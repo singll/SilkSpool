@@ -1,0 +1,49 @@
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: ${APP_PREFIX:-sp-}n8n
+    restart: unless-stopped
+    # [修复] 脚本中使用了 root 权限，必须加上，否则 volume 可能无权写入
+    user: root
+    ports:
+      - "5678:5678"
+    environment:
+      # [修复] 补全时区设置
+      - TZ=Asia/Shanghai
+      - GENERIC_TIMEZONE=Asia/Shanghai
+      # [修复] 补全认证配置
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-n8npassword}
+      # [修复] 内存限制，防止 OOM
+      - NODE_OPTIONS=--max-old-space-size=2048
+      # [优化] 执行历史自动清理 - 防止硬盘撑爆
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168
+      - EXECUTIONS_DATA_PRUNE_MAX_COUNT=5000
+      # 连接 Firecrawl
+      - FIRECRAWL_API_URL=http://firecrawl-api:3002
+      # 允许 n8n 访问宿主机网络
+      - HOST_DOCKER_INTERNAL=host.docker.internal
+    # [修复] 添加 Host 映射
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - kb-n8n-data:/home/node/.n8n
+    networks:
+      - kb-network
+
+  memos:
+    image: neosmemo/memos:stable
+    container_name: ${APP_PREFIX:-sp-}memos
+    restart: unless-stopped
+    ports:
+      - "5230:5230"
+    environment:
+      - TZ=Asia/Shanghai
+      # [SSO] 如需 Authelia OIDC 统一登录，在 .env 中配置 MEMOS_PUBLIC_URL
+      - MEMOS_PUBLIC_URL=${MEMOS_PUBLIC_URL:-}
+    volumes:
+      - kb-memos-data:/var/opt/memos
+    networks:
+      - kb-network

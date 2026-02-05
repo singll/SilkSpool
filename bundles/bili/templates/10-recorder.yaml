@@ -1,0 +1,23 @@
+services:
+  # ----------------------------------------------------------------
+  # 录播姬 (BililiveRecorder) - 官方镜像
+  # WebUI: http://<IP>:2356
+  # ----------------------------------------------------------------
+  recorder:
+    image: bililive/recorder:latest
+    container_name: ${APP_PREFIX:-sp-}bili-recorder
+    restart: always
+    ports:
+      - "2356:2356"
+    volumes:
+      - ./recorder/config:/etc/bililiverecorder
+      # 录播数据存储目录 (从 .env 读取)
+      - ${BREC_REC_PATH:-/mnt/smb/Live}:/rec
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+      - BREC_HTTP_BASIC_USER=${BREC_USER:-admin}
+      - BREC_HTTP_BASIC_PASS=${BREC_PASS:-admin}
+    # 使用 root 身份运行以确保有权写入 SMB 挂载点
+    user: "0:0"
+    security_opt:
+      - apparmor:unconfined

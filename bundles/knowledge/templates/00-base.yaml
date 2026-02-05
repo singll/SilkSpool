@@ -1,0 +1,27 @@
+name: knowledge-base
+
+networks:
+  kb-network:
+    driver: bridge
+
+# ==============================================================================
+#  数据卷定义
+#  策略: 高 IO 服务使用本地卷，大文件存储使用 NFS 挂载路径
+# ==============================================================================
+volumes:
+  # --- 本地卷 (高 IO 需求，保持本地) ---
+  kb-n8n-data:
+  kb-memos-data:
+  kb-ragflow-esdata:      # Elasticsearch 索引，需要高 IOPS
+  kb-firecrawl-db:        # PostgreSQL 数据
+  kb-firecrawl-rabbitmq:  # RabbitMQ 消息队列数据
+  kb-redis-data:
+  kb-mysql-data:
+  # Knowledge Management 数据卷
+  km-backend-data:
+  km-backend-temp:
+
+  # --- NFS 挂载卷 (大容量存储，通过 bind mount 使用) ---
+  # 以下卷不再使用，改为直接 bind mount 到 /data/xxx
+  # kb-ragflow-data:      → /data/documents/ragflow
+  # kb-minio-data:        → /data/minio

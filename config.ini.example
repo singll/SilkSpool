@@ -1,0 +1,198 @@
+#!/bin/bash
+# ==============================================================================
+#  SilkSpool Configuration Template
+#
+#  Usage:
+#  1. Copy this file: cp config.ini.example config.ini
+#  2. Edit config.ini with your actual server information
+#  3. config.ini is gitignored to protect your secrets
+# ==============================================================================
+
+# ----------------- 1. Global Settings -----------------
+# SSH private key path (relative to project root)
+SSH_KEY_PATH="./keys/id_silkspool"
+
+# Default domain (used for DNS management and site commands)
+DEFAULT_DOMAIN="example.com"
+
+# Backup storage path (outside the project directory)
+BACKUP_DIR="$HOME/silkspool_backups"
+
+# ----------------- 2. Host Inventory -----------------
+# Format: HOST_INFO["alias"]="user@ip"
+# Tip: Use a dedicated ops user (e.g., silkspool) for most hosts
+#      OpenWrt/iStoreOS usually requires root
+declare -A HOST_INFO
+HOST_INFO["router"]="root@192.168.1.1"            # Gateway / Router
+HOST_INFO["knowledge"]="silkspool@192.168.1.10"   # Knowledge base server
+HOST_INFO["bili-node"]="silkspool@192.168.1.11"    # Bilibili recording node
+HOST_INFO["vps"]="silkspool@1.2.3.4"              # Public VPS
+
+# ----------------- 3. Host Metadata -----------------
+# Controls container name prefix: "APP_PREFIX=sp-" => sp-redis, "APP_PREFIX=" => redis
+declare -A HOST_META
+HOST_META["router"]="APP_PREFIX=sp-"
+HOST_META["knowledge"]="APP_PREFIX=sp-"
+HOST_META["bili-node"]="APP_PREFIX=sp-"
+HOST_META["vps"]="APP_PREFIX="
+
+# ----------------- 4. Bundle Bindings -----------------
+# Which bundles are deployed to which hosts (maps to bundles/ directory)
+declare -a BUNDLES_ROUTER=("gateway")
+declare -a BUNDLES_KNOWLEDGE=("knowledge")
+declare -a BUNDLES_BILINODE=("bili")
+declare -a BUNDLES_VPS=("server")
+
+# ----------------- 5. Binary Stack -----------------
+# Software to install on hosts using ./spool.sh stack <host>
+declare -a STACK_VPS=("caddy" "headscale" "conduit" "ntfy")
+
+# ----------------- 6. Install Sources -----------------
+# Format: "alias:repo:filename_regex:systemd_service_name"
+# {ARCH} is auto-replaced with amd64/arm64
+declare -a INSTALL_SOURCES=(
+    "caddy:caddyserver/caddy:linux_{ARCH}.tar.gz:caddy"
+    "headscale:juanfont/headscale:linux_{ARCH}$:headscale"
+    "conduit:gitlab:famedly/conduit:x86_64.*linux.*musl:conduit"
+    "ntfy:binwiederhier/ntfy:linux_{ARCH}.tar.gz:ntfy"
+)
+
+# ----------------- 7. Sync Rules -----------------
+# Format: "local_relative_path:remote_absolute_path"
+# Local paths are relative to hosts/<host>/
+
+declare -a RULES_ROUTER=(
+    "caddy/Caddyfile:/opt/caddy/Caddyfile"
+    "homepage/services.yaml:/opt/homepage/config/services.yaml"
+    "homepage/settings.yaml:/opt/homepage/config/settings.yaml"
+    "homepage/bookmarks.yaml:/opt/homepage/config/bookmarks.yaml"
+    "homepage/docker.yaml:/opt/homepage/config/docker.yaml"
+    "homepage/widgets.yaml:/opt/homepage/config/widgets.yaml"
+    "dnsmasq/dnsmasq.conf:/etc/dnsmasq.conf"
+    "openclash/hosts.list:/etc/openclash/custom/openclash_custom_hosts.list"
+)
+
+declare -a RULES_KNOWLEDGE=(
+    ".env:/opt/silkspool/knowledge/.env"
+    "ragflow/conf:/opt/silkspool/knowledge/ragflow/conf"
+    "n8n-workflows/:/opt/silkspool/knowledge/n8n-workflows/"
+)
+
+declare -a RULES_BILINODE=(
+    ".env:/opt/bili-suite/.env"
+    "recorder/config/:/opt/bili-suite/recorder/config/"
+    "robot/config/:/opt/bili-suite/robot/config/"
+)
+
+declare -a RULES_VPS=(
+    "caddy/Caddyfile:/etc/caddy/Caddyfile"
+    "headscale/config.yaml:/etc/headscale/config.yaml"
+    "conduit/conduit.toml:/etc/conduit/conduit.toml"
+    "ntfy/server.yml:/etc/ntfy/server.yml"
+)
+
+# ----------------- 8. Service Registry -----------------
+# Format: "alias:type:real_name"
+# Types: docker, systemd, openwrt, initd
+
+declare -a SERVICES_ROUTER=(
+    "caddy:docker:caddy"
+    "homepage:docker:homepage"
+    "firewall:openwrt:firewall"
+    "dnsmasq:initd:dnsmasq"
+    "openclash:initd:openclash"
+)
+
+declare -a SERVICES_KNOWLEDGE=(
+    "backend:docker:sp-backend"
+    "frontend:docker:sp-frontend"
+    "n8n:docker:sp-n8n"
+    "ragflow:docker:sp-ragflow"
+    "memos:docker:sp-memos"
+    "rsshub:docker:sp-rsshub"
+    "firecrawl:docker:sp-firecrawl-api"
+    "redis:docker:sp-redis"
+    "mysql:docker:sp-mysql"
+    "minio:docker:sp-minio"
+    "es:docker:sp-ragflow-es"
+)
+
+declare -a SERVICES_BILINODE=(
+    "recorder:docker:sp-bili-recorder"
+    "robot:docker:sp-bili-robot"
+    "dozzle:docker:sp-dozzle"
+)
+
+declare -a SERVICES_VPS=(
+    "caddy:systemd:caddy"
+    "headscale:systemd:headscale"
+    "conduit:systemd:conduit"
+    "ntfy:systemd:ntfy"
+)
+
+# ----------------- 9. Backup Rules -----------------
+# Format: "type:source:backup_alias"
+# Types: volume, db-mysql, db-pg, dir
+
+declare -a BACKUP_KNOWLEDGE=(
+    "volume:sp-n8n-data:n8n-backup"
+    "volume:sp-memos-data:memos-backup"
+    "volume:sp-firecrawl-db:firecrawl-pg"
+    "db-mysql:sp-mysql:ragflow-sql"
+    "volume:sp-minio-data:ragflow-files"
+)
+
+declare -a BACKUP_BILINODE=(
+    "dir:/opt/bili-suite/recorder/config:recorder-cfg"
+    "dir:/opt/bili-suite/robot/config:robot-cfg"
+)
+
+# ----------------- 10. Version Control -----------------
+# "latest" = auto-fetch newest; "v1.2.3" = pin specific version
+declare -A APP_VERSIONS
+APP_VERSIONS["caddy"]="latest"
+APP_VERSIONS["headscale"]="v0.22.3"
+APP_VERSIONS["ntfy"]="latest"
+APP_VERSIONS["conduit"]="latest"
+APP_VERSIONS["firecrawl"]="v1.0.0"
+
+# --- Helper Functions (DO NOT MODIFY) ---
+_normalize_host() { echo "${1^^}" | tr -d '-'; }
+get_host_rules() { local h=$1; local v="RULES_$(_normalize_host "$h")"; eval "echo \"\${${v}[@]}\""; }
+get_host_services() { local h=$1; local v="SERVICES_$(_normalize_host "$h")"; eval "echo \"\${${v}[@]}\""; }
+get_host_backups() { local h=$1; local v="BACKUP_$(_normalize_host "$h")"; eval "echo \"\${${v}[@]}\""; }
+get_host_stack() { local h=$1; local v="STACK_$(_normalize_host "$h")"; eval "echo \"\${${v}[@]}\""; }
+get_host_meta() { local h=$1; local v="HOST_META[$h]"; echo "${!v}"; }
+get_post_push_hooks() { local h=$1; local v="POST_PUSH_HOOKS_$(_normalize_host "$h")"; eval "echo \"\${${v}[@]}\""; }
+
+# ----------------- 11. DNS Settings -----------------
+DNS_GATEWAY_IP="192.168.1.1"
+DNS_HEADSCALE_SERVER="100.100.100.100"
+DNS_GATEWAY_HOST="router"
+DNS_HEADSCALE_HOST="vps"
+
+# DNS local config paths (relative to hosts/<host>/)
+DNS_DNSMASQ_LOCAL="dnsmasq/dnsmasq.conf"
+DNS_OPENCLASH_LOCAL="openclash/hosts.list"
+DNS_HEADSCALE_LOCAL="headscale/config.yaml"
+DNS_CADDY_LOCAL="caddy/Caddyfile"
+DNS_HOMEPAGE_LOCAL="homepage/services.yaml"
+
+# ----------------- 12. Post-Push Hooks -----------------
+# Format: "local_path_match:remote_command"
+# Executed automatically after sync push when file matches
+
+declare -a POST_PUSH_HOOKS_ROUTER=(
+    "caddy/Caddyfile:docker exec caddy caddy reload --config /etc/caddy/Caddyfile"
+)
+
+declare -a POST_PUSH_HOOKS_VPS=(
+    "headscale/config.yaml:sudo chown headscale:headscale /etc/headscale/config.yaml"
+)
+
+# ----------------- 13. n8n Workflow Management ---------
+N8N_HOST="knowledge"
+N8N_CONTAINER="sp-n8n"
+N8N_WORKFLOW_DIR="/opt/silkspool/knowledge/n8n-workflows"
+N8N_API_URL="http://localhost:5678"
+N8N_API_KEY=""  # Create in n8n UI: Settings -> API Keys

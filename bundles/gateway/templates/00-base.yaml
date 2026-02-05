@@ -1,0 +1,5 @@
+name: gateway-stack
+networks:
+  gateway-net:
+    # 外部网络，允许其他容器加入
+    external: true

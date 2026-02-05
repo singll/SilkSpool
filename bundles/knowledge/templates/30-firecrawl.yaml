@@ -1,0 +1,94 @@
+services:
+  # ===========================================================================
+  #  Firecrawl - 网页抓取服务
+  #  注意: Firecrawl 没有公开的预构建镜像，需要从源码构建
+  #  源码由 remote.sh 克隆到 ./firecrawl 目录
+  # ===========================================================================
+
+  # Firecrawl Playwright 服务 (网页抓取引擎)
+  firecrawl-playwright:
+    build:
+      context: ./firecrawl/apps/playwright-service-ts
+      dockerfile: Dockerfile
+    container_name: ${APP_PREFIX:-sp-}firecrawl-playwright
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      PROXY_SERVER: ${PROXY_SERVER:-}
+      PROXY_USERNAME: ${PROXY_USERNAME:-}
+      PROXY_PASSWORD: ${PROXY_PASSWORD:-}
+      BLOCK_MEDIA: ${BLOCK_MEDIA:-true}
+    networks:
+      - kb-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+
+  # Firecrawl API 服务
+  firecrawl-api:
+    build:
+      context: ./firecrawl/apps/api
+      dockerfile: Dockerfile
+    container_name: ${APP_PREFIX:-sp-}firecrawl-api
+    restart: unless-stopped
+    environment:
+      HOST: "0.0.0.0"
+      PORT: 3002
+      # Redis 连接
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redispassword}@redis:6379
+      REDIS_RATE_LIMIT_URL: redis://:${REDIS_PASSWORD:-redispassword}@redis:6379
+      # Playwright 服务
+      PLAYWRIGHT_MICROSERVICE_URL: http://firecrawl-playwright:3000/scrape
+      # PostgreSQL 连接
+      POSTGRES_HOST: firecrawl-db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      POSTGRES_DB: "${POSTGRES_DB:-firecrawl}"
+      USE_DB_AUTHENTICATION: "false"
+      # 并发配置
+      NUM_WORKERS_PER_QUEUE: 4
+      CRAWL_CONCURRENT_REQUESTS: 5
+      MAX_CONCURRENT_JOBS: 3
+      # RabbitMQ 连接
+      NUQ_RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@firecrawl-rabbitmq:5672
+    ports:
+      - "3002:3002"
+    depends_on:
+      - firecrawl-playwright
+      - firecrawl-db
+      - firecrawl-rabbitmq
+      - redis
+    networks:
+      - kb-network
+
+  # Firecrawl 数据库 (使用官方的 nuq-postgres，包含初始化 schema)
+  firecrawl-db:
+    build:
+      context: ./firecrawl/apps/nuq-postgres
+      dockerfile: Dockerfile
+    container_name: ${APP_PREFIX:-sp-}firecrawl-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-firecrawl}
+    networks:
+      - kb-network
+    volumes:
+      - kb-firecrawl-db:/var/lib/postgresql/data
+
+  # Firecrawl RabbitMQ (消息队列服务)
+  firecrawl-rabbitmq:
+    image: rabbitmq:3-management
+    container_name: ${APP_PREFIX:-sp-}firecrawl-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    networks:
+      - kb-network
+    volumes:
+      - kb-firecrawl-rabbitmq:/var/lib/rabbitmq

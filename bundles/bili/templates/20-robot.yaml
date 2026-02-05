@@ -1,0 +1,19 @@
+services:
+  # ----------------------------------------------------------------
+  # 弹幕机器人 (xbclub 官方镜像)
+  # 使用 host 模式连接 B 站弹幕服务器
+  # ----------------------------------------------------------------
+  robot:
+    image: xbclub/bilibilidanmurobot:latest
+    container_name: ${APP_PREFIX:-sp-}bili-robot
+    restart: always
+    # 使用 host 模式连接 B 站弹幕服务器最稳
+    network_mode: host
+    volumes:
+      # 该镜像默认读取 /app/data/etc 下的配置
+      - ./robot/config:/app/data/etc
+      - ./robot/logs:/app/data/logs
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    security_opt:
+      - apparmor:unconfined

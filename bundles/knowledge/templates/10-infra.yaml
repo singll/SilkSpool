@@ -1,0 +1,56 @@
+services:
+  redis:
+    image: redis:7-alpine
+    # 动态容器名: 默认为 sp-redis
+    container_name: ${APP_PREFIX:-sp-}redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redispassword}
+    volumes:
+      - kb-redis-data:/data
+    networks:
+      - kb-network
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+
+  mysql:
+    image: mysql:8.0.39
+    container_name: ${APP_PREFIX:-sp-}mysql
+    restart: unless-stopped
+    environment:
+      # 引用 .env 中的变量
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-mysql123}
+    volumes:
+      - kb-mysql-data:/var/lib/mysql
+    networks:
+      - kb-network
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2023-12-20T01-00-02Z
+    container_name: ${APP_PREFIX:-sp-}minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-minio123}
+    volumes:
+      # [NFS] MinIO 对象存储 → TrueNAS
+      - ${NFS_MINIO:-/data/minio}:/data
+    networks:
+      - kb-network
+
+  es:
+    image: elasticsearch:8.11.1
+    container_name: ${APP_PREFIX:-sp-}ragflow-es
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms4g -Xmx4g"
+    volumes:
+      - kb-ragflow-esdata:/usr/share/elasticsearch/data
+    networks:
+      - kb-network

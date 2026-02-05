@@ -1,0 +1,33 @@
+services:
+  ragflow:
+    image: infiniflow/ragflow:v0.22.1
+    container_name: ${APP_PREFIX:-sp-}ragflow
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      # 密码引用
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-mysql123}
+      MINIO_PASSWORD: ${MINIO_PASSWORD:-minio123}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redispassword}
+      # 内部链接: 直接使用 Service Name (如 mysql, es)，不受前缀影响
+      # [Fix] 使用 ES_HOST 而不是 ELASTICSEARCH_HOST (RagFlow 模板使用 ES_HOST)
+      ES_HOST: es
+      MYSQL_HOST: mysql
+      MINIO_HOST: minio
+      REDIS_HOST: redis
+    volumes:
+      # [NFS] RAGFlow 文档数据 → TrueNAS
+      - ${NFS_DOCUMENTS:-/data/documents}/ragflow:/ragflow/data
+      # [NFS] RAGFlow 应用日志 → TrueNAS (防止撑满本地磁盘)
+      - ${NFS_LOGS:-/data/logs}/ragflow:/ragflow/logs
+      # [Fix] 挂载 nginx 配置解决 RagFlow 前端显示问题
+      - ./ragflow/conf/ragflow.nginx.conf:/etc/nginx/sites-enabled/ragflow:ro
+      - ./ragflow/conf/empty.conf:/etc/nginx/sites-enabled/default:ro
+    depends_on:
+      - es
+      - redis
+      - mysql
+      - minio
+    networks:
+      - kb-network

@@ -1,0 +1,10 @@
+services:
+  caddy:
+    image: caddy:latest
+    container_name: ${APP_PREFIX:-sp-}caddy
+    restart: unless-stopped
+    # 主机模式，性能更好且方便反代
+    network_mode: host
+    volumes:
+      - /opt/caddy/Caddyfile:/etc/caddy/Caddyfile
+      - /opt/caddy/data:/data
