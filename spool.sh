@@ -50,10 +50,12 @@ usage() {
     echo "  site push             -> Push all site configs"
     echo ""
     echo "Bundle Orchestration:"
-    echo "  bundle <name> <cmd> <host>"
+    echo "  bundle <name> <cmd> <host> [args]"
     echo "      <name>: Bundle name (e.g. knowledge, bili)"
-    echo "      <cmd> : init | setup | up | down | status"
+    echo "      <cmd> : init | setup | up | down | status | service"
     echo "      init  : Download default configs to hosts/<host>/"
+    echo "      service: Manage single service (bundle <name> service <host> <svc> <action>)"
+    echo "               Example: bundle knowledge service knowledge bellkeeper up"
     echo ""
     echo "Service Management:"
     echo "  stack  <host>         -> Install binary stack"
@@ -120,7 +122,9 @@ case "$CMD" in
     # Bundle 编排
     bundle)
         NAME=$1; ACTION=$2; HOST=$3
-        [ -z "$HOST" ] && log_err "Usage: bundle <name> <action> <host>" && exit 1
+        shift 3 2>/dev/null || true
+        EXTRA_ARGS="$*"  # 额外参数 (用于 service 命令)
+        [ -z "$HOST" ] && log_err "Usage: bundle <name> <action> <host> [extra_args]" && exit 1
 
         BUNDLE_ROOT="$BASE_DIR/bundles/$NAME"
         if [ ! -d "$BUNDLE_ROOT" ]; then
@@ -130,7 +134,7 @@ case "$CMD" in
 
         [[ "$ACTION" =~ ^(setup|up)$ ]] && ensure_local_yq
         # init 不需要远程脚本，直接由 runner 处理
-        run_bundle_generic "$NAME" "$ACTION" "$HOST" "$BUNDLE_ROOT"
+        run_bundle_generic "$NAME" "$ACTION" "$HOST" "$BUNDLE_ROOT" "$EXTRA_ARGS"
         ;;
 
     # Stack 基础栈

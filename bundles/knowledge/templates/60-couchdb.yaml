@@ -1,0 +1,28 @@
+# ==============================================================================
+#  CouchDB 配置 - Obsidian LiveSync 同步后端
+#  用途: 为 Obsidian 笔记提供实时同步能力，支持多设备同步
+# ==============================================================================
+
+services:
+  couchdb:
+    image: couchdb:3.3
+    container_name: ${APP_PREFIX:-sp-}couchdb
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - COUCHDB_USER=${COUCHDB_USER:-admin}
+      - COUCHDB_PASSWORD=${COUCHDB_PASSWORD}
+      - COUCHDB_SECRET=${COUCHDB_SECRET}
+    volumes:
+      - kb-couchdb-data:/opt/couchdb/data
+      - kb-couchdb-config:/opt/couchdb/etc/local.d
+    ports:
+      - "5984:5984"
+    networks:
+      - kb-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5984/_up"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

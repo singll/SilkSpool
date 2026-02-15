@@ -17,9 +17,18 @@ volumes:
   kb-firecrawl-rabbitmq:  # RabbitMQ 消息队列数据
   kb-redis-data:
   kb-mysql-data:
-  # Knowledge Management 数据卷
+  # Knowledge Management 数据卷 (旧版)
   km-backend-data:
   km-backend-temp:
+  # Bellkeeper 数据卷 (新版)
+  kb-bellkeeper-db:       # Bellkeeper PostgreSQL 数据
+  # CouchDB 数据卷 (Obsidian LiveSync)
+  kb-couchdb-data:
+  kb-couchdb-config:
+  # New API 数据卷 (AI Model Gateway)
+  kb-newapi-data:
+  kb-newapi-db:
+  kb-newapi-logs:
 
   # --- NFS 挂载卷 (大容量存储，通过 bind mount 使用) ---
   # 以下卷不再使用，改为直接 bind mount 到 /data/xxx

@@ -161,9 +161,12 @@ print(json.dumps(clean_data))
         return 1
     fi
 
-    # 创建工作流 - 将 JSON 写入临时文件避免 shell 转义问题
+    # 创建工作流 - 使用 base64 编码避免 shell 转义问题
+    local json_base64
+    json_base64=$(echo "$clean_json" | base64 -w 0)
+
     local result
-    result=$(remote_exec "echo '$clean_json' > /tmp/wf-import.json && curl -s -X POST '${N8N_API_URL}/api/v1/workflows' \
+    result=$(remote_exec "echo '$json_base64' | base64 -d > /tmp/wf-import.json && curl -s -X POST '${N8N_API_URL}/api/v1/workflows' \
         -H 'Accept: application/json' \
         -H 'Content-Type: application/json' \
         -H 'X-N8N-API-KEY: ${N8N_API_KEY}' \
@@ -385,10 +388,12 @@ show_help() {
     echo "Usage: ./spool.sh n8n-sync <command>"
     echo ""
     echo "Commands:"
-    echo "  list        List workflow files (local + remote + n8n)"
-    echo "  import      Import all workflows to n8n via API"
-    echo "  export      Export all workflows from n8n to local backup"
-    echo "  push-import Push local files to remote and import to n8n"
+    echo "  list             List workflow files (local + remote + n8n)"
+    echo "  import           Import NEW workflows to n8n via API"
+    echo "  update [name]    Update EXISTING workflows (all or by name)"
+    echo "  export           Export all workflows from n8n to local backup"
+    echo "  push-import      Push local files to remote and import NEW"
+    echo "  push-update      Push local files to remote and update EXISTING"
     echo ""
     echo "First-time setup - create API Key:"
     echo "  1. Open n8n Web UI -> Settings -> API Keys"
@@ -397,9 +402,8 @@ show_help() {
     echo ""
     echo "Typical workflow:"
     echo "  1. Edit local hosts/${N8N_HOST}/n8n-workflows/*.json"
-    echo "  2. ./spool.sh sync push ${N8N_HOST}  (push to server)"
-    echo "  3. ./spool.sh n8n-sync import        (import to n8n)"
-    echo "  Or: ./spool.sh n8n-sync push-import  (one-click)"
+    echo "  2. First time:   ./spool.sh n8n-sync push-import"
+    echo "  3. Update later: ./spool.sh n8n-sync push-update"
     echo ""
     echo "Current config:"
     echo "  N8N_HOST:     ${N8N_HOST}"
@@ -409,6 +413,216 @@ show_help() {
     else
         echo "  N8N_API_KEY:  Not configured"
     fi
+}
+
+# 获取工作流 ID (通过名称)
+get_workflow_id_by_name() {
+    local name="$1"
+    local result
+    result=$(api_list_workflows)
+
+    echo "$result" | python3 -c "
+import sys, json
+name = '$name'
+try:
+    data = json.load(sys.stdin)
+    for w in data.get('data', []):
+        if w.get('name') == name:
+            print(w.get('id', ''))
+            break
+except:
+    pass
+" 2>/dev/null
+}
+
+# 通过 API 更新工作流
+api_update_workflow() {
+    local workflow_id="$1"
+    local json_file="$2"
+    local json_content
+    json_content=$(remote_exec "cat '$json_file'")
+
+    # 清理 JSON 只保留 API 允许的字段
+    local clean_json
+    clean_json=$(echo "$json_content" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+
+# 只保留 API 允许的字段
+allowed_keys = ['name', 'nodes', 'connections', 'settings']
+clean_data = {k: data[k] for k in allowed_keys if k in data}
+
+# 确保必要字段存在
+if 'name' not in clean_data:
+    clean_data['name'] = 'Unnamed Workflow'
+if 'nodes' not in clean_data:
+    clean_data['nodes'] = []
+if 'connections' not in clean_data:
+    clean_data['connections'] = {}
+if 'settings' not in clean_data:
+    clean_data['settings'] = {'executionOrder': 'v1'}
+
+# 清理 settings 中的多余字段
+allowed_settings = ['executionOrder', 'saveManualExecutions', 'callerPolicy', 'errorWorkflow', 'timezone']
+clean_data['settings'] = {k: v for k, v in clean_data.get('settings', {}).items() if k in allowed_settings}
+if not clean_data['settings']:
+    clean_data['settings'] = {'executionOrder': 'v1'}
+
+print(json.dumps(clean_data))
+" 2>/dev/null)
+
+    if [ -z "$clean_json" ]; then
+        return 1
+    fi
+
+    # 更新工作流 - 使用 base64 编码避免 shell 转义问题
+    local json_base64
+    json_base64=$(echo "$clean_json" | base64 -w 0)
+
+    local result
+    result=$(remote_exec "echo '$json_base64' | base64 -d > /tmp/wf-update.json && curl -s -X PUT '${N8N_API_URL}/api/v1/workflows/${workflow_id}' \
+        -H 'Accept: application/json' \
+        -H 'Content-Type: application/json' \
+        -H 'X-N8N-API-KEY: ${N8N_API_KEY}' \
+        -d @/tmp/wf-update.json && rm -f /tmp/wf-update.json")
+
+    echo "$result"
+}
+
+# 更新单个工作流
+update_workflow() {
+    local target_name="$1"
+
+    check_api_key
+    check_container
+
+    if [ -z "$target_name" ]; then
+        log_error "Usage: n8n-sync update <workflow-name>"
+        echo "Example: n8n-sync update 02-核心爬取"
+        exit 1
+    fi
+
+    log_step "Updating workflow: $target_name"
+
+    # 查找工作流 ID
+    local workflow_id
+    workflow_id=$(get_workflow_id_by_name "$target_name")
+
+    if [ -z "$workflow_id" ]; then
+        log_error "Workflow not found in n8n: $target_name"
+        exit 1
+    fi
+
+    log_info "Found workflow ID: $workflow_id"
+
+    # 查找对应的本地文件
+    local files_output
+    files_output=$(remote_exec "ls -1 '${N8N_WORKFLOW_DIR}'/*.json 2>/dev/null")
+
+    local found_file=""
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        local filename=$(basename "$file")
+        [[ "$filename" == "00-config.json" ]] && continue
+
+        local wf_name
+        wf_name=$(remote_exec "python3 -c \"import json; print(json.load(open('$file')).get('name',''))\"" 2>/dev/null)
+
+        if [ "$wf_name" = "$target_name" ]; then
+            found_file="$file"
+            break
+        fi
+    done <<< "$files_output"
+
+    if [ -z "$found_file" ]; then
+        log_error "Workflow file not found for: $target_name"
+        exit 1
+    fi
+
+    log_info "Updating from file: $(basename "$found_file")"
+
+    # 调用 API 更新
+    local result
+    result=$(api_update_workflow "$workflow_id" "$found_file")
+
+    if echo "$result" | grep -q '"id"'; then
+        log_info "[OK] Workflow updated successfully"
+    else
+        local error_msg
+        error_msg=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('message','Unknown error'))" 2>/dev/null)
+        log_error "[FAIL] Update failed: $error_msg"
+        exit 1
+    fi
+}
+
+# 更新所有已存在的工作流
+update_all() {
+    check_api_key
+    check_container
+
+    log_step "Updating all existing workflows..."
+    echo ""
+
+    # 获取已存在的工作流
+    local existing_result
+    existing_result=$(api_list_workflows)
+
+    # 获取远程文件列表
+    local files_output
+    files_output=$(remote_exec "ls -1 '${N8N_WORKFLOW_DIR}'/*.json 2>/dev/null")
+
+    local success=0
+    local failed=0
+    local skipped=0
+
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        local filename=$(basename "$file")
+        [[ "$filename" == "00-config.json" ]] && continue
+
+        local wf_name
+        wf_name=$(remote_exec "python3 -c \"import json; print(json.load(open('$file')).get('name',''))\"" 2>/dev/null)
+
+        # 查找工作流 ID
+        local workflow_id
+        workflow_id=$(echo "$existing_result" | python3 -c "
+import sys, json
+name = '$wf_name'
+try:
+    data = json.load(sys.stdin)
+    for w in data.get('data', []):
+        if w.get('name') == name:
+            print(w.get('id', ''))
+            break
+except:
+    pass
+" 2>/dev/null)
+
+        if [ -z "$workflow_id" ]; then
+            log_warn "Skipping (not in n8n): $wf_name"
+            ((skipped++)) || true
+            continue
+        fi
+
+        log_info "Updating: $wf_name ($filename)"
+
+        local result
+        result=$(api_update_workflow "$workflow_id" "$file")
+
+        if echo "$result" | grep -q '"id"'; then
+            log_info "  [OK] Updated"
+            ((success++)) || true
+        else
+            local error_msg
+            error_msg=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('message','Unknown error'))" 2>/dev/null)
+            log_error "  [FAIL] $error_msg"
+            ((failed++)) || true
+        fi
+    done <<< "$files_output"
+
+    echo ""
+    log_info "Update completed: $success updated, $skipped skipped"
+    [ $failed -gt 0 ] && log_warn "$failed failed"
 }
 
 # 主函数
@@ -424,11 +638,25 @@ main() {
         import)
             import_all
             ;;
+        update)
+            shift
+            if [ -n "$1" ]; then
+                update_workflow "$1"
+            else
+                update_all
+            fi
+            ;;
         export)
             export_all
             ;;
         push-import)
             push_and_import
+            ;;
+        push-update)
+            log_step "Pushing workflow files to remote server..."
+            bash "$BASE_DIR/lib/core/sync.sh" push "$N8N_HOST"
+            echo ""
+            update_all
             ;;
         help|--help|-h)
             show_help

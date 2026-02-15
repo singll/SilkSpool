@@ -25,6 +25,14 @@ services:
       - FIRECRAWL_API_URL=http://firecrawl-api:3002
       # 允许 n8n 访问宿主机网络
       - HOST_DOCKER_INTERNAL=host.docker.internal
+      # [新增] 允许 Code 节点访问环境变量
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      # [新增] 多端存储所需的环境变量
+      - COUCHDB_USER=${COUCHDB_USER:-admin}
+      - COUCHDB_PASSWORD=${COUCHDB_PASSWORD:-}
+      - MEMOS_API_TOKEN=${MEMOS_API_TOKEN:-}
+      - RAGFLOW_API_KEY=${RAGFLOW_API_KEY:-}
+      # RAGFLOW_DATASET_ID 已移除 - 工作流根据 category 自动路由到对应 Dataset
     # [修复] 添加 Host 映射
     extra_hosts:
       - "host.docker.internal:host-gateway"

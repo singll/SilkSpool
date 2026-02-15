@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh -o StrictHostKeyChecking=no -i /home/ubuntu/SilkSpool/keys/id_silkspool \"silkspool@192.168.7.220\" \"cd /opt/silkspool/knowledge && docker compose up -d --force-recreate n8n 2>&1\")"
+    ]
+  }
+}

@@ -1,0 +1,64 @@
+# ==============================================================================
+#  New API - AI Model Gateway & Distribution Hub
+#  描述: 统一 AI 模型网关，支持多种 LLM 格式转换 (OpenAI/Claude/Gemini 兼容)
+#  依赖: PostgreSQL (独立实例), Redis (共享)
+#  文档: https://github.com/QuantumNous/new-api
+# ==============================================================================
+
+services:
+  # --- New API 主服务 ---
+  new-api:
+    image: calciumion/new-api:latest
+    container_name: ${APP_PREFIX:-sp-}new-api
+    restart: unless-stopped
+    command: --log-dir /app/logs
+    ports:
+      - "3003:3000"
+    environment:
+      - TZ=Asia/Shanghai
+      - SQL_DSN=postgresql://newapi:${NEWAPI_DB_PASSWORD:-newapi123}@new-api-db:5432/newapi
+      - REDIS_CONN_STRING=redis://:${REDIS_PASSWORD:-redispassword}@redis:6379
+      - ERROR_LOG_ENABLED=true
+      - BATCH_UPDATE_ENABLED=true
+    volumes:
+      - kb-newapi-data:/data
+      - kb-newapi-logs:/app/logs
+    depends_on:
+      new-api-db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - kb-network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/status | grep -o '\"success\":\\s*true' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # --- New API PostgreSQL (独立实例，不影响其他服务) ---
+  new-api-db:
+    image: postgres:16-alpine
+    container_name: ${APP_PREFIX:-sp-}new-api-db
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - POSTGRES_DB=newapi
+      - POSTGRES_USER=newapi
+      - POSTGRES_PASSWORD=${NEWAPI_DB_PASSWORD:-newapi123}
+    volumes:
+      - kb-newapi-db:/var/lib/postgresql/data
+    networks:
+      - kb-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U newapi -d newapi"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# --- 数据卷 ---
+volumes:
+  kb-newapi-data:
+  kb-newapi-db:
+  kb-newapi-logs:

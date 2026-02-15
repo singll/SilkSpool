@@ -354,6 +354,59 @@ dns_push() {
     [ -f "$HEADSCALE_CONFIG" ] && echo "  ./spool.sh restart $HEADSCALE_HOST headscale"
 }
 
+dns_deploy() {
+    local domain=$1
+    local ip=${2:-$DEFAULT_IP}
+
+    if [ -z "$domain" ]; then
+        log_err "Usage: dns deploy <domain> [ip]"
+        echo "Example: dns deploy couchdb.singll.net"
+        echo ""
+        echo "This command will:"
+        echo "  1. Add DNS record to local configs"
+        echo "  2. Push configs to remote servers"
+        echo "  3. Restart DNS services (dnsmasq, openclash, headscale)"
+        exit 1
+    fi
+
+    echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║  DNS One-Click Deploy: $domain${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+    echo ""
+
+    # Step 1: Add DNS record
+    log_step "Step 1/3: Adding DNS record..."
+    dns_add "$domain" "$ip"
+
+    # Step 2: Push to remote
+    log_step "Step 2/3: Pushing configs to remote servers..."
+    dns_push
+
+    # Step 3: Restart services
+    log_step "Step 3/3: Restarting DNS services..."
+    echo ""
+
+    # Restart gateway DNS services
+    log_info "Restarting $GATEWAY_HOST services..."
+    bash "$LIB_DIR/service.sh" restart "$GATEWAY_HOST" dnsmasq
+    bash "$LIB_DIR/service.sh" restart "$GATEWAY_HOST" openclash
+
+    # Restart Headscale if configured
+    if [ -f "$HEADSCALE_CONFIG" ]; then
+        log_info "Restarting $HEADSCALE_HOST services..."
+        bash "$LIB_DIR/service.sh" restart "$HEADSCALE_HOST" headscale
+    fi
+
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║  DNS Deploy Complete!                  ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo "Domain $domain -> $ip is now active on:"
+    echo "  - Internal: dnsmasq + OpenClash ($GATEWAY_HOST)"
+    [ -f "$HEADSCALE_CONFIG" ] && echo "  - VPN: Headscale ($HEADSCALE_HOST)"
+}
+
 dns_sync_caddy() {
     if [ ! -f "$CADDY_CONFIG" ]; then
         log_err "Caddyfile not found: $CADDY_CONFIG"
@@ -472,6 +525,77 @@ site_push() {
     [ -f "$HEADSCALE_CONFIG" ] && echo "  ./spool.sh restart $HEADSCALE_HOST headscale"
 }
 
+site_deploy() {
+    local domain=$1
+    local backend=$2
+    local name=$3
+    local description=${4:-""}
+    local icon=${5:-mdi-application}
+    local category=${6:-Services}
+
+    if [ -z "$domain" ] || [ -z "$backend" ] || [ -z "$name" ]; then
+        log_err "Usage: site deploy <domain> <backend> <name> [description] [icon] [category]"
+        echo ""
+        echo "This command will:"
+        echo "  1. Add DNS record (dnsmasq, OpenClash, Headscale)"
+        echo "  2. Add Caddy reverse proxy"
+        echo "  3. Add Homepage dashboard entry"
+        echo "  4. Push all configs to remote"
+        echo "  5. Restart all services"
+        echo ""
+        echo "Example:"
+        echo "  ./spool.sh site deploy myapp.singll.net 192.168.1.10:8080 MyApp 'My App'"
+        exit 1
+    fi
+
+    [ -z "$description" ] && description="$name service"
+
+    echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║  Site One-Click Deploy: $name${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+    echo ""
+
+    # Step 1: Add site config
+    log_step "Step 1/3: Adding site configuration..."
+    site_add "$domain" "$backend" "$name" "$description" "$icon" "$category"
+
+    # Step 2: Push to remote
+    log_step "Step 2/3: Pushing configs to remote servers..."
+    site_push
+
+    # Step 3: Restart services
+    log_step "Step 3/3: Restarting services..."
+    echo ""
+
+    # Restart gateway services
+    log_info "Restarting $GATEWAY_HOST services..."
+    bash "$LIB_DIR/service.sh" restart "$GATEWAY_HOST" dnsmasq
+    bash "$LIB_DIR/service.sh" restart "$GATEWAY_HOST" openclash
+    bash "$LIB_DIR/service.sh" restart "$GATEWAY_HOST" caddy
+    bash "$LIB_DIR/service.sh" restart "$GATEWAY_HOST" homepage
+
+    # Restart Headscale if configured
+    if [ -f "$HEADSCALE_CONFIG" ]; then
+        log_info "Restarting $HEADSCALE_HOST services..."
+        bash "$LIB_DIR/service.sh" restart "$HEADSCALE_HOST" headscale
+    fi
+
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║  Site Deploy Complete!                 ║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo "Site $name is now live:"
+    echo "  URL:     https://$domain"
+    echo "  Backend: $backend"
+    echo ""
+    echo "Active on:"
+    echo "  - DNS: dnsmasq + OpenClash ($GATEWAY_HOST)"
+    echo "  - Proxy: Caddy ($GATEWAY_HOST)"
+    echo "  - Dashboard: Homepage ($GATEWAY_HOST)"
+    [ -f "$HEADSCALE_CONFIG" ] && echo "  - VPN DNS: Headscale ($HEADSCALE_HOST)"
+}
+
 site_list() {
     echo -e "${BLUE}=== Configured Sites ===${NC}"
 
@@ -498,37 +622,48 @@ dns_help() {
     echo -e "${BLUE}========= DNS Management Tool =========${NC}"
     echo "Usage: ./spool.sh dns <command> [args]"
     echo ""
-    echo "Commands:"
+    echo -e "${GREEN}Quick Commands (Recommended):${NC}"
+    echo "  deploy <domain> [ip]    One-click: add + push + restart all services"
+    echo ""
+    echo "Step-by-Step Commands:"
+    echo "  add <domain> [ip]       Add domain to local configs"
+    echo "  push                    Push config to remote servers"
+    echo ""
+    echo "Other Commands:"
     echo "  list                    List all DNS records"
-    echo "  add <domain> [ip]       Add domain (default IP: $DEFAULT_IP)"
     echo "  remove <domain>         Remove domain"
     echo "  pull                    Pull config from remote"
-    echo "  push                    Push config to remote"
     echo "  sync-caddy              Sync missing domains from Caddyfile"
+    echo ""
+    echo "Examples:"
+    echo "  ./spool.sh dns deploy couchdb.singll.net           # One-click deploy"
+    echo "  ./spool.sh dns deploy myapp.singll.net 10.0.0.5    # With custom IP"
     echo ""
     echo "Config files (local):"
     echo "  dnsmasq:   $DNSMASQ_CONFIG"
     echo "  OpenClash: $OPENCLASH_HOSTS"
     echo "  Headscale: $HEADSCALE_CONFIG"
-    echo ""
-    echo "Host mapping:"
-    echo "  Gateway:      $GATEWAY_HOST"
-    echo "  Headscale:    $HEADSCALE_HOST"
 }
 
 site_help() {
     echo -e "${BLUE}========= Site Management Tool =========${NC}"
     echo "Usage: ./spool.sh site <command> [args]"
     echo ""
-    echo "Commands:"
-    echo "  list                                          List all sites"
-    echo "  add <domain> <backend> <name> [desc] [icon]   Add site (DNS + Caddy + Homepage)"
-    echo "  remove <domain>                               Remove site"
+    echo -e "${GREEN}Quick Commands (Recommended):${NC}"
+    echo "  deploy <domain> <backend> <name> [desc] [icon]"
+    echo "         One-click: add DNS + Caddy + Homepage + push + restart"
+    echo ""
+    echo "Step-by-Step Commands:"
+    echo "  add <domain> <backend> <name> [desc] [icon]   Add site to local configs"
     echo "  push                                          Push all configs"
     echo ""
-    echo "Example:"
-    echo "  ./spool.sh site add myapp.example.com 192.168.1.10:8080 MyApp 'My App'"
-    echo "  ./spool.sh site remove myapp.example.com"
+    echo "Other Commands:"
+    echo "  list                    List all sites"
+    echo "  remove <domain>         Remove site"
+    echo ""
+    echo "Examples:"
+    echo "  ./spool.sh site deploy myapp.singll.net 192.168.7.100:8080 MyApp 'My Application'"
+    echo "  ./spool.sh site list"
 }
 
 # ==================== 主入口 ====================
@@ -538,6 +673,7 @@ case "$CMD" in
     # DNS 命令
     list|ls)      dns_list ;;
     add)          dns_add "$@" ;;
+    deploy)       dns_deploy "$@" ;;
     remove|rm)    dns_remove "$@" ;;
     pull)         dns_pull ;;
     push)         dns_push ;;
@@ -546,6 +682,7 @@ case "$CMD" in
     # Site 命令 (通过 spool.sh site 调用)
     site-list)    site_list ;;
     site-add)     site_add "$@" ;;
+    site-deploy)  site_deploy "$@" ;;
     site-remove)  site_remove "$@" ;;
     site-push)    site_push ;;
     site-help)    site_help ;;

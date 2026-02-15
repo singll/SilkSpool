@@ -125,6 +125,7 @@ run_bundle_generic() {
     local ACTION=$2
     local HOST=$3
     local BUNDLE_ROOT=$4
+    local EXTRA_ARGS=$5  # 额外参数 (用于 service 命令等)
 
     local LOGIN=${HOST_INFO[$HOST]}
     local APP_PREFIX=$(get_prefix "$HOST")
@@ -286,5 +287,5 @@ run_bundle_generic() {
             -e "s|{{DEPLOY_PATH}}|$DEPLOY_PATH|g" \
             "$REMOTE_SCRIPT"
 
-    } | ssh -t $SSH_OPT "$LOGIN" "bash -s -- $ACTION"
+    } | ssh -t $SSH_OPT "$LOGIN" "bash -s -- $ACTION $EXTRA_ARGS"
 }

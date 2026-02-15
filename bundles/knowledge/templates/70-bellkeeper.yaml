@@ -1,0 +1,70 @@
+# ==============================================================================
+#  Bellkeeper - Knowledge Management System
+#  描述: Go + SolidJS 全栈应用，替代旧版 knowledge-management
+#  依赖: PostgreSQL (独立实例), 连接 RagFlow/n8n
+# ==============================================================================
+
+services:
+  # --- Bellkeeper Backend + Frontend ---
+  bellkeeper:
+    build:
+      context: ./bellkeeper
+      dockerfile: docker/Dockerfile
+    image: bellkeeper:latest
+    container_name: ${APP_PREFIX:-sp-}bellkeeper
+    restart: unless-stopped
+    ports:
+      - "8090:8080"
+    environment:
+      - TZ=Asia/Shanghai
+      # Server config
+      - BELLKEEPER_SERVER_MODE=release
+      - BELLKEEPER_SERVER_HOST=0.0.0.0
+      - BELLKEEPER_SERVER_PORT=8080
+      # Database (使用独立 PostgreSQL)
+      - BELLKEEPER_DATABASE_DRIVER=postgres
+      - BELLKEEPER_DATABASE_HOST=${APP_PREFIX:-sp-}bellkeeper-db
+      - BELLKEEPER_DATABASE_PORT=5432
+      - BELLKEEPER_DATABASE_NAME=bellkeeper
+      - BELLKEEPER_DATABASE_USER=bellkeeper
+      - BELLKEEPER_DATABASE_PASSWORD=${BELLKEEPER_DB_PASSWORD:-bellkeeper123}
+      # RagFlow 连接 (使用同网络的 RagFlow 服务)
+      - BELLKEEPER_RAGFLOW_BASE_URL=http://${APP_PREFIX:-sp-}ragflow:9380
+      - BELLKEEPER_RAGFLOW_API_KEY=${RAGFLOW_API_KEY:-}
+      # n8n 连接
+      - BELLKEEPER_N8N_WEBHOOK_BASE_URL=http://${APP_PREFIX:-sp-}n8n:5678
+    depends_on:
+      bellkeeper-db:
+        condition: service_healthy
+    networks:
+      - kb-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # --- Bellkeeper PostgreSQL (独立实例，不影响其他服务) ---
+  bellkeeper-db:
+    image: postgres:16-alpine
+    container_name: ${APP_PREFIX:-sp-}bellkeeper-db
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - POSTGRES_DB=bellkeeper
+      - POSTGRES_USER=bellkeeper
+      - POSTGRES_PASSWORD=${BELLKEEPER_DB_PASSWORD:-bellkeeper123}
+    volumes:
+      - kb-bellkeeper-db:/var/lib/postgresql/data
+    networks:
+      - kb-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bellkeeper -d bellkeeper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# --- 数据卷 (在 00-base.yaml 中定义，这里补充) ---
+volumes:
+  kb-bellkeeper-db:

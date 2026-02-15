@@ -71,6 +71,12 @@ N8N_PASSWORD=CHANGE_ME_n8n_password
 RAGFLOW_API_KEY=your-ragflow-api-key
 KM_SECRET_KEY=CHANGE_ME_secret_key
 
+# --- Bellkeeper Configuration (新版知识管理系统) ---
+BELLKEEPER_DB_PASSWORD=CHANGE_ME_bellkeeper_db_password
+
+# --- New API Configuration (AI Model Gateway) ---
+NEWAPI_DB_PASSWORD=CHANGE_ME_newapi_db_password
+
 # --- Memos Public URL (for OIDC SSO, optional) ---
 # MEMOS_PUBLIC_URL=https://memos.example.com
 EOF
