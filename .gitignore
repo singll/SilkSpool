@@ -29,8 +29,13 @@ downloads/
 .DS_Store
 
 # --- 4. 主机特定敏感配置 ---
-# 忽略 hosts 目录下所有的 .env 文件 (包含数据库密码等)
-hosts/
+# hosts 目录包含各主机的配置文件，可能含有敏感信息，默认全部忽略
+hosts/*
+!hosts/keeper/
+hosts/keeper/*
+!hosts/keeper/n8n-workflows/
+hosts/keeper/n8n-workflows/*
+!hosts/keeper/n8n-workflows/*.json
 
 # --- 5. IDE 配置 ---
 .vscode/

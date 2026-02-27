@@ -1,0 +1,323 @@
+{
+  "name": "06-\u670d\u52a1\u5065\u5eb7\u76d1\u63a7",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/5 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "c3d4e5f6-0003-4000-c000-000000000001",
+      "name": "\u6bcf5\u5206\u949f\u89e6\u53d1",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// \u5b9a\u4e49\u8981\u76d1\u63a7\u7684\u670d\u52a1\u7aef\u70b9\nreturn [\n  {\n    json: {\n      name: 'Bellkeeper',\n      url: `${$env.BELLKEEPER_URL}/api/health/detailed`,\n      needsApiKey: true,\n      apiKey: $env.BELLKEEPER_API_KEY\n    }\n  },\n  {\n    json: {\n      name: 'Firecrawl',\n      url: `${$env.FIRECRAWL_API_URL}/`,\n      needsApiKey: false\n    }\n  },\n  {\n    json: {\n      name: 'RSSHub',\n      url: 'http://rsshub:1200/',\n      needsApiKey: false\n    }\n  },\n  {\n    json: {\n      name: 'Memos',\n      url: 'http://memos:5230/api/v1/status',\n      needsApiKey: false\n    }\n  }\n];"
+      },
+      "id": "c3d4e5f6-0003-4000-c000-000000000002",
+      "name": "\u5b9a\u4e49\u670d\u52a1\u5217\u8868",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/health/detailed",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "c3d4e5f6-0003-4000-c000-000000000003",
+      "name": "\u68c0\u67e5Bellkeeper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 100],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.FIRECRAWL_API_URL }}/",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c3d4e5f6-0003-4000-c000-000000000004",
+      "name": "\u68c0\u67e5Firecrawl",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 260],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://rsshub:1200/",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c3d4e5f6-0003-4000-c000-000000000005",
+      "name": "\u68c0\u67e5RSSHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 420],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://memos:5230/api/v1/status",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c3d4e5f6-0003-4000-c000-000000000006",
+      "name": "\u68c0\u67e5Memos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 580],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// \u6c47\u603b\u6240\u6709\u5065\u5eb7\u68c0\u67e5\u7ed3\u679c\uff0c\u4e0e\u4e0a\u6b21\u72b6\u6001\u5bf9\u6bd4\nconst staticData = $getWorkflowStaticData('global');\n\nconst bellkeeperResult = $('\\u68c0\\u67e5Bellkeeper').first().json;\nconst firecrawlResult = $('\\u68c0\\u67e5Firecrawl').first().json;\nconst rsshubResult = $('\\u68c0\\u67e5RSSHub').first().json;\nconst memosResult = $('\\u68c0\\u67e5Memos').first().json;\n\nfunction isHealthy(result, serviceName) {\n  // \u5982\u679c\u8bf7\u6c42\u5931\u8d25\uff0ccontinueOnFail\u4f1a\u8fd4\u56de\u5305\u542berror\u5b57\u6bb5\u7684\u5bf9\u8c61\n  if (!result || result.error || result.errorMessage) {\n    return false;\n  }\n  // Bellkeeper\u8fd4\u56de\u7684\u5065\u5eb7\u68c0\u67e5\u6709\u7279\u5b9a\u683c\u5f0f\n  if (serviceName === 'Bellkeeper') {\n    return result.status === 'healthy' || result.status === 'ok' || !!result.version;\n  }\n  // \u5176\u4ed6\u670d\u52a1\u53ea\u8981\u80fd\u54cd\u5e94\u5c31\u7b97\u5065\u5eb7\n  return true;\n}\n\nconst currentState = {\n  Bellkeeper: isHealthy(bellkeeperResult, 'Bellkeeper'),\n  Firecrawl: isHealthy(firecrawlResult, 'Firecrawl'),\n  RSSHub: isHealthy(rsshubResult, 'RSSHub'),\n  Memos: isHealthy(memosResult, 'Memos')\n};\n\nconst previousState = staticData.serviceState || null;\nconst changes = [];\n\nif (previousState) {\n  for (const [service, isUp] of Object.entries(currentState)) {\n    const wasUp = previousState[service];\n    if (wasUp !== undefined && wasUp !== isUp) {\n      if (isUp) {\n        changes.push(`\\u2705 ${service} \\u5df2\\u6062\\u590d\\u6b63\\u5e38`);\n      } else {\n        changes.push(`\\u274c ${service} \\u5df2\\u5b95\\u673a`);\n      }\n    }\n  }\n}\n\n// \u4fdd\u5b58\u5f53\u524d\u72b6\u6001\nstaticData.serviceState = currentState;\nstaticData.lastCheck = new Date().toISOString();\n\n// \u6784\u5efa\u901a\u77e5\u6d88\u606f\nlet hasChanges = changes.length > 0;\nlet message = '';\nlet html = '';\n\nif (hasChanges) {\n  const statusLines = Object.entries(currentState).map(\n    ([service, isUp]) => `${isUp ? '\\u2705' : '\\u274c'} ${service}: ${isUp ? '\\u6b63\\u5e38' : '\\u5f02\\u5e38'}`\n  );\n  \n  message = `\\u26a0\\ufe0f \\u670d\\u52a1\\u72b6\\u6001\\u53d8\\u66f4\\n\\n\\u53d8\\u66f4:\\n${changes.join('\\n')}\\n\\n\\u5f53\\u524d\\u72b6\\u6001:\\n${statusLines.join('\\n')}\\n\\n\\u68c0\\u67e5\\u65f6\\u95f4: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;\n  \n  html = `<h4>\\u26a0\\ufe0f \\u670d\\u52a1\\u72b6\\u6001\\u53d8\\u66f4</h4><p><b>\\u53d8\\u66f4:</b></p><ul>${changes.map(c => `<li>${c}</li>`).join('')}</ul><p><b>\\u5f53\\u524d\\u72b6\\u6001:</b></p><ul>${statusLines.map(s => `<li>${s}</li>`).join('')}</ul><p><small>\\u68c0\\u67e5\\u65f6\\u95f4: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</small></p>`;\n}\n\nreturn [{\n  json: {\n    hasChanges: hasChanges,\n    changes: changes,\n    currentState: currentState,\n    previousState: previousState,\n    message: message,\n    html: html,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "c3d4e5f6-0003-4000-c000-000000000007",
+      "name": "\u6c47\u603b\u5e76\u5bf9\u6bd4\u72b6\u6001",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-changes",
+              "leftValue": "={{ $json.hasChanges }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c3d4e5f6-0003-4000-c000-000000000008",
+      "name": "\u6709\u72b6\u6001\u53d8\u5316?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [960, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: 'alerts', message: $json.message, html: $json.html }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "c3d4e5f6-0003-4000-c000-000000000009",
+      "name": "\u53d1\u9001\u544a\u8b66\u901a\u77e5",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// \u786e\u8ba4\u72b6\u6001\u5df2\u4fdd\u5b58\u5230staticData\nconst staticData = $getWorkflowStaticData('global');\nreturn [{\n  json: {\n    saved: true,\n    lastCheck: staticData.lastCheck,\n    serviceState: staticData.serviceState\n  }\n}];"
+      },
+      "id": "c3d4e5f6-0003-4000-c000-000000000010",
+      "name": "\u4fdd\u5b58\u72b6\u6001",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 200]
+    },
+    {
+      "parameters": {},
+      "id": "c3d4e5f6-0003-4000-c000-000000000011",
+      "name": "\u65e0\u53d8\u5316\u8df3\u8fc7",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1200, 420]
+    }
+  ],
+  "connections": {
+    "\u6bcf5\u5206\u949f\u89e6\u53d1": {
+      "main": [
+        [
+          {
+            "node": "\u5b9a\u4e49\u670d\u52a1\u5217\u8868",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u5b9a\u4e49\u670d\u52a1\u5217\u8868": {
+      "main": [
+        [
+          {
+            "node": "\u68c0\u67e5Bellkeeper",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "\u68c0\u67e5Firecrawl",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "\u68c0\u67e5RSSHub",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "\u68c0\u67e5Memos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u68c0\u67e5Bellkeeper": {
+      "main": [
+        [
+          {
+            "node": "\u6c47\u603b\u5e76\u5bf9\u6bd4\u72b6\u6001",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u68c0\u67e5Firecrawl": {
+      "main": [
+        [
+          {
+            "node": "\u6c47\u603b\u5e76\u5bf9\u6bd4\u72b6\u6001",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u68c0\u67e5RSSHub": {
+      "main": [
+        [
+          {
+            "node": "\u6c47\u603b\u5e76\u5bf9\u6bd4\u72b6\u6001",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u68c0\u67e5Memos": {
+      "main": [
+        [
+          {
+            "node": "\u6c47\u603b\u5e76\u5bf9\u6bd4\u72b6\u6001",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u6c47\u603b\u5e76\u5bf9\u6bd4\u72b6\u6001": {
+      "main": [
+        [
+          {
+            "node": "\u6709\u72b6\u6001\u53d8\u5316?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u6709\u72b6\u6001\u53d8\u5316?": {
+      "main": [
+        [
+          {
+            "node": "\u53d1\u9001\u544a\u8b66\u901a\u77e5",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "\u65e0\u53d8\u5316\u8df3\u8fc7",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u53d1\u9001\u544a\u8b66\u901a\u77e5": {
+      "main": [
+        [
+          {
+            "node": "\u4fdd\u5b58\u72b6\u6001",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-27T00:00:00.000Z",
+  "versionId": "1"
+}

@@ -1,0 +1,141 @@
+{
+  "name": "05-Matrix\u901a\u77e5\u53d1\u9001\u5668",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "notify",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b2c3d4e5-0002-4000-b000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "notify-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// \u6620\u5c04room\u540d\u79f0\u5230\u5b9e\u9645\u7684Matrix Room ID\nconst body = $input.first().json.body || $input.first().json;\nconst roomName = body.room;\nconst message = body.message;\nconst html = body.html || null;\n\nconst roomMap = {\n  'alerts': $env.MATRIX_ROOM_ALERTS,\n  'daily': $env.MATRIX_ROOM_DAILY,\n  'todo': $env.MATRIX_ROOM_TODO\n};\n\nconst roomId = roomMap[roomName];\n\nif (!roomId) {\n  throw new Error(`Unknown room: ${roomName}. Valid rooms: alerts, daily, todo`);\n}\n\nif (!message) {\n  throw new Error('Message is required');\n}\n\n// \u751f\u6210\u552f\u4e00\u7684\u4e8b\u52a1ID\nconst txnId = `n8n_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;\n\n// \u6784\u5efaMatrix\u6d88\u606f\u4f53\nconst matrixBody = {\n  msgtype: 'm.text',\n  body: message\n};\n\n// \u5982\u679c\u6709HTML\u683c\u5f0f\uff0c\u6dfb\u52a0formatted_body\nif (html) {\n  matrixBody.format = 'org.matrix.custom.html';\n  matrixBody.formatted_body = html;\n} else {\n  matrixBody.format = 'org.matrix.custom.html';\n  matrixBody.formatted_body = message;\n}\n\nreturn [{\n  json: {\n    roomId: roomId,\n    txnId: txnId,\n    matrixBody: matrixBody,\n    encodedRoomId: encodeURIComponent(roomId)\n  }\n}];"
+      },
+      "id": "b2c3d4e5-0002-4000-b000-000000000002",
+      "name": "\u6784\u5efa\u6d88\u606f",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.MATRIX_HOMESERVER }}/_matrix/client/v3/rooms/{{ $json.encodedRoomId }}/send/m.room.message/{{ $json.txnId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.MATRIX_BOT_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.matrixBody) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "b2c3d4e5-0002-4000-b000-000000000003",
+      "name": "\u53d1\u9001Matrix\u6d88\u606f",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// \u68c0\u67e5\u53d1\u9001\u7ed3\u679c\nconst response = $input.first().json;\n\nif (response.event_id) {\n  return [{\n    json: {\n      status: 'sent',\n      event_id: response.event_id\n    }\n  }];\n} else {\n  return [{\n    json: {\n      status: 'error',\n      error: response.errcode || 'Unknown error',\n      message: response.error || JSON.stringify(response)\n    }\n  }];\n}"
+      },
+      "id": "b2c3d4e5-0002-4000-b000-000000000004",
+      "name": "\u68c0\u67e5\u7ed3\u679c",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.status === 'sent' ? 200 : 500 }}"
+        }
+      },
+      "id": "b2c3d4e5-0002-4000-b000-000000000005",
+      "name": "\u8fd4\u56de\u54cd\u5e94",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [960, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "\u6784\u5efa\u6d88\u606f",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u6784\u5efa\u6d88\u606f": {
+      "main": [
+        [
+          {
+            "node": "\u53d1\u9001Matrix\u6d88\u606f",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u53d1\u9001Matrix\u6d88\u606f": {
+      "main": [
+        [
+          {
+            "node": "\u68c0\u67e5\u7ed3\u679c",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u68c0\u67e5\u7ed3\u679c": {
+      "main": [
+        [
+          {
+            "node": "\u8fd4\u56de\u54cd\u5e94",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-27T00:00:00.000Z",
+  "versionId": "1"
+}

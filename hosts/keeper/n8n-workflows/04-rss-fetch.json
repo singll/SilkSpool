@@ -1,0 +1,342 @@
+{
+  "name": "04-RSS\u5b9a\u65f6\u91c7\u96c6",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * *"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0 12 * * *"
+            },
+            {
+              "field": "cronExpression",
+              "expression": "0 18 * * *"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000001",
+      "name": "\u5b9a\u65f6\u89e6\u53d1",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/rss?is_active=true&per_page=100",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000002",
+      "name": "\u83b7\u53d6RSS\u6e90\u5217\u8868",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// \u4eceBellkeeper API\u54cd\u5e94\u4e2d\u63d0\u53d6RSS\u6e90\u5e76\u6784\u5efaURL\nconst response = $input.first().json;\nconst sources = response.data || response.items || response;\n\nconst results = [];\nfor (const source of sources) {\n  let feedUrl = source.url;\n  // \u5982\u679curl\u4ee5/\u5f00\u5934\uff0c\u524d\u7f00\u52a0\u4e0arsshub\u5730\u5740\n  if (feedUrl.startsWith('/')) {\n    feedUrl = 'http://rsshub:1200' + feedUrl;\n  }\n  results.push({\n    json: {\n      id: source.id,\n      name: source.name,\n      feedUrl: feedUrl,\n      originalUrl: source.url,\n      category: source.category || '',\n      tags: source.tags || [],\n      isActive: source.is_active\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000003",
+      "name": "\u63d0\u53d6RSS\u6e90",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000004",
+      "name": "\u9010\u4e2a\u5904\u7406RSS\u6e90",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.feedUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000005",
+      "name": "\u62c9\u53d6RSS Feed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// \u89e3\u6790RSS XML\u54cd\u5e94\uff0c\u63d0\u53d6\u6587\u7ae0\u5217\u8868\nconst input = $input.first().json;\nconst xml = input.data || input.body || '';\n\nif (!xml || typeof xml !== 'string') {\n  return [{ json: { articles: [], error: 'Empty or invalid response', sourceName: $('\\u9010\\u4e2a\\u5904\\u7406RSS\\u6e90').first().json.name } }];\n}\n\n// \u4ece\u4e0a\u6e38SplitInBatches\u83b7\u53d6\u6e90\u4fe1\u606f\nconst source = $('\\u9010\\u4e2a\\u5904\\u7406RSS\\u6e90').first().json;\n\nconst articles = [];\n\n// \u7528\u6b63\u5219\u63d0\u53d6<item>\u6216<entry>\u5143\u7d20\nconst itemRegex = /<item[^>]*>([\\s\\S]*?)<\\/item>/gi;\nconst entryRegex = /<entry[^>]*>([\\s\\S]*?)<\\/entry>/gi;\n\nfunction extractTag(content, tag) {\n  // \u652f\u6301CDATA\u548c\u666e\u901a\u6587\u672c\n  const cdataRegex = new RegExp(`<${tag}[^>]*><!\\\\[CDATA\\\\[([\\\\s\\\\S]*?)\\\\]\\\\]><\\\\/${tag}>`, 'i');\n  const plainRegex = new RegExp(`<${tag}[^>]*>([\\\\s\\\\S]*?)<\\\\/${tag}>`, 'i');\n  const hrefRegex = new RegExp(`<${tag}[^>]*href=[\"']([^\"']+)[\"']`, 'i');\n  \n  let match = content.match(cdataRegex);\n  if (match) return match[1].trim();\n  \n  match = content.match(plainRegex);\n  if (match) return match[1].trim();\n  \n  // Atom feed\u7684link\u53ef\u80fd\u662f<link href=\"...\"/>\n  if (tag === 'link') {\n    match = content.match(hrefRegex);\n    if (match) return match[1].trim();\n  }\n  \n  return '';\n}\n\nlet matches;\nconst regex = xml.includes('<entry') ? entryRegex : itemRegex;\n\nwhile ((matches = regex.exec(xml)) !== null) {\n  const itemXml = matches[1];\n  const title = extractTag(itemXml, 'title');\n  const link = extractTag(itemXml, 'link');\n  const pubDate = extractTag(itemXml, 'pubDate') || extractTag(itemXml, 'published') || extractTag(itemXml, 'updated');\n  \n  if (title && link) {\n    articles.push({\n      title: title,\n      link: link,\n      pubDate: pubDate\n    });\n  }\n}\n\n// \u8fd4\u56de\u6bcf\u7bc7\u6587\u7ae0\u4f5c\u4e3a\u5355\u72ec\u7684item\nif (articles.length === 0) {\n  return [{ json: { skip: true, sourceName: source.name, reason: 'no articles found' } }];\n}\n\nreturn articles.map(article => ({\n  json: {\n    url: article.link,\n    title: article.title,\n    pubDate: article.pubDate,\n    tags: source.tags,\n    category: source.category,\n    sourceName: source.name\n  }\n}));"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000006",
+      "name": "\u89e3\u6790RSS\u6587\u7ae0",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-skip",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notTrue"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000007",
+      "name": "\u6709\u6587\u7ae0?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1440, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/article-ingest",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.url, tags: $json.tags, category: $json.category, title: $json.title }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000008",
+      "name": "\u63a8\u9001\u6587\u7ae0\u5230Ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "amount": 3,
+        "unit": "seconds"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000009",
+      "name": "\u7b49\u5f853\u79d2",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1920, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// \u6c47\u603b\u7edf\u8ba1\u4fe1\u606f\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.stats) {\n  staticData.stats = {};\n}\n\nconst items = $input.all();\nlet totalProcessed = 0;\nlet totalErrors = 0;\n\nfor (const item of items) {\n  const sourceName = item.json.sourceName || 'unknown';\n  if (!staticData.stats[sourceName]) {\n    staticData.stats[sourceName] = { processed: 0, errors: 0 };\n  }\n  if (item.json.error) {\n    staticData.stats[sourceName].errors++;\n    totalErrors++;\n  } else {\n    staticData.stats[sourceName].processed++;\n    totalProcessed++;\n  }\n}\n\nreturn [{\n  json: {\n    summary: `RSS\u91c7\u96c6\u5b8c\u6210: \u5904\u7406 ${totalProcessed} \u7bc7\u6587\u7ae0, ${totalErrors} \u4e2a\u9519\u8bef`,\n    totalProcessed,\n    totalErrors,\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000010",
+      "name": "\u6c47\u603b\u7edf\u8ba1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2160, 300]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0001-4000-a000-000000000011",
+      "name": "\u7ed3\u675f",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2400, 300]
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0001-4000-a000-000000000012",
+      "name": "\u8df3\u8fc7\u65e0\u6587\u7ae0\u6e90",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1680, 520]
+    }
+  ],
+  "connections": {
+    "\u5b9a\u65f6\u89e6\u53d1": {
+      "main": [
+        [
+          {
+            "node": "\u83b7\u53d6RSS\u6e90\u5217\u8868",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u83b7\u53d6RSS\u6e90\u5217\u8868": {
+      "main": [
+        [
+          {
+            "node": "\u63d0\u53d6RSS\u6e90",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u63d0\u53d6RSS\u6e90": {
+      "main": [
+        [
+          {
+            "node": "\u9010\u4e2a\u5904\u7406RSS\u6e90",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u9010\u4e2a\u5904\u7406RSS\u6e90": {
+      "main": [
+        [
+          {
+            "node": "\u62c9\u53d6RSS Feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u62c9\u53d6RSS Feed": {
+      "main": [
+        [
+          {
+            "node": "\u89e3\u6790RSS\u6587\u7ae0",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u89e3\u6790RSS\u6587\u7ae0": {
+      "main": [
+        [
+          {
+            "node": "\u6709\u6587\u7ae0?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u6709\u6587\u7ae0?": {
+      "main": [
+        [
+          {
+            "node": "\u63a8\u9001\u6587\u7ae0\u5230Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "\u8df3\u8fc7\u65e0\u6587\u7ae0\u6e90",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u63a8\u9001\u6587\u7ae0\u5230Ingest": {
+      "main": [
+        [
+          {
+            "node": "\u7b49\u5f853\u79d2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u7b49\u5f853\u79d2": {
+      "main": [
+        [
+          {
+            "node": "\u9010\u4e2a\u5904\u7406RSS\u6e90",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u8df3\u8fc7\u65e0\u6587\u7ae0\u6e90": {
+      "main": [
+        [
+          {
+            "node": "\u9010\u4e2a\u5904\u7406RSS\u6e90",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u6c47\u603b\u7edf\u8ba1": {
+      "main": [
+        [
+          {
+            "node": "\u7ed3\u675f",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-27T00:00:00.000Z",
+  "versionId": "1"
+}
