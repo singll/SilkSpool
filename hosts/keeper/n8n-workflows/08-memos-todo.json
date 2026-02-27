@@ -24,6 +24,11 @@
           "values": [
             {
               "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
                 "conditions": [
                   {
                     "leftValue": "={{ $json.body.action }}",
@@ -40,6 +45,11 @@
             },
             {
               "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
                 "conditions": [
                   {
                     "leftValue": "={{ $json.body.action }}",
@@ -56,6 +66,11 @@
             },
             {
               "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
                 "conditions": [
                   {
                     "leftValue": "={{ $json.body.action }}",
@@ -72,6 +87,11 @@
             },
             {
               "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
                 "conditions": [
                   {
                     "leftValue": "={{ $json.body.action }}",
@@ -88,14 +108,15 @@
             }
           ]
         },
+        "fallbackOutput": "extra",
         "options": {
-          "fallbackOutput": "extra"
+          "looseTypeValidation": true
         }
       },
       "id": "switch-action",
       "name": "路由操作",
       "type": "n8n-nodes-base.switch",
-      "typeVersion": 2,
+      "typeVersion": 3,
       "position": [480, 300]
     },
     {
