@@ -10,8 +10,6 @@ set -e
 APP_PREFIX="{{APP_PREFIX}}"
 BASE_DIR="{{DEPLOY_PATH}}"  # <--- 不再写死 /opt/...，由 runner 注入
 FC_DIR="$BASE_DIR/firecrawl"
-KM_DIR="$BASE_DIR/knowledge-management" # <--- 旧版 knowledge-management
-BK_DIR="$BASE_DIR/bellkeeper"           # <--- 新版 Bellkeeper (Go + SolidJS)
 ACTION=$1  # 接收来自 runner.sh 的第一个参数
 SERVICE=$2 # 可选: 指定要操作的服务名称 (用于 service 命令)
 
@@ -178,44 +176,13 @@ cd "$BASE_DIR"
 update_repos() {
     echo "[Git] Checking source repository status..."
 
-    # 1. 处理 Firecrawl (外部依赖)
+    # Firecrawl (外部依赖)
     if [ -d "$FC_DIR" ]; then
         echo "   [*] Updating Firecrawl..."
-        # 使用 || true 防止因本地修改导致 pull 失败中断脚本
         git -C "$FC_DIR" pull || echo "   [!] Firecrawl update failed (possible local conflict), skipping."
     else
         echo "   [*] Cloning Firecrawl..."
         git clone https://github.com/mendableai/firecrawl.git "$FC_DIR"
-    fi
-
-    # 2. 处理 Knowledge Management (旧版 Python 全栈项目)
-    if [ -d "$KM_DIR" ]; then
-        echo "   [*] Updating Knowledge Management..."
-        git -C "$KM_DIR" pull || echo "   [!] Knowledge Management update failed, skipping."
-    else
-        echo "   [*] Cloning Knowledge Management..."
-        # 指向您的 GitHub 仓库
-        git clone https://github.com/singll/knowledge-management.git "$KM_DIR"
-    fi
-
-    # 3. 处理 Bellkeeper (新版 Go + SolidJS 项目)
-    # 优先使用本地 rsync 推送的代码，如果不存在则尝试从 GitHub 克隆
-    if [ -d "$BK_DIR" ]; then
-        echo "   [*] Updating Bellkeeper..."
-        # 检查是否有 .git 目录 (git 仓库)
-        if [ -d "$BK_DIR/.git" ]; then
-            git -C "$BK_DIR" pull || echo "   [!] Bellkeeper update failed, using existing code."
-        else
-            echo "   [*] Bellkeeper directory exists (rsync mode), skipping git pull."
-        fi
-    else
-        echo "   [*] Bellkeeper not found, trying to clone from GitHub..."
-        # 尝试从 GitHub 克隆，如果失败则提示用户使用 rsync
-        if ! git clone https://github.com/singll/Bellkeeper.git "$BK_DIR" 2>/dev/null; then
-            echo "   [!] GitHub clone failed. Please use rsync to push source code:"
-            echo "       rsync -avz --exclude node_modules --exclude dist /path/to/Bellkeeper/ user@host:$BK_DIR/"
-            echo "   [!] Skipping Bellkeeper setup."
-        fi
     fi
 }
 
@@ -360,12 +327,11 @@ case "$ACTION" in
             echo "Usage: $0 service <service_name> [action]"
             echo ""
             echo "Available services:"
-            echo "  bellkeeper    - Bellkeeper (Go + SolidJS)"
-            echo "  bellkeeper-db - Bellkeeper PostgreSQL"
-            echo "  n8n           - n8n workflow"
-            echo "  memos         - Memos note-taking"
             echo "  ragflow       - RAGFlow"
             echo "  firecrawl-api - Firecrawl API"
+            echo "  redis         - Redis"
+            echo "  mysql         - MySQL"
+            echo "  minio         - MinIO"
             echo ""
             echo "Actions: up, down, build, logs, restart"
             exit 1
@@ -375,16 +341,6 @@ case "$ACTION" in
 
         case "$svc_action" in
             up)
-                # 如果是 Bellkeeper，先更新代码
-                if [[ "$svc_name" == "bellkeeper"* ]]; then
-                    if [ -d "$BK_DIR" ]; then
-                        echo "   [*] Updating Bellkeeper source..."
-                        git -C "$BK_DIR" pull || true
-                    else
-                        echo "   [*] Cloning Bellkeeper..."
-                        git clone https://github.com/singll/Bellkeeper.git "$BK_DIR"
-                    fi
-                fi
                 $DC -f docker-compose.yaml up -d --no-deps --build "$svc_name"
                 ;;
             down)

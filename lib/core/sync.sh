@@ -33,11 +33,11 @@ run_post_push_hooks() {
     local host=$1
     local pushed_file=$2
 
-    # 获取该主机的 hooks
-    local hooks_str=$(get_post_push_hooks "$host")
-    [ -z "$hooks_str" ] && return 0
+    # 直接通过 eval 获取数组，避免空格分隔导致元素被拆散
+    local var_name="POST_PUSH_HOOKS_$(_normalize_host "$host")"
+    eval "local hooks=(\"\${${var_name}[@]}\")"
+    [ ${#hooks[@]} -eq 0 ] && return 0
 
-    read -r -a hooks <<< "$hooks_str"
     local login=${HOST_INFO[$host]}
 
     for hook in "${hooks[@]}"; do
