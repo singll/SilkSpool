@@ -20,6 +20,18 @@ services:
       - FIRECRAWL_API_URL=http://${KNOWLEDGE_HOST:-192.168.7.220}:3002
       - HOST_DOCKER_INTERNAL=host.docker.internal
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      # --- Bellkeeper API ---
+      - BELLKEEPER_API_KEY=${BELLKEEPER_API_KEY:-}
+      - BELLKEEPER_URL=${BELLKEEPER_INTERNAL_URL:-http://bellkeeper:8080}
+      # --- 跨服务器服务地址 ---
+      - FIRECRAWL_API_URL=${FIRECRAWL_API_URL:-http://192.168.7.220:3002}
+      - RAGFLOW_API_URL=${RAGFLOW_API_URL:-http://192.168.7.220:8080}
+      # --- Matrix 通知 ---
+      - MATRIX_HOMESERVER=${MATRIX_HOMESERVER:-}
+      - MATRIX_BOT_TOKEN=${MATRIX_BOT_TOKEN:-}
+      - MATRIX_ROOM_ALERTS=${MATRIX_ROOM_ALERTS:-}
+      - MATRIX_ROOM_DAILY=${MATRIX_ROOM_DAILY:-}
+      - MATRIX_ROOM_TODO=${MATRIX_ROOM_TODO:-}
       # 多端存储所需的环境变量
       - COUCHDB_USER=${COUCHDB_USER:-admin}
       - COUCHDB_PASSWORD=${COUCHDB_PASSWORD:-}

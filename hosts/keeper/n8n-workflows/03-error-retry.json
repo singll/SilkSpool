@@ -1,0 +1,390 @@
+{
+  "name": "03-失败重试队列",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 200]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "error-retry",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 480],
+      "webhookId": "error-retry"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get failed URLs from workflow static data, up to 10 per run\nconst staticData = $getWorkflowStaticData('global');\nconst failedQueue = staticData.failedQueue || [];\n\n// Determine trigger source\nconst isWebhook = $('Webhook Trigger').isExecuted;\nconst triggerSource = isWebhook ? 'webhook' : 'schedule';\n\nif (failedQueue.length === 0) {\n  return [{ json: { empty: true, triggerSource, message: 'No failed URLs in queue' } }];\n}\n\n// Take up to 10 URLs for this run\nconst batch = failedQueue.slice(0, 10);\n\nreturn [{\n  json: {\n    empty: false,\n    triggerSource,\n    urls: batch,\n    totalInQueue: failedQueue.length,\n    processingCount: batch.length\n  }\n}];"
+      },
+      "id": "get-failed-urls",
+      "name": "Get Failed URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 340]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-empty",
+              "leftValue": "={{ $json.empty }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-empty",
+      "name": "If Empty",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 340]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: 'No failed URLs in queue', retriedCount: 0 }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-empty-webhook",
+      "name": "Respond Empty",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [960, 200]
+    },
+    {
+      "parameters": {},
+      "id": "noop-empty-schedule",
+      "name": "NoOp Empty Schedule",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1200, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convert URLs array into individual items for SplitInBatches\nconst data = $input.first().json;\nconst urls = data.urls || [];\n\nreturn urls.map(entry => ({\n  json: {\n    url: entry.url,\n    retryCount: (entry.retryCount || 0),\n    addedAt: entry.addedAt || new Date().toISOString(),\n    triggerSource: data.triggerSource\n  }\n}));"
+      },
+      "id": "prepare-batch",
+      "name": "Prepare Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 480]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-batches",
+      "name": "SplitInBatches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1200, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/article-ingest",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.url }) }}",
+        "options": {
+          "timeout": 120000,
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "retry-ingest",
+      "name": "Retry Ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 480]
+    },
+    {
+      "parameters": {
+        "amount": 3,
+        "unit": "seconds"
+      },
+      "id": "wait-between",
+      "name": "Wait Between",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1680, 480]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process retry results and update the failed queue in static data\nconst staticData = $getWorkflowStaticData('global');\nconst failedQueue = staticData.failedQueue || [];\nconst allResults = $('Retry Ingest').all();\nconst batchItems = $('Prepare Batch').all();\nconst getData = $('Get Failed URLs').first().json;\n\nconst successUrls = new Set();\nconst stillFailed = [];\nlet successCount = 0;\nlet failCount = 0;\n\nfor (let i = 0; i < allResults.length; i++) {\n  const result = allResults[i].json;\n  const batchItem = batchItems[i] ? batchItems[i].json : {};\n  const status = result.status || '';\n\n  if (status === 'ingested' || result.success === true || status === 'duplicate') {\n    successUrls.add(batchItem.url);\n    successCount++;\n  } else {\n    failCount++;\n    // Keep in queue with incremented retry count\n    stillFailed.push({\n      url: batchItem.url,\n      retryCount: (batchItem.retryCount || 0) + 1,\n      addedAt: batchItem.addedAt,\n      lastError: result.message || result.error || 'Unknown error',\n      lastRetry: new Date().toISOString()\n    });\n  }\n}\n\n// Remove successful URLs from the queue and merge remaining\nconst remainingQueue = failedQueue\n  .filter(entry => !successUrls.has(entry.url))\n  .map(entry => {\n    // Update retry info for still-failed items\n    const updated = stillFailed.find(f => f.url === entry.url);\n    return updated || entry;\n  });\n\n// Cap at 100 entries, remove oldest first\nif (remainingQueue.length > 100) {\n  remainingQueue.splice(0, remainingQueue.length - 100);\n}\n\nstaticData.failedQueue = remainingQueue;\n\nreturn [{\n  json: {\n    success: true,\n    triggerSource: getData.triggerSource,\n    processed: allResults.length,\n    succeeded: successCount,\n    stillFailed: failCount,\n    remainingInQueue: remainingQueue.length\n  }\n}];"
+      },
+      "id": "update-queue",
+      "name": "Update Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 480]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-webhook-source",
+              "leftValue": "={{ $json.triggerSource }}",
+              "rightValue": "webhook",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-webhook-source",
+      "name": "If Webhook Source",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2160, 480]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-results",
+      "name": "Respond Results",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2400, 380]
+    },
+    {
+      "parameters": {},
+      "id": "noop-schedule-done",
+      "name": "NoOp Schedule Done",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [2400, 580]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Helper: Add a URL to the failed queue (called externally or for manual additions)\n// This node is a utility - it adds URLs to the static data failed queue\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.failedQueue) {\n  staticData.failedQueue = [];\n}\n\nconst input = $input.first().json;\nconst url = input.url || '';\nconst error = input.error || 'Unknown error';\n\nif (url) {\n  // Check if URL already in queue\n  const exists = staticData.failedQueue.some(entry => entry.url === url);\n  if (!exists) {\n    staticData.failedQueue.push({\n      url: url,\n      retryCount: 0,\n      addedAt: new Date().toISOString(),\n      lastError: error\n    });\n\n    // Cap at 100 entries\n    if (staticData.failedQueue.length > 100) {\n      staticData.failedQueue.splice(0, staticData.failedQueue.length - 100);\n    }\n  }\n}\n\nreturn [{ json: { queueSize: staticData.failedQueue.length } }];"
+      },
+      "id": "add-to-queue-util",
+      "name": "Add To Queue (Utility)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [0, 700],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge node: simply pass through data from whichever trigger fired\n// This allows both Schedule and Webhook triggers to feed into the same flow\nconst items = $input.all();\nreturn items.length > 0 ? items : [{ json: { merged: true } }];"
+      },
+      "id": "merge-triggers",
+      "name": "Merge Triggers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 340]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Merge Triggers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Merge Triggers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Triggers": {
+      "main": [
+        [
+          {
+            "node": "Get Failed URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Failed URLs": {
+      "main": [
+        [
+          {
+            "node": "If Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Empty": {
+      "main": [
+        [
+          {
+            "node": "Respond Empty",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond Empty": {
+      "main": [
+        [
+          {
+            "node": "NoOp Empty Schedule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Batch": {
+      "main": [
+        [
+          {
+            "node": "SplitInBatches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SplitInBatches": {
+      "main": [
+        [
+          {
+            "node": "Retry Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Ingest": {
+      "main": [
+        [
+          {
+            "node": "Wait Between",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Between": {
+      "main": [
+        [
+          {
+            "node": "SplitInBatches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Queue": {
+      "main": [
+        [
+          {
+            "node": "If Webhook Source",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Webhook Source": {
+      "main": [
+        [
+          {
+            "node": "Respond Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "NoOp Schedule Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": []
+}

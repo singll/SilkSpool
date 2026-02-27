@@ -1,0 +1,149 @@
+{
+  "name": "07-每日摘要报告",
+  "meta": {
+    "instanceId": ""
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 21
+            }
+          ]
+        }
+      },
+      "id": "cron-daily",
+      "name": "每日21点触发",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/health/detailed",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-health",
+      "name": "获取服务状态",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/datasets?per_page=1",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-article-count",
+      "name": "获取文章总数",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://memos:5230/api/v1/memos?filter=tag%3D%3D%27%E5%BE%85%E5%8A%9E%27&pageSize=100",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-todos",
+      "name": "获取待办事项",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const healthData = $('获取服务状态').first().json;\nconst articleData = $('获取文章总数').first().json;\nconst todoData = $('获取待办事项').first().json;\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\n\n// Parse service health\nconst services = healthData.services || healthData.components || {};\nconst bellkeeperStatus = (services.bellkeeper?.status === 'healthy' || services.bellkeeper?.status === 'ok' || healthData.status === 'healthy') ? '\\u2705' : '\\u274c';\nconst ragflowStatus = (services.ragflow?.status === 'healthy' || services.ragflow?.status === 'ok') ? '\\u2705' : '\\u274c';\nconst firecrawlStatus = (services.firecrawl?.status === 'healthy' || services.firecrawl?.status === 'ok') ? '\\u2705' : '\\u274c';\n\n// Parse article count from pagination\nconst totalArticles = articleData.pagination?.total || articleData.total || articleData.total_count || 0;\n\n// Parse todos\nconst memos = todoData.memos || [];\nconst todoCount = memos.length;\n\n// Build plain text message\nconst plainMessage = `\\ud83d\\udcca \\u6bcf\\u65e5\\u77e5\\u8bc6\\u5e93\\u6458\\u8981 - ${dateStr}\\n\\n\\ud83d\\udce6 \\u670d\\u52a1\\u72b6\\u6001\\n- Bellkeeper: ${bellkeeperStatus}\\n- RagFlow: ${ragflowStatus}\\n- Firecrawl: ${firecrawlStatus}\\n\\n\\ud83d\\udcda \\u77e5\\u8bc6\\u5e93\\u7edf\\u8ba1\\n- \\u6587\\u7ae0\\u603b\\u6570: ${totalArticles}\\n\\n\\ud83d\\udcdd \\u5f85\\u529e\\u4e8b\\u9879\\n- \\u672a\\u5b8c\\u6210: ${todoCount} \\u9879`;\n\n// Build HTML message\nconst htmlMessage = `<h3>\\ud83d\\udcca \\u6bcf\\u65e5\\u77e5\\u8bc6\\u5e93\\u6458\\u8981 - ${dateStr}</h3>` +\n  `<h4>\\ud83d\\udce6 \\u670d\\u52a1\\u72b6\\u6001</h4>` +\n  `<ul>` +\n  `<li>Bellkeeper: ${bellkeeperStatus}</li>` +\n  `<li>RagFlow: ${ragflowStatus}</li>` +\n  `<li>Firecrawl: ${firecrawlStatus}</li>` +\n  `</ul>` +\n  `<h4>\\ud83d\\udcda \\u77e5\\u8bc6\\u5e93\\u7edf\\u8ba1</h4>` +\n  `<ul><li>\\u6587\\u7ae0\\u603b\\u6570: ${totalArticles}</li></ul>` +\n  `<h4>\\ud83d\\udcdd \\u5f85\\u529e\\u4e8b\\u9879</h4>` +\n  `<ul><li>\\u672a\\u5b8c\\u6210: ${todoCount} \\u9879</li></ul>`;\n\nreturn {\n  json: {\n    room: 'daily',\n    message: plainMessage,\n    html: htmlMessage\n  }\n};"
+      },
+      "id": "build-summary",
+      "name": "构建摘要消息",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: $json.room, message: $json.message, html: $json.html }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-notify",
+      "name": "发送通知",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 300],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "每日21点触发": {
+      "main": [[{"node": "获取服务状态", "type": "main", "index": 0}]]
+    },
+    "获取服务状态": {
+      "main": [[{"node": "获取文章总数", "type": "main", "index": 0}]]
+    },
+    "获取文章总数": {
+      "main": [[{"node": "获取待办事项", "type": "main", "index": 0}]]
+    },
+    "获取待办事项": {
+      "main": [[{"node": "构建摘要消息", "type": "main", "index": 0}]]
+    },
+    "构建摘要消息": {
+      "main": [[{"node": "发送通知", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "pinData": {},
+  "tags": [{"name": "knowledge"}, {"name": "daily"}]
+}

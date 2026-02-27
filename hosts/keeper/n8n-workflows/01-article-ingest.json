@@ -1,0 +1,376 @@
+{
+  "name": "01-文章智能入库",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "article-ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "article-ingest"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate and normalize the incoming URL\nconst input = $input.first().json;\nconst body = input.body || input;\n\nconst url = (body.url || '').trim();\nif (!url) {\n  throw new Error('Missing required field: url');\n}\n\n// Basic URL validation\ntry {\n  new URL(url);\n} catch (e) {\n  throw new Error(`Invalid URL format: ${url}`);\n}\n\n// Normalize: remove trailing slash, remove fragment\nlet normalized = url.split('#')[0].replace(/\\/+$/, '');\n\nreturn [{\n  json: {\n    url: normalized,\n    tags: body.tags || [],\n    category: body.category || '',\n    title: body.title || ''\n  }\n}];"
+      },
+      "id": "validate-url",
+      "name": "Validate URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/datasets/check-url",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.url }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "check-url",
+      "name": "Check URL Exists",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-duplicate",
+              "leftValue": "={{ $json.duplicate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-duplicate",
+      "name": "If Duplicate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, status: 'duplicate', message: 'URL already exists in the knowledge base', url: $('Validate URL').first().json.url }) }}",
+        "options": {
+          "responseCode": 409
+        }
+      },
+      "id": "respond-duplicate",
+      "name": "Respond Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [960, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.FIRECRAWL_API_URL }}/v1/scrape",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $('Validate URL').first().json.url, formats: ['markdown'], onlyMainContent: true, waitFor: 3000 }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "scrape-url",
+      "name": "Scrape URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate scraped content and extract metadata\nconst scrapeResult = $input.first().json;\nconst inputData = $('Validate URL').first().json;\n\n// Extract markdown content\nconst data = scrapeResult.data || scrapeResult;\nconst markdown = data.markdown || '';\nconst metadata = data.metadata || {};\n\nif (markdown.length < 100) {\n  return [{\n    json: {\n      valid: false,\n      error: `Content too short (${markdown.length} chars). Minimum 100 chars required.`,\n      url: inputData.url\n    }\n  }];\n}\n\n// Use provided title, or extract from metadata, or from content\nlet title = inputData.title;\nif (!title) {\n  title = metadata.title || metadata.ogTitle || '';\n}\nif (!title) {\n  // Extract first heading from markdown\n  const headingMatch = markdown.match(/^#\\s+(.+)$/m);\n  if (headingMatch) {\n    title = headingMatch[1].trim();\n  }\n}\nif (!title) {\n  title = 'Untitled';\n}\n\n// Generate filename from title\nconst filename = title\n  .replace(/[^a-zA-Z0-9\\u4e00-\\u9fff\\s-]/g, '')\n  .replace(/\\s+/g, '-')\n  .substring(0, 80) + '.md';\n\n// Extract keywords from title for tag matching\nconst keywords = title\n  .replace(/[^a-zA-Z0-9\\u4e00-\\u9fff\\s]/g, ' ')\n  .split(/\\s+/)\n  .filter(w => w.length > 1)\n  .slice(0, 10);\n\nreturn [{\n  json: {\n    valid: true,\n    content: markdown,\n    title: title,\n    filename: filename,\n    url: inputData.url,\n    tags: inputData.tags,\n    category: inputData.category,\n    keywords: keywords\n  }\n}];"
+      },
+      "id": "validate-content",
+      "name": "Validate Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 440]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-content-valid",
+      "name": "If Content Valid",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1440, 440]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, status: 'error', message: $json.error, url: $json.url }) }}",
+        "options": {
+          "responseCode": 422
+        }
+      },
+      "id": "respond-content-error",
+      "name": "Respond Content Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/tags/match",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ keywords: $json.keywords }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "match-tags",
+      "name": "Match Tags",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge matched tags with user-provided tags\nconst matchResult = $input.first().json;\nconst contentData = $('Validate Content').first().json;\n\nconst matchedTags = (matchResult.tags || matchResult.matched || []).map(t => typeof t === 'string' ? t : t.name || t.tag || '');\nconst userTags = contentData.tags || [];\n\n// Combine and deduplicate\nconst allTags = [...new Set([...userTags, ...matchedTags])].filter(t => t);\n\nreturn [{\n  json: {\n    content: contentData.content,\n    filename: contentData.filename,\n    title: contentData.title,\n    url: contentData.url,\n    tags: allTags,\n    category: contentData.category\n  }\n}];"
+      },
+      "id": "merge-tags",
+      "name": "Merge Tags",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 560]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/ragflow/upload/with-routing",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: $json.content, filename: $json.filename, title: $json.title, url: $json.url, tags: $json.tags, category: $json.category }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "upload-to-ragflow",
+      "name": "Upload to RagFlow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2160, 560]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, status: 'ingested', title: $('Merge Tags').first().json.title, url: $('Merge Tags').first().json.url, tags: $('Merge Tags').first().json.tags, category: $('Merge Tags').first().json.category, uploadResult: $json }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2400, 560]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate URL": {
+      "main": [
+        [
+          {
+            "node": "Check URL Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check URL Exists": {
+      "main": [
+        [
+          {
+            "node": "If Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Respond Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Scrape URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scrape URL": {
+      "main": [
+        [
+          {
+            "node": "Validate Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Content": {
+      "main": [
+        [
+          {
+            "node": "If Content Valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Content Valid": {
+      "main": [
+        [
+          {
+            "node": "Match Tags",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Content Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match Tags": {
+      "main": [
+        [
+          {
+            "node": "Merge Tags",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Tags": {
+      "main": [
+        [
+          {
+            "node": "Upload to RagFlow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to RagFlow": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": []
+}

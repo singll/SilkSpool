@@ -1,0 +1,174 @@
+{
+  "name": "02-手动批量提交",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "manual-ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "manual-ingest"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize input to array of URLs and validate\nconst input = $input.first().json;\nconst body = input.body || input;\n\nlet urls = [];\n\nif (body.urls && Array.isArray(body.urls)) {\n  urls = body.urls;\n} else if (body.url) {\n  urls = [body.url];\n} else {\n  throw new Error('Missing required field: url or urls');\n}\n\n// Validate and normalize URLs\nconst validUrls = [];\nconst invalidUrls = [];\n\nfor (const rawUrl of urls) {\n  const u = (rawUrl || '').trim();\n  if (!u) continue;\n  try {\n    new URL(u);\n    validUrls.push(u);\n  } catch (e) {\n    invalidUrls.push({ url: u, error: 'Invalid URL format' });\n  }\n}\n\nif (validUrls.length === 0) {\n  throw new Error('No valid URLs provided');\n}\n\n// Return each URL as a separate item for SplitInBatches\nconst items = validUrls.map(url => ({ json: { url, totalCount: validUrls.length, invalidUrls } }));\nreturn items;"
+      },
+      "id": "normalize-urls",
+      "name": "Normalize URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-batches",
+      "name": "SplitInBatches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/article-ingest",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ url: $json.url }) }}",
+        "options": {
+          "timeout": 120000,
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "call-ingest",
+      "name": "Call Article Ingest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "amount": 2,
+        "unit": "seconds"
+      },
+      "id": "wait-delay",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [960, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate all results from the batch processing\nconst allItems = $('Call Article Ingest').all();\nconst normalizeData = $('Normalize URLs').first().json;\n\nlet success = 0;\nlet duplicate = 0;\nlet failed = 0;\nconst details = [];\n\nfor (const item of allItems) {\n  const result = item.json;\n  const status = result.status || 'unknown';\n\n  if (status === 'ingested' || result.success === true) {\n    success++;\n    details.push({ url: result.url || '', status: 'success', title: result.title || '' });\n  } else if (status === 'duplicate') {\n    duplicate++;\n    details.push({ url: result.url || '', status: 'duplicate' });\n  } else {\n    failed++;\n    details.push({ url: result.url || '', status: 'failed', error: result.message || result.error || 'Unknown error' });\n  }\n}\n\n// Include invalid URLs from initial validation\nconst invalidUrls = normalizeData.invalidUrls || [];\nfor (const inv of invalidUrls) {\n  failed++;\n  details.push({ url: inv.url, status: 'failed', error: inv.error });\n}\n\nreturn [{\n  json: {\n    total: success + duplicate + failed,\n    success,\n    duplicate,\n    failed,\n    details\n  }\n}];"
+      },
+      "id": "aggregate-results",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-summary",
+      "name": "Respond Summary",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1440, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize URLs": {
+      "main": [
+        [
+          {
+            "node": "SplitInBatches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SplitInBatches": {
+      "main": [
+        [
+          {
+            "node": "Call Article Ingest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Article Ingest": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "SplitInBatches",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Respond Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "tags": []
+}

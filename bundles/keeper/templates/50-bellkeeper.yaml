@@ -29,6 +29,8 @@ services:
       # RagFlow (跨服务器访问 knowledge)
       - BELLKEEPER_RAGFLOW_BASE_URL=http://${KNOWLEDGE_HOST:-192.168.7.220}:8080
       - BELLKEEPER_RAGFLOW_API_KEY=${RAGFLOW_API_KEY:-}
+      # API Key (供 n8n 等内部服务调用)
+      - BELLKEEPER_SERVER_API_KEY=${BELLKEEPER_API_KEY:-}
       # n8n (同机访问)
       - BELLKEEPER_N8N_WEBHOOK_BASE_URL=http://${APP_PREFIX:-sp-}n8n:5678
     depends_on:
