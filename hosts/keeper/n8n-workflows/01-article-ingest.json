@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Validate and normalize the incoming URL\nconst input = $input.first().json;\nconst body = input.body || input;\n\nconst url = (body.url || '').trim();\nif (!url) {\n  throw new Error('Missing required field: url');\n}\n\n// Basic URL validation\ntry {\n  new URL(url);\n} catch (e) {\n  throw new Error(`Invalid URL format: ${url}`);\n}\n\n// Normalize: remove trailing slash, remove fragment\nlet normalized = url.split('#')[0].replace(/\\/+$/, '');\n\nreturn [{\n  json: {\n    url: normalized,\n    tags: body.tags || [],\n    category: body.category || '',\n    title: body.title || ''\n  }\n}];"
+        "jsCode": "// Validate and normalize the incoming URL\nconst input = $input.first().json;\nconst body = input.body || input;\n\nconst url = (body.url || '').trim();\nif (!url) {\n  throw new Error('Missing required field: url');\n}\n\n// Basic URL validation using regex (URL constructor not available in sandbox)\nconst urlPattern = /^https?:\\/\\/[^\\s/$.?#].[^\\s]*$/i;\nif (!urlPattern.test(url)) {\n  throw new Error(`Invalid URL format: ${url}`);\n}\n\n// Normalize: remove trailing slash, remove fragment\nlet normalized = url.split('#')[0].replace(/\\/+$/, '');\n\nreturn [{\n  json: {\n    url: normalized,\n    tags: body.tags || [],\n    category: body.category || '',\n    title: body.title || ''\n  }\n}];"
       },
       "id": "validate-url",
       "name": "Validate URL",
