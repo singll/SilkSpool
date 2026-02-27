@@ -1,0 +1,63 @@
+# ==============================================================================
+#  Bellkeeper - Knowledge Management System
+#  描述: Go + SolidJS 全栈应用
+#  依赖: PostgreSQL (独立实例), 连接 RagFlow (跨服务器) / n8n (同机)
+# ==============================================================================
+
+services:
+  bellkeeper:
+    build:
+      context: ./bellkeeper
+      dockerfile: docker/Dockerfile
+    image: bellkeeper:latest
+    container_name: ${APP_PREFIX:-sp-}bellkeeper
+    restart: unless-stopped
+    ports:
+      - "8090:8080"
+    environment:
+      - TZ=Asia/Shanghai
+      - BELLKEEPER_SERVER_MODE=release
+      - BELLKEEPER_SERVER_HOST=0.0.0.0
+      - BELLKEEPER_SERVER_PORT=8080
+      # Database (本机 PostgreSQL)
+      - BELLKEEPER_DATABASE_DRIVER=postgres
+      - BELLKEEPER_DATABASE_HOST=${APP_PREFIX:-sp-}bellkeeper-db
+      - BELLKEEPER_DATABASE_PORT=5432
+      - BELLKEEPER_DATABASE_NAME=bellkeeper
+      - BELLKEEPER_DATABASE_USER=bellkeeper
+      - BELLKEEPER_DATABASE_PASSWORD=${BELLKEEPER_DB_PASSWORD:-bellkeeper123}
+      # RagFlow (跨服务器访问 knowledge)
+      - BELLKEEPER_RAGFLOW_BASE_URL=http://${KNOWLEDGE_HOST:-192.168.7.220}:8080
+      - BELLKEEPER_RAGFLOW_API_KEY=${RAGFLOW_API_KEY:-}
+      # n8n (同机访问)
+      - BELLKEEPER_N8N_WEBHOOK_BASE_URL=http://${APP_PREFIX:-sp-}n8n:5678
+    depends_on:
+      bellkeeper-db:
+        condition: service_healthy
+    networks:
+      - kp-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  bellkeeper-db:
+    image: postgres:16-alpine
+    container_name: ${APP_PREFIX:-sp-}bellkeeper-db
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - POSTGRES_DB=bellkeeper
+      - POSTGRES_USER=bellkeeper
+      - POSTGRES_PASSWORD=${BELLKEEPER_DB_PASSWORD:-bellkeeper123}
+    volumes:
+      - kp-bellkeeper-db:/var/lib/postgresql/data
+    networks:
+      - kp-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bellkeeper -d bellkeeper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

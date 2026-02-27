@@ -1,0 +1,12 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ${APP_PREFIX:-sp-}redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redispassword}
+    volumes:
+      - gw-redis-data:/data
+    networks:
+      - gw-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]

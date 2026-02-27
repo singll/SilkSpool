@@ -1,0 +1,29 @@
+services:
+  memos:
+    image: neosmemo/memos:stable
+    container_name: ${APP_PREFIX:-sp-}memos
+    restart: unless-stopped
+    ports:
+      - "5230:5230"
+    environment:
+      - TZ=Asia/Shanghai
+      - MEMOS_PUBLIC_URL=${MEMOS_PUBLIC_URL:-}
+    volumes:
+      - kp-memos-data:/var/opt/memos
+    networks:
+      - kp-network
+
+  rsshub:
+    image: diygod/rsshub:latest
+    container_name: ${APP_PREFIX:-sp-}rsshub
+    restart: unless-stopped
+    ports:
+      - "1200:1200"
+    environment:
+      NODE_ENV: production
+      CACHE_TYPE: redis
+      REDIS_URL: "redis://:${REDIS_PASSWORD:-redispassword}@redis:6379/"
+    depends_on:
+      - redis
+    networks:
+      - kp-network

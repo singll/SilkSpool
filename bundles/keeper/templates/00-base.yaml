@@ -1,0 +1,13 @@
+name: keeper
+
+networks:
+  kp-network:
+    driver: bridge
+
+volumes:
+  kp-redis-data:
+  kp-n8n-data:
+  kp-memos-data:
+  kp-bellkeeper-db:
+  kp-couchdb-data:
+  kp-couchdb-config:

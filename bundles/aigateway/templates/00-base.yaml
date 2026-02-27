@@ -1,0 +1,11 @@
+name: aigateway
+
+networks:
+  gw-network:
+    driver: bridge
+
+volumes:
+  gw-redis-data:
+  gw-newapi-data:
+  gw-newapi-db:
+  gw-newapi-logs:
