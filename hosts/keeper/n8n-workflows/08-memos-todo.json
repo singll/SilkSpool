@@ -217,24 +217,6 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://localhost:5678/webhook/notify",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ room: 'todo', message: '\\u2795 \\u65b0\\u5f85\\u529e: ' + $('格式化待办内容').first().json.text }) }}",
-        "options": {
-          "timeout": 10000
-        }
-      },
-      "id": "notify-add",
-      "name": "通知新待办",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1200, 300],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify({ success: true, action: 'add', memo: $('创建待办').first().json }) }}",
         "options": {
@@ -245,7 +227,7 @@
       "name": "返回创建结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1440, 300]
+      "position": [1200, 300]
     },
     {
       "parameters": {
@@ -284,7 +266,7 @@
     {
       "parameters": {
         "method": "PATCH",
-        "url": "=http://memos:5230/api/v1/{{ $json.memo_name }}",
+        "url": "=http://memos:5230/api/v1/{{ $json.memo_name }}?updateMask=content",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -310,24 +292,6 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://localhost:5678/webhook/notify",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ room: 'todo', message: '\\u2705 \\u5df2\\u5b8c\\u6210: ' + $('标记已完成').first().json.text }) }}",
-        "options": {
-          "timeout": 10000
-        }
-      },
-      "id": "notify-done",
-      "name": "通知已完成",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1440, 500],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify({ success: true, action: 'done', memo_name: $('标记已完成').first().json.memo_name }) }}",
         "options": {
@@ -338,7 +302,7 @@
       "name": "返回完成结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1680, 500]
+      "position": [1200, 500]
     },
     {
       "parameters": {
@@ -415,7 +379,7 @@
     {
       "parameters": {
         "method": "PATCH",
-        "url": "=http://memos:5230/api/v1/{{ $json.memo_name }}",
+        "url": "=http://memos:5230/api/v1/{{ $json.memo_name }}?updateMask=content",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -441,24 +405,6 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://localhost:5678/webhook/notify",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ room: 'todo', message: '\\u270f\\ufe0f \\u5df2\\u4fee\\u6539: ' + $('准备修改内容').first().json.newText }) }}",
-        "options": {
-          "timeout": 10000
-        }
-      },
-      "id": "notify-modify",
-      "name": "通知已修改",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1440, 900],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify({ success: true, action: 'modify', memo_name: $('准备修改内容').first().json.memo_name }) }}",
         "options": {
@@ -469,7 +415,7 @@
       "name": "返回修改结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1680, 900]
+      "position": [1200, 900]
     },
     {
       "parameters": {
@@ -507,9 +453,6 @@
       "main": [[{"node": "创建待办", "type": "main", "index": 0}]]
     },
     "创建待办": {
-      "main": [[{"node": "通知新待办", "type": "main", "index": 0}]]
-    },
-    "通知新待办": {
       "main": [[{"node": "返回创建结果", "type": "main", "index": 0}]]
     },
     "获取待办详情": {
@@ -519,9 +462,6 @@
       "main": [[{"node": "更新待办状态", "type": "main", "index": 0}]]
     },
     "更新待办状态": {
-      "main": [[{"node": "通知已完成", "type": "main", "index": 0}]]
-    },
-    "通知已完成": {
       "main": [[{"node": "返回完成结果", "type": "main", "index": 0}]]
     },
     "删除待办": {
@@ -534,9 +474,6 @@
       "main": [[{"node": "更新待办内容", "type": "main", "index": 0}]]
     },
     "更新待办内容": {
-      "main": [[{"node": "通知已修改", "type": "main", "index": 0}]]
-    },
-    "通知已修改": {
       "main": [[{"node": "返回修改结果", "type": "main", "index": 0}]]
     }
   },
