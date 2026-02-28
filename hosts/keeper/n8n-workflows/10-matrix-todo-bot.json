@@ -73,42 +73,13 @@
     },
     {
       "parameters": {
-        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst syncResp = $input.first().json;\nconst prevData = $('准备同步').first().json;\nconst isFirstRun = prevData.isFirstRun;\nconst todoRoom = prevData.todoRoom;\n\n// Save next_batch token\nif (syncResp.next_batch) {\n  staticData.sinceToken = syncResp.next_batch;\n}\n\n// First run: just save token, don't process\nif (isFirstRun) {\n  return [{ json: { skip: true } }];\n}\n\n// Check for errors\nif (syncResp.errcode) {\n  return [{ json: { skip: true, error: syncResp.error } }];\n}\n\nconst commands = [];\nconst joinedRooms = syncResp.rooms?.join || {};\n\nfor (const [roomId, roomData] of Object.entries(joinedRooms)) {\n  if (roomId !== todoRoom) continue;\n  const events = roomData.timeline?.events || [];\n  \n  for (const event of events) {\n    if (event.type !== 'm.room.message') continue;\n    const body = (event.content?.body || '').trim();\n    \n    // Support both ! and \uff01 (full-width)\n    if (!body.startsWith('!') && !body.startsWith('\uff01')) continue;\n    \n    const parts = body.substring(1).trim().split(/\\s+/);\n    const cmd = parts[0];\n    const args = parts.slice(1).join(' ');\n    \n    let command = null;\n    \n    switch(cmd) {\n      case '\\u5f85\\u529e':\n      case '\\u5217\\u8868':\n      case '\\u5f85\\u529e\\u5217\\u8868':\n      case '\\u67e5\\u8be2':\n      case '\\u67e5\\u770b':\n        command = { action: 'list' };\n        break;\n      case '\\u65b0\\u589e':\n      case '\\u6dfb\\u52a0':\n        if (args) {\n          // Parse priority: !新增 P1 text or !新增 text\n          const pMatch = args.match(/^P(\\d)\\s+(.+)/);\n          if (pMatch) {\n            command = { action: 'add', text: pMatch[2], priority: parseInt(pMatch[1]) };\n          } else {\n            command = { action: 'add', text: args, priority: 3 };\n          }\n        }\n        break;\n      case '\\u5b8c\\u6210':\n        if (args) command = { action: 'done', memo_name: `memos/${args}` };\n        break;\n      case '\\u5220\\u9664':\n        if (args) command = { action: 'delete', memo_name: `memos/${args}` };\n        break;\n      case '\\u4fee\\u6539':\n        // Format: !修改 <id> <new text>\n        const modParts = args.split(/\\s+/);\n        if (modParts.length >= 2) {\n          command = { action: 'modify', memo_name: `memos/${modParts[0]}`, text: modParts.slice(1).join(' ') };\n        }\n        break;\n      case '\\u5e2e\\u52a9':\n      case 'help':\n        command = { action: 'help' };\n        break;\n    }\n    \n    if (command) {\n      command.sender = event.sender;\n      commands.push(command);\n    }\n  }\n}\n\nif (commands.length === 0) {\n  return [{ json: { skip: true } }];\n}\n\nreturn commands.map(cmd => ({ json: cmd }));"
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst syncResp = $input.first().json;\nconst prevData = $('准备同步').first().json;\nconst isFirstRun = prevData.isFirstRun;\nconst todoRoom = prevData.todoRoom;\n\n// Save next_batch token\nif (syncResp.next_batch) {\n  staticData.sinceToken = syncResp.next_batch;\n}\n\n// First run: just save token, don't process\nif (isFirstRun) {\n  return [];\n}\n\n// Check for errors\nif (syncResp.errcode) {\n  return [];\n}\n\nconst commands = [];\nconst joinedRooms = syncResp.rooms?.join || {};\n\nfor (const [roomId, roomData] of Object.entries(joinedRooms)) {\n  if (roomId !== todoRoom) continue;\n  const events = roomData.timeline?.events || [];\n  \n  for (const event of events) {\n    if (event.type !== 'm.room.message') continue;\n    const body = (event.content?.body || '').trim();\n    \n    // Support both ! and \uff01 (full-width)\n    if (!body.startsWith('!') && !body.startsWith('\uff01')) continue;\n    \n    const parts = body.substring(1).trim().split(/\\s+/);\n    const cmd = parts[0];\n    const args = parts.slice(1).join(' ');\n    \n    let command = null;\n    \n    switch(cmd) {\n      case '\\u5f85\\u529e':\n      case '\\u5217\\u8868':\n      case '\\u5f85\\u529e\\u5217\\u8868':\n      case '\\u67e5\\u8be2':\n      case '\\u67e5\\u770b':\n        command = { action: 'list' };\n        break;\n      case '\\u65b0\\u589e':\n      case '\\u6dfb\\u52a0':\n        if (args) {\n          // Parse priority: !新增 P1 text or !新增 text\n          const pMatch = args.match(/^P(\\d)\\s+(.+)/);\n          if (pMatch) {\n            command = { action: 'add', text: pMatch[2], priority: parseInt(pMatch[1]) };\n          } else {\n            command = { action: 'add', text: args, priority: 3 };\n          }\n        }\n        break;\n      case '\\u5b8c\\u6210':\n        if (args) command = { action: 'done', memo_name: `memos/${args}` };\n        break;\n      case '\\u5220\\u9664':\n        if (args) command = { action: 'delete', memo_name: `memos/${args}` };\n        break;\n      case '\\u4fee\\u6539':\n        // Format: !修改 <id> <new text>\n        const modParts = args.split(/\\s+/);\n        if (modParts.length >= 2) {\n          command = { action: 'modify', memo_name: `memos/${modParts[0]}`, text: modParts.slice(1).join(' ') };\n        }\n        break;\n      case '\\u5e2e\\u52a9':\n      case 'help':\n        command = { action: 'help' };\n        break;\n    }\n    \n    if (command) {\n      command.sender = event.sender;\n      commands.push(command);\n    }\n  }\n}\n\nif (commands.length === 0) {\n  return [];\n}\n\nreturn commands.map(cmd => ({ json: cmd }));"
       },
       "id": "parse-commands",
       "name": "解析指令",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [720, 300]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "leftValue": "",
-            "typeValidation": "strict"
-          },
-          "conditions": [
-            {
-              "id": "has-action",
-              "leftValue": "={{ $json.action }}",
-              "rightValue": "",
-              "operator": {
-                "type": "string",
-                "operation": "isNotEmpty"
-              }
-            }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "id": "has-commands",
-      "name": "有指令?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [960, 300]
     },
     {
       "parameters": {
@@ -215,14 +186,6 @@
       "continueOnFail": true
     },
     {
-      "parameters": {},
-      "id": "end-noop",
-      "name": "结束",
-      "type": "n8n-nodes-base.noOp",
-      "typeVersion": 1,
-      "position": [1200, 500]
-    },
-    {
       "parameters": {
         "method": "GET",
         "url": "http://memos:5230/api/v1/memos?filter=tag%3D%3D%27%E5%BE%85%E5%8A%9E%27&pageSize=100",
@@ -286,18 +249,12 @@
       "main": [[{"node": "解析指令", "type": "main", "index": 0}]]
     },
     "解析指令": {
-      "main": [[{"node": "有指令?", "type": "main", "index": 0}]]
-    },
-    "有指令?": {
-      "main": [
-        [{"node": "逐个处理", "type": "main", "index": 0}],
-        [{"node": "结束", "type": "main", "index": 0}]
-      ]
+      "main": [[{"node": "逐个处理", "type": "main", "index": 0}]]
     },
     "逐个处理": {
       "main": [
         [{"node": "是否帮助?", "type": "main", "index": 0}],
-        [{"node": "结束", "type": "main", "index": 0}]
+        []
       ]
     },
     "是否帮助?": {
