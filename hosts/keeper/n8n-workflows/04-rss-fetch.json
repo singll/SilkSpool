@@ -173,7 +173,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// \u6c47\u603b\u7edf\u8ba1\u4fe1\u606f\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.stats) {\n  staticData.stats = {};\n}\n\nconst items = $input.all();\nlet totalProcessed = 0;\nlet totalErrors = 0;\n\nfor (const item of items) {\n  const sourceName = item.json.sourceName || 'unknown';\n  if (!staticData.stats[sourceName]) {\n    staticData.stats[sourceName] = { processed: 0, errors: 0 };\n  }\n  if (item.json.error) {\n    staticData.stats[sourceName].errors++;\n    totalErrors++;\n  } else {\n    staticData.stats[sourceName].processed++;\n    totalProcessed++;\n  }\n}\n\nreturn [{\n  json: {\n    summary: `RSS\u91c7\u96c6\u5b8c\u6210: \u5904\u7406 ${totalProcessed} \u7bc7\u6587\u7ae0, ${totalErrors} \u4e2a\u9519\u8bef`,\n    totalProcessed,\n    totalErrors,\n    timestamp: new Date().toISOString()\n  }\n}];"
+        "jsCode": "const now = new Date();\nconst hour = now.getHours();\nlet period = '\u65e9\u95f4';\nif (hour >= 11 && hour < 15) period = '\u5348\u95f4';\nelse if (hour >= 17) period = '\u665a\u95f4';\n\nlet sourceCount = 0;\ntry {\n  sourceCount = $('\u63d0\u53d6RSS\u6e90').all().length;\n} catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `\ud83d\udcf0 ${period}RSS\u5b9a\u65f6\u91c7\u96c6\u5df2\u5b8c\u6210\\n\u23f0 ${dateStr} ${timeStr}\\n\ud83d\udcca \u5904\u7406RSS\u6e90: ${sourceCount} \u4e2a`;\n\nreturn [{\n  json: {\n    summary: summary,\n    timestamp: now.toISOString()\n  }\n}];"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000010",
       "name": "\u6c47\u603b\u7edf\u8ba1",
@@ -182,12 +182,30 @@
       "position": [2160, 300]
     },
     {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: 'daily', message: $json.summary }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000013",
+      "name": "\u53d1\u9001\u91c7\u96c6\u901a\u77e5",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2400, 300],
+      "continueOnFail": true
+    },
+    {
       "parameters": {},
       "id": "a1b2c3d4-0001-4000-a000-000000000011",
       "name": "\u7ed3\u675f",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [2400, 300]
+      "position": [2640, 300]
     },
     {
       "parameters": {},
@@ -237,6 +255,13 @@
         [
           {
             "node": "\u62c9\u53d6RSS Feed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "\u6c47\u603b\u7edf\u8ba1",
             "type": "main",
             "index": 0
           }
@@ -317,6 +342,17 @@
       ]
     },
     "\u6c47\u603b\u7edf\u8ba1": {
+      "main": [
+        [
+          {
+            "node": "\u53d1\u9001\u91c7\u96c6\u901a\u77e5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u53d1\u9001\u91c7\u96c6\u901a\u77e5": {
       "main": [
         [
           {

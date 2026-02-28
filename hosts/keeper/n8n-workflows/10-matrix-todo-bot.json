@@ -1,0 +1,339 @@
+{
+  "name": "10-Matrix待办指令",
+  "meta": {
+    "instanceId": ""
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/30 * * * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-poll",
+      "name": "定时轮询",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "cron-daily",
+      "name": "每日推送",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 700]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst sinceToken = staticData.sinceToken || '';\nconst homeserver = $env.MATRIX_HOMESERVER;\nconst todoRoom = $env.MATRIX_ROOM_TODO;\nconst botToken = $env.MATRIX_BOT_TOKEN;\n\nif (!homeserver || !todoRoom || !botToken) {\n  return [{ json: { error: 'Matrix config missing', skip: true } }];\n}\n\nconst filter = JSON.stringify({\n  room: {\n    rooms: [todoRoom],\n    timeline: { types: ['m.room.message'], limit: 20 }\n  },\n  presence: { types: [] },\n  account_data: { types: [] }\n});\n\nlet syncUrl = `${homeserver}/_matrix/client/v3/sync?timeout=0&filter=${encodeURIComponent(filter)}`;\nif (sinceToken) {\n  syncUrl += `&since=${encodeURIComponent(sinceToken)}`;\n}\n\nreturn [{\n  json: {\n    syncUrl,\n    isFirstRun: !sinceToken,\n    todoRoom\n  }\n}];"
+      },
+      "id": "prepare-sync",
+      "name": "准备同步",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.syncUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.MATRIX_BOT_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "sync-matrix",
+      "name": "同步Matrix",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst syncResp = $input.first().json;\nconst prevData = $('准备同步').first().json;\nconst isFirstRun = prevData.isFirstRun;\nconst todoRoom = prevData.todoRoom;\n\n// Save next_batch token\nif (syncResp.next_batch) {\n  staticData.sinceToken = syncResp.next_batch;\n}\n\n// First run: just save token, don't process\nif (isFirstRun) {\n  return [{ json: { skip: true } }];\n}\n\n// Check for errors\nif (syncResp.errcode) {\n  return [{ json: { skip: true, error: syncResp.error } }];\n}\n\nconst commands = [];\nconst joinedRooms = syncResp.rooms?.join || {};\n\nfor (const [roomId, roomData] of Object.entries(joinedRooms)) {\n  if (roomId !== todoRoom) continue;\n  const events = roomData.timeline?.events || [];\n  \n  for (const event of events) {\n    if (event.type !== 'm.room.message') continue;\n    const body = (event.content?.body || '').trim();\n    \n    // Only process commands starting with !\n    if (!body.startsWith('!')) continue;\n    \n    const parts = body.substring(1).trim().split(/\\s+/);\n    const cmd = parts[0];\n    const args = parts.slice(1).join(' ');\n    \n    let command = null;\n    \n    switch(cmd) {\n      case '\\u5f85\\u529e':\n      case '\\u5217\\u8868':\n      case '\\u5f85\\u529e\\u5217\\u8868':\n      case '\\u67e5\\u8be2':\n      case '\\u67e5\\u770b':\n        command = { action: 'list' };\n        break;\n      case '\\u65b0\\u589e':\n      case '\\u6dfb\\u52a0':\n        if (args) {\n          // Parse priority: !新增 P1 text or !新增 text\n          const pMatch = args.match(/^P(\\d)\\s+(.+)/);\n          if (pMatch) {\n            command = { action: 'add', text: pMatch[2], priority: parseInt(pMatch[1]) };\n          } else {\n            command = { action: 'add', text: args, priority: 3 };\n          }\n        }\n        break;\n      case '\\u5b8c\\u6210':\n        if (args) command = { action: 'done', memo_name: `memos/${args}` };\n        break;\n      case '\\u5220\\u9664':\n        if (args) command = { action: 'delete', memo_name: `memos/${args}` };\n        break;\n      case '\\u4fee\\u6539':\n        // Format: !修改 <id> <new text>\n        const modParts = args.split(/\\s+/);\n        if (modParts.length >= 2) {\n          command = { action: 'modify', memo_name: `memos/${modParts[0]}`, text: modParts.slice(1).join(' ') };\n        }\n        break;\n      case '\\u5e2e\\u52a9':\n      case 'help':\n        command = { action: 'help' };\n        break;\n    }\n    \n    if (command) {\n      command.sender = event.sender;\n      commands.push(command);\n    }\n  }\n}\n\nif (commands.length === 0) {\n  return [{ json: { skip: true } }];\n}\n\nreturn commands.map(cmd => ({ json: cmd }));"
+      },
+      "id": "parse-commands",
+      "name": "解析指令",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-action",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isNotEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "has-commands",
+      "name": "有指令?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [960, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-commands",
+      "name": "逐个处理",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-help",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "help",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "is-help",
+      "name": "是否帮助?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1440, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/memos-todo",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ action: $json.action, text: $json.text || '', memo_name: $json.memo_name || '', priority: $json.priority || 3 }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "call-todo-api",
+      "name": "执行待办操作",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst command = $('逐个处理').first().json;\nconst action = command.action;\n\nlet message = '';\n\nif (response.success === false || response.error) {\n  message = `\\u274c \\u64cd\\u4f5c\\u5931\\u8d25: ${response.error || '\\u672a\\u77e5\\u9519\\u8bef'}`;\n} else {\n  switch(action) {\n    case 'list': {\n      const memos = response.memos || [];\n      if (memos.length === 0) {\n        message = '\\ud83d\\udcdd \\u5f53\\u524d\\u6ca1\\u6709\\u5f85\\u529e\\u4e8b\\u9879';\n      } else {\n        const lines = ['\\ud83d\\udcdd \\u5f85\\u529e\\u5217\\u8868:'];\n        memos.forEach((memo, i) => {\n          const content = memo.content || '';\n          const text = content.replace(/#\\S+/g, '').trim();\n          const id = (memo.name || '').replace('memos/', '');\n          const priority = (content.match(/#P(\\d)/) || [])[1] || '-';\n          lines.push(`${i + 1}. [#${id}] P${priority} ${text}`);\n        });\n        message = lines.join('\\n');\n      }\n      break;\n    }\n    case 'add':\n      message = `\\u2795 \\u5df2\\u6dfb\\u52a0\\u5f85\\u529e: ${command.text}`;\n      break;\n    case 'done':\n      message = `\\u2705 \\u5df2\\u5b8c\\u6210\\u5f85\\u529e: ${command.memo_name}`;\n      break;\n    case 'delete':\n      message = `\\ud83d\\uddd1\\ufe0f \\u5df2\\u5220\\u9664\\u5f85\\u529e: ${command.memo_name}`;\n      break;\n    case 'modify':\n      message = `\\u270f\\ufe0f \\u5df2\\u4fee\\u6539\\u5f85\\u529e: ${command.text}`;\n      break;\n    default:\n      message = `\\u2753 \\u672a\\u77e5\\u64cd\\u4f5c: ${action}`;\n  }\n}\n\nreturn [{ json: { room: 'todo', message } }];"
+      },
+      "id": "format-response",
+      "name": "格式化回复",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: $json.room, message: $json.message }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-response",
+      "name": "发送回复",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2160, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: 'todo', message: '\\ud83d\\udcd6 \\u5f85\\u529e\\u6307\\u4ee4\\u5e2e\\u52a9:\\n\\n!\\u5f85\\u529e / !\\u5217\\u8868 - \\u67e5\\u770b\\u5f85\\u529e\\u5217\\u8868\\n!\\u65b0\\u589e <\\u5185\\u5bb9> - \\u6dfb\\u52a0\\u5f85\\u529e\\n!\\u65b0\\u589e P1 <\\u5185\\u5bb9> - \\u6dfb\\u52a0\\u9ad8\\u4f18\\u5148\\u7ea7\\u5f85\\u529e\\n!\\u5b8c\\u6210 <ID> - \\u5b8c\\u6210\\u5f85\\u529e\\n!\\u5220\\u9664 <ID> - \\u5220\\u9664\\u5f85\\u529e\\n!\\u4fee\\u6539 <ID> <\\u65b0\\u5185\\u5bb9> - \\u4fee\\u6539\\u5f85\\u529e\\n!\\u5e2e\\u52a9 - \\u663e\\u793a\\u6b64\\u5e2e\\u52a9\\n\\n\\u793a\\u4f8b: !\\u65b0\\u589e P1 \\u5b8c\\u6210\\u5468\\u62a5' }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-help",
+      "name": "发送帮助",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1680, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {},
+      "id": "end-noop",
+      "name": "结束",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1200, 500]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://memos:5230/api/v1/memos?filter=tag%3D%3D%27%E5%BE%85%E5%8A%9E%27&pageSize=100",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "daily-get-todos",
+      "name": "获取每日待办",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 700],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst memos = data.memos || [];\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\n\nlet message = '';\n\nif (memos.length === 0) {\n  message = `\\ud83c\\udf05 \\u65e9\\u5b89! ${dateStr}\\n\\n\\u2728 \\u4eca\\u65e5\\u6ca1\\u6709\\u5f85\\u529e\\u4e8b\\u9879\\uff0c\\u4eab\\u53d7\\u7f8e\\u597d\\u7684\\u4e00\\u5929!`;\n} else {\n  const lines = [`\\ud83c\\udf05 \\u65e9\\u5b89! ${dateStr}`, '', `\\ud83d\\udcdd \\u4eca\\u65e5\\u5f85\\u529e (${memos.length} \\u9879):`];\n  \n  // Sort by priority\n  const sorted = memos.sort((a, b) => {\n    const pA = parseInt((a.content?.match(/#P(\\d)/) || [])[1] || '3');\n    const pB = parseInt((b.content?.match(/#P(\\d)/) || [])[1] || '3');\n    return pA - pB;\n  });\n  \n  sorted.forEach((memo, i) => {\n    const content = memo.content || '';\n    const text = content.replace(/#\\S+/g, '').trim();\n    const id = (memo.name || '').replace('memos/', '');\n    const priority = (content.match(/#P(\\d)/) || [])[1] || '3';\n    const pEmoji = priority === '1' ? '\\ud83d\\udd34' : priority === '2' ? '\\ud83d\\udfe1' : '\\u26aa';\n    lines.push(`${pEmoji} ${i + 1}. [#${id}] ${text}`);\n  });\n  \n  lines.push('', '\\u53d1\\u9001 !\\u5e2e\\u52a9 \\u67e5\\u770b\\u6307\\u4ee4\\u7528\\u6cd5');\n  message = lines.join('\\n');\n}\n\nreturn [{ json: { room: 'todo', message } }];"
+      },
+      "id": "format-daily",
+      "name": "格式化每日推送",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 700]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: $json.room, message: $json.message }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-daily",
+      "name": "发送每日推送",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 700],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "定时轮询": {
+      "main": [[{"node": "准备同步", "type": "main", "index": 0}]]
+    },
+    "准备同步": {
+      "main": [[{"node": "同步Matrix", "type": "main", "index": 0}]]
+    },
+    "同步Matrix": {
+      "main": [[{"node": "解析指令", "type": "main", "index": 0}]]
+    },
+    "解析指令": {
+      "main": [[{"node": "有指令?", "type": "main", "index": 0}]]
+    },
+    "有指令?": {
+      "main": [
+        [{"node": "逐个处理", "type": "main", "index": 0}],
+        [{"node": "结束", "type": "main", "index": 0}]
+      ]
+    },
+    "逐个处理": {
+      "main": [
+        [{"node": "是否帮助?", "type": "main", "index": 0}],
+        [{"node": "结束", "type": "main", "index": 0}]
+      ]
+    },
+    "是否帮助?": {
+      "main": [
+        [{"node": "发送帮助", "type": "main", "index": 0}],
+        [{"node": "执行待办操作", "type": "main", "index": 0}]
+      ]
+    },
+    "执行待办操作": {
+      "main": [[{"node": "格式化回复", "type": "main", "index": 0}]]
+    },
+    "格式化回复": {
+      "main": [[{"node": "发送回复", "type": "main", "index": 0}]]
+    },
+    "发送回复": {
+      "main": [[{"node": "逐个处理", "type": "main", "index": 0}]]
+    },
+    "发送帮助": {
+      "main": [[{"node": "逐个处理", "type": "main", "index": 0}]]
+    },
+    "每日推送": {
+      "main": [[{"node": "获取每日待办", "type": "main", "index": 0}]]
+    },
+    "获取每日待办": {
+      "main": [[{"node": "格式化每日推送", "type": "main", "index": 0}]]
+    },
+    "格式化每日推送": {
+      "main": [[{"node": "发送每日推送", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "pinData": {},
+  "tags": [{"name": "knowledge"}, {"name": "matrix"}, {"name": "todo"}]
+}

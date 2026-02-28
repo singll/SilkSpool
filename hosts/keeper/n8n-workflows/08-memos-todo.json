@@ -105,6 +105,27 @@
                 "combinator": "and"
               },
               "outputIndex": 3
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.action }}",
+                    "rightValue": "modify",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputIndex": 4
             }
           ]
         },
@@ -359,8 +380,101 @@
     },
     {
       "parameters": {
+        "method": "GET",
+        "url": "=http://memos:5230/api/v1/{{ $json.body.memo_name }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-memo-modify",
+      "name": "获取待修改待办",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 900],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const memo = $input.first().json;\nconst body = $('待办入口').first().json.body;\nconst memoName = body.memo_name;\nconst newText = body.text || '';\n\nif (!newText) {\n  throw new Error('text parameter is required for modify action');\n}\n\nlet content = memo.content || '';\n// 保留标签，替换文本内容\nconst tags = content.match(/#\\S+/g) || ['#待办'];\nconst updatedContent = tags.join(' ') + ' ' + newText;\n\n// 提取原始文本\nconst oldText = content.replace(/#\\S+/g, '').trim();\n\nreturn {\n  json: {\n    memo_name: memoName,\n    content: updatedContent,\n    oldText: oldText,\n    newText: newText\n  }\n};"
+      },
+      "id": "prepare-modify",
+      "name": "准备修改内容",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 900]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://memos:5230/api/v1/{{ $json.memo_name }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: $json.content }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "update-memo-modify",
+      "name": "更新待办内容",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 900],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: 'todo', message: '\\u270f\\ufe0f \\u5df2\\u4fee\\u6539: ' + $('准备修改内容').first().json.newText }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "notify-modify",
+      "name": "通知已修改",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 900],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: false, error: '未知操作，支持: list, add, done, delete' }) }}",
+        "responseBody": "={{ JSON.stringify({ success: true, action: 'modify', memo_name: $('准备修改内容').first().json.memo_name }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-modify",
+      "name": "返回修改结果",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1680, 900]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: '未知操作，支持: list, add, done, delete, modify' }) }}",
         "options": {
           "responseCode": 400
         }
@@ -369,7 +483,7 @@
       "name": "未知操作响应",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [720, 900]
+      "position": [720, 1100]
     }
   ],
   "connections": {
@@ -382,6 +496,7 @@
         [{"node": "格式化待办内容", "type": "main", "index": 0}],
         [{"node": "获取待办详情", "type": "main", "index": 0}],
         [{"node": "删除待办", "type": "main", "index": 0}],
+        [{"node": "获取待修改待办", "type": "main", "index": 0}],
         [{"node": "未知操作响应", "type": "main", "index": 0}]
       ]
     },
@@ -411,6 +526,18 @@
     },
     "删除待办": {
       "main": [[{"node": "返回删除结果", "type": "main", "index": 0}]]
+    },
+    "获取待修改待办": {
+      "main": [[{"node": "准备修改内容", "type": "main", "index": 0}]]
+    },
+    "准备修改内容": {
+      "main": [[{"node": "更新待办内容", "type": "main", "index": 0}]]
+    },
+    "更新待办内容": {
+      "main": [[{"node": "通知已修改", "type": "main", "index": 0}]]
+    },
+    "通知已修改": {
+      "main": [[{"node": "返回修改结果", "type": "main", "index": 0}]]
     }
   },
   "settings": {
