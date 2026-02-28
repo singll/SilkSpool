@@ -261,6 +261,13 @@ run_bundle_generic() {
                 log_info "Pushing Systemd service templates..."
                 scp $SSH_OPT -q "$TEMPLATE_DIR"/*.service "$LOGIN:$DEPLOY_PATH/"
             fi
+
+            # 4.3 处理 Shell 脚本 (如 n8n-init.sh 等容器入口脚本)
+            if ls "$TEMPLATE_DIR"/*.sh 1> /dev/null 2>&1; then
+                log_info "Pushing shell scripts..."
+                scp $SSH_OPT -q "$TEMPLATE_DIR"/*.sh "$LOGIN:$DEPLOY_PATH/"
+                ssh -q $SSH_OPT "$LOGIN" "chmod +x $DEPLOY_PATH/*.sh"
+            fi
         fi
     fi
 

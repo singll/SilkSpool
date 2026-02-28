@@ -33,6 +33,10 @@ REDIS_PASSWORD=CHANGE_ME_redis_password
 
 # --- n8n ---
 N8N_PASSWORD=CHANGE_ME_n8n_password
+# 固定加密密钥 (重要! 确保凭证在容器重建后不丢失, 请生成随机字符串)
+N8N_ENCRYPTION_KEY=CHANGE_ME_generate_random_string
+# Owner 自动注册 (首次启动时自动创建管理员账号)
+N8N_OWNER_EMAIL=admin@example.com
 
 # --- Bellkeeper ---
 BELLKEEPER_DB_PASSWORD=CHANGE_ME_bellkeeper_db_password

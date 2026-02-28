@@ -6,19 +6,24 @@ services:
     user: root
     ports:
       - "5678:5678"
+    entrypoint: ["/bin/sh"]
+    command: ["/home/node/scripts/n8n-init.sh"]
     environment:
       - TZ=Asia/Shanghai
       - GENERIC_TIMEZONE=Asia/Shanghai
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=admin
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-n8npassword}
+      # --- n8n 核心配置 ---
+      # 固定加密密钥, 确保凭证数据在容器重建后不丢失
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-}
+      # --- Owner 自动注册 (首次启动时自动创建管理员账号) ---
+      - N8N_OWNER_EMAIL=${N8N_OWNER_EMAIL:-}
+      - N8N_OWNER_PASSWORD=${N8N_OWNER_PASSWORD:-${N8N_PASSWORD:-}}
+      - N8N_PASSWORD=${N8N_PASSWORD:-}
+      # --- 性能调优 ---
       - NODE_OPTIONS=--max-old-space-size=2048
       - EXECUTIONS_DATA_PRUNE=true
       - EXECUTIONS_DATA_MAX_AGE=168
       - EXECUTIONS_DATA_PRUNE_MAX_COUNT=5000
-      # Firecrawl 在 knowledge 服务器上，需要跨服务器访问
-      - FIRECRAWL_API_URL=http://${KNOWLEDGE_HOST:-192.168.7.220}:3002
-      - HOST_DOCKER_INTERNAL=host.docker.internal
+      # --- 允许 Code 节点访问环境变量 ---
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       # --- Bellkeeper API ---
       - BELLKEEPER_API_KEY=${BELLKEEPER_API_KEY:-}
@@ -32,16 +37,18 @@ services:
       - MATRIX_ROOM_ALERTS=${MATRIX_ROOM_ALERTS:-}
       - MATRIX_ROOM_DAILY=${MATRIX_ROOM_DAILY:-}
       - MATRIX_ROOM_TODO=${MATRIX_ROOM_TODO:-}
-      # 多端存储所需的环境变量
+      # --- 多端存储 ---
       - COUCHDB_USER=${COUCHDB_USER:-admin}
       - COUCHDB_PASSWORD=${COUCHDB_PASSWORD:-}
       - MEMOS_API_TOKEN=${MEMOS_API_TOKEN:-}
       - RAGFLOW_API_KEY=${RAGFLOW_API_KEY:-}
-      # knowledge 服务器地址 (供 n8n Code 节点使用)
+      # --- knowledge 服务器地址 (供 n8n Code 节点使用) ---
       - KNOWLEDGE_HOST=${KNOWLEDGE_HOST:-192.168.7.220}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - kp-n8n-data:/home/node/.n8n
+      - ./n8n-init.sh:/home/node/scripts/n8n-init.sh:ro
+      - ./n8n-workflows:/home/node/n8n-workflows:ro
     networks:
       - kp-network
