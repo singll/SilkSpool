@@ -143,7 +143,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "http://memos:5230/api/v1/memos?filter=tag%3D%3D%27%E5%BE%85%E5%8A%9E%27&pageSize=100",
+        "url": "http://memos:5230/api/v1/memos?tagSearch=%E5%BE%85%E5%8A%9E&pageSize=100",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
