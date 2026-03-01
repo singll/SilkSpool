@@ -15,7 +15,10 @@
       "name": "待办入口",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [240, 300],
+      "position": [
+        240,
+        300
+      ],
       "webhookId": "memos-todo"
     },
     {
@@ -138,7 +141,10 @@
       "name": "路由操作",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [480, 300]
+      "position": [
+        480,
+        300
+      ]
     },
     {
       "parameters": {
@@ -161,7 +167,10 @@
       "name": "查询待办列表",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [720, 100],
+      "position": [
+        720,
+        100
+      ],
       "continueOnFail": true
     },
     {
@@ -176,17 +185,23 @@
       "name": "返回列表",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [960, 100]
+      "position": [
+        960,
+        100
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const input = $input.first().json;\nconst body = input.body || input;\nconst text = body.text || '';\nconst priority = body.priority || 3;\n\nif (!text) {\n  throw new Error('text parameter is required');\n}\n\nconst content = `#\\u5f85\\u529e #P${priority} ${text}`;\n\nreturn {\n  json: {\n    content: content,\n    text: text,\n    priority: priority\n  }\n};"
+        "jsCode": "const input = $input.first().json;\nconst body = input.body || input;\nconst text = body.text || '';\nconst priority = body.priority || 3;\nconst dueDate = body.dueDate || '';\n\nif (!text) {\n  throw new Error('text parameter is required');\n}\n\nlet content = `#\\u5f85\\u529e #P${priority}`;\nif (dueDate) {\n  content += ` #D:${dueDate}`;\n}\ncontent += ` ${text}`;\n\nreturn {\n  json: {\n    content: content,\n    text: text,\n    priority: priority,\n    dueDate: dueDate\n  }\n};"
       },
       "id": "format-add",
       "name": "格式化待办内容",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [720, 300]
+      "position": [
+        720,
+        300
+      ]
     },
     {
       "parameters": {
@@ -212,7 +227,10 @@
       "name": "创建待办",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [960, 300],
+      "position": [
+        960,
+        300
+      ],
       "continueOnFail": true
     },
     {
@@ -227,7 +245,10 @@
       "name": "返回创建结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1200, 300]
+      "position": [
+        1200,
+        300
+      ]
     },
     {
       "parameters": {
@@ -250,7 +271,10 @@
       "name": "获取待办详情",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [720, 500],
+      "position": [
+        720,
+        500
+      ],
       "continueOnFail": true
     },
     {
@@ -261,7 +285,10 @@
       "name": "标记已完成",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 500]
+      "position": [
+        960,
+        500
+      ]
     },
     {
       "parameters": {
@@ -287,7 +314,10 @@
       "name": "更新待办状态",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1200, 500],
+      "position": [
+        1200,
+        500
+      ],
       "continueOnFail": true
     },
     {
@@ -302,7 +332,10 @@
       "name": "返回完成结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1200, 500]
+      "position": [
+        1200,
+        500
+      ]
     },
     {
       "parameters": {
@@ -325,7 +358,10 @@
       "name": "删除待办",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [720, 700],
+      "position": [
+        720,
+        700
+      ],
       "continueOnFail": true
     },
     {
@@ -340,7 +376,10 @@
       "name": "返回删除结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [960, 700]
+      "position": [
+        960,
+        700
+      ]
     },
     {
       "parameters": {
@@ -363,7 +402,10 @@
       "name": "获取待修改待办",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [720, 900],
+      "position": [
+        720,
+        900
+      ],
       "continueOnFail": true
     },
     {
@@ -374,7 +416,10 @@
       "name": "准备修改内容",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 900]
+      "position": [
+        960,
+        900
+      ]
     },
     {
       "parameters": {
@@ -400,7 +445,10 @@
       "name": "更新待办内容",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1200, 900],
+      "position": [
+        1200,
+        900
+      ],
       "continueOnFail": true
     },
     {
@@ -415,7 +463,10 @@
       "name": "返回修改结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1200, 900]
+      "position": [
+        1200,
+        900
+      ]
     },
     {
       "parameters": {
@@ -429,52 +480,179 @@
       "name": "未知操作响应",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [720, 1100]
+      "position": [
+        720,
+        1100
+      ]
     }
   ],
   "connections": {
     "待办入口": {
-      "main": [[{"node": "路由操作", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "路由操作",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "路由操作": {
       "main": [
-        [{"node": "查询待办列表", "type": "main", "index": 0}],
-        [{"node": "格式化待办内容", "type": "main", "index": 0}],
-        [{"node": "获取待办详情", "type": "main", "index": 0}],
-        [{"node": "删除待办", "type": "main", "index": 0}],
-        [{"node": "获取待修改待办", "type": "main", "index": 0}],
-        [{"node": "未知操作响应", "type": "main", "index": 0}]
+        [
+          {
+            "node": "查询待办列表",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "格式化待办内容",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "获取待办详情",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "删除待办",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "获取待修改待办",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "未知操作响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "查询待办列表": {
-      "main": [[{"node": "返回列表", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "返回列表",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "格式化待办内容": {
-      "main": [[{"node": "创建待办", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "创建待办",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "创建待办": {
-      "main": [[{"node": "返回创建结果", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "返回创建结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "获取待办详情": {
-      "main": [[{"node": "标记已完成", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "标记已完成",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "标记已完成": {
-      "main": [[{"node": "更新待办状态", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "更新待办状态",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "更新待办状态": {
-      "main": [[{"node": "返回完成结果", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "返回完成结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "删除待办": {
-      "main": [[{"node": "返回删除结果", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "返回删除结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "获取待修改待办": {
-      "main": [[{"node": "准备修改内容", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "准备修改内容",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "准备修改内容": {
-      "main": [[{"node": "更新待办内容", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "更新待办内容",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "更新待办内容": {
-      "main": [[{"node": "返回修改结果", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "返回修改结果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
@@ -484,5 +662,12 @@
   },
   "staticData": null,
   "pinData": {},
-  "tags": [{"name": "knowledge"}, {"name": "memos"}]
+  "tags": [
+    {
+      "name": "knowledge"
+    },
+    {
+      "name": "memos"
+    }
+  ]
 }

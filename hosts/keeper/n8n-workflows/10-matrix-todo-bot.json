@@ -1,5 +1,5 @@
 {
-  "name": "10-Matrix\u5f85\u529e\u6307\u4ee4",
+  "name": "10-Matrix待办指令",
   "meta": {
     "instanceId": ""
   },
@@ -16,10 +16,13 @@
         }
       },
       "id": "cron-poll",
-      "name": "\u5b9a\u65f6\u8f6e\u8be2",
+      "name": "定时轮询",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 300]
+      "position": [
+        0,
+        300
+      ]
     },
     {
       "parameters": {
@@ -32,20 +35,26 @@
         }
       },
       "id": "cron-daily",
-      "name": "\u6bcf\u65e5\u63a8\u9001",
+      "name": "每日推送",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 800]
+      "position": [
+        0,
+        800
+      ]
     },
     {
       "parameters": {
         "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst sinceToken = staticData.sinceToken || '';\nconst homeserver = $env.MATRIX_HOMESERVER;\nconst todoRoom = $env.MATRIX_ROOM_TODO;\nconst botToken = $env.MATRIX_BOT_TOKEN;\n\nif (!homeserver || !todoRoom || !botToken) {\n  return [];\n}\n\nconst filter = JSON.stringify({\n  room: {\n    rooms: [todoRoom],\n    timeline: { types: ['m.room.message'], limit: 20 }\n  },\n  presence: { types: [] },\n  account_data: { types: [] }\n});\n\n// timeout=8000: long-polling, returns immediately when new events arrive\nlet syncUrl = `${homeserver}/_matrix/client/v3/sync?timeout=8000&filter=${encodeURIComponent(filter)}`;\nif (sinceToken) {\n  syncUrl += `&since=${encodeURIComponent(sinceToken)}`;\n}\n\nreturn [{ json: { syncUrl, isFirstRun: !sinceToken, todoRoom } }];"
       },
       "id": "prepare-sync",
-      "name": "\u51c6\u5907\u540c\u6b65",
+      "name": "准备同步",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [240, 300]
+      "position": [
+        240,
+        300
+      ]
     },
     {
       "parameters": {
@@ -65,21 +74,27 @@
         }
       },
       "id": "sync-matrix",
-      "name": "\u540c\u6b65Matrix",
+      "name": "同步Matrix",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [480, 300],
+      "position": [
+        480,
+        300
+      ],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst syncResp = $input.first().json;\nconst prevData = $('\u51c6\u5907\u540c\u6b65').first().json;\nconst isFirstRun = prevData.isFirstRun;\nconst todoRoom = prevData.todoRoom;\n\nif (syncResp.next_batch) {\n  staticData.sinceToken = syncResp.next_batch;\n}\n\n// First run or error: skip\nif (isFirstRun || syncResp.errcode) {\n  return [];\n}\n\nconst results = [];\nconst joinedRooms = syncResp.rooms?.join || {};\n\nfor (const [roomId, roomData] of Object.entries(joinedRooms)) {\n  if (roomId !== todoRoom) continue;\n  const events = roomData.timeline?.events || [];\n\n  for (const event of events) {\n    if (event.type !== 'm.room.message') continue;\n    // Ignore bot's own messages\n    if (event.sender && event.sender.startsWith('@kb-bot:')) continue;\n\n    const body = (event.content?.body || '').trim();\n    if (!body.startsWith('!') && !body.startsWith('\\uff01')) continue;\n\n    const parts = body.substring(1).trim().split(/\\s+/);\n    const cmd = parts[0];\n    const args = parts.slice(1).join(' ');\n    let result = null;\n\n    switch(cmd) {\n      case '\\u5f85\\u529e': case '\\u5217\\u8868': case '\\u5f85\\u529e\\u5217\\u8868':\n      case '\\u67e5\\u8be2': case '\\u67e5\\u770b':\n        result = { action: 'list' };\n        break;\n      case '\\u65b0\\u589e': case '\\u6dfb\\u52a0':\n        if (args) {\n          const pMatch = args.match(/^P(\\d)\\s+(.+)/);\n          result = pMatch\n            ? { action: 'add', text: pMatch[2], priority: parseInt(pMatch[1]) }\n            : { action: 'add', text: args, priority: 3 };\n        }\n        break;\n      case '\\u5b8c\\u6210':\n        if (args) result = { action: 'done', memo_name: `memos/${args}` };\n        break;\n      case '\\u5220\\u9664':\n        if (args) result = { action: 'delete', memo_name: `memos/${args}` };\n        break;\n      case '\\u4fee\\u6539': {\n        const modParts = args.split(/\\s+/);\n        if (modParts.length >= 2) {\n          result = { action: 'modify', memo_name: `memos/${modParts[0]}`, text: modParts.slice(1).join(' ') };\n        }\n        break;\n      }\n      case '\\u5e2e\\u52a9': case 'help':\n        result = { action: 'help' };\n        break;\n    }\n\n    if (result) {\n      result.sender = event.sender;\n      results.push(result);\n    }\n  }\n}\n\nreturn results.length > 0 ? results.map(r => ({ json: r })) : [];"
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst syncResp = $input.first().json;\nconst prevData = $('\\u51c6\\u5907\\u540c\\u6b65').first().json;\nconst isFirstRun = prevData.isFirstRun;\nconst todoRoom = prevData.todoRoom;\n\nif (syncResp.next_batch) {\n  staticData.sinceToken = syncResp.next_batch;\n}\n\nif (isFirstRun || syncResp.errcode) {\n  return [];\n}\n\nconst results = [];\nconst joinedRooms = syncResp.rooms?.join || {};\n\nfor (const [roomId, roomData] of Object.entries(joinedRooms)) {\n  if (roomId !== todoRoom) continue;\n  const events = roomData.timeline?.events || [];\n\n  for (const event of events) {\n    if (event.type !== 'm.room.message') continue;\n    if (event.sender && event.sender.startsWith('@kb-bot:')) continue;\n\n    const body = (event.content?.body || '').trim();\n    if (!body.startsWith('!') && !body.startsWith('\\uff01')) continue;\n\n    const parts = body.substring(1).trim().split(/\\s+/);\n    const cmd = parts[0];\n    const args = parts.slice(1).join(' ');\n    let result = null;\n\n    switch(cmd) {\n      case '\\u5f85\\u529e': case '\\u5217\\u8868': case '\\u5f85\\u529e\\u5217\\u8868':\n      case '\\u67e5\\u8be2': case '\\u67e5\\u770b':\n        result = { action: 'list' };\n        break;\n      case '\\u4eca\\u65e5': case '\\u4eca\\u5929':\n        result = { action: 'list', filter: 'today' };\n        break;\n      case '\\u903e\\u671f':\n        result = { action: 'list', filter: 'overdue' };\n        break;\n      case '\\u65b0\\u589e': case '\\u6dfb\\u52a0':\n        if (args) {\n          let priority = 3;\n          let dueDate = '';\n          let remaining = args;\n          for (let i = 0; i < 2; i++) {\n            const pMatch = remaining.match(/^P(\\d)\\s+([\\s\\S]*)/);\n            if (pMatch) { priority = parseInt(pMatch[1]); remaining = pMatch[2]; continue; }\n            const dFull = remaining.match(/^D(\\d{4}-\\d{1,2}-\\d{1,2})\\s+([\\s\\S]*)/);\n            if (dFull) { dueDate = dFull[1]; remaining = dFull[2]; continue; }\n            const dShort = remaining.match(/^D(\\d{1,2})\\/(\\d{1,2})\\s+([\\s\\S]*)/);\n            if (dShort) {\n              const y = new Date().getFullYear();\n              dueDate = `${y}-${dShort[1].padStart(2,'0')}-${dShort[2].padStart(2,'0')}`;\n              remaining = dShort[3]; continue;\n            }\n            break;\n          }\n          if (remaining.trim()) {\n            result = { action: 'add', text: remaining.trim(), priority, dueDate };\n          }\n        }\n        break;\n      case '\\u5b8c\\u6210':\n        if (args) result = { action: 'done', memo_name: `memos/${args}` };\n        break;\n      case '\\u5220\\u9664':\n        if (args) result = { action: 'delete', memo_name: `memos/${args}` };\n        break;\n      case '\\u4fee\\u6539': {\n        const modParts = args.split(/\\s+/);\n        if (modParts.length >= 2) {\n          result = { action: 'modify', memo_name: `memos/${modParts[0]}`, text: modParts.slice(1).join(' ') };\n        }\n        break;\n      }\n      case '\\u5e2e\\u52a9': case 'help':\n        result = { action: 'help' };\n        break;\n    }\n\n    if (result) {\n      result.sender = event.sender;\n      results.push(result);\n    }\n  }\n}\n\nreturn results.length > 0 ? results.map(r => ({ json: r })) : [];"
       },
       "id": "parse-commands",
-      "name": "\u89e3\u6790\u6307\u4ee4",
+      "name": "解析指令",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [720, 300]
+      "position": [
+        720,
+        300
+      ]
     },
     {
       "parameters": {
@@ -105,10 +120,13 @@
         "options": {}
       },
       "id": "is-help",
-      "name": "\u5e2e\u52a9\u6307\u4ee4?",
+      "name": "帮助指令?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [960, 300]
+      "position": [
+        960,
+        300
+      ]
     },
     {
       "parameters": {
@@ -116,16 +134,19 @@
         "url": "http://localhost:5678/webhook/notify",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ room: 'todo', message: '\ud83d\udcd6 \u5f85\u529e\u6307\u4ee4\u5e2e\u52a9:\\n\\n!\u5f85\u529e / !\u5217\u8868 - \u67e5\u770b\u5f85\u529e\u5217\u8868\\n!\u65b0\u589e <\u5185\u5bb9> - \u6dfb\u52a0\u5f85\u529e\\n!\u65b0\u589e P1 <\u5185\u5bb9> - \u6dfb\u52a0\u9ad8\u4f18\u5148\u7ea7\u5f85\u529e\\n!\u5b8c\u6210 <ID> - \u5b8c\u6210\u5f85\u529e\\n!\u5220\u9664 <ID> - \u5220\u9664\u5f85\u529e\\n!\u4fee\u6539 <ID> <\u65b0\u5185\u5bb9> - \u4fee\u6539\u5f85\u529e\\n!\u5e2e\u52a9 - \u663e\u793a\u6b64\u5e2e\u52a9\\n\\n\u793a\u4f8b: !\u65b0\u589e P1 \u5b8c\u6210\u5468\u62a5' }) }}",
+        "jsonBody": "={{ JSON.stringify({ room: 'todo', message: '\\ud83d\\udcd6 \\u5f85\\u529e\\u6307\\u4ee4\\u5e2e\\u52a9\\n\\n\\ud83d\\udccb \\u67e5\\u770b\\n  !\\u5217\\u8868 - \\u67e5\\u770b\\u6240\\u6709\\u5f85\\u529e\\n  !\\u4eca\\u65e5 - \\u67e5\\u770b\\u4eca\\u65e5\\u5230\\u671f\\n  !\\u903e\\u671f - \\u67e5\\u770b\\u5df2\\u903e\\u671f\\n\\n\\ud83d\\udcdd \\u7ba1\\u7406\\n  !\\u65b0\\u589e {\\u5185\\u5bb9} - \\u6dfb\\u52a0\\u5f85\\u529e\\n  !\\u65b0\\u589e P1 {\\u5185\\u5bb9} - \\u6307\\u5b9a\\u4f18\\u5148\\u7ea7(P1\\u6700\\u9ad8)\\n  !\\u65b0\\u589e D3/15 {\\u5185\\u5bb9} - \\u6307\\u5b9a\\u622a\\u6b62\\u65e5\\u671f\\n  !\\u65b0\\u589e P1 D3/15 {\\u5185\\u5bb9} - \\u540c\\u65f6\\u6307\\u5b9a\\n  !\\u5b8c\\u6210 {ID} - \\u6807\\u8bb0\\u5b8c\\u6210\\n  !\\u5220\\u9664 {ID} - \\u5220\\u9664\\u5f85\\u529e\\n  !\\u4fee\\u6539 {ID} {\\u65b0\\u5185\\u5bb9} - \\u4fee\\u6539\\u5185\\u5bb9\\n\\n\\u793a\\u4f8b: !\\u65b0\\u589e P1 D3/15 \\u5b8c\\u6210\\u5468\\u62a5' }) }}",
         "options": {
           "timeout": 10000
         }
       },
       "id": "send-help",
-      "name": "\u53d1\u9001\u5e2e\u52a9",
+      "name": "发送帮助",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1200, 200],
+      "position": [
+        1200,
+        200
+      ],
       "continueOnFail": true
     },
     {
@@ -134,27 +155,33 @@
         "url": "http://localhost:5678/webhook/memos-todo",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ action: $json.action, text: $json.text || '', memo_name: $json.memo_name || '', priority: $json.priority || 3 }) }}",
+        "jsonBody": "={{ JSON.stringify({ action: $json.action, text: $json.text || '', memo_name: $json.memo_name || '', priority: $json.priority || 3, dueDate: $json.dueDate || '', filter: $json.filter || '' }) }}",
         "options": {
           "timeout": 30000
         }
       },
       "id": "call-todo-api",
-      "name": "\u6267\u884c\u5f85\u529e\u64cd\u4f5c",
+      "name": "执行待办操作",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1200, 400],
+      "position": [
+        1200,
+        400
+      ],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "const response = $input.first().json;\nconst command = $('\u5e2e\u52a9\u6307\u4ee4?').item.json;\nconst action = command.action;\n\nlet message = '';\n\nif (response.success === false || response.error) {\n  message = `\\u274c \\u64cd\\u4f5c\\u5931\\u8d25: ${response.error || '\\u672a\\u77e5\\u9519\\u8bef'}`;\n} else {\n  switch(action) {\n    case 'list': {\n      const memos = response.memos || [];\n      if (memos.length === 0) {\n        message = '\\ud83d\\udcdd \\u5f53\\u524d\\u6ca1\\u6709\\u5f85\\u529e\\u4e8b\\u9879';\n      } else {\n        const lines = ['\\ud83d\\udcdd \\u5f85\\u529e\\u5217\\u8868:'];\n        memos.forEach((memo, i) => {\n          const content = memo.content || '';\n          const text = content.replace(/#\\S+/g, '').trim();\n          const id = (memo.name || '').replace('memos/', '');\n          const priority = (content.match(/#P(\\d)/) || [])[1] || '-';\n          lines.push(`${i + 1}. [#${id}] P${priority} ${text}`);\n        });\n        message = lines.join('\\n');\n      }\n      break;\n    }\n    case 'add':\n      message = `\\u2795 \\u5df2\\u6dfb\\u52a0\\u5f85\\u529e: ${command.text}`;\n      break;\n    case 'done':\n      message = `\\u2705 \\u5df2\\u5b8c\\u6210: ${(command.memo_name || '').replace('memos/', '#')}`;\n      break;\n    case 'delete':\n      message = `\\ud83d\\uddd1\\ufe0f \\u5df2\\u5220\\u9664: ${(command.memo_name || '').replace('memos/', '#')}`;\n      break;\n    case 'modify':\n      message = `\\u270f\\ufe0f \\u5df2\\u4fee\\u6539: ${command.text}`;\n      break;\n    default:\n      message = `\\u2753 \\u672a\\u77e5\\u64cd\\u4f5c: ${action}`;\n  }\n}\n\nreturn [{ json: { room: 'todo', message } }];"
+        "jsCode": "const response = $input.first().json;\nconst command = $('\\u5e2e\\u52a9\\u6307\\u4ee4?').item.json;\nconst action = command.action;\nconst filter = command.filter || '';\n\nlet message = '';\n\nif (response.success === false || response.error) {\n  message = `\\u274c \\u64cd\\u4f5c\\u5931\\u8d25: ${response.error || '\\u672a\\u77e5\\u9519\\u8bef'}`;\n} else {\n  switch(action) {\n    case 'list': {\n      let memos = response.memos || [];\n      const now = new Date();\n      const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;\n\n      // Apply filter\n      if (filter === 'today') {\n        memos = memos.filter(m => {\n          const d = (m.content || '').match(/#D:(\\d{4}-\\d{2}-\\d{2})/);\n          return d && d[1] === todayStr;\n        });\n      } else if (filter === 'overdue') {\n        memos = memos.filter(m => {\n          const d = (m.content || '').match(/#D:(\\d{4}-\\d{2}-\\d{2})/);\n          return d && d[1] < todayStr;\n        });\n      }\n\n      const filterLabel = filter === 'today' ? '\\u4eca\\u65e5\\u5230\\u671f' : filter === 'overdue' ? '\\u903e\\u671f' : '\\u5f85\\u529e\\u5217\\u8868';\n\n      if (memos.length === 0) {\n        const emptyMsg = filter === 'today' ? '\\u4eca\\u65e5\\u6ca1\\u6709\\u5230\\u671f\\u4e8b\\u9879' : filter === 'overdue' ? '\\u6ca1\\u6709\\u903e\\u671f\\u4e8b\\u9879' : '\\u5f53\\u524d\\u6ca1\\u6709\\u5f85\\u529e\\u4e8b\\u9879';\n        message = `\\ud83d\\udcdd ${emptyMsg}`;\n      } else {\n        // Sort: overdue first, then by due date asc, then priority\n        memos.sort((a, b) => {\n          const dA = (a.content || '').match(/#D:(\\d{4}-\\d{2}-\\d{2})/);\n          const dB = (b.content || '').match(/#D:(\\d{4}-\\d{2}-\\d{2})/);\n          const dateA = dA ? dA[1] : '9999-99-99';\n          const dateB = dB ? dB[1] : '9999-99-99';\n          const overA = dA && dA[1] < todayStr ? 0 : 1;\n          const overB = dB && dB[1] < todayStr ? 0 : 1;\n          if (overA !== overB) return overA - overB;\n          if (dateA !== dateB) return dateA.localeCompare(dateB);\n          const pA = parseInt((a.content?.match(/#P(\\d)/) || [])[1] || '3');\n          const pB = parseInt((b.content?.match(/#P(\\d)/) || [])[1] || '3');\n          return pA - pB;\n        });\n\n        const lines = [`\\ud83d\\udcdd ${filterLabel} (${memos.length}\\u9879):`];\n        memos.forEach((memo, i) => {\n          const content = memo.content || '';\n          const text = content.replace(/#\\S+/g, '').trim();\n          const id = (memo.name || '').replace('memos/', '');\n          const priority = (content.match(/#P(\\d)/) || [])[1] || '3';\n          const pEmoji = priority === '1' ? '\\ud83d\\udd34' : priority === '2' ? '\\ud83d\\udfe1' : '\\u26aa';\n          const dueMatch = content.match(/#D:(\\d{4})-(\\d{2})-(\\d{2})/);\n          let dateStr = '';\n          if (dueMatch) {\n            const isOverdue = `${dueMatch[1]}-${dueMatch[2]}-${dueMatch[3]}` < todayStr;\n            const isToday = `${dueMatch[1]}-${dueMatch[2]}-${dueMatch[3]}` === todayStr;\n            dateStr = isOverdue ? ` \\u26a0\\ufe0f${parseInt(dueMatch[2])}/${parseInt(dueMatch[3])}(\\u903e\\u671f)` : isToday ? ` \\ud83d\\udcc5\\u4eca\\u65e5` : ` \\ud83d\\udcc5${parseInt(dueMatch[2])}/${parseInt(dueMatch[3])}`;\n          }\n          lines.push(`${pEmoji} ${i+1}. [#${id}] P${priority}${dateStr} ${text}`);\n        });\n        message = lines.join('\\n');\n      }\n      break;\n    }\n    case 'add': {\n      let extra = '';\n      if (command.dueDate) {\n        const dp = command.dueDate.split('-');\n        extra = ` (\\ud83d\\udcc5${parseInt(dp[1])}/${parseInt(dp[2])})`;\n      }\n      message = `\\u2795 \\u5df2\\u6dfb\\u52a0\\u5f85\\u529e: ${command.text}${extra}`;\n      break;\n    }\n    case 'done':\n      message = `\\u2705 \\u5df2\\u5b8c\\u6210: ${(command.memo_name || '').replace('memos/', '#')}`;\n      break;\n    case 'delete':\n      message = `\\ud83d\\uddd1\\ufe0f \\u5df2\\u5220\\u9664: ${(command.memo_name || '').replace('memos/', '#')}`;\n      break;\n    case 'modify':\n      message = `\\u270f\\ufe0f \\u5df2\\u4fee\\u6539: ${command.text}`;\n      break;\n    default:\n      message = `\\u2753 \\u672a\\u77e5\\u64cd\\u4f5c: ${action}`;\n  }\n}\n\nreturn [{ json: { room: 'todo', message } }];"
       },
       "id": "format-response",
-      "name": "\u683c\u5f0f\u5316\u56de\u590d",
+      "name": "格式化回复",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1440, 400]
+      "position": [
+        1440,
+        400
+      ]
     },
     {
       "parameters": {
@@ -168,10 +195,13 @@
         }
       },
       "id": "send-response",
-      "name": "\u53d1\u9001\u56de\u590d",
+      "name": "发送回复",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1680, 400],
+      "position": [
+        1680,
+        400
+      ],
       "continueOnFail": true
     },
     {
@@ -192,21 +222,27 @@
         }
       },
       "id": "daily-get-todos",
-      "name": "\u83b7\u53d6\u6bcf\u65e5\u5f85\u529e",
+      "name": "获取每日待办",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [240, 800],
+      "position": [
+        240,
+        800
+      ],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "const data = $input.first().json;\nconst memos = data.memos || [];\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\n\nlet message = '';\n\nif (memos.length === 0) {\n  message = `\\ud83c\\udf05 \\u65e9\\u5b89! ${dateStr}\\n\\n\\u2728 \\u4eca\\u65e5\\u6ca1\\u6709\\u5f85\\u529e\\u4e8b\\u9879\\uff0c\\u4eab\\u53d7\\u7f8e\\u597d\\u7684\\u4e00\\u5929!`;\n} else {\n  const lines = [`\\ud83c\\udf05 \\u65e9\\u5b89! ${dateStr}`, '', `\\ud83d\\udcdd \\u4eca\\u65e5\\u5f85\\u529e (${memos.length} \\u9879):`];\n  const sorted = memos.sort((a, b) => {\n    const pA = parseInt((a.content?.match(/#P(\\d)/) || [])[1] || '3');\n    const pB = parseInt((b.content?.match(/#P(\\d)/) || [])[1] || '3');\n    return pA - pB;\n  });\n  sorted.forEach((memo, i) => {\n    const content = memo.content || '';\n    const text = content.replace(/#\\S+/g, '').trim();\n    const id = (memo.name || '').replace('memos/', '');\n    const priority = (content.match(/#P(\\d)/) || [])[1] || '3';\n    const pEmoji = priority === '1' ? '\\ud83d\\udd34' : priority === '2' ? '\\ud83d\\udfe1' : '\\u26aa';\n    lines.push(`${pEmoji} ${i + 1}. [#${id}] ${text}`);\n  });\n  lines.push('', '\\u53d1\\u9001 !\\u5e2e\\u52a9 \\u67e5\\u770b\\u6307\\u4ee4\\u7528\\u6cd5');\n  message = lines.join('\\n');\n}\n\nreturn [{ json: { room: 'todo', message } }];"
+        "jsCode": "const data = $input.first().json;\nconst memos = data.memos || [];\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst todayStr = dateStr;\n\nlet message = '';\n\nif (memos.length === 0) {\n  message = `\\ud83c\\udf05 \\u65e9\\u5b89! ${dateStr}\\n\\n\\u2728 \\u4eca\\u65e5\\u6ca1\\u6709\\u5f85\\u529e\\u4e8b\\u9879\\uff0c\\u4eab\\u53d7\\u7f8e\\u597d\\u7684\\u4e00\\u5929!`;\n} else {\n  const overdue = [];\n  const dueToday = [];\n  const upcoming = [];\n  const noDue = [];\n\n  memos.forEach(memo => {\n    const content = memo.content || '';\n    const dueMatch = content.match(/#D:(\\d{4}-\\d{2}-\\d{2})/);\n    if (dueMatch) {\n      if (dueMatch[1] < todayStr) overdue.push(memo);\n      else if (dueMatch[1] === todayStr) dueToday.push(memo);\n      else upcoming.push(memo);\n    } else {\n      noDue.push(memo);\n    }\n  });\n\n  const sortByPriority = (a, b) => {\n    const pA = parseInt((a.content?.match(/#P(\\d)/) || [])[1] || '3');\n    const pB = parseInt((b.content?.match(/#P(\\d)/) || [])[1] || '3');\n    return pA - pB;\n  };\n  overdue.sort(sortByPriority);\n  dueToday.sort(sortByPriority);\n  upcoming.sort((a, b) => {\n    const dA = (a.content || '').match(/#D:(\\d{4}-\\d{2}-\\d{2})/)[1];\n    const dB = (b.content || '').match(/#D:(\\d{4}-\\d{2}-\\d{2})/)[1];\n    return dA === dB ? sortByPriority(a, b) : dA.localeCompare(dB);\n  });\n  noDue.sort(sortByPriority);\n\n  const lines = [`\\ud83c\\udf05 \\u65e9\\u5b89! ${dateStr}`, '', `\\ud83d\\udcdd \\u5f85\\u529e\\u603b\\u89c8 (${memos.length}\\u9879):`];\n\n  const formatMemo = (memo, idx) => {\n    const content = memo.content || '';\n    const text = content.replace(/#\\S+/g, '').trim();\n    const id = (memo.name || '').replace('memos/', '');\n    const priority = (content.match(/#P(\\d)/) || [])[1] || '3';\n    const pEmoji = priority === '1' ? '\\ud83d\\udd34' : priority === '2' ? '\\ud83d\\udfe1' : '\\u26aa';\n    const dueMatch = content.match(/#D:(\\d{4})-(\\d{2})-(\\d{2})/);\n    let dateTag = '';\n    if (dueMatch) {\n      const ds = `${dueMatch[1]}-${dueMatch[2]}-${dueMatch[3]}`;\n      if (ds < todayStr) dateTag = ` \\u26a0\\ufe0f${parseInt(dueMatch[2])}/${parseInt(dueMatch[3])}(\\u903e\\u671f)`;\n      else if (ds === todayStr) dateTag = ` \\ud83d\\udcc5\\u4eca\\u65e5`;\n      else dateTag = ` \\ud83d\\udcc5${parseInt(dueMatch[2])}/${parseInt(dueMatch[3])}`;\n    }\n    return `${pEmoji} ${idx}. [#${id}]${dateTag} ${text}`;\n  };\n\n  let idx = 1;\n  if (overdue.length > 0) {\n    lines.push(`\\n\\u26a0\\ufe0f \\u903e\\u671f (${overdue.length}\\u9879):`);\n    overdue.forEach(m => { lines.push(formatMemo(m, idx++)); });\n  }\n  if (dueToday.length > 0) {\n    lines.push(`\\n\\ud83d\\udcc5 \\u4eca\\u65e5\\u5230\\u671f (${dueToday.length}\\u9879):`);\n    dueToday.forEach(m => { lines.push(formatMemo(m, idx++)); });\n  }\n  if (upcoming.length > 0 || noDue.length > 0) {\n    const rest = [...upcoming, ...noDue];\n    lines.push(`\\n\\ud83d\\udccc \\u5176\\u4ed6 (${rest.length}\\u9879):`);\n    rest.forEach(m => { lines.push(formatMemo(m, idx++)); });\n  }\n\n  lines.push('', '\\u53d1\\u9001 !\\u5e2e\\u52a9 \\u67e5\\u770b\\u6307\\u4ee4\\u7528\\u6cd5');\n  message = lines.join('\\n');\n}\n\nreturn [{ json: { room: 'todo', message } }];"
       },
       "id": "format-daily",
-      "name": "\u683c\u5f0f\u5316\u6bcf\u65e5\u63a8\u9001",
+      "name": "格式化每日推送",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [480, 800]
+      "position": [
+        480,
+        800
+      ]
     },
     {
       "parameters": {
@@ -220,46 +256,133 @@
         }
       },
       "id": "send-daily",
-      "name": "\u53d1\u9001\u6bcf\u65e5\u63a8\u9001",
+      "name": "发送每日推送",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [720, 800],
+      "position": [
+        720,
+        800
+      ],
       "continueOnFail": true
     }
   ],
   "connections": {
-    "\u5b9a\u65f6\u8f6e\u8be2": {
-      "main": [[{"node": "\u51c6\u5907\u540c\u6b65", "type": "main", "index": 0}]]
-    },
-    "\u51c6\u5907\u540c\u6b65": {
-      "main": [[{"node": "\u540c\u6b65Matrix", "type": "main", "index": 0}]]
-    },
-    "\u540c\u6b65Matrix": {
-      "main": [[{"node": "\u89e3\u6790\u6307\u4ee4", "type": "main", "index": 0}]]
-    },
-    "\u89e3\u6790\u6307\u4ee4": {
-      "main": [[{"node": "\u5e2e\u52a9\u6307\u4ee4?", "type": "main", "index": 0}]]
-    },
-    "\u5e2e\u52a9\u6307\u4ee4?": {
+    "定时轮询": {
       "main": [
-        [{"node": "\u53d1\u9001\u5e2e\u52a9", "type": "main", "index": 0}],
-        [{"node": "\u6267\u884c\u5f85\u529e\u64cd\u4f5c", "type": "main", "index": 0}]
+        [
+          {
+            "node": "准备同步",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "\u6267\u884c\u5f85\u529e\u64cd\u4f5c": {
-      "main": [[{"node": "\u683c\u5f0f\u5316\u56de\u590d", "type": "main", "index": 0}]]
+    "准备同步": {
+      "main": [
+        [
+          {
+            "node": "同步Matrix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "\u683c\u5f0f\u5316\u56de\u590d": {
-      "main": [[{"node": "\u53d1\u9001\u56de\u590d", "type": "main", "index": 0}]]
+    "同步Matrix": {
+      "main": [
+        [
+          {
+            "node": "解析指令",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "\u6bcf\u65e5\u63a8\u9001": {
-      "main": [[{"node": "\u83b7\u53d6\u6bcf\u65e5\u5f85\u529e", "type": "main", "index": 0}]]
+    "解析指令": {
+      "main": [
+        [
+          {
+            "node": "帮助指令?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "\u83b7\u53d6\u6bcf\u65e5\u5f85\u529e": {
-      "main": [[{"node": "\u683c\u5f0f\u5316\u6bcf\u65e5\u63a8\u9001", "type": "main", "index": 0}]]
+    "帮助指令?": {
+      "main": [
+        [
+          {
+            "node": "发送帮助",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "执行待办操作",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "\u683c\u5f0f\u5316\u6bcf\u65e5\u63a8\u9001": {
-      "main": [[{"node": "\u53d1\u9001\u6bcf\u65e5\u63a8\u9001", "type": "main", "index": 0}]]
+    "执行待办操作": {
+      "main": [
+        [
+          {
+            "node": "格式化回复",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "格式化回复": {
+      "main": [
+        [
+          {
+            "node": "发送回复",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "每日推送": {
+      "main": [
+        [
+          {
+            "node": "获取每日待办",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取每日待办": {
+      "main": [
+        [
+          {
+            "node": "格式化每日推送",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "格式化每日推送": {
+      "main": [
+        [
+          {
+            "node": "发送每日推送",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
@@ -269,5 +392,15 @@
   },
   "staticData": null,
   "pinData": {},
-  "tags": [{"name": "knowledge"}, {"name": "matrix"}, {"name": "todo"}]
+  "tags": [
+    {
+      "name": "knowledge"
+    },
+    {
+      "name": "matrix"
+    },
+    {
+      "name": "todo"
+    }
+  ]
 }
