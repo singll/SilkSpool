@@ -100,7 +100,7 @@
         "url": "={{ $env.FIRECRAWL_API_URL }}/v1/scrape",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ url: $('Validate URL').first().json.url, formats: ['markdown'], onlyMainContent: true, waitFor: 3000 }) }}",
+        "jsonBody": "={{ JSON.stringify({ url: $('Validate URL').first().json.url, formats: ['markdown'], onlyMainContent: true, timeout: 45000 }) }}",
         "options": {
           "timeout": 60000
         }
@@ -109,11 +109,12 @@
       "name": "Scrape URL",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [960, 440]
+      "position": [960, 440],
+      "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "// Validate scraped content and extract metadata\nconst scrapeResult = $input.first().json;\nconst inputData = $('Validate URL').first().json;\n\n// Extract markdown content\nconst data = scrapeResult.data || scrapeResult;\nconst markdown = data.markdown || '';\nconst metadata = data.metadata || {};\n\nif (markdown.length < 100) {\n  return [{\n    json: {\n      valid: false,\n      error: `Content too short (${markdown.length} chars). Minimum 100 chars required.`,\n      url: inputData.url\n    }\n  }];\n}\n\n// Use provided title, or extract from metadata, or from content\nlet title = inputData.title;\nif (!title) {\n  title = metadata.title || metadata.ogTitle || '';\n}\nif (!title) {\n  // Extract first heading from markdown\n  const headingMatch = markdown.match(/^#\\s+(.+)$/m);\n  if (headingMatch) {\n    title = headingMatch[1].trim();\n  }\n}\nif (!title) {\n  title = 'Untitled';\n}\n\n// Generate filename from title\nconst filename = title\n  .replace(/[^a-zA-Z0-9\\u4e00-\\u9fff\\s-]/g, '')\n  .replace(/\\s+/g, '-')\n  .substring(0, 80) + '.md';\n\n// Extract keywords from title for tag matching\nconst keywords = title\n  .replace(/[^a-zA-Z0-9\\u4e00-\\u9fff\\s]/g, ' ')\n  .split(/\\s+/)\n  .filter(w => w.length > 1)\n  .slice(0, 10);\n\nreturn [{\n  json: {\n    valid: true,\n    content: markdown,\n    title: title,\n    filename: filename,\n    url: inputData.url,\n    tags: inputData.tags,\n    category: inputData.category,\n    keywords: keywords\n  }\n}];"
+        "jsCode": "// Validate scraped content and extract metadata\nconst scrapeResult = $input.first().json;\nconst inputData = $('Validate URL').first().json;\n\n// Check for scrape errors (continueOnFail produces error fields)\nif (scrapeResult.error || scrapeResult.code === 'SCRAPE_TIMEOUT') {\n  const errMsg = scrapeResult.error || scrapeResult.message || 'Scrape failed';\n  return [{\n    json: {\n      valid: false,\n      error: `Scrape error: ${typeof errMsg === 'object' ? JSON.stringify(errMsg) : errMsg}`,\n      url: inputData.url\n    }\n  }];\n}\n\n// Extract markdown content\nconst data = scrapeResult.data || scrapeResult;\nconst markdown = data.markdown || '';\nconst metadata = data.metadata || {};\n\nif (markdown.length < 100) {\n  return [{\n    json: {\n      valid: false,\n      error: `Content too short (${markdown.length} chars). Minimum 100 chars required.`,\n      url: inputData.url\n    }\n  }];\n}\n\n// Use provided title, or extract from metadata, or from content\nlet title = inputData.title;\nif (!title) {\n  title = metadata.title || metadata.ogTitle || '';\n}\nif (!title) {\n  // Extract first heading from markdown\n  const headingMatch = markdown.match(/^#\\s+(.+)$/m);\n  if (headingMatch) {\n    title = headingMatch[1].trim();\n  }\n}\nif (!title) {\n  title = 'Untitled';\n}\n\n// Generate filename from title\nconst filename = title\n  .replace(/[^a-zA-Z0-9\\u4e00-\\u9fff\\s-]/g, '')\n  .replace(/\\s+/g, '-')\n  .substring(0, 80) + '.md';\n\n// Extract keywords from title for tag matching\nconst keywords = title\n  .replace(/[^a-zA-Z0-9\\u4e00-\\u9fff\\s]/g, ' ')\n  .split(/\\s+/)\n  .filter(w => w.length > 1)\n  .slice(0, 10);\n\nreturn [{\n  json: {\n    valid: true,\n    content: markdown,\n    title: title,\n    filename: filename,\n    url: inputData.url,\n    tags: inputData.tags,\n    category: inputData.category,\n    keywords: keywords\n  }\n}];"
       },
       "id": "validate-content",
       "name": "Validate Content",
