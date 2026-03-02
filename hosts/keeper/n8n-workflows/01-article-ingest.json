@@ -62,7 +62,7 @@
           "conditions": [
             {
               "id": "condition-duplicate",
-              "leftValue": "={{ $json.duplicate }}",
+              "leftValue": "={{ $json.exists }}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -215,7 +215,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ content: $json.content, filename: $json.filename, title: $json.title, url: $json.url, tags: $json.tags, category: $json.category }) }}",
+        "jsonBody": "={{ JSON.stringify({ content: $json.content, filename: $json.filename, title: $json.title, url: $json.url, tags: $json.tags, category: $json.category, auto_create_tags: true }) }}",
         "options": {
           "timeout": 30000
         }
