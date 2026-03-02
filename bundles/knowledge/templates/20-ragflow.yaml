@@ -1,6 +1,6 @@
 services:
   ragflow:
-    image: infiniflow/ragflow:v0.22.1
+    image: ${RAGFLOW_IMAGE:-infiniflow/ragflow:v0.24.0}
     container_name: ${APP_PREFIX:-sp-}ragflow
     restart: unless-stopped
     ports:
@@ -21,9 +21,9 @@ services:
       - ${NFS_DOCUMENTS:-/data/documents}/ragflow:/ragflow/data
       # [NFS] RAGFlow 应用日志 → TrueNAS (防止撑满本地磁盘)
       - ${NFS_LOGS:-/data/logs}/ragflow:/ragflow/logs
-      # [Fix] 挂载 nginx 配置解决 RagFlow 前端显示问题
-      - ./ragflow/conf/ragflow.nginx.conf:/etc/nginx/sites-enabled/ragflow:ro
-      - ./ragflow/conf/empty.conf:/etc/nginx/sites-enabled/default:ro
+      # [Fix] v0.24.0 Nginx 只加载 conf.d/，挂载自定义配置并覆盖默认
+      - ./ragflow/conf/ragflow.nginx.conf:/etc/nginx/conf.d/ragflow.conf:ro
+      - ./ragflow/conf/empty.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - es
       - redis
