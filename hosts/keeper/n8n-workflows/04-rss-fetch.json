@@ -55,24 +55,13 @@
     },
     {
       "parameters": {
-        "jsCode": "// \u4eceBellkeeper API\u54cd\u5e94\u4e2d\u63d0\u53d6RSS\u6e90\u5e76\u6784\u5efaURL\nconst response = $input.first().json;\nconst sources = response.data || response.items || response;\n\nconst results = [];\nfor (const source of sources) {\n  let feedUrl = source.url;\n  // \u5982\u679curl\u4ee5/\u5f00\u5934\uff0c\u524d\u7f00\u52a0\u4e0arsshub\u5730\u5740\n  if (feedUrl.startsWith('/')) {\n    feedUrl = 'http://rsshub:1200' + feedUrl;\n  }\n\n  // \u63d0\u53d6\u6807\u7b7e\u540d\u79f0\uff08\u6807\u7b7e\u53ef\u80fd\u662f\u5bf9\u8c61\u6216\u5b57\u7b26\u4e32\uff09\n  const sourceTags = (source.tags || []).map(t => typeof t === 'object' ? (t.name || '') : String(t)).filter(t => t);\n\n  // \u5c06\u5206\u7c7b\u81ea\u52a8\u52a0\u5165\u6807\u7b7e\uff0c\u786e\u4fdd\u6bcf\u7bc7\u6587\u7ae0\u81f3\u5c11\u6709\u5206\u7c7b\u6807\u7b7e\n  if (source.category && !sourceTags.includes(source.category)) {\n    sourceTags.push(source.category);\n  }\n\n  results.push({\n    json: {\n      id: source.id,\n      name: source.name,\n      feedUrl: feedUrl,\n      originalUrl: source.url,\n      category: source.category || '',\n      tags: sourceTags,\n      isActive: source.is_active\n    }\n  });\n}\n\nreturn results;"
+        "jsCode": "// \u4eceBellkeeper API\u54cd\u5e94\u4e2d\u63d0\u53d6RSS\u6e90\u5e76\u6784\u5efaURL\nconst response = $input.first().json;\nconst sources = response.data || response.items || response;\n\nconst results = [];\nfor (const source of sources) {\n  let feedUrl = source.url;\n  if (feedUrl.startsWith('/')) {\n    feedUrl = 'http://rsshub:1200' + feedUrl;\n  }\n\n  const sourceTags = (source.tags || []).map(t => typeof t === 'object' ? (t.name || '') : String(t)).filter(t => t);\n  if (source.category && !sourceTags.includes(source.category)) {\n    sourceTags.push(source.category);\n  }\n\n  results.push({\n    json: {\n      id: source.id,\n      name: source.name,\n      feedUrl: feedUrl,\n      originalUrl: source.url,\n      category: source.category || '',\n      tags: sourceTags,\n      isActive: source.is_active\n    }\n  });\n}\n\nreturn results;"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000003",
       "name": "\u63d0\u53d6RSS\u6e90",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [480, 300]
-    },
-    {
-      "parameters": {
-        "batchSize": 1,
-        "options": {}
-      },
-      "id": "a1b2c3d4-0001-4000-a000-000000000004",
-      "name": "\u9010\u4e2a\u5904\u7406RSS\u6e90",
-      "type": "n8n-nodes-base.splitInBatches",
-      "typeVersion": 3,
-      "position": [720, 300]
     },
     {
       "parameters": {
@@ -91,18 +80,18 @@
       "name": "\u62c9\u53d6RSS Feed",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [960, 400],
+      "position": [720, 300],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "// \u89e3\u6790RSS XML\u54cd\u5e94\uff0c\u63d0\u53d6\u6587\u7ae0\u5217\u8868\nconst input = $input.first().json;\nconst xml = input.data || input.body || '';\n\nif (!xml || typeof xml !== 'string') {\n  return [{ json: { articles: [], error: 'Empty or invalid response', sourceName: $('\\u9010\\u4e2a\\u5904\\u7406RSS\\u6e90').first().json.name } }];\n}\n\n// \u4ece\u4e0a\u6e38SplitInBatches\u83b7\u53d6\u6e90\u4fe1\u606f\nconst source = $('\\u9010\\u4e2a\\u5904\\u7406RSS\\u6e90').first().json;\n\nconst articles = [];\n\n// \u7528\u6b63\u5219\u63d0\u53d6<item>\u6216<entry>\u5143\u7d20\nconst itemRegex = /<item[^>]*>([\\s\\S]*?)<\\/item>/gi;\nconst entryRegex = /<entry[^>]*>([\\s\\S]*?)<\\/entry>/gi;\n\nfunction extractTag(content, tag) {\n  // \u652f\u6301CDATA\u548c\u666e\u901a\u6587\u672c\n  const cdataRegex = new RegExp(`<${tag}[^>]*><!\\\\[CDATA\\\\[([\\\\s\\\\S]*?)\\\\]\\\\]><\\\\/${tag}>`, 'i');\n  const plainRegex = new RegExp(`<${tag}[^>]*>([\\\\s\\\\S]*?)<\\\\/${tag}>`, 'i');\n  const hrefRegex = new RegExp(`<${tag}[^>]*href=[\"']([^\"']+)[\"']`, 'i');\n  \n  let match = content.match(cdataRegex);\n  if (match) return match[1].trim();\n  \n  match = content.match(plainRegex);\n  if (match) return match[1].trim();\n  \n  // Atom feed\u7684link\u53ef\u80fd\u662f<link href=\"...\"/>\n  if (tag === 'link') {\n    match = content.match(hrefRegex);\n    if (match) return match[1].trim();\n  }\n  \n  return '';\n}\n\nlet matches;\nconst regex = xml.includes('<entry') ? entryRegex : itemRegex;\n\nwhile ((matches = regex.exec(xml)) !== null) {\n  const itemXml = matches[1];\n  const title = extractTag(itemXml, 'title');\n  const link = extractTag(itemXml, 'link');\n  const pubDate = extractTag(itemXml, 'pubDate') || extractTag(itemXml, 'published') || extractTag(itemXml, 'updated');\n  \n  if (title && link) {\n    articles.push({\n      title: title,\n      link: link,\n      pubDate: pubDate\n    });\n  }\n}\n\n// \u8fd4\u56de\u6bcf\u7bc7\u6587\u7ae0\u4f5c\u4e3a\u5355\u72ec\u7684item\nif (articles.length === 0) {\n  return [{ json: { skip: true, sourceName: source.name, reason: 'no articles found' } }];\n}\n\nreturn articles.map(article => ({\n  json: {\n    url: article.link,\n    title: article.title,\n    pubDate: article.pubDate,\n    tags: source.tags,\n    category: source.category,\n    sourceName: source.name\n  }\n}));"
+        "jsCode": "// \u5c06\u6240\u6709Feed\u54cd\u5e94\u4e0eRSS\u6e90\u4fe1\u606f\u6309\u7d22\u5f15\u914d\u5bf9\uff0c\u89e3\u6790\u6240\u6709\u6587\u7ae0\nconst feeds = $input.all();\nconst sources = $('\u63d0\u53d6RSS\u6e90').all();\n\nfunction extractTag(content, tag) {\n  const cdataRegex = new RegExp(`<${tag}[^>]*><!\\\\[CDATA\\\\[([\\\\s\\\\S]*?)\\\\]\\\\]><\\\\/${tag}>`, 'i');\n  const plainRegex = new RegExp(`<${tag}[^>]*>([\\\\s\\\\S]*?)<\\\\/${tag}>`, 'i');\n  const hrefRegex = new RegExp(`<${tag}[^>]*href=[\"']([^\"']+)[\"']`, 'i');\n  let match = content.match(cdataRegex);\n  if (match) return match[1].trim();\n  match = content.match(plainRegex);\n  if (match) return match[1].trim();\n  if (tag === 'link') {\n    match = content.match(hrefRegex);\n    if (match) return match[1].trim();\n  }\n  return '';\n}\n\nconst allArticles = [];\n\nfor (let i = 0; i < feeds.length; i++) {\n  const feedData = feeds[i].json;\n  const source = sources[i] ? sources[i].json : {};\n  const xml = feedData.data || feedData.body || '';\n\n  if (!xml || typeof xml !== 'string') continue;\n\n  const itemRegex = /<item[^>]*>([\\s\\S]*?)<\\/item>/gi;\n  const entryRegex = /<entry[^>]*>([\\s\\S]*?)<\\/entry>/gi;\n  const regex = xml.includes('<entry') ? entryRegex : itemRegex;\n\n  let matches;\n  while ((matches = regex.exec(xml)) !== null) {\n    const itemXml = matches[1];\n    const title = extractTag(itemXml, 'title');\n    const link = extractTag(itemXml, 'link');\n    if (title && link) {\n      allArticles.push({\n        json: {\n          url: link,\n          title: title,\n          tags: source.tags || [],\n          category: source.category || '',\n          sourceName: source.name || ''\n        }\n      });\n    }\n  }\n}\n\nif (allArticles.length === 0) {\n  return [{ json: { _noArticles: true, _sourceCount: sources.length } }];\n}\n\nreturn allArticles;"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000006",
-      "name": "\u89e3\u6790RSS\u6587\u7ae0",
+      "name": "\u89e3\u6790\u5168\u90e8\u6587\u7ae0",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1200, 400]
+      "position": [960, 300]
     },
     {
       "parameters": {
@@ -114,12 +103,12 @@
           },
           "conditions": [
             {
-              "id": "condition-skip",
-              "leftValue": "={{ $json.skip }}",
-              "rightValue": true,
+              "id": "condition-has-url",
+              "leftValue": "={{ $json.url }}",
+              "rightValue": "",
               "operator": {
-                "type": "boolean",
-                "operation": "notTrue"
+                "type": "string",
+                "operation": "notEmpty"
               }
             }
           ],
@@ -131,7 +120,7 @@
       "name": "\u6709\u6587\u7ae0?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1440, 400]
+      "position": [1200, 300]
     },
     {
       "parameters": {
@@ -150,35 +139,25 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ url: $json.url, tags: $json.tags, category: $json.category, title: $json.title }) }}",
         "options": {
-          "timeout": 60000
+          "timeout": 120000
         }
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000008",
       "name": "\u63a8\u9001\u6587\u7ae0\u5230Ingest",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1680, 300],
+      "position": [1440, 200],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "// \u5408\u5e76\u591a\u7bc7\u6587\u7ae0\u7684\u5904\u7406\u7ed3\u679c\u4e3a1\u4e2aitem\uff0c\u907f\u514dSplitInBatches\u88ab\u591a\u6b21\u89e6\u53d1\nconst items = $input.all();\nreturn [{ json: { articlesProcessed: items.length } }];"
-      },
-      "id": "a1b2c3d4-0001-4000-a000-000000000014",
-      "name": "\u5408\u5e76\u5faa\u73af",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1920, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "const now = new Date();\nconst hour = now.getHours();\nlet period = '\u65e9\u95f4';\nif (hour >= 11 && hour < 15) period = '\u5348\u95f4';\nelse if (hour >= 17) period = '\u665a\u95f4';\n\nlet sourceCount = 0;\ntry {\n  sourceCount = $('\u63d0\u53d6RSS\u6e90').all().length;\n} catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `\ud83d\udcf0 ${period}RSS\u5b9a\u65f6\u91c7\u96c6\u5df2\u5b8c\u6210\\n\u23f0 ${dateStr} ${timeStr}\\n\ud83d\udcca \u5904\u7406RSS\u6e90: ${sourceCount} \u4e2a`;\n\nreturn [{\n  json: {\n    summary: summary,\n    timestamp: now.toISOString()\n  }\n}];"
+        "jsCode": "const now = new Date();\nconst hour = now.getHours();\nlet period = '\u65e9\u95f4';\nif (hour >= 11 && hour < 15) period = '\u5348\u95f4';\nelse if (hour >= 17) period = '\u665a\u95f4';\n\nlet articleCount = 0;\nlet sourceCount = 0;\ntry {\n  sourceCount = $('\u63d0\u53d6RSS\u6e90').all().length;\n} catch(e) {}\ntry {\n  articleCount = $input.all().length;\n} catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `\ud83d\udcf0 ${period}RSS\u5b9a\u65f6\u91c7\u96c6\u5df2\u5b8c\u6210\\n\u23f0 ${dateStr} ${timeStr}\\n\ud83d\udcca RSS\u6e90: ${sourceCount} \u4e2a | \u6587\u7ae0: ${articleCount} \u7bc7`;\n\nreturn [{ json: { summary, timestamp: now.toISOString() } }];"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000010",
       "name": "\u6c47\u603b\u7edf\u8ba1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2160, 300]
+      "position": [1680, 300]
     },
     {
       "parameters": {
@@ -195,7 +174,7 @@
       "name": "\u53d1\u9001\u91c7\u96c6\u901a\u77e5",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2400, 300],
+      "position": [1920, 300],
       "continueOnFail": true
     },
     {
@@ -204,15 +183,17 @@
       "name": "\u7ed3\u675f",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [2640, 300]
+      "position": [2160, 300]
     },
     {
-      "parameters": {},
-      "id": "a1b2c3d4-0001-4000-a000-000000000012",
-      "name": "\u8df3\u8fc7\u65e0\u6587\u7ae0\u6e90",
-      "type": "n8n-nodes-base.noOp",
-      "typeVersion": 1,
-      "position": [1680, 520]
+      "parameters": {
+        "jsCode": "// \u65e0\u6587\u7ae0\u65f6\u4e5f\u53d1\u9001\u901a\u77e5\nconst now = new Date();\nconst hour = now.getHours();\nlet period = '\u65e9\u95f4';\nif (hour >= 11 && hour < 15) period = '\u5348\u95f4';\nelse if (hour >= 17) period = '\u665a\u95f4';\n\nlet sourceCount = 0;\ntry { sourceCount = $('\u63d0\u53d6RSS\u6e90').all().length; } catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `\ud83d\udcf0 ${period}RSS\u5b9a\u65f6\u91c7\u96c6\u5df2\u5b8c\u6210\\n\u23f0 ${dateStr} ${timeStr}\\n\ud83d\udcca RSS\u6e90: ${sourceCount} \u4e2a | \u6587\u7ae0: 0 \u7bc7 (\u65e0\u65b0\u5185\u5bb9)`;\n\nreturn [{ json: { summary, timestamp: now.toISOString() } }];"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000015",
+      "name": "\u65e0\u6587\u7ae0\u6c47\u603b",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 440]
     }
   ],
   "connections": {
@@ -242,25 +223,7 @@
       "main": [
         [
           {
-            "node": "\u9010\u4e2a\u5904\u7406RSS\u6e90",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "\u9010\u4e2a\u5904\u7406RSS\u6e90": {
-      "main": [
-        [
-          {
             "node": "\u62c9\u53d6RSS Feed",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "\u6c47\u603b\u7edf\u8ba1",
             "type": "main",
             "index": 0
           }
@@ -271,14 +234,14 @@
       "main": [
         [
           {
-            "node": "\u89e3\u6790RSS\u6587\u7ae0",
+            "node": "\u89e3\u6790\u5168\u90e8\u6587\u7ae0",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "\u89e3\u6790RSS\u6587\u7ae0": {
+    "\u89e3\u6790\u5168\u90e8\u6587\u7ae0": {
       "main": [
         [
           {
@@ -300,7 +263,7 @@
         ],
         [
           {
-            "node": "\u8df3\u8fc7\u65e0\u6587\u7ae0\u6e90",
+            "node": "\u65e0\u6587\u7ae0\u6c47\u603b",
             "type": "main",
             "index": 0
           }
@@ -311,29 +274,7 @@
       "main": [
         [
           {
-            "node": "\u5408\u5e76\u5faa\u73af",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "\u5408\u5e76\u5faa\u73af": {
-      "main": [
-        [
-          {
-            "node": "\u9010\u4e2a\u5904\u7406RSS\u6e90",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "\u8df3\u8fc7\u65e0\u6587\u7ae0\u6e90": {
-      "main": [
-        [
-          {
-            "node": "\u9010\u4e2a\u5904\u7406RSS\u6e90",
+            "node": "\u6c47\u603b\u7edf\u8ba1",
             "type": "main",
             "index": 0
           }
@@ -341,6 +282,17 @@
       ]
     },
     "\u6c47\u603b\u7edf\u8ba1": {
+      "main": [
+        [
+          {
+            "node": "\u53d1\u9001\u91c7\u96c6\u901a\u77e5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u65e0\u6587\u7ae0\u6c47\u603b": {
       "main": [
         [
           {
@@ -363,15 +315,11 @@
       ]
     }
   },
-  "pinData": {},
   "settings": {
     "executionOrder": "v1",
     "saveManualExecutions": true,
     "callerPolicy": "workflowsFromSameOwner"
   },
   "staticData": null,
-  "tags": [],
-  "triggerCount": 1,
-  "updatedAt": "2026-03-02T00:00:00.000Z",
-  "versionId": "2"
+  "tags": []
 }
