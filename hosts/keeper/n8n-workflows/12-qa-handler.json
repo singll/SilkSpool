@@ -1,0 +1,309 @@
+{
+  "name": "12-知识问答处理器",
+  "meta": {
+    "instanceId": ""
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "qa-handler",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-qa",
+      "name": "问答入口",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "qa-handler"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.command }}",
+                    "rightValue": "ask",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputIndex": 0
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.command }}",
+                    "rightValue": "search",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputIndex": 1
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.command }}",
+                    "rightValue": "help",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputIndex": 2
+            }
+          ]
+        },
+        "fallbackOutput": "extra",
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "switch-command",
+      "name": "路由指令",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst question = body.question || '';\n\nif (!question) {\n  throw new Error('question parameter is required');\n}\n\nreturn [{\n  json: {\n    question: question\n  }\n}];"
+      },
+      "id": "prepare-ask",
+      "name": "准备问答请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.RAGFLOW_API_URL }}/api/v1/chats_openai/{{ $env.RAGFLOW_CHAT_ASSISTANT_ID }}/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.RAGFLOW_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $env.RAGFLOW_CHAT_ASSISTANT_ID, messages: [{ role: 'user', content: $json.question }], stream: false }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "call-ragflow-chat",
+      "name": "调用RAGFlow Chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 100],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst question = $('准备问答请求').first().json.question;\n\n// 检查是否有错误\nif (response.error || response.errcode) {\n  return [{\n    json: {\n      success: false,\n      error: response.error || response.message || 'RAGFlow API 调用失败'\n    }\n  }];\n}\n\n// 提取答案\nconst answer = response.choices?.[0]?.message?.content || '未找到相关内容';\n\n// 提取引用来源\nconst references = response.reference || [];\n\n// 格式化回复消息\nlet message = `🤖 知识库助手\\n\\n${answer}`;\n\nif (references.length > 0) {\n  message += '\\n\\n📚 参考来源:';\n  references.forEach((ref, i) => {\n    const docName = ref.doc_name || '未知文档';\n    const similarity = ref.similarity ? Math.round(ref.similarity * 100) : 0;\n    message += `\\n${i+1}. [${docName}] (相似度: ${similarity}%)`;\n  });\n}\n\nreturn [{\n  json: {\n    success: true,\n    message: message,\n    data: {\n      answer: answer,\n      references: references\n    }\n  }\n}];"
+      },
+      "id": "format-ask-response",
+      "name": "格式化问答回复",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-ask",
+      "name": "返回问答结果",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1440, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst keywords = body.keywords || '';\n\nif (!keywords) {\n  throw new Error('keywords parameter is required');\n}\n\nreturn [{\n  json: {\n    keywords: keywords\n  }\n}];"
+      },
+      "id": "prepare-search",
+      "name": "准备搜索请求",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.RAGFLOW_API_URL }}/api/v1/retrieval",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.RAGFLOW_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ question: $json.keywords, datasets: [], top_k: 5 }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "call-ragflow-retrieval",
+      "name": "调用RAGFlow检索",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst keywords = $('准备搜索请求').first().json.keywords;\n\n// 检查是否有错误\nif (response.error || response.errcode) {\n  return [{\n    json: {\n      success: false,\n      error: response.error || response.message || 'RAGFlow 检索失败'\n    }\n  }];\n}\n\n// 提取检索结果\nconst chunks = response.data?.chunks || [];\n\nif (chunks.length === 0) {\n  return [{\n    json: {\n      success: true,\n      message: `🔍 搜索结果: ${keywords}\\n\\n未找到相关内容`\n    }\n  }];\n}\n\n// 格式化回复消息\nlet message = `🔍 搜索结果: ${keywords}\\n`;\n\nchunks.forEach((chunk, i) => {\n  const docName = chunk.doc_name || '未知文档';\n  const content = (chunk.content || '').substring(0, 100);\n  const similarity = chunk.similarity ? Math.round(chunk.similarity * 100) : 0;\n  message += `\\n${i+1}. [${docName}] (${similarity}%)\\n   \"${content}...\"\\n`;\n});\n\nmessage += `\\n共找到 ${chunks.length} 条相关内容`;\n\nreturn [{\n  json: {\n    success: true,\n    message: message,\n    data: {\n      chunks: chunks\n    }\n  }\n}];"
+      },
+      "id": "format-search-response",
+      "name": "格式化搜索回复",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-search",
+      "name": "返回搜索结果",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1440, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: '🤖 知识库助手帮助\\n\\n基础:\\n  !问 {问题} - 向知识库提问\\n  !搜 {关键词} - 搜索相关文档\\n  !帮助 - 显示此帮助\\n\\n示例:\\n  !问 如何配置 RAGFlow\\n  !搜 Docker 部署' }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "respond-help",
+      "name": "返回帮助",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [720, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, error: '未知指令，支持: ask, search, help' }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-unknown",
+      "name": "未知指令响应",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [720, 700]
+    }
+  ],
+  "connections": {
+    "问答入口": {
+      "main": [[{ "node": "路由指令", "type": "main", "index": 0 }]]
+    },
+    "路由指令": {
+      "main": [
+        [{ "node": "准备问答请求", "type": "main", "index": 0 }],
+        [{ "node": "准备搜索请求", "type": "main", "index": 0 }],
+        [{ "node": "返回帮助", "type": "main", "index": 0 }],
+        [{ "node": "未知指令响应", "type": "main", "index": 0 }]
+      ]
+    },
+    "准备问答请求": {
+      "main": [[{ "node": "调用RAGFlow Chat", "type": "main", "index": 0 }]]
+    },
+    "调用RAGFlow Chat": {
+      "main": [[{ "node": "格式化问答回复", "type": "main", "index": 0 }]]
+    },
+    "格式化问答回复": {
+      "main": [[{ "node": "返回问答结果", "type": "main", "index": 0 }]]
+    },
+    "准备搜索请求": {
+      "main": [[{ "node": "调用RAGFlow检索", "type": "main", "index": 0 }]]
+    },
+    "调用RAGFlow检索": {
+      "main": [[{ "node": "格式化搜索回复", "type": "main", "index": 0 }]]
+    },
+    "格式化搜索回复": {
+      "main": [[{ "node": "返回搜索结果", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "pinData": {},
+  "tags": [
+    {
+      "name": "knowledge"
+    },
+    {
+      "name": "ragflow"
+    },
+    {
+      "name": "qa"
+    }
+  ]
+}
