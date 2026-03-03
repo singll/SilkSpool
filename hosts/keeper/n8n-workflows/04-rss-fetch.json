@@ -1,5 +1,5 @@
 {
-  "name": "04-RSS\u5b9a\u65f6\u91c7\u96c6",
+  "name": "04-RSS定时采集",
   "nodes": [
     {
       "parameters": {
@@ -21,10 +21,13 @@
         }
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000001",
-      "name": "\u5b9a\u65f6\u89e6\u53d1",
+      "name": "定时触发",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 300]
+      "position": [
+        0,
+        300
+      ]
     },
     {
       "parameters": {
@@ -48,20 +51,26 @@
         }
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000002",
-      "name": "\u83b7\u53d6RSS\u6e90\u5217\u8868",
+      "name": "获取RSS源列表",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [240, 300]
+      "position": [
+        240,
+        300
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// \u4eceBellkeeper API\u54cd\u5e94\u4e2d\u63d0\u53d6RSS\u6e90\u5e76\u6784\u5efaURL\nconst response = $input.first().json;\nconst sources = response.data || response.items || response;\n\nconst results = [];\nfor (const source of sources) {\n  let feedUrl = source.url;\n  if (feedUrl.startsWith('/')) {\n    feedUrl = 'http://rsshub:1200' + feedUrl;\n  }\n\n  const sourceTags = (source.tags || []).map(t => typeof t === 'object' ? (t.name || '') : String(t)).filter(t => t);\n  if (source.category && !sourceTags.includes(source.category)) {\n    sourceTags.push(source.category);\n  }\n\n  results.push({\n    json: {\n      id: source.id,\n      name: source.name,\n      feedUrl: feedUrl,\n      originalUrl: source.url,\n      category: source.category || '',\n      tags: sourceTags,\n      isActive: source.is_active\n    }\n  });\n}\n\nreturn results;"
+        "jsCode": "// 从Bellkeeper API响应中提取RSS源并构建URL\nconst response = $input.first().json;\nconst sources = response.data || response.items || response;\n\nconst results = [];\nfor (const source of sources) {\n  let feedUrl = source.url;\n  if (feedUrl.startsWith('/')) {\n    feedUrl = 'http://rsshub:1200' + feedUrl;\n  }\n\n  const sourceTags = (source.tags || []).map(t => typeof t === 'object' ? (t.name || '') : String(t)).filter(t => t);\n  if (source.category && !sourceTags.includes(source.category)) {\n    sourceTags.push(source.category);\n  }\n\n  results.push({\n    json: {\n      id: source.id,\n      name: source.name,\n      feedUrl: feedUrl,\n      originalUrl: source.url,\n      category: source.category || '',\n      tags: sourceTags,\n      isActive: source.is_active\n    }\n  });\n}\n\nreturn results;"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000003",
-      "name": "\u63d0\u53d6RSS\u6e90",
+      "name": "提取RSS源",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [480, 300]
+      "position": [
+        480,
+        300
+      ]
     },
     {
       "parameters": {
@@ -77,21 +86,27 @@
         }
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000005",
-      "name": "\u62c9\u53d6RSS Feed",
+      "name": "拉取RSS Feed",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [720, 300],
+      "position": [
+        720,
+        300
+      ],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "// \u5c06\u6240\u6709Feed\u54cd\u5e94\u4e0eRSS\u6e90\u4fe1\u606f\u6309\u7d22\u5f15\u914d\u5bf9\uff0c\u89e3\u6790\u6240\u6709\u6587\u7ae0\nconst feeds = $input.all();\nconst sources = $('\u63d0\u53d6RSS\u6e90').all();\n\nfunction extractTag(content, tag) {\n  const cdataRegex = new RegExp(`<${tag}[^>]*><!\\\\[CDATA\\\\[([\\\\s\\\\S]*?)\\\\]\\\\]><\\\\/${tag}>`, 'i');\n  const plainRegex = new RegExp(`<${tag}[^>]*>([\\\\s\\\\S]*?)<\\\\/${tag}>`, 'i');\n  const hrefRegex = new RegExp(`<${tag}[^>]*href=[\"']([^\"']+)[\"']`, 'i');\n  let match = content.match(cdataRegex);\n  if (match) return match[1].trim();\n  match = content.match(plainRegex);\n  if (match) return match[1].trim();\n  if (tag === 'link') {\n    match = content.match(hrefRegex);\n    if (match) return match[1].trim();\n  }\n  return '';\n}\n\nconst allArticles = [];\n\nfor (let i = 0; i < feeds.length; i++) {\n  const feedData = feeds[i].json;\n  const source = sources[i] ? sources[i].json : {};\n  const xml = feedData.data || feedData.body || '';\n\n  if (!xml || typeof xml !== 'string') continue;\n\n  const itemRegex = /<item[^>]*>([\\s\\S]*?)<\\/item>/gi;\n  const entryRegex = /<entry[^>]*>([\\s\\S]*?)<\\/entry>/gi;\n  const regex = xml.includes('<entry') ? entryRegex : itemRegex;\n\n  let matches;\n  while ((matches = regex.exec(xml)) !== null) {\n    const itemXml = matches[1];\n    const title = extractTag(itemXml, 'title');\n    const link = extractTag(itemXml, 'link');\n    if (title && link) {\n      allArticles.push({\n        json: {\n          url: link,\n          title: title,\n          tags: source.tags || [],\n          category: source.category || '',\n          sourceName: source.name || ''\n        }\n      });\n    }\n  }\n}\n\nif (allArticles.length === 0) {\n  return [{ json: { _noArticles: true, _sourceCount: sources.length } }];\n}\n\nreturn allArticles;"
+        "jsCode": "// 将所有Feed响应与RSS源信息按索引配对，解析所有文章\nconst feeds = $input.all();\nconst sources = $('提取RSS源').all();\n\nfunction extractTag(content, tag) {\n  const cdataRegex = new RegExp(`<${tag}[^>]*><!\\\\[CDATA\\\\[([\\\\s\\\\S]*?)\\\\]\\\\]><\\\\/${tag}>`, 'i');\n  const plainRegex = new RegExp(`<${tag}[^>]*>([\\\\s\\\\S]*?)<\\\\/${tag}>`, 'i');\n  const hrefRegex = new RegExp(`<${tag}[^>]*href=[\"']([^\"']+)[\"']`, 'i');\n  let match = content.match(cdataRegex);\n  if (match) return match[1].trim();\n  match = content.match(plainRegex);\n  if (match) return match[1].trim();\n  if (tag === 'link') {\n    match = content.match(hrefRegex);\n    if (match) return match[1].trim();\n  }\n  return '';\n}\n\nconst allArticles = [];\n\nfor (let i = 0; i < feeds.length; i++) {\n  const feedData = feeds[i].json;\n  const source = sources[i] ? sources[i].json : {};\n  const xml = feedData.data || feedData.body || '';\n\n  if (!xml || typeof xml !== 'string') continue;\n\n  const itemRegex = /<item[^>]*>([\\s\\S]*?)<\\/item>/gi;\n  const entryRegex = /<entry[^>]*>([\\s\\S]*?)<\\/entry>/gi;\n  const regex = xml.includes('<entry') ? entryRegex : itemRegex;\n\n  let matches;\n  while ((matches = regex.exec(xml)) !== null) {\n    const itemXml = matches[1];\n    const title = extractTag(itemXml, 'title');\n    const link = extractTag(itemXml, 'link');\n    if (title && link) {\n      allArticles.push({\n        json: {\n          url: link,\n          title: title,\n          tags: source.tags || [],\n          category: source.category || '',\n          sourceName: source.name || ''\n        }\n      });\n    }\n  }\n}\n\nif (allArticles.length === 0) {\n  return [{ json: { _noArticles: true, _sourceCount: sources.length } }];\n}\n\nreturn allArticles;"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000006",
-      "name": "\u89e3\u6790\u5168\u90e8\u6587\u7ae0",
+      "name": "解析全部文章",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 300]
+      "position": [
+        960,
+        300
+      ]
     },
     {
       "parameters": {
@@ -117,10 +132,13 @@
         "options": {}
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000007",
-      "name": "\u6709\u6587\u7ae0?",
+      "name": "有文章?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1200, 300]
+      "position": [
+        1200,
+        300
+      ]
     },
     {
       "parameters": {
@@ -143,21 +161,27 @@
         }
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000008",
-      "name": "\u63a8\u9001\u6587\u7ae0\u5230Ingest",
+      "name": "推送文章到Ingest",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1440, 200],
+      "position": [
+        1440,
+        200
+      ],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "const now = new Date();\nconst hour = now.getHours();\nlet period = '\u65e9\u95f4';\nif (hour >= 11 && hour < 15) period = '\u5348\u95f4';\nelse if (hour >= 17) period = '\u665a\u95f4';\n\nlet sourceCount = 0;\ntry { sourceCount = $('\u63d0\u53d6RSS\u6e90').all().length; } catch(e) {}\n\nconst results = $input.all();\nlet total = results.length;\nlet success = 0;\nlet duplicate = 0;\nlet failed = 0;\nfor (const r of results) {\n  const d = r.json;\n  if (d.error) {\n    failed++;\n  } else if (d.success === false && d.status === 'duplicate') {\n    duplicate++;\n  } else if (d.success === true) {\n    success++;\n  } else {\n    // Unknown status, count as attempted\n    success++;\n  }\n}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nlet summary = `\ud83d\udcf0 ${period}RSS\u5b9a\u65f6\u91c7\u96c6\u5df2\u5b8c\u6210\\n\u23f0 ${dateStr} ${timeStr}\\n\ud83d\udcca RSS\u6e90: ${sourceCount} \u4e2a | \u6587\u7ae0: ${total} \u7bc7`;\nsummary += `\\n\u2705 \u5165\u5e93: ${success} | \u23e9 \u5df2\u5b58\u5728: ${duplicate} | \u274c \u5931\u8d25: ${failed}`;\n\nreturn [{ json: { summary, timestamp: now.toISOString() } }];"
+        "jsCode": "const now = new Date();\nconst hour = now.getHours();\nlet period = '早间';\nif (hour >= 11 && hour < 15) period = '午间';\nelse if (hour >= 17) period = '晚间';\n\nlet sourceCount = 0;\ntry { sourceCount = $('提取RSS源').all().length; } catch(e) {}\n\n// Get article results from \"推送文章到Ingest\"\nconst articleResults = $('推送文章到Ingest').all();\nlet total = articleResults.length;\nlet success = 0;\nlet duplicate = 0;\nlet failed = 0;\nfor (const r of articleResults) {\n  const d = r.json;\n  if (d.error) {\n    failed++;\n  } else if (d.success === false && d.status === 'duplicate') {\n    duplicate++;\n  } else if (d.success === true) {\n    success++;\n  } else {\n    success++;\n  }\n}\n\n// Get parsing results\nlet parseSuccess = 0;\nlet parseFailed = 0;\nlet parseTotal = 0;\ntry {\n  const parseResults = $('批量解析文档').all();\n  const groupResults = $('按Dataset分组').all();\n\n  for (const r of parseResults) {\n    const d = r.json;\n    // Find corresponding group to get document count\n    const group = groupResults.find(g => g.json.dataset_id === d.dataset_id);\n    const docCount = group ? group.json.document_ids.length : 0;\n    parseTotal += docCount;\n\n    if (d.error || (d.code && d.code !== 0)) {\n      parseFailed += docCount;\n    } else {\n      parseSuccess += docCount;\n    }\n  }\n} catch(e) {\n  // No parsing results, skip\n}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nlet summary = `📰 ${period}RSS定时采集已完成\\n⏰ ${dateStr} ${timeStr}\\n📊 RSS源: ${sourceCount} 个 | 文章: ${total} 篇`;\nsummary += `\\n✅ 入库: ${success} | ⏩ 已存在: ${duplicate} | ❌ 失败: ${failed}`;\n\nif (parseTotal > 0) {\n  summary += `\\n🔄 解析: ${parseSuccess}/${parseTotal} 成功`;\n  if (parseFailed > 0) {\n    summary += ` | ⚠️ ${parseFailed} 失败`;\n  }\n}\n\nreturn [{ json: { summary, timestamp: now.toISOString() } }];"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000010",
-      "name": "\u6c47\u603b\u7edf\u8ba1",
+      "name": "汇总统计",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1680, 300]
+      "position": [
+        1920,
+        300
+      ]
     },
     {
       "parameters": {
@@ -171,143 +195,295 @@
         }
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000013",
-      "name": "\u53d1\u9001\u91c7\u96c6\u901a\u77e5",
+      "name": "发送采集通知",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1920, 300],
+      "position": [
+        2160,
+        300
+      ],
       "continueOnFail": true
     },
     {
       "parameters": {},
       "id": "a1b2c3d4-0001-4000-a000-000000000011",
-      "name": "\u7ed3\u675f",
+      "name": "结束",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [2160, 300]
+      "position": [
+        2160,
+        300
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// \u65e0\u6587\u7ae0\u65f6\u4e5f\u53d1\u9001\u901a\u77e5\nconst now = new Date();\nconst hour = now.getHours();\nlet period = '\u65e9\u95f4';\nif (hour >= 11 && hour < 15) period = '\u5348\u95f4';\nelse if (hour >= 17) period = '\u665a\u95f4';\n\nlet sourceCount = 0;\ntry { sourceCount = $('\u63d0\u53d6RSS\u6e90').all().length; } catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `\ud83d\udcf0 ${period}RSS\u5b9a\u65f6\u91c7\u96c6\u5df2\u5b8c\u6210\\n\u23f0 ${dateStr} ${timeStr}\\n\ud83d\udcca RSS\u6e90: ${sourceCount} \u4e2a | \u6587\u7ae0: 0 \u7bc7 (\u65e0\u65b0\u5185\u5bb9)`;\n\nreturn [{ json: { summary, timestamp: now.toISOString() } }];"
+        "jsCode": "// 无文章时也发送通知\nconst now = new Date();\nconst hour = now.getHours();\nlet period = '早间';\nif (hour >= 11 && hour < 15) period = '午间';\nelse if (hour >= 17) period = '晚间';\n\nlet sourceCount = 0;\ntry { sourceCount = $('提取RSS源').all().length; } catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `📰 ${period}RSS定时采集已完成\\n⏰ ${dateStr} ${timeStr}\\n📊 RSS源: ${sourceCount} 个 | 文章: 0 篇 (无新内容)`;\n\nreturn [{ json: { summary, timestamp: now.toISOString() } }];"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000015",
-      "name": "\u65e0\u6587\u7ae0\u6c47\u603b",
+      "name": "无文章汇总",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1440, 440]
+      "position": [
+        1440,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract document IDs from successful upload responses\nconst results = $input.all();\nconst documents = [];\n\nfor (const item of results) {\n  const d = item.json;\n\n  // Only process successful uploads\n  if (d.success === true && d.uploadResult) {\n    const uploadData = d.uploadResult.data;\n    const datasetId = d.uploadResult.dataset_id;\n\n    if (!uploadData || !datasetId) continue;\n\n    // Extract document ID from RAGFlow response\n    // Response can be: {\"id\": \"xxx\"} or [{\"id\": \"xxx\"}]\n    let docId = null;\n\n    if (typeof uploadData === 'object' && uploadData.id) {\n      docId = uploadData.id;\n    } else if (Array.isArray(uploadData) && uploadData.length > 0 && uploadData[0].id) {\n      docId = uploadData[0].id;\n    }\n\n    if (docId) {\n      documents.push({\n        document_id: docId,\n        dataset_id: datasetId,\n        title: d.title || 'Untitled',\n        url: d.url || ''\n      });\n    }\n  }\n}\n\nreturn [{ json: { documents, count: documents.length } }];"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000016",
+      "name": "提取文档ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-has-docs",
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000017",
+      "name": "有文档需解析?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Group document IDs by dataset_id\nconst input = $input.first().json;\nconst documents = input.documents || [];\n\nconst grouped = {};\nfor (const doc of documents) {\n  const datasetId = doc.dataset_id;\n  if (!grouped[datasetId]) {\n    grouped[datasetId] = {\n      dataset_id: datasetId,\n      document_ids: [],\n      titles: []\n    };\n  }\n  grouped[datasetId].document_ids.push(doc.document_id);\n  grouped[datasetId].titles.push(doc.title);\n}\n\n// Convert to array for iteration\nconst result = Object.values(grouped);\nreturn result.map(g => ({ json: g }));"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000018",
+      "name": "按Dataset分组",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.RAGFLOW_API_URL }}/api/v1/datasets/{{ $json.dataset_id }}/documents/parse",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.RAGFLOW_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ document_ids: $json.document_ids }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000019",
+      "name": "批量解析文档",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1800,
+        200
+      ],
+      "continueOnFail": true
     }
   ],
   "connections": {
-    "\u5b9a\u65f6\u89e6\u53d1": {
+    "定时触发": {
       "main": [
         [
           {
-            "node": "\u83b7\u53d6RSS\u6e90\u5217\u8868",
+            "node": "获取RSS源列表",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "\u83b7\u53d6RSS\u6e90\u5217\u8868": {
+    "获取RSS源列表": {
       "main": [
         [
           {
-            "node": "\u63d0\u53d6RSS\u6e90",
+            "node": "提取RSS源",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "\u63d0\u53d6RSS\u6e90": {
+    "提取RSS源": {
       "main": [
         [
           {
-            "node": "\u62c9\u53d6RSS Feed",
+            "node": "拉取RSS Feed",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "\u62c9\u53d6RSS Feed": {
+    "拉取RSS Feed": {
       "main": [
         [
           {
-            "node": "\u89e3\u6790\u5168\u90e8\u6587\u7ae0",
+            "node": "解析全部文章",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "\u89e3\u6790\u5168\u90e8\u6587\u7ae0": {
+    "解析全部文章": {
       "main": [
         [
           {
-            "node": "\u6709\u6587\u7ae0?",
+            "node": "有文章?",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "\u6709\u6587\u7ae0?": {
+    "有文章?": {
       "main": [
         [
           {
-            "node": "\u63a8\u9001\u6587\u7ae0\u5230Ingest",
+            "node": "推送文章到Ingest",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "\u65e0\u6587\u7ae0\u6c47\u603b",
+            "node": "无文章汇总",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "\u63a8\u9001\u6587\u7ae0\u5230Ingest": {
+    "推送文章到Ingest": {
       "main": [
         [
           {
-            "node": "\u6c47\u603b\u7edf\u8ba1",
+            "node": "提取文档ID",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "\u6c47\u603b\u7edf\u8ba1": {
+    "汇总统计": {
       "main": [
         [
           {
-            "node": "\u53d1\u9001\u91c7\u96c6\u901a\u77e5",
+            "node": "发送采集通知",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "\u65e0\u6587\u7ae0\u6c47\u603b": {
+    "无文章汇总": {
       "main": [
         [
           {
-            "node": "\u53d1\u9001\u91c7\u96c6\u901a\u77e5",
+            "node": "发送采集通知",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "\u53d1\u9001\u91c7\u96c6\u901a\u77e5": {
+    "发送采集通知": {
       "main": [
         [
           {
-            "node": "\u7ed3\u675f",
+            "node": "结束",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "提取文档ID": {
+      "main": [
+        [
+          {
+            "node": "有文档需解析?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "有文档需解析?": {
+      "main": [
+        [
+          {
+            "node": "按Dataset分组",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "汇总统计",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "按Dataset分组": {
+      "main": [
+        [
+          {
+            "node": "批量解析文档",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "批量解析文档": {
+      "main": [
+        [
+          {
+            "node": "汇总统计",
             "type": "main",
             "index": 0
           }
