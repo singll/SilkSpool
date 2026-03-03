@@ -6,8 +6,9 @@ services:
     ports:
       - "8080:80"
     environment:
-      # 密码引用
+      # 密码/凭证引用
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-mysql123}
+      MINIO_USER: ${MINIO_USER:-minio}
       MINIO_PASSWORD: ${MINIO_PASSWORD:-minio123}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-redispassword}
       # 内部链接: 直接使用 Service Name (如 mysql, es)，不受前缀影响
