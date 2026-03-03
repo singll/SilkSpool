@@ -12,7 +12,10 @@
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [0, 300],
+      "position": [
+        0,
+        300
+      ],
       "webhookId": "article-ingest"
     },
     {
@@ -23,7 +26,10 @@
       "name": "Validate URL",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [240, 300]
+      "position": [
+        240,
+        300
+      ]
     },
     {
       "parameters": {
@@ -49,7 +55,10 @@
       "name": "Check URL Exists",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [480, 300]
+      "position": [
+        480,
+        300
+      ]
     },
     {
       "parameters": {
@@ -78,7 +87,10 @@
       "name": "If Duplicate",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [720, 300]
+      "position": [
+        720,
+        300
+      ]
     },
     {
       "parameters": {
@@ -92,7 +104,10 @@
       "name": "Respond Duplicate",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [960, 160]
+      "position": [
+        960,
+        160
+      ]
     },
     {
       "parameters": {
@@ -109,7 +124,10 @@
       "name": "Scrape URL",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [960, 440],
+      "position": [
+        960,
+        440
+      ],
       "continueOnFail": true
     },
     {
@@ -120,7 +138,10 @@
       "name": "Validate Content",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1200, 440]
+      "position": [
+        1200,
+        440
+      ]
     },
     {
       "parameters": {
@@ -149,21 +170,27 @@
       "name": "If Content Valid",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1440, 440]
+      "position": [
+        1440,
+        440
+      ]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: false, status: 'error', message: $json.error, url: $json.url }) }}",
+        "responseBody": "={{ JSON.stringify({ success: false, status: 'scrape_failed', message: $json.error, url: $json.url }) }}",
         "options": {
-          "responseCode": 422
+          "responseCode": 200
         }
       },
       "id": "respond-content-error",
       "name": "Respond Content Error",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1680, 300]
+      "position": [
+        1680,
+        300
+      ]
     },
     {
       "parameters": {
@@ -189,7 +216,10 @@
       "name": "Match Tags",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1680, 560]
+      "position": [
+        1680,
+        560
+      ]
     },
     {
       "parameters": {
@@ -199,7 +229,10 @@
       "name": "Merge Tags",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1920, 560]
+      "position": [
+        1920,
+        560
+      ]
     },
     {
       "parameters": {
@@ -225,7 +258,10 @@
       "name": "Upload to RagFlow",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2160, 560]
+      "position": [
+        2160,
+        560
+      ]
     },
     {
       "parameters": {
@@ -239,7 +275,10 @@
       "name": "Respond Success",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [2400, 560]
+      "position": [
+        2400,
+        560
+      ]
     }
   ],
   "connections": {
