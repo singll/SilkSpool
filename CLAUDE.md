@@ -55,3 +55,21 @@
 | `/home/ubuntu/SilkSpool` | singll/SilkSpool |
 | `/home/ubuntu/SingllLive` | singll/SingllLive |
 | `/home/ubuntu/Bellkeeper` | singll/Bellkeeper |
+
+## Matrix 机器人房间规则
+
+创建新的 Matrix 机器人房间或测试房间时，**必须**将 `@singll:matrix.singll.net` 邀请加入房间，以便用户可以使用和测试。
+
+操作方式：
+```python
+import urllib.request, urllib.parse, json
+room_id = '!新房间ID'
+encoded = urllib.parse.quote(room_id)
+url = f'https://matrix.singll.net/_matrix/client/v3/rooms/{encoded}/invite'
+data = json.dumps({'user_id': '@singll:matrix.singll.net'}).encode()
+req = urllib.request.Request(url, data=data, headers={
+    'Authorization': 'Bearer <BOT_TOKEN>',
+    'Content-Type': 'application/json'
+})
+urllib.request.urlopen(req)
+```
