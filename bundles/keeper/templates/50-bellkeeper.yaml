@@ -35,6 +35,11 @@ services:
       - BELLKEEPER_N8N_WEBHOOK_BASE_URL=http://${APP_PREFIX:-sp-}n8n:5678
       - BELLKEEPER_N8N_API_BASE_URL=http://${APP_PREFIX:-sp-}n8n:5678/api/v1
       - BELLKEEPER_N8N_API_KEY=${N8N_API_KEY:-}
+      # LLM Proxy (API Keys 传递给容器，由 bellkeeper.yaml 中 ${VAR} 引用)
+      - LLM_NEWAPI_BASE_URL=${LLM_NEWAPI_BASE_URL:-}
+      - LLM_NEWAPI_API_KEY=${LLM_NEWAPI_API_KEY:-}
+      - LLM_DEEPSEEK_API_KEY=${LLM_DEEPSEEK_API_KEY:-}
+      - LLM_KIMI_API_KEY=${LLM_KIMI_API_KEY:-}
     depends_on:
       bellkeeper-db:
         condition: service_healthy
