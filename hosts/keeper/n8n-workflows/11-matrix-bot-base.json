@@ -195,7 +195,7 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ command: $json.command, question: $json.args.question || '', keywords: $json.args.keywords || '' }) }}",
         "options": {
-          "timeout": 30000
+          "timeout": 65000
         }
       },
       "id": "call-qa",
