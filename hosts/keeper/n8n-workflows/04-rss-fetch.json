@@ -289,13 +289,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.RAGFLOW_API_URL }}/api/v1/datasets/{{ $json.dataset_id }}/documents/parse",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/ragflow/documents/parse/throttled",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
-              "name": "Authorization",
-              "value": "=Bearer {{ $env.RAGFLOW_API_KEY }}"
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
             },
             {
               "name": "Content-Type",
@@ -305,7 +305,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ document_ids: $json.document_ids }) }}",
+        "jsonBody": "={{ JSON.stringify({ dataset_id: $json.dataset_id, document_ids: $json.document_ids, batch_size: 3, interval_seconds: 30 }) }}",
         "options": {
           "timeout": 30000
         }

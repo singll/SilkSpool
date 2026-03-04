@@ -137,9 +137,24 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://api.moonshot.cn/v1/chat/completions",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/llm/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            },
+            {
+              "name": "X-Caller-ID",
+              "value": "n8n-ai-summarize-kimi"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={\n  \"model\": \"{{ $json.model }}\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"你是一个专业的技术文档分析助手，请使用中文回复。\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.prompt) }}}\n  ],\n  \"temperature\": 0.7,\n  \"max_tokens\": 4096\n}",
@@ -152,25 +167,34 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1340, 200],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "kimi-auth",
-          "name": "Kimi API"
-        }
-      },
       "continueOnFail": true
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "https://api.deepseek.com/chat/completions",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/llm/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            },
+            {
+              "name": "X-Caller-ID",
+              "value": "n8n-ai-summarize-deepseek"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={\n  \"model\": \"{{ $json.model }}\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"你是一个专业的技术文档分析助手，请使用中文回复。\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.prompt) }}}\n  ],\n  \"temperature\": 0.7,\n  \"max_tokens\": 4096\n}",
         "options": {
-          "timeout": 60000
+          "timeout": 120000
         }
       },
       "id": "call-deepseek",
@@ -178,12 +202,6 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1340, 400],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "deepseek-auth",
-          "name": "DeepSeek API"
-        }
-      },
       "continueOnFail": true
     },
     {
