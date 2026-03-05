@@ -1,5 +1,5 @@
 {
-  "name": "11-Matrix机器人基础",
+  "name": "M01-Matrix机器人基础",
   "meta": {
     "instanceId": ""
   },
@@ -19,7 +19,10 @@
       "name": "定时轮询",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 300]
+      "position": [
+        0,
+        300
+      ]
     },
     {
       "parameters": {
@@ -29,7 +32,10 @@
       "name": "准备同步",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [240, 300]
+      "position": [
+        240,
+        300
+      ]
     },
     {
       "parameters": {
@@ -52,7 +58,10 @@
       "name": "同步Matrix",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [480, 300],
+      "position": [
+        480,
+        300
+      ],
       "continueOnFail": true
     },
     {
@@ -63,7 +72,10 @@
       "name": "解析消息",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [720, 300]
+      "position": [
+        720,
+        300
+      ]
     },
     {
       "parameters": {
@@ -73,7 +85,10 @@
       "name": "解析指令",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 300]
+      "position": [
+        960,
+        300
+      ]
     },
     {
       "parameters": {
@@ -167,7 +182,10 @@
       "name": "路由分发",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [1200, 300]
+      "position": [
+        1200,
+        300
+      ]
     },
     {
       "parameters": {
@@ -184,7 +202,10 @@
       "name": "调用待办处理",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1440, 100],
+      "position": [
+        1440,
+        100
+      ],
       "continueOnFail": true
     },
     {
@@ -202,7 +223,10 @@
       "name": "调用问答处理",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1440, 300],
+      "position": [
+        1440,
+        300
+      ],
       "continueOnFail": true
     },
     {
@@ -213,7 +237,10 @@
       "name": "构建帮助消息",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1440, 500]
+      "position": [
+        1440,
+        500
+      ]
     },
     {
       "parameters": {
@@ -223,7 +250,10 @@
       "name": "构建未知指令消息",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1440, 700]
+      "position": [
+        1440,
+        700
+      ]
     },
     {
       "parameters": {
@@ -233,7 +263,10 @@
       "name": "格式化待办回复",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1680, 100]
+      "position": [
+        1680,
+        100
+      ]
     },
     {
       "parameters": {
@@ -243,7 +276,10 @@
       "name": "格式化问答回复",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1680, 300]
+      "position": [
+        1680,
+        300
+      ]
     },
     {
       "parameters": {
@@ -253,7 +289,10 @@
       "name": "准备发送",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1920, 300]
+      "position": [
+        1920,
+        300
+      ]
     },
     {
       "parameters": {
@@ -270,54 +309,177 @@
       "name": "发送回复",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2160, 300],
+      "position": [
+        2160,
+        300
+      ],
       "continueOnFail": true
     }
   ],
   "connections": {
     "定时轮询": {
-      "main": [[{ "node": "准备同步", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "准备同步",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "准备同步": {
-      "main": [[{ "node": "同步Matrix", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "同步Matrix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "同步Matrix": {
-      "main": [[{ "node": "解析消息", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "解析消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "解析消息": {
-      "main": [[{ "node": "解析指令", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "解析指令",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "解析指令": {
-      "main": [[{ "node": "路由分发", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "路由分发",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "路由分发": {
       "main": [
-        [{ "node": "调用待办处理", "type": "main", "index": 0 }],
-        [{ "node": "调用问答处理", "type": "main", "index": 0 }],
-        [{ "node": "构建帮助消息", "type": "main", "index": 0 }],
-        [{ "node": "构建未知指令消息", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "调用待办处理",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "调用问答处理",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "构建帮助消息",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "构建未知指令消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "调用待办处理": {
-      "main": [[{ "node": "格式化待办回复", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "格式化待办回复",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "调用问答处理": {
-      "main": [[{ "node": "格式化问答回复", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "格式化问答回复",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "构建帮助消息": {
-      "main": [[{ "node": "准备发送", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "准备发送",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "构建未知指令消息": {
-      "main": [[{ "node": "准备发送", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "准备发送",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "格式化待办回复": {
-      "main": [[{ "node": "准备发送", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "准备发送",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "格式化问答回复": {
-      "main": [[{ "node": "准备发送", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "准备发送",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "准备发送": {
-      "main": [[{ "node": "发送回复", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "发送回复",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {

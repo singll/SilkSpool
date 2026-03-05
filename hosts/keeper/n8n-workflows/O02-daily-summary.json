@@ -1,5 +1,5 @@
 {
-  "name": "07-每日摘要报告",
+  "name": "O02-每日摘要报告",
   "meta": {
     "instanceId": ""
   },
@@ -18,7 +18,10 @@
       "name": "每日21点触发",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [240, 300]
+      "position": [
+        240,
+        300
+      ]
     },
     {
       "parameters": {
@@ -41,7 +44,10 @@
       "name": "获取服务状态",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [480, 300],
+      "position": [
+        480,
+        300
+      ],
       "continueOnFail": true
     },
     {
@@ -65,7 +71,10 @@
       "name": "获取文章总数",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [720, 300],
+      "position": [
+        720,
+        300
+      ],
       "continueOnFail": true
     },
     {
@@ -89,7 +98,10 @@
       "name": "获取待办事项",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [960, 300],
+      "position": [
+        960,
+        300
+      ],
       "continueOnFail": true
     },
     {
@@ -100,7 +112,10 @@
       "name": "构建摘要消息",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1200, 300]
+      "position": [
+        1200,
+        300
+      ]
     },
     {
       "parameters": {
@@ -117,25 +132,68 @@
       "name": "发送通知",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1440, 300],
+      "position": [
+        1440,
+        300
+      ],
       "continueOnFail": true
     }
   ],
   "connections": {
     "每日21点触发": {
-      "main": [[{"node": "获取服务状态", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "获取服务状态",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "获取服务状态": {
-      "main": [[{"node": "获取文章总数", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "获取文章总数",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "获取文章总数": {
-      "main": [[{"node": "获取待办事项", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "获取待办事项",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "获取待办事项": {
-      "main": [[{"node": "构建摘要消息", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "构建摘要消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "构建摘要消息": {
-      "main": [[{"node": "发送通知", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "发送通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
@@ -145,5 +203,12 @@
   },
   "staticData": null,
   "pinData": {},
-  "tags": [{"name": "knowledge"}, {"name": "daily"}]
+  "tags": [
+    {
+      "name": "knowledge"
+    },
+    {
+      "name": "daily"
+    }
+  ]
 }

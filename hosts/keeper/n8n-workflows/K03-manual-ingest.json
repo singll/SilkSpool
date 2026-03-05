@@ -1,5 +1,5 @@
 {
-  "name": "02-手动批量提交",
+  "name": "K03-手动批量提交",
   "nodes": [
     {
       "parameters": {
@@ -12,7 +12,10 @@
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
-      "position": [0, 300],
+      "position": [
+        0,
+        300
+      ],
       "webhookId": "manual-ingest"
     },
     {
@@ -23,7 +26,10 @@
       "name": "Normalize URLs",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [240, 300]
+      "position": [
+        240,
+        300
+      ]
     },
     {
       "parameters": {
@@ -34,7 +40,10 @@
       "name": "SplitInBatches",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
-      "position": [480, 300]
+      "position": [
+        480,
+        300
+      ]
     },
     {
       "parameters": {
@@ -52,7 +61,10 @@
       "name": "Call Article Ingest",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [720, 300]
+      "position": [
+        720,
+        300
+      ]
     },
     {
       "parameters": {
@@ -63,7 +75,10 @@
       "name": "Wait",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [960, 300]
+      "position": [
+        960,
+        300
+      ]
     },
     {
       "parameters": {
@@ -73,7 +88,10 @@
       "name": "Aggregate Results",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1200, 300]
+      "position": [
+        1200,
+        300
+      ]
     },
     {
       "parameters": {
@@ -87,7 +105,10 @@
       "name": "Respond Summary",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [1440, 300]
+      "position": [
+        1440,
+        300
+      ]
     }
   ],
   "connections": {

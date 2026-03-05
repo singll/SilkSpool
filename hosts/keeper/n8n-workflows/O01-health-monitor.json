@@ -1,5 +1,5 @@
 {
-  "name": "06-服务健康监控",
+  "name": "O01-服务健康监控",
   "nodes": [
     {
       "parameters": {
@@ -16,7 +16,10 @@
       "name": "每5分钟触发",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 300]
+      "position": [
+        0,
+        300
+      ]
     },
     {
       "parameters": {
@@ -44,7 +47,10 @@
       "name": "检查Bellkeeper",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [240, 300],
+      "position": [
+        240,
+        300
+      ],
       "continueOnFail": true
     },
     {
@@ -59,7 +65,10 @@
       "name": "检查Firecrawl",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [480, 300],
+      "position": [
+        480,
+        300
+      ],
       "continueOnFail": true
     },
     {
@@ -74,7 +83,10 @@
       "name": "检查RSSHub",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [720, 300],
+      "position": [
+        720,
+        300
+      ],
       "continueOnFail": true
     },
     {
@@ -89,7 +101,10 @@
       "name": "检查Memos",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [960, 300],
+      "position": [
+        960,
+        300
+      ],
       "continueOnFail": true
     },
     {
@@ -100,7 +115,10 @@
       "name": "汇总并对比状态",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1200, 300]
+      "position": [
+        1200,
+        300
+      ]
     },
     {
       "parameters": {
@@ -129,7 +147,10 @@
       "name": "有状态变化?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [1440, 300]
+      "position": [
+        1440,
+        300
+      ]
     },
     {
       "parameters": {
@@ -155,7 +176,10 @@
       "name": "发送告警通知",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1680, 200]
+      "position": [
+        1680,
+        200
+      ]
     },
     {
       "parameters": {
@@ -165,7 +189,10 @@
       "name": "保存状态",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1920, 200]
+      "position": [
+        1920,
+        200
+      ]
     },
     {
       "parameters": {},
@@ -173,7 +200,10 @@
       "name": "无变化跳过",
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
-      "position": [1680, 420]
+      "position": [
+        1680,
+        420
+      ]
     }
   ],
   "connections": {
