@@ -56,6 +56,26 @@
 | `/home/ubuntu/SingllLive` | singll/SingllLive |
 | `/home/ubuntu/Bellkeeper` | singll/Bellkeeper |
 
+## n8n 工作流命名规则
+
+工作流文件位于 `hosts/keeper/n8n-workflows/`，命名必须遵循分层序号体系：
+
+| 前缀 | 含义 | 示例 |
+|------|------|------|
+| B | 基础设施（通知、日志等被广泛依赖的底层服务） | B01-notify.json |
+| K | 知识管道（采集、入库、解析、总结） | K01-article-ingest.json |
+| M | 机器人/交互（Matrix 指令、UI 联动） | M01-matrix-bot-base.json |
+| O | 运维（监控、备份、清理） | O01-health-monitor.json |
+
+规则：
+- 文件名格式：`{前缀}{两位数字}-{英文短名}.json`
+- JSON 内部 `"name"` 字段格式：`{前缀}{两位数字}-{中文名称}`（如 `"K02-RSS定时采集"`）
+- 子工作流用 `.1` 后缀（如 `K02.1-rss-parse-trigger.json`）
+- 新增工作流时在对应分类内递增序号，预留间隔便于插入
+- 基础工作流（B 类）排在最前，被其他工作流依赖
+
+当前工作流清单和调用关系详见 `doc/WORKFLOWS.md`。
+
 ## Matrix 机器人房间规则
 
 创建新的 Matrix 机器人房间或测试房间时，**必须**将 `@singll:matrix.singll.net` 邀请加入房间，以便用户可以使用和测试。
