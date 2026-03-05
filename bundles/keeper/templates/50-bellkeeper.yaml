@@ -14,32 +14,16 @@ services:
     restart: unless-stopped
     ports:
       - "8090:8080"
+    entrypoint: ["/bin/sh"]
+    command: ["/app/scripts/bellkeeper-init.sh"]
     environment:
+      # 仅保留 Docker 层面必需的变量 (几乎不变, 无需热更新)
+      # 其余所有变量由 init 脚本从挂载的 .env 文件动态加载
+      # → 修改 .env 后只需 docker compose restart bellkeeper, 无需 up -d 重建容器
       - TZ=Asia/Shanghai
-      - BELLKEEPER_SERVER_MODE=release
-      - BELLKEEPER_SERVER_HOST=0.0.0.0
-      - BELLKEEPER_SERVER_PORT=8080
-      # Database (本机 PostgreSQL)
-      - BELLKEEPER_DATABASE_DRIVER=postgres
-      - BELLKEEPER_DATABASE_HOST=${APP_PREFIX:-sp-}bellkeeper-db
-      - BELLKEEPER_DATABASE_PORT=5432
-      - BELLKEEPER_DATABASE_NAME=bellkeeper
-      - BELLKEEPER_DATABASE_USER=bellkeeper
-      - BELLKEEPER_DATABASE_PASSWORD=${BELLKEEPER_DB_PASSWORD:-bellkeeper123}
-      # RagFlow (跨服务器访问 knowledge)
-      - BELLKEEPER_RAGFLOW_BASE_URL=http://${KNOWLEDGE_HOST:-192.168.7.220}:8080
-      - BELLKEEPER_RAGFLOW_API_KEY=${RAGFLOW_API_KEY:-}
-      # API Key (供 n8n 等内部服务调用)
-      - BELLKEEPER_SERVER_API_KEY=${BELLKEEPER_API_KEY:-}
-      # n8n (同机访问)
-      - BELLKEEPER_N8N_WEBHOOK_BASE_URL=http://${APP_PREFIX:-sp-}n8n:5678
-      - BELLKEEPER_N8N_API_BASE_URL=http://${APP_PREFIX:-sp-}n8n:5678/api/v1
-      - BELLKEEPER_N8N_API_KEY=${N8N_API_KEY:-}
-      # LLM Proxy (API Keys 传递给容器，由 bellkeeper.yaml 中 ${VAR} 引用)
-      - LLM_NEWAPI_BASE_URL=${LLM_NEWAPI_BASE_URL:-}
-      - LLM_NEWAPI_API_KEY=${LLM_NEWAPI_API_KEY:-}
-      - LLM_DEEPSEEK_API_KEY=${LLM_DEEPSEEK_API_KEY:-}
-      - LLM_KIMI_API_KEY=${LLM_KIMI_API_KEY:-}
+    volumes:
+      - ./bellkeeper-init.sh:/app/scripts/bellkeeper-init.sh:ro
+      - ./.env:/app/config/.env:ro
     depends_on:
       bellkeeper-db:
         condition: service_healthy

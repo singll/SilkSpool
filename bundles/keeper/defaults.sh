@@ -38,7 +38,14 @@ N8N_ENCRYPTION_KEY=CHANGE_ME_generate_random_string
 
 # --- Bellkeeper ---
 BELLKEEPER_DB_PASSWORD=CHANGE_ME_bellkeeper_db_password
+BELLKEEPER_API_KEY=your-bellkeeper-api-key
 RAGFLOW_API_KEY=your-ragflow-api-key
+
+# --- LLM Proxy ---
+LLM_NEWAPI_BASE_URL=
+LLM_NEWAPI_API_KEY=
+LLM_DEEPSEEK_API_KEY=
+LLM_KIMI_API_KEY=
 
 # --- Memos ---
 MEMOS_API_TOKEN=your-memos-api-token
