@@ -1,0 +1,189 @@
+{
+  "name": "O05-自动备份",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "backup-trigger",
+      "name": "每日凌晨2点",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "host1",
+              "name": "host",
+              "value": "knowledge",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "backup-set-knowledge",
+      "name": "备份knowledge",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [200, 200]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "host2",
+              "name": "host",
+              "value": "keeper",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "backup-set-keeper",
+      "name": "备份keeper",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "host3",
+              "name": "host",
+              "value": "aigateway",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "backup-set-aigateway",
+      "name": "备份aigateway",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [200, 400]
+    },
+    {
+      "parameters": {
+        "command": "=cd /home/ubuntu/SilkSpool && ./spool.sh backup {{ $json.host }}"
+      },
+      "id": "backup-exec",
+      "name": "执行备份",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [400, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "command": "find /home/ubuntu/backups -type f -name '*.tar.gz' -mtime +7 -delete && echo \"Cleaned old backups\""
+      },
+      "id": "backup-cleanup-exec",
+      "name": "清理旧备份",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = items.slice(0, -1).map(item => ({\n  host: item.json.host,\n  success: !item.json.error && item.json.exitCode === 0,\n  output: item.json.stdout || item.json.stderr\n}));\nconst cleanup = items[items.length - 1].json;\n\nlet msg = `<h3>📦 每日备份报告</h3>`;\nmsg += `<ul>`;\nresults.forEach(r => {\n  msg += `<li>${r.success ? '✅' : '❌'} ${r.host}</li>`;\n});\nmsg += `</ul>`;\nmsg += `<p><small>清理: ${cleanup.stdout}</small></p>`;\nmsg += `<p><small>${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</small></p>`;\nreturn [{ json: { message: msg, allSuccess: results.every(r => r.success) } }];"
+      },
+      "id": "backup-summary-code",
+      "name": "汇总结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/matrix/send",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "room_id",
+              "value": "={{ $env.MATRIX_ADMIN_ROOM }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $json.message }}"
+            },
+            {
+              "name": "msg_type",
+              "value": "m.text"
+            },
+            {
+              "name": "format",
+              "value": "org.matrix.custom.html"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "backup-notify-http",
+      "name": "发送通知",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 300]
+    }
+  ],
+  "connections": {
+    "每日凌晨2点": {
+      "main": [[
+        {"node": "备份knowledge", "type": "main", "index": 0},
+        {"node": "备份keeper", "type": "main", "index": 0},
+        {"node": "备份aigateway", "type": "main", "index": 0}
+      ]]
+    },
+    "备份knowledge": {
+      "main": [[{"node": "执行备份", "type": "main", "index": 0}]]
+    },
+    "备份keeper": {
+      "main": [[{"node": "执行备份", "type": "main", "index": 0}]]
+    },
+    "备份aigateway": {
+      "main": [[{"node": "执行备份", "type": "main", "index": 0}]]
+    },
+    "执行备份": {
+      "main": [[{"node": "清理旧备份", "type": "main", "index": 0}]]
+    },
+    "清理旧备份": {
+      "main": [[{"node": "汇总结果", "type": "main", "index": 0}]]
+    },
+    "汇总结果": {
+      "main": [[{"node": "发送通知", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

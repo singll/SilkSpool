@@ -394,6 +394,8 @@ show_help() {
     echo "  export           Export all workflows from n8n to local backup"
     echo "  push-import      Push local files to remote and import NEW"
     echo "  push-update      Push local files to remote and update EXISTING"
+    echo "  activate <name>  Activate a workflow"
+    echo "  deactivate <name> Deactivate a workflow"
     echo ""
     echo "First-time setup - create API Key:"
     echo "  1. Open n8n Web UI -> Settings -> API Keys"
@@ -487,6 +489,13 @@ print(json.dumps(clean_data))
         -d @/tmp/wf-update.json && rm -f /tmp/wf-update.json")
 
     echo "$result"
+}
+
+# 激活/停用工作流
+api_toggle_workflow() {
+    local workflow_id="$1"
+    local active="$2"
+    call_n8n_api "PATCH" "/workflows/${workflow_id}" "{\"active\":${active}}"
 }
 
 # 更新单个工作流
@@ -625,6 +634,38 @@ except:
     [ $failed -gt 0 ] && log_warn "$failed failed"
 }
 
+# 激活工作流
+activate_workflow() {
+    local target_name="$1"
+    check_api_key
+    check_container
+
+    local workflow_id
+    workflow_id=$(get_workflow_id_by_name "$target_name")
+    [ -z "$workflow_id" ] && log_error "Workflow not found: $target_name" && exit 1
+
+    log_info "Activating: $target_name"
+    local result
+    result=$(api_toggle_workflow "$workflow_id" "true")
+    echo "$result" | grep -q '"active":true' && log_info "[OK] Activated" || log_error "[FAIL] Activation failed"
+}
+
+# 停用工作流
+deactivate_workflow() {
+    local target_name="$1"
+    check_api_key
+    check_container
+
+    local workflow_id
+    workflow_id=$(get_workflow_id_by_name "$target_name")
+    [ -z "$workflow_id" ] && log_error "Workflow not found: $target_name" && exit 1
+
+    log_info "Deactivating: $target_name"
+    local result
+    result=$(api_toggle_workflow "$workflow_id" "false")
+    echo "$result" | grep -q '"active":false' && log_info "[OK] Deactivated" || log_error "[FAIL] Deactivation failed"
+}
+
 # 主函数
 main() {
     local cmd="${1:-help}"
@@ -657,6 +698,16 @@ main() {
             bash "$BASE_DIR/lib/core/sync.sh" push "$N8N_HOST"
             echo ""
             update_all
+            ;;
+        activate)
+            shift
+            [ -z "$1" ] && log_error "Usage: n8n-sync activate <workflow-name>" && exit 1
+            activate_workflow "$1"
+            ;;
+        deactivate)
+            shift
+            [ -z "$1" ] && log_error "Usage: n8n-sync deactivate <workflow-name>" && exit 1
+            deactivate_workflow "$1"
             ;;
         help|--help|-h)
             show_help

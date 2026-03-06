@@ -1,0 +1,151 @@
+{
+  "name": "O04-容器健康检查",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/5 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "container-health-trigger",
+      "name": "每5分钟检查",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "command": "docker ps -a --format '{{json .}}' | jq -s '.'"
+      },
+      "id": "container-list-exec",
+      "name": "获取容器状态",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const stdout = $input.first().json.stdout;\nconst containers = JSON.parse(stdout);\nconst staticData = $getWorkflowStaticData('global');\n\nconst unhealthy = containers.filter(c => {\n  const isRunning = c.State === 'running';\n  const hasHealthCheck = c.Status.includes('(health');\n  const isUnhealthy = hasHealthCheck && c.Status.includes('(unhealthy)');\n  const isExited = c.State === 'exited' || c.State === 'dead';\n  return isUnhealthy || isExited;\n});\n\nconst previousUnhealthy = staticData.unhealthyContainers || [];\nconst newIssues = unhealthy.filter(c => \n  !previousUnhealthy.some(p => p.ID === c.ID)\n);\n\nstaticData.unhealthyContainers = unhealthy.map(c => ({\n  ID: c.ID,\n  Names: c.Names,\n  State: c.State,\n  Status: c.Status\n}));\n\nreturn unhealthy.map(c => ({ json: c }));"
+        }
+      },
+      "id": "container-parse-code",
+      "name": "检测异常容器",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.Names }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "container-check-if",
+      "name": "有异常容器?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "command": "=docker restart {{ $json.Names }}"
+      },
+      "id": "container-restart-exec",
+      "name": "重启容器",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [800, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst hostname = require('os').hostname();\nlet msg = `<h3>🔧 容器自动重启</h3>`;\nmsg += `<p><strong>主机:</strong> ${hostname}</p>`;\nmsg += `<ul>`;\nitems.forEach(item => {\n  const c = item.json;\n  const success = !c.error;\n  msg += `<li>${success ? '✅' : '❌'} <code>${c.Names}</code> - ${c.State} (${c.Status.substring(0,50)})</li>`;\n});\nmsg += `</ul>`;\nmsg += `<p><small>${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</small></p>`;\nreturn [{ json: { message: msg } }];"
+        }
+      },
+      "id": "container-format-code",
+      "name": "格式化通知",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/matrix/send",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "room_id",
+              "value": "={{ $env.MATRIX_ADMIN_ROOM }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $json.message }}"
+            },
+            {
+              "name": "msg_type",
+              "value": "m.text"
+            },
+            {
+              "name": "format",
+              "value": "org.matrix.custom.html"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "container-notify-http",
+      "name": "发送通知",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1200, 200]
+    }
+  ],
+  "connections": {
+    "每5分钟检查": {
+      "main": [[{"node": "获取容器状态", "type": "main", "index": 0}]]
+    },
+    "获取容器状态": {
+      "main": [[{"node": "检测异常容器", "type": "main", "index": 0}]]
+    },
+    "检测异常容器": {
+      "main": [[{"node": "有异常容器?", "type": "main", "index": 0}]]
+    },
+    "有异常容器?": {
+      "main": [[{"node": "重启容器", "type": "main", "index": 0}]]
+    },
+    "重启容器": {
+      "main": [[{"node": "格式化通知", "type": "main", "index": 0}]]
+    },
+    "格式化通知": {
+      "main": [[{"node": "发送通知", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
