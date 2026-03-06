@@ -1,0 +1,186 @@
+{
+  "name": "K06-文档解析兜底",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "trigger-node",
+      "name": "定时触发",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_INTERNAL_URL }}/api/ragflow/documents?status=unparsed&page_size=100",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "get-unparsed",
+      "name": "获取未解析文档",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.first().json;\nconst docs = resp.data?.data || [];\n\nif (docs.length === 0) {\n  return [{ json: { hasDocuments: false, count: 0 } }];\n}\n\nconst grouped = {};\nfor (const doc of docs) {\n  const dsId = doc.dataset_id || doc.kb_id;\n  if (!dsId) continue;\n  \n  if (!grouped[dsId]) {\n    grouped[dsId] = { dataset_id: dsId, document_ids: [], titles: [] };\n  }\n  grouped[dsId].document_ids.push(doc.id);\n  grouped[dsId].titles.push(doc.name || 'Untitled');\n}\n\nconst result = Object.values(grouped);\nreturn result.map(g => ({ json: { ...g, hasDocuments: true, count: g.document_ids.length } }));"
+      },
+      "id": "group-by-dataset",
+      "name": "按Dataset分组",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-docs",
+              "leftValue": "={{ $json.hasDocuments }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-has-docs",
+      "name": "有未解析文档?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_INTERNAL_URL }}/api/ragflow/documents/parse/throttled",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ dataset_id: $json.dataset_id, document_ids: $json.document_ids, batch_size: 5, interval_seconds: 30 }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "trigger-parse",
+      "name": "触发解析",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = $('触发解析').all();\nlet totalDocs = 0;\nlet successCount = 0;\nlet failCount = 0;\n\nfor (const r of results) {\n  const d = r.json;\n  const count = d.count || 0;\n  totalDocs += count;\n  \n  if (d.error || (d.code && d.code !== 0)) {\n    failCount += count;\n  } else {\n    successCount += count;\n  }\n}\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `🔄 文档解析兜底任务完成\\n⏰ ${dateStr} ${timeStr}\\n📊 触发解析: ${successCount}/${totalDocs} 篇${failCount > 0 ? ` (${failCount} 失败)` : ''}`;\nconst html = `<h4>🔄 文档解析兜底</h4>\\n<p><i>${dateStr} ${timeStr}</i></p>\\n<p>触发解析: <b>${successCount}/${totalDocs}</b> 篇${failCount > 0 ? ` (<span style=\"color:red\">${failCount} 失败</span>)` : ''}</p>`;\n\nreturn [{ json: { summary, html, totalDocs, successCount, failCount } }];"
+      },
+      "id": "summarize",
+      "name": "汇总结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: 'daily', message: $json.summary, html: $json.html }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-notify",
+      "name": "发送通知",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1440, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `🔄 文档解析兜底任务完成\\n⏰ ${dateStr} ${timeStr}\\n📊 无未解析文档`;\nconst html = `<h4>🔄 文档解析兜底</h4>\\n<p><i>${dateStr} ${timeStr}</i></p>\\n<p>✅ 无未解析文档</p>`;\n\nreturn [{ json: { summary, html } }];"
+      },
+      "id": "no-docs-summary",
+      "name": "无文档汇总",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 440]
+    }
+  ],
+  "connections": {
+    "定时触发": {
+      "main": [[{ "node": "获取未解析文档", "type": "main", "index": 0 }]]
+    },
+    "获取未解析文档": {
+      "main": [[{ "node": "按Dataset分组", "type": "main", "index": 0 }]]
+    },
+    "按Dataset分组": {
+      "main": [[{ "node": "有未解析文档?", "type": "main", "index": 0 }]]
+    },
+    "有未解析文档?": {
+      "main": [
+        [{ "node": "触发解析", "type": "main", "index": 0 }],
+        [{ "node": "无文档汇总", "type": "main", "index": 0 }]
+      ]
+    },
+    "触发解析": {
+      "main": [[{ "node": "汇总结果", "type": "main", "index": 0 }]]
+    },
+    "汇总结果": {
+      "main": [[{ "node": "发送通知", "type": "main", "index": 0 }]]
+    },
+    "无文档汇总": {
+      "main": [[{ "node": "发送通知", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": []
+}
