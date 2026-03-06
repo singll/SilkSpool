@@ -195,6 +195,36 @@
     {
       "parameters": {
         "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/classify/article",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ title: $json.title, url: $json.url, content: $json.content.substring(0, 1000) }) }}",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "llm-classify",
+      "name": "LLM Classify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        560
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
         "url": "={{ $env.BELLKEEPER_URL }}/api/tags/match",
         "sendHeaders": true,
         "headerParameters": {
@@ -217,20 +247,20 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1680,
+        1920,
         560
       ]
     },
     {
       "parameters": {
-        "jsCode": "// Merge matched tags with user-provided tags\nconst matchResult = $input.first().json;\nconst contentData = $('Validate Content').first().json;\n\nconst matchedTags = (matchResult.tags || matchResult.matched || []).map(t => typeof t === 'string' ? t : t.name || t.tag || '');\nconst userTags = contentData.tags || [];\n\n// Combine and deduplicate\nconst allTags = [...new Set([...userTags, ...matchedTags])].filter(t => t);\n\nreturn [{\n  json: {\n    content: contentData.content,\n    filename: contentData.filename,\n    title: contentData.title,\n    url: contentData.url,\n    tags: allTags,\n    category: contentData.category\n  }\n}];"
+        "jsCode": "// Merge LLM tags, matched tags, and user-provided tags\nconst llmResult = $('LLM Classify').first().json;\nconst matchResult = $('Match Tags').first().json;\nconst contentData = $('Validate Content').first().json;\n\n// Extract LLM tags (empty if LLM failed)\nconst llmTags = (llmResult.tags || []).filter(t => t);\nconst llmDatasetId = llmResult.dataset_id || '';\n\n// Extract matched tags\nconst matchedTags = (matchResult.tags || matchResult.matched || []).map(t => typeof t === 'string' ? t : t.name || t.tag || '');\nconst userTags = contentData.tags || [];\n\n// Combine and deduplicate: LLM tags + user tags + matched tags\nconst allTags = [...new Set([...llmTags, ...userTags, ...matchedTags])].filter(t => t);\n\nreturn [{\n  json: {\n    content: contentData.content,\n    filename: contentData.filename,\n    title: contentData.title,\n    url: contentData.url,\n    tags: allTags,\n    category: contentData.category,\n    dataset_id: llmDatasetId\n  }\n}];"
       },
       "id": "merge-tags",
       "name": "Merge Tags",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1920,
+        2160,
         560
       ]
     },
@@ -249,7 +279,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ content: $json.content, filename: $json.filename, title: $json.title, url: $json.url, tags: $json.tags, category: $json.category, auto_create_tags: true }) }}",
+        "jsonBody": "={{ JSON.stringify({ content: $json.content, filename: $json.filename, title: $json.title, url: $json.url, tags: $json.tags, category: $json.category, dataset_id: $json.dataset_id, auto_create_tags: true }) }}",
         "options": {
           "timeout": 30000
         }
@@ -259,7 +289,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2160,
+        2400,
         560
       ]
     },
@@ -276,7 +306,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        2400,
+        2640,
         560
       ]
     }
@@ -359,7 +389,7 @@
       "main": [
         [
           {
-            "node": "Match Tags",
+            "node": "LLM Classify",
             "type": "main",
             "index": 0
           }
@@ -367,6 +397,17 @@
         [
           {
             "node": "Respond Content Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Classify": {
+      "main": [
+        [
+          {
+            "node": "Match Tags",
             "type": "main",
             "index": 0
           }
