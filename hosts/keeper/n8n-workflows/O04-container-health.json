@@ -31,7 +31,6 @@
     {
       "parameters": {
         "jsCode": "const stdout = $input.first().json.stdout;\nconst containers = JSON.parse(stdout);\nconst staticData = $getWorkflowStaticData('global');\n\nconst unhealthy = containers.filter(c => {\n  const isRunning = c.State === 'running';\n  const hasHealthCheck = c.Status.includes('(health');\n  const isUnhealthy = hasHealthCheck && c.Status.includes('(unhealthy)');\n  const isExited = c.State === 'exited' || c.State === 'dead';\n  return isUnhealthy || isExited;\n});\n\nconst previousUnhealthy = staticData.unhealthyContainers || [];\nconst newIssues = unhealthy.filter(c => \n  !previousUnhealthy.some(p => p.ID === c.ID)\n);\n\nstaticData.unhealthyContainers = unhealthy.map(c => ({\n  ID: c.ID,\n  Names: c.Names,\n  State: c.State,\n  Status: c.Status\n}));\n\nreturn unhealthy.map(c => ({ json: c }));"
-        }
       },
       "id": "container-parse-code",
       "name": "检测异常容器",
@@ -70,7 +69,6 @@
     {
       "parameters": {
         "jsCode": "const items = $input.all();\nconst hostname = require('os').hostname();\nlet msg = `<h3>🔧 容器自动重启</h3>`;\nmsg += `<p><strong>主机:</strong> ${hostname}</p>`;\nmsg += `<ul>`;\nitems.forEach(item => {\n  const c = item.json;\n  const success = !c.error;\n  msg += `<li>${success ? '✅' : '❌'} <code>${c.Names}</code> - ${c.State} (${c.Status.substring(0,50)})</li>`;\n});\nmsg += `</ul>`;\nmsg += `<p><small>${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</small></p>`;\nreturn [{ json: { message: msg } }];"
-        }
       },
       "id": "container-format-code",
       "name": "格式化通知",
