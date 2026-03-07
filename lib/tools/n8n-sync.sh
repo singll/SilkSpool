@@ -107,7 +107,7 @@ call_n8n_api() {
     local curl_cmd="curl -s -X $method '${N8N_API_URL}/api/v1${endpoint}' \
         -H 'Accept: application/json' \
         -H 'Content-Type: application/json' \
-        -H 'X-N8N-API-KEY: ${N8N_API_KEY}'"
+        -H 'X-N8N-API-KEY: $N8N_API_KEY'"
 
     if [ -n "$data" ]; then
         curl_cmd="$curl_cmd -d '$data'"
@@ -118,7 +118,12 @@ call_n8n_api() {
 
 # 通过 API 获取所有工作流
 api_list_workflows() {
-    call_n8n_api "GET" "/workflows"
+    local result
+    result=$(call_n8n_api "GET" "/workflows")
+
+    # 保存到临时文件用于调试
+    echo "$result" > /tmp/n8n-api-response.txt
+    echo "$result"
 }
 
 # 通过 API 创建工作流
@@ -219,12 +224,10 @@ list_n8n_workflows() {
     local result
     result=$(api_list_workflows)
 
-    if echo "$result" | grep -q '"message"'; then
-        log_error "API call failed: $(echo "$result" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("message","Unknown error"))' 2>/dev/null)"
-        return 1
-    fi
-
-    echo "$result" | python3 -c "
+    # 检查是否是错误响应（顶层有 message 但没有 data）
+    if echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if 'data' in d else 1)" 2>/dev/null; then
+        # 正常响应，解析工作流列表
+        echo "$result" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -237,6 +240,13 @@ try:
 except Exception as e:
     print(f'  Parse failed: {e}')
 " 2>/dev/null
+    else
+        # 错误响应
+        local error_msg
+        error_msg=$(echo "$result" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("message","Unknown error"))' 2>/dev/null || echo "API call failed")
+        log_error "API call failed: $error_msg"
+        return 1
+    fi
     echo ""
 }
 
@@ -254,7 +264,7 @@ import_all() {
     existing_result=$(api_list_workflows)
 
     local existing_names=""
-    if ! echo "$existing_result" | grep -q '"message"'; then
+    if echo "$existing_result" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if 'data' in d else 1)" 2>/dev/null; then
         existing_names=$(echo "$existing_result" | python3 -c "
 import sys, json
 try:
@@ -264,6 +274,11 @@ try:
 except:
     pass
 " 2>/dev/null)
+    else
+        local error_msg
+        error_msg=$(echo "$existing_result" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("message","Unknown error"))' 2>/dev/null || echo "API call failed")
+        log_error "Failed to fetch existing workflows: $error_msg"
+        exit 1
     fi
 
     # 获取远程文件列表
@@ -495,7 +510,12 @@ print(json.dumps(clean_data))
 api_toggle_workflow() {
     local workflow_id="$1"
     local active="$2"
-    call_n8n_api "PATCH" "/workflows/${workflow_id}" "{\"active\":${active}}"
+
+    if [ "$active" = "true" ]; then
+        call_n8n_api "POST" "/workflows/${workflow_id}/activate"
+    else
+        call_n8n_api "POST" "/workflows/${workflow_id}/deactivate"
+    fi
 }
 
 # 更新单个工作流
@@ -647,6 +667,7 @@ activate_workflow() {
     log_info "Activating: $target_name"
     local result
     result=$(api_toggle_workflow "$workflow_id" "true")
+    log_info "DEBUG: API result=$result"
     echo "$result" | grep -q '"active":true' && log_info "[OK] Activated" || log_error "[FAIL] Activation failed"
 }
 
@@ -664,6 +685,27 @@ deactivate_workflow() {
     local result
     result=$(api_toggle_workflow "$workflow_id" "false")
     echo "$result" | grep -q '"active":false' && log_info "[OK] Deactivated" || log_error "[FAIL] Deactivation failed"
+}
+
+# 删除工作流
+delete_workflow() {
+    local target_name="$1"
+    check_api_key
+    check_container
+
+    local workflow_id
+    workflow_id=$(get_workflow_id_by_name "$target_name")
+    [ -z "$workflow_id" ] && log_error "Workflow not found: $target_name" && exit 1
+
+    log_warn "Deleting: $target_name (ID: $workflow_id)"
+    local result
+    result=$(call_n8n_api "DELETE" "/workflows/${workflow_id}")
+
+    if echo "$result" | grep -q '"id"'; then
+        log_info "[OK] Deleted"
+    else
+        log_error "[FAIL] Deletion failed"
+    fi
 }
 
 # 主函数
@@ -708,6 +750,11 @@ main() {
             shift
             [ -z "$1" ] && log_error "Usage: n8n-sync deactivate <workflow-name>" && exit 1
             deactivate_workflow "$1"
+            ;;
+        delete)
+            shift
+            [ -z "$1" ] && log_error "Usage: n8n-sync delete <workflow-name>" && exit 1
+            delete_workflow "$1"
             ;;
         help|--help|-h)
             show_help
