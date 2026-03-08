@@ -31,6 +31,37 @@
     },
     {
       "parameters": {
+        "httpMethod": "POST",
+        "path": "rss-backfill",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000020",
+      "name": "补录触发",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        540
+      ],
+      "webhookId": "rss-backfill"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: '补录任务已启动，将在后台获取并处理文章' }) }}"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000021",
+      "name": "立即响应",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        540
+      ]
+    },
+    {
+      "parameters": {
         "method": "GET",
         "url": "={{ $env.BELLKEEPER_URL }}/api/rss?is_active=true&per_page=100",
         "sendHeaders": true,
@@ -55,21 +86,21 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        240,
-        300
+        480,
+        400
       ]
     },
     {
       "parameters": {
-        "jsCode": "// 从Bellkeeper API响应中提取RSS源并构建URL\nconst response = $input.first().json;\nconst sources = response.data || response.items || response;\n\nconst results = [];\nfor (const source of sources) {\n  let feedUrl = source.url;\n  if (feedUrl.startsWith('/')) {\n    feedUrl = 'http://rsshub:1200' + feedUrl;\n  }\n\n  const sourceTags = (source.tags || []).map(t => typeof t === 'object' ? (t.name || '') : String(t)).filter(t => t);\n  if (source.category && !sourceTags.includes(source.category)) {\n    sourceTags.push(source.category);\n  }\n\n  results.push({\n    json: {\n      id: source.id,\n      name: source.name,\n      feedUrl: feedUrl,\n      originalUrl: source.url,\n      category: source.category || '',\n      tags: sourceTags,\n      isActive: source.is_active\n    }\n  });\n}\n\nreturn results;"
+        "jsCode": "// 从Bellkeeper API响应中提取RSS源并构建URL\n// 补录模式：为 RSSHub 源追加 ?limit=N 获取更多条目\nlet rssLimit = 0;\nlet isBackfill = false;\ntry {\n  const webhookData = $('补录触发').first().json;\n  const body = webhookData.body || webhookData;\n  rssLimit = parseInt(body.limit) || 200;\n  isBackfill = true;\n} catch(e) {\n  // 定时触发，不追加 limit\n}\n\nconst response = $input.first().json;\nconst sources = response.data || response.items || response;\n\nconst results = [];\nfor (const source of sources) {\n  let feedUrl = source.url;\n  if (feedUrl.startsWith('/')) {\n    feedUrl = 'http://rsshub:1200' + feedUrl;\n    // 补录模式为 RSSHub 源追加 limit 参数\n    if (isBackfill && rssLimit > 0) {\n      feedUrl += (feedUrl.includes('?') ? '&' : '?') + 'limit=' + rssLimit;\n    }\n  }\n\n  const sourceTags = (source.tags || []).map(t => typeof t === 'object' ? (t.name || '') : String(t)).filter(t => t);\n  if (source.category && !sourceTags.includes(source.category)) {\n    sourceTags.push(source.category);\n  }\n\n  results.push({\n    json: {\n      id: source.id,\n      name: source.name,\n      feedUrl: feedUrl,\n      originalUrl: source.url,\n      category: source.category || '',\n      tags: sourceTags,\n      isActive: source.is_active,\n      _isBackfill: isBackfill,\n      _rssLimit: rssLimit\n    }\n  });\n}\n\nreturn results;"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000003",
       "name": "提取RSS源",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        480,
-        300
+        720,
+        400
       ]
     },
     {
@@ -90,22 +121,22 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        720,
-        300
+        960,
+        400
       ],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "// 将所有Feed响应与RSS源信息按索引配对，解析所有文章\nconst feeds = $input.all();\nconst sources = $('提取RSS源').all();\n\nfunction extractTag(content, tag) {\n  const cdataRegex = new RegExp(`<${tag}[^>]*><!\\\\[CDATA\\\\[([\\\\s\\\\S]*?)\\\\]\\\\]><\\\\/${tag}>`, 'i');\n  const plainRegex = new RegExp(`<${tag}[^>]*>([\\\\s\\\\S]*?)<\\\\/${tag}>`, 'i');\n  const hrefRegex = new RegExp(`<${tag}[^>]*href=[\"']([^\"']+)[\"']`, 'i');\n  let match = content.match(cdataRegex);\n  if (match) return match[1].trim();\n  match = content.match(plainRegex);\n  if (match) return match[1].trim();\n  if (tag === 'link') {\n    match = content.match(hrefRegex);\n    if (match) return match[1].trim();\n  }\n  return '';\n}\n\nconst allArticles = [];\n\nfor (let i = 0; i < feeds.length; i++) {\n  const feedData = feeds[i].json;\n  const source = sources[i] ? sources[i].json : {};\n  const xml = feedData.data || feedData.body || '';\n\n  if (!xml || typeof xml !== 'string') continue;\n\n  const itemRegex = /<item[^>]*>([\\s\\S]*?)<\\/item>/gi;\n  const entryRegex = /<entry[^>]*>([\\s\\S]*?)<\\/entry>/gi;\n  const regex = xml.includes('<entry') ? entryRegex : itemRegex;\n\n  let matches;\n  while ((matches = regex.exec(xml)) !== null) {\n    const itemXml = matches[1];\n    const title = extractTag(itemXml, 'title');\n    const link = extractTag(itemXml, 'link');\n    if (title && link) {\n      allArticles.push({\n        json: {\n          url: link,\n          title: title,\n          tags: source.tags || [],\n          category: source.category || '',\n          sourceName: source.name || ''\n        }\n      });\n    }\n  }\n}\n\nif (allArticles.length === 0) {\n  return [{ json: { _noArticles: true, _sourceCount: sources.length } }];\n}\n\nreturn allArticles;"
+        "jsCode": "// 将所有Feed响应与RSS源信息按索引配对，解析所有文章\nconst feeds = $input.all();\nconst sources = $('提取RSS源').all();\n\nfunction extractTag(content, tag) {\n  const cdataRegex = new RegExp(`<${tag}[^>]*><!\\\\[CDATA\\\\[([\\\\s\\\\S]*?)\\\\]\\\\]><\\\\/${tag}>`, 'i');\n  const plainRegex = new RegExp(`<${tag}[^>]*>([\\\\s\\\\S]*?)<\\\\/${tag}>`, 'i');\n  const hrefRegex = new RegExp(`<${tag}[^>]*href=[\"']([^\"']+)[\"']`, 'i');\n  let match = content.match(cdataRegex);\n  if (match) return match[1].trim();\n  match = content.match(plainRegex);\n  if (match) return match[1].trim();\n  if (tag === 'link') {\n    match = content.match(hrefRegex);\n    if (match) return match[1].trim();\n  }\n  return '';\n}\n\nconst allArticles = [];\n\nfor (let i = 0; i < feeds.length; i++) {\n  const feedData = feeds[i].json;\n  const source = sources[i] ? sources[i].json : {};\n  const xml = feedData.data || feedData.body || '';\n\n  if (!xml || typeof xml !== 'string') continue;\n\n  const itemRegex = /<item[^>]*>[\\s\\S]*?<\\/item>/gi;\n  const entryRegex = /<entry[^>]*>[\\s\\S]*?<\\/entry>/gi;\n  const regex = xml.includes('<entry') ? entryRegex : itemRegex;\n\n  let matches;\n  while ((matches = regex.exec(xml)) !== null) {\n    const itemXml = matches[0];\n    const title = extractTag(itemXml, 'title');\n    const link = extractTag(itemXml, 'link');\n    if (title && link) {\n      allArticles.push({\n        json: {\n          url: link,\n          title: title,\n          tags: source.tags || [],\n          category: source.category || '',\n          sourceName: source.name || ''\n        }\n      });\n    }\n  }\n}\n\nif (allArticles.length === 0) {\n  return [{ json: { _noArticles: true, _sourceCount: sources.length } }];\n}\n\nreturn allArticles;"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000006",
       "name": "解析全部文章",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        960,
-        300
+        1200,
+        400
       ]
     },
     {
@@ -136,8 +167,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        1200,
-        300
+        1440,
+        400
       ]
     },
     {
@@ -165,68 +196,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1440,
-        200
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "jsCode": "const now = new Date();\nconst hour = now.getHours();\nlet period = '早间';\nif (hour >= 11 && hour < 15) period = '午间';\nelse if (hour >= 17) period = '晚间';\n\nlet sourceCount = 0;\ntry { sourceCount = $('提取RSS源').all().length; } catch(e) {}\n\nconst articleResults = $('推送文章到Ingest').all();\nconst successList = [];\nconst duplicateList = [];\nconst failedList = [];\n\nfor (const r of articleResults) {\n  const d = r.json;\n  const item = { title: d.title || 'Untitled', url: d.url || '', category: d.category || '' };\n  if (d.error) {\n    item.error = d.error.message || String(d.error);\n    failedList.push(item);\n  } else if (d.success === false && d.status === 'duplicate') {\n    duplicateList.push(item);\n  } else {\n    successList.push(item);\n  }\n}\n\nconst total = articleResults.length;\nconst success = successList.length;\nconst duplicate = duplicateList.length;\nconst failed = failedList.length;\n\nlet parseSuccess = 0;\nlet parseFailed = 0;\nlet parseTotal = 0;\ntry {\n  const parseResults = $('批量解析文档').all();\n  const groupResults = $('按Dataset分组').all();\n  for (const r of parseResults) {\n    const d = r.json;\n    const group = groupResults.find(g => g.json.dataset_id === d.dataset_id);\n    const docCount = group ? group.json.document_ids.length : 0;\n    parseTotal += docCount;\n    if (d.error || (d.code && d.code !== 0)) {\n      parseFailed += docCount;\n    } else {\n      parseSuccess += docCount;\n    }\n  }\n} catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst plainText = `📰 ${period}RSS定时采集已完成\\n⏰ ${dateStr} ${timeStr}\\n📊 RSS源: ${sourceCount} 个 | 文章: ${total} 篇\\n✅ 入库: ${success} | ⏩ 已存在: ${duplicate} | ❌ 失败: ${failed}${parseTotal > 0 ? `\\n🔄 解析: ${parseSuccess}/${parseTotal} 成功` : ''}`;\n\nlet html = `<h4>📰 ${period} RSS 采集完成</h4>\\n<p><i>${dateStr} ${timeStr} | ${sourceCount} 个源 | ${total} 篇文章</i></p>\\n`;\n\nif (success > 0) {\n  html += `\\n<h5>✅ 成功入库 (${success} 篇)</h5>\\n<ul>\\n`;\n  const showCount = Math.min(5, success);\n  for (let i = 0; i < showCount; i++) {\n    const a = successList[i];\n    html += `<li>${a.category ? `<b>${a.category}</b>: ` : ''}<a href=\"${a.url}\">${a.title}</a></li>\\n`;\n  }\n  if (success > 5) html += `<li><i>... 还有 ${success - 5} 篇</i></li>\\n`;\n  html += `</ul>\\n`;\n}\n\nif (duplicate > 0) {\n  html += `\\n<h5>📋 已存在 (${duplicate} 篇)</h5>\\n<ul>\\n`;\n  for (const a of duplicateList) {\n    html += `<li><a href=\"${a.url}\">${a.title}</a></li>\\n`;\n  }\n  html += `</ul>\\n`;\n}\n\nif (failed > 0) {\n  html += `\\n<h5>❌ 失败 (${failed} 篇)</h5>\\n<ul>\\n`;\n  for (const a of failedList) {\n    html += `<li><del>${a.url}</del> - ${a.error}</li>\\n`;\n  }\n  html += `</ul>\\n`;\n}\n\nif (parseTotal > 0) {\n  html += `\\n<p>🔄 已触发 ${parseSuccess}/${parseTotal} 篇文档解析`;\n  if (parseFailed > 0) html += ` (${parseFailed} 失败)`;\n  html += `</p>`;\n}\n\nreturn [{ json: { summary: plainText, html, timestamp: now.toISOString() } }];"
-      },
-      "id": "a1b2c3d4-0001-4000-a000-000000000010",
-      "name": "汇总统计",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1920,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "http://localhost:5678/webhook/notify",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ room: 'daily', message: $json.summary, html: $json.html }) }}",
-        "options": {
-          "timeout": 10000
-        }
-      },
-      "id": "a1b2c3d4-0001-4000-a000-000000000013",
-      "name": "发送采集通知",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2160,
+        1680,
         300
       ],
       "continueOnFail": true
-    },
-    {
-      "parameters": {},
-      "id": "a1b2c3d4-0001-4000-a000-000000000011",
-      "name": "结束",
-      "type": "n8n-nodes-base.noOp",
-      "typeVersion": 1,
-      "position": [
-        2160,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "// 无文章时也发送通知\nconst now = new Date();\nconst hour = now.getHours();\nlet period = '早间';\nif (hour >= 11 && hour < 15) period = '午间';\nelse if (hour >= 17) period = '晚间';\n\nlet sourceCount = 0;\ntry { sourceCount = $('提取RSS源').all().length; } catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `📰 ${period}RSS定时采集已完成\\n⏰ ${dateStr} ${timeStr}\\n📊 RSS源: ${sourceCount} 个 | 文章: 0 篇 (无新内容)`;\nconst html = `<h4>📰 ${period} RSS 采集完成</h4>\\n<p><i>${dateStr} ${timeStr} | ${sourceCount} 个源 | 0 篇文章</i></p>\\n<p><i>无新内容</i></p>`;\n\nreturn [{ json: { summary, html, timestamp: now.toISOString() } }];"
-      },
-      "id": "a1b2c3d4-0001-4000-a000-000000000015",
-      "name": "无文章汇总",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1440,
-        440
-      ]
     },
     {
       "parameters": {
@@ -237,8 +210,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1440,
-        300
+        1680,
+        400
       ]
     },
     {
@@ -269,27 +242,27 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        1560,
-        300
+        1800,
+        400
       ]
     },
     {
       "parameters": {
-        "jsCode": "// Group document IDs by dataset_id\nconst input = $input.first().json;\nconst documents = input.documents || [];\n\nconst grouped = {};\nfor (const doc of documents) {\n  const datasetId = doc.dataset_id;\n  if (!grouped[datasetId]) {\n    grouped[datasetId] = {\n      dataset_id: datasetId,\n      document_ids: [],\n      titles: []\n    };\n  }\n  grouped[datasetId].document_ids.push(doc.document_id);\n  grouped[datasetId].titles.push(doc.title);\n}\n\n// Convert to array for iteration\nconst result = Object.values(grouped);\nreturn result.map(g => ({ json: g }));"
+        "jsCode": "// Group document IDs by dataset_id, output as smart parse items array\nconst input = $input.first().json;\nconst documents = input.documents || [];\n\nconst grouped = {};\nfor (const doc of documents) {\n  const datasetId = doc.dataset_id;\n  if (!grouped[datasetId]) {\n    grouped[datasetId] = {\n      dataset_id: datasetId,\n      document_ids: []\n    };\n  }\n  grouped[datasetId].document_ids.push(doc.document_id);\n}\n\nconst items = Object.values(grouped);\nreturn [{ json: { items, total: documents.length } }];"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000018",
       "name": "按Dataset分组",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1680,
-        200
+        1920,
+        300
       ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.BELLKEEPER_URL }}/api/ragflow/documents/parse/throttled",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/ragflow/documents/parse/smart",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -305,24 +278,104 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ dataset_id: $json.dataset_id, document_ids: $json.document_ids, batch_size: 3, interval_seconds: 30 }) }}",
+        "jsonBody": "={{ JSON.stringify({ items: $json.items, config: { batch_size: 3, initial_delay: 15, max_retries: 3, poll_interval: 10, poll_timeout: 300, notify_webhook: 'http://localhost:5678/webhook/notify', notify_room: 'daily' } }) }}",
         "options": {
           "timeout": 30000
         }
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000019",
-      "name": "批量解析文档",
+      "name": "智能解析文档",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1800,
-        200
+        2040,
+        300
       ],
       "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst hour = now.getHours();\nlet period = '早间';\nif (hour >= 11 && hour < 15) period = '午间';\nelse if (hour >= 17) period = '晚间';\n\n// 检测补录模式\nlet isBackfill = false;\nlet rssLimit = 0;\ntry {\n  const wh = $('补录触发').first().json;\n  isBackfill = true;\n  rssLimit = parseInt((wh.body || wh).limit) || 200;\n} catch(e) {}\n\nconst modeLabel = isBackfill ? '手动补录' : period + 'RSS定时采集';\n\nlet sourceCount = 0;\ntry { sourceCount = $('提取RSS源').all().length; } catch(e) {}\n\nconst articleResults = $('推送文章到Ingest').all();\nconst successList = [];\nconst duplicateList = [];\nconst failedList = [];\n\nfor (const r of articleResults) {\n  const d = r.json;\n  const item = { title: d.title || 'Untitled', url: d.url || '', category: d.category || '' };\n  if (d.error) {\n    item.error = d.error.message || String(d.error);\n    failedList.push(item);\n  } else if (d.success === false && d.status === 'duplicate') {\n    duplicateList.push(item);\n  } else {\n    successList.push(item);\n  }\n}\n\nconst total = articleResults.length;\nconst success = successList.length;\nconst duplicate = duplicateList.length;\nconst failed = failedList.length;\n\nlet parseTotal = 0;\nlet parseTaskId = '';\ntry {\n  const parseResult = $('智能解析文档').first().json;\n  parseTotal = parseResult.total_documents || 0;\n  parseTaskId = parseResult.task_id || '';\n} catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst plainText = `${modeLabel}已完成\\n${dateStr} ${timeStr}${isBackfill ? ' | limit=' + rssLimit : ''}\\nRSS源: ${sourceCount} 个 | 文章: ${total} 篇\\n入库: ${success} | 已存在: ${duplicate} | 失败: ${failed}${parseTotal > 0 ? `\\n已启动智能解析 (${parseTotal} 个文档${parseTaskId ? ', task=' + parseTaskId : ''})` : ''}`;\n\nlet html = `<h4>${modeLabel}完成</h4>\\n<p><i>${dateStr} ${timeStr} | ${sourceCount} 个源 | ${total} 篇文章${isBackfill ? ' | limit=' + rssLimit : ''}</i></p>\\n`;\n\nif (success > 0) {\n  html += `\\n<h5>成功入库 (${success} 篇)</h5>\\n<ul>\\n`;\n  const showCount = Math.min(10, success);\n  for (let i = 0; i < showCount; i++) {\n    const a = successList[i];\n    html += `<li>${a.category ? `<b>${a.category}</b>: ` : ''}<a href=\"${a.url}\">${a.title}</a></li>\\n`;\n  }\n  if (success > 10) html += `<li><i>... 还有 ${success - 10} 篇</i></li>\\n`;\n  html += `</ul>\\n`;\n}\n\nif (duplicate > 0) {\n  html += `\\n<p>已存在: ${duplicate} 篇 (已跳过)</p>\\n`;\n}\n\nif (failed > 0) {\n  html += `\\n<h5>失败 (${failed} 篇)</h5>\\n<ul>\\n`;\n  const showFailed = Math.min(5, failed);\n  for (let i = 0; i < showFailed; i++) {\n    const a = failedList[i];\n    html += `<li><del>${a.url}</del> - ${a.error}</li>\\n`;\n  }\n  if (failed > 5) html += `<li><i>... 还有 ${failed - 5} 篇</i></li>\\n`;\n  html += `</ul>\\n`;\n}\n\nif (parseTotal > 0) {\n  html += `\\n<p>已启动智能解析: ${parseTotal} 个文档 (后台处理中，完成后会单独通知)</p>`;\n}\n\nreturn [{ json: { summary: plainText, html, timestamp: now.toISOString() } }];"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000010",
+      "name": "汇总统计",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: 'daily', message: $json.summary, html: $json.html }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000013",
+      "name": "发送采集通知",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        400
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0001-4000-a000-000000000011",
+      "name": "结束",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2640,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 无文章时也发送通知\nconst now = new Date();\nconst hour = now.getHours();\nlet period = '早间';\nif (hour >= 11 && hour < 15) period = '午间';\nelse if (hour >= 17) period = '晚间';\n\nlet isBackfill = false;\ntry { $('补录触发').first(); isBackfill = true; } catch(e) {}\nconst modeLabel = isBackfill ? '手动补录' : period + 'RSS定时采集';\n\nlet sourceCount = 0;\ntry { sourceCount = $('提取RSS源').all().length; } catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `${modeLabel}已完成\\n${dateStr} ${timeStr}\\nRSS源: ${sourceCount} 个 | 文章: 0 篇 (无新内容)`;\nconst html = `<h4>${modeLabel}完成</h4>\\n<p><i>${dateStr} ${timeStr} | ${sourceCount} 个源 | 0 篇文章</i></p>\\n<p><i>无新内容</i></p>`;\n\nreturn [{ json: { summary, html, timestamp: now.toISOString() } }];"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000015",
+      "name": "无文章汇总",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        540
+      ]
     }
   ],
   "connections": {
     "定时触发": {
+      "main": [
+        [
+          {
+            "node": "获取RSS源列表",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "补录触发": {
+      "main": [
+        [
+          {
+            "node": "立即响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "立即响应": {
       "main": [
         [
           {
@@ -406,39 +459,6 @@
         ]
       ]
     },
-    "汇总统计": {
-      "main": [
-        [
-          {
-            "node": "发送采集通知",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "无文章汇总": {
-      "main": [
-        [
-          {
-            "node": "发送采集通知",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "发送采集通知": {
-      "main": [
-        [
-          {
-            "node": "结束",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "提取文档ID": {
       "main": [
         [
@@ -472,18 +492,51 @@
       "main": [
         [
           {
-            "node": "批量解析文档",
+            "node": "智能解析文档",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "批量解析文档": {
+    "智能解析文档": {
       "main": [
         [
           {
             "node": "汇总统计",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "汇总统计": {
+      "main": [
+        [
+          {
+            "node": "发送采集通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "无文章汇总": {
+      "main": [
+        [
+          {
+            "node": "发送采集通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "发送采集通知": {
+      "main": [
+        [
+          {
+            "node": "结束",
             "type": "main",
             "index": 0
           }

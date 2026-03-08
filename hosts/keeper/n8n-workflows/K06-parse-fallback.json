@@ -43,7 +43,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const resp = $input.first().json;\nconst docs = resp.data?.data || [];\n\nif (docs.length === 0) {\n  return [{ json: { hasDocuments: false, count: 0 } }];\n}\n\nconst grouped = {};\nfor (const doc of docs) {\n  const dsId = doc.dataset_id || doc.kb_id;\n  if (!dsId) continue;\n  \n  if (!grouped[dsId]) {\n    grouped[dsId] = { dataset_id: dsId, document_ids: [], titles: [] };\n  }\n  grouped[dsId].document_ids.push(doc.id);\n  grouped[dsId].titles.push(doc.name || 'Untitled');\n}\n\nconst result = Object.values(grouped);\nreturn result.map(g => ({ json: { ...g, hasDocuments: true, count: g.document_ids.length } }));"
+        "jsCode": "const resp = $input.first().json;\nconst docs = resp.data?.data || [];\n\nif (docs.length === 0) {\n  return [{ json: { hasDocuments: false, count: 0 } }];\n}\n\nconst grouped = {};\nfor (const doc of docs) {\n  const dsId = doc.dataset_id || doc.kb_id;\n  if (!dsId) continue;\n  if (!grouped[dsId]) {\n    grouped[dsId] = { dataset_id: dsId, document_ids: [] };\n  }\n  grouped[dsId].document_ids.push(doc.id);\n}\n\nconst items = Object.values(grouped);\nconst totalCount = items.reduce((sum, g) => sum + g.document_ids.length, 0);\nreturn [{ json: { hasDocuments: true, items, count: totalCount } }];"
       },
       "id": "group-by-dataset",
       "name": "按Dataset分组",
@@ -83,7 +83,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.BELLKEEPER_INTERNAL_URL }}/api/ragflow/documents/parse/throttled",
+        "url": "={{ $env.BELLKEEPER_INTERNAL_URL }}/api/ragflow/documents/parse/smart",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -99,7 +99,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ dataset_id: $json.dataset_id, document_ids: $json.document_ids, batch_size: 5, interval_seconds: 30 }) }}",
+        "jsonBody": "={{ JSON.stringify({ items: $json.items, config: { batch_size: 5, initial_delay: 15, max_retries: 3, poll_interval: 10, poll_timeout: 300, notify_webhook: 'http://localhost:5678/webhook/notify', notify_room: 'daily' } }) }}",
         "options": {
           "timeout": 30000
         }
@@ -113,7 +113,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const results = $('触发解析').all();\nlet totalDocs = 0;\nlet successCount = 0;\nlet failCount = 0;\n\nfor (const r of results) {\n  const d = r.json;\n  const count = d.count || 0;\n  totalDocs += count;\n  \n  if (d.error || (d.code && d.code !== 0)) {\n    failCount += count;\n  } else {\n    successCount += count;\n  }\n}\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `🔄 文档解析兜底任务完成\\n⏰ ${dateStr} ${timeStr}\\n📊 触发解析: ${successCount}/${totalDocs} 篇${failCount > 0 ? ` (${failCount} 失败)` : ''}`;\nconst html = `<h4>🔄 文档解析兜底</h4>\\n<p><i>${dateStr} ${timeStr}</i></p>\\n<p>触发解析: <b>${successCount}/${totalDocs}</b> 篇${failCount > 0 ? ` (<span style=\"color:red\">${failCount} 失败</span>)` : ''}</p>`;\n\nreturn [{ json: { summary, html, totalDocs, successCount, failCount } }];"
+        "jsCode": "const result = $('触发解析').first().json;\nconst totalDocs = result.total_documents || 0;\nconst taskId = result.task_id || '';\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `文档解析兜底任务完成\\n${dateStr} ${timeStr}\\n已启动智能解析: ${totalDocs} 个文档 (后台处理中)`;\nconst html = `<h4>文档解析兜底</h4>\\n<p><i>${dateStr} ${timeStr}</i></p>\\n<p>已启动智能解析: <b>${totalDocs}</b> 个文档 (后台处理中，完成后会单独通知)</p>`;\n\nreturn [{ json: { summary, html, totalDocs, taskId } }];"
       },
       "id": "summarize",
       "name": "汇总结果",
