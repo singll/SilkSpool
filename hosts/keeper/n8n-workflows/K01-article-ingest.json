@@ -58,7 +58,8 @@
       "position": [
         480,
         300
-      ]
+      ],
+      "continueOnFail": true
     },
     {
       "parameters": {
@@ -97,7 +98,7 @@
         "respondWith": "json",
         "responseBody": "={{ JSON.stringify({ success: false, status: 'duplicate', message: 'URL already exists in the knowledge base', url: $('Validate URL').first().json.url }) }}",
         "options": {
-          "responseCode": 409
+          "responseCode": 200
         }
       },
       "id": "respond-duplicate",
@@ -249,7 +250,8 @@
       "position": [
         1920,
         560
-      ]
+      ],
+      "continueOnFail": true
     },
     {
       "parameters": {
@@ -291,12 +293,26 @@
       "position": [
         2400,
         560
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build response: handle upload success or failure\nconst uploadResult = $input.first().json;\nconst mergeData = $('Merge Tags').first().json;\n\nif (uploadResult.error) {\n  const errMsg = typeof uploadResult.error === 'object'\n    ? (uploadResult.error.message || JSON.stringify(uploadResult.error))\n    : String(uploadResult.error);\n  return [{\n    json: {\n      success: false,\n      status: 'upload_failed',\n      error: errMsg,\n      title: mergeData.title,\n      url: mergeData.url\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    success: true,\n    status: 'ingested',\n    title: mergeData.title,\n    url: mergeData.url,\n    tags: mergeData.tags,\n    category: mergeData.category,\n    uploadResult: uploadResult\n  }\n}];"
+      },
+      "id": "build-response",
+      "name": "构建响应",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        560
       ]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: true, status: 'ingested', title: $('Merge Tags').first().json.title, url: $('Merge Tags').first().json.url, tags: $('Merge Tags').first().json.tags, category: $('Merge Tags').first().json.category, uploadResult: $json }) }}",
+        "responseBody": "={{ JSON.stringify($json) }}",
         "options": {
           "responseCode": 200
         }
@@ -306,7 +322,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        2640,
+        2880,
         560
       ]
     }
@@ -437,6 +453,17 @@
       ]
     },
     "Upload to RagFlow": {
+      "main": [
+        [
+          {
+            "node": "构建响应",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "构建响应": {
       "main": [
         [
           {
