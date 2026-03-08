@@ -25,6 +25,9 @@ services:
       # [Fix] v0.24.0 Nginx 只加载 conf.d/，挂载自定义配置并覆盖默认
       - ./ragflow/conf/ragflow.nginx.conf:/etc/nginx/conf.d/ragflow.conf:ro
       - ./ragflow/conf/empty.conf:/etc/nginx/conf.d/default.conf:ro
+    # 默认只有 1 个 task executor，多文件同时解析会排队阻塞
+    # 增加到 2 个并发执行器，避免单任务卡住时阻塞全部解析
+    command: ["--workers=2"]
     depends_on:
       - es
       - redis
