@@ -167,6 +167,14 @@
                       "type": "string",
                       "operation": "notEquals"
                     }
+                  },
+                  {
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "backfill",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEquals"
+                    }
                   }
                 ],
                 "combinator": "and"
