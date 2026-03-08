@@ -99,7 +99,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ items: $json.items, config: { batch_size: 5, initial_delay: 15, max_retries: 3, poll_interval: 10, poll_timeout: 300, notify_webhook: 'http://localhost:5678/webhook/notify', notify_room: 'daily' } }) }}",
+        "jsonBody": "={{ JSON.stringify({ items: $json.items, config: { batch_size: 5, initial_delay: 15, max_retries: 3, poll_interval: 10, poll_timeout: 300, notify_webhook: 'http://sp-n8n:5678/webhook/notify', notify_room: 'daily' } }) }}",
         "options": {
           "timeout": 30000
         }

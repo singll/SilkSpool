@@ -307,7 +307,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const command = $('解析指令').first().json;\nconst response = $input.first().json;\nconst botType = command.bot_type;\n\nlet message = '';\nlet html = '';\n\nif (response.success) {\n  const limit = command.args.limit || 200;\n  const days = command.args.days || 0;\n  const daysInfo = days > 0 ? `最近 ${days} 天的` : '';\n  message = `补录任务已启动，将从所有 RSS 源获取${daysInfo}最多 ${limit} 条文章。\\n采集和解析完成后会分别发送通知。`;\n  html = `<p>补录任务已启动，将从所有 RSS 源获取${daysInfo}最多 <b>${limit}</b> 条文章。</p><p><i>采集和解析完成后会分别发送通知。</i></p>`;\n} else {\n  const err = response.error || response.message || '未知错误';\n  message = `补录任务启动失败: ${err}`;\n  html = `<p>补录任务启动失败: ${err}</p>`;\n}\n\nreturn [{ json: { message, html, bot_type: botType } }];"
+        "jsCode": "const command = $('解析指令').first().json;\nconst response = $input.first().json;\nconst botType = command.bot_type;\n\nlet message = '';\nlet html = '';\n\n// onReceived 模式下 webhook 立即返回请求体（无 success 字段）\n// 只有 httpRequest continueOnFail 错误才有 error 字段\nif (response.error) {\n  const err = typeof response.error === 'object' ? (response.error.message || JSON.stringify(response.error)) : String(response.error);\n  message = `补录任务启动失败: ${err}`;\n  html = `<p>补录任务启动失败: ${err}</p>`;\n} else {\n  const limit = command.args.limit || 200;\n  const days = command.args.days || 0;\n  const daysInfo = days > 0 ? `最近 ${days} 天的` : '';\n  message = `补录任务已启动，将从所有 RSS 源获取${daysInfo}最多 ${limit} 条文章。\\n采集和解析完成后会分别发送通知。`;\n  html = `<p>补录任务已启动，将从所有 RSS 源获取${daysInfo}最多 <b>${limit}</b> 条文章。</p><p><i>采集和解析完成后会分别发送通知。</i></p>`;\n}\n\nreturn [{ json: { message, html, bot_type: botType } }];"
       },
       "id": "format-backfill-response",
       "name": "格式化补录回复",
