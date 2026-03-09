@@ -99,7 +99,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ items: $json.items, config: { batch_size: 5, initial_delay: 15, max_retries: 3, poll_interval: 10, poll_timeout: 300, notify_webhook: 'http://sp-n8n:5678/webhook/notify', notify_room: 'daily' } }) }}",
+        "jsonBody": "={{ JSON.stringify({ items: $json.items, config: { batch_size: 1, initial_delay: 15, max_retries: 3, max_recovery_attempts: 3, poll_interval: 10, soft_timeout: 300, hard_timeout: 900, stall_window: 120, degrade_to_single_on_timeout: true, notify_webhook: 'http://sp-n8n:5678/webhook/notify', notify_room: 'daily' } }) }}",
         "options": {
           "timeout": 30000
         }
@@ -113,7 +113,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const result = $('触发解析').first().json;\nconst totalDocs = result.total_documents || 0;\nconst taskId = result.task_id || '';\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `文档解析兜底任务完成\\n${dateStr} ${timeStr}\\n已启动智能解析: ${totalDocs} 个文档 (后台处理中)`;\nconst html = `<h4>文档解析兜底</h4>\\n<p><i>${dateStr} ${timeStr}</i></p>\\n<p>已启动智能解析: <b>${totalDocs}</b> 个文档 (后台处理中，完成后会单独通知)</p>`;\n\nreturn [{ json: { summary, html, totalDocs, taskId } }];"
+        "jsCode": "const result = $('触发解析').first().json;\nconst totalDocs = result.total_documents || 0;\nconst taskId = result.task_id || '';\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `文档解析兜底任务完成\\n${dateStr} ${timeStr}\\n已接管智能解析: ${totalDocs} 个文档${taskId ? ` (task=${taskId})` : ''}\\n若疑似卡住会自动尝试恢复，最终完成/失败将单独通知`;\nconst html = `<h4>文档解析兜底</h4>\\n<p><i>${dateStr} ${timeStr}</i></p>\\n<p>已接管智能解析: <b>${totalDocs}</b> 个文档 (持续跟踪至完成/失败，疑似卡住会自动恢复，最终结果将单独通知)</p>`;\n\nreturn [{ json: { summary, html, totalDocs, taskId } }];"
       },
       "id": "summarize",
       "name": "汇总结果",
