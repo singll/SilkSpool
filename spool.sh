@@ -161,6 +161,11 @@ case "$CMD" in
         bash "$BASE_DIR/lib/tools/n8n-sync.sh" "$@"
         ;;
 
+    # RAGFlow 解析状态
+    parse-status)
+        bash "$BASE_DIR/lib/tools/parse-status.sh" "$@"
+        ;;
+
     # 远程执行命令
     exec)
         HOST=$1; shift
