@@ -1,7 +1,33 @@
 {
   "permissions": {
     "allow": [
-      "Bash(ssh -o StrictHostKeyChecking=no -i /home/ubuntu/SilkSpool/keys/id_silkspool \"silkspool@192.168.7.220\" \"cd /opt/silkspool/knowledge && docker compose up -d --force-recreate n8n 2>&1\")"
+      "Bash(ssh -o StrictHostKeyChecking=no -i /home/ubuntu/SilkSpool/keys/id_silkspool \"silkspool@192.168.7.220\" \"cd /opt/silkspool/knowledge && docker compose up -d --force-recreate n8n 2>&1\")",
+      "Bash(API_KEY=\"77620b7fc1ae6e2c5884ac3aea48f26e58a3c7f4bbe8ab34\")",
+      "Bash(./spool.sh exec keeper \"docker exec sp-n8n node -e \"\":*)",
+      "Bash(./spool.sh logs keeper bellkeeper 200)",
+      "Bash(./spool.sh logs keeper bellkeeper 500)",
+      "Bash(curl -sL https://raw.githubusercontent.com/xbclub/BilibiliDanmuRobot-Core/master/blivedm-go/client/client.go)",
+      "Bash(go test:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(for file:*)",
+      "Bash(do echo:*)",
+      "Bash(./spool.sh exec:*)",
+      "Bash(./spool.sh exec keeper 'docker exec sp-n8n node -e \"\":*)",
+      "Bash(./spool.sh n8n-sync:*)",
+      "Bash(./spool.sh restart:*)",
+      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" n8n-sync update \"M03-知识问答处理器\")",
+      "Bash(git -C \"/home/ubuntu/SilkSpool\" diff --stat -- \"hosts/keeper/n8n-workflows/M03-qa-handler.json\" \"hosts/keeper/n8n-workflows/M01-matrix-bot-base.json\")",
+      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" n8n-sync push-update)",
+      "Bash(set +e)",
+      "Bash(status=$?)",
+      "Bash(printf '\\\\nEXIT_STATUS=%s\\\\n' \"$status\")",
+      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\":*)",
+      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" exec keeper \"curl -s -X POST ''http://localhost:5678/webhook/qa-handler'' -H ''Content-Type: application/json'' -d ''{\"\"command\"\":\"\"help\"\",\"\"question\"\":\"\"\"\",\"\"keywords\"\":\"\"\"\"}''\")",
+      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" exec keeper \"curl -s -X POST ''http://localhost:5678/webhook/qa-handler'' -H ''Content-Type: application/json'' -d ''{\"\"body\"\":{\"\"command\"\":\"\"help\"\",\"\"question\"\":\"\"\"\",\"\"keywords\"\":\"\"\"\"}}''\")",
+      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" exec keeper \"curl -s -i -X POST ''http://localhost:5678/webhook/qa-handler'' -H ''Content-Type: application/json'' -d ''{\"\"command\"\":\"\"search\"\",\"\"question\"\":\"\"\"\",\"\"keywords\"\":\"\"反序列化漏洞\"\"}''\")",
+      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" exec keeper \"curl -s -i -X POST ''http://localhost:5678/webhook/qa-handler'' -H ''Content-Type: application/json'' -d ''{\"\"body\"\":{\"\"command\"\":\"\"search\"\",\"\"question\"\":\"\"\"\",\"\"keywords\"\":\"\"反序列化漏洞\"\"}}''\")",
+      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" exec keeper \"curl -s -X POST ''http://localhost:5678/webhook/qa-handler'' -H ''Content-Type: application/json'' -d ''{\"\"command\"\":\"\"ask\"\",\"\"question\"\":\"\"反序列化漏洞的定义是什么\"\",\"\"keywords\"\":\"\"\"\"}''\")",
+      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" sync push keeper)"
     ]
   }
 }

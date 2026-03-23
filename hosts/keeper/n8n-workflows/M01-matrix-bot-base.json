@@ -132,6 +132,72 @@
                 },
                 "conditions": [
                   {
+                    "leftValue": "={{ $json.bot_type }}",
+                    "rightValue": "qa",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "help",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEquals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "backfill",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEquals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "parse_status",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEquals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputIndex": 1
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "help",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputIndex": 2
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
                     "leftValue": "={{ $json.command }}",
                     "rightValue": "backfill",
                     "operator": {
@@ -163,69 +229,11 @@
                 ],
                 "combinator": "and"
               },
-              "outputIndex": 5
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{ $json.bot_type }}",
-                    "rightValue": "qa",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  },
-                  {
-                    "leftValue": "={{ $json.command }}",
-                    "rightValue": "help",
-                    "operator": {
-                      "type": "string",
-                      "operation": "notEquals"
-                    }
-                  },
-                  {
-                    "leftValue": "={{ $json.command }}",
-                    "rightValue": "backfill",
-                    "operator": {
-                      "type": "string",
-                      "operation": "notEquals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              },
-              "outputIndex": 1
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{ $json.command }}",
-                    "rightValue": "help",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              },
-              "outputIndex": 2
+              "outputIndex": 4
             }
           ]
         },
-        "fallbackOutput": 4,
+        "fallbackOutput": "extra",
         "options": {}
       },
       "id": "route-command",
@@ -533,14 +541,14 @@
         ],
         [
           {
-            "node": "构建未知指令消息",
+            "node": "查询解析状态",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "查询解析状态",
+            "node": "构建未知指令消息",
             "type": "main",
             "index": 0
           }

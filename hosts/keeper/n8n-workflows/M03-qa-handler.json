@@ -23,6 +23,19 @@
     },
     {
       "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\nreturn [{\n  json: {\n    command: body.command || '',\n    question: body.question || '',\n    keywords: body.keywords || ''\n  }\n}];"
+      },
+      "id": "normalize-input",
+      "name": "标准化输入",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        360,
+        300
+      ]
+    },
+    {
+      "parameters": {
         "rules": {
           "values": [
             {
@@ -34,7 +47,7 @@
                 },
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body.command }}",
+                    "leftValue": "={{ $json.command }}",
                     "rightValue": "ask",
                     "operator": {
                       "type": "string",
@@ -55,7 +68,7 @@
                 },
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body.command }}",
+                    "leftValue": "={{ $json.command }}",
                     "rightValue": "search",
                     "operator": {
                       "type": "string",
@@ -76,7 +89,7 @@
                 },
                 "conditions": [
                   {
-                    "leftValue": "={{ $json.body.command }}",
+                    "leftValue": "={{ $json.command }}",
                     "rightValue": "help",
                     "operator": {
                       "type": "string",
@@ -100,13 +113,13 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
       "position": [
-        480,
+        600,
         300
       ]
     },
     {
       "parameters": {
-        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst question = body.question || '';\n\nif (!question) {\n  throw new Error('question parameter is required');\n}\n\nreturn [{\n  json: {\n    question: question\n  }\n}];"
+        "jsCode": "const question = $input.first().json.question || '';\n\nif (!question) {\n  throw new Error('question parameter is required');\n}\n\nreturn [{\n  json: {\n    question: question\n  }\n}];"
       },
       "id": "prepare-ask",
       "name": "准备问答请求",
@@ -153,7 +166,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const response = $input.first().json;\nconst question = $('准备问答请求').first().json.question;\n\n// 检查各种错误情况\nconst isTimeout = response.name === 'AxiosError' || (response.message && response.message.includes('timeout'));\nconst isRateLimit = response.message && (response.message.includes('429') || response.message.includes('rate') || response.message.includes('速率限制') || response.message.includes('RATE_LIMIT') || response.message.includes('Too Many Requests'));\nconst isError = response.error || response.errcode || (response.code && response.code !== 0) || isTimeout;\n\nif (isError) {\n  let errMsg = 'RAGFlow API 调用失败';\n  if (isRateLimit) {\n    errMsg = 'AI 模型繁忙（速率限制），请等待 30 秒后重试';\n  } else if (isTimeout) {\n    errMsg = '知识库响应超时，请稍后重试';\n  } else {\n    errMsg = typeof response.error === 'string' ? response.error : (response.message || errMsg);\n  }\n  \n  return [{\n    json: {\n      success: false,\n      error: errMsg,\n      rate_limited: isRateLimit,\n      retry_hint: isRateLimit ? 30 : 0\n    }\n  }];\n}\n\n// 提取答案\nconst answer = response.choices?.[0]?.message?.content || '未找到相关内容';\n\n// 提取引用来源 (v0.24 格式)\nlet references = [];\nif (Array.isArray(response.reference)) {\n  references = response.reference;\n} else if (response.reference && typeof response.reference === 'object') {\n  references = response.reference.chunks || [];\n}\n\n// 格式化回复消息\nlet message = `🤖 知识库助手\\n\\n${answer}`;\n\nif (references.length > 0) {\n  message += '\\n\\n📚 参考来源:';\n  references.forEach((ref, i) => {\n    const docName = (ref.document_keyword || ref.doc_name || '未知文档').replace(/\\.md$/, '');\n    const similarity = ref.similarity ? Math.round(ref.similarity * 100) : 0;\n    message += `\\n${i+1}. ${docName} (${similarity}%)`;\n  });\n}\n\nreturn [{\n  json: {\n    success: true,\n    message: message,\n    data: {\n      answer: answer,\n      references: references\n    }\n  }\n}];"
+        "jsCode": "const response = $input.first().json;\n\n// 错误检测\nconst isTimeout = response.name === 'AxiosError' || (response.message && response.message.includes('timeout'));\nconst isRateLimit = response.message && (response.message.includes('429') || response.message.includes('rate'));\nconst isError = (response.error && !response.choices) || isTimeout;\n\nif (isError) {\n  let errMsg = 'RAGFlow API 调用失败';\n  if (isRateLimit) {\n    errMsg = 'AI 模型繁忙（速率限制），请等待 30 秒后重试';\n  } else if (isTimeout) {\n    errMsg = '知识库响应超时，请稍后重试';\n  } else {\n    errMsg = response.message || response.error || errMsg;\n  }\n  return [{ json: { success: false, error: errMsg } }];\n}\n\n// OpenAI 兼容端点: { choices: [{ message: { content } }] }\n// 原生端点兜底: { code: 0, data: { answer } }\nlet answer = '';\nlet references = [];\n\nif (response.choices && response.choices.length > 0) {\n  answer = (response.choices[0].message?.content || '').trim();\n} else if (response.data) {\n  const ragData = response.data.data || response.data;\n  answer = (ragData.answer || '').trim();\n  references = ragData.references || ragData.reference || [];\n}\n\nif (!answer) {\n  return [{ json: { success: false, error: '知识库未返回有效答案，请稍后重试或改用 !搜 关键词' } }];\n}\n\nlet message = `🤖 知识库助手\\n\\n${answer}`;\n\nif (Array.isArray(references) && references.length > 0) {\n  message += '\\n\\n📚 参考来源:';\n  references.forEach((ref, i) => {\n    const docName = (ref.doc_name || '未知文档').replace(/\\.md$/, '');\n    const similarity = ref.similarity ? Math.round(ref.similarity * 100) : 0;\n    message += `\\n${i+1}. ${docName} (${similarity}%)`;\n  });\n}\n\nreturn [{ json: { success: true, message, data: { answer, references } } }];"
       },
       "id": "format-ask-response",
       "name": "格式化问答回复",
@@ -183,7 +196,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst keywords = body.keywords || '';\n\nif (!keywords) {\n  throw new Error('keywords parameter is required');\n}\n\nreturn [{\n  json: {\n    keywords: keywords\n  }\n}];"
+        "jsCode": "const keywords = $input.first().json.keywords || '';\n\nif (!keywords) {\n  throw new Error('keywords parameter is required');\n}\n\nreturn [{\n  json: {\n    keywords: keywords\n  }\n}];"
       },
       "id": "prepare-search",
       "name": "准备搜索请求",
@@ -295,6 +308,17 @@
   ],
   "connections": {
     "问答入口": {
+      "main": [
+        [
+          {
+            "node": "标准化输入",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "标准化输入": {
       "main": [
         [
           {
