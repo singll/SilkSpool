@@ -27,7 +27,12 @@
       "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" exec keeper \"curl -s -i -X POST ''http://localhost:5678/webhook/qa-handler'' -H ''Content-Type: application/json'' -d ''{\"\"command\"\":\"\"search\"\",\"\"question\"\":\"\"\"\",\"\"keywords\"\":\"\"反序列化漏洞\"\"}''\")",
       "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" exec keeper \"curl -s -i -X POST ''http://localhost:5678/webhook/qa-handler'' -H ''Content-Type: application/json'' -d ''{\"\"body\"\":{\"\"command\"\":\"\"search\"\",\"\"question\"\":\"\"\"\",\"\"keywords\"\":\"\"反序列化漏洞\"\"}}''\")",
       "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" exec keeper \"curl -s -X POST ''http://localhost:5678/webhook/qa-handler'' -H ''Content-Type: application/json'' -d ''{\"\"command\"\":\"\"ask\"\",\"\"question\"\":\"\"反序列化漏洞的定义是什么\"\",\"\"keywords\"\":\"\"\"\"}''\")",
-      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" sync push keeper)"
+      "Bash(bash \"/home/ubuntu/SilkSpool/spool.sh\" sync push keeper)",
+      "Bash(GIT_SSH_COMMAND=\"ssh -o ConnectTimeout=30\" git push origin main)",
+      "Bash(git -C /home/ubuntu/SilkSpool remote -v)",
+      "Bash(ssh -T git@github.com -o ConnectTimeout=5 -4)",
+      "Bash(ssh -T git@github.com -o ConnectTimeout=5 -p 443 -o HostName=ssh.github.com)",
+      "Bash(bash -n /home/ubuntu/SilkSpool/lib/tools/n8n-sync.sh)"
     ]
   }
 }

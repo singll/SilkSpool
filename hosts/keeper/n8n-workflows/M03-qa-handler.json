@@ -133,6 +133,40 @@
     {
       "parameters": {
         "method": "POST",
+        "url": "={{ $env.RAGFLOW_API_URL }}/api/v1/retrieval",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.RAGFLOW_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ question: $json.question, dataset_ids: $env.RAGFLOW_DATASET_IDS ? $env.RAGFLOW_DATASET_IDS.split(',').map(id => id.trim()) : ['d15bd2ac07ae11f1a088ae230b1794d7'], top_k: 5 }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "ask-retrieval",
+      "name": "问答补充来源检索",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        100
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
         "url": "={{ $env.RAGFLOW_API_URL }}/api/v1/chats_openai/{{ $env.RAGFLOW_CHAT_ASSISTANT_ID }}/chat/completions",
         "sendHeaders": true,
         "headerParameters": {
@@ -149,7 +183,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $env.RAGFLOW_CHAT_ASSISTANT_ID, messages: [{ role: 'user', content: $json.question }], stream: false }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: $env.RAGFLOW_CHAT_ASSISTANT_ID, messages: [{ role: 'user', content: $('准备问答请求').first().json.question }], stream: false }) }}",
         "options": {
           "timeout": 60000
         }
@@ -159,21 +193,21 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        960,
+        1200,
         100
       ],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "const response = $input.first().json;\n\n// 错误检测\nconst isTimeout = response.name === 'AxiosError' || (response.message && response.message.includes('timeout'));\nconst isRateLimit = response.message && (response.message.includes('429') || response.message.includes('rate'));\nconst isError = (response.error && !response.choices) || isTimeout;\n\nif (isError) {\n  let errMsg = 'RAGFlow API 调用失败';\n  if (isRateLimit) {\n    errMsg = 'AI 模型繁忙（速率限制），请等待 30 秒后重试';\n  } else if (isTimeout) {\n    errMsg = '知识库响应超时，请稍后重试';\n  } else {\n    errMsg = response.message || response.error || errMsg;\n  }\n  return [{ json: { success: false, error: errMsg } }];\n}\n\n// OpenAI 兼容端点: { choices: [{ message: { content } }] }\n// 原生端点兜底: { code: 0, data: { answer } }\nlet answer = '';\nlet references = [];\n\nif (response.choices && response.choices.length > 0) {\n  answer = (response.choices[0].message?.content || '').trim();\n} else if (response.data) {\n  const ragData = response.data.data || response.data;\n  answer = (ragData.answer || '').trim();\n  references = ragData.references || ragData.reference || [];\n}\n\nif (!answer) {\n  return [{ json: { success: false, error: '知识库未返回有效答案，请稍后重试或改用 !搜 关键词' } }];\n}\n\nlet message = `🤖 知识库助手\\n\\n${answer}`;\n\nif (Array.isArray(references) && references.length > 0) {\n  message += '\\n\\n📚 参考来源:';\n  references.forEach((ref, i) => {\n    const docName = (ref.doc_name || '未知文档').replace(/\\.md$/, '');\n    const similarity = ref.similarity ? Math.round(ref.similarity * 100) : 0;\n    message += `\\n${i+1}. ${docName} (${similarity}%)`;\n  });\n}\n\nreturn [{ json: { success: true, message, data: { answer, references } } }];"
+        "jsCode": "const response = $input.first().json;\nconst question = $('准备问答请求').first().json.question;\nconst retrievalResponse = $('问答补充来源检索').first()?.json || {};\n\nconst isTimeout = response.name === 'AxiosError' || (response.message && response.message.includes('timeout'));\nconst isRateLimit = response.message && (response.message.includes('429') || response.message.includes('rate'));\nconst isError = (response.error && !response.choices && !response.data) || isTimeout;\n\nif (isError) {\n  let errMsg = 'RAGFlow API 调用失败';\n  if (isRateLimit) {\n    errMsg = 'AI 模型繁忙（速率限制），请等待 30 秒后重试';\n  } else if (isTimeout) {\n    errMsg = '知识库响应超时，请稍后重试';\n  } else {\n    errMsg = response.message || response.error || errMsg;\n  }\n  return [{ json: { success: false, error: errMsg } }];\n}\n\nlet answer = '';\nlet references = [];\n\nif (response.choices && response.choices.length > 0) {\n  answer = (response.choices[0].message?.content || '').trim();\n} else if (response.data) {\n  const ragData = response.data?.data || response.data;\n  answer = (ragData.answer || '').trim();\n  references = ragData.references || ragData.reference || [];\n}\n\nif (!answer) {\n  return [{ json: { success: false, error: '知识库未返回有效答案，请稍后重试或改用 !搜 关键词' } }];\n}\n\nconst retrievalChunks = Array.isArray(retrievalResponse.data?.chunks) ? retrievalResponse.data.chunks : [];\nconst normalizedFromChat = Array.isArray(references) ? references.map((ref) => ({\n  docName: (ref.doc_name || ref.document_keyword || '未知文档').replace(/\\.md$/, ''),\n  similarity: ref.similarity ? Math.round(ref.similarity * 100) : 0,\n  snippet: (ref.content || ref.chunk || '').replace(/\\s+/g, ' ').trim()\n})) : [];\nconst normalizedFromRetrieval = retrievalChunks.map((chunk) => ({\n  docName: (chunk.document_keyword || chunk.doc_name || '未知文档').replace(/\\.md$/, ''),\n  similarity: chunk.similarity ? Math.round(chunk.similarity * 100) : 0,\n  snippet: (chunk.content || '').replace(/[\\[\\]()#*>|!]/g, '').replace(/\\s+/g, ' ').trim()\n}));\n\nconst mergedReferences = [];\nconst seen = new Set();\nfor (const ref of [...normalizedFromChat, ...normalizedFromRetrieval]) {\n  const key = `${ref.docName}::${ref.snippet.slice(0, 80)}`;\n  if (!seen.has(key)) {\n    seen.add(key);\n    mergedReferences.push(ref);\n  }\n}\n\nmergedReferences.sort((a, b) => (b.similarity || 0) - (a.similarity || 0));\nconst topReferences = mergedReferences.slice(0, 3);\n\nlet message = `📘 知识库回答\n\n问题：${question}\n\n## 核心答案\n${answer}`;\n\nif (topReferences.length > 0) {\n  message += '\n\n## 参考来源';\n  topReferences.forEach((ref, index) => {\n    const snippet = ref.snippet ? `\n   摘要：${ref.snippet.slice(0, 180)}${ref.snippet.length > 180 ? '...' : ''}` : '';\n    const score = ref.similarity ? ` (${ref.similarity}%)` : '';\n    message += `\n${index + 1}. ${ref.docName}${score}${snippet}`;\n  });\n}\n\nreturn [{\n  json: {\n    success: true,\n    message,\n    data: {\n      answer,\n      references: topReferences,\n      retrievalCount: mergedReferences.length\n    }\n  }\n}];"
       },
       "id": "format-ask-response",
       "name": "格式化问答回复",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1200,
+        1440,
         100
       ]
     },
@@ -190,7 +224,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        1440,
+        1680,
         100
       ]
     },
@@ -243,7 +277,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const response = $input.first().json;\nconst keywords = $('准备搜索请求').first().json.keywords;\n\n// 检查是否有错误\nif (response.error || response.errcode) {\n  return [{\n    json: {\n      success: false,\n      error: response.error || response.message || 'RAGFlow 检索失败'\n    }\n  }];\n}\n\n// 提取检索结果\nconst chunks = response.data?.chunks || [];\n\nif (chunks.length === 0) {\n  return [{\n    json: {\n      success: true,\n      message: `🔍 搜索结果: ${keywords}\\n\\n未找到相关内容`\n    }\n  }];\n}\n\n// 格式化回复消息\nlet message = `🔍 搜索结果: ${keywords}\\n`;\n\nchunks.forEach((chunk, i) => {\n  const docName = (chunk.document_keyword || chunk.doc_name || '未知文档').replace(/\\.md$/, '');\n  const rawContent = (chunk.content || '').replace(/[\\[\\]()#*>|!]/g, '').replace(/\\s+/g, ' ').trim();\n  const content = rawContent.substring(0, 120);\n  const similarity = chunk.similarity ? Math.round(chunk.similarity * 100) : 0;\n  message += `\\n${i+1}. ${docName} (${similarity}%)\\n   ${content}...\\n`;\n});\n\nmessage += `\\n共找到 ${chunks.length} 条相关内容`;\n\nreturn [{\n  json: {\n    success: true,\n    message: message,\n    data: {\n      chunks: chunks\n    }\n  }\n}];"
+        "jsCode": "const response = $input.first().json;\nconst keywords = $('准备搜索请求').first().json.keywords;\n\nif (response.error || response.errcode) {\n  return [{\n    json: {\n      success: false,\n      error: response.error || response.message || 'RAGFlow 检索失败'\n    }\n  }];\n}\n\nconst chunks = response.data?.chunks || [];\n\nif (chunks.length === 0) {\n  return [{\n    json: {\n      success: true,\n      message: `🔍 搜索结果: ${keywords}\\n\\n未找到相关内容`\n    }\n  }];\n}\n\nlet message = `🔍 搜索结果: ${keywords}\\n`;\n\nchunks.forEach((chunk, i) => {\n  const docName = (chunk.document_keyword || chunk.doc_name || '未知文档').replace(/\\.md$/, '');\n  const rawContent = (chunk.content || '').replace(/[\\[\\]()#*>|!]/g, '').replace(/\\s+/g, ' ').trim();\n  const content = rawContent.substring(0, 120);\n  const similarity = chunk.similarity ? Math.round(chunk.similarity * 100) : 0;\n  message += `\\n${i+1}. ${docName} (${similarity}%)\\n   ${content}...\\n`;\n});\n\nmessage += `\\n共找到 ${chunks.length} 条相关内容`;\n\nreturn [{\n  json: {\n    success: true,\n    message: message,\n    data: {\n      chunks: chunks\n    }\n  }\n}];"
       },
       "id": "format-search-response",
       "name": "格式化搜索回复",
@@ -274,7 +308,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: true, message: '🤖 知识库助手帮助\\n\\n基础:\\n  !问 {问题} - 向知识库提问\\n  !搜 {关键词} - 搜索相关文档\\n  !帮助 - 显示此帮助\\n\\n示例:\\n  !问 如何配置 RAGFlow\\n  !搜 Docker 部署' }) }}",
+        "responseBody": "={{ JSON.stringify({ success: true, message: '📘 知识库助手帮助\n\n基础:\n  !问 {问题} - 向知识库提问\n  !搜 {关键词} - 搜索相关文档\n  !帮助 - 显示此帮助\n\n示例:\n  !问 如何配置 RAGFlow\n  !搜 Docker 部署' }) }}",
         "options": {
           "responseCode": 200
         }
@@ -362,6 +396,17 @@
       ]
     },
     "准备问答请求": {
+      "main": [
+        [
+          {
+            "node": "问答补充来源检索",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "问答补充来源检索": {
       "main": [
         [
           {

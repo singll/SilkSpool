@@ -457,7 +457,7 @@ api_update_workflow() {
     local workflow_id="$1"
     local json_file="$2"
     local json_content
-    json_content=$(remote_exec "cat '$json_file'")
+    json_content=$(python3 -c "import sys; print(open(sys.argv[1], 'r', encoding='utf-8').read())" "$json_file" 2>/dev/null)
 
     # 清理 JSON 只保留 API 允许的字段
     local clean_json
@@ -545,9 +545,6 @@ update_workflow() {
     log_info "Found workflow ID: $workflow_id"
 
     # 查找对应的本地文件
-    local files_output
-    files_output=$(remote_exec "ls -1 '${N8N_WORKFLOW_DIR}'/*.json 2>/dev/null")
-
     local found_file=""
     while IFS= read -r file; do
         [ -z "$file" ] && continue
@@ -555,16 +552,16 @@ update_workflow() {
         [[ "$filename" == "00-config.json" ]] && continue
 
         local wf_name
-        wf_name=$(remote_exec "python3 -c \"import json; print(json.load(open('$file')).get('name',''))\"" 2>/dev/null)
+        wf_name=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8')).get('name',''))" "$file" 2>/dev/null)
 
         if [ "$wf_name" = "$target_name" ]; then
             found_file="$file"
             break
         fi
-    done <<< "$files_output"
+    done < <(compgen -G "$LOCAL_WORKFLOW_DIR/*.json")
 
     if [ -z "$found_file" ]; then
-        log_error "Workflow file not found for: $target_name"
+        log_error "Workflow file not found in local dir: $LOCAL_WORKFLOW_DIR ($target_name)"
         exit 1
     fi
 
@@ -596,10 +593,6 @@ update_all() {
     local existing_result
     existing_result=$(api_list_workflows)
 
-    # 获取远程文件列表
-    local files_output
-    files_output=$(remote_exec "ls -1 '${N8N_WORKFLOW_DIR}'/*.json 2>/dev/null")
-
     local success=0
     local failed=0
     local skipped=0
@@ -610,7 +603,8 @@ update_all() {
         [[ "$filename" == "00-config.json" ]] && continue
 
         local wf_name
-        wf_name=$(remote_exec "python3 -c \"import json; print(json.load(open('$file')).get('name',''))\"" 2>/dev/null)
+        wf_name=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1], encoding='utf-8')).get('name',''))" "$file" 2>/dev/null)
+        [ -z "$wf_name" ] && continue
 
         # 查找工作流 ID
         local workflow_id
@@ -647,7 +641,7 @@ except:
             log_error "  [FAIL] $error_msg"
             ((failed++)) || true
         fi
-    done <<< "$files_output"
+    done < <(compgen -G "$LOCAL_WORKFLOW_DIR/*.json")
 
     echo ""
     log_info "Update completed: $success updated, $skipped skipped"
@@ -736,10 +730,15 @@ main() {
             push_and_import
             ;;
         push-update)
+            shift
             log_step "Pushing workflow files to remote server..."
             bash "$BASE_DIR/lib/core/sync.sh" push "$N8N_HOST"
             echo ""
-            update_all
+            if [ -n "$1" ]; then
+                update_workflow "$1"
+            else
+                update_all
+            fi
             ;;
         activate)
             shift
