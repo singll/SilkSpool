@@ -272,9 +272,9 @@
         "url": "http://localhost:5678/webhook/qa-handler",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ command: $json.command, question: $json.args.question || '', keywords: $json.args.keywords || '' }) }}",
+        "jsonBody": "={{ JSON.stringify({ command: $json.command, question: $json.args.question || '', keywords: $json.args.keywords || '', room: 'qa', bot_type: $json.bot_type }) }}",
         "options": {
-          "timeout": 120000
+          "timeout": 5000
         }
       },
       "id": "call-qa",
@@ -363,19 +363,6 @@
       "position": [
         1680,
         100
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const command = $('解析指令').first().json;\nconst response = $input.first().json;\nconst botType = command.bot_type;\n\nlet message = '';\nlet html = '';\n\nif (response.success === false || response.error) {\n  const errMsg = typeof response.error === 'object' ? (response.error.message || JSON.stringify(response.error)) : String(response.error || '未知错误');\n  message = `❌ 操作失败: ${errMsg}`;\n  html = `<p>❌ 操作失败: ${errMsg}</p>`;\n} else if (response.message) {\n  message = response.message;\n  const lines = response.message.split('\\n');\n  const htmlParts = [];\n  let inList = false;\n\n  for (let i = 0; i < lines.length; i++) {\n    let line = lines[i];\n\n    // 空行\n    if (!line.trim()) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      continue;\n    }\n\n    // 转义 HTML 特殊字符\n    line = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n    // 粗体 **text**\n    line = line.replace(/\\*\\*(.+?)\\*\\*/g, '<b>$1</b>');\n    // 行内代码 `code`\n    line = line.replace(/`([^`]+)`/g, '<code>$1</code>');\n\n    // 📘/🔍/🤖 标题行\n    if (/^[📘🔍🤖]/.test(line)) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      htmlParts.push(`<h4>${line}</h4>`);\n      continue;\n    }\n\n    // 问题行\n    if (/^问题：/.test(line)) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      htmlParts.push(`<p><em>${line}</em></p>`);\n      continue;\n    }\n\n    // ## 小节标题\n    const h2Match = line.match(/^## (.+)$/);\n    if (h2Match) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      htmlParts.push(`<h5>${h2Match[1]}</h5>`);\n      continue;\n    }\n\n    // 摘要行（缩进 + 摘要：）\n    const summaryMatch = line.match(/^\\s+摘要：(.+)$/);\n    if (summaryMatch) {\n      htmlParts.push(`<blockquote>${summaryMatch[1]}</blockquote>`);\n      continue;\n    }\n\n    // 数字列表项 (1. xxx)\n    const numMatch = line.match(/^(\\d+)\\.\\s+(.+)$/);\n    if (numMatch) {\n      if (!inList) { htmlParts.push('<ol>'); inList = true; }\n      htmlParts.push(`<li><b>${numMatch[2]}</b></li>`);\n      continue;\n    }\n\n    // 普通段落\n    if (inList) { htmlParts.push('</ol>'); inList = false; }\n    htmlParts.push(`<p>${line}</p>`);\n  }\n  if (inList) { htmlParts.push('</ol>'); }\n  html = htmlParts.join('\\n');\n} else {\n  message = '✅ 操作成功';\n  html = '<p>✅ 操作成功</p>';\n}\n\nreturn [{ json: { message, html, bot_type: botType } }];"
-      },
-      "id": "format-qa-response",
-      "name": "格式化问答回复",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1680,
-        300
       ]
     },
     {
@@ -566,17 +553,6 @@
         ]
       ]
     },
-    "调用问答处理": {
-      "main": [
-        [
-          {
-            "node": "格式化问答回复",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "构建帮助消息": {
       "main": [
         [
@@ -600,17 +576,6 @@
       ]
     },
     "格式化待办回复": {
-      "main": [
-        [
-          {
-            "node": "准备发送",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "格式化问答回复": {
       "main": [
         [
           {

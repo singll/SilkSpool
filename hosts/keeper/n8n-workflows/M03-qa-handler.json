@@ -23,7 +23,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\nreturn [{\n  json: {\n    command: body.command || '',\n    question: body.question || '',\n    keywords: body.keywords || ''\n  }\n}];"
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\nreturn [{\n  json: {\n    command: body.command || '',\n    question: body.question || '',\n    keywords: body.keywords || '',\n    room: body.room || 'qa',\n    bot_type: body.bot_type || 'qa'\n  }\n}];"
       },
       "id": "normalize-input",
       "name": "标准化输入",
@@ -200,7 +200,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const response = $input.first().json;\nconst question = $('准备问答请求').first().json.question;\nconst retrievalResponse = $('问答补充来源检索').first()?.json || {};\n\nconst isTimeout = response.name === 'AxiosError' || (response.message && response.message.includes('timeout'));\nconst isRateLimit = response.message && (response.message.includes('429') || response.message.includes('rate'));\nconst isError = (response.error && !response.choices && !response.data) || isTimeout;\n\nif (isError) {\n  let errMsg = 'RAGFlow API 调用失败';\n  if (isRateLimit) {\n    errMsg = 'AI 模型繁忙（速率限制），请等待 30 秒后重试';\n  } else if (isTimeout) {\n    errMsg = '知识库响应超时，请稍后重试。如果持续超时，可尝试简化问题或使用 !搜 关键词';\n  } else {\n    errMsg = response.message || response.error || errMsg;\n  }\n  return [{ json: { success: false, error: errMsg } }];\n}\n\nlet answer = '';\nlet references = [];\n\nif (response.choices && response.choices.length > 0) {\n  answer = (response.choices[0].message?.content || '').trim();\n} else if (response.data) {\n  const ragData = response.data?.data || response.data;\n  answer = (ragData.answer || '').trim();\n  references = ragData.references || ragData.reference || [];\n}\n\nif (!answer) {\n  return [{ json: { success: false, error: '知识库未返回有效答案，请稍后重试或改用 !搜 关键词' } }];\n}\n\nconst retrievalChunks = Array.isArray(retrievalResponse.data?.chunks) ? retrievalResponse.data.chunks : [];\nconst normalizedFromChat = Array.isArray(references) ? references.map((ref) => ({\n  docName: (ref.doc_name || ref.document_keyword || '未知文档').replace(/\\.md$/, ''),\n  similarity: ref.similarity ? Math.round(ref.similarity * 100) : 0,\n  snippet: (ref.content || ref.chunk || '').replace(/\\s+/g, ' ').trim()\n})) : [];\nconst normalizedFromRetrieval = retrievalChunks.map((chunk) => ({\n  docName: (chunk.document_keyword || chunk.doc_name || '未知文档').replace(/\\.md$/, ''),\n  similarity: chunk.similarity ? Math.round(chunk.similarity * 100) : 0,\n  snippet: (chunk.content || '').replace(/[\\[\\]()#*>|!]/g, '').replace(/\\s+/g, ' ').trim()\n}));\n\nconst mergedReferences = [];\nconst seen = new Set();\nfor (const ref of [...normalizedFromChat, ...normalizedFromRetrieval]) {\n  const key = `${ref.docName}::${ref.snippet.slice(0, 80)}`;\n  if (!seen.has(key)) {\n    seen.add(key);\n    mergedReferences.push(ref);\n  }\n}\n\nmergedReferences.sort((a, b) => (b.similarity || 0) - (a.similarity || 0));\nconst topReferences = mergedReferences.slice(0, 3);\n\nlet message = `📘 知识库回答\\n\\n问题：${question}\\n\\n## 核心答案\\n${answer}`;\n\nif (topReferences.length > 0) {\n  message += '\\n\\n## 参考来源';\n  topReferences.forEach((ref, index) => {\n    const snippet = ref.snippet ? `\\n   摘要：${ref.snippet.slice(0, 180)}${ref.snippet.length > 180 ? '...' : ''}` : '';\n    const score = ref.similarity ? ` (${ref.similarity}%)` : '';\n    message += `\\n${index + 1}. ${ref.docName}${score}${snippet}`;\n  });\n}\n\nreturn [{\n  json: {\n    success: true,\n    message,\n    data: {\n      answer,\n      references: topReferences,\n      retrievalCount: mergedReferences.length\n    }\n  }\n}];"
+        "jsCode": "const response = $input.first().json;\nconst question = $('准备问答请求').first().json.question;\nconst retrievalResponse = $('问答补充来源检索').first()?.json || {};\nconst inputData = $('标准化输入').first().json;\nconst room = inputData.room || 'qa';\n\nconst isTimeout = response.name === 'AxiosError' || (response.message && response.message.includes('timeout'));\nconst isRateLimit = response.message && (response.message.includes('429') || response.message.includes('rate'));\nconst isError = (response.error && !response.choices && !response.data) || isTimeout;\n\nif (isError) {\n  let errMsg = 'RAGFlow API 调用失败';\n  if (isRateLimit) {\n    errMsg = 'AI 模型繁忙（速率限制），请等待 30 秒后重试';\n  } else if (isTimeout) {\n    errMsg = '知识库响应超时，请稍后重试。如果持续超时，可尝试简化问题或使用 !搜 关键词';\n  } else {\n    errMsg = response.message || response.error || errMsg;\n  }\n  return [{ json: { success: false, error: errMsg, room: room } }];\n}\n\nlet answer = '';\nlet references = [];\n\nif (response.choices && response.choices.length > 0) {\n  answer = (response.choices[0].message?.content || '').trim();\n} else if (response.data) {\n  const ragData = response.data?.data || response.data;\n  answer = (ragData.answer || '').trim();\n  references = ragData.references || ragData.reference || [];\n}\n\nif (!answer) {\n  return [{ json: { success: false, error: '知识库未返回有效答案，请稍后重试或改用 !搜 关键词', room: room } }];\n}\n\nconst retrievalChunks = Array.isArray(retrievalResponse.data?.chunks) ? retrievalResponse.data.chunks : [];\nconst normalizedFromChat = Array.isArray(references) ? references.map((ref) => ({\n  docName: (ref.doc_name || ref.document_keyword || '未知文档').replace(/\\.md$/, ''),\n  similarity: ref.similarity ? Math.round(ref.similarity * 100) : 0,\n  snippet: (ref.content || ref.chunk || '').replace(/\\s+/g, ' ').trim()\n})) : [];\nconst normalizedFromRetrieval = retrievalChunks.map((chunk) => ({\n  docName: (chunk.document_keyword || chunk.doc_name || '未知文档').replace(/\\.md$/, ''),\n  similarity: chunk.similarity ? Math.round(chunk.similarity * 100) : 0,\n  snippet: (chunk.content || '').replace(/[\\[\\]()#*>|!]/g, '').replace(/\\s+/g, ' ').trim()\n}));\n\nconst mergedReferences = [];\nconst seen = new Set();\nfor (const ref of [...normalizedFromChat, ...normalizedFromRetrieval]) {\n  const key = `${ref.docName}::${ref.snippet.slice(0, 80)}`;\n  if (!seen.has(key)) {\n    seen.add(key);\n    mergedReferences.push(ref);\n  }\n}\n\nmergedReferences.sort((a, b) => (b.similarity || 0) - (a.similarity || 0));\nconst topReferences = mergedReferences.slice(0, 3);\n\nlet message = `📘 知识库回答\\n\\n问题：${question}\\n\\n## 核心答案\\n${answer}`;\n\nif (topReferences.length > 0) {\n  message += '\\n\\n## 参考来源';\n  topReferences.forEach((ref, index) => {\n    const snippet = ref.snippet ? `\\n   摘要：${ref.snippet.slice(0, 180)}${ref.snippet.length > 180 ? '...' : ''}` : '';\n    const score = ref.similarity ? ` (${ref.similarity}%)` : '';\n    message += `\\n${index + 1}. ${ref.docName}${score}${snippet}`;\n  });\n}\n\nreturn [{\n  json: {\n    success: true,\n    message,\n    room: room,\n    data: {\n      answer,\n      references: topReferences,\n      retrievalCount: mergedReferences.length\n    }\n  }\n}];"
       },
       "id": "format-ask-response",
       "name": "格式化问答回复",
@@ -226,7 +226,8 @@
       "position": [
         1680,
         100
-      ]
+      ],
+      "continueOnFail": true
     },
     {
       "parameters": {
@@ -277,7 +278,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const response = $input.first().json;\nconst keywords = $('准备搜索请求').first().json.keywords;\n\nif (response.error || response.errcode) {\n  return [{\n    json: {\n      success: false,\n      error: response.error || response.message || 'RAGFlow 检索失败'\n    }\n  }];\n}\n\nconst chunks = response.data?.chunks || [];\n\nif (chunks.length === 0) {\n  return [{\n    json: {\n      success: true,\n      message: `🔍 搜索结果: ${keywords}\\n\\n未找到相关内容`\n    }\n  }];\n}\n\nlet message = `🔍 搜索结果: ${keywords}\\n`;\n\nchunks.forEach((chunk, i) => {\n  const docName = (chunk.document_keyword || chunk.doc_name || '未知文档').replace(/\\.md$/, '');\n  const rawContent = (chunk.content || '').replace(/[\\[\\]()#*>|!]/g, '').replace(/\\s+/g, ' ').trim();\n  const content = rawContent.substring(0, 120);\n  const similarity = chunk.similarity ? Math.round(chunk.similarity * 100) : 0;\n  message += `\\n${i+1}. ${docName} (${similarity}%)\\n   ${content}...\\n`;\n});\n\nmessage += `\\n共找到 ${chunks.length} 条相关内容`;\n\nreturn [{\n  json: {\n    success: true,\n    message: message,\n    data: {\n      chunks: chunks\n    }\n  }\n}];"
+        "jsCode": "const response = $input.first().json;\nconst keywords = $('准备搜索请求').first().json.keywords;\nconst inputData = $('标准化输入').first().json;\nconst room = inputData.room || 'qa';\n\nif (response.error || response.errcode) {\n  return [{\n    json: {\n      success: false,\n      error: response.error || response.message || 'RAGFlow 检索失败',\n      room: room\n    }\n  }];\n}\n\nconst chunks = response.data?.chunks || [];\n\nif (chunks.length === 0) {\n  return [{\n    json: {\n      success: true,\n      message: `🔍 搜索结果: ${keywords}\\n\\n未找到相关内容`,\n      room: room\n    }\n  }];\n}\n\nlet message = `🔍 搜索结果: ${keywords}\\n`;\n\nchunks.forEach((chunk, i) => {\n  const docName = (chunk.document_keyword || chunk.doc_name || '未知文档').replace(/\\.md$/, '');\n  const rawContent = (chunk.content || '').replace(/[\\[\\]()#*>|!]/g, '').replace(/\\s+/g, ' ').trim();\n  const content = rawContent.substring(0, 120);\n  const similarity = chunk.similarity ? Math.round(chunk.similarity * 100) : 0;\n  message += `\\n${i+1}. ${docName} (${similarity}%)\\n   ${content}...\\n`;\n});\n\nmessage += `\\n共找到 ${chunks.length} 条相关内容`;\n\nreturn [{\n  json: {\n    success: true,\n    message: message,\n    room: room,\n    data: {\n      chunks: chunks\n    }\n  }\n}];"
       },
       "id": "format-search-response",
       "name": "格式化搜索回复",
@@ -303,7 +304,8 @@
       "position": [
         1440,
         300
-      ]
+      ],
+      "continueOnFail": true
     },
     {
       "parameters": {
@@ -338,6 +340,74 @@
         720,
         700
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst room = data.room || 'qa';\n\nlet message = '';\nlet html = '';\n\nif (data.success === false || data.error) {\n  const errMsg = typeof data.error === 'object' ? (data.error.message || JSON.stringify(data.error)) : String(data.error || '未知错误');\n  message = `❌ 操作失败: ${errMsg}`;\n  html = `<p>❌ 操作失败: ${errMsg}</p>`;\n} else if (data.message) {\n  message = data.message;\n  const lines = data.message.split('\\n');\n  const htmlParts = [];\n  let inList = false;\n\n  for (let i = 0; i < lines.length; i++) {\n    let line = lines[i];\n\n    if (!line.trim()) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      continue;\n    }\n\n    line = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n    line = line.replace(/\\*\\*(.+?)\\*\\*/g, '<b>$1</b>');\n    line = line.replace(/`([^`]+)`/g, '<code>$1</code>');\n\n    if (/^[📘🔍🤖]/.test(line)) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      htmlParts.push(`<h4>${line}</h4>`);\n      continue;\n    }\n\n    if (/^问题：/.test(line)) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      htmlParts.push(`<p><em>${line}</em></p>`);\n      continue;\n    }\n\n    const h2Match = line.match(/^## (.+)$/);\n    if (h2Match) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      htmlParts.push(`<h5>${h2Match[1]}</h5>`);\n      continue;\n    }\n\n    const summaryMatch = line.match(/^\\s+摘要：(.+)$/);\n    if (summaryMatch) {\n      htmlParts.push(`<blockquote>${summaryMatch[1]}</blockquote>`);\n      continue;\n    }\n\n    const numMatch = line.match(/^(\\d+)\\.\\s+(.+)$/);\n    if (numMatch) {\n      if (!inList) { htmlParts.push('<ol>'); inList = true; }\n      htmlParts.push(`<li><b>${numMatch[2]}</b></li>`);\n      continue;\n    }\n\n    const bulletMatch = line.match(/^[*\\-]\\s+(.+)$/);\n    if (bulletMatch) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      htmlParts.push(`<p>• ${bulletMatch[1]}</p>`);\n      continue;\n    }\n\n    if (inList) { htmlParts.push('</ol>'); inList = false; }\n    htmlParts.push(`<p>${line}</p>`);\n  }\n  if (inList) { htmlParts.push('</ol>'); }\n  html = htmlParts.join('\\n');\n} else {\n  message = '✅ 操作成功';\n  html = '<p>✅ 操作成功</p>';\n}\n\nreturn [{ json: { room, message, html } }];"
+      },
+      "id": "format-matrix-msg",
+      "name": "格式化Matrix消息",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: $json.room, message: $json.message, html: $json.html }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-qa-notify",
+      "name": "发送问答通知",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1920,
+        100
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst room = data.room || 'qa';\n\nlet message = '';\nlet html = '';\n\nif (data.success === false || data.error) {\n  const errMsg = typeof data.error === 'object' ? (data.error.message || JSON.stringify(data.error)) : String(data.error || '未知错误');\n  message = `❌ 操作失败: ${errMsg}`;\n  html = `<p>❌ 操作失败: ${errMsg}</p>`;\n} else if (data.message) {\n  message = data.message;\n  const lines = data.message.split('\\n');\n  const htmlParts = [];\n  let inList = false;\n\n  for (let i = 0; i < lines.length; i++) {\n    let line = lines[i];\n\n    if (!line.trim()) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      continue;\n    }\n\n    line = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n    line = line.replace(/\\*\\*(.+?)\\*\\*/g, '<b>$1</b>');\n    line = line.replace(/`([^`]+)`/g, '<code>$1</code>');\n\n    if (/^[📘🔍🤖]/.test(line)) {\n      if (inList) { htmlParts.push('</ol>'); inList = false; }\n      htmlParts.push(`<h4>${line}</h4>`);\n      continue;\n    }\n\n    const numMatch = line.match(/^(\\d+)\\.\\s+(.+)$/);\n    if (numMatch) {\n      if (!inList) { htmlParts.push('<ol>'); inList = true; }\n      htmlParts.push(`<li><b>${numMatch[2]}</b></li>`);\n      continue;\n    }\n\n    if (inList) { htmlParts.push('</ol>'); inList = false; }\n    htmlParts.push(`<p>${line}</p>`);\n  }\n  if (inList) { htmlParts.push('</ol>'); }\n  html = htmlParts.join('\\n');\n} else {\n  message = '✅ 操作成功';\n  html = '<p>✅ 操作成功</p>';\n}\n\nreturn [{ json: { room, message, html } }];"
+      },
+      "id": "format-search-matrix-msg",
+      "name": "格式化搜索Matrix消息",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: $json.room, message: $json.message, html: $json.html }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "send-search-notify",
+      "name": "发送搜索通知",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        500
+      ],
+      "continueOnFail": true
     }
   ],
   "connections": {
@@ -435,6 +505,11 @@
             "node": "返回问答结果",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "格式化Matrix消息",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -466,6 +541,33 @@
         [
           {
             "node": "返回搜索结果",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "格式化搜索Matrix消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "格式化Matrix消息": {
+      "main": [
+        [
+          {
+            "node": "发送问答通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "格式化搜索Matrix消息": {
+      "main": [
+        [
+          {
+            "node": "发送搜索通知",
             "type": "main",
             "index": 0
           }
