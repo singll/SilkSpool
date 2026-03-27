@@ -1,0 +1,95 @@
+{
+  "name": "K07-Obsidian笔记同步",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "nodes": [
+    {
+      "id": "k07-0001-sched",
+      "name": "定时触发",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {"field": "cronExpression", "expression": "*/15 * * * *"}
+          ]
+        }
+      }
+    },
+    {
+      "id": "k07-0002-getseq",
+      "name": "读取 last_seq",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 300],
+      "parameters": {
+        "jsCode": "const store = $getWorkflowStaticData('global');\nconst since = store.last_seq || '0';\nreturn [{ json: { since } }];"
+      }
+    },
+    {
+      "id": "k07-0003-changes",
+      "name": "拉取 _changes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "continueOnFail": true,
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.COUCHDB_URL }}/obsidian-personal/_changes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "basicAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {"name": "feed", "value": "normal"},
+            {"name": "include_docs", "value": "true"},
+            {"name": "since", "value": "={{ $json.since }}"},
+            {"name": "limit", "value": "50"}
+          ]
+        },
+        "options": {"timeout": 30000}
+      }
+    },
+    {
+      "id": "k07-0004-filter",
+      "name": "过滤 MD 文档",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300],
+      "parameters": {
+        "jsCode": "const store = $getWorkflowStaticData('global');\nconst body = $input.first().json;\nif (body.last_seq) { store.last_seq = body.last_seq; }\nconst results = body.results || [];\nconst mdDocs = results.filter(r => {\n  const doc = r.doc || {};\n  const id = doc._id || r.id || '';\n  return !r.deleted && (id.endsWith('.md') || (doc.path || '').endsWith('.md'));\n});\nif (mdDocs.length === 0) return [];\nreturn mdDocs.map(r => {\n  const doc = r.doc || {};\n  const path = doc.path || doc._id || r.id;\n  const content = doc.content || doc.body || '';\n  const title = doc.title || path.split('/').pop().replace(/\\.md$/, '');\n  const tags = doc.tags || [];\n  return { json: { doc_id: r.id, vault: 'personal', path, content, title, tags } };\n});"
+      }
+    },
+    {
+      "id": "k07-0005-ingest",
+      "name": "推送到 Bellkeeper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 300],
+      "continueOnFail": true,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/ragflow/ingest/obsidian",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{"name": "X-API-Key", "value": "={{ $env.BELLKEEPER_API_KEY }}"}]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ doc_id: $json.doc_id, vault: $json.vault, path: $json.path, content: $json.content, title: $json.title, tags: $json.tags }) }}",
+        "options": {"timeout": 30000}
+      }
+    }
+  ],
+  "connections": {
+    "定时触发": {"main": [[{"node": "读取 last_seq", "type": "main", "index": 0}]]},
+    "读取 last_seq": {"main": [[{"node": "拉取 _changes", "type": "main", "index": 0}]]},
+    "拉取 _changes": {"main": [[{"node": "过滤 MD 文档", "type": "main", "index": 0}]]},
+    "过滤 MD 文档": {"main": [[{"node": "推送到 Bellkeeper", "type": "main", "index": 0}]]}
+  }
+}
