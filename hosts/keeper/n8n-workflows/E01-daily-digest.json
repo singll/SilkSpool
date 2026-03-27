@@ -1,0 +1,247 @@
+{
+  "name": "E01-每日资讯摘要推送",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 20 * * *"
+            }
+          ]
+        }
+      },
+      "id": "e01-0001",
+      "name": "每日20点触发",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/logs?module=ragflow_upload&action=upload_with_routing&status=success&limit=200",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "e01-0002",
+      "name": "获取今日入库日志",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        300
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst todayStr = now.toISOString().slice(0,10);\nconst items = ($input.first().json.data?.items || []).filter(x => x.created_at && x.created_at.startsWith(todayStr));\n\n// Dataset display names\nconst datasetNames = {\n  'd15bd2ac07ae11f1a088ae230b1794d7': '每日资讯',\n  'd157b35c07ae11f1a088ae230b1794d7': 'AI技术',\n  'd1537f8a07ae11f1a088ae230b1794d7': '开发技术',\n  'd14f2fac07ae11f1a088ae230b1794d7': '网络安全',\n  'd14aaa7c07ae11f1a088ae230b1794d7': '安全漏洞',\n};\n\nconst grouped = {};\nfor (const item of items) {\n  const dsId = item.ref_id || '';\n  if (!grouped[dsId]) grouped[dsId] = [];\n  // Extract filename from summary\n  const m = item.summary?.match(/路由上传 (.+?) 到/);\n  if (m) {\n    const title = m[1].replace(/-+/g,' ').replace(/\\.(md|txt)$/i,'').trim();\n    grouped[dsId].push(title);\n  }\n}\n\nconst sections = [];\nlet totalCount = 0;\nfor (const [dsId, titles] of Object.entries(grouped)) {\n  const name = datasetNames[dsId] || dsId.slice(0,8);\n  totalCount += titles.length;\n  sections.push({ dataset: name, titles });\n}\n\nif (totalCount === 0) {\n  return [{ json: { skip: true, date: todayStr } }];\n}\n\n// Build prompt for K05\nlet promptLines = [`今天(${todayStr})共入库 ${totalCount} 篇文章，按领域分类如下：\n`];\nfor (const s of sections) {\n  promptLines.push(`【${s.dataset}】(${s.titles.length}篇)`);\n  for (const t of s.titles.slice(0,20)) promptLines.push(`  - ${t}`);\n  if (s.titles.length > 20) promptLines.push(`  ... 共${s.titles.length}篇`);\n}\npromptLines.push('\n请按领域分别用2-3句话概括今日资讯亮点，最后给出一句总体评价。输出中文。');\n\nreturn [{ json: {\n  skip: false,\n  date: todayStr,\n  totalCount,\n  sections,\n  prompt: promptLines.join('\n')\n} }];"
+      },
+      "id": "e01-0003",
+      "name": "整理今日数据",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "skip-check",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e01-0004",
+      "name": "有内容?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/ai-summarize",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ content: $json.prompt, provider: 'deepseek', max_tokens: 1024 }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "e01-0005",
+      "name": "调用K05总结",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        220
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const summarizeResp = $('调用K05总结').first().json;\nconst metaData = $('整理今日数据').first().json;\nconst aiText = summarizeResp.result || summarizeResp.content || summarizeResp.choices?.[0]?.message?.content || '(AI总结暂不可用)';\nconst date = metaData.date;\nconst total = metaData.totalCount;\nconst sections = metaData.sections || [];\n\nconst statLines = sections.map(s => `<li>${s.dataset}: ${s.titles.length} 篇</li>`).join('');\n\nconst html = `<h3>📰 每日资讯摘要 - ${date}</h3>`+\n  `<h4>📊 今日入库统计（共 ${total} 篇）</h4>`+\n  `<ul>${statLines}</ul>`+\n  `<h4>🤖 AI 亮点总结</h4>`+\n  `<p>${aiText.replace(/\n/g,'<br/>')}</p>`;\n\nconst plain = `📰 每日资讯摘要 - ${date}\n\n共入库 ${total} 篇\n${sections.map(s=>s.dataset+': '+s.titles.length+'篇').join(' | ')}\n\n${aiText}`;\n\nreturn [{ json: { room: 'daily', message: plain, html } }];"
+      },
+      "id": "e01-0006",
+      "name": "构建推送消息",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: $json.room, message: $json.message, html: $json.html }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "e01-0007",
+      "name": "发送Matrix通知",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        220
+      ],
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "每日20点触发": {
+      "main": [
+        [
+          {
+            "node": "获取今日入库日志",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取今日入库日志": {
+      "main": [
+        [
+          {
+            "node": "整理今日数据",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "整理今日数据": {
+      "main": [
+        [
+          {
+            "node": "有内容?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "有内容?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "调用K05总结",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "调用K05总结": {
+      "main": [
+        [
+          {
+            "node": "构建推送消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "构建推送消息": {
+      "main": [
+        [
+          {
+            "node": "发送Matrix通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "698a004d-5308-468d-a595-8ccd0d936fe7",
+  "id": "e01-daily-digest"
+}
