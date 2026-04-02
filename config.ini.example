@@ -191,8 +191,18 @@ declare -a POST_PUSH_HOOKS_VPS=(
 )
 
 # ----------------- 13. n8n Workflow Management ---------
-N8N_HOST="knowledge"
+N8N_HOST="keeper"
 N8N_CONTAINER="sp-n8n"
-N8N_WORKFLOW_DIR="/opt/silkspool/knowledge/n8n-workflows"
+N8N_WORKFLOW_DIR="/opt/silkspool/keeper/n8n-workflows"
 N8N_API_URL="http://localhost:5678"
-N8N_API_KEY=""  # Create in n8n UI: Settings -> API Keys
+# Sensitive value: put N8N_API_KEY in hosts/<N8N_HOST>/.env
+
+# ----------------- 14. TrueNAS Management --------------
+NAS_HOST="truenas"
+TRUENAS_API_URL="https://truenas.example.com/api/current"
+TRUENAS_API_USERNAME="root"
+TRUENAS_API_VERIFY_TLS="1"
+TRUENAS_RPC_TIMEOUT="30"
+TRUENAS_JOB_TIMEOUT="300"
+TRUENAS_DEFAULT_POOL=""
+# Sensitive value: put TRUENAS_API_KEY in hosts/<NAS_HOST>/.env

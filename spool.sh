@@ -18,6 +18,7 @@ fi
 source "$CONFIG_FILE"
 source "$LIB_DIR/utils.sh"
 source "$LIB_DIR/runner.sh"
+source "$LIB_DIR/env.sh"
 
 # --- 2. 修正 SSH 密钥路径 ---
 if [[ "$SSH_KEY_PATH" == ./* ]]; then
@@ -70,11 +71,15 @@ usage() {
     echo "  exec <host> <cmd...>  -> Execute command on remote host"
     echo "  test-url <domain>     -> Test domain reverse proxy"
     echo ""
-    echo "n8n Workflow Management:"
-    echo "  n8n-sync list         -> List workflow files (local+remote+n8n)"
-    echo "  n8n-sync import       -> Import workflows to n8n via API"
-    echo "  n8n-sync export       -> Export workflows from n8n to local"
-    echo "  n8n-sync push-import  -> Push and import (one-click)"
+    echo "Workflow & Storage Tools:"
+    echo "  n8n list              -> List workflow files (local+remote+n8n)"
+    echo "  n8n import            -> Import workflows to n8n via API"
+    echo "  n8n export            -> Export workflows from n8n to local"
+    echo "  n8n push-import       -> Push and import (one-click)"
+    echo "  nas info              -> Show TrueNAS system info"
+    echo "  nas pool list         -> List TrueNAS pools"
+    echo "  nas dataset list      -> List TrueNAS datasets"
+    echo "  nas snapshot list     -> List TrueNAS snapshots"
     exit 1
 }
 
@@ -156,9 +161,14 @@ case "$CMD" in
         for app in "${APPS[@]}"; do bash "$LIB_DIR/service.sh" "restart" "$HOST" "$app"; done
         ;;
 
-    # n8n 工作流同步
-    n8n-sync)
-        bash "$BASE_DIR/lib/tools/n8n-sync.sh" "$@"
+    # n8n 工作流管理
+    n8n)
+        bash "$BASE_DIR/lib/tools/n8n.sh" "$@"
+        ;;
+
+    # TrueNAS 管理
+    nas)
+        bash "$BASE_DIR/lib/tools/nas.sh" "$@"
         ;;
 
     # RAGFlow 解析状态

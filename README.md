@@ -37,7 +37,8 @@ SilkSpool/
 │   └── .gitkeep
 ├── hosts/                 # Per-node data (gitignored)
 │   ├── router/            #   caddy/, homepage/, dnsmasq/, openclash/
-│   ├── knowledge/         #   .env, ragflow/conf, n8n-workflows/
+│   ├── keeper/            #   .env, n8n-workflows/
+│   ├── knowledge/         #   .env, ragflow/conf/
 │   └── vps/               #   headscale/config.yaml, caddy/Caddyfile
 ├── bundles/               # Multi-container application bundles
 │   ├── knowledge/         #   remote.sh, defaults.sh, templates/
@@ -53,9 +54,13 @@ SilkSpool/
     │   ├── dns.sh         #   DNS and site management
     │   ├── backup.sh      #   Backup management
     │   ├── install.sh     #   Binary installation
+    │   ├── env.sh         #   Shared config/env loader
+    │   ├── confirm.sh     #   Write/destructive confirmations
+    │   ├── truenas_rpc.py #   TrueNAS WebSocket JSON-RPC helper
     │   └── runner.sh      #   Bundle runner
     └── tools/
-        └── n8n-sync.sh    #   n8n workflow sync tool
+        ├── n8n.sh         #   n8n workflow management
+        └── nas.sh         #   TrueNAS management
 ```
 
 ### 🚀 Quick Start
@@ -164,14 +169,17 @@ Supported types: `systemd`, `docker`, `openwrt`, `initd`
 | `stack <host>` | Install binary stack |
 | `install <host> <app>` | Install/update single binary tool |
 
-#### n8n Workflow & Others
+#### n8n / TrueNAS / Others
 
 | Command | Description |
 | --- | --- |
-| `n8n-sync list / import / export / push-import` | n8n workflow management |
+| `n8n list / import / update / export / push-import / push-update` | n8n workflow management |
+| `nas info / pool list / dataset list / snapshot list` | TrueNAS management via API key |
 | `backup <host>` | Execute backup tasks |
 | `exec <host> <cmd...>` | Execute remote command |
 | `test-url <domain>` | Test reverse proxy |
+
+n8n and TrueNAS keep non-sensitive settings in `config.ini`, while API keys live in `hosts/<node>/.env` such as `N8N_API_KEY` and `TRUENAS_API_KEY`.
 
 ### 📖 Advanced Guide
 
@@ -298,7 +306,8 @@ SilkSpool/
 │   └── .gitkeep
 ├── hosts/                 # [数据] 各节点个性化数据 (被 git 忽略)
 │   ├── router/            #   caddy/, homepage/, dnsmasq/, openclash/
-│   ├── knowledge/         #   .env, ragflow/conf, n8n-workflows/
+│   ├── keeper/            #   .env, n8n-workflows/
+│   ├── knowledge/         #   .env, ragflow/conf/
 │   └── vps/               #   headscale/config.yaml, caddy/Caddyfile
 ├── bundles/               # [护符] 多容器应用编排包
 │   ├── knowledge/         #   remote.sh, defaults.sh, templates/
@@ -314,9 +323,13 @@ SilkSpool/
     │   ├── dns.sh         #   DNS 与站点管理
     │   ├── backup.sh      #   备份管理
     │   ├── install.sh     #   二进制安装
+    │   ├── env.sh         #   共享配置/环境加载
+    │   ├── confirm.sh     #   写入/破坏性操作确认
+    │   ├── truenas_rpc.py #   TrueNAS WebSocket JSON-RPC 助手
     │   └── runner.sh      #   Bundle 运行器
     └── tools/
-        └── n8n-sync.sh    #   n8n 工作流同步工具
+        ├── n8n.sh         #   n8n 工作流管理
+        └── nas.sh         #   TrueNAS 管理
 ```
 
 ### 🚀 快速开始
@@ -440,14 +453,17 @@ vim hosts/bili-node/robot/config/bilidanmaku-api.yaml  # 修改参数
 ./spool.sh bundle bili setup bili-node       # 部署启动
 ```
 
-#### n8n 工作流与其他工具
+#### n8n / TrueNAS / 其他工具
 
 | 命令 | 描述 |
 | --- | --- |
-| `n8n-sync list / import / export / push-import` | n8n 工作流管理 |
+| `n8n list / import / update / export / push-import / push-update` | n8n 工作流管理 |
+| `nas info / pool list / dataset list / snapshot list` | 通过 API key 管理 TrueNAS |
 | `backup <主机>` | 执行备份任务 |
 | `exec <主机> <命令...>` | 远程执行命令 |
 | `test-url <域名>` | 测试反向代理 |
+
+n8n 和 TrueNAS 的非敏感配置放在 `config.ini`，API key 等敏感信息放在 `hosts/<节点名>/.env`，例如 `N8N_API_KEY`、`TRUENAS_API_KEY`。
 
 ### 📖 进阶指南
 
