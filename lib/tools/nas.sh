@@ -63,6 +63,59 @@ print(json.dumps([sys.argv[1]], ensure_ascii=False))
 PY
 }
 
+normalize_dir_create_args() {
+    local resource=$1
+    local args_json=${2:-"[]"}
+
+    python3 - "$resource" "$args_json" <<'PY'
+import json
+import sys
+
+resource = sys.argv[1]
+raw = sys.argv[2]
+
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"Invalid JSON for --args: {exc}")
+
+if data == []:
+    payload = {"path": resource}
+elif isinstance(data, dict):
+    payload = data
+elif isinstance(data, list) and len(data) == 1 and isinstance(data[0], dict):
+    payload = data[0]
+elif isinstance(data, list) and len(data) >= 1 and isinstance(data[0], str):
+    payload = {"path": data[0]}
+    if len(data) >= 2:
+        if not isinstance(data[1], dict):
+            raise SystemExit("dir create --args second element must be an object")
+        payload["options"] = data[1]
+else:
+    raise SystemExit("dir create --args must be [], a dict, or legacy [path, options]")
+
+path = payload.get("path") or resource
+if not path:
+    raise SystemExit("dir create requires --resource or args.path")
+payload["path"] = path
+
+options = payload.get("options")
+if options is None:
+    options = {}
+elif not isinstance(options, dict):
+    raise SystemExit("dir create options must be an object")
+payload["options"] = options
+
+for key in ("mode", "raise_chmod_error"):
+    if key in payload:
+        options.setdefault(key, payload.pop(key))
+
+options.setdefault("raise_chmod_error", False)
+
+print(json.dumps([payload], ensure_ascii=False))
+PY
+}
+
 parse_common_flags() {
     FLAG_YES=0
     FLAG_CONFIRM=""
@@ -308,7 +361,9 @@ dir_dispatch() {
             ;;
         create)
             parse_common_flags "$@"
-            execute_write normal "Creating directory" "filesystem.mkdir" "$OPT_RESOURCE" "$OPT_ARGS"
+            local mkdir_args
+            mkdir_args=$(normalize_dir_create_args "$OPT_RESOURCE" "$OPT_ARGS") || exit 1
+            execute_write normal "Creating directory" "filesystem.mkdir" "$OPT_RESOURCE" "$mkdir_args"
             ;;
         delete)
             parse_common_flags "$@"
