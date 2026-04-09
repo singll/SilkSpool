@@ -465,6 +465,8 @@ vim hosts/bili-node/robot/config/bilidanmaku-api.yaml  # 修改参数
 
 n8n 和 TrueNAS 的非敏感配置放在 `config.ini`，API key 等敏感信息放在 `hosts/<节点名>/.env`，例如 `N8N_API_KEY`、`TRUENAS_API_KEY`。
 
+TrueNAS 目前的一等命令组主要覆盖 `info / pool / dataset / dir / snapshot / rpc call`。如果要查看 APP、服务、SMB/NFS share 等资源，当前建议通过 `nas rpc call` 直接调用原始 TrueNAS JSON-RPC 方法，例如 `app.query`、`service.query`、`sharing.smb.query`、`sharing.nfs.query`。更完整的存储布局与应用联动说明见 [doc/modules/storage/README.md](doc/modules/storage/README.md)。
+
 ### 📖 进阶指南
 
 <details>

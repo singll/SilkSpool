@@ -6,6 +6,7 @@ networks:
 
 volumes:
   kp-redis-data:
+  kp-nats-data:
   kp-n8n-data:
   kp-memos-data:
   kp-bellkeeper-db:
