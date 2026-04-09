@@ -255,7 +255,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Merge LLM tags, matched tags, and user-provided tags\nconst llmRaw = $('LLM Classify').first().json;\n// Handle both { data: { tags, dataset_id } } and { tags, dataset_id } formats\nconst llmResult = llmRaw.data || llmRaw;\nconst matchResult = $('Match Tags').first().json;\nconst contentData = $('Validate Content').first().json;\n\n// Extract LLM tags (empty if LLM failed)\nconst llmTags = (llmResult.tags || []).filter(t => t);\nconst llmDatasetId = llmResult.dataset_id || '';\n\n// Extract matched tags\nconst matchedTags = (matchResult.tags || matchResult.matched || []).map(t => typeof t === 'string' ? t : t.name || t.tag || '');\nconst userTags = contentData.tags || [];\n\n// Combine and deduplicate: LLM tags + user tags + matched tags\nconst allTags = [...new Set([...llmTags, ...userTags, ...matchedTags])].filter(t => t);\n\nreturn [{\n  json: {\n    content: contentData.content,\n    filename: contentData.filename,\n    title: contentData.title,\n    url: contentData.url,\n    tags: allTags,\n    category: contentData.category,\n    dataset_id: llmDatasetId\n  }\n}];"
+        "jsCode": "// Merge LLM tags, matched tags, and user-provided tags\n// Note: dataset_id removed - now using file ingestion instead of RAGFlow\nconst llmRaw = $('LLM Classify').first().json;\n// Handle both { data: { tags, dataset_id } } and { tags, dataset_id } formats\nconst llmResult = llmRaw.data || llmRaw;\nconst matchResult = $('Match Tags').first().json;\nconst contentData = $('Validate Content').first().json;\n\n// Extract LLM tags (empty if LLM failed)\nconst llmTags = (llmResult.tags || []).filter(t => t);\n\n// Extract matched tags\nconst matchedTags = (matchResult.tags || matchResult.matched || []).map(t => typeof t === 'string' ? t : t.name || t.tag || '');\nconst userTags = contentData.tags || [];\n\n// Combine and deduplicate: LLM tags + user tags + matched tags\nconst allTags = [...new Set([...llmTags, ...userTags, ...matchedTags])].filter(t => t);\n\nreturn [{\n  json: {\n    content: contentData.content,\n    filename: contentData.filename,\n    title: contentData.title,\n    url: contentData.url,\n    tags: allTags,\n    category: contentData.category\n  }\n}];"
       },
       "id": "merge-tags",
       "name": "Merge Tags",
@@ -269,7 +269,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.BELLKEEPER_URL }}/api/ragflow/upload/with-routing",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/files/ingest/url",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -281,13 +281,13 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ content: $json.content, filename: $json.filename, title: $json.title, url: $json.url, tags: $json.tags, category: $json.category, dataset_id: $json.dataset_id, auto_create_tags: true }) }}",
+        "jsonBody": "={{ JSON.stringify({ url: $json.url, title: $json.title, tags: $json.tags, category: $json.category, layer: 'raw' }) }}",
         "options": {
           "timeout": 30000
         }
       },
-      "id": "upload-to-ragflow",
-      "name": "Upload to RagFlow",
+      "id": "file-ingest",
+      "name": "File Ingest",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -298,7 +298,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Build response: handle upload success or failure\nconst uploadResult = $input.first().json;\nconst mergeData = $('Merge Tags').first().json;\n\nif (uploadResult.error) {\n  const errMsg = typeof uploadResult.error === 'object'\n    ? (uploadResult.error.message || JSON.stringify(uploadResult.error))\n    : String(uploadResult.error);\n  return [{\n    json: {\n      success: false,\n      status: 'upload_failed',\n      error: errMsg,\n      title: mergeData.title,\n      url: mergeData.url\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    success: true,\n    status: 'ingested',\n    title: mergeData.title,\n    url: mergeData.url,\n    tags: mergeData.tags,\n    category: mergeData.category,\n    uploadResult: uploadResult\n  }\n}];"
+        "jsCode": "// Build response: handle file ingestion success or failure\nconst ingestResult = $input.first().json;\nconst mergeData = $('Merge Tags').first().json;\n\n// Handle file ingestion response\nif (ingestResult.error) {\n  const errMsg = typeof ingestResult.error === 'object'\n    ? (ingestResult.error.message || JSON.stringify(ingestResult.error))\n    : String(ingestResult.error);\n  return [{\n    json: {\n      success: false,\n      status: 'ingest_failed',\n      error: errMsg,\n      title: mergeData.title,\n      url: mergeData.url\n    }\n  }];\n}\n\n// Check for error fields in response\nif (ingestResult.success === false) {\n  return [{\n    json: {\n      success: false,\n      status: ingestResult.status || 'ingest_failed',\n      error: ingestResult.error_message || ingestResult.message || 'Unknown error',\n      title: mergeData.title,\n      url: mergeData.url\n    }\n  }];\n}\n\n// Success case - file ingested to TrueNAS\nreturn [{\n  json: {\n    success: true,\n    status: 'ingested',\n    title: mergeData.title,\n    url: mergeData.url,\n    tags: mergeData.tags,\n    category: mergeData.category,\n    file_path: ingestResult.file_path\n  }\n}];"
       },
       "id": "build-response",
       "name": "构建响应",
@@ -445,14 +445,14 @@
       "main": [
         [
           {
-            "node": "Upload to RagFlow",
+            "node": "File Ingest",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Upload to RagFlow": {
+    "File Ingest": {
       "main": [
         [
           {
