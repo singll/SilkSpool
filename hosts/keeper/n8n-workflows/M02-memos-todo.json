@@ -1,7 +1,8 @@
 {
   "name": "M02-Memos待办管理",
   "meta": {
-    "instanceId": ""
+    "instanceId": "",
+    "deprecationNote": "Matrix 命令已迁移到 Bellkeeper DirectMemosHandler。此 webhook 保留用于 API 访问。"
   },
   "nodes": [
     {
@@ -108,27 +109,6 @@
                 "combinator": "and"
               },
               "outputIndex": 3
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "loose"
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{ $json.body.action }}",
-                    "rightValue": "modify",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              },
-              "outputIndex": 4
             }
           ]
         },
@@ -192,7 +172,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const input = $input.first().json;\nconst body = input.body || input;\nconst text = body.text || '';\nconst priority = body.priority || 3;\nconst dueDate = body.dueDate || '';\n\nif (!text) {\n  throw new Error('text parameter is required');\n}\n\nlet content = `#\\u5f85\\u529e #P${priority}`;\nif (dueDate) {\n  content += ` #D:${dueDate}`;\n}\ncontent += ` ${text}`;\n\nreturn {\n  json: {\n    content: content,\n    text: text,\n    priority: priority,\n    dueDate: dueDate\n  }\n};"
+        "jsCode": "const input = $input.first().json;\nconst body = input.body || input;\nconst text = body.text || '';\nconst priority = body.priority || 3;\nconst dueDate = body.dueDate || '';\n\nif (!text) {\n  throw new Error('text parameter is required');\n}\n\nlet content = `#待办 #P${priority}`;\nif (dueDate) {\n  content += ` #D:${dueDate}`;\n}\ncontent += ` ${text}`;\n\nreturn {\n  json: {\n    content: content,\n    text: text\n  }\n};"
       },
       "id": "format-add",
       "name": "格式化待办内容",
@@ -213,18 +193,22 @@
             {
               "name": "Authorization",
               "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
             }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ content: $json.content }) }}",
+        "jsonBody": "={{ JSON.stringify({ content: $json.content, visibility: 'PRIVATE' }) }}",
         "options": {
           "timeout": 15000
         }
       },
-      "id": "create-memo",
-      "name": "创建待办",
+      "id": "add-memo",
+      "name": "添加待办",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
@@ -236,13 +220,13 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: true, action: 'add', memo: $('创建待办').first().json }) }}",
+        "responseBody": "={{ JSON.stringify({ success: true, action: 'add', memo: $json.memo, message: '已添加待办' }) }}",
         "options": {
-          "responseCode": 200
+          "responseCode": 201
         }
       },
       "id": "respond-add",
-      "name": "返回创建结果",
+      "name": "返回添加结果",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
@@ -252,237 +236,19 @@
     },
     {
       "parameters": {
-        "method": "GET",
-        "url": "=http://memos:5230/api/v1/{{ $json.body.memo_name }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
-            }
-          ]
-        },
-        "options": {
-          "timeout": 15000
-        }
-      },
-      "id": "get-memo-done",
-      "name": "获取待办详情",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        720,
-        500
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "jsCode": "const memo = $input.first().json;\nconst memoName = $('待办入口').first().json.body.memo_name;\n\nlet content = memo.content || '';\nconst updatedContent = content.replace(/#\\u5f85\\u529e/g, '#\\u5df2\\u5b8c\\u6210');\n\n// Extract readable text (remove tags)\nconst text = content.replace(/#\\S+/g, '').trim();\n\nreturn {\n  json: {\n    memo_name: memoName,\n    content: updatedContent,\n    text: text\n  }\n};"
-      },
-      "id": "mark-done",
-      "name": "标记已完成",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        960,
-        500
-      ]
-    },
-    {
-      "parameters": {
-        "method": "PATCH",
-        "url": "=http://memos:5230/api/v1/{{ $json.memo_name }}?updateMask=content",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ content: $json.content }) }}",
-        "options": {
-          "timeout": 15000
-        }
-      },
-      "id": "update-memo",
-      "name": "更新待办状态",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1200,
-        500
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: true, action: 'done', memo_name: $('标记已完成').first().json.memo_name }) }}",
-        "options": {
-          "responseCode": 200
-        }
-      },
-      "id": "respond-done",
-      "name": "返回完成结果",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
-      "position": [
-        1200,
-        500
-      ]
-    },
-    {
-      "parameters": {
-        "method": "DELETE",
-        "url": "=http://memos:5230/api/v1/{{ $json.body.memo_name }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
-            }
-          ]
-        },
-        "options": {
-          "timeout": 15000
-        }
-      },
-      "id": "delete-memo",
-      "name": "删除待办",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        720,
-        700
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: true, action: 'delete', memo_name: $('待办入口').first().json.body.memo_name }) }}",
-        "options": {
-          "responseCode": 200
-        }
-      },
-      "id": "respond-delete",
-      "name": "返回删除结果",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
-      "position": [
-        960,
-        700
-      ]
-    },
-    {
-      "parameters": {
-        "method": "GET",
-        "url": "=http://memos:5230/api/v1/{{ $json.body.memo_name }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
-            }
-          ]
-        },
-        "options": {
-          "timeout": 15000
-        }
-      },
-      "id": "get-memo-modify",
-      "name": "获取待修改待办",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        720,
-        900
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "jsCode": "const memo = $input.first().json;\nconst body = $('待办入口').first().json.body;\nconst memoName = body.memo_name;\nconst newText = body.text || '';\n\nif (!newText) {\n  throw new Error('text parameter is required for modify action');\n}\n\nlet content = memo.content || '';\n// 保留标签，替换文本内容\nconst tags = content.match(/#\\S+/g) || ['#待办'];\nconst updatedContent = tags.join(' ') + ' ' + newText;\n\n// 提取原始文本\nconst oldText = content.replace(/#\\S+/g, '').trim();\n\nreturn {\n  json: {\n    memo_name: memoName,\n    content: updatedContent,\n    oldText: oldText,\n    newText: newText\n  }\n};"
-      },
-      "id": "prepare-modify",
-      "name": "准备修改内容",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        960,
-        900
-      ]
-    },
-    {
-      "parameters": {
-        "method": "PATCH",
-        "url": "=http://memos:5230/api/v1/{{ $json.memo_name }}?updateMask=content",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
-            }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ content: $json.content }) }}",
-        "options": {
-          "timeout": 15000
-        }
-      },
-      "id": "update-memo-modify",
-      "name": "更新待办内容",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1200,
-        900
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: true, action: 'modify', memo_name: $('准备修改内容').first().json.memo_name }) }}",
-        "options": {
-          "responseCode": 200
-        }
-      },
-      "id": "respond-modify",
-      "name": "返回修改结果",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
-      "position": [
-        1200,
-        900
-      ]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ success: false, error: '未知操作，支持: list, add, done, delete, modify' }) }}",
+        "responseBody": "={{ JSON.stringify({ success: false, error: '无效的操作' }) }}",
         "options": {
           "responseCode": 400
         }
       },
-      "id": "respond-unknown",
-      "name": "未知操作响应",
+      "id": "respond-fallback",
+      "name": "无效操作",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
         720,
-        1100
+        500
       ]
     }
   ],
@@ -516,28 +282,14 @@
         ],
         [
           {
-            "node": "获取待办详情",
+            "node": "添加待办",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "删除待办",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "获取待修改待办",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "未知操作响应",
+            "node": "无效操作",
             "type": "main",
             "index": 0
           }
@@ -559,95 +311,18 @@
       "main": [
         [
           {
-            "node": "创建待办",
+            "node": "添加待办",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "创建待办": {
+    "添加待办": {
       "main": [
         [
           {
-            "node": "返回创建结果",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "获取待办详情": {
-      "main": [
-        [
-          {
-            "node": "标记已完成",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "标记已完成": {
-      "main": [
-        [
-          {
-            "node": "更新待办状态",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "更新待办状态": {
-      "main": [
-        [
-          {
-            "node": "返回完成结果",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "删除待办": {
-      "main": [
-        [
-          {
-            "node": "返回删除结果",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "获取待修改待办": {
-      "main": [
-        [
-          {
-            "node": "准备修改内容",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "准备修改内容": {
-      "main": [
-        [
-          {
-            "node": "更新待办内容",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "更新待办内容": {
-      "main": [
-        [
-          {
-            "node": "返回修改结果",
+            "node": "返回添加结果",
             "type": "main",
             "index": 0
           }
@@ -655,19 +330,16 @@
       ]
     }
   },
+  "pinData": {},
   "settings": {
     "executionOrder": "v1",
     "saveManualExecutions": true,
     "callerPolicy": "workflowsFromSameOwner"
   },
   "staticData": null,
-  "pinData": {},
-  "tags": [
-    {
-      "name": "knowledge"
-    },
-    {
-      "name": "memos"
-    }
-  ]
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-04-10T00:00:00.000Z",
+  "versionId": "3",
+  "notes": "Matrix 命令已由 Bellkeeper DirectMemosHandler 处理。此 webhook 保留用于 API 访问。"
 }
