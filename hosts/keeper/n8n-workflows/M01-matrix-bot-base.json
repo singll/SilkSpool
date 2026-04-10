@@ -1,640 +1,96 @@
 {
   "name": "M01-Matrix机器人基础",
   "meta": {
-    "instanceId": ""
+    "instanceId": "",
+    "deprecationNote": "Matrix 轮询和命令路由已迁移到 Bellkeeper。此工作流仅保留 webhook 接口供外部系统集成。"
   },
   "nodes": [
     {
       "parameters": {
-        "rule": {
-          "interval": [
-            {
-              "field": "cronExpression",
-              "expression": "*/10 * * * * *"
-            }
-          ]
-        }
+        "httpMethod": "POST",
+        "path": "matrix-command",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "cron-poll",
-      "name": "定时轮询",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.2,
+      "id": "webhook-matrix",
+      "name": "Matrix命令Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
       "position": [
         0,
         300
-      ]
+      ],
+      "webhookId": "matrix-command-webhook"
     },
     {
       "parameters": {
-        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst sinceToken = staticData.sinceToken || '';\nconst homeserver = $env.MATRIX_HOMESERVER;\nconst botToken = $env.MATRIX_BOT_TOKEN;\nconst todoRoom = $env.MATRIX_ROOM_TODO;\nconst qaRoom = $env.MATRIX_ROOM_QA || '';\n\nif (!homeserver || !botToken) {\n  return [];\n}\n\n// 监听的房间列表\nconst rooms = [todoRoom];\nif (qaRoom) rooms.push(qaRoom);\n\nconst filter = JSON.stringify({\n  room: {\n    rooms: rooms,\n    timeline: { types: ['m.room.message'], limit: 20 }\n  },\n  presence: { types: [] },\n  account_data: { types: [] }\n});\n\n// timeout=8000: long-polling, returns immediately when new events arrive\nlet syncUrl = `${homeserver}/_matrix/client/v3/sync?timeout=8000&filter=${encodeURIComponent(filter)}`;\nif (sinceToken) {\n  syncUrl += `&since=${encodeURIComponent(sinceToken)}`;\n}\n\nreturn [{ json: { syncUrl, isFirstRun: !sinceToken, todoRoom, qaRoom } }];"
-      },
-      "id": "prepare-sync",
-      "name": "准备同步",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        240,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "method": "GET",
-        "url": "={{ $json.syncUrl }}",
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/matrix/notify",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
-              "name": "Authorization",
-              "value": "=Bearer {{ $env.MATRIX_BOT_TOKEN }}"
-            }
-          ]
-        },
-        "options": {
-          "timeout": 15000
-        }
-      },
-      "id": "sync-matrix",
-      "name": "同步Matrix",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        480,
-        300
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst syncResp = $input.first().json;\nconst prevData = $('准备同步').first().json;\nconst isFirstRun = prevData.isFirstRun;\nconst todoRoom = prevData.todoRoom;\nconst qaRoom = prevData.qaRoom;\n\n// 保存 next_batch token\nif (syncResp.next_batch) {\n  staticData.sinceToken = syncResp.next_batch;\n}\n\n// 首次运行或出错时跳过\nif (isFirstRun || syncResp.errcode) {\n  return [];\n}\n\n// 事件去重：用 staticData 记录已处理的 event_id\nif (!staticData.processedEvents) {\n  staticData.processedEvents = [];\n}\n\n// 房间到 bot_type 的映射\nconst roomMap = {};\nif (todoRoom) roomMap[todoRoom] = 'todo';\nif (qaRoom) roomMap[qaRoom] = 'qa';\n\nconst results = [];\nconst joinedRooms = syncResp.rooms?.join || {};\nconst botMention = '@kb-bot:matrix.singll.net';\n\nfor (const [roomId, roomData] of Object.entries(joinedRooms)) {\n  const botType = roomMap[roomId];\n  if (!botType) continue;\n\n  const events = roomData.timeline?.events || [];\n\n  for (const event of events) {\n    if (event.type !== 'm.room.message') continue;\n    // 过滤 bot 自己的消息\n    if (event.sender && event.sender.startsWith('@kb-bot:')) continue;\n    // 去重：跳过已处理的事件\n    if (staticData.processedEvents.includes(event.event_id)) continue;\n\n    let body = (event.content?.body || '').trim();\n    let rawMessage = body;\n\n    // 检测提及触发\n    if (body.includes(botMention)) {\n      // 提取 mention 后的内容\n      const mentionIndex = body.indexOf(botMention);\n      body = body.substring(mentionIndex + botMention.length).trim();\n      // 如果不以 ! 或 ！ 开头，自动添加\n      if (body && !body.startsWith('!') && !body.startsWith('！')) {\n        body = '!' + body;\n      }\n      rawMessage = body;\n    }\n\n    // 只处理以 ! 或 ！ 开头的指令\n    if (!body.startsWith('!') && !body.startsWith('！')) continue;\n\n    // 记录已处理的事件\n    staticData.processedEvents.push(event.event_id);\n\n    results.push({\n      bot_type: botType,\n      room_id: roomId,\n      sender: event.sender,\n      raw_message: rawMessage,\n      event_id: event.event_id\n    });\n  }\n}\n\n// 只保留最近 200 个 event_id，避免内存无限增长\nif (staticData.processedEvents.length > 200) {\n  staticData.processedEvents = staticData.processedEvents.slice(-200);\n}\n\nreturn results.length > 0 ? results.map(r => ({ json: r })) : [];"
-      },
-      "id": "parse-messages",
-      "name": "解析消息",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        720,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const input = $input.first().json;\nconst botType = input.bot_type;\nconst rawMessage = input.raw_message;\n\n// 移除开头的 ! 或 ！\nconst content = rawMessage.substring(1).trim();\nconst parts = content.split(/\\s+/);\nconst cmd = parts[0].toLowerCase();\nconst args = parts.slice(1).join(' ');\n\nlet command = '';\nlet parsedArgs = {};\n\n// === 全局指令（任何房间均可触发） ===\nswitch(cmd) {\n  case '补录':\n  case 'backfill': case 'bf':\n    command = 'backfill';\n    if (args) {\n      const daysMatch = args.match(/(\\d+)天/);\n      if (daysMatch) {\n        parsedArgs.days = parseInt(daysMatch[1]);\n        parsedArgs.limit = 200;\n      } else {\n        parsedArgs.limit = parseInt(args) || 200;\n      }\n    } else {\n      parsedArgs.limit = 200;\n    }\n    break;\n  case '解析状态': case '解析进度':\n  case 'parse-status': case 'ps':\n    command = 'parse_status';\n    break;\n  case '帮助': case 'help': case 'h': case '?':\n    command = 'help';\n    break;\n}\n\n// === 房间特定指令 ===\nif (!command) {\n  if (botType === 'todo') {\n    switch(cmd) {\n      case '待办': case '列表': case '待办列表':\n      case '查询': case '查看':\n      case 'list': case 'ls': case 'show':\n        command = 'list';\n        break;\n      case '今日': case '今天':\n      case 'today':\n        command = 'list';\n        parsedArgs.filter = 'today';\n        break;\n      case '逾期':\n      case 'overdue':\n        command = 'list';\n        parsedArgs.filter = 'overdue';\n        break;\n      case '新增': case '添加':\n      case 'add': case 'new': case 'create':\n        if (args) {\n          command = 'add';\n          let priority = 3;\n          let dueDate = '';\n          let remaining = args;\n          for (let i = 0; i < 2; i++) {\n            const pMatch = remaining.match(/^P(\\d)\\s+([\\s\\S]*)/);\n            if (pMatch) { priority = parseInt(pMatch[1]); remaining = pMatch[2]; continue; }\n            const dFull = remaining.match(/^D(\\d{4}-\\d{1,2}-\\d{1,2})\\s+([\\s\\S]*)/);\n            if (dFull) { dueDate = dFull[1]; remaining = dFull[2]; continue; }\n            const dShort = remaining.match(/^D(\\d{1,2})\\/(\\d{1,2})\\s+([\\s\\S]*)/);\n            if (dShort) {\n              const y = new Date().getFullYear();\n              dueDate = `${y}-${dShort[1].padStart(2,'0')}-${dShort[2].padStart(2,'0')}`;\n              remaining = dShort[3]; continue;\n            }\n            break;\n          }\n          parsedArgs.text = remaining.trim();\n          parsedArgs.priority = priority;\n          parsedArgs.dueDate = dueDate;\n        }\n        break;\n      case '完成':\n      case 'done': case 'complete': case 'finish':\n        if (args) {\n          command = 'done';\n          parsedArgs.memo_name = `memos/${args}`;\n        }\n        break;\n      case '删除':\n      case 'delete': case 'del': case 'remove': case 'rm':\n        if (args) {\n          command = 'delete';\n          parsedArgs.memo_name = `memos/${args}`;\n        }\n        break;\n      case '修改':\n      case 'modify': case 'edit': case 'update': {\n        const modParts = args.split(/\\s+/);\n        if (modParts.length >= 2) {\n          command = 'modify';\n          parsedArgs.memo_name = `memos/${modParts[0]}`;\n          parsedArgs.text = modParts.slice(1).join(' ');\n        }\n        break;\n      }\n    }\n  } else if (botType === 'qa') {\n    switch(cmd) {\n      case '问':\n      case 'ask': case 'question': case 'q':\n        if (args) {\n          command = 'ask';\n          parsedArgs.question = args;\n        }\n        break;\n      case '搜': case '搜索':\n      case 'search': case 'find': case 's':\n        if (args) {\n          command = 'search';\n          parsedArgs.keywords = args;\n        }\n        break;\n    }\n  }\n}\n\nif (!command) {\n  command = 'unknown';\n}\n\nreturn [{\n  json: {\n    bot_type: botType,\n    room_id: input.room_id,\n    sender: input.sender,\n    command: command,\n    args: parsedArgs,\n    raw_message: rawMessage\n  }\n}];"
-      },
-      "id": "parse-command",
-      "name": "解析指令",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        960,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{ $json.bot_type }}",
-                    "rightValue": "todo",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  },
-                  {
-                    "leftValue": "={{ $json.command }}",
-                    "rightValue": "help",
-                    "operator": {
-                      "type": "string",
-                      "operation": "notEquals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              },
-              "outputIndex": 0
+              "name": "Content-Type",
+              "value": "application/json"
             },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{ $json.bot_type }}",
-                    "rightValue": "qa",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  },
-                  {
-                    "leftValue": "={{ $json.command }}",
-                    "rightValue": "help",
-                    "operator": {
-                      "type": "string",
-                      "operation": "notEquals"
-                    }
-                  },
-                  {
-                    "leftValue": "={{ $json.command }}",
-                    "rightValue": "backfill",
-                    "operator": {
-                      "type": "string",
-                      "operation": "notEquals"
-                    }
-                  },
-                  {
-                    "leftValue": "={{ $json.command }}",
-                    "rightValue": "parse_status",
-                    "operator": {
-                      "type": "string",
-                      "operation": "notEquals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              },
-              "outputIndex": 1
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{ $json.command }}",
-                    "rightValue": "help",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              },
-              "outputIndex": 2
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{ $json.command }}",
-                    "rightValue": "backfill",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              },
-              "outputIndex": 3
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "leftValue": "",
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{ $json.command }}",
-                    "rightValue": "parse_status",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              },
-              "outputIndex": 4
-            }
-          ]
-        },
-        "fallbackOutput": "extra",
-        "options": {}
-      },
-      "id": "route-command",
-      "name": "路由分发",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3,
-      "position": [
-        1200,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "http://localhost:5678/webhook/memos-todo",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ action: $json.command, text: $json.args.text || '', memo_name: $json.args.memo_name || '', priority: $json.args.priority || 3, dueDate: $json.args.dueDate || '', filter: $json.args.filter || '' }) }}",
-        "options": {
-          "timeout": 30000
-        }
-      },
-      "id": "call-todo",
-      "name": "调用待办处理",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1440,
-        100
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "http://localhost:5678/webhook/qa-handler",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ command: $json.command, question: $json.args.question || '', keywords: $json.args.keywords || '', room: 'qa', bot_type: $json.bot_type }) }}",
-        "options": {
-          "timeout": 5000
-        }
-      },
-      "id": "call-qa",
-      "name": "调用问答处理",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1440,
-        300
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "jsCode": "const input = $('解析指令').first().json;\nconst botType = input.bot_type;\n\nlet message = '';\nlet html = '';\n\nif (botType === 'todo') {\n  message = '📖 待办机器人使用指南\\n\\n🎯 触发方式\\n  • 前缀命令: !指令\\n  • 提及触发: @kb-bot:matrix.singll.net 指令\\n\\n📋 查看待办\\n  !列表 / !list / !ls - 查看所有待办\\n  !今日 / !today - 查看今日到期\\n  !逾期 / !overdue - 查看已逾期\\n\\n📝 管理待办\\n  !新增 / !add {内容} - 添加待办\\n  !新增 P1 {内容} - 指定优先级(P1-P3)\\n  !新增 D3/15 {内容} - 指定截止日期(月/日)\\n  !新增 P1 D3/15 {内容} - 同时指定\\n  !完成 / !done {ID} - 标记完成\\n  !删除 / !delete {ID} - 删除待办\\n  !修改 / !edit {ID} {新内容} - 修改内容\\n\\n💡 示例\\n  !add P1 D3/20 完成项目文档\\n  @kb-bot:matrix.singll.net list\\n  !done 123';\n  \n  html = '<h4>📖 待办机器人使用指南</h4>'\n    + '<h5>🎯 触发方式</h5>'\n    + '<ul>'\n    + '<li><b>前缀命令</b>: <code>!指令</code></li>'\n    + '<li><b>提及触发</b>: <code>@kb-bot:matrix.singll.net 指令</code></li>'\n    + '</ul>'\n    + '<h5>📋 查看待办</h5>'\n    + '<ul>'\n    + '<li><code>!列表</code> / <code>!list</code> / <code>!ls</code> - 查看所有待办</li>'\n    + '<li><code>!今日</code> / <code>!today</code> - 查看今日到期</li>'\n    + '<li><code>!逾期</code> / <code>!overdue</code> - 查看已逾期</li>'\n    + '</ul>'\n    + '<h5>📝 管理待办</h5>'\n    + '<ul>'\n    + '<li><code>!新增</code> / <code>!add</code> <code>{内容}</code> - 添加待办</li>'\n    + '<li><code>!新增 P1 {内容}</code> - 指定优先级(P1-P3)</li>'\n    + '<li><code>!新增 D3/15 {内容}</code> - 指定截止日期(月/日)</li>'\n    + '<li><code>!新增 P1 D3/15 {内容}</code> - 同时指定</li>'\n    + '<li><code>!完成</code> / <code>!done</code> <code>{ID}</code> - 标记完成</li>'\n    + '<li><code>!删除</code> / <code>!delete</code> <code>{ID}</code> - 删除待办</li>'\n    + '<li><code>!修改</code> / <code>!edit</code> <code>{ID} {新内容}</code> - 修改内容</li>'\n    + '</ul>'\n    + '<h5>💡 示例</h5>'\n    + '<p><i><code>!add P1 D3/20 完成项目文档</code></i></p>'\n    + '<p><i><code>@kb-bot:matrix.singll.net list</code></i></p>'\n    + '<p><i><code>!done 123</code></i></p>';\n} else if (botType === 'qa') {\n  message = '🤖 知识库助手使用指南\\n\\n🎯 触发方式\\n  • 前缀命令: !指令\\n  • 提及触发: @kb-bot:matrix.singll.net 指令\\n\\n💬 基础功能\\n  !问 / !ask {问题} - 向知识库提问\\n  !搜 / !search {关键词} - 搜索相关文档\\n  !补录 / !backfill - 一键补录历史文章\\n  !补录 50 - 每源获取50条\\n  !补录 7天 - 获取最近7天文章\\n  !解析状态 / !ps - 查看文档解析进度\\n  !帮助 / !help - 显示此帮助\\n\\n💡 示例\\n  !ask 如何配置 RAGFlow\\n  @kb-bot:matrix.singll.net search Docker\\n  !补录';\n  \n  html = '<h4>🤖 知识库助手使用指南</h4>'\n    + '<h5>🎯 触发方式</h5>'\n    + '<ul>'\n    + '<li><b>前缀命令</b>: <code>!指令</code></li>'\n    + '<li><b>提及触发</b>: <code>@kb-bot:matrix.singll.net 指令</code></li>'\n    + '</ul>'\n    + '<h5>💬 基础功能</h5>'\n    + '<ul>'\n    + '<li><code>!问</code> / <code>!ask</code> <code>{问题}</code> - 向知识库提问</li>'\n    + '<li><code>!搜</code> / <code>!search</code> <code>{关键词}</code> - 搜索相关文档</li>'\n    + '<li><code>!补录</code> / <code>!backfill</code> - 一键补录历史文章</li>'\n    + '<li><code>!补录 50</code> - 每源获取50条</li>'\n    + '<li><code>!补录 7天</code> - 获取最近7天文章</li>'\n    + '<li><code>!解析状态</code> / <code>!ps</code> - 查看文档解析进度</li>'\n    + '<li><code>!帮助</code> / <code>!help</code> - 显示此帮助</li>'\n    + '</ul>'\n    + '<h5>💡 示例</h5>'\n    + '<p><i><code>!ask 如何配置 RAGFlow</code></i></p>'\n    + '<p><i><code>@kb-bot:matrix.singll.net search Docker</code></i></p>'\n    + '<p><i><code>!补录</code></i></p>';\n} else {\n  message = '❓ 未知机器人类型';\n  html = '<p>❓ 未知机器人类型</p>';\n}\n\nreturn [{ json: { message, html, bot_type: botType } }];"
-      },
-      "id": "build-help",
-      "name": "构建帮助消息",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1440,
-        500
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const input = $('解析指令').first().json;\nconst botType = input.bot_type;\nconst message = '❓ 未知指令，发送 !帮助 查看用法';\nconst html = '<p>❓ 未知指令，发送 <code>!帮助</code> 查看用法</p>';\nreturn [{ json: { message, html, bot_type: botType } }];"
-      },
-      "id": "build-unknown",
-      "name": "构建未知指令消息",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1440,
-        700
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "http://localhost:5678/webhook/rss-backfill",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ limit: $json.args.limit || 200, days: $json.args.days || 0 }) }}",
-        "options": {
-          "timeout": 15000,
-          "response": {
-            "response": {
-              "responseFormat": "text"
-            }
-          }
-        }
-      },
-      "id": "call-backfill",
-      "name": "调用补录",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1440,
-        900
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "jsCode": "const command = $('解析指令').first().json;\nconst response = $input.first().json;\nconst botType = command.bot_type;\n\nlet message = '';\nlet html = '';\n\n// responseFormat: text 时，响应在 response.data 字段中为字符串\nlet hasError = false;\nif (response.error) {\n  hasError = true;\n} else if (typeof response.data === 'string') {\n  // 检查文本响应是否包含错误\n  const text = response.data.toLowerCase();\n  if (text.includes('error') || text.includes('failed') || text.includes('invalid')) {\n    hasError = true;\n  }\n}\n\nif (hasError) {\n  const err = response.error ? (typeof response.error === 'object' ? (response.error.message || JSON.stringify(response.error)) : String(response.error)) : response.data || 'webhook调用失败';\n  message = `❌ 补录任务启动失败: ${err}`;\n  html = `<p>❌ 补录任务启动失败: ${err}</p>`;\n} else {\n  const limit = command.args.limit || 200;\n  const days = command.args.days || 0;\n  const daysInfo = days > 0 ? `最近 ${days} 天的` : '';\n  message = `✅ 补录任务已启动，将从所有 RSS 源获取${daysInfo}最多 ${limit} 条文章。\\n采集和解析完成后会分别发送通知。`;\n  html = `<p>✅ 补录任务已启动，将从所有 RSS 源获取${daysInfo}最多 <b>${limit}</b> 条文章。</p><p><i>采集和解析完成后会分别发送通知。</i></p>`;\n}\n\nreturn [{ json: { message, html, bot_type: botType } }];"
-      },
-      "id": "format-backfill-response",
-      "name": "格式化补录回复",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1680,
-        900
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const command = $('解析指令').first().json;\nconst response = $input.first().json;\nconst action = command.command;\nconst filter = command.args.filter || '';\nconst botType = command.bot_type;\n\nlet message = '';\nlet html = '';\n\nif (response.success === false || response.error) {\n  message = `❌ 操作失败: ${response.error || '未知错误'}`;\n  html = `<p>❌ 操作失败: ${response.error || '未知错误'}</p>`;\n} else {\n  switch(action) {\n    case 'list': {\n      let memos = response.memos || [];\n      const now = new Date();\n      const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;\n\n      if (filter === 'today') {\n        memos = memos.filter(m => {\n          const d = (m.content || '').match(/#D:(\\d{4}-\\d{2}-\\d{2})/);\n          return d && d[1] === todayStr;\n        });\n      } else if (filter === 'overdue') {\n        memos = memos.filter(m => {\n          const d = (m.content || '').match(/#D:(\\d{4}-\\d{2}-\\d{2})/);\n          return d && d[1] < todayStr;\n        });\n      }\n\n      const filterLabel = filter === 'today' ? '今日到期' : filter === 'overdue' ? '逾期' : '待办列表';\n\n      if (memos.length === 0) {\n        const emptyMsg = filter === 'today' ? '今日没有到期事项' : filter === 'overdue' ? '没有逾期事项' : '当前没有待办事项';\n        message = `📝 ${emptyMsg}`;\n        html = `<p>📝 <i>${emptyMsg}</i></p>`;\n      } else {\n        memos.sort((a, b) => {\n          const dA = (a.content || '').match(/#D:(\\d{4}-\\d{2}-\\d{2})/);\n          const dB = (b.content || '').match(/#D:(\\d{4}-\\d{2}-\\d{2})/);\n          const dateA = dA ? dA[1] : '9999-99-99';\n          const dateB = dB ? dB[1] : '9999-99-99';\n          const overA = dA && dA[1] < todayStr ? 0 : 1;\n          const overB = dB && dB[1] < todayStr ? 0 : 1;\n          if (overA !== overB) return overA - overB;\n          if (dateA !== dateB) return dateA.localeCompare(dateB);\n          const pA = parseInt((a.content?.match(/#P(\\d)/) || [])[1] || '3');\n          const pB = parseInt((b.content?.match(/#P(\\d)/) || [])[1] || '3');\n          return pA - pB;\n        });\n\n        const lines = [`📝 ${filterLabel} (${memos.length}项):`];\n        html = `<h4>📝 ${filterLabel} (${memos.length}项)</h4>\\n<ul>\\n`;\n        memos.forEach((memo, i) => {\n          const content = memo.content || '';\n          const text = content.replace(/#\\S+/g, '').trim();\n          const id = (memo.name || '').replace('memos/', '');\n          const priority = (content.match(/#P(\\d)/) || [])[1] || '3';\n          const pEmoji = priority === '1' ? '🔴' : priority === '2' ? '🟡' : '⚪';\n          const dueMatch = content.match(/#D:(\\d{4})-(\\d{2})-(\\d{2})/);\n          let dateStr = '';\n          let htmlDate = '';\n          if (dueMatch) {\n            const isOverdue = `${dueMatch[1]}-${dueMatch[2]}-${dueMatch[3]}` < todayStr;\n            const isToday = `${dueMatch[1]}-${dueMatch[2]}-${dueMatch[3]}` === todayStr;\n            dateStr = isOverdue ? ` ⚠️${parseInt(dueMatch[2])}/${parseInt(dueMatch[3])}(逾期)` : isToday ? ` 📅今日` : ` 📅${parseInt(dueMatch[2])}/${parseInt(dueMatch[3])}`;\n            htmlDate = isOverdue ? ` <b>⚠️${parseInt(dueMatch[2])}/${parseInt(dueMatch[3])}</b>` : isToday ? ` 📅今日` : ` 📅${parseInt(dueMatch[2])}/${parseInt(dueMatch[3])}`;\n          }\n          lines.push(`${pEmoji} ${i+1}. [#${id}] P${priority}${dateStr} ${text}`);\n          html += `<li>${pEmoji} <code>#${id}</code> P${priority}${htmlDate} ${text}</li>\\n`;\n        });\n        message = lines.join('\\n');\n        html += `</ul>`;\n      }\n      break;\n    }\n    case 'add': {\n      let extra = '';\n      if (command.args.dueDate) {\n        const dp = command.args.dueDate.split('-');\n        extra = ` (📅${parseInt(dp[1])}/${parseInt(dp[2])})`;\n      }\n      message = `➕ 已添加待办: ${command.args.text}${extra}`;\n      html = `<p>➕ 已添加待办: <b>${command.args.text}</b>${extra}</p>`;\n      break;\n    }\n    case 'done':\n      message = `✅ 已完成: ${(command.args.memo_name || '').replace('memos/', '#')}`;\n      html = `<p>✅ 已完成: <code>${(command.args.memo_name || '').replace('memos/', '#')}</code></p>`;\n      break;\n    case 'delete':\n      message = `🗑️ 已删除: ${(command.args.memo_name || '').replace('memos/', '#')}`;\n      html = `<p>🗑️ 已删除: <code>${(command.args.memo_name || '').replace('memos/', '#')}</code></p>`;\n      break;\n    case 'modify':\n      message = `✏️ 已修改: ${command.args.text}`;\n      html = `<p>✏️ 已修改: <b>${command.args.text}</b></p>`;\n      break;\n    default:\n      message = `❓ 未知操作: ${action}`;\n      html = `<p>❓ 未知操作: ${action}</p>`;\n  }\n}\n\nreturn [{ json: { message, html, bot_type: botType } }];"
-      },
-      "id": "format-todo-response",
-      "name": "格式化待办回复",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1680,
-        100
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const input = $input.first().json;\nconst botType = input.bot_type;\nconst message = input.message;\nconst html = input.html || null;\n\nconst roomMap = {\n  'todo': 'todo',\n  'qa': 'qa'\n};\n\nconst room = roomMap[botType] || 'todo';\n\nreturn [{ json: { room, message, html } }];"
-      },
-      "id": "prepare-notify",
-      "name": "准备发送",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1920,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "http://localhost:5678/webhook/notify",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ room: $json.room, message: $json.message, html: $json.html }) }}",
-        "options": {
-          "timeout": 10000
-        }
-      },
-      "id": "send-notify",
-      "name": "发送回复",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2160,
-        300
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "method": "GET",
-        "url": "={{ $env.BELLKEEPER_URL }}/api/ragflow/documents/parse/overview",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
             {
               "name": "X-API-Key",
               "value": "={{ $env.BELLKEEPER_API_KEY }}"
             }
           ]
         },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"channel\": {{ JSON.stringify($input.first().json.body.room || 'qa') }},\n  \"message\": {{ JSON.stringify($input.first().json.body.message || '') }},\n  \"message_type\": \"html\"\n}",
         "options": {
           "timeout": 30000
         }
       },
-      "id": "call-parse-status",
-      "name": "查询解析状态",
+      "id": "notify-bellkeeper",
+      "name": "通知Bellkeeper发送",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1440,
-        1100
+        240,
+        300
       ],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "const command = $('解析指令').first().json;\nconst response = $input.first().json;\nconst botType = command.bot_type;\n\nlet message = '';\nlet html = '';\n\nif (response.error) {\n  message = '解析状态查询失败: ' + (typeof response.error === 'object' ? (response.error.message || JSON.stringify(response.error)) : String(response.error));\n  html = '<p>' + message + '</p>';\n} else {\n  const datasets = response.datasets || [];\n  const totalDocs = response.total_documents || 0;\n  const totalParsed = response.total_parsed || 0;\n  const totalUnparsed = response.total_unparsed || 0;\n  const totalFailed = response.total_failed || 0;\n  const totalRunning = response.total_running || 0;\n  const pct = totalDocs > 0 ? Math.round(totalParsed / totalDocs * 100) : 0;\n  \n  const bar = '█'.repeat(Math.round(pct / 5)) + '░'.repeat(20 - Math.round(pct / 5));\n  \n  message = `📊 RAGFlow 解析状态\\n${bar} ${pct}%\\n总计: ${totalDocs} | 已解析: ${totalParsed} | 未解析: ${totalUnparsed} | 运行中: ${totalRunning} | 失败: ${totalFailed}`;\n  html = `<h4>📊 RAGFlow 解析状态</h4>`;\n  html += `<p><code>${bar}</code> <b>${pct}%</b></p>`;\n  html += `<p>总计: ${totalDocs} | 已解析: ${totalParsed} | 未解析: ${totalUnparsed} | 运行中: ${totalRunning} | 失败: ${totalFailed}</p>`;\n  \n  if (datasets.length > 0) {\n    html += '<table><tr><th>知识库</th><th>总数</th><th>已解析</th><th>未解析</th><th>进度</th></tr>';\n    for (const ds of datasets) {\n      const dsPct = ds.total > 0 ? Math.round(ds.parsed / ds.total * 100) : 0;\n      const statusIcon = ds.unparsed > 0 ? '⏳' : ds.failed > 0 ? '⚠️' : '✅';\n      html += `<tr><td>${statusIcon} ${ds.name}</td><td>${ds.total}</td><td>${ds.parsed}</td><td>${ds.unparsed}</td><td>${dsPct}%</td></tr>`;\n      message += `\\n${statusIcon} ${ds.name}: ${ds.parsed}/${ds.total} (${dsPct}%)`;\n    }\n    html += '</table>';\n  }\n}\n\nreturn [{ json: { message, html, bot_type: botType } }];"
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.success ? 200 : 500 }}"
+        }
       },
-      "id": "format-parse-status",
-      "name": "格式化解析状态",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "id": "respond",
+      "name": "返回响应",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
       "position": [
-        1680,
-        1100
+        480,
+        300
       ]
     }
   ],
   "connections": {
-    "定时轮询": {
+    "Matrix命令Webhook": {
       "main": [
         [
           {
-            "node": "准备同步",
+            "node": "通知Bellkeeper发送",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "准备同步": {
+    "通知Bellkeeper发送": {
       "main": [
         [
           {
-            "node": "同步Matrix",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "同步Matrix": {
-      "main": [
-        [
-          {
-            "node": "解析消息",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "解析消息": {
-      "main": [
-        [
-          {
-            "node": "解析指令",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "解析指令": {
-      "main": [
-        [
-          {
-            "node": "路由分发",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "路由分发": {
-      "main": [
-        [
-          {
-            "node": "调用待办处理",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "调用问答处理",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "构建帮助消息",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "调用补录",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "查询解析状态",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "构建未知指令消息",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "调用待办处理": {
-      "main": [
-        [
-          {
-            "node": "格式化待办回复",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "构建帮助消息": {
-      "main": [
-        [
-          {
-            "node": "准备发送",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "构建未知指令消息": {
-      "main": [
-        [
-          {
-            "node": "准备发送",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "格式化待办回复": {
-      "main": [
-        [
-          {
-            "node": "准备发送",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "调用补录": {
-      "main": [
-        [
-          {
-            "node": "格式化补录回复",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "格式化补录回复": {
-      "main": [
-        [
-          {
-            "node": "准备发送",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "查询解析状态": {
-      "main": [
-        [
-          {
-            "node": "格式化解析状态",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "格式化解析状态": {
-      "main": [
-        [
-          {
-            "node": "准备发送",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "准备发送": {
-      "main": [
-        [
-          {
-            "node": "发送回复",
+            "node": "返回响应",
             "type": "main",
             "index": 0
           }
@@ -642,22 +98,16 @@
       ]
     }
   },
+  "pinData": {},
   "settings": {
     "executionOrder": "v1",
     "saveManualExecutions": true,
     "callerPolicy": "workflowsFromSameOwner"
   },
   "staticData": null,
-  "pinData": {},
-  "tags": [
-    {
-      "name": "knowledge"
-    },
-    {
-      "name": "matrix"
-    },
-    {
-      "name": "bot"
-    }
-  ]
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-04-10T00:00:00.000Z",
+  "versionId": "3",
+  "notes": "Matrix 轮询和命令路由已由 Bellkeeper 处理。此工作流保留 webhook 接口供外部系统调用。"
 }
