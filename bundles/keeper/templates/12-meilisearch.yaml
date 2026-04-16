@@ -1,0 +1,22 @@
+services:
+  meilisearch:
+    image: getmeili/meilisearch:v1.7
+    container_name: ${APP_PREFIX:-sp-}meilisearch
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_ENV: production
+      MEILI_DB_PATH: /meili_data
+    volumes:
+      - kp-meilisearch-data:/meili_data
+    networks:
+      - kp-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--spider", "http://127.0.0.1:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  kp-meilisearch-data:
+    driver: local
