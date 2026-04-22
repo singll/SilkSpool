@@ -41,7 +41,9 @@ fi
 LOCAL_WORKFLOW_DIR="$BASE_DIR/hosts/${N8N_HOST}/n8n-workflows"
 SSH_KEY="${SSH_KEY_PATH:-$BASE_DIR/keys/id_silkspool}"
 HOST_CONN=$(ss_get_host_conn "$N8N_HOST")
-SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+SSH_CTRL_DIR="$BASE_DIR/.ssh-control"
+mkdir -p "$SSH_CTRL_DIR"
+SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ControlMaster=auto -o ControlPath=$SSH_CTRL_DIR/n8n-%r@%h:%p -o ControlPersist=600"
 [ -f "$SSH_KEY" ] && SSH_OPTS="$SSH_OPTS -i $SSH_KEY"
 
 log_error() { log_err "$1"; }
@@ -52,6 +54,19 @@ remote_exec() {
         ssh -n $SSH_OPTS "$HOST_CONN" "$command"
     else
         bash -lc "$command"
+    fi
+}
+
+# Ensure master SSH connection is established before bulk operations
+ssh_open() {
+    if [ -n "$HOST_CONN" ] && [ -f "$SSH_KEY" ]; then
+        ssh -fN $SSH_OPTS "$HOST_CONN" 2>/dev/null || true
+    fi
+}
+
+ssh_close() {
+    if [ -n "$HOST_CONN" ] && [ -f "$SSH_KEY" ]; then
+        ssh -O exit $SSH_OPTS "$HOST_CONN" 2>/dev/null || true
     fi
 }
 
@@ -137,14 +152,11 @@ print(json.dumps(clean_data))
 
 api_create_workflow() {
     local json_file="$1"
-    local json_content
-    json_content=$(remote_exec "cat '$json_file'")
 
+    # Read local file directly (no SSH round-trip needed)
     local clean_json
-    clean_json=$(printf '%s' "$json_content" | clean_workflow_json)
-    if [ -z "$clean_json" ]; then
-        return 1
-    fi
+    clean_json=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); allowed=['name','nodes','connections','settings']; print(json.dumps({k:d[k] for k in allowed if k in d}))" "$json_file" 2>/dev/null)
+    [ -z "$clean_json" ] && return 1
 
     local json_base64
     json_base64=$(printf '%s' "$clean_json" | base64 -w 0)
@@ -257,6 +269,9 @@ import_all() {
     check_api_key
     check_container
 
+    # Open persistent SSH connection for bulk operations
+    ssh_open
+
     log_step "Starting workflow import"
     echo ""
 
@@ -273,6 +288,7 @@ import_all() {
         fi
     done < <(compgen -G "$LOCAL_WORKFLOW_DIR/*.json")
     if [ -n "$json_errors" ]; then
+        ssh_close
         log_error "Invalid JSON files detected:${json_errors}"
         log_info "Please fix the JSON syntax errors before importing"
         exit 1
@@ -358,6 +374,7 @@ except Exception:
     log_info "Import completed: $success succeeded, $skipped skipped"
     [ $failed -gt 0 ] && log_warn "$failed failed"
     [ $success -gt 0 ] && log_warn "Newly imported workflows are inactive by default; activate them in n8n UI"
+    ssh_close
 }
 
 export_all() {
@@ -479,6 +496,8 @@ update_all() {
     check_api_key
     check_container
 
+    ssh_open
+
     log_step "Updating all existing workflows"
     echo ""
 
@@ -495,6 +514,7 @@ update_all() {
         fi
     done < <(compgen -G "$LOCAL_WORKFLOW_DIR/*.json")
     if [ -n "$json_errors" ]; then
+        ssh_close
         log_error "Invalid JSON files detected:${json_errors}"
         log_info "Please fix the JSON syntax errors before updating"
         exit 1
@@ -557,6 +577,7 @@ except Exception:
     echo ""
     log_info "Update completed: $success updated, $skipped skipped"
     [ $failed -gt 0 ] && log_warn "$failed failed"
+    ssh_close
 }
 
 activate_workflow() {
@@ -577,6 +598,8 @@ activate_workflow() {
 activate_all() {
     check_api_key
     check_container
+
+    ssh_open
 
     log_step "Activating all workflows"
     echo ""
@@ -638,6 +661,7 @@ except Exception:
 
     echo ""
     log_info "Activation completed: $success activated, $failed failed"
+    ssh_close
     [ $failed -gt 0 ] && exit 1
 }
 

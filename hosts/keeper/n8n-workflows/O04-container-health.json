@@ -7,13 +7,13 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "*/5 * * * *"
+              "expression": "*/10 * * * *"
             }
           ]
         }
       },
       "id": "container-health-trigger",
-      "name": "每5分钟检查",
+      "name": "每10分钟检查",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "position": [
@@ -23,22 +23,36 @@
     },
     {
       "parameters": {
-        "command": "docker ps -a --format '{{json .}}' | jq -s '.'"
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/system/containers",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
       },
-      "id": "container-list-exec",
+      "id": "container-list-http",
       "name": "获取容器状态",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
         200,
         300
-      ]
+      ],
+      "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "const stdout = $input.first().json.stdout;\nconst containers = JSON.parse(stdout);\nconst staticData = $getWorkflowStaticData('global');\n\nconst unhealthy = containers.filter(c => {\n  const isRunning = c.State === 'running';\n  const hasHealthCheck = c.Status.includes('(health');\n  const isUnhealthy = hasHealthCheck && c.Status.includes('(unhealthy)');\n  const isExited = c.State === 'exited' || c.State === 'dead';\n  return isUnhealthy || isExited;\n});\n\nconst previousUnhealthy = staticData.unhealthyContainers || [];\nconst newIssues = unhealthy.filter(c => \n  !previousUnhealthy.some(p => p.ID === c.ID)\n);\n\nstaticData.unhealthyContainers = unhealthy.map(c => ({\n  ID: c.ID,\n  Names: c.Names,\n  State: c.State,\n  Status: c.Status\n}));\n\nreturn unhealthy.map(c => ({ json: c }));"
+        "jsCode": "const staticData = $getWorkflowStaticData('global');\nconst containers = $input.first().json.containers || [];\n\nconst unhealthy = containers.filter(c => {\n  return c.state !== 'running';\n});\n\nconst previousUnhealthy = staticData.unhealthyContainers || [];\nconst newIssues = unhealthy.filter(c =>\n  !previousUnhealthy.some(p => p.name === c.name)\n);\n\nstaticData.unhealthyContainers = unhealthy.map(c => ({\n  name: c.name,\n  state: c.state\n}));\n\nreturn [{ json: { unhealthy, newIssues, allHealthy: unhealthy.length === 0 } }];"
       },
-      "id": "container-parse-code",
+      "id": "container-check-code",
       "name": "检测异常容器",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -50,18 +64,30 @@
     {
       "parameters": {
         "conditions": {
-          "string": [
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
             {
-              "value1": "={{ $json.Names }}",
-              "operation": "isNotEmpty"
+              "id": "has-issues",
+              "leftValue": "={{ $json.allHealthy }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
             }
-          ]
-        }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
       },
-      "id": "container-check-if",
+      "id": "container-if",
       "name": "有异常容器?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [
         600,
         300
@@ -69,35 +95,8 @@
     },
     {
       "parameters": {
-        "command": "=docker restart {{ $json.Names }}"
-      },
-      "id": "container-restart-exec",
-      "name": "重启容器",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [
-        800,
-        200
-      ],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "jsCode": "const items = $input.all();\nconst hostname = require('os').hostname();\nlet msg = `<h3>🔧 容器自动重启</h3>`;\nmsg += `<p><strong>主机:</strong> ${hostname}</p>`;\nmsg += `<ul>`;\nitems.forEach(item => {\n  const c = item.json;\n  const success = !c.error;\n  msg += `<li>${success ? '✅' : '❌'} <code>${c.Names}</code> - ${c.State} (${c.Status.substring(0,50)})</li>`;\n});\nmsg += `</ul>`;\nmsg += `<p><small>${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</small></p>`;\nreturn [{ json: { message: msg } }];"
-      },
-      "id": "container-format-code",
-      "name": "格式化通知",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1000,
-        200
-      ]
-    },
-    {
-      "parameters": {
         "method": "POST",
-        "url": "={{ $env.BELLKEEPER_URL }}/api/matrix/send",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/system/containers/{{ $json.unhealthy[0].name }}/restart",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -111,41 +110,76 @@
             }
           ]
         },
-        "sendBody": true,
-        "bodyParameters": {
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "container-restart-http",
+      "name": "重启容器",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        200
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst unhealthy = $node['检测异常容器'].first().json.unhealthy || [];\nconst now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });\nlet md = `### 🛠️ 容器自动重启\\n\\n| 容器 | 状态 |\\n|------|------|\\n`;\nunhealthy.forEach(c => {\n  md += `| \\`${c.name}\\` | ❌ ${c.state} |\\n`;\n});\nmd += `\\n> 检查时间: ${now}`;\nreturn [{ json: { markdown: md } }];"
+      },
+      "id": "container-format-code",
+      "name": "格式化通知",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendHeaders": true,
+        "headerParameters": {
           "parameters": [
             {
-              "name": "room_id",
-              "value": "={{ $env.MATRIX_ADMIN_ROOM }}"
-            },
-            {
-              "name": "message",
-              "value": "={{ $json.message }}"
-            },
-            {
-              "name": "msg_type",
-              "value": "m.text"
-            },
-            {
-              "name": "format",
-              "value": "org.matrix.custom.html"
+              "name": "Content-Type",
+              "value": "application/json"
             }
           ]
         },
-        "options": {}
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: 'alerts', markdown: $json.markdown }) }}",
+        "options": {
+          "timeout": 15000
+        }
       },
       "id": "container-notify-http",
-      "name": "发送通知",
+      "name": "发送Matrix通知",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
         1200,
         200
       ]
+    },
+    {
+      "parameters": {},
+      "id": "container-all-ok",
+      "name": "全部正常",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        800,
+        400
+      ]
     }
   ],
   "connections": {
-    "每5分钟检查": {
+    "每10分钟检查": {
       "main": [
         [
           {
@@ -186,6 +220,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "全部正常",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -204,7 +245,7 @@
       "main": [
         [
           {
-            "node": "发送通知",
+            "node": "发送Matrix通知",
             "type": "main",
             "index": 0
           }
@@ -213,6 +254,8 @@
     }
   },
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
   }
 }

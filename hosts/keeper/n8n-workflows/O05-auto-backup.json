@@ -80,46 +80,45 @@
     },
     {
       "parameters": {
-        "command": "=cd /home/ubuntu/SilkSpool && ./spool.sh backup {{ $json.host }}"
-      },
-      "id": "backup-exec",
-      "name": "执行备份",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [400, 300],
-      "continueOnFail": true
-    },
-    {
-      "parameters": {
-        "command": "find /home/ubuntu/backups -type f -name '*.tar.gz' -mtime +7 -delete && echo \"Cleaned old backups\""
-      },
-      "id": "backup-cleanup-exec",
-      "name": "清理旧备份",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
-      "position": [600, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "const items = $input.all();\nconst results = items.slice(0, -1).map(item => ({\n  host: item.json.host,\n  success: !item.json.error && item.json.exitCode === 0,\n  output: item.json.stdout || item.json.stderr\n}));\nconst cleanup = items[items.length - 1].json;\n\nlet msg = `<h3>📦 每日备份报告</h3>`;\nmsg += `<ul>`;\nresults.forEach(r => {\n  msg += `<li>${r.success ? '✅' : '❌'} ${r.host}</li>`;\n});\nmsg += `</ul>`;\nmsg += `<p><small>清理: ${cleanup.stdout}</small></p>`;\nmsg += `<p><small>${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}</small></p>`;\nreturn [{ json: { message: msg, allSuccess: results.every(r => r.success) } }];"
-      },
-      "id": "backup-summary-code",
-      "name": "汇总结果",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [800, 300]
-    },
-    {
-      "parameters": {
         "method": "POST",
-        "url": "={{ $env.BELLKEEPER_URL }}/api/matrix/send",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/system/backup?host={{ $json.host }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "X-API-Key",
               "value": "={{ $env.BELLKEEPER_API_KEY }}"
-            },
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "backup-exec-http",
+      "name": "执行备份",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = items.map(item => ({\n  host: item.json.host,\n  success: item.json.output && !item.json.error,\n  output: item.json.output || item.json.message || 'unknown'\n}));\nconst allSuccess = results.every(r => r.success);\n\nlet md = `### 📦 每日备份报告\\n\\n| 主机 | 状态 |\\n|------|------|\\n`;\nresults.forEach(r => {\n  md += `| ${r.host} | ${r.success ? '✅ 成功' : '❌ 失败'} |\\n`;\n});\nmd += `\\n> 执行时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;\n\nreturn [{ json: { markdown: md, allSuccess } }];"
+      },
+      "id": "backup-summary-code",
+      "name": "汇总结果",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
             {
               "name": "Content-Type",
               "value": "application/json"
@@ -127,33 +126,17 @@
           ]
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "room_id",
-              "value": "={{ $env.MATRIX_ADMIN_ROOM }}"
-            },
-            {
-              "name": "message",
-              "value": "={{ $json.message }}"
-            },
-            {
-              "name": "msg_type",
-              "value": "m.text"
-            },
-            {
-              "name": "format",
-              "value": "org.matrix.custom.html"
-            }
-          ]
-        },
-        "options": {}
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: 'alerts', markdown: $json.markdown }) }}",
+        "options": {
+          "timeout": 15000
+        }
       },
       "id": "backup-notify-http",
-      "name": "发送通知",
+      "name": "发送Matrix通知",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1000, 300]
+      "position": [800, 300]
     }
   ],
   "connections": {
@@ -174,16 +157,15 @@
       "main": [[{"node": "执行备份", "type": "main", "index": 0}]]
     },
     "执行备份": {
-      "main": [[{"node": "清理旧备份", "type": "main", "index": 0}]]
-    },
-    "清理旧备份": {
       "main": [[{"node": "汇总结果", "type": "main", "index": 0}]]
     },
     "汇总结果": {
-      "main": [[{"node": "发送通知", "type": "main", "index": 0}]]
+      "main": [[{"node": "发送Matrix通知", "type": "main", "index": 0}]]
     }
   },
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
   }
 }

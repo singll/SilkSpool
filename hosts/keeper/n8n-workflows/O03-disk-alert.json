@@ -23,32 +23,58 @@
     },
     {
       "parameters": {
-        "command": "df -h | awk 'NR>1 {gsub(/%/,\"\",$5); if($5+0>80) print $6\"|\"$5\"|\"$2\"|\"$3}'"
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/system/disk",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
       },
-      "id": "disk-check-exec",
+      "id": "disk-check-http",
       "name": "检查磁盘使用率",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
         200,
         300
-      ]
+      ],
+      "continueOnFail": true
     },
     {
       "parameters": {
         "conditions": {
-          "string": [
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
             {
-              "value1": "={{ $json.stdout }}",
-              "operation": "isNotEmpty"
+              "id": "has-alerts",
+              "leftValue": "={{ $json.alerts.length }}",
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              },
+              "rightValue": 0
             }
-          ]
-        }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
       },
       "id": "disk-check-if",
-      "name": "是否超过80%",
+      "name": "是否有告警?",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 1,
+      "typeVersion": 2,
       "position": [
         400,
         300
@@ -56,27 +82,14 @@
     },
     {
       "parameters": {
-        "jsCode": "const lines = $input.first().json.stdout.trim().split('\\n');\nconst alerts = lines.map(line => {\n  const [mount, usage, total, used] = line.split('|');\n  return { mount, usage: parseInt(usage), total, used };\n});\nreturn alerts.map(a => ({ json: a }));"
-      },
-      "id": "disk-parse-code",
-      "name": "解析磁盘数据",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        600,
-        200
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const alerts = $input.all();\nconst hostname = require('os').hostname();\nlet md = `### ⚠️ 磁盘空间告警\\n\\n**主机:** ${hostname}\\n\\n| 挂载点 | 使用率 | 总容量 | 已用 |\\n|--------|--------|--------|------|\\n`;\nalerts.forEach(item => {\n  const a = item.json;\n  md += `| \\`${a.mount}\\` | ${a.usage}% | ${a.total} | ${a.used} |\\n`;\n});\nreturn [{ json: { markdown: md } }];"
+        "jsCode": "const alerts = $input.first().json.alerts || [];\nconst hostname = $input.first().json.hostname || 'keeper';\nlet md = `### ⚠️ 磁盘空间告警\\n\\n| 挂载点 | 使用率 | 状态 |\\n|--------|--------|------|\\n`;\nalerts.forEach(a => {\n  const icon = a.alert ? '🔴' : '🟡';\n  const level = a.alert ? '紧急' : '警告';\n  md += `| \\`${a.mount}\\` | ${a.usage}% | ${icon} ${level} |\\n`;\n});\nreturn [{ json: { markdown: md, alertCount: alerts.length } }];"
       },
       "id": "disk-format-code",
       "name": "格式化告警消息",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        800,
+        600,
         200
       ]
     },
@@ -88,27 +101,36 @@
         "headerParameters": {
           "parameters": [
             {
-              "name": "X-API-Key",
-              "value": "={{ $env.BELLKEEPER_API_KEY }}"
-            },
-            {
               "name": "Content-Type",
               "value": "application/json"
             }
           ]
         },
         "sendBody": true,
-        "options": {},
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ room: 'alerts', markdown: $json.markdown }) }}"
+        "jsonBody": "={{ JSON.stringify({ room: 'alerts', markdown: $json.markdown }) }}",
+        "options": {
+          "timeout": 15000
+        }
       },
       "id": "disk-notify-http",
       "name": "发送Matrix通知",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1000,
+        800,
         200
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "disk-no-alerts",
+      "name": "正常跳过",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        600,
+        400
       ]
     }
   ],
@@ -128,29 +150,25 @@
       "main": [
         [
           {
-            "node": "是否超过80%",
+            "node": "是否有告警?",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "是否超过80%": {
-      "main": [
-        [
-          {
-            "node": "解析磁盘数据",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "解析磁盘数据": {
+    "是否有告警?": {
       "main": [
         [
           {
             "node": "格式化告警消息",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "正常跳过",
             "type": "main",
             "index": 0
           }
@@ -170,6 +188,7 @@
     }
   },
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "saveManualExecutions": true
   }
 }
