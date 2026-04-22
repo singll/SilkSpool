@@ -281,7 +281,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const now = new Date();\nconst hour = now.getHours();\nlet period = '早间';\nif (hour >= 11 && hour < 15) period = '午间';\nelse if (hour >= 17) period = '晚间';\n\n// 检测补录模式\nlet isBackfill = false;\nlet rssLimit = 0;\ntry {\n  const wh = $('补录触发').first().json;\n  isBackfill = true;\n  rssLimit = parseInt((wh.body || wh).limit) || 200;\n} catch(e) {}\n\nconst modeLabel = isBackfill ? '手动补录' : period + 'RSS定时采集';\n\nlet sourceCount = 0;\ntry { sourceCount = $('提取RSS源').all().length; } catch(e) {}\n\n// 构建原始文章标题映射 (K01响应可能丢失标题)\nconst origArticles = $('解析全部文章').all().filter(a => a.json.url);\nconst titleByUrl = {};\nfor (const a of origArticles) {\n  titleByUrl[a.json.url] = a.json.title || '';\n}\n\nconst articleResults = $('推送文章到Ingest').all();\nconst successList = [];\nconst duplicateList = [];\nconst failedList = [];\n\nfor (let i = 0; i < articleResults.length; i++) {\n  const d = articleResults[i].json;\n  // 标题: 优先用K01响应 → 回退到URL匹配 → 回退到索引匹配 → Untitled\n  const origByIdx = (i < origArticles.length) ? origArticles[i].json : {};\n  const title = d.title || titleByUrl[d.url] || origByIdx.title || 'Untitled';\n  const url = d.url || origByIdx.url || '';\n  const category = d.category || origByIdx.category || '';\n  const item = { title, url, category };\n\n  if (d.error) {\n    // httpRequest 错误 (Invalid JSON, timeout 等)\n    item.error = typeof d.error === 'object' ? (d.error.message || JSON.stringify(d.error)) : String(d.error);\n    failedList.push(item);\n  } else if (d.success === false) {\n    if (d.status === 'duplicate') {\n      duplicateList.push(item);\n    } else {\n      // scrape_failed, upload_failed 等\n      item.error = d.message || d.error || d.status || 'unknown error';\n      failedList.push(item);\n    }\n  } else {\n    successList.push(item);\n  }\n}\n\nconst total = articleResults.length;\nconst success = successList.length;\nconst duplicate = duplicateList.length;\nconst failed = failedList.length;\n\nlet parseTotal = 0;\nlet parseTaskId = '';\ntry {\n  const parseResult = $('智能解析文档').first().json;\n  parseTotal = parseResult.total_documents || 0;\n  parseTaskId = parseResult.task_id || '';\n} catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst plainText = `${modeLabel}已完成\\n${dateStr} ${timeStr}${isBackfill ? ' | limit=' + rssLimit : ''}\\nRSS源: ${sourceCount} 个 | 文章: ${total} 篇\\n入库: ${success} | 已存在: ${duplicate} | 失败: ${failed}${parseTotal > 0 ? `\\n智能解析任务已接管并持续跟踪 (${parseTotal} 个文档${parseTaskId ? ', task=' + parseTaskId : ''})\\n若疑似卡住会自动尝试恢复，最终完成/失败将单独通知` : ''}`;\n\nlet html = `<h4>${modeLabel}完成</h4>\\n<p><i>${dateStr} ${timeStr} | ${sourceCount} 个源 | ${total} 篇文章${isBackfill ? ' | limit=' + rssLimit : ''}</i></p>\\n`;\n\nif (success > 0) {\n  html += `\\n<h5>成功入库 (${success} 篇)</h5>\\n<ul>\\n`;\n  const showCount = Math.min(10, success);\n  for (let i = 0; i < showCount; i++) {\n    const a = successList[i];\n    html += `<li>${a.category ? `<b>${a.category}</b>: ` : ''}<a href=\"${a.url}\">${a.title}</a></li>\\n`;\n  }\n  if (success > 10) html += `<li><i>... 还有 ${success - 10} 篇</i></li>\\n`;\n  html += `</ul>\\n`;\n}\n\nif (duplicate > 0) {\n  html += `\\n<p>已存在: ${duplicate} 篇 (已跳过)</p>\\n`;\n}\n\nif (failed > 0) {\n  html += `\\n<h5>失败 (${failed} 篇)</h5>\\n<ul>\\n`;\n  const showFailed = Math.min(5, failed);\n  for (let i = 0; i < showFailed; i++) {\n    const a = failedList[i];\n    html += `<li><del>${a.url || a.title}</del> - ${a.error}</li>\\n`;\n  }\n  if (failed > 5) html += `<li><i>... 还有 ${failed - 5} 篇</i></li>\\n`;\n  html += `</ul>\\n`;\n}\n\nif (parseTotal > 0) {\n  html += `\\n<p>已接管智能解析: ${parseTotal} 个文档 (持续跟踪至完成/失败，疑似卡住会自动恢复，最终结果将单独通知)</p>`;\n}\n\nreturn [{ json: { summary: plainText, html, timestamp: now.toISOString() } }];"
+        "jsCode": "const now = new Date();\nconst hour = now.getHours();\nlet period = '早间';\nif (hour >= 11 && hour < 15) period = '午间';\nelse if (hour >= 17) period = '晚间';\n\nlet isBackfill = false;\nlet rssLimit = 0;\ntry {\n  const wh = $('补录触发').first().json;\n  isBackfill = true;\n  rssLimit = parseInt((wh.body || wh).limit) || 200;\n} catch(e) {}\n\nconst modeLabel = isBackfill ? '手动补录' : period + 'RSS定时采集';\n\nlet sourceCount = 0;\ntry { sourceCount = $('提取RSS源').all().length; } catch(e) {}\n\nconst origArticles = $('解析全部文章').all().filter(a => a.json.url);\nconst titleByUrl = {};\nfor (const a of origArticles) {\n  titleByUrl[a.json.url] = a.json.title || '';\n}\n\nconst articleResults = $('推送文章到Ingest').all();\nconst successList = [];\nconst duplicateList = [];\nconst failedList = [];\n\nfor (let i = 0; i < articleResults.length; i++) {\n  const d = articleResults[i].json;\n  const origByIdx = (i < origArticles.length) ? origArticles[i].json : {};\n  const title = d.title || titleByUrl[d.url] || origByIdx.title || 'Untitled';\n  const url = d.url || origByIdx.url || '';\n  const category = d.category || origByIdx.category || '';\n  const item = { title, url, category };\n\n  if (d.error) {\n    item.error = typeof d.error === 'object' ? (d.error.message || JSON.stringify(d.error)) : String(d.error);\n    failedList.push(item);\n  } else if (d.success === false) {\n    if (d.status === 'duplicate') {\n      duplicateList.push(item);\n    } else {\n      item.error = d.message || d.error || d.status || 'unknown error';\n      failedList.push(item);\n    }\n  } else {\n    successList.push(item);\n  }\n}\n\nconst total = articleResults.length;\nconst success = successList.length;\nconst duplicate = duplicateList.length;\nconst failed = failedList.length;\n\nlet parseTotal = 0;\nlet parseTaskId = '';\ntry {\n  const parseResult = $('智能解析文档').first().json;\n  parseTotal = parseResult.total_documents || 0;\n  parseTaskId = parseResult.task_id || '';\n} catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nlet md = `#### ${modeLabel}\\n\\n`;\nmd += `| 指标 | 数量 |\\n|------|------|\\n`;\nmd += `| RSS源 | ${sourceCount} 个 |\\n`;\nmd += `| 文章总数 | ${total} 篇 |\\n`;\nmd += `| 成功入库 | ${success} 篇 |\\n`;\nmd += `| 已存在(跳过) | ${duplicate} 篇 |\\n`;\nmd += `| 失败 | ${failed} 篇 |\\n\\n`;\n\nif (success > 0) {\n  md += `**成功入库 (${success} 篇):**\\n\\n`;\n  const showCount = Math.min(10, success);\n  for (let i = 0; i < showCount; i++) {\n    const a = successList[i];\n    md += `- ${a.category ? `**${a.category}**: ` : ''}[${a.title}](${a.url})\\n`;\n  }\n  if (success > 10) md += `- ... 还有 ${success - 10} 篇\\n`;\n  md += '\\n';\n}\n\nif (failed > 0) {\n  md += `**失败 (${failed} 篇):**\\n\\n`;\n  const showFailed = Math.min(5, failed);\n  for (let i = 0; i < showFailed; i++) {\n    const a = failedList[i];\n    md += `- ~~${a.url || a.title}~~ - ${a.error}\\n`;\n  }\n  if (failed > 5) md += `- ... 还有 ${failed - 5} 篇\\n`;\n  md += '\\n';\n}\n\nif (parseTotal > 0) {\n  md += `> 已接管智能解析: ${parseTotal} 个文档 (持续跟踪至完成/失败，疑似卡住会自动恢复)${parseTaskId ? `，task=${parseTaskId}` : ''}\\n\\n`;\n}\n\nconst logDetail = JSON.stringify({ sourceCount, total, success, duplicate, failed, articles: failedList.slice(0, 20) });\n\nreturn [{ json: { markdown: md, date: dateStr, time: timeStr, modeLabel, sourceCount, total, success, duplicate, failed, parseTotal, parseTaskId, logDetail, timestamp: now.toISOString() } }];"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000010",
       "name": "汇总统计",
@@ -298,7 +298,7 @@
         "url": "http://localhost:5678/webhook/notify",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ room: 'daily', message: $json.summary, html: $json.html }) }}",
+        "jsonBody": "={{ JSON.stringify({ room: 'daily', markdown: $json.markdown }) }}",
         "options": {
           "timeout": 10000
         }
@@ -326,7 +326,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// 无文章时也发送通知\nconst now = new Date();\nconst hour = now.getHours();\nlet period = '早间';\nif (hour >= 11 && hour < 15) period = '午间';\nelse if (hour >= 17) period = '晚间';\n\nlet isBackfill = false;\ntry { $('补录触发').first(); isBackfill = true; } catch(e) {}\nconst modeLabel = isBackfill ? '手动补录' : period + 'RSS定时采集';\n\nlet sourceCount = 0;\ntry { sourceCount = $('提取RSS源').all().length; } catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst summary = `${modeLabel}已完成\\n${dateStr} ${timeStr}\\nRSS源: ${sourceCount} 个 | 文章: 0 篇 (无新内容)`;\nconst html = `<h4>${modeLabel}完成</h4>\\n<p><i>${dateStr} ${timeStr} | ${sourceCount} 个源 | 0 篇文章</i></p>\\n<p><i>无新内容</i></p>`;\n\nreturn [{ json: { summary, html, timestamp: now.toISOString() } }];"
+        "jsCode": "const now = new Date();\nconst hour = now.getHours();\nlet period = '早间';\nif (hour >= 11 && hour < 15) period = '午间';\nelse if (hour >= 17) period = '晚间';\n\nlet isBackfill = false;\ntry { $('补录触发').first(); isBackfill = true; } catch(e) {}\nconst modeLabel = isBackfill ? '手动补录' : period + 'RSS定时采集';\n\nlet sourceCount = 0;\ntry { sourceCount = $('提取RSS源').all().length; } catch(e) {}\n\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\nconst timeStr = `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;\n\nconst md = `#### ${modeLabel}\\n\\n` +\n  `| 指标 | 数量 |\\n|------|------|\\n` +\n  `| RSS源 | ${sourceCount} 个 |\\n` +\n  `| 文章总数 | 0 篇 |\\n\\n` +\n  `*无新内容*`;\n\nreturn [{ json: { markdown: md, date: dateStr, time: timeStr, modeLabel, sourceCount, total: 0, success: 0, duplicate: 0, failed: 0, parseTotal: 0, parseTaskId: '', logDetail: JSON.stringify({ sourceCount, total: 0, success: 0, duplicate: 0, failed: 0, articles: [] }), timestamp: now.toISOString() } }];"
       },
       "id": "a1b2c3d4-0001-4000-a000-000000000015",
       "name": "无文章汇总",
@@ -336,6 +336,68 @@
         1680,
         540
       ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ module: 'rss_fetch', action: 'batch_summary', status: $json.failed > 0 ? 'partial' : 'success', summary: $json.modeLabel + ': ' + $json.sourceCount + '源 | ' + $json.total + '篇 | 成功' + $json.success + ' | 重复' + $json.duplicate + ' | 失败' + $json.failed, detail: $json.logDetail }) }}"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000020",
+      "name": "上报采集详情",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        300
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/reports/write",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: 'daily', content: $json.markdown, source: 'K02-RSS定时采集', date: $json.date }) }}"
+      },
+      "id": "a1b2c3d4-0001-4000-a000-000000000021",
+      "name": "写入采集报告",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        400
+      ],
+      "continueOnFail": true
     }
   ],
   "connections": {
@@ -508,6 +570,28 @@
       ]
     },
     "发送采集通知": {
+      "main": [
+        [
+          {
+            "node": "上报采集详情",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "上报采集详情": {
+      "main": [
+        [
+          {
+            "node": "写入采集报告",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "写入采集报告": {
       "main": [
         [
           {

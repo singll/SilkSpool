@@ -16,7 +16,10 @@
       "name": "每6小时检查",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 300]
+      "position": [
+        0,
+        300
+      ]
     },
     {
       "parameters": {
@@ -26,7 +29,10 @@
       "name": "检查磁盘使用率",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [200, 300]
+      "position": [
+        200,
+        300
+      ]
     },
     {
       "parameters": {
@@ -43,7 +49,10 @@
       "name": "是否超过80%",
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
-      "position": [400, 300]
+      "position": [
+        400,
+        300
+      ]
     },
     {
       "parameters": {
@@ -53,22 +62,28 @@
       "name": "解析磁盘数据",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [600, 200]
+      "position": [
+        600,
+        200
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const alerts = $input.all();\nconst hostname = require('os').hostname();\nlet msg = `<h3>⚠️ 磁盘空间告警</h3>`;\nmsg += `<p><strong>主机:</strong> ${hostname}</p>`;\nmsg += `<ul>`;\nalerts.forEach(item => {\n  const a = item.json;\n  msg += `<li><code>${a.mount}</code>: ${a.usage}% (${a.used}/${a.total})</li>`;\n});\nmsg += `</ul>`;\nreturn [{ json: { message: msg } }];"
+        "jsCode": "const alerts = $input.all();\nconst hostname = require('os').hostname();\nlet md = `### ⚠️ 磁盘空间告警\\n\\n**主机:** ${hostname}\\n\\n| 挂载点 | 使用率 | 总容量 | 已用 |\\n|--------|--------|--------|------|\\n`;\nalerts.forEach(item => {\n  const a = item.json;\n  md += `| \\`${a.mount}\\` | ${a.usage}% | ${a.total} | ${a.used} |\\n`;\n});\nreturn [{ json: { markdown: md } }];"
       },
       "id": "disk-format-code",
       "name": "格式化告警消息",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [800, 200]
+      "position": [
+        800,
+        200
+      ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.BELLKEEPER_URL }}/api/matrix/send",
+        "url": "http://localhost:5678/webhook/notify",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -83,50 +98,75 @@
           ]
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "room_id",
-              "value": "={{ $env.MATRIX_ADMIN_ROOM }}"
-            },
-            {
-              "name": "message",
-              "value": "={{ $json.message }}"
-            },
-            {
-              "name": "msg_type",
-              "value": "m.text"
-            },
-            {
-              "name": "format",
-              "value": "org.matrix.custom.html"
-            }
-          ]
-        },
-        "options": {}
+        "options": {},
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: 'alerts', markdown: $json.markdown }) }}"
       },
       "id": "disk-notify-http",
       "name": "发送Matrix通知",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1000, 200]
+      "position": [
+        1000,
+        200
+      ]
     }
   ],
   "connections": {
     "每6小时检查": {
-      "main": [[{"node": "检查磁盘使用率", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "检查磁盘使用率",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "检查磁盘使用率": {
-      "main": [[{"node": "是否超过80%", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "是否超过80%",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "是否超过80%": {
-      "main": [[{"node": "解析磁盘数据", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "解析磁盘数据",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "解析磁盘数据": {
-      "main": [[{"node": "格式化告警消息", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "格式化告警消息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "格式化告警消息": {
-      "main": [[{"node": "发送Matrix通知", "type": "main", "index": 0}]]
+      "main": [
+        [
+          {
+            "node": "发送Matrix通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {

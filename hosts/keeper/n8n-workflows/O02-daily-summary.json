@@ -26,6 +26,60 @@
     {
       "parameters": {
         "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/logs/stats?since={{ $now.format('yyyy-MM-dd') }}T00:00:00",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-stats",
+      "name": "获取今日采集统计",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        200
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/logs?module=rss_fetch&since={{ $now.format('yyyy-MM-dd') }}T00:00:00&limit=50",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-rss-logs",
+      "name": "获取RSS采集详情",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        300
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
         "url": "={{ $env.BELLKEEPER_URL }}/api/health/detailed",
         "sendHeaders": true,
         "headerParameters": {
@@ -46,7 +100,7 @@
       "typeVersion": 4.2,
       "position": [
         480,
-        300
+        400
       ],
       "continueOnFail": true
     },
@@ -73,7 +127,7 @@
       "typeVersion": 4.2,
       "position": [
         720,
-        300
+        400
       ],
       "continueOnFail": true
     },
@@ -100,22 +154,56 @@
       "typeVersion": 4.2,
       "position": [
         960,
-        300
+        400
       ],
       "continueOnFail": true
     },
     {
       "parameters": {
-        "jsCode": "const healthData = $('获取服务状态').first().json;\nconst articleData = $('获取文章总数').first().json;\nconst todoData = $('获取待办事项').first().json;\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\n\n// Parse service health\nconst services = healthData.services || healthData.components || {};\nconst bellkeeperStatus = (services.bellkeeper?.status === 'healthy' || services.bellkeeper?.status === 'ok' || healthData.status === 'healthy') ? '\\u2705' : '\\u274c';\nconst ragflowStatus = (services.ragflow?.status === 'healthy' || services.ragflow?.status === 'ok') ? '\\u2705' : '\\u274c';\nconst firecrawlStatus = (services.firecrawl?.status === 'healthy' || services.firecrawl?.status === 'ok') ? '\\u2705' : '\\u274c';\n\n// Parse article count from pagination\nconst totalArticles = articleData.pagination?.total || articleData.total || articleData.total_count || 0;\n\n// Parse todos\nconst memos = todoData.memos || [];\nconst todoCount = memos.length;\n\n// Build plain text message\nconst plainMessage = `\\ud83d\\udcca \\u6bcf\\u65e5\\u77e5\\u8bc6\\u5e93\\u6458\\u8981 - ${dateStr}\\n\\n\\ud83d\\udce6 \\u670d\\u52a1\\u72b6\\u6001\\n- Bellkeeper: ${bellkeeperStatus}\\n- RagFlow: ${ragflowStatus}\\n- Firecrawl: ${firecrawlStatus}\\n\\n\\ud83d\\udcda \\u77e5\\u8bc6\\u5e93\\u7edf\\u8ba1\\n- \\u6587\\u7ae0\\u603b\\u6570: ${totalArticles}\\n\\n\\ud83d\\udcdd \\u5f85\\u529e\\u4e8b\\u9879\\n- \\u672a\\u5b8c\\u6210: ${todoCount} \\u9879`;\n\n// Build HTML message\nconst htmlMessage = `<h3>\\ud83d\\udcca \\u6bcf\\u65e5\\u77e5\\u8bc6\\u5e93\\u6458\\u8981 - ${dateStr}</h3>` +\n  `<h4>\\ud83d\\udce6 \\u670d\\u52a1\\u72b6\\u6001</h4>` +\n  `<ul>` +\n  `<li>Bellkeeper: ${bellkeeperStatus}</li>` +\n  `<li>RagFlow: ${ragflowStatus}</li>` +\n  `<li>Firecrawl: ${firecrawlStatus}</li>` +\n  `</ul>` +\n  `<h4>\\ud83d\\udcda \\u77e5\\u8bc6\\u5e93\\u7edf\\u8ba1</h4>` +\n  `<ul><li>\\u6587\\u7ae0\\u603b\\u6570: ${totalArticles}</li></ul>` +\n  `<h4>\\ud83d\\udcdd \\u5f85\\u529e\\u4e8b\\u9879</h4>` +\n  `<ul><li>\\u672a\\u5b8c\\u6210: ${todoCount} \\u9879</li></ul>`;\n\nreturn {\n  json: {\n    room: 'daily',\n    message: plainMessage,\n    html: htmlMessage\n  }\n};"
+        "jsCode": "const now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\n\n// Service health\nconst healthData = $('获取服务状态').first().json;\nconst services = healthData.services || healthData.components || {};\nconst svc = (name) => (services[name]?.status === 'healthy' || services[name]?.status === 'ok' || healthData.status === 'healthy') ? '\\u2705' : '\\u274c';\n\n// Article count\nconst totalArticles = $('获取文章总数').first().json.pagination?.total || 0;\n\n// Todos\nconst todoCount = ($('获取待办事项').first().json.memos || []).length;\n\n// RSS fetch stats from ActivityLog\nconst rssLogs = $('获取RSS采集详情').first().json.data?.items || [];\nconst rssSuccess = rssLogs.filter(l => l.status === 'success').length;\nconst rssFailed = rssLogs.filter(l => l.status === 'failed').length;\n\n// Build failed articles list\nconst failedArticles = rssLogs\n  .filter(l => l.status === 'failed' && l.detail)\n  .map(l => {\n    try {\n      const d = typeof l.detail === 'string' ? JSON.parse(l.detail) : l.detail;\n      const articles = d.articles || d.failed || [];\n      return articles.map(a => `- [${a.title || 'Untitled'}](${a.url || ''}) - ${a.error || l.summary || ''}`);\n    } catch(e) { return []; }\n  })\n  .flat();\n\n// Dataset stats\nconst datasets = $('获取文章总数').first().json.data?.items || [];\nconst datasetLines = datasets.map(d => `  - ${d.name}: ${d.document_count || 0} \\u7bc7`);\n\n// Build markdown\nlet md = `### \\ud83d\\udcca \\u6bcf\\u65e5\\u77e5\\u8bc6\\u5e93\\u6458\\u8981 - ${dateStr}\\n\\n`;\n\nmd += `#### \\ud83d\\udce6 \\u670d\\u52a1\\u72b6\\u6001\\n\\n`;\nmd += `| \\u670d\\u52a1 | \\u72b6\\u6001 |\\n|------|------|\\n`;\nmd += `| Bellkeeper | ${svc('bellkeeper')} |\\n`;\nmd += `| RagFlow | ${svc('ragflow')} |\\n`;\nmd += `| Firecrawl | ${svc('firecrawl')} |\\n\\n`;\n\nmd += `#### \\ud83d\\udce5 \\u4eca\\u65e5\\u5185\\u5bb9\\u91c7\\u96c6\\n\\n`;\nif (rssSuccess > 0 || rssFailed > 0) {\n  md += `##### RSS \\u5b9a\\u65f6\\u91c7\\u96c6\\n\\n`;\n  md += `| \\u6307\\u6807 | \\u6570\\u91cf |\\n|------|------|\\n`;\n  md += `| \\u6210\\u529f\\u5165\\u5e93 | ${rssSuccess} \\u7bc7 |\\n`;\n  md += `| \\u5931\\u8d25 | ${rssFailed} \\u7bc7 |\\n\\n`;\n  if (failedArticles.length > 0) {\n    md += `**\\u5931\\u8d25\\u6587\\u7ae0:**\\n\\n`;\n    md += failedArticles.join('\\n') + '\\n\\n';\n  }\n} else {\n  md += `*\\u4eca\\u65e5\\u65e0 RSS \\u91c7\\u96c6\\u8bb0\\u5f55*\\n\\n`;\n}\n\nmd += `#### \\ud83d\\udcda \\u77e5\\u8bc6\\u5e93\\u7edf\\u8ba1\\n\\n`;\nmd += `- **\\u6587\\u7ae0\\u603b\\u6570**: ${totalArticles} \\u7bc7\\n\\n`;\nif (datasetLines.length > 0) {\n  md += `| \\u6570\\u636e\\u96c6 | \\u6587\\u7ae0\\u6570 |\\n|---------|---------|\\n`;\n  md += datasetLines.map(l => l.replace(/^  - /, '| ').replace(': ', '| ')).join(' \\u7bc7\\n') + ' \\u7bc7\\n\\n';\n}\n\nmd += `#### \\ud83d\\udcdd \\u5f85\\u529e\\u4e8b\\u9879\\n\\n`;\nmd += `- \\u672a\\u5b8c\\u6210: ${todoCount} \\u9879`;\n\nreturn [{ json: { room: 'daily', markdown: md, date: dateStr } }];"
       },
       "id": "build-summary",
-      "name": "构建摘要消息",
+      "name": "构建Markdown摘要",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         1200,
-        300
+        400
       ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/reports/write",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: 'daily', content: $json.markdown, source: 'O02-每日摘要报告', date: $json.date }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "write-report",
+      "name": "写入日报文件",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        300
+      ],
+      "continueOnFail": true
     },
     {
       "parameters": {
@@ -123,7 +211,7 @@
         "url": "http://localhost:5678/webhook/notify",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ room: $json.room, message: $json.message, html: $json.html }) }}",
+        "jsonBody": "={{ JSON.stringify({ room: $json.room, markdown: $json.markdown }) }}",
         "options": {
           "timeout": 10000
         }
@@ -134,7 +222,7 @@
       "typeVersion": 4.2,
       "position": [
         1440,
-        300
+        500
       ],
       "continueOnFail": true
     }
@@ -143,6 +231,16 @@
     "每日21点触发": {
       "main": [
         [
+          {
+            "node": "获取今日采集统计",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "获取RSS采集详情",
+            "type": "main",
+            "index": 0
+          },
           {
             "node": "获取服务状态",
             "type": "main",
@@ -177,16 +275,21 @@
       "main": [
         [
           {
-            "node": "构建摘要消息",
+            "node": "构建Markdown摘要",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "构建摘要消息": {
+    "构建Markdown摘要": {
       "main": [
         [
+          {
+            "node": "写入日报文件",
+            "type": "main",
+            "index": 0
+          },
           {
             "node": "发送通知",
             "type": "main",

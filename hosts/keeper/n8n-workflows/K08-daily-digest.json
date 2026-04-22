@@ -50,7 +50,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const now = new Date();\nconst todayStr = now.toISOString().slice(0,10);\nconst items = ($input.first().json.data?.items || []).filter(x => x.created_at && x.created_at.startsWith(todayStr));\n\n// Dataset display names\nconst datasetNames = {\n  'd15bd2ac07ae11f1a088ae230b1794d7': '每日资讯',\n  'd157b35c07ae11f1a088ae230b1794d7': 'AI技术',\n  'd1537f8a07ae11f1a088ae230b1794d7': '开发技术',\n  'd14f2fac07ae11f1a088ae230b1794d7': '网络安全',\n  'd14aaa7c07ae11f1a088ae230b1794d7': '安全漏洞',\n};\n\nconst grouped = {};\nfor (const item of items) {\n  const dsId = item.ref_id || '';\n  if (!grouped[dsId]) grouped[dsId] = [];\n  // Extract filename from summary\n  const m = item.summary?.match(/路由上传 (.+?) 到/);\n  if (m) {\n    const title = m[1].replace(/-+/g,' ').replace(/\\.(md|txt)$/i,'').trim();\n    grouped[dsId].push(title);\n  }\n}\n\nconst sections = [];\nlet totalCount = 0;\nfor (const [dsId, titles] of Object.entries(grouped)) {\n  const name = datasetNames[dsId] || dsId.slice(0,8);\n  totalCount += titles.length;\n  sections.push({ dataset: name, titles });\n}\n\nif (totalCount === 0) {\n  return [{ json: { skip: true, date: todayStr } }];\n}\n\n// Build prompt for K05\nlet promptLines = [`今天(${todayStr})共入库 ${totalCount} 篇文章，按领域分类如下：\n`];\nfor (const s of sections) {\n  promptLines.push(`【${s.dataset}】(${s.titles.length}篇)`);\n  for (const t of s.titles.slice(0,20)) promptLines.push(`  - ${t}`);\n  if (s.titles.length > 20) promptLines.push(`  ... 共${s.titles.length}篇`);\n}\npromptLines.push('\n请按领域分别用2-3句话概括今日资讯亮点，最后给出一句总体评价。输出中文。');\n\nreturn [{ json: {\n  skip: false,\n  date: todayStr,\n  totalCount,\n  sections,\n  prompt: promptLines.join('\n')\n} }];"
+        "jsCode": "const now = new Date();\nconst todayStr = now.toISOString().slice(0,10);\nconst items = ($input.first().json.data?.items || []).filter(x => x.created_at && x.created_at.startsWith(todayStr));\n\nconst datasetNames = {\n  'd15bd2ac07ae11f1a088ae230b1794d7': '\\u6bcf\\u65e5\\u8baf\\u606f',\n  'd157b35c07ae11f1a088ae230b1794d7': 'AI\\u6280\\u672f',\n  'd1537f8a07ae11f1a088ae230b1794d7': '\\u5f00\\u53d1\\u6280\\u672f',\n  'd14f2fac07ae11f1a088ae230b1794d7': '\\u7f51\\u7edc\\u5b89\\u5168',\n  'd14aaa7c07ae11f1a088ae230b1794d7': '\\u5b89\\u5168\\u6f0f\\u6d1e',\n};\n\nconst grouped = {};\nfor (const item of items) {\n  const dsId = item.ref_id || '';\n  if (!grouped[dsId]) grouped[dsId] = [];\n  const m = item.summary?.match(/\\u8def\\u7531\\u4e0a\\u4f20 (.+?) \\u5230/);\n  if (m) {\n    const title = m[1].replace(/-+/g,' ').replace(/\\.(md|txt)$/i,'').trim();\n    grouped[dsId].push(title);\n  }\n}\n\nconst sections = [];\nlet totalCount = 0;\nfor (const [dsId, titles] of Object.entries(grouped)) {\n  const name = datasetNames[dsId] || dsId.slice(0,8);\n  totalCount += titles.length;\n  sections.push({ dataset: name, titles });\n}\n\nif (totalCount === 0) {\n  return [{ json: { skip: true, date: todayStr } }];\n}\n\nlet promptLines = [`\\u4eca\\u5929(${todayStr})\\u5171\\u5165\\u5e93 ${totalCount} \\u7bc7\\u6587\\u7ae0\\uff0c\\u6309\\u9886\\u57df\\u5206\\u7c7b\\u5982\\u4e0b\\uff1a\\n`];\nfor (const s of sections) {\n  promptLines.push(`\\u3010${s.dataset}\\u3011(${s.titles.length}\\u7bc7)`);\n  for (const t of s.titles.slice(0,20)) promptLines.push(`  - ${t}`);\n  if (s.titles.length > 20) promptLines.push(`  ... \\u5171${s.titles.length}\\u7bc7`);\n}\npromptLines.push('\\n\\u8bf7\\u6309\\u9886\\u57df\\u5206\\u522b\\u75282-3\\u53e5\\u8bdd\\u6982\\u62ec\\u4eca\\u65e5\\u8baf\\u606f\\u4eae\\u70b9\\uff0c\\u6700\\u540e\\u7ed9\\u51fa\\u4e00\\u53e5\\u603b\\u4f53\\u8bc4\\u4ef7\\u3002\\u8f93\\u51fa\\u4e2d\\u6587\\u3002');\n\nreturn [{ json: {\n  skip: false,\n  date: todayStr,\n  totalCount,\n  sections,\n  prompt: promptLines.join('\\n')\n} }];"
       },
       "id": "e01-0003",
       "name": "整理今日数据",
@@ -125,7 +125,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const summarizeResp = $('调用K05总结').first().json;\nconst metaData = $('整理今日数据').first().json;\nconst aiText = summarizeResp.result || summarizeResp.content || summarizeResp.choices?.[0]?.message?.content || '(AI总结暂不可用)';\nconst date = metaData.date;\nconst total = metaData.totalCount;\nconst sections = metaData.sections || [];\n\nconst statLines = sections.map(s => `<li>${s.dataset}: ${s.titles.length} 篇</li>`).join('');\n\nconst html = `<h3>📰 每日资讯摘要 - ${date}</h3>`+\n  `<h4>📊 今日入库统计（共 ${total} 篇）</h4>`+\n  `<ul>${statLines}</ul>`+\n  `<h4>🤖 AI 亮点总结</h4>`+\n  `<p>${aiText.replace(/\n/g,'<br/>')}</p>`;\n\nconst plain = `📰 每日资讯摘要 - ${date}\n\n共入库 ${total} 篇\n${sections.map(s=>s.dataset+': '+s.titles.length+'篇').join(' | ')}\n\n${aiText}`;\n\nreturn [{ json: { room: 'daily', message: plain, html } }];"
+        "jsCode": "const summarizeResp = $('调用K05总结').first().json;\nconst metaData = $('整理今日数据').first().json;\nconst aiText = summarizeResp.result || summarizeResp.content || summarizeResp.choices?.[0]?.message?.content || '(AI总结暂不可用)';\nconst date = metaData.date;\nconst total = metaData.totalCount;\nconst sections = metaData.sections || [];\n\nconst statLines = sections.map(s => `| ${s.dataset} | ${s.titles.length} \\u7bc7 |`).join('\\n');\n\nconst md = `### \\ud83d\\udcf0 \\u6bcf\\u65e5\\u8baf\\u606f\\u6458\\u8981 - ${date}\\n\\n` +\n  `#### \\ud83d\\udcca \\u4eca\\u65e5\\u5165\\u5e93\\u7edf\\u8ba1\\uff08\\u5171 ${total} \\u7bc7\\uff09\\n\\n` +\n  `| \\u9886\\u57df | \\u6587\\u7ae0\\u6570 |\\n|------|---------|\\n` +\n  `${statLines}\\n\\n` +\n  `#### \\ud83e\\udd16 AI \\u4eae\\u70b9\\u603b\\u7ed3\\n\\n` +\n  aiText;\n\nreturn [{ json: { room: 'daily', markdown: md, date } }];"
       },
       "id": "e01-0006",
       "name": "构建推送消息",
@@ -139,10 +139,14 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:5678/webhook/notify",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/reports/write",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            },
             {
               "name": "Content-Type",
               "value": "application/json"
@@ -151,7 +155,28 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ room: $json.room, message: $json.message, html: $json.html }) }}",
+        "jsonBody": "={{ JSON.stringify({ channel: 'daily', content: $json.markdown, source: 'K08-每日资讯摘要推送', date: $json.date }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "e01-0006b",
+      "name": "写入日报文件",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        120
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/notify",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ room: $json.room, markdown: $json.markdown }) }}",
         "options": {
           "timeout": 30000
         }
@@ -162,7 +187,7 @@
       "typeVersion": 4.2,
       "position": [
         1320,
-        220
+        320
       ],
       "continueOnFail": true
     }
@@ -227,6 +252,11 @@
     "构建推送消息": {
       "main": [
         [
+          {
+            "node": "写入日报文件",
+            "type": "main",
+            "index": 0
+          },
           {
             "node": "发送Matrix通知",
             "type": "main",
