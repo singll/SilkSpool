@@ -260,6 +260,26 @@ import_all() {
     log_step "Starting workflow import"
     echo ""
 
+    # Pre-validate all JSON files before any API calls
+    log_info "Validating local workflow JSON files"
+    local json_errors=""
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        local filename
+        filename=$(basename "$file")
+        [[ "$filename" == "00-config.json" ]] && continue
+        if ! python3 -c "import json; json.load(open('$file', encoding='utf-8'))" 2>/dev/null; then
+            json_errors="$json_errors\n  - $filename"
+        fi
+    done < <(compgen -G "$LOCAL_WORKFLOW_DIR/*.json")
+    if [ -n "$json_errors" ]; then
+        log_error "Invalid JSON files detected:${json_errors}"
+        log_info "Please fix the JSON syntax errors before importing"
+        exit 1
+    fi
+    log_success "All JSON files valid"
+    echo ""
+
     log_info "Checking existing workflows in n8n"
     local existing_result
     existing_result=$(api_list_workflows)
@@ -462,6 +482,26 @@ update_all() {
     log_step "Updating all existing workflows"
     echo ""
 
+    # Pre-validate JSON before any API calls
+    log_info "Validating local workflow JSON files"
+    local json_errors=""
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        local filename
+        filename=$(basename "$file")
+        [[ "$filename" == "00-config.json" ]] && continue
+        if ! python3 -c "import json; json.load(open('$file', encoding='utf-8'))" 2>/dev/null; then
+            json_errors="$json_errors\n  - $filename"
+        fi
+    done < <(compgen -G "$LOCAL_WORKFLOW_DIR/*.json")
+    if [ -n "$json_errors" ]; then
+        log_error "Invalid JSON files detected:${json_errors}"
+        log_info "Please fix the JSON syntax errors before updating"
+        exit 1
+    fi
+    log_success "All JSON files valid"
+    echo ""
+
     local existing_result
     existing_result=$(api_list_workflows)
 
@@ -534,6 +574,73 @@ activate_workflow() {
     echo "$result" | grep -q '"active":true' && log_success "Activated" || { log_error "Activation failed"; exit 1; }
 }
 
+activate_all() {
+    check_api_key
+    check_container
+
+    log_step "Activating all workflows"
+    echo ""
+
+    local result
+    result=$(api_list_workflows)
+
+    local success=0
+    local failed=0
+
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        local filename
+        filename=$(basename "$file")
+        [[ "$filename" == "00-config.json" ]] && continue
+
+        # Validate JSON before processing
+        if ! python3 -c "import json; json.load(open('$file', encoding='utf-8'))" 2>/dev/null; then
+            log_error "Invalid JSON: $filename — skipping"
+            ((failed++)) || true
+            continue
+        fi
+
+        local wf_name
+        wf_name=$(python3 -c "import json; print(json.load(open('$file', encoding='utf-8')).get('name',''))" 2>/dev/null)
+        [ -z "$wf_name" ] && continue
+
+        local workflow_id
+        workflow_id=$(echo "$result" | python3 -c "
+import sys, json
+name = '$wf_name'
+try:
+    data = json.load(sys.stdin)
+    for workflow in data.get('data', []):
+        if workflow.get('name') == name:
+            print(workflow.get('id', ''))
+            break
+except Exception:
+    pass
+" 2>/dev/null)
+
+        if [ -z "$workflow_id" ]; then
+            log_warn "Not in n8n: $wf_name"
+            continue
+        fi
+
+        log_info "Activating: $wf_name"
+        local toggle_result
+        toggle_result=$(api_toggle_workflow "$workflow_id" "true")
+
+        if echo "$toggle_result" | grep -q '"active":true'; then
+            log_success "Activated"
+            ((success++)) || true
+        else
+            log_error "Activation failed: $wf_name"
+            ((failed++)) || true
+        fi
+    done < <(compgen -G "$LOCAL_WORKFLOW_DIR/*.json")
+
+    echo ""
+    log_info "Activation completed: $success activated, $failed failed"
+    [ $failed -gt 0 ] && exit 1
+}
+
 deactivate_workflow() {
     local target_name="$1"
     check_api_key
@@ -582,7 +689,7 @@ show_help() {
     echo "  export              Export all workflows from n8n to local backup"
     echo "  push-import         Push local files to remote and import NEW"
     echo "  push-update [name]  Push local files to remote and update EXISTING"
-    echo "  activate <name>     Activate a workflow"
+    echo "  activate [name]     Activate a workflow (or all if no name)"
     echo "  deactivate <name>   Deactivate a workflow"
     echo "  delete <name>       Delete a workflow from n8n"
     echo ""
@@ -649,8 +756,11 @@ main() {
             ;;
         activate)
             shift
-            [ -z "$1" ] && log_error "Usage: n8n activate <workflow-name>" && exit 1
-            activate_workflow "$1"
+            if [ -n "$1" ]; then
+                activate_workflow "$1"
+            else
+                activate_all
+            fi
             ;;
         deactivate)
             shift
