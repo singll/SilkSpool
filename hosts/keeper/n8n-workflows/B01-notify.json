@@ -37,7 +37,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"channel\": {{ JSON.stringify($input.first().json.body.channel || $input.first().json.room || $input.first().json.channel) }},\n  \"message\": {{ JSON.stringify($input.first().json.body.markdown || $input.first().json.body.message || $input.first().json.message) }},\n  \"message_type\": {{ $input.first().json.body.markdown ? '\"markdown\"' : $input.first().json.body.html ? '\"html\"' : '\"text\"' }}\n}",
+        "jsonBody": "={\n  \"channel\": {{ JSON.stringify($input.first().json.channel || $input.first().json.room || $input.first().json.body?.channel) }},\n  \"message\": {{ JSON.stringify($input.first().json.markdown || $input.first().json.message || $input.first().json.body?.message) }},\n  \"message_type\": {{ $input.first().json.markdown ? '\"markdown\"' : $input.first().json.html ? '\"html\"' : '\"text\"' }}\n}",
         "options": {
           "timeout": 30000
         }
