@@ -346,7 +346,7 @@
           "parameters": [
             {
               "name": "X-API-Key",
-              "value": "={{ $env.BELLKEEPER_API_KEY }"
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
             },
             {
               "name": "Content-Type",
@@ -377,7 +377,7 @@
           "parameters": [
             {
               "name": "X-API-Key",
-              "value": "={{ $env.BELLKEEPER_API_KEY }"
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
             },
             {
               "name": "Content-Type",
