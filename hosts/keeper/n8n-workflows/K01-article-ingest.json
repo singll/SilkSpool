@@ -281,7 +281,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ url: $json.url, title: $json.title, tags: $json.tags, category: $json.category, layer: 'raw' }) }}",
+        "jsonBody": "={{ JSON.stringify({ url: $json.url, title: $json.title, tags: $json.tags, category: $json.category, layer: 'raw', content: $json.content }) }}",
         "options": {
           "timeout": 30000
         }
