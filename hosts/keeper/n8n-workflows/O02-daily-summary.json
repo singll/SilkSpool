@@ -107,6 +107,168 @@
     {
       "parameters": {
         "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/crawl/queue/stats",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-crawl-stats",
+      "name": "获取爬取队列统计",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        500
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/crawl/queue/jobs?status=dead&since={{ $now.format('yyyy-MM-dd') }}T00:00:00&limit=50",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-dead-jobs",
+      "name": "获取今日失败任务",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        600
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/crawl/queue/jobs?status=blocked&since={{ $now.format('yyyy-MM-dd') }}T00:00:00&limit=50",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-blocked-jobs",
+      "name": "获取今日阻塞任务",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        600
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/crawl/queue/workers",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-workers",
+      "name": "获取爬取Worker状态",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        500
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/llm/health",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-llm-health",
+      "name": "获取LLM代理健康",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        700
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BELLKEEPER_URL }}/api/knowledge/files/stats",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.BELLKEEPER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "get-knowledge-stats",
+      "name": "获取知识库索引统计",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        700
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
         "url": "={{ $env.BELLKEEPER_URL }}/api/datasets?per_page=1",
         "sendHeaders": true,
         "headerParameters": {
@@ -134,7 +296,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "http://memos:5230/api/v1/memos?filter=tag%3D%3D%27%E5%BE%85%E5%8A%9E%27&pageSize=100",
+        "url": "http://memos:5230/api/v1/memos?filter=type+%3D%3D+%22MEMO%22+%26%26+tag+%3D%3D+%22%E5%BE%85%E5%8A%9E%22&pageSize=100",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -160,7 +322,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\n\n// --- Unwrap Bellkeeper {\"data\": ...} wrapper ---\nconst healthRes = $('获取服务状态').first().json;\nconst healthData = healthRes.data || healthRes;\nconst services = healthData.services || {};\nconst svc = (name) => (services[name]?.status === 'up') ? '\\u2705' : (services[name]?.status ? `\\u26a0\\ufe0f ${services[name].status}` : '\\u274c');\n\n// Article count from datasets list (total = total dataset mappings)\nconst datasetsRes = $('获取文章总数').first().json;\nconst datasetsData = datasetsRes.data || datasetsRes;\nconst totalArticles = datasetsRes.total || 0;\nconst datasets = datasetsData || [];\n\n// Todos from Memos API (raw response, no wrapper)\nconst todoRes = $('获取待办事项').first().json;\nconst todoCount = (todoRes.memos || []).length;\n\n// --- Content collection stats ---\n// extractor module tracks firecrawl/trafilatura results\nconst extLogsRes = $('获取RSS采集详情').first().json;\nconst extLogsData = extLogsRes.data || extLogsRes;\nconst extLogs = extLogsData.items || [];\nconst extSuccess = extLogs.filter(l => l.status === 'success').length;\nconst extFailed = extLogs.filter(l => l.status === 'failed').length;\n\n// file_ingestion module tracks URL ingestion\nconst ingLogsRes = $('获取今日采集统计').first().json;\nconst ingLogsData = ingLogsRes.data || ingLogsRes;\nconst ingLogs = ingLogsData.items || [];\nconst ingSuccess = ingLogs.filter(l => l.status === 'success').length;\nconst ingFailed = ingLogs.filter(l => l.status === 'failed' || l.status === 'db_failed').length;\n\n// Build failed content list\nconst failedContent = [...extLogs, ...ingLogs]\n  .filter(l => l.status === 'failed' || l.status === 'db_failed')\n  .slice(0, 10)\n  .map(l => `- ${l.summary || ''}`);\n\n// Dataset lines (display_name for readability)\nconst datasetLines = datasets.map(d => `  - ${d.display_name || d.name}: ${(d.tags?.length || 0)} \\u6807\\u7b7e`);\n\n// Build markdown\nlet md = `### \\ud83d\\udcca \\u6bcf\\u65e5\\u77e5\\u8bc6\\u5e93\\u6458\\u8981 - ${dateStr}\\n\\n`;\n\nmd += `#### \\ud83d\\udce6 \\u670d\\u52a1\\u72b6\\u6001\\n\\n`;\nmd += `| \\u670d\\u52a1 | \\u72b6\\u6001 |\\n|------|------|\\n`;\nmd += `| RagFlow | ${svc('ragflow')} |\\n`;\nmd += `| n8n | ${svc('n8n')} |\\n`;\nmd += `| Meilisearch | ${svc('meilisearch')} |\\n\\n`;\n\nmd += `#### \\ud83d\\udce5 \\u4eca\\u65e5\\u5185\\u5bb9\\u91c7\\u96c6\\n\\n`;\nconst totalSuccess = extSuccess + ingSuccess;\nconst totalFailed = extFailed + ingFailed;\nif (totalSuccess > 0 || totalFailed > 0) {\n  md += `| \\u6307\\u6807 | \\u6570\\u91cf |\\n|------|------|\\n`;\n  md += `| \\u63d0\\u53d6\\u6210\\u529f | ${extSuccess} \\u7bc7 |\\n`;\n  md += `| \\u63d0\\u53d6\\u5931\\u8d25 | ${extFailed} \\u7bc7 |\\n`;\n  md += `| \\u5165\\u5e93\\u6210\\u529f | ${ingSuccess} \\u7bc7 |\\n`;\n  md += `| \\u5165\\u5e93\\u5931\\u8d25 | ${ingFailed} \\u7bc7 |\\n\\n`;\n  if (failedContent.length > 0) {\n    md += `**\\u5931\\u8d25\\u8bb0\\u5f55:**\\n\\n`;\n    md += failedContent.join('\\n') + '\\n\\n';\n  }\n} else {\n  md += `*\\u4eca\\u65e5\\u65e0\\u91c7\\u96c6\\u8bb0\\u5f55*\\n\\n`;\n}\n\nmd += `#### \\ud83d\\udcda \\u77e5\\u8bc6\\u5e93\\u7edf\\u8ba1\\n\\n`;\nmd += `- **\\u6587\\u7ae0\\u603b\\u6570**: ${totalArticles} \\u7bc7\\n\\n`;\nif (datasetLines.length > 0) {\n  md += `| \\u6570\\u636e\\u96c6 | \\u6807\\u7b7e\\u6570 |\\n|---------|--------|\\n`;\n  md += datasetLines.map(l => l.replace(/^  - /, '| ').replace(': ', '| ')).join(' \\u6807\\u7b7e\\n') + ' \\u6807\\u7b7e\\n\\n';\n}\n\nmd += `#### \\ud83d\\udcdd \\u5f85\\u529e\\u4e8b\\u9879\\n\\n`;\nmd += `- \\u672a\\u5b8c\\u6210: ${todoCount} \\u9879`;\n\nreturn [{ json: { room: 'daily', markdown: md, date: dateStr } }];"
+        "jsCode": "const now = new Date();\nconst dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;\n\n// --- Helper: unwrap Bellkeeper {\"data\": ...} wrapper ---\nconst unwrap = (nodeName) => {\n  try {\n    const raw = $(nodeName).first().json;\n    return raw.data || raw;\n  } catch { return {}; }\n};\n\n// --- Service Health ---\nconst healthData = unwrap('获取服务状态');\nconst services = healthData.services || {};\nconst svc = (name) => (services[name]?.status === 'up') ? '\\u2705' : (services[name]?.status ? `\\u26a0\\ufe0f ${services[name].status}` : '\\u274c');\n\n// --- Article / Dataset ---\nconst datasetsRes = $('获取文章总数').first().json;\nconst datasetsData = datasetsRes.data || datasetsRes;\nconst totalArticles = datasetsRes.total || 0;\nconst datasets = datasetsData || [];\n\n// --- Todos ---\nconst todoRes = $('获取待办事项').first().json;\nconst todoCount = (todoRes.memos || []).length;\n\n// --- Content collection stats ---\nconst extLogsData = unwrap('获取RSS采集详情');\nconst extLogs = extLogsData.items || [];\nconst extSuccess = extLogs.filter(l => l.status === 'success').length;\nconst extFailed = extLogs.filter(l => l.status === 'failed').length;\n\nconst ingLogsData = unwrap('获取今日采集统计');\nconst ingLogs = ingLogsData.items || [];\nconst ingSuccess = ingLogs.filter(l => l.status === 'success').length;\nconst ingFailed = ingLogs.filter(l => l.status === 'failed' || l.status === 'db_failed').length;\n\nconst failedContent = [...extLogs, ...ingLogs]\n  .filter(l => l.status === 'failed' || l.status === 'db_failed')\n  .slice(0, 10)\n  .map(l => `- ${l.summary || ''}`);\n\n// --- Crawl Queue Stats ---\nconst crawlStatsData = unwrap('获取爬取队列统计');\n\n// --- Dead Jobs (today) ---\nconst deadJobsRaw = unwrap('获取今日失败任务');\nconst deadJobs = deadJobsRaw.items || deadJobsRaw || [];\nconst deadTotal = deadJobsRaw.total || deadJobs.length;\n\n// --- Blocked Jobs (today) ---\nconst blockedJobsRaw = unwrap('获取今日阻塞任务');\nconst blockedJobs = blockedJobsRaw.items || blockedJobsRaw || [];\nconst blockedTotal = blockedJobsRaw.total || blockedJobs.length;\n\n// --- Worker Health ---\nconst workersRaw = unwrap('获取爬取Worker状态');\nconst workers = Array.isArray(workersRaw) ? workersRaw : [];\n\n// --- LLM Health ---\nconst llmHealthRaw = unwrap('获取LLM代理健康');\nconst llmChannels = Array.isArray(llmHealthRaw) ? llmHealthRaw : [];\n\n// --- Knowledge Index Stats ---\nconst knowledgeStatsData = unwrap('获取知识库索引统计');\n\n// ===================== BUILD MARKDOWN =====================\nlet md = `### \\ud83d\\udcca \\u6bcf\\u65e5\\u77e5\\u8bc6\\u5e93\\u6458\\u8981 - ${dateStr}\\n\\n`;\n\n// --- Service Status ---\nmd += `#### \\ud83d\\udce6 \\u670d\\u52a1\\u72b6\\u6001\\n\\n`;\nmd += `| \\u670d\\u52a1 | \\u72b6\\u6001 |\\n|------|------|\\n`;\nmd += `| RagFlow | ${svc('ragflow')} |\\n`;\nmd += `| n8n | ${svc('n8n')} |\\n`;\nmd += `| Meilisearch | ${svc('meilisearch')} |\\n\\n`;\n\n// --- Content Collection ---\nmd += `#### \\ud83d\\udce5 \\u4eca\\u65e5\\u5185\\u5bb9\\u91c7\\u96c6\\n\\n`;\nconst totalSuccess = extSuccess + ingSuccess;\nconst totalFailed = extFailed + ingFailed;\nif (totalSuccess > 0 || totalFailed > 0) {\n  md += `| \\u6307\\u6807 | \\u6570\\u91cf |\\n|------|------|\\n`;\n  md += `| \\u63d0\\u53d6\\u6210\\u529f | ${extSuccess} \\u7bc7 |\\n`;\n  md += `| \\u63d0\\u53d6\\u5931\\u8d25 | ${extFailed} \\u7bc7 |\\n`;\n  md += `| \\u5165\\u5e93\\u6210\\u529f | ${ingSuccess} \\u7bc7 |\\n`;\n  md += `| \\u5165\\u5e93\\u5931\\u8d25 | ${ingFailed} \\u7bc7 |\\n\\n`;\n  if (failedContent.length > 0) {\n    md += `**\\u5931\\u8d25\\u8bb0\\u5f55:**\\n\\n`;\n    md += failedContent.join('\\n') + '\\n\\n';\n  }\n} else {\n  md += `*\\u4eca\\u65e5\\u65e0\\u91c7\\u96c6\\u8bb0\\u5f55*\\n\\n`;\n}\n\n// --- Crawl Queue Overview ---\nmd += `#### \\ud83d\\udd77\\ufe0f \\u722c\\u53d6\\u961f\\u5217\\u6982\\u89c8\\n\\n`;\nconst statusLabels = {\n  pending: '\\u5f85\\u5904\\u7406', running: '\\u8fd0\\u884c\\u4e2d', success: '\\u6210\\u529f',\n  retrying: '\\u91cd\\u8bd5\\u4e2d', blocked: '\\u5df2\\u963b\\u585e', dead: '\\u5df2\\u6b7b\\u4ea1',\n  skipped: '\\u5df2\\u8df3\\u8fc7', failed: '\\u5931\\u8d25'\n};\nconst significantStatuses = Object.entries(statusLabels).filter(([key]) => crawlStatsData[key] > 0);\nif (significantStatuses.length > 0) {\n  md += `| \\u72b6\\u6001 | \\u6570\\u91cf |\\n|------|------|\\n`;\n  significantStatuses.forEach(([key, label]) => {\n    md += `| ${label} | ${crawlStatsData[key]} |\\n`;\n  });\n  md += '\\n';\n} else {\n  md += `*\\u961f\\u5217\\u7a7a\\u95f2*\\n\\n`;\n}\n\nif (crawlStatsData.running > 0) {\n  md += `> \\u26a0\\ufe0f \\u6709 ${crawlStatsData.running} \\u4e2a\\u4efb\\u52a1\\u5904\\u4e8e\\u8fd0\\u884c\\u4e2d\\u72b6\\u6001\\uff0c\\u53ef\\u80fd\\u5361\\u4f4f\\n\\n`;\n}\n\n// --- Today's Dead Jobs ---\nif (deadJobs.length > 0) {\n  md += `#### \\ud83d\\udc80 \\u4eca\\u65e5\\u5931\\u8d25\\u4efb\\u52a1 (${deadTotal})\\n\\n`;\n  md += `| URL | \\u9519\\u8bef\\u7c7b\\u578b | \\u9519\\u8bef\\u4fe1\\u606f |\\n|-----|---------|--------|\\n`;\n  deadJobs.slice(0, 15).forEach(j => {\n    const shortUrl = (j.url || '').length > 60 ? j.url.substring(0, 57) + '...' : (j.url || '');\n    const errType = j.error_type || '';\n    const errMsg = (j.error_message || '').length > 50 ? j.error_message.substring(0, 47) + '...' : (j.error_message || '');\n    md += `| ${shortUrl} | ${errType} | ${errMsg} |\\n`;\n  });\n  if (deadTotal > 15) {\n    md += `\\n> ...\\u53ca\\u5176\\u4ed6 ${deadTotal - 15} \\u4e2a\\n`;\n  }\n  md += '\\n';\n}\n\n// --- Today's Blocked Jobs ---\nif (blockedJobs.length > 0) {\n  md += `#### \\ud83d\\udeab \\u4eca\\u65e5\\u963b\\u585e\\u4efb\\u52a1 (${blockedTotal})\\n\\n`;\n  md += `| URL | \\u963b\\u585e\\u539f\\u56e0 |\\u57df\\u540d|\\n|-----|--------|-----|\\n`;\n  blockedJobs.slice(0, 15).forEach(j => {\n    const shortUrl = (j.url || '').length > 60 ? j.url.substring(0, 57) + '...' : (j.url || '');\n    md += `| ${shortUrl} | ${j.block_reason || ''} | ${j.source_domain || ''} |\\n`;\n  });\n  if (blockedTotal > 15) {\n    md += `\\n> ...\\u53ca\\u5176\\u4ed6 ${blockedTotal - 15} \\u4e2a\\n`;\n  }\n  md += '\\n';\n\n  // Top blocked domains\n  const domainBlockCounts = {};\n  blockedJobs.forEach(j => {\n    const domain = j.source_domain || 'unknown';\n    const reason = j.block_reason || 'unknown';\n    const key = `${domain} (${reason})`;\n    domainBlockCounts[key] = (domainBlockCounts[key] || 0) + 1;\n  });\n  const sortedDomains = Object.entries(domainBlockCounts)\n    .sort((a, b) => b[1] - a[1])\n    .slice(0, 5);\n  if (sortedDomains.length > 0) {\n    md += `**\\u963b\\u585e\\u57df\\u540d Top 5:**\\n\\n`;\n    sortedDomains.forEach(([key, count]) => {\n      md += `- ${key}: ${count} \\u4e2a\\n`;\n    });\n    md += '\\n';\n  }\n}\n\n// --- Worker Health ---\nmd += `#### \\ud83d\\udd27 Worker \\u901a\\u9053\\u72b6\\u6001\\n\\n`;\nif (workers.length > 0) {\n  md += `| \\u901a\\u9053 | \\u7194\\u65ad\\u5668 | \\u8fde\\u7eed\\u5931\\u8d25 | \\u5de5\\u4eba\\u6570 |\\n|------|--------|----------|--------|\\n`;\n  workers.forEach(w => {\n    const breakerIcon = w.breaker_state === 'closed' ? '\\u2705' :\n                        w.breaker_state === 'open' ? '\\ud83d\\udd34' : '\\ud83d\\udfe1';\n    md += `| ${w.channel || ''} | ${breakerIcon} ${w.breaker_state || ''} | ${w.consecutive_fail || 0} | ${w.worker_count || 0} |\\n`;\n  });\n  md += '\\n';\n} else {\n  md += `*\\u65e0 Worker \\u6570\\u636e*\\n\\n`;\n}\n\n// --- LLM Proxy Health ---\nif (llmChannels.length > 0) {\n  md += `#### \\ud83e\\udd16 LLM \\u4ee3\\u7406\\u5065\\u5eb7\\n\\n`;\n  const healthyCount = llmChannels.filter(c => c.health === 'healthy').length;\n  md += `- \\u5065\\u5eb7: ${healthyCount}/${llmChannels.length} \\u4e2a\\u901a\\u9053\\n`;\n  const unhealthy = llmChannels.filter(c => c.health !== 'healthy');\n  if (unhealthy.length > 0) {\n    md += `- \\u5f02\\u5e38\\u901a\\u9053: ${unhealthy.map(c => c.name || c.channel || 'unknown').join(', ')}\\n`;\n  }\n  md += '\\n';\n}\n\n// --- Knowledge Base Stats ---\nmd += `#### \\ud83d\\udcda \\u77e5\\u8bc6\\u5e93\\u7edf\\u8ba1\\n\\n`;\nmd += `- **\\u6587\\u7ae0\\u603b\\u6570**: ${totalArticles} \\u7bc7\\n`;\nif (knowledgeStatsData.total_files !== undefined) {\n  md += `- **\\u7d22\\u5f15\\u6587\\u4ef6\\u6570**: ${knowledgeStatsData.total_files}\\n`;\n}\nif (knowledgeStatsData.total_chunks !== undefined) {\n  md += `- **\\u7d22\\u5f15\\u5206\\u5757\\u6570**: ${knowledgeStatsData.total_chunks}\\n`;\n}\nif (knowledgeStatsData.skipped_files !== undefined) {\n  md += `- **\\u8df3\\u8fc7\\u6587\\u4ef6\\u6570**: ${knowledgeStatsData.skipped_files}\\n`;\n}\nmd += '\\n';\n\n// --- Dataset lines ---\nconst datasetLines = datasets.map(d => `  - ${d.display_name || d.name}: ${(d.tags?.length || 0)} \\u6807\\u7b7e`);\nif (datasetLines.length > 0) {\n  md += `| \\u6570\\u636e\\u96c6 | \\u6807\\u7b7e\\u6570 |\\n|---------|--------|\\n`;\n  md += datasetLines.map(l => l.replace(/^  - /, '| ').replace(': ', '| ')).join(' \\u6807\\u7b7e\\n') + ' \\u6807\\u7b7e\\n\\n';\n}\n\n// --- Todos ---\nmd += `#### \\ud83d\\udcdd \\u5f85\\u529e\\u4e8b\\u9879\\n\\n`;\nmd += `- \\u672a\\u5b8c\\u6210: ${todoCount} \\u9879`;\n\nreturn [{ json: { room: 'daily', markdown: md, date: dateStr } }];"
       },
       "id": "build-summary",
       "name": "构建Markdown摘要",
@@ -245,6 +407,36 @@
             "node": "获取服务状态",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "获取爬取队列统计",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "获取今日失败任务",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "获取今日阻塞任务",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "获取爬取Worker状态",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "获取LLM代理健康",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "获取知识库索引统计",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -272,6 +464,72 @@
       ]
     },
     "获取待办事项": {
+      "main": [
+        [
+          {
+            "node": "构建Markdown摘要",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取爬取队列统计": {
+      "main": [
+        [
+          {
+            "node": "构建Markdown摘要",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取今日失败任务": {
+      "main": [
+        [
+          {
+            "node": "构建Markdown摘要",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取今日阻塞任务": {
+      "main": [
+        [
+          {
+            "node": "构建Markdown摘要",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取爬取Worker状态": {
+      "main": [
+        [
+          {
+            "node": "构建Markdown摘要",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取LLM代理健康": {
+      "main": [
+        [
+          {
+            "node": "构建Markdown摘要",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "获取知识库索引统计": {
       "main": [
         [
           {
