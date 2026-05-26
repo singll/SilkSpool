@@ -37,8 +37,7 @@ SilkSpool/
 │   └── .gitkeep
 ├── hosts/                 # Per-node data (gitignored)
 │   ├── router/            #   caddy/, homepage/, dnsmasq/, openclash/
-│   ├── keeper/            #   .env, n8n-workflows/
-│   ├── knowledge/         #   .env, ragflow/conf/
+│   ├── keeper/            #   .env, n8n-workflows/, couchdb/
 │   └── vps/               #   headscale/config.yaml, caddy/Caddyfile
 ├── bundles/               # Multi-container application bundles
 │   ├── knowledge/         #   remote.sh, defaults.sh, templates/
@@ -95,10 +94,10 @@ HOST_META["router"]="APP_PREFIX=sp-"
 #### 4. Deploy
 
 ```bash
-# Knowledge Base Stack
-./spool.sh bundle knowledge init my-node
-vim hosts/my-node/.env  # Edit passwords
-./spool.sh bundle knowledge setup my-node
+# Knowledge Base Stack (Bellkeeper + Meilisearch + n8n + Memos)
+./spool.sh bundle keeper init my-node           # Initialize default configs
+vim hosts/my-node/.env                          # Edit passwords
+./spool.sh bundle keeper setup my-node          # Deploy and start
 
 # Gateway Stack
 ./spool.sh bundle gateway setup router
@@ -249,14 +248,15 @@ Modes: `download` (ready to use) / `template` (needs editing)
 <summary><b>Backup</b></summary>
 
 ```bash
-declare -a BACKUP_KNOWLEDGE=(
-    "db-mysql:sp-mysql:ragflow-sql"
-    "volume:sp-minio-data:ragflow-files"
+declare -a BACKUP_KEEPER=(
+    "db-postgres:sp-postgres:bellkeeper"
+    "volume:kp-n8n-data:n8n"
+    "volume:kp-couchdb-data:couchdb"
 )
 ```
 
 ```bash
-./spool.sh backup knowledge
+./spool.sh backup keeper
 ```
 
 </details>
@@ -306,8 +306,7 @@ SilkSpool/
 │   └── .gitkeep
 ├── hosts/                 # [数据] 各节点个性化数据 (被 git 忽略)
 │   ├── router/            #   caddy/, homepage/, dnsmasq/, openclash/
-│   ├── keeper/            #   .env, n8n-workflows/
-│   ├── knowledge/         #   .env, ragflow/conf/
+│   ├── keeper/            #   .env, n8n-workflows/, couchdb/
 │   └── vps/               #   headscale/config.yaml, caddy/Caddyfile
 ├── bundles/               # [护符] 多容器应用编排包
 │   ├── knowledge/         #   remote.sh, defaults.sh, templates/
@@ -366,10 +365,10 @@ HOST_META["router"]="APP_PREFIX=sp-"
 #### 4. 编织服务（部署）
 
 ```bash
-# 部署知识库全栈 (RAGFlow + Firecrawl + n8n)
-./spool.sh bundle knowledge init my-node      # 初始化默认配置
+# 部署知识库全栈 (Bellkeeper + Meilisearch + n8n + Memos + CouchDB LiveSync)
+./spool.sh bundle keeper init my-node          # 初始化默认配置
 vim hosts/my-node/.env                         # 修改密码
-./spool.sh bundle knowledge setup my-node      # 部署启动
+./spool.sh bundle keeper setup my-node         # 部署启动
 
 # 部署网关 (Caddy + Homepage)
 ./spool.sh bundle gateway setup router
@@ -548,14 +547,15 @@ declare -a CONFIG_DEFAULTS=(
 
 ```bash
 # 在 config.ini 中定义
-declare -a BACKUP_KNOWLEDGE=(
-    "db-mysql:sp-mysql:ragflow-sql"
-    "volume:sp-minio-data:ragflow-files"
+declare -a BACKUP_KEEPER=(
+    "db-postgres:sp-postgres:bellkeeper"
+    "volume:kp-n8n-data:n8n"
+    "volume:kp-couchdb-data:couchdb"
 )
 ```
 
 ```bash
-./spool.sh backup knowledge
+./spool.sh backup keeper
 # 备份文件保存到 $BACKUP_DIR/<主机>/日期/
 ```
 
