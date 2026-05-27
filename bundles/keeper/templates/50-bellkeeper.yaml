@@ -1,7 +1,7 @@
 # ==============================================================================
 #  Bellkeeper - Knowledge Management System
 #  描述: Go + SolidJS 全栈应用
-#  依赖: PostgreSQL (独立实例), 连接 RagFlow (跨服务器) / n8n (同机)
+#  依赖: PostgreSQL (独立实例), 连接 n8n (同机) / Meilisearch (同机)
 # ==============================================================================
 
 services:
@@ -31,6 +31,8 @@ services:
       redis:
         condition: service_started
       nats:
+        condition: service_started
+      meilisearch:
         condition: service_started
     networks:
       - kp-network

@@ -25,7 +25,7 @@ generate_local_template() {
 APP_PREFIX=sp-
 
 # --- 跨服务器通信 ---
-# knowledge 服务器 IP (RAGFlow + Firecrawl 所在)
+# knowledge 服务器 IP (Firecrawl + 其他外部辅助服务)
 KNOWLEDGE_HOST=192.168.7.220
 
 # --- Redis ---
@@ -39,7 +39,6 @@ N8N_ENCRYPTION_KEY=CHANGE_ME_generate_random_string
 # --- Bellkeeper ---
 BELLKEEPER_DB_PASSWORD=CHANGE_ME_bellkeeper_db_password
 BELLKEEPER_API_KEY=your-bellkeeper-api-key
-RAGFLOW_API_KEY=your-ragflow-api-key
 
 # --- LLM Proxy ---
 LLM_NEWAPI_BASE_URL=
