@@ -1,0 +1,90 @@
+{
+  "name": "O02.1-Todo同步",
+  "meta": {
+    "instanceId": "",
+    "description": "定时同步 Memos 待办到 TrueNAS todo.txt 文件"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "每5分钟触发",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5230/api/v1/memos",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"content\": \"#待办 #P1 测试同步\", \"visibility\": \"PRIVATE\" }",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.MEMOS_API_TOKEN }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "test-memo",
+      "name": "创建测试待办(仅调试)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300],
+      "continueOnFail": true,
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Memos 待办同步到 todo.txt\n// 此节点生成同步命令\n\nconst MEMOS_API = 'http://localhost:5230/api/v1/memos';\nconst TOKEN = $env.MEMOS_API_TOKEN;\nconst TODO_DIR = '/mnt/NAS/data/knowledge/todos';\n\n// 注意：此工作流主要用于触发同步\n// 实际同步由 cron 任务执行：/opt/silkspool/keeper/sync-todos.py\n\nreturn {\n  json: {\n    status: 'ok',\n    message: '同步由 cron 任务执行',\n    sync_script: '/opt/silkspool/keeper/sync-todos.py',\n    cron_config: '* * * * * silkspool /usr/bin/python3 /opt/silkspool/keeper/sync-todos.py >> /var/log/todo-sync.log 2>&1'\n  }\n};"
+      },
+      "id": "sync-info",
+      "name": "同步信息",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [750, 300]
+    }
+  ],
+  "connections": {
+    "每5分钟触发": {
+      "main": [
+        [
+          {
+            "node": "同步信息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "pinData": {},
+  "tags": [
+    {
+      "name": "todo"
+    },
+    {
+      "name": "ops"
+    }
+  ]
+}

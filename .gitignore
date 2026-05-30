@@ -41,7 +41,11 @@ hosts/keeper/n8n-workflows/*
 .vscode/
 .idea/
 
-# --- 6. 本地文档与配置 ---
-CLAUDE.md
-doc/
-knowledge-management/
+# --- 7. Go 二进制文件 ---
+spool-v2
+*.exe
+
+# --- 8. Python 缓存 ---
+lib/core/__pycache__/
+*.pyc
+*.pyo

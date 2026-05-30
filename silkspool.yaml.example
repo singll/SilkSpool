@@ -1,0 +1,268 @@
+# =============================================================================
+#  SilkSpool V2 - 全局配置文件
+#  替代: config.ini (Bash 关联数组)
+# =============================================================================
+
+# -------------------- 全局配置 --------------------
+global:
+  # SSH 私钥路径 (相对项目根目录或绝对路径)
+  ssh_key_path: "./keys/id_silkspool"
+
+  # 默认域名后缀 (用于 dns/site 命令默认值)
+  default_domain: "singll.net"
+
+  # 备份存储路径
+  backup_dir: "~/silkspool_backups"
+
+  # DNS 默认网关 IP
+  dns_gateway_ip: "192.168.7.1"
+
+  # Headscale MagicDNS 服务器
+  dns_headscale_server: "100.100.100.100"
+
+# -------------------- 主机清单 (Inventory) --------------------
+hosts:
+  # =========================================================================
+  # iStoreOS 路由器 (OpenWrt)
+  # =========================================================================
+  istoreos:
+    address: "root@192.168.7.1"
+    app_prefix: "sp-"
+    bundles: ["gateway"]
+    sync_rules:
+      - local: "caddy/Caddyfile"
+        remote: "/opt/caddy/Caddyfile"
+      - local: "homepage/services.yaml"
+        remote: "/opt/homepage/config/services.yaml"
+      - local: "homepage/bookmarks.yaml"
+        remote: "/opt/homepage/config/bookmarks.yaml"
+      - local: "homepage/docker.yaml"
+        remote: "/opt/homepage/config/docker.yaml"
+      - local: "homepage/kubernetes.yaml"
+        remote: "/opt/homepage/config/kubernetes.yaml"
+      - local: "homepage/proxmox.yaml"
+        remote: "/opt/homepage/config/proxmox.yaml"
+      - local: "homepage/settings.yaml"
+        remote: "/opt/homepage/config/settings.yaml"
+      - local: "homepage/widgets.yaml"
+        remote: "/opt/homepage/config/widgets.yaml"
+      - local: "dnsmasq/dnsmasq.conf"
+        remote: "/etc/dnsmasq.conf"
+      - local: "openclash/hosts.list"
+        remote: "/etc/openclash/custom/openclash_custom_hosts.list"
+      - local: "openclash/openclash_custom_overwrite.sh"
+        remote: "/etc/openclash/custom/openclash_custom_overwrite.sh"
+    services:
+      - alias: "caddy"
+        type: "docker"
+        name: "caddy"
+      - alias: "homepage"
+        type: "docker"
+        name: "homepage"
+      - alias: "authelia"
+        type: "docker"
+        name: "authelia"
+      - alias: "dnsmasq"
+        type: "initd"
+        name: "dnsmasq"
+      - alias: "openclash"
+        type: "initd"
+        name: "openclash"
+    post_push_hooks:
+      - pattern: "caddy/Caddyfile"
+        command: "docker exec caddy caddy reload --config /etc/caddy/Caddyfile"
+      - pattern: "openclash/openclash_custom_overwrite.sh"
+        command: "chmod +x /etc/openclash/custom/openclash_custom_overwrite.sh"
+
+  # =========================================================================
+  # Keeper 知识管理服务器
+  # =========================================================================
+  keeper:
+    address: "silkspool@192.168.7.230"
+    app_prefix: "sp-"
+    bundles: ["keeper"]
+    sync_rules:
+      - local: ".env"
+        remote: "/opt/silkspool/keeper/.env"
+      - local: "n8n-workflows/"
+        remote: "/opt/silkspool/keeper/n8n-workflows/"
+      - local: "couchdb/"
+        remote: "/opt/silkspool/keeper/couchdb/"
+    services:
+      - alias: "redis"
+        type: "docker"
+        name: "sp-redis"
+      - alias: "n8n"
+        type: "docker"
+        name: "sp-n8n"
+      - alias: "bellkeeper"
+        type: "docker"
+        name: "sp-bellkeeper"
+      - alias: "bellkeeper-db"
+        type: "docker"
+        name: "sp-bellkeeper-db"
+      - alias: "memos"
+        type: "docker"
+        name: "sp-memos"
+      - alias: "rsshub"
+        type: "docker"
+        name: "sp-rsshub"
+      - alias: "couchdb"
+        type: "docker"
+        name: "sp-couchdb"
+      - alias: "nats"
+        type: "docker"
+        name: "sp-nats"
+      - alias: "meilisearch"
+        type: "docker"
+        name: "sp-meilisearch"
+    backups:
+      - type: "volume"
+        source: "kp-n8n-data"
+        name: "n8n-backup"
+      - type: "volume"
+        source: "kp-memos-data"
+        name: "memos-backup"
+      - type: "volume"
+        source: "kp-bellkeeper-db"
+        name: "bellkeeper-pg"
+      - type: "volume"
+        source: "kp-couchdb-data"
+        name: "couchdb-backup"
+
+  # =========================================================================
+  # TXHK 远程 VPS 服务器
+  # =========================================================================
+  txhk:
+    address: "silkspool@43.129.195.4"
+    app_prefix: ""  # 二进制服务无 Docker 前缀
+    bundles: ["server"]
+    sync_rules:
+      - local: "caddy/Caddyfile"
+        remote: "/etc/caddy/Caddyfile"
+      - local: "headscale/config.yaml"
+        remote: "/etc/headscale/config.yaml"
+      - local: "conduit/conduit.toml"
+        remote: "/etc/conduit/conduit.toml"
+      - local: "ntfy/server.yml"
+        remote: "/etc/ntfy/server.yml"
+    services:
+      - alias: "caddy"
+        type: "systemd"
+        name: "caddy"
+      - alias: "headscale"
+        type: "systemd"
+        name: "headscale"
+      - alias: "conduit"
+        type: "systemd"
+        name: "conduit"
+      - alias: "ntfy"
+        type: "systemd"
+        name: "ntfy"
+    stack:
+      - "caddy"
+      - "headscale"
+      - "conduit"
+      - "ntfy"
+    post_push_hooks:
+      - pattern: "headscale/config.yaml"
+        command: "sudo chown headscale:headscale /etc/headscale/config.yaml"
+
+  # =========================================================================
+  # AIGateway AI 网关服务器
+  # =========================================================================
+  aigateway:
+    address: "silkspool@192.168.7.110"
+    app_prefix: "sp-"
+    bundles: ["aigateway"]
+    sync_rules:
+      - local: ".env"
+        remote: "/opt/silkspool/aigateway/.env"
+    services:
+      - alias: "redis"
+        type: "docker"
+        name: "sp-redis"
+      - alias: "new-api"
+        type: "docker"
+        name: "sp-new-api"
+      - alias: "new-api-db"
+        type: "docker"
+        name: "sp-new-api-db"
+    backups:
+      - type: "volume"
+        source: "gw-newapi-data"
+        name: "newapi-backup"
+      - type: "volume"
+        source: "gw-newapi-db"
+        name: "newapi-pg"
+
+  # =========================================================================
+  # Bili-Node B站相关服务节点
+  # =========================================================================
+  bili-node:
+    address: "silkspool@192.168.7.108"
+    app_prefix: "sp-"
+    bundles: ["bili"]
+    sync_rules:
+      - local: ".env"
+        remote: "/opt/bili-suite/.env"
+      - local: "recorder/config/"
+        remote: "/opt/bili-suite/recorder/config/"
+      - local: "robot/config/"
+        remote: "/opt/bili-suite/robot/config/"
+    services:
+      - alias: "recorder"
+        type: "docker"
+        name: "sp-bili-recorder"
+      - alias: "robot"
+        type: "docker"
+        name: "sp-bili-robot"
+      - alias: "dozzle"
+        type: "docker"
+        name: "sp-dozzle"
+    backups:
+      - type: "dir"
+        source: "/opt/bili-suite/recorder/config"
+        name: "recorder-cfg"
+      - type: "dir"
+        source: "/opt/bili-suite/robot/config"
+        name: "robot-cfg"
+
+# -------------------- 安装源定义 (用于 stack/install) --------------------
+install_sources:
+  - alias: "caddy"
+    repo: "caddyserver/caddy"
+    pattern: "linux_{ARCH}.tar.gz"
+    service_name: "caddy"
+    default_version: "latest"
+
+  - alias: "headscale"
+    repo: "juanfont/headscale"
+    pattern: "linux_{ARCH}$"
+    service_name: "headscale"
+    default_version: "v0.22.3"
+
+  - alias: "conduit"
+    repo: "gitlab:famedly/conduit"
+    pattern: "x86_64.*linux.*musl"
+    service_name: "conduit"
+    default_version: "latest"
+
+  - alias: "ntfy"
+    repo: "binwiederhier/ntfy"
+    pattern: "linux_{ARCH}.tar.gz"
+    service_name: "ntfy"
+    default_version: "latest"
+
+# -------------------- n8n 配置 --------------------
+n8n:
+  host: "keeper"
+  container: "sp-n8n"
+  workflow_dir: "/opt/silkspool/keeper/n8n-workflows"
+  api_url: "http://localhost:5678"
+
+# -------------------- TrueNAS 配置 --------------------
+truenas:
+  host: "truenas"
+  api_url: "https://192.168.7.121"
+  username: "admin"
