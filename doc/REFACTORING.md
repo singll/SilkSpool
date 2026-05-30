@@ -353,6 +353,40 @@ func (c *TrueNASClient) WaitForJob(jobID int, timeout time.Duration) (*TrueNASJo
 
 ---
 
+### Phase 5: 运行时模型重构 — out/ 自包含目录 ✅ 已完成 (2026-05-30)
+
+**目标**: 弃用 `~/.silkspool` 分离模型，实现二进制自包含的运行时目录
+
+#### 5.1 BaseDir 自动解析 (`cmd/spool/main.go`)
+- **新增** `resolveBaseDir()`：自动以二进制所在目录为 BaseDir
+- **优先级**：`--config` > 可执行文件目录（有效目录判定）> `cwd`
+- **开发兼容**：`go run` 时临时目录无效，自动 fallback 到项目根目录
+
+#### 5.2 构建脚本 (`Makefile`)
+- **新增** `make all`：一键编译 + 初始化 `out/` 目录
+- **内容**：二进制 + `bundles/` 复制 + `silkspool.yaml` 示例 + 空运行时目录
+- **幂等**：不覆盖已有的 `out/silkspool.yaml` 和 `out/hosts/`
+
+#### 5.3 配置路径调整 (`internal/config/config.go`)
+- `~/.silkspool` 优先级降为**最后 fallback**
+- 从 `~/.silkspool` 加载时输出 deprecation 警告
+- 主要搜索路径改为以 BaseDir（如 `out/`）为根
+
+#### 5.4 `.gitignore` 更新
+- 新增 `out/` 忽略规则，确保构建产物不污染版本控制
+
+#### 部署模型对比
+
+| 模型 | 旧模型 (v1.x-v2.0早期) | 新模型 (v2.0+) |
+|------|----------------------|----------------|
+| 配置位置 | `~/.silkspool/` | `out/`（二进制同目录） |
+| bundles | 项目目录或符号链接 | 复制到 `out/bundles/` |
+| 运行方式 | `cd SilkSpool && ./spool` | `/opt/silkspool/spool`（任意位置） |
+| BaseDir | `cwd` | 自动解析为二进制目录 |
+| 可移植性 | 需源码 + 配置分离复制 | `cp -r out/` 即可 |
+
+---
+
 ## 六、CLI 命令对照表
 
 | 命令 | 旧实现 | 新实现 | 状态 |
@@ -423,21 +457,22 @@ rm spool-v2
 
 ## 九、后续计划
 
-### 9.1 Phase 4 (SOPS 集成)
-- [ ] 引入 SOPS SDK
-- [ ] 实现 `.env.enc` 解密
-- [ ] SSH 原生上传解密内容
-- [ ] 清理旧 Python 脚本
+### 9.1 Phase 5 (SOPS 完善)
+- [ ] 实现 `.env.enc` 自动解密流程
+- [ ] SSH 原生上传解密后的 `.env`
+- [ ] 清理旧 Python 脚本（`lib/tools/scan_dups.py` 以外的遗留）
 
-### 9.2 Phase 5 (测试覆盖)
-- [ ] 单元测试覆盖核心模块
+### 9.2 Phase 6 (测试覆盖)
+- [ ] 单元测试覆盖核心模块（config、engine、tools）
 - [ ] 集成测试（模拟 SSH 连接）
-- [ ] 配置解析测试
+- [ ] BaseDir 解析逻辑测试
+- [ ] 配置加载路径测试
 
-### 9.3 Phase 6 (文档完善)
-- [ ] 更新 README.md
+### 9.3 Phase 7 (文档完善)
+- [ ] 更新 README.md（out/ 部署模型）
 - [ ] 编写 CLI 使用手册
 - [ ] 更新 doc/STATUS.md
+- [ ] 编写迁移指南（~/.silkspool → out/）
 
 ---
 
@@ -458,6 +493,8 @@ rm spool-v2
 | `internal/tools/truenas.go` | TrueNAS RPC 客户端 |
 | `pkg/utils/logger.go` | 日志工具 |
 | `silkspool.yaml.example` | 配置文件示例 |
+| `Makefile` | 构建脚本（out/ 自包含目录） |
+| `.gitignore` | Git 忽略规则 |
 | `go.mod` | Go 模块定义 |
 
 ---

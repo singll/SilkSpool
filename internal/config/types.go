@@ -6,6 +6,7 @@ package config
 
 type GlobalConfig struct {
 	SSHKeyPath         string `yaml:"ssh_key_path"`          // SSH 私钥路径
+	AgeKeyPath         string `yaml:"age_key_path"`          // SOPS age 密钥路径
 	DefaultDomain      string `yaml:"default_domain"`        // 默认域名后缀
 	BackupDir          string `yaml:"backup_dir"`           // 备份目录
 	DNSGatewayIP       string `yaml:"dns_gateway_ip"`        // DNS 网关 IP

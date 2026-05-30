@@ -147,6 +147,32 @@ func (c *SSHClient) Upload(content, remotePath string) error {
 	return nil
 }
 
+// Download 下载远程文件到本地（通过 SSH cat + 写入本地）
+func (c *SSHClient) Download(remotePath, localPath string) error {
+	if err := c.Connect(); err != nil {
+		return err
+	}
+
+	session, err := c.client.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+	defer session.Close()
+
+	var stdout bytes.Buffer
+	session.Stdout = &stdout
+
+	if err := session.Run(fmt.Sprintf("cat %s", remotePath)); err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+
+	if err := os.WriteFile(localPath, stdout.Bytes(), 0644); err != nil {
+		return fmt.Errorf("failed to write local file: %w", err)
+	}
+
+	return nil
+}
+
 // parseSSHAddress 解析 SSH 地址
 func parseSSHAddress(address string) (user, host string, err error) {
 	if idx := strings.LastIndex(address, "@"); idx != -1 {

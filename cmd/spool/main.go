@@ -21,16 +21,8 @@ var (
 	GitCommit = "unknown"
 )
 
-// BaseDir 项目根目录
+// BaseDir 项目根目录（运行时通过 resolveBaseDir 解析）
 var BaseDir string
-
-func init() {
-	// 获取项目根目录
-	cwd, err := os.Getwd()
-	if err == nil {
-		BaseDir = cwd
-	}
-}
 
 // ============ 命令定义 ============
 
@@ -51,6 +43,9 @@ var RootCmd = &cobra.Command{
 
 使用 ./spool --help 查看完整帮助`,
 	SilenceUsage: true,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		BaseDir = resolveBaseDir()
+	},
 }
 
 // 全局标志
@@ -928,6 +923,52 @@ func passThrough(script string, args []string) {
 	if err := cmd.Run(); err != nil {
 		os.Exit(1)
 	}
+}
+
+// ============ BaseDir 解析 ============
+
+// resolveBaseDir 解析项目根目录，优先级：
+// 1. --config 参数指定的目录
+// 2. 可执行文件所在目录（如果是有效 Spool 目录）
+// 3. 当前工作目录（fallback）
+func resolveBaseDir() string {
+	// 1. --config 参数指定了完整路径
+	if configFlag != "" {
+		if filepath.IsAbs(configFlag) {
+			return filepath.Dir(configFlag)
+		}
+		cwd, err := os.Getwd()
+		if err == nil {
+			return filepath.Dir(filepath.Join(cwd, configFlag))
+		}
+		return filepath.Dir(configFlag)
+	}
+
+	// 2. 可执行文件所在目录
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		if isValidSpoolDir(exeDir) {
+			return exeDir
+		}
+	}
+
+	// 3. 当前工作目录
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+
+	return "."
+}
+
+// isValidSpoolDir 判断目录是否包含 Spool 运行所需的标识文件/目录
+func isValidSpoolDir(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "bundles")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(dir, "silkspool.yaml")); err == nil {
+		return true
+	}
+	return false
 }
 
 // ============ main 函数 ============
