@@ -42,35 +42,48 @@ WebSocket:      github.com/gorilla/websocket (v1.5.3)
 
 ## 三、目录结构
 
+### 代码仓库结构
+
 ```
-SilkSpool/
-├── cmd/
-│   └── spool/
-│       └── main.go              # Cobra CLI 入口点
-├── internal/
-│   ├── config/
-│   │   ├── config.go           # Viper 配置加载 + YAML 映射
-│   │   └── types.go            # 所有强类型 Struct 定义
-│   ├── engine/
-│   │   ├── dns.go              # DNS 配置管理（结构化修改）
-│   │   ├── sync.go             # rsync 封装 + Post-Push Hooks
-│   │   ├── bundle.go           # YAML 模板合并 + 远程脚本执行
-│   │   ├── ssh.go              # SSH Client 封装
-│   │   ├── service.go          # 服务控制（docker/systemd/initd）
-│   │   └── install.go          # 二进制安装（动态下载器）
-│   └── tools/
-│       ├── n8n.go              # n8n HTTP API 客户端
-│       └── truenas.go          # TrueNAS WebSocket JSON-RPC 客户端
-├── pkg/
-│   ├── ssh/
-│   │   └── client.go           # SSH Client 封装
-│   └── utils/
-│       └── logger.go            # 日志 + 终端着色
-├── bundles/                     # [维持原样] 业务模板
-├── hosts/                       # [维持原样] 主机配置
-├── silkspool.yaml.example       # 新配置文件示例
-├── go.mod
-└── go.sum
+SilkSpool/                      # Git 管理的代码仓库
+├── cmd/spool/                  # CLI 入口
+├── internal/                    # 核心模块
+│   ├── config/                 # 配置加载
+│   ├── engine/                 # IaC 引擎
+│   │   ├── dns.go             # DNS 管理
+│   │   ├── sync.go           # 配置同步
+│   │   ├── bundle.go         # Bundle 编排
+│   │   ├── backup.go         # 备份管理
+│   │   ├── init.go           # 主机初始化
+│   │   └── ...
+│   └── tools/                  # 外部工具客户端
+├── pkg/                        # 共享包
+│   ├── sops/                  # SOPS 加密
+│   ├── ssh/                   # SSH 封装
+│   └── utils/                 # 日志/工具
+├── bundles/                    # Bundle 模板 (与代码同目录)
+├── silkspool.yaml.example     # 配置模板
+└── doc/DEPLOYMENT.md          # 部署指南
+```
+
+### 用户运行环境 (不 git)
+
+```
+~/.silkspool/                   # 用户配置目录
+├── silkspool.yaml               # 主配置文件
+├── keys/                       # SSH 密钥
+│   ├── id_silkspool
+│   └── age.key                # SOPS 密钥
+├── hosts/                      # 主机特定配置
+└── backups/                   # 备份存储
+```
+
+### 二进制部署
+
+```
+/usr/local/bin/spool            # 可执行文件 (PATH 中)
+或
+./spool                          # 代码仓库中直接运行
 ```
 
 ---
@@ -299,9 +312,9 @@ func (c *TrueNASClient) WaitForJob(jobID int, timeout time.Duration) (*TrueNASJo
 
 ---
 
-### Phase 4: 旧脚本清理 ✅ 已完成 (2026-05-30)
+### Phase 4: SOPS 集成与旧脚本清理 ✅ 已完成 (2026-05-30)
 
-**目标**: 清理已用 Go 替代的旧脚本
+**目标**: 敏感配置加密 + 清理旧脚本
 
 #### 已删除脚本
 
@@ -309,22 +322,28 @@ func (c *TrueNASClient) WaitForJob(jobID int, timeout time.Duration) (*TrueNASJo
 |--------|---------|----------|
 | `lib/core/runner.sh` | `engine/bundle.go` | 2026-05-30 |
 | `lib/core/sync.sh` | `engine/sync.go` | 2026-05-30 |
-| `lib/core/dns.sh` | `engine/dns.go` | 2026-05-30 |
+| `lib/core/dns.sh` | `engine/dns.go` + `engine/site.go` | 2026-05-30 |
 | `lib/core/service.sh` | `engine/service.go` | 2026-05-30 |
+| `lib/core/backup.sh` | `engine/backup.go` | 2026-05-30 |
+| `lib/core/ssh.sh` | `engine/ssh.go` (init 提示) | 2026-05-30 |
+| `lib/core/utils.sh` | `pkg/utils/logger.go` | 2026-05-30 |
+| `lib/core/env.sh` | `internal/config/config.go` | 2026-05-30 |
+| `lib/core/confirm.sh` | 合并到 Go | 2026-05-30 |
+| `lib/core/install.sh` | `engine/install.go` | 2026-05-30 |
 | `lib/core/truenas_rpc.py` | `tools/truenas.go` | 2026-05-30 |
 | `lib/tools/n8n.sh` | `tools/n8n.go` | 2026-05-30 |
 | `lib/tools/nas.sh` | `tools/truenas.go` | 2026-05-30 |
+| `spool.sh` | `spool` (Go CLI) | 2026-05-30 |
+| `config.ini.example` | `silkspool.yaml.example` | 2026-05-30 |
 
-#### 待清理脚本（Go 实现未完成）
+#### 新增 Go 模块
 
-| 旧脚本 | Go 替代 | 状态 |
-|--------|---------|------|
-| `lib/core/backup.sh` | `engine/backup.go` | ⏳ 待实现 |
-| `lib/core/ssh.sh` | `engine/ssh.go` | ⏳ 待移除透传 |
-| `lib/core/utils.sh` | `pkg/utils/logger.go` | ⏳ 待评估 |
-| `lib/core/env.sh` | `internal/config/config.go` | ⏳ 待评估 |
-| `lib/core/confirm.sh` | 合并到 Go | ⏳ 待评估 |
-| `lib/core/install.sh` | `engine/install.go` | ⏳ 待移除 |
+| 模块 | 说明 |
+|------|------|
+| `pkg/sops/sops.go` | SOPS SDK 封装 |
+| `internal/engine/sops.go` | SOPS 高级集成 |
+| `internal/engine/site.go` | 站点管理 (DNS + Caddy) |
+| `internal/engine/backup.go` | 备份管理器 |
 
 #### 遗留脚本（独立工具）
 
@@ -332,51 +351,37 @@ func (c *TrueNASClient) WaitForJob(jobID int, timeout time.Duration) (*TrueNASJo
 |------|------|------|
 | `lib/tools/scan_dups.py` | 重复文件扫描 | ✅ 保留（独立工具） |
 
-#### SOPS 集成（可选）
-
-```go
-// 检查加密配置
-if _, err := os.Stat("hosts/keeper/.env.enc"); err == nil {
-    // 在内存中解密
-    decrypted, err := sops.Decrypt(content, ageKey)
-    // 通过 SSH 上传到远程
-    client.UploadContent(decrypted, remotePath)
-}
-```
-
 ---
 
 ## 六、CLI 命令对照表
 
 | 命令 | 旧实现 | 新实现 | 状态 |
 |------|--------|--------|------|
-| `./spool sync pull <host>` | lib/core/sync.sh | engine/sync.go | ✅ 已删除 |
-| `./spool sync push <host>` | lib/core/sync.sh | engine/sync.go | ✅ 已删除 |
-| `./spool dns add <domain>` | lib/core/dns.sh | engine/dns.go | ✅ 已删除 |
-| `./spool dns deploy <domain>` | lib/core/dns.sh | engine/dns.go | ✅ 已删除 |
-| `./spool n8n list` | lib/tools/n8n.sh | tools/n8n.go | ✅ 已删除 |
-| `./spool n8n import` | lib/tools/n8n.sh | tools/n8n.go | ✅ 已删除 |
-| `./spool nas info` | lib/tools/nas.sh | tools/truenas.go | ✅ 已删除 |
-| `./spool nas pool list` | lib/tools/nas.sh | tools/truenas.go | ✅ 已删除 |
+| `./spool sync pull/push <host>` | lib/core/sync.sh | engine/sync.go | ✅ 已删除 |
+| `./spool dns add/remove/push` | lib/core/dns.sh | engine/dns.go | ✅ 已删除 |
+| `./spool site deploy` | lib/core/dns.sh | engine/site.go | ✅ 已删除 |
 | `./spool bundle <name> up` | lib/core/runner.sh | engine/bundle.go | ✅ 已删除 |
-| `./spool service <host> status` | lib/core/service.sh | engine/service.go | ✅ 已删除 |
-| `./spool stack <host>` | spool.sh | engine/install.go | ✅ |
-| `./spool backup <host>` | lib/core/backup.sh | engine/backup.go | ⏳ 待实现 |
-| `./spool exec <host> <cmd>` | lib/core/ssh.sh | engine/ssh.go | ⏳ 待移除透传 |
+| `./spool n8n list/import/export` | lib/tools/n8n.sh | tools/n8n.go | ✅ 已删除 |
+| `./spool nas info/pool/dataset` | lib/tools/nas.sh | tools/truenas.go | ✅ 已删除 |
+| `./spool service status/restart` | lib/core/service.sh | engine/service.go | ✅ 已删除 |
+| `./spool stack <host>` | lib/core/install.sh | engine/install.go | ✅ |
+| `./spool backup <host>` | lib/core/backup.sh | engine/backup.go | ✅ 已删除 |
+| `./spool exec <host> <cmd>` | lib/core/ssh.sh | engine/ssh.go | ✅ 透传已移除 |
+| `./spool init <host>` | lib/core/ssh.sh | engine/init.go | ✅ 交互式实现 |
 
 ---
 
-## 七、测试与验证
+## 八、测试与验证
 
 ### 编译验证
 ```bash
-go build -o spool-v2 ./cmd/spool/
-./spool-v2 --help
-./spool-v2 version
-./spool-v2 sync --help
-./spool-v2 dns --help
-./spool-v2 n8n --help
-./spool-v2 nas --help
+go build -o spool ./cmd/spool/
+./spool --help
+./spool version
+./spool sync --help
+./spool dns --help
+./spool n8n --help
+./spool nas --help
 ```
 
 ### 预期输出
