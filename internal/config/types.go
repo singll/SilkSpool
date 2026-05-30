@@ -5,81 +5,81 @@ package config
 // ==================== 全局配置 ====================
 
 type GlobalConfig struct {
-	SSHKeyPath         string `yaml:"ssh_key_path"`          // SSH 私钥路径
-	AgeKeyPath         string `yaml:"age_key_path"`          // SOPS age 密钥路径
-	DefaultDomain      string `yaml:"default_domain"`        // 默认域名后缀
-	BackupDir          string `yaml:"backup_dir"`           // 备份目录
-	DNSGatewayIP       string `yaml:"dns_gateway_ip"`        // DNS 网关 IP
-	DNSHeadscaleServer string `yaml:"dns_headscale_server"` // Headscale DNS
+	SSHKeyPath         string `yaml:"ssh_key_path"          mapstructure:"ssh_key_path"`          // SSH 私钥路径
+	AgeKeyPath         string `yaml:"age_key_path"          mapstructure:"age_key_path"`          // SOPS age 密钥路径
+	DefaultDomain      string `yaml:"default_domain"        mapstructure:"default_domain"`        // 默认域名后缀
+	BackupDir          string `yaml:"backup_dir"           mapstructure:"backup_dir"`           // 备份目录
+	DNSGatewayIP       string `yaml:"dns_gateway_ip"        mapstructure:"dns_gateway_ip"`        // DNS 网关 IP
+	DNSHeadscaleServer string `yaml:"dns_headscale_server" mapstructure:"dns_headscale_server"` // Headscale DNS
 }
 
 // ==================== 主机配置 ====================
 
 // HostConfig 定义单个主机的完整配置
 type HostConfig struct {
-	Address       string          `yaml:"address"`       // 用户名@IP
-	AppPrefix     string          `yaml:"app_prefix"`   // 容器名前缀
-	Bundles       []string       `yaml:"bundles"`       // 关联的 bundle
-	SyncRules     []SyncRule     `yaml:"sync_rules"`   // 同步规则
-	Services      []ServiceEntry `yaml:"services"`      // 服务注册
-	PostPushHooks []PostPushHook  `yaml:"post_push_hooks"` // 推送后钩子
-	Backups       []BackupRule   `yaml:"backups"`       // 备份规则
-	Stack         []string       `yaml:"stack"`         // 二进制安装列表
+	Address       string          `yaml:"address"        mapstructure:"address"`        // 用户名@IP
+	AppPrefix     string          `yaml:"app_prefix"     mapstructure:"app_prefix"`     // 容器名前缀
+	Bundles       []string       `yaml:"bundles"        mapstructure:"bundles"`        // 关联的 bundle
+	SyncRules     []SyncRule     `yaml:"sync_rules"     mapstructure:"sync_rules"`     // 同步规则
+	Services      []ServiceEntry `yaml:"services"       mapstructure:"services"`       // 服务注册
+	PostPushHooks []PostPushHook  `yaml:"post_push_hooks" mapstructure:"post_push_hooks"` // 推送后钩子
+	Backups       []BackupRule   `yaml:"backups"        mapstructure:"backups"`        // 备份规则
+	Stack         []string       `yaml:"stack"          mapstructure:"stack"`          // 二进制安装列表
 }
 
 // SyncRule 定义单个同步规则
 type SyncRule struct {
-	Local  string `yaml:"local"`  // 本地相对路径 (相对于 hosts/<host>/)
-	Remote string `yaml:"remote"` // 远程绝对路径
+	Local  string `yaml:"local"  mapstructure:"local"`  // 本地相对路径 (相对于 hosts/<host>/)
+	Remote string `yaml:"remote" mapstructure:"remote"` // 远程绝对路径
 }
 
 // ServiceEntry 定义单个服务条目
 type ServiceEntry struct {
-	Alias string `yaml:"alias"` // 服务别名 (用于命令参数)
-	Type  string `yaml:"type"`  // docker | systemd | initd | openwrt
-	Name  string `yaml:"name"`  // 实际服务名/容器名
+	Alias string `yaml:"alias" mapstructure:"alias"` // 服务别名 (用于命令参数)
+	Type  string `yaml:"type"  mapstructure:"type"`  // docker | systemd | initd | openwrt
+	Name  string `yaml:"name"  mapstructure:"name"`  // 实际服务名/容器名
 }
 
 // PostPushHook 定义推送后执行的钩子
 type PostPushHook struct {
-	Pattern  string `yaml:"pattern"`  // 文件路径匹配 (用于判断是否触发)
-	Command  string `yaml:"command"`  // 远程执行的命令
+	Pattern string `yaml:"pattern" mapstructure:"pattern"` // 文件路径匹配 (用于判断是否触发)
+	Command string `yaml:"command" mapstructure:"command"` // 远程执行的命令
 }
 
 // BackupRule 定义单个备份规则
 type BackupRule struct {
-	Type   string `yaml:"type"`   // volume | dir | db-mysql
-	Source string `yaml:"source"` // 卷名或目录路径
-	Name   string `yaml:"name"`   // 备份文件名
+	Type   string `yaml:"type"   mapstructure:"type"`   // volume | dir | db-mysql
+	Source string `yaml:"source" mapstructure:"source"` // 卷名或目录路径
+	Name   string `yaml:"name"   mapstructure:"name"`   // 备份文件名
 }
 
 // ==================== 安装源 ====================
 
 // InstallSource 定义软件安装源
 type InstallSource struct {
-	Alias          string `yaml:"alias"`           // 软件别名
-	Repo           string `yaml:"repo"`            // 仓库标识 (支持 gitlab: 前缀)
-	Pattern        string `yaml:"pattern"`         // 文件名正则
-	ServiceName    string `yaml:"service_name"`     // Systemd 服务名
-	DefaultVersion string `yaml:"default_version"` // 默认版本
+	Alias          string `yaml:"alias"           mapstructure:"alias"`           // 软件别名
+	Repo           string `yaml:"repo"            mapstructure:"repo"`            // 仓库标识 (支持 gitlab: 前缀)
+	Pattern        string `yaml:"pattern"         mapstructure:"pattern"`         // 文件名正则
+	ServiceName    string `yaml:"service_name"    mapstructure:"service_name"`    // Systemd 服务名
+	DefaultVersion string `yaml:"default_version" mapstructure:"default_version"` // 默认版本
 }
 
 // ==================== n8n / TrueNAS ====================
 
 // N8NConfig 定义 n8n 集成配置
 type N8NConfig struct {
-	Host        string `yaml:"host"`         // 主机别名
-	Container   string `yaml:"container"`   // 容器名
-	WorkflowDir string `yaml:"workflow_dir"` // 远程工作流目录
-	APIURL     string `yaml:"api_url"`      // API 地址
+	Host        string `yaml:"host"         mapstructure:"host"`         // 主机别名
+	Container   string `yaml:"container"    mapstructure:"container"`    // 容器名
+	WorkflowDir string `yaml:"workflow_dir" mapstructure:"workflow_dir"` // 远程工作流目录
+	APIURL      string `yaml:"api_url"      mapstructure:"api_url"`      // API 地址
 	// APIKey 从 hosts/<host>/.env 动态读取
 }
 
 // TrueNASConfig 定义 TrueNAS 集成配置
 type TrueNASConfig struct {
-	Host     string `yaml:"host"`      // 主机别名
-	APIURL   string `yaml:"api_url"`  // API 地址
-	Username string `yaml:"username"`  // 用户名
+	Host     string `yaml:"host"     mapstructure:"host"`     // 主机别名
+	APIURL   string `yaml:"api_url"  mapstructure:"api_url"`  // API 地址
+	Username string `yaml:"username" mapstructure:"username"` // 用户名
 	// APIKey 从 hosts/<host>/.env 动态读取
 }
 
@@ -87,11 +87,11 @@ type TrueNASConfig struct {
 
 // Config 是 silkspool.yaml 的根结构
 type Config struct {
-	Global         GlobalConfig             `yaml:"global"`
-	Hosts          map[string]HostConfig   `yaml:"hosts"`
-	InstallSources []InstallSource          `yaml:"install_sources"`
-	N8N            N8NConfig               `yaml:"n8n"`
-	TrueNAS        TrueNASConfig           `yaml:"truenas"`
+	Global         GlobalConfig           `yaml:"global"          mapstructure:"global"`
+	Hosts          map[string]HostConfig  `yaml:"hosts"           mapstructure:"hosts"`
+	InstallSources []InstallSource        `yaml:"install_sources" mapstructure:"install_sources"`
+	N8N            N8NConfig              `yaml:"n8n"             mapstructure:"n8n"`
+	TrueNAS        TrueNASConfig          `yaml:"truenas"         mapstructure:"truenas"`
 }
 
 // GetHost 返回指定别名的主机配置，不存在则返回 nil
