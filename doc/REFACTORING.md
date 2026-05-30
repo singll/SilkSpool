@@ -345,11 +345,11 @@ func (c *TrueNASClient) WaitForJob(jobID int, timeout time.Duration) (*TrueNASJo
 | `internal/engine/site.go` | 站点管理 (DNS + Caddy) |
 | `internal/engine/backup.go` | 备份管理器 |
 
-#### 遗留脚本（独立工具）
+#### 已迁移脚本
 
-| 脚本 | 用途 | 状态 |
-|------|------|------|
-| `lib/tools/scan_dups.py` | 重复文件扫描 | ✅ 保留（独立工具） |
+| 脚本 | 用途 | 迁移目标 |
+|------|------|----------|
+| `lib/tools/scan_dups.py` | 重复文件扫描 | `Bellkeeper/scripts/scan_dups.py` |
 
 ---
 
@@ -460,7 +460,7 @@ rm spool-v2
 ### 9.1 Phase 5 (SOPS 完善)
 - [ ] 实现 `.env.enc` 自动解密流程
 - [ ] SSH 原生上传解密后的 `.env`
-- [ ] 清理旧 Python 脚本（`lib/tools/scan_dups.py` 以外的遗留）
+- [ ] 清理 SilkSpool 目录中残留的 Python 脚本（已全部迁移或删除）
 
 ### 9.2 Phase 6 (测试覆盖)
 - [ ] 单元测试覆盖核心模块（config、engine、tools）
