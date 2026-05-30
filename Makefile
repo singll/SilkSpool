@@ -45,11 +45,20 @@ init-out:
 	@echo "==> $(OUT_DIR)/ is ready."
 	@echo "    Run './$(OUT_DIR)/$(BINARY_NAME) --help' to get started."
 
-# Clean build output
+# Clean build artifacts (preserves user data: hosts/, keys/, backups/, silkspool.yaml)
 clean:
-	@echo "==> Cleaning $(OUT_DIR)/..."
+	@echo "==> Cleaning build artifacts..."
+	@rm -f $(OUT_DIR)/$(BINARY_NAME)
+	@rm -rf $(OUT_DIR)/bundles
+	@echo "==> Done. (hosts/, keys/, backups/, silkspool.yaml preserved)"
+
+# Dist-clean: remove entire out/ directory (destructive)
+dist-clean:
+	@echo "==> WARNING: This will delete ALL files in $(OUT_DIR)/ including hosts/, keys/, backups/"
+	@echo "==> Press Ctrl+C to cancel, or wait 3 seconds to continue..."
+	@sleep 3
 	@rm -rf $(OUT_DIR)
-	@echo "==> Done."
+	@echo "==> Done. $(OUT_DIR)/ completely removed."
 
 # Cross-compile helpers (optional)
 build-linux:
