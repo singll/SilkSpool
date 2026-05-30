@@ -1,55 +1,31 @@
 # ==============================================================================
 #  Git 忽略规则配置
-#  目的: 确保敏感信息（密钥、密码、临时文件）绝对不会被提交到版本控制系统
+#  目的: 确保构建产物、敏感信息、临时文件不进入版本控制
 # ==============================================================================
 
-# --- 1. 核心凭证 (Secrets) ---
-# 用户的真实配置文件，包含 IP 和账号信息
-config.ini
-# 任何证书文件
+# --- 1. 证书与密钥 ---
 *.pem
 *.key
 *.crt
 
-# --- 2. SSH Keys (本地存储) ---
-# 忽略 keys 目录下的所有密钥文件 (私钥/公钥)
-keys/*
-# !例外: 保留 .gitkeep，确保别人 clone 项目时包含 keys 目录结构
-!keys/.gitkeep
-
-# --- 3. 运行时与临时文件 ---
-# 脚本执行时的日志
+# --- 2. 运行时与临时文件 ---
 *.log
-# 脚本生成的临时 YAML 或中间脚本
 *.tmp
-# 本地备份下载目录
-backups/
-downloads/
-# macOS 系统文件
 .DS_Store
 
-# --- 4. 主机特定敏感配置 ---
-# hosts 目录包含各主机的配置文件，可能含有敏感信息，默认全部忽略
-hosts/*
-!hosts/keeper/
-hosts/keeper/*
-!hosts/keeper/n8n-workflows/
-hosts/keeper/n8n-workflows/*
-!hosts/keeper/n8n-workflows/*.json
-
-# --- 5. IDE 配置 ---
+# --- 3. IDE 配置 ---
 .vscode/
 .idea/
 
-# --- 7. Go 二进制文件 ---
+# --- 4. Go 二进制文件 ---
 /spool
 spool-v2
 *.exe
 
-# --- 8. Build output (self-contained distribution) ---
+# --- 5. Build output (self-contained distribution) ---
 out/
 
-# --- 8. Python 缓存 ---
-lib/core/__pycache__/
+# --- 6. Python 缓存 ---
+__pycache__/
 *.pyc
 *.pyo
