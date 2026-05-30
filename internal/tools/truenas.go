@@ -322,7 +322,7 @@ func (c *TrueNASClient) ListSnapshots(pool string) ([]TrueNASSnapshot, error) {
 		params["dataset"] = pool
 	}
 
-	result, err := c.Call("zfs.snapshot.query", []interface{}{params})
+	result, err := c.Call("pool.snapshot.query", []interface{}{params})
 	if err != nil {
 		return nil, err
 	}

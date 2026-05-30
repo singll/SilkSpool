@@ -13,8 +13,9 @@ import (
 
 // SyncManager 同步管理器
 type SyncManager struct {
-	baseDir  string
+	baseDir string
 	sshKey  string
+	sops    *SOPSManager
 }
 
 // NewSyncManager 创建同步管理器
@@ -29,9 +30,22 @@ func NewSyncManager(baseDir string) (*SyncManager, error) {
 		sshKey = filepath.Join(baseDir, sshKey)
 	}
 
+	// 初始化 SOPS (仅当 age 密钥存在时启用，否则保持明文同步)
+	var sopsMgr *SOPSManager
+	ageKey := cfg.Global.AgeKeyPath
+	if ageKey == "" {
+		ageKey = filepath.Join(baseDir, "keys", "age.key")
+	} else if !filepath.IsAbs(ageKey) {
+		ageKey = filepath.Join(baseDir, ageKey)
+	}
+	if _, err := os.Stat(ageKey); err == nil {
+		sopsMgr = NewSOPSManagerWithKey(ageKey)
+	}
+
 	return &SyncManager{
 		baseDir: baseDir,
-		sshKey: sshKey,
+		sshKey:  sshKey,
+		sops:    sopsMgr,
 	}, nil
 }
 
@@ -61,6 +75,11 @@ func (m *SyncManager) SyncHost(host string, direction string) error {
 				utils.Success("Pulled: %s", rule.Local)
 			}
 		} else {
+			// 优先处理 SOPS 加密文件 (<local>.enc)，否则常规推送
+			if m.tryPushEncrypted(hostCfg.Address, host, rule) {
+				m.runPostPushHooks(host, hostCfg, rule.Local)
+				continue
+			}
 			if err := m.pushFile(hostCfg.Address, localPath, remotePath); err != nil {
 				utils.Error("Push failed: %s (%v)", rule.Local, err)
 			} else {
@@ -115,6 +134,9 @@ func (m *SyncManager) pushFile(address, localPath, remotePath string) error {
 	if _, err := os.Stat(localPath); os.IsNotExist(err) {
 		return fmt.Errorf("local file not found: %s", localPath)
 	}
+
+	// 确保远程父目录存在 (与旧 shell 版一致: push 前 mkdir -p)
+	m.ensureRemoteDir(address, filepath.Dir(remotePath))
 
 	// 解析用户名
 	user := strings.Split(address, "@")[0]
@@ -205,4 +227,49 @@ func (m *SyncManager) SyncHostFile(host, direction, localPath string) error {
 		return m.pullFile(hostCfg.Address, remotePath, localFullPath)
 	}
 	return m.pushFile(hostCfg.Address, localFullPath, remotePath)
+}
+
+// ensureRemoteDir 确保远程父目录存在
+func (m *SyncManager) ensureRemoteDir(address, dir string) {
+	if dir == "" || dir == "." || dir == "/" {
+		return
+	}
+	user := strings.Split(address, "@")[0]
+	mkdir := fmt.Sprintf("mkdir -p %q", dir)
+	if user != "root" {
+		mkdir = fmt.Sprintf("sudo mkdir -p %q && sudo chown $(id -u):$(id -g) %q", dir, dir)
+	}
+	if _, err := SSHExecute(address, m.sshKey, mkdir); err != nil {
+		utils.Warn("Failed to ensure remote dir %s: %v", dir, err)
+	}
+}
+
+// tryPushEncrypted 若存在 <local>.enc 加密文件，则解密并上传到远程。
+// 返回 true 表示该规则已被处理(无论成功失败)，不应再走明文推送。
+func (m *SyncManager) tryPushEncrypted(address, host string, rule config.SyncRule) bool {
+	encPath := filepath.Join(m.baseDir, "hosts", host, rule.Local+".enc")
+	if _, err := os.Stat(encPath); err != nil {
+		return false // 无加密文件，走常规推送
+	}
+
+	if m.sops == nil {
+		utils.Warn("Found %s.enc but SOPS age key not configured, skipping", rule.Local)
+		return true
+	}
+
+	utils.Info("Decrypting and pushing: %s.enc -> %s", rule.Local, rule.Remote)
+	plaintext, err := m.sops.Decrypt(encPath)
+	if err != nil {
+		utils.Error("Decrypt %s.enc failed: %v", rule.Local, err)
+		return true
+	}
+
+	m.ensureRemoteDir(address, filepath.Dir(rule.Remote))
+	if err := SSHUpload(address, m.sshKey, string(plaintext), rule.Remote); err != nil {
+		utils.Error("Upload decrypted %s failed: %v", rule.Local, err)
+		return true
+	}
+
+	utils.Success("Pushed (decrypted): %s", rule.Local)
+	return true
 }

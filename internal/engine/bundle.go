@@ -6,17 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/singll/silkspool/internal/config"
 	"github.com/singll/silkspool/pkg/utils"
 )
 
 // BundleManager Bundle 编排管理器
 type BundleManager struct {
-	baseDir   string
-	sshKey    string
-	sshClient *SSHClient
+	baseDir string
+	sshKey  string
 }
 
 // NewBundleManager 创建 Bundle 管理器
@@ -106,8 +103,8 @@ func (m *BundleManager) SetupBundle(bundleName, host, action string) error {
 
 	utils.Step("Running Bundle: %s | Host: %s | Action: %s", bundleName, host, action)
 
-	// 获取对应的驱动
-	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey)
+	// 获取对应的驱动（使用命令行指定的 bundleName，而非 hostCfg.Bundles[0]）
+	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey, bundleName)
 	if err != nil {
 		return err
 	}
@@ -155,25 +152,12 @@ func (m *BundleManager) SetupBundleService(bundleName, host, svc, action string)
 
 	deployPath := m.resolveDeployPath(bundleName, host, hostCfg)
 
-	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey)
+	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey, bundleName)
 	if err != nil {
 		return err
 	}
 
 	return driver.Service(host, hostCfg, deployPath, svc, action)
-}
-
-// PushBundleConfig 推送 Bundle 配置文件
-func (m *BundleManager) PushBundleConfig(bundleName, host string) error {
-	syncMgr, err := NewSyncManager(m.baseDir)
-	if err != nil {
-		return err
-	}
-
-	utils.Info("Pushing bundle config files...")
-
-	// 使用 sync 模块推送
-	return syncMgr.SyncHost(host, "push")
 }
 
 // resolveDeployPath 解析部署路径
@@ -188,183 +172,4 @@ func (m *BundleManager) resolveDeployPath(bundleName, host string, hostCfg *conf
 	}
 
 	return defaultPath
-}
-
-// ensureRemoteDir 确保远程目录存在
-func (m *BundleManager) ensureRemoteDir(address, path string) error {
-	cmd := fmt.Sprintf("sudo mkdir -p %s && sudo chown $(id -u):$(id -g) %s", path, path)
-
-	result, err := SSHExecute(address, m.sshKey, cmd)
-	if err != nil {
-		return fmt.Errorf("failed to create remote dir: %w", err)
-	}
-
-	_ = result // 忽略输出
-	return nil
-}
-
-// ==================== YAML 模板合并 ====================
-
-// mergeYAMLTemplates 合并 YAML 模板
-func (m *BundleManager) mergeYAMLTemplates(bundleName, host, deployPath string) error {
-	bundleRoot := filepath.Join(m.baseDir, "bundles", bundleName)
-	templateDir := filepath.Join(bundleRoot, "templates")
-
-	// 查找所有 YAML 文件
-	yamlFiles, err := filepath.Glob(filepath.Join(templateDir, "*.yaml"))
-	if err != nil || len(yamlFiles) == 0 {
-		return nil // 没有 YAML 模板
-	}
-
-	utils.Info("Merging YAML templates...")
-
-	// 合并 YAML
-	merged, err := m.mergeYAMLFiles(yamlFiles)
-	if err != nil {
-		return fmt.Errorf("YAML merge failed: %w", err)
-	}
-
-	// 上传到远程
-	cfg, _ := config.LoadConfig(m.baseDir)
-	hostCfg := cfg.GetHost(host)
-	if hostCfg == nil {
-		return fmt.Errorf("host %s not found", host)
-	}
-
-	remotePath := filepath.Join(deployPath, "docker-compose.yaml")
-
-	// 通过 SSH 上传
-	content := string(merged)
-	_, err = SSHUploadContent(hostCfg.Address, m.sshKey, content, remotePath)
-	if err != nil {
-		return fmt.Errorf("failed to upload YAML: %w", err)
-	}
-
-	utils.Success("Uploaded docker-compose.yaml")
-	return nil
-}
-
-// mergeYAMLFiles 合并多个 YAML 文件
-func (m *BundleManager) mergeYAMLFiles(files []string) ([]byte, error) {
-	var result map[string]interface{}
-
-	for _, file := range files {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read %s: %w", file, err)
-		}
-
-		var doc map[string]interface{}
-		if err := yaml.Unmarshal(data, &doc); err != nil {
-			return nil, fmt.Errorf("failed to parse %s: %w", file, err)
-		}
-
-		result = m.deepMerge(result, doc)
-	}
-
-	return yaml.Marshal(result)
-}
-
-// deepMerge 深度合并两个 map
-func (m *BundleManager) deepMerge(base, overlay map[string]interface{}) map[string]interface{} {
-	if base == nil {
-		return overlay
-	}
-	if overlay == nil {
-		return base
-	}
-
-	result := make(map[string]interface{})
-	for k, v := range base {
-		result[k] = v
-	}
-
-	for k, v := range overlay {
-		if existing, ok := result[k]; ok {
-			// 两者都是 map，递归合并
-			if baseMap, ok1 := existing.(map[string]interface{}); ok1 {
-				if overlayMap, ok2 := v.(map[string]interface{}); ok2 {
-					result[k] = m.deepMerge(baseMap, overlayMap)
-					continue
-				}
-			}
-		}
-		result[k] = v
-	}
-
-	return result
-}
-
-// ==================== 服务控制 ====================
-
-// StartServices 启动服务
-func (m *BundleManager) StartServices(host, serviceType string) error {
-	cfg, _ := config.LoadConfig(m.baseDir)
-	hostCfg := cfg.GetHost(host)
-	if hostCfg == nil {
-		return fmt.Errorf("host %s not found", host)
-	}
-
-	utils.Step("Starting services on %s", host)
-
-	switch serviceType {
-	case "docker":
-		cmd := "docker compose -f /opt/silkspool/" + host + "/docker-compose.yaml up -d"
-		_, err := SSHExecute(hostCfg.Address, m.sshKey, cmd)
-		return err
-	case "systemd":
-		// TODO: 实现 systemd 服务启动
-		return fmt.Errorf("systemd not implemented")
-	default:
-		return fmt.Errorf("unknown service type: %s", serviceType)
-	}
-}
-
-// StopServices 停止服务
-func (m *BundleManager) StopServices(host, serviceType string) error {
-	cfg, _ := config.LoadConfig(m.baseDir)
-	hostCfg := cfg.GetHost(host)
-	if hostCfg == nil {
-		return fmt.Errorf("host %s not found", host)
-	}
-
-	utils.Step("Stopping services on %s", host)
-
-	switch serviceType {
-	case "docker":
-		cmd := "docker compose -f /opt/silkspool/" + host + "/docker-compose.yaml down"
-		_, err := SSHExecute(hostCfg.Address, m.sshKey, cmd)
-		return err
-	case "systemd":
-		return fmt.Errorf("systemd not implemented")
-	default:
-		return fmt.Errorf("unknown service type: %s", serviceType)
-	}
-}
-
-// ServiceStatus 查看服务状态
-func (m *BundleManager) ServiceStatus(host, serviceAlias string) (string, error) {
-	cfg, _ := config.LoadConfig(m.baseDir)
-	hostCfg := cfg.GetHost(host)
-	if hostCfg == nil {
-		return "", fmt.Errorf("host %s not found", host)
-	}
-
-	svc := hostCfg.GetService(serviceAlias)
-	if svc == nil {
-		return "", fmt.Errorf("service %s not found on %s", serviceAlias, host)
-	}
-
-	switch svc.Type {
-	case "docker":
-		cmd := fmt.Sprintf("docker ps --filter name=^%s$ --format '{{.Status}}'", svc.Name)
-		status, err := SSHExecute(hostCfg.Address, m.sshKey, cmd)
-		return strings.TrimSpace(status), err
-	case "systemd":
-		cmd := fmt.Sprintf("systemctl is-active %s", svc.Name)
-		status, err := SSHExecute(hostCfg.Address, m.sshKey, cmd)
-		return strings.TrimSpace(status), err
-	default:
-		return "", fmt.Errorf("unknown service type: %s", svc.Type)
-	}
 }

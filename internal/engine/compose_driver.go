@@ -12,21 +12,23 @@ import (
 
 // ComposeDriver Docker Compose 驱动
 type ComposeDriver struct {
-	baseDir string
-	sshKey  string
+	baseDir    string
+	sshKey     string
+	bundleName string
 }
 
 // NewComposeDriver 创建 Compose 驱动
-func NewComposeDriver(baseDir, sshKey string) *ComposeDriver {
+func NewComposeDriver(baseDir, sshKey, bundleName string) *ComposeDriver {
 	return &ComposeDriver{
-		baseDir: baseDir,
-		sshKey:  sshKey,
+		baseDir:    baseDir,
+		sshKey:     sshKey,
+		bundleName: bundleName,
 	}
 }
 
 // Setup 初始化并启动服务
 func (d *ComposeDriver) Setup(host string, hostCfg *config.HostConfig, deployPath string) error {
-	manifest, err := d.loadManifest(hostCfg)
+	manifest, err := d.loadManifest()
 	if err != nil {
 		return err
 	}
@@ -94,7 +96,7 @@ func (d *ComposeDriver) Setup(host string, hostCfg *config.HostConfig, deployPat
 
 // Up 更新并启动服务
 func (d *ComposeDriver) Up(host string, hostCfg *config.HostConfig, deployPath string) error {
-	manifest, err := d.loadManifest(hostCfg)
+	manifest, err := d.loadManifest()
 	if err != nil {
 		return err
 	}
@@ -157,7 +159,7 @@ func (d *ComposeDriver) Service(host string, hostCfg *config.HostConfig, deployP
 	composeFile := filepath.Join(deployPath, "docker-compose.yaml")
 
 	// 对于 build 操作，如果是 bellkeeper 先拉取更新
-	manifest, _ := d.loadManifest(hostCfg)
+	manifest, _ := d.loadManifest()
 	if action == "up" && manifest != nil && manifest.Features.GitClone != nil {
 		if manifest.Features.GitClone.Path != "" && (svc == "bellkeeper" || svc == manifest.Features.GitClone.Path) {
 			targetPath := filepath.Join(deployPath, manifest.Features.GitClone.Path)
@@ -170,16 +172,10 @@ func (d *ComposeDriver) Service(host string, hostCfg *config.HostConfig, deployP
 
 // ==================== 内部方法 ====================
 
-// loadManifest 加载当前 bundle 的 manifest
-func (d *ComposeDriver) loadManifest(hostCfg *config.HostConfig) (*BundleManifest, error) {
-	// 从 hostCfg.Bundles 获取 bundle 名称
-	if len(hostCfg.Bundles) == 0 {
-		return nil, fmt.Errorf("no bundle assigned to host")
-	}
-	bundleName := hostCfg.Bundles[0]
-
+// loadManifest 加载当前 bundle 的 manifest (使用命令行指定的 bundle 名，而非 hostCfg.Bundles[0])
+func (d *ComposeDriver) loadManifest() (*BundleManifest, error) {
 	loader := NewManifestLoader(d.baseDir)
-	return loader.Load(bundleName)
+	return loader.Load(d.bundleName)
 }
 
 // pushAndMerge 推送配置并合并 YAML 模板
@@ -195,7 +191,7 @@ func (d *ComposeDriver) pushAndMerge(host string, hostCfg *config.HostConfig, de
 
 	// 合并 YAML 模板
 	if len(manifest.Templates) > 0 {
-		bundleRoot := filepath.Join(d.baseDir, "bundles", manifest.Name)
+		bundleRoot := filepath.Join(d.baseDir, "bundles", d.bundleName)
 		templateFiles := make([]string, 0, len(manifest.Templates))
 		for _, t := range manifest.Templates {
 			templateFiles = append(templateFiles, filepath.Join(bundleRoot, "templates", t))

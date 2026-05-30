@@ -402,3 +402,126 @@ func sanitizeFilename(name string) string {
 	name = strings.ReplaceAll(name, ":", "-")
 	return name
 }
+
+// UpdateWorkflows 更新工作流: 已存在则更新，不存在则创建
+func (m *N8NManager) UpdateWorkflows(ctx context.Context, workflowDir string) error {
+	existing, err := m.client.ListWorkflows(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list existing workflows: %w", err)
+	}
+	existingIDs := make(map[string]string) // name -> id
+	for _, wf := range existing {
+		existingIDs[wf.Name] = wf.ID
+	}
+
+	files, err := m.ListLocalWorkflows(workflowDir)
+	if err != nil {
+		return err
+	}
+
+	var updated, created, failed int
+	for _, file := range files {
+		wf, err := LoadWorkflowFromFile(file)
+		if err != nil {
+			utils.Warn("Skipping: %s (%v)", file, err)
+			failed++
+			continue
+		}
+
+		if id, ok := existingIDs[wf.Name]; ok {
+			if _, err := m.client.UpdateWorkflow(ctx, id, wf); err != nil {
+				utils.Error("Failed to update %s: %v", wf.Name, err)
+				failed++
+				continue
+			}
+			utils.Success("Updated: %s", wf.Name)
+			updated++
+		} else {
+			result, err := m.client.CreateWorkflow(ctx, wf)
+			if err != nil {
+				utils.Error("Failed to create %s: %v", wf.Name, err)
+				failed++
+				continue
+			}
+			utils.Success("Created: %s (id: %s)", wf.Name, result.ID)
+			created++
+		}
+	}
+
+	utils.Info("Update completed: %d updated, %d created, %d failed", updated, created, failed)
+	return nil
+}
+
+// findWorkflowID 按名称查找工作流 ID
+func (m *N8NManager) findWorkflowID(ctx context.Context, name string) (string, error) {
+	workflows, err := m.client.ListWorkflows(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, wf := range workflows {
+		if wf.Name == name {
+			return wf.ID, nil
+		}
+	}
+	return "", fmt.Errorf("workflow not found: %s", name)
+}
+
+// ActivateWorkflow 激活工作流 (name 为空则激活全部)
+func (m *N8NManager) ActivateWorkflow(ctx context.Context, name string) error {
+	if name == "" {
+		workflows, err := m.client.ListWorkflows(ctx)
+		if err != nil {
+			return err
+		}
+		var n int
+		for _, wf := range workflows {
+			if wf.Active {
+				continue
+			}
+			if err := m.client.ActivateWorkflow(ctx, wf.ID); err != nil {
+				utils.Warn("Activate %s failed: %v", wf.Name, err)
+				continue
+			}
+			utils.Success("Activated: %s", wf.Name)
+			n++
+		}
+		utils.Info("Activated %d workflows", n)
+		return nil
+	}
+
+	id, err := m.findWorkflowID(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := m.client.ActivateWorkflow(ctx, id); err != nil {
+		return err
+	}
+	utils.Success("Activated: %s", name)
+	return nil
+}
+
+// DeactivateWorkflow 停用工作流
+func (m *N8NManager) DeactivateWorkflow(ctx context.Context, name string) error {
+	id, err := m.findWorkflowID(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := m.client.DeactivateWorkflow(ctx, id); err != nil {
+		return err
+	}
+	utils.Success("Deactivated: %s", name)
+	return nil
+}
+
+// DeleteWorkflow 删除工作流
+func (m *N8NManager) DeleteWorkflow(ctx context.Context, name string) error {
+	id, err := m.findWorkflowID(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := m.client.DeleteWorkflow(ctx, id); err != nil {
+		return err
+	}
+	utils.Success("Deleted: %s", name)
+	return nil
+}

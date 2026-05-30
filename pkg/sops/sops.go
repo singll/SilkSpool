@@ -115,10 +115,10 @@ func extractAgeRecipients(keyPath string) string {
 
 	content := strings.TrimSpace(string(data))
 
-	// 如果是私钥文件，提取公钥
+	// 如果是私钥文件，提取公钥 (通过 stdin 传入，避免私钥出现在进程命令行/ps 中)
 	if strings.HasPrefix(content, "AGE-SECRET-KEY-") {
-		// 使用 age-keygen -y 提取公钥
-		cmd := exec.Command("sh", "-c", fmt.Sprintf("echo '%s' | age-keygen -y", content))
+		cmd := exec.Command("age-keygen", "-y")
+		cmd.Stdin = strings.NewReader(content)
 		output, err := cmd.Output()
 		if err == nil {
 			return strings.TrimSpace(string(output))

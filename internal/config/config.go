@@ -89,6 +89,23 @@ func (cl *ConfigLoader) Load() (*Config, error) {
 	cfg.Global.SSHKeyPath = expandPath(cfg.Global.SSHKeyPath)
 	cfg.Global.BackupDir = expandPath(cfg.Global.BackupDir)
 
+	// 填充默认值（与旧 shell config.ini 的 :- 默认保持一致）
+	if cfg.Global.DNSGatewayHost == "" {
+		cfg.Global.DNSGatewayHost = "istoreos"
+	}
+	if cfg.Global.DNSHeadscaleHost == "" {
+		cfg.Global.DNSHeadscaleHost = "txhk"
+	}
+	if cfg.Global.DefaultDomain == "" {
+		cfg.Global.DefaultDomain = "singll.net"
+	}
+	if cfg.Global.DNSGatewayIP == "" {
+		cfg.Global.DNSGatewayIP = "192.168.1.1"
+	}
+	if cfg.Global.DNSHeadscaleServer == "" {
+		cfg.Global.DNSHeadscaleServer = "100.100.100.100"
+	}
+
 	// SyncRules 中的路径是相对于 hosts/<alias>/ 的，不需要展开
 	// 确保配置被正确解析
 	_ = cfg.Hosts

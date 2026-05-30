@@ -4,299 +4,397 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/singll/silkspool/internal/config"
 	"github.com/singll/silkspool/pkg/utils"
 )
 
+// SiteManager 站点管理器: 编排 DNS + Caddy 反向代理 + Homepage 仪表盘三联动
 type SiteManager struct {
-	baseDir  string
-	dnsMgr   *DNSManager
-	sshKey   string
+	baseDir       string
+	gatewayHost   string
+	headscaleHost string
+	defaultIP     string
+	defaultDomain string
+	sshKey        string
+	caddyPath     string // 本地 Caddyfile 路径
+	homepagePath  string // 本地 Homepage services.yaml 路径
+	dns           *DNSManager
 }
 
+// Site 站点信息
 type Site struct {
-	Domain   string
-	Backend  string
-	Name     string
-	Desc     string
-	Icon     string
-	Enabled  bool
+	Domain  string
+	Backend string
+	Name    string
+	Desc    string
+	Icon    string
 }
 
-func NewSiteManager(baseDir string) *SiteManager {
-	return &SiteManager{
-		baseDir: baseDir,
+// NewSiteManager 创建站点管理器
+func NewSiteManager(baseDir string) (*SiteManager, error) {
+	cfg, err := config.LoadConfig(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
-}
 
-// ListSites 列出所有站点
-func (m *SiteManager) ListSites() ([]Site, error) {
-	cfg, err := config.LoadConfig(m.baseDir)
+	dns, err := NewDNSManager(baseDir)
 	if err != nil {
 		return nil, err
 	}
 
-	// 从 DNS 配置中提取站点信息
-	sites := []Site{}
+	gw := cfg.Global.DNSGatewayHost
+	return &SiteManager{
+		baseDir:       baseDir,
+		gatewayHost:   gw,
+		headscaleHost: cfg.Global.DNSHeadscaleHost,
+		defaultIP:     cfg.Global.DNSGatewayIP,
+		defaultDomain: cfg.Global.DefaultDomain,
+		sshKey:        filepath.Join(baseDir, cfg.Global.SSHKeyPath),
+		caddyPath:     filepath.Join(baseDir, "hosts", gw, "caddy", "Caddyfile"),
+		homepagePath:  filepath.Join(baseDir, "hosts", gw, "homepage", "services.yaml"),
+		dns:           dns,
+	}, nil
+}
 
-	// 遍历所有主机的 DNS 配置
-	for host := range cfg.Hosts {
-		dnsPath := filepath.Join(m.baseDir, "hosts", host, "dns.conf")
-		data, err := os.ReadFile(dnsPath)
-		if err != nil {
+// ==================== 站点编排 ====================
+
+// AddSite 添加站点 (DNS + Caddy + Homepage)
+func (m *SiteManager) AddSite(domain, backend, name, desc, icon string) error {
+	if domain == "" || backend == "" || name == "" {
+		return fmt.Errorf("usage: site add <domain> <backend> <name> [desc] [icon]")
+	}
+	if desc == "" {
+		desc = name + " service"
+	}
+	if icon == "" {
+		icon = "mdi-application"
+	}
+
+	utils.Step("Adding site: %s -> %s", domain, backend)
+
+	// 1. DNS 记录 (dnsmasq + openclash + headscale)
+	if err := m.dns.AddDomain(domain, m.defaultIP); err != nil {
+		return fmt.Errorf("DNS add failed: %w", err)
+	}
+
+	// 2. Caddy 反向代理
+	if err := m.caddyAddSite(domain, backend); err != nil {
+		utils.Warn("Caddy add failed: %v", err)
+	}
+
+	// 3. Homepage 仪表盘入口
+	if err := m.homepageAddSite(domain, name, desc, icon, "Services"); err != nil {
+		utils.Warn("Homepage add failed: %v", err)
+	}
+
+	utils.Success("Site config generated: %s", domain)
+	return nil
+}
+
+// RemoveSite 删除站点
+func (m *SiteManager) RemoveSite(domain string) error {
+	if domain == "" {
+		return fmt.Errorf("usage: site remove <domain>")
+	}
+
+	utils.Step("Removing site: %s", domain)
+
+	if err := m.dns.RemoveDomain(domain); err != nil {
+		utils.Warn("DNS remove failed: %v", err)
+	}
+	if err := m.caddyRemoveSite(domain); err != nil {
+		utils.Warn("Caddy remove failed: %v", err)
+	}
+	if err := m.homepageRemoveSite(domain); err != nil {
+		utils.Warn("Homepage remove failed: %v", err)
+	}
+
+	utils.Success("Site removed: %s", domain)
+	return nil
+}
+
+// DeploySite 一键部署: 添加 + 推送 + 重启
+func (m *SiteManager) DeploySite(domain, backend, name, desc, icon string) error {
+	utils.Step("Step 1/3: Adding site configuration...")
+	if err := m.AddSite(domain, backend, name, desc, icon); err != nil {
+		return err
+	}
+
+	utils.Step("Step 2/3: Pushing configs to remote...")
+	if err := m.PushSites(); err != nil {
+		return err
+	}
+
+	utils.Step("Step 3/3: Restarting services...")
+	m.restartSiteServices()
+
+	utils.Success("Site deploy complete: %s (https://%s)", name, domain)
+	return nil
+}
+
+// PushSites 推送站点配置到远程 (网关主机 + Headscale)
+func (m *SiteManager) PushSites() error {
+	utils.Step("Pushing site configs to remote")
+
+	syncMgr, err := NewSyncManager(m.baseDir)
+	if err != nil {
+		return err
+	}
+
+	if err := syncMgr.SyncHost(m.gatewayHost, "push"); err != nil {
+		return fmt.Errorf("push to %s failed: %w", m.gatewayHost, err)
+	}
+
+	// Headscale 配置存在则一并推送
+	if m.headscaleConfigExists() {
+		if err := syncMgr.SyncHost(m.headscaleHost, "push"); err != nil {
+			utils.Warn("push to %s failed: %v", m.headscaleHost, err)
+		}
+	}
+
+	utils.Success("Site config pushed")
+	return nil
+}
+
+// ListSites 列出所有站点 (从 Caddyfile 解析)
+func (m *SiteManager) ListSites() ([]Site, error) {
+	data, err := os.ReadFile(m.caddyPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Caddyfile: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	blockRe := regexp.MustCompile(`^([a-z0-9][-a-z0-9.]*\.` + regexp.QuoteMeta(m.defaultDomain) + `)\s*\{`)
+
+	var sites []Site
+	var current *Site
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if mm := blockRe.FindStringSubmatch(trimmed); mm != nil {
+			if current != nil {
+				sites = append(sites, *current)
+			}
+			current = &Site{Domain: mm[1], Name: domainToName(mm[1])}
 			continue
 		}
 
-		// 解析 DNS 配置中的站点
-		content := string(data)
-		// 简化解析：查找 Caddy 反向代理配置
-		for _, line := range splitLines(content) {
-			if contains(line, "reverse_proxy") || contains(line, "->") {
-				// 提取域名
-				if domain := extractDomain(line); domain != "" {
-					sites = append(sites, Site{
-						Domain:  domain,
-						Backend: extractBackend(line),
-						Name:    domainToName(domain),
-						Enabled: !contains(line, "#"),
-					})
-				}
+		if current != nil {
+			if strings.HasPrefix(trimmed, "reverse_proxy ") {
+				current.Backend = strings.TrimSpace(strings.TrimPrefix(trimmed, "reverse_proxy "))
+			}
+			if trimmed == "}" {
+				sites = append(sites, *current)
+				current = nil
 			}
 		}
+	}
+	if current != nil {
+		sites = append(sites, *current)
 	}
 
 	return sites, nil
 }
 
-// AddSite 添加站点
-func (m *SiteManager) AddSite(domain, backend, name, desc, icon string) error {
-	utils.Info("Adding site: %s", domain)
+// ==================== Caddy 本地操作 ====================
 
-	cfg, err := config.LoadConfig(m.baseDir)
+func (m *SiteManager) caddyAddSite(domain, backend string) error {
+	data, err := os.ReadFile(m.caddyPath)
 	if err != nil {
-		return fmt.Errorf("failed to load config: %v", err)
+		return fmt.Errorf("Caddyfile not found: %s", m.caddyPath)
+	}
+	content := string(data)
+
+	// 已存在则跳过
+	if regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(domain) + `\s*\{`).MatchString(content) {
+		utils.Info("Caddy: site %s already exists", domain)
+		return nil
 	}
 
-	// 确定目标主机 (默认使用 n8n 配置的主机)
-	host := cfg.N8N.Host
-	if host == "" {
-		host = "keeper"
+	if !strings.HasPrefix(backend, "http") {
+		backend = "http://" + backend
 	}
 
-	hostCfg := cfg.GetHost(host)
-	if hostCfg == nil {
-		return fmt.Errorf("host not found: %s", host)
-	}
+	block := fmt.Sprintf("\n%s {\n    import common\n    import authelia\n    reverse_proxy %s\n}\n", domain, backend)
+	content += block
 
-	// 写入 DNS 配置
-	dnsPath := filepath.Join(m.baseDir, "hosts", host, "dns.conf")
-	f, err := os.OpenFile(dnsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open dns.conf: %w", err)
+	if err := os.WriteFile(m.caddyPath, []byte(content), 0644); err != nil {
+		return err
 	}
-	defer f.Close()
-
-	entry := fmt.Sprintf("\n# Site: %s\n%s {\n  reverse_proxy %s\n}\n",
-		name, domain, backend)
-	_, err = f.WriteString(entry)
-	if err != nil {
-		return fmt.Errorf("failed to write dns.conf: %w", err)
-	}
-
-	utils.Success("Site added: %s", domain)
+	utils.Success("Caddy: added %s -> %s", domain, backend)
 	return nil
 }
 
-// DeploySite 一键部署站点
-func (m *SiteManager) DeploySite(domain, backend, name string) error {
-	utils.Info("Deploying site: %s", domain)
-
-	// 1. 添加 DNS/Caddy 配置
-	if err := m.AddSite(domain, backend, name, "", ""); err != nil {
-		return err
-	}
-
-	// 2. 推送配置到远程
-	syncMgr, err := NewSyncManager(m.baseDir)
-	if err != nil {
-		return fmt.Errorf("failed to create sync manager: %w", err)
-	}
-
-	cfg, _ := config.LoadConfig(m.baseDir)
-	host := cfg.N8N.Host
-	if host == "" {
-		host = "keeper"
-	}
-
-	// 推送 DNS 配置
-	hostCfg := cfg.GetHost(host)
-	if hostCfg == nil {
-		return fmt.Errorf("host not found: %s", host)
-	}
-
-	for _, rule := range hostCfg.SyncRules {
-		if contains(rule.Local, "dns.conf") || contains(rule.Local, "Caddyfile") {
-			localPath := filepath.Join(m.baseDir, "hosts", host, rule.Local)
-			if _, err := os.Stat(localPath); err == nil {
-				utils.Info("Pushing config: %s", rule.Local)
-				if err := syncMgr.pushFile(hostCfg.Address, localPath, rule.Remote); err != nil {
-					utils.Warn("Push failed: %v", err)
-				}
-			}
-		}
-	}
-
-	// 3. 重启 Caddy
-	sshClient, err := NewSSHClient(hostCfg.Address, m.sshKey)
-	if err != nil {
-		return fmt.Errorf("failed to create SSH client: %w", err)
-	}
-	defer sshClient.Close()
-
-	utils.Info("Restarting Caddy...")
-	if _, err := sshClient.Execute("sudo systemctl reload caddy"); err != nil {
-		utils.Warn("Caddy reload failed: %v", err)
-	}
-
-	utils.Success("Site deployed: %s", domain)
-	return nil
-}
-
-// PushSites 推送所有站点配置
-func (m *SiteManager) PushSites() error {
-	utils.Info("Pushing all site configurations...")
-
-	syncMgr, err := NewSyncManager(m.baseDir)
+func (m *SiteManager) caddyRemoveSite(domain string) error {
+	data, err := os.ReadFile(m.caddyPath)
 	if err != nil {
 		return err
 	}
 
-	cfg, err := config.LoadConfig(m.baseDir)
-	if err != nil {
-		return err
-	}
+	lines := strings.Split(string(data), "\n")
+	startRe := regexp.MustCompile(`^` + regexp.QuoteMeta(domain) + `\s*\{`)
 
-	host := cfg.N8N.Host
-	if host == "" {
-		host = "keeper"
-	}
-
-	return syncMgr.SyncHost(host, "push")
-}
-
-// Helper functions
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			lines = append(lines, s[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		lines = append(lines, s[start:])
-	}
-	return lines
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr ||
-		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr) >= 0))
-}
-
-func findSubstring(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
-}
-
-func extractDomain(line string) string {
-	// 简单提取: 找到第一个不在引号中的域名
-	start := -1
-	for i := 0; i < len(line); i++ {
-		if line[i] == '{' && start == -1 {
-			start = i + 1
-		}
-		if line[i] == '}' && start != -1 {
-			return line[start:i]
-		}
-	}
-	// 尝试提取 reverse_proxy 后的地址
-	if idx := findSubstring(line, "reverse_proxy"); idx >= 0 {
-		rest := line[idx+14:]
-		for i, c := range rest {
-			if c == ' ' || c == '\t' {
-				continue
-			}
-			if c == ':' {
-				continue
-			}
-			end := i
-			for end < len(rest) && rest[end] != ' ' && rest[end] != '\t' && rest[end] != '\n' {
-				end++
-			}
-			if end > i {
-				return rest[i:end]
-			}
-		}
-	}
-	return ""
-}
-
-func extractBackend(line string) string {
-	if idx := findSubstring(line, "reverse_proxy"); idx >= 0 {
-		rest := line[idx+14:]
-		for i, c := range rest {
-			if c == ' ' || c == '\t' {
-				continue
-			}
-			end := i
-			for end < len(rest) && rest[end] != ' ' && rest[end] != '\t' && rest[end] != '\n' {
-				end++
-			}
-			if end > i {
-				return rest[i:end]
-			}
-		}
-	}
-	return ""
-}
-
-func domainToName(domain string) string {
-	// 简单转换: sub.domain.com -> SubDomain
-	name := ""
-	parts := splitByDot(domain)
-	for i, part := range parts {
-		if part == "" || part == "com" || part == "net" || part == "org" {
+	var out []string
+	skip := false
+	for _, line := range lines {
+		if !skip && startRe.MatchString(strings.TrimSpace(line)) {
+			skip = true
 			continue
 		}
-		if len(part) > 0 {
-			if part[0] >= 'a' && part[0] <= 'z' {
-				name += string(part[0]-'a'+'A') + part[1:]
-			} else {
-				name += part
+		if skip {
+			if strings.TrimSpace(line) == "}" {
+				skip = false
 			}
-			if i < len(parts)-1 {
-				name += "."
-			}
+			continue
 		}
+		out = append(out, line)
 	}
-	return name
+
+	return os.WriteFile(m.caddyPath, []byte(strings.Join(out, "\n")), 0644)
 }
 
-func splitByDot(s string) []string {
-	var parts []string
-	start := 0
-	for i := 0; i <= len(s); i++ {
-		if i == len(s) || s[i] == '.' {
-			parts = append(parts, s[start:i])
-			start = i + 1
+// ==================== Homepage 本地操作 ====================
+
+func (m *SiteManager) homepageAddSite(domain, name, desc, icon, category string) error {
+	data, err := os.ReadFile(m.homepagePath)
+	if err != nil {
+		return fmt.Errorf("Homepage config not found: %s", m.homepagePath)
+	}
+	content := string(data)
+
+	if strings.Contains(content, "href: https://"+domain) {
+		utils.Info("Homepage: site %s already exists", domain)
+		return nil
+	}
+
+	entry := fmt.Sprintf("    - %s:\n        href: https://%s\n        description: %s\n        icon: %s\n        ping: https://%s",
+		name, domain, desc, icon, domain)
+
+	lines := strings.Split(content, "\n")
+
+	// 查找目标分类行 (顶层 "- Category:")
+	catRe := regexp.MustCompile(`^- ` + regexp.QuoteMeta(category) + `:`)
+	catLine := -1
+	for i, line := range lines {
+		if catRe.MatchString(line) {
+			catLine = i
+			break
 		}
 	}
-	return parts
+
+	if catLine == -1 {
+		// 分类不存在: 新建分类并追加
+		utils.Warn("Homepage: category '%s' not found, creating it", category)
+		content = strings.TrimRight(content, "\n") + "\n- " + category + ":\n" + entry + "\n"
+		if err := os.WriteFile(m.homepagePath, []byte(content), 0644); err != nil {
+			return err
+		}
+		utils.Success("Homepage: added %s (%s)", name, domain)
+		return nil
+	}
+
+	// 找到该分类下一个顶层 "- " 的位置 (分类区块结束处)
+	topRe := regexp.MustCompile(`^- `)
+	nextCat := len(lines)
+	for i := catLine + 1; i < len(lines); i++ {
+		if topRe.MatchString(lines[i]) {
+			nextCat = i
+			break
+		}
+	}
+
+	entryLines := strings.Split(entry, "\n")
+	newLines := append([]string{}, lines[:nextCat]...)
+	newLines = append(newLines, entryLines...)
+	newLines = append(newLines, lines[nextCat:]...)
+
+	if err := os.WriteFile(m.homepagePath, []byte(strings.Join(newLines, "\n")), 0644); err != nil {
+		return err
+	}
+	utils.Success("Homepage: added %s (%s)", name, domain)
+	return nil
+}
+
+func (m *SiteManager) homepageRemoveSite(domain string) error {
+	data, err := os.ReadFile(m.homepagePath)
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(data), "\n")
+
+	hrefLine := -1
+	for i, line := range lines {
+		if strings.Contains(line, "href: https://"+domain) {
+			hrefLine = i
+			break
+		}
+	}
+	if hrefLine == -1 {
+		return nil // 不存在
+	}
+
+	// entry 起点: href 上一行 ("    - Name:")
+	start := hrefLine - 1
+	if start < 0 {
+		start = 0
+	}
+
+	// entry 终点: 下一个列表项 ("- " 或 "    - ") 之前
+	itemRe := regexp.MustCompile(`^\s*-\s`)
+	end := len(lines)
+	for i := hrefLine + 1; i < len(lines); i++ {
+		if itemRe.MatchString(lines[i]) {
+			end = i
+			break
+		}
+	}
+
+	newLines := append([]string{}, lines[:start]...)
+	newLines = append(newLines, lines[end:]...)
+
+	return os.WriteFile(m.homepagePath, []byte(strings.Join(newLines, "\n")), 0644)
+}
+
+// ==================== 内部辅助 ====================
+
+// restartSiteServices 重启站点相关服务 (DNS + Caddy + Homepage + Headscale)
+func (m *SiteManager) restartSiteServices() {
+	svcMgr, err := NewServiceManager(m.baseDir)
+	if err != nil {
+		utils.Warn("Failed to init service manager: %v", err)
+		return
+	}
+
+	for _, svc := range []string{"dnsmasq", "openclash", "caddy", "homepage"} {
+		if err := svcMgr.RestartService(m.gatewayHost, svc); err != nil {
+			utils.Warn("Restart %s failed: %v", svc, err)
+		}
+	}
+
+	if m.headscaleConfigExists() {
+		if err := svcMgr.RestartService(m.headscaleHost, "headscale"); err != nil {
+			utils.Warn("Restart headscale failed: %v", err)
+		}
+	}
+}
+
+// headscaleConfigExists 判断本地是否存在 Headscale 配置
+func (m *SiteManager) headscaleConfigExists() bool {
+	path := filepath.Join(m.baseDir, "hosts", m.headscaleHost, "headscale", "config.yaml")
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// domainToName 从域名生成展示名 (sub.example.com -> Sub)
+func domainToName(domain string) string {
+	parts := strings.Split(domain, ".")
+	if len(parts) == 0 || parts[0] == "" {
+		return domain
+	}
+	first := parts[0]
+	return strings.ToUpper(first[:1]) + first[1:]
 }

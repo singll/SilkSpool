@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/singll/silkspool/internal/config"
 	"github.com/singll/silkspool/internal/engine"
 	"github.com/singll/silkspool/internal/tools"
 	"github.com/singll/silkspool/pkg/utils"
@@ -194,6 +195,7 @@ Actions:
   ./spool bundle keeper service keeper bellkeeper up`,
 		Run: runBundle,
 	}
+	cmd.Flags().Bool("yes", false, "跳过危险操作 (down/cleanup) 的二次确认")
 	RootCmd.AddCommand(cmd)
 }
 
@@ -430,12 +432,13 @@ func runDNSGo(args []string) {
 		if len(args) > 2 {
 			ip = args[2]
 		}
-		if err := mgr.AddDomain(domain, ip); err != nil {
+		if err := mgr.DeployDomain(domain, ip); err != nil {
 			utils.Error("Failed: %v", err)
 			os.Exit(1)
 		}
-		if err := mgr.PushDNS(); err != nil {
-			utils.Error("Push failed: %v", err)
+	case "pull":
+		if err := mgr.PullDNS(); err != nil {
+			utils.Error("Failed: %v", err)
 			os.Exit(1)
 		}
 	default:
@@ -466,7 +469,8 @@ Commands:
   add <domain> [ip] Add DNS record
   remove <domain>   Remove DNS record
   push              Push DNS config to remote
-  deploy <domain>   One-click deploy (add + push)
+  pull              Pull DNS config from remote
+  deploy <domain>   One-click deploy (add + push + restart)
   sync-caddy        Sync domains from Caddyfile
 
 Examples:
@@ -486,6 +490,15 @@ func runBundle(cmd *cobra.Command, args []string) {
 	name := args[0]
 	action := args[1]
 	host := args[2]
+
+	// 危险操作二次确认 (down / cleanup)
+	if action == "down" || action == "cleanup" {
+		assumeYes, _ := cmd.Flags().GetBool("yes")
+		if !engine.ConfirmDestructive(action, fmt.Sprintf("bundle %s on %s", name, host), assumeYes) {
+			utils.Warn("Aborted")
+			return
+		}
+	}
 
 	mgr, err := engine.NewBundleManager(BaseDir)
 	if err != nil {
@@ -667,29 +680,200 @@ func runLogs(cmd *cobra.Command, args []string) {
 }
 
 func runInit(cmd *cobra.Command, args []string) {
-	passThrough("lib/core/ssh.sh", args)
+	mgr, err := engine.NewInitManager(BaseDir)
+	if err != nil {
+		utils.Error("Failed to init: %v", err)
+		os.Exit(1)
+	}
+
+	if all, _ := cmd.Flags().GetBool("all"); all {
+		if err := mgr.RunAll(); err != nil {
+			utils.Error("Init failed: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if len(args) < 1 {
+		utils.Error("Usage: spool init <host> (or --all)")
+		os.Exit(1)
+	}
+	if err := mgr.Run(args[0]); err != nil {
+		utils.Error("Init failed: %v", err)
+		os.Exit(1)
+	}
 }
 
 func runSite(cmd *cobra.Command, args []string) {
-	// TODO: Go 原生实现
 	if len(args) == 0 {
-		fmt.Println("Usage: spool site <command>")
+		siteHelp()
+		return
+	}
+
+	mgr, err := engine.NewSiteManager(BaseDir)
+	if err != nil {
+		utils.Error("Failed to init site manager: %v", err)
 		os.Exit(1)
 	}
-	subCmd := args[0]
-	newArgs := []string{"site-" + subCmd}
-	if len(args) > 1 {
-		newArgs = append(newArgs, args[1:]...)
+
+	switch args[0] {
+	case "list", "ls":
+		sites, err := mgr.ListSites()
+		if err != nil {
+			utils.Error("Failed: %v", err)
+			os.Exit(1)
+		}
+		utils.Info("Configured sites:")
+		for _, s := range sites {
+			utils.Info("  %s -> %s", s.Domain, s.Backend)
+		}
+	case "add":
+		if len(args) < 4 {
+			utils.Error("Usage: site add <domain> <backend> <name> [desc] [icon]")
+			os.Exit(1)
+		}
+		desc, icon := "", ""
+		if len(args) > 4 {
+			desc = args[4]
+		}
+		if len(args) > 5 {
+			icon = args[5]
+		}
+		if err := mgr.AddSite(args[1], args[2], args[3], desc, icon); err != nil {
+			utils.Error("Failed: %v", err)
+			os.Exit(1)
+		}
+	case "remove", "rm":
+		if len(args) < 2 {
+			utils.Error("Usage: site remove <domain>")
+			os.Exit(1)
+		}
+		if err := mgr.RemoveSite(args[1]); err != nil {
+			utils.Error("Failed: %v", err)
+			os.Exit(1)
+		}
+	case "deploy":
+		if len(args) < 4 {
+			utils.Error("Usage: site deploy <domain> <backend> <name> [desc] [icon]")
+			os.Exit(1)
+		}
+		desc, icon := "", ""
+		if len(args) > 4 {
+			desc = args[4]
+		}
+		if len(args) > 5 {
+			icon = args[5]
+		}
+		if err := mgr.DeploySite(args[1], args[2], args[3], desc, icon); err != nil {
+			utils.Error("Failed: %v", err)
+			os.Exit(1)
+		}
+	case "push":
+		if err := mgr.PushSites(); err != nil {
+			utils.Error("Failed: %v", err)
+			os.Exit(1)
+		}
+	default:
+		siteHelp()
 	}
-	passThrough("lib/core/dns.sh", newArgs)
+}
+
+func siteHelp() {
+	fmt.Println(`Site Management
+
+Usage: ./spool site <command>
+
+Commands:
+  list                                            List all sites
+  add <domain> <backend> <name> [desc] [icon]     Add site (DNS + Caddy + Homepage)
+  remove <domain>                                 Remove site
+  deploy <domain> <backend> <name> [desc] [icon]  One-click deploy (add + push + restart)
+  push                                            Push all site configs
+
+Examples:
+  ./spool site deploy myapp.singll.net 192.168.7.100:8080 MyApp 'My Application'`)
 }
 
 func runBackup(cmd *cobra.Command, args []string) {
-	passThrough("lib/core/backup.sh", args)
+	if len(args) < 1 {
+		utils.Error("Usage: spool backup <host|all>")
+		os.Exit(1)
+	}
+
+	cfg, err := config.LoadConfig(BaseDir)
+	if err != nil {
+		utils.Error("Failed to load config: %v", err)
+		os.Exit(1)
+	}
+	sshKey := filepath.Join(BaseDir, cfg.Global.SSHKeyPath)
+
+	runOne := func(host string, hostCfg *config.HostConfig) {
+		if len(hostCfg.Backups) == 0 {
+			utils.Warn("No backup rules for %s, skipping", host)
+			return
+		}
+		mgr := engine.NewBackupManagerFromConfig(host, hostCfg)
+		client, err := engine.NewSSHClient(hostCfg.Address, sshKey)
+		if err != nil {
+			utils.Error("SSH client failed for %s: %v", host, err)
+			return
+		}
+		defer client.Close()
+		mgr.SetSSHClient(client)
+
+		results, err := mgr.Run(context.Background())
+		if err != nil {
+			utils.Error("Backup %s failed: %v", host, err)
+			return
+		}
+		utils.Success("Backup %s -> %s (%d items)", host, mgr.LocalDir(), len(results))
+	}
+
+	if args[0] == "all" {
+		for host := range cfg.Hosts {
+			hc := cfg.GetHost(host)
+			runOne(host, hc)
+		}
+	} else {
+		hc := cfg.GetHost(args[0])
+		if hc == nil {
+			utils.Error("Unknown host: %s", args[0])
+			os.Exit(1)
+		}
+		runOne(args[0], hc)
+	}
 }
 
 func runExec(cmd *cobra.Command, args []string) {
-	passThrough("spool.sh", append([]string{"exec"}, args...))
+	if len(args) < 2 {
+		utils.Error("Usage: spool exec <host> <command...>")
+		os.Exit(1)
+	}
+
+	host := args[0]
+	cfg, err := config.LoadConfig(BaseDir)
+	if err != nil {
+		utils.Error("Failed to load config: %v", err)
+		os.Exit(1)
+	}
+	hostCfg := cfg.GetHost(host)
+	if hostCfg == nil {
+		utils.Error("Unknown host: %s", host)
+		os.Exit(1)
+	}
+
+	// 用本地 ssh 透传 (支持交互式命令)，密钥与同步一致
+	sshKey := filepath.Join(BaseDir, cfg.Global.SSHKeyPath)
+	sshArgs := []string{"-i", sshKey, "-o", "ConnectTimeout=10", "-t", hostCfg.Address}
+	sshArgs = append(sshArgs, args[1:]...)
+
+	c := exec.Command("ssh", sshArgs...)
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	if err := c.Run(); err != nil {
+		os.Exit(1)
+	}
 }
 
 // ============ Phase 2: Go 原生实现 ============
@@ -712,11 +896,11 @@ func runN8NGo(cmd *cobra.Command, args []string) {
 	switch args[0] {
 	case "list":
 		runN8NList(ctx, manager, args[1:])
-	case "import":
+	case "import", "push-import":
 		runN8NImport(ctx, manager, args[1:])
 	case "export":
 		runN8NExport(ctx, manager, args[1:])
-	case "update":
+	case "update", "push-update":
 		runN8NUpdate(ctx, manager, args[1:])
 	case "activate":
 		runN8NActivate(ctx, manager, args[1:])
@@ -794,17 +978,26 @@ func runN8NExport(ctx context.Context, m *tools.N8NManager, args []string) {
 }
 
 func runN8NUpdate(ctx context.Context, m *tools.N8NManager, args []string) {
-	utils.Info("Update not implemented in Go yet, falling back to script")
-	passThrough("lib/tools/n8n.sh", append([]string{"update"}, args...))
+	workflowDir, err := tools.GetN8NWorkflowDir(BaseDir)
+	if err != nil {
+		utils.Error("Failed to get workflow dir: %v", err)
+		os.Exit(1)
+	}
+	if err := m.UpdateWorkflows(ctx, workflowDir); err != nil {
+		utils.Error("Update failed: %v", err)
+		os.Exit(1)
+	}
 }
 
 func runN8NActivate(ctx context.Context, m *tools.N8NManager, args []string) {
-	if len(args) == 0 {
-		utils.Error("Usage: n8n activate <workflow-name>")
+	name := ""
+	if len(args) > 0 {
+		name = args[0]
+	}
+	if err := m.ActivateWorkflow(ctx, name); err != nil {
+		utils.Error("Activate failed: %v", err)
 		os.Exit(1)
 	}
-	utils.Info("Activate not implemented in Go yet, falling back to script")
-	passThrough("lib/tools/n8n.sh", append([]string{"activate"}, args...))
 }
 
 func runN8NDeactivate(ctx context.Context, m *tools.N8NManager, args []string) {
@@ -812,8 +1005,10 @@ func runN8NDeactivate(ctx context.Context, m *tools.N8NManager, args []string) {
 		utils.Error("Usage: n8n deactivate <workflow-name>")
 		os.Exit(1)
 	}
-	utils.Info("Deactivate not implemented in Go yet, falling back to script")
-	passThrough("lib/tools/n8n.sh", append([]string{"deactivate"}, args...))
+	if err := m.DeactivateWorkflow(ctx, args[0]); err != nil {
+		utils.Error("Deactivate failed: %v", err)
+		os.Exit(1)
+	}
 }
 
 func runN8NDelete(ctx context.Context, m *tools.N8NManager, args []string) {
@@ -821,8 +1016,10 @@ func runN8NDelete(ctx context.Context, m *tools.N8NManager, args []string) {
 		utils.Error("Usage: n8n delete <workflow-name>")
 		os.Exit(1)
 	}
-	utils.Info("Delete not implemented in Go yet, falling back to script")
-	passThrough("lib/tools/n8n.sh", append([]string{"delete"}, args...))
+	if err := m.DeleteWorkflow(ctx, args[0]); err != nil {
+		utils.Error("Delete failed: %v", err)
+		os.Exit(1)
+	}
 }
 
 func n8nHelp() {
@@ -914,30 +1111,6 @@ Examples:
   ./spool nas info
   ./spool nas pool list
   ./spool nas snapshot list tank`)
-}
-
-// passThrough 透传参数到旧脚本
-func passThrough(script string, args []string) {
-	// 解析脚本路径 (相对于 BaseDir)
-	scriptPath := filepath.Join(BaseDir, script)
-
-	// 检查脚本是否存在
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: script not found: %s\n", scriptPath)
-		os.Exit(1)
-	}
-
-	// 构建命令
-	cmdArgs := append([]string{scriptPath}, args...)
-	cmd := exec.Command("bash", cmdArgs...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Dir = BaseDir
-
-	if err := cmd.Run(); err != nil {
-		os.Exit(1)
-	}
 }
 
 // ============ BaseDir 解析 ============

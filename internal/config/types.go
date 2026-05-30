@@ -11,6 +11,8 @@ type GlobalConfig struct {
 	BackupDir          string `yaml:"backup_dir"           mapstructure:"backup_dir"`           // 备份目录
 	DNSGatewayIP       string `yaml:"dns_gateway_ip"        mapstructure:"dns_gateway_ip"`        // DNS 网关 IP
 	DNSHeadscaleServer string `yaml:"dns_headscale_server" mapstructure:"dns_headscale_server"` // Headscale DNS
+	DNSGatewayHost     string `yaml:"dns_gateway_host"      mapstructure:"dns_gateway_host"`      // DNS 网关主机别名 (dnsmasq/openclash/caddy/homepage)
+	DNSHeadscaleHost   string `yaml:"dns_headscale_host"    mapstructure:"dns_headscale_host"`    // Headscale 主机别名
 }
 
 // ==================== 主机配置 ====================

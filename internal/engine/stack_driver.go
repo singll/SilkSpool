@@ -12,18 +12,20 @@ import (
 
 // StackDriver 二进制栈驱动（Systemd + InstallManager）
 type StackDriver struct {
-	baseDir string
-	sshKey  string
-	install *InstallManager
+	baseDir    string
+	sshKey     string
+	bundleName string
+	install    *InstallManager
 }
 
 // NewStackDriver 创建 Stack 驱动
-func NewStackDriver(baseDir, sshKey string) *StackDriver {
+func NewStackDriver(baseDir, sshKey, bundleName string) *StackDriver {
 	install, _ := NewInstallManager(baseDir)
 	return &StackDriver{
-		baseDir: baseDir,
-		sshKey:  sshKey,
-		install: install,
+		baseDir:    baseDir,
+		sshKey:     sshKey,
+		bundleName: bundleName,
+		install:    install,
 	}
 }
 
@@ -39,7 +41,7 @@ func (d *StackDriver) Setup(host string, hostCfg *config.HostConfig, deployPath 
 	}
 
 	// 推送 Systemd 服务文件（如果 templates 中有）
-	manifest, err := d.loadManifest(hostCfg)
+	manifest, err := d.loadManifest()
 	if err == nil && len(manifest.Templates) > 0 {
 		if err := d.pushSystemdTemplates(host, hostCfg, deployPath, manifest); err != nil {
 			utils.Warn("Systemd template push failed: %v", err)
@@ -126,20 +128,16 @@ func (d *StackDriver) Service(host string, hostCfg *config.HostConfig, deployPat
 
 // ==================== 内部方法 ====================
 
-// loadManifest 加载当前 bundle 的 manifest
-func (d *StackDriver) loadManifest(hostCfg *config.HostConfig) (*BundleManifest, error) {
-	if len(hostCfg.Bundles) == 0 {
-		return nil, fmt.Errorf("no bundle assigned to host")
-	}
-	bundleName := hostCfg.Bundles[0]
+// loadManifest 加载当前 bundle 的 manifest (使用命令行指定的 bundle 名)
+func (d *StackDriver) loadManifest() (*BundleManifest, error) {
 	loader := NewManifestLoader(d.baseDir)
-	return loader.Load(bundleName)
+	return loader.Load(d.bundleName)
 }
 
 // pushSystemdTemplates 推送 Systemd 服务模板
 func (d *StackDriver) pushSystemdTemplates(host string, hostCfg *config.HostConfig, deployPath string, manifest *BundleManifest) error {
 	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
-	bundleRoot := filepath.Join(d.baseDir, "bundles", manifest.Name)
+	bundleRoot := filepath.Join(d.baseDir, "bundles", d.bundleName)
 
 	for _, t := range manifest.Templates {
 		if filepath.Ext(t) != ".service" {

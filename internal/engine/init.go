@@ -269,3 +269,17 @@ func extractHost(address string) string {
 	}
 	return address
 }
+
+// RunAll 初始化所有配置的主机
+func (m *InitManager) RunAll() error {
+	cfg, err := config.LoadConfig(m.baseDir)
+	if err != nil {
+		return err
+	}
+	for host := range cfg.Hosts {
+		if err := m.Run(host); err != nil {
+			utils.Warn("Init %s failed: %v", host, err)
+		}
+	}
+	return nil
+}
