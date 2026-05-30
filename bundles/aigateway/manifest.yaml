@@ -1,0 +1,27 @@
+name: aigateway
+type: compose
+features:
+  docker_log_rotation: true
+defaults:
+  - path: .env
+    content: |
+      # ==============================================================================
+      #  AI Gateway Environment Variables
+      # ==============================================================================
+
+      # --- 容器前缀 ---
+      APP_PREFIX=sp-
+
+      # --- Redis ---
+      REDIS_PASSWORD=CHANGE_ME_redis_password
+
+      # --- New API (AI Model Gateway) ---
+      NEWAPI_DB_PASSWORD=CHANGE_ME_newapi_db_password
+templates:
+  - 00-base.yaml
+  - 10-redis.yaml
+  - 20-newapi.yaml
+services:
+  - redis
+  - new-api
+  - new-api-db

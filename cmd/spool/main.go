@@ -479,7 +479,7 @@ Examples:
 
 func runBundle(cmd *cobra.Command, args []string) {
 	if len(args) < 3 {
-		fmt.Println("Usage: spool bundle <name> <action> <host>")
+		fmt.Println("Usage: spool bundle <name> <action> <host> [service] [svc-action]")
 		os.Exit(1)
 	}
 
@@ -491,6 +491,21 @@ func runBundle(cmd *cobra.Command, args []string) {
 	if err != nil {
 		utils.Error("Failed to init bundle manager: %v", err)
 		os.Exit(1)
+	}
+
+	// service 子命令需要额外参数
+	if action == "service" {
+		if len(args) < 5 {
+			fmt.Println("Usage: spool bundle <name> service <host> <service> <action>")
+			os.Exit(1)
+		}
+		svc := args[3]
+		svcAction := args[4]
+		if err := mgr.SetupBundleService(name, host, svc, svcAction); err != nil {
+			utils.Error("Failed: %v", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if err := mgr.SetupBundle(name, host, action); err != nil {

@@ -1,0 +1,18 @@
+name: bili
+type: compose
+features:
+  docker_log_rotation: true
+defaults:
+  - path: robot/config/bilidanmaku-api.yaml
+    content: |
+      # 必须从官方仓库获取最新配置并修改 RoomId
+      # https://raw.githubusercontent.com/xbclub/BilibiliDanmuRobot/master/etc/bilidanmaku-api.yaml
+templates:
+  - 00-base.yaml
+  - 10-recorder.yaml
+  - 20-robot.yaml
+  - 30-dozzle.yaml
+services:
+  - bili-recorder
+  - bili-robot
+  - dozzle

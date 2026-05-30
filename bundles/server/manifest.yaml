@@ -1,0 +1,11 @@
+name: server
+type: stack
+features:
+  systemd: true
+templates:
+  - caddy.service
+services:
+  - caddy
+  - headscale
+  - conduit
+  - ntfy

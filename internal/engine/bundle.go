@@ -33,26 +33,50 @@ func NewBundleManager(baseDir string) (*BundleManager, error) {
 
 	return &BundleManager{
 		baseDir: baseDir,
-		sshKey: sshKey,
+		sshKey:  sshKey,
 	}, nil
 }
 
 // ==================== Bundle 操作 ====================
 
 // InitBundleDefaults 初始化 Bundle 默认配置
+// 根据 manifest.yaml 中的 defaults 字段生成默认配置文件到 hosts/<host>/
 func (m *BundleManager) InitBundleDefaults(bundleName, host string) error {
-	bundleRoot := filepath.Join(m.baseDir, "bundles", bundleName)
-	defaultsScript := filepath.Join(bundleRoot, "defaults.sh")
+	loader := NewManifestLoader(m.baseDir)
+	manifest, err := loader.Load(bundleName)
+	if err != nil {
+		// 如果没有 manifest.yaml，跳过
+		return nil
+	}
 
-	// 如果没有 defaults.sh，跳过
-	if _, err := os.Stat(defaultsScript); os.IsNotExist(err) {
+	if len(manifest.Defaults) == 0 {
 		return nil
 	}
 
 	utils.Step("Initializing bundle defaults: %s -> %s", bundleName, host)
 
-	// 执行 defaults.sh 脚本
-	// TODO: 解析 defaults.sh 并执行下载逻辑
+	hostDir := filepath.Join(m.baseDir, "hosts", host)
+	for _, def := range manifest.Defaults {
+		targetPath := filepath.Join(hostDir, def.Path)
+		targetDir := filepath.Dir(targetPath)
+
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			utils.Warn("Failed to create dir %s: %v", targetDir, err)
+			continue
+		}
+
+		// 如果文件已存在，不覆盖（保护用户已有配置）
+		if _, err := os.Stat(targetPath); err == nil {
+			utils.Info("  Skipping existing: %s", def.Path)
+			continue
+		}
+
+		if err := os.WriteFile(targetPath, []byte(def.Content), 0644); err != nil {
+			utils.Warn("Failed to write %s: %v", def.Path, err)
+			continue
+		}
+		utils.Info("  Created: %s", def.Path)
+	}
 
 	utils.Success("Bundle defaults initialized")
 	return nil
@@ -70,42 +94,73 @@ func (m *BundleManager) SetupBundle(bundleName, host, action string) error {
 		return fmt.Errorf("host %s not found", host)
 	}
 
-	bundleRoot := filepath.Join(m.baseDir, "bundles", bundleName)
-	_ = filepath.Join(bundleRoot, "templates") // templateDir - reserved for future use
-	remoteScript := filepath.Join(bundleRoot, "remote.sh")
-
-	utils.Step("Running Bundle: %s | Host: %s | Action: %s", bundleName, host, action)
+	// 加载 manifest
+	loader := NewManifestLoader(m.baseDir)
+	manifest, err := loader.Load(bundleName)
+	if err != nil {
+		return fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
+	}
 
 	// 解析部署路径
 	deployPath := m.resolveDeployPath(bundleName, host, hostCfg)
 
-	// 处理模板 (setup 或 up)
-	if action == "setup" || action == "up" {
-		// 确保远程目录存在
-		if err := m.ensureRemoteDir(hostCfg.Address, deployPath); err != nil {
-			return err
-		}
+	utils.Step("Running Bundle: %s | Host: %s | Action: %s", bundleName, host, action)
 
-		// 初始化默认配置
+	// 获取对应的驱动
+	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey)
+	if err != nil {
+		return err
+	}
+
+	// 执行 action
+	switch action {
+	case "init":
+		return m.InitBundleDefaults(bundleName, host)
+	case "setup":
+		// 初始化默认配置 + 驱动 Setup
 		m.InitBundleDefaults(bundleName, host)
+		return driver.Setup(host, hostCfg, deployPath)
+	case "up":
+		return driver.Up(host, hostCfg, deployPath)
+	case "down":
+		return driver.Down(host, hostCfg, deployPath)
+	case "status":
+		return driver.Status(host, hostCfg, deployPath)
+	case "cleanup":
+		return driver.Cleanup(host, hostCfg, deployPath, "normal")
+	case "service":
+		return fmt.Errorf("service action requires service name, use: bundle %s service <host> <svc> <action>", bundleName)
+	default:
+		return fmt.Errorf("unknown action: %s", action)
+	}
+}
 
-		// 推送配置文件
-		m.PushBundleConfig(bundleName, host)
-
-		// 处理 YAML 模板
-		if err := m.mergeYAMLTemplates(bundleName, host, deployPath); err != nil {
-			utils.Warn("YAML template merge failed: %v", err)
-		}
+// SetupBundleService 管理 Bundle 中的单个服务
+func (m *BundleManager) SetupBundleService(bundleName, host, svc, action string) error {
+	cfg, err := config.LoadConfig(m.baseDir)
+	if err != nil {
+		return err
 	}
 
-	// 执行远程脚本
-	if _, err := os.Stat(remoteScript); err == nil {
-		if err := m.executeRemoteScript(bundleName, host, action, deployPath, hostCfg); err != nil {
-			return err
-		}
+	hostCfg := cfg.GetHost(host)
+	if hostCfg == nil {
+		return fmt.Errorf("host %s not found", host)
 	}
 
-	return nil
+	loader := NewManifestLoader(m.baseDir)
+	manifest, err := loader.Load(bundleName)
+	if err != nil {
+		return fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
+	}
+
+	deployPath := m.resolveDeployPath(bundleName, host, hostCfg)
+
+	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey)
+	if err != nil {
+		return err
+	}
+
+	return driver.Service(host, hostCfg, deployPath, svc, action)
 }
 
 // PushBundleConfig 推送 Bundle 配置文件
@@ -238,84 +293,6 @@ func (m *BundleManager) deepMerge(base, overlay map[string]interface{}) map[stri
 	}
 
 	return result
-}
-
-// ==================== 远程脚本执行 ====================
-
-// executeRemoteScript 执行远程脚本
-func (m *BundleManager) executeRemoteScript(bundleName, host, action, deployPath string, hostCfg *config.HostConfig) error {
-	bundleRoot := filepath.Join(m.baseDir, "bundles", bundleName)
-	remoteScript := filepath.Join(bundleRoot, "remote.sh")
-
-	// 读取远程脚本
-	scriptData, err := os.ReadFile(remoteScript)
-	if err != nil {
-		return fmt.Errorf("failed to read remote script: %w", err)
-	}
-
-	script := string(scriptData)
-
-	// 准备注入变量
-	appPrefix := hostCfg.AppPrefix
-	if appPrefix == "" {
-		appPrefix = "sp-"
-	}
-
-	// 生成 Stack 数据 (用于 server bundle)
-	stackData := m.generateStackData(hostCfg.Stack)
-
-	// 准备脚本内容
-	scriptContent := m.prepareScript(script, appPrefix, deployPath, stackData)
-
-	// 执行远程脚本
-	utils.Info("Executing remote script...")
-	_, err = SSHExecuteStdin(hostCfg.Address, m.sshKey, scriptContent)
-	if err != nil {
-		return fmt.Errorf("remote script failed: %w", err)
-	}
-
-	utils.Success("Remote script executed")
-	return nil
-}
-
-// generateStackData 生成 Stack 安装数据
-func (m *BundleManager) generateStackData(stackList []string) string {
-	if len(stackList) == 0 {
-		return ""
-	}
-
-	cfg, _ := config.LoadConfig(m.baseDir)
-	var lines []string
-
-	for _, app := range stackList {
-		src := cfg.GetInstallSource(app)
-		if src == nil {
-			utils.Warn("Install source not found: %s", app)
-			continue
-		}
-
-		// 格式: REPO|PATTERN|SVC|VER
-		line := fmt.Sprintf("%s|%s|%s|%s",
-			src.Repo, src.Pattern, src.ServiceName, src.DefaultVersion)
-		lines = append(lines, line)
-	}
-
-	return strings.Join(lines, "\n")
-}
-
-// prepareScript 准备脚本内容 (替换占位符)
-func (m *BundleManager) prepareScript(script, appPrefix, deployPath, stackData string) string {
-	// 替换占位符
-	script = strings.ReplaceAll(script, "{{APP_PREFIX}}", appPrefix)
-	script = strings.ReplaceAll(script, "{{DEPLOY_PATH}}", deployPath)
-
-	// 如果有 Stack 数据，添加
-	if stackData != "" {
-		stackBlock := fmt.Sprintf("read -r -d '' BATCH_INSTALL_DATA << 'EOF_BATCH'\n%s\nEOF_BATCH\n", stackData)
-		script = stackBlock + script
-	}
-
-	return script
 }
 
 // ==================== 服务控制 ====================

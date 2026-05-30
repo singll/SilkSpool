@@ -1,0 +1,61 @@
+name: gateway
+type: compose
+features:
+  docker_log_rotation: true
+  create_network: gateway-net
+defaults:
+  - path: homepage/settings.yaml
+    content: |
+      ---
+      # Homepage Settings File
+      # Reference: https://gethomepage.dev/configs/settings/
+
+      title: My Dashboard
+      favicon: https://example.com/favicon.ico
+
+      # Theme: dark, light
+      theme: dark
+      color: slate
+
+      # Layout settings
+      layout:
+        - Services:
+            style: row
+            columns: 4
+        - Infrastructure:
+            style: row
+            columns: 3
+
+      # Header style
+      headerStyle: boxed
+
+      # Hide version number
+      hideVersion: true
+  - path: homepage/services.yaml
+    content: |
+      ---
+      # Homepage Services Configuration
+      # Reference: https://gethomepage.dev/configs/services/
+
+      - Services:
+          - Example App:
+              icon: mdi-application
+              href: https://app.example.com
+              description: Example application description
+              # widget configuration example
+              # widget:
+              #   type: xxx
+              #   url: http://xxx:8080
+
+      - Infrastructure:
+          - Router:
+              icon: mdi-router-wireless
+              href: https://router.example.com
+              description: Gateway management
+templates:
+  - 00-base.yaml
+  - 10-caddy.yaml
+  - 20-homepage.yaml
+services:
+  - caddy
+  - homepage
