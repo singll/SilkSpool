@@ -9,8 +9,9 @@
 
 | 文档 | 说明 |
 |------|------|
-| [DEPLOYMENT.md](DEPLOYMENT.md) | 部署指南：二进制安装、目录结构、用户配置 |
-| [REFACTORING.md](REFACTORING.md) | V2 重构计划：Bash/Python → Go 单体二进制 |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | 部署指南：二进制安装、PATH 软链、目录结构、升级、配置 |
+
+> V1→V2（Bash/Python → Go 单体二进制）重构已全部完成，迁移过程详见 git 历史。
 
 ---
 

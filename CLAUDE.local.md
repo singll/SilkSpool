@@ -4,7 +4,7 @@
 
 - **禁止 `docker compose down -v` 或 `--volumes` 操作 n8n** — `kp-n8n-data` volume 包含所有工作流、凭证、API Key，删除不可恢复
 - **n8n 重启仅使用 `docker stop sp-n8n && docker start sp-n8n`**，绝不可 `up -d --force-recreate`
-- **禁止直接 SSH 手动操作远程 Docker** — 必须使用 `./spool.sh exec`
+- **禁止直接 SSH 手动操作远程 Docker** — 必须使用 PATH 中的 `spool exec`
 
 ## n8n 数据保护
 

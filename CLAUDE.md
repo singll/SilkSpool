@@ -1,5 +1,51 @@
 # 项目规则
 
+## spool 运维工具使用规则（远程主机运维）
+
+**spool 已编译并部署为系统级二进制**。当确定要用 spool 运维远程主机时，**直接使用系统环境变量（PATH）中的 `spool` 命令** —— 不要重新生成、不要 `go run`、不要写代码绕过它。
+
+| 事项 | 说明 |
+|------|------|
+| 二进制位置 | `/opt/SilkSpool/spool`（注意大写 S） |
+| PATH 命令 | `/usr/local/bin/spool` → 软链到 `/opt/SilkSpool/spool`，**任意目录**直接敲 `spool` |
+| BaseDir | 自动解析为 `/opt/SilkSpool/`，配置取 `/opt/SilkSpool/silkspool.yaml` |
+
+### 必须遵守
+
+- ✅ **运维远程主机一律用 PATH 中的 `spool`**（如 `spool exec keeper "..."`、`spool sync push keeper`、`spool restart keeper n8n`），无需 `cd`、无需 `./`
+- ❌ **不要为了运维去 `make build` / `go run ./cmd/spool` / 重新编译** —— 已部署的 `spool` 就是运维工具，编译只在改了 spool 源码后才做
+- ❌ **不要绕过 spool 写脚本或直接 SSH/curl 操作远程 Docker** —— 一切远程操作走 `spool exec`
+- ❌ **不要用 `go run` 跑运维命令** —— `go run` 仅用于开发/调试 spool 源码
+
+### 何时才需要重新编译并部署
+
+**仅当修改了 spool 自身的 Go 源码**（`cmd/`、`internal/`、`pkg/`）后才重新编译，且升级**只覆盖二进制**：
+
+```bash
+make build                                # 产出 out/spool
+cp out/spool /opt/SilkSpool/spool         # 仅覆盖二进制（保留 hosts/keys/silkspool.yaml）
+chmod 755 /opt/SilkSpool/spool
+spool version                             # 验证
+```
+
+> ❌ **绝不** `cp -r out/ /opt/SilkSpool` 升级 —— 会清掉运行时的 `hosts/`、`keys/`、`silkspool.yaml`。整目录复制只用于首次部署到空目录。
+
+### 常用命令速查
+
+| 命令 | 用途 |
+|------|------|
+| `spool exec <host> "<cmd>"` | 远程执行命令（运维首选） |
+| `spool sync pull/push <host>` | 配置同步（注意：不推送 compose 模板，需手动 push） |
+| `spool service <host> status` / `spool restart <host> <svc>` | 服务控制 |
+| `spool logs <host> <svc> [lines]` | 查看日志 |
+| `spool bundle <name> <init\|up\|down\|status> <host>` | Bundle 编排 |
+| `spool n8n list/import/export` | n8n 工作流管理 |
+| `spool nas info/pool/dataset/snapshot` | TrueNAS 管理 |
+| `spool backup <host>` | 备份主机数据 |
+| `spool dns ...` / `spool site deploy ...` | DNS / 站点管理 |
+
+> 完整部署与升级说明见 [doc/DEPLOYMENT.md](doc/DEPLOYMENT.md)。
+
 ## 自动提交规则
 
 当你完成一次**完整的修改任务**后，且本次消息产生了至少一个**未被 `.gitignore` 忽略**的文件变更时，必须自动执行 git commit + push。
@@ -38,7 +84,7 @@
 ### 操作红线
 
 1. **禁止自行重建容器** — n8n/Memos/Bellkeeper 等有状态服务重建需用户批准
-2. **必须用 spool.sh 操作远程** — 禁止直接 SSH 手动操作 Docker
+2. **必须用 PATH 中的 `spool` 操作远程** — 禁止直接 SSH 手动操作 Docker（见上 §spool 运维工具使用规则）
 3. **禁止 `docker compose down`** — 会停全部服务
 4. **绝对禁止对 n8n 执行 `docker compose down -v` / `--volumes`** — 会删除 `kp-n8n-data` volume，工作流、凭证、API Key 永久丢失。n8n 重启只能用 `docker stop sp-n8n && docker start sp-n8n`
 5. **禁止 `git add -f`** — doc/hosts/config.ini/keys 在 .gitignore 中

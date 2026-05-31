@@ -210,27 +210,31 @@ vim out/silkspool.yaml
 
 SilkSpool V2 采用**自包含二进制目录**模型：
 
-```
+```bash
 # 方式 1: 从源码构建 (推荐)
 make all                    # 编译 + 初始化 out/
-./out/spool version        # 验证
+./out/spool version         # 验证
 
-# 方式 2: 复制 out/ 到目标位置
-cp -r out/ /opt/silkspool
-/opt/silkspool/spool version
+# 方式 2: 复制 out/ 到系统目录并软链到 PATH
+sudo cp -r out/ /opt/SilkSpool
+sudo ln -sf /opt/SilkSpool/spool /usr/local/bin/spool
+spool version               # 任意目录可用
 
 # 方式 3: 下载预编译发行包
 wget https://github.com/singll/SilkSpool/releases/latest/download/spool-linux-amd64.tar.gz
-tar -xzf spool-linux-amd64.tar.gz -C /opt/silkspool
+tar -xzf spool-linux-amd64.tar.gz -C /opt/SilkSpool
 ```
+
+> 升级时只覆盖二进制：`make build && cp out/spool /opt/SilkSpool/spool`，
+> 切勿整目录覆盖（会清掉 `hosts/`、`keys/`、`silkspool.yaml`）。详见 [doc/DEPLOYMENT.md](doc/DEPLOYMENT.md)。
 
 ### BaseDir 自动解析
 
 `spool` 自动以自身所在目录为 BaseDir，**无论从哪运行**都能正确找到配置：
 
 ```bash
-/opt/silkspool/spool sync push keeper    # 自动找到 /opt/silkspool/silkspool.yaml
-~/SilkSpool/out/spool version           # 也能工作
+spool sync push keeper                   # 自动找到 /opt/SilkSpool/silkspool.yaml
+~/SilkSpool/out/spool version            # 也能工作
 ```
 
 ---
