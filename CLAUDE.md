@@ -139,7 +139,7 @@ spool version                             # 验证
 - 新增工作流时在对应分类内递增序号，预留间隔便于插入
 - 基础工作流（B 类）排在最前，被其他工作流依赖
 
-当前工作流清单和调用关系详见 [doc/STATUS.md](doc/STATUS.md) 和 [doc/ROADMAP.md](doc/ROADMAP.md)。
+当前工作流清单和调用关系详见 [Bellkeeper/doc/STATUS.md](../Bellkeeper/doc/STATUS.md) 和 [Bellkeeper/doc/ROADMAP.md](../Bellkeeper/doc/ROADMAP.md)。
 
 ## Matrix 机器人架构
 
