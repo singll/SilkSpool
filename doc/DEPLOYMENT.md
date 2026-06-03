@@ -167,7 +167,6 @@ spool --config /etc/silkspool/silkspool.yaml sync push keeper
 3. 可执行文件所在目录（`/opt/SilkSpool/`）
 4. 当前工作目录（fallback，开发模式）
 5. `/etc/silkspool/`（系统级 fallback）
-6. `~/.silkspool/`（已弃用，保留兼容）
 
 ---
 
@@ -207,13 +206,13 @@ spool version
 
 ---
 
-## 关于 ~/.silkspool（已弃用）
+## 关于 ~/.silkspool（已移除）
 
-旧版本中 `~/.silkspool/` 是推荐的配置目录。从 v2.0.0+ 起，运行时模型已迁移到**二进制自包含目录**（`out/` / `/opt/SilkSpool/`）。
+旧版本中 `~/.silkspool/` 是推荐的配置目录。从 v2.0.0+ 起，运行时模型已迁移到**二进制自包含目录**（`/opt/SilkSpool/`）。
 
-- `~/.silkspool/` 仍可作为最后的配置 fallback（向后兼容）
-- 如果配置从 `~/.silkspool/` 加载，会输出 deprecation 警告
-- 建议新部署直接使用 `/opt/SilkSpool/` 模型
+- 配置搜索顺序已收敛为 `baseDir → baseDir/.. → /etc/silkspool`，**不再回退到 `~/.silkspool/`**
+- 运行时唯一根目录是 `/opt/SilkSpool/`：`spool` 经 `os.Executable()` 自动解析，任意目录运行结果一致
+- 如机器上仍有遗留的 `~/.silkspool/`，可安全删除
 
 ---
 

@@ -20,7 +20,7 @@ func NewConfigLoader(baseDir string) *ConfigLoader {
 }
 
 // Load 加载 silkspool.yaml 配置
-// 搜索顺序: baseDir, baseDir/.., /etc/silkspool, ~/.silkspool (fallback)
+// 搜索顺序: baseDir, baseDir/.., /etc/silkspool
 func (cl *ConfigLoader) Load() (*Config, error) {
 	v := viper.New()
 
@@ -28,16 +28,11 @@ func (cl *ConfigLoader) Load() (*Config, error) {
 	v.SetConfigName("silkspool")
 	v.SetConfigType("yaml")
 
-	// 搜索路径: 当前目录、项目根目录、系统目录、用户 home fallback
+	// 搜索路径: 当前目录、项目根目录、系统目录
 	searchPaths := []string{
 		cl.baseDir,
 		cl.baseDir + "/..",
 		"/etc/silkspool",
-	}
-
-	homeDir, err := os.UserHomeDir()
-	if err == nil {
-		searchPaths = append(searchPaths, filepath.Join(homeDir, ".silkspool"))
 	}
 
 	for _, p := range searchPaths {
@@ -47,14 +42,6 @@ func (cl *ConfigLoader) Load() (*Config, error) {
 	// 尝试读取配置
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read config: %w", err)
-	}
-
-	// 如果从 ~/.silkspool 加载，输出 deprecation 提示
-	if used := v.ConfigFileUsed(); used != "" && homeDir != "" {
-		if strings.Contains(used, filepath.Join(homeDir, ".silkspool")) {
-			fmt.Fprintf(os.Stderr, "[WARN] Config loaded from deprecated path: %s\n", used)
-			fmt.Fprintln(os.Stderr, "[WARN] Consider migrating config to the binary directory (out/) or project root.")
-		}
 	}
 
 	var cfg Config
