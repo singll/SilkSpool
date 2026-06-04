@@ -149,7 +149,7 @@ func (m *InstallManager) getLatestVersion(repo string) (string, error) {
 	}
 
 	// 简单解析 tag_name
-	buf := make([]byte, 1024)
+	buf := make([]byte, 8192)
 	n, _ := resp.Body.Read(buf)
 	if n > 0 {
 		body := string(buf[:n])
@@ -177,6 +177,7 @@ func (m *InstallManager) buildDownloadURL(repo, pattern, version, arch string) s
 	}
 
 	pattern = strings.ReplaceAll(pattern, "{ARCH}", arch)
+	pattern = strings.ReplaceAll(pattern, "{VERSION}", version)
 	return fmt.Sprintf("%s/%s", baseURL, pattern)
 }
 

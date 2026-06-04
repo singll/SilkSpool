@@ -147,6 +147,10 @@ hosts:
         remote: "/etc/conduit/conduit.toml"
       - local: "ntfy/server.yml"
         remote: "/etc/ntfy/server.yml"
+      - local: "authelia/config.yml"
+        remote: "/etc/authelia/config.yml"
+      - local: "authelia/users_database.yml"
+        remote: "/etc/authelia/users_database.yml"
     services:
       - alias: "caddy"
         type: "systemd"
@@ -160,11 +164,15 @@ hosts:
       - alias: "ntfy"
         type: "systemd"
         name: "ntfy"
+      - alias: "authelia"
+        type: "systemd"
+        name: "authelia"
     stack:
       - "caddy"
       - "headscale"
       - "conduit"
       - "ntfy"
+      - "authelia"
     post_push_hooks:
       - pattern: "headscale/config.yaml"
         command: "sudo chown headscale:headscale /etc/headscale/config.yaml"
@@ -253,6 +261,12 @@ install_sources:
     repo: "binwiederhier/ntfy"
     pattern: "linux_{ARCH}.tar.gz"
     service_name: "ntfy"
+    default_version: "latest"
+
+  - alias: "authelia"
+    repo: "authelia/authelia"
+    pattern: "authelia-{VERSION}-linux-{ARCH}.tar.gz"
+    service_name: "authelia"
     default_version: "latest"
 
 # -------------------- n8n 配置 --------------------

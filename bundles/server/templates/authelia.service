@@ -1,0 +1,16 @@
+[Unit]
+Description=Authelia Identity and Access Management
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+User=authelia
+Group=authelia
+ExecStart=/usr/local/bin/authelia --config /etc/authelia/config.yml
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
