@@ -33,7 +33,10 @@ func (d *ComposeDriver) Setup(host string, hostCfg *config.HostConfig, deployPat
 		return err
 	}
 
-	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 
 	// 1. 确保远程目录存在
 	if err := re.EnsureDir(deployPath); err != nil {
@@ -101,7 +104,10 @@ func (d *ComposeDriver) Up(host string, hostCfg *config.HostConfig, deployPath s
 		return err
 	}
 
-	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 
 	// 1. 特性：Git 拉取
 	if manifest.Features.GitClone != nil {
@@ -130,14 +136,20 @@ func (d *ComposeDriver) Up(host string, hostCfg *config.HostConfig, deployPath s
 
 // Down 停止服务
 func (d *ComposeDriver) Down(host string, hostCfg *config.HostConfig, deployPath string) error {
-	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 	composeFile := filepath.Join(deployPath, "docker-compose.yaml")
 	return re.ComposeDown(composeFile)
 }
 
 // Status 查看服务状态
 func (d *ComposeDriver) Status(host string, hostCfg *config.HostConfig, deployPath string) error {
-	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 	composeFile := filepath.Join(deployPath, "docker-compose.yaml")
 	out, err := re.ComposePS(composeFile)
 	if err != nil {
@@ -149,13 +161,19 @@ func (d *ComposeDriver) Status(host string, hostCfg *config.HostConfig, deployPa
 
 // Cleanup 清理 Docker 资源
 func (d *ComposeDriver) Cleanup(host string, hostCfg *config.HostConfig, deployPath string, mode string) error {
-	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 	return re.CleanupDocker(mode)
 }
 
 // Service 管理单个服务
 func (d *ComposeDriver) Service(host string, hostCfg *config.HostConfig, deployPath string, svc string, action string) error {
-	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 	composeFile := filepath.Join(deployPath, "docker-compose.yaml")
 
 	// 对于 build 操作，如果是 bellkeeper 先拉取更新
@@ -180,7 +198,6 @@ func (d *ComposeDriver) loadManifest() (*BundleManifest, error) {
 
 // pushAndMerge 推送配置并合并 YAML 模板
 func (d *ComposeDriver) pushAndMerge(host string, hostCfg *config.HostConfig, deployPath string, manifest *BundleManifest) error {
-	// 使用 sync 模块推送配置
 	syncMgr, err := NewSyncManager(d.baseDir)
 	if err != nil {
 		return err
@@ -189,7 +206,6 @@ func (d *ComposeDriver) pushAndMerge(host string, hostCfg *config.HostConfig, de
 		return fmt.Errorf("push config failed: %w", err)
 	}
 
-	// 合并 YAML 模板
 	if len(manifest.Templates) > 0 {
 		bundleRoot := filepath.Join(d.baseDir, "bundles", d.bundleName)
 		templateFiles := make([]string, 0, len(manifest.Templates))
@@ -203,7 +219,11 @@ func (d *ComposeDriver) pushAndMerge(host string, hostCfg *config.HostConfig, de
 		}
 
 		remotePath := filepath.Join(deployPath, "docker-compose.yaml")
-		if err := SSHUpload(hostCfg.Address, d.sshKey, string(merged), remotePath); err != nil {
+		client, err := globalPool.Get(hostCfg.Address, d.sshKey)
+		if err != nil {
+			return fmt.Errorf("SSH connect failed: %w", err)
+		}
+		if err := client.Upload(string(merged), remotePath); err != nil {
 			return fmt.Errorf("upload docker-compose.yaml failed: %w", err)
 		}
 	}

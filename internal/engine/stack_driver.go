@@ -53,7 +53,10 @@ func (d *StackDriver) Setup(host string, hostCfg *config.HostConfig, deployPath 
 
 // Up 启动所有服务
 func (d *StackDriver) Up(host string, hostCfg *config.HostConfig, deployPath string) error {
-	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 	for _, app := range hostCfg.Stack {
 		if err := re.Systemctl("start", app); err != nil {
 			utils.Warn("Failed to start %s: %v", app, err)
@@ -64,7 +67,10 @@ func (d *StackDriver) Up(host string, hostCfg *config.HostConfig, deployPath str
 
 // Down 停止所有服务
 func (d *StackDriver) Down(host string, hostCfg *config.HostConfig, deployPath string) error {
-	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 	for _, app := range hostCfg.Stack {
 		if err := re.Systemctl("stop", app); err != nil {
 			utils.Warn("Failed to stop %s: %v", app, err)
@@ -75,9 +81,13 @@ func (d *StackDriver) Down(host string, hostCfg *config.HostConfig, deployPath s
 
 // Status 查看所有服务状态
 func (d *StackDriver) Status(host string, hostCfg *config.HostConfig, deployPath string) error {
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 	for _, app := range hostCfg.Stack {
 		cmd := fmt.Sprintf("systemctl is-active %s", app)
-		out, err := SSHExecute(hostCfg.Address, d.sshKey, cmd)
+		out, err := re.Exec(cmd)
 		if err != nil {
 			fmt.Printf("%s: inactive\n", app)
 		} else {
@@ -94,7 +104,10 @@ func (d *StackDriver) Cleanup(host string, hostCfg *config.HostConfig, deployPat
 
 // Service 管理单个 Systemd 服务
 func (d *StackDriver) Service(host string, hostCfg *config.HostConfig, deployPath string, svc string, action string) error {
-	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 
 	var systemctlAction string
 	switch action {
@@ -105,16 +118,15 @@ func (d *StackDriver) Service(host string, hostCfg *config.HostConfig, deployPat
 	case "restart":
 		systemctlAction = "restart"
 	case "logs":
-		// journalctl 查看日志
 		cmd := fmt.Sprintf("sudo journalctl -u %s -n 100 --no-pager", svc)
-		out, err := SSHExecute(hostCfg.Address, d.sshKey, cmd)
+		out, err := re.Exec(cmd)
 		if err == nil {
 			fmt.Print(out)
 		}
 		return err
 	case "status":
 		cmd := fmt.Sprintf("systemctl is-active %s", svc)
-		out, err := SSHExecute(hostCfg.Address, d.sshKey, cmd)
+		out, err := re.Exec(cmd)
 		if err == nil {
 			fmt.Printf("%s: %s\n", svc, strings.TrimSpace(out))
 		}
@@ -136,7 +148,10 @@ func (d *StackDriver) loadManifest() (*BundleManifest, error) {
 
 // pushSystemdTemplates 推送 Systemd 服务模板
 func (d *StackDriver) pushSystemdTemplates(host string, hostCfg *config.HostConfig, deployPath string, manifest *BundleManifest) error {
-	re := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return err
+	}
 	bundleRoot := filepath.Join(d.baseDir, "bundles", d.bundleName)
 
 	for _, t := range manifest.Templates {

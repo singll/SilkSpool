@@ -54,12 +54,20 @@ func (m *ServiceManager) GetHostServices(host string) ([]ServiceInfo, error) {
 		return nil, fmt.Errorf("host %s not found", host)
 	}
 
+	client, err := globalPool.Get(hostCfg.Address, m.sshKey)
+	if err != nil {
+		return nil, fmt.Errorf("SSH connect failed: %w", err)
+	}
+
 	var services []ServiceInfo
 
 	for _, svc := range hostCfg.Services {
-		status, err := m.GetServiceStatus(host, svc.Alias)
-		if err != nil {
-			status = "unknown"
+		status := "unknown"
+		cmd := m.buildStatusCommand(svc.Type, svc.Name)
+		if cmd != "" {
+			if out, err := client.Execute(cmd); err == nil {
+				status = m.parseStatus(svc.Type, out)
+			}
 		}
 
 		services = append(services, ServiceInfo{

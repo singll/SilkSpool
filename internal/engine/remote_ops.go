@@ -10,16 +10,21 @@ import (
 // RemoteExecutor 封装远程主机上的常用操作
 // 所有方法通过 SSH 在远程主机执行命令序列
 type RemoteExecutor struct {
-	address string
-	sshKey  string
+	client *SSHClient
 }
 
-// NewRemoteExecutor 创建远程执行器
-func NewRemoteExecutor(address, sshKey string) *RemoteExecutor {
-	return &RemoteExecutor{
-		address: address,
-		sshKey:  sshKey,
+// NewRemoteExecutor 创建远程执行器（从连接池获取复用连接）
+func NewRemoteExecutor(address, sshKey string) (*RemoteExecutor, error) {
+	client, err := globalPool.Get(address, sshKey)
+	if err != nil {
+		return nil, fmt.Errorf("connect %s failed: %w", address, err)
 	}
+	return &RemoteExecutor{client: client}, nil
+}
+
+// Exec 在远程主机执行命令并返回 stdout
+func (re *RemoteExecutor) Exec(cmd string) (string, error) {
+	return re.client.Execute(cmd)
 }
 
 // ==================== Docker 环境 ====================
@@ -28,7 +33,7 @@ func NewRemoteExecutor(address, sshKey string) *RemoteExecutor {
 func (re *RemoteExecutor) EnsureDocker() error {
 	utils.Info("Checking Docker on remote...")
 	cmd := "command -v docker || (curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER)"
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	if err != nil {
 		return fmt.Errorf("docker installation failed: %w", err)
 	}
@@ -38,13 +43,11 @@ func (re *RemoteExecutor) EnsureDocker() error {
 // EnsureCompose 确保远程主机有 docker compose
 func (re *RemoteExecutor) EnsureCompose() error {
 	utils.Info("Checking docker compose on remote...")
-	// 优先检测 docker compose v2，否则回退到 docker-compose v1
 	cmd := `docker compose version >/dev/null 2>&1 && echo "docker compose" || (docker-compose version >/dev/null 2>&1 && echo "docker-compose")`
-	out, err := SSHExecute(re.address, re.sshKey, cmd)
+	out, err := re.client.Execute(cmd)
 	if err != nil || strings.TrimSpace(out) == "" {
-		// 尝试安装 docker-compose v2
 		installCmd := `ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH="x86_64" ;; aarch64) ARCH="aarch64" ;; armv7l) ARCH="armv7" ;; esac; VER=$(curl -sL https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name":' | cut -d'"' -f4); [ -z "$VER" ] && VER="v2.24.5"; sudo curl -L "https://github.com/docker/compose/releases/download/${VER}/docker-compose-linux-${ARCH}" -o /usr/bin/docker-compose && sudo chmod +x /usr/bin/docker-compose`
-		_, err = SSHExecute(re.address, re.sshKey, installCmd)
+		_, err = re.client.Execute(installCmd)
 		if err != nil {
 			return fmt.Errorf("docker compose installation failed: %w", err)
 		}
@@ -55,7 +58,7 @@ func (re *RemoteExecutor) EnsureCompose() error {
 // GetComposeCmd 获取远程主机的 docker compose 命令
 func (re *RemoteExecutor) GetComposeCmd() string {
 	cmd := `docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose"`
-	out, _ := SSHExecute(re.address, re.sshKey, cmd)
+	out, _ := re.client.Execute(cmd)
 	return strings.TrimSpace(out)
 }
 
@@ -63,7 +66,7 @@ func (re *RemoteExecutor) GetComposeCmd() string {
 func (re *RemoteExecutor) ConfigureDockerLogRotation() error {
 	utils.Info("Configuring Docker log rotation...")
 	cmd := `if [ -f /etc/docker/daemon.json ] && grep -q "max-size" /etc/docker/daemon.json 2>/dev/null; then echo "OK"; else echo '{"log-driver":"json-file","log-opts":{"max-size":"50m","max-file":"3"}}' | sudo tee /etc/docker/daemon.json >/dev/null && sudo systemctl restart docker || true; fi`
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -74,7 +77,7 @@ func (re *RemoteExecutor) CreateDockerNetwork(name string) error {
 	}
 	utils.Info("Creating Docker network: %s", name)
 	cmd := fmt.Sprintf("docker network ls | grep -q %q || docker network create %q", name, name)
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -89,7 +92,7 @@ func (re *RemoteExecutor) CleanupDocker(mode string) error {
 	}
 	cmd += "; docker network prune -f >/dev/null 2>&1 || true"
 	cmd += "; docker container prune -f >/dev/null 2>&1 || true"
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -100,7 +103,7 @@ func (re *RemoteExecutor) ComposePull(composeFile string) error {
 	utils.Info("Pulling images...")
 	dc := re.GetComposeCmd()
 	cmd := fmt.Sprintf("cd $(dirname %s) && %s -f %s pull", composeFile, dc, composeFile)
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -113,7 +116,7 @@ func (re *RemoteExecutor) ComposeBuild(composeFile string, services ...string) e
 		svcArg = strings.Join(services, " ")
 	}
 	cmd := fmt.Sprintf("cd $(dirname %s) && %s -f %s build %s", composeFile, dc, composeFile, svcArg)
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -122,7 +125,7 @@ func (re *RemoteExecutor) ComposeUp(composeFile string) error {
 	utils.Info("Starting services...")
 	dc := re.GetComposeCmd()
 	cmd := fmt.Sprintf("cd $(dirname %s) && %s -f %s up -d --remove-orphans", composeFile, dc, composeFile)
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -131,7 +134,7 @@ func (re *RemoteExecutor) ComposeDown(composeFile string) error {
 	utils.Info("Stopping services...")
 	dc := re.GetComposeCmd()
 	cmd := fmt.Sprintf("cd $(dirname %s) && %s -f %s down", composeFile, dc, composeFile)
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -139,7 +142,7 @@ func (re *RemoteExecutor) ComposeDown(composeFile string) error {
 func (re *RemoteExecutor) ComposePS(composeFile string) (string, error) {
 	dc := re.GetComposeCmd()
 	cmd := fmt.Sprintf("cd $(dirname %s) && %s -f %s ps", composeFile, dc, composeFile)
-	return SSHExecute(re.address, re.sshKey, cmd)
+	return re.client.Execute(cmd)
 }
 
 // ComposeService 对单个服务执行操作 (up/down/build/logs/restart)
@@ -160,7 +163,7 @@ func (re *RemoteExecutor) ComposeService(composeFile, service, action string) er
 	default:
 		return fmt.Errorf("unknown service action: %s", action)
 	}
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -170,7 +173,7 @@ func (re *RemoteExecutor) ComposeService(composeFile, service, action string) er
 func (re *RemoteExecutor) GitClone(repo, targetPath string) error {
 	utils.Info("Cloning repository: %s", repo)
 	cmd := fmt.Sprintf("if [ -d %q ]; then echo 'exists'; else git clone %q %q 2>/dev/null || echo 'clone failed'; fi", targetPath, repo, targetPath)
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -178,7 +181,7 @@ func (re *RemoteExecutor) GitClone(repo, targetPath string) error {
 func (re *RemoteExecutor) GitPull(path string) error {
 	utils.Info("Pulling updates: %s", path)
 	cmd := fmt.Sprintf("if [ -d %q/.git ]; then git -C %q pull || true; fi", path, path)
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -187,16 +190,15 @@ func (re *RemoteExecutor) GitPull(path string) error {
 // SetupSystemd 配置 Systemd 服务
 func (re *RemoteExecutor) SetupSystemd(unitName, unitContent string) error {
 	utils.Info("Setting up systemd service: %s", unitName)
-	// 通过 cat > 写入服务文件
 	cmd := fmt.Sprintf("cat > /tmp/%s.service << 'EOF_SYSTEMD'\n%s\nEOF_SYSTEMD\nsudo mv /tmp/%s.service /etc/systemd/system/\nsudo systemctl daemon-reload\nsudo systemctl enable %s", unitName, unitContent, unitName, unitName)
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
 // Systemctl 执行 systemctl 操作
 func (re *RemoteExecutor) Systemctl(action, service string) error {
 	cmd := fmt.Sprintf("sudo systemctl %s %s", action, service)
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
@@ -204,15 +206,12 @@ func (re *RemoteExecutor) Systemctl(action, service string) error {
 
 // EnsureDir 确保远程目录存在
 func (re *RemoteExecutor) EnsureDir(path string) error {
-	// 仅对「新建」目录 chown 给执行用户（满足非 sudo 的 cat 写入）；绝不 chown 已存在目录，
-	// 否则会夺走 /etc 等系统目录的属主、导致 sudo 失效（同 sync.ensureRemoteDir）。
 	cmd := fmt.Sprintf(`if [ ! -d %q ]; then sudo mkdir -p %q && sudo chown $(id -u):$(id -g) %q; fi`, path, path, path)
-	_, err := SSHExecute(re.address, re.sshKey, cmd)
+	_, err := re.client.Execute(cmd)
 	return err
 }
 
 // WriteFile 在远程主机写入文件
 func (re *RemoteExecutor) WriteFile(content, remotePath string) error {
-	_, err := SSHUploadContent(re.address, re.sshKey, content, remotePath)
-	return err
+	return re.client.Upload(content, remotePath)
 }

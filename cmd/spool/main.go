@@ -1282,6 +1282,7 @@ func isValidSpoolDir(dir string) bool {
 // ============ main 函数 ============
 
 func main() {
+	defer engine.CloseGlobalPool()
 	if err := RootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
