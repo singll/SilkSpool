@@ -84,6 +84,9 @@ vim out/silkspool.yaml
 | Command | Description |
 | --- | --- |
 | `init [host]` | Initialize SSH trust |
+| `decommission <host>` | Remove a host from management (revoke SSH access) |
+| `key rotate` | Rotate the SSH key across all managed hosts |
+| `key status [host\|--all]` | Check whether the spool key is authorized on hosts |
 | `sync pull/push <host>` | Sync configs between local and remote |
 | `dns list/add/remove/push` | Manage DNS records |
 | `site list/deploy/push` | Quick site deployment |
@@ -184,6 +187,9 @@ vim out/silkspool.yaml
 | 命令 | 描述 |
 | --- | --- |
 | `init [主机]` | 初始化 SSH 信任 |
+| `decommission <主机>` | 解除主机管控 (吊销 SSH 访问，别名 unmanage) |
+| `key rotate` | 在所有受管控主机上轮换 SSH 密钥 |
+| `key status [主机\|--all]` | 检查主机是否已授权 spool 公钥 |
 | `sync pull/push <主机>` | 本地与远程同步配置 |
 | `dns list/add/remove/push` | DNS 记录管理 |
 | `site list/deploy/push` | 快速站点部署 |

@@ -42,6 +42,9 @@ spool version                             # 验证
 | `spool n8n list/import/export` | n8n 工作流管理 |
 | `spool nas info/pool/dataset/snapshot` | TrueNAS 管理 |
 | `spool backup <host>` | 备份主机数据 |
+| `spool key rotate [--dry-run] [--new p] [--keep-old-remote]` | 全主机轮换 SSH 管控密钥（两阶段无锁死） |
+| `spool key status [host\|--all]` | 检查主机是否已授权 spool 公钥 |
+| `spool decommission <host> [--purge-config]` | 解除主机管控（吊销 SSH 访问，别名 unmanage） |
 | `spool dns ...` / `spool site deploy ...` | DNS / 站点管理 |
 
 > 完整部署与升级说明见 [doc/DEPLOYMENT.md](doc/DEPLOYMENT.md)。

@@ -41,6 +41,8 @@ var RootCmd = &cobra.Command{
   - Bundle 编排 (bundle <name> <action> <host>)
   - n8n 工作流管理 (n8n list/import/export)
   - TrueNAS 存储管理 (nas info/pool/dataset)
+  - 主机接入/下线 (init / decommission)
+  - SSH 管控密钥轮换 (key rotate/status)
 
 使用 ./spool --help 查看完整帮助`,
 	SilenceUsage: true,
@@ -82,6 +84,8 @@ func init() {
 	addNASCmd()
 	addBackupCmd()
 	addExecCmd()
+	addKeyCmd()
+	addDecommissionCmd()
 }
 
 // ============ 子命令定义 ============
@@ -326,6 +330,56 @@ func addExecCmd() {
   ./spool exec txhk "systemctl status headscale"`,
 		Run: runExec,
 	}
+	RootCmd.AddCommand(cmd)
+}
+
+func addKeyCmd() {
+	cmd := &cobra.Command{
+		Use:   "key <command>",
+		Short: "SSH 管控密钥管理",
+		Long: `管理 spool 用于访问受管控主机的 SSH 密钥。
+
+命令:
+  rotate            在所有受管控主机上轮换 SSH 密钥 (旧 -> 新)
+  status [host]     检查每台主机是否已授权当前公钥
+
+rotate 采用两阶段、全有或全无的安全时序: 先在每台主机部署并验证新密钥，
+全部通过后才切换本地密钥并移除远程旧密钥，过程中不会把自己锁在门外。
+若有主机已永久失联，请先 decommission 该主机再 rotate。
+
+示例:
+  ./spool key status --all
+  ./spool key rotate --dry-run     # 预演 (不修改任何内容)
+  ./spool key rotate               # 自动生成新 ed25519 密钥并轮换
+  ./spool key rotate --new ./keys/id_new --keep-old-remote`,
+		Run: runKey,
+	}
+	cmd.Flags().String("new", "", "指定新私钥路径 (默认自动生成 ed25519)")
+	cmd.Flags().Bool("keep-old-remote", false, "保留远程旧公钥作为兜底 (不移除)")
+	cmd.Flags().Bool("dry-run", false, "仅验证可达性并打印计划，不修改任何内容")
+	cmd.Flags().Bool("all", false, "key status: 检查所有主机")
+	cmd.Flags().Bool("yes", false, "跳过危险操作二次确认")
+	RootCmd.AddCommand(cmd)
+}
+
+func addDecommissionCmd() {
+	cmd := &cobra.Command{
+		Use:     "decommission <host>",
+		Aliases: []string{"unmanage"},
+		Short:   "解除主机管控 (吊销 SSH 访问)",
+		Long: `把主机从 SilkSpool 管控中下线: 从远程 authorized_keys 移除 spool 公钥，
+使 spool 不再能登录该主机。与 init (接入) 对称。
+
+默认不修改配置文件，只打印需手动清理的内容。
+加 --purge-config 才会从 silkspool.yaml 删除该主机块 (保留其它主机注释，先写 .bak 备份)。
+
+示例:
+  ./spool decommission bili-node
+  ./spool decommission bili-node --purge-config --yes`,
+		Run: runDecommission,
+	}
+	cmd.Flags().Bool("purge-config", false, "同时从 silkspool.yaml 删除该主机块")
+	cmd.Flags().Bool("yes", false, "跳过危险操作二次确认")
 	RootCmd.AddCommand(cmd)
 }
 
@@ -872,6 +926,72 @@ func runExec(cmd *cobra.Command, args []string) {
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
+		os.Exit(1)
+	}
+}
+
+// ============ Key / Decommission 命令 ============
+
+func runKey(cmd *cobra.Command, args []string) {
+	if len(args) == 0 {
+		_ = cmd.Help()
+		return
+	}
+
+	mgr, err := engine.NewKeyManager(BaseDir)
+	if err != nil {
+		utils.Error("Failed to init key manager: %v", err)
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "rotate":
+		newKey, _ := cmd.Flags().GetString("new")
+		keepOld, _ := cmd.Flags().GetBool("keep-old-remote")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		assumeYes, _ := cmd.Flags().GetBool("yes")
+		if err := mgr.Rotate(engine.RotateOptions{
+			NewKeyPath:    newKey,
+			KeepOldRemote: keepOld,
+			DryRun:        dryRun,
+			AssumeYes:     assumeYes,
+		}); err != nil {
+			utils.Error("%v", err)
+			os.Exit(1)
+		}
+	case "status":
+		var hosts []string
+		if all, _ := cmd.Flags().GetBool("all"); !all && len(args) > 1 {
+			hosts = args[1:]
+		}
+		if err := mgr.Status(hosts); err != nil {
+			utils.Error("%v", err)
+			os.Exit(1)
+		}
+	default:
+		_ = cmd.Help()
+	}
+}
+
+func runDecommission(cmd *cobra.Command, args []string) {
+	if len(args) < 1 {
+		utils.Error("Usage: spool decommission <host> [--purge-config] [--yes]")
+		os.Exit(1)
+	}
+
+	mgr, err := engine.NewKeyManager(BaseDir)
+	if err != nil {
+		utils.Error("Failed to init key manager: %v", err)
+		os.Exit(1)
+	}
+
+	purge, _ := cmd.Flags().GetBool("purge-config")
+	assumeYes, _ := cmd.Flags().GetBool("yes")
+	if err := mgr.Decommission(args[0], engine.DecommissionOptions{
+		PurgeConfig: purge,
+		AssumeYes:   assumeYes,
+	}); err != nil {
+		utils.Error("%v", err)
 		os.Exit(1)
 	}
 }
