@@ -1,4 +1,4 @@
-.PHONY: all build init-out clean
+.PHONY: all build init-out clean build-rdp build-rdp-gateway build-rdp6-agent
 
 BINARY_NAME := spool
 CMD_PATH := ./cmd/spool/
@@ -75,3 +75,17 @@ build-windows:
 	@echo "==> Building for windows/amd64..."
 	@mkdir -p $(OUT_DIR)
 	GOOS=windows GOARCH=amd64 go build -o $(OUT_DIR)/$(BINARY_NAME)-windows-amd64.exe $(CMD_PATH)
+
+# RDP 安全网关组件（静态交叉编译到 linux/amd64：txhk 与 istoreos 均为 x86_64+musl，
+# CGO_ENABLED=0 产出无运行时依赖的单文件，经 spool sync push 部署。见 doc/RDP-GUARD.md）
+build-rdp: build-rdp-gateway build-rdp6-agent
+
+build-rdp-gateway:
+	@echo "==> Building rdp-gateway (linux/amd64, static)..."
+	@mkdir -p $(OUT_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o $(OUT_DIR)/rdp-gateway ./cmd/rdp-gateway
+
+build-rdp6-agent:
+	@echo "==> Building rdp6-agent (linux/amd64, static)..."
+	@mkdir -p $(OUT_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o $(OUT_DIR)/rdp6-agent ./cmd/rdp6-agent

@@ -1,4 +1,21 @@
-# RDP 安全网关实施方案 v3.3
+# RDP 安全网关实施方案 v3.4
+
+> ## ✅ v3.4 已落地（2026-06-06，经 spool 部署并验证）
+>
+> 本方案已从纸面落到生产。三项技术裁决与实现：
+> 1. **授权连接页 = 自研（Go），非开源现成品**：无开源产品恰好做"Authelia forward_auth → 动态 v4 白名单 + 经 Tailscale 跨主机开 v6 pinhole + 返回当前 GUA 页"；fwknop/敲门用的是非 Web、非 2FA 模型，无法与 Authelia 集成。
+> 2. **语言 = Go 静态二进制，替换文档中所有 Python**：istoreos 路由器**无 python3** + musl + flash 受限，装 python 不划算；Go `CGO_ENABLED=0 GOARCH=amd64` 单文件零依赖。两机均 x86_64。**txhk 转发也并入 Go（免 socat）**。
+>    - `cmd/rdp-gateway`（txhk）：授权页 + v4 白名单(nft+内存双闸) + 调 istoreos agent + **TCP/UDP 代理**，取代 §4.4 `unlock.py` 与 §4.6 socat。
+>    - `cmd/rdp6-agent`（istoreos）：仅监听 Tailscale + token + **动态发现 Win10 真实 GUA** + 写 fw4 set，取代 §6.3 `agent.py`。
+> 3. **IPv6 获取法 = agent 运行时动态发现真实 GUA**（优先级：EUI-64已观测→邻居表→DHCPv6租约→::129→EUI-64计算）。实测 Win10 用 **SLAAC stable-privacy**（非 EUI-64），agent 经 neigh 命中并返回其真实 GUA `2408:832e:208a:abe0:4d52:fe70:9926:a35d`，比文档"纯算 ::129"稳。DHCPv6 ::129 预留保留作稳定器。
+>
+> **验证通过**：路径 A（agent 仅 100.64.0.2:8091 监听、返回真实 GUA、错 token 403、fw4 set 开关正常）；路径 B（授权页同时给出 v6/v4 地址、nft 白名单写入、TCP/UDP 代理转发到 192.168.7.129:3389）；**内嵌 DERP 已启用**（/health=200、STUN udp/3478、txhk→home **直连 ~62ms**、netcheck 最近 DERP=txhk）。
+>
+> **§7 重要修正**：Win10 **不在 Tailscale**、是内网常开机 192.168.7.129。路径 B 经 istoreos 子网路由（`NoSNAT:false`）**SNAT**，Win10 看到的源是 **`192.168.7.1`**，故文档旧 §7 的 `RemoteAddress 100.64.0.0/10` **错**。加固见 `doc/rdp-win10-hardening.ps1`。
+>
+> **部署坑（spool）**：`spool sync push` 的 `ensureRemoteDir` 对非 root 主机会把"目标文件父目录"`chown` 给同步用户。曾因把文件推到 `/etc/*` 而误把 txhk 的 `/etc`、`/etc/sudoers.d` chown 成 silkspool → sudo 失效（用户 root 执行 `chown root:root /etc /etc/sudoers.d` 已恢复）。**规避**：txhk 的 RDP 文件全部 `spool` 推到 `/opt/rdp-gateway/` 暂存区，再 `spool exec` 用 `sudo install` 落位到 `/etc`。istoreos（root@）不受此影响。
+>
+> **待用户侧**：① Cloudflare 加 `rdp.singll.net A → 43.129.195.4`（v6 不绑 DNS——会公开 GUA 且漂移，授权页已实时给）；② 腾讯云安全组放行 `udp/3478`（STUN，DERP 增强）；③ 公司设备 v6 测试；④ Win10 跑加固脚本；⑤ 浏览器 2FA 实连。
 
 > **目标**：让「装不了 Tailscale 的临时设备」通过原生 RDP（mstsc）安全连接家里内网的 Win10（192.168.7.129）。
 > **架构**：**双路径** —— 快车道 A（IPv6 端到端直连，公司侧有 v6 时启用，最低延迟）+ 兜底 B（txhk 香港公网中转，任意 IPv4 客户端永远可用）。
@@ -177,6 +194,8 @@ table inet rdp_guard {
 
 ### 4.4 IP 登记服务 unlock（v4 白名单 + 触发 v6 开门 + 返回 GUA）
 
+> ⚠️ **v3.4：以下 Python 已被 Go 取代** —— 实际实现为 `cmd/rdp-gateway`（授权页 + v4 白名单 + 调 agent + TCP/UDP 代理一体）。下文 Python 仅留作设计参考。
+
 `hosts/txhk/rdp-unlock/unlock.py`（Python 标准库；只信 Caddy 注入的 `X-Real-IP`；2FA 后**一次性武装两条路径**并返回 HTML）：
 
 ```python
@@ -352,6 +371,8 @@ config rule
 
 **(b) rdp6-agent（`/opt/rdp6-agent/agent.py`，仅监听 Tailscale IP，token 校验，GUA 服务端计算）：**
 
+> ⚠️ **v3.4：以下 Python 已被 Go 取代** —— 实际实现为 `cmd/rdp6-agent`，且 GUA 改为**动态发现真实地址**（neigh/DHCPv6 租约/EUI-64/::129 多法兜底），而非纯算 ::129。下文 Python 仅留作设计参考。
+
 ```python
 #!/usr/bin/env python3
 """仅监听 Tailscale；校验 token 后把当前 Win10 GUA(<前缀>::129) 加入 fw4 set rdp6_open（TTL），返回该 GUA。"""
@@ -431,9 +452,10 @@ Get-LocalGroupMember -Group "Administrators" | ? Name -like "*rdp_remote*"   # �
 # 3. 账户锁定（5 次失败锁 15 分钟）—— v6 直连尤为重要
 net accounts /lockoutthreshold:5 /lockoutwindow:15 /lockoutduration:15
 
-# 4. 防火墙作用域
-Set-NetFirewallRule -DisplayName "Remote Desktop - User Mode (TCP-In)" -RemoteAddress "100.64.0.0/10"   # 路径 B（txhk socat 出口）
-#   路径 A（v6）默认放行入站 RDP；如公司 v6 前缀稳定可叠加 RemoteAddress 收敛（§6.4）
+# 4. 防火墙作用域 —— ★v3.4 修正：Win10 不在 Tailscale，路径 B 经 istoreos 子网路由 SNAT，
+#    Win10 看到的源是 192.168.7.1（不是 100.64.0.0/10）。完整脚本见 doc/rdp-win10-hardening.ps1。
+Enable-NetFirewallRule -DisplayGroup "Remote Desktop"   # 放行 RDP；门控在上游(txhk 2FA / istoreos 3min pinhole)+NLA+锁定
+#   可选收敛：禁用过宽 TCP-In/UDP-In，仅放行 192.168.7.0/24(v4 路径B) 与 2000::/3(v6 路径A)，见 ps1 §5b
 
 # 5. 启用 RDP UDP（RemoteFX，配合 §4.2 / 路径 A）
 Set-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name "fClientDisableUDP" -Value 0 -ErrorAction SilentlyContinue
