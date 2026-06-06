@@ -266,10 +266,20 @@
       "Bash(bash -c 'source config.ini; echo \"=== KNOWLEDGE ===\"; for s in \"${SERVICES_KNOWLEDGE[@]}\"; do echo \"  $s\"; done; echo \"=== KEEPER ===\"; for s in \"${SERVICES_KEEPER[@]}\"; do echo \"  $s\"; done')",
       "Bash(scp -i /home/ubuntu/SilkSpool/keys/id_silkspool -o ConnectTimeout=10 -o StrictHostKeyChecking=no /tmp/openclash_custom_overwrite.sh root@192.168.7.1:/etc/openclash/custom/openclash_custom_overwrite.sh)",
       "Bash(scp -i /home/ubuntu/SilkSpool/keys/id_silkspool -o StrictHostKeyChecking=no /tmp/openclash_custom_overwrite.sh root@192.168.7.1:/etc/openclash/custom/openclash_custom_overwrite.sh)",
-      "Bash(./spool.sh backup *)"
+      "Bash(./spool.sh backup *)",
+      "WebFetch(domain:api.steampowered.com)",
+      "Bash(echo \"=== Authelia config.yml: session 段 ===\"; sed -n '/^session:/,/^[a-z]/p' /opt/SilkSpool/hosts/txhk/authelia/config.yml 2>/dev/null | head -40 *)",
+      "Bash(echo \"=== spool 管理的主机 ===\"; grep -iE '^\\\\s*-?\\\\s*\\(name|host|addr|user\\):' /opt/SilkSpool/silkspool.yaml 2>/dev/null | head -40; echo \"--- 或 hosts 段 ---\"; sed -n '/hosts:/,/^[a-z]/p' /opt/SilkSpool/silkspool.yaml 2>/dev/null | head -50)",
+      "Bash(./out/spool key *)",
+      "Bash(./out/spool decommission *)",
+      "Bash(set -e)",
+      "Bash(spool key *)"
     ],
     "additionalDirectories": [
-      "/home/ubuntu/Bellkeeper/doc"
+      "/home/ubuntu/Bellkeeper/doc",
+      "/opt/SilkSpool/hosts/istoreos/openclash",
+      "/opt/SilkSpool/hosts/txhk/authelia",
+      "/opt/SilkSpool"
     ]
   }
 }

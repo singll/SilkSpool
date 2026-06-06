@@ -1,10 +1,12 @@
-# RDP 安全网关实施方案 v2.0
+# RDP 安全网关实施方案 v3.0
 
 > **目标**：让「装不了 Tailscale 的临时设备」通过原生 RDP（mstsc）安全连接家里内网的 Win10（192.168.7.129）。
-> **双路径**：① IPv6 端到端直连（优选，性能最好，无中转）② txhk 香港公网中转（兜底，任意 IPv4 客户端可用）。
+> **路径**：txhk 香港公网中转（唯一路径，任意 IPv4 客户端可用）。
 > **认证底座**：Authelia 2FA → 动态防火墙白名单（短 TTL）；最后底线：Windows NLA + 弱权账户 + 账户锁定。
 >
-> 本版基于 2026-06-05 实测环境调查与方案审计重写。v1.0 的环境数据已多处过期，**勿再参照 v1.0**。
+> 本版基于 2026-06-06 实测：**Win10 无公网 IPv6**，v2.0 的路径 A（IPv6 直连）不可行，已移除。
+> 新增 §3「直连方案对比」，列出在「不可内网穿透、不可用向日葵等远程工具」约束下的直连替代方案。
+> v1.0/v2.0 的环境数据已多处过期，**勿再参照旧版**。
 
 ---
 
@@ -50,92 +52,271 @@ txhk → 192.168.7.129:3389  : OPEN
 | 路由器 | iStoreOS `192.168.7.1`（= spool 主机 `istoreos` = Tailscale `route` 节点 `100.64.0.2`），跑 Caddy/Authelia/homepage/openclash（Docker）+ tailscaled（subnet router + exit node） | 子网路由把 `192.168.7.0/24` 宣告给 txhk |
 | Win10 | `192.168.7.129`，RDP 3389 开放 | future 节点 `100.64.0.1`，**当前关机（21 天）** |
 | **IPv4 公网入站** | PPPoE 接口 `113.227.140.75` ≠ 实际出口 `103.190.178.216` | **CGNAT/大内网，无法从公网入站**（实测从 txhk 连两个候选 IP 的临时端口均 `Connection refused`，SYN 止于运营商 NAT） |
-| **IPv6 公网** | br-lan 下发 `2408:832e:208a:abe0::/60`（联通公网 /60） | **LAN 设备（含 Win10）可获公网 v6** → IPv6 端到端直连可行（见路径 A） |
+| **IPv6 公网** | 路由器 br-lan 下发 `2408:832e:208a:abe0::/60`（联通公网 /60），但 **Win10 未获取到公网 IPv6 地址** | **IPv6 直连不可行**（v2.0 路径 A 已移除） |
 
 ### 1.3 关键结论
 
 - ❌ **IPv4 动态直连不可行**：你能查到的"公网 IP"是运营商共享 NAT 出口，端口不归你，DDNS 跟踪也无法入站。
-- ✅ **IPv6 端到端直连可行**：家里有公网 /60，Win10 可拿公网 v6。这才是你设想的"动态直连"的正确落点 —— 但受限于**客户端是否有 v6 出口**（酒店/企业网常无）。
-- ✅ **IPv4 必须经 txhk 中转兜底**：保证任何 v4 客户端都能连，这是「保证可用」的基线。
+- ❌ **IPv6 端到端直连不可行**：虽然家里有公网 /60 前缀，但 Win10 实测无公网 v6 地址，无法作为直连目标。
+- ✅ **IPv4 必须经 txhk 中转**：保证任何 v4 客户端都能连，这是「保证可用」的基线。
+- △ **如需直连提升性能**：需借助客户端辅助工具建立虚拟隧道，详见 §3。
 
 ---
 
 ## 2. 路径选择与决策
 
 ```
-                       ┌─ 客户端有可用 IPv6? ─┐
-       是（性能最好）  │                      │  否（保证可用）
-            ▼          │                      │       ▼
-  路径 A：IPv6 直连     │                      │   路径 B：txhk 中转
-  mstsc → rdp6.singll  │                      │   mstsc → 43.129.195.4:33890
-   .net:3389           │                      │     → socat → Tailscale 子网路由
-   端到端，无中转       │                      │     → 192.168.7.129:3389
+客户端（任意 IPv4）
+       │
+       ▼
+路径 B：txhk 中转
+mstsc → 43.129.195.4:33890
+  → socat → Tailscale 子网路由
+  → 192.168.7.129:3389
 ```
 
-| 维度 | 路径 A（IPv6 直连） | 路径 B（txhk 中转） |
-|------|---------------------|---------------------|
-| 路径 | 客户端 → 公网 v6 → Win10 | 客户端 → 香港 txhk → Tailscale → route → Win10 |
-| 延迟 | **最低**（端到端直达） | 较高（绕香港 + 双跳隧道，txhk→Win10 实测 ~180ms） |
-| 前提 | 客户端有 v6 + Win10 开机有公网 v6 | 仅需客户端有 v4（**永远满足**） |
-| 暴露面 | Win10 v6 的 3389（需防护） | txhk 的 33890（Authelia 网关 + 白名单） |
-| 落地难度 | 中（动态 DDNS + 家里 v6 防火墙） | 中（已有 Authelia/Caddy/Tailscale） |
-
-**实施次序建议**：
-
-1. **阶段一（先做，保证可用）**：路径 B（§4），修正 v1.0 全部缺陷后落地。任何设备立即可连。
-2. **阶段二（Win10 开机后，性能优化）**：验证 Win10 公网 v6 可达性后，加配路径 A（§3）。
-3. 客户端使用时：能 v6 就连 `rdp6.singll.net`（A），否则连 `43.129.195.4:33890`（B）。
+| 维度 | 路径 B（txhk 中转） |
+|------|---------------------|
+| 路径 | 客户端 → 香港 txhk → Tailscale → route → Win10 |
+| 延迟 | 较高（绕香港 + 双跳隧道，txhk→Win10 实测 ~180ms） |
+| 前提 | 仅需客户端有 v4（**永远满足**） |
+| 暴露面 | txhk 的 33890（Authelia 网关 + 白名单） |
+| 落地难度 | 中（已有 Authelia/Caddy/Tailscale） |
 
 > **为何不用 Guacamole（浏览器内 RDP）**：你要原生 mstsc 体验/性能。Guacamole 同样得部署在 txhk（仍绕香港），且 txhk 仅 2 核 3.6G、跑 Tomcat+guacd 偏重、guacd 须源码编译。性能与体验都不如原生 RDP。详见 §7 工具调研。
 
 ---
 
-## 3. 路径 A：IPv6 端到端直连（优选，待 Win10 开机验证）
+## 3. 直连方案对比（提升性能的替代路径）
 
-### 3.1 前提验证清单（Win10 开机后执行）
+> **约束前提**：
+> - ❌ 不可使用内网穿透（公司电脑不可将公司网络连入家庭网络）
+> - ❌ 不可使用向日葵、ToDesk、TeamViewer 等商业远程工具
+> - ✅ 可使用客户端辅助工具建立虚拟隧道
+> - ✅ 目标是原生 RDP 体验（mstsc），而非浏览器或第三方客户端
 
-```powershell
-# Win10 是否拿到公网 v6（应出现 2408:832e:208a:abe0:xxxx，非 fe80/fde1 内网）
-ipconfig | findstr /i "IPv6"
-# 从外部有 v6 的设备测试可达（在客户端执行）
-ping -6 <Win10的公网v6>
-Test-NetConnection -ComputerName <Win10的公网v6> -Port 3389
+### 3.1 方案总览
+
+| 方案 | 原理 | 客户端要求 | 服务端要求 | 延迟 | 安全性 | 复杂度 | 推荐度 |
+|------|------|-----------|-----------|------|--------|--------|--------|
+| **A. Tailscale 直连** | WireGuard 零配置 VPN，NAT 穿透 | 装 Tailscale 客户端 | Win10 装 Tailscale | **最低**（P2P 直连） | 🥇 端到端加密 | 低 | ⭐⭐⭐⭐⭐ |
+| **B. WireGuard 手动** | 轻量 VPN，需手动配置 | 装 WireGuard 客户端 | 家里路由器/Win10 跑 WG | 低（直连） | 🥇 端到端加密 | 中 | ⭐⭐⭐⭐ |
+| **C. ZeroTier** | SD-WAN 虚拟局域网 | 装 ZeroTier 客户端 | Win10 装 ZeroTier | 低（P2P） | 🥇 端到端加密 | 低 | ⭐⭐⭐⭐ |
+| **D. Cloudflare Tunnel + WARP** | Cloudflare 边缘隧道 | 装 Cloudflare WARP | 家里跑 cloudflared | 中（经 CF 边缘） | 🥈 TLS 加密 | 中 | ⭐⭐⭐ |
+| **E. frp 反向代理** | 从家里主动连公网服务器 | 无需客户端 | 公网服务器 + 家里 frpc | 中（经公网服务器） | 🥈 可加密 | 中 | ⭐⭐ |
+| **F. 当前方案（txhk 中转）** | 固定公网服务器转发 | 无需客户端 | txhk + Authelia | 高（绕香港） | 🥈 2FA + 白名单 | 中 | ⭐⭐（兜底） |
+
+### 3.2 方案详解
+
+#### 方案 A：Tailscale 直连（最推荐）
+
+**原理**：Tailscale 基于 WireGuard，自动处理 NAT 穿透（STUN/DERP），在大多数场景下可实现 P2P 直连。
+
+**架构**：
+```
+公司电脑（Tailscale 客户端）
+       │
+       ▼ Tailscale mesh（P2P 直连或经 DERP 中继）
+       │
+家里 Win10（Tailscale 客户端，100.64.0.1）
 ```
 
-- 若 Win10 **未拿到公网 v6**：检查 iStoreOS 是否对 br-lan 开启 IPv6 NDP/DHCPv6-PD 下发（一般默认开）。
-- 若客户端**无 v6 出口**：路径 A 不可用，回退路径 B。
+**优点**：
+- ✅ **零配置 NAT 穿透**：自动尝试 STUN 打洞，失败时经 DERP 中继（仍加密）
+- ✅ **端到端加密**：WireGuard 层加密，即使经 DERP 中继也无法被中间人解密
+- ✅ **最低延迟**：P2P 直连时延迟最低（无中转）
+- ✅ **已有基础设施**：你已有 Headscale 控制平面，只需让 Win10 加入
+- ✅ **ACL 控制**：可在 Headscale 配置访问策略
 
-### 3.2 动态 DDNS（解决 v6 地址/前缀变化）
+**缺点**：
+- ❌ 需要在客户端设备安装 Tailscale（但这是「客户端辅助」，不涉及内网穿透）
+- ❌ 公司网络可能阻止 UDP（此时会回退到 DERP 中继，延迟增加但仍可用）
 
-公网 v6 前缀随 PD 租约可能变化，需动态更新 `rdp6.singll.net` 的 AAAA 记录：
+**实施步骤**：
+1. Win10 安装 Tailscale，配置 Headscale 控制平面（`--login-server https://headscale.singll.net`）
+2. 客户端设备安装 Tailscale，登录同一控制平面
+3. 客户端直接 RDP 到 Win10 的 Tailscale IP（`100.64.0.1:3389`）
+4. 可选：在 Headscale ACL 中限制只有特定节点可访问 Win10 的 3389
 
-- **方式一（推荐，路由器侧）**：在 iStoreOS 上用 `ddns-go` 或 OpenWrt `ddns-scripts`，源取 Win10 的 v6（从 NDP/邻居表按 MAC 锁定 Win10），写入你的 DNS 提供商 AAAA。
-- **方式二（主机侧）**：Win10 上跑轻量 DDNS 客户端上报自身公网 v6。
-
-> Win10 的 v6 临时地址（privacy extension）会变，DDNS 应锁定其**稳定地址**（EUI-64 或 DHCPv6 分配），或在 Win10 关闭 v6 临时地址：`netsh interface ipv6 set global randomizeidentifiers=disabled`。
-
-### 3.3 家里 v6 防火墙：两种防护强度
-
-路径 A 把 Win10 的 3389 暴露在公网 v6。**不可裸奔**，二选一：
-
-- **方案 A1（简单）**：iStoreOS fw4 仅放行 3389/v6 入站到 Win10，配合 Win10 NLA + 强密码 + 账户锁定 + 可选 fail2ban。攻击面 = 全网 v6 扫描。
-- **方案 A2（推荐，对称复用 Authelia）**：在家里也做「2FA 解锁动态白名单」——
-  1. 客户端先浏览器访问 `rdp.singll.net` 过 Authelia 2FA；
-  2. 一个运行在 **istoreos** 上的 unlock 服务，把客户端的**公网 v6** 加入 fw4 的 v6 白名单 set（短 TTL）；
-  3. 客户端 mstsc 连 `rdp6.singll.net:3389`。
-  - 复用现有 `auth.singll.net`（Authelia）；istoreos 已有 Caddy(Docker)，加一个站点 + unlock 容器/进程即可。实现与路径 B 的 §4.2/§4.3 对称（把 nft 操作换成 istoreos fw4 的 v6 set）。
-
-> 阶段二落地时再细化 A2 的 istoreos 侧 unlock；阶段一先用路径 B。
+**与「内网穿透」的区别**：
+- 内网穿透 = 把公司网络**连入**家庭网络（公司电脑成为家庭网络的延伸）
+- Tailscale = 在两台电脑之间建立**点对点隧道**（公司网络和家庭网络保持隔离）
+- 公司电脑通过 Tailscale 只能访问 Win10，无法访问家里其他设备（除非显式配置）
 
 ---
 
-## 4. 路径 B：txhk 公网中转（兜底基线，v1.0 修正版）
+#### 方案 B：WireGuard 手动配置
+
+**原理**：WireGuard 是 Tailscale 的底层协议，手动配置可实现更精细的控制。
+
+**架构**：
+```
+公司电脑（WireGuard 客户端）
+       │
+       ▼ WireGuard 隧道（UDP）
+       │
+家里路由器/Win10（WireGuard 服务端）
+```
+
+**优点**：
+- ✅ **纯内核实现**：性能极高，延迟最低
+- ✅ **完全自主**：不依赖任何第三方服务
+- ✅ **端到端加密**：ChaCha20-Poly1305 加密
+
+**缺点**：
+- ❌ 需要公网服务器或家里有公网 IP（你有 CGNAT，需要公网服务器做中转或打洞）
+- ❌ 手动配置密钥和路由，维护成本高
+- ❌ NAT 穿透需手动配置（不如 Tailscale 自动）
+
+**实施方式**：
+1. **方式一（公网服务器中转）**：在 txhk 跑 WireGuard，公司和 Win10 都连到 txhk
+2. **方式二（NAT 打洞）**：使用 wg-quick + 手动配置 endpoint，但 CGNAT 下打洞困难
+
+**推荐**：如果追求极致性能且愿意手动维护，可在 txhk 跑 WireGuard 服务端，公司和 Win10 作为客户端连接。但这与当前 Tailscale 方案本质相同，只是更手动。
+
+---
+
+#### 方案 C：ZeroTier
+
+**原理**：ZeroTier 是类似 Tailscale 的 SD-WAN 方案，创建虚拟局域网。
+
+**架构**：
+```
+公司电脑（ZeroTier 客户端）
+       │
+       ▼ ZeroTier 虚拟网络
+       │
+家里 Win10（ZeroTier 客户端）
+```
+
+**优点**：
+- ✅ **Layer 2 虚拟网络**：可模拟完整以太网，支持广播/组播
+- ✅ **P2P 直连**：支持 NAT 穿透
+- ✅ **自建控制器**：可自建 ZeroTier 控制器（类似 Headscale）
+
+**缺点**：
+- ❌ 免费版限制 25 节点（自建控制器可绕过）
+- ❌ 配置比 Tailscale 稍复杂
+- ❌ 你已有 Tailscale/Headscale 基础设施，迁移成本
+
+**推荐**：如果 Tailscale 满足需求，无需迁移到 ZeroTier。
+
+---
+
+#### 方案 D：Cloudflare Tunnel + WARP
+
+**原理**：Cloudflare Tunnel 从家里主动连 Cloudflare 边缘，客户端通过 WARP 连接 Cloudflare。
+
+**架构**：
+```
+公司电脑（Cloudflare WARP 客户端）
+       │
+       ▼ Cloudflare 边缘网络
+       │
+家里 Win10（cloudflared tunnel）
+```
+
+**优点**：
+- ✅ **无需公网 IP**：从家里主动出站连接
+- ✅ **Cloudflare 边缘加速**：全球 Anycast 节点
+- ✅ **可配合 Access 做零信任**：类似 Authelia 的 2FA 控制
+
+**缺点**：
+- ❌ 需要 Cloudflare 账号（免费版可用）
+- ❌ 流量经 Cloudflare 边缘，非纯 P2P
+- ❌ RDP 需要通过 Cloudflare 的 TCP 隧道，可能有限制
+
+**实施步骤**：
+1. 家里跑 `cloudflared tunnel`，配置指向 Win10:3389
+2. 客户端安装 WARP，连接到同一 Cloudflare 网络
+3. 或使用 Cloudflare Access 配置浏览器 2FA + TCP 隧道
+
+**推荐**：如果不想自建基础设施，Cloudflare Tunnel 是不错的托管方案。
+
+---
+
+#### 方案 E：frp 反向代理
+
+**原理**：frp 从家里主动连接公网服务器（txhk），客户端连接公网服务器。
+
+**架构**：
+```
+公司电脑（mstsc）
+       │
+       ▼
+txhk（frps 公网服务端）
+       │
+       ▼ frp 隧道（从家里主动建立）
+       │
+家里 Win10（frpc 客户端）
+```
+
+**优点**：
+- ✅ **无需客户端**：客户端只需 mstsc
+- ✅ **从家里主动出站**：绕过 CGNAT 入站限制
+- ✅ **可复用 txhk**：已有公网服务器
+
+**缺点**：
+- ❌ **所有流量经 txhk**：与当前方案本质相同，延迟无改善
+- ❌ 需要额外部署 frps/frpc
+- ❌ 安全性需额外配置（token 加密、TLS）
+
+**推荐**：与当前 socat 方案功能等价，无性能提升，不建议重复建设。
+
+---
+
+#### 方案 F：当前方案（txhk 中转 + Authelia）
+
+**原理**：固定公网服务器转发 RDP 流量，配合 2FA 和动态白名单。
+
+**架构**：
+```
+公司电脑（mstsc）
+       │
+       ▼ Authelia 2FA + nftables 白名单
+       │
+txhk（socat 转发）
+       │
+       ▼ Tailscale 子网路由
+       │
+家里 Win10
+```
+
+**优点**：
+- ✅ **无需客户端**：任意浏览器 + mstsc 即可
+- ✅ **安全性高**：2FA + 动态白名单 + NLA
+- ✅ **已部署**：基础设施就绪
+
+**缺点**：
+- ❌ **延迟高**：绕香港 + 双跳隧道
+- ❌ **依赖 txhk 可用性**：单点故障
+
+**定位**：作为「兜底方案」，当无法安装客户端时使用。
+
+---
+
+### 3.3 方案选择建议
+
+| 场景 | 推荐方案 | 理由 |
+|------|---------|------|
+| **公司允许安装软件** | A. Tailscale 直连 | 性能最好，已有基础设施，安全可靠 |
+| **公司禁止安装软件** | F. txhk 中转（当前方案） | 无需客户端，浏览器 2FA 即可 |
+| **追求极致性能** | B. WireGuard 手动 | 纯内核，延迟最低，但维护成本高 |
+| **不想自建基础设施** | D. Cloudflare Tunnel | 托管方案，零运维 |
+| **需要 Layer 2 网络** | C. ZeroTier | 虚拟局域网，支持广播 |
+
+**最终建议**：
+1. **主力方案**：Tailscale 直连（方案 A）—— 在公司电脑和 Win10 都装 Tailscale，实现 P2P 直连
+2. **兜底方案**：txhk 中转（方案 F，当前已部署）—— 当无法安装客户端时使用
+3. **两者并存**：日常用 Tailscale（低延迟），临时设备用 txhk 中转（无需客户端）
+
+---
+
+## 4. 路径 B：txhk 公网中转（当前方案）
 
 > 以下已修正 v1.0 审计发现的 A–L 全部缺陷。**所有配置纳入 spool 版本管理**（§4.6），不手动 SSH 编辑。
 
 ### 4.1 nftables 动态白名单（修正 A/E：补 established + lo）
-
-v1.0 缺 `ct state established` → 白名单过期时**已建立的 RDP 会话会在第 3 分钟被切断**（与文档承诺矛盾）；且缺 `iif lo` → 本机自测被 drop。修正后的规则集 `hosts/txhk/nftables/rdp_guard.nft`：
 
 ```nft
 #!/usr/sbin/nft -f
@@ -345,7 +526,7 @@ spool exec txhk "sudo systemctl enable --now nftables-rdp rdp-unlock rdp-forward
 
 ---
 
-## 5. Windows 10 加固（两路径共用，Win10 开机后执行）
+## 5. Windows 10 加固（Win10 开机后执行）
 
 ```powershell
 # 1. 专职低权账户（强密码、永不过期）
@@ -366,16 +547,16 @@ net accounts /lockoutthreshold:5 /lockoutwindow:15 /lockoutduration:15
 # 4. 防火墙作用域（按路径分别放行）
 #   路径 B（中转）：socat 从 txhk 的 Tailscale IP 100.64.0.3 发起 → 放行 Tailscale 段
 Set-NetFirewallRule -DisplayName "Remote Desktop - User Mode (TCP-In)" -RemoteAddress "100.64.0.0/10"
-#   路径 A（v6 直连）：另加一条放行客户端公网 v6（动态白名单方案 A2 时由家里防火墙控制，Win10 可放宽到 v6 Any 仅靠 NLA）
+#   Tailscale 直连：Win10 加入 Tailscale 后，RDP 流量来自 Tailscale 段，同上规则已覆盖
 ```
 
-> 路径 B 下，Win10 看到的源 IP 是 txhk 的 `100.64.0.3`（socat 出口），与防火墙 `100.64.0.0/10` 一致；真正按客户端 IP 收敛的是 txhk 的 nftables 白名单。
+> 路径 B 下，Win10 看到的源 IP 是 txhk 的 `100.64.0.3`（socat 出口），与防火墙 `100.64.0.0/10` 一致；真正按客户端 IP 收敛的是 txhk 的 nftables 白名单。Tailscale 直连时，Win10 看到的源 IP 是客户端的 Tailscale IP，同样在 `100.64.0.0/10` 段内。
 
 ---
 
-## 6. 安全机制时间线（修正版）
+## 6. 安全机制时间线
 
-| 时间 | 路径 B 事件 |
+| 时间 | txhk 中转事件 |
 |------|------|
 | T+0 | 客户端访问 `rdp.singll.net`，Authelia 2FA（或持有效会话） |
 | T+~10s | 认证通过，`unlock.py` 把客户端 IP 写入 nftables set（TTL=3min） |
@@ -389,12 +570,16 @@ Set-NetFirewallRule -DisplayName "Remote Desktop - User Mode (TCP-In)" -RemoteAd
 
 | 方案 | 公网 RDP 暴露 | 客户端要求 | txhk/家里负载 | 落地复杂度 | 适配本场景 |
 |------|------|------|------|------|------|
-| **路径 A：IPv6 直连** | 否（端到端） | 需 v6 出口 | 极低 | 中（DDNS+v6防火墙） | 🥇 性能最好，受客户端 v6 限制 |
-| **路径 B：socat 中转** | 是（Authelia+白名单 gated） | 仅需 v4 | 极低 | 中 | 🥈 永远可用，本方案基线 |
+| **Tailscale 直连** | 否（端到端加密） | 装 Tailscale | 极低 | **低**（已有 Headscale） | 🥇 性能最好，P2P 直连，与现有基础设施无缝集成 |
+| **当前方案：socat 中转** | 是（Authelia+白名单 gated） | 仅需 v4 | 极低 | 中 | 🥈 永远可用，兜底方案 |
+| **WireGuard 手动** | 否（端到端加密） | 装 WireGuard | 极低 | 中（手动配置） | ✅ 性能好，但不如 Tailscale 省心 |
+| **ZeroTier** | 否（端到端加密） | 装 ZeroTier | 极低 | 低 | △ 与 Tailscale 同类，已有 Tailscale 则无需 |
+| **Cloudflare Tunnel** | 否（TLS 加密） | 装 WARP | 低 | 中 | △ 托管方案，非 P2P |
+| **frp 反向代理** | 是（需额外安全层） | 无需 | 低 | 中 | △ 与 socat 中转等价，无性能提升 |
 | Guacamole 浏览器内 RDP | 否（443 复用） | 仅浏览器 | **高**（Tomcat+guacd） | **高**（guacd 须源码编译） | ❌ 仍绕香港、txhk 偏重、非原生体验 |
 | fwknop SPA 单包授权 | 否（端口隐形） | 需装客户端 | 极低 | 中 | △ 隐蔽性最强，但非"浏览器即可"，上游活跃度下降 |
-| systemd-socket-proxyd | 同 B | 同 B | 极低 | **低**（systemd 自带） | ✅ **替代 socat 免安装**，推荐用于 §4.4 |
-| caddy-l4（L4 反代） | 同 B | 同 B | 低 | 中（须 xcaddy 重编译 Caddy） | △ 与 Caddy 统一，但纯转发相比 socat 优势有限 |
+| systemd-socket-proxyd | 同当前方案 | 同当前方案 | 极低 | **低**（systemd 自带） | ✅ **替代 socat 免安装**，推荐用于 §4.4 |
+| caddy-l4（L4 反代） | 同当前方案 | 同当前方案 | 低 | 中（须 xcaddy 重编译 Caddy） | △ 与 Caddy 统一，但纯转发相比 socat 优势有限 |
 
 要点与来源：
 
@@ -402,7 +587,7 @@ Set-NetFirewallRule -DisplayName "Remote Desktop - User Mode (TCP-In)" -RemoteAd
 - **[Guacamole 1.6.0](https://guacamole.apache.org/doc/1.6.0/gug/guacamole-native.html)**：guacd 必须源码编译（cairo/libjpeg/libvncserver 等），Tomcat 9/10 的 javax/jakarta 命名空间坑；txhk 2 核 3.6G 偏重。本场景不推荐。
 - **[fwknop SPA](https://github.com/mrash/fwknop)**：端口对 nmap 完全隐形、抗重放、纯 C 无解释器依赖、可对接 nftables；适合替换"web 解锁"为"单包解锁"，但要装客户端，不满足"任意浏览器即可"。
 - **[caddy-l4](https://github.com/mholt/caddy-l4)** / [layer4 proxy 文档](https://caddyserver.com/docs/modules/layer4.handlers.proxy)：声明式 L4 路由，需 `xcaddy build --with github.com/mholt/caddy-l4`；RDP 后端不认 proxy_protocol，纯转发场景收益不大。
-- **Tailscale 原生**：最安全，但你的核心约束是「客户端装不了 Tailscale」，故仅适用于"被连的 Win10 装 Tailscale"以简化路径 B 的转发目标（直接转发到 Win10 的 100.64.0.1，免依赖 route 子网路由）——待 Win10 常开时可优化。
+- **Tailscale 直连**：最安全且性能最好，Win10 装 Tailscale 加入 Headscale 后，客户端也装 Tailscale 即可实现 P2P 直连（见 §3 方案 A）。若客户端无法装 Tailscale，Win10 的 Tailscale 仍可简化当前方案的转发目标（直接转发到 100.64.0.1，免依赖 route 子网路由）。
 
 ---
 
@@ -435,7 +620,7 @@ spool exec txhk "ping -c1 192.168.7.129 && timeout 3 bash -c 'echo>/dev/tcp/192.
 | RDP 连上 3 分钟后掉线 | nftables 缺 `ct state established`（v1.0 缺陷） | `nft list table inet rdp_guard` 确认含 established 规则 |
 | 自测 `nc 127.0.0.1 33890` 失败 | 缺 `iif lo accept` | 同上确认含 lo 放行 |
 | route offline / 子网路由丢失 | istoreos tailscaled 未连控制面 | `spool exec istoreos "tailscale status"`；必要时 `/etc/init.d/tailscale restart` |
-| 路径 A v6 连不上 | 客户端无 v6 / Win10 无公网 v6 / DDNS 未更新 | 客户端 `ping -6`；Win10 `ipconfig`；查 AAAA 记录 |
+| Tailscale 直连不通 | 客户端/Win10 未上线 / 公司网阻止 UDP | `tailscale status`；`tailscale ping <对端>`；检查 DERP 回退 |
 
 ### 日志位置
 
@@ -466,4 +651,4 @@ spool exec istoreos "tailscale status; nslookup headscale.singll.net"
 
 ---
 
-*文档版本: 2.0 | 重写日期: 2026-06-05 | 基于实测环境与 v1.0 方案审计 | 前置 P0 已修复*
+*文档版本: 3.0 | 重写日期: 2026-06-06 | 移除 IPv6 路径（Win10 无 v6），新增直连方案对比 | 前置 P0 已修复*
