@@ -1,25 +1,29 @@
-# RDP 安全网关实施方案 v3.1
+# RDP 安全网关实施方案 v3.2
 
 > **目标**：让「装不了 Tailscale 的临时设备」通过原生 RDP（mstsc）安全连接家里内网的 Win10（192.168.7.129）。
-> **路径**：txhk 香港公网中转（唯一路径，任意 IPv4 客户端可用）。
+> **架构**：**双路径** —— 快车道 A（IPv6 端到端直连，公司侧有 v6 时启用，最低延迟）+ 兜底 B（txhk 香港公网中转，任意 IPv4 客户端永远可用）。
 > **认证底座**：Authelia 2FA → 动态防火墙白名单（短 TTL）；最后底线：Windows NLA + 弱权账户 + 账户锁定。
 >
-> 本版基于 2026-06-06 实测：**Win10 无公网 IPv6**，v2.0 的路径 A（IPv6 直连）不可行，已移除。
-> 新增 §3「低延迟方案对比」，列出在「公司电脑禁止安装虚拟网卡/虚拟网络、禁止内网穿透、禁止向日葵等远程工具」约束下的替代方案。
-> v1.0/v2.0 的环境数据已多处过期，**勿再参照旧版**。
+> **v3.2 关键变更（2026-06-06 实测驱动）**：
+> 1. **推翻 v3.1 的延迟归因**：实测 `tailscale ping` 证明 txhk→home 的 80–100ms 不是物理延迟，而是 **Tailscale 公共香港 DERP 绕行（130ms）**；真实直连仅 **52ms**。新增 §3 实测与 §4.1 中转优化（txhk 内嵌 DERP），把中转路径从 ~170ms 砍到 ~90–100ms，**零成本、不买 VPS、不碰 AD**。
+> 2. **恢复 IPv6 直连快车道**：v3.1 因「Win10 无 v6」误删了 v6 路径。实测家里路由器握有完整公网 `/60`、RA 服务已开、LAN 设备已在分配公网 GUA —— v6 基础早已就绪。Win10「无 v6」是关机 21 天的过期观测。详见 §5/§6。
+> 3. **新增 §8 安全审查**：对全部新增改动（尤其 **headscale 内嵌 DERP**）做机密性 / 暴露面 / 信任边界 / 可用性分析。
+>
+> v3.1 的核心加固（nftables 白名单、unlock 服务、Caddy、Win10 加固、P0 修复）保留并增强。v1.0/v2.0 数据已过期，**勿再参照**。
 
 ---
 
 ## 0. 前置修复记录（2026-06-05，已完成）
 
-部署本方案前必须保证 Tailscale 子网路由可用。调查中发现昨日（06-04 17:20）给 txhk 上 Authelia 时引发**两个连锁故障**，导致所有 Tailscale 节点控制面失联（`headscale nodes list` 全部 offline）。已修复：
+部署本方案前必须保证 Tailscale 子网路由可用。06-04 给 txhk 上 Authelia 时引发**两个连锁故障**，导致所有 Tailscale 节点控制面失联。已修复：
 
 | 编号 | 根因 | 修复 | 验证 |
 |------|------|------|------|
 | P0-1 | txhk 的 Caddy 给 `headscale.singll.net` 整站套了 `forward_auth`（Authelia 2FA），节点用 machine key 走 `/key`、`/ts2021` 控制协议无法过 2FA → 控制面被 302 拦截 | `hosts/txhk/caddy/Caddyfile` 移除 headscale 段的 `forward_auth`，仅保留 `reverse_proxy 127.0.0.1:8080` | `curl /key` 由 302 变 400（直达 Headscale） |
 | P0-2 | 家里 istoreos 的 openclash 把 `headscale.singll.net` 分配成 fake-ip（198.18.0.30），本机 tailscaled 连控制面被劫持走代理 → noise 握手 `EOF` | `hosts/istoreos/openclash/openclash_custom_overwrite.sh` 的 `fake-ip-filter` 增加 `+.singll.net`，重启 openclash | 解析回归 43.129.195.4；`route` 节点恢复 online |
 
-> **经验**：自建服务域名（`*.singll.net`）中，**部署在 txhk 的服务（headscale/auth/matrix/ntfy）必须用真实公网 IP 直连**，既不能套面向人的 2FA，也不能进 openclash 的 fake-ip/代理。openclash 原先只为官方 `+.tailscale.io/.com` 做了直连豁免，漏了自建 Headscale 域名。
+> **经验**：部署在 txhk 的自建服务域名（headscale/auth/matrix/ntfy）必须用真实公网 IP 直连，既不能套面向人的 2FA，也不能进 openclash 的 fake-ip/代理。
+> **v3.2 强化**：§4.1 的内嵌 DERP 也跑在 `headscale.singll.net/derp` 上，**P0-1（不套 forward_auth）和 P0-2（fake-ip 豁免 `+.singll.net`）现在同时守护着 DERP**。任何回退这两条修复的操作都会同时打断控制面和 DERP 中继。
 
 **修复后验收（实测）**：
 
@@ -31,343 +35,155 @@ txhk → 192.168.7.129:3389  : OPEN
 
 ---
 
-## 1. 环境现状（2026-06-05 实测）
+## 1. 环境现状（2026-06-06 实测）
 
-### 1.1 txhk 云服务器（中转入口）
+### 1.1 txhk 云服务器（中转入口 / 控制面 / DERP）
 
 | 项目 | 值 | 备注 |
 |------|-----|------|
-| 公网 IP | `43.129.195.4` | 运营商 EIP，本机 eth0 实为 `172.19.0.11`（云内网，DNAT 映射） |
-| 公网 IPv6 | **无** | 仅 Tailscale ULA `fd7a:115c:a1e0::3`，无全球可路由 v6 |
-| 系统 | Ubuntu **22.04** LTS | 主机名 `ubuntu24` 是误导；Python 3.10.12 / pip 22.0.2（**不触发 PEP668 硬拦截**，但仍不建议污染系统库） |
-| Caddy | v2.10.2 | 入口反代，systemd 运行，配置 `/etc/caddy/Caddyfile` |
-| Authelia | 127.0.0.1:9091 | session `expiration: 1h` / `inactivity: 5m`；regulation `3 次/2min → 封 5min`；ACL `*.singll.net → two_factor`（已覆盖 `rdp.singll.net`，**无需改 ACL**） |
-| 防火墙 | iptables-nft `table ip filter`（Tailscale 装）；`inet` family 空闲，可建 `rdp_guard` 表共存 | |
-| 待装 | `socat` **未安装**（可用 systemd-socket-proxyd 替代，见 §7） | |
+| 公网 IPv4 | `43.129.195.4` | 腾讯云 EIP，本机 eth0 实为 `172.19.0.11`（云内网，DNAT 映射） |
+| 公网 IPv6 | **无（实测 rc=1）** | 仅 Tailscale ULA `fd7a:115c:a1e0::3`。**txhk 无任何全球 v6 出口** → v6 只能用于「公司↔家」端到端，帮不了香港中转段 |
+| 系统 | Ubuntu 22.04 LTS | Python 3.10（不触发 PEP668） |
+| Caddy | v2.10.2 | 入口反代，`*:443`，systemd，配置 `/etc/caddy/Caddyfile` |
+| headscale | `127.0.0.1:8080`（Caddy 反代 `headscale.singll.net`） | `server_url: https://headscale.singll.net`；DERP 当前 `enabled: false`，用公共 derpmap |
+| Authelia | `127.0.0.1:9091` | session `1h`/inactivity `5m`；regulation `3 次/2min → 封 5min`；ACL `*.singll.net → two_factor` |
+| 当前对外监听 | `tcp/443`(caddy) + `udp/41641`(tailscaled) | **`udp/3478` 当前关闭** → 启用内嵌 DERP 需新开（§8.1） |
+| 防火墙 | iptables-nft `table ip filter`（Tailscale 装）；`inet` family 空闲，建 `rdp_guard` 表共存 | 另有腾讯云安全组（云防火墙），开端口需同步放行 |
 
 ### 1.2 家里网络（被连目标侧）
 
 | 项目 | 值 | 结论 |
 |------|-----|------|
-| 路由器 | iStoreOS `192.168.7.1`（= spool 主机 `istoreos` = Tailscale `route` 节点 `100.64.0.2`），跑 Caddy/Authelia/homepage/openclash（Docker）+ tailscaled（subnet router + exit node） | 子网路由把 `192.168.7.0/24` 宣告给 txhk |
-| Win10 | `192.168.7.129`，RDP 3389 开放 | future 节点 `100.64.0.1`，**当前关机（21 天）** |
-| **IPv4 公网入站** | PPPoE 接口 `113.227.140.75` ≠ 实际出口 `103.190.178.216` | **CGNAT/大内网，无法从公网入站**（实测从 txhk 连两个候选 IP 的临时端口均 `Connection refused`，SYN 止于运营商 NAT） |
-| **IPv6 公网** | 路由器 br-lan 下发 `2408:832e:208a:abe0::/60`（联通公网 /60），但 **Win10 未获取到公网 IPv6 地址** | **IPv6 直连不可行**（v2.0 路径 A 已移除） |
+| 路由器 | iStoreOS `192.168.7.1`（spool 主机 `istoreos` = Tailscale `route` `100.64.0.2`），跑 Caddy/Authelia/homepage/openclash（Docker）+ tailscaled（subnet router + exit node） | 子网路由把 `192.168.7.0/24` 宣告给 txhk |
+| Win10 | `192.168.7.129`，RDP 3389 开放 | Tailscale `future` `100.64.0.1`，**当前关机（21 天）** |
+| **IPv4 公网入站** | PPPoE 接口 `113.227.140.75`，实际出口经运营商 NAT | **CGNAT，无法接受无请求入站**；但 **UDP 打洞可穿透**（实测 Tailscale 直连成功打到 `113.227.140.75:41641`，见 §3） |
+| **IPv6 公网（家侧）** | br-lan 持公网 `2408:832e:208a:abe0::1/60`（联通，有 v6 默认路由）；`dhcp.lan.ra='server'`/`dhcpv6='server'`/`ra_default=1` **已开**；LAN 设备**已在分配公网 GUA**（实测 neigh 表多个 `2408:832e:208a:abe0:*`） | **家侧 v6 基础已就绪**。v3.1「Win10 无 v6」系关机期间的过期观测，需 Win10 开机后复测（§5） |
+| **家侧入站 v6 默认策略** | `network.wan.ipv6='auto'`（v6 在 wan/PPPoE 同接口）；firewall `wan` zone `input=REJECT`/`forward=REJECT` **覆盖 v6** | **入站 v6 默认拒绝** → 开公网 v6 不会自动暴露 LAN；v6 直连需**显式 + 受控**的 pinhole（§6） |
 
 ### 1.3 关键结论
 
-- ❌ **IPv4 动态直连不可行**：你能查到的"公网 IP"是运营商共享 NAT 出口，端口不归你，DDNS 跟踪也无法入站。
-- ❌ **IPv6 端到端直连不可行**：虽然家里有公网 /60 前缀，但 Win10 实测无公网 v6 地址，无法作为直连目标。
-- ✅ **IPv4 必须经 txhk 中转**：保证任何 v4 客户端都能连，这是「保证可用」的基线。
-- △ **如需降低延迟**：在「禁止虚拟网卡/虚拟网络」约束下，需用应用层隧道或优化中转路径，详见 §3。
+- ❌ **IPv4 动态直连不可行**：家里是运营商共享 NAT 出口，端口不归你，DDNS 也无法入站。
+- ✅ **IPv4 必须经 txhk 中转**（路径 B）：任何 v4 客户端可用，是「保证可用」的兜底基线。
+- ✅ **txhk→home 的延迟可砍半**：实测瓶颈是公共 DERP 绕行（130ms），直连仅 52ms。txhk 内嵌 DERP 可把这段锁定 ~52ms（§4.1）。
+- △ **IPv6 端到端直连是唯一能消除「香港 trombone」的路径**（路径 A）：家侧已就绪，**唯一未知是公司电脑是否有 v6 出网**（§6 提供测试）。成立则 ~30–60ms，最低延迟。
 
 ---
 
-## 2. 路径选择与决策
+## 2. 架构总览：双路径
 
 ```
-客户端（任意 IPv4）
-       │
-       ▼
-路径 B：txhk 中转
-mstsc → 43.129.195.4:33890
-  → socat → Tailscale 子网路由
-  → 192.168.7.129:3389
+                        ┌─────────────────────────────────────────────┐
+                        │  公司临时设备（仅原生 mstsc，禁装虚拟网卡）   │
+                        └───────────────┬───────────────┬─────────────┘
+              ┌─────────────────────────┘               └──────────────────────────┐
+              ▼ 路径 A（快车道，公司有 v6 时）            ▼ 路径 B（兜底，永远可用）
+   IPv6 端到端直连（不经香港）                  mstsc → 43.129.195.4:33890（txhk）
+   mstsc → [Win10 公网 GUA]:3389                   → nft 白名单 gate（2FA 解锁）
+     → 家侧 2FA 动态 pinhole（§6）                   → socat（TCP+UDP）
+     → istoreos 转发 → Win10:3389                    → Tailscale 直连/内嵌DERP（§4.1）
+   延迟 ~30–60ms（估，全程国内单段）                 → route → Win10:3389
+                                                     延迟 ~90–100ms（优化后；原 ~170ms）
 ```
 
-| 维度 | 路径 B（txhk 中转） |
-|------|---------------------|
-| 路径 | 客户端 → 香港 txhk → Tailscale → route → Win10 |
-| 延迟 | 较高（绕香港 + 双跳隧道，txhk→Win10 实测 ~180ms） |
-| 前提 | 仅需客户端有 v4（**永远满足**） |
-| 暴露面 | txhk 的 33890（Authelia 网关 + 白名单） |
-| 落地难度 | 中（已有 Authelia/Caddy/Tailscale） |
+| 维度 | 路径 A：IPv6 直连 | 路径 B：txhk 中转（优化后） |
+|------|------------------|----------------------------|
+| 前提 | **公司电脑有 v6 出网**（未知，需测）+ Win10 有公网 GUA | 仅需客户端有 v4（**永远满足**） |
+| 路径 | 公司 → 家（直连，无香港） | 公司 → 香港 txhk → Tailscale 直连/DERP → route → Win10 |
+| 延迟 | ~30–60ms（估，消除 trombone） | ~90–100ms（直连/内嵌 DERP）；未优化时 ~170ms |
+| 暴露面 | istoreos v6:443（unlock）+ Win10 v6:3389（gated） | txhk:33890（nft 白名单）+ txhk:443（Authelia） |
+| 安全门 | 家侧 Authelia 2FA → istoreos nft `inet6` 动态 pinhole | txhk Authelia 2FA → txhk nft `inet` 动态白名单 |
+| 落地难度 | 中（家侧需 unlock + v6 pinhole） | 中（已有 Authelia/Caddy/Tailscale，加 DERP + UDP） |
+| 定位 | 有 v6 时优先（最低延迟） | 默认兜底（无 v6 / 公司封 v6 时） |
 
-> **为何不用 Guacamole（浏览器内 RDP）**：你要原生 mstsc 体验/性能。Guacamole 同样得部署在 txhk（仍绕香港），且 txhk 仅 2 核 3.6G、跑 Tomcat+guacd 偏重、guacd 须源码编译。性能与体验都不如原生 RDP。详见 §7 工具调研。
+> **决策**：先按 §6.1 测公司 v6。**有 v6** → 部署路径 A 为主、B 为兜底（双路径并存）。**无 v6** → 仅部署优化后的路径 B。两条路径互不依赖，可分别启停。
 
 ---
 
-## 3. 低延迟方案对比（公司网络约束下的替代路径）
+## 3. 延迟实测与归因（推翻 v3.1 估算）
 
-> **硬约束**：
-> - ❌ **禁止安装虚拟网卡/虚拟网络**：Tailscale、WireGuard、ZeroTier、Cloudflare WARP 等创建虚拟网卡的工具全部不可用
-> - ❌ **禁止内网穿透**：不可将公司网络桥接到家庭网络（公司电脑不能成为家庭网络的延伸）
-> - ❌ **禁止向日葵、ToDesk、TeamViewer 等商业远程工具**
-> - ✅ 可安装不修改网络栈的普通应用（如浏览器、SSH 客户端、端口转发工具等）
-> - ✅ 目标是原生 RDP 体验（mstsc），而非浏览器或第三方客户端
+### 3.1 实测证据：DERP 绕行才是瓶颈
 
-### 3.1 延迟瓶颈分析
-
-当前方案（txhk 中转）的延迟构成：
+`spool exec txhk "tailscale ping -c 12 100.64.0.2"`（txhk → 家里 route 节点）：
 
 ```
-公司电脑 ──①──→ txhk 香港 ──②──→ Tailscale 隧道 ──③──→ iStoreOS route ──④──→ Win10
-          ~30-50ms      ~10ms(本机)      ~80-100ms        ~5ms
-                                                         总计: ~130-170ms
+pong from route (100.64.0.2) via DERP(hkg) in 131ms     ← 冷启动走 Tailscale 公共香港 DERP
+pong from route (100.64.0.2) via DERP(hkg) in 130ms
+pong from route (100.64.0.2) via 113.227.140.75:41641 in 52ms   ← 第 4 包 UDP 打洞成功，直连
+...（持续打流后稳定）pong ... via 113.227.140.75:41641 in 53ms   ← 直连保持
 ```
 
-- **① 公司→txhk**：取决于公司到香港的公网路由，通常 30-50ms（中国大陆→香港）
-- **② txhk 本机 socat 转发**：几乎为 0
-- **③ txhk→iStoreOS（Tailscale 隧道）**：80-100ms（Tailscale WireGuard 隧道 + 跨境回大陆）
-- **④ iStoreOS→Win10**：局域网 <1ms
+**归因**：
+- txhk 和 Tailscale 的 `DERP(hkg)` 都在香港，但那台公共 DERP 到家里联通的对等极差，绕了 ~78ms。
+- txhk（腾讯香港）到家**直连**仅 52ms —— 腾讯香港对大陆联通 peering 好。
+- `headscale config.yaml`：`derp.server.enabled: false` + `urls: controlplane.tailscale.com/derpmap/default` → **当前在用公共 DERP 地图，回退就落到那台 130ms 的 hkg**。
+- v3.1 把这 130ms（偶发 180ms）误当成「Tailscale 隧道物理延迟 80–100ms」，据此得出「不买 VPS 只能 130–170ms」的错误结论。
 
-**关键发现**：延迟的大头是 ①+③ 两段跨境公网路由。要降低延迟，核心是**缩短或合并跨境路径**。
+### 3.2 重写后的延迟预算
 
-### 3.2 方案总览
+| 段 | v3.1 口径 | 实测真相 | 优化后（§4.1） |
+|---|---|---|---|
+| 公司 → txhk | 30–50ms | ~40ms（估，公司侧不可测） | ~40ms |
+| **txhk → home** | 80–100ms | **DERP 130ms / 直连 52ms** | **~52ms（直连或 txhk 内嵌 DERP）** |
+| home → Win10（LAN） | <1ms | <1ms | <1ms |
+| **端到端 RTT** | **130–170ms** | **~170ms（DERP）/ ~92ms（直连）** | **~90–100ms** |
 
-| 方案 | 原理 | 客户端要求 | 延迟改善 | 安全性 | 复杂度 | 推荐度 |
-|------|------|-----------|---------|--------|--------|--------|
-| **A. RD Gateway over HTTPS** | Windows RD Gateway 封装 RDP 到 HTTPS | 仅需 mstsc | 中（减少一跳） | 🥇 SSL+2FA | 高 | ⭐⭐⭐⭐ |
-| **B. 国内 VPS 中转** | 用国内 VPS 替代 txhk，免去跨境 | 无需客户端 | **高**（消除跨境延迟） | 🥈 白名单+NLA | 中 | ⭐⭐⭐⭐⭐ |
-| **C. SSH 隧道（PuTTY/portable）** | SSH 本地端口转发 | 免安装 portable PuTTY | 中（同 B，换中转服务器） | 🥇 SSH 加密 | 低 | ⭐⭐⭐⭐ |
-| **D. frp over WebSocket/TLS** | 从家里主动出站，经公网中转 | 仅需 mstsc | 中（换中转服务器） | 🥈 TLS+token | 中 | ⭐⭐⭐ |
-| **E. Win10 安装 Tailscale（仅服务端）** | Win10 加入 Tailscale，简化路径 B | 无需客户端 | 低（仅消除 route 中转） | 🥇 Tailscale 加密 | 低 | ⭐⭐⭐ |
-| **F. 当前方案（txhk 中转）** | 固定公网服务器转发 | 无需客户端 | 基线 | 🥈 2FA+白名单 | 中 | ⭐⭐（兜底） |
-
-### 3.3 方案详解
-
-#### 方案 A：RD Gateway over HTTPS
-
-**原理**：Windows Server 的 RD Gateway（远程桌面网关）将 RDP 协议封装在 HTTPS/TLS 隧道内传输。客户端用原生 mstsc 连接时，在「高级」标签页设置 RD Gateway 服务器地址，mstsc 自动通过 HTTPS 443 端口建立隧道，再由 RD Gateway 转发到内网 RDP 目标。
-
-**架构**：
-```
-公司电脑（mstsc，设置 RD Gateway）
-       │
-       ▼ HTTPS/443（TLS 加密，看起来就是普通 HTTPS 流量）
-       │
-txhk 或国内 VPS（RD Gateway 服务）
-       │
-       ▼ 内网转发
-       │
-家里 Win10（RDP 3389）
-```
-
-**优点**：
-- ✅ **客户端零安装**：mstsc 原生支持 RD Gateway，只需在连接设置里填网关地址
-- ✅ **流量伪装**：RDP over HTTPS，对网络层而言就是普通 HTTPS 流量，公司防火墙通常不拦截
-- ✅ **SSL/TLS 加密**：传输层加密，无需额外 VPN
-- ✅ **支持 2FA**：RD Gateway 可对接 RADIUS/NPS 实现 MFA
-- ✅ **443 端口复用**：可与 Caddy 共存（SNI 路由或不同路径）
-
-**缺点**：
-- ❌ 需要 Windows Server 授权（RD Gateway 是 RDS 角色的一部分）
-- ❌ 部署复杂度较高（需 IIS + RD Gateway 角色安装 + 证书配置）
-- ❌ 如果仍部署在 txhk，跨境延迟 ① 仍在
-- ❌ txhk 是 Linux，需用 Docker 跑 Windows Server 或换其他方案
-
-**实施步骤**：
-1. 在国内 VPS 上部署 Windows Server + RD Gateway 角色
-2. 配置 SSL 证书 + RD CAP/RAP 策略
-3. 客户端 mstsc 连接时设置 RD Gateway 地址
-4. 或：在 txhk 上用 Linux 替代方案（如 `guacd` + RDP over WebSocket → 但这又回到 Guacamole 方案）
-
-**延迟分析**：若部署在国内 VPS，可消除跨境段 ③（~80-100ms），保留段 ①（~30ms 国内），总延迟降至 ~40-60ms。
+**结论**：仅修掉 DERP 绕行（txhk 单边配置，零成本），路径 B 即从 ~170ms → ~90–100ms（降 ~45%）。这就是 v3.1 漏掉的「更优方案」。若公司有 v6，路径 A 可进一步到 ~30–60ms。
 
 ---
 
-#### 方案 B：国内 VPS 中转（最推荐）
+## 4. 路径 B：txhk 公网中转（优化 + 加固）
 
-**原理**：当前延迟的大头是「公司→香港 txhk→跨境回大陆→家里」。如果把中转服务器换成国内 VPS（如阿里云/腾讯云上海节点），公司→VPS 和 VPS→家里 都是国内路由，跨境延迟完全消除。
+### 4.1 ★中转优化：消除 DERP 绕行（txhk 内嵌 DERP）
 
-**架构**：
-```
-公司电脑（mstsc）
-       │
-       ▼ 国内公网（~20-30ms）
-       │
-国内 VPS（socat/端口转发，Authelia 2FA + 白名单）
-       │
-       ▼ frp/Tailscale 出站隧道（~20-40ms，国内→家里）
-       │
-家里 Win10
-```
+把 txhk 自己变成本 tailnet 的 DERP 中继区。这样：**直连可用时走 52ms；即便冷启动/打洞失败回退，中继也是 txhk 本机这台 DERP（走腾讯香港好路由，~52ms），而不是 Tailscale 那台 130ms 的 hkg。** 无论冷热，这段都锁定 ~52ms。
 
-**优点**：
-- ✅ **延迟大幅降低**：全部走国内路由，预估 40-70ms（vs 当前 130-170ms）
-- ✅ **客户端无需改动**：mstsc 连国内 VPS 的公网 IP:33890 即可
-- ✅ **安全架构可复用**：nftables 白名单 + Authelia 2FA + unlock 服务，与 txhk 完全对称
-- ✅ **公司防火墙友好**：连接国内 IP，不会被当作异常出境流量
+改 `/etc/headscale/config.yaml` 的 `derp.server`（**注意：当前是占位 IP，必须改对，否则会下发错误地址、反而降级连通性**）：
 
-**缺点**：
-- ❌ **需要额外购买国内 VPS**（成本 ~30-50 元/月，轻量应用服务器即可）
-- ❌ **国内 VPS 需备案**：若用域名访问 Authelia 解锁页面，域名需 ICP 备案；若仅用 IP:端口直连则不需要
-- ❌ **家里到国内 VPS 的隧道**：需要从家里主动连出（frp/Tailscale），与当前 txhk 架构类似
-
-**实施步骤**：
-1. 购买国内轻量 VPS（1 核 1G 即可，如阿里云/腾讯云/华为云上海节点）
-2. 在家里 iStoreOS 上部署 frpc，主动连接国内 VPS 的 frps，建立 RDP 端口映射
-3. 或：国内 VPS 安装 Tailscale，加入 Headscale 网络，用 Tailscale 子网路由转发到 Win10
-4. 在国内 VPS 上复刻 txhk 的 nftables 白名单 + unlock 服务
-5. 客户端 mstsc 连国内 VPS 公网 IP:33890
-
-**不需要备案的情况**：
-- 如果只用 `VPS_IP:33890` 直连 RDP，不需要域名，不需要备案
-- 如果想用 `rdp.singll.net` 解析到国内 VPS，需要备案（但可以不绑定域名，用 IP 直连）
-- unlock 页面可以用 `http://VPS_IP:8090` 而非域名
-
-**延迟预估**：
-```
-公司→国内VPS: ~20-30ms（国内骨干网）
-国内VPS→家里: ~20-40ms（国内→家里，Tailscale 或 frp 隧道）
-总计: ~40-70ms（vs 当前 txhk 的 ~130-170ms，改善约 60-70%）
+```yaml
+derp:
+  server:
+    enabled: true                       # 原 false
+    region_id: 999
+    region_code: "txhk"
+    region_name: "SilkSpool txhk DERP"
+    verify_clients: true                # ★关键安全控制：仅本 tailnet 已认证节点可中继（防开放中继）
+    stun_listen_addr: "0.0.0.0:3478"    # NAT 打洞用，需对公网开放（见下）
+    private_key_path: /var/lib/headscale/derp_server_private.key   # 缺失自动生成
+    automatically_add_embedded_derp_region: true
+    ipv4: 43.129.195.4                  # ★必须改成真实公网 IP（原占位 198.51.100.1 = TEST-NET，会下发坏地址）
+    # ipv6:                             # ★必须删除/留空（txhk 无全球 v6；原占位 2001:db8::1 会下发坏地址）
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default   # 保留作冗余兜底（region 999 对 home 更近，会被优先选中）
+  paths: []
+  auto_update_enabled: true
+  update_frequency: 3h
 ```
 
----
+开放 STUN 端口（**host 防火墙 + 腾讯云安全组都要放行 `udp/3478`**）：
 
-#### 方案 C：SSH 本地端口转发（PuTTY Portable）
-
-**原理**：利用 SSH 的本地端口转发（`-L`），在公司电脑上通过 SSH 隧道把本地端口映射到远程 RDP 端口。PuTTY 有 portable 版本，无需安装，不创建虚拟网卡。
-
-**架构**：
-```
-公司电脑
-  ├─ PuTTY Portable（SSH -L 13389:192.168.7.129:3389 user@中转服务器）
-  └─ mstsc → localhost:13389 → SSH 隧道 → 中转服务器 → Win10:3389
+```bash
+# host 侧（与 Tailscale 的 table ip filter 共存；若无显式 input drop 则本步可省，但建议显式放行）
+spool exec txhk "sudo nft add rule inet rdp_guard input udp dport 3478 accept 2>/dev/null || true"
+# 腾讯云安全组：控制台放行 udp/3478（spool 无法操作云防火墙，需手动）
 ```
 
-**优点**：
-- ✅ **不创建虚拟网卡**：SSH 是应用层隧道，仅占用一个本地端口
-- ✅ **PuTTY Portable 免安装**：U 盘拷贝即可运行，不写注册表、不装驱动
-- ✅ **SSH 加密**：传输安全
-- ✅ **公司防火墙友好**：SSH 22 或 443 端口，通常不被拦截（尤其是 443）
-- ✅ **可复用现有服务器**：txhk 或国内 VPS 均可
+应用并验证：
 
-**缺点**：
-- ❌ 需要手动配置 PuTTY 端口转发（可保存 session 文件）
-- ❌ 如果用 txhk，跨境延迟仍在
-- ❌ SSH 隧道不如 WireGuard 高效（用户态转发 vs 内核态）
-- ❌ 每次连接需先开 PuTTY 再开 mstsc，步骤稍多
-
-**实施步骤**：
-1. 在中转服务器（国内 VPS 或 txhk）上确保 SSH 服务运行
-2. 下载 PuTTY Portable，配置 Session：`中转服务器IP`，端口 22 或 443
-3. 配置 Connection → SSH → Tunnels：`L13389  192.168.7.129:3389`
-4. 中转服务器上需确保能访问 Win10:3389（Tailscale 子网路由或 frp）
-5. Open PuTTY 连接后，mstsc 连 `localhost:13389`
-
-**推荐搭配**：PuTTY + 国内 VPS（方案 B），可获得最低延迟 + 无需安装的体验。
-
-**安全增强**：
-- SSH 服务器配置 `AllowUsers` 限制可登录用户
-- 使用 SSH key 认证而非密码
-- 可用 `fail2ban` 防暴力破解
-
----
-
-#### 方案 D：frp over WebSocket/TLS
-
-**原理**：frp（Fast Reverse Proxy）从家里主动连接公网服务器，建立反向代理隧道。frp 支持 WebSocket/TLS 加密，客户端只需 mstsc 连接公网服务器的映射端口。
-
-**架构**：
-```
-公司电脑（mstsc → VPS:33890）
-       │
-       ▼
-国内 VPS（frps）
-       │
-       ▼ frp TLS 隧道（从家里主动建立）
-       │
-家里 Win10（frpc）
+```bash
+spool exec txhk "sudo systemctl restart headscale && sleep 3 && headscale nodes list"   # 数据面不断，控制面短暂重连
+spool exec txhk "sudo ss -ulnp | grep ':3478'"                                          # STUN 应在监听
+spool exec txhk "tailscale ping -c 8 100.64.0.2"                                         # 期望大多 via 直连 ~52ms；回退应 via DERP(txhk) 而非 DERP(hkg)
 ```
 
-**优点**：
-- ✅ **客户端无需任何软件**：mstsc 直连即可
-- ✅ **从家里主动出站**：绕过 CGNAT 入站限制
-- ✅ **frp 支持 TLS 加密**：传输安全
-- ✅ **可复用国内 VPS**：与方案 B 共用
+> DERP 经 `headscale.singll.net/derp`（复用 Caddy 443，TLS）+ STUN `udp/3478`。Caddy `reverse_proxy` 透传 DERP 的 HTTP upgrade，无需额外配置。**安全分析见 §8.1**（含「为何不增加数据暴露」「为何不扩大信任边界」）。
 
-**缺点**：
-- ❌ 需要在家里 Win10 上运行 frpc（或 iStoreOS 上跑 frpc Docker）
-- ❌ frp 端口转发本身不提供 2FA，需额外安全层（nftables 白名单 + Authelia）
-- ❌ frpc 进程需持续运行，Win10 重启后需自启
+### 4.2 ★RDP-UDP 传输（提升跟手度）
 
-**实施步骤**：
-1. 国内 VPS 部署 frps
-2. 家里 Win10 或 iStoreOS 部署 frpc，配置 `[rdp]` 节：`local_ip = 192.168.7.129, local_port = 3389, remote_port = 33890`
-3. VPS 上配置 nftables 白名单（复用 txhk 的 rdp_guard 方案）
-4. 可选：配置 Authelia + unlock 服务
+RDP 8+ 用 **UDP/3389（MS-RDPEUDP）** 做 RemoteFX 传输（带 FEC、无队头阻塞），在 90–130ms 链路上比纯 TCP 跟手得多。v3.1 的 socat 只转发 TCP → mstsc 退化纯 TCP。补 UDP 转发即可。**RDP 在 UDP 不通时自动回退 TCP，故此优化无副作用、可放心尝试。**
 
-**延迟预估**：与方案 B 相同（~40-70ms），因为路径相同，只是隧道技术从 Tailscale 换成 frp。
+需同时改：①nft 白名单加 UDP gate（§4.3，**必须加 `udp drop` 否则 fail-open**）；②加一个 UDP socat（§4.6）。
 
----
-
-#### 方案 E：Win10 安装 Tailscale（仅服务端）
-
-**原理**：当前路径 B 中，txhk 到 Win10 需要经过 iStoreOS 的 Tailscale 子网路由（route 节点中转）。如果让 Win10 自己安装 Tailscale 成为独立节点，txhk 可以直接连 Win10 的 Tailscale IP（100.64.0.1），消除 route 节点这一跳。
-
-**架构**：
-```
-公司电脑（mstsc → txhk:33890）
-       │
-       ▼
-txhk（socat → 100.64.0.1:3389）    ← 直接连 Win10 Tailscale IP
-       │
-       ▼ Tailscale mesh
-       │
-家里 Win10（Tailscale 节点 100.64.0.1）  ← 不再经 route 中转
-```
-
-**注意**：此方案 **Win10 安装 Tailscale 创建虚拟网卡**，但这是在家里电脑上，不在公司电脑上。公司电脑仍然只用 mstsc，不安装任何东西。
-
-**优点**：
-- ✅ **消除 route 节点中转**：txhk 直连 Win10，减少一跳
-- ✅ **公司电脑无需改动**：仍用 mstsc → txhk:33890
-- ✅ **实施简单**：Win10 装 Tailscale 加入 Headscale 即可
-
-**缺点**：
-- ❌ **延迟改善有限**：只省了 route→Win10 的局域网跳（<5ms），跨境延迟 ①+③ 仍在
-- ❌ **Win10 需常开 Tailscale**：关机或 Tailscale 离线则不可用
-- ❌ **Win10 上装虚拟网卡**（但这是家里电脑，非公司电脑）
-
-**延迟预估**：改善约 5-10ms，总延迟 ~120-160ms，意义不大。
-
----
-
-#### 方案 F：当前方案（txhk 中转 + Authelia）
-
-**原理**：固定公网服务器转发 RDP 流量，配合 2FA 和动态白名单。
-
-**架构**：
-```
-公司电脑（mstsc）
-       │
-       ▼ Authelia 2FA + nftables 白名单
-       │
-txhk（socat 转发）
-       │
-       ▼ Tailscale 子网路由
-       │
-家里 Win10
-```
-
-**定位**：兜底方案，当无法使用任何辅助工具时使用。
-
----
-
-### 3.4 方案选择建议
-
-| 场景 | 推荐方案 | 预估延迟 |
-|------|---------|---------|
-| **可购买国内 VPS** | B. 国内 VPS 中转 | ~40-70ms |
-| **可购买国内 VPS + 愿配置** | B + C（SSH 隧道） | ~40-70ms + SSH 加密 |
-| **不能买 VPS，可接受 portable 工具** | C. SSH 隧道到 txhk | ~130-170ms（但加密） |
-| **不能用任何额外工具** | F. txhk 中转（当前方案） | ~130-170ms |
-| **需要 mstsc 原生 RD Gateway 体验** | A. RD Gateway | 取决于服务器位置 |
-
-**最终建议**：
-1. **最优方案**：**购买国内 VPS + frp/socat 中转**（方案 B）—— 延迟降低 60-70%，客户端零改动
-2. **进阶组合**：方案 B + 方案 C —— 国内 VPS 跑 SSH，公司用 PuTTY Portable 端口转发，额外获得 SSH 加密层
-3. **零成本方案**：方案 C（SSH 到 txhk）—— 延迟不变，但获得 SSH 加密 + 不装软件
-4. **兜底方案**：方案 F（当前 txhk 中转）—— 无需任何额外配置
-
----
-
-## 4. 路径 B：txhk 公网中转（当前方案）
-
-> 以下已修正 v1.0 审计发现的 A–L 全部缺陷。**所有配置纳入 spool 版本管理**（§4.6），不手动 SSH 编辑。
-
-### 4.1 nftables 动态白名单（修正 A/E：补 established + lo）
+### 4.3 nftables 动态白名单（TCP+UDP gate，修正 fail-open）
 
 ```nft
 #!/usr/sbin/nft -f
@@ -380,38 +196,22 @@ table inet rdp_guard {
     }
     chain input {
         type filter hook input priority 0; policy accept;
-        ct state established,related accept    # 已建立会话放行 → 不受 TTL 影响（修正 A）
-        iif "lo" accept                        # 本机回环放行 → 自测 127.0.0.1:33890 可用（修正 E）
+        ct state established,related accept    # 已建立会话放行 → 不受 TTL 影响
+        iif "lo" accept                        # 本机回环放行 → 自测可用
+        udp dport 3478 accept                  # STUN（内嵌 DERP，§4.1）
         tcp dport 33890 ip saddr @allowed_ips accept
+        udp dport 33890 ip saddr @allowed_ips accept    # ★RDP-UDP gate（§4.2）
         tcp dport 33890 drop                   # 未授权一律丢弃
+        udp dport 33890 drop                   # ★防 UDP fail-open（policy 是 accept，必须显式 drop）
     }
 }
 ```
 
-加载与持久化（systemd，开机生效）`hosts/txhk/systemd/nftables-rdp.service`：
+> systemd 加载单元 `nftables-rdp.service` 同 v3.1（`Type=oneshot` + `Before=network.target`），略。
 
-```ini
-[Unit]
-Description=Load nftables RDP guard rules
-After=network-pre.target
-Before=network.target
+### 4.4 IP 登记服务 unlock（同 v3.1：X-Real-IP + 校验 + 零依赖）
 
-[Service]
-Type=oneshot
-ExecStart=/usr/sbin/nft -f /etc/nftables.d/rdp_guard.nft
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 4.2 IP 登记服务 unlock（修正 B/D/F：X-Real-IP + 校验 + 去 Flask）
-
-**修正 F**：去掉 Flask 重型依赖与 `pip install` 系统污染，改用 Python 标准库 `http.server`（零依赖）。
-**修正 B**：不再解析可伪造的 `X-Forwarded-For[0]`，只信 Caddy 用 `{remote_host}` 注入的 `X-Real-IP`。
-**修正 D**：登记前用 `ipaddress` 校验，拒绝非法值与 IPv6（本 set 仅 v4）。
-
-`hosts/txhk/rdp-unlock/unlock.py`：
+`hosts/txhk/rdp-unlock/unlock.py`（Python 标准库 `http.server`，只信 Caddy 注入的 `X-Real-IP`，`ipaddress` 校验、拒 IPv6）：
 
 ```python
 #!/usr/bin/env python3
@@ -419,11 +219,11 @@ WantedBy=multi-user.target
 import ipaddress, json, logging, subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-logging.basicConfig(filename='/var/log/rdp-unlock.log',
-                    level=logging.INFO, format='%(asctime)s %(message)s')
+logging.basicConfig(filename='/var/log/rdp-unlock.log', level=logging.INFO,
+                    format='%(asctime)s %(message)s')
 
 def whitelist(ip: str):
-    addr = ipaddress.ip_address(ip)          # 非法直接抛异常（修正 D）
+    addr = ipaddress.ip_address(ip)          # 非法直接抛异常
     if addr.version != 4:
         raise ValueError(f'IPv6 not supported by this set: {ip}')
     subprocess.run(['sudo', 'nft', 'add', 'element', 'inet', 'rdp_guard',
@@ -433,60 +233,32 @@ def whitelist(ip: str):
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_response(code); self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.end_headers(); self.wfile.write(body)
-
     def do_GET(self):
         if self.path.startswith('/health'):
             return self._json(200, {'status': 'ok'})
-        ip = (self.headers.get('X-Real-IP') or '').strip()   # 只信 Caddy 注入（修正 B）
+        ip = (self.headers.get('X-Real-IP') or '').strip()   # 只信 Caddy 注入
         try:
-            whitelist(ip)
-            logging.info(f'whitelisted {ip}')
-            self._json(200, {'status': 'ok', 'ip': ip,
-                             'message': f'IP {ip} 已放行，请在 3 分钟内发起 RDP 连接'})
+            whitelist(ip); logging.info(f'whitelisted {ip}')
+            self._json(200, {'status': 'ok', 'ip': ip, 'message': f'IP {ip} 已放行，请在 3 分钟内发起 RDP 连接'})
         except Exception as e:
-            logging.error(f'unlock failed ip={ip!r}: {e}')
-            self._json(500, {'status': 'error', 'message': '放行失败'})
-
-    def log_message(self, *a):    # 静默默认访问日志
-        pass
+            logging.error(f'unlock failed ip={ip!r}: {e}'); self._json(500, {'status': 'error', 'message': '放行失败'})
+    def log_message(self, *a): pass
 
 if __name__ == '__main__':
     HTTPServer(('127.0.0.1', 8090), Handler).serve_forever()
 ```
 
-服务账户与 sudoers（最小权限）`hosts/txhk/sudoers/rdp-unlock`：
+sudoers（最小权限）`hosts/txhk/sudoers/rdp-unlock`：
 
 ```
 rdpunlock ALL=(root) NOPASSWD: /usr/sbin/nft add element inet rdp_guard allowed_ips { [0-9.]* }
 ```
 
-`hosts/txhk/systemd/rdp-unlock.service`：
+`rdp-unlock.service` 同 v3.1（`User=rdpunlock`、`ProtectSystem=strict`、`Requires=nftables-rdp.service`），略。
 
-```ini
-[Unit]
-Description=RDP IP Whitelist Unlock Service
-After=network.target nftables-rdp.service
-Requires=nftables-rdp.service
-
-[Service]
-Type=simple
-User=rdpunlock
-Group=rdpunlock
-ExecStart=/usr/bin/python3 /opt/rdp-unlock/unlock.py
-Restart=always
-RestartSec=3
-NoNewPrivileges=false
-ProtectSystem=strict
-ReadWritePaths=/var/log/rdp-unlock.log
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 4.3 Caddy 反代 + forward_auth（修正 B：注入可信真实 IP）
+### 4.5 Caddy 反代 + forward_auth（注入可信真实 IP）
 
 追加到 `hosts/txhk/caddy/Caddyfile`：
 
@@ -497,58 +269,54 @@ rdp.singll.net {
         uri /api/verify?rd=https://auth.singll.net/
     }
     reverse_proxy 127.0.0.1:8090 {
-        header_up X-Real-IP {remote_host}   # 用 TCP peer 覆写，攻击者无法伪造（修正 B）
+        header_up X-Real-IP {remote_host}   # 用 TCP peer 覆写，攻击者无法伪造
     }
 }
 ```
 
-- DNS：`rdp.singll.net` 的公网 A 记录改为 `43.129.195.4`（原指 192.168.7.1）。家里 openclash 已对 `+.singll.net` 走真实 DNS，解析一致。
+- DNS：`rdp.singll.net` A 记录 → `43.129.195.4`。家里 openclash 已对 `+.singll.net` 走真实 DNS。
 - 无需改 Authelia ACL：`*.singll.net → two_factor` 已覆盖。
+- **认证语义提醒**：Authelia `session 1h / inactivity 5m`，一次 2FA 后在有效期内再访问**不重新要 TOTP**，实质是「持有效会话即可解锁」。若要「每次开门强制 2FA」，需缩短 session 或为该站单独 cookie 策略。
 
-> **认证语义提醒（审计 G）**：Authelia `session 1h / inactivity 5m`，一次 2FA 后在有效期内再访问 `rdp.singll.net` **不会重新要 TOTP**，实质是「持有效会话即可解锁」。若要「每次开门强制 2FA」，需缩短 session 或为该站单独 cookie 策略。
+### 4.6 转发层 socat（TCP + UDP，修正 fail-open 竞态）
 
-### 4.4 转发层 socat（修正 C：消除 fail-open 竞态）
-
-v1.0 的 `rdp-forward` 不依赖防火墙规则加载 → 若 nft 晚于 socat 启动，33890 会裸奔。修正 `hosts/txhk/systemd/rdp-forward.service`：
+`hosts/txhk/systemd/rdp-forward.service`（TCP）：
 
 ```ini
 [Unit]
-Description=Forward RDP to Home Win10 via Tailscale subnet route
+Description=Forward RDP (TCP) to Home Win10 via Tailscale subnet route
 After=network.target tailscaled.service nftables-rdp.service
-Requires=tailscaled.service nftables-rdp.service     # 防火墙先于转发（修正 C）
-
+Requires=tailscaled.service nftables-rdp.service     # 防火墙先于转发
 [Service]
 ExecStart=/usr/bin/socat -d TCP-LISTEN:33890,fork,reuseaddr TCP:192.168.7.129:3389
 Restart=always
 RestartSec=5
 LimitNOFILE=65536
-
 [Install]
 WantedBy=multi-user.target
 ```
 
-> 也可用 **systemd-socket-proxyd** 免去安装 socat（见 §7）。`192.168.7.129` 经 Tailscale 子网路由可达（route 节点提供），无需 Win10 装 Tailscale。
+`hosts/txhk/systemd/rdp-forward-udp.service`（★UDP，§4.2）：
 
-### 4.5 通知联动（可选，修正 H：私有主题）
-
-ntfy 主题改用**随机串**或带 access token，避免解锁 IP 泄露/被伪造。在 `unlock.py` 的 `whitelist` 成功后追加：
-
-```python
-import urllib.request
-def notify(ip):
-    try:
-        urllib.request.urlopen(urllib.request.Request(
-            'https://ntfy.singll.net/rdp-<随机串>',          # 非公开主题（修正 H）
-            data=f'RDP unlock: {ip}'.encode(),
-            headers={'Title': 'RDP 白名单触发', 'Priority': 'high', 'Tags': 'warning'}),
-            timeout=5)
-    except Exception as e:
-        logging.error(f'ntfy failed: {e}')
+```ini
+[Unit]
+Description=Forward RDP (UDP/RemoteFX) to Home Win10
+After=network.target tailscaled.service nftables-rdp.service
+Requires=tailscaled.service nftables-rdp.service
+[Service]
+ExecStart=/usr/bin/socat -d UDP4-LISTEN:33890,fork,reuseaddr UDP4:192.168.7.129:3389
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+[Install]
+WantedBy=multi-user.target
 ```
 
-### 4.6 纳入 spool 部署（修正 J：版本化，不手动 SSH）
+> `192.168.7.129` 经 Tailscale 子网路由可达，无需 Win10 装 Tailscale。也可用 systemd-socket-proxyd 替代 TCP socat（§10）。**为何不改用 nftables DNAT**：DNAT 需把 gate 从 `input` 迁到 `forward` 链 + masquerade + 开 `ip_forward`，多处易出 fail-open；对单路交互式 RDP，socat 的用户态拷贝延迟可忽略（微秒级，非影响体感的毫秒级）。故保留经过验证的 socat + `input` 链 gate（§8.5 权衡）。
 
-在 `silkspool.yaml` 的 `txhk` 主机下增加 sync_rules 与 post-push hook：
+### 4.7 纳入 spool 部署
+
+`silkspool.yaml` 的 `txhk` 增加 sync_rules（新增 UDP 转发单元）：
 
 ```yaml
     sync_rules:
@@ -558,13 +326,16 @@ def notify(ip):
       - { local: "systemd/nftables-rdp.service",    remote: "/etc/systemd/system/nftables-rdp.service" }
       - { local: "systemd/rdp-unlock.service",      remote: "/etc/systemd/system/rdp-unlock.service" }
       - { local: "systemd/rdp-forward.service",     remote: "/etc/systemd/system/rdp-forward.service" }
+      - { local: "systemd/rdp-forward-udp.service", remote: "/etc/systemd/system/rdp-forward-udp.service" }
     post_push_hooks:
       - { pattern: "sudoers/rdp-unlock",   command: "chmod 440 /etc/sudoers.d/rdp-unlock && visudo -cf /etc/sudoers.d/rdp-unlock" }
-      - { pattern: "caddy/Caddyfile",      command: "systemctl reload caddy" }   # 补 txhk 缺失的 reload hook
+      - { pattern: "caddy/Caddyfile",      command: "systemctl reload caddy" }
       - { pattern: "systemd/.*\\.service", command: "systemctl daemon-reload" }
 ```
 
-一次性初始化（创建账户、装 socat、启服务）：
+> headscale 的 DERP 改动直接编辑 `/etc/headscale/config.yaml`（已有 `config.yaml.save` 备份），改后 `systemctl restart headscale`。
+
+一次性初始化：
 
 ```bash
 spool exec txhk "sudo useradd -r -s /usr/sbin/nologin rdpunlock 2>/dev/null; \
@@ -572,12 +343,110 @@ spool exec txhk "sudo useradd -r -s /usr/sbin/nologin rdpunlock 2>/dev/null; \
   sudo touch /var/log/rdp-unlock.log && sudo chown rdpunlock:rdpunlock /var/log/rdp-unlock.log; \
   sudo mkdir -p /etc/nftables.d"
 spool sync push txhk
-spool exec txhk "sudo systemctl enable --now nftables-rdp rdp-unlock rdp-forward"
+spool exec txhk "sudo systemctl enable --now nftables-rdp rdp-unlock rdp-forward rdp-forward-udp"
 ```
 
 ---
 
-## 5. Windows 10 加固（Win10 开机后执行）
+## 5. IPv6 本地开启（家里，确认与补全）
+
+**现状：家侧 v6 基本已就绪**（§1.2）—— 路由器持公网 `/60`、RA/DHCPv6 服务已开、LAN 设备已在分配公网 GUA、入站默认拒绝。本节是**确认 + 给 Win10 一个稳定可寻址的 GUA**，而非从零开启。
+
+### 5.1 确认入站默认拒绝（安全前提）
+
+```bash
+spool exec istoreos "uci show firewall.@zone[2]"   # name='wan' input='REJECT' forward='REJECT'
+spool exec istoreos "uci show network.wan | grep ipv6"   # ipv6='auto'（v6 在 wan 同接口 → 被 wan zone 覆盖）
+```
+
+确认 `wan.input/forward = REJECT` 且 v6 走 `wan`（非游离接口）→ **公网 v6 入站默认拒绝**，开 v6 不会自动暴露 LAN。
+
+### 5.2 让 Win10 拿到稳定 GUA（开机后执行）
+
+RA flags 为 `managed-config other-config`（M+O）→ Windows 走 DHCPv6 取址，同时前缀含 SLAAC A 标志（已见 EUI-64 地址）。Win10 开机后：
+
+```powershell
+# Win10 上确认是否已获公网 GUA（2408:832e:208a:abe0:* 段）
+Get-NetIPAddress -AddressFamily IPv6 | Where-Object {$_.IPAddress -like "2408:832e:208a:abe0:*"} | Select IPAddress,PrefixOrigin,SuffixOrigin
+```
+
+- 若已有 GUA：记录该地址；建议在 istoreos 用 **DHCPv6 静态租约（按 DUID）** 或依赖**稳定的 SLAAC EUI-64 地址**，确保 §6 的 pinhole 指向固定地址。
+- 若仍无 GUA：检查 Win10「网络适配器 → IPv6」未禁用；必要时 `ipconfig /renew6`。家侧 RA/DHCPv6 已验证对其他设备生效，故大概率是 Win10 关机/适配器设置问题，而非家侧缺失。
+
+> **隐私地址提醒**：Windows 默认启用临时地址（RFC 4941）用于**出站**；**入站** RDP 应指向其稳定地址（DHCPv6 租约或 EUI-64），并在 §6 pinhole 与 Win10 防火墙中锁定该地址。
+
+---
+
+## 6. 路径 A：IPv6 端到端直连（快车道）
+
+> 唯一能消除「香港 trombone」的路径。**先做 §6.1 前置测试**；公司无 v6 则跳过本节，仅用路径 B。
+
+### 6.1 前置测试（必须在公司电脑上做）
+
+公司临时设备上，浏览器访问 `https://test-ipv6.com/`，或命令行：
+
+```cmd
+ping -6 ipv6.singll.net      :: 或任意已知 v6 主机
+curl -6 https://test-ipv6.com/ip/    :: 返回 v6 地址即公司有 v6 出网
+```
+
+- **能拿到 v6 且能 ping 通外部 v6** → 路径 A 可行，继续 §6.2。
+- **无 v6 / 公司封禁 v6 出站** → 路径 A 不可用（很多企业网纯 v4），仅用优化后的路径 B。
+
+### 6.2 架构与安全门（家侧 2FA 动态 pinhole，镜像 txhk）
+
+**安全核心**：路径 A **绕过了 txhk 的 Authelia 2FA gate**，若裸开 Win10:3389 到 v6 公网，等于把 RDP 直接暴露给互联网（详见 §8.3）。因此路径 A **必须**复刻路径 B 的「2FA → 短 TTL 动态放行」机制，只是搬到家侧、走 v6：
+
+```
+公司电脑（有 v6）
+   │  ① 浏览器访问 https://rdp6.singll.net（AAAA → istoreos 公网 GUA）
+   ▼
+istoreos 家侧 Caddy:443(v6)  ──forward_auth──→ 家侧 Authelia 2FA
+   │  ② 2FA 通过 → 家侧 unlock 把【客户端 v6】写入 istoreos nft `inet6` set（TTL 3min）
+   │     并放行 forward → Win10:3389
+   ▼
+   ③ mstsc 连 [Win10 公网 GUA]:3389（v6 直连，不经香港）
+   ▼
+Win10（NLA + rdp_remote 低权 + 锁定）
+```
+
+为何 unlock 能拿到客户端真实 v6：客户端**经 v6 访问** `rdp6.singll.net`（与随后 RDP 同一地址族），istoreos 直接看到其 v6 源地址。
+
+### 6.3 istoreos 侧实现（gated pinhole）
+
+家侧 nft（经 fw4 include，`/etc/nftables.d/` 或 uci firewall include）建 v6 动态集 + 受控转发：
+
+```nft
+table inet rdp6_guard {
+    set allowed6 {
+        type ipv6_addr ; flags timeout ; timeout 3m
+    }
+    chain forward {
+        type filter hook forward priority -1; policy accept;   # 仅追加放行，不改 fw4 默认
+        ip6 daddr <WIN10_GUA> tcp dport 3389 ip6 saddr @allowed6 accept
+        ip6 daddr <WIN10_GUA> tcp dport 3389 drop               # 未授权丢弃
+    }
+}
+```
+
+- 家侧 unlock（同 §4.4 的 `unlock.py`，改写 `inet6 rdp6_guard allowed6` 并允许 v6）由家侧 Caddy `rdp6.singll.net` 经 `forward_auth` 保护。
+- istoreos 防火墙需放行**入站 v6 到路由器自身 443**（family ipv6，供 unlock 页面可达）：`uci` 加一条 `wan → 本机:443 ipv6` 的 input 规则。
+- 默认 `wan.forward=REJECT` 已挡住一切 → 仅 `@allowed6` 内的源在 3 分钟窗口可达 Win10:3389。
+
+> **取舍**：路径 A 引入「家侧 Caddy/Authelia 暴露到 v6 公网」的新增面（§8.3 缓解）。若公司 v6 前缀**固定且可知**，可再叠加「仅放行该 `/48` 或 `/64` 源」的静态约束，纵深防御。
+
+### 6.4 Win10 v6 防火墙作用域（开机后）
+
+```powershell
+# 仅放行入站 v6 RDP（默认配合 §6.3 的家侧 gate；如公司 v6 前缀已知可进一步 RemoteAddress 收敛）
+Set-NetFirewallRule -DisplayName "Remote Desktop - User Mode (TCP-In)" -Enabled True
+# 如需按已知公司 v6 前缀收敛（强烈建议，若前缀稳定）：
+# Set-NetFirewallRule -DisplayName "Remote Desktop - User Mode (TCP-In)" -RemoteAddress "<公司v6前缀>::/64"
+```
+
+---
+
+## 7. Windows 10 加固（Win10 开机后执行，两路径共用）
 
 ```powershell
 # 1. 专职低权账户（强密码、永不过期）
@@ -585,124 +454,191 @@ $pw = Read-Host -AsSecureString "rdp_remote 密码(16+位)"
 New-LocalUser -Name "rdp_remote" -Password $pw -PasswordNeverExpires -AccountNeverExpires
 Add-LocalGroupMember -Group "Remote Desktop Users" -Member "rdp_remote"
 Add-LocalGroupMember -Group "Users" -Member "rdp_remote"
-# 确认不在 Administrators
-Get-LocalGroupMember -Group "Administrators" | Where-Object Name -like "*rdp_remote*"
+Get-LocalGroupMember -Group "Administrators" | Where-Object Name -like "*rdp_remote*"   # 确认不在管理员组
 
-# 2. 强制 NLA（网络级别身份验证）
+# 2. 强制 NLA
 (Get-WmiObject -class Win32_TSGeneralSetting -Namespace root\cimv2\terminalservices `
   -Filter "TerminalName='RDP-tcp'").SetUserAuthenticationRequired(1)
 
-# 3. 账户锁定（5 次失败锁 15 分钟）
+# 3. 账户锁定（5 次失败锁 15 分钟）—— 抵御暴力破解，v6 直连尤为重要
 net accounts /lockoutthreshold:5 /lockoutwindow:15 /lockoutduration:15
 
-# 4. 防火墙作用域（按路径分别放行）
-#   路径 B（中转）：socat 从 txhk 的 Tailscale IP 100.64.0.3 发起 → 放行 Tailscale 段
+# 4. 防火墙作用域
+#   路径 B：socat 从 txhk 的 Tailscale IP 100.64.0.3 发起 → 放行 Tailscale 段
 Set-NetFirewallRule -DisplayName "Remote Desktop - User Mode (TCP-In)" -RemoteAddress "100.64.0.0/10"
-#   Tailscale 直连：Win10 加入 Tailscale 后，RDP 流量来自 Tailscale 段，同上规则已覆盖
+#   路径 A（v6 直连）：见 §6.4（注意：两路径并存时 RemoteAddress 需同时含 100.64.0.0/10 与 v6 来源）
+
+# 5. 启用 RDP UDP（RemoteFX，配合 §4.2 / 路径 A）
+Set-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name "fClientDisableUDP" -Value 0 -ErrorAction SilentlyContinue
 ```
 
-> 路径 B 下，Win10 看到的源 IP 是 txhk 的 `100.64.0.3`（socat 出口），与防火墙 `100.64.0.0/10` 一致；真正按客户端 IP 收敛的是 txhk 的 nftables 白名单。Tailscale 直连时，Win10 看到的源 IP 是客户端的 Tailscale IP，同样在 `100.64.0.0/10` 段内。
+> 路径 B 下 Win10 看到的源是 txhk 的 `100.64.0.3`（socat 出口），收敛靠 txhk 的 nft 白名单。路径 A 下源是客户端真实 v6，收敛靠 istoreos 的 `rdp6_guard` + （可选）Win10 RemoteAddress。
 
 ---
 
-## 6. 安全机制时间线
+## 8. 安全审查（v3.2 重点）
 
-| 时间 | txhk 中转事件 |
-|------|------|
-| T+0 | 客户端访问 `rdp.singll.net`，Authelia 2FA（或持有效会话） |
-| T+~10s | 认证通过，`unlock.py` 把客户端 IP 写入 nftables set（TTL=3min） |
-| T+1min | mstsc 连 `43.129.195.4:33890`，TCP 握手 → socat → Win10 NLA 登录 |
-| T+3min | 白名单条目过期，**新连接**被 drop |
-| T+3min 之后 | ✅ **已建立的 RDP 会话不受影响**（`ct state established,related accept` 放行），持续到主动断开 —— v1.0 此承诺因缺 established 规则而**不成立**，本版已修正 |
+对全部新增改动做机密性 / 完整性 / 可用性 / 暴露面 / 信任边界分析。**重点：headscale 内嵌 DERP（§8.1）。**
+
+### 8.1 ★headscale 内嵌 DERP（§4.1）—— 是否涉及网络安全？有何风险？
+
+**改动**：`derp.server.enabled: true`，txhk 成为本 tailnet 的 DERP 中继区（id 999），开 `udp/3478` STUN，DERP 经 `headscale.singll.net/derp`（复用 443）。
+
+| 维度 | 分析 | 结论 |
+|------|------|------|
+| **机密性（会泄露 RDP 内容吗？）** | DERP **只中继 WireGuard/Noise 密文，无法解密** tailnet 流量。且对本 RDP 用途，**txhk 本就是明文点**（socat 在 txhk 终结客户端 RDP 再重新进隧道）—— DERP 不增加任何新的明文可见性。对其他 tailnet 流量，DERP 只见密文。 | ✅ **不增加数据暴露** |
+| **开放中继滥用** | 若不设防，DERP 可被任意人借道中继（带宽盗用 / 流量洗白）。`verify_clients: true` 让 DERP 仅为**本 headscale tailnet 已认证节点**（核对公钥）中继。 | ✅ 安全，**必须保持 `verify_clients: true`** |
+| **STUN `udp/3478` 暴露** | STUN 是反射协议，但响应≈请求大小，放大系数 ~1x（非 DNS/NTP/memcached 那类 50–500x 放大器），不是有效 DDoS 放大源；仅暴露「这是个 STUN 服务」。必须对公网开放（NAT 打洞所需）。 | △ **低风险**；可选对 3478 限速；需同步开**腾讯云安全组** |
+| **DERP over 443** | 复用现有 Caddy 443，无新端口；Caddy 透传 HTTP upgrade；`verify_clients` 拒未认证客户端。 | ✅ 复用既有面 |
+| **信任边界是否扩大** | txhk 本就是「皇冠明珠」：持控制面（headscale）、终结 RDP 明文、是唯一公网节点。**txhk 若失陷，攻击者已得到一切**；DERP 不增加 blast radius。 | ✅ **不扩大信任边界** |
+| **可用性 / 误配** | ❶ 占位 `ipv4: 198.51.100.1`/`ipv6: 2001:db8::1` 若不改，会给客户端下发**坏地址 → 连通性反而降级**（必须改真实 v4、删 v6）。❷ `systemctl restart headscale`：**数据面（既有隧道）不中断**，仅控制面短暂重连；坏配置可能致 headscale 起不来 → 节点拿不到更新。 | △ **改对占位 IP**；保留 `config.yaml.save` 备份；低峰重启；改后立即 `headscale nodes list` 验证 |
+| **与 P0 联动** | DERP 跑在 `headscale.singll.net/derp` → **P0-1（该域名不得套 forward_auth）和 P0-2（openclash 须 fake-ip 豁免 `+.singll.net`）现在同时守护 DERP**。已豁免，无新增脆弱点，但回退这两条会同时打断 DERP。 | ✅ 现有约束已覆盖，需在文档强调 |
+
+**§8.1 小结**：内嵌 DERP **确实是网络安全相关改动**（新开公网 STUN 端口、txhk 承担中继角色），但在 `verify_clients: true` + 改对占位 IP + 同步云安全组的前提下，**不增加数据暴露、不扩大信任边界、无显著放大风险**。唯一真实注意项是**占位 IP 必须改对**（否则降级可用性）与**STUN 端口需云安全组放行**。
+
+### 8.2 RDP-UDP 转发（§4.2/4.6）
+
+| 风险 | 分析 | 处置 |
+|------|------|------|
+| **UDP fail-open** | nft `policy accept`，若只加 `udp accept` 不加 `udp dport 33890 drop`，则 UDP 端口对全网敞开。 | ✅ §4.3 已显式加 `udp dport 33890 drop`；部署后 `nft list` 必须核对两条 drop 都在 |
+| 明文暴露 | RDP-UDP 承载同一 RDP 安全层（TLS/NLA），UDP gate 与 TCP 同受白名单约束。 | ✅ 无新增明文 |
+| 失败回退 | RDP-UDP 不通自动回退 TCP。 | ✅ 无副作用 |
+
+### 8.3 ★IPv6 直连（§6）—— 最高风险项
+
+| 风险 | 分析 | 处置 |
+|------|------|------|
+| **绕过 2FA gate** | 路径 A 不经 txhk Authelia。**裸开 Win10:3389 到 v6 公网 = RDP 直面互联网**（BlueKeep 类漏洞、爆破的高价值目标）。 | ❗ **禁止裸 pinhole**；**必须**用 §6.2 家侧 2FA 动态放行（镜像 txhk），仅 `@allowed6` 内源、3min 窗口可达 |
+| 家侧 Caddy/Authelia 暴露到 v6 | `rdp6.singll.net` 使家侧 Caddy:443、Authelia 内网面变 v6 公网可达，新增暴露面。 | △ 仅暴露 unlock vhost；依赖 Authelia regulation（3/2min 封 5min）；TLS；可叠加公司 v6 前缀静态约束 |
+| Win10 直接可达 | 即使有 gate，窗口内 Win10 RDP 对授权源可达。 | NLA + `rdp_remote` 低权 + 锁定（§7）+ （建议）Win10 RemoteAddress 收敛到公司 v6 前缀 |
+| 缺审计 | v6 直连无 txhk 日志。 | 家侧 unlock 写日志 + 可选 ntfy 通知（同 §4 附 H） |
+
+**§8.3 小结**：路径 A **是本方案最高风险面**。其安全性**完全取决于是否落实家侧 2FA 动态 pinhole**。落实后与路径 B 安全等级相当；不落实（裸开端口）则**显著低于**路径 B，不可接受。
+
+### 8.4 IPv6 本地开启（§5）
+
+| 风险 | 分析 | 处置 |
+|------|------|------|
+| LAN 全员获公网可寻址 | 开 RA 后所有 LAN 设备（含 IoT/打印机）持公网 GUA。 | ✅ 仅**可寻址**，`wan.input/forward=REJECT` 默认**拒绝入站** → 不可达，除非显式 pinhole |
+| wan zone 是否覆盖 v6 | 若 v6 在游离接口（未入 wan zone），入站受 `defaults.input=ACCEPT` 管 → 危险。 | ✅ 已实测 `network.wan.ipv6='auto'`（v6 在 wan 同接口），wan zone 覆盖；§5.1 已列复核步骤 |
+| ULA 泄露 | `fde1:29df:2d55::/48` ULA 仅内网，不可全球路由。 | ✅ 无影响 |
+
+### 8.5 整体威胁模型与残余风险
+
+| 资产 | 主要威胁 | 现有控制 | 残余风险 |
+|------|---------|---------|---------|
+| Win10 RDP | 爆破 / RDP 漏洞 | NLA + 低权账户 + 锁定 + （两路径）2FA 动态放行 | 中→低；建议补 Win10 安全更新、监控登录失败 |
+| txhk（皇冠明珠） | 节点失陷 → 控制面 + RDP 明文 + DERP | 最小权限 unlock、sudoers 收敛、443/3478/33890 之外不暴露 | 取决于 txhk 主机加固（SSH key、fail2ban） |
+| 中转白名单 | fail-open / TTL 绕过 | `policy accept` + 显式 TCP/UDP drop + `ct established` | 低；部署后必须 `nft list` 核对 4 条 dport 规则齐全 |
+| v6 直连面 | 绕过 2FA / 家侧服务暴露 | §6.2 家侧 2FA gate（**强制**） | **未落实 gate 则高**；落实后中→低 |
+
+> **socat vs DNAT 取舍（§4.6）**：安全上保留 socat + `input` 链 gate（经验证、单点 drop、无 forward/masquerade 的 fail-open 面）优于重构为 nat 表 DNAT；延迟上对单路交互式 RDP 二者无可感差异。故不采纳 DNAT。
 
 ---
 
-## 7. 工具调研（替代/增强选型）
+## 9. 安全机制时间线
+
+| 时间 | 路径 B（txhk） | 路径 A（v6 直连） |
+|------|------|------|
+| T+0 | 访问 `rdp.singll.net`，Authelia 2FA | 经 v6 访问 `rdp6.singll.net`，家侧 Authelia 2FA |
+| T+~10s | unlock 写客户端 v4 → txhk nft set（TTL 3min） | 家侧 unlock 写客户端 v6 → istoreos nft `inet6` set（TTL 3min）+ 放行 forward |
+| T+1min | mstsc 连 `43.129.195.4:33890` → socat → Win10 NLA | mstsc 连 `[Win10 GUA]:3389` → Win10 NLA |
+| T+3min | 白名单过期，**新连接** drop | 同左 |
+| T+3min 后 | ✅ **已建立会话不受影响**（`ct established` 放行），持续到主动断开 | 同左（istoreos forward 链同样需 `ct established` 放行，§6.3 补） |
+
+---
+
+## 10. 工具调研（替代/增强选型）
 
 | 方案 | 公网 RDP 暴露 | 客户端要求 | 服务器负载 | 落地复杂度 | 适配本场景 |
 |------|------|------|------|------|------|
-| **国内 VPS 中转** | 是（白名单 gated） | 仅需 v4 | 极低 | 中 | 🥇 延迟最优，消除跨境跳 |
-| **RD Gateway over HTTPS** | 否（HTTPS 封装） | 仅需 mstsc | 中 | 高（需 WinServer） | ✅ 原生支持，流量伪装，但部署重 |
-| **SSH 本地端口转发** | 否（SSH 加密） | PuTTY Portable | 极低 | **低** | ✅ 免安装，加密，可与国内 VPS 搭配 |
-| **当前方案：socat 中转** | 是（Authelia+白名单 gated） | 仅需 v4 | 极低 | 中 | 🥈 永远可用，兜底方案 |
-| **frp 反向代理** | 是（需额外安全层） | 无需 | 低 | 中 | △ 换中转服务器后有意义 |
-| **Win10 装 Tailscale（仅服务端）** | 否（Tailscale 加密） | 无需 | 极低 | 低 | △ 仅省一跳局域网，改善有限 |
-| Guacamole 浏览器内 RDP | 否（443 复用） | 仅浏览器 | **高**（Tomcat+guacd） | **高**（guacd 须源码编译） | ❌ 仍绕香港、txhk 偏重、非原生体验 |
-| fwknop SPA 单包授权 | 否（端口隐形） | 需装客户端 | 极低 | 中 | △ 隐蔽性最强，但非"浏览器即可"，上游活跃度下降 |
-| systemd-socket-proxyd | 同当前方案 | 同当前方案 | 极低 | **低**（systemd 自带） | ✅ **替代 socat 免安装**，推荐用于 §4.4 |
-| caddy-l4（L4 反代） | 同当前方案 | 同当前方案 | 低 | 中（须 xcaddy 重编译 Caddy） | △ 与 Caddy 统一，纯转发相比 socat 优势有限 |
-
-要点与来源：
-
-- **systemd-socket-proxyd**：systemd 自带，`.socket`(监听 33890) + `.service`(proxy 到 192.168.7.129:3389)，零额外依赖，可替代 §4.4 的 socat。
-- **[Guacamole 1.6.0](https://guacamole.apache.org/doc/1.6.0/gug/guacamole-native.html)**：guacd 必须源码编译（cairo/libjpeg/libvncserver 等），Tomcat 9/10 的 javax/jakarta 命名空间坑；txhk 2 核 3.6G 偏重。本场景不推荐。
-- **[fwknop SPA](https://github.com/mrash/fwknop)**：端口对 nmap 完全隐形、抗重放、纯 C 无解释器依赖、可对接 nftables；适合替换"web 解锁"为"单包解锁"，但要装客户端，不满足"任意浏览器即可"。
-- **[caddy-l4](https://github.com/mholt/caddy-l4)** / [layer4 proxy 文档](https://caddyserver.com/docs/modules/layer4.handlers.proxy)：声明式 L4 路由，需 `xcaddy build --with github.com/mholt/caddy-l4`；RDP 后端不认 proxy_protocol，纯转发场景收益不大。
-- **国内 VPS 中转**：延迟最优方案，购买国内轻量 VPS（阿里云/腾讯云上海节点），复刻 txhk 的 nftables 白名单 + unlock 服务，延迟从 ~130-170ms 降至 ~40-70ms（见 §3 方案 B）。
-- **SSH 本地端口转发**：PuTTY Portable 免安装，配置 `-L 13389:Win10:3389`，mstsc 连 `localhost:13389`，适合与国内 VPS 搭配使用（见 §3 方案 C）。
-- **Win10 装 Tailscale（仅服务端）**：Win10 加入 Headscale 后，txhk 可直接转发到 100.64.0.1，省去 route 节点一跳，但改善有限（~5-10ms）。
+| **txhk 内嵌 DERP（§4.1）** | 不增加 | 无 | 极低 | **低** | 🥇 **零成本砍掉 130ms→52ms 绕行** |
+| **RDP-UDP 转发（§4.2）** | 不增加（同 gate） | 无 | 极低 | 低 | 🥇 跟手度提升，自动回退 |
+| **IPv6 直连（§6）** | 是（家侧 2FA gated） | 仅需 v6 出网 | 极低 | 中 | 🥇 唯一消除 trombone，~30–60ms（需公司有 v6） |
+| socat 中转（§4.6） | 是（Authelia+白名单 gated） | 仅需 v4 | 极低 | 中 | 🥈 永远可用兜底 |
+| systemd-socket-proxyd | 同 socat | 同 socat | 极低 | 低（systemd 自带） | ✅ 可替代 TCP socat |
+| 国内 VPS 中转 | 是（白名单 gated） | 仅需 v4 | 极低 | 中 | ❌ **用户约束：不买新 VPS** |
+| RD Gateway over HTTPS | 否（HTTPS 封装） | 仅 mstsc | 中 | 高（需 WinServer/AD） | ❌ **用户约束：不搭 AD gate** |
+| Guacamole 浏览器内 RDP | 否（443） | 仅浏览器 | **高**（Tomcat+guacd） | **高**（guacd 须编译） | ❌ 仍绕香港、非原生体验 |
+| fwknop SPA 单包授权 | 否（端口隐形） | 需装客户端 | 极低 | 中 | △ 隐蔽性最强，但需客户端 |
+| caddy-l4（L4 反代） | 同 socat | 同 socat | 低 | 中（须 xcaddy 重编译） | △ 纯转发相比 socat 优势有限 |
 
 ---
 
-## 8. 部署与验证清单
+## 11. 部署与验证清单
 
 ```bash
-# === 路径 B 部署后验证（txhk）===
-spool exec txhk "sudo systemctl status nftables-rdp rdp-unlock rdp-forward --no-pager | grep Active"
-spool exec txhk "sudo ss -tlnp | grep -E ':(8090|33890)'"
-spool exec txhk "sudo nft list table inet rdp_guard"        # 含 ct state / iif lo / 两条 dport 规则
-spool exec txhk "curl -s -o /dev/null -w '%{http_code}' -I https://rdp.singll.net"   # 302 → auth
-# 链路（已验证 OK）
-spool exec txhk "ping -c1 192.168.7.129 && timeout 3 bash -c 'echo>/dev/tcp/192.168.7.129/3389' && echo 3389-OPEN"
+# === 中转优化（§4.1 内嵌 DERP）===
+spool exec txhk "sudo systemctl restart headscale && sleep 3 && headscale nodes list"
+spool exec txhk "sudo ss -ulnp | grep ':3478'"                 # STUN 监听
+spool exec txhk "tailscale ping -c 8 100.64.0.2"               # 期望 via 直连 ~52ms / 回退 via DERP(txhk)
+# 腾讯云安全组手动放行 udp/3478
 
-# === 端到端（外网客户端）===
-# 1) 浏览器访问 https://rdp.singll.net 完成 2FA
-# 2) spool exec txhk "sudo nft list set inet rdp_guard allowed_ips"   # 应见客户端 IP
-# 3) mstsc 连 43.129.195.4:33890 → rdp_remote 登录
-# 4) 等 3 分钟后新连接应被拒；已连会话不掉线
+# === 路径 B 部署（§4.3-4.7）===
+spool exec txhk "sudo systemctl status nftables-rdp rdp-unlock rdp-forward rdp-forward-udp --no-pager | grep Active"
+spool exec txhk "sudo ss -tlnp | grep -E ':(8090|33890)'; sudo ss -ulnp | grep ':33890'"
+spool exec txhk "sudo nft list table inet rdp_guard"           # 核对 ct/lo/3478 + TCP&UDP 各 accept+drop（共 4 条 dport）
+spool exec txhk "curl -s -o /dev/null -w '%{http_code}' -I https://rdp.singll.net"   # 302 → auth
+
+# === 路径 A 前置（§5/§6）===
+spool exec istoreos "uci show firewall.@zone[2]; uci show network.wan | grep ipv6"   # wan REJECT + ipv6=auto
+# 公司电脑：访问 test-ipv6.com 确认有 v6 出网（§6.1）
+# Win10 开机：Get-NetIPAddress -AddressFamily IPv6 | ? IPAddress -like '2408:832e:208a:abe0:*'
+
+# === 端到端 ===
+# 路径 B：浏览器 2FA → mstsc 43.129.195.4:33890
+# 路径 A：v6 浏览器访问 rdp6.singll.net 2FA → mstsc [Win10 GUA]:3389
 ```
 
 ---
 
-## 9. 故障排查
+## 12. 故障排查
 
 | 问题 | 可能原因 | 排查 |
 |------|---------|------|
-| 所有 Tailscale 节点 offline | headscale 被 Caddy 2FA 拦 / openclash fake-ip 劫持（见 §0） | `curl -I https://headscale.singll.net/key`（应 400 非 302）；istoreos `nslookup headscale.singll.net`（应真实 IP 非 198.18.x） |
+| 所有 Tailscale 节点 offline | headscale 被 Caddy 2FA 拦 / openclash fake-ip 劫持（§0） | `curl -I https://headscale.singll.net/key`（应 400）；istoreos `nslookup headscale.singll.net`（应真实 IP） |
+| 改 DERP 后 headscale 起不来 | config.yaml 语法错 / 占位 IP 未改 | `journalctl -u headscale`；`cp config.yaml.save config.yaml` 回滚 |
+| `tailscale ping` 仍 via DERP(hkg) | 内嵌 DERP 未生效 / 3478 被云安全组挡 / 占位 IP 未改 | `ss -ulnp \| grep 3478`；核对 `ipv4: 43.129.195.4`；腾讯云安全组 |
+| RDP 连上 3 分钟后掉线 | nft 缺 `ct state established` | `nft list table inet rdp_guard` |
+| UDP/RemoteFX 不通但 TCP 能连 | 3478 之外，udp/33890 未放行 / UDP socat 未起 | 正常会回退 TCP；如需 UDP：核对 `udp dport 33890 accept` + `rdp-forward-udp` |
 | rdp.singll.net 认证后 500 | unlock 未启动 / sudoers 错 / X-Real-IP 空 | `journalctl -u rdp-unlock`；`tail /var/log/rdp-unlock.log` |
-| RDP 连上 3 分钟后掉线 | nftables 缺 `ct state established`（v1.0 缺陷） | `nft list table inet rdp_guard` 确认含 established 规则 |
-| 自测 `nc 127.0.0.1 33890` 失败 | 缺 `iif lo accept` | 同上确认含 lo 放行 |
-| route offline / 子网路由丢失 | istoreos tailscaled 未连控制面 | `spool exec istoreos "tailscale status"`；必要时 `/etc/init.d/tailscale restart` |
-| 国内 VPS 中转延迟仍高 | VPS 到家里路由绕路 | `traceroute` 检查 VPS→家里路由；考虑换 VPS 节点位置 |
-| SSH 隧道连不上 | SSH 服务未开 / 端口被封 | 检查 SSH 服务状态；尝试 443 端口 |
+| v6 直连连不上 | 公司无 v6 / Win10 无 GUA / 家侧 gate 未放行 / wan 未开 443 入站 | §6.1 测公司 v6；§5.2 查 Win10 GUA；家侧 unlock 日志；`uci` 查 v6 input 规则 |
+| route offline | istoreos tailscaled 未连控制面 | `spool exec istoreos "tailscale status"`；`/etc/init.d/tailscale restart` |
 
 ### 日志位置
 
 | 服务 | 位置 |
 |------|------|
-| Caddy / Authelia / rdp-forward | `journalctl -u <svc>` |
-| unlock | `/var/log/rdp-unlock.log` |
-| nftables | `journalctl -k | grep rdp_guard` |
+| Caddy / Authelia / headscale / rdp-forward | `journalctl -u <svc>` |
+| unlock（txhk / 家侧） | `/var/log/rdp-unlock.log` |
+| nftables | `journalctl -k \| grep rdp_guard` |
 
 ---
 
 ## 附录：命令速查
 
 ```bash
+# 中转优化诊断（核心）
+spool exec txhk "tailscale ping -c 8 100.64.0.2"               # 直连 vs DERP + RTT
+spool exec txhk "tailscale status"
+spool exec txhk "sudo ss -ulnp | grep 3478"                    # STUN
+
 # nftables 白名单
 spool exec txhk "sudo nft list set inet rdp_guard allowed_ips"
 spool exec txhk "sudo nft add element inet rdp_guard allowed_ips { 1.2.3.4 }"
 spool exec txhk "sudo nft delete element inet rdp_guard allowed_ips { 1.2.3.4 }"
 
 # 服务
-spool exec txhk "sudo systemctl restart rdp-unlock rdp-forward"
+spool exec txhk "sudo systemctl restart rdp-unlock rdp-forward rdp-forward-udp"
+spool exec txhk "sudo systemctl restart headscale"             # DERP 配置生效（数据面不断）
 spool logs txhk caddy 50
 
 # 链路
 spool exec txhk "ping 192.168.7.129; timeout 3 bash -c 'echo>/dev/tcp/192.168.7.129/3389'"
 spool exec istoreos "tailscale status; nslookup headscale.singll.net"
+spool exec istoreos "uci show firewall.@zone[2]; uci show network.wan | grep ipv6"   # v6 入站默认拒绝核对
 ```
 
 ---
 
-*文档版本: 3.1 | 重写日期: 2026-06-06 | 移除 IPv6 路径，重写直连方案（排除虚拟网卡方案，聚焦国内 VPS 中转 + SSH 隧道） | 前置 P0 已修复*
+*文档版本: 3.2 | 重写日期: 2026-06-06 | 实测推翻 DERP 延迟归因（170→90-100ms）、恢复 IPv6 直连双路径、新增中转优化与安全审查（重点 headscale 内嵌 DERP）| 前置 P0 已修复*
