@@ -237,7 +237,10 @@ func (m *SyncManager) ensureRemoteDir(address, dir string) {
 	user := strings.Split(address, "@")[0]
 	mkdir := fmt.Sprintf("mkdir -p %q", dir)
 	if user != "root" {
-		mkdir = fmt.Sprintf("sudo mkdir -p %q && sudo chown $(id -u):$(id -g) %q", dir, dir)
+		// 仅对「新建」目录 chown 给同步用户（满足非 sudo 的 SOPS cat 上传）；绝不 chown 已存在目录，
+		// 否则会夺走 /etc、/etc/sudoers.d 等系统目录的属主、导致 sudo 失效。
+		// 常规推送走 `sudo rsync`（以 root 写入），本就不依赖目录归属同步用户。
+		mkdir = fmt.Sprintf(`if [ ! -d %q ]; then sudo mkdir -p %q && sudo chown $(id -u):$(id -g) %q; fi`, dir, dir, dir)
 	}
 	if _, err := SSHExecute(address, m.sshKey, mkdir); err != nil {
 		utils.Warn("Failed to ensure remote dir %s: %v", dir, err)

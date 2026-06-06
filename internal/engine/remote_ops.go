@@ -204,7 +204,9 @@ func (re *RemoteExecutor) Systemctl(action, service string) error {
 
 // EnsureDir 确保远程目录存在
 func (re *RemoteExecutor) EnsureDir(path string) error {
-	cmd := fmt.Sprintf("sudo mkdir -p %q && sudo chown $(id -u):$(id -g) %q", path, path)
+	// 仅对「新建」目录 chown 给执行用户（满足非 sudo 的 cat 写入）；绝不 chown 已存在目录，
+	// 否则会夺走 /etc 等系统目录的属主、导致 sudo 失效（同 sync.ensureRemoteDir）。
+	cmd := fmt.Sprintf(`if [ ! -d %q ]; then sudo mkdir -p %q && sudo chown $(id -u):$(id -g) %q; fi`, path, path, path)
 	_, err := SSHExecute(re.address, re.sshKey, cmd)
 	return err
 }
