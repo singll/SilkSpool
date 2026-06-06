@@ -1,11 +1,11 @@
-# RDP 安全网关实施方案 v3.0
+# RDP 安全网关实施方案 v3.1
 
 > **目标**：让「装不了 Tailscale 的临时设备」通过原生 RDP（mstsc）安全连接家里内网的 Win10（192.168.7.129）。
 > **路径**：txhk 香港公网中转（唯一路径，任意 IPv4 客户端可用）。
 > **认证底座**：Authelia 2FA → 动态防火墙白名单（短 TTL）；最后底线：Windows NLA + 弱权账户 + 账户锁定。
 >
 > 本版基于 2026-06-06 实测：**Win10 无公网 IPv6**，v2.0 的路径 A（IPv6 直连）不可行，已移除。
-> 新增 §3「直连方案对比」，列出在「不可内网穿透、不可用向日葵等远程工具」约束下的直连替代方案。
+> 新增 §3「低延迟方案对比」，列出在「公司电脑禁止安装虚拟网卡/虚拟网络、禁止内网穿透、禁止向日葵等远程工具」约束下的替代方案。
 > v1.0/v2.0 的环境数据已多处过期，**勿再参照旧版**。
 
 ---
@@ -59,7 +59,7 @@ txhk → 192.168.7.129:3389  : OPEN
 - ❌ **IPv4 动态直连不可行**：你能查到的"公网 IP"是运营商共享 NAT 出口，端口不归你，DDNS 跟踪也无法入站。
 - ❌ **IPv6 端到端直连不可行**：虽然家里有公网 /60 前缀，但 Win10 实测无公网 v6 地址，无法作为直连目标。
 - ✅ **IPv4 必须经 txhk 中转**：保证任何 v4 客户端都能连，这是「保证可用」的基线。
-- △ **如需直连提升性能**：需借助客户端辅助工具建立虚拟隧道，详见 §3。
+- △ **如需降低延迟**：在「禁止虚拟网卡/虚拟网络」约束下，需用应用层隧道或优化中转路径，详见 §3。
 
 ---
 
@@ -87,181 +87,240 @@ mstsc → 43.129.195.4:33890
 
 ---
 
-## 3. 直连方案对比（提升性能的替代路径）
+## 3. 低延迟方案对比（公司网络约束下的替代路径）
 
-> **约束前提**：
-> - ❌ 不可使用内网穿透（公司电脑不可将公司网络连入家庭网络）
-> - ❌ 不可使用向日葵、ToDesk、TeamViewer 等商业远程工具
-> - ✅ 可使用客户端辅助工具建立虚拟隧道
+> **硬约束**：
+> - ❌ **禁止安装虚拟网卡/虚拟网络**：Tailscale、WireGuard、ZeroTier、Cloudflare WARP 等创建虚拟网卡的工具全部不可用
+> - ❌ **禁止内网穿透**：不可将公司网络桥接到家庭网络（公司电脑不能成为家庭网络的延伸）
+> - ❌ **禁止向日葵、ToDesk、TeamViewer 等商业远程工具**
+> - ✅ 可安装不修改网络栈的普通应用（如浏览器、SSH 客户端、端口转发工具等）
 > - ✅ 目标是原生 RDP 体验（mstsc），而非浏览器或第三方客户端
 
-### 3.1 方案总览
+### 3.1 延迟瓶颈分析
 
-| 方案 | 原理 | 客户端要求 | 服务端要求 | 延迟 | 安全性 | 复杂度 | 推荐度 |
-|------|------|-----------|-----------|------|--------|--------|--------|
-| **A. Tailscale 直连** | WireGuard 零配置 VPN，NAT 穿透 | 装 Tailscale 客户端 | Win10 装 Tailscale | **最低**（P2P 直连） | 🥇 端到端加密 | 低 | ⭐⭐⭐⭐⭐ |
-| **B. WireGuard 手动** | 轻量 VPN，需手动配置 | 装 WireGuard 客户端 | 家里路由器/Win10 跑 WG | 低（直连） | 🥇 端到端加密 | 中 | ⭐⭐⭐⭐ |
-| **C. ZeroTier** | SD-WAN 虚拟局域网 | 装 ZeroTier 客户端 | Win10 装 ZeroTier | 低（P2P） | 🥇 端到端加密 | 低 | ⭐⭐⭐⭐ |
-| **D. Cloudflare Tunnel + WARP** | Cloudflare 边缘隧道 | 装 Cloudflare WARP | 家里跑 cloudflared | 中（经 CF 边缘） | 🥈 TLS 加密 | 中 | ⭐⭐⭐ |
-| **E. frp 反向代理** | 从家里主动连公网服务器 | 无需客户端 | 公网服务器 + 家里 frpc | 中（经公网服务器） | 🥈 可加密 | 中 | ⭐⭐ |
-| **F. 当前方案（txhk 中转）** | 固定公网服务器转发 | 无需客户端 | txhk + Authelia | 高（绕香港） | 🥈 2FA + 白名单 | 中 | ⭐⭐（兜底） |
+当前方案（txhk 中转）的延迟构成：
 
-### 3.2 方案详解
+```
+公司电脑 ──①──→ txhk 香港 ──②──→ Tailscale 隧道 ──③──→ iStoreOS route ──④──→ Win10
+          ~30-50ms      ~10ms(本机)      ~80-100ms        ~5ms
+                                                         总计: ~130-170ms
+```
 
-#### 方案 A：Tailscale 直连（最推荐）
+- **① 公司→txhk**：取决于公司到香港的公网路由，通常 30-50ms（中国大陆→香港）
+- **② txhk 本机 socat 转发**：几乎为 0
+- **③ txhk→iStoreOS（Tailscale 隧道）**：80-100ms（Tailscale WireGuard 隧道 + 跨境回大陆）
+- **④ iStoreOS→Win10**：局域网 <1ms
 
-**原理**：Tailscale 基于 WireGuard，自动处理 NAT 穿透（STUN/DERP），在大多数场景下可实现 P2P 直连。
+**关键发现**：延迟的大头是 ①+③ 两段跨境公网路由。要降低延迟，核心是**缩短或合并跨境路径**。
+
+### 3.2 方案总览
+
+| 方案 | 原理 | 客户端要求 | 延迟改善 | 安全性 | 复杂度 | 推荐度 |
+|------|------|-----------|---------|--------|--------|--------|
+| **A. RD Gateway over HTTPS** | Windows RD Gateway 封装 RDP 到 HTTPS | 仅需 mstsc | 中（减少一跳） | 🥇 SSL+2FA | 高 | ⭐⭐⭐⭐ |
+| **B. 国内 VPS 中转** | 用国内 VPS 替代 txhk，免去跨境 | 无需客户端 | **高**（消除跨境延迟） | 🥈 白名单+NLA | 中 | ⭐⭐⭐⭐⭐ |
+| **C. SSH 隧道（PuTTY/portable）** | SSH 本地端口转发 | 免安装 portable PuTTY | 中（同 B，换中转服务器） | 🥇 SSH 加密 | 低 | ⭐⭐⭐⭐ |
+| **D. frp over WebSocket/TLS** | 从家里主动出站，经公网中转 | 仅需 mstsc | 中（换中转服务器） | 🥈 TLS+token | 中 | ⭐⭐⭐ |
+| **E. Win10 安装 Tailscale（仅服务端）** | Win10 加入 Tailscale，简化路径 B | 无需客户端 | 低（仅消除 route 中转） | 🥇 Tailscale 加密 | 低 | ⭐⭐⭐ |
+| **F. 当前方案（txhk 中转）** | 固定公网服务器转发 | 无需客户端 | 基线 | 🥈 2FA+白名单 | 中 | ⭐⭐（兜底） |
+
+### 3.3 方案详解
+
+#### 方案 A：RD Gateway over HTTPS
+
+**原理**：Windows Server 的 RD Gateway（远程桌面网关）将 RDP 协议封装在 HTTPS/TLS 隧道内传输。客户端用原生 mstsc 连接时，在「高级」标签页设置 RD Gateway 服务器地址，mstsc 自动通过 HTTPS 443 端口建立隧道，再由 RD Gateway 转发到内网 RDP 目标。
 
 **架构**：
 ```
-公司电脑（Tailscale 客户端）
+公司电脑（mstsc，设置 RD Gateway）
        │
-       ▼ Tailscale mesh（P2P 直连或经 DERP 中继）
+       ▼ HTTPS/443（TLS 加密，看起来就是普通 HTTPS 流量）
        │
-家里 Win10（Tailscale 客户端，100.64.0.1）
+txhk 或国内 VPS（RD Gateway 服务）
+       │
+       ▼ 内网转发
+       │
+家里 Win10（RDP 3389）
 ```
 
 **优点**：
-- ✅ **零配置 NAT 穿透**：自动尝试 STUN 打洞，失败时经 DERP 中继（仍加密）
-- ✅ **端到端加密**：WireGuard 层加密，即使经 DERP 中继也无法被中间人解密
-- ✅ **最低延迟**：P2P 直连时延迟最低（无中转）
-- ✅ **已有基础设施**：你已有 Headscale 控制平面，只需让 Win10 加入
-- ✅ **ACL 控制**：可在 Headscale 配置访问策略
+- ✅ **客户端零安装**：mstsc 原生支持 RD Gateway，只需在连接设置里填网关地址
+- ✅ **流量伪装**：RDP over HTTPS，对网络层而言就是普通 HTTPS 流量，公司防火墙通常不拦截
+- ✅ **SSL/TLS 加密**：传输层加密，无需额外 VPN
+- ✅ **支持 2FA**：RD Gateway 可对接 RADIUS/NPS 实现 MFA
+- ✅ **443 端口复用**：可与 Caddy 共存（SNI 路由或不同路径）
 
 **缺点**：
-- ❌ 需要在客户端设备安装 Tailscale（但这是「客户端辅助」，不涉及内网穿透）
-- ❌ 公司网络可能阻止 UDP（此时会回退到 DERP 中继，延迟增加但仍可用）
+- ❌ 需要 Windows Server 授权（RD Gateway 是 RDS 角色的一部分）
+- ❌ 部署复杂度较高（需 IIS + RD Gateway 角色安装 + 证书配置）
+- ❌ 如果仍部署在 txhk，跨境延迟 ① 仍在
+- ❌ txhk 是 Linux，需用 Docker 跑 Windows Server 或换其他方案
 
 **实施步骤**：
-1. Win10 安装 Tailscale，配置 Headscale 控制平面（`--login-server https://headscale.singll.net`）
-2. 客户端设备安装 Tailscale，登录同一控制平面
-3. 客户端直接 RDP 到 Win10 的 Tailscale IP（`100.64.0.1:3389`）
-4. 可选：在 Headscale ACL 中限制只有特定节点可访问 Win10 的 3389
+1. 在国内 VPS 上部署 Windows Server + RD Gateway 角色
+2. 配置 SSL 证书 + RD CAP/RAP 策略
+3. 客户端 mstsc 连接时设置 RD Gateway 地址
+4. 或：在 txhk 上用 Linux 替代方案（如 `guacd` + RDP over WebSocket → 但这又回到 Guacamole 方案）
 
-**与「内网穿透」的区别**：
-- 内网穿透 = 把公司网络**连入**家庭网络（公司电脑成为家庭网络的延伸）
-- Tailscale = 在两台电脑之间建立**点对点隧道**（公司网络和家庭网络保持隔离）
-- 公司电脑通过 Tailscale 只能访问 Win10，无法访问家里其他设备（除非显式配置）
+**延迟分析**：若部署在国内 VPS，可消除跨境段 ③（~80-100ms），保留段 ①（~30ms 国内），总延迟降至 ~40-60ms。
 
 ---
 
-#### 方案 B：WireGuard 手动配置
+#### 方案 B：国内 VPS 中转（最推荐）
 
-**原理**：WireGuard 是 Tailscale 的底层协议，手动配置可实现更精细的控制。
-
-**架构**：
-```
-公司电脑（WireGuard 客户端）
-       │
-       ▼ WireGuard 隧道（UDP）
-       │
-家里路由器/Win10（WireGuard 服务端）
-```
-
-**优点**：
-- ✅ **纯内核实现**：性能极高，延迟最低
-- ✅ **完全自主**：不依赖任何第三方服务
-- ✅ **端到端加密**：ChaCha20-Poly1305 加密
-
-**缺点**：
-- ❌ 需要公网服务器或家里有公网 IP（你有 CGNAT，需要公网服务器做中转或打洞）
-- ❌ 手动配置密钥和路由，维护成本高
-- ❌ NAT 穿透需手动配置（不如 Tailscale 自动）
-
-**实施方式**：
-1. **方式一（公网服务器中转）**：在 txhk 跑 WireGuard，公司和 Win10 都连到 txhk
-2. **方式二（NAT 打洞）**：使用 wg-quick + 手动配置 endpoint，但 CGNAT 下打洞困难
-
-**推荐**：如果追求极致性能且愿意手动维护，可在 txhk 跑 WireGuard 服务端，公司和 Win10 作为客户端连接。但这与当前 Tailscale 方案本质相同，只是更手动。
-
----
-
-#### 方案 C：ZeroTier
-
-**原理**：ZeroTier 是类似 Tailscale 的 SD-WAN 方案，创建虚拟局域网。
-
-**架构**：
-```
-公司电脑（ZeroTier 客户端）
-       │
-       ▼ ZeroTier 虚拟网络
-       │
-家里 Win10（ZeroTier 客户端）
-```
-
-**优点**：
-- ✅ **Layer 2 虚拟网络**：可模拟完整以太网，支持广播/组播
-- ✅ **P2P 直连**：支持 NAT 穿透
-- ✅ **自建控制器**：可自建 ZeroTier 控制器（类似 Headscale）
-
-**缺点**：
-- ❌ 免费版限制 25 节点（自建控制器可绕过）
-- ❌ 配置比 Tailscale 稍复杂
-- ❌ 你已有 Tailscale/Headscale 基础设施，迁移成本
-
-**推荐**：如果 Tailscale 满足需求，无需迁移到 ZeroTier。
-
----
-
-#### 方案 D：Cloudflare Tunnel + WARP
-
-**原理**：Cloudflare Tunnel 从家里主动连 Cloudflare 边缘，客户端通过 WARP 连接 Cloudflare。
-
-**架构**：
-```
-公司电脑（Cloudflare WARP 客户端）
-       │
-       ▼ Cloudflare 边缘网络
-       │
-家里 Win10（cloudflared tunnel）
-```
-
-**优点**：
-- ✅ **无需公网 IP**：从家里主动出站连接
-- ✅ **Cloudflare 边缘加速**：全球 Anycast 节点
-- ✅ **可配合 Access 做零信任**：类似 Authelia 的 2FA 控制
-
-**缺点**：
-- ❌ 需要 Cloudflare 账号（免费版可用）
-- ❌ 流量经 Cloudflare 边缘，非纯 P2P
-- ❌ RDP 需要通过 Cloudflare 的 TCP 隧道，可能有限制
-
-**实施步骤**：
-1. 家里跑 `cloudflared tunnel`，配置指向 Win10:3389
-2. 客户端安装 WARP，连接到同一 Cloudflare 网络
-3. 或使用 Cloudflare Access 配置浏览器 2FA + TCP 隧道
-
-**推荐**：如果不想自建基础设施，Cloudflare Tunnel 是不错的托管方案。
-
----
-
-#### 方案 E：frp 反向代理
-
-**原理**：frp 从家里主动连接公网服务器（txhk），客户端连接公网服务器。
+**原理**：当前延迟的大头是「公司→香港 txhk→跨境回大陆→家里」。如果把中转服务器换成国内 VPS（如阿里云/腾讯云上海节点），公司→VPS 和 VPS→家里 都是国内路由，跨境延迟完全消除。
 
 **架构**：
 ```
 公司电脑（mstsc）
        │
-       ▼
-txhk（frps 公网服务端）
+       ▼ 国内公网（~20-30ms）
        │
-       ▼ frp 隧道（从家里主动建立）
+国内 VPS（socat/端口转发，Authelia 2FA + 白名单）
        │
-家里 Win10（frpc 客户端）
+       ▼ frp/Tailscale 出站隧道（~20-40ms，国内→家里）
+       │
+家里 Win10
 ```
 
 **优点**：
-- ✅ **无需客户端**：客户端只需 mstsc
-- ✅ **从家里主动出站**：绕过 CGNAT 入站限制
-- ✅ **可复用 txhk**：已有公网服务器
+- ✅ **延迟大幅降低**：全部走国内路由，预估 40-70ms（vs 当前 130-170ms）
+- ✅ **客户端无需改动**：mstsc 连国内 VPS 的公网 IP:33890 即可
+- ✅ **安全架构可复用**：nftables 白名单 + Authelia 2FA + unlock 服务，与 txhk 完全对称
+- ✅ **公司防火墙友好**：连接国内 IP，不会被当作异常出境流量
 
 **缺点**：
-- ❌ **所有流量经 txhk**：与当前方案本质相同，延迟无改善
-- ❌ 需要额外部署 frps/frpc
-- ❌ 安全性需额外配置（token 加密、TLS）
+- ❌ **需要额外购买国内 VPS**（成本 ~30-50 元/月，轻量应用服务器即可）
+- ❌ **国内 VPS 需备案**：若用域名访问 Authelia 解锁页面，域名需 ICP 备案；若仅用 IP:端口直连则不需要
+- ❌ **家里到国内 VPS 的隧道**：需要从家里主动连出（frp/Tailscale），与当前 txhk 架构类似
 
-**推荐**：与当前 socat 方案功能等价，无性能提升，不建议重复建设。
+**实施步骤**：
+1. 购买国内轻量 VPS（1 核 1G 即可，如阿里云/腾讯云/华为云上海节点）
+2. 在家里 iStoreOS 上部署 frpc，主动连接国内 VPS 的 frps，建立 RDP 端口映射
+3. 或：国内 VPS 安装 Tailscale，加入 Headscale 网络，用 Tailscale 子网路由转发到 Win10
+4. 在国内 VPS 上复刻 txhk 的 nftables 白名单 + unlock 服务
+5. 客户端 mstsc 连国内 VPS 公网 IP:33890
+
+**不需要备案的情况**：
+- 如果只用 `VPS_IP:33890` 直连 RDP，不需要域名，不需要备案
+- 如果想用 `rdp.singll.net` 解析到国内 VPS，需要备案（但可以不绑定域名，用 IP 直连）
+- unlock 页面可以用 `http://VPS_IP:8090` 而非域名
+
+**延迟预估**：
+```
+公司→国内VPS: ~20-30ms（国内骨干网）
+国内VPS→家里: ~20-40ms（国内→家里，Tailscale 或 frp 隧道）
+总计: ~40-70ms（vs 当前 txhk 的 ~130-170ms，改善约 60-70%）
+```
+
+---
+
+#### 方案 C：SSH 本地端口转发（PuTTY Portable）
+
+**原理**：利用 SSH 的本地端口转发（`-L`），在公司电脑上通过 SSH 隧道把本地端口映射到远程 RDP 端口。PuTTY 有 portable 版本，无需安装，不创建虚拟网卡。
+
+**架构**：
+```
+公司电脑
+  ├─ PuTTY Portable（SSH -L 13389:192.168.7.129:3389 user@中转服务器）
+  └─ mstsc → localhost:13389 → SSH 隧道 → 中转服务器 → Win10:3389
+```
+
+**优点**：
+- ✅ **不创建虚拟网卡**：SSH 是应用层隧道，仅占用一个本地端口
+- ✅ **PuTTY Portable 免安装**：U 盘拷贝即可运行，不写注册表、不装驱动
+- ✅ **SSH 加密**：传输安全
+- ✅ **公司防火墙友好**：SSH 22 或 443 端口，通常不被拦截（尤其是 443）
+- ✅ **可复用现有服务器**：txhk 或国内 VPS 均可
+
+**缺点**：
+- ❌ 需要手动配置 PuTTY 端口转发（可保存 session 文件）
+- ❌ 如果用 txhk，跨境延迟仍在
+- ❌ SSH 隧道不如 WireGuard 高效（用户态转发 vs 内核态）
+- ❌ 每次连接需先开 PuTTY 再开 mstsc，步骤稍多
+
+**实施步骤**：
+1. 在中转服务器（国内 VPS 或 txhk）上确保 SSH 服务运行
+2. 下载 PuTTY Portable，配置 Session：`中转服务器IP`，端口 22 或 443
+3. 配置 Connection → SSH → Tunnels：`L13389  192.168.7.129:3389`
+4. 中转服务器上需确保能访问 Win10:3389（Tailscale 子网路由或 frp）
+5. Open PuTTY 连接后，mstsc 连 `localhost:13389`
+
+**推荐搭配**：PuTTY + 国内 VPS（方案 B），可获得最低延迟 + 无需安装的体验。
+
+**安全增强**：
+- SSH 服务器配置 `AllowUsers` 限制可登录用户
+- 使用 SSH key 认证而非密码
+- 可用 `fail2ban` 防暴力破解
+
+---
+
+#### 方案 D：frp over WebSocket/TLS
+
+**原理**：frp（Fast Reverse Proxy）从家里主动连接公网服务器，建立反向代理隧道。frp 支持 WebSocket/TLS 加密，客户端只需 mstsc 连接公网服务器的映射端口。
+
+**架构**：
+```
+公司电脑（mstsc → VPS:33890）
+       │
+       ▼
+国内 VPS（frps）
+       │
+       ▼ frp TLS 隧道（从家里主动建立）
+       │
+家里 Win10（frpc）
+```
+
+**优点**：
+- ✅ **客户端无需任何软件**：mstsc 直连即可
+- ✅ **从家里主动出站**：绕过 CGNAT 入站限制
+- ✅ **frp 支持 TLS 加密**：传输安全
+- ✅ **可复用国内 VPS**：与方案 B 共用
+
+**缺点**：
+- ❌ 需要在家里 Win10 上运行 frpc（或 iStoreOS 上跑 frpc Docker）
+- ❌ frp 端口转发本身不提供 2FA，需额外安全层（nftables 白名单 + Authelia）
+- ❌ frpc 进程需持续运行，Win10 重启后需自启
+
+**实施步骤**：
+1. 国内 VPS 部署 frps
+2. 家里 Win10 或 iStoreOS 部署 frpc，配置 `[rdp]` 节：`local_ip = 192.168.7.129, local_port = 3389, remote_port = 33890`
+3. VPS 上配置 nftables 白名单（复用 txhk 的 rdp_guard 方案）
+4. 可选：配置 Authelia + unlock 服务
+
+**延迟预估**：与方案 B 相同（~40-70ms），因为路径相同，只是隧道技术从 Tailscale 换成 frp。
+
+---
+
+#### 方案 E：Win10 安装 Tailscale（仅服务端）
+
+**原理**：当前路径 B 中，txhk 到 Win10 需要经过 iStoreOS 的 Tailscale 子网路由（route 节点中转）。如果让 Win10 自己安装 Tailscale 成为独立节点，txhk 可以直接连 Win10 的 Tailscale IP（100.64.0.1），消除 route 节点这一跳。
+
+**架构**：
+```
+公司电脑（mstsc → txhk:33890）
+       │
+       ▼
+txhk（socat → 100.64.0.1:3389）    ← 直接连 Win10 Tailscale IP
+       │
+       ▼ Tailscale mesh
+       │
+家里 Win10（Tailscale 节点 100.64.0.1）  ← 不再经 route 中转
+```
+
+**注意**：此方案 **Win10 安装 Tailscale 创建虚拟网卡**，但这是在家里电脑上，不在公司电脑上。公司电脑仍然只用 mstsc，不安装任何东西。
+
+**优点**：
+- ✅ **消除 route 节点中转**：txhk 直连 Win10，减少一跳
+- ✅ **公司电脑无需改动**：仍用 mstsc → txhk:33890
+- ✅ **实施简单**：Win10 装 Tailscale 加入 Headscale 即可
+
+**缺点**：
+- ❌ **延迟改善有限**：只省了 route→Win10 的局域网跳（<5ms），跨境延迟 ①+③ 仍在
+- ❌ **Win10 需常开 Tailscale**：关机或 Tailscale 离线则不可用
+- ❌ **Win10 上装虚拟网卡**（但这是家里电脑，非公司电脑）
+
+**延迟预估**：改善约 5-10ms，总延迟 ~120-160ms，意义不大。
 
 ---
 
@@ -282,33 +341,25 @@ txhk（socat 转发）
 家里 Win10
 ```
 
-**优点**：
-- ✅ **无需客户端**：任意浏览器 + mstsc 即可
-- ✅ **安全性高**：2FA + 动态白名单 + NLA
-- ✅ **已部署**：基础设施就绪
-
-**缺点**：
-- ❌ **延迟高**：绕香港 + 双跳隧道
-- ❌ **依赖 txhk 可用性**：单点故障
-
-**定位**：作为「兜底方案」，当无法安装客户端时使用。
+**定位**：兜底方案，当无法使用任何辅助工具时使用。
 
 ---
 
-### 3.3 方案选择建议
+### 3.4 方案选择建议
 
-| 场景 | 推荐方案 | 理由 |
-|------|---------|------|
-| **公司允许安装软件** | A. Tailscale 直连 | 性能最好，已有基础设施，安全可靠 |
-| **公司禁止安装软件** | F. txhk 中转（当前方案） | 无需客户端，浏览器 2FA 即可 |
-| **追求极致性能** | B. WireGuard 手动 | 纯内核，延迟最低，但维护成本高 |
-| **不想自建基础设施** | D. Cloudflare Tunnel | 托管方案，零运维 |
-| **需要 Layer 2 网络** | C. ZeroTier | 虚拟局域网，支持广播 |
+| 场景 | 推荐方案 | 预估延迟 |
+|------|---------|---------|
+| **可购买国内 VPS** | B. 国内 VPS 中转 | ~40-70ms |
+| **可购买国内 VPS + 愿配置** | B + C（SSH 隧道） | ~40-70ms + SSH 加密 |
+| **不能买 VPS，可接受 portable 工具** | C. SSH 隧道到 txhk | ~130-170ms（但加密） |
+| **不能用任何额外工具** | F. txhk 中转（当前方案） | ~130-170ms |
+| **需要 mstsc 原生 RD Gateway 体验** | A. RD Gateway | 取决于服务器位置 |
 
 **最终建议**：
-1. **主力方案**：Tailscale 直连（方案 A）—— 在公司电脑和 Win10 都装 Tailscale，实现 P2P 直连
-2. **兜底方案**：txhk 中转（方案 F，当前已部署）—— 当无法安装客户端时使用
-3. **两者并存**：日常用 Tailscale（低延迟），临时设备用 txhk 中转（无需客户端）
+1. **最优方案**：**购买国内 VPS + frp/socat 中转**（方案 B）—— 延迟降低 60-70%，客户端零改动
+2. **进阶组合**：方案 B + 方案 C —— 国内 VPS 跑 SSH，公司用 PuTTY Portable 端口转发，额外获得 SSH 加密层
+3. **零成本方案**：方案 C（SSH 到 txhk）—— 延迟不变，但获得 SSH 加密 + 不装软件
+4. **兜底方案**：方案 F（当前 txhk 中转）—— 无需任何额外配置
 
 ---
 
@@ -568,18 +619,18 @@ Set-NetFirewallRule -DisplayName "Remote Desktop - User Mode (TCP-In)" -RemoteAd
 
 ## 7. 工具调研（替代/增强选型）
 
-| 方案 | 公网 RDP 暴露 | 客户端要求 | txhk/家里负载 | 落地复杂度 | 适配本场景 |
+| 方案 | 公网 RDP 暴露 | 客户端要求 | 服务器负载 | 落地复杂度 | 适配本场景 |
 |------|------|------|------|------|------|
-| **Tailscale 直连** | 否（端到端加密） | 装 Tailscale | 极低 | **低**（已有 Headscale） | 🥇 性能最好，P2P 直连，与现有基础设施无缝集成 |
+| **国内 VPS 中转** | 是（白名单 gated） | 仅需 v4 | 极低 | 中 | 🥇 延迟最优，消除跨境跳 |
+| **RD Gateway over HTTPS** | 否（HTTPS 封装） | 仅需 mstsc | 中 | 高（需 WinServer） | ✅ 原生支持，流量伪装，但部署重 |
+| **SSH 本地端口转发** | 否（SSH 加密） | PuTTY Portable | 极低 | **低** | ✅ 免安装，加密，可与国内 VPS 搭配 |
 | **当前方案：socat 中转** | 是（Authelia+白名单 gated） | 仅需 v4 | 极低 | 中 | 🥈 永远可用，兜底方案 |
-| **WireGuard 手动** | 否（端到端加密） | 装 WireGuard | 极低 | 中（手动配置） | ✅ 性能好，但不如 Tailscale 省心 |
-| **ZeroTier** | 否（端到端加密） | 装 ZeroTier | 极低 | 低 | △ 与 Tailscale 同类，已有 Tailscale 则无需 |
-| **Cloudflare Tunnel** | 否（TLS 加密） | 装 WARP | 低 | 中 | △ 托管方案，非 P2P |
-| **frp 反向代理** | 是（需额外安全层） | 无需 | 低 | 中 | △ 与 socat 中转等价，无性能提升 |
+| **frp 反向代理** | 是（需额外安全层） | 无需 | 低 | 中 | △ 换中转服务器后有意义 |
+| **Win10 装 Tailscale（仅服务端）** | 否（Tailscale 加密） | 无需 | 极低 | 低 | △ 仅省一跳局域网，改善有限 |
 | Guacamole 浏览器内 RDP | 否（443 复用） | 仅浏览器 | **高**（Tomcat+guacd） | **高**（guacd 须源码编译） | ❌ 仍绕香港、txhk 偏重、非原生体验 |
 | fwknop SPA 单包授权 | 否（端口隐形） | 需装客户端 | 极低 | 中 | △ 隐蔽性最强，但非"浏览器即可"，上游活跃度下降 |
 | systemd-socket-proxyd | 同当前方案 | 同当前方案 | 极低 | **低**（systemd 自带） | ✅ **替代 socat 免安装**，推荐用于 §4.4 |
-| caddy-l4（L4 反代） | 同当前方案 | 同当前方案 | 低 | 中（须 xcaddy 重编译 Caddy） | △ 与 Caddy 统一，但纯转发相比 socat 优势有限 |
+| caddy-l4（L4 反代） | 同当前方案 | 同当前方案 | 低 | 中（须 xcaddy 重编译 Caddy） | △ 与 Caddy 统一，纯转发相比 socat 优势有限 |
 
 要点与来源：
 
@@ -587,7 +638,9 @@ Set-NetFirewallRule -DisplayName "Remote Desktop - User Mode (TCP-In)" -RemoteAd
 - **[Guacamole 1.6.0](https://guacamole.apache.org/doc/1.6.0/gug/guacamole-native.html)**：guacd 必须源码编译（cairo/libjpeg/libvncserver 等），Tomcat 9/10 的 javax/jakarta 命名空间坑；txhk 2 核 3.6G 偏重。本场景不推荐。
 - **[fwknop SPA](https://github.com/mrash/fwknop)**：端口对 nmap 完全隐形、抗重放、纯 C 无解释器依赖、可对接 nftables；适合替换"web 解锁"为"单包解锁"，但要装客户端，不满足"任意浏览器即可"。
 - **[caddy-l4](https://github.com/mholt/caddy-l4)** / [layer4 proxy 文档](https://caddyserver.com/docs/modules/layer4.handlers.proxy)：声明式 L4 路由，需 `xcaddy build --with github.com/mholt/caddy-l4`；RDP 后端不认 proxy_protocol，纯转发场景收益不大。
-- **Tailscale 直连**：最安全且性能最好，Win10 装 Tailscale 加入 Headscale 后，客户端也装 Tailscale 即可实现 P2P 直连（见 §3 方案 A）。若客户端无法装 Tailscale，Win10 的 Tailscale 仍可简化当前方案的转发目标（直接转发到 100.64.0.1，免依赖 route 子网路由）。
+- **国内 VPS 中转**：延迟最优方案，购买国内轻量 VPS（阿里云/腾讯云上海节点），复刻 txhk 的 nftables 白名单 + unlock 服务，延迟从 ~130-170ms 降至 ~40-70ms（见 §3 方案 B）。
+- **SSH 本地端口转发**：PuTTY Portable 免安装，配置 `-L 13389:Win10:3389`，mstsc 连 `localhost:13389`，适合与国内 VPS 搭配使用（见 §3 方案 C）。
+- **Win10 装 Tailscale（仅服务端）**：Win10 加入 Headscale 后，txhk 可直接转发到 100.64.0.1，省去 route 节点一跳，但改善有限（~5-10ms）。
 
 ---
 
@@ -620,7 +673,8 @@ spool exec txhk "ping -c1 192.168.7.129 && timeout 3 bash -c 'echo>/dev/tcp/192.
 | RDP 连上 3 分钟后掉线 | nftables 缺 `ct state established`（v1.0 缺陷） | `nft list table inet rdp_guard` 确认含 established 规则 |
 | 自测 `nc 127.0.0.1 33890` 失败 | 缺 `iif lo accept` | 同上确认含 lo 放行 |
 | route offline / 子网路由丢失 | istoreos tailscaled 未连控制面 | `spool exec istoreos "tailscale status"`；必要时 `/etc/init.d/tailscale restart` |
-| Tailscale 直连不通 | 客户端/Win10 未上线 / 公司网阻止 UDP | `tailscale status`；`tailscale ping <对端>`；检查 DERP 回退 |
+| 国内 VPS 中转延迟仍高 | VPS 到家里路由绕路 | `traceroute` 检查 VPS→家里路由；考虑换 VPS 节点位置 |
+| SSH 隧道连不上 | SSH 服务未开 / 端口被封 | 检查 SSH 服务状态；尝试 443 端口 |
 
 ### 日志位置
 
@@ -651,4 +705,4 @@ spool exec istoreos "tailscale status; nslookup headscale.singll.net"
 
 ---
 
-*文档版本: 3.0 | 重写日期: 2026-06-06 | 移除 IPv6 路径（Win10 无 v6），新增直连方案对比 | 前置 P0 已修复*
+*文档版本: 3.1 | 重写日期: 2026-06-06 | 移除 IPv6 路径，重写直连方案（排除虚拟网卡方案，聚焦国内 VPS 中转 + SSH 隧道） | 前置 P0 已修复*
