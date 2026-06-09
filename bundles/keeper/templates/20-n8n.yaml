@@ -14,6 +14,8 @@ services:
       # → 修改 .env 后只需 docker compose restart n8n, 无需 up -d 重建容器
       - TZ=Asia/Shanghai
       - GENERIC_TIMEZONE=Asia/Shanghai
+      - HOME=/home/node
+      - N8N_USER_FOLDER=/home/node
       # !!! 关键: N8N_ENCRYPTION_KEY 必须保留, 用于解密 credentials
       #     丢失此 key = 所有 API Key/凭证永久不可用
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}

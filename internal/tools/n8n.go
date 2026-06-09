@@ -3,53 +3,52 @@ package tools
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/singll/silkspool/internal/config"
+	"github.com/singll/silkspool/internal/engine"
 	"github.com/singll/silkspool/pkg/utils"
 )
 
 // N8NClient n8n API 客户端
 type N8NClient struct {
-	baseURL   string
-	apiKey    string
-	hostConn  string
-	sshKey    string
+	baseURL    string
+	apiKey     string
+	hostConn   string
+	sshKey     string
 	httpClient *http.Client
 }
 
 // N8NWorkflow n8n 工作流结构
 type N8NWorkflow struct {
-	ID            string                 `json:"id,omitempty"`
-	Name          string                 `json:"name"`
-	Active        bool                   `json:"active,omitempty"`
-	Nodes         []N8NNode              `json:"nodes,omitempty"`
-	Connections   map[string]interface{} `json:"connections,omitempty"`
-	Settings      N8NSettings            `json:"settings,omitempty"`
+	ID          string                 `json:"id,omitempty"`
+	Name        string                 `json:"name"`
+	Active      bool                   `json:"active,omitempty"`
+	Nodes       []N8NNode              `json:"nodes,omitempty"`
+	Connections map[string]interface{} `json:"connections,omitempty"`
+	Settings    map[string]interface{} `json:"settings,omitempty"`
 }
 
 // N8NNode 工作流节点
 type N8NNode struct {
-	ID      string                 `json:"id"`
-	Name    string                 `json:"name"`
-	Type    string                 `json:"type"`
-	TypeVersion float64            `json:"typeVersion,omitempty"`
-	Position []int                 `json:"position"`
-	Data    map[string]interface{} `json:"data,omitempty"`
-	Parameters map[string]interface{} `json:"parameters,omitempty"`
+	ID          string                 `json:"id"`
+	Name        string                 `json:"name"`
+	Type        string                 `json:"type"`
+	TypeVersion float64                `json:"typeVersion,omitempty"`
+	Position    []int                  `json:"position"`
+	Data        map[string]interface{} `json:"data,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters,omitempty"`
 	Credentials map[string]interface{} `json:"credentials,omitempty"`
-}
-
-// N8NSettings 工作流设置
-type N8NSettings struct {
-	ExecutionOrder string `json:"executionOrder,omitempty"`
 }
 
 // NewN8NClient 创建 n8n 客户端
@@ -76,10 +75,10 @@ func NewN8NClient(baseDir string, hostAlias string) (*N8NClient, error) {
 	sshKey := filepath.Join(baseDir, cfg.Global.SSHKeyPath)
 
 	return &N8NClient{
-		baseURL:   cfg.N8N.APIURL,
-		apiKey:    apiKey,
-		hostConn:  hostCfg.Address,
-		sshKey:    sshKey,
+		baseURL:  cfg.N8N.APIURL,
+		apiKey:   apiKey,
+		hostConn: hostCfg.Address,
+		sshKey:   sshKey,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -88,13 +87,22 @@ func NewN8NClient(baseDir string, hostAlias string) (*N8NClient, error) {
 
 // doRequest 发送 HTTP 请求
 func (c *N8NClient) doRequest(ctx context.Context, method, endpoint string, body interface{}) ([]byte, error) {
-	var reqBody io.Reader
+	var bodyBytes []byte
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal body: %w", err)
 		}
-		reqBody = bytes.NewReader(data)
+		bodyBytes = data
+	}
+
+	if c.shouldUseRemoteAPI() {
+		return c.doRemoteRequest(method, endpoint, bodyBytes)
+	}
+
+	var reqBody io.Reader
+	if bodyBytes != nil {
+		reqBody = bytes.NewReader(bodyBytes)
 	}
 
 	url := c.baseURL + "/api/v1" + endpoint
@@ -118,19 +126,146 @@ func (c *N8NClient) doRequest(ctx context.Context, method, endpoint string, body
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	if resp.StatusCode >= 400 {
-		// 尝试解析错误消息
+	return handleN8NResponse(resp.StatusCode, respBody)
+}
+
+func (c *N8NClient) shouldUseRemoteAPI() bool {
+	parsed, err := neturl.Parse(c.baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return c.hostConn != "" && c.sshKey != "" && (host == "localhost" || host == "127.0.0.1" || host == "::1")
+}
+
+func (c *N8NClient) doRemoteRequest(method, endpoint string, body []byte) ([]byte, error) {
+	requestURL := strings.TrimRight(c.baseURL, "/") + "/api/v1" + endpoint
+	bodyB64 := ""
+	if len(body) > 0 {
+		bodyB64 = base64.StdEncoding.EncodeToString(body)
+	}
+
+	script := fmt.Sprintf(`set -u
+url=%s
+method=%s
+api_key=%s
+body_b64=%s
+body_file="$(mktemp)"
+resp_file="$(mktemp)"
+err_file="$(mktemp)"
+cleanup() {
+  rm -f "$body_file" "$resp_file" "$err_file"
+}
+trap cleanup EXIT
+
+if [ -n "$body_b64" ]; then
+  printf '%%s' "$body_b64" | base64 -d > "$body_file"
+fi
+
+if [ -n "$body_b64" ]; then
+  status="$(curl -sS -o "$resp_file" -w '%%{http_code}' -X "$method" "$url" \
+    -H 'Accept: application/json' \
+    -H 'Content-Type: application/json' \
+    -H "X-N8N-API-KEY: $api_key" \
+    --data-binary "@$body_file" 2>"$err_file")"
+else
+  status="$(curl -sS -o "$resp_file" -w '%%{http_code}' -X "$method" "$url" \
+    -H 'Accept: application/json' \
+    -H "X-N8N-API-KEY: $api_key" 2>"$err_file")"
+fi
+curl_rc=$?
+
+printf '__SPOOL_HTTP_STATUS__:%%s\n' "$status"
+printf '__SPOOL_CURL_STATUS__:%%s\n' "$curl_rc"
+printf '__SPOOL_CURL_ERROR__:'
+tr '\n' ' ' < "$err_file"
+printf '\n__SPOOL_BODY_BEGIN__\n'
+cat "$resp_file"
+exit 0
+`, shellQuote(requestURL), shellQuote(method), shellQuote(c.apiKey), shellQuote(bodyB64))
+
+	output, err := engine.SSHExecute(c.hostConn, c.sshKey, script)
+	if err != nil {
+		return nil, fmt.Errorf("remote n8n request failed: %w", err)
+	}
+
+	statusCode, curlCode, curlErr, respBody, err := parseRemoteHTTPOutput(output)
+	if err != nil {
+		return nil, err
+	}
+	if curlCode != 0 {
+		if curlErr != "" {
+			return nil, fmt.Errorf("remote curl failed (%d): %s", curlCode, curlErr)
+		}
+		return nil, fmt.Errorf("remote curl failed (%d)", curlCode)
+	}
+
+	return handleN8NResponse(statusCode, respBody)
+}
+
+func parseRemoteHTTPOutput(output string) (statusCode int, curlCode int, curlErr string, body []byte, err error) {
+	const bodyMarker = "\n__SPOOL_BODY_BEGIN__\n"
+	parts := strings.SplitN(output, bodyMarker, 2)
+	if len(parts) != 2 {
+		err = fmt.Errorf("remote n8n request returned malformed output")
+		return
+	}
+
+	statusCode = -1
+	curlCode = -1
+	for _, line := range strings.Split(parts[0], "\n") {
+		switch {
+		case strings.HasPrefix(line, "__SPOOL_HTTP_STATUS__:"):
+			value := strings.TrimSpace(strings.TrimPrefix(line, "__SPOOL_HTTP_STATUS__:"))
+			if value == "" {
+				value = "0"
+			}
+			statusCode, err = strconv.Atoi(value)
+			if err != nil {
+				err = fmt.Errorf("invalid remote HTTP status %q: %w", value, err)
+				return
+			}
+		case strings.HasPrefix(line, "__SPOOL_CURL_STATUS__:"):
+			value := strings.TrimSpace(strings.TrimPrefix(line, "__SPOOL_CURL_STATUS__:"))
+			curlCode, err = strconv.Atoi(value)
+			if err != nil {
+				err = fmt.Errorf("invalid remote curl status %q: %w", value, err)
+				return
+			}
+		case strings.HasPrefix(line, "__SPOOL_CURL_ERROR__:"):
+			curlErr = strings.TrimSpace(strings.TrimPrefix(line, "__SPOOL_CURL_ERROR__:"))
+		}
+	}
+	if statusCode < 0 {
+		err = fmt.Errorf("remote n8n request did not return HTTP status")
+		return
+	}
+	if curlCode < 0 {
+		err = fmt.Errorf("remote n8n request did not return curl status")
+		return
+	}
+
+	body = []byte(parts[1])
+	return
+}
+
+func handleN8NResponse(statusCode int, respBody []byte) ([]byte, error) {
+	if statusCode >= 400 || statusCode == 0 {
 		var errResp struct {
 			Message string `json:"message"`
 		}
 		json.Unmarshal(respBody, &errResp)
 		if errResp.Message != "" {
-			return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, errResp.Message)
+			return nil, fmt.Errorf("API error (%d): %s", statusCode, errResp.Message)
 		}
-		return nil, fmt.Errorf("API error: %d - %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("API error: %d - %s", statusCode, string(respBody))
 	}
 
 	return respBody, nil
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 // ListWorkflows 列出所有工作流
@@ -224,10 +359,7 @@ func cleanWorkflowForCreate(wf *N8NWorkflow) *N8NWorkflow {
 		Name:        wf.Name,
 		Nodes:       wf.Nodes,
 		Connections: wf.Connections,
-		Settings:    wf.Settings,
-	}
-	if clean.Settings.ExecutionOrder == "" {
-		clean.Settings.ExecutionOrder = "v1"
+		Settings:    workflowSettingsWithDefault(wf.Settings),
 	}
 	return clean
 }
@@ -236,13 +368,20 @@ func cleanWorkflowForCreate(wf *N8NWorkflow) *N8NWorkflow {
 func cleanWorkflowForUpdate(wf *N8NWorkflow) *N8NWorkflow {
 	clean := &N8NWorkflow{
 		Name:        wf.Name,
-		Active:     wf.Active,
 		Nodes:       wf.Nodes,
 		Connections: wf.Connections,
-		Settings:    wf.Settings,
+		Settings:    workflowSettingsWithDefault(wf.Settings),
 	}
-	if clean.Settings.ExecutionOrder == "" {
-		clean.Settings.ExecutionOrder = "v1"
+	return clean
+}
+
+func workflowSettingsWithDefault(settings map[string]interface{}) map[string]interface{} {
+	clean := make(map[string]interface{}, len(settings)+1)
+	for key, value := range settings {
+		clean[key] = value
+	}
+	if _, ok := clean["executionOrder"]; !ok {
+		clean["executionOrder"] = "v1"
 	}
 	return clean
 }
@@ -380,16 +519,25 @@ func (m *N8NManager) ExportWorkflows(ctx context.Context, backupDir string) erro
 	}
 
 	for _, wf := range workflows {
-		filename := filepath.Join(backupDir, sanitizeFilename(wf.Name)+".json")
-		data, err := json.MarshalIndent(wf, "", "  ")
+		fullWorkflow := &wf
+		if wf.ID != "" {
+			if detailed, err := m.client.GetWorkflow(ctx, wf.ID); err == nil {
+				fullWorkflow = detailed
+			} else {
+				utils.Warn("Failed to fetch full workflow %s, exporting list payload: %v", wf.Name, err)
+			}
+		}
+
+		filename := filepath.Join(backupDir, sanitizeFilename(fullWorkflow.Name)+".json")
+		data, err := json.MarshalIndent(fullWorkflow, "", "  ")
 		if err != nil {
-			return fmt.Errorf("failed to marshal workflow %s: %w", wf.Name, err)
+			return fmt.Errorf("failed to marshal workflow %s: %w", fullWorkflow.Name, err)
 		}
 
 		if err := os.WriteFile(filename, data, 0644); err != nil {
 			return fmt.Errorf("failed to write %s: %w", filename, err)
 		}
-		utils.Success("Exported: %s", wf.Name)
+		utils.Success("Exported: %s", fullWorkflow.Name)
 	}
 
 	return nil
@@ -403,15 +551,15 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
-// UpdateWorkflows 更新工作流: 已存在则更新，不存在则创建
-func (m *N8NManager) UpdateWorkflows(ctx context.Context, workflowDir string) error {
+// UpdateWorkflows 更新工作流: 已存在则更新，不存在则创建。names 为空时更新全部。
+func (m *N8NManager) UpdateWorkflows(ctx context.Context, workflowDir string, names ...string) error {
 	existing, err := m.client.ListWorkflows(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list existing workflows: %w", err)
 	}
-	existingIDs := make(map[string]string) // name -> id
+	existingByName := make(map[string]N8NWorkflow) // name -> workflow
 	for _, wf := range existing {
-		existingIDs[wf.Name] = wf.ID
+		existingByName[wf.Name] = wf
 	}
 
 	files, err := m.ListLocalWorkflows(workflowDir)
@@ -419,7 +567,18 @@ func (m *N8NManager) UpdateWorkflows(ctx context.Context, workflowDir string) er
 		return err
 	}
 
+	targets := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		targets[name] = struct{}{}
+		targets[strings.TrimSuffix(name, filepath.Ext(name))] = struct{}{}
+	}
+
 	var updated, created, failed int
+	var matched int
 	for _, file := range files {
 		wf, err := LoadWorkflowFromFile(file)
 		if err != nil {
@@ -427,9 +586,13 @@ func (m *N8NManager) UpdateWorkflows(ctx context.Context, workflowDir string) er
 			failed++
 			continue
 		}
+		if len(targets) > 0 && !workflowMatchesTargets(file, wf, targets) {
+			continue
+		}
+		matched++
 
-		if id, ok := existingIDs[wf.Name]; ok {
-			if _, err := m.client.UpdateWorkflow(ctx, id, wf); err != nil {
+		if remote, ok := existingByName[wf.Name]; ok {
+			if _, err := m.client.UpdateWorkflow(ctx, remote.ID, wf); err != nil {
 				utils.Error("Failed to update %s: %v", wf.Name, err)
 				failed++
 				continue
@@ -448,8 +611,21 @@ func (m *N8NManager) UpdateWorkflows(ctx context.Context, workflowDir string) er
 		}
 	}
 
+	if len(targets) > 0 && matched == 0 {
+		return fmt.Errorf("no local workflow matched: %s", strings.Join(names, ", "))
+	}
+
 	utils.Info("Update completed: %d updated, %d created, %d failed", updated, created, failed)
 	return nil
+}
+
+func workflowMatchesTargets(file string, wf *N8NWorkflow, targets map[string]struct{}) bool {
+	fileName := filepath.Base(file)
+	fileKey := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	_, byName := targets[wf.Name]
+	_, byFile := targets[fileName]
+	_, byKey := targets[fileKey]
+	return byName || byFile || byKey
 }
 
 // findWorkflowID 按名称查找工作流 ID

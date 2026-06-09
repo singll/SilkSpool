@@ -1103,7 +1103,7 @@ func runN8NUpdate(ctx context.Context, m *tools.N8NManager, args []string) {
 		utils.Error("Failed to get workflow dir: %v", err)
 		os.Exit(1)
 	}
-	if err := m.UpdateWorkflows(ctx, workflowDir); err != nil {
+	if err := m.UpdateWorkflows(ctx, workflowDir, args...); err != nil {
 		utils.Error("Update failed: %v", err)
 		os.Exit(1)
 	}
