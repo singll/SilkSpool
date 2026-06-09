@@ -16,6 +16,7 @@
 # --- 3. IDE 配置 ---
 .vscode/
 .idea/
+.claude/
 
 # --- 4. Go 二进制文件 ---
 /spool
