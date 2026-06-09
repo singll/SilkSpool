@@ -11,6 +11,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -20,6 +21,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,129 +31,628 @@ import (
 
 // 配置（systemd EnvironmentFile 注入）
 var (
-	httpListen  = env("GW_HTTP_LISTEN", "127.0.0.1:8090")   // Caddy forward_auth 后端
-	proxyListen = env("GW_PROXY_LISTEN", ":33890")           // 公网中转口（nft + 内存双闸）
-	target      = env("GW_TARGET", "192.168.7.129:3389")     // 经 Tailscale 子网路由到达 Win10
-	publicAddr  = env("GW_PUBLIC_ADDR", "43.129.195.4:33890") // 授权页展示用
-	agentURL    = env("GW_AGENT_URL", "http://100.64.0.2:8091/open")
-	nftSet      = env("GW_NFT_SET", "rdp_guard")
-	nftBin      = env("GW_NFT_BIN", "/usr/sbin/nft")
-	ttlSeconds  = envInt("GW_TTL", 180)
-	token       = os.Getenv("RDP6_TOKEN")
+	httpListen       = env("GW_HTTP_LISTEN", "127.0.0.1:8090")     // Caddy forward_auth 后端
+	proxyListen      = env("GW_PROXY_LISTEN", ":33890")            // 公网中转口（nft + 内存双闸）
+	target           = env("GW_TARGET", "192.168.7.129:3389")      // 经 Tailscale 子网路由到达 Win10
+	publicAddr       = env("GW_PUBLIC_ADDR", "43.129.195.4:33890") // 授权页展示用
+	agentURL         = env("GW_AGENT_URL", "http://100.64.0.2:8091/open")
+	nftSet           = env("GW_NFT_SET", "rdp_guard")
+	nftBin           = env("GW_NFT_BIN", "/usr/sbin/nft")
+	ttlSeconds       = envInt("GW_TTL", 180)
+	udpIdleSeconds   = envInt("GW_UDP_IDLE", 1800)
+	stateFile        = env("GW_STATE_FILE", "/var/lib/rdp-gateway/state.json")
+	loginURL         = env("GW_LOGIN_URL", "https://auth.singll.net/")
+	historyLimit     = envInt("GW_HISTORY_LIMIT", 160)
+	permanentRefresh = envInt("GW_PERMANENT_REFRESH", maxInt(20, ttlSeconds/2))
+	token            = os.Getenv("RDP6_TOKEN")
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags)
+
+	store := newStateStore(stateFile, historyLimit)
+	if err := store.Load(); err != nil {
+		log.Printf("rdp-gateway: 读取状态文件失败 path=%s: %v", stateFile, err)
+	}
+
 	wl := newWhitelist()
+	for _, entry := range store.PermanentEntries() {
+		wl.AddPermanent(entry.IP)
+		if err := nftAllowV4(entry.IP); err != nil {
+			log.Printf("rdp-gateway: 恢复长期白名单到 nft 失败 ip=%s: %v", entry.IP, err)
+		}
+	}
+	go refreshPermanentWhitelist(wl, store)
+
+	limiter := newEventLimiter()
 
 	// 代理层先起（转发先于授权可用，连接来了即能用）
-	go serveTCPProxy(proxyListen, target, wl)
-	go serveUDPProxy(proxyListen, target, wl)
+	go serveTCPProxy(proxyListen, target, wl, store, limiter)
+	go serveUDPProxy(proxyListen, target, wl, store, limiter)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { handleUnlock(w, r, wl) })
+	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
+		handleState(w, r, wl, store)
+	})
+	mux.HandleFunc("/api/whitelist/current", func(w http.ResponseWriter, r *http.Request) {
+		handleAddCurrentPermanent(w, r, wl, store)
+	})
+	mux.HandleFunc("/api/whitelist/remove", func(w http.ResponseWriter, r *http.Request) {
+		handleRemovePermanent(w, r, wl, store)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { handleUnlock(w, r, wl, store) })
 
-	log.Printf("rdp-gateway: HTTP=%s 代理=%s 目标=%s TTL=%ds", httpListen, proxyListen, target, ttlSeconds)
+	log.Printf("rdp-gateway: HTTP=%s 代理=%s 目标=%s TTL=%ds UDP空闲=%ds 状态=%s", httpListen, proxyListen, target, ttlSeconds, udpIdleSeconds, stateFile)
 	srv := &http.Server{Addr: httpListen, Handler: mux, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second}
 	log.Fatal(srv.ListenAndServe())
 }
 
 // handleUnlock：2FA 已由 Caddy forward_auth 保证。写 v4 白名单 + 开 v6 + 返回连接页。
-func handleUnlock(w http.ResponseWriter, r *http.Request, wl *whitelist) {
-	// 只信 Caddy 注入的 X-Real-IP（{remote_host}，TCP 对端，无法伪造）
-	clientIP := strings.TrimSpace(r.Header.Get("X-Real-IP"))
-	if ip := net.ParseIP(clientIP); ip != nil && ip.To4() != nil {
-		wl.Add(clientIP, time.Duration(ttlSeconds)*time.Second)
-		if err := nftAllowV4(clientIP); err != nil {
-			log.Printf("rdp-gateway: nft 写白名单失败 ip=%s: %v", clientIP, err)
-		} else {
-			log.Printf("rdp-gateway: 已放行 v4 %s（%ds）", clientIP, ttlSeconds)
-		}
-	} else {
-		log.Printf("rdp-gateway: X-Real-IP 非法或非 v4: %q", clientIP)
+func handleUnlock(w http.ResponseWriter, r *http.Request, wl *whitelist, store *stateStore) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 
-	// 经 Tailscale 触发 v6 pinhole 并取回当前 GUA（路径 A）
-	v6 := ""
-	if gua, port, ok := callAgent(); ok {
-		v6 = fmt.Sprintf("[%s]:%d", gua, port)
-		log.Printf("rdp-gateway: v6 直连已就绪 %s", v6)
+	now := time.Now()
+	clientIP := clientIPv4(r)
+	expiresAt := now.Add(time.Duration(ttlSeconds) * time.Second)
+	v4State := "当前出口 IP 无法识别"
+	v4Detail := "请确认 Caddy 已覆盖 X-Real-IP"
+	nftWarning := ""
+	isPermanent := false
+
+	if clientIP != "" {
+		if wl.IsPermanent(clientIP) || store.HasPermanent(clientIP) {
+			isPermanent = true
+			wl.AddPermanent(clientIP)
+			store.TouchPermanent(clientIP)
+			v4State = "长期白名单已生效"
+			v4Detail = "中转入口会持续刷新内核白名单；新连接不受短窗口限制"
+			if err := nftAllowV4(clientIP); err != nil {
+				nftWarning = fmt.Sprintf("刷新 nft 白名单失败：%v", err)
+				log.Printf("rdp-gateway: 刷新长期白名单失败 ip=%s: %v", clientIP, err)
+			}
+		} else {
+			wl.AddTemporary(clientIP, time.Duration(ttlSeconds)*time.Second)
+			if err := nftAllowV4(clientIP); err != nil {
+				nftWarning = fmt.Sprintf("写 nft 白名单失败：%v", err)
+				v4State = "临时授权已记录，但内核白名单写入失败"
+				v4Detail = "如果 nft 规则处于启用状态，中转连接可能会被内核拦截"
+				log.Printf("rdp-gateway: nft 写白名单失败 ip=%s: %v", clientIP, err)
+			} else {
+				v4State = "临时授权已生效"
+				v4Detail = fmt.Sprintf("%d 秒后只拒绝新会话，已建立会话继续保持", ttlSeconds)
+				log.Printf("rdp-gateway: 已放行 v4 %s（%ds）", clientIP, ttlSeconds)
+			}
+		}
 	} else {
+		log.Printf("rdp-gateway: X-Real-IP 非法或非 v4: %q remote=%q", strings.TrimSpace(r.Header.Get("X-Real-IP")), r.RemoteAddr)
+	}
+
+	agent, v6OK := callAgent()
+	v6Addr := ""
+	agentWarning := ""
+	if v6OK {
+		v6Addr = fmt.Sprintf("[%s]:%d", agent.GUA, agent.Port)
+		log.Printf("rdp-gateway: v6 直连已就绪 %s", v6Addr)
+	} else {
+		agentWarning = "IPv6 直连本次不可用，仍可使用中转"
 		log.Printf("rdp-gateway: v6 直连本次不可用（agent 无响应/无 v6）")
 	}
 
+	result := "ok"
+	if nftWarning != "" || agentWarning != "" {
+		result = "partial"
+	}
+	if clientIP == "" {
+		result = "failed"
+	}
+	store.Record(historyEntry{
+		Time:      now,
+		Kind:      "unlock",
+		IP:        clientIP,
+		Result:    result,
+		Detail:    strings.TrimSpace(strings.Join(nonEmpty(v4State, agentWarning), "；")),
+		V4Addr:    publicAddr,
+		V6Addr:    v6Addr,
+		ExpiresAt: &expiresAt,
+	})
+
+	data := pageData{
+		ClientIP:         clientIP,
+		ClientKnown:      clientIP != "",
+		V4Addr:           publicAddr,
+		V6Addr:           v6Addr,
+		V6Source:         agent.Source,
+		V6TTL:            firstNonZero(agent.TTL, ttlSeconds),
+		TTLSeconds:       ttlSeconds,
+		ExpiresAtUnix:    expiresAt.Unix(),
+		ExpiresAtText:    formatTime(expiresAt),
+		LoginURL:         loginURL,
+		IsPermanent:      isPermanent,
+		V4State:          v4State,
+		V4Detail:         v4Detail,
+		NftWarning:       nftWarning,
+		AgentWarning:     agentWarning,
+		PermanentEntries: permanentViews(store.PermanentEntries(), clientIP),
+		TempEntries:      temporaryViews(wl.TemporaryEntries()),
+		History:          historyViews(store.History()),
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = pageTmpl.Execute(w, pageData{V6Addr: v6, V4Addr: publicAddr, TTLMin: ttlSeconds / 60})
+	if err := pageTmpl.Execute(w, data); err != nil {
+		log.Printf("rdp-gateway: 渲染页面失败: %v", err)
+	}
+}
+
+func handleState(w http.ResponseWriter, r *http.Request, wl *whitelist, store *stateStore) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"client_ip":           clientIPv4(r),
+		"temporary_whitelist": wl.TemporaryEntries(),
+		"permanent_whitelist": store.PermanentEntries(),
+		"history":             store.History(),
+		"ttl_seconds":         ttlSeconds,
+		"udp_idle_seconds":    udpIdleSeconds,
+	})
+}
+
+func handleAddCurrentPermanent(w http.ResponseWriter, r *http.Request, wl *whitelist, store *stateStore) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOrigin(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	ip := clientIPv4(r)
+	if ip == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "current IPv4 not found"})
+		return
+	}
+	req := struct {
+		Note string `json:"note"`
+	}{}
+	_ = readJSONOrForm(r, &req)
+	req.Note = trimRunes(strings.TrimSpace(req.Note), 80)
+
+	if err := nftAllowV4(ip); err != nil {
+		log.Printf("rdp-gateway: 添加长期白名单时刷新 nft 失败 ip=%s: %v", ip, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "nft whitelist failed", "detail": err.Error()})
+		return
+	}
+	entry, err := store.AddPermanent(ip, req.Note)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "save whitelist failed", "detail": err.Error()})
+		return
+	}
+	wl.AddPermanent(ip)
+	store.Record(historyEntry{
+		Time:   time.Now(),
+		Kind:   "whitelist",
+		IP:     ip,
+		Result: "added",
+		Detail: "added current outbound IP to long-term whitelist",
+	})
+	log.Printf("rdp-gateway: 已加入长期白名单 ip=%s note=%q", ip, req.Note)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "entry": entry})
+}
+
+func handleRemovePermanent(w http.ResponseWriter, r *http.Request, wl *whitelist, store *stateStore) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOrigin(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	req := struct {
+		IP string `json:"ip"`
+	}{}
+	if err := readJSONOrForm(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "bad request"})
+		return
+	}
+	ip := normalizeIPv4(req.IP)
+	if ip == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid IPv4"})
+		return
+	}
+	if err := store.RemovePermanent(ip); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "save whitelist failed", "detail": err.Error()})
+		return
+	}
+	wl.RemovePermanent(ip)
+	if err := nftDeleteV4(ip); err != nil {
+		log.Printf("rdp-gateway: 移除 nft 白名单失败 ip=%s: %v", ip, err)
+	}
+	store.Record(historyEntry{
+		Time:   time.Now(),
+		Kind:   "whitelist",
+		IP:     ip,
+		Result: "removed",
+		Detail: "removed from long-term whitelist",
+	})
+	log.Printf("rdp-gateway: 已移除长期白名单 ip=%s", ip)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // callAgent 经 Tailscale 调 istoreos rdp6-agent，开 v6 pinhole 并取回 GUA。
-func callAgent() (gua string, port int, ok bool) {
+func callAgent() (agentOpenResult, bool) {
 	if agentURL == "" || token == "" {
-		return "", 0, false
+		return agentOpenResult{}, false
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(agentURL + "?token=" + url.QueryEscape(token))
 	if err != nil {
 		log.Printf("rdp-gateway: 调 agent 失败: %v", err)
-		return "", 0, false
+		return agentOpenResult{}, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("rdp-gateway: agent 返回 %d", resp.StatusCode)
-		return "", 0, false
+		return agentOpenResult{}, false
 	}
-	var r struct {
-		GUA  string `json:"gua"`
-		Port int    `json:"port"`
-	}
+	var r agentOpenResult
 	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil || r.GUA == "" {
-		return "", 0, false
+		return agentOpenResult{}, false
 	}
 	if r.Port == 0 {
 		r.Port = 3389
 	}
-	return r.GUA, r.Port, true
+	if r.TTL == 0 {
+		r.TTL = ttlSeconds
+	}
+	return r, true
+}
+
+type agentOpenResult struct {
+	GUA       string `json:"gua"`
+	Port      int    `json:"port"`
+	TTL       int    `json:"ttl"`
+	Source    string `json:"source"`
+	ExpiresAt string `json:"expires_at"`
 }
 
 // nftAllowV4 把客户端 v4 加入 nft 白名单（内核 drop 闸）。经受限 sudoers 提权。
 func nftAllowV4(ip string) error {
 	out, err := exec.Command("sudo", nftBin, "add", "element", "inet", nftSet, "allowed_ips",
 		fmt.Sprintf("{ %s timeout %ds }", ip, ttlSeconds)).CombinedOutput()
-	if err != nil {
+	if err != nil && !strings.Contains(strings.ToLower(string(out)), "exist") {
 		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func nftDeleteV4(ip string) error {
+	out, err := exec.Command("sudo", nftBin, "delete", "element", "inet", nftSet, "allowed_ips",
+		fmt.Sprintf("{ %s }", ip)).CombinedOutput()
+	if err != nil {
+		s := strings.ToLower(string(out))
+		if strings.Contains(s, "no such") || strings.Contains(s, "not found") {
+			return nil
+		}
+		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func refreshPermanentWhitelist(wl *whitelist, store *stateStore) {
+	if permanentRefresh <= 0 {
+		return
+	}
+	ticker := time.NewTicker(time.Duration(permanentRefresh) * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		for _, entry := range store.PermanentEntries() {
+			if err := nftAllowV4(entry.IP); err != nil {
+				log.Printf("rdp-gateway: 刷新长期白名单失败 ip=%s: %v", entry.IP, err)
+				continue
+			}
+			wl.AddPermanent(entry.IP)
+		}
+	}
+}
+
+// ---------- 状态文件 ----------
+
+type permanentEntry struct {
+	IP       string    `json:"ip"`
+	Note     string    `json:"note,omitempty"`
+	AddedAt  time.Time `json:"added_at"`
+	LastSeen time.Time `json:"last_seen"`
+}
+
+type historyEntry struct {
+	ID        int64      `json:"id"`
+	Time      time.Time  `json:"time"`
+	Kind      string     `json:"kind"`
+	IP        string     `json:"ip,omitempty"`
+	Result    string     `json:"result"`
+	Detail    string     `json:"detail,omitempty"`
+	V4Addr    string     `json:"v4_addr,omitempty"`
+	V6Addr    string     `json:"v6_addr,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+type persistedState struct {
+	Permanent map[string]permanentEntry `json:"permanent_whitelist"`
+	History   []historyEntry            `json:"history"`
+	NextID    int64                     `json:"next_id"`
+}
+
+type stateStore struct {
+	mu    sync.Mutex
+	path  string
+	limit int
+	data  persistedState
+}
+
+func newStateStore(path string, limit int) *stateStore {
+	if limit <= 0 {
+		limit = 160
+	}
+	return &stateStore{
+		path:  path,
+		limit: limit,
+		data: persistedState{
+			Permanent: make(map[string]permanentEntry),
+			NextID:    1,
+		},
+	}
+}
+
+func (s *stateStore) Load() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	b, err := os.ReadFile(s.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	var data persistedState
+	if err := json.Unmarshal(b, &data); err != nil {
+		return err
+	}
+	if data.Permanent == nil {
+		data.Permanent = make(map[string]permanentEntry)
+	}
+	for ip, entry := range data.Permanent {
+		nip := normalizeIPv4(firstNonEmpty(entry.IP, ip))
+		if nip == "" {
+			delete(data.Permanent, ip)
+			continue
+		}
+		if nip != ip {
+			delete(data.Permanent, ip)
+		}
+		entry.IP = nip
+		if entry.AddedAt.IsZero() {
+			entry.AddedAt = time.Now()
+		}
+		if entry.LastSeen.IsZero() {
+			entry.LastSeen = entry.AddedAt
+		}
+		data.Permanent[nip] = entry
+	}
+	if data.NextID <= 0 {
+		data.NextID = int64(len(data.History) + 1)
+	}
+	s.data = data
+	return nil
+}
+
+func (s *stateStore) AddPermanent(ip, note string) (permanentEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	if s.data.Permanent == nil {
+		s.data.Permanent = make(map[string]permanentEntry)
+	}
+	entry, ok := s.data.Permanent[ip]
+	if !ok {
+		entry = permanentEntry{IP: ip, AddedAt: now}
+	}
+	entry.Note = note
+	entry.LastSeen = now
+	s.data.Permanent[ip] = entry
+	return entry, s.saveLocked()
+}
+
+func (s *stateStore) TouchPermanent(ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, ok := s.data.Permanent[ip]
+	if !ok {
+		return
+	}
+	entry.LastSeen = time.Now()
+	s.data.Permanent[ip] = entry
+	if err := s.saveLocked(); err != nil {
+		log.Printf("rdp-gateway: 保存长期白名单 last_seen 失败 ip=%s: %v", ip, err)
+	}
+}
+
+func (s *stateStore) RemovePermanent(ip string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data.Permanent, ip)
+	return s.saveLocked()
+}
+
+func (s *stateStore) HasPermanent(ip string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.data.Permanent[ip]
+	return ok
+}
+
+func (s *stateStore) PermanentEntries() []permanentEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res := make([]permanentEntry, 0, len(s.data.Permanent))
+	for _, entry := range s.data.Permanent {
+		res = append(res, entry)
+	}
+	sort.Slice(res, func(i, j int) bool {
+		return res[i].LastSeen.After(res[j].LastSeen)
+	})
+	return res
+}
+
+func (s *stateStore) Record(entry historyEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if entry.Time.IsZero() {
+		entry.Time = time.Now()
+	}
+	entry.ID = s.data.NextID
+	s.data.NextID++
+	s.data.History = append([]historyEntry{entry}, s.data.History...)
+	if len(s.data.History) > s.limit {
+		s.data.History = s.data.History[:s.limit]
+	}
+	if err := s.saveLocked(); err != nil {
+		log.Printf("rdp-gateway: 保存历史失败: %v", err)
+	}
+}
+
+func (s *stateStore) History() []historyEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res := make([]historyEntry, len(s.data.History))
+	copy(res, s.data.History)
+	return res
+}
+
+func (s *stateStore) saveLocked() error {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(s.data, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
 }
 
 // ---------- 内存白名单（应用层闸，纵深防御）----------
 
 type whitelist struct {
 	mu sync.RWMutex
-	m  map[string]time.Time // IP → 过期时刻
+	m  map[string]whitelistEntry
 }
 
-func newWhitelist() *whitelist { return &whitelist{m: make(map[string]time.Time)} }
+type whitelistEntry struct {
+	IP        string    `json:"ip"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	Permanent bool      `json:"permanent"`
+}
 
-func (w *whitelist) Add(ip string, ttl time.Duration) {
+type allowStatus struct {
+	Allowed   bool
+	Permanent bool
+	ExpiresAt time.Time
+}
+
+func newWhitelist() *whitelist { return &whitelist{m: make(map[string]whitelistEntry)} }
+
+func (w *whitelist) AddTemporary(ip string, ttl time.Duration) {
 	w.mu.Lock()
-	w.m[ip] = time.Now().Add(ttl)
+	defer w.mu.Unlock()
+	if entry, ok := w.m[ip]; ok && entry.Permanent {
+		return
+	}
+	w.m[ip] = whitelistEntry{IP: ip, ExpiresAt: time.Now().Add(ttl)}
+}
+
+func (w *whitelist) AddPermanent(ip string) {
+	w.mu.Lock()
+	w.m[ip] = whitelistEntry{IP: ip, Permanent: true}
 	w.mu.Unlock()
 }
 
-func (w *whitelist) Allowed(ip string) bool {
+func (w *whitelist) RemovePermanent(ip string) {
+	w.mu.Lock()
+	if entry, ok := w.m[ip]; ok && entry.Permanent {
+		delete(w.m, ip)
+	}
+	w.mu.Unlock()
+}
+
+func (w *whitelist) IsPermanent(ip string) bool {
 	w.mu.RLock()
-	exp, ok := w.m[ip]
+	entry, ok := w.m[ip]
 	w.mu.RUnlock()
-	return ok && time.Now().Before(exp)
+	return ok && entry.Permanent
+}
+
+func (w *whitelist) Check(ip string) allowStatus {
+	w.mu.RLock()
+	entry, ok := w.m[ip]
+	w.mu.RUnlock()
+	if !ok {
+		return allowStatus{}
+	}
+	if entry.Permanent {
+		return allowStatus{Allowed: true, Permanent: true}
+	}
+	if time.Now().Before(entry.ExpiresAt) {
+		return allowStatus{Allowed: true, ExpiresAt: entry.ExpiresAt}
+	}
+	return allowStatus{}
+}
+
+func (w *whitelist) TemporaryEntries() []whitelistEntry {
+	now := time.Now()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	res := make([]whitelistEntry, 0, len(w.m))
+	for ip, entry := range w.m {
+		if entry.Permanent {
+			continue
+		}
+		if now.After(entry.ExpiresAt) {
+			delete(w.m, ip)
+			continue
+		}
+		res = append(res, entry)
+	}
+	sort.Slice(res, func(i, j int) bool {
+		return res[i].ExpiresAt.After(res[j].ExpiresAt)
+	})
+	return res
 }
 
 // ---------- TCP 代理 ----------
 
-func serveTCPProxy(listen, target string, wl *whitelist) {
+func serveTCPProxy(listen, target string, wl *whitelist, store *stateStore, limiter *eventLimiter) {
 	ln, err := net.Listen("tcp", listen)
 	if err != nil {
 		log.Fatalf("rdp-gateway: TCP 监听 %s 失败: %v", listen, err)
@@ -161,23 +663,35 @@ func serveTCPProxy(listen, target string, wl *whitelist) {
 		if err != nil {
 			continue
 		}
-		go handleTCP(c, target, wl)
+		go handleTCP(c, target, wl, store, limiter)
 	}
 }
 
-func handleTCP(c net.Conn, target string, wl *whitelist) {
+func handleTCP(c net.Conn, target string, wl *whitelist, store *stateStore, limiter *eventLimiter) {
 	defer c.Close()
 	host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
-	if !wl.Allowed(host) {
+	status := wl.Check(host)
+	if !status.Allowed {
 		log.Printf("rdp-gateway: 拒绝未授权 TCP 源 %s", host)
+		if limiter.Allow("tcp-deny:"+host, time.Minute) {
+			store.Record(historyEntry{Time: time.Now(), Kind: "tcp", IP: host, Result: "denied", Detail: "new TCP session denied after whitelist expiry or without authorization"})
+		}
 		return
 	}
 	up, err := net.DialTimeout("tcp", target, 5*time.Second)
 	if err != nil {
 		log.Printf("rdp-gateway: 连目标 %s 失败: %v", target, err)
+		store.Record(historyEntry{Time: time.Now(), Kind: "tcp", IP: host, Result: "failed", Detail: fmt.Sprintf("target dial failed: %v", err)})
 		return
 	}
 	defer up.Close()
+
+	detail := "new TCP session accepted"
+	if status.Permanent {
+		detail = "new TCP session accepted by long-term whitelist"
+	}
+	store.Record(historyEntry{Time: time.Now(), Kind: "tcp", IP: host, Result: "accepted", Detail: detail, V4Addr: publicAddr})
+
 	errc := make(chan error, 2)
 	go func() { _, e := io.Copy(up, c); errc <- e }()
 	go func() { _, e := io.Copy(c, up); errc <- e }()
@@ -186,7 +700,7 @@ func handleTCP(c net.Conn, target string, wl *whitelist) {
 
 // ---------- UDP 代理（RDP-UDP，per-client 会话 + 空闲回收）----------
 
-func serveUDPProxy(listen, target string, wl *whitelist) {
+func serveUDPProxy(listen, target string, wl *whitelist, store *stateStore, limiter *eventLimiter) {
 	laddr, err := net.ResolveUDPAddr("udp", listen)
 	if err != nil {
 		log.Fatalf("rdp-gateway: 解析 UDP 监听地址失败: %v", err)
@@ -201,7 +715,6 @@ func serveUDPProxy(listen, target string, wl *whitelist) {
 	}
 	log.Printf("rdp-gateway: UDP 代理就绪 %s", listen)
 
-	const idle = 60 * time.Second
 	var mu sync.Mutex
 	sessions := map[string]*net.UDPConn{} // clientAddr → 到目标的 conn
 	buf := make([]byte, 65535)
@@ -210,24 +723,38 @@ func serveUDPProxy(listen, target string, wl *whitelist) {
 		if err != nil {
 			continue
 		}
-		if !wl.Allowed(caddr.IP.String()) {
-			continue
-		}
 		key := caddr.String()
+		clientIP := caddr.IP.String()
+
 		mu.Lock()
 		up := sessions[key]
 		if up == nil {
+			status := wl.Check(clientIP)
+			if !status.Allowed {
+				mu.Unlock()
+				if limiter.Allow("udp-deny:"+clientIP, time.Minute) {
+					store.Record(historyEntry{Time: time.Now(), Kind: "udp", IP: clientIP, Result: "denied", Detail: "new UDP session denied after whitelist expiry or without authorization"})
+				}
+				continue
+			}
 			up, err = net.DialUDP("udp", nil, raddr)
 			if err != nil {
 				mu.Unlock()
+				store.Record(historyEntry{Time: time.Now(), Kind: "udp", IP: clientIP, Result: "failed", Detail: fmt.Sprintf("target dial failed: %v", err)})
 				continue
 			}
 			sessions[key] = up
-			// 回程：从目标读 → 写回客户端；空闲超时即收会话
+			detail := "new UDP session accepted"
+			if status.Permanent {
+				detail = "new UDP session accepted by long-term whitelist"
+			}
+			store.Record(historyEntry{Time: time.Now(), Kind: "udp", IP: clientIP, Result: "accepted", Detail: detail, V4Addr: publicAddr})
+
+			// 白名单只在创建 UDP 会话时检查，TTL 过期后不影响已建立的 RDP-UDP 会话。
 			go func(up *net.UDPConn, caddr *net.UDPAddr, key string) {
 				b := make([]byte, 65535)
 				for {
-					_ = up.SetReadDeadline(time.Now().Add(idle))
+					_ = up.SetReadDeadline(time.Now().Add(time.Duration(udpIdleSeconds) * time.Second))
 					m, err := up.Read(b)
 					if err != nil {
 						break
@@ -245,54 +772,525 @@ func serveUDPProxy(listen, target string, wl *whitelist) {
 	}
 }
 
+type eventLimiter struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+func newEventLimiter() *eventLimiter {
+	return &eventLimiter{last: make(map[string]time.Time)}
+}
+
+func (l *eventLimiter) Allow(key string, interval time.Duration) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if last, ok := l.last[key]; ok && now.Sub(last) < interval {
+		return false
+	}
+	l.last[key] = now
+	return true
+}
+
 // ---------- 授权页 ----------
 
 type pageData struct {
+	ClientIP         string
+	ClientKnown      bool
+	V6Addr           string
+	V6Source         string
+	V6TTL            int
+	V4Addr           string
+	TTLSeconds       int
+	ExpiresAtUnix    int64
+	ExpiresAtText    string
+	LoginURL         string
+	IsPermanent      bool
+	V4State          string
+	V4Detail         string
+	NftWarning       string
+	AgentWarning     string
+	PermanentEntries []permanentView
+	TempEntries      []temporaryView
+	History          []historyView
+}
+
+type permanentView struct {
+	IP        string
+	Note      string
+	AddedAt   string
+	LastSeen  string
+	IsCurrent bool
+}
+
+type temporaryView struct {
+	IP        string
+	ExpiresAt string
+	Remaining string
+}
+
+type historyView struct {
+	Time   string
+	Kind   string
+	IP     string
+	Result string
+	Detail string
 	V6Addr string
-	V4Addr string
-	TTLMin int
+	Tone   string
+}
+
+func permanentViews(entries []permanentEntry, currentIP string) []permanentView {
+	res := make([]permanentView, 0, len(entries))
+	for _, entry := range entries {
+		res = append(res, permanentView{
+			IP:        entry.IP,
+			Note:      entry.Note,
+			AddedAt:   formatTime(entry.AddedAt),
+			LastSeen:  formatTime(entry.LastSeen),
+			IsCurrent: entry.IP == currentIP,
+		})
+	}
+	return res
+}
+
+func temporaryViews(entries []whitelistEntry) []temporaryView {
+	res := make([]temporaryView, 0, len(entries))
+	for _, entry := range entries {
+		remaining := time.Until(entry.ExpiresAt).Round(time.Second)
+		if remaining < 0 {
+			remaining = 0
+		}
+		res = append(res, temporaryView{
+			IP:        entry.IP,
+			ExpiresAt: formatTime(entry.ExpiresAt),
+			Remaining: compactDuration(remaining),
+		})
+	}
+	return res
+}
+
+func historyViews(entries []historyEntry) []historyView {
+	res := make([]historyView, 0, len(entries))
+	for _, entry := range entries {
+		res = append(res, historyView{
+			Time:   formatTime(entry.Time),
+			Kind:   historyKindLabel(entry.Kind),
+			IP:     firstNonEmpty(entry.IP, "unknown"),
+			Result: historyResultLabel(entry.Result),
+			Detail: entry.Detail,
+			V6Addr: entry.V6Addr,
+			Tone:   historyTone(entry.Result),
+		})
+	}
+	return res
 }
 
 var pageTmpl = template.Must(template.New("page").Parse(`<!doctype html>
-<meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>RDP 已授权</title>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RDP 安全入口</title>
 <style>
- body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:24px auto;padding:0 16px;color:#1c1c1e}
- h2{margin:.2em 0}.sub{color:#6b7280;font-size:.9em}
- .card{border:1px solid #e5e7eb;border-radius:12px;padding:14px 16px;margin:12px 0}
- .card.v6{border-color:#34c759}.card.v4{border-color:#0a84ff}.card.off{border-color:#d1d5db;color:#9ca3af}
- .lbl{font-size:.85em;color:#6b7280}.addr{font-size:1.25em;font-weight:600;word-break:break-all;user-select:all}
- button{margin-top:8px;border:0;border-radius:8px;padding:8px 14px;background:#111827;color:#fff;font-size:.95em}
- .tip{font-size:.85em;color:#6b7280;margin-top:6px}#cd{font-weight:600}
+:root{color-scheme:light;--bg:#f6f7f4;--panel:#ffffff;--text:#17211b;--muted:#66706a;--line:#d9ded8;--blue:#1d5fd1;--green:#177245;--amber:#9a5b00;--red:#b42318;--shadow:0 18px 60px rgba(24,34,28,.12)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",Arial,sans-serif}
+button,input{font:inherit}
+.wrap{width:min(1120px,calc(100vw - 32px));margin:0 auto;padding:26px 0 34px}
+.top{display:grid;grid-template-columns:1.1fr auto;gap:18px;align-items:end;margin-bottom:18px}
+h1{margin:0;font-size:clamp(28px,4vw,46px);line-height:1.02;letter-spacing:0}
+.lead{margin:10px 0 0;color:var(--muted);font-size:15px;line-height:1.55}
+.status{display:grid;grid-template-columns:repeat(3,minmax(130px,1fr));gap:10px;min-width:420px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;box-shadow:0 8px 24px rgba(24,34,28,.05)}
+.stat b{display:block;font-size:18px;margin-top:5px}.stat span{color:var(--muted);font-size:12px}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px;align-items:start}
+.stack{display:grid;gap:14px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}
+.panel-h{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:14px 16px}
+.panel-h h2,.panel-h h3{margin:0;font-size:16px;letter-spacing:0}.panel-b{padding:16px}
+.routes{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.route{border:1px solid var(--line);border-radius:8px;padding:14px;background:#fbfcfb;min-width:0}
+.route.good{border-color:rgba(23,114,69,.45)}.route.fast{border-color:rgba(29,95,209,.45)}.route.off{background:#f4f5f3;color:#717a74}
+.label{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted);font-size:13px;margin-bottom:9px}
+.badge{display:inline-flex;align-items:center;min-height:24px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--muted);font-size:12px;white-space:nowrap}
+.badge.ok{border-color:rgba(23,114,69,.35);color:var(--green);background:#f1faf4}.badge.warn{border-color:rgba(154,91,0,.35);color:var(--amber);background:#fff8eb}
+.addr{display:block;width:100%;min-height:44px;padding:9px 10px;border:1px dashed #b9c2bb;border-radius:6px;background:#fff;color:#111;font-size:20px;font-weight:700;line-height:1.2;word-break:break-all;user-select:all}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.btn{border:1px solid #202721;background:#202721;color:#fff;border-radius:6px;min-height:36px;padding:0 12px;cursor:pointer}
+.btn.danger{background:#fff;color:var(--red);border-color:rgba(180,35,24,.35)}.btn:disabled{opacity:.45;cursor:not-allowed}
+.note{color:var(--muted);font-size:13px;line-height:1.45;margin-top:9px}
+.warning{border:1px solid rgba(154,91,0,.35);background:#fff8eb;color:#7a4600;border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.45;margin-top:10px}
+.ipbox{display:grid;gap:10px}
+.ipline{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;background:#f8faf8;border:1px solid var(--line);border-radius:8px}
+.ipline strong{font-size:18px;word-break:break-all}
+.formrow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+input{height:38px;border:1px solid var(--line);border-radius:6px;padding:0 10px;background:#fff;color:var(--text);min-width:0}
+.table{display:grid;gap:8px}
+.row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;border:1px solid var(--line);border-radius:8px;background:#fbfcfb;padding:10px}
+.row-main{min-width:0}.row-title{font-weight:700;word-break:break-all}.row-meta{margin-top:4px;color:var(--muted);font-size:12px;line-height:1.35}
+.empty{padding:20px 12px;text-align:center;color:var(--muted);border:1px dashed #c9d0ca;border-radius:8px;background:#fbfcfb}
+.history{display:grid;gap:8px;max-height:560px;overflow:auto;padding-right:2px}
+.event{border:1px solid var(--line);border-left:4px solid #8a938d;border-radius:8px;background:#fbfcfb;padding:10px}
+.event.ok{border-left-color:var(--green)}.event.warn{border-left-color:var(--amber)}.event.bad{border-left-color:var(--red)}
+.event-top{display:flex;justify-content:space-between;gap:10px;align-items:center}.event-kind{font-weight:700}.event-time{color:var(--muted);font-size:12px;white-space:nowrap}
+.event p{margin:6px 0 0;color:var(--muted);font-size:12px;line-height:1.4;word-break:break-word}
+.modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(16,24,20,.46);padding:18px;z-index:20}
+.modal.open{display:flex}.modal-card{width:min(440px,100%);background:#fff;border-radius:8px;border:1px solid var(--line);box-shadow:var(--shadow);padding:20px}.modal-card h2{margin:0 0 8px;font-size:22px}.modal-card p{margin:0 0 14px;color:var(--muted);line-height:1.5}
+.toast{position:fixed;right:18px;bottom:18px;max-width:min(420px,calc(100vw - 36px));background:#202721;color:#fff;border-radius:8px;padding:12px 14px;box-shadow:var(--shadow);display:none;z-index:30}.toast.show{display:block}
+@media (max-width:920px){.top{grid-template-columns:1fr}.status{min-width:0}.grid,.routes{grid-template-columns:1fr}}
+@media (max-width:560px){.wrap{width:min(100vw - 20px,1120px);padding-top:16px}.status{grid-template-columns:1fr}.panel-h{align-items:flex-start;flex-direction:column}.formrow,.row{grid-template-columns:1fr}.addr{font-size:17px}.event-top{align-items:flex-start;flex-direction:column;gap:4px}}
 </style>
-<h2>✅ 已授权</h2>
-<p class=sub>约 <span id=cd>{{.TTLMin}}:00</span> 内有效，用原生 mstsc 连接：</p>
-{{if .V6Addr}}
-<div class="card v6">
- <div class=lbl>① IPv6 直连（最快，需公司有 v6 出网）</div>
- <div class=addr id=v6>{{.V6Addr}}</div>
- <button onclick="cp('v6')">复制</button>
- <div class=tip>mstsc 计算机处直接粘贴；地址不公开、随前缀漂移，仅本次有效</div>
+</head>
+<body data-expires-at="{{.ExpiresAtUnix}}" data-login-url="{{.LoginURL}}">
+<main class="wrap">
+ <section class="top">
+  <div>
+   <h1>RDP 安全入口</h1>
+   <p class="lead">当前出口 IP 已完成本次授权。窗口结束后只会阻止新的连接，已经建立的 RDP 会话会继续保持。</p>
+  </div>
+  <div class="status">
+   <div class="stat"><span>倒计时</span><b id="countdown">--:--</b></div>
+   <div class="stat"><span>当前出口 IP</span><b>{{if .ClientKnown}}{{.ClientIP}}{{else}}未知{{end}}</b></div>
+   <div class="stat"><span>授权状态</span><b>{{if .IsPermanent}}长期{{else}}临时{{end}}</b></div>
+  </div>
+ </section>
+
+ <section class="grid">
+  <div class="stack">
+   <section class="panel">
+    <div class="panel-h">
+     <h2>连接地址</h2>
+     <span class="badge {{if .IsPermanent}}ok{{else}}warn{{end}}">{{.V4State}}</span>
+    </div>
+    <div class="panel-b">
+     <div class="routes">
+      {{if .V6Addr}}
+      <article class="route fast">
+       <div class="label"><span>IPv6 直连</span><span class="badge ok">{{if .V6Source}}{{.V6Source}}{{else}}ready{{end}}</span></div>
+       <code class="addr" id="v6addr">{{.V6Addr}}</code>
+       <div class="actions"><button class="btn" data-copy="v6addr">复制</button></div>
+       <div class="note">公司网络有 IPv6 时优先用这条；本次 pinhole 约 {{.V6TTL}} 秒。</div>
+      </article>
+      {{else}}
+      <article class="route off">
+       <div class="label"><span>IPv6 直连</span><span class="badge warn">不可用</span></div>
+       <div class="addr">本次未打开</div>
+       <div class="note">家侧 agent 未响应或未解析到可用 GUA。</div>
+      </article>
+      {{end}}
+      <article class="route good">
+       <div class="label"><span>香港中转</span><span class="badge ok">兜底</span></div>
+       <code class="addr" id="v4addr">{{.V4Addr}}</code>
+       <div class="actions"><button class="btn" data-copy="v4addr">复制</button></div>
+       <div class="note">{{.V4Detail}}</div>
+      </article>
+     </div>
+     {{if .NftWarning}}<div class="warning">{{.NftWarning}}</div>{{end}}
+     {{if .AgentWarning}}<div class="warning">{{.AgentWarning}}</div>{{end}}
+    </div>
+   </section>
+
+   <section class="panel">
+    <div class="panel-h"><h3>长期白名单</h3><span class="badge">当前 IP 一键加入</span></div>
+    <div class="panel-b ipbox">
+     <div class="ipline">
+      <span>当前出口</span>
+      <strong>{{if .ClientKnown}}{{.ClientIP}}{{else}}无法识别{{end}}</strong>
+     </div>
+     <div class="formrow">
+      <input id="wl-note" maxlength="80" placeholder="备注，例如 公司办公室 / 家里宽带">
+      <button class="btn" id="add-wl" {{if not .ClientKnown}}disabled{{end}}>{{if .IsPermanent}}更新备注{{else}}加入长期白名单{{end}}</button>
+     </div>
+     <div class="note">长期白名单保存在网关状态文件中，并由服务持续刷新短 TTL 内核白名单；移除后应用层立即停止长期放行。</div>
+    </div>
+   </section>
+
+   <section class="panel">
+    <div class="panel-h"><h3>已加入白名单</h3><span class="badge">{{len .PermanentEntries}} 个</span></div>
+    <div class="panel-b">
+     {{if .PermanentEntries}}
+     <div class="table">
+      {{range .PermanentEntries}}
+      <div class="row">
+       <div class="row-main">
+        <div class="row-title">{{.IP}} {{if .IsCurrent}}<span class="badge ok">当前</span>{{end}}</div>
+        <div class="row-meta">{{if .Note}}{{.Note}} · {{end}}加入 {{.AddedAt}} · 最近使用 {{.LastSeen}}</div>
+       </div>
+       <button class="btn danger" data-remove="{{.IP}}">移除</button>
+      </div>
+      {{end}}
+     </div>
+     {{else}}
+     <div class="empty">还没有长期白名单</div>
+     {{end}}
+    </div>
+   </section>
+
+   <section class="panel">
+    <div class="panel-h"><h3>临时窗口</h3><span class="badge">{{len .TempEntries}} 个</span></div>
+    <div class="panel-b">
+     {{if .TempEntries}}
+     <div class="table">
+      {{range .TempEntries}}
+      <div class="row">
+       <div class="row-main">
+        <div class="row-title">{{.IP}}</div>
+        <div class="row-meta">剩余 {{.Remaining}} · 到期 {{.ExpiresAt}}</div>
+       </div>
+      </div>
+      {{end}}
+     </div>
+     {{else}}
+     <div class="empty">没有其他临时授权</div>
+     {{end}}
+    </div>
+   </section>
+  </div>
+
+  <aside class="panel">
+   <div class="panel-h"><h3>连接历史</h3><span class="badge">最近 {{len .History}}</span></div>
+   <div class="panel-b">
+    {{if .History}}
+    <div class="history">
+     {{range .History}}
+     <article class="event {{.Tone}}">
+      <div class="event-top"><span class="event-kind">{{.Kind}} · {{.Result}}</span><span class="event-time">{{.Time}}</span></div>
+      <p>{{.IP}}{{if .Detail}} · {{.Detail}}{{end}}</p>
+      {{if .V6Addr}}<p>IPv6 {{.V6Addr}}</p>{{end}}
+     </article>
+     {{end}}
+    </div>
+    {{else}}
+    <div class="empty">暂无历史</div>
+    {{end}}
+   </div>
+  </aside>
+ </section>
+</main>
+
+<div class="modal" id="expired-modal" role="dialog" aria-modal="true" aria-labelledby="expired-title">
+ <div class="modal-card">
+  <h2 id="expired-title">授权窗口已结束</h2>
+  <p>页面会跳回登录入口。已连接的 RDP 会话不受影响，新的连接需要重新授权。</p>
+  <button class="btn" id="go-login">立即前往</button>
+ </div>
 </div>
-{{else}}
-<div class="card off">
- <div class=lbl>① IPv6 直连</div>
- <div>本次不可用（公司无 v6 或家侧 agent 无响应）——请用下方中转</div>
-</div>
-{{end}}
-<div class="card v4">
- <div class=lbl>② 香港中转（兜底，任意网络可用）</div>
- <div class=addr id=v4>{{.V4Addr}}</div>
- <button onclick="cp('v4')">复制</button>
- <div class=tip>仅放行你当前出口 IP，{{.TTLMin}} 分钟后新连接被拒；已建立会话不掉线</div>
-</div>
+<div class="toast" id="toast"></div>
+
 <script>
- function cp(id){var t=document.getElementById(id).innerText;navigator.clipboard&&navigator.clipboard.writeText(t)}
- var s={{.TTLMin}}*60,e=document.getElementById('cd');setInterval(function(){if(s<=0){e.innerText='已过期，请刷新重新授权';return}s--;var m=Math.floor(s/60),x=s%60;e.innerText=m+':'+(x<10?'0':'')+x},1000);
+(function(){
+  var body=document.body;
+  var expiresAt=Number(body.dataset.expiresAt||0)*1000;
+  var loginURL=body.dataset.loginUrl||"/";
+  var countdown=document.getElementById("countdown");
+  var expired=false;
+  function showToast(msg){var t=document.getElementById("toast");t.textContent=msg;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2600)}
+  function copy(id){
+    var el=document.getElementById(id);
+    if(!el)return;
+    var text=el.textContent.trim();
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){showToast("已复制")},function(){showToast(text)});
+    }else{showToast(text)}
+  }
+  function tick(){
+    var left=Math.max(0,Math.floor((expiresAt-Date.now())/1000));
+    var m=Math.floor(left/60),s=left%60;
+    countdown.textContent=m+":"+(s<10?"0":"")+s;
+    if(left<=0&&!expired){
+      expired=true;
+      document.getElementById("expired-modal").classList.add("open");
+      setTimeout(function(){window.location.assign(loginURL)},1800);
+    }
+  }
+  document.querySelectorAll("[data-copy]").forEach(function(btn){btn.addEventListener("click",function(){copy(btn.dataset.copy)})});
+  document.getElementById("go-login").addEventListener("click",function(){window.location.assign(loginURL)});
+  var add=document.getElementById("add-wl");
+  if(add){
+    add.addEventListener("click",function(){
+      add.disabled=true;
+      fetch("/api/whitelist/current",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({note:document.getElementById("wl-note").value||""})})
+        .then(function(r){if(!r.ok){return r.json().catch(function(){return {error:"请求失败"}}).then(function(j){throw new Error(j.detail||j.error||"请求失败")})}return r.json()})
+        .then(function(){showToast("长期白名单已更新");setTimeout(function(){window.location.reload()},500)})
+        .catch(function(err){showToast(err.message);add.disabled=false});
+    });
+  }
+  document.querySelectorAll("[data-remove]").forEach(function(btn){
+    btn.addEventListener("click",function(){
+      btn.disabled=true;
+      fetch("/api/whitelist/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ip:btn.dataset.remove})})
+        .then(function(r){if(!r.ok){throw new Error("移除失败")}return r.json()})
+        .then(function(){showToast("已移除");setTimeout(function(){window.location.reload()},500)})
+        .catch(function(err){showToast(err.message);btn.disabled=false});
+    });
+  });
+  tick();
+  setInterval(tick,1000);
+})();
 </script>
+</body>
+</html>
 `))
 
 // ---------- 通用工具 ----------
+
+func clientIPv4(r *http.Request) string {
+	ip := normalizeIPv4(strings.TrimSpace(r.Header.Get("X-Real-IP")))
+	if ip != "" {
+		return ip
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return normalizeIPv4(host)
+}
+
+func normalizeIPv4(v string) string {
+	ip := net.ParseIP(strings.TrimSpace(v))
+	if ip == nil || ip.To4() == nil {
+		return ""
+	}
+	return ip.To4().String()
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
+}
+
+func readJSONOrForm(r *http.Request, v any) error {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		return json.NewDecoder(r.Body).Decode(v)
+	}
+	if err := r.ParseForm(); err != nil {
+		return err
+	}
+	b, _ := json.Marshal(map[string]string{
+		"note": r.Form.Get("note"),
+		"ip":   r.Form.Get("ip"),
+	})
+	return json.Unmarshal(b, v)
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Local().Format("2006-01-02 15:04:05")
+}
+
+func compactDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+	return fmt.Sprintf("%dm%02ds", int(d/time.Minute), int((d%time.Minute)/time.Second))
+}
+
+func historyKindLabel(kind string) string {
+	switch kind {
+	case "unlock":
+		return "授权"
+	case "whitelist":
+		return "白名单"
+	case "tcp":
+		return "TCP"
+	case "udp":
+		return "UDP"
+	default:
+		return kind
+	}
+}
+
+func historyResultLabel(result string) string {
+	switch result {
+	case "ok":
+		return "成功"
+	case "partial":
+		return "部分可用"
+	case "failed":
+		return "失败"
+	case "accepted":
+		return "已连接"
+	case "denied":
+		return "已拒绝"
+	case "added":
+		return "已加入"
+	case "removed":
+		return "已移除"
+	default:
+		return result
+	}
+}
+
+func historyTone(result string) string {
+	switch result {
+	case "ok", "accepted", "added":
+		return "ok"
+	case "partial", "removed":
+		return "warn"
+	case "failed", "denied":
+		return "bad"
+	default:
+		return ""
+	}
+}
+
+func nonEmpty(values ...string) []string {
+	res := make([]string, 0, len(values))
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			res = append(res, strings.TrimSpace(v))
+		}
+	}
+	return res
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func firstNonZero(values ...int) int {
+	for _, v := range values {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func trimRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {

@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,6 +38,8 @@ var (
 	token      = os.Getenv("RDP6_TOKEN")
 )
 
+var openState = newAgentState()
+
 func main() {
 	log.SetFlags(log.LstdFlags)
 	if token == "" {
@@ -44,6 +47,7 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/open", handleOpen)
+	mux.HandleFunc("/status", handleStatus)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -71,10 +75,7 @@ func main() {
 
 // handleOpen 校验 token → 发现 Win10 GUA → 写 fw4 set 开 pinhole → 返回 GUA。
 func handleOpen(w http.ResponseWriter, r *http.Request) {
-	got := r.URL.Query().Get("token")
-	if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
-		log.Printf("rdp6-agent: 错误 token，来自 %s", r.RemoteAddr)
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+	if !authorized(w, r) {
 		return
 	}
 	gua, source, err := resolveGUA()
@@ -88,10 +89,80 @@ func handleOpen(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "open pinhole failed"})
 		return
 	}
+	expiresAt := time.Now().Add(time.Duration(ttlSeconds) * time.Second)
+	openState.Set(gua, source, expiresAt)
 	log.Printf("rdp6-agent: 已开窗 gua=%s 来源=%s ttl=%ds", gua, source, ttlSeconds)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"gua": gua, "port": rdpPort, "ttl": ttlSeconds, "source": source,
+		"gua": gua, "port": rdpPort, "ttl": ttlSeconds, "source": source, "expires_at": expiresAt.Format(time.RFC3339),
 	})
+}
+
+// handleStatus 返回 agent 当前解析状态与最近一次开窗，不修改 fw4 set。
+func handleStatus(w http.ResponseWriter, r *http.Request) {
+	if !authorized(w, r) {
+		return
+	}
+	status := map[string]any{
+		"listen":     listenAddr,
+		"lan_if":     lanIf,
+		"win10_mac":  win10MAC,
+		"nft_set":    nftSet,
+		"rdp_port":   rdpPort,
+		"ttl":        ttlSeconds,
+		"last_open":  openState.Snapshot(),
+		"checked_at": time.Now().Format(time.RFC3339),
+	}
+	if gua, source, err := resolveGUA(); err != nil {
+		status["resolve_error"] = err.Error()
+	} else {
+		status["gua"] = gua
+		status["source"] = source
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func authorized(w http.ResponseWriter, r *http.Request) bool {
+	got := r.URL.Query().Get("token")
+	if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+		log.Printf("rdp6-agent: 错误 token，来自 %s", r.RemoteAddr)
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+		return false
+	}
+	return true
+}
+
+type agentState struct {
+	mu        sync.RWMutex
+	GUA       string    `json:"gua,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	OpenedAt  time.Time `json:"opened_at,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+}
+
+func newAgentState() *agentState { return &agentState{} }
+
+func (s *agentState) Set(gua, source string, expiresAt time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.GUA = gua
+	s.Source = source
+	s.OpenedAt = time.Now()
+	s.ExpiresAt = expiresAt
+}
+
+func (s *agentState) Snapshot() map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.GUA == "" {
+		return nil
+	}
+	return map[string]any{
+		"gua":        s.GUA,
+		"source":     s.Source,
+		"opened_at":  s.OpenedAt.Format(time.RFC3339),
+		"expires_at": s.ExpiresAt.Format(time.RFC3339),
+		"active":     time.Now().Before(s.ExpiresAt),
+	}
 }
 
 // resolveGUA 发现 Win10 当前真实 GUA。返回地址字符串与命中来源。

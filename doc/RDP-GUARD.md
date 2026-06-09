@@ -15,6 +15,8 @@
 >
 > **部署坑（spool）**：`spool sync push` 的 `ensureRemoteDir` 对非 root 主机会把"目标文件父目录"`chown` 给同步用户。曾因把文件推到 `/etc/*` 而误把 txhk 的 `/etc`、`/etc/sudoers.d` chown 成 silkspool → sudo 失效（用户 root 执行 `chown root:root /etc /etc/sudoers.d` 已恢复）。**规避**：txhk 的 RDP 文件全部 `spool` 推到 `/opt/rdp-gateway/` 暂存区，再 `spool exec` 用 `sudo install` 落位到 `/etc`。istoreos（root@）不受此影响。
 >
+> **v3.5 UI/状态增强（2026-06-08）**：`cmd/rdp-gateway` 增加新版控制页、倒计时结束弹窗并跳转 `GW_LOGIN_URL`、当前出口 IP、长期白名单、已加入白名单、连接历史与 `/api/state`；长期白名单持久化到 `GW_STATE_FILE`（默认 `/var/lib/rdp-gateway/state.json`），并通过 `GW_PERMANENT_REFRESH` 周期刷新 nft 短 TTL。连接语义调整为“TTL 只限制新会话”：TCP 已建立会话不重检，UDP 只在创建 per-client 会话时检查白名单，默认空闲 `GW_UDP_IDLE=1800` 秒后回收。`rdp6-agent` 增加 `/status?token=...`，`/open` 返回 `expires_at`。sudoers 需允许 gateway 执行 `nft delete element ... allowed_ips ...`，用于移除长期白名单。
+>
 > **待用户侧**：① Cloudflare 加 `rdp.singll.net A → 43.129.195.4`（v6 不绑 DNS——会公开 GUA 且漂移，授权页已实时给）；② 腾讯云安全组放行 `udp/3478`（STUN，DERP 增强）；③ 公司设备 v6 测试；④ Win10 跑加固脚本；⑤ 浏览器 2FA 实连。
 
 > **目标**：让「装不了 Tailscale 的临时设备」通过原生 RDP（mstsc）安全连接家里内网的 Win10（192.168.7.129）。
@@ -243,7 +245,7 @@ if __name__ == '__main__':
     HTTPServer(('127.0.0.1', 8090), H).serve_forever()
 ```
 
-sudoers `hosts/txhk/sudoers/rdp-unlock`：`rdpunlock ALL=(root) NOPASSWD: /usr/sbin/nft add element inet rdp_guard allowed_ips { [0-9.]* }`
+sudoers `hosts/txhk/sudoers/rdp-unlock`：需允许受限执行 `nft add element inet rdp_guard allowed_ips { <ipv4> timeout <ttl>s }` 与 `nft delete element inet rdp_guard allowed_ips { <ipv4> }`，分别用于临时/长期放行与移除长期白名单。
 service：`rdp-unlock.service` 同 v3.1，并在 `[Service]` 加 `Environment=RDP6_TOKEN=<与 istoreos 同一随机串>`（经 `EnvironmentFile` 注入更佳，文件 gitignored）。
 
 ### 4.5 Caddy 反代 + forward_auth
