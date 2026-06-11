@@ -3,9 +3,12 @@ package engine
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/singll/silkspool/pkg/utils"
 )
+
+var composeCmdCache sync.Map
 
 // RemoteExecutor 封装远程主机上的常用操作
 // 所有方法通过 SSH 在远程主机执行命令序列
@@ -57,9 +60,16 @@ func (re *RemoteExecutor) EnsureCompose() error {
 
 // GetComposeCmd 获取远程主机的 docker compose 命令
 func (re *RemoteExecutor) GetComposeCmd() string {
+	if cached, ok := composeCmdCache.Load(re.client.Address()); ok {
+		return cached.(string)
+	}
 	cmd := `docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose"`
 	out, _ := re.client.Execute(cmd)
-	return strings.TrimSpace(out)
+	result := strings.TrimSpace(out)
+	if result != "" {
+		composeCmdCache.Store(re.client.Address(), result)
+	}
+	return result
 }
 
 // ConfigureDockerLogRotation 配置 Docker 日志轮转

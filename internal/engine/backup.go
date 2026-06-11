@@ -130,7 +130,7 @@ func (m *BackupManager) backupRule(ctx context.Context, rule config.BackupRule) 
 	}
 
 	// Cleanup remote temp file
-	_, _ = m.sshClient.Execute("rm -f " + remoteTmp)
+	_ = m.sshClient.RemoveFile(remoteTmp)
 
 	result.Path = localPath
 	result.Status = "success"

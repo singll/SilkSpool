@@ -3,34 +3,56 @@ package engine
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
-// SSHClient SSH 客户端
 type SSHClient struct {
-	address   string
-	sshKey    string
-	timeout   time.Duration
-	client    *ssh.Client
-	keySigner ssh.Signer
+	address    string
+	sshKey     string
+	port       string
+	timeout    time.Duration
+	knownHosts string
+	client     *ssh.Client
+	keySigner  ssh.Signer
 }
 
-// NewSSHClient 创建 SSH 客户端
-func NewSSHClient(address, sshKey string) (*SSHClient, error) {
-	return &SSHClient{
+type SSHClientOption func(*SSHClient)
+
+func WithSSHPort(port string) SSHClientOption {
+	return func(c *SSHClient) { c.port = port }
+}
+
+func WithTimeout(d time.Duration) SSHClientOption {
+	return func(c *SSHClient) { c.timeout = d }
+}
+
+func WithKnownHosts(path string) SSHClientOption {
+	return func(c *SSHClient) { c.knownHosts = path }
+}
+
+func NewSSHClient(address, sshKey string, opts ...SSHClientOption) (*SSHClient, error) {
+	c := &SSHClient{
 		address: address,
 		sshKey:  sshKey,
+		port:    "22",
 		timeout: 30 * time.Second,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
 }
 
-// Connect 建立连接
 func (c *SSHClient) Connect() error {
 	if c.client != nil {
 		return nil
@@ -53,14 +75,19 @@ func (c *SSHClient) Connect() error {
 		return err
 	}
 
+	hostKeyCallback, err := c.getHostKeyCallback()
+	if err != nil {
+		return fmt.Errorf("failed to setup host key verification: %w", err)
+	}
+
 	config := &ssh.ClientConfig{
 		User:            user,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(c.keySigner)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         c.timeout,
 	}
 
-	addr := net.JoinHostPort(host, "22")
+	addr := net.JoinHostPort(host, c.port)
 	conn, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
@@ -70,7 +97,23 @@ func (c *SSHClient) Connect() error {
 	return nil
 }
 
-// Close 关闭连接
+func (c *SSHClient) getHostKeyCallback() (ssh.HostKeyCallback, error) {
+	if c.knownHosts == "" {
+		return ssh.InsecureIgnoreHostKey(), nil
+	}
+
+	if _, err := os.Stat(c.knownHosts); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(c.knownHosts), 0700); err != nil {
+			return nil, fmt.Errorf("failed to create known_hosts dir: %w", err)
+		}
+		if err := os.WriteFile(c.knownHosts, []byte{}, 0600); err != nil {
+			return nil, fmt.Errorf("failed to create known_hosts file: %w", err)
+		}
+	}
+
+	return knownhosts.New(c.knownHosts)
+}
+
 func (c *SSHClient) Close() error {
 	if c.client != nil {
 		c.client.Close()
@@ -79,35 +122,31 @@ func (c *SSHClient) Close() error {
 	return nil
 }
 
-// IsConnected 检查连接是否存活（非阻塞，仅检查 nil 状态）
 func (c *SSHClient) IsConnected() bool {
 	return c.client != nil
 }
 
-// Address 返回 SSH 地址
 func (c *SSHClient) Address() string {
 	return c.address
 }
 
-// SSHClientPool SSH 连接池，按 address+sshKey 缓存复用连接
 type SSHClientPool struct {
 	mu      sync.Mutex
 	clients map[string]*SSHClient
+	opts    []SSHClientOption
 }
 
-// NewSSHClientPool 创建连接池
-func NewSSHClientPool() *SSHClientPool {
+func NewSSHClientPool(opts ...SSHClientOption) *SSHClientPool {
 	return &SSHClientPool{
 		clients: make(map[string]*SSHClient),
+		opts:    opts,
 	}
 }
 
-// poolKey 生成缓存键
 func poolKey(address, sshKey string) string {
 	return address + "|" + sshKey
 }
 
-// Get 获取或创建 SSH 客户端（同一 address+sshKey 复用连接）
 func (p *SSHClientPool) Get(address, sshKey string) (*SSHClient, error) {
 	key := poolKey(address, sshKey)
 
@@ -122,7 +161,7 @@ func (p *SSHClientPool) Get(address, sshKey string) (*SSHClient, error) {
 	}
 	p.mu.Unlock()
 
-	client, err := NewSSHClient(address, sshKey)
+	client, err := NewSSHClient(address, sshKey, p.opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +176,6 @@ func (p *SSHClientPool) Get(address, sshKey string) (*SSHClient, error) {
 	return client, nil
 }
 
-// CloseAll 关闭所有缓存的连接
 func (p *SSHClientPool) CloseAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -147,7 +185,6 @@ func (p *SSHClientPool) CloseAll() {
 	p.clients = make(map[string]*SSHClient)
 }
 
-// Execute 执行命令（含自动重连）
 func (c *SSHClient) Execute(cmd string) (string, error) {
 	if err := c.Connect(); err != nil {
 		return "", err
@@ -177,7 +214,6 @@ func (c *SSHClient) Execute(cmd string) (string, error) {
 	return stdout.String(), nil
 }
 
-// ExecuteStdin 通过 stdin 执行命令（含自动重连）
 func (c *SSHClient) ExecuteStdin(script string) (string, error) {
 	if err := c.Connect(); err != nil {
 		return "", err
@@ -208,71 +244,73 @@ func (c *SSHClient) ExecuteStdin(script string) (string, error) {
 	return "", session.Wait()
 }
 
-// Upload 上传文件内容（含自动重连）
 func (c *SSHClient) Upload(content, remotePath string) error {
 	if err := c.Connect(); err != nil {
 		return err
 	}
 
-	session, err := c.client.NewSession()
+	sftpClient, err := sftp.NewClient(c.client)
 	if err != nil {
-		c.Close()
-		if err2 := c.Connect(); err2 != nil {
-			return fmt.Errorf("reconnect failed: %w (original: %v)", err2, err)
-		}
-		session, err = c.client.NewSession()
-		if err != nil {
-			return fmt.Errorf("failed to create session after reconnect: %w", err)
-		}
+		return fmt.Errorf("failed to create SFTP client: %w", err)
 	}
-	defer session.Close()
+	defer sftpClient.Close()
 
-	session.Stdout = os.Stdout
-	session.Stderr = os.Stderr
-	session.Stdin = strings.NewReader(content)
-
-	err = session.Run(fmt.Sprintf("cat > %s", remotePath))
+	f, err := sftpClient.Create(remotePath)
 	if err != nil {
-		return fmt.Errorf("upload failed: %w", err)
+		return fmt.Errorf("failed to create remote file: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write([]byte(content)); err != nil {
+		return fmt.Errorf("failed to write remote file: %w", err)
 	}
 
 	return nil
 }
 
-// Download 下载远程文件到本地（通过 SSH cat + 写入本地，含自动重连）
 func (c *SSHClient) Download(remotePath, localPath string) error {
 	if err := c.Connect(); err != nil {
 		return err
 	}
 
-	session, err := c.client.NewSession()
+	sftpClient, err := sftp.NewClient(c.client)
 	if err != nil {
-		c.Close()
-		if err2 := c.Connect(); err2 != nil {
-			return fmt.Errorf("reconnect failed: %w (original: %v)", err2, err)
-		}
-		session, err = c.client.NewSession()
-		if err != nil {
-			return fmt.Errorf("failed to create session after reconnect: %w", err)
-		}
+		return fmt.Errorf("failed to create SFTP client: %w", err)
 	}
-	defer session.Close()
+	defer sftpClient.Close()
 
-	var stdout bytes.Buffer
-	session.Stdout = &stdout
+	f, err := sftpClient.Open(remotePath)
+	if err != nil {
+		return fmt.Errorf("failed to open remote file: %w", err)
+	}
+	defer f.Close()
 
-	if err := session.Run(fmt.Sprintf("cat %s", remotePath)); err != nil {
-		return fmt.Errorf("download failed: %w", err)
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("failed to read remote file: %w", err)
 	}
 
-	if err := os.WriteFile(localPath, stdout.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(localPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write local file: %w", err)
 	}
 
 	return nil
 }
 
-// parseSSHAddress 解析 SSH 地址
+func (c *SSHClient) RemoveFile(remotePath string) error {
+	if err := c.Connect(); err != nil {
+		return err
+	}
+
+	sftpClient, err := sftp.NewClient(c.client)
+	if err != nil {
+		return fmt.Errorf("failed to create SFTP client: %w", err)
+	}
+	defer sftpClient.Close()
+
+	return sftpClient.Remove(remotePath)
+}
+
 func parseSSHAddress(address string) (user, host string, err error) {
 	if idx := strings.LastIndex(address, "@"); idx != -1 {
 		user = address[:idx]
@@ -289,18 +327,22 @@ func parseSSHAddress(address string) (user, host string, err error) {
 	return user, host, nil
 }
 
-// ==================== 全局便捷函数 ====================
+var globalPool *SSHClientPool
 
-// globalPool 全局连接池，供便捷函数使用
-var globalPool = NewSSHClientPool()
-
-// CloseGlobalPool 关闭全局连接池（程序退出时调用）
-func CloseGlobalPool() {
-	globalPool.CloseAll()
+func InitGlobalPool(opts ...SSHClientOption) {
+	globalPool = NewSSHClientPool(opts...)
 }
 
-// SSHExecute 执行远程命令（使用全局连接池复用连接）
+func CloseGlobalPool() {
+	if globalPool != nil {
+		globalPool.CloseAll()
+	}
+}
+
 func SSHExecute(address, sshKey, cmd string) (string, error) {
+	if globalPool == nil {
+		globalPool = NewSSHClientPool()
+	}
 	client, err := globalPool.Get(address, sshKey)
 	if err != nil {
 		return "", err
@@ -308,8 +350,10 @@ func SSHExecute(address, sshKey, cmd string) (string, error) {
 	return client.Execute(cmd)
 }
 
-// SSHExecuteStdin 通过 stdin 执行脚本（使用全局连接池复用连接）
 func SSHExecuteStdin(address, sshKey, script string) (string, error) {
+	if globalPool == nil {
+		globalPool = NewSSHClientPool()
+	}
 	client, err := globalPool.Get(address, sshKey)
 	if err != nil {
 		return "", err
@@ -317,16 +361,13 @@ func SSHExecuteStdin(address, sshKey, script string) (string, error) {
 	return client.ExecuteStdin(script)
 }
 
-// SSHUpload 上传文件内容（使用全局连接池复用连接）
 func SSHUpload(address, sshKey, content, remotePath string) error {
+	if globalPool == nil {
+		globalPool = NewSSHClientPool()
+	}
 	client, err := globalPool.Get(address, sshKey)
 	if err != nil {
 		return err
 	}
 	return client.Upload(content, remotePath)
-}
-
-// SSHUploadContent 上传内容 (别名)
-func SSHUploadContent(address, sshKey, content, remotePath string) (string, error) {
-	return "", SSHUpload(address, sshKey, content, remotePath)
 }
