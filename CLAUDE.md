@@ -183,3 +183,17 @@ req = urllib.request.Request(url, data=data, headers={
 })
 urllib.request.urlopen(req)
 ```
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub (singll/SilkSpool). Use `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout. See `docs/agents/domain.md`.
