@@ -24,6 +24,9 @@ defaults:
       REDIS_PASSWORD=CHANGE_ME_redis_password
 
       # --- n8n ---
+      # WebUI owner 登录凭证 (n8n-init.sh 启动自愈: 重建/恢复后凭证恒为这两项)
+      N8N_OWNER_EMAIL=CHANGE_ME_owner_email
+      N8N_OWNER_FIRSTNAME=Owner
       N8N_PASSWORD=CHANGE_ME_n8n_password
       # 固定加密密钥 (重要! 确保凭证在容器重建后不丢失, 请生成随机字符串)
       N8N_ENCRYPTION_KEY=CHANGE_ME_generate_random_string
