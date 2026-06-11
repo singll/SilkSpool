@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 )
@@ -113,8 +114,7 @@ func (l *Logger) log(level LogLevel, format string, args ...interface{}) {
 
 // getTimestamp 返回时间戳 (带空格前缀以对齐)
 func getTimestamp() string {
-	// 在 TTY 模式下，空时间戳用于对齐
-	return ""
+	return time.Now().Format("2006-01-02 15:04:05 ") + " "
 }
 
 // isTTY 检查输出是否为终端

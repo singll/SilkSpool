@@ -144,9 +144,21 @@ func (m *DNSManager) AddDomain(domain, ip string) error {
 func (m *DNSManager) RemoveDomain(domain string) error {
 	utils.Step("Removing DNS record: %s", domain)
 
-	m.removeDnsmasqRecord(domain)
-	m.removeOpenClashRecord(domain)
-	m.removeHeadscaleRecord(domain)
+	var errs []error
+
+	if err := m.removeDnsmasqRecord(domain); err != nil {
+		errs = append(errs, fmt.Errorf("dnsmasq: %w", err))
+	}
+	if err := m.removeOpenClashRecord(domain); err != nil {
+		errs = append(errs, fmt.Errorf("openclash: %w", err))
+	}
+	if err := m.removeHeadscaleRecord(domain); err != nil {
+		errs = append(errs, fmt.Errorf("headscale: %w", err))
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("some DNS providers failed: %v", errs)
+	}
 
 	utils.Success("DNS record removed: %s", domain)
 	return nil
@@ -177,18 +189,18 @@ func (m *DNSManager) addDnsmasqRecord(domain, ip string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-func (m *DNSManager) removeDnsmasqRecord(domain string) {
+func (m *DNSManager) removeDnsmasqRecord(domain string) error {
 	path := filepath.Join(m.baseDir, "hosts", m.gatewayHost, "dnsmasq", "dnsmasq.conf")
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return err
 	}
 
 	re := regexp.MustCompile(fmt.Sprintf(`(?m)^address=/%s/.*\n?`, regexp.QuoteMeta(domain)))
 	content := re.ReplaceAllString(string(data), "")
 
-	os.WriteFile(path, []byte(content), 0644)
+	return os.WriteFile(path, []byte(content), 0644)
 }
 
 // ==================== OpenClash ====================
@@ -214,18 +226,18 @@ func (m *DNSManager) addOpenClashRecord(domain, ip string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-func (m *DNSManager) removeOpenClashRecord(domain string) {
+func (m *DNSManager) removeOpenClashRecord(domain string) error {
 	path := filepath.Join(m.baseDir, "hosts", m.gatewayHost, "openclash", "hosts.list")
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return err
 	}
 
 	re := regexp.MustCompile(fmt.Sprintf(`(?m)^'%s':.*\n?`, regexp.QuoteMeta(domain)))
 	content := re.ReplaceAllString(string(data), "")
 
-	os.WriteFile(path, []byte(content), 0644)
+	return os.WriteFile(path, []byte(content), 0644)
 }
 
 // ==================== Headscale ====================
@@ -273,15 +285,15 @@ func (m *DNSManager) addHeadscaleRecord(domain, ip string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
-func (m *DNSManager) removeHeadscaleRecord(domain string) {
+func (m *DNSManager) removeHeadscaleRecord(domain string) error {
 	path := filepath.Join(m.baseDir, "hosts", m.headscaleHost, "headscale", "config.yaml")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return
+		return nil
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return err
 	}
 
 	content := string(data)
@@ -292,7 +304,7 @@ func (m *DNSManager) removeHeadscaleRecord(domain string) {
 	re2 := regexp.MustCompile(fmt.Sprintf(`(?m)(      - name: "%s"\n        type: "A"\n        value: "[^"]+"\n)`, regexp.QuoteMeta(domain)))
 	content = re2.ReplaceAllString(content, "")
 
-	os.WriteFile(path, []byte(content), 0644)
+	return os.WriteFile(path, []byte(content), 0644)
 }
 
 // ==================== 工具方法 ====================
