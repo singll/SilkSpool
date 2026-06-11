@@ -36,9 +36,16 @@ var (
 	rdpPort    = envInt("RDP6_RDP_PORT", 3389)
 	ttlSeconds = envInt("RDP6_TTL", 180)
 	token      = os.Getenv("RDP6_TOKEN")
+
+	// 路径 A-v4（IPv4 直连）：家宽为公网动态 v4（PPPoE），DNAT/SNAT 静态链见
+	// /etc/nftables.d/90-rdp4-dnat.nft，本 agent 只负责把 2FA 客户端 v4 写入限源集合。
+	v4NftSet  = env("RDP4_NFT_SET", "rdp4_clients")
+	v4ExtPort = envInt("RDP4_EXT_PORT", 33891) // 家宽公网入口端口（DNAT → Win10:3389）
+	wanIface  = env("RDP4_WAN_IFACE", "wan")   // ubus 逻辑接口名（pppoe-wan 的 uci 名）
 )
 
 var openState = newAgentState()
+var v4State = newAgentState()
 
 func main() {
 	log.SetFlags(log.LstdFlags)
@@ -47,6 +54,7 @@ func main() {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/open", handleOpen)
+	mux.HandleFunc("/open4", handleOpenV4)
 	mux.HandleFunc("/status", handleStatus)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -97,20 +105,59 @@ func handleOpen(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleOpenV4 校验 token → 校验客户端 v4 → 写 fw4 限源集合开 v4 DNAT 窗口 → 返回家宽当前公网 v4。
+// 与 /open（v6，开窗不限源）不同：v4 直连按客户端源 IP 精确放行，未授权源不命中 DNAT、落入 fw4 默认拒绝。
+func handleOpenV4(w http.ResponseWriter, r *http.Request) {
+	if !authorized(w, r) {
+		return
+	}
+	client := parseClientV4(r.URL.Query().Get("client"))
+	if client == "" {
+		log.Printf("rdp6-agent: /open4 客户端 v4 非法: %q", r.URL.Query().Get("client"))
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid client ipv4"})
+		return
+	}
+	wan4, err := currentWAN4()
+	if err != nil {
+		log.Printf("rdp6-agent: 解析家宽公网 v4 失败: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "resolve wan ipv4 failed: " + err.Error()})
+		return
+	}
+	if err := openV4Pinhole(client); err != nil {
+		log.Printf("rdp6-agent: 写 fw4 set %s 失败 client=%s: %v", v4NftSet, client, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "open v4 pinhole failed"})
+		return
+	}
+	expiresAt := time.Now().Add(time.Duration(ttlSeconds) * time.Second)
+	v4State.Set(client+" → "+wan4, "wan4", expiresAt)
+	log.Printf("rdp6-agent: 已开 v4 直连窗口 client=%s wan=%s:%d ttl=%ds", client, wan4, v4ExtPort, ttlSeconds)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"v4": wan4, "port": v4ExtPort, "ttl": ttlSeconds, "client": client, "expires_at": expiresAt.Format(time.RFC3339),
+	})
+}
+
 // handleStatus 返回 agent 当前解析状态与最近一次开窗，不修改 fw4 set。
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	if !authorized(w, r) {
 		return
 	}
 	status := map[string]any{
-		"listen":     listenAddr,
-		"lan_if":     lanIf,
-		"win10_mac":  win10MAC,
-		"nft_set":    nftSet,
-		"rdp_port":   rdpPort,
-		"ttl":        ttlSeconds,
-		"last_open":  openState.Snapshot(),
-		"checked_at": time.Now().Format(time.RFC3339),
+		"listen":       listenAddr,
+		"lan_if":       lanIf,
+		"win10_mac":    win10MAC,
+		"nft_set":      nftSet,
+		"rdp_port":     rdpPort,
+		"ttl":          ttlSeconds,
+		"last_open":    openState.Snapshot(),
+		"v4_nft_set":   v4NftSet,
+		"v4_ext_port":  v4ExtPort,
+		"last_open_v4": v4State.Snapshot(),
+		"checked_at":   time.Now().Format(time.RFC3339),
+	}
+	if wan4, err := currentWAN4(); err != nil {
+		status["wan4_error"] = err.Error()
+	} else {
+		status["wan4"] = wan4
 	}
 	if gua, source, err := resolveGUA(); err != nil {
 		status["resolve_error"] = err.Error()
@@ -297,6 +344,61 @@ func openPinhole(gua string) error {
 	_, err := run("nft", "add", "element", "inet", "fw4", nftSet,
 		"{", gua, "timeout", fmt.Sprintf("%ds", ttlSeconds), "}")
 	return err
+}
+
+// openV4Pinhole 把客户端 v4 加入 fw4 限源集合 rdp4_clients（带 TTL）。
+// 集合由 uci firewall 声明；DNAT/SNAT 静态链见 /etc/nftables.d/90-rdp4-dnat.nft，仅对集合内源生效。
+func openV4Pinhole(client string) error {
+	_, err := run("nft", "add", "element", "inet", "fw4", v4NftSet,
+		"{", client, "timeout", fmt.Sprintf("%ds", ttlSeconds), "}")
+	return err
+}
+
+// parseClientV4 校验调用方传入的客户端地址：必须是全局单播 IPv4。
+func parseClientV4(v string) string {
+	ip := net.ParseIP(strings.TrimSpace(v))
+	if ip == nil || ip.To4() == nil || !ip.IsGlobalUnicast() {
+		return ""
+	}
+	return ip.To4().String()
+}
+
+// currentWAN4 经 ubus 读 WAN 口当前 IPv4；若为私网/CGNAT 段则报错（v4 直连依赖公网入站）。
+func currentWAN4() (string, error) {
+	out, err := run("ubus", "call", fmt.Sprintf("network.interface.%s", wanIface), "status")
+	if err != nil {
+		return "", fmt.Errorf("ubus wan status: %w", err)
+	}
+	var parsed struct {
+		Addrs []struct {
+			Address string `json:"address"`
+		} `json:"ipv4-address"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		return "", fmt.Errorf("解析 wan status: %w", err)
+	}
+	if len(parsed.Addrs) == 0 {
+		return "", fmt.Errorf("wan 口无 IPv4 地址")
+	}
+	ip := net.ParseIP(parsed.Addrs[0].Address)
+	if ip == nil || ip.To4() == nil {
+		return "", fmt.Errorf("wan IPv4 非法: %q", parsed.Addrs[0].Address)
+	}
+	if !isPublicV4(ip) {
+		return "", fmt.Errorf("wan IPv4 %s 非公网（CGNAT/私网），v4 直连不可用", ip)
+	}
+	return ip.To4().String(), nil
+}
+
+// isPublicV4 排除私网、CGNAT（100.64/10）、链路本地与回环。
+func isPublicV4(ip net.IP) bool {
+	for _, cidr := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8"} {
+		_, n, _ := net.ParseCIDR(cidr)
+		if n.Contains(ip) {
+			return false
+		}
+	}
+	return ip.IsGlobalUnicast()
 }
 
 // ---------- 地址构造工具 ----------

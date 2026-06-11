@@ -17,6 +17,12 @@
 >
 > **v3.5 UI/状态增强（2026-06-08）**：`cmd/rdp-gateway` 增加新版控制页、倒计时结束弹窗并跳转 `GW_LOGIN_URL`、当前出口 IP、长期白名单、已加入白名单、连接历史与 `/api/state`；长期白名单持久化到 `GW_STATE_FILE`（默认 `/var/lib/rdp-gateway/state.json`），并通过 `GW_PERMANENT_REFRESH` 周期刷新 nft 短 TTL。连接语义调整为“TTL 只限制新会话”：TCP 已建立会话不重检，UDP 只在创建 per-client 会话时检查白名单，默认空闲 `GW_UDP_IDLE=1800` 秒后回收。`rdp6-agent` 增加 `/status?token=...`，`/open` 返回 `expires_at`。sudoers 需允许 gateway 执行 `nft delete element ... allowed_ips ...`，用于移除长期白名单。
 >
+> **v3.6 路径 A-v4（IPv4 直连）+ 按需单独开通（2026-06-11）**：
+> 1. **§1.2 勘误**：家宽实测**非 CGNAT** —— `pppoe-wan` 直接持有公网动态 v4（如 119.109.63.120/32），公司→家同省联通 ping ~25ms。「IPv4 动态直连不可行」结论作废。
+> 2. **新增路径 A-v4**：`rdp6-agent` 增加 `/open4?token&client=<v4>`，把 2FA 客户端 v4 写入 fw4 限源集合 `rdp4_clients`（uci `config ipset` 声明，TTL 180s）并返回家宽当前公网 v4 与入口端口（`RDP4_EXT_PORT=33891`）。`/etc/nftables.d/90-rdp4-dnat.nft`（fw4 include，与 fw4 同表）做静态 DNAT `pppoe-wan:33891 → 192.168.7.129:3389`（仅命中集合内源，集合空=端口关闭，无 fail-open；prerouting `dstnat-5` 先于 OpenClash 劫持链）+ SNAT 伪装 `192.168.7.1`（Win10 防火墙仅放行 `192.168.7.0/24` 无需改动）；转发放行走 uci `Allow-RDP4-dynamic`（独立 base-chain 的 accept 拦不住 fw4 reject，同 rdp6 经验）。**比 v6 路径更严：按客户端源 IP 精确放行**。动态 IP 漂移由授权页实时返回当前家宽 v4 解决。
+> 3. **开通模型改为按需单独武装**（最小授权）：登录 2FA 后**不再自动开通任何通路**，控制页三张卡片（v4 直连推荐 / v6 直连 / 香港中转托底）各自带「开通」按钮，分别调 `/api/open/v4|v6|relay`，开哪条武装哪条，各自独立 TTL 倒计时。长期白名单语义不变（中转常通）。gateway 新增 `GW_AGENT_V4_URL`（默认 `http://100.64.0.2:8091/open4`）。
+> 4. **动机**：txhk 2Mbps 出口限速导致中转刷屏断连（cubic cwnd 崩塌，已另启 BBR 缓解）+ 113ms 香港 trombone；v4 直连同时根治延迟与带宽，公司无 v6 也可用。中转保留为托底。
+>
 > **待用户侧**：① Cloudflare 加 `rdp.singll.net A → 43.129.195.4`（v6 不绑 DNS——会公开 GUA 且漂移，授权页已实时给）；② 腾讯云安全组放行 `udp/3478`（STUN，DERP 增强）；③ 公司设备 v6 测试；④ Win10 跑加固脚本；⑤ 浏览器 2FA 实连。
 
 > **目标**：让「装不了 Tailscale 的临时设备」通过原生 RDP（mstsc）安全连接家里内网的 Win10（192.168.7.129）。

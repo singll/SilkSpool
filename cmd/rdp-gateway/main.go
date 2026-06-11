@@ -2,8 +2,11 @@
 //
 // 单进程承担四件事（见 doc/RDP-GUARD.md §4）：
 //  1. HTTP 授权页（127.0.0.1:8090，置于 Caddy forward_auth 之后；2FA 通过才可达）；
-//  2. 把客户端 v4 写入 nft 白名单（内核 drop 闸，TTL）+ 内存白名单（应用层闸，纵深防御）；
-//  3. 经 Tailscale 调 istoreos rdp6-agent 开 v6 pinhole 并取回当前 Win10 GUA；
+//  2. 三条通路按需单独开通（/api/open/relay|v4|v6，登录不自动开任何通路）：
+//     - relay：客户端 v4 写入 nft 白名单（内核 drop 闸，TTL）+ 内存白名单（应用层闸，纵深防御）；
+//     - v4：经 Tailscale 调 istoreos agent /open4 开限源 DNAT 窗口，取回家宽公网 v4（直连，不经香港）；
+//     - v6：经 Tailscale 调 istoreos agent /open 开 v6 pinhole 并取回当前 Win10 GUA；
+//  3. 长期白名单（中转常通，显式加入）持久化与周期刷新；
 //  4. TCP+UDP 代理 :33890 → 192.168.7.129:3389（替代 socat：单二进制、原生 UDP、无 per-conn fork）。
 //
 // 仅用标准库；以最小权限用户运行，写 nft 经受限 sudoers（见 hosts/txhk/sudoers/rdp-gateway）。
@@ -36,6 +39,7 @@ var (
 	target           = env("GW_TARGET", "192.168.7.129:3389")      // 经 Tailscale 子网路由到达 Win10
 	publicAddr       = env("GW_PUBLIC_ADDR", "43.129.195.4:33890") // 授权页展示用
 	agentURL         = env("GW_AGENT_URL", "http://100.64.0.2:8091/open")
+	agentV4URL       = env("GW_AGENT_V4_URL", "http://100.64.0.2:8091/open4")
 	nftSet           = env("GW_NFT_SET", "rdp_guard")
 	nftBin           = env("GW_NFT_BIN", "/usr/sbin/nft")
 	ttlSeconds       = envInt("GW_TTL", 180)
@@ -84,6 +88,15 @@ func main() {
 	mux.HandleFunc("/api/whitelist/remove", func(w http.ResponseWriter, r *http.Request) {
 		handleRemovePermanent(w, r, wl, store)
 	})
+	mux.HandleFunc("/api/open/relay", func(w http.ResponseWriter, r *http.Request) {
+		handleOpenRelay(w, r, wl, store)
+	})
+	mux.HandleFunc("/api/open/v6", func(w http.ResponseWriter, r *http.Request) {
+		handleOpenV6(w, r, store)
+	})
+	mux.HandleFunc("/api/open/v4", func(w http.ResponseWriter, r *http.Request) {
+		handleOpenDirectV4(w, r, store)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { handleUnlock(w, r, wl, store) })
 
 	log.Printf("rdp-gateway: HTTP=%s 代理=%s 目标=%s TTL=%ds UDP空闲=%ds 状态=%s", httpListen, proxyListen, target, ttlSeconds, udpIdleSeconds, stateFile)
@@ -91,7 +104,9 @@ func main() {
 	log.Fatal(srv.ListenAndServe())
 }
 
-// handleUnlock：2FA 已由 Caddy forward_auth 保证。写 v4 白名单 + 开 v6 + 返回连接页。
+// handleUnlock：2FA 已由 Caddy forward_auth 保证。仅渲染控制页 —— 不自动开通任何通路，
+// 每条通路（v4 直连 / v6 直连 / 中转）由页面按钮单独触发对应 /api/open/*（最小授权）。
+// 例外：长期白名单 IP 的中转保活是既有显式授权语义，访问时顺带刷新。
 func handleUnlock(w http.ResponseWriter, r *http.Request, wl *whitelist, store *stateStore) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -102,87 +117,26 @@ func handleUnlock(w http.ResponseWriter, r *http.Request, wl *whitelist, store *
 		return
 	}
 
-	now := time.Now()
 	clientIP := clientIPv4(r)
-	expiresAt := now.Add(time.Duration(ttlSeconds) * time.Second)
-	v4State := "当前出口 IP 无法识别"
-	v4Detail := "请确认 Caddy 已覆盖 X-Real-IP"
-	nftWarning := ""
-	isPermanent := false
-
-	if clientIP != "" {
-		if wl.IsPermanent(clientIP) || store.HasPermanent(clientIP) {
-			isPermanent = true
-			wl.AddPermanent(clientIP)
-			store.TouchPermanent(clientIP)
-			v4State = "长期白名单已生效"
-			v4Detail = "中转入口会持续刷新内核白名单；新连接不受短窗口限制"
-			if err := nftAllowV4(clientIP); err != nil {
-				nftWarning = fmt.Sprintf("刷新 nft 白名单失败：%v", err)
-				log.Printf("rdp-gateway: 刷新长期白名单失败 ip=%s: %v", clientIP, err)
-			}
-		} else {
-			wl.AddTemporary(clientIP, time.Duration(ttlSeconds)*time.Second)
-			if err := nftAllowV4(clientIP); err != nil {
-				nftWarning = fmt.Sprintf("写 nft 白名单失败：%v", err)
-				v4State = "临时授权已记录，但内核白名单写入失败"
-				v4Detail = "如果 nft 规则处于启用状态，中转连接可能会被内核拦截"
-				log.Printf("rdp-gateway: nft 写白名单失败 ip=%s: %v", clientIP, err)
-			} else {
-				v4State = "临时授权已生效"
-				v4Detail = fmt.Sprintf("%d 秒后只拒绝新会话，已建立会话继续保持", ttlSeconds)
-				log.Printf("rdp-gateway: 已放行 v4 %s（%ds）", clientIP, ttlSeconds)
-			}
-		}
-	} else {
+	if clientIP == "" {
 		log.Printf("rdp-gateway: X-Real-IP 非法或非 v4: %q remote=%q", strings.TrimSpace(r.Header.Get("X-Real-IP")), r.RemoteAddr)
 	}
-
-	agent, v6OK := callAgent()
-	v6Addr := ""
-	agentWarning := ""
-	if v6OK {
-		v6Addr = fmt.Sprintf("[%s]:%d", agent.GUA, agent.Port)
-		log.Printf("rdp-gateway: v6 直连已就绪 %s", v6Addr)
-	} else {
-		agentWarning = "IPv6 直连本次不可用，仍可使用中转"
-		log.Printf("rdp-gateway: v6 直连本次不可用（agent 无响应/无 v6）")
+	isPermanent := clientIP != "" && (wl.IsPermanent(clientIP) || store.HasPermanent(clientIP))
+	if isPermanent {
+		wl.AddPermanent(clientIP)
+		store.TouchPermanent(clientIP)
+		if err := nftAllowV4(clientIP); err != nil {
+			log.Printf("rdp-gateway: 刷新长期白名单失败 ip=%s: %v", clientIP, err)
+		}
 	}
-
-	result := "ok"
-	if nftWarning != "" || agentWarning != "" {
-		result = "partial"
-	}
-	if clientIP == "" {
-		result = "failed"
-	}
-	store.Record(historyEntry{
-		Time:      now,
-		Kind:      "unlock",
-		IP:        clientIP,
-		Result:    result,
-		Detail:    strings.TrimSpace(strings.Join(nonEmpty(v4State, agentWarning), "；")),
-		V4Addr:    publicAddr,
-		V6Addr:    v6Addr,
-		ExpiresAt: &expiresAt,
-	})
 
 	data := pageData{
 		ClientIP:         clientIP,
 		ClientKnown:      clientIP != "",
-		V4Addr:           publicAddr,
-		V6Addr:           v6Addr,
-		V6Source:         agent.Source,
-		V6TTL:            firstNonZero(agent.TTL, ttlSeconds),
+		RelayAddr:        publicAddr,
 		TTLSeconds:       ttlSeconds,
-		ExpiresAtUnix:    expiresAt.Unix(),
-		ExpiresAtText:    formatTime(expiresAt),
 		LoginURL:         loginURL,
 		IsPermanent:      isPermanent,
-		V4State:          v4State,
-		V4Detail:         v4Detail,
-		NftWarning:       nftWarning,
-		AgentWarning:     agentWarning,
 		PermanentEntries: permanentViews(store.PermanentEntries(), clientIP),
 		TempEntries:      temporaryViews(wl.TemporaryEntries()),
 		History:          historyViews(store.History()),
@@ -192,6 +146,109 @@ func handleUnlock(w http.ResponseWriter, r *http.Request, wl *whitelist, store *
 	if err := pageTmpl.Execute(w, data); err != nil {
 		log.Printf("rdp-gateway: 渲染页面失败: %v", err)
 	}
+}
+
+// openRequestGuard 统一三个 /api/open/* 的方法与同源校验。
+func openRequestGuard(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	if !sameOrigin(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+// handleOpenRelay 开通香港中转（路径 B 托底）：客户端 v4 写 nft + 内存白名单。
+func handleOpenRelay(w http.ResponseWriter, r *http.Request, wl *whitelist, store *stateStore) {
+	if !openRequestGuard(w, r) {
+		return
+	}
+	now := time.Now()
+	ip := clientIPv4(r)
+	if ip == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无法识别当前出口 IPv4"})
+		return
+	}
+	permanent := wl.IsPermanent(ip) || store.HasPermanent(ip)
+	if err := nftAllowV4(ip); err != nil {
+		log.Printf("rdp-gateway: 中转开通写 nft 失败 ip=%s: %v", ip, err)
+		store.Record(historyEntry{Time: now, Kind: "relay", IP: ip, Result: "failed", Detail: "写内核白名单失败"})
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "写内核白名单失败", "detail": err.Error()})
+		return
+	}
+	resp := map[string]any{"addr": publicAddr, "ttl": ttlSeconds, "permanent": permanent}
+	detail := ""
+	var expiresAt *time.Time
+	if permanent {
+		wl.AddPermanent(ip)
+		store.TouchPermanent(ip)
+		detail = "长期白名单持续放行"
+	} else {
+		wl.AddTemporary(ip, time.Duration(ttlSeconds)*time.Second)
+		exp := now.Add(time.Duration(ttlSeconds) * time.Second)
+		expiresAt = &exp
+		resp["expires_at_unix"] = exp.Unix()
+		detail = fmt.Sprintf("%d 秒后只拒绝新会话，已建立会话继续保持", ttlSeconds)
+	}
+	resp["detail"] = detail
+	store.Record(historyEntry{Time: now, Kind: "relay", IP: ip, Result: "ok", Detail: detail, V4Addr: publicAddr, ExpiresAt: expiresAt})
+	log.Printf("rdp-gateway: 中转已开通 ip=%s permanent=%v", ip, permanent)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleOpenV6 开通 IPv6 直连（路径 A）：经 Tailscale 令 istoreos 开 v6 pinhole。
+func handleOpenV6(w http.ResponseWriter, r *http.Request, store *stateStore) {
+	if !openRequestGuard(w, r) {
+		return
+	}
+	now := time.Now()
+	ip := clientIPv4(r)
+	agent, ok := callAgent()
+	if !ok {
+		store.Record(historyEntry{Time: now, Kind: "v6", IP: ip, Result: "failed", Detail: "家侧 agent 无响应或未解析到 GUA"})
+		log.Printf("rdp-gateway: v6 直连开通失败（agent 无响应/无 v6）")
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "家侧 agent 无响应或未解析到 GUA"})
+		return
+	}
+	addr := fmt.Sprintf("[%s]:%d", agent.GUA, agent.Port)
+	exp := now.Add(time.Duration(agent.TTL) * time.Second)
+	store.Record(historyEntry{Time: now, Kind: "v6", IP: ip, Result: "ok", Detail: "来源 " + agent.Source, V6Addr: addr, ExpiresAt: &exp})
+	log.Printf("rdp-gateway: v6 直连已开通 %s（来源 %s）", addr, agent.Source)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"addr": addr, "ttl": agent.TTL, "source": agent.Source, "expires_at_unix": exp.Unix(),
+		"detail": fmt.Sprintf("pinhole %d 秒内有效，需当前网络有 IPv6 出网", agent.TTL),
+	})
+}
+
+// handleOpenDirectV4 开通 IPv4 直连（路径 A-v4）：经 Tailscale 令 istoreos 开限源 DNAT 窗口。
+func handleOpenDirectV4(w http.ResponseWriter, r *http.Request, store *stateStore) {
+	if !openRequestGuard(w, r) {
+		return
+	}
+	now := time.Now()
+	ip := clientIPv4(r)
+	if ip == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "无法识别当前出口 IPv4，v4 直连需要按源放行"})
+		return
+	}
+	res, err := callAgentV4(ip)
+	if err != nil {
+		store.Record(historyEntry{Time: now, Kind: "v4", IP: ip, Result: "failed", Detail: err.Error()})
+		log.Printf("rdp-gateway: v4 直连开通失败 client=%s: %v", ip, err)
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "v4 直连开通失败", "detail": err.Error()})
+		return
+	}
+	addr := net.JoinHostPort(res.V4, strconv.Itoa(res.Port))
+	exp := now.Add(time.Duration(res.TTL) * time.Second)
+	store.Record(historyEntry{Time: now, Kind: "v4", IP: ip, Result: "ok", Detail: "仅放行当前出口 IP", V4Addr: addr, ExpiresAt: &exp})
+	log.Printf("rdp-gateway: v4 直连已开通 %s（仅放行 %s）", addr, ip)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"addr": addr, "ttl": res.TTL, "expires_at_unix": exp.Unix(),
+		"detail": fmt.Sprintf("仅放行 %s，%d 秒内可发起新连接", ip, res.TTL),
+	})
 }
 
 func handleState(w http.ResponseWriter, r *http.Request, wl *whitelist, store *stateStore) {
@@ -325,6 +382,48 @@ type agentOpenResult struct {
 	Port      int    `json:"port"`
 	TTL       int    `json:"ttl"`
 	Source    string `json:"source"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// callAgentV4 经 Tailscale 调 istoreos agent /open4，按客户端源 IP 开 v4 DNAT 窗口，取回家宽公网 v4。
+func callAgentV4(clientIP string) (agentV4Result, error) {
+	if agentV4URL == "" || token == "" {
+		return agentV4Result{}, fmt.Errorf("agent 未配置")
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(agentV4URL + "?token=" + url.QueryEscape(token) + "&client=" + url.QueryEscape(clientIP))
+	if err != nil {
+		return agentV4Result{}, fmt.Errorf("家侧 agent 无响应: %w", err)
+	}
+	defer resp.Body.Close()
+	var r agentV4Result
+	if resp.StatusCode != http.StatusOK {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&e)
+		if e.Error == "" {
+			e.Error = fmt.Sprintf("agent 返回 %d", resp.StatusCode)
+		}
+		return agentV4Result{}, fmt.Errorf("%s", e.Error)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil || r.V4 == "" {
+		return agentV4Result{}, fmt.Errorf("agent 响应非法")
+	}
+	if r.Port == 0 {
+		r.Port = 33891
+	}
+	if r.TTL == 0 {
+		r.TTL = ttlSeconds
+	}
+	return r, nil
+}
+
+type agentV4Result struct {
+	V4        string `json:"v4"`
+	Port      int    `json:"port"`
+	TTL       int    `json:"ttl"`
+	Client    string `json:"client"`
 	ExpiresAt string `json:"expires_at"`
 }
 
@@ -797,19 +896,10 @@ func (l *eventLimiter) Allow(key string, interval time.Duration) bool {
 type pageData struct {
 	ClientIP         string
 	ClientKnown      bool
-	V6Addr           string
-	V6Source         string
-	V6TTL            int
-	V4Addr           string
+	RelayAddr        string
 	TTLSeconds       int
-	ExpiresAtUnix    int64
-	ExpiresAtText    string
 	LoginURL         string
 	IsPermanent      bool
-	V4State          string
-	V4Detail         string
-	NftWarning       string
-	AgentWarning     string
 	PermanentEntries []permanentView
 	TempEntries      []temporaryView
 	History          []historyView
@@ -835,6 +925,7 @@ type historyView struct {
 	IP     string
 	Result string
 	Detail string
+	V4Addr string
 	V6Addr string
 	Tone   string
 }
@@ -878,6 +969,7 @@ func historyViews(entries []historyEntry) []historyView {
 			IP:     firstNonEmpty(entry.IP, "unknown"),
 			Result: historyResultLabel(entry.Result),
 			Detail: entry.Detail,
+			V4Addr: entry.V4Addr,
 			V6Addr: entry.V6Addr,
 			Tone:   historyTone(entry.Result),
 		})
@@ -908,7 +1000,7 @@ h1{margin:0;font-size:clamp(28px,4vw,46px);line-height:1.02;letter-spacing:0}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow)}
 .panel-h{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:14px 16px}
 .panel-h h2,.panel-h h3{margin:0;font-size:16px;letter-spacing:0}.panel-b{padding:16px}
-.routes{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.routes{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
 .route{border:1px solid var(--line);border-radius:8px;padding:14px;background:#fbfcfb;min-width:0}
 .route.good{border-color:rgba(23,114,69,.45)}.route.fast{border-color:rgba(29,95,209,.45)}.route.off{background:#f4f5f3;color:#717a74}
 .label{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted);font-size:13px;margin-bottom:9px}
@@ -941,17 +1033,17 @@ input{height:38px;border:1px solid var(--line);border-radius:6px;padding:0 10px;
 @media (max-width:560px){.wrap{width:min(100vw - 20px,1120px);padding-top:16px}.status{grid-template-columns:1fr}.panel-h{align-items:flex-start;flex-direction:column}.formrow,.row{grid-template-columns:1fr}.addr{font-size:17px}.event-top{align-items:flex-start;flex-direction:column;gap:4px}}
 </style>
 </head>
-<body data-expires-at="{{.ExpiresAtUnix}}" data-login-url="{{.LoginURL}}">
+<body data-login-url="{{.LoginURL}}">
 <main class="wrap">
  <section class="top">
   <div>
    <h1>RDP 安全入口</h1>
-   <p class="lead">当前出口 IP 已完成本次授权。窗口结束后只会阻止新的连接，已经建立的 RDP 会话会继续保持。</p>
+   <p class="lead">2FA 已通过。三条通路按需单独开通——点哪条开哪条，互不影响；窗口结束只阻止新连接，已建立会话继续保持。</p>
   </div>
   <div class="status">
-   <div class="stat"><span>倒计时</span><b id="countdown">--:--</b></div>
+   <div class="stat"><span>最近窗口</span><b id="countdown">--:--</b></div>
    <div class="stat"><span>当前出口 IP</span><b>{{if .ClientKnown}}{{.ClientIP}}{{else}}未知{{end}}</b></div>
-   <div class="stat"><span>授权状态</span><b>{{if .IsPermanent}}长期{{else}}临时{{end}}</b></div>
+   <div class="stat"><span>中转授权</span><b>{{if .IsPermanent}}长期{{else}}按需{{end}}</b></div>
   </div>
  </section>
 
@@ -959,34 +1051,39 @@ input{height:38px;border:1px solid var(--line);border-radius:6px;padding:0 10px;
   <div class="stack">
    <section class="panel">
     <div class="panel-h">
-     <h2>连接地址</h2>
-     <span class="badge {{if .IsPermanent}}ok{{else}}warn{{end}}">{{.V4State}}</span>
+     <h2>连接通路</h2>
+     <span class="badge">单独开通 · 窗口 {{.TTLSeconds}} 秒</span>
     </div>
     <div class="panel-b">
      <div class="routes">
-      {{if .V6Addr}}
-      <article class="route fast">
-       <div class="label"><span>IPv6 直连</span><span class="badge ok">{{if .V6Source}}{{.V6Source}}{{else}}ready{{end}}</span></div>
-       <code class="addr" id="v6addr">{{.V6Addr}}</code>
-       <div class="actions"><button class="btn" data-copy="v6addr">复制</button></div>
-       <div class="note">公司网络有 IPv6 时优先用这条；本次 pinhole 约 {{.V6TTL}} 秒。</div>
+      <article class="route fast" id="route-v4">
+       <div class="label"><span>IPv4 直连（推荐）</span><span class="badge warn" data-badge>未开通</span></div>
+       <code class="addr" id="addr-v4">点击开通后显示</code>
+       <div class="actions">
+        <button class="btn" data-open="v4" {{if not .ClientKnown}}disabled{{end}}>开通 v4 直连</button>
+        <button class="btn" data-copy="addr-v4" disabled>复制</button>
+       </div>
+       <div class="note" data-note>不经香港、同省直达（~25ms），带宽为家宽上行；仅放行当前出口 IP。</div>
       </article>
-      {{else}}
-      <article class="route off">
-       <div class="label"><span>IPv6 直连</span><span class="badge warn">不可用</span></div>
-       <div class="addr">本次未打开</div>
-       <div class="note">家侧 agent 未响应或未解析到可用 GUA。</div>
+      <article class="route fast" id="route-v6">
+       <div class="label"><span>IPv6 直连</span><span class="badge warn" data-badge>未开通</span></div>
+       <code class="addr" id="addr-v6">点击开通后显示</code>
+       <div class="actions">
+        <button class="btn" data-open="v6">开通 v6 直连</button>
+        <button class="btn" data-copy="addr-v6" disabled>复制</button>
+       </div>
+       <div class="note" data-note>需当前网络有 IPv6 出网；开窗不限源，依赖 GUA 不可枚举 + 短窗口。</div>
       </article>
-      {{end}}
-      <article class="route good">
-       <div class="label"><span>香港中转</span><span class="badge ok">兜底</span></div>
-       <code class="addr" id="v4addr">{{.V4Addr}}</code>
-       <div class="actions"><button class="btn" data-copy="v4addr">复制</button></div>
-       <div class="note">{{.V4Detail}}</div>
+      <article class="route good" id="route-relay">
+       <div class="label"><span>香港中转（托底）</span><span class="badge {{if .IsPermanent}}ok{{else}}warn{{end}}" data-badge>{{if .IsPermanent}}长期已生效{{else}}未开通{{end}}</span></div>
+       <code class="addr" id="addr-relay">{{if .IsPermanent}}{{.RelayAddr}}{{else}}点击开通后显示{{end}}</code>
+       <div class="actions">
+        <button class="btn" data-open="relay" {{if not .ClientKnown}}disabled{{end}}>{{if .IsPermanent}}刷新中转{{else}}开通中转{{end}}</button>
+        <button class="btn" data-copy="addr-relay" {{if not .IsPermanent}}disabled{{end}}>复制</button>
+       </div>
+       <div class="note" data-note>任意 IPv4 网络可用的兜底通路；延迟较高（~110ms）、带宽 2Mbps，直连不可用时再用。</div>
       </article>
      </div>
-     {{if .NftWarning}}<div class="warning">{{.NftWarning}}</div>{{end}}
-     {{if .AgentWarning}}<div class="warning">{{.AgentWarning}}</div>{{end}}
     </div>
    </section>
 
@@ -1056,6 +1153,7 @@ input{height:38px;border:1px solid var(--line);border-radius:6px;padding:0 10px;
      <article class="event {{.Tone}}">
       <div class="event-top"><span class="event-kind">{{.Kind}} · {{.Result}}</span><span class="event-time">{{.Time}}</span></div>
       <p>{{.IP}}{{if .Detail}} · {{.Detail}}{{end}}</p>
+      {{if .V4Addr}}<p>IPv4 {{.V4Addr}}</p>{{end}}
       {{if .V6Addr}}<p>IPv6 {{.V6Addr}}</p>{{end}}
      </article>
      {{end}}
@@ -1068,22 +1166,11 @@ input{height:38px;border:1px solid var(--line);border-radius:6px;padding:0 10px;
  </section>
 </main>
 
-<div class="modal" id="expired-modal" role="dialog" aria-modal="true" aria-labelledby="expired-title">
- <div class="modal-card">
-  <h2 id="expired-title">授权窗口已结束</h2>
-  <p>页面会跳回登录入口。已连接的 RDP 会话不受影响，新的连接需要重新授权。</p>
-  <button class="btn" id="go-login">立即前往</button>
- </div>
-</div>
 <div class="toast" id="toast"></div>
 
 <script>
 (function(){
-  var body=document.body;
-  var expiresAt=Number(body.dataset.expiresAt||0)*1000;
-  var loginURL=body.dataset.loginUrl||"/";
-  var countdown=document.getElementById("countdown");
-  var expired=false;
+  var routeExpires={};
   function showToast(msg){var t=document.getElementById("toast");t.textContent=msg;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2600)}
   function copy(id){
     var el=document.getElementById(id);
@@ -1093,18 +1180,44 @@ input{height:38px;border:1px solid var(--line);border-radius:6px;padding:0 10px;
       navigator.clipboard.writeText(text).then(function(){showToast("已复制")},function(){showToast(text)});
     }else{showToast(text)}
   }
+  function fmtLeft(left){var m=Math.floor(left/60),s=left%60;return m+":"+(s<10?"0":"")+s}
   function tick(){
-    var left=Math.max(0,Math.floor((expiresAt-Date.now())/1000));
-    var m=Math.floor(left/60),s=left%60;
-    countdown.textContent=m+":"+(s<10?"0":"")+s;
-    if(left<=0&&!expired){
-      expired=true;
-      document.getElementById("expired-modal").classList.add("open");
-      setTimeout(function(){window.location.assign(loginURL)},1800);
-    }
+    var best=0;
+    Object.keys(routeExpires).forEach(function(kind){
+      var left=Math.max(0,Math.floor((routeExpires[kind]-Date.now())/1000));
+      var card=document.getElementById("route-"+kind);
+      if(card){
+        var badge=card.querySelector("[data-badge]");
+        if(left>0){badge.textContent="已开通 · 剩余 "+fmtLeft(left);badge.className="badge ok"}
+        else{badge.textContent="窗口已结束";badge.className="badge warn";delete routeExpires[kind]}
+      }
+      if(left>best)best=left;
+    });
+    document.getElementById("countdown").textContent=best>0?fmtLeft(best):"--:--";
   }
+  document.querySelectorAll("[data-open]").forEach(function(btn){
+    btn.addEventListener("click",function(){
+      var kind=btn.dataset.open;
+      btn.disabled=true;
+      fetch("/api/open/"+kind,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})
+        .then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok){throw new Error(j.detail||j.error||"开通失败")}return j})})
+        .then(function(j){
+          var card=document.getElementById("route-"+kind);
+          var addr=document.getElementById("addr-"+kind);
+          if(addr&&j.addr)addr.textContent=j.addr;
+          var copyBtn=card.querySelector("[data-copy]");if(copyBtn)copyBtn.disabled=false;
+          var badge=card.querySelector("[data-badge]");
+          if(j.permanent){badge.textContent="长期已生效";badge.className="badge ok"}
+          else if(j.expires_at_unix){routeExpires[kind]=j.expires_at_unix*1000}
+          if(j.detail){card.querySelector("[data-note]").textContent=j.detail}
+          tick();
+          showToast("已开通");
+        })
+        .catch(function(err){showToast(err.message)})
+        .finally(function(){btn.disabled=false});
+    });
+  });
   document.querySelectorAll("[data-copy]").forEach(function(btn){btn.addEventListener("click",function(){copy(btn.dataset.copy)})});
-  document.getElementById("go-login").addEventListener("click",function(){window.location.assign(loginURL)});
   var add=document.getElementById("add-wl");
   if(add){
     add.addEventListener("click",function(){
@@ -1124,7 +1237,6 @@ input{height:38px;border:1px solid var(--line);border-radius:6px;padding:0 10px;
         .catch(function(err){showToast(err.message);btn.disabled=false});
     });
   });
-  tick();
   setInterval(tick,1000);
 })();
 </script>
@@ -1204,6 +1316,12 @@ func historyKindLabel(kind string) string {
 	switch kind {
 	case "unlock":
 		return "授权"
+	case "relay":
+		return "中转开通"
+	case "v4":
+		return "v4 直连"
+	case "v6":
+		return "v6 直连"
 	case "whitelist":
 		return "白名单"
 	case "tcp":
