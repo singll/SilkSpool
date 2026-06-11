@@ -353,9 +353,12 @@ func (m *DNSManager) listHeadscaleRecords() []DNSRecord {
 	return records
 }
 
-// headscaleConfigExists 判断本地是否存在 Headscale 配置
 func (m *DNSManager) headscaleConfigExists() bool {
-	path := filepath.Join(m.baseDir, "hosts", m.headscaleHost, "headscale", "config.yaml")
+	return isHeadscaleConfigPresent(m.baseDir, m.headscaleHost)
+}
+
+func isHeadscaleConfigPresent(baseDir, headscaleHost string) bool {
+	path := filepath.Join(baseDir, "hosts", headscaleHost, "headscale", "config.yaml")
 	_, err := os.Stat(path)
 	return err == nil
 }

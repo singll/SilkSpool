@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -475,29 +474,4 @@ func formatUptime(seconds int) string {
 		return fmt.Sprintf("%dh %dm", hours, mins)
 	}
 	return fmt.Sprintf("%dm", mins)
-}
-
-// GetN8NWorkflowDir 获取 n8n 工作流目录
-func GetN8NWorkflowDir(baseDir string) (string, error) {
-	cfg, err := config.LoadConfig(baseDir)
-	if err != nil {
-		return "", err
-	}
-	hostCfg := cfg.GetHost(cfg.N8N.Host)
-	if hostCfg == nil {
-		return "", fmt.Errorf("host %s not found", cfg.N8N.Host)
-	}
-	// 相对于 hosts/<host>/ 的路径
-	workflowDir := filepath.Join(baseDir, "hosts", cfg.N8N.Host, "n8n-workflows")
-	return workflowDir, nil
-}
-
-// GetN8NBackupDir 获取 n8n 备份目录
-func GetN8NBackupDir(baseDir string) (string, error) {
-	cfg, err := config.LoadConfig(baseDir)
-	if err != nil {
-		return "", err
-	}
-	backupDir := filepath.Join(cfg.Global.BackupDir, "n8n", time.Now().Format("20060102-150405"))
-	return backupDir, nil
 }

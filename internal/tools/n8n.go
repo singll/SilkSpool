@@ -16,17 +16,17 @@ import (
 	"time"
 
 	"github.com/singll/silkspool/internal/config"
-	"github.com/singll/silkspool/internal/engine"
 	"github.com/singll/silkspool/pkg/utils"
 )
 
 // N8NClient n8n API 客户端
 type N8NClient struct {
-	baseURL    string
-	apiKey     string
-	hostConn   string
-	sshKey     string
-	httpClient *http.Client
+	baseURL     string
+	apiKey      string
+	hostConn    string
+	sshKey      string
+	httpClient  *http.Client
+	sshProvider SSHProvider
 }
 
 // N8NWorkflow n8n 工作流结构
@@ -52,7 +52,7 @@ type N8NNode struct {
 }
 
 // NewN8NClient 创建 n8n 客户端
-func NewN8NClient(baseDir string, hostAlias string) (*N8NClient, error) {
+func NewN8NClient(baseDir string, hostAlias string, sshProvider SSHProvider) (*N8NClient, error) {
 	// 加载 n8n 配置
 	cfg, err := config.LoadConfig(baseDir)
 	if err != nil {
@@ -75,10 +75,11 @@ func NewN8NClient(baseDir string, hostAlias string) (*N8NClient, error) {
 	sshKey := filepath.Join(baseDir, cfg.Global.SSHKeyPath)
 
 	return &N8NClient{
-		baseURL:  cfg.N8N.APIURL,
-		apiKey:   apiKey,
-		hostConn: hostCfg.Address,
-		sshKey:   sshKey,
+		baseURL:     cfg.N8N.APIURL,
+		apiKey:      apiKey,
+		hostConn:    hostCfg.Address,
+		sshKey:      sshKey,
+		sshProvider: sshProvider,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -184,7 +185,7 @@ cat "$resp_file"
 exit 0
 `, shellQuote(requestURL), shellQuote(method), shellQuote(c.apiKey), shellQuote(bodyB64))
 
-	output, err := engine.SSHExecute(c.hostConn, c.sshKey, script)
+	output, err := c.sshProvider.Execute(c.hostConn, c.sshKey, script)
 	if err != nil {
 		return nil, fmt.Errorf("remote n8n request failed: %w", err)
 	}
@@ -413,16 +414,16 @@ func LoadWorkflowFromFile(path string) (*N8NWorkflow, error) {
 
 // N8NManager n8n 工作流管理器
 type N8NManager struct {
-	client *N8NClient
+	client      *N8NClient
+	sshProvider SSHProvider
 }
 
-// NewN8NManager 创建管理器
-func NewN8NManager(baseDir string) (*N8NManager, error) {
-	client, err := NewN8NClient(baseDir, "")
+func NewN8NManager(baseDir string, sshProvider SSHProvider) (*N8NManager, error) {
+	client, err := NewN8NClient(baseDir, "", sshProvider)
 	if err != nil {
 		return nil, err
 	}
-	return &N8NManager{client: client}, nil
+	return &N8NManager{client: client, sshProvider: sshProvider}, nil
 }
 
 // Close 关闭管理器
@@ -449,12 +450,6 @@ func (m *N8NManager) ListLocalWorkflows(workflowDir string) ([]string, error) {
 		}
 	}
 	return files, nil
-}
-
-// ListRemoteWorkflows 列出远程工作流文件
-func (m *N8NManager) ListRemoteWorkflows(remoteDir string) ([]string, error) {
-	// 使用 SSH 执行 ls 命令
-	return nil, fmt.Errorf("not implemented: use SSH directly")
 }
 
 // ImportWorkflows 导入工作流
@@ -700,4 +695,26 @@ func (m *N8NManager) DeleteWorkflow(ctx context.Context, name string) error {
 	}
 	utils.Success("Deleted: %s", name)
 	return nil
+}
+
+func GetN8NWorkflowDir(baseDir string) (string, error) {
+	cfg, err := config.LoadConfig(baseDir)
+	if err != nil {
+		return "", err
+	}
+	hostCfg := cfg.GetHost(cfg.N8N.Host)
+	if hostCfg == nil {
+		return "", fmt.Errorf("host %s not found", cfg.N8N.Host)
+	}
+	workflowDir := filepath.Join(baseDir, "hosts", cfg.N8N.Host, "n8n-workflows")
+	return workflowDir, nil
+}
+
+func GetN8NBackupDir(baseDir string) (string, error) {
+	cfg, err := config.LoadConfig(baseDir)
+	if err != nil {
+		return "", err
+	}
+	backupDir := filepath.Join(cfg.Global.BackupDir, "n8n", time.Now().Format("20060102-150405"))
+	return backupDir, nil
 }

@@ -382,11 +382,8 @@ func (m *SiteManager) restartSiteServices() {
 	}
 }
 
-// headscaleConfigExists 判断本地是否存在 Headscale 配置
 func (m *SiteManager) headscaleConfigExists() bool {
-	path := filepath.Join(m.baseDir, "hosts", m.headscaleHost, "headscale", "config.yaml")
-	_, err := os.Stat(path)
-	return err == nil
+	return isHeadscaleConfigPresent(m.baseDir, m.headscaleHost)
 }
 
 // domainToName 从域名生成展示名 (sub.example.com -> Sub)

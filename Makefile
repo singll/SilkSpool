@@ -10,7 +10,7 @@ OUT_DIR := out
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "1.0.0")
 BUILD_TIME := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-LDFLAGS := -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.GitCommit=$(GIT_COMMIT)
+LDFLAGS := -X github.com/singll/silkspool/internal/cli.Version=$(VERSION) -X github.com/singll/silkspool/internal/cli.BuildTime=$(BUILD_TIME) -X github.com/singll/silkspool/internal/cli.GitCommit=$(GIT_COMMIT)
 
 # Default target
 all: build init-out
