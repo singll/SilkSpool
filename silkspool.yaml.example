@@ -21,6 +21,26 @@ global:
   # Headscale MagicDNS 服务器
   dns_headscale_server: "100.100.100.100"
 
+  # SSH 连接超时
+  # ssh_connect: "30s"
+
+  # HTTP 客户端超时
+  # http_client: "30s"
+
+  # RDP Agent HTTP 超时
+  # agent_http: "5s"
+
+  # RDP Agent 重试间隔
+  # agent_retry: "3s"
+
+  # -------------------- 默认值 --------------------
+  # defaults:
+  #   log_lines: 50
+  #   docker_log_max: "50m"
+  #   docker_log_num: 3
+  #   deploy_path: "/opt/silkspool"
+  #   compose_version: "v2.24.5"
+
 # -------------------- 主机清单 (Inventory) --------------------
 hosts:
   # =========================================================================
@@ -28,6 +48,7 @@ hosts:
   # =========================================================================
   istoreos:
     address: "root@192.168.7.1"
+    # ssh_port: "22"  # 默认 22，非标准端口需显式设置
     app_prefix: "sp-"
     bundles: ["gateway"]
     sync_rules:

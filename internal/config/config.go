@@ -76,26 +76,7 @@ func (cl *ConfigLoader) Load() (*Config, error) {
 	cfg.Global.SSHKeyPath = expandPath(cfg.Global.SSHKeyPath)
 	cfg.Global.BackupDir = expandPath(cfg.Global.BackupDir)
 
-	// 填充默认值（与旧 shell config.ini 的 :- 默认保持一致）
-	if cfg.Global.DNSGatewayHost == "" {
-		cfg.Global.DNSGatewayHost = "istoreos"
-	}
-	if cfg.Global.DNSHeadscaleHost == "" {
-		cfg.Global.DNSHeadscaleHost = "txhk"
-	}
-	if cfg.Global.DefaultDomain == "" {
-		cfg.Global.DefaultDomain = "singll.net"
-	}
-	if cfg.Global.DNSGatewayIP == "" {
-		cfg.Global.DNSGatewayIP = "192.168.1.1"
-	}
-	if cfg.Global.DNSHeadscaleServer == "" {
-		cfg.Global.DNSHeadscaleServer = "100.100.100.100"
-	}
-
-	// SyncRules 中的路径是相对于 hosts/<alias>/ 的，不需要展开
-	// 确保配置被正确解析
-	_ = cfg.Hosts
+	// 环境特定配置（default_domain, dns_gateway_ip 等）必须在 silkspool.yaml 中显式设置
 
 	return &cfg, nil
 }
@@ -208,6 +189,18 @@ func (cl *ConfigLoader) ResolveSSHKey(sshKeyPath string) string {
 	}
 
 	return sshKeyPath
+}
+
+// ResolveSSHKeyPath 解析 SSH 密钥路径
+// 如果是绝对路径直接返回，否则相对于 baseDir 拼接
+func ResolveSSHKeyPath(baseDir, keyPath string) string {
+	if keyPath == "" {
+		return ""
+	}
+	if filepath.IsAbs(keyPath) {
+		return keyPath
+	}
+	return filepath.Join(baseDir, keyPath)
 }
 
 // LoadConfig 加载配置的便捷函数
