@@ -53,26 +53,24 @@ type N8NNode struct {
 
 // NewN8NClient 创建 n8n 客户端
 func NewN8NClient(baseDir string, hostAlias string, sshProvider SSHProvider) (*N8NClient, error) {
-	// 加载 n8n 配置
 	cfg, err := config.LoadConfig(baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// 加载 API Key
 	apiKey := config.GetEnvVar("N8N_API_KEY", cfg.N8N.Host, baseDir)
 	if apiKey == "" {
 		return nil, fmt.Errorf("N8N_API_KEY not found in hosts/%s/.env", cfg.N8N.Host)
 	}
 
-	// 获取 SSH 连接信息
 	hostCfg := cfg.GetHost(cfg.N8N.Host)
 	if hostCfg == nil {
 		return nil, fmt.Errorf("host %s not found", cfg.N8N.Host)
 	}
 
-	// SSH 密钥路径
 	sshKey := filepath.Join(baseDir, cfg.Global.SSHKeyPath)
+
+	httpTimeout := config.ParseDuration(cfg.Global.Timeouts.HTTPClient, 30*time.Second)
 
 	return &N8NClient{
 		baseURL:     cfg.N8N.APIURL,
@@ -81,7 +79,7 @@ func NewN8NClient(baseDir string, hostAlias string, sshProvider SSHProvider) (*N
 		sshKey:      sshKey,
 		sshProvider: sshProvider,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: httpTimeout,
 		},
 	}, nil
 }

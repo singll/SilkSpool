@@ -15,14 +15,23 @@ type ComposeDriver struct {
 	baseDir    string
 	sshKey     string
 	bundleName string
+	defaults   config.DefaultsConfig
 }
 
-// NewComposeDriver 创建 Compose 驱动
 func NewComposeDriver(baseDir, sshKey, bundleName string) *ComposeDriver {
 	return &ComposeDriver{
 		baseDir:    baseDir,
 		sshKey:     sshKey,
 		bundleName: bundleName,
+	}
+}
+
+func NewComposeDriverWithDefaults(baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) *ComposeDriver {
+	return &ComposeDriver{
+		baseDir:    baseDir,
+		sshKey:     sshKey,
+		bundleName: bundleName,
+		defaults:   defaults,
 	}
 }
 
@@ -33,7 +42,7 @@ func (d *ComposeDriver) Setup(host string, hostCfg *config.HostConfig, deployPat
 		return err
 	}
 
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}
@@ -104,7 +113,7 @@ func (d *ComposeDriver) Up(host string, hostCfg *config.HostConfig, deployPath s
 		return err
 	}
 
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}
@@ -136,7 +145,7 @@ func (d *ComposeDriver) Up(host string, hostCfg *config.HostConfig, deployPath s
 
 // Down 停止服务
 func (d *ComposeDriver) Down(host string, hostCfg *config.HostConfig, deployPath string) error {
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}
@@ -146,7 +155,7 @@ func (d *ComposeDriver) Down(host string, hostCfg *config.HostConfig, deployPath
 
 // Status 查看服务状态
 func (d *ComposeDriver) Status(host string, hostCfg *config.HostConfig, deployPath string) error {
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}
@@ -161,7 +170,7 @@ func (d *ComposeDriver) Status(host string, hostCfg *config.HostConfig, deployPa
 
 // Cleanup 清理 Docker 资源
 func (d *ComposeDriver) Cleanup(host string, hostCfg *config.HostConfig, deployPath string, mode string) error {
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}
@@ -170,7 +179,7 @@ func (d *ComposeDriver) Cleanup(host string, hostCfg *config.HostConfig, deployP
 
 // Service 管理单个服务
 func (d *ComposeDriver) Service(host string, hostCfg *config.HostConfig, deployPath string, svc string, action string) error {
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}

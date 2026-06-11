@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -43,7 +44,8 @@ func (a *App) runBackup(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		mgr := engine.NewBackupManagerFromConfig(host, hostCfg)
-		client, err := engine.NewSSHClient(hostCfg.Address, sshKey)
+		sshTimeout := config.ParseDuration(cfg.Global.Timeouts.SSHConnect, 30*time.Second)
+		client, err := engine.NewSSHClient(hostCfg.Address, sshKey, engine.WithTimeout(sshTimeout))
 		if err != nil {
 			utils.Error("SSH client failed for %s: %v", host, err)
 			return nil

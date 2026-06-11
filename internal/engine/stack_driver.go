@@ -16,9 +16,9 @@ type StackDriver struct {
 	sshKey     string
 	bundleName string
 	install    *InstallManager
+	defaults   config.DefaultsConfig
 }
 
-// NewStackDriver 创建 Stack 驱动
 func NewStackDriver(baseDir, sshKey, bundleName string) *StackDriver {
 	install, _ := NewInstallManager(baseDir)
 	return &StackDriver{
@@ -26,6 +26,17 @@ func NewStackDriver(baseDir, sshKey, bundleName string) *StackDriver {
 		sshKey:     sshKey,
 		bundleName: bundleName,
 		install:    install,
+	}
+}
+
+func NewStackDriverWithDefaults(baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) *StackDriver {
+	install, _ := NewInstallManager(baseDir)
+	return &StackDriver{
+		baseDir:    baseDir,
+		sshKey:     sshKey,
+		bundleName: bundleName,
+		install:    install,
+		defaults:   defaults,
 	}
 }
 
@@ -53,7 +64,7 @@ func (d *StackDriver) Setup(host string, hostCfg *config.HostConfig, deployPath 
 
 // Up 启动所有服务
 func (d *StackDriver) Up(host string, hostCfg *config.HostConfig, deployPath string) error {
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}
@@ -67,7 +78,7 @@ func (d *StackDriver) Up(host string, hostCfg *config.HostConfig, deployPath str
 
 // Down 停止所有服务
 func (d *StackDriver) Down(host string, hostCfg *config.HostConfig, deployPath string) error {
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}
@@ -81,7 +92,7 @@ func (d *StackDriver) Down(host string, hostCfg *config.HostConfig, deployPath s
 
 // Status 查看所有服务状态
 func (d *StackDriver) Status(host string, hostCfg *config.HostConfig, deployPath string) error {
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}
@@ -104,7 +115,7 @@ func (d *StackDriver) Cleanup(host string, hostCfg *config.HostConfig, deployPat
 
 // Service 管理单个 Systemd 服务
 func (d *StackDriver) Service(host string, hostCfg *config.HostConfig, deployPath string, svc string, action string) error {
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}
@@ -118,7 +129,8 @@ func (d *StackDriver) Service(host string, hostCfg *config.HostConfig, deployPat
 	case "restart":
 		systemctlAction = "restart"
 	case "logs":
-		cmd := fmt.Sprintf("sudo journalctl -u %s -n 100 --no-pager", svc)
+		logLines := config.DefaultInt(d.defaults.LogLines, 100)
+		cmd := fmt.Sprintf("sudo journalctl -u %s -n %d --no-pager", svc, logLines)
 		out, err := re.Exec(cmd)
 		if err == nil {
 			fmt.Print(out)
@@ -148,7 +160,7 @@ func (d *StackDriver) loadManifest() (*BundleManifest, error) {
 
 // pushSystemdTemplates 推送 Systemd 服务模板
 func (d *StackDriver) pushSystemdTemplates(host string, hostCfg *config.HostConfig, deployPath string, manifest *BundleManifest) error {
-	re, err := NewRemoteExecutor(hostCfg.Address, d.sshKey)
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
 	if err != nil {
 		return err
 	}

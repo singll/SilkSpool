@@ -121,12 +121,14 @@ func NewTrueNASClient(baseDir string) (*TrueNASClient, error) {
 		return nil, fmt.Errorf("TRUENAS_API_KEY not found in hosts/%s/.env", cfg.TrueNAS.Host)
 	}
 
+	wsTimeout := config.ParseDuration(cfg.Global.Timeouts.HTTPClient, 30*time.Second)
+
 	return &TrueNASClient{
 		apiURL:   cfg.TrueNAS.APIURL,
 		username: cfg.TrueNAS.Username,
 		apiKey:   apiKey,
 		insecure: false,
-		timeout:  30 * time.Second,
+		timeout:  wsTimeout,
 	}, nil
 }
 

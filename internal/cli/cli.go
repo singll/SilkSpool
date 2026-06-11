@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -70,12 +71,19 @@ func NewRootCmd() *cobra.Command {
 			app.BaseDir = resolveBaseDir()
 			knownHosts := filepath.Join(app.BaseDir, "known_hosts")
 			sshKey, err := app.SSHKeyPath()
+			sshTimeout := 30 * time.Second
+			if cfg, cfgErr := config.LoadConfig(app.BaseDir); cfgErr == nil {
+				sshTimeout = config.ParseDuration(cfg.Global.Timeouts.SSHConnect, 30*time.Second)
+			}
 			if err == nil && sshKey != "" {
 				engine.InitGlobalPool(
 					engine.WithKnownHosts(knownHosts),
+					engine.WithTimeout(sshTimeout),
 				)
 			} else {
-				engine.InitGlobalPool()
+				engine.InitGlobalPool(
+					engine.WithTimeout(sshTimeout),
+				)
 			}
 			return nil
 		},

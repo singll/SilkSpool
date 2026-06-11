@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -217,4 +218,29 @@ func LoadConfigFromCWD() (*Config, error) {
 		return nil, fmt.Errorf("failed to get cwd: %w", err)
 	}
 	return LoadConfig(cwd)
+}
+
+func ParseDuration(s string, defaultVal time.Duration) time.Duration {
+	if s == "" {
+		return defaultVal
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return defaultVal
+	}
+	return d
+}
+
+func DefaultInt(val, defaultVal int) int {
+	if val == 0 {
+		return defaultVal
+	}
+	return val
+}
+
+func DefaultString(val, defaultVal string) string {
+	if val == "" {
+		return defaultVal
+	}
+	return val
 }

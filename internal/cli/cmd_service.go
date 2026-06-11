@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/singll/silkspool/internal/config"
 	"github.com/singll/silkspool/internal/engine"
 	"github.com/singll/silkspool/pkg/utils"
 )
@@ -89,7 +90,8 @@ func (a *App) runService(cmd *cobra.Command, args []string) error {
 		if service == "" {
 			return fmt.Errorf("usage: spool service <host> logs <service> [lines]")
 		}
-		lines := 50
+		cfg, _ := config.LoadConfig(a.BaseDir)
+		lines := config.DefaultInt(cfg.Global.Defaults.LogLines, 50)
 		if len(args) > 3 {
 			fmt.Sscanf(args[3], "%d", &lines)
 		}
@@ -148,7 +150,8 @@ func (a *App) runLogs(cmd *cobra.Command, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: spool logs <host> <service> [lines]")
 	}
-	lines := 50
+	cfg, _ := config.LoadConfig(a.BaseDir)
+	lines := config.DefaultInt(cfg.Global.Defaults.LogLines, 50)
 	if len(args) > 2 {
 		fmt.Sscanf(args[2], "%d", &lines)
 	}

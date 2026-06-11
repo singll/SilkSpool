@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -10,6 +11,10 @@ import (
 	"github.com/singll/silkspool/internal/config"
 	"github.com/singll/silkspool/pkg/utils"
 )
+
+type githubRelease struct {
+	TagName string `json:"tag_name"`
+}
 
 // InstallManager 安装管理器
 type InstallManager struct {
@@ -137,7 +142,10 @@ func (m *InstallManager) getLatestVersion(repo string) (string, error) {
 
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	cfg, _ := config.LoadConfig(m.baseDir)
+	apiTimeout := config.ParseDuration(cfg.Global.Timeouts.HTTPClient, 10*time.Second)
+
+	client := &http.Client{Timeout: apiTimeout}
 	resp, err := client.Get(url)
 	if err != nil {
 		return "latest", nil
@@ -148,18 +156,12 @@ func (m *InstallManager) getLatestVersion(repo string) (string, error) {
 		return "latest", nil
 	}
 
-	// 简单解析 tag_name
-	buf := make([]byte, 8192)
-	n, _ := resp.Body.Read(buf)
-	if n > 0 {
-		body := string(buf[:n])
-		if idx := strings.Index(body, `"tag_name":"`); idx != -1 {
-			start := idx + len(`"tag_name":"`)
-			end := strings.Index(body[start:], `"`)
-			if end > 0 {
-				return body[start : start+end], nil
-			}
-		}
+	var release githubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", fmt.Errorf("failed to parse GitHub release: %w", err)
+	}
+	if release.TagName != "" {
+		return release.TagName, nil
 	}
 
 	return "latest", nil

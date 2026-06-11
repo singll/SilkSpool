@@ -104,7 +104,7 @@ func (m *BundleManager) SetupBundle(bundleName, host, action string) error {
 	utils.Step("Running Bundle: %s | Host: %s | Action: %s", bundleName, host, action)
 
 	// 获取对应的驱动（使用命令行指定的 bundleName，而非 hostCfg.Bundles[0]）
-	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey, bundleName)
+	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey, bundleName, cfg.Global.Defaults)
 	if err != nil {
 		return err
 	}
@@ -152,7 +152,7 @@ func (m *BundleManager) SetupBundleService(bundleName, host, svc, action string)
 
 	deployPath := m.resolveDeployPath(bundleName, host, hostCfg)
 
-	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey, bundleName)
+	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey, bundleName, cfg.Global.Defaults)
 	if err != nil {
 		return err
 	}
@@ -162,7 +162,12 @@ func (m *BundleManager) SetupBundleService(bundleName, host, svc, action string)
 
 // resolveDeployPath 解析部署路径
 func (m *BundleManager) resolveDeployPath(bundleName, host string, hostCfg *config.HostConfig) string {
-	defaultPath := fmt.Sprintf("/opt/silkspool/%s", bundleName)
+	cfg, err := config.LoadConfig(m.baseDir)
+	defaultBase := "/opt/silkspool"
+	if err == nil {
+		defaultBase = config.DefaultString(cfg.Global.Defaults.DeployPath, "/opt/silkspool")
+	}
+	defaultPath := fmt.Sprintf("%s/%s", defaultBase, bundleName)
 
 	// 从同步规则中查找
 	for _, rule := range hostCfg.SyncRules {

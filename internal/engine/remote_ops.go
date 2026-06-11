@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/singll/silkspool/internal/config"
 	"github.com/singll/silkspool/pkg/utils"
 )
 
@@ -13,16 +14,24 @@ var composeCmdCache sync.Map
 // RemoteExecutor 封装远程主机上的常用操作
 // 所有方法通过 SSH 在远程主机执行命令序列
 type RemoteExecutor struct {
-	client *SSHClient
+	client   *SSHClient
+	defaults config.DefaultsConfig
 }
 
-// NewRemoteExecutor 创建远程执行器（从连接池获取复用连接）
 func NewRemoteExecutor(address, sshKey string) (*RemoteExecutor, error) {
 	client, err := globalPool.Get(address, sshKey)
 	if err != nil {
 		return nil, fmt.Errorf("connect %s failed: %w", address, err)
 	}
 	return &RemoteExecutor{client: client}, nil
+}
+
+func NewRemoteExecutorWithDefaults(address, sshKey string, defaults config.DefaultsConfig) (*RemoteExecutor, error) {
+	client, err := globalPool.Get(address, sshKey)
+	if err != nil {
+		return nil, fmt.Errorf("connect %s failed: %w", address, err)
+	}
+	return &RemoteExecutor{client: client, defaults: defaults}, nil
 }
 
 // Exec 在远程主机执行命令并返回 stdout
@@ -49,7 +58,8 @@ func (re *RemoteExecutor) EnsureCompose() error {
 	cmd := `docker compose version >/dev/null 2>&1 && echo "docker compose" || (docker-compose version >/dev/null 2>&1 && echo "docker-compose")`
 	out, err := re.client.Execute(cmd)
 	if err != nil || strings.TrimSpace(out) == "" {
-		installCmd := `ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH="x86_64" ;; aarch64) ARCH="aarch64" ;; armv7l) ARCH="armv7" ;; esac; VER=$(curl -sL https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name":' | cut -d'"' -f4); [ -z "$VER" ] && VER="v2.24.5"; sudo curl -L "https://github.com/docker/compose/releases/download/${VER}/docker-compose-linux-${ARCH}" -o /usr/bin/docker-compose && sudo chmod +x /usr/bin/docker-compose`
+		composeVer := config.DefaultString(re.defaults.ComposeVer, "v2.24.5")
+		installCmd := fmt.Sprintf(`ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH="x86_64" ;; aarch64) ARCH="aarch64" ;; armv7l) ARCH="armv7" ;; esac; VER=$(curl -sL https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name":' | cut -d'"' -f4); [ -z "$VER" ] && VER="%s"; sudo curl -L "https://github.com/docker/compose/releases/download/${VER}/docker-compose-linux-${ARCH}" -o /usr/bin/docker-compose && sudo chmod +x /usr/bin/docker-compose`, composeVer)
 		_, err = re.client.Execute(installCmd)
 		if err != nil {
 			return fmt.Errorf("docker compose installation failed: %w", err)
@@ -75,7 +85,9 @@ func (re *RemoteExecutor) GetComposeCmd() string {
 // ConfigureDockerLogRotation 配置 Docker 日志轮转
 func (re *RemoteExecutor) ConfigureDockerLogRotation() error {
 	utils.Info("Configuring Docker log rotation...")
-	cmd := `if [ -f /etc/docker/daemon.json ] && grep -q "max-size" /etc/docker/daemon.json 2>/dev/null; then echo "OK"; else echo '{"log-driver":"json-file","log-opts":{"max-size":"50m","max-file":"3"}}' | sudo tee /etc/docker/daemon.json >/dev/null && sudo systemctl restart docker || true; fi`
+	logMax := config.DefaultString(re.defaults.DockerLogMax, "50m")
+	logNum := config.DefaultInt(re.defaults.DockerLogNum, 3)
+	cmd := fmt.Sprintf(`if [ -f /etc/docker/daemon.json ] && grep -q "max-size" /etc/docker/daemon.json 2>/dev/null; then echo "OK"; else echo '{"log-driver":"json-file","log-opts":{"max-size":"%s","max-file":"%d"}}' | sudo tee /etc/docker/daemon.json >/dev/null && sudo systemctl restart docker || true; fi`, logMax, logNum)
 	_, err := re.client.Execute(cmd)
 	return err
 }
@@ -167,7 +179,8 @@ func (re *RemoteExecutor) ComposeService(composeFile, service, action string) er
 	case "build":
 		cmd = fmt.Sprintf("cd $(dirname %s) && %s -f %s build --no-cache %s", composeFile, dc, composeFile, service)
 	case "logs":
-		cmd = fmt.Sprintf("cd $(dirname %s) && %s -f %s logs -f --tail=100 %s", composeFile, dc, composeFile, service)
+		logTail := config.DefaultInt(re.defaults.LogLines, 100)
+		cmd = fmt.Sprintf("cd $(dirname %s) && %s -f %s logs -f --tail=%d %s", composeFile, dc, composeFile, logTail, service)
 	case "restart":
 		cmd = fmt.Sprintf("cd $(dirname %s) && %s -f %s restart %s", composeFile, dc, composeFile, service)
 	default:

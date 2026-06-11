@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -41,7 +42,12 @@ func (a *App) runExec(cmd *cobra.Command, args []string) error {
 	}
 
 	sshKey := filepath.Join(a.BaseDir, cfg.Global.SSHKeyPath)
-	sshArgs := []string{"-i", sshKey, "-o", "ConnectTimeout=10", "-t", hostCfg.Address}
+	sshTimeout := config.ParseDuration(cfg.Global.Timeouts.SSHConnect, 30*time.Second)
+	connectTimeout := int(sshTimeout.Seconds())
+	if connectTimeout <= 0 {
+		connectTimeout = 30
+	}
+	sshArgs := []string{"-i", sshKey, "-o", fmt.Sprintf("ConnectTimeout=%d", connectTimeout), "-t", hostCfg.Address}
 	sshArgs = append(sshArgs, args[1:]...)
 
 	c := exec.Command("ssh", sshArgs...)

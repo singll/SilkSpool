@@ -17,25 +17,23 @@ type BundleDriver interface {
 }
 
 // driverRegistry bundle 驱动注册表
-var driverRegistry = map[string]func(baseDir, sshKey, bundleName string) BundleDriver{
-	"compose": func(baseDir, sshKey, bundleName string) BundleDriver {
-		return NewComposeDriver(baseDir, sshKey, bundleName)
+var driverRegistry = map[string]func(baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) BundleDriver{
+	"compose": func(baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) BundleDriver {
+		return NewComposeDriverWithDefaults(baseDir, sshKey, bundleName, defaults)
 	},
-	"stack": func(baseDir, sshKey, bundleName string) BundleDriver {
-		return NewStackDriver(baseDir, sshKey, bundleName)
+	"stack": func(baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) BundleDriver {
+		return NewStackDriverWithDefaults(baseDir, sshKey, bundleName, defaults)
 	},
 }
 
-// GetDriver 根据类型获取对应的 bundle 驱动
-func GetDriver(driverType string, baseDir, sshKey, bundleName string) (BundleDriver, error) {
+func GetDriver(driverType string, baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) (BundleDriver, error) {
 	factory, ok := driverRegistry[driverType]
 	if !ok {
 		return nil, fmt.Errorf("unknown bundle driver type: %s", driverType)
 	}
-	return factory(baseDir, sshKey, bundleName), nil
+	return factory(baseDir, sshKey, bundleName, defaults), nil
 }
 
-// RegisterDriver 注册自定义驱动（用于扩展）
-func RegisterDriver(name string, factory func(baseDir, sshKey, bundleName string) BundleDriver) {
+func RegisterDriver(name string, factory func(baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) BundleDriver) {
 	driverRegistry[name] = factory
 }
