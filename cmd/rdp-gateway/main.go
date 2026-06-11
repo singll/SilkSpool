@@ -34,18 +34,18 @@ import (
 
 // 配置（systemd EnvironmentFile 注入）
 var (
-	httpListen       = env("GW_HTTP_LISTEN", "127.0.0.1:8090")     // Caddy forward_auth 后端
-	proxyListen      = env("GW_PROXY_LISTEN", ":33890")            // 公网中转口（nft + 内存双闸）
-	target           = env("GW_TARGET", "192.168.7.129:3389")      // 经 Tailscale 子网路由到达 Win10
-	publicAddr       = env("GW_PUBLIC_ADDR", "43.129.195.4:33890") // 授权页展示用
-	agentURL         = env("GW_AGENT_URL", "http://100.64.0.2:8091/open")
-	agentV4URL       = env("GW_AGENT_V4_URL", "http://100.64.0.2:8091/open4")
+	httpListen       = envRequired("GW_HTTP_LISTEN")
+	proxyListen      = envRequired("GW_PROXY_LISTEN")
+	target           = envRequired("GW_TARGET")
+	publicAddr       = envRequired("GW_PUBLIC_ADDR")
+	agentURL         = envRequired("GW_AGENT_URL")
+	agentV4URL       = envRequired("GW_AGENT_V4_URL")
 	nftSet           = env("GW_NFT_SET", "rdp_guard")
 	nftBin           = env("GW_NFT_BIN", "/usr/sbin/nft")
 	ttlSeconds       = envInt("GW_TTL", 180)
 	udpIdleSeconds   = envInt("GW_UDP_IDLE", 1800)
 	stateFile        = env("GW_STATE_FILE", "/var/lib/rdp-gateway/state.json")
-	loginURL         = env("GW_LOGIN_URL", "https://auth.singll.net/")
+	loginURL         = envRequired("GW_LOGIN_URL")
 	historyLimit     = envInt("GW_HISTORY_LIMIT", 160)
 	permanentRefresh = envInt("GW_PERMANENT_REFRESH", maxInt(20, ttlSeconds/2))
 	token            = os.Getenv("RDP6_TOKEN")
@@ -1415,6 +1415,14 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+func envRequired(k string) string {
+	v := os.Getenv(k)
+	if v == "" {
+		log.Fatalf("Environment variable %s is required", k)
+	}
+	return v
 }
 
 func envInt(k string, def int) int {

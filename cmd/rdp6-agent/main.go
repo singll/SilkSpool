@@ -28,10 +28,10 @@ import (
 
 // 配置（环境变量注入；procd 从 /opt/rdp6-agent/token 读 token 传入 RDP6_TOKEN）
 var (
-	listenAddr = env("RDP6_LISTEN", "100.64.0.2:8091") // 仅 Tailscale IP，绝不 0.0.0.0
-	win10MAC   = strings.ToLower(env("RDP6_WIN10_MAC", "bc:24:11:98:25:18"))
-	lanIf      = env("RDP6_LAN_IF", "br-lan")
-	hostID     = env("RDP6_HOSTID", "129") // ::129 兜底（odhcpd hostid 为十六进制）
+	listenAddr = envRequired("RDP6_LISTEN")
+	win10MAC   = strings.ToLower(envRequired("RDP6_WIN10_MAC"))
+	lanIf      = envRequired("RDP6_LAN_IF")
+	hostID     = envRequired("RDP6_HOSTID")
 	nftSet     = env("RDP6_NFT_SET", "rdp6_open")
 	rdpPort    = envInt("RDP6_RDP_PORT", 3389)
 	ttlSeconds = envInt("RDP6_TTL", 180)
@@ -40,8 +40,8 @@ var (
 	// 路径 A-v4（IPv4 直连）：家宽为公网动态 v4（PPPoE），DNAT/SNAT 静态链见
 	// /etc/nftables.d/90-rdp4-dnat.nft，本 agent 只负责把 2FA 客户端 v4 写入限源集合。
 	v4NftSet  = env("RDP4_NFT_SET", "rdp4_clients")
-	v4ExtPort = envInt("RDP4_EXT_PORT", 33891) // 家宽公网入口端口（DNAT → Win10:3389）
-	wanIface  = env("RDP4_WAN_IFACE", "wan")   // ubus 逻辑接口名（pppoe-wan 的 uci 名）
+	v4ExtPort = envInt("RDP4_EXT_PORT", 33891)
+	wanIface  = env("RDP4_WAN_IFACE", "wan")
 )
 
 var openState = newAgentState()
@@ -482,6 +482,14 @@ func env(k, def string) string {
 		return v
 	}
 	return def
+}
+
+func envRequired(k string) string {
+	v := os.Getenv(k)
+	if v == "" {
+		log.Fatalf("Environment variable %s is required", k)
+	}
+	return v
 }
 
 func envInt(k string, def int) int {
