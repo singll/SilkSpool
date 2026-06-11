@@ -193,6 +193,9 @@ func truncateCommand(cmd string, maxLen int) string {
 	if len(cmd) <= maxLen {
 		return cmd
 	}
+	if maxLen < 3 {
+		return "..."
+	}
 	return cmd[:maxLen-3] + "..."
 }
 

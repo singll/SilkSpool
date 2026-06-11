@@ -214,7 +214,7 @@ func (m *DNSManager) addOpenClashRecord(domain, ip string) error {
 	}
 
 	content := string(data)
-	pattern := fmt.Sprintf(`'%s':`, regexp.QuoteMeta(domain))
+	pattern := fmt.Sprintf("'%s':", domain)
 
 	if strings.Contains(content, pattern) {
 		re := regexp.MustCompile(fmt.Sprintf(`'%s':.*`, regexp.QuoteMeta(domain)))

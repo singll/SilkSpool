@@ -363,7 +363,10 @@ func NewTrueNASManager(baseDir string) (*TrueNASManager, error) {
 
 // Close 关闭管理器
 func (m *TrueNASManager) Close() error {
-	return m.client.Close()
+	if m.client != nil {
+		return m.client.Close()
+	}
+	return nil
 }
 
 // CmdInfo 显示系统信息
