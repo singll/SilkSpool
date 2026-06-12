@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/singll/silkspool/internal/config"
 )
 
 func TestTruncateCommandBoundarySync(t *testing.T) {
@@ -120,15 +122,19 @@ func TestTryPushEncryptedNoEncFile(t *testing.T) {
 
 func TestSyncManagerStructFieldValues(t *testing.T) {
 	m := &SyncManager{
-		baseDir: "/opt/SilkSpool",
-		sshKey:  "/opt/SilkSpool/keys/spool",
-		sops:    nil,
+		baseDir:    "/opt/SilkSpool",
+		sshKey:     "/opt/SilkSpool/keys/spool",
+		knownHosts: "/opt/SilkSpool/known_hosts",
+		sops:       nil,
 	}
 	if m.baseDir != "/opt/SilkSpool" {
 		t.Errorf("baseDir = %q", m.baseDir)
 	}
 	if m.sshKey != "/opt/SilkSpool/keys/spool" {
 		t.Errorf("sshKey = %q", m.sshKey)
+	}
+	if m.knownHosts != "/opt/SilkSpool/known_hosts" {
+		t.Errorf("knownHosts = %q", m.knownHosts)
 	}
 	if m.sops != nil {
 		t.Error("sops should be nil when not configured")
@@ -153,7 +159,8 @@ func TestEnsureRemoteDirSkipsRoot(t *testing.T) {
 
 func TestPushFileLocalNotExist(t *testing.T) {
 	m := &SyncManager{baseDir: t.TempDir(), sshKey: "/fake/key"}
-	err := m.pushFile("user@host", "/nonexistent/file", "/remote/path")
+	hc := &config.HostConfig{Address: "user@host"}
+	err := m.pushFile(hc, "/nonexistent/file", "/remote/path")
 	if err == nil {
 		t.Error("expected error for non-existent local file")
 	}

@@ -1,6 +1,6 @@
 # SilkSpool 部署指南
 
-> 适用于: v2.0.0+
+> 适用于: v1.0.0+
 > 部署模型: 自包含二进制目录（out/）+ 系统 PATH 软链
 
 ---
@@ -208,7 +208,7 @@ spool version
 
 ## 关于 ~/.silkspool（已移除）
 
-旧版本中 `~/.silkspool/` 是推荐的配置目录。从 v2.0.0+ 起，运行时模型已迁移到**二进制自包含目录**（`/opt/SilkSpool/`）。
+旧版本中 `~/.silkspool/` 是推荐的配置目录。从 v1.0.0+ 起，运行时模型已迁移到**二进制自包含目录**（`/opt/SilkSpool/`）。
 
 - 配置搜索顺序已收敛为 `baseDir → baseDir/.. → /etc/silkspool`，**不再回退到 `~/.silkspool/`**
 - 运行时唯一根目录是 `/opt/SilkSpool/`：`spool` 经 `os.Executable()` 自动解析，任意目录运行结果一致

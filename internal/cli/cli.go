@@ -51,7 +51,7 @@ func NewRootCmd() *cobra.Command {
 
 	root := &cobra.Command{
 		Use:          "spool",
-		Short:        "SilkSpool V2 - 云基础设施编排 CLI 工具",
+		Short:        "SilkSpool - 云基础设施编排 CLI 工具",
 		Long: `SilkSpool (丝轴) - 云基础设施编排工具
 基于 Go 重构，提供跨平台支持
 
@@ -96,7 +96,7 @@ func NewRootCmd() *cobra.Command {
 		Use:   "version",
 		Short: "显示版本信息",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("SilkSpool V%s\n", Version)
+			fmt.Printf("SilkSpool %s\n", Version)
 			fmt.Printf("  Build: %s (%s)\n", GitCommit, BuildTime)
 		},
 	})

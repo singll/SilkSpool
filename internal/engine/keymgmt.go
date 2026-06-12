@@ -15,10 +15,11 @@ import (
 
 // KeyManager 负责 spool 管控 SSH 密钥的轮换与主机下线。
 type KeyManager struct {
-	baseDir string
-	cfg     *config.Config
-	sshKey  string // 当前 canonical 私钥绝对路径
-	sshPub  string // = sshKey + ".pub"
+	baseDir    string
+	cfg        *config.Config
+	sshKey     string // 当前 canonical 私钥绝对路径
+	sshPub     string // = sshKey + ".pub"
+	knownHosts string
 }
 
 // NewKeyManager 创建密钥管理器。
@@ -29,10 +30,11 @@ func NewKeyManager(baseDir string) (*KeyManager, error) {
 	}
 	sshKey := resolveSSHKeyPath(cfg.Global.SSHKeyPath, baseDir)
 	return &KeyManager{
-		baseDir: baseDir,
-		cfg:     cfg,
-		sshKey:  sshKey,
-		sshPub:  sshKey + ".pub",
+		baseDir:    baseDir,
+		cfg:        cfg,
+		sshKey:     sshKey,
+		sshPub:     sshKey + ".pub",
+		knownHosts: filepath.Join(baseDir, "known_hosts"),
 	}, nil
 }
 
@@ -84,7 +86,7 @@ func (m *KeyManager) Rotate(opts RotateOptions) error {
 		var unreachable []string
 		for _, h := range hosts {
 			hc := m.cfg.GetHost(h)
-			if err := m.verifyKey(hc.Address, m.sshKey); err != nil {
+			if err := m.verifyKey(hc.Address, m.sshKey, hc); err != nil {
 				unreachable = append(unreachable, h)
 				utils.Error("  %-12s UNREACHABLE with current key: %v", h, err)
 			} else {
@@ -153,7 +155,7 @@ func (m *KeyManager) Rotate(opts RotateOptions) error {
 	for _, h := range hosts {
 		hc := m.cfg.GetHost(h)
 		utils.Info("  [%s] %s", h, hc.Address)
-		client, err := NewSSHClient(hc.Address, m.sshKey)
+		client, err := NewSSHClient(hc.Address, m.sshKey, m.clientOptsFor(hc)...)
 		if err != nil {
 			failed = append(failed, h)
 			utils.Error("    connect with current key failed: %v", err)
@@ -166,7 +168,7 @@ func (m *KeyManager) Rotate(opts RotateOptions) error {
 			continue
 		}
 		client.Close()
-		if err := m.verifyKey(hc.Address, newKey); err != nil {
+		if err := m.verifyKey(hc.Address, newKey, hc); err != nil {
 			failed = append(failed, h)
 			utils.Error("    verify with new key failed: %v", err)
 			continue
@@ -207,7 +209,7 @@ func (m *KeyManager) Rotate(opts RotateOptions) error {
 	var rmFail []string
 	for _, h := range hosts {
 		hc := m.cfg.GetHost(h)
-		client, err := NewSSHClient(hc.Address, m.sshKey)
+		client, err := NewSSHClient(hc.Address, m.sshKey, m.clientOptsFor(hc)...)
 		if err != nil {
 			rmFail = append(rmFail, h)
 			utils.Warn("  [%s] connect with new key failed: %v", h, err)
@@ -251,7 +253,7 @@ func (m *KeyManager) Decommission(host string, opts DecommissionOptions) error {
 	utils.Step("Decommissioning %s (%s)", host, hc.Address)
 
 	// 1. 吊销远程公钥
-	client, err := NewSSHClient(hc.Address, m.sshKey)
+	client, err := NewSSHClient(hc.Address, m.sshKey, m.clientOptsFor(hc)...)
 	if err != nil {
 		utils.Warn("Cannot connect to %s: %v", host, err)
 		utils.Warn("Host may already be unreachable; skipping remote key removal.")
@@ -307,7 +309,7 @@ func (m *KeyManager) Status(hosts []string) error {
 			utils.Warn("  %-12s unknown host", h)
 			continue
 		}
-		client, err := NewSSHClient(hc.Address, m.sshKey)
+		client, err := NewSSHClient(hc.Address, m.sshKey, m.clientOptsFor(hc)...)
 		if err != nil {
 			utils.Error("  %-12s connect failed: %v", h, err)
 			continue
@@ -329,6 +331,18 @@ func (m *KeyManager) Status(hosts []string) error {
 
 // ==================== 远程 authorized_keys 操作 ====================
 
+// clientOptsFor 返回连接指定主机的 SSH 选项。
+func (m *KeyManager) clientOptsFor(hc *config.HostConfig) []SSHClientOption {
+	port := hc.SSHPort
+	if port == "" {
+		port = "22"
+	}
+	return []SSHClientOption{
+		WithSSHPort(port),
+		WithKnownHosts(m.knownHosts),
+	}
+}
+
 // addKeyRemote 幂等地把公钥追加到远程 authorized_keys (含 Dropbear)。
 func (m *KeyManager) addKeyRemote(c *SSHClient, pubLine, body string) error {
 	_, err := c.Execute(buildAddKeyScript(pubLine, body))
@@ -342,8 +356,8 @@ func (m *KeyManager) removeKeyRemote(c *SSHClient, body string) error {
 }
 
 // verifyKey 用指定私钥连接主机并执行探测命令，验证该 key 已被授权。
-func (m *KeyManager) verifyKey(address, keyPath string) error {
-	c, err := NewSSHClient(address, keyPath)
+func (m *KeyManager) verifyKey(address, keyPath string, hc *config.HostConfig) error {
+	c, err := NewSSHClient(address, keyPath, m.clientOptsFor(hc)...)
 	if err != nil {
 		return err
 	}

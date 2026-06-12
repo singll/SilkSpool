@@ -15,7 +15,7 @@
 
 It rejects the heaviness of K8s and the complex DSL of Ansible, returning to pure **Go binary + Docker Compose**. Through silk threads (CLI), it weaves scattered cloud servers, home routers (iStoreOS/OpenWrt), and PVE virtual machines into an organic, controllable whole.
 
-### Key Changes in V2.0.0
+### Key Changes in v1.0.0 (第二代架构)
 
 * **Go Rewritten**: Single cross-platform binary, no shell dependencies
 * **YAML Config**: Replaced `config.ini` with `silkspool.yaml`
@@ -117,7 +117,7 @@ vim out/silkspool.yaml
 
 它拒绝 K8s 的沉重与 Ansible 的复杂 DSL，回归最纯粹的 **Go 二进制 + Docker Compose**。通过一根根"丝线"（CLI），将散落在互联网各处的云服务器、家用软路由 (iStoreOS/OpenWrt) 和 PVE 虚拟机编织成一个有机、可控的整体。
 
-### V2.0.0 重大变更
+### v1.0.0 重大变更（第二代架构）
 
 * **Go 重构**: 单个跨平台二进制文件，无 Shell 依赖
 * **YAML 配置**: 用 `silkspool.yaml` 替代 `config.ini`
@@ -214,7 +214,7 @@ vim out/silkspool.yaml
 
 ## 部署模型
 
-SilkSpool V2 采用**自包含二进制目录**模型：
+SilkSpool 采用**自包含二进制目录**模型：
 
 ```bash
 # 方式 1: 从源码构建 (推荐)

@@ -13,9 +13,10 @@ import (
 
 // SyncManager 同步管理器
 type SyncManager struct {
-	baseDir string
-	sshKey  string
-	sops    *SOPSManager
+	baseDir       string
+	sshKey        string
+	knownHosts    string
+	sops          *SOPSManager
 }
 
 // NewSyncManager 创建同步管理器
@@ -30,6 +31,8 @@ func NewSyncManager(baseDir string) (*SyncManager, error) {
 		sshKey = filepath.Join(baseDir, sshKey)
 	}
 
+	knownHosts := filepath.Join(baseDir, "known_hosts")
+
 	// 初始化 SOPS (仅当 age 密钥存在时启用，否则保持明文同步)
 	var sopsMgr *SOPSManager
 	ageKey := cfg.Global.AgeKeyPath
@@ -43,9 +46,10 @@ func NewSyncManager(baseDir string) (*SyncManager, error) {
 	}
 
 	return &SyncManager{
-		baseDir: baseDir,
-		sshKey:  sshKey,
-		sops:    sopsMgr,
+		baseDir:    baseDir,
+		sshKey:     sshKey,
+		knownHosts: knownHosts,
+		sops:       sopsMgr,
 	}, nil
 }
 
@@ -69,18 +73,18 @@ func (m *SyncManager) SyncHost(host string, direction string) error {
 		remotePath := rule.Remote
 
 		if direction == "pull" {
-			if err := m.pullFile(hostCfg.Address, remotePath, localPath); err != nil {
+			if err := m.pullFile(hostCfg, remotePath, localPath); err != nil {
 				utils.Error("Pull failed: %s (%v)", rule.Local, err)
 			} else {
 				utils.Success("Pulled: %s", rule.Local)
 			}
 		} else {
 			// 优先处理 SOPS 加密文件 (<local>.enc)，否则常规推送
-			if m.tryPushEncrypted(hostCfg.Address, host, rule) {
+			if m.tryPushEncrypted(hostCfg, host, rule) {
 				m.runPostPushHooks(host, hostCfg, rule.Local)
 				continue
 			}
-			if err := m.pushFile(hostCfg.Address, localPath, remotePath); err != nil {
+			if err := m.pushFile(hostCfg, localPath, remotePath); err != nil {
 				utils.Error("Push failed: %s (%v)", rule.Local, err)
 			} else {
 				utils.Success("Pushed: %s", rule.Local)
@@ -110,16 +114,21 @@ func (m *SyncManager) SyncAll(direction string) error {
 }
 
 // pullFile 拉取远程文件到本地
-func (m *SyncManager) pullFile(address, remotePath, localPath string) error {
+func (m *SyncManager) pullFile(hostCfg *config.HostConfig, remotePath, localPath string) error {
 	// 确保本地目录存在
 	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 		return fmt.Errorf("failed to create local dir: %w", err)
 	}
 
+	sshPort := hostCfg.SSHPort
+	if sshPort == "" {
+		sshPort = "22"
+	}
+
 	// 使用 rsync 拉取
 	cmd := exec.Command("rsync", "-azc",
-		"-e", fmt.Sprintf("ssh -i %s -o StrictHostKeyChecking=no", m.sshKey),
-		fmt.Sprintf("%s:%s", address, remotePath),
+		"-e", fmt.Sprintf("ssh -i %s -p %s -o UserKnownHostsFile=%s -o StrictHostKeyChecking=yes", m.sshKey, sshPort, m.knownHosts),
+		fmt.Sprintf("%s:%s", hostCfg.Address, remotePath),
 		localPath,
 	)
 	cmd.Stdout = os.Stdout
@@ -129,17 +138,22 @@ func (m *SyncManager) pullFile(address, remotePath, localPath string) error {
 }
 
 // pushFile 推送本地文件到远程
-func (m *SyncManager) pushFile(address, localPath, remotePath string) error {
+func (m *SyncManager) pushFile(hostCfg *config.HostConfig, localPath, remotePath string) error {
 	// 检查本地文件是否存在
 	if _, err := os.Stat(localPath); os.IsNotExist(err) {
 		return fmt.Errorf("local file not found: %s", localPath)
 	}
 
+	sshPort := hostCfg.SSHPort
+	if sshPort == "" {
+		sshPort = "22"
+	}
+
 	// 确保远程父目录存在 (与旧 shell 版一致: push 前 mkdir -p)
-	m.ensureRemoteDir(address, filepath.Dir(remotePath))
+	m.ensureRemoteDir(hostCfg, filepath.Dir(remotePath))
 
 	// 解析用户名
-	user := strings.Split(address, "@")[0]
+	user := strings.Split(hostCfg.Address, "@")[0]
 
 	// 远程需要 sudo (如果是非 root 用户)
 	rsyncPath := "rsync"
@@ -149,10 +163,10 @@ func (m *SyncManager) pushFile(address, localPath, remotePath string) error {
 
 	// 使用 rsync 推送
 	cmd := exec.Command("rsync", "-azc",
-		"-e", fmt.Sprintf("ssh -i %s -o StrictHostKeyChecking=no", m.sshKey),
+		"-e", fmt.Sprintf("ssh -i %s -p %s -o UserKnownHostsFile=%s -o StrictHostKeyChecking=yes", m.sshKey, sshPort, m.knownHosts),
 		"--rsync-path", rsyncPath,
 		localPath,
-		fmt.Sprintf("%s:%s", address, remotePath),
+		fmt.Sprintf("%s:%s", hostCfg.Address, remotePath),
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -162,6 +176,11 @@ func (m *SyncManager) pushFile(address, localPath, remotePath string) error {
 
 // runPostPushHooks 执行推送后钩子
 func (m *SyncManager) runPostPushHooks(host string, hostCfg *config.HostConfig, localPath string) {
+	sshPort := hostCfg.SSHPort
+	if sshPort == "" {
+		sshPort = "22"
+	}
+
 	for _, hook := range hostCfg.PostPushHooks {
 		// 检查是否匹配
 		if !strings.Contains(localPath, hook.Pattern) {
@@ -173,7 +192,9 @@ func (m *SyncManager) runPostPushHooks(host string, hostCfg *config.HostConfig, 
 		// 构建 SSH 命令
 		cmd := exec.Command("ssh",
 			"-i", m.sshKey,
-			"-o", "StrictHostKeyChecking=no",
+			"-p", sshPort,
+			"-o", fmt.Sprintf("UserKnownHostsFile=%s", m.knownHosts),
+			"-o", "StrictHostKeyChecking=yes",
 			hostCfg.Address,
 			hook.Command,
 		)
@@ -227,23 +248,37 @@ func (m *SyncManager) SyncHostFile(host, direction, localPath string) error {
 	localFullPath := filepath.Join(m.baseDir, "hosts", host, localPath)
 
 	if direction == "pull" {
-		return m.pullFile(hostCfg.Address, remotePath, localFullPath)
+		return m.pullFile(hostCfg, remotePath, localFullPath)
 	}
-	return m.pushFile(hostCfg.Address, localFullPath, remotePath)
+	return m.pushFile(hostCfg, localFullPath, remotePath)
 }
 
 // ensureRemoteDir 确保远程父目录存在
-func (m *SyncManager) ensureRemoteDir(address, dir string) {
+func (m *SyncManager) ensureRemoteDir(hostCfg *config.HostConfig, dir string) {
 	if dir == "" || dir == "." || dir == "/" {
 		return
 	}
-	user := strings.Split(address, "@")[0]
+	user := strings.Split(hostCfg.Address, "@")[0]
 	mkdir := fmt.Sprintf("mkdir -p %q", dir)
 	if user != "root" {
 		mkdir = fmt.Sprintf(`if [ ! -d %q ]; then sudo mkdir -p %q && sudo chown $(id -u):$(id -g) %q; fi`, dir, dir, dir)
 	}
-	client, err := globalPool.Get(address, m.sshKey)
+
+	sshPort := hostCfg.SSHPort
+	if sshPort == "" {
+		sshPort = "22"
+	}
+
+	client, err := NewSSHClient(hostCfg.Address, m.sshKey,
+		WithSSHPort(sshPort),
+		WithKnownHosts(m.knownHosts),
+	)
 	if err != nil {
+		utils.Warn("Failed to create SSH client for ensuring remote dir %s: %v", dir, err)
+		return
+	}
+	defer client.Close()
+	if err := client.Connect(); err != nil {
 		utils.Warn("Failed to connect for ensuring remote dir %s: %v", dir, err)
 		return
 	}
@@ -254,7 +289,7 @@ func (m *SyncManager) ensureRemoteDir(address, dir string) {
 
 // tryPushEncrypted 若存在 <local>.enc 加密文件，则解密并上传到远程。
 // 返回 true 表示该规则已被处理(无论成功失败)，不应再走明文推送。
-func (m *SyncManager) tryPushEncrypted(address, host string, rule config.SyncRule) bool {
+func (m *SyncManager) tryPushEncrypted(hostCfg *config.HostConfig, host string, rule config.SyncRule) bool {
 	encPath := filepath.Join(m.baseDir, "hosts", host, rule.Local+".enc")
 	if _, err := os.Stat(encPath); err != nil {
 		return false
@@ -272,9 +307,22 @@ func (m *SyncManager) tryPushEncrypted(address, host string, rule config.SyncRul
 		return true
 	}
 
-	m.ensureRemoteDir(address, filepath.Dir(rule.Remote))
-	client, err := globalPool.Get(address, m.sshKey)
+	sshPort := hostCfg.SSHPort
+	if sshPort == "" {
+		sshPort = "22"
+	}
+
+	m.ensureRemoteDir(hostCfg, filepath.Dir(rule.Remote))
+	client, err := NewSSHClient(hostCfg.Address, m.sshKey,
+		WithSSHPort(sshPort),
+		WithKnownHosts(m.knownHosts),
+	)
 	if err != nil {
+		utils.Error("SSH connect failed for pushing %s: %v", rule.Local, err)
+		return true
+	}
+	defer client.Close()
+	if err := client.Connect(); err != nil {
 		utils.Error("SSH connect failed for pushing %s: %v", rule.Local, err)
 		return true
 	}

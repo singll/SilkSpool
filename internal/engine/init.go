@@ -128,9 +128,17 @@ func (m *InitManager) Run(host string) error {
 	utils.Info("")
 	utils.Info("Executing initialization script on %s@%s...", adminUser, extractHost(addr))
 
+	sshPort := hostCfg.SSHPort
+	if sshPort == "" {
+		sshPort = "22"
+	}
+	knownHosts := filepath.Join(m.baseDir, "known_hosts")
+
 	cmd := exec.Command("ssh",
 		"-t",
-		"-o", "StrictHostKeyChecking=no",
+		"-p", sshPort,
+		"-o", fmt.Sprintf("UserKnownHostsFile=%s", knownHosts),
+		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "PubkeyAuthentication=no",
 		fmt.Sprintf("%s@%s", adminUser, extractHost(addr)),
 		script,
@@ -150,7 +158,9 @@ func (m *InitManager) Run(host string) error {
 	testCmd := exec.Command("ssh",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=5",
-		"-o", "StrictHostKeyChecking=no",
+		"-p", sshPort,
+		"-o", fmt.Sprintf("UserKnownHostsFile=%s", knownHosts),
+		"-o", "StrictHostKeyChecking=accept-new",
 		addr,
 		"echo 'Connection OK'",
 	)

@@ -47,7 +47,22 @@ func (a *App) runExec(cmd *cobra.Command, args []string) error {
 	if connectTimeout <= 0 {
 		connectTimeout = 30
 	}
-	sshArgs := []string{"-i", sshKey, "-o", fmt.Sprintf("ConnectTimeout=%d", connectTimeout), "-t", hostCfg.Address}
+
+	sshPort := hostCfg.SSHPort
+	if sshPort == "" {
+		sshPort = "22"
+	}
+
+	knownHosts := filepath.Join(a.BaseDir, "known_hosts")
+
+	sshArgs := []string{
+		"-i", sshKey,
+		"-p", sshPort,
+		"-o", fmt.Sprintf("ConnectTimeout=%d", connectTimeout),
+		"-o", fmt.Sprintf("UserKnownHostsFile=%s", knownHosts),
+		"-o", "StrictHostKeyChecking=yes",
+		"-t", hostCfg.Address,
+	}
 	sshArgs = append(sshArgs, args[1:]...)
 
 	c := exec.Command("ssh", sshArgs...)
