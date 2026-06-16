@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -27,18 +30,23 @@ func (a *App) addN8NCmd(root *cobra.Command) {
 命令:
   list              列出工作流文件 (本地 + 远程 + n8n)
   import            导入新工作流到 n8n
-  export            导出 n8n 工作流到本地备份
-  update [name]     更新现有工作流
+  export            导出 n8n 工作流到本地备份 (--to-source 回写源目录)
+  update [name]     更新现有工作流 (推送前展示 diff, --dry-run 仅预览, --yes 跳过确认)
   activate [name]   激活工作流
   deactivate <name> 停用工作流
   delete <name>     删除工作流
 
 示例:
   ./spool n8n list
-  ./spool n8n push-import      # 推送 + 导入
-  ./spool n8n push-update      # 推送 + 更新`,
+  ./spool n8n export --to-source   # 从 n8n 无损回写到 git 源目录
+  ./spool n8n update --dry-run     # 仅预览将推送的 diff
+  ./spool n8n push-import          # 推送 + 导入
+  ./spool n8n push-update          # 推送 + 更新`,
 		RunE: a.runN8N,
 	}
+	cmd.Flags().Bool("to-source", false, "export: 回写到 git 源目录 (hosts/<host>/n8n-workflows/) 而非备份目录")
+	cmd.Flags().Bool("dry-run", false, "update: 仅展示 diff 不推送")
+	cmd.Flags().Bool("yes", false, "update: 跳过有变更时的二次确认")
 	root.AddCommand(cmd)
 }
 
@@ -62,9 +70,9 @@ func (a *App) runN8N(cmd *cobra.Command, args []string) error {
 	case "import", "push-import":
 		return a.runN8NImport(ctx, manager, args[1:])
 	case "export":
-		return a.runN8NExport(ctx, manager, args[1:])
+		return a.runN8NExport(cmd, ctx, manager, args[1:])
 	case "update", "push-update":
-		return a.runN8NUpdate(ctx, manager, args[1:])
+		return a.runN8NUpdate(cmd, ctx, manager, args[1:])
 	case "activate":
 		return a.runN8NActivate(ctx, manager, args[1:])
 	case "deactivate":
@@ -122,7 +130,19 @@ func (a *App) runN8NImport(ctx context.Context, m *tools.N8NManager, args []stri
 	return m.ImportWorkflows(ctx, workflowDir)
 }
 
-func (a *App) runN8NExport(ctx context.Context, m *tools.N8NManager, args []string) error {
+func (a *App) runN8NExport(cmd *cobra.Command, ctx context.Context, m *tools.N8NManager, args []string) error {
+	if toSource, _ := cmd.Flags().GetBool("to-source"); toSource {
+		workflowDir, err := tools.GetN8NWorkflowDir(a.BaseDir)
+		if err != nil {
+			return fmt.Errorf("failed to get workflow dir: %w", err)
+		}
+		if err := m.ExportWorkflowsToSource(ctx, workflowDir); err != nil {
+			return err
+		}
+		utils.Success("Exported to source: %s", workflowDir)
+		return nil
+	}
+
 	backupDir, err := tools.GetN8NBackupDir(a.BaseDir)
 	if err != nil {
 		return fmt.Errorf("failed to get backup dir: %w", err)
@@ -135,12 +155,49 @@ func (a *App) runN8NExport(ctx context.Context, m *tools.N8NManager, args []stri
 	return nil
 }
 
-func (a *App) runN8NUpdate(ctx context.Context, m *tools.N8NManager, args []string) error {
+func (a *App) runN8NUpdate(cmd *cobra.Command, ctx context.Context, m *tools.N8NManager, args []string) error {
 	workflowDir, err := tools.GetN8NWorkflowDir(a.BaseDir)
 	if err != nil {
 		return fmt.Errorf("failed to get workflow dir: %w", err)
 	}
-	return m.UpdateWorkflows(ctx, workflowDir, args...)
+
+	plan, err := m.PlanUpdate(ctx, workflowDir, args...)
+	if err != nil {
+		return err
+	}
+	plan.Render()
+
+	if !plan.HasChanges() {
+		utils.Info("无变更, 无需推送")
+		return nil
+	}
+
+	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+		utils.Info("--dry-run: 未推送任何更改")
+		return nil
+	}
+
+	if assumeYes, _ := cmd.Flags().GetBool("yes"); !assumeYes {
+		if !confirmN8NPush() {
+			utils.Warn("已取消, 未推送")
+			return nil
+		}
+	}
+
+	return m.ApplyUpdate(ctx, plan)
+}
+
+// confirmN8NPush 推送前的二次确认 (非破坏性, 简单 y/N)。非交互式终端拒绝。
+func confirmN8NPush() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil || (fi.Mode()&os.ModeCharDevice) == 0 {
+		fmt.Fprintln(os.Stderr, "[!] 非交互式终端拒绝推送 (传 --yes 以确认, 或 --dry-run 预览)")
+		return false
+	}
+	fmt.Print("\n将以上改动推送到 n8n? [y/N]: ")
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	return strings.EqualFold(strings.TrimSpace(input), "y") || strings.EqualFold(strings.TrimSpace(input), "yes")
 }
 
 func (a *App) runN8NActivate(ctx context.Context, m *tools.N8NManager, args []string) error {

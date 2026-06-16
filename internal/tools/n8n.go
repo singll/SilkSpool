@@ -39,7 +39,12 @@ type N8NWorkflow struct {
 	Settings    map[string]interface{} `json:"settings,omitempty"`
 }
 
-// N8NNode 工作流节点
+// N8NNode 工作流节点。
+//
+// 除显式建模的字段外，所有未知字段经 extra 原样保留并在序列化时写回，
+// 确保 update/export 的 round-trip 无损：webhookId、onError、disabled、notes、
+// continueOnFail、alwaysOutputData、retryOnFail 等节点级字段不会再被静默丢弃。
+// （历史 bug：webhookId 被丢弃 → n8n 退化注册到 {workflowId}/webhook/{path} 畸形路径。）
 type N8NNode struct {
 	ID          string                 `json:"id"`
 	Name        string                 `json:"name"`
@@ -49,6 +54,56 @@ type N8NNode struct {
 	Data        map[string]interface{} `json:"data,omitempty"`
 	Parameters  map[string]interface{} `json:"parameters,omitempty"`
 	Credentials map[string]interface{} `json:"credentials,omitempty"`
+	// extra 保存所有未显式建模的节点字段，原样透传，对 n8n 未来新增字段免疫。
+	extra map[string]json.RawMessage
+}
+
+// knownNodeFields 为 N8NNode 显式建模字段的 JSON key，UnmarshalJSON 据此剔除已知字段、
+// 剩余即 extra。新增显式字段时务必同步此列表。
+var knownNodeFields = []string{"id", "name", "type", "typeVersion", "position", "data", "parameters", "credentials"}
+
+// UnmarshalJSON 解析显式字段，并把其余未知字段收集进 extra 以便无损写回。
+func (n *N8NNode) UnmarshalJSON(data []byte) error {
+	type alias N8NNode // alias 不带自定义方法，避免无限递归；extra 未导出，json 自动忽略
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*n = N8NNode(a)
+
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(data, &all); err != nil {
+		return err
+	}
+	for _, k := range knownNodeFields {
+		delete(all, k)
+	}
+	if len(all) > 0 {
+		n.extra = all
+	}
+	return nil
+}
+
+// MarshalJSON 先序列化显式字段，再合并 extra 中的未知字段（已存在的 key 不覆盖）。
+func (n N8NNode) MarshalJSON() ([]byte, error) {
+	type alias N8NNode // 仅序列化导出字段（extra 未导出，被忽略）
+	kb, err := json.Marshal(alias(n))
+	if err != nil {
+		return nil, err
+	}
+	if len(n.extra) == 0 {
+		return kb, nil
+	}
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(kb, &merged); err != nil {
+		return nil, err
+	}
+	for k, v := range n.extra {
+		if _, ok := merged[k]; !ok {
+			merged[k] = v
+		}
+	}
+	return json.Marshal(merged)
 }
 
 // NewN8NClient 创建 n8n 客户端
@@ -536,6 +591,82 @@ func (m *N8NManager) ExportWorkflows(ctx context.Context, backupDir string) erro
 	return nil
 }
 
+// ExportWorkflowsToSource 把 n8n 中的工作流回写到 git 受管的源目录（hosts/<host>/n8n-workflows/）。
+//
+// 与 ExportWorkflows（写时间戳备份目录、按工作流名命名）不同，本函数按工作流 name
+// 匹配源目录里**已存在**的文件并原地覆盖，从而保留源文件名（源文件名遵循 K02-rss-collect
+// 这类英文短名规范，而工作流 name 字段是 K02-RSS定时采集 这类中文名，二者不一致）。
+// 配合无损 round-trip（extra 字段透传），可直接从线上实例刷新源真相文件后提交。
+// 远端存在但本地没有对应文件的工作流，按 sanitizeFilename(name) 落为新文件并告警，提醒补命名规范。
+func (m *N8NManager) ExportWorkflowsToSource(ctx context.Context, workflowDir string) error {
+	workflows, err := m.client.ListWorkflows(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list workflows: %w", err)
+	}
+
+	if err := os.MkdirAll(workflowDir, 0755); err != nil {
+		return fmt.Errorf("failed to create workflow dir: %w", err)
+	}
+
+	fileByName, err := m.mapLocalFilesByName(workflowDir)
+	if err != nil {
+		return err
+	}
+
+	var written, fresh int
+	for _, wf := range workflows {
+		fullWorkflow := &wf
+		if wf.ID != "" {
+			if detailed, err := m.client.GetWorkflow(ctx, wf.ID); err == nil {
+				fullWorkflow = detailed
+			} else {
+				utils.Warn("Failed to fetch full workflow %s, exporting list payload: %v", wf.Name, err)
+			}
+		}
+
+		data, err := json.MarshalIndent(fullWorkflow, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal workflow %s: %w", fullWorkflow.Name, err)
+		}
+
+		if path, ok := fileByName[fullWorkflow.Name]; ok {
+			if err := os.WriteFile(path, data, 0644); err != nil {
+				return fmt.Errorf("failed to write %s: %w", path, err)
+			}
+			utils.Success("Updated source: %s -> %s", fullWorkflow.Name, filepath.Base(path))
+			written++
+		} else {
+			path := filepath.Join(workflowDir, sanitizeFilename(fullWorkflow.Name)+".json")
+			if err := os.WriteFile(path, data, 0644); err != nil {
+				return fmt.Errorf("failed to write %s: %w", path, err)
+			}
+			utils.Warn("New source file (建议改名以符合命名规范): %s", filepath.Base(path))
+			fresh++
+		}
+	}
+
+	utils.Info("Export-to-source completed: %d updated, %d new", written, fresh)
+	return nil
+}
+
+// mapLocalFilesByName 加载源目录下每个工作流文件，返回 工作流name -> 文件路径 的映射。
+func (m *N8NManager) mapLocalFilesByName(workflowDir string) (map[string]string, error) {
+	files, err := m.ListLocalWorkflows(workflowDir)
+	if err != nil {
+		return nil, err
+	}
+	byName := make(map[string]string, len(files))
+	for _, file := range files {
+		wf, err := LoadWorkflowFromFile(file)
+		if err != nil {
+			utils.Warn("Skipping (无法解析): %s (%v)", file, err)
+			continue
+		}
+		byName[wf.Name] = file
+	}
+	return byName, nil
+}
+
 // sanitizeFilename 清理文件名
 func sanitizeFilename(name string) string {
 	name = strings.ReplaceAll(name, "/", "-")
@@ -544,20 +675,71 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
-// UpdateWorkflows 更新工作流: 已存在则更新，不存在则创建。names 为空时更新全部。
-func (m *N8NManager) UpdateWorkflows(ctx context.Context, workflowDir string, names ...string) error {
+// UpdateAction 描述一个工作流在 update 时的处置。
+type UpdateAction string
+
+const (
+	ActionUnchanged UpdateAction = "unchanged" // 本地与远端规范化后一致，跳过
+	ActionUpdate    UpdateAction = "update"    // 已存在且有差异，将覆盖远端
+	ActionCreate    UpdateAction = "create"    // 远端不存在，将新建
+)
+
+// WorkflowChange 是 update 计划中的一项变更。
+type WorkflowChange struct {
+	Name   string       // 工作流 name
+	File   string       // 源文件路径
+	Action UpdateAction // 处置类型
+	ID     string       // 远端工作流 ID（update 时有值）
+	Diff   string       // 远端 -> 本地的行级 diff（仅 update 时有值）
+	wf     *N8NWorkflow // 待推送的本地工作流
+}
+
+// UpdatePlan 是一次 update 的预推送计划，先展示再应用。
+type UpdatePlan struct {
+	Changes []WorkflowChange
+}
+
+// HasChanges 报告计划中是否存在 create/update（unchanged 不算）。
+func (p *UpdatePlan) HasChanges() bool {
+	for _, c := range p.Changes {
+		if c.Action == ActionUpdate || c.Action == ActionCreate {
+			return true
+		}
+	}
+	return false
+}
+
+// Render 以人类可读形式打印计划：无变更标 =，新建标 +，更新标 ~ 并展开 diff。
+func (p *UpdatePlan) Render() {
+	for _, c := range p.Changes {
+		switch c.Action {
+		case ActionUnchanged:
+			utils.Info("  = %s (无变更)", c.Name)
+		case ActionCreate:
+			utils.Info("  + %s (将创建)", c.Name)
+		case ActionUpdate:
+			utils.Warn("  ~ %s (将更新, 远端→本地):", c.Name)
+			fmt.Println(c.Diff)
+		}
+	}
+}
+
+// PlanUpdate 计算 update 计划但不推送：逐个对比本地源文件与远端的规范化负载，
+// 分类为 unchanged/update/create，并为 update 项生成行级 diff（pre-push diff 守卫）。
+// names 为空时覆盖全部本地工作流。
+func (m *N8NManager) PlanUpdate(ctx context.Context, workflowDir string, names ...string) (*UpdatePlan, error) {
 	existing, err := m.client.ListWorkflows(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to list existing workflows: %w", err)
+		return nil, fmt.Errorf("failed to list existing workflows: %w", err)
 	}
-	existingByName := make(map[string]N8NWorkflow) // name -> workflow
+	existingByName := make(map[string]N8NWorkflow, len(existing))
 	for _, wf := range existing {
 		existingByName[wf.Name] = wf
 	}
 
 	files, err := m.ListLocalWorkflows(workflowDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	targets := make(map[string]struct{}, len(names))
@@ -570,13 +752,12 @@ func (m *N8NManager) UpdateWorkflows(ctx context.Context, workflowDir string, na
 		targets[strings.TrimSuffix(name, filepath.Ext(name))] = struct{}{}
 	}
 
-	var updated, created, failed int
+	plan := &UpdatePlan{}
 	var matched int
 	for _, file := range files {
 		wf, err := LoadWorkflowFromFile(file)
 		if err != nil {
 			utils.Warn("Skipping: %s (%v)", file, err)
-			failed++
 			continue
 		}
 		if len(targets) > 0 && !workflowMatchesTargets(file, wf, targets) {
@@ -584,32 +765,162 @@ func (m *N8NManager) UpdateWorkflows(ctx context.Context, workflowDir string, na
 		}
 		matched++
 
-		if remote, ok := existingByName[wf.Name]; ok {
-			if _, err := m.client.UpdateWorkflow(ctx, remote.ID, wf); err != nil {
-				utils.Error("Failed to update %s: %v", wf.Name, err)
-				failed++
-				continue
-			}
-			utils.Success("Updated: %s", wf.Name)
-			updated++
-		} else {
-			result, err := m.client.CreateWorkflow(ctx, wf)
-			if err != nil {
-				utils.Error("Failed to create %s: %v", wf.Name, err)
-				failed++
-				continue
-			}
-			utils.Success("Created: %s (id: %s)", wf.Name, result.ID)
-			created++
+		remote, ok := existingByName[wf.Name]
+		if !ok {
+			plan.Changes = append(plan.Changes, WorkflowChange{Name: wf.Name, File: file, Action: ActionCreate, wf: wf})
+			continue
 		}
+
+		remoteFull := &remote
+		if detailed, err := m.client.GetWorkflow(ctx, remote.ID); err == nil {
+			remoteFull = detailed
+		} else {
+			utils.Warn("Failed to fetch remote %s for diff, comparing list payload: %v", wf.Name, err)
+		}
+
+		localJSON := marshalForDiff(cleanWorkflowForUpdate(wf))
+		remoteJSON := marshalForDiff(cleanWorkflowForUpdate(remoteFull))
+		if localJSON == remoteJSON {
+			plan.Changes = append(plan.Changes, WorkflowChange{Name: wf.Name, File: file, Action: ActionUnchanged, ID: remote.ID})
+			continue
+		}
+		plan.Changes = append(plan.Changes, WorkflowChange{
+			Name:   wf.Name,
+			File:   file,
+			Action: ActionUpdate,
+			ID:     remote.ID,
+			Diff:   collapseContext(jsonLineDiff(remoteJSON, localJSON), 3),
+			wf:     wf,
+		})
 	}
 
 	if len(targets) > 0 && matched == 0 {
-		return fmt.Errorf("no local workflow matched: %s", strings.Join(names, ", "))
+		return nil, fmt.Errorf("no local workflow matched: %s", strings.Join(names, ", "))
+	}
+	return plan, nil
+}
+
+// ApplyUpdate 执行计划中的 create/update（unchanged 跳过）。
+func (m *N8NManager) ApplyUpdate(ctx context.Context, plan *UpdatePlan) error {
+	var updated, created, skipped, failed int
+	for _, c := range plan.Changes {
+		switch c.Action {
+		case ActionUnchanged:
+			skipped++
+		case ActionUpdate:
+			if _, err := m.client.UpdateWorkflow(ctx, c.ID, c.wf); err != nil {
+				utils.Error("Failed to update %s: %v", c.Name, err)
+				failed++
+				continue
+			}
+			utils.Success("Updated: %s", c.Name)
+			updated++
+		case ActionCreate:
+			result, err := m.client.CreateWorkflow(ctx, c.wf)
+			if err != nil {
+				utils.Error("Failed to create %s: %v", c.Name, err)
+				failed++
+				continue
+			}
+			utils.Success("Created: %s (id: %s)", c.Name, result.ID)
+			created++
+		}
+	}
+	utils.Info("Update completed: %d updated, %d created, %d unchanged, %d failed", updated, created, skipped, failed)
+	return nil
+}
+
+// marshalForDiff 把规范化工作流序列化为缩进 JSON，用于比对/diff（marshal 失败返回空串）。
+// 再经一轮 generic unmarshal/marshal 统一 key 字母序，消除 N8NNode 结构体字段序与 extra
+// map 序混排带来的 diff 噪声（有/无 extra 的节点否则会呈现伪重排）。
+func marshalForDiff(wf *N8NWorkflow) string {
+	data, err := json.MarshalIndent(wf, "", "  ")
+	if err != nil {
+		return ""
+	}
+	var generic interface{}
+	if err := json.Unmarshal(data, &generic); err != nil {
+		return string(data)
+	}
+	canonical, err := json.MarshalIndent(generic, "", "  ")
+	if err != nil {
+		return string(data)
+	}
+	return string(canonical)
+}
+
+// jsonLineDiff 基于 LCS 生成 old→new 的行级 diff（- 删除 / + 新增 / 空格 上下文），仅用于人工预览。
+func jsonLineDiff(oldStr, newStr string) string {
+	oldLines := strings.Split(strings.TrimRight(oldStr, "\n"), "\n")
+	newLines := strings.Split(strings.TrimRight(newStr, "\n"), "\n")
+	m, n := len(oldLines), len(newLines)
+
+	dp := make([][]int, m+1)
+	for i := range dp {
+		dp[i] = make([]int, n+1)
+	}
+	for i := m - 1; i >= 0; i-- {
+		for j := n - 1; j >= 0; j-- {
+			if oldLines[i] == newLines[j] {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else if dp[i+1][j] >= dp[i][j+1] {
+				dp[i][j] = dp[i+1][j]
+			} else {
+				dp[i][j] = dp[i][j+1]
+			}
+		}
 	}
 
-	utils.Info("Update completed: %d updated, %d created, %d failed", updated, created, failed)
-	return nil
+	var b strings.Builder
+	i, j := 0, 0
+	for i < m && j < n {
+		switch {
+		case oldLines[i] == newLines[j]:
+			b.WriteString("  " + oldLines[i] + "\n")
+			i++
+			j++
+		case dp[i+1][j] >= dp[i][j+1]:
+			b.WriteString("- " + oldLines[i] + "\n")
+			i++
+		default:
+			b.WriteString("+ " + newLines[j] + "\n")
+			j++
+		}
+	}
+	for ; i < m; i++ {
+		b.WriteString("- " + oldLines[i] + "\n")
+	}
+	for ; j < n; j++ {
+		b.WriteString("+ " + newLines[j] + "\n")
+	}
+	return b.String()
+}
+
+// collapseContext 折叠连续 > ctx 行的未变更上下文为 "  ..."，让 diff 聚焦改动。
+func collapseContext(diff string, ctx int) string {
+	lines := strings.Split(strings.TrimRight(diff, "\n"), "\n")
+	keep := make([]bool, len(lines))
+	for idx, l := range lines {
+		if strings.HasPrefix(l, "+ ") || strings.HasPrefix(l, "- ") {
+			for k := idx - ctx; k <= idx+ctx; k++ {
+				if k >= 0 && k < len(lines) {
+					keep[k] = true
+				}
+			}
+		}
+	}
+	var b strings.Builder
+	skipping := false
+	for idx := range lines {
+		if keep[idx] {
+			b.WriteString(lines[idx] + "\n")
+			skipping = false
+		} else if !skipping {
+			b.WriteString("  ...\n")
+			skipping = true
+		}
+	}
+	return b.String()
 }
 
 func workflowMatchesTargets(file string, wf *N8NWorkflow, targets map[string]struct{}) bool {
