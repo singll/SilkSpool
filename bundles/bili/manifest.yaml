@@ -7,12 +7,17 @@ defaults:
     content: |
       # 必须从官方仓库获取最新配置并修改 RoomId
       # https://raw.githubusercontent.com/xbclub/BilibiliDanmuRobot/master/etc/bilidanmaku-api.yaml
+  - path: robot2/config/bilidanmaku-api.yaml
+    content: |
+      # 第二个直播间的弹幕机器人配置，修改 RoomId 为目标房间号
 templates:
   - 00-base.yaml
   - 10-recorder.yaml
   - 20-robot.yaml
   - 30-dozzle.yaml
+  - 40-robot.yaml
 services:
   - bili-recorder
   - bili-robot
+  - bili-robot2
   - dozzle

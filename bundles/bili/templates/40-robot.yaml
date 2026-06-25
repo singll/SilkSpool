@@ -1,0 +1,13 @@
+services:
+  robot2:
+    image: xbclub/bilibilidanmurobot:latest
+    container_name: ${APP_PREFIX:-sp-}bili-robot2
+    restart: always
+    network_mode: host
+    volumes:
+      - ./robot2/config:/app/data/etc
+      - ./robot2/logs:/app/data/logs
+    environment:
+      - TZ=${TZ:-Asia/Shanghai}
+    security_opt:
+      - apparmor:unconfined

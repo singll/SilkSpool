@@ -1,0 +1,85 @@
+# --- 核心设置 ---
+# 账号配置 (Account Configuration)
+# ----------------------------------------------------------------
+
+RoomId: ROOM_ID_PLACEHOLDER
+
+# --- 防风控与安全设置 (关键) ---
+DanmuLen: 30
+ThanksGiftTimeout: 8
+FuzzyMatchCmd: false
+Limit: true
+
+# --- 数据库配置 ---
+DBPath: "./data"
+DBName: "room2.db"
+
+# --- 功能开关 ---
+InteractWord: false
+EntryEffect: true
+WelcomeHighWealthy: true
+WelcomeHighWealthyLevel: 30
+ThanksGift: true
+ThanksFocus: false
+CronDanmu: true
+PKNotice: true
+BlindBoxProfitLossStat: false
+BlindBoxStat: true
+DanmuCntEnable: true
+InteractAnchor: false
+
+KeywordReply: true
+KeywordReplyList:
+  "查询": "发送【盲盒】可以查看本月成就哦~"
+
+# --- 欢迎语列表 ---
+WelcomeDanmu:
+  - "欢迎 {user} 回家~"
+  - "欢迎 {user}，前排瓜子板凳已经备好~"
+  - "欢迎 {user}，来了就是一家人！"
+  - "哇！欢迎 {user} 空降直播间！"
+  - "欢迎 {user}，今天也是元气满满的一天呢！"
+  - "欢迎 {user}，这里是快乐星球，快坐下！"
+  - "欢迎 {user}，点点关注不迷路~"
+  - "欢迎 {user}，入股不亏，点个关注吧！"
+  - "捉到一只野生的 {user}，快到碗里来~"
+  - "欢迎 {user} 宝子，贴贴~"
+
+# --- 关注感谢文案 ---
+FocusDanmu:
+  - "感谢关注！老板大气！"
+  - "谢谢宝子的关注，爱你哟~"
+  - "感谢关注，祝老板发大财！"
+  - "收到关注啦！开心转圈圈~"
+
+# --- 整点报时配置 ---
+CronDanmuList:
+  - Cron: "0 0 19 * * *"
+    Random: true
+    Danmu:
+      - "【整点报时】晚上 19:00，欢迎新进直播间的朋友们！"
+
+  - Cron: "0 0 20 * * *"
+    Random: true
+    Danmu:
+      - "【整点报时】晚上 20:00，黄金档时间！"
+
+  - Cron: "0 0 21 * * *"
+    Random: true
+    Danmu:
+      - "【整点报时】晚上 21:00，感谢大家的陪伴~"
+
+  - Cron: "0 0 22 * * *"
+    Random: true
+    Danmu:
+      - "【整点报时】深夜 22:00，准备休息的宝子们晚安~"
+
+  - Cron: "0 0 23 * * *"
+    Random: true
+    Danmu:
+      - "【整点报时】深夜 23:00，早睡早起身体好~"
+
+# --- 杂项 ---
+RobotName: "小簿向前冲2号"
+Log:
+  Encoding: plain
