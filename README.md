@@ -107,6 +107,41 @@ vim out/silkspool.yaml
 | `bili` | BiliRecorder, BiliRobot, Dozzle | Bilibili live/chat tools |
 | `aigateway` | NewAPI, Redis | LLM API gateway |
 
+### Binary Install Sources (`install_sources`)
+
+`spool stack <host>` installs binary services declared in `host.stack[]`. Each `install_sources` entry supports:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `alias` | yes | Binary name; installs to `/usr/local/bin/<alias>` |
+| `repo` | one of | `owner/repo` (GitHub) or `gitlab:owner/repo`; mutually exclusive with `url` |
+| `url` | one of | Direct download URL (`{ARCH}`/`{VERSION}` placeholders); bypasses release API. Exactly one of `repo`/`url` is required |
+| `pattern` | repo only | Asset filename; `{ARCH}` / `{VERSION}` placeholders |
+| `service_name` | no | systemd unit name; omit for a plain binary |
+| `default_version` | no* | `latest` (GitHub only) or a fixed tag. *Required and must be a fixed tag for `url` and `gitlab:` sources (no `latest` resolution) |
+| `format` | no | Override format detection — needed for regex `pattern` |
+| `binary_path` | no | Path to the binary inside an archive (tar/zip only; ignored with a warning for single-file/raw) |
+| `exec_args` | no | Extra `ExecStart` args for the generated systemd unit |
+| `sha256` | no | Per-arch checksum map (`amd64:`/`arm64:`…); verified on the target before install. Configured-but-missing the current arch is an error |
+
+**Supported Artifact Formats** (auto-detected from the asset filename suffix; override with `format`):
+
+| Format | Detection | Remote tool | Notes |
+|--------|-----------|-------------|-------|
+| `tar.gz` / `tgz` | `.tar.gz` / `.tgz` | `tar` | |
+| `tar.xz` | `.tar.xz` | `xz` (xz-utils) | |
+| `tar.zst` | `.tar.zst` | `zstd` | |
+| `zip` | `.zip` | `unzip` | |
+| `zst` | `.zst` (single-file) | `zstd` | decompresses straight to the binary, e.g. tuwunel |
+| `gz` | `.gz` (single-file) | `gzip` | |
+| `raw` | no/unknown suffix, regex pattern | — | bare ELF, `chmod +x` |
+
+Notes:
+- Missing a required command on the target (`curl`, a decompressor, or `sha256sum` when a checksum is set) produces a clear error with the package to install; spool never installs packages on the target itself.
+- Archives locate the binary via `binary_path` → match by `alias` → largest ELF.
+- Install is idempotent: a `/usr/local/bin/.spool-<alias>.version` marker is compared against the resolved tag (`latest` resolved first for GitHub). Use `--force` to reinstall, `--dry-run` to preview (still probes the remote for its architecture; it just skips the install itself).
+- Install places the binary and writes a systemd unit but never enables or starts it — starting a service is `spool restart` / bundle `up`, kept separate from install.
+
 ---
 
 <a id="中文"></a>

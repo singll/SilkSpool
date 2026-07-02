@@ -272,11 +272,12 @@ install_sources:
     service_name: "headscale"
     default_version: "v0.22.3"
 
+  # GitLab 源：无法解析 latest，必须显式 pin default_version（否则报错）
   - alias: "conduit"
     repo: "gitlab:famedly/conduit"
     pattern: "x86_64.*linux.*musl"
     service_name: "conduit"
-    default_version: "latest"
+    default_version: "v0.9.0"
 
   - alias: "ntfy"
     repo: "binwiederhier/ntfy"
@@ -289,6 +290,48 @@ install_sources:
     pattern: "authelia-{VERSION}-linux-{ARCH}.tar.gz"
     service_name: "authelia"
     default_version: "latest"
+
+  # 单文件 zstd 压缩（zstd -d 解出即全静态可执行文件，无运行时依赖）
+  # 目标机需有 zstd；exec_args 注入到自动生成的 systemd unit
+  - alias: "tuwunel"
+    repo: "matrix-construct/tuwunel"
+    pattern: "tuwunel-{ARCH}-linux-musl.zst"
+    service_name: "tuwunel"
+    default_version: "latest"
+    format: "zst"
+    exec_args: "--config /etc/tuwunel/tuwunel.toml"
+
+  # tar.xz 压缩包示例（目标机需 xz-utils）；binary_path 指定包内二进制相对路径
+  - alias: "examplexz"
+    repo: "someorg/exampletool"
+    pattern: "exampletool-{VERSION}-{ARCH}-linux.tar.xz"
+    service_name: "examplexz"
+    default_version: "latest"
+    binary_path: "exampletool"
+
+  # zip 压缩包示例（目标机需 unzip）；不填 binary_path 时按 alias 名/最大 ELF 自动定位
+  - alias: "examplezip"
+    repo: "someorg/zippedtool"
+    pattern: "zippedtool_{VERSION}_linux_{ARCH}.zip"
+    default_version: "latest"
+
+  # 直链源示例（url 与 repo 互斥、优先）：绕开 release API，适合自建/镜像/私有 CDN 上的二进制。
+  # 直链无法解析 latest，default_version 必填且不能是 latest（用于替换 {VERSION} 占位 + 幂等标记）。
+  - alias: "exampleurl"
+    url: "https://mirror.example.com/bin/exampletool-{VERSION}-linux-{ARCH}.zst"
+    service_name: "exampleurl"
+    default_version: "v3.1.0"
+    format: "zst"
+
+  # sha256 完整性校验示例：按架构填校验和，安装前远程 sha256sum 比对，不符即中止。
+  # 配了 sha256 却缺当前架构条目 → 报错（不静默放行）。清空 sha256 = 不校验。
+  - alias: "examplesha"
+    url: "https://mirror.example.com/bin/securetool-{VERSION}-{ARCH}"
+    service_name: "examplesha"
+    default_version: "v2.0.0"
+    sha256:
+      amd64: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      arm64: "0000000000000000000000000000000000000000000000000000000000000000"
 
 # -------------------- n8n 配置 --------------------
 n8n:
