@@ -1,0 +1,29 @@
+# ==============================================================================
+#  Prometheus - 指标抓取与存储
+#  scrape 目标经 prometheus.yml（silkdata sync_rules 下发到 deployPath）：
+#    bellkeeper(192.168.7.230:8090/metrics)、cAdvisor×3(.230/.231/.220:8081)、loki、self
+#  named volume 挂 /prometheus，首挂继承镜像内 nobody 属主，无需 chown。
+# ==============================================================================
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: ${APP_PREFIX:-sp-}prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - obs-prom-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    networks:
+      - obs-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

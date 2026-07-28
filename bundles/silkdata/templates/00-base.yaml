@@ -1,0 +1,12 @@
+name: silkdata
+
+networks:
+  kp-network:
+    driver: bridge
+
+volumes:
+  kp-redis-data:
+  kp-nats-data:
+  kp-bellkeeper-db:
+  kp-couchdb-data:
+  kp-couchdb-config:

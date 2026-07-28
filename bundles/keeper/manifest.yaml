@@ -51,20 +51,11 @@ defaults:
       COUCHDB_SECRET=CHANGE_ME_couchdb_secret
 templates:
   - 00-base.yaml
-  - 10-redis.yaml
-  - 12-meilisearch.yaml
-  - 15-nats.yaml
   - 20-n8n.yaml
   - 30-apps.yaml
-  - 40-couchdb.yaml
   - 50-bellkeeper.yaml
 services:
   - bellkeeper
-  - bellkeeper-db
   - n8n
   - memos
   - rsshub
-  - couchdb
-  - redis
-  - meilisearch
-  - nats

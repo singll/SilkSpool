@@ -1,0 +1,25 @@
+# ==============================================================================
+#  Loki - 日志聚合（收 promtail 推送，filesystem 存储，保留 7d 对齐 app 日志 MaxAge）
+#  单体模式(monolithic)：auth 关闭（纯内网）；配置 loki-config.yml 经 sync_rules 下发。
+#  named volume 挂 /loki，首挂继承镜像属主，无需 chown。
+# ==============================================================================
+
+services:
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: ${APP_PREFIX:-sp-}loki
+    restart: unless-stopped
+    volumes:
+      - ./loki-config.yml:/etc/loki/loki-config.yml:ro
+      - obs-loki-data:/loki
+    command: -config.file=/etc/loki/loki-config.yml
+    ports:
+      - "3100:3100"
+    networks:
+      - obs-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

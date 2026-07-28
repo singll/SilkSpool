@@ -25,15 +25,19 @@ services:
       - ./bellkeeper-init.sh:/app/scripts/bellkeeper-init.sh:ro
       - ./.env:/app/config/.env:ro
       - /mnt/NAS/data/knowledge:/mnt/knowledge:rw
-    depends_on:
-      bellkeeper-db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      nats:
-        condition: service_started
-      meilisearch:
-        condition: service_started
+    # 数据层已剥离到 silkdata(.231)；用 extra_hosts 把数据服务名解析到数据机，
+    # 应用连接串(config 默认 sp-* 容器名)无需改动。sp- 名与裸服务名都映射，覆盖所有解析路径。
+    extra_hosts:
+      - "sp-bellkeeper-db:192.168.7.231"
+      - "bellkeeper-db:192.168.7.231"
+      - "sp-meilisearch:192.168.7.231"
+      - "meilisearch:192.168.7.231"
+      - "sp-redis:192.168.7.231"
+      - "redis:192.168.7.231"
+      - "sp-nats:192.168.7.231"
+      - "nats:192.168.7.231"
+      - "sp-couchdb:192.168.7.231"
+      - "couchdb:192.168.7.231"
     networks:
       - kp-network
     healthcheck:
@@ -43,21 +47,5 @@ services:
       retries: 3
       start_period: 10s
 
-  bellkeeper-db:
-    image: postgres:16-alpine
-    container_name: ${APP_PREFIX:-sp-}bellkeeper-db
-    restart: unless-stopped
-    environment:
-      - TZ=Asia/Shanghai
-      - POSTGRES_DB=bellkeeper
-      - POSTGRES_USER=bellkeeper
-      - POSTGRES_PASSWORD=${BELLKEEPER_DB_PASSWORD:-bellkeeper123}
-    volumes:
-      - kp-bellkeeper-db:/var/lib/postgresql/data
-    networks:
-      - kp-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bellkeeper -d bellkeeper"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+# bellkeeper-db 已迁移到 silkdata(.231) 数据层，见 bundle silkdata / 50-postgres.yaml。
+# 旧卷 kp-bellkeeper-db 保留在 keeper 上作回滚兜底（≥7 天）。

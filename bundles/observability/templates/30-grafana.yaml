@@ -1,0 +1,35 @@
+# ==============================================================================
+#  Grafana - 看板（数据源 Prometheus+Loki 与启动看板经 provisioning 声明式下发）
+#  访问：grafana.singll.net（caddy 反代 → 本机 :3000，前置 authelia one_factor）
+#  admin 密码走 .env(GRAFANA_ADMIN_PASSWORD)；named volume 挂 /var/lib/grafana。
+# ==============================================================================
+
+services:
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: ${APP_PREFIX:-sp-}grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD 必须在 .env 提供}
+      - GF_SERVER_ROOT_URL=https://grafana.singll.net
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    volumes:
+      - obs-grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - obs-network
+    depends_on:
+      - prometheus
+      - loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

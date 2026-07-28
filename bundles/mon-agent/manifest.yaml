@@ -1,0 +1,16 @@
+name: mon-agent
+type: compose
+# 每机监控 agent（keeper / silkdata / knowledge 三台）：
+#   cAdvisor  → 暴露本机容器 CPU/内存/网络/磁盘指标（Prometheus 跨机抓 :8081）
+#   Promtail  → 采集本机 docker 容器 stdout 日志，推送到 silkdata:3100 的 Loki
+# promtail-config.yml 每机一份（仅 host 标签不同），经各 host 的 sync_rules 下发。
+features:
+  docker_log_rotation: true
+  docker_prune: true
+templates:
+  - 00-base.yaml
+  - 10-cadvisor.yaml
+  - 20-promtail.yaml
+services:
+  - cadvisor
+  - promtail

@@ -23,7 +23,8 @@ services:
       NODE_ENV: production
       CACHE_TYPE: redis
       REDIS_URL: "redis://:${REDIS_PASSWORD:-redispassword}@redis:6379/"
-    depends_on:
-      - redis
+    extra_hosts:
+      - "redis:192.168.7.231"
+      - "sp-redis:192.168.7.231"
     networks:
       - kp-network

@@ -1,0 +1,26 @@
+# ==============================================================================
+#  PostgreSQL - Bellkeeper 主库（从 keeper 的 50-bellkeeper.yaml 抽出，独立到数据层）
+#  分离后对 LAN 发布 5432，供 keeper 上的 sp-bellkeeper 经 extra_hosts 跨机连接。
+# ==============================================================================
+
+services:
+  bellkeeper-db:
+    image: postgres:16-alpine
+    container_name: ${APP_PREFIX:-sp-}bellkeeper-db
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - POSTGRES_DB=bellkeeper
+      - POSTGRES_USER=bellkeeper
+      - POSTGRES_PASSWORD=${BELLKEEPER_DB_PASSWORD:-bellkeeper123}
+    volumes:
+      - kp-bellkeeper-db:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"          # 分离后对 LAN 发布，供 keeper 应用层跨机连接
+    networks:
+      - kp-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bellkeeper -d bellkeeper"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

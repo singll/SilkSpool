@@ -1,0 +1,16 @@
+# ==============================================================================
+#  observability 中心栈 - 网络与卷（仅 silkdata）
+#  三个服务(prometheus/loki/grafana)同处 obs-network，用容器名互访：
+#    grafana → prometheus:9090 / loki:3100；prometheus → loki:3100(self-scrape)
+#  被监控端(bellkeeper /metrics、cAdvisor)是跨机 IP 抓取，不在本网络内。
+# ==============================================================================
+name: observability
+
+networks:
+  obs-network:
+    driver: bridge
+
+volumes:
+  obs-prom-data:      # Prometheus TSDB（保留 15d）
+  obs-loki-data:      # Loki chunks/index（保留 7d）
+  obs-grafana-data:   # Grafana 状态库（看板/数据源经 provisioning 声明式下发）

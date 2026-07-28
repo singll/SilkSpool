@@ -1,0 +1,40 @@
+# ==============================================================================
+#  cAdvisor - 本机容器资源指标（Prometheus 跨机抓 http://<host>:8081/metrics）
+#  ⚠ 三台 Docker 均启用 containerd 快照器(StorageDriver=overlayfs)，经典 docker
+#    读写层路径(image/*/layerdb)不存在——必须走 containerd 工厂 + moby 命名空间才能出
+#    单容器指标；且需 cAdvisor≥v0.52(旧版 docker 客户端 API 1.41<守护进程要求的 1.44)。
+#    单容器 name= 是容器ID哈希，友好标识用 image 标签(看板已据此分组)。
+#  ⚠ 已知缺口：keeper 跑前沿 Docker 29.2.1，docker 工厂抢先接管却卡 RW-layer 失败、
+#    不回退 containerd → keeper 单容器指标缺失(仅机器级+根cgroup)；knowledge/silkdata 正常。
+#  mem_limit 300m：护栏，防止 agent 在内存吃紧的 keeper 上失控。
+# ==============================================================================
+
+services:
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    container_name: ${APP_PREFIX:-sp-}cadvisor
+    restart: unless-stopped
+    privileged: true
+    cgroup: host                      # 宿主 cgroup 命名空间——否则 cgroup v2 下 cAdvisor 只见自身子树，
+                                       # 单容器指标(name=)全缺、只剩根 cgroup id="/"（看板空数据根因）
+    mem_limit: 300m
+    command:
+      # 三台 Docker 均启用 containerd 快照器(StorageDriver=overlayfs，镜像由 containerd 管)，
+      # cAdvisor 经典 docker 读写层路径不存在→docker_only 下单容器 handler 创建失败只剩根 cgroup。
+      # 改走 containerd 工厂直连，恢复单容器 name 指标。
+      - '--containerd=/run/containerd/containerd.sock'
+      - '--containerd-namespace=moby'  # Docker 的容器在 containerd 的 moby 命名空间(cAdvisor 默认找 k8s.io)
+      - '--housekeeping_interval=30s' # 与 Prometheus scrape_interval 对齐，降 CPU
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+      - /run/containerd:/run/containerd:ro   # containerd 工厂直连快照器
+    ports:
+      - "8081:8080"
+    networks:
+      - monagent-net

@@ -1,0 +1,28 @@
+name: observability
+type: compose
+# 中心观测栈（仅 silkdata）：Prometheus(指标) + Loki(日志) + Grafana(看板)
+# agent(cAdvisor+Promtail)在 mon-agent bundle，落到每台被监控机。
+# 配置文件(prometheus.yml/loki-config.yml/grafana provisioning/.env)经 silkdata sync_rules 下发，
+# 挂进容器（相对 deployPath=/opt/silkspool/observability）。
+features:
+  docker_log_rotation: true
+  docker_prune: true
+defaults:
+  - path: .env
+    content: |
+      # ==============================================================================
+      #  observability 中心栈环境变量
+      #  真实密码由 hosts/silkdata/observability/.env 经 sync_rules 覆盖下发。
+      # ==============================================================================
+      APP_PREFIX=sp-
+      GRAFANA_ADMIN_USER=admin
+      GRAFANA_ADMIN_PASSWORD=CHANGE_ME_grafana_admin_password
+templates:
+  - 00-base.yaml
+  - 10-prometheus.yaml
+  - 20-loki.yaml
+  - 30-grafana.yaml
+services:
+  - prometheus
+  - loki
+  - grafana

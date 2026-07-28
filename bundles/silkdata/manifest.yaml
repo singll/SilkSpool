@@ -1,0 +1,36 @@
+name: silkdata
+type: compose
+# 数据层 bundle：从 keeper 剥离出的有状态服务（PG / Meilisearch / Redis / NATS / CouchDB）
+# 与 keeper(应用层)分离部署，独立生命周期 + 独立备份。
+# 无 git_clone —— 数据层不需要 Bellkeeper 源码。
+features:
+  docker_log_rotation: true
+  docker_prune: true
+defaults:
+  - path: .env
+    content: |
+      # ==============================================================================
+      #  Silkdata Stack Environment Variables（数据层）
+      #  注意：这些密钥必须与 keeper(应用层) .env 完全一致，
+      #        否则应用连不上库 / Meili key 不匹配。部署时由 hosts/silkdata/.env 覆盖。
+      # ==============================================================================
+      APP_PREFIX=sp-
+      REDIS_PASSWORD=CHANGE_ME_redis_password
+      MEILI_MASTER_KEY=CHANGE_ME_meili_master_key
+      BELLKEEPER_DB_PASSWORD=CHANGE_ME_bellkeeper_db_password
+      COUCHDB_USER=admin
+      COUCHDB_PASSWORD=CHANGE_ME_couchdb_password
+      COUCHDB_SECRET=CHANGE_ME_couchdb_secret
+templates:
+  - 00-base.yaml
+  - 10-redis.yaml
+  - 12-meilisearch.yaml
+  - 15-nats.yaml
+  - 40-couchdb.yaml
+  - 50-postgres.yaml
+services:
+  - bellkeeper-db
+  - meilisearch
+  - redis
+  - nats
+  - couchdb
