@@ -9,6 +9,10 @@
   因两路径源族不同且 v6 不固定，RDP 防火墙保持放行，真正门控在上游
   （txhk 2FA+白名单 / istoreos 3min pinhole）+ 下面的 NLA + 账户锁定 + 低权专账户。
 
+  传输策略（本版）：全程强制 RDP TCP-only（SelectTransport=1）+ 服务端 KeepAlive——
+  根治"弱显卡直通 + 受限家宽上行"下翻页快即断连、临时窗口断开难重连。网络层已配套：
+  istoreos 路径 A 的 v4 DNAT 改 TCP-only、rdp6-agent 按 conntrack 活跃度保活直连窗口。
+
   用法（管理员 PowerShell）：  powershell -ExecutionPolicy Bypass -File .\rdp-win10-hardening.ps1
 #>
 
@@ -39,11 +43,22 @@ Write-Host "  RDP 已启用 + 强制 NLA ✓"
 & net accounts /lockoutthreshold:5 /lockoutwindow:15 /lockoutduration:15 | Out-Null
 Write-Host "  账户锁定：5 次失败锁 15 分钟 ✓"
 
-# 4) 启用 RDP-UDP（RemoteFX，配合 txhk UDP 代理 / 路径 A，提升跟手度；不通自动回退 TCP）
+# 4) 强制 RDP 传输为 TCP-only（关键：根治"翻页快/高码率时直接断连"）
+#    目标机是 PVE 显卡直通的弱显卡 Win10、家宽上行已到顶：RDP-UDP(RemoteFX) 在丢包/受限上行下
+#    会触发图形管线 reset → 整条 RDP 会话被拉断。TCP 传输有重传，牺牲一点跟手度换"不掉线"。
+#    与网络层呼应：istoreos 路径 A 的 v4 DNAT 已改 TCP-only；此处让 Win10 干脆不协商 UDP，
+#    连接更快、无 UDP 探测停顿。日后若想换回"流畅优先"：把 SelectTransport 改回 0 即可。
 $ts = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
 if (-not (Test-Path $ts)) { New-Item -Path $ts -Force | Out-Null }
-Set-ItemProperty $ts -Name fClientDisableUDP -Value 0 -ErrorAction SilentlyContinue
-Write-Host "  RDP-UDP 已启用 ✓"
+Set-ItemProperty $ts -Name SelectTransport -Value 1 -Type DWord   # 0=TCP+UDP(默认) 1=仅TCP 2=任一
+Write-Host "  RDP 传输已强制 TCP-only（SelectTransport=1）✓"
+
+# 4b) 服务端 KeepAlive + 允许断线自动重连（配合家侧 conntrack 连接保活：短暂丢包不掉线、掉了能自动回来）
+#     KeepAliveInterval 单位=分钟；服务端周期发保活 PDU，及时发现半死连接并驱动客户端自动重连。
+Set-ItemProperty $ts -Name KeepAliveEnable       -Value 1 -Type DWord
+Set-ItemProperty $ts -Name KeepAliveInterval     -Value 1 -Type DWord   # 每 1 分钟
+Set-ItemProperty $ts -Name fDisableAutoReconnect -Value 0 -Type DWord   # 允许客户端自动重连
+Write-Host "  RDP KeepAlive(1min) + 自动重连 已启用 ✓"
 
 # 5) 防火墙：确保 RDP 入站放行（门控在上游，不在此处过度收敛）
 Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue

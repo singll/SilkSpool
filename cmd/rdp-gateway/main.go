@@ -243,11 +243,15 @@ func handleOpenDirectV4(w http.ResponseWriter, r *http.Request, store *stateStor
 	}
 	addr := net.JoinHostPort(res.V4, strconv.Itoa(res.Port))
 	exp := now.Add(time.Duration(res.TTL) * time.Second)
-	store.Record(historyEntry{Time: now, Kind: "v4", IP: ip, Result: "ok", Detail: "仅放行当前出口 IP", V4Addr: addr, ExpiresAt: &exp})
-	log.Printf("rdp-gateway: v4 直连已开通 %s（仅放行 %s）", addr, ip)
+	store.Record(historyEntry{Time: now, Kind: "v4", IP: ip, Result: "ok", Detail: "仅放行当前出口 IP（连接保活）", V4Addr: addr, ExpiresAt: &exp})
+	log.Printf("rdp-gateway: v4 直连已开通 %s（仅放行 %s，保活=%v）", addr, ip, res.Keepalive)
+	detail := fmt.Sprintf("仅放行 %s，%d 秒内可发起新连接", ip, res.TTL)
+	if res.Keepalive {
+		detail = fmt.Sprintf("仅放行 %s：连接期间自动续期不掉线，断开约 %d 分钟后自动关窗，重连无需重新开通", ip, (res.TTL+59)/60)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"addr": addr, "ttl": res.TTL, "expires_at_unix": exp.Unix(),
-		"detail": fmt.Sprintf("仅放行 %s，%d 秒内可发起新连接", ip, res.TTL),
+		"keepalive": res.Keepalive, "detail": detail,
 	})
 }
 
@@ -423,6 +427,8 @@ type agentV4Result struct {
 	V4        string `json:"v4"`
 	Port      int    `json:"port"`
 	TTL       int    `json:"ttl"`
+	Keepalive bool   `json:"keepalive"`
+	Refresh   int    `json:"refresh"`
 	Client    string `json:"client"`
 	ExpiresAt string `json:"expires_at"`
 }
@@ -1063,7 +1069,7 @@ input{height:38px;border:1px solid var(--line);border-radius:6px;padding:0 10px;
         <button class="btn" data-open="v4" {{if not .ClientKnown}}disabled{{end}}>开通 v4 直连</button>
         <button class="btn" data-copy="addr-v4" disabled>复制</button>
        </div>
-       <div class="note" data-note>不经香港、同省直达（~25ms），带宽为家宽上行；仅放行当前出口 IP。</div>
+       <div class="note" data-note>不经香港、同省直达（~25ms），带宽为家宽上行；仅放行当前出口 IP，连接期间自动保活、断线可原地重连。</div>
       </article>
       <article class="route fast" id="route-v6">
        <div class="label"><span>IPv6 直连</span><span class="badge warn" data-badge>未开通</span></div>
@@ -1208,6 +1214,7 @@ input{height:38px;border:1px solid var(--line);border-radius:6px;padding:0 10px;
           var copyBtn=card.querySelector("[data-copy]");if(copyBtn)copyBtn.disabled=false;
           var badge=card.querySelector("[data-badge]");
           if(j.permanent){badge.textContent="长期已生效";badge.className="badge ok"}
+          else if(j.keepalive){badge.textContent="已开通 · 保活中";badge.className="badge ok"}
           else if(j.expires_at_unix){routeExpires[kind]=j.expires_at_unix*1000}
           if(j.detail){card.querySelector("[data-note]").textContent=j.detail}
           tick();

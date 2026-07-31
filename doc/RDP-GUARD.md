@@ -25,6 +25,16 @@
 >
 > **待用户侧**：① Cloudflare 加 `rdp.singll.net A → 43.129.195.4`（v6 不绑 DNS——会公开 GUA 且漂移，授权页已实时给）；② 腾讯云安全组放行 `udp/3478`（STUN，DERP 增强）；③ 公司设备 v6 测试；④ Win10 跑加固脚本；⑤ 浏览器 2FA 实连。
 
+> **v3.7 v4 直连稳定性：TCP-only + 连接保活（2026-07-31）**：
+> 1. **问题**：v4 直连（路径 A-v4）"翻网页过快即直接断连"，且因是临时短窗口，断开后**打不进去重连**。目标机是 **PVE 显卡直通的弱显卡 Win10**、家宽上行已到顶。
+> 2. **根因**：① **RDP-UDP(RemoteFX)** 在弱显卡高码率 + 受限上行丢包下，图形管线 reset → 整条会话被拉断（UDP 无重传）；② v4 限源集合元素 **短 TTL 180s** 到期即关窗，断线自动重连的新 TCP 连接**不命中 DNAT**、落入 fw4 默认拒绝。
+> 3. **修复（四处）**：
+>    - **`90-rdp4-dnat.nft` 改 TCP-only**：去掉 UDP 的 DNAT/SNAT，只保留 `tcp dport 33891 → 192.168.7.129:3389`。RDP 被迫走 TCP（有重传），弱上行下不再掉线。
+>    - **`rdp6-agent` 连接保活**：v4 从 v6 的 `RDP6_TTL` 拆出独立 **`RDP4_TTL`**（默认 300、部署 600）+ **`RDP4_REFRESH`**（默认 60）。新增 `v4Keeper`：读 `/proc/net/nf_conntrack`，按 `dport=<RDP4_EXT_PORT> && src=<client>` 累计双向包数；有增长则每 `RDP4_REFRESH` 秒重放限源集合元素续期；持续 `RDP4_TTL` 秒无新流量则停止续期、元素在 fw4 自然过期 → 窗口自动关闭。**效果**：活跃连接永不掉、翻页触发的 RDP 自动重连仍命中 DNAT、真断开后窗口自动收口（安全不长开）。`/open4` 响应加 `keepalive`/`refresh`，`/status` 加 `v4_ttl`/`v4_refresh`。
+>    - **`rdp-gateway`**：`/api/open/v4` 透传保活标志，控制页 v4 卡片显示「保活中」。必需 env `GW_AGENT_V4_URL`（`http://100.64.0.2:8091/open4`）。
+>    - **Win10 加固脚本**：由"启用 RDP-UDP"改为**强制 TCP-only**（`SelectTransport=1`）+ 服务端 **KeepAlive**（`KeepAliveEnable=1` / `KeepAliveInterval=1min`）+ `fDisableAutoReconnect=0`。传输层与网络层一致，连接更快、无 UDP 探测停顿。
+> 4. **部署注记（避坑）**：gateway 的 `EnvironmentFile=/etc/rdp-gateway.env` 与 `spool push` 落点 `/opt/rdp-gateway/rdp-gateway.env` **是两个文件**——push 只到暂存区，必须 `spool exec txhk "sudo install -m640 -o root -g root /opt/rdp-gateway/rdp-gateway.env /etc/rdp-gateway.env"` 落位后再 `restart`，否则新增 env（如 `GW_AGENT_V4_URL`）不生效、gateway `envRequired` 崩溃循环。agent 的 `RDP4_TTL`/`RDP4_REFRESH` 由 `rdp6-agent.init` 的 `procd_set_param env` 注入（istoreos root@ 直接生效）。
+
 > **目标**：让「装不了 Tailscale 的临时设备」通过原生 RDP（mstsc）安全连接家里内网的 Win10（192.168.7.129）。
 > **架构**：**双路径** —— 快车道 A（IPv6 端到端直连，公司侧有 v6 时启用，最低延迟）+ 兜底 B（txhk 香港公网中转，任意 IPv4 客户端永远可用）。
 > **认证底座**：**单点 2FA 在 txhk** —— 一次 Authelia 2FA 同时武装两条路径（v4 中转白名单 + 经 Tailscale 令 istoreos 开 v6 pinhole 并返回当前 Win10 GUA）；最后底线：Windows NLA + 弱权账户 + 账户锁定。
@@ -465,8 +475,12 @@ net accounts /lockoutthreshold:5 /lockoutwindow:15 /lockoutduration:15
 Enable-NetFirewallRule -DisplayGroup "Remote Desktop"   # 放行 RDP；门控在上游(txhk 2FA / istoreos 3min pinhole)+NLA+锁定
 #   可选收敛：禁用过宽 TCP-In/UDP-In，仅放行 192.168.7.0/24(v4 路径B) 与 2000::/3(v6 路径A)，见 ps1 §5b
 
-# 5. 启用 RDP UDP（RemoteFX，配合 §4.2 / 路径 A）
-Set-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services" -Name "fClientDisableUDP" -Value 0 -ErrorAction SilentlyContinue
+# 5. 【v3.7】强制 RDP 传输 TCP-only + 服务端 KeepAlive（根治弱显卡+受限上行下翻页快即断连；取代旧"启用 UDP"）
+$ts = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+Set-ItemProperty $ts -Name "SelectTransport"      -Value 1 -Type DWord   # 0=TCP+UDP 1=仅TCP 2=任一
+Set-ItemProperty $ts -Name "KeepAliveEnable"      -Value 1 -Type DWord
+Set-ItemProperty $ts -Name "KeepAliveInterval"    -Value 1 -Type DWord   # 分钟
+Set-ItemProperty $ts -Name "fDisableAutoReconnect" -Value 0 -Type DWord
 ```
 
 ---

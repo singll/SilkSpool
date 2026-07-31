@@ -42,10 +42,18 @@ var (
 	v4NftSet  = env("RDP4_NFT_SET", "rdp4_clients")
 	v4ExtPort = envInt("RDP4_EXT_PORT", 33891)
 	wanIface  = env("RDP4_WAN_IFACE", "wan")
+
+	// v4 连接保活：与 v6（开窗不限源、短 TTL）不同，v4 按源 IP 精确放行，可长开而低风险。
+	// 只要 conntrack 里该客户端到 Win10:3389 的会话仍在收发包，就每 v4RefreshSeconds 续期一次
+	// 限源集合元素；断开后 v4TTLSeconds 内无新流量则停止续期，元素在 fw4 自然过期 → 窗口关闭。
+	// 效果：连着永不掉、翻页快触发的 RDP 自动重连仍命中 DNAT；真断开后窗口自动收口。
+	v4TTLSeconds     = envInt("RDP4_TTL", 300)
+	v4RefreshSeconds = envInt("RDP4_REFRESH", 60)
 )
 
 var openState = newAgentState()
 var v4State = newAgentState()
+var v4keep = newV4Keeper()
 
 func main() {
 	log.SetFlags(log.LstdFlags)
@@ -128,11 +136,13 @@ func handleOpenV4(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "open v4 pinhole failed"})
 		return
 	}
-	expiresAt := time.Now().Add(time.Duration(ttlSeconds) * time.Second)
+	v4keep.Arm(client) // 连接保活：活跃期间自动续期，断开 v4TTLSeconds 无流量后关窗
+	expiresAt := time.Now().Add(time.Duration(v4TTLSeconds) * time.Second)
 	v4State.Set(client+" → "+wan4, "wan4", expiresAt)
-	log.Printf("rdp6-agent: 已开 v4 直连窗口 client=%s wan=%s:%d ttl=%ds", client, wan4, v4ExtPort, ttlSeconds)
+	log.Printf("rdp6-agent: 已开 v4 直连窗口 client=%s wan=%s:%d ttl=%ds 保活=%ds", client, wan4, v4ExtPort, v4TTLSeconds, v4RefreshSeconds)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"v4": wan4, "port": v4ExtPort, "ttl": ttlSeconds, "client": client, "expires_at": expiresAt.Format(time.RFC3339),
+		"v4": wan4, "port": v4ExtPort, "ttl": v4TTLSeconds, "keepalive": true, "refresh": v4RefreshSeconds,
+		"client": client, "expires_at": expiresAt.Format(time.RFC3339),
 	})
 }
 
@@ -151,6 +161,8 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		"last_open":    openState.Snapshot(),
 		"v4_nft_set":   v4NftSet,
 		"v4_ext_port":  v4ExtPort,
+		"v4_ttl":       v4TTLSeconds,
+		"v4_refresh":   v4RefreshSeconds,
 		"last_open_v4": v4State.Snapshot(),
 		"checked_at":   time.Now().Format(time.RFC3339),
 	}
@@ -348,9 +360,10 @@ func openPinhole(gua string) error {
 
 // openV4Pinhole 把客户端 v4 加入 fw4 限源集合 rdp4_clients（带 TTL）。
 // 集合由 uci firewall 声明；DNAT/SNAT 静态链见 /etc/nftables.d/90-rdp4-dnat.nft，仅对集合内源生效。
+// 元素 TTL 用 v4TTLSeconds（连接保活会周期性重放此元素以续期）。
 func openV4Pinhole(client string) error {
 	_, err := run("nft", "add", "element", "inet", "fw4", v4NftSet,
-		"{", client, "timeout", fmt.Sprintf("%ds", ttlSeconds), "}")
+		"{", client, "timeout", fmt.Sprintf("%ds", v4TTLSeconds), "}")
 	return err
 }
 
@@ -399,6 +412,84 @@ func isPublicV4(ip net.IP) bool {
 		}
 	}
 	return ip.IsGlobalUnicast()
+}
+
+// ---------- v4 连接保活（活跃则续期，断开后自然关窗）----------
+
+// v4Keeper 跟踪已开窗的 v4 直连客户端。只要 conntrack 里该客户端到 Win10:3389 的会话
+// 仍在收发包，就周期性续期 fw4 限源集合元素——这样翻页快触发的 RDP 自动重连（新 TCP 连接）
+// 仍命中 DNAT，不会因 180s 短窗口过期而连不上；一旦 v4TTLSeconds 内不再有新流量，停止续期，
+// 元素在 fw4 中自然过期，窗口自动关闭。
+type v4Keeper struct {
+	mu      sync.Mutex
+	tracked map[string]bool
+}
+
+func newV4Keeper() *v4Keeper { return &v4Keeper{tracked: make(map[string]bool)} }
+
+// Arm 开始（或复用）对某客户端的保活跟踪。幂等：重复开窗不会起第二个 goroutine。
+func (k *v4Keeper) Arm(client string) {
+	k.mu.Lock()
+	already := k.tracked[client]
+	k.tracked[client] = true
+	k.mu.Unlock()
+	if !already {
+		go k.loop(client)
+	}
+}
+
+// loop 每 v4RefreshSeconds 检查一次客户端 RDP 会话的累计包数：有增长则续期窗口；
+// 持续 v4TTLSeconds 无增长（会话真断开、元素已过期）则停止跟踪并退出。
+func (k *v4Keeper) loop(client string) {
+	ticker := time.NewTicker(time.Duration(v4RefreshSeconds) * time.Second)
+	defer ticker.Stop()
+	grace := time.Duration(v4TTLSeconds) * time.Second
+	last := rdpFlowPackets(client)
+	lastGrowth := time.Now()
+	for range ticker.C {
+		cur := rdpFlowPackets(client)
+		if cur > last {
+			last = cur
+			lastGrowth = time.Now()
+			if err := openV4Pinhole(client); err != nil {
+				log.Printf("rdp6-agent: v4 保活续期失败 client=%s: %v", client, err)
+			}
+			continue
+		}
+		if time.Since(lastGrowth) > grace {
+			k.mu.Lock()
+			delete(k.tracked, client)
+			k.mu.Unlock()
+			log.Printf("rdp6-agent: v4 保活结束 client=%s（%ds 无流量，窗口已关）", client, int(grace/time.Second))
+			return
+		}
+	}
+}
+
+// rdpFlowPackets 累计 conntrack 中该客户端 v4 直连 RDP 会话的双向包数（含重连产生的多条流）。
+// 匹配原始方向 dport=<v4ExtPort> 且 src=<client> 的行，累加行内所有 packets= 字段。
+// 只有 RDP 直连用该外部端口，无误命中；用包数增量判活跃，避免 TCP established 长驻 conntrack 误判。
+func rdpFlowPackets(client string) uint64 {
+	b, err := os.ReadFile("/proc/net/nf_conntrack")
+	if err != nil {
+		return 0
+	}
+	needle := "dport=" + strconv.Itoa(v4ExtPort)
+	src := "src=" + client + " "
+	var total uint64
+	for _, ln := range strings.Split(string(b), "\n") {
+		if !strings.Contains(ln, needle) || !strings.Contains(ln, src) {
+			continue
+		}
+		for _, f := range strings.Fields(ln) {
+			if strings.HasPrefix(f, "packets=") {
+				if n, e := strconv.ParseUint(f[len("packets="):], 10, 64); e == nil {
+					total += n
+				}
+			}
+		}
+	}
+	return total
 }
 
 // ---------- 地址构造工具 ----------
