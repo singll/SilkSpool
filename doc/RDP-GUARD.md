@@ -37,9 +37,11 @@
 
 > **v3.7.1 重估：真实根因=PPPoE UDP-MTU 黑洞 + 用满 GTX 1650（2026-07-31）**：
 > 1. **纠正**：断连非"带宽/弱显卡"——家宽上行实为 ~70M（富余）、GPU 为 **GTX1650**（有 NVENC 硬件编码）。实测 `pppoe-wan` MTU=**1492**、`br-lan`=1500，fw4 `mtu_fix` **仅对 TCP** 做 MSS 钳制、**UDP 无保护**：RDP-UDP 满 size 大包在 1492 上被 DF 丢 + ICMP 常被过滤 → **PMTUD 黑洞** → 翻页大帧批量静默丢 → 断连。故 **TCP-only 是这条 PPPoE 线的结构性正解**（TCP 被钳到 ~1452 永不黑洞），不是"牺牲流畅换稳定"的妥协。
-> 2. **优化转向（带宽 + GPU 双富余 → 堆画质）**：`rdp-win10-hardening.ps1` §4c 增：`AVCHardwareEncodePreferred=1`（GPU 硬件 H.264/NVENC）、`AVC444ModePreferred=1`（全 4:4:4，文字锐利 + 视频顺滑）、`bEnumerateHWBeforeSW=1`（优先物理 GPU）；`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp\DWMFRAMEINTERVAL=15`（解 30fps 上限 → ~60fps）。传输仍 TCP-only。
+> 2. **优化转向（带宽 + GPU 双富余 → 堆画质）**：`rdp-win10-hardening.ps1` §4c 增：`AVCHardwareEncodePreferred=1`（GPU 硬件 H.264/NVENC）、`AVC444ModePreferred=0`（默认更稳的 AVC420，见 v3.7.2；开 1=全 4:4:4 但 NVENC 下可能花屏）、`bEnumerateHWBeforeSW=1`（优先物理 GPU）；`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp\DWMFRAMEINTERVAL=15`（解 30fps 上限 → ~60fps）。传输仍 TCP-only。
 > 3. **直通前提（关键）**：硬件编码要生效，GPU 须为"活动显示适配器"——建议插 HDMI dummy plug（假负载）或配虚拟显示器；无头 VM 里 RDP 可能走软件渲染、NVENC 不介入。验证：连上后任务管理器 → 性能 → GPU → "Video Encode" 有负载。
 > 4. **Tier2 可选实验（默认不做）**：想找回 UDP 顺滑可降 Win10 网卡 MTU → ~1400（`netsh interface ipv4 set subinterface "以太网" mtu=1400 store=persistent`）让 RDP-UDP 端到端塞进 1492，再补回 v4 DNAT 的 UDP + Win10 UDP；~25ms 同省下增益边际，故以 TCP-only 为默认。
+
+> **v3.7.2 AVC444 花屏回退（2026-08-01）**：启用 `AVC444ModePreferred=1` 后实测——RDP 下**选中/反色文字等高对比突变会间歇触发整帧品红/紫色块花屏**（仍可操作、偶尔看不清，属 NVENC 的 AVC444 双流「色度平面」损坏，非稳定复现）。**处置**：`AVC444ModePreferred=0` 回退到**硬件 AVC420**（仍走 GPU/NVENC、仍锐利，花屏消失）。想保 4:4:4 三选一：① 升级 NVIDIA 驱动后再开；② 用**软件 AVC444**（`AVCHardwareEncodePreferred=0`，稳但吃 CPU、弃 NVENC）；③ 维持 AVC420（**推荐**）。花屏当场清除：最小化再还原 / 拉伸 RDP 窗口强制整帧刷新。`rdp-win10-hardening.ps1` §4c 与 `rdp-win10-tuning.ps1` 已默认 AVC420。
 
 > **目标**：让「装不了 Tailscale 的临时设备」通过原生 RDP（mstsc）安全连接家里内网的 Win10（192.168.7.129）。
 > **架构**：**双路径** —— 快车道 A（IPv6 端到端直连，公司侧有 v6 时启用，最低延迟）+ 兜底 B（txhk 香港公网中转，任意 IPv4 客户端永远可用）。

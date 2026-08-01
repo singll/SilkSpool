@@ -71,9 +71,11 @@ Write-Host "  RDP KeepAlive(1min) + 自动重连 已启用 ✓"
 #        或配虚拟显示器；无头 VM 里 RDP 可能走软件渲染、NVENC 不介入。
 #        验证：连上后任务管理器→性能→GPU→"Video Encode" 应有负载。
 Set-ItemProperty $ts -Name AVCHardwareEncodePreferred -Value 1 -Type DWord   # 启用 GPU 硬件 H.264(NVENC)
-Set-ItemProperty $ts -Name AVC444ModePreferred        -Value 1 -Type DWord   # 全 4:4:4：文字锐利+视频顺滑
 Set-ItemProperty $ts -Name bEnumerateHWBeforeSW       -Value 1 -Type DWord   # 强制优先物理 GPU（直通关键）
-Write-Host "  GPU 硬件 H.264 + AVC444 + 优先物理 GPU 已启用 ✓"
+# AVC444（全 4:4:4）默认关闭：实测 NVENC + AVC444 在高对比突变（选中文字反色等）时会间歇整帧品红/紫块花屏；
+# 硬件 AVC420 已够锐利且稳定。想要 4:4:4 请先升级 NVIDIA 驱动再把下行改回 1。见 RDP-GUARD.md v3.7.2。
+Set-ItemProperty $ts -Name AVC444ModePreferred        -Value 0 -Type DWord   # 0=更稳的 AVC420(推荐)；1=全4:4:4(NVENC 下可能花屏)
+Write-Host "  GPU 硬件 H.264（AVC420，稳定）+ 优先物理 GPU 已启用 ✓"
 
 # 4c-2) 解 RDP 30fps 上限 → ~60fps（滚动更跟手；注意是 WinStations 键，非上面的策略键）
 $rdpTcp = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
