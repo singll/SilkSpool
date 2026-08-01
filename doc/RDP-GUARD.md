@@ -26,14 +26,20 @@
 > **待用户侧**：① Cloudflare 加 `rdp.singll.net A → 43.129.195.4`（v6 不绑 DNS——会公开 GUA 且漂移，授权页已实时给）；② 腾讯云安全组放行 `udp/3478`（STUN，DERP 增强）；③ 公司设备 v6 测试；④ Win10 跑加固脚本；⑤ 浏览器 2FA 实连。
 
 > **v3.7 v4 直连稳定性：TCP-only + 连接保活（2026-07-31）**：
-> 1. **问题**：v4 直连（路径 A-v4）"翻网页过快即直接断连"，且因是临时短窗口，断开后**打不进去重连**。目标机是 **PVE 显卡直通的弱显卡 Win10**、家宽上行已到顶。
-> 2. **根因**：① **RDP-UDP(RemoteFX)** 在弱显卡高码率 + 受限上行丢包下，图形管线 reset → 整条会话被拉断（UDP 无重传）；② v4 限源集合元素 **短 TTL 180s** 到期即关窗，断线自动重连的新 TCP 连接**不命中 DNAT**、落入 fw4 默认拒绝。
+> 1. **问题**：v4 直连（路径 A-v4）"翻网页过快即直接断连"，且因是临时短窗口，断开后**打不进去重连**。目标机是 PVE 显卡直通（GTX1650）的 Win10、家宽 PPPoE 上行 ~70M。
+> 2. **根因（已实测修正）**：① 家宽 PPPoE 出口 **MTU=1492**，fw4 只对 **TCP** 做 MSS 钳制（`tcp option maxseg size set rt mtu`→~1452 自动塞进）、**UDP 不受保护**；RDP-UDP 大包带 DF 在 1492 上被丢、ICMP 常被过滤 → **PMTUD 黑洞**，翻页大帧批量静默丢包 → UDP 传输超时 → 断连。**非带宽**（上行 ~70M 富余）**非显卡**（GTX1650 有 NVENC）。② v4 限源集合元素 **短 TTL 180s** 到期即关窗，断线自动重连的新 TCP 连接**不命中 DNAT**、落入 fw4 默认拒绝。
 > 3. **修复（四处）**：
->    - **`90-rdp4-dnat.nft` 改 TCP-only**：去掉 UDP 的 DNAT/SNAT，只保留 `tcp dport 33891 → 192.168.7.129:3389`。RDP 被迫走 TCP（有重传），弱上行下不再掉线。
+>    - **`90-rdp4-dnat.nft` 改 TCP-only**：去掉 UDP 的 DNAT/SNAT，只保留 `tcp dport 33891 → 192.168.7.129:3389`。RDP 被迫走 TCP，经 fw4 MSS 钳制自然塞进 1492、不再触发 UDP 黑洞掉线。
 >    - **`rdp6-agent` 连接保活**：v4 从 v6 的 `RDP6_TTL` 拆出独立 **`RDP4_TTL`**（默认 300、部署 600）+ **`RDP4_REFRESH`**（默认 60）。新增 `v4Keeper`：读 `/proc/net/nf_conntrack`，按 `dport=<RDP4_EXT_PORT> && src=<client>` 累计双向包数；有增长则每 `RDP4_REFRESH` 秒重放限源集合元素续期；持续 `RDP4_TTL` 秒无新流量则停止续期、元素在 fw4 自然过期 → 窗口自动关闭。**效果**：活跃连接永不掉、翻页触发的 RDP 自动重连仍命中 DNAT、真断开后窗口自动收口（安全不长开）。`/open4` 响应加 `keepalive`/`refresh`，`/status` 加 `v4_ttl`/`v4_refresh`。
 >    - **`rdp-gateway`**：`/api/open/v4` 透传保活标志，控制页 v4 卡片显示「保活中」。必需 env `GW_AGENT_V4_URL`（`http://100.64.0.2:8091/open4`）。
 >    - **Win10 加固脚本**：由"启用 RDP-UDP"改为**强制 TCP-only**（`SelectTransport=1`）+ 服务端 **KeepAlive**（`KeepAliveEnable=1` / `KeepAliveInterval=1min`）+ `fDisableAutoReconnect=0`。传输层与网络层一致，连接更快、无 UDP 探测停顿。
 > 4. **部署注记（避坑）**：gateway 的 `EnvironmentFile=/etc/rdp-gateway.env` 与 `spool push` 落点 `/opt/rdp-gateway/rdp-gateway.env` **是两个文件**——push 只到暂存区，必须 `spool exec txhk "sudo install -m640 -o root -g root /opt/rdp-gateway/rdp-gateway.env /etc/rdp-gateway.env"` 落位后再 `restart`，否则新增 env（如 `GW_AGENT_V4_URL`）不生效、gateway `envRequired` 崩溃循环。agent 的 `RDP4_TTL`/`RDP4_REFRESH` 由 `rdp6-agent.init` 的 `procd_set_param env` 注入（istoreos root@ 直接生效）。
+
+> **v3.7.1 重估：真实根因=PPPoE UDP-MTU 黑洞 + 用满 GTX 1650（2026-07-31）**：
+> 1. **纠正**：断连非"带宽/弱显卡"——家宽上行实为 ~70M（富余）、GPU 为 **GTX1650**（有 NVENC 硬件编码）。实测 `pppoe-wan` MTU=**1492**、`br-lan`=1500，fw4 `mtu_fix` **仅对 TCP** 做 MSS 钳制、**UDP 无保护**：RDP-UDP 满 size 大包在 1492 上被 DF 丢 + ICMP 常被过滤 → **PMTUD 黑洞** → 翻页大帧批量静默丢 → 断连。故 **TCP-only 是这条 PPPoE 线的结构性正解**（TCP 被钳到 ~1452 永不黑洞），不是"牺牲流畅换稳定"的妥协。
+> 2. **优化转向（带宽 + GPU 双富余 → 堆画质）**：`rdp-win10-hardening.ps1` §4c 增：`AVCHardwareEncodePreferred=1`（GPU 硬件 H.264/NVENC）、`AVC444ModePreferred=1`（全 4:4:4，文字锐利 + 视频顺滑）、`bEnumerateHWBeforeSW=1`（优先物理 GPU）；`HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp\DWMFRAMEINTERVAL=15`（解 30fps 上限 → ~60fps）。传输仍 TCP-only。
+> 3. **直通前提（关键）**：硬件编码要生效，GPU 须为"活动显示适配器"——建议插 HDMI dummy plug（假负载）或配虚拟显示器；无头 VM 里 RDP 可能走软件渲染、NVENC 不介入。验证：连上后任务管理器 → 性能 → GPU → "Video Encode" 有负载。
+> 4. **Tier2 可选实验（默认不做）**：想找回 UDP 顺滑可降 Win10 网卡 MTU → ~1400（`netsh interface ipv4 set subinterface "以太网" mtu=1400 store=persistent`）让 RDP-UDP 端到端塞进 1492，再补回 v4 DNAT 的 UDP + Win10 UDP；~25ms 同省下增益边际，故以 TCP-only 为默认。
 
 > **目标**：让「装不了 Tailscale 的临时设备」通过原生 RDP（mstsc）安全连接家里内网的 Win10（192.168.7.129）。
 > **架构**：**双路径** —— 快车道 A（IPv6 端到端直连，公司侧有 v6 时启用，最低延迟）+ 兜底 B（txhk 香港公网中转，任意 IPv4 客户端永远可用）。
@@ -475,12 +481,18 @@ net accounts /lockoutthreshold:5 /lockoutwindow:15 /lockoutduration:15
 Enable-NetFirewallRule -DisplayGroup "Remote Desktop"   # 放行 RDP；门控在上游(txhk 2FA / istoreos 3min pinhole)+NLA+锁定
 #   可选收敛：禁用过宽 TCP-In/UDP-In，仅放行 192.168.7.0/24(v4 路径B) 与 2000::/3(v6 路径A)，见 ps1 §5b
 
-# 5. 【v3.7】强制 RDP 传输 TCP-only + 服务端 KeepAlive（根治弱显卡+受限上行下翻页快即断连；取代旧"启用 UDP"）
+# 5. 【v3.7】强制 RDP 传输 TCP-only + 服务端 KeepAlive（根因=PPPoE 1492 对 UDP 的 MTU 黑洞，仅 TCP 受 MSS 钳制；取代旧"启用 UDP"）
 $ts = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
 Set-ItemProperty $ts -Name "SelectTransport"      -Value 1 -Type DWord   # 0=TCP+UDP 1=仅TCP 2=任一
 Set-ItemProperty $ts -Name "KeepAliveEnable"      -Value 1 -Type DWord
 Set-ItemProperty $ts -Name "KeepAliveInterval"    -Value 1 -Type DWord   # 分钟
 Set-ItemProperty $ts -Name "fDisableAutoReconnect" -Value 0 -Type DWord
+
+# 6. 【v3.7.1】用满 GTX 1650：GPU 硬件 H.264/AVC444/优先物理 GPU + ~60fps（详见 ps1 §4c；直通须 dummy plug 才生效）
+Set-ItemProperty $ts -Name "AVCHardwareEncodePreferred" -Value 1 -Type DWord   # GPU 硬件 H.264(NVENC)
+Set-ItemProperty $ts -Name "AVC444ModePreferred"        -Value 1 -Type DWord   # 全 4:4:4
+Set-ItemProperty $ts -Name "bEnumerateHWBeforeSW"       -Value 1 -Type DWord   # 优先物理 GPU
+Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "DWMFRAMEINTERVAL" -Value 15 -Type DWord  # ~60fps
 ```
 
 ---
