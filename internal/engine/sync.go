@@ -69,7 +69,7 @@ func (m *SyncManager) SyncHost(host string, direction string) error {
 
 	// 遍历同步规则
 	for _, rule := range hostCfg.SyncRules {
-		localPath := filepath.Join(m.baseDir, "hosts", host, rule.Local)
+		localPath := joinLocalRulePath(m.baseDir, host, rule.Local)
 		remotePath := rule.Remote
 
 		if direction == "pull" {
@@ -245,12 +245,24 @@ func (m *SyncManager) SyncHostFile(host, direction, localPath string) error {
 		return fmt.Errorf("no sync rule for %s", localPath)
 	}
 
-	localFullPath := filepath.Join(m.baseDir, "hosts", host, localPath)
+	localFullPath := joinLocalRulePath(m.baseDir, host, localPath)
 
 	if direction == "pull" {
 		return m.pullFile(hostCfg, remotePath, localFullPath)
 	}
 	return m.pushFile(hostCfg, localFullPath, remotePath)
+}
+
+// joinLocalRulePath 拼接 hosts/<host>/<rule.Local>；
+// rule.Local 以 / 结尾（目录同步）时保留尾部斜杠 —— filepath.Join 会将其清除，
+// 而 rsync 依赖 src 尾部斜杠区分"同步目录内容"与"拷贝目录本身"，
+// 丢失斜杠会在远程形成双层嵌套（tools/ → tools/tools）
+func joinLocalRulePath(baseDir, host, ruleLocal string) string {
+	p := filepath.Join(baseDir, "hosts", host, ruleLocal)
+	if strings.HasSuffix(ruleLocal, "/") && !strings.HasSuffix(p, "/") {
+		p += "/"
+	}
+	return p
 }
 
 // ensureRemoteDir 确保远程父目录存在

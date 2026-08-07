@@ -263,6 +263,8 @@ hosts:
         command: "(sudo systemctl restart cyberstrikeai 2>/dev/null || true)"
       - pattern: ".env"
         command: "(sudo systemctl restart cyberstrikeai 2>/dev/null || true)"
+      - pattern: "tools/"
+        command: "(sudo systemctl restart cyberstrikeai 2>/dev/null || true)"
     backups:
       - type: "dir"
         source: "/opt/silkspool/csai/CyberStrikeAI/data"
