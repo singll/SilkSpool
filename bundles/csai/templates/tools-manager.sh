@@ -47,6 +47,8 @@ GO_TOOLS=(
     amass:github.com/owasp-amass/amass/v4/cmd/amass
     assetfinder:github.com/tomnomnom/assetfinder
     waybackurls:github.com/tomnomnom/waybackurls
+    gau:github.com/lc/gau/v2/cmd/gau
+    kube-bench:github.com/aquasecurity/kube-bench
 )
 
 # PIP 组（装入应用 venv，systemd PATH 已含）格式: name:pip_ref[:check_cmd]
@@ -59,7 +61,7 @@ PIP_TOOLS=(
 )
 
 # 特殊安装（git 克隆/脚本化资源）
-SPECIAL_TOOLS=(seclists wordlists paramspider enum4linux-ng)
+SPECIAL_TOOLS=(seclists wordlists paramspider enum4linux-ng x8 pwninit cloudmapper falco)
 
 MANUAL_TOOLS=(
     metasploit-framework   # https://docs.metasploit.com/docs/using-metasploit/getting-started/nightly-installers.html
@@ -99,7 +101,7 @@ check_cmd_for() {
 tool_present() { # $1=检测方式
     case "$1" in
         py_*) python3 -c "import ${1#py_}" >/dev/null 2>&1 ;;
-        *)    command -v "$1" >/dev/null 2>&1 || [ -x "$VENV/bin/$1" ] ;;
+        *)    command -v "$1" >/dev/null 2>&1 || [ -x "$VENV/bin/$1" ] || [ -x "/usr/sbin/$1" ] || [ -x "/sbin/$1" ] ;;
     esac
 }
 
@@ -113,6 +115,7 @@ tool_check_spec() { # $1=工具名 → 输出检测方式，未定义返回 1
         wordlists)   echo "file:/usr/share/wordlists/rockyou.txt" ;;
         paramspider) echo "$VENV/bin/paramspider" ;;
         enum4linux-ng) echo "$VENV/bin/enum4linux-ng" ;;
+        cloudmapper) echo "/usr/local/bin/cloudmapper" ;;
         *) return 1 ;;
     esac
 }
@@ -147,6 +150,40 @@ $SUDO chmod 644 /usr/share/wordlists/rockyou.txt ;;
             [ -x "$VENV/bin/enum4linux-ng" ] && { echo "[skip] enum4linux-ng 已安装"; return 0; }
             echo "[pip] 安装 enum4linux-ng（PyPI 无此包，从 GitHub 安装）"
             "$VENV/bin/pip" install -q 'git+https://github.com/cddmp/enum4linux-ng.git' ;;
+        x8)
+            command -v x8 >/dev/null 2>&1 && { echo "[skip] x8 已安装"; return 0; }
+            echo "[release] 安装 x8（Rust 参数发现工具，GitHub 预编译）"
+            local tmp; tmp=$(mktemp -d)
+            curl -fsSL -o "$tmp/x8.gz" "https://github.com/Sh1Yo/x8/releases/latest/download/x86_64-linux-x8.gz"
+            gzip -d "$tmp/x8.gz" && $SUDO install -m 755 "$tmp/x8" /usr/local/bin/x8
+            rm -rf "$tmp" ;;
+        pwninit)
+            command -v pwninit >/dev/null 2>&1 && { echo "[skip] pwninit 已安装"; return 0; }
+            echo "[release] 安装 pwninit"
+            curl -fsSL -o /tmp/pwninit.bin "https://github.com/io12/pwninit/releases/latest/download/pwninit"
+            $SUDO install -m 755 /tmp/pwninit.bin /usr/local/bin/pwninit; rm -f /tmp/pwninit.bin ;;
+        cloudmapper)
+            [ -x /usr/local/bin/cloudmapper ] && { echo "[skip] cloudmapper 已安装"; return 0; }
+            echo "[git+pip] 安装 CloudMapper"
+            [ -d /usr/share/cloudmapper ] || $SUDO git clone --depth 1 https://github.com/duo-labs/cloudmapper.git /usr/share/cloudmapper
+            $SUDO chown -R "$(id -u):$(id -g)" /usr/share/cloudmapper
+            "$VENV/bin/pip" install -q -r /usr/share/cloudmapper/requirements.txt || echo "[warn] 部分依赖安装失败，基本功能可用"
+            printf '#!/bin/bash\nexec %s/bin/python3 /usr/share/cloudmapper/cloudmapper.py "$@"\n' "$VENV" | $SUDO tee /usr/local/bin/cloudmapper >/dev/null
+            $SUDO chmod 755 /usr/local/bin/cloudmapper ;;
+        falco)
+            command -v falco >/dev/null 2>&1 && { echo "[skip] falco 已安装"; return 0; }
+            echo "[apt-repo] 安装 Falco（官方仓库）"
+            echo "注意: LXC/无内核头环境下 falco 内核驱动不可用，仅安装用户态"
+            curl -fsSL 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x65106822B35B1B1F' -o /tmp/falco.key
+            $SUDO rm -f /usr/share/keyrings/falco-archive-keyring.gpg
+            $SUDO gpg --batch --dearmor -o /usr/share/keyrings/falco-archive-keyring.gpg /tmp/falco.key
+            echo 'deb [signed-by=/usr/share/keyrings/falco-archive-keyring.gpg] https://download.falco.org/packages/deb stable main' | $SUDO tee /etc/apt/sources.list.d/falcosecurity.list >/dev/null
+            $SUDO apt-get update -qq
+            $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y falco || {
+                echo "[warn] postinst 驱动构建失败（LXC），跳过驱动编译"
+                $SUDO sed -i '1a exit 0  # spool: skip driver build' /var/lib/dpkg/info/falco.postinst
+                $SUDO dpkg --configure falco
+            } ;;
     esac
 }
 
@@ -229,6 +266,14 @@ do_update_one() {
     elif [ "$name" = "seclists" ]; then
         echo "[git] 更新 SecLists"
         $SUDO git -C /usr/share/seclists pull --ff-only || true
+    elif [ "$name" = "x8" ] || [ "$name" = "pwninit" ] || [ "$name" = "cloudmapper" ] || [ "$name" = "falco" ]; then
+        echo "[reinstall] $name 更新即重装"
+        case "$name" in
+            x8|pwninit) $SUDO rm -f /usr/local/bin/$name ;;
+            cloudmapper) $SUDO rm -f /usr/local/bin/cloudmapper; sudo git -C /usr/share/cloudmapper pull --ff-only || true ;;
+            falco) $SUDO apt-get update -qq && $SUDO apt-get install -y --only-upgrade falco; return 0 ;;
+        esac
+        install_special "$name"
     elif [ "$name" = "enum4linux-ng" ]; then
         echo "[pip] 更新 enum4linux-ng"
         "$VENV/bin/pip" install -q --upgrade 'git+https://github.com/cddmp/enum4linux-ng.git'

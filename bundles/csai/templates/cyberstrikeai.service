@@ -8,7 +8,7 @@ Type=simple
 User=root
 WorkingDirectory={{BASE_DIR}}/CyberStrikeAI
 EnvironmentFile=-{{BASE_DIR}}/.env
-Environment=PATH={{BASE_DIR}}/CyberStrikeAI/venv/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH={{BASE_DIR}}/CyberStrikeAI/venv/bin:/usr/local/go/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
 ExecStart={{BASE_DIR}}/CyberStrikeAI/cyberstrike-ai --http
 Restart=always
 RestartSec=5
