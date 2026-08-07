@@ -241,7 +241,7 @@ echo '[*] Creating user if not exists...'
 if ! id "$TARGET_USER" >/dev/null 2>&1; then
     if command -v useradd >/dev/null; then
         $SUDO useradd -m -s /bin/bash "$TARGET_USER"
-        echo '$TARGET_USER:$TARGET_USER' | $SUDO chpasswd || true
+        echo "$TARGET_USER:$TARGET_USER" | $SUDO chpasswd || true
         echo '[OK] User created'
     else
         echo '[WARN] useradd not found, skipping user creation'
@@ -251,7 +251,7 @@ else
 fi
 
 echo '[*] Ensuring sudoers (NOPASSWD)...'
-echo '$TARGET_USER ALL=(ALL) NOPASSWD: ALL' | $SUDO tee /etc/sudoers.d/"$TARGET_USER" >/dev/null
+echo "$TARGET_USER ALL=(ALL) NOPASSWD: ALL" | $SUDO tee /etc/sudoers.d/"$TARGET_USER" >/dev/null
 $SUDO chmod 440 /etc/sudoers.d/"$TARGET_USER"
 
 echo '[*] Configuring Docker permissions...'
