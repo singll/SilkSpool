@@ -174,6 +174,10 @@ func (m *InitManager) Run(host string) error {
 		utils.Success("Connection verified: %s", strings.TrimSpace(out.String()))
 	}
 
+	// 8. 补齐全部 host key 类型（OpenSSH accept-new 只记录协商到的一种，
+	//    Go x/crypto 协商顺序不同会拿到其他类型导致 knownhosts key mismatch）
+	m.recordAllHostKeyTypes(extractHost(addr), sshPort, knownHosts)
+
 	utils.Success("Host %s initialized successfully!", host)
 	utils.Info("")
 	utils.Info("You can now use spool commands:")
@@ -238,8 +242,6 @@ if ! id "$TARGET_USER" >/dev/null 2>&1; then
     if command -v useradd >/dev/null; then
         $SUDO useradd -m -s /bin/bash "$TARGET_USER"
         echo '$TARGET_USER:$TARGET_USER' | $SUDO chpasswd || true
-        echo '$TARGET_USER ALL=(ALL) NOPASSWD: ALL' | $SUDO tee /etc/sudoers.d/"$TARGET_USER" >/dev/null
-        $SUDO chmod 440 /etc/sudoers.d/"$TARGET_USER"
         echo '[OK] User created'
     else
         echo '[WARN] useradd not found, skipping user creation'
@@ -247,6 +249,10 @@ if ! id "$TARGET_USER" >/dev/null 2>&1; then
 else
     echo '[OK] User already exists'
 fi
+
+echo '[*] Ensuring sudoers (NOPASSWD)...'
+echo '$TARGET_USER ALL=(ALL) NOPASSWD: ALL' | $SUDO tee /etc/sudoers.d/"$TARGET_USER" >/dev/null
+$SUDO chmod 440 /etc/sudoers.d/"$TARGET_USER"
 
 echo '[*] Configuring Docker permissions...'
 if command -v docker >/dev/null 2>&1; then
@@ -272,6 +278,38 @@ echo '[OK] Initialization complete!'
 
 	return script
 }
+// recordAllHostKeyTypes 用 ssh-keyscan 补齐该主机全部 host key 类型到 known_hosts。
+// 已存在的 (host, key-type) 组合跳过，避免重复堆积。
+func (m *InitManager) recordAllHostKeyTypes(host, port, knownHosts string) {
+	existing, _ := os.ReadFile(knownHosts)
+
+	for _, keyType := range []string{"ed25519", "ecdsa", "rsa"} {
+		cmd := exec.Command("ssh-keyscan", "-T", "5", "-t", keyType, "-p", port, host)
+		out, err := cmd.Output()
+		if err != nil || len(out) == 0 {
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			// 同一 key 类型已有记录（含哈希格式无法比对内容，保守跳过整类）则不追加
+			if strings.Contains(string(existing), " ssh-"+keyType) ||
+				(keyType == "ecdsa" && strings.Contains(string(existing), "ecdsa-sha2-")) {
+				continue
+			}
+			f, err := os.OpenFile(knownHosts, os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				continue
+			}
+			f.WriteString(line + "\n")
+			f.Close()
+			existing = append(existing, line...)
+		}
+	}
+}
+
 // extractHost 从 user@host 格式提取 host
 func extractHost(address string) string {
 	if idx := strings.LastIndex(address, "@"); idx != -1 {
