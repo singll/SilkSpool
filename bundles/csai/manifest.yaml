@@ -1,0 +1,17 @@
+name: csai
+type: script
+defaults:
+  - path: .env
+    content: |
+      # ==============================================================================
+      #  CyberStrikeAI Environment Variables (systemd EnvironmentFile 注入)
+      # ==============================================================================
+
+      # --- AI 通道 API Key（config.yaml 中以 ${OPENAI_API_KEY} 引用，也可在 Web UI 配置）---
+      OPENAI_API_KEY=CHANGE_ME_api_key
+templates:
+  - setup.sh
+  - tools-manager.sh
+  - cyberstrikeai.service
+services:
+  - cyberstrikeai

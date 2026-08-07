@@ -24,6 +24,9 @@ var driverRegistry = map[string]func(baseDir, sshKey, bundleName string, default
 	"stack": func(baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) BundleDriver {
 		return NewStackDriverWithDefaults(baseDir, sshKey, bundleName, defaults)
 	},
+	"script": func(baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) BundleDriver {
+		return NewScriptDriverWithDefaults(baseDir, sshKey, bundleName, defaults)
+	},
 }
 
 func GetDriver(driverType string, baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) (BundleDriver, error) {

@@ -18,6 +18,9 @@ global:
   # DNS 默认网关 IP
   dns_gateway_ip: "192.168.7.1"
 
+  # DNS 网关主机别名 (dnsmasq/openclash/caddy/homepage 所在主机)
+  dns_gateway_host: "istoreos"
+
   # Headscale MagicDNS 服务器
   dns_headscale_server: "100.100.100.100"
 
@@ -225,6 +228,34 @@ hosts:
       - type: "volume"
         source: "gw-newapi-db"
         name: "newapi-pg"
+
+  # =========================================================================
+  # CSAI 安全测试服务器 (CyberStrikeAI，script bundle 纳管 systemd 服务)
+  # =========================================================================
+  csai:
+    address: "silkspool@192.168.7.107"
+    app_prefix: "sp-"
+    bundles: ["csai"]
+    sync_rules:
+      - local: ".env"
+        remote: "/opt/silkspool/csai/.env"
+      - local: "config.yaml"
+        remote: "/opt/silkspool/csai/CyberStrikeAI/config.yaml"
+    services:
+      - alias: "cyberstrikeai"
+        type: "systemd"
+        name: "cyberstrikeai"
+    stack:
+      - "cyberstrikeai"
+    post_push_hooks:
+      - pattern: "config.yaml"
+        command: "(sudo systemctl restart cyberstrikeai 2>/dev/null || true)"
+      - pattern: ".env"
+        command: "(sudo systemctl restart cyberstrikeai 2>/dev/null || true)"
+    backups:
+      - type: "dir"
+        source: "/opt/silkspool/csai/CyberStrikeAI/data"
+        name: "csai-data"
 
   # =========================================================================
   # Bili-Node B站相关服务节点

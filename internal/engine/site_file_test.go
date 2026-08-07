@@ -30,8 +30,8 @@ func TestCaddyAddSiteNewDomain(t *testing.T) {
 	if !strings.Contains(content, "import common") {
 		t.Errorf("block should contain import common, got: %s", content)
 	}
-	if !strings.Contains(content, "import authelia") {
-		t.Errorf("block should contain import authelia, got: %s", content)
+	if strings.Contains(content, "import authelia") {
+		t.Errorf("block should not contain import authelia (snippet 不存在于现网 Caddyfile), got: %s", content)
 	}
 }
 

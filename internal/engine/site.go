@@ -218,7 +218,7 @@ func (m *SiteManager) caddyAddSite(domain, backend string) error {
 		backend = "http://" + backend
 	}
 
-	block := fmt.Sprintf("\n%s {\n    import common\n    import authelia\n    reverse_proxy %s\n}\n", domain, backend)
+	block := fmt.Sprintf("\n%s {\n    import common\n    reverse_proxy %s\n}\n", domain, backend)
 	content += block
 
 	if err := os.WriteFile(m.caddyPath, []byte(content), 0644); err != nil {

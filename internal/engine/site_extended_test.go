@@ -165,12 +165,12 @@ func TestSiteStructAllFields(t *testing.T) {
 func TestCaddyBlockGeneration(t *testing.T) {
 	domain := "myapp.example.com"
 	backend := "http://myapp:8080"
-	block := "\n" + domain + " {\n    import common\n    import authelia\n    reverse_proxy " + backend + "\n}\n"
+	block := "\n" + domain + " {\n    import common\n    reverse_proxy " + backend + "\n}\n"
 	if !strings.Contains(block, "import common") {
 		t.Error("block should contain import common")
 	}
-	if !strings.Contains(block, "import authelia") {
-		t.Error("block should contain import authelia")
+	if strings.Contains(block, "import authelia") {
+		t.Error("block should not contain import authelia (snippet 不存在于现网 Caddyfile)")
 	}
 	if !strings.Contains(block, "reverse_proxy http://myapp:8080") {
 		t.Error("block should contain reverse_proxy directive")
