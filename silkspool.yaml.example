@@ -241,6 +241,17 @@ hosts:
         remote: "/opt/silkspool/csai/.env"
       - local: "config.yaml"
         remote: "/opt/silkspool/csai/CyberStrikeAI/config.yaml"
+      # --- 可定制配置目录（config.yaml 中 tools_dir/roles_dir/agents_dir/skills_dir）---
+      # 注意: bundle setup 升级(git pull)后请先 spool sync pull csai 刷新本地，再编辑推送，避免旧本地覆盖新远程
+      # 内容目录 push 后不自动重启；角色/技能如不生效请 spool restart csai cyberstrikeai
+      - local: "tools/"
+        remote: "/opt/silkspool/csai/CyberStrikeAI/tools/"
+      - local: "roles/"
+        remote: "/opt/silkspool/csai/CyberStrikeAI/roles/"
+      - local: "agents/"
+        remote: "/opt/silkspool/csai/CyberStrikeAI/agents/"
+      - local: "skills/"
+        remote: "/opt/silkspool/csai/CyberStrikeAI/skills/"
     services:
       - alias: "cyberstrikeai"
         type: "systemd"
@@ -256,6 +267,9 @@ hosts:
       - type: "dir"
         source: "/opt/silkspool/csai/CyberStrikeAI/data"
         name: "csai-data"
+      - type: "dir"
+        source: "/opt/silkspool/csai/CyberStrikeAI/knowledge_base"
+        name: "csai-knowledge"
 
   # =========================================================================
   # Bili-Node B站相关服务节点
