@@ -25,13 +25,13 @@ APT_TOOLS=(
     # Web 应用扫描
     sqlmap:sqlmap nikto:nikto dirb:dirb gobuster:gobuster whatweb:whatweb wafw00f:wafw00f
     # 漏洞/口令
-    hydra:hydra hashcat:hashcat john:john wpscan:wpscan sslscan:sslscan
+    hydra:hydra hashcat:hashcat john:john sslscan:sslscan
     # DNS/枚举
     dnsenum:dnsenum fierce:fierce dnsutils:dnsutils:dig snmp:snmp:snmpwalk smbclient:smbclient
     # 二进制/取证
     gdb:gdb radare2:radare2 binwalk:binwalk foremost:foremost steghide:steghide exiftool:libimage-exiftool-perl
     # 后渗透/辅助
-    responder:responder impacket:python3-impacket:py_impacket netcat:netcat-traditional socat:socat rlwrap:rlwrap
+    impacket:python3-impacket:py_impacket netcat:netcat-traditional socat:socat rlwrap:rlwrap
 )
 
 GO_TOOLS=(
@@ -61,7 +61,7 @@ PIP_TOOLS=(
 )
 
 # 特殊安装（git 克隆/脚本化资源）
-SPECIAL_TOOLS=(seclists wordlists paramspider enum4linux-ng x8 pwninit cloudmapper falco)
+SPECIAL_TOOLS=(seclists wordlists paramspider enum4linux-ng x8 pwninit cloudmapper falco wpscan responder)
 
 MANUAL_TOOLS=(
     metasploit-framework   # https://docs.metasploit.com/docs/using-metasploit/getting-started/nightly-installers.html
@@ -100,7 +100,7 @@ check_cmd_for() {
 
 tool_present() { # $1=检测方式
     case "$1" in
-        py_*) python3 -c "import ${1#py_}" >/dev/null 2>&1 ;;
+        py_*) "$VENV/bin/python3" -c "import ${1#py_}" >/dev/null 2>&1 ;;
         *)    command -v "$1" >/dev/null 2>&1 || [ -x "$VENV/bin/$1" ] || [ -x "/usr/sbin/$1" ] || [ -x "/sbin/$1" ] ;;
     esac
 }
@@ -116,6 +116,11 @@ tool_check_spec() { # $1=工具名 → 输出检测方式，未定义返回 1
         paramspider) echo "$VENV/bin/paramspider" ;;
         enum4linux-ng) echo "$VENV/bin/enum4linux-ng" ;;
         cloudmapper) echo "/usr/local/bin/cloudmapper" ;;
+        x8)          echo "/usr/local/bin/x8" ;;
+        pwninit)     echo "/usr/local/bin/pwninit" ;;
+        falco)       echo "/usr/bin/falco" ;;
+        wpscan)      echo "/usr/local/bin/wpscan" ;;
+        responder)   echo "/usr/local/bin/responder" ;;
         *) return 1 ;;
     esac
 }
@@ -184,6 +189,18 @@ $SUDO chmod 644 /usr/share/wordlists/rockyou.txt ;;
                 $SUDO sed -i '1a exit 0  # spool: skip driver build' /var/lib/dpkg/info/falco.postinst
                 $SUDO dpkg --configure falco
             } ;;
+        wpscan)
+            [ -x /usr/local/bin/wpscan ] && { echo "[skip] wpscan 已安装"; return 0; }
+            echo "[gem] 安装 WPScan（Ubuntu 仓库无此包，走 RubyGems）"
+            $SUDO apt-get update -qq
+            $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ruby ruby-dev libcurl4-openssl-dev libxml2-dev libxslt1-dev zlib1g-dev
+            $SUDO gem install wpscan --no-document ;;
+        responder)
+            [ -x /usr/local/bin/responder ] && { echo "[skip] responder 已安装"; return 0; }
+            echo "[git] 安装 Responder（Ubuntu 仓库无此包，从 GitHub 克隆 + wrapper）"
+            [ -d /opt/Responder ] || $SUDO git clone --depth 1 https://github.com/lgandx/Responder.git /opt/Responder
+            printf '#!/bin/sh\nexec python3 /opt/Responder/Responder.py "$@"\n' | $SUDO tee /usr/local/bin/responder >/dev/null
+            $SUDO chmod 755 /usr/local/bin/responder ;;
     esac
 }
 
@@ -209,7 +226,7 @@ cmd_check() {
         case "$spec" in
             dir:*)  [ -d "${spec#dir:}" ]  && spec="" || spec="MISSING" ;;
             file:*) [ -f "${spec#file:}" ] && spec="" || spec="MISSING" ;;
-            py_*)   python3 -c "import ${spec#py_}" >/dev/null 2>&1 && spec="" || spec="MISSING" ;;
+            py_*)   "$VENV/bin/python3" -c "import ${spec#py_}" >/dev/null 2>&1 && spec="" || spec="MISSING" ;;
             */*)    [ -x "$spec" ] && spec="" || spec="MISSING" ;;
             *)      tool_present "$spec" && spec=$(tool_version "$spec") || spec="MISSING" ;;
         esac
@@ -266,12 +283,14 @@ do_update_one() {
     elif [ "$name" = "seclists" ]; then
         echo "[git] 更新 SecLists"
         $SUDO git -C /usr/share/seclists pull --ff-only || true
-    elif [ "$name" = "x8" ] || [ "$name" = "pwninit" ] || [ "$name" = "cloudmapper" ] || [ "$name" = "falco" ]; then
+    elif [ "$name" = "x8" ] || [ "$name" = "pwninit" ] || [ "$name" = "cloudmapper" ] || [ "$name" = "falco" ] || [ "$name" = "wpscan" ] || [ "$name" = "responder" ]; then
         echo "[reinstall] $name 更新即重装"
         case "$name" in
             x8|pwninit) $SUDO rm -f /usr/local/bin/$name ;;
             cloudmapper) $SUDO rm -f /usr/local/bin/cloudmapper; sudo git -C /usr/share/cloudmapper pull --ff-only || true ;;
             falco) $SUDO apt-get update -qq && $SUDO apt-get install -y --only-upgrade falco; return 0 ;;
+            wpscan) $SUDO gem update wpscan --no-document; return 0 ;;
+            responder) $SUDO git -C /opt/Responder pull --ff-only; return 0 ;;
         esac
         install_special "$name"
     elif [ "$name" = "enum4linux-ng" ]; then

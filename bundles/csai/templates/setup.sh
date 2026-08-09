@@ -76,7 +76,20 @@ adopt_or_clone() {
         if [ -d "$APP_DIR/.git" ]; then
             log "拉取最新代码 (git pull --ff-only)"
             git -C "$APP_DIR" pull --ff-only || warn "git pull 失败（可能有本地修改），沿用当前代码构建"
+            return
         fi
+        if [ -f "$APP_DIR/go.mod" ]; then
+            log "已含源码（无 .git），沿用当前代码构建"
+            return
+        fi
+        # sync push 先行创建了配置目录（tools/roles/...），克隆代码到临时目录后合并，保留既有配置
+        log "目录仅含配置（sync push 先行），克隆代码并合并"
+        local tmp
+        tmp=$(mktemp -d)
+        git clone --depth 1 "$REPO" "$tmp/repo"
+        cp -a "$tmp/repo/." "$APP_DIR/"
+        rm -rf "$tmp"
+        $SUDO chown -R "$(id -u):$(id -g)" "$APP_DIR"
         return
     fi
 
