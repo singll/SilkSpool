@@ -1,0 +1,13 @@
+[Unit]
+Description=CSAI Proxy Pool - refresh (scrape + validate + anonymity grade)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory={{BASE_DIR}}/proxy-pool
+TimeoutStartSec=2400
+# 上游二进制带 TUI（编译期特性，无关闭开关），经包装器提供伪终端并在产出落盘后自动退出
+ExecStart={{BASE_DIR}}/proxy-pool/proxy-pool-run-refresh.sh
+ExecStartPost=/usr/bin/python3 {{BASE_DIR}}/proxy-pool/proxy_grade.py

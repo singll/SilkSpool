@@ -1,0 +1,17 @@
+[Unit]
+Description=CSAI Proxy Pool - rotating gateway (mubeng, http://127.0.0.1:8899)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={{BASE_DIR}}/proxy-pool
+ExecStartPre=/usr/bin/touch {{BASE_DIR}}/proxy-pool/live.txt
+ExecStart={{BASE_DIR}}/proxy-pool/bin/mubeng -a 127.0.0.1:8899 -f {{BASE_DIR}}/proxy-pool/live.txt -r 1 -m random --rotate-on-error --remove-on-error -w -t 15s -g 100
+Restart=always
+RestartSec=10
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

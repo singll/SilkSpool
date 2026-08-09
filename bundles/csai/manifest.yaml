@@ -13,5 +13,14 @@ templates:
   - setup.sh
   - tools-manager.sh
   - cyberstrikeai.service
+  # --- 代理池（免费代理采集/验证/分级/轮换网关/MCP）---
+  - proxy-pool-setup.sh
+  - proxy-pool-run-refresh.sh
+  - proxy-scraper-checker.toml
+  - proxy_grade.py
+  - mcp_proxy_pool.py
+  - csai-proxy-rotator.service
+  - csai-proxy-refresh.service
 services:
   - cyberstrikeai
+  - csai-proxy-rotator

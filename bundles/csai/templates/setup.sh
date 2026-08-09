@@ -168,4 +168,9 @@ ensure_venv
 build_app
 ensure_config
 reconcile_service
+
+# -------------------- 8. 代理池（proxy-scraper-checker + mubeng + MCP） --------------------
+if [ -f "$BASE_DIR/proxy-pool-setup.sh" ]; then
+    bash "$BASE_DIR/proxy-pool-setup.sh" || warn "代理池安装失败（不影响 CyberStrikeAI 主程序）"
+fi
 log "setup 完成"
