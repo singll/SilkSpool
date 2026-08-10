@@ -61,13 +61,14 @@ PIP_TOOLS=(
 )
 
 # 特殊安装（git 克隆/脚本化资源）
-SPECIAL_TOOLS=(seclists wordlists paramspider enum4linux-ng x8 pwninit cloudmapper falco wpscan responder)
+SPECIAL_TOOLS=(seclists wordlists paramspider enum4linux-ng x8 pwninit cloudmapper falco wpscan responder feroxbuster fscan lightx pacu zap-cli)
 
 MANUAL_TOOLS=(
     metasploit-framework   # https://docs.metasploit.com/docs/using-metasploit/getting-started/nightly-installers.html
     bloodhound             # https://github.com/SpecterOps/BloodHound
     ghidra                 # https://github.com/NationalSecurityAgency/ghidra/releases (analyzeHeadless)
     xsser                  # https://github.com/epsylon/xsser
+    clair                  # Clair v4 是服务型扫描器（无一次性 CLI），需部署服务端: https://github.com/quay/clair
 )
 
 CORE_NAMES=(nmap masscan sqlmap nikto gobuster ffuf nuclei subfinder httpx hydra hashcat john)
@@ -121,6 +122,11 @@ tool_check_spec() { # $1=工具名 → 输出检测方式，未定义返回 1
         falco)       echo "/usr/bin/falco" ;;
         wpscan)      echo "/usr/local/bin/wpscan" ;;
         responder)   echo "/usr/local/bin/responder" ;;
+        feroxbuster) echo "/usr/local/bin/feroxbuster" ;;
+        fscan)       echo "/usr/local/bin/fscan" ;;
+        lightx)      echo "/usr/local/bin/lightx" ;;
+        pacu)        echo "/usr/local/bin/pacu" ;;
+        zap-cli)     echo "/usr/local/bin/zap-cli" ;;
         *) return 1 ;;
     esac
 }
@@ -201,6 +207,41 @@ $SUDO chmod 644 /usr/share/wordlists/rockyou.txt ;;
             [ -d /opt/Responder ] || $SUDO git clone --depth 1 https://github.com/lgandx/Responder.git /opt/Responder
             printf '#!/bin/sh\nexec python3 /opt/Responder/Responder.py "$@"\n' | $SUDO tee /usr/local/bin/responder >/dev/null
             $SUDO chmod 755 /usr/local/bin/responder ;;
+        feroxbuster)
+            command -v feroxbuster >/dev/null 2>&1 && { echo "[skip] feroxbuster 已安装"; return 0; }
+            echo "[release] 安装 feroxbuster（Rust 递归目录发现，GitHub 预编译）"
+            local tmpf; tmpf=$(mktemp -d)
+            curl -fsSL -o "$tmpf/f.tar.gz" "https://github.com/epi052/feroxbuster/releases/latest/download/x86_64-linux-feroxbuster.tar.gz"
+            tar -xzf "$tmpf/f.tar.gz" -C "$tmpf"
+            $SUDO install -m 755 "$tmpf/feroxbuster" /usr/local/bin/feroxbuster
+            rm -rf "$tmpf" ;;
+        fscan)
+            command -v fscan >/dev/null 2>&1 && { echo "[skip] fscan 已安装"; return 0; }
+            echo "[release] 安装 fscan（内网综合扫描，GitHub 预编译）"
+            local furl
+            furl=$(curl -fsSL https://api.github.com/repos/shadow1ng/fscan/releases/latest | grep -o '"browser_download_url": *"[^"]*"' | cut -d'"' -f4 | grep -E '/fscan_[0-9.]+_linux_x64$' | head -1)
+            [ -n "$furl" ] || { echo "[warn] 无法获取 fscan 下载地址"; return 1; }
+            curl -fsSL -o /tmp/fscan.bin "$furl"
+            $SUDO install -m 755 /tmp/fscan.bin /usr/local/bin/fscan; rm -f /tmp/fscan.bin ;;
+        lightx)
+            command -v lightx >/dev/null 2>&1 && { echo "[skip] lightx 已安装"; return 0; }
+            echo "[release] 安装 lightx（轻量资产扫描，GitHub 预编译）"
+            curl -fsSL -o /tmp/lightx.bin "https://github.com/onewinner/Lightx/releases/latest/download/lightx_linux_amd64"
+            $SUDO install -m 755 /tmp/lightx.bin /usr/local/bin/lightx; rm -f /tmp/lightx.bin ;;
+        pacu)
+            [ -x /usr/local/bin/pacu ] && { echo "[skip] pacu 已安装"; return 0; }
+            echo "[pip-isolated] 安装 Pacu（依赖版本与主 venv 冲突，装独立 venv）"
+            $SUDO python3 -m venv /opt/pacu-venv
+            $SUDO /opt/pacu-venv/bin/pip install -q --upgrade pip
+            $SUDO /opt/pacu-venv/bin/pip install -q pacu
+            $SUDO ln -sf /opt/pacu-venv/bin/pacu /usr/local/bin/pacu ;;
+        zap-cli)
+            [ -x /usr/local/bin/zap-cli ] && { echo "[skip] zap-cli 已安装"; return 0; }
+            echo "[pip-isolated] 安装 zap-cli（装独立 venv；运行需 ZAP 守护进程，见 tools/zap.yaml）"
+            $SUDO python3 -m venv /opt/zapcli-venv
+            $SUDO /opt/zapcli-venv/bin/pip install -q --upgrade pip
+            $SUDO /opt/zapcli-venv/bin/pip install -q zapcli
+            $SUDO ln -sf /opt/zapcli-venv/bin/zap-cli /usr/local/bin/zap-cli ;;
     esac
 }
 
@@ -283,10 +324,12 @@ do_update_one() {
     elif [ "$name" = "seclists" ]; then
         echo "[git] 更新 SecLists"
         $SUDO git -C /usr/share/seclists pull --ff-only || true
-    elif [ "$name" = "x8" ] || [ "$name" = "pwninit" ] || [ "$name" = "cloudmapper" ] || [ "$name" = "falco" ] || [ "$name" = "wpscan" ] || [ "$name" = "responder" ]; then
+    elif [ "$name" = "x8" ] || [ "$name" = "pwninit" ] || [ "$name" = "cloudmapper" ] || [ "$name" = "falco" ] || [ "$name" = "wpscan" ] || [ "$name" = "responder" ] || [ "$name" = "feroxbuster" ] || [ "$name" = "fscan" ] || [ "$name" = "lightx" ] || [ "$name" = "pacu" ] || [ "$name" = "zap-cli" ]; then
         echo "[reinstall] $name 更新即重装"
         case "$name" in
-            x8|pwninit) $SUDO rm -f /usr/local/bin/$name ;;
+            x8|pwninit|feroxbuster|fscan|lightx) $SUDO rm -f /usr/local/bin/$name ;;
+            pacu) $SUDO rm -rf /opt/pacu-venv /usr/local/bin/pacu ;;
+            zap-cli) $SUDO rm -rf /opt/zapcli-venv /usr/local/bin/zap-cli ;;
             cloudmapper) $SUDO rm -f /usr/local/bin/cloudmapper; sudo git -C /usr/share/cloudmapper pull --ff-only || true ;;
             falco) $SUDO apt-get update -qq && $SUDO apt-get install -y --only-upgrade falco; return 0 ;;
             wpscan) $SUDO gem update wpscan --no-document; return 0 ;;
