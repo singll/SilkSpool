@@ -4,7 +4,8 @@
 # 用法:
 #   tools-manager.sh list                     列出全部工具（按分类）
 #   tools-manager.sh check                    检测安装状态与版本
-#   tools-manager.sh install all|core|<name>… 安装工具
+#   tools-manager.sh verify                   冒烟验证：每个工具实际跑一遍，全部可用才算安装完成
+#   tools-manager.sh install all|core|<name>… 安装工具（完成后自动做 PATH 冲突清理 + verify）
 #   tools-manager.sh update  all|<name>…      更新工具
 # 说明:
 #   - apt 组走系统包管理器；go 组走 go install @latest 到 /usr/local/bin
@@ -240,7 +241,10 @@ $SUDO chmod 644 /usr/share/wordlists/rockyou.txt ;;
             echo "[pip-isolated] 安装 zap-cli（装独立 venv；运行需 ZAP 守护进程，见 tools/zap.yaml）"
             $SUDO python3 -m venv /opt/zapcli-venv
             $SUDO /opt/zapcli-venv/bin/pip install -q --upgrade pip
+            # zapcli 0.10 锁死 requests==2.20.1（其依赖 urllib3 1.24.x 自带的 six 与 py3.12 不兼容），
+            # 强制升级到可用版本，zapcli 实际工作正常
             $SUDO /opt/zapcli-venv/bin/pip install -q zapcli
+            $SUDO /opt/zapcli-venv/bin/pip install -q 'requests>=2.31,<3' 'urllib3==1.26.20'
             $SUDO ln -sf /opt/zapcli-venv/bin/zap-cli /usr/local/bin/zap-cli ;;
     esac
 }
@@ -279,6 +283,71 @@ cmd_check() {
     done
     echo "----"
     echo "已安装 $ok，缺失 $miss。安装全部: tools-manager.sh install all；核心集: install core"
+}
+
+# -------------------- PATH 冲突清理 --------------------
+# systemd unit PATH 中 venv/bin 在最前，venv 里 Python 包的同名 CLI shim
+# （如 httpx 库自带的 httpx 入口）会遮蔽 /usr/local/bin 下的安全工具。
+# 安装后将这类 shim 改名禁用（Python 包本体仍可 import，不受影响）。
+SVC_PATH="$VENV/bin:/usr/local/go/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+
+fix_path_shims() {
+    local name spec base
+    for name in $(all_names); do
+        spec=$(tool_check_spec "$name" 2>/dev/null || true)
+        case "$spec" in dir:*|file:*|py_*|*/*|"") continue ;; esac
+        base=$(basename "$spec")
+        if [ -f "$VENV/bin/$base" ] && [ -e "/usr/local/bin/$base" -o -e "/usr/bin/$base" -o -e "/usr/sbin/$base" ]; then
+            echo "[shim] 禁用 venv 同名 CLI 遮蔽: $VENV/bin/$base → $base.pycli-disabled"
+            mv -f "$VENV/bin/$base" "$VENV/bin/$base.pycli-disabled"
+        fi
+    done
+}
+
+# -------------------- 冒烟验证 --------------------
+# 每个工具按服务 PATH 解析后实际执行 --version（超时兜底 -h），
+# 命中 126/127/挂起/缺库/缺依赖/命令未找到 即判不可用。
+tool_smoke() { # $1=工具名 → 0 可用；失败原因写全局 SMOKE_REASON
+    local name="$1" spec bin out rc
+    SMOKE_REASON=""
+    spec=$(tool_check_spec "$name" 2>/dev/null || true)
+    case "$spec" in
+        dir:*)  [ -d "${spec#dir:}" ]  || SMOKE_REASON="目录不存在: ${spec#dir:}" ;;
+        file:*) [ -f "${spec#file:}" ] || SMOKE_REASON="文件不存在: ${spec#file:}" ;;
+        py_*)   "$VENV/bin/python3" -c "import ${spec#py_}" >/dev/null 2>&1 || SMOKE_REASON="venv 无法 import ${spec#py_}" ;;
+        *)
+            if [ -z "$spec" ]; then SMOKE_REASON="未定义检测方式"; return 1; fi
+            case "$spec" in
+                */*) bin="$spec" ;;
+                *)   bin=$(PATH="$SVC_PATH" command -v "$spec" 2>/dev/null) ;;
+            esac
+            [ -n "$bin" ] && [ -x "$bin" ] || { SMOKE_REASON="命令不可执行: $spec"; return 1; }
+            out=$(timeout 15 "$bin" --version 2>&1); rc=$?
+            if [ $rc -eq 124 ] || echo "$out" | grep -qiE 'no such option|unrecognized option|invalid option|unknown option|illegal option'; then
+                out=$(timeout 10 "$bin" --help 2>&1); rc=$?
+            fi
+            if [ $rc -eq 124 ]; then SMOKE_REASON="执行挂起（超时）"; return 1; fi
+            if [ $rc -eq 126 ] || [ $rc -eq 127 ]; then SMOKE_REASON="无法执行 (rc=$rc): $bin"; return 1; fi
+            if echo "$out" | grep -qiE 'error while loading shared libraries|No module named|could not run because the required dependencies|command not found'; then
+                SMOKE_REASON=$(echo "$out" | head -1 | cut -c1-100); return 1
+            fi ;;
+    esac
+    [ -z "$SMOKE_REASON" ]
+}
+
+cmd_verify() {
+    local ok=0 fail=0 name
+    printf "%-16s %-8s %s\n" "TOOL" "VERIFY" "REASON"
+    for name in $(all_names); do
+        if tool_smoke "$name"; then
+            printf "%-16s %-8s\n" "$name" "PASS"; ok=$((ok+1))
+        else
+            printf "%-16s %-8s %s\n" "$name" "FAIL" "$SMOKE_REASON"; fail=$((fail+1))
+        fi
+    done
+    echo "----"
+    echo "验证通过 $ok，失败 $fail"
+    [ $fail -eq 0 ]
 }
 
 do_install_one() {
@@ -354,12 +423,13 @@ expand_targets() {
     else printf "%s\n" "$@"; fi
 }
 
-cmd_install() { local t; for t in $(expand_targets "$@"); do do_install_one "$t"; done; }
+cmd_install() { local t; for t in $(expand_targets "$@"); do do_install_one "$t"; done; fix_path_shims; cmd_verify; }
 cmd_update()  { local t; for t in $(expand_targets "$@"); do do_update_one "$t"; done; }
 
 case "${1:-help}" in
     list)    cmd_list ;;
     check|status) cmd_check ;;
+    verify)  fix_path_shims; cmd_verify ;;
     install) shift; cmd_install "$@" ;;
     update)  shift; cmd_update "$@" ;;
     *)       grep -E '^\#   tools-manager' "$0" | sed 's/^# //' ;;
