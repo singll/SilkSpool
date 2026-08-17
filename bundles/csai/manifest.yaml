@@ -13,6 +13,8 @@ templates:
   - setup.sh
   - tools-manager.sh
   - cyberstrikeai.service
+  # --- 一键升级（spool upgrade csai / spool bundle csai upgrade csai）---
+  - csai-upgrade.sh
   # --- 代理池（免费代理采集/验证/分级/轮换网关/MCP）---
   - proxy-pool-setup.sh
   - proxy-pool-run-refresh.sh

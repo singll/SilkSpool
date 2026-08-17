@@ -85,6 +85,15 @@ func TestBackupNoArgs(t *testing.T) {
 	}
 }
 
+func TestUpgradeNoArgs(t *testing.T) {
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"upgrade"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Error("upgrade without host should error")
+	}
+}
+
 func TestExecNoArgs(t *testing.T) {
 	cmd := NewRootCmd()
 	cmd.SetArgs([]string{"exec"})

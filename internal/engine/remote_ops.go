@@ -39,6 +39,12 @@ func (re *RemoteExecutor) Exec(cmd string) (string, error) {
 	return re.client.Execute(cmd)
 }
 
+// ExecStream 在远程主机执行命令，输出实时透传到本地 stdout/stderr（适用于长时任务）
+func (re *RemoteExecutor) ExecStream(cmd string) error {
+	_, err := re.client.ExecuteStdin(cmd)
+	return err
+}
+
 // ==================== Docker 环境 ====================
 
 // EnsureDocker 确保远程主机已安装 Docker

@@ -38,7 +38,8 @@ spool version                             # 验证
 | `spool sync pull/push <host>` | 配置同步（注意：不推送 compose 模板，需手动 push） |
 | `spool service <host> status` / `spool restart <host> <svc>` | 服务控制 |
 | `spool logs <host> <svc> [lines]` | 查看日志 |
-| `spool bundle <name> <init\|up\|down\|status> <host>` | Bundle 编排 |
+| `spool bundle <name> <init\|up\|down\|status\|upgrade> <host>` | Bundle 编排 |
+| `spool upgrade <host> [--force]` | 业务包一键升级到最新版（如 csai） |
 | `spool n8n list/import/export` | n8n 工作流管理 |
 | `spool nas info/pool/dataset/snapshot` | TrueNAS 管理 |
 | `spool backup <host>` | 备份主机数据 |

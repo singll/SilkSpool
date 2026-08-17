@@ -60,6 +60,7 @@ func NewRootCmd() *cobra.Command {
   - DNS 记录管理 (dns add/remove/push)
   - 站点快速部署 (site deploy)
   - Bundle 编排 (bundle <name> <action> <host>)
+  - 业务包一键升级 (upgrade <host>)
   - n8n 工作流管理 (n8n list/import/export)
   - TrueNAS 存储管理 (nas info/pool/dataset)
   - 主机接入/下线 (init / decommission)
@@ -112,6 +113,7 @@ func NewRootCmd() *cobra.Command {
 	app.addNASCmd(root)
 	app.addBackupCmd(root)
 	app.addExecCmd(root)
+	app.addUpgradeCmd(root)
 	app.addKeyCmd(root)
 	app.addDecommissionCmd(root)
 

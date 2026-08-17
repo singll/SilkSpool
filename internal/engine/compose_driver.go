@@ -177,6 +177,11 @@ func (d *ComposeDriver) Cleanup(host string, hostCfg *config.HostConfig, deployP
 	return re.CleanupDocker(mode)
 }
 
+// Upgrade compose 驱动暂不支持一键升级
+func (d *ComposeDriver) Upgrade(host string, hostCfg *config.HostConfig, deployPath string, force bool) error {
+	return fmt.Errorf("upgrade action is not supported for compose driver (bundle %s)", d.bundleName)
+}
+
 // Service 管理单个服务
 func (d *ComposeDriver) Service(host string, hostCfg *config.HostConfig, deployPath string, svc string, action string) error {
 	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)

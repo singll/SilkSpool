@@ -113,6 +113,11 @@ func (d *StackDriver) Cleanup(host string, hostCfg *config.HostConfig, deployPat
 	return nil
 }
 
+// Upgrade stack 驱动暂不支持一键升级
+func (d *StackDriver) Upgrade(host string, hostCfg *config.HostConfig, deployPath string, force bool) error {
+	return fmt.Errorf("upgrade action is not supported for stack driver (bundle %s)", d.bundleName)
+}
+
 // Service 管理单个 Systemd 服务
 func (d *StackDriver) Service(host string, hostCfg *config.HostConfig, deployPath string, svc string, action string) error {
 	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)

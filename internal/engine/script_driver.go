@@ -124,6 +124,60 @@ func (d *ScriptDriver) Cleanup(host string, hostCfg *config.HostConfig, deployPa
 	return nil
 }
 
+// Upgrade 升级 bundle 到最新版本
+// 流程：sync pull 本地备份配置 → 推送模板 → 远程执行 *-upgrade.sh（流式输出）
+// bundle 需在 templates 中提供 *-upgrade.sh 升级脚本
+func (d *ScriptDriver) Upgrade(host string, hostCfg *config.HostConfig, deployPath string, force bool) error {
+	manifest, err := d.loadManifest()
+	if err != nil {
+		return err
+	}
+
+	upgradeScript := ""
+	for _, t := range manifest.Templates {
+		if strings.HasSuffix(t, "upgrade.sh") {
+			upgradeScript = filepath.Base(t)
+			break
+		}
+	}
+	if upgradeScript == "" {
+		return fmt.Errorf("bundle %s 未提供升级脚本（templates 中需要 *-upgrade.sh）", d.bundleName)
+	}
+
+	// 1. 拉取远程配置到本地作为备份（升级前保护）
+	utils.Step("Pulling config backup from %s", host)
+	syncMgr, err := NewSyncManager(d.baseDir)
+	if err != nil {
+		return err
+	}
+	if err := syncMgr.SyncHost(host, "pull"); err != nil {
+		return fmt.Errorf("config backup (sync pull) failed: %w", err)
+	}
+
+	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)
+	if err != nil {
+		return err
+	}
+
+	// 2. 推送模板（确保远程为最新升级脚本）
+	if err := d.pushTemplates(re, deployPath, manifest); err != nil {
+		return err
+	}
+
+	// 3. 远程执行升级脚本（流式输出，耗时取决于构建）
+	args := ""
+	if force {
+		args = " --force"
+	}
+	utils.Step("Running %s on %s", upgradeScript, host)
+	if err := re.ExecStream(fmt.Sprintf("cd %s && bash %s%s", deployPath, upgradeScript, args)); err != nil {
+		return fmt.Errorf("upgrade script failed: %w", err)
+	}
+
+	utils.Success("Bundle %s upgraded on %s", d.bundleName, host)
+	return nil
+}
+
 // Service 管理单个 Systemd 服务
 func (d *ScriptDriver) Service(host string, hostCfg *config.HostConfig, deployPath string, svc string, action string) error {
 	re, err := NewRemoteExecutorWithDefaults(hostCfg.Address, d.sshKey, d.defaults)

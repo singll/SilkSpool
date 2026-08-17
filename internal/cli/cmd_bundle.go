@@ -21,15 +21,18 @@ Actions:
   up                启动服务
   down              停止服务
   status            查看服务状态
+  upgrade           升级到最新版本 (需 bundle 提供 *-upgrade.sh 模板)
   service <svc> <action>  管理单个服务
 
 示例:
   ./spool bundle keeper init keeper
   ./spool bundle keeper up keeper
+  ./spool bundle csai upgrade csai
   ./spool bundle keeper service keeper bellkeeper up`,
-		RunE: a.runBundle,
+	RunE: a.runBundle,
 	}
 	cmd.Flags().Bool("yes", false, "跳过危险操作 (down/cleanup) 的二次确认")
+	cmd.Flags().Bool("force", false, "upgrade: 强制重装（即使已是最新版本）")
 	root.AddCommand(cmd)
 }
 
@@ -62,6 +65,11 @@ func (a *App) runBundle(cmd *cobra.Command, args []string) error {
 		svc := args[3]
 		svcAction := args[4]
 		return mgr.SetupBundleService(name, host, svc, svcAction)
+	}
+
+	if action == "upgrade" {
+		force, _ := cmd.Flags().GetBool("force")
+		return mgr.UpgradeBundle(name, host, force)
 	}
 
 	return mgr.SetupBundle(name, host, action)

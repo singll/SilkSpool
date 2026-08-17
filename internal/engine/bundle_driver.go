@@ -14,6 +14,7 @@ type BundleDriver interface {
 	Status(host string, hostCfg *config.HostConfig, deployPath string) error
 	Cleanup(host string, hostCfg *config.HostConfig, deployPath string, mode string) error
 	Service(host string, hostCfg *config.HostConfig, deployPath string, svc string, action string) error
+	Upgrade(host string, hostCfg *config.HostConfig, deployPath string, force bool) error
 }
 
 // driverRegistry bundle 驱动注册表

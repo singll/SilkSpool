@@ -132,6 +132,36 @@ func (m *BundleManager) SetupBundle(bundleName, host, action string) error {
 	}
 }
 
+// UpgradeBundle 升级 Bundle 到最新版本（当前仅 script 驱动支持）
+func (m *BundleManager) UpgradeBundle(bundleName, host string, force bool) error {
+	cfg, err := config.LoadConfig(m.baseDir)
+	if err != nil {
+		return err
+	}
+
+	hostCfg := cfg.GetHost(host)
+	if hostCfg == nil {
+		return fmt.Errorf("host %s not found", host)
+	}
+
+	loader := NewManifestLoader(m.baseDir)
+	manifest, err := loader.Load(bundleName)
+	if err != nil {
+		return fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
+	}
+
+	deployPath := m.resolveDeployPath(bundleName, host, hostCfg)
+
+	utils.Step("Upgrading Bundle: %s | Host: %s | Force: %v", bundleName, host, force)
+
+	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey, bundleName, cfg.Global.Defaults)
+	if err != nil {
+		return err
+	}
+
+	return driver.Upgrade(host, hostCfg, deployPath, force)
+}
+
 // SetupBundleService 管理 Bundle 中的单个服务
 func (m *BundleManager) SetupBundleService(bundleName, host, svc, action string) error {
 	cfg, err := config.LoadConfig(m.baseDir)
