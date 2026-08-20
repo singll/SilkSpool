@@ -16,7 +16,9 @@
 > **auth-gate 已完成（2026-08-20）**：dsh-auth-gate@0.7.2（静态扫描 PASS，hash 已入 plugins.lock），密码模式 admin 用户已建，
 > 未登录 401 / 登录 302 / 带 cookie 200 全链路验证通过。注意 **dsh rc.7 强制 loopback 绑定**（拒绝 0.0.0.0 与具体 LAN IP），
 > 故新增 `silksecagent-edge.service`（socat 转发 192.168.7.107:3080 → 127.0.0.1:3080）开放内网访问。
-> LAN 地址：http://192.168.7.107:3080（内网 DNS 已有 singll.net 体系，本机未走网关 DNS 按用户要求不依赖）。
+> LAN 地址：http://192.168.7.107:3080；**域名 https://silksecagent.singll.net 已上线**（spool dns + istoreos Caddy 反代，LE 证书已签发；
+> 注意仅不依赖 **AI 网关** New API，内网 DNS/Caddy 网关体系正常使用）。
+> 踩坑：istoreos 的 Caddyfile 是**单文件 bind mount**，sync push 替换 inode 后容器内看到旧文件，`docker restart caddy` 才生效。
 >
 > **P1 已完成（2026-08-20）**：`@silksec/sec-suite` 插件落地——sec-cli-adapter（run_cli/grep_result/page_result 三工具，
 > manifest 驱动、模板渲染、超时/代理注入、results/<run_id>/ 全量落盘、≤20 行摘要）+ 内建 scope-guard
