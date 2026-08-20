@@ -182,6 +182,11 @@ if [ -f "$BASE_DIR/sec-suite-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-suite-plugin-setup.sh" || warn "安全套件插件安装失败（不影响 DSH 主程序）"
 fi
 
+# -------------------- 8.5 浏览器 fork（流量入总线） --------------------
+if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"
+fi
+
 # -------------------- 9. 情报刷新定时器（intel-feeder v1，每日） --------------------
 if [ -f "$BASE_DIR/intel-refresh.sh" ]; then
     $SUDO tee /etc/systemd/system/silksec-intel.service >/dev/null <<EOF

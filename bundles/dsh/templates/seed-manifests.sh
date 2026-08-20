@@ -294,6 +294,68 @@ summarize: head
 store: none
 EOF
 
+seed semgrep <<'EOF'
+name: semgrep
+binary: /usr/local/bin/semgrep
+stage: audit
+risk: passive
+timeout: 900
+requires: [local_path]
+produces: [sast_findings]
+args_template: "scan {{path}} --config {{rules|auto}} --json -o {{outdir}}/semgrep.json --quiet"
+env_proxy: false
+parser: json
+summarize: head
+store: none
+EOF
+
+seed codeql <<'EOF'
+name: codeql
+binary: /usr/local/bin/codeql
+stage: audit
+risk: passive
+timeout: 1800
+requires: [local_path]
+produces: [dataflow_findings]
+args_template: "{{subcmd|pack list}} {{args|}}"
+env_proxy: false
+parser: lines
+summarize: head
+store: none
+EOF
+
+seed sqlmap <<'EOF'
+name: sqlmap
+binary: /usr/bin/sqlmap
+stage: vuln
+risk: active
+timeout: 1800
+target_param: target
+requires: [urls]
+produces: [sqli_findings]
+args_template: "-u {{target}} --batch --random-agent --level {{level|1}} --risk {{risk|1}} --output-dir {{outdir}}"
+env_proxy: true
+parser: lines
+summarize: head
+store: none
+EOF
+
+seed wafw00f <<'EOF'
+name: wafw00f
+binary: /usr/local/bin/wafw00f
+stage: recon
+risk: passive
+timeout: 120
+target_param: target
+requires: [live_hosts]
+produces: [waf_fingerprint]
+args_template: "{{target}}"
+env_proxy: true
+parser: lines
+summarize: head
+store: none
+EOF
+
 # ---------- 自检测试 ----------
 seed echo-test <<'EOF'
 name: echo-test

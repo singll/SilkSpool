@@ -57,8 +57,13 @@ templates:
   - sec-suite-plugin-setup.sh
   - seed-manifests.sh
   - seed-skills.sh
+  - seed-presets.sh
   # --- 情报刷新（intel-feeder v1）---
   - intel-refresh.sh
+  # --- 浏览器 fork（+SEC_FLOW_PROXY 流量入总线）---
+  - sec-browser-plugin-setup.sh
+  - dsh-browser-upstream.index.js
+  - dsh-browser-upstream.browser-manager.js
   # --- 社区插件锁（pin 版本 + hash，先扫后装）---
   - plugins.lock
 services:

@@ -36,7 +36,20 @@ list_all() {
 
 bin_path() { echo "$GOBIN/$1"; }
 
-is_installed() { [ -x "$(bin_path "$1")" ]; }
+is_installed() {
+    # pip 通道按入口 bin 检查（包名≠命令名，如 impacket → psexec.py）
+    local spec channel installer first_bin
+    spec=$(get_spec "$1")
+    if [ -n "$spec" ]; then
+        channel="${spec%%|*}"; installer="${spec#*|}"; installer="${installer%%|*}"
+        if [ "$channel" = "pip" ]; then
+            first_bin="${installer#*:}"; first_bin="${first_bin%%,*}"
+            [ "$first_bin" != "$installer" ] || first_bin="$1"
+            [ -x "$VENV_DIR/bin/$first_bin" ] && return 0
+        fi
+    fi
+    [ -x "$(bin_path "$1")" ] || command -v "$1" >/dev/null 2>&1
+}
 
 # -------------------- 通道安装器 --------------------
 install_go() {
@@ -95,7 +108,20 @@ for a in d.get("assets", []):
     [ -n "$bin" ] || bin=$(find "$tmpdir" -maxdepth 3 -type f -name "${name}_*" | head -1)
     [ -n "$bin" ] || bin=$(find "$tmpdir" -maxdepth 3 -type f ! -name pkg ! -name "*.txt" ! -name "*.md" -exec du -b {} + | sort -rn | head -1 | cut -f2)
     [ -n "$bin" ] || { err "$repo 解压后未找到可执行文件"; rm -rf "$tmpdir"; return 1; }
-    $SUDO install -m 0755 "$bin" "$(bin_path "$name")"
+    # 若二进制在发行子目录内（如 codeql/codeql 需整套目录），整目录安装到 opt 下再软链
+    local parent
+    parent=$(dirname "$bin")
+    if [ "$parent" != "$tmpdir" ] && [ "$(dirname "$parent")" = "$tmpdir" ]; then
+        local optdir="{{BASE_DIR}}/opt/$name"
+        $SUDO mkdir -p "{{BASE_DIR}}/opt"
+        $SUDO rm -rf "$optdir"
+        $SUDO mv "$parent" "$optdir"
+        # zip 解压丢执行位：恢复启动器与 bin/ 下工具的执行权
+        $SUDO find "$optdir" -type f \( -name "$name" -o -path "*/bin/*" \) -exec chmod +x {} +
+        $SUDO ln -sf "$optdir/$name" "$(bin_path "$name")"
+    else
+        $SUDO install -m 0755 "$bin" "$(bin_path "$name")"
+    fi
     rm -rf "$tmpdir"
 }
 
@@ -104,6 +130,36 @@ install_apt() {
     log "apt install $pkg"
     $SUDO apt-get update -qq
     $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg"
+}
+
+# -------------------- pip 通道（共享 venv + 软链入口） --------------------
+VENV_DIR="{{BASE_DIR}}/venv"
+
+ensure_venv() {
+    if [ ! -x "$VENV_DIR/bin/pip" ]; then
+        log "创建共享 venv: $VENV_DIR"
+        python3 -m venv "$VENV_DIR"
+        "$VENV_DIR/bin/pip" install -q --upgrade pip
+    fi
+}
+
+# install_spec 格式: <pip包>:<入口bin1,bin2,...>
+install_pip() {
+    local name="$1" spec="$2"
+    local pkg="${spec%%:*}" bins="${spec#*:}"
+    [ "$bins" != "$spec" ] || bins="$name"
+    ensure_venv
+    log "pip install $pkg"
+    "$VENV_DIR/bin/pip" install -q "$pkg"
+    local b
+    IFS=',' read -ra arr <<< "$bins"
+    for b in "${arr[@]}"; do
+        if [ -x "$VENV_DIR/bin/$b" ]; then
+            $SUDO ln -sf "$VENV_DIR/bin/$b" "$(bin_path "$b")"
+        else
+            warn "$pkg 未提供入口 $b"
+        fi
+    done
 }
 
 do_install() {
@@ -119,6 +175,7 @@ do_install() {
         go)  install_go "$name" "$installer" ;;
         bin) install_bin "$name" "$installer" ;;
         apt) install_apt "$name" "$installer" ;;
+        pip) install_pip "$name" "$installer" ;;
         *)   warn "$name 未知通道 $channel，跳过"; return 0 ;;
     esac
     if bash -c "$verify" >/dev/null 2>&1; then

@@ -40,3 +40,12 @@ trufflehog|bin|trufflesecurity/trufflehog|trufflehog --version
 
 # --- 供应链 ---
 osv-scanner|go|github.com/google/osv-scanner/cmd/osv-scanner|osv-scanner --version
+
+# --- 代码审计（重型）---
+semgrep|pip|semgrep:semgrep|semgrep --version
+codeql|bin|github/codeql-cli-binaries|codeql version
+
+# --- 内网/专项 ---
+sqlmap|apt|sqlmap|sqlmap --version
+wafw00f|pip|wafw00f:wafw00f|wafw00f --version
+impacket|pip|impacket:psexec.py,wmiexec.py,secretsdump.py,smbexec.py|psexec.py -h

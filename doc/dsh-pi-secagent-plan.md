@@ -22,7 +22,13 @@
 >   xray 只从可执行文件旁读主配置（ExecStartPre 安装 xray.yaml 到 /usr/local/bin/）；
 > - **authz_diff 越权对比 harness**：双会话头重放 + 状态码/长度/JSON 键重合度判定（suspected 自动入 finding），实测通过；
 > - **3 个核心 Skill 种子**（sec-verification 验证铁律 / sec-blackboard 黑板纪律 / sec-review 复盘沉淀），DSH 用户级技能目录热加载；
-> - 欠账：Preset 层（6 角色）未做、浏览器流量入总线（dsh-browser 无 proxy 配置项，待评估绕行方案）、4.3/4.4 重型工具（semgrep/CodeQL/impacket）未装。
+> - ~~欠账：Preset 层（6 角色）、浏览器流量入总线、4.3/4.4 重型工具~~ **已全部清零（2026-08-20）**：
+>   - **Preset 层**：6 角色（recon/vuln-hunt/biz-logic/code-audit/intranet/review）以用户 preset 落地
+>     （$DSH_HOME/.agent-presets/，复制 standard 组合 + 安全人格 persona，seed-presets.sh 幂等），agentPreset.list 验证全部可用；
+>   - **浏览器流量入总线**：fork dsh-browser 为 @silksec/dsh-browser（注入 SEC_FLOW_PROXY 启动项，tarball 安装绕开 link: 依赖解析问题），
+>     链路 browser → xray:7777 被动审计 → mubeng:8899 轮换出口，实测经总线访问成功且 xray 日志可见流量；
+>   - **重型工具**：tools-manager 新增 pip 通道（共享 venv+软链入口）与 bin 整目录安装（codeql 发行包），
+>     semgrep/codeql/sqlmap/wafw00f/impacket 已装齐——**26/26 工具、22 个 manifest**。
 >
 > **P4 核心已完成（2026-08-20）**：`@silksec/sec-suite/experience`（experience-hub）落地——
 > - **经验卡**：exp_store（同 scenario 自动合并、evidence 空拒绝、external 强制低置信）/ exp_search（FTS5+逐词 LIKE 双引擎，

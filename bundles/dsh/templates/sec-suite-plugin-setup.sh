@@ -84,6 +84,9 @@ seed_manifests
 if [ -f "$BASE_DIR/seed-skills.sh" ]; then
     DSH_HOME="$DATA_DIR" bash "$BASE_DIR/seed-skills.sh" || warn "Skill 种子失败（不影响主程序）"
 fi
+if [ -f "$BASE_DIR/seed-presets.sh" ]; then
+    DSH_HOME="$DATA_DIR" bash "$BASE_DIR/seed-presets.sh" || warn "Preset 种子失败（不影响主程序）"
+fi
 install_plugin
 smoke || true
 log "完成。重启生效: spool restart <host> silksecagent"
