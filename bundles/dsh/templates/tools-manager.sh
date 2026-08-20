@@ -52,16 +52,25 @@ install_go() {
 }
 
 install_bin() {
-    local name="$1" repo="$2"
+    local name="$1" spec="$2"
+    local repo="$spec" tag=""
+    case "$spec" in *@*) repo="${spec%@*}"; tag="${spec##*@}" ;; esac
     local arch
     case "$(uname -m)" in
         x86_64)  arch="amd64|x86_64|x64" ;;
         aarch64) arch="arm64|aarch64" ;;
         *) err "不支持的架构: $(uname -m)"; return 1 ;;
     esac
-    log "下载 $repo latest release (linux/$arch)"
+    local api
+    if [ -n "$tag" ]; then
+        api="https://api.github.com/repos/$repo/releases/tags/$tag"
+        log "下载 $repo@$tag (linux/$arch)"
+    else
+        api="https://api.github.com/repos/$repo/releases/latest"
+        log "下载 $repo latest release (linux/$arch)"
+    fi
     local url
-    url=$(curl -fsSL --connect-timeout 15 "https://api.github.com/repos/$repo/releases/latest" \
+    url=$(curl -fsSL --connect-timeout 15 "$api" \
         | python3 -c '
 import json, sys, re
 d = json.load(sys.stdin)
@@ -81,8 +90,10 @@ for a in d.get("assets", []):
         *)        (cd "$tmpdir" && mv pkg "$name") ;;
     esac
     local bin
+    # 依次尝试：精确文件名 → 去掉常见后缀的文件名 → 最大的常规文件（zip 解压可能丢执行位，install 统一赋权）
     bin=$(find "$tmpdir" -maxdepth 3 -type f -name "$name" | head -1)
-    [ -n "$bin" ] || bin=$(find "$tmpdir" -maxdepth 3 -type f -executable ! -name pkg | head -1)
+    [ -n "$bin" ] || bin=$(find "$tmpdir" -maxdepth 3 -type f -name "${name}_*" | head -1)
+    [ -n "$bin" ] || bin=$(find "$tmpdir" -maxdepth 3 -type f ! -name pkg ! -name "*.txt" ! -name "*.md" -exec du -b {} + | sort -rn | head -1 | cut -f2)
     [ -n "$bin" ] || { err "$repo 解压后未找到可执行文件"; rm -rf "$tmpdir"; return 1; }
     $SUDO install -m 0755 "$bin" "$(bin_path "$name")"
     rm -rf "$tmpdir"

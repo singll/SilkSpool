@@ -13,6 +13,17 @@
 > `dsh plugin` 子命令必须显式传 `DSH_HOME` 和 pnpm PATH，否则误建 `~/.dsh`。
 > 待办：其余 6 个社区插件（plugins.lock）待 P3/P4 扫描后启用。
 >
+> **P3 核心已完成（2026-08-20）**：
+> - **asset-graph**（`@silksec/sec-suite/asset-graph`，node:sqlite 零依赖 + WAL）：assets/endpoints/findings/blackboard 四表，
+>   9 个模型工具（asset/endpoint/finding 增查 + blackboard 读写 + stats）；finding 按 host+title+url 指纹自动去重；
+>   run_cli 成功结果按 manifest `store: asset-graph` **自动抽取 URL/域名入图谱**；
+> - **流量总线 v1**：xray 1.9.11 被动扫描（silksec-xray.service，:7777）→ webhook（sec-suite 内建 :7788 接收）→ findings 自动入库 + JSONL 落盘。
+>   踩坑：chaitin/xray 最新版已变 xpoc（无被动模式），bin 通道需 pin `chaitin/xray@1.9.11`（tools-manager 已支持 repo@tag）；
+>   xray 只从可执行文件旁读主配置（ExecStartPre 安装 xray.yaml 到 /usr/local/bin/）；
+> - **authz_diff 越权对比 harness**：双会话头重放 + 状态码/长度/JSON 键重合度判定（suspected 自动入 finding），实测通过；
+> - **3 个核心 Skill 种子**（sec-verification 验证铁律 / sec-blackboard 黑板纪律 / sec-review 复盘沉淀），DSH 用户级技能目录热加载；
+> - 欠账：Preset 层（6 角色）未做、浏览器流量入总线（dsh-browser 无 proxy 配置项，待评估绕行方案）、4.3/4.4 重型工具（semgrep/CodeQL/impacket）未装。
+>
 > **P1 已补齐（2026-08-20）**：18 个工具 manifest 种子（seed-manifests.sh 幂等补齐）；`burp_import` 工具落地
 > （Burp XML proxy history / scanner issues → JSONL 落盘 data/imports/，实测解析正确）。
 > **P2 已完成（2026-08-20）**：

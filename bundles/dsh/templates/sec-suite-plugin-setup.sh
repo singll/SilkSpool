@@ -19,23 +19,28 @@ warn() { echo "[sec-suite-plugin][WARN] $*"; }
 assemble() {
     mkdir -p "$PLUGIN_DIR"
     cp "$BASE_DIR/dsh-plugin-sec-suite.js" "$PLUGIN_DIR/index.js"
+    cp "$BASE_DIR/dsh-plugin-sec-suite.asset-db.js" "$PLUGIN_DIR/asset-db.js"
+    cp "$BASE_DIR/dsh-plugin-sec-suite.asset-graph.js" "$PLUGIN_DIR/asset-graph.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.patch.yml" "$PLUGIN_DIR/cordis.patch.yml"
-    if [ ! -f "$PLUGIN_DIR/package.json" ]; then
-        cat > "$PLUGIN_DIR/package.json" <<'EOF'
+    # package.json 完全由本脚本管理，始终重写（结构升级时不需要手工干预）
+    cat > "$PLUGIN_DIR/package.json" <<'EOF'
 {
   "name": "@silksec/sec-suite",
-  "version": "0.1.0",
-  "description": "SilkSecAgent security suite: sec-cli-adapter (manifest-driven CLI runner) with built-in scope-guard whitelist enforcement.",
+  "version": "0.2.0",
+  "description": "SilkSecAgent security suite: sec-cli-adapter (manifest-driven CLI runner + scope-guard) and asset-graph (SQLite asset/endpoint/finding/blackboard store).",
   "type": "module",
   "main": "./index.js",
-  "exports": { ".": "./index.js", "./package.json": "./package.json" },
-  "files": ["index.js", "cordis.patch.yml"],
+  "exports": {
+    ".": "./index.js",
+    "./asset-graph": "./asset-graph.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js", "asset-db.js", "asset-graph.js", "cordis.patch.yml"],
   "license": "MIT",
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
 }
 EOF
-        log "生成 package.json"
-    fi
+    log "生成 package.json"
 }
 
 # -------------------- 2. tools.d 种子清单（幂等补齐缺失） --------------------
@@ -74,6 +79,9 @@ smoke() {
 
 assemble
 seed_manifests
+if [ -f "$BASE_DIR/seed-skills.sh" ]; then
+    DSH_HOME="$DATA_DIR" bash "$BASE_DIR/seed-skills.sh" || warn "Skill 种子失败（不影响主程序）"
+fi
 install_plugin
 smoke || true
 log "完成。重启生效: spool restart <host> silksecagent"

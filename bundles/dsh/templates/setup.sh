@@ -128,7 +128,8 @@ EOF
 
 # -------------------- 4. 数据目录与配置 --------------------
 ensure_data() {
-    mkdir -p "$DATA_DIR"/{results,backups,tools.d,knowledge,playbooks,skills/draft}
+    mkdir -p "$DATA_DIR"/{results,backups,tools.d,knowledge,playbooks,skills/draft,flows,imports}
+    mkdir -p "$BASE_DIR/xray"
     # 授权白名单：只初始化，不覆盖
     if [ ! -f "$DATA_DIR/scope.yml" ]; then
         if [ -f "$BASE_DIR/scope.yml" ]; then

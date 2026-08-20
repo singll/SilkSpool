@@ -17,7 +17,9 @@
 import { spawn } from 'node:child_process'
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
+import * as http from 'node:http'
 import * as path from 'node:path'
+import * as assetDb from './asset-db.js'
 
 export const name = 'sec-cli-adapter'
 export const inject = ['tools']
@@ -366,6 +368,15 @@ async function runCli(args) {
   // ---- 摘要（≤20 行）----
   let stdoutText = ''
   try { stdoutText = fs.readFileSync(path.join(runDir, 'stdout.log'), 'utf8') } catch { /* 无输出 */ }
+
+  // ---- 自动入资产图谱（manifest store: asset-graph 且执行成功）----
+  let ingested = null
+  if (manifest.store === 'asset-graph' && result.code === 0 && stdoutText) {
+    try {
+      ingested = assetDb.ingestText(`${toolName}:${runId}`, stdoutText)
+    } catch { /* 入库失败不影响主流程 */ }
+  }
+
   const lines = stdoutText.split('\n')
   const head = lines.slice(0, 20).join('\n')
   return {
@@ -375,8 +386,9 @@ async function runCli(args) {
     duration_ms: meta.duration_ms,
     total_lines: lines.length,
     summary: head,
+    ingested: ingested || undefined,
     error: result.error || null,
-    hint: lines.length > 20 ? `输出共 ${lines.length} 行，仅显示前 20 行；用 grep_result/page_result 按需取细节` : undefined,
+    hint: lines.length > 20 ? `输出共 ${lines.length} 行，仅显示前 20 行；用 grep_result/page_result 按需取` : undefined,
   }
 }
 
@@ -468,6 +480,115 @@ function burpImport(args) {
     records: count, hosts: [...hosts].slice(0, 20), output: outFile,
     hint: '完整数据已落盘 JSONL；接入 asset-graph（P3）后自动入图谱',
   }
+}
+
+// ==============================================================================
+// authz_diff：越权对比 harness（双会话重放 + 响应 diff）
+// 低权会话拿到与高权会话相当的数据 = 疑似越权
+// ==============================================================================
+
+async function authzDiff(args) {
+  const url = String(args.url || '')
+  if (!url) return { ok: false, error: 'url 不能为空' }
+  // scope-guard 硬校验（与其他工具同一标准）
+  const chk = checkTarget(url)
+  audit({ ts: Date.now(), run_id: '-', tool: 'authz_diff', target: url, decision: chk.allow ? 'allow' : 'deny', reason: chk.reason })
+  if (!chk.allow) return { ok: false, error: `scope-guard 拒绝: ${chk.reason}` }
+
+  const method = String(args.method || 'GET').toUpperCase()
+  const body = args.body ? String(args.body) : undefined
+  const mk = (h) => {
+    const base = { 'content-type': 'application/json', 'user-agent': 'SilkSecAgent-authz-diff' }
+    if (!h) return base
+    if (typeof h === 'object') return { ...base, ...h }
+    // 字符串形式: "Cookie: a=1\nX-Role: low"
+    for (const line of String(h).split('\n')) {
+      const i = line.indexOf(':')
+      if (i > 0) base[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim()
+    }
+    return base
+  }
+  const fire = async (headers) => {
+    const started = Date.now()
+    const res = await fetch(url, { method, headers, body, redirect: 'manual', signal: AbortSignal.timeout(30000) })
+    const text = await res.text()
+    return { status: res.status, length: text.length, ms: Date.now() - started, body: text.slice(0, 2000) }
+  }
+
+  let low; let high
+  try { low = await fire(mk(args.headers_low)) } catch (e) { return { ok: false, error: `低权请求失败: ${e.message}` } }
+  try { high = await fire(mk(args.headers_high)) } catch (e) { return { ok: false, error: `高权请求失败: ${e.message}` } }
+
+  const jsonKeys = (b) => {
+    try { return Object.keys(JSON.parse(b)).sort() } catch { return null }
+  }
+  const lowKeys = jsonKeys(low.body); const highKeys = jsonKeys(high.body)
+  const keysOverlap = lowKeys && highKeys && lowKeys.length
+    ? lowKeys.filter((k) => highKeys.includes(k)).length / Math.max(highKeys.length, 1) : 0
+  const lenRatio = high.length ? low.length / high.length : 0
+
+  let verdict = 'unlikely'
+  let why = ''
+  if (low.status === 401 || low.status === 403) { verdict = 'unlikely'; why = '低权请求被拒（401/403），鉴权正常' }
+  else if (low.status !== high.status) { verdict = 'review'; why = `状态码不一致 low=${low.status} high=${high.status}，需人工看响应` }
+  else if (low.status === 200 && (keysOverlap > 0.5 || (lenRatio > 0.5 && lenRatio < 2))) {
+    verdict = 'suspected'
+    why = `低权 200 且响应与高权高度相似（键重合 ${(keysOverlap * 100).toFixed(0)}%，长度比 ${lenRatio.toFixed(2)}）——疑似越权，人工核实数据归属`
+  } else { why = `同状态但响应差异大（键重合 ${(keysOverlap * 100).toFixed(0)}%，长度比 ${lenRatio.toFixed(2)}）` }
+
+  if (verdict === 'suspected') {
+    assetDb.addFinding({
+      title: `疑似越权(IDOR): ${method} ${url}`, severity: 'high',
+      host: hostOf(url), url, source: 'authz_diff',
+      evidence: `low=${low.status}/${low.length}B high=${high.status}/${high.length}B keysOverlap=${(keysOverlap * 100).toFixed(0)}%`,
+    })
+  }
+  return {
+    ok: true, verdict, why,
+    low: { status: low.status, length: low.length, ms: low.ms },
+    high: { status: high.status, length: high.length, ms: high.ms },
+    low_body_head: low.body.slice(0, 300), high_body_head: high.body.slice(0, 300),
+  }
+}
+
+// ==============================================================================
+// xray webhook 接收器（流量总线 v1：xray 被动审计发现 → JSONL + findings 入库）
+// ==============================================================================
+
+const FLOWS_DIR = path.join(DATA_DIR, 'flows')
+let webhookServer = null
+
+function startXrayWebhook(ctx) {
+  if (webhookServer) return
+  fs.mkdirSync(FLOWS_DIR, { recursive: true })
+  webhookServer = http.createServer((req, res) => {
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+    let body = ''
+    req.on('data', (c) => { body += c; if (body.length > 1048576) req.destroy() })
+    req.on('end', () => {
+      try {
+        const finding = JSON.parse(body)
+        const file = path.join(FLOWS_DIR, `xray-${new Date().toISOString().slice(0, 10)}.jsonl`)
+        fs.appendFileSync(file, body + '\n')
+        // xray webhook 结构: {type:"web_vuln", data:{title, target, plugin...}}（v2 字段容忍性解析）
+        const d = finding.data || finding
+        const target = d.target || d.url || ''
+        const title = d.title || d.plugin || finding.type || 'xray finding'
+        assetDb.addFinding({
+          title: `xray: ${title}`, severity: 'medium', host: hostOf(target), url: target,
+          source: 'xray-webhook', evidence: `flow:${file}`,
+        })
+        res.writeHead(200); res.end('ok')
+      } catch { res.writeHead(400); res.end('bad json') }
+    })
+  })
+  webhookServer.on('error', (e) => {
+    // 端口已被占用（如测试副本在跑）时降级为不起服务，不影响插件加载
+    process.stderr.write(`[sec-suite] xray webhook 启动失败: ${e.message}\n`)
+    webhookServer = null
+  })
+  webhookServer.listen(7788, '127.0.0.1')
+  ctx?.on?.('dispose', () => webhookServer?.close())
 }
 
 // ==============================================================================
@@ -622,4 +743,27 @@ export function apply(ctx) {
     output: { schema: { type: 'object' }, render: renderJSON },
     execute: async (args) => spawnWorker(args || {}),
   })
+
+  ctx.tools.register({
+    name: 'authz_diff',
+    description: '越权对比测试：同一请求分别用低权/高权会话头发送，对比响应判定疑似越权。'
+      + 'headers_low/headers_high 传 Cookie/Token 等鉴权头（对象或 "Key: Value\\n" 字符串）。目标经 scope-guard 校验。',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        method: { type: 'string', description: '默认 GET' },
+        body: { type: 'string' },
+        headers_low: { type: ['object', 'string'], description: '低权会话头' },
+        headers_high: { type: ['object', 'string'], description: '高权会话头' },
+      },
+      required: ['url'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: renderJSON },
+    execute: async (args) => authzDiff(args || {}),
+  })
+
+  // xray webhook 接收器随插件启动（流量总线 v1）
+  startXrayWebhook(ctx)
 }

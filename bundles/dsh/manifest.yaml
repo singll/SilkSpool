@@ -42,18 +42,24 @@ templates:
   - proxy-scraper-checker.toml
   - silksec-proxy-rotator.service
   - silksec-proxy-refresh.service
+  # --- xray 被动扫描（流量总线 v1）---
+  - silksec-xray.service
   # --- 代理池 dsh 原生插件（替代 MCP 模式）---
   - dsh-plugin-proxy-pool.js
   - dsh-plugin-proxy-pool.patch.yml
   - proxy-pool-plugin-setup.sh
-  # --- 安全套件插件（sec-cli-adapter + scope-guard 硬校验）---
+  # --- 安全套件插件（sec-cli-adapter + scope-guard 硬校验 + asset-graph）---
   - dsh-plugin-sec-suite.js
+  - dsh-plugin-sec-suite.asset-db.js
+  - dsh-plugin-sec-suite.asset-graph.js
   - dsh-plugin-sec-suite.patch.yml
   - sec-suite-plugin-setup.sh
   - seed-manifests.sh
+  - seed-skills.sh
   # --- 社区插件锁（pin 版本 + hash，先扫后装）---
   - plugins.lock
 services:
   - silksecagent
   - silksecagent-edge
   - silksec-proxy-rotator
+  - silksec-xray

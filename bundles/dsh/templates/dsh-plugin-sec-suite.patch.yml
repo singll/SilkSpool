@@ -1,4 +1,7 @@
-# silksec-sec-suite bundle layer: sec-cli-adapter（内建 scope-guard 硬校验）
+# silksec-sec-suite bundle layer: sec-cli-adapter（内建 scope-guard）+ asset-graph
 - insert:
     - id: sec-cli-adapter
       name: '@silksec/sec-suite'
+
+    - id: asset-graph
+      name: '@silksec/sec-suite/asset-graph'

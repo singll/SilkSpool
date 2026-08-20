@@ -26,6 +26,7 @@ nuclei|go|github.com/projectdiscovery/nuclei/v3/cmd/nuclei|nuclei -version
 dalfox|go|github.com/hahwul/dalfox/v2|dalfox version
 crlfuzz|go|github.com/dwisiswant0/crlfuzz/cmd/crlfuzz|crlfuzz -h
 afrog|bin|zan8in/afrog|afrog -version
+xray|bin|chaitin/xray@1.9.11|xray version
 
 # --- 指纹 ---
 observer_ward|bin|emo-crab/observer_ward|observer_ward --help

@@ -1,0 +1,18 @@
+[Unit]
+Description=SilkSecAgent xray passive scan (流量总线 v1：监听 7777，webhook → 127.0.0.1:7788)
+After=network-online.target silksecagent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={{BASE_DIR}}/xray
+# xray 只从可执行文件旁读主配置：把生成的默认配置安装到 /usr/local/bin/xray.yaml
+ExecStartPre=/bin/sh -c '[ -f /usr/local/bin/xray.yaml ] || cp {{BASE_DIR}}/xray/xray.yaml /usr/local/bin/xray.yaml'
+ExecStart=/usr/local/bin/xray webscan --listen 127.0.0.1:7777 --webhook-output http://127.0.0.1:7788/xray --json-output {{BASE_DIR}}/data/flows/xray-passive.json
+Restart=always
+RestartSec=10
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
