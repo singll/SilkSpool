@@ -52,10 +52,13 @@ templates:
   - dsh-plugin-sec-suite.js
   - dsh-plugin-sec-suite.asset-db.js
   - dsh-plugin-sec-suite.asset-graph.js
+  - dsh-plugin-sec-suite.experience.js
   - dsh-plugin-sec-suite.patch.yml
   - sec-suite-plugin-setup.sh
   - seed-manifests.sh
   - seed-skills.sh
+  # --- 情报刷新（intel-feeder v1）---
+  - intel-refresh.sh
   # --- 社区插件锁（pin 版本 + hash，先扫后装）---
   - plugins.lock
 services:

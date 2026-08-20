@@ -181,4 +181,30 @@ fi
 if [ -f "$BASE_DIR/sec-suite-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-suite-plugin-setup.sh" || warn "安全套件插件安装失败（不影响 DSH 主程序）"
 fi
+
+# -------------------- 9. 情报刷新定时器（intel-feeder v1，每日） --------------------
+if [ -f "$BASE_DIR/intel-refresh.sh" ]; then
+    $SUDO tee /etc/systemd/system/silksec-intel.service >/dev/null <<EOF
+[Unit]
+Description=SilkSecAgent intel refresh (nuclei/afrog template update)
+
+[Service]
+Type=oneshot
+User=silkspool
+ExecStart=/bin/bash $BASE_DIR/intel-refresh.sh
+EOF
+    $SUDO tee /etc/systemd/system/silksec-intel.timer >/dev/null <<'EOF'
+[Unit]
+Description=SilkSecAgent intel refresh (daily)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable --now silksec-intel.timer 2>/dev/null || warn "intel timer 启用失败"
+fi
 log "setup 完成"

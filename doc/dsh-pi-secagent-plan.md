@@ -24,6 +24,16 @@
 > - **3 个核心 Skill 种子**（sec-verification 验证铁律 / sec-blackboard 黑板纪律 / sec-review 复盘沉淀），DSH 用户级技能目录热加载；
 > - 欠账：Preset 层（6 角色）未做、浏览器流量入总线（dsh-browser 无 proxy 配置项，待评估绕行方案）、4.3/4.4 重型工具（semgrep/CodeQL/impacket）未装。
 >
+> **P4 核心已完成（2026-08-20）**：`@silksec/sec-suite/experience`（experience-hub）落地——
+> - **经验卡**：exp_store（同 scenario 自动合并、evidence 空拒绝、external 强制低置信）/ exp_search（FTS5+逐词 LIKE 双引擎，
+>   置信度×来源加权排序）/ exp_list / exp_validate（时效刷新）——生命周期管理与来源分级内建；
+> - **知识导入**：kb_import（file/url → 落盘 + 全文索引，external 标注）/ kb_search（标题+摘录）；
+> - **playbook-ranker**：pb_save / pb_outcome（EWMA 耗时）/ pb_rank（成功率 × 时间衰减）；
+> - **intel-feeder v1**：silksec-intel.timer 每日刷新 nuclei/afrog 模板库，计数变化写 data/intel/intel.jsonl；
+> - 单测 8/8 通过（无证据拒绝/合并去重/中英文检索/kb 导入检索/playbook 排名）。
+>   踩坑：FTS5 unicode61 对中英文无空格混排整串成词，必须逐词 LIKE 兜底；
+> - 欠账：靶场回归评测（需 Vulhub 环境）、dsh-sentinel 事件触发、向量嵌入（当前 FTS5，语义检索待本地嵌入模型）。
+>
 > **P1 已补齐（2026-08-20）**：18 个工具 manifest 种子（seed-manifests.sh 幂等补齐）；`burp_import` 工具落地
 > （Burp XML proxy history / scanner issues → JSONL 落盘 data/imports/，实测解析正确）。
 > **P2 已完成（2026-08-20）**：

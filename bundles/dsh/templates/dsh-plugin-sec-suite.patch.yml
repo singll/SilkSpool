@@ -1,7 +1,10 @@
-# silksec-sec-suite bundle layer: sec-cli-adapter（内建 scope-guard）+ asset-graph
+# silksec-sec-suite bundle layer
 - insert:
     - id: sec-cli-adapter
       name: '@silksec/sec-suite'
 
     - id: asset-graph
       name: '@silksec/sec-suite/asset-graph'
+
+    - id: experience-hub
+      name: '@silksec/sec-suite/experience'
