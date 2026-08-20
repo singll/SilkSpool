@@ -11,7 +11,17 @@
 > 替代原 MCP 模式（mcp_proxy_pool.py 退役）；mubeng 轮换网关（:8899）与采集/分级 timer 保留在 csai bundle 继续运行。
 > 关键经验：`dsh plugin add` 会把包写入 profile 的 `dsh.profile.bundles`；**link: 安装下插件目录取不到 peer 依赖，插件须零依赖**（defineTool 产物内联手写即可）；
 > `dsh plugin` 子命令必须显式传 `DSH_HOME` 和 pnpm PATH，否则误建 `~/.dsh`。
-> 待办：其余 7 个社区插件（plugins.lock）待 P2 扫描后启用。
+> 待办：其余 6 个社区插件（plugins.lock）待 P3/P4 扫描后启用。
+>
+> **P1 已补齐（2026-08-20）**：18 个工具 manifest 种子（seed-manifests.sh 幂等补齐）；`burp_import` 工具落地
+> （Burp XML proxy history / scanner issues → JSONL 落盘 data/imports/，实测解析正确）。
+> **P2 已完成（2026-08-20）**：
+> - `spawn_worker`：隔离无头 worker（复用 DSH headless profile 子进程，并发上限 4，只回尾部摘要），
+>   sec-suite/proxy-pool 插件已同时装入 web+headless 双 profile，真实 LLM 调用验证通过（3s 出结果）。
+>   注：pi-bridge 未做——DSH 内建 headless profile + dsh-llm-pi-ai 多供应商路由已覆盖其价值，pi 侧保持零扩展；
+> - dsh-browser@0.1.0（扫描 PASS）+ Playwright chromium headless 验证通过；
+> - **token 量化验收**：subfinder 真实输出 548,994 字节（≈137k tokens）→ 摘要 479 字节（≈120 tokens），
+>   **压缩比 1146x**；worker 日志全量落盘只回尾部——批任务上下文污染结构性消除。
 >
 > **多供应商切换已上线（2026-08-20）**：dsh-model-failover@0.1.4（扫描 PASS）安装完成，两级熔断（模型级/平台级）+ 冷却探针自动恢复，
 > 与官方 llm-retry 分层（route 内重试 → 熔断切换）。配置分两处（均有用户空位）：

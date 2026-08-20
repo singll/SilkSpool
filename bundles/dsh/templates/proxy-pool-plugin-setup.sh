@@ -40,19 +40,18 @@ EOF
     fi
 }
 
-# -------------------- 2. 装入 web profile --------------------
+# -------------------- 2. 装入 profile（web + headless，worker 需要代理池工具） --------------------
 install_plugin() {
-    local profile_dir="$DATA_DIR/profiles/web"
-    [ -d "$profile_dir" ] || { warn "profile 目录不存在: $profile_dir（先启动一次 dsh web）"; return 1; }
-
-    if grep -q '"@silksec/dsh-proxy-pool"' "$profile_dir/package.json" 2>/dev/null; then
-        log "插件已在 profile 中，跳过（升级插件代码后需 systemctl restart silksecagent）"
-        return 0
-    fi
-
-    log "dsh plugin --profile web add $PLUGIN_DIR"
-    (cd "$APP_DIR" && DSH_HOME="$DATA_DIR" PATH=/usr/local/node/bin:$PATH "$NODE" "$DSH_BIN" plugin --profile web add "$PLUGIN_DIR")
-    log "插件安装完成"
+    for profile in web headless; do
+        local profile_dir="$DATA_DIR/profiles/$profile"
+        if grep -q '"@silksec/dsh-proxy-pool"' "$profile_dir/package.json" 2>/dev/null; then
+            log "插件已在 $profile profile 中，跳过（升级插件代码后需 systemctl restart silksecagent）"
+            continue
+        fi
+        log "dsh plugin --profile $profile add $PLUGIN_DIR"
+        (cd "$APP_DIR" && DSH_HOME="$DATA_DIR" PATH=/usr/local/node/bin:$PATH "$NODE" "$DSH_BIN" plugin --profile "$profile" add "$PLUGIN_DIR")
+        log "插件安装完成 ($profile)"
+    done
 }
 
 # -------------------- 3. 冒烟：profile 组合可解析 --------------------

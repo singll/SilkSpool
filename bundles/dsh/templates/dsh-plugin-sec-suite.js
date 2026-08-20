@@ -413,6 +413,124 @@ function pageResult(args) {
 }
 
 // ==============================================================================
+// burp-ingest：Burp Suite 导出 XML 导入（proxy history items / scanner issues）
+// ==============================================================================
+
+function xmlTag(block, tag) {
+  const m = block.match(new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${tag}>`))
+  return m ? m[1].trim() : ''
+}
+
+function burpImport(args) {
+  const file = String(args.file || '')
+  if (!file || !fs.existsSync(file)) return { ok: false, error: `文件不存在: ${file}` }
+  const text = fs.readFileSync(file, 'utf8')
+  const importId = 'burp-' + Date.now().toString(36)
+  const outDir = path.join(DATA_DIR, 'imports')
+  fs.mkdirSync(outDir, { recursive: true })
+
+  const isIssues = /<issues>/.test(text)
+  const blocks = text.match(/<(item|issue)>[\s\S]*?<\/\1>/g) || []
+  const outFile = path.join(outDir, `${importId}.jsonl`)
+  const out = fs.createWriteStream(outFile)
+  const hosts = new Set()
+  let count = 0
+
+  if (isIssues) {
+    for (const b of blocks) {
+      const name = xmlTag(b, 'name')
+      const host = hostOf(xmlTag(b, 'host'))
+      const rec = {
+        type: 'issue', name, host,
+        path: xmlTag(b, 'path'), severity: xmlTag(b, 'severity'),
+        confidence: xmlTag(b, 'confidence'),
+      }
+      if (host) hosts.add(host)
+      out.write(JSON.stringify(rec) + '\n'); count++
+    }
+  } else {
+    for (const b of blocks) {
+      const url = xmlTag(b, 'url')
+      const host = hostOf(xmlTag(b, 'host') || url)
+      const rec = {
+        type: 'item', host, url,
+        method: xmlTag(b, 'method'), status: xmlTag(b, 'status'),
+        mimetype: xmlTag(b, 'mimetype'),
+      }
+      if (host) hosts.add(host)
+      out.write(JSON.stringify(rec) + '\n'); count++
+    }
+  }
+  out.end()
+  audit({ ts: Date.now(), run_id: importId, tool: 'burp_import', decision: 'executed', detail: `${count} records from ${path.basename(file)}` })
+  return {
+    ok: true, import_id: importId, kind: isIssues ? 'scanner issues' : 'proxy history',
+    records: count, hosts: [...hosts].slice(0, 20), output: outFile,
+    hint: '完整数据已落盘 JSONL；接入 asset-graph（P3）后自动入图谱',
+  }
+}
+
+// ==============================================================================
+// spawn_worker：隔离执行的无头 worker（批任务不污染主会话上下文）
+// 复用 DSH 内建 headless profile：子进程跑完只回尾部摘要，全文落盘
+// ==============================================================================
+
+const DSH_BIN = process.env.SEC_DSH_BIN
+  || '/opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/bin.js'
+const NODE_BIN = process.env.SEC_NODE_BIN || '/usr/local/node/bin/node'
+const MAX_WORKERS = 4
+let activeWorkers = 0
+
+async function spawnWorker(args) {
+  const task = String(args.task || '').trim()
+  if (!task) return { ok: false, error: 'task 不能为空' }
+  if (activeWorkers >= MAX_WORKERS) {
+    return { ok: false, error: `worker 并发上限 ${MAX_WORKERS}，请稍后重试` }
+  }
+  const timeoutMs = Math.min(Number(args.timeout) || 900, 3600) * 1000
+  const runId = 'w' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex')
+  const runDir = path.join(RESULTS_DIR, runId)
+  fs.mkdirSync(runDir, { recursive: true })
+
+  const env = { ...process.env, DSH_HOME: DATA_DIR, PATH: '/usr/local/node/bin:' + (process.env.PATH || '') }
+  audit({ ts: Date.now(), run_id: runId, tool: 'spawn_worker', decision: 'executed', detail: task.slice(0, 200) })
+
+  activeWorkers++
+  const started = Date.now()
+  const result = await new Promise((resolve) => {
+    const out = fs.createWriteStream(path.join(runDir, 'worker.log'))
+    const child = spawn(NODE_BIN, [DSH_BIN, '--profile', 'headless', task], {
+      env, cwd: runDir,
+    })
+    child.stdout.pipe(out)
+    child.stderr.pipe(out)
+    const killer = setTimeout(() => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 5000).unref() }, timeoutMs)
+    child.on('error', (e) => { clearTimeout(killer); resolve({ code: null, error: String(e.message) }) })
+    child.on('close', (code, signal) => { clearTimeout(killer); resolve({ code, signal }) })
+  })
+  activeWorkers--
+
+  const meta = {
+    run_id: runId, tool: 'spawn_worker', task, started_at: new Date(started).toISOString(),
+    duration_ms: Date.now() - started, exit_code: result.code ?? null,
+  }
+  fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 1) + '\n')
+
+  let logText = ''
+  try { logText = fs.readFileSync(path.join(runDir, 'worker.log'), 'utf8') } catch { /* 无输出 */ }
+  const lines = logText.split('\n').filter(Boolean)
+  return {
+    ok: result.code === 0,
+    run_id: runId,
+    exit_code: result.code ?? null,
+    duration_ms: meta.duration_ms,
+    log_lines: lines.length,
+    tail: lines.slice(-20).join('\n'),
+    hint: `完整日志 ${lines.length} 行已落盘，用 grep_result/page_result 取 ${runId} 的细节`,
+  }
+}
+
+// ==============================================================================
 // 注册
 // ==============================================================================
 
@@ -470,5 +588,38 @@ export function apply(ctx) {
     },
     output: { schema: { type: 'object' }, render: renderJSON },
     execute: async (args) => pageResult(args || {}),
+  })
+
+  ctx.tools.register({
+    name: 'burp_import',
+    description: '导入 Burp Suite 导出文件（XML：proxy history 或 scanner issues），结构化落盘 data/imports/ 并回摘要。'
+      + '人工在 Burp 里测试后导出 XML，用本工具回流系统沉淀资产与发现。',
+    parameters: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', description: 'Burp 导出的 XML 文件路径（本机绝对路径）' },
+      },
+      required: ['file'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: renderJSON },
+    execute: async (args) => burpImport(args || {}),
+  })
+
+  ctx.tools.register({
+    name: 'spawn_worker',
+    description: '派一个隔离的无头 worker 执行自包含任务（批量复扫、大日志蒸馏等），worker 上下文独立，'
+      + '跑完只回尾部摘要，全文落盘 results/<run_id>/worker.log。批任务用它，不要在主会话直接跑大输出工具。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: '自包含的任务描述（worker 看不到本会话上下文，目标/范围/产出要求要写全）' },
+        timeout: { type: 'integer', description: '超时秒数，默认 900，上限 3600' },
+      },
+      required: ['task'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: renderJSON },
+    execute: async (args) => spawnWorker(args || {}),
   })
 }

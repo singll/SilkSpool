@@ -50,6 +50,7 @@ templates:
   - dsh-plugin-sec-suite.js
   - dsh-plugin-sec-suite.patch.yml
   - sec-suite-plugin-setup.sh
+  - seed-manifests.sh
   # --- 社区插件锁（pin 版本 + hash，先扫后装）---
   - plugins.lock
 services:
