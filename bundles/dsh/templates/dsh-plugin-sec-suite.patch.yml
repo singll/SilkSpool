@@ -1,0 +1,4 @@
+# silksec-sec-suite bundle layer: sec-cli-adapter（内建 scope-guard 硬校验）
+- insert:
+    - id: sec-cli-adapter
+      name: '@silksec/sec-suite'

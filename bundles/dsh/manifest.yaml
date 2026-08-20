@@ -7,15 +7,22 @@ defaults:
       #  SilkSecAgent (DSH) Environment Variables (systemd EnvironmentFile 注入)
       # ==============================================================================
 
-      # --- aigateway (New API) 多模型网关 ---
-      AIGATEWAY_BASE_URL=CHANGE_ME_http://aigateway:3000/v1
-      AIGATEWAY_API_KEY=CHANGE_ME_api_key
+      # --- 模型供应商直连 key（不走任何网关）---
+      # DSH 主模型在 Web UI 设置中配置（base_url 填供应商官方地址，key 引用下列变量）；
+      # 自研插件 / pi-ai 模型路由也读取下列变量
+      DEEPSEEK_API_KEY=CHANGE_ME_api_key
+      # OPENAI_API_KEY=
+      # MOONSHOT_API_KEY=
+      # ANTHROPIC_API_KEY=
 
       # --- 出口代理（mubeng 轮换网关，复用 csai 现有资产）---
       SEC_EGRESS_PROXY=http://127.0.0.1:8899
+      # --- 代理池数据目录（proxy-pool 插件读取）---
+      SEC_PROXY_POOL_DIR=/opt/silkspool/csai/proxy-pool
 templates:
   - setup.sh
   - silksecagent.service
+  - silksecagent-edge.service
   # --- 一键升级（spool bundle dsh upgrade csai）---
   - dsh-upgrade.sh
   # --- 安全工具链管理（安装/升级/卸载，幂等）---
@@ -28,7 +35,12 @@ templates:
   - dsh-plugin-proxy-pool.js
   - dsh-plugin-proxy-pool.patch.yml
   - proxy-pool-plugin-setup.sh
+  # --- 安全套件插件（sec-cli-adapter + scope-guard 硬校验）---
+  - dsh-plugin-sec-suite.js
+  - dsh-plugin-sec-suite.patch.yml
+  - sec-suite-plugin-setup.sh
   # --- 社区插件锁（pin 版本 + hash，先扫后装）---
   - plugins.lock
 services:
   - silksecagent
+  - silksecagent-edge

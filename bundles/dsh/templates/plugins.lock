@@ -1,14 +1,14 @@
 # ==============================================================================
-# SilkSecAgent 社区插件锁（pin 版本，先扫后装，见 doc/dsh-pi-secagent-plan.md §6.2）
-# 状态：P2 阶段启用。安装前必须过供应链静态扫描（Block/Warn/PASS 门），
-# 扫描通过后把确切版本与 tarball hash 填入下方，随 dsh-upgrade 窗口一起冒烟。
-# 格式：name|npm_spec|sha256|scan_verdict|purpose
+# SilkSecAgent 社区插件锁（pin 版本 + hash，先扫后装，见 doc/dsh-pi-secagent-plan.md §6.2）
+# 格式：name|npm_spec|integrity|scan_verdict|purpose
 # ==============================================================================
 
+dsh-auth-gate|0.7.2|sha512-g2x+90ldjEMC5R7Zj9upqpHfjxyUQ66KMueg6cpBkVXdTRkyHmCPTSgJstE4P6H+wCkNABgesf9y/NiGdCU1FA==|PASS_2026-08-20|Web UI 登录门（无安装脚本/无网络外联/无 eval，已人工审查 lib 源码）
+
+# 待评估（P2）：
 # wqty123/dsh-browser        | TBD | TBD | PENDING | 浏览器共驾（真实浏览器/人工接管/CAPTCHA 检测）
 # tancheng33/dsh-egress-guard| TBD | TBD | PENDING | 出口白名单+凭据脱敏+审计
 # sashankh/dsh-taintguard    | TBD | TBD | PENDING | 不可信内容污点追踪（防目标反制注入）
-# TecFancy/dsh-auth-gate     | TBD | TBD | PENDING | Web UI 登录门（对外开放 :3080 前必装）
 # Jannchie/dsh-bill          | TBD | TBD | PENDING | token 成本归因+预算+台账
 # akslcw/dsh-negative-ledger | TBD | TBD | PENDING | 负知识账本（已证伪路径拦截）
 # htcqp802/dsh-knowledge-base| TBD | TBD | PENDING | 知识库导入底座（md/pdf/docx+FTS5）

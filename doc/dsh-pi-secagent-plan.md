@@ -11,7 +11,19 @@
 > 替代原 MCP 模式（mcp_proxy_pool.py 退役）；mubeng 轮换网关（:8899）与采集/分级 timer 保留在 csai bundle 继续运行。
 > 关键经验：`dsh plugin add` 会把包写入 profile 的 `dsh.profile.bundles`；**link: 安装下插件目录取不到 peer 依赖，插件须零依赖**（defineTool 产物内联手写即可）；
 > `dsh plugin` 子命令必须显式传 `DSH_HOME` 和 pnpm PATH，否则误建 `~/.dsh`。
-> 待办：`hosts/csai/dsh/.env` 的 `AIGATEWAY_API_KEY` 仍为占位符，需填入真实 key；9 个社区插件（plugins.lock）待 P2 扫描后启用；对外开放 :3080 前必须先装 auth-gate。
+> 待办：`hosts/csai/dsh/.env` 的 `DEEPSEEK_API_KEY` 仍为占位符，需填入真实 key（已改为供应商直连，不依赖 aigateway/New API）；其余 8 个社区插件（plugins.lock）待 P2 扫描后启用。
+>
+> **auth-gate 已完成（2026-08-20）**：dsh-auth-gate@0.7.2（静态扫描 PASS，hash 已入 plugins.lock），密码模式 admin 用户已建，
+> 未登录 401 / 登录 302 / 带 cookie 200 全链路验证通过。注意 **dsh rc.7 强制 loopback 绑定**（拒绝 0.0.0.0 与具体 LAN IP），
+> 故新增 `silksecagent-edge.service`（socat 转发 192.168.7.107:3080 → 127.0.0.1:3080）开放内网访问。
+> LAN 地址：http://192.168.7.107:3080（内网 DNS 已有 singll.net 体系，本机未走网关 DNS 按用户要求不依赖）。
+>
+> **P1 已完成（2026-08-20）**：`@silksec/sec-suite` 插件落地——sec-cli-adapter（run_cli/grep_result/page_result 三工具，
+> manifest 驱动、模板渲染、超时/代理注入、results/<run_id>/ 全量落盘、≤20 行摘要）+ 内建 scope-guard
+> （域名后缀/CIDR/精确匹配、排除清单、风险四级、fail-closed、audit.jsonl 全量审计）。
+> 单测 7/7 通过（授权/CIDR/排除/未授权拒绝/grep/page/缺 manifest），subfinder 真实端到端跑通（23363 行输出仅回 20 行摘要）。
+> 内置极简 YAML 解析器（零依赖），种子 manifest：subfinder/httpx/nuclei/katana/echo-test。
+> scope.yml 当前 programs 为空 = 全拒绝，授权目标需先登记。
 
 > 基础事实：2026-08-20 已用 spool 实测 csai 主机（Ubuntu 24.04 / 8C / 16G / 余 939G / **无 Docker 无 Node**），并核实 DSH、pi 上游仓库。
 >
@@ -127,7 +139,7 @@ worker 纪律（回应"子代理是黑盒"的批评）：**worker 只执行确�
 └──────────────────────────────────────────────────────────────────────────────────────┘
          │ LLM 调用（pi-ai 统一出口，OpenAI 兼容）
 ┌────────▼─────────┐
-│ aigateway（现有）  │  New API 多模型网关，密钥一处管理
+│ 模型供应商直连     │  DeepSeek 等官方 API（不经任何网关，key 存 .env）
 └──────────────────┘
 ```
 
@@ -262,7 +274,7 @@ export function apply(ctx: Context) {
   // 批任务经官方 jobs 包管理（进度/取消/超时回收 UI 可见）
 }
 // PiBridgeService 内部:
-//   - pi-ai: 统一 LLM 出口（base_url 指向 aigateway，按 taskType 路由模型）
+//   - pi-ai: 统一 LLM 出口（直连供应商官方 API，按 taskType 路由模型）
 //   - pi-agent-core: worker 生命周期（spawn/流式事件转发到 DSH 事件流/超时回收）
 //   - worker 与主会话共用同一套 run_cli 工具实现（工具逻辑只有一份）
 //   - pi 侧不安装任何业务扩展（§1.2 主次纪律）
@@ -423,7 +435,7 @@ DSH 一切皆插件 + 官方 extensions 包（运行时自修改：模型可检�
 
 ```
 bundles/dsh/                     # ✅ P0 已落地（2026-08-20，csai 验证通过）
-├── manifest.yaml                # type: script；defaults 生成 dsh/.env（aigateway 端点/key、代理地址）
+├── manifest.yaml                # type: script；defaults 生成 dsh/.env（供应商直连 key、代理地址）
 └── templates/
     ├── setup.sh                 # ✅ 幂等：apt 依赖 → Node 22 LTS+pnpm → npm 安装 DSH(pin 版本)
     │                            #   → data 目录/scope.yml 初始化 → reconcile_service

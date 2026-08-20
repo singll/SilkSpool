@@ -170,4 +170,9 @@ reconcile_service
 if [ -f "$BASE_DIR/proxy-pool-plugin-setup.sh" ]; then
     bash "$BASE_DIR/proxy-pool-plugin-setup.sh" || warn "代理池插件安装失败（不影响 DSH 主程序）"
 fi
+
+# -------------------- 7. 安全套件插件（sec-cli-adapter + scope-guard） --------------------
+if [ -f "$BASE_DIR/sec-suite-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-suite-plugin-setup.sh" || warn "安全套件插件安装失败（不影响 DSH 主程序）"
+fi
 log "setup 完成"
