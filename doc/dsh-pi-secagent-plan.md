@@ -1,5 +1,11 @@
 # 基于 DSH + pi 的 AI 网络安全辅助平台方案 v3
 
+> **实施状态（2026-08-20）**：P0 底座已完成——`bundles/dsh`（SilkSecAgent）已落地并在 csai 跑通：
+> `spool bundle dsh setup csai && spool bundle dsh up csai` 一条链验证通过，Web UI 于 127.0.0.1:3080 正常响应（HTTP 200）。
+> 已验证：setup 幂等重跑、`spool bundle dsh upgrade csai`（版本检查+备份+冒烟+回滚）、tools-manager 安装/升级/卸载/状态闭环（20 个核心工具已装齐）。
+> 关键经验：DSH 依赖图巨大，**npm 解析会卡死，必须用 pnpm**（14 秒装完）；dsh rc.7 无 `--no-open` 参数，systemd 下用 `--host/--port` 显式指定。
+> 待办：`hosts/csai/dsh/.env` 的 `AIGATEWAY_API_KEY` 仍为占位符，需填入真实 key；9 个社区插件（plugins.lock）待 P2 扫描后启用；对外开放 :3080 前必须先装 auth-gate。
+
 > 基础事实：2026-08-20 已用 spool 实测 csai 主机（Ubuntu 24.04 / 8C / 16G / 余 939G / **无 Docker 无 Node**），并核实 DSH、pi 上游仓库。
 >
 > - DSH：https://github.com/deepseek-ai/deepseek-harness （Cordis "一切皆插件" 架构，`npx @deepseek-ai/dsh web` 起 Web UI :3080，开发者预览版，MIT）
@@ -409,20 +415,18 @@ DSH 一切皆插件 + 官方 extensions 包（运行时自修改：模型可检�
 新建 `bundles/dsh/`（type: script，范式对照现有 csai bundle 的幂等 setup 模式）：
 
 ```
-bundles/dsh/
-├── manifest.yaml              # type: script；.env 注入 aigateway 端点/key、代理地址
+bundles/dsh/                     # ✅ P0 已落地（2026-08-20，csai 验证通过）
+├── manifest.yaml                # type: script；defaults 生成 dsh/.env（aigateway 端点/key、代理地址）
 └── templates/
-    ├── setup.sh               # 幂等：apt 依赖 → Node LTS+pnpm → clone DSH(锁版本) → pnpm build
-    │                          #   → 官方包启用 + 9 个社区插件(pin+hash 校验+扫描) + 自研插件安装
-    │                          #   → 生成 dsh.yaml → reconcile_service
-    ├── dsh.service            # systemd unit（EnvironmentFile 注入代理/网关配置）
-    ├── dsh-upgrade.sh         # 锁版本升级 + 冒烟 + 回滚（含 e2e 套件）
-    ├── tools-manager.sh       # apt/go/pip/bin 四通道幂等安装 §四 工具 + verify 冒烟
-    ├── sync-manifests.sh      # tools.d 清单 lint/校验
-    ├── plugins.lock           # 社区插件版本+hash 清单（进 git）
-    ├── scope.yml              # 授权白名单初始模板（可扩展为 src-programs.yml：
-    │                          #   含各 SRC 范围/排除项/规则/历史 finding 指纹库/代理策略开关）
-    └── seed/                  # 首批 ~20 个核心工具 manifest + 6 个 Preset + 6 个 Skill 草稿
+    ├── setup.sh                 # ✅ 幂等：apt 依赖 → Node 22 LTS+pnpm → npm 安装 DSH(pin 版本)
+    │                            #   → data 目录/scope.yml 初始化 → reconcile_service
+    ├── silksecagent.service     # ✅ systemd unit（DSH_HOME=data/，EnvironmentFile 注入）
+    ├── dsh-upgrade.sh           # ✅ 版本检查→备份→pnpm 安装→重启→冒烟→失败回滚
+    ├── tools-manager.sh         # ✅ install/upgrade/remove/status 四动作，清单驱动
+    ├── tools.list               # ✅ 首批 20 个核心工具（go/bin/apt 三通道 + verify 冒烟）
+    ├── scope.yml                # ✅ 授权白名单初始模板（含 per-program 代理策略开关）
+    └── plugins.lock             # ⏳ 9 个社区插件 pin+hash 清单（P2 扫描后启用）
+    # 后续阶段：seed/（Preset/Skill 草稿）、自研插件包（pi-bridge/sec-cli-adapter 等）
 ```
 
 纪律（沿用现有 csai bundle 已验证的原则）：setup 幂等可重跑；配置已存在不覆盖；data 目录与程序目录分离；代理池只检测复用（127.0.0.1:8899），不重装；**验收标准 = 干净 Ubuntu 24.04 上 `spool bundle dsh setup <host> && spool bundle dsh up <host>` 一条链跑通**。

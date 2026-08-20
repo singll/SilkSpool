@@ -1,0 +1,41 @@
+# ==============================================================================
+# SilkSecAgent 安全工具清单（tools-manager.sh 读取）
+# 格式：name|channel|install_spec|verify_cmd
+#   channel: go | bin | apt
+#   go:  install_spec = go install 路径（@版本 可省，默认 @latest）
+#   bin: install_spec = GitHub repo（owner/name），自动取 latest release 匹配平台资产
+#   apt: install_spec = apt 包名
+# 空行与 # 注释忽略。工具版本随 tools-manager 升级窗口统一切换。
+# ==============================================================================
+
+# --- 资产收集（PD 全家桶）---
+subfinder|go|github.com/projectdiscovery/subfinder/v2/cmd/subfinder|subfinder -version
+dnsx|go|github.com/projectdiscovery/dnsx/cmd/dnsx|dnsx -version
+naabu|go|github.com/projectdiscovery/naabu/v2/cmd/naabu|naabu -version
+httpx|go|github.com/projectdiscovery/httpx/cmd/httpx|httpx -version
+tlsx|go|github.com/projectdiscovery/tlsx/cmd/tlsx|tlsx -version
+asnmap|go|github.com/projectdiscovery/asnmap/cmd/asnmap|asnmap -version
+mapcidr|go|github.com/projectdiscovery/mapcidr/cmd/mapcidr|mapcidr -version
+katana|go|github.com/projectdiscovery/katana/cmd/katana|katana -version
+gau|go|github.com/lc/gau/v2/cmd/gau|gau --version
+waybackurls|go|github.com/tomnomnom/waybackurls|waybackurls -h
+ffuf|go|github.com/ffuf/ffuf/v2|ffuf -V
+
+# --- 漏洞挖掘 ---
+nuclei|go|github.com/projectdiscovery/nuclei/v3/cmd/nuclei|nuclei -version
+dalfox|go|github.com/hahwul/dalfox/v2|dalfox version
+crlfuzz|go|github.com/dwisiswant0/crlfuzz/cmd/crlfuzz|crlfuzz -h
+afrog|bin|zan8in/afrog|afrog -version
+
+# --- 指纹 ---
+observer_ward|bin|emo-crab/observer_ward|observer_ward --help
+
+# --- 弱口令/爆破 ---
+kerbrute|go|github.com/ropnop/kerbrute|kerbrute -h
+
+# --- 密钥泄漏 ---
+gitleaks|bin|gitleaks/gitleaks|gitleaks version
+trufflehog|bin|trufflesecurity/trufflehog|trufflehog --version
+
+# --- 供应链 ---
+osv-scanner|go|github.com/google/osv-scanner/cmd/osv-scanner|osv-scanner --version

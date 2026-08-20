@@ -1,0 +1,20 @@
+[Unit]
+Description=SilkSecAgent - DSH based AI Security Platform (Web UI :3080)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=silkspool
+WorkingDirectory={{BASE_DIR}}/app
+EnvironmentFile=-{{BASE_DIR}}/.env
+Environment=HOME=/home/silkspool
+Environment=DSH_HOME={{BASE_DIR}}/data
+Environment=PATH=/usr/local/node/bin:/usr/local/go/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+ExecStart=/usr/local/node/bin/node {{BASE_DIR}}/app/node_modules/@deepseek-ai/dsh/lib/bin.js web --host 127.0.0.1 --port 3080
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

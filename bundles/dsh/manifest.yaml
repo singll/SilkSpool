@@ -1,0 +1,30 @@
+name: dsh
+type: script
+defaults:
+  - path: dsh/.env
+    content: |
+      # ==============================================================================
+      #  SilkSecAgent (DSH) Environment Variables (systemd EnvironmentFile 注入)
+      # ==============================================================================
+
+      # --- aigateway (New API) 多模型网关 ---
+      AIGATEWAY_BASE_URL=CHANGE_ME_http://aigateway:3000/v1
+      AIGATEWAY_API_KEY=CHANGE_ME_api_key
+
+      # --- 出口代理（mubeng 轮换网关，复用 csai 现有资产）---
+      SEC_EGRESS_PROXY=http://127.0.0.1:8899
+templates:
+  - setup.sh
+  - silksecagent.service
+  # --- 一键升级（spool bundle dsh upgrade csai）---
+  - dsh-upgrade.sh
+  # --- 安全工具链管理（安装/升级/卸载，幂等）---
+  - tools-manager.sh
+  # --- 工具清单（tools-manager 读取）---
+  - tools.list
+  # --- 授权白名单初始模板 ---
+  - scope.yml
+  # --- 社区插件锁（pin 版本 + hash，先扫后装）---
+  - plugins.lock
+services:
+  - silksecagent

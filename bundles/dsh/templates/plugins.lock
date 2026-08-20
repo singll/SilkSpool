@@ -1,0 +1,16 @@
+# ==============================================================================
+# SilkSecAgent 社区插件锁（pin 版本，先扫后装，见 doc/dsh-pi-secagent-plan.md §6.2）
+# 状态：P2 阶段启用。安装前必须过供应链静态扫描（Block/Warn/PASS 门），
+# 扫描通过后把确切版本与 tarball hash 填入下方，随 dsh-upgrade 窗口一起冒烟。
+# 格式：name|npm_spec|sha256|scan_verdict|purpose
+# ==============================================================================
+
+# wqty123/dsh-browser        | TBD | TBD | PENDING | 浏览器共驾（真实浏览器/人工接管/CAPTCHA 检测）
+# tancheng33/dsh-egress-guard| TBD | TBD | PENDING | 出口白名单+凭据脱敏+审计
+# sashankh/dsh-taintguard    | TBD | TBD | PENDING | 不可信内容污点追踪（防目标反制注入）
+# TecFancy/dsh-auth-gate     | TBD | TBD | PENDING | Web UI 登录门（对外开放 :3080 前必装）
+# Jannchie/dsh-bill          | TBD | TBD | PENDING | token 成本归因+预算+台账
+# akslcw/dsh-negative-ledger | TBD | TBD | PENDING | 负知识账本（已证伪路径拦截）
+# htcqp802/dsh-knowledge-base| TBD | TBD | PENDING | 知识库导入底座（md/pdf/docx+FTS5）
+# fuhefei/dsh-sentinel       | TBD | TBD | PENDING | 条件驱动唤醒（intel-feeder 触发层）
+# 534119219/chicheng-push    | TBD | TBD | PENDING | 多渠道推送（审批/出洞通知到手机）

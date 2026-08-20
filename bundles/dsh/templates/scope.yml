@@ -1,0 +1,29 @@
+# ==============================================================================
+# SilkSecAgent 授权白名单（scope-guard 硬校验，不依赖模型自觉）
+# 部署后复制到 data/scope.yml；新增 SRC 项目时在 programs 下追加
+# ==============================================================================
+
+version: 1
+
+# 全局默认策略
+defaults:
+  egress_proxy: http://127.0.0.1:8899   # 出口统一走 mubeng 轮换网关
+  rate_limit_qps: 50                     # 主动扫描全局限速
+  allow_risk: [passive, active]          # 默认可自动执行的风险级；intrusive 需人工确认；manual 禁用
+
+# SRC 项目清单（示例，按需修改）
+programs: []
+#  - name: example-src
+#    scope:                              # 授权范围（域名/IP/CIDR，含解析后校验）
+#      - "*.example.com"
+#      - "203.0.113.0/24"
+#    exclude:                            # 排除项
+#      - "pay.example.com"
+#    rules:                              # 项目特定规则
+#      fixed_egress_ip: false            # true = 该 SRC 要求固定出口 IP 报备，不走轮换代理
+#      max_risk: active                  # 该项目允许的最高风险级
+#    finding_db: data/findings/example-src.jsonl   # 历史 finding 指纹库（防 dup）
+
+# 黑板/凭据（由系统运行时写入，勿手工编辑）
+runtime:
+  credentials_ref: env                  # 凭据统一走 credentials 包 / .env 引用
