@@ -29,7 +29,10 @@
 > ② `cordis.patch.yml` 的 `model-failover.fallbacks`：优先级链（已纳入 spool sync 管理）。
 > **403 修复**：DSH rc.7 把 settings.*/credentials.*/agentPreset.* 等特权 API 钉死在 loopback（LAN/域名必然 403，设计如此）；
 > 边缘代理从 socat 换为 caddy（silksecagent-edge）做 Host 改写绕过栅栏，DSH 移至环回 3081，边缘 3080。
-> 踩坑：caddy 站点地址不匹配 Host 会静默回空 200（假阳性），通配站点 `http://:3080` 解决；端口冲突需先停旧进程。
+> **二次修复（2026-08-20）**：Host 改写后浏览器 POST 仍 403——栅栏校验 `Origin.host === Host.host`，
+> 浏览器必带 Origin（curl 不带，造成上次"已修复"的假阳性），边缘需**同步改写 Origin**（edge-Caddyfile 已加 header_up Origin）。
+> 踩坑：caddy 站点地址不匹配 Host 会静默回空 200（假阳性），通配站点 `http://:3080` 解决；端口冲突需先停旧进程；
+> **验收必须带 Origin/Sec-Fetch-Site 头的 POST + WebSocket 升级测试**。
 >
 > **代理池产权迁移完成（2026-08-20）**：代理池基础设施（mubeng/采集/分级/timer）整体迁入 bundle dsh，
 > 单元更名 silksec-proxy-rotator/refresh，数据目录 /opt/silkspool/dsh/proxy-pool；旧 csai-proxy-* 单元已停用删除，
