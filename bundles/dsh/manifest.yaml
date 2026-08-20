@@ -24,6 +24,10 @@ templates:
   - tools.list
   # --- 授权白名单初始模板 ---
   - scope.yml
+  # --- 代理池 dsh 原生插件（替代 MCP 模式）---
+  - dsh-plugin-proxy-pool.js
+  - dsh-plugin-proxy-pool.patch.yml
+  - proxy-pool-plugin-setup.sh
   # --- 社区插件锁（pin 版本 + hash，先扫后装）---
   - plugins.lock
 services:

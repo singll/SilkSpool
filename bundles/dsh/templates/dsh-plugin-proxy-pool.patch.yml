@@ -1,0 +1,4 @@
+# silksec-proxy-pool bundle layer: 把代理池管理工具挂载进安装它的 profile
+- insert:
+    - id: silksec-proxy-pool
+      name: '@silksec/dsh-proxy-pool'

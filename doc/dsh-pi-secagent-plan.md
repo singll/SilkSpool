@@ -4,6 +4,13 @@
 > `spool bundle dsh setup csai && spool bundle dsh up csai` 一条链验证通过，Web UI 于 127.0.0.1:3080 正常响应（HTTP 200）。
 > 已验证：setup 幂等重跑、`spool bundle dsh upgrade csai`（版本检查+备份+冒烟+回滚）、tools-manager 安装/升级/卸载/状态闭环（20 个核心工具已装齐）。
 > 关键经验：DSH 依赖图巨大，**npm 解析会卡死，必须用 pnpm**（14 秒装完）；dsh rc.7 无 `--no-open` 参数，systemd 下用 `--host/--port` 显式指定。
+>
+> **CyberStrikeAI 已退役（2026-08-20）**：服务已停并卸载，数据资产完整保留——全量备份 `/opt/silkspool/csai/backups/csai-retire-20260820_065716.tgz`（含 conversations.db 漏洞/会话、knowledge.db、eino-checkpoints 黑板、knowledge_base），
+> 并已解包到 `/opt/silkspool/dsh/data/import-staging/cyberstrikeai/` 等待导入 SilkSecAgent；管理机本地备份 `~/silkspool_backups/csai/20260820_065822`。
+> **代理池已迁移为 DSH 原生插件**：`@silksec/dsh-proxy-pool`（bundles/dsh/templates/dsh-plugin-proxy-pool.js，6 个 proxy_pool_* 工具经 `ctx.tools` 注册，零依赖），
+> 替代原 MCP 模式（mcp_proxy_pool.py 退役）；mubeng 轮换网关（:8899）与采集/分级 timer 保留在 csai bundle 继续运行。
+> 关键经验：`dsh plugin add` 会把包写入 profile 的 `dsh.profile.bundles`；**link: 安装下插件目录取不到 peer 依赖，插件须零依赖**（defineTool 产物内联手写即可）；
+> `dsh plugin` 子命令必须显式传 `DSH_HOME` 和 pnpm PATH，否则误建 `~/.dsh`。
 > 待办：`hosts/csai/dsh/.env` 的 `AIGATEWAY_API_KEY` 仍为占位符，需填入真实 key；9 个社区插件（plugins.lock）待 P2 扫描后启用；对外开放 :3080 前必须先装 auth-gate。
 
 > 基础事实：2026-08-20 已用 spool 实测 csai 主机（Ubuntu 24.04 / 8C / 16G / 余 939G / **无 Docker 无 Node**），并核实 DSH、pi 上游仓库。

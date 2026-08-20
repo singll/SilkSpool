@@ -165,4 +165,9 @@ ensure_pnpm
 install_dsh
 ensure_data
 reconcile_service
+
+# -------------------- 6. 代理池 dsh 插件（替代 MCP 模式） --------------------
+if [ -f "$BASE_DIR/proxy-pool-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/proxy-pool-plugin-setup.sh" || warn "代理池插件安装失败（不影响 DSH 主程序）"
+fi
 log "setup 完成"
