@@ -15,10 +15,10 @@ defaults:
       # MOONSHOT_API_KEY=
       # ANTHROPIC_API_KEY=
 
-      # --- 出口代理（mubeng 轮换网关，复用 csai 现有资产）---
+      # --- 出口代理（mubeng 轮换网关，本 bundle 纳管）---
       SEC_EGRESS_PROXY=http://127.0.0.1:8899
       # --- 代理池数据目录（proxy-pool 插件读取）---
-      SEC_PROXY_POOL_DIR=/opt/silkspool/csai/proxy-pool
+      SEC_PROXY_POOL_DIR=/opt/silkspool/dsh/proxy-pool
 templates:
   - setup.sh
   - silksecagent.service
@@ -31,6 +31,13 @@ templates:
   - tools.list
   # --- 授权白名单初始模板 ---
   - scope.yml
+  # --- 代理池基础设施（mubeng 网关 + 采集/分级/定时刷新，自 CyberStrikeAI 迁移纳管）---
+  - proxy-pool-infra-setup.sh
+  - proxy-pool-run-refresh.sh
+  - proxy_grade.py
+  - proxy-scraper-checker.toml
+  - silksec-proxy-rotator.service
+  - silksec-proxy-refresh.service
   # --- 代理池 dsh 原生插件（替代 MCP 模式）---
   - dsh-plugin-proxy-pool.js
   - dsh-plugin-proxy-pool.patch.yml
@@ -44,3 +51,4 @@ templates:
 services:
   - silksecagent
   - silksecagent-edge
+  - silksec-proxy-rotator

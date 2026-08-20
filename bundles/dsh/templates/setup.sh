@@ -166,12 +166,17 @@ install_dsh
 ensure_data
 reconcile_service
 
-# -------------------- 6. 代理池 dsh 插件（替代 MCP 模式） --------------------
+# -------------------- 6. 代理池基础设施（mubeng 网关 + 采集刷新） --------------------
+if [ -f "$BASE_DIR/proxy-pool-infra-setup.sh" ]; then
+    bash "$BASE_DIR/proxy-pool-infra-setup.sh" || warn "代理池基础设施安装失败（不影响 DSH 主程序）"
+fi
+
+# -------------------- 7. 代理池 dsh 插件（替代 MCP 模式） --------------------
 if [ -f "$BASE_DIR/proxy-pool-plugin-setup.sh" ]; then
     bash "$BASE_DIR/proxy-pool-plugin-setup.sh" || warn "代理池插件安装失败（不影响 DSH 主程序）"
 fi
 
-# -------------------- 7. 安全套件插件（sec-cli-adapter + scope-guard） --------------------
+# -------------------- 8. 安全套件插件（sec-cli-adapter + scope-guard） --------------------
 if [ -f "$BASE_DIR/sec-suite-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-suite-plugin-setup.sh" || warn "安全套件插件安装失败（不影响 DSH 主程序）"
 fi

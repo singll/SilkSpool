@@ -11,7 +11,14 @@
 > 替代原 MCP 模式（mcp_proxy_pool.py 退役）；mubeng 轮换网关（:8899）与采集/分级 timer 保留在 csai bundle 继续运行。
 > 关键经验：`dsh plugin add` 会把包写入 profile 的 `dsh.profile.bundles`；**link: 安装下插件目录取不到 peer 依赖，插件须零依赖**（defineTool 产物内联手写即可）；
 > `dsh plugin` 子命令必须显式传 `DSH_HOME` 和 pnpm PATH，否则误建 `~/.dsh`。
-> 待办：`hosts/csai/dsh/.env` 的 `DEEPSEEK_API_KEY` 仍为占位符，需填入真实 key（已改为供应商直连，不依赖 aigateway/New API）；其余 8 个社区插件（plugins.lock）待 P2 扫描后启用。
+> 待办：其余 8 个社区插件（plugins.lock）待 P2 扫描后启用；多供应商优先级切换方案已定（见 §5.2 附注）待实施。
+>
+> **代理池产权迁移完成（2026-08-20）**：代理池基础设施（mubeng/采集/分级/timer）整体迁入 bundle dsh，
+> 单元更名 silksec-proxy-rotator/refresh，数据目录 /opt/silkspool/dsh/proxy-pool；旧 csai-proxy-* 单元已停用删除，
+> /opt/silkspool/csai/ 仅余 backups/。silkspool.yaml 已清理 CyberStrikeAI 全部 sync_rules/services/hooks/backups，csai 主机 bundles 仅剩 ["dsh"]。
+> DEEPSEEK_API_KEY 已推送生效（进程内确认，API 直连验证返回模型列表 deepseek-v4-pro/flash）。
+> **DSH 原生已有多供应商底座**：`@deepseek-ai/dsh-llm-pi-ai`（pi-ai 驱动的多 provider 配置，按 route 声明 apiKeyEnv/baseURL/retryPolicy）
+> + `@deepseek-ai/dsh-llm-retry`（同 provider 内重试，**不做跨 provider 切换**）。
 >
 > **auth-gate 已完成（2026-08-20）**：dsh-auth-gate@0.7.2（静态扫描 PASS，hash 已入 plugins.lock），密码模式 admin 用户已建，
 > 未登录 401 / 登录 302 / 带 cookie 200 全链路验证通过。注意 **dsh rc.7 强制 loopback 绑定**（拒绝 0.0.0.0 与具体 LAN IP），

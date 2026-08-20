@@ -34,11 +34,11 @@ function tool(options) {
   }
 }
 
-const POOL_DIR = process.env.SEC_PROXY_POOL_DIR || '/opt/silkspool/csai/proxy-pool'
+const POOL_DIR = process.env.SEC_PROXY_POOL_DIR || '/opt/silkspool/dsh/proxy-pool'
 const GATEWAY = process.env.SEC_EGRESS_PROXY || 'http://127.0.0.1:8899'
-const REFRESH_UNIT = 'csai-proxy-refresh.service'
-const REFRESH_TIMER = 'csai-proxy-refresh.timer'
-const ROTATOR_UNIT = 'csai-proxy-rotator.service'
+const REFRESH_UNIT = 'silksec-proxy-refresh.service'
+const REFRESH_TIMER = 'silksec-proxy-refresh.timer'
+const ROTATOR_UNIT = 'silksec-proxy-rotator.service'
 
 const POOL_JSON = path.join(POOL_DIR, 'pool.json')
 const LIVE_TXT = path.join(POOL_DIR, 'live.txt')
