@@ -97,9 +97,9 @@ if ! systemctl is-active --quiet "$SERVICE"; then
     rollback; exit 1
 fi
 # Web UI 冒烟（:3080 响应即通过，不要求 200）
-SMOKE_CODE=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 10 http://127.0.0.1:3080/ || echo "000")
+SMOKE_CODE=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 10 http://127.0.0.1:3081/ || echo "000")
 if [ "$SMOKE_CODE" = "000" ]; then
-    err "冒烟失败: http://127.0.0.1:3080 无响应"
+    err "冒烟失败: http://127.0.0.1:3081 无响应"
     rollback; exit 1
 fi
 

@@ -4,6 +4,7 @@
 # ==============================================================================
 
 dsh-auth-gate|0.7.2|sha512-g2x+90ldjEMC5R7Zj9upqpHfjxyUQ66KMueg6cpBkVXdTRkyHmCPTSgJstE4P6H+wCkNABgesf9y/NiGdCU1FA==|PASS_2026-08-20|Web UI 登录门（无安装脚本/无网络外联/无 eval，已人工审查 lib 源码）
+dsh-model-failover|0.1.4|sha512-AFXS85nhND6nOk82ZgJ20jwlLFxklNm3lKDZ6HtjzAGlCTsLnCa3pFRMNAcfU42nAOkBfldCwhwQxpSvHRtvEg==|PASS_2026-08-20|多供应商两级熔断+优先级切换（无安装脚本/无外联，已人工审查）
 
 # 待评估（P2）：
 # wqty123/dsh-browser        | TBD | TBD | PENDING | 浏览器共驾（真实浏览器/人工接管/CAPTCHA 检测）

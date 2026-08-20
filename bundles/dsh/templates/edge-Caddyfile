@@ -1,0 +1,13 @@
+# SilkSecAgent 内网边缘反代（caddy）
+# 职责：LAN 192.168.7.107:3080 → 127.0.0.1:3080，并把 Host 改写为 loopback。
+# 原因：DSH rc.7 的 /api browser-trust 栅栏把 settings.*/credentials.*/agentPreset.*
+# 等特权方法钉死在 loopback（空信任列表），LAN/域名访问一律 403。
+# Host 改写后栅栏看到的是 loopback，全部方法可用。
+# 安全前提：auth-gate（dsh-auth-gate）是唯一门禁，fail-closed + 登录限速；
+# 本边缘只绑内网 IP，不暴露公网。
+# 通配站点：任意 Host（LAN IP 或域名）都代理到 DSH 环回端口
+http://:3080 {
+    reverse_proxy 127.0.0.1:3081 {
+        header_up Host 127.0.0.1:3081
+    }
+}

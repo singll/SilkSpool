@@ -11,7 +11,7 @@ EnvironmentFile=-{{BASE_DIR}}/.env
 Environment=HOME=/home/silkspool
 Environment=DSH_HOME={{BASE_DIR}}/data
 Environment=PATH=/usr/local/node/bin:/usr/local/go/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
-ExecStart=/usr/local/node/bin/node {{BASE_DIR}}/app/node_modules/@deepseek-ai/dsh/lib/bin.js web --host 127.0.0.1 --port 3080 --trusted-host 192.168.7.107:3080 --trusted-host silksecagent.singll.net
+ExecStart=/usr/local/node/bin/node {{BASE_DIR}}/app/node_modules/@deepseek-ai/dsh/lib/bin.js web --host 127.0.0.1 --port 3081
 Restart=always
 RestartSec=5
 LimitNOFILE=65535

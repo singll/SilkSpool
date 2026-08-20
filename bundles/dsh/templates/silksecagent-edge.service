@@ -1,13 +1,15 @@
 [Unit]
-Description=SilkSecAgent LAN edge (socat 192.168.7.107:3080 -> 127.0.0.1:3080; dsh rc.7 仅允许 loopback 绑定)
+Description=SilkSecAgent LAN edge (caddy 192.168.7.107:3080 -> 127.0.0.1:3080, Host 改写绕开 DSH loopback 特权栅栏)
 After=silksecagent.service
 Requires=silksecagent.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/socat TCP-LISTEN:3080,bind=192.168.7.107,fork,reuseaddr TCP:127.0.0.1:3080
+ExecStart=/usr/bin/caddy run --config {{BASE_DIR}}/edge-Caddyfile --adapter caddyfile
 Restart=always
 RestartSec=3
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
