@@ -336,6 +336,23 @@ async function runCli(args) {
 
   // ---- scope-guard：目标硬校验 ----
   const targets = extractTargets(manifest, params)
+
+  // S3 守卫（审计）：manifest 无 target_param 且 risk≥active → 拒绝（防 scope 校验空转绕过）
+  if (!manifest.target_param && RISK_ORDER.indexOf(String(manifest.risk || 'passive')) >= RISK_ORDER.indexOf('active')) {
+    audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: '无 target_param 且 risk≥active' })
+    return { ok: false, run_id: runId, error: `manifest 未声明 target_param 且 risk=${manifest.risk}≥active：无法做 scope 校验，拒绝执行（补 target_param 或降 risk）` }
+  }
+  // S4 守卫（审计）：参数注入防护——值禁换行；target 参数禁空白（防 argv 注入危险 flag）
+  for (const [k, v] of Object.entries(params)) {
+    if (typeof v !== 'string') continue
+    if (/[\r\n]/.test(v)) {
+      return { ok: false, run_id: runId, error: `参数 ${k} 含换行符，拒绝（防参数注入）` }
+    }
+    if (k === manifest.target_param && /\s/.test(v)) {
+      return { ok: false, run_id: runId, error: `target 参数含空白字符，拒绝（防参数注入）` }
+    }
+  }
+
   for (const t of targets) {
     const chk = checkTarget(t)
     audit({ ts: Date.now(), run_id: runId, tool: toolName, target: t, decision: chk.allow ? 'allow' : 'deny', reason: chk.reason })
