@@ -130,6 +130,8 @@ EOF
 ensure_data() {
     mkdir -p "$DATA_DIR"/{results,backups,tools.d,knowledge,playbooks,skills/draft,flows,imports}
     mkdir -p "$BASE_DIR/xray"
+    # 密钥文件权限固化（审计 S5：sync push 可能写回 644，此处兜底 600）
+    if [ -f "$BASE_DIR/.env" ]; then chmod 600 "$BASE_DIR/.env"; fi
     # 授权白名单：只初始化，不覆盖
     if [ ! -f "$DATA_DIR/scope.yml" ]; then
         if [ -f "$BASE_DIR/scope.yml" ]; then

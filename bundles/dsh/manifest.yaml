@@ -53,6 +53,7 @@ templates:
   - dsh-plugin-sec-suite.asset-db.js
   - dsh-plugin-sec-suite.asset-graph.js
   - dsh-plugin-sec-suite.experience.js
+  - dsh-plugin-sec-suite.parsers.js
   - dsh-plugin-sec-suite.patch.yml
   - sec-suite-plugin-setup.sh
   - seed-manifests.sh

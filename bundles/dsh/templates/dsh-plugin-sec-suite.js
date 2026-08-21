@@ -20,6 +20,7 @@ import * as fs from 'node:fs'
 import * as http from 'node:http'
 import * as path from 'node:path'
 import * as assetDb from './asset-db.js'
+import * as parsers from './parsers.js'
 
 export const name = 'sec-cli-adapter'
 export const inject = ['tools']
@@ -381,11 +382,11 @@ async function runCli(args) {
   let stdoutText = ''
   try { stdoutText = fs.readFileSync(path.join(runDir, 'stdout.log'), 'utf8') } catch { /* 无输出 */ }
 
-  // ---- 自动入资产图谱（manifest store: asset-graph 且执行成功）----
+  // ---- 自动入资产图谱（manifest store: asset-graph 且执行成功；parser 注册表路由）----
   let ingested = null
   if (manifest.store === 'asset-graph' && result.code === 0 && stdoutText) {
     try {
-      ingested = assetDb.ingestText(`${toolName}:${runId}`, stdoutText)
+      ingested = parsers.applyParsedResult(manifest, toolName, runId, stdoutText)
     } catch { /* 入库失败不影响主流程 */ }
   }
 
@@ -681,6 +682,44 @@ async function spawnWorker(args) {
 }
 
 // ==============================================================================
+// plan_chain：能力原语凑链（BFS 前提-产出图搜索，manifest requires/produces）
+// ==============================================================================
+
+function planChain(args) {
+  const have = Array.isArray(args.have) ? args.have.map(String) : []
+  const want = String(args.want || '').trim()
+  if (!want) return { ok: false, error: 'want 不能为空（如 findings / live_hosts / subdomains）' }
+
+  const manifests = {}
+  for (const name of listManifests()) {
+    const m = loadManifest(name)
+    if (m && Array.isArray(m.requires) && Array.isArray(m.produces)) manifests[name] = m
+  }
+
+  const available = new Set(have)
+  const chain = []
+  const used = new Set()
+  let progress = true
+  while (!available.has(want) && progress) {
+    progress = false
+    for (const [name, m] of Object.entries(manifests)) {
+      if (used.has(name)) continue
+      if (m.requires.every((r) => available.has(r))) {
+        for (const p of m.produces) available.add(p)
+        chain.push(name)
+        used.add(name)
+        progress = true
+        break
+      }
+    }
+  }
+  if (!available.has(want)) {
+    return { ok: false, have: [...have], available: [...available], error: `无法凑链到 ${want}（缺前置能力）` }
+  }
+  return { ok: true, have, want, chain, available: [...available] }
+}
+
+// ==============================================================================
 // 注册
 // ==============================================================================
 
@@ -795,6 +834,24 @@ export function apply(ctx, config) {
     output: { schema: { type: 'object' }, render: renderJSON },
     timeoutMs: 90000,
     execute: async (args) => authzDiff(args || {}),
+  })
+
+  ctx.tools.register({
+    name: 'plan_chain',
+    description: '能力原语凑链：给定已拥有的能力（have）与想要的能力（want），'
+      + '按 manifest 的 requires/produces 做 BFS 图搜索，返回有序工具链。'
+      + '侦察阶段免手工记工具顺序。',
+    parameters: {
+      type: 'object',
+      properties: {
+        have: { type: 'array', items: { type: 'string' }, description: '已拥有的能力，如 ["company_name"]' },
+        want: { type: 'string', description: '想要的能力，如 findings / live_hosts / subdomains' },
+      },
+      required: ['want'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: renderJSON },
+    execute: async (args) => planChain(args || {}),
   })
 
   // xray webhook 接收器随插件启动（流量总线 v1）；preset 内挂载时 sidecars:false 跳过
