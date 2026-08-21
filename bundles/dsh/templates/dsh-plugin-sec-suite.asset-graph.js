@@ -40,18 +40,19 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'asset_query',
-    description: '检索资产图谱。host_like 模糊匹配，type 过滤，按最近活跃排序。',
+    description: '检索资产图谱。host_like 模糊匹配，type 过滤，program_id 按项目过滤，按最近活跃排序。',
     parameters: {
       type: 'object',
       properties: {
         host_like: { type: 'string' },
         type: { type: 'string' },
+        program_id: { type: 'string' },
         limit: { type: 'integer', description: '默认 50，上限 200' },
       },
       additionalProperties: false,
     },
     execute: async (a) => {
-      const items = db.queryAssets({ hostLike: a.host_like || '', type: a.type || '', limit: a.limit || 50 })
+      const items = db.queryAssets({ hostLike: a.host_like || '', type: a.type || '', programId: a.program_id || '', limit: a.limit || 50 })
       return { ok: true, total: items.length, items }
     },
   })
@@ -76,17 +77,18 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'endpoint_query',
-    description: '检索接口端点。可按 host 精确 + path_like 模糊。',
+    description: '检索接口端点。可按 host 精确 + path_like 模糊，program_id 按项目过滤。',
     parameters: {
       type: 'object',
       properties: {
         host: { type: 'string' },
         path_like: { type: 'string' },
+        program_id: { type: 'string' },
         limit: { type: 'integer' },
       },
       additionalProperties: false,
     },
-    execute: async (a) => ({ ok: true, items: db.queryEndpoints({ host: a.host || '', pathLike: a.path_like || '', limit: a.limit || 50 }) }),
+    execute: async (a) => ({ ok: true, items: db.queryEndpoints({ host: a.host || '', pathLike: a.path_like || '', programId: a.program_id || '', limit: a.limit || 50 }) }),
   })
 
   reg(ctx, {
@@ -111,18 +113,19 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'finding_query',
-    description: '检索发现。按 host/severity/status（new/confirmed/false_positive/submitted/dup）过滤。',
+    description: '检索发现。按 host/severity/status/program_id（new/confirmed/false_positive/submitted/dup）过滤。',
     parameters: {
       type: 'object',
       properties: {
         host: { type: 'string' },
         severity: { type: 'string' },
         status: { type: 'string' },
+        program_id: { type: 'string' },
         limit: { type: 'integer' },
       },
       additionalProperties: false,
     },
-    execute: async (a) => ({ ok: true, items: db.queryFindings({ host: a.host || '', severity: a.severity || '', status: a.status || '', limit: a.limit || 50 }) }),
+    execute: async (a) => ({ ok: true, items: db.queryFindings({ host: a.host || '', severity: a.severity || '', status: a.status || '', programId: a.program_id || '', limit: a.limit || 50 }) }),
   })
 
   reg(ctx, {
@@ -191,5 +194,90 @@ export function apply(ctx) {
       const r = db.buildReport({ hostLike: a.host_like || '', sinceDays: a.since_days || 0, status: a.status || '' })
       return { ok: true, ...r, hint: '报告已落盘，提交 SRC 前必须人工逐条核实' }
     },
+  })
+
+  // -------------------- P6：program / task 工具（脊柱） --------------------
+
+  reg(ctx, {
+    name: 'program_list',
+    description: '列出 programs 表（scope.yml 的运行态镜像）。项目是资产/漏洞/任务的顶层作用域。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    execute: async () => ({ ok: true, items: db.listPrograms() }),
+  })
+
+  reg(ctx, {
+    name: 'task_create',
+    description: '创建一个任务（可管理的工作单元，编排器的派单对象）。program_id 见 program_list；phase: recon/vuln/biz-logic/code-audit/intranet/review；priority 0 最高。',
+    parameters: {
+      type: 'object',
+      properties: {
+        program_id: { type: 'string' },
+        phase: { type: 'string' },
+        objective: { type: 'string' },
+        priority: { type: 'integer', description: '默认 5，0 最高' },
+        budget_tokens: { type: 'integer' },
+        parent_id: { type: 'integer' },
+      },
+      required: ['program_id', 'objective'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.taskCreate(a),
+  })
+
+  reg(ctx, {
+    name: 'task_update',
+    description: '更新任务状态：queued/running/blocked/done/failed/cancelled。note 追加进 result 证据链；blocked_reason 记录 HITL 阻塞原因。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer' },
+        status: { type: 'string', enum: ['queued', 'running', 'blocked', 'done', 'failed', 'cancelled'] },
+        note: { type: 'string' },
+        blocked_reason: { type: 'string' },
+      },
+      required: ['id', 'status'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.taskUpdate(a),
+  })
+
+  reg(ctx, {
+    name: 'task_list',
+    description: '列出任务（看板数据源）。按 program/status/phase 过滤，priority 升序 + created_at 升序。',
+    parameters: {
+      type: 'object',
+      properties: {
+        program_id: { type: 'string' },
+        status: { type: 'string' },
+        phase: { type: 'string' },
+        limit: { type: 'integer', description: '默认 50' },
+      },
+      additionalProperties: false,
+    },
+    execute: async (a) => ({ ok: true, items: db.taskList({ programId: a.program_id || '', status: a.status || '', phase: a.phase || '', limit: a.limit || 50 }) }),
+  })
+
+  reg(ctx, {
+    name: 'task_next',
+    description: '编排器认领：返回指定 program 下最高优先级、无未完成父任务的 queued 任务。无则返回 null。',
+    parameters: {
+      type: 'object',
+      properties: { program_id: { type: 'string' } },
+      required: ['program_id'],
+      additionalProperties: false,
+    },
+    execute: async (a) => ({ ok: true, task: db.taskNext(a.program_id) }),
+  })
+
+  reg(ctx, {
+    name: 'task_stats',
+    description: '任务进度总览：按 phase×status 计数 + 总数。',
+    parameters: {
+      type: 'object',
+      properties: { program_id: { type: 'string' } },
+      required: ['program_id'],
+      additionalProperties: false,
+    },
+    execute: async (a) => ({ ok: true, ...db.taskStats(a.program_id) }),
   })
 }

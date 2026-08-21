@@ -59,6 +59,43 @@ export function getDb() {
     CREATE INDEX IF NOT EXISTS idx_endpoints_host ON endpoints(host);
     CREATE INDEX IF NOT EXISTS idx_findings_host ON findings(host);
   `)
+  // ---- P6 脊柱：programs / tasks 表（跨会话领域实体，自建持久层）----
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS programs (
+      id TEXT PRIMARY KEY,
+      platform TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      max_risk TEXT,
+      fixed_egress_ip INTEGER DEFAULT 0,
+      created_at INTEGER, updated_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      program_id TEXT NOT NULL,
+      parent_id INTEGER,
+      phase TEXT,
+      objective TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      priority INTEGER NOT NULL DEFAULT 5,
+      assignee TEXT,
+      budget_tokens INTEGER,
+      spent_tokens INTEGER DEFAULT 0,
+      session_id TEXT,
+      blocked_reason TEXT,
+      result TEXT,
+      created_at INTEGER, updated_at INTEGER, started_at INTEGER, finished_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(program_id, status, priority);
+  `)
+  // ---- 平滑迁移：给存量表补 program_id / task_id（可空，幂等）----
+  const ensureCol = (table, col, ddl) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all()
+    if (!cols.some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
+  }
+  ensureCol('assets', 'program_id', 'program_id TEXT')
+  ensureCol('endpoints', 'program_id', 'program_id TEXT')
+  ensureCol('findings', 'program_id', 'program_id TEXT')
+  ensureCol('findings', 'task_id', 'task_id INTEGER')
   return db
 }
 
@@ -67,66 +104,71 @@ const now = () => Date.now()
 // node:sqlite 返回 null-prototype 对象，DSH 工具输出要求无损 JSON——统一转普通对象
 const plain = (rows) => rows.map((r) => ({ ...r }))
 
-export function upsertAsset({ host, type = 'host', source = '', attrs = null }) {
+export function upsertAsset({ host, type = 'host', source = '', attrs = null, program_id = null }) {
   if (!host) return false
   getDb().prepare(`
-    INSERT INTO assets (host, type, source, attrs, first_seen, last_seen)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO assets (host, type, source, attrs, program_id, first_seen, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (host, type) DO UPDATE SET last_seen = excluded.last_seen,
-      source = CASE WHEN excluded.source != '' THEN excluded.source ELSE assets.source END
-  `).run(host, type, source, attrs ? JSON.stringify(attrs) : null, now(), now())
+      source = CASE WHEN excluded.source != '' THEN excluded.source ELSE assets.source END,
+      program_id = CASE WHEN excluded.program_id IS NOT NULL THEN excluded.program_id ELSE assets.program_id END
+  `).run(host, type, source, attrs ? JSON.stringify(attrs) : null, program_id, now(), now())
   return true
 }
 
-export function upsertEndpoint({ host, method = 'GET', path: p = '/', status = '', source = '' }) {
+export function upsertEndpoint({ host, method = 'GET', path: p = '/', status = '', source = '', program_id = null }) {
   if (!host || !p) return false
   getDb().prepare(`
-    INSERT INTO endpoints (host, method, path, status, source, first_seen, last_seen)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO endpoints (host, method, path, status, source, program_id, first_seen, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (host, method, path) DO UPDATE SET last_seen = excluded.last_seen,
-      status = CASE WHEN excluded.status != '' THEN excluded.status ELSE endpoints.status END
-  `).run(host, method.toUpperCase(), p, String(status), source, now(), now())
+      status = CASE WHEN excluded.status != '' THEN excluded.status ELSE endpoints.status END,
+      program_id = CASE WHEN excluded.program_id IS NOT NULL THEN excluded.program_id ELSE endpoints.program_id END
+  `).run(host, method.toUpperCase(), p, String(status), source, program_id, now(), now())
   return true
 }
 
-export function addFinding({ title, severity = 'info', host = '', url = '', evidence = '', source = '' }) {
+export function addFinding({ title, severity = 'info', host = '', url = '', evidence = '', source = '', program_id = null }) {
   const fingerprint = crypto.createHash('sha1').update(`${host}|${title}|${url}`).digest('hex')
   const d = getDb()
   const dup = d.prepare('SELECT id, status FROM findings WHERE fingerprint = ?').get(fingerprint)
   if (dup) return { id: dup.id, dup: true, status: dup.status }
   const r = d.prepare(`
-    INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?)
-  `).run(fingerprint, title, severity, host, url, evidence, source, now())
+    INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, program_id, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+  `).run(fingerprint, title, severity, host, url, evidence, source, program_id, now())
   return { id: Number(r.lastInsertRowid), dup: false }
 }
 
-export function queryAssets({ hostLike = '', type = '', limit = 50 }) {
-  let sql = 'SELECT host, type, source, last_seen FROM assets WHERE 1=1'
+export function queryAssets({ hostLike = '', type = '', programId = '', limit = 50 }) {
+  let sql = 'SELECT host, type, source, program_id, last_seen FROM assets WHERE 1=1'
   const args = []
   if (hostLike) { sql += ' AND host LIKE ?'; args.push(`%${hostLike}%`) }
   if (type) { sql += ' AND type = ?'; args.push(type) }
+  if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
   sql += ' ORDER BY last_seen DESC LIMIT ?'
   args.push(Math.min(limit, 200))
   return plain(getDb().prepare(sql).all(...args))
 }
 
-export function queryEndpoints({ host = '', pathLike = '', limit = 50 }) {
-  let sql = 'SELECT host, method, path, status, source, last_seen FROM endpoints WHERE 1=1'
+export function queryEndpoints({ host = '', pathLike = '', programId = '', limit = 50 }) {
+  let sql = 'SELECT host, method, path, status, source, program_id, last_seen FROM endpoints WHERE 1=1'
   const args = []
   if (host) { sql += ' AND host = ?'; args.push(host) }
   if (pathLike) { sql += ' AND path LIKE ?'; args.push(`%${pathLike}%`) }
+  if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
   sql += ' ORDER BY last_seen DESC LIMIT ?'
   args.push(Math.min(limit, 200))
   return plain(getDb().prepare(sql).all(...args))
 }
 
-export function queryFindings({ host = '', severity = '', status = '', limit = 50 }) {
-  let sql = 'SELECT id, title, severity, host, url, evidence, source, status, created_at FROM findings WHERE 1=1'
+export function queryFindings({ host = '', severity = '', status = '', programId = '', limit = 50 }) {
+  let sql = 'SELECT id, title, severity, host, url, evidence, source, status, program_id, created_at FROM findings WHERE 1=1'
   const args = []
   if (host) { sql += ' AND host = ?'; args.push(host) }
   if (severity) { sql += ' AND severity = ?'; args.push(severity) }
   if (status) { sql += ' AND status = ?'; args.push(status) }
+  if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
   sql += ' ORDER BY created_at DESC LIMIT ?'
   args.push(Math.min(limit, 200))
   return plain(getDb().prepare(sql).all(...args))
@@ -140,8 +182,93 @@ export function stats() {
   return {
     assets: count('assets'), endpoints: count('endpoints'),
     findings: count('findings'), blackboard_keys: count('blackboard'),
+    programs: count('programs'), tasks: count('tasks'),
     assets_by_type: byType, findings_by_severity: bySev,
   }
+}
+
+// -------------------- P6：programs 同步（scope.yml 镜像）+ tasks 生命周期 --------------------
+
+export function upsertProgram({ id, platform = '', max_risk = null, status = 'active' }) {
+  if (!id) return false
+  getDb().prepare(`
+    INSERT INTO programs (id, platform, status, max_risk, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (id) DO UPDATE SET platform = excluded.platform, status = excluded.status,
+      max_risk = excluded.max_risk, updated_at = excluded.updated_at
+  `).run(id, platform, status, max_risk, now(), now())
+  return true
+}
+
+export function listPrograms() {
+  return plain(getDb().prepare('SELECT id, platform, status, max_risk FROM programs ORDER BY id').all())
+}
+
+const TASK_STATUS = ['queued', 'running', 'blocked', 'done', 'failed', 'cancelled']
+
+export function taskCreate({ program_id, phase = '', objective, priority = 5, budget_tokens = null, parent_id = null, assignee = '' }) {
+  if (!program_id || !objective) return { ok: false, error: 'program_id 与 objective 必填' }
+  const d = getDb()
+  const r = d.prepare(`
+    INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+  `).run(program_id, parent_id, phase, objective, priority, assignee, budget_tokens, now(), now())
+  return { ok: true, id: Number(r.lastInsertRowid) }
+}
+
+export function taskUpdate({ id, status, note = '', blocked_reason = '', result = '' }) {
+  if (!TASK_STATUS.includes(status)) return { ok: false, error: `非法状态 ${status}（可选: ${TASK_STATUS.join('/')}）` }
+  const d = getDb()
+  const sets = ['status = ?', 'updated_at = ?']
+  const args = [status, now()]
+  if (blocked_reason) { sets.push('blocked_reason = ?'); args.push(blocked_reason) }
+  if (result) { sets.push('result = ?'); args.push(result) }
+  if (status === 'running') { sets.push('started_at = COALESCE(started_at, ?)'); args.push(now()) }
+  if (status === 'done' || status === 'failed' || status === 'cancelled') { sets.push('finished_at = ?'); args.push(now()) }
+  args.push(Number(id))
+  const r = d.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...args)
+  if (r.changes === 0) return { ok: false, error: `task 不存在: ${id}` }
+  if (note) {
+    const cur = d.prepare('SELECT result FROM tasks WHERE id = ?').get(Number(id))
+    d.prepare('UPDATE tasks SET result = ? WHERE id = ?')
+      .run(`${cur.result || ''}\n[${new Date().toISOString().slice(0, 16)}] ${status}: ${note}`.trim(), Number(id))
+  }
+  return { ok: true, id: Number(id), status }
+}
+
+export function taskList({ programId = '', status = '', phase = '', limit = 50 }) {
+  let sql = 'SELECT * FROM tasks WHERE 1=1'
+  const args = []
+  if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
+  if (status) { sql += ' AND status = ?'; args.push(status) }
+  if (phase) { sql += ' AND phase = ?'; args.push(phase) }
+  sql += ' ORDER BY priority ASC, created_at ASC LIMIT ?'
+  args.push(Math.min(limit, 200))
+  return plain(getDb().prepare(sql).all(...args))
+}
+
+export function taskNext(programId) {
+  const d = getDb()
+  const rows = plain(d.prepare(
+    'SELECT * FROM tasks WHERE program_id = ? AND status = ? ORDER BY priority ASC, created_at ASC'
+  ).all(programId, 'queued'))
+  for (const t of rows) {
+    if (t.parent_id) {
+      const p = d.prepare('SELECT status FROM tasks WHERE id = ?').get(t.parent_id)
+      if (!p || p.status !== 'done') continue
+    }
+    return t
+  }
+  return null
+}
+
+export function taskStats(programId) {
+  const d = getDb()
+  const rows = plain(d.prepare(
+    'SELECT phase, status, COUNT(*) AS n FROM tasks WHERE program_id = ? GROUP BY phase, status'
+  ).all(programId))
+  const total = d.prepare('SELECT COUNT(*) AS n FROM tasks WHERE program_id = ?').get(programId).n
+  return { program_id: programId, total, by_phase_status: rows }
 }
 
 export function bbSet(key, value) {

@@ -209,6 +209,21 @@ function loadScope() {
   return data
 }
 
+// P6：scope.yml 程序 → programs 表运行态镜像（幂等，启动时调用）
+function syncPrograms() {
+  const scope = loadScope()
+  const programs = Array.isArray(scope.programs) ? scope.programs : []
+  for (const p of programs) {
+    if (!p.name) continue
+    assetDb.upsertProgram({
+      id: p.name,
+      platform: p.platform || '',
+      max_risk: (p.rules && p.rules.max_risk) || null,
+    })
+  }
+  return programs.map((p) => p.name)
+}
+
 // 返回 { allow, reason, program }
 function checkTarget(rawTarget) {
   const host = hostOf(rawTarget)
@@ -327,6 +342,7 @@ async function runCli(args) {
     if (!chk.allow) return { ok: false, run_id: runId, error: `scope-guard 拒绝: ${chk.reason}` }
   }
   const firstChk = targets.length ? checkTarget(targets[0]) : { programCfg: null }
+  const programId = firstChk.program || null
   const riskChk = checkRisk(String(manifest.risk || 'passive'), firstChk.programCfg)
   if (!riskChk.allow) {
     audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: riskChk.reason })
@@ -382,11 +398,11 @@ async function runCli(args) {
   let stdoutText = ''
   try { stdoutText = fs.readFileSync(path.join(runDir, 'stdout.log'), 'utf8') } catch { /* 无输出 */ }
 
-  // ---- 自动入资产图谱（manifest store: asset-graph 且执行成功；parser 注册表路由）----
+  // ---- 自动入资产图谱（manifest store: asset-graph 且执行成功；parser 注册表路由；自动回填 program_id）----
   let ingested = null
   if (manifest.store === 'asset-graph' && result.code === 0 && stdoutText) {
     try {
-      ingested = parsers.applyParsedResult(manifest, toolName, runId, stdoutText)
+      ingested = parsers.applyParsedResult(manifest, toolName, runId, stdoutText, programId)
     } catch { /* 入库失败不影响主流程 */ }
   }
 
@@ -728,6 +744,9 @@ function renderJSON(_args, value) {
 }
 
 export function apply(ctx, config) {
+  // P6：启动时把 scope.yml 程序镜像到 programs 表（幂等）
+  try { syncPrograms() } catch { /* 镜像失败不影响插件加载 */ }
+
   ctx.tools.register({
     name: 'run_cli',
     description: '运行已登记的安全 CLI 工具（manifest 驱动）。目标经 scope-guard 白名单硬校验，参数模板化渲染，'

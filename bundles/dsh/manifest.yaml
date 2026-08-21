@@ -59,6 +59,8 @@ templates:
   - seed-manifests.sh
   - seed-skills.sh
   - seed-presets.sh
+  # --- program_id 回填迁移（P6 一次性脚本）---
+  - backfill-program.js
   # --- 情报刷新（intel-feeder v1）---
   - intel-refresh.sh
   # --- CyberStrikeAI 历史数据导入器 ---

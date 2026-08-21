@@ -134,9 +134,9 @@ const PARSERS = {
   csv_ffuf: parseCsvFfuf,
 }
 
-export function applyParsedResult(manifest, toolName, runId, text) {
+export function applyParsedResult(manifest, toolName, runId, text, programId = null) {
   const source = `${toolName}:${runId}`
-  const ctx = { tool: toolName, runId, source }
+  const ctx = { tool: toolName, runId, source, programId }
   const parserKey = String(manifest.parser || '')
 
   // 1) 精确匹配 <parser>_<tool>
@@ -159,11 +159,11 @@ export function applyParsedResult(manifest, toolName, runId, text) {
   let assets = 0
   let endpoints = 0
   let findings = 0
-  for (const a of parsed.assets || []) if (a && a.host && db.upsertAsset(a)) assets++
-  for (const e of parsed.endpoints || []) if (e && e.host && db.upsertEndpoint(e)) endpoints++
+  for (const a of parsed.assets || []) if (a && a.host && db.upsertAsset({ ...a, program_id: programId })) assets++
+  for (const e of parsed.endpoints || []) if (e && e.host && db.upsertEndpoint({ ...e, program_id: programId })) endpoints++
   for (const f of parsed.findings || []) {
     if (!f || !f.title || !f.host) continue
-    const r = db.addFinding({ title: f.title, severity: f.severity || 'info', host: f.host, url: f.url || '', evidence: f.evidence || '', source })
+    const r = db.addFinding({ title: f.title, severity: f.severity || 'info', host: f.host, url: f.url || '', evidence: f.evidence || '', source, program_id: programId })
     if (r && !r.dup) findings++
   }
   return { assets, endpoints, findings }
