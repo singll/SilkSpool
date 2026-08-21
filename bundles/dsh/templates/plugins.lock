@@ -5,7 +5,9 @@
 
 dsh-auth-gate|0.7.2|sha512-g2x+90ldjEMC5R7Zj9upqpHfjxyUQ66KMueg6cpBkVXdTRkyHmCPTSgJstE4P6H+wCkNABgesf9y/NiGdCU1FA==|PASS_2026-08-20|Web UI 登录门（无安装脚本/无网络外联/无 eval，已人工审查 lib 源码）
 dsh-model-failover|0.1.4|sha512-AFXS85nhND6nOk82ZgJ20jwlLFxklNm3lKDZ6HtjzAGlCTsLnCa3pFRMNAcfU42nAOkBfldCwhwQxpSvHRtvEg==|PASS_2026-08-20|多供应商两级熔断+优先级切换（无安装脚本/无外联，已人工审查）
-dsh-browser|0.1.0|sha512-VX85jp5SBczvxDDcCNNtpMO4khiopqPTdPvKBI+riL9pCovG7LIU3xD3eD7wBnEGRPZ2rKXPAKSD1OAKAguC8g==|PASS_2026-08-20|Playwright 浏览器自动化（11 个 browser_* 工具；无安装脚本/无外联，已人工审查）
+dsh-browser|0.1.0|sha512-VX85jp5SBczvxDDcCNNtpMO4khiopqPTdPvKBI+riL9pCovG7LIU3xD3eD7wBnEGRPZ2rKXPAKSD1OAKAguC8g==|PASS_2026-08-20|上游 lib 副本随 bundle 携带（fork 基础）；已 fork 为 @silksec/dsh-browser
+dsh-bill|0.13.1|sha512-3hVNV5e1aWDDcFx0xRp79VpgQZ5zKLEfchztkomnkvSKgWcM3gEiRNgeV0pXsk1curg76yH4g4ldGe21gK3uEw==|PASS_2026-08-21|token 成本归因/预算/台账（外联仅汇率 API+DeepSeek 余额端点，功能所需）
+dsh-sentinel|0.11.0|sha512-zscBPaEim4DOnf1qgpoHNPd0ZlyKzDID/k3x7OBMZ5XR4r79XMxWWd+T2P5PbGPhvchpn0/7uU/T/owM/0muQg==|BLOCKED_2026-08-21|client.js 未注册导致 Web UI 插件加载失败，已移除；事件触发由 silksec-intel.timer + xray webhook 承担，待上游修复再评
 
 # 待评估（P2）：
 # wqty123/dsh-browser        | TBD | TBD | PENDING | 浏览器共驾（真实浏览器/人工接管/CAPTCHA 检测）

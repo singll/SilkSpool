@@ -209,7 +209,23 @@ timeout: 1800
 target_param: target
 requires: [live_hosts]
 produces: [findings]
-args_template: "-t {{target}} -o {{outdir}}/afrog.txt"
+args_template: "-t {{target}} -o {{outdir}}/afrog.html"
+env_proxy: true
+parser: lines
+summarize: head
+store: asset-graph
+EOF
+
+seed afrog-keyword <<'EOF'
+name: afrog-keyword
+binary: /usr/local/bin/afrog
+stage: vuln
+risk: active
+timeout: 900
+target_param: target
+requires: [live_hosts]
+produces: [findings]
+args_template: "-t {{target}} -s {{keyword}} -o {{outdir}}/afrog.html"
 env_proxy: true
 parser: lines
 summarize: head

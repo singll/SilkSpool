@@ -157,4 +157,39 @@ export function apply(ctx) {
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     execute: async () => ({ ok: true, ...db.stats() }),
   })
+
+  reg(ctx, {
+    name: 'finding_update',
+    description: '更新 finding 状态（P5 运营流转）：new → confirmed/false_positive → submitted → accepted/dup/ignored。note 追加到证据链。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer' },
+        status: { type: 'string', enum: ['new', 'confirmed', 'false_positive', 'submitted', 'accepted', 'dup', 'ignored'] },
+        note: { type: 'string', description: '状态说明（追加进证据链）' },
+      },
+      required: ['id', 'status'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.updateFinding(a),
+  })
+
+  reg(ctx, {
+    name: 'report_build',
+    description: '生成漏洞报告（markdown）：按严重级汇总 + 明细表（标题/目标/证据），落盘 data/reports/。提交 SRC 前必须人工审核。',
+    parameters: {
+      type: 'object',
+      properties: {
+        host_like: { type: 'string', description: '按目标过滤（如 meituan）' },
+        since_days: { type: 'integer', description: '只看近 N 天，0=全部' },
+        status: { type: 'string', description: '按状态过滤（如 confirmed）' },
+      },
+      additionalProperties: false,
+    },
+    timeoutMs: 60000,
+    execute: async (a) => {
+      const r = db.buildReport({ hostLike: a.host_like || '', sinceDays: a.since_days || 0, status: a.status || '' })
+      return { ok: true, ...r, hint: '报告已落盘，提交 SRC 前必须人工逐条核实' }
+    },
+  })
 }

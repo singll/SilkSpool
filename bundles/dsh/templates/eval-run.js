@@ -25,19 +25,21 @@ const cases = fs.readFileSync(CASES_FILE, 'utf8').split('\n')
   .filter(([name]) => only.length === 0 || only.includes(name))
 
 const results = []
-for (const [name, target, expected] of cases) {
+for (const [name, target, engine, keyword, expected] of cases) {
   const started = Date.now()
-  process.stdout.write(`[eval] ${name} (${target}) 期待 ${expected} ... `)
-  const r = await run.execute({ tool: 'nuclei', params: { target, rate: '100' } })
+  process.stdout.write(`[eval] ${name} (${target}) ${engine} 期待 ${expected} ... `)
+  const toolName = engine === 'afrog' ? 'afrog-keyword' : 'nuclei'
+  const params = engine === 'afrog' ? { target: `http://${target}`, keyword } : { target, rate: '100' }
+  const r = await run.execute({ tool: toolName, params })
   if (!r.ok && !r.run_id) {
-    results.push({ name, target, expected, found: false, error: r.error, duration_ms: Date.now() - started })
+    results.push({ name, target, engine, expected, found: false, error: r.error, duration_ms: Date.now() - started })
     console.log(`管线失败: ${r.error}`)
     continue
   }
   const g = await grep.execute({ run_id: r.run_id, pattern: expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), max: 5 })
   const found = g.ok && g.matched > 0
   results.push({
-    name, target, expected, found,
+    name, target, engine, expected, found,
     run_id: r.run_id, exit_code: r.exit_code, total_lines: r.total_lines,
     duration_ms: Date.now() - started,
   })

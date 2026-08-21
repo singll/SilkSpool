@@ -159,6 +159,56 @@ export function bbGet(key) {
   return plain(d.prepare('SELECT key, value, updated_at FROM blackboard ORDER BY updated_at DESC LIMIT 100').all())
 }
 
+// -------------------- P5：finding 状态流转 + 报告 --------------------
+
+const FINDING_STATUS = ['new', 'confirmed', 'false_positive', 'submitted', 'accepted', 'dup', 'ignored']
+
+export function updateFinding({ id, status, note = '' }) {
+  if (!FINDING_STATUS.includes(status)) return { ok: false, error: `非法状态 ${status}（可选: ${FINDING_STATUS.join('/')}）` }
+  const d = getDb()
+  const r = d.prepare('UPDATE findings SET status = ? WHERE id = ?').run(status, Number(id))
+  if (r.changes === 0) return { ok: false, error: `finding 不存在: ${id}` }
+  if (note) {
+    const cur = d.prepare('SELECT evidence FROM findings WHERE id = ?').get(Number(id))
+    d.prepare('UPDATE findings SET evidence = ? WHERE id = ?')
+      .run(`${cur.evidence}\n[${new Date().toISOString().slice(0, 16)}] ${status}: ${note}`, Number(id))
+  }
+  return { ok: true, id: Number(id), status }
+}
+
+export function buildReport({ hostLike = '', sinceDays = 0, status = '' }) {
+  const d = getDb()
+  const args = []
+  let sql = 'SELECT * FROM findings WHERE 1=1'
+  if (hostLike) { sql += ' AND host LIKE ?'; args.push(`%${hostLike}%`) }
+  if (status) { sql += ' AND status = ?'; args.push(status) }
+  if (sinceDays > 0) { sql += ' AND created_at >= ?'; args.push(Date.now() - sinceDays * 86400000) }
+  sql += ' ORDER BY created_at DESC'
+  const rows = plain(d.prepare(sql).all(...args))
+
+  const bySev = {}
+  for (const r of rows) bySev[r.severity || 'info'] = (bySev[r.severity || 'info'] || 0) + 1
+
+  const md = [
+    `# SilkSecAgent 漏洞报告`,
+    ``,
+    `- 生成时间: ${new Date().toISOString()}`,
+    `- 范围: ${hostLike || '全部'}${sinceDays ? `（近 ${sinceDays} 天）` : ''}`,
+    `- 合计: ${rows.length} 个发现（${Object.entries(bySev).map(([k, v]) => `${k}:${v}`).join(' / ') || '无'}）`,
+    ``,
+    `| # | 级别 | 状态 | 标题 | 目标 | 证据 |`,
+    `|---|---|---|---|---|---|`,
+    ...rows.map((r) => `| ${r.id} | ${r.severity} | ${r.status} | ${r.title.replace(/\|/g, '\\|')} | ${r.url || r.host} | ${String(r.evidence).split('\n')[0].slice(0, 80).replace(/\|/g, '\\|')} |`),
+    ``,
+  ].join('\n')
+
+  const dir = path.join(DATA_DIR, 'reports')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `report-${Date.now()}.md`)
+  fs.writeFileSync(file, md)
+  return { file, total: rows.length, by_severity: bySev }
+}
+
 // -------------------- 文本自动抽取（run_cli 结果入库用） --------------------
 
 const URL_RE = /https?:\/\/[^\s"'<>()\[\]{}|,;\\]+/gi

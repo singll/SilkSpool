@@ -40,6 +40,13 @@
 >   踩坑：FTS5 unicode61 对中英文无空格混排整串成词，必须逐词 LIKE 兜底；
 > - 欠账：靶场回归评测（需 Vulhub 环境）、dsh-sentinel 事件触发、向量嵌入（当前 FTS5，语义检索待本地嵌入模型）。
 >
+> **P5 运营期核心（2026-08-21）**：finding_update（状态流转 new→confirmed→submitted→accepted/dup/ignored，note 追加证据链）
+> + report_build（markdown 报告落盘 data/reports/，按严重级汇总+明细，提示人工审核）；
+> dsh-bill@0.13.1 扫描 PASS 安装（token 成本台账，外联仅汇率 API+DeepSeek 余额端点）；
+> 字节 SRC 同步导入（185 资产/10 漏洞/566 黑板事实）。
+> **工具契约系统性修复（2026-08-21）**：30 个工具全量排查——无损 JSON（null-prototype/undefined 键）、
+> timeoutMs（长跑工具防打断）、bubblewrap 沙箱后端安装；21 项契约回归测试全 PASS。
+>
 > **欠账清理（2026-08-21）**：
 > - **Vulhub 靶场**：bundle vulhub 部署到 silkdata（32G/362G），6 个环境在线（weblogic-10271:7001 / shiro-4437:8080 /
 >   fastjson-1224:8090 / struts2-s2045:8082 / thinkphp-5023:8083 / drupal-8760:8084），DNS vulhub.singll.net → 192.168.7.231；

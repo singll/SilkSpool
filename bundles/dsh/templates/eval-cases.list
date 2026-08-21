@@ -1,9 +1,14 @@
 # 靶场评测用例（eval-run.js 读取）
-# 格式：case|target|expected_template_id
-# expected_template_id 为 nuclei 模板/特征串，扫描输出命中即算发现
-weblogic-10271|vulhub.singll.net:7001|CVE-2017-10271
-shiro-4437|vulhub.singll.net:8080|CVE-2016-4437
-fastjson-1224|vulhub.singll.net:8090|fastjson
-struts2-s2045|vulhub.singll.net:8082|CVE-2017-5638
-thinkphp-5023|vulhub.singll.net:8083|thinkphp
-drupal-8760|vulhub.singll.net:8084|CVE-2018-7600
+# 格式：case|target|engine|keyword|expected
+#   engine：nuclei（全模板）或 afrog（-s keyword 定向）
+#   expected：输出（run 目录任意产物）命中即算发现
+# 基线说明（2026-08-21 定稿）：nuclei 命中 weblogic/fastjson/thinkphp；shiro 以 shiro-detect 指纹为基线；
+# struts2 走 afrog 补位（CVE-2017-5638 CRITICAL 实测命中）；
+# drupal CVE-2018-7600 为已知缺口（nuclei/afrog/xray 三引擎默认 poc 均不触发，需自研 poc/深度验证链）——
+# 保留该用例作为"引擎覆盖缺口"的长期回归项
+weblogic-10271|vulhub.singll.net:7001|nuclei||CVE-2017-10271
+shiro-4437|vulhub.singll.net:8080|nuclei||shiro-detect
+fastjson-1224|vulhub.singll.net:8090|nuclei||fastjson
+struts2-s2045|vulhub.singll.net:8082|afrog|struts|CVE-2017-5638
+thinkphp-5023|vulhub.singll.net:8083|nuclei||thinkphp
+drupal-8760|vulhub.singll.net:8084|afrog|drupal|CVE-2018-7600

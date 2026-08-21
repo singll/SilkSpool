@@ -413,17 +413,32 @@ function resultFile(runId) {
 }
 
 function grepResult(args) {
-  const f = resultFile(args.run_id)
-  if (!f) return { ok: false, error: `run_id 不存在或无输出: ${args.run_id}` }
+  // 搜索范围：run 目录下全部文本产物（stdout.log + 工具 -o 落盘文件），不只是 stdout
+  const dir = /^r[a-z0-9]+$/.test(String(args.run_id)) ? path.join(RESULTS_DIR, args.run_id) : null
+  if (!dir || !fs.existsSync(dir)) return { ok: false, error: `run_id 不存在: ${args.run_id}` }
   let re
   try { re = new RegExp(String(args.pattern), 'i') } catch (e) { return { ok: false, error: `正则无效: ${e.message}` } }
   const max = Math.min(Number(args.max) || 50, 200)
   const matched = []
-  const lines = fs.readFileSync(f, 'utf8').split('\n')
-  for (let i = 0; i < lines.length && matched.length < max; i++) {
-    if (re.test(lines[i])) matched.push(`${i + 1}: ${lines[i]}`)
+  const files = []
+  const walk = (d) => {
+    for (const f of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, f.name)
+      if (f.isDirectory()) walk(p)
+      else if (!/\.(png|jpg|jpeg|gif|zip|gz|zstd|bin)$/i.test(f.name)) files.push(p)
+    }
   }
-  return { ok: true, run_id: args.run_id, matched: matched.length, lines: matched.join('\n') }
+  walk(dir)
+  for (const f of files) {
+    let lines
+    try { lines = fs.readFileSync(f, 'utf8').split('\n') } catch { continue }
+    const rel = path.relative(dir, f)
+    for (let i = 0; i < lines.length && matched.length < max; i++) {
+      if (re.test(lines[i])) matched.push(`${rel}:${i + 1}: ${lines[i].slice(0, 500)}`)
+    }
+    if (matched.length >= max) break
+  }
+  return { ok: true, run_id: args.run_id, files_searched: files.length, matched: matched.length, lines: matched.join('\n') }
 }
 
 function pageResult(args) {
