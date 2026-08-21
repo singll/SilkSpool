@@ -96,6 +96,55 @@ export function getDb() {
   ensureCol('endpoints', 'program_id', 'program_id TEXT')
   ensureCol('findings', 'program_id', 'program_id TEXT')
   ensureCol('findings', 'task_id', 'task_id INTEGER')
+  // ---- P8：事实图谱 + 指纹 / 凭据 / 接口鉴权 / finding 报告模板 ----
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS facts (
+      program_id TEXT NOT NULL,
+      fact_key TEXT NOT NULL,
+      category TEXT,
+      summary TEXT,
+      body TEXT,
+      confidence TEXT DEFAULT 'tentative',
+      pinned INTEGER DEFAULT 0,
+      related_finding_id INTEGER,
+      source TEXT,
+      updated_at INTEGER,
+      PRIMARY KEY (program_id, fact_key)
+    );
+    CREATE TABLE IF NOT EXISTS fact_edges (
+      program_id TEXT NOT NULL,
+      src_key TEXT NOT NULL,
+      dst_key TEXT NOT NULL,
+      edge_type TEXT NOT NULL,
+      confidence TEXT,
+      PRIMARY KEY (program_id, src_key, dst_key, edge_type)
+    );
+    CREATE TABLE IF NOT EXISTS fingerprints (
+      program_id TEXT, host TEXT, tech TEXT, version TEXT, source TEXT, last_seen INTEGER,
+      PRIMARY KEY (host, tech)
+    );
+    CREATE TABLE IF NOT EXISTS credentials (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, program_id TEXT, host TEXT,
+      cred_type TEXT, ref TEXT, role TEXT, note TEXT, created_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_facts_program ON facts(program_id);
+    CREATE INDEX IF NOT EXISTS idx_edges_src ON fact_edges(program_id, src_key);
+    CREATE INDEX IF NOT EXISTS idx_edges_dst ON fact_edges(program_id, dst_key);
+    CREATE INDEX IF NOT EXISTS idx_fp_host ON fingerprints(host);
+  `)
+  ensureCol('endpoints', 'params', 'params TEXT')
+  ensureCol('endpoints', 'auth_required', 'auth_required TEXT')
+  ensureCol('endpoints', 'roles_seen', 'roles_seen TEXT')
+  ensureCol('findings', 'vuln_type', 'vuln_type TEXT')
+  ensureCol('findings', 'cwe', 'cwe TEXT')
+  ensureCol('findings', 'endpoint_ref', 'endpoint_ref TEXT')
+  ensureCol('findings', 'preconditions', 'preconditions TEXT')
+  ensureCol('findings', 'reproduction_steps', 'reproduction_steps TEXT')
+  ensureCol('findings', 'impact', 'impact TEXT')
+  ensureCol('findings', 'recommendation', 'recommendation TEXT')
+  ensureCol('findings', 'submitted_at', 'submitted_at INTEGER')
+  ensureCol('findings', 'vendor_status', 'vendor_status TEXT')
+  ensureCol('findings', 'bounty', 'bounty REAL')
   return db
 }
 
@@ -116,27 +165,36 @@ export function upsertAsset({ host, type = 'host', source = '', attrs = null, pr
   return true
 }
 
-export function upsertEndpoint({ host, method = 'GET', path: p = '/', status = '', source = '', program_id = null }) {
+export function upsertEndpoint({ host, method = 'GET', path: p = '/', status = '', source = '', program_id = null, params = null, auth_required = null, roles_seen = null }) {
   if (!host || !p) return false
   getDb().prepare(`
-    INSERT INTO endpoints (host, method, path, status, source, program_id, first_seen, last_seen)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO endpoints (host, method, path, status, source, program_id, params, auth_required, roles_seen, first_seen, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (host, method, path) DO UPDATE SET last_seen = excluded.last_seen,
       status = CASE WHEN excluded.status != '' THEN excluded.status ELSE endpoints.status END,
-      program_id = CASE WHEN excluded.program_id IS NOT NULL THEN excluded.program_id ELSE endpoints.program_id END
-  `).run(host, method.toUpperCase(), p, String(status), source, program_id, now(), now())
+      program_id = CASE WHEN excluded.program_id IS NOT NULL THEN excluded.program_id ELSE endpoints.program_id END,
+      params = CASE WHEN excluded.params IS NOT NULL THEN excluded.params ELSE endpoints.params END,
+      auth_required = CASE WHEN excluded.auth_required IS NOT NULL THEN excluded.auth_required ELSE endpoints.auth_required END,
+      roles_seen = CASE WHEN excluded.roles_seen IS NOT NULL THEN excluded.roles_seen ELSE endpoints.roles_seen END
+  `).run(host, method.toUpperCase(), p, String(status), source, program_id, params ? JSON.stringify(params) : null, auth_required, roles_seen ? JSON.stringify(roles_seen) : null, now(), now())
   return true
 }
 
-export function addFinding({ title, severity = 'info', host = '', url = '', evidence = '', source = '', program_id = null }) {
+export function addFinding({
+  title, severity = 'info', host = '', url = '', evidence = '', source = '', program_id = null,
+  vuln_type = null, cwe = null, endpoint_ref = null, preconditions = null, reproduction_steps = null,
+  impact = null, recommendation = null,
+}) {
   const fingerprint = crypto.createHash('sha1').update(`${host}|${title}|${url}`).digest('hex')
   const d = getDb()
   const dup = d.prepare('SELECT id, status FROM findings WHERE fingerprint = ?').get(fingerprint)
   if (dup) return { id: dup.id, dup: true, status: dup.status }
   const r = d.prepare(`
-    INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, program_id, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
-  `).run(fingerprint, title, severity, host, url, evidence, source, program_id, now())
+    INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, program_id,
+      vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+  `).run(fingerprint, title, severity, host, url, evidence, source, program_id,
+    vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, now())
   return { id: Number(r.lastInsertRowid), dup: false }
 }
 
@@ -271,6 +329,98 @@ export function taskStats(programId) {
   return { program_id: programId, total, by_phase_status: rows }
 }
 
+// -------------------- P8：事实图谱（facts + fact_edges）--------------------
+
+const FACT_CONFIDENCE = ['confirmed', 'tentative', 'deprecated']
+
+export function factUpsert({ program_id, fact_key, category = '', summary = '', body = '', confidence = 'tentative', pinned = 0, related_finding_id = null, source = '' }) {
+  if (!program_id || !fact_key) return { ok: false, error: 'program_id 与 fact_key 必填（fact_key 格式 category/slug）' }
+  if (!FACT_CONFIDENCE.includes(confidence)) return { ok: false, error: `非法 confidence ${confidence}（可选: ${FACT_CONFIDENCE.join('/')}）` }
+  getDb().prepare(`
+    INSERT INTO facts (program_id, fact_key, category, summary, body, confidence, pinned, related_finding_id, source, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (program_id, fact_key) DO UPDATE SET
+      category = excluded.category, summary = excluded.summary, body = excluded.body,
+      confidence = excluded.confidence, pinned = excluded.pinned,
+      related_finding_id = excluded.related_finding_id, source = excluded.source, updated_at = excluded.updated_at
+  `).run(program_id, fact_key, category, summary, body, confidence, pinned ? 1 : 0, related_finding_id, source, now())
+  return { ok: true, program_id, fact_key }
+}
+
+export function factGet(program_id, fact_key) {
+  const row = getDb().prepare('SELECT * FROM facts WHERE program_id = ? AND fact_key = ?').get(program_id, fact_key)
+  return row ? { ...row } : null
+}
+
+export function factSearch({ program_id = '', category = '', q = '', limit = 50 }) {
+  let sql = 'SELECT program_id, fact_key, category, summary, confidence, pinned, related_finding_id, updated_at FROM facts WHERE 1=1'
+  const args = []
+  if (program_id) { sql += ' AND program_id = ?'; args.push(program_id) }
+  if (category) { sql += ' AND category = ?'; args.push(category) }
+  if (q) { sql += ' AND (summary LIKE ? OR fact_key LIKE ? OR body LIKE ?)'; args.push(`%${q}%`, `%${q}%`, `%${q}%`) }
+  sql += ' ORDER BY pinned DESC, updated_at DESC LIMIT ?'
+  args.push(Math.min(limit, 200))
+  return plain(getDb().prepare(sql).all(...args))
+}
+
+export function factLink({ program_id, src_key, dst_key, edge_type, confidence = 'tentative' }) {
+  if (!program_id || !src_key || !dst_key || !edge_type) return { ok: false, error: 'program_id/src_key/dst_key/edge_type 必填' }
+  getDb().prepare(`
+    INSERT OR REPLACE INTO fact_edges (program_id, src_key, dst_key, edge_type, confidence)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(program_id, src_key, dst_key, edge_type, confidence)
+  return { ok: true }
+}
+
+export function factGraph(program_id, fact_key) {
+  const d = getDb()
+  const node = factGet(program_id, fact_key)
+  const out = plain(d.prepare('SELECT dst_key, edge_type, confidence FROM fact_edges WHERE program_id = ? AND src_key = ?').all(program_id, fact_key))
+  const inc = plain(d.prepare('SELECT src_key, edge_type, confidence FROM fact_edges WHERE program_id = ? AND dst_key = ?').all(program_id, fact_key))
+  return { ok: true, node, out, in: inc }
+}
+
+// -------------------- P8：指纹 / 凭据 --------------------
+
+export function fpAdd({ program_id = null, host, tech, version = '', source = '' }) {
+  if (!host || !tech) return false
+  getDb().prepare(`
+    INSERT INTO fingerprints (program_id, host, tech, version, source, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (host, tech) DO UPDATE SET version = CASE WHEN excluded.version != '' THEN excluded.version ELSE fingerprints.version END, last_seen = excluded.last_seen
+  `).run(program_id, host, tech, version, source, now())
+  return true
+}
+
+export function fpQuery({ host = '', tech = '', program_id = '', limit = 50 }) {
+  let sql = 'SELECT program_id, host, tech, version, source, last_seen FROM fingerprints WHERE 1=1'
+  const args = []
+  if (host) { sql += ' AND host = ?'; args.push(host) }
+  if (tech) { sql += ' AND tech LIKE ?'; args.push(`%${tech}%`) }
+  if (program_id) { sql += ' AND program_id = ?'; args.push(program_id) }
+  sql += ' ORDER BY last_seen DESC LIMIT ?'
+  args.push(Math.min(limit, 200))
+  return plain(getDb().prepare(sql).all(...args))
+}
+
+export function credAdd({ program_id = null, host = '', cred_type = '', ref = '', role = '', note = '' }) {
+  const r = getDb().prepare(`
+    INSERT INTO credentials (program_id, host, cred_type, ref, role, note, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(program_id, host, cred_type, ref, role, note, now())
+  return { ok: true, id: Number(r.lastInsertRowid) }
+}
+
+export function credQuery({ program_id = '', host = '', limit = 50 }) {
+  let sql = 'SELECT id, program_id, host, cred_type, ref, role, note, created_at FROM credentials WHERE 1=1'
+  const args = []
+  if (program_id) { sql += ' AND program_id = ?'; args.push(program_id) }
+  if (host) { sql += ' AND host = ?'; args.push(host) }
+  sql += ' ORDER BY created_at DESC LIMIT ?'
+  args.push(Math.min(limit, 200))
+  return plain(getDb().prepare(sql).all(...args))
+}
+
 export function bbSet(key, value) {
   getDb().prepare('INSERT INTO blackboard (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
     .run(String(key), String(value), now())
@@ -303,12 +453,13 @@ export function updateFinding({ id, status, note = '' }) {
   return { ok: true, id: Number(id), status }
 }
 
-export function buildReport({ hostLike = '', sinceDays = 0, status = '' }) {
+export function buildReport({ hostLike = '', sinceDays = 0, status = '', programId = '' }) {
   const d = getDb()
   const args = []
   let sql = 'SELECT * FROM findings WHERE 1=1'
   if (hostLike) { sql += ' AND host LIKE ?'; args.push(`%${hostLike}%`) }
   if (status) { sql += ' AND status = ?'; args.push(status) }
+  if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
   if (sinceDays > 0) { sql += ' AND created_at >= ?'; args.push(Date.now() - sinceDays * 86400000) }
   sql += ' ORDER BY created_at DESC'
   const rows = plain(d.prepare(sql).all(...args))

@@ -59,7 +59,7 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'endpoint_add',
-    description: '登记一个接口端点（host + method + path）。越权/逻辑漏洞挖掘依赖接口图谱。',
+    description: '登记一个接口端点（host + method + path）。越权/逻辑漏洞挖掘依赖接口图谱；auth_required（yes/no/unknown）与 roles_seen（访问过的角色 JSON 数组）支撑越权矩阵。',
     parameters: {
       type: 'object',
       properties: {
@@ -68,11 +68,14 @@ export function apply(ctx) {
         path: { type: 'string' },
         status: { type: 'string' },
         source: { type: 'string' },
+        params: { type: 'object', description: '参数清单 JSON' },
+        auth_required: { type: 'string', enum: ['yes', 'no', 'unknown'] },
+        roles_seen: { type: 'array', items: { type: 'string' }, description: '访问过该接口的角色' },
       },
       required: ['host', 'path'],
       additionalProperties: false,
     },
-    execute: async (a) => ({ ok: db.upsertEndpoint({ host: a.host, method: a.method || 'GET', path: a.path, status: a.status || '', source: a.source || 'manual' }) }),
+    execute: async (a) => ({ ok: db.upsertEndpoint({ host: a.host, method: a.method || 'GET', path: a.path, status: a.status || '', source: a.source || 'manual', params: a.params || null, auth_required: a.auth_required || null, roles_seen: a.roles_seen || null }) }),
   })
 
   reg(ctx, {
@@ -94,7 +97,8 @@ export function apply(ctx) {
   reg(ctx, {
     name: 'finding_add',
     description: '登记一个疑似漏洞发现。自动按 host+title+url 指纹去重（dup:true 表示已存在）。'
-      + '纪律：必须附 evidence（run_id/flow_id/请求响应摘要），否则视为幻觉。',
+      + '纪律：必须附 evidence（run_id/flow_id/请求响应摘要），否则视为幻觉。'
+      + 'vuln_type/cwe/impact/recommendation 等字段补全报告模板（提交 SRC 用）。',
     parameters: {
       type: 'object',
       properties: {
@@ -104,6 +108,13 @@ export function apply(ctx) {
         url: { type: 'string' },
         evidence: { type: 'string', description: '证据引用：run_id/flow_id/burp_item + 摘要' },
         source: { type: 'string' },
+        vuln_type: { type: 'string', description: 'IDOR/SQLi/XSS/RCE/未授权...' },
+        cwe: { type: 'string' },
+        endpoint_ref: { type: 'string', description: '关联接口 host+method+path' },
+        preconditions: { type: 'string' },
+        reproduction_steps: { type: 'string' },
+        impact: { type: 'string' },
+        recommendation: { type: 'string' },
       },
       required: ['title', 'host', 'evidence'],
       additionalProperties: false,
@@ -184,6 +195,7 @@ export function apply(ctx) {
       type: 'object',
       properties: {
         host_like: { type: 'string', description: '按目标过滤（如 meituan）' },
+        program_id: { type: 'string', description: '按项目过滤（项目级报告）' },
         since_days: { type: 'integer', description: '只看近 N 天，0=全部' },
         status: { type: 'string', description: '按状态过滤（如 confirmed）' },
       },
@@ -191,7 +203,7 @@ export function apply(ctx) {
     },
     timeoutMs: 60000,
     execute: async (a) => {
-      const r = db.buildReport({ hostLike: a.host_like || '', sinceDays: a.since_days || 0, status: a.status || '' })
+      const r = db.buildReport({ hostLike: a.host_like || '', programId: a.program_id || '', sinceDays: a.since_days || 0, status: a.status || '' })
       return { ok: true, ...r, hint: '报告已落盘，提交 SRC 前必须人工逐条核实' }
     },
   })
@@ -279,5 +291,168 @@ export function apply(ctx) {
       additionalProperties: false,
     },
     execute: async (a) => ({ ok: true, ...db.taskStats(a.program_id) }),
+  })
+
+  // -------------------- P8：事实图谱 / 指纹 / 凭据 工具 --------------------
+
+  reg(ctx, {
+    name: 'fact_upsert',
+    description: '写入/覆盖一条事实（跨会话共享，边渗透边记录）。fact_key 格式 category/slug（如 auth/cred-admin、note/failed-xxx）。'
+      + 'summary 一行索引会注入 prompt，body 按需 fact_get 拉取。confidence: confirmed/tentative/deprecated。',
+    parameters: {
+      type: 'object',
+      properties: {
+        program_id: { type: 'string' },
+        fact_key: { type: 'string' },
+        category: { type: 'string', description: 'auth/target/note/finding/chain/exploit/asset' },
+        summary: { type: 'string' },
+        body: { type: 'string', description: '完整可复现上下文' },
+        confidence: { type: 'string', enum: ['confirmed', 'tentative', 'deprecated'] },
+        pinned: { type: 'integer', description: '1=置顶' },
+        related_finding_id: { type: 'integer' },
+        source: { type: 'string' },
+      },
+      required: ['program_id', 'fact_key'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.factUpsert(a),
+  })
+
+  reg(ctx, {
+    name: 'fact_get',
+    description: '读单条事实全文（含 body）。摘要不够时按需拉取，禁止臆造。',
+    parameters: {
+      type: 'object',
+      properties: { program_id: { type: 'string' }, fact_key: { type: 'string' } },
+      required: ['program_id', 'fact_key'],
+      additionalProperties: false,
+    },
+    execute: async (a) => ({ ok: true, fact: db.factGet(a.program_id, a.fact_key) }),
+  })
+
+  reg(ctx, {
+    name: 'fact_search',
+    description: '检索事实（按 program/category/关键词，summary+key+body LIKE）。返回索引（不含 body）。',
+    parameters: {
+      type: 'object',
+      properties: {
+        program_id: { type: 'string' },
+        category: { type: 'string' },
+        q: { type: 'string' },
+        limit: { type: 'integer' },
+      },
+      additionalProperties: false,
+    },
+    execute: async (a) => ({ ok: true, items: db.factSearch({ program_id: a.program_id || '', category: a.category || '', q: a.q || '', limit: a.limit || 50 }) }),
+  })
+
+  reg(ctx, {
+    name: 'fact_link',
+    description: '建立两条事实的关系边。edge_type: resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits。',
+    parameters: {
+      type: 'object',
+      properties: {
+        program_id: { type: 'string' },
+        src_key: { type: 'string' },
+        dst_key: { type: 'string' },
+        edge_type: { type: 'string' },
+        confidence: { type: 'string' },
+      },
+      required: ['program_id', 'src_key', 'dst_key', 'edge_type'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.factLink(a),
+  })
+
+  reg(ctx, {
+    name: 'fact_graph',
+    description: '返回某条事实的关系子图（节点 + 出边 + 入边）。资产关系/攻击链可遍历。',
+    parameters: {
+      type: 'object',
+      properties: { program_id: { type: 'string' }, fact_key: { type: 'string' } },
+      required: ['program_id', 'fact_key'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.factGraph(a.program_id, a.fact_key),
+  })
+
+  reg(ctx, {
+    name: 'fp_add',
+    description: '登记指纹（技术栈/组件 + 版本）。component-vuln-intel 触发器据此搜洞。',
+    parameters: {
+      type: 'object',
+      properties: {
+        host: { type: 'string' },
+        tech: { type: 'string', description: '如 ruoyi / spring / weblogic' },
+        version: { type: 'string' },
+        source: { type: 'string' },
+        program_id: { type: 'string' },
+      },
+      required: ['host', 'tech'],
+      additionalProperties: false,
+    },
+    execute: async (a) => ({ ok: db.fpAdd({ program_id: a.program_id || null, host: a.host, tech: a.tech, version: a.version || '', source: a.source || '' }) }),
+  })
+
+  reg(ctx, {
+    name: 'fp_query',
+    description: '检索指纹（按 host/tech/program）。命中技术栈后查 N-day。',
+    parameters: {
+      type: 'object',
+      properties: {
+        host: { type: 'string' },
+        tech: { type: 'string' },
+        program_id: { type: 'string' },
+        limit: { type: 'integer' },
+      },
+      additionalProperties: false,
+    },
+    execute: async (a) => ({ ok: true, items: db.fpQuery({ host: a.host || '', tech: a.tech || '', program_id: a.program_id || '', limit: a.limit || 50 }) }),
+  })
+
+  reg(ctx, {
+    name: 'cred_add',
+    description: '登记凭据引用（绝不存明文）。ref 指向 ctx.credentials / env 变量名；role 记录角色（越权矩阵用）。',
+    parameters: {
+      type: 'object',
+      properties: {
+        program_id: { type: 'string' },
+        host: { type: 'string' },
+        cred_type: { type: 'string' },
+        ref: { type: 'string', description: '凭证引用（环境变量名/credentials key），非明文' },
+        role: { type: 'string' },
+        note: { type: 'string' },
+      },
+      required: ['ref'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.credAdd({ program_id: a.program_id || null, host: a.host || '', cred_type: a.cred_type || '', ref: a.ref, role: a.role || '', note: a.note || '' }),
+  })
+
+  reg(ctx, {
+    name: 'cred_query',
+    description: '检索凭据引用（只返回引用，不返回明文）。',
+    parameters: {
+      type: 'object',
+      properties: { program_id: { type: 'string' }, host: { type: 'string' }, limit: { type: 'integer' } },
+      additionalProperties: false,
+    },
+    execute: async (a) => ({ ok: true, items: db.credQuery({ program_id: a.program_id || '', host: a.host || '', limit: a.limit || 50 }) }),
+  })
+
+  reg(ctx, {
+    name: 'asset_graph',
+    description: '返回某资产相关的指纹 + 事实关系子图（借 fact_edges 遍历），资产图谱可遍历而非扁平列表。',
+    parameters: {
+      type: 'object',
+      properties: { host: { type: 'string' } },
+      required: ['host'],
+      additionalProperties: false,
+    },
+    execute: async (a) => {
+      const fps = db.fpQuery({ host: a.host })
+      const facts = db.factSearch({ q: a.host, limit: 50 })
+      return { ok: true, host: a.host, fingerprints: fps, related_facts: facts }
+    },
   })
 }
