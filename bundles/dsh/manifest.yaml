@@ -59,6 +59,11 @@ templates:
   - seed-manifests.sh
   - seed-skills.sh
   - seed-presets.sh
+  # --- 安全看板客户端插件（DSH Web UI slot，依赖 sec-suite 的 /silksec/dashboard RPC）---
+  - dsh-plugin-sec-dashboard.index.js
+  - dsh-plugin-sec-dashboard.client.js
+  - dsh-plugin-sec-dashboard.patch.yml
+  - sec-dashboard-plugin-setup.sh
   # --- program_id 回填迁移（P6 一次性脚本）---
   - backfill-program.js
   # --- 情报刷新（intel-feeder v1）---

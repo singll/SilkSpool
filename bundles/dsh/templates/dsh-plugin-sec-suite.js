@@ -753,6 +753,78 @@ function planChain(args) {
 }
 
 // ==============================================================================
+// 看板 Remote（Host↔Client RPC 通道 /silksec-dashboard，authority=loopback）
+// 只读查询 + 两个受控写（打标 findingUpdate / 事实纠正 factCorrect·factDeprecate）。
+// 底层直接复用 assetDb 现有函数——「一份校验、一条 audit.jsonl、一个真相源」。
+// ==============================================================================
+
+const FINDING_TAG_STATUS = ['confirmed', 'false_positive', 'ignored', 'new']
+let dashboardRpcRegistered = false
+
+function handleDashboardRpc(endpoint, payload) {
+  const p = (payload && typeof payload === 'object') ? payload : {}
+  switch (endpoint) {
+    case 'stats':
+      return assetDb.stats()
+    case 'assets':
+      return assetDb.queryAssets({ limit: Math.min(Number(p.limit) || 100, 500) })
+    case 'endpoints':
+      return assetDb.queryEndpoints({ limit: Math.min(Number(p.limit) || 100, 500) })
+    case 'findings':
+      return assetDb.queryFindings({ limit: Math.min(Number(p.limit) || 100, 500) })
+    case 'blackboard':
+      return assetDb.bbGet()
+    case 'facts':
+      return assetDb.factSearch({ limit: Math.min(Number(p.limit) || 100, 500) })
+    case 'findingUpdate': {
+      const id = Number(p.id)
+      const status = String(p.status || '')
+      if (!id || !FINDING_TAG_STATUS.includes(status)) {
+        throw new Error(`findingUpdate 需要合法 id 与 status（${FINDING_TAG_STATUS.join('/')}）`)
+      }
+      const r = assetDb.updateFinding({ id, status, note: String(p.note || '') })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.findingUpdate', decision: 'executed', detail: { id, status } })
+      return r
+    }
+    case 'factCorrect': {
+      const programId = String(p.program_id || '')
+      const factKey = String(p.fact_key || '')
+      if (!programId || !factKey) throw new Error('factCorrect 需要 program_id 与 fact_key')
+      const cur = assetDb.factGet(programId, factKey)
+      if (!cur) return { ok: false, error: `fact 不存在: ${programId}/${factKey}` }
+      // 只覆盖显式提供的字段，其余保留原值；confidence 固定升为 confirmed
+      const r = assetDb.factUpsert({
+        program_id: programId, fact_key: factKey,
+        category: p.category !== undefined && p.category !== null ? String(p.category) : cur.category,
+        summary: p.summary !== undefined && p.summary !== null ? String(p.summary) : cur.summary,
+        body: p.body !== undefined && p.body !== null ? String(p.body) : cur.body,
+        confidence: 'confirmed',
+        pinned: cur.pinned, related_finding_id: cur.related_finding_id, source: cur.source,
+      })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.factCorrect', decision: 'executed', detail: { program_id: programId, fact_key: factKey } })
+      return r
+    }
+    case 'factDeprecate': {
+      const programId = String(p.program_id || '')
+      const factKey = String(p.fact_key || '')
+      if (!programId || !factKey) throw new Error('factDeprecate 需要 program_id 与 fact_key')
+      const cur = assetDb.factGet(programId, factKey)
+      if (!cur) return { ok: false, error: `fact 不存在: ${programId}/${factKey}` }
+      const r = assetDb.factUpsert({
+        program_id: programId, fact_key: factKey,
+        category: cur.category, summary: cur.summary, body: cur.body,
+        confidence: 'deprecated', pinned: cur.pinned,
+        related_finding_id: cur.related_finding_id, source: cur.source,
+      })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.factDeprecate', decision: 'executed', detail: { program_id: programId, fact_key: factKey } })
+      return r
+    }
+    default:
+      throw new Error(`未知看板端点: ${endpoint}`)
+  }
+}
+
+// ==============================================================================
 // 注册
 // ==============================================================================
 
@@ -892,4 +964,29 @@ export function apply(ctx, config) {
 
   // xray webhook 接收器随插件启动（流量总线 v1）；preset 内挂载时 sidecars:false 跳过
   if (!config || config.sidecars !== false) startXrayWebhook(ctx)
+
+  // 看板 Remote：仅在 connection 服务存在时挂载（headless 无此服务，gracefully 跳过）。
+  // 用 child fiber 等待服务初始化，避免 bare ctx.get 在 carrier 就绪前静默失效。
+  // module 级幂等守卫：DSH 启动期 connection 服务会短暂重配（webServer 就绪后再 re-provide 一次），
+  // 导致 child fiber 二次激活、重复注册同名 prefix 路由。守卫保证只注册一次，杜绝 duplicate 报错。
+  try {
+    ctx.inject(['connection'], (child) => {
+      child.effect(() => {
+        if (dashboardRpcRegistered) return
+        dashboardRpcRegistered = true
+        const dispose = child.connection.rpc.handle('/silksec-dashboard',
+          async (endpoint, payload) => {
+            try {
+              return { ok: true, value: handleDashboardRpc(String(endpoint || ''), payload) }
+            } catch (error) {
+              return { ok: false, error: { code: 'internal', message: error?.message ?? String(error), details: {} } }
+            }
+          },
+          { authority: 'loopback' })
+        return () => { void dispose() }
+      }, 'sec-suite: dashboard rpc')
+    })
+  } catch (e) {
+    process.stderr.write(`[sec-suite] dashboard RPC 挂载失败: ${e?.message ?? String(e)}\n`)
+  }
 }
