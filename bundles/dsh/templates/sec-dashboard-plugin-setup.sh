@@ -41,7 +41,7 @@ assemble() {
   "license": "MIT",
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
-    "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-conversation"] }
+    "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-sidebar"] }
   }
 }
 EOF

@@ -776,6 +776,10 @@ function handleDashboardRpc(endpoint, payload) {
       return assetDb.bbGet()
     case 'facts':
       return assetDb.factSearch({ limit: Math.min(Number(p.limit) || 100, 500) })
+    case 'programs':
+      return assetDb.listPrograms()
+    case 'tasks':
+      return assetDb.taskList({ limit: Math.min(Number(p.limit) || 200, 500) })
     case 'findingUpdate': {
       const id = Number(p.id)
       const status = String(p.status || '')
