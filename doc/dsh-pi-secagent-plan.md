@@ -40,7 +40,12 @@
 >   踩坑：FTS5 unicode61 对中英文无空格混排整串成词，必须逐词 LIKE 兜底；
 > - 欠账：靶场回归评测（需 Vulhub 环境）、dsh-sentinel 事件触发、向量嵌入（当前 FTS5，语义检索待本地嵌入模型）。
 >
-> **P5 运营期核心（2026-08-21）**：finding_update（状态流转 new→confirmed→submitted→accepted/dup/ignored，note 追加证据链）
+> **美团 SRC 实战首跑完成（2026-08-21）**：headless 会话自主完成"存活复核+模板扫描"——
+> 40 资产中 14 个存活确认（nuclei HTTP/TLS 证据）；新发现 2 条（auth.mykeeta.com CORS 任意起源+凭据反射 low；
+> intranet.dianping.com:7001 WebLogic T3 12.2.1.4 公网暴露 medium，id 58-59），既有 14 条复核无漂移；
+> 报告落盘 results/meituan-src-run-20260821-r2.md；全程 run_cli 经 mubeng 代理池（/proc 环境实证注入，出口 IP 轮换验证）。
+> agent 自主适应：httpx 环境级卡死时切换 nuclei 做存活，并在黑板留证（httpx-blocked-env）。
+> 已知问题：headless 会话在产出最终报告后进程不退出（空转需人工清），LLM 流式偶发挂起需看门狗（failover 只认显式失败）。finding_update（状态流转 new→confirmed→submitted→accepted/dup/ignored，note 追加证据链）
 > + report_build（markdown 报告落盘 data/reports/，按严重级汇总+明细，提示人工审核）；
 > dsh-bill@0.13.1 扫描 PASS 安装（token 成本台账，外联仅汇率 API+DeepSeek 余额端点）；
 > 字节 SRC 同步导入（185 资产/10 漏洞/566 黑板事实）。
