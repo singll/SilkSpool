@@ -1,0 +1,9 @@
+# 靶场评测用例（eval-run.js 读取）
+# 格式：case|target|expected_template_id
+# expected_template_id 为 nuclei 模板/特征串，扫描输出命中即算发现
+weblogic-10271|vulhub.singll.net:7001|CVE-2017-10271
+shiro-4437|vulhub.singll.net:8080|CVE-2016-4437
+fastjson-1224|vulhub.singll.net:8090|fastjson
+struts2-s2045|vulhub.singll.net:8082|CVE-2017-5638
+thinkphp-5023|vulhub.singll.net:8083|thinkphp
+drupal-8760|vulhub.singll.net:8084|CVE-2018-7600

@@ -176,6 +176,16 @@ function hostOf(raw) {
   return s.toLowerCase()
 }
 
+// 内网目标判定（代理池仅供出公网；内网目标注入公网代理必然失败）
+function isInternalHost(host) {
+  if (!host) return false
+  if (host === 'localhost' || host.endsWith('.singll.net') || host.endsWith('.internal') || host.endsWith('.lan')) return true
+  const ip = ipToInt(host)
+  if (ip === null) return false
+  const a = (ip >>> 24) & 255; const b = (ip >>> 16) & 255
+  return a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254)
+}
+
 function entryMatches(entry, host) {
   entry = String(entry).trim().toLowerCase()
   if (!entry) return false
@@ -332,7 +342,9 @@ async function runCli(args) {
   const binary = String(manifest.binary || toolName)
   const timeoutMs = Math.min(Number(manifest.timeout || 300), 3600) * 1000
   const env = { ...process.env }
-  if (manifest.env_proxy && EGRESS_PROXY) {
+  // 代理注入仅对公网目标生效；内网/环回目标直连（公网代理到不了内网）
+  const allInternal = targets.length > 0 && targets.every((t) => isInternalHost(hostOf(t)))
+  if (manifest.env_proxy && EGRESS_PROXY && !allInternal) {
     env.http_proxy = EGRESS_PROXY; env.https_proxy = EGRESS_PROXY
     env.HTTP_PROXY = EGRESS_PROXY; env.HTTPS_PROXY = EGRESS_PROXY
   }
@@ -659,7 +671,7 @@ function renderJSON(_args, value) {
   return [{ type: 'text', text: JSON.stringify(value, null, 1) }]
 }
 
-export function apply(ctx) {
+export function apply(ctx, config) {
   ctx.tools.register({
     name: 'run_cli',
     description: '运行已登记的安全 CLI 工具（manifest 驱动）。目标经 scope-guard 白名单硬校验，参数模板化渲染，'
@@ -764,6 +776,6 @@ export function apply(ctx) {
     execute: async (args) => authzDiff(args || {}),
   })
 
-  // xray webhook 接收器随插件启动（流量总线 v1）
-  startXrayWebhook(ctx)
+  // xray webhook 接收器随插件启动（流量总线 v1）；preset 内挂载时 sidecars:false 跳过
+  if (!config || config.sidecars !== false) startXrayWebhook(ctx)
 }

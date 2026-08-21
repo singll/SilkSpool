@@ -60,6 +60,14 @@ templates:
   - seed-presets.sh
   # --- 情报刷新（intel-feeder v1）---
   - intel-refresh.sh
+  # --- CyberStrikeAI 历史数据导入器 ---
+  - import-cyberstrikeai.py
+  # --- 向量嵌入模块（experience-hub 语义检索）---
+  - embeddings.index.js
+  - embeddings-setup.sh
+  # --- 靶场回归评测 ---
+  - eval-run.js
+  - eval-cases.list
   # --- 浏览器 fork（+SEC_FLOW_PROXY 流量入总线）---
   - sec-browser-plugin-setup.sh
   - dsh-browser-upstream.index.js

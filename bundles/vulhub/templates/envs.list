@@ -1,0 +1,12 @@
+# ==============================================================================
+# Vulhub 靶场环境清单（vulhub-ctl.sh 读取）
+# 格式：name|env_path|internal_port|external_port|ready_url_suffix
+# env_path 相对 vulhub 仓库根；external_port 需避开 silkdata 已占端口
+# （3000/3100/4222/5432/5984/6379/7700/8081/9090）
+# ==============================================================================
+weblogic-10271|weblogic/CVE-2017-10271|7001|7001|/uddiexplorer/
+shiro-4437|shiro/CVE-2016-4437|8080|8080|/
+fastjson-1224|fastjson/1.2.24-rce|8090|8090|/
+struts2-s2045|struts2/s2-045|8080|8082|/
+thinkphp-5023|thinkphp/5.0.23-rce|80|8083|/
+drupal-8760|drupal/CVE-2018-7600|80|8084|/user/login

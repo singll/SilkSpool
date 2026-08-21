@@ -21,7 +21,25 @@ mkpreset() {
     local id="$1" pname="$2" desc="$3" persona="$4"
     local dir="$PRESET_ROOT/$id"
     if [ -f "$dir/agent.cordis.yml" ]; then
-        log "$id 已存在，跳过"
+        # 已存在的 preset：确保 sec 工具行在（agent 面注册，幂等）
+        if ! grep -q 'sec-suite-agent' "$dir/agent.cordis.yml"; then
+            cat >> "$dir/agent.cordis.yml" <<'ROWS'
+
+# ── SilkSecAgent 安全工具（agent 面注册；宿主面注册对会话不可见）──
+- id: sec-suite-agent
+  name: '@silksec/sec-suite'
+  config: { sidecars: false }
+- id: asset-graph-agent
+  name: '@silksec/sec-suite/asset-graph'
+- id: experience-agent
+  name: '@silksec/sec-suite/experience'
+- id: proxy-pool-agent
+  name: '@silksec/dsh-proxy-pool'
+ROWS
+            log "$id 补充 sec 工具行"
+        else
+            log "$id 已存在，跳过"
+        fi
         return
     fi
     mkdir -p "$dir"
@@ -45,6 +63,20 @@ name: $pname
 description: $desc
 order: 10
 EOF
+    # 追加 SilkSecAgent 工具行（agent 面注册）
+    cat >> "$dir/agent.cordis.yml" <<'ROWS'
+
+# ── SilkSecAgent 安全工具（agent 面注册；宿主面注册对会话不可见）──
+- id: sec-suite-agent
+  name: '@silksec/sec-suite'
+  config: { sidecars: false }
+- id: asset-graph-agent
+  name: '@silksec/sec-suite/asset-graph'
+- id: experience-agent
+  name: '@silksec/sec-suite/experience'
+- id: proxy-pool-agent
+  name: '@silksec/dsh-proxy-pool'
+ROWS
     log "$id 已写入"
 }
 

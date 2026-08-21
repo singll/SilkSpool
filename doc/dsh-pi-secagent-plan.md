@@ -40,6 +40,17 @@
 >   踩坑：FTS5 unicode61 对中英文无空格混排整串成词，必须逐词 LIKE 兜底；
 > - 欠账：靶场回归评测（需 Vulhub 环境）、dsh-sentinel 事件触发、向量嵌入（当前 FTS5，语义检索待本地嵌入模型）。
 >
+> **欠账清理（2026-08-21）**：
+> - **Vulhub 靶场**：bundle vulhub 部署到 silkdata（32G/362G），6 个环境在线（weblogic-10271:7001 / shiro-4437:8080 /
+>   fastjson-1224:8090 / struts2-s2045:8082 / thinkphp-5023:8083 / drupal-8760:8084），DNS vulhub.singll.net → 192.168.7.231；
+> - **评测基线首轮**：nuclei 全模板 6 靶标 3/6 命中（weblogic/fastjson/thinkphp ✓；shiro/struts2/drupal 模板存在但不触发），
+>   afrog 补位命中 struts2 CVE-2017-5638（CRITICAL）——多引擎价值实证，报告存 data/eval/；
+> - **dsh-sentinel@0.11.0**：扫描通过（hash 入锁），但其 client.js 导致 Web UI 插件加载失败，已移除——事件触发改用 intel.timer + webhook 通道，sentinel 待上游修复再评；
+> - **向量嵌入**：plugins/embeddings（transformers.js + multilingual-e5-small，模型缓存 data/models/），
+>   experience-hub 接入成功——查询"WLS 控制台默认密码部署"零关键词重叠命中"WebLogic 后台弱口令"卡（semantic 0.89）；
+> - **重大教训（工具不可见之谜）**：手工跑 headless 必须显式 `DSH_HOME=/opt/silkspool/dsh/data`——否则用默认 ~/.dsh 启动，
+>   无我们的插件，agent 正确地报"没有 run_cli"。上一轮美团运行失败即因此，非平台缺陷。已清理误建的 ~/.dsh。
+>
 > **P1 已补齐（2026-08-20）**：18 个工具 manifest 种子（seed-manifests.sh 幂等补齐）；`burp_import` 工具落地
 > （Burp XML proxy history / scanner issues → JSONL 落盘 data/imports/，实测解析正确）。
 > **P2 已完成（2026-08-20）**：

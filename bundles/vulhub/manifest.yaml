@@ -1,0 +1,7 @@
+name: vulhub
+type: script
+templates:
+  - setup.sh
+  - vulhub-ctl.sh
+  - envs.list
+services: []

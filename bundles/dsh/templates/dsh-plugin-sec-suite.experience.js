@@ -15,6 +15,21 @@ export const inject = ['tools']
 const DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const KNOWLEDGE_DIR = path.join(DATA_DIR, 'knowledge')
 
+// -------------------- 向量嵌入（可选，SEC_EMBEDDINGS 指向模块） --------------------
+let embMod = null
+let embTried = false
+async function embeddings() {
+  if (embTried) return embMod
+  embTried = true
+  const modPath = process.env.SEC_EMBEDDINGS || '/opt/silkspool/dsh/plugins/embeddings/index.js'
+  try {
+    const url = modPath.startsWith('/') ? `file://${modPath}` : modPath
+    embMod = await import(url)
+    embMod.embed('warmup').catch(() => { embMod = null }) // 后台预热失败则永久降级
+  } catch { embMod = null }
+  return embMod
+}
+
 const CONFIDENCE_RANK = { high: 3, medium: 2, low: 1 }
 const SOURCE_RANK = { 'human-verified': 3, '实战': 2, 'external': 1 }
 
@@ -52,6 +67,10 @@ function db() {
         successes INTEGER NOT NULL DEFAULT 0,
         avg_duration_ms INTEGER NOT NULL DEFAULT 0,
         last_run_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS exp_embeddings (
+        card_id INTEGER PRIMARY KEY,
+        vec TEXT NOT NULL
       );
     `)
     initialized = true
@@ -92,6 +111,13 @@ function expStore(a) {
   const id = Number(r.lastInsertRowid)
   d.prepare('INSERT INTO exp_fts (rowid, scenario, takeaway, chain) VALUES (?, ?, ?, ?)')
     .run(id, String(a.scenario), String(a.takeaway), JSON.stringify(a.chain || []))
+  // 向量索引（嵌入模块可用时，后台异步）
+  embeddings().then((m) => {
+    if (!m) return
+    m.embedPassage(`${a.scenario} ${a.takeaway}`).then((vec) => {
+      db().prepare('INSERT OR REPLACE INTO exp_embeddings (card_id, vec) VALUES (?, ?)').run(id, JSON.stringify(vec))
+    }).catch(() => {})
+  }).catch(() => {})
   return { ok: true, id, merged: false }
 }
 
@@ -112,11 +138,26 @@ function ftsSearch(table, query, limit) {
   return out
 }
 
-function expSearch(a) {
+async function expSearch(a) {
   if (!a.query) return { ok: false, error: 'query 必填' }
   const limit = Math.min(a.limit || 5, 20)
   const hits = ftsSearch('exp_fts', String(a.query), limit * 2)
-  if (hits.size === 0) return { ok: true, total: 0, items: [] }
+
+  // 向量语义召回（嵌入模块可用时）：与 FTS 结果按 RRF 融合
+  const m = await embeddings()
+  let vecScore = new Map()
+  if (m) {
+    try {
+      const qv = await m.embed(String(a.query))
+      const rows = db().prepare('SELECT card_id, vec FROM exp_embeddings').all()
+      vecScore = new Map(rows.map((r) => [r.card_id, m.cosine(qv, JSON.parse(r.vec))]))
+      // 纯语义命中（无关键词重叠）也并入候选
+      for (const [id, s] of vecScore) {
+        if (s >= 0.55 && !hits.has(id)) hits.set(id, 0)
+      }
+    } catch { vecScore = new Map() }
+  }
+
   const d = db()
   const items = [...hits.entries()]
     .map(([id, score]) => ({ ...d.prepare('SELECT * FROM exp_cards WHERE id = ?').get(id), _score: score }))
@@ -125,7 +166,8 @@ function expSearch(a) {
       chain: JSON.parse(c.chain || '[]'), evidence: JSON.parse(c.evidence || '[]'),
       source: c.source, confidence: c.confidence,
       last_validated_at: new Date(c.last_validated_at).toISOString().slice(0, 10),
-      _rank: c._score * 10 + (SOURCE_RANK[c.source] || 0) * 3 + (CONFIDENCE_RANK[c.confidence] || 0),
+      semantic: vecScore.has(c.id) ? Math.round(vecScore.get(c.id) * 100) / 100 : undefined,
+      _rank: c._score * 10 + (vecScore.get(c.id) || 0) * 20 + (SOURCE_RANK[c.source] || 0) * 3 + (CONFIDENCE_RANK[c.confidence] || 0),
     }))
     .sort((x, y) => y._rank - x._rank)
     .slice(0, limit)
