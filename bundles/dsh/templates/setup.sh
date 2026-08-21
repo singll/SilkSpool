@@ -22,7 +22,7 @@ if [ "$(id -u)" -ne 0 ]; then SUDO='sudo'; fi
 ensure_apt_deps() {
     command -v apt-get >/dev/null 2>&1 || { warn "非 apt 系统，请手动确认 git/curl 已安装"; return; }
     local missing=()
-    for pkg in git curl tar xz-utils ca-certificates; do
+    for pkg in git curl tar xz-utils ca-certificates bubblewrap; do
         dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
     done
     if [ ${#missing[@]} -gt 0 ]; then

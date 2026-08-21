@@ -391,17 +391,19 @@ async function runCli(args) {
 
   const lines = stdoutText.split('\n')
   const head = lines.slice(0, 20).join('\n')
-  return {
+  const out = {
     ok: result.code === 0,
     run_id: runId,
     exit_code: result.code ?? null,
     duration_ms: meta.duration_ms,
     total_lines: lines.length,
     summary: head,
-    ingested: ingested || undefined,
     error: result.error || null,
-    hint: lines.length > 20 ? `输出共 ${lines.length} 行，仅显示前 20 行；用 grep_result/page_result 按需取` : undefined,
   }
+  // 无损 JSON 纪律：条件字段只在有值时才设置（undefined 键会破坏 round-trip 校验）
+  if (ingested) out.ingested = ingested
+  if (lines.length > 20) out.hint = `输出共 ${lines.length} 行，仅显示前 20 行；用 grep_result/page_result 按需取`
+  return out
 }
 
 function resultFile(runId) {
@@ -686,6 +688,7 @@ export function apply(ctx, config) {
       additionalProperties: false,
     },
     output: { schema: { type: 'object' }, render: renderJSON },
+    timeoutMs: 3670000,
     execute: async (args) => runCli(args || {}),
   })
 
@@ -736,6 +739,7 @@ export function apply(ctx, config) {
       additionalProperties: false,
     },
     output: { schema: { type: 'object' }, render: renderJSON },
+    timeoutMs: 180000,
     execute: async (args) => burpImport(args || {}),
   })
 
@@ -753,6 +757,7 @@ export function apply(ctx, config) {
       additionalProperties: false,
     },
     output: { schema: { type: 'object' }, render: renderJSON },
+    timeoutMs: 3670000,
     execute: async (args) => spawnWorker(args || {}),
   })
 
@@ -773,6 +778,7 @@ export function apply(ctx, config) {
       additionalProperties: false,
     },
     output: { schema: { type: 'object' }, render: renderJSON },
+    timeoutMs: 90000,
     execute: async (args) => authzDiff(args || {}),
   })
 

@@ -64,6 +64,9 @@ export function getDb() {
 
 const now = () => Date.now()
 
+// node:sqlite 返回 null-prototype 对象，DSH 工具输出要求无损 JSON——统一转普通对象
+const plain = (rows) => rows.map((r) => ({ ...r }))
+
 export function upsertAsset({ host, type = 'host', source = '', attrs = null }) {
   if (!host) return false
   getDb().prepare(`
@@ -105,7 +108,7 @@ export function queryAssets({ hostLike = '', type = '', limit = 50 }) {
   if (type) { sql += ' AND type = ?'; args.push(type) }
   sql += ' ORDER BY last_seen DESC LIMIT ?'
   args.push(Math.min(limit, 200))
-  return getDb().prepare(sql).all(...args)
+  return plain(getDb().prepare(sql).all(...args))
 }
 
 export function queryEndpoints({ host = '', pathLike = '', limit = 50 }) {
@@ -115,7 +118,7 @@ export function queryEndpoints({ host = '', pathLike = '', limit = 50 }) {
   if (pathLike) { sql += ' AND path LIKE ?'; args.push(`%${pathLike}%`) }
   sql += ' ORDER BY last_seen DESC LIMIT ?'
   args.push(Math.min(limit, 200))
-  return getDb().prepare(sql).all(...args)
+  return plain(getDb().prepare(sql).all(...args))
 }
 
 export function queryFindings({ host = '', severity = '', status = '', limit = 50 }) {
@@ -126,14 +129,14 @@ export function queryFindings({ host = '', severity = '', status = '', limit = 5
   if (status) { sql += ' AND status = ?'; args.push(status) }
   sql += ' ORDER BY created_at DESC LIMIT ?'
   args.push(Math.min(limit, 200))
-  return getDb().prepare(sql).all(...args)
+  return plain(getDb().prepare(sql).all(...args))
 }
 
 export function stats() {
   const d = getDb()
   const count = (t) => d.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n
-  const byType = d.prepare('SELECT type, COUNT(*) AS n FROM assets GROUP BY type ORDER BY n DESC').all()
-  const bySev = d.prepare('SELECT severity, COUNT(*) AS n FROM findings GROUP BY severity').all()
+  const byType = plain(d.prepare('SELECT type, COUNT(*) AS n FROM assets GROUP BY type ORDER BY n DESC').all())
+  const bySev = plain(d.prepare('SELECT severity, COUNT(*) AS n FROM findings GROUP BY severity').all())
   return {
     assets: count('assets'), endpoints: count('endpoints'),
     findings: count('findings'), blackboard_keys: count('blackboard'),
@@ -151,9 +154,9 @@ export function bbGet(key) {
   const d = getDb()
   if (key) {
     const row = d.prepare('SELECT key, value, updated_at FROM blackboard WHERE key = ?').get(String(key))
-    return row || null
+    return row ? { ...row } : null
   }
-  return d.prepare('SELECT key, value, updated_at FROM blackboard ORDER BY updated_at DESC LIMIT 100').all()
+  return plain(d.prepare('SELECT key, value, updated_at FROM blackboard ORDER BY updated_at DESC LIMIT 100').all())
 }
 
 // -------------------- 文本自动抽取（run_cli 结果入库用） --------------------

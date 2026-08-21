@@ -161,14 +161,18 @@ async function expSearch(a) {
   const d = db()
   const items = [...hits.entries()]
     .map(([id, score]) => ({ ...d.prepare('SELECT * FROM exp_cards WHERE id = ?').get(id), _score: score }))
-    .map((c) => ({
-      id: c.id, scenario: c.scenario, takeaway: c.takeaway,
-      chain: JSON.parse(c.chain || '[]'), evidence: JSON.parse(c.evidence || '[]'),
-      source: c.source, confidence: c.confidence,
-      last_validated_at: new Date(c.last_validated_at).toISOString().slice(0, 10),
-      semantic: vecScore.has(c.id) ? Math.round(vecScore.get(c.id) * 100) / 100 : undefined,
-      _rank: c._score * 10 + (vecScore.get(c.id) || 0) * 20 + (SOURCE_RANK[c.source] || 0) * 3 + (CONFIDENCE_RANK[c.confidence] || 0),
-    }))
+    .map((c) => {
+      const item = {
+        id: c.id, scenario: c.scenario, takeaway: c.takeaway,
+        chain: JSON.parse(c.chain || '[]'), evidence: JSON.parse(c.evidence || '[]'),
+        source: c.source, confidence: c.confidence,
+        last_validated_at: new Date(c.last_validated_at).toISOString().slice(0, 10),
+        _rank: c._score * 10 + (vecScore.get(c.id) || 0) * 20 + (SOURCE_RANK[c.source] || 0) * 3 + (CONFIDENCE_RANK[c.confidence] || 0),
+      }
+      // 无损 JSON 纪律：semantic 只在有值时设置
+      if (vecScore.has(c.id)) item.semantic = Math.round(vecScore.get(c.id) * 100) / 100
+      return item
+    })
     .sort((x, y) => y._rank - x._rank)
     .slice(0, limit)
     .map(({ _rank, ...rest }) => rest)
@@ -178,6 +182,7 @@ async function expSearch(a) {
 function expList(a) {
   const limit = Math.min(a.limit || 20, 100)
   const rows = db().prepare('SELECT id, scenario, takeaway, source, confidence, last_validated_at FROM exp_cards ORDER BY last_validated_at DESC LIMIT ?').all(limit)
+  // node:sqlite 返回 null-prototype 对象，统一转普通对象（无损 JSON 校验）
   return { ok: true, total: rows.length, items: rows.map((c) => ({ ...c, last_validated_at: new Date(c.last_validated_at).toISOString().slice(0, 10) })) }
 }
 
@@ -363,6 +368,7 @@ export function apply(ctx) {
       },
       additionalProperties: false,
     },
+    timeoutMs: 90000,   // url 抓取 30s + 写盘余量
     execute: async (a) => kbImport(a || {}),
   })
 

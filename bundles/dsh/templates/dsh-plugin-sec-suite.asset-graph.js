@@ -17,6 +17,7 @@ const reg = (ctx, def) => ctx.tools.register({
   description: def.description,
   parameters: def.parameters,
   output: { schema: { type: 'object' }, render: renderJSON },
+  ...(def.timeoutMs ? { timeoutMs: def.timeoutMs } : {}),
   execute: def.execute,
 })
 
@@ -49,7 +50,10 @@ export function apply(ctx) {
       },
       additionalProperties: false,
     },
-    execute: async (a) => ({ ok: true, total: undefined, items: db.queryAssets({ hostLike: a.host_like || '', type: a.type || '', limit: a.limit || 50 }) }),
+    execute: async (a) => {
+      const items = db.queryAssets({ hostLike: a.host_like || '', type: a.type || '', limit: a.limit || 50 })
+      return { ok: true, total: items.length, items }
+    },
   })
 
   reg(ctx, {
