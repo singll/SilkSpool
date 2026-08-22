@@ -236,6 +236,7 @@ export function apply(ctx) {
     name: 'task_create',
     description: '创建一个任务（可管理的工作单元，编排器的派单对象；看板任务视图立即可见）。'
       + 'program_id 见 program_list（不传则按当前会话所在工作区自动带出）；phase: recon/vuln/biz-logic/code-audit/intranet/review；priority 0 最高。'
+      + '依赖：传 parent_id 声明前置任务，前置未 done 时调度器/派单不放行（多级链用 task_chain 一次展开）。'
       + '定时任务：用户说「定时/每隔/每天/每小时/定期跑」时必须传 schedule（{kind:"once",at:<未来毫秒时间戳>} 或 {kind:"interval",every_seconds:>=300}），'
       + '不得只在会话里口头答应——带 schedule 的任务由调度循环自动执行，intrusive 级目标禁止 interval。',
     parameters: {

@@ -463,7 +463,9 @@ export function taskClaimDue(nowTs) {
   d.exec('BEGIN IMMEDIATE')
   try {
     const due = plain(d.prepare(
-      "SELECT id FROM tasks WHERE schedule_kind IS NOT NULL AND status = 'queued' AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY priority ASC, next_run_at ASC LIMIT 4"
+      `SELECT id FROM tasks t WHERE schedule_kind IS NOT NULL AND status = 'queued' AND next_run_at IS NOT NULL AND next_run_at <= ?
+         AND (parent_id IS NULL OR EXISTS (SELECT 1 FROM tasks p WHERE p.id = t.parent_id AND p.status = 'done'))
+       ORDER BY priority ASC, next_run_at ASC LIMIT 4`
     ).all(nowTs))
     const claimed = []
     const upd = d.prepare("UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ? AND status = 'queued'")

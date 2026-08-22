@@ -642,6 +642,22 @@ function sessionIdOf(exec) {
   } catch { return null }
 }
 
+// 会话 header cwd（对齐 asset-graph.execCwd），用于按工作区反查所属 program
+function execCwd(exec) {
+  try {
+    const cwd = exec && exec.agent && exec.agent.session && exec.agent.session.header && exec.agent.session.header.cwd
+    return cwd ? String(cwd) : null
+  } catch { return null }
+}
+
+// 解析当前会话所属 program：显式 program_id 优先，否则按会话工作区 cwd 反查（缺则空串）
+function resolveProgramId(explicit, exec) {
+  const pid = String(explicit || '').trim()
+  if (pid) return pid
+  const cwd = execCwd(exec)
+  return (cwd && assetDb.programByWorkspacePath(cwd)) || ''
+}
+
 async function runCli(args, exec) {
   const sessionId = sessionIdOf(exec)
   const toolName = String(args.tool || '')
@@ -1214,6 +1230,70 @@ function planChain(args) {
   return { ok: true, have, want, chain, available: [...available] }
 }
 
+// P2-2：一条 objective 自动展开任务依赖链。
+// 复用 planChain BFS 求可达工具链 → 反向剪枝到达成 want 的最小链（去掉贪心带入的旁支）→
+// 落成 parent 串联的 once 调度任务：head 立即到期，子任务由 taskClaimDue 的「前置=done」gate 逐级放行 → 链式自动推进。
+function taskChain(args, exec) {
+  const programId = resolveProgramId(args.program_id, exec)
+  if (!programId) return { ok: false, error: 'program_id 缺失且当前会话未在已绑定工作区（传 program_id，见 program_list）' }
+  const want = String(args.want || 'findings').trim()
+  const have = (Array.isArray(args.have) && args.have.length) ? args.have.map(String) : ['domains']
+  const priority = Number.isInteger(args.priority) ? args.priority : 3
+  const objectiveCtx = String(args.objective || '').trim()
+
+  // 1) 复用 planChain BFS：验证可达 + 得到有序（含冗余旁支）工具链
+  const plan = planChain({ have, want })
+  if (!plan.ok) return { ok: false, error: plan.error, have, want, hint: '调整 have/want 或检查 manifest 的 requires/produces' }
+
+  // 2) 反向剪枝：从 want 回溯，只保留 produces 命中「所需能力」的工具，逐级把其 requires 并入所需集
+  const needed = new Set([want])
+  const keep = []
+  for (let i = plan.chain.length - 1; i >= 0; i--) {
+    const m = loadManifest(plan.chain[i])
+    if (!m) continue
+    const produces = Array.isArray(m.produces) ? m.produces : []
+    if (produces.some((p) => needed.has(p))) {
+      keep.unshift(m)
+      for (const r of (Array.isArray(m.requires) ? m.requires : [])) needed.add(r)
+    }
+  }
+  if (!keep.length) return { ok: false, error: `剪枝后链为空（want=${want} 无产出工具）`, plan_chain: plan.chain }
+
+  // 3) 幂等去重：同 program 下已有未终结的同 want 链则不重复展开
+  const marker = `[链:${want}]`
+  const dup = assetDb.taskList({ programId, q: marker, limit: 100 })
+    .find((t) => ['queued', 'running', 'blocked'].includes(t.status))
+  if (dup) return { ok: true, program_id: programId, want, deduped: true, chain: keep.map((m) => m.name), hint: `已存在未完成的 ${want} 任务链（起始 #${dup.id}），未重复展开` }
+
+  // 4) 建 parent 串联的 once 调度任务（at 取小幅未来以过 normalizeSchedule 校验；实际次序由 parent gate 决定）
+  const stageToPhase = { recon: 'recon', vuln: 'vuln', audit: 'code-audit' }
+  const base = Date.now()
+  const N = keep.length
+  const ids = []
+  let parentId = Number.isInteger(args.parent_id) ? args.parent_id : null
+  for (let i = 0; i < N; i++) {
+    const m = keep[i]
+    const produces = (Array.isArray(m.produces) ? m.produces : []).join('+') || m.name
+    const objective = `${marker} [${i + 1}/${N}] ${m.name}（产出 ${produces}）`
+      + `${objectiveCtx ? `｜目标：${objectiveCtx}` : ''}`
+      + `${m.stage === 'vuln' ? '。N-day/漏洞验证——结果 tentative，附证据才 confirmed' : ''}`
+    const r = assetDb.taskCreate({
+      program_id: programId,
+      phase: stageToPhase[m.stage] || m.stage || '',
+      objective,
+      priority,
+      parent_id: parentId,
+      session_id: sessionIdOf(exec),
+      schedule: { kind: 'once', at: base + (i + 1) * 2000 },
+    })
+    if (!r.ok) return { ok: false, error: `第 ${i + 1} 步建任务失败: ${r.error}`, created: ids }
+    ids.push(r.id)
+    parentId = r.id
+  }
+  audit({ ts: Date.now(), run_id: '-', tool: 'task_chain', decision: 'executed', detail: { program_id: programId, want, chain: keep.map((m) => m.name), task_ids: ids }, session_id: sessionIdOf(exec) })
+  return { ok: true, program_id: programId, want, have, chain: keep.map((m) => m.name), task_ids: ids, note: `已展开 ${N} 级依赖链（once 调度，parent 串联）：前置未完成不派单，parent 完成后调度器自动放行下一级。` }
+}
+
 // ==============================================================================
 // 看板 Remote（Host↔Client RPC 通道 /silksec-dashboard，authority=loopback）
 // 只读查询 + 受控写（打标 findingUpdate / 事实纠正 factCorrect·factDeprecate /
@@ -1359,7 +1439,7 @@ async function handleDashboardRpc(endpoint, payload) {
 
 const NUCLEI_TEMPLATES = path.join(HOME_DIR, 'nuclei-templates')
 
-function intelHunt(args) {
+function intelHunt(args, exec) {
   const tech = String(args.tech || '').toLowerCase().trim()
   if (!tech) return { ok: false, error: 'tech 必填（如 weblogic / ruoyi / spring）' }
   const version = String(args.version || '').trim()
@@ -1385,10 +1465,34 @@ function intelHunt(args) {
   }
   walk(NUCLEI_TEMPLATES, 0)
   const rel = matches.slice(0, 30).map((m) => path.relative(NUCLEI_TEMPLATES, m))
-  const hint = rel.length
-    ? `命中 ${rel.length} 个 ${tech}${version ? '@' + version : ''} 相关模板；建议 task_create(phase=vuln, objective="验证 ${tech}${version ? ' ' + version : ''} N-day", priority=1)。结果强制 tentative，验证附证据才 confirmed`
-    : `模板库无 ${tech} 相关模板`
-  return { ok: true, tech, version, templates: rel, hint }
+  if (!rel.length) return { ok: true, tech, version, templates: [], task_id: null, hint: `模板库无 ${tech} 相关模板` }
+
+  // P2-3：命中模板 → 自动产出 N-day 候选任务（普通 queued，非自动跑；tentative，验证附证据才 confirmed）
+  const programId = resolveProgramId(args.program_id, exec)
+  const host = String(args.host || '').trim()
+  const label = `[N-day ${tech}${version ? '@' + version : ''}]`
+  let task = null
+  if (programId) {
+    // 幂等去重：同 program 下已有未终结（queued/running/blocked）的同技术栈候选任务则不重复建
+    const dup = assetDb.taskList({ programId, q: label, limit: 50 })
+      .find((t) => ['queued', 'running', 'blocked'].includes(t.status))
+    if (dup) {
+      task = { id: dup.id, deduped: true }
+    } else {
+      const objective = `${label} 验证 ${tech}${version ? ' ' + version : ''} N-day 漏洞`
+        + `${host ? `（目标 ${host}）` : ''}：命中 ${rel.length} 个 nuclei 模板，逐一验证。`
+        + '结果强制 tentative——附 PoC/响应证据方可 confirmed，无证据保持 tentative 或证伪。'
+      const r = assetDb.taskCreate({ program_id: programId, phase: 'vuln', objective, priority: 1, session_id: sessionIdOf(exec) })
+      if (r.ok) {
+        task = { id: r.id, deduped: false }
+        audit({ ts: Date.now(), run_id: '-', tool: 'intel_hunt.autotask', decision: 'executed', detail: { program_id: programId, tech, version, task_id: r.id, templates: rel.length }, session_id: sessionIdOf(exec) })
+      }
+    }
+  }
+  const hint = task
+    ? `命中 ${rel.length} 个模板 → 已${task.deduped ? '存在' : '产出'} N-day 候选任务 #${task.id}（phase=vuln, priority=1, tentative）。验证附证据才 confirmed。`
+    : `命中 ${rel.length} 个 ${tech}${version ? '@' + version : ''} 相关模板；未绑定 program（传 program_id 或在工作区会话内调用）故未自动建任务。结果强制 tentative。`
+  return { ok: true, tech, version, templates: rel, task_id: task ? task.id : null, deduped: task ? task.deduped : false, hint }
 }
 
 // ==============================================================================
@@ -1530,20 +1634,45 @@ export function apply(ctx, config) {
   })
 
   ctx.tools.register({
+    name: 'task_chain',
+    description: '一条 objective 自动展开为任务依赖链（P2-2）：复用 plan_chain BFS 按 manifest requires/produces 凑链，'
+      + '反向剪枝到达成 want 的最小链，落成 parent 串联的 once 调度任务——前置未完成不派单，parent 完成后调度器自动放行下一级（链式自动推进）。'
+      + '默认 have=["domains"]、want=findings（资产收集→存活→指纹→N-day）。链尾多为 active 扫描且会自动执行，仅对已授权 scope 使用。',
+    parameters: {
+      type: 'object',
+      properties: {
+        program_id: { type: 'string', description: '不传则按当前会话工作区自动绑定' },
+        objective: { type: 'string', description: '整体目标描述（写入每级任务作上下文，可选）' },
+        want: { type: 'string', description: '目标能力，默认 findings（见 plan_chain）' },
+        have: { type: 'array', items: { type: 'string' }, description: '起始已有能力，默认 ["domains"]' },
+        priority: { type: 'integer', description: '链上任务优先级，默认 3' },
+        parent_id: { type: 'integer', description: '把链挂在某个已有任务之后（可选）' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: renderJSON },
+    execute: async (args, exec) => taskChain(args || {}, exec),
+  })
+
+  ctx.tools.register({
     name: 'intel_hunt',
-    description: 'component-vuln-intel（P9）：指纹命中后查本地 nuclei 模板库找 tech 相关的 N-day 模板/CVE。'
-      + '结果仅 tentative（搜索结果≠漏洞），命中后用 task_create 建验证任务，验证附证据才 confirmed。',
+    description: 'component-vuln-intel（P9/P2-3）：指纹命中后查本地 nuclei 模板库找 tech 相关的 N-day 模板/CVE。'
+      + '命中即自动产出一条 phase=vuln、priority=1 的 N-day 候选任务（普通 queued，非自动跑；tentative，验证附证据才 confirmed）。'
+      + '未绑定 program 时仅返回模板列表不建任务。',
     parameters: {
       type: 'object',
       properties: {
         tech: { type: 'string', description: '技术栈/组件，如 weblogic / ruoyi / spring' },
         version: { type: 'string', description: '版本号（可选）' },
+        program_id: { type: 'string', description: '归属项目；不传则按当前会话工作区自动绑定' },
+        host: { type: 'string', description: '命中该指纹的主机（写入候选任务目标，可选）' },
       },
       required: ['tech'],
       additionalProperties: false,
     },
     output: { schema: { type: 'object' }, render: renderJSON },
-    execute: async (args) => intelHunt(args || {}),
+    execute: async (args, exec) => intelHunt(args || {}, exec),
   })
 
   // xray webhook 接收器只在 web 宿主面启动（connection 服务存在时；headless worker 不起，避免 EADDRINUSE 噪声）。

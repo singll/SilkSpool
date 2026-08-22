@@ -159,7 +159,12 @@ export function applyParsedResult(manifest, toolName, runId, text, programId = n
   let assets = 0
   let endpoints = 0
   let findings = 0
-  for (const a of parsed.assets || []) if (a && a.host && db.upsertAsset({ ...a, program_id: programId })) assets++
+  for (const a of parsed.assets || []) {
+    if (a && a.host && db.upsertAsset({ ...a, program_id: programId })) assets++
+    // P2-3：解析出的技术栈自动登记指纹（httpx tech 等），intel_hunt 据此搜 N-day
+    const techs = a && a.attrs && Array.isArray(a.attrs.tech) ? a.attrs.tech : []
+    for (const tech of techs) if (tech) db.fpAdd({ program_id: programId, host: a.host, tech: String(tech), source })
+  }
   for (const e of parsed.endpoints || []) if (e && e.host && db.upsertEndpoint({ ...e, program_id: programId })) endpoints++
   for (const f of parsed.findings || []) {
     if (!f || !f.title || !f.host) continue
