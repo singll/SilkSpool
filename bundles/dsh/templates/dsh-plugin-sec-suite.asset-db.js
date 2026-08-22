@@ -216,9 +216,17 @@ export function addFinding({
   return { id: Number(r.lastInsertRowid), dup: false }
 }
 
-export function queryAssets({ hostLike = '', type = '', programId = '', limit = 50, offset = 0 }) {
+// 排序白名单（防注入）：仅这些列可作 ORDER BY，未知值回落默认列
+const ASSET_SORT = { last_seen: 'last_seen', host: 'host', type: 'type', program_id: 'program_id' }
+function orderClause(map, sort, dir, dflt) {
+  const col = map[sort] || dflt
+  const dr = String(dir || '').toLowerCase() === 'asc' ? 'ASC' : 'DESC'
+  return `${col} ${dr}`
+}
+
+export function queryAssets({ hostLike = '', type = '', programId = '', limit = 50, offset = 0, sort = '', dir = '' }) {
   const { where, args } = assetWhere({ hostLike, type, programId })
-  const sql = `SELECT host, type, source, program_id, last_seen FROM assets WHERE ${where} ORDER BY last_seen DESC LIMIT ? OFFSET ?`
+  const sql = `SELECT host, type, source, program_id, last_seen FROM assets WHERE ${where} ORDER BY ${orderClause(ASSET_SORT, sort, dir, 'last_seen')} LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
 
@@ -236,9 +244,10 @@ function assetWhere({ hostLike = '', type = '', programId = '' }) {
   return { where, args }
 }
 
-export function queryEndpoints({ host = '', pathLike = '', programId = '', limit = 50, offset = 0 }) {
+const ENDPOINT_SORT = { last_seen: 'last_seen', host: 'host', status: 'status', path: 'path' }
+export function queryEndpoints({ host = '', pathLike = '', programId = '', limit = 50, offset = 0, sort = '', dir = '' }) {
   const { where, args } = endpointWhere({ host, pathLike, programId })
-  const sql = `SELECT host, method, path, status, source, program_id, last_seen FROM endpoints WHERE ${where} ORDER BY last_seen DESC LIMIT ? OFFSET ?`
+  const sql = `SELECT host, method, path, status, source, program_id, last_seen FROM endpoints WHERE ${where} ORDER BY ${orderClause(ENDPOINT_SORT, sort, dir, 'last_seen')} LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
 
@@ -256,9 +265,15 @@ function endpointWhere({ host = '', pathLike = '', programId = '' }) {
   return { where, args }
 }
 
-export function queryFindings({ host = '', severity = '', status = '', programId = '', q = '', limit = 50, offset = 0 }) {
+// severity 语义排序（critical>high>medium>low>info），非按字母
+const FINDING_SORT = {
+  created_at: 'created_at', id: 'id', status: 'status',
+  severity: "(CASE severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END)",
+}
+export function queryFindings({ host = '', severity = '', status = '', programId = '', q = '', limit = 50, offset = 0, sort = '', dir = '' }) {
   const { where, args } = findingWhere({ host, severity, status, programId, q })
-  const sql = `SELECT id, title, severity, host, url, evidence, source, status, program_id, session_id, created_at FROM findings WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+  // 列表不带 evidence（大字段，详情面板按需 findingGet 拉取）；带 vuln_type/bounty/vendor_status 供行内徽章
+  const sql = `SELECT id, title, severity, host, url, source, status, program_id, session_id, vuln_type, bounty, vendor_status, created_at FROM findings WHERE ${where} ORDER BY ${orderClause(FINDING_SORT, sort, dir, 'created_at')} LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
 
@@ -283,12 +298,13 @@ export function stats() {
   const count = (t) => d.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n
   const byType = plain(d.prepare('SELECT type, COUNT(*) AS n FROM assets GROUP BY type ORDER BY n DESC').all())
   const bySev = plain(d.prepare('SELECT severity, COUNT(*) AS n FROM findings GROUP BY severity').all())
+  const byStatus = plain(d.prepare('SELECT status, COUNT(*) AS n FROM findings GROUP BY status').all())
   return {
     assets: count('assets'), endpoints: count('endpoints'),
     findings: count('findings'), blackboard_keys: count('blackboard'),
     facts: count('facts'),
     programs: count('programs'), tasks: count('tasks'),
-    assets_by_type: byType, findings_by_severity: bySev,
+    assets_by_type: byType, findings_by_severity: bySev, findings_by_status: byStatus,
   }
 }
 
@@ -549,7 +565,10 @@ export function factGet(program_id, fact_key) {
 
 export function factSearch({ program_id = '', category = '', q = '', confidence = '', limit = 50, offset = 0 }) {
   const { where, args } = factWhere({ program_id, category, q, confidence })
-  const sql = `SELECT program_id, fact_key, category, summary, confidence, pinned, related_finding_id, updated_at FROM facts WHERE ${where} ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?`
+  // edge_count：关联事实条数（走 idx_edges_src/dst，供看板「关联」按钮仅在有边时出现）
+  const sql = `SELECT program_id, fact_key, category, summary, confidence, pinned, related_finding_id, updated_at,
+    (SELECT COUNT(*) FROM fact_edges e WHERE e.program_id = facts.program_id AND (e.src_key = facts.fact_key OR e.dst_key = facts.fact_key)) AS edge_count
+    FROM facts WHERE ${where} ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
 
@@ -677,10 +696,22 @@ export function bbGet(key) {
 
 const FINDING_STATUS = ['new', 'confirmed', 'false_positive', 'submitted', 'accepted', 'dup', 'ignored']
 
-export function updateFinding({ id, status, note = '' }) {
+export function findingGet(id) {
+  const row = getDb().prepare('SELECT * FROM findings WHERE id = ?').get(Number(id))
+  return row ? { ...row } : null
+}
+
+export function updateFinding({ id, status, note = '', bounty = null, vendor_status = '' }) {
   if (!FINDING_STATUS.includes(status)) return { ok: false, error: `非法状态 ${status}（可选: ${FINDING_STATUS.join('/')}）` }
   const d = getDb()
-  const r = d.prepare('UPDATE findings SET status = ? WHERE id = ?').run(status, Number(id))
+  // 主更新：status + 可选 bounty/vendor_status/submitted_at（仅在显式提供时写，向后兼容）
+  const sets = ['status = ?']
+  const args = [status]
+  if (bounty !== null && bounty !== undefined && bounty !== '') { sets.push('bounty = ?'); args.push(Number(bounty)) }
+  if (vendor_status) { sets.push('vendor_status = ?'); args.push(String(vendor_status)) }
+  if (status === 'submitted') { sets.push('submitted_at = COALESCE(submitted_at, ?)'); args.push(now()) }
+  args.push(Number(id))
+  const r = d.prepare(`UPDATE findings SET ${sets.join(', ')} WHERE id = ?`).run(...args)
   if (r.changes === 0) return { ok: false, error: `finding 不存在: ${id}` }
   if (note) {
     const cur = d.prepare('SELECT evidence FROM findings WHERE id = ?').get(Number(id))

@@ -166,6 +166,13 @@ window.__ModuleLoader__.load({
       var extra = status === 'blocked' ? { color: T.warn } : status === 'failed' ? { color: T.error } : null
       return el('span', { style: { ...pill, ...(extra || {}) } }, TASK_STATUS_LABEL[status] || status || 'queued')
     }
+    // 归属单元格：_legacy / 空 显示为「未关联」（B2：合法未归属或历史数据，不冒充项目）
+    function programCell(pid) {
+      if (!pid || pid === '_legacy') {
+        return el('span', { style: { color: T.label3, ...F.xxs }, title: '未关联到授权项目（合法未归属或历史数据）' }, '未关联')
+      }
+      return el('span', { style: F.xs }, pid)
+    }
 
     // ── 图标（规范 §5：内联 SVG，stroke 1.5，currentColor） ───────────────────
     // 丝轴 + 引出一段丝线（SilkSpool/Silksong 双关，全站唯一品牌图形）
@@ -185,6 +192,7 @@ window.__ModuleLoader__.load({
       else if (kind === 'false_positive') path = el(React.Fragment, null, el('path', { d: 'M4.5 4.5l7 7M11.5 4.5l-7 7' }))
       else if (kind === 'jump') path = el(React.Fragment, null, el('path', { d: 'M6 3.5h7v7' }), el('path', { d: 'M13 3.5L5.5 11' }), el('path', { d: 'M11 8v5H3.5V5.5H8' }))
       else if (kind === 'play') path = el('path', { d: 'M5 3.5l8 4.5-8 4.5z' })
+      else if (kind === 'stop') path = el('rect', { x: 4.5, y: 4.5, width: 7, height: 7, rx: 1 })
       else path = el(React.Fragment, null, el('path', { d: 'M2.5 8s2.2-3.8 5.5-3.8S13.5 8 13.5 8 11.3 11.8 8 11.8 2.5 8 2.5 8z' }), el('path', { d: 'M4 13l8-10' }))
       return el('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }, path)
     }
@@ -259,6 +267,8 @@ window.__ModuleLoader__.load({
       var page = ps[0]; var setPage = ps[1]
       var ss = React.useState(20)
       var size = ss[0]; var setSize = ss[1]
+      var sos = React.useState({ sort: '', dir: '' })
+      var sortState = sos[0]; var setSortState = sos[1]
       var ts = React.useState(0)
       var tick = ts[0]; var setTick = ts[1]
       var rs = React.useState({ loading: true, rows: null, total: 0, error: null })
@@ -279,6 +289,7 @@ window.__ModuleLoader__.load({
           var payload = { limit: size, offset: page * size }
           if (dq) payload.q = dq
           for (var k in filters) if (filters[k]) payload[k] = filters[k]
+          if (sortState.sort) { payload.sort = sortState.sort; payload.dir = sortState.dir }
           return callRpc(endpoint, payload).then(function (res) {
             if (!alive || my !== seq.current) return
             setResult({ loading: false, rows: (res && res.rows) || [], total: (res && res.total) || 0, error: null })
@@ -291,13 +302,23 @@ window.__ModuleLoader__.load({
         load()
         var timer = setInterval(load, POLL_MS)
         return function () { alive = false; clearInterval(timer) }
-      }, [endpoint, active, dq, JSON.stringify(filters), page, size, tick])
+      }, [endpoint, active, dq, JSON.stringify(filters), page, size, tick, JSON.stringify(sortState)])
 
       function setFilter(key, value) {
         setFilters(function (prev) {
           var next = { ...prev }
           if (value) next[key] = value; else delete next[key]
           return next
+        })
+        setPage(0)
+      }
+      // 服务端排序：同列 降→升→取消 循环；换列从降序起
+      function toggleSort(col) {
+        if (!col) return
+        setSortState(function (prev) {
+          if (prev.sort !== col) return { sort: col, dir: 'desc' }
+          if (prev.dir === 'desc') return { sort: col, dir: 'asc' }
+          return { sort: '', dir: '' }
         })
         setPage(0)
       }
@@ -309,6 +330,7 @@ window.__ModuleLoader__.load({
         q: q, setQ: setQ, filters: filters, setFilter: setFilter,
         page: page, setPage: setPage, size: size,
         setSize: function (n) { setSize(n); setPage(0) },
+        sort: sortState.sort, dir: sortState.dir, toggleSort: toggleSort,
         rows: result.rows, total: result.total, loading: result.loading, error: result.error,
         filtered: !!(dq || Object.keys(filters).length),
         reset: reset, reload: reload, refresh: refresh,
@@ -332,7 +354,8 @@ window.__ModuleLoader__.load({
           },
             el('option', { value: '' }, f.label + '：全部'),
             f.options.map(function (o) { return el('option', { key: o.v, value: o.v }, o.l) }))
-        }))
+        }),
+        props.extra ? el('span', { style: { marginLeft: 'auto', display: 'inline-flex', gap: 8 } }, props.extra) : null)
     }
 
     function Pager(props) {
@@ -349,6 +372,17 @@ window.__ModuleLoader__.load({
           el('option', { value: '20' }, '20 条/页'),
           el('option', { value: '50' }, '50 条/页'),
           el('option', { value: '100' }, '100 条/页')))
+    }
+
+    // 可排序表头：点击切换排序方向；仅传 col 的列可排，非排序列回落普通 th
+    function sortableTh(label, col, query) {
+      if (!col) return el('th', { style: th }, label)
+      var active = query.sort === col
+      var caret = active ? (query.dir === 'asc' ? ' ↑' : ' ↓') : ''
+      return el('th', {
+        style: { ...th, cursor: 'pointer', color: active ? T.label : T.label2, userSelect: 'none' },
+        title: '点击排序', onClick: function () { query.toggleSort(col) },
+      }, label + caret)
     }
 
     function SkeletonRows(props) {
@@ -375,7 +409,7 @@ window.__ModuleLoader__.load({
       var kpis = [
         { label: '漏洞', value: fmtBytes(s.findings), tab: 'findings' },
         { label: '资产', value: fmtBytes(s.assets), tab: 'assets' },
-        { label: '接口', value: fmtBytes(s.endpoints), tab: 'assets' },
+        { label: '接口', value: fmtBytes(s.endpoints), tab: 'endpoints' },
         { label: '工作区', value: props.workspaceCount === null ? '—' : fmtBytes(props.workspaceCount), tab: 'tasks' },
         { label: '任务', value: fmtBytes(s.tasks), tab: 'tasks' },
         { label: '事实', value: fmtBytes(s.facts !== undefined ? s.facts : s.blackboard_keys), tab: 'facts' },
@@ -394,15 +428,107 @@ window.__ModuleLoader__.load({
 
     function unusedPlaceholder() { return null }
 
+    // 漏洞洞察条（U2/F8）：级别分布 + 待处理数 + 评测回流误报率——归在漏洞视图内，不占 KPI、不割裂
+    function FindingsInsight(props) {
+      var bySev = props.bySeverity || []
+      var byStatus = props.byStatus || []
+      var evalData = props.evalData
+      var map = {}; bySev.forEach(function (s) { map[s.severity] = s.n })
+      var pending = 0; byStatus.forEach(function (s) { if (s.status === 'new') pending = s.n })
+      var order = ['critical', 'high', 'medium', 'low', 'info']
+      var chips = order.filter(function (k) { return map[k] }).map(function (k) {
+        var c = SEV_COLOR[k]
+        return el('span', { key: k, style: { ...pill, color: c, borderColor: 'color-mix(in srgb, ' + c + ' 40%, transparent)' } }, SEV_LABEL[k] + ' ' + map[k])
+      })
+      if (!chips.length && !pending) return null
+      var fpTitle = ''
+      if (evalData && evalData.by_type) {
+        fpTitle = Object.keys(evalData.by_type).map(function (t) {
+          var s = evalData.by_type[t]; return t + '：确认 ' + s.confirmed + ' / 误报 ' + s.false_positive + '（误报率 ' + Math.round((s.fp_rate || 0) * 100) + '%）'
+        }).join('\n')
+      }
+      return el('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '2px 0 8px' } },
+        chips,
+        pending ? el('span', { style: { ...pill, color: T.brand, borderColor: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent)' }, title: '状态为「新发现」的未处理漏洞' }, '待处理 ' + pending) : null,
+        (evalData && evalData.total)
+          ? el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs, cursor: fpTitle ? 'help' : 'default' }, title: fpTitle }, '评测回流 ' + evalData.total + ' 条判定')
+          : null)
+    }
+
+    // 漏洞详情面板（F1）：按需 findingGet 拉全字段（证据/复现/影响/建议）+ 生命周期操作。
+    // 详情设计上「在会话看」，但历史 finding 的 session_id 多为空——此面板兜底，让核心产出在看板可读。
+    function FindingDetail(props) {
+      var r = props.row
+      var st = React.useState({ loading: true, data: null, error: null })
+      var d = st[0]; var setD = st[1]
+      React.useEffect(function () {
+        var alive = true
+        callRpc('findingGet', { id: r.id })
+          .then(function (res) { if (alive) setD({ loading: false, data: res, error: null }) })
+          .catch(function (e) { if (alive) setD({ loading: false, data: null, error: e && e.message ? e.message : String(e) }) })
+        return function () { alive = false }
+      }, [r.id])
+      var inner
+      if (d.loading) inner = el(SkeletonRows, { rows: 3 })
+      else if (d.error || !d.data) inner = el('div', { style: { ...errorLine, padding: 0 } }, '详情加载失败: ' + (d.error || '无数据'))
+      else {
+        var f = d.data
+        var field = function (label, val, mono) {
+          if (!val) return null
+          return el('div', { style: { marginBottom: 8 } },
+            el('div', { style: { color: T.label3, ...F.xxxs, marginBottom: 2 } }, label),
+            el('div', { style: { color: T.label2, ...F.xxs, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: mono ? MONO : undefined } }, String(val)))
+        }
+        inner = el(React.Fragment, null,
+          el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 } },
+            f.vuln_type ? el('span', { style: pill }, f.vuln_type) : null,
+            f.cwe ? el('span', { style: pill }, 'CWE-' + f.cwe) : null,
+            f.bounty ? el('span', { style: { ...pill, color: T.success } }, '赏金 ' + f.bounty) : null,
+            f.vendor_status ? el('span', { style: pill }, '厂商 ' + f.vendor_status) : null,
+            el('span', { style: { marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 } },
+              el('span', { style: { color: T.label3, ...F.xxxs } }, '来源会话'), el(SessionLink, { id: f.session_id }))),
+          field('目标', f.url || f.host, true),
+          field('证据', f.evidence, true),
+          field('复现步骤', f.reproduction_steps, true),
+          field('前提条件', f.preconditions),
+          field('影响', f.impact),
+          field('修复建议', f.recommendation),
+          props.actions && props.actions.length
+            ? el('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6, borderTop: '1px solid ' + T.border2, paddingTop: 10 } }, props.actions)
+            : null)
+      }
+      return el('div', { style: { padding: '12px 14px', background: T.layer1, borderLeft: '2px solid ' + T.brand } }, inner)
+    }
+
     function FindingsView(props) {
       var query = props.query
       var busy = props.busy
+      var exp = React.useState(null)
+      var expandedId = exp[0]; var setExpanded = exp[1]
       function tagIconBtn(label, status, id, kind, cls) {
         return el('button', {
           type: 'button', key: status, className: 'silksec-icon-btn' + (cls ? ' ' + cls : ''),
           disabled: !!busy, title: label, 'aria-label': label,
-          onClick: function () { props.onTag(id, status) },
+          onClick: function (e) { e.stopPropagation(); props.onTag(id, status) },
         }, opIcon(kind))
+      }
+      function lcBtn(label, fn, cls) {
+        return el('button', { key: label, type: 'button', className: 'silksec-btn' + (cls ? ' ' + cls : ''), disabled: !!busy, onClick: fn }, label)
+      }
+      // 生命周期操作按状态给出（放详情面板，避免行内拥挤）：new/confirmed→确认/误报；confirmed→提交；submitted→接收+赏金/判重
+      function lifecycleActions(r) {
+        var a = []
+        if (['new', 'confirmed'].indexOf(r.status) >= 0) {
+          a.push(lcBtn('确认为真实漏洞', function () { props.onTag(r.id, 'confirmed') }, 'silksec-btn-confirm'))
+          a.push(lcBtn('误报', function () { props.onTag(r.id, 'false_positive') }, 'silksec-btn-danger'))
+        }
+        if (r.status === 'confirmed') a.push(lcBtn('标记已提交 SRC', function () { props.onTag(r.id, 'submitted') }))
+        if (r.status === 'submitted') {
+          a.push(lcBtn('已接收 + 记录赏金', function () { props.onAccept(r.id) }, 'silksec-btn-confirm'))
+          a.push(lcBtn('厂商判重复', function () { props.onTag(r.id, 'dup') }))
+        }
+        if (['new', 'confirmed', 'submitted'].indexOf(r.status) >= 0) a.push(lcBtn('忽略', function () { props.onTag(r.id, 'ignored') }))
+        return a
       }
       return el(ViewBody, { query: query, emptyText: '暂无漏洞数据' }, function (rows) {
         return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
@@ -411,15 +537,15 @@ window.__ModuleLoader__.load({
             el('colgroup', null,
               el('col', { style: { width: 52 } }),
               el('col', { style: { width: 76 } }),
-              el('col', { style: { width: 84 } }),
+              el('col', { style: { width: 92 } }),
               el('col', null),
-              el('col', { style: { width: '24%' } }),
+              el('col', { style: { width: '22%' } }),
               el('col', { style: { width: 56 } }),
               el('col', { style: { width: 110 } })),
             el('thead', null, el('tr', { style: theadRow },
-              el('th', { style: th }, '#'),
-              el('th', { style: th }, '级别'),
-              el('th', { style: th }, '状态'),
+              sortableTh('#', 'id', query),
+              sortableTh('级别', 'severity', query),
+              sortableTh('状态', 'status', query),
               el('th', { style: th }, '标题'),
               el('th', { style: th }, '目标'),
               el('th', { style: th }, '会话'),
@@ -427,25 +553,33 @@ window.__ModuleLoader__.load({
             el('tbody', null, rows.map(function (r) {
               var taggable = ['new', 'confirmed'].indexOf(r.status) >= 0
               var closed = STATUS_CLOSED.indexOf(r.status) >= 0
-              // 强调（规范 §7）：new = 行左 2px 绯红边条；已定案 = 整行淡出
+              var isOpen = expandedId === r.id
+              // 强调（规范 §7）：new = 行左 2px 绯红边条；展开 = 中性边条；已定案 = 整行淡出
               var rowStyle = {
                 opacity: closed ? 0.5 : 1,
-                boxShadow: r.status === 'new' ? 'inset 2px 0 0 ' + T.brand : undefined,
+                boxShadow: r.status === 'new' ? 'inset 2px 0 0 ' + T.brand : (isOpen ? 'inset 2px 0 0 ' + T.border3 : undefined),
               }
-              return el('tr', { key: String(r.id), className: 'silksec-row', style: rowStyle },
-                el('td', { style: tdMono }, String(r.id)),
-                el('td', { style: td }, sevPill(r.severity)),
-                el('td', { style: td }, statusPill(r.status)),
-                el('td', { style: td }, r.title),
-                el('td', { style: tdMono }, r.url || r.host || '—'),
-                el('td', { style: td }, el(SessionLink, { id: r.session_id })),
-                el('td', { style: { ...td, whiteSpace: 'nowrap' } },
-                  taggable
-                    ? el('span', { style: { display: 'inline-flex', gap: 6 } },
-                        tagIconBtn('确认（确认为真实漏洞）', 'confirmed', r.id, 'confirm', 'silksec-icon-btn-confirm'),
-                        tagIconBtn('误报（标记为误报）', 'false_positive', r.id, 'false_positive'),
-                        tagIconBtn('忽略（不再跟进）', 'ignored', r.id, 'ignored'))
-                    : el('span', { style: { color: T.label3, ...F.xs } }, '已定案')))
+              return el(React.Fragment, { key: String(r.id) },
+                el('tr', { className: 'silksec-row', style: { ...rowStyle, cursor: 'pointer' }, title: '点击展开详情', onClick: function () { setExpanded(isOpen ? null : r.id) } },
+                  el('td', { style: tdMono }, String(r.id)),
+                  el('td', { style: td }, sevPill(r.severity)),
+                  el('td', { style: td }, statusPill(r.status)),
+                  el('td', { style: td },
+                    el('span', { style: { color: T.label3, marginRight: 6, ...F.xxxs } }, isOpen ? '▾' : '▸'),
+                    r.title,
+                    r.bounty ? el('span', { style: { ...pill, color: T.success, marginLeft: 6 } }, '赏金 ' + r.bounty) : null),
+                  el('td', { style: tdMono }, r.url || r.host || '—'),
+                  el('td', { style: td, onClick: function (e) { e.stopPropagation() } }, el(SessionLink, { id: r.session_id })),
+                  el('td', { style: { ...td, whiteSpace: 'nowrap' }, onClick: function (e) { e.stopPropagation() } },
+                    taggable
+                      ? el('span', { style: { display: 'inline-flex', gap: 6 } },
+                          tagIconBtn('确认（确认为真实漏洞）', 'confirmed', r.id, 'confirm', 'silksec-icon-btn-confirm'),
+                          tagIconBtn('误报（标记为误报）', 'false_positive', r.id, 'false_positive'),
+                          tagIconBtn('忽略（不再跟进）', 'ignored', r.id, 'ignored'))
+                      : el('span', { style: { color: T.label3, ...F.xs } }, '详情 →'))),
+                isOpen
+                  ? el('tr', null, el('td', { colSpan: 7, style: { padding: 0 } }, el(FindingDetail, { row: r, actions: lifecycleActions(r) })))
+                  : null)
             }))))
       })
     }
@@ -462,20 +596,101 @@ window.__ModuleLoader__.load({
               el('col', { style: { width: 130 } }),
               el('col', { style: { width: 140 } })),
             el('thead', null, el('tr', { style: theadRow },
-              el('th', { style: th }, '主机'),
-              el('th', { style: th }, '类型'),
+              sortableTh('主机', 'host', query),
+              sortableTh('类型', 'type', query),
               el('th', { style: th }, '来源'),
               el('th', { style: th }, '项目'),
-              el('th', { style: th }, '最近发现'))),
+              sortableTh('最近发现', 'last_seen', query))),
             el('tbody', null, rows.map(function (r) {
               return el('tr', { key: (r.host || '') + '|' + (r.type || ''), className: 'silksec-row' },
                 el('td', { style: tdMono }, r.host),
                 el('td', { style: td }, r.type),
                 el('td', { style: td }, r.source || '—'),
-                el('td', { style: td }, r.program_id || '—'),
+                el('td', { style: td }, programCell(r.program_id)),
                 el('td', { style: tdMono }, fmtTime(r.last_seen)))
             }))))
       })
+    }
+
+    // 接口视图（F5）：endpoints 是资产的子维度，此前只有 KPI 计数无明细。方法着色，路径可搜。
+    function EndpointsView(props) {
+      var query = props.query
+      var METHOD_COLOR = { GET: T.label2, POST: T.brand, PUT: T.warn, DELETE: T.error, PATCH: T.warn }
+      return el(ViewBody, { query: query, emptyText: '暂无接口数据' }, function (rows) {
+        return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
+          el('table', { style: tableStyle },
+            el('colgroup', null,
+              el('col', { style: { width: 160 } }),
+              el('col', { style: { width: 66 } }),
+              el('col', null),
+              el('col', { style: { width: 66 } }),
+              el('col', { style: { width: 110 } }),
+              el('col', { style: { width: 120 } })),
+            el('thead', null, el('tr', { style: theadRow },
+              sortableTh('主机', 'host', query),
+              el('th', { style: th }, '方法'),
+              sortableTh('路径', 'path', query),
+              sortableTh('状态', 'status', query),
+              el('th', { style: th }, '项目'),
+              sortableTh('最近发现', 'last_seen', query))),
+            el('tbody', null, rows.map(function (r, i) {
+              return el('tr', { key: (r.host || '') + '|' + (r.method || '') + '|' + (r.path || '') + '|' + i, className: 'silksec-row' },
+                el('td', { style: tdMono }, r.host),
+                el('td', { style: { ...td, color: METHOD_COLOR[r.method] || T.label2, fontFamily: MONO, fontSize: 12 } }, r.method || '—'),
+                el('td', { style: tdMono }, r.path || '/'),
+                el('td', { style: tdMono }, r.status || '—'),
+                el('td', { style: td }, programCell(r.program_id)),
+                el('td', { style: tdMono }, fmtTime(r.last_seen)))
+            }))))
+      })
+    }
+
+    // 事实卡（含关联子图展开，F2）：edge_count>0 才显示「关联」，点开按需 factGraph 拉出/入边，
+    // 关联事实可点击回填搜索——扁平列表升级为可遍历图谱，但不引入力导图（不过度）。
+    function FactCard(props) {
+      var f = props.f
+      var busy = props.busy
+      var deprecated = f.confidence === 'deprecated'
+      var exp = React.useState(false)
+      var open = exp[0]; var setOpen = exp[1]
+      var gs = React.useState(null)
+      var graph = gs[0]; var setGraph = gs[1]
+      function toggle() {
+        var next = !open; setOpen(next)
+        if (next && !graph) {
+          callRpc('factGraph', { program_id: f.program_id, fact_key: f.fact_key })
+            .then(function (res) { setGraph(res || { out: [], in: [] }) })
+            .catch(function () { setGraph({ out: [], in: [] }) })
+        }
+      }
+      function edgeBtn(e, dir) {
+        var key = dir === 'out' ? e.dst_key : e.src_key
+        return el('button', {
+          key: dir + '|' + key + '|' + e.edge_type, type: 'button', className: 'silksec-btn',
+          style: { fontFamily: MONO, fontSize: 11, height: 24 },
+          title: (dir === 'out' ? '出边 ' : '入边 ') + e.edge_type + ' · 点击检索该事实',
+          onClick: function () { props.onSearchKey(key) },
+        }, (dir === 'out' ? '→ ' : '← ') + e.edge_type + ' · ' + key)
+      }
+      return el('div', { style: { ...card, opacity: deprecated ? 0.55 : 1 } },
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+          el('span', { style: { color: T.label, ...F.sStrong, wordBreak: 'break-all' } }, f.fact_key),
+          confPill(f.confidence),
+          el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, f.program_id),
+          f.edge_count ? el('button', { type: 'button', className: 'silksec-btn', onClick: toggle, title: '查看关联事实（图谱边）' }, open ? '收起' : '关联 ' + f.edge_count) : null,
+          el('button', { type: 'button', className: 'silksec-btn', disabled: !!busy || deprecated, onClick: function () { props.onCorrect(f.program_id, f.fact_key, f.summary) } }, '纠正'),
+          el('button', { type: 'button', className: 'silksec-btn silksec-btn-danger', disabled: !!busy || deprecated, onClick: function () { props.onDeprecate(f.program_id, f.fact_key) } }, '废弃')),
+        f.summary ? el('div', { style: { color: T.label2, marginTop: 6, ...F.xxs } }, f.summary) : null,
+        open
+          ? el('div', { style: { marginTop: 10, borderTop: '1px solid ' + T.border2, paddingTop: 8 } },
+              graph
+                ? ((graph.out && graph.out.length) || (graph.in && graph.in.length)
+                    ? el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+                        (graph.out || []).map(function (e) { return edgeBtn(e, 'out') }),
+                        (graph.in || []).map(function (e) { return edgeBtn(e, 'in') }))
+                    : el('span', { style: { color: T.label3, ...F.xxs } }, '无关联事实'))
+                : el('span', { style: { color: T.label3, ...F.xxs } }, '加载关联…'))
+          : null)
     }
 
     function FactsView(props) {
@@ -486,16 +701,10 @@ window.__ModuleLoader__.load({
         el(ViewBody, { query: query, emptyText: '暂无事实数据' }, function (facts) {
           return el('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
             facts.map(function (f) {
-              var key = f.program_id + '/' + f.fact_key
-              var deprecated = f.confidence === 'deprecated'
-              return el('div', { key: key, style: { ...card, opacity: deprecated ? 0.55 : 1 } },
-                el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-                  el('span', { style: { color: T.label, ...F.sStrong, wordBreak: 'break-all' } }, f.fact_key),
-                  confPill(f.confidence),
-                  el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, f.program_id),
-                  el('button', { type: 'button', className: 'silksec-btn', disabled: !!busy || deprecated, onClick: function () { props.onCorrect(f.program_id, f.fact_key, f.summary) } }, '纠正'),
-                  el('button', { type: 'button', className: 'silksec-btn silksec-btn-danger', disabled: !!busy || deprecated, onClick: function () { props.onDeprecate(f.program_id, f.fact_key) } }, '废弃')),
-                f.summary ? el('div', { style: { color: T.label2, marginTop: 6, ...F.xxs } }, f.summary) : null)
+              return el(FactCard, {
+                key: f.program_id + '/' + f.fact_key, f: f, busy: busy,
+                onCorrect: props.onCorrect, onDeprecate: props.onDeprecate, onSearchKey: props.onSearchKey,
+              })
             }))
         }),
         el('div', { style: { ...pageT, marginTop: 20 } }, '遗留黑板'),
@@ -611,6 +820,13 @@ window.__ModuleLoader__.load({
                             title: '立即执行一次（不动调度节律）', 'aria-label': '立即执行',
                             onClick: function () { props.onRunNow(t.id) },
                           }, opIcon('play'))
+                        : null,
+                      ['queued', 'running', 'blocked'].indexOf(t.status) >= 0
+                        ? el('button', {
+                            type: 'button', className: 'silksec-icon-btn silksec-icon-btn-danger', disabled: !!props.busy,
+                            title: '取消任务（置为已取消，终态）', 'aria-label': '取消任务',
+                            onClick: function () { props.onCancel(t.id) },
+                          }, opIcon('stop'))
                         : null)))
               }))))
         }))
@@ -719,6 +935,79 @@ window.__ModuleLoader__.load({
           : el('button', { type: 'button', className: 'silksec-btn', style: { marginTop: 14 }, onClick: function () { setEditing({}) } }, '+ 新增授权项目'))
     }
 
+    // ── 审计视图（F7）：audit.jsonl 尾部只读呈现，合规单一真相源 ────────────────
+    function AuditView(props) {
+      var state = props.state
+      if (state.error) return el('div', { style: errorLine }, '审计加载失败: ' + state.error)
+      if (!state.data) return el(SkeletonRows, null)
+      var rows = (state.data && state.data.rows) || []
+      if (!rows.length) return el(EmptyState, { text: '暂无审计记录' })
+      function decColor(dec) {
+        var s = String(dec || '')
+        if (/reject|deny|拒绝|blocked|denied/i.test(s)) return T.error
+        if (/execut|allow|ok|已/i.test(s)) return T.success
+        return T.label2
+      }
+      return el('div', null,
+        el('div', { style: pageSub }, '写操作与 scope 决策的全量审计（audit.jsonl 尾部 ≤300 条，新→旧）。合规单一真相源，看板只读呈现。'),
+        el('div', { style: { overflowX: 'auto', minWidth: 0, marginTop: 10 } },
+          el('table', { style: tableStyle },
+            el('colgroup', null,
+              el('col', { style: { width: 140 } }),
+              el('col', { style: { width: 210 } }),
+              el('col', { style: { width: 84 } }),
+              el('col', null)),
+            el('thead', null, el('tr', { style: theadRow },
+              el('th', { style: th }, '时间'),
+              el('th', { style: th }, '工具 / 动作'),
+              el('th', { style: th }, '决策'),
+              el('th', { style: th }, '详情'))),
+            el('tbody', null, rows.map(function (r, i) {
+              var detail = r.detail ? (typeof r.detail === 'object' ? JSON.stringify(r.detail) : String(r.detail)) : ''
+              return el('tr', { key: i, className: 'silksec-row' },
+                el('td', { style: tdMono }, fmtTime(r.ts)),
+                el('td', { style: tdMono }, r.tool || '—'),
+                el('td', { style: { ...td, color: decColor(r.decision) } }, r.decision || '—'),
+                el('td', { style: { ...tdMono, color: T.label2 }, title: detail }, detail.slice(0, 200)))
+            })))))
+    }
+
+    // ── 报告模态（F3）：reportBuild 生成 markdown（服务端落盘）+ 读回展示 + 下载/复制 ──
+    function ReportModal(props) {
+      if (!Modal) return null
+      var s = props.state || {}
+      function download() {
+        try {
+          var blob = new Blob([s.content || ''], { type: 'text/markdown' })
+          var url = URL.createObjectURL(blob)
+          var a = document.createElement('a')
+          a.href = url
+          a.download = s.file ? String(s.file).split('/').pop() : 'silksec-report.md'
+          document.body.appendChild(a); a.click(); document.body.removeChild(a)
+          setTimeout(function () { URL.revokeObjectURL(url) }, 1000)
+        } catch (e) { try { window.alert('下载失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} }
+      }
+      function copy() { try { navigator.clipboard.writeText(s.content || '') } catch (e) {} }
+      return el(Modal, { open: !!props.open, onClose: props.onClose, title: '漏洞报告', headless: true, className: 'silksec-dash-dialog' },
+        el('div', { style: { ...root, padding: '18px 22px 16px' } },
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+            el('span', { style: { color: T.brand, display: 'inline-flex' } }, spoolIcon(16)),
+            el('div', { style: pageT }, '漏洞报告'),
+            (s.total !== undefined && !s.loading && !s.error) ? el('span', { style: pill }, '合计 ' + s.total) : null,
+            el('span', { style: { marginLeft: 'auto', display: 'inline-flex', gap: 8 } },
+              el('button', { type: 'button', className: 'silksec-btn', disabled: !s.content, onClick: copy }, '复制'),
+              el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: !s.content, onClick: download }, '下载 .md'))),
+          el('div', { style: pageSub }, '提交 SRC 前必须人工逐条复核。报告已落盘服务端 data/reports/。'),
+          el('div', { style: silkDivider }),
+          el('div', { style: { flex: '1 1 auto', overflowY: 'auto', marginTop: 12, minHeight: 0 } },
+            s.loading
+              ? el(SkeletonRows, { rows: 8 })
+              : s.error
+                ? el('div', { style: errorLine }, '生成失败: ' + s.error)
+                : el('pre', { style: { margin: 0, padding: 12, background: T.layer1, borderRadius: 8, border: '1px solid ' + T.border, color: T.label2, fontFamily: MONO, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, s.content || '（空报告）')))
+      )
+    }
+
     // ── 看板外壳 ─────────────────────────────────────────────────────────────
     function DashboardShell() {
       var tab = React.useState('findings')
@@ -739,12 +1028,23 @@ window.__ModuleLoader__.load({
       var boardState = useRpc(function () {
         return activeTab === 'facts' ? { endpoint: 'blackboard' } : null
       }, [activeTab])
+      var auditState = useRpc(function () {
+        return activeTab === 'audit' ? { endpoint: 'audit' } : null
+      }, [activeTab])
+      var evalState = useRpc(function () {
+        return activeTab === 'findings' ? { endpoint: 'evalStats' } : null
+      }, [activeTab])
 
-      // 四个视图各自的分页查询（状态按 tab 记忆，Modal 关闭即销毁重置；仅活跃视图取数/轮询）
+      // 分页查询（状态按 tab 记忆，Modal 关闭即销毁重置；仅活跃视图取数/轮询）
       var findingsQ = usePagedQuery('findings', activeTab === 'findings')
       var assetsQ = usePagedQuery('assets', activeTab === 'assets')
+      var endpointsQ = usePagedQuery('endpoints', activeTab === 'endpoints')
       var factsQ = usePagedQuery('facts', activeTab === 'facts')
       var tasksQ = usePagedQuery('tasks', activeTab === 'tasks')
+
+      // 报告模态态（F3）
+      var rpt = React.useState({ open: false })
+      var reportState = rpt[0]; var setReportState = rpt[1]
 
       function withBusy(fn) {
         return function () {
@@ -773,6 +1073,33 @@ window.__ModuleLoader__.load({
       function onRunNow(id) {
         withBusy(function () { return callRpc('taskRunNow', { id: id }) })()
       }
+      function onCancel(id) {
+        var yes = false
+        try { yes = window.confirm('确认取消任务 #' + id + '？将置为终态「已取消」。') } catch (e) { return }
+        if (yes) withBusy(function () { return callRpc('taskCancel', { id: id }) })()
+      }
+      // 已接收 + 记录赏金（F4）：SRC 提交闭环的最后一环
+      function onAccept(id) {
+        var b = null
+        try { b = window.prompt('厂商已接收。记录赏金金额（数字，可留空）:', '') } catch (e) { return }
+        if (b === null) return
+        var payload = { id: id, status: 'accepted' }
+        var n = Number(b)
+        if (String(b).trim() !== '' && !isNaN(n)) payload.bounty = n
+        withBusy(function () { return callRpc('findingUpdate', payload) })()
+      }
+      // 生成报告（F3）：按当前漏洞筛选（项目/状态）生成 markdown，服务端落盘 + 读回展示
+      function onBuildReport() {
+        var payload = {}
+        if (findingsQ.filters.program_id) payload.program_id = findingsQ.filters.program_id
+        if (findingsQ.filters.status) payload.status = findingsQ.filters.status
+        setReportState({ open: true, loading: true })
+        callRpc('reportBuild', payload).then(function (res) {
+          setReportState({ open: true, loading: false, content: res.content, file: res.file, total: res.total, by_severity: res.by_severity })
+        }).catch(function (e) {
+          setReportState({ open: true, loading: false, error: e && e.message ? e.message : String(e) })
+        })
+      }
       function onScopeSave(spec, isNew) {
         withBusy(function () {
           return callRpc('scopeSaveProgram', { ...spec, is_new: isNew }).then(function () { scopeState.reload() })
@@ -787,9 +1114,11 @@ window.__ModuleLoader__.load({
       var tabs = [
         { id: 'findings', label: '漏洞' },
         { id: 'assets', label: '资产' },
+        { id: 'endpoints', label: '接口' },
         { id: 'facts', label: '事实' },
         { id: 'tasks', label: '任务' },
         { id: 'scope', label: '授权' },
+        { id: 'audit', label: '审计' },
       ]
       function tabButton(t) {
         return el('button', {
@@ -803,6 +1132,7 @@ window.__ModuleLoader__.load({
       // 筛选器选项：值仍用 program_id（数据外键），标签显示工作区标题（用户可感概念）
       var progOpts = wsItems.filter(function (w) { return w.program }).map(function (w) { return { v: w.program.id, l: w.title + '（' + w.program.id + '）' } })
       var content = null
+      var statsData = statsState.data || {}
       if (activeTab === 'findings') {
         content = el(React.Fragment, null,
           el(Toolbar, {
@@ -812,10 +1142,12 @@ window.__ModuleLoader__.load({
               { key: 'status', label: '状态', options: Object.keys(STATUS_LABEL).map(function (k) { return { v: k, l: STATUS_LABEL[k] } }) },
               { key: 'program_id', label: '工作区', options: progOpts },
             ],
+            extra: el('button', { type: 'button', className: 'silksec-btn', disabled: isBusy, title: '按当前筛选（项目/状态）生成 markdown 报告', onClick: onBuildReport }, '生成报告'),
           }),
-          el(FindingsView, { query: findingsQ, onTag: onTag, busy: isBusy }))
+          el(FindingsInsight, { bySeverity: statsData.findings_by_severity, byStatus: statsData.findings_by_status, evalData: evalState.data }),
+          el(FindingsView, { query: findingsQ, onTag: onTag, onAccept: onAccept, busy: isBusy }))
       } else if (activeTab === 'assets') {
-        var typeOpts = ((statsState.data && statsState.data.assets_by_type) || []).map(function (r) { return { v: r.type, l: r.type + ' (' + r.n + ')' } })
+        var typeOpts = ((statsData.assets_by_type) || []).map(function (r) { return { v: r.type, l: r.type + ' (' + r.n + ')' } })
         content = el(React.Fragment, null,
           el(Toolbar, {
             query: assetsQ, placeholder: '搜索主机…',
@@ -825,17 +1157,26 @@ window.__ModuleLoader__.load({
             ],
           }),
           el(AssetsView, { query: assetsQ }))
+      } else if (activeTab === 'endpoints') {
+        content = el(React.Fragment, null,
+          el(Toolbar, {
+            query: endpointsQ, placeholder: '搜索路径…',
+            filters: [
+              { key: 'program_id', label: '工作区', options: progOpts },
+            ],
+          }),
+          el(EndpointsView, { query: endpointsQ }))
       } else if (activeTab === 'facts') {
         content = el(React.Fragment, null,
           el(Toolbar, {
             query: factsQ, placeholder: '搜索事实 key / 摘要…',
             filters: [
-              { key: 'category', label: '分类', options: ['auth', 'target', 'note', 'finding', 'chain', 'exploit', 'asset'].map(function (c) { return { v: c, l: c } }) },
+              { key: 'category', label: '分类', options: ['note', 'target', 'asset', 'finding', 'recon', 'infra'].map(function (c) { return { v: c, l: c } }) },
               { key: 'confidence', label: '置信', options: Object.keys(CONF_LABEL).map(function (k) { return { v: k, l: CONF_LABEL[k] } }) },
               { key: 'program_id', label: '工作区', options: progOpts },
             ],
           }),
-          el(FactsView, { query: factsQ, board: boardState.data, onDeprecate: onDeprecate, onCorrect: onCorrect, busy: isBusy }))
+          el(FactsView, { query: factsQ, board: boardState.data, onDeprecate: onDeprecate, onCorrect: onCorrect, onSearchKey: function (k) { factsQ.setQ(k) }, busy: isBusy }))
       } else if (activeTab === 'tasks') {
         content = el(React.Fragment, null,
           el(Toolbar, {
@@ -846,12 +1187,14 @@ window.__ModuleLoader__.load({
               { key: 'program_id', label: '工作区', options: progOpts },
             ],
           }),
-          el(TasksView, { query: tasksQ, workspaces: workspacesState.data, onRunNow: onRunNow, busy: isBusy }))
+          el(TasksView, { query: tasksQ, workspaces: workspacesState.data, onRunNow: onRunNow, onCancel: onCancel, busy: isBusy }))
       } else if (activeTab === 'scope') {
         content = el(ScopeView, {
           scopeData: scopeState.data, workspaces: workspacesState.data,
           onSave: onScopeSave, onDelete: onScopeDelete, busy: isBusy,
         })
+      } else if (activeTab === 'audit') {
+        content = el(AuditView, { state: auditState })
       }
 
       return el('div', { style: root },
@@ -860,7 +1203,7 @@ window.__ModuleLoader__.load({
             el('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
               el('span', { style: { color: T.brand, display: 'inline-flex' } }, spoolIcon(16)),
               el('div', { style: pageT }, '安全看板')),
-            el('div', { style: pageSub }, '全局 · 工作区 / 资产 / 漏洞 / 事实 / 任务 / 授权 · 写操作全部写入 audit.jsonl · 行内跳链回来源会话'),
+            el('div', { style: pageSub }, '全局 · 漏洞 / 资产 / 接口 / 事实 / 任务 / 授权 / 审计 · 写操作全部写入 audit.jsonl · 行内跳链回来源会话'),
             el('div', { style: silkDivider })),
           el('button', {
             type: 'button', className: 'silksec-btn', disabled: refreshing,
@@ -868,7 +1211,7 @@ window.__ModuleLoader__.load({
             onClick: function () {
               if (refreshing) return
               setRefreshing(true)
-              Promise.all([findingsQ.refresh(), assetsQ.refresh(), factsQ.refresh(), tasksQ.refresh()])
+              Promise.all([findingsQ.refresh(), assetsQ.refresh(), endpointsQ.refresh(), factsQ.refresh(), tasksQ.refresh()])
                 .catch(function () {}).then(function () { setRefreshing(false) })
             },
           }, refreshing ? '刷新中…' : '刷新')),
@@ -878,7 +1221,8 @@ window.__ModuleLoader__.load({
           onNavigate: setTab,
         }),
         el('div', { style: tabBar }, tabs.map(tabButton)),
-        el('div', { style: body }, content))
+        el('div', { style: body }, content),
+        el(ReportModal, { open: reportState.open, state: reportState, onClose: function () { setReportState({ open: false }) } }))
     }
 
     // ── 侧边栏入口（root scope）：按钮 + 全局 Modal ──────────────────────────

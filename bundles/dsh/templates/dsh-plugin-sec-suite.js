@@ -593,6 +593,23 @@ function audit(record) {
   } catch { /* 审计写入失败不阻断（执行前已记录 decision） */ }
 }
 
+// 审计尾读（看板审计视图）：只读文件尾部 ≤256KB（audit 50MB 轮转，尾读足够），解析最近 n 条，新→旧。
+function tailAudit(n) {
+  try {
+    const stat = fs.statSync(AUDIT_LOG)
+    const maxBytes = 256 * 1024
+    const start = Math.max(0, stat.size - maxBytes)
+    const fd = fs.openSync(AUDIT_LOG, 'r')
+    const buf = Buffer.alloc(stat.size - start)
+    fs.readSync(fd, buf, 0, buf.length, start)
+    fs.closeSync(fd)
+    const lines = buf.toString('utf8').split('\n').filter((l) => l.trim())
+    const rows = []
+    for (const line of lines.slice(-n)) { try { rows.push(JSON.parse(line)) } catch { /* 跳过半行 */ } }
+    return rows.reverse()
+  } catch { return [] }
+}
+
 // ==============================================================================
 // sandbox（审计 S2）：run_cli 经 bwrap 白名单隔离执行
 // 白名单只挂 /usr /etc /home /opt/silkspool/dsh/{venv,opt} + runDir(写) + /tmp /dev /proc。
@@ -1301,7 +1318,7 @@ function taskChain(args, exec) {
 // 底层直接复用 assetDb 现有函数——「一份校验、一条 audit.jsonl、一个真相源」。
 // ==============================================================================
 
-const FINDING_TAG_STATUS = ['confirmed', 'false_positive', 'ignored', 'new']
+const FINDING_TAG_STATUS = ['confirmed', 'false_positive', 'ignored', 'new', 'submitted', 'accepted', 'dup']
 let dashboardRpcRegistered = false
 
 async function handleDashboardRpc(endpoint, payload) {
@@ -1340,17 +1357,38 @@ async function handleDashboardRpc(endpoint, payload) {
       audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskRunNow', decision: 'executed', detail: { id } })
       return assetDb.taskRunNow(id)
     }
+    case 'taskCancel': {
+      const id = Number(p.id)
+      if (!id) throw new Error('taskCancel 需要 id')
+      const r = assetDb.taskUpdate({ id, status: 'cancelled', note: String(p.note || '看板手动取消') })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskCancel', decision: 'executed', detail: { id } })
+      return r
+    }
+    case 'reportBuild': {
+      const r = assetDb.buildReport({
+        hostLike: String(p.host_like || ''), programId: String(p.program_id || ''),
+        status: String(p.status || ''), sinceDays: Number(p.since_days) || 0,
+      })
+      let content = ''
+      try { content = fs.readFileSync(r.file, 'utf8') } catch { /* 读回失败仅少 content，不阻断 */ }
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.reportBuild', decision: 'executed', detail: { file: r.file, total: r.total } })
+      return { ...r, content }
+    }
+    case 'evalStats':
+      return assetDb.evalStats()
+    case 'audit':
+      return { rows: tailAudit(Math.min(Number(p.limit) || 120, 300)) }
     case 'assets': {
       const filters = { hostLike: String(p.q || ''), type: String(p.type || ''), programId: String(p.program_id || '') }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
-      return { rows: assetDb.queryAssets({ ...filters, limit, offset }), total: assetDb.countAssets(filters) }
+      return { rows: assetDb.queryAssets({ ...filters, limit, offset, sort: String(p.sort || ''), dir: String(p.dir || '') }), total: assetDb.countAssets(filters) }
     }
     case 'endpoints': {
       const filters = { host: String(p.host || ''), pathLike: String(p.q || ''), programId: String(p.program_id || '') }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
-      return { rows: assetDb.queryEndpoints({ ...filters, limit, offset }), total: assetDb.countEndpoints(filters) }
+      return { rows: assetDb.queryEndpoints({ ...filters, limit, offset, sort: String(p.sort || ''), dir: String(p.dir || '') }), total: assetDb.countEndpoints(filters) }
     }
     case 'findings': {
       const filters = {
@@ -1359,7 +1397,12 @@ async function handleDashboardRpc(endpoint, payload) {
       }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
-      return { rows: assetDb.queryFindings({ ...filters, limit, offset }), total: assetDb.countFindings(filters) }
+      return { rows: assetDb.queryFindings({ ...filters, limit, offset, sort: String(p.sort || ''), dir: String(p.dir || '') }), total: assetDb.countFindings(filters) }
+    }
+    case 'findingGet': {
+      const id = Number(p.id)
+      if (!id) throw new Error('findingGet 需要 id')
+      return assetDb.findingGet(id)
     }
     case 'blackboard':
       return assetDb.bbGet()
@@ -1371,6 +1414,12 @@ async function handleDashboardRpc(endpoint, payload) {
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
       return { rows: assetDb.factSearch({ ...filters, limit, offset }), total: assetDb.countFacts(filters) }
+    }
+    case 'factGraph': {
+      const programId = String(p.program_id || '')
+      const factKey = String(p.fact_key || '')
+      if (!programId || !factKey) throw new Error('factGraph 需要 program_id 与 fact_key')
+      return assetDb.factGraph(programId, factKey)
     }
     case 'programs':
       return assetDb.listPrograms()
@@ -1391,8 +1440,8 @@ async function handleDashboardRpc(endpoint, payload) {
       if (!id || !FINDING_TAG_STATUS.includes(status)) {
         throw new Error(`findingUpdate 需要合法 id 与 status（${FINDING_TAG_STATUS.join('/')}）`)
       }
-      const r = assetDb.updateFinding({ id, status, note: String(p.note || '') })
-      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.findingUpdate', decision: 'executed', detail: { id, status } })
+      const r = assetDb.updateFinding({ id, status, note: String(p.note || ''), bounty: p.bounty, vendor_status: String(p.vendor_status || '') })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.findingUpdate', decision: 'executed', detail: { id, status, bounty: p.bounty ?? null } })
       return r
     }
     case 'factCorrect': {
