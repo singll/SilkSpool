@@ -38,17 +38,17 @@
 
 ### 2.1 核心色值（初值，真机渲染后可微调对比度）
 
-**背景层（Pharloom 之夜）**
+**背景层（Pharloom 之夜——v3 真机校准：整体抬高、层间落差加大，内容有托底反差）**
 
 | 令牌 | 色值 | 用途 |
 |---|---|---|
-| `--dsw-alias-bg-base` | `#0D1113` | 最底层，墨青黑 |
-| `--dsw-alias-bg-layer-1` | `#141A1D` | 卡片/面板 |
-| `--dsw-alias-bg-layer-2` | `#1B2328` | 浮起层（hover 卡片、输入框） |
-| `--dsw-alias-bg-layer-3` | `#243037` | 最高浮层（Modal、菜单） |
-| `--dsw-alias-bg-overlay` | `#1B2328` | overlay/popover |
-| `--dsw-specific-sidebar-fill` | `#11171A` | 侧边栏（介于 base 与 layer-1 之间） |
-| `--dsw-alias-bg-skeleton` | `rgba(230,224,212,0.06)` | 骨架屏（骨白的 6%） |
+| `--dsw-alias-bg-base` | `#161D22` | 最底层，墨青黑 |
+| `--dsw-alias-bg-layer-1` | `#1D262C` | 卡片/面板 |
+| `--dsw-alias-bg-layer-2` | `#253037` | 浮起层（hover 卡片、输入框） |
+| `--dsw-alias-bg-layer-3` | `#2E3B43` | 最高浮层（Modal、菜单） |
+| `--dsw-alias-bg-overlay` | `#253037` | overlay/popover |
+| `--dsw-specific-sidebar-fill` | `#1A2126` | 侧边栏（介于 base 与 layer-1 之间） |
+| `--dsw-alias-bg-skeleton` | `rgba(242,238,228,0.08)` | 骨架屏（骨白的 8%） |
 
 **文字层（骨白系，暖调，不用冷白——骨器/羊皮纸质感）**
 
@@ -61,13 +61,13 @@
 | `--dsw-alias-label-tertiary` | `#9D9682` |
 | `--dsw-alias-label-caption` | `#9D9682` |
 
-**边框（暖灰青，三级明暗——v2 真机校准：整体提亮，保证表格/卡片界限清晰）**
+**边框（暖灰青——v3 真机校准：随背景抬高同步提亮，层间界限清晰）**
 
 | 令牌 | 色值 |
 |---|---|
-| `--dsw-alias-border-l1` | `#333B42` |
-| `--dsw-alias-border-l2` | `#3E4850` |
-| `--dsw-alias-border-l3` | `#51616D` |
+| `--dsw-alias-border-l1` | `#3D474F` |
+| `--dsw-alias-border-l2` | `#4A555F` |
+| `--dsw-alias-border-l3` | `#5F6F7B` |
 
 **叙事四色 → 状态令牌**
 
