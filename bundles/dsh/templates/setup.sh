@@ -255,4 +255,31 @@ EOF
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable --now silksec-retention.timer 2>/dev/null || warn "retention timer 启用失败"
 fi
+
+# -------------------- 9.6 SQLite 快照备份定时器（P0-5，每 6 小时） --------------------
+if [ -f "$BASE_DIR/silksec-backup.sh" ]; then
+    chmod +x "$BASE_DIR/silksec-backup.sh" "$BASE_DIR/silksec-restore.sh" 2>/dev/null || true
+    $SUDO tee /etc/systemd/system/silksec-backup.service >/dev/null <<EOF
+[Unit]
+Description=SilkSecAgent SQLite consistent snapshot backup
+
+[Service]
+Type=oneshot
+User=silkspool
+ExecStart=/bin/bash $BASE_DIR/silksec-backup.sh
+EOF
+    $SUDO tee /etc/systemd/system/silksec-backup.timer >/dev/null <<'EOF'
+[Unit]
+Description=SilkSecAgent SQLite snapshot backup (every 6h)
+
+[Timer]
+OnCalendar=*-*-* 00/6:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable --now silksec-backup.timer 2>/dev/null || warn "backup timer 启用失败"
+fi
 log "setup 完成"

@@ -1116,14 +1116,44 @@ async function schedulerTick() {
   try { await reconcileWorkspaceSessions() } catch { /* 归组失败不阻断调度 */ }
 }
 
-// 进程级单例（globalThis）：插件可能被宿主面与每个 agent 面分别加载成不同模块实例，
-// 模块级变量挡不住跨实例重复；SQLite BEGIN IMMEDIATE 原子认领兜底防重复派单。
+// 跨进程单例（P0-1）：插件被宿主面与每个 agent/worker 子进程分别加载，globalThis 不跨进程，
+// 模块级/globalThis 单例都挡不住多进程各起调度循环（实测 10+ PID 各跑 tick + database is locked）。
+// 用文件锁 data/scheduler.lock（持有者 PID + 心跳时间戳）保证全机只有一个进程真正认领任务。
+const SCHEDULER_LOCK = path.join(DATA_DIR, 'scheduler.lock')
+const SCHEDULER_LOCK_STALE_MS = 180000 // 3 分钟无心跳（容 3 个 tick 未刷新）视为死锁，可抢占
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+// 抢锁：无锁文件 / 持有者已死 / 心跳超期 → 写入自己 PID。返回是否持有。
+function acquireSchedulerLock() {
+  try {
+    const cur = JSON.parse(fs.readFileSync(SCHEDULER_LOCK, 'utf8'))
+    if (cur && cur.pid && cur.pid !== process.pid && pidAlive(cur.pid) && (Date.now() - (cur.ts || 0) < SCHEDULER_LOCK_STALE_MS)) {
+      return false // 活锁被他人持有
+    }
+  } catch { /* 无锁文件或损坏 → 可抢 */ }
+  try { fs.writeFileSync(SCHEDULER_LOCK, JSON.stringify({ pid: process.pid, ts: Date.now() })); return true } catch { return false }
+}
+function holdsSchedulerLock() {
+  try { return JSON.parse(fs.readFileSync(SCHEDULER_LOCK, 'utf8')).pid === process.pid } catch { return false }
+}
+
 function startScheduler() {
   if (globalThis.__silksecScheduler) return
-  globalThis.__silksecScheduler = setInterval(() => { schedulerTick().catch(() => {}) }, SCHEDULER_TICK_MS)
+  if (!acquireSchedulerLock()) return // 已有活的调度进程持锁，本进程不启动（收敛多进程内讧）
+  try { assetDb.taskReapStale() } catch { /* 启动时僵尸回收一次，失败不阻断 */ }
+  process.once('exit', () => { try { if (holdsSchedulerLock()) fs.unlinkSync(SCHEDULER_LOCK) } catch { /* ignore */ } })
+  let tick = 0
+  globalThis.__silksecScheduler = setInterval(() => {
+    // 心跳续锁 + 持有校验：丢锁则尝试重夺，仍被他人活持则本 tick 跳过（不认领）
+    if (!holdsSchedulerLock() && !acquireSchedulerLock()) return
+    try { fs.writeFileSync(SCHEDULER_LOCK, JSON.stringify({ pid: process.pid, ts: Date.now() })) } catch { /* ignore */ }
+    if ((++tick % 10) === 0) { try { assetDb.taskReapStale() } catch { /* ignore */ } } // 每 10 tick 周期回收
+    schedulerTick().catch(() => {})
+  }, SCHEDULER_TICK_MS)
   globalThis.__silksecScheduler.unref?.()
-  // 进程生命周期级单例：不绑 fiber dispose（connection 重配会回收 child fiber，不能拖死调度循环）
-  process.stderr.write('[sec-suite] 定时任务调度循环已启动（60s tick）\n')
+  process.stderr.write(`[sec-suite] 定时任务调度循环已启动（60s tick, pid=${process.pid}）\n`)
 }
 
 // ==============================================================================

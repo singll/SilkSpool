@@ -103,7 +103,7 @@ function parseJsonlNuclei(text, ctx) {
 
 // subfinder/naabu/katana 等（lines）：逐行 host/URL → assets/endpoints（复用 ingestText 能力）
 function parseLines(text, ctx) {
-  const r = db.ingestText(ctx.source, text)
+  const r = db.ingestText(ctx.source, text, ctx.programId)
   return { assets: r.assets, endpoints: r.endpoints, findings: [] }
 }
 
@@ -145,7 +145,7 @@ export function applyParsedResult(manifest, toolName, runId, text, programId = n
   if (!fn) fn = PARSERS[parserKey]
   // 3) 回退：通用 regex 抽取
   if (!fn) {
-    const r = db.ingestText(source, text)
+    const r = db.ingestText(source, text, programId)
     return r
   }
 

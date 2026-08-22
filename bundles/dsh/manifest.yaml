@@ -75,6 +75,9 @@ templates:
   - migrate-blackboard-to-facts.js
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---
   - retention.sh
+  # --- SQLite 一致性快照备份 + 紧急恢复（P0-5：DB down 应急 + 集中存储归宿）---
+  - silksec-backup.sh
+  - silksec-restore.sh
   # --- 情报刷新（intel-feeder v1）---
   - intel-refresh.sh
   # --- CyberStrikeAI 历史数据导入器 ---

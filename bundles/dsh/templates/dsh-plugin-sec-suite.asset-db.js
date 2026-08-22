@@ -19,6 +19,9 @@ export function getDb() {
   fs.mkdirSync(DATA_DIR, { recursive: true })
   db = new DatabaseSync(DB_FILE)
   db.exec('PRAGMA journal_mode = WAL')
+  db.exec('PRAGMA busy_timeout = 5000')       // P0-2：争锁等待 5s，取代立即抛 database is locked
+  db.exec('PRAGMA synchronous = NORMAL')      // P0-2：WAL 下安全且更快
+  db.exec('PRAGMA wal_autocheckpoint = 1000') // P0-2：约 4MB 自动 checkpoint，防 WAL 无限膨胀
   db.exec(`
     CREATE TABLE IF NOT EXISTS assets (
       host TEXT NOT NULL,
@@ -501,6 +504,24 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '' }) {
   return { ok: true, id: Number(id), status, next_run_at: nextRunAt }
 }
 
+// 僵尸回收（P0-3）：宿主进程崩溃/超时导致 running 卡死的 scheduled 任务 → 回收。
+// once 任务标 failed（终态），interval 任务退回 queued（下次续期）。默认超龄 1 小时（对齐 worker timeout 上限）。
+export function taskReapStale(maxAgeMs = 3600000) {
+  const d = getDb()
+  const cutoff = now() - maxAgeMs
+  const stale = plain(d.prepare(
+    "SELECT id, schedule_kind FROM tasks WHERE status = 'running' AND schedule_kind IS NOT NULL AND started_at IS NOT NULL AND started_at < ?"
+  ).all(cutoff))
+  let reaped = 0
+  for (const t of stale) {
+    const status = t.schedule_kind === 'interval' ? 'queued' : 'failed'
+    const r = d.prepare("UPDATE tasks SET status = ?, blocked_reason = '宿主重启/超时回收', updated_at = ? WHERE id = ? AND status = 'running'")
+      .run(status, now(), t.id)
+    if (r.changes === 1) reaped++
+  }
+  return { reaped }
+}
+
 // -------------------- P8：事实图谱（facts + fact_edges）--------------------
 
 const FACT_CONFIDENCE = ['confirmed', 'tentative', 'deprecated']
@@ -688,7 +709,7 @@ export function buildReport({ hostLike = '', sinceDays = 0, status = '', program
 const URL_RE = /https?:\/\/[^\s"'<>()\[\]{}|,;\\]+/gi
 const HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?::\d{1,5})?$/i
 
-export function ingestText(source, text) {
+export function ingestText(source, text, program_id = null) {
   let assets = 0; let endpoints = 0
   const seen = new Set()
   for (const line of String(text).split('\n')) {
@@ -698,14 +719,14 @@ export function ingestText(source, text) {
         const key = `${u.host}${u.pathname}`
         if (seen.has(key)) continue
         seen.add(key)
-        if (upsertAsset({ host: u.host, type: 'web', source })) assets++
-        if (upsertEndpoint({ host: u.host, method: 'GET', path: u.pathname + u.search, source })) endpoints++
+        if (upsertAsset({ host: u.host, type: 'web', source, program_id })) assets++
+        if (upsertEndpoint({ host: u.host, method: 'GET', path: u.pathname + u.search, source, program_id })) endpoints++
       } catch { /* 非法 URL 跳过 */ }
     }
     const bare = line.trim()
     if (HOST_RE.test(bare) && !seen.has(bare)) {
       seen.add(bare)
-      if (upsertAsset({ host: bare, type: 'domain', source })) assets++
+      if (upsertAsset({ host: bare, type: 'domain', source, program_id })) assets++
     }
   }
   return { assets, endpoints }
