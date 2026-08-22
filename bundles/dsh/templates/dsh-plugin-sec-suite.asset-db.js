@@ -583,6 +583,38 @@ export function factGraph(program_id, fact_key) {
   return { ok: true, node, out, in: inc }
 }
 
+// P2-1 事实图谱自动建边：扫描 program 的 facts，按共享域名根 / /24 网段建关系边（star 型控边数，
+// 超大组跳过防噪声）。让孤立事实点集成图，支撑攻击面聚类与关系遍历。幂等（INSERT OR REPLACE）。
+const _HOST_RE = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b/gi
+const _IP_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g
+export function factReindexEdges(program_id) {
+  if (!program_id) return { ok: false, error: 'program_id 必填' }
+  const d = getDb()
+  const facts = plain(d.prepare('SELECT fact_key, summary, body FROM facts WHERE program_id = ?').all(program_id))
+  const tokenMap = {} // token(域名根 / /24 段) -> [fact_key]
+  for (const f of facts) {
+    const text = `${f.fact_key} ${f.summary || ''} ${f.body || ''}`
+    const tokens = new Set()
+    for (const m of text.match(_HOST_RE) || []) tokens.add(m.toLowerCase().split('.').slice(-2).join('.'))
+    for (const m of text.match(_IP_RE) || []) tokens.add(m.split('.').slice(0, 3).join('.') + '.0/24')
+    for (const t of tokens) (tokenMap[t] || (tokenMap[t] = [])).push(f.fact_key)
+  }
+  let edges = 0
+  let groups = 0
+  for (const [token, keys] of Object.entries(tokenMap)) {
+    const uniq = [...new Set(keys)]
+    if (uniq.length < 2 || uniq.length > 50) continue // 单点无边；超大组跳过（噪声）
+    groups++
+    const edgeType = token.includes('/') ? 'same-subnet' : 'same-domain'
+    const center = uniq[0]
+    for (let i = 1; i < uniq.length; i++) {
+      factLink({ program_id, src_key: center, dst_key: uniq[i], edge_type: edgeType, confidence: 'tentative' })
+      edges++
+    }
+  }
+  return { ok: true, program_id, facts: facts.length, groups, edges }
+}
+
 // -------------------- P8：指纹 / 凭据 --------------------
 
 export function fpAdd({ program_id = null, host, tech, version = '', source = '' }) {

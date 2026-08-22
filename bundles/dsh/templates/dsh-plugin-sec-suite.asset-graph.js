@@ -449,6 +449,18 @@ export function apply(ctx) {
   })
 
   reg(ctx, {
+    name: 'fact_reindex',
+    description: '事实图谱自动建边（P2-1）：扫描项目全部事实，按共享域名根 / C 段建关系边，让孤立事实成图。返回建边数。周期或新增事实后调用。',
+    parameters: {
+      type: 'object',
+      properties: { program_id: { type: 'string' } },
+      required: ['program_id'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.factReindexEdges(a.program_id),
+  })
+
+  reg(ctx, {
     name: 'neg_check',
     description: '负知识账本（P9 negative-ledger 内建）：查 note/* 已证伪路径（验证失败/前提不满足），派单前拦截重复尝试。',
     parameters: {
