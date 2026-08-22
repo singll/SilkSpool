@@ -670,6 +670,29 @@ function appendLiveEval(rec) {
   } catch { /* 评测回流失败不阻断 */ }
 }
 
+// 活评测回流（P9 环3）：读 eval-live.jsonl 聚合各漏洞类型的确认/误报统计，供 eval_stats 工具与报告校准可信度
+export function evalStats() {
+  const file = path.join(DATA_DIR, 'eval', 'eval-live.jsonl')
+  const byType = {}
+  let total = 0
+  try {
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      if (!line.trim()) continue
+      let r; try { r = JSON.parse(line) } catch { continue }
+      total++
+      const t = r.vuln_type || 'unknown'
+      if (!byType[t]) byType[t] = { confirmed: 0, false_positive: 0 }
+      if (r.verdict === 'confirmed') byType[t].confirmed++
+      else if (r.verdict === 'false_positive') byType[t].false_positive++
+    }
+  } catch { /* 无评测文件 → 空统计 */ }
+  for (const t of Object.keys(byType)) {
+    const s = byType[t]; const n = s.confirmed + s.false_positive
+    s.fp_rate = n ? Math.round((s.false_positive / n) * 100) / 100 : 0
+  }
+  return { total, by_type: byType }
+}
+
 export function buildReport({ hostLike = '', sinceDays = 0, status = '', programId = '' }) {
   const d = getDb()
   const args = []

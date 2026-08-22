@@ -468,6 +468,13 @@ export function apply(ctx) {
   })
 
   reg(ctx, {
+    name: 'eval_stats',
+    description: '活评测回流（P9 环3）：读打标历史（confirmed/false_positive），返回各漏洞类型的确认数/误报数/误报率。用于判断新发现可信度、校准复核优先级——高误报率类型需更谨慎验证。',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    execute: async () => ({ ok: true, ...db.evalStats() }),
+  })
+
+  reg(ctx, {
     name: 'fp_add',
     description: '登记指纹（技术栈/组件 + 版本）。component-vuln-intel 触发器据此搜洞。',
     parameters: {

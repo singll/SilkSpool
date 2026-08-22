@@ -341,10 +341,16 @@ function pbSave(a) {
   return { ok: true, name: a.name, steps: a.chain.length }
 }
 
-function pbOutcome(a) {
+export function pbOutcome(a) {
   const d = db()
-  const pb = d.prepare('SELECT * FROM playbooks WHERE name = ?').get(String(a.name || ''))
-  if (!pb) return { ok: false, error: `playbook 不存在: ${a.name}（先 pb_save）` }
+  const name = String(a.name || '')
+  if (!name) return { ok: false, error: 'name 必填' }
+  let pb = d.prepare('SELECT * FROM playbooks WHERE name = ?').get(name)
+  if (!pb) {
+    // P1-1 环1：工具/链执行统计自动登记（chain 空占位，后续 pb_save 可补真实调用链）
+    d.prepare('INSERT INTO playbooks (name, scenario, chain) VALUES (?, ?, ?)').run(name, String(a.scenario || ''), '[]')
+    pb = d.prepare('SELECT * FROM playbooks WHERE name = ?').get(name)
+  }
   const dur = Math.max(0, Number(a.duration_ms) || 0)
   const runs = pb.runs + 1
   const successes = pb.successes + (a.success ? 1 : 0)

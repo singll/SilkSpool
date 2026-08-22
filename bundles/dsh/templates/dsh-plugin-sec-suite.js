@@ -22,6 +22,7 @@ import * as http from 'node:http'
 import * as path from 'node:path'
 import * as assetDb from './asset-db.js'
 import * as parsers from './parsers.js'
+import { pbOutcome } from './experience.js'
 
 export const name = 'sec-cli-adapter'
 export const inject = ['tools']
@@ -744,6 +745,24 @@ async function runCli(args, exec) {
   }
   fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 1) + '\n')
   audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'executed', exit_code: meta.exit_code, duration_ms: meta.duration_ms, sandboxed: meta.sandboxed })
+
+  // P1-1 环1 自动沉淀：工具执行统计（成功率/耗时）→ playbook，驱动 pb_rank 进化（无需 agent 手动 pb_outcome）
+  try { pbOutcome({ name: `tool:${toolName}`, success: result.code === 0, duration_ms: meta.duration_ms }) } catch { /* 统计失败不阻断 */ }
+  // P1-1 环1 负知识：执行失败/超时自动写 note 证伪，neg_check 派单前据此拦截重复尝试（免踩同一坑）
+  if (programId && result.code !== 0) {
+    const why = result.error ? `启动失败: ${result.error}` : result.signal ? `超时/被杀 ${result.signal}` : `exit ${result.code}`
+    try {
+      assetDb.factUpsert({
+        program_id: programId,
+        fact_key: `note/fail-${toolName}-${hostOf(targets[0] || 'na')}`.slice(0, 100),
+        category: 'note',
+        summary: `${toolName} 对 ${targets[0] || '?'} 执行失败（${why}）`,
+        body: `run_id=${runId} tool=${toolName} target=${targets[0] || ''} ${why} duration=${meta.duration_ms}ms（自动证伪，neg_check 用于拦截重复尝试）`,
+        confidence: 'tentative',
+        source: 'auto:runcli-fail',
+      })
+    } catch { /* 证伪写入失败不阻断 */ }
+  }
 
   // ---- 摘要（≤20 行）----
   let stdoutText = ''
