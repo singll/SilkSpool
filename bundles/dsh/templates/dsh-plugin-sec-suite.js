@@ -1142,7 +1142,8 @@ function holdsSchedulerLock() {
 function startScheduler() {
   if (globalThis.__silksecScheduler) return
   if (!acquireSchedulerLock()) return // 已有活的调度进程持锁，本进程不启动（收敛多进程内讧）
-  try { assetDb.taskReapStale() } catch { /* 启动时僵尸回收一次，失败不阻断 */ }
+  // 启动即回收：新进程启动意味着旧进程已终止，其派发的所有 running scheduled 任务均为孤儿 → 无条件回收（maxAge=0）
+  try { assetDb.taskReapStale(0) } catch { /* 启动僵尸回收，失败不阻断 */ }
   process.once('exit', () => { try { if (holdsSchedulerLock()) fs.unlinkSync(SCHEDULER_LOCK) } catch { /* ignore */ } })
   let tick = 0
   globalThis.__silksecScheduler = setInterval(() => {
