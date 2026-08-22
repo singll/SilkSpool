@@ -52,20 +52,22 @@
 
 **文字层（骨白系，暖调，不用冷白——骨器/羊皮纸质感）**
 
-| 令牌 | 色值 |
-|---|---|
-| `--dsw-alias-label-primary` | `#E6E0D4` |
-| `--dsw-alias-label-secondary` | `#A89F90` |
-| `--dsw-alias-label-tertiary` | `#6E6A60` |
-| `--dsw-alias-label-caption` | `#6E6A60` |
-
-**边框（暖灰青，三级明暗，不抢戏）**
+> v2 真机校准：三级文字全部提亮（初值偏淡、不够突出）。
 
 | 令牌 | 色值 |
 |---|---|
-| `--dsw-alias-border-l1` | `#2A3136` |
-| `--dsw-alias-border-l2` | `#333C42` |
-| `--dsw-alias-border-l3` | `#41505A` |
+| `--dsw-alias-label-primary` | `#EFEAE0` |
+| `--dsw-alias-label-secondary` | `#BDB4A4` |
+| `--dsw-alias-label-tertiary` | `#8A8474` |
+| `--dsw-alias-label-caption` | `#8A8474` |
+
+**边框（暖灰青，三级明暗——v2 真机校准：整体提亮，保证表格/卡片界限清晰）**
+
+| 令牌 | 色值 |
+|---|---|
+| `--dsw-alias-border-l1` | `#333B42` |
+| `--dsw-alias-border-l2` | `#3E4850` |
+| `--dsw-alias-border-l3` | `#51616D` |
 
 **叙事四色 → 状态令牌**
 
@@ -135,7 +137,10 @@
 | 圆角 | 三档：**6px**（按钮/输入框等控件）/ **8px**（卡片、表格容器）/ **12px**（Modal 大容器）；pill 徽章例外用胶囊（999px） |
 | 边框 | **1px 细边框是分层的主要手段**（border-l1/l2 两档明暗），对应「丝线」意象：细、精准 |
 | 阴影 | **禁用投影**。层级靠背景色阶 + 细边框表达；仅 Modal 保留宿主自带遮罩 |
-| hover | 只改背景色（升一档），不改边框、不位移、不放大 |
+| hover | 只改背景色（升一档），不改边框、不位移、不放大；表格行 hover 铺 hover 底色 |
+| 表格 | `table-layout: fixed` + colgroup 定列宽（ID/操作列不错位）；表头 border-l3 强分界；单元格 13px、`8px 12px` 内距、垂直居中 |
+| Modal | 看板弹窗 `min(1280px, 100vw-32px)` × `min(88vh, 1020px)` |
+| KPI 统计卡 | 可交互：hover 抬升边界（bg 升档 + border-l3），点击跳转对应视图；数字 20px/600 |
 
 宿主原生组件的形状写死在组件里、令牌管不到——**保持原样**，靠颜色令牌融合；本规范约束的是所有自建组件。
 

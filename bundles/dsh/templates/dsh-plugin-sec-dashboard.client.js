@@ -91,18 +91,24 @@ window.__ModuleLoader__.load({
       styleTag.dataset.plugin = '@silksec/sec-dashboard'
       styleTag.dataset.pluginCss = CSS_KEY
       styleTag.textContent = [
-        '.silksec-dash-dialog{width:min(1120px,calc(100vw - 48px));height:min(85vh,960px)}',
+        '.silksec-dash-dialog{width:min(1280px,calc(100vw - 32px));height:min(88vh,1020px)}',
         '.silksec-dash-action{box-sizing:border-box;width:calc(100% + 8px);height:34px;margin:4px -4px;padding:6px 10px;border:0;border-radius:12px;background:0 0;cursor:pointer;display:flex;align-items:center;gap:6px;min-width:0;color:' + T.label2 + ';font:' + F.xs.font + ';transition:background-color 150ms ease-out,color 150ms ease-out}',
         '.silksec-dash-action:hover{background:' + T.hover + ';color:' + T.label + '}',
         '.silksec-dash-action[data-rail=true]{width:36px;height:36px;margin:4px 0;padding:0;border-radius:50%;justify-content:center}',
         '.silksec-dash-action:focus-visible{box-shadow:0 0 0 2px ' + T.border3 + ';outline:none}',
+        // KPI 统计卡：hover 抬升边界 + 可点击跳视图
+        '.silksec-kpi{box-sizing:border-box;text-align:left;padding:12px 14px;border-radius:8px;border:1px solid ' + T.border + ';background:' + T.base + ';min-width:0;cursor:pointer;font:inherit;transition:background-color 150ms ease-out,border-color 150ms ease-out}',
+        '.silksec-kpi:hover{background:' + T.layer1 + ';border-color:' + T.border3 + '}',
+        // 表格：行 hover 分界 + 表头强分界（真机校准 v2）
+        '.silksec-row{border-bottom:1px solid ' + T.border2 + ';transition:background-color 150ms ease-out,opacity 150ms ease-out}',
+        '.silksec-row:hover{background:' + T.hover + '}',
         // 工具条输入/下拉
         '.silksec-input{box-sizing:border-box;height:28px;padding:0 10px;border-radius:6px;border:1px solid ' + T.border2 + ';background:' + T.layer2 + ';color:' + T.label + ';font:' + F.xs.font + ';outline:none;transition:border-color 150ms ease-out}',
         '.silksec-input:focus{border-color:' + T.border3 + '}',
         '.silksec-input::placeholder{color:' + T.label3 + '}',
         'select.silksec-input{appearance:none;padding-right:22px;background-image:linear-gradient(45deg,transparent 50%,' + T.label3 + ' 50%),linear-gradient(135deg,' + T.label3 + ' 50%,transparent 50%);background-position:calc(100% - 13px) 50%,calc(100% - 9px) 50%;background-size:4px 4px;background-repeat:no-repeat;cursor:pointer}',
         // 打标按钮：确认 hover 转绯红填充（主行动语义，规范 §7）
-        '.silksec-btn{box-sizing:border-box;height:24px;padding:0 10px;border-radius:6px;border:1px solid ' + T.border2 + ';background:transparent;color:' + T.label + ';cursor:pointer;font-size:12px;line-height:18px;transition:background-color 150ms ease-out,color 150ms ease-out,border-color 150ms ease-out}',
+        '.silksec-btn{box-sizing:border-box;height:26px;padding:0 10px;border-radius:6px;border:1px solid ' + T.border2 + ';background:transparent;color:' + T.label + ';cursor:pointer;font-size:13px;line-height:20px;transition:background-color 150ms ease-out,color 150ms ease-out,border-color 150ms ease-out}',
         '.silksec-btn:hover:not(:disabled){background:' + T.hover + '}',
         '.silksec-btn:disabled{opacity:0.4;cursor:default}',
         '.silksec-btn-confirm:hover:not(:disabled){background:' + T.brand + ';border-color:' + T.brand + ';color:var(--dsw-alias-brand-text)}',
@@ -125,15 +131,17 @@ window.__ModuleLoader__.load({
     var tabBar = { display: 'flex', gap: 4, borderBottom: '1px solid ' + T.border, flexWrap: 'wrap', marginBottom: 4 }
     var body = { flex: '1 1 auto', overflowY: 'auto', minHeight: 0, padding: '12px 2px 20px' }
     var card = { padding: '12px 14px', borderRadius: 8, border: '1px solid ' + T.border, background: T.base, minWidth: 0, boxSizing: 'border-box' }
-    var cardL = { color: T.label3, ...F.xxs }
-    var cardV = { color: T.label, marginTop: 4, ...F.baseStrong }
+    var cardL = { color: T.label2, ...F.xxs }
+    var cardV = { color: T.label, marginTop: 4, fontSize: 20, fontWeight: 600, lineHeight: '24px' }
     var stateLine = { color: T.label3, padding: '24px 0', ...F.s }
     var errorLine = { ...stateLine, color: T.error, padding: '8px 0' }
-    var pill = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 999, fontSize: 11, lineHeight: '16px', border: '1px solid ' + T.border2, color: T.label2, background: 'transparent', flexShrink: 0, whiteSpace: 'nowrap' }
-    var th = { textAlign: 'left', color: T.label3, padding: '6px 8px', ...F.xxsStrong, whiteSpace: 'nowrap' }
-    var td = { padding: '6px 8px', color: T.label, ...F.xxs, verticalAlign: 'top', wordBreak: 'break-word' }
-    var tdMono = { ...td, fontFamily: MONO, fontSize: 12 }
-    var row = { borderBottom: '1px solid ' + T.border2, transition: 'opacity 150ms ease-out' }
+    var pill = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 999, fontSize: 12, lineHeight: '16px', border: '1px solid ' + T.border2, color: T.label2, background: 'transparent', flexShrink: 0, whiteSpace: 'nowrap' }
+    // 表格：表头用 label2 提升可读性；单元格 13px + 更宽内距（真机校准 v2）
+    var th = { textAlign: 'left', color: T.label2, padding: '8px 12px', ...F.xxsStrong, whiteSpace: 'nowrap' }
+    var td = { padding: '8px 12px', color: T.label, ...F.xs, verticalAlign: 'middle', wordBreak: 'break-word' }
+    var tdMono = { ...td, fontFamily: MONO, fontSize: 13 }
+    var tableStyle = { width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }
+    var theadRow = { borderBottom: '1px solid ' + T.border3 }
     var toolbar = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '10px 0 8px' }
     var pagerBar = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10, color: T.label3, ...F.xxs }
 
@@ -321,19 +329,24 @@ window.__ModuleLoader__.load({
     }
 
     // ── 各视图 ───────────────────────────────────────────────────────────────
+    // KPI 统计卡：hover 有反馈、点击跳转对应视图
     function StatsHeader(props) {
       var s = props.stats || {}
       var kpis = [
-        { label: '资产', value: fmtBytes(s.assets) },
-        { label: '接口', value: fmtBytes(s.endpoints) },
-        { label: '漏洞', value: fmtBytes(s.findings) },
-        { label: '项目', value: fmtBytes(s.programs) },
-        { label: '任务', value: fmtBytes(s.tasks) },
-        { label: '事实', value: fmtBytes(s.blackboard_keys) },
+        { label: '漏洞', value: fmtBytes(s.findings), tab: 'findings' },
+        { label: '资产', value: fmtBytes(s.assets), tab: 'assets' },
+        { label: '接口', value: fmtBytes(s.endpoints), tab: 'assets' },
+        { label: '项目', value: fmtBytes(s.programs), tab: 'tasks' },
+        { label: '任务', value: fmtBytes(s.tasks), tab: 'tasks' },
+        { label: '事实', value: fmtBytes(s.blackboard_keys), tab: 'facts' },
       ]
       return el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))', gap: 8, marginBottom: 12 } },
         kpis.map(function (kpi) {
-          return el('div', { key: kpi.label, style: card },
+          return el('button', {
+            key: kpi.label, type: 'button', className: 'silksec-kpi',
+            title: '查看' + kpi.label,
+            onClick: function () { props.onNavigate(kpi.tab) },
+          },
             el('div', { style: cardL }, kpi.label),
             el('div', { style: cardV }, kpi.value))
         }))
@@ -349,14 +362,22 @@ window.__ModuleLoader__.load({
       function tagBtn(label, status, id, cls) {
         return el('button', {
           type: 'button', key: status, className: 'silksec-btn' + (cls ? ' ' + cls : ''),
-          disabled: !!busy, style: { marginRight: 6 },
+          disabled: !!busy,
           onClick: function () { props.onTag(id, status) },
         }, label)
       }
       return el(ViewBody, { query: query, emptyText: '暂无漏洞数据' }, function (rows) {
         return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
-          el('table', { style: { width: '100%', borderCollapse: 'collapse', minWidth: 720 } },
-            el('thead', null, el('tr', null,
+          // tableLayout fixed + colgroup：列宽恒定，ID/打标不错位
+          el('table', { style: tableStyle },
+            el('colgroup', null,
+              el('col', { style: { width: 52 } }),
+              el('col', { style: { width: 76 } }),
+              el('col', { style: { width: 84 } }),
+              el('col', null),
+              el('col', { style: { width: '26%' } }),
+              el('col', { style: { width: 196 } })),
+            el('thead', null, el('tr', { style: theadRow },
               el('th', { style: th }, '#'),
               el('th', { style: th }, '级别'),
               el('th', { style: th }, '状态'),
@@ -368,23 +389,22 @@ window.__ModuleLoader__.load({
               var closed = STATUS_CLOSED.indexOf(r.status) >= 0
               // 强调（规范 §7）：new = 行左 2px 绯红边条；已定案 = 整行淡出
               var rowStyle = {
-                ...row,
                 opacity: closed ? 0.5 : 1,
                 boxShadow: r.status === 'new' ? 'inset 2px 0 0 ' + T.brand : undefined,
               }
-              return el('tr', { key: String(r.id), style: rowStyle },
+              return el('tr', { key: String(r.id), className: 'silksec-row', style: rowStyle },
                 el('td', { style: tdMono }, String(r.id)),
                 el('td', { style: td }, sevPill(r.severity)),
                 el('td', { style: td }, statusPill(r.status)),
                 el('td', { style: td }, r.title),
                 el('td', { style: tdMono }, r.url || r.host || '—'),
-                el('td', { style: td },
+                el('td', { style: { ...td, whiteSpace: 'nowrap' } },
                   taggable
-                    ? el('span', null,
+                    ? el('span', { style: { display: 'inline-flex', gap: 6 } },
                         tagBtn('确认', 'confirmed', r.id, 'silksec-btn-confirm'),
                         tagBtn('误报', 'false_positive', r.id),
                         tagBtn('忽略', 'ignored', r.id))
-                    : el('span', { style: { color: T.label3, ...F.xxs } }, '已定案')))
+                    : el('span', { style: { color: T.label3, ...F.xs } }, '已定案')))
             }))))
       })
     }
@@ -393,15 +413,21 @@ window.__ModuleLoader__.load({
       var query = props.query
       return el(ViewBody, { query: query, emptyText: '暂无资产数据' }, function (rows) {
         return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
-          el('table', { style: { width: '100%', borderCollapse: 'collapse', minWidth: 560 } },
-            el('thead', null, el('tr', null,
+          el('table', { style: tableStyle },
+            el('colgroup', null,
+              el('col', null),
+              el('col', { style: { width: 90 } }),
+              el('col', { style: { width: 110 } }),
+              el('col', { style: { width: 130 } }),
+              el('col', { style: { width: 140 } })),
+            el('thead', null, el('tr', { style: theadRow },
               el('th', { style: th }, '主机'),
               el('th', { style: th }, '类型'),
               el('th', { style: th }, '来源'),
               el('th', { style: th }, '项目'),
               el('th', { style: th }, '最近发现'))),
             el('tbody', null, rows.map(function (r) {
-              return el('tr', { key: (r.host || '') + '|' + (r.type || ''), style: row },
+              return el('tr', { key: (r.host || '') + '|' + (r.type || ''), className: 'silksec-row' },
                 el('td', { style: tdMono }, r.host),
                 el('td', { style: td }, r.type),
                 el('td', { style: td }, r.source || '—'),
@@ -466,8 +492,15 @@ window.__ModuleLoader__.load({
         el('div', { style: pageSub }, '编排器派发的任务队列（只读，起任务走对话）。'),
         el(ViewBody, { query: query, emptyText: '暂无任务' }, function (rows) {
           return el('div', { style: { overflowX: 'auto', minWidth: 0, marginTop: 12 } },
-            el('table', { style: { width: '100%', borderCollapse: 'collapse', minWidth: 640 } },
-              el('thead', null, el('tr', null,
+            el('table', { style: tableStyle },
+              el('colgroup', null,
+                el('col', { style: { width: 52 } }),
+                el('col', { style: { width: 110 } }),
+                el('col', { style: { width: 96 } }),
+                el('col', null),
+                el('col', { style: { width: 84 } }),
+                el('col', { style: { width: 64 } })),
+              el('thead', null, el('tr', { style: theadRow },
                 el('th', { style: th }, '#'),
                 el('th', { style: th }, '项目'),
                 el('th', { style: th }, '阶段'),
@@ -475,7 +508,7 @@ window.__ModuleLoader__.load({
                 el('th', { style: th }, '状态'),
                 el('th', { style: th }, '优先级'))),
               el('tbody', null, rows.map(function (t) {
-                return el('tr', { key: String(t.id), style: row },
+                return el('tr', { key: String(t.id), className: 'silksec-row' },
                   el('td', { style: tdMono }, String(t.id)),
                   el('td', { style: td }, t.program_id),
                   el('td', { style: td }, t.phase || '—'),
@@ -602,7 +635,7 @@ window.__ModuleLoader__.load({
             el('div', { style: pageSub }, '全局 · 资产 / 漏洞 / 事实 / 任务 · 打标与事实纠正写入 audit.jsonl'),
             el('div', { style: silkDivider })),
           el('button', { type: 'button', className: 'silksec-btn', onClick: function () { findingsQ.reload(); assetsQ.reload(); factsQ.reload(); tasksQ.reload() } }, '刷新')),
-        statsState.error ? el('div', { style: errorLine }, '统计加载失败: ' + statsState.error) : el(StatsHeader, { stats: statsState.data }),
+        statsState.error ? el('div', { style: errorLine }, '统计加载失败: ' + statsState.error) : el(StatsHeader, { stats: statsState.data, onNavigate: setTab }),
         el('div', { style: tabBar }, tabs.map(tabButton)),
         el('div', { style: body }, content))
     }
