@@ -224,4 +224,30 @@ EOF
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable --now silksec-intel.timer 2>/dev/null || warn "intel timer 启用失败"
 fi
+
+# -------------------- 9.5 数据保留期定时器（审计 S7，每日） --------------------
+if [ -f "$BASE_DIR/retention.sh" ]; then
+    $SUDO tee /etc/systemd/system/silksec-retention.service >/dev/null <<EOF
+[Unit]
+Description=SilkSecAgent data retention cleanup (flows/results/audit)
+
+[Service]
+Type=oneshot
+User=silkspool
+ExecStart=/bin/bash $BASE_DIR/retention.sh
+EOF
+    $SUDO tee /etc/systemd/system/silksec-retention.timer >/dev/null <<'EOF'
+[Unit]
+Description=SilkSecAgent data retention cleanup (daily)
+
+[Timer]
+OnCalendar=*-*-* 05:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable --now silksec-retention.timer 2>/dev/null || warn "retention timer 启用失败"
+fi
 log "setup 完成"

@@ -16,6 +16,7 @@
 
 import { spawn } from 'node:child_process'
 import * as crypto from 'node:crypto'
+import * as dns from 'node:dns'
 import * as fs from 'node:fs'
 import * as http from 'node:http'
 import * as path from 'node:path'
@@ -259,6 +260,67 @@ function checkRisk(manifestRisk, programCfg) {
 }
 
 // ==============================================================================
+// S1 解析后校验（审计）：active+ 目标执行前 DNS 解析，解析 IP 落内网/保留段且未授权 → 拒绝
+// 防「授权域名 CNAME/解析到 scope 外、内网 IP 打内网」越界。passive 工具跳过（不主动连目标）。
+// ==============================================================================
+
+const RESERVED_CIDRS = [
+  { base: 0x00000000, bits: 8 },      // 0.0.0.0/8
+  { base: 0x0a000000, bits: 8 },      // 10.0.0.0/8
+  { base: 0x64400000, bits: 10 },     // 100.64.0.0/10 (CGNAT)
+  { base: 0x7f000000, bits: 8 },      // 127.0.0.0/8
+  { base: 0xa9fe0000, bits: 16 },     // 169.254.0.0/16
+  { base: 0xac100000, bits: 12 },     // 172.16.0.0/12
+  { base: 0xc0a80000, bits: 16 },     // 192.168.0.0/16
+]
+
+function ipInReserved(ipInt) {
+  for (const c of RESERVED_CIDRS) {
+    const mask = c.bits === 32 ? 0xffffffff : (0xffffffff << (32 - c.bits)) >>> 0
+    if (((c.base & mask) >>> 0) === ((ipInt & mask) >>> 0)) return true
+  }
+  return false
+}
+
+function programAllowsIp(programCfg, ip) {
+  const entries = Array.isArray(programCfg && programCfg.scope) ? programCfg.scope : []
+  const ipi = ipToInt(ip)
+  return entries.some((e) => {
+    e = String(e).trim().toLowerCase()
+    if (e.includes('/')) return ipi !== null && cidrContains(e, ip)
+    return ipi !== null && ipToInt(e) === ipi
+  })
+}
+
+// 返回违规原因字符串，或 null（通过）
+async function verifyResolved(targets, manifest) {
+  if (RISK_ORDER.indexOf(String(manifest.risk || 'passive')) < RISK_ORDER.indexOf('active')) return null
+  for (const t of targets) {
+    const host = hostOf(t)
+    if (!host) continue
+    const chk = checkTarget(host)
+    const cfg = chk.programCfg || null
+    const ipi = ipToInt(host)
+    if (ipi !== null) {
+      if (ipInReserved(ipi) && !programAllowsIp(cfg, host)) {
+        return `目标 ${host} 为内网/保留 IP 且不在项目 ${chk.program || '?'} 授权 CIDR 内`
+      }
+      continue
+    }
+    // 域名 → 解析后校验（失败不阻断，被动工具/临时 DNS 故障容错）
+    let ips = []
+    try { ips = await dns.promises.resolve4(host) } catch { ips = [] }
+    for (const ip of ips) {
+      const ri = ipToInt(ip)
+      if (ri !== null && ipInReserved(ri) && !programAllowsIp(cfg, ip)) {
+        return `目标 ${host} 解析到内网/保留 IP ${ip} 且不在项目 ${chk.program || '?'} 授权 CIDR 内`
+      }
+    }
+  }
+  return null
+}
+
+// ==============================================================================
 // sec-cli-adapter：manifest 加载 / 模板渲染 / 执行 / 落盘 / 摘要
 // ==============================================================================
 
@@ -405,6 +467,15 @@ async function runCli(args) {
   if (!riskChk.allow) {
     audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: riskChk.reason })
     return { ok: false, run_id: runId, error: `scope-guard 拒绝: ${riskChk.reason}`, needs_approval: !!riskChk.needsApproval }
+  }
+
+  // S1 解析后校验（active+）：DNS 解析 IP 落内网/保留段且未授权 → 拒绝
+  if (targets.length > 0) {
+    const resolvedViolation = await verifyResolved(targets, manifest)
+    if (resolvedViolation) {
+      audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: resolvedViolation })
+      return { ok: false, run_id: runId, error: `scope-guard 解析后校验拒绝: ${resolvedViolation}` }
+    }
   }
 
   // ---- 渲染 + 执行 ----
@@ -875,6 +946,44 @@ function handleDashboardRpc(endpoint, payload) {
 }
 
 // ==============================================================================
+// intel_hunt：component-vuln-intel 触发器（P9）——指纹命中后查本地 nuclei 模板库找 N-day
+// ==============================================================================
+
+const NUCLEI_TEMPLATES = path.join(HOME_DIR, 'nuclei-templates')
+
+function intelHunt(args) {
+  const tech = String(args.tech || '').toLowerCase().trim()
+  if (!tech) return { ok: false, error: 'tech 必填（如 weblogic / ruoyi / spring）' }
+  const version = String(args.version || '').trim()
+  if (!fs.existsSync(NUCLEI_TEMPLATES)) return { ok: false, error: `nuclei 模板库不存在: ${NUCLEI_TEMPLATES}` }
+  const matches = []
+  const walk = (dir, depth) => {
+    if (depth > 3 || matches.length >= 30) return
+    let entries
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (matches.length >= 30) return
+      const p = path.join(dir, e.name)
+      if (e.isDirectory()) {
+        if (e.name.toLowerCase().includes(tech)) {
+          try { matches.push(...fs.readdirSync(p).filter((f) => f.endsWith('.yaml')).map((f) => path.join(p, f)).slice(0, 30)) } catch { /* skip */ }
+        } else {
+          walk(p, depth + 1)
+        }
+      } else if (e.name.toLowerCase().includes(tech) && e.name.endsWith('.yaml')) {
+        matches.push(p)
+      }
+    }
+  }
+  walk(NUCLEI_TEMPLATES, 0)
+  const rel = matches.slice(0, 30).map((m) => path.relative(NUCLEI_TEMPLATES, m))
+  const hint = rel.length
+    ? `命中 ${rel.length} 个 ${tech}${version ? '@' + version : ''} 相关模板；建议 task_create(phase=vuln, objective="验证 ${tech}${version ? ' ' + version : ''} N-day", priority=1)。结果强制 tentative，验证附证据才 confirmed`
+    : `模板库无 ${tech} 相关模板`
+  return { ok: true, tech, version, templates: rel, hint }
+}
+
+// ==============================================================================
 // 注册
 // ==============================================================================
 
@@ -1010,6 +1119,23 @@ export function apply(ctx, config) {
     },
     output: { schema: { type: 'object' }, render: renderJSON },
     execute: async (args) => planChain(args || {}),
+  })
+
+  ctx.tools.register({
+    name: 'intel_hunt',
+    description: 'component-vuln-intel（P9）：指纹命中后查本地 nuclei 模板库找 tech 相关的 N-day 模板/CVE。'
+      + '结果仅 tentative（搜索结果≠漏洞），命中后用 task_create 建验证任务，验证附证据才 confirmed。',
+    parameters: {
+      type: 'object',
+      properties: {
+        tech: { type: 'string', description: '技术栈/组件，如 weblogic / ruoyi / spring' },
+        version: { type: 'string', description: '版本号（可选）' },
+      },
+      required: ['tech'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: renderJSON },
+    execute: async (args) => intelHunt(args || {}),
   })
 
   // xray webhook 接收器随插件启动（流量总线 v1）；preset 内挂载时 sidecars:false 跳过

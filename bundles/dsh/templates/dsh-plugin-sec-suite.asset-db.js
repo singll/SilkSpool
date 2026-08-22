@@ -450,7 +450,21 @@ export function updateFinding({ id, status, note = '' }) {
     d.prepare('UPDATE findings SET evidence = ? WHERE id = ?')
       .run(`${cur.evidence}\n[${new Date().toISOString().slice(0, 16)}] ${status}: ${note}`, Number(id))
   }
+  // 活评测集（P9）：confirmed/false_positive 判定回流成评测用例，供误报率统计
+  if (status === 'confirmed' || status === 'false_positive') {
+    const f = d.prepare('SELECT title, host, url, vuln_type FROM findings WHERE id = ?').get(Number(id))
+    if (f) appendLiveEval({ finding_id: Number(id), host: f.host || '', url: f.url || '', title: f.title, vuln_type: f.vuln_type || '', verdict: status })
+  }
   return { ok: true, id: Number(id), status }
+}
+
+// 活评测集落盘：data/eval/eval-live.jsonl（每行一条实战判定，用于误报率/发现率复盘）
+function appendLiveEval(rec) {
+  try {
+    const dir = path.join(DATA_DIR, 'eval')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.appendFileSync(path.join(dir, 'eval-live.jsonl'), JSON.stringify({ ...rec, ts: Date.now() }) + '\n')
+  } catch { /* 评测回流失败不阻断 */ }
 }
 
 export function buildReport({ hostLike = '', sinceDays = 0, status = '', programId = '' }) {

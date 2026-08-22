@@ -377,6 +377,25 @@ export function apply(ctx) {
   })
 
   reg(ctx, {
+    name: 'neg_check',
+    description: '负知识账本（P9 negative-ledger 内建）：查 note/* 已证伪路径（验证失败/前提不满足），派单前拦截重复尝试。',
+    parameters: {
+      type: 'object',
+      properties: {
+        program_id: { type: 'string' },
+        q: { type: 'string', description: '目标/路径关键词' },
+        limit: { type: 'integer' },
+      },
+      required: ['program_id'],
+      additionalProperties: false,
+    },
+    execute: async (a) => {
+      const items = db.factSearch({ program_id: a.program_id, category: 'note', q: a.q || '', limit: a.limit || 20 })
+      return { ok: true, total: items.length, failed_paths: items, warning: items.length ? '以下路径已证伪，避免重复尝试' : '无已知证伪路径' }
+    },
+  })
+
+  reg(ctx, {
     name: 'fp_add',
     description: '登记指纹（技术栈/组件 + 版本）。component-vuln-intel 触发器据此搜洞。',
     parameters: {
