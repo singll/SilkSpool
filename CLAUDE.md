@@ -30,6 +30,8 @@ spool version                             # 验证
 
 > ❌ **绝不** `cp -r out/ /opt/SilkSpool` 升级 —— 会清掉运行时的 `hosts/`、`keys/`、`silkspool.yaml`。整目录复制只用于首次部署到空目录。
 
+> ⚠️ **bundle 模板是运行时副本**：spool 读的是 `/opt/SilkSpool/bundles/`（不是仓库里的 `bundles/`）。改了仓库里的 bundle 模板/manifest 后，先 `rsync -a bundles/<name>/ /opt/SilkSpool/bundles/<name>/` 再 `spool bundle <name> setup <host>`，否则推送的是旧模板。
+
 ### 常用命令速查
 
 | 命令 | 用途 |

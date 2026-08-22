@@ -1,0 +1,267 @@
+# 丝之歌主题（Silksong Theme）设计规范
+
+> SilkSecAgent DSH WebUI 的全局设计规范。视觉叙事取自游戏《空洞骑士：丝之歌》。
+> 本文档是所有 UI 工作的**唯一权威**：新模块、新组件、新视图一律照此组装，不得各自发明。
+> 术语以 [../CONTEXT.md](../CONTEXT.md) 为准；平台总体计划见 `doc/dsh-pi-secagent-plan-v5.md`。
+>
+> 版本：v1（2026-08-22 定稿，grill 访谈 12 项决策的沉淀）
+
+---
+
+## 一、设计理念
+
+### 1.1 两条红线（先于一切美学）
+
+1. **实用优先**：这是一个安全作战平台，界面是工具不是展品。任何设计决策与可用性冲突时，可用性赢。
+2. **不过度**：不堆动画、不堆特效、不堆装饰。点击响应贴近原生 WebUI 速度；「该有的反馈动效要有，但没有任何东西在表演」。
+
+### 1.2 叙事四色（视觉语言的根）
+
+从丝之歌提取四个色彩叙事，**全部颜色决策都必须能归因到其一**：
+
+| 叙事 | 语义角色 | 意象来源 |
+|---|---|---|
+| **Pharloom 之夜** | 全部背景与边框 | 王国的幽暗——墨青底，不用纯黑（纯黑显得死） |
+| **Hornet 绯红** | 唯一行动色（主按钮/激活态/主操作） | 主角的斗篷 |
+| **丝线与铜铃之金** | 强调 / 警告 / 待确认 | 丝线、丝轴、铃铛 |
+| **苔原之绿 + 石墙之青** | 成功/安全（绿）、中性信息（青） | Moss Grotto 与 Pharloom 石墙 |
+
+**衍生铁律**：
+
+- **全站只有绯红一个「行动色」**。金色只做强调/警告，永远不做主按钮。用户扫一眼即知「哪里能点、哪里在报警」。
+- **绯红填充 = 行动；绯红文字/描边 = 危险**。同样的红，填充与否区分「要点它」与「要怕它」，互不混淆。
+- **同一屏内「最强强调」的元素不超过一类**；强调服务于「下一步该干什么」，不服务于「什么好看」。
+
+---
+
+## 二、调色板与令牌映射
+
+### 2.1 核心色值（初值，真机渲染后可微调对比度）
+
+**背景层（Pharloom 之夜）**
+
+| 令牌 | 色值 | 用途 |
+|---|---|---|
+| `--dsw-alias-bg-base` | `#0D1113` | 最底层，墨青黑 |
+| `--dsw-alias-bg-layer-1` | `#141A1D` | 卡片/面板 |
+| `--dsw-alias-bg-layer-2` | `#1B2328` | 浮起层（hover 卡片、输入框） |
+| `--dsw-alias-bg-layer-3` | `#243037` | 最高浮层（Modal、菜单） |
+| `--dsw-alias-bg-overlay` | `#1B2328` | overlay/popover |
+| `--dsw-specific-sidebar-fill` | `#11171A` | 侧边栏（介于 base 与 layer-1 之间） |
+| `--dsw-alias-bg-skeleton` | `rgba(230,224,212,0.06)` | 骨架屏（骨白的 6%） |
+
+**文字层（骨白系，暖调，不用冷白——骨器/羊皮纸质感）**
+
+| 令牌 | 色值 |
+|---|---|
+| `--dsw-alias-label-primary` | `#E6E0D4` |
+| `--dsw-alias-label-secondary` | `#A89F90` |
+| `--dsw-alias-label-tertiary` | `#6E6A60` |
+| `--dsw-alias-label-caption` | `#6E6A60` |
+
+**边框（暖灰青，三级明暗，不抢戏）**
+
+| 令牌 | 色值 |
+|---|---|
+| `--dsw-alias-border-l1` | `#2A3136` |
+| `--dsw-alias-border-l2` | `#333C42` |
+| `--dsw-alias-border-l3` | `#41505A` |
+
+**叙事四色 → 状态令牌**
+
+| 令牌 | 色值 | 叙事 |
+|---|---|---|
+| `--dsw-alias-brand-primary` | `#C8403F` | **Hornet 绯红** |
+| `--dsw-alias-brand-text` | `#E6E0D4` | 绯红按钮上的文字（骨白） |
+| `--dsw-alias-button-primary-fill` | `#C8403F` | |
+| `--dsw-alias-button-primary-hover` | `#D65453` | 绯红提亮一档 |
+| `--dsw-alias-state-error-primary` | `#D24848` | 绯红警示变体（比 brand 亮，危急感） |
+| `--dsw-alias-interactive-bg-hover-danger` | `rgba(210,72,72,0.12)` | |
+| `--dsw-alias-state-warn-primary` | `#D4A24C` | **丝线金** |
+| `--dsw-alias-state-warn-label` | `#D4A24C` | |
+| `--dsw-alias-state-warn-tertiary` | `#2A2416` | warn 底色（金的暗化） |
+| `--dsw-alias-state-success-primary` | `#7A9B6A` | **苔绿** |
+| `--dsw-alias-state-success-tertiary` | `#1B2418` | success 底色（绿的暗化） |
+| `--dsw-alias-state-business-primary` | `#4E8C84` | **青碧**（中性信息） |
+| `--dsw-alias-state-business-tertiary` | `#16211F` | info 底色（青的暗化） |
+
+**交互与杂项**
+
+| 令牌 | 色值 |
+|---|---|
+| `--dsw-alias-interactive-bg-hover` | `rgba(230,224,212,0.06)` |
+| `--dsw-alias-interactive-bg-active` | `rgba(230,224,212,0.10)` |
+| `--dsw-alias-interactive-bg-hover-accent` | `rgba(200,64,63,0.14)` |
+| `--dsw-alias-bg-mask-1` | `rgba(6,9,10,0.6)` |
+| `--dsw-alias-bg-mask-3` | `rgba(6,9,10,0.6)` |
+| `--dsw-alias-toast-bg` | `#243037` |
+| `--dsw-alias-tooltip-bg` | `#243037` |
+| `--dsw-alias-scrollbar-bg-l1` | `#333C42` |
+| `--dsw-alias-scrollbar-hover-l1` | `#41505A` |
+| `--dsw-specific-sidebar-nav-item-hover` | `#1B2328` |
+| `--dsw-specific-sidebar-nav-item-active` | `#243037` |
+| `--dsw-specific-sidebar-nav-item-active-accent` | `#C8403F` |
+| `--dsw-specific-menu` | `#243037` |
+| `--dsw-specific-input-major` | `#1B2328` |
+| `--dsw-specific-bubble` | `#1B2328` |
+| `--dsw-specific-bubble-highlight` | `#243037` |
+| markdown 系列（code-block/inline-code/citation/tag 等） | 全部映射到 layer-1/2/3 三档背景，不引入新色 |
+
+**看板私有语义色（`--silksec-sev-*`，severity 五色，与叙事四色同源）**
+
+| 变量 | 色值 | 级别 |
+|---|---|---|
+| `--silksec-sev-critical` | `#E05555` | 严重（绯红提亮） |
+| `--silksec-sev-high` | `#D4743A` | 高危（朱砂橙） |
+| `--silksec-sev-medium` | `#D4A24C` | 中危（丝线金） |
+| `--silksec-sev-low` | `#4E8C84` | 低危（青碧） |
+| `--silksec-sev-info` | `#8A8578` | 信息（石灰） |
+
+级别色逻辑：**越危险越往红走，越安全越往青绿走**。不引入外来色。
+
+### 2.2 令牌工程纪律
+
+- 主题经 DSH 原生 theme registry 注册（`ctx.theme.register({ id: 'silksong', colorScheme: 'dark', tokens })`），presenter 把 tokens 以 **inline CSS 变量写到 `<body>`**——覆盖一切吃 `--dsw-alias-*` 的原生组件，**这是整站一致的官方通道，不是 hack**。
+- tokens 一律写**原始 hex/rgba 值**，不引用 `--dsw-static-*`（主题的权威在令牌层，不依赖静态色板的存在）。
+- 上表未列出的令牌保持宿主 dark 基底原样；新增覆盖必须先加进本文档再写代码。
+- `--silksec-sev-*` 不在 registry 白名单内，由主题插件在 silksong 激活时经 `<style>` 插拔注入；消费方一律带 fallback：`var(--silksec-sev-critical, #E05555)`。
+
+---
+
+## 三、形态语言（形状规范）
+
+| 元素 | 规范 |
+|---|---|
+| 圆角 | 三档：**6px**（按钮/输入框等控件）/ **8px**（卡片、表格容器）/ **12px**（Modal 大容器）；pill 徽章例外用胶囊（999px） |
+| 边框 | **1px 细边框是分层的主要手段**（border-l1/l2 两档明暗），对应「丝线」意象：细、精准 |
+| 阴影 | **禁用投影**。层级靠背景色阶 + 细边框表达；仅 Modal 保留宿主自带遮罩 |
+| hover | 只改背景色（升一档），不改边框、不位移、不放大 |
+
+宿主原生组件的形状写死在组件里、令牌管不到——**保持原样**，靠颜色令牌融合；本规范约束的是所有自建组件。
+
+---
+
+## 四、动效规范（「丝滑但不过度」的量化线）
+
+### 4.1 白名单（就这五类）
+
+| 场景 | 参数 |
+|---|---|
+| hover 变色 / 点击激活态 | `150ms ease-out` |
+| tab 下划线滑动 / 展开收起 | `200ms cubic-bezier(.4,0,.2,1)`（用宿主 `--ds-ease-in-out`） |
+| Modal 打开/关闭 | 沿用宿主自带（不自建） |
+| 新增数据行高亮渐隐 | `300ms` 背景色渐隐（唯一表意动效，可选） |
+
+### 4.2 红线（禁止清单）
+
+- ❌ 位移动画（slide-in、飞入）——重排重绘掉帧
+- ❌ 无限循环动画（呼吸灯、流光、粒子、飘动背景）——持续占 GPU
+- ❌ 弹性/回弹动画（spring/bounce，scale>2%）——与冷峻工具感冲突
+- ❌ 任何超过 300ms 的过渡
+- ❌ `transition: all`——只许显式列属性
+- ❌ JS 驱动动画（requestAnimationFrame 做视觉）——只用 CSS transition
+
+### 4.3 技术纪律
+
+transition 只碰 `background-color / color / border-color / opacity`（不触发重排）；transform 仅限宿主 Modal 自带的一处。目标：任何机器上合成层完成、零布局抖动。
+
+---
+
+## 五、装饰元素与图标
+
+### 5.1 装饰白名单（全站就这三处，其余一律不装饰）
+
+| 位置 | 元素 |
+|---|---|
+| 侧边栏「看板」入口图标 | **丝轴 + 引出一段丝线**（SilkSpool/Silksong 双关），内联 SVG，16×16，1.5px stroke，currentColor |
+| 看板标题区 | 标题旁小号丝轴徽章 + 标题下 1px 丝线分隔线（纯 CSS/SVG，无动画） |
+| 各视图空状态 | 单色线稿小图标（丝轴/针），label-tertiary 色，不彩色、不插画化 |
+
+### 5.2 禁止清单
+
+❌ 背景纹样/水印 ❌ 位图素材（png/jpg/webp 一律不进包）❌ 角色立绘/剪影（版权+过度）❌ 任何会动的装饰。
+
+### 5.3 图标工程纪律
+
+一律内联 SVG：stroke 风格、`currentColor` 跟随令牌、viewBox 统一 16×16 或 24×24、stroke-width 1.5——与宿主 icons 视觉密度一致，并排不违和。
+
+---
+
+## 六、字体规范
+
+- **不引入任何 webfont**（首开性能 + 中西文混排割裂，双重否决）。正文沿用宿主 `--dsw-font-*` 系统栈。
+- **数据密集型内容走等宽字体**：主机名、IP、ID、时间戳、代码、evidence——用宿主 `--ds-font-family-code`（宿主已处理 Windows CJK 回退坑），内容需要字符对齐与 0/O、1/l 精确辨认。
+- 字重仅两档：常规 + strong（600）。不引入更多字重。
+
+---
+
+## 七、强调优先级规范（突出重点）
+
+手段按强度排序：**① 颜色（severity 红系 > 金 > 青绿）→ ② 字重 → ③ pill 描边 → ④ 透明度反向运用（降权=淡出）**。
+
+| 元素 | 处置 |
+|---|---|
+| status=new 的漏洞 | 最强：行左 2px 绯红边条（待处理 > 已处理） |
+| critical/high severity pill | 红/朱砂描边 + 同色文字 |
+| 已定案漏洞（误报/忽略/重复） | 反向降权：整行 opacity 0.5 |
+| 打标按钮「确认」 | hover 转绯红填充（主行动语义） |
+| blocked/failed 任务 | 丝线金 / 警示红 pill |
+| tentative 事实 | 丝线金 pill（「不确定的知识」需要被看到） |
+| deprecated 事实 | 整卡 opacity 0.55 |
+| KPI 统计卡数字 | strong 字重 + label-primary |
+| 激活 tab | 绯红下划线 |
+| 项目 max_risk | 中性 pill；仅 intrusive 时丝线金 |
+| program_id / 来源 / 时间等参考列 | 不强调（label-tertiary） |
+| 盲区指标（P8 预留） | 丝线金描边 pill「30d+」 |
+
+---
+
+## 八、看板交互规范（分页 / 搜索 / 筛选）
+
+### 8.1 数据通道
+
+- **服务端分页**：查询函数带 `offset` + 同条件 `COUNT(*)`，RPC 返回 `{ rows, total }`。
+- 默认每页 **20 条**（可选 20/50/100）；排序固定**最新在前**（资产 last_seen / 漏洞 created_at / 任务 priority+created_at），不做表头自定义排序。
+
+### 8.2 工具条（每个视图顶部，左搜索右筛选）
+
+| 视图 | 搜索框（模糊） | 筛选下拉 |
+|---|---|---|
+| 漏洞 | 标题/host/url 三字段 OR | severity · status · program |
+| 资产 | host | type · program |
+| 事实 | fact_key + summary | category · program · confidence |
+| 任务 | objective | status · phase · program |
+
+### 8.3 交互细则
+
+- 搜索**防抖 300ms**；改搜索/筛选页码归 1；翻页保持条件
+- 工具条状态**按 tab 各自记忆**，关闭 Modal 重置
+- 加载态：表格区骨架行（bg-skeleton，无动画），工具条不锁定（后发请求覆盖先发，丢弃过期响应）
+- 空态双文案：「暂无数据」（库里没有）vs「无匹配结果」（被过滤掉），后者配空态线稿图标
+- 轮询 30s 只刷当前页查询
+
+### 8.4 不做清单（防范围蔓延）
+
+❌ 表头点击排序 ❌ 多选批量打标 ❌ 日期范围选择器 ❌ AND/OR 高级筛选构造器——留作扩展位，真高频再做。
+
+---
+
+## 九、工程形态
+
+| 件 | 形态 |
+|---|---|
+| 主题插件 | 独立客户端插件 `@silksec/theme-silksong`（host 半面 no-op 供 Loader 扫描；client 半面注册主题 + 插拔 `--silksec-sev-*` + 设置行） |
+| 与看板的关系 | **零耦合**：sec-dashboard 只认 `--dsw-alias-*` 与带 fallback 的 `--silksec-sev-*`；主题被禁用则看板自动回落原生配色 |
+| 默认启用 | 首次加载自动 `setTheme('silksong')`；用户在内置「外观」行切走（light/dark/system）后**尊重其选择不再切回**；设置→通用里有「丝之歌主题」开关行可切回 |
+| 持久化 | 宿主 user-settings 只收内置三态（light/dark/system），自定义主题选择由插件自己持久化（localStorage），加载时重放 |
+| 部署 | templates/ 产物 + setup 脚本 + plugins.lock pin + 先扫后装（沿用现有插件治理） |
+
+## 十、验收清单
+
+- [ ] 设置→通用出现「丝之歌主题」开关；首装默认启用
+- [ ] 整站（侧边栏/会话/markdown/设置页/Modal/toast/tooltip/滚动条）统一丝之歌配色，无原生蓝/原生灰残留区块
+- [ ] 切回内置 light/dark 后刷新不自动切回；切回丝之歌后刷新保持
+- [ ] 看板 severity 五色随主题切换跟随/回落
+- [ ] 看板四视图均有工具条；分页 {rows,total} 正确；搜索防抖生效
+- [ ] 全站无位移动画/循环动画/投影；transition 均 ≤300ms 且只碰合成层属性
+- [ ] 数据列（host/ID/时间戳）等宽字体渲染

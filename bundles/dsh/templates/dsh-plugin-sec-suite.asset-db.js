@@ -198,38 +198,66 @@ export function addFinding({
   return { id: Number(r.lastInsertRowid), dup: false }
 }
 
-export function queryAssets({ hostLike = '', type = '', programId = '', limit = 50 }) {
-  let sql = 'SELECT host, type, source, program_id, last_seen FROM assets WHERE 1=1'
-  const args = []
-  if (hostLike) { sql += ' AND host LIKE ?'; args.push(`%${hostLike}%`) }
-  if (type) { sql += ' AND type = ?'; args.push(type) }
-  if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
-  sql += ' ORDER BY last_seen DESC LIMIT ?'
-  args.push(Math.min(limit, 200))
-  return plain(getDb().prepare(sql).all(...args))
+export function queryAssets({ hostLike = '', type = '', programId = '', limit = 50, offset = 0 }) {
+  const { where, args } = assetWhere({ hostLike, type, programId })
+  const sql = `SELECT host, type, source, program_id, last_seen FROM assets WHERE ${where} ORDER BY last_seen DESC LIMIT ? OFFSET ?`
+  return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
 
-export function queryEndpoints({ host = '', pathLike = '', programId = '', limit = 50 }) {
-  let sql = 'SELECT host, method, path, status, source, program_id, last_seen FROM endpoints WHERE 1=1'
-  const args = []
-  if (host) { sql += ' AND host = ?'; args.push(host) }
-  if (pathLike) { sql += ' AND path LIKE ?'; args.push(`%${pathLike}%`) }
-  if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
-  sql += ' ORDER BY last_seen DESC LIMIT ?'
-  args.push(Math.min(limit, 200))
-  return plain(getDb().prepare(sql).all(...args))
+export function countAssets(filters = {}) {
+  const { where, args } = assetWhere(filters)
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM assets WHERE ${where}`).get(...args).n
 }
 
-export function queryFindings({ host = '', severity = '', status = '', programId = '', limit = 50 }) {
-  let sql = 'SELECT id, title, severity, host, url, evidence, source, status, program_id, created_at FROM findings WHERE 1=1'
+function assetWhere({ hostLike = '', type = '', programId = '' }) {
+  let where = '1=1'
   const args = []
-  if (host) { sql += ' AND host = ?'; args.push(host) }
-  if (severity) { sql += ' AND severity = ?'; args.push(severity) }
-  if (status) { sql += ' AND status = ?'; args.push(status) }
-  if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
-  sql += ' ORDER BY created_at DESC LIMIT ?'
-  args.push(Math.min(limit, 200))
-  return plain(getDb().prepare(sql).all(...args))
+  if (hostLike) { where += ' AND host LIKE ?'; args.push(`%${hostLike}%`) }
+  if (type) { where += ' AND type = ?'; args.push(type) }
+  if (programId) { where += ' AND program_id = ?'; args.push(programId) }
+  return { where, args }
+}
+
+export function queryEndpoints({ host = '', pathLike = '', programId = '', limit = 50, offset = 0 }) {
+  const { where, args } = endpointWhere({ host, pathLike, programId })
+  const sql = `SELECT host, method, path, status, source, program_id, last_seen FROM endpoints WHERE ${where} ORDER BY last_seen DESC LIMIT ? OFFSET ?`
+  return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
+}
+
+export function countEndpoints(filters = {}) {
+  const { where, args } = endpointWhere(filters)
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM endpoints WHERE ${where}`).get(...args).n
+}
+
+function endpointWhere({ host = '', pathLike = '', programId = '' }) {
+  let where = '1=1'
+  const args = []
+  if (host) { where += ' AND host = ?'; args.push(host) }
+  if (pathLike) { where += ' AND path LIKE ?'; args.push(`%${pathLike}%`) }
+  if (programId) { where += ' AND program_id = ?'; args.push(programId) }
+  return { where, args }
+}
+
+export function queryFindings({ host = '', severity = '', status = '', programId = '', q = '', limit = 50, offset = 0 }) {
+  const { where, args } = findingWhere({ host, severity, status, programId, q })
+  const sql = `SELECT id, title, severity, host, url, evidence, source, status, program_id, created_at FROM findings WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+  return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
+}
+
+export function countFindings(filters = {}) {
+  const { where, args } = findingWhere(filters)
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM findings WHERE ${where}`).get(...args).n
+}
+
+function findingWhere({ host = '', severity = '', status = '', programId = '', q = '' }) {
+  let where = '1=1'
+  const args = []
+  if (host) { where += ' AND host = ?'; args.push(host) }
+  if (severity) { where += ' AND severity = ?'; args.push(severity) }
+  if (status) { where += ' AND status = ?'; args.push(status) }
+  if (programId) { where += ' AND program_id = ?'; args.push(programId) }
+  if (q) { where += ' AND (title LIKE ? OR host LIKE ? OR url LIKE ?)'; args.push(`%${q}%`, `%${q}%`, `%${q}%`) }
+  return { where, args }
 }
 
 export function stats() {
@@ -294,15 +322,25 @@ export function taskUpdate({ id, status, note = '', blocked_reason = '', result 
   return { ok: true, id: Number(id), status }
 }
 
-export function taskList({ programId = '', status = '', phase = '', limit = 50 }) {
-  let sql = 'SELECT * FROM tasks WHERE 1=1'
+export function taskList({ programId = '', status = '', phase = '', q = '', limit = 50, offset = 0 }) {
+  const { where, args } = taskWhere({ programId, status, phase, q })
+  const sql = `SELECT * FROM tasks WHERE ${where} ORDER BY priority ASC, created_at ASC LIMIT ? OFFSET ?`
+  return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
+}
+
+export function countTasks(filters = {}) {
+  const { where, args } = taskWhere(filters)
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM tasks WHERE ${where}`).get(...args).n
+}
+
+function taskWhere({ programId = '', status = '', phase = '', q = '' }) {
+  let where = '1=1'
   const args = []
-  if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
-  if (status) { sql += ' AND status = ?'; args.push(status) }
-  if (phase) { sql += ' AND phase = ?'; args.push(phase) }
-  sql += ' ORDER BY priority ASC, created_at ASC LIMIT ?'
-  args.push(Math.min(limit, 200))
-  return plain(getDb().prepare(sql).all(...args))
+  if (programId) { where += ' AND program_id = ?'; args.push(programId) }
+  if (status) { where += ' AND status = ?'; args.push(status) }
+  if (phase) { where += ' AND phase = ?'; args.push(phase) }
+  if (q) { where += ' AND objective LIKE ?'; args.push(`%${q}%`) }
+  return { where, args }
 }
 
 export function taskNext(programId) {
@@ -352,15 +390,25 @@ export function factGet(program_id, fact_key) {
   return row ? { ...row } : null
 }
 
-export function factSearch({ program_id = '', category = '', q = '', limit = 50 }) {
-  let sql = 'SELECT program_id, fact_key, category, summary, confidence, pinned, related_finding_id, updated_at FROM facts WHERE 1=1'
+export function factSearch({ program_id = '', category = '', q = '', confidence = '', limit = 50, offset = 0 }) {
+  const { where, args } = factWhere({ program_id, category, q, confidence })
+  const sql = `SELECT program_id, fact_key, category, summary, confidence, pinned, related_finding_id, updated_at FROM facts WHERE ${where} ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?`
+  return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
+}
+
+export function countFacts(filters = {}) {
+  const { where, args } = factWhere(filters)
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM facts WHERE ${where}`).get(...args).n
+}
+
+function factWhere({ program_id = '', category = '', q = '', confidence = '' }) {
+  let where = '1=1'
   const args = []
-  if (program_id) { sql += ' AND program_id = ?'; args.push(program_id) }
-  if (category) { sql += ' AND category = ?'; args.push(category) }
-  if (q) { sql += ' AND (summary LIKE ? OR fact_key LIKE ? OR body LIKE ?)'; args.push(`%${q}%`, `%${q}%`, `%${q}%`) }
-  sql += ' ORDER BY pinned DESC, updated_at DESC LIMIT ?'
-  args.push(Math.min(limit, 200))
-  return plain(getDb().prepare(sql).all(...args))
+  if (program_id) { where += ' AND program_id = ?'; args.push(program_id) }
+  if (category) { where += ' AND category = ?'; args.push(category) }
+  if (confidence) { where += ' AND confidence = ?'; args.push(confidence) }
+  if (q) { where += ' AND (summary LIKE ? OR fact_key LIKE ? OR body LIKE ?)'; args.push(`%${q}%`, `%${q}%`, `%${q}%`) }
+  return { where, args }
 }
 
 export function factLink({ program_id, src_key, dst_key, edge_type, confidence = 'tentative' }) {

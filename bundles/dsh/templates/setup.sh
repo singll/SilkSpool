@@ -199,6 +199,11 @@ if [ -f "$BASE_DIR/sec-dashboard-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-dashboard-plugin-setup.sh" || warn "安全看板插件安装失败（不影响 DSH 主程序）"
 fi
 
+# -------------------- 8.8 丝之歌全局主题客户端插件 --------------------
+if [ -f "$BASE_DIR/theme-silksong-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/theme-silksong-plugin-setup.sh" || warn "丝之歌主题插件安装失败（不影响 DSH 主程序）"
+fi
+
 # -------------------- 9. 情报刷新定时器（intel-feeder v1，每日） --------------------
 if [ -f "$BASE_DIR/intel-refresh.sh" ]; then
     $SUDO tee /etc/systemd/system/silksec-intel.service >/dev/null <<EOF

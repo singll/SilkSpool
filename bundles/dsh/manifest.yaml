@@ -64,6 +64,11 @@ templates:
   - dsh-plugin-sec-dashboard.client.js
   - dsh-plugin-sec-dashboard.patch.yml
   - sec-dashboard-plugin-setup.sh
+  # --- 丝之歌全局主题客户端插件（设计规范：doc/silksong-theme-design.md）---
+  - dsh-plugin-theme-silksong.index.js
+  - dsh-plugin-theme-silksong.client.js
+  - dsh-plugin-theme-silksong.patch.yml
+  - theme-silksong-plugin-setup.sh
   # --- program_id 回填迁移（P6 一次性脚本）---
   - backfill-program.js
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---

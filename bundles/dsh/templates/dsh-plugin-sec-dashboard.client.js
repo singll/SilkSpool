@@ -4,13 +4,17 @@
  * SilkSecAgent「看板」——**全局**入口，不挂任何会话：
  *   - 入口：`sidebar.footer.action`（scope:root，侧边栏底部，任何会话/无会话时都可见）
  *   - 形态：primitives `Modal`（headless 模式，~1120px），内部四视图 tab：
- *     漏洞（findings，打标）/ 资产（assets+endpoints）/ 事实（facts+遗留 blackboard，纠正·废弃）/
+ *     漏洞（findings，打标）/ 资产（assets）/ 事实（facts+遗留 blackboard，纠正·废弃）/
  *     任务（programs+tasks，只读）
  *
  * 数据走 Host↔Client RPC 通道 `/silksec-dashboard`（`ctx.get('connection').rpc`），
  * 与 sec-suite 宿主侧 `connection.rpc.handle('/silksec-dashboard', …)` 一一对应。
- * 写操作（打标 / 事实纠正）直接复用宿主 assetDb 函数 + audit.jsonl，本插件零持久化。
- * 视觉走宿主设计令牌（--dsw-alias-* / --dsw-font-*）+ primitives Modal。
+ * 查询端点返回 { rows, total }（服务端分页 + 筛选）；写操作（打标 / 事实纠正）
+ * 直接复用宿主 assetDb 函数 + audit.jsonl，本插件零持久化。
+ *
+ * 视觉遵循丝之歌主题设计规范（bundles/dsh/doc/silksong-theme-design.md）：
+ * 宿主设计令牌（--dsw-alias-* / --dsw-font-*）+ primitives Modal；
+ * severity 五色走 --silksec-sev-*（theme-silksong 插件注入，带 fallback）。
  */
 window.__ModuleLoader__.load({
   id: '@silksec/sec-dashboard',
@@ -32,11 +36,14 @@ window.__ModuleLoader__.load({
       border2: 'var(--dsw-alias-border-l2)',
       border3: 'var(--dsw-alias-border-l3)',
       base: 'var(--dsw-alias-bg-base)',
+      layer1: 'var(--dsw-alias-bg-layer-1)',
+      layer2: 'var(--dsw-alias-bg-layer-2)',
       hover: 'var(--dsw-alias-interactive-bg-hover)',
       brand: 'var(--dsw-alias-brand-primary)',
       success: 'var(--dsw-alias-state-success-primary)',
       warn: 'var(--dsw-alias-state-warn-primary)',
       error: 'var(--dsw-alias-state-error-primary)',
+      skeleton: 'var(--dsw-alias-bg-skeleton)',
     }
     var F = {
       xxxs: { font: 'var(--dsw-font-xxxs-11)' },
@@ -47,14 +54,24 @@ window.__ModuleLoader__.load({
       sStrong: { font: 'var(--dsw-font-s-strong-14)' },
       baseStrong: { font: 'var(--dsw-font-base-strong-16)' },
     }
+    var MONO = 'var(--ds-font-family-code, ui-monospace, SFMono-Regular, Consolas, monospace)'
     var EASE = 'var(--ds-ease-in-out, cubic-bezier(.4, 0, .2, 1))'
 
-    var SEV_COLOR = { critical: '#e2607a', high: '#e2803a', medium: '#d99a2b', low: '#4a90e2', info: '#8a8f98' }
+    // severity 五色：丝之歌主题经 --silksec-sev-* 注入，fallback 为规范初值
+    var SEV_COLOR = {
+      critical: 'var(--silksec-sev-critical, #E05555)',
+      high: 'var(--silksec-sev-high, #D4743A)',
+      medium: 'var(--silksec-sev-medium, #D4A24C)',
+      low: 'var(--silksec-sev-low, #4E8C84)',
+      info: 'var(--silksec-sev-info, #8A8578)',
+    }
     var SEV_LABEL = { critical: '严重', high: '高危', medium: '中危', low: '低危', info: '信息' }
     var STATUS_LABEL = {
       new: '新发现', confirmed: '已确认', false_positive: '误报', submitted: '已提交',
       accepted: '已接收', dup: '重复', ignored: '忽略',
     }
+    // 已定案（降权淡出，规范 §7）
+    var STATUS_CLOSED = ['false_positive', 'dup', 'ignored']
     var CONF_LABEL = { confirmed: '确认', tentative: '待定', deprecated: '废弃' }
     var TASK_STATUS_LABEL = {
       queued: '排队', running: '运行中', blocked: '阻塞', done: '完成', failed: '失败', cancelled: '取消',
@@ -67,7 +84,7 @@ window.__ModuleLoader__.load({
     }
     function fmtBytes(n) { return n === undefined || n === null ? '—' : String(n) }
 
-    // ── 注入样式（Modal 宽度/高度覆盖 + 侧边栏入口按钮几何） ─────────────────
+    // ── 注入样式（Modal 几何 + 侧边栏入口 + 工具条/分页/打标 hover 规则） ──────
     var CSS_KEY = 'silksec-dashboard'
     if (!document.querySelector('style[data-plugin-css=' + JSON.stringify(CSS_KEY) + ']')) {
       var styleTag = document.createElement('style')
@@ -75,10 +92,25 @@ window.__ModuleLoader__.load({
       styleTag.dataset.pluginCss = CSS_KEY
       styleTag.textContent = [
         '.silksec-dash-dialog{width:min(1120px,calc(100vw - 48px));height:min(85vh,960px)}',
-        '.silksec-dash-action{box-sizing:border-box;width:calc(100% + 8px);height:34px;margin:4px -4px;padding:6px 10px;border:0;border-radius:12px;background:0 0;cursor:pointer;display:flex;align-items:center;gap:6px;min-width:0;color:' + T.label2 + ';font:' + F.xs.font + ';transition:background-color ' + EASE + ',color ' + EASE + '}',
+        '.silksec-dash-action{box-sizing:border-box;width:calc(100% + 8px);height:34px;margin:4px -4px;padding:6px 10px;border:0;border-radius:12px;background:0 0;cursor:pointer;display:flex;align-items:center;gap:6px;min-width:0;color:' + T.label2 + ';font:' + F.xs.font + ';transition:background-color 150ms ease-out,color 150ms ease-out}',
         '.silksec-dash-action:hover{background:' + T.hover + ';color:' + T.label + '}',
         '.silksec-dash-action[data-rail=true]{width:36px;height:36px;margin:4px 0;padding:0;border-radius:50%;justify-content:center}',
         '.silksec-dash-action:focus-visible{box-shadow:0 0 0 2px ' + T.border3 + ';outline:none}',
+        // 工具条输入/下拉
+        '.silksec-input{box-sizing:border-box;height:28px;padding:0 10px;border-radius:6px;border:1px solid ' + T.border2 + ';background:' + T.layer2 + ';color:' + T.label + ';font:' + F.xs.font + ';outline:none;transition:border-color 150ms ease-out}',
+        '.silksec-input:focus{border-color:' + T.border3 + '}',
+        '.silksec-input::placeholder{color:' + T.label3 + '}',
+        'select.silksec-input{appearance:none;padding-right:22px;background-image:linear-gradient(45deg,transparent 50%,' + T.label3 + ' 50%),linear-gradient(135deg,' + T.label3 + ' 50%,transparent 50%);background-position:calc(100% - 13px) 50%,calc(100% - 9px) 50%;background-size:4px 4px;background-repeat:no-repeat;cursor:pointer}',
+        // 打标按钮：确认 hover 转绯红填充（主行动语义，规范 §7）
+        '.silksec-btn{box-sizing:border-box;height:24px;padding:0 10px;border-radius:6px;border:1px solid ' + T.border2 + ';background:transparent;color:' + T.label + ';cursor:pointer;font-size:12px;line-height:18px;transition:background-color 150ms ease-out,color 150ms ease-out,border-color 150ms ease-out}',
+        '.silksec-btn:hover:not(:disabled){background:' + T.hover + '}',
+        '.silksec-btn:disabled{opacity:0.4;cursor:default}',
+        '.silksec-btn-confirm:hover:not(:disabled){background:' + T.brand + ';border-color:' + T.brand + ';color:var(--dsw-alias-brand-text)}',
+        '.silksec-btn-danger{color:' + T.error + ';border-color:color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, transparent)}',
+        '.silksec-btn-danger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger)}',
+        // tab 下划线滑动
+        '.silksec-tab{border:none;background:transparent;cursor:pointer;padding:6px 14px;border-radius:0;border-bottom:2px solid transparent;color:' + T.label3 + ';font:' + F.s.font + ';transition:color 150ms ease-out,border-color 200ms ' + EASE + '}',
+        '.silksec-tab[data-on=true]{color:' + T.label + ';border-bottom-color:' + T.brand + ';font:' + F.sStrong.font + '}',
       ].join('\n')
       document.head.appendChild(styleTag)
     }
@@ -88,8 +120,9 @@ window.__ModuleLoader__.load({
     var header = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', minWidth: 0, marginBottom: 12 }
     var pageT = { color: T.label, ...F.baseStrong }
     var pageSub = { color: T.label3, marginTop: 2, ...F.xxs }
+    // 丝线分隔线（规范 §5.1：1px，两端渐隐）
+    var silkDivider = { height: 1, margin: '8px 0 0', background: 'linear-gradient(90deg, transparent, ' + T.border3 + ' 20%, ' + T.border3 + ' 80%, transparent)' }
     var tabBar = { display: 'flex', gap: 4, borderBottom: '1px solid ' + T.border, flexWrap: 'wrap', marginBottom: 4 }
-    var tabBase = { padding: '6px 14px', border: 'none', background: 'transparent', cursor: 'pointer', color: T.label3, ...F.s, borderBottom: '2px solid transparent', borderRadius: 0 }
     var body = { flex: '1 1 auto', overflowY: 'auto', minHeight: 0, padding: '12px 2px 20px' }
     var card = { padding: '12px 14px', borderRadius: 8, border: '1px solid ' + T.border, background: T.base, minWidth: 0, boxSizing: 'border-box' }
     var cardL = { color: T.label3, ...F.xxs }
@@ -97,11 +130,12 @@ window.__ModuleLoader__.load({
     var stateLine = { color: T.label3, padding: '24px 0', ...F.s }
     var errorLine = { ...stateLine, color: T.error, padding: '8px 0' }
     var pill = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 999, fontSize: 11, lineHeight: '16px', border: '1px solid ' + T.border2, color: T.label2, background: 'transparent', flexShrink: 0, whiteSpace: 'nowrap' }
-    var btn = { padding: '3px 10px', borderRadius: 6, border: '1px solid ' + T.border2, background: 'transparent', color: T.label, cursor: 'pointer', fontSize: 12, lineHeight: '18px' }
-    var btnDanger = { ...btn, color: T.error, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, transparent)' }
     var th = { textAlign: 'left', color: T.label3, padding: '6px 8px', ...F.xxsStrong, whiteSpace: 'nowrap' }
     var td = { padding: '6px 8px', color: T.label, ...F.xxs, verticalAlign: 'top', wordBreak: 'break-word' }
-    var row = { borderBottom: '1px solid ' + T.border2 }
+    var tdMono = { ...td, fontFamily: MONO, fontSize: 12 }
+    var row = { borderBottom: '1px solid ' + T.border2, transition: 'opacity 150ms ease-out' }
+    var toolbar = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', margin: '10px 0 8px' }
+    var pagerBar = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 10, color: T.label3, ...F.xxs }
 
     function sevPill(sev) {
       var c = SEV_COLOR[sev] || SEV_COLOR.info
@@ -113,19 +147,26 @@ window.__ModuleLoader__.load({
       return el('span', { style: { ...pill, color: c } }, CONF_LABEL[conf] || conf || 'tentative')
     }
     function taskPill(status) {
-      return el('span', { style: pill }, TASK_STATUS_LABEL[status] || status || 'queued')
+      var extra = status === 'blocked' ? { color: T.warn } : status === 'failed' ? { color: T.error } : null
+      return el('span', { style: { ...pill, ...(extra || {}) } }, TASK_STATUS_LABEL[status] || status || 'queued')
     }
 
-    function tagBtn(label, status, onTag, disabled) {
-      return el('button', { type: 'button', key: status, disabled: !!disabled, style: { ...btn, marginRight: 6, opacity: disabled ? 0.4 : 1 }, onClick: function () { onTag(status) } }, label)
+    // ── 图标（规范 §5：内联 SVG，stroke 1.5，currentColor） ───────────────────
+    // 丝轴 + 引出一段丝线（SilkSpool/Silksong 双关，全站唯一品牌图形）
+    function spoolIcon(size) {
+      return el('svg', { width: size || 16, height: size || 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', style: { flexShrink: 0 } },
+        el('path', { d: 'M4 2.5h7' }),
+        el('path', { d: 'M4 13.5h7' }),
+        el('path', { d: 'M5.5 2.5v11M9.5 2.5v11' }),
+        el('path', { d: 'M5.5 5.5h4M5.5 8h4M5.5 10.5h4' }),
+        el('path', { d: 'M9.5 10.5c3 0.5 3 2.5 4.5 3' }))
     }
 
-    function dashIcon() {
-      return el('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, style: { flexShrink: 0 } },
-        el('rect', { x: 2, y: 2, width: 5, height: 5, rx: 1 }),
-        el('rect', { x: 9, y: 2, width: 5, height: 5, rx: 1 }),
-        el('rect', { x: 2, y: 9, width: 5, height: 5, rx: 1 }),
-        el('rect', { x: 9, y: 9, width: 5, height: 5, rx: 1 }))
+    // 空状态（规范 §8.3 双文案 + §5.1 线稿图标）
+    function EmptyState(props) {
+      return el('div', { style: { ...stateLine, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, padding: '36px 0' } },
+        el('span', { style: { color: T.label3 } }, spoolIcon(24)),
+        el('span', null, props.filtered ? '无匹配结果' : (props.text || '暂无数据')))
     }
 
     // ── 数据读取 ─────────────────────────────────────────────────────────────
@@ -162,6 +203,123 @@ window.__ModuleLoader__.load({
       return data
     }
 
+    // 分页查询 hook：搜索防抖 300ms、改条件页码归 1、过期响应丢弃、30s 轮询当前页
+    function usePagedQuery(endpoint) {
+      var qs = React.useState('')
+      var q = qs[0]; var setQ = qs[1]
+      var dqs = React.useState('')
+      var dq = dqs[0]; var setDq = dqs[1]
+      var fs = React.useState({})
+      var filters = fs[0]; var setFilters = fs[1]
+      var ps = React.useState(0)
+      var page = ps[0]; var setPage = ps[1]
+      var ss = React.useState(20)
+      var size = ss[0]; var setSize = ss[1]
+      var ts = React.useState(0)
+      var tick = ts[0]; var setTick = ts[1]
+      var rs = React.useState({ loading: true, rows: null, total: 0, error: null })
+      var result = rs[0]; var setResult = rs[1]
+      var seq = React.useRef(0)
+
+      React.useEffect(function () {
+        var t = setTimeout(function () { setDq(q); setPage(0) }, 300)
+        return function () { clearTimeout(t) }
+      }, [q])
+
+      React.useEffect(function () {
+        var alive = true
+        function load() {
+          var my = ++seq.current
+          var payload = { limit: size, offset: page * size }
+          if (dq) payload.q = dq
+          for (var k in filters) if (filters[k]) payload[k] = filters[k]
+          callRpc(endpoint, payload).then(function (res) {
+            if (!alive || my !== seq.current) return
+            setResult({ loading: false, rows: (res && res.rows) || [], total: (res && res.total) || 0, error: null })
+          }).catch(function (e) {
+            if (!alive || my !== seq.current) return
+            setResult({ loading: false, rows: null, total: 0, error: e && e.message ? e.message : String(e) })
+          })
+        }
+        load()
+        var timer = setInterval(load, POLL_MS)
+        return function () { alive = false; clearInterval(timer) }
+      }, [endpoint, dq, JSON.stringify(filters), page, size, tick])
+
+      function setFilter(key, value) {
+        setFilters(function (prev) {
+          var next = { ...prev }
+          if (value) next[key] = value; else delete next[key]
+          return next
+        })
+        setPage(0)
+      }
+      function reset() { setQ(''); setDq(''); setFilters({}); setPage(0) }
+      function reload() { setTick(function (t) { return t + 1 }) }
+
+      return {
+        q: q, setQ: setQ, filters: filters, setFilter: setFilter,
+        page: page, setPage: setPage, size: size,
+        setSize: function (n) { setSize(n); setPage(0) },
+        rows: result.rows, total: result.total, loading: result.loading, error: result.error,
+        filtered: !!(dq || Object.keys(filters).length),
+        reset: reset, reload: reload,
+      }
+    }
+
+    // ── 工具条 / 分页器 / 骨架 ────────────────────────────────────────────────
+    function Toolbar(props) {
+      return el('div', { style: toolbar },
+        el('input', {
+          className: 'silksec-input', style: { width: 220 },
+          placeholder: props.placeholder || '搜索…',
+          value: props.query.q,
+          onChange: function (e) { props.query.setQ(e.target.value) },
+        }),
+        (props.filters || []).map(function (f) {
+          return el('select', {
+            key: f.key, className: 'silksec-input',
+            value: props.query.filters[f.key] || '',
+            onChange: function (e) { props.query.setFilter(f.key, e.target.value) },
+          },
+            el('option', { value: '' }, f.label + '：全部'),
+            f.options.map(function (o) { return el('option', { key: o.v, value: o.v }, o.l) }))
+        }))
+    }
+
+    function Pager(props) {
+      var query = props.query
+      var pages = Math.max(1, Math.ceil(query.total / query.size))
+      return el('div', { style: pagerBar },
+        el('button', { type: 'button', className: 'silksec-btn', disabled: query.page <= 0, onClick: function () { query.setPage(query.page - 1) } }, '‹ 上一页'),
+        el('span', null, '第 ' + (query.page + 1) + ' / ' + pages + ' 页 · 共 ' + query.total + ' 条'),
+        el('button', { type: 'button', className: 'silksec-btn', disabled: query.page >= pages - 1, onClick: function () { query.setPage(query.page + 1) } }, '下一页 ›'),
+        el('select', {
+          className: 'silksec-input', style: { marginLeft: 'auto' }, value: String(query.size),
+          onChange: function (e) { query.setSize(Number(e.target.value)) },
+        },
+          el('option', { value: '20' }, '20 条/页'),
+          el('option', { value: '50' }, '50 条/页'),
+          el('option', { value: '100' }, '100 条/页')))
+    }
+
+    function SkeletonRows(props) {
+      var rows = []
+      for (var i = 0; i < (props.rows || 5); i++) {
+        rows.push(el('div', { key: i, style: { height: 14, borderRadius: 4, background: T.skeleton, margin: '10px 8px', width: (88 - i * 7) + '%' } }))
+      }
+      return el('div', { style: { padding: '8px 0' } }, rows)
+    }
+
+    // 视图主体三态：错误 / 首载骨架 / 内容（后续刷新保留旧数据避免闪烁）
+    function ViewBody(props) {
+      var query = props.query
+      if (query.error) return el('div', { style: errorLine }, '加载失败: ' + query.error)
+      if (query.rows === null) return el(SkeletonRows, null)
+      if (!query.rows.length) return el(EmptyState, { filtered: query.filtered, text: props.emptyText })
+      return el(React.Fragment, null, props.children(query.rows), el(Pager, { query: query }))
+    }
+
     // ── 各视图 ───────────────────────────────────────────────────────────────
     function StatsHeader(props) {
       var s = props.stats || {}
@@ -181,102 +339,121 @@ window.__ModuleLoader__.load({
         }))
     }
 
-    function AssetsView(props) {
-      var rows = props.data || []
-      if (!rows.length) return el('div', { style: stateLine }, '暂无资产数据')
-      return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
-        el('table', { style: { width: '100%', borderCollapse: 'collapse', minWidth: 560 } },
-          el('thead', null, el('tr', null,
-            el('th', { style: th }, '主机'),
-            el('th', { style: th }, '类型'),
-            el('th', { style: th }, '来源'),
-            el('th', { style: th }, '项目'),
-            el('th', { style: th }, '最近发现'))),
-          el('tbody', null, rows.map(function (r) {
-            return el('tr', { key: (r.host || '') + '|' + (r.type || ''), style: row },
-              el('td', { style: td }, r.host),
-              el('td', { style: td }, r.type),
-              el('td', { style: td }, r.source || '—'),
-              el('td', { style: td }, r.program_id || '—'),
-              el('td', { style: td }, fmtTime(r.last_seen)))
-          }))))
+    function programOptions(programs) {
+      return (programs || []).map(function (p) { return { v: p.id, l: p.id } })
     }
 
     function FindingsView(props) {
-      var rows = props.data || []
+      var query = props.query
       var busy = props.busy
-      if (!rows.length) return el('div', { style: stateLine }, '暂无漏洞数据')
-      return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
-        el('table', { style: { width: '100%', borderCollapse: 'collapse', minWidth: 720 } },
-          el('thead', null, el('tr', null,
-            el('th', { style: th }, '#'),
-            el('th', { style: th }, '级别'),
-            el('th', { style: th }, '状态'),
-            el('th', { style: th }, '标题'),
-            el('th', { style: th }, '目标'),
-            el('th', { style: th }, '打标'))),
-          el('tbody', null, rows.map(function (r) {
-            var taggable = ['new', 'confirmed'].indexOf(r.status) >= 0
-            return el('tr', { key: String(r.id), style: row },
-              el('td', { style: td }, String(r.id)),
-              el('td', { style: td }, sevPill(r.severity)),
-              el('td', { style: td }, statusPill(r.status)),
-              el('td', { style: td }, r.title),
-              el('td', { style: td }, r.url || r.host || '—'),
-              el('td', { style: td },
-                taggable
-                  ? el('span', null,
-                      tagBtn('确认', 'confirmed', function (s) { props.onTag(r.id, s) }, busy),
-                      tagBtn('误报', 'false_positive', function (s) { props.onTag(r.id, s) }, busy),
-                      tagBtn('忽略', 'ignored', function (s) { props.onTag(r.id, s) }, busy))
-                  : el('span', { style: { color: T.label3, ...F.xxs } }, '已定案')))
-          }))))
+      function tagBtn(label, status, id, cls) {
+        return el('button', {
+          type: 'button', key: status, className: 'silksec-btn' + (cls ? ' ' + cls : ''),
+          disabled: !!busy, style: { marginRight: 6 },
+          onClick: function () { props.onTag(id, status) },
+        }, label)
+      }
+      return el(ViewBody, { query: query, emptyText: '暂无漏洞数据' }, function (rows) {
+        return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
+          el('table', { style: { width: '100%', borderCollapse: 'collapse', minWidth: 720 } },
+            el('thead', null, el('tr', null,
+              el('th', { style: th }, '#'),
+              el('th', { style: th }, '级别'),
+              el('th', { style: th }, '状态'),
+              el('th', { style: th }, '标题'),
+              el('th', { style: th }, '目标'),
+              el('th', { style: th }, '打标'))),
+            el('tbody', null, rows.map(function (r) {
+              var taggable = ['new', 'confirmed'].indexOf(r.status) >= 0
+              var closed = STATUS_CLOSED.indexOf(r.status) >= 0
+              // 强调（规范 §7）：new = 行左 2px 绯红边条；已定案 = 整行淡出
+              var rowStyle = {
+                ...row,
+                opacity: closed ? 0.5 : 1,
+                boxShadow: r.status === 'new' ? 'inset 2px 0 0 ' + T.brand : undefined,
+              }
+              return el('tr', { key: String(r.id), style: rowStyle },
+                el('td', { style: tdMono }, String(r.id)),
+                el('td', { style: td }, sevPill(r.severity)),
+                el('td', { style: td }, statusPill(r.status)),
+                el('td', { style: td }, r.title),
+                el('td', { style: tdMono }, r.url || r.host || '—'),
+                el('td', { style: td },
+                  taggable
+                    ? el('span', null,
+                        tagBtn('确认', 'confirmed', r.id, 'silksec-btn-confirm'),
+                        tagBtn('误报', 'false_positive', r.id),
+                        tagBtn('忽略', 'ignored', r.id))
+                    : el('span', { style: { color: T.label3, ...F.xxs } }, '已定案')))
+            }))))
+      })
+    }
+
+    function AssetsView(props) {
+      var query = props.query
+      return el(ViewBody, { query: query, emptyText: '暂无资产数据' }, function (rows) {
+        return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
+          el('table', { style: { width: '100%', borderCollapse: 'collapse', minWidth: 560 } },
+            el('thead', null, el('tr', null,
+              el('th', { style: th }, '主机'),
+              el('th', { style: th }, '类型'),
+              el('th', { style: th }, '来源'),
+              el('th', { style: th }, '项目'),
+              el('th', { style: th }, '最近发现'))),
+            el('tbody', null, rows.map(function (r) {
+              return el('tr', { key: (r.host || '') + '|' + (r.type || ''), style: row },
+                el('td', { style: tdMono }, r.host),
+                el('td', { style: td }, r.type),
+                el('td', { style: td }, r.source || '—'),
+                el('td', { style: td }, r.program_id || '—'),
+                el('td', { style: tdMono }, fmtTime(r.last_seen)))
+            }))))
+      })
     }
 
     function FactsView(props) {
-      var facts = props.facts || []
+      var query = props.query
       var board = props.board || []
       var busy = props.busy
       return el('div', null,
-        el('div', { style: pageT }, '事实图谱'),
-        el('div', { style: pageSub }, '渗透过程沉淀的事实（fact），错误的 fact 会注入未来所有 prompt，请用「废弃」纠正。'),
-        facts.length
-          ? el('div', { style: { margin: '12px 0 20px', display: 'flex', flexDirection: 'column', gap: 8 } },
-              facts.map(function (f) {
-                var key = f.program_id + '/' + f.fact_key
-                var deprecated = f.confidence === 'deprecated'
-                return el('div', { key: key, style: { ...card, opacity: deprecated ? 0.55 : 1 } },
-                  el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-                    el('span', { style: { color: T.label, ...F.sStrong, wordBreak: 'break-all' } }, f.fact_key),
-                    confPill(f.confidence),
-                    el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, f.program_id),
-                    el('button', { type: 'button', style: btn, disabled: !!busy || deprecated, onClick: function () { props.onCorrect(f.program_id, f.fact_key, f.summary) } }, '纠正'),
-                    el('button', { type: 'button', style: btnDanger, disabled: !!busy || deprecated, onClick: function () { props.onDeprecate(f.program_id, f.fact_key) } }, '废弃')),
-                  f.summary ? el('div', { style: { color: T.label2, marginTop: 6, ...F.xxs } }, f.summary) : null,
-                  f.body ? el('div', { style: { color: T.label3, marginTop: 4, ...F.xxxs } }, f.body) : null)
-              }))
-          : el('div', { style: stateLine }, '暂无事实数据'),
-        el('div', { style: { ...pageT, marginTop: 8 } }, '遗留黑板'),
+        el(ViewBody, { query: query, emptyText: '暂无事实数据' }, function (facts) {
+          return el('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+            facts.map(function (f) {
+              var key = f.program_id + '/' + f.fact_key
+              var deprecated = f.confidence === 'deprecated'
+              return el('div', { key: key, style: { ...card, opacity: deprecated ? 0.55 : 1 } },
+                el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+                  el('span', { style: { color: T.label, ...F.sStrong, wordBreak: 'break-all' } }, f.fact_key),
+                  confPill(f.confidence),
+                  el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, f.program_id),
+                  el('button', { type: 'button', className: 'silksec-btn', disabled: !!busy || deprecated, onClick: function () { props.onCorrect(f.program_id, f.fact_key, f.summary) } }, '纠正'),
+                  el('button', { type: 'button', className: 'silksec-btn silksec-btn-danger', disabled: !!busy || deprecated, onClick: function () { props.onDeprecate(f.program_id, f.fact_key) } }, '废弃')),
+                f.summary ? el('div', { style: { color: T.label2, marginTop: 6, ...F.xxs } }, f.summary) : null)
+            }))
+        }),
+        el('div', { style: { ...pageT, marginTop: 20 } }, '遗留黑板'),
         el('div', { style: pageSub }, '旧版扁平黑板（key/value，只读，待迁移进事实图谱）。'),
         board.length
           ? el('div', { style: { marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 } },
               board.map(function (b) {
                 return el('div', { key: b.key, style: card },
-                  el('div', { style: { color: T.label, ...F.xxsStrong, wordBreak: 'break-all' } }, b.key),
+                  el('div', { style: { color: T.label, ...F.xxsStrong, wordBreak: 'break-all', fontFamily: MONO, fontSize: 12 } }, b.key),
                   el('div', { style: { color: T.label2, marginTop: 4, ...F.xxs, wordBreak: 'break-word' } }, String(b.value || '').slice(0, 2000)))
               }))
-          : el('div', { style: stateLine }, '暂无黑板数据'))
+          : el(EmptyState, { text: '暂无黑板数据' }))
     }
 
     function TasksView(props) {
+      var query = props.query
       var programs = props.programs || []
-      var tasks = props.tasks || []
       var progs = programs.map(function (p) {
+        var intrusive = p.max_risk === 'intrusive'
         return el('div', { key: p.id, style: card },
           el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
             el('span', { style: { color: T.label, ...F.sStrong } }, p.id),
             p.platform ? el('span', { style: pill }, p.platform) : null,
-            p.max_risk ? el('span', { style: pill }, '上限 ' + p.max_risk) : null,
+            // 规范 §7：风险上限仅 intrusive 时用丝线金提示
+            p.max_risk ? el('span', { style: intrusive ? { ...pill, color: T.warn, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent)' } : pill }, '上限 ' + p.max_risk) : null,
             el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, p.status || 'active')))
       })
       return el('div', null,
@@ -284,31 +461,32 @@ window.__ModuleLoader__.load({
         el('div', { style: pageSub }, 'scope.yml 授权项目（Program），任务/资产/漏洞的归属主体。'),
         progs.length
           ? el('div', { style: { margin: '12px 0 20px', display: 'flex', flexDirection: 'column', gap: 8 } }, progs)
-          : el('div', { style: stateLine }, '暂无项目'),
+          : el(EmptyState, { text: '暂无项目' }),
         el('div', { style: { ...pageT, marginTop: 8 } }, '任务'),
         el('div', { style: pageSub }, '编排器派发的任务队列（只读，起任务走对话）。'),
-        tasks.length
-          ? el('div', { style: { overflowX: 'auto', minWidth: 0, marginTop: 12 } },
-              el('table', { style: { width: '100%', borderCollapse: 'collapse', minWidth: 640 } },
-                el('thead', null, el('tr', null,
-                  el('th', { style: th }, '#'),
-                  el('th', { style: th }, '项目'),
-                  el('th', { style: th }, '阶段'),
-                  el('th', { style: th }, '目标'),
-                  el('th', { style: th }, '状态'),
-                  el('th', { style: th }, '优先级'))),
-                el('tbody', null, tasks.map(function (t) {
-                  return el('tr', { key: String(t.id), style: row },
-                    el('td', { style: td }, String(t.id)),
-                    el('td', { style: td }, t.program_id),
-                    el('td', { style: td }, t.phase || '—'),
-                    el('td', { style: td }, t.objective),
-                    el('td', { style: td }, taskPill(t.status)),
-                    el('td', { style: td }, String(t.priority ?? 5)))
-                }))))
-          : el('div', { style: stateLine }, '暂无任务'))
+        el(ViewBody, { query: query, emptyText: '暂无任务' }, function (rows) {
+          return el('div', { style: { overflowX: 'auto', minWidth: 0, marginTop: 12 } },
+            el('table', { style: { width: '100%', borderCollapse: 'collapse', minWidth: 640 } },
+              el('thead', null, el('tr', null,
+                el('th', { style: th }, '#'),
+                el('th', { style: th }, '项目'),
+                el('th', { style: th }, '阶段'),
+                el('th', { style: th }, '目标'),
+                el('th', { style: th }, '状态'),
+                el('th', { style: th }, '优先级'))),
+              el('tbody', null, rows.map(function (t) {
+                return el('tr', { key: String(t.id), style: row },
+                  el('td', { style: tdMono }, String(t.id)),
+                  el('td', { style: td }, t.program_id),
+                  el('td', { style: td }, t.phase || '—'),
+                  el('td', { style: td }, t.objective),
+                  el('td', { style: td }, taskPill(t.status)),
+                  el('td', { style: tdMono }, String(t.priority ?? 5)))
+              }))))
+        }))
     }
 
+    // ── 看板外壳 ─────────────────────────────────────────────────────────────
     function DashboardShell() {
       var tab = React.useState('findings')
       var activeTab = tab[0]
@@ -316,29 +494,18 @@ window.__ModuleLoader__.load({
       var busy = React.useState(false)
       var isBusy = busy[0]
       var setBusy = busy[1]
-      var refresh = React.useState(0)
-      var refreshTick = refresh[0]
-      var doRefresh = function () { refresh([refreshTick + 1]) }
 
-      var statsState = useRpc(function () { return { endpoint: 'stats' } }, [refreshTick])
-      var findingsState = useRpc(function () {
-        return activeTab === 'findings' ? { endpoint: 'findings', payload: { limit: 200 } } : null
-      }, [activeTab, refreshTick])
-      var assetsState = useRpc(function () {
-        return activeTab === 'assets' ? { endpoint: 'assets', payload: { limit: 200 } } : null
-      }, [activeTab, refreshTick])
-      var factsState = useRpc(function () {
-        return activeTab === 'facts' ? { endpoint: 'facts', payload: { limit: 200 } } : null
-      }, [activeTab, refreshTick])
+      var statsState = useRpc(function () { return { endpoint: 'stats' } }, [])
+      var programsState = useRpc(function () { return { endpoint: 'programs' } }, [])
       var boardState = useRpc(function () {
         return activeTab === 'facts' ? { endpoint: 'blackboard' } : null
-      }, [activeTab, refreshTick])
-      var tasksState = useRpc(function () {
-        return activeTab === 'tasks' ? { endpoint: 'tasks', payload: { limit: 200 } } : null
-      }, [activeTab, refreshTick])
-      var programsState = useRpc(function () {
-        return activeTab === 'tasks' ? { endpoint: 'programs' } : null
-      }, [activeTab, refreshTick])
+      }, [activeTab])
+
+      // 四个视图各自的分页查询（状态按 tab 记忆，Modal 关闭即销毁重置）
+      var findingsQ = usePagedQuery('findings')
+      var assetsQ = usePagedQuery('assets')
+      var factsQ = usePagedQuery('facts')
+      var tasksQ = usePagedQuery('tasks')
 
       function withBusy(fn) {
         return function () {
@@ -346,7 +513,7 @@ window.__ModuleLoader__.load({
           setBusy(true)
           Promise.resolve().then(fn).catch(function (e) {
             console.error('[sec-dashboard] 写操作失败:', e)
-          }).finally(function () { setBusy(false); doRefresh() })
+          }).finally(function () { setBusy(false); findingsQ.reload(); factsQ.reload() })
         }
       }
       function onTag(id, status) {
@@ -371,39 +538,70 @@ window.__ModuleLoader__.load({
         { id: 'tasks', label: '任务' },
       ]
       function tabButton(t) {
-        var on = activeTab === t.id
         return el('button', {
-          key: t.id, type: 'button',
-          style: { ...tabBase, color: on ? T.label : T.label3, borderBottom: '2px solid ' + (on ? T.brand : 'transparent'), ...(on ? F.sStrong : {}) },
+          key: t.id, type: 'button', className: 'silksec-tab',
+          'data-on': activeTab === t.id ? 'true' : undefined,
           onClick: function () { setTab(t.id) },
         }, t.label)
       }
 
+      var progOpts = programOptions(programsState.data)
       var content = null
       if (activeTab === 'findings') {
-        content = findingsState.error ? el('div', { style: errorLine }, '加载失败: ' + findingsState.error)
-          : findingsState.loading ? el('div', { style: stateLine }, '加载中…')
-            : el(FindingsView, { data: findingsState.data, onTag: onTag, busy: isBusy })
+        content = el(React.Fragment, null,
+          el(Toolbar, {
+            query: findingsQ, placeholder: '搜索标题 / 主机 / URL…',
+            filters: [
+              { key: 'severity', label: '级别', options: Object.keys(SEV_LABEL).map(function (k) { return { v: k, l: SEV_LABEL[k] } }) },
+              { key: 'status', label: '状态', options: Object.keys(STATUS_LABEL).map(function (k) { return { v: k, l: STATUS_LABEL[k] } }) },
+              { key: 'program_id', label: '项目', options: progOpts },
+            ],
+          }),
+          el(FindingsView, { query: findingsQ, onTag: onTag, busy: isBusy }))
       } else if (activeTab === 'assets') {
-        content = assetsState.error ? el('div', { style: errorLine }, '加载失败: ' + assetsState.error)
-          : assetsState.loading ? el('div', { style: stateLine }, '加载中…')
-            : el(AssetsView, { data: assetsState.data })
+        var typeOpts = ((statsState.data && statsState.data.assets_by_type) || []).map(function (r) { return { v: r.type, l: r.type + ' (' + r.n + ')' } })
+        content = el(React.Fragment, null,
+          el(Toolbar, {
+            query: assetsQ, placeholder: '搜索主机…',
+            filters: [
+              { key: 'type', label: '类型', options: typeOpts },
+              { key: 'program_id', label: '项目', options: progOpts },
+            ],
+          }),
+          el(AssetsView, { query: assetsQ }))
       } else if (activeTab === 'facts') {
-        content = (factsState.error || boardState.error) ? el('div', { style: errorLine }, '加载失败: ' + (factsState.error || boardState.error))
-          : (factsState.loading || boardState.loading) ? el('div', { style: stateLine }, '加载中…')
-            : el(FactsView, { facts: factsState.data, board: boardState.data, onDeprecate: onDeprecate, onCorrect: onCorrect, busy: isBusy })
+        content = el(React.Fragment, null,
+          el(Toolbar, {
+            query: factsQ, placeholder: '搜索事实 key / 摘要…',
+            filters: [
+              { key: 'category', label: '分类', options: ['auth', 'target', 'note', 'finding', 'chain', 'exploit', 'asset'].map(function (c) { return { v: c, l: c } }) },
+              { key: 'confidence', label: '置信', options: Object.keys(CONF_LABEL).map(function (k) { return { v: k, l: CONF_LABEL[k] } }) },
+              { key: 'program_id', label: '项目', options: progOpts },
+            ],
+          }),
+          el(FactsView, { query: factsQ, board: boardState.data, onDeprecate: onDeprecate, onCorrect: onCorrect, busy: isBusy }))
       } else {
-        content = (tasksState.error || programsState.error) ? el('div', { style: errorLine }, '加载失败: ' + (tasksState.error || programsState.error))
-          : (tasksState.loading || programsState.loading) ? el('div', { style: stateLine }, '加载中…')
-            : el(TasksView, { tasks: tasksState.data, programs: programsState.data })
+        content = el(React.Fragment, null,
+          el(Toolbar, {
+            query: tasksQ, placeholder: '搜索任务目标…',
+            filters: [
+              { key: 'status', label: '状态', options: Object.keys(TASK_STATUS_LABEL).map(function (k) { return { v: k, l: TASK_STATUS_LABEL[k] } }) },
+              { key: 'phase', label: '阶段', options: ['recon', 'vuln', 'biz-logic', 'code-audit', 'intranet', 'review'].map(function (c) { return { v: c, l: c } }) },
+              { key: 'program_id', label: '项目', options: progOpts },
+            ],
+          }),
+          el(TasksView, { query: tasksQ, programs: programsState.data }))
       }
 
       return el('div', { style: root },
         el('div', { style: header },
           el('div', null,
-            el('div', { style: pageT }, '安全看板'),
-            el('div', { style: pageSub }, '全局 · 资产 / 漏洞 / 事实 / 任务 · 打标与事实纠正写入 audit.jsonl')),
-          el('button', { type: 'button', style: btn, onClick: doRefresh }, '刷新')),
+            el('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+              el('span', { style: { color: T.brand, display: 'inline-flex' } }, spoolIcon(16)),
+              el('div', { style: pageT }, '安全看板')),
+            el('div', { style: pageSub }, '全局 · 资产 / 漏洞 / 事实 / 任务 · 打标与事实纠正写入 audit.jsonl'),
+            el('div', { style: silkDivider })),
+          el('button', { type: 'button', className: 'silksec-btn', onClick: function () { findingsQ.reload(); assetsQ.reload(); factsQ.reload(); tasksQ.reload() } }, '刷新')),
         statsState.error ? el('div', { style: errorLine }, '统计加载失败: ' + statsState.error) : el(StatsHeader, { stats: statsState.data }),
         el('div', { style: tabBar }, tabs.map(tabButton)),
         el('div', { style: body }, content))
@@ -424,7 +622,7 @@ window.__ModuleLoader__.load({
         title: '安全看板',
         onClick: function () { setOpen(true) },
       },
-        dashIcon(),
+        spoolIcon(16),
         wide ? el('span', null, '看板') : null)
 
       if (!Modal) return button

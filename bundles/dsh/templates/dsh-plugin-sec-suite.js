@@ -883,20 +883,49 @@ function handleDashboardRpc(endpoint, payload) {
   switch (endpoint) {
     case 'stats':
       return assetDb.stats()
-    case 'assets':
-      return assetDb.queryAssets({ limit: Math.min(Number(p.limit) || 100, 500) })
-    case 'endpoints':
-      return assetDb.queryEndpoints({ limit: Math.min(Number(p.limit) || 100, 500) })
-    case 'findings':
-      return assetDb.queryFindings({ limit: Math.min(Number(p.limit) || 100, 500) })
+    case 'assets': {
+      const filters = { hostLike: String(p.q || ''), type: String(p.type || ''), programId: String(p.program_id || '') }
+      const limit = Math.min(Number(p.limit) || 20, 200)
+      const offset = Math.max(0, Number(p.offset) || 0)
+      return { rows: assetDb.queryAssets({ ...filters, limit, offset }), total: assetDb.countAssets(filters) }
+    }
+    case 'endpoints': {
+      const filters = { host: String(p.host || ''), pathLike: String(p.q || ''), programId: String(p.program_id || '') }
+      const limit = Math.min(Number(p.limit) || 20, 200)
+      const offset = Math.max(0, Number(p.offset) || 0)
+      return { rows: assetDb.queryEndpoints({ ...filters, limit, offset }), total: assetDb.countEndpoints(filters) }
+    }
+    case 'findings': {
+      const filters = {
+        severity: String(p.severity || ''), status: String(p.status || ''),
+        programId: String(p.program_id || ''), q: String(p.q || ''),
+      }
+      const limit = Math.min(Number(p.limit) || 20, 200)
+      const offset = Math.max(0, Number(p.offset) || 0)
+      return { rows: assetDb.queryFindings({ ...filters, limit, offset }), total: assetDb.countFindings(filters) }
+    }
     case 'blackboard':
       return assetDb.bbGet()
-    case 'facts':
-      return assetDb.factSearch({ limit: Math.min(Number(p.limit) || 100, 500) })
+    case 'facts': {
+      const filters = {
+        program_id: String(p.program_id || ''), category: String(p.category || ''),
+        q: String(p.q || ''), confidence: String(p.confidence || ''),
+      }
+      const limit = Math.min(Number(p.limit) || 20, 200)
+      const offset = Math.max(0, Number(p.offset) || 0)
+      return { rows: assetDb.factSearch({ ...filters, limit, offset }), total: assetDb.countFacts(filters) }
+    }
     case 'programs':
       return assetDb.listPrograms()
-    case 'tasks':
-      return assetDb.taskList({ limit: Math.min(Number(p.limit) || 200, 500) })
+    case 'tasks': {
+      const filters = {
+        programId: String(p.program_id || ''), status: String(p.status || ''),
+        phase: String(p.phase || ''), q: String(p.q || ''),
+      }
+      const limit = Math.min(Number(p.limit) || 20, 200)
+      const offset = Math.max(0, Number(p.offset) || 0)
+      return { rows: assetDb.taskList({ ...filters, limit, offset }), total: assetDb.countTasks(filters) }
+    }
     case 'findingUpdate': {
       const id = Number(p.id)
       const status = String(p.status || '')

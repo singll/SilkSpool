@@ -1,0 +1,4 @@
+# silksec-theme-silksong bundle layer：把丝之歌主题宿主半面挂进安装它的 profile
+- insert:
+    - id: theme-silksong
+      name: '@silksec/theme-silksong'
