@@ -13,21 +13,24 @@
 
 ## 0. 一句话诊断（2026-08-22 校准）
 
-SilkSecAgent 已从「跑得通的引擎」进化为「有脊柱、有眼睛的平台」：P6 脊柱（programs/tasks 表 + task 工具）、P7 补血（parser 注册表 + nuclei→findings + plan_chain）、P8 管理增强（事实图谱 + 指纹/凭据 + 报告模板）、P9 自学习（negative-ledger/活评测/语义去重/intel_hunt）、P10 合规补齐（bwrap 沙箱/S1 解析后校验/参数注入防护/retention）**全部落地**，看板全局入口四视图已上线（丝之歌主题）。但它有五个新短板（对应本次五个需求）：
+SilkSecAgent 已从「跑得通的引擎」进化为「有脊柱、有眼睛的平台」：P6 脊柱、P7 补血、P8 管理增强、P9 自学习、P10 合规补齐**全部落地**，看板全局入口已上线（丝之歌主题）。本次五个新需求（定时任务 / 跳链 / 工作区融合 / 事实迁移 / 强关联 + 追加的 scope 界面管理）构成 **P11，已于 2026-08-22 当天执行完毕**（验收记录见 §八）：
 
-1. **任务无定时**——tasks 表 0 行、无调度字段，DSH 自带 `dsh-schedule` 装了没组合；对话里说「定时跑」**不会**出现在看板任务里（§五给出直接回答与方案）。
-2. **无跳转**——看板行与会话之间没有链接，run→session 映射不存在（工具执行未捕获 `exec.agent.id`）。
-3. **双项目体系**——看板的 Program（scope.yml 镜像）与 DSH 自带 Workspace（`ctx.workspaceRegistry`，已有美团SRC/字节SRC 两个）是两套，未融合。
-4. **事实黑板空转**——facts/fact_edges 表 + fact_* 工具 + 看板事实视图都已上线**但 0 行**；970 条旧事实（含字节 566 条）仍躺在遗留 blackboard 表里只读展示。
-5. **归属未收口**——287 资产 / 26 漏洞 / 235 接口挂在 `_legacy`（含字节 117 资产，因 scope.yml 无 bytedance 程序），与工作区未绑定。
+1. **任务无定时** → ✅ tasks 调度字段 + 60s 调度循环（SQLite 事务认领）+ worker cwd=工作区；对话说「定时跑」= task_create(schedule=…)，看板立即可见（§五）。
+2. **无跳转** → ✅ `exec.agent.id` 捕获 session_id（findings/tasks/run meta），看板行级 `ctx.sessions.open` 跳链，详情在会话（§六）。
+3. **双项目体系** → ✅ Program（scope 真相）↔ Workspace（用户可感项目）1:1 软绑定，看板项目区块改为工作区区块（§四）。
+4. **事实黑板空转** → ✅ 970 条遗留 blackboard 迁入 facts（meituan 403 / bytedance 566 / _unbound 1），confidence 一律 tentative（§七）。
+5. **归属未收口** → ✅ scope.yml 登记 bytedance（11 域，2026-08-22 用户确认）+ backfill 重扫 `_legacy`；剩余 _legacy 为合法未关联（§四.3）。
+6. **追加：scope 界面管理** → ✅ 看板「授权」视图（新增/编辑/移除 + 工作区绑定表单，原子写 + 备份 + 审计）。
 
-**结论**：P11 迭代 = **装日历（定时任务）、装桥梁（工作区融合 + 跳转）、搬家（事实迁移 + 存量重关联）**，全部增量、不推倒重来。
+**遗留（P12）**：egress-guard / chicheng-push / Authelia 三件（见 §1.5）；dsh-schedule 可选补齐为会话内提醒（§五.4）。
 
 ---
 
 ## 一、现状诚实基线（2026-08-22 实测校准）
 
 > 校准方式：spool exec 实测 csai 运行时（SQLite 计数 / systemctl / 文件权限 / profile 组合）+ 源码通读 + rc.7 包级核实。
+>
+> **P11 已落地（2026-08-22 当天执行完毕，见 §八验收记录）**：工作区融合、定时任务调度、跳链、scope 看板管理、事实迁移、存量重关联全部上线并实测通过。
 
 ### 1.1 能力矩阵（真实状态，✅=已落地并验证）
 
@@ -38,37 +41,38 @@ SilkSecAgent 已从「跑得通的引擎」进化为「有脊柱、有眼睛的�
 | **bwrap 沙箱**（审计 S2） | 同上 `SANDBOX_DISABLED` 段 | ✅ run_cli 已接 bwrap 白名单隔离（`--unshare-all --share-net`），可 `SEC_NO_SANDBOX=1` 兜底 |
 | **S3/S4 守卫** | 同上 | ✅ 无 target_param 且 risk≥active → 拒绝；标量参数注入防护 |
 | `asset-graph`（assets/endpoints/findings/blackboard） | [asset-db.js](../bundles/dsh/templates/dsh-plugin-sec-suite.asset-db.js) | ✅ 四表 + WAL |
-| **P6 脊柱**：programs/tasks 表 + task_create/update/list/next/stats + program_list + program_id 自动回填 + orchestrator Preset | asset-db / [asset-graph.js](../bundles/dsh/templates/dsh-plugin-sec-suite.asset-graph.js) | ✅ 表与工具在；**tasks 0 行（尚无活水）** |
+| **P6 脊柱**：programs/tasks 表 + task_create/update/list/next/stats + program_list + program_id 自动回填 + orchestrator Preset | asset-db / [asset-graph.js](../bundles/dsh/templates/dsh-plugin-sec-suite.asset-graph.js) | ✅ 表与工具在 |
 | **P7 补血**：parser 注册表（jsonl_httpx/jsonl_nuclei/lines_subfinder/csv_ffuf/excel_enscan）+ nuclei/afrog→findings 去重 + plan_chain 凑链 | [parsers.js](../bundles/dsh/templates/dsh-plugin-sec-suite.parsers.js) / sec-suite | ✅ 主扫描引擎命中进库率 0%→100% 的最大漏斗已堵 |
-| **P8 管理增强**：facts/fact_edges/fingerprints/credentials 表 + fact_upsert/get/search/link + fp_add/cred_add + 接口鉴权建模 + finding 报告模板 + report_build(program) | asset-db / asset-graph | ✅ 表与工具在；**facts/fingerprints/credentials 均 0 行（未迁移/未启用）** |
+| **P8 管理增强**：facts/fact_edges/fingerprints/credentials 表 + fact_upsert/get/search/link + fp_add/cred_add + 接口鉴权建模 + finding 报告模板 + report_build(program) | asset-db / asset-graph | ✅ 表与工具在；**facts 已由 P11 迁移灌入 970 条（见 §七）** |
 | **P9 自学习**：neg_check（note/* 证伪拦截）+ 经验卡语义去重（cosine>0.85 合并）+ 活评测（打标→eval-live.jsonl）+ kb 语义召回 + intel_hunt（指纹→N-day 模板） | experience.js / sec-suite | ✅ |
 | **P10 合规**：retention.sh + silksec-retention.timer（flows/results 30 天、audit 50MB 轮转，timer enabled 实测）；kb_import 注入扫描 + 污点标记（taintguard 等价） | retention.sh / experience.js | ✅ |
 | `experience-hub`（经验卡/知识库/playbook + FTS5 + multilingual-e5-small 向量） | [experience.js](../bundles/dsh/templates/dsh-plugin-sec-suite.experience.js) | ✅ |
-| `spawn_worker`（DSH headless 子进程，≤4 并发，只回尾部） | sec-suite | ✅ cwd=results/<run_id>/（**P11 改为工作区路径，见 §五**） |
+| `spawn_worker`（DSH headless 子进程，≤4 并发，只回尾部） | sec-suite | ✅ **cwd 支持工作区路径（定时任务执行会话自动归组）** |
 | `authz_diff`（双会话重放 + diff，scope 门正确） | sec-suite | ✅ |
-| 看板（Dashboard）：全局入口 sidebar.footer.action → Modal 四视图（漏洞/资产/事实/任务），服务端分页/搜索/筛选 + 30s 轮询，打标 + 事实纠正双写，丝之歌主题 | [sec-dashboard.client.js](../bundles/dsh/templates/dsh-plugin-sec-dashboard.client.js) + sec-suite `/silksec-dashboard` RPC | ✅ 已上线；**无跳转、无工作区维度（P11 补）** |
+| 看板（Dashboard）：全局入口 sidebar.footer.action → Modal **五视图**（漏洞/资产/事实/任务/授权），服务端分页/搜索/筛选 + 30s 轮询，打标 + 事实纠正 + **scope 管理 + 任务立即跑**写操作，**行级会话跳链（ctx.sessions.open）**，丝之歌主题 | [sec-dashboard.client.js](../bundles/dsh/templates/dsh-plugin-sec-dashboard.client.js) + sec-suite `/silksec-dashboard` RPC | ✅ 已上线 |
 | 代理池（mubeng:8899）/ dsh-bill / auth-gate / model-failover / dsh-browser(fork) / 主题 | plugins.lock / profile | ✅ |
 | Vulhub 靶场 + eval-run.js 回归 / intel-refresh timer | eval/intel | ✅ |
 | 多供应商路由（pi-ai 底座）+ 两级熔断 | settings.yaml + model-failover | ✅ |
-| **定时任务** | — | ❌ 无（tasks 无调度字段；dsh-schedule 未组合）→ §五 |
-| **run→session 映射 / 看板跳转** | — | ❌ 无 → §六 |
-| **egress-guard 网络层出口白名单**（审计 S3 兜底 / S9 运行期） | plugins.lock PENDING | ❌ 未装（P11 尾项或 P12） |
+| **定时任务（P11）**：tasks 调度字段 + task_create(schedule)/task_schedule/task_run_now + 60s 调度循环（SQLite 事务认领）+ worker cwd=工作区 | sec-suite / asset-db | ✅ 端到端实测通过（见 §八） |
+| **run→session 映射 / 看板跳链（P11）** | `exec.agent.id` 捕获 + findings/tasks.session_id + client inject sessions | ✅ 新数据 100% 带；老数据显示「—」不造假链 |
+| **工作区融合（P11）**：programs.workspace_id/path + scope.yml `rules.workspace` 声明式绑定 + 工作区会话 reconcile 归组 | sec-suite / asset-db | ✅ 美团SRC↔meituan-src、字节SRC↔bytedance 已绑定 |
+| **scope 看板管理（P11 追加）**：授权视图（新增/编辑/移除 + 工作区绑定表单） | scopeSaveProgram/scopeDeleteProgram RPC + ScopeForm | ✅ 原子写 + scope.yml.bak 备份 + audit.jsonl；**注意 scope.yml 受 spool sync 管理，界面写入后需 `spool sync pull csai` 回收管理机副本** |
+| **egress-guard 网络层出口白名单**（审计 S3 兜底 / S9 运行期） | plugins.lock PENDING | ❌ 未装（P12 尾项） |
 | **chicheng-push 手机推送**（HITL 到手机） | plugins.lock PENDING | ❌ 未装 |
 | **auth-gate 挪 Authelia forward-auth**（审计 S6） | — | ❌ 未做（公网仅密码认证） |
 
-### 1.2 数据规模实测（2026-08-22，可复现）
+### 1.2 数据规模实测（2026-08-22，P11 执行后）
 
 | 表 | 行数 | 分布 |
 |---|---|---|
-| assets | 692 | meituan-src 399 / `_legacy` 287（含字节 117）/ vulhub 6 |
-| endpoints | 279 | `_legacy` 235 / vulhub 27 / meituan-src 17 |
-| findings | 59 | meituan-src 33 / `_legacy` 26（含字节 1） |
-| blackboard（遗留） | **970** | `import:*` 967（美团SRC 401 / 字节SRC 566）+ alive 2 + note 1 |
-| **facts / fact_edges** | **0 / 0** | 表已建、工具已上、视图已有——**空转，待迁移（§七）** |
-| programs | 2 | vulhub / meituan-src（**无 bytedance，scope.yml 未登记**） |
-| tasks | **0** | 表已建、工具已上——**无活水** |
-| fingerprints / credentials | 0 / 0 | 表已建（P9 intel_hunt 上线后有活水来源） |
-| DSH workspaces | 2 | 美团SRC（path `/home/silkspool/美团SRC`，3 会话）/ 字节SRC（path `/home/silkspool/字节SRC`，1 会话），另有 results//tmp 下的 headless 会话未分组 |
+| assets | 692 | meituan-src 399 / bytedance 180 / vulhub 6 / `_legacy` 107（确无归属的参考站点/未登记目标，合法「未关联」） |
+| endpoints | 279 | meituan-src 17 / vulhub 27 / `_legacy` 235（nuclei 模板元数据参考站等，合法未关联） |
+| findings | 59 | meituan-src 33 / bytedance 7 / `_legacy` 19（历史其他目标，合法未关联） |
+| **facts** | **970** | meituan-src 403 / bytedance 566 / `_unbound` 1；category: note 374 / target 262 / asset 228 / finding 70 / recon 20 / infra 16 |
+| blackboard（遗留） | 970 | 已迁移进 facts，只读观察期 30 天后下线看板区块 |
+| programs | 3 | vulhub / meituan-src（绑 美团SRC 工作区）/ bytedance（绑 字节SRC 工作区） |
+| tasks | 0 | 表与调度就绪（P11 端到端实测后清理了 2 条测试任务） |
+| DSH workspaces | 2 | 美团SRC / 字节SRC；定时任务 worker 会话按 cwd 自动归组（reconcile 已验证） |
 
 ### 1.3 DSH rc.7 原生能力组合实况（核实到包级）
 
@@ -171,9 +175,9 @@ ALTER TABLE programs ADD COLUMN workspace_path TEXT;   -- 镜像，免查 regist
 
 ## 五、定时任务（需求 1）
 
-### 5.1 直接回答：当前不行
+### 5.1 直接回答：当时不行（P11 已修复，方案见 §5.2）
 
-对话里说「定时跑 X」**不会**出现在看板任务里，三个原因：① tasks 表无调度字段，task_create 不接收时间参数；② DSH 自带 `dsh-schedule`（schedule_create/list/delete）**未组合进任何 profile**，agent 根本没有定时工具；③ 即使组合 dsh-schedule，它的语义是「**会话内提醒**」（durable reminder 以 user-role 消息投递到**原会话**，冷会话不触发、不写 tasks 表），看板依然看不到。
+对话里说「定时跑 X」在 P11 之前**不会**出现在看板任务里，三个原因：① tasks 表无调度字段，task_create 不接收时间参数；② DSH 自带 `dsh-schedule`（schedule_create/list/delete）**未组合进任何 profile**，agent 根本没有定时工具；③ 即使组合 dsh-schedule，它的语义是「**会话内提醒**」（durable reminder 以 user-role 消息投递到**原会话**，冷会话不触发、不写 tasks 表），看板依然看不到。
 
 ### 5.2 方案：sec-suite 内建持久调度器（任务=定时任务）
 
@@ -231,8 +235,20 @@ dsh-schedule 可在后续作为「**会话内提醒**」补齐（组合进 web p
 | 端点 | 数据 | 说明 |
 |---|---|---|
 | `workspaces` | `ctx.workspaceRegistry.list()` + 每个 workspace 绑定的 program/资产数/漏洞数/会话数 | 工作区区块数据源 |
-| `sessions` | 按 workspace 过滤的会话清单（id/title/updatedAt） | 跳链前的选择列表 |
+| `sessions` | 按 workspace 过滤的会话清单（id/createdAt） | 跳链前的选择列表 |
+| `scopeList` / `scopeSaveProgram` / `scopeDeleteProgram` | scope.yml 解析 / 原子写 / 移除（programs 行归档） | 授权视图（§6.4） |
+| `programBindWorkspace` | programs.workspace_id 绑定 | 工作区↔授权绑定 |
+| `taskRunNow` | 任务立即执行一次 | 任务行操作 |
 | 现有 findings/assets/facts/tasks | 增返回 `session_id`、`workspace_id` | 行级跳链字段 |
+
+### 6.4 授权（Scope）视图（P11 追加，2026-08-22 落地）
+
+scope.yml 是 fail-closed 红线，但此前只能手工编辑——看板新增第五个 tab「授权」：
+
+- **读**：`scopeList` 返回 programs（scope/exclude/max_risk/workspace 绑定）+ defaults + 已归档行；
+- **写**：`scopeSaveProgram`（新增/编辑，全量替换语义——表单预填原值，字段不带即清除）/ `scopeDeleteProgram`（移除授权，programs 表归档、数据归属保留）；
+- **纪律**：写入前校验（项目名 `^[a-z0-9][a-z0-9-]{0,62}$`、scope 至少一条、max_risk 枚举），写时 `scope.yml.bak` 备份 + tmp+rename 原子替换 + audit.jsonl 记录 + syncPrograms 立即镜像 + pairWorkspaces 重新配对；fail-closed 语义不变（移除即拒绝）；
+- **spool sync 协同**：scope.yml 是 sync_rule 管理的配置（`hosts/csai/dsh/scope.yml`）。**界面写入后需 `spool sync pull csai` 回收管理机副本**，否则下次 sync push 会用旧副本覆盖界面变更。
 
 ---
 
@@ -257,9 +273,18 @@ dsh-schedule 可在后续作为「**会话内提醒**」补齐（组合进 web p
 
 ---
 
-## 八、P11 执行计划（可操作清单）
+## 八、P11 执行计划（可操作清单）+ 执行记录
 
-> 每步「做什么 / 改哪 / 怎么验收」。顺序执行，每步独立可验证、可回滚。
+> **P11 已于 2026-08-22 全部执行完毕并部署验证**（csai，silksecagent active）：
+> - 步骤 0 ✅：bytedance 登记 scope.yml（11 域，含 workspace 绑定声明）；**踩坑**：scope.yml 受 spool sync 管理（`hosts/csai/dsh/scope.yml` ↔ data/scope.yml），直接改远端会被 sync push 覆盖——正解是改管理机副本再 `spool sync push csai`。
+> - 步骤 1 ✅：programs.workspace_id/path 落库；syncPrograms 按 scope.yml `rules.workspace` 声明配对；美团SRC↔meituan-src、字节SRC↔bytedance 绑定实测在库。
+> - 步骤 2 ✅：调度字段 + task_create(schedule)/task_schedule/task_run_now + 60s 调度循环。端到端实测：插入到期 once 任务 → 认领 → headless worker 执行（LLM 真实回复落 result）→ 会话按 cwd 归组进工作区（reconcile 后 美团SRC 3→4、字节SRC 1→2）。**踩坑**：插件会被宿主面与每个 agent 面分别加载（agent 在 worker 线程，globalThis 不共享），调度循环只能从入口侧用 `sidecars:false` 收敛到宿主面启动。
+> - 步骤 3 ✅：run_cli/spawn_worker/authz_diff/finding_add 捕获 `exec.agent.id` → findings.session_id / tasks.session_id / meta.json；看板 inject sessions，行级跳链。
+> - 步骤 4 ✅：迁移脚本实测 dry-run 与真实执行一致，970 条入库。**踩坑**：迁移/回填脚本须放在 `plugins/sec-suite/` 下运行（相对 import './asset-db.js'）。
+> - 步骤 5 ✅：backfill 重扫 `_legacy`（字节资产 117→180、漏洞 1→7 归位）；剩余 _legacy 为参考站点元数据与未登记历史目标，合法未关联。
+> - 追加 ✅：看板「授权」视图（scopeList/scopeSaveProgram/scopeDeleteProgram/programBindWorkspace RPC + ScopeForm 表单），原子写 + scope.yml.bak + audit.jsonl；本地单测覆盖（新增/编辑全量替换/重复拒绝/非法拒绝/删除归档/checkTarget 生效）。
+
+### 原设计清单（存档）
 
 ### 步骤 0：字节授权登记（前置，需用户确认，合规红线）
 

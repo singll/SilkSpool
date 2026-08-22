@@ -134,7 +134,7 @@ const PARSERS = {
   csv_ffuf: parseCsvFfuf,
 }
 
-export function applyParsedResult(manifest, toolName, runId, text, programId = null) {
+export function applyParsedResult(manifest, toolName, runId, text, programId = null, sessionId = null) {
   const source = `${toolName}:${runId}`
   const ctx = { tool: toolName, runId, source, programId }
   const parserKey = String(manifest.parser || '')
@@ -163,7 +163,7 @@ export function applyParsedResult(manifest, toolName, runId, text, programId = n
   for (const e of parsed.endpoints || []) if (e && e.host && db.upsertEndpoint({ ...e, program_id: programId })) endpoints++
   for (const f of parsed.findings || []) {
     if (!f || !f.title || !f.host) continue
-    const r = db.addFinding({ title: f.title, severity: f.severity || 'info', host: f.host, url: f.url || '', evidence: f.evidence || '', source, program_id: programId })
+    const r = db.addFinding({ title: f.title, severity: f.severity || 'info', host: f.host, url: f.url || '', evidence: f.evidence || '', source, program_id: programId, session_id: sessionId })
     if (r && !r.dup) findings++
   }
   return { assets, endpoints, findings }

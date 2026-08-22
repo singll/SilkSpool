@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // ==============================================================================
-// SilkSecAgent program_id 回填迁移（P6）：存量 assets/endpoints/findings 打上项目归属
-// 一次性脚本：读 scope.yml → 对每条 host 反查命中 program → 回填 program_id；未命中归 _legacy
+// SilkSecAgent program_id 回填迁移（P6/P11）：存量 assets/endpoints/findings 打上项目归属
+// 一次性脚本：读 scope.yml → 对每条 host 反查命中 program → 回填 program_id；
+// 未命中归 _legacy（P11 起 _legacy 行也会被重扫——新增授权项目后可把旧 _legacy 数据归位）
 // 用法：SEC_DATA_DIR=/opt/silkspool/dsh/data node backfill-program.js [--dry-run]
 // ==============================================================================
 import * as db from './asset-db.js'
@@ -86,7 +87,7 @@ const tables = [
 let changed = 0
 let legacy = 0
 for (const { t, col, key } of tables) {
-  const rows = plain(d.prepare(`SELECT ${key}, ${col} FROM ${t} WHERE program_id IS NULL`).all())
+  const rows = plain(d.prepare(`SELECT ${key}, ${col} FROM ${t} WHERE program_id IS NULL OR program_id = '_legacy'`).all())
   for (const r of rows) {
     const program = resolveProgram(programs, hostOf(r[col]))
     if (program) {

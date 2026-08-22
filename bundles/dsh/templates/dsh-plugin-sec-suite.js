@@ -26,6 +26,9 @@ import * as parsers from './parsers.js'
 export const name = 'sec-cli-adapter'
 export const inject = ['tools']
 
+// 测试/脚本用导出（插件加载器忽略多余导出）：scope 序列化回环与调度逻辑的单测入口
+export const _internal = { serializeScope, scopeSaveProgram, scopeDeleteProgram, scopeList, checkTarget, parseYaml, sessionIdOf }
+
 const DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const SCOPE_FILE = process.env.SEC_SCOPE_FILE || path.join(DATA_DIR, 'scope.yml')
 const TOOLS_DIR = path.join(DATA_DIR, 'tools.d')
@@ -222,7 +225,212 @@ function syncPrograms() {
       max_risk: (p.rules && p.rules.max_risk) || null,
     })
   }
+  pairWorkspaces(programs)
   return programs.map((p) => p.name)
+}
+
+// ==============================================================================
+// P11 工作区融合：program ↔ DSH workspace 1:1 软绑定
+// 绑定优先级：scope.yml rules.workspace（标题或路径，显式声明）> 标题/路径精确匹配。
+// registry 不可用时（headless profile 无 dsh-workspace）静默跳过。
+// ==============================================================================
+
+let workspaceRegistryRef = null  // ctx.workspaceRegistry（web profile 宿主面）
+let sessionPersistenceRef = null // ctx.sessionPersistence（会话头部投影，sessions RPC 用）
+
+function pairWorkspaces(scopePrograms) {
+  if (!workspaceRegistryRef) return
+  const programs = scopePrograms || (loadScope().programs || [])
+  let workspaces
+  try { workspaces = workspaceRegistryRef.list() } catch { return }
+  for (const p of programs) {
+    if (!p.name) continue
+    const declared = p.rules && p.rules.workspace ? String(p.rules.workspace).trim() : ''
+    let hit = null
+    if (declared) hit = workspaces.find((w) => w.title === declared || w.path === declared) || null
+    if (!hit) hit = workspaces.find((w) => w.title.toLowerCase() === String(p.name).toLowerCase()) || null
+    if (hit) {
+      try { assetDb.bindProgramWorkspace(p.name, String(hit.id), hit.path) } catch { /* 绑定失败不阻断 */ }
+    }
+  }
+}
+
+// ==============================================================================
+// P11 scope 管理（看板授权界面）：解析 → 变更 → 规范化重写 scope.yml（原子 + 备份 + 审计）
+// ==============================================================================
+
+function yamlQuote(s) { return JSON.stringify(String(s)) }
+
+function serializeScope(scope) {
+  const d = scope.defaults || {}
+  const lines = [
+    '# ==============================================================================',
+    '# SilkSecAgent 授权白名单（scope-guard 硬校验，不依赖模型自觉）',
+    '# 由看板「授权」视图或手工编辑维护；每次界面写入自动备份 scope.yml.bak 并记 audit.jsonl',
+    '# ==============================================================================',
+    '',
+    'version: 1',
+    '',
+    '# 全局默认策略',
+    'defaults:',
+  ]
+  const egress = d.egress_proxy || 'http://127.0.0.1:8899'
+  lines.push(`  egress_proxy: ${egress}   # 出口统一走 mubeng 轮换网关`)
+  lines.push(`  rate_limit_qps: ${Number(d.rate_limit_qps) || 50}                     # 主动扫描全局限速`)
+  const allowRisk = Array.isArray(d.allow_risk) && d.allow_risk.length ? d.allow_risk : ['passive', 'active']
+  lines.push(`  allow_risk: [${allowRisk.join(', ')}]          # 默认可自动执行的风险级；intrusive 需人工确认；manual 禁用`)
+  lines.push('', '# SRC 项目清单')
+  const programs = Array.isArray(scope.programs) ? scope.programs : []
+  if (!programs.length) lines.push('programs: []')
+  else {
+    lines.push('programs:')
+    for (const p of programs) {
+      lines.push(`  - name: ${yamlQuote(p.name)}`)
+      if (p.platform) lines.push(`    platform: ${yamlQuote(p.platform)}`)
+      lines.push('    scope:')
+      for (const e of p.scope || []) lines.push(`      - ${yamlQuote(e)}`)
+      if (Array.isArray(p.exclude) && p.exclude.length) {
+        lines.push('    exclude:')
+        for (const e of p.exclude) lines.push(`      - ${yamlQuote(e)}`)
+      }
+      const rules = p.rules || {}
+      lines.push('    rules:')
+      lines.push(`      max_risk: ${rules.max_risk || 'active'}`)
+      lines.push(`      fixed_egress_ip: ${rules.fixed_egress_ip ? 'true' : 'false'}`)
+      if (rules.workspace) lines.push(`      workspace: ${yamlQuote(rules.workspace)}   # 绑定的 DSH 工作区（标题或路径）`)
+      if (p.finding_db) lines.push(`    finding_db: ${yamlQuote(p.finding_db)}`)
+      lines.push('')
+    }
+  }
+  lines.push('# 黑板/凭据（由系统运行时写入，勿手工编辑）', 'runtime:', '  credentials_ref: env                  # 凭据统一走 credentials 包 / .env 引用', '')
+  return lines.join('\n')
+}
+
+const PROGRAM_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
+const RISK_LEVELS = ['passive', 'active', 'intrusive']
+
+// spec: { name, platform, scope[], exclude[], max_risk, fixed_egress_ip, workspace, finding_db }
+// 返回 { ok, error?, program }。fail-closed 语义不变：不在 scope.yml 的目标依然全拒绝。
+function scopeSaveProgram(spec, isNew) {
+  const name = String(spec.name || '').trim()
+  if (!PROGRAM_NAME_RE.test(name)) return { ok: false, error: `非法项目名 ${name}（^[a-z0-9][a-z0-9-]{0,62}$）` }
+  const scopeEntries = [...new Set((Array.isArray(spec.scope) ? spec.scope : []).map((s) => String(s).trim()).filter(Boolean))]
+  if (!scopeEntries.length) return { ok: false, error: 'scope 至少一条授权条目（域名/IP/CIDR）' }
+  const excludeEntries = [...new Set((Array.isArray(spec.exclude) ? spec.exclude : []).map((s) => String(s).trim()).filter(Boolean))]
+  const maxRisk = String(spec.max_risk || 'active')
+  if (!RISK_LEVELS.includes(maxRisk)) return { ok: false, error: `非法 max_risk ${maxRisk}（可选: ${RISK_LEVELS.join('/')}）` }
+
+  const scope = loadScope()
+  const programs = Array.isArray(scope.programs) ? scope.programs : []
+  const idx = programs.findIndex((p) => p && p.name === name)
+  if (isNew && idx >= 0) return { ok: false, error: `项目 ${name} 已存在` }
+  const entry = {
+    name,
+    scope: scopeEntries,
+    rules: {
+      max_risk: maxRisk,
+      fixed_egress_ip: !!spec.fixed_egress_ip,
+      ...(spec.workspace ? { workspace: String(spec.workspace).trim() } : {}),
+    },
+  }
+  if (spec.platform) entry.platform = String(spec.platform).trim()
+  if (excludeEntries.length) entry.exclude = excludeEntries
+  if (spec.finding_db) entry.finding_db = String(spec.finding_db).trim()
+  if (idx >= 0) programs[idx] = entry
+  else programs.push(entry)
+  scope.programs = programs
+
+  // 原子写 + 备份
+  fs.copyFileSync(SCOPE_FILE, SCOPE_FILE + '.bak')
+  const tmp = SCOPE_FILE + '.tmp'
+  fs.writeFileSync(tmp, serializeScope(scope))
+  fs.renameSync(tmp, SCOPE_FILE)
+  audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.scopeSaveProgram', decision: 'executed', detail: { name, entries: scopeEntries.length, max_risk: maxRisk, isNew: !!isNew } })
+  syncPrograms()
+  return { ok: true, name }
+}
+
+function scopeDeleteProgram(name) {
+  name = String(name || '').trim()
+  const scope = loadScope()
+  const programs = Array.isArray(scope.programs) ? scope.programs : []
+  const idx = programs.findIndex((p) => p && p.name === name)
+  if (idx < 0) return { ok: false, error: `项目 ${name} 不在 scope.yml` }
+  programs.splice(idx, 1)
+  scope.programs = programs
+  fs.copyFileSync(SCOPE_FILE, SCOPE_FILE + '.bak')
+  const tmp = SCOPE_FILE + '.tmp'
+  fs.writeFileSync(tmp, serializeScope(scope))
+  fs.renameSync(tmp, SCOPE_FILE)
+  audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.scopeDeleteProgram', decision: 'executed', detail: { name } })
+  // 删除授权 ≠ 删数据：programs 行归档，资产/漏洞归属保留
+  assetDb.archiveProgram(name)
+  return { ok: true, name, hint: '已从 scope.yml 移除（fail-closed 立即生效），programs 表归档保留归属' }
+}
+
+function scopeList() {
+  const scope = loadScope()
+  const programs = (Array.isArray(scope.programs) ? scope.programs : []).map((p) => ({
+    name: p.name,
+    platform: p.platform || '',
+    scope: Array.isArray(p.scope) ? p.scope : [],
+    exclude: Array.isArray(p.exclude) ? p.exclude : [],
+    max_risk: (p.rules && p.rules.max_risk) || 'active',
+    fixed_egress_ip: !!(p.rules && p.rules.fixed_egress_ip),
+    workspace: (p.rules && p.rules.workspace) || '',
+    finding_db: p.finding_db || '',
+  }))
+  const dbPrograms = {}
+  for (const p of assetDb.listPrograms()) dbPrograms[p.id] = p
+  return {
+    defaults: scope.defaults || {},
+    programs: programs.map((p) => ({ ...p, db: dbPrograms[p.name] || null })),
+    archived: assetDb.listPrograms().filter((p) => p.status === 'archived' && !programs.some((s) => s.name === p.id)),
+  }
+}
+
+// 看板工作区区块数据源：workspaceRegistry + 绑定 program + 资产/漏洞/会话计数
+function workspacesList() {
+  if (!workspaceRegistryRef) return { available: false, items: [] }
+  let workspaces
+  try { workspaces = workspaceRegistryRef.list() } catch (e) { return { available: false, items: [], error: String(e && e.message || e) } }
+  const programs = assetDb.listPrograms()
+  const byWorkspace = {}
+  for (const p of programs) if (p.workspace_id) byWorkspace[p.workspace_id] = p
+  const items = workspaces.map((w) => {
+    const prog = byWorkspace[String(w.id)] || null
+    let assets = 0; let findings = 0; let tasks = 0
+    if (prog) {
+      assets = assetDb.countAssets({ programId: prog.id })
+      findings = assetDb.countFindings({ programId: prog.id })
+      tasks = assetDb.countTasks({ programId: prog.id })
+    }
+    return {
+      id: String(w.id), title: w.title, path: w.path,
+      session_count: Array.isArray(w.sessionIds) ? w.sessionIds.length : 0,
+      program: prog ? { id: prog.id, status: prog.status, max_risk: prog.max_risk } : null,
+      assets, findings, tasks,
+    }
+  })
+  return { available: true, items }
+}
+
+// 工作区的会话清单（跳链用）：registry sessionIds + sessionPersistence 头部投影
+async function sessionsList(workspaceId) {
+  if (!workspaceRegistryRef) return { available: false, items: [] }
+  const ws = workspaceRegistryRef.get(workspaceId)
+  if (!ws) return { available: true, items: [], error: `工作区不存在: ${workspaceId}` }
+  const headers = {}
+  if (sessionPersistenceRef) {
+    try {
+      for (const h of await sessionPersistenceRef.list()) headers[String(h.id)] = h
+    } catch { /* 头部投影失败降级为纯 id 列表 */ }
+  }
+  const items = ws.sessionIds.map((id) => {
+    const h = headers[String(id)] || null
+    return { id: String(id), created_at: h && h.createdAt ? h.createdAt : null }
+  })
+  return { available: true, items, workspace: { id: String(ws.id), title: ws.title, path: ws.path } }
 }
 
 // 返回 { allow, reason, program }
@@ -425,7 +633,16 @@ function buildSandboxCommand(binary, argv, runDir) {
   return { cmd: BWRAP_BIN, args }
 }
 
-async function runCli(args) {
+// 工具执行上下文（rc.7 ToolRunContext）：exec.agent.id === SessionId，run→session 映射的捕获点
+function sessionIdOf(exec) {
+  try {
+    const id = exec && exec.agent && exec.agent.id
+    return id ? String(id) : null
+  } catch { return null }
+}
+
+async function runCli(args, exec) {
+  const sessionId = sessionIdOf(exec)
   const toolName = String(args.tool || '')
   const params = args.params || {}
   const manifest = loadManifest(toolName)
@@ -523,7 +740,7 @@ async function runCli(args) {
     started_at: new Date(started).toISOString(), duration_ms: Date.now() - started,
     exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null,
     risk: manifest.risk || 'passive', stage: manifest.stage || null,
-    sandboxed: !!sandbox,
+    sandboxed: !!sandbox, session_id: sessionId,
   }
   fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 1) + '\n')
   audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'executed', exit_code: meta.exit_code, duration_ms: meta.duration_ms, sandboxed: meta.sandboxed })
@@ -536,7 +753,7 @@ async function runCli(args) {
   let ingested = null
   if (manifest.store === 'asset-graph' && result.code === 0 && stdoutText) {
     try {
-      ingested = parsers.applyParsedResult(manifest, toolName, runId, stdoutText, programId)
+      ingested = parsers.applyParsedResult(manifest, toolName, runId, stdoutText, programId, sessionId)
     } catch { /* 入库失败不影响主流程 */ }
   }
 
@@ -667,7 +884,8 @@ function burpImport(args) {
 // 低权会话拿到与高权会话相当的数据 = 疑似越权
 // ==============================================================================
 
-async function authzDiff(args) {
+async function authzDiff(args, exec) {
+  const sessionId = sessionIdOf(exec)
   const url = String(args.url || '')
   if (!url) return { ok: false, error: 'url 不能为空' }
   // scope-guard 硬校验（与其他工具同一标准）
@@ -719,7 +937,7 @@ async function authzDiff(args) {
   if (verdict === 'suspected') {
     assetDb.addFinding({
       title: `疑似越权(IDOR): ${method} ${url}`, severity: 'high',
-      host: hostOf(url), url, source: 'authz_diff',
+      host: hostOf(url), url, source: 'authz_diff', session_id: sessionId,
       evidence: `low=${low.status}/${low.length}B high=${high.status}/${high.length}B keysOverlap=${(keysOverlap * 100).toFixed(0)}%`,
     })
   }
@@ -768,7 +986,7 @@ function startXrayWebhook(ctx) {
     webhookServer = null
   })
   webhookServer.listen(7788, '127.0.0.1')
-  ctx?.on?.('dispose', () => webhookServer?.close())
+  // 进程生命周期级：不绑 fiber dispose（fiber 重配回收不该关掉 webhook）
 }
 
 // ==============================================================================
@@ -782,26 +1000,27 @@ const NODE_BIN = process.env.SEC_NODE_BIN || '/usr/local/node/bin/node'
 const MAX_WORKERS = 4
 let activeWorkers = 0
 
-async function spawnWorker(args) {
-  const task = String(args.task || '').trim()
-  if (!task) return { ok: false, error: 'task 不能为空' }
-  if (activeWorkers >= MAX_WORKERS) {
-    return { ok: false, error: `worker 并发上限 ${MAX_WORKERS}，请稍后重试` }
+// worker 核心（工具与调度循环共用）。cwd 默认 runDir；调度任务传工作区路径——
+// headless 会话 header cwd = workspace path → workspaceRegistry 自动归组 → 看板可跳链
+async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId = null, enforceLimit = true }) {
+  if (enforceLimit && activeWorkers >= MAX_WORKERS) {
+    return { ok: false, busy: true, error: `worker 并发上限 ${MAX_WORKERS}，请稍后重试` }
   }
-  const timeoutMs = Math.min(Number(args.timeout) || 900, 3600) * 1000
+  const timeoutMs = Math.min(Number(timeoutSec) || 900, 3600) * 1000
   const runId = 'w' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex')
   const runDir = path.join(RESULTS_DIR, runId)
   fs.mkdirSync(runDir, { recursive: true })
+  const workCwd = (cwd && fs.existsSync(cwd)) ? cwd : runDir
 
   const env = { ...process.env, DSH_HOME: DATA_DIR, PATH: '/usr/local/node/bin:' + (process.env.PATH || '') }
-  audit({ ts: Date.now(), run_id: runId, tool: 'spawn_worker', decision: 'executed', detail: task.slice(0, 200) })
+  audit({ ts: Date.now(), run_id: runId, tool: 'spawn_worker', decision: 'executed', detail: task.slice(0, 200), session_id: originSessionId })
 
   activeWorkers++
   const started = Date.now()
   const result = await new Promise((resolve) => {
     const out = fs.createWriteStream(path.join(runDir, 'worker.log'))
     const child = spawn(NODE_BIN, [DSH_BIN, '--profile', 'headless', task], {
-      env, cwd: runDir,
+      env, cwd: workCwd,
     })
     child.stdout.pipe(out)
     child.stderr.pipe(out)
@@ -812,8 +1031,8 @@ async function spawnWorker(args) {
   activeWorkers--
 
   const meta = {
-    run_id: runId, tool: 'spawn_worker', task, started_at: new Date(started).toISOString(),
-    duration_ms: Date.now() - started, exit_code: result.code ?? null,
+    run_id: runId, tool: 'spawn_worker', task, cwd: workCwd, started_at: new Date(started).toISOString(),
+    duration_ms: Date.now() - started, exit_code: result.code ?? null, session_id: originSessionId,
   }
   fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 1) + '\n')
 
@@ -829,6 +1048,82 @@ async function spawnWorker(args) {
     tail: lines.slice(-20).join('\n'),
     hint: `完整日志 ${lines.length} 行已落盘，用 grep_result/page_result 取 ${runId} 的细节`,
   }
+}
+
+async function spawnWorker(args, exec) {
+  const task = String(args.task || '').trim()
+  if (!task) return { ok: false, error: 'task 不能为空' }
+  return runWorker({ task, timeoutSec: args.timeout, originSessionId: sessionIdOf(exec) })
+}
+
+// ==============================================================================
+// P11 定时任务调度循环（sec-suite host 面，仅 web profile 启动）
+// 60s tick → SQLite 事务原子认领到期任务 → runWorker(cwd=工作区路径) → 收尾续期。
+// 重启恢复：任务状态在 SQLite，过期的 interval 按 latest-only 补触发最近一次。
+// ==============================================================================
+
+const SCHEDULER_TICK_MS = 60000
+
+function workspacePathOfProgram(programId) {
+  const p = assetDb.listPrograms().find((x) => x.id === programId)
+  return (p && p.workspace_path) || null
+}
+
+// 工作区会话归组 reconcile：headless worker / CLI 产生的会话按 header cwd 匹配工作区路径，
+// attachSession 幂等（已归组则无写）。registry 对后期 cwd-only 会话不自动归组（上游语义），这里补齐。
+async function reconcileWorkspaceSessions() {
+  if (!workspaceRegistryRef || !sessionPersistenceRef) return
+  let headers
+  try { headers = await sessionPersistenceRef.list() } catch { return }
+  let workspaces
+  try { workspaces = workspaceRegistryRef.list() } catch { return }
+  const byPath = {}
+  for (const w of workspaces) byPath[w.path] = w
+  for (const h of headers) {
+    const w = h && h.cwd ? byPath[String(h.cwd)] : null
+    if (!w) continue
+    try { await w.attachSession(h.id) } catch { /* 单个失败不影响其余 */ }
+  }
+}
+
+// worker.log 尾部噪声（headless 进程 stderr 杂讯）不进入任务摘要
+const WORKER_NOISE_RE = /ExperimentalWarning|trace-warnings|EADDRINUSE|xray webhook 启动失败/
+
+async function schedulerTick() {
+  let due
+  try { due = assetDb.taskClaimDue(Date.now()) } catch (e) {
+    process.stderr.write(`[sec-suite] 调度认领失败: ${e?.message ?? String(e)}\n`)
+    return
+  }
+  for (const task of due) {
+    // 并发上限时延后再跑（next_run_at 不动，下个 tick 重试——但 status 已是 running，需回滚）
+    if (activeWorkers >= MAX_WORKERS) {
+      try { assetDb.taskUpdate({ id: task.id, status: 'queued', note: 'worker 并发已满，延后到下一 tick' }) } catch { /* ignore */ }
+      continue
+    }
+    const prompt = `[定时任务 #${task.id}${task.phase ? ' / ' + task.phase : ''}] ${task.objective}`
+    const cwd = workspacePathOfProgram(task.program_id)
+    audit({ ts: Date.now(), run_id: '-', tool: 'scheduler', decision: 'executed', detail: { task_id: task.id, program_id: task.program_id } })
+    try {
+      const r = await runWorker({ task: prompt, cwd, timeoutSec: 1800, enforceLimit: false })
+      const note = (r.tail || '').split('\n').filter((l) => l.trim() && !WORKER_NOISE_RE.test(l)).slice(-3).join(' ').slice(0, 300)
+      assetDb.taskFinishScheduledRun({ id: task.id, ok: !!r.ok, run_id: r.run_id || '', note })
+    } catch (e) {
+      try { assetDb.taskFinishScheduledRun({ id: task.id, ok: false, run_id: '', note: `调度执行异常: ${e?.message ?? String(e)}`.slice(0, 300) }) } catch { /* ignore */ }
+    }
+  }
+  // 顺带做工作区会话归组（轻量、幂等）
+  try { await reconcileWorkspaceSessions() } catch { /* 归组失败不阻断调度 */ }
+}
+
+// 进程级单例（globalThis）：插件可能被宿主面与每个 agent 面分别加载成不同模块实例，
+// 模块级变量挡不住跨实例重复；SQLite BEGIN IMMEDIATE 原子认领兜底防重复派单。
+function startScheduler() {
+  if (globalThis.__silksecScheduler) return
+  globalThis.__silksecScheduler = setInterval(() => { schedulerTick().catch(() => {}) }, SCHEDULER_TICK_MS)
+  globalThis.__silksecScheduler.unref?.()
+  // 进程生命周期级单例：不绑 fiber dispose（connection 重配会回收 child fiber，不能拖死调度循环）
+  process.stderr.write('[sec-suite] 定时任务调度循环已启动（60s tick）\n')
 }
 
 // ==============================================================================
@@ -871,18 +1166,50 @@ function planChain(args) {
 
 // ==============================================================================
 // 看板 Remote（Host↔Client RPC 通道 /silksec-dashboard，authority=loopback）
-// 只读查询 + 两个受控写（打标 findingUpdate / 事实纠正 factCorrect·factDeprecate）。
+// 只读查询 + 受控写（打标 findingUpdate / 事实纠正 factCorrect·factDeprecate /
+// P11：授权管理 scopeSaveProgram·scopeDeleteProgram / 工作区绑定 programBindWorkspace / 任务立即跑 taskRunNow）。
 // 底层直接复用 assetDb 现有函数——「一份校验、一条 audit.jsonl、一个真相源」。
 // ==============================================================================
 
 const FINDING_TAG_STATUS = ['confirmed', 'false_positive', 'ignored', 'new']
 let dashboardRpcRegistered = false
 
-function handleDashboardRpc(endpoint, payload) {
+async function handleDashboardRpc(endpoint, payload) {
   const p = (payload && typeof payload === 'object') ? payload : {}
   switch (endpoint) {
     case 'stats':
       return assetDb.stats()
+    // ---- P11：工作区 / 会话 / 授权管理 ----
+    case 'workspaces':
+      pairWorkspaces() // 顺手做幂等配对（registry 后到场景）
+      return workspacesList()
+    case 'programBindWorkspace': {
+      const programId = String(p.program_id || '')
+      if (!programId) throw new Error('programBindWorkspace 需要 program_id')
+      const workspaceId = p.workspace_id ? String(p.workspace_id) : null
+      let wsPath = null
+      if (workspaceId && workspaceRegistryRef) {
+        const ws = workspaceRegistryRef.get(workspaceId)
+        if (!ws) throw new Error(`工作区不存在: ${workspaceId}`)
+        wsPath = ws.path
+      }
+      if (!assetDb.bindProgramWorkspace(programId, workspaceId, wsPath)) throw new Error(`program 不存在: ${programId}`)
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.programBindWorkspace', decision: 'executed', detail: { program_id: programId, workspace_id: workspaceId } })
+      return { ok: true, program_id: programId, workspace_id: workspaceId }
+    }
+    case 'scopeList':
+      pairWorkspaces()
+      return scopeList()
+    case 'scopeSaveProgram':
+      return scopeSaveProgram(p, !!p.is_new)
+    case 'scopeDeleteProgram':
+      return scopeDeleteProgram(p.name)
+    case 'taskRunNow': {
+      const id = Number(p.id)
+      if (!id) throw new Error('taskRunNow 需要 id')
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskRunNow', decision: 'executed', detail: { id } })
+      return assetDb.taskRunNow(id)
+    }
     case 'assets': {
       const filters = { hostLike: String(p.q || ''), type: String(p.type || ''), programId: String(p.program_id || '') }
       const limit = Math.min(Number(p.limit) || 20, 200)
@@ -926,6 +1253,8 @@ function handleDashboardRpc(endpoint, payload) {
       const offset = Math.max(0, Number(p.offset) || 0)
       return { rows: assetDb.taskList({ ...filters, limit, offset }), total: assetDb.countTasks(filters) }
     }
+    case 'sessions':
+      return sessionsList(String(p.workspace_id || ''))
     case 'findingUpdate': {
       const id = Number(p.id)
       const status = String(p.status || '')
@@ -1039,7 +1368,7 @@ export function apply(ctx, config) {
     },
     output: { schema: { type: 'object' }, render: renderJSON },
     timeoutMs: 3670000,
-    execute: async (args) => runCli(args || {}),
+    execute: async (args, exec) => runCli(args || {}, exec),
   })
 
   ctx.tools.register({
@@ -1108,7 +1437,7 @@ export function apply(ctx, config) {
     },
     output: { schema: { type: 'object' }, render: renderJSON },
     timeoutMs: 3670000,
-    execute: async (args) => spawnWorker(args || {}),
+    execute: async (args, exec) => spawnWorker(args || {}, exec),
   })
 
   ctx.tools.register({
@@ -1129,7 +1458,7 @@ export function apply(ctx, config) {
     },
     output: { schema: { type: 'object' }, render: renderJSON },
     timeoutMs: 90000,
-    execute: async (args) => authzDiff(args || {}),
+    execute: async (args, exec) => authzDiff(args || {}, exec),
   })
 
   ctx.tools.register({
@@ -1167,8 +1496,8 @@ export function apply(ctx, config) {
     execute: async (args) => intelHunt(args || {}),
   })
 
-  // xray webhook 接收器随插件启动（流量总线 v1）；preset 内挂载时 sidecars:false 跳过
-  if (!config || config.sidecars !== false) startXrayWebhook(ctx)
+  // xray webhook 接收器只在 web 宿主面启动（connection 服务存在时；headless worker 不起，避免 EADDRINUSE 噪声）。
+  // preset 内挂载（sidecars:false）跳过。
 
   // 看板 Remote：仅在 connection 服务存在时挂载（headless 无此服务，gracefully 跳过）。
   // 用 child fiber 等待服务初始化，避免 bare ctx.get 在 carrier 就绪前静默失效。
@@ -1182,16 +1511,39 @@ export function apply(ctx, config) {
         const dispose = child.connection.rpc.handle('/silksec-dashboard',
           async (endpoint, payload) => {
             try {
-              return { ok: true, value: handleDashboardRpc(String(endpoint || ''), payload) }
+              return { ok: true, value: await handleDashboardRpc(String(endpoint || ''), payload) }
             } catch (error) {
               return { ok: false, error: { code: 'internal', message: error?.message ?? String(error), details: {} } }
             }
           },
           { authority: 'loopback' })
+        // P11：调度循环只随宿主面 bundle 加载启动（preset 的 agent 面挂载 sidecars:false，跳过；
+        // agent 可能跑在 worker 线程，globalThis 不共享，单例守卫不够，只能从入口侧收敛）
+        if (!config || config.sidecars !== false) startScheduler()
+        // xray webhook 同样只在 web 宿主面启动（模块内单例幂等，不随 fiber dispose 回收）
+        if (!config || config.sidecars !== false) startXrayWebhook()
         return () => { void dispose() }
       }, 'sec-suite: dashboard rpc')
     })
   } catch (e) {
     process.stderr.write(`[sec-suite] dashboard RPC 挂载失败: ${e?.message ?? String(e)}\n`)
   }
+
+  // P11 工作区融合：workspaceRegistry（dsh-web-app 组合）+ sessionPersistence（会话头部投影）。
+  // 两个服务在 headless profile 不存在时 inject 回调永不触发，自然降级。
+  try {
+    ctx.inject(['workspaceRegistry'], (child) => {
+      workspaceRegistryRef = child.workspaceRegistry
+      child.effect(() => {
+        try { pairWorkspaces() } catch { /* 配对失败不阻断 */ }
+        return () => { workspaceRegistryRef = null }
+      }, 'sec-suite: workspace pairing')
+    })
+  } catch { /* 无 workspaceRegistry（headless）*/ }
+  try {
+    ctx.inject(['sessionPersistence'], (child) => {
+      sessionPersistenceRef = child.sessionPersistence
+      child.effect(() => () => { sessionPersistenceRef = null }, 'sec-suite: session persistence')
+    })
+  } catch { /* 无 sessionPersistence */ }
 }

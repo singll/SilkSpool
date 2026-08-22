@@ -11,7 +11,9 @@ defaults:
   rate_limit_qps: 50                     # 主动扫描全局限速
   allow_risk: [passive, active]          # 默认可自动执行的风险级；intrusive 需人工确认；manual 禁用
 
-# SRC 项目清单（示例，按需修改）
+# SRC 项目清单（示例，按需修改；也可走看板「授权」视图管理，界面写入自动备份+审计）
+# rules 可选字段：max_risk（项目风险上限）/ fixed_egress_ip（固定出口报备）/
+#                workspace（绑定的 DSH 工作区标题或路径，P11 工作区融合）
 programs: []
 #  - name: example-src
 #    scope:                              # 授权范围（域名/IP/CIDR，含解析后校验）

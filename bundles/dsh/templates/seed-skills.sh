@@ -81,4 +81,21 @@ description: 复盘沉淀——任务结束时把 trajectory 蒸馏为经验卡�
 4. 同一 scenario 已有经验卡时，做补充修正而非另起炉灶。
 EOF
 
+seed sec-task <<'EOF'
+---
+name: sec-task
+description: 任务与调度纪律——用户提到「定时/每隔/每天/每小时/定期/复扫节奏」时必须创建带 schedule 的 Task，不得只在会话里口头答应；任务一律绑定当前工作区对应的 Program。
+---
+
+# 任务与调度纪律
+
+1. **「定时跑」= task_create 带 schedule**：用户意图含「定时/每隔 N/每天/每小时/定期复扫」时，必须调用
+   `task_create(objective=..., schedule={kind:"interval",every_seconds:N})`（一次性用 `{kind:"once",at:<未来毫秒时间戳>}`）。
+   创建后任务立即出现在看板「任务」视图，由调度循环自动执行。**禁止只在会话里口头答应而不建任务**。
+2. **归属自动带出**：不传 program_id 时系统按当前会话所在工作区自动绑定；工作区未绑定 Program 时先 program_list 确认再显式传。
+3. **intrusive 级目标禁止 interval**：需要人工确认的操作只做一次性任务或当场执行，不挂周期。
+4. **改调度用 task_schedule，补跑用 task_run_now**，取消用 task_update(status=cancelled)。
+5. 定时任务的执行由 spawn_worker 完成，执行会话自动归入对应工作区，结果写在任务 result 里（看板可跳链查看）。
+EOF
+
 log "Skill 种子完成"

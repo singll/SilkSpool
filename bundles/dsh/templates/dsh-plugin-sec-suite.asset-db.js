@@ -96,6 +96,17 @@ export function getDb() {
   ensureCol('endpoints', 'program_id', 'program_id TEXT')
   ensureCol('findings', 'program_id', 'program_id TEXT')
   ensureCol('findings', 'task_id', 'task_id INTEGER')
+  // ---- P11：工作区融合 + 定时任务 + run→session 映射（可空，幂等）----
+  ensureCol('programs', 'workspace_id', 'workspace_id TEXT')     // DSH workspace UUID（1:1 软绑定）
+  ensureCol('programs', 'workspace_path', 'workspace_path TEXT') // 镜像，免查 registry
+  ensureCol('findings', 'session_id', 'session_id TEXT')         // 来源会话（跳链）
+  ensureCol('tasks', 'schedule_kind', 'schedule_kind TEXT')      // NULL=普通 / once / interval
+  ensureCol('tasks', 'run_at', 'run_at INTEGER')                 // once：到期时间戳
+  ensureCol('tasks', 'every_seconds', 'every_seconds INTEGER')   // interval：间隔（≥300）
+  ensureCol('tasks', 'next_run_at', 'next_run_at INTEGER')       // 调度循环扫描键
+  ensureCol('tasks', 'last_run_at', 'last_run_at INTEGER')
+  ensureCol('tasks', 'last_run_id', 'last_run_id TEXT')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(schedule_kind, next_run_at)')
   // ---- P8：事实图谱 + 指纹 / 凭据 / 接口鉴权 / finding 报告模板 ----
   db.exec(`
     CREATE TABLE IF NOT EXISTS facts (
@@ -183,18 +194,22 @@ export function upsertEndpoint({ host, method = 'GET', path: p = '/', status = '
 export function addFinding({
   title, severity = 'info', host = '', url = '', evidence = '', source = '', program_id = null,
   vuln_type = null, cwe = null, endpoint_ref = null, preconditions = null, reproduction_steps = null,
-  impact = null, recommendation = null,
+  impact = null, recommendation = null, session_id = null,
 }) {
   const fingerprint = crypto.createHash('sha1').update(`${host}|${title}|${url}`).digest('hex')
   const d = getDb()
   const dup = d.prepare('SELECT id, status FROM findings WHERE fingerprint = ?').get(fingerprint)
-  if (dup) return { id: dup.id, dup: true, status: dup.status }
+  if (dup) {
+    // 已存在的 finding 补上缺失的 session_id（不覆盖已有值）
+    if (session_id) d.prepare('UPDATE findings SET session_id = COALESCE(session_id, ?) WHERE id = ?').run(session_id, dup.id)
+    return { id: dup.id, dup: true, status: dup.status }
+  }
   const r = d.prepare(`
     INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, program_id,
-      vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+      vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
   `).run(fingerprint, title, severity, host, url, evidence, source, program_id,
-    vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, now())
+    vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, now())
   return { id: Number(r.lastInsertRowid), dup: false }
 }
 
@@ -240,7 +255,7 @@ function endpointWhere({ host = '', pathLike = '', programId = '' }) {
 
 export function queryFindings({ host = '', severity = '', status = '', programId = '', q = '', limit = 50, offset = 0 }) {
   const { where, args } = findingWhere({ host, severity, status, programId, q })
-  const sql = `SELECT id, title, severity, host, url, evidence, source, status, program_id, created_at FROM findings WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+  const sql = `SELECT id, title, severity, host, url, evidence, source, status, program_id, session_id, created_at FROM findings WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
 
@@ -268,6 +283,7 @@ export function stats() {
   return {
     assets: count('assets'), endpoints: count('endpoints'),
     findings: count('findings'), blackboard_keys: count('blackboard'),
+    facts: count('facts'),
     programs: count('programs'), tasks: count('tasks'),
     assets_by_type: byType, findings_by_severity: bySev,
   }
@@ -286,20 +302,66 @@ export function upsertProgram({ id, platform = '', max_risk = null, status = 'ac
   return true
 }
 
+// 工作区绑定（P11）：program ↔ DSH workspace 1:1 软绑定；workspace_id 传 null 解绑
+export function bindProgramWorkspace(program_id, workspace_id, workspace_path) {
+  const r = getDb().prepare('UPDATE programs SET workspace_id = ?, workspace_path = ?, updated_at = ? WHERE id = ?')
+    .run(workspace_id || null, workspace_path || null, now(), program_id)
+  return r.changes > 0
+}
+
+// scope.yml 删除程序 ≠ 删数据：programs 行归档保留归属关系
+export function archiveProgram(id) {
+  const r = getDb().prepare("UPDATE programs SET status = 'archived', updated_at = ? WHERE id = ?").run(now(), id)
+  return r.changes > 0
+}
+
+// 会话 cwd → program（经工作区路径匹配），供 task_create 自动带出归属
+export function programByWorkspacePath(cwd) {
+  if (!cwd) return null
+  const row = getDb().prepare(
+    "SELECT id FROM programs WHERE workspace_path = ? AND status = 'active'"
+  ).get(String(cwd))
+  return row ? row.id : null
+}
+
 export function listPrograms() {
-  return plain(getDb().prepare('SELECT id, platform, status, max_risk FROM programs ORDER BY id').all())
+  return plain(getDb().prepare('SELECT id, platform, status, max_risk, workspace_id, workspace_path FROM programs ORDER BY id').all())
 }
 
 const TASK_STATUS = ['queued', 'running', 'blocked', 'done', 'failed', 'cancelled']
+const MIN_INTERVAL_SECONDS = 300 // 对齐 dsh-schedule 下限
 
-export function taskCreate({ program_id, phase = '', objective, priority = 5, budget_tokens = null, parent_id = null, assignee = '' }) {
+// schedule: { kind: 'once', at: <epoch ms> } | { kind: 'interval', every_seconds: <s>=300+ } | 缺省=普通任务
+function normalizeSchedule(schedule) {
+  if (!schedule) return { kind: null, run_at: null, every_seconds: null, next_run_at: null }
+  const kind = String(schedule.kind || '')
+  if (kind === 'once') {
+    const at = Number(schedule.at)
+    if (!Number.isFinite(at) || at <= now()) return { error: 'once 调度需要未来的 at 时间戳（毫秒）' }
+    return { kind, run_at: at, every_seconds: null, next_run_at: at }
+  }
+  if (kind === 'interval') {
+    const every = Number(schedule.every_seconds)
+    if (!Number.isInteger(every) || every < MIN_INTERVAL_SECONDS) {
+      return { error: `interval 调度需要 every_seconds ≥ ${MIN_INTERVAL_SECONDS} 的整数` }
+    }
+    return { kind, run_at: null, every_seconds: every, next_run_at: now() + every * 1000 }
+  }
+  return { error: `非法 schedule.kind: ${kind || '(空)'}（可选: once/interval）` }
+}
+
+export function taskCreate({ program_id, phase = '', objective, priority = 5, budget_tokens = null, parent_id = null, assignee = '', session_id = null, schedule = null }) {
   if (!program_id || !objective) return { ok: false, error: 'program_id 与 objective 必填' }
+  const sched = normalizeSchedule(schedule)
+  if (sched.error) return { ok: false, error: sched.error }
   const d = getDb()
   const r = d.prepare(`
-    INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-  `).run(program_id, parent_id, phase, objective, priority, assignee, budget_tokens, now(), now())
-  return { ok: true, id: Number(r.lastInsertRowid) }
+    INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
+      session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+  `).run(program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
+    session_id, sched.kind, sched.run_at, sched.every_seconds, sched.next_run_at, now(), now())
+  return { ok: true, id: Number(r.lastInsertRowid), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at } : null }
 }
 
 export function taskUpdate({ id, status, note = '', blocked_reason = '', result = '' }) {
@@ -365,6 +427,78 @@ export function taskStats(programId) {
   ).all(programId))
   const total = d.prepare('SELECT COUNT(*) AS n FROM tasks WHERE program_id = ?').get(programId).n
   return { program_id: programId, total, by_phase_status: rows }
+}
+
+// -------------------- P11：定时调度 --------------------
+
+// 修改/暂停/恢复调度。schedule=null 表示清除调度（变普通任务）。
+export function taskSchedule({ id, schedule }) {
+  const d = getDb()
+  const t = d.prepare('SELECT id, status FROM tasks WHERE id = ?').get(Number(id))
+  if (!t) return { ok: false, error: `task 不存在: ${id}` }
+  if (['done', 'failed', 'cancelled'].includes(t.status)) return { ok: false, error: `task #${id} 已终态（${t.status}），不能改调度` }
+  const sched = normalizeSchedule(schedule)
+  if (sched.error) return { ok: false, error: sched.error }
+  d.prepare('UPDATE tasks SET schedule_kind = ?, run_at = ?, every_seconds = ?, next_run_at = ?, updated_at = ? WHERE id = ?')
+    .run(sched.kind, sched.run_at, sched.every_seconds, sched.next_run_at, now(), Number(id))
+  return { ok: true, id: Number(id), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at } : null }
+}
+
+// 立即触发一次（不动调度节律）：把 next_run_at 拨到现在，调度循环下个 tick 认领
+export function taskRunNow(id) {
+  const d = getDb()
+  const t = d.prepare('SELECT id, status FROM tasks WHERE id = ?').get(Number(id))
+  if (!t) return { ok: false, error: `task 不存在: ${id}` }
+  if (t.status !== 'queued') return { ok: false, error: `task #${id} 当前 ${t.status}，仅 queued 可立即触发` }
+  d.prepare('UPDATE tasks SET next_run_at = ?, updated_at = ? WHERE id = ?').run(now(), now(), Number(id))
+  return { ok: true, id: Number(id), hint: '已排入调度队列，下一 tick（≤60s）认领执行' }
+}
+
+// 调度循环认领（原子抢占，防重启/双实例重复派单）：到期 scheduled 任务 → running
+export function taskClaimDue(nowTs) {
+  const d = getDb()
+  d.exec('BEGIN IMMEDIATE')
+  try {
+    const due = plain(d.prepare(
+      "SELECT id FROM tasks WHERE schedule_kind IS NOT NULL AND status = 'queued' AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY priority ASC, next_run_at ASC LIMIT 4"
+    ).all(nowTs))
+    const claimed = []
+    const upd = d.prepare("UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ? AND status = 'queued'")
+    for (const row of due) {
+      const r = upd.run(nowTs, nowTs, row.id)
+      if (r.changes === 1) claimed.push(row.id)
+    }
+    if (!claimed.length) { d.exec('COMMIT'); return [] }
+    const marks = claimed.map(() => '?').join(',')
+    const tasks = plain(d.prepare(`SELECT * FROM tasks WHERE id IN (${marks})`).all(...claimed))
+    d.exec('COMMIT')
+    return tasks
+  } catch (e) {
+    try { d.exec('ROLLBACK') } catch { /* 已回滚 */ }
+    throw e
+  }
+}
+
+// 调度执行收尾：记录 last_run_*，interval 任务 latest-only 续期回 queued，once 任务进终态
+export function taskFinishScheduledRun({ id, ok, run_id, note = '' }) {
+  const d = getDb()
+  const t = d.prepare('SELECT * FROM tasks WHERE id = ?').get(Number(id))
+  if (!t) return { ok: false, error: `task 不存在: ${id}` }
+  const finished = now()
+  let nextRunAt = null
+  let status = ok ? 'done' : 'failed'
+  if (t.schedule_kind === 'interval' && t.every_seconds) {
+    // latest-only：从原定锚点按整数倍推进到第一个未来点，错过的不补跑
+    const anchor = t.next_run_at || finished
+    const step = t.every_seconds * 1000
+    nextRunAt = anchor + Math.max(1, Math.ceil((finished - anchor) / step)) * step
+    status = 'queued'
+  }
+  const tail = `${t.result || ''}\n[${new Date().toISOString().slice(0, 16)}] run ${run_id}: ${ok ? 'done' : 'failed'}${note ? ' — ' + note : ''}`.trim()
+  d.prepare(`UPDATE tasks SET status = ?, result = ?, last_run_at = ?, last_run_id = ?, next_run_at = ?,
+    finished_at = CASE WHEN ? IN ('done','failed') THEN ? ELSE finished_at END, updated_at = ? WHERE id = ?`)
+    .run(status, tail.slice(-8000), finished, run_id || null, nextRunAt, status, finished, now(), Number(id))
+  return { ok: true, id: Number(id), status, next_run_at: nextRunAt }
 }
 
 // -------------------- P8：事实图谱（facts + fact_edges）--------------------

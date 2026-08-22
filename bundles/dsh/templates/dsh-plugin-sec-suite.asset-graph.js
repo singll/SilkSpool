@@ -21,6 +21,21 @@ const reg = (ctx, def) => ctx.tools.register({
   execute: def.execute,
 })
 
+// 工具执行上下文（rc.7 ToolRunContext）：exec.agent.id === SessionId；session.header.cwd = 会话工作目录
+function execSessionId(exec) {
+  try {
+    const id = exec && exec.agent && exec.agent.id
+    return id ? String(id) : null
+  } catch { return null }
+}
+
+function execCwd(exec) {
+  try {
+    const cwd = exec && exec.agent && exec.agent.session && exec.agent.session.header && exec.agent.session.header.cwd
+    return cwd ? String(cwd) : null
+  } catch { return null }
+}
+
 export function apply(ctx) {
   reg(ctx, {
     name: 'asset_add',
@@ -119,7 +134,7 @@ export function apply(ctx) {
       required: ['title', 'host', 'evidence'],
       additionalProperties: false,
     },
-    execute: async (a) => ({ ok: true, ...db.addFinding(a) }),
+    execute: async (a, exec) => ({ ok: true, ...db.addFinding({ ...a, session_id: execSessionId(exec) }) }),
   })
 
   reg(ctx, {
@@ -219,21 +234,78 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'task_create',
-    description: '创建一个任务（可管理的工作单元，编排器的派单对象）。program_id 见 program_list；phase: recon/vuln/biz-logic/code-audit/intranet/review；priority 0 最高。',
+    description: '创建一个任务（可管理的工作单元，编排器的派单对象；看板任务视图立即可见）。'
+      + 'program_id 见 program_list（不传则按当前会话所在工作区自动带出）；phase: recon/vuln/biz-logic/code-audit/intranet/review；priority 0 最高。'
+      + '定时任务：用户说「定时/每隔/每天/每小时/定期跑」时必须传 schedule（{kind:"once",at:<未来毫秒时间戳>} 或 {kind:"interval",every_seconds:>=300}），'
+      + '不得只在会话里口头答应——带 schedule 的任务由调度循环自动执行，intrusive 级目标禁止 interval。',
     parameters: {
       type: 'object',
       properties: {
-        program_id: { type: 'string' },
+        program_id: { type: 'string', description: '不传则按当前会话工作区自动绑定' },
         phase: { type: 'string' },
         objective: { type: 'string' },
         priority: { type: 'integer', description: '默认 5，0 最高' },
         budget_tokens: { type: 'integer' },
         parent_id: { type: 'integer' },
+        schedule: {
+          type: 'object',
+          description: '定时调度（可选）：{kind:"once",at} 或 {kind:"interval",every_seconds}',
+          properties: {
+            kind: { type: 'string', enum: ['once', 'interval'] },
+            at: { type: 'integer', description: 'once：未来毫秒时间戳' },
+            every_seconds: { type: 'integer', description: 'interval：间隔秒数，≥300' },
+          },
+          required: ['kind'],
+          additionalProperties: false,
+        },
       },
-      required: ['program_id', 'objective'],
+      required: ['objective'],
       additionalProperties: false,
     },
-    execute: async (a) => db.taskCreate(a),
+    execute: async (a, exec) => {
+      let programId = a.program_id || ''
+      if (!programId) {
+        const cwd = execCwd(exec)
+        programId = (cwd && db.programByWorkspacePath(cwd)) || ''
+        if (!programId) return { ok: false, error: 'program_id 缺失且当前会话未在已绑定工作区（传 program_id，见 program_list）' }
+      }
+      return db.taskCreate({ ...a, program_id: programId, session_id: execSessionId(exec) })
+    },
+  })
+
+  reg(ctx, {
+    name: 'task_schedule',
+    description: '设置/修改/清除任务的定时调度。schedule 同 task_create；schedule 传 null 清除调度变普通任务。终态任务不可改。',
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'integer' },
+        schedule: {
+          type: ['object', 'null'],
+          properties: {
+            kind: { type: 'string', enum: ['once', 'interval'] },
+            at: { type: 'integer' },
+            every_seconds: { type: 'integer', description: '≥300' },
+          },
+          additionalProperties: false,
+        },
+      },
+      required: ['id', 'schedule'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.taskSchedule({ id: a.id, schedule: a.schedule ?? null }),
+  })
+
+  reg(ctx, {
+    name: 'task_run_now',
+    description: '立即触发一次任务执行（不动调度节律）：排入调度队列，下一 tick（≤60s）由 worker 认领执行。',
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'integer' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.taskRunNow(a.id),
   })
 
   reg(ctx, {
