@@ -322,6 +322,47 @@ function audit(record) {
   } catch { /* 审计写入失败不阻断（执行前已记录 decision） */ }
 }
 
+// ==============================================================================
+// sandbox（审计 S2）：run_cli 经 bwrap 白名单隔离执行
+// 白名单只挂 /usr /etc /home /opt/silkspool/dsh/{venv,opt} + runDir(写) + /tmp /dev /proc。
+// 效果：平台密钥（.env/settings.yaml/silkspool.yaml/keys）与系统写路径对工具不可见，
+//       且除 runDir 外全部只读。SEC_NO_SANDBOX=1 或 bwrap 缺失时 graceful 降级为不沙箱。
+// ==============================================================================
+
+const BWRAP_BIN = process.env.SEC_BWRAP_BIN || '/usr/bin/bwrap'
+const SANDBOX_DISABLED = process.env.SEC_NO_SANDBOX === '1'
+const HOME_DIR = process.env.HOME || '/home/silkspool'
+const VENV_DIR = '/opt/silkspool/dsh/venv'
+const OPT_DIR = '/opt/silkspool/dsh/opt'
+
+function bwrapAvailable() {
+  try { return fs.existsSync(BWRAP_BIN) } catch { return false }
+}
+
+// 返回 { cmd, args } 或 null（不沙箱）。仅对有 target_param 的网络工具沙箱；
+// 本地代码审计工具（semgrep/codeql/gitleaks 等无 target_param）需读任意源码路径，不沙箱。
+function buildSandboxCommand(binary, argv, runDir) {
+  if (SANDBOX_DISABLED || !bwrapAvailable()) return null
+  const args = [
+    '--unshare-all', '--share-net', '--die-with-parent', '--new-session',
+    '--proc', '/proc',
+    '--dev', '/dev',
+    '--tmpfs', '/tmp',
+    '--ro-bind', '/usr', '/usr',
+    '--ro-bind', '/etc', '/etc',
+    '--symlink', 'usr/bin', '/bin',
+    '--symlink', 'usr/sbin', '/sbin',
+    '--symlink', 'usr/lib', '/lib',
+    '--symlink', 'usr/lib64', '/lib64',
+    '--bind', HOME_DIR, HOME_DIR,
+  ]
+  if (fs.existsSync(VENV_DIR)) args.push('--ro-bind', VENV_DIR, VENV_DIR)
+  if (fs.existsSync(OPT_DIR)) args.push('--ro-bind', OPT_DIR, OPT_DIR)
+  args.push('--bind', runDir, runDir)
+  args.push('--', binary, ...argv)
+  return { cmd: BWRAP_BIN, args }
+}
+
 async function runCli(args) {
   const toolName = String(args.tool || '')
   const params = args.params || {}
@@ -384,10 +425,14 @@ async function runCli(args) {
   }
 
   const started = Date.now()
+  // sandbox（S2）：有 target_param 的网络工具经 bwrap 白名单隔离；本地审计工具不沙箱
+  const sandbox = manifest.target_param ? buildSandboxCommand(binary, argv, runDir) : null
+  const spawnCmd = sandbox ? sandbox.cmd : binary
+  const spawnArgs = sandbox ? sandbox.args : argv
   const result = await new Promise((resolve) => {
     let child
     try {
-      child = spawn(binary, argv, { env, cwd: runDir })
+      child = spawn(spawnCmd, spawnArgs, { env, cwd: runDir })
     } catch (e) {
       resolve({ error: `启动失败: ${e.message}`, code: null, stdout: '', stderr: '' })
       return
@@ -401,15 +446,16 @@ async function runCli(args) {
     child.on('close', (code, signal) => { clearTimeout(killer); resolve({ code, signal }) })
   })
 
-  fs.writeFileSync(path.join(runDir, 'cmd.txt'), [binary, ...argv].join(' ') + '\n')
+  fs.writeFileSync(path.join(runDir, 'cmd.txt'), (sandbox ? '[sandbox] ' : '') + [binary, ...argv].join(' ') + '\n')
   const meta = {
     run_id: runId, tool: toolName, argv: [binary, ...argv], params,
     started_at: new Date(started).toISOString(), duration_ms: Date.now() - started,
     exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null,
     risk: manifest.risk || 'passive', stage: manifest.stage || null,
+    sandboxed: !!sandbox,
   }
   fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 1) + '\n')
-  audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'executed', exit_code: meta.exit_code, duration_ms: meta.duration_ms })
+  audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'executed', exit_code: meta.exit_code, duration_ms: meta.duration_ms, sandboxed: meta.sandboxed })
 
   // ---- 摘要（≤20 行）----
   let stdoutText = ''
