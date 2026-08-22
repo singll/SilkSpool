@@ -38,14 +38,14 @@ window.__ModuleLoader__.load({
       '--dsw-alias-bg-mask-2': 'rgba(6,9,10,0.2)',
       '--dsw-alias-bg-mask-3': 'rgba(6,9,10,0.6)',
       '--dsw-alias-bg-mask-drop': 'rgba(20,26,29,0.7)',
-      // 文字层（骨白系——真机校准 v2：三级文字全部提亮，解决「字淡不突出」）
-      '--dsw-alias-label-primary': '#EFEAE0',
-      '--dsw-alias-label-secondary': '#BDB4A4',
-      '--dsw-alias-label-tertiary': '#8A8474',
-      '--dsw-alias-label-caption': '#8A8474',
-      '--dsw-alias-label-dimmed': '#9C9585',
-      '--dsw-alias-label-primary-bluish': '#EFEAE0',
-      '--dsw-alias-label-primary-dimmed': '#BDB4A4',
+      // 文字层（骨白系——真机校准 v3：再提亮一档，对话区弱字清晰可读）
+      '--dsw-alias-label-primary': '#F2EEE4',
+      '--dsw-alias-label-secondary': '#C6BDAC',
+      '--dsw-alias-label-tertiary': '#9D9682',
+      '--dsw-alias-label-caption': '#9D9682',
+      '--dsw-alias-label-dimmed': '#B0A896',
+      '--dsw-alias-label-primary-bluish': '#F2EEE4',
+      '--dsw-alias-label-primary-dimmed': '#C6BDAC',
       '--dsw-alias-label-primary-foreground': '#0D1113',
       '--dsw-alias-label-primary-inverted': '#1B2328',
       // 边框（暖灰青，三级——真机校准 v2：整体提亮，解决「界限不清晰」）
@@ -58,15 +58,15 @@ window.__ModuleLoader__.load({
       '--dsw-alias-border-inverted2': 'rgba(239,234,224,0.10)',
       // Hornet 绯红（唯一行动色）
       '--dsw-alias-brand-primary': '#C8403F',
-      '--dsw-alias-brand-text': '#EFEAE0',
-      '--dsw-alias-brand-primary-invert': '#EFEAE0',
+      '--dsw-alias-brand-text': '#F2EEE4',
+      '--dsw-alias-brand-primary-invert': '#F2EEE4',
       '--dsw-alias-brand-primary-new-colorprimary-new-color': '#C8403F',
       '--dsw-alias-button-primary-fill': '#C8403F',
       '--dsw-alias-button-primary-hover': '#D65453',
       '--dsw-alias-button-primary-dimmed': '#243037',
       '--dsw-alias-button-info-fill': '#4E8C84',
       '--dsw-alias-button-info-hover': '#5FA39A',
-      '--dsw-alias-button-contrast-fill': '#EFEAE0',
+      '--dsw-alias-button-contrast-fill': '#F2EEE4',
       '--dsw-alias-button-elevated-fill': '#1B2328',
       '--dsw-alias-button-floating-fill': '#1B2328',
       '--dsw-alias-button-floating-hover': '#243037',
@@ -77,17 +77,17 @@ window.__ModuleLoader__.load({
       '--dsw-alias-button-tool-bar-hover': 'rgba(65,80,90,0.6)',
       '--dsw-alias-button-tool-bar-fill-invisible': 'rgba(20,26,29,0.4)',
       // 状态（丝线金=警告 / 苔绿=成功 / 青碧=信息 / 绯红变体=错误）
-      '--dsw-alias-state-warn-primary': '#D4A24C',
-      '--dsw-alias-state-warn-label': '#D4A24C',
-      '--dsw-alias-state-warn-secondary': '#E0B567',
+      '--dsw-alias-state-warn-primary': '#DDAE55',
+      '--dsw-alias-state-warn-label': '#DDAE55',
+      '--dsw-alias-state-warn-secondary': '#E6C078',
       '--dsw-alias-state-warn-tertiary': '#2A2416',
-      '--dsw-alias-state-success-primary': '#7A9B6A',
-      '--dsw-alias-state-success-secondary': '#8FB07D',
+      '--dsw-alias-state-success-primary': '#8CAF7C',
+      '--dsw-alias-state-success-secondary': '#A3C193',
       '--dsw-alias-state-success-tertiary': '#1B2418',
-      '--dsw-alias-state-business-primary': '#4E8C84',
+      '--dsw-alias-state-business-primary': '#5FA39A',
       '--dsw-alias-state-business-tertiary': '#16211F',
-      '--dsw-alias-state-error-primary': '#D24848',
-      '--dsw-alias-state-error-secondary': '#E05555',
+      '--dsw-alias-state-error-primary': '#DA5252',
+      '--dsw-alias-state-error-secondary': '#E55F5F',
       '--dsw-alias-interactive-bg-hover-danger': 'rgba(210,72,72,0.12)',
       // 交互
       '--dsw-alias-interactive-bg-hover': 'rgba(239,234,224,0.08)',
@@ -124,8 +124,9 @@ window.__ModuleLoader__.load({
       '--dsw-specific-bubble-highlight': '#243037',
     }
 
-    // ── severity 五色（registry 白名单外，silksong 激活时经 <style> 插拔） ──────
-    var SEV_CSS = ':root{--silksec-sev-critical:#E05555;--silksec-sev-high:#D4743A;--silksec-sev-medium:#D4A24C;--silksec-sev-low:#4E8C84;--silksec-sev-info:#8A8578}'
+    // ── 激活期附加样式（registry 白名单外，silksong 激活时经 <style> 插拔） ────
+    // 1) severity 五色（与状态色同源的 v3 提亮值）；2) 图片亮度/对比度微调（墨青底可见度，无特效）
+    var SEV_CSS = ':root{--silksec-sev-critical:#E55F5F;--silksec-sev-high:#DA8248;--silksec-sev-medium:#DDAE55;--silksec-sev-low:#5FA39A;--silksec-sev-info:#948E7E}\nimg{filter:brightness(1.07) contrast(1.07)}'
     var SEV_KEY = 'silksec-sev'
 
     function setSevStyle(on) {

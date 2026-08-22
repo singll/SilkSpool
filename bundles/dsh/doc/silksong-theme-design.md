@@ -52,14 +52,14 @@
 
 **文字层（骨白系，暖调，不用冷白——骨器/羊皮纸质感）**
 
-> v2 真机校准：三级文字全部提亮（初值偏淡、不够突出）。
+> v3 真机校准：文字再提亮一档（含对话区弱字）；状态色同步提亮；图片 `brightness/contrast(1.07)` 微调（随主题激活插拔，无特效）。
 
 | 令牌 | 色值 |
 |---|---|
-| `--dsw-alias-label-primary` | `#EFEAE0` |
-| `--dsw-alias-label-secondary` | `#BDB4A4` |
-| `--dsw-alias-label-tertiary` | `#8A8474` |
-| `--dsw-alias-label-caption` | `#8A8474` |
+| `--dsw-alias-label-primary` | `#F2EEE4` |
+| `--dsw-alias-label-secondary` | `#C6BDAC` |
+| `--dsw-alias-label-tertiary` | `#9D9682` |
+| `--dsw-alias-label-caption` | `#9D9682` |
 
 **边框（暖灰青，三级明暗——v2 真机校准：整体提亮，保证表格/卡片界限清晰）**
 
@@ -79,12 +79,12 @@
 | `--dsw-alias-button-primary-hover` | `#D65453` | 绯红提亮一档 |
 | `--dsw-alias-state-error-primary` | `#D24848` | 绯红警示变体（比 brand 亮，危急感） |
 | `--dsw-alias-interactive-bg-hover-danger` | `rgba(210,72,72,0.12)` | |
-| `--dsw-alias-state-warn-primary` | `#D4A24C` | **丝线金** |
-| `--dsw-alias-state-warn-label` | `#D4A24C` | |
+| `--dsw-alias-state-warn-primary` | `#DDAE55` | **丝线金** |
+| `--dsw-alias-state-warn-label` | `#DDAE55` | |
 | `--dsw-alias-state-warn-tertiary` | `#2A2416` | warn 底色（金的暗化） |
-| `--dsw-alias-state-success-primary` | `#7A9B6A` | **苔绿** |
+| `--dsw-alias-state-success-primary` | `#8CAF7C` | **苔绿** |
 | `--dsw-alias-state-success-tertiary` | `#1B2418` | success 底色（绿的暗化） |
-| `--dsw-alias-state-business-primary` | `#4E8C84` | **青碧**（中性信息） |
+| `--dsw-alias-state-business-primary` | `#5FA39A` | **青碧**（中性信息） |
 | `--dsw-alias-state-business-tertiary` | `#16211F` | info 底色（青的暗化） |
 
 **交互与杂项**
@@ -113,11 +113,11 @@
 
 | 变量 | 色值 | 级别 |
 |---|---|---|
-| `--silksec-sev-critical` | `#E05555` | 严重（绯红提亮） |
-| `--silksec-sev-high` | `#D4743A` | 高危（朱砂橙） |
-| `--silksec-sev-medium` | `#D4A24C` | 中危（丝线金） |
-| `--silksec-sev-low` | `#4E8C84` | 低危（青碧） |
-| `--silksec-sev-info` | `#8A8578` | 信息（石灰） |
+| `--silksec-sev-critical` | `#E55F5F` | 严重（绯红提亮） |
+| `--silksec-sev-high` | `#DA8248` | 高危（朱砂橙） |
+| `--silksec-sev-medium` | `#DDAE55` | 中危（丝线金） |
+| `--silksec-sev-low` | `#5FA39A` | 低危（青碧） |
+| `--silksec-sev-info` | `#948E7E` | 信息（石灰） |
 
 级别色逻辑：**越危险越往红走，越安全越往青绿走**。不引入外来色。
 
@@ -141,6 +141,7 @@
 | 表格 | `table-layout: fixed` + colgroup 定列宽（ID/操作列不错位）；表头 border-l3 强分界；单元格 13px、`8px 12px` 内距、垂直居中 |
 | Modal | 看板弹窗 `min(1280px, 100vw-32px)` × `min(88vh, 1020px)` |
 | KPI 统计卡 | 可交互：hover 抬升边界（bg 升档 + border-l3），点击跳转对应视图；数字 20px/600 |
+| 行内操作按钮 | 位置紧张时**图标化**（26×26 图标按钮，stroke 图标 + `title` 悬停提示），不打断表格密度；如打标三键：✓确认 / ✕误报 / 忽略 |
 
 宿主原生组件的形状写死在组件里、令牌管不到——**保持原样**，靠颜色令牌融合；本规范约束的是所有自建组件。
 
