@@ -4,7 +4,7 @@
 > 本文档是所有 UI 工作的**唯一权威**：新模块、新组件、新视图一律照此组装，不得各自发明。
 > 术语以 [../CONTEXT.md](../CONTEXT.md) 为准；平台总体计划见 `doc/dsh-pi-secagent-plan-v5.md`。
 >
-> 版本：v1（2026-08-22 定稿，grill 访谈 12 项决策的沉淀）
+> 版本：v3（2026-08-22）。v1 grill 定稿 → v2/v3 真机校准（文字/边框/背景提亮、表格定宽、KPI 可交互、打标图标化、刷新反馈、轮询只刷活跃视图）。令牌全表与实现一一对应，已审计无漂移。
 
 ---
 
@@ -36,9 +36,11 @@
 
 ## 二、调色板与令牌映射
 
-### 2.1 核心色值（初值，真机渲染后可微调对比度）
+### 2.1 令牌全表（88 个，与 `dsh-plugin-theme-silksong.client.js` 的 TOKENS 一一对应，以此为准）
 
-**背景层（Pharloom 之夜——v3 真机校准：整体抬高、层间落差加大，内容有托底反差）**
+> 校准记录：v1 初值 → v2 文字/边框提亮 → v3 背景色阶整体抬高 + 文字/状态色再提亮 + 图片微调。
+
+**背景层（Pharloom 之夜）**
 
 | 令牌 | 色值 | 用途 |
 |---|---|---|
@@ -47,67 +49,82 @@
 | `--dsw-alias-bg-layer-2` | `#253037` | 浮起层（hover 卡片、输入框） |
 | `--dsw-alias-bg-layer-3` | `#2E3B43` | 最高浮层（Modal、菜单） |
 | `--dsw-alias-bg-overlay` | `#253037` | overlay/popover |
-| `--dsw-specific-sidebar-fill` | `#1A2126` | 侧边栏（介于 base 与 layer-1 之间） |
+| `--dsw-alias-bg-module-platform` | `#2E3B43` | 平台模块底 |
+| `--dsw-alias-bg-multi-select` | `#2E3B43` | 多选底 |
 | `--dsw-alias-bg-skeleton` | `rgba(242,238,228,0.08)` | 骨架屏（骨白的 8%） |
+| `--dsw-alias-bg-mask-1` `rgba(8,12,14,0.6)`；`--dsw-alias-bg-mask-2` `rgba(8,12,14,0.2)`；`--dsw-alias-bg-mask-3` `rgba(8,12,14,0.6)` | 遮罩 |
+| `--dsw-alias-bg-mask-drop` | `rgba(25,32,37,0.7)` | 下拉遮罩 |
+| `--dsw-specific-sidebar-fill` | `#1A2126` | 侧边栏（介于 base 与 layer-1 之间） |
 
 **文字层（骨白系，暖调，不用冷白——骨器/羊皮纸质感）**
 
-> v3 真机校准：文字再提亮一档（含对话区弱字）；状态色同步提亮；图片 `brightness/contrast(1.07)` 微调（随主题激活插拔，无特效）。
+| 令牌 | 色值 |
+|---|---|
+| `--dsw-alias-label-primary`、`--dsw-alias-label-primary-bluish` | `#F2EEE4` |
+| `--dsw-alias-label-secondary`、`--dsw-alias-label-primary-dimmed` | `#C6BDAC` |
+| `--dsw-alias-label-tertiary`、`--dsw-alias-label-caption` | `#9D9682` |
+| `--dsw-alias-label-dimmed` | `#B0A896` |
+| `--dsw-alias-label-primary-foreground` | `#161D22`（深底上的反白场景用底色） |
+| `--dsw-alias-label-primary-inverted` | `#253037` |
+
+**边框（暖灰青）**
 
 | 令牌 | 色值 |
 |---|---|
-| `--dsw-alias-label-primary` | `#F2EEE4` |
-| `--dsw-alias-label-secondary` | `#C6BDAC` |
-| `--dsw-alias-label-tertiary` | `#9D9682` |
-| `--dsw-alias-label-caption` | `#9D9682` |
-
-**边框（暖灰青——v3 真机校准：随背景抬高同步提亮，层间界限清晰）**
-
-| 令牌 | 色值 |
-|---|---|
-| `--dsw-alias-border-l1` | `#3D474F` |
+| `--dsw-alias-border-l1`、`--dsw-alias-border-l2-darkmode-thin` | `#3D474F` |
 | `--dsw-alias-border-l2` | `#4A555F` |
 | `--dsw-alias-border-l3` | `#5F6F7B` |
+| `--dsw-alias-border-l4` | `#6E7E8A` |
+| `--dsw-alias-border-inverted` `rgba(242,238,228,0.10)`；`--dsw-alias-border-inverted2` `rgba(242,238,228,0.12)` |
+
+**Hornet 绯红（唯一行动色）**
+
+| 令牌 | 色值 |
+|---|---|
+| `--dsw-alias-brand-primary`、`--dsw-alias-brand-primary-new-colorprimary-new-color` | `#C8403F` |
+| `--dsw-alias-brand-text`、`--dsw-alias-brand-primary-invert`、`--dsw-alias-button-contrast-fill` | `#F2EEE4`（绯红上的骨白文字） |
+| `--dsw-alias-button-primary-fill` | `#C8403F` |
+| `--dsw-alias-button-primary-hover` | `#D65453`（绯红提亮一档） |
+| `--dsw-alias-button-primary-dimmed` | `#2E3B43` |
 
 **叙事四色 → 状态令牌**
 
 | 令牌 | 色值 | 叙事 |
 |---|---|---|
-| `--dsw-alias-brand-primary` | `#C8403F` | **Hornet 绯红** |
-| `--dsw-alias-brand-text` | `#E6E0D4` | 绯红按钮上的文字（骨白） |
-| `--dsw-alias-button-primary-fill` | `#C8403F` | |
-| `--dsw-alias-button-primary-hover` | `#D65453` | 绯红提亮一档 |
-| `--dsw-alias-state-error-primary` | `#D24848` | 绯红警示变体（比 brand 亮，危急感） |
-| `--dsw-alias-interactive-bg-hover-danger` | `rgba(210,72,72,0.12)` | |
-| `--dsw-alias-state-warn-primary` | `#DDAE55` | **丝线金** |
-| `--dsw-alias-state-warn-label` | `#DDAE55` | |
+| `--dsw-alias-state-error-primary` `#DA5252`；`--dsw-alias-state-error-secondary` `#E55F5F` | 绯红警示变体（比 brand 亮，危急感） |
+| `--dsw-alias-interactive-bg-hover-danger` | `rgba(210,72,72,0.12)` | 危险 hover 底 |
+| `--dsw-alias-state-warn-primary`、`--dsw-alias-state-warn-label` | `#DDAE55` | **丝线金** |
+| `--dsw-alias-state-warn-secondary` | `#E6C078` | |
 | `--dsw-alias-state-warn-tertiary` | `#2A2416` | warn 底色（金的暗化） |
-| `--dsw-alias-state-success-primary` | `#8CAF7C` | **苔绿** |
+| `--dsw-alias-state-success-primary` `#8CAF7C`；`--dsw-alias-state-success-secondary` `#A3C193` | **苔绿** |
 | `--dsw-alias-state-success-tertiary` | `#1B2418` | success 底色（绿的暗化） |
 | `--dsw-alias-state-business-primary` | `#5FA39A` | **青碧**（中性信息） |
 | `--dsw-alias-state-business-tertiary` | `#16211F` | info 底色（青的暗化） |
+| `--dsw-alias-button-info-fill` `#4E8C84`；`--dsw-alias-button-info-hover` `#5FA39A` | info 按钮（青碧暗档） |
 
 **交互与杂项**
 
 | 令牌 | 色值 |
 |---|---|
-| `--dsw-alias-interactive-bg-hover` | `rgba(230,224,212,0.06)` |
-| `--dsw-alias-interactive-bg-active` | `rgba(230,224,212,0.10)` |
-| `--dsw-alias-interactive-bg-hover-accent` | `rgba(200,64,63,0.14)` |
-| `--dsw-alias-bg-mask-1` | `rgba(6,9,10,0.6)` |
-| `--dsw-alias-bg-mask-3` | `rgba(6,9,10,0.6)` |
-| `--dsw-alias-toast-bg` | `#243037` |
-| `--dsw-alias-tooltip-bg` | `#243037` |
-| `--dsw-alias-scrollbar-bg-l1` | `#333C42` |
-| `--dsw-alias-scrollbar-hover-l1` | `#41505A` |
-| `--dsw-specific-sidebar-nav-item-hover` | `#1B2328` |
-| `--dsw-specific-sidebar-nav-item-active` | `#243037` |
+| `--dsw-alias-interactive-bg-hover` | `rgba(242,238,228,0.09)` |
+| `--dsw-alias-interactive-bg-active` | `rgba(242,238,228,0.13)` |
+| `--dsw-alias-interactive-bg-hover-accent` | `rgba(200,64,63,0.16)` |
+| `--dsw-alias-interactive-bg-hover-solid` | `#253037` |
+| `--dsw-alias-button-elevated-fill`、`--dsw-alias-button-floating-fill` | `#253037` |
+| `--dsw-alias-button-floating-hover`、`--dsw-alias-button-ghost-active-hover` | `#2E3B43` |
+| `--dsw-alias-button-ghost-active-fill` | `#253037` |
+| `--dsw-alias-button-ghost-active-border` | `#5F6F7B` |
+| `--dsw-alias-button-tool-bar-fill` `rgba(95,111,123,0.5)`；`--dsw-alias-button-tool-bar-hover` `rgba(95,111,123,0.6)` |
+| `--dsw-alias-button-tool-bar-fill-invisible` | `rgba(25,32,37,0.4)` |
+| `--dsw-alias-toast-bg`、`--dsw-alias-tooltip-bg` | `#2E3B43` |
+| `--dsw-alias-scrollbar-bg-l1`、`--dsw-alias-scrollbar-bg-l2` | `#4A555F` |
+| `--dsw-alias-scrollbar-hover-l1`、`--dsw-alias-scrollbar-hover-l2` | `#5F6F7B` |
+| `--dsw-alias-markdown-code-block`、`--dsw-alias-markdown-code-segment-unselected` `#1A2126`；`--dsw-alias-markdown-code-block-banner` `#1D262C`；`--dsw-alias-markdown-inline-code`、`--dsw-alias-markdown-placeholder`、`--dsw-alias-markdown-tag` `#253037`；`--dsw-alias-markdown-citation`、`--dsw-alias-markdown-code-segment-selected` `#2E3B43` | 全部映射到 layer 三档，不引入新色 |
+| `--dsw-specific-menu`、`--dsw-specific-bubble-highlight` | `#2E3B43` |
+| `--dsw-specific-sidebar-nav-item-hover`、`--dsw-specific-input-major`、`--dsw-specific-selector`、`--dsw-specific-tip`、`--dsw-specific-bubble` | `#253037` |
+| `--dsw-specific-sidebar-nav-item-active` | `#2E3B43` |
 | `--dsw-specific-sidebar-nav-item-active-accent` | `#C8403F` |
-| `--dsw-specific-menu` | `#243037` |
-| `--dsw-specific-input-major` | `#1B2328` |
-| `--dsw-specific-bubble` | `#1B2328` |
-| `--dsw-specific-bubble-highlight` | `#243037` |
-| markdown 系列（code-block/inline-code/citation/tag 等） | 全部映射到 layer-1/2/3 三档背景，不引入新色 |
+| `--dsw-specific-login-input` | `#1D262C` |
 
 **看板私有语义色（`--silksec-sev-*`，severity 五色，与叙事四色同源）**
 
@@ -125,8 +142,9 @@
 
 - 主题经 DSH 原生 theme registry 注册（`ctx.theme.register({ id: 'silksong', colorScheme: 'dark', tokens })`），presenter 把 tokens 以 **inline CSS 变量写到 `<body>`**——覆盖一切吃 `--dsw-alias-*` 的原生组件，**这是整站一致的官方通道，不是 hack**。
 - tokens 一律写**原始 hex/rgba 值**，不引用 `--dsw-static-*`（主题的权威在令牌层，不依赖静态色板的存在）。
-- 上表未列出的令牌保持宿主 dark 基底原样；新增覆盖必须先加进本文档再写代码。
-- `--silksec-sev-*` 不在 registry 白名单内，由主题插件在 silksong 激活时经 `<style>` 插拔注入；消费方一律带 fallback：`var(--silksec-sev-critical, #E05555)`。
+- 上表为**全量清单**（88 个令牌），未列出的令牌保持宿主 dark 基底原样；新增覆盖必须先加进本文档再写代码。
+- `--silksec-sev-*` 不在 registry 白名单内，由主题插件在 silksong 激活时经 `<style>` 插拔注入；消费方一律带 fallback：`var(--silksec-sev-critical, #E55F5F)`。
+- 同一 `<style>` 插拔还承担一项附加规则：图片 `brightness(1.07) contrast(1.07)` 微调（墨青底上的可见度，切走主题即移除，无特效无动画）。
 
 ---
 
@@ -210,11 +228,11 @@ transition 只碰 `background-color / color / border-color / opacity`（不触�
 | status=new 的漏洞 | 最强：行左 2px 绯红边条（待处理 > 已处理） |
 | critical/high severity pill | 红/朱砂描边 + 同色文字 |
 | 已定案漏洞（误报/忽略/重复） | 反向降权：整行 opacity 0.5 |
-| 打标按钮「确认」 | hover 转绯红填充（主行动语义） |
+| 打标「确认」图标按钮 | hover 转绯红填充（主行动语义） |
 | blocked/failed 任务 | 丝线金 / 警示红 pill |
 | tentative 事实 | 丝线金 pill（「不确定的知识」需要被看到） |
 | deprecated 事实 | 整卡 opacity 0.55 |
-| KPI 统计卡数字 | strong 字重 + label-primary |
+| KPI 统计卡数字 | 20px / 600 字重 + label-primary |
 | 激活 tab | 绯红下划线 |
 | 项目 max_risk | 中性 pill；仅 intrusive 时丝线金 |
 | program_id / 来源 / 时间等参考列 | 不强调（label-tertiary） |
@@ -235,7 +253,7 @@ transition 只碰 `background-color / color / border-color / opacity`（不触�
 |---|---|---|
 | 漏洞 | 标题/host/url 三字段 OR | severity · status · program |
 | 资产 | host | type · program |
-| 事实 | fact_key + summary | category · program · confidence |
+| 事实 | fact_key + 摘要 + 正文 | category · confidence · program |
 | 任务 | objective | status · phase · program |
 
 ### 8.3 交互细则
@@ -243,8 +261,9 @@ transition 只碰 `background-color / color / border-color / opacity`（不触�
 - 搜索**防抖 300ms**；改搜索/筛选页码归 1；翻页保持条件
 - 工具条状态**按 tab 各自记忆**，关闭 Modal 重置
 - 加载态：表格区骨架行（bg-skeleton，无动画），工具条不锁定（后发请求覆盖先发，丢弃过期响应）
-- 空态双文案：「暂无数据」（库里没有）vs「无匹配结果」（被过滤掉），后者配空态线稿图标
-- 轮询 30s 只刷当前页查询
+- 空态双文案：「暂无数据」（库里没有）vs「无匹配结果」（被过滤掉），均配空态线稿图标
+- 轮询 30s **只刷活跃视图**的当前查询（切 tab 即激活即取数）
+- 「刷新」按钮：并行重取四视图，期间显示「刷新中…」并禁用防连点
 
 ### 8.4 不做清单（防范围蔓延）
 

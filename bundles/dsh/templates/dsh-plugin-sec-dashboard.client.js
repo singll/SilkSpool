@@ -227,8 +227,8 @@ window.__ModuleLoader__.load({
       return data
     }
 
-    // 分页查询 hook：搜索防抖 300ms、改条件页码归 1、过期响应丢弃、30s 轮询当前页
-    function usePagedQuery(endpoint) {
+    // 分页查询 hook：搜索防抖 300ms、改条件页码归 1、过期响应丢弃、30s 轮询（仅活跃视图）
+    function usePagedQuery(endpoint, active) {
       var qs = React.useState('')
       var q = qs[0]; var setQ = qs[1]
       var dqs = React.useState('')
@@ -252,6 +252,7 @@ window.__ModuleLoader__.load({
       }, [q])
 
       React.useEffect(function () {
+        if (!active) return
         var alive = true
         function load() {
           var my = ++seq.current
@@ -270,7 +271,7 @@ window.__ModuleLoader__.load({
         load()
         var timer = setInterval(load, POLL_MS)
         return function () { alive = false; clearInterval(timer) }
-      }, [endpoint, dq, JSON.stringify(filters), page, size, tick])
+      }, [endpoint, active, dq, JSON.stringify(filters), page, size, tick])
 
       function setFilter(key, value) {
         setFilters(function (prev) {
@@ -556,11 +557,11 @@ window.__ModuleLoader__.load({
         return activeTab === 'facts' ? { endpoint: 'blackboard' } : null
       }, [activeTab])
 
-      // 四个视图各自的分页查询（状态按 tab 记忆，Modal 关闭即销毁重置）
-      var findingsQ = usePagedQuery('findings')
-      var assetsQ = usePagedQuery('assets')
-      var factsQ = usePagedQuery('facts')
-      var tasksQ = usePagedQuery('tasks')
+      // 四个视图各自的分页查询（状态按 tab 记忆，Modal 关闭即销毁重置；仅活跃视图取数/轮询）
+      var findingsQ = usePagedQuery('findings', activeTab === 'findings')
+      var assetsQ = usePagedQuery('assets', activeTab === 'assets')
+      var factsQ = usePagedQuery('facts', activeTab === 'facts')
+      var tasksQ = usePagedQuery('tasks', activeTab === 'tasks')
 
       function withBusy(fn) {
         return function () {
