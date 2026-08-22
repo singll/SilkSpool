@@ -1,5 +1,5 @@
 # ==============================================================================
-# SilkSecAgent 社区插件锁（pin 版本 + hash，先扫后装，见 doc/dsh-pi-secagent-plan.md §6.2）
+# SilkSecAgent 社区插件锁（pin 版本 + hash，先扫后装，治理纪律见 doc/dsh-secagent-plan-v6.md）
 # 格式：name|npm_spec|integrity|scan_verdict|purpose
 # ==============================================================================
 
