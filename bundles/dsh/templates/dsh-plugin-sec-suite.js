@@ -1077,11 +1077,13 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
   const result = await new Promise((resolve) => {
     const out = fs.createWriteStream(path.join(runDir, 'worker.log'))
     const child = spawn(NODE_BIN, [DSH_BIN, '--profile', 'headless', task], {
-      env, cwd: workCwd,
+      env, cwd: workCwd, detached: true,
     })
     child.stdout.pipe(out)
     child.stderr.pipe(out)
-    const killer = setTimeout(() => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 5000).unref() }, timeoutMs)
+    // 超时杀整个进程组（派生子 worker/CLI 子进程随父一起回收，防孤儿）
+    const killGroup = (sig) => { try { process.kill(-child.pid, sig) } catch { /* 进程组已退 */ } }
+    const killer = setTimeout(() => { killGroup('SIGTERM'); setTimeout(() => killGroup('SIGKILL'), 5000).unref() }, timeoutMs)
     child.on('error', (e) => { clearTimeout(killer); resolve({ code: null, error: String(e.message) }) })
     child.on('close', (code, signal) => { clearTimeout(killer); resolve({ code, signal }) })
   })
@@ -1120,6 +1122,8 @@ async function spawnWorker(args, exec) {
 // ==============================================================================
 
 const SCHEDULER_TICK_MS = 60000
+// 定时任务 worker 执行上限：原 1800s 与任务体量不匹配导致每晚超时被杀，放宽到 runWorker 上限 3600s
+const SCHEDULER_TASK_TIMEOUT_SEC = 3600
 
 function workspacePathOfProgram(programId) {
   const p = assetDb.listPrograms().find((x) => x.id === programId)
@@ -1144,7 +1148,7 @@ async function reconcileWorkspaceSessions() {
 }
 
 // worker.log 尾部噪声（headless 进程 stderr 杂讯）不进入任务摘要
-const WORKER_NOISE_RE = /ExperimentalWarning|trace-warnings|EADDRINUSE|xray webhook 启动失败/
+const WORKER_NOISE_RE = /ExperimentalWarning|trace-warnings|EADDRINUSE|xray webhook 启动失败|onnxruntime|pthread_setaffinity/
 
 async function schedulerTick() {
   let due
@@ -1152,23 +1156,30 @@ async function schedulerTick() {
     process.stderr.write(`[sec-suite] 调度认领失败: ${e?.message ?? String(e)}\n`)
     return
   }
-  for (const task of due) {
-    // 并发上限时延后再跑（next_run_at 不动，下个 tick 重试——但 status 已是 running，需回滚）
-    if (activeWorkers >= MAX_WORKERS) {
-      try { assetDb.taskUpdate({ id: task.id, status: 'queued', note: 'worker 并发已满，延后到下一 tick' }) } catch { /* ignore */ }
-      continue
-    }
-    const prompt = `[定时任务 #${task.id}${task.phase ? ' / ' + task.phase : ''}] ${task.objective}`
-    const cwd = workspacePathOfProgram(task.program_id)
-    audit({ ts: Date.now(), run_id: '-', tool: 'scheduler', decision: 'executed', detail: { task_id: task.id, program_id: task.program_id } })
+  // 到期任务相互独立：并行启动（修复串行 await 导致第 N 个任务晚 (N-1)×上限 才开跑的问题）。
+  // 每个 callback 全段 try/catch + stderr 落日志：任何单任务异常可见可查，不再静默吞掉。
+  await Promise.allSettled(due.map(async (task) => {
     try {
-      const r = await runWorker({ task: prompt, cwd, timeoutSec: 1800, enforceLimit: false })
-      const note = (r.tail || '').split('\n').filter((l) => l.trim() && !WORKER_NOISE_RE.test(l)).slice(-3).join(' ').slice(0, 300)
+      const prompt = `[定时任务 #${task.id}${task.phase ? ' / ' + task.phase : ''}] ${task.objective}`
+      const cwd = workspacePathOfProgram(task.program_id)
+      audit({ ts: Date.now(), run_id: '-', tool: 'scheduler', decision: 'executed', detail: { task_id: task.id, program_id: task.program_id } })
+      const r = await runWorker({ task: prompt, cwd, timeoutSec: SCHEDULER_TASK_TIMEOUT_SEC, enforceLimit: true })
+      if (r.busy) {
+        try { assetDb.taskUpdate({ id: task.id, status: 'queued', note: 'worker 并发已满，延后到下一 tick' }) } catch { /* ignore */ }
+        return
+      }
+      let note = ''
+      if (!r.ok && r.exit_code === null && r.duration_ms >= SCHEDULER_TASK_TIMEOUT_SEC * 1000 - 15000) {
+        note = `worker 超时被杀（${SCHEDULER_TASK_TIMEOUT_SEC} 秒上限）`  // 显式写原因，不再展示日志尾部噪声
+      } else {
+        note = (r.tail || '').split('\n').filter((l) => l.trim() && !WORKER_NOISE_RE.test(l)).slice(-3).join(' ').slice(0, 300)
+      }
       assetDb.taskFinishScheduledRun({ id: task.id, ok: !!r.ok, run_id: r.run_id || '', note })
     } catch (e) {
+      process.stderr.write(`[sec-suite] 调度任务 #${task.id} 执行异常: ${e?.stack || e?.message || String(e)}\n`)
       try { assetDb.taskFinishScheduledRun({ id: task.id, ok: false, run_id: '', note: `调度执行异常: ${e?.message ?? String(e)}`.slice(0, 300) }) } catch { /* ignore */ }
     }
-  }
+  }))
   // 顺带做工作区会话归组（轻量、幂等）
   try { await reconcileWorkspaceSessions() } catch { /* 归组失败不阻断调度 */ }
 }
