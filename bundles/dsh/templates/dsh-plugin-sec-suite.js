@@ -1056,10 +1056,51 @@ const DSH_BIN = process.env.SEC_DSH_BIN
 const NODE_BIN = process.env.SEC_NODE_BIN || '/usr/local/node/bin/node'
 const MAX_WORKERS = 4
 let activeWorkers = 0
+// 幂等恢复窗口：仅约束 done/failed 回读（从 finished_at 计）。重启后重试在数秒~分钟内落地，30min 绰绰有余。
+const WORKER_DEDUPE_WINDOW_MS = 30 * 60 * 1000
+
+// 从注册表行 + 落盘文件重建 worker 返回（幂等恢复用）。文件已清理则回 null → 调用方降级。
+function readWorkerResult(row) {
+  if (!row || !row.run_dir) return null
+  let logText = ''
+  try { logText = fs.readFileSync(path.join(row.run_dir, 'worker.log'), 'utf8') } catch { return null }
+  const lines = logText.split('\n').filter(Boolean)
+  return {
+    ok: row.status === 'done',
+    run_id: row.run_id,
+    exit_code: row.exit_code ?? null,
+    recovered: true,
+    status: row.status,
+    log_lines: lines.length,
+    tail: lines.slice(-20).join('\n'),
+    hint: `恢复自既有 run ${row.run_id}（未重跑）；完整日志用 grep_result/page_result 取；强制重跑传 force:true`,
+  }
+}
 
 // worker 核心（工具与调度循环共用）。cwd 默认 runDir；调度任务传工作区路径——
 // headless 会话 header cwd = workspace path → workspaceRegistry 自动归组 → 看板可跳链
-async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId = null, enforceLimit = true }) {
+async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId = null, enforceLimit = true, dedupeKey = null }) {
+  // 幂等恢复（仅交互路径传 dedupeKey）：重启→重试时确定性拿回结果，而非 "outcome unknown"。
+  // 早返回全部在 activeWorkers++ 之前 → 不占也不错减并发 slot。
+  if (dedupeKey) {
+    const prev = assetDb.workerFindRecentByKey(dedupeKey, WORKER_DEDUPE_WINDOW_MS)
+    if (prev) {
+      if (prev.status === 'running') {
+        if (pidAlive(prev.pid)) {
+          return { ok: false, in_progress: true, run_id: prev.run_id, status: 'running',
+            hint: `同任务 worker 正在跑（run_id=${prev.run_id}），用 worker_status 查进度；强制重跑传 force:true` }
+        }
+        try { assetDb.workerFinish(prev.run_id, { status: 'killed' }) } catch { /* ignore */ } // pid 死的僵尸 running → 归 killed，落到重跑
+      } else if (prev.status === 'done' || prev.status === 'failed') {
+        const recovered = readWorkerResult(prev)
+        if (recovered) return recovered
+        return { ok: prev.status === 'done', run_id: prev.run_id, exit_code: prev.exit_code ?? null,
+          recovered: true, status: prev.status, tail: '', hint: '原始输出已清理，仅存 DB 终态' } // 文件清理降级
+      }
+      // killed → 落到下方 fresh spawn（无 durable 结果，重跑）
+    }
+  }
+
   if (enforceLimit && activeWorkers >= MAX_WORKERS) {
     return { ok: false, busy: true, error: `worker 并发上限 ${MAX_WORKERS}，请稍后重试` }
   }
@@ -1079,6 +1120,11 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
     const child = spawn(NODE_BIN, [DSH_BIN, '--profile', 'headless', task], {
       env, cwd: workCwd, detached: true,
     })
+    // 注册表登记（带 pid）：供重启对账 + 重试幂等恢复。登记失败不阻断执行。
+    try {
+      assetDb.workerRegister({ run_id: runId, dedupe_key: dedupeKey, task, cwd: workCwd, pid: child.pid,
+        timeout_sec: Math.round(timeoutMs / 1000), session_id: originSessionId, run_dir: runDir })
+    } catch { /* ignore */ }
     child.stdout.pipe(out)
     child.stderr.pipe(out)
     // 超时杀整个进程组（派生子 worker/CLI 子进程随父一起回收，防孤儿）
@@ -1094,6 +1140,9 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
     duration_ms: Date.now() - started, exit_code: result.code ?? null, session_id: originSessionId,
   }
   fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 1) + '\n')
+  // 注册表收尾：exit0→done / 非0→failed / 被信号杀（超时）→killed
+  const finalStatus = result.code === 0 ? 'done' : (result.code == null && result.signal ? 'killed' : 'failed')
+  try { assetDb.workerFinish(runId, { status: finalStatus, exit_code: result.code ?? null }) } catch { /* ignore */ }
 
   let logText = ''
   try { logText = fs.readFileSync(path.join(runDir, 'worker.log'), 'utf8') } catch { /* 无输出 */ }
@@ -1112,7 +1161,30 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
 async function spawnWorker(args, exec) {
   const task = String(args.task || '').trim()
   if (!task) return { ok: false, error: 'task 不能为空' }
-  return runWorker({ task, timeoutSec: args.timeout, originSessionId: sessionIdOf(exec) })
+  // 幂等去重键 = sha1(task+cwd)；force:true 时不传 → 显式重跑。交互路径 cwd 恒为 null。
+  const dedupeKey = args.force === true ? null
+    : crypto.createHash('sha1').update(task + '\0').digest('hex')
+  return runWorker({ task, timeoutSec: args.timeout, originSessionId: sessionIdOf(exec), dedupeKey })
+}
+
+// worker run 状态查询（重启后 "interrupted/outcome unknown" 时确认真实结局；结果已落盘）
+function workerStatus(args) {
+  const runId = String(args.run_id || '').trim()
+  if (!runId) return { ok: false, error: 'run_id 不能为空' }
+  const row = assetDb.workerGet(runId)
+  if (!row) return { ok: false, error: `无 run ${runId} 记录` }
+  let tail = ''; let logLines = 0
+  try {
+    const logText = fs.readFileSync(path.join(row.run_dir || path.join(RESULTS_DIR, runId), 'worker.log'), 'utf8')
+    const lines = logText.split('\n').filter(Boolean)
+    logLines = lines.length
+    tail = lines.slice(-20).join('\n')
+  } catch { /* 日志已清理 */ }
+  return {
+    ok: true, run_id: runId, status: row.status, exit_code: row.exit_code ?? null,
+    started_at: row.started_at, finished_at: row.finished_at, duration_ms: (row.finished_at && row.started_at) ? row.finished_at - row.started_at : null,
+    log_lines: logLines, tail,
+  }
 }
 
 // ==============================================================================
@@ -1212,6 +1284,8 @@ function startScheduler() {
   if (!acquireSchedulerLock()) return // 已有活的调度进程持锁，本进程不启动（收敛多进程内讧）
   // 启动即回收：新进程启动意味着旧进程已终止，其派发的所有 running scheduled 任务均为孤儿 → 无条件回收（maxAge=0）
   try { assetDb.taskReapStale(0) } catch { /* 启动僵尸回收，失败不阻断 */ }
+  // worker 注册表启动对账：把重启杀死的在飞 worker 从 running 重分类为 done/failed/killed（供重试幂等恢复）
+  try { assetDb.workerReapStale() } catch { /* 失败不阻断 */ }
   process.once('exit', () => { try { if (holdsSchedulerLock()) fs.unlinkSync(SCHEDULER_LOCK) } catch { /* ignore */ } })
   let tick = 0
   globalThis.__silksecScheduler = setInterval(() => {
@@ -1644,12 +1718,15 @@ export function apply(ctx, config) {
   ctx.tools.register({
     name: 'spawn_worker',
     description: '派一个隔离的无头 worker 执行自包含任务（批量复扫、大日志蒸馏等），worker 上下文独立，'
-      + '跑完只回尾部摘要，全文落盘 results/<run_id>/worker.log。批任务用它，不要在主会话直接跑大输出工具。',
+      + '跑完只回尾部摘要，全文落盘 results/<run_id>/worker.log。批任务用它，不要在主会话直接跑大输出工具。'
+      + '幂等：宿主重启后本调用报 "interrupted/outcome unknown" 时，原样重试即可确定性拿回真实结果'
+      + '（已完成→回读、被杀→重跑）；要显式强制重跑同一任务传 force:true。',
     parameters: {
       type: 'object',
       properties: {
         task: { type: 'string', description: '自包含的任务描述（worker 看不到本会话上下文，目标/范围/产出要求要写全）' },
         timeout: { type: 'integer', description: '超时秒数，默认 900，上限 3600' },
+        force: { type: 'boolean', description: '跳过幂等去重，强制重跑同一任务（默认 false）' },
       },
       required: ['task'],
       additionalProperties: false,
@@ -1657,6 +1734,36 @@ export function apply(ctx, config) {
     output: { schema: { type: 'object' }, render: renderJSON },
     timeoutMs: 3670000,
     execute: async (args, exec) => spawnWorker(args || {}, exec),
+  })
+
+  ctx.tools.register({
+    name: 'worker_status',
+    description: '查询某个 spawn_worker 的 run 结局（running/done/failed/killed）+ 尾部日志。'
+      + '重启后 spawn_worker 报 "interrupted/outcome unknown" 时，用它确认 worker 真实结果（已落盘）。',
+    parameters: {
+      type: 'object',
+      properties: { run_id: { type: 'string' } },
+      required: ['run_id'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: renderJSON },
+    execute: async (args) => workerStatus(args || {}),
+  })
+
+  ctx.tools.register({
+    name: 'worker_list',
+    description: '列出最近的 spawn_worker run（可按 status 过滤），总览在飞/历史 worker。',
+    parameters: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', description: 'running / done / failed / killed，不传=全部' },
+        limit: { type: 'integer', description: '默认 20，上限 200' },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: renderJSON },
+    execute: async (args) => ({ ok: true, workers: assetDb.workerList(args || {}) }),
   })
 
   ctx.tools.register({

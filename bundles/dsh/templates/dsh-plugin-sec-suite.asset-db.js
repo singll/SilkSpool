@@ -159,6 +159,19 @@ export function getDb() {
   ensureCol('findings', 'submitted_at', 'submitted_at INTEGER')
   ensureCol('findings', 'vendor_status', 'vendor_status TEXT')
   ensureCol('findings', 'bounty', 'bounty REAL')
+  // ---- worker 注册表：spawn_worker run 生命周期账本（重启幂等恢复用）----
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workers (
+      run_id TEXT PRIMARY KEY,
+      dedupe_key TEXT,
+      task TEXT, cwd TEXT, pid INTEGER,
+      status TEXT NOT NULL DEFAULT 'running',
+      exit_code INTEGER,
+      started_at INTEGER, finished_at INTEGER,
+      timeout_sec INTEGER, session_id TEXT, run_dir TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_workers_key ON workers(dedupe_key, started_at);
+  `)
   return db
 }
 
@@ -535,6 +548,79 @@ export function taskReapStale(maxAgeMs = 3600000) {
     const status = t.schedule_kind === 'interval' ? 'queued' : 'failed'
     const r = d.prepare("UPDATE tasks SET status = ?, blocked_reason = '宿主重启/超时回收', updated_at = ? WHERE id = ? AND status = 'running'")
       .run(status, now(), t.id)
+    if (r.changes === 1) reaped++
+  }
+  return { reaped }
+}
+
+// -------------------- worker 注册表（重启幂等恢复）--------------------
+// spawn_worker 阻塞父会话最长 1h，重启落窗口会让在飞 worker 变 "outcome unknown"。
+// 注册表让"重启→重试"确定性恢复真实结果（done/failed 回读）或干净重跑（killed）。
+const pidAlive = (pid) => { if (!pid) return false; try { process.kill(pid, 0); return true } catch { return false } }
+
+export function workerRegister({ run_id, dedupe_key = null, task = '', cwd = null, pid = null, timeout_sec = null, session_id = null, run_dir = null }) {
+  if (!run_id) return { ok: false, error: 'run_id 必填' }
+  getDb().prepare(`
+    INSERT INTO workers (run_id, dedupe_key, task, cwd, pid, status, exit_code, started_at, finished_at, timeout_sec, session_id, run_dir)
+    VALUES (?, ?, ?, ?, ?, 'running', NULL, ?, NULL, ?, ?, ?)
+    ON CONFLICT (run_id) DO UPDATE SET pid = excluded.pid, status = 'running'
+  `).run(run_id, dedupe_key, String(task).slice(0, 2000), cwd, pid, now(), timeout_sec, session_id, run_dir)
+  return { ok: true, run_id }
+}
+
+export function workerFinish(run_id, { status = 'done', exit_code = null } = {}) {
+  if (!run_id) return { ok: false }
+  const r = getDb().prepare('UPDATE workers SET status = ?, exit_code = ?, finished_at = ? WHERE run_id = ?')
+    .run(status, exit_code, now(), run_id)
+  return { ok: r.changes === 1 }
+}
+
+// 去重/恢复查询：窗口内该 dedupe_key 最近一条（started_at 倒序）
+export function workerFindRecentByKey(dedupe_key, sinceMs) {
+  if (!dedupe_key) return null
+  const cutoff = now() - (Number(sinceMs) || 0)
+  const row = getDb().prepare(
+    'SELECT * FROM workers WHERE dedupe_key = ? AND started_at >= ? ORDER BY started_at DESC LIMIT 1'
+  ).get(dedupe_key, cutoff)
+  return row ? { ...row } : null
+}
+
+export function workerGet(run_id) {
+  const row = getDb().prepare('SELECT * FROM workers WHERE run_id = ?').get(run_id)
+  return row ? { ...row } : null
+}
+
+export function workerList({ status = null, limit = 20 } = {}) {
+  const lim = Math.min(Math.max(Number(limit) || 20, 1), 200)
+  const rows = status
+    ? getDb().prepare('SELECT * FROM workers WHERE status = ? ORDER BY started_at DESC LIMIT ?').all(String(status), lim)
+    : getDb().prepare('SELECT * FROM workers ORDER BY started_at DESC LIMIT ?').all(lim)
+  return plain(rows)
+}
+
+// 启动对账：每条 running 行——先读 run_dir/meta.json（有 exit_code=宿主被杀前已完成，close 没跑到）→ done/failed；
+// 否则 pid 已死 → killed；否则保留 running（真活着，罕见）。先读 meta 再判 pid 是关键（防把已完成误判 killed）。
+export function workerReapStale() {
+  const d = getDb()
+  const running = plain(d.prepare("SELECT run_id, pid, run_dir FROM workers WHERE status = 'running'").all())
+  let reaped = 0
+  for (const w of running) {
+    let status = null; let exitCode = null
+    try {
+      if (w.run_dir) {
+        const meta = JSON.parse(fs.readFileSync(path.join(w.run_dir, 'meta.json'), 'utf8'))
+        if (meta && meta.exit_code !== undefined && meta.exit_code !== null) {
+          exitCode = meta.exit_code
+          status = meta.exit_code === 0 ? 'done' : 'failed'
+        }
+      }
+    } catch { /* 无 meta.json → 落到 pid 判定 */ }
+    if (!status) {
+      if (pidAlive(w.pid)) continue // 真活着，保留 running
+      status = 'killed'
+    }
+    const r = d.prepare("UPDATE workers SET status = ?, exit_code = ?, finished_at = ? WHERE run_id = ? AND status = 'running'")
+      .run(status, exitCode, now(), w.run_id)
     if (r.changes === 1) reaped++
   }
   return { reaped }
