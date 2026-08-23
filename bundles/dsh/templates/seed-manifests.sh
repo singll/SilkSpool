@@ -80,7 +80,7 @@ timeout: 300
 target_param: target
 requires: [subdomains]
 produces: [live_hosts, fingerprints]
-args_template: "-u {{target}} -json -silent"
+args_template: "-u {{target}} -json -silent -duc"
 env_proxy: true
 parser: jsonl
 summarize: head

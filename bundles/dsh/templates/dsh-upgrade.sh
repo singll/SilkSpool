@@ -24,6 +24,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 log() { echo "[upgrade] $*"; }
+warn() { echo "[upgrade][WARN] $*" >&2; }
 err() { echo "[upgrade][ERROR] $*" >&2; }
 
 export PATH="$NODE_BIN:$PATH"
@@ -59,7 +60,22 @@ mkdir -p "$DATA_DIR/backups"
 tar -czf "$DATA_DIR/backups/dsh-upgrade-$TS.tgz" \
     -C "$BASE_DIR" .env 2>/dev/null \
     -C "$APP_DIR" package.json package-lock.json 2>/dev/null || true
-log "备份: $DATA_DIR/backups/dsh-upgrade-$TS.tgz"
+log "配置备份: $DATA_DIR/backups/dsh-upgrade-$TS.tgz"
+
+# ---------- 1b. 数据快照（状态 + 配置，跨不兼容存储格式的回滚兜底）----------
+# rc.8 起 DSH 存储格式声明为「不兼容」——升级可能对 storages/（会话/轨迹）做单向迁移，
+# 届时仅回滚 npm 版本无法复原旧格式数据。此处快照关键状态：asset-graph.db（领域数据）、
+# scope.yml（授权真相）、storages/、tools.d/、profiles/、knowledge/、playbooks/、skills/。
+# 排除 results/、flows/（大体量瞬态数据，retention 管理，回滚不需要）与 backups/（自身）。
+DATA_SNAP="$DATA_DIR/backups/dsh-datasnap-$TS.tgz"
+tar -czf "$DATA_SNAP" \
+    --exclude='./results' --exclude='./flows' --exclude='./backups' \
+    -C "$DATA_DIR" . 2>/dev/null || warn "数据快照 tar 返回非零（多为跳过瞬态文件，通常可忽略）"
+if [ -s "$DATA_SNAP" ]; then
+    log "数据快照: $DATA_SNAP ($(du -h "$DATA_SNAP" 2>/dev/null | cut -f1))"
+else
+    warn "数据快照为空，升级前请人工确认 $DATA_DIR 状态"
+fi
 
 rollback() {
     err "升级失败，回滚到 $CUR_VER"
@@ -72,6 +88,9 @@ json.dump(p, open("package.json", "w"), indent=2, ensure_ascii=False)
 EOF
     pnpm install --prod --ignore-scripts || true
     sudo systemctl restart "$SERVICE" || true
+    warn "已回滚 npm 版本至 $CUR_VER。注意：若失败发生在存储迁移之后（新版已改写 storages/ 格式），"
+    warn "仅回滚版本不足以复原旧格式数据——需人工用数据快照恢复："
+    warn "  bash $BASE_DIR/silksec-restore.sh   # 或手动解包 ${DATA_SNAP:-\$DATA_DIR/backups/dsh-datasnap-*.tgz}"
 }
 
 # ---------- 2. 安装目标版本 ----------
@@ -96,12 +115,21 @@ if ! systemctl is-active --quiet "$SERVICE"; then
     err "$SERVICE 启动失败，排查: sudo journalctl -u $SERVICE -n 50"
     rollback; exit 1
 fi
-# Web UI 冒烟（:3080 响应即通过，不要求 200）
+# Web UI 冒烟（:3081 响应即通过，不要求 200）
 SMOKE_CODE=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 10 http://127.0.0.1:3081/ || echo "000")
 if [ "$SMOKE_CODE" = "000" ]; then
     err "冒烟失败: http://127.0.0.1:3081 无响应"
     rollback; exit 1
 fi
+
+# 深冒烟：确认自研插件仍进组合树——DSH 破坏性升级最可能在此暴露（服务能起但插件 API 变更导致加载失败，
+# 浅冒烟只看 HTTP 有响应会漏判）。sec-cli-adapter 是安全套件核心工具，不在组合树 = 平台已残废。
+DSH_BIN="$APP_DIR/node_modules/@deepseek-ai/dsh/lib/bin.js"
+if ! (cd "$APP_DIR" && DSH_HOME="$DATA_DIR" node "$DSH_BIN" --profile web --dump-config 2>/dev/null | grep -q 'sec-cli-adapter'); then
+    err "深冒烟失败：--dump-config 未见 sec-cli-adapter（DSH 升级破坏了自研插件加载）"
+    rollback; exit 1
+fi
+log "深冒烟通过：sec-cli-adapter 已进 web 组合树"
 
 NEW_VER="$(cur_version)"
 log "升级完成: ${CUR_VER:-unknown} -> ${NEW_VER:-$TARGET} (HTTP $SMOKE_CODE)"

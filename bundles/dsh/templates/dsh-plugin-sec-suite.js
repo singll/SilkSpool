@@ -747,14 +747,19 @@ async function runCli(args, exec) {
   }
 
   const started = Date.now()
-  // sandbox（S2）：有 target_param 的网络工具经 bwrap 白名单隔离；本地审计工具不沙箱
-  const sandbox = manifest.target_param ? buildSandboxCommand(binary, argv, runDir) : null
+  // sandbox（S2）：有 target_param 的网络工具经 bwrap 白名单隔离；本地审计工具不沙箱。
+  // manifest 可显式 `sandbox: false` 逐工具豁免——留给极少数与 bwrap user-ns 真不兼容的工具的 escape hatch（默认仍沙箱）。
+  const sandbox = (manifest.target_param && manifest.sandbox !== false) ? buildSandboxCommand(binary, argv, runDir) : null
   const spawnCmd = sandbox ? sandbox.cmd : binary
   const spawnArgs = sandbox ? sandbox.args : argv
   const result = await new Promise((resolve) => {
     let child
     try {
-      child = spawn(spawnCmd, spawnArgs, { env, cwd: runDir })
+      // stdin 必须置 /dev/null（stdio[0]='ignore'）：默认 spawn 的 stdin 是常开管道，
+      // ProjectDiscovery 系工具（httpx/nuclei/dnsx/naabu…）的 fileutil.HasStdin() 会把管道识别为
+      // 「有 stdin 输入」→ 阻塞等待从 stdin 读目标直到 EOF；父进程从不写也不关 → 永久卡死（httpx v1.10 实测 300s 零输出）。
+      // 关闭后 stdin=/dev/null（字符设备）→ HasStdin()=false → 工具改用 -u/-l 参数正常执行。stdout/stderr 仍为管道（下方要读）。
+      child = spawn(spawnCmd, spawnArgs, { env, cwd: runDir, stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (e) {
       resolve({ error: `启动失败: ${e.message}`, code: null, stdout: '', stderr: '' })
       return
