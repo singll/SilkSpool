@@ -1516,7 +1516,7 @@ async function handleDashboardRpc(endpoint, payload) {
     case 'tasks': {
       const filters = {
         programId: String(p.program_id || ''), status: String(p.status || ''),
-        phase: String(p.phase || ''), q: String(p.q || ''),
+        phase: String(p.phase || ''), q: String(p.q || ''), bucket: String(p.bucket || ''),
       }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)

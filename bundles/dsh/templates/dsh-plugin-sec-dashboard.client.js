@@ -84,6 +84,14 @@ window.__ModuleLoader__.load({
       return isNaN(d.getTime()) ? String(ts) : d.toISOString().slice(0, 16).replace('T', ' ')
     }
     function fmtBytes(n) { return n === undefined || n === null ? '—' : String(n) }
+    // 时间戳格式化：epoch ms 数字或 ISO 串 → 本地 YYYY-MM-DD HH:mm（发现时间列用）
+    function fmtTs(v) {
+      if (v === undefined || v === null || v === '') return '—'
+      var d = typeof v === 'number' ? new Date(v) : new Date(String(v))
+      if (isNaN(d.getTime())) return String(v).slice(0, 16).replace('T', ' ')
+      var p = function (n) { return (n < 10 ? '0' : '') + n }
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+    }
 
     // ── 注入样式（Modal 几何 + 侧边栏入口 + 工具条/分页/打标 hover 规则） ──────
     var CSS_KEY = 'silksec-dashboard'
@@ -256,12 +264,12 @@ window.__ModuleLoader__.load({
     }
 
     // 分页查询 hook：搜索防抖 300ms、改条件页码归 1、过期响应丢弃、30s 轮询（仅活跃视图）
-    function usePagedQuery(endpoint, active) {
+    function usePagedQuery(endpoint, active, initialFilters) {
       var qs = React.useState('')
       var q = qs[0]; var setQ = qs[1]
       var dqs = React.useState('')
       var dq = dqs[0]; var setDq = dqs[1]
-      var fs = React.useState({})
+      var fs = React.useState(initialFilters || {})
       var filters = fs[0]; var setFilters = fs[1]
       var ps = React.useState(0)
       var page = ps[0]; var setPage = ps[1]
@@ -538,6 +546,7 @@ window.__ModuleLoader__.load({
               el('col', { style: { width: 52 } }),
               el('col', { style: { width: 76 } }),
               el('col', { style: { width: 92 } }),
+              el('col', { style: { width: 124 } }),
               el('col', null),
               el('col', { style: { width: '22%' } }),
               el('col', { style: { width: 56 } }),
@@ -546,6 +555,7 @@ window.__ModuleLoader__.load({
               sortableTh('#', 'id', query),
               sortableTh('级别', 'severity', query),
               sortableTh('状态', 'status', query),
+              sortableTh('发现时间', 'created_at', query),
               el('th', { style: th }, '标题'),
               el('th', { style: th }, '目标'),
               el('th', { style: th }, '会话'),
@@ -564,6 +574,7 @@ window.__ModuleLoader__.load({
                   el('td', { style: tdMono }, String(r.id)),
                   el('td', { style: td }, sevPill(r.severity)),
                   el('td', { style: td }, statusPill(r.status)),
+                  el('td', { style: { ...td, whiteSpace: 'nowrap', color: T.label2 } }, fmtTs(r.created_at)),
                   el('td', { style: td },
                     el('span', { style: { color: T.label3, marginRight: 6, ...F.xxxs } }, isOpen ? '▾' : '▸'),
                     r.title,
@@ -578,7 +589,7 @@ window.__ModuleLoader__.load({
                           tagIconBtn('忽略（不再跟进）', 'ignored', r.id, 'ignored'))
                       : el('span', { style: { color: T.label3, ...F.xs } }, '详情 →'))),
                 isOpen
-                  ? el('tr', null, el('td', { colSpan: 7, style: { padding: 0 } }, el(FindingDetail, { row: r, actions: lifecycleActions(r) })))
+                  ? el('tr', null, el('td', { colSpan: 8, style: { padding: 0 } }, el(FindingDetail, { row: r, actions: lifecycleActions(r) })))
                   : null)
             }))))
       })
@@ -1040,7 +1051,7 @@ window.__ModuleLoader__.load({
       var assetsQ = usePagedQuery('assets', activeTab === 'assets')
       var endpointsQ = usePagedQuery('endpoints', activeTab === 'endpoints')
       var factsQ = usePagedQuery('facts', activeTab === 'facts')
-      var tasksQ = usePagedQuery('tasks', activeTab === 'tasks')
+      var tasksQ = usePagedQuery('tasks', activeTab === 'tasks', { bucket: 'active' })
 
       // 报告模态态（F3）
       var rpt = React.useState({ open: false })
@@ -1182,6 +1193,7 @@ window.__ModuleLoader__.load({
           el(Toolbar, {
             query: tasksQ, placeholder: '搜索任务目标…',
             filters: [
+              { key: 'bucket', label: '视图', options: [{ v: 'active', l: '正在执行' }, { v: 'history', l: '历史' }] },
               { key: 'status', label: '状态', options: Object.keys(TASK_STATUS_LABEL).map(function (k) { return { v: k, l: TASK_STATUS_LABEL[k] } }) },
               { key: 'phase', label: '阶段', options: ['recon', 'vuln', 'biz-logic', 'code-audit', 'intranet', 'review'].map(function (c) { return { v: c, l: c } }) },
               { key: 'program_id', label: '工作区', options: progOpts },

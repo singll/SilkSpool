@@ -416,8 +416,8 @@ export function taskUpdate({ id, status, note = '', blocked_reason = '', result 
   return { ok: true, id: Number(id), status }
 }
 
-export function taskList({ programId = '', status = '', phase = '', q = '', limit = 50, offset = 0 }) {
-  const { where, args } = taskWhere({ programId, status, phase, q })
+export function taskList({ programId = '', status = '', phase = '', q = '', bucket = '', limit = 50, offset = 0 }) {
+  const { where, args } = taskWhere({ programId, status, phase, q, bucket })
   const sql = `SELECT * FROM tasks WHERE ${where} ORDER BY priority ASC, created_at ASC LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
@@ -427,13 +427,16 @@ export function countTasks(filters = {}) {
   return getDb().prepare(`SELECT COUNT(*) AS n FROM tasks WHERE ${where}`).get(...args).n
 }
 
-function taskWhere({ programId = '', status = '', phase = '', q = '' }) {
+function taskWhere({ programId = '', status = '', phase = '', q = '', bucket = '' }) {
   let where = '1=1'
   const args = []
   if (programId) { where += ' AND program_id = ?'; args.push(programId) }
   if (status) { where += ' AND status = ?'; args.push(status) }
   if (phase) { where += ' AND phase = ?'; args.push(phase) }
   if (q) { where += ' AND objective LIKE ?'; args.push(`%${q}%`) }
+  // active=正在执行(排队/运行/阻塞) / history=历史(完成/失败/取消)：定时任务自续排+重设会累积终态行，UI 据此分区
+  if (bucket === 'active') { where += " AND status IN ('queued', 'running', 'blocked')" }
+  else if (bucket === 'history') { where += " AND status IN ('done', 'failed', 'cancelled')" }
   return { where, args }
 }
 
