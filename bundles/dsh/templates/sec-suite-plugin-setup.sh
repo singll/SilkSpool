@@ -28,7 +28,7 @@ assemble() {
     cat > "$PLUGIN_DIR/package.json" <<'EOF'
 {
   "name": "@silksec/sec-suite",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "SilkSecAgent security suite: sec-cli-adapter (manifest-driven CLI runner + scope-guard) and asset-graph (SQLite asset/endpoint/finding/blackboard store).",
   "type": "module",
   "main": "./index.js",

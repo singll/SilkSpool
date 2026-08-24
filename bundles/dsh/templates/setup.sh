@@ -194,6 +194,11 @@ if [ -f "$BASE_DIR/embeddings-setup.sh" ]; then
     bash "$BASE_DIR/embeddings-setup.sh" || warn "嵌入模块安装失败（语义检索降级为 FTS）"
 fi
 
+# -------------------- 8.6.1 headless worker 模型熔断回退（2026-08-24 线上修复固化） --------------------
+if [ -f "$BASE_DIR/headless-failover-setup.sh" ]; then
+    bash "$BASE_DIR/headless-failover-setup.sh" || warn "headless failover 安装失败（不影响 DSH 主程序）"
+fi
+
 # -------------------- 8.7 安全看板客户端插件（DSH Web UI slot） --------------------
 if [ -f "$BASE_DIR/sec-dashboard-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-dashboard-plugin-setup.sh" || warn "安全看板插件安装失败（不影响 DSH 主程序）"

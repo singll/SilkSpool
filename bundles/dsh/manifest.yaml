@@ -71,6 +71,8 @@ templates:
   - theme-silksong-plugin-setup.sh
   # --- program_id 回填迁移（P6 一次性脚本）---
   - backfill-program.js
+  # --- 定时任务迁移（P12：once 重复创建 → interval 固定实体，幂等）---
+  - migrate-scheduled-tasks.js
   # --- 事实迁移（P11：遗留 blackboard → facts 事实图谱，幂等）---
   - migrate-blackboard-to-facts.js
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---
@@ -92,6 +94,8 @@ templates:
   - sec-browser-plugin-setup.sh
   - dsh-browser-upstream.index.js
   - dsh-browser-upstream.browser-manager.js
+  # --- headless worker 模型熔断回退（2026-08-24 线上修复固化，幂等）---
+  - headless-failover-setup.sh
   # --- 社区插件锁（pin 版本 + hash，先扫后装）---
   - plugins.lock
 services:

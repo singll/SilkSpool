@@ -110,6 +110,21 @@ export function getDb() {
   ensureCol('tasks', 'last_run_at', 'last_run_at INTEGER')
   ensureCol('tasks', 'last_run_id', 'last_run_id TEXT')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(schedule_kind, next_run_at)')
+  // ---- P12：定时任务执行历史（task 行不再因重复跑而增殖；每次运行落一行历史）----
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      run_id TEXT,
+      ok INTEGER NOT NULL DEFAULT 0,
+      note TEXT,
+      started_at INTEGER,
+      finished_at INTEGER,
+      duration_ms INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_task_runs_finished ON task_runs(finished_at DESC);
+  `)
   // ---- P8：事实图谱 + 指纹 / 凭据 / 接口鉴权 / finding 报告模板 ----
   db.exec(`
     CREATE TABLE IF NOT EXISTS facts (
@@ -387,6 +402,14 @@ export function taskCreate({ program_id, phase = '', objective, priority = 5, bu
   const sched = normalizeSchedule(schedule)
   if (sched.error) return { ok: false, error: sched.error }
   const d = getDb()
+  // P12 幂等去重：interval 周期任务是「固定任务」实体——同 program 下同 objective 的活跃周期任务只保留一行，
+  // 重复创建（链/会话复读）直接返回已有任务，不再让任务表增殖。
+  if (sched.kind === 'interval') {
+    const dup = d.prepare(
+      "SELECT id FROM tasks WHERE program_id = ? AND objective = ? AND schedule_kind = 'interval' AND status NOT IN ('done','failed','cancelled') LIMIT 1"
+    ).get(program_id, objective)
+    if (dup) return { ok: true, id: Number(dup.id), deduped: true, schedule: { kind: 'interval' } }
+  }
   const r = d.prepare(`
     INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
       session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at)
@@ -411,13 +434,13 @@ export function taskUpdate({ id, status, note = '', blocked_reason = '', result 
   if (note) {
     const cur = d.prepare('SELECT result FROM tasks WHERE id = ?').get(Number(id))
     d.prepare('UPDATE tasks SET result = ? WHERE id = ?')
-      .run(`${cur.result || ''}\n[${new Date().toISOString().slice(0, 16)}] ${status}: ${note}`.trim(), Number(id))
+      .run(`${cur.result || ''}\n[${new Date().toISOString().slice(0, 16)}] ${status}: ${note}`.trim().slice(-8000), Number(id))
   }
   return { ok: true, id: Number(id), status }
 }
 
-export function taskList({ programId = '', status = '', phase = '', q = '', bucket = '', limit = 50, offset = 0 }) {
-  const { where, args } = taskWhere({ programId, status, phase, q, bucket })
+export function taskList({ programId = '', status = '', phase = '', q = '', bucket = '', scheduled = '', limit = 50, offset = 0 }) {
+  const { where, args } = taskWhere({ programId, status, phase, q, bucket, scheduled })
   const sql = `SELECT * FROM tasks WHERE ${where} ORDER BY priority ASC, created_at ASC LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
@@ -427,7 +450,7 @@ export function countTasks(filters = {}) {
   return getDb().prepare(`SELECT COUNT(*) AS n FROM tasks WHERE ${where}`).get(...args).n
 }
 
-function taskWhere({ programId = '', status = '', phase = '', q = '', bucket = '' }) {
+function taskWhere({ programId = '', status = '', phase = '', q = '', bucket = '', scheduled = '' }) {
   let where = '1=1'
   const args = []
   if (programId) { where += ' AND program_id = ?'; args.push(programId) }
@@ -437,6 +460,9 @@ function taskWhere({ programId = '', status = '', phase = '', q = '', bucket = '
   // active=正在执行(排队/运行/阻塞) / history=历史(完成/失败/取消)：定时任务自续排+重设会累积终态行，UI 据此分区
   if (bucket === 'active') { where += " AND status IN ('queued', 'running', 'blocked')" }
   else if (bucket === 'history') { where += " AND status IN ('done', 'failed', 'cancelled')" }
+  // P12：定时任务由看板「定时任务」卡片区独立展示；active 列表默认排除定时行，避免与卡片重复
+  if (scheduled === 'exclude') { where += ' AND schedule_kind IS NULL' }
+  else if (scheduled === 'only') { where += ' AND schedule_kind IS NOT NULL' }
   return { where, args }
 }
 
@@ -516,7 +542,7 @@ export function taskClaimDue(nowTs) {
   }
 }
 
-// 调度执行收尾：记录 last_run_*，interval 任务 latest-only 续期回 queued，once 任务进终态
+// 调度执行收尾：记录 last_run_* + 落 task_runs 执行历史，interval 任务 latest-only 续期回 queued，once 任务进终态
 export function taskFinishScheduledRun({ id, ok, run_id, note = '' }) {
   const d = getDb()
   const t = d.prepare('SELECT * FROM tasks WHERE id = ?').get(Number(id))
@@ -535,7 +561,54 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '' }) {
   d.prepare(`UPDATE tasks SET status = ?, result = ?, last_run_at = ?, last_run_id = ?, next_run_at = ?,
     finished_at = CASE WHEN ? IN ('done','failed') THEN ? ELSE finished_at END, updated_at = ? WHERE id = ?`)
     .run(status, tail.slice(-8000), finished, run_id || null, nextRunAt, status, finished, now(), Number(id))
+  taskRunRecord({ task_id: Number(id), run_id, ok, note, started_at: t.started_at || null, finished_at: finished })
   return { ok: true, id: Number(id), status, next_run_at: nextRunAt }
+}
+
+// 执行历史落库（每任务保留最近 200 行，防无限膨胀）
+function taskRunRecord({ task_id, run_id = '', ok, note = '', started_at = null, finished_at = null }) {
+  const d = getDb()
+  const duration = (started_at && finished_at) ? finished_at - started_at : null
+  d.prepare('INSERT INTO task_runs (task_id, run_id, ok, note, started_at, finished_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(task_id, String(run_id || ''), ok ? 1 : 0, String(note || '').slice(0, 500), started_at, finished_at, duration)
+  d.prepare('DELETE FROM task_runs WHERE task_id = ? AND id NOT IN (SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 200)')
+    .run(task_id, task_id)
+}
+
+// 执行历史查询（join tasks 带出 objective/program，看板「执行历史」区）
+export function taskRunsList({ taskId = 0, programId = '', limit = 50, offset = 0 }) {
+  let where = '1=1'
+  const args = []
+  if (taskId) { where += ' AND r.task_id = ?'; args.push(Number(taskId)) }
+  if (programId) { where += ' AND t.program_id = ?'; args.push(programId) }
+  return plain(getDb().prepare(
+    `SELECT r.id, r.task_id, r.run_id, r.ok, r.note, r.started_at, r.finished_at, r.duration_ms,
+            t.objective, t.program_id, t.phase
+     FROM task_runs r JOIN tasks t ON t.id = r.task_id
+     WHERE ${where} ORDER BY r.id DESC LIMIT ? OFFSET ?`
+  ).all(...args, Math.min(limit, 200), Math.max(0, offset)))
+}
+
+export function countTaskRuns({ taskId = 0, programId = '' } = {}) {
+  let where = '1=1'
+  const args = []
+  if (taskId) { where += ' AND r.task_id = ?'; args.push(Number(taskId)) }
+  if (programId) { where += ' AND t.program_id = ?'; args.push(programId) }
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM task_runs r JOIN tasks t ON t.id = r.task_id WHERE ${where}`).get(...args).n
+}
+
+// 固定定时任务清单（看板「定时任务」卡片区）：未终态 + 带调度，聚合运行统计与最近一次结局
+export function taskScheduledList() {
+  return plain(getDb().prepare(
+    `SELECT t.*,
+       (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id) AS run_count,
+       (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id AND r.ok = 0) AS fail_count,
+       (SELECT r.ok FROM task_runs r WHERE r.task_id = t.id ORDER BY r.id DESC LIMIT 1) AS last_ok,
+       (SELECT r.note FROM task_runs r WHERE r.task_id = t.id ORDER BY r.id DESC LIMIT 1) AS last_note
+     FROM tasks t
+     WHERE t.schedule_kind IS NOT NULL AND t.status NOT IN ('done', 'failed', 'cancelled')
+     ORDER BY t.next_run_at ASC`
+  ).all())
 }
 
 // 僵尸回收（P0-3）：宿主进程崩溃/超时导致 running 卡死的 scheduled 任务 → 回收。
@@ -544,14 +617,17 @@ export function taskReapStale(maxAgeMs = 3600000) {
   const d = getDb()
   const cutoff = now() - maxAgeMs
   const stale = plain(d.prepare(
-    "SELECT id, schedule_kind FROM tasks WHERE status = 'running' AND schedule_kind IS NOT NULL AND started_at IS NOT NULL AND started_at < ?"
+    "SELECT id, schedule_kind, started_at FROM tasks WHERE status = 'running' AND schedule_kind IS NOT NULL AND started_at IS NOT NULL AND started_at < ?"
   ).all(cutoff))
   let reaped = 0
   for (const t of stale) {
     const status = t.schedule_kind === 'interval' ? 'queued' : 'failed'
     const r = d.prepare("UPDATE tasks SET status = ?, blocked_reason = '宿主重启/超时回收', updated_at = ? WHERE id = ? AND status = 'running'")
       .run(status, now(), t.id)
-    if (r.changes === 1) reaped++
+    if (r.changes === 1) {
+      reaped++
+      taskRunRecord({ task_id: t.id, run_id: '', ok: false, note: '宿主重启/超时回收', started_at: t.started_at, finished_at: now() })
+    }
   }
   return { reaped }
 }

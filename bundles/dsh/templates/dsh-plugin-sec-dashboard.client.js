@@ -84,6 +84,34 @@ window.__ModuleLoader__.load({
       return isNaN(d.getTime()) ? String(ts) : d.toISOString().slice(0, 16).replace('T', ' ')
     }
     function fmtBytes(n) { return n === undefined || n === null ? '—' : String(n) }
+    // 周期人性化：86400→每天，3600→每小时
+    function fmtEvery(sec) {
+      if (!sec) return '—'
+      if (sec % 86400 === 0) { var d = sec / 86400; return d === 1 ? '每天' : '每 ' + d + ' 天' }
+      if (sec % 3600 === 0) { var h = sec / 3600; return h === 1 ? '每小时' : '每 ' + h + ' 小时' }
+      if (sec % 60 === 0) return '每 ' + Math.round(sec / 60) + ' 分钟'
+      return '每 ' + sec + ' 秒'
+    }
+    // 相对时间：未来 → "x 小时后"，过去 → "x 小时前"
+    function fmtRel(ts) {
+      if (!ts) return ''
+      var diff = ts - Date.now()
+      var abs = Math.abs(diff)
+      var n, unit
+      if (abs >= 86400000) { n = Math.round(abs / 86400000); unit = ' 天' }
+      else if (abs >= 3600000) { n = Math.round(abs / 3600000); unit = ' 小时' }
+      else { n = Math.max(1, Math.round(abs / 60000)); unit = ' 分钟' }
+      return diff >= 0 ? n + unit + '后' : n + unit + '前'
+    }
+    // 耗时人性化：758000 → "12m38s"
+    function fmtDur(ms) {
+      if (ms === undefined || ms === null) return '—'
+      var s = Math.round(ms / 1000)
+      if (s < 60) return s + 's'
+      var m = Math.floor(s / 60)
+      if (m < 60) return m + 'm' + (s % 60 ? (s % 60) + 's' : '')
+      return Math.floor(m / 60) + 'h' + (m % 60 ? (m % 60) + 'm' : '')
+    }
     // 时间戳格式化：epoch ms 数字或 ISO 串 → 本地 YYYY-MM-DD HH:mm（发现时间列用）
     function fmtTs(v) {
       if (v === undefined || v === null || v === '') return '—'
@@ -740,6 +768,142 @@ window.__ModuleLoader__.load({
         label + ' · ' + fmtTime(t.next_run_at))
     }
 
+    // ── P12：固定定时任务卡片区 ─────────────────────────────────────────────
+    // 周期任务是一行固定实体（跑完自动续期，不增殖）；卡片聚合最近一次结局 + 累计统计，
+    // 行内展开该任务的执行历史（task_runs），操作：立即跑/暂停/恢复/改周期/取消。
+
+    // 单张定时任务卡
+    function ScheduledCard(props) {
+      var t = props.task
+      var hs = React.useState(null)      // null=未展开 / []=已展开加载中…
+      var runs = hs[0]; var setRuns = hs[1]
+      var paused = t.status === 'blocked'
+      function toggleHistory() {
+        if (runs !== null) { setRuns(null); return }
+        setRuns([])
+        callRpc('taskRuns', { task_id: t.id, limit: 10 }).then(function (res) {
+          setRuns((res && res.rows) || [])
+        }).catch(function () { setRuns([]) })
+      }
+      var lastOk = t.last_ok === null || t.last_ok === undefined ? null : (Number(t.last_ok) === 1)
+      return el('div', { style: card },
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+          el('span', { style: { color: T.label3, ...F.xxxs, fontFamily: MONO } }, '#' + t.id),
+          el('span', { style: { color: T.label, ...F.sStrong, wordBreak: 'break-word', flex: '1 1 320px' } }, t.objective),
+          el('span', { style: { ...pill, color: T.brand, borderColor: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent)' } },
+            t.schedule_kind === 'interval' ? fmtEvery(t.every_seconds) : '一次性'),
+          t.phase ? el('span', { style: pill }, t.phase) : null,
+          taskPill(t.status)),
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 8, color: T.label2, ...F.xxs } },
+          el('span', null, '工作区 ', el('span', { style: { color: T.label } }, t.program_id)),
+          el('span', { title: fmtTime(t.next_run_at) }, paused ? '已暂停（恢复后继续节律）' : '下次 ' + fmtTime(t.next_run_at) + (t.next_run_at ? '（' + fmtRel(t.next_run_at) + '）' : '')),
+          t.last_run_at
+            ? el('span', { style: { color: lastOk === false ? T.error : T.label2 }, title: t.last_note || '' },
+                '上次 ' + fmtRel(t.last_run_at) + (lastOk === null ? '' : lastOk ? ' 成功' : ' 失败'))
+            : el('span', { style: { color: T.label3 } }, '尚未运行'),
+          el('span', { style: { color: T.label3 } }, '累计 ' + (t.run_count || 0) + ' 次' + (t.fail_count ? '（失败 ' + t.fail_count + '）' : '')),
+          el('span', { style: { marginLeft: 'auto', display: 'inline-flex', gap: 6 } },
+            el(SessionLink, { id: t.session_id }),
+            el('button', { type: 'button', className: 'silksec-icon-btn', disabled: !!props.busy || paused || t.status !== 'queued',
+              title: '立即执行一次（不动调度节律）', 'aria-label': '立即执行',
+              onClick: function () { props.onRunNow(t.id) } }, opIcon('play')),
+            el('button', { type: 'button', className: 'silksec-icon-btn', disabled: !!props.busy,
+              title: paused ? '恢复调度' : '暂停调度（保留周期，恢复后继续）', 'aria-label': paused ? '恢复' : '暂停',
+              onClick: function () { paused ? props.onResume(t.id) : props.onPause(t.id) } }, opIcon(paused ? 'play' : 'stop')),
+            el('button', { type: 'button', className: 'silksec-btn', disabled: !!props.busy,
+              onClick: function () { props.onEditEvery(t) } }, '改周期'),
+            el('button', { type: 'button', className: 'silksec-btn', onClick: toggleHistory }, runs !== null ? '收起历史' : '历史'),
+            el('button', { type: 'button', className: 'silksec-icon-btn silksec-icon-btn-danger', disabled: !!props.busy,
+              title: '取消任务（置为已取消，终态）', 'aria-label': '取消任务',
+              onClick: function () { props.onCancel(t.id) } }, opIcon('stop')))),
+        t.last_note && lastOk === false
+          ? el('div', { style: { marginTop: 6, color: T.error, ...F.xxxs, wordBreak: 'break-word' } }, '最近失败：' + String(t.last_note).slice(0, 200))
+          : null,
+        runs !== null
+          ? el('div', { style: { marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 } },
+              runs.length
+                ? runs.map(function (r) { return el(TaskRunLine, { key: String(r.id), r: r, showTask: false }) })
+                : el('span', { style: { color: T.label3, ...F.xxs } }, '暂无执行历史'))
+          : null)
+    }
+
+    // 执行历史行（卡片区展开 + 全局历史区共用）
+    // 注：run_id 是 worker run 不是 session，不放跳链（无 session 不造假链）
+    function TaskRunLine(props) {
+      var r = props.r
+      var showTask = props.showTask !== false
+      return el('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '4px 0', borderTop: '1px solid ' + T.border3 } },
+        el('span', { style: { color: T.label3, ...F.xxxs, fontFamily: MONO, whiteSpace: 'nowrap' } }, fmtTs(r.finished_at || r.started_at)),
+        showTask
+          ? el('span', { style: { color: T.label2, ...F.xxs, wordBreak: 'break-word', flex: '1 1 260px' } },
+              '#' + r.task_id + ' ' + String(r.objective || '').slice(0, 60))
+          : null,
+        el('span', { style: { ...pill, color: r.ok ? T.success : T.error } }, r.ok ? '成功' : '失败'),
+        el('span', { style: { color: T.label3, ...F.xxxs, whiteSpace: 'nowrap' } }, fmtDur(r.duration_ms)),
+        r.note ? el('span', { style: { color: T.label3, ...F.xxxs, wordBreak: 'break-word', flex: '2 1 240px' }, title: r.note }, String(r.note).slice(0, 120)) : null)
+    }
+
+    // 新建周期任务表单（折叠）
+    function ScheduledCreateForm(props) {
+      var programs = props.programs || []   // [{v: program_id, l: label}]
+      var pid = React.useState(programs.length ? programs[0].v : '')
+      var obj = React.useState('')
+      var phase = React.useState('recon')
+      var hours = React.useState(24)
+      if (!programs.length) return el('div', { style: { ...card, marginTop: 8, color: T.label3, ...F.xxs } }, '暂无已授权工作区，先到「授权」视图登记并绑定。')
+      function submit() {
+        var h = Number(hours[0])
+        if (!obj[0].trim() || !pid[0] || !(h >= 1)) return
+        props.onCreate({
+          program_id: pid[0], objective: obj[0].trim(), phase: phase[0],
+          schedule: { kind: 'interval', every_seconds: Math.round(h * 3600) },
+        })
+        obj[1]('')
+      }
+      return el('div', { style: { ...card, borderColor: T.border3, marginTop: 8 } },
+        el('div', { style: { display: 'flex', gap: 12, flexWrap: 'wrap' } },
+          el('div', { style: { ...formRow, flex: '1 1 200px' } },
+            el('span', { style: formLabel }, '工作区（授权项目）'),
+            el('select', { className: 'silksec-input', style: inputStyle, value: pid[0], onChange: function (e) { pid[1](e.target.value) } },
+              programs.map(function (o) { return el('option', { key: o.v, value: o.v }, o.l) }))),
+          el('div', { style: { ...formRow, flex: '1 1 140px' } },
+            el('span', { style: formLabel }, '阶段'),
+            el('select', { className: 'silksec-input', style: inputStyle, value: phase[0], onChange: function (e) { phase[1](e.target.value) } },
+              ['recon', 'vuln', 'biz-logic', 'code-audit', 'intranet', 'review'].map(function (c) { return el('option', { key: c, value: c }, c) }))),
+          el('div', { style: { ...formRow, flex: '1 1 140px' } },
+            el('span', { style: formLabel }, '周期（小时，如 24=每天）'),
+            el('input', { className: 'silksec-input', style: inputStyle, type: 'number', min: 1, value: hours[0], onChange: function (e) { hours[1](e.target.value) } }))),
+        el('div', { style: formRow },
+          el('span', { style: formLabel }, '任务目标（同工作区同目标幂等去重，不会重复创建）'),
+          el('textarea', { className: 'silksec-input', style: { ...inputStyle, height: 60, padding: '8px 10px', resize: 'vertical' }, value: obj[0], onChange: function (e) { obj[1](e.target.value) } })),
+        el('div', { style: { display: 'flex', gap: 8, marginTop: 4 } },
+          el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: !!props.busy, onClick: submit }, '创建周期任务'),
+          el('button', { type: 'button', className: 'silksec-btn', onClick: props.onClose }, '收起')))
+    }
+
+    // 定时任务卡片区（含新建入口）
+    function ScheduledSection(props) {
+      var rows = (props.data && props.data.rows) || []
+      var cs = React.useState(false)
+      var creating = cs[0]; var setCreating = cs[1]
+      return el('div', null,
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+          el('div', { style: pageT }, '定时任务'),
+          el('button', { type: 'button', className: 'silksec-btn', onClick: function () { setCreating(!creating) } }, creating ? '收起' : '新建周期任务')),
+        el('div', { style: pageSub }, '固定周期实体：跑完自动续期不增殖；同工作区同目标幂等去重。每次运行落入下方执行历史。对话里说「每天跑 X」也会建到这里。'),
+        creating ? el(ScheduledCreateForm, { programs: props.programs, busy: props.busy, onCreate: props.onCreate, onClose: function () { setCreating(false) } }) : null,
+        rows.length
+          ? el('div', { style: { margin: '12px 0 20px', display: 'flex', flexDirection: 'column', gap: 8 } },
+              rows.map(function (t) {
+                return el(ScheduledCard, {
+                  key: String(t.id), task: t, busy: props.busy,
+                  onRunNow: props.onRunNow, onPause: props.onPause, onResume: props.onResume,
+                  onEditEvery: props.onEditEvery, onCancel: props.onCancel,
+                })
+              }))
+          : el(EmptyState, { text: '暂无定时任务' }))
+    }
+
     // 工作区卡：标题/路径 + program 徽章 + 计数 + 会话列表（展开跳链）
     function WorkspaceCard(props) {
       var w = props.ws
@@ -780,6 +944,18 @@ window.__ModuleLoader__.load({
           : null)
     }
 
+    // 全局执行历史区（task_runs 倒序分页）
+    function TaskRunsView(props) {
+      var query = props.query
+      return el('div', null,
+        el('div', { style: { ...pageT, marginTop: 20 } }, '执行历史'),
+        el('div', { style: pageSub }, '定时任务的每次运行记录（结局/耗时/摘要），按时间倒序；卡片上的「历史」只看单个任务。'),
+        el(ViewBody, { query: query, emptyText: '暂无执行历史' }, function (rows) {
+          return el('div', { style: { marginTop: 12, display: 'flex', flexDirection: 'column' } },
+            rows.map(function (r) { return el(TaskRunLine, { key: String(r.id), r: r }) }))
+        }))
+    }
+
     function TasksView(props) {
       var query = props.query
       var workspaces = props.workspaces
@@ -793,8 +969,13 @@ window.__ModuleLoader__.load({
             ? el('div', { style: { margin: '12px 0 20px', display: 'flex', flexDirection: 'column', gap: 8 } },
                 items.map(function (w) { return el(WorkspaceCard, { key: w.id, ws: w }) }))
             : el(EmptyState, { text: '暂无工作区' }),
-        el('div', { style: { ...pageT, marginTop: 8 } }, '任务'),
-        el('div', { style: pageSub }, '编排器派发的任务队列；带调度徽章的为定时任务（调度循环自动执行，会话归入对应工作区）。对话里说「定时跑 X」即建此类任务。'),
+        el(ScheduledSection, {
+          data: props.schedData, programs: props.progOpts || [], busy: props.busy,
+          onRunNow: props.onRunNow, onPause: props.onPause, onResume: props.onResume,
+          onEditEvery: props.onEditEvery, onCancel: props.onCancel, onCreate: props.onCreateScheduled,
+        }),
+        el('div', { style: { ...pageT, marginTop: 8 } }, '任务队列'),
+        el('div', { style: pageSub }, '编排器派发的一次性任务（链步骤、N-day 候选等）；定时任务见上方卡片区，不再混排于此。'),
         el(ViewBody, { query: query, emptyText: '暂无任务' }, function (rows) {
           return el('div', { style: { overflowX: 'auto', minWidth: 0, marginTop: 12 } },
             el('table', { style: tableStyle },
@@ -840,7 +1021,8 @@ window.__ModuleLoader__.load({
                           }, opIcon('stop'))
                         : null)))
               }))))
-        }))
+        }),
+        el(TaskRunsView, { query: props.runsQuery }))
     }
 
     // ── 授权视图（scope.yml 管理：新增/编辑/移除 + 工作区绑定）─────────────────
@@ -1052,6 +1234,11 @@ window.__ModuleLoader__.load({
       var endpointsQ = usePagedQuery('endpoints', activeTab === 'endpoints')
       var factsQ = usePagedQuery('facts', activeTab === 'facts')
       var tasksQ = usePagedQuery('tasks', activeTab === 'tasks', { bucket: 'active' })
+      // P12：固定定时任务卡片区 + 执行历史（仅任务 tab 激活时取数/轮询）
+      var schedState = useRpc(function () {
+        return activeTab === 'tasks' ? { endpoint: 'scheduledTasks' } : null
+      }, [activeTab])
+      var runsQ = usePagedQuery('taskRuns', activeTab === 'tasks')
 
       // 报告模态态（F3）
       var rpt = React.useState({ open: false })
@@ -1064,7 +1251,7 @@ window.__ModuleLoader__.load({
           Promise.resolve().then(fn).catch(function (e) {
             console.error('[sec-dashboard] 写操作失败:', e)
             try { window.alert('操作失败: ' + (e && e.message ? e.message : e)) } catch (e2) {}
-          }).finally(function () { setBusy(false); findingsQ.reload(); factsQ.reload(); tasksQ.reload() })
+          }).finally(function () { setBusy(false); findingsQ.reload(); factsQ.reload(); tasksQ.reload(); schedState.reload(); runsQ.reload() })
         }
       }
       function onTag(id, status) {
@@ -1088,6 +1275,30 @@ window.__ModuleLoader__.load({
         var yes = false
         try { yes = window.confirm('确认取消任务 #' + id + '？将置为终态「已取消」。') } catch (e) { return }
         if (yes) withBusy(function () { return callRpc('taskCancel', { id: id }) })()
+      }
+      // P12：定时任务暂停/恢复/改周期/新建
+      function onPause(id) {
+        withBusy(function () { return callRpc('taskSetStatus', { id: id, status: 'blocked' }) })()
+      }
+      function onResume(id) {
+        withBusy(function () { return callRpc('taskSetStatus', { id: id, status: 'queued' }) })()
+      }
+      function onEditEvery(t) {
+        var curMin = Math.round((t.every_seconds || 86400) / 60)
+        var v = null
+        try { v = window.prompt('修改周期（分钟，如 1440=每天，60=每小时）:', String(curMin)) } catch (e) { return }
+        if (v === null) return
+        var min = Number(v)
+        if (!isNaN(min) && min >= 5) {
+          withBusy(function () { return callRpc('taskScheduleUpdate', { id: t.id, schedule: { kind: 'interval', every_seconds: Math.round(min * 60) } }) })()
+        }
+      }
+      function onCreateScheduled(spec) {
+        withBusy(function () {
+          return callRpc('taskCreate', spec).then(function (r) {
+            if (r && r.deduped) try { window.alert('已存在相同目标的周期任务（#' + r.id + '），未重复创建。') } catch (e) {}
+          })
+        })()
       }
       // 已接收 + 记录赏金（F4）：SRC 提交闭环的最后一环
       function onAccept(id) {
@@ -1199,7 +1410,11 @@ window.__ModuleLoader__.load({
               { key: 'program_id', label: '工作区', options: progOpts },
             ],
           }),
-          el(TasksView, { query: tasksQ, workspaces: workspacesState.data, onRunNow: onRunNow, onCancel: onCancel, busy: isBusy }))
+          el(TasksView, {
+            query: tasksQ, workspaces: workspacesState.data, schedData: schedState.data, runsQuery: runsQ,
+            progOpts: progOpts, onRunNow: onRunNow, onCancel: onCancel, onPause: onPause, onResume: onResume,
+            onEditEvery: onEditEvery, onCreateScheduled: onCreateScheduled, busy: isBusy,
+          }))
       } else if (activeTab === 'scope') {
         content = el(ScopeView, {
           scopeData: scopeState.data, workspaces: workspacesState.data,

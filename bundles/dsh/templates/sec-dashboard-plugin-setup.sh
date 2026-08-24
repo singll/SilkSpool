@@ -28,7 +28,7 @@ assemble() {
     cat > "$PLUGIN_DIR/package.json" <<'EOF'
 {
   "name": "@silksec/sec-dashboard",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "SilkSecAgent dashboard: DSH Web UI slot plugin (assets/vulnerabilities/blackboard views + finding tag & fact-correction write ops).",
   "type": "module",
   "main": "./index.js",

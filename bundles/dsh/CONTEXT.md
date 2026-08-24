@@ -14,7 +14,8 @@ SRC/HW 授权项目，真相源是 `scope.yml` 的 `program.name`，是 scope-gu
 _Avoid_: 项目之外勿用「目标」「客户」。
 
 **Task（任务）**：
-编排器派发的可治理工作单元，带队列/优先级/依赖/预算/人工断点；**带调度字段（schedule_kind/run_at/every_seconds/next_run_at）的 Task 即定时任务**——同一张表、同一视图、同一状态机。属于某个 Program，由某个 Run 或 worker 执行。
+编排器派发的可治理工作单元，带队列/优先级/依赖/预算/人工断点；**带调度字段（schedule_kind/run_at/every_seconds/next_run_at）的 Task 即定时任务**——同一张表、同一状态机。属于某个 Program，由某个 Run 或 worker 执行。
+定时任务是一行**固定实体**（P12）：interval 任务跑完 latest-only 自动续期，同 program+objective 幂等去重，严禁「每天重建 once 任务」；每次运行落 `task_runs` 执行历史（每任务保留最近 200 行）。看板任务 tab 三分区：定时任务卡片 / 一次性任务队列 / 执行历史。
 _Avoid_: 会话内易失的 goal/plan/todo 不是 Task。
 
 **Run（执行）**：
@@ -48,7 +49,7 @@ _Avoid_: 别挂在会话标签页下。
 跟某一条对话绑定的 UI（消息 / Trajectory / Run）。
 
 **看板（Dashboard）**：
-全局面的正式名称，侧边栏全局入口 → 独立模态面板，内含「漏洞 / 资产 / 事实 / 任务 / 授权」五视图（任务视图含工作区区块与定时调度；授权视图管理 scope.yml）。看板行只放摘要 + 跳链（`ctx.sessions.open`），**详细内容一律在会话里看**。
+全局面的正式名称，侧边栏全局入口 → 独立模态面板，内含「漏洞 / 资产 / 接口 / 事实 / 任务 / 授权 / 审计」七视图（任务视图含工作区区块、定时任务卡片区、一次性任务队列与执行历史；授权视图管理 scope.yml）。看板行只放摘要 + 跳链（`ctx.sessions.open`），**详细内容一律在会话里看**。
 _Avoid_: 工作台、安全中心（同名不改）。
 
 **丝之歌主题（Silksong Theme）**：

@@ -1252,8 +1252,7 @@ async function schedulerTick() {
       try { assetDb.taskFinishScheduledRun({ id: task.id, ok: false, run_id: '', note: `调度执行异常: ${e?.message ?? String(e)}`.slice(0, 300) }) } catch { /* ignore */ }
     }
   }))
-  // 顺带做工作区会话归组（轻量、幂等）
-  try { await reconcileWorkspaceSessions() } catch { /* 归组失败不阻断调度 */ }
+  // 顺带做工作区会话归组（轻量、幂等）——已移至 tick 层每 10 周期执行，此处不再重复
 }
 
 // 跨进程单例（P0-1）：插件被宿主面与每个 agent/worker 子进程分别加载，globalThis 不跨进程，
@@ -1294,6 +1293,8 @@ function startScheduler() {
     try { fs.writeFileSync(SCHEDULER_LOCK, JSON.stringify({ pid: process.pid, ts: Date.now() })) } catch { /* ignore */ }
     if ((++tick % 10) === 0) { try { assetDb.taskReapStale() } catch { /* ignore */ } } // 每 10 tick 周期回收
     schedulerTick().catch(() => {})
+    // 会话归组 reconcile 是全量 list+attach，每 tick 跑浪费 I/O：降到每 10 tick（≈10min），够收敛即可
+    if ((tick % 10) === 0) reconcileWorkspaceSessions().catch(() => {})
   }, SCHEDULER_TICK_MS)
   globalThis.__silksecScheduler.unref?.()
   process.stderr.write(`[sec-suite] 定时任务调度循环已启动（60s tick, pid=${process.pid}）\n`)
@@ -1517,10 +1518,53 @@ async function handleDashboardRpc(endpoint, payload) {
       const filters = {
         programId: String(p.program_id || ''), status: String(p.status || ''),
         phase: String(p.phase || ''), q: String(p.q || ''), bucket: String(p.bucket || ''),
+        scheduled: String(p.scheduled || ''),
       }
+      // P12：定时任务由卡片区独立展示；活跃桶默认排除定时行，避免重复显示
+      if (!filters.scheduled && filters.bucket === 'active') filters.scheduled = 'exclude'
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
       return { rows: assetDb.taskList({ ...filters, limit, offset }), total: assetDb.countTasks(filters) }
+    }
+    // ---- P12：固定定时任务卡片区 + 执行历史 ----
+    case 'scheduledTasks':
+      return { rows: assetDb.taskScheduledList() }
+    case 'taskRuns': {
+      const taskId = Number(p.task_id) || 0
+      const programId = String(p.program_id || '')
+      const limit = Math.min(Number(p.limit) || 20, 200)
+      const offset = Math.max(0, Number(p.offset) || 0)
+      return { rows: assetDb.taskRunsList({ taskId, programId, limit, offset }), total: assetDb.countTaskRuns({ taskId, programId }) }
+    }
+    case 'taskScheduleUpdate': {
+      const id = Number(p.id)
+      if (!id) throw new Error('taskScheduleUpdate 需要 id')
+      const schedule = p.schedule && typeof p.schedule === 'object' ? p.schedule : null
+      const r = assetDb.taskSchedule({ id, schedule })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskScheduleUpdate', decision: 'executed', detail: { id, schedule } })
+      return r
+    }
+    case 'taskSetStatus': {
+      // 暂停/恢复定时任务：blocked=暂停（调度器只认 queued），queued=恢复。其余状态走 taskCancel。
+      const id = Number(p.id)
+      const status = String(p.status || '')
+      if (!id || !['blocked', 'queued'].includes(status)) throw new Error('taskSetStatus 需要 id 且 status 仅支持 blocked/queued')
+      const r = assetDb.taskUpdate({ id, status, note: status === 'blocked' ? '看板手动暂停' : '看板手动恢复' })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskSetStatus', decision: 'executed', detail: { id, status } })
+      return r
+    }
+    case 'taskCreate': {
+      // 看板建任务（主要面向固定周期任务；interval 幂等去重，重复目标返回已有）
+      const programId = String(p.program_id || '').trim()
+      const objective = String(p.objective || '').trim()
+      if (!programId || !objective) throw new Error('taskCreate 需要 program_id 与 objective')
+      const schedule = p.schedule && typeof p.schedule === 'object' ? p.schedule : null
+      const r = assetDb.taskCreate({
+        program_id: programId, objective, phase: String(p.phase || ''),
+        priority: Number(p.priority) || 5, schedule,
+      })
+      if (r.ok) audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskCreate', decision: 'executed', detail: { id: r.id, program_id: programId, schedule, deduped: !!r.deduped } })
+      return r
     }
     case 'sessions':
       return sessionsList(String(p.workspace_id || ''))
