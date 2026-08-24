@@ -1292,6 +1292,9 @@ function startScheduler() {
     if (!holdsSchedulerLock() && !acquireSchedulerLock()) return
     try { fs.writeFileSync(SCHEDULER_LOCK, JSON.stringify({ pid: process.pid, ts: Date.now() })) } catch { /* ignore */ }
     if ((++tick % 10) === 0) { try { assetDb.taskReapStale() } catch { /* ignore */ } } // 每 10 tick 周期回收
+    // 孤儿 worker 周期对账（P12-1）：父 worker 被杀会留下 registry 永远 running 的孙 worker
+    // （孙进程 detached 自成进程组，外层 SIGKILL 够不着），按 pid 死活定期重分类
+    if ((tick % 10) === 0) { try { assetDb.workerReapStale() } catch { /* ignore */ } }
     schedulerTick().catch(() => {})
     // 会话归组 reconcile 是全量 list+attach，每 tick 跑浪费 I/O：降到每 10 tick（≈10min），够收敛即可
     if ((tick % 10) === 0) reconcileWorkspaceSessions().catch(() => {})

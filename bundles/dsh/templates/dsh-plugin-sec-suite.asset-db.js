@@ -681,7 +681,7 @@ export function workerList({ status = null, limit = 20 } = {}) {
 // 否则 pid 已死 → killed；否则保留 running（真活着，罕见）。先读 meta 再判 pid 是关键（防把已完成误判 killed）。
 export function workerReapStale() {
   const d = getDb()
-  const running = plain(d.prepare("SELECT run_id, pid, run_dir FROM workers WHERE status = 'running'").all())
+  const running = plain(d.prepare("SELECT run_id, pid, run_dir, started_at, timeout_sec FROM workers WHERE status = 'running'").all())
   let reaped = 0
   for (const w of running) {
     let status = null; let exitCode = null
@@ -695,8 +695,20 @@ export function workerReapStale() {
       }
     } catch { /* 无 meta.json → 落到 pid 判定 */ }
     if (!status) {
-      if (pidAlive(w.pid)) continue // 真活着，保留 running
-      status = 'killed'
+      if (pidAlive(w.pid)) {
+        // P12-1 孤儿超时执法：父 worker 被杀后其 killer 定时器随之消失，detached 孙 worker 会无限跑。
+        // 超过 started_at + timeout_sec + 60s 宽限仍未退出 → 由本对账代行 SIGTERM→SIGKILL（进程组）
+        const limit = (w.started_at || 0) + ((w.timeout_sec || 900) + 60) * 1000
+        if (w.started_at && now() > limit) {
+          try { process.kill(-w.pid, 'SIGTERM') } catch { /* 进程组已退 */ }
+          setTimeout(() => { try { process.kill(-w.pid, 'SIGKILL') } catch { /* ignore */ } }, 5000).unref?.()
+          status = 'killed'
+        } else {
+          continue // 真活着且未超时，保留 running
+        }
+      } else {
+        status = 'killed'
+      }
     }
     const r = d.prepare("UPDATE workers SET status = ?, exit_code = ?, finished_at = ? WHERE run_id = ? AND status = 'running'")
       .run(status, exitCode, now(), w.run_id)
