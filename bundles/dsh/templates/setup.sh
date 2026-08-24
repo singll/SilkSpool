@@ -199,6 +199,11 @@ if [ -f "$BASE_DIR/headless-failover-setup.sh" ]; then
     bash "$BASE_DIR/headless-failover-setup.sh" || warn "headless failover 安装失败（不影响 DSH 主程序）"
 fi
 
+# -------------------- 8.6.2 设置镜像补丁（域名访问时 Models 页可用；上游 loopback-only 设计） --------------------
+if [ -f "$BASE_DIR/settings-mirror-patch.sh" ]; then
+    bash "$BASE_DIR/settings-mirror-patch.sh" || warn "设置镜像补丁失败（不影响 DSH 主程序）"
+fi
+
 # -------------------- 8.7 安全看板客户端插件（DSH Web UI slot） --------------------
 if [ -f "$BASE_DIR/sec-dashboard-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-dashboard-plugin-setup.sh" || warn "安全看板插件安装失败（不影响 DSH 主程序）"

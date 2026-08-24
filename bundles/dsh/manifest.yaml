@@ -96,6 +96,8 @@ templates:
   - dsh-browser-upstream.browser-manager.js
   # --- headless worker 模型熔断回退（2026-08-24 线上修复固化，幂等）---
   - headless-failover-setup.sh
+  # --- 设置镜像补丁（域名访问 Models 页可用；setup/upgrade 重放，幂等）---
+  - settings-mirror-patch.sh
   # --- 社区插件锁（pin 版本 + hash，先扫后装）---
   - plugins.lock
 services:

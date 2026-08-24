@@ -132,5 +132,9 @@ fi
 log "深冒烟通过：sec-cli-adapter 已进 web 组合树"
 
 NEW_VER="$(cur_version)"
+# 升级后重放客户端补丁：pnpm install 会把设置镜像补丁冲掉（见 settings-mirror-patch.sh）
+if [ -f "$BASE_DIR/settings-mirror-patch.sh" ]; then
+    bash "$BASE_DIR/settings-mirror-patch.sh" || warn "设置镜像补丁重放失败（不影响升级结果）"
+fi
 log "升级完成: ${CUR_VER:-unknown} -> ${NEW_VER:-$TARGET} (HTTP $SMOKE_CODE)"
 log "备份位置: $DATA_DIR/backups/dsh-upgrade-$TS.tgz"
