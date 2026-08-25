@@ -1,211 +1,192 @@
-# SilkSecAgent 持久记忆治理设计（分类 + 遗忘机制）
+# SilkSecAgent 统一记忆基架设计（Memory Substrate）
 
-> 日期：2026-08-25 ｜ 状态：**待拍板**（方案讨论稿，未实施）
-> 起源：httpx 卡死故障文本被固化进每日任务 objective 与黑板，故障修复后仍被 agent 当现行约束读取。讨论后确认这不是单个故障问题，而是**所有持久记忆面缺少分类与遗忘机制**的系统性问题。
-
----
-
-## 1. 背景与现状（csai 主机实测取证）
-
-### 1.1 持久记忆面清单
-
-| 记忆面 | 载体 | 现状规模 | 元数据 | 读取默认 |
-|---|---|---|---|---|
-| 黑板 | `asset-graph.db: blackboard`（key/value/updated_at 三列） | **1000 键** | 无分类、无 TTL | 全量可读 |
-| 事实 | `facts`（有 pinned/confidence，无 TTL） | **999 条**（note 396 / target 264 / asset 231 / finding 70） | 无时效分类 | 全量可搜 |
-| 经验卡 | `exp_cards` | 2 张 | 有 confidence/source，无使用统计 | 全量可搜 |
-| 打法链 | `playbooks` | 15 条 | 有 runs/successes 统计（可借鉴） | 全量可搜 |
-| 外部知识 | `kb_docs` | 0 | 有 tainted 注入标记 | — |
-| 工作区指令 | `$DSH_HOME/AGENTS.md` 注入链 | **目前不存在** | — | 每会话开局注入 |
-| 任务指令 | `tasks.objective`（interval 任务自续排复用） | 4 条每日 interval | — | 调度时注入 worker |
-| 文件产物 | reports/ flows/ results/ audit.jsonl | — | retention.sh 每日清理（仅文件层） | — |
-
-### 1.2 共享的错误默认假设
-
-所有记忆面共享同一假设："**写下的就是永久真相，且所有任务默认可读**"。由此产生三类污染：
-
-1. **时效污染**：时间轴流水（"2026-08-24 链健康""次日续排 id=17 已存在"）写成永久记录，无限累积；
-2. **失效污染**：临时状态（httpx 卡死、代理某次封禁、某日存活清单）失效后无人清除，新旧矛盾并存
-   ——实证：黑板中 `note:meituan-src:httpx-blocked-env`（故障记录）与 `note:dsh:httpx-fixed-2026-08-23`（已修复）同时存在，而 recon objective 还要求开局读前者；
-3. **粒度污染**：目标特定事实（"auth.mykeeta.com 有 CORS"）与可迁移方法论（"SUPABASE anon JWT 泄露可直连数据库"）混存同层，后者才该永久。
-
-### 1.3 httpx 事件定性
-
-- 卡死文本存在于 **4 个 interval 任务（#16/#17/#18/#19）的 objective**（动态拼接层，非固定提示词）+ 黑板旧 note；
-- interval 任务每日自续排**复用同一 objective**，临时故障由此被复制成永久指令；
-- preset persona / skills / settings / patch.yml 中无相关内容（grep 证实）——问题 100% 在动态层。
-
-### 1.4 已有基础设施
-
-- `retention.sh` + `silksec-retention.timer`：每日跑，但只清 flows/results/audit 文件，**不管 SQLite 记忆表**——sweeper 框架现成，可直接扩展；
-- 看板 RPC 通道 `/silksec-dashboard`（host↔client）现成，加 case 即可扩展管理界面；
-- playbooks 的 runs/successes 统计设计可直接借鉴到 exp_cards 评分。
+> 版本：v2.0 终版（替代 v1 讨论稿）｜ 日期：2026-08-25 ｜ 状态：**已定型，待实施**
+> 决策记录：候选方案 A（元数据标签制）+ B（分层记忆制）融合，**不采用 C 过渡方案**；
+> 用户三要求：① 晋升/遗忘/分类全部代码硬实施强监管；② 容错托底——无周复盘系统也健康运转；
+> ③ 保留弹性——底线之上写入方自主思考，思考留痕即可采纳。不怕动数据、不怕动代码。
 
 ---
 
-## 2. 设计目标
+## 0. 三条设计原则
 
-1. **分类**：所有持久记忆写入时必须声明"这是什么、活多久"；
-2. **遗忘**：临时的、可失效的、时间轴记录有明确的生命周期出口，不无限累积；
-3. **读取隔离**：不是所有任务都能读到一切——默认只给"当前还有效"的记忆；
-4. **通用才长久**：永久层只放通用的、不受时间限制的内容，且有守门机制防污染；
-5. **可审计可恢复**：遗忘不是直接删除，先归档后硬清，全程留痕。
-
-### 治理的三个落刀面
-
-| 面 | 内容 | 强制手段 |
-|---|---|---|
-| 写入面 | 写记忆时强制声明类别与寿命 | 代码校验 or 提示词纪律 |
-| 存储面 | 记忆按寿命分层，有状态机和出口 | schema 字段 / 分表 / 命名约定 |
-| 读取面 | 检索默认过滤失效与流水 | 检索工具过滤 / 注入层裁剪 |
+1. **提示词负责智慧，代码负责纪律。** 提示词只教写入方"怎么思考"，监管全部在代码里。
+2. **复盘是加速器，不是单点。** 所有关键流转（晋升/降级/归档/摘要）都有自动通道，复盘只做增强。
+3. **permanent 层只有一种居民。** 事实永远会过期，只有方法论配永久——永久层 = 经验卡/打法，且只能晋升进入，禁止直写。
 
 ---
 
-## 3. 候选方案
+## 1. 背景（csai 实测，v1 取证）
 
-### 方案 A：元数据标签制（单库扩展，代码强制）
-
-不动存储结构，给 `blackboard`/`facts`/`exp_cards` 统一加列：
-
-```
-mem_class:  permanent | durable | ephemeral | timeline
-expires_at: 时间戳（ephemeral 必填；durable 必填=复验期限）
-status:     active | cooling | archived
-```
-
-- 写入：工具强制带 `mem_class`，缺省按类型给默认（黑板 note=ephemeral 7 天、fact=durable 30 天、exp=permanent）；
-- 读取：`blackboard_get`/`fact_search`/`exp_search` 默认过滤 expired/archived/timeline，timeline 仅复盘任务显式 `include_timeline=true` 可读；
-- 遗忘：扩展 retention.sh 增加 SQLite sweeper：过期→cooling→归档表→90 天硬删。
-- ✅ 一套机制全覆盖、硬保证、可审计、改动集中（experience.js / asset-db.js / asset-graph.js）
-- ❌ 需迁移回填 1999 条遗留数据；需重启服务；标签判断仍靠写入方，标错照样污染 permanent 层
-
-### 方案 B：分层记忆制（物理三层 + 晋升制）
-
-仿人类记忆物理分层，核心思想"**知识只能升舱，不能直写永久层**"：
-
-| 层 | 载体 | 谁能写 | 谁能读 | 寿命 |
-|---|---|---|---|---|
-| 工作记忆 | blackboard（全量 TTL 化） | 所有任务 | 所有任务 | 7-14 天自动归档 |
-| 情景记忆 | facts/时间轴事件流 | 所有任务 | 默认仅复盘任务读全文；执行任务只读 pinned+近 7 天 | 30 天归档 |
-| 语义记忆 | exp_cards/playbooks/AGENTS.md | **仅复盘任务经三闸门晋升** | 所有任务（开局注入） | 永久，带评分淘汰 |
-
-- 执行任务禁止直接 exp_store，只写情景层"候选经验"；每周复盘做晋升评审。
-- ✅ 架构上保证"通用才持久"，永久层有唯一入口和守门人，污染物理上进不去
-- ❌ 改动最大（新表/工具语义变更/agent 习惯改变）；晋升制依赖复盘任务稳定运行，复盘一停知识管道断流
-
-### 方案 C：纯约定制（零代码）
-
-键名前缀约定（`[env-issue]`/`[timeline]`/`[perm]`）+ AGENTS.md 读取纪律 + 每周复盘清理。
-- ✅ 今天就能上，零风险零重启
-- ❌ 全靠模型自觉，无硬保证；1000 存量键不受约束；漏标即无声累积——正是 httpx 事件的重演路径。**只配当过渡，不配当终态。**
-
-### 方案 D：混合制（推荐）= A 的机制 + B 的思想 + C 的过渡
-
-1. **标签即层级**：不物理分库，用 `mem_class` 字段表达三层（ephemeral≈工作、durable/timeline≈情景、permanent≈语义），`promote` = 改 class 字段，避免 B 的大迁移；
-2. **晋升制收窄**：`exp_store` 可写但新卡默认进 `candidate` 状态（检索可见但排序靠后），复盘评审通过才转 `active`——用远小于 B 的改动拿到"永久层守门"的核心收益；
-3. **读写双面代码化**：写入强制分类 + 读取默认过滤 + sweeper 归档（A 的全部机制）；
-4. **C 立即止血**：键名约定 + AGENTS.md 纪律 + httpx 清理今天先做，不等代码。
-
-**遗忘机制组合拳**（四手段各司其职）：
-
-| 手段 | 作用 | 类比 |
-|---|---|---|
-| 读取面过滤 | 过期/timeline 立刻"看不见"，即时生效 | 遗忘的感受 |
-| 评分降权 | 低分/久未复验沉底，不删但不浮现 | 记忆淡化 |
-| 归档软删 | 移入 archive 表，可恢复可审计 | 放进阁楼 |
-| 定期硬删 | archived 超 90 天物理删除 | 真正遗忘 |
+- 所有记忆面（blackboard 1000 键 / facts 999 条 / exp_cards / playbooks）共享错误默认："写下即永久、全员默认可读"；
+- 三类污染：时效污染（流水永久化，facts 中 note 类已 396 条）、失效污染（`httpx-blocked-env` 与 `httpx-fixed` 矛盾并存）、粒度污染（目标事实与可迁移方法论混层）；
+- httpx 事件定性：故障文本固化在 4 个 interval 任务 objective + 黑板旧 note，属动态层污染；
+- 现成设施：retention.sh 每日 timer（只管文件不管库）、`/silksec-dashboard` RPC 通道、playbooks 的 runs/successes 统计设计。
 
 ---
 
-## 4. 推荐方案 D 的细化设计
+## 2. 架构总览：一个生命周期引擎，所有记忆面共用
 
-### 4.1 标签体系（两轴 + 状态机）
-
-**时效轴（mem_class）**：
-
-| 类别 | 定义 | 默认 TTL | 例子 |
-|---|---|---|---|
-| `permanent` | 通用方法论、架构事实、授权范围 | 无 | 经验卡、三闸门通过的打法 |
-| `durable` | 目标相关事实，需复验刷新 | 30 天未复验→cooling | 资产存活、指纹、CORS 误配置 |
-| `ephemeral` | 环境状态、临时故障、代理状态 | 7 天 | httpx 卡死类 [env-issue] |
-| `timeline` | 执行流水、调度日志、日期快照 | 30 天归档，默认不可读 | "链健康""次日续排 id=17" |
-
-**作用域轴（scope）**：`global` / `program:<id>` / `task:<id>` / `session`——读取时按当前任务 scope 过滤，session 级随会话消亡不落盘。
-
-**状态机**：
+新建 **`dsh-plugin-sec-suite.lifecycle.js`**（独立模块），提供四个统一原语。状态机、校验、过滤、清扫**只写一份**；blackboard / facts / exp_cards 及未来任何新记忆表，只要带统一列组并注册进引擎，即自动获得全部治理能力——不冗余的关键。
 
 ```
-active ──过期/零使用──► cooling ──持续衰退/neg_fb≥3──► archived ──90天──► (硬删)
-  ▲                       │                              │
-  └── promote（仅复盘）────┴──── 恢复（看板/复盘手动）──────┘
-
-candidate ──复盘评审通过──► active   （permanent 层唯一入口）
+┌─────────────────────────────────────────────────────┐
+│ lifecycle.js（唯一治理引擎）                          │
+│  validateWrite()     写入校验（底线硬约束 R1-R7）      │
+│  visibilityFilter()  读取过滤（读者角色×状态×scope）   │
+│  transition()        状态机（唯一状态转换入口）         │
+│  sweep()             每日清扫（降级/归档/硬删/自动晋升） │
+└────────┬──────────────┬──────────────┬──────────────┘
+    blackboard        facts        exp_cards      （未来新表）
 ```
 
-### 4.2 写入门禁
+### 2.1 统一列组（每张记忆表）
 
-| 写入方 | 规则 |
+| 列 | 说明 |
 |---|---|
-| 执行任务 worker | 可写 ephemeral/durable/timeline；exp_store 落 `candidate`；**禁直写 active permanent** |
-| 复盘任务（review phase） | 唯一 promote 通道：三闸门评审（① 换目标可复用？② evidence 齐全？③ 已查重？） |
-| 看板人工 | 全部操作可用，audit 留痕，human-verified 来源权重最高 |
-| 目标特定事实 | 永远进 facts(durable)，**禁入 exp_cards**——卡只装可迁移方法论 |
+| `mem_class` | permanent / durable / ephemeral / timeline |
+| `scope` | global / program:\<id\> / task:\<id\> / session（session 级不落盘） |
+| `status` | candidate / active / cooling / archived |
+| `expires_at` | ephemeral 必填 |
+| `revalidate_by` | durable 必填（复验期限） |
+| `justification` | 写入理由（思考证明，见 §3） |
+| `last_validated_at` | 最近复验时间 |
+| 评分组 | `uses / adopted / pos_fb / neg_fb / score / last_used_at`（timeline 不参与） |
 
-### 4.3 读取隔离
+归档出口：每张表对应 `*_archive` 表（同构 + `archived_at` / `archive_reason`）。
 
-| 读取方 | 默认可见 |
-|---|---|
-| 执行任务开局 | permanent(active) + 本 scope durable(active) + ephemeral(active 未过期)；**timeline 不可见** |
-| 复盘任务 | 全量（含 timeline、archive、cooling）——只有复盘能"回忆过去" |
-| exp_search 排序 | 现有 `FTS×10 + 余弦×20 + source×3 + confidence` + **score×2**；candidate 固定降权 |
+---
 
-### 4.4 评分淘汰（与卡片评分机制合并）
+## 3. 写入协议：底线代码卡死，上限写入方自主
+
+每次写入必须携带 **intent 声明**：
+
+```json
+{ "mem_class": "ephemeral", "ttl_days": 5, "scope": "program:meituan-src",
+  "justification": "代理池 8899 端口今日三次超时，疑临时封禁，复验后即可删" }
+```
+
+### 3.1 底线（代码硬校验，违反即拒绝）
+
+| # | 规则 | 处理 |
+|---|---|---|
+| R1 | mem_class ∈ {permanent, durable, ephemeral, timeline}，必填 | 拒绝 |
+| R2 | **permanent 禁止直写**，只能经 promote 进入 | 拒绝 |
+| R3 | ephemeral：TTL ∈ [1小时, 30天]，写入方区间内自选 | 拒绝 |
+| R4 | durable：revalidate_by ∈ [7天, 90天]，自选 | 拒绝 |
+| R5 | fact/exp 类 evidence 非空（沿用验证铁律） | 拒绝 |
+| R6 | justification ≥ 10 字且非占位符——**只验"思考过"，不审内容质量** | 拒绝 |
+| R7 | timeline 只追加、不可改写（流水不可变） | 拒绝 update |
+
+### 3.2 弹性（写入方自主空间）
+
+类别判断、TTL 长短、scope 宽窄由写入方按 `skills/sec-knowledge` 的思考指引自行决定，过 R1-R7 即采纳。justification 全程留痕（audit.jsonl）。
+
+**预留扩展点（一期不实现）**：按写入方（agent/worker）统计 justification 质量形成"写入信用分"，低信用写入者的卡片初始降权。
+
+---
+
+## 4. 状态机与双通道晋升
 
 ```
-exp_cards 新增列: uses / adopted / pos_fb / neg_fb / score / status / last_used_at
+candidate ──❶复盘评审 promote──┐
+    │                          ▼
+    └──❷自动晋升（托底）──► active ──TTL过期/零使用30d/neg_fb≥3──► cooling
+         adopted≥2 且 neg_fb=0        ▲                            │
+         且存活≥7天（sweeper 执行）    └──❸用到即复验复活──           │
+                                                              再衰退30d
+                                                                 ▼
+         timeline: active ─30d─► archived（纯老化，不评分）    archived ─90d─► 硬删
+```
+
+| 通道 | 机制 | 性质 |
+|---|---|---|
+| ❶ 评审晋升 | 周复盘三闸门（换目标可复用？evidence 齐全？已查重？） | 加速器：快、质量高 |
+| ❷ 自动晋升 | candidate 被不同 run 实际采用 ≥2 次、零负反馈、存活 ≥7 天 → sweeper 自动升 active | **托底**：无复盘好用的卡照样浮现 |
+| ❸ 自愈复活 | 执行任务读到 cooling 的 durable 可现场复验，`last_validated_at` 刷新即回 active | 常用事实永不死，冷门自然沉 |
+
+### 4.1 评分公式
+
+```
 score = adopted×3 + pos_fb×2 + uses×0.5 − neg_fb×5 − 天数衰减
-淘汰: uses=0 且 >30 天 → cooling；cooling 再 30 天或 neg_fb≥3 → archived
+降级: uses=0 且 >30 天 → cooling；cooling 再 30 天或 neg_fb≥3 → archived
+检索排序: FTS×10 + 余弦×20 + source×3 + confidence + score×2；candidate 固定降权
 ```
 
-### 4.5 Sweeper（扩展现有 retention.sh）
+---
 
-每日 timer 已在跑，新增 SQLite 阶段：
-1. `expires_at < now` → cooling；
-2. cooling 超 30 天 → 移入 `*_archive` 表；
-3. archive 超 90 天 → 硬删；
-4. 全程写 audit.jsonl。
+## 5. 读取隔离（代码强制）
 
-### 4.6 提示词层纪律（三不原则，防 objective/persona 固化）
-
-1. 临时环境故障**只进黑板**（`[env-issue]` 前缀 + 日期 + TTL 7 天）；
-2. **不进 objective、不进 persona**——objective 只允许写"开局 blackboard_get 读 `[env-issue]` 键"这一条通用指引，不写具体故障内容；
-3. 复盘任务每周巡检 `[env-issue]` 键：已修复验证后删除，未修复保留复核——黑板自净闭环。
-
-### 4.7 遗留数据回填
-
-1999 条存量（blackboard 1000 + facts 999），两条路线待选：
-- **大清洗**：建一次性复盘任务，模型逐条分类回填（1-2 个工时，质量高）；
-- **粗清洗**：`updated_at` 超 30 天未动的全部进 cooling，note/timeline 类键名匹配日期的直接 timeline 化（快，误伤需人工恢复）。
+| 读者 | permanent active | candidate | durable active | durable cooling | ephemeral active | timeline | archived |
+|---|---|---|---|---|---|---|---|
+| 执行任务 | ✅ | ✅ 降权 | ✅ | ✅ 带"待复验"标记 | ✅ | ❌ | ❌ |
+| 复盘任务 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ---
 
-## 5. 待拍板决策点
+## 6. 容错托底总表
 
-| # | 决策点 | 选项 | 倾向 |
-|---|---|---|---|
-| 1 | 终态选型 | A（务实）/ B（理想大改）/ **D（混合）** | D |
-| 2 | exp_store 是否收窄为候选晋升制 | 收窄（D 内含）/ 保持直写靠评分淘汰 | 收窄 |
-| 3 | timeline 对执行任务可见性 | 完全不可读 / 可读近 3 天 | 完全不可读，靠复盘摘要衔接 |
-| 4 | 遗留数据回填 | 大清洗（模型逐条）/ 粗清洗（规则批量） | 大清洗，分 program 两次跑 |
-| 5 | 评分公式数值与淘汰阈值 | 按 §4.4 / 调整 | 按 §4.4 先跑一个月再调 |
+| 失效场景 | 系统行为 |
+|---|---|
+| **周复盘停跑** | 自动晋升/sweeper 降级归档硬删/AGENTS.md 每日自动重写/评分沉浮照常；仅损失"晋升加速、质量审查、碎片合并"三个增强项 |
+| sweeper 停跑 | 读写路径**惰性降级**（读到过期项即时 transition），可见性不错乱；恢复后补扫 |
+| 写入方乱标类别 | 底线校验挡硬错误；误标卡靠评分+零使用自动沉没；justification 可审计追责 |
+| embedding 服务挂 | FTS 检索照常；语义合并降级为 scenario 精确匹配 |
+| 复盘误判晋升 | neg_fb + 评分衰减自动纠错下沉 |
+| 合并事故（既往 0.85 阈值） | 阈值收紧 0.95 才合并覆盖 takeaway；0.85~0.95 只追加证据 + warning |
 
 ---
 
-## 6. 落地批次（与总方案对齐）
+## 7. AGENTS.md 自动化（引擎产物，非复盘产物）
+
+sweeper 每日重写 `AGENTS.md` 受管区块（`<!-- memcore:begin/end -->` 标记内）：
+- Top N 高分 permanent 卡摘要（只摘要 + ID，不铺全文）；
+- 当前 active 的 `[env-issue]` 清单；
+- 写入/读取纪律一句话指引。
+
+人工内容写标记外。复盘可补充，但引擎不缺位。
+
+---
+
+## 8. 提示词层定位（极薄，架构级红线）
+
+提示词只剩两件事（skills/sec-knowledge + AGENTS.md 受管区块）：
+1. **写入思考指引**："写记忆前回答三问：它会过期吗？换目标还有用吗？谁会读它？——答案写进 justification"；
+2. **读取纪律**："cooling 标记的事实用到即复验"。
+
+**红线**：persona/objective 从此禁止承载任何具体事实、故障、状态。兜底：sweeper 顺带做 "objective lint"——扫描 interval 任务 objective 中的日期/故障关键词，命中即看板告警。
+
+---
+
+## 9. 数据迁移（一次到位）
+
+存量 1000 黑板键 + 999 facts，规则迁移 + 抽样验证：
+1. 键名含日期 / `alive:*` / `scan:*` → `timeline`；
+2. `note:*`、env 相关 → `ephemeral`（TTL 7 天，到期自然消亡——含 httpx-blocked-env，无需手工删）；
+3. `asset/target/finding` 类 facts → `durable`（revalidate_by 30 天）；
+4. 迁移后一次性抽检任务（抽 5% 模型核对），误标看板手动修正。
+
+---
+
+## 10. 实施批次
 
 | 批次 | 内容 | 需重启 |
 |---|---|---|
-| 一（纯文本/DB） | httpx 清理（4 objective + 黑板）、AGENTS.md 三不纪律、键名前缀约定、报告路径统一 | ❌ |
-| 二（代码） | mem_class/status/expires_at 三表扩展、写入校验、读取过滤、sweeper、exp 评分列+exp_feedback、exp_store 候选制、合并阈值 0.85→0.95、5 个 persona 补句、看板知识 tab | ✅ 一次 |
-| 三（治理运转） | 每周 review interval 任务（晋升评审 + exp_validate + [env-issue] 巡检 + AGENTS.md 知识段重写）、遗留大清洗任务 | ❌ |
-| 四（基础设施） | NAS vault 同步 + 卡片 md 导出桥 + kb_import 回流通道 | ❌ |
+| 一 | **lifecycle.js 引擎**：validateWrite / visibilityFilter / transition / sweep；三表统一列组迁移 + archive 表；存量规则迁移 | ✅ |
+| 二 | 三插件接入引擎（blackboard/facts/exp 读写全走原语）；exp_store 候选制；exp_feedback/exp_update/exp_deprecate；合并阈值 0.95；AGENTS.md 生成器；objective lint | ✅（与批次一合并为一次重启） |
+| 三 | 看板知识 tab（列表/评分/编辑/弃置/新增/恢复，走 /silksec-dashboard RPC）；sec-knowledge 技能；5 个执行型 persona 补开局检索一句 | ✅ |
+| 四 | 每周 review interval 任务（三闸门评审加速 + 碎片合并 + 质量审计）；报告路径统一；NAS vault 同步 + 卡片 md 导出桥 + kb_import 回流 | ❌ |
+
+---
+
+## 11. 参数表（集中可调，先跑一个月再校准）
+
+| 参数 | 默认值 |
+|---|---|
+| ephemeral TTL 区间 | 1小时 ~ 30天 |
+| durable 复验区间 | 7 ~ 90天 |
+| 自动晋升阈值 | adopted≥2 且 neg_fb=0 且存活≥7天 |
+| 降级阈值 | uses=0 且 >30天 / neg_fb≥3 |
+| cooling→archived | 30天 |
+| archived→硬删 | 90天 |
+| timeline 归档 | 30天 |
+| 语义合并阈值 | 0.95（0.85~0.95 仅追加证据） |
