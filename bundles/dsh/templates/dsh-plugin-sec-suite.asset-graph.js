@@ -37,6 +37,22 @@ function execCwd(exec) {
 }
 
 export function apply(ctx) {
+  // memcore 治理服务绑定（可选注入，缺席透传 fail-open）+ 缺席告警
+  let lcBound = false
+  try {
+    ctx.inject(['secMemoryLifecycle'], (child) => {
+      db._bindLifecycle(child.secMemoryLifecycle)
+      lcBound = true
+      child.effect(() => () => { db._bindLifecycle(null); lcBound = false }, 'memcore unbind')
+    })
+  } catch { /* 无 cordis inject 时透传 */ }
+  setTimeout(() => {
+    if (!lcBound) {
+      process.stderr.write('[asset-graph] memcore 未加载：记忆治理 fail-open 透传（写入不校验/读取全量可见）\n')
+      try { db.bbSet('note:dsh:memcore-offline', `[${new Date().toISOString()}] memcore 插件未加载，记忆治理透传。检查 profile 是否含 @silksec/sec-memcore。`) } catch { /* noop */ }
+    }
+  }, 15000).unref?.()
+
   reg(ctx, {
     name: 'asset_add',
     description: '登记一个资产（域名/IP/存活 web 站点）到资产图谱。type: domain/ip/web/service。',
@@ -156,28 +172,37 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'blackboard_set',
-    description: '写事实黑板（跨会话共享）：凭据引用/存活主机/已试路径/中间结论。key 如 cred:example.com:admin。',
+    description: '写事实黑板（跨会话共享）：凭据引用/存活主机/已试路径/中间结论。key 如 cred:example.com:admin。'
+      + 'memcore 治理：默认 ephemeral 7 天到期自动归档；环境故障用 [env-issue] 前缀 key；timeline 键（带日期快照）只追加不可改写。'
+      + '可用 mem_class/ttl_days/justification 自声明。',
     parameters: {
       type: 'object',
       properties: {
         key: { type: 'string' },
         value: { type: 'string' },
+        mem_class: { type: 'string', enum: ['ephemeral', 'timeline'] },
+        ttl_days: { type: 'number', description: 'ephemeral 存活天数（1小时-30天）' },
+        justification: { type: 'string', description: '分类理由（可选）' },
+        scope: { type: 'string' },
       },
       required: ['key', 'value'],
       additionalProperties: false,
     },
-    execute: async (a) => ({ ok: db.bbSet(a.key, a.value) }),
+    execute: async (a) => db.bbSet(a.key, a.value, a),
   })
 
   reg(ctx, {
     name: 'blackboard_get',
-    description: '读事实黑板。带 key 读单条，不带列出最近 100 条。',
+    description: '读事实黑板。带 key 读单条，不带列出最近 100 条。memcore 治理下默认不返回 timeline/已归档/已过期项；reader=review 全量。',
     parameters: {
       type: 'object',
-      properties: { key: { type: 'string' } },
+      properties: {
+        key: { type: 'string' },
+        reader: { type: 'string', enum: ['task', 'review'] },
+      },
       additionalProperties: false,
     },
-    execute: async (a) => ({ ok: true, result: db.bbGet(a.key) }),
+    execute: async (a) => ({ ok: true, result: db.bbGet(a.key, a.reader === 'review' ? 'review' : 'task') }),
   })
 
   reg(ctx, {
@@ -371,7 +396,8 @@ export function apply(ctx) {
   reg(ctx, {
     name: 'fact_upsert',
     description: '写入/覆盖一条事实（跨会话共享，边渗透边记录）。fact_key 格式 category/slug（如 auth/cred-admin、note/failed-xxx）。'
-      + 'summary 一行索引会注入 prompt，body 按需 fact_get 拉取。confidence: confirmed/tentative/deprecated。',
+      + 'summary 一行索引会注入 prompt，body 按需 fact_get 拉取。confidence: confirmed/tentative/deprecated。'
+      + 'memcore 治理：note 类默认 ephemeral 14 天，其余 durable 30 天复验；可用 mem_class/ttl_days/revalidate_days/justification 自声明。',
     parameters: {
       type: 'object',
       properties: {
@@ -384,11 +410,15 @@ export function apply(ctx) {
         pinned: { type: 'integer', description: '1=置顶' },
         related_finding_id: { type: 'integer' },
         source: { type: 'string' },
+        mem_class: { type: 'string', enum: ['durable', 'ephemeral', 'timeline'], description: '记忆类别（缺省按 category 推导）' },
+        ttl_days: { type: 'number', description: 'ephemeral 存活天数（1-30）' },
+        revalidate_days: { type: 'number', description: 'durable 复验期限（7-90）' },
+        justification: { type: 'string', description: '分类理由（可选，写记忆前三问的答案）' },
       },
       required: ['program_id', 'fact_key'],
       additionalProperties: false,
     },
-    execute: async (a) => db.factUpsert(a),
+    execute: async (a) => db.factUpsert({ ...a, intent: { mem_class: a.mem_class, ttl_days: a.ttl_days, revalidate_days: a.revalidate_days, justification: a.justification } }),
   })
 
   reg(ctx, {
@@ -405,7 +435,7 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'fact_search',
-    description: '检索事实（按 program/category/关键词，summary+key+body LIKE）。返回索引（不含 body）。',
+    description: '检索事实（按 program/category/关键词，summary+key+body LIKE）。返回索引（不含 body）。memcore 治理下默认不返回 timeline/已归档/已过期项，cooling 项带标记（用到即复验）。',
     parameters: {
       type: 'object',
       properties: {
@@ -413,10 +443,11 @@ export function apply(ctx) {
         category: { type: 'string' },
         q: { type: 'string' },
         limit: { type: 'integer' },
+        reader: { type: 'string', enum: ['task', 'review'], description: 'review=复盘角色全量可见（含 timeline/归档）' },
       },
       additionalProperties: false,
     },
-    execute: async (a) => ({ ok: true, items: db.factSearch({ program_id: a.program_id || '', category: a.category || '', q: a.q || '', limit: a.limit || 50 }) }),
+    execute: async (a) => ({ ok: true, items: db.factSearch({ program_id: a.program_id || '', category: a.category || '', q: a.q || '', limit: a.limit || 50, role: a.reader === 'review' ? 'review' : 'task' }) }),
   })
 
   reg(ctx, {

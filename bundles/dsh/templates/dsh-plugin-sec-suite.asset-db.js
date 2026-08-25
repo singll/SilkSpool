@@ -721,9 +721,40 @@ export function workerReapStale() {
 
 const FACT_CONFIDENCE = ['confirmed', 'tentative', 'deprecated']
 
-export function factUpsert({ program_id, fact_key, category = '', summary = '', body = '', confidence = 'tentative', pinned = 0, related_finding_id = null, source = '' }) {
+// -------------------- memcore 治理服务绑定（可选，缺席透传 fail-open） --------------------
+let _lifecycle = null
+export function _bindLifecycle(lc) { _lifecycle = lc }
+const LC = () => _lifecycle
+
+export function factUpsert({ program_id, fact_key, category = '', summary = '', body = '', confidence = 'tentative', pinned = 0, related_finding_id = null, source = '', intent = null }) {
   if (!program_id || !fact_key) return { ok: false, error: 'program_id 与 fact_key 必填（fact_key 格式 category/slug）' }
   if (!FACT_CONFIDENCE.includes(confidence)) return { ok: false, error: `非法 confidence ${confidence}（可选: ${FACT_CONFIDENCE.join('/')}）` }
+  const lc = LC()
+  const nowTs = now()
+  if (lc) {
+    // 缺省分类：note 类负知识 → ephemeral 14d；其余 → durable 30d 复验（见实施文档 §3.3）
+    const vw = lc.validateWrite('facts', {
+      mem_class: intent?.mem_class || (category === 'note' ? 'ephemeral' : 'durable'),
+      ttl_days: intent?.ttl_days, revalidate_days: intent?.revalidate_days,
+      justification: intent?.justification, scope: intent?.scope || `program:${program_id}`,
+    })
+    if (!vw.ok) return { ok: false, error: vw.error }
+    const v = vw.value
+    getDb().prepare(`
+      INSERT INTO facts (program_id, fact_key, category, summary, body, confidence, pinned, related_finding_id, source, updated_at,
+        mem_class, status, status_at, scope, expires_at, revalidate_by, justification, last_validated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (program_id, fact_key) DO UPDATE SET
+        category = excluded.category, summary = excluded.summary, body = excluded.body,
+        confidence = excluded.confidence, pinned = excluded.pinned,
+        related_finding_id = excluded.related_finding_id, source = excluded.source, updated_at = excluded.updated_at,
+        mem_class = excluded.mem_class, status = 'active', status_at = excluded.status_at, scope = excluded.scope,
+        expires_at = excluded.expires_at, revalidate_by = excluded.revalidate_by,
+        justification = excluded.justification, last_validated_at = excluded.last_validated_at
+    `).run(program_id, fact_key, category, summary, body, confidence, pinned ? 1 : 0, related_finding_id, source, nowTs,
+      v.mem_class, nowTs, v.scope, v.expires_at ?? null, v.revalidate_by ?? null, v.justification, v.last_validated_at ?? null)
+    return { ok: true, program_id, fact_key, mem_class: v.mem_class }
+  }
   getDb().prepare(`
     INSERT INTO facts (program_id, fact_key, category, summary, body, confidence, pinned, related_finding_id, source, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -731,7 +762,7 @@ export function factUpsert({ program_id, fact_key, category = '', summary = '', 
       category = excluded.category, summary = excluded.summary, body = excluded.body,
       confidence = excluded.confidence, pinned = excluded.pinned,
       related_finding_id = excluded.related_finding_id, source = excluded.source, updated_at = excluded.updated_at
-  `).run(program_id, fact_key, category, summary, body, confidence, pinned ? 1 : 0, related_finding_id, source, now())
+  `).run(program_id, fact_key, category, summary, body, confidence, pinned ? 1 : 0, related_finding_id, source, nowTs)
   return { ok: true, program_id, fact_key }
 }
 
@@ -740,13 +771,17 @@ export function factGet(program_id, fact_key) {
   return row ? { ...row } : null
 }
 
-export function factSearch({ program_id = '', category = '', q = '', confidence = '', limit = 50, offset = 0 }) {
+export function factSearch({ program_id = '', category = '', q = '', confidence = '', limit = 50, offset = 0, role = 'task' }) {
   const { where, args } = factWhere({ program_id, category, q, confidence })
+  const lc = LC()
+  // memcore 缺席时无治理列，回退旧列清单（fail-open）
+  const memCols = lc ? ', mem_class, status, revalidate_by' : ''
   // edge_count：关联事实条数（走 idx_edges_src/dst，供看板「关联」按钮仅在有边时出现）
-  const sql = `SELECT program_id, fact_key, category, summary, confidence, pinned, related_finding_id, updated_at,
+  const sql = `SELECT program_id, fact_key, category, summary, confidence, pinned, related_finding_id, updated_at${memCols},
     (SELECT COUNT(*) FROM fact_edges e WHERE e.program_id = facts.program_id AND (e.src_key = facts.fact_key OR e.dst_key = facts.fact_key)) AS edge_count
     FROM facts WHERE ${where} ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?`
-  return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
+  const rows = plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
+  return lc ? lc.visibilityFilter(role, 'facts', rows) : rows
 }
 
 export function countFacts(filters = {}) {
@@ -854,19 +889,47 @@ export function credQuery({ program_id = '', host = '', limit = 50 }) {
   return plain(getDb().prepare(sql).all(...args))
 }
 
-export function bbSet(key, value) {
+export function bbSet(key, value, intent = null) {
+  const lc = LC()
+  const nowTs = now()
+  if (lc) {
+    const existing = getDb().prepare('SELECT mem_class FROM blackboard WHERE key = ?').get(String(key))
+    if (existing && existing.mem_class === 'timeline') {
+      return { ok: false, error: 'R7: timeline 键只追加不可改写，请换用带新日期的新 key' }
+    }
+    const vw = lc.validateWrite('blackboard', {
+      mem_class: intent?.mem_class, ttl_days: intent?.ttl_days,
+      justification: intent?.justification, scope: intent?.scope,
+    })
+    if (!vw.ok) return { ok: false, error: vw.error }
+    const v = vw.value
+    getDb().prepare(`INSERT INTO blackboard (key, value, updated_at, mem_class, status, status_at, scope, expires_at, justification)
+      VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+      ON CONFLICT (key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at,
+        mem_class=excluded.mem_class, status='active', status_at=excluded.status_at,
+        scope=excluded.scope, expires_at=excluded.expires_at, justification=excluded.justification`)
+      .run(String(key), String(value), nowTs, v.mem_class, nowTs, v.scope, v.expires_at ?? null, v.justification)
+    return { ok: true, mem_class: v.mem_class, expires_at: v.expires_at ?? null }
+  }
   getDb().prepare('INSERT INTO blackboard (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
-    .run(String(key), String(value), now())
-  return true
+    .run(String(key), String(value), nowTs)
+  return { ok: true }
 }
 
-export function bbGet(key) {
+export function bbGet(key, role = 'task') {
   const d = getDb()
+  const lc = LC()
   if (key) {
-    const row = d.prepare('SELECT key, value, updated_at FROM blackboard WHERE key = ?').get(String(key))
-    return row ? { ...row } : null
+    const row = d.prepare('SELECT * FROM blackboard WHERE key = ?').get(String(key))
+    if (!row) return null
+    if (lc) {
+      const kept = lc.visibilityFilter(role, 'blackboard', [{ ...row }])
+      return kept.length ? kept[0] : null
+    }
+    return { key: row.key, value: row.value, updated_at: row.updated_at }
   }
-  return plain(d.prepare('SELECT key, value, updated_at FROM blackboard ORDER BY updated_at DESC LIMIT 100').all())
+  const rows = plain(d.prepare('SELECT * FROM blackboard ORDER BY updated_at DESC LIMIT 100').all())
+  return lc ? lc.visibilityFilter(role, 'blackboard', rows) : rows
 }
 
 // -------------------- P5：finding 状态流转 + 报告 --------------------

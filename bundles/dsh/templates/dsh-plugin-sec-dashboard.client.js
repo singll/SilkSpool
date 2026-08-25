@@ -1201,6 +1201,125 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // ── 知识 tab（memcore 记忆治理的操作界面：卡片评分/晋升/编辑/弃置 + playbooks） ──
+    function memStatusPill(status) {
+      var c = status === 'active' ? T.success : status === 'candidate' ? T.warn : T.label3
+      return el('span', { style: { ...pill, color: c } }, status || 'active')
+    }
+    function KnowledgeView(props) {
+      var cards = (props.cardsState.data && props.cardsState.data.rows) || []
+      var pbs = (props.pbsState.data && props.pbsState.data.rows) || []
+      var mem = props.memState.data
+      function act(fn) { if (props.busy) return; fn().then(function () { props.cardsState.reload() }).catch(function (e) { alert('操作失败: ' + (e && e.message ? e.message : e)) }) }
+      function onFeedback(id, verdict) { act(function () { return callRpc('expFeedback', { id: id, verdict: verdict }) }) }
+      function onPromote(id) {
+        var reason = window.prompt('晋升理由（复盘评审通道：三闸门已过？）', '人工评审通过：可复用/有证据/已查重')
+        if (!reason) return
+        act(function () { return callRpc('expPromote', { id: id, reason: reason }) })
+      }
+      function onEdit(id, old) {
+        var takeaway = window.prompt('修改 takeaway（一句话可操作结论）', old)
+        if (takeaway === null || takeaway === old) return
+        var just = window.prompt('修改理由（≥10字，memcore 强制）', '')
+        if (!just || just.trim().length < 10) { alert('justification 不足 10 字，已取消'); return }
+        act(function () { return callRpc('expUpdate', { id: id, takeaway: takeaway, justification: just }) })
+      }
+      function onDeprecate(id) {
+        var reason = window.prompt('弃置理由（移入归档，可恢复）', '结论失效或无复用价值')
+        if (!reason) return
+        act(function () { return callRpc('expDeprecate', { id: id, reason: reason }) })
+      }
+      var memChips = null
+      if (mem && mem.loaded && mem.tables) {
+        memChips = el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', margin: '8px 0' } },
+          Object.keys(mem.tables).map(function (t) {
+            var parts = Object.keys(mem.tables[t]).map(function (s) { return s + ':' + mem.tables[t][s] }).join(' ')
+            return el('span', { key: t, style: pill, title: 'memcore 治理状态分布' }, t + ' ' + parts)
+          }))
+      }
+      return el('div', null,
+        memChips,
+        el('div', { style: { ...cardL, margin: '10px 0 6px' } }, '经验卡（exp_cards）· candidate 候选 / active 已晋升 / cooling 衰退 · 评分=adopted×3+👍×2+uses×0.5−👎×5−时效衰减'),
+        props.cardsState.loading ? el(SkeletonRows, { rows: 5 }) : cards.length === 0
+          ? el(EmptyState, { text: '暂无经验卡' })
+          : el('table', { style: tableStyle },
+              el('colgroup', null,
+                el('col', { style: { width: 40 } }), el('col', { style: { width: '22%' } }), el('col', null),
+                el('col', { style: { width: 56 } }), el('col', { style: { width: 64 } }), el('col', { style: { width: 78 } }), el('col', { style: { width: 200 } })),
+              el('thead', null, el('tr', { style: theadRow },
+                el('th', { style: th }, '#'), el('th', { style: th }, '场景'), el('th', { style: th }, '结论（takeaway）'),
+                el('th', { style: th }, '评分'), el('th', { style: th }, '使用'), el('th', { style: th }, '状态'), el('th', { style: th }, '操作'))),
+              el('tbody', null, cards.map(function (c) {
+                return el('tr', { key: c.id, style: { borderBottom: '1px solid ' + T.border } },
+                  el('td', { style: tdMono }, String(c.id)),
+                  el('td', { style: td, title: c.scenario }, el('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, c.scenario)),
+                  el('td', { style: td, title: c.takeaway }, c.takeaway),
+                  el('td', { style: tdMono }, String(c.score !== undefined ? c.score : '—')),
+                  el('td', { style: { ...tdMono, title: 'uses/adopted/👍/👎' } }, c.uses !== undefined ? c.uses + '/' + c.adopted + '/' + c.pos_fb + '/' + c.neg_fb : '—'),
+                  el('td', { style: td }, memStatusPill(c.status)),
+                  el('td', { style: td },
+                    el('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap' } },
+                      el('button', { type: 'button', className: 'silksec-btn', disabled: props.busy, title: '有用', onClick: function () { onFeedback(c.id, 'useful') } }, '👍'),
+                      el('button', { type: 'button', className: 'silksec-btn', disabled: props.busy, title: '错误/过时', onClick: function () { onFeedback(c.id, 'wrong') } }, '👎'),
+                      c.status !== 'active' ? el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: props.busy, onClick: function () { onPromote(c.id) } }, '晋升') : null,
+                      el('button', { type: 'button', className: 'silksec-btn', disabled: props.busy, onClick: function () { onEdit(c.id, c.takeaway) } }, '编辑'),
+                      el('button', { type: 'button', className: 'silksec-btn silksec-btn-danger', disabled: props.busy, onClick: function () { onDeprecate(c.id) } }, '弃置'))))
+              }))),
+        el('div', { style: { ...cardL, margin: '18px 0 6px' } }, 'Playbooks（调用链 · 只读，信号来自真实运行）'),
+        props.pbsState.loading ? el(SkeletonRows, { rows: 3 }) : pbs.length === 0
+          ? el(EmptyState, { text: '暂无 playbook' })
+          : el('table', { style: tableStyle },
+              el('colgroup', null, el('col', null), el('col', { style: { width: 70 } }), el('col', { style: { width: 80 } }), el('col', { style: { width: 78 } }), el('col', { style: { width: 110 } })),
+              el('thead', null, el('tr', { style: theadRow },
+                el('th', { style: th }, '名称'), el('th', { style: th }, '运行'), el('th', { style: th }, '成功率'), el('th', { style: th }, '状态'), el('th', { style: th }, '最近运行'))),
+              el('tbody', null, pbs.map(function (pb) {
+                return el('tr', { key: pb.name, style: { borderBottom: '1px solid ' + T.border } },
+                  el('td', { style: td, title: pb.name }, el('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, pb.name)),
+                  el('td', { style: tdMono }, String(pb.runs)),
+                  el('td', { style: tdMono }, String(pb.success_rate)),
+                  el('td', { style: td }, memStatusPill(pb.status)),
+                  el('td', { style: tdMono }, pb.last_run_at ? new Date(pb.last_run_at).toISOString().slice(0, 10) : '—'))
+              }))))
+    }
+
+    // ── 报告 tab（只读预览 data/reports/**/*.md） ──
+    function ReportsView(props) {
+      var rows = (props.state.data && props.state.data.rows) || []
+      var reading = React.useState(null)
+      var cur = reading[0]; var setCur = reading[1]
+      function open(file) {
+        setCur({ file: file, loading: true, content: null })
+        callRpc('reportRead', { file: file }).then(function (res) {
+          setCur({ file: file, loading: false, content: res.content, truncated: res.truncated })
+        }).catch(function (e) {
+          setCur({ file: file, loading: false, content: null, error: e && e.message ? e.message : String(e) })
+        })
+      }
+      return el('div', null,
+        el('div', { style: { ...cardL, margin: '10px 0 6px' } }, 'data/reports/ 下的 markdown 报告（只读；编辑请走 NAS/Obsidian 通道）'),
+        props.state.loading ? el(SkeletonRows, { rows: 5 }) : rows.length === 0
+          ? el(EmptyState, { text: '暂无报告' })
+          : el('table', { style: tableStyle },
+              el('colgroup', null, el('col', null), el('col', { style: { width: 150 } }), el('col', { style: { width: 90 } }), el('col', { style: { width: 70 } })),
+              el('thead', null, el('tr', { style: theadRow },
+                el('th', { style: th }, '文件'), el('th', { style: th }, '修改时间'), el('th', { style: th }, '大小'), el('th', { style: th }, '操作'))),
+              el('tbody', null, rows.map(function (r) {
+                return el('tr', { key: r.file, style: { borderBottom: '1px solid ' + T.border } },
+                  el('td', { style: tdMono }, r.file),
+                  el('td', { style: tdMono }, new Date(r.mtime).toISOString().slice(0, 16).replace('T', ' ')),
+                  el('td', { style: tdMono }, (r.size / 1024).toFixed(1) + ' KB'),
+                  el('td', { style: td }, el('button', { type: 'button', className: 'silksec-btn', onClick: function () { open(r.file) } }, '查看')))
+              }))),
+        cur ? el('div', { style: { ...card, marginTop: 12 } },
+          el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
+            el('span', { style: { color: T.label, ...F.sStrong } }, cur.file),
+            el('button', { type: 'button', className: 'silksec-btn', onClick: function () { setCur(null) } }, '关闭')),
+          cur.loading ? el(SkeletonRows, { rows: 8 })
+            : cur.error ? el('div', { style: errorLine }, '读取失败: ' + cur.error)
+              : el('pre', { style: { margin: 0, maxHeight: 480, overflowY: 'auto', padding: 12, background: T.layer1, borderRadius: 8, border: '1px solid ' + T.border, color: T.label2, fontFamily: MONO, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' } },
+                  (cur.content || '（空）') + (cur.truncated ? '\n\n…（超 300KB 截断）' : ''))) : null)
+    }
+
     // ── 看板外壳 ─────────────────────────────────────────────────────────────
     function DashboardShell() {
       var tab = React.useState('findings')
@@ -1226,6 +1345,16 @@ window.__ModuleLoader__.load({
       }, [activeTab])
       var evalState = useRpc(function () {
         return activeTab === 'findings' ? { endpoint: 'evalStats' } : null
+      }, [activeTab])
+      var memState = useRpc(function () { return { endpoint: 'memcore' } }, [])
+      var cardsState = useRpc(function () {
+        return activeTab === 'knowledge' ? { endpoint: 'expCards' } : null
+      }, [activeTab])
+      var pbsState = useRpc(function () {
+        return activeTab === 'knowledge' ? { endpoint: 'playbooks' } : null
+      }, [activeTab])
+      var reportsState = useRpc(function () {
+        return activeTab === 'reports' ? { endpoint: 'reports' } : null
       }, [activeTab])
 
       // 分页查询（状态按 tab 记忆，Modal 关闭即销毁重置；仅活跃视图取数/轮询）
@@ -1339,6 +1468,8 @@ window.__ModuleLoader__.load({
         { id: 'endpoints', label: '接口' },
         { id: 'facts', label: '事实' },
         { id: 'tasks', label: '任务' },
+        { id: 'knowledge', label: '知识' },
+        { id: 'reports', label: '报告' },
         { id: 'scope', label: '授权' },
         { id: 'audit', label: '审计' },
       ]
@@ -1415,6 +1546,10 @@ window.__ModuleLoader__.load({
             progOpts: progOpts, onRunNow: onRunNow, onCancel: onCancel, onPause: onPause, onResume: onResume,
             onEditEvery: onEditEvery, onCreateScheduled: onCreateScheduled, busy: isBusy,
           }))
+      } else if (activeTab === 'knowledge') {
+        content = el(KnowledgeView, { memState: memState, cardsState: cardsState, pbsState: pbsState, busy: isBusy })
+      } else if (activeTab === 'reports') {
+        content = el(ReportsView, { state: reportsState })
       } else if (activeTab === 'scope') {
         content = el(ScopeView, {
           scopeData: scopeState.data, workspaces: workspacesState.data,
@@ -1447,6 +1582,9 @@ window.__ModuleLoader__.load({
           workspaceCount: workspacesState.data && workspacesState.data.available ? wsItems.length : null,
           onNavigate: setTab,
         }),
+        (memState.data && memState.data.loaded === false)
+          ? el('div', { style: { ...errorLine, color: T.warn } }, '⚠ memcore 记忆治理插件未加载：写入不校验、读取全量可见（fail-open）。检查 profile 是否含 @silksec/sec-memcore。')
+          : null,
         el('div', { style: tabBar }, tabs.map(tabButton)),
         el('div', { style: body }, content),
         el(ReportModal, { open: reportState.open, state: reportState, onClose: function () { setReportState({ open: false }) } }))

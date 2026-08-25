@@ -56,6 +56,10 @@ templates:
   - dsh-plugin-sec-suite.parsers.js
   - dsh-plugin-sec-suite.patch.yml
   - sec-suite-plugin-setup.sh
+  # --- 记忆治理引擎插件（memcore：生命周期/评分/晋升/遗忘，fail-open 可选注入）---
+  - dsh-plugin-sec-memcore.js
+  - dsh-plugin-sec-memcore.patch.yml
+  - sec-memcore-plugin-setup.sh
   - seed-manifests.sh
   - seed-skills.sh
   - seed-presets.sh

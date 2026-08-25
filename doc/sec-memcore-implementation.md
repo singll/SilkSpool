@@ -1,8 +1,23 @@
 # SilkSecAgent 记忆基架 + 自学习 实施总纲
 
-> 版本：v1.0 ｜ 日期：2026-08-25 ｜ 上游设计：[sec-memory-governance-design.md](sec-memory-governance-design.md) v2.1
+> 版本：v1.1 ｜ 日期：2026-08-25 ｜ 上游设计：[sec-memory-governance-design.md](sec-memory-governance-design.md) v2.1
 > 本文档是**实施前的整合思考**：澄清"记忆治理系统"与"知识卡片自学习"两套方案的相互影响，
 > 消除冲突与冗余，给出合并后的最终数据模型、原语集与实施批次。实施以本文档为准。
+
+> **实施状态（2026-08-25 已上线，csai 验证通过）**
+> - ✅ B0：4 条 interval objective 清 httpx/统一报告路径/清陈旧日期；黑板 httpx note 标记归档
+> - ✅ B1+B2：@silksec/sec-memcore 已装入 web+headless profile；存量迁移完成
+>   （blackboard 21 timeline+979 ephemeral；facts 396 ephemeral+603 durable；exp 2 candidate；playbooks 15）；
+>   sweeper 6h 运转、AGENTS.md 受管区块自动生成、objective lint 首跑 12 命中
+> - ✅ fail-open 实测：摘除 memcore 后服务正常 + stderr/黑板告警触发 + 写读透传；恢复后治理回归
+> - ✅ B3：看板知识 tab（卡片评分/晋升/编辑/弃置 + playbooks）+ 报告只读 tab + memcore 缺席横幅；
+>   sec-knowledge 技能已种；5 个执行型 persona 已补开局检索句
+> - ✅ B4（部分）：每周 review interval 任务已建（id=24，每周日 05:00）
+> - ⏳ B4（剩余）：NAS dataset + 卡片 md 导出桥 + vault 同步（待与需求3方案一并落地）
+>
+> **实施期设计修正**：① facts 的 note 类负知识归为 ephemeral 14 天（而非 timeline）——neg_check
+> 依赖其可见性，timeline 会弄瞎负知识拦截；② R6 justification 硬要求仅语义层（exp/pb/kb），
+> 工作/情景层允许缺省分类（auto:default）——否则内部自动写入点（runcli 失败证伪等）会全部被拒。
 
 ---
 

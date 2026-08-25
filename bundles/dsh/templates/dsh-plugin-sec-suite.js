@@ -22,6 +22,7 @@ import * as http from 'node:http'
 import * as path from 'node:path'
 import * as assetDb from './asset-db.js'
 import * as parsers from './parsers.js'
+import * as exp from './experience.js'
 import { pbOutcome } from './experience.js'
 
 export const name = 'sec-cli-adapter'
@@ -1613,6 +1614,69 @@ async function handleDashboardRpc(endpoint, payload) {
       })
       audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.factDeprecate', decision: 'executed', detail: { program_id: programId, fact_key: factKey } })
       return r
+    }
+    // ---- 记忆治理（memcore）：知识 tab ----
+    case 'memcore':
+      return exp.memStatus()
+    case 'expCards': {
+      const memCols = exp.memStatus().loaded
+        ? ', status, score, uses, adopted, pos_fb, neg_fb, justification, mem_class' : ''
+      const rows = assetDb.getDb().prepare(
+        `SELECT id, scenario, takeaway, source, confidence, last_validated_at, created_at${memCols} FROM exp_cards ORDER BY ${memCols ? 'score DESC, ' : ''}last_validated_at DESC LIMIT 200`).all()
+      return { rows: rows.map((r) => ({ ...r })) }
+    }
+    case 'expFeedback': {
+      const r = exp.expFeedback({ id: Number(p.id), verdict: String(p.verdict || ''), actor: 'dashboard' })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expFeedback', decision: 'executed', detail: { id: Number(p.id), verdict: String(p.verdict || '') } })
+      return r
+    }
+    case 'expPromote': {
+      const r = exp.expPromote({ id: Number(p.id), reason: String(p.reason || '看板人工晋升'), actor: 'dashboard' })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expPromote', decision: 'executed', detail: { id: Number(p.id) } })
+      return r
+    }
+    case 'expDeprecate': {
+      const r = exp.expDeprecate({ id: Number(p.id), reason: String(p.reason || '看板弃置'), actor: 'dashboard' })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expDeprecate', decision: 'executed', detail: { id: Number(p.id), reason: String(p.reason || '') } })
+      return r
+    }
+    case 'expUpdate': {
+      const r = exp.expUpdate({ id: Number(p.id), takeaway: p.takeaway, justification: String(p.justification || '') })
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expUpdate', decision: 'executed', detail: { id: Number(p.id) } })
+      return r
+    }
+    case 'playbooks': {
+      const rows = assetDb.getDb().prepare('SELECT * FROM playbooks ORDER BY runs DESC LIMIT 100').all()
+      return { rows: rows.map((r) => ({ ...r, success_rate: r.runs ? Math.round((r.successes / r.runs) * 100) / 100 : 0 })) }
+    }
+    // ---- 报告查看（只读）----
+    case 'reports': {
+      const base = path.join(DATA_DIR, 'reports')
+      const out = []
+      const walk = (dir, rel) => {
+        let entries
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+        for (const e of entries) {
+          const rp = rel ? `${rel}/${e.name}` : e.name
+          if (e.isDirectory()) walk(path.join(dir, e.name), rp)
+          else if (e.name.endsWith('.md')) {
+            const st = fs.statSync(path.join(dir, e.name))
+            out.push({ file: rp, mtime: st.mtimeMs, size: st.size })
+          }
+        }
+      }
+      walk(base, '')
+      out.sort((a, b) => b.mtime - a.mtime)
+      return { rows: out.slice(0, 200) }
+    }
+    case 'reportRead': {
+      const base = path.join(DATA_DIR, 'reports')
+      const rel = String(p.file || '').replace(/^\/+/, '')
+      const full = path.resolve(base, rel)
+      if (!full.startsWith(base + path.sep)) throw new Error('非法路径')
+      if (!fs.existsSync(full)) throw new Error(`报告不存在: ${rel}`)
+      const content = fs.readFileSync(full, 'utf8')
+      return { file: rel, content: content.slice(0, 300000), truncated: content.length > 300000 }
     }
     default:
       throw new Error(`未知看板端点: ${endpoint}`)
