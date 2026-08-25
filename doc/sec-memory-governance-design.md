@@ -1,9 +1,9 @@
 # SilkSecAgent 统一记忆基架设计（Memory Substrate）
 
-> 版本：v2.0 终版（替代 v1 讨论稿）｜ 日期：2026-08-25 ｜ 状态：**已定型，待实施**
+> 版本：v2.1 终版（v2.0 A+B 融合定型；v2.1 治理层改为独立 cordis 插件 @silksec/sec-memcore，可选注入、fail-open）｜ 日期：2026-08-25 ｜ 状态：**已定型，待实施**
 > 决策记录：候选方案 A（元数据标签制）+ B（分层记忆制）融合，**不采用 C 过渡方案**；
-> 用户三要求：① 晋升/遗忘/分类全部代码硬实施强监管；② 容错托底——无周复盘系统也健康运转；
-> ③ 保留弹性——底线之上写入方自主思考，思考留痕即可采纳。不怕动数据、不怕动代码。
+> 用户四要求：① 晋升/遗忘/分类全部代码硬实施强监管；② 容错托底——无周复盘系统也健康运转；
+> ③ 保留弹性——底线之上写入方自主思考，思考留痕即可采纳；④ **插件化——治理层缺席时系统正常运转（fail-open 全量可读），只是没有记忆治理效果**。不怕动数据、不怕动代码。
 
 ---
 
@@ -24,20 +24,50 @@
 
 ---
 
-## 2. 架构总览：一个生命周期引擎，所有记忆面共用
+## 2. 架构总览：独立治理插件 + 可选注入（fail-open）
 
-新建 **`dsh-plugin-sec-suite.lifecycle.js`**（独立模块），提供四个统一原语。状态机、校验、过滤、清扫**只写一份**；blackboard / facts / exp_cards 及未来任何新记忆表，只要带统一列组并注册进引擎，即自动获得全部治理能力——不冗余的关键。
+新建独立 cordis 插件 **`@silksec/sec-memcore`**，`provide('secMemoryLifecycle')` 暴露四个统一原语；blackboard / facts / exp_cards 所在存储插件通过 `ctx.inject(['secMemoryLifecycle'], cb)` **可选注入**消费（沿用 sec-suite.js 对 connection/workspaceRegistry 的成熟模式）。**依赖关系反转**：存储插件是主体，治理插件是旁路——存储插件写读时问一句"治理服务在吗"，在则校验/过滤，不在则直透传；存储插件自身的表结构、工具定义、调用链一概不动，统一列组（含迁移）的所有权归治理插件。
 
 ```
-┌─────────────────────────────────────────────────────┐
-│ lifecycle.js（唯一治理引擎）                          │
-│  validateWrite()     写入校验（底线硬约束 R1-R7）      │
-│  visibilityFilter()  读取过滤（读者角色×状态×scope）   │
-│  transition()        状态机（唯一状态转换入口）         │
-│  sweep()             每日清扫（降级/归档/硬删/自动晋升） │
-└────────┬──────────────┬──────────────┬──────────────┘
-    blackboard        facts        exp_cards      （未来新表）
+┌────────────────────────────────────────────┐
+│ @silksec/sec-memcore（治理插件，可选加载）     │
+│  provide('secMemoryLifecycle'):             │
+│    validateWrite()     写入校验（R1-R7）      │
+│    visibilityFilter()  读取过滤（角色×状态×scope）│
+│    transition()        状态机（唯一转换入口）   │
+│    sweep()             每日清扫（宿主面单例）   │
+│  + AGENTS.md 生成器 + schema 自迁移           │
+└──────────────▲─────────────────────────────┘
+               │ ctx.inject 可选注入，缺席即透传
+┌──────────────┴─────────────────────────────┐
+│ sec-suite / asset-graph / experience        │
+│ （存储插件，不感知也不依赖治理是否存在）        │
+└────────────────────────────────────────────┘
 ```
+
+### 2.0 未加载插件时的行为（fail-open，正常运转）
+
+治理层绝不成为业务单点——宁可"失去治理"也不能"治理插件崩了 agent 干不了活"：
+
+| 能力 | 插件加载 | 插件未加载 |
+|---|---|---|
+| 写入 | R1-R7 硬校验 | 全部放行 |
+| 读取 | 按角色×状态×scope 过滤 | 全量可见（=退回现状行为） |
+| 状态机/晋升/降级 | 自动运转 | 不运转，数据静置无损失 |
+| sweeper/归档/硬删 | 每日执行 | 不执行（只是不清理，不丢数据） |
+| AGENTS.md 受管区块 | 每日重写 | 停止更新（标记外人工内容不受影响） |
+| 业务功能（扫描/挖掘/复盘） | 正常 | **完全正常** |
+
+防"悄悄失去治理"的两项配套：
+1. **缺席告警**：存储插件 inject 超时未获得服务 → stderr + 黑板 `note:dsh:memcore-offline` + 看板横幅"记忆治理未加载"；
+2. **信息不丢**：列已迁移时，调用方传的 intent 字段照样落库，插件恢复后历史数据可追溯分类。
+
+### 2.0.1 插件边界事宜
+
+- **schema 自迁移**：memcore 在 `apply()` 时对注册表幂等 `ALTER TABLE`（统一列组 + archive 表），存储插件永不碰这些列；
+- **sweeper 单例**：沿用 `config.sidecars !== false` 守卫只在 web 宿主面跑（P11 已验证的模式）；
+- **启停**：cordis profile 配置（patch.yml 一行摘除），不动代码；
+- **存储侧唯一侵入**：几处分支，远优于分叉两套代码。
 
 ### 2.1 统一列组（每张记忆表）
 
@@ -171,9 +201,9 @@ sweeper 每日重写 `AGENTS.md` 受管区块（`<!-- memcore:begin/end -->` 标
 
 | 批次 | 内容 | 需重启 |
 |---|---|---|
-| 一 | **lifecycle.js 引擎**：validateWrite / visibilityFilter / transition / sweep；三表统一列组迁移 + archive 表；存量规则迁移 | ✅ |
-| 二 | 三插件接入引擎（blackboard/facts/exp 读写全走原语）；exp_store 候选制；exp_feedback/exp_update/exp_deprecate；合并阈值 0.95；AGENTS.md 生成器；objective lint | ✅（与批次一合并为一次重启） |
-| 三 | 看板知识 tab（列表/评分/编辑/弃置/新增/恢复，走 /silksec-dashboard RPC）；sec-knowledge 技能；5 个执行型 persona 补开局检索一句 | ✅ |
+| 一 | **@silksec/sec-memcore 插件**：四原语 + schema 自迁移（统一列组 + archive 表）+ sweeper + AGENTS.md 生成器；存量规则迁移随 apply 执行 | ✅ |
+| 二 | 三存储插件接入可选注入（写读走原语、缺席透传 + 缺席告警）；exp_store 候选制；exp_feedback/exp_update/exp_deprecate；合并阈值 0.95；objective lint | ✅（与批次一合并为一次重启） |
+| 三 | 看板知识 tab（列表/评分/编辑/弃置/新增/恢复，走 /silksec-dashboard RPC；含 memcore 缺席横幅）；sec-knowledge 技能；5 个执行型 persona 补开局检索一句 | ✅ |
 | 四 | 每周 review interval 任务（三闸门评审加速 + 碎片合并 + 质量审计）；报告路径统一；NAS vault 同步 + 卡片 md 导出桥 + kb_import 回流 | ❌ |
 
 ---
