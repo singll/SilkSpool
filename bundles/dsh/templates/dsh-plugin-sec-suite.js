@@ -1223,6 +1223,27 @@ async function reconcileWorkspaceSessions() {
 // worker.log 尾部噪声（headless 进程 stderr 杂讯）不进入任务摘要
 const WORKER_NOISE_RE = /ExperimentalWarning|trace-warnings|EADDRINUSE|xray webhook 启动失败|onnxruntime|pthread_setaffinity/
 
+// 定时任务角色注入：按 phase 读对应 preset 的 persona（单一事实源=preset 文件，与 webui 自定义 agent 同步演化）。
+// headless CLI 无 --agent 选项，调度 worker 原只有通用 coding-agent 人格——此处补齐项目层等价实现。
+const PHASE_PRESET = { recon: 'recon', vuln: 'vuln-hunt', 'biz-logic': 'biz-logic', 'code-audit': 'code-audit', intranet: 'intranet', review: 'review' }
+const personaCache = new Map()
+function personaOfPhase(phase, cwd) {
+  const preset = PHASE_PRESET[String(phase || '')]
+  if (!preset) return ''
+  if (personaCache.has(preset)) return personaCache.get(preset)
+  let text = ''
+  try {
+    const yml = fs.readFileSync(path.join(DATA_DIR, '.agent-presets', preset, 'agent.cordis.yml'), 'utf8')
+    const m = yml.match(/text: >-\n((?: {6}.*\n?)+)/)
+    if (m) {
+      text = m[1].split('\n').map((l) => l.replace(/^ {6}/, '')).join('\n').trim()
+        .replace(/\{\{model\}\}/g, '当前模型').replace(/\{\{cwd\}\}/g, cwd || '工作目录')
+    }
+  } catch { /* 读取失败静默降级为无角色 */ }
+  personaCache.set(preset, text)
+  return text
+}
+
 async function schedulerTick() {
   let due
   try { due = assetDb.taskClaimDue(Date.now()) } catch (e) {
@@ -1233,8 +1254,9 @@ async function schedulerTick() {
   // 每个 callback 全段 try/catch + stderr 落日志：任何单任务异常可见可查，不再静默吞掉。
   await Promise.allSettled(due.map(async (task) => {
     try {
-      const prompt = `[定时任务 #${task.id}${task.phase ? ' / ' + task.phase : ''}] ${task.objective}`
       const cwd = workspacePathOfProgram(task.program_id)
+      const role = personaOfPhase(task.phase, cwd)
+      const prompt = `${role ? '[角色人格] ' + role + '\n\n' : ''}[定时任务 #${task.id}${task.phase ? ' / ' + task.phase : ''}] ${task.objective}`
       audit({ ts: Date.now(), run_id: '-', tool: 'scheduler', decision: 'executed', detail: { task_id: task.id, program_id: task.program_id } })
       const r = await runWorker({ task: prompt, cwd, timeoutSec: SCHEDULER_TASK_TIMEOUT_SEC, enforceLimit: true })
       if (r.busy) {
