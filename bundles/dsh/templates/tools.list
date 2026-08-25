@@ -49,3 +49,6 @@ codeql|bin|github/codeql-cli-binaries|codeql version
 sqlmap|apt|sqlmap|sqlmap --version
 wafw00f|pip|wafw00f:wafw00f|wafw00f --version
 impacket|pip|impacket:psexec.py,wmiexec.py,secretsdump.py,smbexec.py|psexec.py -h
+arjun|pip|arjun:arjun|arjun -h
+# graphql-cop 无 pip 包（PyPI 为占位）：手动 git clone dolevf/graphql-cop 到 /opt/graphql-cop
+# + 独立 venv（其 urllib3 钉死 1.26 与 semgrep 冲突）+ /usr/local/bin/graphql-cop wrapper

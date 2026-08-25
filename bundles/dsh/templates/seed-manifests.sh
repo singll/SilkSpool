@@ -232,6 +232,38 @@ summarize: head
 store: asset-graph
 EOF
 
+seed arjun <<'EOF'
+name: arjun
+binary: /usr/local/bin/arjun
+stage: vuln
+risk: active
+timeout: 600
+target_param: target
+requires: [urls]
+produces: [params]
+args_template: "-u {{target}} --stable -q -oT {{outdir}}/arjun.txt"
+env_proxy: true
+parser: lines
+summarize: head
+store: asset-graph
+EOF
+
+seed graphql-cop <<'EOF'
+name: graphql-cop
+binary: /usr/local/bin/graphql-cop
+stage: vuln
+risk: active
+timeout: 300
+target_param: target
+requires: [urls]
+produces: [graphql_findings]
+args_template: "-t {{target}} -o json"
+env_proxy: true
+parser: lines
+summarize: head
+store: asset-graph
+EOF
+
 seed dalfox <<'EOF'
 name: dalfox
 binary: /usr/local/bin/dalfox
