@@ -6,3 +6,4 @@
         sweeper: true
         agentsMd: true
         intervalHours: 6
+        vaultExport: true

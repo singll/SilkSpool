@@ -1195,6 +1195,7 @@ function workerStatus(args) {
 // ==============================================================================
 
 const SCHEDULER_TICK_MS = 60000
+let lastVaultSyncDay = ''
 // 定时任务 worker 执行上限：原 1800s 与任务体量不匹配导致每晚超时被杀，放宽到 runWorker 上限 3600s
 const SCHEDULER_TASK_TIMEOUT_SEC = 3600
 
@@ -1275,6 +1276,14 @@ async function schedulerTick() {
       try { assetDb.taskFinishScheduledRun({ id: task.id, ok: false, run_id: '', note: `调度执行异常: ${e?.message ?? String(e)}`.slice(0, 300) }) } catch { /* ignore */ }
     }
   }))
+  // vault 回流（Bellkeeper 融合方向②）：每日 05 时后首个 tick 拉取安全域卡 → kb_docs（防循环/去重在 kbVaultSync 内）
+  const today = new Date().toISOString().slice(0, 10)
+  if (lastVaultSyncDay !== today && new Date().getHours() >= 5) {
+    lastVaultSyncDay = today
+    exp.kbVaultSync().then((r) => {
+      process.stderr.write(`[sec-suite] vault 回流: ${JSON.stringify(r)}\n`)
+    }).catch((e) => process.stderr.write(`[sec-suite] vault 回流异常: ${e?.message}\n`))
+  }
   // 顺带做工作区会话归组（轻量、幂等）——已移至 tick 层每 10 周期执行，此处不再重复
 }
 
@@ -1642,7 +1651,7 @@ async function handleDashboardRpc(endpoint, payload) {
       return exp.memStatus()
     case 'expCards': {
       const memCols = exp.memStatus().loaded
-        ? ', status, score, uses, adopted, pos_fb, neg_fb, justification, mem_class' : ''
+        ? ', status, score, uses, adopted, pos_fb, neg_fb, justification, mem_class, exportable' : ''
       const rows = assetDb.getDb().prepare(
         `SELECT id, scenario, takeaway, source, confidence, last_validated_at, created_at${memCols} FROM exp_cards ORDER BY ${memCols ? 'score DESC, ' : ''}last_validated_at DESC LIMIT 200`).all()
       return { rows: rows.map((r) => ({ ...r })) }
@@ -1666,6 +1675,14 @@ async function handleDashboardRpc(endpoint, payload) {
       const r = exp.expUpdate({ id: Number(p.id), takeaway: p.takeaway, justification: String(p.justification || '') })
       audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expUpdate', decision: 'executed', detail: { id: Number(p.id) } })
       return r
+    }
+    case 'expExportable': {
+      const id = Number(p.id)
+      const on = p.exportable ? 1 : 0
+      if (!id) throw new Error('expExportable 需要 id')
+      assetDb.getDb().prepare('UPDATE exp_cards SET exportable = ? WHERE id = ?').run(on, id)
+      audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expExportable', decision: 'executed', detail: { id, exportable: on } })
+      return { ok: true, id, exportable: on }
     }
     case 'playbooks': {
       const rows = assetDb.getDb().prepare('SELECT * FROM playbooks ORDER BY runs DESC LIMIT 100').all()

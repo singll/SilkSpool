@@ -371,6 +371,7 @@ async function kbImport(a) {
     if (!fs.existsSync(String(a.file))) return { ok: false, error: `文件不存在: ${a.file}` }
     body = fs.readFileSync(String(a.file), 'utf8')
     title = a.title || path.basename(String(a.file)).replace(/\.[^.]+$/, '')
+    sourceUrl = a.source_url ? String(a.source_url) : null
   } else {
     return { ok: false, error: 'file 或 url 必给其一' }
   }
@@ -461,8 +462,38 @@ async function kbSearch(a) {
   return { ok: true, total: visible.length, source: 'external', items: visible.map(({ _doc, ...rest }) => rest) }
 }
 
-// -------------------- Playbook --------------------
+// -------------------- vault 回流（Bellkeeper 融合方向②：vault → sec） --------------------
+// 每日从 keeper 拉取 Bellkeeper 安全域原子卡 → 新卡经 kbImport 入库（external 低置信 + taintguard）。
+// 防循环铁律：frontmatter 含 source_system: silksecagent 的卡禁止回流（导出物再导回会污染评分）。
+const VAULT_IMPORT_CACHE = path.join(DATA_DIR, 'vault-import')
+const VAULT_IMPORT_REMOTE = process.env.SEC_VAULT_IMPORT_REMOTE || 'silkspool@192.168.7.230:/mnt/NAS/data/knowledge/vault/安全/'
 
+export async function kbVaultSync() {
+  const { spawnSync } = await import('node:child_process')
+  fs.mkdirSync(VAULT_IMPORT_CACHE, { recursive: true })
+  const r = spawnSync('rsync', ['-a', '--timeout=60', VAULT_IMPORT_REMOTE, VAULT_IMPORT_CACHE + '/'], { timeout: 120000, encoding: 'utf8' })
+  if (r.status !== 0) return { ok: false, error: `rsync 拉取失败: ${String(r.stderr || r.error || '').slice(-200)}` }
+  const d = db()
+  const stats = { imported: 0, skipped_loop: 0, skipped_existing: 0, errors: 0 }
+  for (const f of fs.readdirSync(VAULT_IMPORT_CACHE)) {
+    if (!f.endsWith('.md')) continue
+    const full = path.join(VAULT_IMPORT_CACHE, f)
+    let head = ''
+    try { head = fs.readFileSync(full, 'utf8').slice(0, 2000) } catch { stats.errors++; continue }
+    if (/^source_system:\s*silksecagent/m.test(head)) { stats.skipped_loop++; continue }
+    const srcUrl = 'vault://安全/' + f
+    if (d.prepare('SELECT id FROM kb_docs WHERE source_url = ?').get(srcUrl)) { stats.skipped_existing++; continue }
+    const res = await kbImport({
+      file: full, title: f.replace(/\.md$/, ''), source_url: srcUrl,
+      justification: 'vault 回流：Bellkeeper 安全域原子卡，外部公开知识提炼，供 sec 侧方法论借鉴',
+    })
+    if (res.ok) stats.imported++
+    else { stats.errors++; process.stderr.write(`[kb-vault-sync] ${f} 导入失败: ${res.error}\n`) }
+  }
+  return { ok: true, ...stats }
+}
+
+// -------------------- Playbook --------------------
 function pbSave(a) {
   if (!a.name || !Array.isArray(a.chain) || a.chain.length === 0) return { ok: false, error: 'name 和非空 chain 必填' }
   const lc = LC()

@@ -1229,6 +1229,9 @@ window.__ModuleLoader__.load({
         if (!reason) return
         act(function () { return callRpc('expDeprecate', { id: id, reason: reason }) })
       }
+      function onExportable(id, on) {
+        act(function () { return callRpc('expExportable', { id: id, exportable: on }) })
+      }
       var memChips = null
       if (mem && mem.loaded && mem.tables) {
         memChips = el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', margin: '8px 0' } },
@@ -1262,6 +1265,7 @@ window.__ModuleLoader__.load({
                       el('button', { type: 'button', className: 'silksec-btn', disabled: props.busy, title: '有用', onClick: function () { onFeedback(c.id, 'useful') } }, '👍'),
                       el('button', { type: 'button', className: 'silksec-btn', disabled: props.busy, title: '错误/过时', onClick: function () { onFeedback(c.id, 'wrong') } }, '👎'),
                       c.status !== 'active' ? el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: props.busy, onClick: function () { onPromote(c.id) } }, '晋升') : null,
+                      c.exportable !== undefined ? el('button', { type: 'button', className: 'silksec-btn' + (c.exportable ? ' silksec-btn-confirm' : ''), disabled: props.busy, title: '导出到 Bellkeeper vault/安全经验（每日 sweeper 推送；scope 脱敏硬门）', onClick: function () { onExportable(c.id, c.exportable ? 0 : 1) } }, c.exportable ? '已导出' : '导出') : null,
                       el('button', { type: 'button', className: 'silksec-btn', disabled: props.busy, onClick: function () { onEdit(c.id, c.takeaway) } }, '编辑'),
                       el('button', { type: 'button', className: 'silksec-btn silksec-btn-danger', disabled: props.busy, onClick: function () { onDeprecate(c.id) } }, '弃置'))))
               }))),

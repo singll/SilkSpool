@@ -13,6 +13,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { spawn } from 'node:child_process'
 
 export const name = 'sec-memcore'
 export const inject = []
@@ -79,8 +80,8 @@ async function loadDb() {
 const LIFECYCLE_COLS = {
   blackboard: [['mem_class', 'TEXT'], ['status', "TEXT DEFAULT 'active'"], ['status_at', 'INTEGER'], ['scope', 'TEXT'], ['expires_at', 'INTEGER'], ['justification', 'TEXT']],
   facts: [['mem_class', 'TEXT'], ['status', "TEXT DEFAULT 'active'"], ['status_at', 'INTEGER'], ['scope', 'TEXT'], ['expires_at', 'INTEGER'], ['revalidate_by', 'INTEGER'], ['justification', 'TEXT'], ['last_validated_at', 'INTEGER']],
-  exp_cards: [['mem_class', 'TEXT'], ['status', "TEXT DEFAULT 'candidate'"], ['status_at', 'INTEGER'], ['scope', 'TEXT'], ['justification', 'TEXT'], ['uses', 'INTEGER DEFAULT 0'], ['adopted', 'INTEGER DEFAULT 0'], ['pos_fb', 'INTEGER DEFAULT 0'], ['neg_fb', 'INTEGER DEFAULT 0'], ['score', 'REAL DEFAULT 0'], ['last_used_at', 'INTEGER']],
-  playbooks: [['mem_class', 'TEXT'], ['status', "TEXT DEFAULT 'active'"], ['status_at', 'INTEGER'], ['scope', 'TEXT'], ['justification', 'TEXT']],
+  exp_cards: [['mem_class', 'TEXT'], ['status', "TEXT DEFAULT 'candidate'"], ['status_at', 'INTEGER'], ['scope', 'TEXT'], ['justification', 'TEXT'], ['uses', 'INTEGER DEFAULT 0'], ['adopted', 'INTEGER DEFAULT 0'], ['pos_fb', 'INTEGER DEFAULT 0'], ['neg_fb', 'INTEGER DEFAULT 0'], ['score', 'REAL DEFAULT 0'], ['last_used_at', 'INTEGER'], ['exportable', 'INTEGER DEFAULT 0']],
+  playbooks: [['mem_class', 'TEXT'], ['status', "TEXT DEFAULT 'active'"], ['status_at', 'INTEGER'], ['scope', 'TEXT'], ['justification', 'TEXT'], ['exportable', 'INTEGER DEFAULT 0']],
   kb_docs: [['mem_class', 'TEXT'], ['status', "TEXT DEFAULT 'active'"], ['status_at', 'INTEGER'], ['scope', 'TEXT'], ['revalidate_by', 'INTEGER'], ['justification', 'TEXT'], ['last_validated_at', 'INTEGER'], ['uses', 'INTEGER DEFAULT 0'], ['last_used_at', 'INTEGER']],
 }
 
@@ -314,8 +315,160 @@ function recordSignal(table, id, signal, meta = {}) {
   return { ok: false, error: 'unreachable' }
 }
 
+// -------------------- vault 导出桥（Bellkeeper 融合方向①：sec → vault） --------------------
+// 设计：Bellkeeper×SilkSecAgent 融合评估 §5.2——只导出 permanent+active+exportable 的方法论卡；
+// exportable 默认 0（fail-closed）；scope 授权域脱敏硬门（与 scope-guard 同级）；
+// 幂等覆盖 + tombstone 同步；推送走 keeper rsync（csai 为非特权 LXC 无法挂 NFS）。
+const EXPORT_STAGING = path.join(DATA_DIR, 'vault-export')
+const EXPORT_REMOTE = process.env.SEC_VAULT_REMOTE || 'silkspool@192.168.7.230:/mnt/NAS/data/knowledge/vault/安全经验/'
+const SCOPE_FILE = path.join(DATA_DIR, 'scope.yml')
+
+let scopeDomainsCache = null
+function scopeDomains() {
+  if (scopeDomainsCache) return scopeDomainsCache
+  const domains = new Set()
+  try {
+    const text = fs.readFileSync(SCOPE_FILE, 'utf8')
+    for (const m of text.match(/[a-z0-9][a-z0-9.-]*\.[a-z]{2,}/gi) || []) {
+      const d = m.toLowerCase().replace(/^\*\./, '')
+      // 过滤明显非域名的匹配（版本号/文件扩展等）：至少含一个点且不以数字结尾段
+      if (d.includes('.') && !/^\d+\.\d+/.test(d)) domains.add(d)
+    }
+  } catch { /* scope 缺失则不脱敏（导出仍进行，由 exportable 门兜底） */ }
+  scopeDomainsCache = domains
+  return domains
+}
+
+// 脱敏硬门：文本命中任一授权域 → 拒绝导出（fail-closed，日志可查）
+function hitsScopeTarget(text) {
+  const lower = String(text).toLowerCase()
+  for (const d of scopeDomains()) if (d.length >= 5 && lower.includes(d)) return d
+  return null
+}
+
+function slugify(text, max = 60) {
+  return String(text).replace(/[\/\\:*?"<>|，。；、\s]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, max) || 'untitled'
+}
+
+function cardToMarkdown(c) {
+  const chain = JSON.parse(c.chain || '[]')
+  const evidence = JSON.parse(c.evidence || '[]')
+  return `---
+title: ${c.scenario}
+type: pkb_card
+atomic_concept: ${c.scenario}
+aliases: []
+card_type: method
+source_system: silksecagent
+sec_card_id: exp_${c.id}
+mem_class: permanent
+mem_status: active
+mem_score: ${c.score ?? 0}
+uses: ${c.uses ?? 0}
+adopted: ${c.adopted ?? 0}
+source: ${c.source}
+confidence: ${c.confidence}
+domains: [安全]
+tags: [silksec, 实战经验]
+export_date: ${new Date().toISOString().slice(0, 10)}
+---
+
+## 定义与本质
+${c.takeaway}
+
+## 关键细节（调用链）
+${chain.length ? chain.map((s) => `- ${s}`).join('\n') : '- （见 evidence 回溯）'}
+
+## 适用场景与边界
+- 适用：${c.scenario} 画像的同类授权目标
+- 证据：${evidence.length} 条 run_id 留存于 SilkSecAgent 内部（目标标识按合规要求不导出）
+
+## 与其他知识的关系
+- 本卡由 SilkSecAgent memcore 自动导出（source_system: silksecagent），生命周期主权在 sec 侧；vault 侧手改将在下次导出被覆盖。
+`
+}
+
+function playbookToMarkdown(pb) {
+  const chain = JSON.parse(pb.chain || '[]')
+  const rate = pb.runs ? Math.round((pb.successes / pb.runs) * 100) / 100 : 0
+  return `---
+title: 打法链：${pb.name}
+type: pkb_card
+atomic_concept: ${pb.name}
+aliases: []
+card_type: pattern
+source_system: silksecagent
+sec_card_id: pb_${pb.name}
+mem_class: permanent
+mem_status: active
+runs: ${pb.runs}
+success_rate: ${rate}
+domains: [安全]
+tags: [silksec, 打法链]
+export_date: ${new Date().toISOString().slice(0, 10)}
+---
+
+## 定义与本质
+${pb.scenario || pb.name} 场景下已验证的调用链（运行 ${pb.runs} 次，成功率 ${rate}）。
+
+## 关键细节（调用链）
+${chain.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+
+## 与其他知识的关系
+- 本卡由 SilkSecAgent memcore 自动导出（source_system: silksecagent），生命周期主权在 sec 侧。
+`
+}
+
+function rsyncPush() {
+  return new Promise((resolve) => {
+    const child = spawn('rsync', ['-rlt', '--delete', '--no-perms', '--no-owner', '--no-group', '--timeout=60',
+      EXPORT_STAGING + '/', EXPORT_REMOTE], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000 })
+    let err = ''
+    child.stderr.on('data', (d) => { err += d })
+    child.on('error', (e) => resolve({ ok: false, error: String(e.message) }))
+    child.on('close', (code) => resolve({ ok: code === 0, error: code === 0 ? null : err.slice(-300) }))
+  })
+}
+
+async function exportVault() {
+  const d = getDb()
+  const cards = d.prepare("SELECT * FROM exp_cards WHERE mem_class='permanent' AND status='active' AND exportable=1").all()
+  const pbs = d.prepare("SELECT * FROM playbooks WHERE status='active' AND exportable=1").all()
+  const stats = { exported: 0, blocked: 0, pushed: false }
+  fs.mkdirSync(EXPORT_STAGING, { recursive: true })
+  const keep = new Set()
+  for (const c of cards) {
+    const md = cardToMarkdown(c)
+    const hit = hitsScopeTarget(`${c.scenario} ${c.takeaway} ${c.chain || ''}`)
+    if (hit) { stats.blocked++; log(`vault-export: 卡 #${c.id} 命中授权域 ${hit}，fail-closed 拒绝导出`) ; continue }
+    const file = slugify(c.scenario) + '.md'
+    keep.add(file)
+    fs.writeFileSync(path.join(EXPORT_STAGING, file), md)
+    stats.exported++
+  }
+  for (const pb of pbs) {
+    const hit = hitsScopeTarget(`${pb.name} ${pb.scenario || ''} ${pb.chain || ''}`)
+    if (hit) { stats.blocked++; log(`vault-export: playbook ${pb.name} 命中授权域 ${hit}，拒绝导出`); continue }
+    const file = 'pb-' + slugify(pb.name) + '.md'
+    keep.add(file)
+    fs.writeFileSync(path.join(EXPORT_STAGING, file), playbookToMarkdown(pb))
+    stats.exported++
+  }
+  // tombstone：staging 中不在本次集合的文件删除（弃置/降级/取消 exportable 的卡从 vault 移除）
+  for (const f of fs.readdirSync(EXPORT_STAGING)) {
+    if (f.endsWith('.md') && !keep.has(f)) fs.unlinkSync(path.join(EXPORT_STAGING, f))
+  }
+  if (stats.exported > 0 || keep.size === 0) {
+    const r = await rsyncPush()
+    stats.pushed = r.ok
+    if (!r.ok) log(`vault-export: rsync 推送失败（下轮重试）: ${r.error}`)
+  }
+  if (stats.exported || stats.blocked) log(`vault-export: 导出 ${stats.exported}，脱敏拦截 ${stats.blocked}，推送=${stats.pushed}`)
+  return stats
+}
+
 // -------------------- 原语 5：sweep --------------------
-function sweep({ dryRun = false, agentsMd = true } = {}) {
+async function sweep({ dryRun = false, agentsMd = true } = {}) {
   const d = getDb()
   const now = Date.now()
   const stats = { archived: 0, cooling: 0, promoted: 0, purged: 0, lintHits: 0 }
@@ -376,6 +529,9 @@ function sweep({ dryRun = false, agentsMd = true } = {}) {
     }
   }
   if (!dryRun && agentsMd) rewriteAgentsMd(d)
+  if (!dryRun && applyConfig.vaultExport !== false) {
+    try { await exportVault() } catch (e) { log(`vault-export 异常: ${e?.message}`) }
+  }
   log(`sweep 完成: ${JSON.stringify(stats)}${dryRun ? ' (dry-run)' : ''}`)
   return stats
 }
@@ -428,7 +584,9 @@ function status() {
 }
 
 // -------------------- 插件入口 --------------------
+let applyConfig = {}
 export async function apply(ctx, config = {}) {
+  applyConfig = config
   try {
     await loadDb()
   } catch (e) {
@@ -462,9 +620,9 @@ export async function apply(ctx, config = {}) {
   const sweeperOn = config.sweeper !== false && isWeb
   if (sweeperOn) {
     const intervalMs = Math.max(1, Number(config.intervalHours || 6)) * 3600000
-    const timer = setInterval(() => { try { sweep({ agentsMd: config.agentsMd !== false }) } catch (e) { log(`sweep 异常: ${e?.message}`) } }, intervalMs)
+    const timer = setInterval(() => { sweep({ agentsMd: config.agentsMd !== false }).catch((e) => log(`sweep 异常: ${e?.message}`)) }, intervalMs)
     timer.unref?.()
-    setTimeout(() => { try { sweep({ agentsMd: config.agentsMd !== false }) } catch (e) { log(`首跑 sweep 异常: ${e?.message}`) } }, 90000).unref?.()
+    setTimeout(() => { sweep({ agentsMd: config.agentsMd !== false }).catch((e) => log(`首跑 sweep 异常: ${e?.message}`)) }, 90000).unref?.()
     ctx.effect?.(() => () => clearInterval(timer))
     log(`sweeper 已启动（间隔 ${intervalMs / 3600000}h）`)
   } else {

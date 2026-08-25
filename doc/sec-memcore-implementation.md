@@ -13,7 +13,14 @@
 > - ✅ B3：看板知识 tab（卡片评分/晋升/编辑/弃置 + playbooks）+ 报告只读 tab + memcore 缺席横幅；
 >   sec-knowledge 技能已种；5 个执行型 persona 已补开局检索句
 > - ✅ B4（部分）：每周 review interval 任务已建（id=24，每周日 05:00）
-> - ⏳ B4（剩余）：NAS dataset + 卡片 md 导出桥 + vault 同步（待与需求3方案一并落地）
+> - ✅ B4（剩余）：**Bellkeeper 融合双向桥已上线**（2026-08-25，按融合评估报告 F1/F3 落地）：
+>   - 方向① sec→vault：sweeper 每日导出 permanent+active+**exportable=1** 的 exp_cards/playbooks
+>     为 pkb 兼容 frontmatter 的 md → rsync 推送 keeper:`vault/安全经验/`（幂等覆盖+tombstone；
+>     **exportable 默认 0 fail-closed**；scope 授权域脱敏硬门命中即拒导；看板知识 tab 有导出开关）
+>   - 方向② vault→sec：每日 05 时后 rsync 拉取 `vault/安全/` → 新卡经 kbImport 入 kb_docs
+>     （taintguard+external 低置信；**source_system: silksecagent 禁回流防循环**；已导入 224 张）
+>   - 拓扑说明：csai/keeper 均为非特权 LXC 无法挂 NFS，桥走 SSH rsync（keeper 真实 IP .230，
+>     .167 为转发地址）；Bellkeeper scan_dirs 递归覆盖 vault/ 故 安全经验/ 零开发入 Meili/Obsidian
 >
 > **实施期设计修正**：① facts 的 note 类负知识归为 ephemeral 14 天（而非 timeline）——neg_check
 > 依赖其可见性，timeline 会弄瞎负知识拦截；② R6 justification 硬要求仅语义层（exp/pb/kb），
