@@ -245,8 +245,12 @@ async function expSearch(a) {
 
   const d = db()
   const lc = LC()
+  // FTS 外部内容索引可能有残留（归档卡 rowid 仍在 exp_fts）：SELECT 落空必须真过滤（防 Invalid time value）
   let rows = [...hits.entries()]
-    .map(([id, score]) => ({ ...d.prepare('SELECT * FROM exp_cards WHERE id = ?').get(id), _score: score }))
+    .map(([id, score]) => {
+      const c = d.prepare('SELECT * FROM exp_cards WHERE id = ?').get(id)
+      return c ? { ...c, _score: score } : null
+    })
     .filter(Boolean)
   // memcore 可见性：archived 不返回；cooling/candidate 标记并降权
   if (lc) rows = lc.visibilityFilter('task', 'exp_cards', rows)
@@ -260,7 +264,7 @@ async function expSearch(a) {
         id: c.id, scenario: c.scenario, takeaway: c.takeaway,
         chain: JSON.parse(c.chain || '[]'), evidence: JSON.parse(c.evidence || '[]'),
         source: c.source, confidence: c.confidence,
-        last_validated_at: new Date(c.last_validated_at).toISOString().slice(0, 10),
+        last_validated_at: c.last_validated_at ? new Date(c.last_validated_at).toISOString().slice(0, 10) : null,
         _rank: rank,
       }
       if (lc) { item.status = c.status || 'active'; item.score = c.score || 0; item.uses = c.uses || 0 }

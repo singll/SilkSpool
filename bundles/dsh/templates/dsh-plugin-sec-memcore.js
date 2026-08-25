@@ -220,6 +220,16 @@ function transition(table, id, to, reason, getDbFn, actor = 'engine') {
     d.prepare(`INSERT INTO ${table}_archive (${cols.join(', ')}, archived_at, archive_reason) VALUES (${cols.map(() => '?').join(', ')}, ?, ?)`)
       .run(...cols.map((c) => row[c]), now, String(reason || ''))
     deleteRow(d, table, id)
+    // 外部内容 FTS/向量索引不随主表删除自动清理：归档时必须除残留，否则检索命中空行（exp_search Invalid time value 事故根因）
+    try {
+      if (table === 'exp_cards') {
+        d.prepare('DELETE FROM exp_fts WHERE rowid = ?').run(Number(id))
+        d.prepare('DELETE FROM exp_embeddings WHERE card_id = ?').run(Number(id))
+      } else if (table === 'kb_docs') {
+        d.prepare('DELETE FROM kb_fts WHERE rowid = ?').run(Number(id))
+        d.prepare('DELETE FROM kb_embeddings WHERE doc_id = ?').run(Number(id))
+      }
+    } catch { /* 索引清理失败不阻断归档 */ }
   } else {
     const row = selectRow(d, table, id)
     if (!row) return { ok: false, error: 'not found' }
@@ -440,6 +450,7 @@ export async function apply(ctx, config = {}) {
     transition: (table, id, to, reason, actor) => transition(table, id, to, reason, null, actor),
     recordSignal: (table, id, signal, meta) => recordSignal(table, id, signal, meta),
     sweep: (opts) => sweep(opts),
+    refreshAgentsMd: () => { try { rewriteAgentsMd(getDb()); return true } catch { return false } },
     status: () => status(),
     policies: POLICIES,
   }

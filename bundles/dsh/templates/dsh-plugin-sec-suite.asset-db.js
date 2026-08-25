@@ -909,6 +909,10 @@ export function bbSet(key, value, intent = null) {
         mem_class=excluded.mem_class, status='active', status_at=excluded.status_at,
         scope=excluded.scope, expires_at=excluded.expires_at, justification=excluded.justification`)
       .run(String(key), String(value), nowTs, v.mem_class, nowTs, v.scope, v.expires_at ?? null, v.justification)
+    // [env-issue] 键关系全员安全：即时刷新 AGENTS.md 受管区块（不等 6h sweep 周期）
+    if (String(key).startsWith('[env-issue]') && typeof lc.refreshAgentsMd === 'function') {
+      try { lc.refreshAgentsMd() } catch { /* 刷新失败不阻断写入 */ }
+    }
     return { ok: true, mem_class: v.mem_class, expires_at: v.expires_at ?? null }
   }
   getDb().prepare('INSERT INTO blackboard (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
