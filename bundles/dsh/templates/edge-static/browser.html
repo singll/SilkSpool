@@ -30,14 +30,15 @@
 
 <h2>说明</h2>
 <div class="card muted">
-  inspect 链接统一走域名 wss 通道（绕过 https 前端 + ws:// 混合内容拦截）。DevTools 打开后若空白：刷新一次；确认 basicauth 已登录。
+  DevTools 前端与 WebSocket 已全部同源化（本站反代前端资源）：任何入口都不会再有跨域鉴权/混合内容问题。
 </div>
 
 <script>
 const REV = '@782af9cb30a53f54487e5d2e44738645a8ec457c';
-const WS_HOST = 'browser.silksecagent.singll.net';
+// 前端与 WS 全部同源（本服务反代 appspot 前端资源）：basicauth 凭据随域走，WS 不再跨域 401
 function inspectUrl(id){
-  return 'https://chrome-devtools-frontend.appspot.com/serve_rev/' + REV + '/inspector.html?wss=' + WS_HOST + '/devtools/page/' + id;
+  const proto = location.protocol === 'https:' ? 'wss=' : 'ws=';
+  return location.origin + '/serve_rev/' + REV + '/inspector.html?' + proto + location.host + '/devtools/page/' + id;
 }
 async function load(){
   const r = await fetch('/json', {headers:{'Accept':'application/json'}});

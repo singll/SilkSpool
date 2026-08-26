@@ -18,6 +18,12 @@ http://:9223 {
         rewrite / /browser.html
         file_server
     }
+    # DevTools 前端自托管反代（同源：WS 鉴权随页面域走；顺带解决 appspot 可达性）
+    handle /serve_rev/* {
+        reverse_proxy https://chrome-devtools-frontend.appspot.com {
+            header_up Host chrome-devtools-frontend.appspot.com
+        }
+    }
     handle {
         reverse_proxy 127.0.0.1:9222 {
             header_up Host 192.168.7.107:9223
