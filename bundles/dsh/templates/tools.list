@@ -9,6 +9,7 @@
 # ==============================================================================
 
 # --- 资产收集（PD 全家桶）---
+# fofa_search：脚本通道（FOFA 被动测绘），不在本清单——由 seed-manifests.sh 安装并生成 manifest
 subfinder|go|github.com/projectdiscovery/subfinder/v2/cmd/subfinder|subfinder -version
 dnsx|go|github.com/projectdiscovery/dnsx/cmd/dnsx|dnsx -version
 naabu|go|github.com/projectdiscovery/naabu/v2/cmd/naabu|naabu -version

@@ -78,11 +78,28 @@ stage: recon
 risk: passive
 timeout: 300
 target_param: target
+sandbox: false
 requires: [subdomains]
 produces: [live_hosts, fingerprints]
 args_template: "-u {{target}} -json -silent -duc"
 env_proxy: true
 parser: jsonl
+summarize: head
+store: asset-graph
+EOF
+
+seed fofa_search <<'EOF'
+name: fofa_search
+binary: /usr/local/bin/fofa_search
+stage: recon
+risk: passive
+timeout: 120
+target_param: target
+requires: [domains]
+produces: [exposure_assets, cert_assets]
+args_template: "-d {{target}} --size 200"
+env_proxy: false
+parser: lines
 summarize: head
 store: asset-graph
 EOF
@@ -420,5 +437,15 @@ parser: lines
 summarize: head
 store: none
 EOF
+
+# ---------- fofa_search 脚本安装（幂等：缺失或内容不一致才更新） ----------
+SUDO=''
+if [ "$(id -u)" -ne 0 ]; then SUDO='sudo'; fi
+if [ -f "{{BASE_DIR}}/fofa_search.sh" ]; then
+    if ! cmp -s "{{BASE_DIR}}/fofa_search.sh" /usr/local/bin/fofa_search 2>/dev/null; then
+        $SUDO install -m 0755 "{{BASE_DIR}}/fofa_search.sh" /usr/local/bin/fofa_search
+        log "fofa_search 已安装/更新到 /usr/local/bin"
+    fi
+fi
 
 log "种子清单完成"
