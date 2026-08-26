@@ -42,6 +42,8 @@ templates:
   - proxy-scraper-checker.toml
   - silksec-proxy-rotator.service
   - silksec-proxy-refresh.service
+  # --- 共享浏览器常驻（CDP 9222 持久登录态，LAN 经 edge :9223 basicauth）---
+  - silksec-shared-browser.service
   # --- xray 被动扫描（流量总线 v1）---
   - silksec-xray.service
   # --- 代理池 dsh 原生插件（替代 MCP 模式）---

@@ -1,0 +1,20 @@
+[Unit]
+Description=SilkSecAgent 共享浏览器（CDP 9222 常驻，持久化登录态，人机共用）
+After=network-online.target silksecagent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=silkspool
+Environment=HOME=/home/silkspool
+Environment=SEC_FLOW_PROXY=http://127.0.0.1:7777
+Environment=PATH=/usr/local/node/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/silkspool/日常/browser
+ExecStart=/usr/local/node/bin/node /home/silkspool/日常/browser/shared-browser-host.mjs
+Restart=always
+RestartSec=5
+# profile 目录=登录态凭据，权限收紧
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
