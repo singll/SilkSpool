@@ -146,7 +146,9 @@ description: 记忆治理纪律——写记忆前三问、开局检索、用完�
 
 ## 规则先验层（data/rules/）
 
-命中技术栈（指纹/fp_add）后、上专项扫描前：查 `data/rules/<域>/<栈>.md` 是否存在（如 web/spring.md、web/nextjs.md、web/selfhosted-supabase.md、php/thinkphp.md），存在则读入作为该栈审计先验（入口点模式/特有攻击面/验证要点）。这层是**人工蒸馏的静态先验**，与 memcore 经验卡（实战后验）互补：先验给方向，后验给打法。复盘时发现某栈规则缺失或有新心得 → 在复盘报告里提议新增/修订规则文件（人工评审后落盘，agent 不自写规则层）。
+命中技术栈（指纹/fp_add）后、上专项扫描前：查 `data/rules/<域>/<栈>.md` 是否存在（如 web/spring.md、web/nextjs.md、web/selfhosted-supabase.md、php/thinkphp.md），存在则读入作为该栈审计先验（入口点模式/特有攻击面/验证要点）。
+
+**SRC 评级规则（rules/src/）**：recon 评分打标前读 `src/asset-scoring.md`；漏洞定级、写报告、提交判断前读 `src/severity-rating.md`——定级不膨胀、不确定往低报。这层是**人工蒸馏的静态先验**，与 memcore 经验卡（实战后验）互补：先验给方向，后验给打法。复盘时发现某栈规则缺失或有新心得 → 在复盘报告里提议新增/修订规则文件（人工评审后落盘，agent 不自写规则层）。
 
 ## 流程纪律
 
@@ -246,4 +248,64 @@ seed_rule web/spring.md <<'EOF'
 ## 验证要点
 - 403 是 WAF 还是 Spring Security？看响应头/错误体指纹，别误判
 - actuator 存在 ≠ 可用：逐个端点试，看 management.endpoints.web.exposure.include 配置痕迹
+EOF
+
+seed_rule src/asset-scoring.md <<'EOF'
+# SRC 资产可挖掘性评级（SABC 打分表）——源自 CyberStrikeAI 实战规则（资产测绘Agent）
+
+> 用途：recon 测绘后给资产打"可挖掘性"分，vuln 任务按 level S→A→B、score 降序取队列。
+> 原则：评分只排优先级，不构成授权——授权边界永远是 scope.yml；accept 政策名单只管"SRC 收不收"。
+
+## 打分表（满分 100）
+
+| 维度 | 权重 | 子项 |
+|---|---|---|
+| A 漏洞价值 | 40 | 数据敏感度 0-15 / 业务核心度 0-15 / 影响可放大性 0-10 |
+| B 出洞概率 | 45 | 可交互 0-12 / 功能攻击面 0-12 / 组件脆弱性 0-12 / 历史冷门度 0-9 |
+| C 时效加成 | 15 | 新鲜度 0-8 / 活动加成 0-7 |
+
+## 分层
+
+- **S ≥ 75**：优先挖穿（核心业务 + 高可交互 + 有攻击面）
+- **A 60-74**：深挖队列主力
+- **B 40-59**：常规覆盖
+- **C < 40**：仅登记，不主动深挖
+
+## 配套打标（与评分独立但联动）
+
+- **owner 归属**：confirmed（ICP 备案/证书 Organization/whois 强证据）/ suspect（仅 favicon/同 C 段弱证据→挂起不交下游）/ 第三方 SaaS/CDN → 排除。投资公司/已剥离业务/合作方存疑一律 suspect
+- **accept 收录政策**（查 facts category=policy 的 accept-list）：full（默认）/ intrusion-only（只报入侵类：通生产 SSRF/可逃逸 RCE/主站后台 getshell/进内网入口/可证核心 SQLi）/ none（暂停收录，可算分但不驱动挖掘）；拿不准从严 none 并注明待确认
+- **biz 业务分级**：核心（交易/资金/核心 PII）/ 一般 / 未知
+- **state 增量**：new / changed / stable / dead（与上轮对比）
+
+## 深挖队列规则
+
+`owner=confirmed 且 level∈{S,A,B} 且 accept≠none`，按 score 降序逐资产挖穿再走下一个；
+accept:intrusion-only 照常挖但仅入侵类才 finding_add，非入侵类留 intel 不提交。
+EOF
+
+seed_rule src/severity-rating.md <<'EOF'
+# SRC 对齐漏洞定级（压级约束）——源自 CyberStrikeAI 实战规则（深入挖掘Agent）
+
+> 铁律：**定级不膨胀、不确定往低报、判忽略的不进提交队列**。
+> 与 SRC 平台（美团/字节）审核口径看齐，让真正的高/中危能被认真对待。
+
+## 定级表
+
+| 级别 | 范围 |
+|---|---|
+| 严重/高危 | RCE、可证 SQLi、核心越权（资金/大量 PII）、账户接管、支付绕过、进内网 SSRF、主站 getshell |
+| 中危 | 一般越权、存储 XSS、有影响的逻辑缺陷、需条件 SSRF、受限上传 |
+| 低危 | 反射 XSS（需交互）、不含敏感数据的信息泄露、低影响 CSRF、CORS、点击劫持 |
+| 忽略 | 纯版本 banner、无敏感 swagger、Self-XSS、无 PoC 理论、目录列表、扫描误报——不进提交但留副产物（fact/intel 记录） |
+
+## 特别约束
+
+- **信息泄露默认低危甚至忽略**；仅泄露凭证/大量 PII/源码/内部核心配置才上探
+- 拿不准级别的往低报；证据不足 downgrade 到 tentative
+- accept:intrusion-only 资产：仅入侵类（通生产 SSRF/可逃逸 RCE/主站 getshell/进内网入口/可证核心 SQLi）才 finding_add，其余留 intel
+
+## 报告模板（CVSS4.0 一洞一报）
+
+标题 / 危害（讲业务影响，不堆技术词）/ CVSS4.0 向量与评分 / 复现步骤 / 打码证据 / 影响范围 / 修复建议 / **是否值得提交**（结论 + 理由）
 EOF

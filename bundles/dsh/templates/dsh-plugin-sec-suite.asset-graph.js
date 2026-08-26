@@ -55,35 +55,43 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'asset_add',
-    description: '登记一个资产（域名/IP/存活 web 站点）到资产图谱。type: domain/ip/web/service。',
+    description: '登记/更新一个资产（域名/IP/存活 web 站点）到资产图谱。type: domain/ip/web/service。评级字段（score 0-100/level S|A|B|C/accept full|intrusion-only|none/biz 核心|一般|未知/state new|changed|stable|dead）按 rules/src/asset-scoring.md 打分体系，null 不覆盖既有值。',
     parameters: {
       type: 'object',
       properties: {
         host: { type: 'string' },
         type: { type: 'string', enum: ['domain', 'ip', 'web', 'service'] },
         source: { type: 'string', description: '来源（工具名/run_id/手工）' },
+        score: { type: 'integer', description: '可挖掘性评分 0-100（SABC 打分表）' },
+        level: { type: 'string', enum: ['S', 'A', 'B', 'C'], description: 'S≥75 A60-74 B40-59 C<40' },
+        accept: { type: 'string', enum: ['full', 'intrusion-only', 'none'], description: 'SRC 收录政策（查 facts category=policy）' },
+        biz: { type: 'string', enum: ['核心', '一般', '未知'] },
+        state: { type: 'string', enum: ['new', 'changed', 'stable', 'dead'] },
       },
       required: ['host'],
       additionalProperties: false,
     },
-    execute: async (a) => ({ ok: db.upsertAsset({ host: a.host, type: a.type || 'host', source: a.source || 'manual' }) }),
+    execute: async (a) => ({ ok: db.upsertAsset({ host: a.host, type: a.type || 'host', source: a.source || 'manual', score: a.score ?? null, level: a.level ?? null, accept: a.accept ?? null, biz: a.biz ?? null, state: a.state ?? null }) }),
   })
 
   reg(ctx, {
     name: 'asset_query',
-    description: '检索资产图谱。host_like 模糊匹配，type 过滤，program_id 按项目过滤，按最近活跃排序。',
+    description: '检索资产图谱。host_like 模糊匹配，type/level/accept 过滤，program_id 按项目过滤；深挖队列用法：level=S/A/B + accept!=none + sort=score desc。state=dead 为已失效资产。',
     parameters: {
       type: 'object',
       properties: {
         host_like: { type: 'string' },
         type: { type: 'string' },
         program_id: { type: 'string' },
+        level: { type: 'string', description: 'S/A/B/C 过滤（深挖队列取 S/A/B）' },
+        accept: { type: 'string', description: 'full/intrusion-only/none 过滤' },
+        sort: { type: 'string', enum: ['last_seen', 'score', 'host'], description: 'score=按可挖掘性降序' },
         limit: { type: 'integer', description: '默认 50，上限 200' },
       },
       additionalProperties: false,
     },
     execute: async (a) => {
-      const items = db.queryAssets({ hostLike: a.host_like || '', type: a.type || '', programId: a.program_id || '', limit: a.limit || 50 })
+      const items = db.queryAssets({ hostLike: a.host_like || '', type: a.type || '', programId: a.program_id || '', level: a.level || '', accept: a.accept || '', sort: a.sort || '', limit: a.limit || 50 })
       return { ok: true, total: items.length, items }
     },
   })
