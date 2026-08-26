@@ -526,7 +526,9 @@ export function taskClaimDue(nowTs) {
        ORDER BY priority ASC, next_run_at ASC LIMIT 4`
     ).all(nowTs))
     const claimed = []
-    const upd = d.prepare("UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ? AND status = 'queued'")
+    // 每次认领都刷新 started_at=本次认领时刻：否则 interval 任务跨 slot 复用首次认领时间，
+    // taskReapStale（按 started_at 超龄 1h 判僵尸）会误杀健康在飞 worker → 重排队 → 同 slot 双重派单
+    const upd = d.prepare("UPDATE tasks SET status = 'running', started_at = ?, blocked_reason = NULL, updated_at = ? WHERE id = ? AND status = 'queued'")
     for (const row of due) {
       const r = upd.run(nowTs, nowTs, row.id)
       if (r.changes === 1) claimed.push(row.id)
@@ -553,8 +555,13 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '' }) {
   if (t.schedule_kind === 'interval' && t.every_seconds) {
     // latest-only：从原定锚点按整数倍推进到第一个未来点，错过的不补跑
     const anchor = t.next_run_at || finished
-    const step = t.every_seconds * 1000
-    nextRunAt = anchor + Math.max(1, Math.ceil((finished - anchor) / step)) * step
+    // 幂等守卫：本 slot 已推进过（重复收尾/历史双 worker 场景）不二次推进，防静默跳槽
+    if (t.last_run_at && t.last_run_at >= anchor && t.next_run_at && t.next_run_at > anchor) {
+      nextRunAt = t.next_run_at
+    } else {
+      const step = t.every_seconds * 1000
+      nextRunAt = anchor + Math.max(1, Math.ceil((finished - anchor) / step)) * step
+    }
     status = 'queued'
   }
   const tail = `${t.result || ''}\n[${new Date().toISOString().slice(0, 16)}] run ${run_id}: ${ok ? 'done' : 'failed'}${note ? ' — ' + note : ''}`.trim()

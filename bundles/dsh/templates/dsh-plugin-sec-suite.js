@@ -1231,7 +1231,8 @@ const personaCache = new Map()
 function personaOfPhase(phase, cwd) {
   const preset = PHASE_PRESET[String(phase || '')]
   if (!preset) return ''
-  if (personaCache.has(preset)) return personaCache.get(preset)
+  const cacheKey = preset + '|' + (cwd || '')  // 角色文本内联 cwd，缓存必须按 cwd 区分（否则跨 workspace 复用张冠李戴）
+  if (personaCache.has(cacheKey)) return personaCache.get(cacheKey)
   let text = ''
   try {
     const yml = fs.readFileSync(path.join(DATA_DIR, '.agent-presets', preset, 'agent.cordis.yml'), 'utf8')
@@ -1241,7 +1242,7 @@ function personaOfPhase(phase, cwd) {
         .replace(/\{\{model\}\}/g, '当前模型').replace(/\{\{cwd\}\}/g, cwd || '工作目录')
     }
   } catch { /* 读取失败静默降级为无角色 */ }
-  personaCache.set(preset, text)
+  personaCache.set(cacheKey, text)
   return text
 }
 
