@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>SilkSec 共享浏览器</title>
+<style>
+  body{font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f1115;color:#e6e6e6;max-width:960px;margin:40px auto;padding:0 16px}
+  h1{font-size:20px} h2{font-size:14px;color:#9aa0a6;margin-top:28px}
+  .card{background:#171a21;border:1px solid #2a2f3a;border-radius:8px;padding:12px 14px;margin:8px 0}
+  a{color:#7aa2f7;text-decoration:none} a:hover{text-decoration:underline}
+  .muted{color:#6b7280;font-size:12px;word-break:break-all}
+  input{background:#0f1115;border:1px solid #2a2f3a;color:#e6e6e6;border-radius:6px;padding:8px 10px;width:70%}
+  button{background:#7aa2f7;border:none;color:#0f1115;border-radius:6px;padding:8px 14px;cursor:pointer;font-weight:600}
+  .tag{display:inline-block;background:#2a2f3a;border-radius:4px;padding:1px 6px;font-size:11px;margin-right:6px}
+</style>
+</head>
+<body>
+<h1>SilkSec 共享浏览器 <span class="tag">人机共用登录态</span><span class="tag">CDP 9222</span></h1>
+<p class="muted">agent 与你共用同一浏览器实例与同一份 Cookie。登录完目标站点，agent 侧即刻可用。</p>
+
+<h2>新开标签页</h2>
+<div class="card">
+  <input id="url" placeholder="https://目标地址（仅授权目标）">
+  <button onclick="openTab()">打开</button>
+</div>
+
+<h2>当前标签页（点 inspect 打开可交互 DevTools）</h2>
+<div id="list">加载中…</div>
+
+<h2>说明</h2>
+<div class="card muted">
+  inspect 链接已按当前访问方式自动选择 ws/wss 通道。若 DevTools 打开后白屏/连不上：复制链接，把 <code>wss=</code> 参数改为 <code>ws=192.168.7.107:9223</code>（http 访问时）或确认走的是域名 https。
+</div>
+
+<script>
+const REV = '@782af9cb30a53f54487e5d2e44738645a8ec457c';
+function wsBase(id){
+  const https = location.protocol === 'https:';
+  return (https ? 'wss=' : 'ws=') + location.host + '/devtools/page/' + id;
+}
+async function load(){
+  const r = await fetch('/json', {headers:{'Accept':'application/json'}});
+  const tabs = await r.json();
+  const el = document.getElementById('list');
+  if(!tabs.length){ el.innerHTML = '<div class="card muted">无标签页</div>'; return; }
+  el.innerHTML = tabs.filter(t=>t.type==='page').map(t=>{
+    const insp = 'https://chrome-devtools-frontend.appspot.com/serve_rev/' + REV + '/inspector.html?' + wsBase(t.id);
+    return '<div class="card"><b>' + (t.title||'(无标题)') + '</b><br>' +
+      '<span class="muted">' + t.url + '</span><br>' +
+      '<a href="' + insp + '" target="_blank">inspect（可交互）</a></div>';
+  }).join('');
+}
+async function openTab(){
+  const u = document.getElementById('url').value.trim();
+  if(!u) return;
+  await fetch('/json/new?' + encodeURIComponent(u), {method:'PUT'}).catch(()=>{});
+  setTimeout(load, 800);
+}
+load(); setInterval(load, 5000);
+</script>
+</body>
+</html>

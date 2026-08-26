@@ -27,6 +27,7 @@ templates:
   - silksecagent.service
   - silksecagent-edge.service
   - edge-Caddyfile
+  - edge-static/browser.html
   # --- 一键升级（spool bundle dsh upgrade csai）---
   - dsh-upgrade.sh
   # --- 安全工具链管理（安装/升级/卸载，幂等）---

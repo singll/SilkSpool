@@ -1,12 +1,5 @@
 # SilkSecAgent 内网边缘反代（caddy 2.6.2）
-# 职责：LAN 192.168.7.107:3080 → 127.0.0.1:3080，并把 Host 改写为 loopback。
-# 原因：DSH rc.7 的 /api browser-trust 栅栏把 settings.*/credentials.*/agentPreset.*
-# 等特权方法钉死在 loopback（空信任列表），LAN/域名访问一律 403。
-# Host 改写后栅栏看到的是 loopback，全部方法可用。
-# 安全前提：auth-gate（dsh-auth-gate）是唯一门禁，fail-closed + 登录限速；
-# 本边缘只绑内网 IP，不暴露公网。
-# 通配站点：任意 Host（LAN IP 或域名）都代理到 DSH 环回端口
-# Host 与 Origin 同步改写：栅栏要求 Origin.host === Host.host，浏览器 POST 必带 Origin
+# :3080 DSH Web UI（Host/Origin 改写绕 loopback 特权栅栏）；:9223 共享浏览器（basicauth + 落地页）
 http://:3080 {
     reverse_proxy 127.0.0.1:3081 {
         header_up Host 127.0.0.1:3081
@@ -15,12 +8,19 @@ http://:3080 {
 }
 
 # 共享浏览器 CDP/DevTools（basicauth 保护；profile=登录态凭据）
-# 入口：http://browser.silksecagent.singll.net（网关 80 口转发）或 http://192.168.7.107:9223
+# 入口：http://browser.silksecagent.singll.net（经网关）或 http://192.168.7.107:9223
 http://:9223 {
     basicauth {
         silksec $2b$14$ZeShsNfhSloJFL5ZqJ5RuOVCMxHS8cPv4wSKEYSHmCSCCJpc4DQD6
     }
-    reverse_proxy 127.0.0.1:9222 {
-        header_up Host 192.168.7.107:9223
+    handle / {
+        root * /opt/silkspool/dsh/edge-static
+        rewrite / /browser.html
+        file_server
+    }
+    handle {
+        reverse_proxy 127.0.0.1:9222 {
+            header_up Host 192.168.7.107:9223
+        }
     }
 }
