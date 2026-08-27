@@ -1,6 +1,6 @@
-# SilkSecAgent SRC 漏洞挖掘优化方案
+# SilkSecAgent SRC 漏洞挖掘体系设计规范
 
-> 版本：v1.0 · 2026-08-27
+> 版本：v2.0 · 2026-08-27（v1.0 全面重构）
 > 性质：Living Document，随时修订。基于对 csai 主机 SilkSecAgent（DSH sec-suite）的只读检查与 08-20 ~ 08-27 实际运行数据。
 > 适用范围：meituan-src / bytedance 双项目每日 recon+vuln 自动挖掘链路。
 
@@ -8,455 +8,481 @@
 
 ## 目录
 
-1. [现状检查结论](#一现状检查结论)
-2. [做得好的 / 做得不好的](#二做得好与做得不好)
-3. [资产收集补强清单](#三资产收集补强清单)
-4. [流程优化：四级漏斗管线](#四流程优化四级漏斗管线)
-5. [资产×漏洞覆盖矩阵规范](#五资产漏洞覆盖矩阵规范)
-6. [漏洞卡片（VulnCard）规范](#六漏洞卡片-vulncard-规范)
-7. [登录态测试方法论与账号获取策略](#七登录态测试方法论与账号获取策略)
-8. [输入/输出规范与会话接力](#八输入输出规范与会话接力)
-9. [落地路线图](#九落地路线图)
+0. [设计原则（五条公理）](#零设计原则五条公理)
+1. [总体架构：四层管线 + 三条反馈回路](#一总体架构四层管线--三条反馈回路)
+2. [可靠性设计：容错、幂等与覆盖闭环](#二可靠性设计容错幂等与覆盖闭环)
+3. [输出契约与防幻觉标准](#三输出契约与防幻觉标准)
+4. [覆盖矩阵：开放状态机](#四覆盖矩阵开放状态机)
+5. [知识单元体系：四类卡片与注册表](#五知识单元体系四类卡片与注册表)
+6. [反馈与学习回路](#六反馈与学习回路)
+7. [自由探索机制：规定动作 + 自选动作](#七自由探索机制规定动作--自选动作)
+8. [登录态测试方法论与账号获取策略](#八登录态测试方法论与账号获取策略)
+9. [资产收集方法清单（开放）](#九资产收集方法清单开放)
+10. [落地路线图](#十落地路线图)
 
 ---
 
-## 一、现状检查结论
+## 零、设计原则（五条公理）
 
-### 1.1 体系全景（2026-08-27 实测）
+本规范所有条款从以下五条公理推导，任何后续修订不得违背：
 
-| 维度 | 现状 |
+| # | 公理 | 含义 |
+|---|---|---|
+| P1 | **流程可靠优先** | 步骤必须容错、幂等、可断点续跑；覆盖必须闭环——每个可以发现漏洞的点最终都有终态结论，不允许"漏掉且无人知晓" |
+| P2 | **无证据不结论** | 一切输出（有漏洞/无漏洞/不适用/阻塞）必须挂可核查证据与覆盖率分母；用大模型最怕的幻觉倒逼形式化标准 |
+| P3 | **万物皆可进化** | 每条漏洞卡、方法、判定依据、思路都是带版本和反馈回路的活体，实践中持续反哺优化 |
+| P4 | **格式刚性、内容开放** | 输出格式必须机器可校验（字段结构刚性），但取值集合开放注册（卡片数、状态、理由词表均可扩展），绝不用固定枚举限制能力上限 |
+| P5 | **保底 + 自由** | 每次任务 = 规定动作（硬指标，必须完成）+ 自选动作（探索配额，必须产出但方向自由）；当下用不了的想法也要入库留种 |
+
+> 公理间冲突时的裁决顺序：P2（真实性）> P1（可靠覆盖）> P3（可进化）> P5（自由探索）> P4（开放扩展）。
+
+---
+
+## 一、总体架构：四层管线 + 三条反馈回路
+
+### 1.1 正向管线（漏洞发现的完整路径）
+
+```
+L1 资产层     域名/IP/端口/存活/形态 ──→ assets.tsv（资产台账）
+     ↓ 存活站点
+L2 接口层     爬虫+历史URL+JS提取 ──→ endpoints.tsv（接口参数面）
+     ↓ 按指纹/形态分派
+L3 工具矩阵层  漏洞卡驱动的专项探测 ──→ attempts.tsv（尝试台账）
+     ↓ 命中
+L4 确认层     验证规程+复现+证据包 ──→ findings + evidence/{id}/
+```
+
+**关键认知：漏洞不在域名上，在接口和参数上。** 当前系统从 L1 直接跳到用 nuclei 扫域名，缺失 L2（接口层）是最大结构性缺口——127+276 个存活站的参数面从未系统性收集。L2 是把 dalfox/sqlmap/arjun 等闲置工具激活的前提。
+
+### 1.2 三条反馈回路（正向管线之外的生命线）
+
+```
+回路A（日内）：L3 命中 → L4 验证 → 证伪 → PatternCard 证伪条款 + 负账本
+回路B（日间）：attempts/卡片使用记录 → 触发器评审 → 卡片升版 → STALE 重测
+回路C（长期）：intel/kb/头脑风暴 → IdeaCard 留种 → 条件成熟 → 转正为正式卡片
+```
+
+### 1.3 与现状的映射
+
+当前链路 recon(03:00)→vuln(04:00) 保留为调度骨架，任务内容重构：
+
+| 任务 | 原内容 | 新内容 |
+|---|---|---|
+| recon | 子域 diff + 探活 | L1 全量 + 新增资产 L2 接口层收集 + 注册入口侦察（§8.2） |
+| vuln | "未跑过资产跑 nuclei" | 读覆盖矩阵 PENDING/BLOCKED/STALE 清单 → 按卡片执行 → 探索配额（§七）→ 全部留痕 |
+
+---
+
+## 二、可靠性设计：容错、幂等与覆盖闭环
+
+### 2.1 执行可靠性（每一步都可能失败，失败必须是可恢复的常态）
+
+| 机制 | 规范 |
 |---|---|
-| 编排框架 | DSH sec-suite 插件（asset-db / facts 黑板 / exp 经验卡 / playbooks / knowledge 224 篇 / intel / scheduler） |
-| 每日链路 | recon 03:00 → vuln 04:00，interval 自动续排，双项目同构 |
-| 授权管控 | scope.yml + scope-guard 硬校验，max_risk=active，统一 mubeng 代理池（live_pool 173） |
-| 资产面 | 美团 6309 域/存活 127；字节 3546 域/存活 276；子域连续 3-4 日 diff=0 |
-| 产出 | findings 美团 187 + 字节 89；high/medium 共 12 条**全部来自 08-20 早期手工战役**；近 6 天自动化仅 +1 条 low（CORS #287） |
-| xray | 被动监听 7777 常驻，8 天累计 11.2 万条 flow，**无下游消费（死库）** |
-| 工具 | 已装 20+（dalfox/katana/arjun/afrog/sqlmap/ffuf/naabu/graphql-cop/ZAP…），实际仅调用 5 种（subfinder/nuclei/httpx/gau/dnsx） |
-| 知识库 | 224 篇外部知识导入后 kb_search 仅 2 次调用 |
-| 数据质量 | 276 条 findings 中 273 条 vuln_type 未填；报告落点分散（沙箱拒写 5 天，工作区/自动报告并存） |
+| 批次检查点 | 每批 ≤3 目标/≤600s（沿用已验证纪律）；每完成一个目标立即落盘 attempts 行，**不允许攒批写**——被杀时进度不丢 |
+| 幂等 run_id | 每个执行单元有唯一 run_id；重跑时先查 attempts，已有终态（非 STALE）的直接跳过 |
+| 工具降级链 | 每类采集/探测动作注册 ≥2 个实现（如子域：subfinder→uncover→fofa API；探活：httpx→curl 脚本）；主工具失败自动降级并在台账记 `tool_fallback` |
+| 出口容错 | 000/超时 ≥4 次复探且换出口（沿用现行基线）；代理池健康度开局检查，live_pool 低于阈值当日降级为只读模式并告警 |
+| 失败留痕 | 失败 run 必须落 meta（exit_code/duration/stderr 摘要），禁止"仅 1 行日志"的失败（08-24 wmt68eti01fa1 教训） |
+| 任务熔断 | 单任务失败率 >50% 或连续 3 目标同错 → 停止本批，转人工/次日，防止烧预算刷垃圾数据 |
 
-### 1.2 一句话诊断
+### 2.2 覆盖闭环（保证"不漏掉且可知"）
 
-**当前是"资产维护型"系统，不是"漏洞挖掘型"系统。** 覆盖率和判定纪律是强项；深度攻击链（登录态越权/逻辑/SQLi/XSS）基本空转；"子域 diff=0 多日"更可能是**被动源枯竭的伪收敛**而非真实面收敛。
-
----
-
-## 二、做得好与做得不好
-
-### 2.1 应保留并固化的
-
-1. **判定纪律**：catch-all 基线差分、认证封闭判定（401/403/参数错误 → huntlist 而非漏洞）、权威 DNS 复核移除、误报闭环 + 负账本、每日复验漂移。直接消灭 SRC 提交中最致命的误报问题。
-2. **合规边界硬控**：scope-guard fail-closed、exclude 域硬拒绝、intrusive 需人工、全程代理留痕。
-3. **经验沉淀机制**：exp 卡被后续任务 adopt 18 次；playbooks（大厂首扫闭环、N-day 证伪闭环）形成方法论资产。
-4. **候选主域核证流程**：web_search 核实归属 → 人工评审 → scope 扩容 13 主域。
-5. **调度韧性**：interval 续排、≤3目标/≤600s 派单纪律、meta.json 幂等重跑。
-
-### 2.2 问题清单（按损失排序）
-
-| # | 问题 | 证据 |
-|---|---|---|
-| 1 | **深度为零**：所有高价值面停在"登录态不可达"，IDOR/越权/逻辑从未真正尝试 | authz_diff 零调用；credentials 表无引用；huntlist 空转 |
-| 2 | **工具闲置**：装了不用 = 能力缺口伪装成"没有漏洞" | dalfox/arjun/afrog/graphql-cop/katana/sqlmap 零调用 |
-| 3 | **xray 死库**：11.2 万条 flow 无参数提取/敏感信息回扫/未授权重放 | flows/*.jsonl 只增不读 |
-| 4 | **知识库闲置**：kb_search 仅 2 次，与实际挖掘脱节 | 224 篇 vs 2 次检索 |
-| 5 | **huntlist 无生命周期**：无前置条件/TTL，超期条目无限滚动移交 | 08-26 遗留 4 条到 08-27 仍"需登录态未执行" |
-| 6 | **数据规范缺失**：vuln_type 大面积空缺、报告落点不一、证据粒度不均 | 273/276 未填类型；report-*.md 多次空壳 |
-| 7 | **资产源单一**：subfinder 实际仅 certspotter 一源工作，diff=0 被误读为收敛 | crt.sh 502、hackertarget 限配额；asnmap/mapcidr/alterx/uncover 未进链路 |
-| 8 | **无逐资产×逐漏洞的覆盖记录**：只知道"扫过 nuclei"，不知道"哪个资产测过哪类漏洞、哪类因无功能不适用、哪类被条件阻塞" | 无 attempts 台账 |
-
----
-
-## 三、资产收集补强清单
-
-按投入产出排序：
-
-| 优先级 | 方法 | 工具/源 | 状态 |
-|---|---|---|---|
-| P0 | **URL/端点历史挖掘**（域名级→接口级的关键一跃） | waybackurls（已装未用）、gau（仅 7 次）、katana、ParamSpider | 127+276 存活站从未系统性跑 URL 收集 |
-| P0 | **JS 端点自动化提取** | subjs + LinkFinder/SecretFinder，或 katana -jc | 手工做过 4 次效果好（CORE_HOST/内网域泄露），须工具化进每日链路 |
-| P1 | 被动 DNS 多源 | SecurityTrails、VirusTotal、OTX、urlscan.io、RapidDNS、bevigil；uncover 已装 | 解决单源枯竭 |
-| P1 | 证书/空间测绘深化 | censys、fofa/hunter/quake API（fofa.conf、fofa_search.sh 已存在未日常化） | 同证书反查、favicon hash 反查 |
-| P1 | 子域爆破+排列 | puredns/dnsx bruteforce + alterx（已装） | 被动源枯竭后的增量主力 |
-| P1 | **子域接管排查** | nuclei takeover 模板 / subzy，全量 CNAME 跑一次 | 0 成本高收益，从未做过 |
-| P2 | ASN/IP 面 + 端口 | asnmap/mapcidr → naabu → httpx | scope 允许时；T3/ActiveMQ 先例证明价值 |
-| P2 | 移动端/小程序 | APK 反编译（jadx）、微信小程序解包、同开发者 App | 美团/字节业务大头在 App 端，纯 Web 收集天然漏 API 面 |
-| P2 | 代码泄露面 | GitHub/GitLab 关键词监控、网盘/文库泄露检索 | 找源码、凭据、内部文档 |
-| P3 | 云存储桶枚举 | S3/OSS/TOS/COS 桶名爆破 | 配合 JS 提取的桶名（已有 s3.meituan.net 先例） |
-
----
-
-## 四、流程优化：四级漏斗管线
-
-当前为串行两段式（recon → vuln），建议改为：
+覆盖闭环 = 每个对象在每个维度上都有**终态或明确的非终态理由**：
 
 ```
-L1 资产层（每日 recon 保持现状 + 补源）
-   域名/IP/端口/存活 → 资产库
-
-L2 接口层（新增，当前缺失——最重要的一层）
-   存活站点 → katana/waybackurls/gau → JS 提取 → 参数面清单
-   产出 endpoints.tsv（url, method, params, auth_required, source）
-
-L3 工具矩阵层（按指纹/形态自动分派，替代"只跑 nuclei"）
-   有参数          → dalfox(XSS) / sqlmap --level 1 --risk 1(SQLi) / arjun(隐藏参数)
-   有 GraphQL      → graphql-cop
-   CNAME 外部指向  → takeover 检测
-   指纹命中组件    → 对应 CVE 模板 + afrog
-   登录框          → JWT 分析 / SSO 配置审计 / 登录接口本身的安全测试（见 §7.4）
-   表单/上传       → ffuf 路径 + 上传面标记
-
-L4 深度层（需凭据或人工，单独队列）
-   登录态越权/逻辑漏洞/业务风控绕过 → huntlist 带前置条件跟踪
+资产闭环：  每个 domain ∈ assets.tsv 必有 status（alive/dead/blocked/na）
+接口闭环：  每个 alive web 资产必有 L2 状态（collected/failed/no-surface）
+漏洞闭环：  每个 (资产 × 适用卡片) 组合必有矩阵终态（§四）
+复验闭环：  每条 CONFIRMED 必有 next_verify 日期，到期自动回队
+情报闭环：  每条 N-day/新打法情报必有结论（验证/证伪/无对应部署），不许悬空
 ```
 
-配套机制改动：
+**"没有漏"的定义不是"扫过"，而是"台账可证"**：任何人随时可查"资产 X 对漏洞 Y 测没测、何时测、什么结论、证据在哪"。
 
-1. **打破"覆盖 100%"幻觉**：覆盖指标从"资产扫过一次"改为**接口层覆盖率**（存活站中完成 URL 收集的比例）+ **漏洞卡覆盖率**（见 §五）。当前 100% 是域名级假饱和。
-2. **huntlist 生命周期**：每条带 `precondition`（账号/出口/工具）+ `ttl`（默认 3 天）+ `next_action`。开局先判条件；不满足的进入"创造条件"动作；超 TTL 进"人工/放弃"队列，**禁止无限滚动移交**。
-3. **xray 流量激活**（零新增成本）：每日 vuln 链加一步——当日 flows 提取带参数 URL → 去重 → 喂 dalfox/sqlmap；flow 敏感信息正则回扫（token/key/idcard）；未授权 200 API 重放标注。
-4. **nuclei 噪音治理**：默认排除 info 级（或独立低优通道），报告默认 severity≥low；命中必须过基线差分（纪律已有，须工具化）。
-5. **kb 进流程**：开局强制 `kb_search(当日目标指纹)` 与 exp_search 并行，把"指纹→已知打法"变成机械动作。
+### 2.3 收尾强制清单（每次任务结束前必过）
+
+1. 本批所有目标在 attempts.tsv 中有终态行（无终态 = 任务未完成，不许收尾）
+2. 所有 CONFIRMED 有证据包（§3.3）
+3. 所有 NOT_APPLICABLE / BLOCKED 有理由值
+4. 当日新增 idea 已入库（§七）
+5. handoff 已生成且数字与台账一致（§3.4 一致性校验）
 
 ---
 
-## 五、资产×漏洞覆盖矩阵规范
+## 三、输出契约与防幻觉标准
 
-### 5.1 问题定义
+### 3.1 总纲：结论分级与证据绑定
 
-当前只知道"某资产扫过一次 nuclei"，无法回答：
-- 这个资产测过哪些漏洞类型？
-- 哪些没测？是因为**没测到**（PENDING）、**无对应功能**（NOT_APPLICABLE）、还是**条件不满足**（BLOCKED，如缺账号）？
-- 上次测的时点、工具版本、结论是什么？资产变化后哪些测试需要重跑？
+所有产出物中的陈述分三级，级别决定证据要求：
 
-### 5.2 覆盖状态机
-
-每个 `资产 × 漏洞卡` 组合处于且仅处于一个状态：
-
-| 状态 | 含义 | 进入条件 |
+| 级别 | 措辞 | 证据要求 |
 |---|---|---|
-| `PENDING` | 未测试 | 默认初始态 |
-| `TESTED_CLEAN` | 已测，未发现 | 按漏洞卡 detect 流程完整执行且无命中 |
-| `CONFIRMED` | 已确认漏洞 | 按漏洞卡 verify 流程确认，生成 finding |
-| `FALSE_POSITIVE` | 曾命中但证伪 | verify 阶段证伪，进负账本 |
-| `NOT_APPLICABLE` | 无对应功能/前提，不适用 | 资产无该攻击面（须填 `na_reason`，见下） |
-| `BLOCKED` | 条件不满足，暂不可测 | 缺凭据/缺出口/风险级超限（须填 `blocker`） |
-| `STALE` | 结论过期需重测 | 资产形态变化 / 漏洞卡版本升级 / 超过 retest_after 天数 |
+| **结论（fact）** | "存在/不存在/不适用/阻塞" | 必须挂 evidence 指针（文件路径/run_id/命令+响应摘要） |
+| **观察（observation）** | "记录到 X 现象" | 必须有原始记录指针，但允许未定性 |
+| **推测（hypothesis）** | "可能/疑似/或许" | **禁止出现在结论字段**，只能进 IdeaCard 或 huntlist，且必须标注验证所需条件 |
 
-### 5.3 NOT_APPLICABLE 必须填理由（na_reason）
+### 3.2 防幻觉八条硬标准
 
-"不适用"不允许裸标，必须从受控词表选值，防止用 N/A 偷懒掩盖漏测：
+1. **分母明确**：任何覆盖率数字必须给出分母来源（资产清单文件 + 行数 + 生成时间/hash），如"覆盖 45/127（alive-20260827.txt, 127 行）"。没有分母的百分比一律视为幻觉。
+2. **TESTED_CLEAN 也要证据**："没发现漏洞"和"有漏洞"同级举证——命令、时间、目标响应特征摘要（状态码/长度/关键头）必须落盘。防止模型把"没测"写成"测了没有"。
+3. **detect/verify 分离**：命中（detect）与确认（verify）是两个独立动作；CONFIRMED 必须过卡片的 verify 规程 + ≥2 次复现（间隔换出口）。
+4. **数字可溯源**：报告中的每个统计数字必须有生成方式（查询语句/文件路径），禁止"约""大概"类数字进正式报告。
+5. **格式机器校验**：所有标准产物（assets/endpoints/attempts/handoff）有 schema，任务收尾时自检（必填列、值域、日期格式），不通过 = 任务失败。
+6. **禁止词清单**：结论区禁止出现"可能存在、疑似、应该是、理论上、大概率"；这些词只允许出现在 IdeaCard/huntlist。
+7. **负例即价值**：NOT_APPLICABLE / FALSE_POSITIVE / BLOCKED 与 CONFIRMED 同等正式记录——防止模型为了"有产出"而拔高结论。
+8. **一致性校验**：handoff/日报中的汇总数必须与台账实际行数一致（脚本可校验），不一致即标记异常。
 
-| na_reason | 说明 | 示例 |
+### 3.3 Finding 证据包（可提交性标准）
+
+每条 CONFIRMED 强制目录化 `evidence/{finding_id}/`：
+
+| 文件 | 内容 | 防的什么幻觉 |
 |---|---|---|
-| `no-param-surface` | 无查询参数/表单 | 纯静态官网 |
-| `no-auth-feature` | 无登录/会话体系 | 公开文档站 |
-| `no-upload-feature` | 无文件上传点 | — |
-| `no-graphql` | 无 GraphQL 端点 | — |
-| `static-site` | 整站静态无后端交互 | 营销页 |
-| `scope-excluded` | scope 规则排除 | *.sankuai.com |
-| `cdn-edge-only` | 纯 CDN 边缘无源站交互 | 静态资源域 |
-| `tech-mismatch` | 技术栈不匹配该漏洞类 | 非 Java 站不测 log4j |
+| `request.txt` / `response.txt` | 原始报文 + 时间戳 + 出口 IP | "我测过"的口头声明 |
+| `reproduce.md` | 编号复现步骤，**直接可贴进 SRC 提交框** | 不可复现的运气命中 |
+| `verify-log.md` | 每次复验追加一行（时间/出口/结果/响应哈希） | 一次性巧合、WAF 抖动 |
+| `screenshot.png` | 浏览器截图（有界面时强制） | 纯文本脑补 |
+| `falsification.md` | 证伪检查记录（按卡片 falsification 条款逐项打勾） | 基线/网关统一行为误判 |
 
-### 5.4 覆盖矩阵的物理形态
+finding 必填字段：`vuln_type`(CWE)、`severity`、`affected_url`、`param`、`poc_summary`、`src_ready`(bool)、`card_id@version`。存量 273 条缺 vuln_type 的回填至少到类型级。
 
-不落大宽表（几千资产 × 几十漏洞卡会爆炸），用**稀疏台账**推导：
+### 3.4 标准产物清单与格式契约
 
-- 事实层：`attempts-{program}.tsv`（append-only，见 §8.3）
-- 视图层：由台账聚合生成 `coverage-{program}-{date}.md`，每日报告引用：
+**格式刚性：以下核心字段不可缺、列序固定、机器可校验。内容开放：允许在核心列之后追加自定义列（见 §5.6 扩展规则）。**
+
+| 产物 | 路径模式 | 核心字段（最左起固定） |
+|---|---|---|
+| 资产台账 | `assets-{program}.tsv` | domain, status, first_seen, last_seen, source, probe_date |
+| 接口面 | `endpoints-{program}.tsv` | url, method, params, auth_required, source, collected_at |
+| 尝试台账 | `attempts-{program}.tsv` | ts, asset, card_id, card_ver, tool, result, evidence_path, run_id |
+| 覆盖视图 | `coverage-{program}-{date}.md` | 按卡片聚合的六态计数表（由 attempts 聚合生成，禁手填） |
+| 卡片使用记录 | `card_usage-{date}.jsonl` | card_id, asset, result, card_version, deviation, suggest |
+| 开局包 | `brief-{program}-{date}.md` | 昨日状态 / 今日硬指标 / 禁止项（§七含探索引导） |
+| 交接包 | `handoff-{program}-{date}.md` | 状态快照 / 动作摘要 / 明日队列 / 阻塞求助 / 数据指针 |
+
+交接包五段中"阻塞与求助"按**解锁收益排序**（例："补 1 个美团商家账号可解锁 14 条 BLOCKED"），把对人的请求变成精确的最小请求。
+
+---
+
+## 四、覆盖矩阵：开放状态机
+
+### 4.1 状态定义（初始集合，可扩展）
+
+每个 `资产 × 卡片` 组合处于且仅处于一个状态：
+
+| 状态 | 含义 | 必填附加字段 |
+|---|---|---|
+| `PENDING` | 未测试 | — |
+| `TESTED_CLEAN` | 按卡片规程完整执行，无命中 | evidence_path（§3.2-2） |
+| `CONFIRMED` | 过 verify 规程确认 | finding_id + 证据包 |
+| `FALSE_POSITIVE` | 曾命中但证伪 | falsification 记录 |
+| `NOT_APPLICABLE` | 无对应攻击面 | `na_reason`（词表开放，§4.2） |
+| `BLOCKED` | 条件不满足暂不可测 | `blocker`（缺什么，词表开放） |
+| `STALE` | 结论过期需重测 | `stale_reason`（资产变化/卡片升版/超期） |
+| *（可注册新状态）* | 新状态首次使用须在当日报告说明语义，评审后入词表 | — |
+
+### 4.2 理由词表（开放注册，初始值如下）
+
+`na_reason` 初始集：`no-param-surface`（无参数/表单）、`no-auth-feature`（无会话体系）、`no-upload-feature`、`no-graphql`、`static-site`、`cdn-edge-only`、`scope-excluded`、`tech-mismatch`。
+
+`blocker` 初始集：`no-credential`（缺账号）、`no-registration-channel`（无注册入口）、`egress-unreachable`（出口不可达）、`risk-exceeded`（超 max_risk 需人工）、`tool-missing`、`rate-limited`。
+
+**扩展规则**：遇到词表外的情况，允许当场造新值，但①新值必须是"可复用的类别"而非一次性描述；②当日报告的变更说明区必须登记新值及定义；③每周评审合并近义值。**禁止用 `other`/`misc` 兜底。**
+
+### 4.3 物理形态
+
+- 事实层：`attempts-{program}.tsv`（append-only，稀疏台账）
+- 视图层：`coverage-{program}-{date}.md` 由台账**脚本聚合生成**（防手填幻觉）：
 
 ```
 ## 覆盖矩阵摘要（2026-08-27）
-| 漏洞卡 | TESTED_CLEAN | CONFIRMED | N/A | BLOCKED | PENDING |
-|---|---|---|---|---|---|
-| VC-001 CORS 误配 | 112 | 2 | 8(静态) | 0 | 5 |
-| VC-007 未授权访问 | 98 | 0 | 12 | 14(需账号) | 3 |
-| VC-012 SQLi | 45 | 0 | 60(无参数面) | 0 | 22 |
-| ... |
+| 卡片 | CLEAN | CONFIRMED | FP | N/A | BLOCKED | PENDING | STALE |
+|---|---|---|---|---|---|---|---|
+| VC-001 CORS 误配        | 112 | 2 | 1 | 8  | 0  | 5 | 0 |
+| VC-008 越权 IDOR        | 0   | 0 | 0 | 60 | 14 | 3 | 0 |
+| ...（行动态增长，随卡片注册扩展） |
 ```
 
-**每日 vuln 任务的开局动作 = 读 PENDING/BLOCKED/STALE 清单**，而不是重新盘点全部资产。这从机制上保证"每个资产最终都被每张适用的卡测过"，且 BLOCKED 条目集中暴露了"补什么条件能解锁多少测试面"（如：补 1 个美团账号可解锁 N 条 BLOCKED）。
+### 4.4 重测触发（STALE 规则）
 
-### 5.5 重测触发（STALE 规则）
+- 资产 title/指纹/状态码特征变化 → 该资产全部 CLEAN 转 STALE
+- 卡片版本升级 → 引用旧版的记录转 STALE（方法改进自动触发回归）
+- 超过卡片 `retest_after_days` → STALE
+- 新情报涉及该技术栈 → 相关资产相关卡片转 STALE
 
-- 资产 title/指纹/状态码变化 → 该资产全部 TESTED_CLEAN 转 STALE
-- 漏洞卡版本升级（见 §6.5）→ 引用旧版的记录转 STALE
-- 超过卡的 `retest_after`（如 CORS 30 天、敏感路径 7 天）→ STALE
+### 4.5 每日 vuln 开局动作
+
+读 PENDING/STALE 清单 + 评审 BLOCKED 的解锁条件是否已满足——**而不是重新盘点全部资产**。BLOCKED 汇总视图直接回答"补什么条件能解锁多少测试面"。
 
 ---
 
-## 六、漏洞卡片（VulnCard）规范
+## 五、知识单元体系：四类卡片与注册表
 
-### 6.1 目标
+### 5.1 为什么分四类
 
-把"每种漏洞怎么探测、怎么验证、什么条件下适用"从模型记忆和散落经验中抽出来，变成**版本化、可迭代、被强制使用的卡片库**。每次实战使用卡片后必须反馈：卡片有没有要改的地方。
+实践中有四种不同性质的"可进化知识"，混在一张卡里会互相污染：
 
-### 6.2 卡片 Schema
+| 卡类 | 管什么 | 示例（从现有沉淀初始化） |
+|---|---|---|
+| **VulnCard** 漏洞卡 | 单漏洞的探测/验证规程 | CORS 误配、SQLi、越权 IDOR… |
+| **MethodCard** 方法卡 | 工具用法、管线、工程技巧 | xargs -P8 批探、xray flows 消费管线、JS bundle 测绘法 |
+| **PatternCard** 判定卡 | 判定依据/基线特征/证伪规则 | 403+9B=出口 ACL、456=反爬非漏洞、catch-all 基线差分、Supabase 五端点确认法 |
+| **IdeaCard** 想法卡 | 未验证的思路种子（§七） | "CORS+缓存投毒组合""SSO continue 参数开放跳转链" |
 
-建议存放：`/opt/silkspool/dsh/data/vulncards/VC-xxx-{slug}.yaml`（或并入 playbooks 体系，关键是版本化）。
+### 5.2 通用骨架（所有卡共享，保证可学习可统计）
 
 ```yaml
-id: VC-001
+id: VC-001                # {类型前缀}-{序号}，注册表分配，不回收
+type: vuln                # vuln / method / pattern / idea（类型也可注册新增）
 name: CORS 任意起源反射
-cwe: CWE-942
 version: 3
-status: active            # active / draft / deprecated
-severity_potential: [low, medium]   # 该漏洞在本类目标上的现实定级区间
-risk_level: passive       # passive / active / intrusive（与 scope-guard 对齐）
-
-# ---- 适用性判定（决定矩阵中 PENDING 还是 NOT_APPLICABLE）----
-applicable_when:
-  - 响应包含 ACAO 头或存在跨域 API 端点
-  - 存在鉴权会话（Cookie/Token）的域
-not_applicable_when:
-  - na_reason: static-site
-  - na_reason: cdn-edge-only
-
-# ---- 前置条件（不满足则 BLOCKED）----
-prerequisites:
-  egress: 任意            # 任意 / 国内出口 / 固定IP
-  auth: none              # none / single-account / dual-account
-  tools: [curl]
-
-# ---- 探测（detect）----
-detect:
-  summary: 多 Origin 差分 + ACAC 联合判定
-  steps:
-    - 无 Origin 基线请求，记录 ACAO/ACAC
-    - Origin: https://evil.example.net，观察是否反射
-    - Origin: null / 子域绕过 / 后缀绕过（evil{domain}）变体各一次
-  tool_cmd: "bash/curl 差分（禁止用 nuclei cors 模板单独定论）"
-  fp_baseline: 反射但 ACAC:false 且无敏感数据 → 降级 info 或不报
-
-# ---- 验证（verify，确认必须全过）----
-verify:
-  must_pass:
-    - 反射 Origin 与请求 Origin 精确一致（非 *）
-    - ACAC: true 或响应含敏感数据
-    - 连续 ≥2 次复现（间隔换出口）
-  falsification:
-    - catch-all/网关统一反射检查（对 404 路径同样反射 → 边缘行为，降级）
-  evidence_required: [request.txt, response.txt, 复现x2记录]
-
-# ---- SRC 提交要点 ----
-src_notes: |
-  美团/字节对纯 CORS 反射定级多为 low；需说明可窃取的数据类型才有 medium 可能。
-  报告须附可利用的端点实际返回的敏感字段示例。
-
-# ---- 运维字段 ----
-retest_after_days: 30
+status: active            # draft / active / deprecated
+created: 2026-08-22
+# --- 进化统计（机器维护） ---
 usage_count: 9            # 每次使用 +1
-hit_count: 2              # 每次 CONFIRMED +1
+hit_count: 2              # 产出 CONFIRMED/被成功复用 +1
+fp_count: 1               # 引发误报 +1
 last_used: 2026-08-27
-changelog:
+changelog:                # 每次修订必须 bump version + 写条目
   - v3 2026-08-26: 增加"404 路径对照"证伪步骤（字节边缘网关误报教训）
-  - v2 2026-08-22: 增加 null origin 变体
 ```
 
-### 6.3 首批应建立的卡片清单
+### 5.3 各类型特有字段
 
-| ID | 漏洞类 | 探测主力 | 风险级 |
-|---|---|---|---|
-| VC-001 | CORS 误配 | curl 差分 | passive |
-| VC-002 | 子域接管 | nuclei takeover / subzy | passive |
-| VC-003 | 敏感路径暴露（actuator/swagger/.git/api-docs） | ffuf 专项字典 + 基线差分 | active |
-| VC-004 | 反射/存储 XSS | dalfox + 人工复核 | active |
-| VC-005 | SQL 注入 | sqlmap --level 1 --risk 1（限速） | active |
-| VC-006 | CRLF 注入 | crlfuzz | active |
-| VC-007 | 未授权访问（API/管理面） | 路径遍历 + 方法变换 + 鉴权头摘除 | active |
-| VC-008 | 越权 IDOR（水平/垂直） | authz_diff 双账号差分 | active（需凭据） |
-| VC-009 | SSRF | URL 取参端点 + 内网探针 | active |
-| VC-010 | GraphQL 内省/滥用 | graphql-cop | active |
-| VC-011 | JWT 弱密钥/算法混淆 | jwt_tool 类 | active（需 token） |
-| VC-012 | OAuth/SSO 逻辑（redirect_uri/state/code 重放） | 手工 + 浏览器 | active |
-| VC-013 | 文件上传绕过 | ffuf + 手工变形 | active |
-| VC-014 | 信息泄露（JS 密钥/源码 map/备份文件/云桶） | SecretFinder + ffuf + 桶枚举 | passive |
-| VC-015 | 登录接口安全（爆破保护/短信轰炸/验证码绕过/账号枚举/密码重置逻辑） | 手工 + 限速脚本 | active（无需账号，见 §7.4） |
-| VC-016 | N-day 组件漏洞 | nuclei/afrog 模板 + 前提校验 | 按模板定 |
-| VC-017 | 业务逻辑（价格/数量/重放/竞态） | 手工 + 并发脚本 | active（需凭据） |
-| VC-018 | 中间件暴露面（T3/AJP/ActiveMQ 等非常规端口） | naabu + 协议探针 | active |
+**VulnCard**（在通用骨架上扩展）：
 
-每张卡的 detect/verify 内容应从本次复盘已沉淀的方法论初始化（如 catch-all 基线差分、Supabase 五端点验证法、456 反爬识别等），后续在使用中迭代。
-
-### 6.4 卡片使用反馈环（强制）
-
-每次任务使用卡片后，在当日 attempts 台账之外，追加一条**卡片使用记录**：
-
-```
-card_usage-{date}.jsonl:
-{"card_id":"VC-001","asset":"e.waimai.meituan.com","result":"CONFIRMED",
- "card_version":3,"deviation":"发现该站对 origin 后缀绕过也反射，卡片未覆盖",
- "suggest":"detect.steps 增加 evil{domain} 后缀变体"}
+```yaml
+cwe: CWE-942
+severity_potential: [low, medium]     # 在本类目标的现实定级区间
+risk_level: passive                   # 与 scope-guard 对齐
+applicable_when: [...]                # 决定矩阵 PENDING vs NOT_APPLICABLE
+not_applicable_when: [...]            # 引用 na_reason 词表
+prerequisites: {egress: 任意, auth: none, tools: [curl]}   # 不满足 → BLOCKED
+detect:                               # 探测规程：步骤+工具+FP 基线
+  steps: [...]
+  fp_baseline: ...
+verify:                               # 确认规程
+  must_pass: [...]                    # 全过才算 CONFIRMED
+  falsification: [...]                # 证伪检查清单
+retest_after_days: 30
+src_notes: |                          # SRC 提交要点（定级习惯、政策变化）
+  ...
 ```
 
-**卡片修订触发器**（满足任一即应更新卡片版本）：
-1. 实战中出现卡片未覆盖的绕过/变体 → 补 detect 步骤
-2. 出现误报且卡片 falsification 未能拦截 → 补证伪步骤
-3. 同一卡连续 `usage_count` ≥ 20 而 `hit_count` = 0 → 评审：是目标面问题还是探测方法失效（如 WAF 规则更新），必要时降低优先级或标 deprecated
-4. intel/kb 出现新技术（新绕过手法、新工具）→ 相关卡升级
-5. SRC 平台对该类漏洞的收录政策变化 → 更新 src_notes
+**MethodCard**：`inputs / outputs / steps / pitfalls / cost_notes`（成本与超时经验）。
 
-**纪律：卡片修订必须 bump version + 写 changelog**；版本升级触发引用旧版的覆盖记录转 STALE（§5.5），形成"方法改进 → 自动重测"的正循环。
+**PatternCard**：`pattern`（特征描述）/ `means`（该特征意味着什么）/ `counter_examples`（反例——什么时候这个判断是错的）/ `applies_to`。
 
-### 6.5 与现有体系的关系
+**IdeaCard**：见 §7.3。
 
-- playbooks = **跨漏洞的流程级方法论**（如"大厂首扫闭环"）；VulnCard = **单漏洞的探测/验证规程**。两者互补，不合并。
-- exp 经验卡偏"软性经验"，VulnCard 是"硬性规程"——每日 vuln 任务契约应直接引用当日待执行的卡片 ID 清单。
+### 5.4 初始卡片清单（种子，不设上限）
+
+VulnCard 种子（VC-001~018）：CORS 误配、子域接管、敏感路径暴露、XSS、SQLi、CRLF、未授权访问、越权 IDOR、SSRF、GraphQL 滥用、JWT 缺陷、OAuth/SSO 逻辑、文件上传、信息泄露、登录接口安全、N-day 组件、业务逻辑、中间件暴露面。
+
+**数量不被限制死**：任何会话发现词表外的漏洞类/方法/判定模式，按 §5.5 注册新卡。清单是活的，表格行动态增长。
+
+### 5.5 卡片生命周期与注册流程
+
+```
+draft（首次提出，可在任务中即创即用）
+  → 满足晋升条件 → active（进每日任务契约的可分派集）
+  → 失效/被更好卡片替代 → deprecated（保留历史，引用它的矩阵记录转 STALE）
+```
+
+晋升条件（满足其一）：① draft 状态被使用 ≥3 次且规程稳定；② 人工评审通过。废止条件：`usage_count ≥ 20 且 hit_count = 0` 时强制评审——是目标面问题还是方法失效（如 WAF 升级），结论写进 changelog。
+
+### 5.6 开放扩展规则（公理 P4 的落地）
+
+- **schema 只锁结构不锁取值**：校验器检查"必填字段存在、类型正确"，不检查"id 是否在固定清单里"
+- **注册即生效**：新卡/新状态/新理由值当场可用，登记义务在当日报告变更说明区
+- **核心列 + 自由列**：tsv 产物核心列固定（§3.4），之后允许任意追加列；追加列被 3 个以上任务使用后可提议升格为核心列（升版 schema）
+- **禁止的全局规则只有两条**：不许用 other/misc 兜底；不许修改历史 append-only 行（纠错用新行冲正）
 
 ---
 
-## 七、登录态测试方法论与账号获取策略
+## 六、反馈与学习回路
 
-### 7.1 先纠正一个认知偏差：按"登录后增益"给资产分级
+### 6.1 使用反馈环（每次任务强制）
 
-观察正确：很多前台站点登录/未登录区别不大。因此**不要为所有资产搞账号**，而是给资产打 auth-value 分级，只向高增益面投入账号成本：
+每次使用任何卡片，落一条 `card_usage-{date}.jsonl`：
 
-| 分级 | 特征 | 示例（实测面） | 策略 |
-|---|---|---|---|
-| A 级（必投） | 登录后暴露全新功能面：管理后台/商家端/运营端/API 控制台/开发者平台 | admin.erp、cloud-erp、livehub 40+ 端点、keeservice 工作台、lbs 控制台、saiyan/live_console、carrier proxy 网关 | 集中资源搞账号 |
-| B 级（选投） | 登录后多个人数据/订单/消息面，IDOR 价值高 | waimai 订单、火山开发者中心 user 系列端点 | 有现成账号就挂 |
-| C 级（不投） | 登录/未登录几乎同面 | 官网、营销页、文档站、静态站 | 不投入，标 na_reason=no-auth-feature 或直接维持匿名测试 |
+```json
+{"card_id":"VC-001","card_version":3,"asset":"e.waimai.meituan.com",
+ "result":"CONFIRMED","deviation":"该站对 origin 后缀绕过也反射，卡片未覆盖",
+ "suggest":"detect.steps 增加 evil{domain} 后缀变体","run_id":"wmt9xxx"}
+```
 
-### 7.2 账号获取的七条路径（按可行性排序）
+`deviation`（实战与卡片的偏差）和 `suggest`（修改建议）是反哺的核心字段；无偏差可省略，有偏差**必须**记录——偏差就是卡片进化的原料。
 
-**路径 1：可自行注册的公开入口（成本最低，优先穷尽）**
-- 美团：美团/点评 C 端账号（手机号）、美团开放平台开发者、美团商家版（个体户资质可试）、快驴/优选等业务线注册入口、Keeta 海外站（邮箱即可）。
-- 字节：抖音 C 端、巨量引擎/巨量百应试用、火山引擎个人试用（送额度，ark/console 面直接解锁）、coze 国内版、Trae 开发者账号。
-- **每个 A 级资产先回答一个问题："它的注册入口在哪？"** 把"找注册入口"本身作为 recon 任务（搜 "域名+注册/试用/开放平台/开发者"），产出注册可行性清单交人工执行。
+### 6.2 卡片修订触发器（满足任一即应升版）
 
-**路径 2：一个主账号打通生态（SSO 乘数效应）**
-- 美团通行证（unitivelogin SSO，08-27 已测绘出完整链路）一号通多子系统；字节通行证同理。**1 个主账号的实际覆盖远超 1 个系统**，优先打通。
+1. 实战出现卡片未覆盖的绕过/变体 → 补 detect 步骤
+2. 出现误报且 falsification 未拦截 → 补证伪条款（同时考虑沉淀为 PatternCard）
+3. `fp_count` 上升 → 评审判定逻辑是否过宽
+4. 达到废止评审线（usage≥20 & hit=0）→ 修订、降优或废止
+5. intel/kb 出现新技术（新绕过、新工具）→ 相关卡升级
+6. SRC 平台收录政策/定级习惯变化 → 更新 src_notes
+7. 另一个项目的经验可迁移（回路 C 的跨项目碰撞）→ 合并条款
 
-**路径 3：开放平台/沙箱/试用凭据**
-- 开发者平台 API Key、沙箱环境、免费试用额度，往往能拿到合法 token 直接测 API 面（lbs 控制台 /api/key/*、火山引擎 Ark 均属此类）。
+### 6.3 知识流动全景
 
-**路径 4：无法注册时的"无账号登录态测试"（重要，常被忽略）**
-登录接口本身就是攻击面，**不需要账号**：
-- 账号枚举（登录/注册/找回密码响应差异）
-- 短信/邮件轰炸（频率限制缺失）
-- 验证码绕过（复用、万能码、响应包泄露）
-- 密码重置逻辑（token 可预测、未绑定校验）
-- 爆破/撞库保护缺失（限速脚本低频探测，注意合规）
-- SSO/OAuth 配置缺陷（redirect_uri 白名单、state 缺失）
-- 默认口令/弱口令仅对**测试环境/自有靶场**做，生产 SRC 谨慎
+```
+实战中 ─┬─ 新漏洞类型/新打法 ────→ 注册新 VulnCard(draft)
+        ├─ 工程技巧/工具心得 ────→ MethodCard
+        ├─ 判定依据/误报特征 ────→ PatternCard（含 counter_examples）
+        ├─ 用不了的灵感 ────────→ IdeaCard（留种）
+        └─ 与既有卡的偏差 ──────→ card_usage.deviation → 升版
 
-**路径 5：泄露凭据的合规利用（灰色转白）**
-- GitHub/网盘/公开文档中泄露的测试账号、demo 账号（很多后台有 demo/demo123 类公开演示账号，属厂商自暴露）
-- JS bundle 中的测试凭据（已有 JS 测绘管线，加 SecretFinder 规则）
-- **红线：仅使用"厂商自暴露"的凭据；绝不使用拖库/暗网凭据，绝不登录真实用户账号**。发现泄露凭据本身即可作为信息泄露漏洞提交。
+情报侧 ─┬─ web_search/intel 新 CVE ─→ IdeaCard 或 VulnCard(N-day) 条款
+        └─ kb 224 篇 ─→ 开局 kb_search 强制检索 ─→ 命中知识挂到相关卡 changelog
 
-**路径 6：邀请制系统的合规申请**
-- 企业试用（销售通道、edu/企业邮箱申请）、内测申请、问卷招募。把候选列成清单交人工，人每周花 30 分钟批量申请。
+复盘侧 ─┬─ 每周评审：词表合并、draft 晋升、deprecated 清理、统计报告
+        └─ STALE 风暴检查：卡片升版是否造成不合理的大规模重测
+```
 
-**路径 7：放弃并标注**
-- 确实无路的（纯内部系统外网暴露面），标 `BLOCKED(blocker=no-registration-channel)`，转入"登录面测试"（路径 4）+ 定期复评。**不让它无限占 huntlist。**
+### 6.4 与现有体系的关系
 
-### 7.3 账号资产的管理规范
-
-- 凭据入 credentials 表，字段：`program / system / account_type(self-registered|demo|leaked-public) / risk_ack / scope_binding`
-- scope.yml rules 关联：凭据仅用于对应 program
-- **双账号原则**：测水平越权必须同系统 2 个账号（A 创建资源，B 访问 A 的资源 ID），注册时即成对注册
-- 测试数据隔离：只用自己创建的测试数据做 IDOR/逻辑测试，绝不触碰真实用户数据（SRC 通用红线，写进卡片 prerequisites）
-- 会话维持：shared-browser profile 持久化登录态 + xray 7777 挂为浏览器代理 → **一次打通"认证爬虫 → 被动扫描 → authz_diff 越权差分"**；cookie 失效自动告警转人工重登
-
-### 7.4 登录后的挖掘方法（有账号后干什么）
-
-1. **功能全覆盖爬虫**：katana/浏览器带会话爬全功能面，流量全过 xray → 被动扫描 + 参数面沉淀
-2. **authz_diff 双账号差分**：同一请求换 B 账号凭证重放，响应数据归属比对 → 水平越权；摘除/降级凭证 → 垂直越权
-3. **对象 ID 遍历**：user_id/order_id/doc_id/coupon_id 数字/短哈希枚举（限速），重点关注 JS 已泄露的真实 ID 作为种子
-4. **业务逻辑**：价格/数量篡改、负值、重放、竞态（单端点并发 N 请求）、优惠券/积分规则绕过
-5. **GraphQL/批量接口**：内省、字段遍历、批量别名滥用
-6. **管理面特有**：角色权限矩阵（低权账号访问高权端点）、审计日志缺失、导出接口未脱敏
+- playbooks（流程级方法论）= 跨卡的编排经验，保留；四类卡 = 原子知识单元
+- exp 经验卡 = 软性经验；卡片 = 硬性规程。每日 vuln 任务契约直接引用当日的卡片 ID 清单
+- kb 不再闲置：开局 `kb_search(当日目标指纹)` 是硬指标，命中内容以 changelog 形式挂到相关卡片，知识完成从"库存"到"规程"的转化
 
 ---
 
-## 八、输入/输出规范与会话接力
+## 七、自由探索机制：规定动作 + 自选动作
 
-### 8.1 开局包（输入规范）
+### 7.1 任务结构：保底与自由的比例
 
-每会话不再自由盘点，读固定结构 `brief-{program}-{date}.md`：
+每个 vuln 任务 = **规定动作（必须 100% 完成）+ 自选动作（必须产出，方向自由）**：
 
-```
-## 昨日状态
-- 存活/新增/移除资产数（数字指针）
-- PENDING/BLOCKED/STALE 覆盖清单（§5.4 聚合视图）
-- 复验到期 finding 清单
-## 今日硬指标
-- recon: diff 三数 + 新增资产 100% 形态确认
-- vuln: 指定漏洞卡 × 指定资产批次的执行清单、kb_search ≥2 次、
-        huntlist 条件判定 100%、卡片使用记录落盘
-## 禁止项
-- 负账本条目清单/查询式（禁止重跑）
-- info 级噪音进 findings
-```
-
-### 8.2 资产台账（recon 必输出）
-
-`assets-{program}.tsv`（append-only，单一权威源，替代当前 probe-out 四代并存）：
-
-```
-domain  ip  cname  status  title  tech  first_seen  last_seen  source  probe_date  egress_note
-```
-
-配套每日 `asset-diff-{date}.md`：新增/漂移/移除三表。
-
-### 8.3 漏洞尝试台账（vuln 必输出，当前完全缺失）
-
-`attempts-{program}.tsv`（append-only）：
-
-```
-ts  asset  endpoint  card_id  card_ver  tool  result  na_reason/blocker  evidence_path  run_id
-2026-08-27T04:12  e.waimai.meituan.com  /api/x  VC-001  3  curl-diff  CONFIRMED  -  ev/287/  wmt9xxx
-2026-08-27T04:20  cloud-erp.meituan.com  /actuator/*  VC-003  1  ffuf  TESTED_CLEAN  -  tmp/cloud-erp.tsv  bash-3
-2026-08-27T04:30  kat.test.meituan.com  -  VC-004  1  dalfox  NOT_APPLICABLE  static-site  -  -
-2026-08-27T04:35  admin.erp.meituan.com  /api/*  VC-008  1  authz_diff  BLOCKED  no-credential  -  -
-```
-
-`result ∈ {TESTED_CLEAN, CONFIRMED, FALSE_POSITIVE, NOT_APPLICABLE, BLOCKED}`。覆盖矩阵由此聚合（§5.4）。
-
-### 8.4 Finding 证据包（可提交性留痕）
-
-每条 finding 强制目录化 `evidence/{finding_id}/`：
-
-- `request.txt` / `response.txt`：原始报文，含时间戳与出口 IP
-- `reproduce.md`：编号复现步骤，**直接可贴进 SRC 提交框**
-- `screenshot.png`：browser 插件已有，应强制
-- `verify-log.md`：每次复验追加一行（时间/出口/结果/响应哈希）
-
-finding 字段补全：`vuln_type`(CWE)、`severity`、`affected_url`、`param`、`poc_summary`、`src_ready`(bool)。存量 273 条缺类型的回填至少到类型级。
-
-### 8.5 会话交接包（接力复用）
-
-每日收尾产出 `handoff-{program}-{date}.md`，固定五段：
-
-```
-1. 状态快照：资产数/覆盖矩阵摘要/未闭环项（全指针，不内联数据）
-2. 今日动作摘要：attempts 行数 + 关键结论 ≤10 行
-3. 明日队列：huntlist（含 precondition/ttl/next_action）
-4. 阻塞与求助：需人工事项（账号申请、授权、intrusive 批准）——按"解锁多少 BLOCKED"排序
-5. 数据指针：所有产物绝对路径清单
-```
-
-下一会话任务提示只需引用 handoff 路径 + brief，不翻全量黑板（顺带解决黑板键 60+、开局重复全量检索的 token 浪费）。
-
----
-
-## 九、落地路线图
-
-| 期 | 动作 | 预期收益 |
+| 部分 | 内容 | 硬指标 |
 |---|---|---|
-| 第一周 | ① attempts 台账 + handoff 交接包 + brief 进任务契约；② nuclei info 噪音隔离；③ 存量 findings 回填 vuln_type；④ 首批 18 张漏洞卡骨架（从既有方法论初始化） | 留痕/接力/覆盖可见性立即改善，成本≈0 |
-| 第二周 | ⑤ L2 接口层管线（katana+waybackurls+gau+JS 提取工具化）；⑥ xray flows 每日消费（参数→dalfox/sqlmap、敏感信息回扫）；⑦ 子域接管全量扫一次（VC-002 首跑） | 域名级→接口级，工具矩阵转动 |
-| 第三周 | ⑧ 被动源扩容（uncover/fofa API 日常化）；⑨ huntlist 生命周期（precondition/ttl）；⑩ kb 开局强制检索；⑪ 卡片反馈环机制化 | 破资产伪收敛，卡片开始自我进化 |
-| 持续（需人配合） | ⑫ **凭据策略**：按 §7.2 路径 1/2/3 注册双项目成对测试账号 → 浏览器挂 xray → authz_diff；把"注册入口侦察"列入 recon 任务，每周交人工一批申请清单 | 唯一能带回 high/medium 产出的动作，解开 90% BLOCKED |
+| 规定动作 | 覆盖矩阵 PENDING/STALE 消化、复验到期项、huntlist 条件判定、台账留痕 | 开局 brief 明确列出 |
+| 自选动作 | 自由探索（见 7.2 引导） | **≥ 任务窗口 20% 的时间 或 ≥3 条 IdeaCard**，二者取其易 |
 
-### 关键原则
+**两条边界**：①自选动作不许挤占规定动作（规定动作未完成 = 任务失败）；②自选动作的产出**只能进 IdeaCard/huntlist，不许直接进 findings**——灵感和漏洞之间隔着验证规程（P2 裁决）。
 
-1. **覆盖率的新定义**：不是"资产扫过一次"，而是"每个资产 × 每张适用的漏洞卡都有终态结论，且有台账可查"。
-2. **BLOCKED 不是垃圾桶**：每个 BLOCKED 必须写明解锁条件，且汇总成"人工待办"按解锁收益排序——这把"需要人做什么"变成了精确的最小请求。
-3. **卡片是活的**：每次使用都是一次评审机会；方法改进通过版本号自动触发重测，经验不再随会话结束而流失。
-4. **留痕即接力**：attempts + handoff + 证据包三件套，保证任何新会话（或换人）能在 5 分钟内接续到上一次的精确断点。
+### 7.2 头脑风暴引导（写进每日 brief 的发散框架）
+
+模型自由发挥时，给角度不给结论。六个发散方向，每次任务至少扫一遍：
+
+1. **组合**：两个已确认事实能不能组合成新攻击链？（CORS 反射 × 缓存投毒；SSO continue 参数 × 开放跳转；JS 泄露内网域 × 云元数据）
+2. **类比**：本项目的面，别的 SRC/公开案例怎么打过？（kb 检索"同类厂商+同类业务"的公开 writeup）
+3. **倒置**：防守方假设是什么？假设反过来会怎样？（"网关一定鉴权"→ 摘除头/改方法/换路径试试；"测试环境不出网"→ DNS 带外试试）
+4. **协议下沉**：HTTP 层下面还有什么？（WebSocket 鉴权、T3/AJP/MQ 等中间件协议、HTTP/2 走私、Host 头多面性）
+5. **数据追问**：这个响应里的每个字段从哪来、能被谁影响？（Server-Timing 泄露 region/instance → 能否用于侧信道或定位内网面）
+6. **时间维度**：面随时间怎么变？（新发版窗口、证书新签发子域、git 提交时间规律、大促/活动临时面）
+
+### 7.3 IdeaCard：想法的留种与孵化
+
+当下验证不了的想法**必须入库**（不许丢弃）， schema 在通用骨架上扩展：
+
+```yaml
+id: IC-007
+type: idea
+name: waimai CORS 反射 × 登录态缓存投毒组合链
+status: seed              # seed / incubating / testable / validated / promoted / rejected
+seed_from: 2026-08-27 头脑风暴（方向1：组合）
+hypothesis: |
+  e.waimai 反射+ACAC 已确认；若其某接口响应被共享缓存键覆盖，
+  可形成"反射凭证读取 + 缓存放大"链，定级从 low 升至 high
+verification_requires:    # 留种的核心：写清楚缺什么
+  - 登录态账号（blocker: no-credential）
+  - 缓存键测绘方法（需查 kb 或新研）
+first_testable_when: 凭据到位当日
+related: [VC-001, VC-0xx-缓存投毒(待建)]
+```
+
+孵化流转：
+- `seed → incubating`：后续会话补充了方法/先例/变体
+- `incubating → testable`：验证条件全部满足（凭据到位/工具就绪/目标面出现）——**每日开局检查 IdeaCard 的 first_testable_when，条件满足的自动升格并进当日 huntlist**
+- `testable → validated`：实测验证成功 → **转正**（promoted）：想法固化为新 VulnCard 或并入既有卡 changelog
+- `→ rejected`：证伪，写清证伪依据（rejected 也是知识，防后人重复）
+
+### 7.4 思路碰撞的制度化
+
+- **跨项目碰撞**：美团确认的手法/判定模式，每周评审时对字节资产做一次适用性扫描（反之亦然）
+- **跨时间碰撞**：每月用当前卡片库对"历史 TESTED_CLEAN 资产"做一次抽样重估——卡片进化后，过去的"干净"可能不再干净（STALE 机制已自动化，此处做抽查兜底）
+- **外部碰撞**：web_search 不仅查 CVE，定期查"目标厂商 + 公开漏洞报告/writeup"，把外部打法转成 IdeaCard
 
 ---
 
-*本文档基于 2026-08-27 对 csai 的只读检查生成，未对远端做任何变更。修订时请注意同步更新相关章节。*
+## 八、登录态测试方法论与账号获取策略
+
+### 8.1 按"登录后增益"分级，不为所有资产搞账号
+
+| 分级 | 特征 | 实测示例 | 策略 |
+|---|---|---|---|
+| A（必投） | 登录后暴露全新功能面：管理后台/商家端/运营端/API 控制台 | admin.erp、cloud-erp、livehub、keeservice 工作台、lbs 控制台、carrier proxy 网关 | 集中资源搞账号 |
+| B（选投） | 登录后多个人数据/订单/消息面，IDOR 价值高 | waimai 订单、火山开发者中心 user 系列 | 有现成账号就挂 |
+| C（不投） | 登录/未登录几乎同面 | 官网、营销页、文档站 | na_reason=no-auth-feature，维持匿名测试 |
+
+### 8.2 账号获取路径（开放清单，初始七条）
+
+| # | 路径 | 说明 |
+|---|---|---|
+| 1 | 自行注册穷尽 | 每个 A 级资产必答"注册入口在哪"；把**注册入口侦察列为 recon 常规任务**，产出可行性清单交人工执行。美团（C 端/开放平台/商家版/Keeta 海外邮箱注册）、字节（抖音/巨量试用/火山引擎个人试用/coze/Trae） |
+| 2 | SSO 乘数 | 美团 unitivelogin、字节通行证一号通多系统，**优先打通主账号** |
+| 3 | 开放平台/沙箱 | 开发者 API Key、沙箱、免费试用额度 → 合法 token 直测 API 面 |
+| 4 | **无账号登录面测试** | 登录接口本身是攻击面：账号枚举/短信轰炸/验证码绕过/密码重置逻辑/OAuth 配置/爆破保护——不需要账号，独立成卡（VC-015） |
+| 5 | 厂商自暴露凭据 | demo 账号、JS 中测试凭据、GitHub/网盘泄露——**仅用厂商自暴露的；泄露本身即可作为信息泄露提交。红线：绝不用拖库凭据、绝不登真实用户账号** |
+| 6 | 邀请制申请 | 企业试用/内测/问卷，清单交人工批量申请 |
+| 7 | 放弃并标注 | 确无通道 → `BLOCKED(no-registration-channel)` + 转路径 4 + 定期复评，**不许无限占 huntlist** |
+
+新路径随时注册进本清单（P4）。
+
+### 8.3 账号资产管理
+
+- 凭据入 credentials 表：`program / system / account_type(self-registered|demo|leaked-public) / scope_binding`
+- **双账号原则**：水平越权必须同系统双账号成对注册
+- 测试数据隔离：只用自建测试数据做 IDOR/逻辑测试，不碰真实用户数据（SRC 红线，写进相关卡 prerequisites）
+- 会话维持：shared-browser profile 持久化 + xray 7777 挂浏览器代理 → 一次打通"认证爬虫→被动扫描→authz_diff 差分"；cookie 失效告警转人工
+
+### 8.4 登录后挖掘方法
+
+功能全覆盖爬虫（katana 带会话过 xray）→ authz_diff 双账号差分 → 对象 ID 遍历（JS 泄露真实 ID 做种子）→ 业务逻辑（价格/数量/重放/竞态）→ GraphQL/批量接口 → 角色权限矩阵。各自对应 VulnCard，按卡执行。
+
+---
+
+## 九、资产收集方法清单（开放）
+
+按投入产出排序的**初始**清单（新方法随时注册）：
+
+| 优先级 | 方法 | 工具/源 | 状态 |
+|---|---|---|---|
+| P0 | URL/端点历史挖掘 | waybackurls、gau、katana、ParamSpider | 最大缺口，从未系统做 |
+| P0 | JS 端点自动化提取 | subjs + LinkFinder/SecretFinder、katana -jc | 手工验证过效果，须工具化 |
+| P1 | 被动 DNS 多源 | SecurityTrails、VT、OTX、urlscan、RapidDNS、uncover | 解决 certspotter 单源枯竭 |
+| P1 | 空间测绘 API | fofa/hunter/quake/censys（fofa.conf 已存在） | 同证书/favicon 反查 |
+| P1 | 子域爆破+排列 | puredns/dnsx + alterx | 被动源枯竭后的增量主力 |
+| P1 | 子域接管 | nuclei takeover / subzy | 0 成本高收益，从未做 |
+| P2 | ASN/IP+端口面 | asnmap/mapcidr → naabu → httpx | T3/ActiveMQ 先例证明价值 |
+| P2 | 移动端/小程序 | jadx、小程序解包 | 美团/字节业务大头在 App |
+| P2 | 代码泄露面 | GitHub/GitLab 监控、网盘文库 | — |
+| P3 | 云桶枚举 | S3/OSS/TOS/COS | 配合 JS 提取桶名 |
+
+**"子域 diff=0 多日"警惕伪收敛**：源单一时 diff=0 只说明"这个源没新货"，不说明"面收敛"。多源并行后才允许下收敛结论。
+
+---
+
+## 十、落地路线图
+
+| 期 | 动作 | 对应公理 | 预期收益 |
+|---|---|---|---|
+| 第一周 | ① §3.4 标准产物 + schema 校验进任务契约；② attempts/handoff/brief 三件套；③ nuclei info 噪音隔离；④ 存量 findings 回填 vuln_type | P2 | 留痕/接力/防幻觉立即生效，成本≈0 |
+| 第二周 | ⑤ 四类卡注册表 + 种子卡（VC-001~018 等）从既有方法论初始化；⑥ 覆盖矩阵聚合脚本；⑦ L2 接口层管线（katana+waybackurls+gau+JS 提取） | P1/P3/P4 | 域名级→接口级，覆盖可见 |
+| 第三周 | ⑧ xray flows 消费管线；⑨ 探索配额与 IdeaCard 进任务契约；⑩ huntlist 生命周期（precondition/ttl）；⑪ 资产多源扩容 | P5/P1 | 工具矩阵转动，想法开始留种 |
+| 第四周 | ⑫ 每周评审会机制（词表合并/draft 晋升/STALE 风暴检查）；⑬ 卡片反馈环数据首轮复盘 | P3 | 进化回路闭环 |
+| 持续（需人配合） | ⑭ 凭据策略：按 §8.2 路径 1/2/3 成对注册账号 → 浏览器挂 xray → authz_diff | — | 唯一能把产出带回 high/medium 的动作 |
+
+### 关键原则回顾
+
+1. **没有漏 = 台账可证**，不是"扫过"（P1）
+2. **无证据不结论，没证据的"干净"与"有洞"同罪**（P2）
+3. **每次使用都是一次评审，每次偏差都是一次升版机会**（P3）
+4. **格式锁死、内容放飞；表格会长大，schema 不长**（P4）
+5. **规定动作保底、自选动作留种；今天用不了的想法是明天的漏洞**（P5）
+
+---
+
+*v2.0 变更说明：按五条公理全面重构 v1.0——新增设计原则层、可靠性设计、防幻觉八条标准、卡片体系从单类扩为四类注册表、新增自由探索机制与 IdeaCard 孵化流、所有枚举改为开放注册。v1.0 的覆盖矩阵、账号策略、资产清单等内容保留并融入新结构。*
