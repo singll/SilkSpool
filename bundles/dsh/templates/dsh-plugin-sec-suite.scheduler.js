@@ -1,0 +1,162 @@
+// ==============================================================================
+// P11 定时任务调度循环（sec-suite host 面，仅 web profile 启动）
+// 60s tick → SQLite 事务原子认领到期任务 → runWorker(cwd=工作区路径) → 收尾续期。
+// 重启恢复：任务状态在 SQLite，过期的 interval 按 latest-only 补触发最近一次。
+// ==============================================================================
+
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+
+// 依赖注入（由 index.js 调用 startScheduler 时传入，避免循环依赖）：
+//   dataDir                数据目录（主文件 DATA_DIR，用于推导锁文件与 preset 目录）
+//   audit                  主文件 audit()：审计 JSONL 落盘
+//   assetDb                asset-db.js 模块命名空间（任务认领/收尾/回收）
+//   exp                    experience.js 模块命名空间（kbVaultSync vault 回流）
+//   runWorker              主文件 runWorker()：worker 执行核心
+//   pidAlive               主文件 pidAlive()：进程存活探测
+//   getWorkspaceRegistry   () => 主文件 workspaceRegistryRef（fiber 注入，可能为 null，须惰性读取）
+//   getSessionPersistence  () => 主文件 sessionPersistenceRef（同上）
+let deps = null
+
+const SCHEDULER_TICK_MS = 60000
+let lastVaultSyncDay = ''
+// 定时任务 worker 执行上限：原 1800s 与任务体量不匹配导致每晚超时被杀，放宽到 runWorker 上限 3600s
+const SCHEDULER_TASK_TIMEOUT_SEC = 3600
+
+function workspacePathOfProgram(programId) {
+  const p = deps.assetDb.listPrograms().find((x) => x.id === programId)
+  return (p && p.workspace_path) || null
+}
+
+// 工作区会话归组 reconcile：headless worker / CLI 产生的会话按 header cwd 匹配工作区路径，
+// attachSession 幂等（已归组则无写）。registry 对后期 cwd-only 会话不自动归组（上游语义），这里补齐。
+async function reconcileWorkspaceSessions() {
+  const workspaceRegistryRef = deps.getWorkspaceRegistry()
+  const sessionPersistenceRef = deps.getSessionPersistence()
+  if (!workspaceRegistryRef || !sessionPersistenceRef) return
+  let headers
+  try { headers = await sessionPersistenceRef.list() } catch { return }
+  let workspaces
+  try { workspaces = workspaceRegistryRef.list() } catch { return }
+  const byPath = {}
+  for (const w of workspaces) byPath[w.path] = w
+  for (const h of headers) {
+    const w = h && h.cwd ? byPath[String(h.cwd)] : null
+    if (!w) continue
+    try { await w.attachSession(h.id) } catch { /* 单个失败不影响其余 */ }
+  }
+}
+
+// worker.log 尾部噪声（headless 进程 stderr 杂讯）不进入任务摘要
+const WORKER_NOISE_RE = /ExperimentalWarning|trace-warnings|EADDRINUSE|xray webhook 启动失败|onnxruntime|pthread_setaffinity/
+
+// 定时任务角色注入：按 phase 读对应 preset 的 persona（单一事实源=preset 文件，与 webui 自定义 agent 同步演化）。
+// headless CLI 无 --agent 选项，调度 worker 原只有通用 coding-agent 人格——此处补齐项目层等价实现。
+const PHASE_PRESET = { recon: 'recon', vuln: 'vuln-hunt', 'biz-logic': 'biz-logic', 'code-audit': 'code-audit', intranet: 'intranet', review: 'review' }
+const personaCache = new Map()
+function personaOfPhase(phase, cwd) {
+  const preset = PHASE_PRESET[String(phase || '')]
+  if (!preset) return ''
+  const cacheKey = preset + '|' + (cwd || '')  // 角色文本内联 cwd，缓存必须按 cwd 区分（否则跨 workspace 复用张冠李戴）
+  if (personaCache.has(cacheKey)) return personaCache.get(cacheKey)
+  let text = ''
+  try {
+    const yml = fs.readFileSync(path.join(deps.dataDir, '.agent-presets', preset, 'agent.cordis.yml'), 'utf8')
+    const m = yml.match(/text: >-\n((?: {6}.*\n?)+)/)
+    if (m) {
+      text = m[1].split('\n').map((l) => l.replace(/^ {6}/, '')).join('\n').trim()
+        .replace(/\{\{model\}\}/g, '当前模型').replace(/\{\{cwd\}\}/g, cwd || '工作目录')
+    }
+  } catch { /* 读取失败静默降级为无角色 */ }
+  personaCache.set(cacheKey, text)
+  return text
+}
+
+async function schedulerTick() {
+  let due
+  try { due = deps.assetDb.taskClaimDue(Date.now()) } catch (e) {
+    process.stderr.write(`[sec-suite] 调度认领失败: ${e?.message ?? String(e)}\n`)
+    return
+  }
+  // 到期任务相互独立：并行启动（修复串行 await 导致第 N 个任务晚 (N-1)×上限 才开跑的问题）。
+  // 每个 callback 全段 try/catch + stderr 落日志：任何单任务异常可见可查，不再静默吞掉。
+  await Promise.allSettled(due.map(async (task) => {
+    try {
+      const cwd = workspacePathOfProgram(task.program_id)
+      const role = personaOfPhase(task.phase, cwd)
+      const prompt = `${role ? '[角色人格] ' + role + '\n\n' : ''}[定时任务 #${task.id}${task.phase ? ' / ' + task.phase : ''}] ${task.objective}`
+      deps.audit({ ts: Date.now(), run_id: '-', tool: 'scheduler', decision: 'executed', detail: { task_id: task.id, program_id: task.program_id } })
+      const r = await deps.runWorker({ task: prompt, cwd, timeoutSec: SCHEDULER_TASK_TIMEOUT_SEC, enforceLimit: true })
+      if (r.busy) {
+        try { deps.assetDb.taskUpdate({ id: task.id, status: 'queued', note: 'worker 并发已满，延后到下一 tick' }) } catch { /* ignore */ }
+        return
+      }
+      let note = ''
+      if (!r.ok && r.exit_code === null && r.duration_ms >= SCHEDULER_TASK_TIMEOUT_SEC * 1000 - 15000) {
+        note = `worker 超时被杀（${SCHEDULER_TASK_TIMEOUT_SEC} 秒上限）`  // 显式写原因，不再展示日志尾部噪声
+      } else {
+        note = (r.tail || '').split('\n').filter((l) => l.trim() && !WORKER_NOISE_RE.test(l)).slice(-3).join(' ').slice(0, 300)
+      }
+      deps.assetDb.taskFinishScheduledRun({ id: task.id, ok: !!r.ok, run_id: r.run_id || '', note })
+    } catch (e) {
+      process.stderr.write(`[sec-suite] 调度任务 #${task.id} 执行异常: ${e?.stack || e?.message || String(e)}\n`)
+      try { deps.assetDb.taskFinishScheduledRun({ id: task.id, ok: false, run_id: '', note: `调度执行异常: ${e?.message ?? String(e)}`.slice(0, 300) }) } catch { /* ignore */ }
+    }
+  }))
+  // vault 回流（Bellkeeper 融合方向②）：每日 05 时后首个 tick 拉取安全域卡 → kb_docs（防循环/去重在 kbVaultSync 内）
+  const today = new Date().toISOString().slice(0, 10)
+  if (lastVaultSyncDay !== today && new Date().getHours() >= 5) {
+    lastVaultSyncDay = today
+    deps.exp.kbVaultSync().then((r) => {
+      process.stderr.write(`[sec-suite] vault 回流: ${JSON.stringify(r)}\n`)
+    }).catch((e) => process.stderr.write(`[sec-suite] vault 回流异常: ${e?.message}\n`))
+  }
+  // 顺带做工作区会话归组（轻量、幂等）——已移至 tick 层每 10 周期执行，此处不再重复
+}
+
+// 跨进程单例（P0-1）：插件被宿主面与每个 agent/worker 子进程分别加载，globalThis 不跨进程，
+// 模块级/globalThis 单例都挡不住多进程各起调度循环（实测 10+ PID 各跑 tick + database is locked）。
+// 用文件锁 data/scheduler.lock（持有者 PID + 心跳时间戳）保证全机只有一个进程真正认领任务。
+const SCHEDULER_LOCK_STALE_MS = 180000 // 3 分钟无心跳（容 3 个 tick 未刷新）视为死锁，可抢占
+// 原主文件模块级常量 SCHEDULER_LOCK = path.join(DATA_DIR, 'scheduler.lock')，改为按注入 dataDir 惰性求值（值不变）
+const schedulerLockPath = () => path.join(deps.dataDir, 'scheduler.lock')
+
+// 抢锁：无锁文件 / 持有者已死 / 心跳超期 → 写入自己 PID。返回是否持有。
+function acquireSchedulerLock() {
+  try {
+    const cur = JSON.parse(fs.readFileSync(schedulerLockPath(), 'utf8'))
+    if (cur && cur.pid && cur.pid !== process.pid && deps.pidAlive(cur.pid) && (Date.now() - (cur.ts || 0) < SCHEDULER_LOCK_STALE_MS)) {
+      return false // 活锁被他人持有
+    }
+  } catch { /* 无锁文件或损坏 → 可抢 */ }
+  try { fs.writeFileSync(schedulerLockPath(), JSON.stringify({ pid: process.pid, ts: Date.now() })); return true } catch { return false }
+}
+function holdsSchedulerLock() {
+  try { return JSON.parse(fs.readFileSync(schedulerLockPath(), 'utf8')).pid === process.pid } catch { return false }
+}
+
+export function startScheduler(injected) {
+  deps = injected
+  if (globalThis.__silksecScheduler) return
+  if (!acquireSchedulerLock()) return // 已有活的调度进程持锁，本进程不启动（收敛多进程内讧）
+  // 启动即回收：新进程启动意味着旧进程已终止，其派发的所有 running scheduled 任务均为孤儿 → 无条件回收（maxAge=0）
+  try { deps.assetDb.taskReapStale(0) } catch { /* 启动僵尸回收，失败不阻断 */ }
+  // worker 注册表启动对账：把重启杀死的在飞 worker 从 running 重分类为 done/failed/killed（供重试幂等恢复）
+  try { deps.assetDb.workerReapStale() } catch { /* 失败不阻断 */ }
+  process.once('exit', () => { try { if (holdsSchedulerLock()) fs.unlinkSync(schedulerLockPath()) } catch { /* ignore */ } })
+  let tick = 0
+  globalThis.__silksecScheduler = setInterval(() => {
+    // 心跳续锁 + 持有校验：丢锁则尝试重夺，仍被他人活持则本 tick 跳过（不认领）
+    if (!holdsSchedulerLock() && !acquireSchedulerLock()) return
+    try { fs.writeFileSync(schedulerLockPath(), JSON.stringify({ pid: process.pid, ts: Date.now() })) } catch { /* ignore */ }
+    if ((++tick % 10) === 0) { try { deps.assetDb.taskReapStale() } catch { /* ignore */ } } // 每 10 tick 周期回收
+    // 孤儿 worker 周期对账（P12-1）：父 worker 被杀会留下 registry 永远 running 的孙 worker
+    // （孙进程 detached 自成进程组，外层 SIGKILL 够不着），按 pid 死活定期重分类
+    if ((tick % 10) === 0) { try { deps.assetDb.workerReapStale() } catch { /* ignore */ } }
+    schedulerTick().catch(() => {})
+    // 会话归组 reconcile 是全量 list+attach，每 tick 跑浪费 I/O：降到每 10 tick（≈10min），够收敛即可
+    if ((tick % 10) === 0) reconcileWorkspaceSessions().catch(() => {})
+  }, SCHEDULER_TICK_MS)
+  globalThis.__silksecScheduler.unref?.()
+  process.stderr.write(`[sec-suite] 定时任务调度循环已启动（60s tick, pid=${process.pid}）\n`)
+}

@@ -1,0 +1,13 @@
+name: l2-collect
+binary: /opt/silkspool/dsh/scripts/pipeline/l2-collect.sh
+stage: recon
+risk: active
+timeout: 600
+target_param: target
+requires: [live_hosts]
+produces: [endpoints]
+args_template: "{{program}} {{target}}"
+env_proxy: true
+parser: lines
+summarize: head
+store: asset-graph

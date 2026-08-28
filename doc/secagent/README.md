@@ -80,12 +80,13 @@
 
 > 按建议顺序排列；完成一项移入「已完成记录」。
 
-### T-0 调度异常调查与修复【紧急】
+### T-0 调度异常调查与修复【升级窗口处理】
 
-- 现象（2026-08-28 发现）：tasks #16-#19 next_run_at 被推进到 08-30/09-01（非每日），今日 03:00/04:00 链未运行；updated_at=今日 09:18，audit 无记录，原因未明
-- 待做：① 查明是谁/什么改动了 next_run（看板操作/会话 task_schedule/调度器重锚定 bug）；② 非人为有意则重新锚定到次日 03:00/04:00；③ 若为重锚定 bug 记入 env-issue 并观察复发
+- 根因（2026-08-28 查明）：task_runs 持续 ~24h 才关闭（latest-only 语义）→ 每日触发时前次运行仍"打开" → 调度器生成"宿主重启/超时回收"恢复行并多次推进 next_run（08-30/09-01）。**链条实际每日正常执行一次**，恢复行是记录产物非真实执行
+- 待做：① 0.1.2 升级后验证调度器行为是否变化；② 重新锚定 next_run 到次日 03:00/04:00（与升级窗口一并，避免与调度器恢复逻辑打架）；③ 若升级后仍复发，记入 env-issue 并考虑向 DSH 上游报 issue
+- 注意：task_runs 的 duration_ms 显示 ~24h 是关闭时机产物，**不是真实执行时长**，复盘时勿误读
 
-### T-1 验收 P13 首批运行质量（T-0 修复后起算，每日）
+### T-1 验收 P13+P14 运行质量（每日）
 
 - 检查 attempts 台账是否按六态落行、N/A 和 BLOCKED 是否带理由、handoff 是否生成且数字一致
 - 发现执行偏差 → 修订 sec-pipeline 技能或任务 objective（deviation 即卡片/规范升版原料）
@@ -213,7 +214,11 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 | 2026-08-28 | **重要纠偏** | xray flows/*.jsonl 11.2 万行全是扫描统计计数，**请求内容从未被记录**——参数面改由 l2-collect 直接产出 |
 | 2026-08-28 | 文档整合 | sec/dsh 文档集中至 doc/secagent/；本 README 为唯一持续推进入口 |
 | 2026-08-28 | DSH 升级规划 + B0 执行 | `dsh-0.1.2-upgrade-arch-plan.md` 产出；B0 排查全过（无 APIProxy 依赖）；**B1 暂缓：0.1.2-alpha.1 未发布 npm**（GitHub 仅源码），用户决策等 beta；已部署 dsh-version-watch 每日监控 npm |
-| 2026-08-28 | 发现调度异常（待查） | tasks #16-#19 next_run_at 被推进到 08-30/09-01（updated 09:18 今天，原因未明），今日 03:00/04:00 链未跑；需查明并重新锚定 |
+| 2026-08-28 | 发现调度异常（已查明） | tasks #16-#19 next_run 漂移根因：**task_runs 持续 ~24h 才关闭 → 每日触发时前次运行仍"打开" → 调度器生成"宿主重启/超时回收"恢复行并多次推进 next_run**；实际链条每日正常执行一次（恢复行是记录产物非真实执行）。修复（重锚定）待 0.1.2 升级窗口一并处理，登记 T-0 |
+| 2026-08-28 | B2 提示词去重（P14） | 新建 sec-runtime-discipline 公共纪律技能；4 个日任务 objective 重写（3569→1226 等，~70% 精简，纪律全部归技能单一事实源）；**收尾 note 强制【项目·角色·MMdd】格式**（执行历史左侧可分辨哪天哪个任务）；#24 周复盘挂入每周卡片评审段（T-4 完成） |
+| 2026-08-28 | B3 sec-pipeline 插件化 | 新插件 8 工具上线（attempts_log/card_usage_log/radar_read/pipeline_validate/coverage_report/verify_replay/surface_queue/surface_scan，全部单测通过含反例拦截）；l2-collect 注册为 run_cli manifest；objective 工具引用更新；旧脚本进入 1 周只读退役期 |
+| 2026-08-28 | B4 sec-suite 拆分（第一批） | 主文件 2051→1874 行，webhook.js/scheduler.js 卫星拆出（依赖注入、行为不变、node --check 全过）；重启冒烟通过（调度循环正常启动）；taskChain/reportBuild 留待下批 |
+| 2026-08-28 | B5 TrueNAS/vault 沉淀 | spool nas 修复（新增 insecure 配置 + uptime 字符串解析）；csai 直挂 NFS 被 EPERM（keeper 正常，根因未明）→ **keeper 中继方案**落地：csai vault-export-build（卡片 YAML→md）→ operator vault-sync cron 每 30min → keeper `/mnt/NAS/data/knowledge/vault/SilkSecAgent/`（卡片库/报告/覆盖视图/交接，首批 18 文件已同步） |
 
 ### 历史文档索引（本目录）
 

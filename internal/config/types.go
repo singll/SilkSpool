@@ -144,8 +144,9 @@ type N8NConfig struct {
 // TrueNASConfig 定义 TrueNAS 集成配置
 type TrueNASConfig struct {
 	Host     string `yaml:"host"     mapstructure:"host"`     // 主机别名
-	APIURL   string `yaml:"api_url"  mapstructure:"api_url"`  // API 地址
+	APIURL   string `yaml:"api_url" mapstructure:"api_url"` // API 地址
 	Username string `yaml:"username" mapstructure:"username"` // 用户名
+	Insecure bool   `yaml:"insecure" mapstructure:"insecure"` // 跳过 TLS 证书校验（自签证书无 IP SAN 时）
 	// APIKey 从 hosts/<host>/.env 动态读取
 }
 

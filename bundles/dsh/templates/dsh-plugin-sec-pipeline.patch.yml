@@ -1,0 +1,4 @@
+# sec-pipeline bundle layer: 把流水线工具挂载进安装它的 profile
+- insert:
+    - id: sec-pipeline
+      name: '@silksec/dsh-sec-pipeline'

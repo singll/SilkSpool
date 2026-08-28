@@ -23,6 +23,8 @@ assemble() {
     cp "$BASE_DIR/dsh-plugin-sec-suite.asset-graph.js" "$PLUGIN_DIR/asset-graph.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.experience.js" "$PLUGIN_DIR/experience.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.parsers.js" "$PLUGIN_DIR/parsers.js"
+    cp "$BASE_DIR/dsh-plugin-sec-suite.webhook.js" "$PLUGIN_DIR/webhook.js"
+    cp "$BASE_DIR/dsh-plugin-sec-suite.scheduler.js" "$PLUGIN_DIR/scheduler.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.patch.yml" "$PLUGIN_DIR/cordis.patch.yml"
     # package.json 完全由本脚本管理，始终重写（结构升级时不需要手工干预）
     cat > "$PLUGIN_DIR/package.json" <<'EOF'
@@ -38,7 +40,7 @@ assemble() {
     "./experience": "./experience.js",
     "./package.json": "./package.json"
   },
-  "files": ["index.js", "asset-db.js", "asset-graph.js", "experience.js", "parsers.js", "cordis.patch.yml"],
+  "files": ["index.js", "asset-db.js", "asset-graph.js", "experience.js", "parsers.js", "webhook.js", "scheduler.js", "cordis.patch.yml"],
   "license": "MIT",
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
 }

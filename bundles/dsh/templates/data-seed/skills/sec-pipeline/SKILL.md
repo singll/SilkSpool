@@ -45,17 +45,22 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 - 有 GraphQL → graphql-cop；登录框 → VC-015 登录接口安全（无需账号）
 - nuclei 产出 info 级默认隔离：finding 候选只看 severity≥low；info 命中记台账不落 finding。
 
-### 流水线脚本（/opt/silkspool/dsh/scripts/pipeline/，已部署可直接调用）
+### 流水线工具（sec-pipeline 插件，原生工具优先于脚本）
 
-| 脚本 | 用途 | 用法 |
-|---|---|---|
-| l2-collect.sh | L2 接口层收集（katana+waybackurls+gau→endpoints.tsv） | `l2-collect.sh <program> <host或文件>` |
-| surface-consume.py | 参数 URL 队列（喂 dalfox/sqlmap）+ 敏感信息回扫（VC-027） | `surface-consume.py queue <program> <endpoints.tsv>` / `scan <file>` |
-| js-watch.py | 变化雷达·JS 发版 hash 监控 | `js-watch.py init/run <program>` |
-| ct-watch.py | 变化雷达·CT 新子域（已常驻 systemd: ct-watch.service，产出 radar-queue.jsonl，开局消费即可） | recon 开局读 `radar-queue.jsonl` |
-| pipeline-validate.py | 台账格式机器校验（收尾强制） | `pipeline-validate.py <file...>` |
-| coverage-report.py | 覆盖矩阵视图生成（报告数字唯一来源） | `coverage-report.py <attempts.tsv> --out coverage-YYYY-MM-DD.md` |
-| verify-replay.py | CONFIRMED 机械复核（重放+hash+verify-log） | `verify-replay.py <evidence_dir> --proxy http://127.0.0.1:8899` |
+**agent 一律调用 DSH 工具**（审计/run_id 归因/写入即校验），不再用 bash 直接调脚本：
+
+| 工具 | 用途 |
+|---|---|
+| `attempts_log` | 六态台账追加（写入即校验，违规拒绝）——每个探测动作后立即调用 |
+| `card_usage_log` | 卡片使用记录（deviation 必填） |
+| `radar_read` | 变化雷达队列读取（recon 开局，drain） |
+| `pipeline_validate` | 产物格式机器校验（收尾强制） |
+| `coverage_report` | 覆盖矩阵视图（报告数字唯一来源） |
+| `verify_replay` | CONFIRMED 机械复核（重放+hash+verify-log） |
+| `surface_queue` | 参数 URL 队列（喂 dalfox/sqlmap） |
+| `surface_scan` | 敏感信息回扫（VC-027，打码） |
+
+系统层（非 agent 调用）：`l2-collect` 已注册为 run_cli 工具（recon 收集接口层用 `run_cli tool=l2-collect program=<prog> target=<host>`）；ct-watch/js-watch 为 systemd 守护，产出 radar-queue.jsonl。
 
 注意：xray flows/*.jsonl 只有扫描统计计数、无请求内容（已核实）——参数面以 l2-collect 产出为准，勿再依赖 flows 文件。
 

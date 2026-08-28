@@ -50,7 +50,7 @@ type TrueNASJob struct {
 type TrueNASSystemInfo struct {
 	Version  string   `json:"version"`
 	Hostname string   `json:"hostname"`
-	Uptime   int      `json:"uptime"`
+	Uptime   any      `json:"uptime"` // 版本差异：有的返回秒数(int)，有的返回字符串("147 days, 16:47:51")
 	Model    string   `json:"model"`
 	Serial   string   `json:"serial"`
 	MemTotal int64    `json:"mem_total"`
@@ -127,7 +127,7 @@ func NewTrueNASClient(baseDir string) (*TrueNASClient, error) {
 		apiURL:   cfg.TrueNAS.APIURL,
 		username: cfg.TrueNAS.Username,
 		apiKey:   apiKey,
-		insecure: false,
+		insecure: cfg.TrueNAS.Insecure,
 		timeout:  wsTimeout,
 	}, nil
 }
@@ -467,16 +467,24 @@ func (m *TrueNASManager) CmdSnapshotList(pool string) error {
 }
 
 // formatUptime 格式化运行时间
-func formatUptime(seconds int) string {
-	days := seconds / 86400
-	hours := (seconds % 86400) / 3600
-	mins := (seconds % 3600) / 60
+func formatUptime(u any) string {
+	switch v := u.(type) {
+	case string:
+		return v
+	case float64:
+		seconds := int64(v)
+		days := seconds / 86400
+		hours := (seconds % 86400) / 3600
+		mins := (seconds % 3600) / 60
 
-	if days > 0 {
-		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+		if days > 0 {
+			return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+		}
+		if hours > 0 {
+			return fmt.Sprintf("%dh %dm", hours, mins)
+		}
+		return fmt.Sprintf("%dm", mins)
+	default:
+		return fmt.Sprintf("%v", u)
 	}
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm", hours, mins)
-	}
-	return fmt.Sprintf("%dm", mins)
 }
