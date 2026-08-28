@@ -80,7 +80,12 @@
 
 > 按建议顺序排列；完成一项移入「已完成记录」。
 
-### T-1 验收 P13 首批运行质量（2026-08-28 起，每日）
+### T-0 调度异常调查与修复【紧急】
+
+- 现象（2026-08-28 发现）：tasks #16-#19 next_run_at 被推进到 08-30/09-01（非每日），今日 03:00/04:00 链未运行；updated_at=今日 09:18，audit 无记录，原因未明
+- 待做：① 查明是谁/什么改动了 next_run（看板操作/会话 task_schedule/调度器重锚定 bug）；② 非人为有意则重新锚定到次日 03:00/04:00；③ 若为重锚定 bug 记入 env-issue 并观察复发
+
+### T-1 验收 P13 首批运行质量（T-0 修复后起算，每日）
 
 - 检查 attempts 台账是否按六态落行、N/A 和 BLOCKED 是否带理由、handoff 是否生成且数字一致
 - 发现执行偏差 → 修订 sec-pipeline 技能或任务 objective（deviation 即卡片/规范升版原料）
@@ -207,6 +212,8 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 | 2026-08-28 | 第二周批次落地 | l2-collect（实测单目标 6593 端点/913 参数 URL）、surface-consume（队列+7 类敏感回扫）、js-watch、ct-watch 常驻（calidog 不可用改 certspotter 轮询+429 退避） |
 | 2026-08-28 | **重要纠偏** | xray flows/*.jsonl 11.2 万行全是扫描统计计数，**请求内容从未被记录**——参数面改由 l2-collect 直接产出 |
 | 2026-08-28 | 文档整合 | sec/dsh 文档集中至 doc/secagent/；本 README 为唯一持续推进入口 |
+| 2026-08-28 | DSH 升级规划 + B0 执行 | `dsh-0.1.2-upgrade-arch-plan.md` 产出；B0 排查全过（无 APIProxy 依赖）；**B1 暂缓：0.1.2-alpha.1 未发布 npm**（GitHub 仅源码），用户决策等 beta；已部署 dsh-version-watch 每日监控 npm |
+| 2026-08-28 | 发现调度异常（待查） | tasks #16-#19 next_run_at 被推进到 08-30/09-01（updated 09:18 今天，原因未明），今日 03:00/04:00 链未跑；需查明并重新锚定 |
 
 ### 历史文档索引（本目录）
 

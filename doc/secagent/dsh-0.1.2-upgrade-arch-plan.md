@@ -1,6 +1,7 @@
 # DSH v0.1.1-rc.2 → v0.1.2-alpha.1 升级与架构优化规划
 
-> 版本：v1.0 · 2026-08-28 ｜ 性质：**规划文档，未实施**
+> 版本：v1.1 · 2026-08-28 ｜ 性质：**规划文档；B0 已执行，B1 暂缓（见下方状态）**
+> **升级状态（2026-08-28 决策）**：`0.1.2-alpha.1` **未发布到 npm**（latest/next 均为 0.1.1-rc.2，GitHub 仅源码 tag 无二进制资产）。三次升级尝试均被安全机制拦截并自动回滚，系统滞留 rc.2 正常运行、零影响。经用户决策：**放弃本次 alpha，等 beta/rc**；已部署 `dsh-version-watch.sh`（每日 08:30 查 npm，新版本出现即写 radar-queue 提醒）。npm 出现 0.1.2 后按本文档 B1 起继续执行。
 > 目标：① 升级 DSH 到 v0.1.2-alpha.1 且全部附加功能正常运行；② 借机对全部插件/脚本/提示词/流程做架构级优化，让每个部件处于最优位置；③ 知识产物（漏洞卡等）沉淀到 TrueNAS Obsidian vault。
 > 关联：`README.md`（持续推进文档）、`dsh-upgrade-0.1.1-rc.2-report.md`（上次升级报告）、`bundles/dsh/CONTEXT.md`（领域语言）
 
@@ -45,6 +46,11 @@
 | 15 | **DeepSeek 适配器默认附带插件包名称+版本**（可关） | 🟡 | 隐私/合规评估：会向模型提供方泄露我们的插件清单（含 sec-suite 等名称）。**建议配置关闭** |
 | 16 | **可选会话日志增量上传**（默认关） | ⚪ | 保持默认关闭 |
 | 17 | **ACP/Python SDK 收敛至 dsh profile** | 🟡 | 若有脚本以 ACP 方式驱动 DSH 需改 profile 方式（grep 确认，预期无） |
+| 18 | **网络访问 Web 界面需链接中的一次性 token 鉴权**（API 完整版新增条目） | 🔴 | **直接冲击 silksecagent-edge**：Caddy LAN 反代（192.168.7.107:3080→127.0.0.1:3080 + Host 改写绕 loopback 栅栏）在新版下网络访问需一次性 token 链接——edge 的免密 LAN 访问模式将失效，需重新设计接入（token 分发/auth-gate 适配/或仅 loopback+SSH 隧道）。升级前必须验证并出方案 |
+| 19 | **会话视图工程大幅拆分**（"请面向诉求分层导入合适模块"） | 🔴 | sec-dashboard（105KB client.js）与 theme-silksong 若 import UI 内部模块，大概率需适配——升级后第一优先验证看板七视图与主题加载 |
+| 20 | **Code Mode 更名 PTC mode**（旧会话记录仍可读） | ⚪ | 仅命名变更 |
+
+> 注：#18/#19 来自 GitHub API 完整版 release body（网页精简版未含），B0 阶段实测补充。
 
 ### 1.2 升级前必做排查清单
 
