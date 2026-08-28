@@ -1,5 +1,7 @@
 # SilkSecAgent 体系全面评估报告
 
+> ⚠️ **后续状态（2026-08-28 当日）**：本报告指出的问题已于同日 **P15 纪律落地批 + P16 产出转化批**实施修复——流程守卫（机器强制台账/卡记录/交接包）、findings 噪声闸门（314 条 info 隔离）、资产准入（全量分级 79,155/79,258）、三断链修复（task_runs/session_id/调度重锚定 drift=0）、ops 健康度五指标、VC-034 卡、视觉分诊、Slice 化 objective、提交草稿。§1 记分卡为**修复前快照**，不再反映现状；修复明细见 README.md 里程碑日志与 `silksecagent-system-complete.md` §4.1.5。仍有效的遗留项：H-001（公网 NS 委派，人工）、H-002（SRC 注册账号，人工）、S6（Authelia）、egress-guard/chicheng-push（PENDING）。
+
 > 评估日期：2026-08-28 ｜ 评估方式：文档审读（doc/secagent 全部 7 篇）+ spool exec 对 csai 运行时实测取证
 > 实测面：asset-graph.db 13 张表逐表计数、tasks/task_runs 调度数据、pipeline 台账、vulncards 卡库、每日链 worker 产物（meta.json/worker.log）、systemd 7 个 unit、代理池端到端、AGENTS.md 受管区块、scope.yml、tools.d 工具清单
 > 性质：本文为一次性快照评估（证据均标注实测来源），结论供 P15+ 迭代决策使用。README.md 仍是唯一持续推进入口。

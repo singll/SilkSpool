@@ -1,8 +1,9 @@
 # SilkSecAgent SRC 漏洞挖掘体系 · 持续推进文档
 
-> 版本：v3.0 · 2026-08-28（由设计规范 v2.1 + 人工待办文档合并而来，为唯一持续推进入口）
+> 版本：v3.1 · 2026-08-28（由设计规范 v2.1 + 人工待办文档合并而来，为唯一持续推进入口）
 > 性质：Living Document。历史设计文档与实施报告见本目录其他文件；本文档只保留**当前状态、待办、未完成的详细内容、工作规范**。
 > 体系运行位置：csai `/opt/silkspool/dsh/`；版本受控源文件在 SilkSpool 仓库 `bundles/dsh/templates/data-seed/`。
+> **系统是什么、怎么转**（插件/脚本/流程/提示词/状态机/DSH+pi 架构完整解剖）见 [silksecagent-system-complete.md](silksecagent-system-complete.md)。
 
 ---
 
@@ -189,8 +190,8 @@ L1 资产层 → L2 接口层 → L3 工具矩阵层 → L4 确认层
 
 ### 4.3 覆盖六态与台账
 
-`PENDING / TESTED_CLEAN(要证据) / CONFIRMED(要证据包) / FALSE_POSITIVE / NOT_APPLICABLE(要 na_reason) / BLOCKED(要 blocker) / STALE`。
-台账 `attempts-{program}.tsv` 核心列固定：`ts/asset/card_id/card_ver/tool/result/reason/evidence_path/run_id`，完成一个目标立即一行；开放注册新状态/新理由值（禁 other/misc）；覆盖视图由 coverage-report.py 生成（禁手填）。
+可落行的六种终态：`TESTED_CLEAN(要证据) / CONFIRMED(要证据包) / FALSE_POSITIVE / NOT_APPLICABLE(要 na_reason) / BLOCKED(要 blocker) / STALE`；**PENDING 是"未落行"的隐含态**（覆盖矩阵中尚未出现的组合），不在台账工具枚举中（attempts_log 强制枚举校验）。
+台账 `attempts-{program}.tsv` 核心列固定：`ts/asset/card_id/card_ver/tool/result/reason/evidence_path/run_id`，完成一个目标立即一行；开放注册新状态/新理由值（禁 other/misc）；覆盖视图由 sec-pipeline 插件 `coverage_report` 工具生成（禁手填；同名旧脚本在退役观察期）。
 STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到期；升版波及 >50 单元格先抽样 20% 回归。
 
 ### 4.4 防幻觉十条
@@ -200,7 +201,7 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 ### 4.5 卡片体系
 
 四类卡：**VulnCard**（探测/验证规程）、**MethodCard**（工具技巧）、**PatternCard**（判定依据含 counter_examples）、**IdeaCard**（思路种子：必写 verification_requires + first_testable_when，seed→incubating→testable→promoted/rejected）。
-通用骨架：id/type/name/version/status + usage/hit/fp 统计 + changelog。每次使用落 card_usage.jsonl，**deviation 必填**（偏差=升版原料）。升版 bump version；draft 用 ≥3 次或评审转 active；usage≥20 且 hit=0 强制废止评审。
+通用骨架：id/type/name/version/status + usage/hit/fp 统计 + changelog。每次使用经 `card_usage_log` 落 `card_usage-{日期}.jsonl`，**deviation 必填**（偏差=升版原料）。升版 bump version；draft 用 ≥3 次或评审转 active；usage≥20 且 hit=0 强制废止评审。
 
 ### 4.6 任务结构
 
@@ -237,8 +238,10 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 
 ### 历史文档索引（本目录）
 
-- `dsh-secagent-plan-v6.md` — 平台总体计划（主计划）
-- `dsh-upgrade-0.1.1-rc.2-report.md` — DSH 升级报告（2026-08-23）
+- `silksecagent-system-complete.md` — **系统全景文档（以运行代码为真相源，长期有效）**：全部插件/脚本/流程/提示词/状态机/DSH+pi 融合架构解剖
+- `dsh-secagent-plan-v6.md` — P11 时代主计划（历史快照，运行时现状以全景文档为准）
+- `dsh-upgrade-0.1.1-rc.2-report.md` — DSH 升级报告（2026-08-23，升级/回滚手册仍有效）
+- `silksecagent-assessment-2026-08-28.md` — 体系评估快照（主要缺口已由当日 P15/P16 批修复，见文末追加说明）
 - `sec-memcore-implementation.md` / `sec-memory-governance-design.md` — 记忆基架设计与实施
 - `XFF-SECURITY-RESEARCH.md` — XFF 伪造影响研究
 - 挖掘体系设计规范 v2.1 完整版 — 见 git 历史 `doc/secagent-src-mining-optimization.md`（已并入本文档 §四）
