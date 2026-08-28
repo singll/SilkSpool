@@ -5,7 +5,7 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 
 # 挖掘流水线纪律（v2.1）
 
-> 设计文档：`doc/secagent-src-mining-optimization.md`（SilkSpool 仓库）。本技能是其执行层摘要。
+> 设计文档：`doc/secagent/README.md`（SilkSpool 仓库）。本技能是其执行层摘要。
 
 ## 1. 覆盖六态（每个 资产×卡片 组合有且仅有一个终态）
 

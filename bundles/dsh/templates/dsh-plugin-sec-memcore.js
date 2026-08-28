@@ -1,6 +1,6 @@
 // ==============================================================================
 // @silksec/sec-memcore — 统一记忆治理引擎（Memory Substrate）
-// 设计：doc/sec-memory-governance-design.md v2.1 / doc/sec-memcore-implementation.md v1.0
+// 设计：doc/secagent/sec-memory-governance-design.md v2.1 / doc/secagent/sec-memcore-implementation.md v1.0
 //
 // 提供 cordis 服务 'secMemoryLifecycle'，五原语：
 //   validateWrite / visibilityFilter / transition / recordSignal / sweep

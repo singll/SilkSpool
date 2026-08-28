@@ -1,7 +1,7 @@
 # VulnCard 注册表
 
 > 卡片 = 单漏洞的探测/验证规程，版本化、可迭代、被强制使用。
-> 设计规范见 SilkSpool 仓库 `doc/secagent-src-mining-optimization.md` §五。
+> 设计规范见 SilkSpool 仓库 `doc/secagent/README.md` §四。
 
 ## 使用规则
 

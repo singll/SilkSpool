@@ -1,7 +1,7 @@
 # SilkSecAgent 领域语言 / Domain Language
 
 > SilkSecAgent（DSH + pi）授权范围内漏洞发现平台的统一术语表。
-> 当代码、文档或对话使用这些词时，含义以此为准。实施细节见 `doc/dsh-secagent-plan-v6.md`。
+> 当代码、文档或对话使用这些词时，含义以此为准。实施细节见 `doc/secagent/dsh-secagent-plan-v6.md`。
 
 ## 核心实体
 

@@ -2,7 +2,7 @@
 
 > SilkSecAgent DSH WebUI 的全局设计规范。视觉叙事取自游戏《空洞骑士：丝之歌》。
 > 本文档是所有 UI 工作的**唯一权威**：新模块、新组件、新视图一律照此组装，不得各自发明。
-> 术语以 [../CONTEXT.md](../CONTEXT.md) 为准；平台总体计划见 `doc/dsh-secagent-plan-v6.md`。
+> 术语以 [../CONTEXT.md](../CONTEXT.md) 为准；平台总体计划见 `doc/secagent/dsh-secagent-plan-v6.md`。
 >
 > 版本：v3（2026-08-22）。v1 grill 定稿 → v2/v3 真机校准（文字/边框/背景提亮、表格定宽、KPI 可交互、打标图标化、刷新反馈、轮询只刷活跃视图）。令牌全表与实现一一对应，已审计无漂移。
 
