@@ -1,0 +1,32 @@
+id: VC-002
+type: vuln
+name: 子域接管（dangling CNAME / NS / 云桶）
+cwe: CWE-1104
+version: 1
+status: active
+severity_potential: [medium, high]
+risk_level: passive
+applicable_when:
+  - 资产 CNAME 指向外部服务（云/SAAS/CDN/对象存储）
+  - 权威 NS 指向第三方 DNS 服务
+not_applicable_when: [cdn-edge-only]
+prerequisites: {egress: 任意, auth: none, tools: [dig, nuclei]}
+detect:
+  summary: 全量 CNAME 导出 → 外部指向筛选 → 指纹判定服务已释放
+  steps:
+    - dnsx/dig 导出全量子域 CNAME，筛选外部指向（github.io/s3/oss/tos/cos/heroku/aliyun 等）
+    - nuclei -tags takeover 批量跑
+    - 命中的手工访问确认特征页（404/NoSuchBucket/unclaimed）
+  fp_baseline: nuclei takeover 命中必须人工访问复核，指纹页可伪造
+verify:
+  must_pass:
+    - 目标服务控制台确认该资源名可注册（或明确返回 unclaimed 特征）
+    - 权威 DNS 查询确认 CNAME 仍指向该失效资源
+  falsification:
+    - 云厂商保留页 vs 真 unclaimed 区分（查该服务最新特征文档）
+retest_after_days: 60
+src_notes: |
+  接管后放大路径：cookie tossing（向 domain=.主域 投 cookie）、CSP 绕过、钓鱼可信度。
+  报告中说明放大面可提升定级。
+changelog:
+  - v1 2026-08-27: 初版（接管面从未系统扫过）

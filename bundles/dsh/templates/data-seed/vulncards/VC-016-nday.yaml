@@ -1,0 +1,34 @@
+id: VC-016
+type: vuln
+name: N-day 组件漏洞
+cwe: CWE-1104
+version: 2
+status: active
+severity_potential: [medium, high, critical]
+risk_level: active
+applicable_when:
+  - 指纹命中具体组件+版本（fp_add 台账）
+  - intel 出现对应组件 CVE
+not_applicable_when: [tech-mismatch]
+prerequisites: {egress: 任意, auth: none, tools: [nuclei, afrog]}
+detect:
+  summary: 情报→本地部署确认→前提前置校验→模板/手工验证
+  steps:
+    - 前提前置校验（先于一切投入）：CVE 触发条件在目标是否成立
+      （版本段/配置项/功能开关/协议可达性——#15 AJP closed、#25 无 mailto 诊断块教训）
+    - 前提成立 → nuclei/afrog 对应模板
+    - 模板无命中但前提仍成立 → 手工构造 POC
+  fp_baseline: intrusive 类模板对边缘端口的空洞匹配一律复核（CVE-2019-5544 FP 教训）
+verify:
+  must_pass:
+    - POC 实际生效证据（回显/OOB 回连/行为差异），非模板自报
+    - 版本在受影响区间内的证据（banner/构建号/行为指纹）
+  falsification:
+    - 协议层复核：目标端口实际协议与 CVE 涉及协议一致性
+retest_after_days: 90
+src_notes: |
+  全部 6 条历史候选证伪的经验：前提校验投入 5 分钟可省 1 小时无效验证。
+  情报闭环纪律：每条候选必有结论（验证/证伪/无对应部署），不许悬空。
+changelog:
+  - v2 2026-08-26: 增加前提前置校验步骤（6 条候选全证伪复盘）
+  - v1 2026-08-23: 初版

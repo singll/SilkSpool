@@ -1,0 +1,31 @@
+id: VC-015
+type: vuln
+name: 登录接口安全（枚举/轰炸/验证码/密码重置）
+cwe: CWE-307
+version: 1
+status: active
+severity_potential: [low, medium]
+risk_level: active
+applicable_when:
+  - 存在登录/注册/找回密码/验证码发送端点
+not_applicable_when: [no-auth-feature]
+prerequisites: {egress: 任意, auth: none（无需账号）, tools: [curl]}
+detect:
+  summary: 认证面逻辑差分（全部无需账号）
+  steps:
+    - 账号枚举：存在/不存在用户的响应差异（码/长度/文案/时间）
+    - 短信/邮件轰炸：同号重发是否有频率限制（≤5 次试探，止损）
+    - 验证码：响应包是否泄露验证码/可复用/可爆破（4-6 位纯数字无锁定）
+    - 密码重置：token 可预测性/未绑定校验/Host 头投毒（联动 VC-025）
+    - 登录失败锁定策略：同账号连续错误是否锁定（≤10 次试探）
+  fp_baseline: 响应差异来自 WAF 而非业务逻辑时降级
+verify:
+  must_pass:
+    - 差异稳定复现且对照组排除 WAF/CDN 因素
+    - 轰炸类：实际收到 ≥2 条重复消息（用自有手机号/邮箱验证，绝不骚扰真实用户）
+  falsification:
+    - 换出口换时段复测排除限流抖动
+retest_after_days: 60
+src_notes: 短信轰炸/账号枚举多为 low；密码重置逻辑缺陷可上 medium/high。
+changelog:
+  - v1 2026-08-27: 初版（无账号登录面测试路线，解"无法注册"困局）

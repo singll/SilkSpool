@@ -1,0 +1,30 @@
+id: VC-021
+type: vuln
+name: 配置中心/注册中心未授权（Nacos/Apollo/Consul/Eureka）
+cwe: CWE-306
+version: 1
+status: draft
+severity_potential: [high, critical]
+risk_level: active
+applicable_when:
+  - 端口/路径指纹命中配置中心（8848/nacos、8080/apollo、8500/consul、eureka 路径）
+not_applicable_when: [tech-mismatch]
+prerequisites: {egress: 任意, auth: none, tools: [curl, nuclei]}
+detect:
+  summary: 指纹确认 → 未授权读配置 → 默认口令（仅验证存在性）
+  steps:
+    - 指纹：/nacos/v1/console/health/readiness、/v1/cs/configs、apollo 签名页、consul /v1/agent/self
+    - Nacos：未授权读 /nacos/v1/cs/configs?dataId=...&group=...；user-agent 绕过（Nacos-Server）
+    - 默认口令仅验证"是否存在"（nacos/nacos 一次尝试），不爆破
+    - 读到配置采样即停（够证即停：DB 凭据/AK-SK 打码留证）
+  fp_baseline: 反代统一 401 = 已防护；鉴权插件生效证据（token 要求）
+verify:
+  must_pass:
+    - 未授权实际读到配置内容（非登录页/错误页）
+    - 配置含真实环境特征（DB 串/密钥/服务列表）
+  falsification:
+    - 确认读到的非示例/默认 namespace 空配置
+retest_after_days: 90
+src_notes: 配置中心未授权=全栈凭据泄露，基本稳定 critical/high。证据严格采样+打码。
+changelog:
+  - v1 2026-08-27: 初版（国产大厂高频洞，端口面扩展重点）

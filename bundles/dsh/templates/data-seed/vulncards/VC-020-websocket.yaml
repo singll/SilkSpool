@@ -1,0 +1,30 @@
+id: VC-020
+type: vuln
+name: WebSocket 安全（鉴权缺失/CSWSH/越权订阅）
+cwe: CWE-1385
+version: 1
+status: draft
+severity_potential: [low, medium, high]
+risk_level: active
+applicable_when:
+  - 站点使用 WebSocket（直播/客服/实时协作，JS 中 wss:// 或 Upgrade 握手）
+not_applicable_when: [static-site]
+prerequisites: {egress: 任意, auth: none（部分测试需账号）, tools: [websocat, python]}
+detect:
+  summary: 握手鉴权审计 + 跨站劫持 + 消息越权
+  steps:
+    - 匿名发起 WS 握手：是否要求凭证（不要 = 鉴权缺失候选）
+    - CSWSH：握手仅依赖 Cookie 且无 Origin 校验 → 跨站可连（与 VC-001 联动）
+    - 连接后消息协议分析：频道订阅/房间号/用户 ID 参数可否遍历（越权订阅）
+    - 服务端输入处理：消息注入（XSS 到客户端/命令注入到后端）
+  fp_baseline: 公开频道（直播间弹幕本就公开）不算越权
+verify:
+  must_pass:
+    - 实际建立连接并收到非公开数据流，或跨站 PoC 页面实际连上
+    - 越权订阅：收到他人/私有频道消息（自建双账号验证）
+  falsification:
+    - 确认数据流非公开广播（对照匿名可访问的公开流）
+retest_after_days: 60
+src_notes: 现有工具链（nuclei 等）不覆盖 WS，属低竞争面；CSWSH+CORS 反射可组合升级。
+changelog:
+  - v1 2026-08-27: 初版

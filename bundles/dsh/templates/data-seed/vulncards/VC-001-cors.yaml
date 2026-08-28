@@ -1,0 +1,37 @@
+id: VC-001
+type: vuln
+name: CORS 任意起源反射
+cwe: CWE-942
+version: 3
+status: active
+severity_potential: [low, medium]
+risk_level: passive
+applicable_when:
+  - 响应包含 ACAO 头或存在跨域 API 端点
+  - 存在鉴权会话（Cookie/Token）的域
+not_applicable_when: [static-site, cdn-edge-only]
+prerequisites: {egress: 任意, auth: none, tools: [curl]}
+detect:
+  summary: 多 Origin 差分 + ACAC 联合判定
+  steps:
+    - 无 Origin 基线请求，记录 ACAO/ACAC
+    - "Origin: https://evil.example.net，观察是否精确反射"
+    - 变体各一次：Origin: null / 子域绕过 / 后缀绕过（evil{domain}）
+  fp_baseline: 反射但 ACAC:false 且响应无敏感数据 → 降级 info 或不报
+verify:
+  must_pass:
+    - 反射 Origin 与请求 Origin 精确一致（非 *）
+    - ACAC: true 或响应含敏感数据
+    - 连续 ≥2 次复现（间隔换出口）
+  falsification:
+    - 对 404 路径发同样请求：同样反射 = 边缘网关统一行为，降级或否
+retest_after_days: 30
+src_notes: |
+  美团/字节对纯 CORS 反射定级多为 low；说明可窃取的数据类型才有 medium 可能。
+  报告须附可利用端点实际返回的敏感字段示例。
+usage_count: 9
+hit_count: 2
+fp_count: 1
+changelog:
+  - v3 2026-08-26: 增加 404 路径对照证伪（字节边缘网关误报教训）
+  - v2 2026-08-22: 增加 null origin 变体

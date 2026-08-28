@@ -1,0 +1,30 @@
+id: VC-027
+type: vuln
+name: 数据脱敏检查（接口返回/导出未脱敏）
+cwe: CWE-359
+version: 1
+status: draft
+severity_potential: [low, medium]
+risk_level: passive
+applicable_when:
+  - 存在返回用户数据的接口（列表/详情/导出）
+  - xray flows 中有业务响应流量
+not_applicable_when: [static-site]
+prerequisites: {egress: 任意, auth: none（导出类多需账号）, tools: [python 正则回扫]}
+detect:
+  summary: 响应敏感字段模式批量回扫
+  steps:
+    - xray flows / 爬虫响应做正则回扫：手机号全号（1[3-9]\d{9}）、身份证、银行卡、邮箱、详细地址
+    - 命中接口人工复核：字段是否应脱敏（对照前端展示是否打码）
+    - 导出接口（excel/csv 下载）单独检查
+  fp_baseline: 测试数据/示例数据（13800138000 等）；前端本就明文展示=业务设计
+verify:
+  must_pass:
+    - 返回真实格式敏感字段且前端展示层有打码（说明后端应脱敏未脱敏）
+    - 采样确认多条记录均泄露（非单条偶发）
+  falsification:
+    - 确认数据非用户自公开（商家公开电话等业务公开字段）
+retest_after_days: 30
+src_notes: 单接口少量字段=low；批量 PII 导出=medium。与 VC-008 联动（越权+未脱敏可升级）。
+changelog:
+  - v1 2026-08-27: 初版（flows 回扫管线主力卡，稳定产出型）

@@ -1,0 +1,30 @@
+id: VC-009
+type: vuln
+name: SSRF
+cwe: CWE-918
+version: 1
+status: active
+severity_potential: [medium, high]
+risk_level: active
+applicable_when:
+  - 存在 URL 取参类端点（预览/抓取/回调/webhook/图片代理）
+not_applicable_when: [no-param-surface, static-site]
+prerequisites: {egress: 任意, auth: none, tools: [curl, oob]}
+detect:
+  summary: URL 参数注入 OOB 回连地址 + 内网地址探针
+  steps:
+    - 识别取 URL 的参数（url/target/callback/webhook/image/src）
+    - 注入 OOB 地址（{run_id}.oob 域）：等回连（DNS/HTTP）
+    - 有回连后进阶：127.0.0.1/内网段/云元数据 169.254.169.254 探针
+    - 盲 SSRF 只有 OOB 回连一条路，无 OOB 不得下任何结论
+  fp_baseline: 仅请求发出去了 ≠ 存在（sec-verification 铁律 4）
+verify:
+  must_pass:
+    - OOB 平台收到回连且标识与 run_id 匹配
+    - 回连源 IP 归属目标厂商网段（whois/rdns 佐证）
+  falsification:
+    - 排除回连来自安全设备/邮件网关等中间盒（源 IP 研判）
+retest_after_days: 60
+src_notes: 通内网/云元数据的 SSRF 属高危族；仅出网回连证据不足时往低报。
+changelog:
+  - v1 2026-08-27: 初版（OOB 设施为前置，未部署前盲类 BLOCKED(tool-missing)）

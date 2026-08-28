@@ -1,0 +1,31 @@
+id: VC-003
+type: vuln
+name: 敏感路径暴露（actuator/swagger/.git/api-docs/备份文件）
+cwe: CWE-200
+version: 2
+status: active
+severity_potential: [info, low, medium]
+risk_level: active
+applicable_when:
+  - 存活 web 资产（有后端交互）
+not_applicable_when: [static-site, cdn-edge-only]
+prerequisites: {egress: 任意, auth: none, tools: [ffuf, curl]}
+detect:
+  summary: 专项字典 ffuf + 统一基线差分
+  steps:
+    - 先取基线：随机不存在路径的响应（状态码/长度/标题）= catch-all 特征
+    - ffuf 跑敏感路径字典（actuator/env/heapdump、swagger、v2/api-docs、.git/HEAD、备份后缀）
+    - 命中项与基线差分：同长同码 = 软 404/catch-all，剔除
+  fp_baseline: 456=反爬非漏洞；403+9B=出口 ACL 非死非漏洞；SPA 同页=catch-all
+verify:
+  must_pass:
+    - 响应内容与基线有实质差异
+    - 实际读到敏感内容（配置/端点表/源码头），非占位页
+  falsification:
+    - 456/403-9B 响应按既有 PatternCard 判定为防护行为
+    - heapdump 等大文件确认 Content-Type 与大小合理再下载（止损：采样即可）
+retest_after_days: 7
+src_notes: 纯路径存在无敏感内容=忽略级；泄露凭证/源码/核心配置才上探。
+changelog:
+  - v2 2026-08-26: 并入 456/403-9B/catch-all 基线判定（原 PatternCard 条款）
+  - v1 2026-08-23: 初版

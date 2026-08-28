@@ -1,0 +1,29 @@
+id: VC-004
+type: vuln
+name: XSS（反射/存储）
+cwe: CWE-79
+version: 1
+status: active
+severity_potential: [low, medium]
+risk_level: active
+applicable_when:
+  - 存在查询参数/表单/输入回显的端点（endpoints.tsv 有参数面）
+not_applicable_when: [no-param-surface, static-site]
+prerequisites: {egress: 任意, auth: none（存储型建议账号）, tools: [dalfox]}
+detect:
+  summary: dalfox 批量 + 命中人工复核
+  steps:
+    - endpoints.tsv 提取带参数 URL → dalfox 批量（--silence --skip-bav）
+    - 命中项人工 curl 复核：payload 是否原样回显、上下文（HTML/JS/属性）
+  fp_baseline: 仅 URL 中回显不进 body = 误报；CSP/过滤绕过率高的上下文才继续
+verify:
+  must_pass:
+    - payload 在响应 body 中未编码回显且上下文可执行
+    - 浏览器实测弹窗或等效执行证据（截图）
+  falsification:
+    - 检查响应 Content-Type（json 且正确转义 = 不可执行）
+    - 检查 CSP/X-XSS-Protection 是否实质阻断
+retest_after_days: 30
+src_notes: 反射 XSS 需交互多定 low；存储型/绕过 CSP 可上 medium。附可执行上下文截图。
+changelog:
+  - v1 2026-08-27: 初版（dalfox 此前零调用，本卡激活之）

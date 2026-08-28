@@ -1,0 +1,18 @@
+id: IC-000
+type: idea
+name: （模板）想法卡
+status: seed
+seed_from: （来源：YYYY-MM-DD 头脑风暴方向N / intel / 复盘中某观察）
+hypothesis: |
+  （一句话假设：什么面 + 什么机制 + 预期什么效果）
+verification_requires:
+  - （验证所需条件 1：凭据/工具/出口/目标面）
+first_testable_when: （条件满足时点描述）
+related: []
+changelog:
+  - v1 YYYY-MM-DD: 留种
+
+# 状态机：seed → incubating（补充了方法/先例）→ testable（条件满足，进 huntlist）
+#   → validated → promoted（转正为 VulnCard 或并入既有卡 changelog）
+#   → rejected（证伪，写清依据——rejected 也是知识，防重复思考）
+# 纪律：探索产出只进 IdeaCard/huntlist，不许直接进 findings（灵感与漏洞之间隔着验证规程）。

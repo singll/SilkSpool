@@ -1,0 +1,32 @@
+id: VC-005
+type: vuln
+name: SQL 注入
+cwe: CWE-89
+version: 1
+status: active
+severity_potential: [medium, high]
+risk_level: active
+applicable_when:
+  - 存在查询参数的端点（endpoints.tsv 有参数面）
+not_applicable_when: [no-param-surface, static-site]
+prerequisites: {egress: 任意, auth: none, tools: [sqlmap]}
+detect:
+  summary: sqlmap 低险批量 + 时间盲注换出口复测
+  steps:
+    - 参数 URL → sqlmap -u --batch --level 1 --risk 1 --threads 1 --delay 0.5（限速止损）
+    - 报错注入/联合注入命中直接进 verify
+    - 时间盲注命中必须换出口换时段复测（排除网络抖动）
+  fp_baseline: sqlmap "might be injectable" 仅为候选；time-based 单路结论不可信
+verify:
+  must_pass:
+    - 可证差异：布尔差分（true/false 页面实质不同）或可读出版本/库名采样（够证即停）
+    - 复现 ≥2 次且换出口稳定
+  falsification:
+    - WAF 拦截页与真注入页区分（403/456 特征）
+    - 时间盲注做对照组（无 payload 基线响应时间分布）
+retest_after_days: 60
+src_notes: |
+  可证 SQLi 属高危族（severity-rating）。证据采样最小化：证明可注入即停，禁止拖数据。
+  报告附布尔差分对照或采样截图（打码）。
+changelog:
+  - v1 2026-08-27: 初版（sqlmap 已装未用，本卡激活之）

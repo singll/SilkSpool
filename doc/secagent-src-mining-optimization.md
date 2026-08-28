@@ -569,3 +569,23 @@ APP API 常见 sign 签名。分级处置：
 ---
 
 *v2.1 变更说明（2026-08-27）：整合五组扩展——A 组机制优化（优先级队列/机械复核/OOB/变化雷达/STALE 治理/负账本洗白/出口健康矩阵）、B 组新攻击面（Desync/WebSocket/云原生配置中心/AI 应用/cookie tossing/僵尸 API/白盒审计/缓存投毒）、C 组情报维度（CT 流/JD-PPT 情报/平台运营/厂商体质）、D 组运营度量（ROI 排行/提交模板/蜜罐识别）、E 组补充（对抗性复核/签名重放/Host 投毒/脱敏检查/ICP 备案反查/favicon 猎捕/网关路由绕过/日志监控面/RAG 预取/预算自适应/验证止损线）；新增第十章 SRC 平台运营、第十一章合规止损红线。*
+
+---
+
+## 附录：实施状态（2026-08-28 第一批落地）
+
+已在 csai 完成（版本受控源文件在 SilkSpool 仓库 `bundles/dsh/templates/data-seed/`）：
+
+| 项 | 落点 | 状态 |
+|---|---|---|
+| sec-pipeline 技能 | `/opt/silkspool/dsh/data/skills/sec-pipeline/SKILL.md` | ✅ 已部署 |
+| 漏洞卡注册表 + 17 张种子卡 + IdeaCard 模板 | `data/vulncards/`（registry.md、VC-001~029、ideas/） | ✅ 已部署 |
+| brief/handoff 模板 | `data/templates/` | ✅ 已部署 |
+| 格式校验脚本 pipeline-validate.py | `/opt/silkspool/dsh/scripts/pipeline/` | ✅ 已测试（正反例均正确） |
+| 覆盖聚合脚本 coverage-report.py | 同上 | ✅ 已测试 |
+| 机械复核脚本 verify-replay.py | 同上 | ✅ 已测试（经 8899 代理重放成功） |
+| 台账初始化 | `data/pipeline/{meituan-src,bytedance}/attempts-*.tsv` | ✅ 表头已建 |
+| 任务契约接入 | tasks #16/#17/#18/#19 objective 追加「P13-流水线规范」（DB 已备份 backups/asset-graph.pre-pipeline-*） | ✅ 已生效（下次调度起） |
+| OOB interactsh-server v1.3.1 | `/opt/silkspool/dsh/oob/`（service 文件 prepared 未启用） | ⏸ 待 DNS 委派（需选一个域如 oob.singll.net 做 NS 委派指向 141.11.43.99，然后启用 systemd unit） |
+
+**待人工事项**：① OOB 域名 NS 委派（决定域名后启用 service）；② 凭据策略（§8.2 注册双项目成对测试账号）；③ 存量 findings 回填 vuln_type（可排入下批）。

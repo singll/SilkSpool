@@ -1,0 +1,30 @@
+id: VC-024
+type: vuln
+name: Web 缓存投毒 / 缓存欺骗
+cwe: CWE-444
+version: 1
+status: draft
+severity_potential: [medium, high]
+risk_level: active
+applicable_when:
+  - 目标经 CDN/缓存层（volccdn 等缓存特征头：Age/X-Cache/Server-Timing）
+not_applicable_when: [cdn-edge-only]
+prerequisites: {egress: 任意, auth: none, tools: [curl]}
+detect:
+  summary: 未键入头/参数测绘 → 缓存键差分 → 无害投毒确认
+  steps:
+    - 识别缓存行为（Age/X-Cache: HIT 特征）
+    - 未键入输入探测：X-Forwarded-Host/X-Original-URL/多余参数，观察响应反射且键不变
+    - 缓存欺骗：/account/ → /account/x.css 类路径混淆，看私密响应是否被公开缓存
+    - 确认用唯一参数标记自己的投毒（禁止污染真实用户缓存——止损红线）
+  fp_baseline: 响应变化但无缓存存储（每次都回源）= 非投毒
+verify:
+  must_pass:
+    - 第二请求（无投毒载荷、换出口）仍返回被投毒内容 = 已入缓存
+    - 影响面评估：缓存键维度（全站 or 按参数）
+  falsification:
+    - 排除 Vary 头导致的个体差异
+retest_after_days: 90
+src_notes: 投毒可存储 XSS/挂马=high；欺骗泄露私密响应=medium+。探测后立即请求刷新缓存恢复。
+changelog:
+  - v1 2026-08-27: 初版（与 VC-019 同属中间层攻击家族）

@@ -1,0 +1,31 @@
+id: VC-029
+type: vuln
+name: 网关路由绕过 / URL 解析差异
+cwe: CWE-436
+version: 1
+status: draft
+severity_potential: [medium, high]
+risk_level: active
+applicable_when:
+  - 存在 401/403 统一网关（token gate），后端可能有鉴权假设"网关已拦"
+not_applicable_when: [static-site]
+prerequisites: {egress: 任意, auth: none, tools: [curl]}
+detect:
+  summary: 路径变形矩阵差分（前端网关与后端路由解析不一致）
+  steps:
+    - 对 401 端点跑变形矩阵：/api/x → //api/x、/api//x、/api/./x、/api/%2e/x、/api/x/、/API/x、/api/x;.json、/api/x/..;/api/x
+    - 框架特技巧：Spring 加 ;jsessionid=xxx、尾缀 .json/.do；nginx alias 误配（/api../）
+    - 每个变形记录状态码/长度，与基线差分
+  fp_baseline: 变形后仍统一 401 = 网关规范化处理一致，无可绕
+verify:
+  must_pass:
+    - 某变形绕过网关返回后端业务响应（非 401），且正常形态仍 401
+    - 换出口复现
+  falsification:
+    - 排除变形命中的是另一个公开端点（路由巧合）
+retest_after_days: 60
+src_notes: |
+  直击已测绘的 401 网关面（admin.erp/carrier proxy 等）。绕过+读到敏感数据可上 high。
+  与 VC-019（走私）同族互补：一个骗路由，一个骗解析。
+changelog:
+  - v1 2026-08-27: 初版（"倒置"发散角度产物：假设网关一定鉴权→变形试试）

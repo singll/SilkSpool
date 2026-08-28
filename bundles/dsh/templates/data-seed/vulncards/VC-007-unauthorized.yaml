@@ -1,0 +1,31 @@
+id: VC-007
+type: vuln
+name: 未授权访问（API/管理面）
+cwe: CWE-306
+version: 1
+status: active
+severity_potential: [low, medium, high]
+risk_level: active
+applicable_when:
+  - 存在鉴权保护的端点（401/403/参数校验错误=端面存在）
+  - JS 提取出的内部 API 端点
+not_applicable_when: [static-site]
+prerequisites: {egress: 任意, auth: none, tools: [curl]}
+detect:
+  summary: 鉴权摘除/方法变换/路径变体差分
+  steps:
+    - 对 401/403 端点：摘除 Authorization/Cookie 对比带与不带
+    - 方法变换：GET→POST→PUT→OPTIONS，观察是否某方法放行
+    - 路径变体：尾斜杠/大小写/;.json//;/..;/%2e（与 VC-029 联动）
+    - 参数补齐：401 前的参数校验错误提示可反推必填参数
+  fp_baseline: 统一 token gate JSON（60B 等）= 网关封闭，非漏洞
+verify:
+  must_pass:
+    - 未带凭证实际读到业务数据或触发业务动作（非错误页）
+    - 对照组（随机路径）无同样特征
+  falsification:
+    - catch-all/网关统一响应检查（404 路径同特征则否）
+retest_after_days: 30
+src_notes: 读到数据的敏感度决定定级（severity-rating：核心 PII/资金面上探高危）。
+changelog:
+  - v1 2026-08-27: 初版（沉淀既有"认证封闭判定"纪律为正向探测规程）

@@ -1,0 +1,30 @@
+id: VC-014
+type: vuln
+name: 信息泄露（JS 密钥/sourcemap/备份/云桶/内部域）
+cwe: CWE-200
+version: 1
+status: active
+severity_potential: [info, low, medium]
+risk_level: passive
+applicable_when:
+  - 存活 web 资产（有 JS bundle/静态资源）
+not_applicable_when: []
+prerequisites: {egress: 任意, auth: none, tools: [curl, katana]}
+detect:
+  summary: JS 自动化提取 + 敏感模式正则 + sourcemap 反解
+  steps:
+    - katana -jc 或 subjs 收集 JS → LinkFinder 提端点 → SecretFinder 提密钥
+    - 敏感模式 grep：AK/SK、token、内部域名（10./172.16./192.168.、内部 TLD）、PSM 服务名
+    - .map 文件探测：存在则反解源码树找硬编码与隐藏接口
+    - JS 提取的桶名做匿名读写探测（S3/OSS/TOS/COS）
+  fp_baseline: 公开 CDN 域/官方文档引用不算泄露
+verify:
+  must_pass:
+    - 泄露项可用性验证（密钥格式合法且对应服务可达/内部域可解析）
+    - 非公开文档已有的信息
+  falsification:
+    - 确认不是公开的测试/示例值（官方 SDK 示例 key 模式排除）
+retest_after_days: 30
+src_notes: 信息泄露默认 low 甚至忽略；仅凭证/大量 PII/源码/内部核心配置上探（severity-rating）。
+changelog:
+  - v1 2026-08-27: 初版（手工 JS 测绘已验证有效 4 次，本卡工具化）

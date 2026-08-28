@@ -1,0 +1,33 @@
+id: VC-019
+type: vuln
+name: HTTP 请求走私（Desync）
+cwe: CWE-444
+version: 1
+status: draft
+severity_potential: [high, critical]
+risk_level: active
+applicable_when:
+  - 目标前端链路为多层代理（CDN→openresty/tengine→自研网关→微服务）
+  - 存在 401/403 网关（走私可绕网关鉴权直达后端）
+not_applicable_when: [cdn-edge-only, static-site]
+prerequisites: {egress: 任意, auth: none, tools: [smuggler 或手工 socket]}
+detect:
+  summary: CL.TE / TE.TE / H2 走私探测，时延差分判型
+  steps:
+    - 指纹确认代理层级（Server/Via 头、错误页差异）
+    - CL.TE 与 TE.CL 探测 payload 各一发，观察时延/响应差异
+    - 判型后用无害前缀走私确认（走私请求触发后端独有响应特征）
+    - H2 站点加测 H2.CL/H2.TE 降级走私
+  fp_baseline: 仅时延异常无走私确认 = 网络抖动，复测排除
+verify:
+  must_pass:
+    - 走私请求实际触达后端（后端独有响应/404 特征差异）
+    - 换出口复现 ≥2 次
+  falsification:
+    - 对照组：正常请求与走私请求的响应差异必须可重复，排除缓存
+retest_after_days: 90
+src_notes: |
+  确认走私存在后，利用方向：绕网关鉴权访问已测绘的 401 端点、缓存投毒（联动 VC-024）、
+  会话劫持。危害叙述按可达后端面定级。探测必须无害化（勿投毒真实缓存）。
+changelog:
+  - v1 2026-08-27: 初版（多层网关架构天然猎场，高价值低竞争方向）

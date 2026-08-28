@@ -1,0 +1,33 @@
+id: VC-008
+type: vuln
+name: 越权 IDOR（水平/垂直）
+cwe: CWE-639
+version: 1
+status: active
+severity_potential: [medium, high]
+risk_level: active
+applicable_when:
+  - 登录态端点含对象 ID 参数（user_id/order_id/doc_id 等）
+  - JS 泄露真实对象 ID 可作种子
+not_applicable_when: [no-auth-feature]
+prerequisites: {egress: 任意, auth: dual-account, tools: [authz_diff, curl]}
+detect:
+  summary: 双账号差分 + 对象 ID 遍历
+  steps:
+    - A 账号创建/拥有资源，记录对象 ID
+    - B 账号凭证请求 A 的对象 ID：水平越权判定
+    - 摘除/降级凭证请求高权端点：垂直越权判定
+    - ID 规律分析（自增/短哈希）决定可否批量遍历（限速！）
+  fp_baseline: 公开资源（头像/昵称等本就公开字段）不算越权
+verify:
+  must_pass:
+    - B 实际读到 A 的私有数据（非公开字段）
+    - 排除"该接口本就设计为公开"（查前端是否匿名也调用）
+  falsification:
+    - 用匿名请求对照：匿名也能读 = 未授权（转 VC-007）而非越权
+retest_after_days: 60
+src_notes: |
+  核心 PII/资金对象越权上探高危。测试只用双账号自建数据，绝不遍历真实用户对象。
+  报告说明可遍历性（ID 可预测性）与单条数据敏感度。
+changelog:
+  - v1 2026-08-27: 初版（凭据到位前全部 BLOCKED(no-credential)）
