@@ -20,20 +20,33 @@
 
 **系统在跑什么**（csai，全部已验证）：
 
-- 双项目每日链路：recon 03:00 → vuln 04:00（interval 任务 #16-#19，objective 已含 P13 流水线规范）
+- 双项目每日链路：recon 03:00 → vuln 04:00（interval 任务 #16-#19，objective 已 Slice 化硬指标 + sec-pipeline 规范）
 - 台账体系：`data/pipeline/{program}/attempts-*.tsv`（六态）、`endpoints-*.tsv`（接口面）、`radar-queue.jsonl`（变化雷达）
-- 漏洞卡注册表：`data/vulncards/`（17 张种子卡 + IdeaCard 模板，开放注册）
-- 脚本：`scripts/pipeline/`（l2-collect / surface-consume / js-watch / ct-watch / pipeline-validate / coverage-report / verify-replay）
+- **流程守卫（P15）**：interval 日任务标 `done` 前引擎硬校验纪律产物（台账 24h 增量 / card_usage / handoff-{date}.md），缺失即拦截——纪律不再依赖提示词自觉
+- **噪声闸门（P15）**：info 级模板指纹自动打 `noise=1`，findings 信号面/报告/KPI 默认隔离（314 条存量已回填）
+- **资产准入（P15）**：未分级资产禁入主动扫描队列（`asset_query level_in=S,A,B`）；全库已分级（grade-assets，域外参考站保持 NULL 永不进队）
+- 漏洞卡注册表：`data/vulncards/`（18 张卡，含 VC-034 Supabase 开放数据面 = 08-20 战役 retro）
+- 脚本：`scripts/pipeline/`（l2-collect / surface-consume / js-watch / ct-watch / pipeline-validate / coverage-report / verify-replay / **grade-assets / data-quality / discipline-audit**）
 - 常驻服务：`ct-watch.service`（CT 新子域雷达，certspotter 轮询，30min 间隔）、xray 被动 7777、mubeng 代理池 8899
-- 技能：sec-pipeline（流水线纪律）+ 原有 sec-verification/sec-task 等
+- 技能：sec-pipeline（流水线纪律+守卫说明）+ 原有 sec-verification/sec-task 等
+- 新工具：`vision_triage`（截图→视觉模型分诊）、`submission_draft`（CONFIRMED→SRC 提交草稿+查重）、`data_quality`/`discipline_audit`/`grade_assets`（治理 CLI，均已 manifest 化）
+- 看板：新增 `ops` 端点（纪律健康度五指标），告警时顶部红条
 
 **当前最大瓶颈**（按解锁收益排序）：
 
 1. **无凭据** → 越权/逻辑/登录态面全部 BLOCKED（H-002）
-2. **无 OOB** → 盲 SSRF/盲注/盲 RCE 物理上不可测（H-001）
+2. **无 OOB** → 盲 SSRF/盲注/盲 RCE 物理上不可测（H-001，公网 NS 委派必须域名服务商操作）
 3. 高价值面多为登录态后（美团 carrier proxy/admin.erp、字节 saiyan/live_console/火山 ark）
 
-**下一看点**：首批按 P13 规范运行的日报产出质量（2026-08-28 03:00/04:00 起）。
+**下一看点**：2026-08-29 03:00/04:00（北京）首跑 Slice 化 objective + 流程守卫强制下的台账首批落行。
+
+### 纪律健康度速查（文档-现实校验，每次迭代末必跑）
+
+```bash
+spool exec csai "python3 /opt/silkspool/dsh/scripts/pipeline/discipline-audit.py"   # 五指标+告警
+spool exec csai "python3 /opt/silkspool/dsh/scripts/pipeline/data-quality.py"       # SQL 断言集
+```
+看板等价：`ops` RPC 端点（健康时静默，脱节时顶部红条）。判据：**机制上线 ≠ 机制生效，连续 N 天有产物才算生效**。
 
 ---
 
@@ -69,10 +82,9 @@
   3. 首次登录需人配合一次（扫码/短信），之后 shared-browser profile 持久化 + xray 7777 代理链自动维持
   4. `BLOCKED(no-credential)` 批量转 PENDING，按优先级队列消化；VC-008 启用 authz_diff 双账号差分
 
-### H-003 存量 findings 回填 vuln_type 【P2】
+### H-003 存量 findings 回填 vuln_type 【已完成 2026-08-28】
 
-- **待做**：确认允许 agent 批量回填（美团 187 + 字节 89 中 273 条缺类型）
-- **接入**：agent 按 CWE 批量回填；回填后统计口径生效
+- ✅ 全部 findings 已按关键词映射回填（vuln_type+cwe），`data-quality.py` 断言 0 缺失；后续新 finding 由噪声闸门+objective 字段要求保持覆盖。
 
 ---
 
@@ -80,11 +92,10 @@
 
 > 按建议顺序排列；完成一项移入「已完成记录」。
 
-### T-0 调度异常调查与修复【升级窗口处理】
+### T-0 调度异常调查与修复【已完成 2026-08-28】
 
-- 根因（2026-08-28 查明）：task_runs 持续 ~24h 才关闭（latest-only 语义）→ 每日触发时前次运行仍"打开" → 调度器生成"宿主重启/超时回收"恢复行并多次推进 next_run（08-30/09-01）。**链条实际每日正常执行一次**，恢复行是记录产物非真实执行
-- 待做：① 0.1.2 升级后验证调度器行为是否变化；② 重新锚定 next_run 到次日 03:00/04:00（与升级窗口一并，避免与调度器恢复逻辑打架）；③ 若升级后仍复发，记入 env-issue 并考虑向 DSH 上游报 issue
-- 注意：task_runs 的 duration_ms 显示 ~24h 是关闭时机产物，**不是真实执行时长**，复盘时勿误读
+- ✅ 根因修复（三处，代码级）：① taskClaimDue 认领时 `started_at=COALESCE` 永不清零 → 已改为每次认领刷新；② taskReapStale 默认 1h 宽限与 3600s 超时同量级 → 改为超时+15min，且 last_run worker 进程活着即跳过回收（防双重派单）；③ task_runs 记录失败从静默改为 stderr 可见。
+- ✅ next_run 已重锚定（#16/#17→北京 03:00、#18/#19→北京 04:00，ops 断言 drift=0）。task_runs 的历史 duration_ms ~24h 行是旧 bug 产物，统计时剔除即可。
 
 ### T-1 验收 P13+P14 运行质量（每日）
 
@@ -150,7 +161,8 @@
 
 ### T-12 待建卡片（注册即用，按 §四卡片规范建）
 
-VC-006 CRLF / VC-010 GraphQL / VC-011 JWT / VC-012 OAuth-SSO / VC-013 文件上传 / VC-017 业务逻辑 / VC-018 中间件暴露 / VC-022 AI 应用攻击面（coze/ark 在 scope，竞争极少）/ VC-023 Cookie 作用域（cookie tossing）/ VC-025 Host 头攻击（密码重置投毒）/ VC-026 签名与重放 / VC-028 日志监控面未授权（Kibana/Graylog）/ VC-030 SSTI / VC-031 XXE / VC-032 反序列化 / VC-033 会话管理
+VC-006 CRLF / VC-010 GraphQL / VC-011 JWT / VC-012 OAuth-SSO / VC-013 文件上传 / VC-017 业务逻辑 / VC-018 中间件暴露 / VC-022 AI 应用攻击面（coze/ark 在 scope，竞争极少）/ VC-023 Cookie 作用域（cookie tossing）/ VC-025 Host 头攻击（密码重置投毒）/ VC-026 签名与重放 / VC-028 日志监控面未授权（Kibana/Graylog）/ VC-030 SSTI / VC-031 XXE / VC-032 反序列化 / VC-033 会话管理。
+（~~VC-034~~ ✅ 已建：Supabase/PostgREST 开放数据面，08-20 战役 retro，v1 2026-08-28）
 
 ### T-13 签名逆向（APP API 前置，人机混合）
 
@@ -220,6 +232,8 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 | 2026-08-28 | B4 sec-suite 拆分（第一批） | 主文件 2051→1874 行，webhook.js/scheduler.js 卫星拆出（依赖注入、行为不变、node --check 全过）；重启冒烟通过（调度循环正常启动）；taskChain/reportBuild 留待下批 |
 | 2026-08-28 | B4 sec-suite 拆分（第二批） | 主文件 1874→1507 行（101.7KB→72.1KB），dashboard-rpc.js 卫星拆出（planChain/taskChain/handleDashboardRpc 全部 38 个 case，initDashboardRpc 依赖注入）；发现 reportBuild 实际逻辑本就在 asset-db.js 卫星（taskChain 仅转发）；重启冒烟通过（0 错误、调度正常、webhook 正常）；剩余主体为 run_cli/scope/sandbox 引擎（拆分候选：scope.js/sandbox.js/run-cli.js，视后续需要） |
 | 2026-08-28 | B5 TrueNAS/vault 沉淀 | spool nas 修复（新增 insecure 配置 + uptime 字符串解析）；csai 直挂 NFS 被 EPERM（keeper 正常，根因未明）→ **keeper 中继方案**落地：csai vault-export-build（卡片 YAML→md）→ operator vault-sync cron 每 30min → keeper `/mnt/NAS/data/knowledge/vault/SilkSecAgent/`（卡片库/报告/覆盖视图/交接，首批 18 文件已同步） |
+| 2026-08-28 | **P15 纪律落地批**（评估报告驱动） | ① 流程守卫：interval 任务标 done 前引擎硬校验台账/卡记录/交接包（asset-db taskUpdate，缺失即拦截，冒烟双向验证）；② 噪声闸门：findings.noise 列 + info 级自动隔离（存量 314 回填），query/report/KPI 默认排除；③ 资产准入：assets.level_in 查询 + grade-assets.py 全量分级（79,155/79,258，域外 103 保持 NULL）；④ 修三断链：taskClaimDue started_at 刷新 + reap 宽限期+活 worker 跳过 + 调度 run 会话反查回填（session_id/meta.json/task_runs）；T-0 重锚定 drift=0；⑤ ops 健康度：asset-db.opsHealth() + 看板 `ops` RPC + 红条横幅 + discipline-audit.py/data-quality.py；⑥ H-003 vuln_type 回填清零；垃圾 playbook 清理；facts 空 category 归位 |
+| 2026-08-28 | **P16 产出转化批** | ① VC-034 Supabase 开放数据面卡（08-20 战役 retro，6H/4M 背书）；② vision_triage manifest + vision-triage.mjs（deepseek-v4-flash-vision-exp 实测通，.env 自加载）；③ #16-#19 objective Slice 化重写（硬指标=消化覆盖矩阵 top-10 格子，蒸馏中置，blackboard→fact_upsert，交接包五段路径）；#24 周复盘产物物化（review-*.md 无产物=没跑）；④ submission_draft 工具（CONFIRMED→提交草稿+同目标同类型查重）；⑤ sec-pipeline 技能新增 §9 流程守卫/§10 资产准入与 Slice；⑥ settings-mirror 补丁 rc.2 后失效已 sudo 重放；manifest 补登记 scheduler/webhook/dashboard-rpc 三拆分文件（B4 遗漏） |
 
 ### 历史文档索引（本目录）
 

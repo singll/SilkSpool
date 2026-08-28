@@ -38,6 +38,7 @@
 | VC-024 | Web 缓存投毒/欺骗 | draft | 1 | |
 | VC-027 | 数据脱敏检查 | draft | 1 | 配 flows 回扫 |
 | VC-029 | 网关路由绕过/URL 解析差异 | draft | 1 | 打 401 网关 |
+| VC-034 | 自托管 Supabase/PostgREST 开放数据面 | active | 1 | 08-20 美团战役 retro，6H/4M 实战背书 |
 
 ## 已规划未建卡（注册即建）
 

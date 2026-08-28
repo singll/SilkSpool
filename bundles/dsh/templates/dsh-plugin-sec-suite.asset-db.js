@@ -192,6 +192,13 @@ export function getDb() {
   for (const [col, ctype] of [['score', 'INTEGER'], ['level', 'TEXT'], ['accept', 'TEXT'], ['biz', 'TEXT'], ['state', 'TEXT']]) {
     if (!assetCols.includes(col)) db.exec(`ALTER TABLE assets ADD COLUMN ${col} ${ctype}`)
   }
+  // ---- P15 噪声闸门：info 级模板指纹（ssl-issuer/wildcard-tls…）默认不进信号面 ----
+  // noise=1 的行全查询/报告/KPI 默认排除（includeNoise 显式查看）；存量 info 一次性回填。
+  ensureCol('findings', 'noise', "noise INTEGER NOT NULL DEFAULT 0")
+  db.exec('CREATE INDEX IF NOT EXISTS idx_findings_noise ON findings(noise)')
+  db.exec("UPDATE findings SET noise = 1 WHERE severity = 'info' AND noise = 0")
+  // ---- P15：调度 run 的 worker 会话 id（看板跳链）----
+  ensureCol('task_runs', 'session_id', 'session_id TEXT')
   return db
 }
 
@@ -238,21 +245,25 @@ export function addFinding({
   vuln_type = null, cwe = null, endpoint_ref = null, preconditions = null, reproduction_steps = null,
   impact = null, recommendation = null, session_id = null,
 }) {
-  const fingerprint = crypto.createHash('sha1').update(`${host}|${title}|${url}`).digest('hex')
+  // P15 噪声闸门：info 级 = 模板指纹/侦察副产物，不进 findings 信号面（noise=1）。
+  // 噪声行指纹弱化为 host|title（同模板同目标只留一行，URL 变体不再增殖）。
+  const noise = String(severity) === 'info' ? 1 : 0
+  const fingerprint = crypto.createHash('sha1')
+    .update(noise ? `${host}|${title}` : `${host}|${title}|${url}`).digest('hex')
   const d = getDb()
   const dup = d.prepare('SELECT id, status FROM findings WHERE fingerprint = ?').get(fingerprint)
   if (dup) {
     // 已存在的 finding 补上缺失的 session_id（不覆盖已有值）
     if (session_id) d.prepare('UPDATE findings SET session_id = COALESCE(session_id, ?) WHERE id = ?').run(session_id, dup.id)
-    return { id: dup.id, dup: true, status: dup.status }
+    return { id: dup.id, dup: true, status: dup.status, noise: !!noise }
   }
   const r = d.prepare(`
     INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, program_id,
-      vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+      vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, noise, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
   `).run(fingerprint, title, severity, host, url, evidence, source, program_id,
-    vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, now())
-  return { id: Number(r.lastInsertRowid), dup: false }
+    vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, noise, now())
+  return { id: Number(r.lastInsertRowid), dup: false, noise: !!noise }
 }
 
 // 排序白名单（防注入）：仅这些列可作 ORDER BY，未知值回落默认列
@@ -263,8 +274,8 @@ function orderClause(map, sort, dir, dflt) {
   return `${col} ${dr}`
 }
 
-export function queryAssets({ hostLike = '', type = '', programId = '', level = '', accept = '', limit = 50, offset = 0, sort = '', dir = '' }) {
-  const { where, args } = assetWhere({ hostLike, type, programId, level, accept })
+export function queryAssets({ hostLike = '', type = '', programId = '', level = '', levelIn = '', accept = '', limit = 50, offset = 0, sort = '', dir = '' }) {
+  const { where, args } = assetWhere({ hostLike, type, programId, level, levelIn, accept })
   const sql = `SELECT host, type, source, program_id, last_seen, score, level, accept, biz, state FROM assets WHERE ${where} ORDER BY ${orderClause(ASSET_SORT, sort, dir, 'last_seen')} LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
@@ -274,13 +285,18 @@ export function countAssets(filters = {}) {
   return getDb().prepare(`SELECT COUNT(*) AS n FROM assets WHERE ${where}`).get(...args).n
 }
 
-function assetWhere({ hostLike = '', type = '', programId = '', level = '', accept = '' }) {
+function assetWhere({ hostLike = '', type = '', programId = '', level = '', levelIn = '', accept = '' }) {
   let where = '1=1'
   const args = []
   if (hostLike) { where += ' AND host LIKE ?'; args.push(`%${hostLike}%`) }
   if (type) { where += ' AND type = ?'; args.push(type) }
   if (programId) { where += ' AND program_id = ?'; args.push(programId) }
   if (level) { where += ' AND level = ?'; args.push(level) }
+  // P15 资产准入：多级过滤（如 "S,A,B"）——主动扫描队列应排除未分级与 C 级（level_in=S,A,B）
+  if (levelIn) {
+    const lv = String(levelIn).split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
+    if (lv.length) { where += ` AND level IN (${lv.map(() => '?').join(',')})`; args.push(...lv) }
+  }
   if (accept) { where += ' AND accept = ?'; args.push(accept) }
   return { where, args }
 }
@@ -311,10 +327,10 @@ const FINDING_SORT = {
   created_at: 'created_at', id: 'id', status: 'status',
   severity: "(CASE severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END)",
 }
-export function queryFindings({ host = '', severity = '', status = '', programId = '', q = '', limit = 50, offset = 0, sort = '', dir = '' }) {
-  const { where, args } = findingWhere({ host, severity, status, programId, q })
+export function queryFindings({ host = '', severity = '', status = '', programId = '', q = '', limit = 50, offset = 0, sort = '', dir = '', includeNoise = false }) {
+  const { where, args } = findingWhere({ host, severity, status, programId, q, includeNoise })
   // 列表不带 evidence（大字段，详情面板按需 findingGet 拉取）；带 vuln_type/bounty/vendor_status 供行内徽章
-  const sql = `SELECT id, title, severity, host, url, source, status, program_id, session_id, vuln_type, bounty, vendor_status, created_at FROM findings WHERE ${where} ORDER BY ${orderClause(FINDING_SORT, sort, dir, 'created_at')} LIMIT ? OFFSET ?`
+  const sql = `SELECT id, title, severity, host, url, source, status, program_id, session_id, vuln_type, bounty, vendor_status, noise, created_at FROM findings WHERE ${where} ORDER BY ${orderClause(FINDING_SORT, sort, dir, 'created_at')} LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
 
@@ -323,9 +339,11 @@ export function countFindings(filters = {}) {
   return getDb().prepare(`SELECT COUNT(*) AS n FROM findings WHERE ${where}`).get(...args).n
 }
 
-function findingWhere({ host = '', severity = '', status = '', programId = '', q = '' }) {
+function findingWhere({ host = '', severity = '', status = '', programId = '', q = '', includeNoise = false }) {
   let where = '1=1'
   const args = []
+  // P15 噪声闸门：默认排除 noise 行（includeNoise=true 才看全量）
+  if (!includeNoise) where += ' AND noise = 0'
   if (host) { where += ' AND host = ?'; args.push(host) }
   if (severity) { where += ' AND severity = ?'; args.push(severity) }
   if (status) { where += ' AND status = ?'; args.push(status) }
@@ -338,11 +356,14 @@ export function stats() {
   const d = getDb()
   const count = (t) => d.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n
   const byType = plain(d.prepare('SELECT type, COUNT(*) AS n FROM assets GROUP BY type ORDER BY n DESC').all())
-  const bySev = plain(d.prepare('SELECT severity, COUNT(*) AS n FROM findings GROUP BY severity').all())
-  const byStatus = plain(d.prepare('SELECT status, COUNT(*) AS n FROM findings GROUP BY status').all())
+  // P15 噪声闸门：KPI 只统计信号（noise=0），噪声单独计数
+  const bySev = plain(d.prepare("SELECT severity, COUNT(*) AS n FROM findings WHERE noise = 0 GROUP BY severity").all())
+  const byStatus = plain(d.prepare("SELECT status, COUNT(*) AS n FROM findings WHERE noise = 0 GROUP BY status").all())
   return {
     assets: count('assets'), endpoints: count('endpoints'),
-    findings: count('findings'), blackboard_keys: count('blackboard'),
+    findings: d.prepare('SELECT COUNT(*) AS n FROM findings WHERE noise = 0').get().n,
+    findings_noise: d.prepare('SELECT COUNT(*) AS n FROM findings WHERE noise = 1').get().n,
+    blackboard_keys: count('blackboard'),
     facts: count('facts'),
     programs: count('programs'), tasks: count('tasks'),
     assets_by_type: byType, findings_by_severity: bySev, findings_by_status: byStatus,
@@ -432,9 +453,60 @@ export function taskCreate({ program_id, phase = '', objective, priority = 5, bu
   return { ok: true, id: Number(r.lastInsertRowid), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at } : null }
 }
 
+// ---- P15 流程守卫：interval 日任务标 done 前硬校验纪律产物（台账增量/卡片使用/交接包）----
+// 原则：纪律不能只靠提示词自觉——缺产物则任务不可 done，agent 拿到缺失清单后必须补齐再收尾。
+// 作用域：schedule_kind='interval' 且 data/pipeline/{program}/ 存在的项目任务（dsh-ops 等无管线目录的任务不拦）。
+const beijingDate = (ts = Date.now()) => new Date(ts + 8 * 3600_000).toISOString().slice(0, 10)
+
+function pipelineGuardStatus(programId) {
+  const dir = path.join(DATA_DIR, 'pipeline', programId)
+  if (!fs.existsSync(dir)) return null // 无管线目录 → 守卫不适用
+  const today = beijingDate()
+  const yesterday = beijingDate(Date.now() - 86400000)
+  const missing = []
+  // 1) 台账当日增量（ts 落今天/昨天 的数据行）
+  let ledgerRows = 0
+  const attemptsFile = path.join(dir, `attempts-${programId}.tsv`)
+  try {
+    const lines = fs.readFileSync(attemptsFile, 'utf8').split('\n').filter((l) => l.trim())
+    ledgerRows = lines.slice(1).filter((l) => { const d = (l.split('\t')[0] || '').slice(0, 10); return d === today || d === yesterday }).length
+  } catch { /* 无台账文件 */ }
+  if (ledgerRows === 0) missing.push(`attempts 台账近 24h 零增量：用 attempts_log 逐目标落六态行（含 NOT_APPLICABLE/BLOCKED，理由必填）→ ${attemptsFile}`)
+  // 2) 卡片使用记录（文件名日期 今天/昨天，或 mtime 24h 内）
+  let cardUsage = false
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.startsWith('card_usage-')) continue
+      const d = f.match(/card_usage-(\d{4}-\d{2}-\d{2})\.jsonl/)?.[1]
+      const fresh = (d === today || d === yesterday) || (Date.now() - fs.statSync(path.join(dir, f)).mtimeMs < 86400000)
+      if (fresh) { cardUsage = true; break }
+    }
+  } catch { /* ignore */ }
+  if (!cardUsage) missing.push('card_usage 近 24h 零记录：用 card_usage_log 落本次用卡记录（含 deviation）')
+  // 3) 交接包
+  const hasHandoff = [today, yesterday].some((d) => fs.existsSync(path.join(dir, `handoff-${d}.md`)))
+  if (!hasHandoff) missing.push(`handoff 交接包缺失：按五段固定结构写 ${dir}/handoff-${today}.md（状态快照/今日动作/明日队列/阻塞与求助/数据指针）`)
+  return { ok: missing.length === 0, missing, ledger_rows_24h: ledgerRows }
+}
+
 export function taskUpdate({ id, status, note = '', blocked_reason = '', result = '' }) {
   if (!TASK_STATUS.includes(status)) return { ok: false, error: `非法状态 ${status}（可选: ${TASK_STATUS.join('/')}）` }
   const d = getDb()
+  // 流程守卫：只在标 done 时拦截（blocked/failed/cancelled 不拦——失败与放弃必须能落库）
+  if (status === 'done') {
+    const t = d.prepare('SELECT program_id, schedule_kind FROM tasks WHERE id = ?').get(Number(id))
+    if (t && t.schedule_kind === 'interval' && t.program_id) {
+      const guard = pipelineGuardStatus(t.program_id)
+      if (guard && !guard.ok) {
+        return {
+          ok: false,
+          guard_blocked: true,
+          missing: guard.missing,
+          error: `流程守卫拦截（任务不可 done，纪律产物缺失）：\n- ${guard.missing.join('\n- ')}\n补齐后重新 task_update status=done。`,
+        }
+      }
+    }
+  }
   const sets = ['status = ?', 'updated_at = ?']
   const args = [status, now()]
   if (blocked_reason) { sets.push('blocked_reason = ?'); args.push(blocked_reason) }
@@ -539,7 +611,10 @@ export function taskClaimDue(nowTs) {
        ORDER BY priority ASC, next_run_at ASC LIMIT 4`
     ).all(nowTs))
     const claimed = []
-    const upd = d.prepare("UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ? AND status = 'queued'")
+    // P15 修复（env-issue scheduler-reap-double-dispatch）：认领时间必须每次刷新。
+    // 旧逻辑 COALESCE(started_at, now) 使 interval 任务跨日复用首次认领时间 → taskReapStale 按
+    // started_at 判龄时把正在跑的任务误判为僵尸回收 → 双重派单 + 恢复行风暴。
+    const upd = d.prepare("UPDATE tasks SET status = 'running', started_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'")
     for (const row of due) {
       const r = upd.run(nowTs, nowTs, row.id)
       if (r.changes === 1) claimed.push(row.id)
@@ -555,8 +630,9 @@ export function taskClaimDue(nowTs) {
   }
 }
 
-// 调度执行收尾：记录 last_run_* + 落 task_runs 执行历史，interval 任务 latest-only 续期回 queued，once 任务进终态
-export function taskFinishScheduledRun({ id, ok, run_id, note = '' }) {
+// 调度执行收尾：记录 last_run_* + 落 task_runs 执行历史，interval 任务 latest-only 续期回 queued，once 任务进终态。
+// P15：可选 session_id（调度器从 sessionPersistence 反查 worker 会话）→ task_runs.session_id + tasks.session_id 回填（看板跳链）。
+export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id = null }) {
   const d = getDb()
   const t = d.prepare('SELECT * FROM tasks WHERE id = ?').get(Number(id))
   if (!t) return { ok: false, error: `task 不存在: ${id}` }
@@ -572,18 +648,24 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '' }) {
   }
   const tail = `${t.result || ''}\n[${new Date().toISOString().slice(0, 16)}] run ${run_id}: ${ok ? 'done' : 'failed'}${note ? ' — ' + note : ''}`.trim()
   d.prepare(`UPDATE tasks SET status = ?, result = ?, last_run_at = ?, last_run_id = ?, next_run_at = ?,
+    session_id = COALESCE(?, session_id),
     finished_at = CASE WHEN ? IN ('done','failed') THEN ? ELSE finished_at END, updated_at = ? WHERE id = ?`)
-    .run(status, tail.slice(-8000), finished, run_id || null, nextRunAt, status, finished, now(), Number(id))
-  taskRunRecord({ task_id: Number(id), run_id, ok, note, started_at: t.started_at || null, finished_at: finished })
+    .run(status, tail.slice(-8000), finished, run_id || null, nextRunAt, session_id, status, finished, now(), Number(id))
+  try {
+    taskRunRecord({ task_id: Number(id), run_id, ok, note, started_at: t.started_at || null, finished_at: finished, session_id })
+  } catch (e) {
+    // 执行历史落库失败不丢任务状态，但必须可见（此前静默丢行导致 task_runs 断链无人发觉）
+    process.stderr.write(`[asset-db] task_runs 记录失败(task=${id}): ${e?.message ?? e}\n`)
+  }
   return { ok: true, id: Number(id), status, next_run_at: nextRunAt }
 }
 
 // 执行历史落库（每任务保留最近 200 行，防无限膨胀）
-function taskRunRecord({ task_id, run_id = '', ok, note = '', started_at = null, finished_at = null }) {
+function taskRunRecord({ task_id, run_id = '', ok, note = '', started_at = null, finished_at = null, session_id = null }) {
   const d = getDb()
   const duration = (started_at && finished_at) ? finished_at - started_at : null
-  d.prepare('INSERT INTO task_runs (task_id, run_id, ok, note, started_at, finished_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(task_id, String(run_id || ''), ok ? 1 : 0, String(note || '').slice(0, 500), started_at, finished_at, duration)
+  d.prepare('INSERT INTO task_runs (task_id, run_id, ok, note, started_at, finished_at, duration_ms, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(task_id, String(run_id || ''), ok ? 1 : 0, String(note || '').slice(0, 500), started_at, finished_at, duration, session_id)
   d.prepare('DELETE FROM task_runs WHERE task_id = ? AND id NOT IN (SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 200)')
     .run(task_id, task_id)
 }
@@ -595,7 +677,7 @@ export function taskRunsList({ taskId = 0, programId = '', limit = 50, offset = 
   if (taskId) { where += ' AND r.task_id = ?'; args.push(Number(taskId)) }
   if (programId) { where += ' AND t.program_id = ?'; args.push(programId) }
   return plain(getDb().prepare(
-    `SELECT r.id, r.task_id, r.run_id, r.ok, r.note, r.started_at, r.finished_at, r.duration_ms,
+    `SELECT r.id, r.task_id, r.run_id, r.ok, r.note, r.started_at, r.finished_at, r.duration_ms, r.session_id,
             t.objective, t.program_id, t.phase
      FROM task_runs r JOIN tasks t ON t.id = r.task_id
      WHERE ${where} ORDER BY r.id DESC LIMIT ? OFFSET ?`
@@ -626,23 +708,32 @@ export function taskScheduledList() {
 
 // 僵尸回收（P0-3）：宿主进程崩溃/超时导致 running 卡死的 scheduled 任务 → 回收。
 // once 任务标 failed（终态），interval 任务退回 queued（下次续期）。默认超龄 1 小时（对齐 worker timeout 上限）。
-export function taskReapStale(maxAgeMs = 3600000) {
+export function taskReapStale(maxAgeMs = 3600000, pidAliveFn = null) {
+  const alive = pidAliveFn || pidAlive
   const d = getDb()
   const cutoff = now() - maxAgeMs
   const stale = plain(d.prepare(
-    "SELECT id, schedule_kind, started_at FROM tasks WHERE status = 'running' AND schedule_kind IS NOT NULL AND started_at IS NOT NULL AND started_at < ?"
+    "SELECT id, schedule_kind, started_at, last_run_id FROM tasks WHERE status = 'running' AND schedule_kind IS NOT NULL AND started_at IS NOT NULL AND started_at < ?"
   ).all(cutoff))
   let reaped = 0
+  let skipped = 0
   for (const t of stale) {
+    // P15 修复：last_run 对应的 worker 进程还活着 → 任务在真实执行，不是僵尸，跳过回收。
+    // （旧逻辑只看 started_at 年龄，与 3600s 超时上限同量级，会把跑满预算的正常任务误杀+双重派单。）
+    if (t.last_run_id) {
+      const w = d.prepare('SELECT pid, status FROM workers WHERE run_id = ?').get(t.last_run_id)
+      if (w && w.status === 'running' && alive(w.pid)) { skipped++; continue }
+    }
     const status = t.schedule_kind === 'interval' ? 'queued' : 'failed'
     const r = d.prepare("UPDATE tasks SET status = ?, blocked_reason = '宿主重启/超时回收', updated_at = ? WHERE id = ? AND status = 'running'")
       .run(status, now(), t.id)
     if (r.changes === 1) {
       reaped++
-      taskRunRecord({ task_id: t.id, run_id: '', ok: false, note: '宿主重启/超时回收', started_at: t.started_at, finished_at: now() })
+      try { taskRunRecord({ task_id: t.id, run_id: '', ok: false, note: '宿主重启/超时回收', started_at: t.started_at, finished_at: now() }) }
+      catch (e) { process.stderr.write(`[asset-db] task_runs 记录失败(task=${t.id}): ${e?.message ?? e}\n`) }
     }
   }
-  return { reaped }
+  return { reaped, skipped_alive: skipped }
 }
 
 // -------------------- worker 注册表（重启幂等恢复）--------------------
@@ -1019,12 +1110,15 @@ export function buildReport({ hostLike = '', sinceDays = 0, status = '', program
   const d = getDb()
   const args = []
   let sql = 'SELECT * FROM findings WHERE 1=1'
+  // P15 噪声闸门：报告只列信号（noise=0）；噪声只给一行计数
+  sql += ' AND noise = 0'
   if (hostLike) { sql += ' AND host LIKE ?'; args.push(`%${hostLike}%`) }
   if (status) { sql += ' AND status = ?'; args.push(status) }
   if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
   if (sinceDays > 0) { sql += ' AND created_at >= ?'; args.push(Date.now() - sinceDays * 86400000) }
   sql += ' ORDER BY created_at DESC'
   const rows = plain(d.prepare(sql).all(...args))
+  const noiseCount = d.prepare('SELECT COUNT(*) AS n FROM findings WHERE noise = 1').get().n
 
   const bySev = {}
   for (const r of rows) bySev[r.severity || 'info'] = (bySev[r.severity || 'info'] || 0) + 1
@@ -1035,10 +1129,11 @@ export function buildReport({ hostLike = '', sinceDays = 0, status = '', program
     `- 生成时间: ${new Date().toISOString()}`,
     `- 范围: ${hostLike || '全部'}${sinceDays ? `（近 ${sinceDays} 天）` : ''}`,
     `- 合计: ${rows.length} 个发现（${Object.entries(bySev).map(([k, v]) => `${k}:${v}`).join(' / ') || '无'}）`,
+    `- 噪声: ${noiseCount} 条 info 级模板指纹已闸门过滤（不计入合计，可用 finding_query include_noise 查看）`,
     ``,
-    `| # | 级别 | 状态 | 标题 | 目标 | 证据 |`,
-    `|---|---|---|---|---|---|`,
-    ...rows.map((r) => `| ${r.id} | ${r.severity} | ${r.status} | ${r.title.replace(/\|/g, '\\|')} | ${r.url || r.host} | ${String(r.evidence).split('\n')[0].slice(0, 80).replace(/\|/g, '\\|')} |`),
+    `| # | 级别 | 状态 | 类型 | 标题 | 目标 | 证据 |`,
+    `|---|---|---|---|---|---|---|`,
+    ...rows.map((r) => `| ${r.id} | ${r.severity} | ${r.status} | ${r.vuln_type || '—'} | ${r.title.replace(/\|/g, '\\|')} | ${r.url || r.host} | ${String(r.evidence).split('\n')[0].slice(0, 80).replace(/\|/g, '\\|')} |`),
     ``,
   ].join('\n')
 
@@ -1046,7 +1141,7 @@ export function buildReport({ hostLike = '', sinceDays = 0, status = '', program
   fs.mkdirSync(dir, { recursive: true })
   const file = path.join(dir, `report-${Date.now()}.md`)
   fs.writeFileSync(file, md)
-  return { file, total: rows.length, by_severity: bySev }
+  return { file, total: rows.length, by_severity: bySev, noise_filtered: noiseCount }
 }
 
 // -------------------- 文本自动抽取（run_cli 结果入库用） --------------------
@@ -1075,4 +1170,125 @@ export function ingestText(source, text, program_id = null) {
     }
   }
   return { assets, endpoints }
+}
+
+// -------------------- P15：纪律健康度（看板 ops 视图 + 每日自检数据源） --------------------
+// 五指标：台账日增量 / 卡片使用周增量 / IdeaCard 月增量 / 交接包生成率 / 调度漂移+task_runs 新鲜度。
+// 数据即现实校验：任何指标红灯 = 文档纪律与实际执行脱节。
+export function opsHealth() {
+  const d = getDb()
+  const today = beijingDate()
+  const yesterday = beijingDate(Date.now() - 86400000)
+  const days = []
+  for (let i = 0; i < 7; i++) days.push(beijingDate(Date.now() - i * 86400000))
+  const programs = fs.readdirSync(path.join(DATA_DIR, 'pipeline'), { withFileTypes: true })
+    .filter((e) => e.isDirectory()).map((e) => e.name)
+
+  const ledger = {}
+  for (const p of programs) {
+    const f = path.join(DATA_DIR, 'pipeline', p, `attempts-${p}.tsv`)
+    try {
+      const lines = fs.readFileSync(f, 'utf8').split('\n').filter((l) => l.trim())
+      ledger[p] = { total: lines.length - 1, today: lines.slice(1).filter((l) => (l.split('\t')[0] || '').slice(0, 10) === today).length }
+    } catch { ledger[p] = { total: 0, today: 0 } }
+  }
+  let cardUsage7d = 0
+  for (const p of programs) {
+    try {
+      for (const f of fs.readdirSync(path.join(DATA_DIR, 'pipeline', p))) {
+        const m = f.match(/^card_usage-(\d{4}-\d{2}-\d{2})\.jsonl$/)
+        if (m && days.includes(m[1])) cardUsage7d += fs.readFileSync(path.join(DATA_DIR, 'pipeline', p, f), 'utf8').split('\n').filter((l) => l.trim()).length
+      }
+    } catch { /* ignore */ }
+  }
+  let handoff7d = 0
+  for (const p of programs) {
+    for (const day of days) {
+      try { if (fs.existsSync(path.join(DATA_DIR, 'pipeline', p, `handoff-${day}.md`))) handoff7d++ } catch { /* ignore */ }
+    }
+  }
+  let ideaCards = 0
+  try {
+    ideaCards = fs.readdirSync(path.join(DATA_DIR, 'vulncards', 'ideas'))
+      .filter((f) => f.endsWith('.yaml') && !f.startsWith('IC-000')).length
+  } catch { /* ignore */ }
+  // 调度漂移：next_run_at 相对 last_run_at+every_seconds 的偏移比（>1.5 视为漂移）
+  const drift = plain(d.prepare(
+    `SELECT id, program_id, phase, last_run_at, next_run_at, every_seconds,
+            CAST(next_run_at AS REAL) / NULLIF(CAST(last_run_at + every_seconds * 1000 AS REAL), 0) AS drift_ratio
+     FROM tasks WHERE schedule_kind = 'interval' AND status NOT IN ('done','failed','cancelled')`
+  ).all()).map((r) => ({ ...r, drifting: !!r.drift_ratio && r.drift_ratio > 1.5 }))
+  const lastRun = d.prepare('SELECT MAX(finished_at) AS ts FROM task_runs').get().ts
+  const taskRunsStaleH = lastRun ? Math.round((Date.now() - lastRun) / 360000) / 10 : null
+  const alerts = []
+  for (const [p, v] of Object.entries(ledger)) if (v.total === 0) alerts.push(`台账空转: ${p} attempts 0 行`)
+  if (cardUsage7d === 0) alerts.push('卡片使用记录 7 天 0 条（card_usage_log 未被使用）')
+  if (handoff7d === 0) alerts.push('交接包 7 天 0 份（handoff-{date}.md 未生成）')
+  for (const t of drift) if (t.drifting) alerts.push(`调度漂移: task #${t.id} next_run 偏移 ${t.drift_ratio?.toFixed(2)}x`)
+  if (taskRunsStaleH != null && taskRunsStaleH > 26) alerts.push(`task_runs 断链: 最近执行记录已是 ${taskRunsStaleH}h 前`)
+  return {
+    generated_at: new Date().toISOString(),
+    ledger_today: ledger,
+    card_usage_7d: cardUsage7d,
+    handoff_7d: handoff7d,
+    idea_cards: ideaCards,
+    scheduled_drift: drift,
+    task_runs_last_age_hours: taskRunsStaleH,
+    findings_noise: d.prepare('SELECT COUNT(*) AS n FROM findings WHERE noise = 1').get().n,
+    assets_ungraded: d.prepare('SELECT COUNT(*) AS n FROM assets WHERE level IS NULL').get().n,
+    alerts,
+    healthy: alerts.length === 0,
+  }
+}
+
+// -------------------- P16：SRC 提交半自动化（草稿生成 + 查重检索） --------------------
+// finding CONFIRMED → 平台提交草稿（复现步骤/影响/放大面/脱敏证据指针）+ 同目标同类型查重。
+// 人只做最终审校与粘贴——挖到到提交之间不再断链。
+export function submissionDraft(findingId, { platform = '' } = {}) {
+  const d = getDb()
+  const f = d.prepare('SELECT * FROM findings WHERE id = ?').get(Number(findingId))
+  if (!f) return { ok: false, error: `finding 不存在: ${findingId}` }
+  // 查重：同 host 或同 vuln_type 的历史提交/已确认项（提交前必看，防平台判重）
+  const dups = plain(d.prepare(
+    `SELECT id, title, severity, status, host FROM findings
+     WHERE id != ? AND noise = 0 AND (host = ? OR (vuln_type IS NOT NULL AND vuln_type = ?))
+     ORDER BY created_at DESC LIMIT 10`
+  ).all(Number(findingId), f.host || '', f.vuln_type || ''))
+  const sevName = { critical: '严重', high: '高危', medium: '中危', low: '低危', info: '信息' }[f.severity] || f.severity
+  const md = [
+    `# 漏洞提交草稿（finding #${f.id}，人工审校后提交）`,
+    '',
+    `- 平台: ${platform || '（按目标 SRC 平台填写）'}`,
+    `- 漏洞类型: ${f.vuln_type || '（回填 vuln_type）'}${f.cwe ? ` / ${f.cwe}` : ''}`,
+    `- 等级自评: ${sevName}`,
+    `- 目标: ${f.url || f.host}`,
+    '',
+    '## 漏洞描述',
+    f.title,
+    f.impact ? `\n**影响**: ${f.impact}` : '',
+    '',
+    '## 复现步骤',
+    f.reproduction_steps || '（补全：1. … 2. … 3. …，每步附请求/响应关键片段）',
+    f.preconditions ? `\n**前置条件**: ${f.preconditions}` : '',
+    '',
+    '## 证据',
+    '```',
+    String(f.evidence || '').slice(0, 2000),
+    '```',
+    f.endpoint_ref ? `\n关联接口: ${f.endpoint_ref}` : '',
+    '',
+    '## 修复建议',
+    f.recommendation || '（补全修复建议）',
+    '',
+    '## 提交前查重结果',
+    dups.length ? dups.map((x) => `- #${x.id} [${x.severity}] ${x.title}（${x.host}，status=${x.status}）`).join('\n') : '- 无同目标/同类型历史记录',
+    '',
+    '---',
+    `数据指针：finding #${f.id} · session ${f.session_id || '—'} · source ${f.source || '—'} · ${new Date().toISOString()}`,
+  ].join('\n')
+  const dir = path.join(DATA_DIR, 'reports', 'submissions')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `draft-finding-${f.id}-${beijingDate()}.md`)
+  fs.writeFileSync(file, md)
+  return { ok: true, file, finding_id: f.id, dup_candidates: dups, hint: '人工审校后提交；提交成功用 finding_update status=submitted 回流' }
 }

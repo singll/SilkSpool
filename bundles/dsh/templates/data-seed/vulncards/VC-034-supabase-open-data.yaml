@@ -1,0 +1,38 @@
+id: VC-034
+type: vuln
+name: 自托管 Supabase / PostgREST 开放数据面（RLS 缺失）
+cwe: CWE-1230
+version: 1
+status: active
+severity_potential: [high, medium]
+risk_level: passive
+applicable_when:
+  - 资产指纹命中 Supabase（Kong 网关 / supabase_* 响应头 / RESTful /rest/v1/ 路径）
+  - 任意 web 资产响应特征符合 PostgREST 风格（OpenAPI 自述 / PGRST 错误码 / /rest/v1/ 路径）
+not_applicable_when: [supabase-hosted-with-auth, no-rest-endpoint]
+prerequisites: {egress: 任意, auth: none, tools: [curl, nuclei]}
+detect:
+  summary: 指纹识别 Supabase/PostgREST → anon 角色直连 REST → 表枚举 → CRUD 探测
+  steps:
+    - '指纹入口：/rest/v1/ 路径探测、响应头（x-kong-* / supabase）、401 报文格式（PostgREST JSON error）、OpenAPI 根路径自述'
+    - '无 key 时尝试匿名：GET /rest/v1/<guess_table>?limit=1（PostgREST 匿名默认角色 anon）'
+    - '表名枚举：从 JS/前端代码提取表名（supabase.from("xxx")）、常见业务词、/rest/v1/ OpenAPI swagger 端点'
+    - '对每张可达表测 CRUD 完整性：GET（读）/ POST（插）/ PATCH（改）——只对自己插入的自建行操作，够证即停'
+    - '提权面：测 rpc/ 存储过程匿名调用、auth/v1 admin 接口暴露、service_role key 泄漏（JS 源码/配置）'
+  fp_baseline: 返回 401/403 = RLS 生效，不是漏洞；能匿名读到任何真实业务行才进入验证
+verify:
+  must_pass:
+    - 匿名 GET 真实业务表返回 ≥1 行非示例数据（脱敏记录行数与字段名）
+    - 写操作只验证到"自建测试行成功写入/修改"即止，附行 id 与回滚证明
+    - 截图/响应证据含请求与响应体（脱敏后）+ run_id
+  falsification:
+    - 区分公开宣传数据（公告/新闻，设计如此）vs 用户/业务数据（RLS 应生效）
+    - 排除网关层 mock / 蜜罐假数据（数据一致性与量级交叉核对）
+retest_after_days: 45
+src_notes: |
+  实战背书：美团 SRC 2026-08-20 手工战役 6 high/4 medium 全部出自此类（骑手签到 12 万行匿名可读、
+  NoCode 平台 18 表暴露、cmd_exec 视图命令执行、anon 提权 admin）。报告放大路径：① 可篡改（写权限）
+  比只读提一档；② PII 量级量化提升定级；③ 连锁提权（rpc/admin 接口）单独成案。
+  该类在世界范围内属高产出面：自托管 Supabase 默认 anon 无 RLS，部署方普遍误配。
+changelog:
+  - v1 2026-08-28: 初版（由 08-20 手工战役 retro 沉淀——"指纹→假说→验证链"卡片化第一张）

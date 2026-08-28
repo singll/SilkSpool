@@ -75,3 +75,20 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 ## 8. 交接包（每日收尾，`data/pipeline/{program}/handoff-{date}.md`，模板见 data/templates/）
 
 五段固定：状态快照 / 今日动作摘要 / 明日队列（huntlist 带 precondition+ttl）/ 阻塞与求助（按解锁收益排序）/ 数据指针（全部绝对路径）。
+
+## 9. 流程守卫（P15，机器强制——纪律不再依赖自觉）
+
+`task_update status=done` 时引擎硬校验三个纪律产物，缺一即拦截并返回缺失清单，补齐后重试：
+
+1. `attempts-{program}.tsv` 近 24h 有增量行（六态皆可，含 N/A 与 BLOCKED——零探测日也要给存量目标落终态行）；
+2. `card_usage-*.jsonl` 近 24h 有记录（当日未用卡则对规程复盘落一条 deviation）；
+3. `handoff-{date}.md` 存在（北京日期）。
+
+被拦截 ≠ 失败：按缺失清单用 `attempts_log` / `card_usage_log` 补产物，再 task_update。守卫拦截本身会被记录（ops 视图可见），长期零拦截+零台账才是异常。
+
+## 10. 资产准入与每日 Slice（P15）
+
+- **准入**：主动扫描（risk≥active 的 run_cli）只打已分级资产——`asset_query level_in=S,A,B` 取队列；未分级资产先 `grade_assets` 分级或 `vision_triage` 截图分诊（喂 dsh-browser/httpx 截图，返回 page_type/has_login/interesting）。
+- **Slice 化**：每日任务的硬指标是消化覆盖矩阵的一个切片（如 top-10 BLOCKED/PENDING 格子 + radar 事件全清），**不是**"覆盖全部资产"——完成切片即达标，剩余预算进研究模式（产 IdeaCard）。跑不完登记次日队列，禁止为凑覆盖率跑低价值全量。
+- **蒸馏中置**：每完成一个目标的验证链立即评估 exp_store/pb_save（三问：会过期吗/换目标有用吗/谁会读），不要攒到收尾——预算耗尽时收尾蒸馏永远轮不到。
+- 报告只列信号：info 级模板指纹已被引擎闸门隔离（noise=1），`finding_query` 默认看不到，无需再自行过滤。

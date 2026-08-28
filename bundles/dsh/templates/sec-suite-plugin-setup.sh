@@ -58,6 +58,30 @@ seed_manifests() {
     fi
 }
 
+# -------------------- 2.5 P15/P16 脚本归位（manifest 扁平推送 → 移入 scripts/） --------------------
+# manifest 只能扁平推到 $BASE_DIR；这里把治理/分诊脚本安装到最终位置（幂等，内容一致才跳过）。
+install_scripts() {
+    mkdir -p "$BASE_DIR/scripts/pipeline"
+    local moved=0
+    for f in vision-triage.mjs; do
+        if [ -f "$BASE_DIR/$f" ]; then
+            if ! cmp -s "$BASE_DIR/$f" "$BASE_DIR/scripts/$f" 2>/dev/null; then
+                install -m 0644 "$BASE_DIR/$f" "$BASE_DIR/scripts/$f"; moved=$((moved+1))
+            fi
+            rm -f "$BASE_DIR/$f"
+        fi
+    done
+    for f in grade-assets.py data-quality.py discipline-audit.py; do
+        if [ -f "$BASE_DIR/$f" ]; then
+            if ! cmp -s "$BASE_DIR/$f" "$BASE_DIR/scripts/pipeline/$f" 2>/dev/null; then
+                install -m 0644 "$BASE_DIR/$f" "$BASE_DIR/scripts/pipeline/$f"; moved=$((moved+1))
+            fi
+            rm -f "$BASE_DIR/$f"
+        fi
+    done
+    log "脚本归位完成（更新 ${moved} 个）→ $BASE_DIR/scripts/"
+}
+
 # -------------------- 3. 装入 profile（web + headless，worker 需要 run_cli） --------------------
 install_plugin() {
     for profile in web headless; do
@@ -84,6 +108,7 @@ smoke() {
 }
 
 assemble
+install_scripts
 seed_manifests
 if [ -f "$BASE_DIR/seed-skills.sh" ]; then
     DSH_HOME="$DATA_DIR" bash "$BASE_DIR/seed-skills.sh" || warn "Skill 种子失败（不影响主程序）"

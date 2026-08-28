@@ -50,6 +50,27 @@ async function reconcileWorkspaceSessions() {
 // worker.log 尾部噪声（headless 进程 stderr 杂讯）不进入任务摘要
 const WORKER_NOISE_RE = /ExperimentalWarning|trace-warnings|EADDRINUSE|xray webhook 启动失败|onnxruntime|pthread_setaffinity/
 
+// P15：按 cwd + 时间窗反查 headless worker 自己的会话 id（跳链地基）。
+// worker 会话 header.cwd = 工作区路径，createdAt 落在运行窗口内 → 取最新一条；查不到返回 null（不造假链）。
+// 字段兼容：header 形态可能是 {id,cwd,createdAt} 平铺或 {identity:{cwd,createdAt}} 嵌套。
+async function findWorkerSessionId(cwd, startedAt) {
+  try {
+    const sp = deps.getSessionPersistence()
+    if (!sp || !cwd) return null
+    const headers = await sp.list()
+    const cwdOf = (h) => h?.cwd ?? h?.identity?.cwd ?? null
+    const tsOf = (h) => h?.createdAt ?? h?.identity?.createdAt ?? h?.updatedAt ?? null
+    const candidates = (headers || []).filter((h) => {
+      if (cwdOf(h) !== cwd) return false
+      const t = tsOf(h)
+      return t == null || (t >= startedAt - 60000 && t <= Date.now() + 60000)
+    })
+    candidates.sort((a, b) => (tsOf(b) || 0) - (tsOf(a) || 0))
+    const hit = candidates[0]
+    return hit && (hit.id ?? hit.sessionId) ? String(hit.id ?? hit.sessionId) : null
+  } catch { return null }
+}
+
 // 定时任务角色注入：按 phase 读对应 preset 的 persona（单一事实源=preset 文件，与 webui 自定义 agent 同步演化）。
 // headless CLI 无 --agent 选项，调度 worker 原只有通用 coding-agent 人格——此处补齐项目层等价实现。
 const PHASE_PRESET = { recon: 'recon', vuln: 'vuln-hunt', 'biz-logic': 'biz-logic', 'code-audit': 'code-audit', intranet: 'intranet', review: 'review' }
@@ -81,6 +102,7 @@ async function schedulerTick() {
   // 到期任务相互独立：并行启动（修复串行 await 导致第 N 个任务晚 (N-1)×上限 才开跑的问题）。
   // 每个 callback 全段 try/catch + stderr 落日志：任何单任务异常可见可查，不再静默吞掉。
   await Promise.allSettled(due.map(async (task) => {
+    const startedAt = Date.now()
     try {
       const cwd = workspacePathOfProgram(task.program_id)
       const role = personaOfPhase(task.phase, cwd)
@@ -97,7 +119,18 @@ async function schedulerTick() {
       } else {
         note = (r.tail || '').split('\n').filter((l) => l.trim() && !WORKER_NOISE_RE.test(l)).slice(-3).join(' ').slice(0, 300)
       }
-      deps.assetDb.taskFinishScheduledRun({ id: task.id, ok: !!r.ok, run_id: r.run_id || '', note })
+      // P15 修复跳链断链：headless worker 的会话按 cwd 反查（header.cwd=工作区 → workspaceRegistry 归组），
+      // 回填 meta.json 与 task_runs.session_id——调度 run 此前 session_id 恒为 null。
+      const workerSessionId = findWorkerSessionId(cwd, startedAt)
+      if (workerSessionId && r.run_id) {
+        try {
+          const metaPath = path.join(deps.dataDir, 'results', r.run_id, 'meta.json')
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'))
+          meta.session_id = workerSessionId
+          fs.writeFileSync(metaPath, JSON.stringify(meta, null, 1) + '\n')
+        } catch { /* meta 回填失败不影响主流程 */ }
+      }
+      deps.assetDb.taskFinishScheduledRun({ id: task.id, ok: !!r.ok, run_id: r.run_id || '', note, session_id: workerSessionId })
     } catch (e) {
       process.stderr.write(`[sec-suite] 调度任务 #${task.id} 执行异常: ${e?.stack || e?.message || String(e)}\n`)
       try { deps.assetDb.taskFinishScheduledRun({ id: task.id, ok: false, run_id: '', note: `调度执行异常: ${e?.message ?? String(e)}`.slice(0, 300) }) } catch { /* ignore */ }
@@ -149,7 +182,9 @@ export function startScheduler(injected) {
     // 心跳续锁 + 持有校验：丢锁则尝试重夺，仍被他人活持则本 tick 跳过（不认领）
     if (!holdsSchedulerLock() && !acquireSchedulerLock()) return
     try { fs.writeFileSync(schedulerLockPath(), JSON.stringify({ pid: process.pid, ts: Date.now() })) } catch { /* ignore */ }
-    if ((++tick % 10) === 0) { try { deps.assetDb.taskReapStale() } catch { /* ignore */ } } // 每 10 tick 周期回收
+    // 周期回收：宽限期 = 超时上限 + 15min（旧默认 1h 与超时同量级，跑满预算的正常任务会被误杀）；
+    // 传 pidAlive 让回收跳过「last_run worker 还活着」的在飞任务（防双重派单）。
+    if ((++tick % 10) === 0) { try { deps.assetDb.taskReapStale((SCHEDULER_TASK_TIMEOUT_SEC + 900) * 1000, deps.pidAlive) } catch { /* ignore */ } }
     // 孤儿 worker 周期对账（P12-1）：父 worker 被杀会留下 registry 永远 running 的孙 worker
     // （孙进程 detached 自成进程组，外层 SIGKILL 够不着），按 pid 死活定期重分类
     if ((tick % 10) === 0) { try { deps.assetDb.workerReapStale() } catch { /* ignore */ } }

@@ -76,7 +76,8 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'asset_query',
-    description: '检索资产图谱。host_like 模糊匹配，type/level/accept 过滤，program_id 按项目过滤；深挖队列用法：level=S/A/B + accept!=none + sort=score desc。state=dead 为已失效资产。',
+    description: '检索资产图谱。host_like 模糊匹配，type/level/accept 过滤，program_id 按项目过滤；深挖队列用法：level_in=S,A,B + accept!=none + sort=score desc。'
+      + '资产准入：主动扫描只打已分级资产——未分级（level NULL）先用 grade-assets 分级或 vision_triage 分诊，禁直接全量扫描。',
     parameters: {
       type: 'object',
       properties: {
@@ -84,6 +85,7 @@ export function apply(ctx) {
         type: { type: 'string' },
         program_id: { type: 'string' },
         level: { type: 'string', description: 'S/A/B/C 过滤（深挖队列取 S/A/B）' },
+        level_in: { type: 'string', description: '多级过滤，如 "S,A,B"（主动扫描队列准入）' },
         accept: { type: 'string', description: 'full/intrusion-only/none 过滤' },
         sort: { type: 'string', enum: ['last_seen', 'score', 'host'], description: 'score=按可挖掘性降序' },
         limit: { type: 'integer', description: '默认 50，上限 200' },
@@ -91,7 +93,7 @@ export function apply(ctx) {
       additionalProperties: false,
     },
     execute: async (a) => {
-      const items = db.queryAssets({ hostLike: a.host_like || '', type: a.type || '', programId: a.program_id || '', level: a.level || '', accept: a.accept || '', sort: a.sort || '', limit: a.limit || 50 })
+      const items = db.queryAssets({ hostLike: a.host_like || '', type: a.type || '', programId: a.program_id || '', level: a.level || '', levelIn: a.level_in || '', accept: a.accept || '', sort: a.sort || '', limit: a.limit || 50 })
       return { ok: true, total: items.length, items }
     },
   })
@@ -163,7 +165,7 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'finding_query',
-    description: '检索发现。按 host/severity/status/program_id（new/confirmed/false_positive/submitted/dup）过滤。',
+    description: '检索发现。按 host/severity/status/program_id（new/confirmed/false_positive/submitted/dup）过滤。默认排除 info 噪声（include_noise=true 查看）。',
     parameters: {
       type: 'object',
       properties: {
@@ -171,11 +173,27 @@ export function apply(ctx) {
         severity: { type: 'string' },
         status: { type: 'string' },
         program_id: { type: 'string' },
+        include_noise: { type: 'boolean', description: 'true=含 info 噪声行（默认排除）' },
         limit: { type: 'integer' },
       },
       additionalProperties: false,
     },
-    execute: async (a) => ({ ok: true, items: db.queryFindings({ host: a.host || '', severity: a.severity || '', status: a.status || '', programId: a.program_id || '', limit: a.limit || 50 }) }),
+    execute: async (a) => ({ ok: true, items: db.queryFindings({ host: a.host || '', severity: a.severity || '', status: a.status || '', programId: a.program_id || '', includeNoise: a.include_noise === true, limit: a.limit || 50 }) }),
+  })
+
+  reg(ctx, {
+    name: 'submission_draft',
+    description: 'SRC 提交半自动化：按 finding 生成平台提交草稿（复现步骤/影响/证据/修复建议 markdown）+ 同目标同类型查重检索，落盘 data/reports/submissions/。提交前必须人工审校；提交成功后 finding_update status=submitted。',
+    parameters: {
+      type: 'object',
+      properties: {
+        finding_id: { type: 'integer' },
+        platform: { type: 'string', description: '目标平台名（如 美团SRC / 字节SRC）' },
+      },
+      required: ['finding_id'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.submissionDraft(a.finding_id, { platform: a.platform || '' }),
   })
 
   reg(ctx, {
@@ -344,7 +362,8 @@ export function apply(ctx) {
 
   reg(ctx, {
     name: 'task_update',
-    description: '更新任务状态：queued/running/blocked/done/failed/cancelled。note 追加进 result 证据链；blocked_reason 记录 HITL 阻塞原因。',
+    description: '更新任务状态：queued/running/blocked/done/failed/cancelled。note 追加进 result 证据链；blocked_reason 记录 HITL 阻塞原因。'
+      + '流程守卫：interval 日任务标 done 前机器校验纪律产物（台账当日增量/卡片使用记录/交接包），缺失即拦截并返回缺失清单——补齐产物后重试，不可绕过。',
     parameters: {
       type: 'object',
       properties: {

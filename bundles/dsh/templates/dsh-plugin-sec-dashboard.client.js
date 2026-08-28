@@ -1358,6 +1358,7 @@ window.__ModuleLoader__.load({
         return activeTab === 'findings' ? { endpoint: 'evalStats' } : null
       }, [activeTab])
       var memState = useRpc(function () { return { endpoint: 'memcore' } }, [])
+      var opsState = useRpc(function () { return { endpoint: 'ops' } }, [])
       var cardsState = useRpc(function () {
         return activeTab === 'knowledge' ? { endpoint: 'expCards' } : null
       }, [activeTab])
@@ -1595,6 +1596,9 @@ window.__ModuleLoader__.load({
         }),
         (memState.data && memState.data.loaded === false)
           ? el('div', { style: { ...errorLine, color: T.warn } }, '⚠ memcore 记忆治理插件未加载：写入不校验、读取全量可见（fail-open）。检查 profile 是否含 @silksec/sec-memcore。')
+          : null,
+        (opsState.data && opsState.data.healthy === false)
+          ? el('div', { style: { ...errorLine, color: T.warn } }, '⚠ 纪律健康度告警（' + opsState.data.alerts.length + '）：' + opsState.data.alerts.slice(0, 3).join('；') + '（详见 ops 端点）')
           : null,
         el('div', { style: tabBar }, tabs.map(tabButton)),
         el('div', { style: body }, content),

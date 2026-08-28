@@ -438,6 +438,67 @@ summarize: head
 store: none
 EOF
 
+# ---------- P15/P16：治理与分诊工具（本地文件面，无外发目标流量，risk=passive 不设 target_param） ----------
+seed vision_triage <<'EOF'
+name: vision_triage
+binary: /usr/local/node/bin/node
+stage: recon
+risk: passive
+timeout: 180
+requires: []
+produces: [visual_triage]
+args_template: "/opt/silkspool/dsh/scripts/vision-triage.mjs {{image}}"
+env_proxy: false
+parser: lines
+summarize: head
+store: none
+EOF
+
+seed data_quality <<'EOF'
+name: data_quality
+binary: /usr/bin/python3
+stage: ops
+risk: passive
+timeout: 120
+requires: []
+produces: [quality_report]
+args_template: "/opt/silkspool/dsh/scripts/pipeline/data-quality.py --json"
+env_proxy: false
+parser: lines
+summarize: head
+store: none
+EOF
+
+seed discipline_audit <<'EOF'
+name: discipline_audit
+binary: /usr/bin/python3
+stage: ops
+risk: passive
+timeout: 120
+requires: []
+produces: [discipline_report]
+args_template: "/opt/silkspool/dsh/scripts/pipeline/discipline-audit.py --json"
+env_proxy: false
+parser: lines
+summarize: head
+store: none
+EOF
+
+seed grade_assets <<'EOF'
+name: grade_assets
+binary: /usr/bin/python3
+stage: recon
+risk: passive
+timeout: 300
+requires: []
+produces: [graded_assets]
+args_template: "/opt/silkspool/dsh/scripts/pipeline/grade-assets.py"
+env_proxy: false
+parser: lines
+summarize: head
+store: none
+EOF
+
 # ---------- fofa_search 脚本安装（幂等：缺失或内容不一致才更新） ----------
 SUDO=''
 if [ "$(id -u)" -ne 0 ]; then SUDO='sudo'; fi

@@ -145,6 +145,9 @@ export async function handleDashboardRpc(endpoint, payload) {
   switch (endpoint) {
     case 'stats':
       return deps.assetDb.stats()
+    // ---- P15：纪律健康度（五指标：台账/卡使用/交接包/IdeaCard/调度漂移）----
+    case 'ops':
+      return deps.assetDb.opsHealth()
     // ---- P11：工作区 / 会话 / 授权管理 ----
     case 'workspaces':
       deps.pairWorkspaces() // 顺手做幂等配对（registry 后到场景）
