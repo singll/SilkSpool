@@ -218,6 +218,7 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 | 2026-08-28 | B2 提示词去重（P14） | 新建 sec-runtime-discipline 公共纪律技能；4 个日任务 objective 重写（3569→1226 等，~70% 精简，纪律全部归技能单一事实源）；**收尾 note 强制【项目·角色·MMdd】格式**（执行历史左侧可分辨哪天哪个任务）；#24 周复盘挂入每周卡片评审段（T-4 完成） |
 | 2026-08-28 | B3 sec-pipeline 插件化 | 新插件 8 工具上线（attempts_log/card_usage_log/radar_read/pipeline_validate/coverage_report/verify_replay/surface_queue/surface_scan，全部单测通过含反例拦截）；l2-collect 注册为 run_cli manifest；objective 工具引用更新；旧脚本进入 1 周只读退役期 |
 | 2026-08-28 | B4 sec-suite 拆分（第一批） | 主文件 2051→1874 行，webhook.js/scheduler.js 卫星拆出（依赖注入、行为不变、node --check 全过）；重启冒烟通过（调度循环正常启动）；taskChain/reportBuild 留待下批 |
+| 2026-08-28 | B4 sec-suite 拆分（第二批） | 主文件 1874→1507 行（101.7KB→72.1KB），dashboard-rpc.js 卫星拆出（planChain/taskChain/handleDashboardRpc 全部 38 个 case，initDashboardRpc 依赖注入）；发现 reportBuild 实际逻辑本就在 asset-db.js 卫星（taskChain 仅转发）；重启冒烟通过（0 错误、调度正常、webhook 正常）；剩余主体为 run_cli/scope/sandbox 引擎（拆分候选：scope.js/sandbox.js/run-cli.js，视后续需要） |
 | 2026-08-28 | B5 TrueNAS/vault 沉淀 | spool nas 修复（新增 insecure 配置 + uptime 字符串解析）；csai 直挂 NFS 被 EPERM（keeper 正常，根因未明）→ **keeper 中继方案**落地：csai vault-export-build（卡片 YAML→md）→ operator vault-sync cron 每 30min → keeper `/mnt/NAS/data/knowledge/vault/SilkSecAgent/`（卡片库/报告/覆盖视图/交接，首批 18 文件已同步） |
 
 ### 历史文档索引（本目录）
