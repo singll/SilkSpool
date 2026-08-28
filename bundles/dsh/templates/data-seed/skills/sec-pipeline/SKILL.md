@@ -45,6 +45,20 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 - 有 GraphQL → graphql-cop；登录框 → VC-015 登录接口安全（无需账号）
 - nuclei 产出 info 级默认隔离：finding 候选只看 severity≥low；info 命中记台账不落 finding。
 
+### 流水线脚本（/opt/silkspool/dsh/scripts/pipeline/，已部署可直接调用）
+
+| 脚本 | 用途 | 用法 |
+|---|---|---|
+| l2-collect.sh | L2 接口层收集（katana+waybackurls+gau→endpoints.tsv） | `l2-collect.sh <program> <host或文件>` |
+| surface-consume.py | 参数 URL 队列（喂 dalfox/sqlmap）+ 敏感信息回扫（VC-027） | `surface-consume.py queue <program> <endpoints.tsv>` / `scan <file>` |
+| js-watch.py | 变化雷达·JS 发版 hash 监控 | `js-watch.py init/run <program>` |
+| ct-watch.py | 变化雷达·CT 新子域（已常驻 systemd: ct-watch.service，产出 radar-queue.jsonl，开局消费即可） | recon 开局读 `radar-queue.jsonl` |
+| pipeline-validate.py | 台账格式机器校验（收尾强制） | `pipeline-validate.py <file...>` |
+| coverage-report.py | 覆盖矩阵视图生成（报告数字唯一来源） | `coverage-report.py <attempts.tsv> --out coverage-YYYY-MM-DD.md` |
+| verify-replay.py | CONFIRMED 机械复核（重放+hash+verify-log） | `verify-replay.py <evidence_dir> --proxy http://127.0.0.1:8899` |
+
+注意：xray flows/*.jsonl 只有扫描统计计数、无请求内容（已核实）——参数面以 l2-collect 产出为准，勿再依赖 flows 文件。
+
 ## 6. 合规止损（机器强制，不靠自觉）
 
 够证即停：证明存在即停止，不拖数据、不横向、不扩大；证据中真实用户数据脱敏落盘；绝不用拖库凭据、绝不登真实用户账号、只用自建测试数据；intrusive 一律人工；命中蜜罐特征即退。

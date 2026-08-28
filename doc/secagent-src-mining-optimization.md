@@ -588,4 +588,14 @@ APP API 常见 sign 签名。分级处置：
 | 任务契约接入 | tasks #16/#17/#18/#19 objective 追加「P13-流水线规范」（DB 已备份 backups/asset-graph.pre-pipeline-*） | ✅ 已生效（下次调度起） |
 | OOB interactsh-server v1.3.1 | `/opt/silkspool/dsh/oob/`（service 文件 prepared 未启用） | ⏸ 待 DNS 委派（需选一个域如 oob.singll.net 做 NS 委派指向 141.11.43.99，然后启用 systemd unit） |
 
-**待人工事项**：① OOB 域名 NS 委派（决定域名后启用 service）；② 凭据策略（§8.2 注册双项目成对测试账号）；③ 存量 findings 回填 vuln_type（可排入下批）。
+**待人工事项**：见专门登记文档 [secagent-manual-tasks.md](secagent-manual-tasks.md)（H-001 OOB 域名 NS 委派、H-002 双项目成对凭据、H-003 存量回填 vuln_type）。
+
+### 第二批落地（2026-08-28）
+
+| 项 | 落点 | 状态 |
+|---|---|---|
+| L2 接口层收集 l2-collect.sh（katana+waybackurls+gau→endpoints.tsv） | `scripts/pipeline/` | ✅ 实测：单目标采 6593 端点/913 参数 URL 入队 |
+| 参数面消费 surface-consume.py（dalfox/sqlmap 队列 + 敏感信息回扫） | 同上 | ✅ 已测试 |
+| 变化雷达·JS 发版监控 js-watch.py | 同上 | ✅ 已测试 |
+| 变化雷达·CT 新子域 ct-watch.py（certspotter 轮询，含 429 退避） | systemd `ct-watch.service` 常驻 | ✅ 运行中（公共 calidog websocket 已验证不可用，改轮询设计） |
+| **重要纠偏** | xray flows/*.jsonl 只有扫描统计计数、无请求内容——"11.2 万条 flow 死库"实为统计计数，流量内容从未被记录。参数面改由 l2-collect 直接产出 | 已更新认知，skills 中注明 |
