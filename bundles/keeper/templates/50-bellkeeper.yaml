@@ -24,6 +24,7 @@ services:
     volumes:
       - ./bellkeeper-init.sh:/app/scripts/bellkeeper-init.sh:ro
       - ./.env:/app/config/.env:ro
+      - ./bellkeeper/config/bellkeeper.yaml:/app/config/bellkeeper.yaml:ro
       - /mnt/NAS/data/knowledge:/mnt/knowledge:rw
     # 数据层已剥离到 silkdata(.231)；用 extra_hosts 把数据服务名解析到数据机，
     # 应用连接串(config 默认 sp-* 容器名)无需改动。sp- 名与裸服务名都映射，覆盖所有解析路径。

@@ -40,6 +40,9 @@ defaults:
       LLM_NEWAPI_API_KEY=
       LLM_DEEPSEEK_API_KEY=
       LLM_KIMI_API_KEY=
+      # SilkSecAgent 路由新增渠道（值填实际 key）
+      LLM_SENSENOVA_API_KEY=
+      LLM_OPENCODE_GO_API_KEY=
 
       # --- Memos ---
       MEMOS_API_TOKEN=your-memos-api-token
