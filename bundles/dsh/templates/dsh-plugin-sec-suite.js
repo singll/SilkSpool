@@ -23,16 +23,12 @@ import * as path from 'node:path'
 import * as assetDb from './asset-db.js'
 import * as parsers from './parsers.js'
 import * as exp from './experience.js'
-import { pbOutcome } from './experience.js'
 import { startXrayWebhook } from './webhook.js'
 import { startScheduler } from './scheduler.js'
 import { initDashboardRpc, planChain, taskChain, handleDashboardRpc } from './dashboard-rpc.js'
 
 export const name = 'sec-cli-adapter'
 export const inject = ['tools']
-
-// 测试/脚本用导出（插件加载器忽略多余导出）：scope 序列化回环与调度逻辑的单测入口
-export const _internal = { serializeScope, scopeSaveProgram, scopeDeleteProgram, scopeList, checkTarget, parseYaml, sessionIdOf }
 
 const DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const SCOPE_FILE = process.env.SEC_SCOPE_FILE || path.join(DATA_DIR, 'scope.yml')
@@ -355,8 +351,8 @@ function scopeSaveProgram(spec, isNew) {
   else programs.push(entry)
   scope.programs = programs
 
-  // 原子写 + 备份
-  fs.copyFileSync(SCOPE_FILE, SCOPE_FILE + '.bak')
+  // 原子写 + 备份（首次创建时 scope.yml 可能不存在，跳过备份）
+  if (fs.existsSync(SCOPE_FILE)) fs.copyFileSync(SCOPE_FILE, SCOPE_FILE + '.bak')
   const tmp = SCOPE_FILE + '.tmp'
   fs.writeFileSync(tmp, serializeScope(scope))
   fs.renameSync(tmp, SCOPE_FILE)
@@ -373,7 +369,8 @@ function scopeDeleteProgram(name) {
   if (idx < 0) return { ok: false, error: `项目 ${name} 不在 scope.yml` }
   programs.splice(idx, 1)
   scope.programs = programs
-  fs.copyFileSync(SCOPE_FILE, SCOPE_FILE + '.bak')
+  // 原子写 + 备份（首次创建时 scope.yml 可能不存在，跳过备份）
+  if (fs.existsSync(SCOPE_FILE)) fs.copyFileSync(SCOPE_FILE, SCOPE_FILE + '.bak')
   const tmp = SCOPE_FILE + '.tmp'
   fs.writeFileSync(tmp, serializeScope(scope))
   fs.renameSync(tmp, SCOPE_FILE)
@@ -799,7 +796,7 @@ async function runCli(args, exec) {
   audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'executed', exit_code: meta.exit_code, duration_ms: meta.duration_ms, sandboxed: meta.sandboxed })
 
   // P1-1 环1 自动沉淀：工具执行统计（成功率/耗时）→ playbook，驱动 pb_rank 进化（无需 agent 手动 pb_outcome）
-  try { pbOutcome({ name: `tool:${toolName}`, success: result.code === 0, duration_ms: meta.duration_ms }) } catch { /* 统计失败不阻断 */ }
+  try { exp.pbOutcome({ name: `tool:${toolName}`, success: result.code === 0, duration_ms: meta.duration_ms }) } catch { /* 统计失败不阻断 */ }
   // P1-1 环1 负知识：执行失败/超时自动写 note 证伪，neg_check 派单前据此拦截重复尝试（免踩同一坑）
   if (programId && result.code !== 0) {
     const why = result.error ? `启动失败: ${result.error}` : result.signal ? `超时/被杀 ${result.signal}` : `exit ${result.code}`
@@ -825,7 +822,9 @@ async function runCli(args, exec) {
   if (manifest.store === 'asset-graph' && result.code === 0 && stdoutText) {
     try {
       ingested = parsers.applyParsedResult(manifest, toolName, runId, stdoutText, programId, sessionId)
-    } catch { /* 入库失败不影响主流程 */ }
+    } catch (e) {
+      process.stderr.write(`[sec-suite] ${toolName} 自动入库异常: ${e?.message ?? String(e)}\n`)
+    }
   }
 
   const lines = stdoutText.split('\n')

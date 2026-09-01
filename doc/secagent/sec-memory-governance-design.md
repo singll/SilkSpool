@@ -1,6 +1,6 @@
 # SilkSecAgent 统一记忆基架设计（Memory Substrate）
 
-> 版本：v2.1 终版（v2.0 A+B 融合定型；v2.1 治理层改为独立 cordis 插件 @silksec/sec-memcore，可选注入、fail-open）｜ 日期：2026-08-25 ｜ 状态：**已定型，待实施**
+> 版本：v2.1 终版（v2.0 A+B 融合定型；v2.1 治理层改为独立 cordis 插件 @silksec/sec-memcore，可选注入、fail-open）｜ 日期：2026-08-25 ｜ 状态：**已实施，当前实现见 `sec-memcore-implementation.md` 与 `bundles/dsh/templates/dsh-plugin-sec-memcore.js`**
 > 决策记录：候选方案 A（元数据标签制）+ B（分层记忆制）融合，**不采用 C 过渡方案**；
 > 用户四要求：① 晋升/遗忘/分类全部代码硬实施强监管；② 容错托底——无周复盘系统也健康运转；
 > ③ 保留弹性——底线之上写入方自主思考，思考留痕即可采纳；④ **插件化——治理层缺席时系统正常运转（fail-open 全量可读），只是没有记忆治理效果**。不怕动数据、不怕动代码。

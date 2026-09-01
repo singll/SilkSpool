@@ -1,9 +1,8 @@
 # SilkSecAgent 记忆基架 + 自学习 实施总纲
 
-> 版本：v1.1 ｜ 日期：2026-08-25 ｜ 上游设计：[sec-memory-governance-design.md](sec-memory-governance-design.md) v2.1
-> 本文档是**实施前的整合思考**：澄清"记忆治理系统"与"知识卡片自学习"两套方案的相互影响，
-> 消除冲突与冗余，给出合并后的最终数据模型、原语集与实施批次。实施以本文档为准。
-> （2026-08-28 注：运行时机制现状以 `silksecagent-system-complete.md` §4.2 为准；文中"exp 2 candidate"为落地当日快照，现经自动晋升通道已转 active。）
+> 版本：v1.2 ｜ 日期：2026-09-01 ｜ 上游设计：[sec-memory-governance-design.md](sec-memory-governance-design.md) v2.1
+> 本文档记录记忆治理系统的**实施状态**；数据现状以 `silksecagent-system-complete.md` §4.2/§5 与 csai 运行时实测为准。
+> 2026-09-01 更新：blackboard 现为 timeline/ephemeral 兼容层（47 键），facts 1,082 条，exp_cards 4 张；sweeper 6h 运转、AGENTS.md 受管区块自动生成、vault 导出桥正常。
 
 > **实施状态（2026-08-25 已上线，csai 验证通过）**
 > - ✅ B0：4 条 interval objective 清 httpx/统一报告路径/清陈旧日期；黑板 httpx note 标记归档

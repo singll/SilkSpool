@@ -1,8 +1,8 @@
 # SilkSecAgent SRC 漏洞挖掘体系 · 持续推进文档
 
-> 版本：v3.1 · 2026-08-28（由设计规范 v2.1 + 人工待办文档合并而来，为唯一持续推进入口）
+> 版本：v3.2 · 2026-09-01（由设计规范 v2.1 + 人工待办文档合并而来，为唯一持续推进入口）
 > 性质：Living Document。历史设计文档与实施报告见本目录其他文件；本文档只保留**当前状态、待办、未完成的详细内容、工作规范**。
-> 体系运行位置：csai `/opt/silkspool/dsh/`；版本受控源文件在 SilkSpool 仓库 `bundles/dsh/templates/data-seed/`。
+> 体系运行位置：csai `/opt/silkspool/dsh/`；版本受控源文件在 SilkSpool 仓库 `bundles/dsh/templates/`。
 > **系统是什么、怎么转**（插件/脚本/流程/提示词/状态机/DSH+pi 架构完整解剖）见 [silksecagent-system-complete.md](silksecagent-system-complete.md)。
 
 ---
@@ -21,17 +21,20 @@
 
 **系统在跑什么**（csai，全部已验证）：
 
-- 双项目每日链路：recon 03:00 → vuln 04:00（interval 任务 #16-#19，objective 已 Slice 化硬指标 + sec-pipeline 规范）
+- 双项目每日链路：recon 03:00 → vuln 04:00（interval 任务 #16/#17/#19 + #37，objective 已 Slice 化硬指标 + sec-pipeline 规范）
+- 数据规模（清理后）：assets **79,705** / endpoints **103** / findings **59**（噪声 14 条已闸门隔离）/ facts **1,082** / blackboard **47** 键（timeline/ephemeral 兼容层）/ tasks **18**
 - 台账体系：`data/pipeline/{program}/attempts-*.tsv`（六态）、`endpoints-*.tsv`（接口面）、`radar-queue.jsonl`（变化雷达）
 - **流程守卫（P15）**：interval 日任务标 `done` 前引擎硬校验纪律产物（台账 24h 增量 / card_usage / handoff-{date}.md），缺失即拦截——纪律不再依赖提示词自觉
-- **噪声闸门（P15）**：info 级模板指纹自动打 `noise=1`，findings 信号面/报告/KPI 默认隔离（314 条存量已回填）
+- **噪声闸门（P15）**：info 级模板指纹自动打 `noise=1`，findings 信号面/报告/KPI 默认隔离（清理后 14 条存量噪声保留观察）
 - **资产准入（P15）**：未分级资产禁入主动扫描队列（`asset_query level_in=S,A,B`）；全库已分级（grade-assets，域外参考站保持 NULL 永不进队）
+- **FGS 决策图（P17）**：`fgs_nodes` 表与 `fgs_add/update/list/next/export` 工具已落地，scheduler 在任务 prompt 中注入 FGS 使用说明；当前表为空，待跑通 Decide/Execute 循环
 - 漏洞卡注册表：`data/vulncards/`（18 张卡，含 VC-034 Supabase 开放数据面 = 08-20 战役 retro）
 - 脚本：`scripts/pipeline/`（l2-collect / surface-consume / js-watch / ct-watch / pipeline-validate / coverage-report / verify-replay / **grade-assets / data-quality / discipline-audit**）
 - 常驻服务：`ct-watch.service`（CT 新子域雷达，certspotter 轮询，30min 间隔）、xray 被动 7777、mubeng 代理池 8899
 - 技能：sec-pipeline（流水线纪律+守卫说明）+ 原有 sec-verification/sec-task 等
 - 新工具：`vision_triage`（截图→视觉模型分诊）、`submission_draft`（CONFIRMED→SRC 提交草稿+查重）、`data_quality`/`discipline_audit`/`grade_assets`（治理 CLI，均已 manifest 化）
 - 看板：新增 `ops` 端点（纪律健康度五指标），告警时顶部红条
+- **代码与数据清理**：2026-09-01 批次修复 scheduler `session_id` 回填缺失、scope 首次创建崩溃、pipeline 输出格式/覆盖矩阵 bug、parser 静默失败；清理 407 条孤儿资产、235 条外部/孤儿端点、310 条噪声 finding、17 条旧版一次性任务、20 条过期 blackboard 日更日志，facts 归属归一化
 
 **当前最大瓶颈**（按解锁收益排序）：
 
@@ -39,7 +42,7 @@
 2. **无 OOB** → 盲 SSRF/盲注/盲 RCE 物理上不可测（H-001，公网 NS 委派必须域名服务商操作）
 3. 高价值面多为登录态后（美团 carrier proxy/admin.erp、字节 saiyan/live_console/火山 ark）
 
-**下一看点**：2026-08-29 03:00/04:00（北京）首跑 Slice 化 objective + 流程守卫强制下的台账首批落行。
+**下一看点**：下一日 Beijing 03:00/04:00 interval 任务自动续排；FGS 图待首次产生运行节点。
 
 ### 纪律健康度速查（文档-现实校验，每次迭代末必跑）
 
@@ -234,7 +237,7 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 | 2026-08-28 | B4 sec-suite 拆分（第二批） | 主文件 1874→1507 行（101.7KB→72.1KB），dashboard-rpc.js 卫星拆出（planChain/taskChain/handleDashboardRpc 全部 38 个 case，initDashboardRpc 依赖注入）；发现 reportBuild 实际逻辑本就在 asset-db.js 卫星（taskChain 仅转发）；重启冒烟通过（0 错误、调度正常、webhook 正常）；剩余主体为 run_cli/scope/sandbox 引擎（拆分候选：scope.js/sandbox.js/run-cli.js，视后续需要） |
 | 2026-08-28 | B5 TrueNAS/vault 沉淀 | spool nas 修复（新增 insecure 配置 + uptime 字符串解析）；csai 直挂 NFS 被 EPERM（keeper 正常，根因未明）→ **keeper 中继方案**落地：csai vault-export-build（卡片 YAML→md）→ operator vault-sync cron 每 30min → keeper `/mnt/NAS/data/knowledge/vault/SilkSecAgent/`（卡片库/报告/覆盖视图/交接，首批 18 文件已同步） |
 | 2026-08-28 | **P15 纪律落地批**（评估报告驱动） | ① 流程守卫：interval 任务标 done 前引擎硬校验台账/卡记录/交接包（asset-db taskUpdate，缺失即拦截，冒烟双向验证）；② 噪声闸门：findings.noise 列 + info 级自动隔离（存量 314 回填），query/report/KPI 默认排除；③ 资产准入：assets.level_in 查询 + grade-assets.py 全量分级（79,155/79,258，域外 103 保持 NULL）；④ 修三断链：taskClaimDue started_at 刷新 + reap 宽限期+活 worker 跳过 + 调度 run 会话反查回填（session_id/meta.json/task_runs）；T-0 重锚定 drift=0；⑤ ops 健康度：asset-db.opsHealth() + 看板 `ops` RPC + 红条横幅 + discipline-audit.py/data-quality.py；⑥ H-003 vuln_type 回填清零；垃圾 playbook 清理；facts 空 category 归位 |
-| 2026-08-28 | **P16 产出转化批** | ① VC-034 Supabase 开放数据面卡（08-20 战役 retro，6H/4M 背书）；② vision_triage manifest + vision-triage.mjs（deepseek-v4-flash-vision-exp 实测通，.env 自加载）；③ #16-#19 objective Slice 化重写（硬指标=消化覆盖矩阵 top-10 格子，蒸馏中置，blackboard→fact_upsert，交接包五段路径）；#24 周复盘产物物化（review-*.md 无产物=没跑）；④ submission_draft 工具（CONFIRMED→提交草稿+同目标同类型查重）；⑤ sec-pipeline 技能新增 §9 流程守卫/§10 资产准入与 Slice；⑥ settings-mirror 补丁 rc.2 后失效已 sudo 重放；manifest 补登记 scheduler/webhook/dashboard-rpc 三拆分文件（B4 遗漏） |
+| 2026-09-01 | **P17 落地 + 代码/数据清理** | ① P17 FGS 决策图框架落地（`fgs_nodes` 表 + 工具 + scheduler prompt 注入）；② 修复 scheduler `findWorkerSessionId` 缺失 `await` 导致 `session_id` 写入 Promise 字符串的 bug、scope 首次创建 `copyFileSync` 崩溃、pipeline `renderJSON` 输出格式与覆盖矩阵 bug、parser 静默失败；③ 清理 407 条孤儿资产（按域名后缀归属 bytedance/meituan-src/legacy-archive）、235 条外部/孤儿端点、310 条噪声 finding、17 条旧版一次性任务、20 条过期 blackboard 日更日志，facts 归属归一化；④ 主文档 README/system-complete 刷新到 2026-09-01 状态 |
 
 ### 历史文档索引（本目录）
 

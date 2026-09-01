@@ -5,7 +5,7 @@
 # ==============================================================================
 set -euo pipefail
 
-BASE_DIR="/opt/silkspool/dsh"
+BASE_DIR="{{BASE_DIR}}"
 APP_DIR="$BASE_DIR/app"
 DATA_DIR="${DSH_HOME:-$BASE_DIR/data}"
 PLUGIN_DIR="$BASE_DIR/plugins/sec-memcore"

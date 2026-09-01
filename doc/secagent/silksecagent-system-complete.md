@@ -1,7 +1,7 @@
 # SilkSecAgent 系统全景文档（以运行代码为真相源）
 
-> 版本：v1.0 ｜ 快照日期：2026-08-28 ｜ 主机：csai（192.168.7.107，非特权 LXC）
-> **取证声明**：本文所有描述均逐行核对过 csai 上实际运行的代码与配置——8 个自研插件文件 repo↔线上 md5 全量一致（`9f8893f5…`/`a71085eb…`/`d6d0ff1a…`/`59016d94…`/`83c9ce6a…`/`fc4587cd…`/`44ffdb35…`/`60162e24…`），服务单元/profile/scope/skills/presets/脚本均经 `spool exec` 实读。与早期设计文档冲突处，**以本文为准**。
+> 版本：v1.1 ｜ 快照日期：2026-09-01 ｜ 主机：csai（192.168.7.107，非特权 LXC）
+> **取证声明**：本文所有描述均基于 csai 上实际运行的代码与配置，经 `spool exec` 实测与 SilkSpool 仓库 `bundles/dsh/templates/` 源码比对；与早期设计文档冲突处，**以本文为准**。
 > 文档体系定位：`README.md` 是唯一持续推进入口（状态/待办）；本文是**系统是什么、怎么转**的完整解剖，长期有效，随大版本更新。
 
 ---
@@ -59,7 +59,7 @@ data/  ← DSH_HOME           一切运行时数据（spool sync 管理其中 sc
   .env                      供应商 API key（600；systemd 注入；settings 只写 apiKeyEnv 引用）
   profiles/{web,headless}/  两个 profile 的 package.json（bundle 组合清单）
   plugins/sec-suite/ 等     自研插件组装产物（setup 脚本从 BASE_DIR 模板复制）
-  tools.d/*.yaml            CLI 工具 manifest（31 个）
+  tools.d/*.yaml            CLI 工具 manifest（32 个，含 1 个备份残留待清理）
   skills/<name>/SKILL.md    7 个技能 + rules/{web,php,src}/*.md 规则先验层
   .agent-presets/<role>/    7 个角色 preset（persona 文本 + agent 面插件行）
   AGENTS.md                 memcore 受管区块自动生成（Top 卡/env-issue/纪律）
@@ -224,6 +224,8 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 - **xray webhook**（webhook.js）：xray 7788 → `flows/xray-日期.jsonl` + addFinding（medium，`xray: <title>`，evidence=flow 文件）
 - **report_build**：noise 过滤 + 类型列 + 噪声计数行；落 reports/
 
+**FGS 决策图（P17）**：`fgs_nodes` 表 + `fgs_add / fgs_update / fgs_list / fgs_next / fgs_export` 工具，scheduler 在定时任务 prompt 中注入使用说明。目标是把任务执行中的 fact/goal/step/finding 实时结构化，形成 Decide/Execute 循环；任务收尾时 `appendFgsToHandoff` 自动追加 Markdown 摘要。**当前表为空**，框架已就绪，待每日任务实际产生节点。
+
 ### 4.2 sec-memcore（@silksec/sec-memcore，631 行）——记忆治理引擎
 
 **依赖反转架构**：治理插件是旁路，`ctx.provide('secMemoryLifecycle')` 五原语；存储插件（asset-db/experience）`ctx.inject(['secMemoryLifecycle'])` 可选注入——**fail-open**：缺席即透传（写入不校验/读取全量/清扫停摆，业务完全正常）+ stderr/黑板告警 + 看板横幅。自身任何异常不得拖垮宿主（apply/sweep 全 try/catch）。
@@ -284,7 +286,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 ### 5.1 asset-graph.db 表清单（node:sqlite 单文件，WAL）
 
-**领域表**：assets（host,type 主键；program_id/score/level/accept/biz/state P13 评级列）、endpoints（host,method,path 主键；params/auth_required/roles_seen 越权矩阵列）、findings（fingerprint UNIQUE；vuln_type/cwe/endpoint_ref/preconditions/reproduction_steps/impact/recommendation 提交模板列；session_id 跳链；**noise P15**；bounty/vendor_status/submitted_at SRC 运营列）、programs（scope.yml 镜像 + workspace_id/path 绑定 + status archived）、tasks（program_id/phase/objective/status/priority/budget + schedule_kind/run_at/every_seconds/next_run_at/last_run_at/last_run_id + session_id/blocked_reason/result）、task_runs（执行历史，每任务保留 200 行，session_id）、blackboard（遗留 key:value，memcore 治理中，观察期只减不增）、facts（program_id+fact_key 主键；summary 注入 prompt 索引 + body 全文；confidence；**memcore 生命周期列**）、fact_edges（src/dst/edge_type：resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits）、fingerprints（host+tech 主键）、credentials（ref 引用非明文）、workers（spawn_worker 注册表：pid/status/exit/run_dir/dedupe_key）。
+**领域表**：assets（host,type 主键；program_id/score/level/accept/biz/state P13 评级列）、endpoints（host,method,path 主键；params/auth_required/roles_seen 越权矩阵列）、findings（fingerprint UNIQUE；vuln_type/cwe/endpoint_ref/preconditions/reproduction_steps/impact/recommendation 提交模板列；session_id 跳链；**noise P15**；**confidence/fgs_node_id/discovery_step P17**；bounty/vendor_status/submitted_at SRC 运营列）、programs（scope.yml 镜像 + workspace_id/path 绑定 + status archived）、tasks（program_id/phase/objective/status/priority/budget + schedule_kind/run_at/every_seconds/next_run_at/last_run_at/last_run_id + session_id/blocked_reason/result）、task_runs（执行历史，每任务保留 200 行，session_id）、blackboard（**timeline/ephemeral 兼容层**，memcore 治理下 active 写入；日更 alive/recon/scan 键 7d 滚动，env-issue 修复后清理）、facts（program_id+fact_key 主键；summary 注入 prompt 索引 + body 全文；confidence；**memcore 生命周期列**）、fact_edges（src/dst/edge_type：resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits）、**fgs_nodes（P17 Cairn_Y FGS 图：task_id/run_id/type/status/content/json score/parent_id/depends_on）**、fingerprints（host+tech 主键）、credentials（ref 引用非明文）、workers（spawn_worker 注册表：pid/status/exit/run_dir/dedupe_key）。
 
 **语义层表**（experience.js 建）：exp_cards（scenario UNIQUE/takeaway/chain/attempts/evidence/source/confidence + memcore 评分列 + exportable）、exp_fts（FTS5 external content）、kb_docs（title/file/source_url/tainted）、kb_fts、playbooks（name 主键/runs/successes/avg_duration_ms）、exp_embeddings/kb_embeddings（384 维 e5 向量 JSON）。
 
@@ -299,9 +301,10 @@ queued ──task_run_now──▶ next_run_at=now（立即触发不动节律）
 queued ──task_update(blocked)──▶ blocked（HITL 暂停；看板手动恢复→queued）
 running ──reap(宽限=超时+15min，活 worker 跳过)──▶ interval: queued / once: failed（reason=宿主重启/超时回收）
 任意 ──task_update(cancelled)──▶ cancelled
-queued --标 done 时--> 流程守卫拦截点（台账/卡/交接包三查，缺则拒绝并返回清单）
+queued --标 done 时--> 流程守卫拦截点（台账/卡/交接包三查，缺则拒绝并返回清单；**当前守卫不校验最近一次 task_run 的 ok 字段，失败 run 需在 ops 健康度/看板红条中人工关注**）
 ```
 **Finding**：`new → confirmed / false_positive / dup / ignored → submitted → accepted`（finding_update + note 追加证据链；dashboard 打标同通道； CONFIRMED 须 verify_replay 机械复核 + 证据包）；`noise=1` 与信号面隔离（非状态而是可见性维度）。
+**FGS 节点（P17）**：`open ──fgs_next 取 ready──▶ running ──fgs_update──▶ done / failed / blocked`；`fact/goal/step/finding` 四类节点，依赖满足后 step 才 ready；任务收尾时 `appendFgsToHandoff` 自动把决策链摘要追加进 handoff。
 **exp_cards**：`candidate ──(复盘评审 promote ｜ 自动晋升 adopted≥2∧neg=0∧≥7d)──▶ active ──(neg_fb≥3 ｜ uses=0>30d)──▶ cooling ──(用到即复验 validated=复活 active)──(30d)──▶ archived ──(90d)──▶ 硬删`。
 **facts**：`active(durable, revalidate_by) ──逾期──▶ cooling ──复验刷新=复活──(30d)──▶ archived`；ephemeral 过期即 archived（读取路径惰性降级）。
 **playbooks**：`active ──(成功率<30% ∧ runs≥5)──▶ cooling`。

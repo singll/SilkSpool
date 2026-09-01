@@ -102,10 +102,7 @@ function parseJsonlNuclei(text, ctx) {
 }
 
 // subfinder/naabu/katana 等（lines）：逐行 host/URL → assets/endpoints（复用 ingestText 能力）
-function parseLines(text, ctx) {
-  const r = db.ingestText(ctx.source, text, ctx.programId)
-  return { assets: r.assets, endpoints: r.endpoints, findings: [] }
-}
+// 注：保留为通用 fallback，不再单独注册 PARSERS['lines']
 
 // ffuf -of csv：命中路径 → endpoints
 function parseCsvFfuf(text, ctx) {
@@ -130,7 +127,6 @@ function parseCsvFfuf(text, ctx) {
 const PARSERS = {
   jsonl_httpx: parseJsonlHttpx,
   jsonl_nuclei: parseJsonlNuclei,
-  lines: parseLines,
   csv_ffuf: parseCsvFfuf,
 }
 
@@ -152,7 +148,8 @@ export function applyParsedResult(manifest, toolName, runId, text, programId = n
   let parsed
   try {
     parsed = fn(String(text), ctx) || {}
-  } catch {
+  } catch (e) {
+    process.stderr.write(`[sec-parsers] ${toolName} parser ${parserKey} 异常: ${e?.message ?? String(e)}\n`)
     parsed = { assets: [], endpoints: [], findings: [] }
   }
 

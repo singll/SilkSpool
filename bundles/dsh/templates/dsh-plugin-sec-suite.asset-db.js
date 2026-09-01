@@ -12,6 +12,10 @@ import * as crypto from 'node:crypto'
 const DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const DB_FILE = path.join(DATA_DIR, 'asset-graph.db')
 
+function beijingDate(ts = Date.now()) {
+  return new Date(ts + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
 let db = null
 
 export function getDb() {
@@ -758,7 +762,14 @@ export function fgsUpdateNode({ id, status = null, content = null, score = null 
       const cur = d.prepare('SELECT content FROM fgs_nodes WHERE id = ?').get(Number(id))
       merged = JSON.parse(cur?.content || '{}')
     } catch { merged = {} }
-    merged = { ...merged, ...(typeof content === 'string' ? JSON.parse(content) : content) }
+    let incoming = {}
+    try {
+      incoming = typeof content === 'string' ? JSON.parse(content) : content
+      if (!incoming || typeof incoming !== 'object') incoming = {}
+    } catch {
+      return { ok: false, error: 'content 不是合法 JSON 对象' }
+    }
+    merged = { ...merged, ...incoming }
     updates.push('content = ?'); args.push(JSON.stringify(merged))
   }
   if (score !== null) { updates.push('score = ?'); args.push(score) }
@@ -819,8 +830,7 @@ export function fgsClearTask(task_id) {
 export function appendFgsToHandoff(task_id, program_id) {
   if (!task_id || !program_id) return { ok: false, error: 'task_id 与 program_id 必填' }
   const dir = path.join(DATA_DIR, 'pipeline', String(program_id))
-  const beijingDate = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
-  const handoffPath = path.join(dir, `handoff-${beijingDate}.md`)
+  const handoffPath = path.join(dir, `handoff-${beijingDate()}.md`)
   const nodes = fgsListNodes({ task_id: Number(task_id), type: '', status: '', run_id: '', limit: 500 })
   if (!nodes.length) return { ok: true, appended: false, reason: 'FGS 图为空' }
   const byType = { fact: [], goal: [], step: [], finding: [] }

@@ -78,7 +78,7 @@ function tool(options) {
 }
 
 function renderJSON(x) {
-  return { type: 'text', text: typeof x === 'string' ? x : JSON.stringify(x, null, 2) }
+  return [{ type: 'text', text: typeof x === 'string' ? x : JSON.stringify(x, null, 2) }]
 }
 
 const RESULT_ENUM = ['TESTED_CLEAN', 'CONFIRMED', 'FALSE_POSITIVE', 'NOT_APPLICABLE', 'BLOCKED', 'STALE']
@@ -278,7 +278,7 @@ function toolCoverageReport() {
         '| 卡片 | 版本 | CLEAN | CONFIRMED | FP | N/A | BLOCKED | STALE |', '|---|---|---|---|---|---|---|---|',
       ]
       for (const c of Object.keys(cardState).sort()) {
-        const st = cardState[cardVer[c] !== undefined ? c : c]
+        const st = cardState[c]
         lines.push(`| ${c} | ${cardVer[c]} | ${st.TESTED_CLEAN || 0} | ${st.CONFIRMED || 0} | ${st.FALSE_POSITIVE || 0} | ${st.NOT_APPLICABLE || 0} | ${st.BLOCKED || 0} | ${st.STALE || 0} |`)
       }
       lines.push('', '## BLOCKED 解锁收益', '', '| blocker | 解锁单元格数 |', '|---|---|')

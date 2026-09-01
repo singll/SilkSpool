@@ -363,8 +363,19 @@ async function kbImport(a) {
   fs.mkdirSync(KNOWLEDGE_DIR, { recursive: true })
   let title; let body; let sourceUrl = null
   if (a.url) {
-    const res = await fetch(String(a.url), { signal: AbortSignal.timeout(30000), headers: { 'user-agent': 'SilkSecAgent-kb' } })
-    body = stripHtml(await res.text())
+    let res
+    try {
+      res = await fetch(String(a.url), { signal: AbortSignal.timeout(30000), headers: { 'user-agent': 'SilkSecAgent-kb' } })
+    } catch (e) {
+      return { ok: false, error: `抓取失败: ${e?.message ?? String(e)}` }
+    }
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
+    const ct = (res.headers.get('content-type') || '').toLowerCase()
+    if (ct.includes('application/json') || ct.includes('text/') || ct.includes('application/xml')) {
+      body = stripHtml(await res.text())
+    } else {
+      return { ok: false, error: `不支持的 Content-Type: ${ct}` }
+    }
     title = a.title || String(a.url).split('/').filter(Boolean).pop() || 'untitled'
     sourceUrl = String(a.url)
   } else if (a.file) {

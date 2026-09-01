@@ -136,7 +136,7 @@ async function schedulerTick() {
       }
       // P15 修复跳链断链：headless worker 的会话按 cwd 反查（header.cwd=工作区 → workspaceRegistry 归组），
       // 回填 meta.json 与 task_runs.session_id——调度 run 此前 session_id 恒为 null。
-      const workerSessionId = findWorkerSessionId(cwd, startedAt)
+      const workerSessionId = await findWorkerSessionId(cwd, startedAt)
       if (workerSessionId && r.run_id) {
         try {
           const metaPath = path.join(deps.dataDir, 'results', r.run_id, 'meta.json')
