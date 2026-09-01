@@ -139,7 +139,8 @@ export function apply(ctx) {
     name: 'finding_add',
     description: '登记一个疑似漏洞发现。自动按 host+title+url 指纹去重（dup:true 表示已存在）。'
       + '纪律：必须附 evidence（run_id/flow_id/请求响应摘要），否则视为幻觉。'
-      + 'vuln_type/cwe/impact/recommendation 等字段补全报告模板（提交 SRC 用）。',
+      + 'vuln_type/cwe/impact/recommendation 等字段补全报告模板（提交 SRC 用）。'
+      + 'P17：调度任务会话内调用会自动创建 FGS finding 节点；调用方可显式传 confidence=tentative|confirmed|false_positive|dup。',
     parameters: {
       type: 'object',
       properties: {
@@ -156,11 +157,41 @@ export function apply(ctx) {
         reproduction_steps: { type: 'string' },
         impact: { type: 'string' },
         recommendation: { type: 'string' },
+        confidence: { type: 'string', enum: ['tentative', 'confirmed', 'false_positive', 'dup'], description: 'P17：证据置信度；未指定时由 FGS/状态机推断。' },
       },
       required: ['title', 'host', 'evidence'],
       additionalProperties: false,
     },
-    execute: async (a, exec) => ({ ok: true, ...db.addFinding({ ...a, session_id: execSessionId(exec) }) }),
+    execute: async (a, exec) => {
+      const sessionId = execSessionId(exec)
+      let fgsNodeId = null
+      let discoveryStep = null
+      let confidence = null
+      // P17：若调用发生在调度任务会话内，自动创建 FGS finding 节点并关联
+      if (sessionId) {
+        try {
+          const active = db.activeTaskBySession(sessionId)
+          if (active?.task_id) {
+            const step = db.fgsListNodes({ task_id: active.task_id, type: 'step', status: 'running', limit: 1 })[0]
+              || db.fgsListNodes({ task_id: active.task_id, type: 'step', status: '', limit: 1 })[0]
+            const node = db.fgsAddNode({
+              task_id: active.task_id,
+              run_id: active.run_id,
+              type: 'finding',
+              status: 'open',
+              content: { summary: a.title, host: a.host, url: a.url, severity: a.severity, evidence: a.evidence },
+              score: ({ critical: 90, high: 70, medium: 50, low: 30, info: 10 }[a.severity] || 10),
+              parent_id: step?.id || null
+            })
+            if (node.ok) fgsNodeId = node.id
+            discoveryStep = step?.content?.summary || step?.content?.detail || null
+          }
+        } catch (e) {
+          process.stderr.write(`[asset-graph] finding_add FGS 关联失败: ${e?.message ?? String(e)}\n`)
+        }
+      }
+      return { ok: true, ...db.addFinding({ ...a, session_id: sessionId, fgs_node_id: fgsNodeId, discovery_step: discoveryStep, confidence }) }
+    },
   })
 
   reg(ctx, {
@@ -673,6 +704,42 @@ export function apply(ctx) {
       additionalProperties: false,
     },
     execute: async (a) => ({ ok: true, steps: db.fgsNextStep(a.task_id) }),
+  })
+
+  reg(ctx, {
+    name: 'fgs_export',
+    description: '导出某任务 FGS 图摘要（按 type/status 聚合），用于 handoff/交接包中的“决策链”章节。',
+    parameters: {
+      type: 'object',
+      properties: { task_id: { type: 'integer' }, format: { type: 'string', enum: ['json', 'markdown'], description: '默认 markdown（可直接嵌入 handoff）' } },
+      required: ['task_id'],
+      additionalProperties: false,
+    },
+    execute: async (a) => {
+      const nodes = db.fgsListNodes({ task_id: a.task_id, type: '', status: '', run_id: '', limit: 500 })
+      if (a.format === 'json') return { ok: true, task_id: a.task_id, nodes }
+      const byType = { fact: [], goal: [], step: [], finding: [] }
+      for (const n of nodes) (byType[n.type] || []).push(n)
+      const md = [
+        '## FGS 决策链摘要',
+        '',
+        `- 任务: #${a.task_id}`,
+        `- 节点总数: ${nodes.length}（fact ${byType.fact.length} / goal ${byType.goal.length} / step ${byType.step.length} / finding ${byType.finding.length}）`,
+        '',
+        '### 目标 (Goal)',
+        ...byType.goal.map((n) => `- [${n.status}] ${n.content?.summary || n.content?.detail || '-'}${n.score ? ` (score:${n.score})` : ''}`),
+        '',
+        '### 关键事实 (Fact)',
+        ...byType.fact.map((n) => `- [${n.status}] ${n.content?.summary || n.content?.detail || '-'}`),
+        '',
+        '### 执行步骤 (Step)',
+        ...byType.step.map((n) => `- [${n.status}] ${n.content?.summary || n.content?.detail || '-'}`),
+        '',
+        '### 发现 (Finding)',
+        ...byType.finding.map((n) => `- [${n.status}] ${n.content?.summary || '-'} @${n.content?.host || ''}${n.score ? ` (score:${n.score})` : ''}`),
+      ]
+      return { ok: true, task_id: a.task_id, markdown: md.join('\n') }
+    },
   })
 
   reg(ctx, {

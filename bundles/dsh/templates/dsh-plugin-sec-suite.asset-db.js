@@ -266,6 +266,7 @@ export function addFinding({
   title, severity = 'info', host = '', url = '', evidence = '', source = '', program_id = null,
   vuln_type = null, cwe = null, endpoint_ref = null, preconditions = null, reproduction_steps = null,
   impact = null, recommendation = null, session_id = null,
+  confidence = null, fgs_node_id = null, discovery_step = null,
 }) {
   // P15 噪声闸门：info 级 = 模板指纹/侦察副产物，不进 findings 信号面（noise=1）。
   // 噪声行指纹弱化为 host|title（同模板同目标只留一行，URL 变体不再增殖）。
@@ -281,10 +282,13 @@ export function addFinding({
   }
   const r = d.prepare(`
     INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, program_id,
-      vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, noise, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+      vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, noise, status, created_at,
+      confidence, fgs_node_id, discovery_step)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?,
+      COALESCE(?, 'tentative'), ?, ?)
   `).run(fingerprint, title, severity, host, url, evidence, source, program_id,
-    vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, noise, now())
+    vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, noise, now(),
+    confidence, fgs_node_id, discovery_step)
   return { id: Number(r.lastInsertRowid), dup: false, noise: !!noise }
 }
 
@@ -352,7 +356,7 @@ const FINDING_SORT = {
 export function queryFindings({ host = '', severity = '', status = '', programId = '', q = '', limit = 50, offset = 0, sort = '', dir = '', includeNoise = false }) {
   const { where, args } = findingWhere({ host, severity, status, programId, q, includeNoise })
   // 列表不带 evidence（大字段，详情面板按需 findingGet 拉取）；带 vuln_type/bounty/vendor_status 供行内徽章
-  const sql = `SELECT id, title, severity, host, url, source, status, program_id, session_id, vuln_type, bounty, vendor_status, noise, created_at FROM findings WHERE ${where} ORDER BY ${orderClause(FINDING_SORT, sort, dir, 'created_at')} LIMIT ? OFFSET ?`
+  const sql = `SELECT id, title, severity, host, url, source, status, program_id, session_id, vuln_type, bounty, vendor_status, noise, created_at, confidence, fgs_node_id, discovery_step FROM findings WHERE ${where} ORDER BY ${orderClause(FINDING_SORT, sort, dir, 'created_at')} LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
 
@@ -791,6 +795,19 @@ function taskRunRecord({ task_id, run_id = '', ok, note = '', started_at = null,
     .run(task_id, String(run_id || ''), ok ? 1 : 0, String(note || '').slice(0, 500), started_at, finished_at, duration, session_id)
   d.prepare('DELETE FROM task_runs WHERE task_id = ? AND id NOT IN (SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 200)')
     .run(task_id, task_id)
+}
+
+// P17：按 session_id 反查当前正在执行的调度任务（工具调用归属）
+export function activeTaskBySession(session_id, maxAgeMs = 6 * 3600 * 1000) {
+  if (!session_id) return null
+  const d = getDb()
+  const cutoff = now() - maxAgeMs
+  return d.prepare(`
+    SELECT t.id AS task_id, t.program_id, t.phase, t.objective, r.run_id, r.started_at
+    FROM task_runs r JOIN tasks t ON t.id = r.task_id
+    WHERE r.session_id = ? AND t.status = 'running' AND r.started_at >= ?
+    ORDER BY r.id DESC LIMIT 1
+  `).get(session_id, cutoff) || null
 }
 
 // 执行历史查询（join tasks 带出 objective/program，看板「执行历史」区）
