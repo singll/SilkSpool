@@ -199,6 +199,28 @@ export function getDb() {
   db.exec("UPDATE findings SET noise = 1 WHERE severity = 'info' AND noise = 0")
   // ---- P15：调度 run 的 worker 会话 id（看板跳链）----
   ensureCol('task_runs', 'session_id', 'session_id TEXT')
+  // ---- P17：Cairn_Y 融合——FGS 图（Fact-Goal-Step Graph）作为任务状态外化记忆 ----
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fgs_nodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      run_id TEXT,
+      type TEXT NOT NULL CHECK(type IN ('fact','goal','step','finding')),
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','running','done','failed','blocked','deprecated')),
+      content TEXT NOT NULL DEFAULT '{}',
+      score REAL DEFAULT 0,
+      parent_id INTEGER REFERENCES fgs_nodes(id),
+      depends_on TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_fgs_task ON fgs_nodes(task_id, type, status);
+    CREATE INDEX IF NOT EXISTS idx_fgs_run ON fgs_nodes(run_id);
+  `)
+  // ---- P17：Finding 过程产物（confidence + 与 FGS 节点关联）----
+  ensureCol('findings', 'confidence', "confidence TEXT NOT NULL DEFAULT 'tentative' CHECK(confidence IN ('tentative','confirmed','false_positive','dup'))")
+  ensureCol('findings', 'fgs_node_id', 'fgs_node_id INTEGER')
+  ensureCol('findings', 'discovery_step', 'discovery_step TEXT')
   return db
 }
 
@@ -632,10 +654,39 @@ export function taskClaimDue(nowTs) {
 
 // 调度执行收尾：记录 last_run_* + 落 task_runs 执行历史，interval 任务 latest-only 续期回 queued，once 任务进终态。
 // P15：可选 session_id（调度器从 sessionPersistence 反查 worker 会话）→ task_runs.session_id + tasks.session_id 回填（看板跳链）。
+// P17：增加结果真实性校验——worker.log 中出现模型拒执/API 错误等标记时，即使 worker 返回 exit 0 也标失败/待复核。
 export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id = null }) {
   const d = getDb()
   const t = d.prepare('SELECT * FROM tasks WHERE id = ?').get(Number(id))
   if (!t) return { ok: false, error: `task 不存在: ${id}` }
+
+  // P17：真实性校验
+  let truth = { checked: false, rejected: false, reason: '' }
+  if (ok && run_id) {
+    try {
+      const logPath = path.join(DATA_DIR, 'results', String(run_id), 'worker.log')
+      if (fs.existsSync(logPath)) {
+        const tail = fs.readFileSync(logPath, 'utf8').slice(-4000)
+        const rejectMarks = [
+          "I won't produce", 'I will not produce', 'I cannot continue', 'refuse to continue',
+          'unverifiable authorization', '授权不可验证', '拒绝执行', '停止执行',
+          'INVALID_REQUEST', 'RATE_LIMIT', 'TIMEOUT', 'Provided value cannot be bound',
+          'reasoning_content must be passed back'
+        ]
+        for (const mark of rejectMarks) {
+          if (tail.includes(mark)) { truth.rejected = true; truth.reason = `worker.log 命中拒执/错误标记: ${mark}`; break }
+        }
+        truth.checked = true
+      }
+    } catch (e) {
+      process.stderr.write(`[asset-db] taskFinishScheduledRun 真实性校验读日志失败(task=${id}): ${e?.message ?? e}\n`)
+    }
+  }
+  if (truth.rejected) {
+    ok = false
+    note = `[真实性校验失败] ${truth.reason}${note ? ' | ' + note : ''}`.slice(0, 500)
+  }
+
   const finished = now()
   let nextRunAt = null
   let status = ok ? 'done' : 'failed'
@@ -646,11 +697,11 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id =
     nextRunAt = anchor + Math.max(1, Math.ceil((finished - anchor) / step)) * step
     status = 'queued'
   }
-  const tail = `${t.result || ''}\n[${new Date().toISOString().slice(0, 16)}] run ${run_id}: ${ok ? 'done' : 'failed'}${note ? ' — ' + note : ''}`.trim()
+  const tailNote = `${t.result || ''}\n[${new Date().toISOString().slice(0, 16)}] run ${run_id}: ${ok ? 'done' : 'failed'}${note ? ' — ' + note : ''}`.trim()
   d.prepare(`UPDATE tasks SET status = ?, result = ?, last_run_at = ?, last_run_id = ?, next_run_at = ?,
     session_id = COALESCE(?, session_id),
     finished_at = CASE WHEN ? IN ('done','failed') THEN ? ELSE finished_at END, updated_at = ? WHERE id = ?`)
-    .run(status, tail.slice(-8000), finished, run_id || null, nextRunAt, session_id, status, finished, now(), Number(id))
+    .run(status, tailNote.slice(-8000), finished, run_id || null, nextRunAt, session_id, status, finished, now(), Number(id))
   try {
     taskRunRecord({ task_id: Number(id), run_id, ok, note, started_at: t.started_at || null, finished_at: finished, session_id })
   } catch (e) {
@@ -658,6 +709,78 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id =
     process.stderr.write(`[asset-db] task_runs 记录失败(task=${id}): ${e?.message ?? e}\n`)
   }
   return { ok: true, id: Number(id), status, next_run_at: nextRunAt }
+}
+
+// -------------------- FGS 图操作（P17 Cairn_Y 融合）--------------------
+export function fgsAddNode({ task_id, run_id = null, type, status = 'open', content = {}, score = 0, parent_id = null, depends_on = null }) {
+  const d = getDb()
+  const ts = now()
+  const contentJson = typeof content === 'string' ? content : JSON.stringify(content)
+  const dependsJson = Array.isArray(depends_on) ? JSON.stringify(depends_on) : (depends_on || null)
+  const r = d.prepare(`INSERT INTO fgs_nodes (task_id, run_id, type, status, content, score, parent_id, depends_on, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(Number(task_id), run_id || null, type, status, contentJson, score, parent_id || null, dependsJson, ts, ts)
+  return { ok: true, id: Number(r.lastInsertRowid) }
+}
+
+export function fgsUpdateNode({ id, status = null, content = null, score = null }) {
+  const d = getDb()
+  const updates = []
+  const args = []
+  if (status !== null) { updates.push('status = ?'); args.push(status) }
+  if (content !== null) { updates.push('content = ?'); args.push(typeof content === 'string' ? content : JSON.stringify(content)) }
+  if (score !== null) { updates.push('score = ?'); args.push(score) }
+  if (updates.length === 0) return { ok: false, error: '无更新字段' }
+  updates.push('updated_at = ?'); args.push(now())
+  args.push(Number(id))
+  d.prepare(`UPDATE fgs_nodes SET ${updates.join(', ')} WHERE id = ?`).run(...args)
+  return { ok: true, id: Number(id) }
+}
+
+export function fgsListNodes({ task_id, type = '', status = '', run_id = '', limit = 200, offset = 0 }) {
+  let where = 'task_id = ?'
+  const args = [Number(task_id)]
+  if (type) { where += " AND type = ?"; args.push(type) }
+  if (status) { where += " AND status = ?"; args.push(status) }
+  if (run_id) { where += " AND run_id = ?"; args.push(run_id) }
+  const rows = plain(getDb().prepare(
+    `SELECT id, task_id, run_id, type, status, content, score, parent_id, depends_on, created_at, updated_at
+     FROM fgs_nodes WHERE ${where} ORDER BY score DESC, updated_at DESC LIMIT ? OFFSET ?`
+  ).all(...args, Math.min(limit, 500), Math.max(0, offset)))
+  for (const r of rows) {
+    try { r.content = JSON.parse(r.content) } catch { r.content = {} }
+    try { r.depends_on = r.depends_on ? JSON.parse(r.depends_on) : null } catch { r.depends_on = null }
+  }
+  return rows
+}
+
+export function fgsNextStep(task_id) {
+  const d = getDb()
+  // 取状态为 open 且依赖已满足的 step；若依赖为空直接可执行
+  const rows = plain(d.prepare(
+    `SELECT id, content, score, depends_on FROM fgs_nodes
+     WHERE task_id = ? AND type = 'step' AND status = 'open'
+     ORDER BY score DESC, updated_at DESC LIMIT 50`
+  ).all(Number(task_id)))
+  const doneIds = new Set(
+    plain(d.prepare("SELECT id FROM fgs_nodes WHERE task_id = ? AND type = 'step' AND status = 'done'")
+      .all(Number(task_id))).map((r) => r.id)
+  )
+  const ready = []
+  for (const r of rows) {
+    let deps = []
+    try { deps = r.depends_on ? JSON.parse(r.depends_on) : [] } catch { deps = [] }
+    if (!Array.isArray(deps) || deps.length === 0 || deps.every((id) => doneIds.has(id))) {
+      try { r.content = JSON.parse(r.content) } catch { r.content = {} }
+      ready.push(r)
+    }
+  }
+  return ready.slice(0, 10)
+}
+
+export function fgsClearTask(task_id) {
+  getDb().prepare('DELETE FROM fgs_nodes WHERE task_id = ?').run(Number(task_id))
+  return { ok: true }
 }
 
 // 执行历史落库（每任务保留最近 200 行，防无限膨胀）

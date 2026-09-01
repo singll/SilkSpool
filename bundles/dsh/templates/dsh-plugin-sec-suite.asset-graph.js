@@ -609,6 +609,72 @@ export function apply(ctx) {
     execute: async (a) => ({ ok: true, items: db.credQuery({ program_id: a.program_id || '', host: a.host || '', limit: a.limit || 50 }) }),
   })
 
+  // ---- P17：FGS 图工具（Cairn_Y 融合）----
+  reg(ctx, {
+    name: 'fgs_add',
+    description: '在任务 FGS 图（Fact-Goal-Step Graph）中新增一个节点。type: fact/goal/step/finding；status 默认 open；content 为 JSON 对象（summary/detail/evidence/run_id 等）；depends_on 为依赖节点 id 数组。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'integer' },
+        run_id: { type: 'string' },
+        type: { type: 'string', enum: ['fact', 'goal', 'step', 'finding'] },
+        status: { type: 'string', enum: ['open', 'running', 'done', 'failed', 'blocked', 'deprecated'] },
+        content: { type: 'object' },
+        score: { type: 'number' },
+        parent_id: { type: 'integer' },
+        depends_on: { type: 'array', items: { type: 'integer' } }
+      },
+      required: ['task_id', 'type', 'content'],
+      additionalProperties: false,
+    },
+    execute: async (a, exec) => db.fgsAddNode({
+      task_id: a.task_id, run_id: a.run_id || execSessionId(exec), type: a.type,
+      status: a.status, content: a.content, score: a.score, parent_id: a.parent_id, depends_on: a.depends_on
+    }),
+  })
+
+  reg(ctx, {
+    name: 'fgs_update',
+    description: '更新 FGS 节点状态/内容/分值。',
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'integer' }, status: { type: 'string' }, content: { type: 'object' }, score: { type: 'number' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    execute: async (a) => db.fgsUpdateNode({ id: a.id, status: a.status, content: a.content, score: a.score }),
+  })
+
+  reg(ctx, {
+    name: 'fgs_list',
+    description: '列出某任务的 FGS 图节点，可按 type/status 过滤。',
+    parameters: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'integer' }, type: { type: 'string' }, status: { type: 'string' },
+        run_id: { type: 'string' }, limit: { type: 'integer' }
+      },
+      required: ['task_id'],
+      additionalProperties: false,
+    },
+    execute: async (a) => ({ ok: true, items: db.fgsListNodes({
+      task_id: a.task_id, type: a.type || '', status: a.status || '', run_id: a.run_id || '', limit: a.limit || 200
+    }) }),
+  })
+
+  reg(ctx, {
+    name: 'fgs_next',
+    description: '返回任务 FGS 图中当前可执行的 Step 列表（依赖已满足、状态 open），按 score 降序。Decide 循环用此工具决定下一步动作。',
+    parameters: {
+      type: 'object',
+      properties: { task_id: { type: 'integer' } },
+      required: ['task_id'],
+      additionalProperties: false,
+    },
+    execute: async (a) => ({ ok: true, steps: db.fgsNextStep(a.task_id) }),
+  })
+
   reg(ctx, {
     name: 'asset_graph',
     description: '返回某资产相关的指纹 + 事实关系子图（借 fact_edges 遍历），资产图谱可遍历而非扁平列表。',
