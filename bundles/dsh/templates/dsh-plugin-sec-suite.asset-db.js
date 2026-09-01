@@ -689,6 +689,11 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id =
   if (truth.rejected) {
     ok = false
     note = `[真实性校验失败] ${truth.reason}${note ? ' | ' + note : ''}`.slice(0, 500)
+    // P17：拒执/错误被真实记录进 FGS 图，便于复盘模型行为
+    try {
+      fgsAddNode({ task_id: Number(id), run_id: run_id || null, type: 'finding', status: 'failed',
+        content: { summary: 'worker 拒执或 API 错误', reason: truth.reason, run_id }, score: 0 })
+    } catch { /* 失败不阻断主流程 */ }
   }
 
   const finished = now()
@@ -701,6 +706,13 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id =
     nextRunAt = anchor + Math.max(1, Math.ceil((finished - anchor) / step)) * step
     status = 'queued'
   }
+  // P17：任务失败时记录失败节点（blocked），把错误/超时写入 FGS 图
+  if (!ok && !truth.rejected) {
+    try {
+      fgsAddNode({ task_id: Number(id), run_id: run_id || null, type: 'step', status: 'failed',
+        content: { summary: `任务失败: ${note || 'unknown'}`, run_id }, score: 0 })
+    } catch { /* 失败不阻断主流程 */ }
+  }
   const tailNote = `${t.result || ''}\n[${new Date().toISOString().slice(0, 16)}] run ${run_id}: ${ok ? 'done' : 'failed'}${note ? ' — ' + note : ''}`.trim()
   d.prepare(`UPDATE tasks SET status = ?, result = ?, last_run_at = ?, last_run_id = ?, next_run_at = ?,
     session_id = COALESCE(?, session_id),
@@ -711,6 +723,13 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id =
   } catch (e) {
     // 执行历史落库失败不丢任务状态，但必须可见（此前静默丢行导致 task_runs 断链无人发觉）
     process.stderr.write(`[asset-db] task_runs 记录失败(task=${id}): ${e?.message ?? e}\n`)
+  }
+  // P17：收尾自动把 FGS 摘要追加到 handoff（不依赖模型自觉调用）
+  try {
+    const fgsHandoff = appendFgsToHandoff(Number(id), t.program_id)
+    if (!fgsHandoff.ok) process.stderr.write(`[asset-db] FGS handoff 追加失败(task=${id}): ${fgsHandoff.error}\n`)
+  } catch (e) {
+    process.stderr.write(`[asset-db] FGS handoff 追加异常(task=${id}): ${e?.message ?? e}\n`)
   }
   return { ok: true, id: Number(id), status, next_run_at: nextRunAt }
 }
@@ -732,7 +751,16 @@ export function fgsUpdateNode({ id, status = null, content = null, score = null 
   const updates = []
   const args = []
   if (status !== null) { updates.push('status = ?'); args.push(status) }
-  if (content !== null) { updates.push('content = ?'); args.push(typeof content === 'string' ? content : JSON.stringify(content)) }
+  if (content !== null) {
+    // P17：content 增量合并，不覆盖原有字段
+    let merged = {}
+    try {
+      const cur = d.prepare('SELECT content FROM fgs_nodes WHERE id = ?').get(Number(id))
+      merged = JSON.parse(cur?.content || '{}')
+    } catch { merged = {} }
+    merged = { ...merged, ...(typeof content === 'string' ? JSON.parse(content) : content) }
+    updates.push('content = ?'); args.push(JSON.stringify(merged))
+  }
   if (score !== null) { updates.push('score = ?'); args.push(score) }
   if (updates.length === 0) return { ok: false, error: '无更新字段' }
   updates.push('updated_at = ?'); args.push(now())
@@ -785,6 +813,45 @@ export function fgsNextStep(task_id) {
 export function fgsClearTask(task_id) {
   getDb().prepare('DELETE FROM fgs_nodes WHERE task_id = ?').run(Number(task_id))
   return { ok: true }
+}
+
+// P17：任务收尾时把 FGS 图摘要自动追加到 handoff-{date}.md（北京日期）
+export function appendFgsToHandoff(task_id, program_id) {
+  if (!task_id || !program_id) return { ok: false, error: 'task_id 与 program_id 必填' }
+  const dir = path.join(DATA_DIR, 'pipeline', String(program_id))
+  const beijingDate = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+  const handoffPath = path.join(dir, `handoff-${beijingDate}.md`)
+  const nodes = fgsListNodes({ task_id: Number(task_id), type: '', status: '', run_id: '', limit: 500 })
+  if (!nodes.length) return { ok: true, appended: false, reason: 'FGS 图为空' }
+  const byType = { fact: [], goal: [], step: [], finding: [] }
+  for (const n of nodes) (byType[n.type] || []).push(n)
+  const lines = [
+    '', '---', '',
+    '## FGS 决策链摘要（自动导出）',
+    '',
+    `- 任务: #${task_id}`,
+    `- 节点总数: ${nodes.length}（fact ${byType.fact.length} / goal ${byType.goal.length} / step ${byType.step.length} / finding ${byType.finding.length}）`,
+    '',
+    '### 目标 (Goal)',
+    ...byType.goal.map((n) => `- [${n.status}] ${n.content?.summary || n.content?.detail || '-'}`),
+    '',
+    '### 关键事实 (Fact)',
+    ...byType.fact.map((n) => `- [${n.status}] ${n.content?.summary || n.content?.detail || '-'}`),
+    '',
+    '### 执行步骤 (Step)',
+    ...byType.step.map((n) => `- [${n.status}] ${n.content?.summary || n.content?.detail || '-'}`),
+    '',
+    '### 发现 (Finding)',
+    ...byType.finding.map((n) => `- [${n.status}] ${n.content?.summary || '-'} @${n.content?.host || ''}${n.score ? ` (score:${n.score})` : ''}`),
+    '',
+  ]
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.appendFileSync(handoffPath, lines.join('\n') + '\n')
+    return { ok: true, appended: true, handoff: handoffPath, nodes: nodes.length }
+  } catch (e) {
+    return { ok: false, error: e?.message ?? String(e) }
+  }
 }
 
 // 执行历史落库（每任务保留最近 200 行，防无限膨胀）
@@ -1190,17 +1257,26 @@ export function findingGet(id) {
 }
 
 export function updateFinding({ id, status, note = '', bounty = null, vendor_status = '' }) {
-  if (!FINDING_STATUS.includes(status)) return { ok: false, error: `非法状态 ${status}（可选: ${FINDING_STATUS.join('/')}）` }
+  if (!FINDING_STATUS.includes(status)) return { ok: false, error: `非法状态 ${status}（可选: ${FINDING_STATUS.join('/')}` }
   const d = getDb()
+  const f0 = d.prepare('SELECT fgs_node_id FROM findings WHERE id = ?').get(Number(id))
   // 主更新：status + 可选 bounty/vendor_status/submitted_at（仅在显式提供时写，向后兼容）
   const sets = ['status = ?']
   const args = [status]
   if (bounty !== null && bounty !== undefined && bounty !== '') { sets.push('bounty = ?'); args.push(Number(bounty)) }
   if (vendor_status) { sets.push('vendor_status = ?'); args.push(String(vendor_status)) }
   if (status === 'submitted') { sets.push('submitted_at = COALESCE(submitted_at, ?)'); args.push(now()) }
+  // P17：状态流转同步 FGS 节点与 confidence
+  const statusToConfidence = { confirmed: 'confirmed', false_positive: 'false_positive', dup: 'dup' }
+  const statusToFgs = { confirmed: 'done', submitted: 'done', false_positive: 'deprecated', dup: 'deprecated', ignored: 'deprecated' }
+  if (statusToConfidence[status]) { sets.push('confidence = ?'); args.push(statusToConfidence[status]) }
   args.push(Number(id))
   const r = d.prepare(`UPDATE findings SET ${sets.join(', ')} WHERE id = ?`).run(...args)
   if (r.changes === 0) return { ok: false, error: `finding 不存在: ${id}` }
+  // 同步 FGS 节点状态
+  if (f0?.fgs_node_id && statusToFgs[status]) {
+    try { fgsUpdateNode({ id: f0.fgs_node_id, status: statusToFgs[status], content: { note: note || `finding_update status=${status}` } }) } catch { /* 失败不阻断主流程 */ }
+  }
   if (note) {
     const cur = d.prepare('SELECT evidence FROM findings WHERE id = ?').get(Number(id))
     d.prepare('UPDATE findings SET evidence = ? WHERE id = ?')
