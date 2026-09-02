@@ -1,0 +1,57 @@
+# ==============================================================================
+# SilkSecAgent 模型配置（Web UI Models 页可可视化编辑；本文件热重载）
+# 纪律：DSH 默认 LLM 路由必须经过 Bellkeeper /api/llm/v1，禁止直接指向上游供应商。
+#       任何变更须同步本模板与 data-quality 校验；手动改 runtime settings.yaml 后
+#       会被 `spool bundle dsh setup` 重新覆盖为模板版本。
+# ==============================================================================
+llm-pi-ai:
+  providers:
+    # 默认/唯一生产路由：Bellkeeper LLM 网关（额度、熔断、粘性、模型组统一调度）
+    bellkeeper:
+      apiKeyEnv: BELLKEEPER_LLM_API_KEY
+      displayName: Bellkeeper LLM Gateway
+      api: openai-completions
+      baseURL: http://192.168.7.230:8090/api/llm/v1
+      compat:
+        supportsDeveloperRole: false
+      models:
+        - id: pool-secagent
+          name: SilkSecAgent 模型池（SenseNova / DeepSeek / OpenCode Go 兜底）
+          contextWindow: 1048576
+          maxTokens: 131072
+          reasoningEfforts:
+            {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
+        - id: deepseek-v4-flash
+          name: DeepSeek V4 Flash
+          contextWindow: 1048576
+          maxTokens: 65536
+          reasoningEfforts:
+            {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
+        - id: glm-5.2
+          name: GLM 5.2
+          contextWindow: 1048576
+          maxTokens: 131072
+          reasoningEfforts:
+            {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
+      retryPolicy: { mode: normal, maxRetries: 4 }
+    # 应急直连：仅在 Bellkeeper 网关完全不可用时手动切回
+    deepseek:
+      apiKeyEnv: DEEPSEEK_API_KEY
+      retryPolicy: { mode: normal, maxRetries: 4 }
+    opencode-go:
+      apiKeyEnv: OPENCODE_GO_API_KEY
+      retryPolicy: { mode: normal, maxRetries: 4 }
+
+# 默认模型：Bellkeeper 的 pool-secagent 模型组（让 Bellkeeper 做智能调度）
+agent-default-model:
+  provider: bellkeeper
+  model: pool-secagent
+  reasoningEffort: max
+
+# 默认 preset：漏洞挖掘（本平台主力角色；用户可在会话级切换）
+agent-presets:
+  default: vuln-hunt
+ui-onboarding:
+  welcomeNoticeVersion: 2026-08-13.1
+locale:
+  preference: zh
