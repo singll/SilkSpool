@@ -145,7 +145,7 @@ async function schedulerTick() {
           fs.writeFileSync(metaPath, JSON.stringify(meta, null, 1) + '\n')
         } catch { /* meta 回填失败不影响主流程 */ }
       }
-      deps.assetDb.taskFinishScheduledRun({ id: task.id, ok: !!r.ok, run_id: r.run_id || '', note, session_id: workerSessionId })
+      deps.assetDb.taskFinishScheduledRun({ id: task.id, ok: !!r.ok, run_id: r.run_id || '', note, session_id: workerSessionId ?? null })
     } catch (e) {
       process.stderr.write(`[sec-suite] 调度任务 #${task.id} 执行异常: ${e?.stack || e?.message || String(e)}\n`)
       try { deps.assetDb.taskFinishScheduledRun({ id: task.id, ok: false, run_id: '', note: `调度执行异常: ${e?.message ?? String(e)}`.slice(0, 300) }) } catch { /* ignore */ }

@@ -486,7 +486,6 @@ export function taskCreate({ program_id, phase = '', objective, priority = 5, bu
 // ---- P15 流程守卫：interval 日任务标 done 前硬校验纪律产物（台账增量/卡片使用/交接包）----
 // 原则：纪律不能只靠提示词自觉——缺产物则任务不可 done，agent 拿到缺失清单后必须补齐再收尾。
 // 作用域：schedule_kind='interval' 且 data/pipeline/{program}/ 存在的项目任务（dsh-ops 等无管线目录的任务不拦）。
-const beijingDate = (ts = Date.now()) => new Date(ts + 8 * 3600_000).toISOString().slice(0, 10)
 
 function pipelineGuardStatus(programId) {
   const dir = path.join(DATA_DIR, 'pipeline', programId)
@@ -664,6 +663,7 @@ export function taskClaimDue(nowTs) {
 // P15：可选 session_id（调度器从 sessionPersistence 反查 worker 会话）→ task_runs.session_id + tasks.session_id 回填（看板跳链）。
 // P17：增加结果真实性校验——worker.log 中出现模型拒执/API 错误等标记时，即使 worker 返回 exit 0 也标失败/待复核。
 export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id = null }) {
+  session_id = session_id ?? null
   const d = getDb()
   const t = d.prepare('SELECT * FROM tasks WHERE id = ?').get(Number(id))
   if (!t) return { ok: false, error: `task 不存在: ${id}` }
@@ -866,6 +866,7 @@ export function appendFgsToHandoff(task_id, program_id) {
 
 // 执行历史落库（每任务保留最近 200 行，防无限膨胀）
 function taskRunRecord({ task_id, run_id = '', ok, note = '', started_at = null, finished_at = null, session_id = null }) {
+  session_id = session_id ?? null
   const d = getDb()
   const duration = (started_at && finished_at) ? finished_at - started_at : null
   d.prepare('INSERT INTO task_runs (task_id, run_id, ok, note, started_at, finished_at, duration_ms, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
