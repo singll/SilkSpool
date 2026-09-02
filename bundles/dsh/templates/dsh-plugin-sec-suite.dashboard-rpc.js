@@ -201,11 +201,28 @@ export async function handleDashboardRpc(endpoint, payload) {
     case 'audit':
       return { rows: deps.tailAudit(Math.min(Number(p.limit) || 120, 300)) }
     case 'assets': {
-      const filters = { hostLike: String(p.q || ''), type: String(p.type || ''), programId: String(p.program_id || '') }
+      const filters = { hostLike: String(p.q || ''), type: String(p.type || ''), programId: String(p.program_id || ''), level: String(p.level || ''), accept: String(p.accept || ''), state: String(p.state || '') }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
       return { rows: deps.assetDb.queryAssets({ ...filters, limit, offset, sort: String(p.sort || ''), dir: String(p.dir || '') }), total: deps.assetDb.countAssets(filters) }
     }
+    // ---- 看板 v4.1：资产多维（域名族总览 + 单主机钻取）、接口按主机分组、事实 facet ----
+    case 'assetOverview':
+      return deps.assetDb.assetOverview()
+    case 'assetDetail': {
+      const host = String(p.host || '')
+      if (!host) throw new Error('assetDetail 需要 host')
+      return deps.assetDb.assetDetail(host)
+    }
+    case 'assetFamily': {
+      return deps.assetDb.assetFamily(String(p.root || ''))
+    }
+    case 'endpointHosts': {
+      const r = deps.assetDb.endpointHosts({ pathLike: String(p.q || ''), programId: String(p.program_id || ''), limit: Math.min(Number(p.limit) || 20, 200), offset: Math.max(0, Number(p.offset) || 0) })
+      return r
+    }
+    case 'factStats':
+      return deps.assetDb.factStats()
     case 'endpoints': {
       const filters = { host: String(p.host || ''), pathLike: String(p.q || ''), programId: String(p.program_id || '') }
       const limit = Math.min(Number(p.limit) || 20, 200)
@@ -232,6 +249,7 @@ export async function handleDashboardRpc(endpoint, payload) {
       const filters = {
         program_id: String(p.program_id || ''), category: String(p.category || ''),
         q: String(p.q || ''), confidence: String(p.confidence || ''),
+        hasEdges: !!p.has_edges, sort: String(p.sort || ''),
       }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)

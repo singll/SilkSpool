@@ -229,6 +229,18 @@ export function getDb() {
   ensureCol('findings', 'confidence', "confidence TEXT NOT NULL DEFAULT 'tentative' CHECK(confidence IN ('tentative','confirmed','false_positive','dup'))")
   ensureCol('findings', 'fgs_node_id', 'fgs_node_id INTEGER')
   ensureCol('findings', 'discovery_step', 'discovery_step TEXT')
+  // ---- v4.1：assets.root 冗余列（注册域/网段根，写入时算好落库）----
+  // 域名族总览 GROUP BY root 纯 SQL 走索引，免 8 万行物化进 JS；幂等回填存量行
+  ensureCol('assets', 'root', 'root TEXT')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_assets_root ON assets(root)')
+  if (db.prepare('SELECT COUNT(*) AS n FROM assets WHERE root IS NULL').get().n > 0) {
+    const upd = db.prepare('UPDATE assets SET root = ? WHERE host = ? AND root IS NULL')
+    db.exec('BEGIN')
+    try {
+      db.prepare('SELECT host FROM assets WHERE root IS NULL').all().forEach((r) => upd.run(hostRoot(r.host), r.host))
+      db.exec('COMMIT')
+    } catch (e) { db.exec('ROLLBACK'); throw e }
+  }
   return db
 }
 
@@ -241,8 +253,8 @@ export function upsertAsset({ host, type = 'host', source = '', attrs = null, pr
   if (!host) return false
   // 评级字段（score/level/accept/biz/state，rules/src/asset-scoring.md 体系）：null=不动既有值
   getDb().prepare(`
-    INSERT INTO assets (host, type, source, attrs, program_id, first_seen, last_seen, score, level, accept, biz, state)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO assets (host, type, source, attrs, program_id, first_seen, last_seen, score, level, accept, biz, state, root)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (host, type) DO UPDATE SET last_seen = excluded.last_seen,
       source = CASE WHEN excluded.source != '' THEN excluded.source ELSE assets.source END,
       program_id = CASE WHEN excluded.program_id IS NOT NULL THEN excluded.program_id ELSE assets.program_id END,
@@ -251,7 +263,8 @@ export function upsertAsset({ host, type = 'host', source = '', attrs = null, pr
       accept = COALESCE(excluded.accept, assets.accept),
       biz = COALESCE(excluded.biz, assets.biz),
       state = COALESCE(excluded.state, assets.state)
-  `).run(host, type, source, attrs ? JSON.stringify(attrs) : null, program_id, now(), now(), score, level, accept, biz, state)
+  `).run(host, type, source, attrs ? JSON.stringify(attrs) : null, program_id, now(), now(), score, level, accept, biz, state, hostRoot(host))
+  invalidateOverview()
   return true
 }
 
@@ -267,6 +280,7 @@ export function upsertEndpoint({ host, method = 'GET', path: p = '/', status = '
       auth_required = CASE WHEN excluded.auth_required IS NOT NULL THEN excluded.auth_required ELSE endpoints.auth_required END,
       roles_seen = CASE WHEN excluded.roles_seen IS NOT NULL THEN excluded.roles_seen ELSE endpoints.roles_seen END
   `).run(host, method.toUpperCase(), p, String(status), source, program_id, params ? JSON.stringify(params) : null, auth_required, roles_seen ? JSON.stringify(roles_seen) : null, now(), now())
+  invalidateOverview()
   return true
 }
 
@@ -297,6 +311,7 @@ export function addFinding({
   `).run(fingerprint, title, severity, host, url, evidence, source, program_id,
     vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation, session_id, noise, now(),
     confidence, fgs_node_id, discovery_step)
+  if (!noise) invalidateOverview() // 噪声行不进总览统计，无需失效
   return { id: Number(r.lastInsertRowid), dup: false, noise: !!noise }
 }
 
@@ -308,8 +323,8 @@ function orderClause(map, sort, dir, dflt) {
   return `${col} ${dr}`
 }
 
-export function queryAssets({ hostLike = '', type = '', programId = '', level = '', levelIn = '', accept = '', limit = 50, offset = 0, sort = '', dir = '' }) {
-  const { where, args } = assetWhere({ hostLike, type, programId, level, levelIn, accept })
+export function queryAssets({ hostLike = '', type = '', programId = '', level = '', levelIn = '', accept = '', state = '', limit = 50, offset = 0, sort = '', dir = '' }) {
+  const { where, args } = assetWhere({ hostLike, type, programId, level, levelIn, accept, state })
   const sql = `SELECT host, type, source, program_id, last_seen, score, level, accept, biz, state FROM assets WHERE ${where} ORDER BY ${orderClause(ASSET_SORT, sort, dir, 'last_seen')} LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
@@ -319,19 +334,22 @@ export function countAssets(filters = {}) {
   return getDb().prepare(`SELECT COUNT(*) AS n FROM assets WHERE ${where}`).get(...args).n
 }
 
-function assetWhere({ hostLike = '', type = '', programId = '', level = '', levelIn = '', accept = '' }) {
+function assetWhere({ hostLike = '', type = '', programId = '', level = '', levelIn = '', accept = '', state = '' }) {
   let where = '1=1'
   const args = []
   if (hostLike) { where += ' AND host LIKE ?'; args.push(`%${hostLike}%`) }
   if (type) { where += ' AND type = ?'; args.push(type) }
   if (programId) { where += ' AND program_id = ?'; args.push(programId) }
-  if (level) { where += ' AND level = ?'; args.push(level) }
+  // level='none' 表达「未分级」（P15：未分级不可准入扫描，看板一键筛出待分级资产）
+  if (level === 'none') { where += ' AND level IS NULL' }
+  else if (level) { where += ' AND level = ?'; args.push(level) }
   // P15 资产准入：多级过滤（如 "S,A,B"）——主动扫描队列应排除未分级与 C 级（level_in=S,A,B）
   if (levelIn) {
     const lv = String(levelIn).split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
     if (lv.length) { where += ` AND level IN (${lv.map(() => '?').join(',')})`; args.push(...lv) }
   }
   if (accept) { where += ' AND accept = ?'; args.push(accept) }
+  if (state) { where += ' AND state = ?'; args.push(state) }
   return { where, args }
 }
 
@@ -345,6 +363,111 @@ export function queryEndpoints({ host = '', pathLike = '', programId = '', limit
 export function countEndpoints(filters = {}) {
   const { where, args } = endpointWhere(filters)
   return getDb().prepare(`SELECT COUNT(*) AS n FROM endpoints WHERE ${where}`).get(...args).n
+}
+
+// 接口按主机分组（看板接口 tab 主视图）：路径搜索命中后按主机聚合，平铺千行无浏览价值
+export function endpointHosts({ pathLike = '', programId = '', limit = 50, offset = 0 }) {
+  let where = '1=1'
+  const args = []
+  if (pathLike) { where += ' AND path LIKE ?'; args.push(`%${pathLike}%`) }
+  if (programId) { where += ' AND program_id = ?'; args.push(programId) }
+  const rows = plain(getDb().prepare(`
+    SELECT host, program_id, COUNT(*) AS n, GROUP_CONCAT(DISTINCT method) AS methods, MAX(last_seen) AS last_seen
+    FROM endpoints WHERE ${where} GROUP BY host ORDER BY last_seen DESC LIMIT ? OFFSET ?
+  `).all(...args, Math.min(limit, 200), Math.max(0, offset)))
+  const total = getDb().prepare(`SELECT COUNT(DISTINCT host) AS n FROM endpoints WHERE ${where}`).get(...args).n
+  return { rows, total }
+}
+
+// ---- 资产多维视图（看板 v4.1）：域名族聚合 + 单主机钻取 ----------------------------------------------
+
+// 主机归族：域名取注册域近似（末两标签；.com.cn 等双后缀取三），IP 取 /24 网段
+// （首字符数字才走 IP 正则，避免 8 万行全量正则开销）
+function hostRoot(host) {
+  let h = String(host || '').toLowerCase().trim()
+  const port = h.indexOf(':'); if (port > 0) h = h.slice(0, port)
+  const c0 = h.charCodeAt(0)
+  if (c0 >= 48 && c0 <= 57 && /^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return h.slice(0, h.lastIndexOf('.')) + '.0/24'
+  const parts = h.replace(/^\*\./, '').split('.')
+  if (parts.length < 2) return h
+  const sld = parts[parts.length - 2]
+  if (parts.length >= 3 && (sld === 'com' || sld === 'net' || sld === 'org' || sld === 'gov' || sld === 'edu' || sld === 'co' || sld === 'ac')) return parts.slice(-3).join('.')
+  return parts.slice(-2).join('.')
+}
+
+// 资产总览结果缓存（25s TTL + 写入即失效）：聚合查询几十 ms，轮询再加一层保险
+let _ovCache = null
+function invalidateOverview() { _ovCache = null }
+
+// 资产总览：评级/状态/收录分布 + 域名族聚合（同族/同网段主机数、接口数、漏洞数、最高评级）
+// 轻量（30s 轮询安全）：不带成员主机清单，成员按需 assetFamily(root) 拉取。
+// 8 万行量级：分组纯 SQL 走 assets.root 冗余列 + idx_assets_root，接口/漏洞计数 LEFT JOIN 预聚合。
+export function assetOverview() {
+  if (_ovCache && Date.now() - _ovCache.at < 25000) return _ovCache.data
+  const d = getDb()
+  const families = d.prepare(`
+    SELECT a.root AS root,
+      COUNT(*) AS host_count,
+      COALESCE(SUM(e.n), 0) AS endpoint_count,
+      COALESCE(SUM(f.n), 0) AS finding_count,
+      MAX(a.score) AS max_score,
+      MAX(CASE a.level WHEN 'S' THEN 4 WHEN 'A' THEN 3 WHEN 'B' THEN 2 WHEN 'C' THEN 1 ELSE 0 END) AS lv_rank,
+      MAX(a.last_seen) AS last_seen
+    FROM assets a
+    LEFT JOIN (SELECT host, COUNT(*) AS n FROM endpoints GROUP BY host) e ON e.host = a.host
+    LEFT JOIN (SELECT host, COUNT(*) AS n FROM findings WHERE noise = 0 GROUP BY host) f ON f.host = a.host
+    WHERE a.root IS NOT NULL
+    GROUP BY a.root ORDER BY host_count DESC, last_seen DESC LIMIT 300
+  `).all().map((r) => ({
+    root: r.root,
+    kind: String(r.root).includes('/24') ? 'subnet' : 'domain',
+    host_count: r.host_count,
+    endpoint_count: r.endpoint_count || 0,
+    finding_count: r.finding_count || 0,
+    max_score: r.max_score,
+    top_level: ({ 4: 'S', 3: 'A', 2: 'B', 1: 'C' })[r.lv_rank] || '',
+    last_seen: r.last_seen,
+    program_id: '',
+  }))
+  const byLevel = {}
+  d.prepare('SELECT level, COUNT(*) AS n FROM assets GROUP BY level').all().forEach((r) => { byLevel[r.level || ''] = r.n })
+  const byState = {}
+  d.prepare('SELECT state, COUNT(*) AS n FROM assets WHERE state IS NOT NULL GROUP BY state').all().forEach((r) => { byState[r.state] = r.n })
+  const byAccept = {}
+  d.prepare('SELECT accept, COUNT(*) AS n FROM assets WHERE accept IS NOT NULL GROUP BY accept').all().forEach((r) => { byAccept[r.accept] = r.n })
+  const data = {
+    total: d.prepare('SELECT COUNT(*) AS n FROM assets').get().n,
+    family_count: d.prepare('SELECT COUNT(DISTINCT root) AS n FROM assets WHERE root IS NOT NULL').get().n,
+    by_level: byLevel, by_state: byState, by_accept: byAccept,
+    families,
+  }
+  _ovCache = { at: Date.now(), data }
+  return data
+}
+
+// 域名族成员主机（按需拉取，族行展开时）：root 冗余列直查（域名族/网段族统一）
+export function assetFamily(root) {
+  const d = getDb()
+  const r = String(root || '')
+  if (!r) return { ok: false, error: 'assetFamily 需要 root' }
+  const rows = plain(d.prepare('SELECT host, type, level, score, accept, state, last_seen FROM assets WHERE root = ? ORDER BY COALESCE(score, -1) DESC, last_seen DESC LIMIT 200').all(r))
+  return { ok: true, root: r, hosts: rows }
+}
+
+// 单主机钻取：多类型资产行 / 接口 / 指纹技术栈 / 漏洞分级统计 / 同族主机
+export function assetDetail(host) {
+  const d = getDb()
+  const assets = plain(d.prepare('SELECT host, type, source, program_id, first_seen, last_seen, score, level, accept, biz, state FROM assets WHERE host = ?').all(host))
+  if (!assets.length) return { ok: false, error: `资产不存在: ${host}` }
+  const endpoints = plain(d.prepare('SELECT method, path, status, last_seen FROM endpoints WHERE host = ? ORDER BY last_seen DESC LIMIT 60').all(host))
+  const endpointTotal = d.prepare('SELECT COUNT(*) AS n FROM endpoints WHERE host = ?').get(host).n
+  const fingerprints = plain(d.prepare('SELECT tech, version, source, last_seen FROM fingerprints WHERE host = ? ORDER BY last_seen DESC LIMIT 30').all(host))
+  const findings = plain(d.prepare("SELECT severity, COUNT(*) AS n FROM findings WHERE noise = 0 AND host = ? GROUP BY severity ORDER BY n DESC").all(host))
+  const root = hostRoot(host)
+  const siblings = plain(d.prepare(
+    'SELECT host, type, level, score, last_seen FROM assets WHERE root = ? AND host != ? ORDER BY COALESCE(score, -1) DESC, last_seen DESC LIMIT 20',
+  ).all(root, host))
+  return { ok: true, host, root, assets, endpoints, endpoint_total: endpointTotal, fingerprints, findings, siblings }
 }
 
 function endpointWhere({ host = '', pathLike = '', programId = '' }) {
@@ -1101,15 +1224,18 @@ export function factGet(program_id, fact_key) {
   return row ? { ...row } : null
 }
 
-export function factSearch({ program_id = '', category = '', q = '', confidence = '', limit = 50, offset = 0, role = 'task' }) {
-  const { where, args } = factWhere({ program_id, category, q, confidence })
+export function factSearch({ program_id = '', category = '', q = '', confidence = '', hasEdges = false, sort = '', limit = 50, offset = 0, role = 'task' }) {
+  const { where, args } = factWhere({ program_id, category, q, confidence, hasEdges })
   const lc = LC()
   // memcore 缺席时无治理列，回退旧列清单（fail-open）
   const memCols = lc ? ', mem_class, status, revalidate_by' : ''
   // edge_count：关联事实条数（走 idx_edges_src/dst，供看板「关联」按钮仅在有边时出现）
+  // 排序（看板 v4.1 检索增强）：edge_count=关联最多 / category=按分类；默认最近更新；置顶恒在最前
+  const FACT_SORT = { edge_count: 'edge_count DESC, updated_at DESC', category: 'category ASC, updated_at DESC', updated_at: 'updated_at DESC' }
+  const orderBy = FACT_SORT[sort] || FACT_SORT.updated_at
   const sql = `SELECT program_id, fact_key, category, summary, confidence, pinned, related_finding_id, updated_at${memCols},
     (SELECT COUNT(*) FROM fact_edges e WHERE e.program_id = facts.program_id AND (e.src_key = facts.fact_key OR e.dst_key = facts.fact_key)) AS edge_count
-    FROM facts WHERE ${where} ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?`
+    FROM facts WHERE ${where} ORDER BY pinned DESC, ${orderBy} LIMIT ? OFFSET ?`
   const rows = plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
   return lc ? lc.visibilityFilter(role, 'facts', rows) : rows
 }
@@ -1119,14 +1245,30 @@ export function countFacts(filters = {}) {
   return getDb().prepare(`SELECT COUNT(*) AS n FROM facts WHERE ${where}`).get(...args).n
 }
 
-function factWhere({ program_id = '', category = '', q = '', confidence = '' }) {
+function factWhere({ program_id = '', category = '', q = '', confidence = '', hasEdges = false }) {
   let where = '1=1'
   const args = []
   if (program_id) { where += ' AND program_id = ?'; args.push(program_id) }
   if (category) { where += ' AND category = ?'; args.push(category) }
   if (confidence) { where += ' AND confidence = ?'; args.push(confidence) }
   if (q) { where += ' AND (summary LIKE ? OR fact_key LIKE ? OR body LIKE ?)'; args.push(`%${q}%`, `%${q}%`, `%${q}%`) }
+  // 看板 v4.1：仅看有图谱边的事实（关系型知识检索）
+  if (hasEdges) {
+    where += ' AND EXISTS (SELECT 1 FROM fact_edges e WHERE e.program_id = facts.program_id AND (e.src_key = facts.fact_key OR e.dst_key = facts.fact_key))'
+  }
   return { where, args }
+}
+
+// 事实统计（看板 v4.1 facet 洞察条）：分类/置信分布 + 置顶 + 图谱边规模
+export function factStats() {
+  const d = getDb()
+  const byCategory = plain(d.prepare('SELECT category, COUNT(*) AS n FROM facts GROUP BY category ORDER BY n DESC').all())
+  const byConfidence = plain(d.prepare('SELECT confidence, COUNT(*) AS n FROM facts GROUP BY confidence').all())
+  const pinned = d.prepare('SELECT COUNT(*) AS n FROM facts WHERE pinned = 1').get().n
+  const edges = d.prepare('SELECT COUNT(*) AS n FROM fact_edges').get().n
+  const withEdges = d.prepare(`SELECT COUNT(*) AS n FROM facts f WHERE EXISTS (
+    SELECT 1 FROM fact_edges e WHERE e.program_id = f.program_id AND (e.src_key = f.fact_key OR e.dst_key = f.fact_key))`).get().n
+  return { total: d.prepare('SELECT COUNT(*) AS n FROM facts').get().n, by_category: byCategory, by_confidence: byConfidence, pinned, edges, with_edges: withEdges }
 }
 
 export function factLink({ program_id, src_key, dst_key, edge_type, confidence = 'tentative' }) {

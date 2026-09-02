@@ -638,79 +638,397 @@ window.__ModuleLoader__.load({
       })
     }
 
-    function AssetsView(props) {
-      var query = props.query
-      return el(ViewBody, { query: query, emptyText: '暂无资产数据' }, function (rows) {
-        return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
-          el('table', { style: tableStyle },
-            el('colgroup', null,
-              el('col', null),
-              el('col', { style: { width: 70 } }),
-              el('col', { style: { width: 60 } }),
-              el('col', { style: { width: 60 } }),
-              el('col', { style: { width: 90 } }),
-              el('col', { style: { width: 100 } }),
-              el('col', { style: { width: 130 } })),
-            el('thead', null, el('tr', { style: theadRow },
-              sortableTh('主机', 'host', query),
-              sortableTh('评级', 'score', query),
-              el('th', { style: th }, '层级'),
-              sortableTh('类型', 'type', query),
-              el('th', { style: th }, '来源'),
-              el('th', { style: th }, '项目'),
-              sortableTh('最近发现', 'last_seen', query))),
-            el('tbody', null, rows.map(function (r) {
-              var lvColor = r.level === 'S' ? T.error : r.level === 'A' ? T.warn : r.level === 'B' ? T.label : T.label3
-              return el('tr', { key: (r.host || '') + '|' + (r.type || ''), className: 'silksec-row' },
-                el('td', { style: tdMono }, r.host),
-                el('td', { style: tdMono }, r.score !== null && r.score !== undefined ? String(r.score) : '—'),
-                el('td', { style: { ...td, color: lvColor, fontWeight: r.level === 'S' || r.level === 'A' ? 600 : 400 } }, r.level || '—'),
-                el('td', { style: td }, r.type),
-                el('td', { style: td }, r.source || '—'),
-                el('td', { style: td }, programCell(r.program_id)),
-                el('td', { style: tdMono }, fmtTime(r.last_seen)))
-            }))))
-      })
+    // ── 资产视图（v4.1 多维改造）：洞察条 + 列表/域名族双模式 + 行内钻取 ──────
+    // 资产记录多且扁平，看不出结构——多维入口：评级/收录/状态 chip 即点即筛，
+    // 域名族（同注册域 / 同 /24 网段）呈现资产间的联系，单主机钻取聚合指纹/接口/漏洞/同族。
+    var ASSET_LV_COLOR = { S: T.error, A: T.warn, B: T.label, C: T.label2 }
+    var ASSET_STATE_LABEL = { new: '新发现', changed: '有变更', stable: '稳定', dead: '已失活' }
+    var ASSET_ACCEPT_LABEL = { full: '全量收录', 'intrusion-only': '仅入侵', none: '不收录' }
+
+    // 可点即筛的洞察 chip（选中态升一档背景；再点清除）
+    function insightChip(key, value, label, count, color, query, title) {
+      var on = query.filters[key] === value
+      return el('button', {
+        key: key + '|' + value, type: 'button', className: 'silksec-btn',
+        style: { ...pill, cursor: 'pointer', height: 22, color: color || T.label2, background: on ? T.layer2 : 'transparent' },
+        title: (title || label) + '：' + count + '（点击' + (on ? '清除' : '筛选') + '）',
+        onClick: function () { query.setFilter(key, on ? '' : value) },
+      }, label + ' ' + count)
     }
 
-    // 接口视图（F5）：endpoints 是资产的子维度，此前只有 KPI 计数无明细。方法着色，路径可搜。
+    function AssetInsight(props) {
+      var ov = props.overview || {}
+      var query = props.query
+      var byLevel = ov.by_level || {}
+      var byState = ov.by_state || {}
+      var byAccept = ov.by_accept || {}
+      var chips = ['S', 'A', 'B', 'C'].filter(function (k) { return byLevel[k] })
+        .map(function (k) { return insightChip('level', k, k, byLevel[k], ASSET_LV_COLOR[k], query, '可挖掘性评级 ' + k) })
+      if (byLevel['']) chips.push(insightChip('level', 'none', '未分级', byLevel[''], T.warn, query, '未评级资产（P15：未分级不可主动扫描，先分级）'))
+      Object.keys(ASSET_ACCEPT_LABEL).forEach(function (k) {
+        if (byAccept[k]) chips.push(insightChip('accept', k, ASSET_ACCEPT_LABEL[k], byAccept[k], k === 'none' ? T.label3 : undefined, query, 'SRC 收录政策'))
+      })
+      Object.keys(ASSET_STATE_LABEL).forEach(function (k) {
+        if (byState[k]) chips.push(insightChip('state', k, ASSET_STATE_LABEL[k], byState[k], k === 'dead' ? T.label3 : undefined, query, '资产状态'))
+      })
+      if (!chips.length) return null
+      return el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', margin: '2px 0 8px' } },
+        chips,
+        el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs }, title: '域名族 = 同注册域 / 同 /24 网段的资产聚合（资产之间的联系），见「域名族」视图' }, '共 ' + (ov.total || 0) + ' 台 · ' + (ov.family_count || 0) + ' 族'))
+    }
+
+    // 单主机钻取面板（列表模式行内展开）：指纹技术栈 / 该主机接口 / 漏洞分级 / 同族主机
+    function AssetDetailPanel(props) {
+      var st = React.useState({ loading: true, data: null, error: null })
+      var d = st[0]; var setD = st[1]
+      React.useEffect(function () {
+        var alive = true
+        setD({ loading: true, data: null, error: null })
+        callRpc('assetDetail', { host: props.host })
+          .then(function (res) { if (alive) setD({ loading: false, data: res, error: null }) })
+          .catch(function (e) { if (alive) setD({ loading: false, data: null, error: e && e.message ? e.message : String(e) }) })
+        return function () { alive = false }
+      }, [props.host])
+      var METHOD_COLOR = { GET: T.label2, POST: T.brand, PUT: T.warn, DELETE: T.error, PATCH: T.warn }
+      var inner
+      if (d.loading) inner = el(SkeletonRows, { rows: 3 })
+      else if (d.error || !d.data || d.data.ok === false) inner = el('div', { style: { ...errorLine, padding: 0 } }, '钻取加载失败: ' + (d.error || (d.data && d.data.error) || '无数据'))
+      else {
+        var det = d.data
+        var sec = function (title, children) {
+          return el('div', { style: { minWidth: 0, flex: '0 1 auto' } },
+            el('div', { style: { color: T.label3, ...F.xxxs, marginBottom: 4 } }, title),
+            children)
+        }
+        var findingTotal = (det.findings || []).reduce(function (s, f) { return s + f.n }, 0)
+        inner = el('div', { style: { display: 'flex', gap: 20, flexWrap: 'wrap' } },
+          sec('指纹技术栈（' + (det.fingerprints || []).length + '）',
+            (det.fingerprints || []).length
+              ? el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', maxWidth: 300 } },
+                  det.fingerprints.map(function (fp) {
+                    return el('span', { key: fp.tech + (fp.version || ''), style: pill, title: '版本 ' + (fp.version || '—') + ' · 来源 ' + (fp.source || '—') + ' · ' + fmtTime(fp.last_seen) }, fp.tech + (fp.version ? ' ' + fp.version : ''))
+                  }))
+              : el('span', { style: { color: T.label3, ...F.xxs } }, '—')),
+          sec('接口（' + det.endpoint_total + '）',
+            det.endpoint_total
+              ? el('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 400 } },
+                  (det.endpoints || []).slice(0, 6).map(function (e, i) {
+                    return el('div', { key: i, style: { fontFamily: MONO, fontSize: 12, color: T.label2, wordBreak: 'break-all' } },
+                      el('span', { style: { color: METHOD_COLOR[e.method] || T.label2, marginRight: 6 } }, e.method),
+                      e.path,
+                      e.status ? el('span', { style: { color: T.label3, marginLeft: 6 } }, e.status) : null)
+                  }),
+                  det.endpoint_total > 6 ? el('span', { style: { color: T.label3, ...F.xxxs } }, '… 其余 ' + (det.endpoint_total - 6) + ' 个见「接口」tab') : null)
+              : el('span', { style: { color: T.label3, ...F.xxs } }, '—')),
+          sec('漏洞（' + findingTotal + '）',
+            (det.findings || []).length
+              ? el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+                  det.findings.map(function (f) {
+                    var c = SEV_COLOR[f.severity] || T.label2
+                    return el('button', {
+                      key: f.severity, type: 'button', className: 'silksec-btn',
+                      style: { ...pill, cursor: 'pointer', color: c, height: 22, borderColor: 'color-mix(in srgb, ' + c + ' 40%, transparent)' },
+                      title: '跳转漏洞视图并按该主机' + (SEV_LABEL[f.severity] || f.severity) + '过滤',
+                      onClick: function () { props.onFindings(det.host, f.severity) },
+                    }, (SEV_LABEL[f.severity] || f.severity) + ' ' + f.n)
+                  }))
+              : el('span', { style: { color: T.label3, ...F.xxs } }, '—')),
+          sec('同族主机（' + (det.siblings || []).length + '）',
+            (det.siblings || []).length
+              ? el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', maxWidth: 340 } },
+                  det.siblings.map(function (s) {
+                    return el('button', {
+                      key: s.host, type: 'button', className: 'silksec-btn',
+                      style: { ...pill, cursor: 'pointer', fontFamily: MONO, fontSize: 11, height: 22 },
+                      title: '同属 ' + det.root + ' · 评级 ' + (s.level || '—') + (s.score !== null && s.score !== undefined ? ' · ' + s.score + ' 分' : '') + ' · 点击搜索该主机',
+                      onClick: function () { props.onPickHost(s.host) },
+                    }, s.host)
+                  }))
+              : el('span', { style: { color: T.label3, ...F.xxs } }, '（孤例，无同族资产）'))),
+          el('div', { style: { ...F.xxxs, color: T.label3, width: '100%' }, title: '域名族根' }, '族根 ' + det.root)
+      }
+      return el('div', { style: { padding: '12px 14px', background: T.layer1, borderLeft: '2px solid ' + T.brand } }, inner)
+    }
+
+    // 域名族成员主机（按需拉取，族行展开时；总览不带成员清单，30s 轮询保持轻量）
+    function FamilyHostsPanel(props) {
+      var st = React.useState({ loading: true, data: null, error: null })
+      var d = st[0]; var setD = st[1]
+      React.useEffect(function () {
+        var alive = true
+        setD({ loading: true, data: null, error: null })
+        callRpc('assetFamily', { root: props.root })
+          .then(function (res) { if (alive) setD({ loading: false, data: res, error: null }) })
+          .catch(function (e) { if (alive) setD({ loading: false, data: null, error: e && e.message ? e.message : String(e) }) })
+        return function () { alive = false }
+      }, [props.root])
+      if (d.loading) return el('div', { style: { padding: '10px 14px', background: T.layer1 } }, el(SkeletonRows, { rows: 2 }))
+      if (d.error || !d.data || d.data.ok === false) return el('div', { style: { ...errorLine, padding: '10px 14px' } }, '成员加载失败: ' + (d.error || '无数据'))
+      var hosts = d.data.hosts || []
+      return el('div', { style: { padding: '10px 14px', background: T.layer1, borderLeft: '2px solid ' + T.border3 } },
+        el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', maxHeight: 300, overflowY: 'auto' } },
+          hosts.map(function (h) {
+            return el('button', {
+              key: h.host, type: 'button', className: 'silksec-btn',
+              style: { ...pill, cursor: 'pointer', fontFamily: MONO, fontSize: 11, height: 22, color: ASSET_LV_COLOR[h.level] || T.label2 },
+              title: '类型 ' + (h.type || '—') + ' · 评级 ' + (h.level || '—') + (h.score !== null && h.score !== undefined ? ' · ' + h.score + ' 分' : '') + (h.accept ? ' · 收录 ' + (ASSET_ACCEPT_LABEL[h.accept] || h.accept) : '') + ' · ' + fmtTime(h.last_seen) + ' · 点击在列表视图搜索',
+              onClick: function () { props.onPickHost(h.host) },
+            }, h.host)
+          }),
+          props.hostCount > hosts.length
+            ? el('span', { style: { ...pill, color: T.label3 } }, '… 共 ' + props.hostCount + ' 台（按分排序展示前 ' + hosts.length + '）')
+            : null))
+    }
+
+    function AssetsView(props) {
+      var query = props.query
+      var modeS = React.useState('list')
+      var mode = modeS[0]; var setMode = modeS[1]
+      var exp = React.useState(null)
+      var expandedHost = exp[0]; var setExpandedHost = exp[1]
+      var fexp = React.useState(null)
+      var expandedFam = fexp[0]; var setExpandedFam = fexp[1]
+      var toggle = el('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 4, margin: '2px 0 8px' } },
+        [['list', '列表', '逐台资产列表（点击行钻取：指纹 / 接口 / 漏洞 / 同族主机）'], ['family', '域名族', '按注册域 / /24 网段聚合的资产族视图（资产之间的联系）']].map(function (m) {
+          var on = mode === m[0]
+          return el('button', {
+            key: m[0], type: 'button', className: 'silksec-btn',
+            style: { height: 22, ...F.xxxs, color: on ? T.label : T.label2, background: on ? T.layer2 : 'transparent', borderColor: on ? T.border3 : T.border2 },
+            title: m[2], onClick: function () { setMode(m[0]) },
+          }, m[1])
+        }))
+
+      // 域名族视图：聚合数据来自 assetOverview（客户端按搜索词过滤族根；成员按需拉取）
+      if (mode === 'family') {
+        var fams = ((props.overview && props.overview.families) || []).slice()
+        var term = String(query.q || '').toLowerCase()
+        if (term) fams = fams.filter(function (f) { return String(f.root).toLowerCase().indexOf(term) >= 0 })
+        return el('div', null, toggle,
+          el(AssetInsight, { overview: props.overview, query: query }),
+          fams.length === 0
+            ? el(EmptyState, { text: props.overview ? '无匹配资产族' : '暂无资产族数据' })
+            : el('div', { style: { overflowX: 'auto', minWidth: 0 } },
+                el('table', { style: tableStyle },
+                  el('colgroup', null,
+                    el('col', null),
+                    el('col', { style: { width: 56 } }),
+                    el('col', { style: { width: 52 } }),
+                    el('col', { style: { width: 52 } }),
+                    el('col', { style: { width: 52 } }),
+                    el('col', { style: { width: 52 } }),
+                    el('col', { style: { width: 56 } }),
+                    el('col', { style: { width: 96 } })),
+                  el('thead', null, el('tr', { style: theadRow },
+                    el('th', { style: th }, '域名族 / 网段'),
+                    el('th', { style: th }, '类型'),
+                    el('th', { style: th }, '主机'),
+                    el('th', { style: th }, '接口'),
+                    el('th', { style: th }, '漏洞'),
+                    el('th', { style: th }, '评级'),
+                    el('th', { style: th }, '最高分'),
+                    el('th', { style: th }, '最近发现'))),
+                  el('tbody', null, fams.map(function (f) {
+                    var isOpen = expandedFam === f.root
+                    return el(React.Fragment, { key: f.root },
+                      el('tr', {
+                        className: 'silksec-row',
+                        style: { cursor: 'pointer', boxShadow: isOpen ? 'inset 2px 0 0 ' + T.border3 : undefined },
+                        title: '点击展开成员主机（共 ' + f.host_count + ' 台）',
+                        onClick: function () { setExpandedFam(isOpen ? null : f.root) },
+                      },
+                        el('td', { style: tdMono },
+                          el('span', { style: { color: T.label3, marginRight: 6, ...F.xxxs } }, isOpen ? '▾' : '▸'),
+                          f.root),
+                        el('td', { style: td }, el('span', { style: pill, title: f.kind === 'subnet' ? '同 /24 网段' : '同注册域' }, f.kind === 'subnet' ? '网段' : '域名')),
+                        el('td', { style: tdMono }, String(f.host_count)),
+                        el('td', { style: tdMono }, String(f.endpoint_count)),
+                        el('td', { style: { ...tdMono, color: f.finding_count ? T.warn : T.label3 } }, String(f.finding_count)),
+                        el('td', { style: { ...td, color: ASSET_LV_COLOR[f.top_level] || T.label3, fontWeight: f.top_level === 'S' || f.top_level === 'A' ? 600 : 400 } }, f.top_level || '—'),
+                        el('td', { style: tdMono }, f.max_score !== null && f.max_score !== undefined ? String(f.max_score) : '—'),
+                        el('td', { style: tdMono }, fmtTime(f.last_seen))),
+                      isOpen
+                        ? el('tr', null, el('td', { colSpan: 8, style: { padding: 0 } },
+                            el(FamilyHostsPanel, { root: f.root, hostCount: f.host_count, onPickHost: function (h) { setMode('list'); props.onPickHost(h) } })))
+                        : null)
+                  })))))
+      }
+
+      // 列表视图：原表格 + 行内钻取
+      return el('div', null, toggle,
+        el(AssetInsight, { overview: props.overview, query: query }),
+        el(ViewBody, { query: query, emptyText: '暂无资产数据' }, function (rows) {
+          return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
+            el('table', { style: tableStyle },
+              el('colgroup', null,
+                el('col', null),
+                el('col', { style: { width: 70 } }),
+                el('col', { style: { width: 60 } }),
+                el('col', { style: { width: 60 } }),
+                el('col', { style: { width: 90 } }),
+                el('col', { style: { width: 100 } }),
+                el('col', { style: { width: 130 } })),
+              el('thead', null, el('tr', { style: theadRow },
+                sortableTh('主机', 'host', query),
+                sortableTh('评级', 'score', query),
+                el('th', { style: th }, '层级'),
+                sortableTh('类型', 'type', query),
+                el('th', { style: th }, '来源'),
+                el('th', { style: th }, '项目'),
+                sortableTh('最近发现', 'last_seen', query))),
+              el('tbody', null, rows.map(function (r) {
+                var lvColor = ASSET_LV_COLOR[r.level] || T.label3
+                var isOpen = expandedHost === r.host
+                return el(React.Fragment, { key: (r.host || '') + '|' + (r.type || '') },
+                  el('tr', {
+                    className: 'silksec-row',
+                    style: { cursor: 'pointer', boxShadow: isOpen ? 'inset 2px 0 0 ' + T.border3 : undefined },
+                    title: '点击钻取：指纹 / 接口 / 漏洞 / 同族主机',
+                    onClick: function () { setExpandedHost(isOpen ? null : r.host) },
+                  },
+                    el('td', { style: tdMono },
+                      el('span', { style: { color: T.label3, marginRight: 6, ...F.xxxs } }, isOpen ? '▾' : '▸'),
+                      r.host),
+                    el('td', { style: tdMono }, r.score !== null && r.score !== undefined ? String(r.score) : '—'),
+                    el('td', { style: { ...td, color: lvColor, fontWeight: r.level === 'S' || r.level === 'A' ? 600 : 400 } }, r.level || '—'),
+                    el('td', { style: td }, r.type),
+                    el('td', { style: td }, r.source || '—'),
+                    el('td', { style: td }, programCell(r.program_id)),
+                    el('td', { style: tdMono }, fmtTime(r.last_seen))),
+                  isOpen
+                    ? el('tr', null, el('td', { colSpan: 7, style: { padding: 0 } }, el(AssetDetailPanel, { host: r.host, onPickHost: props.onPickHost, onFindings: props.onFindings })))
+                    : null)
+              }))))
+        }))
+    }
+
+    // ── 接口视图（v4.1）：接口是资产的子维度，平铺千行无浏览价值 ──
+    // 改按主机分组手风琴：路径搜索仍全局（命中路径后按主机聚合），展开主机看明细；
+    // 单主机接口也内嵌在资产钻取里，本 tab 侧重跨主机的路径检索。
+    function EndpointListPanel(props) {
+      var st = React.useState({ loading: true, rows: null, error: null })
+      var d = st[0]; var setD = st[1]
+      React.useEffect(function () {
+        var alive = true
+        callRpc('endpoints', { host: props.host, limit: 100 })
+          .then(function (res) { if (alive) setD({ loading: false, rows: (res && res.rows) || [], error: null }) })
+          .catch(function (e) { if (alive) setD({ loading: false, rows: null, error: e && e.message ? e.message : String(e) }) })
+        return function () { alive = false }
+      }, [props.host])
+      var METHOD_COLOR = { GET: T.label2, POST: T.brand, PUT: T.warn, DELETE: T.error, PATCH: T.warn }
+      if (d.loading) return el('div', { style: { padding: '10px 14px', background: T.layer1 } }, el(SkeletonRows, { rows: 3 }))
+      if (d.error) return el('div', { style: { ...errorLine, padding: '10px 14px' } }, '接口加载失败: ' + d.error)
+      return el('div', { style: { padding: '10px 14px', background: T.layer1, borderLeft: '2px solid ' + T.border3 } },
+        el('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 320, overflowY: 'auto', minWidth: 0 } },
+          (d.rows || []).map(function (e, i) {
+            return el('div', { key: i, style: { display: 'flex', gap: 8, alignItems: 'baseline', fontFamily: MONO, fontSize: 12, color: T.label2 } },
+              el('span', { style: { color: METHOD_COLOR[e.method] || T.label2, width: 52, flexShrink: 0 } }, e.method || '—'),
+              el('span', { style: { wordBreak: 'break-all', color: T.label } }, e.path || '/'),
+              e.status ? el('span', { style: { color: T.label3, flexShrink: 0 } }, e.status) : null,
+              el('span', { style: { color: T.label3, flexShrink: 0, marginLeft: 'auto' } }, fmtTime(e.last_seen)))
+          })))
+    }
+
     function EndpointsView(props) {
       var query = props.query
-      var METHOD_COLOR = { GET: T.label2, POST: T.brand, PUT: T.warn, DELETE: T.error, PATCH: T.warn }
+      var exp = React.useState(null)
+      var expandedHost = exp[0]; var setExpandedHost = exp[1]
       return el(ViewBody, { query: query, emptyText: '暂无接口数据' }, function (rows) {
         return el('div', { style: { overflowX: 'auto', minWidth: 0 } },
           el('table', { style: tableStyle },
             el('colgroup', null,
-              el('col', { style: { width: 160 } }),
-              el('col', { style: { width: 66 } }),
               el('col', null),
               el('col', { style: { width: 66 } }),
+              el('col', { style: { width: 180 } }),
               el('col', { style: { width: 110 } }),
-              el('col', { style: { width: 120 } })),
+              el('col', { style: { width: 100 } }),
+              el('col', { style: { width: 40 } })),
             el('thead', null, el('tr', { style: theadRow },
-              sortableTh('主机', 'host', query),
+              el('th', { style: th }, '主机'),
+              el('th', { style: th }, '接口数'),
               el('th', { style: th }, '方法'),
-              sortableTh('路径', 'path', query),
-              sortableTh('状态', 'status', query),
               el('th', { style: th }, '项目'),
-              sortableTh('最近发现', 'last_seen', query))),
-            el('tbody', null, rows.map(function (r, i) {
-              return el('tr', { key: (r.host || '') + '|' + (r.method || '') + '|' + (r.path || '') + '|' + i, className: 'silksec-row' },
-                el('td', { style: tdMono }, r.host),
-                el('td', { style: { ...td, color: METHOD_COLOR[r.method] || T.label2, fontFamily: MONO, fontSize: 12 } }, r.method || '—'),
-                el('td', { style: tdMono }, r.path || '/'),
-                el('td', { style: tdMono }, r.status || '—'),
-                el('td', { style: td }, programCell(r.program_id)),
-                el('td', { style: tdMono }, fmtTime(r.last_seen)))
+              el('th', { style: th }, '最近发现'),
+              el('th', { style: th }, ''))),
+            el('tbody', null, rows.map(function (r) {
+              var isOpen = expandedHost === r.host
+              return el(React.Fragment, { key: r.host },
+                el('tr', {
+                  className: 'silksec-row',
+                  style: { cursor: 'pointer', boxShadow: isOpen ? 'inset 2px 0 0 ' + T.border3 : undefined },
+                  title: '点击展开该主机的接口明细',
+                  onClick: function () { setExpandedHost(isOpen ? null : r.host) },
+                },
+                  el('td', { style: tdMono },
+                    el('span', { style: { color: T.label3, marginRight: 6, ...F.xxxs } }, isOpen ? '▾' : '▸'),
+                    r.host),
+                  el('td', { style: tdMono }, String(r.n)),
+                  el('td', { style: td }, (r.methods || '').split(',').filter(Boolean).map(function (m) {
+                    return el('span', { key: m, style: { ...pill, fontFamily: MONO, fontSize: 11 } }, m)
+                  })),
+                  el('td', { style: td }, programCell(r.program_id)),
+                  el('td', { style: tdMono }, fmtTime(r.last_seen)),
+                  el('td', { style: td, onClick: function (e) { e.stopPropagation() } },
+                    el('button', {
+                      type: 'button', className: 'silksec-icon-btn',
+                      title: '在资产视图中搜索该主机（钻取指纹 / 接口 / 漏洞 / 同族）', 'aria-label': '去资产视图',
+                      onClick: function () { props.onPickHost(r.host) },
+                    }, opIcon('eye')))),
+                isOpen
+                  ? el('tr', null, el('td', { colSpan: 6, style: { padding: 0 } }, el(EndpointListPanel, { host: r.host })))
+                  : null)
             }))))
       })
     }
 
+    // ── 事实视图（v4.1 检索增强）：facet 洞察条 + 搜索高亮 + 关联过滤 ──
+    // 搜索词高亮：命中片段丝线金加粗（零依赖 split，React 元素树直构）
+    function hlText(text, term, keyBase) {
+      var s = String(text == null ? '' : text)
+      var t = String(term || '').toLowerCase()
+      if (!t) return s
+      var lower = s.toLowerCase()
+      var out = []
+      var i = 0; var k = 0
+      while (i <= s.length) {
+        var idx = lower.indexOf(t, i)
+        if (idx < 0) { out.push(el('span', { key: keyBase + '-e' + (k++) }, s.slice(i))); break }
+        if (idx > i) out.push(el('span', { key: keyBase + '-t' + (k++) }, s.slice(i, idx)))
+        out.push(el('span', { key: keyBase + '-m' + (k++), style: { color: T.warn, fontWeight: 600 } }, s.slice(idx, idx + t.length)))
+        i = idx + t.length
+      }
+      return out
+    }
+
+    var CONF_COLOR = { confirmed: T.success, tentative: T.warn, deprecated: T.label3 }
+
+    // 事实洞察条：置信分布 / 有关联 chip 可点即筛；分类 facet 计数（动态，不再硬编码）
+    function FactsInsight(props) {
+      var st = props.stats || {}
+      var query = props.query
+      var byConf = {}
+      ;(st.by_confidence || []).forEach(function (r) { byConf[r.confidence] = r.n })
+      var chips = ['confirmed', 'tentative', 'deprecated'].filter(function (k) { return byConf[k] })
+        .map(function (k) { return insightChip('confidence', k, CONF_LABEL[k], byConf[k], CONF_COLOR[k], query, '置信度') })
+      if (st.with_edges) chips.push(insightChip('has_edges', '1', '有关联', st.with_edges, T.business, query, '有图谱边（同域名/同网段自动建边或手工 fact_link）'))
+      var cats = (st.by_category || []).filter(function (r) { return r.category })
+        .slice(0, 8)
+        .map(function (r) { return insightChip('category', r.category, r.category, r.n, undefined, query, '事实分类') })
+      if (!chips.length && !cats.length) return null
+      return el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', margin: '2px 0 8px' } },
+        chips,
+        st.pinned ? el('span', { style: pill, title: '置顶事实（排序恒在最前）' }, '📌 ' + st.pinned) : null,
+        cats.length ? el('span', { style: { color: T.border3 } }, '|') : null,
+        cats,
+        el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs }, title: 'fact_edges 关系边总数（同域名/同网段自动建边 + 手工 fact_link）' }, '图谱 ' + (st.edges || 0) + ' 边 · ' + (st.total || 0) + ' 条'))
+    }
+
     // 事实卡（含关联子图展开，F2）：edge_count>0 才显示「关联」，点开按需 factGraph 拉出/入边，
     // 关联事实可点击回填搜索——扁平列表升级为可遍历图谱，但不引入力导图（不过度）。
+    // v4.1：补分类徽章（可点筛选）+ 搜索词高亮。
     function FactCard(props) {
       var f = props.f
       var busy = props.busy
+      var hl = props.hl
       var deprecated = f.confidence === 'deprecated'
       var exp = React.useState(false)
       var open = exp[0]; var setOpen = exp[1]
@@ -735,13 +1053,21 @@ window.__ModuleLoader__.load({
       }
       return el('div', { style: { ...card, opacity: deprecated ? 0.55 : 1 } },
         el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-          el('span', { style: { color: T.label, ...F.sStrong, wordBreak: 'break-all' } }, f.fact_key),
+          el('span', { style: { color: T.label, ...F.sStrong, wordBreak: 'break-all' } }, hlText(f.fact_key, hl, 'fk')),
+          f.category
+            ? el('button', {
+                type: 'button', className: 'silksec-btn',
+                style: { ...pill, cursor: 'pointer', height: 20, color: T.label3 },
+                title: '事实分类（点击筛选该分类）',
+                onClick: function () { props.onFilterCategory(f.category) },
+              }, f.category)
+            : null,
           confPill(f.confidence),
           el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, f.program_id),
           f.edge_count ? el('button', { type: 'button', className: 'silksec-btn', onClick: toggle, title: '查看关联事实（图谱边）' }, open ? '收起' : '关联 ' + f.edge_count) : null,
           el('button', { type: 'button', className: 'silksec-icon-btn', disabled: !!busy || deprecated, title: '纠正事实摘要', 'aria-label': '纠正事实', onClick: function () { props.onCorrect(f.program_id, f.fact_key, f.summary) } }, opIcon('edit')),
           el('button', { type: 'button', className: 'silksec-icon-btn silksec-icon-btn-danger', disabled: !!busy || deprecated, title: '废弃事实（降置信为 deprecated，可再纠正恢复）', 'aria-label': '废弃事实', onClick: function () { props.onDeprecate(f.program_id, f.fact_key) } }, opIcon('trash'))),
-        f.summary ? el('div', { style: { color: T.label2, marginTop: 6, ...F.xxs } }, f.summary) : null,
+        f.summary ? el('div', { style: { color: T.label2, marginTop: 6, ...F.xxs } }, hlText(f.summary, hl, 'fs')) : null,
         open
           ? el('div', { style: { marginTop: 10, borderTop: '1px solid ' + T.border2, paddingTop: 8 } },
               graph
@@ -759,12 +1085,14 @@ window.__ModuleLoader__.load({
       var board = props.board || []
       var busy = props.busy
       return el('div', null,
+        el(FactsInsight, { stats: props.stats, query: query }),
         el(ViewBody, { query: query, emptyText: '暂无事实数据' }, function (facts) {
           return el('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
             facts.map(function (f) {
               return el(FactCard, {
-                key: f.program_id + '/' + f.fact_key, f: f, busy: busy,
+                key: f.program_id + '/' + f.fact_key, f: f, busy: busy, hl: query.q,
                 onCorrect: props.onCorrect, onDeprecate: props.onDeprecate, onSearchKey: props.onSearchKey,
+                onFilterCategory: function (c) { query.setFilter('category', c) },
               })
             }))
         }),
@@ -1538,8 +1866,16 @@ window.__ModuleLoader__.load({
       // 分页查询（状态按 tab 记忆，Modal 关闭即销毁重置；仅活跃视图取数/轮询）
       var findingsQ = usePagedQuery('findings', activeTab === 'findings')
       var assetsQ = usePagedQuery('assets', activeTab === 'assets')
-      var endpointsQ = usePagedQuery('endpoints', activeTab === 'endpoints')
+      // v4.1：接口 tab 主查询改按主机分组（endpointHosts）；单主机明细展开时另调 endpoints
+      var endpointsQ = usePagedQuery('endpointHosts', activeTab === 'endpoints')
       var factsQ = usePagedQuery('facts', activeTab === 'facts')
+      // v4.1：资产总览（评级/收录/状态分布 + 域名族聚合）、事实 facet 统计（仅对应 tab 激活时取数）
+      var assetsOvState = useRpc(function () {
+        return activeTab === 'assets' ? { endpoint: 'assetOverview' } : null
+      }, [activeTab])
+      var factStatsState = useRpc(function () {
+        return activeTab === 'facts' ? { endpoint: 'factStats' } : null
+      }, [activeTab])
       var tasksQ = usePagedQuery('tasks', activeTab === 'tasks', { bucket: 'active' })
       // P12：固定定时任务卡片区 + 执行历史（仅任务 tab 激活时取数/轮询）
       var schedState = useRpc(function () {
@@ -1553,6 +1889,16 @@ window.__ModuleLoader__.load({
       function jumpToHistory(id) {
         runsQ.setFilter('task_id', id)
         setJump({ id: id, ts: Date.now() })
+      }
+      // v4.1 跨视图跳链：接口/钻取面板点主机 → 资产列表搜索该主机；漏洞分级 chip → 漏洞视图按主机+级别过滤
+      function pickHost(host) {
+        assetsQ.setQ(host)
+        setTab('assets')
+      }
+      function jumpFindings(host, severity) {
+        findingsQ.setQ(host)
+        findingsQ.setFilter('severity', severity || '')
+        setTab('findings')
       }
 
       // 报告模态态（F3）
@@ -1691,31 +2037,38 @@ window.__ModuleLoader__.load({
           el(Toolbar, {
             query: assetsQ, placeholder: '搜索主机…',
             filters: [
+              { key: 'level', label: '评级', options: [{ v: 'S', l: 'S' }, { v: 'A', l: 'A' }, { v: 'B', l: 'B' }, { v: 'C', l: 'C' }, { v: 'none', l: '未分级' }] },
+              { key: 'accept', label: '收录', options: [{ v: 'full', l: '全量收录' }, { v: 'intrusion-only', l: '仅入侵' }, { v: 'none', l: '不收录' }] },
+              { key: 'state', label: '状态', options: [{ v: 'new', l: '新发现' }, { v: 'changed', l: '有变更' }, { v: 'stable', l: '稳定' }, { v: 'dead', l: '已失活' }] },
               { key: 'type', label: '类型', options: typeOpts },
               { key: 'program_id', label: '工作区', options: progOpts },
             ],
           }),
-          el(AssetsView, { query: assetsQ }))
+          el(AssetsView, { query: assetsQ, overview: assetsOvState.data, onPickHost: pickHost, onFindings: jumpFindings }))
       } else if (activeTab === 'endpoints') {
         content = el(React.Fragment, null,
           el(Toolbar, {
-            query: endpointsQ, placeholder: '搜索路径…',
+            query: endpointsQ, placeholder: '搜索路径（全局，命中后按主机聚合）…',
             filters: [
               { key: 'program_id', label: '工作区', options: progOpts },
             ],
           }),
-          el(EndpointsView, { query: endpointsQ }))
+          el(EndpointsView, { query: endpointsQ, onPickHost: pickHost }))
       } else if (activeTab === 'facts') {
+        var factCats = (((factStatsState.data || {}).by_category) || []).filter(function (r) { return r.category })
+          .map(function (r) { return { v: r.category, l: r.category + ' (' + r.n + ')' } })
         content = el(React.Fragment, null,
           el(Toolbar, {
-            query: factsQ, placeholder: '搜索事实 key / 摘要…',
+            query: factsQ, placeholder: '搜索事实 key / 摘要 / 正文…',
             filters: [
-              { key: 'category', label: '分类', options: ['note', 'target', 'asset', 'finding', 'recon', 'infra'].map(function (c) { return { v: c, l: c } }) },
+              { key: 'category', label: '分类', options: factCats.length ? factCats : ['note', 'target', 'asset', 'finding', 'recon', 'infra'].map(function (c) { return { v: c, l: c } }) },
               { key: 'confidence', label: '置信', options: Object.keys(CONF_LABEL).map(function (k) { return { v: k, l: CONF_LABEL[k] } }) },
+              { key: 'has_edges', label: '关联', options: [{ v: '1', l: '仅有关联' }] },
+              { key: 'sort', label: '排序', options: [{ v: 'edge_count', l: '关联最多' }, { v: 'category', l: '按分类' }] },
               { key: 'program_id', label: '工作区', options: progOpts },
             ],
           }),
-          el(FactsView, { query: factsQ, board: boardState.data, onDeprecate: onDeprecate, onCorrect: onCorrect, onSearchKey: function (k) { factsQ.setQ(k) }, busy: isBusy }))
+          el(FactsView, { query: factsQ, stats: factStatsState.data, board: boardState.data, onDeprecate: onDeprecate, onCorrect: onCorrect, onSearchKey: function (k) { factsQ.setQ(k) }, busy: isBusy }))
       } else if (activeTab === 'tasks') {
         content = el(React.Fragment, null,
           el(Toolbar, {
@@ -1760,7 +2113,7 @@ window.__ModuleLoader__.load({
             onClick: function () {
               if (refreshing) return
               setRefreshing(true)
-              Promise.all([findingsQ.refresh(), assetsQ.refresh(), endpointsQ.refresh(), factsQ.refresh(), tasksQ.refresh()])
+              Promise.all([findingsQ.refresh(), assetsQ.refresh(), endpointsQ.refresh(), factsQ.refresh(), tasksQ.refresh(), assetsOvState.reload(), factStatsState.reload()])
                 .catch(function () {}).then(function () { setRefreshing(false) })
             },
           }, refreshing ? '刷新中…' : '刷新')),
