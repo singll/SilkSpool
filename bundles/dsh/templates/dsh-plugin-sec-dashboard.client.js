@@ -1013,7 +1013,7 @@ window.__ModuleLoader__.load({
                   el('td', { style: { ...td, whiteSpace: 'nowrap' } },
                     el('span', { style: { display: 'inline-flex', gap: 6 } },
                       el(SessionLink, { id: t.session_id }),
-                      t.schedule_kind && t.status === 'queued'
+                      t.status === 'queued'
                         ? el('button', {
                             type: 'button', className: 'silksec-icon-btn', disabled: !!props.busy,
                             title: '立即执行一次（不动调度节律）', 'aria-label': '立即执行',
