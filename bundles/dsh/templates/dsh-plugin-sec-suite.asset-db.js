@@ -619,13 +619,15 @@ export function taskSchedule({ id, schedule }) {
   return { ok: true, id: Number(id), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at } : null }
 }
 
-// 立即触发一次（不动调度节律）：把 next_run_at 拨到现在，调度循环下个 tick 认领
+// 立即触发一次（不动调度节律）：把 next_run_at 拨到现在，调度循环下个 tick 认领。
+// 对未设置 schedule_kind 的一次性任务，自动标为 'once'，否则调度循环永远不会认领它。
 export function taskRunNow(id) {
   const d = getDb()
-  const t = d.prepare('SELECT id, status FROM tasks WHERE id = ?').get(Number(id))
+  const t = d.prepare('SELECT id, status, schedule_kind FROM tasks WHERE id = ?').get(Number(id))
   if (!t) return { ok: false, error: `task 不存在: ${id}` }
   if (t.status !== 'queued') return { ok: false, error: `task #${id} 当前 ${t.status}，仅 queued 可立即触发` }
-  d.prepare('UPDATE tasks SET next_run_at = ?, updated_at = ? WHERE id = ?').run(now(), now(), Number(id))
+  d.prepare('UPDATE tasks SET schedule_kind = COALESCE(schedule_kind, \'once\'), next_run_at = ?, updated_at = ? WHERE id = ?')
+    .run(now(), now(), Number(id))
   return { ok: true, id: Number(id), hint: '已排入调度队列，下一 tick（≤60s）认领执行' }
 }
 
