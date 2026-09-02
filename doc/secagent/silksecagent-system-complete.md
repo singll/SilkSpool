@@ -54,7 +54,7 @@ app/                        DSH npm 应用（pnpm；pin 0.1.1-rc.2，dsh-upgrade
 data/  ← DSH_HOME           一切运行时数据（spool sync 管理其中 scope.yml/.env 镜像等）
   asset-graph.db(+wal/shm)  领域数据库（node:sqlite，WAL，busy_timeout 5s）
   scope.yml                 授权白名单（唯一权威，fail-closed）
-  settings.yaml             模型配置（llm-pi-ai providers / 默认模型 / 默认 preset）
+  settings.yaml             模型配置（llm-pi-ai providers / 默认模型 / 默认 preset；默认路由必须经 Bellkeeper）
   cordis.patch.yml          本地覆盖层（auth-gate/browser 路径/model-failover）
   .env                      供应商 API key（600；systemd 注入；settings 只写 apiKeyEnv 引用）
   profiles/{web,headless}/  两个 profile 的 package.json（bundle 组合清单）
@@ -107,18 +107,18 @@ DSH（@deepseek-ai/dsh 0.1.1-rc.2）是 cordis（依赖注入容器）架构的 
 
 ## 三、pi-ai 模型层：路由、熔断、多角色
 
-### 3.1 供应商与默认模型（settings.yaml，spool sync 管理）
+### 3.1 供应商与默认模型（settings.yaml，模板受控 + spool bundle dsh setup 覆盖）
 
-- **主力**：`opencode-go`（OpenCode Go 套餐，pi-ai 内置目录端点 `https://opencode.ai/zen/go/v1` 自动继承），模型 `deepseek-v4-flash`，`reasoningEffort: max`，retryPolicy normal maxRetries 4
-- **备用**：`deepseek`（官方直连 api.deepseek.com，同模型）
-- key 零明文：settings.yaml 只写 `apiKeyEnv`，真值在 .env（600，systemd EnvironmentFile 注入）
-- **视觉模型**（实测可用）：`deepseek-v4-flash-vision-exp`（OpenCode Go 目录内），vision-triage.mjs 使用
+- **唯一生产路由**：`bellkeeper`（Bellkeeper LLM 网关 OpenAI 兼容端点 `http://192.168.7.230:8090/api/llm/v1`），默认模型 `pool-secagent`，让 Bellkeeper 统一调度 SenseNova / DeepSeek 官方 / OpenCode Go 兜底。
+- **应急直连**：`deepseek`（官方直连 api.deepseek.com）、`opencode-go`（OpenCode Go 套餐）仅在 Bellkeeper 网关不可用时手动切回。
+- key 零明文：`settings.yaml` 只写 `apiKeyEnv`，真值在 `.env`（600，systemd EnvironmentFile 注入）。
+- **纪律**：默认 provider 必须是 `bellkeeper`；data-quality 每日校验；变更须同步模板 `bundles/dsh/templates/settings.yaml`。
 - 默认 preset：`vuln-hunt`（会话级可切换）
 
 ### 3.2 两级熔断（dsh-model-failover 0.1.4，cordis.patch.yml 覆盖层）
 
-- fallbacks 顺序：opencode-go/deepseek-v4-flash → deepseek/deepseek-v4-flash → opencode-go/kimi-k2.7-code（限流严重时升级档位）
-- 触发码：RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT/QUOTA/EMPTY_RESPONSE；模型级阈值 2 次失败熔断 60s（探针恢复）；2 模型同熔 → 平台级 120s；burst 窗口 5min；`stripReasoningEffort` + 切换时 `notifyUser`
+- fallbacks 顺序：`bellkeeper/pool-secagent` → `deepseek/deepseek-v4-flash`（网关自身失败时）
+- 触发码：RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT/QUOTA/EMPTY_RESPONSE；模型级阈值 1 次失败熔断 60s（探针恢复）；平台级阈值 1；burst 窗口 5min；`stripReasoningEffort` + 切换时 `notifyUser`
 - headless worker 侧由 headless-failover-setup.sh 软链共享同一覆盖层（2026-08-24 线上修复固化）
 - 已知边界：LLM 流式偶发挂起 failover 不认（只认显式失败）→ headless 进程可能空转不退出，靠 worker 超时组杀兜底
 

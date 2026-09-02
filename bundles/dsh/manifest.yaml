@@ -7,15 +7,16 @@ defaults:
       #  SilkSecAgent (DSH) Environment Variables (systemd EnvironmentFile 注入)
       # ==============================================================================
 
-      # --- 模型供应商直连 key（不走任何网关）---
-      # DSH 主模型在 Web UI 设置中配置（base_url 填供应商官方地址，key 引用下列变量）；
-      # 自研插件 / pi-ai 模型路由也读取下列变量
+      # --- Bellkeeper LLM 网关（默认路由，额度/熔断/粘性/模型组统一调度）---
+      BELLKEEPER_LLM_API_KEY=CHANGE_ME_bellkeeper_llm_token
+
+      # --- 模型供应商直连 key（应急回退；默认不走这里）---
       DEEPSEEK_API_KEY=CHANGE_ME_api_key
       # OPENAI_API_KEY=
       # MOONSHOT_API_KEY=
       # ANTHROPIC_API_KEY=
 
-      # --- OpenCode Go 套餐（多供应商切换的第二优先级；baseURL 填在 settings.yaml）---
+      # --- OpenCode Go 套餐（应急回退；baseURL 填在 settings.yaml）---
       OPENCODE_GO_API_KEY=CHANGE_ME_opencode_go_key
 
       # --- 出口代理（mubeng 轮换网关，本 bundle 纳管）---
@@ -24,6 +25,7 @@ defaults:
       SEC_PROXY_POOL_DIR=/opt/silkspool/dsh/proxy-pool
 templates:
   - setup.sh
+  - settings.yaml
   - silksecagent.service
   - silksecagent-edge.service
   - edge-Caddyfile

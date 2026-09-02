@@ -14,22 +14,54 @@ import time
 
 DB_DEFAULT = "/opt/silkspool/dsh/data/asset-graph.db"
 PIPELINE_DEFAULT = "/opt/silkspool/dsh/data/pipeline"
+SETTINGS_DEFAULT = "/opt/silkspool/dsh/data/settings.yaml"
 
 
 def q(cur, sql, *args):
     return cur.execute(sql, args).fetchone()[0]
 
 
+def check_settings(path):
+    """P18 纪律：默认 LLM 路由必须经 Bellkeeper /api/llm/v1。"""
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+    except Exception as e:
+        return "critical", f"无法解析 settings.yaml: {e}"
+
+    default = cfg.get("agent-default-model", {})
+    provider = default.get("provider")
+    model = default.get("model")
+    if provider != "bellkeeper":
+        return "critical", f"默认模型 provider 不是 bellkeeper: {provider}"
+    if model != "pool-secagent":
+        return "warn", f"默认模型不是 pool-secagent: {model}"
+
+    providers = cfg.get("llm-pi-ai", {}).get("providers", {})
+    bk = providers.get("bellkeeper")
+    if not bk:
+        return "critical", "llm-pi-ai.providers 中缺少 bellkeeper 路由"
+    base_url = bk.get("baseURL", "")
+    if "/api/llm/v1" not in base_url:
+        return "critical", f"bellkeeper baseURL 不是 /api/llm/v1: {base_url}"
+    return "ok", f"默认路由 bellkeeper/pool-secagent -> {base_url}"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=DB_DEFAULT)
     ap.add_argument("--pipeline-dir", default=PIPELINE_DEFAULT)
+    ap.add_argument("--settings", default=SETTINGS_DEFAULT)
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
     con = sqlite3.connect(args.db)
     cur = con.cursor()
     checks = []  # (name, level, detail)
+
+    # P18 纪律：默认 LLM 路由必须经 Bellkeeper
+    checks.append(("llm_default_route", *check_settings(args.settings)))
 
     total, ungraded = q(cur, "SELECT COUNT(*) FROM assets"), q(cur, "SELECT COUNT(*) FROM assets WHERE level IS NULL")
     pct = round(100 * ungraded / total, 1) if total else 0

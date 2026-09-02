@@ -70,13 +70,13 @@ if [ ! -s "$HEADLESS_PROFILE/cordis.patch.yml" ]; then
     cat > "$HEADLESS_PROFILE/cordis.patch.yml" <<'EOF'
 # SilkSecAgent overlay: headless worker 模型熔断回退（与 web profile 一致）
 # 背景 2026-08-24：worker 无 failover 时 provider 瞬时 TRANSPORT 错误 = 任务硬失败。
-# fallback: agent-default-model（现为 deepseek） → opencode-go（保留额度时可用）。
+# fallback: agent-default-model（现为 bellkeeper/pool-secagent） → deepseek 官方直连。
 # P18：任务级 provider/model 覆盖通过 --patch 单独生效，不受 failover 影响。
 - id: model-failover
   config:
     enabled: true
     fallbacks:
-      - provider: opencode-go
+      - provider: deepseek
         model: deepseek-v4-flash
     tripCodes:
       - RATE_LIMIT

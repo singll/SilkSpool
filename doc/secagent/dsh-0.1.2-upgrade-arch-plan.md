@@ -31,7 +31,7 @@
 |---|---|---|---|
 | 1 | **移除旧版 APIProxy 传输层，改用 Remote 网关；网络访问启用一次性 Token 鉴权** | 🔴 | **唯一明确的破坏性变更**。需排查：① `dsh-browser-upstream` 插件是否通过 APIProxy 连浏览器（15KB index + browser-manager，疑似走 CDP 直连，待确认）；② 任何 headless/SDK 调用（eval-run.js、外部脚本）是否依赖旧传输层；③ 若有用 Remote 网关的场景需配置一次性 Token。升级前 grep 全部插件与脚本确认 |
 | 2 | **Agent 预设修复：profile 配置的预设根目录启动时丢失** | 🟡 | 我们 `data/.agent-presets/` 有 7 个角色预设（recon/vuln-hunt/review/orchestrator/code-audit/biz-logic/intranet），settings.yaml 默认 preset=vuln-hunt。此前若受此影响（重启丢预设根目录），升级后行为**变化**（预设恢复生效）——需验证预设实际加载的 skills/commands 是否与预期一致，避免"修好后行为突变" |
-| 3 | **子代理支持配置模型**（任务可指定 provider/模型/推理力度；spawn 级配置） | 🟢 | **已在 0.1.1-rc.2 反向移植（P18）**：tasks 表新增 provider/model/reasoning_effort，调度器/看板/spawn_worker 均支持按任务覆盖模型；默认模型已切至 deepseek 官方直连以规避 opencode-go 额度耗尽。后续可继续按角色降本 |
+| 3 | **子代理支持配置模型**（任务可指定 provider/模型/推理力度；spawn 级配置） | 🟢 | **已在 0.1.1-rc.2 反向移植（P18）**：tasks 表新增 provider/model/reasoning_effort，调度器/看板/spawn_worker 均支持按任务覆盖模型；全局默认路由已恢复为 Bellkeeper LLM 网关（`bellkeeper/pool-secagent`），由 Bellkeeper 统一做额度/熔断/模型组调度。后续可继续按角色降本 |
 | 4 | **持久终端修复：Linux 管道读取误判为等待输入→提前返回空输出** | 🟢 | **直接命中我们的痛点**——批探脚本大量管道（xargs/curl 管道），此前可能静默拿到空输出导致"000 误判/漏资产"。升级后探活类结果可信度提升 |
 | 5 | **持久终端修复：Bash 派生大量子进程时宿主卡顿** | 🟢 | 命中 xargs -P8 批探场景，稳定性收益 |
 | 6 | **系统提示词分区顺序稳定 + Shell 指南前移** | 🟡 | 提示词行为基线变化：我们的技能依赖 shell 批探，前移后模型用 shell 的倾向可能增强。升级后观察 2-3 天任务轨迹，确认无异常膨胀 |

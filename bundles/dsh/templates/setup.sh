@@ -141,6 +141,15 @@ ensure_data() {
     else
         log "scope.yml 已存在，不覆盖"
     fi
+    # 模型路由配置：受控覆盖（纪律要求默认必须走 Bellkeeper LLM 网关）
+    if [ -f "$BASE_DIR/settings.yaml" ]; then
+        cp "$BASE_DIR/settings.yaml" "$DATA_DIR/settings.yaml.bak.$(date +%Y%m%d%H%M%S)"
+        cp "$BASE_DIR/settings.yaml" "$DATA_DIR/settings.yaml"
+        chmod 600 "$DATA_DIR/settings.yaml"
+        log "覆盖模型路由配置: $DATA_DIR/settings.yaml"
+    else
+        log "未找到 settings.yaml 模板，跳过"
+    fi
 }
 
 # -------------------- 5. 服务状态 --------------------
