@@ -221,16 +221,27 @@ window.__ModuleLoader__.load({
         el('path', { d: 'M9.5 10.5c3 0.5 3 2.5 4.5 3' }))
     }
 
-    // 打标操作图标（stroke 1.5，currentColor；title 提供悬停提示）
+    // 打标/行内操作图标（stroke 1.5，currentColor；title 提供悬停提示）
+    // 符号即功能：全站行内操作一律图标化省位，悬停 title 提示，不打断表格密度（规范 §三）
     function opIcon(kind) {
-      var path = null
-      if (kind === 'confirm') path = el('path', { d: 'M3.5 8.5l3 3 6-6.5' })
-      else if (kind === 'false_positive') path = el(React.Fragment, null, el('path', { d: 'M4.5 4.5l7 7M11.5 4.5l-7 7' }))
-      else if (kind === 'jump') path = el(React.Fragment, null, el('path', { d: 'M6 3.5h7v7' }), el('path', { d: 'M13 3.5L5.5 11' }), el('path', { d: 'M11 8v5H3.5V5.5H8' }))
-      else if (kind === 'play') path = el('path', { d: 'M5 3.5l8 4.5-8 4.5z' })
-      else if (kind === 'stop') path = el('rect', { x: 4.5, y: 4.5, width: 7, height: 7, rx: 1 })
-      else path = el(React.Fragment, null, el('path', { d: 'M2.5 8s2.2-3.8 5.5-3.8S13.5 8 13.5 8 11.3 11.8 8 11.8 2.5 8 2.5 8z' }), el('path', { d: 'M4 13l8-10' }))
-      return el('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }, path)
+      var inner
+      if (kind === 'confirm') inner = el('path', { d: 'M3.5 8.5l3 3 6-6.5' })
+      else if (kind === 'false_positive' || kind === 'close') inner = el(React.Fragment, null, el('path', { d: 'M4.5 4.5l7 7M11.5 4.5l-7 7' }))
+      else if (kind === 'jump') inner = el(React.Fragment, null, el('path', { d: 'M6 3.5h7v7' }), el('path', { d: 'M13 3.5L5.5 11' }), el('path', { d: 'M11 8v5H3.5V5.5H8' }))
+      else if (kind === 'play') inner = el('path', { d: 'M5 3.5l8 4.5-8 4.5z' })
+      else if (kind === 'stop') inner = el('rect', { x: 4.5, y: 4.5, width: 7, height: 7, rx: 1 })
+      else if (kind === 'history') inner = el(React.Fragment, null, el('circle', { cx: 8, cy: 8, r: 5.5 }), el('path', { d: 'M8 5.5V8l2 1.5' }))
+      else if (kind === 'edit') inner = el(React.Fragment, null, el('path', { d: 'M3.5 12.5l.8-3 6.7-6.7 2.2 2.2-6.7 6.7z' }), el('path', { d: 'M9.7 4.3l2 2' }))
+      else if (kind === 'eye') inner = el(React.Fragment, null, el('path', { d: 'M2.5 8s2.2-3.8 5.5-3.8S13.5 8 13.5 8 11.3 11.8 8 11.8 2.5 8 2.5 8z' }), el('circle', { cx: 8, cy: 8, r: 1.5 }))
+      else if (kind === 'download') inner = el(React.Fragment, null, el('path', { d: 'M8 3v6.5M5 7l3 3 3-3' }), el('path', { d: 'M3.5 12.5h9' }))
+      else if (kind === 'copy') inner = el(React.Fragment, null, el('rect', { x: 5.5, y: 5.5, width: 7, height: 7, rx: 1 }), el('path', { d: 'M10.5 3.5h-7v7' }))
+      else if (kind === 'list') inner = el(React.Fragment, null, el('path', { d: 'M5.5 4.5h7M5.5 8h7M5.5 11.5h7' }), el('path', { d: 'M3 4.5h.01M3 8h.01M3 11.5h.01' }))
+      else if (kind === 'plus') inner = el('path', { d: 'M8 3.5v9M3.5 8h9' })
+      else if (kind === 'trash') inner = el(React.Fragment, null, el('path', { d: 'M3 4.5h10M6.3 4.5V3h3.4v1.5' }), el('path', { d: 'M4.7 4.5l.6 8h5.4l.6-8M8 7v3.5' }))
+      else if (kind === 'up') inner = el(React.Fragment, null, el('path', { d: 'M8 12.5V4' }), el('path', { d: 'M4.5 7.5L8 4l3.5 3.5' }))
+      else if (kind === 'chev') inner = el('path', { d: 'M4 6l4 4 4-4' })
+      else inner = el(React.Fragment, null, el('path', { d: 'M2.5 8s2.2-3.8 5.5-3.8S13.5 8 13.5 8 11.3 11.8 8 11.8 2.5 8 2.5 8z' }), el('path', { d: 'M4 13l8-10' }))
+      return el('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }, inner)
     }
 
     // 会话跳链（详情一律在会话里看；无 session 显示「—」不造假链）
@@ -615,7 +626,11 @@ window.__ModuleLoader__.load({
                           tagIconBtn('确认（确认为真实漏洞）', 'confirmed', r.id, 'confirm', 'silksec-icon-btn-confirm'),
                           tagIconBtn('误报（标记为误报）', 'false_positive', r.id, 'false_positive'),
                           tagIconBtn('忽略（不再跟进）', 'ignored', r.id, 'ignored'))
-                      : el('span', { style: { color: T.label3, ...F.xs } }, '详情 →'))),
+                      : el('button', {
+                          type: 'button', className: 'silksec-icon-btn',
+                          title: isOpen ? '收起详情' : '展开详情（证据 / 复现步骤 / 影响 / 修复建议）', 'aria-label': '展开详情',
+                          onClick: function () { setExpanded(isOpen ? null : r.id) },
+                        }, opIcon('chev')))),
                 isOpen
                   ? el('tr', null, el('td', { colSpan: 8, style: { padding: 0 } }, el(FindingDetail, { row: r, actions: lifecycleActions(r) })))
                   : null)
@@ -724,8 +739,8 @@ window.__ModuleLoader__.load({
           confPill(f.confidence),
           el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, f.program_id),
           f.edge_count ? el('button', { type: 'button', className: 'silksec-btn', onClick: toggle, title: '查看关联事实（图谱边）' }, open ? '收起' : '关联 ' + f.edge_count) : null,
-          el('button', { type: 'button', className: 'silksec-btn', disabled: !!busy || deprecated, onClick: function () { props.onCorrect(f.program_id, f.fact_key, f.summary) } }, '纠正'),
-          el('button', { type: 'button', className: 'silksec-btn silksec-btn-danger', disabled: !!busy || deprecated, onClick: function () { props.onDeprecate(f.program_id, f.fact_key) } }, '废弃')),
+          el('button', { type: 'button', className: 'silksec-icon-btn', disabled: !!busy || deprecated, title: '纠正事实摘要', 'aria-label': '纠正事实', onClick: function () { props.onCorrect(f.program_id, f.fact_key, f.summary) } }, opIcon('edit')),
+          el('button', { type: 'button', className: 'silksec-icon-btn silksec-icon-btn-danger', disabled: !!busy || deprecated, title: '废弃事实（降置信为 deprecated，可再纠正恢复）', 'aria-label': '废弃事实', onClick: function () { props.onDeprecate(f.program_id, f.fact_key) } }, opIcon('trash'))),
         f.summary ? el('div', { style: { color: T.label2, marginTop: 6, ...F.xxs } }, f.summary) : null,
         open
           ? el('div', { style: { marginTop: 10, borderTop: '1px solid ' + T.border2, paddingTop: 8 } },
@@ -779,37 +794,21 @@ window.__ModuleLoader__.load({
     // 周期任务是一行固定实体（跑完自动续期，不增殖）；卡片聚合最近一次结局 + 累计统计，
     // 行内展开该任务的执行历史（task_runs），操作：立即跑/暂停/恢复/改周期/取消。
 
-    // 单张定时任务卡
+    // 单张定时任务卡（紧凑两行：标题行 + 元信息行；元信息靠 title 悬停承载细节，操作全图标化）
     function ScheduledCard(props) {
       var t = props.task
-      var hs = React.useState(null)      // null=未展开 / []=已展开加载中…
-      var runs = hs[0]; var setRuns = hs[1]
       var paused = t.status === 'blocked'
-      function toggleHistory() {
-        if (runs !== null) { setRuns(null); return }
-        setRuns([])
-        callRpc('taskRuns', { task_id: t.id, limit: 10 }).then(function (res) {
-          setRuns((res && res.rows) || [])
-        }).catch(function () { setRuns([]) })
-      }
       var lastOk = t.last_ok === null || t.last_ok === undefined ? null : (Number(t.last_ok) === 1)
+      var brandPill = { ...pill, color: T.brand, borderColor: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent)' }
       return el('div', { style: card },
         el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
           el('span', { style: { color: T.label3, ...F.xxxs, fontFamily: MONO } }, '#' + t.id),
-          el('span', { style: { color: T.label, ...F.sStrong, wordBreak: 'break-word', flex: '1 1 320px' } }, t.objective),
-          el('span', { style: { ...pill, color: T.brand, borderColor: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent)' } },
+          el('span', { style: { color: T.label, ...F.sStrong, wordBreak: 'break-word', flex: '1 1 280px' }, title: t.objective }, t.objective),
+          el('span', { style: brandPill, title: '下次运行: ' + fmtTime(t.next_run_at) },
             t.schedule_kind === 'interval' ? fmtEvery(t.every_seconds) : '一次性'),
-          t.phase ? el('span', { style: pill }, t.phase) : null,
+          t.phase ? el('span', { style: pill, title: '任务阶段' }, t.phase) : null,
           t.provider ? el('span', { style: { ...pill, color: T.label3 }, title: t.model || '' }, t.provider + (t.model ? '/' + t.model : '')) : null,
-          taskPill(t.status)),
-        el('div', { style: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 8, color: T.label2, ...F.xxs } },
-          el('span', null, '工作区 ', el('span', { style: { color: T.label } }, t.program_id)),
-          el('span', { title: fmtTime(t.next_run_at) }, paused ? '已暂停（恢复后继续节律）' : '下次 ' + fmtTime(t.next_run_at) + (t.next_run_at ? '（' + fmtRel(t.next_run_at) + '）' : '')),
-          t.last_run_at
-            ? el('span', { style: { color: lastOk === false ? T.error : T.label2 }, title: t.last_note || '' },
-                '上次 ' + fmtRel(t.last_run_at) + (lastOk === null ? '' : lastOk ? ' 成功' : ' 失败'))
-            : el('span', { style: { color: T.label3 } }, '尚未运行'),
-          el('span', { style: { color: T.label3 } }, '累计 ' + (t.run_count || 0) + ' 次' + (t.fail_count ? '（失败 ' + t.fail_count + '）' : '')),
+          taskPill(t.status),
           el('span', { style: { marginLeft: 'auto', display: 'inline-flex', gap: 6 } },
             el(SessionLink, { id: t.session_id }),
             el('button', { type: 'button', className: 'silksec-icon-btn', disabled: !!props.busy || paused || t.status !== 'queued',
@@ -818,37 +817,43 @@ window.__ModuleLoader__.load({
             el('button', { type: 'button', className: 'silksec-icon-btn', disabled: !!props.busy,
               title: paused ? '恢复调度' : '暂停调度（保留周期，恢复后继续）', 'aria-label': paused ? '恢复' : '暂停',
               onClick: function () { paused ? props.onResume(t.id) : props.onPause(t.id) } }, opIcon(paused ? 'play' : 'stop')),
-            el('button', { type: 'button', className: 'silksec-btn', disabled: !!props.busy,
-              onClick: function () { props.onEditEvery(t) } }, '改周期'),
-            el('button', { type: 'button', className: 'silksec-btn', onClick: toggleHistory }, runs !== null ? '收起历史' : '历史'),
+            el('button', { type: 'button', className: 'silksec-icon-btn', disabled: !!props.busy,
+              title: '改周期（分钟，如 1440=每天、60=每小时）', 'aria-label': '改周期',
+              onClick: function () { props.onEditEvery(t) } }, opIcon('edit')),
+            el('button', { type: 'button', className: 'silksec-icon-btn',
+              title: '查看该任务的执行历史（跳转执行历史区并按任务过滤）', 'aria-label': '执行历史',
+              onClick: function () { props.onJumpHistory(t.id) } }, opIcon('history')),
             el('button', { type: 'button', className: 'silksec-icon-btn silksec-icon-btn-danger', disabled: !!props.busy,
               title: '取消任务（置为已取消，终态）', 'aria-label': '取消任务',
               onClick: function () { props.onCancel(t.id) } }, opIcon('stop')))),
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 6, color: T.label3, ...F.xxxs } },
+          el('span', { title: '所属授权项目（工作区）' }, '🏢 ' + (t.program_id || '—')),
+          el('span', { title: '下次运行: ' + fmtTime(t.next_run_at) }, paused ? '⏸ 已暂停（恢复后继续节律）' : '⏭ ' + (t.next_run_at ? fmtRel(t.next_run_at) : '—')),
+          t.last_run_at
+            ? el('span', { style: { color: lastOk === false ? T.error : undefined }, title: (t.last_note || '') + '\n时间: ' + fmtTime(t.last_run_at) },
+                (lastOk === false ? '✗ 上次失败 ' : '✓ 上次成功 ') + fmtRel(t.last_run_at))
+            : el('span', null, '◌ 尚未运行'),
+          el('span', { title: '累计运行 / 失败次数' }, 'Σ ' + (t.run_count || 0) + (t.fail_count ? '（失败 ' + t.fail_count + '）' : ''))),
         t.last_note && lastOk === false
-          ? el('div', { style: { marginTop: 6, color: T.error, ...F.xxxs, wordBreak: 'break-word' } }, '最近失败：' + String(t.last_note).slice(0, 200))
-          : null,
-        runs !== null
-          ? el('div', { style: { marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 } },
-              runs.length
-                ? runs.map(function (r) { return el(TaskRunLine, { key: String(r.id), r: r, showTask: false }) })
-                : el('span', { style: { color: T.label3, ...F.xxs } }, '暂无执行历史'))
+          ? el('div', { style: { marginTop: 6, color: T.error, ...F.xxs, wordBreak: 'break-word' }, title: t.last_note }, '最近失败：' + String(t.last_note).slice(0, 200))
           : null)
     }
 
-    // 执行历史行（卡片区展开 + 全局历史区共用）
-    // 注：run_id 是 worker run 不是 session，不放跳链（无 session 不造假链）
+    // 执行历史行（全局历史区 / 单任务过滤视图共用）：note 全文换行展示不截断，带会话跳链
     function TaskRunLine(props) {
       var r = props.r
       var showTask = props.showTask !== false
-      return el('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '4px 0', borderTop: '1px solid ' + T.border3 } },
-        el('span', { style: { color: T.label3, ...F.xxxs, fontFamily: MONO, whiteSpace: 'nowrap' } }, fmtTs(r.finished_at || r.started_at)),
-        showTask
-          ? el('span', { style: { color: T.label2, ...F.xxs, wordBreak: 'break-word', flex: '1 1 260px' } },
-              '#' + r.task_id + ' ' + String(r.objective || '').slice(0, 60))
-          : null,
-        el('span', { style: { ...pill, color: r.ok ? T.success : T.error } }, r.ok ? '成功' : '失败'),
-        el('span', { style: { color: T.label3, ...F.xxxs, whiteSpace: 'nowrap' } }, fmtDur(r.duration_ms)),
-        r.note ? el('span', { style: { color: T.label3, ...F.xxxs, wordBreak: 'break-word', flex: '2 1 240px' }, title: r.note }, String(r.note).slice(0, 120)) : null)
+      return el('div', { style: { padding: '6px 0', borderTop: '1px solid ' + T.border3 } },
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+          el('span', { style: { color: T.label3, ...F.xxxs, fontFamily: MONO, whiteSpace: 'nowrap' } }, fmtTs(r.finished_at || r.started_at)),
+          showTask
+            ? el('span', { style: { color: T.label2, ...F.xxs, wordBreak: 'break-word', flex: '1 1 260px' } },
+                '#' + r.task_id + ' ' + String(r.objective || ''))
+            : null,
+          el('span', { style: { ...pill, color: r.ok ? T.success : T.error } }, r.ok ? '✓ 成功' : '✗ 失败'),
+          el('span', { style: { color: T.label3, ...F.xxxs, whiteSpace: 'nowrap' }, title: '耗时' }, '⏱ ' + fmtDur(r.duration_ms)),
+          r.session_id ? el('span', { title: '来源会话' }, el(SessionLink, { id: r.session_id })) : null,
+          r.note ? el('span', { style: { color: T.label3, ...F.xxs, wordBreak: 'break-word', flex: '2 1 240px' } }, String(r.note)) : null))
     }
 
     // 新建周期任务表单（折叠）
@@ -904,24 +909,42 @@ window.__ModuleLoader__.load({
           el('button', { type: 'button', className: 'silksec-btn', onClick: props.onClose }, '收起')))
     }
 
-    // 定时任务卡片区（含新建入口）
+    // 折叠分区头：▸/▾ 折叠箭头 + 标题 + 计数徽章 + 短副题 + 右侧附加件（点击整行切换）
+    function SectionHead(props) {
+      return el('div', {
+        style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: props.marginTop === undefined ? 18 : props.marginTop, cursor: 'pointer', userSelect: 'none' },
+        onClick: props.onToggle, title: props.open ? '点击收起' : '点击展开',
+      },
+        el('span', { style: { color: T.label3 } }, props.open ? '▾' : '▸'),
+        el('div', { style: pageT }, props.title),
+        props.count !== undefined ? el('span', { style: { ...pill, color: T.label3 } }, String(props.count)) : null,
+        props.subtitle ? el('div', { style: { ...pageSub, marginTop: 0 } }, props.subtitle) : null,
+        props.extra ? el('span', { style: { marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' } }, props.extra) : null)
+    }
+
+    // 定时任务卡片区（含新建入口；卡片操作全图标化，「历史」图标跳到执行历史区并按任务过滤）
     function ScheduledSection(props) {
       var rows = (props.data && props.data.rows) || []
       var cs = React.useState(false)
       var creating = cs[0]; var setCreating = cs[1]
       return el('div', null,
-        el('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 18, flexWrap: 'wrap' } },
           el('div', { style: pageT }, '定时任务'),
-          el('button', { type: 'button', className: 'silksec-btn', onClick: function () { setCreating(!creating) } }, creating ? '收起' : '新建周期任务')),
-        el('div', { style: pageSub }, '固定周期实体：跑完自动续期不增殖；同工作区同目标幂等去重。每次运行落入下方执行历史。对话里说「每天跑 X」也会建到这里。'),
+          el('span', { style: { ...pill, color: T.label3 } }, String(rows.length)),
+          el('button', {
+            type: 'button', className: 'silksec-btn', style: { marginLeft: 'auto' },
+            title: creating ? '收起新建表单' : '新建固定周期任务（同工作区同目标幂等去重）',
+            onClick: function () { setCreating(!creating) },
+          }, creating ? '收起' : el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 4 } }, opIcon('plus'), '新建'))),
+        el('div', { style: pageSub }, '固定周期实体：跑完自动续期不增殖；每次运行落入「执行历史」；对话里说「每天跑 X」也会建到这里。'),
         creating ? el(ScheduledCreateForm, { programs: props.programs, busy: props.busy, onCreate: props.onCreate, onClose: function () { setCreating(false) } }) : null,
         rows.length
-          ? el('div', { style: { margin: '12px 0 20px', display: 'flex', flexDirection: 'column', gap: 8 } },
+          ? el('div', { style: { margin: '12px 0 8px', display: 'flex', flexDirection: 'column', gap: 8 } },
               rows.map(function (t) {
                 return el(ScheduledCard, {
                   key: String(t.id), task: t, busy: props.busy,
                   onRunNow: props.onRunNow, onPause: props.onPause, onResume: props.onResume,
-                  onEditEvery: props.onEditEvery, onCancel: props.onCancel,
+                  onEditEvery: props.onEditEvery, onCancel: props.onCancel, onJumpHistory: props.onJumpHistory,
                 })
               }))
           : el(EmptyState, { text: '暂无定时任务' }))
@@ -946,14 +969,18 @@ window.__ModuleLoader__.load({
       return el('div', { style: card },
         el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
           el('span', { style: { color: T.label, ...F.sStrong } }, w.title),
-          el('span', { style: { color: T.label3, ...F.xxxs, fontFamily: MONO } }, w.path),
+          el('span', { style: { color: T.label3, ...F.xxxs, fontFamily: MONO }, title: w.path }, w.path),
           w.program
-            ? el('span', { style: { ...pill, color: T.success, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 40%, transparent)' } }, '授权 ' + w.program.id)
+            ? el('span', { style: { ...pill, color: T.success, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 40%, transparent)' }, title: '绑定的 scope.yml 授权项目' }, '授权 ' + w.program.id)
             : el('span', { style: { ...pill, color: T.warn, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent)' }, title: '工作区未绑定 scope.yml 授权项目：scope-guard 对其目标 fail-closed 全拒绝。到「授权」视图登记并绑定。' }, '未绑定授权'),
-          w.program && w.program.max_risk ? el('span', { style: pill }, '上限 ' + w.program.max_risk) : null,
+          w.program && w.program.max_risk ? el('span', { style: pill, title: '风险上限' }, '上限 ' + w.program.max_risk) : null,
           el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } },
             '资产 ' + w.assets + ' · 漏洞 ' + w.findings + ' · 任务 ' + w.tasks + ' · 会话 ' + w.session_count),
-          el('button', { type: 'button', className: 'silksec-btn', onClick: toggle }, open ? '收起会话' : '会话')),
+          el('button', {
+            type: 'button', className: 'silksec-icon-btn',
+            title: open ? '收起会话列表' : '展开会话列表（' + (w.session_count || 0) + ' 条，可跳回会话）', 'aria-label': '会话列表',
+            onClick: toggle,
+          }, opIcon('list'))),
         open && sessions
           ? el('div', { style: { marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 } },
               sessions.length
@@ -967,38 +994,55 @@ window.__ModuleLoader__.load({
           : null)
     }
 
-    // 全局执行历史区（task_runs 倒序分页）
+    // 全局执行历史区（task_runs 倒序分页；被任务过滤时隐藏任务列，过滤条件在分区头 chip 上）
     function TaskRunsView(props) {
       var query = props.query
-      return el('div', null,
-        el('div', { style: { ...pageT, marginTop: 20 } }, '执行历史'),
-        el('div', { style: pageSub }, '定时任务的每次运行记录（结局/耗时/摘要），按时间倒序；卡片上的「历史」只看单个任务。'),
-        el(ViewBody, { query: query, emptyText: '暂无执行历史' }, function (rows) {
-          return el('div', { style: { marginTop: 12, display: 'flex', flexDirection: 'column' } },
-            rows.map(function (r) { return el(TaskRunLine, { key: String(r.id), r: r }) }))
-        }))
+      var filtered = !!query.filters.task_id
+      return el(ViewBody, { query: query, emptyText: filtered ? '该任务暂无执行历史' : '暂无执行历史' }, function (rows) {
+        return el('div', { style: { marginTop: 4, display: 'flex', flexDirection: 'column' } },
+          rows.map(function (r) { return el(TaskRunLine, { key: String(r.id), r: r, showTask: !filtered }) }))
+      })
     }
 
     function TasksView(props) {
       var query = props.query
       var workspaces = props.workspaces
       var items = (workspaces && workspaces.items) || []
+      var wsS = React.useState(false)          // 工作区默认折叠（参考信息，不与主内容抢空间）
+      var wsOpen = wsS[0]; var setWsOpen = wsS[1]
+      var hS = React.useState(false)           // 执行历史默认折叠，由「历史」跳转自动展开
+      var histOpen = hS[0]; var setHistOpen = hS[1]
+      var histRef = React.useRef(null)
+      // 跳转信号：任务卡/队列表点「历史」→ 展开执行历史并滚入可视区
+      React.useEffect(function () {
+        if (!props.jump) return
+        setHistOpen(true)
+        setTimeout(function () {
+          if (histRef.current && histRef.current.scrollIntoView) histRef.current.scrollIntoView({ block: 'start' })
+        }, 30)
+      }, [props.jump && props.jump.ts])
       return el('div', null,
-        el('div', { style: pageT }, '工作区'),
-        el('div', { style: pageSub }, 'DSH 工作区（目录 + 会话组），项目的唯一用户可感概念；徽章显示绑定的 scope.yml 授权。新建工作区 ≠ 自动授权。'),
-        workspaces && workspaces.available === false
-          ? el('div', { style: errorLine }, '工作区服务不可用（workspaceRegistry 未组合）')
-          : items.length
-            ? el('div', { style: { margin: '12px 0 20px', display: 'flex', flexDirection: 'column', gap: 8 } },
-                items.map(function (w) { return el(WorkspaceCard, { key: w.id, ws: w }) }))
-            : el(EmptyState, { text: '暂无工作区' }),
+        el(SectionHead, {
+          title: '工作区', count: items.length, open: wsOpen,
+          onToggle: function () { setWsOpen(!wsOpen) },
+          subtitle: 'DSH 工作区（目录 + 会话组），项目的唯一用户可感概念；徽章显示 scope.yml 授权绑定',
+        }),
+        wsOpen
+          ? (workspaces && workspaces.available === false
+              ? el('div', { style: errorLine }, '工作区服务不可用（workspaceRegistry 未组合）')
+              : items.length
+                ? el('div', { style: { margin: '12px 0 8px', display: 'flex', flexDirection: 'column', gap: 8 } },
+                    items.map(function (w) { return el(WorkspaceCard, { key: w.id, ws: w }) }))
+                : el(EmptyState, { text: '暂无工作区' }))
+          : null,
         el(ScheduledSection, {
           data: props.schedData, programs: props.progOpts || [], busy: props.busy,
           onRunNow: props.onRunNow, onPause: props.onPause, onResume: props.onResume,
           onEditEvery: props.onEditEvery, onCancel: props.onCancel, onCreate: props.onCreateScheduled,
+          onJumpHistory: props.onJumpHistory,
         }),
-        el('div', { style: { ...pageT, marginTop: 8 } }, '任务队列'),
-        el('div', { style: pageSub }, '编排器派发的一次性任务（链步骤、N-day 候选等）；定时任务见上方卡片区，不再混排于此。'),
+        el('div', { style: { ...pageT, marginTop: 18 } }, '任务队列'),
+        el('div', { style: pageSub }, '编排器派发的一次性任务（链步骤、N-day 候选等）；每行的🕘图标跳转该任务的执行历史。'),
         el(ViewBody, { query: query, emptyText: '暂无任务' }, function (rows) {
           return el('div', { style: { overflowX: 'auto', minWidth: 0, marginTop: 12 } },
             el('table', { style: tableStyle },
@@ -1009,7 +1053,7 @@ window.__ModuleLoader__.load({
                 el('col', null),
                 el('col', { style: { width: 150 } }),
                 el('col', { style: { width: 76 } }),
-                el('col', { style: { width: 96 } })),
+                el('col', { style: { width: 130 } })),
               el('thead', null, el('tr', { style: theadRow },
                 el('th', { style: th }, '#'),
                 el('th', { style: th }, '工作区'),
@@ -1023,11 +1067,16 @@ window.__ModuleLoader__.load({
                   el('td', { style: tdMono }, String(t.id)),
                   el('td', { style: td }, t.program_id),
                   el('td', { style: td }, t.phase || '—'),
-                  el('td', { style: td }, t.objective),
-                  el('td', { style: td }, schedulePill(t) || el('span', { style: { color: T.label3, ...F.xxxs } }, '—')),
+                  el('td', { style: td, title: t.objective }, t.objective),
+                  el('td', { style: td }, schedulePill(t) || el('span', { style: { color: T.label3, ...F.xxs } }, '—')),
                   el('td', { style: td }, taskPill(t.status)),
                   el('td', { style: { ...td, whiteSpace: 'nowrap' } },
                     el('span', { style: { display: 'inline-flex', gap: 6 } },
+                      el('button', {
+                        type: 'button', className: 'silksec-icon-btn',
+                        title: '查看该任务的执行历史（跳转并过滤）', 'aria-label': '执行历史',
+                        onClick: function () { props.onJumpHistory(t.id) },
+                      }, opIcon('history')),
                       el(SessionLink, { id: t.session_id }),
                       t.status === 'queued'
                         ? el('button', {
@@ -1045,7 +1094,20 @@ window.__ModuleLoader__.load({
                         : null)))
               }))))
         }),
-        el(TaskRunsView, { query: props.runsQuery }))
+        el('div', { ref: histRef },
+          el(SectionHead, {
+            title: '执行历史', open: histOpen, count: props.runsQuery.total,
+            onToggle: function () { setHistOpen(!histOpen) },
+            subtitle: 'task_runs 全量倒序（结局 / 耗时 / 摘要 / 会话跳链）',
+            extra: props.runsQuery.filters.task_id
+              ? el('button', {
+                  type: 'button', className: 'silksec-btn',
+                  title: '清除任务过滤，回到全量历史',
+                  onClick: function (e) { e.stopPropagation(); props.runsQuery.setFilter('task_id', '') },
+                }, '✕ 任务 #' + props.runsQuery.filters.task_id)
+              : null,
+          }),
+          histOpen ? el(TaskRunsView, { query: props.runsQuery }) : null))
     }
 
     // ── 授权视图（scope.yml 管理：新增/编辑/移除 + 工作区绑定）─────────────────
@@ -1121,16 +1183,20 @@ window.__ModuleLoader__.load({
                 ? el('span', { style: { ...pill, color: T.success } }, '工作区 ' + p.workspace)
                 : el('span', { style: { ...pill, color: T.label3 }, title: '未绑定工作区：task_create 无法按会话自动带出归属' }, '未绑工作区'),
               el('span', { style: { marginLeft: 'auto' } }),
-              el('button', { type: 'button', className: 'silksec-btn', disabled: !!props.busy, onClick: function () { setEditing({ name: p.name, platform: p.platform, scope: p.scope, exclude: p.exclude, max_risk: p.max_risk, workspace: p.workspace }) } }, '编辑'),
               el('button', {
-                type: 'button', className: 'silksec-btn silksec-btn-danger', disabled: !!props.busy,
-                title: '从 scope.yml 移除（fail-closed 立即生效；programs 表归档，资产/漏洞归属保留）',
+                type: 'button', className: 'silksec-icon-btn', disabled: !!props.busy,
+                title: '编辑授权项目（范围 / 排除 / 风险上限 / 工作区绑定）', 'aria-label': '编辑授权',
+                onClick: function () { setEditing({ name: p.name, platform: p.platform, scope: p.scope, exclude: p.exclude, max_risk: p.max_risk, workspace: p.workspace }) },
+              }, opIcon('edit')),
+              el('button', {
+                type: 'button', className: 'silksec-icon-btn silksec-icon-btn-danger', disabled: !!props.busy,
+                title: '移除授权（fail-closed 立即生效；programs 表归档，资产/漏洞归属保留）', 'aria-label': '移除授权',
                 onClick: function () {
                   var yes = false
                   try { yes = window.confirm('确认移除 ' + p.name + ' 的授权？目标立即被 fail-closed 拒绝；历史数据保留并归档。') } catch (e) { return }
                   if (yes) props.onDelete(p.name)
                 },
-              }, '移除授权')),
+              }, opIcon('trash'))),
             el('div', { style: { marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' } },
               (p.scope || []).map(function (s) { return el('span', { key: s, style: { ...pill, fontFamily: MONO, fontSize: 11 } }, s) })),
             (p.exclude && p.exclude.length)
@@ -1148,12 +1214,15 @@ window.__ModuleLoader__.load({
               onSave: function (spec, isNew) { props.onSave(spec, isNew); setEditing(null) },
               onCancel: function () { setEditing(null) },
             })
-          : el('button', { type: 'button', className: 'silksec-btn', style: { marginTop: 14 }, onClick: function () { setEditing({}) } }, '+ 新增授权项目'))
+          : el('button', { type: 'button', className: 'silksec-btn', style: { marginTop: 14 }, title: '登记新的 scope.yml 授权项目', onClick: function () { setEditing({}) } }, el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 4 } }, opIcon('plus'), '新增授权项目')))
     }
 
     // ── 审计视图（F7）：audit.jsonl 尾部只读呈现，合规单一真相源 ────────────────
     function AuditView(props) {
       var state = props.state
+      // 详情列点击展开全文（默认 200 字截断 + 悬停提示，展开后完整显示）
+      var ex = React.useState({})
+      var expanded = ex[0]; var setExpanded = ex[1]
       if (state.error) return el('div', { style: errorLine }, '审计加载失败: ' + state.error)
       if (!state.data) return el(SkeletonRows, null)
       var rows = (state.data && state.data.rows) || []
@@ -1165,7 +1234,7 @@ window.__ModuleLoader__.load({
         return T.label2
       }
       return el('div', null,
-        el('div', { style: pageSub }, '写操作与 scope 决策的全量审计（audit.jsonl 尾部 ≤300 条，新→旧）。合规单一真相源，看板只读呈现。'),
+        el('div', { style: pageSub }, '📜 写操作与 scope 决策的全量审计（尾部 ≤300 条，新→旧）。合规单一真相源，看板只读；详情点击展开。'),
         el('div', { style: { overflowX: 'auto', minWidth: 0, marginTop: 10 } },
           el('table', { style: tableStyle },
             el('colgroup', null,
@@ -1180,16 +1249,83 @@ window.__ModuleLoader__.load({
               el('th', { style: th }, '详情'))),
             el('tbody', null, rows.map(function (r, i) {
               var detail = r.detail ? (typeof r.detail === 'object' ? JSON.stringify(r.detail) : String(r.detail)) : ''
+              var isOpen = !!expanded[i]
               return el('tr', { key: i, className: 'silksec-row' },
                 el('td', { style: tdMono }, fmtTime(r.ts)),
                 el('td', { style: tdMono }, r.tool || '—'),
                 el('td', { style: { ...td, color: decColor(r.decision) } }, r.decision || '—'),
-                el('td', { style: { ...tdMono, color: T.label2 }, title: detail }, detail.slice(0, 200)))
+                el('td', {
+                  style: { ...tdMono, color: T.label2, cursor: detail.length > 200 ? 'pointer' : 'default' },
+                  title: detail.length > 200 ? (isOpen ? '点击收起' : '点击展开全文') : detail,
+                  onClick: function () { if (detail.length > 200) setExpanded({ ...expanded, [i]: !isOpen }) },
+                },
+                  isOpen ? el('span', null, detail + ' ') : detail.slice(0, 200) + (detail.length > 200 ? '… ⤵' : '')))
             })))))
     }
 
-    // ── 报告模态（F3）：reportBuild 生成 markdown（服务端落盘）+ 读回展示 + 下载/复制 ──
-    function ReportModal(props) {
+    // ── 轻量 markdown 渲染（报告查看用；直接构建 React 元素树，不经 innerHTML，零依赖）──
+    // 支持：#~#### 标题 / 表格 / 无序列表 / 分隔线 / **粗体** / `行内码`；其余按段落呈现
+    function mdInline(text, keyBase) {
+      return String(text).split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map(function (p, i) {
+        if (/^\*\*[^*]+\*\*$/.test(p)) return el('strong', { key: keyBase + '-b' + i, style: { color: T.label, fontWeight: 600 } }, p.slice(2, -2))
+        if (/^`[^`]+`$/.test(p)) return el('code', { key: keyBase + '-c' + i, style: { fontFamily: MONO, fontSize: 12, background: T.layer2, borderRadius: 4, padding: '1px 5px' } }, p.slice(1, -1))
+        return el('span', { key: keyBase + '-t' + i }, p)
+      })
+    }
+    function mdBlocks(src) {
+      var lines = String(src || '').split('\n')
+      var out = []
+      var para = []
+      var i = 0
+      function flushPara() {
+        if (!para.length) return
+        out.push(el('div', { key: 'p' + out.length, style: { color: T.label2, ...F.xs, lineHeight: '22px', marginBottom: 8, wordBreak: 'break-word' } }, mdInline(para.join(' '), 'p' + out.length)))
+        para = []
+      }
+      while (i < lines.length) {
+        var line = lines[i]
+        var m = line.match(/^(#{1,4})\s+(.*)$/)
+        if (m) {
+          flushPara()
+          var sizes = [F.baseStrong, F.sStrong, F.sStrong, F.xxsStrong]
+          out.push(el('div', { key: 'h' + out.length, style: { ...sizes[m[1].length - 1], color: T.label, margin: '12px 0 6px' } }, mdInline(m[2], 'h' + out.length)))
+          i++; continue
+        }
+        if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { flushPara(); out.push(el('div', { key: 'hr' + out.length, style: silkDivider })); i++; continue }
+        // 表格：| a | b | 紧跟 |---|---| 分隔行
+        if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+          flushPara()
+          var cells = function (l) { return l.trim().replace(/^\||\|$/g, '').split('|').map(function (c) { return c.trim() }) }
+          var head = cells(line)
+          i += 2
+          var body = []
+          while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) { body.push(cells(lines[i])); i++ }
+          out.push(el('div', { key: 'tbl' + out.length, style: { overflowX: 'auto', minWidth: 0, marginBottom: 10 } },
+            el('table', { style: tableStyle },
+              el('thead', null, el('tr', { style: theadRow }, head.map(function (h, ci) { return el('th', { key: ci, style: th }, mdInline(h, 'th' + ci)) }))),
+              el('tbody', null, body.map(function (row, ri) {
+                return el('tr', { key: ri, className: 'silksec-row' }, row.map(function (c, ci) { return el('td', { key: ci, style: { ...td, ...F.xxs } }, mdInline(c, 'td' + ri + '-' + ci)) }))
+              })))))
+          continue
+        }
+        if (/^\s*[-*]\s+/.test(line)) {
+          flushPara()
+          var items = []
+          while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*]\s+/, '')); i++ }
+          out.push(el('ul', { key: 'ul' + out.length, style: { margin: '0 0 10px 18px', padding: 0, color: T.label2, ...F.xs, lineHeight: '22px' } },
+            items.map(function (it, ii) { return el('li', { key: ii, style: { marginBottom: 2 } }, mdInline(it, 'li' + ii)) })))
+          continue
+        }
+        if (line.trim() === '') { flushPara(); i++; continue }
+        para.push(line)
+        i++
+      }
+      flushPara()
+      return out
+    }
+
+    // ── 报告查看模态（生成报告 F3 + 报告 tab 共用）：markdown 渲染 + 复制/下载，替代页底内嵌展示 ──
+    function DocModal(props) {
       if (!Modal) return null
       var s = props.state || {}
       function download() {
@@ -1204,24 +1340,35 @@ window.__ModuleLoader__.load({
         } catch (e) { try { window.alert('下载失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} }
       }
       function copy() { try { navigator.clipboard.writeText(s.content || '') } catch (e) {} }
-      return el(Modal, { open: !!props.open, onClose: props.onClose, title: '漏洞报告', headless: true, className: 'silksec-dash-dialog' },
+      return el(Modal, { open: !!props.open, onClose: props.onClose, title: props.title || '报告', headless: true, className: 'silksec-dash-dialog' },
         el('div', { style: { ...root, padding: '18px 22px 16px' } },
           el('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
             el('span', { style: { color: T.brand, display: 'inline-flex' } }, spoolIcon(16)),
-            el('div', { style: pageT }, '漏洞报告'),
+            el('div', { style: pageT, title: s.file || '' }, props.title || '报告'),
             (s.total !== undefined && !s.loading && !s.error) ? el('span', { style: pill }, '合计 ' + s.total) : null,
-            el('span', { style: { marginLeft: 'auto', display: 'inline-flex', gap: 8 } },
-              el('button', { type: 'button', className: 'silksec-btn', disabled: !s.content, onClick: copy }, '复制'),
-              el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: !s.content, onClick: download }, '下载 .md'))),
-          el('div', { style: pageSub }, '提交 SRC 前必须人工逐条复核。报告已落盘服务端 data/reports/。'),
+            s.truncated ? el('span', { style: { ...pill, color: T.warn }, title: '超过 300KB 截断显示，完整内容请下载' }, '已截断') : null,
+            el('span', { style: { marginLeft: 'auto', display: 'inline-flex', gap: 6 } },
+              el('button', { type: 'button', className: 'silksec-icon-btn', disabled: !s.content, title: '复制 markdown 到剪贴板', 'aria-label': '复制', onClick: copy }, opIcon('copy')),
+              el('button', { type: 'button', className: 'silksec-icon-btn', disabled: !s.content, title: '下载 .md 文件', 'aria-label': '下载', onClick: download }, opIcon('download')),
+              el('button', { type: 'button', className: 'silksec-icon-btn', title: '关闭', 'aria-label': '关闭', onClick: props.onClose }, opIcon('close')))),
+          props.sub ? el('div', { style: pageSub }, props.sub) : null,
           el('div', { style: silkDivider }),
           el('div', { style: { flex: '1 1 auto', overflowY: 'auto', marginTop: 12, minHeight: 0 } },
             s.loading
               ? el(SkeletonRows, { rows: 8 })
               : s.error
-                ? el('div', { style: errorLine }, '生成失败: ' + s.error)
-                : el('pre', { style: { margin: 0, padding: 12, background: T.layer1, borderRadius: 8, border: '1px solid ' + T.border, color: T.label2, fontFamily: MONO, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, s.content || '（空报告）')))
-      )
+                ? el('div', { style: errorLine }, (props.errorPrefix || '加载') + '失败: ' + s.error)
+                : el('div', { style: { padding: '4px 6px 12px', background: T.layer1, borderRadius: 8, border: '1px solid ' + T.border } },
+                    (s.content || '').trim() ? mdBlocks(s.content) : el('span', { style: { color: T.label3, ...F.xs } }, '（空）')))))
+    }
+
+    // 生成报告（reportBuild）模态：DocModal 的薄封装
+    function ReportModal(props) {
+      return el(DocModal, {
+        open: props.open, onClose: props.onClose, title: '漏洞报告', errorPrefix: '生成',
+        sub: '提交 SRC 前必须人工逐条复核。报告已落盘服务端 data/reports/。',
+        state: props.state,
+      })
     }
 
     // ── 知识 tab（memcore 记忆治理的操作界面：卡片评分/晋升/编辑/弃置 + playbooks） ──
@@ -1265,32 +1412,32 @@ window.__ModuleLoader__.load({
       }
       return el('div', null,
         memChips,
-        el('div', { style: { ...cardL, margin: '10px 0 6px' } }, '经验卡（exp_cards）· candidate 候选 / active 已晋升 / cooling 衰退 · 评分=adopted×3+👍×2+uses×0.5−👎×5−时效衰减'),
+        el('div', { style: { ...cardL, margin: '10px 0 6px' }, title: '评分 = adopted×3 + 👍×2 + uses×0.5 − 👎×5 − 时效衰减' }, '🧠 经验卡（exp_cards）· candidate 候选 / active 已晋升 / cooling 衰退'),
         props.cardsState.loading ? el(SkeletonRows, { rows: 5 }) : cards.length === 0
           ? el(EmptyState, { text: '暂无经验卡' })
           : el('table', { style: tableStyle },
               el('colgroup', null,
                 el('col', { style: { width: 40 } }), el('col', { style: { width: '22%' } }), el('col', null),
-                el('col', { style: { width: 56 } }), el('col', { style: { width: 64 } }), el('col', { style: { width: 78 } }), el('col', { style: { width: 200 } })),
+                el('col', { style: { width: 56 } }), el('col', { style: { width: 64 } }), el('col', { style: { width: 78 } }), el('col', { style: { width: 186 } })),
               el('thead', null, el('tr', { style: theadRow },
                 el('th', { style: th }, '#'), el('th', { style: th }, '场景'), el('th', { style: th }, '结论（takeaway）'),
                 el('th', { style: th }, '评分'), el('th', { style: th }, '使用'), el('th', { style: th }, '状态'), el('th', { style: th }, '操作'))),
               el('tbody', null, cards.map(function (c) {
-                return el('tr', { key: c.id, style: { borderBottom: '1px solid ' + T.border } },
+                return el('tr', { key: c.id, className: 'silksec-row' },
                   el('td', { style: tdMono }, String(c.id)),
-                  el('td', { style: td, title: c.scenario }, el('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, c.scenario)),
-                  el('td', { style: td, title: c.takeaway }, c.takeaway),
-                  el('td', { style: tdMono }, String(c.score !== undefined ? c.score : '—')),
-                  el('td', { style: { ...tdMono, title: 'uses/adopted/👍/👎' } }, c.uses !== undefined ? c.uses + '/' + c.adopted + '/' + c.pos_fb + '/' + c.neg_fb : '—'),
+                  el('td', { style: td, title: c.scenario }, c.scenario),
+                  el('td', { style: td }, c.takeaway),
+                  el('td', { style: tdMono, title: '评分 = adopted×3 + 👍×2 + uses×0.5 − 👎×5 − 时效衰减' }, String(c.score !== undefined ? c.score : '—')),
+                  el('td', { style: { ...tdMono, title: 'uses / adopted / 👍 / 👎' } }, c.uses !== undefined ? c.uses + '/' + c.adopted + '/' + c.pos_fb + '/' + c.neg_fb : '—'),
                   el('td', { style: td }, memStatusPill(c.status)),
-                  el('td', { style: td },
-                    el('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap' } },
-                      el('button', { type: 'button', className: 'silksec-btn', disabled: props.busy, title: '有用', onClick: function () { onFeedback(c.id, 'useful') } }, '👍'),
-                      el('button', { type: 'button', className: 'silksec-btn', disabled: props.busy, title: '错误/过时', onClick: function () { onFeedback(c.id, 'wrong') } }, '👎'),
-                      c.status !== 'active' ? el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: props.busy, onClick: function () { onPromote(c.id) } }, '晋升') : null,
-                      c.exportable !== undefined ? el('button', { type: 'button', className: 'silksec-btn' + (c.exportable ? ' silksec-btn-confirm' : ''), disabled: props.busy, title: '导出到 Bellkeeper vault/安全经验（每日 sweeper 推送；scope 脱敏硬门）', onClick: function () { onExportable(c.id, c.exportable ? 0 : 1) } }, c.exportable ? '已导出' : '导出') : null,
-                      el('button', { type: 'button', className: 'silksec-btn', disabled: props.busy, onClick: function () { onEdit(c.id, c.takeaway) } }, '编辑'),
-                      el('button', { type: 'button', className: 'silksec-btn silksec-btn-danger', disabled: props.busy, onClick: function () { onDeprecate(c.id) } }, '弃置'))))
+                  el('td', { style: { ...td, whiteSpace: 'nowrap' } },
+                    el('div', { style: { display: 'inline-flex', gap: 4 } },
+                      el('button', { type: 'button', className: 'silksec-icon-btn', disabled: props.busy, title: '有用（正反馈，评分 +2）', 'aria-label': '有用', onClick: function () { onFeedback(c.id, 'useful') } }, '👍'),
+                      el('button', { type: 'button', className: 'silksec-icon-btn', disabled: props.busy, title: '错误 / 过时（负反馈，评分 −5）', 'aria-label': '错误或过时', onClick: function () { onFeedback(c.id, 'wrong') } }, '👎'),
+                      c.status !== 'active' ? el('button', { type: 'button', className: 'silksec-icon-btn silksec-icon-btn-confirm', disabled: props.busy, title: '晋升为 active（需评审理由，三闸门）', 'aria-label': '晋升', onClick: function () { onPromote(c.id) } }, opIcon('up')) : null,
+                      c.exportable !== undefined ? el('button', { type: 'button', className: 'silksec-icon-btn' + (c.exportable ? ' silksec-icon-btn-confirm' : ''), disabled: props.busy, title: c.exportable ? '已标记导出（点击取消）：每日 sweeper 推送到 Bellkeeper vault/安全经验，scope 脱敏硬门' : '标记可导出（推送到 Bellkeeper vault/安全经验）', 'aria-label': '导出开关', onClick: function () { onExportable(c.id, c.exportable ? 0 : 1) } }, opIcon('download')) : null,
+                      el('button', { type: 'button', className: 'silksec-icon-btn', disabled: props.busy, title: '修改 takeaway（需 ≥10 字理由）', 'aria-label': '编辑', onClick: function () { onEdit(c.id, c.takeaway) } }, opIcon('edit')),
+                      el('button', { type: 'button', className: 'silksec-icon-btn silksec-icon-btn-danger', disabled: props.busy, title: '弃置（移入归档，可恢复）', 'aria-label': '弃置', onClick: function () { onDeprecate(c.id) } }, opIcon('trash')))))
               }))),
         el('div', { style: { ...cardL, margin: '18px 0 6px' } }, 'Playbooks（调用链 · 只读，信号来自真实运行）'),
         props.pbsState.loading ? el(SkeletonRows, { rows: 3 }) : pbs.length === 0
@@ -1300,8 +1447,8 @@ window.__ModuleLoader__.load({
               el('thead', null, el('tr', { style: theadRow },
                 el('th', { style: th }, '名称'), el('th', { style: th }, '运行'), el('th', { style: th }, '成功率'), el('th', { style: th }, '状态'), el('th', { style: th }, '最近运行'))),
               el('tbody', null, pbs.map(function (pb) {
-                return el('tr', { key: pb.name, style: { borderBottom: '1px solid ' + T.border } },
-                  el('td', { style: td, title: pb.name }, el('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, pb.name)),
+                return el('tr', { key: pb.name, className: 'silksec-row' },
+                  el('td', { style: td, title: pb.name }, pb.name),
                   el('td', { style: tdMono }, String(pb.runs)),
                   el('td', { style: tdMono }, String(pb.success_rate)),
                   el('td', { style: td }, memStatusPill(pb.status)),
@@ -1309,7 +1456,7 @@ window.__ModuleLoader__.load({
               }))))
     }
 
-    // ── 报告 tab（只读预览 data/reports/**/*.md） ──
+    // ── 报告 tab（只读预览 data/reports/**/*.md；点击整行或👁图标在 Modal 中查看） ──
     function ReportsView(props) {
       var rows = (props.state.data && props.state.data.rows) || []
       var reading = React.useState(null)
@@ -1323,28 +1470,31 @@ window.__ModuleLoader__.load({
         })
       }
       return el('div', null,
-        el('div', { style: { ...cardL, margin: '10px 0 6px' } }, 'data/reports/ 下的 markdown 报告（只读；编辑请走 NAS/Obsidian 通道）'),
+        el('div', { style: { ...cardL, margin: '10px 0 6px' }, title: '编辑请走 NAS/Obsidian 通道' }, '📄 data/reports/ 下的 markdown 报告（只读，点击行查看）'),
         props.state.loading ? el(SkeletonRows, { rows: 5 }) : rows.length === 0
           ? el(EmptyState, { text: '暂无报告' })
           : el('table', { style: tableStyle },
-              el('colgroup', null, el('col', null), el('col', { style: { width: 150 } }), el('col', { style: { width: 90 } }), el('col', { style: { width: 70 } })),
+              el('colgroup', null, el('col', null), el('col', { style: { width: 150 } }), el('col', { style: { width: 90 } }), el('col', { style: { width: 60 } })),
               el('thead', null, el('tr', { style: theadRow },
-                el('th', { style: th }, '文件'), el('th', { style: th }, '修改时间'), el('th', { style: th }, '大小'), el('th', { style: th }, '操作'))),
+                el('th', { style: th }, '文件'), el('th', { style: th }, '修改时间'), el('th', { style: th }, '大小'), el('th', { style: th }, '查看'))),
               el('tbody', null, rows.map(function (r) {
-                return el('tr', { key: r.file, style: { borderBottom: '1px solid ' + T.border } },
-                  el('td', { style: tdMono }, r.file),
+                return el('tr', {
+                  key: r.file, className: 'silksec-row',
+                  style: { cursor: 'pointer' }, title: '点击查看报告（Modal 打开，可复制/下载）',
+                  onClick: function () { open(r.file) },
+                },
+                  el('td', { style: tdMono }, '📄 ' + r.file),
                   el('td', { style: tdMono }, new Date(r.mtime).toISOString().slice(0, 16).replace('T', ' ')),
                   el('td', { style: tdMono }, (r.size / 1024).toFixed(1) + ' KB'),
-                  el('td', { style: td }, el('button', { type: 'button', className: 'silksec-btn', onClick: function () { open(r.file) } }, '查看')))
+                  el('td', { style: td, onClick: function (e) { e.stopPropagation() } },
+                    el('button', { type: 'button', className: 'silksec-icon-btn', title: '查看报告（Modal 打开）', 'aria-label': '查看报告', onClick: function () { open(r.file) } }, opIcon('eye'))))
               }))),
-        cur ? el('div', { style: { ...card, marginTop: 12 } },
-          el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 } },
-            el('span', { style: { color: T.label, ...F.sStrong } }, cur.file),
-            el('button', { type: 'button', className: 'silksec-btn', onClick: function () { setCur(null) } }, '关闭')),
-          cur.loading ? el(SkeletonRows, { rows: 8 })
-            : cur.error ? el('div', { style: errorLine }, '读取失败: ' + cur.error)
-              : el('pre', { style: { margin: 0, maxHeight: 480, overflowY: 'auto', padding: 12, background: T.layer1, borderRadius: 8, border: '1px solid ' + T.border, color: T.label2, fontFamily: MONO, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' } },
-                  (cur.content || '（空）') + (cur.truncated ? '\n\n…（超 300KB 截断）' : ''))) : null)
+        cur ? el(DocModal, {
+          open: true, onClose: function () { setCur(null) }, errorPrefix: '读取',
+          title: String(cur.file || '').split('/').pop(),
+          sub: '只读预览 · ' + cur.file + ' · 编辑请走 NAS/Obsidian 通道',
+          state: cur,
+        }) : null)
     }
 
     // ── 看板外壳 ─────────────────────────────────────────────────────────────
@@ -1396,6 +1546,14 @@ window.__ModuleLoader__.load({
         return activeTab === 'tasks' ? { endpoint: 'scheduledTasks' } : null
       }, [activeTab])
       var runsQ = usePagedQuery('taskRuns', activeTab === 'tasks')
+
+      // 任务历史跳转：任务卡/队列表点「🕘 历史」→ 执行历史区按任务过滤 + 展开滚动
+      var jmp = React.useState(null)
+      var jump = jmp[0]; var setJump = jmp[1]
+      function jumpToHistory(id) {
+        runsQ.setFilter('task_id', id)
+        setJump({ id: id, ts: Date.now() })
+      }
 
       // 报告模态态（F3）
       var rpt = React.useState({ open: false })
@@ -1573,6 +1731,7 @@ window.__ModuleLoader__.load({
             query: tasksQ, workspaces: workspacesState.data, schedData: schedState.data, runsQuery: runsQ,
             progOpts: progOpts, onRunNow: onRunNow, onCancel: onCancel, onPause: onPause, onResume: onResume,
             onEditEvery: onEditEvery, onCreateScheduled: onCreateScheduled, busy: isBusy,
+            onJumpHistory: jumpToHistory, jump: jump,
           }))
       } else if (activeTab === 'knowledge') {
         content = el(KnowledgeView, { memState: memState, cardsState: cardsState, pbsState: pbsState, busy: isBusy })
@@ -1593,7 +1752,7 @@ window.__ModuleLoader__.load({
             el('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
               el('span', { style: { color: T.brand, display: 'inline-flex' } }, spoolIcon(16)),
               el('div', { style: pageT }, '安全看板')),
-            el('div', { style: pageSub }, '全局 · 漏洞 / 资产 / 接口 / 事实 / 任务 / 授权 / 审计 · 写操作全部写入 audit.jsonl · 行内跳链回来源会话'),
+            el('div', { style: pageSub, title: '写操作全部写入 audit.jsonl；行内跳链回来源会话（详情一律在会话里看）' }, '全局安全态势 · 漏洞 / 资产 / 任务 / 知识 / 授权 / 审计'),
             el('div', { style: silkDivider })),
           el('button', {
             type: 'button', className: 'silksec-btn', disabled: refreshing,
