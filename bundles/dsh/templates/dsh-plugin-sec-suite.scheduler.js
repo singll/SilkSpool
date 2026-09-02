@@ -122,8 +122,8 @@ async function schedulerTick() {
         + `你拥有 fgs_add/fgs_update/fgs_list/fgs_next/fgs_export 工具。请把任务执行过程中的事实(fact)、目标(goal)、待执行步骤(step)、中间发现(finding)实时写入 FGS 图。`
         + `对每个漏洞卡，先创建 detect step（状态 running）、完成后创建 verify step（依赖 detect）；CONFIRMED 的发现用 finding_add 登记，会自动关联 FGS。`
         + `Decide 时用 fgs_next 取下一步，Execute 后用 fgs_add/fgs_update 提交结果。收尾时调用 fgs_export(task_id=${task.id}, format=markdown) 把决策链摘要追加进 handoff。`
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'scheduler', decision: 'executed', detail: { task_id: task.id, program_id: task.program_id } })
-      const r = await deps.runWorker({ task: prompt, cwd, timeoutSec: SCHEDULER_TASK_TIMEOUT_SEC, enforceLimit: true })
+      deps.audit({ ts: Date.now(), run_id: '-', tool: 'scheduler', decision: 'executed', detail: { task_id: task.id, program_id: task.program_id, provider: task.provider, model: task.model } })
+      const r = await deps.runWorker({ task: prompt, cwd, timeoutSec: SCHEDULER_TASK_TIMEOUT_SEC, enforceLimit: true, provider: task.provider, model: task.model, reasoningEffort: task.reasoning_effort })
       if (r.busy) {
         try { deps.assetDb.taskUpdate({ id: task.id, status: 'queued', note: 'worker 并发已满，延后到下一 tick' }) } catch { /* ignore */ }
         return

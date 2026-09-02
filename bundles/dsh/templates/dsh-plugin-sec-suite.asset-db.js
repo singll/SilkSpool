@@ -113,6 +113,10 @@ export function getDb() {
   ensureCol('tasks', 'next_run_at', 'next_run_at INTEGER')       // 调度循环扫描键
   ensureCol('tasks', 'last_run_at', 'last_run_at INTEGER')
   ensureCol('tasks', 'last_run_id', 'last_run_id TEXT')
+  // ---- P18：任务级模型覆盖（NULL 表示走 DSH agent-default-model 默认）----
+  ensureCol('tasks', 'provider', 'provider TEXT')
+  ensureCol('tasks', 'model', 'model TEXT')
+  ensureCol('tasks', 'reasoning_effort', 'reasoning_effort TEXT')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(schedule_kind, next_run_at)')
   // ---- P12：定时任务执行历史（task 行不再因重复跑而增殖；每次运行落一行历史）----
   db.exec(`
@@ -461,7 +465,7 @@ function normalizeSchedule(schedule) {
   return { error: `非法 schedule.kind: ${kind || '(空)'}（可选: once/interval）` }
 }
 
-export function taskCreate({ program_id, phase = '', objective, priority = 5, budget_tokens = null, parent_id = null, assignee = '', session_id = null, schedule = null }) {
+export function taskCreate({ program_id, phase = '', objective, priority = 5, budget_tokens = null, parent_id = null, assignee = '', session_id = null, schedule = null, provider = null, model = null, reasoning_effort = null }) {
   if (!program_id || !objective) return { ok: false, error: 'program_id 与 objective 必填' }
   const sched = normalizeSchedule(schedule)
   if (sched.error) return { ok: false, error: sched.error }
@@ -476,10 +480,12 @@ export function taskCreate({ program_id, phase = '', objective, priority = 5, bu
   }
   const r = d.prepare(`
     INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
-      session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+      session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at,
+      provider, model, reasoning_effort)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
   `).run(program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
-    session_id, sched.kind, sched.run_at, sched.every_seconds, sched.next_run_at, now(), now())
+    session_id, sched.kind, sched.run_at, sched.every_seconds, sched.next_run_at, now(), now(),
+    provider ?? null, model ?? null, reasoning_effort ?? null)
   return { ok: true, id: Number(r.lastInsertRowid), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at } : null }
 }
 

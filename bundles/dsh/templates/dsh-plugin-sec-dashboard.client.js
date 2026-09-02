@@ -800,6 +800,7 @@ window.__ModuleLoader__.load({
           el('span', { style: { ...pill, color: T.brand, borderColor: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent)' } },
             t.schedule_kind === 'interval' ? fmtEvery(t.every_seconds) : '一次性'),
           t.phase ? el('span', { style: pill }, t.phase) : null,
+          t.provider ? el('span', { style: { ...pill, color: T.label3 }, title: t.model || '' }, t.provider + (t.model ? '/' + t.model : '')) : null,
           taskPill(t.status)),
         el('div', { style: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 8, color: T.label2, ...F.xxs } },
           el('span', null, '工作区 ', el('span', { style: { color: T.label } }, t.program_id)),
@@ -857,14 +858,19 @@ window.__ModuleLoader__.load({
       var obj = React.useState('')
       var phase = React.useState('recon')
       var hours = React.useState(24)
+      var provider = React.useState('')
+      var model = React.useState('')
       if (!programs.length) return el('div', { style: { ...card, marginTop: 8, color: T.label3, ...F.xxs } }, '暂无已授权工作区，先到「授权」视图登记并绑定。')
       function submit() {
         var h = Number(hours[0])
         if (!obj[0].trim() || !pid[0] || !(h >= 1)) return
-        props.onCreate({
+        var spec = {
           program_id: pid[0], objective: obj[0].trim(), phase: phase[0],
           schedule: { kind: 'interval', every_seconds: Math.round(h * 3600) },
-        })
+        }
+        if (provider[0].trim()) spec.provider = provider[0].trim()
+        if (model[0].trim()) spec.model = model[0].trim()
+        props.onCreate(spec)
         obj[1]('')
       }
       return el('div', { style: { ...card, borderColor: T.border3, marginTop: 8 } },
@@ -879,7 +885,17 @@ window.__ModuleLoader__.load({
               ['recon', 'vuln', 'biz-logic', 'code-audit', 'intranet', 'review'].map(function (c) { return el('option', { key: c, value: c }, c) }))),
           el('div', { style: { ...formRow, flex: '1 1 140px' } },
             el('span', { style: formLabel }, '周期（小时，如 24=每天）'),
-            el('input', { className: 'silksec-input', style: inputStyle, type: 'number', min: 1, value: hours[0], onChange: function (e) { hours[1](e.target.value) } }))),
+            el('input', { className: 'silksec-input', style: inputStyle, type: 'number', min: 1, value: hours[0], onChange: function (e) { hours[1](e.target.value) } })),
+          el('div', { style: { ...formRow, flex: '1 1 140px' } },
+            el('span', { style: formLabel }, 'provider（可选）'),
+            el('input', { className: 'silksec-input', style: inputStyle, list: 'dsh-provider-list', value: provider[0], onChange: function (e) { provider[1](e.target.value) }, placeholder: '默认' })),
+          el('div', { style: { ...formRow, flex: '1 1 140px' } },
+            el('span', { style: formLabel }, 'model（可选）'),
+            el('input', { className: 'silksec-input', style: inputStyle, list: 'dsh-model-list', value: model[0], onChange: function (e) { model[1](e.target.value) }, placeholder: '默认' }))),
+        el('datalist', { id: 'dsh-provider-list' },
+          ['opencode-go', 'deepseek', 'sensenova'].map(function (v) { return el('option', { key: v, value: v }) })),
+        el('datalist', { id: 'dsh-model-list' },
+          ['deepseek-v4-flash', 'deepseek-v4-pro', 'glm-5.2', 'glm-5.1', 'kimi-k2.7-code'].map(function (v) { return el('option', { key: v, value: v }) })),
         el('div', { style: formRow },
           el('span', { style: formLabel }, '任务目标（同工作区同目标幂等去重，不会重复创建）'),
           el('textarea', { className: 'silksec-input', style: { ...inputStyle, height: 60, padding: '8px 10px', resize: 'vertical' }, value: obj[0], onChange: function (e) { obj[1](e.target.value) } })),

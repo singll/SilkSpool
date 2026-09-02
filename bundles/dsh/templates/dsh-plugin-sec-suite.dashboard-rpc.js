@@ -293,8 +293,9 @@ export async function handleDashboardRpc(endpoint, payload) {
       const r = deps.assetDb.taskCreate({
         program_id: programId, objective, phase: String(p.phase || ''),
         priority: Number(p.priority) || 5, schedule,
+        provider: p.provider || null, model: p.model || null, reasoning_effort: p.reasoning_effort || null,
       })
-      if (r.ok) deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskCreate', decision: 'executed', detail: { id: r.id, program_id: programId, schedule, deduped: !!r.deduped } })
+      if (r.ok) deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskCreate', decision: 'executed', detail: { id: r.id, program_id: programId, schedule, provider: p.provider, model: p.model, deduped: !!r.deduped } })
       return r
     }
     case 'sessions':

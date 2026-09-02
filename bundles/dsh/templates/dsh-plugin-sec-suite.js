@@ -1052,7 +1052,7 @@ function readWorkerResult(row) {
 
 // worker 核心（工具与调度循环共用）。cwd 默认 runDir；调度任务传工作区路径——
 // headless 会话 header cwd = workspace path → workspaceRegistry 自动归组 → 看板可跳链
-async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId = null, enforceLimit = true, dedupeKey = null }) {
+async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId = null, enforceLimit = true, dedupeKey = null, provider = null, model = null, reasoningEffort = null }) {
   // 幂等恢复（仅交互路径传 dedupeKey）：重启→重试时确定性拿回结果，而非 "outcome unknown"。
   // 早返回全部在 activeWorkers++ 之前 → 不占也不错减并发 slot。
   if (dedupeKey) {
@@ -1083,6 +1083,16 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
   fs.mkdirSync(runDir, { recursive: true })
   const workCwd = (cwd && fs.existsSync(cwd)) ? cwd : runDir
 
+  // P18：任务级模型覆盖。headless profile 默认读 agent-default-model；用 --patch 覆盖。
+  const dshArgs = [DSH_BIN, '--profile', 'headless']
+  if (provider && model) {
+    const patchPath = path.join(runDir, 'model-patch.yml')
+    const patchYaml = `- id: agent-default-model\n  config:\n    provider: ${String(provider)}\n    model: ${String(model)}\n`
+    fs.writeFileSync(patchPath, patchYaml)
+    dshArgs.push('--patch', patchPath)
+  }
+  dshArgs.push(task)
+
   const env = { ...process.env, DSH_HOME: DATA_DIR, PATH: '/usr/local/node/bin:' + (process.env.PATH || '') }
   audit({ ts: Date.now(), run_id: runId, tool: 'spawn_worker', decision: 'executed', detail: task.slice(0, 200), session_id: originSessionId })
 
@@ -1090,7 +1100,7 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
   const started = Date.now()
   const result = await new Promise((resolve) => {
     const out = fs.createWriteStream(path.join(runDir, 'worker.log'))
-    const child = spawn(NODE_BIN, [DSH_BIN, '--profile', 'headless', task], {
+    const child = spawn(NODE_BIN, dshArgs, {
       env, cwd: workCwd, detached: true,
     })
     // 注册表登记（带 pid）：供重启对账 + 重试幂等恢复。登记失败不阻断执行。
@@ -1137,7 +1147,9 @@ async function spawnWorker(args, exec) {
   // 幂等去重键 = sha1(task+cwd)；force:true 时不传 → 显式重跑。交互路径 cwd 恒为 null。
   const dedupeKey = args.force === true ? null
     : crypto.createHash('sha1').update(task + '\0').digest('hex')
-  return runWorker({ task, timeoutSec: args.timeout, originSessionId: sessionIdOf(exec), dedupeKey })
+  const provider = args.provider || null
+  const model = args.model || null
+  return runWorker({ task, timeoutSec: args.timeout, originSessionId: sessionIdOf(exec), dedupeKey, provider, model })
 }
 
 // worker run 状态查询（重启后 "interrupted/outcome unknown" 时确认真实结局；结果已落盘）
@@ -1333,6 +1345,8 @@ export function apply(ctx, config) {
         task: { type: 'string', description: '自包含的任务描述（worker 看不到本会话上下文，目标/范围/产出要求要写全）' },
         timeout: { type: 'integer', description: '超时秒数，默认 900，上限 3600' },
         force: { type: 'boolean', description: '跳过幂等去重，强制重跑同一任务（默认 false）' },
+        provider: { type: 'string', description: '可选：覆盖 LLM provider（如 deepseek / sensenova）' },
+        model: { type: 'string', description: '可选：覆盖 LLM model（如 deepseek-v4-flash / glm-5.2）' },
       },
       required: ['task'],
       additionalProperties: false,
