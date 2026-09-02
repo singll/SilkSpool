@@ -48,7 +48,7 @@ async function reconcileWorkspaceSessions() {
 }
 
 // worker.log 尾部噪声（headless 进程 stderr 杂讯）不进入任务摘要
-const WORKER_NOISE_RE = /ExperimentalWarning|trace-warnings|EADDRINUSE|xray webhook 启动失败|onnxruntime|pthread_setaffinity/
+const WORKER_NOISE_RE = /ExperimentalWarning|trace-warnings|EADDRINUSE|xray webhook 启动失败|onnxruntime|pthread_setaffinity|\[memcore|secMemoryLifecycle|sweeper 未启动/
 
 // P15：按 cwd + 时间窗反查 headless worker 自己的会话 id（跳链地基）。
 // worker 会话 header.cwd = 工作区路径，createdAt 落在运行窗口内 → 取最新一条；查不到返回 null（不造假链）。
