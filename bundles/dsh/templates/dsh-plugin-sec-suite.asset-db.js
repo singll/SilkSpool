@@ -749,6 +749,8 @@ export function taskSchedule({ id, schedule }) {
 }
 
 // 立即触发一次（不动调度节律）：把 next_run_at 拨到现在，调度循环下个 tick 认领。
+// 节律不漂移的保证在 taskFinishScheduledRun：interval 续期以 run_at（标称相位）为锚，
+// 手动触发的 next_run_at 覆写不会污染下次运行时间。
 // 对未设置 schedule_kind 的一次性任务，自动标为 'once'，否则调度循环永远不会认领它。
 export function taskRunNow(id) {
   const d = getDb()
@@ -809,8 +811,7 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id =
         const rejectMarks = [
           "I won't produce", 'I will not produce', 'I cannot continue', 'refuse to continue',
           'unverifiable authorization', '授权不可验证', '拒绝执行', '停止执行',
-          'INVALID_REQUEST', 'RATE_LIMIT', 'TIMEOUT', 'Provided value cannot be bound',
-          'reasoning_content must be passed back'
+          'INVALID_REQUEST', 'reasoning_content must be passed back'
         ]
         for (const mark of rejectMarks) {
           if (tail.includes(mark)) { truth.rejected = true; truth.reason = `worker.log 命中拒执/错误标记: ${mark}`; break }
@@ -835,10 +836,22 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id =
   let nextRunAt = null
   let status = ok ? 'done' : 'failed'
   if (t.schedule_kind === 'interval' && t.every_seconds) {
-    // latest-only：从原定锚点按整数倍推进到第一个未来点，错过的不补跑
-    const anchor = t.next_run_at || finished
+    // latest-only：从**标称锚点 run_at**（任务创建/改调度时的原始节律相位）按整数倍推进到
+    // 第一个未来点，错过的不补跑。绝不能用 next_run_at 当锚——taskRunNow 会把它拨到"现在"，
+    // 用它续期会把整个节律漂移到手动触发时刻（2026-09-02 手动立即执行后每日任务从凌晨 3 点
+    // 漂到晚上 19 点的根因）。run_at 无效（epoch 0/NULL，老数据）时退回 next_run_at。
     const step = t.every_seconds * 1000
-    nextRunAt = anchor + Math.max(1, Math.ceil((finished - anchor) / step)) * step
+    const anchor = (t.run_at && t.run_at > 0 ? t.run_at : (t.next_run_at || finished))
+    if (finished <= anchor) {
+      // 手动提前跑（taskRunNow）：未到期的原定运行仍保留，不跳格
+      nextRunAt = anchor
+    } else {
+      nextRunAt = anchor + Math.max(1, Math.ceil((finished - anchor) / step)) * step
+      if (nextRunAt <= finished) nextRunAt += step // finish 恰落在格点上时防立即重复认领
+      // 失败快速重试：失败后 2 小时内重试一次（额度窗口/凭证类故障常在数十分钟内恢复），
+      // 但不越过下一个标称格点——持续失败也只是每小时段重试，成功后自动回到原节律。
+      if (!ok) nextRunAt = Math.min(nextRunAt, finished + 2 * 3600 * 1000)
+    }
     status = 'queued'
   }
   // P17：任务失败时记录失败节点（blocked），把错误/超时写入 FGS 图

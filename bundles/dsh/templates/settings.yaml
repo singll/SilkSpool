@@ -33,7 +33,13 @@ llm-pi-ai:
           maxTokens: 131072
           reasoningEfforts:
             {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
-      retryPolicy: { mode: normal, maxRetries: 4 }
+      # 网关池后面是多家供应商：QUOTA/RATE_LIMIT 多为池内瞬时突发（上游渠道熔断切换即可恢复），
+      # DSH 层也必须带退避重试，不能一次 429 就杀 worker（2026-09-03 #19/#37 任务因此中断）。
+      retryPolicy:
+        mode: normal
+        maxRetries: 5
+        retryableCodes: [EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT, QUOTA]
+        backoff: { initialDelayMs: 2000, maxDelayMs: 60000, jitterRatio: 0.2 }
     # 应急直连：仅在 Bellkeeper 网关完全不可用时手动切回
     deepseek:
       apiKeyEnv: DEEPSEEK_API_KEY
