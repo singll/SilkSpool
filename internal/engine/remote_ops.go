@@ -233,9 +233,10 @@ func (re *RemoteExecutor) Systemctl(action, service string) error {
 
 // ==================== 文件系统操作 ====================
 
-// EnsureDir 确保远程目录存在
+// EnsureDir 确保远程目录存在且归当前 SSH 用户所有
+// （既有目录可能为 root 所有导致 SFTP 写入失败，如手工 mkdir 的 edge-static/——一律归位）
 func (re *RemoteExecutor) EnsureDir(path string) error {
-	cmd := fmt.Sprintf(`if [ ! -d %q ]; then sudo mkdir -p %q && sudo chown $(id -u):$(id -g) %q; fi`, path, path, path)
+	cmd := fmt.Sprintf(`sudo mkdir -p %q && sudo chown $(id -u):$(id -g) %q`, path, path)
 	_, err := re.client.Execute(cmd)
 	return err
 }

@@ -75,6 +75,73 @@ templates:
   - data-seed/scripts/data-quality.py
   - data-seed/scripts/vault-export-build.sh
   - data-seed/scripts/discipline-audit.py
+  # --- v4.5 规则/技能版本受控源（seed-skills.sh 部署通道，正文不再内嵌 heredoc）---
+  # --- 规则先验层 56 篇：src 4 + srcskill 2 + techniques 46 + web 3 + php 1 ---
+  - data-seed/rules/src/asset-scoring.md
+  - data-seed/rules/src/equity-gate.md
+  - data-seed/rules/src/severity-rating.md
+  - data-seed/rules/src/technique-index.md
+  - data-seed/rules/srcskill/dig-scope-workflow.md
+  - data-seed/rules/srcskill/vuln-report-format.md
+  - data-seed/rules/php/thinkphp.md
+  - data-seed/rules/web/nextjs.md
+  - data-seed/rules/web/selfhosted-supabase.md
+  - data-seed/rules/web/spring.md
+  # --- sec-* 技能 8 个（v4.5 正文全部外移 data-seed/skills/，经 seed-skills.sh 下发）---
+  - data-seed/skills/sec-verification/SKILL.md
+  - data-seed/skills/sec-blackboard/SKILL.md
+  - data-seed/skills/sec-review/SKILL.md
+  - data-seed/skills/sec-task/SKILL.md
+  - data-seed/skills/sec-knowledge/SKILL.md
+  - data-seed/skills/sec-runtime-discipline/SKILL.md
+  - data-seed/skills/sec-pipeline/SKILL.md
+  # --- 手法模块 46 篇（源自 doc/srcskill 知识库全量导入；technique-index 短表为其索引）---
+  - data-seed/rules/techniques/401-403-bypass.md
+  - data-seed/rules/techniques/agent-tool-exec-test.md
+  - data-seed/rules/techniques/api-gateway-test.md
+  - data-seed/rules/techniques/authbypass-test.md
+  - data-seed/rules/techniques/cache-poisoning-test.md
+  - data-seed/rules/techniques/clickjacking-test.md
+  - data-seed/rules/techniques/cloud-ide-codex-rce-chain.md
+  - data-seed/rules/techniques/cors-test.md
+  - data-seed/rules/techniques/crlf-injection-test.md
+  - data-seed/rules/techniques/csp-bypass-test.md
+  - data-seed/rules/techniques/csrf-test.md
+  - data-seed/rules/techniques/csv-formula-injection-test.md
+  - data-seed/rules/techniques/dangling-markup-test.md
+  - data-seed/rules/techniques/dependency-confusion-test.md
+  - data-seed/rules/techniques/deserialization-test.md
+  - data-seed/rules/techniques/dns-rebinding-test.md
+  - data-seed/rules/techniques/el-injection-test.md
+  - data-seed/rules/techniques/email-header-injection-test.md
+  - data-seed/rules/techniques/file-upload-test.md
+  - data-seed/rules/techniques/ghost-bits-cast-test.md
+  - data-seed/rules/techniques/graphql-test.md
+  - data-seed/rules/techniques/hpp-test.md
+  - data-seed/rules/techniques/http2-attacks-test.md
+  - data-seed/rules/techniques/http-host-header-test.md
+  - data-seed/rules/techniques/http-smuggling-test.md
+  - data-seed/rules/techniques/idor-test.md
+  - data-seed/rules/techniques/info-leak-test.md
+  - data-seed/rules/techniques/injection-test.md
+  - data-seed/rules/techniques/insecure-scm-test.md
+  - data-seed/rules/techniques/jndi-injection-test.md
+  - data-seed/rules/techniques/js-reverse-guide.md
+  - data-seed/rules/techniques/llm-security-test.md
+  - data-seed/rules/techniques/logic-test.md
+  - data-seed/rules/techniques/oauth-jwt-test.md
+  - data-seed/rules/techniques/open-redirect-test.md
+  - data-seed/rules/techniques/prototype-pollution-test.md
+  - data-seed/rules/techniques/race-condition-test.md
+  - data-seed/rules/techniques/recon-methodology.md
+  - data-seed/rules/techniques/ssrf-test.md
+  - data-seed/rules/techniques/subdomain-takeover-test.md
+  - data-seed/rules/techniques/type-juggling-test.md
+  - data-seed/rules/techniques/waf-bypass.md
+  - data-seed/rules/techniques/websocket-test.md
+  - data-seed/rules/techniques/xslt-injection-test.md
+  - data-seed/rules/techniques/xss-test.md
+  - data-seed/rules/techniques/xxe-test.md
   # --- 记忆治理引擎插件（memcore：生命周期/评分/晋升/遗忘，fail-open 可选注入）---
   - dsh-plugin-sec-memcore.js
   - dsh-plugin-sec-memcore.patch.yml

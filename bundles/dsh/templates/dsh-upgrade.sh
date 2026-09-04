@@ -28,6 +28,9 @@ warn() { echo "[upgrade][WARN] $*" >&2; }
 err() { echo "[upgrade][ERROR] $*" >&2; }
 
 export PATH="$NODE_BIN:$PATH"
+# pnpm 在无 TTY 环境下遇 modules 目录清理会交互式确认并中止（ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY，
+# 2026-09-04 0.1.2-rc.1 升级实测触发）——显式关闭确认
+export npm_config_confirm_modules_purge=false
 
 [ -d "$APP_DIR" ] || { err "$APP_DIR 不存在，请先 spool bundle dsh setup <host>"; exit 1; }
 

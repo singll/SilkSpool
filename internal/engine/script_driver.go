@@ -262,16 +262,24 @@ func (d *ScriptDriver) pushTemplates(re *RemoteExecutor, deployPath string, mani
 			continue
 		}
 
+		// 含子目录的模板保留相对路径部署（如 data-seed/rules/**、edge-static/**），
+		// 避免同名文件互相覆盖（8 个 SKILL.md）与手工归位；顶层模板保持扁平行为（向后兼容）
 		remotePath := filepath.Join(deployPath, name)
+		if relDir := filepath.Dir(t); relDir != "." {
+			remotePath = filepath.Join(deployPath, relDir, name)
+			if err := re.EnsureDir(filepath.Join(deployPath, relDir)); err != nil {
+				return fmt.Errorf("mkdir %s failed: %w", relDir, err)
+			}
+		}
 		if err := re.WriteFile(content, remotePath); err != nil {
-			return fmt.Errorf("upload %s failed: %w", name, err)
+			return fmt.Errorf("upload %s failed: %w", t, err)
 		}
 		if strings.HasSuffix(name, ".sh") {
 			if _, err := re.Exec(fmt.Sprintf("chmod +x %s", remotePath)); err != nil {
-				return fmt.Errorf("chmod %s failed: %w", name, err)
+				return fmt.Errorf("chmod %s failed: %w", remotePath, err)
 			}
 		}
-		utils.Info("  Pushed: %s", name)
+		utils.Info("  Pushed: %s", t)
 	}
 
 	return nil

@@ -143,7 +143,9 @@ ensure_data() {
     fi
     # 模型路由配置：受控覆盖（纪律要求默认必须走 Bellkeeper LLM 网关）
     if [ -f "$BASE_DIR/settings.yaml" ]; then
-        cp "$BASE_DIR/settings.yaml" "$DATA_DIR/settings.yaml.bak.$(date +%Y%m%d%H%M%S)"
+        cp "$DATA_DIR/settings.yaml" "$DATA_DIR/settings.yaml.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+        # 备份滚动：仅保留最近 1 份（旧版每次 setup 无限堆积，2026-09-04 清理时已积 23 份）
+        ls -t "$DATA_DIR"/settings.yaml.bak* 2>/dev/null | tail -n +2 | xargs -r rm -f --
         cp "$BASE_DIR/settings.yaml" "$DATA_DIR/settings.yaml"
         chmod 600 "$DATA_DIR/settings.yaml"
         log "覆盖模型路由配置: $DATA_DIR/settings.yaml"
