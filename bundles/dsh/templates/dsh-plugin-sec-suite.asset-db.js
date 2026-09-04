@@ -512,8 +512,8 @@ const FINDING_SORT = {
   created_at: 'created_at', id: 'id', status: 'status',
   severity: "(CASE severity WHEN 'critical' THEN 5 WHEN 'high' THEN 4 WHEN 'medium' THEN 3 WHEN 'low' THEN 2 ELSE 1 END)",
 }
-export function queryFindings({ host = '', severity = '', status = '', programId = '', q = '', limit = 50, offset = 0, sort = '', dir = '', includeNoise = false }) {
-  const { where, args } = findingWhere({ host, severity, status, programId, q, includeNoise })
+export function queryFindings({ host = '', severity = '', status = '', programId = '', q = '', limit = 50, offset = 0, sort = '', dir = '', includeNoise = false, noise = '' }) {
+  const { where, args } = findingWhere({ host, severity, status, programId, q, includeNoise, noise })
   // 列表不带 evidence（大字段，详情面板按需 findingGet 拉取）；带 vuln_type/bounty/vendor_status 供行内徽章
   const sql = `SELECT id, title, severity, host, url, source, status, program_id, session_id, vuln_type, bounty, vendor_status, noise, created_at, confidence, fgs_node_id, discovery_step FROM findings WHERE ${where} ORDER BY ${orderClause(FINDING_SORT, sort, dir, 'created_at')} LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
