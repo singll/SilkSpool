@@ -1,6 +1,6 @@
 # SilkSecAgent SRC 漏洞挖掘体系 · 持续推进文档
 
-> 版本：v3.2 · 2026-09-01（由设计规范 v2.1 + 人工待办文档合并而来，为唯一持续推进入口）
+> 版本：v3.3 · 2026-09-04（由设计规范 v2.1 + 人工待办文档合并而来，为唯一持续推进入口）
 > 性质：Living Document。历史设计文档与实施报告见本目录其他文件；本文档只保留**当前状态、待办、未完成的详细内容、工作规范**。
 > 体系运行位置：csai `/opt/silkspool/dsh/`；版本受控源文件在 SilkSpool 仓库 `bundles/dsh/templates/`。
 > **系统是什么、怎么转**（插件/脚本/流程/提示词/状态机/DSH+pi 架构完整解剖）见 [silksecagent-system-complete.md](silksecagent-system-complete.md)。
@@ -22,18 +22,21 @@
 **系统在跑什么**（csai，全部已验证）：
 
 - 双项目每日链路：recon 03:00 → vuln 04:00（interval 任务 #16/#17/#19 + #37，objective 已 Slice 化硬指标 + sec-pipeline 规范）
-- 数据规模（清理后）：assets **79,705** / endpoints **103** / findings **59**（噪声 14 条已闸门隔离）/ facts **1,082** / blackboard **47** 键（timeline/ephemeral 兼容层）/ tasks **18**
+- 数据规模（2026-09-04）：assets **80,648** / endpoints **103** / findings **64**（信号面 9 + 待验证候选 55）/ facts **1,096**（可见域 1,096，排除 note 速记 630）/ blackboard **43** 键（timeline/ephemeral 兼容层）/ tasks **20** / approval_requests **4**（待审批 1）
 - 台账体系：`data/pipeline/{program}/attempts-*.tsv`（六态）、`endpoints-*.tsv`（接口面）、`radar-queue.jsonl`（变化雷达）
 - **流程守卫（P15）**：interval 日任务标 `done` 前引擎硬校验纪律产物（台账 24h 增量 / card_usage / handoff-{date}.md），缺失即拦截——纪律不再依赖提示词自觉
-- **噪声闸门（P15）**：info 级模板指纹自动打 `noise=1`，findings 信号面/报告/KPI 默认隔离（清理后 14 条存量噪声保留观察）
+- **噪声闸门（P15）+ 完整性闸门（v4.2）**：info 级模板指纹自动打 `noise=1`；缺复现步骤/影响或标题<10 字符的登记一律归「待验证候选」——漏洞列表只呈现经 LLM 验证流登记、字段完整可复核的信号（机器直灌不冒充漏洞），补全后重登记可就地升级
+- **统一审批中心（v4.3）**：`approval_requests` 通用表 + `APPROVAL_KINDS` kind 注册表（首个 kind `scope-domain`=候选授权域名，批准自动原子写回 scope.yml）；agent 工具 `approval_request` 提请，看板「审批」tab 批准/驳回留痕；批准前 fail-closed 不变
+- **事实治理（v4.3）**：countFacts/factSearch 同口径（行数=总数）；看板事实 tab 默认隐藏 note 速记 + 生命周期 facet（长期/时效/时间线）
+- **报告（v4.3）**：buildReport 按 severity 多选/source 筛选生成、按项目分节、文件名语义化；报告列表按项目分组可筛
 - **资产准入（P15）**：未分级资产禁入主动扫描队列（`asset_query level_in=S,A,B`）；全库已分级（grade-assets，域外参考站保持 NULL 永不进队）
 - **FGS 决策图（P17）**：`fgs_nodes` 表与 `fgs_add/update/list/next/export` 工具已落地，scheduler 在任务 prompt 中注入 FGS 使用说明；当前表为空，待跑通 Decide/Execute 循环
 - 漏洞卡注册表：`data/vulncards/`（18 张卡，含 VC-034 Supabase 开放数据面 = 08-20 战役 retro）
 - 脚本：`scripts/pipeline/`（l2-collect / surface-consume / js-watch / ct-watch / pipeline-validate / coverage-report / verify-replay / **grade-assets / data-quality / discipline-audit**）
 - 常驻服务：`ct-watch.service`（CT 新子域雷达，certspotter 轮询，30min 间隔）、xray 被动 7777、mubeng 代理池 8899
-- 技能：sec-pipeline（流水线纪律+守卫说明）+ 原有 sec-verification/sec-task 等
-- 新工具：`vision_triage`（截图→视觉模型分诊）、`submission_draft`（CONFIRMED→SRC 提交草稿+查重）、`data_quality`/`discipline_audit`/`grade_assets`（治理 CLI，均已 manifest 化）
-- 看板：新增 `ops` 端点（纪律健康度五指标），告警时顶部红条
+- 技能：sec-pipeline（流水线纪律+守卫+五要素登记）+ sec-runtime-discipline（9 条公共纪律）+ 原有 sec-verification/sec-task 等
+- 新工具：`vision_triage`（截图→视觉模型分诊）、`submission_draft`（CONFIRMED→SRC 提交草稿+查重）、`approval_request`（统一审批提请）、`data_quality`/`discipline_audit`/`grade_assets`（治理 CLI，均已 manifest 化）
+- 看板：`ops` 端点（纪律健康度五指标，告警时顶部红条）+ 十视图（含统一审批 tab，待审批数进徽章）
 - **代码与数据清理**：2026-09-01 批次修复 scheduler `session_id` 回填缺失、scope 首次创建崩溃、pipeline 输出格式/覆盖矩阵 bug、parser 静默失败；清理 407 条孤儿资产、235 条外部/孤儿端点、310 条噪声 finding、17 条旧版一次性任务、20 条过期 blackboard 日更日志，facts 归属归一化
 
 **当前最大瓶颈**（按解锁收益排序）：
@@ -89,6 +92,13 @@ spool exec csai "python3 /opt/silkspool/dsh/scripts/pipeline/data-quality.py"   
 ### H-003 存量 findings 回填 vuln_type 【已完成 2026-08-28】
 
 - ✅ 全部 findings 已按关键词映射回填（vuln_type+cwe），`data-quality.py` 断言 0 缺失；后续新 finding 由噪声闸门+objective 字段要求保持覆盖。
+
+### H-004 待审批：zhaopin.com 授权边界确认【2026-09-04 提请】
+
+- **是什么**：审批中心（看板「审批」tab）待审批 1 条：`zhaopin.com` 提请加入 meituan-src 授权（审批 #2）。
+- **归属证据**：智联招聘 2021 私有化财团由红杉中国与美团牵头（美团控股）；meituan.com 下有 ide.zhaopin.meituan.com 等 126 个内部部署域印证。
+- **⚠️ 需人工确认的边界**：智联招聘**或另有自身 SRC 归属**（第三方 SRC 平台可能有独立收漏洞渠道）——批准前请确认其归属边界，避免越权测试。
+- **操作**：看板「审批」tab → 批准（自动加入 meituan-src scope）或驳回（附原因）。另 3 条历史候选（catpaw.com / tabbit.com / wow.fun）已于 2026-09-04 批准入 scope。
 
 ---
 
@@ -238,6 +248,9 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 | 2026-08-28 | B5 TrueNAS/vault 沉淀 | spool nas 修复（新增 insecure 配置 + uptime 字符串解析）；csai 直挂 NFS 被 EPERM（keeper 正常，根因未明）→ **keeper 中继方案**落地：csai vault-export-build（卡片 YAML→md）→ operator vault-sync cron 每 30min → keeper `/mnt/NAS/data/knowledge/vault/SilkSecAgent/`（卡片库/报告/覆盖视图/交接，首批 18 文件已同步） |
 | 2026-08-28 | **P15 纪律落地批**（评估报告驱动） | ① 流程守卫：interval 任务标 done 前引擎硬校验台账/卡记录/交接包（asset-db taskUpdate，缺失即拦截，冒烟双向验证）；② 噪声闸门：findings.noise 列 + info 级自动隔离（存量 314 回填），query/report/KPI 默认排除；③ 资产准入：assets.level_in 查询 + grade-assets.py 全量分级（79,155/79,258，域外 103 保持 NULL）；④ 修三断链：taskClaimDue started_at 刷新 + reap 宽限期+活 worker 跳过 + 调度 run 会话反查回填（session_id/meta.json/task_runs）；T-0 重锚定 drift=0；⑤ ops 健康度：asset-db.opsHealth() + 看板 `ops` RPC + 红条横幅 + discipline-audit.py/data-quality.py；⑥ H-003 vuln_type 回填清零；垃圾 playbook 清理；facts 空 category 归位 |
 | 2026-09-01 | **P17 落地 + 代码/数据清理** | ① P17 FGS 决策图框架落地（`fgs_nodes` 表 + 工具 + scheduler prompt 注入）；② 修复 scheduler `findWorkerSessionId` 缺失 `await` 导致 `session_id` 写入 Promise 字符串的 bug、scope 首次创建 `copyFileSync` 崩溃、pipeline `renderJSON` 输出格式与覆盖矩阵 bug、parser 静默失败；③ 清理 407 条孤儿资产（按域名后缀归属 bytedance/meituan-src/legacy-archive）、235 条外部/孤儿端点、310 条噪声 finding、17 条旧版一次性任务、20 条过期 blackboard 日更日志，facts 归属归一化；④ 主文档 README/system-complete 刷新到 2026-09-01 状态 |
+| 2026-09-04 | **v4.2 漏洞列表信号面规范** | ① addFinding 完整性闸门：缺复现步骤/影响或标题<10 字符的登记自动归「待验证候选」（noise=1），漏洞列表只呈现字段完整可复核的信号；弱指纹命中补全后 UPDATE 原行就地升级；② finding_add schema 强制五要素 + 标题规范；③ xray webhook 标题规范化、不再冒充漏洞；④ 看板「仅待验证候选」筛选 + 已定案行紧凑化；⑤ 修复 queryFindings 未透传 noise（行数≠总数同类病）；⑥ csai 存量 40 行不完整登记降级候选（单测 6/6） |
+| 2026-09-04 | **v4.3 事实治理 + 报告归类 + 统一审批中心** | ① countFacts/factSearch 口径对齐 + 看板事实 tab 生命周期 facet + 默认隐藏 note 速记（1096→630）+ factStats by_mem_class/by_status；② buildReport severity 多选/按项目分节/文件名语义化 + 报告列表按项目分组筛选；③ 统一审批中心：approval_requests 通用表 + APPROVAL_KINDS kind 注册表（首个 scope-domain）+ approval_request 工具 + 看板「审批」tab；④ 历史候选域名 4 条导入待审批（单测 30/30）；⑤ 纪律：sec-runtime-discipline 补第 2 条授权提请 + 第 9 条事实生命周期 |
+| 2026-09-04 | **历史候选域名首批评议** | 审批中心首批 4 条候选：catpaw.com（CatPaw AI Agent 主域）/ tabbit.com（AI 浏览器主域）/ wow.fun（美团官方跳转域）已批准入 meituan-src scope（审批 #3/#4/#5，audit 留痕）；zhaopin.com（智联招聘，或另有自身 SRC 归属）保持 pending 待人工确认边界（H-004）；scope.yml 已 spool sync pull 回收并补回注释 |
 
 ### 历史文档索引（本目录）
 

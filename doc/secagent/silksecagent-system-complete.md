@@ -135,12 +135,12 @@ dsh-bill 0.13.1 token 账本（session_projcache 里有 billTurns 逐轮 model/p
 ### 4.1 sec-suite（@silksec/sec-suite，8 文件）
 
 ```
-index.js(1507) 主文件：scope-guard / run_cli / spawn_worker / authz_diff / intel_hunt / 工具注册 / RPC 挂载
-asset-db.js(1294)      存储层：全表 DDL+迁移 / 领域 CRUD / 调度 SQL / 守卫 / opsHealth / submissionDraft
+index.js(1635) 主文件：scope-guard / run_cli / spawn_worker / authz_diff / intel_hunt / 工具注册（含 approval_request）/ RPC 挂载
+asset-db.js(1856)      存储层：全表 DDL+迁移 / 领域 CRUD / 调度 SQL / 守卫 / opsHealth / submissionDraft / 统一审批 DAO
 asset-graph.js(627)    模型工具面：33 个领域工具注册
 scheduler.js(197)      调度循环（文件锁单例）
 webhook.js(49)         xray webhook 接收器
-dashboard-rpc.js(419)  看板 RPC 端点分发 + planChain/taskChain
+dashboard-rpc.js(467)  看板 RPC 端点分发（47 case）+ planChain/taskChain
 experience.js(747)     经验卡/知识库/playbook + FTS5 + 向量
 parsers.js(175)        解析器注册表
 ```
@@ -161,7 +161,7 @@ parsers.js(175)        解析器注册表
 
 **bwrap 沙箱（S2）**：仅有 target_param 的网络工具沙箱；`--unshare-all --share-net --die-with-parent --new-session --proc /proc --dev /dev --tmpfs /tmp`，只读挂 /usr /etc + venv/opt，可写仅 runDir + $HOME；平台密钥（.env/settings/keys）对工具不可见。`SEC_NO_SANDBOX=1` 或 bwrap 缺失优雅降级；manifest 可 `sandbox: false` 逐工具豁免（本地审计类工具用）。
 
-**scope 管理闭环**（看板授权视图后端）：`serializeScope` 规范化重写 scope.yml（tmp+rename 原子 + `.bak` 备份 + audit + syncPrograms 镜像 + pairWorkspaces 重配对）；删除授权 = fail-closed 立即生效 + programs 行归档（数据归属保留）。**协同纪律**：scope.yml 受 spool sync 管理，界面写入后需 `spool sync pull csai` 回收管理机副本，否则下次 push 覆盖。
+**scope 管理闭环**（看板授权视图后端）：`serializeScope` 规范化重写 scope.yml（tmp+rename 原子 + `.bak` 备份 + audit + syncPrograms 镜像 + pairWorkspaces 重配对）；删除授权 = fail-closed 立即生效 + programs 行归档（数据归属保留）。**新增授权的正规入口=审批中心**（approval_request 提请 → 人工批准 → onApprove 走同一 serializeScope 原子写回；直接手编 yml 仍允许但属例外路径）。**协同纪律**：scope.yml 受 spool sync 管理，界面/审批写入后需 `spool sync pull csai` 回收管理机副本，否则下次 push 覆盖；serializeScope 规范化会丢弃注释，回收后需人工补回关键注释。
 
 #### 4.1.2 run_cli 生命周期（工具执行唯一入口）
 
@@ -202,6 +202,8 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 - **流程守卫**（asset-db.taskUpdate）：interval 日任务标 `done` 前校验三产物——①attempts TSV 近 24h 有增量行（六态皆可）②card_usage-*.jsonl 近 24h 有记录 ③handoff-<北京日期>.md 存在；作用域限 `schedule_kind='interval'` 且 `data/pipeline/{program}/` 存在。缺失返回 `guard_blocked:true + missing[]`，**任务不落 done**，agent 按清单补产物后重试（blocked/failed/cancelled 不拦——失败与放弃必须能落库）
 - **噪声闸门**（addFinding）：severity=info → `noise=1`，指纹弱化为 sha1(host|title)（同模板同目标只留一行，URL 变体不增殖）；全部查询/报告/KPI 默认 `noise=0`（include_noise 显式查看）；存量 info 一次性回填（314 条）
+- **完整性闸门**（addFinding，v4.2）：缺复现步骤/影响或标题<10 字符的登记一律 `noise=1` 归「待验证候选」——机器直灌（xray-webhook/authz_diff 启发式）不再冒充漏洞信号；弱指纹命中后补全字段重新 finding_add 会 UPDATE 原行摘噪声帽（就地升级，不另起行）。漏洞信号面行数与总数同一口径（queryFindings/countFindings 同走 findingWhere）
+- **事实口径对齐**（v4.3）：countFacts 与 factSearch 同一可见域谓词（archived/timeline/过期 ephemeral 排除）；factStats 增 by_mem_class/by_status（memcore 缺席 fail-open 回退空数组）
 - **opsHealth()**：五指标（台账日增量/卡使用 7d/交接包 7d/IdeaCard 数/调度漂移+task_runs 新鲜度）+ 告警列表；看板 `ops` RPC 端点 + 健康度红条横幅；discipline-audit.py 为 CLI 等价面
 - **submissionDraft**：finding → 平台提交草稿 md（漏洞类型/等级自评/复现步骤/证据/修复建议/同目标同类型查重列表）落 `reports/submissions/`；人工审校后提交并 `finding_update status=submitted`
 
@@ -221,8 +223,9 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 - **intel_hunt**：指纹命中 → 走 nuclei-templates 目录找 tech 相关模板（≤30）→ 自动产出 phase=vuln/priority=1 的 N-day 候选任务（同 program 同 label 幂等去重；objective 内置 tentative 纪律）
 - **plan_chain/task_chain**：manifest 的 requires/produces 能力图 BFS；task_chain 反向剪枝后落成 parent 串联的 once 链（`[链:want]` 标记幂等）
 - **burp_import**：Burp XML（proxy history/scanner issues）→ data/imports/*.jsonl（人工测试成果回流口）
-- **xray webhook**（webhook.js）：xray 7788 → `flows/xray-日期.jsonl` + addFinding（medium，`xray: <title>`，evidence=flow 文件）
-- **report_build**：noise 过滤 + 类型列 + 噪声计数行；落 reports/
+- **xray webhook**（webhook.js）：xray 7788 → `flows/xray-日期.jsonl` + addFinding（标题「<host> 被动审计候选：<插件>」，不传复现/影响 → 完整性闸门自动归「待验证候选」，不冒充漏洞信号）
+- **report_build**：noise 过滤 + severity（逗号多选）/source 筛选；输出按项目分节（无项目按严重级分组），文件名语义化 `report-{program}-{YYYYMMDD-HHmm}.md`；reports 端点从文件名解析 program/date 元数据 + program/q 筛选
+- **approval_request**（v4.3）：统一审批提请工具。`kind/subject/program_name/evidence(≥10字)` → APPROVAL_KINDS 注册表校验（scope-domain：subject 须在 scope 外、项目须存在、排除清单拒绝）→ approval_requests 表登记（同 (kind,subject) pending 去重）；批准走 kind 的 onApprove（scope-domain=scopeSaveProgram 原子写回 scope.yml），全程 audit。**提请不改变 fail-closed：批准前目标一律拒绝**
 
 **FGS 决策图（P17）**：`fgs_nodes` 表 + `fgs_add / fgs_update / fgs_list / fgs_next / fgs_export` 工具，scheduler 在定时任务 prompt 中注入使用说明。目标是把任务执行中的 fact/goal/step/finding 实时结构化，形成 Decide/Execute 循环；任务收尾时 `appendFgsToHandoff` 自动追加 Markdown 摘要。**当前表为空**，框架已就绪，待每日任务实际产生节点。
 
@@ -268,8 +271,8 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 ### 4.4 sec-dashboard + theme-silksong（UI 面）
 
-- **客户端**（client.js，ModuleLoader bundle）：全局侧边栏入口 → Modal **九视图**：漏洞/资产/接口/事实/任务/知识/报告/授权/审计；服务端分页/搜索/筛选 + 30s 轮询；顶部 stats KPI + **memcore 缺席横幅 + ops 健康度红条**（P15）；任务视图三分区（定时任务卡片/一次性队列/执行历史）+ 工作区区块（program 徽章+计数+会话跳链 `ctx.sessions.open`）；知识 tab=memcore 状态机的 UI（评分/晋升/编辑/弃置/回执/exportable 开关/playbooks）；授权 tab=scope.yml 管理表单；报告 tab 只读预览。信息架构纪律：**行只放摘要+跳链，详情一律回会话看**。
-- **宿主半面**：`/silksec-dashboard` RPC（authority=loopback），40 个端点（读：stats/ops/assets/findings/facts/tasks/taskRuns/scheduledTasks/workspaces/sessions/scopeList/memcore/expCards/playbooks/reports/audit/evalStats/factGraph/findingGet/reportRead；写：findingUpdate/factCorrect/factDeprecate/taskCreate/taskRunNow/taskCancel/taskSetStatus/taskScheduleUpdate/scopeSaveProgram/scopeDeleteProgram/programBindWorkspace/expFeedback/expPromote/expDeprecate/expUpdate/expExportable/reportBuild）——全部复用 assetDb/experience 同一函数（一份校验、一条 audit）。
+- **客户端**（client.js，ModuleLoader bundle）：全局侧边栏入口 → Modal **十视图**：漏洞/资产/接口/事实/任务/知识/报告/审批/授权/审计；服务端分页/搜索/筛选 + 30s 轮询；顶部 stats KPI + **memcore 缺席横幅 + ops 健康度红条**（P15）；任务视图三分区（定时任务卡片/一次性队列/执行历史）+ 工作区区块（program 徽章+计数+会话跳链 `ctx.sessions.open`）；知识 tab=memcore 状态机的 UI（评分/晋升/编辑/弃置/回执/exportable 开关/playbooks）；授权 tab=scope.yml 管理表单（顶部跳转条指向待审批候选）；报告 tab=按项目分组列表（项目/关键字筛选）+ Modal 查看器；审批 tab=统一审批中心（pending 在前/类型徽章/批准/驳回/历史折叠/待审批数进 tab 徽章）。漏洞列表默认只呈现信号面（noise=0），「待验证候选」chip 可点筛选、已定案行紧凑化；事实视图默认隐藏 note 工作速记（开关展开）+ 生命周期 facet。信息架构纪律：**行只放摘要+跳链，详情一律回会话看**。
+- **宿主半面**：`/silksec-dashboard` RPC（authority=loopback），47 个 case（读：stats/ops/assets/assetDetail/assetFamily/assetOverview/endpoints/endpointHosts/blackboard/findings/facts/factStats/factGraph/findingGet/tasks/taskRuns/scheduledTasks/workspaces/sessions/programs/scopeList/memcore/expCards/playbooks/reports/reportRead/audit/evalStats/approvalList；写：findingUpdate/factCorrect/factDeprecate/taskCreate/taskRunNow/taskCancel/taskSetStatus/taskScheduleUpdate/scopeSaveProgram/scopeDeleteProgram/programBindWorkspace/expFeedback/expPromote/expDeprecate/expUpdate/expExportable/reportBuild/approvalDecide）——全部复用 assetDb/experience 同一函数（一份校验、一条 audit）。
 - **theme-silksong**：丝之歌全局深色主题（DSH theme registry 注册 tokens，Pharloom 墨青底+Hornet 绯红行动色）；severity 五色经 theme/change 事件注入 style（registry 白名单外）；localStorage 持久化用户选择，首装默认启用。
 
 ### 4.5 proxy-pool（@silksec/dsh-proxy-pool，300 行）
@@ -286,11 +289,13 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 ### 5.1 asset-graph.db 表清单（node:sqlite 单文件，WAL）
 
-**领域表**：assets（host,type 主键；program_id/score/level/accept/biz/state P13 评级列）、endpoints（host,method,path 主键；params/auth_required/roles_seen 越权矩阵列）、findings（fingerprint UNIQUE；vuln_type/cwe/endpoint_ref/preconditions/reproduction_steps/impact/recommendation 提交模板列；session_id 跳链；**noise P15**；**confidence/fgs_node_id/discovery_step P17**；bounty/vendor_status/submitted_at SRC 运营列）、programs（scope.yml 镜像 + workspace_id/path 绑定 + status archived）、tasks（program_id/phase/objective/status/priority/budget + schedule_kind/run_at/every_seconds/next_run_at/last_run_at/last_run_id + session_id/blocked_reason/result；**P18 新增 provider/model/reasoning_effort 任务级模型覆盖**）、task_runs（执行历史，每任务保留 200 行，session_id）、blackboard（**timeline/ephemeral 兼容层**，memcore 治理下 active 写入；日更 alive/recon/scan 键 7d 滚动，env-issue 修复后清理）、facts（program_id+fact_key 主键；summary 注入 prompt 索引 + body 全文；confidence；**memcore 生命周期列**）、fact_edges（src/dst/edge_type：resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits）、**fgs_nodes（P17 Cairn_Y FGS 图：task_id/run_id/type/status/content/json score/parent_id/depends_on）**、fingerprints（host+tech 主键）、credentials（ref 引用非明文）、workers（spawn_worker 注册表：pid/status/exit/run_dir/dedupe_key）。
+**领域表**：assets（host,type 主键；program_id/score/level/accept/biz/state P13 评级列）、endpoints（host,method,path 主键；params/auth_required/roles_seen 越权矩阵列）、findings（fingerprint UNIQUE；vuln_type/cwe/endpoint_ref/preconditions/reproduction_steps/impact/recommendation 提交模板列；session_id 跳链；**noise P15**；**confidence/fgs_node_id/discovery_step P17**；bounty/vendor_status/submitted_at SRC 运营列）、programs（scope.yml 镜像 + workspace_id/path 绑定 + status archived）、tasks（program_id/phase/objective/status/priority/budget + schedule_kind/run_at/every_seconds/next_run_at/last_run_at/last_run_id + session_id/blocked_reason/result；**P18 新增 provider/model/reasoning_effort 任务级模型覆盖**）、task_runs（执行历史，每任务保留 200 行，session_id）、blackboard（**timeline/ephemeral 兼容层**，memcore 治理下 active 写入；日更 alive/recon/scan 键 7d 滚动，env-issue 修复后清理）、facts（program_id+fact_key 主键；summary 注入 prompt 索引 + body 全文；confidence；**memcore 生命周期列**）、fact_edges（src/dst/edge_type：resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits）、**fgs_nodes（P17 Cairn_Y FGS 图：task_id/run_id/type/status/content/json score/parent_id/depends_on）**、fingerprints（host+tech 主键）、credentials（ref 引用非明文）、workers（spawn_worker 注册表：pid/status/exit/run_dir/dedupe_key）、**approval_requests（v4.3 统一审批，见下）**。
 
 **语义层表**（experience.js 建）：exp_cards（scenario UNIQUE/takeaway/chain/attempts/evidence/source/confidence + memcore 评分列 + exportable）、exp_fts（FTS5 external content）、kb_docs（title/file/source_url/tainted）、kb_fts、playbooks（name 主键/runs/successes/avg_duration_ms）、exp_embeddings/kb_embeddings（384 维 e5 向量 JSON）。
 
 **治理表**（memcore 建）：每表对应 `*_archive`（同构+archived_at/archive_reason，90 天硬删）、memcore_meta（迁移旗标）、memcore_events（全流转审计）。
+
+**审批表**（asset-db 建，v4.3）：approval_requests（id/kind/subject/program_name/payload/evidence/status: pending→approved|rejected/requested_by/created_at/decided_at/note；kind 经 sec-suite 侧 `APPROVAL_KINDS` 注册表扩展，首个 kind `scope-domain`=候选授权域名）。
 
 ### 5.2 状态机全集（触发者→落点）
 
@@ -393,7 +398,7 @@ verify：verify.must_pass 全过 + falsification 逐项排除 + 对抗性自检�
 
 1. **sec-verification**：验证铁律（证据三选一 run_id/flow_id/burp_item + 必看原始输出 + 误报特征 + 带外必须回连佐证）+ 对抗性自检（≥2 反证假设逐一排除）+ 高危独立 worker 复验（双路一致才 confirmed）
 2. **sec-pipeline**：六态台账/卡片驱动/防幻觉输出契约 7 条（分母明确、CLEAN 同级举证、禁幻觉词、负例即价值…）/规定+自选动作（≥20% 探索配额≥3 IdeaCard，探索产出禁直接进 findings）/工具矩阵分派/合规止损/收尾清单/交接包五段/**§9 流程守卫说明/§10 资产准入与 Slice/蒸馏中置**
-3. **sec-runtime-discipline**：出口/授权/派单/interval/失败留痕/大输出摘要/**收尾 note【项目·角色·MMdd】格式**/黑板 8 条公共纪律
+3. **sec-runtime-discipline**：出口/授权（候选授权资产必须 approval_request 提请）/派单/interval/失败留痕/大输出摘要/**收尾 note【项目·角色·MMdd】格式**/黑板/事实生命周期（note=14 天速记、长期知识写 durable 分类）共 9 条公共纪律
 4. **sec-task**：「定时跑」必须 task_create 带 schedule（禁口头答应）；interval 固定实体禁每天重建 once；归属自动带出；intrusive 禁 interval
 5. **sec-knowledge**：记忆三问 + 类别速查表 + **规则先验层**（data/rules/）使用纪律 + 开局/用卡/cooling/查重/红线流程
 6. **sec-blackboard**：黑板读写键规范（cred:/alive:/tried:/note:/waf:）

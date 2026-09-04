@@ -30,14 +30,17 @@ _Avoid_: 报告、issue。
 侦察到的资产主机与接口。Endpoint 是 Asset 的子维度。
 
 **Fact（事实）**：
-跨会话沉淀的一条知识，格式 `category/slug`，带 summary（注入 prompt 的索引）+ body（按需拉取）+ confidence。落在事实图谱 `facts` + `fact_edges`。
+跨会话沉淀的一条知识，格式 `category/slug`，带 summary（注入 prompt 的索引）+ body（按需拉取）+ confidence。落在事实图谱 `facts` + `fact_edges`。带生命周期维度 mem_class（durable 30 天复验 / ephemeral TTL 14 天 / timeline 30 天归档），note 类缺省 ephemeral=工作速记滚动消亡，长期知识写 target/asset/finding 等分类。列表/计数走同一可见域谓词（archived/timeline/过期 ephemeral 排除）。
 _Avoid_: 黑板、note、key:value。
 
 **Blackboard（黑板，遗留）**：
 旧版扁平 `key:value` 存储，已被 Fact 取代。存量经 `migrate-blackboard-to-facts.js` 幂等迁入 facts 后保留只读观察期，随后下线；`blackboard_set/get` 保留为兼容薄封装（写 `note/` 分类）。
 
 **Scope（授权范围）**：
-`scope.yml` 白名单，fail-closed 硬校验，是平台的安全红线。
+`scope.yml` 白名单，fail-closed 硬校验，是平台的安全红线。新授权域名的入口是审批中心（scope-domain kind，批准即原子写回 scope.yml）。
+
+**报告（Report）**：
+findings 的导出产物，`report-{program}-{YYYYMMDD-HHmm}.md` 语义化文件名，按项目分节，支持 severity 多选/source 筛选生成；列表按项目分组可筛。
 
 ## UI 信息架构
 
@@ -49,8 +52,12 @@ _Avoid_: 别挂在会话标签页下。
 跟某一条对话绑定的 UI（消息 / Trajectory / Run）。
 
 **看板（Dashboard）**：
-全局面的正式名称，侧边栏全局入口 → 独立模态面板，内含「漏洞 / 资产 / 接口 / 事实 / 任务 / 知识 / 报告 / 授权 / 审计」视图（任务视图四区块：工作区折叠区、定时任务卡片区、一次性任务队列、执行历史折叠区，历史可按任务过滤跳转；授权视图管理 scope.yml；报告在 Modal 查看器中阅读）。资产视图双模式：**列表**（评级/收录/状态多维筛选 + 单主机钻取：指纹/接口/漏洞/同族）与**域名族**（同注册域 / 同 /24 网段聚合，呈现资产间联系；成员按需拉取）；接口视图按主机分组（接口是资产的子维度，不做平铺千行）；事实视图 facet 洞察（置信/分类/有关联 chip）+ 搜索词高亮 + 关联最多排序。看板行只放摘要 + 跳链（`ctx.sessions.open`），**详细内容一律在会话里看**。行内操作一律图标 + 悬停提示（title）。
+全局面的正式名称，侧边栏全局入口 → 独立模态面板，内含「漏洞 / 资产 / 接口 / 事实 / 任务 / 知识 / 报告 / 审批 / 授权 / 审计」视图（任务视图四区块：工作区折叠区、定时任务卡片区、一次性任务队列、执行历史折叠区，历史可按任务过滤跳转；授权视图管理 scope.yml；报告在 Modal 查看器中阅读）。资产视图双模式：**列表**（评级/收录/状态多维筛选 + 单主机钻取：指纹/接口/漏洞/同族）与**域名族**（同注册域 / 同 /24 网段聚合，呈现资产间联系；成员按需拉取）；接口视图按主机分组（接口是资产的子维度，不做平铺千行）；事实视图 facet 洞察（置信/分类/有关联/生命周期 chip）+ 搜索词高亮 + 关联最多排序 + 默认隐藏 note 工作速记（「工作速记」开关开启）；报告视图按项目分组 + 项目/关键字筛选；审批视图=统一审批中心（pending 在前、类型徽章、批准/驳回留痕，待审批数显示在 tab 徽章上）。看板行只放摘要 + 跳链（`ctx.sessions.open`），**详细内容一律在会话里看**。行内操作一律图标 + 悬停提示（title）。
 _Avoid_: 工作台、安全中心（同名不改）。
+
+**审批（Approval）**：
+统一审批中心，`approval_requests` 表为唯一审批队列。审批类型经 `APPROVAL_KINDS` 注册表扩展（每种 kind 定义 label/validate/onApprove，批准先跑副作用成功才落 approved）；首个 kind `scope-domain`=候选授权域名（批准副作用=追加进 scope.yml，复用 scopeSaveProgram 原子写+备份+审计）。agent 侧用 `approval_request` 工具提请（同对象 pending 去重、evidence≥10 字）；**提请不改变 fail-closed——批准前目标一律拒绝**。未来其他审批类型（intrusive 工具、高危动作）作为新 kind 挂进来即可，看板/工具/rpc 零改动。
+_Avoid_: 为每类审批另建专用表/专用流程。
 
 **丝之歌主题（Silksong Theme）**：
 平台的全局 UI 主题（单套深色），视觉叙事取自游戏《空洞骑士：丝之歌》——Pharloom 的墨青夜色为底、Hornet 绯红为唯一行动色、丝线金为强调/警示、苔绿为安全/成功。作用于整站（会话面 + 全局面），不是某个面板的局部皮肤。
