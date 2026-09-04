@@ -183,6 +183,9 @@ window.__ModuleLoader__.load({
     // 表格：表头用 label2 提升可读性；单元格 13px + 更宽内距（真机校准 v2）
     var th = { textAlign: 'left', color: T.label2, padding: '8px 12px', ...F.xxsStrong, whiteSpace: 'nowrap' }
     var td = { padding: '8px 12px', color: T.label, ...F.xs, verticalAlign: 'middle', wordBreak: 'break-word' }
+    // 已定案（dup/false_positive/ignored）紧凑行：可见但高度减半、次要列省略——重复漏洞
+    // 一屏可见又不挤占待处理信号的视觉空间（v4.2）
+    var tdClosed = { padding: '3px 12px', color: T.label2, ...F.xxxs, verticalAlign: 'middle', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }
     var tdMono = { ...td, fontFamily: MONO, fontSize: 13 }
     var tableStyle = { width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }
     var theadRow = { borderBottom: '1px solid ' + T.border3 }
@@ -475,11 +478,12 @@ window.__ModuleLoader__.load({
 
     function unusedPlaceholder() { return null }
 
-    // 漏洞洞察条（U2/F8）：级别分布 + 待处理数 + 评测回流误报率——归在漏洞视图内，不占 KPI、不割裂
+    // 漏洞洞察条（U2/F8）：级别分布 + 待处理数 + 待验证候选 + 评测回流误报率——归在漏洞视图内，不占 KPI、不割裂
     function FindingsInsight(props) {
       var bySev = props.bySeverity || []
       var byStatus = props.byStatus || []
       var evalData = props.evalData
+      var noiseN = props.noiseCount || 0
       var map = {}; bySev.forEach(function (s) { map[s.severity] = s.n })
       var pending = 0; byStatus.forEach(function (s) { if (s.status === 'new') pending = s.n })
       var order = ['critical', 'high', 'medium', 'low', 'info']
@@ -487,7 +491,7 @@ window.__ModuleLoader__.load({
         var c = SEV_COLOR[k]
         return el('span', { key: k, style: { ...pill, color: c, borderColor: 'color-mix(in srgb, ' + c + ' 40%, transparent)' } }, SEV_LABEL[k] + ' ' + map[k])
       })
-      if (!chips.length && !pending) return null
+      if (!chips.length && !pending && !noiseN) return null
       var fpTitle = ''
       if (evalData && evalData.by_type) {
         fpTitle = Object.keys(evalData.by_type).map(function (t) {
@@ -497,6 +501,12 @@ window.__ModuleLoader__.load({
       return el('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '2px 0 8px' } },
         chips,
         pending ? el('span', { style: { ...pill, color: T.brand, borderColor: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent)' }, title: '状态为「新发现」的未处理漏洞' }, '待处理 ' + pending) : null,
+        // 待验证候选（v4.2）：机器直灌/字段不完整、未过 LLM 验证规程的登记——点击筛出补全复核
+        noiseN ? el('button', {
+          type: 'button', style: { ...pill, color: T.warn, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent)', cursor: 'pointer', background: 'transparent' },
+          title: '机器直灌 / 缺复现步骤与影响的待验证候选（默认不进漏洞信号面），点击筛出复核',
+          onClick: function () { props.query && props.query.setFilter('noise', '1') },
+        }, '待验证候选 ' + noiseN) : null,
         (evalData && evalData.total)
           ? el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs, cursor: fpTitle ? 'help' : 'default' }, title: fpTitle }, '评测回流 ' + evalData.total + ' 条判定')
           : null)
@@ -603,24 +613,26 @@ window.__ModuleLoader__.load({
               var taggable = ['new', 'confirmed'].indexOf(r.status) >= 0
               var closed = STATUS_CLOSED.indexOf(r.status) >= 0
               var isOpen = expandedId === r.id
-              // 强调（规范 §7）：new = 行左 2px 绯红边条；展开 = 中性边条；已定案 = 整行淡出
+              // 强调（规范 §7）：new = 行左 2px 绯红边条；展开 = 中性边条；已定案 = 紧凑淡出（可见但不占位）
               var rowStyle = {
-                opacity: closed ? 0.5 : 1,
+                opacity: closed ? 0.45 : 1,
                 boxShadow: r.status === 'new' ? 'inset 2px 0 0 ' + T.brand : (isOpen ? 'inset 2px 0 0 ' + T.border3 : undefined),
               }
+              var cell = closed ? tdClosed : td
+              var cellMono = closed ? tdClosed : tdMono
               return el(React.Fragment, { key: String(r.id) },
-                el('tr', { className: 'silksec-row', style: { ...rowStyle, cursor: 'pointer' }, title: '点击展开详情', onClick: function () { setExpanded(isOpen ? null : r.id) } },
-                  el('td', { style: tdMono }, String(r.id)),
-                  el('td', { style: td }, sevPill(r.severity)),
-                  el('td', { style: td }, statusPill(r.status)),
-                  el('td', { style: { ...td, whiteSpace: 'nowrap', color: T.label2 } }, fmtTs(r.created_at)),
-                  el('td', { style: td },
+                el('tr', { className: 'silksec-row', style: { ...rowStyle, cursor: 'pointer' }, title: closed ? '已定案（重复/误报/忽略）· 点击展开详情' : '点击展开详情', onClick: function () { setExpanded(isOpen ? null : r.id) } },
+                  el('td', { style: cellMono }, String(r.id)),
+                  el('td', { style: cell }, closed ? el('span', { style: { ...pill, padding: '1px 6px', fontSize: 11 } }, SEV_LABEL[r.severity] || r.severity) : sevPill(r.severity)),
+                  el('td', { style: cell }, closed ? el('span', { style: { ...pill, padding: '1px 6px', fontSize: 11 } }, STATUS_LABEL[r.status] || r.status) : statusPill(r.status)),
+                  el('td', { style: { ...cell, color: T.label2 } }, fmtTs(r.created_at)),
+                  el('td', { style: cell },
                     el('span', { style: { color: T.label3, marginRight: 6, ...F.xxxs } }, isOpen ? '▾' : '▸'),
                     r.title,
                     r.bounty ? el('span', { style: { ...pill, color: T.success, marginLeft: 6 } }, '赏金 ' + r.bounty) : null),
-                  el('td', { style: tdMono }, r.url || r.host || '—'),
-                  el('td', { style: td, onClick: function (e) { e.stopPropagation() } }, el(SessionLink, { id: r.session_id })),
-                  el('td', { style: { ...td, whiteSpace: 'nowrap' }, onClick: function (e) { e.stopPropagation() } },
+                  el('td', { style: cellMono }, r.url || r.host || '—'),
+                  el('td', { style: cell, onClick: function (e) { e.stopPropagation() } }, closed ? '—' : el(SessionLink, { id: r.session_id })),
+                  el('td', { style: { ...cell, whiteSpace: 'nowrap' }, onClick: function (e) { e.stopPropagation() } },
                     taggable
                       ? el('span', { style: { display: 'inline-flex', gap: 6 } },
                           tagIconBtn('确认（确认为真实漏洞）', 'confirmed', r.id, 'confirm', 'silksec-icon-btn-confirm'),
@@ -2025,11 +2037,12 @@ window.__ModuleLoader__.load({
             filters: [
               { key: 'severity', label: '级别', options: Object.keys(SEV_LABEL).map(function (k) { return { v: k, l: SEV_LABEL[k] } }) },
               { key: 'status', label: '状态', options: Object.keys(STATUS_LABEL).map(function (k) { return { v: k, l: STATUS_LABEL[k] } }) },
+              { key: 'noise', label: '验证', options: [{ v: '1', l: '仅待验证候选' }] },
               { key: 'program_id', label: '工作区', options: progOpts },
             ],
             extra: el('button', { type: 'button', className: 'silksec-btn', disabled: isBusy, title: '按当前筛选（项目/状态）生成 markdown 报告', onClick: onBuildReport }, '生成报告'),
           }),
-          el(FindingsInsight, { bySeverity: statsData.findings_by_severity, byStatus: statsData.findings_by_status, evalData: evalState.data }),
+          el(FindingsInsight, { bySeverity: statsData.findings_by_severity, byStatus: statsData.findings_by_status, evalData: evalState.data, noiseCount: statsData.findings_noise, query: findingsQ }),
           el(FindingsView, { query: findingsQ, onTag: onTag, onAccept: onAccept, busy: isBusy }))
       } else if (activeTab === 'assets') {
         var typeOpts = ((statsData.assets_by_type) || []).map(function (r) { return { v: r.type, l: r.type + ' (' + r.n + ')' } })

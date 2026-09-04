@@ -1005,6 +1005,8 @@ async function authzDiff(args, exec) {
   } else { why = `同状态但响应差异大（键重合 ${(keysOverlap * 100).toFixed(0)}%，长度比 ${lenRatio.toFixed(2)}）` }
 
   if (verdict === 'suspected') {
+    // 启发式判定（非 LLM 验证流）：缺复现步骤/影响 → addFinding 完整性闸门自动归"待验证候选"（noise=1），
+    // 由后续 vuln 轮/人工复核确认后补全升级，不直接进漏洞信号面。
     assetDb.addFinding({
       title: `疑似越权(IDOR): ${method} ${url}`, severity: 'high',
       host: hostOf(url), url, source: 'authz_diff', session_id: sessionId,

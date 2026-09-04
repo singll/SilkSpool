@@ -31,6 +31,7 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 5. **负例即价值**：0 产出日的报告同等重要；禁止为凑产出报噪音。
 6. 报告统计数字以台账实际为准（coverage-report.py 生成），禁手填。
 7. CONFIRMED 建证据包 `data/evidence/{finding_id}/`：request.txt/response.txt（含时间戳+出口IP）/reproduce.md（含影响场景具体化）/falsification.md/verify-log.md。
+8. **finding_add 五要素齐才登记**：规范标题（`<组件/业务语境> <漏洞类型与后果>（关键特征）`，如 "Oceanus 404 调试页泄露内网节点 IP+appkey"，禁止工具原始输出当标题）+ 证据 + 复现步骤 + 影响 + 修复建议。完整性闸门（v4.2）：缺复现步骤/影响的登记自动归入"待验证候选"（noise=1，漏洞列表不可见）——这是登记未完成的信号，补全后重新 finding_add 即可升级，不是流程终点。
 
 ## 4. 每日任务结构 = 规定动作 + 自选动作
 

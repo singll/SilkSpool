@@ -139,12 +139,15 @@ export function apply(ctx) {
     name: 'finding_add',
     description: '登记一个疑似漏洞发现。自动按 host+title+url 指纹去重（dup:true 表示已存在）。'
       + '纪律：必须附 evidence（run_id/flow_id/请求响应摘要），否则视为幻觉。'
-      + 'vuln_type/cwe/impact/recommendation 等字段补全报告模板（提交 SRC 用）。'
+      + '标题规范：「<组件/业务语境> <漏洞类型与后果>（关键特征）」，如 "Oceanus 404 调试页泄露内网节点 IP+appkey"——'
+      + '禁止把工具原始输出（如 "web_statistic"、"<scanner>: <plugin>"）当标题，标题必须让人一眼看懂是什么漏洞。'
+      + '复现步骤与影响为必填（完整性闸门：缺失的登记自动归入待验证候选，不进漏洞信号面）；'
+      + 'vuln_type/cwe/recommendation 等字段补全报告模板（提交 SRC 用）。'
       + 'P17：调度任务会话内调用会自动创建 FGS finding 节点；调用方可显式传 confidence=tentative|confirmed|false_positive|dup。',
     parameters: {
       type: 'object',
       properties: {
-        title: { type: 'string' },
+        title: { type: 'string', description: '规范标题：<组件/业务语境> <漏洞类型与后果>（关键特征）' },
         severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
         host: { type: 'string' },
         url: { type: 'string' },
@@ -154,19 +157,19 @@ export function apply(ctx) {
         cwe: { type: 'string' },
         endpoint_ref: { type: 'string', description: '关联接口 host+method+path' },
         preconditions: { type: 'string' },
-        reproduction_steps: { type: 'string' },
-        impact: { type: 'string' },
-        recommendation: { type: 'string' },
+        reproduction_steps: { type: 'string', description: '可复核的复现步骤（命令/请求序列 + 观察点），必填' },
+        impact: { type: 'string', description: '具体化的影响（泄露了什么/可做什么，不是套话），必填' },
+        recommendation: { type: 'string', description: '修复建议' },
         confidence: { type: 'string', enum: ['tentative', 'confirmed', 'false_positive', 'dup'], description: 'P17：证据置信度；未指定时由 FGS/状态机推断。' },
       },
-      required: ['title', 'host', 'evidence'],
+      required: ['title', 'host', 'evidence', 'reproduction_steps', 'impact'],
       additionalProperties: false,
     },
     execute: async (a, exec) => {
       const sessionId = execSessionId(exec)
       let fgsNodeId = null
       let discoveryStep = null
-      let confidence = null
+      const confidence = a.confidence || null
       // P17：若调用发生在调度任务会话内，自动创建 FGS finding 节点并关联
       if (sessionId) {
         try {

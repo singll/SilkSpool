@@ -233,6 +233,7 @@ export async function handleDashboardRpc(endpoint, payload) {
       const filters = {
         severity: String(p.severity || ''), status: String(p.status || ''),
         programId: String(p.program_id || ''), q: String(p.q || ''),
+        noise: String(p.noise || ''), // v4.2：'1' = 仅待验证候选（机器直灌/字段不完整）
       }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)

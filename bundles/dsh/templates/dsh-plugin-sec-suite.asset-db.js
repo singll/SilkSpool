@@ -290,13 +290,41 @@ export function addFinding({
   impact = null, recommendation = null, session_id = null,
   confidence = null, fgs_node_id = null, discovery_step = null,
 }) {
-  // P15 噪声闸门：info 级 = 模板指纹/侦察副产物，不进 findings 信号面（noise=1）。
-  // 噪声行指纹弱化为 host|title（同模板同目标只留一行，URL 变体不再增殖）。
-  const noise = String(severity) === 'info' ? 1 : 0
-  const fingerprint = crypto.createHash('sha1')
-    .update(noise ? `${host}|${title}` : `${host}|${title}|${url}`).digest('hex')
+  // P15 噪声闸门 + 完整性闸门（v4.2）：漏洞列表只呈现"经 LLM 验证流登记、字段完整可复核"的信号。
+  //   info 级 = 模板指纹/侦察副产物；
+  //   缺复现步骤/影响、或标题过短（<10 字符，如工具原始输出 "xray: web_statistic"）= 机器直灌
+  //   或半成品登记（xray-webhook / authz_diff suspected / agent 未走完验证规程），一律 noise=1
+  //   归入"待验证候选"——默认列表不可见，daily review 可 include_noise 捞出，补全后重新登记升级。
+  //   噪声行指纹弱化为 host|title（同模板同目标只留一行，URL 变体不再增殖）。
+  const titleS = String(title || '').trim()
+  const complete = titleS.length >= 10
+    && !!String(reproduction_steps || '').trim() && !!String(impact || '').trim()
+  const noise = (String(severity) === 'info' || !complete) ? 1 : 0
+  // 噪声行弱指纹（host|title），信号行强指纹（host|title|url）
+  const fpWeak = crypto.createHash('sha1').update(`${host}|${title}`).digest('hex')
+  const fingerprint = noise ? fpWeak : crypto.createHash('sha1').update(`${host}|${title}|${url}`).digest('hex')
   const d = getDb()
-  const dup = d.prepare('SELECT id, status FROM findings WHERE fingerprint = ?').get(fingerprint)
+  let dup = d.prepare('SELECT id, status, noise FROM findings WHERE fingerprint = ?').get(fingerprint)
+  // 补全升级：候选行（弱指纹）被完整登记命中 → 就地补齐字段 + 摘掉噪声帽（换强指纹），不另起一行
+  if (!dup && !noise) {
+    const cand = d.prepare('SELECT id, status, noise FROM findings WHERE fingerprint = ?').get(fpWeak)
+    if (cand?.noise) {
+      d.prepare(`
+        UPDATE findings SET
+          fingerprint = ?, severity = CASE WHEN ? != 'info' THEN ? ELSE severity END,
+          url = COALESCE(NULLIF(?, ''), url), evidence = COALESCE(NULLIF(?, ''), evidence),
+          vuln_type = COALESCE(?, vuln_type), cwe = COALESCE(?, cwe), endpoint_ref = COALESCE(?, endpoint_ref),
+          preconditions = COALESCE(?, preconditions), reproduction_steps = COALESCE(?, reproduction_steps),
+          impact = COALESCE(?, impact), recommendation = COALESCE(?, recommendation),
+          session_id = COALESCE(session_id, ?), noise = 0
+        WHERE id = ?
+      `).run(fingerprint, String(severity), String(severity), url, evidence,
+        vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact, recommendation,
+        session_id, cand.id)
+      invalidateOverview()
+      return { id: cand.id, dup: true, upgraded: true, status: cand.status, noise: false }
+    }
+  }
   if (dup) {
     // 已存在的 finding 补上缺失的 session_id（不覆盖已有值）
     if (session_id) d.prepare('UPDATE findings SET session_id = COALESCE(session_id, ?) WHERE id = ?').run(session_id, dup.id)
@@ -496,11 +524,13 @@ export function countFindings(filters = {}) {
   return getDb().prepare(`SELECT COUNT(*) AS n FROM findings WHERE ${where}`).get(...args).n
 }
 
-function findingWhere({ host = '', severity = '', status = '', programId = '', q = '', includeNoise = false }) {
+function findingWhere({ host = '', severity = '', status = '', programId = '', q = '', includeNoise = false, noise = '' }) {
   let where = '1=1'
   const args = []
-  // P15 噪声闸门：默认排除 noise 行（includeNoise=true 才看全量）
-  if (!includeNoise) where += ' AND noise = 0'
+  // P15 噪声闸门 + v4.2 待验证候选视图：
+  //   默认排除 noise 行；noise='1' = 仅看机器直灌/字段不完整的候选；includeNoise=true = 全量
+  if (noise === '1') where += ' AND noise = 1'
+  else if (!includeNoise) where += ' AND noise = 0'
   if (host) { where += ' AND host = ?'; args.push(host) }
   if (severity) { where += ' AND severity = ?'; args.push(severity) }
   if (status) { where += ' AND status = ?'; args.push(status) }

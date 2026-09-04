@@ -31,8 +31,12 @@ export function startXrayWebhook(injected) {
         const d = finding.data || finding
         const target = d.target || d.url || ''
         const title = d.title || d.plugin || finding.type || 'xray finding'
+        // v4.2 被动审计事件只做"待验证候选"：标题带 host + 插件语义（不再是 "xray: web_statistic"
+        // 这种读不懂的原始输出），且不传复现步骤/影响 → addFinding 完整性闸门自动归 noise=1，
+        // 不进漏洞信号面。原始 payload 已落 flows JSONL，daily review 可捞出验证后补全升级。
+        const host = deps.hostOf(target) || String(target).replace(/^https?:\/\//, '').split('/')[0] || ''
         deps.assetDb.addFinding({
-          title: `xray: ${title}`, severity: 'medium', host: deps.hostOf(target), url: target,
+          title: `${host || '未知目标'} 被动审计候选：${title}`, severity: 'medium', host, url: target,
           source: 'xray-webhook', evidence: `flow:${file}`,
         })
         res.writeHead(200); res.end('ok')
