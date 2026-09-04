@@ -16,16 +16,23 @@ APP_DIR="$BASE_DIR/app"
 log()  { echo "[settings-mirror-patch] $*"; }
 warn() { echo "[settings-mirror-patch][WARN] $*"; }
 
-PATTERN='s/connection\.isLoopback ? "host" : "memory"/"host"/g'
+PATTERN_OLD='s/connection\.isLoopback ? "host" : "memory"/"host"/g'   # ≤0.1.1-rc.2 的模式
+PATTERN_NEW='s/ctx\.remote\.\$host\.isLoopback ? "host" : "memory"/"host"/g'  # 0.1.2 起的模式（2026-09-04 实测）
 patched=0 skipped=0
 shopt -s nullglob
 for f in "$APP_DIR"/node_modules/.pnpm/@deepseek-ai+dsh-client-ui-settings@*/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js; do
-    if grep -q 'connection\.isLoopback ? "host" : "memory"' "$f"; then
-        sed -i "$PATTERN" "$f"
-        log "已补丁: $f"
+    if grep -q 'persistence = "host"' "$f" && ! grep -qE 'isLoopback \? "host" : "memory"' "$f"; then
+        skipped=$((skipped+1))   # 已补丁（含手工重放过的新模式）
+    elif grep -q 'connection\.isLoopback ? "host" : "memory"' "$f"; then
+        sed -i "$PATTERN_OLD" "$f"
+        log "已补丁(旧模式): $f"
+        patched=$((patched+1))
+    elif grep -q 'ctx\.remote\.\$host\.isLoopback ? "host" : "memory"' "$f"; then
+        sed -i "$PATTERN_NEW" "$f"
+        log "已补丁(新模式): $f"
         patched=$((patched+1))
     else
-        skipped=$((skipped+1))
+        skipped=$((skipped+1))   # 模式串不匹配（版本结构变化）→ 落入尾部冒烟告警
     fi
 done
 if [ "$patched" -eq 0 ] && [ "$skipped" -eq 0 ]; then

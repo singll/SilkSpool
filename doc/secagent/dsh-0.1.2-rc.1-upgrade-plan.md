@@ -1,6 +1,7 @@
 # DSH v0.1.1-rc.2 → v0.1.2-rc.1 升级方案设计
 
-> 版本：v1.0 · 2026-09-04 ｜ 性质：**规划文档，未实施**
+> 版本：v1.1 · 2026-09-04 ｜ 性质：**已实施——B0'/B1'/B2' 完成，B3' 观察期进行中（2-3 天）**
+> 实施结果：csai 线上已运行 0.1.2-rc.1（2026-09-04 升级成功，NRestarts=0 稳定）；V1-V10 验证全过（edge token 走方案 A 零改动、157 插件 id 组合树、sec-* 全在 web+headless 树、7 preset persona 完好、spawn_worker pong、web_fetch 实测直连公网）；F-6/F-7/F-8 适配全部落地（纪律 +10/+11 条、plugin-package-inventory enabled:false 双 profile、版本钉+version-watch dist-tags.latest）。升级过程五个坑（TTY→CI→lockfile→patch 升版→projcache v3→v5）全部根因修复并回写仓库模板。
 > 前置文档：`dsh-0.1.2-upgrade-arch-plan.md`（v1.2，目标当时为 alpha.1/alpha.2；其 §三/§四/§五/§六 架构优化部分 B2-B5 已执行完毕，本文只处理**剩余的 B1：DSH 本体升级**，并按 rc.1 最终 release notes 重新逐条校准）
 > 升级状态：`0.1.2-rc.1` 已上 npm **dist-tag latest**（2026-09-03 发布）；GitHub 同日出现 `0.1.3-alpha.1`（2026-09-04，含破坏性 Session API 变更 + 已知性能回退）→ **本文目标锁定 rc.1，0.1.3-alpha.1 只做前瞻避让不升级**（§五）。
 > 事实源：本文所有「当前系统」结论均来自 2026-09-04 对 csai `/opt/silkspool/dsh/` 的只读实查（grep 插件依赖、读 settings.yaml/edge-Caddyfile/dsh-upgrade.sh/scheduler.js、查 asset-graph.db 表结构），非文档推断。
@@ -276,4 +277,46 @@
 
 ---
 
-*本文档为方案设计，未实施、未修改任何系统文件。批准后按 §七批次执行，每批完成后更新 README.md 里程碑日志与本文档状态头。*
+*本文档为方案设计，批准后按 §七批次执行，每批完成后更新 README.md 里程碑日志与本文档状态头。*
+
+---
+
+## 十、实施结果（2026-09-04，B0'/B1'/B2' 完成）
+
+### 10.1 B1' 升级过程——五个坑全根因修复
+
+| # | 坑 | 根因与修复 | 回写 |
+|---|---|---|---|
+| 1 | `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` | pnpm 11.22.0 无 TTY 清 modules 目录交互确认中止；`npm_config_confirm_modules_purge=false` 无效，实测认 **CI 变量** → `export CI=true` | dsh-upgrade.sh 模板 |
+| 2 | CI=true 下 `ERR_PNPM_OUTDATED_LOCKFILE` | CI 默认 frozen-lockfile，版本切换 lockfile 必然落后 → `--no-frozen-lockfile` | dsh-upgrade.sh 模板 |
+| 3 | ERR_PNPM_UNUSED_PATCH | pnpm-workspace.yaml patch 声明钉 0.1.1-rc.2 → 对 0.1.2-rc.1 的 dsh-llm-deepseek 重打 reasoning_content patch（同款 sed 修复 + git 风格 header）+ workspace 声明升版 | 部署现场（每次升版必做） |
+| 4 | `StorageError: session_projcache stored version 3 != expected 5` → crash-loop | 0.1.2 存储单元格式升级 → 备份后改 unit.version 3→5；做成 **projcache_fix 幂等钩子**入升级脚本 | dsh-upgrade.sh 模板 |
+| 5 | pnpm 僵死 40+ 分钟（RetryOperation 死循环） | root 属主 node_modules（8-31 手工 patch 遗留）→ EACCES 后死循环 → `chown -R silkspool:silkspool` | 部署纪律（spawn_worker 红线已有） |
+
+### 10.2 验证结论（V1-V10 + 实测补充）
+
+- **V1 edge token**：方案 A 成立零改动——LAN 3080 → 302 → auth-gate 登录页，Caddy Host 改写（`header_up Host 127.0.0.1:3081`）继续绕过 0.1.2 一次性 token 网络访问要求。开放问题 1 结论：判定取 hostname。
+- **V2 settings-mirror-patch**：模式串已变（`connection.isLoopback` → `ctx.remote.$host.isLoopback`，client.js:1345），手工重放 `persistence = "host"` 成功；模板改双模式（新旧串都认）。
+- **插件树/服务/preset/spawn_worker/webhook/web_fetch**：157 插件 id、sec-* 双 profile 全在、7 preset persona 完好、spawn_worker pong、xray finding 入库（冒烟数据已清理）、web_fetch 实测直连公网 200。
+- **V8 web_fetch 禁用开关**：0.1.2 无独立禁用配置（web+headless 两态 `fetch: true` 默认），F-6 纪律是唯一约束手段——已下发。
+
+### 10.3 F-6/F-7/F-8 落地明细
+
+| 项 | 落地 |
+|---|---|
+| F-6 web_fetch 边界纪律 | sec-runtime-discipline **第 10 条**：目标域交互一律 run_cli；web_fetch 仅限非目标域公开资料，禁对 scope 资产使用（出口直连不经 mubeng） |
+| F-7 模型路由纪律 | sec-runtime-discipline **第 11 条**：worker 禁自主切换 provider；覆盖只能由派单方经 spawn_worker `--patch` 显式指定 |
+| F-7 插件名上报关闭 | **plugin-package-inventory-deepseek `enabled: false`**（web + headless 双 profile cordis.patch.yml，dump-config 验证生效）。键名经探查确认：该插件由 dsh-base bundle 挂载、config 走 zod `enabled` 默认 true。N12 session-log 上报确认默认关（zod default(false)），无需动作。开放问题 3 结论：N8 无全局开关，纪律是约束手段 |
+| F-8 版本钉同步 | setup.sh DSH_VERSION → 0.1.2-rc.1；dsh-version-watch.sh KNOWN → 0.1.2-rc.1 + 版本获取改 **dist-tags.latest**（curl registry 直查，替代 `npm view versions[-1]` 的 alpha 误报）；线上脚本已同步部署+冒烟（`仍最新=0.1.2-rc.1`），radar-queue 清理 5 条陈旧 dsh-new-version 事件 |
+| 模板部署 | 仓库 templates 已 rsync → /opt/SilkSpool/bundles/dsh/（运行时副本） |
+
+### 10.4 B3' 观察期任务（进行中）
+
+- 当日 19:00 UTC（Beijing 03:00）双链 #16/#17 自动触发 = 首个观察点（次晨验收 done 状态）
+- Shell 倾向轨迹观察（C2/F13）、F-2 存量 000 复验 once 任务、bill 成本对比
+
+### 10.5 遗留登记
+
+- F-5 send_message 人工断点：不排期（T-7 凭据依赖 H-002）
+- 0.1.3 升级前置：SessionHandle 两处重写（index.js:638 / scheduler.js findWorkerSessionId）+ 官方修性能回退
+- 每次升版必做：重打 dsh-llm-deepseek reasoning_content patch（ERR_PNPM_UNUSED_PATCH）+ 确认 node_modules 属主 silkspool

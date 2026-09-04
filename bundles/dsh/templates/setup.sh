@@ -9,7 +9,7 @@ set -euo pipefail
 BASE_DIR="{{BASE_DIR}}"
 APP_DIR="$BASE_DIR/app"
 DATA_DIR="$BASE_DIR/data"
-DSH_VERSION="0.1.1-rc.2"          # pin：升级只走 dsh-upgrade.sh（rc.2 全家一致，勿降回 rc.7——setup 若降版会重解析浮动依赖致 web boot 混版）
+DSH_VERSION="0.1.2-rc.1"          # pin：升级只走 dsh-upgrade.sh（2026-09-04 从 0.1.1-rc.2 升至 0.1.2-rc.1；setup 版本钉必须与线上一致，否则重跑 setup 会降版重解析浮动依赖致 web boot 混版）
 NODE_MAJOR=22
 
 log()  { echo "[setup] $*"; }

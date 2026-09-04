@@ -1,6 +1,6 @@
 ---
 name: sec-runtime-discipline
-description: 运行环境公共纪律——代理出口/授权边界/派单/interval 任务/失败留痕/大输出摘要/日期标签。所有定时任务与执行会话默认遵守（单一事实源，任务 objective 不再内联重复）。
+description: 运行环境公共纪律——代理出口/授权边界/派单/interval 任务/失败留痕/大输出摘要/日期标签/web_fetch 边界/模型路由。所有定时任务与执行会话默认遵守（单一事实源，任务 objective 不再内联重复）。
 ---
 
 # 运行环境公共纪律
@@ -14,4 +14,6 @@ description: 运行环境公共纪律——代理出口/授权边界/派单/inte
 7. **日期标签**：日报/黑板键/台账文件名统一 YYYY-MM-DD；定时任务收尾 task_update 的 **note 必须以【{项目}·{角色}·MMdd】开头**（如【美团·vuln·0828】），保证看板执行历史左侧标题一眼可分辨哪天哪个任务。
 8. **黑板**：环境故障查 [env-issue] 前缀键（现行有效才参考）；存活清单/台账不内联进 objective，以黑板/facts 实时记录为准。
 9. **事实生命周期**：note 类=agent 工作速记（ephemeral，14 天滚动消亡）——失败记录/当日结论/临时观察写 note；**长期知识必须写 target/asset/finding 等分类**（durable，30 天复验，被引用即续期）；带明确时效的事实用 intent.ttl_days 显式声明。禁止把需要长期保留的知识写进 note（14 天后会被 sweeper 归档）。
+10. **web_fetch 边界（2026-09-04 起，DSH 0.1.2 默认启用）**：目标域（scope.yml 内资产）交互一律走 run_cli（scope-guard 管控）；web_fetch 仅限**非目标域公开资料**（文档/CVE/POC 公开页等），**禁止对 scope 内资产使用 web_fetch**（绕过 scope-guard 与代理池出口纪律，且出口直连公网不经 mubeng 网关）。对 scope 内资产的网页取证用 run_cli + curl（模板化代理）。
+11. **模型路由**：worker 禁止自主切换 provider/模型——一律默认路由（bellkeeper/pool-secagent，由 model-failover 做平台级熔断回退）。子代理的 provider/模型覆盖只能由派单方（人工/父任务规划）通过 spawn_worker `--patch` 显式指定，worker 会话内不得自行改选 providers 列表里的其他渠道（直连 deepseek 等会绕过网关的额度/熔断/审计）。
 

@@ -29,8 +29,10 @@ err() { echo "[upgrade][ERROR] $*" >&2; }
 
 export PATH="$NODE_BIN:$PATH"
 # pnpm 在无 TTY 环境下遇 modules 目录清理会交互式确认并中止（ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY，
-# 2026-09-04 0.1.2-rc.1 升级实测触发）——显式关闭确认
+# 2026-09-04 0.1.2-rc.1 升级实测触发）。npm_config_confirm_modules_purge=false 对 pnpm 11 无效，
+# 实测认 CI 变量——两个都设，双保险。
 export npm_config_confirm_modules_purge=false
+export CI=true
 
 [ -d "$APP_DIR" ] || { err "$APP_DIR 不存在，请先 spool bundle dsh setup <host>"; exit 1; }
 
@@ -105,9 +107,33 @@ p = json.load(open("package.json"))
 p.setdefault("dependencies", {})["@deepseek-ai/dsh"] = sys.argv[1]
 json.dump(p, open("package.json", "w"), indent=2, ensure_ascii=False)
 EOF
-if ! pnpm install --prod --ignore-scripts; then
+# --no-frozen-lockfile：CI=true 下 pnpm 默认 frozen-lockfile，版本切换时 lockfile 必然落后于
+# package.json（ERR_PNPM_OUTDATED_LOCKFILE，2026-09-04 实测）。--ignore-scripts 保持供应链纪律。
+if ! pnpm install --prod --ignore-scripts --no-frozen-lockfile; then
     rollback; exit 1
 fi
+
+# ---------- 2b. 存储单元版本升钩子 ----------
+# 0.1.2-rc.1 实测：storages/session_projcache.json 的 unit.version 3 与新代码期望 5 冲突，
+# 启动直接 plugin tree failed（version-mismatch）且无限 crash-loop（Restart=always 反复拉起）。
+# 此处幂等升版：unit.version < 期望 → 备份后改写。若未来 DSH 再改格式，同样在此登记。
+projcache_fix() {
+    local f="$DATA_DIR/storages/session_projcache.json"
+    [ -f "$f" ] || return 0
+    local cur
+    cur=$(python3 -c 'import json;print(json.load(open("'"$f"'"))["unit"]["version"])' 2>/dev/null || echo "")
+    [ "$cur" = "3" ] || return 0
+    cp "$f" "$DATA_DIR/backups/session_projcache.v${cur}.json.bak-$(date +%Y%m%d)"
+    python3 - "$f" <<'EOF'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["unit"]["version"] = 5
+json.dump(d, open(p, "w"), separators=(",", ":"))
+EOF
+    log "session_projcache 存储版本 3→5 已升版（原文件备份在 backups/）"
+}
+projcache_fix
 
 # ---------- 3. 重启 + 冒烟 ----------
 log "重启 $SERVICE ..."
