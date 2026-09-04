@@ -1,6 +1,6 @@
 # SilkSecAgent SRC 漏洞挖掘体系 · 持续推进文档
 
-> 版本：v3.3 · 2026-09-04（由设计规范 v2.1 + 人工待办文档合并而来，为唯一持续推进入口）
+> 版本：v3.4 · 2026-09-04（由设计规范 v2.1 + 人工待办文档合并而来，为唯一持续推进入口）
 > 性质：Living Document。历史设计文档与实施报告见本目录其他文件；本文档只保留**当前状态、待办、未完成的详细内容、工作规范**。
 > 体系运行位置：csai `/opt/silkspool/dsh/`；版本受控源文件在 SilkSpool 仓库 `bundles/dsh/templates/`。
 > **系统是什么、怎么转**（插件/脚本/流程/提示词/状态机/DSH+pi 架构完整解剖）见 [silksecagent-system-complete.md](silksecagent-system-complete.md)。
@@ -26,7 +26,8 @@
 - 台账体系：`data/pipeline/{program}/attempts-*.tsv`（六态）、`endpoints-*.tsv`（接口面）、`radar-queue.jsonl`（变化雷达）
 - **流程守卫（P15）**：interval 日任务标 `done` 前引擎硬校验纪律产物（台账 24h 增量 / card_usage / handoff-{date}.md），缺失即拦截——纪律不再依赖提示词自觉
 - **噪声闸门（P15）+ 完整性闸门（v4.2）**：info 级模板指纹自动打 `noise=1`；缺复现步骤/影响或标题<10 字符的登记一律归「待验证候选」——漏洞列表只呈现经 LLM 验证流登记、字段完整可复核的信号（机器直灌不冒充漏洞），补全后重登记可就地升级
-- **统一审批中心（v4.3）**：`approval_requests` 通用表 + `APPROVAL_KINDS` kind 注册表（首个 kind `scope-domain`=候选授权域名，批准自动原子写回 scope.yml）；agent 工具 `approval_request` 提请，看板「审批」tab 批准/驳回留痕；批准前 fail-closed 不变
+- **统一审批中心（v4.3 + v4.4 判据结构化）**：`approval_requests` 通用表 + `APPROVAL_KINDS` kind 注册表（`scope-domain`=候选授权域名：提请须带股权判据 equity_basis/independent_src/corroboration（口径=rules/src/equity-gate.md 股权闸），批准=原子写回 scope.yml **+ 自动入队首轮资产收集种子任务（`[审批入队]` 前缀）+ radar-queue scope-approved 事件**；`exclude-exception`=排除例外评估：批准=移出排除+并入 scope+durable fact 留判据）；agent 工具 `approval_request` 提请，看板「审批」tab 渲染判据 chip 批准/驳回留痕；批准前 fail-closed 不变
+- **srcskill 实战先验吸收（v4.4 首批）**：`rules/src/equity-gate.md`（股权范围闸：五档判据口径 + 默认不入池 + 独立SRC判定 + 人工判例表含 H-004 zhaopin 教训）+ `rules/src/technique-index.md`（打穿短表 87 行：手法族×认什么×打哪×出什么算成×假点，开局先扫「认什么」列对现场特征）；sec-pipeline 插件正式接线（manifest.yaml + setup.sh 8.4，此前仅开发完成未部署）
 - **事实治理（v4.3）**：countFacts/factSearch 同口径（行数=总数）；看板事实 tab 默认隐藏 note 速记 + 生命周期 facet（长期/时效/时间线）
 - **报告（v4.3）**：buildReport 按 severity 多选/source 筛选生成、按项目分节、文件名语义化；报告列表按项目分组可筛
 - **资产准入（P15）**：未分级资产禁入主动扫描队列（`asset_query level_in=S,A,B`）；全库已分级（grade-assets，域外参考站保持 NULL 永不进队）
@@ -234,6 +235,7 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 
 | 日期 | 里程碑 | 记录 |
 |---|---|---|
+| 2026-09-04 | **v4.4 srcskill 首批吸收（P19'+P20'）** | ① sec-pipeline 插件接线：manifest.yaml + setup.sh §8.4 正式部署（此前 8 工具仅开发未接线）；② 批准→种子入队闭环：scope-domain onApprove 自动创建 `[审批入队]` once 任务（+5min，只做资产收集禁漏洞探测）+ radar-queue.jsonl 追加 scope-approved 事件（双通道 best-effort 不阻塞批准）；③ 股权判据结构化：scope-domain 提请强制 equity_basis/independent_src/corroboration 三字段（payload 存储，看板渲染判据 chip）；④ 新 kind `exclude-exception`（排除例外评估：validate 强制 subject 在排除清单内，批准=移出排除+并入 scope+durable fact）；⑤ rules 先验两篇：equity-gate.md 股权闸（含判例表 4 例）+ technique-index.md 打穿短表 87 行（手法族列映射 vuln_type 词汇表）；⑥ 纪律更新：sec-runtime-discipline 第 2 条扩 exclude-exception 与判据要求、sec-pipeline §2 增开局扫技术索引；⑦ 修部署链路缺口：sec-pipeline/sec-runtime-discipline 技能源在 data-seed/skills/ 但不经任何通道下发（改了不生效）——已按既有模式接入 seed-skills.sh heredoc（幂等刷新；注意 spool pushTemplates 按文件名平铺推送，manifest 不能列嵌套路径） |
 | 2026-08-27 | 体系检查与设计 v1.0→v2.1 | 对 csai 只读检查：确认"高覆盖低产出"（近 6 天仅 +1 low；high/medium 全来自 08-20 手工战役）、工具闲置（20+ 装 5 用）、kb 闲置、xray 无消费。产出五公理设计规范（本目录保留 v2.1 历史版于 git 历史） |
 | 2026-08-28 | P13 第一批落地 | sec-pipeline 技能、17 张漏洞卡+注册表、3 个核心脚本（validate/coverage/replay 均实测）、brief/handoff 模板、tasks #16-#19 objective 接入（DB 已备份）、OOB interactsh 二进制部署待 DNS |
 | 2026-08-28 | 第二周批次落地 | l2-collect（实测单目标 6593 端点/913 参数 URL）、surface-consume（队列+7 类敏感回扫）、js-watch、ct-watch 常驻（calidog 不可用改 certspotter 轮询+429 退避） |

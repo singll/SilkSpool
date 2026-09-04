@@ -193,6 +193,11 @@ if [ -f "$BASE_DIR/sec-suite-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-suite-plugin-setup.sh" || warn "安全套件插件安装失败（不影响 DSH 主程序）"
 fi
 
+# -------------------- 8.4 流水线插件（sec-pipeline：台账/卡片使用/机械复核原生化工具） --------------------
+if [ -f "$BASE_DIR/sec-pipeline-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-pipeline-plugin-setup.sh" || warn "流水线插件安装失败（不影响 DSH 主程序）"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"

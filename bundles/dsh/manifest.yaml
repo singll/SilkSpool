@@ -65,6 +65,10 @@ templates:
   - dsh-plugin-sec-suite.patch.yml
   - sec-suite-plugin-setup.sh
   - fofa_search.sh
+  # --- 流水线插件（sec-pipeline：覆盖台账/卡片使用/雷达读取/机械复核/参数面消费原生化工具）---
+  - dsh-plugin-sec-pipeline.js
+  - dsh-plugin-sec-pipeline.patch.yml
+  - sec-pipeline-plugin-setup.sh
   # --- P15/P16 治理与分诊脚本（setup 归位到 scripts/，版本受控源在 data-seed/scripts/）---
   - data-seed/scripts/vision-triage.mjs
   - data-seed/scripts/grade-assets.py

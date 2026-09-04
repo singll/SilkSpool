@@ -408,11 +408,46 @@ function scopeList() {
 // 新增审批类型只需在此注册，工具面/rpc/看板零改动。
 // ==============================================================================
 
+// P20' 股权闸判据枚举（口径见 data/rules/src/equity-gate.md：100% 控股算、参股/投资不算、
+// 有自身 SRC 渠道的不并入——H-004 zhaopin.com 教训字段化）
+const EQUITY_BASIS = ['控股/全资', '收购/财团', '品牌/产品线', '技术印证', '其他']
+const INDEPENDENT_SRC = ['无', '有', '不确定']
+
+// P19' 批准 → 种子入队：新授权域名当天启动首轮资产收集。双通道（once 种子任务 5 分钟后由
+// scheduler 派发 + radar 事件供每日 recon 链 radar_read 兜底）。best-effort：入队失败不影响批准结果。
+function enqueueScopeSeed(host, programName) {
+  const notes = []
+  try {
+    const dir = path.join(DATA_DIR, 'pipeline', programName)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.appendFileSync(path.join(dir, 'radar-queue.jsonl'),
+      JSON.stringify({ ts: new Date().toISOString(), type: 'scope-approved', domain: host, source: 'approval' }) + '\n')
+    notes.push('radar 事件已入队')
+  } catch (e) { notes.push(`radar 入队失败: ${e.message}`) }
+  try {
+    const objective = `[审批入队] 新授权域名 ${host} 首轮资产面收集：radar_read 读入 scope-approved 事件 → subfinder 子域枚举 → dnsx 解析 → httpx 存活+指纹入图谱（store:asset-graph）。只做资产收集，禁止主动漏洞探测。完成后 attempts_log 落台账（asset=${host}，card_id=- 非卡片动作，N/A 须理由）。`
+    const dup = assetDb.taskList({ programId: programName, q: host, bucket: 'active', limit: 10 })
+      .filter((t) => (t.objective || '').includes('[审批入队]'))
+    if (dup.length) notes.push('种子任务已存在（幂等跳过）')
+    else {
+      const r = assetDb.taskCreate({
+        program_id: programName, phase: 'recon', objective, priority: 1,
+        schedule: { kind: 'once', at: Date.now() + 5 * 60 * 1000 },
+      })
+      if (r.ok) notes.push(`种子任务 #${r.id} 已入队（5 分钟后派发）`)
+      else notes.push(`种子任务入队失败: ${r.error}`)
+    }
+  } catch (e) { notes.push(`种子任务入队异常: ${e.message}`) }
+  return notes
+}
+
 const APPROVAL_KINDS = {
   'scope-domain': {
     label: '授权域名',
-    // 提请校验：建议项目须存在；域名不得已在 scope（已授权无须审批）；排除清单内的也不收
-    validate({ subject, program_name }) {
+    // 提请校验：建议项目须存在；域名不得已在 scope（已授权无须审批）；排除清单走 exclude-exception。
+    // P20' 股权判据结构化：equity_basis（归属判据类型）+ independent_src（目标有无自身 SRC 渠道）必填，
+    // corroboration（旁证）选填——判据口径见 data/rules/src/equity-gate.md。
+    validate({ subject, program_name, payload }) {
       const host = hostOf(subject)
       if (!host) return { ok: false, error: `无法解析域名: ${subject}` }
       const scope = loadScope()
@@ -423,10 +458,23 @@ const APPROVAL_KINDS = {
       }
       const chk = checkTarget(host)
       if (chk.allow) return { ok: false, error: `${host} 已在项目 ${chk.program} 授权范围内，无须审批` }
-      if (chk.program && /排除清单/.test(chk.reason)) return { ok: false, error: `${host} 在项目 ${chk.program} 排除清单中——被排除的资产走人工评估，不走审批流` }
-      return { ok: true, value: { host, program_name } }
+      if (chk.program && /排除清单/.test(chk.reason)) return { ok: false, error: `${host} 在项目 ${chk.program} 排除清单中——请改提 exclude-exception（排除例外评估）` }
+      const eq = payload && typeof payload === 'object' ? payload : {}
+      const basis = String(eq.equity_basis || '').trim()
+      if (!EQUITY_BASIS.includes(basis)) {
+        return { ok: false, error: `equity_basis 必填（股权/归属判据，可选: ${EQUITY_BASIS.join('/')}）；口径见 data/rules/src/equity-gate.md（100% 控股算，参股/投资不算）` }
+      }
+      const indep = String(eq.independent_src || '').trim()
+      if (!INDEPENDENT_SRC.includes(indep)) {
+        return { ok: false, error: `independent_src 必填（目标是否有自身 SRC 渠道，可选: ${INDEPENDENT_SRC.join('/')}）——有独立收洞渠道的不并入本项目（H-004 教训）` }
+      }
+      return { ok: true, value: { host, program_name, payload: {
+        equity_basis: basis, independent_src: indep,
+        corroboration: String(eq.corroboration || '').trim() || null,
+      } } }
     },
     // 批准副作用：host 追加进目标项目 scope（复用 scopeSaveProgram 原子写+备份+审计+syncPrograms）
+    // + P19' 种子入队（once 任务 + radar 事件，当天启动首轮资产收集）
     onApprove({ subject, program_name }) {
       const host = hostOf(subject)
       const scope = loadScope()
@@ -445,12 +493,67 @@ const APPROVAL_KINDS = {
         finding_db: prog.finding_db || '',
       }, false)
       if (!r.ok) return r
-      return { ok: true, note: `${host} 已加入项目 ${program_name} 授权范围（fail-closed 即时生效）` }
+      const seed = enqueueScopeSeed(host, program_name)
+      return { ok: true, note: `${host} 已加入项目 ${program_name} 授权范围（fail-closed 即时生效）；${seed.join('；')}` }
+    },
+  },
+  // P20' 排除清单例外评估——被排除资产的人工评估正规入口（此前「走人工评估」无登记无留痕）。
+  // 批准 = 移出排除清单并加入授权范围 + durable 事实留档；驳回 = 维持排除（决策留痕）。
+  'exclude-exception': {
+    label: '排除例外',
+    validate({ subject, program_name, payload }) {
+      const host = hostOf(subject)
+      if (!host) return { ok: false, error: `无法解析域名: ${subject}` }
+      if (!program_name) return { ok: false, error: 'exclude-exception 必填 program_name（排除该域的项目名）' }
+      const scope = loadScope()
+      const programs = Array.isArray(scope.programs) ? scope.programs : []
+      const prog = programs.find((p) => p && p.name === program_name)
+      if (!prog) return { ok: false, error: `项目 ${program_name} 不在 scope.yml（scopeList 可查）`, programs: programs.map((p) => p.name) }
+      const excludes = Array.isArray(prog.exclude) ? prog.exclude : []
+      if (!excludes.some((e) => entryMatches(e, host))) {
+        return { ok: false, error: `${host} 不在项目 ${program_name} 的排除清单中（排除例外只收被排除资产；普通候选走 scope-domain）` }
+      }
+      const eq = payload && typeof payload === 'object' ? payload : {}
+      const basis = String(eq.equity_basis || '').trim()
+      if (!EQUITY_BASIS.includes(basis)) {
+        return { ok: false, error: `equity_basis 必填（例外评估判据，可选: ${EQUITY_BASIS.join('/')}）；解除排除须给出比 scope-domain 更强的归属证据` }
+      }
+      return { ok: true, value: { host, program_name, payload: { equity_basis: basis } } }
+    },
+    onApprove({ subject, program_name }) {
+      const host = hostOf(subject)
+      const scope = loadScope()
+      const prog = (Array.isArray(scope.programs) ? scope.programs : []).find((p) => p && p.name === program_name)
+      if (!prog) return { ok: false, error: `项目 ${program_name} 不在 scope.yml（可能已被移除），请驳回后重新提请` }
+      const entries = Array.isArray(prog.scope) ? prog.scope : []
+      const excludes = (Array.isArray(prog.exclude) ? prog.exclude : []).filter((e) => e !== host)
+      if (entries.includes(host) && excludes.every((e) => e !== host)) return { ok: true, note: `${host} 已在 scope 且不在排除清单（幂等跳过）` }
+      const r = scopeSaveProgram({
+        name: program_name,
+        platform: prog.platform || '',
+        scope: entries.includes(host) ? entries : [...entries, host],
+        exclude: excludes,
+        max_risk: (prog.rules && prog.rules.max_risk) || 'active',
+        fixed_egress_ip: !!(prog.rules && prog.rules.fixed_egress_ip),
+        workspace: (prog.rules && prog.rules.workspace) || '',
+        finding_db: prog.finding_db || '',
+      }, false)
+      if (!r.ok) return r
+      // durable 事实留档：例外决策的项目级可见记录（audit.jsonl 之外的长期痕迹）
+      try {
+        assetDb.factUpsert({
+          program_id: program_name, fact_key: `scope/exception-${host}`, category: 'scope',
+          summary: `排除例外已批准：${host} 移出排除清单并入授权范围`,
+          body: `排除清单例外经人工评估批准（审批中心 exclude-exception）。生效动作：移出 ${program_name} 排除清单 + 加入授权范围。评估判据与证据见 approval_requests 决策留痕。`,
+          confidence: 'confirmed', source: 'approval',
+        })
+      } catch { /* 留档失败不阻断批准（audit.jsonl 已有全量留痕） */ }
+      return { ok: true, note: `${host} 已移出项目 ${program_name} 排除清单并加入授权范围（fail-closed 即时生效；例外决策已留档 facts）` }
     },
   },
 }
 
-// agent 工具入口：通用校验（kind 注册/去重/evidence）+ kind.validate 专属校验
+// agent 工具入口：通用校验（kind 注册/去重/evidence）+ kind.validate 专属校验（含 payload 股权判据）
 function approvalRequest(args, exec) {
   const kind = String(args.kind || '').trim()
   const subject = String(args.subject || '').trim()
@@ -459,14 +562,19 @@ function approvalRequest(args, exec) {
   if (!def) return { ok: false, error: `未知审批类型 ${kind}（可选: ${Object.keys(APPROVAL_KINDS).join('/')}）` }
   if (!subject) return { ok: false, error: 'subject 必填' }
   if (evidence.length < 10) return { ok: false, error: 'evidence 必填且 ≥10 字（归属证据/依据摘要）' }
-  const v = def.validate({ subject, program_name: String(args.program_name || '').trim(), evidence })
+  const payload = {
+    equity_basis: String(args.equity_basis || '').trim(),
+    independent_src: String(args.independent_src || '').trim(),
+    corroboration: String(args.corroboration || '').trim(),
+  }
+  const v = def.validate({ subject, program_name: String(args.program_name || '').trim(), evidence, payload })
   if (!v.ok) return v
   const add = assetDb.approvalAdd({
     kind, subject: v.value?.host || subject, program_name: String(args.program_name || '').trim() || null,
-    payload: null, evidence, requested_by: sessionIdOf ? safeSessionId(exec) : 'agent',
+    payload: v.value?.payload || null, evidence, requested_by: sessionIdOf ? safeSessionId(exec) : 'agent',
   })
   if (!add.ok) return add
-  audit({ ts: Date.now(), run_id: '-', tool: 'approval_request', decision: 'executed', detail: { kind, subject, request_id: add.request_id } })
+  audit({ ts: Date.now(), run_id: '-', tool: 'approval_request', decision: 'executed', detail: { kind, subject, request_id: add.request_id, equity_basis: payload.equity_basis || undefined, independent_src: payload.independent_src || undefined } })
   return { ok: true, request_id: add.request_id, hint: '已提请人工审批（看板「审批」tab）。批准前目标仍被 scope-guard 拒绝，不要尝试打点。' }
 }
 
@@ -1563,16 +1671,20 @@ export function apply(ctx, config) {
 
   ctx.tools.register({
     name: 'approval_request',
-    description: '统一审批入口：向人工提请审批（首个类型 scope-domain=候选授权域名）。'
+    description: '统一审批入口：向人工提请审批（scope-domain=候选授权域名 / exclude-exception=排除清单例外评估）。'
       + '资产收集发现疑似 scope 外但归属证据明确的新资产（CNAME 指向授权资产/品牌印证/收购关系）时必须提请，'
       + '禁止只写事实不提请求；也禁止把归属不确定的资产凑数提请。'
+      + '股权判据口径见 data/rules/src/equity-gate.md：100% 控股算、参股/投资不算、有自身 SRC 渠道的不并入。'
       + '登记是被动观察行为：批准前目标依旧被 scope-guard fail-closed 拒绝，授权边界不变。',
     parameters: {
       type: 'object',
       properties: {
-        kind: { type: 'string', enum: ['scope-domain'], description: '审批类型：scope-domain=把候选域名加入授权范围' },
-        subject: { type: 'string', description: '审批对象（scope-domain 传域名，如 catpaw.com）' },
-        program_name: { type: 'string', description: 'scope-domain 必填：建议归属的 scope.yml 项目名' },
+        kind: { type: 'string', enum: ['scope-domain', 'exclude-exception'], description: '审批类型：scope-domain=把候选域名加入授权范围；exclude-exception=被排除资产的例外评估（解除排除）' },
+        subject: { type: 'string', description: '审批对象（传域名，如 catpaw.com）' },
+        program_name: { type: 'string', description: '必填：建议归属的 scope.yml 项目名（exclude-exception 为排除该域的项目名）' },
+        equity_basis: { type: 'string', enum: ['控股/全资', '收购/财团', '品牌/产品线', '技术印证', '其他'], description: '股权/归属判据类型（必填）。「技术印证」=CNAME 指向授权资产/内部部署域等部署关系' },
+        independent_src: { type: 'string', enum: ['无', '有', '不确定'], description: '目标是否有自身 SRC 收洞渠道（scope-domain 必填；有→不并入本项目）' },
+        corroboration: { type: 'string', description: '旁证（选填，如 "meituan.com 下 126 个内部部署域印证"）' },
         evidence: { type: 'string', description: '归属证据/依据摘要（≥10 字，如 "www CNAME→授权资产 meituan.com"）' },
       },
       required: ['kind', 'subject', 'evidence'],

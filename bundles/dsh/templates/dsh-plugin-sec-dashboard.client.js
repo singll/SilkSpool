@@ -1578,7 +1578,7 @@ window.__ModuleLoader__.load({
     // ── 审批视图（v4.3 统一审批中心）：agent 提请的待审批事项，批准/驳回 ──────────
     // 首个类型 scope-domain=候选授权域名（批准=追加进 scope.yml，复用后端 onApprove 副作用）。
     // 后续新审批类型挂进后端 APPROVAL_KINDS 即自动出现在此列表，前端零改动。
-    var APPROVAL_KIND_LABEL = { 'scope-domain': '授权域名' }
+    var APPROVAL_KIND_LABEL = { 'scope-domain': '授权域名', 'exclude-exception': '排除例外' }
     var APPROVAL_STATUS_COLOR = { pending: T.warn, approved: T.success, rejected: T.label3 }
     function ApprovalsView(props) {
       var state = props.state
@@ -1599,6 +1599,9 @@ window.__ModuleLoader__.load({
       }
       function rowCard(r) {
         var isPending = r.status === 'pending'
+        // P20' 股权判据结构化：payload 携带 equity_basis/independent_src/corroboration，看板就地呈现
+        var p = null
+        try { p = r.payload ? JSON.parse(r.payload) : null } catch (e) { p = null }
         return el('div', { key: r.id, style: { ...card, marginTop: 10, opacity: isPending ? 1 : 0.75 } },
           el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
             el('span', { style: { ...pill, color: T.business, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-business-primary) 40%, transparent)' }, title: '审批类型 ' + r.kind }, (APPROVAL_KIND_LABEL[r.kind] || r.kind)),
@@ -1608,10 +1611,16 @@ window.__ModuleLoader__.load({
             el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, '#' + r.id + ' · ' + fmtTime(r.created_at) + (r.requested_by ? ' · ' + r.requested_by : '')),
             isPending
               ? el('span', null,
-                  el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: !!busy, style: { height: 26 }, title: r.kind === 'scope-domain' ? '批准：域名追加进 ' + r.program_name + ' 的 scope.yml（原子写+备份+审计，fail-closed 即时生效）' : '批准并执行对应动作', onClick: function () { decide(r, 'approve') } }, '批准'),
+                  el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: !!busy, style: { height: 26 }, title: r.kind === 'scope-domain' ? '批准：域名追加进 ' + r.program_name + ' 的 scope.yml（原子写+备份+审计，fail-closed 即时生效）并自动入队首轮资产收集种子任务' : '批准并执行对应动作', onClick: function () { decide(r, 'approve') } }, '批准'),
                   el('button', { type: 'button', className: 'silksec-btn silksec-icon-btn-danger', disabled: !!busy, style: { height: 26, marginLeft: 6 }, title: '驳回（留痕，可填备注）', onClick: function () { decide(r, 'reject') } }, '驳回'))
               : null),
+          (p && (p.equity_basis || p.independent_src))
+            ? el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 } },
+                p.equity_basis ? el('span', { style: pill, title: '股权/归属判据（口径 data/rules/src/equity-gate.md）' }, '判据: ' + p.equity_basis) : null,
+                p.independent_src ? el('span', { style: { ...pill, color: p.independent_src === '有' ? T.warn : T.label2 }, title: '目标是否有自身 SRC 收洞渠道（有→不并入本项目）' }, '独立SRC: ' + p.independent_src) : null)
+            : null,
           el('div', { style: { color: T.label2, marginTop: 6, ...F.xxs, wordBreak: 'break-word' } }, r.evidence || '—'),
+          (p && p.corroboration) ? el('div', { style: { color: T.label3, marginTop: 4, ...F.xxxs } }, '旁证: ' + p.corroboration) : null,
           (r.note && !isPending) ? el('div', { style: { color: T.label3, marginTop: 4, ...F.xxxs } }, '决策备注: ' + r.note) : null)
       }
       return el('div', null,

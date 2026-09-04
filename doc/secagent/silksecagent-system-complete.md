@@ -225,7 +225,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 - **burp_import**：Burp XML（proxy history/scanner issues）→ data/imports/*.jsonl（人工测试成果回流口）
 - **xray webhook**（webhook.js）：xray 7788 → `flows/xray-日期.jsonl` + addFinding（标题「<host> 被动审计候选：<插件>」，不传复现/影响 → 完整性闸门自动归「待验证候选」，不冒充漏洞信号）
 - **report_build**：noise 过滤 + severity（逗号多选）/source 筛选；输出按项目分节（无项目按严重级分组），文件名语义化 `report-{program}-{YYYYMMDD-HHmm}.md`；reports 端点从文件名解析 program/date 元数据 + program/q 筛选
-- **approval_request**（v4.3）：统一审批提请工具。`kind/subject/program_name/evidence(≥10字)` → APPROVAL_KINDS 注册表校验（scope-domain：subject 须在 scope 外、项目须存在、排除清单拒绝）→ approval_requests 表登记（同 (kind,subject) pending 去重）；批准走 kind 的 onApprove（scope-domain=scopeSaveProgram 原子写回 scope.yml），全程 audit。**提请不改变 fail-closed：批准前目标一律拒绝**
+- **approval_request**（v4.3，v4.4 判据结构化）：统一审批提请工具。`kind/subject/program_name/evidence(≥10字)` + kind 专属判据字段（scope-domain：equity_basis 股权判据枚举/independent_src 独立SRC判定/corroboration 旁证，口径见 rules/src/equity-gate.md）→ APPROVAL_KINDS 注册表校验 → approval_requests 表登记（同 (kind,subject) pending 去重，判据存 payload 列，看板审批行渲染判据 chip）；批准走 kind 的 onApprove，全程 audit。**批准即闭环**：scope-domain 批准除 scopeSaveProgram 原子写回 scope.yml 外，自动入队首轮资产收集种子任务（objective 带 `[审批入队]` 前缀，once +5min，只做资产收集禁漏洞探测）+ radar-queue.jsonl 追加 scope-approved 事件（双通道，best-effort 不阻塞批准）；exclude-exception 批准=移出排除清单+并入 scope+落 durable fact（scope/exception-{host}）。**提请不改变 fail-closed：批准前目标一律拒绝**
 
 **FGS 决策图（P17）**：`fgs_nodes` 表 + `fgs_add / fgs_update / fgs_list / fgs_next / fgs_export` 工具，scheduler 在定时任务 prompt 中注入使用说明。目标是把任务执行中的 fact/goal/step/finding 实时结构化，形成 Decide/Execute 循环；任务收尾时 `appendFgsToHandoff` 自动追加 Markdown 摘要。**当前表为空**，框架已就绪，待每日任务实际产生节点。
 
@@ -271,7 +271,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 ### 4.4 sec-dashboard + theme-silksong（UI 面）
 
-- **客户端**（client.js，ModuleLoader bundle）：全局侧边栏入口 → Modal **十视图**：漏洞/资产/接口/事实/任务/知识/报告/审批/授权/审计；服务端分页/搜索/筛选 + 30s 轮询；顶部 stats KPI + **memcore 缺席横幅 + ops 健康度红条**（P15）；任务视图三分区（定时任务卡片/一次性队列/执行历史）+ 工作区区块（program 徽章+计数+会话跳链 `ctx.sessions.open`）；知识 tab=memcore 状态机的 UI（评分/晋升/编辑/弃置/回执/exportable 开关/playbooks）；授权 tab=scope.yml 管理表单（顶部跳转条指向待审批候选）；报告 tab=按项目分组列表（项目/关键字筛选）+ Modal 查看器；审批 tab=统一审批中心（pending 在前/类型徽章/批准/驳回/历史折叠/待审批数进 tab 徽章）。漏洞列表默认只呈现信号面（noise=0），「待验证候选」chip 可点筛选、已定案行紧凑化；事实视图默认隐藏 note 工作速记（开关展开）+ 生命周期 facet。信息架构纪律：**行只放摘要+跳链，详情一律回会话看**。
+- **客户端**（client.js，ModuleLoader bundle）：全局侧边栏入口 → Modal **十视图**：漏洞/资产/接口/事实/任务/知识/报告/审批/授权/审计；服务端分页/搜索/筛选 + 30s 轮询；顶部 stats KPI + **memcore 缺席横幅 + ops 健康度红条**（P15）；任务视图三分区（定时任务卡片/一次性队列/执行历史）+ 工作区区块（program 徽章+计数+会话跳链 `ctx.sessions.open`）；知识 tab=memcore 状态机的 UI（评分/晋升/编辑/弃置/回执/exportable 开关/playbooks）；授权 tab=scope.yml 管理表单（顶部跳转条指向待审批候选）；报告 tab=按项目分组列表（项目/关键字筛选）+ Modal 查看器；审批 tab=统一审批中心（pending 在前/类型徽章/判据 chip（equity_basis+independent_src，独立SRC=有 标警色）/旁证行/批准/驳回/历史折叠/待审批数进 tab 徽章）。漏洞列表默认只呈现信号面（noise=0），「待验证候选」chip 可点筛选、已定案行紧凑化；事实视图默认隐藏 note 工作速记（开关展开）+ 生命周期 facet。信息架构纪律：**行只放摘要+跳链，详情一律回会话看**。
 - **宿主半面**：`/silksec-dashboard` RPC（authority=loopback），47 个 case（读：stats/ops/assets/assetDetail/assetFamily/assetOverview/endpoints/endpointHosts/blackboard/findings/facts/factStats/factGraph/findingGet/tasks/taskRuns/scheduledTasks/workspaces/sessions/programs/scopeList/memcore/expCards/playbooks/reports/reportRead/audit/evalStats/approvalList；写：findingUpdate/factCorrect/factDeprecate/taskCreate/taskRunNow/taskCancel/taskSetStatus/taskScheduleUpdate/scopeSaveProgram/scopeDeleteProgram/programBindWorkspace/expFeedback/expPromote/expDeprecate/expUpdate/expExportable/reportBuild/approvalDecide）——全部复用 assetDb/experience 同一函数（一份校验、一条 audit）。
 - **theme-silksong**：丝之歌全局深色主题（DSH theme registry 注册 tokens，Pharloom 墨青底+Hornet 绯红行动色）；severity 五色经 theme/change 事件注入 style（registry 白名单外）；localStorage 持久化用户选择，首装默认启用。
 
@@ -295,7 +295,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 **治理表**（memcore 建）：每表对应 `*_archive`（同构+archived_at/archive_reason，90 天硬删）、memcore_meta（迁移旗标）、memcore_events（全流转审计）。
 
-**审批表**（asset-db 建，v4.3）：approval_requests（id/kind/subject/program_name/payload/evidence/status: pending→approved|rejected/requested_by/created_at/decided_at/note；kind 经 sec-suite 侧 `APPROVAL_KINDS` 注册表扩展，首个 kind `scope-domain`=候选授权域名）。
+**审批表**（asset-db 建，v4.3）：approval_requests（id/kind/subject/program_name/payload/evidence/status: pending→approved|rejected/requested_by/created_at/decided_at/note；kind 经 sec-suite 侧 `APPROVAL_KINDS` 注册表扩展；payload 存 kind 专属判据 JSON——scope-domain 为 equity_basis/independent_src/corroboration。现有 kind：`scope-domain`=候选授权域名（批准=写回 scope.yml+入队首轮资产收集种子任务）、`exclude-exception`=排除例外评估（subject 须在项目排除清单内，批准=移出排除+并入 scope+durable fact 留判据））。
 
 ### 5.2 状态机全集（触发者→落点）
 
@@ -406,7 +406,7 @@ verify：verify.must_pass 全过 + falsification 逐项排除 + 对抗性自检�
 
 ### 7.3 规则先验层（data/rules/，人工蒸馏静态先验，与经验卡后验互补）
 
-`web/selfhosted-supabase.md`（五端点差分确认/anon 非 service_role/RLS 逐表/跨实例 JWT 不通用）、`web/spring.md`（actuator/SpEL/反序列化/鉴权顺序）、`web/nextjs.md`（Server Actions/middleware 绕过/_next/data 泄露）、`php/thinkphp.md`（payload 代际）、`src/asset-scoring.md`（SABC 打分表 A 漏洞价值 40/B 出洞概率 45/C 时效 15 + owner/accept/biz/state 打标 + 深挖队列规则）、`src/severity-rating.md`（SRC 对齐压级：定级不膨胀/不确定往低报/信息泄露默认低危/忽略级不进提交但留副产物 + CVSS4.0 报告模板）。
+`web/selfhosted-supabase.md`（五端点差分确认/anon 非 service_role/RLS 逐表/跨实例 JWT 不通用）、`web/spring.md`（actuator/SpEL/反序列化/鉴权顺序）、`web/nextjs.md`（Server Actions/middleware 绕过/_next/data 泄露）、`php/thinkphp.md`（payload 代际）、`src/asset-scoring.md`（SABC 打分表 A 漏洞价值 40/B 出洞概率 45/C 时效 15 + owner/accept/biz/state 打标 + 深挖队列规则）、`src/severity-rating.md`（SRC 对齐压级：定级不膨胀/不确定往低报/信息泄露默认低危/忽略级不进提交但留副产物 + CVSS4.0 报告模板）、`src/equity-gate.md`（v4.4 股权范围闸，源自 srcskill dig-scope §3.2.0：equity_basis 五档判据口径/默认不入池=参股·战略投资·合资非100%·联营/independent_src 独立SRC判定/提请质量要求/人工判例表含 zhaopin.com H-004 教训）、`src/technique-index.md`（v4.4 打穿短表 87 行，源自 srcskill 知识库：手法族×认什么×打哪×出什么算成×假点，开局先扫「认什么」对现场特征；索引≠清单）。
 
 ### 7.4 任务 objective（调度注入，每个 interval 任务一行固定实体）
 

@@ -37,7 +37,7 @@ _Avoid_: 黑板、note、key:value。
 旧版扁平 `key:value` 存储，已被 Fact 取代。存量经 `migrate-blackboard-to-facts.js` 幂等迁入 facts 后保留只读观察期，随后下线；`blackboard_set/get` 保留为兼容薄封装（写 `note/` 分类）。
 
 **Scope（授权范围）**：
-`scope.yml` 白名单，fail-closed 硬校验，是平台的安全红线。新授权域名的入口是审批中心（scope-domain kind，批准即原子写回 scope.yml）。
+`scope.yml` 白名单，fail-closed 硬校验，是平台的安全红线。新授权域名的入口是审批中心（scope-domain kind，批准即原子写回 scope.yml 并自动入队首轮资产收集种子任务）；排除清单内域名的重新收口走 exclude-exception kind。
 
 **报告（Report）**：
 findings 的导出产物，`report-{program}-{YYYYMMDD-HHmm}.md` 语义化文件名，按项目分节，支持 severity 多选/source 筛选生成；列表按项目分组可筛。
@@ -56,7 +56,7 @@ _Avoid_: 别挂在会话标签页下。
 _Avoid_: 工作台、安全中心（同名不改）。
 
 **审批（Approval）**：
-统一审批中心，`approval_requests` 表为唯一审批队列。审批类型经 `APPROVAL_KINDS` 注册表扩展（每种 kind 定义 label/validate/onApprove，批准先跑副作用成功才落 approved）；首个 kind `scope-domain`=候选授权域名（批准副作用=追加进 scope.yml，复用 scopeSaveProgram 原子写+备份+审计）。agent 侧用 `approval_request` 工具提请（同对象 pending 去重、evidence≥10 字）；**提请不改变 fail-closed——批准前目标一律拒绝**。未来其他审批类型（intrusive 工具、高危动作）作为新 kind 挂进来即可，看板/工具/rpc 零改动。
+统一审批中心，`approval_requests` 表为唯一审批队列。审批类型经 `APPROVAL_KINDS` 注册表扩展（每种 kind 定义 label/validate/onApprove，批准先跑副作用成功才落 approved）。现有 kind：`scope-domain`=候选授权域名（提请须带股权判据 equity_basis/independent_src/corroboration，口径见 rules/src/equity-gate.md；批准副作用=scopeSaveProgram 原子写回 scope.yml + 自动入队首轮资产收集种子任务（`[审批入队]` 前缀，只做资产收集）+ radar-queue 追加 scope-approved 事件，双通道 best-effort）；`exclude-exception`=排除例外评估（subject 须在项目排除清单内；批准=移出排除+并入 scope+durable fact 留判据）。agent 侧用 `approval_request` 工具提请（同对象 pending 去重、evidence≥10 字、判据存 payload 看板渲染）；**提请不改变 fail-closed——批准前目标一律拒绝**。未来其他审批类型（intrusive 工具、高危动作）作为新 kind 挂进来即可，看板/工具/rpc 零改动。
 _Avoid_: 为每类审批另建专用表/专用流程。
 
 **丝之歌主题（Silksong Theme）**：
