@@ -295,7 +295,7 @@
 
 ### 10.2 验证结论（V1-V10 + 实测补充）
 
-- **V1 edge token**：方案 A 成立零改动——LAN 3080 → 302 → auth-gate 登录页，Caddy Host 改写（`header_up Host 127.0.0.1:3081`）继续绕过 0.1.2 一次性 token 网络访问要求。开放问题 1 结论：判定取 hostname。
+- **V1 edge token**：~~方案 A 成立零改动~~ **误判**（当日复盘推翻，见 §10.6）——验证时看到的 302 → auth-gate 登录页只是外层 auth-gate 在工作，并未穿透到原生 BrowserAuth 层；登录后即 401 `dsh web authentication required`。Host 改写只满足 trusted-hosts 栅栏，**不豁免** token/cookie 认证。开放问题 1 结论修正：栅栏判定取 hostname，认证层无 hostname 豁免。
 - **V2 settings-mirror-patch**：模式串已变（`connection.isLoopback` → `ctx.remote.$host.isLoopback`，client.js:1345），手工重放 `persistence = "host"` 成功；模板改双模式（新旧串都认）。
 - **插件树/服务/preset/spawn_worker/webhook/web_fetch**：157 插件 id、sec-* 双 profile 全在、7 preset persona 完好、spawn_worker pong、xray finding 入库（冒烟数据已清理）、web_fetch 实测直连公网 200。
 - **V8 web_fetch 禁用开关**：0.1.2 无独立禁用配置（web+headless 两态 `fetch: true` 默认），F-6 纪律是唯一约束手段——已下发。
@@ -320,3 +320,24 @@
 - F-5 send_message 人工断点：不排期（T-7 凭据依赖 H-002）
 - 0.1.3 升级前置：SessionHandle 两处重写（index.js:638 / scheduler.js findWorkerSessionId）+ 官方修性能回退
 - 每次升版必做：重打 dsh-llm-deepseek reasoning_content patch（ERR_PNPM_UNUSED_PATCH）+ 确认 node_modules 属主 silkspool
+
+### 10.6 升级日复盘：C5 原生 BrowserAuth 打穿（2026-09-04 当晚修复）
+
+**现象**：升级当晚 Web UI 报 `dsh web authentication required; reopen the URL printed by dsh web.`——LAN 经 edge :3080 登录 auth-gate 后仍被拒。
+
+**根因**（0.1.1-rc.2 → 0.1.2-rc.1 行为变化）：
+- 0.1.2 在 `@deepseek-ai/dsh-client-connection`（entry id `connection`）新增原生 BrowserAuth 层：**进程级一次性 launch token**（WeakMap，每次重启随机）兑换 **HMAC 签名 cookie**（密钥持久存于 credentials，`cookieMaxAgeDays` 默认 30 天绝对过期、不续期）。0.1.1 无此层，旧会话全数失效。
+- 该层位于 auth-gate **之内**：Host 改写只过 trusted-hosts 栅栏（loopback），authorizeIndex 一律要求 `?token=` 或有效 cookie，**无 loopback 豁免**。V1 验证时 302 到 auth-gate 登录页即停，误判为"Host 改写继续绕过"。
+- 升级过程中 18:32 crash-loop（projcache v3→v5，§10.1 坑 4）后的首个成功启动才首次暴露该层；18:2x 之前的进程全是 0.1.1（URL 不带 token）。
+
+**修复**（两层）：
+1. **一次性兑换**：浏览器开一次带 token 的 URL 铸 cookie（cookie 签名密钥持久，**重启不失效**，token 只是首次入口）：
+   `http://192.168.7.107:3080/?token=<journalctl -u silksecagent 里最新的 token>`
+   取 token 一行命令：
+   `spool exec csai "journalctl -u silksecagent --no-pager _PID=\$(systemctl show silksecagent -p MainPID --value) | grep -o 'token=.*'"`
+   注意：auth-gate 会话若同时过期，先登录 auth-gate 再开 token URL（auth-gate 302 的 next 只回 pathname，**会丢 query**，登录后需重开一次带 token 的 URL）。
+2. **cookie 有效期 30→365 天**（避免每月复发）：`hosts/csai/dsh/cordis.patch.yml` 新增 `connection` 覆盖——`cookieMaxAgeDays: 365`；**config 按 id 整行替换，`trustedHosts: !!js ctx.webRuntime.trustedHosts` 表达式必须原样保留**（web-app bundle 口径），已 `web --dump-config` 验证生效。
+
+**未采用**：方案 B（token 提取注入 edge）——多一个自研组件且把 auth token 烧进 Caddyfile，收益仅省每年一次的 token 兑换；方案 C（SSH 隧道）——LAN 场景无必要。
+
+**升级脚本登记**：dsh-upgrade.sh 坑表补第 6 坑——**0.1.2+ 升级完成后 Web UI 必现一次 token 兑换提示，属预期行为**，按上式取 URL 一次性兑换即可；cookie 有效期内后续重启无需再取。

@@ -167,3 +167,13 @@ if [ -f "$BASE_DIR/settings-mirror-patch.sh" ]; then
 fi
 log "升级完成: ${CUR_VER:-unknown} -> ${NEW_VER:-$TARGET} (HTTP $SMOKE_CODE)"
 log "备份位置: $DATA_DIR/backups/dsh-upgrade-$TS.tgz"
+
+# 0.1.2+ 原生 BrowserAuth（坑 6，doc/secagent/dsh-0.1.2-rc.1-upgrade-plan.md §10.6）：
+# 新版 web UI 叠加进程级 token + 签名 cookie 认证层（auth-gate 之内），重启必换 token。
+# cookie 由持久密钥签名、重启不失效——只要浏览器 cookie 在有效期（默认 30 天，
+# 本平台已覆盖为 365 天）内，无需任何动作；过期或新浏览器才需开一次带 token 的 URL 兑换。
+TOKEN_URL=$(journalctl -u "$SERVICE" --no-pager _PID="$(systemctl show "$SERVICE" -p MainPID --value)" 2>/dev/null | grep -o 'http://127.0.0.1:3081/?token=.*' | tail -1)
+if [ -n "$TOKEN_URL" ]; then
+    TOKEN="${TOKEN_URL##*token=}"
+    log "Web UI 若提示 authentication required：浏览器开一次 http://<LAN-IP>:3080/?token=${TOKEN} 铸 cookie 即可（365 天内免再取）"
+fi
