@@ -140,7 +140,7 @@ asset-db.js(1856)      存储层：全表 DDL+迁移 / 领域 CRUD / 调度 SQL 
 asset-graph.js(627)    模型工具面：33 个领域工具注册
 scheduler.js(197)      调度循环（文件锁单例）
 webhook.js(49)         xray webhook 接收器
-dashboard-rpc.js(467)  看板 RPC 端点分发（47 case）+ planChain/taskChain
+dashboard-rpc.js(506)  看板 RPC 端点分发（49 case）+ planChain/taskChain
 experience.js(747)     经验卡/知识库/playbook + FTS5 + 向量
 parsers.js(175)        解析器注册表
 ```
@@ -252,7 +252,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 **AGENTS.md 受管区块**（`<!-- memcore:begin/end -->` 标记内引擎独占）：Top5 高分卡摘要 + 现行 [env-issue] 清单 + 记忆三问纪律——每个 worker 开局读工作区 AGENTS.md 即获得记忆上下文，**不依赖复盘任务存活**（容错托底）。
 
-**vault 导出桥**（方向①）：只导出 `permanent+active+exportable=1`（**默认 0 fail-closed**）；导出前过**授权域脱敏硬门**（scope.yml 提取的域名出现在卡文本 → 拒绝导出+日志）；tombstone 同步（弃置卡从 vault 移除）；rsync 推 keeper `vault/安全经验/`（csai 非特权 LXC 不能挂 NFS，走 keeper 中继）。
+**vault 导出桥**（方向①）：只导出 `permanent+active+exportable=1`（**默认 0 fail-closed**）；导出前过**授权域脱敏硬门**（scope.yml 提取的域名出现在卡文本 → 拒绝导出+日志）；tombstone 同步（弃置卡从 vault 移除）；rsync 推 keeper `vault/安全经验/SilkSecAgent/经验卡/`（csai 非特权 LXC 不能挂 NFS，走 keeper 中继）。暂存目录为**独立的** `data/vault-export-cards/`（只放散卡 md）——不能复用 `data/vault-export/`（那里还有 vault-export-build.sh 产出的 SilkSecAgent 整树，整目录 rsync 会把树误推进 经验卡/，2026-09-04 修复）。
 
 ### 4.3 sec-pipeline（@silksec/dsh-sec-pipeline，465 行）——纪律工具化
 
@@ -271,7 +271,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 ### 4.4 sec-dashboard + theme-silksong（UI 面）
 
-- **客户端**（client.js，ModuleLoader bundle）：全局侧边栏入口 → Modal **十视图**：漏洞/资产/接口/事实/任务/知识/报告/审批/授权/审计；服务端分页/搜索/筛选 + 30s 轮询；顶部 stats KPI + **memcore 缺席横幅 + ops 健康度红条**（P15）；任务视图三分区（定时任务卡片/一次性队列/执行历史）+ 工作区区块（program 徽章+计数+会话跳链 `ctx.sessions.open`）；知识 tab=memcore 状态机的 UI（评分/晋升/编辑/弃置/回执/exportable 开关/playbooks）；授权 tab=scope.yml 管理表单（顶部跳转条指向待审批候选）；报告 tab=按项目分组列表（项目/关键字筛选）+ Modal 查看器；审批 tab=统一审批中心（pending 在前/类型徽章/判据 chip（equity_basis+independent_src，独立SRC=有 标警色）/旁证行/批准/驳回/历史折叠/待审批数进 tab 徽章）。漏洞列表默认只呈现信号面（noise=0），「待验证候选」chip 可点筛选、已定案行紧凑化；事实视图默认隐藏 note 工作速记（开关展开）+ 生命周期 facet。信息架构纪律：**行只放摘要+跳链，详情一律回会话看**。
+- **客户端**（client.js，ModuleLoader bundle）：全局侧边栏入口 → Modal **十视图**：漏洞/资产/接口/事实/任务/知识/报告/审批/授权/审计；服务端分页/搜索/筛选 + 30s 轮询；顶部 stats KPI + **memcore 缺席横幅 + ops 健康度红条**（P15）；任务视图三分区（定时任务卡片/一次性队列/执行历史）+ 工作区区块（program 徽章+计数+会话跳链 `ctx.sessions.open`）；知识 tab=memcore 状态机的 UI（评分/晋升/编辑/弃置/回执/exportable 开关/playbooks）+ 静态先验 rules 分区（rulesList 树+rulesRead 只读查看，修改走 seed-skills.sh）；授权 tab=scope.yml 管理表单（顶部跳转条指向待审批候选）；报告 tab=按项目分组列表（项目/关键字筛选）+ Modal 查看器；审批 tab=统一审批中心（pending 在前/类型徽章/判据 chip（equity_basis+independent_src，独立SRC=有 标警色）/旁证行/批准/驳回/历史折叠/待审批数进 tab 徽章）。漏洞列表默认只呈现信号面（noise=0），「待验证候选」chip 可点筛选、已定案行紧凑化；事实视图默认隐藏 note 工作速记（开关展开）+ 生命周期 facet。信息架构纪律：**行只放摘要+跳链，详情一律回会话看**。
 - **宿主半面**：`/silksec-dashboard` RPC（authority=loopback），47 个 case（读：stats/ops/assets/assetDetail/assetFamily/assetOverview/endpoints/endpointHosts/blackboard/findings/facts/factStats/factGraph/findingGet/tasks/taskRuns/scheduledTasks/workspaces/sessions/programs/scopeList/memcore/expCards/playbooks/reports/reportRead/audit/evalStats/approvalList；写：findingUpdate/factCorrect/factDeprecate/taskCreate/taskRunNow/taskCancel/taskSetStatus/taskScheduleUpdate/scopeSaveProgram/scopeDeleteProgram/programBindWorkspace/expFeedback/expPromote/expDeprecate/expUpdate/expExportable/reportBuild/approvalDecide）——全部复用 assetDb/experience 同一函数（一份校验、一条 audit）。
 - **theme-silksong**：丝之歌全局深色主题（DSH theme registry 注册 tokens，Pharloom 墨青底+Hornet 绯红行动色）；severity 五色经 theme/change 事件注入 style（registry 白名单外）；localStorage 持久化用户选择，首装默认启用。
 
@@ -407,6 +407,7 @@ verify：verify.must_pass 全过 + falsification 逐项排除 + 对抗性自检�
 ### 7.3 规则先验层（data/rules/，人工蒸馏静态先验，与经验卡后验互补）
 
 `web/selfhosted-supabase.md`（五端点差分确认/anon 非 service_role/RLS 逐表/跨实例 JWT 不通用）、`web/spring.md`（actuator/SpEL/反序列化/鉴权顺序）、`web/nextjs.md`（Server Actions/middleware 绕过/_next/data 泄露）、`php/thinkphp.md`（payload 代际）、`src/asset-scoring.md`（SABC 打分表 A 漏洞价值 40/B 出洞概率 45/C 时效 15 + owner/accept/biz/state 打标 + 深挖队列规则）、`src/severity-rating.md`（SRC 对齐压级：定级不膨胀/不确定往低报/信息泄露默认低危/忽略级不进提交但留副产物 + CVSS4.0 报告模板）、`src/equity-gate.md`（v4.4 股权范围闸，源自 srcskill dig-scope §3.2.0：equity_basis 五档判据口径/默认不入池=参股·战略投资·合资非100%·联营/independent_src 独立SRC判定/提请质量要求/人工判例表含 zhaopin.com H-004 教训）、`src/technique-index.md`（v4.4 打穿短表 87 行，源自 srcskill 知识库：手法族×认什么×打哪×出什么算成×假点，开局先扫「认什么」对现场特征；索引≠清单）。
+**v4.4 第二批（2026-09-04）**：srcskill 知识库 46 篇手法模块全量导入 `techniques/*.md`（idor/ssrf/xss/rce/401-403-bypass/…，短表「出什么算成」的详解层）+ 2 篇方法论 `srcskill/dig-scope-workflow.md`（挖掘范围工作流）/ `srcskill/vuln-report-format.md`（漏洞报告格式，模块内引用已改写为相对路径）；technique-index 86 行补 `rules/techniques/<手法>.md` 引用闭环。**可见性补齐**：rules 层此前只进 agent 提示词、看板/vault 均不可见——现在知识 tab 有「静态先验 rules」分区（rulesList/rulesRead 只读两件套，写入口仍走 seed-skills.sh 版本受控通道），vault 侧经 vault-export-build.sh 同步 `静态先验/` 子树进 keeper。
 
 ### 7.4 任务 objective（调度注入，每个 interval 任务一行固定实体）
 
@@ -443,7 +444,7 @@ manifest 字段：`name/binary/stage/risk(passive|active|intrusive|manual)/timeo
 | data-quality.py | 11 项 SQL/文件断言（未分级率/空 category/vuln_type 缺失/孤儿外键/垃圾 playbook/双存储漂移/调度漂移/task_runs 新鲜度/台账空转），critical 退出码非 0，--json 供工具消费 |
 | discipline-audit.py | 文档-现实校验五指标（台账日增量/卡使用 7d/交接包 7d/IdeaCard/漂移+新鲜度）+ 告警退出码 |
 | coverage-report.py / pipeline-validate.py / verify-replay.py / surface-consume.py | 旧脚本版（已被 sec-pipeline 同名工具取代，退役观察期） |
-| vault-export-build.sh / vault-sync.sh | 卡片 YAML→pkb md → keeper 中继同步 NAS（B5） |
+| vault-export-build.sh / vault-sync.sh | 卡片 YAML→pkb md + 静态先验 rules/ 整树（含 tombstone）→ keeper 中继同步 NAS（B5；v4.4 补静态先验段，vault-export-build.sh 走 manifest+install_scripts 版本受控通道部署） |
 | dsh-version-watch.sh | npm 上游版本每日监控（0.1.2 升级决策输入） |
 | proxy_grade.py / proxy-scraper-checker | 代理池采集/验证/分级（30min timer） |
 | retention.sh / silksec-backup.sh / silksec-restore.sh | 数据保留期（flows/results 30d、audit 50MB 轮转）/ VACUUM INTO 快照 14 份 / 恢复手册 |

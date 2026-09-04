@@ -198,6 +198,12 @@ if [ -f "$BASE_DIR/sec-pipeline-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-pipeline-plugin-setup.sh" || warn "流水线插件安装失败（不影响 DSH 主程序）"
 fi
 
+# -------------------- 8.5 记忆治理插件（sec-memcore：生命周期/评分/vault 导出桥） --------------------
+# 2026-09-04 修复：此前 setup.sh 从未调用本安装器——memcore 插件代码自 08-25 起不随部署更新（改了不生效）
+if [ -f "$BASE_DIR/sec-memcore-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-memcore-plugin-setup.sh" || warn "记忆治理插件安装失败（不影响 DSH 主程序）"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"

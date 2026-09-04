@@ -71,7 +71,7 @@ install_scripts() {
             rm -f "$BASE_DIR/$f"
         fi
     done
-    for f in grade-assets.py data-quality.py discipline-audit.py; do
+    for f in grade-assets.py data-quality.py discipline-audit.py vault-export-build.sh; do
         if [ -f "$BASE_DIR/$f" ]; then
             if ! cmp -s "$BASE_DIR/$f" "$BASE_DIR/scripts/pipeline/$f" 2>/dev/null; then
                 install -m 0644 "$BASE_DIR/$f" "$BASE_DIR/scripts/pipeline/$f"; moved=$((moved+1))

@@ -53,4 +53,25 @@ for prog in meituan-src bytedance; do
     done
 done
 
+# 3. 静态先验 rules/（人工蒸馏先验层：src/*.md 定级闸 + srcskill/*.md 方法论 + techniques/*.md 手法模块）
+#    人读观测入口：此前 rules 层只进 agent 提示词不进 vault，看板/知识库均不可见（2026-09-04 可见性补齐）
+if [ -d "$DATA/rules" ]; then
+    rc=0
+    while IFS= read -r -d '' rf; do
+        rel="${rf#$DATA/rules/}"
+        dest="$OUT/静态先验/$rel"
+        mkdir -p "$(dirname "$dest")"
+        if [ ! -f "$dest" ] || ! cmp -s "$rf" "$dest"; then
+            cp "$rf" "$dest"; rc=$((rc+1))
+        fi
+    done < <(find "$DATA/rules" -name '*.md' -print0)
+    # tombstone：vault 侧已不存在于源的先验文件清理（源删除/改名跟随）
+    while IFS= read -r -d '' vf; do
+        rel="${vf#$OUT/静态先验/}"
+        [ -f "$DATA/rules/$rel" ] || rm -f "$vf"
+    done < <(find "$OUT/静态先验" -name '*.md' -print0 2>/dev/null)
+    echo "[vault-export] 静态先验同步 $rc 个更新"
+fi
+
+
 echo "[vault-export] 构建完成：$OUT"

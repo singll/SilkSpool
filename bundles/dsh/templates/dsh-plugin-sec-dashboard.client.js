@@ -1875,7 +1875,71 @@ window.__ModuleLoader__.load({
                   el('td', { style: tdMono }, String(pb.success_rate)),
                   el('td', { style: td }, memStatusPill(pb.status)),
                   el('td', { style: tdMono }, pb.last_run_at ? new Date(pb.last_run_at).toISOString().slice(0, 10) : '—'))
-              }))))
+              }))),
+        RulesSection(props))
+    }
+
+    // ── 静态先验 rules/（v4.4：人工蒸馏先验层的看板观测入口——此前只进 agent 提示词，无任何 UI）──
+    // 按 dir 分组（src 定级闸 / srcskill 方法论 / techniques 手法模块 / web 组件先验），只读；
+    // 写入口是 seed-skills.sh 版本受控通道，看板不提供编辑。
+    function RulesSection(props) {
+      var rows = (props.rulesState.data && props.rulesState.data.rows) || []
+      var reading = React.useState(null)
+      var cur = reading[0]; var setCur = reading[1]
+      var qfs = React.useState('')
+      var qf = qfs[0]; var setQf = qfs[1]
+      function open(file) {
+        setCur({ file: file, loading: true, content: null })
+        callRpc('rulesRead', { file: file }).then(function (res) {
+          setCur({ file: file, loading: false, content: res.content })
+        }).catch(function (e) {
+          setCur({ file: file, loading: false, content: null, error: e && e.message ? e.message : String(e) })
+        })
+      }
+      var filtered = qf ? rows.filter(function (r) { return r.file.toLowerCase().indexOf(qf.toLowerCase()) >= 0 || (r.title || '').toLowerCase().indexOf(qf.toLowerCase()) >= 0 }) : rows
+      var groups = {}
+      filtered.forEach(function (r) {
+        var g = r.dir || '.'
+        ;(groups[g] = groups[g] || []).push(r)
+      })
+      var groupKeys = Object.keys(groups).sort()
+      var groupLabel = { '.': '根', 'src': 'src · 定级与准入闸', 'srcskill': 'srcskill · 实战方法论（dig-scope / vuln-report-format）', 'techniques': 'techniques · 手法模块（srcskill 知识库 46 篇 + 短表索引）', 'web': 'web · 组件先验', 'php': 'php · 框架先验' }
+      return el('div', null,
+        el('div', { style: { ...cardL, margin: '18px 0 6px' }, title: '人工蒸馏静态先验：agent 开局/提请时按需读取（technique-index 认现场特征→techniques 模块看细节）；vault 同步在 SilkSecAgent/静态先验/' }, '📚 静态先验 rules/（只读 · ' + rows.length + ' 篇 · 点击行查看）'),
+        el('div', { style: { display: 'flex', gap: 8, alignItems: 'center', margin: '6px 0' } },
+          el('input', {
+            className: 'silksec-input', style: { ...inputStyle, width: 240 }, placeholder: '搜索文件/标题…',
+            value: qf, onChange: function (e) { setQf(e.target.value) },
+          })),
+        props.rulesState.loading ? el(SkeletonRows, { rows: 4 }) : filtered.length === 0
+          ? el(EmptyState, { text: '无匹配先验文件' })
+          : el('div', null, groupKeys.map(function (g) {
+              return el('div', { key: g, style: { marginTop: 10 } },
+                el('div', { style: { ...pageT, display: 'flex', alignItems: 'center', gap: 6 } },
+                  el('span', { style: { fontFamily: MONO, fontSize: 12, color: T.business } }, groupLabel[g] || g),
+                  el('span', { style: { ...pill, color: T.label3 } }, groups[g].length + ' 篇')),
+                el('table', { style: tableStyle },
+                  el('colgroup', null, el('col', null), el('col', { style: { width: 90 } }), el('col', { style: { width: 60 } })),
+                  el('thead', null, el('tr', { style: theadRow },
+                    el('th', { style: th }, '文件 / 标题'), el('th', { style: th }, '大小'), el('th', { style: th }, '查看'))),
+                  el('tbody', null, groups[g].map(function (r) {
+                    return el('tr', {
+                      key: r.file, className: 'silksec-row',
+                      style: { cursor: 'pointer' }, title: '点击查看（Modal 打开，只读）',
+                      onClick: function () { open(r.file) },
+                    },
+                      el('td', { style: tdMono }, (r.title || '').slice(0, 70) || '📄 ' + r.file,
+                        el('span', { style: { color: T.label3, marginLeft: 8 } }, r.file)),
+                      el('td', { style: tdMono }, (r.size / 1024).toFixed(1) + ' KB'),
+                      el('td', { style: td }, el('button', { type: 'button', className: 'silksec-icon-btn', title: '查看先验（Modal 打开）', 'aria-label': '查看', onClick: function (e) { e.stopPropagation(); open(r.file) } }, opIcon('eye'))))
+                  }))))
+            })),
+        cur ? el(DocModal, {
+          open: true, onClose: function () { setCur(null) }, errorPrefix: '读取',
+          title: String(cur.file || '').split('/').pop(),
+          sub: '只读先验 · rules/' + cur.file + ' · 修改走 seed-skills.sh 版本受控通道',
+          state: cur,
+        }) : null)
     }
 
     // ── 报告 tab（只读预览 data/reports/**/*.md；点击整行或👁图标在 Modal 中查看） ──
@@ -1988,6 +2052,9 @@ window.__ModuleLoader__.load({
       }, [activeTab])
       var pbsState = useRpc(function () {
         return activeTab === 'knowledge' ? { endpoint: 'playbooks' } : null
+      }, [activeTab])
+      var rulesState = useRpc(function () {
+        return activeTab === 'knowledge' ? { endpoint: 'rulesList' } : null
       }, [activeTab])
       var rptFilter = React.useState({ program: '', q: '' })
       var reportFilter = rptFilter[0]; var setReportFilter = rptFilter[1]
@@ -2242,7 +2309,7 @@ window.__ModuleLoader__.load({
             onJumpHistory: jumpToHistory, jump: jump,
           }))
       } else if (activeTab === 'knowledge') {
-        content = el(KnowledgeView, { memState: memState, cardsState: cardsState, pbsState: pbsState, busy: isBusy })
+        content = el(KnowledgeView, { memState: memState, cardsState: cardsState, pbsState: pbsState, rulesState: rulesState, busy: isBusy })
       } else if (activeTab === 'reports') {
         content = el(ReportsView, { state: reportsState, onReload: function (f) { setReportFilter({ program: f.program || '', q: f.q || '' }) } })
       } else if (activeTab === 'approvals') {

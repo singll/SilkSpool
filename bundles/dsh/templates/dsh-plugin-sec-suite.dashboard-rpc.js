@@ -412,6 +412,45 @@ export async function handleDashboardRpc(endpoint, payload) {
       const rows = deps.assetDb.getDb().prepare('SELECT * FROM playbooks ORDER BY runs DESC LIMIT 100').all()
       return { rows: rows.map((r) => ({ ...r, success_rate: r.runs ? Math.round((r.successes / r.runs) * 100) / 100 : 0 })) }
     }
+    // ---- 静态先验 rules/（知识 tab v4.4：人工蒸馏先验层此前无任何观测入口）----
+    // 只读两件套：rulesList（目录树+元数据）/ rulesRead（单文件内容，防路径穿越）。写入口仍是 seed-skills.sh 版本受控通道。
+    case 'rulesList': {
+      const base = path.join(deps.dataDir, 'rules')
+      const qFilter = String(p.q || '').toLowerCase()
+      const out = []
+      const walk = (dir, rel) => {
+        let entries
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+        for (const e of entries) {
+          const rp = rel ? `${rel}/${e.name}` : e.name
+          if (e.isDirectory()) walk(path.join(dir, e.name), rp)
+          else if (e.name.endsWith('.md')) {
+            const st = fs.statSync(path.join(dir, e.name))
+            out.push({ file: rp, mtime: st.mtimeMs, size: st.size, dir: rel || '' })
+          }
+        }
+      }
+      walk(base, '')
+      for (const r of out) {
+        try {
+          const head = fs.readFileSync(path.join(base, r.file), 'utf8').slice(0, 2048)
+          r.title = (head.match(/^#\s+(.+)$/m) || [])[1] || ''
+        } catch { r.title = '' }
+      }
+      const filtered = qFilter ? out.filter((r) => r.file.toLowerCase().includes(qFilter) || (r.title || '').toLowerCase().includes(qFilter)) : out
+      filtered.sort((a, b) => a.file.localeCompare(b.file))
+      return { rows: filtered, dirs: [...new Set(out.map((r) => r.dir))].sort() }
+    }
+    case 'rulesRead': {
+      const base = path.join(deps.dataDir, 'rules')
+      const rel = String(p.file || '').replace(/^\/+/, '')
+      const full = path.resolve(base, rel)
+      if (!full.startsWith(base + path.sep)) throw new Error('非法路径')
+      if (!fs.existsSync(full)) throw new Error(`先验文件不存在: ${rel}`)
+      const st = fs.statSync(full)
+      if (st.size > 512 * 1024) throw new Error('文件过大（>512KB），请在主机查看')
+      return { file: rel, content: fs.readFileSync(full, 'utf8'), mtime: st.mtimeMs, size: st.size }
+    }
     // ---- 报告查看（只读）----
     // v4.3：列表元数据化——文件名解析 program/date（report-{prog}-{YYYYMMDD-HHmm}.md，旧 report-{ts}.md 回退 mtime），
     // 首行 # 标题；支持 program/q 筛选，供看板按项目分组。

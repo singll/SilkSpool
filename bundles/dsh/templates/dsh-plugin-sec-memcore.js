@@ -319,8 +319,10 @@ function recordSignal(table, id, signal, meta = {}) {
 // 设计：Bellkeeper×SilkSecAgent 融合评估 §5.2——只导出 permanent+active+exportable 的方法论卡；
 // exportable 默认 0（fail-closed）；scope 授权域脱敏硬门（与 scope-guard 同级）；
 // 幂等覆盖 + tombstone 同步；推送走 keeper rsync（csai 为非特权 LXC 无法挂 NFS）。
-const EXPORT_STAGING = path.join(DATA_DIR, 'vault-export')
-const EXPORT_REMOTE = process.env.SEC_VAULT_REMOTE || 'silkspool@192.168.7.230:/mnt/NAS/data/knowledge/vault/安全经验/'
+// 独立暂存目录（只放经验卡/打法卡散 md）——不能复用 data/vault-export/：
+// 那里还有 vault-export-build.sh 产出的 SilkSecAgent/ 整树，整目录 rsync 会把树误推进 经验卡/（2026-09-04 修复）
+const EXPORT_STAGING = path.join(DATA_DIR, 'vault-export-cards')
+const EXPORT_REMOTE = process.env.SEC_VAULT_REMOTE || 'silkspool@192.168.7.230:/mnt/NAS/data/knowledge/vault/安全经验/SilkSecAgent/经验卡/'
 const SCOPE_FILE = path.join(DATA_DIR, 'scope.yml')
 
 let scopeDomainsCache = null

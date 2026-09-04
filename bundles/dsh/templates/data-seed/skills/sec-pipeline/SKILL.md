@@ -18,7 +18,7 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 
 ## 2. 漏洞卡驱动（data/vulncards/）
 
-- **开局先扫技术索引**：`rules/src/technique-index.md`（打穿短表）「认什么」列对现场特征——命中即按「打哪」出枪，「出什么算成」=判成标准、「假点」=证伪条件。索引≠清单：表上没有的手法照样挖；注入/SSRF/XSS/RCE 有差分面必须真打。
+- **开局先扫技术索引**：`rules/src/technique-index.md`（打穿短表）「认什么」列对现场特征——命中即按「打哪」出枪，「出什么算成」=判成标准、「假点」=证伪条件；探测细节开对应模块 `rules/techniques/<手法>.md`（46 篇全量）。索引≠清单：表上没有的手法照样挖；注入/SSRF/XSS/RCE 有差分面必须真打。
 - 探测前读对应卡片：按 `applicable_when` 判适用、按 `detect.steps` 探测、按 `verify.must_pass + falsification` 确认。
 - 每用一张卡落一条 `card_usage-{date}.jsonl`：`{card_id,card_version,asset,result,deviation,suggest}`。**实战与卡片有偏差必须记 deviation**——那是卡片升版的原料。
 - 现有卡不覆盖的漏洞类：注册新卡（draft，骨架见 registry.md），即创即用，当日报告登记。
