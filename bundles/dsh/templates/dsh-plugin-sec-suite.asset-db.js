@@ -195,6 +195,26 @@ export function getDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_workers_key ON workers(dedupe_key, started_at);
   `)
+  // ---- v4.3：统一审批中心 approval_requests ----
+  // kind 分类型（首个 scope-domain=候选授权域名）；subject=审批对象；payload JSON 留扩展位。
+  // agent 经 approval_request 工具提请（passive 登记，不改变 scope-guard fail-closed）；看板审批 tab 决策。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      program_name TEXT,
+      payload TEXT,
+      evidence TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+      requested_by TEXT,
+      created_at INTEGER,
+      decided_at INTEGER,
+      note TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_approval_pending ON approval_requests(kind, subject, status);
+  `)
   // P13 资产评级列（SABC 可挖掘性打分体系，幂等 ALTER）
   const assetCols = db.prepare('PRAGMA table_info(assets)').all().map((c) => c.name)
   for (const [col, ctype] of [['score', 'INTEGER'], ['level', 'TEXT'], ['accept', 'TEXT'], ['biz', 'TEXT'], ['state', 'TEXT']]) {
@@ -1267,8 +1287,8 @@ export function factGet(program_id, fact_key) {
   return row ? { ...row } : null
 }
 
-export function factSearch({ program_id = '', category = '', q = '', confidence = '', hasEdges = false, sort = '', limit = 50, offset = 0, role = 'task' }) {
-  const { where, args } = factWhere({ program_id, category, q, confidence, hasEdges })
+export function factSearch({ program_id = '', category = '', q = '', confidence = '', hasEdges = false, memClass = '', status = '', excludeNotes = false, sort = '', limit = 50, offset = 0, role = 'task' }) {
+  const { where, args } = factWhere({ program_id, category, q, confidence, hasEdges, memClass, status, excludeNotes })
   const lc = LC()
   // memcore 缺席时无治理列，回退旧列清单（fail-open）
   const memCols = lc ? ', mem_class, status, revalidate_by' : ''
@@ -1283,17 +1303,46 @@ export function factSearch({ program_id = '', category = '', q = '', confidence 
   return lc ? lc.visibilityFilter(role, 'facts', rows) : rows
 }
 
-export function countFacts(filters = {}) {
-  const { where, args } = factWhere(filters)
-  return getDb().prepare(`SELECT COUNT(*) AS n FROM facts WHERE ${where}`).get(...args).n
+// 口径对齐（v4.3）：factSearch 行经 visibilityFilter(role='task') 滤掉 archived/timeline/过期 ephemeral，
+// countFacts 必须在同一可见域内计数（SQL 化同一谓词），否则列表行数与总数必然对不上（与 findings noise bug 同病）。
+function visibleFactsWhere({ memClass = '', status = '', excludeNotes = false } = {}) {
+  const lc = LC()
+  let where = ''
+  const args = []
+  if (lc) {
+    where = "status != 'archived' AND (mem_class IS NULL OR mem_class != 'timeline') AND (mem_class IS NULL OR mem_class != 'ephemeral' OR expires_at IS NULL OR expires_at >= ?)"
+    args.push(now())
+  }
+  if (excludeNotes) { where += `${where ? ' AND ' : ''}(category IS NULL OR category != 'note')` }
+  if (memClass) {
+    where += `${where ? ' AND ' : ''}mem_class = ?`
+    args.push(memClass)
+  }
+  // status 筛选只对 review 视图有意义（task 视角已排除 archived）；显式传了就尊重
+  if (status) {
+    where += `${where ? ' AND ' : ''}status = ?`
+    args.push(status)
+  }
+  return { where: where || '1=1', args }
 }
 
-function factWhere({ program_id = '', category = '', q = '', confidence = '', hasEdges = false }) {
+export function countFacts(filters = {}) {
+  // 与 factSearch 同一个 where（分类/关键词/项目/生命周期），外加可见域谓词 → 行数恒等于列表总数
+  const { where: fw, args: fa } = factWhere({ program_id: filters.program_id, category: filters.category, q: filters.q, confidence: filters.confidence, hasEdges: filters.hasEdges, memClass: filters.mem_class, status: filters.status, excludeNotes: filters.exclude_notes })
+  const { where: vw, args: va } = visibleFactsWhere({ memClass: filters.mem_class, status: filters.status, excludeNotes: filters.exclude_notes })
+  const combined = vw && vw !== '1=1' ? `(${fw}) AND (${vw})` : fw
+  return getDb().prepare(`SELECT COUNT(*) AS n FROM facts WHERE ${combined}`).get(...fa, ...va).n
+}
+
+function factWhere({ program_id = '', category = '', q = '', confidence = '', hasEdges = false, memClass = '', status = '', excludeNotes = false }) {
   let where = '1=1'
   const args = []
   if (program_id) { where += ' AND program_id = ?'; args.push(program_id) }
   if (category) { where += ' AND category = ?'; args.push(category) }
   if (confidence) { where += ' AND confidence = ?'; args.push(confidence) }
+  if (memClass) { where += ' AND mem_class = ?'; args.push(memClass) }
+  if (status) { where += ' AND status = ?'; args.push(status) }
+  if (excludeNotes) { where += " AND (category IS NULL OR category != 'note')" }
   if (q) { where += ' AND (summary LIKE ? OR fact_key LIKE ? OR body LIKE ?)'; args.push(`%${q}%`, `%${q}%`, `%${q}%`) }
   // 看板 v4.1：仅看有图谱边的事实（关系型知识检索）
   if (hasEdges) {
@@ -1303,15 +1352,20 @@ function factWhere({ program_id = '', category = '', q = '', confidence = '', ha
 }
 
 // 事实统计（看板 v4.1 facet 洞察条）：分类/置信分布 + 置顶 + 图谱边规模
+// v4.3：增生命周期分布（by_mem_class/by_status）+ pending 审批计数（审批 tab 提示）
+// memcore 缺席时治理列不存在（fail-open）：by_mem_class/by_status 回退空数组
 export function factStats() {
   const d = getDb()
   const byCategory = plain(d.prepare('SELECT category, COUNT(*) AS n FROM facts GROUP BY category ORDER BY n DESC').all())
   const byConfidence = plain(d.prepare('SELECT confidence, COUNT(*) AS n FROM facts GROUP BY confidence').all())
+  const govOk = LC() && d.prepare('PRAGMA table_info(facts)').all().some((c) => c.name === 'mem_class')
+  const byMemClass = govOk ? plain(d.prepare("SELECT COALESCE(mem_class, '未分类') mem_class, COUNT(*) AS n FROM facts GROUP BY COALESCE(mem_class, '未分类') ORDER BY n DESC").all()) : []
+  const byStatus = govOk ? plain(d.prepare('SELECT status, COUNT(*) AS n FROM facts GROUP BY status').all()) : []
   const pinned = d.prepare('SELECT COUNT(*) AS n FROM facts WHERE pinned = 1').get().n
   const edges = d.prepare('SELECT COUNT(*) AS n FROM fact_edges').get().n
   const withEdges = d.prepare(`SELECT COUNT(*) AS n FROM facts f WHERE EXISTS (
     SELECT 1 FROM fact_edges e WHERE e.program_id = f.program_id AND (e.src_key = f.fact_key OR e.dst_key = f.fact_key))`).get().n
-  return { total: d.prepare('SELECT COUNT(*) AS n FROM facts').get().n, by_category: byCategory, by_confidence: byConfidence, pinned, edges, with_edges: withEdges }
+  return { total: d.prepare('SELECT COUNT(*) AS n FROM facts').get().n, by_category: byCategory, by_confidence: byConfidence, by_mem_class: byMemClass, by_status: byStatus, pinned, edges, with_edges: withEdges }
 }
 
 export function factLink({ program_id, src_key, dst_key, edge_type, confidence = 'tentative' }) {
@@ -1526,7 +1580,9 @@ export function evalStats() {
   return { total, by_type: byType }
 }
 
-export function buildReport({ hostLike = '', sinceDays = 0, status = '', programId = '' }) {
+// v4.3：severity（逗号多选）/source 参数；输出按项目分节（每项目小标题+统计+表），无项目时按严重级分组；
+// 文件名语义化 report-{program|all}-{YYYYMMDD-HHmm}.md（报告列表可据此解析分组）。
+export function buildReport({ hostLike = '', sinceDays = 0, status = '', programId = '', severity = '', source = '' }) {
   const d = getDb()
   const args = []
   let sql = 'SELECT * FROM findings WHERE 1=1'
@@ -1535,33 +1591,119 @@ export function buildReport({ hostLike = '', sinceDays = 0, status = '', program
   if (hostLike) { sql += ' AND host LIKE ?'; args.push(`%${hostLike}%`) }
   if (status) { sql += ' AND status = ?'; args.push(status) }
   if (programId) { sql += ' AND program_id = ?'; args.push(programId) }
+  if (severity) {
+    const sevs = String(severity).split(',').map((s) => s.trim()).filter(Boolean)
+    if (sevs.length) { sql += ` AND severity IN (${sevs.map(() => '?').join(',')})`; args.push(...sevs) }
+  }
+  if (source) { sql += ' AND source = ?'; args.push(source) }
   if (sinceDays > 0) { sql += ' AND created_at >= ?'; args.push(Date.now() - sinceDays * 86400000) }
-  sql += ' ORDER BY created_at DESC'
+  sql += ' ORDER BY program_id ASC, created_at DESC'
   const rows = plain(d.prepare(sql).all(...args))
   const noiseCount = d.prepare('SELECT COUNT(*) AS n FROM findings WHERE noise = 1').get().n
 
   const bySev = {}
   for (const r of rows) bySev[r.severity || 'info'] = (bySev[r.severity || 'info'] || 0) + 1
+  const meta = [
+    `- 生成时间: ${new Date().toISOString()}`,
+    `- 范围: ${hostLike || '全部'}${sinceDays ? `（近 ${sinceDays} 天）` : ''}`,
+    `- 项目: ${programId || '全部'}${source ? ` · 来源 ${source}` : ''}${status ? ` · 状态 ${status}` : ''}${severity ? ` · 级别 ${severity}` : ''}`,
+    `- 合计: ${rows.length} 个发现（${Object.entries(bySev).map(([k, v]) => `${k}:${v}`).join(' / ') || '无'}）`,
+    `- 噪声: ${noiseCount} 条 info 级模板指纹已闸门过滤（不计入合计，可用 finding_query include_noise 查看）`,
+  ]
+
+  // 分节：按项目（无 program_id 的行归入「未归属项目」）；单一项目/全空时退化为按严重级分组的单节
+  const sections = []
+  const byProgram = {}
+  for (const r of rows) { const k = r.program_id || '未归属项目'; (byProgram[k] = byProgram[k] || []).push(r) }
+  const progKeys = Object.keys(byProgram)
+  if (progKeys.length > 1 || (progKeys.length === 1 && progKeys[0] !== '未归属项目')) {
+    for (const k of progKeys) sections.push({ title: `## ${k}（${byProgram[k].length}）`, rows: byProgram[k] })
+  } else {
+    const byS = {}
+    const SEV_ORDER = ['critical', 'high', 'medium', 'low', 'info']
+    for (const r of rows) { const k = r.severity || 'info'; (byS[k] = byS[k] || []).push(r) }
+    for (const k of [...SEV_ORDER, ...Object.keys(byS).filter((x) => !SEV_ORDER.includes(x))]) {
+      if (byS[k]) sections.push({ title: `## ${k.toUpperCase()}（${byS[k].length}）`, rows: byS[k] })
+    }
+    if (!sections.length) sections.push({ title: '## 无发现', rows: [] })
+  }
+
+  const tableOf = (rows) => [
+    `| # | 级别 | 状态 | 类型 | 标题 | 目标 | 证据 |`,
+    `|---|---|---|---|---|---|---|`,
+    ...rows.map((r) => `| ${r.id} | ${r.severity} | ${r.status} | ${r.vuln_type || '—'} | ${r.title.replace(/\|/g, '\\|')} | ${r.url || r.host} | ${String(r.evidence).split('\n')[0].slice(0, 80).replace(/\|/g, '\\|')} |`),
+  ]
 
   const md = [
     `# SilkSecAgent 漏洞报告`,
     ``,
-    `- 生成时间: ${new Date().toISOString()}`,
-    `- 范围: ${hostLike || '全部'}${sinceDays ? `（近 ${sinceDays} 天）` : ''}`,
-    `- 合计: ${rows.length} 个发现（${Object.entries(bySev).map(([k, v]) => `${k}:${v}`).join(' / ') || '无'}）`,
-    `- 噪声: ${noiseCount} 条 info 级模板指纹已闸门过滤（不计入合计，可用 finding_query include_noise 查看）`,
+    ...meta,
     ``,
-    `| # | 级别 | 状态 | 类型 | 标题 | 目标 | 证据 |`,
-    `|---|---|---|---|---|---|---|`,
-    ...rows.map((r) => `| ${r.id} | ${r.severity} | ${r.status} | ${r.vuln_type || '—'} | ${r.title.replace(/\|/g, '\\|')} | ${r.url || r.host} | ${String(r.evidence).split('\n')[0].slice(0, 80).replace(/\|/g, '\\|')} |`),
-    ``,
+    ...sections.flatMap((s) => [s.title, ``, ...tableOf(s.rows), ``]),
   ].join('\n')
 
   const dir = path.join(DATA_DIR, 'reports')
   fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, `report-${Date.now()}.md`)
+  const stamp = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const nameTag = programId
+    ? String(programId).replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'all'
+    : 'all'
+  const file = path.join(dir, `report-${nameTag}-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}.md`)
   fs.writeFileSync(file, md)
   return { file, total: rows.length, by_severity: bySev, noise_filtered: noiseCount }
+}
+
+// -------------------- v4.3：统一审批中心 --------------------
+// kind 注册表在 sec-suite.js（APPROVAL_KINDS，含 onApprove 副作用）；本层只做纯 DAO。
+// 提请（agent 工具 approval_request）：同 (kind, subject) pending 去重；scope-domain 额外校验
+// 不在现有 scope（在 scope 内的拒绝登记——已授权无须审批）。
+export function approvalAdd({ kind, subject, program_name = null, payload = null, evidence = '', requested_by = '' }) {
+  if (!kind || !subject) return { ok: false, error: 'kind 与 subject 必填' }
+  if (String(evidence || '').trim().length < 10) return { ok: false, error: 'evidence 必填且 ≥10 字（归属证据/依据摘要）' }
+  const d = getDb()
+  const dup = d.prepare("SELECT id FROM approval_requests WHERE kind = ? AND subject = ? AND status = 'pending'").get(String(kind), String(subject))
+  if (dup) return { ok: false, error: `同对象已有待审批请求 #${dup.id}（勿重复提请；可等决策或补充证据后重试）`, request_id: Number(dup.id) }
+  const r = d.prepare(`
+    INSERT INTO approval_requests (kind, subject, program_name, payload, evidence, status, requested_by, created_at)
+    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+  `).run(String(kind), String(subject), program_name ? String(program_name) : null, payload ? JSON.stringify(payload) : null, String(evidence), String(requested_by || 'agent'), now())
+  return { ok: true, request_id: Number(r.lastInsertRowid) }
+}
+
+export function approvalList({ kind = '', status = '', limit = 100, offset = 0 } = {}) {
+  let where = '1=1'
+  const args = []
+  if (kind) { where += ' AND kind = ?'; args.push(kind) }
+  if (status) { where += ' AND status = ?'; args.push(status) }
+  // pending 恒在最前，组内按时间倒序
+  const rows = plain(getDb().prepare(`
+    SELECT * FROM approval_requests WHERE ${where}
+    ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC
+    LIMIT ? OFFSET ?
+  `).all(...args, Math.min(limit, 200), Math.max(0, offset)))
+  return rows
+}
+
+export function approvalCount({ status = 'pending' } = {}) {
+  return getDb().prepare('SELECT COUNT(*) AS n FROM approval_requests WHERE status = ?').get(status).n
+}
+
+export function approvalGet(id) {
+  const row = getDb().prepare('SELECT * FROM approval_requests WHERE id = ?').get(Number(id))
+  return row ? { ...row } : null
+}
+
+// 决策落库（副作用由调用方 APPROVAL_KINDS[kind].onApprove 在此之前执行，成功才置 approved）
+export function approvalDecide({ id, decision, note = '' }) {
+  if (!['approve', 'reject'].includes(decision)) return { ok: false, error: `非法 decision ${decision}（approve/reject）` }
+  const d = getDb()
+  const row = approvalGet(Number(id))
+  if (!row) return { ok: false, error: `请求 #${id} 不存在` }
+  if (row.status !== 'pending') return { ok: false, error: `请求 #${id} 已决策（${row.status}），勿重复操作` }
+  d.prepare('UPDATE approval_requests SET status = ?, decided_at = ?, note = ? WHERE id = ?')
+    .run(decision === 'approve' ? 'approved' : 'rejected', now(), note || null, Number(id))
+  return { ok: true, status: decision === 'approve' ? 'approved' : 'rejected', kind: row.kind, subject: row.subject, program_name: row.program_name }
 }
 
 // -------------------- 文本自动抽取（run_cli 结果入库用） --------------------

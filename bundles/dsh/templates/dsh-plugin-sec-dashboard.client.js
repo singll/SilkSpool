@@ -1014,6 +1014,10 @@ window.__ModuleLoader__.load({
     var CONF_COLOR = { confirmed: T.success, tentative: T.warn, deprecated: T.label3 }
 
     // 事实洞察条：置信分布 / 有关联 chip 可点即筛；分类 facet 计数（动态，不再硬编码）
+    // v4.3：生命周期维度（durable/ephemeral/timeline chip + 工作速记开关——note 是 agent 工作记忆，
+    // 默认隐藏防流水账淹没知识事实；note 计数从 by_category 取）
+    var MEM_CLASS_LABEL = { durable: '长期', ephemeral: '时效', timeline: '时间线' }
+    var MEM_CLASS_COLOR = { durable: T.success, ephemeral: T.warn, timeline: T.label3 }
     function FactsInsight(props) {
       var st = props.stats || {}
       var query = props.query
@@ -1022,7 +1026,21 @@ window.__ModuleLoader__.load({
       var chips = ['confirmed', 'tentative', 'deprecated'].filter(function (k) { return byConf[k] })
         .map(function (k) { return insightChip('confidence', k, CONF_LABEL[k], byConf[k], CONF_COLOR[k], query, '置信度') })
       if (st.with_edges) chips.push(insightChip('has_edges', '1', '有关联', st.with_edges, T.business, query, '有图谱边（同域名/同网段自动建边或手工 fact_link）'))
-      var cats = (st.by_category || []).filter(function (r) { return r.category })
+      ;(st.by_mem_class || []).forEach(function (r) {
+        if (MEM_CLASS_LABEL[r.mem_class]) chips.push(insightChip('mem_class', r.mem_class, MEM_CLASS_LABEL[r.mem_class], r.n, MEM_CLASS_COLOR[r.mem_class], query, '记忆生命周期分类（memcore）：' + r.mem_class))
+      })
+      var byCat = {}
+      ;(st.by_category || []).forEach(function (r) { if (r.category) byCat[r.category] = r.n })
+      if (byCat.note) {
+        var noteOn = query.filters.include_notes === '1'
+        chips.push(el('button', {
+          type: 'button', className: 'silksec-btn',
+          style: { ...pill, cursor: 'pointer', height: 22, color: noteOn ? T.business : T.label3, background: noteOn ? T.layer2 : 'transparent' },
+          title: 'note 类=agent 工作速记（14 天滚动消亡的 ephemeral）。默认隐藏防流水账淹没长期知识；点击' + (noteOn ? '隐藏' : '显示'),
+          onClick: function () { query.setFilter('include_notes', noteOn ? '' : '1') },
+        }, '工作速记 ' + byCat.note))
+      }
+      var cats = (st.by_category || []).filter(function (r) { return r.category && r.category !== 'note' })
         .slice(0, 8)
         .map(function (r) { return insightChip('category', r.category, r.category, r.n, undefined, query, '事实分类') })
       if (!chips.length && !cats.length) return null
@@ -1557,6 +1575,61 @@ window.__ModuleLoader__.load({
           : el('button', { type: 'button', className: 'silksec-btn', style: { marginTop: 14 }, title: '登记新的 scope.yml 授权项目', onClick: function () { setEditing({}) } }, el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 4 } }, opIcon('plus'), '新增授权项目')))
     }
 
+    // ── 审批视图（v4.3 统一审批中心）：agent 提请的待审批事项，批准/驳回 ──────────
+    // 首个类型 scope-domain=候选授权域名（批准=追加进 scope.yml，复用后端 onApprove 副作用）。
+    // 后续新审批类型挂进后端 APPROVAL_KINDS 即自动出现在此列表，前端零改动。
+    var APPROVAL_KIND_LABEL = { 'scope-domain': '授权域名' }
+    var APPROVAL_STATUS_COLOR = { pending: T.warn, approved: T.success, rejected: T.label3 }
+    function ApprovalsView(props) {
+      var state = props.state
+      var busy = props.busy
+      if (state.error) return el('div', { style: errorLine }, '审批加载失败: ' + state.error)
+      if (!state.data) return el(SkeletonRows, null)
+      var rows = state.data.rows || []
+      var pending = rows.filter(function (r) { return r.status === 'pending' })
+      var history = rows.filter(function (r) { return r.status !== 'pending' })
+      var histExp = React.useState(false)
+      var showHist = histExp[0]; var setShowHist = histExp[1]
+      function decide(r, decision) {
+        var note = ''
+        if (decision === 'reject') {
+          try { note = window.prompt('驳回备注（可选，agent 复盘可见）:', '') || '' } catch (e) { note = '' }
+        }
+        props.onDecide(r.id, decision, note)
+      }
+      function rowCard(r) {
+        var isPending = r.status === 'pending'
+        return el('div', { key: r.id, style: { ...card, marginTop: 10, opacity: isPending ? 1 : 0.75 } },
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+            el('span', { style: { ...pill, color: T.business, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-business-primary) 40%, transparent)' }, title: '审批类型 ' + r.kind }, (APPROVAL_KIND_LABEL[r.kind] || r.kind)),
+            el('span', { style: { color: T.label, ...F.sStrong, fontFamily: MONO, wordBreak: 'break-all' } }, r.subject),
+            r.program_name ? el('span', { style: pill, title: '建议归属项目' }, '→ ' + r.program_name) : null,
+            el('span', { style: { ...pill, color: APPROVAL_STATUS_COLOR[r.status] || T.label2 } }, r.status === 'pending' ? '待审批' : r.status === 'approved' ? '已批准' : '已驳回'),
+            el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, '#' + r.id + ' · ' + fmtTime(r.created_at) + (r.requested_by ? ' · ' + r.requested_by : '')),
+            isPending
+              ? el('span', null,
+                  el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: !!busy, style: { height: 26 }, title: r.kind === 'scope-domain' ? '批准：域名追加进 ' + r.program_name + ' 的 scope.yml（原子写+备份+审计，fail-closed 即时生效）' : '批准并执行对应动作', onClick: function () { decide(r, 'approve') } }, '批准'),
+                  el('button', { type: 'button', className: 'silksec-btn silksec-icon-btn-danger', disabled: !!busy, style: { height: 26, marginLeft: 6 }, title: '驳回（留痕，可填备注）', onClick: function () { decide(r, 'reject') } }, '驳回'))
+              : null),
+          el('div', { style: { color: T.label2, marginTop: 6, ...F.xxs, wordBreak: 'break-word' } }, r.evidence || '—'),
+          (r.note && !isPending) ? el('div', { style: { color: T.label3, marginTop: 4, ...F.xxxs } }, '决策备注: ' + r.note) : null)
+      }
+      return el('div', null,
+        el('div', { style: pageSub }, '🔔 统一审批中心：agent 提请的授权域名等审批事项（approval_request 工具落库）。批准前目标依旧被 scope-guard fail-closed 拒绝。'),
+        pending.length
+          ? el('div', null,
+              el('div', { style: { ...pageT, marginTop: 12 } }, '待审批（' + pending.length + '）'),
+              pending.map(rowCard))
+          : el(EmptyState, { text: '无待审批事项' }),
+        history.length
+          ? el('div', null,
+              el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 18 } },
+                el('button', { type: 'button', className: 'silksec-btn', onClick: function () { setShowHist(!showHist) }, title: '历史决策留痕（approved/rejected）' }, (showHist ? '收起' : '展开') + '历史（' + history.length + '）'),
+                !showHist ? el('span', { style: { color: T.label3, ...F.xxxs } }, '最近 ' + history.length + ' 条决策记录') : null),
+              showHist ? history.map(rowCard) : null)
+          : null)
+    }
+
     // ── 审计视图（F7）：audit.jsonl 尾部只读呈现，合规单一真相源 ────────────────
     function AuditView(props) {
       var state = props.state
@@ -1797,10 +1870,16 @@ window.__ModuleLoader__.load({
     }
 
     // ── 报告 tab（只读预览 data/reports/**/*.md；点击整行或👁图标在 Modal 中查看） ──
+    // v4.3：按项目分组显示 + 程序/关键字筛选（服务端解析 program/date/标题元数据）
     function ReportsView(props) {
       var rows = (props.state.data && props.state.data.rows) || []
+      var programs = (props.state.data && props.state.data.programs) || []
       var reading = React.useState(null)
       var cur = reading[0]; var setCur = reading[1]
+      var pfs = React.useState('')
+      var programFilter = pfs[0]; var setProgramFilter = pfs[1]
+      var qfs = React.useState('')
+      var qf = qfs[0]; var setQf = qfs[1]
       function open(file) {
         setCur({ file: file, loading: true, content: null })
         callRpc('reportRead', { file: file }).then(function (res) {
@@ -1809,26 +1888,54 @@ window.__ModuleLoader__.load({
           setCur({ file: file, loading: false, content: null, error: e && e.message ? e.message : String(e) })
         })
       }
+      // 分组（客户端）：program || 'all'；组内按 mtime 降序（服务端已排序）
+      var groups = {}
+      rows.forEach(function (r) {
+        var g = r.program || 'all'
+        ;(groups[g] = groups[g] || []).push(r)
+      })
+      var groupKeys = Object.keys(groups).sort(function (a, b) { return a === 'all' ? 1 : b === 'all' ? -1 : a.localeCompare(b) })
+      function rowOf(r) {
+        return el('tr', {
+          key: r.file, className: 'silksec-row',
+          style: { cursor: 'pointer' }, title: '点击查看报告（Modal 打开，可复制/下载）',
+          onClick: function () { open(r.file) },
+        },
+          el('td', { style: tdMono }, (r.title || '').slice(0, 60) || '📄 ' + r.file),
+          el('td', { style: tdMono }, (r.date || '').replace(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/, '$1-$2-$3 $4:$5') || new Date(r.mtime).toISOString().slice(0, 16).replace('T', ' ')),
+          el('td', { style: tdMono }, (r.size / 1024).toFixed(1) + ' KB'),
+          el('td', { style: td, onClick: function (e) { e.stopPropagation() } },
+            el('button', { type: 'button', className: 'silksec-icon-btn', title: '查看报告（Modal 打开）', 'aria-label': '查看报告', onClick: function () { open(r.file) } }, opIcon('eye'))))
+      }
       return el('div', null,
-        el('div', { style: { ...cardL, margin: '10px 0 6px' }, title: '编辑请走 NAS/Obsidian 通道' }, '📄 data/reports/ 下的 markdown 报告（只读，点击行查看）'),
+        el('div', { style: { ...cardL, margin: '10px 0 6px' }, title: '编辑请走 NAS/Obsidian 通道' }, '📄 data/reports/ 下的 markdown 报告（只读，点击行查看；按项目分组）'),
+        el('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '6px 0' } },
+          el('select', {
+            className: 'silksec-input', style: { ...inputStyle, width: 150 },
+            value: programFilter, onChange: function (e) { setProgramFilter(e.target.value) },
+            title: '按项目筛选（all=未标注项目/全局报告）',
+          },
+            el('option', { value: '' }, '全部项目'),
+            programs.map(function (g) { return el('option', { key: g, value: g }, g) })),
+          el('input', {
+            className: 'silksec-input', style: { ...inputStyle, width: 220 }, placeholder: '搜索文件名/标题…',
+            value: qf, onChange: function (e) { setQf(e.target.value) },
+          }),
+          el('button', { type: 'button', className: 'silksec-btn', onClick: function () { props.onReload({ program: programFilter, q: qf }) }, title: '应用筛选（服务端过滤）' }, '筛选'),
+          (programFilter || qf) ? el('button', { type: 'button', className: 'silksec-btn', onClick: function () { setProgramFilter(''); setQf(''); props.onReload({ program: '', q: '' }) }, title: '清除筛选' }, '重置') : null),
         props.state.loading ? el(SkeletonRows, { rows: 5 }) : rows.length === 0
-          ? el(EmptyState, { text: '暂无报告' })
-          : el('table', { style: tableStyle },
-              el('colgroup', null, el('col', null), el('col', { style: { width: 150 } }), el('col', { style: { width: 90 } }), el('col', { style: { width: 60 } })),
-              el('thead', null, el('tr', { style: theadRow },
-                el('th', { style: th }, '文件'), el('th', { style: th }, '修改时间'), el('th', { style: th }, '大小'), el('th', { style: th }, '查看'))),
-              el('tbody', null, rows.map(function (r) {
-                return el('tr', {
-                  key: r.file, className: 'silksec-row',
-                  style: { cursor: 'pointer' }, title: '点击查看报告（Modal 打开，可复制/下载）',
-                  onClick: function () { open(r.file) },
-                },
-                  el('td', { style: tdMono }, '📄 ' + r.file),
-                  el('td', { style: tdMono }, new Date(r.mtime).toISOString().slice(0, 16).replace('T', ' ')),
-                  el('td', { style: tdMono }, (r.size / 1024).toFixed(1) + ' KB'),
-                  el('td', { style: td, onClick: function (e) { e.stopPropagation() } },
-                    el('button', { type: 'button', className: 'silksec-icon-btn', title: '查看报告（Modal 打开）', 'aria-label': '查看报告', onClick: function () { open(r.file) } }, opIcon('eye'))))
-              }))),
+          ? el(EmptyState, { text: '暂无报告（当前筛选下无匹配）' })
+          : el('div', null, groupKeys.map(function (g) {
+              return el('div', { key: g, style: { marginTop: 10 } },
+                el('div', { style: { ...pageT, display: 'flex', alignItems: 'center', gap: 6 } },
+                  el('span', { style: { fontFamily: MONO, fontSize: 12, color: T.business } }, g === 'all' ? '全局/未标注' : g),
+                  el('span', { style: { ...pill, color: T.label3 } }, groups[g].length + ' 份')),
+                el('table', { style: tableStyle },
+                  el('colgroup', null, el('col', null), el('col', { style: { width: 130 } }), el('col', { style: { width: 90 } }), el('col', { style: { width: 60 } })),
+                  el('thead', null, el('tr', { style: theadRow },
+                    el('th', { style: th }, '报告'), el('th', { style: th }, '日期'), el('th', { style: th }, '大小'), el('th', { style: th }, '查看'))),
+                  el('tbody', null, groups[g].map(rowOf))))
+            })),
         cur ? el(DocModal, {
           open: true, onClose: function () { setCur(null) }, errorPrefix: '读取',
           title: String(cur.file || '').split('/').pop(),
@@ -1854,6 +1961,8 @@ window.__ModuleLoader__.load({
       var scopeState = useRpc(function () {
         return activeTab === 'scope' ? { endpoint: 'scopeList' } : null
       }, [activeTab])
+      // v4.3 审批 tab（恒取数：授权 tab 提示条也读 pending 计数）
+      var approvalsState = useRpc(function () { return { endpoint: 'approvalList', payload: { limit: 100 } } }, [])
       var boardState = useRpc(function () {
         return activeTab === 'facts' ? { endpoint: 'blackboard' } : null
       }, [activeTab])
@@ -1871,9 +1980,11 @@ window.__ModuleLoader__.load({
       var pbsState = useRpc(function () {
         return activeTab === 'knowledge' ? { endpoint: 'playbooks' } : null
       }, [activeTab])
+      var rptFilter = React.useState({ program: '', q: '' })
+      var reportFilter = rptFilter[0]; var setReportFilter = rptFilter[1]
       var reportsState = useRpc(function () {
-        return activeTab === 'reports' ? { endpoint: 'reports' } : null
-      }, [activeTab])
+        return activeTab === 'reports' ? { endpoint: 'reports', payload: { program: reportFilter.program, q: reportFilter.q } } : null
+      }, [activeTab, reportFilter.program, reportFilter.q])
 
       // 分页查询（状态按 tab 记忆，Modal 关闭即销毁重置；仅活跃视图取数/轮询）
       var findingsQ = usePagedQuery('findings', activeTab === 'findings')
@@ -1983,11 +2094,19 @@ window.__ModuleLoader__.load({
         if (String(b).trim() !== '' && !isNaN(n)) payload.bounty = n
         withBusy(function () { return callRpc('findingUpdate', payload) })()
       }
-      // 生成报告（F3）：按当前漏洞筛选（项目/状态）生成 markdown，服务端落盘 + 读回展示
+      // 生成报告（F3）：按当前漏洞筛选（项目/状态/级别/待验证候选）生成 markdown，服务端落盘 + 读回展示
+      // v4.3：severity 多选（逗号拼接传服务端）；noise='1' 时提示先到正式列表生成（报告只列信号）
       function onBuildReport() {
         var payload = {}
         if (findingsQ.filters.program_id) payload.program_id = findingsQ.filters.program_id
         if (findingsQ.filters.status) payload.status = findingsQ.filters.status
+        if (findingsQ.filters.severity) payload.severity = findingsQ.filters.severity
+        var sevs = []
+        try { sevs = window.prompt('仅包含的级别（逗号分隔，留空=全部）：critical,high,medium,low', '') || '' } catch (e) { sevs = '' }
+        if (sevs.trim()) payload.severity = sevs.trim()
+        if (findingsQ.filters.noise === '1') {
+          try { window.alert('当前处于「仅待验证候选」视图——报告只列信号（noise=0）。将忽略候选筛选生成正式报告。') } catch (e) {}
+        }
         setReportState({ open: true, loading: true })
         callRpc('reportBuild', payload).then(function (res) {
           setReportState({ open: true, loading: false, content: res.content, file: res.file, total: res.total, by_severity: res.by_severity })
@@ -1998,6 +2117,16 @@ window.__ModuleLoader__.load({
       function onScopeSave(spec, isNew) {
         withBusy(function () {
           return callRpc('scopeSaveProgram', { ...spec, is_new: isNew }).then(function () { scopeState.reload() })
+        })()
+      }
+      // v4.3 审批决策：批准/驳回（服务端执行 kind.onApprove 副作用 + 落库 + 审计），刷新审批与授权
+      function onApprovalDecide(id, decision, note) {
+        withBusy(function () {
+          return callRpc('approvalDecide', { id: id, decision: decision, note: note || '' }).then(function (res) {
+            approvalsState.reload()
+            if (res && res.status === 'approved') scopeState.reload()
+            return res
+          })
         })()
       }
       function onScopeDelete(name) {
@@ -2014,6 +2143,7 @@ window.__ModuleLoader__.load({
         { id: 'tasks', label: '任务' },
         { id: 'knowledge', label: '知识' },
         { id: 'reports', label: '报告' },
+        { id: 'approvals', label: '审批' + (approvalsState.data && approvalsState.data.pending ? ' · ' + approvalsState.data.pending : '') },
         { id: 'scope', label: '授权' },
         { id: 'audit', label: '审计' },
       ]
@@ -2070,11 +2200,14 @@ window.__ModuleLoader__.load({
       } else if (activeTab === 'facts') {
         var factCats = (((factStatsState.data || {}).by_category) || []).filter(function (r) { return r.category })
           .map(function (r) { return { v: r.category, l: r.category + ' (' + r.n + ')' } })
+        // v4.3 流水账治理：默认排除 note 类工作速记（include_notes=1 才纳入）；mem_class 生命周期筛选
+        var factsInitial = factsQ.filters.include_notes ? null : { exclude_notes: '1' }
         content = el(React.Fragment, null,
           el(Toolbar, {
             query: factsQ, placeholder: '搜索事实 key / 摘要 / 正文…',
             filters: [
               { key: 'category', label: '分类', options: factCats.length ? factCats : ['note', 'target', 'asset', 'finding', 'recon', 'infra'].map(function (c) { return { v: c, l: c } }) },
+              { key: 'mem_class', label: '生命周期', options: [{ v: 'durable', l: '长期（30天复验）' }, { v: 'ephemeral', l: '时效（14天滚动）' }, { v: 'timeline', l: '时间线' }] },
               { key: 'confidence', label: '置信', options: Object.keys(CONF_LABEL).map(function (k) { return { v: k, l: CONF_LABEL[k] } }) },
               { key: 'has_edges', label: '关联', options: [{ v: '1', l: '仅有关联' }] },
               { key: 'sort', label: '排序', options: [{ v: 'edge_count', l: '关联最多' }, { v: 'category', l: '按分类' }] },
@@ -2102,12 +2235,24 @@ window.__ModuleLoader__.load({
       } else if (activeTab === 'knowledge') {
         content = el(KnowledgeView, { memState: memState, cardsState: cardsState, pbsState: pbsState, busy: isBusy })
       } else if (activeTab === 'reports') {
-        content = el(ReportsView, { state: reportsState })
+        content = el(ReportsView, { state: reportsState, onReload: function (f) { setReportFilter({ program: f.program || '', q: f.q || '' }) } })
+      } else if (activeTab === 'approvals') {
+        content = el(ApprovalsView, { state: approvalsState, busy: isBusy, onDecide: onApprovalDecide })
       } else if (activeTab === 'scope') {
-        content = el(ScopeView, {
-          scopeData: scopeState.data, workspaces: workspacesState.data,
-          onSave: onScopeSave, onDelete: onScopeDelete, busy: isBusy,
-        })
+        var approvalPending = (approvalsState.data && approvalsState.data.pending) || 0
+        content = el(React.Fragment, null,
+          approvalPending
+            ? el('button', {
+                type: 'button', className: 'silksec-btn',
+                style: { ...cardL, marginTop: 10, width: '100%', cursor: 'pointer', color: T.warn, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent)' },
+                title: 'agent 提请的候选授权资产待人工审批',
+                onClick: function () { setTab('approvals') },
+              }, '🔔 ' + approvalPending + ' 条待审批授权候选 → 前往审批中心')
+            : null,
+          el(ScopeView, {
+            scopeData: scopeState.data, workspaces: workspacesState.data,
+            onSave: onScopeSave, onDelete: onScopeDelete, busy: isBusy,
+          }))
       } else if (activeTab === 'audit') {
         content = el(AuditView, { state: auditState })
       }

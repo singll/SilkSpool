@@ -173,6 +173,11 @@ export async function handleDashboardRpc(endpoint, payload) {
       return deps.scopeSaveProgram(p, !!p.is_new)
     case 'scopeDeleteProgram':
       return deps.scopeDeleteProgram(p.name)
+    // ---- v4.3 统一审批中心 ----
+    case 'approvalList':
+      return { rows: deps.assetDb.approvalList({ kind: String(p.kind || ''), status: String(p.status || ''), limit: Math.min(Number(p.limit) || 100, 200) }), pending: deps.assetDb.approvalCount({ status: 'pending' }) }
+    case 'approvalDecide':
+      return deps.approvalDecideAction({ id: Number(p.id), decision: String(p.decision || ''), note: String(p.note || '') })
     case 'taskRunNow': {
       const id = Number(p.id)
       if (!id) throw new Error('taskRunNow 需要 id')
@@ -190,6 +195,7 @@ export async function handleDashboardRpc(endpoint, payload) {
       const r = deps.assetDb.buildReport({
         hostLike: String(p.host_like || ''), programId: String(p.program_id || ''),
         status: String(p.status || ''), sinceDays: Number(p.since_days) || 0,
+        severity: String(p.severity || ''), source: String(p.source || ''), // v4.3 报告筛选增强
       })
       let content = ''
       try { content = fs.readFileSync(r.file, 'utf8') } catch { /* 读回失败仅少 content，不阻断 */ }
@@ -251,6 +257,8 @@ export async function handleDashboardRpc(endpoint, payload) {
         program_id: String(p.program_id || ''), category: String(p.category || ''),
         q: String(p.q || ''), confidence: String(p.confidence || ''),
         hasEdges: !!p.has_edges, sort: String(p.sort || ''),
+        memClass: String(p.mem_class || ''), status: String(p.status || ''), // v4.3 生命周期维度
+        excludeNotes: !!p.exclude_notes, // v4.3 流水账治理：看板默认排除 note 类工作速记
       }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
@@ -405,8 +413,12 @@ export async function handleDashboardRpc(endpoint, payload) {
       return { rows: rows.map((r) => ({ ...r, success_rate: r.runs ? Math.round((r.successes / r.runs) * 100) / 100 : 0 })) }
     }
     // ---- 报告查看（只读）----
+    // v4.3：列表元数据化——文件名解析 program/date（report-{prog}-{YYYYMMDD-HHmm}.md，旧 report-{ts}.md 回退 mtime），
+    // 首行 # 标题；支持 program/q 筛选，供看板按项目分组。
     case 'reports': {
       const base = path.join(deps.dataDir, 'reports')
+      const programFilter = String(p.program || '').toLowerCase()
+      const qFilter = String(p.q || '').toLowerCase()
       const out = []
       const walk = (dir, rel) => {
         let entries
@@ -421,8 +433,24 @@ export async function handleDashboardRpc(endpoint, payload) {
         }
       }
       walk(base, '')
-      out.sort((a, b) => b.mtime - a.mtime)
-      return { rows: out.slice(0, 200) }
+      // 元数据抽取：新命名 report-{program}-{YYYYMMDD-HHmm}.md；标题读首行（仅前 4KB，控制开销）
+      for (const r of out) {
+        const m = r.file.match(/report-([a-z0-9_-]+)-(\d{8}-\d{4})\.md$/i)
+        r.program = m ? m[1] : ''
+        r.date = m ? m[2] : ''
+        if (!r.date) { const d = new Date(r.mtime); const pad = (n) => String(n).padStart(2, '0'); r.date = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}` }
+        try {
+          const head = fs.readFileSync(path.join(base, r.file), 'utf8').slice(0, 4096)
+          r.title = (head.match(/^#\s+(.+)$/m) || [])[1] || ''
+        } catch { r.title = '' }
+      }
+      const filtered = out.filter((r) => {
+        if (programFilter && programFilter !== 'all' && (r.program || 'all') !== programFilter) return false
+        if (qFilter && !(r.file.toLowerCase().includes(qFilter) || (r.title || '').toLowerCase().includes(qFilter) || r.program.includes(qFilter))) return false
+        return true
+      })
+      filtered.sort((a, b) => b.mtime - a.mtime)
+      return { rows: filtered.slice(0, 200), programs: [...new Set(out.map((r) => r.program || 'all'))].sort() }
     }
     case 'reportRead': {
       const base = path.join(deps.dataDir, 'reports')

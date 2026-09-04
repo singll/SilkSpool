@@ -246,6 +246,7 @@ initDashboardRpc({
   listManifests, loadManifest, resolveProgramId, sessionIdOf,
   pairWorkspaces, workspacesList, sessionsList,
   scopeList, scopeSaveProgram, scopeDeleteProgram,
+  approvalDecideAction,
   getWorkspaceRegistry: () => workspaceRegistryRef,
 })
 
@@ -399,6 +400,97 @@ function scopeList() {
     programs: programs.map((p) => ({ ...p, db: dbPrograms[p.name] || null })),
     archived: assetDb.listPrograms().filter((p) => p.status === 'archived' && !programs.some((s) => s.name === p.id)),
   }
+}
+
+// ==============================================================================
+// v4.3：统一审批中心（agent 提请 → 看板审批 tab 决策）
+// kind 注册表：每种审批类型一个条目（label + validate 提请校验 + onApprove 批准副作用）。
+// 新增审批类型只需在此注册，工具面/rpc/看板零改动。
+// ==============================================================================
+
+const APPROVAL_KINDS = {
+  'scope-domain': {
+    label: '授权域名',
+    // 提请校验：建议项目须存在；域名不得已在 scope（已授权无须审批）；排除清单内的也不收
+    validate({ subject, program_name }) {
+      const host = hostOf(subject)
+      if (!host) return { ok: false, error: `无法解析域名: ${subject}` }
+      const scope = loadScope()
+      const programs = Array.isArray(scope.programs) ? scope.programs : []
+      const prog = programs.find((p) => p && p.name === program_name)
+      if (!prog) {
+        return { ok: false, error: `项目 ${program_name} 不在 scope.yml（先确认归属项目名；scopeList 可查）`, programs: programs.map((p) => p.name) }
+      }
+      const chk = checkTarget(host)
+      if (chk.allow) return { ok: false, error: `${host} 已在项目 ${chk.program} 授权范围内，无须审批` }
+      if (chk.program && /排除清单/.test(chk.reason)) return { ok: false, error: `${host} 在项目 ${chk.program} 排除清单中——被排除的资产走人工评估，不走审批流` }
+      return { ok: true, value: { host, program_name } }
+    },
+    // 批准副作用：host 追加进目标项目 scope（复用 scopeSaveProgram 原子写+备份+审计+syncPrograms）
+    onApprove({ subject, program_name }) {
+      const host = hostOf(subject)
+      const scope = loadScope()
+      const prog = (Array.isArray(scope.programs) ? scope.programs : []).find((p) => p && p.name === program_name)
+      if (!prog) return { ok: false, error: `项目 ${program_name} 不在 scope.yml（可能已被移除），请驳回后重新提请` }
+      const entries = Array.isArray(prog.scope) ? prog.scope : []
+      if (entries.includes(host)) return { ok: true, note: `${host} 已在 scope（幂等跳过）` }
+      const r = scopeSaveProgram({
+        name: program_name,
+        platform: prog.platform || '',
+        scope: [...entries, host],
+        exclude: Array.isArray(prog.exclude) ? prog.exclude : [],
+        max_risk: (prog.rules && prog.rules.max_risk) || 'active',
+        fixed_egress_ip: !!(prog.rules && prog.rules.fixed_egress_ip),
+        workspace: (prog.rules && prog.rules.workspace) || '',
+        finding_db: prog.finding_db || '',
+      }, false)
+      if (!r.ok) return r
+      return { ok: true, note: `${host} 已加入项目 ${program_name} 授权范围（fail-closed 即时生效）` }
+    },
+  },
+}
+
+// agent 工具入口：通用校验（kind 注册/去重/evidence）+ kind.validate 专属校验
+function approvalRequest(args, exec) {
+  const kind = String(args.kind || '').trim()
+  const subject = String(args.subject || '').trim()
+  const evidence = String(args.evidence || '').trim()
+  const def = APPROVAL_KINDS[kind]
+  if (!def) return { ok: false, error: `未知审批类型 ${kind}（可选: ${Object.keys(APPROVAL_KINDS).join('/')}）` }
+  if (!subject) return { ok: false, error: 'subject 必填' }
+  if (evidence.length < 10) return { ok: false, error: 'evidence 必填且 ≥10 字（归属证据/依据摘要）' }
+  const v = def.validate({ subject, program_name: String(args.program_name || '').trim(), evidence })
+  if (!v.ok) return v
+  const add = assetDb.approvalAdd({
+    kind, subject: v.value?.host || subject, program_name: String(args.program_name || '').trim() || null,
+    payload: null, evidence, requested_by: sessionIdOf ? safeSessionId(exec) : 'agent',
+  })
+  if (!add.ok) return add
+  audit({ ts: Date.now(), run_id: '-', tool: 'approval_request', decision: 'executed', detail: { kind, subject, request_id: add.request_id } })
+  return { ok: true, request_id: add.request_id, hint: '已提请人工审批（看板「审批」tab）。批准前目标仍被 scope-guard 拒绝，不要尝试打点。' }
+}
+
+function safeSessionId(exec) {
+  try { const id = sessionIdOf(exec); return id ? String(id) : 'agent' } catch { return 'agent' }
+}
+
+// 看板决策入口（dashboard-rpc approvalDecide 调用）：批准先执行 kind.onApprove 副作用，成功才落 approved
+function approvalDecideAction({ id, decision, note = '' }) {
+  const row = assetDb.approvalGet(Number(id))
+  if (!row) return { ok: false, error: `请求 #${id} 不存在` }
+  if (row.status !== 'pending') return { ok: false, error: `请求 #${id} 已决策（${row.status}）` }
+  if (decision === 'reject') {
+    const r = assetDb.approvalDecide({ id: Number(id), decision, note })
+    audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.approvalDecide', decision: 'executed', detail: { id, result: 'rejected', note } })
+    return r
+  }
+  const def = APPROVAL_KINDS[row.kind]
+  if (!def) return { ok: false, error: `审批类型 ${row.kind} 无处理器（注册表缺项）` }
+  const eff = def.onApprove({ subject: row.subject, program_name: row.program_name, payload: row.payload ? JSON.parse(row.payload) : null, note })
+  if (!eff.ok) return { ok: false, error: `批准副作用失败: ${eff.error}（请求保持 pending，可修复后重试或驳回）` }
+  const r = assetDb.approvalDecide({ id: Number(id), decision: 'approve', note: [note, eff.note].filter(Boolean).join('；') || null })
+  audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.approvalDecide', decision: 'executed', detail: { id, result: 'approved', kind: row.kind, subject: row.subject, effect: eff.note || '' } })
+  return { ...r, effect: eff.note || '' }
 }
 
 // 看板工作区区块数据源：workspaceRegistry + 绑定 program + 资产/漏洞/会话计数
@@ -1467,6 +1559,27 @@ export function apply(ctx, config) {
     },
     output: { schema: { type: 'object' }, render: renderJSON },
     execute: async (args, exec) => intelHunt(args || {}, exec),
+  })
+
+  ctx.tools.register({
+    name: 'approval_request',
+    description: '统一审批入口：向人工提请审批（首个类型 scope-domain=候选授权域名）。'
+      + '资产收集发现疑似 scope 外但归属证据明确的新资产（CNAME 指向授权资产/品牌印证/收购关系）时必须提请，'
+      + '禁止只写事实不提请求；也禁止把归属不确定的资产凑数提请。'
+      + '登记是被动观察行为：批准前目标依旧被 scope-guard fail-closed 拒绝，授权边界不变。',
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['scope-domain'], description: '审批类型：scope-domain=把候选域名加入授权范围' },
+        subject: { type: 'string', description: '审批对象（scope-domain 传域名，如 catpaw.com）' },
+        program_name: { type: 'string', description: 'scope-domain 必填：建议归属的 scope.yml 项目名' },
+        evidence: { type: 'string', description: '归属证据/依据摘要（≥10 字，如 "www CNAME→授权资产 meituan.com"）' },
+      },
+      required: ['kind', 'subject', 'evidence'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' }, render: renderJSON },
+    execute: async (args, exec) => approvalRequest(args || {}, exec),
   })
 
   // xray webhook 接收器只在 web 宿主面启动（connection 服务存在时；headless worker 不起，避免 EADDRINUSE 噪声）。
