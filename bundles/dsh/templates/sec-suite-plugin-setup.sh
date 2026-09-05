@@ -82,6 +82,17 @@ install_scripts() {
             rm -f "$src"
         done
     done
+    # v4.6 流水线脚本接线：此前这些脚本仅靠历史推送存活（不在 manifest templates，重部署会丢）
+    for f in l2-collect.sh surface-consume.py js-watch.py ct-watch.py ct-watch-all.sh \
+             pipeline-validate.py coverage-report.py verify-replay.py dsh-version-watch.sh; do
+        for src in "$BASE_DIR/data-seed/scripts/$f" "$BASE_DIR/$f"; do
+            [ -f "$src" ] || continue
+            if ! cmp -s "$src" "$BASE_DIR/scripts/pipeline/$f" 2>/dev/null; then
+                install -m 0755 "$src" "$BASE_DIR/scripts/pipeline/$f"; moved=$((moved+1))
+            fi
+            rm -f "$src"
+        done
+    done
     log "脚本归位完成（更新 ${moved} 个）→ $BASE_DIR/scripts/"
 }
 

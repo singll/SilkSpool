@@ -178,7 +178,9 @@ ensure_node
 ensure_pnpm
 install_dsh
 ensure_data
-reconcile_service
+# v4.6 修复：reconcile_service（重启服务）必须在所有插件组装（§6-9.x）之后执行——
+# 此前它排在主流程里、§8 插件 setup 之前，导致服务带着旧插件代码重启、组装好的新代码
+# 不生效（要等下一次手工重启才发现），2026-09-05 实测 bbGuarded=0 即此根因。
 
 # -------------------- 6. 代理池基础设施（mubeng 网关 + 采集刷新） --------------------
 if [ -f "$BASE_DIR/proxy-pool-infra-setup.sh" ]; then
@@ -314,4 +316,30 @@ EOF
     $SUDO systemctl daemon-reload
     $SUDO systemctl enable --now silksec-backup.timer 2>/dev/null || warn "backup timer 启用失败"
 fi
+
+# -------------------- 9.7 CT 新子域雷达常驻（v4.6 接线：此前 ct-watch.service 为手工单元，不随 bundle 部署） --------------------
+# 单实例串行轮询双项目（certspotter 限流），驱动脚本 scripts/pipeline/ct-watch-all.sh 由
+# sec-suite-plugin-setup.sh install_scripts 归位（data-seed/scripts/ 版本受控）。
+if [ -f "$BASE_DIR/scripts/pipeline/ct-watch-all.sh" ]; then
+    $SUDO tee /etc/systemd/system/ct-watch.service >/dev/null <<'EOF'
+[Unit]
+Description=CT new-domain radar (all programs, serial)
+After=network-online.target
+
+[Service]
+Type=simple
+User=silkspool
+ExecStart=/opt/silkspool/dsh/scripts/pipeline/ct-watch-all.sh
+Restart=always
+RestartSec=120
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable --now ct-watch.service 2>/dev/null || warn "ct-watch 启用失败"
+fi
+
+# -------------------- 10. 服务重启（收尾，加载全部新代码/单元） --------------------
+reconcile_service
 log "setup 完成"

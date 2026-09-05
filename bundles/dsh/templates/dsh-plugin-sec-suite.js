@@ -214,6 +214,40 @@ function loadScope() {
   return data
 }
 
+// ==============================================================================
+// 主动扫描全局限速执行点（v4.6 修复：scope.defaults.rate_limit_qps 此前只是声明值，
+// 无任何代码读它——「限速 50 QPS 机器强制」实为不成立）。
+// 语义：active+ 级工具的 run_cli 启动节流（进程级全局令牌桶，跨会话/worker 共享，
+// 重启清零无妨）。单次 CLI 运行内部的请求速率由工具自身 flag 控制（tools.d 各自的
+// rate/limit 参数），引擎保证的是「引擎级主动扫描启动速率」不超声明值；批量临时升速
+// 走 T-16 scan-burst 审批设计（批准写 defaults.rate_limit_qps 即时生效——loadScope 按
+// mtime 缓存，改文件自动重读）。
+// ==============================================================================
+const qpsBucket = { tokens: Infinity, cap: 50, last: 0 }
+function acquireQpsToken() {
+  const qps = Math.max(1, Number(loadScope().defaults?.rate_limit_qps) || 50)
+  const now = Date.now()
+  if (!qpsBucket.last) { qpsBucket.last = now; qpsBucket.cap = qps }
+  // qps 变更时桶容量随之调整（scan-burst 批准后放大）
+  if (qpsBucket.cap !== qps) qpsBucket.cap = qps
+  qpsBucket.tokens = Math.min(qpsBucket.cap, qpsBucket.tokens + ((now - qpsBucket.last) / 1000) * qps)
+  qpsBucket.last = now
+  if (qpsBucket.tokens >= 1) { qpsBucket.tokens -= 1; return 0 }
+  const waitMs = Math.ceil(((1 - qpsBucket.tokens) / qps) * 1000)
+  qpsBucket.tokens = 0
+  return waitMs
+}
+async function throttleQps(toolName) {
+  let waited = 0
+  for (;;) {
+    const w = acquireQpsToken()
+    if (w <= 0) break
+    waited += w
+    if (waited > 100) process.stderr.write(`[sec-suite] QPS 限速：${toolName} 等待 ${waited}ms（rate_limit_qps 节流）\n`)
+    await new Promise((r) => setTimeout(r, w))
+  }
+}
+
 // P6：scope.yml 程序 → programs 表运行态镜像（幂等，启动时调用）
 function syncPrograms() {
   const scope = loadScope()
@@ -1120,6 +1154,11 @@ async function runCli(args, exec) {
       audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: resolvedViolation })
       return { ok: false, run_id: runId, error: `scope-guard 解析后校验拒绝: ${resolvedViolation}` }
     }
+  }
+
+  // ---- 主动扫描全局限速（v4.6 执行点）：active+ 工具启动节流，passive 不限 ----
+  if (RISK_ORDER.indexOf(String(manifest.risk || 'passive')) >= RISK_ORDER.indexOf('active')) {
+    await throttleQps(toolName)
   }
 
   // ---- 渲染 + 执行 ----

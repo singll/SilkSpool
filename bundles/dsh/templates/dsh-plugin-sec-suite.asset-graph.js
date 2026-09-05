@@ -298,12 +298,14 @@ export function apply(ctx) {
         program_id: { type: 'string', description: '按项目过滤（项目级报告）' },
         since_days: { type: 'integer', description: '只看近 N 天，0=全部' },
         status: { type: 'string', description: '按状态过滤（如 confirmed）' },
+        severity: { type: 'string', description: '按严重级过滤，逗号分隔多选（如 high,critical；v4.6 补齐——与看板 buildReport 能力对齐）' },
+        source: { type: 'string', description: '按来源过滤（如 xray / agent）' },
       },
       additionalProperties: false,
     },
     timeoutMs: 60000,
     execute: async (a) => {
-      const r = db.buildReport({ hostLike: a.host_like || '', programId: a.program_id || '', sinceDays: a.since_days || 0, status: a.status || '' })
+      const r = db.buildReport({ hostLike: a.host_like || '', programId: a.program_id || '', sinceDays: a.since_days || 0, status: a.status || '', severity: a.severity || '', source: a.source || '' })
       return { ok: true, ...r, hint: '报告已落盘，提交 SRC 前必须人工逐条核实' }
     },
   })

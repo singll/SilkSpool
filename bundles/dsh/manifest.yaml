@@ -75,6 +75,16 @@ templates:
   - data-seed/scripts/data-quality.py
   - data-seed/scripts/vault-export-build.sh
   - data-seed/scripts/discipline-audit.py
+  # --- v4.6 流水线脚本接线（此前仅历史推送存活于 scripts/pipeline/，全量重部署会丢）---
+  - data-seed/scripts/l2-collect.sh
+  - data-seed/scripts/surface-consume.py
+  - data-seed/scripts/js-watch.py
+  - data-seed/scripts/ct-watch.py
+  - data-seed/scripts/ct-watch-all.sh
+  - data-seed/scripts/pipeline-validate.py
+  - data-seed/scripts/coverage-report.py
+  - data-seed/scripts/verify-replay.py
+  - data-seed/scripts/dsh-version-watch.sh
   # --- v4.5 规则/技能版本受控源（seed-skills.sh 部署通道，正文不再内嵌 heredoc）---
   # --- 规则先验层 56 篇：src 4 + srcskill 2 + techniques 46 + web 3 + php 1 ---
   - data-seed/rules/src/asset-scoring.md

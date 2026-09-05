@@ -1,6 +1,6 @@
 # SilkSecAgent 系统全景文档（以运行代码为真相源）
 
-> 版本：v1.2 ｜ 快照日期：2026-09-05 ｜ 主机：csai（192.168.7.107，非特权 LXC）
+> 版本：v1.3 ｜ 快照日期：2026-09-05 ｜ 主机：csai（192.168.7.107，非特权 LXC）
 > **取证声明**：本文所有描述均基于 csai 上实际运行的代码与配置，经 `spool exec` 实测与 SilkSpool 仓库 `bundles/dsh/templates/` 源码比对；与早期设计文档冲突处，**以本文为准**。
 > 文档体系定位：`README.md` 是唯一持续推进入口（状态/待办）；本文是**系统是什么、怎么转**的完整解剖，长期有效，随大版本更新。
 
@@ -159,6 +159,7 @@ parsers.js(172)        解析器注册表
 5. **逐目标 checkTarget**：hostOf 归一化（去 scheme/端口/IPv6 括号/路径，小写）→ 先查项目 `exclude` 清单再查 `scope` 清单；条目匹配支持字面域/`*.后缀`（含裸域本身）/CIDR。**未命中即拒绝（fail-closed）**，命中则记 program
 6. **checkRisk**：`risk=manual` 恒拒绝；项目 `rules.max_risk` 上限封顶；`defaults.allow_risk: [passive, active]` 之外需人工（intrusive 返回 needs_approval）
 7. **S1 解析后校验**（仅 active+）：域名 DNS resolve4 → 任一 IP 落保留段（0/8、10/8、100.64/10、127/8、169.254/16、172.16/12、192.168/16）且该 IP 不在项目授权 CIDR → 拒绝（防"授权域名解析到内网"SSRF 式越界）
+8. **QPS 限速（v4.6.1 执行点）**：仅 active+ 工具——进程级全局令牌桶（容量=当前 `defaults.rate_limit_qps`，跨会话/worker 共享），令牌不足时 throttleQps 循环等待放行（不拒绝、不绕过）；scope.yml 改值按 mtime 缓存即时生效（T-16 scan-burst 批准的最简落点就是临时调高此值）。passive 工具不限；单次 CLI 内部请求速率仍由工具自身 flag 控制（tools.d 各自的 rate/limit 参数）。⚠️ v4.6.1 之前此值纯声明、无任何代码读它
 
 **代理注入**：`env_proxy: true` 且目标是公网（`isInternalHost`：localhost/.singll.net/.internal/.lan/RFC1918/169.254/127 → 直连）→ 注入 `http(s)_proxy=http://127.0.0.1:8899`。
 
@@ -216,7 +217,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 - **exp_search**：FTS5 MATCH + 逐词 LIKE 兜底（unicode61 对中英混排整串成词）+ 向量余弦 ≥0.55 融合；rank = fts×10 + 向量×20 + source×3 + confidence + score×2；candidate×0.5、cooling×0.7 降权；archived/timeline/expired 不可见（visibilityFilter）；**返回即 recordSignal(searched)**（uses+1）
 - **exp_feedback**：useful/adopted/wrong/outdated 四信号（用完卡必须回执——不回执的卡会被判零使用沉没）；wrong/outdated → neg_fb+1，≥3 自动 cooling
 - **exp_validate**：cooling 卡复验通过自动复活 active（用到即复验）
-- **pb_save/pb_outcome/pb_rank**（v4.6 合并①后为**兼容入口**）：playbook 已并入 exp_cards（kind=playbook + runs/successes 列，存量 28 条已迁、playbooks 表清空成空壳）；pb_save 写 kind=playbook 卡、pb_outcome 无卡自动建卡（runs/successes/EWMA 统计打点）、pb_rank 改读 `exp_cards WHERE kind='playbook'`；rank=成功率×时间衰减（-2%/天，下限 0.3）。⚠️ 已知缺口：pbOutcome 的 succeeded/ran 信号未被 memcore exp_cards 分支识别（被 try/catch 静默吞掉），**低成功率自动降级链路当前失效**，待修
+- **pb_save/pb_outcome/pb_rank**（v4.6 合并①后为**兼容入口**）：playbook 已并入 exp_cards（kind=playbook + runs/successes 列，存量 28 条已迁、playbooks 表清空成空壳）；pb_save 写 kind=playbook 卡（**建 playbook 卡唯一入口**——exp_store 无 kind 参数）、pb_outcome 无卡自动建卡（runs/successes/EWMA 统计打点）、pb_rank 改读 `exp_cards WHERE kind='playbook'`；rank=成功率×时间衰减（-2%/天，下限 0.3）。✅ v4.6.1 修复：pbOutcome 的 succeeded/ran 信号此前未被 memcore exp_cards 分支识别（被 try/catch 静默吞掉，低成功率降级链路整体失效）——现 recordSignal 识别两信号（记 last_used_at）+ kind=playbook 卡低成功率降级判定（沿用 playbooks 策略 successRate 0.3/minRuns 5，原判定挂在已空的 playbooks 表上永不触发）；单测 13/13，线上 tool:dnsx（runs=6/successes=0）保持 cooling
 - **kb_import/kb_search**：外部知识 durable 90d；**taintguard 等价**：7 条 prompt-injection 正则扫描 → tainted 标记（检索返回带标志，视作不可信输入）；向量召回零关键词重叠命中；**v4.6 合并③**：`kbIndexCuratedRules()` 启动幂等把 rules/ 56 篇建 curated 索引进 kb_docs（title 带 `curated:` 前缀、status='curated' 固定不参与复验/tainted 生命周期、检索排序 curated 优先于 external、文件删除同步清理索引行）；kb_search 结果区分 curated（人工蒸馏高置信）与 external
 - **kbVaultSync**（B4 Bellkeeper 融合方向②）：每日 rsync 拉 keeper `vault/安全/` → 新卡 kbImport（external 低置信+taintguard）；**防循环铁律**：frontmatter `source_system: silksecagent` 的卡禁止回流
 
@@ -227,7 +228,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 - **plan_chain/task_chain**：manifest 的 requires/produces 能力图 BFS；task_chain 反向剪枝后落成 parent 串联的 once 链（`[链:want]` 标记幂等）
 - **burp_import**：Burp XML（proxy history/scanner issues）→ data/imports/*.jsonl（人工测试成果回流口）
 - **xray webhook**（webhook.js）：xray 7788 → `flows/xray-日期.jsonl` + addFinding（标题「<host> 被动审计候选：<插件>」，不传复现/影响 → 完整性闸门自动归「待验证候选」，不冒充漏洞信号）
-- **report_build**：noise 过滤 + severity（逗号多选）/source 筛选；输出按项目分节（无项目按严重级分组），文件名语义化 `report-{program}-{YYYYMMDD-HHmm}.md`；reports 端点从文件名解析 program/date 元数据 + program/q 筛选
+- **report_build**：noise 过滤 + severity（逗号多选）/source 筛选；输出按项目分节（无项目按严重级分组），文件名语义化 `report-{program}-{YYYYMMDD-HHmm}.md`；reports 端点从文件名解析 program/date 元数据 + program/q 筛选（✅ v4.6.1：agent 工具参数与后端能力对齐——此前工具 schema 只暴露 host_like/program_id/since_days/status 四个参数，severity/source 传不进去，仅看板 RPC 可用）
 - **approval_request**（v4.3，v4.4 判据结构化，v4.5 整域通配）：统一审批提请工具。`kind/subject/program_name/evidence` + kind 专属判据字段 → APPROVAL_KINDS 注册表校验 → approval_requests 表登记（同 (kind,subject) pending 去重，判据存 payload 列，看板审批行渲染判据 chip）；批准走 kind 的 onApprove，全程 audit。**v4.5 判定口径**：整域归属（主体核证级证据）→ `scope-wildcard`（subject=裸 apex，judgment 仅 控股/全资 或 收购/财团，evidence≥30 字；批准写回 `["*.example.com","example.com"]` 双条目+种子任务，全子域一次覆盖）；仅单子域有证据 → `scope-domain`（subject=完整子域，evidence≥30 字具体归属；validate 检测到裸 apex 提请会拒绝并引导改提通配——根因：09-04 批准的裸 apex 次日 recon 对 www 子域照样被拒，逐子域提审批的口径缺口）。**批准即闭环**：scope-domain/scope-wildcard 批准除 scopeSaveProgram 原子写回 scope.yml 外，自动入队首轮资产收集种子任务（objective 带 `[审批入队]` 前缀，once +5min，只做资产收集禁漏洞探测）+ radar-queue.jsonl 追加 scope-approved 事件（双通道，best-effort 不阻塞批准）；exclude-exception 批准=移出排除清单+并入 scope+落 durable fact（scope/exception-{host}）。**提请不改变 fail-closed：批准前目标一律拒绝**
 
 **FGS 决策图（P17 + v4.5 跨任务沉淀）**：`fgs_nodes` 表 + `fgs_add / fgs_update / fgs_list / fgs_next / fgs_export` 工具，scheduler 在定时任务 prompt 中注入使用说明（v4.5 起同时注入 kb_search 知识库检索指令）。目标是把任务执行中的 fact/goal/step/finding 实时结构化，形成 Decide/Execute 循环；任务收尾时 `appendFgsToHandoff` 自动追加 Markdown 摘要。**v4.5 沉淀钩子**：任务 done 时 `persistFgsFacts` 把 type=fact、status=done 且 content 含证据（detail/evidence 非空）的节点转正为 durable facts（fact_key=`fgs/{task_id}/{node_id}`，factUpsert 幂等冲突刷新 last_validated_at，30 天复验周期）——FGS 图生命周期与任务绑定（下个任务 fgsClearTask 清旧图），沉淀是它唯一的跨任务出口（cairn-y §5.8 断链修复）。best-effort：失败不阻断收尾。
@@ -294,7 +295,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 ### 5.1 asset-graph.db 表清单（node:sqlite 单文件，WAL）
 
-**领域表**：assets（host,type 主键；program_id/score/level/accept/biz/state P13 评级列 + root 冗余列（v4.1 域名族/网段聚合索引））、endpoints（host,method,path 主键；params/auth_required/roles_seen 越权矩阵列）、findings（fingerprint UNIQUE；vuln_type/cwe/endpoint_ref/preconditions/reproduction_steps/impact/recommendation 提交模板列；session_id 跳链；**noise P15**；**confidence/fgs_node_id/discovery_step P17**；bounty/vendor_status/submitted_at SRC 运营列）、programs（scope.yml 镜像 + workspace_id/path 绑定 + status archived）、tasks（program_id/phase/objective/status/priority/budget + schedule_kind/run_at/every_seconds/next_run_at/last_run_at/last_run_id + session_id/blocked_reason/result + **budget_timeout_sec（v4.5 任务预算覆盖，task-budget-extend 批准落点）** + **P18 新增 provider/model/reasoning_effort 任务级模型覆盖**）、task_runs（执行历史，每任务保留 200 行，session_id）、blackboard（**v4.6 收窄为环境层**：[env-issue]/[timeline]/全局广播；原业务快照键 26 条已迁 facts（program_id=`__legacy__`，fact_key=`bb/{原键}`，ephemeral 14d 自然消亡），sweep 守卫自动转写新快照键防回潮——⚠️ 已知缺口：守卫正则要求前缀后跟 `:` 或 `_`，单冒号 `note:xxx` 键未匹配，尚有 12 条 note: 工作记录键留在黑板）、facts（program_id+fact_key 主键；summary 注入 prompt 索引 + body 全文；confidence；**memcore 生命周期列**）、fact_edges（src/dst/edge_type：resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits）、**fgs_nodes（P17 Cairn_Y FGS 图：task_id/run_id/type/status/content/json score/parent_id/depends_on）**、fingerprints（host+tech 主键）、credentials（ref 引用非明文）、workers（spawn_worker 注册表：pid/status/exit/run_dir/dedupe_key）、**approval_requests（v4.3 统一审批，见下）**。
+**领域表**：assets（host,type 主键；program_id/score/level/accept/biz/state P13 评级列 + root 冗余列（v4.1 域名族/网段聚合索引））、endpoints（host,method,path 主键；params/auth_required/roles_seen 越权矩阵列）、findings（fingerprint UNIQUE；vuln_type/cwe/endpoint_ref/preconditions/reproduction_steps/impact/recommendation 提交模板列；session_id 跳链；**noise P15**；**confidence/fgs_node_id/discovery_step P17**；bounty/vendor_status/submitted_at SRC 运营列）、programs（scope.yml 镜像 + workspace_id/path 绑定 + status archived）、tasks（program_id/phase/objective/status/priority/budget + schedule_kind/run_at/every_seconds/next_run_at/last_run_at/last_run_id + session_id/blocked_reason/result + **budget_timeout_sec（v4.5 任务预算覆盖，task-budget-extend 批准落点）** + **P18 新增 provider/model/reasoning_effort 任务级模型覆盖**）、task_runs（执行历史，每任务保留 200 行，session_id）、blackboard（**v4.6 收窄为环境层（v4.6.1 已达成）**：[env-issue]/[timeline]/全局广播，非 bracket 快照键 active=0；原业务快照键 26 条已迁 facts（program_id=`__legacy__`，fact_key=`bb/{原键}`，ephemeral 14d 自然消亡）+ v4.6.1 追加迁移 15 条 note: 工作记录键（守卫正则缺陷修复后 13:11 sweep 自动转写，同型 bb/ 前缀），sweep 守卫自动转写新快照键防回潮——✅ 正则缺陷已修：原 alternation `note:` 分支后仍要求 `[:_]`，单冒号 `note:xxx` 键永不匹配）、facts（program_id+fact_key 主键；summary 注入 prompt 索引 + body 全文；confidence；**memcore 生命周期列**）、fact_edges（src/dst/edge_type：resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits）、**fgs_nodes（P17 Cairn_Y FGS 图：task_id/run_id/type/status/content/json score/parent_id/depends_on）**、fingerprints（host+tech 主键）、credentials（ref 引用非明文）、workers（spawn_worker 注册表：pid/status/exit/run_dir/dedupe_key）、**approval_requests（v4.3 统一审批，见下）**。
 
 **语义层表**（experience.js 建）：exp_cards（scenario UNIQUE/takeaway/chain/attempts/evidence/source/confidence + **v4.6 新增 kind/runs/successes（kind=playbook 承接合并①，28 张打法卡）** + memcore 评分列 + exportable）、exp_fts（FTS5 external content）、kb_docs（title/file/source_url/tainted + memcore 生命周期/使用列 mem_class/status（**v4.6 含 curated**）/uses/revalidate_by/last_used_at；curated 行免复验）、kb_fts、playbooks（**v4.6 已迁空，兼容空壳**——pb_save/pb_outcome/pb_rank 为兼容入口）、exp_embeddings/kb_embeddings（384 维 e5 向量 JSON）。FTS/向量索引维护：curated 刷新走 DELETE+INSERT（FTS5 虚表不支持 UPSERT）；归档时同步 DELETE 四索引防外部内容残留命中空行。
 
@@ -329,7 +330,7 @@ queued --标 done 时--> 流程守卫拦截点（台账/卡/交接包三查，�
 | 存储点 | 位置 | 谁写 | 谁读 | 自进化 |
 |---|---|---|---|---|
 | 经验卡 exp_cards | asset-graph.db | exp_store/idea（candidate 起步） | exp_search、AGENTS.md Top5 注入 | ✅ score/adopted/晋升/降级（memcore sweep + 复盘通道） |
-| 打法链 playbooks | asset-graph.db（**v4.6 已并入 exp_cards，kind=playbook**；playbooks 表迁空成空壳） | pb_save（兼容入口）/pb_outcome 打点 | exp_search（统一检索） | ⚠️ 降级通道有缺口：pb_outcome 的 succeeded/ran 信号未被 memcore 识别（静默失败），低成功率自动降级待修；exp 卡常规治理（零使用/neg_fb）仍生效 |
+| 打法链 playbooks | asset-graph.db（**v4.6 已并入 exp_cards，kind=playbook**；playbooks 表迁空成空壳） | pb_save（兼容入口）/pb_outcome 打点 | exp_search（统一检索） | ✅ v4.6.1 降级通道已修：succeeded/ran 信号被 memcore 识别 + kind=playbook 低成功率降级（successRate 0.3/minRuns 5）；exp 卡常规治理（零使用/neg_fb）照常生效 |
 | 知识库 kb_docs | asset-graph.db + data/knowledge/*.md + **rules/ 56 篇（v4.6 curated 索引，文件不动）** | kb_import、vault 回流（每日 05:00 kbVaultSync）、seed-skills.sh（curated） | kb_search（FTS+向量，v4.5 起调度任务 prompt 注入检索指令，v4.6 curated 排序在前） | ⚠️ 半进化：uses/复验字段齐但消费端 2026-09-05 前未接通（268/278 零使用）；revalidate ±15 天抖动防集体到期塌方；curated 行无复验（人工治理域） |
 | 事实 facts | asset-graph.db | fact_upsert + **v4.5 FGS 沉淀钩子**（fgs/{task_id}/{node_id}） | fact_search/摘要注入/neg_check 派单拦截 | ✅ durable 复验/cooling/归档/负知识 note 速记 14d |
 | 黑板 blackboard | asset-graph.db（**v4.6 回归纯环境层**） | blackboard_set（仅 env-issue/timeline/全局广播；快照前缀被 sweep 守卫自动转 facts） | blackboard_get（[env-issue] 查询） | ✅ ephemeral TTL/timeline 30d 归档 + 守卫转写 |
@@ -475,10 +476,11 @@ manifest 字段：`name/binary/stage/risk(passive|active|intrusive|manual)/timeo
 
 ## 九、脚本层
 
+> **部署通道（v4.6.1 全量接线）**：全部管线脚本已入 manifest templates + sec-suite-plugin-setup.sh install_scripts 归位 `scripts/pipeline/`——此前仅 5 个治理脚本（vision-triage/grade-assets/data-quality/discipline-audit/vault-export-build）受控，l2-collect/surface-consume/js-watch/ct-watch/pipeline-validate/coverage-report/verify-replay/dsh-version-watch/ct-watch-all 共 9 个仅靠历史推送存活（全量重部署会丢）。
+
 | 脚本 | 机制 |
-|---|---|
 | l2-collect.sh | katana(-d 2, 走代理, 120s/目标) + waybackurls + gau → URL 归一化（去静态/去重/提参数）追加 endpoints-{program}.tsv；单批 ≤3 目标纪律 |
-| ct-watch.py | certspotter API 轮询（429 退避重试），命中 scope 后缀新域 → radar-queue.jsonl（北京时区 ts）。**远程实际跑的是 ct-watch-all.sh 封装**（单实例串行双项目防限流；2026-09-05 已收编进 `templates/data-seed/scripts/`，**manifest/install_scripts 接线待做**——接线前 bundle setup 不下发） |
+| ct-watch.py | certspotter API 轮询（429 退避重试），命中 scope 后缀新域 → radar-queue.jsonl（北京时区 ts）。**远程实际跑的是 ct-watch-all.sh 封装**（单实例串行双项目防限流；v4.6.1 已接线：manifest templates + install_scripts 归位 scripts/pipeline/ + setup.sh §9.7 ct-watch.service 单元纳管——此前为手工单元+历史推送存活，全量重部署会丢） |
 | js-watch.py | JS bundle hash 变化 → radar 雷达队列（发版监控） |
 | fofa_search.sh | FOFA API 脚本通道（seed-manifests 装到 /usr/local/bin，供 run_cli fofa_search manifest 调用） |
 | 一次性迁移/改库脚本 | backfill-program.js（program_id 回填）、migrate-blackboard-to-facts.js（黑板→facts）、migrate-scheduled-tasks.js（once→interval 治理）、import-cyberstrikeai.py（旧库导入）、p13-task-update.py / p14-objective-slim.py / p14-1-tool-refs.py（历史批次 objective 改写） |
@@ -518,7 +520,7 @@ manifest 字段：`name/binary/stage/risk(passive|active|intrusive|manual)/timeo
 
 ## 十一、部署与运维
 
-- **规范化部署**：改仓库 `bundles/dsh/` → `rsync -a bundles/dsh/ /opt/SilkSpool/bundles/dsh/`（管理机副本）→ `spool bundle dsh setup csai`（推模板+跑各 plugin setup 幂等脚本+种子+冒烟）→ `spool restart csai silksecagent`。**manifest 模板是扁平推送**（basename → BASE_DIR），子目录产物由 setup 脚本归位（install_scripts）。
+- **规范化部署**：改仓库 `bundles/dsh/` → `rsync -a bundles/dsh/ /opt/SilkSpool/bundles/dsh/`（管理机副本）→ `spool bundle dsh setup csai`（推模板+跑各 plugin setup 幂等脚本+种子+冒烟）→ setup 收尾 `reconcile_service` 重启服务（**v4.6.1 修复顺序缺陷**：此前重启排在主流程、§8 插件组装之前——服务带着旧插件代码重启、新组装代码不生效，2026-09-05 实测 bbGuarded=0 即此根因；现重启移到 §10 收尾）。**manifest 模板按相对路径推送**（含子目录），子目录产物由 setup 脚本归位（install_scripts）。
 - **升级**：`spool bundle dsh upgrade csai` → dsh-upgrade.sh（版本 pin + 配置备份 + **升级前数据快照** 187M + pnpm install + 服务健康 + **深冒烟**（--dump-config 校验 sec-cli-adapter/sec-dashboard 在组合树）+ 任一失败自动回滚版本）。
 - **恢复**：backups/ 快照（6h 一次 VACUUM INTO，14 份）+ silksec-restore.sh；数据回滚手册见升级报告 §6。
 - **日常运维**：一律 PATH 中 `spool`（exec/service/restart/logs/sync/bundle），禁止绕过。
