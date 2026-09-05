@@ -1811,6 +1811,24 @@ window.__ModuleLoader__.load({
       var cards = (props.cardsState.data && props.cardsState.data.rows) || []
       var pbs = (props.pbsState.data && props.pbsState.data.rows) || []
       var mem = props.memState.data
+      var kbRows = (props.kbState.data && props.kbState.data.rows) || []
+      var kbCounts = (props.kbState.data && props.kbState.data.counts) || {}
+      var factOv = props.factOvState.data || null
+      var kbQfs = React.useState('')
+      var kbQ = kbQfs[0]; var setKbQ = kbQfs[1]
+      var kbKindfs = React.useState('')
+      var kbKind = kbKindfs[0]; var setKbKind = kbKindfs[1]
+      var kbReading = React.useState(null)
+      var kbCur = kbReading[0]; var setKbCur = kbReading[1]
+      function openKb(id, title) {
+        setKbCur({ id: id, title: title, loading: true, content: null })
+        callRpc('kbRead', { id: id }).then(function (res) {
+          setKbCur({ id: id, title: res.title, loading: false, content: res.content, curated: res.curated, tainted: res.tainted, file: res.file })
+        }).catch(function (e) { setKbCur({ id: id, title: title, loading: false, content: null, error: e && e.message ? e.message : String(e) }) })
+      }
+      function reloadKb() {
+        props.kbState.reload && props.kbState.reload()
+      }
       function act(fn) { if (props.busy) return; fn().then(function () { props.cardsState.reload() }).catch(function (e) { alert('操作失败: ' + (e && e.message ? e.message : e)) }) }
       function onFeedback(id, verdict) { act(function () { return callRpc('expFeedback', { id: id, verdict: verdict }) }) }
       function onPromote(id) {
@@ -1864,10 +1882,29 @@ window.__ModuleLoader__.load({
           el('div', { style: { ...F.s, marginBottom: 4 } }, '📊 知识体检（v4.5）' + (warnBits.length ? ' ⚠ ' + warnBits.join('；') : '')),
           khRows)
       }
+      // v4.6 知识全景图：六类型分区导航（每类知识一个位置一个工具，类型间正交不合并）
+      var typeSections = [
+        { icon: '🧠', name: '经验类', where: 'exp_cards 表', tool: 'exp_search', n: cards.length, extra: (pbs.length ? '+ 打法链 ' + pbs.length : '') },
+        { icon: '🌍', name: '事实类', where: 'facts 表', tool: 'fact_search', n: factOv ? factOv.total : '—', extra: factOv ? (Object.keys(factOv.byCategory).length + ' 分类') : '' },
+        { icon: '📚', name: '文献类', where: 'kb_docs + knowledge/ + rules/', tool: 'kb_search', n: kbCounts.curated !== undefined ? (kbCounts.curated + kbCounts.external) : '—', extra: (kbCounts.curated || 0) + ' curated + ' + (kbCounts.external || 0) + ' external' },
+        { icon: '📋', name: '规程类', where: 'vulncards/*.yaml + rules/src', tool: '按指纹读卡', n: '18 VC', extra: '人工版本受控' },
+        { icon: '🧭', name: '任务内类', where: 'fgs_nodes（任务生命周期）', tool: 'fgs_next', n: (kh && kh.fgs ? kh.fgs.nodes : '—'), extra: kh && kh.fgs ? ('沉淀 ' + kh.fgs.persisted_facts + ' facts') : '' },
+        { icon: '⚠️', name: '环境类', where: 'blackboard（纯环境层）', tool: 'blackboard_get', n: factOv && factOv.blackboard ? factOv.blackboard.active : '—', extra: factOv && factOv.blackboard ? ('env-issue ' + factOv.blackboard.envIssues) : '' },
+      ]
+      var panorama = el('div', { style: { ...card, marginTop: 10, padding: '10px 12px' }, title: 'v4.6 按类型归一：每类知识一个位置一个工具；任务开局三步检索顺序 fact_search → exp_search → kb_search' },
+        el('div', { style: { ...F.s, marginBottom: 6 } }, '🗺️ 知识全景（v4.6 六类型 · 一类一位一工具）'),
+        el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 6 } },
+          typeSections.map(function (t) {
+            return el('div', { key: t.name, style: { padding: '6px 8px', background: T.panel || 'rgba(127,127,127,0.08)', borderRadius: 6, cursor: 'default' } },
+              el('div', { style: { ...F.xs } }, t.icon + ' ' + t.name + '　', el('span', { style: { ...F.mono, fontSize: 12, color: T.business } }, String(t.n)), t.extra ? el('span', { style: { ...F.xxs, color: T.label3 } }, '　' + t.extra) : null),
+              el('div', { style: { ...F.xxs, color: T.label2 } }, t.where),
+              el('div', { style: { ...F.xxs, color: T.label3 } }, '工具: ' + t.tool))
+          })))
       return el('div', null,
         memChips,
         healthCard,
-        el('div', { style: { ...cardL, margin: '10px 0 6px' }, title: '评分 = adopted×3 + 👍×2 + uses×0.5 − 👎×5 − 时效衰减' }, '🧠 经验卡（exp_cards）· candidate 候选 / active 已晋升 / cooling 衰退'),
+        panorama,
+        el('div', { style: { ...cardL, margin: '10px 0 6px' }, title: 'v4.6 合并①：打法链已并入本表（kind 标记）。评分 = adopted×3 + 👍×2 + uses×0.5 − 👎×5 − 时效衰减' }, '🧠 经验类（exp_cards）· 经验卡 + 打法链同表 · candidate / active / cooling'),
         props.cardsState.loading ? el(SkeletonRows, { rows: 5 }) : cards.length === 0
           ? el(EmptyState, { text: '暂无经验卡' })
           : el('table', { style: tableStyle },
@@ -1880,7 +1917,7 @@ window.__ModuleLoader__.load({
               el('tbody', null, cards.map(function (c) {
                 return el('tr', { key: c.id, className: 'silksec-row' },
                   el('td', { style: tdMono }, String(c.id)),
-                  el('td', { style: td, title: c.scenario }, c.scenario),
+                  el('td', { style: td, title: c.scenario }, c.kind === 'playbook' ? el('span', null, el('span', { style: { ...pill, color: T.business } }, '链'), ' ', c.scenario) : c.scenario),
                   el('td', { style: td }, c.takeaway),
                   el('td', { style: tdMono, title: '评分 = adopted×3 + 👍×2 + uses×0.5 − 👎×5 − 时效衰减' }, String(c.score !== undefined ? c.score : '—')),
                   el('td', { style: { ...tdMono, title: 'uses / adopted / 👍 / 👎' } }, c.uses !== undefined ? c.uses + '/' + c.adopted + '/' + c.pos_fb + '/' + c.neg_fb : '—'),
@@ -1894,7 +1931,7 @@ window.__ModuleLoader__.load({
                       el('button', { type: 'button', className: 'silksec-icon-btn', disabled: props.busy, title: '修改 takeaway（需 ≥10 字理由）', 'aria-label': '编辑', onClick: function () { onEdit(c.id, c.takeaway) } }, opIcon('edit')),
                       el('button', { type: 'button', className: 'silksec-icon-btn silksec-icon-btn-danger', disabled: props.busy, title: '弃置（移入归档，可恢复）', 'aria-label': '弃置', onClick: function () { onDeprecate(c.id) } }, opIcon('trash')))))
               }))),
-        el('div', { style: { ...cardL, margin: '18px 0 6px' } }, 'Playbooks（调用链 · 只读，信号来自真实运行）'),
+        el('div', { style: { ...cardL, margin: '18px 0 6px' }, title: 'v4.6 合并①：playbooks 已并入 exp_cards（kind=playbook）。此视图读同表数据，统计打点 pb_outcome 改写为卡分数反馈' }, '🧭 打法链（exp_cards kind=playbook · v4.6 已并入经验表）· 只读'),
         props.pbsState.loading ? el(SkeletonRows, { rows: 3 }) : pbs.length === 0
           ? el(EmptyState, { text: '暂无 playbook' })
           : el('table', { style: tableStyle },
@@ -1909,7 +1946,70 @@ window.__ModuleLoader__.load({
                   el('td', { style: td }, memStatusPill(pb.status)),
                   el('td', { style: tdMono }, pb.last_run_at ? new Date(pb.last_run_at).toISOString().slice(0, 10) : '—'))
               }))),
-        RulesSection(props))
+        KbSection({ rows: kbRows, counts: kbCounts, q: kbQ, setQ: setKbQ, kind: kbKind, setKind: setKbKind, loading: props.kbState.loading, onOpen: openKb, onReload: reloadKb, busy: props.busy }),
+        RulesSection(props),
+        kbCur ? el(DocModal, {
+          open: true, onClose: function () { setKbCur(null) }, errorPrefix: '读取',
+          title: (kbCur.title || '文献').slice(0, 60),
+          sub: (kbCur.curated ? 'curated · 人工蒸馏高置信 · ' : 'external · 外部文献低置信 · ') + (kbCur.tainted ? '⚠ tainted 疑似注入 ' : '') + (kbCur.file || ''),
+          state: kbCur,
+        }) : null)
+    }
+
+    // ── v4.6 文献区（kb_docs：curated 人工蒸馏 + external 外部文献统一浏览）──
+    // 合并③后 kb_docs 是文献类唯一索引面：curated 行 file 指向 rules/（版本受控），external 行指向 knowledge/。
+    // 只读浏览 + kbRead 打开正文；写入仍走 kb_import / seed-skills.sh。
+    function KbSection(props) {
+      var all = props.rows || []
+      var counts = props.counts || {}
+      // 客户端过滤（kbList 全量 ≤200 行）：q 标题/路径子串 + kind curated/external
+      var q = (props.q || '').toLowerCase()
+      var rows = all.filter(function (r) {
+        if (props.kind === 'curated' && !r.curated) return false
+        if (props.kind === 'external' && r.curated) return false
+        if (q && (r.title || '').toLowerCase().indexOf(q) < 0 && (r.file || '').toLowerCase().indexOf(q) < 0) return false
+        return true
+      })
+      function kindBtn(v, label, n) {
+        return el('button', {
+          key: v, type: 'button', className: 'silksec-tab', style: { height: 24, fontSize: 12 },
+          'data-on': props.kind === v ? 'true' : undefined,
+          onClick: function () { props.setKind(v) },
+        }, label + (n !== undefined ? ' ' + n : ''))
+      }
+      return el('div', null,
+        el('div', { style: { ...cardL, margin: '18px 0 6px' }, title: 'v4.6 合并③：rules 56 篇与外部文献统一进 kb_search 检索面（curated 排序在前）。文件物理位置不动；写入走 kb_import / seed-skills.sh' },
+          '📚 文献类（kb_docs · curated 人工蒸馏 ' + (counts.curated || 0) + ' + external 外部文献 ' + (counts.external || 0) + ' · 零使用 ' + (counts.zero_use || 0) + '）'),
+        el('div', { style: { display: 'flex', gap: 8, alignItems: 'center', margin: '6px 0' } },
+          el('input', {
+            className: 'silksec-input', style: { ...inputStyle, width: 240 }, placeholder: '搜索标题/路径…',
+            value: props.q, onChange: function (e) { props.setQ(e.target.value) },
+          }),
+          kindBtn('', '全部'),
+          kindBtn('curated', 'curated', counts.curated),
+          kindBtn('external', 'external', counts.external),
+          counts.tainted ? el('span', { style: { ...pill, color: T.warn } }, 'tainted ' + counts.tainted) : null),
+        props.loading ? el(SkeletonRows, { rows: 4 }) : rows.length === 0
+          ? el(EmptyState, { text: '无匹配文献' })
+          : el('table', { style: tableStyle },
+              el('colgroup', null, el('col', { style: { width: '40%' } }), el('col', { style: { width: 70 } }), el('col', { style: { width: 56 } }), el('col', { style: { width: 60 } }), el('col', { style: { width: 90 } })),
+              el('thead', null, el('tr', { style: theadRow },
+                el('th', { style: th }, '标题'), el('th', { style: th }, '类型'), el('th', { style: th }, '使用'), el('th', { style: th }, '状态'), el('th', { style: th }, '查看'))),
+              el('tbody', null, rows.map(function (r) {
+                return el('tr', {
+                  key: r.id, className: 'silksec-row', style: { cursor: 'pointer' },
+                  onClick: function () { props.onOpen(r.id, r.title) },
+                },
+                  el('td', { style: td, title: r.title + ' · ' + r.file },
+                    r.curated ? el('span', { style: { ...pill, color: T.business, marginRight: 6 } }, 'curated') : null,
+                    r.tainted ? el('span', { style: { ...pill, color: T.warn, marginRight: 6 } }, 'tainted') : null,
+                    (r.title || '').slice(0, 60),
+                    el('span', { style: { color: T.label3, marginLeft: 8, ...F.xxs, fontFamily: MONO } }, (r.file || '').replace(/^.*\/(data\/)?(knowledge|rules)\//, ''))),
+                  el('td', { style: tdMono }, r.curated ? '人工蒸馏' : '外部'),
+                  el('td', { style: tdMono }, String(r.uses !== undefined && r.uses !== null ? r.uses : '—')),
+                  el('td', { style: td }, memStatusPill(r.curated ? 'active' : (r.status || 'active'))),
+                  el('td', { style: td }, el('button', { type: 'button', className: 'silksec-icon-btn', title: '查看文献正文', 'aria-label': '查看', onClick: function (e) { e.stopPropagation(); props.onOpen(r.id, r.title) } }, opIcon('eye'))))
+              }))))
     }
 
     // ── 静态先验 rules/（v4.4：人工蒸馏先验层的看板观测入口——此前只进 agent 提示词，无任何 UI）──
@@ -2088,6 +2188,13 @@ window.__ModuleLoader__.load({
       }, [activeTab])
       var rulesState = useRpc(function () {
         return activeTab === 'knowledge' ? { endpoint: 'rulesList' } : null
+      }, [activeTab])
+      // v4.6 知识全景：文献区（kb_docs 含 curated/external）与事实区分类概览
+      var kbState = useRpc(function () {
+        return activeTab === 'knowledge' ? { endpoint: 'kbList' } : null
+      }, [activeTab])  // 全量拉取（≤200），KbSection 内客户端按 q/kind 过滤
+      var factOvState = useRpc(function () {
+        return activeTab === 'knowledge' ? { endpoint: 'factOverview' } : null
       }, [activeTab])
       var rptFilter = React.useState({ program: '', q: '' })
       var reportFilter = rptFilter[0]; var setReportFilter = rptFilter[1]
@@ -2342,7 +2449,7 @@ window.__ModuleLoader__.load({
             onJumpHistory: jumpToHistory, jump: jump,
           }))
       } else if (activeTab === 'knowledge') {
-        content = el(KnowledgeView, { memState: memState, cardsState: cardsState, pbsState: pbsState, rulesState: rulesState, busy: isBusy })
+        content = el(KnowledgeView, { memState: memState, cardsState: cardsState, pbsState: pbsState, rulesState: rulesState, kbState: kbState, factOvState: factOvState, busy: isBusy })
       } else if (activeTab === 'reports') {
         content = el(ReportsView, { state: reportsState, onReload: function (f) { setReportFilter({ program: f.program || '', q: f.q || '' }) } })
       } else if (activeTab === 'approvals') {

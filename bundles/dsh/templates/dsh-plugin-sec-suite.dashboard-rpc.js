@@ -409,8 +409,61 @@ export async function handleDashboardRpc(endpoint, payload) {
       return { ok: true, id, exportable: on }
     }
     case 'playbooks': {
-      const rows = deps.assetDb.getDb().prepare('SELECT * FROM playbooks ORDER BY runs DESC LIMIT 100').all()
+      // v4.6 合并①：playbooks 已并入 exp_cards——看板列表改读 kind=playbook 卡（兼容返回原字段形态）
+      const rows = deps.assetDb.getDb().prepare("SELECT id, scenario AS name, scenario, takeaway, chain, runs, successes, last_validated_at AS last_run_at, status FROM exp_cards WHERE kind = 'playbook' ORDER BY runs DESC LIMIT 100").all()
       return { rows: rows.map((r) => ({ ...r, success_rate: r.runs ? Math.round((r.successes / r.runs) * 100) / 100 : 0 })) }
+    }
+    // ---- v4.6 知识全景（knowledge tab 分区数据）：kbList 文献浏览 / factOverview 事实分类计数 ----
+    // kbList：kb_docs 检索面全量分页（curated 与 external 混排，curated 排前）；kbRead 读单篇正文。
+    case 'kbList': {
+      const d = deps.assetDb.getDb()
+      const q = String(p.q || '').toLowerCase()
+      const kindFilter = String(p.kind || '') // ''=全部 'curated'=人工蒸馏 'external'=外部文献
+      let rows
+      if (q) {
+        rows = d.prepare(`SELECT id, title, file, source_url, tainted, imported_at, status, uses, revalidate_by FROM kb_docs
+          WHERE (title LIKE ? OR file LIKE ?) AND status != 'archived'
+          ${kindFilter ? (kindFilter === 'curated' ? "AND status = 'curated'" : "AND status != 'curated'") : ''}
+          ORDER BY (status = 'curated') DESC, uses DESC, imported_at DESC LIMIT 200`).all(`%${q}%`, `%${q}%`)
+      } else {
+        rows = d.prepare(`SELECT id, title, file, source_url, tainted, imported_at, status, uses, revalidate_by FROM kb_docs
+          WHERE status != 'archived'
+          ${kindFilter ? (kindFilter === 'curated' ? "AND status = 'curated'" : "AND status != 'curated'") : ''}
+          ORDER BY (status = 'curated') DESC, uses DESC, imported_at DESC LIMIT 200`).all()
+      }
+      const counts = {
+        curated: d.prepare("SELECT COUNT(*) AS n FROM kb_docs WHERE status = 'curated' AND status != 'archived'").get().n,
+        external: d.prepare("SELECT COUNT(*) AS n FROM kb_docs WHERE status != 'curated' AND status != 'archived'").get().n,
+        tainted: d.prepare('SELECT COUNT(*) AS n FROM kb_docs WHERE tainted = 1').get().n,
+        zero_use: d.prepare("SELECT COUNT(*) AS n FROM kb_docs WHERE status != 'curated' AND (uses IS NULL OR uses = 0)").get().n,
+      }
+      return { rows: rows.map((r) => ({ ...r, curated: r.status === 'curated' ? 1 : 0 })), counts }
+    }
+    case 'kbRead': {
+      const d = deps.assetDb.getDb()
+      const id = Number(p.id || 0)
+      const doc = d.prepare('SELECT * FROM kb_docs WHERE id = ?').get(id)
+      if (!doc) throw new Error(`文献不存在: #${id}`)
+      const fs = await import('node:fs')
+      if (!fs.existsSync(doc.file)) throw new Error(`文件缺失: ${doc.file}`)
+      const st = fs.statSync(doc.file)
+      if (st.size > 512 * 1024) throw new Error('文件过大（>512KB），请在主机查看')
+      return { id: doc.id, title: doc.title, file: doc.file, source_url: doc.source_url, curated: doc.status === 'curated', tainted: !!doc.tainted, content: fs.readFileSync(doc.file, 'utf8'), size: st.size }
+    }
+    // factOverview：知识 tab 事实区分类计数（active/cooling + mem_class 分布）——facts 全量列表在事实 tab
+    case 'factOverview': {
+      const d = deps.assetDb.getDb()
+      const cats = d.prepare("SELECT category, mem_class, COUNT(*) AS n FROM facts WHERE status = 'active' GROUP BY category, mem_class").all()
+      const byCategory = {}
+      for (const r of cats) {
+        byCategory[r.category || '(空)'] = byCategory[r.category || '(空)'] || { total: 0, durable: 0, ephemeral: 0 }
+        byCategory[r.category || '(空)'].total += r.n
+        if (r.mem_class === 'ephemeral') byCategory[r.category || '(空)'].ephemeral += r.n
+        else byCategory[r.category || '(空)'].durable += r.n
+      }
+      const board = d.prepare("SELECT COUNT(*) AS n FROM blackboard WHERE status = 'active'").get().n
+      const envIssues = d.prepare("SELECT COUNT(*) AS n FROM blackboard WHERE status = 'active' AND key LIKE '[env-issue]%'").get().n
+      return { byCategory, total: d.prepare("SELECT COUNT(*) AS n FROM facts WHERE status = 'active'").get().n, blackboard: { active: board, envIssues } }
     }
     // ---- 静态先验 rules/（知识 tab v4.4：人工蒸馏先验层此前无任何观测入口）----
     // 只读两件套：rulesList（目录树+元数据）/ rulesRead（单文件内容，防路径穿越）。写入口仍是 seed-skills.sh 版本受控通道。

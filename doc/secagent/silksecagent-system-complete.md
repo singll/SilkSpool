@@ -325,10 +325,10 @@ queued --标 done 时--> 流程守卫拦截点（台账/卡/交接包三查，�
 | 存储点 | 位置 | 谁写 | 谁读 | 自进化 |
 |---|---|---|---|---|
 | 经验卡 exp_cards | asset-graph.db | exp_store/idea（candidate 起步） | exp_search、AGENTS.md Top5 注入 | ✅ score/adopted/晋升/降级（memcore sweep + 复盘通道） |
-| 打法链 playbooks | asset-graph.db | pb_save + runCli/spawn_worker 自动统计 | pb_rank | ✅ 成功率降级（runs≥5 且 <30%） |
-| 知识库 kb_docs | asset-graph.db + data/knowledge/*.md | kb_import、vault 回流（每日 05:00 kbVaultSync） | kb_search（FTS+向量，v4.5 起调度任务 prompt 注入检索指令） | ⚠️ 半进化：uses/复验字段齐但消费端 2026-09-05 前未接通（268/278 零使用）；revalidate ±15 天抖动防集体到期塌方 |
+| 打法链 playbooks | asset-graph.db（**v4.6 已并入 exp_cards，kind=playbook**） | pb_save（兼容入口）/pb_outcome 打点 | exp_search（统一检索） | ✅ 成功率降级走 exp 卡治理 |
+| 知识库 kb_docs | asset-graph.db + data/knowledge/*.md + **rules/ 56 篇（v4.6 curated 索引，文件不动）** | kb_import、vault 回流（每日 05:00 kbVaultSync）、seed-skills.sh（curated） | kb_search（FTS+向量，v4.5 起调度任务 prompt 注入检索指令，v4.6 curated 排序在前） | ⚠️ 半进化：uses/复验字段齐但消费端 2026-09-05 前未接通（268/278 零使用）；revalidate ±15 天抖动防集体到期塌方；curated 行无复验（人工治理域） |
 | 事实 facts | asset-graph.db | fact_upsert + **v4.5 FGS 沉淀钩子**（fgs/{task_id}/{node_id}） | fact_search/摘要注入/neg_check 派单拦截 | ✅ durable 复验/cooling/归档/负知识 note 速记 14d |
-| 黑板 blackboard | asset-graph.db | blackboard_set（env-issue/timeline/ephemeral） | 任务开局必读 | ✅ ephemeral TTL/timeline 30d 归档 |
+| 黑板 blackboard | asset-graph.db（**v4.6 回归纯环境层**） | blackboard_set（仅 env-issue/timeline/全局广播；快照前缀被 sweep 守卫自动转 facts） | blackboard_get（[env-issue] 查询） | ✅ ephemeral TTL/timeline 30d 归档 + 守卫转写 |
 | FGS 图 fgs_nodes | asset-graph.db | fgs_add（任务运行时） | fgs_next/export、看板 | ⚠️ 半进化：任务结束节点沉睡，**v4.5 fact 节点 done 自动沉淀 facts**（跨任务出口） |
 | VulnCard 漏洞卡 | data/vulncards/*.yaml | 人工+卡片升版（deviation 建议） | vuln 任务规程 | ⚠️ 半进化：card_usage deviation 反哺但升版靠人工（P2 纪律，刻意） |
 | 静态先验 rules | data/rules/{src,srcskill,techniques,web,php} 56 篇 | 人工蒸馏（agent 只提议不落盘） | 知识 tab 只读、技术栈命中时读入 | ❌ 纯静态（by design） |
@@ -338,6 +338,21 @@ queued --标 done 时--> 流程守卫拦截点（台账/卡/交接包三查，�
 | skills 24 目录 / agents 16 / tools 80+ yaml | hosts/csai/{skills,agents,tools} → 部署 | 人工 | DSH preset/工具面 | ❌ 静态（版本受控通道 seed-skills.sh） |
 
 **知识体检**：memcore status().knowledgeHealth → dashboard-rpc `memcore` case → 看板知识 tab 顶部（各存储点 count/零使用占比/cooling/30 天到期预警/FGS 沉淀数，死库存与塌方风险一眼可见）。
+
+### 5.4 知识体系按类型归一（v4.6，2026-09-05）
+
+六类型位（一类一位一工具，类型间正交不合并）：
+
+| 类型 | 唯一位置 | 唯一工具 | 归一操作 |
+|---|---|---|---|
+| 经验类 | exp_cards 表 | exp_search | ⬅ playbooks 并入（kind=playbook） |
+| 事实类 | facts 表 | fact_search | ⬅ 黑板快照键迁入（41 条，sweep 守卫防回潮） |
+| 文献类 | kb_docs 索引 | kb_search | ⬅ rules 56 篇建 curated 索引（文件不动） |
+| 规程类 | vulncards + rules/src | 按指纹读卡 | 不动（by design） |
+| 任务内类 | fgs_nodes | fgs_next | 不动（任务生命周期语义） |
+| 环境类 | blackboard | blackboard_get | 收窄为纯环境层 |
+
+任务开局三步检索顺序：`fact_search`（当前状态）→ `exp_search`（实战经验）→ `kb_search`（文献，curated 在前）。看板知识 tab 顶部六类型全景图 + KbSection 文献浏览（RPC kbList/kbRead/factOverview）。明确不合并：vulncards↔techniques（规程 vs 知识）、FGS↔facts（任务内 vs 跨任务）、rules/src↔kb（治理规则 vs 文献）。
 
 ---
 

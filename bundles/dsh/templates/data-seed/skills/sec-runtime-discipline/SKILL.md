@@ -12,8 +12,12 @@ description: 运行环境公共纪律——代理出口/授权边界/派单/inte
 5. **失败留痕**：失败/被杀 run 先读 results/<run_id>/meta.json（exit_code/duration）再处置——数据多已落盘，可幂等重跑；onnxruntime 的 pthread_setaffinity 报错为良性噪声，不是失败信号。
 6. **大输出**：一律 grep_result/page_result 摘要取，禁止在会话铺全文；nuclei 等大输出默认取命中行。
 7. **日期标签**：日报/黑板键/台账文件名统一 YYYY-MM-DD；定时任务收尾 task_update 的 **note 必须以【{项目}·{角色}·MMdd】开头**（如【美团·vuln·0828】），保证看板执行历史左侧标题一眼可分辨哪天哪个任务。
-8. **黑板**：环境故障查 [env-issue] 前缀键（现行有效才参考）；存活清单/台账不内联进 objective，以黑板/facts 实时记录为准。
-9. **事实生命周期**：note 类=agent 工作速记（ephemeral，14 天滚动消亡）——失败记录/当日结论/临时观察写 note；**长期知识必须写 target/asset/finding 等分类**（durable，30 天复验，被引用即续期）；带明确时效的事实用 intent.ttl_days 显式声明。禁止把需要长期保留的知识写进 note（14 天后会被 sweeper 归档）。
+8. **知识检索三步顺序（2026-09-05 起 v4.6）**：任务开局按固定顺序检索，不要面对一堆检索工具挑花眼——
+    1. `fact_search`（事实类：目标/资产/存活当前状态，program 维度，会过期）
+    2. `exp_search`（经验类：打法链+经验卡同表，kind 标记区分，实战置信度最高）
+    3. `kb_search`（文献类：curated: 前缀=人工蒸馏规则高置信，其余外部文献低置信）
+    环境故障查 blackboard [env-issue] 前缀键（现行有效才参考）；任务内决策链用 fgs_next；变化队列 radar_read。黑板不再存业务快照（sweep 守卫自动转 facts）。
+9. **事实生命周期**：note 类=agent 工作速记（ephemeral，14 天滚动消亡）——失败记录/当日结论/临时观察写 note；**长期知识必须写 target/asset/finding 等分类**（durable，30 天复验，被引用即续期）；带明确时效的事实用 intent.ttl_days 显式声明。禁止把需要长期保留的知识写进 note（14 天后会被 sweeper 归档）。打法链沉淀用 exp_store（kind=playbook 语义由 pb_save 兼容入口承接）。
 10. **web_fetch 边界（2026-09-04 起，DSH 0.1.2 默认启用）**：目标域（scope.yml 内资产）交互一律走 run_cli（scope-guard 管控）；web_fetch 仅限**非目标域公开资料**（文档/CVE/POC 公开页等），**禁止对 scope 内资产使用 web_fetch**（绕过 scope-guard 与代理池出口纪律，且出口直连公网不经 mubeng 网关）。对 scope 内资产的网页取证用 run_cli + curl（模板化代理）。
 11. **模型路由**：worker 禁止自主切换 provider/模型——一律默认路由（bellkeeper/pool-secagent，由 model-failover 做平台级熔断回退）。子代理的 provider/模型覆盖只能由派单方（人工/父任务规划）通过 spawn_worker `--patch` 显式指定，worker 会话内不得自行改选 providers 列表里的其他渠道（直连 deepseek 等会绕过网关的额度/熔断/审计）。
 12. **审批判定口径（2026-09-05 起 v4.5）**：scope 外资产提请 `approval_request` 时按层级分流——**整个注册域归属该项目**（主体核证级证据：ICP 备案主体/官网品牌一致/收购公告/SRC 规则页明示）→ `kind=scope-wildcard`（subject=裸 apex，如 catpaw.com，一次审批覆盖 `*.catpaw.com` 全部子域，判据仅限 控股/全资 或 收购/财团）；**仅单个子域有具体归属证据**（CNAME 指向授权资产/内容同源）→ `kind=scope-domain`（subject=完整子域，evidence≥30 字）。禁止拿裸 apex 走 scope-domain（会产生无通配的裸域授权，次日 recon 对 www 子域照样被拒）。
