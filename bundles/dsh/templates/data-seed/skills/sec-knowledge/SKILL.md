@@ -20,6 +20,13 @@ description: 记忆治理纪律——写记忆前三问、开局检索、用完�
 | 目标事实（指纹/配置/负结果） | fact_upsert | durable（30天复验）或 note 类 ephemeral |
 | 可迁移方法论 | exp_store | candidate 起步，附 justification |
 | 成功调用链 | pb_save | permanent，附 justification |
+| 阴性结论（host×栈×漏洞类测过没问题） | fact_upsert，key 规范 `neg:host=<host>\|stack=<栈>\|class=<手法族>` | durable（90 天复验） |
+
+## 阴性账本（neg: 前缀，防重复扫已测面）
+
+- **测过没问题必须记账**：一张 VC 卡/一个手法族在某 host 打完且结论 TESTED_CLEAN → fact_upsert 一条 `neg:` 键（reason 里带当时的工具与版本）。下次同 host 同类扫描前先 `fact_search 'neg:host=<host>'`，命中且未过期 → 跳过该类。
+- **覆盖永不静默缩减**：跳过决策必须留痕（跳了什么、依据哪条 neg 记录）；**该栈从未测过的手法族绝不跳**——哪怕同 host 其他类全是阴性。跳过只省在"已证伪的重复"，不省在"没测过的面"。
+- 复盘时消费：review 角色汇总 `neg:` 键的覆盖分布，找出"测过的类很密、没测过的类整片空白"的目标，产出补测清单。
 
 ## 规则先验层（data/rules/）
 
@@ -33,6 +40,11 @@ description: 记忆治理纪律——写记忆前三问、开局检索、用完�
 
 ## 规则先验层加载口径（与 sec-pipeline 技能互补）
 
-- 开局扫描技术索引：`rules/src/technique-index.md`（打穿短表）「认什么」列对现场特征
+- 开局扫描技术索引：`rules/src/technique-index.md`（打穿短表）「认什么」列对现场特征，按开局路由三步命中才读模块详解/VC 卡/案例
 - 命中技术栈后读对应 `rules/web|php/<栈>.md` 组件先验
 - 评级/定级/报告前读 `rules/src/{asset-scoring,severity-rating}.md`；股权判据读 `rules/src/equity-gate.md`
+
+## 案例引用约束（防幻觉引用）
+
+- 引用真实披露案例（"这类洞 H1 上有先例…"）之前必须 `kb_search` 命中 `rules/cases/` 里的实际条目，**说不出条目路径就别引**——凭记忆编案例编号/URL 是幻觉，与"无证据不结论"同罪。
+- 案例库条目带真实来源 URL（人工策展入库，走 knowledge-adopt 审批）；自己在新目标上打通过同类洞 → 沉淀为 exp_cards（后验），与案例库（先验）互补，不要混写。

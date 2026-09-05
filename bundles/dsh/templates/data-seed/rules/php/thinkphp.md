@@ -1,4 +1,6 @@
 # ThinkPHP 审计先验
+> **触发信号**: ThinkPHP, index.php?s=, 兼容模式路由, 多应用, 5.0.x, 5.1.x, method, __construct, 6.x 反序列化, League/Flysystem, app_debug, trace 页, runtime/log, nuclei, afrog, 版本指纹, ThinkPHP V5
+> **适用**: 报错页/指纹认出 ThinkPHP 后选 payload 代际（5.0 与 5.1 不通用）、开 debug 泄露与日志直连下载 · **不适用**: 非 ThinkPHP 的 PHP 框架（Laravel/Composer gadget 走 deserialization） · 索引: rules/src/technique-index.md
 
 ## 入口点模式
 - 兼容模式路由：index.php?s=/module/controller/action（5.x 历史 RCE 面）

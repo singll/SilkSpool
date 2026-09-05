@@ -1,6 +1,8 @@
 > 短表「Host 毒重置信」在 §2 下，用标题搜即可。有重置/激活口就打 Host / XFH（`rules/srcskill/dig-scope-workflow.md` §4.2.2），不必先看见邮件长什么样。没这类口，不要拿随机页空改 Host 来勾表。
 
 # http-host-header
+> **触发信号**: Host 头, host header, 密码重置投毒, reset poisoning, X-Forwarded-Host, 缓存投毒, SSRF 路由, 虚拟主机, vhost, absolute URL, double Host, trailing dot, tab 注入, connection-state, 框架差异, 302
+> **适用**: Host 可被改写或校验可绕：毒化重置链接、路由型 SSRF、vhost 越权、缓存投毒 · **不适用**: 响应体反射型注入（走 xss/injection） · 索引: rules/src/technique-index.md
 
 # HTTP Host Header Attacks — Injection & Routing Abuse
 

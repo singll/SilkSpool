@@ -5,6 +5,8 @@
 ## 一、原有知识库
 
 # GraphQL 安全测试手册
+> **触发信号**: GraphQL, __typename, introspection, __schema, /graphql, /api/graphql, 水平越权, 垂直越权, SQL 注入, NoSQL, MongoDB, query batching, alias, 嵌套查询, DoS, Did you mean, 字段建议, 隐藏字段, GET CSRF
+> **适用**: 确认了 GraphQL 端点后做自省、越权、注入、批量/嵌套 DoS、字段建议枚举 · **不适用**: REST 接口的同类问题（越权细节以 idor-test 为主） · 索引: rules/src/technique-index.md
 
 ## 一、GraphQL 识别
 

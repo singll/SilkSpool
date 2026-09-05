@@ -1882,6 +1882,67 @@ window.__ModuleLoader__.load({
           el('div', { style: { ...F.s, marginBottom: 4 } }, '📊 知识体检（v4.5）' + (warnBits.length ? ' ⚠ ' + warnBits.join('；') : '')),
           khRows)
       }
+      // ── 覆盖缺口卡（攻面 × rules/VC 卡交叉表，借鉴 Claude-Red MINDMAP：空行即缺口）──
+      // 数据来自 knowledgeCoverage RPC（服务端缓存 data/knowledge-coverage.json，缺失时现场 python3 生成）；
+      // 结构/空态完全复用知识体检卡模式；缺口 = 无规则先验且无 VC 卡的攻面。
+      var cov = props.covState ? props.covState.data : null
+      var covData = null
+      var covStaleNote = null
+      if (cov && cov.ok !== false) covData = cov
+      else if (cov && cov.stale) { covData = cov.stale; covStaleNote = '现场生成失败，展示旧数据：' + (cov.error || '') }
+      var covOpenFs = React.useState(false)
+      var covOpen = covOpenFs[0]; var setCovOpen = covOpenFs[1]
+      var covBusyFs = React.useState(false)
+      var covBusy = covBusyFs[0]; var setCovBusy = covBusyFs[1]
+      function refreshCoverage() {
+        if (covBusy) return
+        setCovBusy(true)
+        callRpc('knowledgeCoverage', { refresh: true }).then(function () {
+          return props.covState.reload()
+        }).catch(function (e) {
+          alert('覆盖数据刷新失败: ' + (e && e.message ? e.message : e))
+        }).then(function () { setCovBusy(false) })
+      }
+      var coverageCard = null
+      if (!covData) {
+        // 数据缺失：loading 骨架 / 引导文案（不报错）
+        var covErr = (props.covState && props.covState.error) || (cov && cov.error) || ''
+        coverageCard = el('div', { style: { ...card, marginTop: 10, padding: '8px 12px' }, title: '攻面分类表（secagent 手法族 15 + 常见 Web 攻面 21）对照 rules/ 与 vulncards/VC-*.yaml 的交叉表；生成走 scripts/pipeline/knowledge-coverage.py' },
+          el('div', { style: { ...F.s, marginBottom: 4 } }, '🧭 覆盖缺口（攻面 × 先验交叉表）'),
+          props.covState && props.covState.loading
+            ? el(SkeletonRows, { rows: 2 })
+            : el('div', { style: { ...F.xxs, color: T.label2 } },
+                '暂无覆盖数据' + (covErr ? '（' + covErr + '）' : '') + '——在主机运行 knowledge-coverage.py 生成（scripts/pipeline/knowledge-coverage.py --out data/knowledge-coverage.json），或点击右侧「刷新」由看板现场生成。'))
+      } else {
+        var covTax = covData.taxonomy || []
+        var covGaps = covTax.filter(function (t) { return !(t.covered_by_rules || []).length && !(t.covered_by_cards || []).length })
+        var covNoCard = covTax.filter(function (t) { return (t.covered_by_rules || []).length && !(t.covered_by_cards || []).length })
+        var covCovered = covTax.filter(function (t) { return (t.covered_by_rules || []).length })
+        var covS = covData.summary || {}
+        var covWarn = covStaleNote
+        coverageCard = el('div', { style: { ...card, marginTop: 10, padding: '8px 12px' }, title: '攻面分类表（secagent 手法族 15 + 常见 Web 攻面 21）对照 rules/ 与 vulncards/VC-*.yaml 的交叉表；空行 = 无任何先验覆盖' },
+          el('div', { style: { ...F.s, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+            el('span', null, '🧭 覆盖缺口（' + covCovered.length + '/' + covTax.length + ' 攻面有规则覆盖' + (covS.coverage_pct !== undefined ? ' · ' + covS.coverage_pct + '%' : '') + '）'),
+            el('button', { type: 'button', className: 'silksec-btn', style: { height: 22, fontSize: 12 }, disabled: covBusy, title: '现场调 python3 跑 knowledge-coverage.py 重新生成（结果缓存 7 天）', onClick: refreshCoverage }, covBusy ? '生成中…' : '刷新'),
+            el('span', { style: { ...F.xxs, color: T.label3 } }, '生成于 ' + String(covData.generated_at || '').slice(0, 16).replace('T', ' ') + (covData.cached ? ' · 缓存' : ''))),
+          covWarn ? el('div', { style: { ...F.xxs, color: T.warn, marginTop: 2 } }, '⚠ ' + covWarn) : null,
+          covData.vulncards_note ? el('div', { style: { ...F.xxs, color: T.warn, marginTop: 2 } }, '⚠ ' + covData.vulncards_note) : null,
+          covGaps.length === 0
+            ? el('div', { style: { ...F.xxs, color: T.label2, marginTop: 3 } }, '✅ 无攻面缺口（每个攻面至少有规则先验或 VC 卡覆盖）')
+            : el('div', { style: { marginTop: 4 } },
+                el('div', { style: { ...F.xxs, color: T.warn } }, '缺口攻面（无规则无卡片，' + covGaps.length + '）：'),
+                el('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3 } },
+                  covGaps.map(function (t) { return el('span', { key: t.id, style: { ...pill, color: T.warn } }, t.name) }))),
+          covNoCard.length
+            ? el('div', { style: { marginTop: 5 } },
+                el('button', { type: 'button', className: 'silksec-btn', style: { height: 22, fontSize: 12, padding: '0 8px' }, onClick: function () { setCovOpen(!covOpen) }, title: '有规则先验但没有 VC 卡规程——按模块规程手工出枪，可考虑 IC 提案固化' },
+                  (covOpen ? '▾ ' : '▸ ') + '有规则无 VC 卡（' + covNoCard.length + '）'),
+                covOpen
+                  ? el('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 3 } },
+                      covNoCard.map(function (t) { return el('span', { key: t.id, style: { ...pill, color: T.label2 } }, t.name) }))
+                  : null)
+            : null)
+      }
       // v4.6 知识全景图：六类型分区导航（每类知识一个位置一个工具，类型间正交不合并）
       var typeSections = [
         { icon: '🧠', name: '经验类', where: 'exp_cards 表', tool: 'exp_search', n: cards.length, extra: (pbs.length ? '+ 打法链 ' + pbs.length : '') },
@@ -1903,6 +1964,7 @@ window.__ModuleLoader__.load({
       return el('div', null,
         memChips,
         healthCard,
+        coverageCard,
         panorama,
         el('div', { style: { ...cardL, margin: '10px 0 6px' }, title: 'v4.6 合并①：打法链已并入本表（kind 标记）。评分 = adopted×3 + 👍×2 + uses×0.5 − 👎×5 − 时效衰减' }, '🧠 经验类（exp_cards）· 经验卡 + 打法链同表 · candidate / active / cooling'),
         props.cardsState.loading ? el(SkeletonRows, { rows: 5 }) : cards.length === 0
@@ -2196,6 +2258,11 @@ window.__ModuleLoader__.load({
       var factOvState = useRpc(function () {
         return activeTab === 'knowledge' ? { endpoint: 'factOverview' } : null
       }, [activeTab])
+      // 覆盖缺口审计（攻面 × rules/VC 卡交叉表）：服务端优先读 data/knowledge-coverage.json 缓存（7 天），
+      // 无缓存则现场 python3 跑 knowledge-coverage.py；刷新按钮走 payload.refresh 强制重新生成
+      var covState = useRpc(function () {
+        return activeTab === 'knowledge' ? { endpoint: 'knowledgeCoverage' } : null
+      }, [activeTab])
       var rptFilter = React.useState({ program: '', q: '' })
       var reportFilter = rptFilter[0]; var setReportFilter = rptFilter[1]
       var reportsState = useRpc(function () {
@@ -2449,7 +2516,7 @@ window.__ModuleLoader__.load({
             onJumpHistory: jumpToHistory, jump: jump,
           }))
       } else if (activeTab === 'knowledge') {
-        content = el(KnowledgeView, { memState: memState, cardsState: cardsState, pbsState: pbsState, rulesState: rulesState, kbState: kbState, factOvState: factOvState, busy: isBusy })
+        content = el(KnowledgeView, { memState: memState, cardsState: cardsState, pbsState: pbsState, rulesState: rulesState, kbState: kbState, factOvState: factOvState, covState: covState, busy: isBusy })
       } else if (activeTab === 'reports') {
         content = el(ReportsView, { state: reportsState, onReload: function (f) { setReportFilter({ program: f.program || '', q: f.q || '' }) } })
       } else if (activeTab === 'approvals') {

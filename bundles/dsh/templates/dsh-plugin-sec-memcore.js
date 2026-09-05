@@ -6,6 +6,8 @@
 //   validateWrite / visibilityFilter / transition / recordSignal / sweep
 // 职责：schema 自迁移（生命周期列 + 语义层评分列 + archive 表）、存量规则迁移、
 //       每日清扫（降级/归档/硬删/自动晋升）、AGENTS.md 受管区块重写、objective lint。
+// 入库三闸：R8 标识符闸（经验卡禁目标域名/私网 IP）+ R9 防膨胀闸（单卡 ≤6000 字符）
+//           走 validateWrite；source_ref 引用核验走 sweep（悬空 → cooling）。
 //
 // fail-open：本插件缺席时存储插件直透传（见 asset-db/experience 的 _bindLifecycle）；
 // 本插件自身任何异常不得拖垮宿主——apply/sweep 全 try/catch。
@@ -66,6 +68,10 @@ const POLICIES = {
 const ARCHIVE_PURGE_DAYS = 90
 const JUSTIFICATION_MIN = 10
 const SEMANTIC_TABLES = new Set(['exp_cards', 'playbooks', 'kb_docs'])
+// R9 防膨胀闸阈值：单卡正文（scenario+takeaway+chain 合计）字符上限
+const EXP_CARD_MAX_CHARS = 6000
+// R8 私网段辅助模式（RFC1918 obvious 段）：至少三段，避免误伤版本号（如 10.1）/小数
+const PRIVATE_IP_RE = /\b(?:10\.\d{1,3}\.\d{1,3}(?:\.\d{1,3})?|192\.168\.\d{1,3}(?:\.\d{1,3})?|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}(?:\.\d{1,3})?)(?=\/\d{1,2}\b|\b)/
 
 // -------------------- DB 接入（共享 sec-suite 的连接，失败则插件禁用） --------------------
 let getDb = null
@@ -217,8 +223,45 @@ function guardBlackboardSnapshots(d, now) {
   return n
 }
 
+// -------------------- 引用核验（sweep 钩子，入库三闸之三） --------------------
+// active 经验卡正文里的 source_ref: 标记指向方法论出处，两类目标：
+//   source_ref: rules/techniques/idor-test.md → <DATA_DIR>/ 下相对路径查文件系统（.. 越界视为悬空）
+//   source_ref: kb://123                     → kb_docs 表按 id 查（表缺失则跳过 kb 类）
+// 悬空引用（目标不存在）→ 直接转 cooling，复用 transition 状态机入口（memcore_events 留痕，
+// 不直改 DB）；引用目标补回后 exp_validate 复验自愈回 active，cooling 30 天未修复则照常归档。
+const SOURCE_REF_RE = /source_ref:\s*(\S+)/g
+function verifyExpRefs(d, doT) {
+  let n = 0
+  const root = path.resolve(DATA_DIR)
+  const kbOk = (() => { try { d.prepare('SELECT 1 FROM kb_docs LIMIT 1').get(); return true } catch { return false } })()
+  for (const r of d.prepare("SELECT id, scenario, takeaway, chain FROM exp_cards WHERE status='active'").all()) {
+    const text = `${r.scenario || ''}\n${r.takeaway || ''}\n${r.chain || ''}`
+    for (const m of text.matchAll(SOURCE_REF_RE)) {
+      // chain 在库里是 JSON 字符串，\S+ 可能把尾部 "] 等标点一并捕获（如 rules/x.md"]）——剥离后再解析
+      const ref = m[1].replace(/[)\]}'"',.;：）】]+$/, '')
+      let live = false
+      if (ref.startsWith('kb://')) {
+        const kid = Number(ref.slice(5))
+        live = kbOk && Number.isInteger(kid) && !!d.prepare('SELECT 1 FROM kb_docs WHERE id=?').get(kid)
+      } else {
+        // 卡内容不可信：相对路径须落在 DATA_DIR 内（防 ../../ 探测面），越界即悬空
+        const full = path.resolve(root, ref.replace(/^\/+/, ''))
+        live = full.startsWith(root + path.sep) && fs.existsSync(full)
+      }
+      if (!live) {
+        doT('exp_cards', r.id, 'cooling', `引用悬空: ${ref}`)
+        n++
+        break // 每卡每轮最多转一次（多张悬空引用逐轮暴露，避免 reason 覆盖丢失信息）
+      }
+    }
+  }
+  if (n) log(`引用核验: ${n} 张 active 经验卡存在悬空 source_ref，已转 cooling`)
+  return n
+}
+
 // -------------------- 原语 1：validateWrite --------------------
-// intent: { mem_class, ttl_days, revalidate_days, scope, justification, evidence }
+// intent: { mem_class, ttl_days, revalidate_days, scope, justification, evidence,
+//           scenario, takeaway, chain, attempts, text }（后五项为 R8/R9 闸捎带的卡面文本）
 // R6 细化：justification 硬要求仅语义层；工作/情景层缺省分类可省略（记 auto:default）
 function validateWrite(table, intent = {}) {
   const p = POLICIES[table]
@@ -232,6 +275,32 @@ function validateWrite(table, intent = {}) {
     }
   } else if (!justification) {
     justification = 'auto:default 缺省分类'
+  }
+  // R8 标识符闸（exp_cards 专属；facts 是目标事实，本就允许含目标标识符，不适用）：
+  // 经验卡按三问纪律必须是可迁移方法论（换目标仍有用），不得含授权目标真实域名/私网 IP——
+  // 否则知识库变成目标档案且有泄漏面（卡面会进 vault 回流 exportVault、进 AGENTS.md 受管区块）。
+  // 域名集来自 scope.yml（含 exclude 清单——它们同样是真实目标标识符），读取 fail-open 见 scopeReload。
+  // 文本取 intent 捎带的卡面字段；调用方未捎带则空文本静默放行（fail-open，与插件整体哲学一致）。
+  if (table === 'exp_cards') {
+    const parts = []
+    for (const k of ['scenario', 'takeaway', 'chain', 'evidence', 'attempts', 'justification']) {
+      const v = intent[k]
+      if (typeof v === 'string' && v) parts.push(v)
+      else if (Array.isArray(v) && v.length) parts.push(v.join('\n'))
+    }
+    if (typeof intent.text === 'string' && intent.text) parts.push(intent.text)
+    const blob = parts.join('\n').toLowerCase()
+    const hitDom = blob ? hitsScopeTargetDeep(blob) : null
+    if (hitDom) return { ok: false, error: `R8 标识符闸: 经验卡不得含授权目标真实域名(${hitDom})——泛化为 target.com 或改写 fact（目标事实走 facts，不走经验卡）` }
+    const hitIp = blob ? blob.match(PRIVATE_IP_RE) : null
+    if (hitIp) return { ok: false, error: `R8 标识符闸: 经验卡不得含私网 IP(${hitIp[0]})——泛化为「内网段」表述或改写 fact（目标网络细节走 facts，不走经验卡）` }
+    // R9 防膨胀闸：单卡正文（scenario+takeaway+chain 合计；evidence/attempts 是溯源数据不计入）
+    // 超 6000 字符即拒绝——单体卡难以被 exp_search 精准命中，也难复用。kb_docs 只是索引行，不设此闸。
+    const cardLen = ['scenario', 'takeaway', 'chain'].reduce((n, k) => {
+      const v = intent[k]
+      return n + (typeof v === 'string' ? v.length : Array.isArray(v) ? v.join('').length : 0)
+    }, 0)
+    if (cardLen > EXP_CARD_MAX_CHARS) return { ok: false, error: `R9 防膨胀闸: 单卡超 ${EXP_CARD_MAX_CHARS} 字符——拆成多张单面卡片（一张卡一个手法面），或删减到可迁移核心` }
   }
   const now = Date.now()
   const v = { mem_class: cls, scope: String(intent.scope || 'global'), justification }
@@ -413,26 +482,59 @@ const EXPORT_STAGING = path.join(DATA_DIR, 'vault-export-cards')
 const EXPORT_REMOTE = process.env.SEC_VAULT_REMOTE || 'silkspool@192.168.7.230:/mnt/NAS/data/knowledge/vault/安全经验/SilkSecAgent/经验卡/'
 const SCOPE_FILE = path.join(DATA_DIR, 'scope.yml')
 
-let scopeDomainsCache = null
-function scopeDomains() {
-  if (scopeDomainsCache) return scopeDomainsCache
-  const domains = new Set()
+// 域名集模块级缓存，scope.yml mtime 变化才重读（R8 每次经验卡写入都要查，不能反复 parse）。
+// 读失败（文件不存在/不可读）→ 返回空集 fail-open 透传（导出门由 exportable 兜底），
+// console.warn 一次（成功读取后复位，状态再次变化可再告警），不刷屏。
+let scopeCache = null // { mtime, domains: Set, deep: [{ d, re }] }
+let scopeFailWarned = false
+function scopeReload() {
   try {
-    const text = fs.readFileSync(SCOPE_FILE, 'utf8')
-    for (const m of text.match(/[a-z0-9][a-z0-9.-]*\.[a-z]{2,}/gi) || []) {
+    const st = fs.statSync(SCOPE_FILE)
+    if (scopeCache && scopeCache.mtime === st.mtimeMs) return scopeCache
+    // 只扫非注释行：模板 scope.yml 的注释含 *.example.com 占位示例，扫进集合会把占位域当授权域误拦
+    const body = fs.readFileSync(SCOPE_FILE, 'utf8').split('\n').filter((l) => !l.trim().startsWith('#')).join('\n')
+    const domains = new Set()
+    for (const m of body.match(/[a-z0-9][a-z0-9.-]*\.[a-z]{2,}/gi) || []) {
       const d = m.toLowerCase().replace(/^\*\./, '')
       // 过滤明显非域名的匹配（版本号/文件扩展等）：至少含一个点且不以数字结尾段
       if (d.includes('.') && !/^\d+\.\d+/.test(d)) domains.add(d)
     }
-  } catch { /* scope 缺失则不脱敏（导出仍进行，由 exportable 门兜底） */ }
-  scopeDomainsCache = domains
-  return domains
+    // 深匹配预编译（含子域）：授权域 example.com 同时命中 sub.example.com；捕获实际命中串供 error 展示
+    const deep = [...domains].filter((d) => d.length >= 5).map((d) => ({
+      d,
+      re: new RegExp(`(?:^|[^a-z0-9.-])((?:[a-z0-9-]+\\.)*${d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![a-z0-9-])`),
+    }))
+    scopeCache = { mtime: st.mtimeMs, domains, deep }
+    scopeFailWarned = false
+    return scopeCache
+  } catch {
+    if (!scopeFailWarned) {
+      scopeFailWarned = true
+      console.warn(`[memcore] scope.yml 读取失败（${SCOPE_FILE}），R8 标识符闸/导出脱敏门 fail-open 透传`)
+    }
+    return { mtime: 0, domains: new Set(), deep: [] } // 不缓存失败态：下轮重试 stat，文件恢复即自动生效
+  }
+}
+
+function scopeDomains() {
+  return scopeReload().domains
 }
 
 // 脱敏硬门：文本命中任一授权域 → 拒绝导出（fail-closed，日志可查）
 function hitsScopeTarget(text) {
   const lower = String(text).toLowerCase()
   for (const d of scopeDomains()) if (d.length >= 5 && lower.includes(d)) return d
+  return null
+}
+
+// R8 深匹配：授权域及其任意子域（exclude 清单里的域同样在集合内——同为目标真实标识符）。
+// 与导出门的 includes 语义差异：能命中 sub.example.com，但不会命中 myexample.com 这类超串。
+function hitsScopeTargetDeep(text) {
+  const lower = String(text).toLowerCase()
+  for (const { re } of scopeReload().deep) {
+    const m = re.exec(lower)
+    if (m) return m[1]
+  }
   return null
 }
 
@@ -614,6 +716,8 @@ async function sweep({ dryRun = false, agentsMd = true } = {}) {
       doT('exp_cards', r.id, 'archived', 'cooling 超30天'); stats.archived++
     }
   }
+  // 引用核验（入库三闸之三）：active 经验卡的 source_ref: 悬空 → 转 cooling（复用 transition，dry-run 由 doT 接管）
+  try { stats.refDangling = verifyExpRefs(d, doT) } catch { /* 核验失败不阻断 sweep */ }
   // playbooks：低成功率降级；cooling 超期归档
   for (const r of d.prepare('SELECT name, status, status_at, runs, successes FROM playbooks').all()) {
     const dm = POLICIES.playbooks.demote

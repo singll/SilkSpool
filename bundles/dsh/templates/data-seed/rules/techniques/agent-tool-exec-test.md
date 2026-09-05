@@ -1,4 +1,6 @@
 # 对话口工具真执行
+> **触发信号**: 对话口, 工具真执行, whoami, 401, unauthenticated, /chat, createTask, message, code_interpreter, bash, shell, python, execute, SSE, toolName, fileUrls, md5, AGENT.md, 云助手, AKSK, 沙箱, uid=, flag, helix-assistant
+> **适用**: 身份口拦了但公开对话口还接、工具列表里有会跑命令的工具时打这条链 · **不适用**: 纯提示词越狱（llm-security）或云 IDE 弱口令+RPC（cloud-ide 那枪） · 索引: rules/src/technique-index.md
 
 > 短表指针。认的是「身份口拦了、对话口仍接、工具列表里有会跑命令的工具」。  
 > **不是**越狱 / 提示词（别开 `llm-security-test.md` 当开场）。  

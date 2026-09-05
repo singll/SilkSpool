@@ -1,4 +1,6 @@
 # open-redirect
+> **触发信号**: 开放重定向, open redirect, redirect, next, dest, returnUrl, backUrl, callback, Location, 301, 302, 协议相对, userinfo, 反斜杠, endswith, 双跳, %0d, tabnabbing, OAuth token 窃取, SSRF 链
+> **适用**: 跳转参数可控且想接 OAuth 窃 token / SSRF 链 / 钓鱼放大 · **不适用**: 纯协议头配置问题（CSP/HSTS 走对应篇） · 索引: rules/src/technique-index.md
 
 # Open Redirect
 

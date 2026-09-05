@@ -4,6 +4,8 @@
 ## 一、原有知识库
 
 # XSS 测试手册
+> **触发信号**: XSS, 反射, 存储, DOM XSS, WAF 绕过, cookie 窃取, document.cookie, onerror, onload, content-visibility, onpointerenter, onanimationstart, layui-anim, popovertarget, onbeforetoggle, Electron, nodeIntegration, ipcRenderer, setAsDefaultProtocolClient, plugin-editor, 自定义协议
+> **适用**: 回显可控要打 XSS 并按拦截情况换冷门事件/标签，打穿后问 JS 跑在谁的进程里（XSS→RCE） · **不适用**: 无回显且无 DOM sink 的输入（转注入/逻辑等其他面） · 索引: rules/src/technique-index.md
 
 ## XSS 类型判断
 

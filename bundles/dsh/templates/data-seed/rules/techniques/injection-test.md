@@ -2,6 +2,8 @@
 > 短表「列表筛选项 OR + total」「邮件订阅 iframe 同目录 list」用标题搜。WooYun 统计 / sqlmap --os-shell / 反弹 shell / 英文附件已砍；现场按栈自己变，不靠教材。
 
 # 注入类漏洞测试手册（SQL注入 / 命令注入 / SSTI）
+> **触发信号**: SQL 注入, 命令注入, SSTI, OR 恒真, total, totalNum, 列表筛选, employeeName, ES, 布尔, 延时, list.php, key, $ne, $gt, Mongo 操作符, sleep 5, {{7*7}}, Jinja2, Twig, FreeMarker, Thymeleaf, ERB, 405
+> **适用**: 列表筛选项 OR 恒真打 total 差分、邮件订阅 iframe 同目录 list、按栈选 JSON/Mongo/SSTI 探针 · **不适用**: 不区分栈对每个 path 喷引号、或要用 sqlmap --dump/--os-shell 重放的场合 · 索引: rules/src/technique-index.md
 
 ## SQL 注入
 

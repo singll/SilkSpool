@@ -1,4 +1,6 @@
 # ghost-bits-cast-attack
+> **触发信号**: ghost bits, char to byte, narrowing, 高位截断, RFC2231Utility, filename*, BCEL, ClassLoader, Jackson, charToHex, Fastjson, \u 转义, Jetty, Undertow, Vert.x, Angus Mail, SMTP 注入, HttpClient, 走私, CVE-2023-32315, CVE-2024-36401, CVE-2022-22965, CVE-2025-57733, Unicode 归一化
+> **适用**: 非法字符经 char→byte 截断/折叠变合法：绕过滤、走私、webshell 上传、已知 CVE 复现 · **不适用**: 常规 WAF 编码绕过（不涉及字符高位截断机制时走 waf-bypass.md） · 索引: rules/src/technique-index.md
 
 # Ghost Bits / Cast Attack — Java char to byte Narrowing Playbook
 

@@ -1,6 +1,8 @@
 > 短表「PP 打到模板 RCE」在后半「来源专题：prototype-pollution-advanced」下，用标题搜即可。主场是 Node 深合并；别的栈 JSON 也能合就仍可探一枪，gadget 对不上丢掉，不是禁打。
 
 # prototype-pollution
+> **触发信号**: 原型污染, prototype pollution, __proto__, constructor.prototype, child_process.spawn, EJS, Pug, Jade, Handlebars, Nunjucks, Express, res.render, jQuery, Lodash, script gadget, URL fragment, JSON body, 深浅合并, RCE gadget
+> **适用**: 合并/深拷贝/解析用户 JSON 的 Node 服务或前端要探 __proto__ 注入并找 RCE/脚本 gadget · **不适用**: PHP/Java 的对象注入（无原型机制，走反序列化篇） · 索引: rules/src/technique-index.md
 
 
 # 来源专题：prototype-pollution

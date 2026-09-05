@@ -1,4 +1,6 @@
 # JS 逆向配合接口挖掘指南
+> **触发信号**: JS 逆向, 加密参数, sign, _token, x-sign, XHR 断点, 调用栈, 签名函数, MD5, HMAC-SHA256, webpack chunk, 路由配置, Vue, React, Axios, baseUrl, search_in_sources, list_network_requests, 隐藏接口, 演示号
+> **适用**: 接口带加密参数无法 curl 重放、或要从 JS 挖隐藏接口/写死演示号/盐与公钥 · **不适用**: 已经是明文可重放的接口（直接进测试流程） · 索引: rules/src/technique-index.md
 
 > 进站强制步骤见 `rules/srcskill/dig-scope-workflow.md` §4.1：**不只抽 `/api/` path**。盐、密文 id 公钥、hidden/admin 路由、写死的演示号有就进清单，没有写「无」。演示号当钥匙，不是登录框字典。
 

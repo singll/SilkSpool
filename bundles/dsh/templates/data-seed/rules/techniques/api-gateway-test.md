@@ -1,4 +1,6 @@
 # API 网关安全测试手册
+> **触发信号**: API 网关, 路径规范化, 点号绕过, 双斜杠, URL 编码, 分号绕过, 反斜杠, HTTP 方法覆盖, X-HTTP-Method-Override, X-Method-Override, _method, 版本回退, /v1 /v2, 速率限制, X-Forwarded-For, API Key 轮换, 端点变体, Swagger, OpenAPI, swagger.json, GraphQL, RAML, WADL, api-docs
+> **适用**: 打 API 网关/鉴权层：路径规范化、方法覆盖、旧版本、限流、文档泄露五大面 · **不适用**: 页面级 XSS/逻辑漏洞等非网关层问题 · 索引: rules/src/technique-index.md
 
 ## 一、路径规范化绕过
 

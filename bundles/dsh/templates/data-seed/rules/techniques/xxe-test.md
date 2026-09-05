@@ -1,4 +1,6 @@
 # xxe
+> **触发信号**: XXE, XML, DOCTYPE, ENTITY, SYSTEM, file://, ftp://, gopher://, php://filter, OOB, DTD, 参数实体, XInclude, SVG 上传, docx, xlsx, SOAP, PDF 生成器, 报错回显, 内网 DTD, local DTD, SSRF 链, base64 外带
+> **适用**: 输入被当 XML/SOAP/Office 文档/SVG/PDF 模板解析时要探实体注入与 OOB 外带 · **不适用**: JSON 接口（无 XML 解析面） · 索引: rules/src/technique-index.md
 
 # XML External Entity Injection (XXE)
 

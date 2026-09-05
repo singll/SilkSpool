@@ -1,4 +1,6 @@
 # 云 IDE / Codex 系 AI 编程平台：弱口令→Root RCE→凭证链
+> **触发信号**: 云 IDE, Codex, /tenant-api/login, /codex-api/rpc, JSON-RPC, command/exec, meta/methods, fs/*, env, 弱口令, admin/admin, 集群 SA, 模型 Key, 邀请码, playbook, @openai/codex, root, Pod, 租户会话, tenant-api
+> **适用**: 公网 AI 编程台/云 IDE 有租户登录+RPC 面，从弱口令打到 root RCE 再追凭证链 · **不适用**: 对话口 bash 工具（agent-tool-exec）或 VS Code 无登录墙读 environ（path-traversal） · 索引: rules/src/technique-index.md
 
 > 类型：认证缺陷 + 危险 RPC + 容器/集群凭证链  
 > 写不写只认 `vuln-report-format.md`。短表指针用标题搜。

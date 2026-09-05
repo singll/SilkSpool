@@ -5,6 +5,8 @@
 ## 一、原有知识库
 
 # HTTP 请求走私测试手册
+> **触发信号**: 请求走私, HTTP smuggling, CL.TE, TE.CL, TE.TE, Transfer-Encoding, Content-Length, chunked, 时间差, smuggler.py, 请求劫持, 绕 WAF, 缓存投毒, H2.CL, HTTP/2 降级, CRLF, HTTP Request Smuggler, Burp, socket
+> **适用**: 前后端对 CL/TE 解析不一致（时间差异常、走私 payload 生效）要定位类型并升利用 · **不适用**: 纯 h2 协议攻击教材式开场（勿当开场，见 http2-attacks-test.md 路由） · 索引: rules/src/technique-index.md
 
 ## 一、HTTP 请求走私原理
 

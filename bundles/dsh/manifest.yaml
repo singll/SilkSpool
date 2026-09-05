@@ -85,8 +85,11 @@ templates:
   - data-seed/scripts/coverage-report.py
   - data-seed/scripts/verify-replay.py
   - data-seed/scripts/dsh-version-watch.sh
+  # --- v4.7 外部仓库对标：知识覆盖审计 + 案例收割管道（review 角色消费，绝不自动入库）---
+  - data-seed/scripts/knowledge-coverage.py
+  - data-seed/scripts/kb-harvest.py
   # --- v4.5 规则/技能版本受控源（seed-skills.sh 部署通道，正文不再内嵌 heredoc）---
-  # --- 规则先验层 56 篇：src 4 + srcskill 2 + techniques 46 + web 3 + php 1 ---
+  # --- 规则先验层 57 篇静态：src 4 + srcskill 2 + techniques 47 + web 3 + php 1 ---
   - data-seed/rules/src/asset-scoring.md
   - data-seed/rules/src/equity-gate.md
   - data-seed/rules/src/severity-rating.md
@@ -97,6 +100,31 @@ templates:
   - data-seed/rules/web/nextjs.md
   - data-seed/rules/web/selfhosted-supabase.md
   - data-seed/rules/web/spring.md
+  # --- v4.7 补缺：穿越/LFI 模块（technique-index 短表 88-91 行一直引用但文件缺失）---
+  - data-seed/rules/techniques/path-traversal-lfi-test.md
+  # --- v4.7 案例引用层（rules/cases/ 22 篇，随 rules 目录被 kbIndexCuratedRules() 自动索引进 kb_search FTS）---
+  - data-seed/rules/cases/cwe-113-request-smuggling-desync.md
+  - data-seed/rules/cases/cwe-1321-prototype-pollution-rce.md
+  - data-seed/rules/cases/cwe-287-oauth-identity-claim-email.md
+  - data-seed/rules/cases/cwe-346-websocket-cross-origin-hijack.md
+  - data-seed/rules/cases/cwe-347-jwt-algorithm-confusion.md
+  - data-seed/rules/cases/cwe-362-race-condition-state-machine.md
+  - data-seed/rules/cases/cwe-404-subdomain-takeover-dangling-dns.md
+  - data-seed/rules/cases/cwe-444-cache-poisoning-unkeyed-input.md
+  - data-seed/rules/cases/cwe-444-http2-request-smuggling.md
+  - data-seed/rules/cases/cwe-502-java-deserialization-preauth-rce.md
+  - data-seed/rules/cases/cwe-525-web-cache-deception.md
+  - data-seed/rules/cases/cwe-601-open-redirect-oauth-chain.md
+  - data-seed/rules/cases/cwe-603-oauth-redirect-uri-code-leak.md
+  - data-seed/rules/cases/cwe-611-xxe-file-read.md
+  - data-seed/rules/cases/cwe-639-idor-api-broken-authz.md
+  - data-seed/rules/cases/cwe-639-idor-upload-bruteforce.md
+  - data-seed/rules/cases/cwe-79-xss-worm-account-takeover.md
+  - data-seed/rules/cases/cwe-840-price-manipulation-payment.md
+  - data-seed/rules/cases/cwe-862-graphql-authorization-gap.md
+  - data-seed/rules/cases/cwe-915-mass-assignment-role.md
+  - data-seed/rules/cases/cwe-918-ssrf-cloud-metadata.md
+  - data-seed/rules/cases/cwe-93-crlf-response-splitting.md
   # --- sec-* 技能 8 个（v4.5 正文全部外移 data-seed/skills/，经 seed-skills.sh 下发）---
   - data-seed/skills/sec-verification/SKILL.md
   - data-seed/skills/sec-blackboard/SKILL.md
@@ -190,6 +218,9 @@ templates:
   # --- 靶场回归评测 ---
   - eval-run.js
   - eval-cases.list
+  # --- v4.7 假阳性消融评测（skill on/off 双条件增益，LLM 走 Bellkeeper 网关）---
+  - eval-fp.js
+  - eval-fp-cases.jsonl
   # --- 浏览器 fork（+SEC_FLOW_PROXY 流量入总线）---
   - sec-browser-plugin-setup.sh
   - dsh-browser-upstream.index.js

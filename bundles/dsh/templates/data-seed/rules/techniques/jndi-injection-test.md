@@ -1,4 +1,6 @@
 # jndi-injection
+> **触发信号**: JNDI, RMI, LDAP, marshalsec, JNDI-Injection-Exploit, Rogue JNDI, JRMPListener, BeanFactory, 8u191, Log4Shell, CVE-2021-44228, ${jndi:ldap, DNSLog, Solr, H2 Console, CREATE ALIAS, JDBC URL, WAF bypass
+> **适用**: 日志/头/参数可控点落进 JNDI lookup（Log4j、H2、RMI/LDAP 暴露）要选工具和 JDK 版本绕过 · **不适用**: 纯反序列化 gadget（无 JNDI lookup 环节时走 deserialization-test.md） · 索引: rules/src/technique-index.md
 
 # JNDI Injection
 

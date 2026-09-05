@@ -176,7 +176,8 @@ async function expStore(a) {
   const lc = LC()
   let mem = null
   if (lc) {
-    const vw = lc.validateWrite('exp_cards', { mem_class: 'permanent', justification: a.justification, scope: a.scope })
+    // v4.7：捎带卡面文本（R8 标识符闸——经验卡禁含授权目标域名/私网 IP；R9 防膨胀闸 6000 字符）
+    const vw = lc.validateWrite('exp_cards', { mem_class: 'permanent', justification: a.justification, scope: a.scope, scenario: a.scenario, takeaway: a.takeaway, chain: a.chain })
     if (!vw.ok) return { ok: false, error: vw.error }
     mem = vw.value
   }
@@ -644,7 +645,8 @@ function pbSave(a) {
   const lc = LC()
   let mem = null
   if (lc) {
-    const vw = lc.validateWrite('exp_cards', { mem_class: 'permanent', justification: a.justification || 'playbook 沉淀（v4.6 归一入口）', scope: a.scope })
+    // v4.7：捎带卡面文本（R8 标识符闸/R9 防膨胀，同 expStore）
+    const vw = lc.validateWrite('exp_cards', { mem_class: 'permanent', justification: a.justification || 'playbook 沉淀（v4.6 归一入口）', scope: a.scope, scenario: a.name, takeaway: `打法链 ${a.name}`, chain: a.chain })
     if (!vw.ok) return { ok: false, error: vw.error }
     mem = vw.value
   }

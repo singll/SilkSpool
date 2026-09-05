@@ -1,4 +1,6 @@
 # 自托管 Supabase 审计先验（源自实战卡 #3，已验证有效）
+> **触发信号**: Supabase, PostgREST, /rest/v1, /auth/v1, /storage/v1, /graphql/v1, /realtime/v1, anon key, anon JWT, RLS, service_role, SUPABASE_URL, signup, object/public, 桶, 低代码, nocode, 401 差分, JWT secret, 五端点
+> **适用**: 前端 JS 里见到 SUPABASE_URL+anon JWT 时按五端点差分确认实例并逐表/逐桶打 RLS 缺失 · **不适用**: 非 Supabase 后端（通用 API 越权走 idor-test.md） · 索引: rules/src/technique-index.md
 
 ## 识别与确认
 - 五端点差分：/rest/v1/ /auth/v1/ /storage/v1/ /graphql/v1 /realtime/v1 全返 401/400 = 真实实例（非反代巧合）

@@ -5,6 +5,8 @@
 ## 一、原有知识库
 
 # WebSocket 安全测试手册
+> **触发信号**: WebSocket, ws://, wss://, Upgrade: websocket, Sec-WebSocket-Key, 101 Switching Protocols, Origin 校验, CSWSH, 跨站劫持, token 重放, 认证缺失, JSON 注入, 二进制消息, websocat, wscat, get_websocket_messages, js-reverse MCP, 慢速攻击, DoS, new WebSocket
+> **适用**: 流量里有 ws:// 握手要测 Origin 绕过、认证缺失/重放、CSWSH、消息注入 · **不适用**: 纯 HTTP 接口的同类问题（认证/越权以 idor/authbypass 为主） · 索引: rules/src/technique-index.md
 
 ## 一、WebSocket 基础
 

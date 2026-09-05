@@ -1,4 +1,6 @@
 # Next.js / Node 全栈审计先验
+> **触发信号**: Next.js, Node 全栈, pages/api, app/api, route.ts, Server Actions, use server, $ACTION_ID, middleware.ts, x-middleware-subrequest, CVE-2025-29927, /_next/data, buildId, next/image, remotePatterns, NEXT_PUBLIC_, iron-session, next-auth, 环境变量, JS bundle
+> **适用**: 目标是 Next.js/Node 全栈：找无鉴权 API 路由、Server Action 枚举、middleware 绕过、_next/data 泄露 · **不适用**: 非 Node 栈（Java/PHP 走 spring/thinkphp 等框架篇） · 索引: rules/src/technique-index.md
 
 ## 入口点模式
 - pages/api/* 或 app/api/*/route.ts（App Router）：默认无鉴权，鉴权全靠手工

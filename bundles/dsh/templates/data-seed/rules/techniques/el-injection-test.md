@@ -1,4 +1,6 @@
 # expression-language-injection
+> **触发信号**: EL 注入, expression language, SpEL, OGNL, Struts2, _memberAccess, OgnlUtil, Confluence, CVE-2021-26084, Spring Cloud Gateway, CVE-2022-22947, Runtime.exec, ProcessBuilder, JSP, JSF, #{3*3}, ${7*7}, sandbox bypass
+> **适用**: 输入落进 SpEL/OGNL/Java EL 求值（Spring、Struts2、Confluence、JSP/JSF）想升 RCE · **不适用**: 纯 SSTI 模板引擎注入（Jinja2/Twig/FreeMarker 走 injection-test.md） · 索引: rules/src/technique-index.md
 
 # Expression Language Injection
 

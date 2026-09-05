@@ -1,4 +1,6 @@
 # type-juggling
+> **触发信号**: PHP 弱比较, type juggling, ==, magic hash, 0e, QNKCDZO, 240610708, md5, sha1, strcmp, intval, json_decode, is_numeric, password[], true, HMAC bypass, null juggling, loose comparison
+> **适用**: PHP 登录/token/HMAC 比较用 == 且输入可传数组/0e 串/布尔时打弱比较绕过 · **不适用**: 非 PHP 栈或强类型比较（=== / hash_equals）的口 · 索引: rules/src/technique-index.md
 
 # PHP Type Juggling — Weak Comparison & Magic Hash Bypass
 

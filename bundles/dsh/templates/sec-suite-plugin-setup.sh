@@ -93,6 +93,16 @@ install_scripts() {
             rm -f "$src"
         done
     done
+    # v4.7 外部仓库对标新增：知识覆盖审计 + 案例收割管道（review 角色消费，绝不自动入库）
+    for f in knowledge-coverage.py kb-harvest.py; do
+        for src in "$BASE_DIR/data-seed/scripts/$f" "$BASE_DIR/$f"; do
+            [ -f "$src" ] || continue
+            if ! cmp -s "$src" "$BASE_DIR/scripts/pipeline/$f" 2>/dev/null; then
+                install -m 0755 "$src" "$BASE_DIR/scripts/pipeline/$f"; moved=$((moved+1))
+            fi
+            rm -f "$src"
+        done
+    done
     log "脚本归位完成（更新 ${moved} 个）→ $BASE_DIR/scripts/"
 }
 

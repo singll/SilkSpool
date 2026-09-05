@@ -3,6 +3,8 @@
 ## 一、原有知识库
 
 # SSRF 测试手册
+> **触发信号**: SSRF, imageUrl, fileUrl, targetUrl, callback, webhook, DNSLog, dnslog.cn, ceye.io, interact.sh, 169.254.169.254, 100.100.100.200, metadata.google.internal, security-credentials, cam/service-role, TmpSecretId, GetCallerIdentity, gopher, gopherus, dict://, file://, GOPROXY, go-import, 回源, IMDS
+> **适用**: URL/callback 参数可控要打内网与云元数据（含厂商钥匙路径差、回环过滤分裂、GOPROXY、COS 回源竞态） · **不适用**: 无服务端取 URL 行为的纯前端跳转（走 open-redirect-test.md） · 索引: rules/src/technique-index.md
 
 ## 常见注入点
 

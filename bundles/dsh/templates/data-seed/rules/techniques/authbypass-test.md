@@ -1,4 +1,6 @@
 # authbypass-authentication-flaws
+> **触发信号**: 认证绕过, authentication bypass, 未登录, 改密口, 密保题, 联合登录, uin, 互联票, 会话票, 验签, 302 回显, signKey, AppSecret, 站点钥, nonce, 共享 JWT, openId, 刷新票, 管理员票, SSO, 演示号, 云钥, 合作方登录, RPC
+> **适用**: 登录态没建立却拿到票/钥：未登录改密、发会话、验签回显、写死密钥、空 openId 进号这条链 · **不适用**: 密码爆破/验证码枚举这类登录框内问题（走 logic-test 验证码节） · 索引: rules/src/technique-index.md
 
 打开是登录页 / SSO → 表单壳听 `rules/srcskill/dig-scope-workflow.md` §4.1.1：找业务面；别按本文件从头跑字典 / 验证码 / 无限试密。  
 发会话、重置、改绑、换票、2FA 按本文件 + `rules/srcskill/dig-scope-workflow.md` §4.2.2 探针打，不要因为 §4.1.1 整摊跳过。表是每站下限，不是只准打这几枪。  

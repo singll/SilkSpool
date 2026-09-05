@@ -5,6 +5,8 @@
 ## 一、原有知识库
 
 # 缓存投毒测试手册
+> **触发信号**: 缓存投毒, cache poisoning, X-Cache, CF-Cache-Status, Age, Cache-Control, unkeyed, X-Forwarded-Host, X-Forwarded-Scheme, X-Forwarded-Proto, X-Original-URL, X-Rewrite-URL, UTM 参数, 缓存欺骗, web cache deception, 路径混淆, .css, 会话页, HIT, MISS
+> **适用**: 响应有缓存头（X-Cache/Age）且存在 unkeyed 输入或想用路径混淆偷会话页 · **不适用**: 无缓存层（无 CDN/代理缓存证据）的纯应用层洞 · 索引: rules/src/technique-index.md
 
 ## 一、Web 缓存投毒原理
 

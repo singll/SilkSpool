@@ -2,6 +2,8 @@
 > 短表指针用标题搜。PHP 马 / GIFAR / ImageTragick / 英文附件已砍；没对象存储不要空打跨桶。
 
 # 文件上传漏洞测试手册
+> **触发信号**: 文件上传, STS, 预签名, 对象 key, md5, filename, Action, assumerole, Policy, OSS, S3, COS, BOS, TOS, x-cos-acl, public-read, x-upsert, supabase, storage/v1, upload_dir, SignedHeaders, 覆盖, 桶
+> **适用**: 对象存储上传链：STS/预签名凭证范围被通配、覆盖他人对象、桶策略匿名全开、带签 URL 未绑 Host · **不适用**: 只在自己 key 里传能传能下（假点）、无对象存储的纯本机路径上传（走 path-traversal） · 索引: rules/src/technique-index.md
 
 ## 测试流程（开场）
 

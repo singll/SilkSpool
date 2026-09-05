@@ -5,6 +5,8 @@
 ## 一、原有知识库
 
 # OAuth/JWT/SAML 安全测试手册
+> **触发信号**: OAuth, JWT, SAML, alg=none, RS256, HS256, jwks.json, jwt_tool, hashcat, kid 注入, jku, x5u, exp, 签名剥离, redirect_uri, state, 授权码重放, scope 提升, 隐式授权, id_token, mass assignment, XXE 注入
+> **适用**: 拿到的 token/授权流程要验签名混淆、kid/jku 篡改、redirect_uri 绕过、码重放、SAML 注入 · **不适用**: 纯会话逻辑（改密/接管走 authbypass、logic 的账号节） · 索引: rules/src/technique-index.md
 
 ## 一、JWT 测试
 

@@ -1,4 +1,6 @@
 # insecure-scm
+> **触发信号**: .git, .git/HEAD, .git/config, git-dumper, GitTools, GitHacker, 源码泄露, SVN, .svn, Mercurial, .hg, DS_Store, Bazaar, 403 vs 404, packed-refs, refs/heads, NGINX
+> **适用**: 目录里露出 .git/.svn/.hg/.DS_Store 或 403 目录要判断能否恢复源码 · **不适用**: Git 产品本身的洞（如 RCE，本篇只管路径泄露与恢复） · 索引: rules/src/technique-index.md
 
 # Insecure Source Code Management
 

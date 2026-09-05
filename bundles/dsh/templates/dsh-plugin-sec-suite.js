@@ -39,6 +39,16 @@ const EGRESS_PROXY = process.env.SEC_EGRESS_PROXY || ''
 
 const RISK_ORDER = ['passive', 'active', 'intrusive', 'manual']
 
+// S5 写动词守卫（scope-guard 链渲染后一步）：写/副作用动词段。由 BugHunter 真实事故而来——
+// 子代理被告知 READ-ONLY 仍向 generate* 端点发 {} 在生产创建了真实记录；教训是 deny 必须按
+// 「动词出现在 URL path 段里」优先判定，否则 refund/batch/status 会被读形关键词（status）放行。
+const WRITE_VERBS = new Set([
+  'create', 'add', 'new', 'update', 'edit', 'modify', 'delete', 'remove', 'drop',
+  'settle', 'refund', 'pay', 'payment', 'transfer', 'withdraw', 'reset', 'generate',
+  'send', 'sms', 'upload', 'import', 'exec', 'eval', 'trigger', 'deploy', 'launch',
+  'approve', 'submit', 'order', 'trade', 'cash', 'bind', 'unbind',
+])
+
 // ==============================================================================
 // 极简 YAML 解析（仅覆盖 tools.d/scope.yml 用到的子集：
 // 嵌套 map、标量 list、map list、行内 [a,b]、引号字符串、数字/布尔、注释）
@@ -725,6 +735,81 @@ const APPROVAL_KINDS = {
       return { ok: true, note: `任务 #${taskId} 预算上限已提升至 ${capped}s（下个调度周期生效，runWorker 按 max(默认, budget_timeout_sec) 取值）` }
     },
   },
+  // P2-3 知识采纳：外部经验（writeup/BugHunter 案例蒸馏出的可迁移模式）经人工审批转正 exp_cards。
+  // subject = 经验卡 scenario 一句话；payload = { card_id?, draft, source_url }。
+  // card_id 有（或 scenario 已有同款卡）→ 转正对应 candidate 卡；只有 draft → 落新卡
+  // （source=external, confidence=low——外部来源置信低起点，后续靠实战反馈信号演进）并直接转正。
+  // status 语义（experience 插件 exp_cards + memcore 治理列）：candidate=入口待评审 → active=转正，
+  // cooling=负反馈降级，archived=弃置；exp_cards 本表无 tainted 列（那是 kb_docs 的），不涉及。
+  // 直写路径：本文件与 experience.js 共用同一 SQLite（asset-db getDb → asset-graph.db）。
+  'knowledge-adopt': {
+    label: '知识采纳',
+    validate({ subject, payload, evidence }) {
+      const scenario = String(subject || '').trim()
+      if (scenario.length < 8) return { ok: false, error: `subject 必填（经验卡 scenario 一句话，≥8 字，当前 ${scenario.length} 字）` }
+      const p = payload && typeof payload === 'object' ? payload : {}
+      const draft = String(p.draft || '').trim()
+      if (draft.length < 50) return { ok: false, error: `payload.draft 必填且 ≥50 字（蒸馏后的可迁移模式，当前 ${draft.length} 字）——原文摘抄/链接描述不构成 draft` }
+      const sourceUrl = String(p.source_url || '').trim()
+      if (!/^https?:\/\/\S{4,}$/.test(sourceUrl)) return { ok: false, error: 'payload.source_url 必填（外部来源完整 URL，http(s):// 开头）——外部知识须可溯源' }
+      const cardId = (p.card_id === undefined || p.card_id === null || p.card_id === '') ? null : Number(p.card_id)
+      if (cardId !== null && (!Number.isInteger(cardId) || cardId <= 0)) {
+        return { ok: false, error: `payload.card_id 须为正整数（exp_cards.id），收到: ${p.card_id}` }
+      }
+      if (String(evidence || '').trim().length < 30) {
+        return { ok: false, error: 'evidence 须 ≥30 字（为什么值得采纳：覆盖了哪个知识缺口/哪个案例支撑/与现有经验卡的差异）' }
+      }
+      return { ok: true, value: { payload: { card_id: cardId, draft, source_url: sourceUrl } } }
+    },
+    onApprove({ subject, program_name, payload, evidence }) {
+      const scenario = String(subject || '').trim()
+      const p = payload && typeof payload === 'object' ? payload : {}
+      const draft = String(p.draft || '').trim()
+      const sourceUrl = String(p.source_url || '').trim()
+      const cardId = p.card_id ? Number(p.card_id) : null
+      // 降级出口：exp_cards 未初始化（experience 插件惰性建表）或直写失败——批准本身有效，
+      // 转正动作留给人，note 必须带全草稿摘要（看板可复制）。
+      const degrade = (why) => ({ ok: true, note: `已批准——请按草稿在经验库手工转正（${why}）。草稿：${draft}${draft.length > 300 ? draft.slice(0, 300) + '…' : ''}；来源 ${sourceUrl || '未提供'}` })
+      let d
+      try {
+        d = assetDb.getDb()
+        if (!d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='exp_cards'").get()) return degrade('exp_cards 表尚未初始化')
+      } catch (e) { return degrade(`经验库不可达: ${e?.message ?? e}`) }
+      const now = Date.now()
+      // 治理列（memcore 加载后才有）：无 status 列时卡默认即生效，无 candidate→active 语义
+      const gov = d.prepare('PRAGMA table_info(exp_cards)').all().some((c) => String(c.name) === 'status')
+      const reason = `知识采纳审批批准（来源 ${sourceUrl || '未提供'}${evidence ? '；依据: ' + String(evidence).slice(0, 120) : ''}）`
+      // card_id 缺席时按 scenario 幂等对卡（exp_cards.scenario UNIQUE，裸 INSERT 会撞）
+      const target = cardId
+        ? d.prepare('SELECT id, scenario, status FROM exp_cards WHERE id = ?').get(cardId)
+        : d.prepare('SELECT id, scenario, status FROM exp_cards WHERE scenario = ?').get(scenario)
+      try {
+        if (target) {
+          if (!target.status || target.status !== 'active') {
+            if (gov) {
+              // 优先 experience 晋升通道（memcore_events 治理留痕）；未加载/失败回退直写治理列
+              const promo = exp.expPromote ? exp.expPromote({ id: target.id, reason, actor: 'dashboard' }) : null
+              if (!promo || !promo.ok) d.prepare("UPDATE exp_cards SET status='active', status_at=? WHERE id=?").run(now, target.id)
+            }
+          }
+          if (draft) {
+            d.prepare('UPDATE exp_cards SET takeaway=?, last_validated_at=? WHERE id=?').run(draft, now, target.id)
+            try { d.prepare('UPDATE exp_fts SET takeaway=? WHERE rowid=?').run(draft, target.id) } catch { /* FTS 行残留不阻断转正 */ }
+          }
+          return { ok: true, note: `经验卡 #${target.id}（${target.scenario}）已转正 active${gov ? '' : '（memcore 未加载，仅更新 takeaway/时效）'}${draft ? '，takeaway 已按审批草稿覆盖' : ''}——检索面即时生效` }
+        }
+        // 无对卡：draft 落新卡并直接转正
+        const r = gov
+          ? d.prepare(`INSERT INTO exp_cards (scenario, takeaway, chain, attempts, evidence, source, confidence, created_at, last_validated_at, mem_class, status, status_at, justification) VALUES (?, ?, '[]', '[]', ?, 'external', 'low', ?, ?, 'permanent', 'active', ?, ?)`)
+            .run(scenario, draft, JSON.stringify([`knowledge-adopt:${sourceUrl}`]), now, now, now, reason)
+          : d.prepare(`INSERT INTO exp_cards (scenario, takeaway, chain, attempts, evidence, source, confidence, created_at, last_validated_at) VALUES (?, ?, '[]', '[]', ?, 'external', 'low', ?, ?)`)
+            .run(scenario, draft, JSON.stringify([`knowledge-adopt:${sourceUrl}`]), now, now)
+        const newId = Number(r.lastInsertRowid)
+        try { d.prepare("INSERT INTO exp_fts (rowid, scenario, takeaway, chain) VALUES (?, ?, ?, '[]')").run(newId, scenario, draft) } catch { /* FTS 索引失败不阻断转正 */ }
+        return { ok: true, note: `外部经验已按审批草稿落卡 #${newId} 并直接转正 active（source=external, confidence=low——后续靠实战反馈信号升置信）；scenario: ${scenario}` }
+      } catch (e) { return degrade(`直写失败: ${e?.message ?? e}`) }
+    },
+  },
 }
 
 // agent 工具入口：通用校验（kind 注册/去重/evidence）+ kind.validate 专属校验（含 payload 股权判据）
@@ -740,6 +825,13 @@ function approvalRequest(args, exec) {
     equity_basis: String(args.equity_basis || '').trim(),
     independent_src: String(args.independent_src || '').trim(),
     corroboration: String(args.corroboration || '').trim(),
+  }
+  // P2-3 knowledge-adopt 专属字段透传（card_id/draft/source_url 进 payload，validate 里把关）；
+  // 其余 kind 无这些字段概念，不受影响。
+  if (kind === 'knowledge-adopt') {
+    payload.card_id = (args.card_id === undefined || args.card_id === null || args.card_id === '') ? null : args.card_id
+    payload.draft = String(args.draft || '')
+    payload.source_url = String(args.source_url || '')
   }
   const v = def.validate({ subject, program_name: String(args.program_name || '').trim(), evidence, payload })
   if (!v.ok) return v
@@ -933,6 +1025,32 @@ async function verifyResolved(targets, manifest) {
       const ri = ipToInt(ip)
       if (ri !== null && ipInReserved(ri) && !programAllowsIp(cfg, ip)) {
         return `目标 ${host} 解析到内网/保留 IP ${ip} 且不在项目 ${chk.program || '?'} 授权 CIDR 内`
+      }
+    }
+  }
+  return null
+}
+
+// ==============================================================================
+// S5 写动词守卫（渲染后校验）：risk=passive 的只读工具（httpx/katana 探测类）渲染命令里
+// 任一 http(s) URL 的 path 段命中 WRITE_VERBS → 拒绝。只按 path 段精确比对（段内再按
+// -/_ 拆 token、剥段尾文件扩展名），不对整个命令做子串匹配——query 参数里的普通词
+// （如 ?q=news）不会被误伤。段级比对保 deny 优先：refund/batch/status 因含 refund 拒绝。
+// ==============================================================================
+
+// 返回首个命中 { verb, url }，或 null（通过）
+function findWriteVerbHit(renderedCmd) {
+  const urls = String(renderedCmd).match(/https?:\/\/[^\s"'<>|`]+/gi) || []
+  for (const u of urls) {
+    const m = u.match(/^https?:\/\/[^/?#]+([^?#]*)/i) // path = 去 scheme/host/query/fragment
+    const pathSegs = m && m[1] ? m[1].split('/') : []
+    for (const seg of pathSegs) {
+      // 剥段两端非字母数字（命令行粘连的逗号/括号等）+ 尾部文件扩展名（generate.json → generate）
+      const clean = seg.toLowerCase().replace(/^[^a-z0-9]+/, '').replace(/(\.[a-z0-9]{1,5})?[^a-z0-9]*$/, '')
+      if (!clean) continue
+      // 段本身或 -/_ 拼接的子 token（generate-report / create_user）任一命中即算
+      for (const tok of clean.split(/[-_]/)) {
+        if (WRITE_VERBS.has(tok)) return { verb: tok, url: u }
       }
     }
   }
@@ -1167,6 +1285,39 @@ async function runCli(args, exec) {
     argv = shellSplit(renderTemplate(String(manifest.args_template || ''), params, runDir, runId))
   } catch (e) {
     return { ok: false, run_id: runId, error: `参数渲染失败: ${e.message}` }
+  }
+
+  // S5 写动词守卫（渲染后校验，BugHunter 事故防线）：passive 只读工具的渲染命令里出现
+  // 写动词 URL path → 拒绝。与 tool-intrusive 审批同一白名单（rules.allow_intrusive_tools）：
+  // 人工批准把该工具写进白名单后，S5 与 checkRisk 同源放行（重试即通过）——工具已被人工
+  // 授信更高风险，无须再按只读口径约束。
+  if (String(manifest.risk || 'passive') === 'passive') {
+    const allowList = (firstChk.programCfg && firstChk.programCfg.rules && Array.isArray(firstChk.programCfg.rules.allow_intrusive_tools)
+      ? firstChk.programCfg.rules.allow_intrusive_tools : []).map((s) => String(s).toLowerCase())
+    const hit = allowList.includes(toolName.toLowerCase()) ? null : findWriteVerbHit(argv.join(' '))
+    if (hit) {
+      // 桥接 tool-intrusive 异步审批（同 checkRisk 拒绝点模式）：同步拒绝语义不变（fail-closed
+      // 当场生效），批准后白名单放行。S5 只对 passive 工具触发，不会消耗 QPS 令牌（passive 不限速）。
+      let approvalHint = null
+      if (programId) {
+        try {
+          const add = assetDb.approvalAdd({
+            kind: 'tool-intrusive', subject: `${toolName}:${targets[0] || hostOf(hit.url) || '-'}`, program_name: programId,
+            payload: { tool: toolName, risk: manifest.risk, target: targets[0] || null, params: sanitizeParamsForApproval(params), program: programId, guard: 'S5-write-verb', verb: hit.verb, url: hit.url },
+            evidence: `只读工具（risk=passive）${toolName} 渲染命令含写动词路径 ${hit.url}（动词 "${hit.verb}"），被 S5 写动词守卫拒绝，请求人工放行`,
+            requested_by: safeSessionId(exec),
+          })
+          if (add.ok || add.request_id) approvalHint = `已自动提请 tool-intrusive 审批 #${add.request_id || add.id}（批准后 ${toolName} 加入项目 ${programId} allow_intrusive_tools 白名单，S5 写动词守卫与风险闸同源放行，重试即通过）。本次调用维持拒绝，勿重试。`
+        } catch { /* 审批落库失败不改变拒绝语义 */ }
+      }
+      audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: `S5 写动词守卫：passive 工具命令含写动词路径 ${hit.url}（${hit.verb}）`, approval_filed: !!approvalHint })
+      return {
+        ok: false, run_id: runId,
+        error: `scope-guard S5 写动词守卫拒绝: 只读工具（risk=passive）${toolName} 的命令中 URL ${hit.url} 的路径含写动词 "${hit.verb}"——只读工具打写动词路径。确属写操作须改用 active/intrusive 风险级的工具 manifest，或等 tool-intrusive 审批放行后重试`,
+        needs_approval: true,
+        ...(approvalHint ? { approval_hint: approvalHint } : {}),
+      }
+    }
   }
   const binary = String(manifest.binary || toolName)
   const timeoutMs = Math.min(Number(manifest.timeout || 300), 3600) * 1000
@@ -1455,6 +1606,19 @@ let activeWorkers = 0
 // 幂等恢复窗口：仅约束 done/failed 回读（从 finished_at 计）。重启后重试在数秒~分钟内落地，30min 绰绰有余。
 const WORKER_DEDUPE_WINDOW_MS = 30 * 60 * 1000
 
+// RoE（Rules of Engagement，交战规则）：每次 spawn 注入任务文本末尾的硬约束块。
+// BugHunter 血泪条款：子代理 scope 不隐式继承。锚点子串用于幂等——task 已含（重试/链式
+// 复用同一文本）则不重复堆叠，注入只追加不内嵌，保证确定性（dedupeKey 不受影响）。
+const ROE_ANCHOR = 'Rules of Engagement 交战规则'
+const ROE_BLOCK = [
+  `【${ROE_ANCHOR}（宿主注入，硬约束，与本任务描述冲突时以本块为准）】`,
+  '1. 目标列表必须作为数据逐字出现在本任务里；「目标资产」「上述范围」式指代无效——未逐字列出的目标一律视为未授权，不要尝试打点。',
+  '2. 测程中新发现的主机（CT 日志/JS 文件/CNAME 爆出的）一律 report-only：只记录上报，禁止探测/扫描/打点；要纳入 scope 须先走 scope 审批。',
+  '3. 「read-only/只读」展开为动词清单：GET、HEAD、OPTIONS、DNS 查询、被动指纹采集；POST/PUT/DELETE/PATCH 及一切写操作动词（create/update/generate/refund…）不在只读范围内。',
+  '4. 越权接触的主机会被 scope-audit 标记（audit.jsonl deny 记录）——scope-guard 是 fail-closed 硬校验，不依赖你的自觉；被拒后不要换姿势重试，改走审批。',
+  '5. 只读工具（passive 级）打写动词路径（如 /api/generate、/refund/batch/status）会被 scope-guard S5 写动词守卫拒绝；确需写操作须改用 active/intrusive 风险级的工具并走审批。',
+].join('\n')
+
 // 从注册表行 + 落盘文件重建 worker 返回（幂等恢复用）。文件已清理则回 null → 调用方降级。
 function readWorkerResult(row) {
   if (!row || !row.run_dir) return null
@@ -1514,10 +1678,14 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
     fs.writeFileSync(patchPath, patchYaml)
     dshArgs.push('--patch', patchPath)
   }
-  dshArgs.push(task)
+  // RoE 契约注入：子代理 scope 不隐式继承——交战规则随任务文本逐字下发（含 S5 写动词守卫提示）。
+  // worker 的 headless prompt 就是这段文本（无独立 AGENTS.md 读取环节），拼在 task 后即实际生效。
+  // 幂等：task 已含 RoE 锚点不重复堆叠；注入是 task 的确定性函数 → dedupeKey/恢复语义不受影响。
+  const fullTask = task.includes(ROE_ANCHOR) ? task : `${task}\n\n${ROE_BLOCK}`
+  dshArgs.push(fullTask)
 
   const env = { ...process.env, DSH_HOME: DATA_DIR, PATH: '/usr/local/node/bin:' + (process.env.PATH || '') }
-  audit({ ts: Date.now(), run_id: runId, tool: 'spawn_worker', decision: 'executed', detail: task.slice(0, 200), session_id: originSessionId })
+  audit({ ts: Date.now(), run_id: runId, tool: 'spawn_worker', decision: 'executed', detail: fullTask.slice(0, 200), session_id: originSessionId })
 
   activeWorkers++
   const started = Date.now()
@@ -1526,9 +1694,9 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
     const child = spawn(NODE_BIN, dshArgs, {
       env, cwd: workCwd, detached: true,
     })
-    // 注册表登记（带 pid）：供重启对账 + 重试幂等恢复。登记失败不阻断执行。
+    // 注册表登记（带 pid）：供重启对账 + 重试幂等恢复。登记的是含 RoE 的实际 prompt（fullTask）。登记失败不阻断执行。
     try {
-      assetDb.workerRegister({ run_id: runId, dedupe_key: dedupeKey, task, cwd: workCwd, pid: child.pid,
+      assetDb.workerRegister({ run_id: runId, dedupe_key: dedupeKey, task: fullTask, cwd: workCwd, pid: child.pid,
         timeout_sec: Math.round(timeoutMs / 1000), session_id: originSessionId, run_dir: runDir })
     } catch { /* ignore */ }
     child.stdout.pipe(out)
@@ -1542,7 +1710,7 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
   activeWorkers--
 
   const meta = {
-    run_id: runId, tool: 'spawn_worker', task, cwd: workCwd, started_at: new Date(started).toISOString(),
+    run_id: runId, tool: 'spawn_worker', task: fullTask, cwd: workCwd, started_at: new Date(started).toISOString(),
     duration_ms: Date.now() - started, exit_code: result.code ?? null, session_id: originSessionId,
   }
   fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 1) + '\n')
@@ -1895,20 +2063,24 @@ export function apply(ctx, config) {
     description: '统一审批入口（fail-closed 之下的正规放行通道）：向人工提请审批。'
       + '类型判定口径：①整个注册域归属该项目（主体核证级证据：ICP 备案主体/官网品牌一致/收购公告/SRC 规则页明示）→ kind=scope-wildcard，'
       + '一次审批覆盖 *.example.com 全部子域；②仅单个子域有具体归属证据（CNAME 指向授权资产/内容同源比对）→ kind=scope-domain，'
-      + 'subject 填完整子域，禁止拿裸 apex 走单域通道；③被排除资产的人工评估 → exclude-exception。'
+      + 'subject 填完整子域，禁止拿裸 apex 走单域通道；③被排除资产的人工评估 → exclude-exception；'
+      + '④外部经验（writeup/案例）蒸馏采纳进经验库 → kind=knowledge-adopt（payload: card_id 可选/draft ≥50 字/source_url 必填）。'
       + '资产收集发现疑似 scope 外资产时必须提请，禁止只写事实不提请求，也禁止把归属不确定的资产凑数提请。'
       + '股权判据口径见 data/rules/src/equity-gate.md：100% 控股算、参股/投资不算、有自身 SRC 渠道的不并入。'
       + '登记是被动观察行为：批准前目标依旧被 scope-guard fail-closed 拒绝，授权边界不变。',
     parameters: {
       type: 'object',
       properties: {
-        kind: { type: 'string', enum: ['scope-domain', 'scope-wildcard', 'exclude-exception'], description: '审批类型：scope-wildcard=整域授权（subject 填注册域 apex，如 example.com）；scope-domain=单子域授权（subject 填完整子域）；exclude-exception=被排除资产的例外评估（解除排除）' },
-        subject: { type: 'string', description: '审批对象（域名；scope-wildcard 传注册域 apex 如 catpaw.com，scope-domain 传完整子域如 www.catpaw.com）' },
-        program_name: { type: 'string', description: '必填：建议归属的 scope.yml 项目名（exclude-exception 为排除该域的项目名）' },
-        equity_basis: { type: 'string', enum: ['控股/全资', '收购/财团', '品牌/产品线', '技术印证', '其他'], description: '股权/归属判据类型（必填）。整域（scope-wildcard）只接受 控股/全资 或 收购/财团。「技术印证」=CNAME 指向授权资产/内部部署域等部署关系' },
+        kind: { type: 'string', enum: ['scope-domain', 'scope-wildcard', 'exclude-exception', 'knowledge-adopt'], description: '审批类型：scope-wildcard=整域授权（subject 填注册域 apex，如 example.com）；scope-domain=单子域授权（subject 填完整子域）；exclude-exception=被排除资产的例外评估（解除排除）；knowledge-adopt=外部经验蒸馏采纳进经验库' },
+        subject: { type: 'string', description: '审批对象（域名；scope-wildcard 传注册域 apex 如 catpaw.com，scope-domain 传完整子域如 www.catpaw.com；knowledge-adopt 传经验卡 scenario 一句话）' },
+        program_name: { type: 'string', description: '建议归属的 scope.yml 项目名（exclude-exception 为排除该域的项目名；knowledge-adopt 可不填）' },
+        equity_basis: { type: 'string', enum: ['控股/全资', '收购/财团', '品牌/产品线', '技术印证', '其他'], description: '股权/归属判据类型（scope 域类必填）。整域（scope-wildcard）只接受 控股/全资 或 收购/财团。「技术印证」=CNAME 指向授权资产/内部部署域等部署关系' },
         independent_src: { type: 'string', enum: ['无', '有', '不确定'], description: '目标是否有自身 SRC 收洞渠道（scope-domain/scope-wildcard 必填；有→不并入本项目）' },
         corroboration: { type: 'string', description: '旁证（选填，如 "meituan.com 下 126 个内部部署域印证"）' },
-        evidence: { type: 'string', description: '归属证据/依据摘要。单子域 ≥30 字且须具体归属证据；整域 ≥30 字且须主体核证级证据（备案主体/收购公告/SRC 规则页）' },
+        card_id: { type: 'integer', description: '（knowledge-adopt）要转正的 exp_cards 卡 id；draft 直落新卡时不传' },
+        draft: { type: 'string', description: '（knowledge-adopt）蒸馏后的可迁移模式（≥50 字），批准后作为经验卡 takeaway' },
+        source_url: { type: 'string', description: '（knowledge-adopt）外部来源完整 URL（http(s):// 开头，可溯源）' },
+        evidence: { type: 'string', description: '归属证据/依据摘要。单子域 ≥30 字且须具体归属证据；整域 ≥30 字且须主体核证级证据（备案主体/收购公告/SRC 规则页）；knowledge-adopt ≥30 字（覆盖了哪个缺口/哪个案例支撑）' },
       },
       required: ['kind', 'subject', 'evidence'],
       additionalProperties: false,

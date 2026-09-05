@@ -1,4 +1,6 @@
 # deserialization
+> **触发信号**: 反序列化, deserialization, ysoserial, CommonsCollections, URLDNS, rememberMe, Shiro, WebLogic, T3, RMI, JEP 290, rO0AB, PHP unserialize, PHAR, PHPGGC, Laravel, Symfony, Guzzle, pickle, __destruct, __wakeup, magic method
+> **适用**: 流量里见到 rO0AB/O:数字:类名/pickle 特征、或 rememberMe/T3/RMI 暴露时选链选工具 · **不适用**: XML 注入（走 xxe）、模板注入（走 injection SSTI 节） · 索引: rules/src/technique-index.md
 
 # Insecure Deserialization
 

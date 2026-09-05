@@ -1,4 +1,6 @@
 # recon-and-methodology
+> **触发信号**: recon, 子域名枚举, subfinder, Amass, certsh, SecurityTrails, Shodan, massdns, ffuf, DNSx, SecLists, vhost, gobuster, masscan, httpx, Wappalyzer, feroxbuster, Arjun, x8, LinkFinder, FOFA, 指纹
+> **适用**: 进站前期做子域/端口/指纹/端点/参数发现与信息收集分层 · **不适用**: 已有明确目标的单漏洞验证（直接开对应 *-test 篇） · 索引: rules/src/technique-index.md
 
 > **测绘节奏只认** `rules/srcskill/dig-scope-workflow.md` §1.0.1 / §2.1：只搜**当前这一个**种子；本种子剩余活面没挖完禁止新搜。认到短表形态只打当前站，禁止拿 Morph 去全网 FOFA。优质根域只回灌，本种子挖完才搜。
 >

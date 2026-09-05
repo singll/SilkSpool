@@ -7,6 +7,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { spawn } from 'node:child_process'
 
 // 依赖注入（由 index.js 模块加载时调用 initDashboardRpc 传入，避免循环依赖）：
 //   dataDir              数据目录（主文件 deps.dataDir，reports 目录推导）
@@ -140,6 +141,50 @@ export function taskChain(args, exec) {
 // ==============================================================================
 
 const FINDING_TAG_STATUS = ['confirmed', 'false_positive', 'ignored', 'new', 'submitted', 'accepted', 'dup']
+
+// ==============================================================================
+// 知识覆盖度审计（攻面 × rules/VC 卡交叉表，借鉴 Claude-Red MINDMAP：空行即缺口）
+// 数据文件 data/knowledge-coverage.json 由 knowledge-coverage.py 生成（stdlib only）；
+// 看板端点 knowledgeCoverage：缓存新鲜（<7 天）直接返回，否则现场 python3 生成。
+// ==============================================================================
+const COVERAGE_FRESH_MS = 7 * 24 * 3600 * 1000
+function locateCoverageScript() {
+  // 脚本落点：部署后 <BASE>/scripts/pipeline/（sec-suite-plugin-setup.sh install_scripts 归位）；
+  // 兼容扁平 <BASE>/scripts/、模板 data-seed/scripts/，以及插件目录反推（plugins/sec-suite → BASE）
+  const base = path.dirname(path.resolve(deps.dataDir))
+  const cands = [path.join(base, 'scripts', 'pipeline', 'knowledge-coverage.py')]
+  let here = ''
+  try { here = new URL('.', import.meta.url).pathname } catch { /* 非 ESM 场景忽略 */ }
+  if (here) {
+    cands.push(path.resolve(here, '..', '..', 'scripts', 'pipeline', 'knowledge-coverage.py'))
+    cands.push(path.resolve(here, '..', '..', 'scripts', 'knowledge-coverage.py'))
+    cands.push(path.resolve(here, '..', '..', 'data-seed', 'scripts', 'knowledge-coverage.py'))
+  }
+  cands.push(path.join(base, 'data-seed', 'scripts', 'knowledge-coverage.py'))
+  for (const c of cands) { try { if (fs.existsSync(c)) return c } catch { /* ignore */ } }
+  return null
+}
+function runCoverageScript(script, out) {
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawn('python3', [script,
+        '--rules-dir', path.join(deps.dataDir, 'rules'),
+        '--vulncards-dir', path.join(deps.dataDir, 'vulncards'),
+        '--out', out], { stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (e) { resolve({ ok: false, error: 'python3 启动失败: ' + (e?.message ?? String(e)) }); return }
+    let stderr = ''
+    child.stdout.on('data', () => {}) // 控制台摘要不回传看板
+    child.stderr.on('data', (d) => { stderr += String(d) })
+    const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch { /* ignore */ } }, 60000)
+    child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, error: 'python3 不可用: ' + (e?.message ?? String(e)) }) })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code !== 0) { resolve({ ok: false, error: 'knowledge-coverage.py 退出码 ' + code + (stderr.trim() ? '：' + stderr.trim().slice(0, 300) : '') }); return }
+      try { resolve({ ok: true, data: JSON.parse(fs.readFileSync(out, 'utf8')) }) } catch (e) { resolve({ ok: false, error: '生成结果解析失败: ' + (e?.message ?? String(e)) }) }
+    })
+  })
+}
 export async function handleDashboardRpc(endpoint, payload) {
   const p = (payload && typeof payload === 'object') ? payload : {}
   switch (endpoint) {
@@ -503,6 +548,27 @@ export async function handleDashboardRpc(endpoint, payload) {
       const st = fs.statSync(full)
       if (st.size > 512 * 1024) throw new Error('文件过大（>512KB），请在主机查看')
       return { file: rel, content: fs.readFileSync(full, 'utf8'), mtime: st.mtimeMs, size: st.size }
+    }
+    // ---- 知识覆盖缺口（知识 tab：攻面 × rules/VC 卡交叉表，MINDMAP 式空行即缺口）----
+    // 返回 { ok, generated_at, taxonomy[], summary{}, cached, regenerated }；
+    // 失败时 { ok: false, error, stale: <旧 JSON 或 null> }。payload.refresh=true 强制重新生成。
+    case 'knowledgeCoverage': {
+      const out = path.join(deps.dataDir, 'knowledge-coverage.json')
+      let stale = null
+      let fresh = false
+      try {
+        stale = JSON.parse(fs.readFileSync(out, 'utf8'))
+        fresh = Date.now() - fs.statSync(out).mtimeMs < COVERAGE_FRESH_MS
+      } catch { stale = null }
+      if (stale && fresh && !p.refresh) return { ok: true, ...stale, cached: true }
+      const script = locateCoverageScript()
+      if (!script) {
+        return { ok: false, error: 'knowledge-coverage.py 未找到（部署后应位于 scripts/pipeline/ 或 data-seed/scripts/）', stale }
+      }
+      const r = await runCoverageScript(script, out)
+      if (!r.ok) return { ok: false, error: r.error, stale }
+      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.knowledgeCoverage', decision: 'executed', detail: { script, out, refresh: !!p.refresh } })
+      return { ok: true, ...r.data, cached: false, regenerated: true }
     }
     // ---- 报告查看（只读）----
     // v4.3：列表元数据化——文件名解析 program/date（report-{prog}-{YYYYMMDD-HHmm}.md，旧 report-{ts}.md 回退 mtime），

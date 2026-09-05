@@ -2,7 +2,7 @@
 # ==============================================================================
 # SilkSecAgent 核心 Skill + 规则先验层 种子（幂等：补缺失 + 内容漂移即刷新）
 # DSH 用户级技能目录：$DSH_HOME/skills/<name>/SKILL.md
-# 规则先验层：$DSH_HOME/rules/<rel>（56 篇，人工蒸馏静态规则）
+# 规则先验层：$DSH_HOME/rules/<rel>（79 篇 = 57 静态规则 + 22 案例引用层，人工蒸馏）
 #
 # v4.5 重构（2026-09-04）：正文全部外移为版本受控文件——
 #   技能源  data-seed/skills/<name>/SKILL.md（7 个 sec-* 技能）
@@ -73,6 +73,9 @@ seed_rule src/technique-index.md
 seed_rule srcskill/dig-scope-workflow.md
 seed_rule srcskill/vuln-report-format.md
 
+# v4.7 补缺：穿越/LFI 模块（technique-index 88-91 行一直引用但文件缺失的漂移）
+seed_rule techniques/path-traversal-lfi-test.md
+
 # 手法模块（46 篇，源自 doc/srcskill 知识库全量导入；technique-index 短表为其索引）
 seed_rule techniques/401-403-bypass.md
 seed_rule techniques/agent-tool-exec-test.md
@@ -121,10 +124,35 @@ seed_rule techniques/xslt-injection-test.md
 seed_rule techniques/xss-test.md
 seed_rule techniques/xxe-test.md
 
+# 案例引用层（v4.7：rules/cases/ 22 篇真实披露案例蒸馏，来源 URL 全核实；
+# 随 rules 目录被 kbIndexCuratedRules() 自动索引进 kb_search FTS，引用约束见 sec-knowledge 技能）
+seed_rule cases/cwe-113-request-smuggling-desync.md
+seed_rule cases/cwe-1321-prototype-pollution-rce.md
+seed_rule cases/cwe-287-oauth-identity-claim-email.md
+seed_rule cases/cwe-346-websocket-cross-origin-hijack.md
+seed_rule cases/cwe-347-jwt-algorithm-confusion.md
+seed_rule cases/cwe-362-race-condition-state-machine.md
+seed_rule cases/cwe-404-subdomain-takeover-dangling-dns.md
+seed_rule cases/cwe-444-cache-poisoning-unkeyed-input.md
+seed_rule cases/cwe-444-http2-request-smuggling.md
+seed_rule cases/cwe-502-java-deserialization-preauth-rce.md
+seed_rule cases/cwe-525-web-cache-deception.md
+seed_rule cases/cwe-601-open-redirect-oauth-chain.md
+seed_rule cases/cwe-603-oauth-redirect-uri-code-leak.md
+seed_rule cases/cwe-611-xxe-file-read.md
+seed_rule cases/cwe-639-idor-api-broken-authz.md
+seed_rule cases/cwe-639-idor-upload-bruteforce.md
+seed_rule cases/cwe-79-xss-worm-account-takeover.md
+seed_rule cases/cwe-840-price-manipulation-payment.md
+seed_rule cases/cwe-862-graphql-authorization-gap.md
+seed_rule cases/cwe-915-mass-assignment-role.md
+seed_rule cases/cwe-918-ssrf-cloud-metadata.md
+seed_rule cases/cwe-93-crlf-response-splitting.md
+
 # -------------------- 3. 源目录整体校验（部署完整性闸门） --------------------
 n_src_rules=$(find "$SEED_SRC/rules" -name '*.md' 2>/dev/null | wc -l || echo 0)
 n_dst_rules=$(find "$RULES_DIR" -name '*.md' 2>/dev/null | wc -l || echo 0)
-if [ "$n_src_rules" != "56" ] || [ "$n_dst_rules" != "56" ]; then
-    log "WARN: 规则数异常（源 $n_src_rules / 已部署 $n_dst_rules，应为 56）——检查 data-seed/rules 完整性"
+if [ "$n_src_rules" != "79" ] || [ "$n_dst_rules" != "79" ]; then
+    log "WARN: 规则数异常（源 $n_src_rules / 已部署 $n_dst_rules，应为 79）——检查 data-seed/rules 完整性"
 fi
 log "seed 完成：7 skills + $n_dst_rules rules（源 $SEED_SRC）"

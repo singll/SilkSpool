@@ -1,4 +1,6 @@
 # waf-bypass
+> **触发信号**: WAF 绕过, wafw00f, http-waf-detect, cf-ray, x-sucuri-id, x-akamai, Cloudflare, AWS WAF, ModSecurity, OWASP CRS, Akamai, Kona, 编码绕过, chunked, HTTP/2, HPP, 路径规范化, Content-Type, multipart boundary, 关键字拆分, X-Forwarded-For
+> **适用**: payload 被 WAF 拦（403/拦截面）要先指纹产品再按品类绕过 · **不适用**: 无 WAF 的直接漏洞验证、或涉及字符截断机制的绕过（走 ghost-bits-cast-test.md） · 索引: rules/src/technique-index.md
 
 # WAF Bypass Techniques — Evasion Playbook
 

@@ -5,6 +5,8 @@
 ## 一、原有知识库
 
 # 竞态条件测试手册
+> **触发信号**: 竞态条件, race condition, TOCTOU, 优惠券, 红包, 双花, 余额, 投票, 点赞, 库存超卖, 验证码并发, 单包攻击, single packet attack, h2load, nghttp2, Turbo Intruder, asyncio, aiohttp, curl 并发, 延迟释放, 连接复用
+> **适用**: 一次性资源/余额/库存/验证码要并发重复获取或绕过先检后用 · **不适用**: 单次请求就能复现的逻辑绕过（走 logic-test.md） · 索引: rules/src/technique-index.md
 
 ## 一、竞态条件原理
 

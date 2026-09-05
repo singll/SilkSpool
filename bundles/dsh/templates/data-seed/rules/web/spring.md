@@ -1,4 +1,6 @@
 # Spring / Spring Boot 审计先验（语言框架规则·末段漏洞判定另见具体漏洞卡）
+> **触发信号**: Spring, Spring Boot, @RequestMapping, @GetMapping, @PostMapping, /actuator, heapdump, env, gateway/routes, antMatchers, mvcMatchers, SpEL, Spring4Shell, CVE-2022-22965, Jackson, Fastjson, @type, enableDefaultTyping, Thymeleaf, permitAll, @PreAuthorize, Spring Cloud Gateway
+> **适用**: 指纹认出 Spring/Spring Boot：actuator 面、antMatchers 匹配差异绕过、SpEL/反序列化/SSTI · **不适用**: 非 JVM 栈（Node 走 nextjs、PHP 走 thinkphp） · 索引: rules/src/technique-index.md
 
 ## 入口点模式
 - 控制器注解族：@RequestMapping/@GetMapping/@PostMapping + 类级路径前缀拼接；@RestControllerAdvice 不改路由

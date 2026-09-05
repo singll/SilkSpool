@@ -1,4 +1,6 @@
 # csrf
+> **触发信号**: CSRF, Cross-Site Request Forgery, token bypass, SameSite, Lax, None, double submit, JSON CSRF, text/plain, multipart, CSPT2CSRF, 路径遍历, window.open, 2-minute window, method override, fetch, XMLHttpRequest, OAuth state, PoC 模板
+> **适用**: 改密/改绑/支付等状态变更接口要验证 token 校验与 SameSite 防护是否真拦跨站 · **不适用**: 只读接口或无 Cookie 依赖的纯 API 滥用 · 索引: rules/src/technique-index.md
 
 > **SRC 纪律：** 本文测 **CSRF 写成功** 等仍可作中高（有跨用户/敏感写才报）。  
 > 文中出现的 CORS 仅作链路基座理解；**禁止**把 CORS 单独写成主洞报告（`cors-vuln-report-priority`：不挖不写）。

@@ -2,6 +2,8 @@
 > 结构：本篇较短，可整篇开。中间件端口见了再打（§五），不是每站先扫端口。
 
 # 信息泄露测试手册
+> **触发信号**: 信息泄露, passwordHash, salt, idCard, bankCard, secretKey, apiKey, stack trace, 内网 IP, 备份文件, ffuf, JS 泄露, AK/SK, GitHub PAT, XOR, 分页越界, pageSize, 导出, 通配符搜索, GraphQL 自省, Redis 6379, rsync 873, PHP-FPM 9000, AJP 8009, h2-console
+> **适用**: 响应/JS/报错/备份文件里多吐敏感字段，或见了中间件端口（Redis/rsync/FPM/AJP/YARN/Docker）要打 · **不适用**: 需要完整攻击链的漏洞类型（本篇只管泄露面与端口入口） · 索引: rules/src/technique-index.md
 
 ## 一、常见泄露点
 

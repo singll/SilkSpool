@@ -1,4 +1,6 @@
 # subdomain-takeover
+> **触发信号**: 子域名接管, subdomain takeover, CNAME, NXDOMAIN, NoSuchBucket, herokuapp, github.io, azurewebsites, myshopify, Fastly, Pantheon, Tumblr, zendesk, ghost.io, surge.sh, fly.dev, subjack, dnsreaper, subzy, NS takeover, MX takeover, can-i-take-over-xyz
+> **适用**: 子域 CNAME 指向已释放的云资源（404 NoSuchBucket/No such app 类指纹）要认领验证 · **不适用**: 主站自身漏洞或仍在解析的正常资源（无悬空 CNAME） · 索引: rules/src/technique-index.md
 
 # Subdomain Takeover — Detection & Exploitation Playbook
 
