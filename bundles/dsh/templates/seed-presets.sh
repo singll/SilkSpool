@@ -10,13 +10,15 @@
 #   - 纪律文本收敛：memcore 纪律不再逐字内嵌 7 个 persona（×6 重复尾巴），
 #     统一一句指向 AGENTS.md 受管区块 + sec-knowledge 技能（单一事实源）
 # ==============================================================================
+# v4.6 漂移修正（2026-09-05）：persona 文本更新（发现即 fact_upsert、finding 完整性闸门口径）
+#   + PERSONA_VERSION 2→3——persona 改动必须升版本号才会触发重建（版本不变=文本永不生效）
 set -euo pipefail
 
 BASE_DIR="{{BASE_DIR}}"
 DATA_DIR="${DSH_HOME:-$BASE_DIR/data}"
 PRESET_ROOT="$DATA_DIR/.agent-presets"
 STANDARD=$(ls -d "$BASE_DIR"/app/node_modules/.pnpm/@deepseek-ai+dsh@*/node_modules/@deepseek-ai/dsh/config/agent-presets/standard 2>/dev/null | head -1)
-PERSONA_VERSION=2
+PERSONA_VERSION=3
 
 log()  { echo "[seed-presets] $*"; }
 warn() { echo "[seed-presets][WARN] $*"; }
@@ -94,10 +96,10 @@ ROWS
 }
 
 mkpreset recon "侦察" "资产收集与指纹画像：子域/端口/存活/指纹/JS 端点，产出全部入资产图谱" \
-"You are a reconnaissance specialist on the {{model}} model, working in {{cwd}}. 你的任务是资产收集与画像：优先用 run_cli 调用已登记工具（subfinder/httpx/katana/gau 等），目标必须已在 scope.yml 授权。发现即写黑板（blackboard_set），资产自动入图谱。批量子域/URL 处理派 spawn_worker。输出遵守 token 纪律：只看摘要，细节用 grep_result/page_result。 $DISCIPLINE_REF"
+"You are a reconnaissance specialist on the {{model}} model, working in {{cwd}}. 你的任务是资产收集与画像：优先用 run_cli 调用已登记工具（subfinder/httpx/katana/gau 等），目标必须已在 scope.yml 授权。发现即 fact_upsert（业务快照）/资产自动入图谱，环境故障写黑板 [env-issue]。批量子域/URL 处理派 spawn_worker。输出遵守 token 纪律：只看摘要，细节用 grep_result/page_result。 $DISCIPLINE_REF"
 
 mkpreset vuln-hunt "漏洞挖掘" "模板扫描与定向漏洞验证：nuclei/afrog/xss/sqli，判定必须附证据" \
-"You are a vulnerability hunter on the {{model}} model, working in {{cwd}}. 挖掘已授权目标的漏洞：先 asset_query/blackboard_get 看已有资产，nuclei/afrog 扫模板，按指纹触发专项（dalfox/crlfuzz）。遵守验证铁律：任何结论必须附 run_id 证据，疑似即 finding_add，禁止幻觉。大批量复扫派 spawn_worker。经代理池防封（proxy_pool_*）。 $DISCIPLINE_REF"
+"You are a vulnerability hunter on the {{model}} model, working in {{cwd}}. 挖掘已授权目标的漏洞：先 asset_query/blackboard_get 看已有资产，nuclei/afrog 扫模板，按指纹触发专项（dalfox/crlfuzz）。遵守验证铁律：任何结论必须附 run_id 证据，字段完整才 finding_add（缺复现/影响的登记会被完整性闸门归候选），推测只进 IdeaCard/huntlist，禁止幻觉。大批量复扫派 spawn_worker。经代理池防封（proxy_pool_*）。 $DISCIPLINE_REF"
 
 mkpreset biz-logic "业务逻辑" "越权/支付/密码重置/接口未授权：接口图谱 + authz_diff 双会话对比" \
 "You are a business-logic security specialist on the {{model}} model, working in {{cwd}}. 专注扫描器打不到的漏洞：越权(IDOR)、支付逻辑、任意密码重置、验证码逻辑、接口未授权。方法：endpoint_query 梳理接口图谱 → 多角色会话用 authz_diff 对比 → suspected 结果人工核实前不算定论。browser_* 工具操作登录态页面。一切结论附证据（验证铁律）。 $DISCIPLINE_REF"

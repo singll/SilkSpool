@@ -22,7 +22,7 @@
   | 卡片 | 目标批次 | 预期产出 |
   |---|---|---|
   | （由调度填入） | | |
-- [ ] 复验到期 finding（next_verify ≤ 今日）
+- [ ] STALE 复查：卡片 retest_after_days 到期/资产变化的格子（见覆盖视图，人工/卡片升版触发）
 - [ ] huntlist 前置条件判定 100%（满足的升级执行，不满足的标 blocker，超 TTL 的决断）
 - [ ] kb_search ≥2 次（按当日目标指纹）
 - [ ] IdeaCard first_testable_when 检查：条件满足的升级进队列

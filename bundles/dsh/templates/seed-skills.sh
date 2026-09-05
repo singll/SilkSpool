@@ -5,7 +5,7 @@
 # 规则先验层：$DSH_HOME/rules/<rel>（56 篇，人工蒸馏静态规则）
 #
 # v4.5 重构（2026-09-04）：正文全部外移为版本受控文件——
-#   技能源  data-seed/skills/<name>/SKILL.md（8 个 sec-* 技能）
+#   技能源  data-seed/skills/<name>/SKILL.md（7 个 sec-* 技能）
 #   规则源  data-seed/rules/<rel>（src 4 + srcskill 2 + techniques 46 + web 3 + php 1）
 # 本脚本只做「部署通道」：install + cmp 幂等，不再内嵌 heredoc（旧版 17442 行巨石，
 #   正文与 doc/srcskill、线上 data/rules 三份并存必然漂移）。
@@ -47,7 +47,7 @@ seed_rule() {
     log "rules/$rel 已写入/刷新"
 }
 
-# -------------------- 1. 核心 sec-* 技能（8 个） --------------------
+# -------------------- 1. 核心 sec-* 技能（7 个） --------------------
 seed_skill sec-verification
 seed_skill sec-blackboard
 seed_skill sec-review
@@ -127,4 +127,4 @@ n_dst_rules=$(find "$RULES_DIR" -name '*.md' 2>/dev/null | wc -l || echo 0)
 if [ "$n_src_rules" != "56" ] || [ "$n_dst_rules" != "56" ]; then
     log "WARN: 规则数异常（源 $n_src_rules / 已部署 $n_dst_rules，应为 56）——检查 data-seed/rules 完整性"
 fi
-log "seed 完成：8 skills + $n_dst_rules rules（源 $SEED_SRC）"
+log "seed 完成：7 skills + $n_dst_rules rules（源 $SEED_SRC）"

@@ -1,5 +1,7 @@
 # SilkSecAgent 统一记忆基架设计（Memory Substrate）
 
+> ⚠️ **历史设计快照（2026-09-05 标注）**：本设计定稿于 2026-08-25，部分条款已被后续演进取代——已知偏差：原语实为**五个**（v1.1 新增 recordSignal）；评分列仅语义层（exp_cards/kb_docs），非每张记忆表；R6 justification≥10 字仅语义层硬要求（工作/情景层缺省记 `auto:default`）；**R7 timeline 只追加未在代码实现**；R3/R4 参数分层化（facts ephemeral 1~30 天、kb_docs durable 复验 7~180 天）；neg_fb≥3 是 active→cooling 而非直接 archived；AGENTS.md 重写随 sweep 每 6h；v4.5/v4.6 演进（三合并/curated 免复验/知识体检/检索三步）见 [silksecagent-system-complete.md](silksecagent-system-complete.md) §5.3-§5.4。正文保留作决策记录。
+>
 > 版本：v2.1 终版（v2.0 A+B 融合定型；v2.1 治理层改为独立 cordis 插件 @silksec/sec-memcore，可选注入、fail-open）｜ 日期：2026-08-25 ｜ 状态：**已实施，当前实现见 `sec-memcore-implementation.md` 与 `bundles/dsh/templates/dsh-plugin-sec-memcore.js`**
 > 决策记录：候选方案 A（元数据标签制）+ B（分层记忆制）融合，**不采用 C 过渡方案**；
 > 用户四要求：① 晋升/遗忘/分类全部代码硬实施强监管；② 容错托底——无周复盘系统也健康运转；

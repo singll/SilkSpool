@@ -4,7 +4,7 @@
 
 ## 1. 状态快照（全指针，不内联数据）
 
-- 覆盖视图：`data/pipeline/{program}/coverage-{date}.md`
+- 覆盖视图：`data/pipeline/{program}/coverage-latest.md`
 - 资产台账：`assets-{program}.tsv`（{n_assets} 行）
 - 尝试台账：`attempts-{program}.tsv`（{n_attempts} 行，今日 +{n_today}）
 - 未闭环：PENDING {n} / BLOCKED {n} / STALE {n}（见覆盖视图）
@@ -29,7 +29,7 @@
 ## 5. 数据指针（绝对路径清单）
 
 - attempts: `/opt/silkspool/dsh/data/pipeline/{program}/attempts-{program}.tsv`
-- 覆盖视图: `/opt/silkspool/dsh/data/pipeline/{program}/coverage-{date}.md`
+- 覆盖视图: `/opt/silkspool/dsh/data/pipeline/{program}/coverage-latest.md`
 - 证据包: `/opt/silkspool/dsh/data/evidence/`
 - 新 IdeaCard: `/opt/silkspool/dsh/data/vulncards/ideas/`
 - 其他:

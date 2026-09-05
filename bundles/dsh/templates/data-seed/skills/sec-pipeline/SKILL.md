@@ -11,7 +11,7 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 
 `PENDING` 未测 / `TESTED_CLEAN` 已测无命中 / `CONFIRMED` 已确认 / `FALSE_POSITIVE` 证伪 / `NOT_APPLICABLE` 无攻击面 / `BLOCKED` 条件不足 / `STALE` 结论过期。
 
-- 每次探测动作落一行台账 `data/pipeline/{program}/attempts.tsv`：
+- 每次探测动作落一行台账 `data/pipeline/{program}/attempts-{program}.tsv`：
   `ts  asset  card_id  card_ver  tool  result  na_reason/blocker  evidence_path  run_id`
 - **NOT_APPLICABLE 必须填 na_reason**（no-param-surface/no-auth-feature/static-site/tech-mismatch/…），**BLOCKED 必须填 blocker**（no-credential/egress-unreachable/risk-exceeded/needs-reverse/…）。词表外新值允许，当日报告登记定义；禁止 other/misc。
 - 完成一个目标立即写一行，禁止攒批。
@@ -72,7 +72,7 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 
 ## 7. 收尾强制清单（未完成 = 任务失败）
 
-1. 本批所有目标 attempts.tsv 有终态行；2. CONFIRMED 有证据包；3. N/A、BLOCKED 有理由值；4. 当日 idea 已入库；5. handoff 生成且汇总数与台账一致。
+1. 本批所有目标 attempts-{program}.tsv 有终态行；2. CONFIRMED 有证据包；3. N/A、BLOCKED 有理由值；4. 当日 idea 已入库；5. handoff 生成且汇总数与台账一致。
 
 ## 8. 交接包（每日收尾，`data/pipeline/{program}/handoff-{date}.md`，模板见 data/templates/）
 
@@ -86,7 +86,7 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 2. `card_usage-*.jsonl` 近 24h 有记录（当日未用卡则对规程复盘落一条 deviation）；
 3. `handoff-{date}.md` 存在（北京日期）。
 
-被拦截 ≠ 失败：按缺失清单用 `attempts_log` / `card_usage_log` 补产物，再 task_update。守卫拦截本身会被记录（ops 视图可见），长期零拦截+零台账才是异常。
+被拦截 ≠ 失败：按缺失清单用 `attempts_log` / `card_usage_log` 补产物，再 task_update。守卫拦截以 `guard_blocked` + missing 清单返回（看板 ops 健康度红条可观测台账空转），长期零拦截+零台账才是异常。
 
 ## 10. 资产准入与每日 Slice（P15）
 

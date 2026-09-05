@@ -1,6 +1,6 @@
 # SilkSecAgent 系统全景文档（以运行代码为真相源）
 
-> 版本：v1.1 ｜ 快照日期：2026-09-01 ｜ 主机：csai（192.168.7.107，非特权 LXC）
+> 版本：v1.2 ｜ 快照日期：2026-09-05 ｜ 主机：csai（192.168.7.107，非特权 LXC）
 > **取证声明**：本文所有描述均基于 csai 上实际运行的代码与配置，经 `spool exec` 实测与 SilkSpool 仓库 `bundles/dsh/templates/` 源码比对；与早期设计文档冲突处，**以本文为准**。
 > 文档体系定位：`README.md` 是唯一持续推进入口（状态/待办）；本文是**系统是什么、怎么转**的完整解剖，长期有效，随大版本更新。
 
@@ -38,37 +38,40 @@
 | `silksecagent.service` | silkspool | 127.0.0.1:**3081** | DSH web 主进程。`node dsh/bin.js web --host 127.0.0.1 --port 3081`；`EnvironmentFile=/opt/silkspool/dsh/.env`（600）；`DSH_HOME=/opt/silkspool/dsh/data`；Restart=always/5s |
 | `silksecagent-edge.service` | root（CAP_NET_BIND_SERVICE） | 192.168.7.107:**3080** | Caddy 边缘反代。`header_up Host/Origin → 127.0.0.1:3081`——**绕开 DSH rc 系 loopback 特权栅栏**（特权 API 校验 Origin.host===Host.host，双改写才能过；curl 不带 Origin 会得到"已修复"假阳性）。同时 ：9223 共享浏览器入口（basicauth `silksec`，落地页 edge-static/browser.html，`/serve_rev/*` 自托管反代 chrome-devtools-frontend，其余反代 127.0.0.1:9222） |
 | `silksec-xray.service` | root | 127.0.0.1:**7777** | xray 被动扫描（pin 1.9.11，新版已变 xpoc 无被动模式）。`webscan --listen 127.0.0.1:7777 --webhook-output http://127.0.0.1:7788/xray`。ExecStartPre 把模板 xray.yaml 装到 /usr/local/bin（xray 只从可执行文件旁读主配置） |
-| `silksec-proxy-rotator.service` | — | 127.0.0.1:**8899** | mubeng 轮换网关（每请求换出口、失败自动轮换剔除） |
-| `silksec-proxy-refresh.timer/.service` | — | — | 每 30min：免费代理采集+验证+匿名度分级（proxy-scraper-checker + proxy_grade.py → pool.json/live.txt） |
-| `silksec-shared-browser.service` | — | 127.0.0.1:**9222** | 常驻 Chromium CDP（持久化 profile=登录态凭据，人机共用） |
-| `ct-watch.service` | — | — | CT 新证书雷达（certspotter API 轮询 30min，429 退避；calidog websocket 已验证不可用弃用）。命中 scope 后缀的新子域写 `data/pipeline/{program}/radar-queue.jsonl` |
-| `silksec-retention.timer` | — | — | 每日 retention.sh：flows/results 30 天清理、audit.jsonl 超 50MB 轮转 |
-| `silksec-backup.timer` | — | — | 每 6h `VACUUM INTO` 一致性快照（不阻塞在线写），保留 14 份 |
-| `silksec-intel.timer` | — | — | 每日 nuclei/afrog 模板更新 → 计数变化写 `data/intel/intel.jsonl` |
+| `silksec-proxy-rotator.service` | root | 127.0.0.1:**8899** | mubeng 轮换网关（每请求换出口、失败自动轮换剔除） |
+| `silksec-proxy-refresh.timer/.service` | root | — | 每 30min：免费代理采集+验证+匿名度分级（proxy-scraper-checker + proxy_grade.py → pool.json/live.txt） |
+| `silksec-shared-browser.service` | silkspool | 127.0.0.1:**9222** | 常驻 Chromium CDP（持久化 profile=登录态凭据，人机共用） |
+| `ct-watch.service` | silkspool | — | CT 新证书雷达：`ct-watch-all.sh` **单实例串行轮询两个 program**（bytedance 19 后缀 + meituan-src 10 后缀，防 certspotter 限流；certspotter API 30min，429 退避；calidog websocket 已验证不可用弃用）。命中 scope 后缀的新子域写 `data/pipeline/{program}/radar-queue.jsonl` |
+| `silksec-retention.timer` | — | — | 每日 retention.sh：flows/results 30 天清理、audit.jsonl 超 50MB 轮转、**datasnap 快照与 import-staging 目录 90 天兜底清理（v4.5）** |
+| `silksec-backup.timer` | — | — | 每 6h `VACUUM INTO` 一致性快照（不阻塞在线写，失败回退 `.backup`；可选 `SEC_BACKUP_REMOTE` rsync 推集中存储），保留 14 份 |
+| `silksec-intel.timer` | — | — | 每日 nuclei 模板更新 → 计数变化写 `data/intel/intel.jsonl`（afrog 已于 2026-09-04 摘除——3.x 本地无模板库且 `-up` flag 不存在，属 G7 根因修复） |
 | `interactsh.service`（**未装**） | — | :53/:8088 | OOB 带外服务器。二进制已部署 `/opt/silkspool/dsh/oob/`，unit 模板 `interactsh.service.prepared` 带占位符 `OOB_DOMAIN_TBD`——**阻塞在公网 NS 委派**（`ns1.oob.singll.net A → 141.11.43.99` + `oob.singll.net NS`，须域名服务商操作，spool dns 只管内网解析） |
 
 ### 1.2 目录布局（/opt/silkspool/dsh/）
 
 ```
-app/                        DSH npm 应用（pnpm；pin 0.1.1-rc.2，dsh-upgrade.sh 管理）
+app/                        DSH npm 应用（pnpm；pin 0.1.2-rc.1，2026-09-04 升级，dsh-upgrade.sh 管理；0.1.3-alpha.1 暂不升）
+.env                        供应商 API key（600；在 BASE_DIR 根，非 data/ 下；systemd 注入；settings 只写 apiKeyEnv 引用）
 data/  ← DSH_HOME           一切运行时数据（spool sync 管理其中 scope.yml/.env 镜像等）
   asset-graph.db(+wal/shm)  领域数据库（node:sqlite，WAL，busy_timeout 5s）
   scope.yml                 授权白名单（唯一权威，fail-closed）
   settings.yaml             模型配置（llm-pi-ai providers / 默认模型 / 默认 preset；默认路由必须经 Bellkeeper）
-  cordis.patch.yml          本地覆盖层（auth-gate/browser 路径/model-failover）
-  .env                      供应商 API key（600；systemd 注入；settings 只写 apiKeyEnv 引用）
+  cordis.patch.yml          本地覆盖层（auth-gate / connection BrowserAuth cookieMaxAgeDays 365 / browser 路径 / model-failover 四段）
+  .credentials.yaml         DSH 0.1.2 原生 BrowserAuth 签名 cookie 凭据（0.1.2 引入）
   profiles/{web,headless}/  两个 profile 的 package.json（bundle 组合清单）
   plugins/sec-suite/ 等     自研插件组装产物（setup 脚本从 BASE_DIR 模板复制）
-  tools.d/*.yaml            CLI 工具 manifest（32 个，含 1 个备份残留待清理）
-  skills/<name>/SKILL.md    7 个技能 + rules/{web,php,src}/*.md 规则先验层
+  tools.d/*.yaml            CLI 工具 manifest（31 个，含 echo-test 自检工具）
+  skills/<name>/SKILL.md    7 个技能 + rules/{web,php,src,srcskill,techniques}/*.md 规则先验层 56 篇
   .agent-presets/<role>/    7 个角色 preset（persona 文本 + agent 面插件行）
-  AGENTS.md                 memcore 受管区块自动生成（Top 卡/env-issue/纪律）
+  AGENTS.md                 memcore 受管区块自动生成（Top 卡/env-issue/纪律/检索三步）
   vulncards/                18 张漏洞卡 + ideas/ + registry.md
   pipeline/{program}/       每项目台账/接口面/雷达队列/交接包
   results/<run_id>/         每次 run_cli/spawn_worker 全量落盘
   flows/                    xray webhook JSONL（只有统计计数，无请求内容——已核实，参数面以 l2-collect 为准）
   reports/ report_build 产物 + submissions/ 提交草稿
   evidence/<finding_id>/    证据包（request/response/reproduce/falsification/verify-log）
+  dsh-bill/                 token 成本台账（records.jsonl/rollup.json）
+  auth/users.yaml templates/(brief/handoff) run-targets.txt vault-export-cards/ memcore-sweep.log
   knowledge/ imports/ intel/ eval/ backups/ vault-export/ vault-import/ storages/ sessions/
 scripts/pipeline/           管线脚本（l2-collect/ct-watch/js-watch/grade-assets/data-quality/…）
 oob/                        interactsh-server 二进制（待 DNS）
@@ -82,7 +85,7 @@ edge-Caddyfile              边缘反代配置
 
 ## 二、DSH 底座：组合架构与利用面
 
-DSH（@deepseek-ai/dsh 0.1.1-rc.2）是 cordis（依赖注入容器）架构的 AI agent 平台。本平台对它的利用全部经过实测验证：
+DSH（@deepseek-ai/dsh 0.1.2-rc.1）是 cordis（依赖注入容器）架构的 AI agent 平台。本平台对它的利用全部经过实测验证：
 
 ### 2.1 Profile 组合（data/profiles/*/package.json）
 
@@ -100,7 +103,7 @@ DSH（@deepseek-ai/dsh 0.1.1-rc.2）是 cordis（依赖注入容器）架构的 
 3. **loopback 特权栅栏**：特权 API 钉死 loopback + 校验 Origin → 边缘 Caddy 同步改写 Host 和 Origin；站点地址不匹配 Host 会静默回空 200（通配站点 `http://:3080` 解决）。
 4. **workspaceRegistry / sessionPersistence**（web 面）：工作区注册表与会话头部投影，注入给 sec-suite 做 Program↔Workspace 配对、会话归组 reconcile（cwd 匹配 attachSession）、看板跳链。
 5. **`exec.agent.id`（ToolRunContext）**：工具执行回调第二参携带会话 id——run→session 映射的捕获点；headless 面无此服务时 inject 回调不触发，自然降级。
-6. **spawn_worker 复用 headless profile**：`node dsh --profile headless <task>` 子进程（detached 自成进程组，超时 kill 整组）；会话 header.cwd=工作区路径 → workspaceRegistry 自动归组。
+6. **spawn_worker 复用 headless profile**：`node dsh --profile headless <task>` 子进程（detached 自成进程组，超时 kill 整组）；支持**任务级模型覆盖**（P18）：provider/model 参数经 `--patch` 写 model-patch.yml 注入子进程，不受默认路由约束；会话 header.cwd=工作区路径 → workspaceRegistry 自动归组。
 7. **RPC 通道**：`connection.rpc.handle('/silksec-dashboard', handler, { authority: 'loopback' })`；connection 服务启动期会短暂重配（re-provide），用 module 级幂等守卫防重复注册。
 
 ---
@@ -109,7 +112,7 @@ DSH（@deepseek-ai/dsh 0.1.1-rc.2）是 cordis（依赖注入容器）架构的 
 
 ### 3.1 供应商与默认模型（settings.yaml，模板受控 + spool bundle dsh setup 覆盖）
 
-- **唯一生产路由**：`bellkeeper`（Bellkeeper LLM 网关 OpenAI 兼容端点 `http://192.168.7.230:8090/api/llm/v1`），默认模型 `pool-secagent`，让 Bellkeeper 统一调度 SenseNova / DeepSeek 官方 / OpenCode Go 兜底。
+- **唯一生产路由**：`bellkeeper`（Bellkeeper LLM 网关 OpenAI 兼容端点 `http://192.168.7.230:8090/api/llm/v1`），默认模型 `pool-secagent`，让 Bellkeeper 统一调度 SenseNova / DeepSeek 官方 / OpenCode Go 兜底；models 另备 `deepseek-v4-flash` / `glm-5.2`，默认 `reasoningEffort: max`；provider 带 retryPolicy（maxRetries 5、六类 retryableCodes、退避 2s~60s，2026-09-03 #19/#37 任务中断后加）。
 - **应急直连**：`deepseek`（官方直连 api.deepseek.com）、`opencode-go`（OpenCode Go 套餐）仅在 Bellkeeper 网关不可用时手动切回。
 - key 零明文：`settings.yaml` 只写 `apiKeyEnv`，真值在 `.env`（600，systemd EnvironmentFile 注入）。
 - **纪律**：默认 provider 必须是 `bellkeeper`；data-quality 每日校验；变更须同步模板 `bundles/dsh/templates/settings.yaml`。
@@ -119,7 +122,7 @@ DSH（@deepseek-ai/dsh 0.1.1-rc.2）是 cordis（依赖注入容器）架构的 
 
 - fallbacks 顺序：`bellkeeper/pool-secagent` → `deepseek/deepseek-v4-flash`（网关自身失败时）
 - 触发码：RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT/QUOTA/EMPTY_RESPONSE；模型级阈值 1 次失败熔断 60s（探针恢复）；平台级阈值 1；burst 窗口 5min；`stripReasoningEffort` + 切换时 `notifyUser`
-- headless worker 侧由 headless-failover-setup.sh 软链共享同一覆盖层（2026-08-24 线上修复固化）
+- headless worker 侧由 headless-failover-setup.sh 软链共享 **node_modules**（failover 插件本体）；cordis.patch.yml 是独立文件（内容与 web 覆盖层 model-failover 段一致，由 spool sync 单独管理 `hosts/csai/dsh/headless.cordis.patch.yml`，setup 仅在缺失时写默认不覆盖 sync 版本）（2026-08-24 线上修复固化）
 - 已知边界：LLM 流式偶发挂起 failover 不认（只认显式失败）→ headless 进程可能空转不退出，靠 worker 超时组杀兜底
 
 ### 3.3 成本核算
@@ -135,14 +138,14 @@ dsh-bill 0.13.1 token 账本（session_projcache 里有 billTurns 逐轮 model/p
 ### 4.1 sec-suite（@silksec/sec-suite，8 文件）
 
 ```
-index.js(1635) 主文件：scope-guard / run_cli / spawn_worker / authz_diff / intel_hunt / 工具注册（含 approval_request）/ RPC 挂载
-asset-db.js(1856)      存储层：全表 DDL+迁移 / 领域 CRUD / 调度 SQL / 守卫 / opsHealth / submissionDraft / 统一审批 DAO
-asset-graph.js(627)    模型工具面：33 个领域工具注册
-scheduler.js(197)      调度循环（文件锁单例）
-webhook.js(49)         xray webhook 接收器
-dashboard-rpc.js(506)  看板 RPC 端点分发（49 case）+ planChain/taskChain
-experience.js(747)     经验卡/知识库/playbook + FTS5 + 向量
-parsers.js(175)        解析器注册表
+index.js(1931) 主文件：scope-guard / run_cli / spawn_worker / authz_diff / intel_hunt / 工具注册（含 approval_request）/ RPC 挂载
+asset-db.js(1865)      存储层：全表 DDL+迁移 / 领域 CRUD / 调度 SQL / 守卫 / opsHealth / submissionDraft / 统一审批 DAO
+asset-graph.js(763)    模型工具面：38 个领域工具注册
+scheduler.js(280)      调度循环（文件锁单例）
+webhook.js(53)         xray webhook 接收器
+dashboard-rpc.js(559)  看板 RPC 端点分发（52 case）+ planChain/taskChain
+experience.js(906)     经验卡/知识库/playbook（v4.6 合并①兼容入口）+ FTS5 + 向量 + curated 索引
+parsers.js(172)        解析器注册表
 ```
 
 #### 4.1.1 scope-guard（授权硬校验链，run_cli 前置）
@@ -204,7 +207,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 - **噪声闸门**（addFinding）：severity=info → `noise=1`，指纹弱化为 sha1(host|title)（同模板同目标只留一行，URL 变体不增殖）；全部查询/报告/KPI 默认 `noise=0`（include_noise 显式查看）；存量 info 一次性回填（314 条）
 - **完整性闸门**（addFinding，v4.2）：缺复现步骤/影响或标题<10 字符的登记一律 `noise=1` 归「待验证候选」——机器直灌（xray-webhook/authz_diff 启发式）不再冒充漏洞信号；弱指纹命中后补全字段重新 finding_add 会 UPDATE 原行摘噪声帽（就地升级，不另起行）。漏洞信号面行数与总数同一口径（queryFindings/countFindings 同走 findingWhere）
 - **事实口径对齐**（v4.3）：countFacts 与 factSearch 同一可见域谓词（archived/timeline/过期 ephemeral 排除）；factStats 增 by_mem_class/by_status（memcore 缺席 fail-open 回退空数组）
-- **opsHealth()**：五指标（台账日增量/卡使用 7d/交接包 7d/IdeaCard 数/调度漂移+task_runs 新鲜度）+ 告警列表；看板 `ops` RPC 端点 + 健康度红条横幅；discipline-audit.py 为 CLI 等价面
+- **opsHealth()**：五指标（台账日增量/卡使用 7d/交接包 7d/IdeaCard 数/调度漂移+task_runs 新鲜度）+ findings_noise/assets_ungraded 计数 + 告警列表；看板 `ops` RPC 端点 + 健康度红条横幅；discipline-audit.py 为 CLI 等价面
 - **submissionDraft**：finding → 平台提交草稿 md（漏洞类型/等级自评/复现步骤/证据/修复建议/同目标同类型查重列表）落 `reports/submissions/`；人工审校后提交并 `finding_update status=submitted`
 
 #### 4.1.6 experience.js（语义层记忆）
@@ -213,8 +216,8 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 - **exp_search**：FTS5 MATCH + 逐词 LIKE 兜底（unicode61 对中英混排整串成词）+ 向量余弦 ≥0.55 融合；rank = fts×10 + 向量×20 + source×3 + confidence + score×2；candidate×0.5、cooling×0.7 降权；archived/timeline/expired 不可见（visibilityFilter）；**返回即 recordSignal(searched)**（uses+1）
 - **exp_feedback**：useful/adopted/wrong/outdated 四信号（用完卡必须回执——不回执的卡会被判零使用沉没）；wrong/outdated → neg_fb+1，≥3 自动 cooling
 - **exp_validate**：cooling 卡复验通过自动复活 active（用到即复验）
-- **kb_import/kb_search**：外部知识 durable 90d；**taintguard 等价**：7 条 prompt-injection 正则扫描 → tainted 标记（检索返回带标志，视作不可信输入）；向量召回零关键词重叠命中
-- **pb_save/pb_outcome/pb_rank**：playbook = name+chain；每次 run_cli 自动 pb_outcome（runs/successes/EWMA 耗时）；rank=成功率×时间衰减（-2%/天，下限 0.3）
+- **pb_save/pb_outcome/pb_rank**（v4.6 合并①后为**兼容入口**）：playbook 已并入 exp_cards（kind=playbook + runs/successes 列，存量 28 条已迁、playbooks 表清空成空壳）；pb_save 写 kind=playbook 卡、pb_outcome 无卡自动建卡（runs/successes/EWMA 统计打点）、pb_rank 改读 `exp_cards WHERE kind='playbook'`；rank=成功率×时间衰减（-2%/天，下限 0.3）。⚠️ 已知缺口：pbOutcome 的 succeeded/ran 信号未被 memcore exp_cards 分支识别（被 try/catch 静默吞掉），**低成功率自动降级链路当前失效**，待修
+- **kb_import/kb_search**：外部知识 durable 90d；**taintguard 等价**：7 条 prompt-injection 正则扫描 → tainted 标记（检索返回带标志，视作不可信输入）；向量召回零关键词重叠命中；**v4.6 合并③**：`kbIndexCuratedRules()` 启动幂等把 rules/ 56 篇建 curated 索引进 kb_docs（title 带 `curated:` 前缀、status='curated' 固定不参与复验/tainted 生命周期、检索排序 curated 优先于 external、文件删除同步清理索引行）；kb_search 结果区分 curated（人工蒸馏高置信）与 external
 - **kbVaultSync**（B4 Bellkeeper 融合方向②）：每日 rsync 拉 keeper `vault/安全/` → 新卡 kbImport（external 低置信+taintguard）；**防循环铁律**：frontmatter `source_system: silksecagent` 的卡禁止回流
 
 #### 4.1.7 其余要点
@@ -231,7 +234,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 **异步审批协议（v4.5）**：所有「运行时被硬拒绝但可人工放行」的决策点统一转化为——**同步拒绝不变（fail-closed 当场生效）+ 自动落 approval_requests（kind 专属，payload 带完整重试上下文）+ 返回 approval_hint 告知 agent 勿重试 → 批准写白名单/预算 → 下个调度周期重试自然放行**（不中断当前 run、不即时执行）。已接线两个决策点：① `tool-intrusive`——runCli 的 checkRisk needsApproval 路径（payload: tool/risk/target/脱敏 params/program；批准写项目 `rules.allow_intrusive_tools` 白名单，serializeScope/checkRisk 支持该字段，白名单按工具名匹配放行 intrusive 级）；② `task-budget-extend`——scheduler 超时分支（worker 跑满 3600s 被杀且尾部有产出迹象才提；payload: task_id/budget_timeout_sec=7200/run_id/tail；批准写 `tasks.budget_timeout_sec` 列（7200 封顶），下周期 runWorker 取 `max(默认, 该值)`）。agent 侧纪律：sec-runtime-discipline 第 13 条——遇 needs_approval/approval_hint 禁自行绕过或重试。审计全量保留（audit.jsonl deny→approve 链条）。
 
-### 4.2 sec-memcore（@silksec/sec-memcore，631 行）——记忆治理引擎
+### 4.2 sec-memcore（@silksec/sec-memcore，776 行）——记忆治理引擎
 
 **依赖反转架构**：治理插件是旁路，`ctx.provide('secMemoryLifecycle')` 五原语；存储插件（asset-db/experience）`ctx.inject(['secMemoryLifecycle'])` 可选注入——**fail-open**：缺席即透传（写入不校验/读取全量/清扫停摆，业务完全正常）+ stderr/黑板告警 + 看板横幅。自身任何异常不得拖垮宿主（apply/sweep 全 try/catch）。
 
@@ -239,24 +242,24 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 | 表 | 允许 mem_class | 入口 | 评分 | 自动晋升 | 降级 |
 |---|---|---|---|---|---|
-| blackboard | ephemeral(默认 7d)/timeline | — | 无 | — | 过期→archived；timeline 30d 归档 |
+| blackboard | ephemeral(默认 7d)/timeline | — | 无 | — | 过期→archived；timeline 30d 归档；**v4.6 守卫**：快照前缀键（alive/scan/recon/review/note:/todo/plan）自动转写 facts（bb/ 前缀 ephemeral 14d）+ 原行归档 |
 | facts | durable(默认复验 30d)/ephemeral/timeline | — | 无 | — | 逾期未复验→cooling→30d→archived（note 类 ephemeral 14d——负知识要可见，neg_check 依赖） |
-| exp_cards | permanent | **candidate** | uses/adopted/pos_fb/neg_fb/score | adopted≥2 且 neg_fb=0 且存活≥7d | uses=0>30d 或 neg_fb≥3→cooling→30d→archived |
-| playbooks | permanent | active | runs/successes | — | 成功率<30% 且 runs≥5→cooling |
-| kb_docs | durable(复验 90d) | active | uses 计数 | — | 逾期→cooling |
+| exp_cards | permanent | **candidate** | uses/adopted/pos_fb/neg_fb/score | adopted≥2 且 neg_fb=0 且存活≥7d | uses=0>30d 或 neg_fb≥3→cooling→30d→archived（v4.6 起 kind=playbook 卡同治，但成功率降级通道有缺口见 §4.1.6） |
+| playbooks（v4.6 已迁空，兼容空壳） | permanent | active | runs/successes | — | 旧策略保留为死代码，待随合并①清理 |
+| kb_docs | durable(复验默认 90d，区间 7~180d；curated 行免复验) | active | uses 计数 | — | 逾期→cooling |
 
 **五原语**：
 1. `validateWrite(table, intent)`：R1 mem_class 枚举；R2 permanent 禁直写（exp 入口 candidate）；R3 ephemeral TTL 1h~30d；R4 durable 复验 7~90d；R5/R6 语义层 justification≥10 字非占位符（工作/情景层缺省记 `auto:default`——否则内部自动写入点全被拒，实施期修正）；R7 timeline 只追加
 2. `visibilityFilter(role, rows)`：task 读隐藏 archived/timeline/已过期（过期项**惰性即时归档**），cooling/candidate 打标降权；review 全量
 3. `transition(table, id, to, reason)`：状态机唯一入口；archived = 复制进 `*_archive` 表（+archived_at/reason）+ 主表删除 + **FTS/向量索引同步清理**（exp_search Invalid time value 事故根因）；全程 memcore_events 审计
 4. `recordSignal(table, id, signal)`：信号计数→评分→自动流转。exp 评分 = `adopted×3 + pos_fb×2 + uses×0.5 − neg_fb×5 − 复验天数×0.1(帽 5)`
-5. `sweep()`：web 宿主面单例，每 6h + 启动 90s 首跑——过期降级/归档/硬删（archive 90d）/自动晋升/AGENTS.md 重写/objective lint（interval 任务 objective 里的故障词与陈旧日期命中即告警——"objective 禁止承载事实"红线的兜底）/vault 导出
+5. `sweep()`：web 宿主面单例，每 6h + 启动 90s 首跑——过期降级/归档/硬删（archive 90d）/自动晋升/AGENTS.md 重写/objective lint（interval 任务 objective 里的故障词与陈旧日期命中即告警——"objective 禁止承载事实"红线的兜底；v4.5 起排除终态任务）/vault 导出（v4.5：命中授权域的卡自动 exportable=0 永久降级，不再每 6h 刷拒绝日志；v4.5 `backfillKbRevalidate` 把同日到期的 kb_docs 散列抖动到 90d±15d 防集体塌方）/黑板快照守卫（v4.6 合并②，见策略表）
 
 **AGENTS.md 受管区块**（`<!-- memcore:begin/end -->` 标记内引擎独占）：Top5 高分卡摘要 + 现行 [env-issue] 清单 + 记忆三问纪律——每个 worker 开局读工作区 AGENTS.md 即获得记忆上下文，**不依赖复盘任务存活**（容错托底）。
 
 **vault 导出桥**（方向①）：只导出 `permanent+active+exportable=1`（**默认 0 fail-closed**）；导出前过**授权域脱敏硬门**（scope.yml 提取的域名出现在卡文本 → 拒绝导出+日志）；tombstone 同步（弃置卡从 vault 移除）；rsync 推 keeper `vault/安全经验/SilkSecAgent/经验卡/`（csai 非特权 LXC 不能挂 NFS，走 keeper 中继）。暂存目录为**独立的** `data/vault-export-cards/`（只放散卡 md）——不能复用 `data/vault-export/`（那里还有 vault-export-build.sh 产出的 SilkSecAgent 整树，整目录 rsync 会把树误推进 经验卡/，2026-09-04 修复）。
 
-### 4.3 sec-pipeline（@silksec/dsh-sec-pipeline，465 行）——纪律工具化
+### 4.3 sec-pipeline（@silksec/dsh-sec-pipeline，467 行）——纪律工具化
 
 8 个原生工具（写入即校验，替代裸脚本；旧脚本进退役观察期）：
 
@@ -273,8 +276,8 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 ### 4.4 sec-dashboard + theme-silksong（UI 面）
 
-- **客户端**（client.js，ModuleLoader bundle）：全局侧边栏入口 → Modal **十视图**：漏洞/资产/接口/事实/任务/知识/报告/审批/授权/审计；服务端分页/搜索/筛选 + 30s 轮询；顶部 stats KPI + **memcore 缺席横幅 + ops 健康度红条**（P15）；任务视图三分区（定时任务卡片/一次性队列/执行历史）+ 工作区区块（program 徽章+计数+会话跳链 `ctx.sessions.open`）；知识 tab=memcore 状态机的 UI（评分/晋升/编辑/弃置/回执/exportable 开关/playbooks）+ 静态先验 rules 分区（rulesList 树+rulesRead 只读查看，修改走 seed-skills.sh）；授权 tab=scope.yml 管理表单（顶部跳转条指向待审批候选）；报告 tab=按项目分组列表（项目/关键字筛选）+ Modal 查看器；审批 tab=统一审批中心（pending 在前/类型徽章/判据 chip（equity_basis+independent_src，独立SRC=有 标警色）/旁证行/批准/驳回/历史折叠/待审批数进 tab 徽章）。漏洞列表默认只呈现信号面（noise=0），「待验证候选」chip 可点筛选、已定案行紧凑化；事实视图默认隐藏 note 工作速记（开关展开）+ 生命周期 facet。信息架构纪律：**行只放摘要+跳链，详情一律回会话看**。
-- **宿主半面**：`/silksec-dashboard` RPC（authority=loopback），47 个 case（读：stats/ops/assets/assetDetail/assetFamily/assetOverview/endpoints/endpointHosts/blackboard/findings/facts/factStats/factGraph/findingGet/tasks/taskRuns/scheduledTasks/workspaces/sessions/programs/scopeList/memcore/expCards/playbooks/reports/reportRead/audit/evalStats/approvalList；写：findingUpdate/factCorrect/factDeprecate/taskCreate/taskRunNow/taskCancel/taskSetStatus/taskScheduleUpdate/scopeSaveProgram/scopeDeleteProgram/programBindWorkspace/expFeedback/expPromote/expDeprecate/expUpdate/expExportable/reportBuild/approvalDecide）——全部复用 assetDb/experience 同一函数（一份校验、一条 audit）。
+- **客户端**（client.js，ModuleLoader bundle）：全局侧边栏入口 → Modal **十视图**：漏洞/资产/接口/事实/任务/知识/报告/审批/授权/审计；服务端分页/搜索/筛选 + 30s 轮询；顶部 stats KPI + **memcore 缺席横幅 + ops 健康度红条**（P15）；任务视图三分区（定时任务卡片/一次性队列/执行历史）+ 工作区区块（program 徽章+计数+会话跳链 `ctx.sessions.open`）；知识 tab **v4.6 重设计**：顶部六类型知识全景图（经验/事实/文献/规程/任务内/环境——一类一位一工具 + 开局三步检索顺序）+ KbSection 文献浏览（kbList curated/external 混排 + kbRead 正文 Modal）+ 事实分类概览（factOverview）+ 经验卡表 kind 徽标（playbooks 区改只读 exp_cards kind=playbook 视图）+ 静态先验 rules 分区（rulesList 树+rulesRead 只读查看，修改走 seed-skills.sh）；授权 tab=scope.yml 管理表单（顶部跳转条指向待审批候选）；报告 tab=按项目分组列表（项目/关键字筛选）+ Modal 查看器；审批 tab=统一审批中心（pending 在前/类型徽章/判据 chip（equity_basis+independent_src，独立SRC=有 标警色）/旁证行/批准/驳回/历史折叠/待审批数进 tab 徽章；列表支持 kind/status 筛选）。漏洞列表默认只呈现信号面（noise=0），「待验证候选」chip 可点筛选、已定案行紧凑化；事实视图默认隐藏 note 工作速记（开关展开）+ 生命周期 facet。信息架构纪律：**行只放摘要+跳链，详情一律回会话看**。
+- **宿主半面**：`/silksec-dashboard` RPC（authority=loopback），52 个 case（读：stats/ops/assets/assetDetail/assetFamily/assetOverview/endpoints/endpointHosts/blackboard/findings/facts/factStats/factGraph/factOverview/findingGet/tasks/taskRuns/scheduledTasks/workspaces/sessions/programs/scopeList/memcore/expCards/playbooks/kbList/kbRead/reports/reportRead/audit/evalStats/approvalList/rulesList/rulesRead；写：findingUpdate/factCorrect/factDeprecate/taskCreate/taskRunNow/taskCancel/taskSetStatus/taskScheduleUpdate/scopeSaveProgram/scopeDeleteProgram/programBindWorkspace/expFeedback/expPromote/expDeprecate/expUpdate/expExportable/reportBuild/approvalDecide）——全部复用 assetDb/experience 同一函数（一份校验、一条 audit）。
 - **theme-silksong**：丝之歌全局深色主题（DSH theme registry 注册 tokens，Pharloom 墨青底+Hornet 绯红行动色）；severity 五色经 theme/change 事件注入 style（registry 白名单外）；localStorage 持久化用户选择，首装默认启用。
 
 ### 4.5 proxy-pool（@silksec/dsh-proxy-pool，300 行）
@@ -283,7 +286,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 ### 4.6 dsh-browser fork（@silksec/dsh-browser）
 
-上游 wqty123/dsh-browser@0.1.0 不支持 proxy → sec-browser-plugin-setup.sh 构建时把上游包复制为 @silksec tarball 并 **patch 注入 `chromium.launch({ proxy: process.env.SEC_FLOW_PROXY })`**。运行链：共享浏览器/会话浏览器 → `SEC_FLOW_PROXY=http://127.0.0.1:7777`（xray 被动总线）→ xray webhook → findings；浏览器出口再由 xray 出站配置走 8899。CDP 9222 常驻 + 持久 profile = 登录态人机共用（H-002 到位后的登录态承载面）。browser 配置的 executablePath 指向 playwright chromium（cordis.patch.yml 覆盖层）。
+上游 wqty123/dsh-browser@0.1.0 不支持 proxy → sec-browser-plugin-setup.sh 构建时把上游包复制为 @silksec tarball 并 **patch 注入 `chromium.launch({ proxy: process.env.SEC_FLOW_PROXY ? { server: ... } : undefined })`**。运行链：共享浏览器/会话浏览器 → `SEC_FLOW_PROXY=http://127.0.0.1:7777`（xray 被动总线）→ xray webhook → findings；浏览器出口再由 xray 出站配置走 8899。CDP 9222 常驻 + 持久 profile = 登录态人机共用（H-002 到位后的登录态承载面）。browser 覆盖层只做 id 覆盖（`@silksec/dsh-browser`），executablePath 等运行时配置在 profile 配置里。
 
 ---
 
@@ -291,9 +294,9 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 ### 5.1 asset-graph.db 表清单（node:sqlite 单文件，WAL）
 
-**领域表**：assets（host,type 主键；program_id/score/level/accept/biz/state P13 评级列）、endpoints（host,method,path 主键；params/auth_required/roles_seen 越权矩阵列）、findings（fingerprint UNIQUE；vuln_type/cwe/endpoint_ref/preconditions/reproduction_steps/impact/recommendation 提交模板列；session_id 跳链；**noise P15**；**confidence/fgs_node_id/discovery_step P17**；bounty/vendor_status/submitted_at SRC 运营列）、programs（scope.yml 镜像 + workspace_id/path 绑定 + status archived）、tasks（program_id/phase/objective/status/priority/budget + schedule_kind/run_at/every_seconds/next_run_at/last_run_at/last_run_id + session_id/blocked_reason/result；**P18 新增 provider/model/reasoning_effort 任务级模型覆盖**）、task_runs（执行历史，每任务保留 200 行，session_id）、blackboard（**timeline/ephemeral 兼容层**，memcore 治理下 active 写入；日更 alive/recon/scan 键 7d 滚动，env-issue 修复后清理）、facts（program_id+fact_key 主键；summary 注入 prompt 索引 + body 全文；confidence；**memcore 生命周期列**）、fact_edges（src/dst/edge_type：resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits）、**fgs_nodes（P17 Cairn_Y FGS 图：task_id/run_id/type/status/content/json score/parent_id/depends_on）**、fingerprints（host+tech 主键）、credentials（ref 引用非明文）、workers（spawn_worker 注册表：pid/status/exit/run_dir/dedupe_key）、**approval_requests（v4.3 统一审批，见下）**。
+**领域表**：assets（host,type 主键；program_id/score/level/accept/biz/state P13 评级列 + root 冗余列（v4.1 域名族/网段聚合索引））、endpoints（host,method,path 主键；params/auth_required/roles_seen 越权矩阵列）、findings（fingerprint UNIQUE；vuln_type/cwe/endpoint_ref/preconditions/reproduction_steps/impact/recommendation 提交模板列；session_id 跳链；**noise P15**；**confidence/fgs_node_id/discovery_step P17**；bounty/vendor_status/submitted_at SRC 运营列）、programs（scope.yml 镜像 + workspace_id/path 绑定 + status archived）、tasks（program_id/phase/objective/status/priority/budget + schedule_kind/run_at/every_seconds/next_run_at/last_run_at/last_run_id + session_id/blocked_reason/result + **budget_timeout_sec（v4.5 任务预算覆盖，task-budget-extend 批准落点）** + **P18 新增 provider/model/reasoning_effort 任务级模型覆盖**）、task_runs（执行历史，每任务保留 200 行，session_id）、blackboard（**v4.6 收窄为环境层**：[env-issue]/[timeline]/全局广播；原业务快照键 26 条已迁 facts（program_id=`__legacy__`，fact_key=`bb/{原键}`，ephemeral 14d 自然消亡），sweep 守卫自动转写新快照键防回潮——⚠️ 已知缺口：守卫正则要求前缀后跟 `:` 或 `_`，单冒号 `note:xxx` 键未匹配，尚有 12 条 note: 工作记录键留在黑板）、facts（program_id+fact_key 主键；summary 注入 prompt 索引 + body 全文；confidence；**memcore 生命周期列**）、fact_edges（src/dst/edge_type：resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits）、**fgs_nodes（P17 Cairn_Y FGS 图：task_id/run_id/type/status/content/json score/parent_id/depends_on）**、fingerprints（host+tech 主键）、credentials（ref 引用非明文）、workers（spawn_worker 注册表：pid/status/exit/run_dir/dedupe_key）、**approval_requests（v4.3 统一审批，见下）**。
 
-**语义层表**（experience.js 建）：exp_cards（scenario UNIQUE/takeaway/chain/attempts/evidence/source/confidence + memcore 评分列 + exportable）、exp_fts（FTS5 external content）、kb_docs（title/file/source_url/tainted）、kb_fts、playbooks（name 主键/runs/successes/avg_duration_ms）、exp_embeddings/kb_embeddings（384 维 e5 向量 JSON）。
+**语义层表**（experience.js 建）：exp_cards（scenario UNIQUE/takeaway/chain/attempts/evidence/source/confidence + **v4.6 新增 kind/runs/successes（kind=playbook 承接合并①，28 张打法卡）** + memcore 评分列 + exportable）、exp_fts（FTS5 external content）、kb_docs（title/file/source_url/tainted + memcore 生命周期/使用列 mem_class/status（**v4.6 含 curated**）/uses/revalidate_by/last_used_at；curated 行免复验）、kb_fts、playbooks（**v4.6 已迁空，兼容空壳**——pb_save/pb_outcome/pb_rank 为兼容入口）、exp_embeddings/kb_embeddings（384 维 e5 向量 JSON）。FTS/向量索引维护：curated 刷新走 DELETE+INSERT（FTS5 虚表不支持 UPSERT）；归档时同步 DELETE 四索引防外部内容残留命中空行。
 
 **治理表**（memcore 建）：每表对应 `*_archive`（同构+archived_at/archive_reason，90 天硬删）、memcore_meta（迁移旗标）、memcore_events（全流转审计）。
 
@@ -304,14 +307,15 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 **Task**：
 ```
 queued ──调度认领(事务)──▶ running ──收尾──▶ interval: queued（latest-only 续期）｜ once: done/failed
+running ──失败──▶ interval: queued（失败快速重试：2h 内重试一次，不越过下一标称格点，成功自动回原节律）｜ once: failed
 queued ──task_run_now──▶ next_run_at=now（立即触发不动节律）
 queued ──task_update(blocked)──▶ blocked（HITL 暂停；看板手动恢复→queued）
 running ──reap(宽限=超时+15min，活 worker 跳过)──▶ interval: queued / once: failed（reason=宿主重启/超时回收）
 任意 ──task_update(cancelled)──▶ cancelled
-queued --标 done 时--> 流程守卫拦截点（台账/卡/交接包三查，缺则拒绝并返回清单；**当前守卫不校验最近一次 task_run 的 ok 字段，失败 run 需在 ops 健康度/看板红条中人工关注**）
+queued --标 done 时--> 流程守卫拦截点（台账/卡/交接包三查，缺则拒绝并返回清单；**作用域限 schedule_kind='interval' 且 data/pipeline/{program}/ 存在的任务**——无管线目录的任务不拦；**当前守卫不校验最近一次 task_run 的 ok 字段，失败 run 需在 ops 健康度/看板红条中人工关注**）
 ```
-**Finding**：`new → confirmed / false_positive / dup / ignored → submitted → accepted`（finding_update + note 追加证据链；dashboard 打标同通道； CONFIRMED 须 verify_replay 机械复核 + 证据包）；`noise=1` 与信号面隔离（非状态而是可见性维度）。
-**FGS 节点（P17）**：`open ──fgs_next 取 ready──▶ running ──fgs_update──▶ done / failed / blocked`；`fact/goal/step/finding` 四类节点，依赖满足后 step 才 ready；任务收尾时 `appendFgsToHandoff` 自动把决策链摘要追加进 handoff。
+**Finding**：`new → confirmed / false_positive / dup / ignored → submitted → accepted`（finding_update + note 追加证据链；dashboard 打标同通道； CONFIRMED 须 verify_replay 机械复核 + 证据包；updateFinding 只校验枚举不校验流转顺序）；confirmed/false_positive/dup 判定同步写 confidence 列、联动 FGS 节点（误报/重复→deprecated）、自动回流 eval-live.jsonl 活评测集（P9）；`noise=1` 与信号面隔离（非状态而是可见性维度）。
+**FGS 节点（P17）**：`open ──fgs_next 取 ready──▶ running ──fgs_update──▶ done / failed / blocked`（枚举另含 **deprecated**——finding 打 false_positive/dup/ignored 时落点）；`fact/goal/step/finding` 四类节点，依赖满足后 step 才 ready；任务启动 fgsClearTask 清旧图；任务收尾时 `appendFgsToHandoff` 自动把决策链摘要追加进 handoff。
 **exp_cards**：`candidate ──(复盘评审 promote ｜ 自动晋升 adopted≥2∧neg=0∧≥7d)──▶ active ──(neg_fb≥3 ｜ uses=0>30d)──▶ cooling ──(用到即复验 validated=复活 active)──(30d)──▶ archived ──(90d)──▶ 硬删`。
 **facts**：`active(durable, revalidate_by) ──逾期──▶ cooling ──复验刷新=复活──(30d)──▶ archived`；ephemeral 过期即 archived（读取路径惰性降级）。
 **playbooks**：`active ──(成功率<30% ∧ runs≥5)──▶ cooling`。
@@ -325,11 +329,11 @@ queued --标 done 时--> 流程守卫拦截点（台账/卡/交接包三查，�
 | 存储点 | 位置 | 谁写 | 谁读 | 自进化 |
 |---|---|---|---|---|
 | 经验卡 exp_cards | asset-graph.db | exp_store/idea（candidate 起步） | exp_search、AGENTS.md Top5 注入 | ✅ score/adopted/晋升/降级（memcore sweep + 复盘通道） |
-| 打法链 playbooks | asset-graph.db（**v4.6 已并入 exp_cards，kind=playbook**） | pb_save（兼容入口）/pb_outcome 打点 | exp_search（统一检索） | ✅ 成功率降级走 exp 卡治理 |
+| 打法链 playbooks | asset-graph.db（**v4.6 已并入 exp_cards，kind=playbook**；playbooks 表迁空成空壳） | pb_save（兼容入口）/pb_outcome 打点 | exp_search（统一检索） | ⚠️ 降级通道有缺口：pb_outcome 的 succeeded/ran 信号未被 memcore 识别（静默失败），低成功率自动降级待修；exp 卡常规治理（零使用/neg_fb）仍生效 |
 | 知识库 kb_docs | asset-graph.db + data/knowledge/*.md + **rules/ 56 篇（v4.6 curated 索引，文件不动）** | kb_import、vault 回流（每日 05:00 kbVaultSync）、seed-skills.sh（curated） | kb_search（FTS+向量，v4.5 起调度任务 prompt 注入检索指令，v4.6 curated 排序在前） | ⚠️ 半进化：uses/复验字段齐但消费端 2026-09-05 前未接通（268/278 零使用）；revalidate ±15 天抖动防集体到期塌方；curated 行无复验（人工治理域） |
 | 事实 facts | asset-graph.db | fact_upsert + **v4.5 FGS 沉淀钩子**（fgs/{task_id}/{node_id}） | fact_search/摘要注入/neg_check 派单拦截 | ✅ durable 复验/cooling/归档/负知识 note 速记 14d |
 | 黑板 blackboard | asset-graph.db（**v4.6 回归纯环境层**） | blackboard_set（仅 env-issue/timeline/全局广播；快照前缀被 sweep 守卫自动转 facts） | blackboard_get（[env-issue] 查询） | ✅ ephemeral TTL/timeline 30d 归档 + 守卫转写 |
-| FGS 图 fgs_nodes | asset-graph.db | fgs_add（任务运行时） | fgs_next/export、看板 | ⚠️ 半进化：任务结束节点沉睡，**v4.5 fact 节点 done 自动沉淀 facts**（跨任务出口） |
+| FGS 图 fgs_nodes | asset-graph.db | fgs_add（任务运行时） | fgs_next/export、看板 | ⚠️ 半进化：任务结束节点沉睡，v4.5 fact 节点 done 自动沉淀 facts 钩子已接线但当前产出 0 条（fgs_nodes 39 个节点无一沉淀成功，跨任务出口机制在、产出为零——待 T-15 验收排查） |
 | VulnCard 漏洞卡 | data/vulncards/*.yaml | 人工+卡片升版（deviation 建议） | vuln 任务规程 | ⚠️ 半进化：card_usage deviation 反哺但升版靠人工（P2 纪律，刻意） |
 | 静态先验 rules | data/rules/{src,srcskill,techniques,web,php} 56 篇 | 人工蒸馏（agent 只提议不落盘） | 知识 tab 只读、技术栈命中时读入 | ❌ 纯静态（by design） |
 | AGENTS.md 受管区块 | data/AGENTS.md | memcore 每 sweep 重写 | 每个 worker 开局 | ✅ Top5 卡+env-issue+检索建议实时投影 |
@@ -346,7 +350,7 @@ queued --标 done 时--> 流程守卫拦截点（台账/卡/交接包三查，�
 | 类型 | 唯一位置 | 唯一工具 | 归一操作 |
 |---|---|---|---|
 | 经验类 | exp_cards 表 | exp_search | ⬅ playbooks 并入（kind=playbook） |
-| 事实类 | facts 表 | fact_search | ⬅ 黑板快照键迁入（41 条，sweep 守卫防回潮） |
+| 事实类 | facts 表 | fact_search | ⬅ 黑板快照键迁入（26 条，program_id=`__legacy__`/fact_key=`bb/{键}`/ephemeral 14d，sweep 守卫防回潮——⚠️ 单冒号 note: 键未匹配正则，尚有 12 条留在黑板） |
 | 文献类 | kb_docs 索引 | kb_search | ⬅ rules 56 篇建 curated 索引（文件不动） |
 | 规程类 | vulncards + rules/src | 按指纹读卡 | 不动（by design） |
 | 任务内类 | fgs_nodes | fgs_next | 不动（任务生命周期语义） |
@@ -393,8 +397,8 @@ verify：verify.must_pass 全过 + falsification 逐项排除 + 对抗性自检�
 
 ### 6.3 每日链与周复盘（调度实体）
 
-- **#16/#17 recon（北京 03:00，字节/美团）**：radar 全清 → 存量复核+新子域探活分级 → 台账逐动作落行 → 蒸馏 → handoff → done（守卫）
-- **#18/#19 vuln（北京 04:00）**：消化覆盖矩阵 top-10 BLOCKED/PENDING 格子（Slice 硬指标，完成即达标）→ param-queue 增量喂 dalfox/arjun → 疑似即 finding_add → CONFIRMED 走 verify_replay+submission_draft → 剩余时间研究模式产 IdeaCard → handoff → done（守卫）
+- **#16/#17 recon（北京 03:00/03:10，字节/美团）**：radar 全清 → 存量复核+新子域探活分级 → 台账逐动作落行 → 蒸馏 → handoff → done（守卫）
+- **#19/#37 vuln（北京 04:00/03:40，字节/美团）**：消化覆盖矩阵 top-10 BLOCKED/PENDING 格子（Slice 硬指标，完成即达标）→ param-queue 增量喂 dalfox/arjun → 疑似即 finding_add → CONFIRMED 走 verify_replay+submission_draft → 剩余时间研究模式产 IdeaCard → handoff → done（守卫）。注：美团原 vuln 任务 #18 已于 2026-08-31 终态 done，由 #37（03:40 锚点）接替
 - **#24 周复盘（周日北京 05:00）**：data_quality + discipline_audit 断言原样贴报告 → 卡片周评审（draft≥3 次转 active / usage≥20 且 hit=0 废止评审）→ 碎片合并（>0.95 合并、0.85~0.95 只加证据）→ IdeaCard first_testable_when 检查 → 卡片 ROI 月排行 → STALE 风暴检查；**产物=review-{date}.md，无产物=没跑**
 - worker 派单纪律：单批 ≤3 目标/≤600s，父预算 3600s 硬上限，跑不完记台账次日推进
 
@@ -406,7 +410,7 @@ verify：verify.must_pass 全过 + falsification 逐项排除 + 对抗性自检�
 注入：worker 开局读 AGENTS.md 受管区块（Top 卡/env-issue/纪律）+ exp_search 按画像检索
 进化：searched/adopted/useful/wrong/outdated/validated 信号 → 评分 → 自动晋升/降级/复活
       （复盘是加速器不是单点：无复盘好用的卡照样浮现，坏卡自动沉没）
-沉淀：sweeper 每日 vault 导出（exportable=1 且脱敏门通过）→ keeper vault → Bellkeeper
+沉淀：sweeper 每 6h vault 导出（exportable=1 且脱敏门通过）→ keeper vault → Bellkeeper
       Meili/Obsidian；vault 人工新知识每日回流 kb_import（taintguard+external 低置信+防循环）
 ```
 
@@ -418,7 +422,7 @@ verify：verify.must_pass 全过 + falsification 逐项排除 + 对抗性自检�
 
 ### 7.1 角色 persona（.agent-presets/<role>/agent.cordis.yml，seed-presets.sh 种子）
 
-7 个角色，每个 persona 尾部统一追加记忆纪律句（开局 exp_search 检索→先读后干→用完 exp_feedback 回执→写记忆遵守 memcore 三问附 justification）：
+7 个角色，其中 6 个执行型角色 persona 尾部统一追加记忆纪律句（orchestrator 派单角色不带）；开局 exp_search 检索→先读后干→用完 exp_feedback 回执→写记忆遵守 memcore 三问附 justification：
 
 | preset | 职责 | persona 要点 |
 |---|---|---|
@@ -433,21 +437,21 @@ verify：verify.must_pass 全过 + falsification 逐项排除 + 对抗性自检�
 ### 7.2 技能（data/skills/*/SKILL.md，7 个）
 
 1. **sec-verification**：验证铁律（证据三选一 run_id/flow_id/burp_item + 必看原始输出 + 误报特征 + 带外必须回连佐证）+ 对抗性自检（≥2 反证假设逐一排除）+ 高危独立 worker 复验（双路一致才 confirmed）
-2. **sec-pipeline**：六态台账/卡片驱动/防幻觉输出契约 7 条（分母明确、CLEAN 同级举证、禁幻觉词、负例即价值…）/规定+自选动作（≥20% 探索配额≥3 IdeaCard，探索产出禁直接进 findings）/工具矩阵分派/合规止损/收尾清单/交接包五段/**§9 流程守卫说明/§10 资产准入与 Slice/蒸馏中置**
+2. **sec-pipeline**：六态台账/卡片驱动/防幻觉输出契约 8 条（分母明确、CLEAN 同级举证、禁幻觉词、负例即价值…；v4.2 新增第 8 条 finding_add 五要素齐才登记）/规定+自选动作（≥20% 探索配额≥3 IdeaCard，探索产出禁直接进 findings）/工具矩阵分派/合规止损/收尾清单/交接包五段/**§9 流程守卫说明/§10 资产准入与 Slice/蒸馏中置**
 3. **sec-runtime-discipline**：出口/授权（候选授权资产必须 approval_request 提请，v4.5 起按层级分流：整域走 scope-wildcard/单子域走 scope-domain）/派单/interval/失败留痕/大输出摘要/**收尾 note【项目·角色·MMdd】格式**/黑板/事实生命周期（note=14 天速记、长期知识写 durable 分类）/web_fetch 边界/模型路由/**needs_approval 不重试**（v4.5 第 13 条）共 13 条公共纪律
 4. **sec-task**：「定时跑」必须 task_create 带 schedule（禁口头答应）；interval 固定实体禁每天重建 once；归属自动带出；intrusive 禁 interval
-5. **sec-knowledge**：记忆三问 + 类别速查表 + **规则先验层**（data/rules/）使用纪律 + 开局/用卡/cooling/查重/红线流程
+5. **sec-knowledge**：记忆三问 + 类别速查表 + **规则先验层**（data/rules/）使用纪律；开局/用卡/cooling/查重等流程纪律**不再在技能内重复**——由 memcore 引擎自动维护在工作区 AGENTS.md 受管区块，技能只留指针（G5 单一来源收敛）
 6. **sec-blackboard**：黑板读写键规范（cred:/alive:/tried:/note:/waf:）
 7. **sec-review**：经验卡 JSON 结构 + 质量要求（takeaway 可操作、失败同等重要、无证据不入库、同 scenario 修正不另起）
 
 ### 7.3 规则先验层（data/rules/，人工蒸馏静态先验，与经验卡后验互补）
 
 `web/selfhosted-supabase.md`（五端点差分确认/anon 非 service_role/RLS 逐表/跨实例 JWT 不通用）、`web/spring.md`（actuator/SpEL/反序列化/鉴权顺序）、`web/nextjs.md`（Server Actions/middleware 绕过/_next/data 泄露）、`php/thinkphp.md`（payload 代际）、`src/asset-scoring.md`（SABC 打分表 A 漏洞价值 40/B 出洞概率 45/C 时效 15 + owner/accept/biz/state 打标 + 深挖队列规则）、`src/severity-rating.md`（SRC 对齐压级：定级不膨胀/不确定往低报/信息泄露默认低危/忽略级不进提交但留副产物 + CVSS4.0 报告模板）、`src/equity-gate.md`（v4.4 股权范围闸，源自 srcskill dig-scope §3.2.0：equity_basis 五档判据口径/默认不入池=参股·战略投资·合资非100%·联营/independent_src 独立SRC判定/提请质量要求/人工判例表含 zhaopin.com H-004 教训）、`src/technique-index.md`（v4.4 打穿短表 87 行，源自 srcskill 知识库：手法族×认什么×打哪×出什么算成×假点，开局先扫「认什么」对现场特征；索引≠清单）。
-**v4.4 第二批（2026-09-04）**：srcskill 知识库 46 篇手法模块全量导入 `techniques/*.md`（idor/ssrf/xss/rce/401-403-bypass/…，短表「出什么算成」的详解层）+ 2 篇方法论 `srcskill/dig-scope-workflow.md`（挖掘范围工作流）/ `srcskill/vuln-report-format.md`（漏洞报告格式，模块内引用已改写为相对路径）；technique-index 86 行补 `rules/techniques/<手法>.md` 引用闭环。**可见性补齐**：rules 层此前只进 agent 提示词、看板/vault 均不可见——现在知识 tab 有「静态先验 rules」分区（rulesList/rulesRead 只读两件套，写入口仍走 seed-skills.sh 版本受控通道），vault 侧经 vault-export-build.sh 同步 `静态先验/` 子树进 keeper。
+**v4.4 第二批（2026-09-04）**：srcskill 知识库 46 篇手法模块全量导入 `techniques/*.md`（idor/ssrf/xss/rce/401-403-bypass/…，短表「出什么算成」的详解层）+ 2 篇方法论 `srcskill/dig-scope-workflow.md`（挖掘范围工作流）/ `srcskill/vuln-report-format.md`（漏洞报告格式，模块内引用已改写为相对路径）；technique-index 87 行补 `rules/techniques/<手法>.md` 引用闭环。**可见性补齐**：rules 层此前只进 agent 提示词、看板/vault 均不可见——现在知识 tab 有「静态先验 rules」分区（rulesList/rulesRead 只读两件套，写入口仍走 seed-skills.sh 版本受控通道），vault 侧经 vault-export-build.sh 同步 `静态先验/` 子树进 keeper。
 
 ### 7.4 任务 objective（调度注入，每个 interval 任务一行固定实体）
 
-结构（当前 #16-#19 实文约 450-700 字）：`【项目·phase·每日Slice】唯一授权权威=scope.yml → 纪律引用技能 → 今日硬指标（Slice：radar 全清/覆盖矩阵 top-10 格子/param-queue 喂弹）→ 蒸馏中置条款 → 收尾（coverage_report → handoff 五段 → task_update done 守卫强制）→ 禁 blackboard_set 新事实（fact_upsert）/禁自建次日任务`。收尾 note 强制 `【项目·角色·MMdd】` 前缀（看板执行历史可辨日期）。
+结构（P14 精简后 #16-#19 实文仅 **328-352 字**、#24 周 450 字，纪律收敛进技能只留指针 + FGS/kb 检索提示）：`【项目·phase·每日Slice】→ 纪律引用技能 → 今日硬指标（Slice：radar 全清/覆盖矩阵 top-10 格子/param-queue 喂弹）→ 收尾（coverage_report → handoff 五段 → task_update done 守卫强制）`。收尾 note 强制 `【项目·角色·MMdd】` 前缀（看板执行历史可辨日期）。
 
 ### 7.5 漏洞卡（data/vulncards/，18 张 + IC-000 模板）
 
@@ -457,15 +461,15 @@ schema：`id/type/name/cwe/version/status/severity_potential/risk_level/applicab
 
 ## 八、工具矩阵（tools.d manifest）
 
-manifest 字段：`name/binary/stage/risk(passive|active|intrusive|manual)/timeout/target_param/requires/produces/args_template/env_proxy/parser/summarize/store`。31 个 manifest 五族：
+manifest 字段：`name/binary/stage/risk(passive|active|intrusive|manual)/timeout/target_param/requires/produces/args_template/env_proxy/parser/summarize/store/sandbox`（`sandbox: false` 逐工具豁免 bwrap，本地审计类用）。31 个 manifest 五族：
 
 - **资产收集**：subfinder/dnsx/naabu/httpx(-duc)/tlsx/katana/ffuf/gau/waybackurls/fofa_search（脚本）——httpx parser=jsonl_httpx（assets+endpoints+指纹自动登记）
-- **漏洞挖掘**：nuclei（parser=jsonl_nuclei，经规则层）/afrog/dalfox/crlfuzz/arjun/graphql-cop/sqlmap
+- **漏洞挖掘**：nuclei（parser=jsonl_nuclei，经规则层）/afrog/afrog-keyword（按关键词定向）/dalfox/crlfuzz/arjun/graphql-cop/sqlmap
 - **审计本地**：gitleaks/trufflehog/semgrep/codeql/osv-scanner（无 target_param 不沙箱）
 - **指纹/信息**：observer_ward/wafw00f
 - **治理与分诊（P15/P16）**：l2-collect（requires live_hosts → produces endpoints）、vision_triage、data_quality、discipline_audit、grade_assets、echo-test（自检）
 
-能力凑链：plan_chain 按 requires/produces BFS（domains → subdomains → live_hosts → endpoints → findings）。工具链版本由 tools-manager.sh + tools.list 统一安装/升级（go install/github release/apt 三通道）。
+能力凑链：plan_chain 按 requires/produces BFS（domains → subdomains → live_hosts → endpoints → findings）。工具链版本由 tools-manager.sh + tools.list 统一安装/升级（go install/github release/apt/**pip** 四通道——semgrep/wafw00f/impacket/arjun 走 pip 装进共享 venv）。
 
 ---
 
@@ -474,10 +478,13 @@ manifest 字段：`name/binary/stage/risk(passive|active|intrusive|manual)/timeo
 | 脚本 | 机制 |
 |---|---|
 | l2-collect.sh | katana(-d 2, 走代理, 120s/目标) + waybackurls + gau → URL 归一化（去静态/去重/提参数）追加 endpoints-{program}.tsv；单批 ≤3 目标纪律 |
-| ct-watch.py | certspotter API 轮询（429 退避重试），命中 scope 后缀新域 → radar-queue.jsonl（北京时区 ts） |
-| js-watch.py | JS bundle hash 变化 → radar 队列（发版监控） |
+| ct-watch.py | certspotter API 轮询（429 退避重试），命中 scope 后缀新域 → radar-queue.jsonl（北京时区 ts）。**远程实际跑的是 ct-watch-all.sh 封装**（单实例串行双项目防限流；2026-09-05 已收编进 `templates/data-seed/scripts/`，**manifest/install_scripts 接线待做**——接线前 bundle setup 不下发） |
+| js-watch.py | JS bundle hash 变化 → radar 雷达队列（发版监控） |
+| fofa_search.sh | FOFA API 脚本通道（seed-manifests 装到 /usr/local/bin，供 run_cli fofa_search manifest 调用） |
+| 一次性迁移/改库脚本 | backfill-program.js（program_id 回填）、migrate-blackboard-to-facts.js（黑板→facts）、migrate-scheduled-tasks.js（once→interval 治理）、import-cyberstrikeai.py（旧库导入）、p13-task-update.py / p14-objective-slim.py / p14-1-tool-refs.py（历史批次 objective 改写） |
+| embeddings-setup.sh / embeddings.index.js | 本地 multilingual-e5-small 向量嵌入模块（experience 向量检索载体，384 维） |
 | grade-assets.py | **scope 过滤**（解析 scope.yml 域模式，域外保持 NULL）+ 关键词启发（admin/api/sso →A 加成；static/cdn/track →C 减分；深层子域微降）+ 数据密度（指纹+8/接口+5/历史中高危+25/dead-25）→ SABC 写库；--dry-run 预览 |
-| data-quality.py | 11 项 SQL/文件断言（未分级率/空 category/vuln_type 缺失/孤儿外键/垃圾 playbook/双存储漂移/调度漂移/task_runs 新鲜度/台账空转），critical 退出码非 0，--json 供工具消费 |
+| data-quality.py | 14 项 SQL/文件断言（未分级率/空 category/vuln_type 缺失/孤儿外键×3（assets/endpoints/findings）/垃圾 playbook/双存储漂移/调度漂移/task_runs 新鲜度/台账空转/llm_default_route（P18 默认路由校验）/findings_noise_ratio/assets_legacy），critical 退出码非 0，--json 供工具消费 |
 | discipline-audit.py | 文档-现实校验五指标（台账日增量/卡使用 7d/交接包 7d/IdeaCard/漂移+新鲜度）+ 告警退出码 |
 | coverage-report.py / pipeline-validate.py / verify-replay.py / surface-consume.py | 旧脚本版（已被 sec-pipeline 同名工具取代，退役观察期） |
 | vault-export-build.sh / vault-sync.sh | 卡片 YAML→pkb md + 静态先验 rules/ 整树（含 tombstone）→ keeper 中继同步 NAS（B5；v4.4 补静态先验段，vault-export-build.sh 走 manifest+install_scripts 版本受控通道部署） |
@@ -539,6 +546,10 @@ manifest 字段：`name/binary/stage/risk(passive|active|intrusive|manual)/timeo
 | **本文** | 系统全景（运行代码解剖，长期有效） |
 | `dsh-secagent-plan-v6.md` | P11 时代主计划（历史快照，2026-08-22 校准） |
 | `dsh-upgrade-0.1.1-rc.2-report.md` | 升级方法论与回滚手册（历史报告） |
-| `sec-memory-governance-design.md` / `sec-memcore-implementation.md` | 记忆基架设计与实施记录 |
+| `dsh-0.1.2-upgrade-arch-plan.md` | 0.1.2 升级架构方案（B0-B3 排查，历史） |
+| `dsh-0.1.2-rc.1-upgrade-plan.md` | 0.1.2-rc.1 升级方案与 71 条变更影响分析（§十 为升级实录） |
+| `dsh-llm-routing-discipline.md` | 模型路由纪律（应急直连切换规程） |
+| `silksecagent-cairn-y-fusion-optimization.md` | Cairn_Y 融合优化方案（FGS/沉淀路线，历史设计） |
+| `sec-memory-governance-design.md` / `sec-memcore-implementation.md` | 记忆基架设计与实施记录（**2026-09-05 起为历史快照**，见各自文首标注） |
 | `silksecagent-assessment-2026-08-28.md` | 体系评估快照（P15/P16 批已修复其中主要缺口，见文末追加说明） |
 | `XFF-SECURITY-RESEARCH.md` | 独立研究报告 |

@@ -1,7 +1,7 @@
 # SilkSecAgent 领域语言 / Domain Language
 
 > SilkSecAgent（DSH + pi）授权范围内漏洞发现平台的统一术语表。
-> 当代码、文档或对话使用这些词时，含义以此为准。实施细节见 `doc/secagent/dsh-secagent-plan-v6.md`。
+> 当代码、文档或对话使用这些词时，含义以此为准。实施细节见 `doc/secagent/silksecagent-system-complete.md`（系统全景，以运行代码为真相源）。
 
 ## 核心实体
 
@@ -33,11 +33,11 @@ _Avoid_: 报告、issue。
 跨会话沉淀的一条知识，格式 `category/slug`，带 summary（注入 prompt 的索引）+ body（按需拉取）+ confidence。落在事实图谱 `facts` + `fact_edges`。带生命周期维度 mem_class（durable 30 天复验 / ephemeral TTL 14 天 / timeline 30 天归档），note 类缺省 ephemeral=工作速记滚动消亡，长期知识写 target/asset/finding 等分类。列表/计数走同一可见域谓词（archived/timeline/过期 ephemeral 排除）。
 _Avoid_: 黑板、note、key:value。
 
-**Blackboard（黑板，遗留）**：
-旧版扁平 `key:value` 存储，已被 Fact 取代。存量经 `migrate-blackboard-to-facts.js` 幂等迁入 facts 后保留只读观察期，随后下线；`blackboard_set/get` 保留为兼容薄封装（写 `note/` 分类）。
+**Blackboard（黑板，环境层）**：
+v4.6 后收敛为**纯环境层**存储：[env-issue] 环境问题、timeline 事件流、全局广播；**不再承载业务快照**——alive/scan/recon/review/note:/todo/plan 等快照前缀键会被 memcore sweep 守卫自动转写为 facts（fact_key=`bb/{键}`，ephemeral 14d）并归档原键，防旧习惯回潮。`blackboard_set/get` 是黑板的常规读写工具（写 blackboard 表，ephemeral/timeline 双类），业务事实一律走 fact_upsert。
 
 **Scope（授权范围）**：
-`scope.yml` 白名单，fail-closed 硬校验，是平台的安全红线。新授权域名的入口是审批中心（scope-domain kind，批准即原子写回 scope.yml 并自动入队首轮资产收集种子任务）；排除清单内域名的重新收口走 exclude-exception kind。
+`scope.yml` 白名单，fail-closed 硬校验，是平台的安全红线。新授权域名的入口是审批中心（整域走 scope-wildcard kind（`*.x.com + x.com` 双条目）、单子域走 scope-domain kind，批准即原子写回 scope.yml 并自动入队首轮资产收集种子任务）；排除清单内域名的重新收口走 exclude-exception kind。
 
 **报告（Report）**：
 findings 的导出产物，`report-{program}-{YYYYMMDD-HHmm}.md` 语义化文件名，按项目分节，支持 severity 多选/source 筛选生成；列表按项目分组可筛。
@@ -52,11 +52,11 @@ _Avoid_: 别挂在会话标签页下。
 跟某一条对话绑定的 UI（消息 / Trajectory / Run）。
 
 **看板（Dashboard）**：
-全局面的正式名称，侧边栏全局入口 → 独立模态面板，内含「漏洞 / 资产 / 接口 / 事实 / 任务 / 知识 / 报告 / 审批 / 授权 / 审计」视图（任务视图四区块：工作区折叠区、定时任务卡片区、一次性任务队列、执行历史折叠区，历史可按任务过滤跳转；授权视图管理 scope.yml；报告在 Modal 查看器中阅读）。资产视图双模式：**列表**（评级/收录/状态多维筛选 + 单主机钻取：指纹/接口/漏洞/同族）与**域名族**（同注册域 / 同 /24 网段聚合，呈现资产间联系；成员按需拉取）；接口视图按主机分组（接口是资产的子维度，不做平铺千行）；事实视图 facet 洞察（置信/分类/有关联/生命周期 chip）+ 搜索词高亮 + 关联最多排序 + 默认隐藏 note 工作速记（「工作速记」开关开启）；报告视图按项目分组 + 项目/关键字筛选；知识视图除 memcore 经验卡/playbooks 外含**静态先验 rules 分区**（rulesList 目录树 + rulesRead 只读查看 data/rules/ 56 篇：src 定级闸 / srcskill 方法论 / techniques 手法模块 / web·php 组件先验，写入口是 seed-skills.sh 版本受控通道）；审批视图=统一审批中心（pending 在前、类型徽章、批准/驳回留痕，待审批数显示在 tab 徽章上）。看板行只放摘要 + 跳链（`ctx.sessions.open`），**详细内容一律在会话里看**。行内操作一律图标 + 悬停提示（title）。
+全局面的正式名称，侧边栏全局入口 → 独立模态面板，内含「漏洞 / 资产 / 接口 / 事实 / 任务 / 知识 / 报告 / 审批 / 授权 / 审计」视图（任务视图四区块：工作区折叠区、定时任务卡片区、一次性任务队列、执行历史折叠区，历史可按任务过滤跳转；授权视图管理 scope.yml；报告在 Modal 查看器中阅读）。资产视图双模式：**列表**（评级/收录/状态多维筛选 + 单主机钻取：指纹/接口/漏洞/同族）与**域名族**（同注册域 / 同 /24 网段聚合，呈现资产间联系；成员按需拉取）；接口视图按主机分组（接口是资产的子维度，不做平铺千行）；事实视图 facet 洞察（置信/分类/有关联/生命周期 chip）+ 搜索词高亮 + 关联最多排序 + 默认隐藏 note 工作速记（「工作速记」开关开启）；报告视图按项目分组 + 项目/关键字筛选；知识视图 v4.6 重设计：顶部知识体检卡（各存储点 count/零使用占比/到期预警）+ 六类型知识全景图（经验/事实/文献/规程/任务内/环境——一类一位一工具 + 开局三步检索顺序 fact→exp→kb）+ 经验卡区（playbooks 已并入 exp_cards，kind=playbook 徽标 + runs/successes 统计）+ 文献区（kbList curated/external 统一浏览 + kbRead 正文 Modal，rules 56 篇进 curated 索引）+ **静态先验 rules 分区**（rulesList 目录树 + rulesRead 只读查看 data/rules/ 56 篇：src 定级闸 / srcskill 方法论 / techniques 手法模块 / web·php 组件先验，写入口是 seed-skills.sh 版本受控通道，外部知识经 kb_import）；审批视图=统一审批中心（pending 在前、类型徽章、批准/驳回留痕，待审批数显示在 tab 徽章上）。看板行只放摘要 + 跳链（`ctx.sessions.open`），**详细内容一律在会话里看**。行内操作一律图标 + 悬停提示（title）。
 _Avoid_: 工作台、安全中心（同名不改）。
 
 **审批（Approval）**：
-统一审批中心，`approval_requests` 表为唯一审批队列。审批类型经 `APPROVAL_KINDS` 注册表扩展（每种 kind 定义 label/validate/onApprove，批准先跑副作用成功才落 approved）。现有 kind：`scope-domain`=候选授权域名（提请须带股权判据 equity_basis/independent_src/corroboration，口径见 rules/src/equity-gate.md；批准副作用=scopeSaveProgram 原子写回 scope.yml + 自动入队首轮资产收集种子任务（`[审批入队]` 前缀，只做资产收集）+ radar-queue 追加 scope-approved 事件，双通道 best-effort）；`exclude-exception`=排除例外评估（subject 须在项目排除清单内；批准=移出排除+并入 scope+durable fact 留判据）。agent 侧用 `approval_request` 工具提请（同对象 pending 去重、evidence≥10 字、判据存 payload 看板渲染）；**提请不改变 fail-closed——批准前目标一律拒绝**。未来其他审批类型（intrusive 工具、高危动作）作为新 kind 挂进来即可，看板/工具/rpc 零改动。
+统一审批中心，`approval_requests` 表为唯一审批队列。审批类型经 `APPROVAL_KINDS` 注册表扩展（每种 kind 定义 label/validate/onApprove，批准先跑副作用成功才落 approved）。现有 5 kind：`scope-wildcard`=整域授权（subject=裸 apex，evidence≥30 字主体核证级，judgment 仅 控股/全资 或 收购/财团；批准写回 `*.x.com + x.com` 双条目 + 种子任务，看板呈现 domain_level=apex 徽章）；`scope-domain`=单子域授权（subject=完整子域，evidence≥30 字具体归属证据，提请须带股权判据 equity_basis/independent_src/corroboration，口径见 rules/src/equity-gate.md；批准副作用=scopeSaveProgram 原子写回 scope.yml + 自动入队首轮资产收集种子任务（`[审批入队]` 前缀，只做资产收集）+ radar-queue 追加 scope-approved 事件；domain_level=subdomain 徽章）；`exclude-exception`=排除例外评估（subject 须在项目排除清单内；批准=移出排除+并入 scope+durable fact 留判据）；`tool-intrusive`=侵入工具放行（**异步审批**：run_cli 遇 intrusive 被拒自动落库，批准写项目 rules.allow_intrusive_tools 白名单，agent 纪律禁重试）；`task-budget-extend`=任务预算延长（**异步审批**：worker 跑满 3600s 被杀时 scheduler 自动提请，批准写 tasks.budget_timeout_sec≤7200）。agent 侧用 `approval_request` 工具提请（同对象 pending 去重、判据存 payload 看板渲染、列表可 kind/status 筛选）；**提请不改变 fail-closed——批准前目标一律拒绝**。未来其他审批类型（如 scan-burst 升速）作为新 kind 挂进来即可，看板/工具/rpc 零改动。
 _Avoid_: 为每类审批另建专用表/专用流程。
 
 **丝之歌主题（Silksong Theme）**：

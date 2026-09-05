@@ -1,5 +1,7 @@
 # SilkSecAgent 记忆基架 + 自学习 实施总纲
 
+> ⚠️ **历史快照（2026-09-05 标注）**：本文冻结于 2026-09-01，此后 v4.5/v4.6 演进未回写——已知过时点：sweep/vault 导出周期为每 6h（非每日）；**playbooks 已并入 exp_cards（v4.6 合并①，kind=playbook + runs/successes 列，playbooks 表已清空）**；kb_docs 复验区间实为 7~180 天且 v4.6 新增 56 篇 rules curated 行免复验；黑板已回归纯环境层（快照键迁 facts，v4.6 合并②）；生命周期列实为 mem_class/status/status_at/scope/justification/exportable（blackboard 无 revalidate_by）；exp_feedback 为四值信号（useful/adopted/wrong/outdated）。**现状一律以 [silksecagent-system-complete.md](silksecagent-system-complete.md) §4.2/§5.3-§5.4 与代码为准**，正文保留作实施史。
+>
 > 版本：v1.2 ｜ 日期：2026-09-01 ｜ 上游设计：[sec-memory-governance-design.md](sec-memory-governance-design.md) v2.1
 > 本文档记录记忆治理系统的**实施状态**；数据现状以 `silksecagent-system-complete.md` §4.2/§5 与 csai 运行时实测为准。
 > 2026-09-01 更新：blackboard 现为 timeline/ephemeral 兼容层（47 键），facts 1,082 条，exp_cards 4 张；sweeper 6h 运转、AGENTS.md 受管区块自动生成、vault 导出桥正常。

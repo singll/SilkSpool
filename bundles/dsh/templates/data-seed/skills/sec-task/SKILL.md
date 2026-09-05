@@ -15,5 +15,5 @@ description: 任务与调度纪律——用户提到「定时/每隔/每天/每�
 5. **改调度用 task_schedule，补跑用 task_run_now**，取消用 task_update(status=cancelled)。
 6. **定时任务里 spawn_worker 派单纪律**：父 worker 的执行预算是硬上限（默认 3600s 到点 SIGKILL），
    阻塞等子 worker = 烧自己的预算。批量扫描必须「小批量短超时」：单批 ≤3 个目标、timeout ≤600s；
-   禁止 ≥1500s 的大单阻塞。跑不完的资产记黑板台账（coverage-ledger）留次日，定时任务逐日增量推进，不追求单日全覆盖。
+   禁止 ≥1500s 的大单阻塞。跑不完的资产在 handoff「明日队列」登记 + attempts 台账落 BLOCKED/STALE 终态行，留次日增量推进，不追求单日全覆盖。
 7. 定时任务的执行由 spawn_worker 完成，执行会话自动归入对应工作区，结果写在任务 result + 执行历史里（看板可跳链查看）。
