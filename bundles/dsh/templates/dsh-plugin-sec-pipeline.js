@@ -77,8 +77,10 @@ function tool(options) {
   }
 }
 
-function renderJSON(x) {
-  return [{ type: 'text', text: typeof x === 'string' ? x : JSON.stringify(x, null, 2) }]
+// render 回调（双参签名：宿主以 (args, value) 调用，序列化的是 value 而非 args）。
+// execute 必须返回纯对象（与 output.schema type:'object' 对齐），禁止 return renderJSON(x)。
+function renderJSON(_args, value) {
+  return [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }]
 }
 
 const RESULT_ENUM = ['TESTED_CLEAN', 'CONFIRMED', 'FALSE_POSITIVE', 'NOT_APPLICABLE', 'BLOCKED', 'STALE']
@@ -107,16 +109,16 @@ function toolAttemptsLog() {
     },
     execute: async (a) => {
       if (['NOT_APPLICABLE', 'BLOCKED'].includes(a.result) && BANNED_REASON.has((a.reason || '').toLowerCase()))
-        return renderJSON({ ok: false, error: `${a.result} 必须填 reason（禁止 other/misc/空）` })
+        return { ok: false, error: `${a.result} 必须填 reason（禁止 other/misc/空）` }
       if (['TESTED_CLEAN', 'CONFIRMED'].includes(a.result) && !a.evidence_path)
-        return renderJSON({ ok: false, error: `${a.result} 必须填 evidence_path（无证据不结论）` })
+        return { ok: false, error: `${a.result} 必须填 evidence_path（无证据不结论）` }
       const file = path.join(pipelineDir(a.program), `attempts-${a.program}.tsv`)
       const runId = a.run_id || makeRunId()
       tsvAppend(file, TSV_HEADERS.attempts, [
         nowIso(), a.asset, a.card_id, String(a.card_ver ?? ''), a.tool,
         a.result, a.reason || '', a.evidence_path || '', runId,
       ])
-      return renderJSON({ ok: true, file, run_id: runId })
+      return { ok: true, file, run_id: runId }
     },
   }
 }
@@ -147,7 +149,7 @@ function toolCardUsageLog() {
       if (a.suggest) rec.suggest = a.suggest
       rec.run_id = a.run_id || makeRunId('cu')
       fs.appendFileSync(file, JSON.stringify(rec) + '\n')
-      return renderJSON({ ok: true, file })
+      return { ok: true, file }
     },
   }
 }
@@ -166,11 +168,11 @@ function toolRadarRead() {
     },
     execute: async (a) => {
       const file = path.join(pipelineDir(a.program), 'radar-queue.jsonl')
-      if (!fs.existsSync(file)) return renderJSON({ ok: true, events: [], note: '队列空' })
+      if (!fs.existsSync(file)) return { ok: true, events: [], note: '队列空' }
       const lines = fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim())
       const events = lines.map((l) => { try { return JSON.parse(l) } catch { return { raw: l } } })
       if (a.drain !== false) fs.writeFileSync(file, '')
-      return renderJSON({ ok: true, count: events.length, events, drained: a.drain !== false })
+      return { ok: true, count: events.length, events, drained: a.drain !== false }
     },
   }
 }
@@ -237,7 +239,7 @@ function toolPipelineValidate() {
         if (!fs.existsSync(f)) { all.push(`${f}: 不存在`); continue }
         all.push(...validateFile(f))
       }
-      return renderJSON({ ok: all.length === 0, errors: all, checked: a.files.length })
+      return { ok: all.length === 0, errors: all, checked: a.files.length }
     },
   }
 }
@@ -287,7 +289,7 @@ function toolCoverageReport() {
       else lines.push('| （无） | 0 |')
       const out = a.out || path.join(pipelineDir(a.program), 'coverage-latest.md')
       fs.writeFileSync(out, lines.join('\n') + '\n')
-      return renderJSON({ ok: true, out, combos: latest.size, cards: Object.keys(cardState).length, blocked: blockerGain })
+      return { ok: true, out, combos: latest.size, cards: Object.keys(cardState).length, blocked: blockerGain }
     },
   }
 }
@@ -329,19 +331,19 @@ function toolVerifyReplay() {
     },
     execute: async (a) => {
       const reqFile = path.join(a.evidence_dir, 'request.txt')
-      if (!fs.existsSync(reqFile)) return renderJSON({ ok: false, error: `${reqFile} 不存在` })
+      if (!fs.existsSync(reqFile)) return { ok: false, error: `${reqFile} 不存在` }
       const raw = fs.readFileSync(reqFile, 'utf8')
       const [head, ...rest] = raw.split(/\r?\n\r?\n/)
       const lines = head.split(/\r?\n/)
       const m = lines[0].match(/^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\S+)/)
-      if (!m) return renderJSON({ ok: false, error: 'request.txt 首行无法解析' })
+      if (!m) return { ok: false, error: 'request.txt 首行无法解析' }
       const headers = {}
       for (const line of lines.slice(1)) {
         const i = line.indexOf(':')
         if (i > 0) headers[line.slice(0, i).trim()] = line.slice(i + 1).trim()
       }
       const host = headers['Host'] || headers['host']
-      if (!host) return renderJSON({ ok: false, error: 'request.txt 缺 Host 头' })
+      if (!host) return { ok: false, error: 'request.txt 缺 Host 头' }
       const proxy = a.proxy === 'direct' ? null : (a.proxy || DEFAULT_PROXY)
       try {
         const resp = await httpReplay({ method: m[1], pathq: m[2], host, headers, body: rest.join('\n\n'), proxy })
@@ -352,9 +354,9 @@ function toolVerifyReplay() {
         if (a.expect_hash) verdict = hash === a.expect_hash ? 'PASS' : 'FAIL(hash 不一致)'
         fs.appendFileSync(path.join(a.evidence_dir, 'verify-log.md'),
           `| ${nowIso()} | ${proxy || 'direct'} | ${resp.statusCode} | sha256:${hash.slice(0, 16)}… | ${verdict} |\n`)
-        return renderJSON({ ok: !verdict.startsWith('FAIL'), status: resp.statusCode, sha256: hash, verdict })
+        return { ok: !verdict.startsWith('FAIL'), status: resp.statusCode, sha256: hash, verdict }
       } catch (e) {
-        return renderJSON({ ok: false, error: `重放失败: ${e.message}` })
+        return { ok: false, error: `重放失败: ${e.message}` }
       }
     },
   }
@@ -380,7 +382,7 @@ function toolSurfaceScan() {
       additionalProperties: false,
     },
     execute: async (a) => {
-      if (!fs.existsSync(a.file)) return renderJSON({ ok: false, error: '文件不存在' })
+      if (!fs.existsSync(a.file)) return { ok: false, error: '文件不存在' }
       const hits = []
       const lines = fs.readFileSync(a.file, 'utf8').split('\n')
       lines.forEach((line, i) => {
@@ -394,7 +396,7 @@ function toolSurfaceScan() {
           }
         }
       })
-      return renderJSON({ ok: true, file: a.file, hits: hits.length, detail: hits.slice(0, 50), truncated: hits.length > 50 })
+      return { ok: true, file: a.file, hits: hits.length, detail: hits.slice(0, 50), truncated: hits.length > 50 }
     },
   }
 }
@@ -412,7 +414,7 @@ function toolSurfaceQueue() {
       additionalProperties: false,
     },
     execute: async (a) => {
-      if (!fs.existsSync(a.source)) return renderJSON({ ok: false, error: 'source 不存在' })
+      if (!fs.existsSync(a.source)) return { ok: false, error: 'source 不存在' }
       const dir = pipelineDir(a.program)
       const seenFile = path.join(dir, 'param-seen.txt')
       const queueFile = path.join(dir, 'param-queue.txt')
@@ -434,8 +436,8 @@ function toolSurfaceQueue() {
         fs.appendFileSync(queueFile, fresh.join('\n') + '\n')
         fs.appendFileSync(seenFile, fresh.join('\n') + '\n')
       }
-      return renderJSON({ ok: true, new_urls: fresh.length, pool: seen.size + fresh.length, queue: queueFile,
-        hint: `dalfox file ${queueFile} / sqlmap -m ${queueFile} --batch --level 1 --risk 1` })
+      return { ok: true, new_urls: fresh.length, pool: seen.size + fresh.length, queue: queueFile,
+        hint: `dalfox file ${queueFile} / sqlmap -m ${queueFile} --batch --level 1 --risk 1` }
     },
   }
 }

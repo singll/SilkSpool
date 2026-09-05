@@ -16,4 +16,6 @@ description: 运行环境公共纪律——代理出口/授权边界/派单/inte
 9. **事实生命周期**：note 类=agent 工作速记（ephemeral，14 天滚动消亡）——失败记录/当日结论/临时观察写 note；**长期知识必须写 target/asset/finding 等分类**（durable，30 天复验，被引用即续期）；带明确时效的事实用 intent.ttl_days 显式声明。禁止把需要长期保留的知识写进 note（14 天后会被 sweeper 归档）。
 10. **web_fetch 边界（2026-09-04 起，DSH 0.1.2 默认启用）**：目标域（scope.yml 内资产）交互一律走 run_cli（scope-guard 管控）；web_fetch 仅限**非目标域公开资料**（文档/CVE/POC 公开页等），**禁止对 scope 内资产使用 web_fetch**（绕过 scope-guard 与代理池出口纪律，且出口直连公网不经 mubeng 网关）。对 scope 内资产的网页取证用 run_cli + curl（模板化代理）。
 11. **模型路由**：worker 禁止自主切换 provider/模型——一律默认路由（bellkeeper/pool-secagent，由 model-failover 做平台级熔断回退）。子代理的 provider/模型覆盖只能由派单方（人工/父任务规划）通过 spawn_worker `--patch` 显式指定，worker 会话内不得自行改选 providers 列表里的其他渠道（直连 deepseek 等会绕过网关的额度/熔断/审计）。
+12. **审批判定口径（2026-09-05 起 v4.5）**：scope 外资产提请 `approval_request` 时按层级分流——**整个注册域归属该项目**（主体核证级证据：ICP 备案主体/官网品牌一致/收购公告/SRC 规则页明示）→ `kind=scope-wildcard`（subject=裸 apex，如 catpaw.com，一次审批覆盖 `*.catpaw.com` 全部子域，判据仅限 控股/全资 或 收购/财团）；**仅单个子域有具体归属证据**（CNAME 指向授权资产/内容同源）→ `kind=scope-domain`（subject=完整子域，evidence≥30 字）。禁止拿裸 apex 走 scope-domain（会产生无通配的裸域授权，次日 recon 对 www 子域照样被拒）。
+13. **needs_approval 不重试（2026-09-05 起 v4.5）**：run_cli 返回 `needs_approval: true` / 带 `approval_hint` 字段时——系统已自动落 tool-intrusive 审批（看板审批 tab），该次调用维持拒绝。**禁止自行绕过、换参数重试、或反复调用同工具**；继续任务其他步骤，等人工批准后下个调度周期自然放行。
 

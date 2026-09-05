@@ -225,9 +225,11 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 - **burp_import**：Burp XML（proxy history/scanner issues）→ data/imports/*.jsonl（人工测试成果回流口）
 - **xray webhook**（webhook.js）：xray 7788 → `flows/xray-日期.jsonl` + addFinding（标题「<host> 被动审计候选：<插件>」，不传复现/影响 → 完整性闸门自动归「待验证候选」，不冒充漏洞信号）
 - **report_build**：noise 过滤 + severity（逗号多选）/source 筛选；输出按项目分节（无项目按严重级分组），文件名语义化 `report-{program}-{YYYYMMDD-HHmm}.md`；reports 端点从文件名解析 program/date 元数据 + program/q 筛选
-- **approval_request**（v4.3，v4.4 判据结构化）：统一审批提请工具。`kind/subject/program_name/evidence(≥10字)` + kind 专属判据字段（scope-domain：equity_basis 股权判据枚举/independent_src 独立SRC判定/corroboration 旁证，口径见 rules/src/equity-gate.md）→ APPROVAL_KINDS 注册表校验 → approval_requests 表登记（同 (kind,subject) pending 去重，判据存 payload 列，看板审批行渲染判据 chip）；批准走 kind 的 onApprove，全程 audit。**批准即闭环**：scope-domain 批准除 scopeSaveProgram 原子写回 scope.yml 外，自动入队首轮资产收集种子任务（objective 带 `[审批入队]` 前缀，once +5min，只做资产收集禁漏洞探测）+ radar-queue.jsonl 追加 scope-approved 事件（双通道，best-effort 不阻塞批准）；exclude-exception 批准=移出排除清单+并入 scope+落 durable fact（scope/exception-{host}）。**提请不改变 fail-closed：批准前目标一律拒绝**
+- **approval_request**（v4.3，v4.4 判据结构化，v4.5 整域通配）：统一审批提请工具。`kind/subject/program_name/evidence` + kind 专属判据字段 → APPROVAL_KINDS 注册表校验 → approval_requests 表登记（同 (kind,subject) pending 去重，判据存 payload 列，看板审批行渲染判据 chip）；批准走 kind 的 onApprove，全程 audit。**v4.5 判定口径**：整域归属（主体核证级证据）→ `scope-wildcard`（subject=裸 apex，judgment 仅 控股/全资 或 收购/财团，evidence≥30 字；批准写回 `["*.example.com","example.com"]` 双条目+种子任务，全子域一次覆盖）；仅单子域有证据 → `scope-domain`（subject=完整子域，evidence≥30 字具体归属；validate 检测到裸 apex 提请会拒绝并引导改提通配——根因：09-04 批准的裸 apex 次日 recon 对 www 子域照样被拒，逐子域提审批的口径缺口）。**批准即闭环**：scope-domain/scope-wildcard 批准除 scopeSaveProgram 原子写回 scope.yml 外，自动入队首轮资产收集种子任务（objective 带 `[审批入队]` 前缀，once +5min，只做资产收集禁漏洞探测）+ radar-queue.jsonl 追加 scope-approved 事件（双通道，best-effort 不阻塞批准）；exclude-exception 批准=移出排除清单+并入 scope+落 durable fact（scope/exception-{host}）。**提请不改变 fail-closed：批准前目标一律拒绝**
 
-**FGS 决策图（P17）**：`fgs_nodes` 表 + `fgs_add / fgs_update / fgs_list / fgs_next / fgs_export` 工具，scheduler 在定时任务 prompt 中注入使用说明。目标是把任务执行中的 fact/goal/step/finding 实时结构化，形成 Decide/Execute 循环；任务收尾时 `appendFgsToHandoff` 自动追加 Markdown 摘要。**当前表为空**，框架已就绪，待每日任务实际产生节点。
+**FGS 决策图（P17 + v4.5 跨任务沉淀）**：`fgs_nodes` 表 + `fgs_add / fgs_update / fgs_list / fgs_next / fgs_export` 工具，scheduler 在定时任务 prompt 中注入使用说明（v4.5 起同时注入 kb_search 知识库检索指令）。目标是把任务执行中的 fact/goal/step/finding 实时结构化，形成 Decide/Execute 循环；任务收尾时 `appendFgsToHandoff` 自动追加 Markdown 摘要。**v4.5 沉淀钩子**：任务 done 时 `persistFgsFacts` 把 type=fact、status=done 且 content 含证据（detail/evidence 非空）的节点转正为 durable facts（fact_key=`fgs/{task_id}/{node_id}`，factUpsert 幂等冲突刷新 last_validated_at，30 天复验周期）——FGS 图生命周期与任务绑定（下个任务 fgsClearTask 清旧图），沉淀是它唯一的跨任务出口（cairn-y §5.8 断链修复）。best-effort：失败不阻断收尾。
+
+**异步审批协议（v4.5）**：所有「运行时被硬拒绝但可人工放行」的决策点统一转化为——**同步拒绝不变（fail-closed 当场生效）+ 自动落 approval_requests（kind 专属，payload 带完整重试上下文）+ 返回 approval_hint 告知 agent 勿重试 → 批准写白名单/预算 → 下个调度周期重试自然放行**（不中断当前 run、不即时执行）。已接线两个决策点：① `tool-intrusive`——runCli 的 checkRisk needsApproval 路径（payload: tool/risk/target/脱敏 params/program；批准写项目 `rules.allow_intrusive_tools` 白名单，serializeScope/checkRisk 支持该字段，白名单按工具名匹配放行 intrusive 级）；② `task-budget-extend`——scheduler 超时分支（worker 跑满 3600s 被杀且尾部有产出迹象才提；payload: task_id/budget_timeout_sec=7200/run_id/tail；批准写 `tasks.budget_timeout_sec` 列（7200 封顶），下周期 runWorker 取 `max(默认, 该值)`）。agent 侧纪律：sec-runtime-discipline 第 13 条——遇 needs_approval/approval_hint 禁自行绕过或重试。审计全量保留（audit.jsonl deny→approve 链条）。
 
 ### 4.2 sec-memcore（@silksec/sec-memcore，631 行）——记忆治理引擎
 
@@ -295,7 +297,7 @@ renderTemplate( {{param|default}} / {{outdir}} / {{run_id}} ) → shellSplit →
 
 **治理表**（memcore 建）：每表对应 `*_archive`（同构+archived_at/archive_reason，90 天硬删）、memcore_meta（迁移旗标）、memcore_events（全流转审计）。
 
-**审批表**（asset-db 建，v4.3）：approval_requests（id/kind/subject/program_name/payload/evidence/status: pending→approved|rejected/requested_by/created_at/decided_at/note；kind 经 sec-suite 侧 `APPROVAL_KINDS` 注册表扩展；payload 存 kind 专属判据 JSON——scope-domain 为 equity_basis/independent_src/corroboration。现有 kind：`scope-domain`=候选授权域名（批准=写回 scope.yml+入队首轮资产收集种子任务）、`exclude-exception`=排除例外评估（subject 须在项目排除清单内，批准=移出排除+并入 scope+durable fact 留判据））。
+**审批表**（asset-db 建，v4.3）：approval_requests（id/kind/subject/program_name/payload/evidence/status: pending→approved|rejected/requested_by/created_at/decided_at/note；kind 经 sec-suite 侧 `APPROVAL_KINDS` 注册表扩展；payload 存 kind 专属判据 JSON。现有 5 kind：`scope-wildcard`=整域授权（v4.5，subject=裸 apex，批准写 `*.x.com + x.com` 双条目+种子任务，judgment 仅 控股/全资 或 收购/财团）、`scope-domain`=单子域授权（subject=完整子域，evidence≥30 字；apex 提请被拒引导改通配）、`exclude-exception`=排除例外评估（subject 须在项目排除清单内，批准=移出排除+并入 scope+durable fact 留判据）、`tool-intrusive`=侵入工具放行（v4.5 异步：runCli 拒绝点自动提请，批准写项目 rules.allow_intrusive_tools 白名单）、`task-budget-extend`=任务预算延长（v4.5 异步：scheduler 超时自动提请，批准写 tasks.budget_timeout_sec≤7200））。
 
 ### 5.2 状态机全集（触发者→落点）
 
@@ -317,6 +319,25 @@ queued --标 done 时--> 流程守卫拦截点（台账/卡/交接包三查，�
 **Asset**：level S/A/B/C/**NULL（未分级=禁入主动扫描队列，准入门）**；state new/changed/stable/dead；accept full/intrusion-only/none（SRC 收录政策）；owner confirmed/suspect（asset-scoring.md 打标规则）。
 **覆盖台账**：六种可落行终态（TESTED_CLEAN/CONFIRMED/FALSE_POSITIVE/NOT_APPLICABLE/BLOCKED/STALE，各带强制 reason/evidence）；**PENDING 是"未落行"的隐含态**（覆盖矩阵里未出现的组合）——台账工具枚举里没有 PENDING。
 **scope program**：active ⇄ archived（删除授权=立即 fail-closed 拒绝 + 行归档保数据）。
+
+### 5.3 知识体系全景盘点（v4.5，存储点 × 读写方 × 进化属性）
+
+| 存储点 | 位置 | 谁写 | 谁读 | 自进化 |
+|---|---|---|---|---|
+| 经验卡 exp_cards | asset-graph.db | exp_store/idea（candidate 起步） | exp_search、AGENTS.md Top5 注入 | ✅ score/adopted/晋升/降级（memcore sweep + 复盘通道） |
+| 打法链 playbooks | asset-graph.db | pb_save + runCli/spawn_worker 自动统计 | pb_rank | ✅ 成功率降级（runs≥5 且 <30%） |
+| 知识库 kb_docs | asset-graph.db + data/knowledge/*.md | kb_import、vault 回流（每日 05:00 kbVaultSync） | kb_search（FTS+向量，v4.5 起调度任务 prompt 注入检索指令） | ⚠️ 半进化：uses/复验字段齐但消费端 2026-09-05 前未接通（268/278 零使用）；revalidate ±15 天抖动防集体到期塌方 |
+| 事实 facts | asset-graph.db | fact_upsert + **v4.5 FGS 沉淀钩子**（fgs/{task_id}/{node_id}） | fact_search/摘要注入/neg_check 派单拦截 | ✅ durable 复验/cooling/归档/负知识 note 速记 14d |
+| 黑板 blackboard | asset-graph.db | blackboard_set（env-issue/timeline/ephemeral） | 任务开局必读 | ✅ ephemeral TTL/timeline 30d 归档 |
+| FGS 图 fgs_nodes | asset-graph.db | fgs_add（任务运行时） | fgs_next/export、看板 | ⚠️ 半进化：任务结束节点沉睡，**v4.5 fact 节点 done 自动沉淀 facts**（跨任务出口） |
+| VulnCard 漏洞卡 | data/vulncards/*.yaml | 人工+卡片升版（deviation 建议） | vuln 任务规程 | ⚠️ 半进化：card_usage deviation 反哺但升版靠人工（P2 纪律，刻意） |
+| 静态先验 rules | data/rules/{src,srcskill,techniques,web,php} 56 篇 | 人工蒸馏（agent 只提议不落盘） | 知识 tab 只读、技术栈命中时读入 | ❌ 纯静态（by design） |
+| AGENTS.md 受管区块 | data/AGENTS.md | memcore 每 sweep 重写 | 每个 worker 开局 | ✅ Top5 卡+env-issue+检索建议实时投影 |
+| vault 双向回流 | vault-export-cards ⇄ keeper NAS rsync | memcore exportVault（6h）/kbVaultSync（每日） | Obsidian 全局 | ✅ 命中授权域的卡自动 exportable=0 降级（v4.5，不再每 6h 刷拒绝日志） |
+| CyberStrikeAI knowledge_base | hosts/csai/knowledge_base（70 目录 23MB） | 人工 | **无运行时消费者（死库存）** | ❌ 处置待决策（T-17） |
+| skills 24 目录 / agents 16 / tools 80+ yaml | hosts/csai/{skills,agents,tools} → 部署 | 人工 | DSH preset/工具面 | ❌ 静态（版本受控通道 seed-skills.sh） |
+
+**知识体检**：memcore status().knowledgeHealth → dashboard-rpc `memcore` case → 看板知识 tab 顶部（各存储点 count/零使用占比/cooling/30 天到期预警/FGS 沉淀数，死库存与塌方风险一眼可见）。
 
 ---
 
@@ -398,7 +419,7 @@ verify：verify.must_pass 全过 + falsification 逐项排除 + 对抗性自检�
 
 1. **sec-verification**：验证铁律（证据三选一 run_id/flow_id/burp_item + 必看原始输出 + 误报特征 + 带外必须回连佐证）+ 对抗性自检（≥2 反证假设逐一排除）+ 高危独立 worker 复验（双路一致才 confirmed）
 2. **sec-pipeline**：六态台账/卡片驱动/防幻觉输出契约 7 条（分母明确、CLEAN 同级举证、禁幻觉词、负例即价值…）/规定+自选动作（≥20% 探索配额≥3 IdeaCard，探索产出禁直接进 findings）/工具矩阵分派/合规止损/收尾清单/交接包五段/**§9 流程守卫说明/§10 资产准入与 Slice/蒸馏中置**
-3. **sec-runtime-discipline**：出口/授权（候选授权资产必须 approval_request 提请）/派单/interval/失败留痕/大输出摘要/**收尾 note【项目·角色·MMdd】格式**/黑板/事实生命周期（note=14 天速记、长期知识写 durable 分类）共 9 条公共纪律
+3. **sec-runtime-discipline**：出口/授权（候选授权资产必须 approval_request 提请，v4.5 起按层级分流：整域走 scope-wildcard/单子域走 scope-domain）/派单/interval/失败留痕/大输出摘要/**收尾 note【项目·角色·MMdd】格式**/黑板/事实生命周期（note=14 天速记、长期知识写 durable 分类）/web_fetch 边界/模型路由/**needs_approval 不重试**（v4.5 第 13 条）共 13 条公共纪律
 4. **sec-task**：「定时跑」必须 task_create 带 schedule（禁口头答应）；interval 固定实体禁每天重建 once；归属自动带出；intrusive 禁 interval
 5. **sec-knowledge**：记忆三问 + 类别速查表 + **规则先验层**（data/rules/）使用纪律 + 开局/用卡/cooling/查重/红线流程
 6. **sec-blackboard**：黑板读写键规范（cred:/alive:/tried:/note:/waf:）

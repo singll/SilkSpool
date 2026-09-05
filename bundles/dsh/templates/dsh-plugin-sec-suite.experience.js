@@ -14,6 +14,14 @@ export const inject = ['tools']
 
 const DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const KNOWLEDGE_DIR = path.join(DATA_DIR, 'knowledge')
+const DAY = 86400000
+
+// 稳定字符串散列（kb revalidate_by 抖动用：同标题同抖动，重导幂等）
+function docIdHash(s) {
+  let h = 5381
+  for (let i = 0; i < String(s).length; i++) h = ((h * 33) ^ String(s).charCodeAt(i)) >>> 0
+  return h
+}
 
 // -------------------- 向量嵌入（可选，SEC_EMBEDDINGS 指向模块） --------------------
 let embMod = null
@@ -402,6 +410,12 @@ async function kbImport(a) {
   const d = db()
   let docId
   if (mem) {
+    // v4.5：revalidate_by 抖动 ±15 天——批量导入（vault 回流整树）若同刻入库会得到同一到期日，
+    // 90 天后同日集体转 cooling 造成知识面塌方；按 docId 散列错峰（memcore validateWrite 只给基准值）
+    if (mem.revalidate_by) {
+      const jitter = ((docIdHash(title) % 31) - 15) * DAY
+      mem.revalidate_by = mem.revalidate_by + jitter
+    }
     const r = d.prepare('INSERT INTO kb_docs (title, file, source_url, tainted, imported_at, mem_class, status, status_at, scope, revalidate_by, justification, last_validated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(title, file, sourceUrl, tainted ? 1 : 0, Date.now(), mem.mem_class, mem.status, Date.now(), mem.scope, mem.revalidate_by ?? null, mem.justification, Date.now())
     docId = Number(r.lastInsertRowid)

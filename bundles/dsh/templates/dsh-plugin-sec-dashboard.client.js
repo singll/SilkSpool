@@ -1578,7 +1578,7 @@ window.__ModuleLoader__.load({
     // ── 审批视图（v4.3 统一审批中心）：agent 提请的待审批事项，批准/驳回 ──────────
     // 首个类型 scope-domain=候选授权域名（批准=追加进 scope.yml，复用后端 onApprove 副作用）。
     // 后续新审批类型挂进后端 APPROVAL_KINDS 即自动出现在此列表，前端零改动。
-    var APPROVAL_KIND_LABEL = { 'scope-domain': '授权域名', 'exclude-exception': '排除例外' }
+    var APPROVAL_KIND_LABEL = { 'scope-domain': '授权域名', 'scope-wildcard': '整域授权(通配)', 'exclude-exception': '排除例外', 'tool-intrusive': '侵入工具放行', 'task-budget-extend': '任务预算延长' }
     var APPROVAL_STATUS_COLOR = { pending: T.warn, approved: T.success, rejected: T.label3 }
     function ApprovalsView(props) {
       var state = props.state
@@ -1611,14 +1611,23 @@ window.__ModuleLoader__.load({
             el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, '#' + r.id + ' · ' + fmtTime(r.created_at) + (r.requested_by ? ' · ' + r.requested_by : '')),
             isPending
               ? el('span', null,
-                  el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: !!busy, style: { height: 26 }, title: r.kind === 'scope-domain' ? '批准：域名追加进 ' + r.program_name + ' 的 scope.yml（原子写+备份+审计，fail-closed 即时生效）并自动入队首轮资产收集种子任务' : '批准并执行对应动作', onClick: function () { decide(r, 'approve') } }, '批准'),
+                  el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: !!busy, style: { height: 26 }, title: r.kind === 'scope-wildcard' ? '批准：*.' + r.subject + ' 与 ' + r.subject + ' 双条目追加进 ' + r.program_name + ' 的 scope.yml（全子域 fail-closed 即时生效）并自动入队首轮资产收集种子任务' : r.kind === 'scope-domain' ? '批准：域名追加进 ' + r.program_name + ' 的 scope.yml（原子写+备份+审计，fail-closed 即时生效）并自动入队首轮资产收集种子任务' : '批准并执行对应动作', onClick: function () { decide(r, 'approve') } }, '批准'),
                   el('button', { type: 'button', className: 'silksec-btn silksec-icon-btn-danger', disabled: !!busy, style: { height: 26, marginLeft: 6 }, title: '驳回（留痕，可填备注）', onClick: function () { decide(r, 'reject') } }, '驳回'))
               : null),
-          (p && (p.equity_basis || p.independent_src))
+          (p && (p.equity_basis || p.independent_src || p.domain_level || p.tool || p.risk || p.task_id))
             ? el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 } },
                 p.equity_basis ? el('span', { style: pill, title: '股权/归属判据（口径 data/rules/src/equity-gate.md）' }, '判据: ' + p.equity_basis) : null,
-                p.independent_src ? el('span', { style: { ...pill, color: p.independent_src === '有' ? T.warn : T.label2 }, title: '目标是否有自身 SRC 收洞渠道（有→不并入本项目）' }, '独立SRC: ' + p.independent_src) : null)
+                p.independent_src ? el('span', { style: { ...pill, color: p.independent_src === '有' ? T.warn : T.label2 }, title: '目标是否有自身 SRC 收洞渠道（有→不并入本项目）' }, '独立SRC: ' + p.independent_src) : null,
+                p.domain_level ? el('span', { style: { ...pill, color: p.domain_level === 'apex' ? T.business : T.label2 }, title: '授权层级：apex=注册域整域（*.通配），subdomain=单子域' }, p.domain_level === 'apex' ? '层级: 注册域' : '层级: 子域') : null,
+                p.tool ? el('span', { style: { ...pill, color: T.business }, title: '申请放行的工具名' }, '工具: ' + p.tool) : null,
+                p.risk ? el('span', { style: { ...pill, color: p.risk === 'intrusive' ? T.warn : T.label2 }, title: '工具风险级' }, '风险: ' + p.risk) : null,
+                p.task_id ? el('span', { style: pill, title: '预算延长的任务 ID' }, '任务: #' + p.task_id) : null,
+                p.budget_timeout_sec ? el('span', { style: pill, title: '批准后的预算上限（秒，7200 封顶）' }, '预算: ' + p.budget_timeout_sec + 's') : null)
             : null,
+          (p && p.params && Object.keys(p.params).length)
+            ? el('div', { style: { color: T.label3, marginTop: 4, ...F.xxxs, fontFamily: MONO, wordBreak: 'break-all' }, title: '调用参数（已脱敏截断）' }, '参数: ' + Object.keys(p.params).map(function (k) { return k + '=' + String(p.params[k]) }).join('  '))
+            : null,
+          (p && p.tail) ? el('div', { style: { color: T.label3, marginTop: 4, ...F.xxxs }, title: '超时时 worker 尾部输出（判断是否接近产出）' }, 'worker 尾部: ' + String(p.tail).slice(0, 160)) : null,
           el('div', { style: { color: T.label2, marginTop: 6, ...F.xxs, wordBreak: 'break-word' } }, r.evidence || '—'),
           (p && p.corroboration) ? el('div', { style: { color: T.label3, marginTop: 4, ...F.xxxs } }, '旁证: ' + p.corroboration) : null,
           (r.note && !isPending) ? el('div', { style: { color: T.label3, marginTop: 4, ...F.xxxs } }, '决策备注: ' + r.note) : null)
@@ -1832,8 +1841,32 @@ window.__ModuleLoader__.load({
             return el('span', { key: t, style: pill, title: 'memcore 治理状态分布' }, t + ' ' + parts)
           }))
       }
+      // v4.5 知识体检：各存储点使用分布/零使用占比/到期预警（死库存与塌方风险一眼可见）
+      var kh = mem && mem.knowledgeHealth ? mem.knowledgeHealth : null
+      var healthCard = null
+      if (kh) {
+        var khRows = []
+        if (kh.kb_docs) khRows.push(el('div', { key: 'kb', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
+          '知识库 kb_docs：' + kh.kb_docs.total + ' 篇（零使用 ' + kh.kb_docs.zero_use + ' = ' + Math.round(kh.kb_docs.zero_use_ratio * 100) + '%，cooling ' + kh.kb_docs.cooling + '，30天内到期 ' + kh.kb_docs.expiring_30d + '）'))
+        if (kh.exp_cards) khRows.push(el('div', { key: 'ec', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
+          '经验卡 exp_cards：' + kh.exp_cards.total + ' 张（零使用 ' + kh.exp_cards.zero_use + '，candidate ' + kh.exp_cards.candidate + '，cooling ' + kh.exp_cards.cooling + '）'))
+        if (kh.facts) khRows.push(el('div', { key: 'fa', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
+          '事实 facts：' + kh.facts.total + ' 条（cooling ' + kh.facts.cooling + '，复验逾期 ' + kh.facts.revalidate_overdue + '）'))
+        if (kh.playbooks) khRows.push(el('div', { key: 'pb', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
+          '打法链 playbooks：' + kh.playbooks.total + ' 条（cooling ' + kh.playbooks.cooling + '）'))
+        if (kh.fgs) khRows.push(el('div', { key: 'fg', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
+          'FGS 图：' + kh.fgs.nodes + ' 节点（已沉淀 facts ' + kh.fgs.persisted_facts + ' 条，任务 done 自动跨任务转正）'))
+        var warnBits = []
+        if (kh.kb_docs && kh.kb_docs.zero_use_ratio >= 0.8) warnBits.push('kb 零使用率 ≥80%——消费端未接通')
+        if (kh.kb_docs && kh.kb_docs.expiring_30d > 50) warnBits.push(kh.kb_docs.expiring_30d + ' 篇 kb 30天内集中到期——塌方风险')
+        if (kh.facts && kh.facts.revalidate_overdue > 100) warnBits.push('facts 复验逾期 ' + kh.facts.revalidate_overdue + ' 条')
+        healthCard = el('div', { style: { ...card, marginTop: 10, padding: '8px 12px' }, title: 'memcore knowledgeHealth：调度任务 done 的 FGS 事实沉淀 + kb_search 消费激活后此表应逐步转好' },
+          el('div', { style: { ...F.s, marginBottom: 4 } }, '📊 知识体检（v4.5）' + (warnBits.length ? ' ⚠ ' + warnBits.join('；') : '')),
+          khRows)
+      }
       return el('div', null,
         memChips,
+        healthCard,
         el('div', { style: { ...cardL, margin: '10px 0 6px' }, title: '评分 = adopted×3 + 👍×2 + uses×0.5 − 👎×5 − 时效衰减' }, '🧠 经验卡（exp_cards）· candidate 候选 / active 已晋升 / cooling 衰退'),
         props.cardsState.loading ? el(SkeletonRows, { rows: 5 }) : cards.length === 0
           ? el(EmptyState, { text: '暂无经验卡' })

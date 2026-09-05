@@ -310,6 +310,10 @@ function serializeScope(scope) {
       lines.push(`      max_risk: ${rules.max_risk || 'active'}`)
       lines.push(`      fixed_egress_ip: ${rules.fixed_egress_ip ? 'true' : 'false'}`)
       if (rules.workspace) lines.push(`      workspace: ${yamlQuote(rules.workspace)}   # 绑定的 DSH 工作区（标题或路径）`)
+      if (Array.isArray(rules.allow_intrusive_tools) && rules.allow_intrusive_tools.length) {
+        lines.push('      allow_intrusive_tools:')
+        for (const t of rules.allow_intrusive_tools) lines.push(`        - ${yamlQuote(t)}`)
+      }
       if (p.finding_db) lines.push(`    finding_db: ${yamlQuote(p.finding_db)}`)
       lines.push('')
     }
@@ -321,7 +325,7 @@ function serializeScope(scope) {
 const PROGRAM_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
 const RISK_LEVELS = ['passive', 'active', 'intrusive']
 
-// spec: { name, platform, scope[], exclude[], max_risk, fixed_egress_ip, workspace, finding_db }
+// spec: { name, platform, scope[], exclude[], max_risk, fixed_egress_ip, workspace, finding_db, allow_intrusive_tools[] }
 // 返回 { ok, error?, program }。fail-closed 语义不变：不在 scope.yml 的目标依然全拒绝。
 function scopeSaveProgram(spec, isNew) {
   const name = String(spec.name || '').trim()
@@ -331,6 +335,7 @@ function scopeSaveProgram(spec, isNew) {
   const excludeEntries = [...new Set((Array.isArray(spec.exclude) ? spec.exclude : []).map((s) => String(s).trim()).filter(Boolean))]
   const maxRisk = String(spec.max_risk || 'active')
   if (!RISK_LEVELS.includes(maxRisk)) return { ok: false, error: `非法 max_risk ${maxRisk}（可选: ${RISK_LEVELS.join('/')}）` }
+  const allowIntrusive = [...new Set((Array.isArray(spec.allow_intrusive_tools) ? spec.allow_intrusive_tools : []).map((s) => String(s).trim()).filter(Boolean))]
 
   const scope = loadScope()
   const programs = Array.isArray(scope.programs) ? scope.programs : []
@@ -343,6 +348,7 @@ function scopeSaveProgram(spec, isNew) {
       max_risk: maxRisk,
       fixed_egress_ip: !!spec.fixed_egress_ip,
       ...(spec.workspace ? { workspace: String(spec.workspace).trim() } : {}),
+      ...(allowIntrusive.length ? { allow_intrusive_tools: allowIntrusive } : {}),
     },
   }
   if (spec.platform) entry.platform = String(spec.platform).trim()
@@ -447,7 +453,7 @@ const APPROVAL_KINDS = {
     // 提请校验：建议项目须存在；域名不得已在 scope（已授权无须审批）；排除清单走 exclude-exception。
     // P20' 股权判据结构化：equity_basis（归属判据类型）+ independent_src（目标有无自身 SRC 渠道）必填，
     // corroboration（旁证）选填——判据口径见 data/rules/src/equity-gate.md。
-    validate({ subject, program_name, payload }) {
+    validate({ subject, program_name, payload, evidence }) {
       const host = hostOf(subject)
       if (!host) return { ok: false, error: `无法解析域名: ${subject}` }
       const scope = loadScope()
@@ -459,6 +465,12 @@ const APPROVAL_KINDS = {
       const chk = checkTarget(host)
       if (chk.allow) return { ok: false, error: `${host} 已在项目 ${chk.program} 授权范围内，无须审批` }
       if (chk.program && /排除清单/.test(chk.reason)) return { ok: false, error: `${host} 在项目 ${chk.program} 排除清单中——请改提 exclude-exception（排除例外评估）` }
+      // 通配判定口径（v4.5）：subject 本身就是 apex 注册域 → 整域归属走 scope-wildcard，
+      // 单域授权只收子域（apex 提 scope-domain 会复现 catpaw/wow.fun 裸域无通配的覆盖缺口）
+      const root = String(assetDb.hostRoot(host) || '')
+      if (root && host === root) {
+        return { ok: false, error: `${host} 本身是注册域（apex）。确认整个域名归属该项目 → 提 kind=scope-wildcard（整域 *.${host} 通配授权）；仅对单个子域有证据时才提 scope-domain 且 subject 填完整子域` }
+      }
       const eq = payload && typeof payload === 'object' ? payload : {}
       const basis = String(eq.equity_basis || '').trim()
       if (!EQUITY_BASIS.includes(basis)) {
@@ -468,8 +480,13 @@ const APPROVAL_KINDS = {
       if (!INDEPENDENT_SRC.includes(indep)) {
         return { ok: false, error: `independent_src 必填（目标是否有自身 SRC 渠道，可选: ${INDEPENDENT_SRC.join('/')}）——有独立收洞渠道的不并入本项目（H-004 教训）` }
       }
+      // 子域单域授权从严：evidence ≥30 字且须含具体归属证据（CNAME 指向授权资产/内容同源比对/
+      // 主体一致性核证），防止「猜一个子域就提审批」
+      if (String(evidence || '').trim().length < 30) {
+        return { ok: false, error: `单子域授权 evidence 须 ≥30 字且含具体归属证据（如 CNAME 指向已授权资产/与授权域内容同源/主体核证），「疑似/字典枚举」不构成依据` }
+      }
       return { ok: true, value: { host, program_name, payload: {
-        equity_basis: basis, independent_src: indep,
+        equity_basis: basis, independent_src: indep, domain_level: 'subdomain',
         corroboration: String(eq.corroboration || '').trim() || null,
       } } }
     },
@@ -495,6 +512,80 @@ const APPROVAL_KINDS = {
       if (!r.ok) return r
       const seed = enqueueScopeSeed(host, program_name)
       return { ok: true, note: `${host} 已加入项目 ${program_name} 授权范围（fail-closed 即时生效）；${seed.join('；')}` }
+    },
+  },
+  // v4.5 整域授权（通配）：整个注册域归属某 SRC 时一次审批覆盖全部子域。
+  // 由来：2026-09-04 批准的 catpaw.com/tabbit.com/wow.fun 只落裸 apex（无 *. 通配），次日 recon
+  // 对 www.catpaw.com 探活即被 fail-closed 拒绝，被迫逐子域提审批——本 kind 根治该口径缺口。
+  // 门槛比单域更严：equity_basis 限「控股/全资」「收购/财团」（品牌/技术印证不足以开整域）、
+  // independent_src 必填且≠「有」、evidence ≥30 字（主体核证级：ICP 备案主体/官网新闻/收购公告）。
+  'scope-wildcard': {
+    label: '整域授权(通配)',
+    validate({ subject, program_name, payload, evidence }) {
+      const host = hostOf(subject)
+      if (!host) return { ok: false, error: `无法解析域名: ${subject}` }
+      const root = String(assetDb.hostRoot(host) || '')
+      if (!root || host !== root) {
+        return { ok: false, error: `scope-wildcard 的 subject 必须是注册域（apex），如 example.com；${host} 是子域——单子域授权请走 scope-domain（subject 填完整子域）` }
+      }
+      const scope = loadScope()
+      const programs = Array.isArray(scope.programs) ? scope.programs : []
+      const prog = programs.find((p) => p && p.name === program_name)
+      if (!prog) {
+        return { ok: false, error: `项目 ${program_name} 不在 scope.yml（先确认归属项目名；scopeList 可查）`, programs: programs.map((p) => p.name) }
+      }
+      // 整域已在授权范围：*.example.com 或裸 apex 任一在 scope 即视为已覆盖
+      const entries = Array.isArray(prog.scope) ? prog.scope : []
+      const wild = `*.${host}`
+      if (entries.some((e) => e === wild || e === host)) {
+        return { ok: false, error: `${wild} 或 ${host} 已在项目 ${program_name} 授权范围内，无须审批` }
+      }
+      const eq = payload && typeof payload === 'object' ? payload : {}
+      const basis = String(eq.equity_basis || '').trim()
+      if (!['控股/全资', '收购/财团'].includes(basis)) {
+        return { ok: false, error: `整域授权 equity_basis 只接受 控股/全资 或 收购/财团（可选: ${EQUITY_BASIS.join('/')}）——品牌/产品线/技术印证不足以开 *.${host} 通配` }
+      }
+      const indep = String(eq.independent_src || '').trim()
+      if (!INDEPENDENT_SRC.includes(indep)) {
+        return { ok: false, error: `independent_src 必填（可选: ${INDEPENDENT_SRC.join('/')}）——有独立收洞渠道的不并入本项目（H-004 教训）` }
+      }
+      if (indep === '有') {
+        return { ok: false, error: `目标有自身 SRC 渠道（independent_src=有）——不并入本项目（H-004 教训），请驳回思路` }
+      }
+      if (String(evidence || '').trim().length < 30) {
+        return { ok: false, error: `整域授权 evidence 须 ≥30 字且为主体核证级证据（ICP 备案主体/官网品牌一致/收购公告/SRC 规则页明示范围），「看起来像」不构成整域依据` }
+      }
+      return { ok: true, value: { host, program_name, payload: {
+        equity_basis: basis, independent_src: indep, domain_level: 'apex',
+        corroboration: String(eq.corroboration || '').trim() || null,
+      } } }
+    },
+    // 批准副作用：写回 ["*.example.com", "example.com"] 双条目（对齐 qiandai/mobike/keeta 现存形态）
+    // + 种子任务（首轮全子域资产收集）
+    onApprove({ subject, program_name }) {
+      const host = hostOf(subject)
+      const root = String(assetDb.hostRoot(host) || '')
+      if (!root || host !== root) return { ok: false, error: `${host} 不是注册域（apex），请驳回后按子域走 scope-domain 重新提请` }
+      const scope = loadScope()
+      const prog = (Array.isArray(scope.programs) ? scope.programs : []).find((p) => p && p.name === program_name)
+      if (!prog) return { ok: false, error: `项目 ${program_name} 不在 scope.yml（可能已被移除），请驳回后重新提请` }
+      const entries = Array.isArray(prog.scope) ? prog.scope : []
+      const wild = `*.${host}`
+      if (entries.includes(wild)) return { ok: true, note: `${wild} 已在 scope（幂等跳过）` }
+      const add = [wild, host].filter((e) => !entries.includes(e))
+      const r = scopeSaveProgram({
+        name: program_name,
+        platform: prog.platform || '',
+        scope: [...entries, ...add],
+        exclude: Array.isArray(prog.exclude) ? prog.exclude : [],
+        max_risk: (prog.rules && prog.rules.max_risk) || 'active',
+        fixed_egress_ip: !!(prog.rules && prog.rules.fixed_egress_ip),
+        workspace: (prog.rules && prog.rules.workspace) || '',
+        finding_db: prog.finding_db || '',
+      }, false)
+      if (!r.ok) return r
+      const seed = enqueueScopeSeed(host, program_name)
+      return { ok: true, note: `${wild} + ${host} 已加入项目 ${program_name} 授权范围（全子域 fail-closed 即时生效）；${seed.join('；')}` }
     },
   },
   // P20' 排除清单例外评估——被排除资产的人工评估正规入口（此前「走人工评估」无登记无留痕）。
@@ -551,6 +642,55 @@ const APPROVAL_KINDS = {
       return { ok: true, note: `${host} 已移出项目 ${program_name} 排除清单并加入授权范围（fail-closed 即时生效；例外决策已留档 facts）` }
     },
   },
+  // v4.5 异步审批：intrusive 工具放行。runCli 遇 allow_risk 拒绝（needsApproval 路径）自动落库，
+  // 不经 approval_request 工具（agent 无法替人工编 evidence）。批准 = 写项目 allow_intrusive_tools
+  // 白名单（scope.yml rules 新字段），下个调度周期任务重试时 checkRisk 自然放行；驳回 = 维持拒绝。
+  // 审计全量保留（audit.jsonl deny→approve 链条完整）。
+  'tool-intrusive': {
+    label: '侵入工具放行',
+    validate() { return { ok: false, error: 'tool-intrusive 由 runCli 拒绝点自动提请（payload 带工具/风险级/目标/参数），agent 不可直接提请' } },
+    onApprove({ subject, program_name, payload }) {
+      const tool = String(payload && payload.tool || '').trim()
+      if (!tool || !program_name) return { ok: false, error: 'payload 缺 tool 或 program_name（历史请求格式不符，请驳回）' }
+      const scope = loadScope()
+      const prog = (Array.isArray(scope.programs) ? scope.programs : []).find((p) => p && p.name === program_name)
+      if (!prog) return { ok: false, error: `项目 ${program_name} 不在 scope.yml（可能已被移除），请驳回` }
+      const rules = prog.rules || {}
+      const allow = Array.isArray(rules.allow_intrusive_tools) ? rules.allow_intrusive_tools : []
+      if (allow.map((s) => String(s).toLowerCase()).includes(tool.toLowerCase())) {
+        return { ok: true, note: `${tool} 已在项目 ${program_name} allow_intrusive_tools 白名单（幂等跳过）` }
+      }
+      const r = scopeSaveProgram({
+        name: program_name,
+        platform: prog.platform || '',
+        scope: Array.isArray(prog.scope) ? prog.scope : [],
+        exclude: Array.isArray(prog.exclude) ? prog.exclude : [],
+        max_risk: rules.max_risk || 'active',
+        fixed_egress_ip: !!rules.fixed_egress_ip,
+        workspace: rules.workspace || '',
+        finding_db: prog.finding_db || '',
+        allow_intrusive_tools: [...allow, tool],
+      }, false)
+      if (!r.ok) return r
+      return { ok: true, note: `${tool} 已加入项目 ${program_name} allow_intrusive_tools 白名单——intrusive 级对该项目放行（其余风险闸不变），下个调度周期任务重试即生效` }
+    },
+  },
+  // v4.5 异步审批：任务预算延长。scheduler 超时分支自动提请（worker 跑满 3600s 上限被杀）。
+  // 批准 = tasks.budget_timeout_sec 列写入（上限 7200 封顶），下个周期 runWorker 用 max(默认, 该值)。
+  'task-budget-extend': {
+    label: '任务预算延长',
+    validate() { return { ok: false, error: 'task-budget-extend 由 scheduler 超时分支自动提请，agent 不可直接提请' } },
+    onApprove({ subject, program_name, payload }) {
+      const taskId = Number(payload && payload.task_id)
+      const budget = Number(payload && payload.budget_timeout_sec) || 7200
+      if (!taskId) return { ok: false, error: 'payload 缺 task_id（历史请求格式不符，请驳回）' }
+      const t = assetDb.taskGet(taskId)
+      if (!t) return { ok: false, error: `任务 #${taskId} 不存在（可能已删除），请驳回` }
+      const capped = Math.min(budget, 7200)
+      assetDb.getDb().prepare('UPDATE tasks SET budget_timeout_sec = ?, updated_at = ? WHERE id = ?').run(capped, Date.now(), taskId)
+      return { ok: true, note: `任务 #${taskId} 预算上限已提升至 ${capped}s（下个调度周期生效，runWorker 按 max(默认, budget_timeout_sec) 取值）` }
+    },
+  },
 }
 
 // agent 工具入口：通用校验（kind 注册/去重/evidence）+ kind.validate 专属校验（含 payload 股权判据）
@@ -580,6 +720,22 @@ function approvalRequest(args, exec) {
 
 function safeSessionId(exec) {
   try { const id = sessionIdOf(exec); return id ? String(id) : 'agent' } catch { return 'agent' }
+}
+
+// tool-intrusive 审批 payload 的参数脱敏：只保留短标量值（供人工判断该工具拿什么参数打哪），
+// 长文本/疑似敏感值截断打码，防审批看板泄漏凭据类参数
+function sanitizeParamsForApproval(params) {
+  const out = {}
+  for (const [k, v] of Object.entries(params || {})) {
+    if (typeof v === 'string') {
+      out[k] = v.length > 60 ? v.slice(0, 60) + '…' : v
+    } else if (typeof v === 'number' || typeof v === 'boolean') {
+      out[k] = v
+    } else {
+      out[k] = `[${Array.isArray(v) ? 'list:' + v.length : typeof v}]`
+    }
+  }
+  return out
 }
 
 // 看板决策入口（dashboard-rpc approvalDecide 调用）：批准先执行 kind.onApprove 副作用，成功才落 approved
@@ -673,11 +829,20 @@ function checkRisk(manifestRisk, programCfg) {
   if (effective && RISK_ORDER.indexOf(manifestRisk) > RISK_ORDER.indexOf(effective)) {
     return { allow: false, reason: `工具风险级 ${manifestRisk} 超过项目上限 ${effective}` }
   }
+  // v4.5 异步放行白名单：项目 rules.allow_intrusive_tools 列出的工具对 intrusive 级放行
+  //（task-intrusive 审批批准后写入，下个调度周期任务重试时自然通过）
+  const allowIntrusive = programCfg && programCfg.rules && Array.isArray(programCfg.rules.allow_intrusive_tools)
+    ? programCfg.rules.allow_intrusive_tools.map((s) => String(s).toLowerCase()) : []
+  if (allowIntrusive.length && manifestRisk === 'intrusive' && toolNameOfRiskCheck) {
+    if (allowIntrusive.includes(String(toolNameOfRiskCheck).toLowerCase())) return { allow: true }
+  }
   if (!allowRisk.includes(manifestRisk)) {
-    return { allow: false, reason: `工具风险级 ${manifestRisk} 需要人工确认（allow_risk: ${allowRisk.join('/') }）`, needsApproval: true }
+    return { allow: false, reason: `工具风险级 ${manifestRisk} 需要人工确认（allow_risk: ${allowRisk.join('/') }）`, needsApproval: manifestRisk === 'intrusive' }
   }
   return { allow: true }
 }
+// checkRisk 与 toolName 的桥（checkRisk 签名历史遗留无 tool 名，intrusive 白名单按工具名匹配）
+let toolNameOfRiskCheck = null
 
 // ==============================================================================
 // S1 解析后校验（审计）：active+ 目标执行前 DNS 解析，解析 IP 落内网/保留段且未授权 → 拒绝
@@ -925,10 +1090,27 @@ async function runCli(args, exec) {
   }
   const firstChk = targets.length ? checkTarget(targets[0]) : { programCfg: null }
   const programId = firstChk.program || null
+  // v4.5 异步审批：intrusive 级被拒 → 自动落 tool-intrusive 审批（payload 带完整重试上下文），
+  // 同步拒绝语义不变（fail-closed 当场生效），agent 不重试；批准写入项目 allow_intrusive_tools
+  // 白名单后下个调度周期重试自然放行。
+  toolNameOfRiskCheck = toolName
   const riskChk = checkRisk(String(manifest.risk || 'passive'), firstChk.programCfg)
+  toolNameOfRiskCheck = null
   if (!riskChk.allow) {
-    audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: riskChk.reason })
-    return { ok: false, run_id: runId, error: `scope-guard 拒绝: ${riskChk.reason}`, needs_approval: !!riskChk.needsApproval }
+    let approvalHint = null
+    if (riskChk.needsApproval && programId) {
+      try {
+        const add = assetDb.approvalAdd({
+          kind: 'tool-intrusive', subject: `${toolName}:${targets[0] || '-'}`, program_name: programId,
+          payload: { tool: toolName, risk: manifest.risk, target: targets[0] || null, params: sanitizeParamsForApproval(params), program: programId },
+          evidence: `intrusive 工具 ${toolName}（risk=${manifest.risk}）对 ${targets[0] || '目标'} 的调用被 allow_risk 拒绝，请求人工放行`,
+          requested_by: sessionIdOf ? safeSessionId(exec) : 'agent',
+        })
+        if (add.ok || add.request_id) approvalHint = `已自动提请 tool-intrusive 审批 #${add.request_id || add.id}（批准后该工具加入项目 ${programId} allow_intrusive_tools 白名单，下个调度周期重试即放行）。本次调用维持拒绝，勿重试。`
+      } catch { /* 审批落库失败不改变拒绝语义 */ }
+    }
+    audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: riskChk.reason, approval_filed: !!approvalHint })
+    return { ok: false, run_id: runId, error: `scope-guard 拒绝: ${riskChk.reason}`, needs_approval: !!riskChk.needsApproval, ...(approvalHint ? { approval_hint: approvalHint } : {}) }
   }
 
   // S1 解析后校验（active+）：DNS 解析 IP 落内网/保留段且未授权 → 拒绝
@@ -1671,21 +1853,23 @@ export function apply(ctx, config) {
 
   ctx.tools.register({
     name: 'approval_request',
-    description: '统一审批入口：向人工提请审批（scope-domain=候选授权域名 / exclude-exception=排除清单例外评估）。'
-      + '资产收集发现疑似 scope 外但归属证据明确的新资产（CNAME 指向授权资产/品牌印证/收购关系）时必须提请，'
-      + '禁止只写事实不提请求；也禁止把归属不确定的资产凑数提请。'
+    description: '统一审批入口（fail-closed 之下的正规放行通道）：向人工提请审批。'
+      + '类型判定口径：①整个注册域归属该项目（主体核证级证据：ICP 备案主体/官网品牌一致/收购公告/SRC 规则页明示）→ kind=scope-wildcard，'
+      + '一次审批覆盖 *.example.com 全部子域；②仅单个子域有具体归属证据（CNAME 指向授权资产/内容同源比对）→ kind=scope-domain，'
+      + 'subject 填完整子域，禁止拿裸 apex 走单域通道；③被排除资产的人工评估 → exclude-exception。'
+      + '资产收集发现疑似 scope 外资产时必须提请，禁止只写事实不提请求，也禁止把归属不确定的资产凑数提请。'
       + '股权判据口径见 data/rules/src/equity-gate.md：100% 控股算、参股/投资不算、有自身 SRC 渠道的不并入。'
       + '登记是被动观察行为：批准前目标依旧被 scope-guard fail-closed 拒绝，授权边界不变。',
     parameters: {
       type: 'object',
       properties: {
-        kind: { type: 'string', enum: ['scope-domain', 'exclude-exception'], description: '审批类型：scope-domain=把候选域名加入授权范围；exclude-exception=被排除资产的例外评估（解除排除）' },
-        subject: { type: 'string', description: '审批对象（传域名，如 catpaw.com）' },
+        kind: { type: 'string', enum: ['scope-domain', 'scope-wildcard', 'exclude-exception'], description: '审批类型：scope-wildcard=整域授权（subject 填注册域 apex，如 example.com）；scope-domain=单子域授权（subject 填完整子域）；exclude-exception=被排除资产的例外评估（解除排除）' },
+        subject: { type: 'string', description: '审批对象（域名；scope-wildcard 传注册域 apex 如 catpaw.com，scope-domain 传完整子域如 www.catpaw.com）' },
         program_name: { type: 'string', description: '必填：建议归属的 scope.yml 项目名（exclude-exception 为排除该域的项目名）' },
-        equity_basis: { type: 'string', enum: ['控股/全资', '收购/财团', '品牌/产品线', '技术印证', '其他'], description: '股权/归属判据类型（必填）。「技术印证」=CNAME 指向授权资产/内部部署域等部署关系' },
-        independent_src: { type: 'string', enum: ['无', '有', '不确定'], description: '目标是否有自身 SRC 收洞渠道（scope-domain 必填；有→不并入本项目）' },
+        equity_basis: { type: 'string', enum: ['控股/全资', '收购/财团', '品牌/产品线', '技术印证', '其他'], description: '股权/归属判据类型（必填）。整域（scope-wildcard）只接受 控股/全资 或 收购/财团。「技术印证」=CNAME 指向授权资产/内部部署域等部署关系' },
+        independent_src: { type: 'string', enum: ['无', '有', '不确定'], description: '目标是否有自身 SRC 收洞渠道（scope-domain/scope-wildcard 必填；有→不并入本项目）' },
         corroboration: { type: 'string', description: '旁证（选填，如 "meituan.com 下 126 个内部部署域印证"）' },
-        evidence: { type: 'string', description: '归属证据/依据摘要（≥10 字，如 "www CNAME→授权资产 meituan.com"）' },
+        evidence: { type: 'string', description: '归属证据/依据摘要。单子域 ≥30 字且须具体归属证据；整域 ≥30 字且须主体核证级证据（备案主体/收购公告/SRC 规则页）' },
       },
       required: ['kind', 'subject', 'evidence'],
       additionalProperties: false,

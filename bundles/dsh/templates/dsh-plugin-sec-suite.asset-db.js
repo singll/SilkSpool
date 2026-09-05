@@ -117,6 +117,8 @@ export function getDb() {
   ensureCol('tasks', 'provider', 'provider TEXT')
   ensureCol('tasks', 'model', 'model TEXT')
   ensureCol('tasks', 'reasoning_effort', 'reasoning_effort TEXT')
+  // ---- v4.5 异步审批：任务预算上限（task-budget-extend 批准后写入，runWorker 取 max(默认, 该值)）----
+  ensureCol('tasks', 'budget_timeout_sec', 'budget_timeout_sec INTEGER')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(schedule_kind, next_run_at)')
   // ---- P12：定时任务执行历史（task 行不再因重复跑而增殖；每次运行落一行历史）----
   db.exec(`
@@ -430,8 +432,9 @@ export function endpointHosts({ pathLike = '', programId = '', limit = 50, offse
 // ---- 资产多维视图（看板 v4.1）：域名族聚合 + 单主机钻取 ----------------------------------------------
 
 // 主机归族：域名取注册域近似（末两标签；.com.cn 等双后缀取三），IP 取 /24 网段
-// （首字符数字才走 IP 正则，避免 8 万行全量正则开销）
-function hostRoot(host) {
+// （首字符数字才走 IP 正则，避免 8 万行全量正则开销）。
+// 导出供 sec-suite 审批中心复用（scope-wildcard 的 apex 注册域判定）。
+export function hostRoot(host) {
   let h = String(host || '').toLowerCase().trim()
   const port = h.indexOf(':'); if (port > 0) h = h.slice(0, port)
   const c0 = h.charCodeAt(0)
@@ -736,6 +739,12 @@ export function taskList({ programId = '', status = '', phase = '', q = '', buck
   const { where, args } = taskWhere({ programId, status, phase, q, bucket, scheduled })
   const sql = `SELECT * FROM tasks WHERE ${where} ORDER BY priority ASC, created_at ASC LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
+}
+
+// v4.5：单任务取（task-budget-extend 审批 onApprove 用）
+export function taskGet(id) {
+  const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(Number(id))
+  return row ? plain(row) : null
 }
 
 export function countTasks(filters = {}) {

@@ -1,6 +1,6 @@
 # SilkSecAgent SRC 漏洞挖掘体系 · 持续推进文档
 
-> 版本：v3.4 · 2026-09-04（由设计规范 v2.1 + 人工待办文档合并而来，为唯一持续推进入口）
+> 版本：v3.5 · 2026-09-05（由设计规范 v2.1 + 人工待办文档合并而来，为唯一持续推进入口）
 > 性质：Living Document。历史设计文档与实施报告见本目录其他文件；本文档只保留**当前状态、待办、未完成的详细内容、工作规范**。
 > 体系运行位置：csai `/opt/silkspool/dsh/`；版本受控源文件在 SilkSpool 仓库 `bundles/dsh/templates/`。
 > **系统是什么、怎么转**（插件/脚本/流程/提示词/状态机/DSH+pi 架构完整解剖）见 [silksecagent-system-complete.md](silksecagent-system-complete.md)。
@@ -27,12 +27,13 @@
 - 台账体系：`data/pipeline/{program}/attempts-*.tsv`（六态）、`endpoints-*.tsv`（接口面）、`radar-queue.jsonl`（变化雷达）
 - **流程守卫（P15）**：interval 日任务标 `done` 前引擎硬校验纪律产物（台账 24h 增量 / card_usage / handoff-{date}.md），缺失即拦截——纪律不再依赖提示词自觉
 - **噪声闸门（P15）+ 完整性闸门（v4.2）**：info 级模板指纹自动打 `noise=1`；缺复现步骤/影响或标题<10 字符的登记一律归「待验证候选」——漏洞列表只呈现经 LLM 验证流登记、字段完整可复核的信号（机器直灌不冒充漏洞），补全后重登记可就地升级
-- **统一审批中心（v4.3 + v4.4 判据结构化）**：`approval_requests` 通用表 + `APPROVAL_KINDS` kind 注册表（`scope-domain`=候选授权域名：提请须带股权判据 equity_basis/independent_src/corroboration（口径=rules/src/equity-gate.md 股权闸），批准=原子写回 scope.yml **+ 自动入队首轮资产收集种子任务（`[审批入队]` 前缀）+ radar-queue scope-approved 事件**；`exclude-exception`=排除例外评估：批准=移出排除+并入 scope+durable fact 留判据）；agent 工具 `approval_request` 提请，看板「审批」tab 渲染判据 chip 批准/驳回留痕；批准前 fail-closed 不变
+- **统一审批中心（v4.3 + v4.4 判据结构化 + v4.5 整域通配与异步化）**：`approval_requests` 通用表 + `APPROVAL_KINDS` kind 注册表，现 4 种 kind——`scope-wildcard`=**整域授权**（subject=裸 apex，如 catpaw.com；批准写回 `["*.example.com","example.com"]` 双条目 + 种子任务，判据仅限 控股/全资 或 收购/财团，evidence≥30 字主体核证级；v4.5 新增，根因=09-04 批准的裸 apex 无通配、次日 recon 对 www 子域照样被拒）；`scope-domain`=**单子域授权**（subject=完整子域，evidence≥30 字具体归属证据；apex 提请会被 validate 拒绝并引导改提 scope-wildcard）；`exclude-exception`=排除例外评估（批准=移出排除+并入 scope+durable fact）；`tool-intrusive`=**侵入工具放行**（v4.5 异步审批：runCli 遇 intrusive 被拒自动落库带工具/参数/目标，批准写项目 `rules.allow_intrusive_tools` 白名单，下个调度周期重试自然放行，agent 不重试）；`task-budget-extend`=**任务预算延长**（v4.5：worker 跑满 3600s 被杀时 scheduler 自动提请，批准写 tasks.budget_timeout_sec≤7200，下周期 runWorker 取 max）；agent 工具 `approval_request` 提请，看板「审批」tab 渲染判据/工具/预算 chip；批准前 fail-closed 不变
 - **srcskill 实战先验吸收（v4.4，两批完成）**：首批 `rules/src/equity-gate.md`（股权范围闸：五档判据口径 + 默认不入池 + 独立SRC判定 + 人工判例表含 H-004 zhaopin 教训）+ `rules/src/technique-index.md`（打穿短表 87 行，开局先扫「认什么」列对现场特征）+ sec-pipeline 插件接线；第二批知识库 46 篇手法模块全量导入 `rules/techniques/`（idor/ssrf/xss/…详解层）+ 2 篇方法论 `rules/srcskill/`（dig-scope-workflow / vuln-report-format，引用路径已改写），rules 总量 56 篇；**可见性补齐**：知识 tab「静态先验 rules」分区（rulesList/rulesRead 只读两件套）+ vault `静态先验/` 子树同步 keeper
 - **事实治理（v4.3）**：countFacts/factSearch 同口径（行数=总数）；看板事实 tab 默认隐藏 note 速记 + 生命周期 facet（长期/时效/时间线）
 - **报告（v4.3）**：buildReport 按 severity 多选/source 筛选生成、按项目分节、文件名语义化；报告列表按项目分组可筛
 - **资产准入（P15）**：未分级资产禁入主动扫描队列（`asset_query level_in=S,A,B`）；全库已分级（grade-assets，域外参考站保持 NULL 永不进队）
-- **FGS 决策图（P17）**：`fgs_nodes` 表与 `fgs_add/update/list/next/export` 工具已落地，scheduler 在任务 prompt 中注入 FGS 使用说明；当前表为空，待跑通 Decide/Execute 循环
+- **FGS 决策图（P17 + v4.5 跨任务沉淀）**：`fgs_nodes` 表与 `fgs_add/update/list/next/export` 工具已落地，scheduler 在任务 prompt 中注入 FGS 使用说明；**v4.5 起任务 done 时 fact 类节点自动沉淀为 durable facts**（fact_key=`fgs/{task_id}/{node_id}`，幂等刷新 last_validated_at）——FGS 不再是一次性记忆，决策链结论跨任务可检索（看板知识 tab 体检视图显示沉淀数）
+- **知识体系自进化（v4.5）**：① kb 消费端激活——调度任务 prompt 注入 kb_search 检索指令 + AGENTS.md 受管区块检索建议段（278 篇 kb_docs 此前 268 篇 uses=0 死库存）；② 知识体检视图（memcore status().knowledgeHealth → 看板知识 tab 顶部：各存储点 count/零使用占比/到期预警）；③ kb revalidate_by 导入时 ±15 天抖动 + 存量同日到期回填散布（防 2026-11-23 集体塌方）；④ memcore sweep 三处死循环治理（vault-export 命中授权域的卡自动 exportable=0 降级不再刷日志、objective-lint 排除终态任务、lint 命中 done 任务#4 的刷屏根除）
 - 漏洞卡注册表：`data/vulncards/`（18 张卡，含 VC-034 Supabase 开放数据面 = 08-20 战役 retro）
 - 脚本：`scripts/pipeline/`（l2-collect / surface-consume / js-watch / ct-watch / pipeline-validate / coverage-report / verify-replay / **grade-assets / data-quality / discipline-audit**）
 - 常驻服务：`ct-watch.service`（CT 新子域雷达，certspotter 轮询，30min 间隔）、xray 被动 7777、mubeng 代理池 8899
@@ -100,7 +101,16 @@ spool exec csai "python3 /opt/silkspool/dsh/scripts/pipeline/data-quality.py"   
 - **是什么**：审批中心（看板「审批」tab）待审批 1 条：`zhaopin.com` 提请加入 meituan-src 授权（审批 #2）。
 - **归属证据**：智联招聘 2021 私有化财团由红杉中国与美团牵头（美团控股）；meituan.com 下有 ide.zhaopin.meituan.com 等 126 个内部部署域印证。
 - **⚠️ 需人工确认的边界**：智联招聘**或另有自身 SRC 归属**（第三方 SRC 平台可能有独立收漏洞渠道）——批准前请确认其归属边界，避免越权测试。
-- **操作**：看板「审批」tab → 批准（自动加入 meituan-src scope）或驳回（附原因）。另 3 条历史候选（catpaw.com / tabbit.com / wow.fun）已于 2026-09-04 批准入 scope。
+- **操作**：看板「审批」tab → 批准（自动加入 meituan-src scope）或驳回（附原因）。
+
+### H-005 存量待审批子域三条处理【2026-09-05 提请，v4.5 部署后处理】
+
+- **是什么**：09-04 批准的 catpaw.com/tabbit.com/wow.fun 只落了裸 apex（当时无 scope-wildcard kind），次日（09-05）recon 任务对 `www.catpaw.com` 等子域探活被 fail-closed 拒绝，agent 补提了 3 条子域级 pending 审批（#6/#7/#8，www.catpaw.com / www.tabbit.com / www.wow.fun 类）。
+- **v4.5 部署后的正确处理**（二选一）：
+  1. **推荐**：看板驳回 3 条子域请求（备注"改提整域"）→ 人工按整域归属分别提 `scope-wildcard`（catpaw.com / tabbit.com / wow.fun，equity_basis 按实际控股关系选 控股/全资 或 收购/财团）→ 批准后 `*.x.com + x.com` 双条目入 scope，全子域一次覆盖。
+  2. 或：直接批准 3 条子域请求（只覆盖单子域，下个子域还会再提——不推荐）。
+  3. 也可以让 agent 在下个周期重新提请（v4.5 的 approval_request 工具描述已教判定口径），但人工看板直提更快。
+- **配套**：处理完 `spool sync pull csai` 回收 scope.yml 管理机副本；若按方案 1，批准动作会自动入队 `[审批入队]` 种子任务（首轮全子域资产收集）。
 
 ---
 
@@ -185,6 +195,29 @@ VC-006 CRLF / VC-010 GraphQL / VC-011 JWT / VC-012 OAuth-SSO / VC-013 文件上�
 - 先测签名实现质量（改参重放/时间戳/删签名——半数实现有缺陷，无需逆向）
 - 确实验签的 → frida 逆向（人机混合任务），产出 MethodCard 长期复用
 
+### T-14 kb_docs 消费激活验收（v4.5 部署后一周）
+
+- 部署后观察：调度任务 worker.log 出现 kb_search 调用（每日）；一周后看板知识 tab 体检视图 kb zero_use 占比显著下降（当前 268/278 ≈ 96% 零使用）
+- 若一周后仍接近全零使用 → 检索指令注入位置不对（考虑移入 persona 而非 prompt 模板）或检索词画像不匹配（调 prompt 中的关键词建议）
+
+### T-15 FGS 沉淀质量验收（v4.5 部署后次日）
+
+- 次日 vuln 任务 done 后：`sqlite3 /opt/silkspool/dsh/data/asset-graph.db "SELECT COUNT(*) FROM facts WHERE fact_key LIKE 'fgs/%'"` > 0
+- 抽查 2-3 条：summary 是否结论性（非 step 感想）、body 是否带证据、confidence=confirmed 是否合理
+- 沉淀量异常大（>50 条/任务）→ 收紧 persistFgsFacts 的证据门槛（detail 长度/类型过滤）
+
+### T-16 scan-burst 审批设计（v4.5 仅登记未实现）
+
+- 突破 rate_limit_qps（50）的批量探测授权：批量扫（如全子域 nuclei）时的临时升速申请
+- 设计要点：kind=scan-burst，payload 带 qps 目标值/时长窗口/资产范围；批准写 scope.yml defaults 或项目 rules 的 burst_qps 字段，scheduler 在窗口内按新限速派发；窗口过期自动回落
+- 依赖：先看 tool-intrusive 白名单机制的实际使用频率，若审批中心活跃度低则本项优先级后移
+
+### T-17 CyberStrikeAI knowledge_base 死库存处置（仅登记）
+
+- `hosts/csai/knowledge_base/`（70 目录 23MB）+ config.yaml 由 spool sync 管理但**无任何运行时消费者**（/opt/silkspool/csai/ 下只剩 backups）
+- 选项：① 篮选有价值内容经 kb_import 灌入 kb_docs（走消费端激活通路）② 维持现状仅归档 ③ 删除（需用户单独批准）
+- 不默认删除——历史库存可能有回流价值，等 T-14 验收后再决策
+
 ---
 
 ## 四、体系工作规范（执行层参考）
@@ -236,6 +269,7 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 
 | 日期 | 里程碑 | 记录 |
 |---|---|---|
+| 2026-09-05 | **v4.5 审批通配/异步化 + 工具信封修复 + 知识体系自进化** | ① sec-pipeline 8 工具信封修复（execute 全部改返回纯对象，renderJSON 保留为双参 render 回调——此前的 `invalid output: "value" must be an object` 服务端实际写入成功仅传输层报错，exp 卡 #6 与黑板 env-issue 记载的根因）；② **审批通配符化**：新 kind `scope-wildcard`（整域 `*.example.com + example.com` 双条目写回 + 种子任务；judgment 仅 控股/全资 或 收购/财团、evidence≥30 字主体核证级）+ scope-domain 加 apex 检测（裸 apex 提请被拒并引导改提通配）+ 子域单域证据门槛升到 30 字；③ **异步审批扩展**：kind `tool-intrusive`（runCli intrusive 拒绝点自动落库带脱敏参数，批准写项目 rules.allow_intrusive_tools 白名单，checkRisk 白名单放行，agent 纪律第 13 条禁重试）+ kind `task-budget-extend`（scheduler 超时分支自动提请，批准写 tasks.budget_timeout_sec≤7200，runWorker 取 max(默认,值)）；④ **FGS 跨任务沉淀**（cairn-y §5.8 落地）：任务 done 时 fact 节点自动转正 durable facts（fgs/{task_id}/{node_id} 幂等）；⑤ **kb 消费激活**：调度 prompt 注入 kb_search 检索指令 + AGENTS.md 检索建议段（268/278 篇零使用死库存）；⑥ 知识体检视图（knowledgeHealth → 看板知识 tab）；⑦ memcore sweep 三处死循环治理（vault-export 拒绝卡自动 exportable=0 + memcore_events 留痕、objective-lint 排除终态任务、kb revalidate ±15 天抖动 + 存量同日到期回填散布）；⑧ 新增 taskGet/budget_timeout_sec/allow_intrusive_tools（serializeScope 支持）；⑨ 文档：H-005 存量子域审批处理指引、T-14~T-17 登记（kb 验收/FGS 验收/scan-burst 设计/CSAI 知识库处置） |
 | 2026-09-04 | **v4.6 DSH 本体升级 0.1.1-rc.2 → 0.1.2-rc.1（B0'/B1'/B2' 完成，B3' 观察中）** | ① 升级五坑全根因修复并回写模板：pnpm 11 无 TTY 清目录中止（实测认 `CI=true` 而非 npm_config_confirm_modules_purge）→ CI 又默认 frozen-lockfile（`--no-frozen-lockfile`）→ pnpm-workspace patch 声明钉旧版（ERR_PNPM_UNUSED_PATCH，对 0.1.2-rc.1 的 dsh-llm-deepseek 重打 reasoning_content patch + 声明升版，**每次升版必做**）→ session_projcache 存储版本 3≠5 crash-loop（幂等升版钩子 projcache_fix 入 dsh-upgrade.sh）→ root 属主 node_modules 致 pnpm RetryOperation 死循环（chown 归位）；② 验证 V1-V10 全过：**edge 走方案 A 零改动**（Caddy Host 改写继续绕过 0.1.2 一次性 token，判定取 hostname）、157 插件 id 组合树、sec-* 双 profile 全在、7 preset persona 完好、spawn_worker pong、web_fetch 实测直连公网（0.1.2 无禁用开关，靠纪律收口）；③ F-6/F-7 纪律：sec-runtime-discipline 新增第 10 条（web_fetch 仅限非目标域公开资料，禁对 scope 资产使用——绕 scope-guard 且出口不经 mubeng）+ 第 11 条（worker 禁自主切 provider，覆盖只由派单方经 `--patch` 指定）；④ F-7 上报关闭：**plugin-package-inventory-deepseek `enabled: false`**（web+headless 双 profile cordis.patch.yml，dump-config 验证；键名经探查=该插件由 dsh-base 挂载、zod `enabled` 默认 true；session-log 上报确认默认关）；⑤ F-8 版本钉：setup.sh DSH_VERSION → 0.1.2-rc.1 + dsh-version-watch.sh KNOWN 同步且版本获取改 dist-tags.latest（替代 versions[-1] 的 alpha 误报）+ radar 清 5 条陈旧事件；⑥ settings-mirror-patch 模板改双模式（0.1.2 起模式串 `ctx.remote.$host.isLoopback`，线上已手工重放）；⑦ 0.1.3-alpha.1 不升（SessionHandle 破坏 + 官方性能回退），升级前置=两处 sessionPersistence 重写。详见 `dsh-0.1.2-rc.1-upgrade-plan.md` §十 |
 | 2026-09-04 | **v4.4 srcskill 首批吸收（P19'+P20'）** | ① sec-pipeline 插件接线：manifest.yaml + setup.sh §8.4 正式部署（此前 8 工具仅开发未接线）；② 批准→种子入队闭环：scope-domain onApprove 自动创建 `[审批入队]` once 任务（+5min，只做资产收集禁漏洞探测）+ radar-queue.jsonl 追加 scope-approved 事件（双通道 best-effort 不阻塞批准）；③ 股权判据结构化：scope-domain 提请强制 equity_basis/independent_src/corroboration 三字段（payload 存储，看板渲染判据 chip）；④ 新 kind `exclude-exception`（排除例外评估：validate 强制 subject 在排除清单内，批准=移出排除+并入 scope+durable fact）；⑤ rules 先验两篇：equity-gate.md 股权闸（含判例表 4 例）+ technique-index.md 打穿短表 87 行（手法族列映射 vuln_type 词汇表）；⑥ 纪律更新：sec-runtime-discipline 第 2 条扩 exclude-exception 与判据要求、sec-pipeline §2 增开局扫技术索引；⑦ 修部署链路缺口：sec-pipeline/sec-runtime-discipline 技能源在 data-seed/skills/ 但不经任何通道下发（改了不生效）——已按既有模式接入 seed-skills.sh heredoc（幂等刷新；注意 spool pushTemplates 按文件名平铺推送，manifest 不能列嵌套路径） |
 | 2026-08-27 | 体系检查与设计 v1.0→v2.1 | 对 csai 只读检查：确认"高覆盖低产出"（近 6 天仅 +1 low；high/medium 全来自 08-20 手工战役）、工具闲置（20+ 装 5 用）、kb 闲置、xray 无消费。产出五公理设计规范（本目录保留 v2.1 历史版于 git 历史） |
