@@ -226,7 +226,10 @@ export function getDb() {
   // noise=1 的行全查询/报告/KPI 默认排除（includeNoise 显式查看）；存量 info 一次性回填。
   ensureCol('findings', 'noise', "noise INTEGER NOT NULL DEFAULT 0")
   db.exec('CREATE INDEX IF NOT EXISTS idx_findings_noise ON findings(noise)')
-  db.exec("UPDATE findings SET noise = 1 WHERE severity = 'info' AND noise = 0")
+  // v5 Phase 0：仅对仍是待验证候选（status='new'）的 info 级行强制 noise=1；
+  //   已 confirmed/submitted/终态的 info 级行（经人工/模型确认升级）保持 noise=0（信号面），
+  //   避免每次 getDb() 初始化把已确认的 info 级发现反复拉回噪声（候选池口径 = noise=1 AND status='new'）。
+  db.exec("UPDATE findings SET noise = 1 WHERE severity = 'info' AND noise = 0 AND status = 'new'")
   // ---- P15：调度 run 的 worker 会话 id（看板跳链）----
   ensureCol('task_runs', 'session_id', 'session_id TEXT')
   // ---- P17：Cairn_Y 融合——FGS 图（Fact-Goal-Step Graph）作为任务状态外化记忆 ----
@@ -572,7 +575,7 @@ export function stats() {
   return {
     assets: count('assets'), endpoints: count('endpoints'),
     findings: d.prepare('SELECT COUNT(*) AS n FROM findings WHERE noise = 0').get().n,
-    findings_noise: d.prepare('SELECT COUNT(*) AS n FROM findings WHERE noise = 1').get().n,
+    findings_noise: d.prepare("SELECT COUNT(*) AS n FROM findings WHERE noise = 1 AND status = 'new'").get().n,
     blackboard_keys: count('blackboard'),
     facts: count('facts'),
     programs: count('programs'), tasks: count('tasks'),
@@ -1533,6 +1536,9 @@ export function updateFinding({ id, status, note = '', bounty = null, vendor_sta
   if (bounty !== null && bounty !== undefined && bounty !== '') { sets.push('bounty = ?'); args.push(Number(bounty)) }
   if (vendor_status) { sets.push('vendor_status = ?'); args.push(String(vendor_status)) }
   if (status === 'submitted') { sets.push('submitted_at = COALESCE(submitted_at, ?)'); args.push(now()) }
+  // P0 热修（v5 Phase 0）：候选确认/提交/验收同事务摘噪声帽——根治 v4 "确认后候选不消减"（2026-09-06 实测 31 条 confirmed+noise=1 僵尸）。
+  //   false_positive/dup/ignored 保持 noise 不动，靠候选池口径（noise=1 AND status='new'）自动出池。
+  if (['confirmed', 'submitted', 'accepted'].includes(status)) { sets.push('noise = 0') }
   // P17：状态流转同步 FGS 节点与 confidence
   const statusToConfidence = { confirmed: 'confirmed', false_positive: 'false_positive', dup: 'dup' }
   const statusToFgs = { confirmed: 'done', submitted: 'done', false_positive: 'deprecated', dup: 'deprecated', ignored: 'deprecated' }
@@ -1805,7 +1811,7 @@ export function opsHealth() {
     idea_cards: ideaCards,
     scheduled_drift: drift,
     task_runs_last_age_hours: taskRunsStaleH,
-    findings_noise: d.prepare('SELECT COUNT(*) AS n FROM findings WHERE noise = 1').get().n,
+    findings_noise: d.prepare("SELECT COUNT(*) AS n FROM findings WHERE noise = 1 AND status = 'new'").get().n,
     assets_ungraded: d.prepare('SELECT COUNT(*) AS n FROM assets WHERE level IS NULL').get().n,
     alerts,
     healthy: alerts.length === 0,

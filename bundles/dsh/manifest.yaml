@@ -203,6 +203,8 @@ templates:
   - migrate-scheduled-tasks.js
   # --- 事实迁移（P11：遗留 blackboard → facts 事实图谱，幂等）---
   - migrate-blackboard-to-facts.js
+  # --- v5 Phase 0 候选池噪声帽归位（31 条 confirmed+noise=1 僵尸 → noise=0，幂等）---
+  - p-v5-0-fix-noise.js
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---
   - retention.sh
   # --- SQLite 一致性快照备份 + 紧急恢复（P0-5：DB down 应急 + 集中存储归宿）---
