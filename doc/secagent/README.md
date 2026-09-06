@@ -212,8 +212,20 @@ VC-006 CRLF / VC-010 GraphQL / VC-011 JWT / VC-012 OAuth-SSO / VC-013 文件上�
 ### T-17 CyberStrikeAI knowledge_base 死库存处置（仅登记）
 
 - `hosts/csai/knowledge_base/`（70 目录 23MB）+ config.yaml 由 spool sync 管理但**无任何运行时消费者**（/opt/silkspool/csai/ 下只剩 backups）
-- 选项：① 篮选有价值内容经 kb_import 灌入 kb_docs（走消费端激活通路）② 维持现状仅归档 ③ 删除（需用户单独批准）
+- 选项：① 筛选有价值内容经 kb_import 灌入 kb_docs（走消费端激活通路）② 维持现状仅归档 ③ 删除（需用户单独批准）
 - 不默认删除——历史库存可能有回流价值，等 T-14 验收后再决策
+
+### T-18 候选池不消减缺陷热修【P0，v5 Phase 0】
+
+- **实证（2026-09-06 实测）**：`updateFinding` 不触碰 `noise` 列 → findings 表 58 条 noise=1 中 **31 条已 confirmed、25 条已终态**仍留在候选徽章计数里，且 31 条已确认漏洞被信号面（noise=0）过滤不可见。候选池只是可见性视图，无状态机、无消减出口。
+- **热修三步**（不等 v5 重构）：① updateFinding 在 confirmed/submitted 流转时同事务 noise=0；② KPI `findings_noise` 口径改 `noise=1 AND status='new'`；③ 数据修复 56 行僵尸（备份先行 + dry-run + 幂等）。
+- **根治**：见 T-19 / [silksecagent-v5-domain-plugin-architecture.md](silksecagent-v5-domain-plugin-architecture.md) §4.1（vuln 域候选状态机化）。
+
+### T-19 v5 领域插件化大重构（Phase 1-5，方案已定稿待评审）
+
+- **方案文档**：[silksecagent-v5-domain-plugin-architecture.md](silksecagent-v5-domain-plugin-architecture.md)——实测取证（12 条写路径清单）→ 领域总线 + 14 域插件 + 可替换后端（sqlite/http/file）→ 统一契约八条铁律 → LLM 只见动词不见存储（工具面=契约自动投影 + actor 白名单 + 状态机私有）。
+- **阶段**：P1 总线+vuln 试点域（~1 周）→ P2 数据域滚动搬迁（asset/endpoint/fact/know）→ P3 跨域事件化（审批/parser/FGS 沉淀）→ P4 http-remote 后端试点（外部漏洞管理系统对接验收）→ P5 LLM 面收敛+守卫+评测。
+- **启动前置**：§三 契约定稿评审（用户确认后进 P1）。
 
 ---
 
@@ -296,6 +308,7 @@ STALE 触发：资产变化/卡片升版/超 retest 期/新情报/负账本到�
 ### 历史文档索引（本目录）
 
 - `silksecagent-system-complete.md` — **系统全景文档（以运行代码为真相源，长期有效）**：全部插件/脚本/流程/提示词/状态机/DSH+pi 融合架构解剖
+- `silksecagent-v5-domain-plugin-architecture.md` — **v5 领域插件化重构方案（2026-09-06 起草，待评审）**：候选池缺陷实证 + 领域总线/14 域契约/LLM 统一接口设计（推进状态见 T-18/T-19）
 - `dsh-secagent-plan-v6.md` — P11 时代主计划（历史快照，运行时现状以全景文档为准）
 - `dsh-upgrade-0.1.1-rc.2-report.md` — DSH 升级报告（2026-08-23，升级/回滚手册仍有效）
 - `silksecagent-assessment-2026-08-28.md` — 体系评估快照（主要缺口已由当日 P15/P16 批修复，见文末追加说明）
