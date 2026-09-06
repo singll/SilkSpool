@@ -1,6 +1,6 @@
 # 02 · vuln 域设计（漏洞信号 / 候选队列 / 证据 / 提交）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案
+> 版本：v5.0 ｜ 状态：草案
 > 依赖：**遵守** [`00-conventions.md`](00-conventions.md)（全局契约宪法，冲突以它为准）；被总线 `@silksec/sec-domain-bus` 宿主挂载。
 > 订阅（本域消费）：`exec.run.completed`（parser proposal 机器直灌分流）。
 > 被订阅（本域发布）：`vuln.candidate.registered / vuln.candidate.promoted / vuln.candidate.claimed / vuln.signal.registered / vuln.signal.confirmed / vuln.signal.rejected / vuln.signal.submitted`——消费方：eval 域（判定回流）、fgs 域（节点状态联动）、report 域（提交统计）、asset 域（总览缓存失效）。
@@ -299,7 +299,7 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 
 #### C9 · vuln_verify_replay（CONFIRMED 机械复核）
 
-**语义**：原 v4 `verify_replay` 工具（sec-pipeline.js L319-363，终审裁决从 ledger 台账族划归本域——操作对象是 `evidence/{finding_id}/`（本域 owns），判定结论是 finding 置信的机械来源，"记录 vs 判定"不同族，详证见 11-ledger.md §三现状映射 #7）。**防幻觉标准 9：LLM 不给自己当法官**——`vuln_confirm` 的纪律自查要求本复核通过，本命令就是那个"机械复核"的域化形态。CONFIRMED 流程里它由模型/脚本在确认前调用，结果留在 verify-log.md 证据链上。
+**语义**：原 v4 `verify_replay` 工具（sec-pipeline.js L319-363；从 ledger 台账族划归本域——操作对象是 `evidence/{finding_id}/`（本域 owns），判定结论是 finding 置信的机械来源，"记录 vs 判定"不同族，详证见 11-ledger.md §三现状映射 #7）。**防幻觉标准 9：LLM 不给自己当法官**——`vuln_confirm` 的纪律自查要求本复核通过，本命令就是那个"机械复核"的域化形态。CONFIRMED 流程里它由模型/脚本在确认前调用，结果留在 verify-log.md 证据链上。
 
 **参数表**：
 
@@ -319,7 +319,7 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 
 **语义**：v4 中 `finding_add` 工具 execute 段（asset-graph.js L168-196）在调度任务会话内自动创建 FGS finding 节点——这是工具面里的跨域直写。v5 改为：**fgs 域订阅 `vuln.signal.registered` / `vuln.candidate.registered`（弱联动）**，事件含 session_id 时查活动任务，创建 type=finding 节点后**调用本命令回写关联**（跨域副作用 = 发布事件 + 订阅方执行命令，公理 4 合法路径）。也允许模型在任务内显式 fgs_add 后传 fgs_node_id 给 C1。
 
-**参数表**：finding_id（必填，行须 status ∈ {new, confirmed}）、fgs_node_id（必填，正整数）。行为：覆盖式关联（后写胜），不改状态。无事件。**actor**：model, reactor（reactor 供 fgs 域订阅 `vuln.signal.registered` 回写，审计 cause 链指向原始事件及其 actor——宪法 §三 v5.0-draft-2）。**幂等**：自动指纹。
+**参数表**：finding_id（必填，行须 status ∈ {new, confirmed}）、fgs_node_id（必填，正整数）。行为：覆盖式关联（后写胜），不改状态。无事件。**actor**：model, reactor（reactor 供 fgs 域订阅 `vuln.signal.registered` 回写，审计 cause 链指向原始事件及其 actor——宪法 §三）。**幂等**：自动指纹。
 
 ### 1.4 查询（读投影）逐个详述
 
@@ -425,7 +425,7 @@ ToolProjector 从 manifest 自动 `ctx.tools.register`：工具名=动词/查询
 | `vuln_release` | 是 | "释放自己认领的候选（改做其他事时必须释放，别让锁白占到超时）。" |
 | `vuln_verify_replay` | 是 | "机械复核（LLM 不给自己当法官）。重放 evidence/{id}/request.txt，响应体 sha256 与 expect_hash 比对，结果追加 verify-log.md。CONFIRMED 纪律自查要求本复核通过。" |
 | `vuln_attach_fgs` | 是（Phase 1 可选） | "把 FGS finding 节点关联到 finding 行（任务内显式建图时用；调度会话内自动关联由 fgs 域事件完成，通常无需手动）。" |
-| （草稿工具） | — | `submission_draft` / `vuln_draft_submission` 旧名经总线别名指向 **report 域 `report_draft_submission`**（终审裁决方案 A，见 12-report.md §一）——本域不注册草稿工具 |
+| （草稿工具） | — | `submission_draft` / `vuln_draft_submission` 旧名经总线别名指向 **report 域 `report_draft_submission`**（见 12-report.md §一）——本域不注册草稿工具 |
 | `vuln_list` | 是 | "检索漏洞发现。visibility=signal（默认，仅信号面）/ candidate（待验证候选队列）/ all。按 host/severity/status/program_id/q 过滤，分页+排序。" |
 | `vuln_get` | 是 | "取单条 finding 全量详情（含 evidence 证据链全文）。" |
 | `vuln_candidates` | 是 | "待验证候选工作队列。claim_state=available（默认，未认领+认领超时）/ unclaimed / claimed / stale / all。带池摘要（pending/claimed/by_severity）。消化候选池是 vuln 任务 Slice 的合法硬指标来源。" |

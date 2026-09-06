@@ -1,6 +1,6 @@
 # 03 · asset 域设计（资产 / 指纹 / 分级——"挖什么、先挖谁"的唯一事实源）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：asset@1（repository-v1）
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：asset@1（repository-v1）
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线：网关/事件/幂等/审计）
 > owns（单写者）：`assets` 表、`fingerprints` 表（含全部列级演进）
 > 不 owns：`endpoints`（endpoint 域）、`findings`（vuln 域）、`programs`/scope（authz 域）
@@ -146,8 +146,15 @@
 | `rationale` | string | 模式②必填 | ≥10 字，分级依据（对齐 exp_store justification 纪律） |
 | `regrade` | boolean | ❌ | `false`；已分级资产默认拒绝重评（INV-5） |
 | `run_id` | string | ❌ | 证据 run（vision_triage 等来源；proposal 模式从文件内取） |
-| `owner` | string | ❌ | enum `confirmed` / `suspect` / `third_party`（2026-09-06 裁决新增；缺省不动既有值）。判据口径 `rules/src/asset-scoring.md` |
+| `owner` | string | ❌ | enum `confirmed` / `suspect` / `third_party`（缺省不动既有值）。判据口径 `rules/src/asset-scoring.md` |
 | `owner_evidence` | string | owner 传入时必填 | ≥10 字归属证据（ICP 备案号/证书 Organization/whois 摘录/favicon 同源依据）——**证据即参数**铁律（宪法 §四.4）：无证据不打 owner 标 |
+
+**owner 归属标注与两步固化**（判据口径 `rules/src/asset-scoring.md`：confirmed = ICP 备案/证书 Organization/whois 强证据；suspect = 仅 favicon/同 C 段弱证据→挂起；第三方 SaaS/CDN → third_party 排除）：
+
+- **列落地**：`assets` 表 ensureCol 增 `owner TEXT NULL`（enum 同上）；
+- **第一步（只记录不固化）**：deep_queue 不加 owner 条件——新分级必带 owner 标注，存量按接触回填（每次 asset_grade / 雷达命中 / 深挖前取队时补判）；
+- **第二步（固化条件打开）**：`confirmed+third_party 覆盖 ≥60% 深挖候选集（S+A+B 且 accept≠none 行）`后，把 `owner='confirmed'` 加进 deep_queue 固化 where。固化当日队列显著缩小属预期（SaaS/CDN 本就不该挖，正是纪律本意）；
+- **报表口径**：asset_stats 增加 owner 分布计数，回填进度看板可见。
 
 **proposal 文件格式（样板全文，`silksec/asset-grade-proposal@1`）**：
 
@@ -368,7 +375,7 @@
 
 返回：`{ rows, total, limit, offset }`，行含 `host, type, score, level, accept, biz, state, last_seen`。
 
-**这是 v4.x "资产准入纪律"（level_in=S,A,B + accept≠none + sort=score desc 写在 asset_query 工具描述里靠模型自觉拼参数）的查询化**：exec/task 域派单与 vuln 任务取队列一律调本查询，不再各自拼 where——未分级（NULL）与 C 级**物理上取不到**。深挖队列纪律的完整口径见 `rules/src/asset-scoring.md`（owner=confirmed 条款见 §四 开放问题）。
+**这是 v4.x "资产准入纪律"（level_in=S,A,B + accept≠none + sort=score desc 写在 asset_query 工具描述里靠模型自觉拼参数）的查询化**：exec/task 域派单与 vuln 任务取队列一律调本查询，不再各自拼 where——未分级（NULL）与 C 级**物理上取不到**。深挖队列纪律的完整口径见 `rules/src/asset-scoring.md`（owner 固化条件见 §1.3.3「owner 归属标注与两步固化」）。
 
 ### 1.5 事件
 
@@ -675,22 +682,9 @@ countFingerprintsWhere(filters) → n
 
 ## 四、开放问题
 
-1. ~~**owner 列缺失**~~ **已裁决（2026-09-06 用户批准：增列 + 分两步固化）**：
-   - **Phase 2 落地**：`ensureCol` 增 `owner TEXT NULL`（enum `confirmed` / `suspect` / `third_party`）；`asset_grade` 增加 `owner` + `owner_evidence` 参数（见 §1.3.3 参数表增补）——判据口径 `rules/src/asset-scoring.md`（confirmed = ICP 备案/证书 Organization/whois 强证据；suspect = 仅 favicon/同 C 段弱证据→挂起；第三方 SaaS/CDN → third_party 排除）。
-   - **第一步（只记录不固化）**：deep_queue 不加 owner 条件——新分级必带 owner 标注，存量按接触回填（每次 asset_grade / 雷达命中 / 深挖前取队时补判）。
-   - **第二步（固化条件打开）**：`confirmed+third_party 覆盖 ≥60% 深挖候选集（S+A+B 且 accept≠none 行）`后，把 `owner='confirmed'` 加进 deep_queue 固化 where。固化当日队列显著缩小属预期（SaaS/CDN 本就不该挖，正是纪律本意）。
-   - 报表口径：asset_stats 增加 owner 分布计数，回填进度看板可见。
-2. **雷达事件自动触发 asset_state**：当前设计由模型消化 radar 后手工登记 state 变化；ledger 域契约定稿后是否由 asset 域直接订阅 `ledger.radar.*` 事件自动 dispatch（signal 映射：新子域→changed、js hash 变化→content_changed）？
-3. **grade proposal 自动落库**：分级保留模型确认点（§1.3.3），代价是 recon 任务忘调 asset_grade 时未分级资产堆积——是否对调度任务（#16/#17 recon）的 objective 固化"grade_assets → asset_grade"两步链，或允许 script actor 在特定 manifest 下自动落库？
-4. **hostRoot 的归属**：域名注册域近似算法被 authz 域（scope-wildcard 审批 apex 判定）复用——保留跨域导出，还是 authz 域自带副本（复制漂移风险 vs 域自治）？
-5. **http-remote CMDB 字段映射**：外部资产系统（设想）的 host/type/attrs 字段差异、severity 映射（SABC→远端等级）需在 Phase 4 试点时定稿；能力矩阵的 partial 差异清单届时具化。
-6. **B 级占比过高**：score 基线 40（未知业务子域起步 B 下沿）导致 B 48,403 / C 28,017 的分布，深挖队列 S+A+B 命中 ~5.1 万行——评分基线是否调参（或在 deep_queue 增加 score 下限参数）？
-7. **proposal 上限 2,000 vs 单事务时长**：2,000 行 UPDATE 单事务实测 <100ms，但若未来 proposal 行数上限提高，是否改为分片多事务（牺牲整批原子性换吞吐）需实测后定。
-
----
-
-## 附：修订记录
-
-| 版本 | 日期 | 变更 |
-|---|---|---|
-| v5.0-draft-1 | 2026-09-06 | 初稿（依据归档 v5 方案 §4.2 种子 + v4.x 源码/运行态取证展开为实现级设计） |
+1. **雷达事件自动触发 asset_state**：当前设计由模型消化 radar 后手工登记 state 变化；ledger 域契约定稿后是否由 asset 域直接订阅 `ledger.radar.*` 事件自动 dispatch（signal 映射：新子域→changed、js hash 变化→content_changed）？
+2. **grade proposal 自动落库**：分级保留模型确认点（§1.3.3），代价是 recon 任务忘调 asset_grade 时未分级资产堆积——是否对调度任务（#16/#17 recon）的 objective 固化"grade_assets → asset_grade"两步链，或允许 script actor 在特定 manifest 下自动落库？
+3. **hostRoot 的归属**：域名注册域近似算法被 authz 域（scope-wildcard 审批 apex 判定）复用——保留跨域导出，还是 authz 域自带副本（复制漂移风险 vs 域自治）？
+4. **http-remote CMDB 字段映射**：外部资产系统（设想）的 host/type/attrs 字段差异、severity 映射（SABC→远端等级）需在 Phase 4 试点时定稿；能力矩阵的 partial 差异清单届时具化。
+5. **B 级占比过高**：score 基线 40（未知业务子域起步 B 下沿）导致 B 48,403 / C 28,017 的分布，深挖队列 S+A+B 命中 ~5.1 万行——评分基线是否调参（或在 deep_queue 增加 score 下限参数）？
+6. **proposal 上限 2,000 vs 单事务时长**：2,000 行 UPDATE 单事务实测 <100ms，但若未来 proposal 行数上限提高，是否改为分片多事务（牺牲整批原子性换吞吐）需实测后定。

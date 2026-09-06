@@ -1,6 +1,6 @@
 # 09 · approval 域设计（统一审批中心 · kind 注册表 · 异步审批协议）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：1
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：1
 > 依赖：**订阅：无**（approval 是联动源头，不订阅任何域——论证见 §1.5.4）；被订阅：`approval.approved`（scope 域 / task 域 / know 域 / fact 域 / exec 域，按 kind 过滤）、`approval.requested`·`approval.rejected`（看板通知、eval 域，弱联动）。
 > 最高约定：[00-conventions.md](00-conventions.md)；本文与它冲突时以它为准。
 
@@ -489,7 +489,7 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | validate | ① subject ≥8 字；② draft ≥50 字；③ source_url 合法；④ card_id 为正整数或空；⑤ evidence ≥30 字（为什么值得采纳：覆盖哪个知识缺口/哪个案例支撑/与现有卡的差异）；⑥ card_id/scenario 对卡状态读 know 域查询（harvest 草稿状态——**同步查询，非订阅**，§1.5.4 论证） |
 | 事件映射（approve） | `approval.approved` → **know 域**（强）`know_adopt`（07-know：card_id 有 → 转正对应 candidate 卡；只有 draft → 落新卡 source=external confidence=low 并直接转正；FTS 索引同步。v4.x 的"降级出口"（经验库不可达 → 批准有效+人工转正 note）在 v5 收紧为强联动失败即 decide 回滚——本地 sqlite 后端下不可达属异常态，人工可修复后重试） |
 
-**kind 7：`task-complete`（自执行任务完成确认）** —— 05-task C16/C17 三段式收尾的审批段（2026-09-06 用户裁决新增）
+**kind 7：`task-complete`（自执行任务完成确认）** —— 05-task C16/C17 三段式收尾的审批段
 
 | 项 | 值 |
 |---|---|
@@ -604,11 +604,3 @@ ApprovalRepo.statsWhere({since_ts}) -> aggregates
 | O-4 | knowledge-adopt 是否需要订阅 know 域收割状态（如"草稿被删除时自动作废已提请求"） | 当前用查询满足；出现真实联动规则再升级为订阅 |
 | O-5 | 审批 SLA：pending >7 天目前只有看板红条，是否要 approval.requested 的 Matrix 通知通道 | 倾向加（Bellkeeper 通知网关已有），Phase 5 与看板通知一并做 |
 | O-6 | kind 注册表的运行时热扩展（插件式 kind 注册）vs manifest 静态声明 | 静态优先（宪法 §八.6 显式依赖精神）；热扩展等出现第三方 kind 需求 |
-
----
-
-## 附：修订记录
-
-| 版本 | 日期 | 变更 |
-|---|---|---|
-| v5.0-draft-1 | 2026-09-06 | 初稿：域契约全量（3 命令 / 2 查询 / 3 事件 / 7 不变量）、6 kind 声明式注册表与事件映射、onApprove 四处直写的事件化时序图、异步审批协议保留设计、两接线决策点事件化路径 |

@@ -1,6 +1,6 @@
 # 07 · know 域设计（知识六仓：经验 / 文献 / 先验规程 / 漏洞卡 / 收割 / 体检）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：know@1
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：know@1
 > 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（订阅 `approval.approved` 承接 knowledge-adopt / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 工具统计回填 playbook）。
 > 被订阅：`know.*` 全系事件——memcore（治理旁路）、dashboard、eval（评测回流）。
 > owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
@@ -43,7 +43,7 @@
 | C13 | `kb_record_usage` | kb | 使用回执（uses+1；kb_search 投影层补发，v5 新增补齐对称性） | model, system | 自动指纹 | （无） |
 | C14 | `rule_seed` | rules | 物化规则文件到 data/rules/ 并建 curated 索引行（actor 物理闸：禁 model） | script, human, system | 自然键（path hash） | know.rule.seeded |
 | C15 | `vc_save` | vulncards | 存入/升版漏洞卡（version+1，deviation+changelog 必填） | model, dashboard, script | 自然键（id+version） | know.vc.saved |
-| C16 | ~~`vc_log_usage`~~ → **消费通道**（终审裁决：卡片使用记录归 ledger 域 `ledger_log_card_usage`，见本表下注） | vulncards | 本域经订阅 `card_usage.logged` 事件 + ledger 查询消费（registry 健康度/零使用卡清理判据）；usage jsonl 写入不在本域 | model, script, system（ledger 侧动词的 actor） | —（本域无此命令） | （ledger 域发 `card_usage.logged`） |
+| C16 | —（原 `vc_log_usage` 废止，改**消费通道**：卡片使用记录归 ledger 域 `ledger_log_card_usage`，见本表下注） | vulncards | 本域经订阅 `card_usage.logged` 事件 + ledger 查询消费（registry 健康度/零使用卡清理判据）；usage jsonl 写入不在本域 | model, script, system（ledger 侧动词的 actor） | —（本域无此命令） | （ledger 域发 `card_usage.logged`） |
 | C17 | `vc_activate` | vulncards | 激活卡片（draft→active，registry 同步） | dashboard, human, script | 自然键 | know.vc.activated |
 | C18 | `vc_deprecate` | vulncards | 弃置卡片（active→deprecated，registry 同步） | dashboard, human, script | 自然键 | know.vc.deprecated |
 | C19 | `harvest_ingest` | harvest | 收割队列投喂（feed/inbox/stdin → drafts + candidates.json，绝不自动写 rules/） | script, system, webhook | 自然键（item hash） | know.harvest.ingested |
@@ -51,7 +51,7 @@
 | C21 | `know_transition` | 跨仓 | 治理通道：exp/kb 生命周期降级（memcore sweep 专用） | system, human | 自然键 | know.exp.cooled/archived/expired、know.kb.* |
 | C22 | `know_purge_archive` | 跨仓 | 归档表 90 天硬删（占位动词，Phase 2 正式化，同 06-fact 映射表 #7） | system | 自然键 | （无） |
 
-> **卡片使用记录（原 `card_usage_log`）归属——终审裁决（2026-09-06）**：两域文档初稿分歧（本稿原判 know、11-ledger.md 判 ledger），终审按 v4 取证裁决**归 ledger 域**（动词 `ledger_log_card_usage`）：① v4 实测文件在 `data/pipeline/{program}/card_usage-{date}.jsonl`（sec-pipeline.js L146，`pipelineDir()` 即 ledger 台账树——本稿初版所写 `data/vulncards/usage/` 路径有误）；② attempts/card_usage/handoff 三产物同一纪律节奏写入、被 task_finish 流程守卫同批校验、走同一 vault 回放链路——拆域会让守卫跨域取证；③ 一棵目录树一个 owner（单写者律同款理由）。**本域消费路径**：订阅 `card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询，驱动 registry 健康度与 know_health 零使用卡清理——读消费不受 owns 影响。字段语义（card_id/deviation/suggest）的知识视角归本域解读，写入动作归 ledger。
+> **卡片使用记录（原 `card_usage_log`）归属**：归 **ledger 域**（动词 `ledger_log_card_usage`），文件 `data/pipeline/{program}/card_usage-{date}.jsonl`（sec-pipeline.js L146，`pipelineDir()` 即 ledger 台账树）：① attempts/card_usage/handoff 三产物同一纪律节奏写入、被 task_finish 流程守卫同批校验、走同一 vault 回放链路——拆域会让守卫跨域取证；② 一棵目录树一个 owner（单写者律同款理由）。**本域消费路径**：订阅 `card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询，驱动 registry 健康度与 know_health 零使用卡清理——读消费不受 owns 影响。字段语义（card_id/deviation/suggest）的知识视角归本域解读，写入动作归 ledger。
 
 ### 1.3 命令逐个详述
 
@@ -255,7 +255,7 @@
 
 #### C16 · 卡片使用记录（本域消费通道，写入归 ledger 域）
 
-**语义**：v4 `card_usage_log` 工具（sec-pipeline.js L130-158）在 v5 归 **ledger 域 `ledger_log_card_usage`**（终审裁决，见 §1.2 表下注）——落 `data/pipeline/{program}/card_usage-{北京日期}.jsonl`：`{ts, card_id, card_version, asset, result, deviation?, suggest?, run_id}`。
+**语义**：v4 `card_usage_log` 工具（sec-pipeline.js L130-158）在 v5 归 **ledger 域 `ledger_log_card_usage`**（见 §1.2 表下注）——落 `data/pipeline/{program}/card_usage-{北京日期}.jsonl`：`{ts, card_id, card_version, asset, result, deviation?, suggest?, run_id}`。
 
 **本域角色**：纯消费方。① 订阅 `card_usage.logged` 事件（弱联动）刷新 registry 健康度缓存；② `know_health` 体检经跨域查询 `ledger_usage_query(card_id, since_days)` 取零使用卡清理判据（不读 ledger 文件）。卡片升版原料分析（deviation 聚合）同样走该查询。
 
@@ -753,7 +753,7 @@ appendJsonl(path, line)
 |---|---|---|
 | `exp_store` / `exp_search` / `exp_feedback` / `pb_save` / `pb_outcome` / `kb_import` / `kb_search` / `kb_list` / `kb_read` / `vc_get` / `rule_list`（等 12 工具名） | 同名直通 | 零改名（1.1 命名裁定） |
 | `exp_validate` | `exp_feedback(verdict='validated')` | 折叠别名（一个观察期后删） |
-| `card_usage_log` | `ledger_log_card_usage`（**ledger 域跨域别名**，终审裁决） | 改名别名（exec 域工具统计侧同步改引） |
+| `card_usage_log` | `ledger_log_card_usage`（**ledger 域跨域别名**） | 改名别名（exec 域工具统计侧同步改引） |
 | `exp_exportable`（RPC） | `know.exp.approve_export` / `revoke_export` | RPC 别名（v4 单 case 拆两动词） |
 | `knowledge_health` | `know_health` | 别名 |
 | RPC expCards/kbList/rulesList/playbooks/knowledgeCoverage | know.** 点分名 | 看板客户端同步改写 |
@@ -775,10 +775,9 @@ appendJsonl(path, line)
 
 ## 四、开放问题
 
-1. ~~**命名豁免的正式化**~~ **已裁决（2026-09-06 用户批准）**：宪法 §二 已修订为 `{domain}_{subrepo?}_{对象?}_{动作}` 可选中段，并落"子仓前缀豁免（know 先例）"条款（宪法 v5.0-draft-2）——子仓动词保持 v4 原名合法化，两份文档不再矛盾。
-2. **exp_update 的模型侧禁用**：v4 经验卡修正仅看板通道；任务执行中模型发现卡错误时只能 wrong 反馈或重写新卡，修正闭环是否放开（配 deviation 强制）待评审。
-3. **kb_fts standalone vs external content**：2.1 的裁定（standalone）基于 body 在文件系统的事实；若未来 body 迁回表内，应切 external content 省双写——列演进时复评。
-4. **vector 检索规模化**：384 维暴力扫在 1e4 行后需 ANN（hnswlib 等）；引入点与 fact 域 LIKE→FTS 的升级点统一规划（两域检索栈演进对齐）。
-5. **curated 行与 kb 治理的边界**：curated 免复验免流转是 v4 语义；若 rules 升级后旧 curated 行内容过时，唯一通道是 rule_seed 覆盖——是否需要 vc_deprecate 同款 curated 下架动词，待规程库运维经验积累。
-6. **know_adopt 的 payload 二次校验深度**：C20 把 payload 按目标子仓分派后重跑该子仓全部不变量（含 INV-K8/K10）；approval 侧已做第一层校验（subject/draft/source_url/evidence 长度）——双层校验的字段重叠部分是否会产生"审批通过但落库被拒"的悬空审批单，需在 09-approval.md 定稿时对齐失败回写语义。
-7. **harvest drafts 的清理责任**：30 天未采纳草稿清理（2.6）未定义归属命令——本域 sweep 类维护任务（system actor）还是 know_health warnings 驱动的人工动作，待定。
+1. **exp_update 的模型侧禁用**：v4 经验卡修正仅看板通道；任务执行中模型发现卡错误时只能 wrong 反馈或重写新卡，修正闭环是否放开（配 deviation 强制）待评审。
+2. **kb_fts standalone vs external content**：2.1 的裁定（standalone）基于 body 在文件系统的事实；若未来 body 迁回表内，应切 external content 省双写——列演进时复评。
+3. **vector 检索规模化**：384 维暴力扫在 1e4 行后需 ANN（hnswlib 等）；引入点与 fact 域 LIKE→FTS 的升级点统一规划（两域检索栈演进对齐）。
+4. **curated 行与 kb 治理的边界**：curated 免复验免流转是 v4 语义；若 rules 升级后旧 curated 行内容过时，唯一通道是 rule_seed 覆盖——是否需要 vc_deprecate 同款 curated 下架动词，待规程库运维经验积累。
+5. **know_adopt 的 payload 二次校验深度**：C20 把 payload 按目标子仓分派后重跑该子仓全部不变量（含 INV-K8/K10）；approval 侧已做第一层校验（subject/draft/source_url/evidence 长度）——双层校验的字段重叠部分是否会产生"审批通过但落库被拒"的悬空审批单，需在 09-approval.md 定稿时对齐失败回写语义。
+6. **harvest drafts 的清理责任**：30 天未采纳草稿清理（2.6）未定义归属命令——本域 sweep 类维护任务（system actor）还是 know_health warnings 驱动的人工动作，待定。

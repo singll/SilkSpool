@@ -1,6 +1,6 @@
 # 11 · ledger 域设计（纪律台账 / 卡使用 / 覆盖 / 雷达队列 / 交接包）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：`ledger/1`
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：`ledger/1`
 > 依赖：订阅 `exec.run.completed`（对账统计，弱联动）、`approval.approved`（scope-approved 雷达入队，弱联动）；被订阅：`attempt.logged` / `card_usage.logged` / `handoff.written`（task 域——task_finish 三产物校验的计数缓存）、`radar.drained`（task/recon 派单侧）
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：把 agent 的**纪律动作**（台账落行/卡使用/交接包/雷达处置）变成机器强制、写入即校验、可聚合取证的文件型台账——"执行了什么、覆盖到哪、纪律是否在线"的唯一真相源。
@@ -24,7 +24,7 @@
 
 **owns 边界的三条论证**：
 
-1. **card_usage 与 know 域的边界（已终审裁决，2026-09-06）**：初稿分歧（本稿判 ledger、07-know.md 初版判 know），终审按 v4 取证裁决**归本域**——动词 `ledger_log_card_usage`，文件 owns `data/pipeline/{program}/card_usage-{date}.jsonl`。理由：① v4 实测文件在 `pipelineDir(program)` 台账树（sec-pipeline.js L146）；② 三产物（attempts / card_usage / handoff）在同一纪律节奏写入（每动作/每日收尾）、被同一流程守卫校验（task_finish 三查）、走同一 vault 回放链路——拆到两个域会让流程守卫跨域取证、让 vault 导出跨域拼目录；③ 一棵目录树一个 owner。know 域已对齐为**纯消费方**：订阅 `card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询（registry 健康度 / 零使用卡清理 / 升版原料 deviation 聚合），不读本域文件。原 §四.1 开放问题就此关闭。
+1. **card_usage 与 know 域的边界**：card_usage 归**本域**——动词 `ledger_log_card_usage`，文件 owns `data/pipeline/{program}/card_usage-{date}.jsonl`。理由：① v4 实测文件在 `pipelineDir(program)` 台账树（sec-pipeline.js L146）；② 三产物（attempts / card_usage / handoff）在同一纪律节奏写入（每动作/每日收尾）、被同一流程守卫校验（task_finish 三查）、走同一 vault 回放链路——拆到两个域会让流程守卫跨域取证、让 vault 导出跨域拼目录；③ 一棵目录树一个 owner。know 域是**纯消费方**：订阅 `card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询（registry 健康度 / 零使用卡清理 / 升版原料 deviation 聚合），不读本域文件。
 2. **handoff 与 fgs/task 域的边界**：交接包是"纪律台账的第五件产物"（收尾强制、被流程守卫校验、vault 回放），不是任务执行史（task 域）也不是决策图（fgs 域）。v4 的 `appendFgsToHandoff` 直写 handoff 文件——v5 废止：FGS 决策链摘要由模型调 `fgs_export` 查询后并入 `ledger_handoff_write` 的"动作"段输入（fgs 域不写本域文件）。
 3. **param-queue / assets-{program}.tsv / endpoints-{program}.tsv 不在本域**：参数队列归 endpoint 域（`endpoint_queue_surface`/`endpoint_consume_queue`，见 04-endpoint.md）；assets/endpoints TSV 是采集建议文件，归各自域经命令入库。本域只在校验查询（`ledger_pipeline_validate`）里核它们的**表头格式契约**（格式契约定义于 §2.1，文件本体 owner 在彼域）。
 
@@ -223,7 +223,7 @@
 
 #### 1.4.7 `ledger_usage_query`（know 域消费接口，卡片使用统计）
 
-终审裁决新增（2026-09-06）：know 域（07-know.md C16 消费通道）经本查询获取卡片使用信号，**不读本域文件**。
+know 域（07-know.md C16 消费通道）经本查询获取卡片使用信号，**不读本域文件**。
 
 | 参数 | 类型 | 必填 | 默认 |
 |---|---|---|---|
@@ -518,8 +518,7 @@ hasHandoff(program, date) → boolean
 
 | # | 问题 | 当前倾向 |
 |---|---|---|
-| 1 | ~~**card_usage 的域归属分歧**~~ **已终审裁决（2026-09-06）**：归本域（动词 `ledger_log_card_usage`），know 域对齐为消费方（事件 + `ledger_usage_query`），见 §1.1 论证 1 与 07-know.md §1.2 表下注 | 已关闭 |
-| 2 | `ledger_coverage_report` 的 coverage-latest.md 物化写在"查询纯读"边界上（定性为缓存写入） | 接受（对齐 know 域 curated 索引先例）；若评审认为越界，升格为命令 `ledger_coverage_materialize` + 纯读查询拆分 |
-| 3 | ct-watch/js-watch 改走 `sec` CLI 后，systemd 单元依赖总线 CLI 可用性（总线未起时事件丢失） | inbox 文件兜底（脚本降级写 radar-inbox.jsonl，域启动收割）；或接受丢失（雷达是 best-effort 旁路，CT 日志可重放） |
-| 4 | 台账"每动作立即落行"与模型攒批倾向的张力——discipline_stats 对账告警是唯一机器压力 | 保持：不自动代写（§1.5.2 论证），告警 + 周复盘人工施压；若漂移持续超标再评估"run 完成后自动落 PENDING 行、agent 补态"的折中（会引入 PENDING 落行，破坏 2.2.1 隐式态设计，慎动） |
-| 5 | handoff 同日多次覆盖只保留一代 `.prev`，人工可能想看更早版本 | vault 链路有日级归档兜底；暂不加版本链 |
+| 1 | `ledger_coverage_report` 的 coverage-latest.md 物化写在"查询纯读"边界上（定性为缓存写入） | 接受（对齐 know 域 curated 索引先例）；若评审认为越界，升格为命令 `ledger_coverage_materialize` + 纯读查询拆分 |
+| 2 | ct-watch/js-watch 改走 `sec` CLI 后，systemd 单元依赖总线 CLI 可用性（总线未起时事件丢失） | inbox 文件兜底（脚本降级写 radar-inbox.jsonl，域启动收割）；或接受丢失（雷达是 best-effort 旁路，CT 日志可重放） |
+| 3 | 台账"每动作立即落行"与模型攒批倾向的张力——discipline_stats 对账告警是唯一机器压力 | 保持：不自动代写（§1.5.2 论证），告警 + 周复盘人工施压；若漂移持续超标再评估"run 完成后自动落 PENDING 行、agent 补态"的折中（会引入 PENDING 落行，破坏 2.2.1 隐式态设计，慎动） |
+| 4 | handoff 同日多次覆盖只保留一代 `.prev`，人工可能想看更早版本 | vault 链路有日级归档兜底；暂不加版本链 |

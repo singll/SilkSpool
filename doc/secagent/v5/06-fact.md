@@ -1,6 +1,6 @@
 # 06 · fact 域设计（事实图谱 / 黑板环境层 / 负知识）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：fact@1
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：fact@1
 > 依赖：总线（01-bus.md，命令/查询网关、事件、幂等、审计）；宪法（00-conventions.md）。
 > 订阅：`task.finished`、`fgs.node.done`（FGS 沉淀）；`exec.run.failed`（负知识自动证伪）；`approval.approved`（exclude-exception 留档）。
 > 被订阅：`fact.*` 全系事件——memcore（治理旁路）、know（[env-issue] → AGENTS.md 刷新）、dashboard（视图）。
@@ -177,7 +177,7 @@
 
 **语义**：生命周期治理通道（memcore/sweep/迁移专用）。**只允许降级方向**：`active→cooling`（durable 复验逾期）、`active→archived`（ephemeral 过期 / timeline 超龄 / 数据修复）、`cooling→archived`（超 30 天）。复活/复验一律走 C5，本动词不做。
 
-> 宪法张力声明：宪法 §四.1 要求"调用方永远不传 status/to 参数"。本动词带 `to` 参数是对该条的**显式豁免**，理由：治理流转的判定来源是外部调度（sweep 周期判定）而非调用方意图，无法枚举为独立语义动词而不爆炸；且 actor 白名单不含 model、工具面不注册，"自由态写入口"风险物理不存在。**豁免已获用户批准（2026-09-06），并已写入宪法 §四.1 已批准豁免条款（三条件边界：调度判定型 / 仅 system+human / 不向模型注册）。**
+> 宪法 §四.1 要求"调用方永远不传 status/to 参数"；本动词带 `to` 参数是宪法**治理通道豁免**的实例（三条件边界：调度判定型 / 仅 system+human / 不向模型注册），理由：治理流转的判定来源是外部调度（sweep 周期判定）而非调用方意图，无法枚举为独立语义动词而不爆炸；且 actor 白名单不含 model、工具面不注册，"自由态写入口"风险物理不存在。
 
 **参数表**：
 
@@ -656,9 +656,8 @@ prompt 引用同步：persona/objective/skills/technique-index 中 `blackboard_s
 
 ## 四、开放问题
 
-1. ~~**fact_transition 的 `to` 参数**豁免确认~~ **已裁决（2026-09-06 用户批准）**：豁免成立，宪法 §四.1 已落"已批准豁免"条款（三条件边界），本域 §1.3 C7 与宪法同步。
-2. **投影层补发归档的失败窗口**：过期行物理归档最迟延迟 6h（sweep 兜底）；若审计要求"过期即物理消失"，需评估 sweep 间隔下调或接受窗口。
-3. **跨域事件 schema 对齐**：`exec.run.failed`、`approval.approved`、`task.finished`、`fgs.node.done` 的 payload schema 分别锚定 10-exec/09-approval/05-task/14-fgs 文档，本文按判据快照假定了字段（run_id/tool/target/cause 等），四份文档定稿时需交叉核对。
-4. **fact_purge_archive**（映射表 #7 的 90 天硬删命令）本文以占位形式声明 system actor + repository 原语，正式动词表待 18-migration Phase 2 补入。
-5. **派生边型**（same-domain/same-subnet）不在七种语义边型内，仅 C9 可写——是否在 schema 层把 edge_type 拆成 `semantic|derived` 两字段，待图规模上来后复评。
-6. **timeline 黑板键形态**：`[timeline]` bracket 键与带日期快照键（已被 INV-F7 拒绝）历史并存；是否对 `[timeline]` 键也强制日期后缀，待存量盘点。
+1. **投影层补发归档的失败窗口**：过期行物理归档最迟延迟 6h（sweep 兜底）；若审计要求"过期即物理消失"，需评估 sweep 间隔下调或接受窗口。
+2. **跨域事件 schema 对齐**：`exec.run.failed`、`approval.approved`、`task.finished`、`fgs.node.done` 的 payload schema 分别锚定 10-exec/09-approval/05-task/14-fgs 文档，本文按判据快照假定了字段（run_id/tool/target/cause 等），四份文档定稿时需交叉核对。
+3. **fact_purge_archive**（映射表 #7 的 90 天硬删命令）本文以占位形式声明 system actor + repository 原语，正式动词表待 18-migration Phase 2 补入。
+4. **派生边型**（same-domain/same-subnet）不在七种语义边型内，仅 C9 可写——是否在 schema 层把 edge_type 拆成 `semantic|derived` 两字段，待图规模上来后复评。
+5. **timeline 黑板键形态**：`[timeline]` bracket 键与带日期快照键（已被 INV-F7 拒绝）历史并存；是否对 `[timeline]` 键也强制日期后缀，待存量盘点。

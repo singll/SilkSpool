@@ -1,6 +1,6 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：`exec/1`
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：`exec/1`
 > 依赖：订阅 `scope.rules.changed`（QPS 即时生效）、`approval.approved`（tool-intrusive 白名单放行后重试自然通过，无需显式订阅——白名单在 scope 域数据里）；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal）、`exec.flow.appended`（vuln 域）、`exec.worker.spawned/.finished`（task 域）、`exec.import.completed`（endpoint/vuln 域）
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
@@ -383,7 +383,7 @@ sec bus replay --domain exec --since 1789000000000
 | `summarize` | string | 否 | 摘要策略（当前 `head`：≤20 行） |
 | `sandbox` | boolean | 否 | `false` = 逐工具豁免 bwrap（本地审计类用；默认沙箱） |
 | **`domain`（v5 新增）** | string | 否 | **产物去向域**标注（`asset` / `endpoint` / `vuln` / `none`）——供 exec_manifest_list 投影与人读；不参与路由（路由由事件订阅决定，标注仅是文档性同步） |
-| ~~`store`~~ | — | 废止 | **废止直写语义**（见下迁移方案） |
+| `store`（废止） | — | 废止 | **废止直写语义**（见下迁移方案） |
 
 **`store` 字段废止直写语义的迁移方案**（宪法 §五"脚本产 proposal 不落库"）：
 

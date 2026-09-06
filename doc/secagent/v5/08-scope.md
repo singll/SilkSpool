@@ -1,6 +1,6 @@
 # 08 · scope 域设计（授权白名单 / 项目镜像 / 排除 / 凭据引用 / 规则）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：1
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：1
 > 依赖：订阅 [`approval.approved`](09-approval.md)（授权类 kind 批准 → 本域执行 grant/rules）；被订阅：`scope.rules.changed`（exec 域令牌桶与风险闸缓存）、`scope.granted`（task 域种子任务链 + ledger 域 radar 追加）。
 > 最高约定：[00-conventions.md](00-conventions.md)；本文与它冲突时以它为准。
 
@@ -694,11 +694,3 @@ v4.x scope.yml 有三个写入方：serializeScope（域内）、spool sync push
 | O-5 | http-remote 全 unsupported——多主机/中心化授权管理的未来形态 | Phase 4 评审时与 vuln http-remote 一并议 |
 | O-6 | `_persistScope` 序列化丢注释（v4.x 已知协同痛点） | 评估 YAML AST 保注释写（js-yaml 保持注释能力有限，可能引入轻量自研） |
 | O-7 | scan-burst（T-16）：临时调高 defaults.rate_limit_qps 的审批 kind——需要"TTL 到期自动回落"的规则状态（临时补丁 + 恢复事件），与 `scope_rules_apply` 的永久补丁模型不同 | 与 09 §四 O-1 联动设计 |
-
----
-
-## 附：修订记录
-
-| 版本 | 日期 | 变更 |
-|---|---|---|
-| v5.0-draft-1 | 2026-09-06 | 初稿：域契约全量（7 命令 / 4 查询 / 5 事件 / 8 不变量 / 双仓后端），checkTarget 规范定义，serializeScope 内化，外部写入接管流程 |

@@ -1,6 +1,6 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：task domain manifest v1
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：task domain manifest v1
 > 依赖：订阅 `approval.approved`（审批入队种子任务 + task-budget-extend 预算落列）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
@@ -49,7 +49,7 @@
 | C16 | `task_submit_complete` | **自执行任务完成声明**（不改状态，提请 task-complete 审批） | model | 自然键（task_id+声明时刻） | — | ✅ |
 | C17 | `task_complete` | **审批落成收尾**（approval.approved kind=task-complete 订阅执行，自执行任务唯一 done 入口） | approval | 自然键（task_id） | task.finished | ❌ |
 
-> \* ~~actor `exec` 提议~~ **已宪法化（2026-09-06 用户裁决）**：宪法 §三 新增第 9 类 `reactor`（域事件订阅反应器）——因与 exec 域撞名弃用原名 `exec`。C13/C14 由总线从 `exec.worker.*` 订阅回调注入 actor=reactor，审计 cause 链指向源事件及其原始 actor；approval 事件的订阅执行保留专用 `approval` actor（语义更具体的先例身份）。
+> \* actor 为 `reactor`（宪法 §三 域事件订阅反应器）：C13/C14 由总线从 `exec.worker.*` 订阅回调注入 actor=reactor，审计 cause 链指向源事件及其原始 actor；approval 事件的订阅执行保留专用 `approval` actor（语义更具体的先例身份）。
 
 **与 exec 域的边界（dedupe_key 幂等语义为界）**：
 
@@ -416,9 +416,9 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 三者均不向模型注册；C13/C14 不发事件（exec.worker.* 事件本身即是留痕）。
 
-#### C16–C17 `task_submit_complete` / `task_complete`（自执行任务三段式收尾 · 已裁决设计 2026-09-06）
+#### C16–C17 `task_submit_complete` / `task_complete`（自执行任务三段式收尾）
 
-**背景（用户裁决方案）**：v4.x 模型可 `task_update status=done` 手动完结——模型给自己当法官。v5 收尾权唯一归 task_finish(scheduler)，但 assignee=model 的**自执行型任务**（web 会话内直接执行、不经 worker 派生）需要一个不破坏状态机单一入口的收尾路径。裁决：**声明完成 → 统一拦截 → 审批裁决**三段式。
+**背景**：v4.x 模型可 `task_update status=done` 手动完结——模型给自己当法官。v5 收尾权唯一归 task_finish(scheduler)，但 assignee=model 的**自执行型任务**（web 会话内直接执行、不经 worker 派生）需要一个不破坏状态机单一入口的收尾路径。采用 **声明完成 → 统一拦截 → 审批裁决** 三段式。
 
 | 动词 | 触发面 | 语义 | 关键细节 |
 |---|---|---|---|
@@ -756,7 +756,7 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 |---|---|---|---|
 | tasks 行数 | 数十（interval 固定任务 ~10 + once 链/种子任务累积） | 缓增；once 终态行长期累积 | idx_tasks_queue / idx_tasks_due；终态行只读不扫（认领查询天然过滤 status='queued'） |
 | task_runs | 每任务 ≤200 行（写入侧 LRU 剪枝） | 有界 | idx_task_runs_task / idx_task_runs_finished |
-| workers | 随 spawn 累积（v4.x 无清理） | 每日数十行 | **v5 新增保留策略（开放问题 4）：终态行保留 30 天后由 task_worker_reap 顺带清理，dedupe 窗口仅 30min 不受影响** |
+| workers | 随 spawn 累积（v4.x 无清理） | 每日数十行 | **v5 新增保留策略（开放问题 2）：终态行保留 30 天后由 task_worker_reap 顺带清理，dedupe 窗口仅 30min 不受影响** |
 | 认领查询 | tick 60s × idx_tasks_due | — | BEGIN IMMEDIATE 短事务，busy_timeout 5s |
 | 并发 | 认领 ≤4/ tick，MAX_WORKERS=4（调度与交互 spawn 共享） | — | busy → 回 queued 下 tick 重试 |
 | dedupe 窗口 | 30min（done/failed 回读） | — | idx_workers_key 覆盖查询 |
@@ -823,9 +823,7 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 
 ## 四、开放问题
 
-1. ~~actor `exec` 的宪法化~~ **已裁决（2026-09-06）**：宪法 §三 新增 `reactor`（弃用撞名原名 exec），C13/C14 白名单已改 reactor，见 §1.2 表注与宪法 v5.0-draft-2。
-2. ~~模型面任务完结语义~~ **已裁决（2026-09-06，用户方案）**：自执行任务走"声明完成（C16 task_submit_complete，model）→ 统一拦截兜底（scheduler 扫描）→ 审批裁决（C17 task_complete，approval）"三段式，见 §1.3 C16-C17；worker 型任务维持 task_finish 唯一收尾。
-3. **守卫失败是否应 blocked**：本稿选择「不拒事务、run ok=0 + 红条可观测」防状态死锁；替代方案是连续 N 次守卫缺失自动 task_block（人工介入）。倾向后者作为 v5.1 增强。
-4. **workers 表保留策略**：v4.x 终态行无限累积；本稿提议 30 天清理（dedupe 窗口 30min 不受影响）。需与「重启恢复窗口」复核。
-5. **task_runs 200 行上限可配性**：排障时可能需要更长历史；是否升为 manifest 配置（默认 200）。
-6. **http-remote 入站形态**：远端任务系统若要下发任务，走 webhook→task_create（actor=webhook）即可；是否需要专用的 `task_import_bulk` 批量动词（≤500 行）待需求实证。
+1. **守卫失败是否应 blocked**：本稿选择「不拒事务、run ok=0 + 红条可观测」防状态死锁；替代方案是连续 N 次守卫缺失自动 task_block（人工介入）。倾向后者作为 v5.1 增强。
+2. **workers 表保留策略**：v4.x 终态行无限累积；本稿提议 30 天清理（dedupe 窗口 30min 不受影响）。需与「重启恢复窗口」复核。
+3. **task_runs 200 行上限可配性**：排障时可能需要更长历史；是否升为 manifest 配置（默认 200）。
+4. **http-remote 入站形态**：远端任务系统若要下发任务，走 webhook→task_create（actor=webhook）即可；是否需要专用的 `task_import_bulk` 批量动词（≤500 行）待需求实证。

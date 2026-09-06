@@ -1,6 +1,6 @@
 # 01 · 领域总线（bus 域：注册 / 命令网关 / 事件 / 双投影 / 幂等 / 审计）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 依赖契约版本：[`00-conventions.md`](00-conventions.md) v5.0-draft-1（宪法，冲突以它为准）
+> 版本：v5.0 ｜ 状态：草案 ｜ 依赖契约版本：[`00-conventions.md`](00-conventions.md) v5.0（宪法，冲突以它为准）
 > 契约版本：bus manifest schema **v1**（本文 §2.2.1）｜ 错误码自有段：`E_BUS_*`
 > owns（单写者）：`idempotency` 表、`bus_meta` 表、`data/audit.jsonl`、`data/events/*.jsonl`、`data/bus.aliases.yaml`（版本受控副本在 bundle 模板）
 > 被依赖：全部 14 个领域模块 + [`16-dashboard.md`](16-dashboard.md)（RpcProjector）+ [`17-llm-surface.md`](17-llm-surface.md)（ToolProjector）+ sec-memcore（事件订阅客户端）
@@ -137,12 +137,12 @@ cordis 容器
     }
   ],
   "subscribers": [
-    { "source": "memcore", "pattern": "vuln.*", "mode": "async", "as": "script*", "last_error": null }
+    { "source": "memcore", "pattern": "vuln.*", "mode": "async", "as": "reactor", "last_error": null }
   ]
 }
 ```
 
-`*`：memcore 的订阅者身份 `as` 当前暂定值，见开放问题 Q1。
+memcore / eval 等治理订阅者执行 lifecycle / 回流命令的 actor 身份即 `reactor`（宪法 §三），白名单为各自 manifest 显式列出的 lifecycle / 回流类动词。
 
 ### 1.5 事件
 
@@ -180,7 +180,7 @@ cordis 容器
 | RPC 通道 | `connection.rpc.handle('/silksec-domain', handler, { authority: 'loopback' })`——沿用 `/silksec-dashboard` 通道的全部先例（sec-suite.js:2099-2112：child fiber 等服务就绪 + **module 级幂等守卫**防 connection re-provide 期重复注册） |
 | endpoint 命名 | `{domain}.{verb}` 点分（宪法 §二），如 `vuln.confirm`、`bus.status`、`bus.replay` |
 | handler 行为 | endpoint 拆成 (domain, verb) → `gateway.dispatch(domain, verb, payload, { actor: 'dashboard', operator })`；返回 `{ ok: true, value: envelope }` / `{ ok: false, error: { code, message, details } }`（与 v4.x dashboard RPC 信封形状一致，看板 client 改造成本最小） |
-| operator 注入 | **不可伪造**：handler 从连接上下文读取 auth-gate 用户身份（payload 内的 `operator` 字段一律忽略并覆盖）。注入通道在 Phase 1 与 dsh-auth-gate 0.7.2 实测对齐；若 auth-gate 不暴露用户上下文服务，回退方案见开放问题 Q5 |
+| operator 注入 | **不可伪造**：handler 从连接上下文读取 auth-gate 用户身份（payload 内的 `operator` 字段一律忽略并覆盖）。注入通道在 Phase 1 与 dsh-auth-gate 0.7.2 实测对齐；若 auth-gate 不暴露用户上下文服务，回退方案见开放问题 Q4 |
 | 覆盖范围 | actor 白名单含 `dashboard` 的全部动词 + 全部查询；`bus.replay` / `bus.prune` 的 RPC 名为 `bus.replay` / `bus.prune`，operator 必须非空且记录进 audit |
 
 ### 1.8 外部调用示例
@@ -308,7 +308,7 @@ subscribes:
   '{source.event.name}':
     handler: string               # 域内处理器函数名
     mode: sync|async
-    as: string                    # 订阅者执行命令时的 actor 身份（见开放问题 Q1）
+    as: string                    # 订阅者执行命令时的 actor 身份（reactor；approval 事件的订阅执行用专用 approval actor）
 backend: repository-v1
 ```
 
@@ -470,7 +470,7 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 |---|---|---|
 | manifest 内存缓存 | 注册后的域 manifest 常驻（dispatch 热路径零 IO） | 不失效（变更=重启；域版本演进走 §十五三段式） |
 | bus_status 健康缓存 | TTL 30s（`backend_reachable` 探测结果、idempotency 计数） | TTL 到期或任一 dispatch 失败即失效 |
-| audit 写入 | appendFileSync 直写（v4.x audit() 同款）；写失败 → 内存队列重试 3 次（间隔 1s/5s/30s）→ 仍失败：stderr + `bus_status.bus.audit.writable:false` + 看板红条。**不回滚命令**（v4.x "审计写入失败不阻断"先例的沿用；fail-open/fail-closed 的最终取舍见开放问题 Q2） |
+| audit 写入 | appendFileSync 直写（v4.x audit() 同款）；写失败 → 内存队列重试 3 次（间隔 1s/5s/30s）→ 仍失败：stderr + `bus_status.bus.audit.writable:false` + 看板红条。**不回滚命令**（v4.x "审计写入失败不阻断"先例的沿用；fail-open/fail-closed 的最终取舍见开放问题 Q1） |
 | 事件文件句柄 | 每域 fd 常驻 O_APPEND | 轮转时重开 |
 
 ### 2.6 性能与容量
@@ -605,14 +605,13 @@ dispatch_aliases:
 
 ---
 
-## 四、开放问题（宪法未覆盖、需用户拍板）
+## 四、开放问题（宪法未覆盖、实现期观察项）
 
 | # | 问题 | 选项与建议 |
 |---|---|---|
-| Q1 | **订阅者执行命令的 actor 身份词汇**。宪法 §三 只为 `approval`（审批事件订阅执行）定义了事件因果 actor；memcore（治理）与 eval（回流）订阅者执行 lifecycle/回流命令时用什么 actor？现值 `script` 是借位（宪法定义 script=run_cli 脚本）。 | 建议：宪法 §三 增补第 9 个 actor **`governance`**（治理订阅执行：memcore 生命周期、eval 回流、统计刷新），白名单仅 lifecycle/回流类动词。manifest `subscribes.as` 字段已为此预留。若不加，memcore 的全部 lifecycle 动词白名单需写 `script`，语义长期漂移 |
-| Q2 | **audit 落盘失败的语义**。现设计沿用 v4.x fail-open（不回滚命令，告警+重试）；但宪法 §十四.7 "审计不可绕过"可读出 fail-closed 期待（审计写不进=命令不许成）。 | 建议：主链路写命令 fail-closed（audit 写失败 → 回滚），查询与弱联动 audit 失败保持 fail-open。需用户确认可用性代价（磁盘满时全系统写停摆是否可接受） |
-| Q3 | **事件 jsonl 跨进程原子性上限**。多进程 O_APPEND 并发写同文件，单次 write >4KB 后内核不再保证不交错。现设计用 8KB 上限 + payload 判据快照约束压风险，未做文件锁。 | 备选：事件写入加 per-domain flock（代价：热路径 +1 syscalls 与锁竞争）。建议先按现设计上线，用 events_tail 的行解析失败率做观测指标，超标再加锁 |
-| Q4 | **强联动嵌套与环**。subscribes 图的强联动环已在注册时检测，但 sync 订阅者动态 dispatch（handler 里调另一域命令又触发 sync 订阅）只能靠深度闸 3 兜底。 | 需确认：深度 3 是否够（vuln→asset→scope 链已 3 层）；是否要在 audit 里显式记录嵌套链 |
-| Q5 | **operator 身份注入通道**。v4.x dashboard RPC 不携带操作者身份（approvalDecide 审计无 operator 字段，实测取证）。v5 设计假定 auth-gate 0.7.2 可在 RPC 连接上下文暴露用户身份，未实测验证。 | 回退方案：看板登录后向 `/silksec-domain` 发一次性 operator 登记调用（token 换绑连接→operator），bus 维护连接↔operator 映射。Phase 1 第一周内定 |
-| Q6 | **http-remote 后端的幂等语义边界**。远程端点部分成功（网络超时但远端已提交）时，本地幂等表未落行 → 重试会在远端二次执行。能力矩阵 partial 声明 + 远端幂等头（Idempotency-Key 透传）是方案，但依赖外部系统配合。 | Phase 4 vuln 试点时定；需用户确认目标外部漏洞管理系统是否支持幂等头 |
-| Q7 | **总线查询面对 model 的暴露口径**。现设计暴露 `bus_status` + `events_tail`（事件是模型可观察的世界状态），不暴露 `audit_tail`。 | 备选：全部收为 dashboard/human 专用（模型最小面），或再放开 audit_tail 的"自身 session_id 过滤"视图。请确认现口径 |
+| Q1 | **audit 落盘失败的语义**。现设计沿用 v4.x fail-open（不回滚命令，告警+重试）；但宪法 §十四.7 "审计不可绕过"可读出 fail-closed 期待（审计写不进=命令不许成）。 | 建议：主链路写命令 fail-closed（audit 写失败 → 回滚），查询与弱联动 audit 失败保持 fail-open。需用户确认可用性代价（磁盘满时全系统写停摆是否可接受） |
+| Q2 | **事件 jsonl 跨进程原子性上限**。多进程 O_APPEND 并发写同文件，单次 write >4KB 后内核不再保证不交错。现设计用 8KB 上限 + payload 判据快照约束压风险，未做文件锁。 | 备选：事件写入加 per-domain flock（代价：热路径 +1 syscalls 与锁竞争）。建议先按现设计上线，用 events_tail 的行解析失败率做观测指标，超标再加锁 |
+| Q3 | **强联动嵌套与环**。subscribes 图的强联动环已在注册时检测，但 sync 订阅者动态 dispatch（handler 里调另一域命令又触发 sync 订阅）只能靠深度闸 3 兜底。 | 需确认：深度 3 是否够（vuln→asset→scope 链已 3 层）；是否要在 audit 里显式记录嵌套链 |
+| Q4 | **operator 身份注入通道**。v4.x dashboard RPC 不携带操作者身份（approvalDecide 审计无 operator 字段，实测取证）。v5 设计假定 auth-gate 0.7.2 可在 RPC 连接上下文暴露用户身份，未实测验证。 | 回退方案：看板登录后向 `/silksec-domain` 发一次性 operator 登记调用（token 换绑连接→operator），bus 维护连接↔operator 映射。Phase 1 第一周内定 |
+| Q5 | **http-remote 后端的幂等语义边界**。远程端点部分成功（网络超时但远端已提交）时，本地幂等表未落行 → 重试会在远端二次执行。能力矩阵 partial 声明 + 远端幂等头（Idempotency-Key 透传）是方案，但依赖外部系统配合。 | Phase 4 vuln 试点时定；需用户确认目标外部漏洞管理系统是否支持幂等头 |
+| Q6 | **总线查询面对 model 的暴露口径**。现设计暴露 `bus_status` + `events_tail`（事件是模型可观察的世界状态），不暴露 `audit_tail`。 | 备选：全部收为 dashboard/human 专用（模型最小面），或再放开 audit_tail 的"自身 session_id 过滤"视图。请确认现口径 |

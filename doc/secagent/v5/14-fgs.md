@@ -1,6 +1,6 @@
 # 14 · fgs 域设计（任务内决策图 Fact-Goal-Step Graph）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：fgs domain manifest v1
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：fgs domain manifest v1
 > 依赖：订阅 `task.finished`（图生命周期收口：失败节点补记）；被 task 域调度器调用（`fgs_clear` + 顶层 goal 种子，actor=scheduler）
 > 被订阅：`fgs.node.done`（fact 域沉淀候选清单）；`fgs_export` 查询被 ledger 域（handoff 追加）、fact 域（沉淀取数）跨域只读调用
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
@@ -30,7 +30,7 @@
 
 ### 1.2 命令总表
 
-> **命名裁决（宪法冲突说明）**：种子设计（归档 §4.13）与任务书的「fgs_update 单动词（status 参数内聚状态机）」与宪法 §二禁用词（新动词不得叫 `update`）及 §四.1（**调用方永远不传 status 参数——目标状态是动词名的一部分**）直接冲突。按宪法裁决：状态机拆为语义动词族（fgs_start / fgs_complete / fgs_fail / fgs_block / fgs_deprecate），content/score 增量合并独立为 `fgs_annotate`；`fgs_update` 降级为**兼容别名**（按 status 参数分派到语义动词，观察期后删除）——与 vuln 域 `updateFinding(status=xxx) → vuln_confirm/vuln_reject/...` 的分派先例完全同型。若用户评审坚持单词法，须先修宪（§二禁用词 + §四.1），见 §四开放问题 1。
+> **命名说明**：种子设计（归档 §4.13）与任务书的「fgs_update 单动词（status 参数内聚状态机）」与宪法 §二禁用词（新动词不得叫 `update`）及 §四.1（**调用方永远不传 status 参数——目标状态是动词名的一部分**）冲突，故状态机拆为语义动词族（fgs_start / fgs_complete / fgs_fail / fgs_block / fgs_deprecate），content/score 增量合并独立为 `fgs_annotate`；`fgs_update` 降级为**兼容别名**（按 status 参数分派到语义动词，观察期后删除）——与 vuln 域 `updateFinding(status=xxx) → vuln_confirm/vuln_reject/...` 的分派先例完全同型。非法流转在 schema 层拒绝。
 
 | # | 动词 | 一句话语义 | actor | 幂等键 | 发布事件 | 模型可见 |
 |---|---|---|---|---|---|---|
@@ -43,7 +43,7 @@
 | F7 | `fgs_annotate` | content 增量合并 + score 调整（**不动状态**） | model | 自动指纹 | fgs.node.updated | ✅ |
 | F8 | `fgs_clear` | 清空某任务旧图（任务启动序列，调度器专用） | scheduler | 状态条件 | fgs.task.cleared | ❌ |
 
-> \* F4 含 system：本域订阅 `task.finished(ok=false)` 后补记 failed 节点走域内 service（cause 链带源事件）。
+> \* F4 含 reactor：本域订阅 `task.finished(ok=false)` 后补记 failed 节点走域内 service（cause 链带源事件，宪法 §三）。
 
 ### 1.3 命令逐个详述
 
@@ -148,11 +148,11 @@
 | `reason` | string | ✅ | 非空；≤500 字 |
 | `content` | object | ❌ | 增量合并（补错误上下文） |
 
-**不变量**：INV-F1（system actor 的 task.finished 补记路径豁免——见 §2.3）；前置=非终态。终态再 fail → `E_STATE`。
+**不变量**：INV-F1（reactor actor 的 task.finished 补记路径豁免——见 §2.3）；前置=非终态。终态再 fail → `E_STATE`。
 
 **返回**：`data: {node_id, task_id, status: "failed"}`。**错误码**：`E_NOT_FOUND`；`E_STATE`；`E_SCHEMA`（reason 空，hint「失败必须写 reason——复盘依赖归因」）。
 
-**幂等**：自动指纹。**actor**：model, reactor（reactor 供订阅 `task.finished` 补记失败节点，宪法 §三 v5.0-draft-2）。**事件**：`fgs.node.updated`。
+**幂等**：自动指纹。**actor**：model, reactor（reactor 供订阅 `task.finished` 补记失败节点，宪法 §三）。**事件**：`fgs.node.updated`。
 
 **agent_note**：
 
@@ -508,9 +508,8 @@ deleteNodesByTask(taskId) → n                              // fgs_clear
 
 ## 四、开放问题
 
-1. ~~**fgs_update 单动词 vs 宪法拆分**~~ **已裁决（2026-09-06 用户确认）**：维持拆分——fgs_start / fgs_complete / fgs_fail / fgs_block / fgs_deprecate / fgs_annotate 六语义动词 + fgs_update 兼容别名（观察期后删），不修宪。非法流转在 schema 层拒绝，与 vuln 域 updateFinding→vuln_* 分派先例统一。
-2. **goal 节点唯一性**：调度器每周期种一个顶层 goal，但契约未禁止模型追加 goal。是否将「每任务 goal ≤1（scheduler 种子专属）」升级为 INV（当前为纪律约定）。
-3. **depends_on 跨类型依赖**：当前 ready 判定只认 step 类 done 节点（依赖 fact 节点不使 step ready）。是否需要显式 fact 依赖语义（如 `depends_kind`），或维持「fact 依赖用 content 表达」的极简口径。
-4. **历史图保留策略**：终态任务图累积（只读）。节点量级小（每任务数十），暂不清理；若长期膨胀再议「导出后归档」。
-5. **fgs.node.done 是否足以独立驱动沉淀**：当前设计 fact 域双订阅（fgs.node.done 记清单 + task.finished 触发转正），沉淀被任务收尾门控（与图生命周期一致）。若未来出现「任务中途即沉淀」的实时性需求，需评估 mid-task 沉淀对复验周期（30d）锚点的影响。
-6. **blocked 节点复活**：当前 blocked 不自动复活（新 step 重试）。是否需要 `fgs_unblock`（blocked→open）动词——倾向不加（避免状态机膨胀，重试新建节点语义更清晰），待实证。
+1. **goal 节点唯一性**：调度器每周期种一个顶层 goal，但契约未禁止模型追加 goal。是否将「每任务 goal ≤1（scheduler 种子专属）」升级为 INV（当前为纪律约定）。
+2. **depends_on 跨类型依赖**：当前 ready 判定只认 step 类 done 节点（依赖 fact 节点不使 step ready）。是否需要显式 fact 依赖语义（如 `depends_kind`），或维持「fact 依赖用 content 表达」的极简口径。
+3. **历史图保留策略**：终态任务图累积（只读）。节点量级小（每任务数十），暂不清理；若长期膨胀再议「导出后归档」。
+4. **fgs.node.done 是否足以独立驱动沉淀**：当前设计 fact 域双订阅（fgs.node.done 记清单 + task.finished 触发转正），沉淀被任务收尾门控（与图生命周期一致）。若未来出现「任务中途即沉淀」的实时性需求，需评估 mid-task 沉淀对复验周期（30d）锚点的影响。
+5. **blocked 节点复活**：当前 blocked 不自动复活（新 step 重试）。是否需要 `fgs_unblock`（blocked→open）动词——倾向不加（避免状态机膨胀，重试新建节点语义更清晰），待实证。

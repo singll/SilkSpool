@@ -1,6 +1,6 @@
 # 12 · report 域设计（报告与提交稿的生成、索引、检索）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：1
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：1
 > 依赖：**订阅**：无（纯消费 vuln 域查询，不订阅任何事件）；**被订阅**：`report.built` / `report.draft.generated`（当前零订阅者，预留给 eval/ledger/每日链——弱联动）；**上游查询依赖**：`vuln_list` / `vuln_stats`（02-vuln.md 契约，经 QueryGateway 同步只读）。
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）。
 
@@ -296,7 +296,7 @@ session_id: sess_...
 | INV-R3 | 新产物 frontmatter 必含 report_id/kind/program/generated_at/date/counts | 写前自检，缺失即 bug |
 | INV-R4 | 报告数据源固定 noise=0 信号面（谓词在域内硬编码，不经参数）| — |
 | INV-R5 | report_read 的 file 解析后必须在 data/reports/ 前缀内 | E_SCHEMA（hint："非法路径"）|
-| INV-R6 | 提交草稿仅针对 status ∈ {confirmed, submitted} 的信号面 finding（v4 无此限制属纪律缺口，v5 收紧；原 02-vuln.md INV-8 随方案 A 终审裁决迁入本域）| E_INVARIANT（hint："提交草稿只针对已确认发现。先完成验证规程并 vuln_confirm 附证据"）|
+| INV-R6 | 提交草稿仅针对 status ∈ {confirmed, submitted} 的信号面 finding（v4 无此限制属纪律缺口，v5 收紧；由 02-vuln 域 INV-8 迁入本域）| E_INVARIANT（hint："提交草稿只针对已确认发现。先完成验证规程并 vuln_confirm 附证据"）|
 | INV-R6 | report_draft_submission 目标必须是信号面 finding | E_REPORT_NOT_SIGNAL |
 
 ### 2.3 事务与联动

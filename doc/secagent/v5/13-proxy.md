@@ -1,6 +1,6 @@
 # 13 · proxy 域设计（免费代理池：采集提案落池、轮换网关消费、会话保持）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：1
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：1
 > 依赖：**订阅**：无（不订阅任何事件）；**被订阅**：`proxy.pool.refreshed` / `proxy.bad.reported` / `proxy.sticky.bound`（当前零强联动订阅者——mubeng 热加载不依赖事件，见 §2.3 论证）；**被引用**：exec 域（env_proxy 8899 注入前引用 `proxy_stats` 做健康观测）、16-dashboard（网关健康展示）。
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）。
 

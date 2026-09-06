@@ -1,6 +1,6 @@
 # 04 · endpoint 域设计（接口面 / 参数队列——"打哪里、喂什么料"的唯一事实源）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 契约版本：endpoint@1（repository-v1）
+> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：endpoint@1（repository-v1）
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线）
 > owns（单写者）：`endpoints` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）
 > 不 owns：`assets`（asset 域）、`findings`（vuln 域）、`data/pipeline/{program}/` 下其余台账文件（ledger 域）
@@ -83,7 +83,7 @@
 }
 ```
 
-行级结果数组仅含前 100 行明细 + 计数（防 5,000 行信封膨胀；完整明细域内不落、调用方按 TSV 自查）。单行 INV-3（scope）失败：行级 `error` 不回滚整批（同 asset 域裁决）。
+行级结果数组仅含前 100 行明细 + 计数（防 5,000 行信封膨胀；完整明细域内不落、调用方按 TSV 自查）。单行 INV-3（scope）失败：行级 `error` 不回滚整批（与 asset 域同口径）。
 
 **幂等**：行级自然键 `(host, method, path)`（表主键，upsert 语义天然幂等）；批量另记 `endpoint:upsert:bulk:sha256:{tsv 指纹}`（重放同文件返回首次结果）。
 
@@ -546,11 +546,3 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 5. **http-remote 对接系统选型**：外部 API 清单系统（设想）的 (host,method,path) 主键兼容性、鉴权字段命名、bulk 端点限额——Phase 4 与 asset 域 CMDB 对接一并调研。
 6. **roles_seen 的角色词表**：当前自由字符串（admin/user/guest…），跨项目口径不一——是否由 authz 域统一角色注册表（credentials 的 role 字段已有雏形）供本域引用校验？
 7. **consume 的自动化**：dalfox/sqlmap 经 run_cli 跑完后由模型显式调 consume_queue（当前设计）；是否在 exec.run.completed handler 里对 scanner ∈ {dalfox, sqlmap} 的 run 自动消化当次喂料（依赖 exec 域 proposal 携带喂料清单）？
-
----
-
-## 附：修订记录
-
-| 版本 | 日期 | 变更 |
-|---|---|---|
-| v5.0-draft-1 | 2026-09-06 | 初稿（依据归档 v5 方案 §4.3 种子 + v4.x 源码/运行态取证展开为实现级设计；补 consume 消化语义与 TSV 断层回填） |

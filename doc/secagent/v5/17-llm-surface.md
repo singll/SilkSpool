@@ -1,6 +1,6 @@
 # 17 · LLM 工具面（llm-surface：契约投影 / 挂载矩阵 / prompt 体系对接 / 负向保障）
 
-> 版本：v5.0-draft-1 ｜ 状态：草案 ｜ 依赖契约版本：[`00-conventions.md`](00-conventions.md) v5.0-draft-1 ｜ [`01-bus.md`](01-bus.md)（ToolProjector 机制）｜ 各域文档 02-15（动词清单与 agent_note 的真相源）
+> 版本：v5.0 ｜ 状态：草案 ｜ 依赖契约版本：[`00-conventions.md`](00-conventions.md) v5.0 ｜ [`01-bus.md`](01-bus.md)（ToolProjector 机制）｜ 各域文档 02-15（动词清单与 agent_note 的真相源）
 > owns：**无**（本域不是插件、不持有任何存储——它是 ToolProjector 的投影规则与 prompt 对接设计；投影器本体属 01-bus）
 > 本文回答：**"模型只见动词不见存储"由哪几张矩阵保证、模型看到的每个工具长什么样、模型做错了怎么自愈、怎么验证它守约。**
 
@@ -48,7 +48,7 @@ for alias of bus.aliases:                              # ② 兼容别名（01 �
 | vuln | 7 | 5 | register_candidate | 11 |
 | asset | 4 | 6 | — | 10 |
 | endpoint | 3 | 3 | — | 6 |
-| task | 8 | 6 | schedule, block, resume, cancel, finish | 9 |
+| task | 17 | 6 | schedule, block, resume, cancel, finish, budget_extend, claim, reap, worker_register, worker_finish, worker_reap, complete | 15 |
 | fact | 6 | 5 | record_validation | 10 |
 | know | 15 | 12 | rule_seed, adopt, kb_revalidate | 24 |
 | scope | 8 | 4 | **全部 8 个写命令**（grant/revoke/exclude/set_rules/cred_add/cred_revoke/bind_workspace/archive） | 4 |
@@ -60,13 +60,13 @@ for alias of bus.aliases:                              # ② 兼容别名（01 �
 | fgs | 2 | 3 | — | 5 |
 | eval | 2 | 2 | case_add, case_resolve | 2 |
 | bus | 2 | 3 | replay, prune；audit_tail（查询矩阵滤除） | 2（bus_status, events_tail） |
-| **合计** | **71** | **65** | **23 个命令不可见**（含 bus 的 replay/prune） | **≈112**（含观察期别名另计 ~20） |
+| **合计** | **80** | **65** | **26 个命令不可见**（含 bus 的 replay/prune） | **≈118**（含观察期别名另计 ~20） |
 
-口径说明：表中"model 工具数"= 命令可见数 + 查询可见数（136 个动词中 model 可见 112：48 命令 + 64 查询；查询侧仅 audit_tail 被矩阵滤除）。v4.x 现状约 67 个工具（asset-graph 38 + sec-suite 15 + sec-pipeline 8 + proxy-pool 6），v5 全量投影约 112——接近翻倍的主要来源是 know 域六子仓动词显式化（v4.x 的 exp/pb/kb/rule/vc/harvest 入口散在两插件里）。容量影响见 §2.6。
+口径说明：表中"model 工具数"= 命令可见数 + 查询可见数（145 个动词中 model 可见 118：54 命令 + 64 查询；查询侧仅 audit_tail 被矩阵滤除）。v4.x 现状约 67 个工具（asset-graph 38 + sec-suite 15 + sec-pipeline 8 + proxy-pool 6），v5 全量投影约 118——接近翻倍的主要来源是 know 域六子仓动词显式化（v4.x 的 exp/pb/kb/rule/vc/harvest 入口散在两插件里）。容量影响见 §2.6。
 
 ### 1.3 命令（工具）逐个详述——按动词类别的投影规范
 
-136 个动词逐个详述在各域文档 §1.3（真相源）。本文按**八类动词**给出投影规范与代表样例（agent_note 全文），每类的 schema/返回/错误/幂等/RoE 引用域文档。
+145 个动词逐个详述在各域文档 §1.3（真相源）。本文按**八类动词**给出投影规范与代表样例（agent_note 全文），每类的 schema/返回/错误/幂等/RoE 引用域文档。
 
 #### A. 确认/裁决类（vuln_confirm, vuln_reject, know_exp_promote …）
 
@@ -113,7 +113,7 @@ agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/ou
 
 #### F. 治理生命周期类（fact_record_validation, know_kb_revalidate, eval_case_add …）
 
-**对 model 不可见**（governance/script 通道）。模型若需要触发复验，走 know_exp_feedback 的 outdated 信号——治理引擎据此处理。
+**对 model 不可见**（script / reactor 通道，对 model 不注册）。模型若需要触发复验，走 know_exp_feedback 的 outdated 信号——治理引擎据此处理。
 
 #### G. 机器直灌类（vuln_register_candidate, webhook 通道 …）
 
@@ -123,7 +123,7 @@ agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/ou
 
 **对 model 不可见**。模型的合法路径：`approval_request` 提请 + 收到 needs_approval 语义的失败信封后**停止重试**（v4.5 异步审批协议第 13 条纪律保留）。
 
-自执行任务完结三段式（05-task C16-C17，2026-09-06 裁决）：模型侧唯一可见的完结动作是 **C16 `task_submit_complete`**（声明完成 + 提请 task-complete 审批，不改状态）；**C17 `task_complete` 与 `task_finish` 同属本类对 model 不可见**（approval / scheduler actor 专用）。agent_note 须写明"声明后进入审批等待，勿重复声明、勿继续执行"（幂等由自然键保证，重复声明返回既有审批单）。
+自执行任务完结三段式（05-task C16-C17）：模型侧唯一可见的完结动作是 **C16 `task_submit_complete`**（声明完成 + 提请 task-complete 审批，不改状态）；**C17 `task_complete` 与 `task_finish` 同属本类对 model 不可见**（approval / scheduler actor 专用）。agent_note 须写明"声明后进入审批等待，勿重复声明、勿继续执行"（幂等由自然键保证，重复声明返回既有审批单）。
 
 #### 查询类（全部 *_list/*_get/*_search/*_stats …）
 
@@ -153,13 +153,13 @@ agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/ou
 | C 流转类（模型可用子集） | ✅ | ✅ | ✅ | ✅ | — |
 | D 台账/回执类 | ✅ | ✅ | ✅ | ✅ | — |
 | E 执行类 | ✅ | ✅ | ✅ | ✅ | — |
-| F 治理生命周期类 | ❌ 不注册 | ❌ 不注册 | ❌（不含 dashboard） | ⚠️ 仅 human（应急） | script / governance* |
+| F 治理生命周期类 | ❌ 不注册 | ❌ 不注册 | ❌（不含 dashboard） | ⚠️ 仅 human（应急） | script / reactor |
 | G 机器直灌类 | ❌ 不注册 | ❌ 不注册 | ❌ | ❌ | webhook / script |
 | H 裁决/授权/调度收尾类 | ❌ 不注册 | ❌ 不注册 | ✅ | ⚠️ 仅 human | dashboard(+operator) / scheduler / approval |
 | bus_status / events_tail | ✅ | ✅ | ✅ | ✅ | — |
 | bus_replay / bus_prune / audit_tail | ❌ | ❌ | ✅ | ✅ | human / system |
 
-`governance*`：待宪法增补的订阅者 actor（01 开放问题 Q1）。
+治理生命周期类的订阅执行（memcore lifecycle、eval 回流）由总线从订阅回调注入 actor=`reactor`（宪法 §三）。
 
 **矩阵的五条 fail-closed 规则**（任何一条不满足=工具不注册，不存在"注册了但运行时再拦"的灰区）：
 
@@ -282,10 +282,10 @@ execute: async (args, exec) => gateway.dispatch('vuln', 'confirm', args, {
 
 | 指标 | 预算 | 说明 |
 |---|---|---|
-| 工具数 | ≈112（+观察期别名 ~20） | v4.x 约 67 → 接近翻倍；来源是 know 域动词显式化，非功能膨胀 |
+| 工具数 | ≈118（+观察期别名 ~20） | v4.x 约 67 → 接近翻倍；来源是 know 域动词显式化，非功能膨胀 |
 | 每工具上下文开销 | description ≤240 字（≈360 token）+ schema（≈150-400 token）≈ **500-700 token** | |
-| 工具面总开销 | ≈112 × 600 ≈ **65-70k token/会话** | 显著项。缓解：DSH/pi-ai 的 prompt caching（工具 schema 在 system 段，缓存命中后边际成本低）+ AGENTS.md 速查表只列动词名不复制全文。**这是全量注册 vs phase 子集注册（开放问题 Q1）的量化输入** |
-| 投影耗时 | 注册期一次性 <100ms（15 个 manifest、136 个动词遍历） | 运行期零开销（execute 直转 dispatch） |
+| 工具面总开销 | ≈118 × 600 ≈ **68-72k token/会话** | 显著项。缓解：DSH/pi-ai 的 prompt caching（工具 schema 在 system 段，缓存命中后边际成本低）+ AGENTS.md 速查表只列动词名不复制全文。**这是全量注册 vs phase 子集注册（开放问题 Q1）的量化输入** |
+| 投影耗时 | 注册期一次性 <100ms（15 个 manifest、145 个动词遍历） | 运行期零开销（execute 直转 dispatch） |
 | 查询后补发 | 每检索 +1 次 dispatch（<5ms，异步不阻塞返回） | 仅 know_exp_search 一处 |
 
 ### 2.7 契约合规评测（eval 域的"模型试图越权"用例设计）
@@ -351,11 +351,11 @@ execute: async (args, exec) => gateway.dispatch('vuln', 'confirm', args, {
 
 ---
 
-## 四、开放问题（宪法未覆盖、需用户拍板）
+## 四、开放问题（宪法未覆盖、实现期观察项）
 
 | # | 问题 | 选项与建议 |
 |---|---|---|
-| Q1 | **工具面 token 预算 vs phase 动态子集注册**。全量 ≈112 工具 ≈65-70k token/会话（§2.6）。备选：headless worker 按任务 phase 只注册该 phase 域的子集（spawn_worker task 描述声明所需域），web 会话保持全量 | 建议：Phase 1-4 全量（先保证正确性，prompt caching 兜成本）；Phase 5 拿 dsh-bill 实测 token 数据再决定是否引入 phase 子集（会带来"worker 想跨界工具时不可见"的新失败模式，需 eval 用例覆盖） |
+| Q1 | **工具面 token 预算 vs phase 动态子集注册**。全量 ≈118 工具 ≈68-72k token/会话（§2.6）。备选：headless worker 按任务 phase 只注册该 phase 域的子集（spawn_worker task 描述声明所需域），web 会话保持全量 | 建议：Phase 1-4 全量（先保证正确性，prompt caching 兜成本）；Phase 5 拿 dsh-bill 实测 token 数据再决定是否引入 phase 子集（会带来"worker 想跨界工具时不可见"的新失败模式，需 eval 用例覆盖） |
 | Q2 | **agent_note 长度预算的执行点**。现设计 manifest lint 硬拒（>240 字拒载）。备选：仅告警 | 建议硬拒（描述劣化直接伤模型行为，v4.x 风险表识别项）；但硬拒会把"写长了"变成域上线阻塞，需在域文档模板里给足范例 |
 | Q3 | **失败信封的投递形态**。现设计返回 JSON 信封（不 throw）。备选：DSH 工具层 throw（走平台错误通道） | 建议 JSON 信封（模型可结构化读 hint/retryable）；Phase 1 用 eval EC-06 类用例验证模型对 JSON 信封的遵循率，不达标再评估 throw 混合形态 |
 | Q4 | **eval 契约合规的验收阈值**。现设计：越权拒绝率 100% 必达、hint 恢复率 ≥90% | 恢复率 90% 是否合理无先例数据；建议 Phase 1 末先跑一轮基线（预期 70-85%），据基线定验收线，写进 15-eval.md 定稿 |
