@@ -686,6 +686,20 @@ appendJsonl(path, line)
 
 **混布实现**（宪法 §十二.4）：域内 commands 层按子仓路由 repository——rule_seed 的"file 先写 + sqlite curated 行后建"即混布实例：文件是真相源，curated 行是检索投影；索引建失败文件仍在，重跑幂等修复（C14 partial 注记）。**跨后端无分布式事务**，一律 file-first + 索引最终一致。
 
+#### 2.4.1 嵌入模块加载与降级
+
+exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依赖嵌入模块，加载与降级策略（embeddings.setup 沿用 v4 机制）：
+
+| 项 | 机制 |
+|---|---|
+| 加载方式 | `SEC_EMBEDDINGS` 环境变量指向本地模型目录（`file://`），进程启动时以 `@huggingface/transformers` 动态加载 onnx 量化（q8）权重——**无网络依赖、无 HF 在线下载**（离线环境约束） |
+| 模型缓存 | `HF_HOME` 指向预下载缓存目录（~120MB）；由 `embeddings-setup.sh` 预热（部署链内执行，失败=部署报告中止项，18-migration §9.3） |
+| 实例化 | 进程内单例（§2.5 缓存表）；首次调用懒加载，加载后常驻 |
+| **降级语义** | **预热/加载失败 → 永久降级为 FTS-only**（本进程生命周期内不再重试加载）：C1-C13 仍可执行（embedding 比对跳过，按 content_hash 精确去重），融合检索退化为纯 FTS + 关键词；`know_health` 上报 `embeddings: degraded` 告警。**禁止半可用态**——不做"部分请求有向量"的混合态（检索质量不可预测，不如显式降级可观测） |
+| 重启恢复 | 降级只影响当前进程；修复 HF_HOME/权重后重启进程即恢复（setup.sh 冒烟含嵌入模块探活） |
+
+**降级是可用性承诺不是错误**：知识管道在无向量条件下保持全部写入路径可用（v4.x 同款行为），检索质量下降由 know_health 告警暴露给看板与 eval 维度。
+
 ### 2.5 缓存与失效
 
 | 缓存 | 位置 | 失效 |

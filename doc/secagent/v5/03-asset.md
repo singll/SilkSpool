@@ -120,7 +120,7 @@
 **语义**：把可挖掘性评分（score）落库并派生 SABC 层级，同时可标注 accept/biz。**本域唯一能写 score/level/accept/biz 的动词**。两种模式二选一（网关校验互斥，同传 → `E_SCHEMA`）：
 
 - **proposal 模式**（script 通道，样板设计）：`grade-assets.py` 纯计算产出 JSON 建议清单文件 → 本命令校验后落库；
-- **单资产模式**（model/dashboard 通道）：vision_triage 分诊补级、人工/模型调级。
+- **单资产模式**（model/dashboard 通道）：vision_triage 分诊补级、人工/模型调级。vision_triage 的视觉模型供给：`scripts/vision-triage.mjs` 依赖 `OPENCODE_GO_API_KEY`（视觉模型 deepseek-v4-flash-vision-exp，网页截图分诊），失败回退 DEEPSEEK 渠道——key 供给属 .env 运维面，分诊本身是沙箱内纯计算产 proposal（vision_triage manifest 通道，10-exec §2.1.1）。
 
 **关键设计：level 永远不是入参**。调用方只给 score；`score → level` 映射是域私有常量（对齐 `rules/src/asset-scoring.md`）：
 

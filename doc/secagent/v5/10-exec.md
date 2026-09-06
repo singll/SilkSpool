@@ -395,6 +395,17 @@ sec bus replay --domain exec --since 1789000000000
 
 过渡期：读取侧忽略 `store` 字段（不报错）；写入侧（seed-manifests）停止生成；一个观察期后从 31 个 manifest 物理删除（废弃三段式）。
 
+**31 个 manifest 完整清单**（csai 实查 2026-09-06，按通道分组的 v5 去向标注；域标注进 `domain` 字段）：
+
+| 通道 | manifest（文件名去 .yaml） | v5 去向要点 |
+|---|---|---|
+| 侦察 CLI（21 个，ProjectDiscovery/开源工具链） | subfinder / dnsx / httpx / naabu / tlsx / katana / gau / waybackurls / ffuf / wafw00f / nuclei / afrog / afrog-keyword / observer_ward | domain 标注 asset（subfinder/dnsx/httpx/naabu/tlsx/katana/gau/waybackurls）或 vuln（nuclei/afrog/afrog-keyword/observer_ward/ffuf/wafw00f）——按 §2.3.2 parser 路由 |
+| 漏洞利用/验证 CLI | dalfox / sqlmap / arjun / crlfuzz / graphql-cop | domain=vuln；risk 多为 active/intrusive（G5 守卫主对象） |
+| 代码审计 CLI | semgrep / codeql / gitleaks / trufflehog / osv-scanner | sandbox=false（本地审计，无 target_param 不触发 G3）；domain=vuln 或 none |
+| 被动测绘 API 通道 | **fofa_search**（`fofa_search.sh` 装至 /usr/local/bin，FOFA 账号凭证经 .env 供给；risk=passive） | domain=asset（API 测绘产 hosts 建议文件 → 模型调 asset_upsert）；**API 通道非本地 CLI**，但走同一 manifest/守卫/落盘框架 |
+| 脚本通道（治理/观测，§2.1.1 迁移表的 store 废止主对象） | grade_assets / vision_triage / l2-collect / data_quality / discipline_audit | 纯计算产 proposal（详见上表）；domain=none |
+| 测试 | echo-test | 保留（契约测试用例的工具面桩） |
+
 #### 2.1.2 `results/<run_id>/` 落盘文件
 
 | 文件 | 写入时机 | 内容 |
@@ -531,6 +542,21 @@ exec 域**没有** sqlite/http 后端计划——owns 全是文件，域内无�
 | QPS 桶 | 进程级，零开销 | — |
 | grep 全 run 目录 | 单 run 文件数 <100，全扫 <50ms | — |
 
+### 2.7 平台资产声明（exec 域周边的不动清单）
+
+exec 域的运行依赖一批**平台层边缘资产**——它们不属于任何域、v5 不改造不域化（"DSH 平台层不动"宪法边界），但 exec 域的契约语义与其耦合，在此集中声明以防漂移（本节是**声明不是 owns**）：
+
+| 平台资产 | 实况 | 与 exec 域的耦合点 |
+|---|---|---|
+| `silksec-shared-browser.service` | 常驻 Chromium（CDP **:9222**），持久化 profile=登录态，人机共用 | **浏览器共驾底座**：模型经 `@silksec/dsh-browser` 工具操作的就是这个实例；登录态观测回填 endpoint 域（04-endpoint C1） |
+| `@silksec/dsh-browser` fork | 上游 DSH 浏览器插件 fork（tarball + `dsh-browser-upstream.index.js` / `browser-manager.js` patch）；patch 注入 `SEC_FLOW_PROXY` 出口代理 | 模型工具面成员之一（投影规则同 17-llm-surface；fork 维护见 18-migration §九） |
+| 浏览器出口代理（`SEC_FLOW_PROXY` → xray :7777） | 浏览器全部流量经 xray 被动扫描（:7777 入口）→ webhook :7788 → 本域 `exec_flow_append` 落 flows/ | **7777 入口是 flows 数据的另一半来源**（§1.3.7 只写了 7788 落点）——浏览器会话产生的被动扫描发现同样进 flow 管道 |
+| `silksecagent-edge` :9223 浏览器入口 | edge-Caddyfile：basicauth + browser.html 落地页 + DevTools 前端自托管反代 | 人机共用浏览器的 LAN 访问入口（探活进 01-bus §2.7 冒烟）；Web UI 主入口 :3080 的 Host/Origin 改写详见 18-migration §九 |
+| `oob/interactsh-server` | 已部署未启用（占位 `OOB_DOMAIN_TBD`，阻塞=公网 NS 委派） | OOB 带外验证通道（盲 SSRF/盲 RCE 回连证据）。证据形态 `oob:` 前缀与轮询归属见 02-vuln §四.7；启用前工具面须能感知"OOB 不可用"并降级 |
+| `silksec-intel.timer` | 每日 nuclei 模板更新（intel-refresh.sh → `~/nuclei-templates` → `data/intel/intel.jsonl` 追加一行版本记录） | **域外单写者声明**：intel.jsonl 由 systemd timer 写入（不经总线、无事件）——它不在本域 owns 内，`exec_intel_hunt` 是其**消费方**（模板库检索）；版本追溯经文件读取而非事件回放，01-bus §2.7 的 data/events 统一口径对它豁免 |
+
+**不动清单的边界**：上表资产出问题时（浏览器崩/OOB 启用/intel.jsonl 格式变化）的处置走 18-migration §九部署通道与运维手册，不改域契约；域文档只在耦合点语义变化时同步本表。
+
 ---
 
 ## 三、迁移与兼容
@@ -567,7 +593,7 @@ exec 域**没有** sqlite/http 后端计划——owns 全是文件，域内无�
 | 24 | webhook.js:1-53 | startXrayWebhook（直调 addFinding） | exec 域 webhook 接收器 + `exec_flow_append` 命令 + `exec.flow.appended` 事件（addFinding 直调废止） |
 | 25 | index.js:468-475 | enqueueScopeSeed 的 radar-queue 直写 | approval 域订阅者调 `ledger_radar_push`（11-ledger.md） |
 | 26 | index.js:853-865 | sanitizeParamsForApproval | 审批 payload 脱敏（随 tool-intrusive 联动保留在本域） |
-| 27 | index.js:1529-1594 | authzDiff | **vuln 域**（`vuln_authz_diff`，02-vuln.md——判定与候选登记是漏洞域语义；exec 只留 hostOf 借用） |
+| 27 | index.js:1529-1594 | authzDiff | **vuln 域 C11 `vuln_authz_diff`**（02-vuln.md §1.3——判定与候选登记是漏洞域语义；exec 只留 hostOf 借用） |
 
 ### 3.2 兼容别名与观察期
 

@@ -498,6 +498,11 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 §G  dump-config 冒烟：--dump-config 组合树校验 sec-domain-bus / 各域插件在树（沿用 dsh-upgrade 深冒烟）
 §H  reconcile_service 重启（§G 之后——v4.6.1 顺序缺陷教训：重启必须排在组装后）
 §I  启动后冒烟：RPC bus.status 或 sec-bus-cli.mjs query bus.status —— domains 全部 registered:true 才算过
+§J  边缘基础设施探活（域外不动清单，10-exec §2.7）：① systemctl is-active silksecagent-edge
+    silksec-shared-browser；② curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/ 期望 200/302
+    （edge-Caddyfile :3080→3081 Host/Origin 改写通道，Web UI 唯一 LAN 入口）；③ :9223 basicauth
+    入口探活（浏览器共驾入口，期望 401 未带凭证）；④ CDP :9222 /json/version 探活（常驻 Chromium）
+    ——四项任一失败=警告不中止（平台层资产非总线 owns，告警进部署报告人工处置）
 ```
 
 ### 2.8 契约测试矩阵（总线自身的测试义务）
@@ -544,7 +549,8 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 | RpcProjector | `dsh-plugin-sec-suite.js:2099-2123`（child fiber 等 connection 就绪 + module 级 `dashboardRpcRegistered` 幂等守卫 + authority loopback + ok/error 信封） | 通道先例整体沿用：`/silksec-dashboard` → `/silksec-domain`；52 case 手写分发废止 |
 | ToolProjector 注册单元 | `dsh-plugin-sec-suite.asset-graph.js:15-22` `reg(ctx, def)` helper（name/description/parameters/output/timeoutMs/execute 六件套） | reg() 的字段形状就是投影器的输出形状；38 个手写 def → manifest 自动生成 |
 | 后台单例收敛 | `dsh-plugin-sec-memcore.js:881-893`（isWeb + config.sweeper!==false 双条件 + interval.unref）+ `scheduler.js` 文件锁 | 双条件 + `data/bus.lock` 文件锁，防多进程重复清理 |
-| 事件留痕 | `flows/xray-*.jsonl` / `data/intel/intel.jsonl` / `radar-queue.jsonl` 的 appendFile 模式 | 统一为 `data/events/{domain}.jsonl` + 事件信封 |
+| 事件留痕 | `flows/xray-*.jsonl` / `radar-queue.jsonl` 的 appendFile 模式 | 统一为 `data/events/{domain}.jsonl` + 事件信封 |
+| 事件留痕（豁免） | `data/intel/intel.jsonl` | **维持原样不统一**：nuclei 模板库版本记录由 silksec-intel.timer 域外单写（systemd 计时器，无进程内事件可发），非域产物——10-exec §2.7 不动清单声明 |
 | parser proposal 管道 | `dsh-plugin-sec-suite.parsers.js` applyParsedResult（store=asset-graph 直写） | 改为 exec.run.completed 事件 + proposal 文件 + 各域订阅经命令入库（直写归零） |
 | webhook actor 注入点 | `dsh-plugin-sec-suite.webhook.js`（webhook 服务器只在宿主面起） | webhook 面调 dispatch 时 actor='webhook' 从服务端注入 |
 

@@ -38,6 +38,7 @@
 | C8 | `vuln_release` | 释放认领 | model, dashboard | 无（认领状态经 vuln_candidates 查询可见） | 宽松幂等（重放返回 ok） |
 | C9 | `vuln_verify_replay` | CONFIRMED 机械复核（重放 request.txt + sha256 比对 + verify-log 追加；"LLM 不给自己当法官"） | model, script | 无（防事件风暴） | 自动指纹（finding_id+expect_hash+分钟） |
 | C10 | `vuln_attach_fgs` | 关联 FGS finding 节点到行（fgs 域事件订阅回写通道，Phase 1 可选落地） | model, reactor | 无 | 自动指纹（finding_id+fgs_node_id） |
+| C11 | `vuln_authz_diff` | 双权凭证重放对比 harness（低权/高权各发一次，三档判定；suspected 机器落候选） | model | 无（suspected 时经 C2 发 candidate.registered） | 自动指纹（url+method+headers 指纹+分钟） |
 
 > 说明：宪法 §三 actor 表无 `parser` 类型——exec 域 parser 提案与 authz_diff 机器判定统一以 **actor=script** 注入，身份细分（`identity: "parser:nuclei:{run_id}"` / `"authz_diff:{session_id}"`）进审计，不新增 actor 枚举。
 
@@ -55,7 +56,7 @@
 | severity | string(enum) | 是 | — | critical/high/medium/low/info；**info → E_INVARIANT（E_VULN_INFO_SEVERITY）**：info 级模板指纹/侦察副产物不进信号面（v4 噪声闸门语义保留并收紧为拒绝） |
 | host | string | 是 | — | 非空；网关归一化（去 scheme/端口/路径，小写）后入库 |
 | url | string | 否 | '' | 合法 URL 或空 |
-| evidence | string | 是 | — | 非空；须含证据引用（run_id / flow_id / burp_item / evidence/ 路径之一，正则 `run_\|flow:\|burp_item\|evidence/`）；不满足 → E_EVIDENCE_REQUIRED |
+| evidence | string | 是 | — | 非空；须含证据引用（run_id / flow_id / burp_item / evidence/ 路径 / oob: 交互记录之一，正则 `run_\|flow:\|burp_item\|evidence/\|oob:`）；不满足 → E_EVIDENCE_REQUIRED |
 | reproduction_steps | string | 是 | — | trim 后非空（INV-4b） |
 | impact | string | 是 | — | trim 后非空（INV-4c） |
 | source | string | 否 | 'agent' | 登记来源标识 |
@@ -90,7 +91,7 @@
 |---|---|---|---|
 | E_VULN_INCOMPLETE | 五要素缺失（title<10 字符 / 复现或影响为空 / 低信息标题形状） | "信号登记要求五要素完整（规范标题≥10 字符、复现步骤、具体影响、证据引用、host）。机器产出或不完整观察请勿用本动词；完成对抗性自检与双出口复现后再登记" | false |
 | E_VULN_INFO_SEVERITY | severity=info | "info 级侦察副产物不进信号面。如确有安全价值，按 rules/src/severity-rating.md 重新定级（信息泄露默认低危）后以 low+具体影响登记" | false |
-| E_EVIDENCE_REQUIRED | evidence 缺失或无证据引用 | "证据必须是 run_id/flow_id/burp_item/evidence 路径引用，无证据不结论（sec-verification 铁律）" | false |
+| E_EVIDENCE_REQUIRED | evidence 缺失或无证据引用 | "证据必须是 run_id/flow_id/burp_item/evidence 路径/oob 交互记录引用，无证据不结论（sec-verification 铁律）" | false |
 | E_IDEMPOTENT_CONFLICT | 同强指纹异参重放 | "该发现已登记（同 host+title+url）。补充信息用 vuln_note；字段勘误用 vuln_note 附勘误说明" | false |
 | E_SCHEMA / E_ACTOR_FORBIDDEN | 见宪法 | — | false |
 
@@ -150,7 +151,7 @@
 | 参数 | 类型 | 必填 | 默认 | 校验规则 |
 |---|---|---|---|---|
 | finding_id | integer | 是 | — | 行存在（E_NOT_FOUND） |
-| evidence | string | 是 | — | 证据引用且**真实存在**（INV-2，网关校验：`run_<id>` → `results/<run_id>/meta.json` 存在；`evidence/<finding_id>/` 目录存在；`flow:` 前缀 → 对应 flows 文件存在）。缺 → E_EVIDENCE_REQUIRED |
+| evidence | string | 是 | — | 证据引用且**真实存在**（INV-2，网关校验：`run_<id>` → `results/<run_id>/meta.json` 存在；`evidence/<finding_id>/` 目录存在；`flow:` 前缀 → 对应 flows 文件存在；`oob:` 前缀 → interactsh 交互记录存在且归属当前任务）。缺 → E_EVIDENCE_REQUIRED |
 | note | string | 否 | '' | 确认说明（追加进证据链） |
 | idempotency_key | string | 否 | — | — |
 
@@ -321,6 +322,42 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 
 **参数表**：finding_id（必填，行须 status ∈ {new, confirmed}）、fgs_node_id（必填，正整数）。行为：覆盖式关联（后写胜），不改状态。无事件。**actor**：model, reactor（reactor 供 fgs 域订阅 `vuln.signal.registered` 回写，审计 cause 链指向原始事件及其 actor——宪法 §三）。**幂等**：自动指纹。
 
+---
+
+#### C11 · vuln_authz_diff（双权凭证重放越权对比 harness）
+
+**语义**：v4 sec-suite.js `authz_diff` 工具（L1529-1594）的域化形态——越权（IDOR/biz-logic）探测的双会话重放 harness：同一请求分别以低权/高权凭证各发一次，diff 响应后给出三档机器判定。**判定与候选登记是漏洞域语义**（exec 域只保留 hostOf 借用），biz-logic 角色 persona 的核心依赖工具。机器 heuristic 判定不冒充模型登记：suspected 档由域内以 actor=script 自动落 C2 候选，review/unlikely 档只返回判定供模型决策。
+
+**参数表**：
+
+| 参数 | 类型 | 必填 | 默认 | 校验 |
+|---|---|---|---|---|
+| url | string | 是 | — | 非空；经 scope-guard 硬校验（G0），未命中 → E_ACTOR_FORBIDDEN（audit 记 deny） |
+| method | string | 否 | `GET` | HTTP 方法大写 |
+| headers_low | string\|object | 是 | — | 低权凭证头（字符串 `"Cookie: a=1\nX-Role: low"` 或对象） |
+| headers_high | string\|object | 是 | — | 高权凭证头（同上格式） |
+| body | string | 否 | — | 请求体（重放载荷） |
+
+**行为**（v4 算法原样保留）：`redirect: manual` + 30s 超时各发一次 → 比对 status / body 长度比 / JSON 键重合度 → 三档判定：
+
+| verdict | 判据 | 含义 |
+|---|---|---|
+| `unlikely` | 低权 401/403 | 鉴权正常 |
+| `review` | 状态码不一致（low≠high） | 需人工看响应 |
+| `suspected` | 低权 200 且响应与高权高度相似（键重合 >50% 或长度比 0.5-2） | 疑似越权 |
+
+suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，identity=`authz_diff:{session_id}`，source='authz_diff'，title=`疑似越权(IDOR): {method} {url}`，severity=high，evidence=`low={s}/{len}B high={s}/{len}B keysOverlap=..%`）——机器直灌语义，落候选池（noise=1）等模型/人工复核，不直接进信号面。
+
+**返回 data**：`{verdict, why, low:{status,length,ms}, high:{status,length,ms}, low_body_head(≤300字), high_body_head(≤300字), candidate_id?}`（candidate_id 仅 suspected 档携带）。
+
+**错误码**：E_ACTOR_FORBIDDEN（scope-guard 拒绝）；`E_VULN_REPLAY_FAILED`（低权/高权请求网络失败，retryable=true）。
+
+**幂等**：自动指纹（url+method+headers_low/high 指纹+分钟）。**actor**：model。**事件**：无（判定返回模型；候选落库经 C2 发 candidate.registered）。**模型可见**：✅。
+
+**agent_note（模型面工具描述全文）**：
+
+> 双权凭证重放对比（越权/IDOR 探测 harness）：同一 URL 以低权与高权凭证各请求一次，机器比对状态码与响应相似度给出 unlikely/review/suspected 三档判定。suspected（低权 200 且响应与高权高度相似）会自动登记为待验证候选——你要继续取证数据归属并走常规验证流；review 档请人工看两个 body_head 自行判断。目标必须经授权白名单。凭证从 cred_query 取（勿在会话里裸贴 token）。
+
 ### 1.4 查询（读投影）逐个详述
 
 统一分页信封 `{rows, total, limit, offset}`；limit 默认 50、上限 500；sort 白名单 + dir=asc|desc；**行数与 total 同一 where 构造器**（契约测试强制断言，v4.3 病根不复发）。
@@ -405,7 +442,7 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 | v4 调用方 | v4 行为 | v5 行为 |
 |---|---|---|
 | xray webhook（webhook.js → addFinding） | 直调函数，机器与模型共用动词 | HTTP 接收器保留在 exec 域边缘 → `dispatch vuln_register_candidate` actor=webhook |
-| authz_diff suspected（sec-suite.js L1582） | 工具 execute 内直调 addFinding（high + 无复现 → 完整性闸门归候选） | exec 域工具判定 suspected 后 `dispatch vuln_register_candidate` actor=script，identity=`authz_diff:{session_id}`，source='authz_diff'（启发式判定是机器语义，不得冒充模型登记） |
+| authz_diff suspected（sec-suite.js L1582） | 工具 execute 内直调 addFinding（high + 无复现 → 完整性闸门归候选） | 本域 C11 判定 suspected 后**域内** `dispatch vuln_register_candidate` actor=script，identity=`authz_diff:{session_id}`，source='authz_diff'（启发式判定是机器语义，不得冒充模型登记） |
 | intel_hunt（sec-suite.js L1790） | 不写 findings（产 N-day 候选**任务**） | 不变——产物是 task 域实体，与 vuln 域无直写关系；任务执行后的发现仍走 C1/C2 |
 | parser 入库（parsers.js applyParsedResult → addFinding） | run_cli 后处理直写 | `exec.run.completed` 事件 → 本域 on_parser_proposal → C2（见上表） |
 
@@ -425,6 +462,7 @@ ToolProjector 从 manifest 自动 `ctx.tools.register`：工具名=动词/查询
 | `vuln_release` | 是 | "释放自己认领的候选（改做其他事时必须释放，别让锁白占到超时）。" |
 | `vuln_verify_replay` | 是 | "机械复核（LLM 不给自己当法官）。重放 evidence/{id}/request.txt，响应体 sha256 与 expect_hash 比对，结果追加 verify-log.md。CONFIRMED 纪律自查要求本复核通过。" |
 | `vuln_attach_fgs` | 是（Phase 1 可选） | "把 FGS finding 节点关联到 finding 行（任务内显式建图时用；调度会话内自动关联由 fgs 域事件完成，通常无需手动）。" |
+| `vuln_authz_diff` | 是 | "双权凭证重放对比（越权/IDOR 探测 harness）：同一 URL 以低权与高权凭证各请求一次，机器比对状态码与响应相似度给出 unlikely/review/suspected 三档判定。suspected（低权 200 且响应与高权高度相似）会自动登记为待验证候选——你要继续取证数据归属并走常规验证流；review 档请人工看两个 body_head 自行判断。目标必须经授权白名单。凭证从 cred_query 取（勿在会话里裸贴 token）。" |
 | （草稿工具） | — | `submission_draft` / `vuln_draft_submission` 旧名经总线别名指向 **report 域 `report_draft_submission`**（见 12-report.md §一）——本域不注册草稿工具 |
 | `vuln_list` | 是 | "检索漏洞发现。visibility=signal（默认，仅信号面）/ candidate（待验证候选队列）/ all。按 host/severity/status/program_id/q 过滤，分页+排序。" |
 | `vuln_get` | 是 | "取单条 finding 全量详情（含 evidence 证据链全文）。" |
@@ -460,7 +498,7 @@ RpcProjector 自动投影（RPC 名 `{domain}.{verb}` 点分；写操作自动�
 **代码调用**（域间/插件内，cordis inject + 总线 dispatch）：
 
 ```js
-// exec 域 authz_diff 判定 suspected 后登记候选（替代 v4 直调 assetDb.addFinding）
+// 本域 vuln_authz_diff 判定 suspected 后域内登记候选（替代 v4 工具 execute 内直调 assetDb.addFinding）
 const vuln = ctx.inject('secDomain.vuln')
 const r = await vuln.dispatch('register_candidate', {
   title: `疑似越权(IDOR): ${method} ${url}`, severity: 'high',
@@ -564,7 +602,7 @@ spool exec csai "node /opt/silkspool/dsh/bin.js --profile web --rpc secDomain.vu
 | # | 不变量 | 失败错误码 |
 |---|---|---|
 | INV-1 | 终态（accepted/false_positive/dup/ignored）不可再流转；confirm/reject 仅自 status='new'（reject 另允许 confirmed/submitted） | E_STATE |
-| INV-2 | confirm 的 evidence 必填且引用真实存在（run_id→results 目录 / evidence/{id}/ / flow 文件） | E_EVIDENCE_REQUIRED |
+| INV-2 | confirm 的 evidence 必填且引用真实存在（run_id→results 目录 / evidence/{id}/ / flow 文件 / oob 交互记录） | E_EVIDENCE_REQUIRED |
 | INV-3 | 候选达终态必出池：confirm 与 reject 的 UPDATE 语句本身包含 noise/status 联动与 status='new' 守卫（changes=0 → E_STATE）——不变量由语句形状保证，网关断言后置（affected 行的 noise/status 组合合法） | E_STATE |
 | INV-4 | register_signal 五要素完整：title≥10 字符且非低信息形状、reproduction_steps 非空、impact 非空、severity≠info、evidence 含引用 | E_INVARIANT（E_VULN_INCOMPLETE / E_VULN_INFO_SEVERITY） |
 | INV-5 | register_candidate 仅机器 actor（webhook/script）；模型走 register_signal | E_ACTOR_FORBIDDEN |
@@ -713,7 +751,7 @@ export const repositoryV1 = {
 | asset-graph.js L276-289 | `finding_update` 工具 | **删除**——别名分派（§3.2） |
 | dashboard-rpc.js L283-296, L375-388 | `findings`/`findingGet`/`findingUpdate` case | RpcProjector 自动投影（§1.7）；FINDING_TAG_STATUS 枚举随之消亡 |
 | webhook.js L54 | xray → addFinding | 接收器留 exec 域边缘 → C2（actor=webhook） |
-| sec-suite.js L1579-1587 | authz_diff suspected → addFinding | exec 域 → C2（actor=script, identity=authz_diff:{session_id}） |
+| sec-suite.js L1529-1594 | authz_diff 工具（双权重放+三档判定；suspected → addFinding L1579-1587） | 工具整体迁入本域 → **C11 vuln_authz_diff**；suspected 段 → 域内 dispatch C2（actor=script, identity=authz_diff:{session_id}）。exec 域只保留 hostOf 借用 |
 | sec-suite.js L1785-1845 | intel_hunt（产 N-day 任务，不写 findings） | 不变（task 域实体），无本域迁移项 |
 | parsers.js L158-171 | applyParsedResult findings 段 | `exec.run.completed` 事件 proposal → 本域 on_parser_proposal → C2（actor=script, identity=parser:{tool}:{run_id}） |
 
@@ -761,4 +799,5 @@ prompt 引用同步：persona/objective/skills/technique-index 中的 finding_ad
 4. **vuln_claim 批量化**：worker 批量消化时逐条 claim 的往返成本——是否提供 `vuln_claim_bulk`（≤50 行单事务行级结果）。
 5. **program_id 自动归属注入点**：v4 resolveProgramId 经 session/workspace 推导；v5 该推导属 scope 域查询，注入点应在网关 ctx（命令层不感知）——待 08-scope.md 定稿对齐。
 6. **dup_of 自动推荐**：verdict=dup 时 dup_of 目前必填；可否在错误 hint 中内嵌 vuln_dedup_check 的 top-3 候选降低模型重试成本。
+7. **OOB 证据通道（带外验证）**：csai 已部署 `oob/interactsh-server`（未启用，阻塞点=公网 NS 委派未做）。v5 证据引用已扩展 `oob:` 前缀（C1 正则 + C3 INV-2 校验），interactsh 交互记录（DNS/HTTP/LDAP 回连）作为第五类证据形态。待定项：① interactsh 轮询与归属匹配（payload correlation-id → 任务 → finding）落在 exec 域（worker 内轮询）还是本域（reactor 周期轮询）——倾向 exec 域 worker 内轮询（回连窗口与任务生命周期绑定），本域只做 evidence 校验；② 公网 NS 委派打通前 OOB 通道整体不可用，payload 生成端（模型/工具面）须能感知"OOB 不可用"并降级为盲注+延迟复验策略；③ interactsh 交互记录的存储归属（data/oob/ 谁 owns）。启用时间表跟随公网 NS 委派（基础设施前置，非 v5 代码项）。
 

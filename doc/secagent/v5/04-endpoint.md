@@ -172,7 +172,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 #### 1.3.4 `endpoint_mark_auth` —— 鉴权标注（越权矩阵数据源）
 
-**语义**：为单个端点标注 `auth_required`（是否需要登录态）与 `roles_seen`（观测到访问过该接口的角色集合）。**越权矩阵（endpoint_matrix）的唯一数据源**。biz-logic 任务的多角色对比（authz_diff）、浏览器登录态页面观测都经此回填。
+**语义**：为单个端点标注 `auth_required`（是否需要登录态）与 `roles_seen`（观测到访问过该接口的角色集合）。**越权矩阵（endpoint_matrix）的唯一数据源**。biz-logic 任务的多角色对比（vuln 域 `vuln_authz_diff`，02-vuln C11）、浏览器登录态页面观测都经此回填。
 
 **参数 schema**：
 
@@ -192,7 +192,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 **错误码**：`E_NOT_FOUND`、`E_EVIDENCE_REQUIRED`（unknown→确定值无证据）、`E_SCHEMA`。
 
-**actor**：model（biz-logic 任务标注）/ dashboard（看板标注表单）/ script（authz_diff 结果回流 proposal）。
+**actor**：model（biz-logic 任务标注）/ dashboard（看板标注表单）/ script（`vuln_authz_diff`（02-vuln C11）判定后的角色观测回流 proposal）。
 
 **agent_note**：
 > 标注接口鉴权（auth_required: yes/no/unknown）与访问角色（roles_seen 并集累积）——越权矩阵的数据源。auth_required 从 unknown 变为确定值必须带证据（run_id/flow_id）。biz-logic 任务梳理接口图谱后应批量回填，多角色命中的接口是越权测试优先面（endpoint_matrix 查询）。

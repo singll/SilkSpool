@@ -111,10 +111,75 @@
 
 ## 九、部署通道（沿用既有机制）
 
+### 9.1 通道与红线
+
 - 仓库 `bundles/dsh/` 改模板 → `rsync -a bundles/dsh/ /opt/SilkSpool/bundles/dsh/` → `spool bundle dsh setup csai`（模板按相对路径推送 + 各域 setup 脚本组装 + 契约测试 + reconcile_service 收尾重启）。
 - 域插件组装：沿用 sec-*-plugin-setup.sh 模式（复制模板进 plugins/<name>/ + package.json + `dsh plugin add` + dump-config 冒烟）。
 - 升级与回滚手册：归档 `../archive/dsh-upgrade-0.1.1-rc.2-report.md` §6 仍适用。
 - **红线不变**：一切远程操作走 PATH 中 `spool`；n8n 等有状态服务与本迁移无关不受影响。
+
+### 9.2 systemd 单元全景（13 个，csai 实查 2026-09-06）
+
+| 单元 | 职责 | v5 去向 |
+|---|---|---|
+| silksecagent | DSH web 宿主（:3081 loopback） | 不动（域插件在同一宿主内挂载） |
+| **silksecagent-edge** | Caddy 边缘：**:3080→3081** Host/Origin 双改写（绕 loopback 栅栏，**Web UI 唯一 LAN 入口**；curl 不带 Origin 会得假阳性——探活必带浏览器同形头）+ **:9223** 浏览器入口（basicauth + browser.html + DevTools 前端自托管反代）。operator 身份经 DSH 0.1.2 原生 **BrowserAuth**（cookie 365 天 + token 一次性兑换）注入，auth-gate operator 侧接线见 01-bus §1.7 | 不动（探活进 01-bus §2.7 §J 冒烟；Caddyfile 本体见 §9.5） |
+| silksec-shared-browser | 常驻 Chromium（CDP :9222，登录态人机共用） | 不动（10-exec §2.7 不动清单） |
+| silksec-xray | 被动扫描：浏览器/工具出口 :7777 → webhook :7788 | 不动（flows 数据入口，10-exec §2.7） |
+| silksec-proxy-rotator | 代理池轮换 | 不动（proxy 域消费方，13-proxy） |
+| silksec-proxy-refresh.{service,timer} | 代理池定期补充 | 不动 |
+| silksec-intel.{service,timer} | 每日 nuclei 模板更新（intel-refresh.sh） | 不动（域外单写者声明，10-exec §2.7） |
+| silksec-backup.{service,timer} | 每日备份（silksec-backup.sh VACUUM INTO） | 不动（回滚保障，§八依赖） |
+| silksec-retention.{service,timer} | 30 天 retention | 不动 |
+
+### 9.3 根目录脚本清单（与 v5 去向）
+
+| 脚本 | 职责 | v5 去向 |
+|---|---|---|
+| setup.sh | 主部署入口（版本钉住 + 全链组装） | 沿用；v5 各域 setup 脚本挂进同一链 |
+| dsh-upgrade.sh | DSH 平台升级（深冒烟） | 沿用 |
+| **tools-manager.sh + tools.list** | CLI 工具**安装/升级四通道**（go / bin（预编译二进制下载）/ apt / pip），按 manifest `binary` 对账 | **沿用且地位不变**：manifest 只声明工具不负责安装——`exec_manifest_list` 报"工具缺失"时的处置入口仍是 tools-manager；v5 仅约定 manifest `binary` 路径须与 tools.list 安装路径一致（setup.sh 对账断言） |
+| intel-refresh.sh | nuclei 模板每日更新 → intel.jsonl | 沿用（G-3，10-exec §2.7） |
+| retention.sh / silksec-backup.sh / silksec-restore.sh | retention / 备份 / 恢复 | 沿用 |
+| proxy-pool-infra-setup.sh / proxy-pool-plugin-setup.sh / proxy-pool-run-refresh.sh | 代理池基础设施 / 插件 / 定期补充 | 沿用（proxy 域迁移时仅换插件本体，infra 三脚本不动） |
+| fofa_search.sh | FOFA 测绘 API 封装（装至 /usr/local/bin，凭证 .env 供给） | 沿用（fofa_search manifest 的 binary，10-exec §2.1.1） |
+| seed-manifests.sh / seed-presets.sh / seed-skills.sh | tools.d / 角色预设 / 技能种子 | seed-manifests 停止生成 `store` 字段（10-exec §2.1.1 迁移）；其余沿用 |
+| **sec-browser-plugin-setup.sh** | @silksec/dsh-browser fork 组装（tarball + upstream patch 注入 SEC_FLOW_PROXY） | **沿用**：浏览器共驾子系统 v5 零改动（G-2，10-exec §2.7 + 17-llm §3.1） |
+| sec-suite-plugin-setup.sh 等 4 个 sec-*-plugin-setup.sh | v4 域插件组装 | Phase 1-2 随域化逐步退场，由 sec-{domain}-plugin-setup.sh 模式接管（01-bus §2.7） |
+| theme-silksong-plugin-setup.sh | 主题插件组装 | 沿用 |
+| embeddings-setup.sh | 嵌入模块预下载（HF 缓存预热） | 沿用（07-know §2.x 嵌入模块加载与降级） |
+| headless-failover-setup.sh / settings-mirror-patch.sh | worker 模型故障转移补丁 / settings 镜像补丁 | 沿用（模型层零改动，17-llm §1.1） |
+| eval-run.js / eval-fp.js | 评测运行器 / 误报评测 | eval 域接管（15-eval，runner 复用） |
+| proxy_grade.py / grade 治理脚本 | 沙箱内纯计算（产 proposal） | 沿用（proposal 落库路径归域命令，17-llm §2.2 #3） |
+
+### 9.4 scripts/pipeline/ 清单（15 个）
+
+| 脚本 | v5 去向 |
+|---|---|
+| ct-watch.py / ct-watch-all.sh / js-watch.py | 情报源采集 → know 域 harvest 通道（07-know） |
+| kb-harvest.py / knowledge-coverage.py | 知识库收割/覆盖 → know 域 |
+| data-quality.py / discipline-audit.py / pipeline-validate.py | 治理观测 → 总线/eval 域每日复跑（discipline-audit 增"悬空工具引用"断言，17-llm §3.3） |
+| grade-assets.py / l2-collect.sh | 纯计算产 proposal（10-exec §2.1.1 迁移表） |
+| vision-triage（root vision_triage 通道） | 纯计算产 proposal（03-asset asset_grade 供给，视觉模型见 03-asset §1.3.2） |
+| verify-replay.py | vuln 域 C9 复核的计算段（02-vuln） |
+| surface-consume.py / coverage-report.py / vault-export-build.sh | 面板消费/覆盖报告/导出构建 → report/eval 域外围，沿用 |
+| **dsh-version-watch.sh** | **沿用且独立于 ledger 雷达**：它监控**上游 DSH 平台版本**（升级可用性），与 11-ledger `version-intel`（目标组件指纹版本，radar type）语义不同源不同表——11-ledger §雷达 type 表有补注；v5 不合并 |
+
+### 9.5 边缘配置资产
+
+| 资产 | 内容 | v5 去向 |
+|---|---|---|
+| edge-Caddyfile | :3080→3081 Host/Origin 改写 + :9223 浏览器入口反代 + basicauth 凭证 | 不动（G-1；探活进 01-bus §2.7 §J） |
+| xray/config.yaml | 被动扫描配置（:7777 监听 / webhook :7788 推送） | 不动（改配置属运维手册，不进域契约） |
+| oob/interactsh-server | OOB 带外验证（已部署未启用，阻塞公网 NS 委派） | 启用时间表外部依赖；证据通道预留见 02-vuln §四.7 |
+| cordis.patch.yml | auth-gate / connection 365d / **browser executablePath** / model-failover 熔断链 | browser 条目随浏览器子系统零改动保留（G-2） |
+| .env 6 键 | 含 **SEC_FLOW_PROXY**（浏览器出口→xray :7777） | 不动 |
+| AUTHORITY.md | 操作员授权声明（注入策略见 08-scope §1.1） | 沿用（G-7） |
+| skills/draft、proxy-scraper-checker.toml | 技能草稿 / 代理抓取配置 | 沿用（无契约耦合） |
+
+### 9.6 豁免清单（已消费，v5 不迁移）
+
+以下一次性产物已完成历史使命，保留在仓库/bundle 只作考古，不进任何域：`backfill-program.js`（历史数据回填）、`migrate-blackboard-to-facts.js` / `migrate-scheduled-tasks.js`（v4 中期迁移）、`import-cyberstrikeai.py`（一次性导入）、`echo-test.yaml`（测试 manifest 保留为契约测试桩，§9.3 之外的唯一例外——它留在 tools.d 但 domain=none）、`dsh-version-watch.sh.bak-*`（备份残留）。
 
 ## 十、完成定义（DoD）
 

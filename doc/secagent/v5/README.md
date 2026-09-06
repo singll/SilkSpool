@@ -25,7 +25,12 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 ```
 ┌─ DSH 平台层（不动）────────────────────────────────────────────┐
 │  cordis 容器 / profiles(web|headless) / tools.register /        │
-│  connection.rpc / spawn_worker / pi-ai 模型层 / dsh-bill         │
+│  connection.rpc / spawn_worker / pi-ai 模型层 / dsh-bill /       │
+│  @silksec/dsh-browser fork + 常驻 Chromium(CDP :9222) 共驾底座   │
+├────────────────────────────────────────────────────────────────┤
+│  边缘层（不动清单，10-exec §2.7 / 18-migration §9.2）             │
+│  silksecagent-edge(:3080→3081 / :9223) / shared-browser / xray  │
+│  proxy-rotator·refresh / intel.timer / backup·retention / OOB    │
 ├────────────────────────────────────────────────────────────────┤
 │  领域总线 @silksec/sec-domain-bus                                │
 │  DomainRegistry · CommandGateway · QueryGateway · EventBus      │

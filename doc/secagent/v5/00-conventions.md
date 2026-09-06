@@ -294,6 +294,7 @@
 5. **脱敏规则**：事件 payload 与 audit 的 before/after 快照经域声明的 `redact` 字段清单过滤（如 params 脱敏、cookie 剥离）；导出类命令过授权域脱敏硬门（scope.yml 域名命中拒绝——v4.x vault 导出桥规则保留）。
 6. **fail-open 仅限治理旁路**：memcore 类治理订阅失败不阻断业务（既有公理）；**领域主链路一律 fail-closed**。
 7. **审计不可绕过**：唯一写入口 = 唯一审计点；任何"跳过审计"的捷径都是缺陷。
+8. **依赖供应链纪律（plugins.lock）**：所有 cordis 插件依赖（含 @silksec fork tarball）在 `plugins.lock` 钉版本 + sha512 integrity 锁定；任何插件/依赖变更必须**先装锁后安装**（lock 文件进 bundle 模板随 git 受控）——`npm install` 不得在未核对 integrity 下解析新版本。升级流程：改 lock（diff 评审）→ 安装 → 契约测试 + dump-config 冒烟（01 §2.7）→ 提交。manifest 或依赖扫描（`npm audit`/sema 等价物）发现高危时处置走 `BLOCKED` 台账（ledger 域）记录并阻塞对应插件升级，不静默忽略；`@silksec/dsh-browser` fork tarball 同样受 integrity 锁定（patch 文件 diff 是唯一合法变更通道，18-migration §9.3）。
 
 ## 十五、版本化与废弃流程
 

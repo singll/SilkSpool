@@ -45,7 +45,7 @@ for alias of bus.aliases:                              # ② 兼容别名（01 �
 
 | 域 | 命令数 | 查询数 | model 不可见命令（挂载矩阵滤除） | model 工具数 |
 |---|---|---|---|---|
-| vuln | 7 | 5 | register_candidate | 11 |
+| vuln | 8 | 5 | register_candidate | 12 |
 | asset | 4 | 6 | — | 10 |
 | endpoint | 3 | 3 | — | 6 |
 | task | 17 | 6 | schedule, block, resume, cancel, finish, budget_extend, claim, reap, worker_register, worker_finish, worker_reap, complete | 15 |
@@ -60,13 +60,13 @@ for alias of bus.aliases:                              # ② 兼容别名（01 �
 | fgs | 2 | 3 | — | 5 |
 | eval | 2 | 2 | case_add, case_resolve | 2 |
 | bus | 2 | 3 | replay, prune；audit_tail（查询矩阵滤除） | 2（bus_status, events_tail） |
-| **合计** | **80** | **65** | **26 个命令不可见**（含 bus 的 replay/prune） | **≈118**（含观察期别名另计 ~20） |
+| **合计** | **81** | **65** | **26 个命令不可见**（含 bus 的 replay/prune） | **≈119**（含观察期别名另计 ~20） |
 
-口径说明：表中"model 工具数"= 命令可见数 + 查询可见数（145 个动词中 model 可见 118：54 命令 + 64 查询；查询侧仅 audit_tail 被矩阵滤除）。v4.x 现状约 67 个工具（asset-graph 38 + sec-suite 15 + sec-pipeline 8 + proxy-pool 6），v5 全量投影约 118——接近翻倍的主要来源是 know 域六子仓动词显式化（v4.x 的 exp/pb/kb/rule/vc/harvest 入口散在两插件里）。容量影响见 §2.6。
+口径说明：表中"model 工具数"= 命令可见数 + 查询可见数（146 个动词中 model 可见 119：55 命令 + 64 查询；查询侧仅 audit_tail 被矩阵滤除）。v4.x 现状约 67 个工具（asset-graph 38 + sec-suite 15 + sec-pipeline 8 + proxy-pool 6），v5 全量投影约 119——接近翻倍的主要来源是 know 域六子仓动词显式化（v4.x 的 exp/pb/kb/rule/vc/harvest 入口散在两插件里）。容量影响见 §2.6。
 
 ### 1.3 命令（工具）逐个详述——按动词类别的投影规范
 
-145 个动词逐个详述在各域文档 §1.3（真相源）。本文按**八类动词**给出投影规范与代表样例（agent_note 全文），每类的 schema/返回/错误/幂等/RoE 引用域文档。
+146 个动词逐个详述在各域文档 §1.3（真相源）。本文按**八类动词**给出投影规范与代表样例（agent_note 全文），每类的 schema/返回/错误/幂等/RoE 引用域文档。
 
 #### A. 确认/裁决类（vuln_confirm, vuln_reject, know_exp_promote …）
 
@@ -278,14 +278,16 @@ execute: async (args, exec) => gateway.dispatch('vuln', 'confirm', args, {
 | 调度 prompt phase 动词段 | scheduler 拼 prompt 时实时派生：phase→域集合映射（recon→asset/endpoint/exec/proxy/fact；vuln→vuln/exec/ledger/know/fact/fgs；review→know/fact/ledger；biz-logic→endpoint/fact/exec）→ 注入"本 phase 可用动词 + 各自 RoE 摘要（agent_note 首句）"。**契约是硬的、提示词是软的**——phase 段只是引导，模型实际能调的仍是全量矩阵（与 v4.x "persona 负责 wisdom、代码负责纪律"分工一致） |
 | persona / objective / skills / technique-index 的工具引用 | **不自动改写**——动词变更时由脚本化改写（§三），改写后 discipline-audit.py 断言无悬空引用 |
 
+prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防模型安全护栏在授权范围内误判拒答）：由 **DSH 平台层**随系统 prompt 注入，**不是 ToolProjector 的产物**（工具面零状态、零 prompt 副作用原则不破）；声明与真相的边界（AUTHORITY.md 无扩权效力，scope.yml 机器判定胜）见 08-scope §1.1。
+
 ### 2.6 性能与容量
 
 | 指标 | 预算 | 说明 |
 |---|---|---|
-| 工具数 | ≈118（+观察期别名 ~20） | v4.x 约 67 → 接近翻倍；来源是 know 域动词显式化，非功能膨胀 |
+| 工具数 | ≈119（+观察期别名 ~20） | v4.x 约 67 → 接近翻倍；来源是 know 域动词显式化，非功能膨胀 |
 | 每工具上下文开销 | description ≤240 字（≈360 token）+ schema（≈150-400 token）≈ **500-700 token** | |
-| 工具面总开销 | ≈118 × 600 ≈ **68-72k token/会话** | 显著项。缓解：DSH/pi-ai 的 prompt caching（工具 schema 在 system 段，缓存命中后边际成本低）+ AGENTS.md 速查表只列动词名不复制全文。**这是全量注册 vs phase 子集注册（开放问题 Q1）的量化输入** |
-| 投影耗时 | 注册期一次性 <100ms（15 个 manifest、145 个动词遍历） | 运行期零开销（execute 直转 dispatch） |
+| 工具面总开销 | ≈119 × 600 ≈ **69-73k token/会话** | 显著项。缓解：DSH/pi-ai 的 prompt caching（工具 schema 在 system 段，缓存命中后边际成本低）+ AGENTS.md 速查表只列动词名不复制全文。**这是全量注册 vs phase 子集注册（开放问题 Q1）的量化输入** |
+| 投影耗时 | 注册期一次性 <100ms（15 个 manifest、146 个动词遍历） | 运行期零开销（execute 直转 dispatch） |
 | 查询后补发 | 每检索 +1 次 dispatch（<5ms，异步不阻塞返回） | 仅 know_exp_search 一处 |
 
 ### 2.7 契约合规评测（eval 域的"模型试图越权"用例设计）
@@ -327,6 +329,7 @@ execute: async (args, exec) => gateway.dispatch('vuln', 'confirm', args, {
 | 超时透传 | reg() 的 `def.timeoutMs`（run_cli 3670000 / burp_import 180000） | manifest timeout_ms 字段承接 |
 | 查询后补发 | experience.js exp_search 的"返回即 recordSignal(searched)" | 拆为 know_exp_record_usage 独立命令 + 投影层 fire-and-forget（副作用显式化，宪法 §七.1） |
 | 工具描述与后端能力对齐 | v4.6.1 修复（工具 schema 只暴露 4 参数、severity/source 传不进去） | 根治：schema 单一来源=manifest，工具面不可能落后于后端 |
+| `@silksec/dsh-browser` fork（浏览器共驾工具面） | tarball + `dsh-browser-upstream.index.js`/`browser-manager.js` patch（注入 SEC_FLOW_PROXY 出口代理→xray :7777）；底座=silksec-shared-browser.service（CDP :9222 常驻 Chromium，登录态人机共用） | **零改动**：fork 与常驻浏览器服务原样保留（平台层不动，10-exec §2.7 不动清单）；浏览器工具按同一 ToolProjector 规则投影（fork 内工具定义改读 manifest 是 Phase 5+ 可选项，非 v5 范围） |
 
 ### 3.2 兼容别名（工具面视角）
 
