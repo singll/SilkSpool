@@ -1,6 +1,6 @@
 # 08 · scope 域设计（授权白名单 / 项目镜像 / 排除 / 凭据引用 / 规则）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：1
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：1
 > 依赖：订阅 [`approval.approved`](09-approval.md)（授权类 kind 批准 → 本域执行 grant/rules）；被订阅：`scope.rules.changed`（exec 域令牌桶与风险闸缓存）、`scope.granted`（task 域种子任务链 + ledger 域 radar 追加）。
 > 最高约定：[00-conventions.md](00-conventions.md)；本文与它冲突时以它为准。
 

@@ -1,6 +1,6 @@
 # 14 · fgs 域设计（任务内决策图 Fact-Goal-Step Graph）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：fgs domain manifest v1
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：fgs domain manifest v1
 > 依赖：订阅 `task.finished`（图生命周期收口：失败节点补记）；被 task 域调度器调用（`fgs_clear` + 顶层 goal 种子，actor=scheduler）
 > 被订阅：`fgs.node.done`（fact 域沉淀候选清单）；`fgs_export` 查询被 ledger 域（handoff 追加）、fact 域（沉淀取数）跨域只读调用
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。

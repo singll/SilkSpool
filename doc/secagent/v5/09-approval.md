@@ -1,6 +1,6 @@
 # 09 · approval 域设计（统一审批中心 · kind 注册表 · 异步审批协议）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：1
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：1
 > 依赖：**订阅：无**（approval 是联动源头，不订阅任何域——论证见 §1.5.4）；被订阅：`approval.approved`（scope 域 / task 域 / know 域 / fact 域 / exec 域，按 kind 过滤）、`approval.requested`·`approval.rejected`（看板通知、eval 域，弱联动）。
 > 最高约定：[00-conventions.md](00-conventions.md)；本文与它冲突时以它为准。
 

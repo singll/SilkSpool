@@ -1,6 +1,6 @@
 # 02 · vuln 域设计（漏洞信号 / 候选队列 / 证据 / 提交）
 
-> 版本：v5.0 ｜ 状态：草案
+> 版本：v5.0 ｜ 状态：定稿
 > 依赖：**遵守** [`00-conventions.md`](00-conventions.md)（全局契约宪法，冲突以它为准）；被总线 `@silksec/sec-domain-bus` 宿主挂载。
 > 订阅（本域消费）：`exec.run.completed`（parser proposal 机器直灌分流）。
 > 被订阅（本域发布）：`vuln.candidate.registered / vuln.candidate.promoted / vuln.candidate.claimed / vuln.signal.registered / vuln.signal.confirmed / vuln.signal.rejected / vuln.signal.submitted`——消费方：eval 域（判定回流）、fgs 域（节点状态联动）、report 域（提交统计）、asset 域（总览缓存失效）。

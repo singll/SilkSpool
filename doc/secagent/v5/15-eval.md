@@ -1,6 +1,6 @@
 # 15 · eval 域设计（活评测集 / 假阳性消融 / 契约合规评测）
 
-> 版本：v5.0 ｜ 状态：草案
+> 版本：v5.0 ｜ 状态：定稿
 > 依赖：**遵守** [`00-conventions.md`](00-conventions.md)（全局契约宪法，冲突以它为准）；被总线 `@silksec/sec-domain-bus` 宿主挂载。
 > 订阅（本域消费）：`vuln.signal.confirmed` / `vuln.signal.rejected`（弱联动——判定回流，替代 v4 `appendLiveEval` 直调）。
 > 被订阅（本域发布）：`eval.case.appended` / `eval.report.built`（消费方：report 域周报可选引用；memcore 不治理本域文件）。

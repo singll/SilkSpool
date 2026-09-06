@@ -1,6 +1,6 @@
 # 06 · fact 域设计（事实图谱 / 黑板环境层 / 负知识）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：fact@1
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：fact@1
 > 依赖：总线（01-bus.md，命令/查询网关、事件、幂等、审计）；宪法（00-conventions.md）。
 > 订阅：`task.finished`、`fgs.node.done`（FGS 沉淀）；`exec.run.failed`（负知识自动证伪）；`approval.approved`（exclude-exception 留档）。
 > 被订阅：`fact.*` 全系事件——memcore（治理旁路）、know（[env-issue] → AGENTS.md 刷新）、dashboard（视图）。

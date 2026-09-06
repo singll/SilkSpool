@@ -1,6 +1,6 @@
 # 12 · report 域设计（报告与提交稿的生成、索引、检索）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：1
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：1
 > 依赖：**订阅**：无（纯消费 vuln 域查询，不订阅任何事件）；**被订阅**：`report.built` / `report.draft.generated`（当前零订阅者，预留给 eval/ledger/每日链——弱联动）；**上游查询依赖**：`vuln_list` / `vuln_stats`（02-vuln.md 契约，经 QueryGateway 同步只读）。
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）。
 

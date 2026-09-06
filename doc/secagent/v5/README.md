@@ -1,6 +1,6 @@
 # SilkSecAgent v5 · 领域插件化架构 · 总设计文档
 
-> 版本：v5.0 ｜ 状态：**全量设计阶段（草案，定稿评审中；代码重构在全部文档定稿后启动）**
+> 版本：v5.0 ｜ 状态：**全量设计定稿（00-18 全部定稿；代码重构按 18-migration.md 的 Phase 顺序启动）**
 > 性质：设计真相源。v4.x 全部文档已归档至 [`../archive/`](../archive/INDEX.md)（过期，仅供回溯）。
 > 工程位置：csai `/opt/silkspool/dsh/`；版本受控源文件在 SilkSpool 仓库 `bundles/dsh/templates/`。
 > **最高约定**：[`00-conventions.md`](00-conventions.md)（全局契约宪法——命名/actor/命令八铁律/信封/错误码/幂等/事件/审计/后端/测试/安全/版本化）。模块文档与它冲突时以它为准。
@@ -55,25 +55,25 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 
 | # | 文档 | 域职责（一句话） | owns（单写者） | 状态 |
 |---|---|---|---|---|
-| 00 | [conventions](00-conventions.md) | 全局契约宪法 | —（总线管 audit/events） | **草案** |
-| 01 | [bus](01-bus.md) | 领域总线：注册/网关/事件/投影/幂等/审计 | idempotency 表、audit.jsonl、data/events/ | 草案 |
-| 02 | [vuln](02-vuln.md) | 漏洞信号/候选队列/证据复核 | findings 表、data/evidence/ | 草案 |
-| 03 | [asset](03-asset.md) | 资产/指纹/分级 | assets、fingerprints 表 | 草案 |
-| 04 | [endpoint](04-endpoint.md) | 接口面/参数队列 | endpoints 表、param-queue | 草案 |
-| 05 | [task](05-task.md) | 任务/调度/执行史/worker 注册表 | tasks、task_runs、workers 表 | 草案 |
-| 06 | [fact](06-fact.md) | 事实/边/黑板环境层/负知识 | facts、fact_edges、blackboard 表 | 草案 |
-| 07 | [know](07-know.md) | 知识六仓：经验/文献/先验/规程/收割/体检 | exp_*、kb_* 表、rules/、vulncards/ | 草案 |
-| 08 | [scope](08-scope.md) | 授权/项目/排除/凭据引用/规则 | scope.yml、programs、credentials 表 | 草案 |
-| 09 | [approval](09-approval.md) | 统一审批中心（kind 注册表） | approval_requests 表 | 草案 |
-| 10 | [exec](10-exec.md) | 工具执行/沙箱/QPS/worker 派生/parser 提案 | tools.d/、results/、flows/ | 草案 |
-| 11 | [ledger](11-ledger.md) | 纪律台账/卡使用/覆盖/雷达队列 | pipeline/{program}/ 台账文件 | 草案 |
-| 12 | [report](12-report.md) | 报告生成/提交稿 | reports/ 全树（含 submissions/） | 草案 |
-| 13 | [proxy](13-proxy.md) | 代理池 | pool.json/live/blocklist | 草案 |
-| 14 | [fgs](14-fgs.md) | 任务内决策图 | fgs_nodes 表 | 草案 |
-| 15 | [eval](15-eval.md) | 活评测集/假阳性消融 | data/eval/ | 草案 |
-| 16 | [dashboard](16-dashboard.md) | 看板壳 + 域视图插件化 + RPC 投影消费 | client 资源 | 草案 |
-| 17 | [llm-surface](17-llm-surface.md) | LLM 工具面/挂载矩阵/prompt 体系对接 | — | 草案 |
-| 18 | [migration](18-migration.md) | 迁移路线 Phase 0-5/回滚/数据修复 | — | 草案 |
+| 00 | [conventions](00-conventions.md) | 全局契约宪法 | —（总线管 audit/events） | **定稿** |
+| 01 | [bus](01-bus.md) | 领域总线：注册/网关/事件/投影/幂等/审计 | idempotency 表、audit.jsonl、data/events/ | 定稿 |
+| 02 | [vuln](02-vuln.md) | 漏洞信号/候选队列/证据复核 | findings 表、data/evidence/ | 定稿 |
+| 03 | [asset](03-asset.md) | 资产/指纹/分级 | assets、fingerprints 表 | 定稿 |
+| 04 | [endpoint](04-endpoint.md) | 接口面/参数队列 | endpoints 表、param-queue | 定稿 |
+| 05 | [task](05-task.md) | 任务/调度/执行史/worker 注册表 | tasks、task_runs、workers 表 | 定稿 |
+| 06 | [fact](06-fact.md) | 事实/边/黑板环境层/负知识 | facts、fact_edges、blackboard 表 | 定稿 |
+| 07 | [know](07-know.md) | 知识六仓：经验/文献/先验/规程/收割/体检 | exp_*、kb_* 表、rules/、vulncards/ | 定稿 |
+| 08 | [scope](08-scope.md) | 授权/项目/排除/凭据引用/规则 | scope.yml、programs、credentials 表 | 定稿 |
+| 09 | [approval](09-approval.md) | 统一审批中心（kind 注册表） | approval_requests 表 | 定稿 |
+| 10 | [exec](10-exec.md) | 工具执行/沙箱/QPS/worker 派生/parser 提案 | tools.d/、results/、flows/ | 定稿 |
+| 11 | [ledger](11-ledger.md) | 纪律台账/卡使用/覆盖/雷达队列 | pipeline/{program}/ 台账文件 | 定稿 |
+| 12 | [report](12-report.md) | 报告生成/提交稿 | reports/ 全树（含 submissions/） | 定稿 |
+| 13 | [proxy](13-proxy.md) | 代理池 | pool.json/live/blocklist | 定稿 |
+| 14 | [fgs](14-fgs.md) | 任务内决策图 | fgs_nodes 表 | 定稿 |
+| 15 | [eval](15-eval.md) | 活评测集/假阳性消融 | data/eval/ | 定稿 |
+| 16 | [dashboard](16-dashboard.md) | 看板壳 + 域视图插件化 + RPC 投影消费 | client 资源 | 定稿 |
+| 17 | [llm-surface](17-llm-surface.md) | LLM 工具面/挂载矩阵/prompt 体系对接 | — | 定稿 |
+| 18 | [migration](18-migration.md) | 迁移路线 Phase 0-5/回滚/数据修复 | — | 定稿 |
 
 **依赖关系速览**（阅读时的心智图）：bus 是所有域的宿主；vuln/asset/endpoint/fact/know 相互只通过事件联动；authz 是 exec 的前置（守卫链）；approval 只发事件不直写任何域；ledger 订阅 exec 产物；task 调 exec 派生 worker；memcore 订阅全部域的 lifecycle 事件。
 

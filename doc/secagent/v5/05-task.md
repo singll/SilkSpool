@@ -1,6 +1,6 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：task domain manifest v1
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：task domain manifest v1
 > 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）；`task_budget_extend` 由 approval 域 `approval_effects` 经 dispatcher 幂等执行。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。

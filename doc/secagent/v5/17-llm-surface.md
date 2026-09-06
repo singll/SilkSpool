@@ -1,6 +1,6 @@
 # 17 · LLM 工具面（llm-surface：契约投影 / 挂载矩阵 / prompt 体系对接 / 负向保障）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 依赖契约版本：[`00-conventions.md`](00-conventions.md) v5.0 ｜ [`01-bus.md`](01-bus.md)（ToolProjector 机制）｜ 各域文档 02-15（动词清单与 agent_note 的真相源）
+> 版本：v5.0 ｜ 状态：定稿 ｜ 依赖契约版本：[`00-conventions.md`](00-conventions.md) v5.0 ｜ [`01-bus.md`](01-bus.md)（ToolProjector 机制）｜ 各域文档 02-15（动词清单与 agent_note 的真相源）
 > owns：**无**（本域不是插件、不持有任何存储——它是 ToolProjector 的投影规则与 prompt 对接设计；投影器本体属 01-bus）
 > 本文回答：**"模型只见动词不见存储"由哪几张矩阵保证、模型看到的每个工具长什么样、模型做错了怎么自愈、怎么验证它守约。**
 
@@ -143,21 +143,23 @@ agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/ou
 
 ### 1.6 模型工具面投影——完整挂载矩阵
 
-**矩阵 = profile × actor 白名单 × 域注册状态**。行的值=该面上该类动词是否可见：
+**矩阵 = profile × phase × actor 白名单 × 域注册状态**。行的值=该面上该类动词是否可见：
 
-| 动词类别（代表） | web 工具面（model） | headless 工具面（model） | 看板 RPC 面（dashboard） | human CLI 面 | 注入的 actor |
+| 动词类别（代表） | web 工具面（model，全量） | headless 工具面（model，按 phase 子集） | 看板 RPC 面（dashboard） | human CLI 面 | 注入的 actor |
 |---|---|---|---|---|---|
-| 全部查询（65 个） | ✅ | ✅ | ✅ | ✅ | 各面固定注入 |
-| A 确认/裁决类 | ✅ | ✅ | ✅ | ✅ | — |
-| B 登记类 | ✅ | ✅ | ✅ | ✅ | — |
-| C 流转类（模型可用子集） | ✅ | ✅ | ✅ | ✅ | — |
-| D 台账/回执类 | ✅ | ✅ | ✅ | ✅ | — |
-| E 执行类 | ✅ | ✅ | ✅ | ✅ | — |
+| 全部查询（65 个） | ✅ 全量 | ✅（仅本 phase 域子集） | ✅ | ✅ | 各面固定注入 |
+| A 确认/裁决类 | ✅ | ✅（vuln phase 可见） | ✅ | ✅ | — |
+| B 登记类 | ✅ | ✅（本 phase 域可见） | ✅ | ✅ | — |
+| C 流转类（模型可用子集） | ✅ | ✅（本 phase 域可见） | ✅ | ✅ | — |
+| D 台账/回执类 | ✅ | ✅（vuln phase 可见） | ✅ | ✅ | — |
+| E 执行类 | ✅ | ✅（recon/vuln phase 可见） | ✅ | ✅ | — |
 | F 治理生命周期类 | ❌ 不注册 | ❌ 不注册 | ❌（不含 dashboard） | ⚠️ 仅 human（应急） | script / reactor |
 | G 机器直灌类 | ❌ 不注册 | ❌ 不注册 | ❌ | ❌ | webhook / script |
 | H 裁决/授权/调度收尾类 | ❌ 不注册 | ❌ 不注册 | ✅ | ⚠️ 仅 human | dashboard(+operator) / scheduler / approval |
 | bus_status / events_tail | ✅ | ✅ | ✅ | ✅ | — |
 | bus_replay / bus_prune / audit_tail | ❌ | ❌ | ✅ | ✅ | human / system |
+
+**phase 动态子集（已定，§2.5 phase→域映射为唯一注册边界）**：headless worker 按任务 `phase` 只注册该 phase 域集合的动词（spawn_worker 的 task 描述声明 phase，ToolProjector 据此裁剪注册集）；web 会话保持全量。这样 worker 会话的 token 开销从 ~68-72k 降到单 phase 域集合的 ~10-20k，且模型在任务内"物理看不见"越界域工具（负向保障强化）。跨界需求走 review phase 或显式声明 phase 集合。
 
 治理生命周期类的订阅执行（memcore lifecycle、eval 回流）由总线从订阅回调注入 actor=`reactor`（宪法 §三）。
 
@@ -167,7 +169,8 @@ agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/ou
 2. 域未通过 R1-R7 注册校验（拒载）→ 该域全部工具不注册；
 3. 别名目标不可见 → 别名不注册；
 4. 后端能力矩阵 `unsupported` 的命令 → **注册但 dispatch 报 E_CAPABILITY_UNSUPPORTED**（工具存在、能力缺失是后端事实，模型应知道并换路径——与 1/2/3 的"接口不存在"语义不同）；
-5. deprecated 且 `mount_deprecated=false`（Phase 5 删别名期）→ 不注册。
+5. deprecated 且 `mount_deprecated=false`（Phase 5 删别名期）→ 不注册；
+6. headless 面：动词所属域不在当前 phase 域集合 → 不注册（phase 动态子集，web 面豁免）。
 
 ### 1.7 看板 RPC 投影
 
@@ -275,7 +278,7 @@ execute: async (args, exec) => gateway.dispatch('vuln', 'confirm', args, {
 | 产物 | 生成/失效时机 |
 |---|---|
 | secbus 区块 | bus 启动（web 宿主面单例）重写；域注册/拒载/别名废弃任何变化都触发。重写只动 begin/end 之间（与 memcore 区块同规矩） |
-| 调度 prompt phase 动词段 | scheduler 拼 prompt 时实时派生：phase→域集合映射（recon→asset/endpoint/exec/proxy/fact；vuln→vuln/exec/ledger/know/fact/fgs；review→know/fact/ledger；biz-logic→endpoint/fact/exec）→ 注入"本 phase 可用动词 + 各自 RoE 摘要（agent_note 首句）"。**契约是硬的、提示词是软的**——phase 段只是引导，模型实际能调的仍是全量矩阵（与 v4.x "persona 负责 wisdom、代码负责纪律"分工一致） |
+| 调度 prompt phase 动词段 | scheduler 拼 prompt 时实时派生：phase→域集合映射（recon→asset/endpoint/exec/proxy/fact；vuln→vuln/exec/ledger/know/fact/fgs；review→know/fact/ledger；biz-logic→endpoint/fact/exec）。**phase 是注册边界（已定）**：headless worker 按 phase 只注册该域集合的动词（§1.6），prompt 的 phase 段只注入"本 phase 可用动词 + 各自 RoE 摘要（agent_note 首句）"作引导——契约硬、提示词软，但两者口径一致（模型可见动词 = prompt 列举动词，无越界工具可调） |
 | persona / objective / skills / technique-index 的工具引用 | **不自动改写**——动词变更时由脚本化改写（§三），改写后 discipline-audit.py 断言无悬空引用 |
 
 prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防模型安全护栏在授权范围内误判拒答）：由 **DSH 平台层**随系统 prompt 注入，**不是 ToolProjector 的产物**（工具面零状态、零 prompt 副作用原则不破）；声明与真相的边界（AUTHORITY.md 无扩权效力，scope.yml 机器判定胜）见 08-scope §1.1。
@@ -286,7 +289,7 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 |---|---|---|
 | 工具数 | ≈119（+观察期别名 ~20） | v4.x 约 67 → 接近翻倍；来源是 know 域动词显式化，非功能膨胀 |
 | 每工具上下文开销 | description ≤240 字（≈360 token）+ schema（≈150-400 token）≈ **500-700 token** | |
-| 工具面总开销 | ≈119 × 600 ≈ **69-73k token/会话** | 显著项。缓解：DSH/pi-ai 的 prompt caching（工具 schema 在 system 段，缓存命中后边际成本低）+ AGENTS.md 速查表只列动词名不复制全文。**这是全量注册 vs phase 子集注册（开放问题 Q1）的量化输入** |
+| 工具面总开销 | web 全量 ≈119 × 600 ≈ **69-73k token/会话**；headless worker 按 phase 子集 ≈ **10-20k token/会话**（已定，§1.6） | web 会话靠 DSH/pi-ai prompt caching（工具 schema 在 system 段，缓存命中后边际成本低）+ AGENTS.md 速查表只列动词名不复制全文；worker 靠 phase 动态子集物理降本 |
 | 投影耗时 | 注册期一次性 <100ms（15 个 manifest、146 个动词遍历） | 运行期零开销（execute 直转 dispatch） |
 | 查询后补发 | 每检索 +1 次 dispatch（<5ms，异步不阻塞返回） | 仅 exp_search 一处 |
 
@@ -358,7 +361,6 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 
 | # | 问题 | 选项与建议 |
 |---|---|---|
-| Q1 | **工具面 token 预算 vs phase 动态子集注册**。全量 ≈118 工具 ≈68-72k token/会话（§2.6）。备选：headless worker 按任务 phase 只注册该 phase 域的子集（spawn_worker task 描述声明所需域），web 会话保持全量 | 建议：Phase 1-4 全量（先保证正确性，prompt caching 兜成本）；Phase 5 拿 dsh-bill 实测 token 数据再决定是否引入 phase 子集（会带来"worker 想跨界工具时不可见"的新失败模式，需 eval 用例覆盖） |
 | Q2 | **agent_note 长度预算的执行点**。现设计 manifest lint 硬拒（>240 字拒载）。备选：仅告警 | 建议硬拒（描述劣化直接伤模型行为，v4.x 风险表识别项）；但硬拒会把"写长了"变成域上线阻塞，需在域文档模板里给足范例 |
 | Q3 | **失败信封的投递形态**。现设计返回 JSON 信封（不 throw）。备选：DSH 工具层 throw（走平台错误通道） | 建议 JSON 信封（模型可结构化读 hint/retryable）；Phase 1 用 eval EC-06 类用例验证模型对 JSON 信封的遵循率，不达标再评估 throw 混合形态 |
 | Q4 | **eval 契约合规的验收阈值**。现设计：越权拒绝率 100% 必达、hint 恢复率 ≥90% | 恢复率 90% 是否合理无先例数据；建议 Phase 1 末先跑一轮基线（预期 70-85%），据基线定验收线，写进 15-eval.md 定稿 |

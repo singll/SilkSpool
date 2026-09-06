@@ -1,6 +1,6 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：`exec/1`
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：`exec/1`
 > 依赖：订阅 `scope.rules.changed`（QPS 即时生效）、`approval.approved`（tool-intrusive 白名单放行后重试自然通过，无需显式订阅——白名单在 scope 域数据里）；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal）、`exec.flow.appended`（vuln 域）、`exec.worker.spawned/.finished`（task 域）、`exec.import.completed`（endpoint/vuln 域）
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。

@@ -1,6 +1,6 @@
 # 11 · ledger 域设计（纪律台账 / 卡使用 / 覆盖 / 雷达队列 / 交接包）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：`ledger/1`
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：`ledger/1`
 > 依赖：订阅 `exec.run.completed`（对账统计，弱联动）、`approval.approved`（scope-approved 雷达入队，弱联动）；被订阅：`attempt.logged` / `card_usage.logged` / `handoff.written`（task 域——task_finish 三产物校验的计数缓存）、`radar.drained`（task/recon 派单侧）
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：把 agent 的**纪律动作**（台账落行/卡使用/交接包/雷达处置）变成机器强制、写入即校验、可聚合取证的文件型台账——"执行了什么、覆盖到哪、纪律是否在线"的唯一真相源。

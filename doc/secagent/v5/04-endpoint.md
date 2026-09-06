@@ -1,6 +1,6 @@
 # 04 · endpoint 域设计（接口面 / 参数队列——"打哪里、喂什么料"的唯一事实源）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：endpoint@1（repository-v1）
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：endpoint@1（repository-v1）
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线）
 > owns（单写者）：`endpoints` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）
 > 不 owns：`assets`（asset 域）、`findings`（vuln 域）、`data/pipeline/{program}/` 下其余台账文件（ledger 域）

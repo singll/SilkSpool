@@ -1,6 +1,6 @@
 # 03 · asset 域设计（资产 / 指纹 / 分级——"挖什么、先挖谁"的唯一事实源）
 
-> 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：asset@1（repository-v1）
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：asset@1（repository-v1）
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线：网关/事件/幂等/审计）
 > owns（单写者）：`assets` 表、`fingerprints` 表（含全部列级演进）
 > 不 owns：`endpoints`（endpoint 域）、`findings`（vuln 域）、`programs`/scope（authz 域）
