@@ -16,9 +16,15 @@ llm-pi-ai:
         supportsDeveloperRole: false
       models:
         - id: pool-secagent
-          name: SilkSecAgent 模型池（SenseNova / DeepSeek / OpenCode Go 兜底）
+          name: SilkSecAgent 模型池（flash-lite 优先 / SenseNova / DeepSeek / OpenCode Go 兜底）
           contextWindow: 1048576
           maxTokens: 131072
+          reasoningEfforts:
+            {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
+        - id: sensenova-6.8-flash-lite
+          name: SenseNova 6.8 Flash Lite（256K 专属积分）
+          contextWindow: 262144
+          maxTokens: 65536
           reasoningEfforts:
             {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
         - id: deepseek-v4-flash
