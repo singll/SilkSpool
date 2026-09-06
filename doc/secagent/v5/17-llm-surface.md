@@ -119,9 +119,11 @@ agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/ou
 
 **对 model 不可见**（actor 限 webhook/script/parser）。"机器直灌不冒充漏洞信号"从闸门 if 升级为接口不存在（宪法 §十四.2）。
 
-#### H. 裁决/授权类（approval_decide, scope_grant/revoke/…, task_finish …）
+#### H. 裁决/授权类（approval_decide, scope_grant/revoke/…, task_complete …）
 
 **对 model 不可见**。模型的合法路径：`approval_request` 提请 + 收到 needs_approval 语义的失败信封后**停止重试**（v4.5 异步审批协议第 13 条纪律保留）。
+
+自执行任务完结三段式（05-task C16-C17，2026-09-06 裁决）：模型侧唯一可见的完结动作是 **C16 `task_submit_complete`**（声明完成 + 提请 task-complete 审批，不改状态）；**C17 `task_complete` 与 `task_finish` 同属本类对 model 不可见**（approval / scheduler actor 专用）。agent_note 须写明"声明后进入审批等待，勿重复声明、勿继续执行"（幂等由自然键保证，重复声明返回既有审批单）。
 
 #### 查询类（全部 *_list/*_get/*_search/*_stats …）
 

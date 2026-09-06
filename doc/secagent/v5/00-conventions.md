@@ -64,7 +64,7 @@
 | cordis 服务名 | `secDomain.{domain}` | `secDomain.vuln` |
 | 插件包名 | `@silksec/sec-domain-{domain}` | `@silksec/sec-domain-vuln` |
 | 后端插件包名 | `@silksec/sec-backend-{domain}-{backend}` | `@silksec/sec-backend-vuln-sqlite` |
-| **命令（写动词）** | `{domain}_{对象?}_{动作}`，snake_case；**动作必须是状态机语义动词**（confirm/reject/register/promote…），禁自由态 update | `vuln_confirm` `asset_grade` `know_exp_promote` |
+| **命令（写动词）** | `{domain}_{子仓?}_{对象?}_{动作}`，snake_case，中段可省；**动作必须是状态机语义动词**（confirm/reject/register/promote…），禁自由态 update | `vuln_confirm` `asset_grade` `know_exp_promote` `exp_store`* |
 | **查询** | `{domain}_{对象}_{读法}` | `vuln_candidates` `asset_deep_queue` |
 | 工具名（模型面） | 与命令/查询名**完全一致**（投影零改名） | 工具 `vuln_confirm` = 命令 `vuln.confirm` |
 | RPC 名（看板面） | `{domain}.{verb}` 点分（RPC 通道允许点号） | RPC `vuln.confirm` |
@@ -76,6 +76,8 @@
 | 模块文档文件 | `v5/{NN}-{domain}.md` | `v5/02-vuln.md` |
 
 *authz（scope+credentials）为单一授权域，见 `08-scope.md`。
+
+**子仓前缀豁免（已裁决 2026-09-06）**：know 域六子仓动词保持 v4 原名（`exp_store` / `kb_import` / `vc_save` / `rule_seed`…），不加 `know_` 域前缀——子仓前缀（`exp_`/`kb_`/`vc_`/`pb_`）天然构成命名空间，且 12 个工具名在 prompt 体系高度内化，改名收益为零、行为漂移风险为实。`know_` 前缀只留给跨子仓动词（`know_adopt` / `know_health` / `know_transition`）。总线寻址 `dispatch('know', 'exp_store')` 域前缀由总线承担。其他域无子仓结构，不适用本豁免。
 
 **禁用词**：任何新动词不得叫 `update` / `set` / `save` / `modify`（自由态写入口）。确需"改一个可选字段集合"的，必须先回答"这是不是一个状态机流转"——是则起语义名，否则拆成多个动词。
 
@@ -91,6 +93,7 @@
 | `webhook` | xray 等机器事件接收器 | 仅机器直灌通道（`vuln_register_candidate` 等） |
 | `scheduler` | 调度循环 | `task_finish` 等 task 域内部动词 |
 | `approval` | 审批批准事件的订阅执行 | `scope_grant` 等（由 approval.approved 事件携带） |
+| `reactor` | **域事件订阅反应器**（approval 事件之外的跨域事件订阅处理器调用面，由总线从订阅回调注入，模型/看板不可见、不可伪造；审计 cause 链指向源事件及其原始 actor） | 事件联动回写类（`task_worker_register` / `vuln_attach_fgs` 等），各命令白名单显式列出 |
 | `system` | 总线/域自身生命周期（迁移、初始化） | 全部；仅限启动/迁移窗口 |
 | `human` | 人工经 CLI 直调（运维应急通道） | 只读查询 + 显式标注 `--actor human` 的写；审计高亮 |
 
@@ -104,6 +107,7 @@
 **写动词八条铁律**（每个命令详述页必须逐条对齐）：
 
 1. **动词即状态机入口**：命令只做一件事——把对象从一个合法状态迁移到另一个（或登记新对象）。目标状态是动词名的一部分，**调用方永远不传 `status`/`to` 参数**。状态机图是模块私有资产，只通过动词集合对外可见。
+   - **已批准豁免（2026-09-06，仅此一例）**：治理通道的周期判定型流转（`fact_transition`）允许 `to` 参数。边界三条件缺一不可：① 目标状态由外部调度计算得出（sweep 判定"逾期"），调用时才可知，无法预编进动词名；② actor 白名单仅 `system/human`；③ 不向模型注册工具——"自由态写入口"对模型物理不存在。其他域援引本豁免须逐条满足三条件并单独评审。
 2. **一个命令一个事务**：后端在 BEGIN IMMEDIATE 内完成该命令的全部行变更（含联动列）。跨域效果不进本事务——发事件，最终一致。
 3. **幂等必填**：见 §六。重放同一命令必须返回与首次相同的结果（信封带 `replay: true` 标记）。
 4. **证据即参数**：语义上"确认/验证/落账/结论"类动词，证据参数（run_id / evidence_path / flow_id）是 schema required。缺证据 = `E_EVIDENCE_REQUIRED`，不是运行时警告。
@@ -305,3 +309,4 @@
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | v5.0-draft-1 | 2026-09-06 | 初稿（由 v5 总体方案 §三 扩展为全量宪法） |
+| v5.0-draft-2 | 2026-09-06 | 用户裁决落章：§二 子仓前缀豁免（know 先例）；§三 新增第 9 类 `reactor` actor（事件订阅反应器）；§四.1 治理通道 `to` 参数豁免（fact_transition 唯一实例，三条件边界） |

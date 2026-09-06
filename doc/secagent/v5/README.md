@@ -102,16 +102,20 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 | 3 | verify_replay 归属（11-ledger 判 vuln，但 02-vuln 初稿无此命令） | **归 vuln 域 `vuln_verify_replay`（C9）**，补全命令规格；vuln 域新增 owns `data/evidence/{finding_id}/` | 操作对象与产物（evidence 包、verify-log）归 vuln；判定驱动 finding 置信——"记录 vs 判定"不同族 |
 | 4 | 宪法 actor 集是否新增 `exec`（05-task §四.1 提议） | **维持开放问题，未修宪**；过渡期 system actor + cause 链（审计指向原始事件） | 与域名 `exec` 撞名有歧义风险；待用户定稿评审时显式裁决（候选方案：更名 `reactor`/`subscriber` 或维持 system+cause） |
 
+**用户逐项裁决（2026-09-06 第二轮，6 项全部落章）**：
+
+| # | 问题 | 裁决 | 落点 |
+|---|---|---|---|
+| 5 | fgs_update 单动词 vs 拆分 | **维持拆 6 语义动词**（start/complete/fail/block/deprecate/annotate + 兼容别名），不修宪 | 14-fgs §四.1 关闭 |
+| 6 | fact_transition 的 `to` 豁免 | **批准豁免**，写入宪法 §四.1"已批准豁免"条款（三条件边界：调度判定型 / 仅 system+human / 不向模型注册） | 宪法 draft-2 + 06-fact C7 |
+| 7 | know 子仓动词命名 | **免域前缀 + 宪法 §二 修订**为 `{domain}_{subrepo?}_{对象?}_{动作}` 可选中段（know 先例条款） | 宪法 draft-2 + 07-know §四.1 关闭 |
+| 8 | 事件订阅方 actor 身份 | **新增第 9 类 `reactor`**（弃撞名原名 exec；approval 事件保留专用 approval actor） | 宪法 §三 + 05-task C13/C14、02-vuln C10、14-fgs F4、07-know pb_outcome、10-exec 全部对齐 |
+| 9 | 自执行任务完结语义 | **用户方案：三段式**——声明完成（C16 `task_submit_complete`，model）→ 统一拦截兜底（scheduler 扫描防漏声明）→ 审批裁决（C17 `task_complete`，approval）；三产物守卫降为审批单 payload 展示，**人工裁决即守卫** | 05-task C16-C17 新增 + 09-approval kind 7 `task-complete` |
+| 10 | assets owner 列 | **增列 + 分两步固化**：Phase 2 ensureCol + asset_grade 加 owner/owner_evidence 参数（证据即参数）；先记录按接触回填，confirmed+third_party 覆盖 ≥60% 深挖候选集后 deep_queue 固化 owner='confirmed' | 03-asset §四.1 关闭 + §1.3.3 参数表 + 结构性闸门五列 |
+
 ## 八、待用户裁决的开放问题（定稿评审清单）
 
-各文档 §四开放问题全文见对应模块文档，以下为**需要用户显式拍板**的宪法级/取舍级项（其余为实现期观察项）：
-
-1. **fgs_update 拆分**（14-fgs §四.1，最重要）：单动词已按宪法拆为 fgs_start/complete/fail/block/deprecate/annotate 六语义动词——若坚持单词法须先修宪并接受状态机开放面；
-2. **fact_transition 的 `to` 参数**（06-fact §四.1）：治理通道传目标态与宪法 §四.1"调用方不传 to"的豁免论证，需确认（替代方案是动词数 ×3）；
-3. **know 子仓动词免域前缀**（07-know §四.1）：exp_store/kb_import 等保持 v4 原名，建议宪法 §二示例同步修订（`{domain}_{subrepo?}_{verb}` 可选中段）；
-4. **`exec` actor 宪法化**（05-task §四.1，见上表 #4）；
-5. **模型自执行型任务的完结语义**（05-task §四.2）：是否为 assignee=model 的任务补 actor=model 的 task_complete（本稿倾向不加）；
-6. **资产 owner 列缺失**（03-asset §四.1）：深挖队列规则依赖 owner 打标但 v4 从未落库——是否增列。
+~~宪法级 6 项~~ **已全部裁决（2026-09-06，见 §七表 5-10）**。剩余为各文档 §四的**实现期观察项**（无需现在拍板，按文档所列倾向推进、实证后复评）：02-vuln §四 2-6、03-asset §四 2-7、04-endpoint §四 1-6、05-task §四 3-6、06-fact §四 2-6、07-know §四 2-6、08-scope §四 O-1~O-6、09-approval §四 O-1~O-6、10-exec §四 1-5、11-ledger §四 2-5、12-report §四 1-5、13-proxy §四 1-5、14-fgs §四 2-6、15-eval §四 1-5、16-dashboard §四 1-6。
 
 ## 九、与归档文档的关系
 
@@ -126,3 +130,4 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 |---|---|---|
 | v5.0-draft-1 | 2026-09-06 | 总体重建：v4.x 文档全量归档；确立 00-18 共 19 份文档的设计体系与完成度索引 |
 | v5.0-draft-2 | 2026-09-06 | 19 份文档全部起草完成（8 并行 agent）；终审裁决 4 项跨文档冲突（§七）；状态表全部置"草案"；汇总待用户裁决开放问题（§八） |
+| v5.0-draft-3 | 2026-09-06 | 用户逐项裁决 6 项宪法级问题全部落章（§七表 5-10）：reactor actor 宪法化 / know 子仓命名豁免 / fact_transition to 豁免 / fgs 维持拆分 / 自执行任务三段式收尾（C16-C17 + kind 7）/ owner 列分两步固化；§八 仅余实现期观察项 |

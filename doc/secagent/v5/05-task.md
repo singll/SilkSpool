@@ -43,11 +43,13 @@
 | C10 | `task_budget_extend` | task-budget-extend 审批落列（budget_timeout_sec ≤7200） | approval | 自然键（task_id） | — | ❌ |
 | C11 | `task_claim` | 调度认领：BEGIN IMMEDIATE 原子抢占 ≤4 条到期任务 | scheduler | 状态条件（queued） | task.claimed ×N | ❌ |
 | C12 | `task_reap` | 僵尸回收：宽限=超时+15min，活 worker 跳过 | scheduler | 状态条件（running） | task.finished ×N | ❌ |
-| C13 | `task_worker_register` | worker 注册表登记（exec.worker.spawned 订阅执行） | exec*, system | 自然键（run_id） | — | ❌ |
-| C14 | `task_worker_finish` | worker 注册表收尾（exec.worker.finished 订阅执行） | exec*, system | 自然键（run_id） | — | ❌ |
+| C13 | `task_worker_register` | worker 注册表登记（exec.worker.spawned 订阅执行） | reactor | 自然键（run_id） | — | ❌ |
+| C14 | `task_worker_finish` | worker 注册表收尾（exec.worker.finished 订阅执行） | reactor | 自然键（run_id） | — | ❌ |
 | C15 | `task_worker_reap` | worker 注册表启动/周期对账（meta 回读 → pid 判活 → 孤儿执法） | scheduler | 状态条件（running） | — | ❌ |
+| C16 | `task_submit_complete` | **自执行任务完成声明**（不改状态，提请 task-complete 审批） | model | 自然键（task_id+声明时刻） | — | ✅ |
+| C17 | `task_complete` | **审批落成收尾**（approval.approved kind=task-complete 订阅执行，自执行任务唯一 done 入口） | approval | 自然键（task_id） | task.finished | ❌ |
 
-> \* `exec` 是本域文档在宪法 §三 actor 集上**提议新增**的域间调用身份（由总线从事件订阅处理器调用面注入，模型/看板不可见、不可伪造）；宪法定稿前过渡期用 `system` actor + cause 链（cause.domain=exec）。见 §四开放问题 1。
+> \* ~~actor `exec` 提议~~ **已宪法化（2026-09-06 用户裁决）**：宪法 §三 新增第 9 类 `reactor`（域事件订阅反应器）——因与 exec 域撞名弃用原名 `exec`。C13/C14 由总线从 `exec.worker.*` 订阅回调注入 actor=reactor，审计 cause 链指向源事件及其原始 actor；approval 事件的订阅执行保留专用 `approval` actor（语义更具体的先例身份）。
 
 **与 exec 域的边界（dedupe_key 幂等语义为界）**：
 
@@ -414,6 +416,21 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 三者均不向模型注册；C13/C14 不发事件（exec.worker.* 事件本身即是留痕）。
 
+#### C16–C17 `task_submit_complete` / `task_complete`（自执行任务三段式收尾 · 已裁决设计 2026-09-06）
+
+**背景（用户裁决方案）**：v4.x 模型可 `task_update status=done` 手动完结——模型给自己当法官。v5 收尾权唯一归 task_finish(scheduler)，但 assignee=model 的**自执行型任务**（web 会话内直接执行、不经 worker 派生）需要一个不破坏状态机单一入口的收尾路径。裁决：**声明完成 → 统一拦截 → 审批裁决**三段式。
+
+| 动词 | 触发面 | 语义 | 关键细节 |
+|---|---|---|---|
+| C16 `task_submit_complete` | 模型（会话内） | **完成声明，不改状态**：向 approval 域提请 kind=task-complete 审批 | 参数：task_id（必填）、summary（≥30 字，做了什么/结论）、evidence（产物指针：run_id / result note 引用，可多个）、follow_up（可选，≤500 字——希望人工顺带裁决的后续操作建议，进审批单 payload 供用户参考）。域内先校验：task 存在、assignee=model、非终态、task_active_by_session 确认无活动 worker；然后 dispatch approval_request（kind=task-complete，subject=task_id，payload={summary, evidence, follow_up, 三产物检查快照}）。返回审批 request_id + hint（"已提请人工确认（看板「审批」tab）。任务保持 in_progress，不要自行标记完成"） |
+| C17 `task_complete` | 订阅 `approval.approved`（kind=task-complete，强联动 sync） | 落 done：status→done、finished_at、result 追加"人工确认 {request_id} + summary" | actor=approval（宪法 §三 先例身份），cause 链指向审批单与 C16 声明。三产物守卫在此**降为展示不拦截**：自执行任务无 worker 产物，守卫结果（含 missing 清单）已在审批单 payload 里呈现给用户——**人工裁决即守卫**（fail-open 的合法形态：放行决策权在人，且全程审计留痕） |
+
+**统一拦截任务（防漏声明兜底）**：调度器每 tick 附带扫描——`assignee=model AND status=in_progress AND 会话已结束（session idle >30min）AND 无 pending 的 task-complete 审批单` → 自动以 actor=scheduler 补提审批（summary="拦截任务自动提请：会话结束未声明完成"，evidence=最后的 task_update_note 摘录）。保证任何自执行任务最终都会进入人工裁决闭环，不悬挂。
+
+**驳回路径**：approval.approved 不发生（rejected）→ 任务保持 in_progress，note 追加驳回理由——用户可在看板 task_block / task_cancel 收尾，或让模型补证后重新 C16。
+
+三者段式对状态机的影响：done 的写入口仍然唯一收敛（worker 型=task_finish[scheduler]；自执行型=task_complete[approval]——都是"调度/人工裁决"，模型在两种形态下都没有直接落 done 的接口）。
+
 ### 1.4 查询逐个详述
 
 统一分页信封 `{rows, total, limit, offset}`；limit 默认 50、上限 500；sort 白名单 + dir。**行数=total 同 where 构造器**（契约测试必备断言）。
@@ -471,7 +488,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
-工具名=命令/查询名，零改名；按 profile × actor 白名单挂载（headless+web 均挂）。模型**看不见**：task_finish / task_claim / task_reap / task_worker_register / task_worker_finish / task_worker_reap / task_budget_extend / task_worker_recent（exec 内部用）/ task_active_by_session（域内部用）。
+工具名=命令/查询名，零改名；按 profile × actor 白名单挂载（headless+web 均挂）。模型**看不见**：task_finish / task_claim / task_reap / task_worker_register / task_worker_finish / task_worker_reap / task_budget_extend / task_complete（approval 专用）/ task_worker_recent（exec 内部用）/ task_active_by_session（域内部用）。模型**可见** task_submit_complete（自执行任务完成声明的唯一入口——描述里写明"声明后等人工确认，不要自行标记完成"）。
 
 | 工具 | 描述全文（manifest agent_note） |
 |---|---|
@@ -479,6 +496,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | `task_schedule` | 见 C2 agent_note |
 | `task_run_now` | 见 C3 agent_note |
 | `task_update_note` | 见 C4 agent_note |
+| `task_submit_complete` | 见 C16 agent_note（自执行任务完成声明：summary ≥30 字 + evidence 产物指针 + 可选 follow_up；声明后任务保持 in_progress 等人工审批确认，绝不自行标记完成） |
 | `task_block` | 见 C5 agent_note |
 | `task_resume` | 见 C6 agent_note |
 | `task_cancel` | 见 C7 agent_note |
@@ -805,8 +823,8 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 
 ## 四、开放问题
 
-1. **actor `exec` 的宪法化**：C13/C14 需要域间调用身份，本文提议在宪法 §三 actor 集新增 `exec`（由总线从事件订阅处理器调用面注入）。定稿 01-bus.md 时裁决；过渡期 system actor + cause 链。
-2. **模型面任务完结语义**：v4.x 模型可 `task_update status=done` 手动完结普通任务；v5 收尾权唯一归 task_finish(scheduler) 后，会话内完结的唯一路径是 task_update_note + 看板/调度侧闭环。是否需要为「模型自执行型任务」（assignee=model 的普通任务）补一个 actor=model 的 `task_complete`（过守卫）？本稿倾向**不加**（执行一律走 worker，状态机单一入口），待用户评审。
+1. ~~actor `exec` 的宪法化~~ **已裁决（2026-09-06）**：宪法 §三 新增 `reactor`（弃用撞名原名 exec），C13/C14 白名单已改 reactor，见 §1.2 表注与宪法 v5.0-draft-2。
+2. ~~模型面任务完结语义~~ **已裁决（2026-09-06，用户方案）**：自执行任务走"声明完成（C16 task_submit_complete，model）→ 统一拦截兜底（scheduler 扫描）→ 审批裁决（C17 task_complete，approval）"三段式，见 §1.3 C16-C17；worker 型任务维持 task_finish 唯一收尾。
 3. **守卫失败是否应 blocked**：本稿选择「不拒事务、run ok=0 + 红条可观测」防状态死锁；替代方案是连续 N 次守卫缺失自动 task_block（人工介入）。倾向后者作为 v5.1 增强。
 4. **workers 表保留策略**：v4.x 终态行无限累积；本稿提议 30 天清理（dedupe 窗口 30min 不受影响）。需与「重启恢复窗口」复核。
 5. **task_runs 200 行上限可配性**：排障时可能需要更长历史；是否升为 manifest 配置（默认 200）。

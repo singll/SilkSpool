@@ -489,6 +489,18 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | validate | ① subject ≥8 字；② draft ≥50 字；③ source_url 合法；④ card_id 为正整数或空；⑤ evidence ≥30 字（为什么值得采纳：覆盖哪个知识缺口/哪个案例支撑/与现有卡的差异）；⑥ card_id/scenario 对卡状态读 know 域查询（harvest 草稿状态——**同步查询，非订阅**，§1.5.4 论证） |
 | 事件映射（approve） | `approval.approved` → **know 域**（强）`know_adopt`（07-know：card_id 有 → 转正对应 candidate 卡；只有 draft → 落新卡 source=external confidence=low 并直接转正；FTS 索引同步。v4.x 的"降级出口"（经验库不可达 → 批准有效+人工转正 note）在 v5 收紧为强联动失败即 decide 回滚——本地 sqlite 后端下不可达属异常态，人工可修复后重试） |
 
+**kind 7：`task-complete`（自执行任务完成确认）** —— 05-task C16/C17 三段式收尾的审批段（2026-09-06 用户裁决新增）
+
+| 项 | 值 |
+|---|---|
+| label | 任务完成确认 |
+| request_actors | model（C16 声明）/ scheduler（统一拦截任务兜底补提） |
+| subject_rule | `task:{task_id}`（正整数 id；task 域同步查询校验存在、assignee=model、非终态——**同步查询，非订阅**，同 kind 6 模式） |
+| payload_schema | `{ task_id: integer, summary: string ≥30 字（做了什么/结论）, evidence: string（产物指针：run_id / result note 引用）, follow_up?: string ≤500 字（希望人工顺带裁决的后续操作建议）, guard_snapshot?: object（三产物检查快照，拦截任务补提时携带） }` |
+| validate | ① task 存在且 assignee=model 且非终态（否则 `E_INVARIANT`，hint："task-complete 只用于模型自执行任务；worker 型任务的收尾由调度器 task_finish 自动完成"）；② 无活动 worker（task_active_by_session）；③ summary ≥30 字；④ evidence 非空 |
+| 事件映射（approve） | `approval.approved` → **task 域**（强）`task_complete`（C17：status→done + finished_at + result 追加"人工确认 {request_id} + summary"）。三产物守卫降为展示不拦截——守卫结果已在 payload 呈现，**人工裁决即守卫**（fail-open 合法形态：放行决策权在人，全程审计留痕） |
+| 事件映射（reject） | 无执行订阅方（任务保持 in_progress + 驳回理由进审批留痕；用户看板 task_block/cancel 收尾或模型补证重新声明） |
+
 ### 2.3 事务与联动实现
 
 **`approval_request` 事务**：BEGIN IMMEDIATE 内 INSERT 单行（I2 去重查询 + 插入同事务防并发穿透）；提交后发 `approval.requested`（无强联动订阅方）。

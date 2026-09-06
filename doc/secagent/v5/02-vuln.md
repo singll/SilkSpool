@@ -37,7 +37,7 @@
 | C7 | `vuln_claim` | 认领候选（防多 worker 重复验证，TTL 软锁） | model, dashboard | candidate.claimed | 自动指纹（finding_id+认领者） |
 | C8 | `vuln_release` | 释放认领 | model, dashboard | 无（认领状态经 vuln_candidates 查询可见） | 宽松幂等（重放返回 ok） |
 | C9 | `vuln_verify_replay` | CONFIRMED 机械复核（重放 request.txt + sha256 比对 + verify-log 追加；"LLM 不给自己当法官"） | model, script | 无（防事件风暴） | 自动指纹（finding_id+expect_hash+分钟） |
-| C10 | `vuln_attach_fgs` | 关联 FGS finding 节点到行（fgs 域事件订阅回写通道，Phase 1 可选落地） | model, system | 无 | 自动指纹（finding_id+fgs_node_id） |
+| C10 | `vuln_attach_fgs` | 关联 FGS finding 节点到行（fgs 域事件订阅回写通道，Phase 1 可选落地） | model, reactor | 无 | 自动指纹（finding_id+fgs_node_id） |
 
 > 说明：宪法 §三 actor 表无 `parser` 类型——exec 域 parser 提案与 authz_diff 机器判定统一以 **actor=script** 注入，身份细分（`identity: "parser:nuclei:{run_id}"` / `"authz_diff:{session_id}"`）进审计，不新增 actor 枚举。
 
@@ -319,7 +319,7 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 
 **语义**：v4 中 `finding_add` 工具 execute 段（asset-graph.js L168-196）在调度任务会话内自动创建 FGS finding 节点——这是工具面里的跨域直写。v5 改为：**fgs 域订阅 `vuln.signal.registered` / `vuln.candidate.registered`（弱联动）**，事件含 session_id 时查活动任务，创建 type=finding 节点后**调用本命令回写关联**（跨域副作用 = 发布事件 + 订阅方执行命令，公理 4 合法路径）。也允许模型在任务内显式 fgs_add 后传 fgs_node_id 给 C1。
 
-**参数表**：finding_id（必填，行须 status ∈ {new, confirmed}）、fgs_node_id（必填，正整数）。行为：覆盖式关联（后写胜），不改状态。无事件。**actor**：model, system（system 供 fgs 域订阅回写，审计 cause 链指向原始事件）。**幂等**：自动指纹。
+**参数表**：finding_id（必填，行须 status ∈ {new, confirmed}）、fgs_node_id（必填，正整数）。行为：覆盖式关联（后写胜），不改状态。无事件。**actor**：model, reactor（reactor 供 fgs 域订阅 `vuln.signal.registered` 回写，审计 cause 链指向原始事件及其 actor——宪法 §三 v5.0-draft-2）。**幂等**：自动指纹。
 
 ### 1.4 查询（读投影）逐个详述
 
@@ -609,7 +609,7 @@ spool exec csai "node /opt/silkspool/dsh/bin.js --profile web --rpc secDomain.vu
 | v4 直调点 | v4 位置 | v5 联动 |
 |---|---|---|
 | updateFinding → fgsUpdateNode（状态同步 FGS 节点） | asset-db.js L1544-1546 | fgs 域订阅 `signal.confirmed`（节点→done）/ `signal.rejected`（→deprecated），按 payload.fgs_node_id 更新自己域的节点——**无需回写 vuln**（弱联动，失败 audit 记 subscriber_failed 可回放） |
-| finding_add 工具段自动建 FGS finding 节点 | asset-graph.js L168-196 | fgs 域订阅 `signal.registered`/`candidate.registered`（payload 含 session_id）→ 查活动任务（task 域查询）→ fgs_add → **调 vuln_attach_fgs 回写**（actor=system，审计 cause 链） |
+| finding_add 工具段自动建 FGS finding 节点 | asset-graph.js L168-196 | fgs 域订阅 `signal.registered`/`candidate.registered`（payload 含 session_id）→ 查活动任务（task 域查询）→ fgs_add → **调 vuln_attach_fgs 回写**（actor=reactor，审计 cause 链） |
 | updateFinding → appendLiveEval（评测回流） | asset-db.js L1553-1556 | eval 域订阅 `signal.confirmed` / `signal.rejected`（弱联动）→ vuln_get 查详情 → eval_case_append（详见 15-eval.md） |
 | addFinding/updateFinding → invalidateOverview（asset 域缓存失效） | asset-db.js L346/364 | asset 域订阅本域全部事件 → 失效自己的 _ovCache；assetOverview 的 finding_count 改经 `vuln_by_asset`/`vuln_stats` 跨域查询（读互调合法） |
 | report_build 读 findings | asset-db.js L1594 | report 域经 vuln_list 查询取数（跨域读），本域不管报告 |

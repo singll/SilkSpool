@@ -143,7 +143,7 @@ renderTemplate → shellSplit → spawn
 
 **并发**：`activeWorkers ≤ 4`（进程级计数；早返回全部在计数递增之前，不占也不错减 slot）。超限 → `E_EXEC_WORKER_BUSY`（retryable: true）。
 
-**执行**：`node dsh --profile headless <task>` 子进程，`detached: true` 自成进程组；超时 `kill(-pid, SIGTERM)` → 5s → `kill(-pid, SIGKILL)` **杀整个进程组**（worker 派生的 CLI/子 worker 随父回收，防孤儿）。worker 环境 `DSH_HOME=data` + headless profile（挂全部域，模型可用动词按 actor 白名单投影）。注册表登记/收尾（pid/status/run_dir/dedupe_key）**经 task 域命令** `task_worker_register` / `task_worker_finish`（workers 表归 task 域 owns；exec 只调命令，actor=system 标注 run_id）。
+**执行**：`node dsh --profile headless <task>` 子进程，`detached: true` 自成进程组；超时 `kill(-pid, SIGTERM)` → 5s → `kill(-pid, SIGKILL)` **杀整个进程组**（worker 派生的 CLI/子 worker 随父回收，防孤儿）。worker 环境 `DSH_HOME=data` + headless profile（挂全部域，模型可用动词按 actor 白名单投影）。注册表登记/收尾（pid/status/run_dir/dedupe_key）**经事件协作**：spawn 成功后本域发布 `exec.worker.spawned`（**强联动 sync**）→ task 域订阅执行 `task_worker_register`（actor=reactor）；进程退出后发布 `exec.worker.finished` → `task_worker_finish`（workers 表归 task 域 owns，本域不写）。强联动失败 → spawn_worker 整体报错回滚（本域 kill 刚 spawn 的进程组再返回——注册行丢失 = dedupe 失效 = 重复 spawn）。
 
 **RoE 契约（硬编码常量，注入任务文本末尾；锚点子串 `Rules of Engagement 交战规则` 用于幂等去重）**——v4.x 五条原样保留：
 

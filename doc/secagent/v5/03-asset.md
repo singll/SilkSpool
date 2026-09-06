@@ -43,7 +43,7 @@
 
 **禁用词自查**：无 `update`/`set`/`save`/`modify`；每个动词都是登记或状态机入口。
 
-**结构性闸门（最重要的一条对外承诺）**：`score` / `level` / `accept` / `biz` 四个评级列**只出现在 `asset_grade` 的参数表里**；`state` 列只出现在 `asset_state` 的（派生）结果里。其余动词 schema `additionalProperties: false`，传评级字段直接 `E_SCHEMA`——"level 只能经 asset_grade 写入"从 v4.x 的 schema 惯例升级为**网关断言**（v4.x `asset_add` 工具带 level/score 参数靠调用纪律不传，是本域要消灭的病灶）。
+**结构性闸门（最重要的一条对外承诺）**：`score` / `level` / `accept` / `biz` / `owner` 五个评级列**只出现在 `asset_grade` 的参数表里**；`state` 列只出现在 `asset_state` 的（派生）结果里。其余动词 schema `additionalProperties: false`，传评级字段直接 `E_SCHEMA`——"level 只能经 asset_grade 写入"从 v4.x 的 schema 惯例升级为**网关断言**（v4.x `asset_add` 工具带 level/score 参数靠调用纪律不传，是本域要消灭的病灶）。
 
 ### 1.3 命令逐个详述
 
@@ -146,6 +146,8 @@
 | `rationale` | string | 模式②必填 | ≥10 字，分级依据（对齐 exp_store justification 纪律） |
 | `regrade` | boolean | ❌ | `false`；已分级资产默认拒绝重评（INV-5） |
 | `run_id` | string | ❌ | 证据 run（vision_triage 等来源；proposal 模式从文件内取） |
+| `owner` | string | ❌ | enum `confirmed` / `suspect` / `third_party`（2026-09-06 裁决新增；缺省不动既有值）。判据口径 `rules/src/asset-scoring.md` |
+| `owner_evidence` | string | owner 传入时必填 | ≥10 字归属证据（ICP 备案号/证书 Organization/whois 摘录/favicon 同源依据）——**证据即参数**铁律（宪法 §四.4）：无证据不打 owner 标 |
 
 **proposal 文件格式（样板全文，`silksec/asset-grade-proposal@1`）**：
 
@@ -673,7 +675,11 @@ countFingerprintsWhere(filters) → n
 
 ## 四、开放问题
 
-1. **owner 列缺失**：`rules/src/asset-scoring.md` 深挖队列规则要求 `owner=confirmed 且 level∈{S,A,B} 且 accept≠none`，但 assets 表无 owner 列（confirmed/suspect 打标从未落库）——v5.1 是否增列 + asset_grade 增加 owner 标注参数？增列后 deep_queue 是否把 owner 纳入固化条件？
+1. ~~**owner 列缺失**~~ **已裁决（2026-09-06 用户批准：增列 + 分两步固化）**：
+   - **Phase 2 落地**：`ensureCol` 增 `owner TEXT NULL`（enum `confirmed` / `suspect` / `third_party`）；`asset_grade` 增加 `owner` + `owner_evidence` 参数（见 §1.3.3 参数表增补）——判据口径 `rules/src/asset-scoring.md`（confirmed = ICP 备案/证书 Organization/whois 强证据；suspect = 仅 favicon/同 C 段弱证据→挂起；第三方 SaaS/CDN → third_party 排除）。
+   - **第一步（只记录不固化）**：deep_queue 不加 owner 条件——新分级必带 owner 标注，存量按接触回填（每次 asset_grade / 雷达命中 / 深挖前取队时补判）。
+   - **第二步（固化条件打开）**：`confirmed+third_party 覆盖 ≥60% 深挖候选集（S+A+B 且 accept≠none 行）`后，把 `owner='confirmed'` 加进 deep_queue 固化 where。固化当日队列显著缩小属预期（SaaS/CDN 本就不该挖，正是纪律本意）。
+   - 报表口径：asset_stats 增加 owner 分布计数，回填进度看板可见。
 2. **雷达事件自动触发 asset_state**：当前设计由模型消化 radar 后手工登记 state 变化；ledger 域契约定稿后是否由 asset 域直接订阅 `ledger.radar.*` 事件自动 dispatch（signal 映射：新子域→changed、js hash 变化→content_changed）？
 3. **grade proposal 自动落库**：分级保留模型确认点（§1.3.3），代价是 recon 任务忘调 asset_grade 时未分级资产堆积——是否对调度任务（#16/#17 recon）的 objective 固化"grade_assets → asset_grade"两步链，或允许 script actor 在特定 manifest 下自动落库？
 4. **hostRoot 的归属**：域名注册域近似算法被 authz 域（scope-wildcard 审批 apex 判定）复用——保留跨域导出，还是 authz 域自带副本（复制漂移风险 vs 域自治）？

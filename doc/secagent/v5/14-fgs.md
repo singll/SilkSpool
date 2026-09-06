@@ -37,7 +37,7 @@
 | F1 | `fgs_add` | 登记节点（fact/goal/step/finding，status 起 open） | model, scheduler, system | 自动指纹 | fgs.node.added | ✅ |
 | F2 | `fgs_start` | open → running（step 开工） | model | 自动指纹 | fgs.node.updated | ✅ |
 | F3 | `fgs_complete` | open/running → done（可同时补结果 content/score） | model | 自动指纹 | **fgs.node.done** | ✅ |
-| F4 | `fgs_fail` | 任意活跃态 → failed（reason 必填） | model, system* | 自动指纹 | fgs.node.updated | ✅ |
+| F4 | `fgs_fail` | 任意活跃态 → failed（reason 必填） | model, reactor* | 自动指纹 | fgs.node.updated | ✅ |
 | F5 | `fgs_block` | 任意活跃态 → blocked（reason 必填） | model | 自动指纹 | fgs.node.updated | ✅ |
 | F6 | `fgs_deprecate` | 任意态（含终态任务图）→ deprecated（误报/重复闭环落点） | model, dashboard, script | 自动指纹 | fgs.node.updated | ✅ |
 | F7 | `fgs_annotate` | content 增量合并 + score 调整（**不动状态**） | model | 自动指纹 | fgs.node.updated | ✅ |
@@ -152,7 +152,7 @@
 
 **返回**：`data: {node_id, task_id, status: "failed"}`。**错误码**：`E_NOT_FOUND`；`E_STATE`；`E_SCHEMA`（reason 空，hint「失败必须写 reason——复盘依赖归因」）。
 
-**幂等**：自动指纹。**actor**：model, system。**事件**：`fgs.node.updated`。
+**幂等**：自动指纹。**actor**：model, reactor（reactor 供订阅 `task.finished` 补记失败节点，宪法 §三 v5.0-draft-2）。**事件**：`fgs.node.updated`。
 
 **agent_note**：
 
@@ -239,7 +239,7 @@
 
 payload 只含 ID 与判据快照（宪法 §八.1），不含行全量——订阅方需要详情自己 fgs_list。
 
-**订阅**：`task.finished`（sync，actor=system，cause 链带源事件）——ok=false 时为该任务补记失败节点：`fgs_add{task_id, type: 'step', status 直接由域内 service 落 'failed', content: {summary: '任务失败: <note>', run_id}}`；truth.rejected=true 时改记 `type:'finding', content:{summary:'worker 拒执或 API 错误', reason, run_id}}`（原 taskFinishScheduledRun 的 P17 内嵌逻辑事件化，供复盘模型行为）。
+**订阅**：`task.finished`（sync，actor=reactor，cause 链带源事件）——ok=false 时为该任务补记失败节点：`fgs_add{task_id, type: 'step', status 直接由域内 service 落 'failed', content: {summary: '任务失败: <note>', run_id}}`；truth.rejected=true 时改记 `type:'finding', content:{summary:'worker 拒执或 API 错误', reason, run_id}}`（原 taskFinishScheduledRun 的 P17 内嵌逻辑事件化，供复盘模型行为）。
 
 **事件协作时序（任务全生命周期，fact 沉淀链全景）**：
 
@@ -508,7 +508,7 @@ deleteNodesByTask(taskId) → n                              // fgs_clear
 
 ## 四、开放问题
 
-1. **fgs_update 单动词 vs 宪法拆分（本文最重要裁决）**：任务书与种子设计的「fgs_update 单动词内聚状态机」被宪法 §二禁用词（update）+ §四.1（调用方不传 status）否决，本文拆为 6 个语义动词 + fgs_update 兼容别名分派（vuln 域 updateFinding→vuln_* 同型先例）。**若用户评审坚持单词法，须先修宪并接受「模型可传任意目标态」的状态机开放面**——请显式裁决。
+1. ~~**fgs_update 单动词 vs 宪法拆分**~~ **已裁决（2026-09-06 用户确认）**：维持拆分——fgs_start / fgs_complete / fgs_fail / fgs_block / fgs_deprecate / fgs_annotate 六语义动词 + fgs_update 兼容别名（观察期后删），不修宪。非法流转在 schema 层拒绝，与 vuln 域 updateFinding→vuln_* 分派先例统一。
 2. **goal 节点唯一性**：调度器每周期种一个顶层 goal，但契约未禁止模型追加 goal。是否将「每任务 goal ≤1（scheduler 种子专属）」升级为 INV（当前为纪律约定）。
 3. **depends_on 跨类型依赖**：当前 ready 判定只认 step 类 done 节点（依赖 fact 节点不使 step ready）。是否需要显式 fact 依赖语义（如 `depends_kind`），或维持「fact 依赖用 content 表达」的极简口径。
 4. **历史图保留策略**：终态任务图累积（只读）。节点量级小（每任务数十），暂不清理；若长期膨胀再议「导出后归档」。

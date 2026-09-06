@@ -379,7 +379,7 @@
 | 订阅事件 | 模式 | 处理器 | 动作 |
 |---|---|---|---|
 | `fact.bb.published` | weak | `onFactBbPublished` | key 前缀 `[env-issue]` → 触发 AGENTS.md 受管区块即时刷新（防抖 5s）——env-issue 是开局上下文的组成 |
-| `exec.run.completed` | weak | `onExecRunCompleted` | 工具执行统计 → 匹配 playbook 触发词命中记录 → **pb_outcome 自动回填**（actor=system，payload ≤2KB，宪法 §八.5）。v4 宿主 runCli 钩子直调 pbOutcome 的域化 |
+| `exec.run.completed` | weak | `onExecRunCompleted` | 工具执行统计 → 匹配 playbook 触发词命中记录 → **pb_outcome 自动回填**（actor=reactor，payload ≤2KB，宪法 §八.5）。v4 宿主 runCli 钩子直调 pbOutcome 的域化 |
 | `approval.approved` | weak | `onApprovalApproved` | kind=knowledge-adopt → know_adopt（target/payload 取审批单字段，校验：subject≥8 字/draft≥50 字/source_url http(s)/evidence≥30 字——v4 校验规则保留为 manifest 前置） |
 | `fact.expired` / `fact.archived` | weak | `onFactArchived` | 受管区块依赖的 fact 计数变化 → AGENTS.md 定时全量刷新提前触发（防抖） |
 
@@ -775,7 +775,7 @@ appendJsonl(path, line)
 
 ## 四、开放问题
 
-1. **命名豁免的正式化**：1.1 的"子仓动词不加 know_ 前缀"裁定与宪法 §二示例（`know_exp_promote`）不一致，建议宪法修订时把示例改为 `{domain}_{subrepo?}_{verb}` 可选中段并在 §二 注明 know 域先例——否则两份文档长期互相矛盾。
+1. ~~**命名豁免的正式化**~~ **已裁决（2026-09-06 用户批准）**：宪法 §二 已修订为 `{domain}_{subrepo?}_{对象?}_{动作}` 可选中段，并落"子仓前缀豁免（know 先例）"条款（宪法 v5.0-draft-2）——子仓动词保持 v4 原名合法化，两份文档不再矛盾。
 2. **exp_update 的模型侧禁用**：v4 经验卡修正仅看板通道；任务执行中模型发现卡错误时只能 wrong 反馈或重写新卡，修正闭环是否放开（配 deviation 强制）待评审。
 3. **kb_fts standalone vs external content**：2.1 的裁定（standalone）基于 body 在文件系统的事实；若未来 body 迁回表内，应切 external content 省双写——列演进时复评。
 4. **vector 检索规模化**：384 维暴力扫在 1e4 行后需 ANN（hnswlib 等）；引入点与 fact 域 LIKE→FTS 的升级点统一规划（两域检索栈演进对齐）。

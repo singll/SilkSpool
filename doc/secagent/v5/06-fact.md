@@ -177,7 +177,7 @@
 
 **语义**：生命周期治理通道（memcore/sweep/迁移专用）。**只允许降级方向**：`active→cooling`（durable 复验逾期）、`active→archived`（ephemeral 过期 / timeline 超龄 / 数据修复）、`cooling→archived`（超 30 天）。复活/复验一律走 C5，本动词不做。
 
-> 宪法张力声明：宪法 §四.1 要求"调用方永远不传 status/to 参数"。本动词带 `to` 参数是对该条的**显式豁免**，理由：治理流转的判定来源是外部调度（sweep 周期判定）而非调用方意图，无法枚举为独立语义动词而不爆炸；且 actor 白名单不含 model、工具面不注册，"自由态写入口"风险物理不存在。豁免以本节为准，评审时确认。
+> 宪法张力声明：宪法 §四.1 要求"调用方永远不传 status/to 参数"。本动词带 `to` 参数是对该条的**显式豁免**，理由：治理流转的判定来源是外部调度（sweep 周期判定）而非调用方意图，无法枚举为独立语义动词而不爆炸；且 actor 白名单不含 model、工具面不注册，"自由态写入口"风险物理不存在。**豁免已获用户批准（2026-09-06），并已写入宪法 §四.1 已批准豁免条款（三条件边界：调度判定型 / 仅 system+human / 不向模型注册）。**
 
 **参数表**：
 
@@ -656,7 +656,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中 `blackboard_s
 
 ## 四、开放问题
 
-1. **fact_transition 的 `to` 参数**与宪法 §四.1"调用方不传 to"的豁免论证（2.3 声明）需用户评审确认；替代方案是为每个 (from,to) 起语义动词（fact_expire/fact_cool_down/fact_archive），代价是动词数 ×3。
+1. ~~**fact_transition 的 `to` 参数**豁免确认~~ **已裁决（2026-09-06 用户批准）**：豁免成立，宪法 §四.1 已落"已批准豁免"条款（三条件边界），本域 §1.3 C7 与宪法同步。
 2. **投影层补发归档的失败窗口**：过期行物理归档最迟延迟 6h（sweep 兜底）；若审计要求"过期即物理消失"，需评估 sweep 间隔下调或接受窗口。
 3. **跨域事件 schema 对齐**：`exec.run.failed`、`approval.approved`、`task.finished`、`fgs.node.done` 的 payload schema 分别锚定 10-exec/09-approval/05-task/14-fgs 文档，本文按判据快照假定了字段（run_id/tool/target/cause 等），四份文档定稿时需交叉核对。
 4. **fact_purge_archive**（映射表 #7 的 90 天硬删命令）本文以占位形式声明 system actor + repository 原语，正式动词表待 18-migration Phase 2 补入。
