@@ -74,6 +74,7 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 | 16 | [dashboard](16-dashboard.md) | 看板壳 + 域视图插件化 + RPC 投影消费 | client 资源 | 草案 |
 | 17 | [llm-surface](17-llm-surface.md) | LLM 工具面/挂载矩阵/prompt 体系对接 | — | 草案 |
 | 18 | [migration](18-migration.md) | 迁移路线 Phase 0-5/回滚/数据修复 | — | 草案 |
+| 19 | [review-and-correction-plan](19-review-and-correction-plan.md) | v5 文档评审、线上对照与修正方案 | — | **评审报告** |
 
 **依赖关系速览**（阅读时的心智图）：bus 是所有域的宿主；vuln/asset/endpoint/fact/know 相互只通过事件联动；authz 是 exec 的前置（守卫链）；approval 只发事件不直写任何域；ledger 订阅 exec 产物；task 调 exec 派生 worker；memcore 订阅全部域的 lifecycle 事件。
 
@@ -102,3 +103,4 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 - v4.x 系统解剖（写路径/表结构/工具清单）：归档 `../archive/silksecagent-system-complete.md`——各模块文档"现状代码映射"节的取证来源；
 - DSH 升级手册/回滚手册：归档对应文件，升级操作时仍有效；
 - 本目录文档是**唯一**设计真相源；归档文档与本文冲突，一律以本文为准。
+- `19-review-and-correction-plan.md` 是 v5 定稿前的评审与修正入口：它记录 csai 线上取证、archive/模板对照、契约矛盾和定稿前置条件；它不替代 00-18 的领域设计真相源。
