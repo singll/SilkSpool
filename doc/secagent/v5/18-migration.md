@@ -47,7 +47,7 @@
 
 ## 四、Phase 2 —— 数据域滚动搬迁（每域 2-4 天，无依赖可并行）
 
-顺序（按收益×独立性）：asset → endpoint → fact → know → task → fgs → scope → approval → exec → ledger → report → proxy。
+顺序（按依赖×收益，task/exec 事件是多个域的基础、approval effect 依赖 scope/task/know 稳定命令，故提前）：**asset + endpoint → fact + know → ledger → task + exec → fgs → scope + approval → report / proxy / eval / dashboard**。
 
 每域固定节奏：
 
@@ -72,10 +72,19 @@
 
 ## 五、Phase 3 —— 跨域事件化收尾（~3 天）
 
-- 强/弱联动分级全量落地（宪法 §八）；approval 六 kind 事件化验收；
-- `data/events/*.jsonl` 回放工具（bus replay）+ 一次演练（删一个弱联动订阅者状态 → 回放恢复）；
+- 事件可靠性落地：`event_outbox` + dispatcher + `bus_subscription`（01-bus §2.2.5/§2.3）；强联动（sync 同事务）/弱联动（async outbox 派发）分级全量落地；approval 六 kind effect outbox 验收；
+- `data/events/*.jsonl` 回放工具（bus replay）+ 一次演练（dispatcher kill/restart 后 outbox `pending` 续扫恢复；删一个 async 订阅者消费记录 → 回放恢复）；
 - memcore 完全旁路化验收：`grep -c 'prepare(' sec-memcore` 仅剩自身迁移表；
-- eval 域订阅上线（signal.confirmed/rejected 回流）。
+- eval 域订阅上线（signal.confirmed/rejected 回流）；
+- 部署验收命令集（R0/R4 契约化，线上 DSH CLI 路径实测为 `app/node_modules/@deepseek-ai/dsh/lib/bin.js`，非根目录 `bin.js`）：
+  ```bash
+  spool exec csai "systemctl is-active silksecagent silksecagent-edge silksec-xray silksec-shared-browser silksec-proxy-rotator ct-watch"
+  spool exec csai "python3 /opt/silkspool/dsh/scripts/pipeline/data-quality.py --json"
+  spool exec csai "test -f /opt/silkspool/dsh/data/AUTHORITY.md"
+  spool exec csai "test -d /opt/silkspool/dsh/data/events"
+  spool exec csai "node /opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --dump-config"
+  spool exec csai "node /opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/bin.js --profile headless --dump-config"
+  ```
 
 ## 六、Phase 4 —— http-remote 后端试点（vuln 域，~1 周）
 
@@ -129,6 +138,7 @@
 | silksec-proxy-rotator | 代理池轮换 | 不动（proxy 域消费方，13-proxy） |
 | silksec-proxy-refresh.{service,timer} | 代理池定期补充 | 不动 |
 | silksec-intel.{service,timer} | 每日 nuclei 模板更新（intel-refresh.sh） | 不动（域外单写者声明，10-exec §2.7） |
+| ct-watch | CT（Certificate Transparency）日志采集 → 雷达队列（ct-new-subdomain 事件源；日志含大量 HTTP 429，健康度见 11-ledger） | 不动（改调 `sec ledger radar-push` CLI，11-ledger §3.1 #12） |
 | silksec-backup.{service,timer} | 每日备份（silksec-backup.sh VACUUM INTO） | 不动（回滚保障，§八依赖） |
 | silksec-retention.{service,timer} | 30 天 retention | 不动 |
 

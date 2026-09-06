@@ -194,6 +194,7 @@
 | 交接包 7d | 近 7 天 handoff 文件数 | 本域文件 |
 | IdeaCard 数 | vulncards/ideas/ 计数 | **know 域查询**（`dispatch('know', …)` 经 QueryGateway） |
 | 调度漂移 + task_runs 新鲜度 | 漂移任务数 / 最近 run 距今 | **task 域查询**（同上） |
+| **数据源新鲜度/错误率** | ct-watch / js-watch 最近一次成功拉取距今 + 近期 429/error 率——**"systemd active"≠功能健康**（ct-watch 长期 429 时本指标告警，不因进程 active 而 healthy） | 雷达源日志 + `ledger_radar_status` 的 oldest_ts |
 
 跨域指标全部经 QueryGateway 委托查询（不 import、不直读他域文件）；know/task 域不可达时对应指标降级为 `unavailable` 并入告警清单（查询整体不失败）。60s 内存缓存（§2.5）。
 

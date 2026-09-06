@@ -265,6 +265,10 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 `last_consumed_at: null` 即"从未消化"——v4 现状三项目全部如此，v5 上线后此字段成为参数面纪律的健康指标。
 
+#### `endpoint_surface_scan`（敏感参数/路径回扫，v4 toolSurfaceScan 收编）
+
+参数：`program`（必填）/ `q`（可选，敏感关键词，默认内置词表：`token/key/secret/password/passwd/pwd/access_key/cookie/authorization` 等）。纯读：扫描 `endpoints` 表（path/params）与 `param-queue.txt` 中命中敏感关键词的 URL/参数，返回 `{hits: [{host, method, path, param, keyword}], total}`。**脱敏检查用途**——发现敏感参数面是越权/未授权访问的排查线索，不回写、不改数据。归本域（操作对象是接口面/参数数据，与 endpoint_queue_surface 同族；v4 在 sec-pipeline，11-ledger §3.1 #9 记录归属裁决）。
+
 ### 1.5 事件
 
 #### `endpoint.registered`

@@ -187,7 +187,7 @@
 
 #### C11 · kb_import
 
-**语义**：导入一篇文献（技术文章/漏洞分析/技巧贴）。事务内完成：URL 去重（url hash 自然键）→ taintguard 扫描（7 条 prompt-injection regex → tainted 标记）→ 自动分类（关键词规则）→ **curated 行识别**（来源 ∈ data/rules/ 物化集 → status='curated'，免复验、免 taintguard 生命周期、检索排序在前）→ 复验期计算 `revalidate_by = now + 90d + ((docIdHash % 31) − 15)d`（±15 天抖动防集体塌方）→ 正文落文件系统（`data/kb/{docId}.md`）+ kb_docs 行 + kb_fts 索引 + embedding。
+**语义**：导入一篇文献（技术文章/漏洞分析/技巧贴）。事务内完成：URL 去重（url hash 自然键）→ taintguard 扫描（7 条 prompt-injection regex → tainted 标记）→ 自动分类（关键词规则）→ **curated 行识别**（来源 ∈ data/rules/ 物化集 → status='curated'，免复验、免 taintguard 生命周期、检索排序在前）→ 复验期计算 `revalidate_by = now + 90d + ((docIdHash % 31) − 15)d`（±15 天抖动防集体塌方）→ 正文落文件系统（`data/knowledge/{docId}.md`）+ kb_docs 行 + kb_fts 索引 + embedding。
 
 **参数表**：
 
@@ -350,6 +350,10 @@
 }
 ```
 
+#### Q15 · know_coverage（知识覆盖缺口，v4 knowledgeCoverage 的域化查询）
+
+无参。返回覆盖矩阵（漏洞卡 × 攻面 TAXONOMY 映射缺口 + 规程库覆盖统计），供看板「覆盖缺口交叉表」。**实现口径**：读缓存文件 `data/knowledge-coverage.json`（7 天新鲜直读，过期由纯计算脚本重算产物——生成是脚本产缓存文件，本查询只读，无写动词；`refresh: true` 强制重算）。返回：`{ generated_at, cards_total, taxonomy_total, uncovered: [{attack_surface, missing_cards}], coverage: [{card_id, attack_surface, covered}] }`。
+
 ### 1.5 事件
 
 **发布**：
@@ -380,7 +384,7 @@
 |---|---|---|---|
 | `fact.bb.published` | weak | `onFactBbPublished` | key 前缀 `[env-issue]` → 触发 AGENTS.md 受管区块即时刷新（防抖 5s）——env-issue 是开局上下文的组成 |
 | `exec.run.completed` | weak | `onExecRunCompleted` | 工具执行统计 → 匹配 playbook 触发词命中记录 → **pb_outcome 自动回填**（actor=reactor，payload ≤2KB，宪法 §八.5）。v4 宿主 runCli 钩子直调 pbOutcome 的域化 |
-| `approval.approved` | weak | `onApprovalApproved` | kind=knowledge-adopt → know_adopt（target/payload 取审批单字段，校验：subject≥8 字/draft≥50 字/source_url http(s)/evidence≥30 字——v4 校验规则保留为 manifest 前置） |
+| `approval.approved` | — | **不订阅（勘误）** | kind=knowledge-adopt 的采纳由 approval 域 `approval_effects` 经 dispatcher 幂等执行 `know_adopt`（C20，actor=approval，cause 链带 request_id；target/payload 取审批单字段，校验：subject≥8 字/draft≥50 字/source_url http(s)/evidence≥30 字——v4 校验规则保留为 manifest 前置） |
 | `fact.expired` / `fact.archived` | weak | `onFactArchived` | 受管区块依赖的 fact 计数变化 → AGENTS.md 定时全量刷新提前触发（防抖） |
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
@@ -425,7 +429,8 @@
 | `know.vc.list` | （看板卡片区，v5 补） | Q11 |
 | `know.vc.save` | （v5 补） | C15 |
 | `know.vc.activate` / `know.vc.deprecate` | （v5 补） | C17/C18 |
-| `know.health` | knowledgeCoverage / knowledgeHealth 区 | Q14 |
+| `know.health` | knowledgeHealth 区 | Q14 |
+| `know.coverage` | knowledgeCoverage 覆盖缺口交叉表 | Q15 |
 | `know.playbooks` | playbooks | Q3（pbRank 视图） |
 | `know.harvest.status` | （v5 补） | Q13 |
 
@@ -498,11 +503,13 @@ sec query know know_health --actor script
 
 #### kb_docs 表（文献索引——正文在文件系统）
 
+> **现状 schema 映射（Phase 2 硬前置，禁止无必要重命名）**：线上 `kb_docs` 表实列为 `id / title / file / source_url / category / status / revalidate_by / created_at ...`（358 行，2026-09-06 实测），正文文件在 `data/knowledge/`（**不是**早期草稿的 `data/kb/`）。v5 采用**保留现表列名 + 文档用逻辑名映射**：逻辑 `doc_id` = 现表 `id`（或内容 hash 派生），逻辑 `body_path` = 现表 `file`；正文路径按现状 `data/knowledge/` 为 backend root，**不做正文迁移、不新建 data/kb/**，未来若换路径另起版本。
+
 | 列 | 类型 | 语义 |
 |---|---|---|
-| doc_id | TEXT PK | 内容 hash 派生 |
+| doc_id | TEXT PK | 内容 hash 派生（逻辑名；映射现表主键） |
 | title / url / category | TEXT | url sha1 = 导入幂等自然键 |
-| body_path | TEXT | `data/kb/{doc_id}.md`（**正文不进表**） |
+| body_path | TEXT | `data/knowledge/{doc_id}.md`（**正文不进表**；映射现表 `file` 列） |
 | status | TEXT | active / curated / cooling / archived / expired |
 | confidence / tags / source | TEXT | — |
 | tainted | INTEGER DEFAULT 0 | taintguard 命中标记 |
@@ -526,7 +533,7 @@ sec query know know_health --actor script
 | `data/rules/` | 79 篇 Markdown（static 57 + cases 22；src 4/srcskill 2/techniques 46/web 3/php 1 分层） | C14 rule_seed（tmp+rename 原子） |
 | `data/vulncards/` | VC-xxx YAML 18 张 + registry.md + ideas/IdeaCard | C15/C17/C18（usage 台账在 ledger 域 `data/pipeline/`，本域不 owns） |
 | `data/harvest/drafts/` + `candidates.json` | 收割草稿 | C19 |
-| `data/kb/{doc_id}.md` | 文献正文 | C11（kb 子仓，file 形态由 sqlite 命令带出） |
+| `data/knowledge/{doc_id}.md` | 文献正文 | C11（kb 子仓，file 形态由 sqlite 命令带出） |
 | `data/vault-export-cards/` | **vault 导出暂存（独立目录，不复用 data/vault-export/）** | 导出桥（域内维护任务，见 2.3） |
 
 ### 2.2 状态机与不变量
@@ -717,7 +724,7 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 |---|---|---|
 | exp_store | 数十张 active + 28 张 kind=playbook（已从 v4 playbooks 表迁入） | 模型沉淀 + harvest 采纳，+2~5/周；Top5 注入仅 5 行，无容量压力 |
 | kb_docs | 334 行（含 curated 79） | vault 回流 + 手动导入 +5~15/周；FTS/embedding 同步增长 |
-| kb 正文文件 | data/kb/ 334 个 md | 512KB/篇上限；当前最大 <200KB |
+| kb 正文文件 | data/knowledge/ 358 篇 md | 512KB/篇上限；当前最大 <200KB |
 | rules | 79 篇（static 57 + cases 22） | 只经 seed 升级变化（版本随 bundle） |
 | vulncards | 18 张（active ~11 + draft 6 + ideas） | +1~2/月（打法验证后沉淀） |
 | usage jsonl | data/pipeline/{program}/ 按日（ledger 域 owns，本域跨域查询） | append-only，30 天归档（ledger 同款） |

@@ -567,23 +567,11 @@ v4.x 的 `serializeScope`（sec-suite.js L320-367）从"外部可直调的函数
 | `scope.granted` | task 域（种子任务）/ ledger 域（radar） | async 弱 | audit `subscriber_failed` + 事件日志可重放（`sec bus replay`） |
 | `scope.granted/revoked/excluded/program.bound` | 看板通知 | async 弱 | 同上 |
 
-#### 2.3.3 与 approval 域的协作（订阅方视角）
+#### 2.3.3 与 approval 域的协作（effect 执行方视角）
 
-scope 域 manifest `subscribes`：
+scope 域**不再订阅** `approval.approved` 事件——授权批准效果由 approval 域写 `approval_effects` 行（domain=scope, verb=grant/rules_apply），总线 dispatcher 经 CommandGateway 幂等执行 `scope_grant` / `scope_rules_apply`（actor=approval，cause 链带 request_id）。effect 失败 → approval 状态机停在 `approved_effect_failed`，`approval_reconcile` 对账后重试（09 §2.3）——v4.x "批准副作用失败 → 请求保持 pending，可修复后重试或驳回"语义由 effect outbox 承接。
 
-```yaml
-subscribes:
-  - event: approval.approved
-    filter: { kind: [scope-wildcard, scope-domain, exclude-exception] }
-    mode: sync
-    handler: onApprovalScopeGrant        # → dispatch scope_grant（entries 按 kind 分派）
-  - event: approval.approved
-    filter: { kind: [tool-intrusive] }
-    mode: sync
-    handler: onApprovalToolIntrusive     # → dispatch scope_rules_apply(allow_intrusive_tools_add)
-```
-
-强联动：grant/rules_apply 失败 → `approval_decide` 整体回滚（请求保持 pending，09 §2.3）——v4.x "批准副作用失败 → 请求保持 pending，可修复后重试或驳回"语义的事件化等价物。
+scope 域 manifest `subscribes` 仅保留对下游自身事件的声明（`scope.rules.changed` 由本域发布、exec 域订阅；本域不订阅 approval 域）。
 
 ### 2.4 后端适配器
 

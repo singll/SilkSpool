@@ -36,6 +36,7 @@
 | C7 | `fact_transition` | 治理通道：生命周期降级流转（active→cooling、\*→archived），memcore/sweep 专用 | system, human | 自动指纹 | fact.cooled / fact.expired / fact.archived |
 | C8 | `fact_record_signal` | 使用信号：uses+1、last_used_at（搜索副作用显式化后的补偿命令） | model, system | 自动指纹 | （无，manifest events: []） |
 | C9 | `fact_reindex` | 图谱自动建边：按共享域名根 / C 段建 star 型关系边 | model, dashboard, script, system | 自然键 | （无，events: []） |
+| C10 | `fact_purge_archive` | 归档表 90 天硬删（memcore sweep 经此命令，替代 v4 裸 DELETE） | system, human | 自动指纹（before_ts） | （无） |
 
 > 命名说明：v4 的 `blackboard_set` 在 v5 更名为 `fact_bb_publish`（宪法 §二 禁用词 `set`）；`blackboard_get` 更名为查询 `fact_bb_read`。旧名走别名（3.2）。
 
@@ -528,7 +529,7 @@ v4 中 memcore 直写 facts/blackboard 的全部 SQL（validateWrite 分支、tr
 | 4 | sweep：cooling 超 30d → archived | C7 fact_transition(to=archived) |
 | 5 | sweep：ephemeral 过期 → archived | C7 fact_transition(to=archived, reason=lazy/sweep 过期) → fact.expired |
 | 6 | sweep：timeline 超龄 30d → archived | C7 fact_transition(to=archived) |
-| 7 | sweep：archive 表 90d 硬删 | C7 fact_transition 语义内含硬删（archive 行 purge 由 memcore 周期脚本经系统通道执行，唯一保留的"裸写"是 DELETE，落为 repository 原语 `purgeArchives(before)`，网关命令 `fact_purge_archive`（system actor，Phase 2 补入 manifest，本表占位） |
+| 7 | sweep：archive 表 90d 硬删 | 网关命令 `fact_purge_archive`（C10，system/human actor）——memcore 周期脚本经系统通道调本命令，repository 原语 `purgeArchives(before)`，替代 v4 的唯一裸 DELETE |
 | 8 | `recordSignal`（facts 无评分，实际仅 exp/kb 用） | C8 fact_record_signal（uses 计数，v5 新增） |
 | 9 | `guardBlackboardSnapshots`（快照键事后转写 facts + 归档原键） | **删除**——INV-F7 前置拒绝（事后转写守卫归零） |
 | 10 | `migrateStock`（存量 mem_class 回填） | 数据迁移脚本（18-migration.md，actor=system 启动窗口） |
@@ -587,7 +588,7 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 
 | 项 | 现状（2026-09-06） | 预期与上限 |
 |---|---|---|
-| facts 行数 | 1,143 | FGS 沉淀主通道接通后（v4 产出为 0，事件化后预计 +5~20/日）+ note 负知识自动证伪；durable 复验 30d 淘汰，稳态预估 3~5 千行 |
+| facts 行数 | 1,143 | FGS 沉淀主通道接通后（现状 `fgs/%` 已有 1 条，事件化后预计 +5~20/日）+ note 负知识自动证伪；durable 复验 30d 淘汰，稳态预估 3~5 千行 |
 | fact_edges | 数百（以 fact_stats 实查为准） | C9 star 建边受"组 2~50"约束，边数 = O(facts)；idx_edges_src/dst 覆盖遍历 |
 | blackboard active | ≤100（Q7 只列最近 100） | ephemeral 7d/timeline 30d 自然消亡 |
 | archive 表 | 与主表同量级 | 90 天硬删封顶 |
@@ -658,6 +659,6 @@ prompt 引用同步：persona/objective/skills/technique-index 中 `blackboard_s
 
 1. **投影层补发归档的失败窗口**：过期行物理归档最迟延迟 6h（sweep 兜底）；若审计要求"过期即物理消失"，需评估 sweep 间隔下调或接受窗口。
 2. **跨域事件 schema 对齐**：`exec.run.failed`、`approval.approved`、`task.finished`、`fgs.node.done` 的 payload schema 分别锚定 10-exec/09-approval/05-task/14-fgs 文档，本文按判据快照假定了字段（run_id/tool/target/cause 等），四份文档定稿时需交叉核对。
-3. **fact_purge_archive**（映射表 #7 的 90 天硬删命令）本文以占位形式声明 system actor + repository 原语，正式动词表待 18-migration Phase 2 补入。
+3. **fact_purge_archive**（映射表 #7 的 90 天硬删命令）已正式列为 C10（system/human actor + repository 原语 `purgeArchives`），不再占位。
 4. **派生边型**（same-domain/same-subnet）不在七种语义边型内，仅 C9 可写——是否在 schema 层把 edge_type 拆成 `semantic|derived` 两字段，待图规模上来后复评。
 5. **timeline 黑板键形态**：`[timeline]` bracket 键与带日期快照键（已被 INV-F7 拒绝）历史并存；是否对 `[timeline]` 键也强制日期后缀，待存量盘点。

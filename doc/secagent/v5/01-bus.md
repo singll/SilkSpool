@@ -2,7 +2,7 @@
 
 > 版本：v5.0 ｜ 状态：草案 ｜ 依赖契约版本：[`00-conventions.md`](00-conventions.md) v5.0（宪法，冲突以它为准）
 > 契约版本：bus manifest schema **v1**（本文 §2.2.1）｜ 错误码自有段：`E_BUS_*`
-> owns（单写者）：`idempotency` 表、`bus_meta` 表、`data/audit.jsonl`、`data/events/*.jsonl`、`data/bus.aliases.yaml`（版本受控副本在 bundle 模板）
+> owns（单写者）：`idempotency` 表、`bus_meta` 表、`event_outbox` 表、`bus_subscription` 表、`data/audit.jsonl`、`data/events/*.jsonl`、`data/bus.aliases.yaml`（版本受控副本在 bundle 模板）
 > 被依赖：全部 14 个领域模块 + [`16-dashboard.md`](16-dashboard.md)（RpcProjector）+ [`17-llm-surface.md`](17-llm-surface.md)（ToolProjector）+ sec-memcore（事件订阅客户端）
 > 本文回答：**"一切写入皆命令 / 一切读取皆查询 / 一切联动皆事件"这三条公理由谁强制执行、怎么强制执行、失败了怎么办。**
 
@@ -92,7 +92,7 @@ cordis 容器
 | RoE | ① 只重放 `mode: async` 的订阅者——强联动已在命令事务内闭环，重放语义不存在；② 订阅者 handler 必须以幂等命令消化事件（网关幂等表兜底，重复消化返回 replay:true 无害）；③ dry_run 只输出将要重放的 (event, subscriber) 对，不执行 |
 | side_effects | events: `bus.replay.completed`；rows: bus_meta 水位更新；caches: 无 |
 
-实现要点：从 `data/events/{domain}.jsonl` 自 `since` 顺序读事件，对每个事件查 registry 中声明订阅它的 async 订阅者，逐个调用 handler（handler 内部经 `dispatch()`，天然过全管线）。水位记 `bus_meta['replay.watermark']`；`bus_replay` 不依赖水位（显式 since），水位仅供 `bus_status` 展示"最近一次重放到哪"。
+实现要点：从 `data/events/{domain}.jsonl` 自 `since` 顺序读事件（兼扫 `event_outbox` 的 `dead_letter`/`pending` 行），对每个事件查 registry 中声明订阅它的 async 订阅者，逐个调用 handler（handler 内部经 `dispatch()`，天然过全管线）——**只重试 async 订阅，不重新执行强联动**。水位记 `bus_meta['replay.watermark']`；`bus_replay` 不依赖水位（显式 since），水位仅供 `bus_status` 展示"最近一次重放到哪"。
 
 #### bus_prune
 
@@ -125,6 +125,7 @@ cordis 容器
     "idempotency": { "rows": 4210, "oldest_created_at": 1788400000000, "pruned_last_24h": 33 },
     "audit": { "writable": true, "bytes": 22000000 },
     "events": { "files": 12, "total_lines": 88214 },
+    "outbox": { "pending": 3, "dead_letter": 1, "max_lag_ms": 4120, "last_delivered_at": 1789000000000 },
     "aliases": { "count": 31, "deprecated": ["finding_update"] }
   },
   "domains": [
@@ -156,11 +157,11 @@ memcore / eval 等治理订阅者执行 lifecycle / 回流命令的 actor 身份
 
 **总线自身订阅**：无。总线是事件的搬运者，不是消费者；任何"总线顺便记点什么"的需求一律做成 audit 或 bus_status 字段，不做隐式订阅。
 
-**域事件的留痕与回放**（EventBus 职责，宪法 §八.4）：
+**域事件的留痕与回放**（EventOutbox/EventDispatcher 职责，宪法 §八.4）：
 
-- 每个命令事务提交后，manifest 声明的事件按序追加 `data/events/{domain}.jsonl`（O_APPEND 单次 write；payload 序列化后 >8KB 拒发 `E_BUS_EVENT_TOO_LARGE`，高频事件类声明 `high_frequency: true` 时上限 2KB——宪法 §八.5 防风暴的执行点）；
+- 命令事务提交后，事件信封随 outbox 行已持久化；dispatcher 派发后按序追加 `data/events/{domain}.jsonl`（O_APPEND 单次 write；payload 序列化后 >8KB 拒发 `E_BUS_EVENT_TOO_LARGE`，高频事件类声明 `high_frequency: true` 时上限 2KB——宪法 §八.5 防风暴的执行点）；
 - 一个命令的事件数上限：默认 1；`{...}_bulk` 动词上限=批量行数（schema 已限 ≤500）；
-- 弱联动失败：handler 异常被网关捕获 → audit 记 `kind: "subscriber_failed"`（字段：event_id / subscriber / as / error）→ 事件已在 jsonl，等 `bus_replay` 或下次同型命令的重试语义；
+- async 联动失败：dispatcher 指数退避重试（`bus_subscription` 记录 attempt/next_retry_at），超过阈值 → `dead_letter`；audit 记 `kind: "subscriber_failed"`（字段：event_id / subscriber / as / error）；`bus_replay` 可重放 dead/pending 的 async 订阅；
 - 强联动失败：见 §2.3。
 
 ### 1.6 模型工具面投影
@@ -254,6 +255,33 @@ CREATE TABLE IF NOT EXISTS bus_meta (
   value      TEXT NOT NULL,              -- JSON
   updated_at INTEGER NOT NULL
 );
+
+-- 事件 outbox（命令事务内与业务表同写；提交后由 web 宿主 dispatcher 按 pending 派发）
+CREATE TABLE IF NOT EXISTS event_outbox (
+  event_id    TEXT PRIMARY KEY,          -- evt_...
+  domain      TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  payload     TEXT NOT NULL,             -- 序列化事件信封（已 redact，≤8KB/高频 2KB）
+  producer_ts INTEGER NOT NULL,          -- 源命令时间（producer version 进 payload）
+  status      TEXT NOT NULL DEFAULT 'pending',  -- pending / delivered / dead_letter
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  next_retry_at INTEGER,                 -- 指数退避下次派发时间
+  last_error  TEXT,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_status ON event_outbox(status, next_retry_at);
+
+-- 订阅消费记录（(event_id, subscriber) 唯一，跨进程幂等消费 + 订阅 offset）
+CREATE TABLE IF NOT EXISTS bus_subscription (
+  event_id    TEXT NOT NULL,
+  subscriber  TEXT NOT NULL,             -- 域名或程序化订阅者 id（bus_status.subscribers 同源）
+  mode        TEXT NOT NULL,             -- sync / async
+  status      TEXT NOT NULL DEFAULT 'delivered',  -- delivered / failed / dead_letter
+  attempt     INTEGER NOT NULL DEFAULT 0,
+  last_error  TEXT,
+  consumed_at INTEGER,
+  PRIMARY KEY (event_id, subscriber)
+);
 ```
 
 **幂等键构造三级**（宪法 §六.1，manifest 每命令声明其一）：
@@ -338,7 +366,7 @@ dispatch(domain, verb, args, ctx)
  ⑥幂等预检                         E_IDEMPOTENT_CONFLICT / 命中→直接返回 replay 信封
  ⑦前置不变量                       E_INVARIANT / 语义子码 / E_NOT_FOUND / E_STATE / E_EVIDENCE_REQUIRED
  ⑧事务执行（BEGIN IMMEDIATE）       E_CONFLICT / 域自有错误码
- ⑨事件发布（强联动同事务，弱联动出事务） E_BUS_STRONG_LINK_FAILED（→ 整体回滚）
+ ⑨事件写 event_outbox（强联动同事务执行，async 登记消费计划） E_BUS_STRONG_LINK_FAILED（→ 整体回滚）
  ⑩幂等行落库（并入⑧同事务，见 §2.3） 
  ⑪审计落盘 + 信封返回               audit 写失败→§2.5 降级策略，不回滚
 ```
@@ -350,7 +378,7 @@ dispatch(domain, verb, args, ctx)
 - ④在⑤前：不支持的命令尽早拒绝，省 schema 校验开销；能力矩阵是 manifest 静态数据，无副作用。
 - ⑥在⑦前：**重放必须直接返回首次结果**，不再跑不变量——时过境迁后不变量可能对重放命令失败，而重放语义要求 bit-for-bit 返回。
 - ⑦在⑧前：不变量失败不应占用写锁（BEGIN IMMEDIATE 会串行化所有进程的写）。
-- ⑨强联动在事务提交前、弱联动在提交后：见 §2.3。
+- ⑨强联动在事务内执行、async 出事务由 dispatcher 派发：见 §2.3。
 - ⑪审计在最后且不回滚：命令数据已持久化，回滚只会制造"执行了但没记录"的更坏状态。
 
 **每段的失败信封都带 hint**（宪法 §五；典型文案在各域文档，总线自有码的 hint）：
@@ -389,25 +417,44 @@ manifest `invariants: [name1, name2]` 引用域模块导出的纯校验函数：
 | 计数同口径 | `total` 必须由 rows 的同一 where 构造器 COUNT 出（v4.3 countFacts/factSearch 病的根治）；契约测试"行数=total"断言（§2.8） |
 | 查询副作用 | 禁止。原"搜索即记 uses"类 → 拆独立命令，由 ToolProjector 查询后补发（17 §2.3） |
 
-### 2.2.5 EventBus 分发器
+### 2.2.5 EventOutbox 与 EventDispatcher（跨进程可靠投递）
 
-同步分发（进程内，注册序）：
+**两个进程角色**（与线上"web 宿主 + 多个 headless worker 共用 SQLite"的事实对齐）：
+
+- **所有进程**：命令事务内把事件写 `event_outbox`（status=pending），不执行 async 订阅者；
+- **仅 web 宿主面**（`sidecars !== false` + 文件锁 `data/dispatcher.lock`，同后台单例收敛）：启动 dispatcher 循环，扫描 `event_outbox.status='pending' AND next_retry_at<=now` 逐个派发给声明订阅的 async 订阅者。headless 进程**不启动 dispatcher**——只写 outbox 不消费（避免多进程重复派发）。
+
+**派发协议**（每个事件 × 每个订阅者一条 `bus_subscription` 记录）：
 
 ```
-publish(event):
+publish(event):                                    # 命令事务内
   envelope = { id: ulid('evt_'), domain, name, ts, actor, session_id/operator, cause: {cmd, idempotency_key}, payload(redact 后) }
-  for sub of subscribers.matching(event.name):        # manifest subscribes + 程序化订阅（memcore）
-    if sub.mode === 'sync':
-     SAVEPOINT sp_n; try sub.handler(envelope)   # handler 内 dispatch → 网关识别嵌套深度，不再 BEGIN，用 SAVEPOINT
-     	catch e → ROLLBACK TO sp_n; 收集强联动失败 → 整体 ROLLBACK + E_BUS_STRONG_LINK_FAILED
-    else: # async
-     	try sub.handler(envelope) catch e → audit(subscriber_failed) # 不回滚命令
-  append data/events/{domain}.jsonl（O_APPEND 单 write，提交后）
+  INSERT event_outbox(envelope, status='pending')  # 与业务表、幂等行同事务
+  for sub of subscribers.matching(event.name):
+    if sub.mode === 'sync':                        # 强联动：同一事务 SAVEPOINT 内执行
+      SAVEPOINT sp_n; sub.handler(envelope)        # handler 内 dispatch → 网关识别嵌套深度，不再 BEGIN，用 SAVEPOINT
+      catch e → ROLLBACK TO sp_n; 整体 ROLLBACK + E_BUS_STRONG_LINK_FAILED
+    else:                                          # async：仅登记消费计划，事务提交后 dispatcher 派发
+      INSERT bus_subscription(event_id, subscriber, mode='async', status='pending')
+
+dispatcher tick（web 宿主面，1s）:
+  for row of event_outbox WHERE status='pending' AND next_retry_at <= now:
+    for sub of subscribers.matching(row.name) WHERE sub.mode === 'async':
+      if bus_subscription(row.event_id, sub.id).status === 'delivered': continue   # 幂等消费
+      try sub.handler(row.envelope)
+        → bus_subscription.status='delivered'；event_outbox.status='delivered'（全部订阅者 delivered 后）
+      catch e:
+        → attempt++, next_retry_at = now + backoff(attempt)   # 指数退避 1s/5s/30s/2m/10m/1h/6h…
+        → attempt > 8 → bus_subscription.status='dead_letter'，event_outbox.status='dead_letter'
 ```
 
-- **强联动回滚的实现**：sync 订阅者与命令主体共用网关持有的同一连接与事务；嵌套 dispatch 走 SAVEPOINT 而非新 BEGIN（嵌套深度上限 3，超过 `E_BUS_STRONG_LINK_NESTING`——防订阅环：A 命令强联动订阅 B 事件、B 又强联动订阅 A 事件的环在注册时用 subscribes 图检测拒载，运行时深度闸兜底）。
+- **模式语义固定（宪法 §八.3，消除"同步但不回滚"的含混表达）**：`sync` = 订阅者与命令主体共用同一连接同一事务（SAVEPOINT 包裹），失败 → 命令整体回滚；`async` = 事件已随事务持久化进 outbox，订阅者在事务提交后由 dispatcher 独立派发，失败进 retry/dead-letter。**不存在"同步但不回滚"的中间态**。
+- **崩溃恢复**：命令事务提交即事件已在 outbox；宿主重启后 dispatcher 从 `pending` 续扫——async 订阅者不丢、不重（`bus_subscription` 唯一键保证幂等）；sync 订阅者随命令事务原子提交/回滚，无独立恢复问题。
+- **强联动嵌套闸**：嵌套 dispatch 走 SAVEPOINT 而非新 BEGIN（嵌套深度上限 3，超过 `E_BUS_STRONG_LINK_NESTING`——订阅环：A 命令强联动订阅 B 事件、B 又强联动订阅 A 事件的环在注册时用 subscribes 图检测拒载，运行时深度闸兜底）。
 - **订阅声明注册**：域经 manifest `subscribes`；非域客户端（memcore）经 `bus.events.subscribe(pattern, handler, {mode, as})` 程序化注册——**未声明订阅的域收不到事件**（宪法 §八.6），程序化订阅同样登记进 `bus_status.subscribers`。
-- **事件风暴闸**：单命令事件数上限（默认 1，bulk≤行数）在⑨入口检查；payload 序列化超限（8KB / 高频 2KB）`E_BUS_EVENT_TOO_LARGE` 拒发（域开发期错误）。
+- **事件留痕**：dispatcher 对每个事件投递完成后把信封追加 `data/events/{domain}.jsonl`（O_APPEND 单 write）——jsonl 是**观测与 `bus_replay` 的源**，不是投递机制本身；投递可靠性由 outbox 保证，jsonl 只做可回放审计。
+- **事件风暴闸**：单命令事件数上限（默认 1，bulk≤行数）在发布入口检查；payload 序列化超限（8KB / 高频 2KB）`E_BUS_EVENT_TOO_LARGE` 拒发（域开发期错误）。
+
 
 ### 2.2.6 ToolProjector / RpcProjector（机械行为）
 
@@ -438,19 +485,20 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 **命令事务边界**（sqlite-local；http-remote 见 §2.4）：
 
 ```
-网关持有连接 C（busy_timeout 5000，WAL）：
-  BEGIN IMMEDIATE                       ⑧
-    域命令全部行变更（含联动列，如 vuln_confirm 的 status+confidence+noise 三联动）
-    强联动订阅者执行（SAVEPOINT 包裹）     ⑨-sync
-    写幂等行（key/args_hash/result_json） ⑩  ← 同事务：命令成功但幂等行丢失的竞态不存在
-  COMMIT
-  弱联动订阅者执行（best-effort）          ⑨-async
-  事件 jsonl 追加 + audit 追加            ⑪
+ 网关持有连接 C（busy_timeout 5000，WAL）：
+   BEGIN IMMEDIATE                       ⑧
+     域命令全部行变更（含联动列，如 vuln_confirm 的 status+confidence+noise 三联动）
+     强联动订阅者执行（SAVEPOINT 包裹）     ⑨-sync
+     写幂等行（key/args_hash/result_json） ⑩  ← 同事务：命令成功但幂等行丢失的竞态不存在
+     写 event_outbox 行（status=pending）     ← 同事务：事件与业务变更原子落库
+   COMMIT
+   dispatcher 派发 async 订阅者（web 宿主面）⑨-async
+   事件 jsonl 追加 + audit 追加            ⑪
 ```
 
-- **失败语义**：⑧⑨-sync 任一失败 → ROLLBACK，事件不发、幂等行不落、audit 记 `result:"failed", error_code`；⑨-async 失败 → 命令已提交，audit 记 subscriber_failed，事件留 jsonl 待重放；⑪ audit 写失败 → 命令不回滚（§2.5）。
+- **失败语义**：⑧⑨-sync 任一失败 → ROLLBACK，事件不发、outbox 行不落、幂等行不落、audit 记 `result:"failed", error_code`；⑨-async 失败 → 命令已提交，dispatcher 指数退避重试，超阈值进 dead_letter（`bus_subscription.status`），`bus_replay` 可重放；⑪ audit 写失败 → 命令不回滚（§2.5）。
 - **重试契约**：`E_CONFLICT`（SQLITE_BUSY 超时）retryable=true，调用方（模型/脚本）退避重试；网关自身不做隐式重试（幂等表保证重试安全）。
-- **跨域效果永不进本事务**（宪法 §四.2）——只有事件。
+- **跨域效果永不进本事务**（宪法 §四.2）——只有事件（sync 强联动是共用同一事务的例外，模式语义见 §2.2.5）。
 
 ### 2.4 后端适配器（总线是自举的）
 
@@ -518,9 +566,10 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 | 幂等 | 同 key 同参 → replay:true 且 bit-for-bit 同果；同 key 异参 → E_IDEMPOTENT_CONFLICT；natural/explicit/auto 三策略各一例 |
 | 并发 | 两进程同时 dispatch 同一候选 confirm → 一成一 `E_STATE`（或一成一 E_CONFLICT），最终状态一致（仅 sqlite-local 跑） |
 | 强联动 | sync 订阅者 throw → 命令行变更回滚（before/after 断言）+ E_BUS_STRONG_LINK_FAILED |
-| 弱联动 | async 订阅者 throw → 命令成功 + audit kind=subscriber_failed + 事件在 jsonl |
+| 弱联动 | async 订阅者 throw → 命令成功 + `bus_subscription` 记录 attempt/next_retry_at + 事件在 outbox（jsonl 待 dispatcher 派发后追加）|
+| 跨进程崩溃恢复 | dispatcher 进程 kill/restart 后，outbox `pending` 行被续扫派发；同事件同订阅者不重复消费（`bus_subscription` 唯一键）|
 | 事件载荷 | payload 符合 manifest events schema、redact 字段被过滤、不含行全量 |
-| 重放 | bus_replay 重放弱联动 → 订阅者幂等消化（第二次 replay 零副作用） |
+| 重放 | bus_replay 重放 weak/dead_letter → 订阅者幂等消化（第二次 replay 零副作用） |
 | 别名 | 别名过全管线（同 E_ACTOR_FORBIDDEN / E_SCHEMA 路径）；分派型别名路由正确 |
 | 注册校验 | R1-R7 各至少一个反例（禁用词动词 / status 参数名 / owns 冲突 / 版本回退）→ 域拒载且总线存活 |
 | 查询 | 行数=total / 谓词默认值 / 分页边界（offset 越界返回空 rows 且 total 不变） |
@@ -565,12 +614,8 @@ aliases:
   finding_get:        vuln_get
   asset_add:          asset_upsert
   asset_query:        asset_list
-  blackboard_set:     fact_bb_set
-  blackboard_get:     fact_bb_get
-  exp_store:          know_exp_store
-  exp_search:         know_exp_search
-  exp_feedback:       know_exp_feedback
-  kb_import:          know_kb_import
+  blackboard_set:     fact_bb_publish
+  blackboard_get:     fact_bb_read
   attempts_log:       ledger_log_attempt
   card_usage_log:     ledger_log_card_usage
   radar_read:         ledger_radar_drain

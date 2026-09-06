@@ -282,7 +282,7 @@ payload 只含 ID 与判据快照（宪法 §八.1），不含行全量——订
 每晚任务产出的结论性事实随图一起蒸发，cairn-y §5.8 断链）
 ```
 
-> 沉淀判据（fact 域执行，源自 v4.x persistFgsFacts 的防灌水闸门）：type=fact、status=done、`content.summary` 非空、`content.detail|evidence` 非空——只沉淀结论性事实，空泛 step 感想不进 facts。v4.5 实测该链产出为 0（39 节点无一沉淀成功，归档 T-15 待验收）——v5 事件化后 `persist_eligible` 即时反馈 + fgs.node.done 留痕，断链可观测。
+> 沉淀判据（fact 域执行，源自 v4.x persistFgsFacts 的防灌水闸门）：type=fact、status=done、`content.summary` 非空、`content.detail|evidence` 非空——只沉淀结论性事实，空泛 step 感想不进 facts。线上现状（2026-09-06 实测）：FGS 59 节点、`fgs/%` facts 已有 1 条沉淀（历史基线，非零）——v5 事件化后 `persist_eligible` 即时反馈 + fgs.node.done 留痕，断链可观测。待沉淀清单的持久性由总线 `event_outbox` 承担（fgs.node.done 事件随事务落库，宿主重启不丢，dispatcher 续扫派发），不再依赖进程内内存清单。
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
@@ -453,7 +453,7 @@ deleteNodesByTask(taskId) → n                              // fgs_clear
 
 | 维度 | 现状（v4.7） | 增长预期 | 保障 |
 |---|---|---|---|
-| fgs_nodes 行数 | 39（v4.5 实测） | 每任务每周期数十节点；fgs_clear 每周期清旧图，**活跃图 ≤ 单任务体量**；历史终态任务图累积（只读） | idx_fgs_task 主路径；终态图永不进入写路径 |
+| fgs_nodes 行数 | 59（2026-09-06 实测） | 每任务每周期数十节点；fgs_clear 每周期清旧图，**活跃图 ≤ 单任务体量**；历史终态任务图累积（只读） | idx_fgs_task 主路径；终态图永不进入写路径 |
 | fgs_next | 候选 ≤50 扫描 + done 集一次查询 | — | O(候选数)；依赖数组通常 ≤5 |
 | fgs_list/fgs_export | ≤500 行/任务 | — | 分页 + idx_fgs_task |
 | 事件量 | fgs.node.* 每任务每周期 ~节点数 ×2 | payload 均 <2KB | jsonl 追加写，无风暴风险 |
@@ -501,7 +501,7 @@ deleteNodesByTask(taskId) → n                              // fgs_clear
 1. **表不迁**：fgs_nodes 留在 asset-graph.db，sqlite-local 后端直接接管；DDL/索引幂等（新装自动建表）。
 2. **无列变更**：v4.x 表结构（含 CHECK 约束）与新契约完全兼容——状态机拆分是动词层变化，落库仍是同一 status 枚举。
 3. **历史节点保留**：终态任务的旧图原样保留（只读决策链档案，fgs_list 可查）；不回填、不清理。
-4. **known-issue 交接**：v4.5 FGS 沉淀链产出为 0（39 节点无一沉淀成功，T-15 待验收）——v5 事件化后以 `persist_eligible` 即时反馈 + fgs.node.done jsonl 留痕定位断链点，属于迁移后的首批验收用例（契约测试：fgs_complete(fact, 带证据) → fgs.node.done(payload.persist_eligible=true) → fact 域订阅者落 fact_upsert）。
+4. **known-issue 交接**：FGS 沉淀链历史基线 59 节点/`fgs/%` 1 条沉淀（2026-09-06 实测）——v5 事件化后以 `persist_eligible` 即时反馈 + fgs.node.done jsonl 留痕定位断链点，属于迁移后的首批验收用例（契约测试：fgs_complete(fact, 带证据) → fgs.node.done(payload.persist_eligible=true) → fact 域订阅者落 fact_upsert）。
 5. 回滚：v4.x 插件整目录回滚；表结构向后兼容。
 
 ---

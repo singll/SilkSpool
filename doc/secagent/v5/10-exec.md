@@ -34,10 +34,10 @@
 | `exec_burp_import` | Burp XML 导入 → 结构化 JSONL 落盘 + proposal 事件 | model, human | 自然键 `sha1(file 内容前 1MB)` | `exec.import.completed` |
 | `exec_report_bad_proxy` | 坏代理上报（经总线 dispatch 调 proxy 域命令） | model, script, dashboard | 自然键 `sha1(proxy_url)` | （proxy 域发） |
 | `exec_intel_hunt` | 指纹命中 → 本地 nuclei 模板检索 +（可选）委托 task 域建 N-day 候选任务 | model, dashboard | 显式键 | （task 域发 `task.created`） |
-| `exec_task_chain` | objective 展开为工具依赖链（BFS + 反向剪枝）→ 委托 task 域逐级建 once 任务 | model, dashboard | 自然键 `[链:want]` 标记去重 | （task 域发 `task.created`×N） |
 | `exec_flow_append` | 机器通道：xray webhook 原始 flow 落盘 | webhook | 自动指纹 `sha1(源 payload)` | `exec.flow.appended` |
 
-> `exec_intel_hunt` / `exec_task_chain` 的"建任务"副作用**全部经总线 `dispatch('task', ...)` 走 task 域命令全管线**（schema/不变量/事务/审计一个不少）——exec 域不 import task 域模块、不直调其函数、不写 tasks 表。这是域间协作的合法形态②（同步命令调用，需要返回 task_id / 强顺序），与形态①（事件订阅，异步解耦）并存；被禁止的只是 import 他域内部函数或绕网关写。
+> `exec_intel_hunt` 的"建任务"副作用**全部经总线 `dispatch('task', ...)` 走 task 域命令全管线**（schema/不变量/事务/审计一个不少）——exec 域不 import task 域模块、不直调其函数、不写 tasks 表。这是域间协作的合法形态②（同步命令调用，需要返回 task_id / 强顺序），与形态①（事件订阅，异步解耦）并存；被禁止的只是 import 他域内部函数或绕网关写。
+> 任务链展开（原 v4 dashboard-rpc taskChain）统一归 **task 域 `task_chain`**（05-task.md C9）——它的事务主体是写 task 域 owned 的 tasks 表；本域只保留能力图**只读查询** `exec_plan_chain`（§1.4），旧 `exec_task_chain` 名经总线别名指向 task_chain。
 
 ### 1.3 命令逐个详述
 
@@ -88,14 +88,14 @@ renderTemplate → shellSplit → spawn
   stdout.log  全量 stdout（流式写入）
   meta.json   见 2.1.2 字段表
   proposal.json  parser 产出的结构化提案（store 语义废止后新增，见 2.1.3）
-后处理（顺序固定）:
-  ① know 域命令：dispatch('know','pb_outcome',{name:"tool:<tool>", success, duration_ms})
-     —— 工具成功率/EWMA 统计（环1 自动沉淀）；弱联动 best-effort，失败 audit 记 dispatch_failed
-  ② fact 域命令：exit ≠ 0 且 program 已解析时 dispatch('fact','upsert', 负知识 note)
-     —— fact_key = note/fail-<tool>-<host>（截 100 字符），confidence=tentative，
-        source=auto:runcli-fail；neg_check 派单前拦截重复尝试；弱联动
-  ③ 发布 exec.run.completed（payload 携带 parse_proposal 摘要，见 1.5.2）
-     —— parser 入库直写归零的核心：asset/endpoint/vuln 域订阅后各自经命令入库
+ 后处理（顺序固定）:
+   ① know 域命令：dispatch('know','pb_outcome',{name:"tool:<tool>", success, duration_ms})
+      —— 工具成功率/EWMA 统计（环1 自动沉淀）；弱联动 best-effort，失败 audit 记 dispatch_failed
+   ② 发布 exec.run.failed（exit_code ≠ 0 且 program 已解析时，payload 含 tool/host/exit_code/error）
+      —— fact 域订阅后写负知识 note（note/fail-<tool>-<host>，neg_check 派单前拦截重复尝试）；
+         事件化替代 v4 runCli 直调 factUpsert；弱联动
+   ③ 发布 exec.run.completed（payload 携带 parse_proposal 摘要，见 1.5.2）
+      —— parser 入库直写归零的核心：asset/endpoint/vuln 域订阅后各自经命令入库
 回模型：≤20 行 summary + total_lines + hint（>20 行时提示用 grep/page 取）
 ```
 
@@ -197,22 +197,9 @@ renderTemplate → shellSplit → spawn
 **归属论证**：intel_hunt 的两半——"模板库检索"是 exec 域执行资源查询（nuclei-templates 是工具链资产，与 tools.d 同族）；"建 N-day 候选任务"是 task 域动词（task_create 经网关全管线）。v4.x 把两半揉在一个函数里直调 `assetDb.taskCreate`，v5 拆开：exec 只做检索与委托，任务的 schema/不变量/审计全在 task 域。
 **actor**：model, dashboard。
 
-#### 1.3.6 `exec_task_chain`
+#### 1.3.6 `exec_task_chain`（已迁出，见 task 域 task_chain）
 
-**agent_note**：一条 objective 自动展开为任务依赖链。复用能力图 BFS 凑链 → 反向剪枝到最小链 → 委托 task 域落成 parent 串联的 once 调度任务（前置未完成不派单，链式自动推进）。默认 have=["domains"]、want=findings。链尾多为 active 扫描且会自动执行，仅对已授权 scope 使用。
-
-| 参数 | 类型 | 必填 | 默认 |
-|---|---|---|---|
-| `program_id` | string | 否 | 会话工作区自动绑定（解析失败 → `E_NOT_FOUND`，hint 指引传 program_id） |
-| `objective` | string | 否 | —（写入每级任务作上下文） |
-| `want` | string | 否 | `findings` |
-| `have` | string[] | 否 | `["domains"]` |
-| `priority` | integer | 否 | 3 |
-| `parent_id` | integer | 否 | —（挂已有任务之后） |
-
-行为四步（v4.x dashboard-rpc.js taskChain 逻辑平移）：① 复用 `exec_plan_chain` BFS 验证可达；② 反向剪枝（从 want 回溯，只保留 produces 命中所需能力的工具，requires 逐级并入）；③ 幂等去重（查同 program 未终结 `[链:want]` 标记任务，deduped 返回）；④ **逐级 `dispatch('task','create',...)`** 建 parent 串联 once 任务（at = base + i×2s 过 normalizeSchedule 校验，实际次序由 task 域 parent gate 决定；stage→phase 映射 recon/vuln/code-audit；vuln 级 objective 附 tentative 纪律）。部分失败返回 `created: [ids]` + 失败原因（`E_EXEC_TASK_CHAIN_PARTIAL`）。
-**为什么是命令不是查询**：它创建任务行（经 task 域命令）——纯读的只有 plan_chain（1.4.2）。
-**actor**：model, dashboard。
+任务链展开命令**归 task 域 `task_chain`**（05-task.md C9，唯一写命令）：它的事务主体是写 tasks 表 N 行（parent 串联 once 链），落点全在 task 域。本域只保留能力图**只读查询** `exec_plan_chain`（§1.4.2）供 task_chain 跨域调用（纯读 BFS，无副作用）。旧 `exec_task_chain` 工具名经总线别名指向 `task_chain`（05-task §3.2），本域契约不再声明该写命令。**actor**：model, dashboard（走 task 域投影）。
 
 #### 1.3.7 `exec_flow_append`（机器通道）
 
@@ -244,9 +231,10 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 | 事件 | 触发 | payload 顶层字段 | 联动 |
 |---|---|---|---|
 | `exec.run.started` | run_cli 通过守卫链、spawn 前 | `run_id, tool, stage, risk, targets(≤10), program_id` | 弱 |
+| `exec.run.failed` | run 落盘且 exit_code≠0、program 已解析（后处理 ②）| `run_id, tool, host, exit_code, error, program_id` | 弱（fact 域订阅写负知识）|
 | `exec.run.completed` | run 落盘 + 后处理 ①② 之后 | 见 1.5.2 | 弱（asset/endpoint/vuln 订阅入库；可重放） |
-| `exec.worker.spawned` | worker 注册表登记成功 | `run_id, dedupe_key, cwd, timeout_sec, pid, origin_session_id` | 弱 |
-| `exec.worker.finished` | worker 收尾（done/failed/killed） | `run_id, status, exit_code, duration_ms` | 弱（task 域对账 task_runs） |
+| `exec.worker.spawned` | worker 注册表登记成功 | `run_id, dedupe_key, cwd, timeout_sec, pid, origin_session_id` | **强（sync）**——task 域注册行丢失=dedupe 失效=重复 spawn |
+| `exec.worker.finished` | worker 收尾（done/failed/killed） | `run_id, status, exit_code, duration_ms` | **强（sync）**——终态是 dedupe 真相的一部分；孤儿兜底由 task 域 reap 对账 |
 | `exec.flow.appended` | flow 落盘后 | `flow_file, host, title` | 弱（vuln 候选登记） |
 | `exec.import.completed` | burp 等导入落盘后 | `import_id, kind, records, hosts(≤20)` | 弱（endpoint/vuln 入库） |
 

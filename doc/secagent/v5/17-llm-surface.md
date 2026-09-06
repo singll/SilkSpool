@@ -51,7 +51,7 @@ for alias of bus.aliases:                              # ② 兼容别名（01 �
 | task | 17 | 6 | schedule, block, resume, cancel, finish, budget_extend, claim, reap, worker_register, worker_finish, worker_reap, complete | 15 |
 | fact | 6 | 5 | record_validation | 10 |
 | know | 15 | 12 | rule_seed, adopt, kb_revalidate | 24 |
-| scope | 8 | 4 | **全部 8 个写命令**（grant/revoke/exclude/set_rules/cred_add/cred_revoke/bind_workspace/archive） | 4 |
+| scope | 7 | 4 | **全部 7 个写命令**（grant/revoke/exclude/rules_apply/cred_add/bind_workspace/archive） | 4 |
 | approval | 2 | 2 | decide | 3 |
 | exec | 4 | 6 | — | 10 |
 | ledger | 4 | 3 | — | 7 |
@@ -100,7 +100,7 @@ for alias of bus.aliases:                              # ② 兼容别名（01 �
 
 agent_note 必须写明**合法起点状态**（"仅 new/changed 可转 dead"），模型据此预判 E_STATE。
 
-#### D. 台账/回执类（ledger_log_attempt, know_exp_feedback, ledger_log_card_usage …）
+#### D. 台账/回执类（ledger_log_attempt, exp_feedback, ledger_log_card_usage …）
 
 agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/outdated）并标注强制字段（"BLOCKED/N-A 必填 reason 且禁 other/misc；TESTED_CLEAN/CONFIRMED 必填 evidence_path"——写入即校验，宪法级不变量）。
 
@@ -113,7 +113,7 @@ agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/ou
 
 #### F. 治理生命周期类（fact_record_validation, know_kb_revalidate, eval_case_add …）
 
-**对 model 不可见**（script / reactor 通道，对 model 不注册）。模型若需要触发复验，走 know_exp_feedback 的 outdated 信号——治理引擎据此处理。
+**对 model 不可见**（script / reactor 通道，对 model 不注册）。模型若需要触发复验，走 exp_feedback 的 outdated 信号——治理引擎据此处理。
 
 #### G. 机器直灌类（vuln_register_candidate, webhook 通道 …）
 
@@ -139,7 +139,7 @@ agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/ou
 
 ### 1.5 事件
 
-**工具面不发布事件**（投影是纯机械转发，无副作用、无状态）。唯一的"查询后动作"是宪法 §七.1 规定的副作用拆分：`know_exp_search` 检索完成后由投影层补发 `know_exp_record_usage` 命令（audit 可见；失败不影响检索结果——§2.3）。
+**工具面不发布事件**（投影是纯机械转发，无副作用、无状态）。唯一的"查询后动作"是宪法 §七.1 规定的副作用拆分：`exp_search` 检索完成后由投影层补发 `exp_record_usage` 命令（audit 可见；失败不影响检索结果——§2.3）。
 
 ### 1.6 模型工具面投影——完整挂载矩阵
 
@@ -226,7 +226,7 @@ execute: async (args, exec) => gateway.dispatch('vuln', 'confirm', args, {
 ### 2.3 事务与联动（工具面视角）
 
 - 工具回调 **不开启任何事务**——dispatch/query 全权交给网关（01 §2.3）；投影层无状态、无重试循环（重试是模型的职责，§2.4 决策表引导）。
-- 唯一的事务外动作：查询后补发（`know_exp_search` → `know_exp_record_usage`）——fire-and-forget dispatch，失败记 audit（kind=command, result=failed）**不影响检索结果返回**（宪法 §七.1）。补发命令的幂等键=auto（同查询同参数 7 天窗口内只记一次 uses）。
+- 唯一的事务外动作：查询后补发（`exp_search` → `exp_record_usage`）——fire-and-forget dispatch，失败记 audit（kind=command, result=failed）**不影响检索结果返回**（宪法 §七.1）。补发命令的幂等键=auto（同查询同参数 7 天窗口内只记一次 uses）。
 
 ### 2.4 模型错误自愈：错误信封 hint 撰写规范 + 重试决策表
 
@@ -288,7 +288,7 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 | 每工具上下文开销 | description ≤240 字（≈360 token）+ schema（≈150-400 token）≈ **500-700 token** | |
 | 工具面总开销 | ≈119 × 600 ≈ **69-73k token/会话** | 显著项。缓解：DSH/pi-ai 的 prompt caching（工具 schema 在 system 段，缓存命中后边际成本低）+ AGENTS.md 速查表只列动词名不复制全文。**这是全量注册 vs phase 子集注册（开放问题 Q1）的量化输入** |
 | 投影耗时 | 注册期一次性 <100ms（15 个 manifest、146 个动词遍历） | 运行期零开销（execute 直转 dispatch） |
-| 查询后补发 | 每检索 +1 次 dispatch（<5ms，异步不阻塞返回） | 仅 know_exp_search 一处 |
+| 查询后补发 | 每检索 +1 次 dispatch（<5ms，异步不阻塞返回） | 仅 exp_search 一处 |
 
 ### 2.7 契约合规评测（eval 域的"模型试图越权"用例设计）
 
@@ -309,7 +309,7 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 
 | 层 | v5 变化 |
 |---|---|
-| 模型路由 / 熔断 / failover / dsh-bill | **零改动**。Bellkeeper 默认路由 + 两级熔断 + 应急直连纪律照旧（`dsh-llm-routing-discipline.md` 仍有效） |
+| 模型路由 / 熔断 / failover / dsh-bill | **机制零改动 + 约束收紧**。Bellkeeper 默认路由 + 两级熔断照旧（`dsh-llm-routing-discipline.md` 仍有效）；但任务级 `provider/model` 必须过 **allowlist**（05-task INV-T13：默认 `bellkeeper`，其它 provider 显式白名单，应急直连走人工通道 + audit 高亮）——线上 dsh-bill 出现 opencode-go/Bellkeeper/SenseNova/DeepSeek 多来源（5,461 条历史），v5 不掩盖历史直连成本：provider 审计与 dsh-bill 成本归因写入 task 域（`spent_tokens` 回填，05-task INV-T14） |
 | DSH tools.register 契约 | 唯一交互通道。工具数量翻倍对该通道无压力（DSH 无工具数上限实测约束；上下文 token 见 §2.6） |
 | 工具失败的信封投递 | 投影层**返回**失败信封对象（不 throw）——模型读到 `{ok:false, error:{code,hint,retryable}}` 全文，renderJSON 渲染。与 v4.x `{ok:false,error}` 习惯一致，v5 增 hint/retryable 字段 |
 | spawn_worker 任务级模型覆盖（P18） | 不变：provider/model 参数经 --patch 注入 worker 子进程，与工具面正交 |
@@ -327,7 +327,7 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 | agent_note 文案库 | asset-graph.js 38 个工具的 description 文本 + sec-suite index.js:1858+ 15 个工具（run_cli 的守卫链摘要 / spawn_worker 的幂等重试语义）+ sec-pipeline 8 工具的硬校验描述 + proxy-pool 6 工具 | 文案按 §1.3 八类规范逐条改写后进各域 manifest agent_note（已验证有效的文案如 spawn_worker 幂等段照抄） |
 | execCwd / sessionIdOf | `asset-graph.js:25-37`（exec.agent.id / session.header.cwd 提取，rc.7 ToolRunContext） | 原样平移进投影器（actor 注入的数据源） |
 | 超时透传 | reg() 的 `def.timeoutMs`（run_cli 3670000 / burp_import 180000） | manifest timeout_ms 字段承接 |
-| 查询后补发 | experience.js exp_search 的"返回即 recordSignal(searched)" | 拆为 know_exp_record_usage 独立命令 + 投影层 fire-and-forget（副作用显式化，宪法 §七.1） |
+| 查询后补发 | experience.js exp_search 的"返回即 recordSignal(searched)" | 拆为 exp_record_usage 独立命令 + 投影层 fire-and-forget（副作用显式化，宪法 §七.1） |
 | 工具描述与后端能力对齐 | v4.6.1 修复（工具 schema 只暴露 4 参数、severity/source 传不进去） | 根治：schema 单一来源=manifest，工具面不可能落后于后端 |
 | `@silksec/dsh-browser` fork（浏览器共驾工具面） | tarball + `dsh-browser-upstream.index.js`/`browser-manager.js` patch（注入 SEC_FLOW_PROXY 出口代理→xray :7777）；底座=silksec-shared-browser.service（CDP :9222 常驻 Chromium，登录态人机共用） | **零改动**：fork 与常驻浏览器服务原样保留（平台层不动，10-exec §2.7 不动清单）；浏览器工具按同一 ToolProjector 规则投影（fork 内工具定义改读 manifest 是 Phase 5+ 可选项，非 v5 范围） |
 
@@ -344,7 +344,7 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 
 | 改写对象 | 内容 | 时机 |
 |---|---|---|
-| `.agent-presets/*/agent.cordis.yml`（7 角色 persona） | 旧工具名引用 → 新动词（vuln-hunt 的 "先 asset_query/blackboard" → "先 asset_list/fact_bb_get"） | Phase 5 第 1 批（别名期内新旧皆可，改写是低风险平滑操作） |
+| `.agent-presets/*/agent.cordis.yml`（7 角色 persona） | 旧工具名引用 → 新动词（vuln-hunt 的 "先 asset_query/blackboard" → "先 asset_list/fact_bb_read"） | Phase 5 第 1 批（别名期内新旧皆可，改写是低风险平滑操作） |
 | `data/skills/*/SKILL.md`（7 技能） | sec-pipeline 的工具矩阵分派表 / sec-runtime-discipline 的动词引用 / sec-knowledge 检索三步（fact_search→exp_search→kb_search 大多同名，know 前缀例外） | 同上 |
 | `data/rules/src/technique-index.md`（87 行短表）与 `rules/techniques/*.md` | "出什么算成"里的工具引用（finding_add→vuln_register_signal 等） | 同上 |
 | tasks 表 interval 任务 objective | p14 系列先例：SQL 批量改写 + dry-run 预览 + 幂等可重跑 | 同上 |

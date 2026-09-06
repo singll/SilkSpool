@@ -196,7 +196,7 @@ await bus.dispatch('eval', 'case_append', {
 **脚本调用**（治理脚本触发评测）：
 
 ```bash
-spool exec csai "node /opt/silkspool/dsh/bin.js --profile web --rpc secDomain.eval runFp \\
+spool exec csai "node /opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --rpc secDomain.eval runFp \\
   --args '{}' --actor script"
 ```
 

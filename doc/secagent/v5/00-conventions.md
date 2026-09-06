@@ -95,6 +95,7 @@
 | `approval` | 审批批准事件的订阅执行 | `scope_grant` 等（由 approval.approved 事件携带） |
 | `reactor` | **域事件订阅反应器**（approval 事件之外的跨域事件订阅处理器调用面，由总线从订阅回调注入，模型/看板不可见、不可伪造；审计 cause 链指向源事件及其原始 actor） | 事件联动回写类（`task_worker_register` / `vuln_attach_fgs` 等），各命令白名单显式列出 |
 | `system` | 总线/域自身生命周期（迁移、初始化） | 全部；仅限启动/迁移窗口 |
+| `platform` | DSH 平台层外部写入方（systemd timer、浏览器共驾、采集链脚本）——不经 CommandGateway，属受控外部写入 | 各域显式声明的接管路径（如 `intel.jsonl` 由 silksec-intel.timer 单写、proxy 采集 proposal） |
 | `human` | 人工经 CLI 直调（运维应急通道） | 只读查询 + 显式标注 `--actor human` 的写；审计高亮 |
 
 规则：
@@ -112,7 +113,7 @@
 3. **幂等必填**：见 §六。重放同一命令必须返回与首次相同的结果（信封带 `replay: true` 标记）。
 4. **证据即参数**：语义上"确认/验证/落账/结论"类动词，证据参数（run_id / evidence_path / flow_id）是 schema required。缺证据 = `E_EVIDENCE_REQUIRED`，不是运行时警告。
 5. **前置不变量在网关**：manifest 的 invariants 清单由 CommandGateway 在事务前逐条执行，失败返回对应错误码。域实现内部不重复校验（也不可能有绕过——service 实例只由网关构造）。
-6. **事件必发**：命令事务提交成功后必然发布 manifest 声明的事件；事务失败不发。同步订阅者异常被网关捕获 → audit 记 `subscriber_failed`，不回滚命令（强联动除外，见 §八）。
+6. **事件必发**：命令事务提交成功后必然发布 manifest 声明的事件（写入 `event_outbox` 同事务）；事务失败不发。sync 订阅者在同一事务内执行（失败即整体回滚）；async 订阅者事务提交后由 dispatcher 派发（失败重试/dead-letter，见 §八）。
 7. **审计唯一落点**：每个命令一条统一 audit 记录（§九），域内禁止私自追加审计行。
 8. **actor 白名单**：§三。
 
@@ -205,9 +206,10 @@
 ```
 
 3. **联动分级**（manifest 中每个订阅声明强/弱）：
-   - **强联动**（`mode: sync`）：订阅者失败 → 触发命令整体回滚报错。仅用于"业务正确性依赖"（候选消减、授权生效、审批闭环写回）；
-   - **弱联动**（`mode: async`）：订阅者失败 → audit 记 `subscriber_failed` + 事件保留可重放。用于 eval 回流、vault 导出、雷达追加、统计刷新。
-4. **留痕与回放**：全部事件按域追加 `data/events/{domain}.jsonl`；`sec bus replay --since <ts>` 支持按事件日志重放弱联动订阅者（灾备与调试）。
+   - **强联动**（`mode: sync`）：订阅者与命令主体共用同一 SQLite 事务（SAVEPOINT 包裹），订阅者失败 → 命令整体回滚报错。仅用于"业务正确性依赖"（候选消减、授权生效、审批闭环写回）；
+   - **弱联动**（`mode: async`）：事件随事务持久化进 `event_outbox`，事务提交后由 web 宿主 dispatcher 独立派发；订阅者失败指数退避重试，超阈值进 `dead_letter`，`bus_replay` 可重放。用于 eval 回流、vault 导出、雷达追加、统计刷新。
+   - **不存在"同步但不回滚"的中间态**——模式语义固定为上述两种，任何文档不得再使用含混表达。
+4. **留痕与回放**：全部事件按域追加 `data/events/{domain}.jsonl`（dispatcher 派发后追加）；投递可靠性由 `event_outbox` 保证（跨进程），jsonl 仅作观测与回放源；`sec bus replay --since <ts>` 支持按事件日志重放 async 订阅者（灾备与调试）。
 5. **禁止事件风暴**：一个命令的事件发布数量有上限（默认 1，批量命令 ≤ 批量行数）；高频信号类（如 exec.run.completed 每次工具调用）payload ≤ 2KB。
 6. **订阅声明**：域在 manifest `subscribes` 里声明订阅 + 模式 + 处理器名——**未声明订阅的域收不到事件**（显式依赖，防止隐式耦合）。
 

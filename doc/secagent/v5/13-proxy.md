@@ -18,6 +18,7 @@
 | 后端插件包名 | `@silksec/sec-backend-proxy-file`（file 后端单实现）|
 | profile 挂载 | web + headless 均挂载（worker 会话要用 sticky_bind / list）|
 | owns（单写者）| `{POOL_DIR}/pool.json`、`live.txt`、`blocklist.txt`、`stats.json`、`sticky.json` 五文件（POOL_DIR = env `SEC_PROXY_POOL_DIR`，默认 `/opt/silkspool/dsh/proxy-pool`）|
+| 文件权限 | 采集 systemd 单元（silksec-proxy-refresh.service）以 root 跑，产出 `out/proxies.json`/`out/proposal.json` 可能 root-owned；本域命令以 silkspool 用户写五文件——**落池前须校验五文件对域用户可写**（`proxy_stats` 增 `writable: bool` 健康指标，不可写时告警并引导 `chown`/sudo 修复，不静默失败） |
 | 只读 inbox（非 owns）| `{POOL_DIR}/out/proxies.json`（proxy-scraper-checker 采集验证原始产物）、`{POOL_DIR}/out/proposal.json`（proxy_grade.py 纯计算产出的落池提案）|
 | 环境变量 | `SEC_PROXY_POOL_DIR`（池目录）、`SEC_EGRESS_PROXY`（网关地址，默认 `http://127.0.0.1:8899`）|
 

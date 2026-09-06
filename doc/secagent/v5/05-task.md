@@ -1,7 +1,7 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
 > 版本：v5.0 ｜ 状态：草案 ｜ 契约版本：task domain manifest v1
-> 依赖：订阅 `approval.approved`（审批入队种子任务 + task-budget-extend 预算落列）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）
+> 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）；`task_budget_extend` 由 approval 域 `approval_effects` 经 dispatcher 幂等执行。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
 
@@ -396,7 +396,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | `budget_timeout_sec` | integer | ✅ | 1–7200（硬顶，防 2 小时外的失控 worker 占死调度槽），否则 `E_SCHEMA` |
 | `approval_id` | integer | ✅ | 证据：源审批单 id（**证据即参数**），须为已批准的 task-budget-extend 单 |
 
-**actor**：approval（approval.approved 订阅执行，弱联动 async——审批已裁决，落列失败仅 audit `subscriber_failed` + 事件可重放）。**幂等**：自然键 `task:budget:{task_id}`。**事件**：无。**模型不可见**。
+**actor**：approval（approval 域 `approval_effects` 经 dispatcher 幂等执行——审批已裁决，落列失败进 approval_effects 退避重试/`approved_effect_failed`，不丢失）。**幂等**：自然键 `task:budget:{task_id}`。**事件**：无。**模型不可见**。
 
 #### C11 `task_claim`（内部）
 
@@ -481,8 +481,8 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 | 事件 | 模式 | 处理器 |
 |---|---|---|
-| `approval.approved {kind:'scope-domain'\|'scope-wildcard'}` | async（best-effort，入队失败不影响批准） | 种子任务入队：`task_create{program_id, phase:'recon', priority:1, objective:'[审批入队] 新授权域名 {host} 首轮资产面收集：radar_read 读入 scope-approved 事件 → subfinder → dnsx → httpx 存活+指纹入图谱。只做资产收集，禁止主动漏洞探测。完成后 attempts_log 落台账…', schedule:{kind:'once', at:now+5min}}`；幂等=同 program 活跃 `[审批入队]`+host 任务存在即跳过（**原 onApprove 直调 taskCreate 改事件**，v4.x enqueueScopeSeedTask 移植） |
-| `approval.approved {kind:'task-budget-extend'}` | async | `task_budget_extend`（C10） |
+| `scope.granted` | async（best-effort，入队失败不影响授权） | 种子任务入队：`task_create{program_id, phase:'recon', priority:1, objective:'[审批入队] 新授权域名 {host} 首轮资产面收集：radar_read 读入 scope-approved 事件 → subfinder → dnsx → httpx 存活+指纹入图谱。只做资产收集，禁止主动漏洞探测。完成后 attempts_log 落台账…', schedule:{kind:'once', at:now+5min}}`；幂等=同 program 活跃 `[审批入队]`+host 任务存在即跳过（**原 onApprove 直调 taskCreate 改事件**，v4.x enqueueScopeSeedTask 移植；授权效果本身由 approval 域 `approval_effects` 经 dispatcher 执行 scope_grant，本域只消费 scope.granted） |
+| （task-budget-extend） | — | `task_budget_extend`（C10）由 approval 域 `approval_effects` 经 dispatcher 幂等执行（actor=approval，cause 链带 request_id），**非本域订阅 approval.approved** |
 | `exec.worker.spawned` | **sync（强联动）** | `task_worker_register`（C13） |
 | `exec.worker.finished` | **sync（强联动）** | `task_worker_finish`（C14） |
 
@@ -684,6 +684,8 @@ stateDiagram-v2
 | INV-T10 | budget_timeout_sec ≤7200 | `E_SCHEMA` |
 | INV-T11 | 续期锚点=run_at（标称相位），非 next_run_at | （算法内建，非校验） |
 | INV-T12 | run_cli 沙箱对本域 owned 表/文件不可写（manifest owns × 沙箱白名单，setup.sh 冒烟交叉断言） | （部署期断言） |
+| INV-T13 | **provider 路由硬约束**：任务级 `provider` 必须 ∈ 允许清单（默认 `bellkeeper`；`provider` 显式传其它值须在白名单内，否则 `E_TASK_PROVIDER_FORBIDDEN`）。应急直连（临时绕 Bellkeeper）走审批 `approval_request(kind=tool-intrusive)` 之外的人工通道，audit 高亮 + dsh-bill 归因 | `E_TASK_PROVIDER_FORBIDDEN` |
+| INV-T14 | **成本归因**：任务收尾时回填 `spent_tokens`（取自 dsh-bill 该 session/provider 的实际用量）；`budget_tokens` 非空时超支记 `note` 前缀 `[预算超支]`——provider 用量与任务级预算在账本对齐 | （可观测承载） |
 
 ### 2.3 事务与联动实现
 

@@ -312,7 +312,7 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 
 **行为**：读 `data/evidence/{finding_id}/request.txt` → 解析首行 method/path + headers（须含 Host）+ body → 经 proxy（或 direct）重放 → 响应体 sha256 → 与 expect_hash 比对 → **追加** `verify-log.md` 一行（`| 北京ISO时间 | 出口 | status | sha256 前 16 位 | verdict |`）。返回 `{status, sha256, verdict}`。**不改 findings 行**——复核结论经证据引用链被 `vuln_confirm` 的自查引用（机械判定本身不自动改状态，确认仍是一次显式命令）。
 
-**错误码**：E_NOT_FOUND（finding 或 request.txt 不存在，hint："先在任务内产出证据包（request.txt 落 evidence/{id}/）再复核"）；`E_VULN_REPLAY_FAILED`（网络/首行解析失败，retryable=true，hint："网络波动可重试；首行无法解析说明 request.txt 非标准 HTTP 报文，重新产出证据包"）。**幂等**：自动指纹（finding_id+expect_hash+分钟）。**actor**：model, script（run_cli 侧治理脚本）。
+**错误码**：E_NOT_FOUND（finding 或 request.txt 不存在，hint："先在任务内产出证据包（request.txt 落 evidence/{id}/）再复核"）；`E_EVIDENCE_LEGACY_UNAVAILABLE`（finding 为 legacy-inline 证据，无 request/response，hint："历史 finding 无机械复核能力，先取证产出新证据包"）；`E_VULN_REPLAY_FAILED`（网络/首行解析失败，retryable=true，hint："网络波动可重试；首行无法解析说明 request.txt 非标准 HTTP 报文，重新产出证据包"）。**幂等**：自动指纹（finding_id+expect_hash+分钟）。**actor**：model, script（run_cli 侧治理脚本）。
 
 ---
 
@@ -512,7 +512,7 @@ const r = await vuln.dispatch('register_candidate', {
 
 ```bash
 # 运维应急：人工翻案一条误判（显式 --actor human，审计高亮）
-spool exec csai "node /opt/silkspool/dsh/bin.js --profile web --rpc secDomain.vuln confirm \\
+spool exec csai "node /opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/bin.js --profile web --rpc secDomain.vuln confirm \\
   --args '{\"finding_id\":341,\"evidence\":\"evidence/341/verify-log.md\"}' --actor human"
 ```
 
@@ -780,7 +780,8 @@ prompt 引用同步：persona/objective/skills/technique-index 中的 finding_ad
    - `UPDATE findings SET noise=0 WHERE noise=1 AND status IN ('confirmed','submitted','accepted')` —— **31 条 confirmed 僵君归位信号面**；
    - 其余 25 条终态滞留（dup 7 + fp 5 + ignored 13）不动 noise，靠口径修正自动出候选计数；
    - dry-run 模式（只打印将改行）+ 修复后断言三口径一致（信号面 41 = 10+31；candidate.pending = 2；terminal_in_pool = 25）；audit 记 `kind:'migration'`。
-   - **这是止血不是根治**（actor 仍混杂、updateFinding 仍是自由态动词）——根治在 Phase 1 本域上线。
+    - **这是止血不是根治**（actor 仍混杂、updateFinding 仍是自由态动词）——根治在 Phase 1 本域上线。
+4. **legacy evidence 回填**（线上 `evidence/` 文件数为 0，36 条 confirmed-like findings 仅有 inline evidence）：为存量 confirmed 行建立 legacy evidence manifest（`evidence/{id}/manifest.json` 标 `legacy-inline`，不含 request/response——**不伪造机械复核能力**）；`vuln_verify_replay` 对 legacy-inline finding 返回 `E_EVIDENCE_LEGACY_UNAVAILABLE`（hint："历史 finding 无 request/response 证据包，仅 inline evidence——复核需先取证产出新证据包"）。
 
 #### Phase 1 正式版（随域上线）
 

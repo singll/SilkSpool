@@ -60,12 +60,12 @@ export default {
 | `vuln.confirm` / `vuln.reject` / `vuln.submit` / `vuln.note` / `vuln.claim`* | 漏洞（候选工作队列）| findingUpdate（按 status 拆分）|
 | `fact.correct` / `fact.deprecate` | 事实 | factCorrect / factDeprecate |
 | `task.create` / `task.run_now` / `task.cancel` / `task.block` / `task.resume` / `task.schedule` | 任务 | taskCreate / taskRunNow / taskCancel / taskSetStatus（拆分）/ taskScheduleUpdate |
-| `know.exp_feedback` / `know.exp_promote` / `know.exp_deprecate` / `know.exp_update` / `know.exp_gate_export`* | 知识 | expFeedback / expPromote / expDeprecate / expUpdate / expExportable |
+| `know.exp_feedback` / `know.exp_promote` / `know.exp_deprecate` / `know.exp_update` / `know.exp.approve_export` / `know.exp.revoke_export`* | 知识 | expFeedback / expPromote / expDeprecate / expUpdate / expExportable |
 | `report.build` | 漏洞（生成报告按钮）/ 报告 | reportBuild |
 | `approval.decide` | 审批 | approvalDecide |
-| `scope.grant` / `scope.set_rules` / `scope.revoke` / `scope.bind_workspace` | 授权 | scopeSaveProgram（拆分）/ scopeDeleteProgram / programBindWorkspace |
+| `scope.grant` / `scope.rules.apply` / `scope.revoke` / `program.bind_workspace` | 授权 | scopeSaveProgram（拆分）/ scopeDeleteProgram / programBindWorkspace |
 
-\* `vuln.claim`（候选认领）与 `know.exp_gate_export`（导出许可翻转）为对应域文档（02/07）的动词定稿职责，本文档只声明消费意图；动词不存在时该按钮不渲染（requires 语义同 tab 级降级）。
+\* `vuln.claim`（候选认领）与 `know.exp.approve_export` / `know.exp.revoke_export`（导出许可翻转）为对应域文档（02/07）的动词定稿职责，本文档只声明消费意图；动词不存在时该按钮不渲染（requires 语义同 tab 级降级）。
 
 **v4 `findingUpdate` 的 `status='new'` 回退操作在 v5 删除**——状态机私有无回退动词（v5 候选误判的纠正路径是 `vuln_reject` 后重新登记，不是打回 new；见 §四 开放问题 3）。
 
@@ -97,8 +97,8 @@ function dispatch(verb, args) {           // verb = 'vuln.confirm'
 
 | 端点 | 数据接口（聚合来源查询）| 消费位置 |
 |---|---|---|
-| `dashboard.stats` | 并行调 `vuln.stats`、`asset.stats`、`endpoint.list(limit=1)`（取 total）、`task.stats`、`fact.overview`、`scope.program_list`，合并为 KPI 大盘（findings/assets/endpoints/tasks/facts/工作区计数 + by_severity/by_status）| 顶部 StatsHeader（tab 跳链入口）|
-| `dashboard.ops` | 调 `ledger.daily_delta`（台账日增量）、`ledger.card_usage_7d`、`ledger.handoff_7d`、`know.stats`（IdeaCard 数）、`task.drift_report`（调度漂移 + task_runs 新鲜度）、`vuln.stats`（候选计数——**v5 口径修正：`noise=1 AND status='new'`，见宪法 §十一**）、`asset.stats`（ungraded 计数）→ 五指标 + alerts + healthy | 红条横幅 + ops 卡片 |
+| `dashboard.stats` | 并行调 `vuln.stats`、`asset.overview`（总览聚合）、`endpoint.list(limit=1)`（取 total）、`task.stats`、`fact.overview`、`scope.program_list`，合并为 KPI 大盘（findings/assets/endpoints/tasks/facts/工作区计数 + by_severity/by_status）| 顶部 StatsHeader（tab 跳链入口）|
+| `dashboard.ops` | 调 `ledger.discipline_stats`（纪律五指标：台账日增量/卡使用 7d/交接包 7d/IdeaCard/调度漂移——11-ledger §1.4.4）、`know.health`（知识体检，07-know §1.4 Q14）、`task.stats` + `task.scheduled`（调度漂移 + task_runs 新鲜度）、`vuln.stats`（候选计数——**v5 口径修正：`noise=1 AND status='new'`，见宪法 §十一**）、`asset.overview`（ungraded 计数）→ 五指标 + alerts + healthy | 红条横幅 + ops 卡片 |
 | `dashboard.memcore` | memcore 插件状态查询（治理旁路观测：loaded/策略摘要）| memcore 缺席横幅（fail-open 提示）|
 | `dashboard.sessions` | DSH 平台会话清单（按 workspace 过滤）| 任务视图会话跳链（`ctx.sessions.open`）|
 | `dashboard.workspaces` | DSH 平台工作区清单 + 幂等配对（pairWorkspaces 逻辑收编）| 工作区区块 + 各视图 program 筛选器选项 |
@@ -124,9 +124,9 @@ function dispatch(verb, args) {           // verb = 'vuln.confirm'
 | 1 | stats | 读 | `dashboard.stats` | 保留聚合（壳，§1.4）|
 | 2 | ops | 读 | `dashboard.ops` | 保留聚合（壳）|
 | 3 | workspaces | 读 | `dashboard.workspaces` | 平台面（壳）|
-| 4 | programBindWorkspace | 写 | `scope.bind_workspace` | 自动投影（域命令）|
+| 4 | programBindWorkspace | 写 | `program.bind_workspace` | 自动投影（域命令）|
 | 5 | scopeList | 读 | `scope.list` | 自动投影（域查询）|
-| 6 | scopeSaveProgram | 写 | 拆分：`scope.grant` + `scope.set_rules`（按表单字段分派，08-scope.md 契约）| 拆分映射 |
+| 6 | scopeSaveProgram | 写 | 拆分：`scope.grant` + `scope.rules.apply`（按表单字段分派，08-scope.md 契约）| 拆分映射 |
 | 7 | scopeDeleteProgram | 写 | `scope.revoke` | 自动投影 |
 | 8 | approvalList | 读 | `approval.list` | 自动投影 |
 | 9 | approvalDecide | 写 | `approval.decide` | 自动投影 |
@@ -144,12 +144,12 @@ function dispatch(verb, args) {           // verb = 'vuln.confirm'
 | 21 | endpoints | 读 | `endpoint.list` | 自动投影 |
 | 22 | findings | 读 | `vuln.list` | 自动投影 |
 | 23 | findingGet | 读 | `vuln.get` | 自动投影 |
-| 24 | blackboard | 读 | `fact.bb_get` | 自动投影 |
+| 24 | blackboard | 读 | `fact.bb.read` | 自动投影 |
 | 25 | facts | 读 | `fact.search` | 自动投影 |
 | 26 | factGraph | 读 | `fact.graph` | 自动投影 |
 | 27 | programs | 读 | `scope.program_list` | 自动投影 |
 | 28 | tasks | 读 | `task.list` | 自动投影 |
-| 29 | scheduledTasks | 读 | `task.scheduled_list` | 自动投影 |
+| 29 | scheduledTasks | 读 | `task.scheduled` | 自动投影 |
 | 30 | taskRuns | 读 | `task.runs` | 自动投影 |
 | 31 | taskScheduleUpdate | 写 | `task.schedule` | 自动投影 |
 | 32 | taskSetStatus | 写 | 拆分：`task.block`（blocked）/ `task.resume`（queued）| 拆分映射 |
@@ -164,14 +164,14 @@ function dispatch(verb, args) {           // verb = 'vuln.confirm'
 | 41 | expPromote | 写 | `know.exp_promote` | 自动投影 |
 | 42 | expDeprecate | 写 | `know.exp_deprecate` | 自动投影 |
 | 43 | expUpdate | 写 | `know.exp_update` | 自动投影 |
-| 44 | expExportable | 写 | `know.exp_gate_export`（07-know.md 定稿名；exportable 0↔1 翻转，reason 必填）| 自动投影 |
+| 44 | expExportable | 写 | 拆分：`know.exp.approve_export` / `know.exp.revoke_export`（07-know.md 定稿名；exportable 0↔1 翻转，reason 必填）| 拆分映射 |
 | 45 | playbooks | 读 | `know.exp_list {kind:'playbook'}`（旧字段形态兼容由视图层适配）| 自动投影（参数化收编）|
 | 46 | kbList | 读 | `know.kb_list` | 自动投影 |
 | 47 | kbRead | 读 | `know.kb_read` | 自动投影 |
 | 48 | factOverview | 读 | `fact.overview` | 自动投影 |
 | 49 | rulesList | 读 | `know.rule_list` | 自动投影 |
 | 50 | rulesRead | 读 | `know.rule_read` | 自动投影 |
-| 51 | knowledgeCoverage | 读 | `know.knowledge_coverage`（缓存卡逻辑收进 know 域查询：7 天新鲜直读 data/knowledge-coverage.json，过期现场跑脚本重算——**生成是纯计算脚本产缓存文件 + 域查询读**，无写动词）| 域查询（含缓存）|
+| 51 | knowledgeCoverage | 读 | `know.coverage`（缓存卡逻辑收进 know 域查询：7 天新鲜直读 data/knowledge-coverage.json，过期现场跑脚本重算——**生成是纯计算脚本产缓存文件 + 域查询读**，无写动词）| 域查询（含缓存）|
 | 52 | reports | 读 | `report.list`（**文件名解析逻辑废弃**，索引直出——12-report.md §1.7）| 自动投影 |
 | 53 | reportRead | 读 | `report.read` | 自动投影 |
 
@@ -184,12 +184,12 @@ function dispatch(verb, args) {           // verb = 'vuln.confirm'
 | 漏洞 | `sec-domain-vuln/dashboard-view.js` | `vuln.list`（分页/筛选）、`vuln.stats`、`eval.stats`（假阳性率，跨域读）| `vuln.confirm/reject/submit/note/claim` | **候选池升级为工作队列视图**：`noise=1 AND status='new'` 口径独立成区（v4 是 chip 筛选）；行内快捷操作——认领（vuln.claim，显示 claimed_by/operator 与时间）、确认（弹证据要求提示——vuln_confirm 的 evidence required 错误 hint 引导）、驳回（verdict 下拉：false_positive/dup/ignored）；认领后行显示认领者徽章；信号/候选双区 KPI 分列 |
 | 资产 | `sec-domain-asset/dashboard-view.js` | `asset.list`、`asset.overview`（域名族/评级分布）、`asset.get`（钻取）、`asset.family` | 无（资产写走 asset_grade 脚本链，看板只读——级别列展示 grade 结果）| 域名族视图与深挖队列（asset.deep_queue）入口；跨视图跳链保留（pickHost/jumpFindings）|
 | 接口 | `sec-domain-endpoint/dashboard-view.js` | `endpoint.hosts`（按主机分组）、`endpoint.list`（单主机明细）| 无 | 参数队列状态展示（endpoint 域查询）；越权矩阵入口（endpoint.matrix，04 域定稿）|
-| 事实 | `sec-domain-fact/dashboard-view.js` | `fact.search`（分页 + 生命周期 facet）、`fact.stats`、`fact.bb_get`（黑板区）、`fact.graph` | `fact.correct`、`fact.deprecate` | note 速记默认隐藏开关保留；生命周期 facet 对齐 memcore 状态（cooling/candidate 打标可见）|
-| 任务 | `sec-domain-task/dashboard-view.js` | `task.list`、`task.scheduled_list`、`task.runs`、`dashboard.workspaces/sessions`（三分区：定时卡片/一次性队列/执行历史）| `task.create/run_now/cancel/block/resume/schedule` | 任务链（plan_chain/task_chain 能力图）展示入口（exec 域查询）；会话跳链（ctx.sessions.open）保留 |
-| 知识 | `sec-domain-know/dashboard-view.js` | `know.exp_list`（含 kind=playbook）、`know.kb_list/kb_read`、`know.rule_list/rule_read`、`fact.overview`、`know.knowledge_coverage`（缓存卡）、`dashboard.memcore` | `know.exp_feedback/promote/deprecate/update/gate_export` | 六类型知识全景图保留（一类一位一工具 + 开局三步检索顺序）；覆盖缺口交叉表刷新按钮（refresh 参数）|
+| 事实 | `sec-domain-fact/dashboard-view.js` | `fact.search`（分页 + 生命周期 facet）、`fact.stats`、`fact.bb.read`（黑板区）、`fact.graph` | `fact.correct`、`fact.deprecate` | note 速记默认隐藏开关保留；生命周期 facet 对齐 memcore 状态（cooling/candidate 打标可见）|
+| 任务 | `sec-domain-task/dashboard-view.js` | `task.list`、`task.scheduled`、`task.runs`、`dashboard.workspaces/sessions`（三分区：定时卡片/一次性队列/执行历史）| `task.create/run_now/cancel/block/resume/schedule` | 任务链（plan_chain/task_chain 能力图）展示入口（exec 域查询）；会话跳链（ctx.sessions.open）保留 |
+| 知识 | `sec-domain-know/dashboard-view.js` | `know.exp_list`（含 kind=playbook）、`know.kb_list/kb_read`、`know.rule_list/rule_read`、`fact.overview`、`know.coverage`（缓存卡）、`dashboard.memcore` | `know.exp_feedback/promote/deprecate/update/approve_export/revoke_export` | 六类型知识全景图保留（一类一位一工具 + 开局三步检索顺序）；覆盖缺口交叉表刷新按钮（refresh 参数）|
 | 报告 | `sec-domain-report/dashboard-view.js` | `report.list`（索引直出，**项目/关键字/日期筛选**）、`report.read`（Modal）| `report.build`（生成按钮）| 列表元数据从索引来（severity 分布/total 可展示）；submissions 草稿区（kind=submission_draft）|
 | 审批 | `sec-domain-approval/dashboard-view.js` | `approval.list`（pending 前置 + 判据 chip + 历史）| `approval.decide` | 待审批数进 tab 徽章（保留）；判据 chip 渲染改消费 approval 域 payload schema |
-| 授权 | `sec-domain-authz/dashboard-view.js` | `scope.list`、`scope.program_list`、`dashboard.workspaces` | `scope.grant/set_rules/revoke`、`scope.bind_workspace` | 顶部跳转条（待审批候选 → 审批 tab）保留；表单按 grant/set_rules 字段拆分提交；scope.yml 同步提示（spool sync 回收纪律提示保留）|
+| 授权 | `sec-domain-authz/dashboard-view.js` | `scope.list`、`scope.program_list`、`dashboard.workspaces` | `scope.grant/rules.apply/revoke`、`program.bind_workspace` | 顶部跳转条（待审批候选 → 审批 tab）保留；表单按 grant/rules_apply 字段拆分提交；scope.yml 同步提示（spool sync 回收纪律提示保留）|
 | 审计 | **壳自带**（消费总线查询，不属业务域）| `bus.audit_tail`（domain/cmd/actor/operator/session/时间窗过滤）| 无 | **v5 审计增强展示**：actor 维度（model session vs dashboard operator）可过滤——写操作审计增强（operator 身份）的消费面；deprecated_use 标记高亮 |
 
 ### 1.8 外部调用示例
@@ -308,7 +308,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在 RpcProjector（�
 | `dsh-plugin-sec-dashboard.client.js` 全文 2628 行 | 十视图单体 | §2.1 拆分表逐函数映射（12 个目标文件）|
 | `dsh-plugin-sec-dashboard.index.js`（14 行）| 宿主 no-op loader entry | 壳插件宿主半面（不变）|
 | `dsh-plugin-sec-suite.dashboard-rpc.js` L188-625 `handleDashboardRpc` | 53 case 分发 | **整体退役**：41 自动投影（RpcProjector）+ 4 拆分映射（视图层分派）+ 5 壳聚合端点 + 3 收编（audit→总线、knowledgeCoverage→know、reports 解析→report 索引）|
-| 同上 L150-187 | knowledgeCoverage 缓存/脚本定位/spawn 逻辑 | know 域 `knowledge_coverage` 查询实现 |
+| 同上 L150-187 | knowledgeCoverage 缓存/脚本定位/spawn 逻辑 | know 域 `know_coverage` 查询实现 |
 | 同上 L39-135 | planChain/taskChain（能力图 BFS）| exec 域查询（10-exec.md 契约），壳任务视图引用 |
 | `sec-dashboard-plugin-setup.sh` | 单包组装 | 壳三文件组装 + 各域 setup 脚本视图资源归位（§2.1）|
 | `dsh-plugin-theme-silksong.*` | 全局主题 | **零改动**（theme registry 机制与壳/视图正交）|
@@ -322,7 +322,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在 RpcProjector（�
 | `findings` / `findingGet` | `vuln.list` / `vuln.get` | 参数名兼容（severity/status/program_id/q/noise→谓词映射）|
 | `findingUpdate` | 按语义分派（§1.7 #35）| status 参数驱动：confirmed→vuln.confirm 等；**new→报 E_STATE + hint 引导**（回退已删除）|
 | `taskSetStatus` | `task.block` / `task.resume` | status 参数驱动 |
-| `scopeSaveProgram` | `scope.grant` + `scope.set_rules` | 表单字段分派（含 rules 字段时两笔命令顺序执行）|
+| `scopeSaveProgram` | `scope.grant` + `scope.rules.apply` | 表单字段分派（含 rules 字段时两笔命令顺序执行）|
 | 其余 47 个 | 同名域化（`stats`→`dashboard.stats` 等）| 直通映射 |
 
 兼容层使用量进 audit（deprecated_use 口径）；删除走废弃三段式（7 天零使用验收）。**client.js 拆分与端点名切换解耦**：新壳组件从第一天就调新端点名，兼容层只服务未迁移的旧组件/外部队列脚本。
