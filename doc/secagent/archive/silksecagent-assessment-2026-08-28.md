@@ -1,3 +1,10 @@
+> ⚠️ **历史归档文档（2026-09-06 起过期，仅供回溯查看）**
+> 本文档描述的是 SilkSecAgent **v4.x 单体架构**的设计/状态/研究，已被 **v5 领域插件化架构**全面取代。
+> 当前设计真相源：[`../v5/README.md`](../v5/README.md)（总设计）+ [`../v5/00-conventions.md`](../v5/00-conventions.md)（全局契约约定）。
+> 本文件原文如下，未做任何内容修改。
+
+---
+
 # SilkSecAgent 体系全面评估报告
 
 > ⚠️ **后续状态（2026-08-28 当日）**：本报告指出的问题已于同日 **P15 纪律落地批 + P16 产出转化批**实施修复——流程守卫（机器强制台账/卡记录/交接包）、findings 噪声闸门（314 条 info 隔离）、资产准入（全量分级 79,155/79,258）、三断链修复（task_runs/session_id/调度重锚定 drift=0）、ops 健康度五指标、VC-034 卡、视觉分诊、Slice 化 objective、提交草稿。§1 记分卡为**修复前快照**，不再反映现状；修复明细见 README.md 里程碑日志与 `silksecagent-system-complete.md` §4.1.5。仍有效的遗留项：H-001（公网 NS 委派，人工）、H-002（SRC 注册账号，人工）、S6（Authelia）、egress-guard/chicheng-push（PENDING）。

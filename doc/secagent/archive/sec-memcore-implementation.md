@@ -1,3 +1,10 @@
+> ⚠️ **历史归档文档（2026-09-06 起过期，仅供回溯查看）**
+> 本文档描述的是 SilkSecAgent **v4.x 单体架构**的设计/状态/研究，已被 **v5 领域插件化架构**全面取代。
+> 当前设计真相源：[`../v5/README.md`](../v5/README.md)（总设计）+ [`../v5/00-conventions.md`](../v5/00-conventions.md)（全局契约约定）。
+> 本文件原文如下，未做任何内容修改。
+
+---
+
 # SilkSecAgent 记忆基架 + 自学习 实施总纲
 
 > ⚠️ **历史快照（2026-09-05 标注）**：本文冻结于 2026-09-01，此后 v4.5/v4.6 演进未回写——已知过时点：sweep/vault 导出周期为每 6h（非每日）；**playbooks 已并入 exp_cards（v4.6 合并①，kind=playbook + runs/successes 列，playbooks 表已清空）**；kb_docs 复验区间实为 7~180 天且 v4.6 新增 56 篇 rules curated 行免复验；黑板已回归纯环境层（快照键迁 facts，v4.6 合并②）；生命周期列实为 mem_class/status/status_at/scope/justification/exportable（blackboard 无 revalidate_by）；exp_feedback 为四值信号（useful/adopted/wrong/outdated）。**现状一律以 [silksecagent-system-complete.md](silksecagent-system-complete.md) §4.2/§5.3-§5.4 与代码为准**，正文保留作实施史。

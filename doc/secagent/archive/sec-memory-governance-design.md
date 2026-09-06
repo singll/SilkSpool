@@ -1,3 +1,10 @@
+> ⚠️ **历史归档文档（2026-09-06 起过期，仅供回溯查看）**
+> 本文档描述的是 SilkSecAgent **v4.x 单体架构**的设计/状态/研究，已被 **v5 领域插件化架构**全面取代。
+> 当前设计真相源：[`../v5/README.md`](../v5/README.md)（总设计）+ [`../v5/00-conventions.md`](../v5/00-conventions.md)（全局契约约定）。
+> 本文件原文如下，未做任何内容修改。
+
+---
+
 # SilkSecAgent 统一记忆基架设计（Memory Substrate）
 
 > ⚠️ **历史设计快照（2026-09-05 标注）**：本设计定稿于 2026-08-25，部分条款已被后续演进取代——已知偏差：原语实为**五个**（v1.1 新增 recordSignal）；评分列仅语义层（exp_cards/kb_docs），非每张记忆表；R6 justification≥10 字仅语义层硬要求（工作/情景层缺省记 `auto:default`）；**R7 timeline 只追加未在代码实现**；R3/R4 参数分层化（facts ephemeral 1~30 天、kb_docs durable 复验 7~180 天）；neg_fb≥3 是 active→cooling 而非直接 archived；AGENTS.md 重写随 sweep 每 6h；v4.5/v4.6 演进（三合并/curated 免复验/知识体检/检索三步）见 [silksecagent-system-complete.md](silksecagent-system-complete.md) §5.3-§5.4。正文保留作决策记录。
