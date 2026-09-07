@@ -205,6 +205,10 @@ templates:
   - migrate-blackboard-to-facts.js
   # --- v5 Phase 0 候选池噪声帽归位（31 条 confirmed+noise=1 僵尸 → noise=0，幂等）---
   - p-v5-0-fix-noise.js
+  # --- v5 Phase 1 正式版数据迁移（复跑 Phase 0 幂等 + ensureCol 6 列 2 索引 + updated_at 回填）---
+  - p-v5-1-migrate-vuln.js
+  # --- v5 Phase 1 试点验收（三路写同一候选 / audit actor 可区分 / 幂等重放，临时库隔离）---
+  - p-v5-2-pilot-accept.js
   # --- v5 领域总线（Phase 1.1：Registry/CommandGateway/QueryGateway/EventOutbox+Dispatcher/
   #     ToolProjector/RpcProjector/幂等/audit v5/别名；全部域插件宿主）---
   - dsh-plugin-sec-domain-bus.js
