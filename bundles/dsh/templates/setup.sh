@@ -208,6 +208,13 @@ if [ -f "$BASE_DIR/sec-memcore-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-memcore-plugin-setup.sh" || warn "记忆治理插件安装失败（不影响 DSH 主程序）"
 fi
 
+# -------------------- 8.55 v5 领域总线插件（sec-domain-bus：全部域的宿主） --------------------
+# 总线是 v5 域插件化架构的底座：契约测试不过 = setup 中止（fail-closed，不用 || warn 兜底）。
+# 注意：必须排在所有 sec-domain-* 插件组装之前 + reconcile_service 之前。
+if [ -f "$BASE_DIR/sec-domain-bus-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-domain-bus-plugin-setup.sh"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"

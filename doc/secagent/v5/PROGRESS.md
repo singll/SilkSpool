@@ -16,10 +16,11 @@
 |---|---|---|---|
 | Phase 0 | 候选池缺陷热修：updateFinding noise 联动 + KPI 口径 + line229 守卫 + 数据修复脚本 | `4ae57cb` | ✅ 信号面 10→41，候选待消化 2，服务 active |
 | 文档定稿 | 00-18 全量定稿 + 4 项关键决策落地（audit fail-closed / phase 子集 / 维持 00-18 / bus 暴露口径） | `2e593e9` | ✅（纯文档，无线上改动） |
+| **1.1 总线骨架** | `@silksec/sec-domain-bus`：DomainRegistry（R1-R7 校验）/ CommandGateway（11 段管线）/ QueryGateway / EventOutbox+Dispatcher / ToolProjector / RpcProjector / 幂等三级键 / audit（fail-closed）/ 别名表 + 自举存储（idempotency/bus_meta/event_outbox/bus_subscription）+ sec-bus-cli | 本次提交 | ✅ 契约测试 33/33 全绿（本地 + csai setup 内双跑）；服务 active；总线域 registered；audit 可写；events jsonl 正常；调度循环无回归 |
 
 ## 三、待办节点（Phase 1，按顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
-- [ ] **1.1 `@silksec/sec-domain-bus` 骨架**：DomainRegistry / CommandGateway / QueryGateway / EventOutbox+Dispatcher / ToolProjector / RpcProjector / 幂等 / audit（fail-closed）/ 别名表 + 自举存储（idempotency/bus_meta/event_outbox/bus_subscription）。契约测试矩阵见 01-bus §2.8。
+- [x] **1.1 `@silksec/sec-domain-bus` 骨架**：DomainRegistry / CommandGateway / QueryGateway / EventOutbox+Dispatcher / ToolProjector / RpcProjector / 幂等 / audit（fail-closed）/ 别名表 + 自举存储（idempotency/bus_meta/event_outbox/bus_subscription）。契约测试矩阵见 01-bus §2.8。**✅ 已完成**
 - [ ] **1.2 `@silksec/sec-domain-vuln` + `sec-backend-vuln-sqlite`**：从 asset-db.js 平移拆语义动词（register_signal/register_candidate/confirm/reject/submit/note/claim/release/verify_replay/attach_fgs + vuln_list/get/candidates/stats 等）。契约测试见 02-vuln §2.2。
 - [ ] **1.3 双投影接线 + 兼容别名**：ToolProjector 注册 `vuln_*` 工具；RpcProjector 注册 `vuln.*` RPC；dashboard-rpc 的 findingUpdate/findingGet/findings case 切 `vuln.*`；别名 finding_add/finding_query/finding_update/submission_draft → 新动词。
 - [ ] **1.4 Phase 0 正式版 + 试点验收**：p-v5-0-fix-noise.js 正式入 bundle；试点验收（三路写同一候选 / audit 三 actor 可区分 / 幂等重放 replay:true / 连续 3 天 03:00/04:00 任务正常收尾）。

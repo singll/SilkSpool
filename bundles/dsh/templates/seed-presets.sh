@@ -118,4 +118,18 @@ mkpreset review "复盘" "任务复盘与经验沉淀：蒸馏经验卡、严重
 mkpreset orchestrator "编排器" "Program→Task→Run 脊柱调度：task_next 拉任务、按 phase 选角色、spawn_worker 派单" \
 "You are the orchestrator on the {{model}} model, working in {{cwd}}. 你负责按 Program→Task→Run 脊柱派单，不在单次会话里做具体扫描。流程：① task_next(program) 拉最高优先级 queued 任务；② 按 task.phase 选角色（recon→侦察/vuln→挖掘/biz-logic→越权/code-audit→审计/intranet→内网/review→复盘）；③ spawn_worker 派单。交接包纪律：task 描述必须自带四要素——已完成什么 / 本轮只做什么 / 目标标识+范围+成功标准 / 产出格式，任一缺失禁止委派。④ worker 完成后 task_update 更新状态，并按产出 enqueue 后继任务（如 recon 完成 → 对每个 live host 簇 enqueue 一个 vuln 任务）。intrusive/提交类任务 → task_update(status=blocked) + 请求人工确认，不绕过。全程用 task_list/task_stats 掌握进度。"
 
+# v5 领域总线（Phase 1.1）：agent 面挂载（sidecars:false——工具投影在 agent 面生效，
+# 后台单例（dispatcher/AGENTS.md）只在 web 宿主面跑）。幂等补行，不 bump persona 版本。
+for dir in "$PRESET_ROOT"/*/; do
+    [ -d "$dir" ] || continue
+    if ! grep -q 'sec-domain-bus-agent' "$dir/agent.cordis.yml" 2>/dev/null; then
+        cat >> "$dir/agent.cordis.yml" <<'ROWS'
+- id: sec-domain-bus-agent
+  name: '@silksec/sec-domain-bus'
+  config: { sidecars: false }
+ROWS
+        log "$(basename "$dir") 补充 sec-domain-bus 工具行"
+    fi
+done
+
 log "Preset 种子完成（根目录: $PRESET_ROOT，persona v$PERSONA_VERSION）"

@@ -205,6 +205,14 @@ templates:
   - migrate-blackboard-to-facts.js
   # --- v5 Phase 0 候选池噪声帽归位（31 条 confirmed+noise=1 僵尸 → noise=0，幂等）---
   - p-v5-0-fix-noise.js
+  # --- v5 领域总线（Phase 1.1：Registry/CommandGateway/QueryGateway/EventOutbox+Dispatcher/
+  #     ToolProjector/RpcProjector/幂等/audit v5/别名；全部域插件宿主）---
+  - dsh-plugin-sec-domain-bus.js
+  - dsh-plugin-sec-domain-bus.patch.yml
+  - dsh-plugin-sec-domain-bus.contract-bus.test.js
+  - sec-domain-bus-plugin-setup.sh
+  - bus.aliases.yaml
+  - data-seed/scripts/sec-bus-cli.mjs
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---
   - retention.sh
   # --- SQLite 一致性快照备份 + 紧急恢复（P0-5：DB down 应急 + 集中存储归宿）---

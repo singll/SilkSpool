@@ -159,6 +159,12 @@ if ! (cd "$APP_DIR" && DSH_HOME="$DATA_DIR" node "$DSH_BIN" --profile web --dump
     rollback; exit 1
 fi
 log "深冒烟通过：sec-cli-adapter 已进 web 组合树"
+# v5 领域总线（Phase 1.1 起）：总线不在组合树 = 全部域插件无宿主，同样视为平台残废
+if ! (cd "$APP_DIR" && DSH_HOME="$DATA_DIR" node "$DSH_BIN" --profile web --dump-config 2>/dev/null | grep -q 'sec-domain-bus'); then
+    err "深冒烟失败：--dump-config 未见 sec-domain-bus（DSH 升级破坏了领域总线加载）"
+    rollback; exit 1
+fi
+log "深冒烟通过：sec-domain-bus 已进 web 组合树"
 
 NEW_VER="$(cur_version)"
 # 升级后重放客户端补丁：pnpm install 会把设置镜像补丁冲掉（见 settings-mirror-patch.sh）
