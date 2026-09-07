@@ -213,6 +213,12 @@ templates:
   - sec-domain-bus-plugin-setup.sh
   - bus.aliases.yaml
   - data-seed/scripts/sec-bus-cli.mjs
+  # --- v5 vuln 域插件（Phase 1.2 试点域：候选池状态机/证据链/提交回流，契约 02-vuln.md）---
+  - dsh-plugin-sec-domain-vuln.js
+  - dsh-plugin-sec-domain-vuln.patch.yml
+  - dsh-plugin-sec-domain-vuln.contract-vuln.test.js
+  - dsh-plugin-sec-backend-vuln-sqlite.js
+  - sec-vuln-domain-plugin-setup.sh
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---
   - retention.sh
   # --- SQLite 一致性快照备份 + 紧急恢复（P0-5：DB down 应急 + 集中存储归宿）---

@@ -333,8 +333,9 @@ export function validateManifestLint(manifest) {
     if (Array.isArray(schema.items)) schema.items.forEach((it, i) => paramCheck(it, `${prefix}[${i}]`))
     else if (isPlainObject(schema.items)) paramCheck(schema.items, `${prefix}[]`)
   }
+  // R3 参数名 lint：只约束命令 schema（状态机私有——写侧禁 status/to/state）。
+  // 查询 params 是可见域谓词（宪法 §十一.4：谓词是查询参数），按 status 等过滤合法，豁免。
   for (const [full, def] of Object.entries(commands)) paramCheck(def?.schema, full)
-  for (const [full, def] of Object.entries(queries)) paramCheck(def?.params, full)
 
   for (const [nm, edef] of Object.entries(events)) {
     if (!isPlainObject(edef)) errs.push(`事件 ${nm} 定义缺失`)
@@ -425,7 +426,7 @@ export function validateAliases(doc) {
 // 幂等键构造（natural / explicit / auto）
 // ---------------------------------------------------------------------------
 
-function buildIdempotencyKey(domain, verb, cmdDef, args, explicitKey = null) {
+function buildIdempotencyKey(domain, verb, cmdDef, args, explicitKey = null, ctx = {}) {
   if (explicitKey) {
     return { key: String(explicitKey), argsForHash: omitKey(args) }
   }
@@ -440,7 +441,13 @@ function buildIdempotencyKey(domain, verb, cmdDef, args, explicitKey = null) {
     if (k === 'idempotency_key') continue
     if (pick.length ? pick.includes(k) : true) core[k] = args[k]
   }
-  return { key: `${domain}:${verb}:${sha1(canonicalStringify(core))}`, argsForHash: omitKey(args) }
+  let key = `${domain}:${verb}:${sha1(canonicalStringify(core))}`
+  // 认领类动词（claim/release）的幂等键必须含调用面身份（session_id/operator）——
+  // 否则不同会话认领同一对象会键碰撞互相 replay（02-vuln C7「finding_id+认领者」）
+  for (const cf of cmdDef.idempotent_ctx_fields || []) {
+    key += `|${cf}=${String(ctx[cf] ?? '')}`
+  }
+  return { key, argsForHash: omitKey(args) }
 }
 function omitKey(args) {
   const out = { ...(args || {}) }
@@ -874,7 +881,7 @@ export function createBus(opts = {}) {
     }
 
     // ⑥ 幂等预检（命中直接返回首次结果，不再跑不变量）
-    const { key, argsForHash } = buildIdempotencyKey(domain, verb, cmdDef, args, explicitIdemKey)
+    const { key, argsForHash } = buildIdempotencyKey(domain, verb, cmdDef, args, explicitIdemKey, ctx)
     const argsHash = sha1(canonicalStringify(argsForHash))
     let hit = null
     try { hit = plain(db.prepare('SELECT * FROM idempotency WHERE idempotency_key=?').get(key)) } catch { /* degraded */ }
@@ -943,8 +950,8 @@ export function createBus(opts = {}) {
           const code = isAudit ? 'E_BUS_AUDIT_FAILED' : (isStrong ? 'E_BUS_STRONG_LINK_FAILED' : (domainErr || 'E_CONFLICT'))
           auditBestEffort({ ts: now(), kind: 'command', domain, cmd: verb, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, idempotency_key: key, replay: false, target: null, before: null, after: null, result: 'failed', error_code: code, duration_ms: now() - started, backend: 'sqlite-local' })
           if (isStrong) return errEnvelope(domain, verb, code, `强联动订阅者失败：${e?.message}`, '修复联动问题后原样重试（幂等保护在）', true, key)
-          const retryable = code === 'E_CONFLICT'
-          const hint = isAudit ? '审计通道不可写，命令已回滚' : (retryable ? '并发写冲突，退避重试（幂等表保证安全）' : e?.hint || null)
+          const retryable = code === 'E_CONFLICT' || e?.retryable === true
+          const hint = isAudit ? '审计通道不可写，命令已回滚' : (code === 'E_CONFLICT' ? '并发写冲突，退避重试（幂等表保证安全）' : (e?.hint || null))
           return errEnvelope(domain, verb, code, e?.message || '命令执行失败', hint, retryable, key)
         } finally { scope.inTxn = false }
       }
@@ -961,6 +968,7 @@ export function createBus(opts = {}) {
         const err = new Error(e?.message || '域命令执行失败')
         err.code = e?.code || 'E_INTERNAL'
         err.hint = e?.hint || null
+        err.retryable = !!e?.retryable
         throw err
       }
       if (!handlerResult || typeof handlerResult !== 'object') throw new Error('域命令 handler 必须返回 {data, events?}')

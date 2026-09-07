@@ -1,0 +1,4 @@
+# silksec-sec-domain-vuln bundle layer
+- insert:
+    - id: sec-domain-vuln
+      name: '@silksec/sec-domain-vuln'

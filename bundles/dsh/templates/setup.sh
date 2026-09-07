@@ -215,6 +215,12 @@ if [ -f "$BASE_DIR/sec-domain-bus-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-domain-bus-plugin-setup.sh"
 fi
 
+# -------------------- 8.56 v5 vuln 域插件（试点域：候选池状态机 + 证据链） --------------------
+# 依赖总线已挂载（顺序在 8.55 之后）；契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-vuln-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-vuln-domain-plugin-setup.sh"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"

@@ -223,7 +223,7 @@ execute: async (args, exec) => gateway.dispatch('vuln', 'confirm', args, {
 | 1 | **actor 注入不可伪造** | actor 由调用面注入：工具回调固定 `actor:'model'+session_id`；RPC handler 固定 `actor:'dashboard'+operator`；脚本 proposal 由宿主侧后处理固定 `actor:'script'+run_id`；CLI 通道固定 `actor:'human'`。调用方参数里的 actor 字段**物理不存在**——manifest schema `additionalProperties:false`（R1 lint）+ R3 参数名 lint，`{actor:'dashboard'}` 之类直接 E_SCHEMA | 契约测试：八 actor × 伪造参数各一例 |
 | 2 | **沙箱 owns × sandbox 交叉断言** | setup.sh §E：各域 manifest `owns.files/tables` 推导出物理路径（表→asset-graph.db；files→data/ 下路径），逐一断言 ∉ bwrap `--bind`（可写）白名单——**域 owned 数据对沙箱不可写**。tools.d manifest 的 `store` 直写字段废止，改为 `produces_proposal: {domain}.{verb}` | setup 冒烟中断条件；retention 后每日 data-quality 增项复跑 |
 | 3 | **脚本 proposal 不落库** | 治理/采集脚本（grade_assets / vision_triage / l2_collect）在沙箱内只产建议文件（runDir 可写）；落库唯一路径=宿主侧读 proposal → `dispatch(actor:'script')`（01 §1.8 第三例） | audit 断言：脚本类 run_id 的落库记录 kind=command 且 actor=script（不再有绕过记录） |
-| 4 | **状态机私有** | 模型无 `update X SET status` 类自由动词：① manifest R2 禁用词（update/set/save/modify）② R3 参数名 lint（status/to/state 不许出现在任何 schema）③ C 类动词 agent_note 写明合法起点。三层叠加后"自由态流转"既调不到也传不进 | bus 注册期校验（R2/R3）+ eval EC-01 用例 |
+| 4 | **状态机私有** | 模型无 `update X SET status` 类自由动词：① manifest R2 禁用词（update/set/save/modify）② R3 参数名 lint（status/to/state 不许出现在**任何命令 schema**；查询 params 是可见域谓词，豁免——宪法 §十一.4）③ C 类动词 agent_note 写明合法起点。三层叠加后"自由态流转"既调不到也传不进 | bus 注册期校验（R2/R3）+ eval EC-01 用例 |
 | 5 | **挂载矩阵 fail-closed** | §1.6 五条规则；矩阵是注册期决策不是运行期检查——model 不可用的动词模型**根本看不见**（工具不在 DSH 工具列表里） | `bus_status` 的 commands 计数 vs 实际注册工具数差值=被滤数量，setup §I 冒烟断言 |
 
 ### 2.3 事务与联动（工具面视角）

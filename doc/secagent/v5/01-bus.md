@@ -292,6 +292,8 @@ CREATE TABLE IF NOT EXISTS bus_subscription (
 | `explicit` | 调用方传 `idempotency_key`（schema 里是可选参数，网关剥离后不进域实现） | `task:create:dedupe:9b1c...`（spawn_worker 链） |
 | `auto` | `{domain}:{verb}:{sha1(排序后 args 核心 fields)}` | `vuln:note:auto:c7d...` |
 
+> `auto` 策略可选 `idempotent_ctx_fields`（如 `session_id`/`operator`）：把调用面身份折进键尾（`|session_id=...`），用于认领类动词（vuln claim/release）——不同会话认领同一对象键不碰撞，同会话重放仍命中 replay。身份来自网关 ctx（actor 注入同源），域实现不可伪造。
+
 保留窗口：7 天或 10,000 条 LRU（`bus_prune` / 每日系统任务执行）。命中同 key 同 args_hash → 返回首次信封 + `replay: true`；同 key 异 args_hash → `E_IDEMPOTENT_CONFLICT`（hint："幂等键 {key} 已绑定不同参数；若是新意图请换 key，若是重放请原样重发参数"）。
 
 **事件文件**：`data/events/{domain}.jsonl`，每行一个事件信封（宪法 §八.2）。轮转 50MB 保一代，保留 90 天（retention.sh 增段）。
@@ -346,7 +348,7 @@ backend: repository-v1
 |---|---|---|
 | R1 | manifest 符合上述 schema（含 additionalProperties:false、agent_note 预算） | 拒载 + `bus.domain.rejected` 事件 |
 | R2 | 禁用词检查：动词名含 `update/set/save/modify` 拒绝（宪法 §二） | 拒载 |
-| R3 | 参数名 lint：任何 schema 含 `status` / `to` / `state` 参数名拒绝（状态机私有——17 §2.2 负向第 4 条的同源断言） | 拒载 |
+| R3 | 参数名 lint：**命令** schema 含 `status` / `to` / `state` 参数名拒绝（状态机私有——写侧禁传目标状态；查询 params 是可见域谓词按 status 过滤合法，豁免——17 §2.2 负向第 4 条同源） | 拒载 |
 | R4 | owns 唯一性：tables/files 与已注册域交叉 | 拒载 + `E_BUS_DOMAIN_OWNS_CONFLICT` 进事件 detail（**重复注册冲突**：同 `domain` 二次 register 也在此拒——幂等重注册（同 version 同内容）返回已注册，静默通过） |
 | R5 | 引用完整性：commands.events / invariants / subscribes.handler 悬空引用 | 拒载 |
 | R6 | **域版本兼容检查**：`version` 必须 ≤ 总线支持的 manifest schema 大版本；且 ≥ bus_meta 记录的该域已见 version（**版本回退拒绝**——防"setup.sh 硬钉旧版本"式混版，DSH 0.1.2 升级教训的泛化） | 拒载 |
