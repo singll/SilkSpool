@@ -16,7 +16,7 @@
 |---|---|---|---|
 | Phase 0 | 候选池缺陷热修：updateFinding noise 联动 + KPI 口径 + line229 守卫 + 数据修复脚本 | `4ae57cb` | ✅ 信号面 10→41，候选待消化 2，服务 active |
 | 文档定稿 | 00-18 全量定稿 + 4 项关键决策落地（audit fail-closed / phase 子集 / 维持 00-18 / bus 暴露口径） | `2e593e9` | ✅（纯文档，无线上改动） |
-| **1.1 总线骨架** | `@silksec/sec-domain-bus`：DomainRegistry（R1-R7 校验）/ CommandGateway（11 段管线）/ QueryGateway / EventOutbox+Dispatcher / ToolProjector / RpcProjector / 幂等三级键 / audit（fail-closed）/ 别名表 + 自举存储（idempotency/bus_meta/event_outbox/bus_subscription）+ sec-bus-cli | 本次提交 | ✅ 契约测试 33/33 全绿（本地 + csai setup 内双跑）；服务 active；总线域 registered；audit 可写；events jsonl 正常；调度循环无回归 |
+| **1.1 总线骨架** | `@silksec/sec-domain-bus`：DomainRegistry（R1-R7 校验）/ CommandGateway（11 段管线）/ QueryGateway / EventOutbox+Dispatcher / ToolProjector / RpcProjector / 幂等三级键 / audit（fail-closed）/ 别名表 + 自举存储（idempotency/bus_meta/event_outbox/bus_subscription）+ sec-bus-cli | `f6eef85` | ✅ 契约测试 33/33 全绿（本地 + csai setup 内双跑）；服务 active；总线域 registered；audit 可写；events jsonl 正常；调度循环无回归 |
 
 ## 三、待办节点（Phase 1，按顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
