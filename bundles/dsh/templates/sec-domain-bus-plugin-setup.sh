@@ -83,8 +83,8 @@ install_cli() {
 
 # -------------------- §D 别名表校验（语法/环/自环；目标存在性留到注册期检查） --------------------
 validate_aliases() {
-    "$NODE" -e '
-const fs = require("fs")
+    "$NODE" --input-type=module -e '
+import * as fs from "node:fs"
 const f = process.argv[1]
 if (!fs.existsSync(f)) { console.log("别名表不存在（空别名表）"); process.exit(0) }
 const text = fs.readFileSync(f, "utf8")
@@ -96,9 +96,14 @@ if (doc !== null) {
 } else {
   const m = text.match(/^aliases:\s*\{\}\s*$/m)
   const md = text.match(/^dispatch_aliases:\s*\{\}\s*$/m)
-  if (!m && !md) {
-    // 非空：交给总线运行时解析校验（bus.index 提供 validateAliases）
-    const mod = require("/opt/silkspool/dsh/plugins/sec-domain-bus/index.js")
+  if (!m || !md) {
+    // 非空：交给总线运行时解析校验（index.js 提供 loadAliases/validateAliases；ESM 用 import）
+    const mod = await import("/opt/silkspool/dsh/plugins/sec-domain-bus/index.js")
+    if (typeof mod.loadAliases !== "function") errs.push("总线插件未导出 loadAliases")
+    else {
+      const res = mod.loadAliases(f)
+      if (!res.ok) errs.push(...res.errors)
+    }
   }
 }
 if (errs.length) { console.error("别名表非法: " + errs.join("; ")); process.exit(1) }

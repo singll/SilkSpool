@@ -357,15 +357,85 @@ export function validateManifestLint(manifest) {
 // 别名（aliases 静态 + dispatch_aliases 分派型）
 // ---------------------------------------------------------------------------
 
+// 分派别名 router 契约：入参 (args, ctx)（ctx={actor, session_id, getFinding}），
+// 返回 { verb, args, domain?, actor_bypass? } 或 { error: {code,message,hint,retryable} }。
+// domain 缺省由 DOMAIN_OF_ROUTER 推导（别名表可用 domain: 显式覆盖）。
+const DOMAIN_OF_ROUTER = {
+  status_router: 'vuln',
+  finding_add_router: 'vuln',
+  query_visibility_router: 'vuln',
+  task_status_router: 'task',
+}
+
 const BUILTIN_ROUTERS = {
-  status_router(args) {
+  // finding_update 旧自由态动词 → 按 status 语义分派（02-vuln §3.2）
+  //   当前值+仅 note→note；confirmed→confirm（缺 evidence 收紧 E_EVIDENCE_REQUIRED）；
+  //   fp/dup/ignored→reject（status→verdict）；submitted→submit；accepted→submit(vendor_status=accepted)；
+  //   new 对非 new 行→E_STATE（回退）。
+  async status_router(args, ctx) {
     const st = args.status
     const rest = { ...args }
     delete rest.status
-    if (st === 'confirmed') return { verb: 'confirm', args: rest }
-    if (st === 'false_positive' || st === 'dup' || st === 'ignored') return { verb: 'reject', args: { ...rest, verdict: st } }
+    // v4 参数名归一：finding_update 旧工具用 id，语义动词用 finding_id
+    if (rest.id !== undefined && rest.finding_id === undefined) {
+      rest.finding_id = rest.id
+      delete rest.id
+    }
+    let row = null
+    if (ctx && typeof ctx.getFinding === 'function' && Number.isInteger(Number(rest.finding_id))) {
+      try { row = await ctx.getFinding(rest.finding_id) } catch { row = null }
+    }
+    const onlyNote = !!(rest.note && rest.bounty === undefined && rest.vendor_status === undefined && rest.evidence === undefined)
+    if (row && row.status === st) {
+      if (onlyNote) return { verb: 'note', args: rest }
+      if (st === 'new') {
+        return { error: { code: 'E_STATE', message: 'finding_update status=new 无变更可做', hint: '仅补充证据用 vuln_note（带 note）；候选回退不合法', retryable: false } }
+      }
+    }
+    if (st === 'new') {
+      return { error: { code: 'E_STATE', message: 'finding_update status=new 是回退，不合法', hint: '候选回退请用语义动词；仅补充证据用 vuln_note', retryable: false } }
+    }
+    if (st === 'confirmed') {
+      if (!String(rest.evidence || '').trim()) {
+        return { error: { code: 'E_EVIDENCE_REQUIRED', message: 'finding_update→confirm 需要 evidence 参数', hint: 'confirm 是收紧后的语义动词：必须附真实存在的证据引用（run_id/evidence 路径/oob），无证据不结论', retryable: false } }
+      }
+      return { verb: 'confirm', args: rest }
+    }
+    if (st === 'false_positive' || st === 'dup' || st === 'ignored') {
+      const rej = { ...rest, verdict: st }
+      if (!String(rej.reason || '').trim() && String(rej.note || '').trim()) rej.reason = rej.note
+      return { verb: 'reject', args: rej }
+    }
     if (st === 'submitted') return { verb: 'submit', args: rest }
-    return { verb: 'note', args: rest }
+    if (st === 'accepted') return { verb: 'submit', args: { ...rest, vendor_status: 'accepted' } }
+    return { error: { code: 'E_STATE', message: `finding_update 非法流转 status=${st}`, hint: '合法子集：confirmed（附 evidence）/false_positive/dup/ignored/submitted/accepted/当前值+note', retryable: false } }
+  },
+  // finding_add 旧工具名 → 按 actor 分派（02-vuln §3.2）
+  //   model/human → register_signal（五要素硬校验）；webhook/script → register_candidate（机器宽容路径）；
+  //   severity=info 一律降级候选（v4 行为保留，仅别名期）；缺 severity 按 v4 默认 info。
+  finding_add_router(args, ctx) {
+    const actor = (ctx && ctx.actor) || 'model'
+    const out = { ...args }
+    if (out.severity === undefined || out.severity === null || out.severity === '') out.severity = 'info'
+    if (String(out.severity) === 'info') {
+      // 模型/人类走候选降级需要 actor 旁路（C2 模型禁入——负向保障仅对直连与 alias 可见性生效，
+      // 本旁路是 02-vuln §3.2 明文的别名期兼容，审计记 via_alias 可追踪）
+      return { verb: 'register_candidate', args: out, actor_bypass: actor !== 'webhook' && actor !== 'script' }
+    }
+    if (actor === 'webhook' || actor === 'script') return { verb: 'register_candidate', args: out }
+    return { verb: 'register_signal', args: out }
+  },
+  // finding_query 旧查询 → vuln_list（include_noise=true→all；noise='1'→candidate；其余直传）
+  query_visibility_router(args) {
+    const out = { ...args }
+    const includeNoise = out.include_noise === true || out.include_noise === 'true'
+    const noise = String(out.noise ?? '')
+    if (includeNoise) out.visibility = 'all'
+    else if (noise === '1') out.visibility = 'candidate'
+    else if (out.visibility === undefined || out.visibility === '') out.visibility = 'signal'
+    delete out.include_noise
+    delete out.noise
+    return { verb: 'list', args: out }
   },
   task_status_router(args) {
     const st = args.status
@@ -409,6 +479,8 @@ export function validateAliases(doc) {
     if (!isPlainObject(def)) { errs.push(`分派别名 ${nm} 定义缺失`); continue }
     if (typeof def.router !== 'string') errs.push(`分派别名 ${nm} router 缺失`)
     else if (!(def.router in BUILTIN_ROUTERS)) errs.push(`分派别名 ${nm} router ${def.router} 未知`)
+    if (def.domain !== undefined && (typeof def.domain !== 'string' || !DOMAIN_WHITELIST.has(def.domain))) errs.push(`分派别名 ${nm} domain 非法: ${def.domain}`)
+    if (def.warn !== undefined && typeof def.warn !== 'string') errs.push(`分派别名 ${nm} warn 必须为字符串`)
     if (nm === def.router) errs.push(`分派别名 ${nm} 自环`)
   }
   const cycle = (nm, seen) => {
@@ -599,6 +671,9 @@ export function createBus(opts = {}) {
   const ownsFiles = new Set()
   const subscribers = []
   const pendingEventLog = new Map()
+  // ToolProjector 时序修复：域注册成功后用缓存的 ctx 再投影（let 声明必须先于 registerDomain 执行）
+  let toolsCtx = null
+  const registeredToolNames = new Set()
 
   function metaGet(key) {
     if (!db) return null
@@ -700,6 +775,10 @@ export function createBus(opts = {}) {
       subscribers.push({ pattern, regex: patternToRegex(pattern), handler: handlers.subscribers[sub.handler], mode: sub.mode, as: sub.as, source: manifest.domain })
     }
     publishSyncEvent('bus.domain.registered', { domain: manifest.domain, version: manifest.version, backend: 'sqlite-local', commands: entry.state.commands, queries: entry.state.queries }, 'system', null, 'bus')
+    // 域注册成功后再投影工具面 + 刷新 AGENTS.md 速查（registerTools 早于域注册的时序修复；
+    // bus 域自注册时 toolsCtx 尚为空，由 apply 显式投影兜底）
+    try { if (toolsCtx) registerTools(toolsCtx) } catch (e) { log(`域 ${manifest.domain} 注册后工具再投影失败: ${e?.message}`) }
+    try { refreshAgentsMd() } catch (e) { log(`域 ${manifest.domain} 注册后 AGENTS.md 刷新失败: ${e?.message}`) }
     return { ok: true, registered: true, entry }
   }
 
@@ -801,7 +880,7 @@ export function createBus(opts = {}) {
 
   // --- CommandGateway：dispatch（11 段管线） ---
   async function dispatch(domainIn, verbIn, argsIn, ctxIn) {
-    const ctx = ctxIn || {}
+    let ctx = ctxIn || {}  // 兼容别名可注入 compat 标志（actor_bypass / dup_of_relaxed）
     const actor = String(ctx.actor || 'model')
     const started = now()
     let aliasUsed = null
@@ -826,16 +905,30 @@ export function createBus(opts = {}) {
       }
       if (aliasesDoc.dispatchAliases[cand]) {
         const ddef = aliasesDoc.dispatchAliases[cand]
-        const routed = BUILTIN_ROUTERS[ddef.router](args)
+        const routed = await BUILTIN_ROUTERS[ddef.router](args, {
+          actor, session_id: ctx.session_id || null,
+          getFinding: async (id) => {
+            const rd = ddef.domain || DOMAIN_OF_ROUTER[ddef.router]
+            const e = rd ? domains.get(rd) : null
+            if (!e) return null
+            try { return e.backend.factory(db).getFinding(Number(id)) } catch { return null }
+          },
+        })
         if (routed.error) {
+          auditBestEffort({ ts: now(), kind: 'deprecated_use', domain: domainIn, cmd: verbIn, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, target: null, alias: cand, warn: ddef.warn || null, result: 'blocked', duration_ms: now() - started })
           auditBestEffort({ ts: now(), kind: 'command', domain: domainIn, cmd: verbIn, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, idempotency_key: null, replay: false, target: { alias: cand }, before: null, after: null, result: 'failed', error_code: routed.error.code, duration_ms: now() - started, backend: 'bus-alias', alias: cand })
           return errEnvelope(domainIn, verbIn, routed.error.code, routed.error.message, routed.error.hint, routed.error.retryable)
         }
-        const routedDomain = ddef.router === 'status_router' ? 'vuln' : 'task'
+        const routedDomain = ddef.domain || DOMAIN_OF_ROUTER[ddef.router] || null
+        if (!routedDomain) {
+          auditBestEffort({ ts: now(), kind: 'command', domain: domainIn, cmd: verbIn, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, idempotency_key: null, replay: false, target: null, before: null, after: null, result: 'failed', error_code: 'E_BUS_ALIAS_DANGLING', duration_ms: now() - started, backend: 'bus-alias' })
+          return errEnvelope(domainIn, verbIn, 'E_BUS_ALIAS_DANGLING', `分派别名 ${cand} 无法推导目标域`, '别名表补 domain 字段或检查 router 映射', false)
+        }
         domain = routedDomain
         verb = routed.verb
         args = routed.args
         aliasUsed = { alias: cand, target: `${domain}_${verb}`, router: ddef.router, warn: ddef.warn }
+        if (routed.actor_bypass) ctx = { ...ctx, compat: { ...(ctx.compat || {}), actor_bypass: { domain, verb, via: cand } } }
         break
       }
     }
@@ -852,6 +945,20 @@ export function createBus(opts = {}) {
     }
     const fullName = `${domain}_${verb}`
 
+    // ①.5 兼容期差异（02-vuln §3.2 finding_update）：dup 缺 dup_of 时自动以同 host+同 vuln_type
+    // 最高候选行填充；查不到留空（ctx.compat.dup_of_relaxed 供域不变量放宽——观察期后必填）
+    if (aliasUsed && aliasUsed.alias === 'finding_update' && verb === 'reject' && args.verdict === 'dup' && !Number.isInteger(args.dup_of)) {
+      try {
+        const repo = entry.backend.factory(db)
+        const row = repo.getFinding(args.finding_id)
+        if (row && (String(row.host || '') || String(row.vuln_type || ''))) {
+          const dd = repo.listDedup({ host: String(row.host || ''), vuln_type: String(row.vuln_type || ''), exclude_id: Number(args.finding_id) }, 1)
+          if (Array.isArray(dd.rows) && dd.rows.length && Number.isInteger(Number(dd.rows[0].id))) args.dup_of = Number(dd.rows[0].id)
+        }
+      } catch (e) { log(`别名 dup_of 自动填充失败: ${e?.message}`) }
+      ctx = { ...ctx, compat: { ...(ctx.compat || {}), dup_of_relaxed: true, via: aliasUsed.alias } }
+    }
+
     // ② deprecated / 别名使用 → audit deprecated_use（不失败）
     if (aliasUsed) {
       auditBestEffort({ ts: now(), kind: 'deprecated_use', domain: domainIn, cmd: verbIn, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, target: fullName, alias: aliasUsed.alias, warn: aliasUsed.warn || null, result: 'ok', duration_ms: 0 })
@@ -861,7 +968,9 @@ export function createBus(opts = {}) {
     }
 
     // ③ actor 白名单（在 schema 前：越权者不应获得参数细节）
-    if (!Array.isArray(cmdDef.actor) || !cmdDef.actor.includes(actor)) {
+    // 兼容旁路仅对分派别名（finding_add severity=info 降级候选）生效，直连 C2 仍严格拒绝
+    const actorBypass = ctx.compat && ctx.compat.actor_bypass && ctx.compat.actor_bypass.domain === domain && ctx.compat.actor_bypass.verb === verb
+    if (!Array.isArray(cmdDef.actor) || (!cmdDef.actor.includes(actor) && !actorBypass)) {
       auditBestEffort({ ts: now(), kind: 'command', domain, cmd: verb, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, idempotency_key: null, replay: false, target: null, before: null, after: null, result: 'failed', error_code: 'E_ACTOR_FORBIDDEN', duration_ms: now() - started, backend: 'bus' })
       return errEnvelope(domain, verb, 'E_ACTOR_FORBIDDEN', `actor=${actor} 不允许调用 ${fullName}`, `白名单: [${(cmdDef.actor || []).join(', ')}]`, false)
     }
@@ -887,6 +996,18 @@ export function createBus(opts = {}) {
     try { hit = plain(db.prepare('SELECT * FROM idempotency WHERE idempotency_key=?').get(key)) } catch { /* degraded */ }
     if (hit) {
       if (hit.args_hash !== argsHash) {
+        // 兼容期宽容（02-vuln §3.2 finding_add）：同指纹异参重放 → v4 形状 {ok:true, dup:true, id}，
+        // 存量 prompt/脚本依赖 dup 语义；仅别名期，新路径严格执行 E_IDEMPOTENT_CONFLICT
+        if (aliasUsed && aliasUsed.alias === 'finding_add') {
+          try {
+            const prior = JSON.parse(hit.result_json)
+            const priorId = prior && prior.data && Number.isInteger(Number(prior.data.id)) ? Number(prior.data.id) : null
+            if (priorId !== null) {
+              auditBestEffort({ ts: now(), kind: 'deprecated_use', domain: domainIn, cmd: verbIn, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, target: fullName, alias: 'finding_add', warn: aliasUsed.warn || null, result: 'ok', compat: 'v4-dup-shape', duration_ms: now() - started })
+              return { ok: true, domain: domainIn, cmd: verbIn, data: { ...(prior.data || {}), id: priorId, dup: true }, dup: true, id: priorId, idempotency_key: key, replay: false, compat: 'v4-dup-shape', via_alias: 'finding_add' }
+            }
+          } catch { /* 转译失败按常规冲突处理 */ }
+        }
         auditBestEffort({ ts: now(), kind: 'command', domain, cmd: verb, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, idempotency_key: key, replay: false, target: null, before: null, after: null, result: 'failed', error_code: 'E_IDEMPOTENT_CONFLICT', duration_ms: now() - started, backend: 'sqlite-local' })
         return errEnvelope(domain, verb, 'E_IDEMPOTENT_CONFLICT', `幂等键 ${key} 已绑定不同参数`, '若是重放请原样重发参数；若是新意图请换 idempotency_key', false, key)
       }
@@ -895,13 +1016,13 @@ export function createBus(opts = {}) {
       return { ...prior, replay: true }
     }
 
-    // ⑦ 前置不变量（不变量失败不占写锁）
+    // ⑦ 前置不变量（不变量失败不占写锁）；ctx 透传（兼容期放宽标志由域不变量按契约读取）
     const repo = entry.backend.factory(db)
     for (const invName of cmdDef.invariants || []) {
       const fn = entry.handlers.invariants?.[invName]
       if (!fn) continue
       let res = null
-      try { res = await fn(args, repo) } catch (e) { res = { code: 'E_INVARIANT', message: `不变量 ${invName} 执行异常: ${e?.message}` } }
+      try { res = await fn(args, repo, ctx) } catch (e) { res = { code: 'E_INVARIANT', message: `不变量 ${invName} 执行异常: ${e?.message}` } }
       if (res) {
         auditBestEffort({ ts: now(), kind: 'command', domain, cmd: verb, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, idempotency_key: key, replay: false, target: null, before: null, after: null, result: 'failed', error_code: res.code || 'E_INVARIANT', duration_ms: now() - started, backend: 'sqlite-local' })
         return errEnvelope(domain, verb, res.code || 'E_INVARIANT', res.message || `不变量 ${invName} 失败`, res.hint || null, false, key)
@@ -1012,6 +1133,7 @@ export function createBus(opts = {}) {
           target: handlerResult.target || null,
           before: handlerResult.before || null, after: handlerResult.after || data || null,
           result: 'ok', error_code: null, duration_ms: now() - started, backend: 'sqlite-local',
+          ...(aliasUsed ? { via_alias: aliasUsed.alias, compat: ctx.compat ? Object.keys(ctx.compat).join(',') : null } : {}),
         })
       } catch (e) {
         const err = new Error(`审计落盘失败（fail-closed）: ${e?.message}`)
@@ -1027,18 +1149,37 @@ export function createBus(opts = {}) {
   async function query(domainIn, nameIn, argsIn, ctxIn) {
     const ctx = ctxIn || {}
     const actor = String(ctx.actor || 'model')
+    const started = now()
     let domain = domainIn
     let name = nameIn
+    let args = argsIn || {}
     const fullCandidate = `${domain}_${name}`
     const aliasCandidates = [fullCandidate]
     if (name !== fullCandidate) aliasCandidates.push(name)
+    let aliasUsed = null
     for (const cand of aliasCandidates) {
       if (aliasesDoc.aliases[cand]) {
         const target = aliasesDoc.aliases[cand]
         domain = target.split('_')[0]
         name = stripDomainPrefix(target, domain)
+        aliasUsed = { alias: cand, target }
         break
       }
+      if (aliasesDoc.dispatchAliases[cand]) {
+        const ddef = aliasesDoc.dispatchAliases[cand]
+        const routed = await BUILTIN_ROUTERS[ddef.router](args, { actor, session_id: ctx.session_id || null })
+        if (routed.error) return errEnvelope(domainIn, nameIn, routed.error.code, routed.error.message, routed.error.hint, routed.error.retryable)
+        const routedDomain = ddef.domain || DOMAIN_OF_ROUTER[ddef.router] || null
+        if (!routedDomain) return errEnvelope(domainIn, nameIn, 'E_BUS_ALIAS_DANGLING', `分派别名 ${cand} 无法推导目标域`, '别名表补 domain 字段或检查 router 映射', false)
+        domain = routedDomain
+        name = routed.verb
+        args = routed.args
+        aliasUsed = { alias: cand, target: `${domain}_${name}`, router: ddef.router, warn: ddef.warn }
+        break
+      }
+    }
+    if (aliasUsed) {
+      auditBestEffort({ ts: now(), kind: 'deprecated_use', domain: domainIn, cmd: nameIn, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, target: `${domain}_${name}`, alias: aliasUsed.alias, warn: aliasUsed.warn || null, result: 'ok', duration_ms: 0 })
     }
     const entry = domains.get(domain)
     if (!entry) return errEnvelope(domain, name, 'E_BUS_DOMAIN_UNKNOWN', `未知域 ${domain}`, `可用域见 bus_status`, false)
@@ -1047,18 +1188,18 @@ export function createBus(opts = {}) {
     if (!Array.isArray(qdef.actor) || !qdef.actor.includes(actor)) {
       return errEnvelope(domain, name, 'E_ACTOR_FORBIDDEN', `actor=${actor} 不允许查询 ${domain}_${name}`, `白名单: [${(qdef.actor || []).join(', ')}]`, false)
     }
-    const v = validateSchema(argsIn || {}, qdef.params || {})
+    const v = validateSchema(args || {}, qdef.params || {})
     if (!v.ok) return errEnvelope(domain, name, 'E_SCHEMA', `参数校验失败：${v.errors.map((e) => `${e.field}: ${e.message}`).join('; ')}`, '修正参数后重试', false)
-    const args = { ...(argsIn || {}) }
-    let limit = Number.isInteger(args.limit) ? args.limit : 50
+    const qargs = { ...(args || {}) }
+    let limit = Number.isInteger(qargs.limit) ? qargs.limit : 50
     if (limit > 500) limit = 500
     if (limit < 1) limit = 1
-    const offset = Number.isInteger(args.offset) ? Math.max(0, args.offset) : 0
+    const offset = Number.isInteger(qargs.offset) ? Math.max(0, qargs.offset) : 0
     const qhandler = entry.handlers.queries?.[name] || entry.handlers.queries?.[`${domain}_${name}`]
     if (!qhandler) return errEnvelope(domain, name, 'E_INTERNAL', `查询 ${domain}_${name} 无 handler`, null, false)
     let res
     try {
-      res = await qhandler(args, entry.backend.factory(db), { actor, session_id: ctx.session_id || null, operator: ctx.operator || null })
+      res = await qhandler(qargs, entry.backend.factory(db), { actor, session_id: ctx.session_id || null, operator: ctx.operator || null })
     } catch (e) {
       return errEnvelope(domain, name, 'E_INTERNAL', e?.message || String(e), null, false)
     }
@@ -1381,6 +1522,9 @@ export function createBus(opts = {}) {
   registerDomain({ manifest: BUS_MANIFEST, handlers: busHandlers, backend: { factory: () => ({}), capabilities: {} } })
 
   // --- ToolProjector（ctx.tools.register；挂载矩阵：actor 白名单 + deprecated） ---
+  // 时序：bus.apply 的 registerTools 早于各域注册（域经 inject 后注册）——域注册成功后必须
+  // 再投影一次（toolsCtx 缓存 ctx；registeredToolNames 去重防重复注册）
+  function setToolsCtx(ctx) { toolsCtx = ctx }
   function renderJSON(_args, value) {
     return [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }]
   }
@@ -1399,8 +1543,11 @@ export function createBus(opts = {}) {
         if (!Array.isArray(def.actor) || !def.actor.includes('model')) continue
         if (def.deprecated && !mountDeprecated) continue
         const verb = stripDomainPrefix(full, d)
+        const name = full
+        if (registeredToolNames.has(name)) continue
+        registeredToolNames.add(name)
         ctx.tools.register({
-          name: full,
+          name,
           description: def.agent_note || full,
           parameters: def.schema || {},
           output: { schema: { type: 'object' }, render: renderJSON },
@@ -1412,6 +1559,8 @@ export function createBus(opts = {}) {
       for (const [full, def] of Object.entries(entry.manifest.queries)) {
         if (!Array.isArray(def.actor) || !def.actor.includes('model')) continue
         const name = stripDomainPrefix(full, d)
+        if (registeredToolNames.has(full)) continue
+        registeredToolNames.add(full)
         ctx.tools.register({
           name: full,
           description: def.agent_note || full,
@@ -1422,7 +1571,7 @@ export function createBus(opts = {}) {
         count++
       }
     }
-    // 兼容别名（目标对 model 可见才注册）
+    // 兼容别名（目标对 model 可见才注册；目标域未注册时跳过——如 submission_draft 待 report 域 Phase 2 上线）
     for (const [alias, target] of Object.entries(aliasesDoc.aliases)) {
       const d = target.split('_')[0]
       const entry = domains.get(d)
@@ -1430,6 +1579,8 @@ export function createBus(opts = {}) {
       const tdef = entry.manifest.commands[target] || entry.manifest.queries[target]
       if (!tdef || !Array.isArray(tdef.actor) || !tdef.actor.includes('model')) continue
       const isQuery = !!entry.manifest.queries[target]
+      if (registeredToolNames.has(alias)) continue
+      registeredToolNames.add(alias)
       ctx.tools.register({
         name: alias,
         description: `[兼容别名 → ${target}] ${tdef.agent_note || ''}`,
@@ -1530,7 +1681,7 @@ export function createBus(opts = {}) {
     registry: { list: () => [...domains.keys()], get: (d) => (domains.get(d) ? { manifest: domains.get(d).manifest, state: domains.get(d).state } : null), register: registerDomain },
   }
   facade._internal = {
-    registerDomain, registerTools, registerRpc, startBackground, stopBackground,
+    registerDomain, registerTools, setToolsCtx, registerRpc, startBackground, stopBackground,
     dispatcherTick, refreshAgentsMd, close: () => { stopBackground(); try { db?.close() } catch { /* noop */ } },
     db: () => db, domains, aliasesDoc, subscribers,
   }
@@ -1558,6 +1709,8 @@ export function apply(ctx, config = {}) {
     }
   }
   // ToolProjector（工具面；agent 面 sidecars:false 时仍注册工具——投影是工具面不是后台）
+  // setToolsCtx 先行：域插件在 bus.apply 之后注册，注册成功时 bus 用缓存 ctx 再投影
+  try { bus._internal.setToolsCtx(ctx) } catch (e) { log(`setToolsCtx 失败: ${e?.message}`) }
   try { bus._internal.registerTools(ctx) } catch (e) { log(`ToolProjector 失败: ${e?.message}`) }
   // RpcProjector（仅 connection 服务存在时）
   try {

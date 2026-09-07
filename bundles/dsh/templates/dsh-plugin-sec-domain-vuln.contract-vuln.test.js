@@ -35,6 +35,9 @@ function makeEnv(opts = {}) {
   fs.writeFileSync(path.join(dataDir, 'results', 'run_test_20260906_000000', 'meta.json'), '{}')
   fs.mkdirSync(path.join(dataDir, 'results', 'run_test_20260907_000000'), { recursive: true })
   fs.writeFileSync(path.join(dataDir, 'results', 'run_test_20260907_000000', 'meta.json'), '{}')
+  if (opts.aliasesDoc) {
+    opts = { ...opts, aliasesFile: writeAliases(path.join(dir, 'bus.aliases.yaml'), opts.aliasesDoc) }
+  }
   const bus = createBus({
     dataDir,
     dbFile: path.join(dir, 'asset-graph.db'),
@@ -49,6 +52,13 @@ function makeEnv(opts = {}) {
   const reg = bus.registry.register(domain)
   assert.equal(reg.ok, true, `vuln 域应注册成功：${reg.error?.message || ''}`)
   return { dir, dataDir, bus, domain }
+}
+
+function writeAliases(f, doc) {
+  let y = 'aliases:\n' + Object.entries(doc.aliases || {}).map(([k, v]) => `  ${k}: ${v}`).join('\n') + '\n'
+  y += 'dispatch_aliases:\n' + Object.entries(doc.dispatch_aliases || {}).map(([k, v]) => `  ${k}:\n    router: ${v.router}\n    domain: ${v.domain}\n`).join('')
+  fs.writeFileSync(f, y)
+  return f
 }
 
 function readAudit(dir) {
@@ -806,4 +816,119 @@ test('总线集成: 后端共享总线连接（同一 DatabaseSync → 同一 WA
   const repoA = domain.backend.factory(bus._internal.db())
   const repoB = domain.backend.factory(bus._internal.db())
   assert.equal(repoA, repoB, '同连接应缓存同一仓库实例')
+})
+
+// ---------------------------------------------------------------------------
+// 13. 兼容别名端到端（1.3，02-vuln §3.2：真实域 + 真实库过全管线）
+// ---------------------------------------------------------------------------
+
+const V1_ALIASES = {
+  aliases: { submission_draft: 'report_draft_submission' },
+  dispatch_aliases: {
+    finding_add: { router: 'finding_add_router', domain: 'vuln' },
+    finding_query: { router: 'query_visibility_router', domain: 'vuln' },
+    finding_update: { router: 'status_router', domain: 'vuln' },
+  },
+}
+
+test('别名: finding_add model 完整五要素 → register_signal；同指纹异参 → v4 dup 形状（真实域）', async () => {
+  const { dir, bus } = makeEnv({ aliasesDoc: V1_ALIASES })
+  const r1 = await bus.dispatch('', 'finding_add', {
+    title: '别名登记完整信号：命令注入可执行系统命令', severity: 'high', host: 'alias1.example.com', url: 'https://alias1.example.com/admin',
+    evidence: 'run_test_20260906_000000', reproduction_steps: '访问并重放命令拼接参数', impact: '任意命令执行',
+  }, { actor: 'model', session_id: 'sess_alias' })
+  assert.equal(r1.ok, true)
+  assert.equal(r1.cmd, 'register_signal')
+  assert.equal(r1.data.noise, false)
+  const r2 = await bus.dispatch('', 'finding_add', {
+    title: '别名登记完整信号：命令注入可执行系统命令', severity: 'medium', host: 'alias1.example.com', url: 'https://alias1.example.com/admin',
+    evidence: 'run_test_20260906_000000', reproduction_steps: '另一套复现', impact: '任意命令执行',
+  }, { actor: 'model', session_id: 'sess_alias' })
+  assert.equal(r2.ok, true, '同指纹异参 → v4 dup 形状不报错')
+  assert.equal(r2.dup, true)
+  assert.equal(r2.id, r1.data.id)
+  assert.equal(r2.compat, 'v4-dup-shape')
+  const audit = readAudit(dir)
+  assert.ok(audit.some((a) => a.kind === 'deprecated_use' && a.alias === 'finding_add'))
+})
+
+test('别名: finding_add webhook → register_candidate；model+info → 降级候选（actor 旁路）', async () => {
+  const { dir, bus } = makeEnv({ aliasesDoc: V1_ALIASES })
+  const w = await bus.dispatch('', 'finding_add', { title: 'xray webhook 候选', severity: 'medium', host: 'alias2.example.com', source: 'xray-webhook' }, { actor: 'webhook', session_id: 'wh1' })
+  assert.equal(w.ok, true)
+  assert.equal(w.cmd, 'register_candidate')
+  assert.equal(w.data.noise, true)
+  const inf = await bus.dispatch('', 'finding_add', { title: 'info 侦察副产物候选', severity: 'info', host: 'alias3.example.com', source: 'agent' }, { actor: 'model', session_id: 'sess_i' })
+  assert.equal(inf.ok, true, 'severity=info 保留 v4 行为降级候选')
+  assert.equal(inf.cmd, 'register_candidate')
+  assert.equal(inf.data.noise, true)
+  const audit = readAudit(dir)
+  assert.ok(audit.some((a) => a.kind === 'command' && a.cmd === 'register_candidate' && a.actor === 'model' && a.via_alias === 'finding_add'), 'info 降级写操作审计 actor 真实 + via_alias 追踪')
+})
+
+test('别名: finding_update confirmed 缺 evidence → E_EVIDENCE_REQUIRED；accepted → submit(vendor_status=accepted)', async () => {
+  const { dir, bus } = makeEnv({ aliasesDoc: V1_ALIASES })
+  const cand = await seedCandidate(bus, { title: 'finding_update 别名候选', host: 'fu1.example.com' })
+  assert.equal(cand.ok, true)
+  const id = cand.data.id
+  const noEv = await bus.dispatch('', 'finding_update', { finding_id: id, status: 'confirmed' }, { actor: 'dashboard' })
+  assert.equal(noEv.ok, false)
+  assert.equal(noEv.error.code, 'E_EVIDENCE_REQUIRED', 'confirm 别名缺 evidence 收紧')
+  assert.ok(noEv.error.hint)
+  const withEv = await bus.dispatch('', 'finding_update', { finding_id: id, status: 'confirmed', evidence: 'run_test_20260906_000000' }, { actor: 'dashboard' })
+  assert.equal(withEv.ok, true)
+  assert.equal(withEv.data.status, 'confirmed')
+  const sub = await bus.dispatch('', 'finding_update', { finding_id: id, status: 'submitted' }, { actor: 'dashboard' })
+  assert.equal(sub.ok, true)
+  assert.equal(sub.data.status, 'submitted')
+  const acc = await bus.dispatch('', 'finding_update', { finding_id: id, status: 'accepted', bounty: 500 }, { actor: 'dashboard' })
+  assert.equal(acc.ok, true)
+  assert.equal(acc.cmd, 'submit')
+  assert.equal(acc.data.status, 'accepted')
+  const row = bus._internal.db().prepare('SELECT * FROM findings WHERE id=?').get(id)
+  assert.equal(row.vendor_status, 'accepted')
+  assert.equal(row.bounty, 500)
+})
+
+test('别名: finding_update dup 缺 dup_of → 自动填充同 host 信号行；查不到 → 留空放行（兼容期）', async () => {
+  const { dir, bus } = makeEnv({ aliasesDoc: V1_ALIASES })
+  await seedSignal(bus, { title: '同目标既有信号：SQLi 注入', host: 'dupfill.example.com', vuln_type: 'SQLi', severity: 'high' })
+  const cand = await seedCandidate(bus, { title: '同目标重复候选', host: 'dupfill.example.com', severity: 'medium' })
+  const id = cand.data.id
+  const r = await bus.dispatch('', 'finding_update', { finding_id: id, status: 'dup', reason: '重复登记：同 host 同类型已有信号行' }, { actor: 'dashboard' })
+  assert.equal(r.ok, true)
+  assert.equal(r.data.status, 'dup')
+  const audit = readAudit(dir)
+  const rec = audit.find((a) => a.kind === 'command' && a.cmd === 'reject' && a.result === 'ok' && a.via_alias === 'finding_update')
+  assert.ok(rec, 'reject 经 alias 审计')
+  const none = await seedCandidate(bus, { title: '无同目标信号的候选', host: 'orphan.example.com' })
+  const r2 = await bus.dispatch('', 'finding_update', { finding_id: none.data.id, status: 'dup', reason: '查不到同目标信号，留空放行' }, { actor: 'dashboard' })
+  assert.equal(r2.ok, true, '查不到 dup_of → 留空放行（观察期后必填）')
+  assert.equal(r2.data.status, 'dup')
+})
+
+test('别名: finding_query → vuln_list（noise=1→candidate / include_noise→all 真实过滤）', async () => {
+  const { dir, bus } = makeEnv({ aliasesDoc: V1_ALIASES })
+  await seedSignal(bus, { title: '别名查询信号：反射 XSS', host: 'fq1.example.com' })
+  await seedCandidate(bus, { title: '别名查询候选', host: 'fq2.example.com' })
+  const qSig = await bus.query('', 'finding_query', {}, { actor: 'model' })
+  assert.equal(qSig.ok, true)
+  assert.equal(qSig.query, 'list')
+  assert.equal(qSig.total, 1, '默认只信号面')
+  const qAll = await bus.query('', 'finding_query', { include_noise: true }, { actor: 'model' })
+  assert.equal(qAll.total, 2, 'include_noise=true → visibility=all')
+  const qCand = await bus.query('', 'finding_query', { noise: '1' }, { actor: 'model' })
+  assert.equal(qCand.total, 1, "noise='1' → visibility=candidate")
+  assert.equal(qCand.rows[0].noise, 1)
+  const audit = readAudit(dir)
+  assert.ok(audit.some((a) => a.kind === 'deprecated_use' && a.alias === 'finding_query'))
+})
+
+test('别名: submission_draft 目标域未注册 → ToolProjector 跳过 / dispatch E_BUS_DOMAIN_UNKNOWN（v4 工具仍在无断流）', async () => {
+  const { dir, bus } = makeEnv({ aliasesDoc: V1_ALIASES })
+  const r = await bus.dispatch('', 'submission_draft', { finding_id: 1 }, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_BUS_DOMAIN_UNKNOWN', 'report 域未注册（Phase 2），别名目标悬空报未知域')
+  const st = await bus.query('bus', 'status', {}, { actor: 'dashboard' })
+  assert.equal(st.data.bus.aliases.count, 4, 'bus_status 别名计数含静态+分派别名')
 })

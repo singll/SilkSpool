@@ -6,7 +6,22 @@
 #   3. 别名使用 → audit 记 deprecated_use；观察期 7 天零使用 → 删除（三段式）
 #   4. 启动/部署时校验：目标存在、无环、无重复目标键冲突（E_BUS_ALIAS_DANGLING 中止 setup）
 # ==============================================================================
-# Phase 1.1：总线骨架先行，域动词尚未注册——别名表保持空（Phase 1.3 接线时再填充，
-# 避免 setup §D 别名校验因目标域未注册而中止）。
-aliases: {}
-dispatch_aliases: {}
+# Phase 1.3：vuln 域已注册（1.2）——填充 vuln 相关别名（02-vuln.md §3.2 表）。
+#   submission_draft → report 域（Phase 2 才注册）：目标域未注册时 ToolProjector 跳过、
+#   dispatch 报 E_BUS_DOMAIN_UNKNOWN（v4 工具仍在，无断流）；report 域上线后别名自动生效。
+# ==============================================================================
+aliases:
+  submission_draft: report_draft_submission
+dispatch_aliases:
+  finding_add:
+    router: finding_add_router
+    domain: vuln
+    warn: "finding_add 已按 actor 分派（model/human→vuln_register_signal；webhook/script→vuln_register_candidate）；severity=info 降级候选；同指纹异参返回 v4 dup 形状——请改用语义动词"
+  finding_query:
+    router: query_visibility_router
+    domain: vuln
+    warn: "finding_query 旧参数 include_noise/noise 已映射为 visibility——请改用 vuln_list"
+  finding_update:
+    router: status_router
+    domain: vuln
+    warn: "finding_update 是自由态旧动词，已按 status 分派（confirm 缺 evidence 收紧）；请改用语义动词"

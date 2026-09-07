@@ -282,6 +282,7 @@ function syncPrograms() {
 
 let workspaceRegistryRef = null  // ctx.workspaceRegistry（web profile 宿主面）
 let sessionPersistenceRef = null // ctx.sessionPersistence（会话头部投影，sessions RPC 用）
+let secDomainBusRef = null       // ctx.secDomainBus（v5 领域总线；看板 findings/findingGet/findingUpdate 三 case 切 vuln.* RPC）
 
 // dashboard-rpc.js 依赖注入（与 startScheduler/startXrayWebhook 同一参数注入模式，避免循环依赖）。
 // 函数声明提升保证此处引用安全；workspaceRegistryRef 经 getter 惰性读取（fiber 注入前为 null）。
@@ -292,6 +293,7 @@ initDashboardRpc({
   scopeList, scopeSaveProgram, scopeDeleteProgram,
   approvalDecideAction,
   getWorkspaceRegistry: () => workspaceRegistryRef,
+  getSecDomainBus: () => secDomainBusRef,
 })
 
 function pairWorkspaces(scopePrograms) {
@@ -2139,4 +2141,12 @@ export function apply(ctx, config) {
       child.effect(() => () => { sessionPersistenceRef = null }, 'sec-suite: session persistence')
     })
   } catch { /* 无 sessionPersistence */ }
+  // v5 领域总线（sec-domain-bus 插件 provide）：看板 findings/findingGet/findingUpdate 三 case 走
+  // vuln.* RPC（02-vuln §1.7）；总线缺席时 dashboard-rpc 回退 v4 直写路径（观察期兜底）
+  try {
+    ctx.inject(['secDomainBus'], (child) => {
+      secDomainBusRef = child.secDomainBus
+      child.effect(() => () => { secDomainBusRef = null }, 'sec-suite: domain bus')
+    })
+  } catch { /* 无 secDomainBus（总线未挂载，v4 直写兜底） */ }
 }

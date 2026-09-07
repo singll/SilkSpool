@@ -564,9 +564,14 @@ function makeHandlers(opts) {
       }
       return null
     },
-    dupTargetValid: async (args, repo) => {
+    dupTargetValid: async (args, repo, ctx) => {
       if (args.verdict !== 'dup') return null
-      if (!Number.isInteger(args.dup_of)) return { code: 'E_VULN_DUP_TARGET_REQUIRED', message: 'verdict=dup 必须带 dup_of', hint: 'dup 判定必须指回被重复的 finding（dup_of）。可先用 vuln_dedup_check 检索同目标同类型历史', retryable: false }
+      if (!Number.isInteger(args.dup_of)) {
+        // 兼容期（02-vuln §3.2 finding_update）：别名层已尽力自动填充同 host+同 vuln_type 候选行，
+        // 查不到时留空放行（观察期后必填）；直连路径无 ctx.compat，严格要求
+        if (ctx && ctx.compat && ctx.compat.dup_of_relaxed === true) return null
+        return { code: 'E_VULN_DUP_TARGET_REQUIRED', message: 'verdict=dup 必须带 dup_of', hint: 'dup 判定必须指回被重复的 finding（dup_of）。可先用 vuln_dedup_check 检索同目标同类型历史', retryable: false }
+      }
       const target = repo.getFinding(args.dup_of)
       if (!target) return { code: 'E_NOT_FOUND', message: `dup_of #${args.dup_of} 不存在`, hint: 'dup_of 必须指向已存在的 finding' }
       return null

@@ -288,11 +288,30 @@ export async function handleDashboardRpc(endpoint, payload) {
       }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
+      // v5：vuln.list 接管（02-vuln §1.7）；v4 queryFindings 兜底（观察期，总线缺席时）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('vuln', 'list', {
+            visibility: filters.noise === '1' ? 'candidate' : (p.include_noise ? 'all' : 'signal'),
+            severity: filters.severity, status: filters.status, program_id: filters.programId, q: filters.q,
+            limit, offset, sort: String(p.sort || ''), dir: String(p.dir || ''),
+          }, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return { rows: deps.assetDb.queryFindings({ ...filters, limit, offset, sort: String(p.sort || ''), dir: String(p.dir || '') }), total: deps.assetDb.countFindings(filters) }
     }
     case 'findingGet': {
       const id = Number(p.id)
       if (!id) throw new Error('findingGet 需要 id')
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('vuln', 'get', { id }, { actor: 'dashboard' })
+          if (r.ok && r.data) return r.data
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return deps.assetDb.findingGet(id)
     }
     case 'blackboard':
@@ -377,6 +396,29 @@ export async function handleDashboardRpc(endpoint, payload) {
       const status = String(p.status || '')
       if (!id || !FINDING_TAG_STATUS.includes(status)) {
         throw new Error(`findingUpdate 需要合法 id 与 status（${FINDING_TAG_STATUS.join('/')}）`)
+      }
+      // v5：分派别名 finding_update → 语义动词（02-vuln §3.2 / §1.7）；v4 updateFinding 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.dispatch('', 'finding_update', {
+            finding_id: id, status,
+            note: String(p.note || ''), bounty: p.bounty ?? null, vendor_status: String(p.vendor_status || ''),
+          }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null, session_id: null })
+          if (r.ok) return { ok: true, id: (r.data && Number.isInteger(Number(r.data.id))) ? Number(r.data.id) : id, ...(r.data || {}) }
+          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
+          const err = new Error(msg)
+          err.code = r.error?.code
+          throw err
+        } catch (e) {
+          // 总线缺席/域未注册才兜底 v4；域业务错误（E_STATE/E_EVIDENCE_REQUIRED 等收紧）不静默降级
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN' || e.code === 'E_BUS_ALIAS_DANGLING') {
+            const r = deps.assetDb.updateFinding({ id, status, note: String(p.note || ''), bounty: p.bounty, vendor_status: String(p.vendor_status || '') })
+            deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.findingUpdate', decision: 'executed', detail: { id, status, bounty: p.bounty ?? null } })
+            return r
+          }
+          throw e
+        }
       }
       const r = deps.assetDb.updateFinding({ id, status, note: String(p.note || ''), bounty: p.bounty, vendor_status: String(p.vendor_status || '') })
       deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.findingUpdate', decision: 'executed', detail: { id, status, bounty: p.bounty ?? null } })

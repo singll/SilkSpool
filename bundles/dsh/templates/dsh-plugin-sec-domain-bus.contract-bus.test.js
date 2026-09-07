@@ -30,15 +30,15 @@ function makeVulnManifest() {
         schema: {
           type: 'object',
           properties: {
-            id: { type: 'integer' },
+            finding_id: { type: 'integer' },
             evidence: { type: 'string', minLength: 1 },
             note: { type: 'string' },
           },
-          required: ['id', 'evidence'],
+          required: ['finding_id', 'evidence'],
           additionalProperties: false,
         },
         idempotent: 'auto',
-        idempotent_fields: ['id', 'evidence'],
+        idempotent_fields: ['finding_id', 'evidence'],
         events: ['vuln.signal.confirmed'],
         invariants: ['candidateActive'],
         side_effects: { rows: 1, events: 1 },
@@ -51,15 +51,17 @@ function makeVulnManifest() {
         schema: {
           type: 'object',
           properties: {
-            id: { type: 'integer' },
+            finding_id: { type: 'integer' },
             verdict: { type: 'string', enum: ['false_positive', 'dup', 'ignored'] },
             reason: { type: 'string' },
+            dup_of: { type: ['integer', 'null'] },
+            note: { type: 'string' },
           },
-          required: ['id', 'verdict'],
+          required: ['finding_id', 'verdict'],
           additionalProperties: false,
         },
         idempotent: 'auto',
-        idempotent_fields: ['id', 'verdict'],
+        idempotent_fields: ['finding_id', 'verdict'],
         events: ['vuln.signal.rejected'],
         invariants: ['candidateActive'],
         side_effects: { rows: 1, events: 1 },
@@ -74,6 +76,7 @@ function makeVulnManifest() {
           properties: {
             title: { type: 'string', minLength: 10 },
             host: { type: 'string' },
+            severity: { type: 'string' },
             secret: { type: 'string' },
           },
           required: ['title', 'host'],
@@ -88,6 +91,70 @@ function makeVulnManifest() {
         agent_note: '登记完整漏洞信号（五要素）。',
         deprecated: false,
       },
+      vuln_register_candidate: {
+        actor: ['webhook', 'script'],
+        schema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            host: { type: 'string' },
+            severity: { type: 'string' },
+            source: { type: 'string' },
+          },
+          required: ['title', 'host', 'severity', 'source'],
+          additionalProperties: false,
+        },
+        idempotent: 'auto',
+        idempotent_fields: ['title', 'host'],
+        events: ['vuln.candidate.registered'],
+        invariants: [],
+        side_effects: { rows: 1, events: 1 },
+        timeout_ms: 60000,
+        agent_note: '机器直灌候选（模型禁入）。',
+        deprecated: false,
+      },
+      vuln_submit: {
+        actor: ['model', 'dashboard'],
+        schema: {
+          type: 'object',
+          properties: {
+            finding_id: { type: 'integer' },
+            bounty: { type: ['number', 'null'] },
+            vendor_status: { type: 'string' },
+            note: { type: 'string' },
+          },
+          required: ['finding_id'],
+          additionalProperties: false,
+        },
+        idempotent: 'auto',
+        idempotent_fields: ['finding_id', 'vendor_status'],
+        events: ['vuln.signal.submitted'],
+        invariants: [],
+        side_effects: { rows: 1, events: 1 },
+        timeout_ms: 60000,
+        agent_note: '运营流转 submit。',
+        deprecated: false,
+      },
+      vuln_note: {
+        actor: ['model', 'dashboard'],
+        schema: {
+          type: 'object',
+          properties: {
+            finding_id: { type: 'integer' },
+            note: { type: 'string', minLength: 1 },
+          },
+          required: ['finding_id', 'note'],
+          additionalProperties: false,
+        },
+        idempotent: 'auto',
+        idempotent_fields: ['finding_id', 'note'],
+        events: [],
+        invariants: [],
+        side_effects: { rows: 1, events: 0 },
+        timeout_ms: 60000,
+        agent_note: '追加证据链（不改状态）。',
+        deprecated: false,
+      },
     },
     queries: {
       vuln_get: {
@@ -100,7 +167,7 @@ function makeVulnManifest() {
         actor: ['model', 'dashboard', 'human'],
         params: {
           type: 'object',
-          properties: { limit: { type: 'integer' }, offset: { type: 'integer' } },
+          properties: { limit: { type: 'integer' }, offset: { type: 'integer' }, visibility: { type: 'string' } },
           additionalProperties: false,
         },
         predicates: ['noise'],
@@ -111,6 +178,8 @@ function makeVulnManifest() {
       'vuln.signal.confirmed': { payload: { type: 'object' }, redact: ['secret'] },
       'vuln.signal.rejected': { payload: { type: 'object' }, redact: [] },
       'vuln.signal.registered': { payload: { type: 'object' }, redact: [] },
+      'vuln.candidate.registered': { payload: { type: 'object' }, redact: [] },
+      'vuln.signal.submitted': { payload: { type: 'object' }, redact: [] },
     },
     subscribes: {},
     backend: 'repository-v1',
@@ -120,25 +189,25 @@ function makeVulnManifest() {
 function makeVulnHandlers(invSpy = null) {
   const handlers = {
     vuln_confirm: async (args, repo) => {
-      const row = repo.getRow(args.id)
-      if (!row) throw Object.assign(new Error(`finding #${args.id} 不存在`), { code: 'E_NOT_FOUND' })
-      const changed = repo.transitionRow(args.id, 'confirmed', 0, 'new')
+      const row = repo.getRow(args.finding_id)
+      if (!row) throw Object.assign(new Error(`finding #${args.finding_id} 不存在`), { code: 'E_NOT_FOUND' })
+      const changed = repo.transitionRow(args.finding_id, 'confirmed', 0, 'new')
       if (!changed) throw Object.assign(new Error(`候选已处于终态，不可再流转`), { code: 'E_STATE', hint: '终态不可再流转' })
       return {
-        data: { id: args.id, status: 'confirmed', noise: 0, promoted_from_candidate: row.noise === 1 },
-        events: [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.id, from: { noise: row.noise, status: row.status }, evidence: args.evidence, secret: row.secret } }],
+        data: { id: args.finding_id, status: 'confirmed', noise: 0, promoted_from_candidate: row.noise === 1 },
+        events: [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, from: { noise: row.noise, status: row.status }, evidence: args.evidence, secret: row.secret } }],
         before: { status: row.status, noise: row.noise },
         after: { status: 'confirmed', noise: 0 },
       }
     },
     vuln_reject: async (args, repo) => {
-      const row = repo.getRow(args.id)
-      if (!row) throw Object.assign(new Error(`finding #${args.id} 不存在`), { code: 'E_NOT_FOUND' })
-      const changed = repo.transitionRow(args.id, args.verdict, 0, 'new')
+      const row = repo.getRow(args.finding_id)
+      if (!row) throw Object.assign(new Error(`finding #${args.finding_id} 不存在`), { code: 'E_NOT_FOUND' })
+      const changed = repo.transitionRow(args.finding_id, args.verdict, 0, 'new')
       if (!changed) throw Object.assign(new Error(`候选已处于终态，不可再流转`), { code: 'E_STATE' })
       return {
-        data: { id: args.id, status: args.verdict, noise: 0 },
-        events: [{ name: 'vuln.signal.rejected', payload: { finding_id: args.id, verdict: args.verdict } }],
+        data: { id: args.finding_id, status: args.verdict, noise: 0 },
+        events: [{ name: 'vuln.signal.rejected', payload: { finding_id: args.finding_id, verdict: args.verdict } }],
         before: { status: row.status, noise: row.noise },
         after: { status: args.verdict, noise: 0 },
       }
@@ -149,6 +218,32 @@ function makeVulnHandlers(invSpy = null) {
         data: { id, status: 'new' },
         events: [{ name: 'vuln.signal.registered', payload: { finding_id: id, title: args.title, host: args.host } }],
         after: { id, status: 'new' },
+      }
+    },
+    vuln_register_candidate: async (args, repo) => {
+      const id = repo.insertRow(args.title, args.host, null)
+      repo.updateRow(id, 'new', 1)
+      return {
+        data: { id, status: 'new', noise: 1, dup: false },
+        events: [{ name: 'vuln.candidate.registered', payload: { finding_id: id, title: args.title, host: args.host } }],
+        after: { id, status: 'new', noise: 1 },
+      }
+    },
+    vuln_submit: async (args, repo) => {
+      const row = repo.getRow(args.finding_id)
+      repo.updateRow(args.finding_id, 'submitted', row ? row.noise : 0)
+      return {
+        data: { id: args.finding_id, status: 'submitted', vendor_status: args.vendor_status || null },
+        events: [{ name: 'vuln.signal.submitted', payload: { finding_id: args.finding_id, vendor_status: args.vendor_status || '' } }],
+        before: row ? { status: row.status } : null,
+        after: { status: 'submitted' },
+      }
+    },
+    vuln_note: async (args, repo) => {
+      return {
+        data: { id: args.finding_id, status: 'new', noted: true },
+        events: [],
+        after: { status: 'new' },
       }
     },
     queries: {
@@ -164,8 +259,8 @@ function makeVulnHandlers(invSpy = null) {
     invariants: {
       candidateActive: async (args, repo) => {
         if (invSpy) invSpy.calls++
-        const row = repo.getRow(args.id)
-        if (!row) return { code: 'E_NOT_FOUND', message: `候选 #${args.id} 不存在`, hint: '先查询核实 id' }
+        const row = repo.getRow(args.finding_id)
+        if (!row) return { code: 'E_NOT_FOUND', message: `候选 #${args.finding_id} 不存在`, hint: '先查询核实 id' }
         if (row.status !== 'new') return { code: 'E_STATE', message: `候选已处于 ${row.status}，终态不可再流转`, hint: '如需补充证据用 vuln_note' }
         return null
       },
@@ -184,6 +279,16 @@ function makeVulnBackend() {
       )`)
       return {
         getRow: (id) => { const r = db.prepare('SELECT * FROM test_findings WHERE id=?').get(id); return r ? { ...r } : null },
+        getFinding: (id) => { const r = db.prepare('SELECT * FROM test_findings WHERE id=?').get(id); return r ? { ...r } : null },
+        listDedup: ({ host = '', vuln_type = '', exclude_id = null }, limit = 10) => {
+          const args = []
+          let where = '1=1'
+          if (host) { where += ' AND host = ?'; args.push(String(host)) }
+          if (vuln_type) { where += ' AND vuln_type = ?'; args.push(String(vuln_type)) }
+          if (exclude_id) { where += ' AND id != ?'; args.push(Number(exclude_id)) }
+          const rows = db.prepare(`SELECT id, title, severity, status, host, created_at FROM test_findings WHERE ${where} ORDER BY created_at DESC LIMIT ?`).all(...args, Math.min(Number(limit) || 10, 50)).map((r) => ({ ...r }))
+          return { rows, total: rows.length }
+        },
         insertRow: (title, host, secret) => {
           const r = db.prepare('INSERT INTO test_findings(title,host,status,noise,secret) VALUES(?,?,?,?,?)').run(title, host, 'new', 1, secret || null)
           return Number(r.lastInsertRowid)
@@ -226,7 +331,12 @@ function writeAliases(dir, doc) {
   let y = ''
   if (a.length) y += 'aliases:\n' + a.map(([k, v]) => `  ${k}: ${v}`).join('\n') + '\n'
   else y += 'aliases: {}\n'
-  if (da.length) y += 'dispatch_aliases:\n' + da.map(([k, v]) => `  ${k}:\n    router: ${v.router}\n`).join('')
+  if (da.length) y += 'dispatch_aliases:\n' + da.map(([k, v]) => {
+    let s = `  ${k}:\n    router: ${v.router}\n`
+    if (v.domain) s += `    domain: ${v.domain}\n`
+    if (v.warn) s += `    warn: ${JSON.stringify(v.warn)}\n`
+    return s
+  }).join('')
   else y += 'dispatch_aliases: {}\n'
   fs.writeFileSync(f, y)
   return f
@@ -334,7 +444,7 @@ test('happy path: 信封结构/event_ids/audit/幂等行', async () => {
   assert.equal(seed.ok, true)
   const id = seed.data.id
 
-  const env = await bus.dispatch('vuln', 'confirm', { id, evidence: 'run_x1' }, { actor: 'model', session_id: 'sess_1' })
+  const env = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_x1' }, { actor: 'model', session_id: 'sess_1' })
   assert.equal(env.ok, true)
   assert.equal(env.domain, 'vuln')
   assert.equal(env.cmd, 'confirm')
@@ -374,9 +484,9 @@ test('顺序敏感: 幂等命中 → 不变量未调用（spy）', async () => {
   bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(spy), backend: makeVulnBackend() })
   const seed = await bus.dispatch('vuln', 'register_signal', { title: '幂等测试漏洞信号一二三', host: 'b.example.com' }, { actor: 'model' })
   const id = seed.data.id
-  await bus.dispatch('vuln', 'confirm', { id, evidence: 'run_x1' }, { actor: 'model' })
+  await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_x1' }, { actor: 'model' })
   const before = spy.calls
-  const replay = await bus.dispatch('vuln', 'confirm', { id, evidence: 'run_x1' }, { actor: 'model' })
+  const replay = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_x1' }, { actor: 'model' })
   assert.equal(replay.ok, true)
   assert.equal(replay.replay, true)
   assert.equal(spy.calls, before)
@@ -389,14 +499,14 @@ test('顺序敏感: 幂等命中 → 不变量未调用（spy）', async () => {
 test('schema 拒绝: 缺 required / 未知参数 / 类型错 → E_SCHEMA 含字段名', async () => {
   const { bus } = makeBus()
   bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
-  const r1 = await bus.dispatch('vuln', 'confirm', { id: 1 }, { actor: 'model' })
+  const r1 = await bus.dispatch('vuln', 'confirm', { finding_id: 1 }, { actor: 'model' })
   assert.equal(r1.ok, false)
   assert.equal(r1.error.code, 'E_SCHEMA')
   assert.match(r1.error.message, /evidence/)
-  const r2 = await bus.dispatch('vuln', 'confirm', { id: 1, evidence: 'x', extra: 2 }, { actor: 'model' })
+  const r2 = await bus.dispatch('vuln', 'confirm', { finding_id: 1, evidence: 'x', extra: 2 }, { actor: 'model' })
   assert.equal(r2.error.code, 'E_SCHEMA')
   assert.match(r2.error.message, /extra/)
-  const r3 = await bus.dispatch('vuln', 'confirm', { id: 'not-int', evidence: 'x' }, { actor: 'model' })
+  const r3 = await bus.dispatch('vuln', 'confirm', { finding_id: 'not-int', evidence: 'x' }, { actor: 'model' })
   assert.equal(r3.error.code, 'E_SCHEMA')
 })
 
@@ -408,7 +518,7 @@ test('actor 拒绝: 非白名单 actor 各一例 → E_ACTOR_FORBIDDEN 且已审
   const { dir, bus } = makeBus()
   bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
   for (const actor of ['webhook', 'script', 'scheduler', 'approval', 'reactor', 'platform', 'system']) {
-    const env = await bus.dispatch('vuln', 'confirm', { id: 1, evidence: 'x' }, { actor })
+    const env = await bus.dispatch('vuln', 'confirm', { finding_id: 1, evidence: 'x' }, { actor })
     assert.equal(env.ok, false, `${actor} 应被拒`)
     assert.equal(env.error.code, 'E_ACTOR_FORBIDDEN')
   }
@@ -426,8 +536,8 @@ test('幂等: auto 策略重放 bit-for-bit；同 key 异参冲突用显式键�
   bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
   const seed = await bus.dispatch('vuln', 'register_signal', { title: '自动幂等测试信号一二', host: 'c.example.com' }, { actor: 'model' })
   const id = seed.data.id
-  const r1 = await bus.dispatch('vuln', 'confirm', { id, evidence: 'run_x1' }, { actor: 'model' })
-  const r2 = await bus.dispatch('vuln', 'confirm', { id, evidence: 'run_x1' }, { actor: 'model' })
+  const r1 = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_x1' }, { actor: 'model' })
+  const r2 = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_x1' }, { actor: 'model' })
   assert.equal(r2.ok, true)
   assert.equal(r2.replay, true)
   assert.deepEqual(JSON.parse(JSON.stringify(r1.data)), JSON.parse(JSON.stringify(r2.data)))
@@ -467,12 +577,12 @@ test('幂等: explicit 策略（调用方 idempotency_key）', async () => {
 test('不变量: 不存在 → E_NOT_FOUND；终态 → E_STATE', async () => {
   const { bus } = makeBus()
   bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
-  const r1 = await bus.dispatch('vuln', 'confirm', { id: 9999, evidence: 'x' }, { actor: 'model' })
+  const r1 = await bus.dispatch('vuln', 'confirm', { finding_id: 9999, evidence: 'x' }, { actor: 'model' })
   assert.equal(r1.ok, false)
   assert.equal(r1.error.code, 'E_NOT_FOUND')
   const seed = await bus.dispatch('vuln', 'register_signal', { title: '状态机测试信号一二三', host: 'f.example.com' }, { actor: 'model' })
-  await bus.dispatch('vuln', 'confirm', { id: seed.data.id, evidence: 'x' }, { actor: 'model' })
-  const r2 = await bus.dispatch('vuln', 'confirm', { id: seed.data.id, evidence: 'y' }, { actor: 'model' })
+  await bus.dispatch('vuln', 'confirm', { finding_id: seed.data.id, evidence: 'x' }, { actor: 'model' })
+  const r2 = await bus.dispatch('vuln', 'confirm', { finding_id: seed.data.id, evidence: 'y' }, { actor: 'model' })
   assert.equal(r2.ok, false)
   assert.equal(r2.error.code, 'E_STATE')
   assert.ok(r2.error.hint)
@@ -488,7 +598,7 @@ test('强联动: sync 订阅者返回失败 → 回滚 + E_BUS_STRONG_LINK_FAILE
   bus.events.subscribe('vuln.signal.confirmed', async () => ({ ok: false, error: { code: 'E_TEST_LINK' } }), { mode: 'sync', as: 'reactor' })
   const seed = await bus.dispatch('vuln', 'register_signal', { title: '强联动测试信号一二三', host: 'g.example.com' }, { actor: 'model' })
   const id = seed.data.id
-  const env = await bus.dispatch('vuln', 'confirm', { id, evidence: 'x' }, { actor: 'model' })
+  const env = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'x' }, { actor: 'model' })
   assert.equal(env.ok, false)
   assert.equal(env.error.code, 'E_BUS_STRONG_LINK_FAILED')
   const db = bus._internal.db()
@@ -502,7 +612,7 @@ test('强联动: sync 订阅者 throw → 回滚', async () => {
   bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
   bus.events.subscribe('vuln.signal.confirmed', async () => { throw new Error('boom') }, { mode: 'sync', as: 'reactor' })
   const seed = await bus.dispatch('vuln', 'register_signal', { title: '强联动抛出测试信号一二', host: 'h.example.com' }, { actor: 'model' })
-  const env = await bus.dispatch('vuln', 'confirm', { id: seed.data.id, evidence: 'x' }, { actor: 'model' })
+  const env = await bus.dispatch('vuln', 'confirm', { finding_id: seed.data.id, evidence: 'x' }, { actor: 'model' })
   assert.equal(env.ok, false)
   assert.equal(env.error.code, 'E_BUS_STRONG_LINK_FAILED')
   const row = bus._internal.db().prepare('SELECT * FROM test_findings WHERE id=?').get(seed.data.id)
@@ -525,7 +635,7 @@ test('审计 fail-closed: audit 落盘失败 → 命令回滚（宪法 §九）'
   db.exec('CREATE TABLE IF NOT EXISTS test_findings (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, host TEXT, status TEXT, noise INTEGER, secret TEXT)')
   db.prepare(`INSERT INTO test_findings(title,host,status,noise,secret) VALUES(?,?,?,?,?)`).run('审计闭锁测试信号一二三', 'h2.example.com', 'new', 1, null)
   const id = Number(db.prepare('SELECT MAX(id) AS m FROM test_findings').get().m)
-  const env = await bus.dispatch('vuln', 'confirm', { id, evidence: 'x' }, { actor: 'model' })
+  const env = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'x' }, { actor: 'model' })
   assert.equal(env.ok, false)
   assert.equal(env.error.code, 'E_BUS_AUDIT_FAILED')
   const row = db.prepare('SELECT * FROM test_findings WHERE id=?').get(id)
@@ -543,7 +653,7 @@ test('弱联动: async 订阅者失败 → 命令成功 + attempt/next_retry + �
   let calls = 0
   bus.events.subscribe('vuln.signal.confirmed', async () => { calls++; throw new Error('first fail') }, { mode: 'async', as: 'reactor' })
   const seed = await bus.dispatch('vuln', 'register_signal', { title: '弱联动测试信号一二三', host: 'i.example.com' }, { actor: 'model' })
-  const env = await bus.dispatch('vuln', 'confirm', { id: seed.data.id, evidence: 'x' }, { actor: 'model' })
+  const env = await bus.dispatch('vuln', 'confirm', { finding_id: seed.data.id, evidence: 'x' }, { actor: 'model' })
   assert.equal(env.ok, true)
   const db = bus._internal.db()
   const out = db.prepare('SELECT * FROM event_outbox WHERE event_id=?').get(env.event_ids[0])
@@ -581,7 +691,7 @@ test('崩溃恢复: 新总线实例续扫 outbox pending 且不重复消费', as
   let delivered = 0
   bus1.events.subscribe('vuln.signal.confirmed', async () => { delivered++; return { ok: true, data: {} } }, { mode: 'async', as: 'reactor' })
   const seed = await bus1.dispatch('vuln', 'register_signal', { title: '崩溃恢复测试信号一二三', host: 'j.example.com' }, { actor: 'model' })
-  const env = await bus1.dispatch('vuln', 'confirm', { id: seed.data.id, evidence: 'x' }, { actor: 'model' })
+  const env = await bus1.dispatch('vuln', 'confirm', { finding_id: seed.data.id, evidence: 'x' }, { actor: 'model' })
   bus1._internal.close() // 模拟崩溃（不 tick 就退出）
 
   const bus2 = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
@@ -605,7 +715,7 @@ test('事件载荷: redact 过滤 secret', async () => {
   const { dir, bus } = makeBus()
   bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
   const seed = await bus.dispatch('vuln', 'register_signal', { title: 'redact 测试信号一二三四', host: 'k.example.com', secret: 'TOPSECRET' }, { actor: 'model' })
-  const env = await bus.dispatch('vuln', 'confirm', { id: seed.data.id, evidence: 'x' }, { actor: 'model' })
+  const env = await bus.dispatch('vuln', 'confirm', { finding_id: seed.data.id, evidence: 'x' }, { actor: 'model' })
   const out = bus._internal.db().prepare('SELECT * FROM event_outbox WHERE event_id=?').get(env.event_ids[0])
   const envelope = JSON.parse(out.payload)
   assert.ok(envelope.payload.secret === undefined, 'redact 后 secret 不在 payload')
@@ -624,7 +734,7 @@ test('重放: bus_replay 重放 async 订阅者，二次重放零副作用', asy
   let calls = 0
   bus.events.subscribe('vuln.signal.confirmed', async () => { calls++; return { ok: true, data: {} } }, { mode: 'async', as: 'reactor' })
   const seed = await bus.dispatch('vuln', 'register_signal', { title: '重放测试信号一二三四五', host: 'l.example.com' }, { actor: 'model' })
-  const env = await bus.dispatch('vuln', 'confirm', { id: seed.data.id, evidence: 'x' }, { actor: 'model' })
+  const env = await bus.dispatch('vuln', 'confirm', { finding_id: seed.data.id, evidence: 'x' }, { actor: 'model' })
   await bus._internal.dispatcherTick()
   const c1 = calls
   assert.ok(c1 >= 1)
@@ -652,17 +762,94 @@ test('别名: 静态别名 finding_add → vuln_register_signal 过全管线 + d
   assert.ok(audit.some((a) => a.kind === 'deprecated_use' && a.alias === 'finding_add'))
 })
 
-test('别名: 分派别名 finding_update status=confirmed → 路由到 vuln_confirm（schema 拦截证明路由）', async () => {
+test('别名: 分派别名 finding_update status=confirmed 缺 evidence → E_EVIDENCE_REQUIRED + hint（收紧）', async () => {
   const dir = tmpDir()
-  const aliasesFile = writeAliases(dir, { aliases: {}, dispatch_aliases: { finding_update: { router: 'status_router' } } })
+  const aliasesFile = writeAliases(dir, { aliases: {}, dispatch_aliases: { finding_update: { router: 'status_router', domain: 'vuln' } } })
   const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile, auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
   bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
-  const env = await bus.dispatch('vuln', 'finding_update', { status: 'confirmed', id: 1 }, { actor: 'model' })
+  const env = await bus.dispatch('', 'finding_update', { status: 'confirmed', id: 1 }, { actor: 'model' })
   assert.equal(env.ok, false)
-  assert.equal(env.error.code, 'E_SCHEMA', '路由到 vuln_confirm 后 evidence 缺失 → E_SCHEMA')
-  assert.match(env.error.message, /evidence/)
+  assert.equal(env.error.code, 'E_EVIDENCE_REQUIRED', 'confirm 别名缺 evidence 收紧（02-vuln §3.2）')
+  assert.ok(env.error.hint)
   const audit = readAudit(dir)
   assert.ok(audit.some((a) => a.kind === 'deprecated_use' && a.alias === 'finding_update'))
+})
+
+test('别名: finding_update accepted→submit(vendor_status=accepted) / new→E_STATE / 当前值+note→note', async () => {
+  const dir = tmpDir()
+  const aliasesFile = writeAliases(dir, { aliases: {}, dispatch_aliases: { finding_update: { router: 'status_router', domain: 'vuln' } } })
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile, auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  const seeded = await bus.dispatch('vuln', 'register_signal', { title: '验收用信号一二三四五六', host: 'ac.example.com', secret: 's1' }, { actor: 'model' })
+  assert.equal(seeded.ok, true)
+  const id = seeded.data.id
+  const noteOnly = await bus.dispatch('', 'finding_update', { status: 'new', id, note: '补充观察' }, { actor: 'model' })
+  assert.equal(noteOnly.ok, true)
+  assert.equal(noteOnly.cmd, 'note', 'status=当前值且带 note → vuln_note')
+  const acc = await bus.dispatch('', 'finding_update', { status: 'accepted', id }, { actor: 'model' })
+  assert.equal(acc.ok, true)
+  assert.equal(acc.cmd, 'submit')
+  assert.equal(acc.data.vendor_status, 'accepted')
+  const rollback = await bus.dispatch('', 'finding_update', { status: 'new', id }, { actor: 'model' })
+  assert.equal(rollback.ok, false)
+  assert.equal(rollback.error.code, 'E_STATE', 'status=new 回退 → E_STATE')
+})
+
+test('别名: finding_add 按 actor 分派（model→register_signal / webhook→register_candidate / info 降级旁路）', async () => {
+  const dir = tmpDir()
+  const aliasesFile = writeAliases(dir, { aliases: {}, dispatch_aliases: { finding_add: { router: 'finding_add_router', domain: 'vuln' } } })
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile, auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  const m = await bus.dispatch('', 'finding_add', { title: '模型信号一二三四五六', host: 'a.example.com', severity: 'high' }, { actor: 'model' })
+  assert.equal(m.ok, true)
+  assert.equal(m.cmd, 'register_signal')
+  const def = await bus.dispatch('', 'finding_add', { title: '缺 severity 默认 info 降级候选', host: 'd.example.com', source: 'agent' }, { actor: 'model' })
+  assert.equal(def.ok, true)
+  assert.equal(def.cmd, 'register_candidate', '缺 severity 按 v4 默认 info → 降级候选')
+  const w = await bus.dispatch('', 'finding_add', { title: 'webhook 候选', host: 'w.example.com', severity: 'medium', source: 'xray' }, { actor: 'webhook' })
+  assert.equal(w.ok, true)
+  assert.equal(w.cmd, 'register_candidate')
+  const inf = await bus.dispatch('', 'finding_add', { title: 'info 降级候选', host: 'i.example.com', severity: 'info', source: 'agent' }, { actor: 'model' })
+  assert.equal(inf.ok, true)
+  assert.equal(inf.cmd, 'register_candidate', 'severity=info 保留 v4 行为降级候选（actor 旁路仅别名期）')
+  const audit = readAudit(dir)
+  const withVia = audit.filter((a) => a.kind === 'command' && a.result === 'ok' && a.via_alias === 'finding_add')
+  assert.ok(withVia.length >= 3, '全部 alias 调用审计带 via_alias 可追踪')
+  const direct = await bus.dispatch('vuln', 'register_candidate', { title: '直连禁入', host: 'x.example.com', severity: 'high', source: 'agent' }, { actor: 'model' })
+  assert.equal(direct.ok, false)
+  assert.equal(direct.error.code, 'E_ACTOR_FORBIDDEN', '直连 C2 模型禁入——负向保障不因旁路放宽')
+})
+
+test('别名: finding_add 同指纹异参 → E_IDEMPOTENT_CONFLICT 转译 v4 dup 形状 {ok,dup:true,id}', async () => {
+  const dir = tmpDir()
+  const aliasesFile = writeAliases(dir, { aliases: {}, dispatch_aliases: { finding_add: { router: 'finding_add_router', domain: 'vuln' } } })
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile, auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  const first = await bus.dispatch('', 'finding_add', { title: '指纹冲突测试信号一二三', host: 'dup.example.com', severity: 'high', secret: 'a' }, { actor: 'model' })
+  assert.equal(first.ok, true)
+  const second = await bus.dispatch('', 'finding_add', { title: '指纹冲突测试信号一二三', host: 'dup.example.com', severity: 'high', secret: 'b' }, { actor: 'model' })
+  assert.equal(second.ok, true, '同指纹异参不报错')
+  assert.equal(second.dup, true, '转译为 v4 dup 形状')
+  assert.equal(second.id, first.data.id, 'dup 指向已存在行')
+  assert.equal(second.compat, 'v4-dup-shape')
+})
+
+test('别名: finding_query → vuln_list（include_noise→all / noise=1→candidate）+ deprecated_use', async () => {
+  const dir = tmpDir()
+  const aliasesFile = writeAliases(dir, { aliases: {}, dispatch_aliases: { finding_query: { router: 'query_visibility_router', domain: 'vuln' } } })
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile, auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  for (let i = 0; i < 3; i++) await bus.dispatch('vuln', 'register_signal', { title: `查询别名信号${i}一二三四五`, host: `q${i}.example.com` }, { actor: 'model' })
+  const q1 = await bus.query('', 'finding_query', { include_noise: true }, { actor: 'model' })
+  assert.equal(q1.ok, true)
+  assert.equal(q1.domain, 'vuln')
+  assert.equal(q1.query, 'list')
+  assert.equal(q1.total, 3)
+  const q2 = await bus.query('', 'finding_query', { noise: '1' }, { actor: 'model' })
+  assert.equal(q2.ok, true)
+  assert.equal(q2.query, 'list')
+  const audit = readAudit(dir)
+  assert.ok(audit.some((a) => a.kind === 'deprecated_use' && a.alias === 'finding_query'))
 })
 
 // ---------------------------------------------------------------------------
@@ -716,8 +903,8 @@ test('并发: 同进程两个并发 dispatch（异参异幂等键）→ 一成�
   const seed = await bus.dispatch('vuln', 'register_signal', { title: '并发测试信号一二三四五六', host: 'n.example.com' }, { actor: 'model' })
   const id = seed.data.id
   const [r1, r2] = await Promise.all([
-    bus.dispatch('vuln', 'confirm', { id, evidence: 'run_proc_a' }, { actor: 'model' }),
-    bus.dispatch('vuln', 'confirm', { id, evidence: 'run_proc_b' }, { actor: 'model' }),
+    bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_proc_a' }, { actor: 'model' }),
+    bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_proc_b' }, { actor: 'model' }),
   ])
   const oks = [r1, r2].filter((r) => r.ok).length
   const eStates = [r1, r2].filter((r) => !r.ok && r.error.code === 'E_STATE').length
@@ -759,19 +946,22 @@ const backend = { capabilities: { vuln_confirm: 'full', vuln_reject: 'full', vul
 } }
 const handlers = {
   vuln_confirm: async (args, repo) => {
-    const row = repo.getRow(args.id)
-    if (!repo.transitionRow(args.id, 'confirmed', 0, 'new')) throw Object.assign(new Error('候选已处于终态'), { code: 'E_STATE', hint: '终态不可再流转' })
-    return { data: { id: args.id, status: 'confirmed', noise: 0 }, events: [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.id, evidence: args.evidence } }], before: { status: row.status, noise: row.noise }, after: { status: 'confirmed', noise: 0 } }
+    const row = repo.getRow(args.finding_id)
+    if (!repo.transitionRow(args.finding_id, 'confirmed', 0, 'new')) throw Object.assign(new Error('候选已处于终态'), { code: 'E_STATE', hint: '终态不可再流转' })
+    return { data: { id: args.finding_id, status: 'confirmed', noise: 0 }, events: [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, evidence: args.evidence } }], before: { status: row.status, noise: row.noise }, after: { status: 'confirmed', noise: 0 } }
   },
-  vuln_reject: async (args, repo) => { repo.updateRow(args.id, 'rejected', 0); return { data: { id: args.id }, events: [] } },
+  vuln_reject: async (args, repo) => { repo.updateRow(args.finding_id, 'rejected', 0); return { data: { id: args.finding_id }, events: [] } },
   vuln_register_signal: async (args, repo) => { const nid = repo.insertRow(args.title, args.host); return { data: { id: nid }, events: [{ name: 'vuln.signal.registered', payload: { finding_id: nid } }] } },
+  vuln_register_candidate: async (args, repo) => { const nid = repo.insertRow(args.title, args.host); repo.updateRow(nid, 'new', 1); return { data: { id: nid, noise: 1 }, events: [{ name: 'vuln.candidate.registered', payload: {} }] } },
+  vuln_submit: async (args, repo) => { repo.updateRow(args.finding_id, 'submitted', 0); return { data: { id: args.finding_id, status: 'submitted' }, events: [{ name: 'vuln.signal.submitted', payload: {} }] } },
+  vuln_note: async (args, repo) => ({ data: { id: args.finding_id, noted: true }, events: [] }),
   queries: {
     vuln_get: async (args, repo) => repo.getRow(args.id) || { not_found: true },
     vuln_list: async (args, repo) => { const rows = repo.listRows(); return { rows, total: rows.length } },
   },
   invariants: {
     candidateActive: async (args, repo) => {
-      const row = repo.getRow(args.id)
+      const row = repo.getRow(args.finding_id)
       if (!row) return { code: 'E_NOT_FOUND', message: 'missing' }
       if (row.status !== 'new') return { code: 'E_STATE', message: '已终态', hint: '用 vuln_note' }
       return null
@@ -784,7 +974,7 @@ const bus = createBus({ dataDir: ${JSON.stringify(dir)}, dbFile: ${JSON.stringif
   auditFile: ${JSON.stringify(path.join(dir, 'audit.jsonl'))},
   eventsDir: ${JSON.stringify(path.join(dir, 'events'))}, sidecars: false, startDispatcherTimer: false })
 bus.registry.register({ manifest, handlers, backend })
-const env = await bus.dispatch('vuln', 'confirm', { id: ${id}, evidence: ${JSON.stringify(evidence)} }, { actor: 'model' })
+const env = await bus.dispatch('vuln', 'confirm', { finding_id: ${id}, evidence: ${JSON.stringify(evidence)} }, { actor: 'model' })
 process.stdout.write(JSON.stringify({ ok: env.ok, code: env.error ? env.error.code : null }))
 bus._internal.close()
 `
@@ -846,4 +1036,59 @@ test('events_tail: 单域必填 + 尾读', async () => {
   assert.equal(q.ok, true)
   assert.ok(q.rows.length >= 1)
   assert.equal(q.rows[0].domain, 'vuln')
+})
+
+// ---------------------------------------------------------------------------
+// 19. 双投影接线（1.3）：ToolProjector 域注册后再投影 + RpcProjector /silksec-domain
+// ---------------------------------------------------------------------------
+
+test('投影: 域注册成功后工具面再投影（vuln_* 可见 / register_candidate 模型不可见 / 别名同可见性）', async () => {
+  const dir = tmpDir()
+  const aliasesFile = writeAliases(dir, { aliases: { finding_add: 'vuln_register_signal' }, dispatch_aliases: {} })
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile, auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
+  const registered = []
+  const fakeCtx = { tools: { register: (def) => registered.push(def) } }
+  // 模拟 apply 时序：先投影（此时域未注册，只有 bus 工具）
+  bus._internal.setToolsCtx(fakeCtx)
+  const first = bus._internal.registerTools(fakeCtx)
+  assert.ok(registered.some((t) => t.name === 'bus_status'), 'bus 查询工具对 model 投影')
+  assert.ok(!registered.some((t) => t.name.startsWith('vuln_')), '域注册前不投影 vuln 工具（时序缺陷修复点）')
+  // 域注册（模拟 vuln 插件 apply 的 registry.register）→ 自动再投影
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  const vulnNames = registered.map((t) => t.name).filter((n) => n.startsWith('vuln_'))
+  for (const expect of ['vuln_register_signal', 'vuln_confirm', 'vuln_reject', 'vuln_list', 'vuln_get']) {
+    assert.ok(registered.some((t) => t.name === expect), `工具 ${expect} 已投影`)
+  }
+  assert.ok(!registered.some((t) => t.name === 'vuln_register_candidate'), 'vuln_register_candidate 模型不可见（负向保障）')
+  const findingAdd = registered.find((t) => t.name === 'finding_add')
+  assert.ok(findingAdd, '静态别名 finding_add 投影（目标对 model 可见）')
+  assert.match(findingAdd.description, /兼容别名/)
+  // 重复注册（同内容幂等）不重复投影
+  const before = registered.length
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  assert.equal(registered.length, before, '再投影去重（同名工具不重复注册）')
+})
+
+test('投影: RpcProjector /silksec-domain vuln.* 路由 + 写操作 operator 注入审计', async () => {
+  const dir = tmpDir()
+  let handler = null
+  const connection = { rpc: { handle: (path, fn, opts) => { handler = fn; return () => {} } } }
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false, rpcOperator: () => 'op_singll' })
+  bus._internal.registerRpc(connection)
+  assert.ok(typeof handler === 'function', '/silksec-domain handler 已挂载')
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  const seed = await bus.dispatch('vuln', 'register_signal', { title: 'RPC 投影测试信号一二三', host: 'r.example.com' }, { actor: 'model' })
+  const rpcRes = await handler('vuln.confirm', { finding_id: seed.data.id, evidence: 'run_rpc_a' })
+  assert.equal(rpcRes.ok, true)
+  assert.equal(rpcRes.value.ok, true)
+  assert.equal(rpcRes.value.cmd, 'confirm')
+  const audit = readAudit(dir)
+  const rec = audit.find((a) => a.kind === 'command' && a.cmd === 'confirm' && a.result === 'ok')
+  assert.ok(rec, '写操作审计落盘')
+  assert.equal(rec.actor, 'dashboard')
+  assert.equal(rec.operator, 'op_singll', 'RPC 写操作带 operator 审计')
+  const bad = await handler('vuln.confirm', { finding_id: 9999, evidence: 'x' })
+  assert.equal(bad.ok, true)
+  assert.equal(bad.value.ok, false)
+  assert.equal(bad.value.error.code, 'E_NOT_FOUND')
 })
