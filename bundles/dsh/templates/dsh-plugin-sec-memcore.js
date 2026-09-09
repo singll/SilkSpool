@@ -758,6 +758,9 @@ async function sweep({ dryRun = false, agentsMd = true } = {}) {
 // -------------------- AGENTS.md 受管区块 --------------------
 const BLOCK_BEGIN = '<!-- memcore:begin -->'
 const BLOCK_END = '<!-- memcore:end -->'
+// 写前 diff 用：header 里的生成时间每次 sweep 都会变，剥离后才比较内容是否真变——
+// 避免"内容没变但时间戳变了 → 重写 → mtime bump → DSH 向活跃会话重复注入 AGENTS.md"。
+const STRIP_TS = /## 记忆基架状态（memcore 引擎生成 [^\n]*\n/
 function rewriteAgentsMd(d) {
   const top = d.prepare("SELECT id, scenario, takeaway, score, adopted FROM exp_cards WHERE mem_class='permanent' AND status='active' ORDER BY score DESC LIMIT 5").all()
   const envIssues = d.prepare("SELECT key, value FROM blackboard WHERE key LIKE '[env-issue]%' AND status='active' AND (expires_at IS NULL OR expires_at > ?)").all(Date.now())
@@ -766,10 +769,10 @@ function rewriteAgentsMd(d) {
     `## 记忆基架状态（memcore 引擎生成 ${new Date().toISOString().slice(0, 16)}，标记内勿手改）`,
     '',
     '### 高分经验卡（permanent·active Top5，exp_search 可查全量）',
-    ...(top.length ? top.map((c) => `- #${c.id} ${c.scenario} → ${String(c.takeaway).slice(0, 80)}（score ${c.score}, adopted ${c.adopted}）`) : ['- （暂无——新卡经 candidate 评审/自动晋升后进入）']),
+    ...(top.length ? top.map((c) => `- #${c.id} ${c.scenario} → ${String(c.takeaway).slice(0, 30)}（score ${c.score}, adopted ${c.adopted}）`) : ['- （暂无——新卡经 candidate 评审/自动晋升后进入）']),
     '',
     '### 现行环境故障 [env-issue]',
-    ...(envIssues.length ? envIssues.map((k) => `- ${k.key}: ${String(k.value).slice(0, 100)}`) : ['- （无）']),
+    ...(envIssues.length ? envIssues.map((k) => `- ${k.key}: ${String(k.value).slice(0, 40)}`) : ['- （无）']),
     '',
     '### 记忆纪律（写记忆前三问，答案写进 justification）',
     '- 它会过期吗？→ 会：ephemeral(≤30d)/durable(需复验)；不会且换目标仍有用：才配进经验卡(candidate 起步)',
@@ -788,10 +791,16 @@ function rewriteAgentsMd(d) {
   let existing = ''
   try { existing = fs.readFileSync(AGENTS_MD, 'utf8') } catch { /* 不存在 */ }
   const bi = existing.indexOf(BLOCK_BEGIN); const ei = existing.indexOf(BLOCK_END)
+  // 内容未变（剥离生成时间后一致）则不重写——避免每 6h sweep 因时间戳变化 bump mtime，
+  // 触发 DSH 对活跃会话重复注入 "Updated instructions from AGENTS.md"（长会话里同一块出现多次）。
+  if (bi >= 0 && ei > bi && existing.slice(bi, ei + BLOCK_END.length).replace(STRIP_TS, '') === block.replace(STRIP_TS, '')) {
+    return false
+  }
   const next = (bi >= 0 && ei > bi)
     ? existing.slice(0, bi) + block + existing.slice(ei + BLOCK_END.length)
     : (existing ? existing.trimEnd() + '\n\n' : '') + block + '\n'
   fs.writeFileSync(AGENTS_MD, next)
+  return true
 }
 
 // -------------------- 状态查询（看板/诊断用） --------------------
