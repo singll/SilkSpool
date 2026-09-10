@@ -322,7 +322,7 @@ export const TASK_MANIFEST = {
       agent_note: '列出任务（看板数据源）。按 program/status/phase/bucket(active|history)/scheduled(only|exclude) 过滤，priority 升序。',
     },
     task_get: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'system', 'reactor'],
       params: schema({ task_id: int() }, ['task_id']),
       agent_note: '取单个任务全列（调度/预算/模型覆盖/最近 run/证据链尾部）。',
     },
@@ -687,7 +687,7 @@ function makeHandlers(opts) {
       }
       return {
         data: { task_id: Number(args.task_id), status, next_run_at: nextRunAt, run_recorded: !!runId, guard: { checked: guard.checked, missing: guard.missing } },
-        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, guard: { checked: guard.checked, missing: guard.missing }, truth, cause: 'run' } }],
+        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, cause: 'run' } }],
         after: { task_id: Number(args.task_id), status, ok },
       }
     },

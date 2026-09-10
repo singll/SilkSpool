@@ -98,3 +98,7 @@ dispatch_aliases:
     router: task_status_router
     domain: task
     warn: "task_update 是自由态旧动词，已按 status 分派（blocked→block/queued→resume/cancelled→cancel）；done/failed/running 通道关闭（收尾权归调度器/审批）——请改用语义动词"
+  fgs_update:
+    router: fgs_update_router
+    domain: fgs
+    warn: "fgs_update 是自由态旧动词，已按 status 分派（running→start/done→complete/failed→fail/blocked→block/deprecated→deprecate；无 status→annotate）——请改用语义动词"

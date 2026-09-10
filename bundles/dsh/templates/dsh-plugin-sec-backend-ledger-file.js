@@ -188,6 +188,13 @@ function createRepo(dataDir) {
     hasHandoff(program, date) {
       return fs.existsSync(path.join(pipelineRoot(program), `handoff-${date}.md`))
     },
+    // FGS 决策链摘要追加（11-ledger §2.3 归属裁决：handoff 归 ledger 域，appendFgsToHandoff 直写归零）
+    appendHandoff(program, date, content) {
+      const dir = ensurePipeline(program)
+      const file = path.join(dir, `handoff-${date}.md`)
+      fs.appendFileSync(file, content)
+      return { file, appended: true }
+    },
 
     // ---- stats ----
     statAttemptsDelta(program, sinceMs) {

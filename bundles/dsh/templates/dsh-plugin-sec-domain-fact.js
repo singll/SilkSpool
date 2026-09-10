@@ -60,7 +60,7 @@ export const FACT_MANIFEST = {
   },
   commands: {
     fact_upsert: {
-      actor: ['model', 'dashboard', 'script', 'approval', 'system'],
+      actor: ['model', 'dashboard', 'script', 'approval', 'system', 'reactor'],
       schema: schema({
         program_id: str({ minLength: 1 }),
         fact_key: str({ minLength: 1 }),
@@ -373,6 +373,7 @@ function computeBbLifecycle({ mem_class, ttl_days, justification, scope }, now) 
 
 function makeHandlers(opts) {
   const dispatchRef = opts.dispatch
+  const queryRef = opts.query
 
   function throwErr(code, message, hint, retryable = false) {
     throw Object.assign(new Error(message), { code, hint, retryable })
@@ -740,21 +741,59 @@ function makeHandlers(opts) {
     },
   }
 
+  // FGS 沉淀（06-fact §2.3，原 persistFgsFacts 直写归零）：查询 fgs 域 done fact 节点，
+  // 对满足沉淀判据（summary + detail/evidence 非空）的节点逐条 fact_upsert（幂等）。
+  async function persistFgsFactsForTask(taskId, programId) {
+    if (!dispatchRef || !queryRef) return 0
+    let list = null
+    try { list = await queryRef('fgs', 'list', { task_id: taskId, type: 'fact', status: 'done', limit: 500 }, { actor: 'reactor' }) } catch { return 0 }
+    const rows = list && list.ok && Array.isArray(list.rows) ? list.rows : []
+    let n = 0
+    for (const node of rows) {
+      const c = node.content || {}
+      const summary = String(c.summary || '').trim()
+      const detail = String(c.detail || c.evidence || '').trim()
+      if (!summary || !detail) continue
+      try {
+        const r = await dispatchRef('fact', 'upsert', {
+          program_id: programId, fact_key: `fgs/${taskId}/${node.id}`,
+          category: 'fgs', summary: summary.slice(0, 200), body: detail.slice(0, 2000),
+          confidence: 'confirmed', source: 'fgs-persist',
+          mem_class: 'durable', revalidate_days: 30,
+          justification: `FGS 任务 #${taskId} 结论性事实沉淀（决策链留痕于 fgs_nodes，证据见 body）`,
+        }, { actor: 'reactor' })
+        if (r && r.ok) n++
+      } catch { /* 单节点失败不影响其余 */ }
+    }
+    return n
+  }
+
   const subscribers = {
+    // 补漏对账（弱联动）：任务成功收尾时对该任务 FGS 图 done fact 节点重放沉淀判定。
+    // 主通道（onFgsNodeDone）曾失败的节点在此补齐；fact_upsert 幂等保证对账零副作用。
     onTaskFinished: async (envelope) => {
-      if (!dispatchRef) return { ok: true, data: { skipped: true } }
-      return { ok: true, data: { skipped: true } } // 补漏对账随 fgs 域上线启用（弱联动）
-    },
-    onFgsNodeDone: async (envelope) => {
-      if (!dispatchRef) return { ok: true, data: { skipped: true } }
+      if (!dispatchRef || !queryRef) return { ok: true, data: { skipped: true } }
       const p = envelope?.payload || {}
-      if (!p.task_id || !p.node_id || !p.summary) return { ok: true, data: { skipped: true } }
-      const r = await dispatchRef('fact', 'upsert', {
-        program_id: p.program_id || '__legacy__', fact_key: `fgs/${p.task_id}/${p.node_id}`,
-        category: 'fgs', summary: String(p.summary || '').slice(0, 200), body: String(p.detail || '').slice(0, 2000),
-        confidence: 'confirmed', source: 'fgs-persist',
-      }, { actor: 'reactor' })
-      return { ok: !!r.ok, data: { skipped: false } }
+      if (!p.ok || !p.task_id) return { ok: true, data: { skipped: true } }
+      const programId = String(p.program_id || '')
+      if (!programId) return { ok: true, data: { skipped: true } }
+      const n = await persistFgsFactsForTask(p.task_id, programId)
+      return { ok: true, data: { skipped: false, persisted: n } }
+    },
+    // 主通道：fgs.node.done（async）→ type=fact 且 persist_eligible 时节点完成即沉淀。
+    // payload 只含 ID 与判据快照（14-fgs §1.5）；program_id 经 task 域 task_get 反查。
+    onFgsNodeDone: async (envelope) => {
+      if (!dispatchRef || !queryRef) return { ok: true, data: { skipped: true } }
+      const p = envelope?.payload || {}
+      if (p.type !== 'fact' || !p.persist_eligible || !p.task_id) return { ok: true, data: { skipped: true } }
+      let programId = ''
+      try {
+        const t = await queryRef('task', 'get', { task_id: p.task_id }, { actor: 'reactor' })
+        programId = t && t.ok && t.data ? String(t.data.program_id || '') : ''
+      } catch { programId = '' }
+      if (!programId) return { ok: true, data: { skipped: true } }
+      const n = await persistFgsFactsForTask(p.task_id, programId)
+      return { ok: true, data: { skipped: n === 0, persisted: n } }
     },
     onExecRunFailed: async (envelope) => {
       if (!dispatchRef) return { ok: true, data: { skipped: true } }
@@ -803,7 +842,7 @@ export function apply(ctx, config = {}) {
   try {
     ctx.inject(['secDomainBus'], (child) => {
       const bus = child.secDomainBus
-      const domain = buildFactDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) })
+      const domain = buildFactDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, n, a, c) => bus.query(d, n, a, c) })
       const res = bus.registry.register(domain)
       if (res.ok) log(`fact 域注册成功（registered=${res.registered}）`)
       else log(`fact 域注册被拒：${res.error?.code} ${res.error?.message}`)

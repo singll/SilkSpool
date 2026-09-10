@@ -388,6 +388,7 @@ const DOMAIN_OF_ROUTER = {
   exp_validate_router: 'know',
   card_usage_router: 'ledger',
   coverage_report_router: 'ledger',
+  fgs_update_router: 'fgs',
 }
 
 const BUILTIN_ROUTERS = {
@@ -528,6 +529,35 @@ const BUILTIN_ROUTERS = {
     const out = { program: args.program }
     if (args.materialize !== undefined) out.materialize = args.materialize
     return { verb: 'coverage_report', args: out }
+  },
+  // fgs_update 旧自由态动词 → 按 status 语义分派（14-fgs §3.2）：running→start、done→complete、
+  // failed→fail、blocked→block、deprecated→deprecate；仅 content/score 无 status → annotate。
+  // reason 缺失时从 content.reason 推导（v4 P17 兼容）。
+  fgs_update_router(args) {
+    const st = args.status
+    const rest = { ...args }
+    delete rest.status
+    // v4 参数名归一：fgs_update 旧工具用 id，语义动词用 node_id
+    if (rest.id !== undefined && rest.node_id === undefined) {
+      rest.node_id = rest.id
+      delete rest.id
+    }
+    if (st === undefined || st === null || st === '') {
+      if (rest.content !== undefined || rest.score !== undefined) return { verb: 'annotate', args: rest }
+      return { error: { code: 'E_SCHEMA', message: 'fgs_update 需要 status 或 content/score', hint: '状态流转用 fgs_start/complete/fail/block/deprecate；补内容用 fgs_annotate', retryable: false } }
+    }
+    const deriveReason = () => {
+      if (String(rest.reason || '').trim()) return
+      const c = rest.content
+      if (c && typeof c === 'object' && String(c.reason || '').trim()) rest.reason = String(c.reason)
+    }
+    if (st === 'running') return { verb: 'start', args: rest }
+    if (st === 'done') return { verb: 'complete', args: rest }
+    if (st === 'failed') { deriveReason(); if (!String(rest.reason || '').trim()) return { error: { code: 'E_SCHEMA', message: 'fgs_update→failed 需要 reason', hint: '失败必须写 reason——复盘依赖归因', retryable: false } }; return { verb: 'fail', args: rest } }
+    if (st === 'blocked') { deriveReason(); if (!String(rest.reason || '').trim()) return { error: { code: 'E_SCHEMA', message: 'fgs_update→blocked 需要 reason', hint: '受阻必须写 reason（在等什么）', retryable: false } }; return { verb: 'block', args: rest } }
+    if (st === 'deprecated') { deriveReason(); if (!String(rest.reason || '').trim()) return { error: { code: 'E_SCHEMA', message: 'fgs_update→deprecated 需要 reason', hint: '废弃必须写 reason（误报/重复依据）', retryable: false } }; return { verb: 'deprecate', args: rest } }
+    if (st === 'open') return { error: { code: 'E_STATE', message: 'fgs_update status=open 是回退，不合法', hint: '新节点初始即 open（fgs_add），不需要回退到 open', retryable: false } }
+    return { error: { code: 'E_STATE', message: `fgs_update 非法流转 status=${st}`, hint: '合法子集：running/done/failed/blocked/deprecated/无 status+content/score', retryable: false } }
   },
 }
 

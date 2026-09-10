@@ -247,6 +247,7 @@ export const LEDGER_MANIFEST = {
   subscribes: {
     'exec.run.completed': { handler: 'onRunCompleted', mode: 'async', as: 'reactor' },
     'approval.approved': { handler: 'onScopeApproved', mode: 'async', as: 'reactor' },
+    'task.finished': { handler: 'onTaskFinished', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -258,6 +259,7 @@ export const LEDGER_MANIFEST = {
 function makeHandlers(opts) {
   const dispatchRef = opts.dispatch
   const queryRef = opts.query
+  const backendRepoRef = opts.repoRef
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const statsCache = new Map()
 
@@ -622,6 +624,28 @@ function makeHandlers(opts) {
         return { ok: true, data: { skipped: false, error: String(e?.message) } }
       }
     },
+    // FGS 决策链摘要追加进当日 handoff（11-ledger §2.3：原 appendFgsToHandoff 文件写入归 ledger 域；
+    // 本域只调 fgs_export(format=markdown) 取内容 + 追加，fgs 域只出内容）。弱联动 best-effort。
+    onTaskFinished: async (envelope) => {
+      const p = envelope?.payload || {}
+      const program = String(p.program_id || '')
+      const taskId = Number(p.task_id)
+      if (!program || !taskId) return { ok: true, data: { skipped: true } }
+      if (!queryRef) return { ok: true, data: { skipped: true } }
+      try {
+        const exp = await queryRef('fgs', 'export', { task_id: taskId, format: 'markdown' }, { actor: 'reactor' })
+        const md = exp && exp.ok && exp.data ? String(exp.data.markdown || '') : ''
+        if (!md.trim()) return { ok: true, data: { skipped: true, reason: 'FGS 图为空' } }
+        const repo = backendRepoRef ? backendRepoRef() : null
+        if (!repo) return { ok: true, data: { skipped: false, error: 'no repo' } }
+        const date = repo.beijingDate()
+        const r = repo.appendHandoff(program, date, md)
+        return { ok: true, data: { skipped: false, file: r.file } }
+      } catch (e) {
+        log(`FGS handoff 追加失败（best-effort）: ${e?.message}`)
+        return { ok: true, data: { skipped: false, error: String(e?.message) } }
+      }
+    },
   }
 
   return { ...commands, queries, invariants, subscribers }
@@ -636,7 +660,7 @@ export function buildLedgerDomain(opts = {}) {
   const backend = createLedgerFileBackend({ dataDir })
   return {
     manifest: LEDGER_MANIFEST,
-    handlers: makeHandlers({ ...opts, dataDir }),
+    handlers: makeHandlers({ ...opts, dataDir, repoRef: () => backend.factory() }),
     backend,
   }
 }

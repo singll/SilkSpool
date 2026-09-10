@@ -498,7 +498,9 @@ export function apply(ctx) {
   })
 
   // ---- P17：FGS 图工具（Cairn_Y 融合）----
-  reg(ctx, {
+  // v5 切流（14-fgs）：fgs_add/fgs_list/fgs_next/fgs_export 由 fgs 域 ToolProjector 零改名接管，
+  // fgs_update 由 fgs_update_router 分派别名接管——旧注册停用（函数体留待删旧路径）。
+  false && reg(ctx, {
     name: 'fgs_add',
     description: '在任务 FGS 图（Fact-Goal-Step Graph）中新增一个节点。type: fact/goal/step/finding；status 默认 open；content 为 JSON 对象（summary/detail/evidence/run_id 等）；depends_on 为依赖节点 id 数组。',
     parameters: {
@@ -522,7 +524,7 @@ export function apply(ctx) {
     }),
   })
 
-  reg(ctx, {
+  false && reg(ctx, {
     name: 'fgs_update',
     description: '更新 FGS 节点状态/内容/分值。',
     parameters: {
@@ -534,7 +536,7 @@ export function apply(ctx) {
     execute: async (a) => db.fgsUpdateNode({ id: a.id, status: a.status, content: a.content, score: a.score }),
   })
 
-  reg(ctx, {
+  false && reg(ctx, {
     name: 'fgs_list',
     description: '列出某任务的 FGS 图节点，可按 type/status 过滤。',
     parameters: {
@@ -551,7 +553,7 @@ export function apply(ctx) {
     }) }),
   })
 
-  reg(ctx, {
+  false && reg(ctx, {
     name: 'fgs_next',
     description: '返回任务 FGS 图中当前可执行的 Step 列表（依赖已满足、状态 open），按 score 降序。Decide 循环用此工具决定下一步动作。',
     parameters: {
@@ -563,7 +565,7 @@ export function apply(ctx) {
     execute: async (a) => ({ ok: true, steps: db.fgsNextStep(a.task_id) }),
   })
 
-  reg(ctx, {
+  false && reg(ctx, {
     name: 'fgs_export',
     description: '导出某任务 FGS 图摘要（按 type/status 聚合），用于 handoff/交接包中的“决策链”章节。',
     parameters: {

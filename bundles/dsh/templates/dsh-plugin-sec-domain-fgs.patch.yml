@@ -1,0 +1,4 @@
+# silksec-sec-domain-fgs bundle layer
+- insert:
+    - id: sec-domain-fgs
+      name: '@silksec/sec-domain-fgs'
