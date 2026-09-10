@@ -269,6 +269,19 @@ if [ -f "$BASE_DIR/sec-fgs-domain-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-fgs-domain-plugin-setup.sh"
 fi
 
+# -------------------- 8.596 v5 scope 域插件（Phase 2 六节点：授权白名单/项目镜像/排除/规则/凭据） --------------------
+# 依赖总线（8.55）；契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-scope-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-scope-domain-plugin-setup.sh"
+fi
+
+# -------------------- 8.597 v5 approval 域插件（Phase 2 六节点：统一审批中心） --------------------
+# 依赖总线（8.55）+ scope（8.596，validate 读 scope）+ task（8.593，task-complete/budget-extend effect）+ know（8.591，knowledge-adopt effect）；
+# 契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-approval-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-approval-domain-plugin-setup.sh"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"

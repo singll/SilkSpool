@@ -1,0 +1,4 @@
+# silksec-sec-domain-scope bundle layer
+- insert:
+    - id: sec-domain-scope
+      name: '@silksec/sec-domain-scope'

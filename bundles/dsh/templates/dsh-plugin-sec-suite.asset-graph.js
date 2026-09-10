@@ -280,7 +280,8 @@ export function apply(ctx) {
 
   // -------------------- P6：program / task 工具（脊柱） --------------------
 
-  reg(ctx, {
+  // v5 切流（08-scope）：program_list 由 scope 域 ToolProjector 零改名接管——旧注册停用（函数体留待删旧路径）。
+  false && reg(ctx, {
     name: 'program_list',
     description: '列出 programs 表（scope.yml 的运行态镜像）。项目是资产/漏洞/任务的顶层作用域。',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -467,7 +468,8 @@ export function apply(ctx) {
     execute: async (a) => ({ ok: true, items: db.fpQuery({ host: a.host || '', tech: a.tech || '', program_id: a.program_id || '', limit: a.limit || 50 }) }),
   })
 
-  reg(ctx, {
+  // v5 切流（08-scope）：cred_add/cred_query 由 scope 域 ToolProjector 零改名接管——旧注册停用（函数体留待删旧路径）。
+  false && reg(ctx, {
     name: 'cred_add',
     description: '登记凭据引用（绝不存明文）。ref 指向 ctx.credentials / env 变量名；role 记录角色（越权矩阵用）。',
     parameters: {
@@ -486,7 +488,7 @@ export function apply(ctx) {
     execute: async (a) => db.credAdd({ program_id: a.program_id || null, host: a.host || '', cred_type: a.cred_type || '', ref: a.ref, role: a.role || '', note: a.note || '' }),
   })
 
-  reg(ctx, {
+  false && reg(ctx, {
     name: 'cred_query',
     description: '检索凭据引用（只返回引用，不返回明文）。',
     parameters: {

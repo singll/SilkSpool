@@ -2060,7 +2060,8 @@ export function apply(ctx, config) {
     execute: async (args, exec) => intelHunt(args || {}, exec),
   })
 
-  ctx.tools.register({
+  // v5 切流（09-approval）：approval_request 由 approval 域 ToolProjector 零改名接管——旧注册停用（函数体留待删旧路径）。
+  false && ctx.tools.register({
     name: 'approval_request',
     description: '统一审批入口（fail-closed 之下的正规放行通道）：向人工提请审批。'
       + '类型判定口径：①整个注册域归属该项目（主体核证级证据：ICP 备案主体/官网品牌一致/收购公告/SRC 规则页明示）→ kind=scope-wildcard，'
