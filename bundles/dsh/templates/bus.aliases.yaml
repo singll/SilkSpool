@@ -11,9 +11,14 @@
 #   dispatch 报 E_BUS_DOMAIN_UNKNOWN（v4 工具仍在，无断流）；report 域上线后别名自动生效。
 # Phase 2 首域：asset + endpoint 域已注册——填充 03-asset §3.2 / 04-endpoint §3.2 别名表。
 #   全走 dispatch_aliases（路由器）：分派别名不经 ToolProjector 投影，避免与 v4 旧工具同名冲突。
+# Phase 2 次节点：fact + know 域已注册——填充 06-fact §3.2 / 07-know §3.2 别名表。
+#   blackboard_set/get 是纯改名（同参直通）；fact_*/exp_*/kb_*/pb_*/vc_*/rule_* 同名零改名（无别名，
+#   直接由域动词接管工具名，v4 旧工具注册在切流时移除）；exp_validate 折叠进 exp_feedback(validated)。
 # ==============================================================================
 aliases:
   submission_draft: report_draft_submission
+  blackboard_set: fact_bb_publish
+  blackboard_get: fact_bb_read
 dispatch_aliases:
   finding_add:
     router: finding_add_router
@@ -55,3 +60,7 @@ dispatch_aliases:
     router: surface_queue_router
     domain: endpoint
     warn: "surface_queue 已改名为 endpoint_queue_surface（队列文件 owner 收编 endpoint 域）——请改用语义动词"
+  exp_validate:
+    router: exp_validate_router
+    domain: know
+    warn: "exp_validate 已折叠进 exp_feedback(verdict=validated)——请改用 exp_feedback"

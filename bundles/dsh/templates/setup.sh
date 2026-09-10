@@ -233,6 +233,18 @@ if [ -f "$BASE_DIR/sec-endpoint-domain-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-endpoint-domain-plugin-setup.sh"
 fi
 
+# -------------------- 8.59 v5 fact 域插件（Phase 2 次节点：事实图谱/黑板/负知识） --------------------
+# 依赖总线（8.55）；契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-fact-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-fact-domain-plugin-setup.sh"
+fi
+
+# -------------------- 8.591 v5 know 域插件（Phase 2 次节点：知识六仓） --------------------
+# 依赖总线（8.55）；契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-know-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-know-domain-plugin-setup.sh"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"

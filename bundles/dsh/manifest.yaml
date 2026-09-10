@@ -235,6 +235,19 @@ templates:
   - dsh-plugin-sec-domain-endpoint.contract-endpoint.test.js
   - dsh-plugin-sec-backend-endpoint-sqlite.js
   - sec-endpoint-domain-plugin-setup.sh
+  # --- v5 fact 域插件（Phase 2 次节点：事实图谱/黑板环境层/负知识，契约 06-fact.md）---
+  - dsh-plugin-sec-domain-fact.js
+  - dsh-plugin-sec-domain-fact.patch.yml
+  - dsh-plugin-sec-domain-fact.contract-fact.test.js
+  - dsh-plugin-sec-backend-fact-sqlite.js
+  - sec-fact-domain-plugin-setup.sh
+  # --- v5 know 域插件（Phase 2 次节点：知识六仓 exp/kb/rules/vulncards/harvest，契约 07-know.md）---
+  - dsh-plugin-sec-domain-know.js
+  - dsh-plugin-sec-domain-know.patch.yml
+  - dsh-plugin-sec-domain-know.contract-know.test.js
+  - dsh-plugin-sec-backend-know-sqlite.js
+  - dsh-plugin-sec-backend-know-file.js
+  - sec-know-domain-plugin-setup.sh
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---
   - retention.sh
   # --- SQLite 一致性快照备份 + 紧急恢复（P0-5：DB down 应急 + 集中存储归宿）---

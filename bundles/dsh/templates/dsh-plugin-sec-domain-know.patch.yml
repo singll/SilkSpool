@@ -1,0 +1,4 @@
+# silksec-sec-domain-know bundle layer
+- insert:
+    - id: sec-domain-know
+      name: '@silksec/sec-domain-know'

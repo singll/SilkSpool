@@ -230,40 +230,8 @@ export function apply(ctx) {
     execute: async (a) => db.submissionDraft(a.finding_id, { platform: a.platform || '' }),
   })
 
-  reg(ctx, {
-    name: 'blackboard_set',
-    description: '写事实黑板（跨会话共享）：凭据引用/存活主机/已试路径/中间结论。key 如 cred:example.com:admin。'
-      + 'memcore 治理：默认 ephemeral 7 天到期自动归档；环境故障用 [env-issue] 前缀 key；timeline 键（带日期快照）只追加不可改写。'
-      + '可用 mem_class/ttl_days/justification 自声明。',
-    parameters: {
-      type: 'object',
-      properties: {
-        key: { type: 'string' },
-        value: { type: 'string' },
-        mem_class: { type: 'string', enum: ['ephemeral', 'timeline'] },
-        ttl_days: { type: 'number', description: 'ephemeral 存活天数（1小时-30天）' },
-        justification: { type: 'string', description: '分类理由（可选）' },
-        scope: { type: 'string' },
-      },
-      required: ['key', 'value'],
-      additionalProperties: false,
-    },
-    execute: async (a) => db.bbSet(a.key, a.value, a),
-  })
-
-  reg(ctx, {
-    name: 'blackboard_get',
-    description: '读事实黑板。带 key 读单条，不带列出最近 100 条。memcore 治理下默认不返回 timeline/已归档/已过期项；reader=review 全量。',
-    parameters: {
-      type: 'object',
-      properties: {
-        key: { type: 'string' },
-        reader: { type: 'string', enum: ['task', 'review'] },
-      },
-      additionalProperties: false,
-    },
-    execute: async (a) => ({ ok: true, result: db.bbGet(a.key, a.reader === 'review' ? 'review' : 'task') }),
-  })
+  // v5：blackboard_set/blackboard_get 由 fact 域接管（fact_bb_publish/fact_bb_read 别名直通）；
+  // fact_* 工具由 fact 域 ToolProjector 投影（零改名），此处 v4 注册移除避免同名冲突。
 
   reg(ctx, {
     name: 'asset_stats',
@@ -455,124 +423,8 @@ export function apply(ctx) {
   })
 
   // -------------------- P8：事实图谱 / 指纹 / 凭据 工具 --------------------
-
-  reg(ctx, {
-    name: 'fact_upsert',
-    description: '写入/覆盖一条事实（跨会话共享，边渗透边记录）。fact_key 格式 category/slug（如 auth/cred-admin、note/failed-xxx）。'
-      + 'summary 一行索引会注入 prompt，body 按需 fact_get 拉取。confidence: confirmed/tentative/deprecated。'
-      + 'memcore 治理：note 类默认 ephemeral 14 天，其余 durable 30 天复验；可用 mem_class/ttl_days/revalidate_days/justification 自声明。',
-    parameters: {
-      type: 'object',
-      properties: {
-        program_id: { type: 'string' },
-        fact_key: { type: 'string' },
-        category: { type: 'string', description: 'auth/target/note/finding/chain/exploit/asset' },
-        summary: { type: 'string' },
-        body: { type: 'string', description: '完整可复现上下文' },
-        confidence: { type: 'string', enum: ['confirmed', 'tentative', 'deprecated'] },
-        pinned: { type: 'integer', description: '1=置顶' },
-        related_finding_id: { type: 'integer' },
-        source: { type: 'string' },
-        mem_class: { type: 'string', enum: ['durable', 'ephemeral', 'timeline'], description: '记忆类别（缺省按 category 推导）' },
-        ttl_days: { type: 'number', description: 'ephemeral 存活天数（1-30）' },
-        revalidate_days: { type: 'number', description: 'durable 复验期限（7-90）' },
-        justification: { type: 'string', description: '分类理由（可选，写记忆前三问的答案）' },
-      },
-      required: ['program_id', 'fact_key'],
-      additionalProperties: false,
-    },
-    execute: async (a) => db.factUpsert({ ...a, intent: { mem_class: a.mem_class, ttl_days: a.ttl_days, revalidate_days: a.revalidate_days, justification: a.justification } }),
-  })
-
-  reg(ctx, {
-    name: 'fact_get',
-    description: '读单条事实全文（含 body）。摘要不够时按需拉取，禁止臆造。',
-    parameters: {
-      type: 'object',
-      properties: { program_id: { type: 'string' }, fact_key: { type: 'string' } },
-      required: ['program_id', 'fact_key'],
-      additionalProperties: false,
-    },
-    execute: async (a) => ({ ok: true, fact: db.factGet(a.program_id, a.fact_key) }),
-  })
-
-  reg(ctx, {
-    name: 'fact_search',
-    description: '检索事实（按 program/category/关键词，summary+key+body LIKE）。返回索引（不含 body）。memcore 治理下默认不返回 timeline/已归档/已过期项，cooling 项带标记（用到即复验）。',
-    parameters: {
-      type: 'object',
-      properties: {
-        program_id: { type: 'string' },
-        category: { type: 'string' },
-        q: { type: 'string' },
-        limit: { type: 'integer' },
-        reader: { type: 'string', enum: ['task', 'review'], description: 'review=复盘角色全量可见（含 timeline/归档）' },
-      },
-      additionalProperties: false,
-    },
-    execute: async (a) => ({ ok: true, items: db.factSearch({ program_id: a.program_id || '', category: a.category || '', q: a.q || '', limit: a.limit || 50, role: a.reader === 'review' ? 'review' : 'task' }) }),
-  })
-
-  reg(ctx, {
-    name: 'fact_link',
-    description: '建立两条事实的关系边。edge_type: resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits。',
-    parameters: {
-      type: 'object',
-      properties: {
-        program_id: { type: 'string' },
-        src_key: { type: 'string' },
-        dst_key: { type: 'string' },
-        edge_type: { type: 'string' },
-        confidence: { type: 'string' },
-      },
-      required: ['program_id', 'src_key', 'dst_key', 'edge_type'],
-      additionalProperties: false,
-    },
-    execute: async (a) => db.factLink(a),
-  })
-
-  reg(ctx, {
-    name: 'fact_graph',
-    description: '返回某条事实的关系子图（节点 + 出边 + 入边）。资产关系/攻击链可遍历。',
-    parameters: {
-      type: 'object',
-      properties: { program_id: { type: 'string' }, fact_key: { type: 'string' } },
-      required: ['program_id', 'fact_key'],
-      additionalProperties: false,
-    },
-    execute: async (a) => db.factGraph(a.program_id, a.fact_key),
-  })
-
-  reg(ctx, {
-    name: 'fact_reindex',
-    description: '事实图谱自动建边（P2-1）：扫描项目全部事实，按共享域名根 / C 段建关系边，让孤立事实成图。返回建边数。周期或新增事实后调用。',
-    parameters: {
-      type: 'object',
-      properties: { program_id: { type: 'string' } },
-      required: ['program_id'],
-      additionalProperties: false,
-    },
-    execute: async (a) => db.factReindexEdges(a.program_id),
-  })
-
-  reg(ctx, {
-    name: 'neg_check',
-    description: '负知识账本（P9 negative-ledger 内建）：查 note/* 已证伪路径（验证失败/前提不满足），派单前拦截重复尝试。',
-    parameters: {
-      type: 'object',
-      properties: {
-        program_id: { type: 'string' },
-        q: { type: 'string', description: '目标/路径关键词' },
-        limit: { type: 'integer' },
-      },
-      required: ['program_id'],
-      additionalProperties: false,
-    },
-    execute: async (a) => {
-      const items = db.factSearch({ program_id: a.program_id, category: 'note', q: a.q || '', limit: a.limit || 20 })
-      return { ok: true, total: items.length, failed_paths: items, warning: items.length ? '以下路径已证伪，避免重复尝试' : '无已知证伪路径' }
-    },
-  })
+  // v5：fact_upsert/fact_get/fact_search/fact_link/fact_graph/fact_reindex/neg_check
+  // 由 fact 域接管（零改名，ToolProjector 投影），此处 v4 注册移除避免同名冲突。
 
   reg(ctx, {
     name: 'eval_stats',

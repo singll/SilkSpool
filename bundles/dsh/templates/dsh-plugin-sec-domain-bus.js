@@ -42,6 +42,10 @@ const ACTOR_WHITELIST = new Set([
 ])
 const BANNED_VERB_WORDS = ['update', 'set', 'save', 'modify']
 const BANNED_PARAM_NAMES = ['status', 'to', 'state']
+// know 域子仓前缀豁免（宪法 §二）：exp_update / vc_save / pb_save 是 v4 内化的语义动词名
+// （exp_update=内容以新代旧的原子重写、vc_save/pb_save=状态机语义动词），非自由态 update/save；
+// 由 07-know.md §1.1 命名裁定背书，禁用词子串检查对它们豁免。
+const BANNED_WORD_EXEMPT_VERBS = new Set(['exp_update', 'vc_save', 'pb_save'])
 
 const log = (msg) => { try { process.stderr.write(`[sec-domain-bus] ${msg}\n`) } catch { /* noop */ } }
 
@@ -294,12 +298,13 @@ export function validateManifestLint(manifest) {
   const queries = manifest.queries || {}
   const events = manifest.events || {}
   const subscribes = manifest.subscribes || {}
+  let defForParam = null
 
   for (const [full, def] of Object.entries(commands)) {
     const verb = stripDomainPrefix(full, manifest.domain)
     // 只校验动词本身（禁用词约束的是动词命名，非域前缀——asset 域名含 "set" 子串是合法域名，
-    // 若连 full 一起查会把 asset_* 全误杀）
-    const bannedHit = BANNED_VERB_WORDS.filter((w) => verb.includes(w))
+    // 若连 full 一起查会把 asset_* 全误杀）；know 域子仓豁免动词跳过（见常量注）。
+    const bannedHit = BANNED_WORD_EXEMPT_VERBS.has(verb) ? [] : BANNED_VERB_WORDS.filter((w) => verb.includes(w))
     if (bannedHit.length) errs.push(`R2 禁用词：动词 ${full} 含 ${bannedHit.join('/')}`)
     if (!isPlainObject(def)) { errs.push(`命令 ${full} 定义缺失`); continue }
     if (!Array.isArray(def.actor) || def.actor.length === 0) errs.push(`命令 ${full} actor 白名单为空`)
@@ -329,13 +334,21 @@ export function validateManifestLint(manifest) {
   const paramCheck = (schema, prefix) => {
     if (!schema || !isPlainObject(schema)) return
     for (const k of Object.keys(schema.properties || {})) {
-      if (BANNED_PARAM_NAMES.includes(k)) errs.push(`R3 参数名 lint：${prefix}.${k} 禁用（状态机私有）`)
+      if (!BANNED_PARAM_NAMES.includes(k)) continue
+      // R3 治理通道豁免（宪法 §四.1）：fact_transition/know_transition 带 to 参数是
+      // 「调度判定型 + 仅 system/human + 不向模型注册」三条件豁免；status/state 不豁免。
+      if (k === 'to' && defForParam && Array.isArray(defForParam.actor) && defForParam.actor.length > 0 && defForParam.actor.every((a) => a === 'system' || a === 'human')) continue
+      errs.push(`R3 参数名 lint：${prefix}.${k} 禁用（状态机私有）`)
     }
   }
   // R3 参数名 lint：只约束命令 schema 的顶层参数（状态机私有——写侧禁 status/to/state）。
   // 嵌套数据字段（如 endpoint_upsert 行内的 HTTP status、TSV 的 status 列）是数据属性非状态机控制，豁免；
   // 查询 params 是可见域谓词（宪法 §十一.4：谓词是查询参数），按 status 等过滤合法，豁免。
-  for (const [full, def] of Object.entries(commands)) paramCheck(def?.schema, full)
+  for (const [full, def] of Object.entries(commands)) {
+    defForParam = def
+    paramCheck(def?.schema, full)
+  }
+  defForParam = null
 
   for (const [nm, edef] of Object.entries(events)) {
     if (!isPlainObject(edef)) errs.push(`事件 ${nm} 定义缺失`)
@@ -372,6 +385,7 @@ const DOMAIN_OF_ROUTER = {
   endpoint_add_router: 'endpoint',
   endpoint_query_router: 'endpoint',
   surface_queue_router: 'endpoint',
+  exp_validate_router: 'know',
 }
 
 const BUILTIN_ROUTERS = {
@@ -481,6 +495,8 @@ const BUILTIN_ROUTERS = {
   },
   endpoint_query_router(args) { return { verb: 'list', args } },
   surface_queue_router(args) { return { verb: 'queue_surface', args } },
+  // exp_validate 旧工具 → exp_feedback(verdict=validated)（07-know §3.2 折叠别名）
+  exp_validate_router(args) { return { verb: 'exp_feedback', args: { id: args.id, verdict: 'validated', source: 'exp_validate' } } },
 }
 
 export function loadAliases(aliasesFile) {
