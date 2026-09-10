@@ -285,6 +285,13 @@ templates:
   - dsh-plugin-sec-domain-approval.contract-approval.test.js
   - dsh-plugin-sec-backend-approval-sqlite.js
   - sec-approval-domain-plugin-setup.sh
+# --- v5 report 域插件（Phase 2 七节点：报告导出/提交草稿/索引/检索，契约 12-report.md）---
+  - dsh-plugin-sec-domain-report.js
+  - dsh-plugin-sec-domain-report.patch.yml
+  - dsh-plugin-sec-domain-report.contract-report.test.js
+  - dsh-plugin-sec-backend-report-sqlite.js
+  - dsh-plugin-sec-backend-report-file.js
+  - sec-report-domain-plugin-setup.sh
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---
   - retention.sh
   # --- SQLite 一致性快照备份 + 紧急恢复（P0-5：DB down 应急 + 集中存储归宿）---

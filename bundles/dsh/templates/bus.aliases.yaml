@@ -23,6 +23,9 @@
 #   切流时移除 v4 同名工具注册）；task_update 走分派别名（task_status_router，模型手动标 done 通道关闭）；
 #   worker_list/worker_status/scheduled_tasks 与 exec 全部 run_cli/spawn_worker/… 是纯改名 → 静态别名
 #   （切流时移除 v4 同名工具注册，别名投影接管旧工具名）。
+# Phase 2 七节点：report 域已注册——submission_draft → report_draft_submission 别名生效（12-report §3.2）：
+#   别名过网关全管线（v4 旧工具名 submission_draft / 归档稿 vuln_draft_submission 均归一 report_draft_submission）。
+#   report_build 同名零改名（域 ToolProjector 零改名接管，切流时移除 v4 同名工具注册）。
 # ==============================================================================
 aliases:
   submission_draft: report_draft_submission

@@ -1,0 +1,4 @@
+# silksec-sec-domain-report bundle layer
+- insert:
+    - id: sec-domain-report
+      name: '@silksec/sec-domain-report'

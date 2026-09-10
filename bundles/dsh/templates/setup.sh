@@ -282,6 +282,13 @@ if [ -f "$BASE_DIR/sec-approval-domain-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-approval-domain-plugin-setup.sh"
 fi
 
+# -------------------- 8.598 v5 report 域插件（Phase 2 七节点：报告导出/提交草稿/索引/检索） --------------------
+# 依赖总线（8.55）+ vuln（8.591，vuln_list/get/stats/dedup_check 跨域读）+ scope（8.596，program_list 校验）；
+# 契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-report-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-report-domain-plugin-setup.sh"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"

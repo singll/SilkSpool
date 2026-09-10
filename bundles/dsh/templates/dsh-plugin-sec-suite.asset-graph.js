@@ -215,7 +215,8 @@ export function apply(ctx) {
     execute: async (a) => ({ ok: true, items: db.queryFindings({ host: a.host || '', severity: a.severity || '', status: a.status || '', programId: a.program_id || '', includeNoise: a.include_noise === true, limit: a.limit || 50 }) }),
   })
 
-  reg(ctx, {
+  // v5 切流（12-report）：submission_draft 由 report 域 report_draft_submission 接管（submission_draft 兼容别名直通），旧注册停用（函数体留待删旧路径）。
+  false && reg(ctx, {
     name: 'submission_draft',
     description: 'SRC 提交半自动化：按 finding 生成平台提交草稿（复现步骤/影响/证据/修复建议 markdown）+ 同目标同类型查重检索，落盘 data/reports/submissions/。提交前必须人工审校；提交成功后 finding_update status=submitted。',
     parameters: {
@@ -256,7 +257,8 @@ export function apply(ctx) {
     execute: async (a) => db.updateFinding(a),
   })
 
-  reg(ctx, {
+  // v5 切流（12-report）：report_build 由 report 域 ToolProjector 零改名接管（同名），旧注册停用（函数体留待删旧路径）。
+  false && reg(ctx, {
     name: 'report_build',
     description: '生成漏洞报告（markdown）：按严重级汇总 + 明细表（标题/目标/证据），落盘 data/reports/。提交 SRC 前必须人工审核。',
     parameters: {
