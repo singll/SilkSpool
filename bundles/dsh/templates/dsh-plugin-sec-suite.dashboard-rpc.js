@@ -191,8 +191,17 @@ export async function handleDashboardRpc(endpoint, payload) {
     case 'stats':
       return deps.assetDb.stats()
     // ---- P15：纪律健康度（五指标：台账/卡使用/交接包/IdeaCard/调度漂移）----
-    case 'ops':
+    case 'ops': {
+      // v5：ledger.discipline_stats 接管（11-ledger §1.7）；v4 opsHealth 兜底（观察期，总线缺席时）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('ledger', 'discipline_stats', { program: String(p.program || '') }, { actor: 'dashboard' })
+          if (r.ok && r.data) return r.data
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return deps.assetDb.opsHealth()
+    }
     // ---- P11：工作区 / 会话 / 授权管理 ----
     case 'workspaces':
       deps.pairWorkspaces() // 顺手做幂等配对（registry 后到场景）

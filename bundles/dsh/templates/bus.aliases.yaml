@@ -14,11 +14,18 @@
 # Phase 2 次节点：fact + know 域已注册——填充 06-fact §3.2 / 07-know §3.2 别名表。
 #   blackboard_set/get 是纯改名（同参直通）；fact_*/exp_*/kb_*/pb_*/vc_*/rule_* 同名零改名（无别名，
 #   直接由域动词接管工具名，v4 旧工具注册在切流时移除）；exp_validate 折叠进 exp_feedback(validated)。
+# Phase 2 三节点：ledger 域已注册——填充 11-ledger §3.2 别名表。
+#   attempts_log / pipeline_validate / radar_read 是纯改名（同参直通；radar_read 的 drain=false 只读面
+#   改走 ledger_radar_status，别名默认 drain 语义不变）；card_usage_log（outcome 由 deviation 推导）与
+#   coverage_report（out 自定义路径被固定缓存取代）是语义变更 → 走分派别名（不投影为模型工具）。
 # ==============================================================================
 aliases:
   submission_draft: report_draft_submission
   blackboard_set: fact_bb_publish
   blackboard_get: fact_bb_read
+  attempts_log: ledger_log_attempt
+  pipeline_validate: ledger_pipeline_validate
+  radar_read: ledger_radar_drain
 dispatch_aliases:
   finding_add:
     router: finding_add_router
@@ -64,3 +71,11 @@ dispatch_aliases:
     router: exp_validate_router
     domain: know
     warn: "exp_validate 已折叠进 exp_feedback(verdict=validated)——请改用 exp_feedback"
+  card_usage_log:
+    router: card_usage_router
+    domain: ledger
+    warn: "card_usage_log 的 outcome 由 deviation 推导（deviated/applied）——请改用 ledger_log_card_usage 显式声明 outcome"
+  coverage_report:
+    router: coverage_report_router
+    domain: ledger
+    warn: "coverage_report 的 out 自定义路径已被固定缓存 coverage-latest.md 取代——请改用 ledger_coverage_report"

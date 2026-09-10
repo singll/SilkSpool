@@ -446,11 +446,8 @@ function toolSurfaceQueue() {
 
 export function apply(ctx) {
   const defs = [
-    ['attempts_log', toolAttemptsLog()],
-    ['card_usage_log', toolCardUsageLog()],
-    ['radar_read', toolRadarRead()],
-    ['pipeline_validate', toolPipelineValidate()],
-    ['coverage_report', toolCoverageReport()],
+    // v5 切流（11-ledger）：attempts_log/card_usage_log/radar_read/pipeline_validate/coverage_report
+    // 已由 ledger 域 ToolProjector 接管（ledger_* 零改名 + 兼容别名）；此处不再注册，旧函数体留待删旧路径。
     ['verify_replay', toolVerifyReplay()],
     ['surface_scan', toolSurfaceScan()],
     ['surface_queue', toolSurfaceQueue()],

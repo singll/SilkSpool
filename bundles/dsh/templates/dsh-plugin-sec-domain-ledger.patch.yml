@@ -1,0 +1,4 @@
+# silksec-sec-domain-ledger bundle layer
+- insert:
+    - id: sec-domain-ledger
+      name: '@silksec/sec-domain-ledger'

@@ -311,7 +311,7 @@ export function validateManifestLint(manifest) {
     for (const a of def.actor || []) if (!ACTOR_WHITELIST.has(a)) errs.push(`命令 ${full} actor ${a} 不在值域`)
     if (!def.schema || !isPlainObject(def.schema)) errs.push(`命令 ${full} schema 缺失`)
     else if (def.schema.additionalProperties !== false) errs.push(`命令 ${full} schema 必须 additionalProperties:false`)
-    if (!['natural', 'explicit', 'auto'].includes(def.idempotent)) errs.push(`命令 ${full} idempotent 必须 natural|explicit|auto`)
+    if (!['natural', 'explicit', 'auto', 'none'].includes(def.idempotent)) errs.push(`命令 ${full} idempotent 必须 natural|explicit|auto|none`)
     if (def.idempotent === 'natural' && !def.idempotent_natural) errs.push(`命令 ${full} 自然键必须声明 idempotent_natural`)
     if (!Array.isArray(def.events)) errs.push(`命令 ${full} events 必须为数组`)
     if (!Array.isArray(def.invariants)) errs.push(`命令 ${full} invariants 必须为数组`)
@@ -386,6 +386,8 @@ const DOMAIN_OF_ROUTER = {
   endpoint_query_router: 'endpoint',
   surface_queue_router: 'endpoint',
   exp_validate_router: 'know',
+  card_usage_router: 'ledger',
+  coverage_report_router: 'ledger',
 }
 
 const BUILTIN_ROUTERS = {
@@ -497,6 +499,22 @@ const BUILTIN_ROUTERS = {
   surface_queue_router(args) { return { verb: 'queue_surface', args } },
   // exp_validate 旧工具 → exp_feedback(verdict=validated)（07-know §3.2 折叠别名）
   exp_validate_router(args) { return { verb: 'exp_feedback', args: { id: args.id, verdict: 'validated', source: 'exp_validate' } } },
+  // card_usage_log 旧工具 → ledger_log_card_usage（11-ledger §3.2）：v4 无 outcome 枚举，
+  // 读取层按 deviation 存在推导 deviated，否则 applied（§2.1.2 兼容推导前移）。
+  card_usage_router(args) {
+    const out = { ...args }
+    if (out.outcome === undefined || out.outcome === null || out.outcome === '') {
+      out.outcome = (out.deviation ? 'deviated' : 'applied')
+    }
+    return { verb: 'log_card_usage', args: out }
+  },
+  // coverage_report 旧工具 → ledger_coverage_report（11-ledger §3.2）：v4 的 out 自定义路径被
+  // 固定缓存 coverage-latest.md 取代（§1.4.2 定性为查询缓存），out 丢弃、materialize 保留缺省。
+  coverage_report_router(args) {
+    const out = { program: args.program }
+    if (args.materialize !== undefined) out.materialize = args.materialize
+    return { verb: 'coverage_report', args: out }
+  },
 }
 
 export function loadAliases(aliasesFile) {
@@ -548,6 +566,11 @@ export function validateAliases(doc) {
 // ---------------------------------------------------------------------------
 
 function buildIdempotencyKey(domain, verb, cmdDef, args, explicitKey = null, ctx = {}) {
+  // none：天然幂等/破坏性读命令（如 ledger.radar_drain 读后清空）——每次都是新读，不落幂等表
+  //（11-ledger §1.3.4「信封 replay 语义不适用，每次 drain 都是新读」）。key=null 时网关跳过幂等预检与回填。
+  if (cmdDef.idempotent === 'none') {
+    return { key: null, argsForHash: omitKey(args) }
+  }
   if (explicitKey) {
     return { key: String(explicitKey), argsForHash: omitKey(args) }
   }
@@ -1042,7 +1065,7 @@ export function createBus(opts = {}) {
     const { key, argsForHash } = buildIdempotencyKey(domain, verb, cmdDef, args, explicitIdemKey, ctx)
     const argsHash = sha1(canonicalStringify(argsForHash))
     let hit = null
-    try { hit = plain(db.prepare('SELECT * FROM idempotency WHERE idempotency_key=?').get(key)) } catch { /* degraded */ }
+    if (key) { try { hit = plain(db.prepare('SELECT * FROM idempotency WHERE idempotency_key=?').get(key)) } catch { /* degraded */ } }
     if (hit) {
       if (hit.args_hash !== argsHash) {
         // 兼容期宽容（02-vuln §3.2 finding_add）：同指纹异参重放 → v4 形状 {ok:true, dup:true, id}，
@@ -1172,8 +1195,10 @@ export function createBus(opts = {}) {
         }
       }
       const envelope = okEnvelope(domain, verb, data, eventIdsLocal, key, false)
-      db.prepare(`INSERT INTO idempotency(idempotency_key,domain,verb,args_hash,result_json,created_at) VALUES(?,?,?,?,?,?)`)
-        .run(key, domain, verb, argsHash, JSON.stringify(envelope), now())
+      if (key) {
+        db.prepare(`INSERT INTO idempotency(idempotency_key,domain,verb,args_hash,result_json,created_at) VALUES(?,?,?,?,?,?)`)
+          .run(key, domain, verb, argsHash, JSON.stringify(envelope), now())
+      }
       try {
         auditAppend({
           ts: now(), kind: 'command', domain, cmd: verb, actor,
