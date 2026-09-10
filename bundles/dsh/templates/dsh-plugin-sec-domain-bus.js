@@ -45,7 +45,7 @@ const BANNED_PARAM_NAMES = ['status', 'to', 'state']
 // know 域子仓前缀豁免（宪法 §二）：exp_update / vc_save / pb_save 是 v4 内化的语义动词名
 // （exp_update=内容以新代旧的原子重写、vc_save/pb_save=状态机语义动词），非自由态 update/save；
 // 由 07-know.md §1.1 命名裁定背书，禁用词子串检查对它们豁免。
-const BANNED_WORD_EXEMPT_VERBS = new Set(['exp_update', 'vc_save', 'pb_save'])
+const BANNED_WORD_EXEMPT_VERBS = new Set(['exp_update', 'vc_save', 'pb_save', 'update_note'])
 
 const log = (msg) => { try { process.stderr.write(`[sec-domain-bus] ${msg}\n`) } catch { /* noop */ } }
 
@@ -311,7 +311,7 @@ export function validateManifestLint(manifest) {
     for (const a of def.actor || []) if (!ACTOR_WHITELIST.has(a)) errs.push(`命令 ${full} actor ${a} 不在值域`)
     if (!def.schema || !isPlainObject(def.schema)) errs.push(`命令 ${full} schema 缺失`)
     else if (def.schema.additionalProperties !== false) errs.push(`命令 ${full} schema 必须 additionalProperties:false`)
-    if (!['natural', 'explicit', 'auto', 'none'].includes(def.idempotent)) errs.push(`命令 ${full} idempotent 必须 natural|explicit|auto|none`)
+    if (!['natural', 'explicit', 'auto', 'none', 'explicit_only'].includes(def.idempotent)) errs.push(`命令 ${full} idempotent 必须 natural|explicit|auto|none|explicit_only`)
     if (def.idempotent === 'natural' && !def.idempotent_natural) errs.push(`命令 ${full} 自然键必须声明 idempotent_natural`)
     if (!Array.isArray(def.events)) errs.push(`命令 ${full} events 必须为数组`)
     if (!Array.isArray(def.invariants)) errs.push(`命令 ${full} invariants 必须为数组`)
@@ -464,12 +464,26 @@ const BUILTIN_ROUTERS = {
     const st = args.status
     const rest = { ...args }
     delete rest.status
-    if (st === 'blocked') return { verb: 'block', args: rest }
-    if (st === 'note') return { verb: 'update_note', args: rest }
-    if (st === 'done') {
-      return { error: { code: 'E_STATE', message: 'done 是调度收尾状态，模型不可直接 finish（见 05-task C16/C17）', hint: '用 task_submit_complete 声明完成并提请审批', retryable: false } }
+    // v4 参数名归一：task_update 旧工具用 id，语义动词用 task_id
+    if (rest.id !== undefined && rest.task_id === undefined) {
+      rest.task_id = rest.id
+      delete rest.id
     }
-    return { verb: 'resume', args: rest }
+    if (st === undefined || st === null || st === '') {
+      if (rest.note) return { verb: 'update_note', args: rest }
+      return { error: { code: 'E_SCHEMA', message: 'task_update 需要 status 或 note', hint: '无状态变更用 task_update_note；状态变更用 task_block/resume/cancel', retryable: false } }
+    }
+    if (st === 'blocked') {
+      const out = { ...rest }
+      if (!out.blocked_reason && out.note) { out.blocked_reason = out.note; delete out.note }
+      return { verb: 'block', args: out }
+    }
+    if (st === 'queued') return { verb: 'resume', args: rest }
+    if (st === 'cancelled') return { verb: 'cancel', args: rest }
+    if (st === 'done' || st === 'failed' || st === 'running') {
+      return { error: { code: 'E_ACTOR_FORBIDDEN', message: `task_update status=${st} 已关闭：任务终态由调度器收尾`, hint: '任务终态由调度器收尾（task_finish）；会话内记录结果用 task_update_note，自执行任务用 task_submit_complete', retryable: false } }
+    }
+    return { error: { code: 'E_STATE', message: `task_update 非法流转 status=${st}`, hint: '合法子集：blocked/queued/cancelled/无 status+note', retryable: false } }
   },
   // asset_add 旧工具 → asset_upsert（03-asset §3.2）：评级字段 score/level/accept/biz/state
   // 被别名层丢弃（结构性闸门 INV-1 的别名期执行）；host/type/source 平移。
@@ -570,6 +584,11 @@ function buildIdempotencyKey(domain, verb, cmdDef, args, explicitKey = null, ctx
   //（11-ledger §1.3.4「信封 replay 语义不适用，每次 drain 都是新读」）。key=null 时网关跳过幂等预检与回填。
   if (cmdDef.idempotent === 'none') {
     return { key: null, argsForHash: omitKey(args) }
+  }
+  // explicit_only：执行类动词（run_cli）——同参重扫是合法业务，不落自动指纹；仅调用方显式传
+  // idempotency_key 时走标准幂等（网络重试保护），否则每次独立执行（10-exec §1.3.1）。
+  if (cmdDef.idempotent === 'explicit_only') {
+    return explicitKey ? { key: String(explicitKey), argsForHash: omitKey(args) } : { key: null, argsForHash: omitKey(args) }
   }
   if (explicitKey) {
     return { key: String(explicitKey), argsForHash: omitKey(args) }
@@ -1105,6 +1124,9 @@ export function createBus(opts = {}) {
     const scope = { depth: 0, inTxn: false, eventIds: [] }
     const parentStore = als.getStore()
     const isNested = !!(parentStore && parentStore.inTxn)
+    // 非事务域（exec：file 后端 + run_cli/spawn_worker 长时执行）——不经 BEGIN IMMEDIATE 与写锁，
+    // 否则 45s~3600s 的执行会占死 SQLite 写锁阻塞调度器/全部域写入（10-exec §2.3.1「没有跨行事务需求」）。
+    const nonTransactional = entry.manifest.backend_transactional === false
     const runTxn = () => als.run(scope, async () => {
       if (isNested) {
         if (scope.depth >= NESTING_DEPTH_MAX) {
@@ -1122,6 +1144,25 @@ export function createBus(opts = {}) {
           try { db.exec(`ROLLBACK TO ${sp}`) } catch { /* noop */ }
           throw e
         } finally { scope.depth-- }
+      } else if (nonTransactional) {
+        // 非事务域：autocommit 直跑（inTxn=false → 嵌套 dispatch 判为顶层、各自独立事务）
+        try {
+          const res = await runCommandTxn(domain, verb, fullName, args, ctx, cmdDef, key, argsHash, entry, started)
+          scope.eventIds.push(...res._eventIds)
+          for (const eid of scope.eventIds) {
+            const env = pendingEventLog.get(eid)
+            if (env && env._noAsync) appendEventLog(env)
+          }
+          return res.envelope
+        } catch (e) {
+          const isStrong = e?.code === 'E_BUS_STRONG_LINK_FAILED'
+          const domainErr = !isStrong && e?.code && String(e.code).startsWith('E_') ? String(e.code) : null
+          const code = isStrong ? 'E_BUS_STRONG_LINK_FAILED' : (domainErr || 'E_CONFLICT')
+          auditBestEffort({ ts: now(), kind: 'command', domain, cmd: verb, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, idempotency_key: key, replay: false, target: null, before: null, after: null, result: 'failed', error_code: code, duration_ms: now() - started, backend: 'file' })
+          if (isStrong) return errEnvelope(domain, verb, code, `强联动订阅者失败：${e?.message}`, '修复联动问题后原样重试（幂等保护在）', true, key)
+          const retryable = code === 'E_CONFLICT' || e?.retryable === true
+          return errEnvelope(domain, verb, code, e?.message || '命令执行失败', e?.hint || null, retryable, key)
+        }
       } else {
         scope.inTxn = true
         txnBegin()
@@ -1150,13 +1191,14 @@ export function createBus(opts = {}) {
       }
     })
     if (isNested) return runTxn()
+    if (nonTransactional) return runTxn()  // 非事务域不经 withWriteLock（长时执行不占写锁）
     return withWriteLock(runTxn)
 
     async function runCommandTxn(domain, verb, fullName, args, ctx, cmdDef, key, argsHash, entry, started) {
       const handler = entry.handlers[fullName] || entry.handlers[verb]
       let handlerResult
       try {
-        handlerResult = await handler(args, entry.backend.factory(db), { actor, session_id: ctx.session_id || null, operator: ctx.operator || null, dispatch, now })
+        handlerResult = await handler(args, entry.backend.factory(db), { actor, session_id: ctx.session_id || null, operator: ctx.operator || null, cwd: ctx.cwd || null, dispatch, now })
       } catch (e) {
         const err = new Error(e?.message || '域命令执行失败')
         err.code = e?.code || 'E_INTERNAL'
@@ -1275,7 +1317,8 @@ export function createBus(opts = {}) {
     try {
       res = await qhandler(qargs, entry.backend.factory(db), { actor, session_id: ctx.session_id || null, operator: ctx.operator || null })
     } catch (e) {
-      return errEnvelope(domain, name, 'E_INTERNAL', e?.message || String(e), null, false)
+      const domainErr = e?.code && String(e.code).startsWith('E_') ? String(e.code) : null
+      return errEnvelope(domain, name, domainErr || 'E_INTERNAL', e?.message || String(e), e?.hint || null, false)
     }
     if (res && Array.isArray(res.rows)) {
       const total = Number.isInteger(res.total) ? res.total : res.rows.length

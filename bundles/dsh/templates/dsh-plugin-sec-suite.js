@@ -1857,7 +1857,7 @@ export function apply(ctx, config) {
   // P6：启动时把 scope.yml 程序镜像到 programs 表（幂等）
   try { syncPrograms() } catch { /* 镜像失败不影响插件加载 */ }
 
-  ctx.tools.register({
+  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：run_cli 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
     name: 'run_cli',
     description: '运行已登记的安全 CLI 工具（manifest 驱动）。目标经 scope-guard 白名单硬校验，参数模板化渲染，'
       + '输出全量落盘 results/<run_id>/，只回 ≤20 行摘要。细节用 grep_result/page_result 按需取。',
@@ -1875,7 +1875,7 @@ export function apply(ctx, config) {
     execute: async (args, exec) => runCli(args || {}, exec),
   })
 
-  ctx.tools.register({
+  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：grep_result 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
     name: 'grep_result',
     description: '在指定 run_id 的完整输出中按正则检索（大小写不敏感），返回匹配行（含行号，最多 max 条）。',
     parameters: {
@@ -1892,7 +1892,7 @@ export function apply(ctx, config) {
     execute: async (args) => grepResult(args || {}),
   })
 
-  ctx.tools.register({
+  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：page_result 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
     name: 'page_result',
     description: '按行区间分页读取指定 run_id 的完整输出（offset 起始行，limit 行数，上限 200）。',
     parameters: {
@@ -1909,7 +1909,7 @@ export function apply(ctx, config) {
     execute: async (args) => pageResult(args || {}),
   })
 
-  ctx.tools.register({
+  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：burp_import 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
     name: 'burp_import',
     description: '导入 Burp Suite 导出文件（XML：proxy history 或 scanner issues），结构化落盘 data/imports/ 并回摘要。'
       + '人工在 Burp 里测试后导出 XML，用本工具回流系统沉淀资产与发现。',
@@ -1926,7 +1926,7 @@ export function apply(ctx, config) {
     execute: async (args) => burpImport(args || {}),
   })
 
-  ctx.tools.register({
+  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：spawn_worker 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
     name: 'spawn_worker',
     description: '派一个隔离的无头 worker 执行自包含任务（批量复扫、大日志蒸馏等），worker 上下文独立，'
       + '跑完只回尾部摘要，全文落盘 results/<run_id>/worker.log。批任务用它，不要在主会话直接跑大输出工具。'
@@ -1949,7 +1949,7 @@ export function apply(ctx, config) {
     execute: async (args, exec) => spawnWorker(args || {}, exec),
   })
 
-  ctx.tools.register({
+  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：worker_status 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
     name: 'worker_status',
     description: '查询某个 spawn_worker 的 run 结局（running/done/failed/killed）+ 尾部日志。'
       + '重启后 spawn_worker 报 "interrupted/outcome unknown" 时，用它确认 worker 真实结果（已落盘）。',
@@ -1963,7 +1963,7 @@ export function apply(ctx, config) {
     execute: async (args) => workerStatus(args || {}),
   })
 
-  ctx.tools.register({
+  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：worker_list 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
     name: 'worker_list',
     description: '列出最近的 spawn_worker run（可按 status 过滤），总览在飞/历史 worker。',
     parameters: {
@@ -2000,7 +2000,7 @@ export function apply(ctx, config) {
     execute: async (args, exec) => authzDiff(args || {}, exec),
   })
 
-  ctx.tools.register({
+  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：plan_chain 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
     name: 'plan_chain',
     description: '能力原语凑链：给定已拥有的能力（have）与想要的能力（want），'
       + '按 manifest 的 requires/produces 做 BFS 图搜索，返回有序工具链。'
@@ -2018,7 +2018,7 @@ export function apply(ctx, config) {
     execute: async (args) => planChain(args || {}),
   })
 
-  ctx.tools.register({
+  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：task_chain 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
     name: 'task_chain',
     description: '一条 objective 自动展开为任务依赖链（P2-2）：复用 plan_chain BFS 按 manifest requires/produces 凑链，'
       + '反向剪枝到达成 want 的最小链，落成 parent 串联的 once 调度任务——前置未完成不派单，parent 完成后调度器自动放行下一级（链式自动推进）。'
@@ -2040,7 +2040,7 @@ export function apply(ctx, config) {
     execute: async (args, exec) => taskChain(args || {}, exec),
   })
 
-  ctx.tools.register({
+  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：intel_hunt 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
     name: 'intel_hunt',
     description: 'component-vuln-intel（P9/P2-3）：指纹命中后查本地 nuclei 模板库找 tech 相关的 N-day 模板/CVE。'
       + '命中即自动产出一条 phase=vuln、priority=1 的 N-day 候选任务（普通 queued，非自动跑；tentative，验证附证据才 confirmed）。'

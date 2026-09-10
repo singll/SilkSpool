@@ -18,6 +18,11 @@
 #   attempts_log / pipeline_validate / radar_read 是纯改名（同参直通；radar_read 的 drain=false 只读面
 #   改走 ledger_radar_status，别名默认 drain 语义不变）；card_usage_log（outcome 由 deviation 推导）与
 #   coverage_report（out 自定义路径被固定缓存取代）是语义变更 → 走分派别名（不投影为模型工具）。
+# Phase 2 四节点：task + exec 域已注册——填充 05-task §3.2 / 10-exec §3.2 别名表。
+#   task_create/schedule/run_now/list/next/stats/chain 同名零改名（域 ToolProjector 零改名接管，
+#   切流时移除 v4 同名工具注册）；task_update 走分派别名（task_status_router，模型手动标 done 通道关闭）；
+#   worker_list/worker_status/scheduled_tasks 与 exec 全部 run_cli/spawn_worker/… 是纯改名 → 静态别名
+#   （切流时移除 v4 同名工具注册，别名投影接管旧工具名）。
 # ==============================================================================
 aliases:
   submission_draft: report_draft_submission
@@ -26,6 +31,16 @@ aliases:
   attempts_log: ledger_log_attempt
   pipeline_validate: ledger_pipeline_validate
   radar_read: ledger_radar_drain
+  worker_list: task_worker_list
+  worker_status: task_worker_status
+  scheduled_tasks: task_scheduled
+  run_cli: exec_run_cli
+  spawn_worker: exec_spawn_worker
+  grep_result: exec_grep_result
+  page_result: exec_page_result
+  plan_chain: exec_plan_chain
+  intel_hunt: exec_intel_hunt
+  burp_import: exec_burp_import
 dispatch_aliases:
   finding_add:
     router: finding_add_router
@@ -79,3 +94,7 @@ dispatch_aliases:
     router: coverage_report_router
     domain: ledger
     warn: "coverage_report 的 out 自定义路径已被固定缓存 coverage-latest.md 取代——请改用 ledger_coverage_report"
+  task_update:
+    router: task_status_router
+    domain: task
+    warn: "task_update 是自由态旧动词，已按 status 分派（blocked→block/queued→resume/cancelled→cancel）；done/failed/running 通道关闭（收尾权归调度器/审批）——请改用语义动词"

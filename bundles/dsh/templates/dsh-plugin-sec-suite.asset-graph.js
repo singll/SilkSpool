@@ -287,7 +287,7 @@ export function apply(ctx) {
     execute: async () => ({ ok: true, items: db.listPrograms() }),
   })
 
-  reg(ctx, {
+  false && reg(ctx, { // v5 切流（05-task）：task_create 由 task 域 ToolProjector 零改名接管，旧注册停用
     name: 'task_create',
     description: '创建一个任务（可管理的工作单元，编排器的派单对象；看板任务视图立即可见）。'
       + 'program_id 见 program_list（不传则按当前会话所在工作区自动带出）；phase: recon/vuln/biz-logic/code-audit/intranet/review；priority 0 最高。'
@@ -329,7 +329,7 @@ export function apply(ctx) {
     },
   })
 
-  reg(ctx, {
+  false && reg(ctx, { // v5 切流（05-task）：task_schedule 由 task 域 ToolProjector 零改名接管，旧注册停用
     name: 'task_schedule',
     description: '设置/修改/清除任务的定时调度。schedule 同 task_create；schedule 传 null 清除调度变普通任务。终态任务不可改。',
     parameters: {
@@ -352,7 +352,7 @@ export function apply(ctx) {
     execute: async (a) => db.taskSchedule({ id: a.id, schedule: a.schedule ?? null }),
   })
 
-  reg(ctx, {
+  false && reg(ctx, { // v5 切流（05-task）：task_run_now 由 task 域 ToolProjector 零改名接管，旧注册停用
     name: 'task_run_now',
     description: '立即触发一次任务执行（不动调度节律）：排入调度队列，下一 tick（≤60s）由 worker 认领执行。',
     parameters: {
@@ -364,7 +364,7 @@ export function apply(ctx) {
     execute: async (a) => db.taskRunNow(a.id),
   })
 
-  reg(ctx, {
+  false && reg(ctx, { // v5 切流（05-task）：task_update 由 task 域 ToolProjector 零改名接管，旧注册停用
     name: 'task_update',
     description: '更新任务状态：queued/running/blocked/done/failed/cancelled。note 追加进 result 证据链；blocked_reason 记录 HITL 阻塞原因。'
       + '流程守卫：interval 日任务标 done 前机器校验纪律产物（台账当日增量/卡片使用记录/交接包），缺失即拦截并返回缺失清单——补齐产物后重试，不可绕过。',
@@ -382,7 +382,7 @@ export function apply(ctx) {
     execute: async (a) => db.taskUpdate(a),
   })
 
-  reg(ctx, {
+  false && reg(ctx, { // v5 切流（05-task）：task_list 由 task 域 ToolProjector 零改名接管，旧注册停用
     name: 'task_list',
     description: '列出任务（看板数据源）。按 program/status/phase 过滤，priority 升序 + created_at 升序。',
     parameters: {
@@ -398,7 +398,7 @@ export function apply(ctx) {
     execute: async (a) => ({ ok: true, items: db.taskList({ programId: a.program_id || '', status: a.status || '', phase: a.phase || '', limit: a.limit || 50 }) }),
   })
 
-  reg(ctx, {
+  false && reg(ctx, { // v5 切流（05-task）：task_next 由 task 域 ToolProjector 零改名接管，旧注册停用
     name: 'task_next',
     description: '编排器认领：返回指定 program 下最高优先级、无未完成父任务的 queued 任务。无则返回 null。',
     parameters: {
@@ -410,7 +410,7 @@ export function apply(ctx) {
     execute: async (a) => ({ ok: true, task: db.taskNext(a.program_id) }),
   })
 
-  reg(ctx, {
+  false && reg(ctx, { // v5 切流（05-task）：task_stats 由 task 域 ToolProjector 零改名接管，旧注册停用
     name: 'task_stats',
     description: '任务进度总览：按 phase×status 计数 + 总数。',
     parameters: {

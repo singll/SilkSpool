@@ -254,6 +254,18 @@ templates:
   - dsh-plugin-sec-domain-ledger.contract-ledger.test.js
   - dsh-plugin-sec-backend-ledger-file.js
   - sec-ledger-domain-plugin-setup.sh
+# --- v5 task 域插件（Phase 2 四节点：任务/调度/执行史/worker 注册表，契约 05-task.md）---
+  - dsh-plugin-sec-domain-task.js
+  - dsh-plugin-sec-domain-task.patch.yml
+  - dsh-plugin-sec-domain-task.contract-task.test.js
+  - dsh-plugin-sec-backend-task-sqlite.js
+  - sec-task-domain-plugin-setup.sh
+# --- v5 exec 域插件（Phase 2 四节点：工具执行/沙箱/限速/worker 派生/parser 提案，契约 10-exec.md）---
+  - dsh-plugin-sec-domain-exec.js
+  - dsh-plugin-sec-domain-exec.patch.yml
+  - dsh-plugin-sec-domain-exec.contract-exec.test.js
+  - dsh-plugin-sec-backend-exec-file.js
+  - sec-exec-domain-plugin-setup.sh
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---
   - retention.sh
   # --- SQLite 一致性快照备份 + 紧急恢复（P0-5：DB down 应急 + 集中存储归宿）---

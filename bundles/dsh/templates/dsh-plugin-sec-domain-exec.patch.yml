@@ -1,0 +1,4 @@
+# silksec-sec-domain-exec bundle layer
+- insert:
+    - id: sec-domain-exec
+      name: '@silksec/sec-domain-exec'

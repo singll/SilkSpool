@@ -1,0 +1,4 @@
+# silksec-sec-domain-task bundle layer
+- insert:
+    - id: sec-domain-task
+      name: '@silksec/sec-domain-task'

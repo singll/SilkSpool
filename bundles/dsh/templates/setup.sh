@@ -251,6 +251,18 @@ if [ -f "$BASE_DIR/sec-ledger-domain-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-ledger-domain-plugin-setup.sh"
 fi
 
+# -------------------- 8.593 v5 task 域插件（Phase 2 四节点：任务/调度/执行史/worker 注册表） --------------------
+# 依赖总线（8.55）+ ledger（8.592，流程守卫查询）；契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-task-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-task-domain-plugin-setup.sh"
+fi
+
+# -------------------- 8.594 v5 exec 域插件（Phase 2 四节点：工具执行/沙箱/限速/worker 派生/parser 提案） --------------------
+# 依赖总线（8.55）+ task（8.593，worker 注册表强联动）；契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-exec-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-exec-domain-plugin-setup.sh"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"
