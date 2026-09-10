@@ -8,7 +8,7 @@
 - **全局契约宪法**：`00-conventions.md`
 - **文档状态**：00-18 全量定稿（2026-09-06，commit `2e593e9`）
 - **领域语言**：`bundles/dsh/CONTEXT.md`
-- **当前 Phase**：**Phase 1 完成（1.5 观察期复核通过，已放行 Phase 2 规划，勿开工）**
+- **当前 Phase**：**Phase 2 进行中（首域 asset + endpoint 已完成并上线，下一节点按 18-migration §四 顺序：fact + know）**
 
 ## 二、已完成节点（附 commit 追踪）
 
@@ -21,6 +21,7 @@
 | **1.3 双投影接线 + 兼容别名** | ToolProjector 注册 `vuln_*` 工具（域注册后再投影时序修复 + 名称去重）；RpcProjector `/silksec-domain` `vuln.*` 路由（rpcOperator 注入）；dashboard-rpc 三 case（findings/findingGet/findingUpdate）切 `vuln.*`（v4 直写兜底）；别名表填充：finding_add（按 actor 分派 + info 降级候选 + E_IDEMPOTENT_CONFLICT→v4 dup 形状）、finding_query（visibility 映射）、finding_update（status_router：confirm 缺 evidence 收紧 / accepted→submit / dup_of 自动填充 / 当前值+note→note）、submission_draft（待 report 域）；分派别名可带 domain/warn；不变量 ctx 透传（dupTargetValid 兼容期放宽）；bus.aliases.yaml + setup §D 校验改 ESM import | `b561e3f` | ✅ 契约测试 39/39（bus）+ 44/44（vuln）全绿（本地 + csai setup 内双跑）；服务 active；AGENTS.md secbus 区块自动含 vuln 动词（再投影生效）；aliases count=4；真实库冒烟：finding_query→vuln.list total=41、finding_update status=new→E_STATE、confirm 缺 evidence→E_EVIDENCE_REQUIRED+hint；口径无回归（signal=41/pending=2/terminal=25）；deprecated_use 审计在记；调度循环正常 |
 | **1.4 Phase 0 正式版 + 试点验收** | `p-v5-1-migrate-vuln.js` 正式入 bundle（复跑 Phase 0 修复幂等 + ensureCol 6 列 2 索引 + updated_at 回填 + 三口径断言 + 迁移动作落 v5 audit kind:migration）；`p-v5-2-pilot-accept.js` 试点验收脚本（三路写同一候选 / audit actor 可区分 / 幂等重放，临时库隔离）；manifest 登记两脚本 | `48b97f3` | ✅ 契约测试 39/39（bus）+ 44/44（vuln）全绿（本地 + csai setup 内双跑）；服务 active；线上迁移 dry-run 零变更、首跑/复跑零变更幂等（--expect=41,2,25 硬断言过），audit 两条 migration noop 记录；试点验收本地 + csai 12/12 全绿（三路写同一候选最终一条信号行、candidates.total=stats.pending=看板徽章同源、webhook/script/model 三 actor 可区分、confirm 幂等重放 replay:true 同果）；真实库冒烟：vuln.stats signal=41/pending=2/terminal=25、vuln.candidates.total=2、finding_update status=new→E_STATE 收紧；aliases deprecated_use 在记（count=4）；调度任务 #16/#17（03:00 recon）+ #37/#19（04:00 vuln）9/5-9/7 连续三天 ok=1 正常收尾（handoff 产出），观测起点 2026-09-07 |
 | **1.5 观察期复核** | 复核 9/7-9/9 三天 03:00/04:00 四任务链路（#16/#17 recon + #37/#19 vuln）全部 ok=1 收尾 + 候选池/信号面双口径对照 → 关账 1.4，放行 Phase 2 规划 | `0ff6dd5` | ✅ 9/7-9/9 四任务全 ok=1（9/9 #17 一次 OpenCode Go 计费故障 03:10 失败→05:23 自动重试恢复，非 v5 回归）；handoff 产物齐全（meituan-src/bytedance 9/7-9/9）；双口径一致 signal=42/pending=9/terminal=27（自然漂移 41/2/25 → 42/9/27），vuln.stats 与 vuln.candidates.total=9 与看板徽章同源；服务 active；aliases deprecated_use 在记（5 条） |
+| **2.1 asset + endpoint 域** | `@silksec/sec-domain-asset`+`sec-backend-asset-sqlite`（asset_upsert/upsert_bulk/grade/state/fp_record/fp_record_bulk + asset_list/get/family/overview/fp_query/deep_queue）+ `@silksec/sec-domain-endpoint`+`sec-backend-endpoint-sqlite`（endpoint_upsert/queue_surface/consume_queue/mark_auth + endpoint_list/hosts/matrix/queue_status/surface_scan）；结构性闸门（评级列只经 grade / state 只经 state / 鉴权列只经 mark_auth）；总线 R2/R3 修复 + 7 分派别名路由器；dashboard-rpc 六读 case 切总线（v4 兜底）；ensureCol changed_at/graded_at + 评级/状态/接口鉴权索引 | `8df0e50` | ✅ 契约测试 asset 30/30 + endpoint 24/24 全绿（本地 + csai setup 内双跑）；服务 active；asset/endpoint 域 registered（bus.domain.registered）；真实库冒烟 asset.overview total=96,684 / deep_queue=51,207 / endpoint hosts=85 / queue_status 三项目 913+1+35；vuln 44/44 + bus 39/39 无回归；别名 deprecated_use 在记；资产准入纪律查询化（deep_queue 固化 where） |
 
 ## 三、待办节点（Phase 1，按顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
@@ -29,6 +30,16 @@
 - [x] **1.3 双投影接线 + 兼容别名**：ToolProjector 注册 `vuln_*` 工具（域注册后再投影时序修复）；RpcProjector 注册 `vuln.*` RPC；dashboard-rpc 的 findingUpdate/findingGet/findings case 切 `vuln.*`（v4 直写兜底保留至观察期）；别名 finding_add/finding_query/finding_update/submission_draft → 新动词（bus.aliases.yaml 已填充，status_router 扩展 accepted/note 分派 + finding_add_router + query_visibility_router 内建）。**✅ 已完成**
 - [x] **1.4 Phase 0 正式版 + 试点验收**：p-v5-0-fix-noise.js 正式入 bundle；试点验收（三路写同一候选 / audit 三 actor 可区分 / 幂等重放 replay:true / 连续 3 天 03:00/04:00 任务正常收尾）。**✅ 已完成并关账（2026-09-07 上线；commit `48b97f3`；3 天链路观测经 1.5 复核通过后关账）**
 - [x] **1.5 观察期复核（3 天后，1 次会话）**：2026-09-10 复核 9/7-9/9 连续 3 天 03:00/04:00 任务全部 ok=1 收尾（守卫过、handoff 出）+ 候选池计数与信号面一致 → 关账 1.4，放行 Phase 2。**✅ 已完成（9/7-9/9 四任务全 ok=1；双口径 signal=42/pending=9/terminal=27 与 candidates.total=9 看板徽章同源；已关账 1.4，放行 Phase 2 规划）**
+
+## 三·五、待办节点（Phase 2，按 18-migration §四 顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
+
+- [x] **2.1 `@silksec/sec-domain-asset` + `@silksec/sec-domain-endpoint`**：从 asset-db.js/asset-graph.js/sec-pipeline.js 平移拆语义动词（asset：upsert/upsert_bulk/grade/state/fp_record/fp_record_bulk；endpoint：upsert/queue_surface/consume_queue/mark_auth）+ 双后端 + 契约测试 + 别名 + dashboard-rpc 六读 case 切总线。契约见 03-asset.md §2.2 / 04-endpoint.md §2.2。**✅ 已完成（2026-09-10 上线；commit `8df0e50`；观察期 1 个调度周期后删旧路径）**
+- [ ] **2.2 fact + know 域**：fact 域（fact_upsert/link/search/get/reindex + 生命周期 mem_class）+ know 域（kb_import/kb_list/kb_read/harvest）。memcore 映射层随 fact/know 分两批迁（06-fact.md 映射表）
+- [ ] **2.3 ledger 域**：雷达/台账/attempts/card_usage（sec-pipeline 8 工具直写 → ledger 命令，写入即校验；11-ledger.md）
+- [ ] **2.4 task + exec 域**：任务/调度/执行事件（exec.run.completed 是多个域的基础，parser 直写 → proposal 回灌；05-task.md / 10-exec.md）
+- [ ] **2.5 fgs 域**：FGS 图节点（persistFgsFacts/appendFgsToHandoff 直写 → 事件协作）
+- [ ] **2.6 scope + approval 域**：scope.yml 白名单 + 统一审批中心（APPROVAL_KINDS 六 kind；QPS mtime 轮询 → scope.rules.changed 事件）
+- [ ] **2.7 report / proxy / eval / dashboard 域**：报告导出/代理池/评测/看板 52 case 逐批切 RpcProjector
 
 ## 四、Phase 2-5 概览（后续会话，勿提前开工）
 
