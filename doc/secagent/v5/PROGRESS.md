@@ -8,7 +8,7 @@
 - **全局契约宪法**：`00-conventions.md`
 - **文档状态**：00-18 全量定稿（2026-09-06，commit `2e593e9`）
 - **领域语言**：`bundles/dsh/CONTEXT.md`
-- **当前 Phase**：**Phase 2 进行中（首域 asset + endpoint 已完成并上线，下一节点按 18-migration §四 顺序：fact + know）**
+- **当前 Phase**：**Phase 2 进行中（asset + endpoint、fact + know 已完成并上线，下一节点按 18-migration §四 顺序：ledger）**
 
 ## 二、已完成节点（附 commit 追踪）
 
@@ -22,6 +22,7 @@
 | **1.4 Phase 0 正式版 + 试点验收** | `p-v5-1-migrate-vuln.js` 正式入 bundle（复跑 Phase 0 修复幂等 + ensureCol 6 列 2 索引 + updated_at 回填 + 三口径断言 + 迁移动作落 v5 audit kind:migration）；`p-v5-2-pilot-accept.js` 试点验收脚本（三路写同一候选 / audit actor 可区分 / 幂等重放，临时库隔离）；manifest 登记两脚本 | `48b97f3` | ✅ 契约测试 39/39（bus）+ 44/44（vuln）全绿（本地 + csai setup 内双跑）；服务 active；线上迁移 dry-run 零变更、首跑/复跑零变更幂等（--expect=41,2,25 硬断言过），audit 两条 migration noop 记录；试点验收本地 + csai 12/12 全绿（三路写同一候选最终一条信号行、candidates.total=stats.pending=看板徽章同源、webhook/script/model 三 actor 可区分、confirm 幂等重放 replay:true 同果）；真实库冒烟：vuln.stats signal=41/pending=2/terminal=25、vuln.candidates.total=2、finding_update status=new→E_STATE 收紧；aliases deprecated_use 在记（count=4）；调度任务 #16/#17（03:00 recon）+ #37/#19（04:00 vuln）9/5-9/7 连续三天 ok=1 正常收尾（handoff 产出），观测起点 2026-09-07 |
 | **1.5 观察期复核** | 复核 9/7-9/9 三天 03:00/04:00 四任务链路（#16/#17 recon + #37/#19 vuln）全部 ok=1 收尾 + 候选池/信号面双口径对照 → 关账 1.4，放行 Phase 2 规划 | `0ff6dd5` | ✅ 9/7-9/9 四任务全 ok=1（9/9 #17 一次 OpenCode Go 计费故障 03:10 失败→05:23 自动重试恢复，非 v5 回归）；handoff 产物齐全（meituan-src/bytedance 9/7-9/9）；双口径一致 signal=42/pending=9/terminal=27（自然漂移 41/2/25 → 42/9/27），vuln.stats 与 vuln.candidates.total=9 与看板徽章同源；服务 active；aliases deprecated_use 在记（5 条） |
 | **2.1 asset + endpoint 域** | `@silksec/sec-domain-asset`+`sec-backend-asset-sqlite`（asset_upsert/upsert_bulk/grade/state/fp_record/fp_record_bulk + asset_list/get/family/overview/fp_query/deep_queue）+ `@silksec/sec-domain-endpoint`+`sec-backend-endpoint-sqlite`（endpoint_upsert/queue_surface/consume_queue/mark_auth + endpoint_list/hosts/matrix/queue_status/surface_scan）；结构性闸门（评级列只经 grade / state 只经 state / 鉴权列只经 mark_auth）；总线 R2/R3 修复 + 7 分派别名路由器；dashboard-rpc 六读 case 切总线（v4 兜底）；ensureCol changed_at/graded_at + 评级/状态/接口鉴权索引 | `8df0e50` | ✅ 契约测试 asset 30/30 + endpoint 24/24 全绿（本地 + csai setup 内双跑）；服务 active；asset/endpoint 域 registered（bus.domain.registered）；真实库冒烟 asset.overview total=96,684 / deep_queue=51,207 / endpoint hosts=85 / queue_status 三项目 913+1+35；vuln 44/44 + bus 39/39 无回归；别名 deprecated_use 在记；资产准入纪律查询化（deep_queue 固化 where） |
+| **2.2 fact + know 域** | `@silksec/sec-domain-fact`+`sec-backend-fact-sqlite`（fact_upsert/correct/deprecate/link/record_validation/bb_publish/transition/record_signal/reindex/purge_archive 十命令 + search/get/graph/overview/stats/neg_check/bb_read 七查询；生命周期列域内计算，memcore validateWrite 分支归零；facts.uses/last_used_at ensureCol + lifecycle/expiry 索引；治理通道 fact_transition 带 to）+ `@silksec/sec-domain-know`+`sec-backend-know-sqlite`+`sec-backend-know-file`（exp/kb/rules/vulncards/harvest 五子仓 21 命令 + 15 查询；语义去重 embedding 降级走 scenario 精确；kb url 去重 + taintguard + ±15 天复验抖动 + curated 行；INV-K8/K12 授权域/先验库物理闸）；总线 know 子仓豁免动词白名单 + to 治理豁免 + exp_validate_router；bus.aliases.yaml 填 blackboard_set/get + exp_validate；切流移除 asset-graph.js/experience.js 与域重名工具注册（fact_*/exp_*/kb_*/pb_* 由域 ToolProjector 零改名接管）+ dashboard-rpc fact/know 全 case 切总线（v4 兜底） | `5f13c76` | ✅ 契约测试 bus 39/39 + fact 22/22 + know 19/19 全绿（本地 + csai setup 内双跑）；服务 active；fact/know 域 registered（bus.domain.registered）；真实库冒烟 fact.stats total=800 edges=761 / fact.search total=663 / know_health exp=35 kb=391 rules=79 vulncards=18 / know.exp_list total=35 / know.rule_list rows=79；vuln/asset/endpoint 无回归（AGENTS.md secbus 区块全域在列）；别名 deprecated_use 在记 |
 
 ## 三、待办节点（Phase 1，按顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
@@ -34,7 +35,7 @@
 ## 三·五、待办节点（Phase 2，按 18-migration §四 顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
 - [x] **2.1 `@silksec/sec-domain-asset` + `@silksec/sec-domain-endpoint`**：从 asset-db.js/asset-graph.js/sec-pipeline.js 平移拆语义动词（asset：upsert/upsert_bulk/grade/state/fp_record/fp_record_bulk；endpoint：upsert/queue_surface/consume_queue/mark_auth）+ 双后端 + 契约测试 + 别名 + dashboard-rpc 六读 case 切总线。契约见 03-asset.md §2.2 / 04-endpoint.md §2.2。**✅ 已完成（2026-09-10 上线；commit `8df0e50`；观察期 1 个调度周期后删旧路径）**
-- [ ] **2.2 fact + know 域**：fact 域（fact_upsert/link/search/get/reindex + 生命周期 mem_class）+ know 域（kb_import/kb_list/kb_read/harvest）。memcore 映射层随 fact/know 分两批迁（06-fact.md 映射表）
+- [ ] **2.2 fact + know 域**：fact 域（fact_upsert/link/search/get/reindex + 生命周期 mem_class）+ know 域（kb_import/kb_list/kb_read/harvest）。memcore 映射层随 fact/know 分两批迁（06-fact.md 映射表）**✅ 已完成（2026-09-10 上线；commit `5f13c76`；观察期 1 个调度周期后删旧路径——memcore 69 处裸 SQL 归零随 Phase 3 收口）**
 - [ ] **2.3 ledger 域**：雷达/台账/attempts/card_usage（sec-pipeline 8 工具直写 → ledger 命令，写入即校验；11-ledger.md）
 - [ ] **2.4 task + exec 域**：任务/调度/执行事件（exec.run.completed 是多个域的基础，parser 直写 → proposal 回灌；05-task.md / 10-exec.md）
 - [ ] **2.5 fgs 域**：FGS 图节点（persistFgsFacts/appendFgsToHandoff 直写 → 事件协作）
