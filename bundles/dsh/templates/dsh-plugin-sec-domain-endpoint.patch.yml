@@ -1,0 +1,4 @@
+# silksec-sec-domain-endpoint bundle layer
+- insert:
+    - id: sec-domain-endpoint
+      name: '@silksec/sec-domain-endpoint'

@@ -252,32 +252,90 @@ export async function handleDashboardRpc(endpoint, payload) {
     case 'audit':
       return { rows: deps.tailAudit(Math.min(Number(p.limit) || 120, 300)) }
     case 'assets': {
-      const filters = { hostLike: String(p.q || ''), type: String(p.type || ''), programId: String(p.program_id || ''), level: String(p.level || ''), accept: String(p.accept || ''), state: String(p.state || '') }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
+      // v5：asset.list 接管（03-asset §1.7）；v4 queryAssets 兜底（观察期，总线缺席时）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('asset', 'list', {
+            host_like: String(p.q || ''), type: String(p.type || ''), program_id: String(p.program_id || ''),
+            level: String(p.level || ''), accept: String(p.accept || ''), state: String(p.state || ''),
+            limit, offset, sort: String(p.sort || ''), dir: String(p.dir || ''),
+          }, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
+      const filters = { hostLike: String(p.q || ''), type: String(p.type || ''), programId: String(p.program_id || ''), level: String(p.level || ''), accept: String(p.accept || ''), state: String(p.state || '') }
       return { rows: deps.assetDb.queryAssets({ ...filters, limit, offset, sort: String(p.sort || ''), dir: String(p.dir || '') }), total: deps.assetDb.countAssets(filters) }
     }
     // ---- 看板 v4.1：资产多维（域名族总览 + 单主机钻取）、接口按主机分组、事实 facet ----
-    case 'assetOverview':
+    case 'assetOverview': {
+      // v5：asset.overview 接管；v4 assetOverview 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('asset', 'overview', {}, { actor: 'dashboard' })
+          if (r.ok && r.data) return r.data
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return deps.assetDb.assetOverview()
+    }
     case 'assetDetail': {
       const host = String(p.host || '')
       if (!host) throw new Error('assetDetail 需要 host')
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('asset', 'get', { host }, { actor: 'dashboard' })
+          if (r.ok && r.data) return { ok: true, ...r.data }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return deps.assetDb.assetDetail(host)
     }
     case 'assetFamily': {
-      return deps.assetDb.assetFamily(String(p.root || ''))
+      const root = String(p.root || '')
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('asset', 'family', { root }, { actor: 'dashboard' })
+          if (r.ok && r.data) return { ok: true, root, hosts: r.data.hosts || [] }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
+      return deps.assetDb.assetFamily(root)
     }
     case 'endpointHosts': {
-      const r = deps.assetDb.endpointHosts({ pathLike: String(p.q || ''), programId: String(p.program_id || ''), limit: Math.min(Number(p.limit) || 20, 200), offset: Math.max(0, Number(p.offset) || 0) })
-      return r
+      const limit = Math.min(Number(p.limit) || 20, 200)
+      const offset = Math.max(0, Number(p.offset) || 0)
+      // v5：endpoint.hosts 接管（04-endpoint §1.7）；v4 endpointHosts 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('endpoint', 'hosts', {
+            path_like: String(p.q || ''), program_id: String(p.program_id || ''), limit, offset,
+          }, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
+      return deps.assetDb.endpointHosts({ pathLike: String(p.q || ''), programId: String(p.program_id || ''), limit, offset })
     }
     case 'factStats':
       return deps.assetDb.factStats()
     case 'endpoints': {
-      const filters = { host: String(p.host || ''), pathLike: String(p.q || ''), programId: String(p.program_id || '') }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
+      // v5：endpoint.list 接管（04-endpoint §1.7）；v4 queryEndpoints 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('endpoint', 'list', {
+            host: String(p.host || ''), path_like: String(p.q || ''), program_id: String(p.program_id || ''),
+            limit, offset, sort: String(p.sort || ''), dir: String(p.dir || ''),
+          }, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
+      const filters = { host: String(p.host || ''), pathLike: String(p.q || ''), programId: String(p.program_id || '') }
       return { rows: deps.assetDb.queryEndpoints({ ...filters, limit, offset, sort: String(p.sort || ''), dir: String(p.dir || '') }), total: deps.assetDb.countEndpoints(filters) }
     }
     case 'findings': {

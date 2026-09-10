@@ -221,6 +221,18 @@ if [ -f "$BASE_DIR/sec-vuln-domain-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-vuln-domain-plugin-setup.sh"
 fi
 
+# -------------------- 8.57 v5 asset 域插件（Phase 2 首域：资产/指纹/分级/生命周期） --------------------
+# 依赖总线（8.55）；契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-asset-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-asset-domain-plugin-setup.sh"
+fi
+
+# -------------------- 8.58 v5 endpoint 域插件（Phase 2 首域：接口面/参数队列） --------------------
+# 依赖总线（8.55）；契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-endpoint-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-endpoint-domain-plugin-setup.sh"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"

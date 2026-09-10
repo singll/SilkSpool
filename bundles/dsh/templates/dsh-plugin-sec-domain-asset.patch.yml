@@ -1,0 +1,4 @@
+# silksec-sec-domain-asset bundle layer
+- insert:
+    - id: sec-domain-asset
+      name: '@silksec/sec-domain-asset'

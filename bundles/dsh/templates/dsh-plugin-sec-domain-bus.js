@@ -297,7 +297,9 @@ export function validateManifestLint(manifest) {
 
   for (const [full, def] of Object.entries(commands)) {
     const verb = stripDomainPrefix(full, manifest.domain)
-    const bannedHit = BANNED_VERB_WORDS.filter((w) => verb.includes(w) || full.includes(w))
+    // 只校验动词本身（禁用词约束的是动词命名，非域前缀——asset 域名含 "set" 子串是合法域名，
+    // 若连 full 一起查会把 asset_* 全误杀）
+    const bannedHit = BANNED_VERB_WORDS.filter((w) => verb.includes(w))
     if (bannedHit.length) errs.push(`R2 禁用词：动词 ${full} 含 ${bannedHit.join('/')}`)
     if (!isPlainObject(def)) { errs.push(`命令 ${full} 定义缺失`); continue }
     if (!Array.isArray(def.actor) || def.actor.length === 0) errs.push(`命令 ${full} actor 白名单为空`)
@@ -328,12 +330,10 @@ export function validateManifestLint(manifest) {
     if (!schema || !isPlainObject(schema)) return
     for (const k of Object.keys(schema.properties || {})) {
       if (BANNED_PARAM_NAMES.includes(k)) errs.push(`R3 参数名 lint：${prefix}.${k} 禁用（状态机私有）`)
-      paramCheck(schema.properties[k], `${prefix}.${k}`)
     }
-    if (Array.isArray(schema.items)) schema.items.forEach((it, i) => paramCheck(it, `${prefix}[${i}]`))
-    else if (isPlainObject(schema.items)) paramCheck(schema.items, `${prefix}[]`)
   }
-  // R3 参数名 lint：只约束命令 schema（状态机私有——写侧禁 status/to/state）。
+  // R3 参数名 lint：只约束命令 schema 的顶层参数（状态机私有——写侧禁 status/to/state）。
+  // 嵌套数据字段（如 endpoint_upsert 行内的 HTTP status、TSV 的 status 列）是数据属性非状态机控制，豁免；
   // 查询 params 是可见域谓词（宪法 §十一.4：谓词是查询参数），按 status 等过滤合法，豁免。
   for (const [full, def] of Object.entries(commands)) paramCheck(def?.schema, full)
 
@@ -365,6 +365,13 @@ const DOMAIN_OF_ROUTER = {
   finding_add_router: 'vuln',
   query_visibility_router: 'vuln',
   task_status_router: 'task',
+  asset_add_router: 'asset',
+  asset_query_router: 'asset',
+  asset_stats_router: 'asset',
+  fp_add_router: 'asset',
+  endpoint_add_router: 'endpoint',
+  endpoint_query_router: 'endpoint',
+  surface_queue_router: 'endpoint',
 }
 
 const BUILTIN_ROUTERS = {
@@ -448,6 +455,32 @@ const BUILTIN_ROUTERS = {
     }
     return { verb: 'resume', args: rest }
   },
+  // asset_add 旧工具 → asset_upsert（03-asset §3.2）：评级字段 score/level/accept/biz/state
+  // 被别名层丢弃（结构性闸门 INV-1 的别名期执行）；host/type/source 平移。
+  asset_add_router(args) {
+    const out = {}
+    if (args.host !== undefined) out.host = args.host
+    if (args.type !== undefined) out.type = args.type
+    if (args.source !== undefined) out.source = args.source
+    return { verb: 'upsert', args: out }
+  },
+  asset_query_router(args) { return { verb: 'list', args } },
+  asset_stats_router() { return { verb: 'overview', args: {} } },
+  fp_add_router(args) { return { verb: 'fp_record', args } },
+  // endpoint_add 旧工具 → endpoint_upsert（04-endpoint §3.2）：auth_required/roles_seen 被丢弃，
+  // 单行 host/method/path 包进 rows[0]（新动词无单行直传模式）。
+  endpoint_add_router(args) {
+    const row = {}
+    if (args.host !== undefined) row.host = args.host
+    if (args.path !== undefined) row.path = args.path
+    if (args.method !== undefined) row.method = args.method
+    if (args.status !== undefined) row.status = args.status
+    if (args.source !== undefined) row.source = args.source
+    if (args.params !== undefined) row.params = args.params
+    return { verb: 'upsert', args: { rows: [row] } }
+  },
+  endpoint_query_router(args) { return { verb: 'list', args } },
+  surface_queue_router(args) { return { verb: 'queue_surface', args } },
 }
 
 export function loadAliases(aliasesFile) {

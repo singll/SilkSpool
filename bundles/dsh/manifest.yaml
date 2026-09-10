@@ -223,6 +223,18 @@ templates:
   - dsh-plugin-sec-domain-vuln.contract-vuln.test.js
   - dsh-plugin-sec-backend-vuln-sqlite.js
   - sec-vuln-domain-plugin-setup.sh
+  # --- v5 asset 域插件（Phase 2 首域：资产/指纹/分级/生命周期，契约 03-asset.md）---
+  - dsh-plugin-sec-domain-asset.js
+  - dsh-plugin-sec-domain-asset.patch.yml
+  - dsh-plugin-sec-domain-asset.contract-asset.test.js
+  - dsh-plugin-sec-backend-asset-sqlite.js
+  - sec-asset-domain-plugin-setup.sh
+  # --- v5 endpoint 域插件（Phase 2 首域：接口面/参数队列，契约 04-endpoint.md）---
+  - dsh-plugin-sec-domain-endpoint.js
+  - dsh-plugin-sec-domain-endpoint.patch.yml
+  - dsh-plugin-sec-domain-endpoint.contract-endpoint.test.js
+  - dsh-plugin-sec-backend-endpoint-sqlite.js
+  - sec-endpoint-domain-plugin-setup.sh
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---
   - retention.sh
   # --- SQLite 一致性快照备份 + 紧急恢复（P0-5：DB down 应急 + 集中存储归宿）---

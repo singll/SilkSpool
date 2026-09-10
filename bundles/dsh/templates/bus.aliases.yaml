@@ -9,6 +9,8 @@
 # Phase 1.3：vuln 域已注册（1.2）——填充 vuln 相关别名（02-vuln.md §3.2 表）。
 #   submission_draft → report 域（Phase 2 才注册）：目标域未注册时 ToolProjector 跳过、
 #   dispatch 报 E_BUS_DOMAIN_UNKNOWN（v4 工具仍在，无断流）；report 域上线后别名自动生效。
+# Phase 2 首域：asset + endpoint 域已注册——填充 03-asset §3.2 / 04-endpoint §3.2 别名表。
+#   全走 dispatch_aliases（路由器）：分派别名不经 ToolProjector 投影，避免与 v4 旧工具同名冲突。
 # ==============================================================================
 aliases:
   submission_draft: report_draft_submission
@@ -25,3 +27,31 @@ dispatch_aliases:
     router: status_router
     domain: vuln
     warn: "finding_update 是自由态旧动词，已按 status 分派（confirm 缺 evidence 收紧）；请改用语义动词"
+  asset_add:
+    router: asset_add_router
+    domain: asset
+    warn: "asset_add 的评级字段（score/level/accept/biz/state）已被丢弃——评级只能经 asset_grade、状态只能经 asset_state，请改用语义动词"
+  asset_query:
+    router: asset_query_router
+    domain: asset
+    warn: "asset_query 已映射为 asset_list（补分页信封与 state 过滤）——请改用语义查询"
+  asset_stats:
+    router: asset_stats_router
+    domain: asset
+    warn: "asset_stats 已映射为 asset_overview——请改用语义查询"
+  fp_add:
+    router: fp_add_router
+    domain: asset
+    warn: "fp_add 已映射为 fp_record——请改用语义动词"
+  endpoint_add:
+    router: endpoint_add_router
+    domain: endpoint
+    warn: "endpoint_add 的鉴权字段（auth_required/roles_seen）已被丢弃——鉴权标注只能经 endpoint_mark_auth，请改用语义动词"
+  endpoint_query:
+    router: endpoint_query_router
+    domain: endpoint
+    warn: "endpoint_query 已映射为 endpoint_list（补 params/auth 列）——请改用语义查询"
+  surface_queue:
+    router: surface_queue_router
+    domain: endpoint
+    warn: "surface_queue 已改名为 endpoint_queue_surface（队列文件 owner 收编 endpoint 域）——请改用语义动词"
