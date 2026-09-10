@@ -2142,8 +2142,8 @@ export function apply(ctx, config) {
       child.effect(() => () => { sessionPersistenceRef = null }, 'sec-suite: session persistence')
     })
   } catch { /* 无 sessionPersistence */ }
-  // v5 领域总线（sec-domain-bus 插件 provide）：看板 findings/findingGet/findingUpdate 三 case 走
-  // vuln.* RPC（02-vuln §1.7）；总线缺席时 dashboard-rpc 回退 v4 直写路径（观察期兜底）
+  // v5 领域总线（sec-domain-bus 插件 provide）：dashboard-rpc 各域 case 走总线 query/dispatch
+  // （vuln/asset/endpoint/fact/know/ledger/scope/approval 等，16-dashboard §1.7）；总线缺席时回退 v4 直写（观察期兜底）
   try {
     ctx.inject(['secDomainBus'], (child) => {
       secDomainBusRef = child.secDomainBus

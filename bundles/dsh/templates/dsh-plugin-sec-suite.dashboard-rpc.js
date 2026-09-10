@@ -210,6 +210,25 @@ export async function handleDashboardRpc(endpoint, payload) {
       const programId = String(p.program_id || '')
       if (!programId) throw new Error('programBindWorkspace 需要 program_id')
       const workspaceId = p.workspace_id ? String(p.workspace_id) : null
+      // v5：program.bind_workspace（scope 域 program_bind_workspace）接管（08-scope §1.7）；v4 直写兜底
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          let workspace = null
+          if (workspaceId) {
+            const reg = deps.getWorkspaceRegistry ? deps.getWorkspaceRegistry() : null
+            const ws = reg ? reg.get(workspaceId) : null
+            workspace = ws ? (ws.path || ws.title) : workspaceId
+          }
+          const r = await bus.dispatch('scope', 'program_bind_workspace', { program_name: programId, workspace }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+          if (r.ok) return { ok: true, program_id: programId, workspace_id: workspaceId, ...(r.data || {}) }
+          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
+          const err = new Error(msg); err.code = r.error?.code; throw err
+        } catch (e) {
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
+          else throw e
+        }
+      }
       let wsPath = null
       if (workspaceId && deps.getWorkspaceRegistry()) {
         const ws = deps.getWorkspaceRegistry().get(workspaceId)
@@ -220,18 +239,108 @@ export async function handleDashboardRpc(endpoint, payload) {
       deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.programBindWorkspace', decision: 'executed', detail: { program_id: programId, workspace_id: workspaceId } })
       return { ok: true, program_id: programId, workspace_id: workspaceId }
     }
-    case 'scopeList':
+    case 'scopeList': {
+      // v5：scope.list（scope 域 scope_list 查询）接管（08-scope §1.7）；v4 兜底
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('scope', 'list', { include_archived: true }, { actor: 'dashboard' })
+          if (r.ok && r.data && Array.isArray(r.data.programs)) return r.data
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       deps.pairWorkspaces()
       return deps.scopeList()
-    case 'scopeSaveProgram':
+    }
+    case 'scopeSaveProgram': {
+      // v5：scope.grant（+ scope.exclude + program.bind_workspace，按表单字段分派）接管
+      // （16-dashboard §1.7 #6）；v4 scopeSaveProgram 兜底
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const name = String(p.name || '').trim()
+          const entries = [...new Set((Array.isArray(p.scope) ? p.scope : []).map((s) => String(s).trim()).filter(Boolean))]
+          if (!entries.length) throw new Error('scope 至少一条授权条目（域名/IP/CIDR）')
+          const ctx = { actor: 'dashboard', operator: p.operator ? String(p.operator) : null }
+          const grantArgs = { program_name: name, entries }
+          if (p.platform) grantArgs.platform = String(p.platform).trim()
+          if (p.max_risk) grantArgs.max_risk = String(p.max_risk)
+          const g = await bus.dispatch('scope', 'grant', grantArgs, ctx)
+          if (!g.ok) { const msg = String(g.error?.message || '未知错误') + (g.error?.hint ? `（${g.error.hint}）` : ''); const err = new Error(msg); err.code = g.error?.code; throw err }
+          const excludeEntries = [...new Set((Array.isArray(p.exclude) ? p.exclude : []).map((s) => String(s).trim()).filter(Boolean))]
+          if (excludeEntries.length) {
+            const e = await bus.dispatch('scope', 'exclude', { program_name: name, entries: excludeEntries }, ctx)
+            if (!e.ok) { const msg = String(e.error?.message || '未知错误') + (e.error?.hint ? `（${e.error.hint}）` : ''); const err = new Error(msg); err.code = e.error?.code; throw err }
+          }
+          const ws = p.workspace ? String(p.workspace).trim() : ''
+          if (ws) {
+            const b = await bus.dispatch('scope', 'program_bind_workspace', { program_name: name, workspace: ws }, ctx)
+            if (!b.ok) { const msg = String(b.error?.message || '未知错误') + (b.error?.hint ? `（${b.error.hint}）` : ''); const err = new Error(msg); err.code = b.error?.code; throw err }
+          }
+          return { ok: true, name, ...(g.data || {}) }
+        } catch (e) {
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
+          else throw e
+        }
+      }
       return deps.scopeSaveProgram(p, !!p.is_new)
-    case 'scopeDeleteProgram':
+    }
+    case 'scopeDeleteProgram': {
+      // v5：scope.revoke（清空全部条目 → 整项目出 yml + programs 归档）接管（08-scope §1.7）；v4 兜底
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const name = String(p.name || '').trim()
+          const list = await bus.query('scope', 'list', { include_archived: false }, { actor: 'dashboard' })
+          const prog = (list.ok && list.data && Array.isArray(list.data.programs)) ? list.data.programs.find((x) => x.name === name) : null
+          if (!prog) { const err = new Error(`项目 ${name} 不在 scope.yml`); err.code = 'E_NOT_FOUND'; throw err }
+          const entries = prog.scope || []
+          if (!entries.length) { const err = new Error(`项目 ${name} 无授权条目`); err.code = 'E_NOT_FOUND'; throw err }
+          const r = await bus.dispatch('scope', 'revoke', { program_name: name, entries }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+          if (r.ok) return { ok: true, name, hint: '已从 scope.yml 移除（fail-closed 立即生效），programs 表归档保留归属', ...(r.data || {}) }
+          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
+          const err = new Error(msg); err.code = r.error?.code; throw err
+        } catch (e) {
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
+          else throw e
+        }
+      }
       return deps.scopeDeleteProgram(p.name)
+    }
     // ---- v4.3 统一审批中心 ----
-    case 'approvalList':
+    case 'approvalList': {
+      // v5：approval.list（approval 域 approval_list 查询）接管（09-approval §1.7）；v4 兜底
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('approval', 'list', { kind: String(p.kind || ''), status: String(p.status || ''), limit: Math.min(Number(p.limit) || 100, 200) }, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) {
+            let pending = 0
+            try {
+              const pc = await bus.query('approval', 'list', { status: 'pending', limit: 1 }, { actor: 'dashboard' })
+              if (pc.ok) pending = Number(pc.total) || 0
+            } catch { pending = r.rows.filter((x) => x.status === 'pending').length }
+            return { rows: r.rows, pending }
+          }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return { rows: deps.assetDb.approvalList({ kind: String(p.kind || ''), status: String(p.status || ''), limit: Math.min(Number(p.limit) || 100, 200) }), pending: deps.assetDb.approvalCount({ status: 'pending' }) }
-    case 'approvalDecide':
+    }
+    case 'approvalDecide': {
+      // v5：approval.decide（approval 域 approval_decide 命令）接管（09-approval §1.7）；v4 兜底
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.dispatch('approval', 'decide', { id: Number(p.id), decision: String(p.decision || ''), note: String(p.note || '') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+          if (r.ok) return { ok: true, ...(r.data || {}) }
+          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
+          const err = new Error(msg); err.code = r.error?.code; throw err
+        } catch (e) {
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
+          else throw e
+        }
+      }
       return deps.approvalDecideAction({ id: Number(p.id), decision: String(p.decision || ''), note: String(p.note || '') })
+    }
     case 'taskRunNow': {
       const id = Number(p.id)
       if (!id) throw new Error('taskRunNow 需要 id')
