@@ -8,7 +8,7 @@
 - **全局契约宪法**：`00-conventions.md`
 - **文档状态**：00-18 全量定稿（2026-09-06，commit `2e593e9`）
 - **领域语言**：`bundles/dsh/CONTEXT.md`
-- **当前 Phase**：**Phase 5 进行中（5.1 已完成并残余修复收口；5.2 别名删除处于 7 天零使用观察期，2026-09-11 复核仍活跃不删、闸口顺延 ≈ 2026-09-18；下一节点：5.2 观察期复核（二次））**
+- **当前 Phase**：**Phase 5 进行中（5.1 已完成并残余修复收口；5.2 别名删除处于 7 天零使用观察期，2026-09-11 复核仍活跃不删、闸口顺延 ≈ 2026-09-18；5.3 worker 挂载矩阵 + owns×sandbox 交叉断言已完成；下一节点：5.4 eval 契约合规用例上线）**
 
 ## 二、已完成节点（附 commit 追踪）
 
@@ -40,6 +40,7 @@
 | **5.1 prompt 体系全量改写** | persona 7 角色（seed-presets.sh）工具引用 → 新动词（run_cli→exec_run_cli / spawn_worker→exec_spawn_worker / finding_add→vuln_register_signal / endpoint_query→endpoint_list / proxy_pool_*→proxy_* / 写黑板→fact_bb_publish 等），PERSONA_VERSION 4→5；7 个 SKILL.md + rules/src/{technique-index,asset-scoring,severity-rating}.md + VC-016 工具引用收敛；`task_update status=done` 旧通道 → 调度器 task_finish 自动收尾语义；新建 `p19-tool-refs.py`（tasks objective SQL 改写，p14 模式，边界感知幂等可重跑，41 对映射）+ manifest 登记 | `ce3bb8a` | ✅ 线上 12 个任务 objective 改写完成（interval + 历史 once），p19 复跑零变更（幂等）；全 prompt 资产悬空旧工具引用 = 0（persona/skills/rules/objective 边界感知扫描）；persona 7 角色重建至 v5（含 exec_run_cli/exec_spawn_worker/fact_bb_publish）；`sec-v5-accept.sh` PASS=25 FAIL=0；服务 active；findings=80 无回归；scheduled tasks 4（24/37/100007/100008）无扰动 |
 | **5.1 残余修复 + 5.2 观察期启动** | 修复 5.1 边界感知扫描漏掉的代码内硬编码旧工具名：`dsh-plugin-sec-domain-task.js` onScopeGranted / `dsh-plugin-sec-suite.js` enqueueScopeSeed 两处审批种子任务 objective（radar_read→ledger_radar_drain、attempts_log→ledger_log_attempt、store:asset-graph→asset_upsert/endpoint_upsert）+ asset 域 agent_note（radar_read）+ ops 提示（attempts_log），消除确定性 deprecated_use 来源；核实现场 deprecated_use 共 104 条、最近 2026-09-11T12:00 UTC（仍在活跃使用）→ **5.2 别名删除不满足「7 天零使用」前置，本次不删**，进入观察期（起点 2026-09-11，闸口 ≈ 2026-09-18） | `1ac5db6` | ✅ 契约测试全绿（setup 内 14 套无 fail）；服务 active；`sec-v5-accept.sh` PASS=25 FAIL=0；bus_status aliases=37（20 静态 + 17 分派）、15 域 registered；findings=80 无回归；别名清单/契约测试/ToolProjector 未动（观察期不删） |
 | **5.2 观察期复核（一）** | 复核 2026-09-11 当日 `data/audit.jsonl` deprecated_use 计数：累计 104 条（起始 2026-09-07）、观察期（≥2026-09-11 00:00 UTC）内 8 条、最新 2026-09-11T12:00:54Z；by cmd：run_cli 62 / coverage_report 7 / page_result 6 / attempts_log 5 / grep_result 5 / proxy_pool_stats 4 / finding_update 3 / pipeline_validate 3 / finding_query 2 / radar_read 2 / spawn_worker 2 / blackboard_get 2 / proxy_pool_list 1，actor 含 model + dashboard → **不满足「连续 7 天零使用」前置（今日仅观察期第 1 天且当日即 8 条），本次不删**；别名清单（20 静态 + 17 分派 = 37，运行时副本与模板一致）/ 契约测试 / ToolProjector 未动；观察期顺延，新闸口以最后一条 deprecated_use 2026-09-11T12:00Z 为锚再计 7 天零使用 ≈ 2026-09-18 | `90c1d2b` | ✅ 服务 active（`systemctl is-active silksecagent`=active）；bus_status aliases=37（20 静态 + 17 分派）与 `bundles/dsh/templates/bus.aliases.yaml` 一致；findings 无回归；deprecated_use 观察继续（纯复核，无代码改动无部署） |
+| **5.3 worker 挂载矩阵 + owns×sandbox 交叉断言** | ① 总线 ToolProjector 增 profile × phase 挂载矩阵（17-llm-surface §1.6 规则 6）：headless worker 按 `SEC_WORKER_PHASE` 只注册「跨 phase 基础设施（bus/task/exec/fact/know/ledger/fgs）+ 本 phase 核心域」动词，web 会话全量豁免，phase 空/未知 fail-open 全量；核心域映射以 §2.5 为基并按 5.1 改写后的 objective 实测回填（recon→asset/endpoint/proxy、vuln→vuln/asset/report、review→∅、biz-logic→endpoint、code-audit/intranet 补）。② `exec_spawn_worker` 增 phase 参数 + `runWorker`/scheduler 透传 `SEC_WORKER_PHASE` 到 worker env。③ `bus_status` 增 mount（phase/subset/mode）观测。④ 新增 `sec-owns-sandbox-check.mjs`（owns×sandbox 交叉断言）+ setup.sh §E 冒烟 fail-closed：各域 owns.tables/files 推导物理路径断言 ∉ bwrap 可写 bind（$HOME）白名单 | `7594f7d` | ✅ 契约测试 bus 45/45（含挂载矩阵 4 用例）全绿（本地 + csai setup 内双跑，14 域全量无回归）；服务 active；`sec-v5-accept.sh` PASS=25 FAIL=0；setup §E 交叉断言 PASS（67 项/14 域零违规）；实测 mount：vuln→[bus/task/exec/fact/know/ledger/fgs/vuln/asset/report]、recon→[+asset/endpoint/proxy]、review→[横切 7 域]、empty→full；findings=80、scheduled interval 4（24/37/100007/100008）无扰动 |
 
 ## 三、待办节点（Phase 1，按顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
@@ -78,7 +79,7 @@
 
 - [x] **5.1 prompt 体系全量改写**：persona/objective/skills/technique-index 工具引用 → 新动词表（脚本化 p19-tool-refs.py，p14 模式）；AGENTS.md 受管区块 manifest 生成（Phase 1 已收口，本节点确认）。**✅ 已完成（2026-09-11 上线；commit `ce3bb8a`）**
 - [ ] **5.2 删兼容别名**：逐个走宪法 §十五废弃三段式（deprecated → 7 天 audit 零使用 → 删除）。前置：5.1 完成后观察 7 天 deprecated_use 计数。**🔄 观察期进行中**（起点 2026-09-11；2026-09-11 复核：观察期内 8 条 deprecated_use 仍活跃（最新 2026-09-11T12:00Z），不满足 7 天零使用前置 → 本次不删、观察期顺延，新闸口以最后一条 deprecated_use 为锚再计 7 天 ≈ 2026-09-18；别名 37 条/契约测试/ToolProjector 未动）
-- [ ] **5.3 worker 挂载矩阵实施**：profile × actor 白名单；setup.sh 冒烟断言 owns×sandbox 交叉校验（17-llm-surface §1.6/§2.2）。
+- [x] **5.3 worker 挂载矩阵实施**：profile × actor 白名单；setup.sh 冒烟断言 owns×sandbox 交叉校验（17-llm-surface §1.6/§2.2）。**✅ 已完成（2026-09-11 上线；commit `7594f7d`）**
 - [ ] **5.4 eval 契约合规用例上线**：模型越权 100% 被拒 + hint 可引导（15-eval.md EC-01~05）。
 - [ ] **5.5 discipline-audit.py 增「悬空工具引用」断言**（17-llm-surface §3.3 执行点）。
 - [ ] **5.6 复评「单写者守护进程」**：Phase 1-5 期间无 E_CONFLICT 频发则维持多进程+WAL 终态。
@@ -88,7 +89,7 @@
 - Phase 2：数据域滚动搬迁（asset+endpoint → fact+know → ledger → task+exec → fgs → scope+approval → report/proxy/eval/dashboard）✅ 已完成
 - Phase 3：跨域事件化收尾（outbox 验收 / bus replay 演练 / memcore 旁路化 / eval 订阅）✅ 已完成（3.1 部署验收 + 3.2 事件可靠性回放 + 3.3 memcore 旁路化 + 3.4 删旧路径）
 - Phase 4：http-remote 后端试点（vuln 域）✅ 已完成（repository-http + 混布 overlay + outbox 同步 + 能力矩阵 + 三后端同套跑 + 切换演练可回切）
-- Phase 5：LLM 面收敛 + 守卫加固 + 评测（删别名 / 挂载矩阵 / 单写者复评）🔄 进行中（5.1 prompt 体系全量改写已完成并残余修复；5.2 别名删除处于观察期，闸口 ≈ 2026-09-18）
+- Phase 5：LLM 面收敛 + 守卫加固 + 评测（删别名 / 挂载矩阵 / 单写者复评）🔄 进行中（5.1 prompt 体系全量改写已完成并残余修复；5.2 别名删除处于观察期，闸口 ≈ 2026-09-18；5.3 worker 挂载矩阵 + owns×sandbox 交叉断言已完成）
 
 ## 五、关键决策（已定，勿推翻）
 
