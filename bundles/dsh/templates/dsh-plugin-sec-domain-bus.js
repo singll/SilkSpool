@@ -47,6 +47,24 @@ const BANNED_PARAM_NAMES = ['status', 'to', 'state']
 // 由 07-know.md §1.1 命名裁定背书，禁用词子串检查对它们豁免。
 const BANNED_WORD_EXEMPT_VERBS = new Set(['exp_update', 'vc_save', 'pb_save', 'update_note'])
 
+// ---------------------------------------------------------------------------
+// Phase 5.3 worker 挂载矩阵（17-llm-surface §1.6/§2.5）：profile × phase × actor 白名单。
+// headless worker 按任务 phase 只注册「跨 phase 基础设施 + 本 phase 核心域」的动词，
+// web 会话全量豁免。phase 空（交互 spawn_worker 未声明）→ 不裁剪（fail-open，与 web 一致）。
+// 跨 phase 基础设施 = 每个调度任务的 prompt 都会注入引用的横切域：FGS 段（fgs_*）、
+// 知识检索三步（fact_search/exp_search/kb_search）、台账/回执（ledger_*）、执行（exec_*）。
+// 核心域映射以 §2.5 为基，并按 5.1 改写后的 objective 实测回填（vuln 需 asset+report、recon 需 proxy）。
+// ---------------------------------------------------------------------------
+export const CROSS_CUTTING_DOMAINS = ['bus', 'task', 'exec', 'fact', 'know', 'ledger', 'fgs']
+export const PHASE_DOMAINS = {
+  recon: ['asset', 'endpoint', 'proxy'],
+  vuln: ['vuln', 'asset', 'report'],
+  review: [],
+  'biz-logic': ['endpoint'],
+  'code-audit': ['vuln', 'asset'],
+  intranet: ['asset', 'endpoint', 'vuln'],
+}
+
 const log = (msg) => { try { process.stderr.write(`[sec-domain-bus] ${msg}\n`) } catch { /* noop */ } }
 
 // ---------------------------------------------------------------------------
@@ -750,6 +768,7 @@ export function createBus(opts = {}) {
   const eventsDir = opts.eventsDir || path.join(dataDir, 'events')
   const agentsMd = opts.agentsMd || path.join(dataDir, 'AGENTS.md')
   const profile = opts.profile || null
+  const workerPhase = opts.phase || process.env.SEC_WORKER_PHASE || ''
   const sidecars = opts.sidecars !== false
   const clock = opts.clock || (() => Date.now())
   const idFactory = opts.idFactory || ((p) => createId(p))
@@ -758,6 +777,11 @@ export function createBus(opts = {}) {
   const dispatcherIntervalMs = opts.dispatcherIntervalMs || 1000
   const dispatcherStartDelayMs = opts.dispatcherStartDelayMs ?? 3000
   const startDispatcherTimer = opts.startDispatcherTimer !== false
+  // 挂载矩阵：仅 headless 面 + 显式声明 phase 时裁剪；phase 空/未知 → 全量（fail-open）。
+  const mountSubset = profile === 'headless' && workerPhase
+    ? new Set([...CROSS_CUTTING_DOMAINS, ...(PHASE_DOMAINS[workerPhase] || [])])
+    : null
+  const mountSubsetNames = mountSubset ? [...mountSubset] : null
 
   const now = () => clock()
 
@@ -1614,6 +1638,11 @@ export function createBus(opts = {}) {
         const deprecated = Object.entries(aliasesDoc.aliases).filter(([, t]) => t && t.startsWith('_')).map(([k]) => k)
         return {
           process: { profile: profile || 'unknown', pid: process.pid, uptime_ms: now() - (busStartedAt), sidecar_singleton: sidecars },
+          mount: {
+            phase: workerPhase || null,
+            subset: mountSubsetNames,
+            mode: mountSubset ? 'phase-subset' : 'full',
+          },
           bus: {
             manifest_schema_version: MANIFEST_SCHEMA_VERSION,
             idempotency: idemStats,
@@ -1708,6 +1737,7 @@ export function createBus(opts = {}) {
     if (!ctx || typeof ctx.tools?.register !== 'function') return { registered: 0 }
     let count = 0
     for (const [d, entry] of domains.entries()) {
+      if (mountSubset && !mountSubset.has(d)) continue
       for (const [full, def] of Object.entries(entry.manifest.commands)) {
         if (!Array.isArray(def.actor) || !def.actor.includes('model')) continue
         if (def.deprecated && !mountDeprecated) continue
@@ -1740,9 +1770,10 @@ export function createBus(opts = {}) {
         count++
       }
     }
-    // 兼容别名（目标对 model 可见才注册；目标域未注册时跳过——如 submission_draft 待 report 域 Phase 2 上线）
+    // 兼容别名（目标对 model 可见才注册；目标域未注册/不在挂载矩阵时跳过——如 submission_draft 待 report 域 Phase 2 上线）
     for (const [alias, target] of Object.entries(aliasesDoc.aliases)) {
       const d = target.split('_')[0]
+      if (mountSubset && !mountSubset.has(d)) continue
       const entry = domains.get(d)
       if (!entry) continue
       const tdef = entry.manifest.commands[target] || entry.manifest.queries[target]
@@ -1873,6 +1904,7 @@ export function createBus(opts = {}) {
 export function apply(ctx, config = {}) {
   const bus = createBus({
     profile: process.argv.includes('web') ? 'web' : 'headless',
+    phase: process.env.SEC_WORKER_PHASE || '',
     sidecars: config.sidecars !== false,
   })
   // host 面（sidecars !== false）provide 门面；agent 面（sidecars:false）不 provide——

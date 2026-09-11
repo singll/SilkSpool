@@ -1145,3 +1145,82 @@ test('投影: RpcProjector /silksec-domain vuln.* 路由 + 写操作 operator �
   assert.equal(bad.value.ok, false)
   assert.equal(bad.value.error.code, 'E_NOT_FOUND')
 })
+
+// ---------------------------------------------------------------------------
+// 20. worker 挂载矩阵（5.3）：profile × phase × actor 白名单（17-llm-surface §1.6 规则 6）
+// ---------------------------------------------------------------------------
+
+function makeProxyManifest() {
+  return {
+    domain: 'proxy',
+    version: 1,
+    service: 'secDomain.proxy',
+    description: '测试用 proxy 伪域',
+    owns: { tables: [], files: ['data/pool.json'] },
+    commands: {
+      proxy_refresh: {
+        actor: ['model', 'script'],
+        schema: { type: 'object', properties: {}, additionalProperties: false },
+        idempotent: 'none', events: [], invariants: [], timeout_ms: 60000,
+        agent_note: '刷新代理池。', deprecated: false,
+      },
+    },
+    queries: {
+      proxy_stats: {
+        actor: ['model', 'dashboard'],
+        params: { type: 'object', properties: {}, additionalProperties: false },
+        predicates: [], agent_note: '代理池统计。',
+      },
+    },
+    events: {},
+    subscribes: {},
+    backend: 'repository-v1',
+  }
+}
+
+function collectTools(bus, manifest) {
+  const registered = []
+  bus._internal.setToolsCtx({ tools: { register: (def) => registered.push(def) } })
+  bus.registry.register({ manifest, handlers: { proxy_refresh: async () => ({ data: {} }) }, backend: { factory: () => ({}), capabilities: {} } })
+  bus._internal.registerTools({ tools: { register: (def) => registered.push(def) } })
+  return registered.map((t) => t.name)
+}
+
+test('挂载矩阵: headless+phase=vuln 只注册 phase 域（vuln 可见 / proxy 不可见）', () => {
+  const dir = tmpDir()
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false, profile: 'headless', phase: 'vuln' })
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  const names = collectTools(bus, makeProxyManifest())
+  assert.ok(names.includes('vuln_register_signal'), 'vuln phase 可见 vuln 动词')
+  assert.ok(!names.includes('proxy_refresh'), 'vuln phase 不投影 proxy 命令')
+  assert.ok(!names.includes('proxy_stats'), 'vuln phase 不投影 proxy 查询')
+  assert.ok(names.includes('bus_status'), '跨 phase 基础设施 bus 恒可见')
+})
+
+test('挂载矩阵: headless 未声明 phase → 全量投影（fail-open）', () => {
+  const dir = tmpDir()
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false, profile: 'headless', phase: '' })
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  const names = collectTools(bus, makeProxyManifest())
+  assert.ok(names.includes('proxy_refresh'), '无 phase → 全量投影（proxy 可见）')
+})
+
+test('挂载矩阵: web 面豁免 phase 裁剪（proxy 可见）', () => {
+  const dir = tmpDir()
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false, profile: 'web', phase: 'vuln' })
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  const names = collectTools(bus, makeProxyManifest())
+  assert.ok(names.includes('proxy_refresh'), 'web 面豁免 phase 裁剪（全量）')
+})
+
+test('挂载矩阵: bus_status 报 mount.phase/subset/mode', async () => {
+  const dir = tmpDir()
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false, profile: 'headless', phase: 'recon' })
+  const st = await bus.query('bus', 'status', {}, { actor: 'dashboard' })
+  assert.equal(st.ok, true)
+  assert.equal(st.data.mount.phase, 'recon')
+  assert.equal(st.data.mount.mode, 'phase-subset')
+  assert.ok(st.data.mount.subset.includes('asset'))
+  assert.ok(st.data.mount.subset.includes('proxy'))
+  assert.ok(st.data.mount.subset.includes('bus'))
+})

@@ -166,7 +166,7 @@ async function schedulerTick() {
       // max(默认上限, 该值)（7200s 封顶，防 2 小时外的失控 worker 占死调度槽）
       const taskBudget = Math.min(Number(task.budget_timeout_sec) || 0, 7200)
       const timeoutSec = Math.max(SCHEDULER_TASK_TIMEOUT_SEC, taskBudget)
-      const r = await deps.runWorker({ task: prompt, cwd, timeoutSec, enforceLimit: true, provider: task.provider, model: task.model, reasoningEffort: task.reasoning_effort })
+      const r = await deps.runWorker({ task: prompt, cwd, timeoutSec, enforceLimit: true, provider: task.provider, model: task.model, reasoningEffort: task.reasoning_effort, phase: task.phase || '' })
       if (r.busy) {
         try { deps.assetDb.taskUpdate({ id: task.id, status: 'queued', note: 'worker 并发已满，延后到下一 tick' }) } catch { /* ignore */ }
         return

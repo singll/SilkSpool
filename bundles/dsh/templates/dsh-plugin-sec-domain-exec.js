@@ -94,6 +94,7 @@ export const EXEC_MANIFEST = {
       actor: ['model', 'dashboard'],
       schema: schema({
         task: str({ minLength: 1 }),
+        phase: str(),
         timeout: int({ minimum: 1, maximum: 3600 }),
         force: { type: 'boolean' },
         provider: str(),
@@ -686,6 +687,7 @@ function makeHandlers(opts) {
       }
       dshArgs.push(fullTask)
       const env = { ...process.env, DSH_HOME: dataDir, PATH: '/usr/local/node/bin:' + (process.env.PATH || '') }
+      if (args.phase) env.SEC_WORKER_PHASE = String(args.phase)
 
       activeWorkers++
       const started = Date.now()

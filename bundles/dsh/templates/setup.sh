@@ -302,6 +302,19 @@ if [ -f "$BASE_DIR/sec-eval-domain-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-eval-domain-plugin-setup.sh"
 fi
 
+# -------------------- 8.5992 v5 owns×sandbox 交叉断言（17-llm-surface §2.2 #2，setup §E） --------------------
+# 各域 owns.tables/files 推导物理路径，逐一断言 ∉ bwrap --bind（可写）白名单（$HOME）——域 owned 数据对沙箱不可写。
+# 必须在全部域插件组装（8.56-8.5991）之后运行；fail-closed（违规 = setup 中止，不用 || warn 兜底）。
+if [ -f "$BASE_DIR/data-seed/scripts/sec-owns-sandbox-check.mjs" ]; then
+    log "§E owns×sandbox 交叉断言"
+    # 归位到 scripts/pipeline/（幂等：内容一致才跳过）供每日复跑
+    mkdir -p "$BASE_DIR/scripts/pipeline"
+    if ! cmp -s "$BASE_DIR/data-seed/scripts/sec-owns-sandbox-check.mjs" "$BASE_DIR/scripts/pipeline/sec-owns-sandbox-check.mjs" 2>/dev/null; then
+        install -m 0755 "$BASE_DIR/data-seed/scripts/sec-owns-sandbox-check.mjs" "$BASE_DIR/scripts/pipeline/sec-owns-sandbox-check.mjs"
+    fi
+    SEC_BASE_DIR="$BASE_DIR" PATH=/usr/local/node/bin:$PATH /usr/local/node/bin/node "$BASE_DIR/scripts/pipeline/sec-owns-sandbox-check.mjs"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"

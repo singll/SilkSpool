@@ -219,6 +219,7 @@ templates:
   - sec-domain-bus-plugin-setup.sh
   - bus.aliases.yaml
   - data-seed/scripts/sec-bus-cli.mjs
+  - data-seed/scripts/sec-owns-sandbox-check.mjs
   # --- v5 vuln 域插件（Phase 1.2 试点域：候选池状态机/证据链/提交回流，契约 02-vuln.md）---
   - dsh-plugin-sec-domain-vuln.js
   - dsh-plugin-sec-domain-vuln.patch.yml

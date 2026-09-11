@@ -1021,7 +1021,7 @@ function readWorkerResult(row) {
 
 // worker 核心（工具与调度循环共用）。cwd 默认 runDir；调度任务传工作区路径——
 // headless 会话 header cwd = workspace path → workspaceRegistry 自动归组 → 看板可跳链
-async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId = null, enforceLimit = true, dedupeKey = null, provider = null, model = null, reasoningEffort = null }) {
+async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId = null, enforceLimit = true, dedupeKey = null, provider = null, model = null, reasoningEffort = null, phase = null }) {
   // 幂等恢复（仅交互路径传 dedupeKey）：重启→重试时确定性拿回结果，而非 "outcome unknown"。
   // 早返回全部在 activeWorkers++ 之前 → 不占也不错减并发 slot。
   if (dedupeKey) {
@@ -1067,6 +1067,7 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
   dshArgs.push(fullTask)
 
   const env = { ...process.env, DSH_HOME: DATA_DIR, PATH: '/usr/local/node/bin:' + (process.env.PATH || '') }
+  if (phase) env.SEC_WORKER_PHASE = String(phase)
   audit({ ts: Date.now(), run_id: runId, tool: 'spawn_worker', decision: 'executed', detail: fullTask.slice(0, 200), session_id: originSessionId })
 
   activeWorkers++
