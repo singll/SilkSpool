@@ -401,9 +401,17 @@ test('不变量 INV-9: reject dup 缺 dup_of → E_VULN_DUP_TARGET_REQUIRED；du
   assert.equal(r2.error.code, 'E_NOT_FOUND')
 })
 
+test('不变量 INV-2b: confirm 缺 evidence → E_EVIDENCE_REQUIRED（引导性 hint，确定性）', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.dispatch('vuln', 'confirm', { finding_id: 1 }, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_EVIDENCE_REQUIRED')
+  assert.ok(r.error.hint && r.error.hint.includes('证据'), 'hint 应引导附证据引用')
+})
+
 test('不变量 E_NOT_FOUND: confirm/note/claim 不存在的行 → E_NOT_FOUND', async () => {
   const { bus } = makeEnv()
-  const r1 = await bus.dispatch('vuln', 'confirm', { finding_id: 99999, evidence: 'run_x' }, { actor: 'model' })
+  const r1 = await bus.dispatch('vuln', 'confirm', { finding_id: 99999, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
   assert.equal(r1.ok, false)
   assert.equal(r1.error.code, 'E_NOT_FOUND')
   const r2 = await bus.dispatch('vuln', 'note', { finding_id: 99999, note: 'x' }, { actor: 'model' })

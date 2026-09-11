@@ -311,6 +311,8 @@ templates:
   - dsh-plugin-sec-backend-eval-file.js
   - sec-eval-domain-plugin-setup.sh
   - p-v5-1-migrate-eval.js
+  # --- v5 Phase 5.4 契约合规评测 runner（Mode A 确定性真实管线跑，无 LLM 成本）---
+  - eval-contract-run.js
   # --- v5 Phase 3 部署验收（18-migration §五：R0 基础健康 + R4 owns 唯一性，契约化）---
   - sec-v5-accept.sh
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---

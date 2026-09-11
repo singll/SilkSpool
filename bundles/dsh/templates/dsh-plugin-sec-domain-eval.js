@@ -373,16 +373,14 @@ function makeHandlers(opts) {
         run_id: runId, kind: 'fp', status: 'running', started_at: Date.now(), fingerprint,
         params: { cases: selected, conditions, model, timeout_sec: timeoutSec },
       })
-      schedule(() => {
-        executor.runFp({ runId, cases: selected, conditions, model, timeoutSec, repo })
-          .then((result) => {
-            repo.finishRun(runId, { status: result.status || 'done', finished_at: Date.now(), ...(result.report_file ? { report_file: result.report_file } : {}), ...(result.error ? { error: result.error } : {}) })
-            publishRef(buildEventEnvelope('eval.report.built', { run_id: runId, kind: 'fp', file: result.report_file || null, pass_rate: result.pass_rate ?? null, gain: result.gain ?? null }))
-          })
-          .catch((e) => {
-            repo.finishRun(runId, { status: 'failed', finished_at: Date.now(), error: String(e?.message || e) })
-          })
-      })
+      schedule(() => executor.runFp({ runId, cases: selected, conditions, model, timeoutSec, repo })
+        .then((result) => {
+          repo.finishRun(runId, { status: result.status || 'done', finished_at: Date.now(), ...(result.report_file ? { report_file: result.report_file } : {}), ...(result.error ? { error: result.error } : {}) })
+          publishRef(buildEventEnvelope('eval.report.built', { run_id: runId, kind: 'fp', file: result.report_file || null, pass_rate: result.pass_rate ?? null, gain: result.gain ?? null }))
+        })
+        .catch((e) => {
+          repo.finishRun(runId, { status: 'failed', finished_at: Date.now(), error: String(e?.message || e) })
+        }))
       return { data: { run_id: runId, status: 'running', cases: selected.length, conditions }, events: [] }
     },
 
@@ -401,16 +399,14 @@ function makeHandlers(opts) {
         run_id: runId, kind: 'contract', status: 'running', started_at: Date.now(), fingerprint,
         params: { cases: selected, llm_probe: llmProbe, model },
       })
-      schedule(() => {
-        executor.runContract({ runId, cases: selected, llmProbe, model, repo })
-          .then((result) => {
-            repo.finishRun(runId, { status: result.status || 'done', finished_at: Date.now(), ...(result.report_file ? { report_file: result.report_file } : {}), ...(result.error ? { error: result.error } : {}) })
-            publishRef(buildEventEnvelope('eval.report.built', { run_id: runId, kind: 'contract', file: result.report_file || null, pass_rate: result.pass_rate ?? null, gain: null }))
-          })
-          .catch((e) => {
-            repo.finishRun(runId, { status: 'failed', finished_at: Date.now(), error: String(e?.message || e) })
-          })
-      })
+      schedule(() => executor.runContract({ runId, cases: selected, llmProbe, model, repo })
+        .then((result) => {
+          repo.finishRun(runId, { status: result.status || 'done', finished_at: Date.now(), ...(result.report_file ? { report_file: result.report_file } : {}), ...(result.error ? { error: result.error } : {}) })
+          publishRef(buildEventEnvelope('eval.report.built', { run_id: runId, kind: 'contract', file: result.report_file || null, pass_rate: result.pass_rate ?? null, gain: null }))
+        })
+        .catch((e) => {
+          repo.finishRun(runId, { status: 'failed', finished_at: Date.now(), error: String(e?.message || e) })
+        }))
       return { data: { run_id: runId, status: 'running', cases: selected.length, llm_probe: llmProbe }, events: [] }
     },
   }
@@ -634,12 +630,19 @@ function makeDefaultExecutor(opts) {
       if (c.kind === 'llm' && !llmProbe) continue
       total++
       let got = null
+      let gotHint = null
+      let gotOk = null
       try {
         const r = await dispatchAttempt(c.attempt || {})
-        got = r && r.ok === false ? (r.error?.code || null) : null
-      } catch (e) { got = String(e?.code || e?.message || 'E_INTERNAL') }
-      if (got === c.expected_code) pass++
-      else failures.push({ name: c.name, got_code: got, expected_code: c.expected_code })
+        gotOk = r ? r.ok : null
+        if (r && r.ok === false) { got = r.error?.code || null; gotHint = r.error?.hint || r.error?.message || null }
+        else if (r && r.ok === true) { got = null; gotHint = null }
+      } catch (e) { got = String(e?.code || e?.message || 'E_INTERNAL'); gotHint = e?.hint || e?.message || null }
+      // 双重断言：① 错误码匹配（越权 100% 被拒）② hint 可引导（含 expected_hint_contains 引导 token）
+      const codeOk = got === c.expected_code
+      const hintOk = !c.expected_hint_contains || (gotHint != null && String(gotHint).includes(c.expected_hint_contains))
+      if (codeOk && hintOk) pass++
+      else failures.push({ name: c.name, got_ok: gotOk, got_code: got, expected_code: c.expected_code, got_hint: gotHint, expected_hint_contains: c.expected_hint_contains })
     }
 
     const passRate = total ? Math.round((pass / total) * 1000) / 10 : 0

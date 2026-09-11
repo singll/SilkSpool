@@ -140,14 +140,16 @@ export const VULN_MANIFEST = {
       actor: ['model', 'dashboard'],
       schema: schema({
         finding_id: int(),
-        evidence: str({ minLength: 1 }),
+        evidence: str({ default: '' }),
         note: str({ default: '' }),
-      }, ['finding_id', 'evidence']),
+      }, ['finding_id']),
       idempotent: 'auto',
       idempotent_fields: ['finding_id', 'evidence'],
       events: ['vuln.signal.confirmed', 'vuln.candidate.promoted'],
       event_limit: 2,
-      invariants: ['findingExists', 'evidenceExists'],
+      // 证据闸门先于 finding 存在性：缺证据 → 确定性 E_EVIDENCE_REQUIRED（引导性 hint，
+      // 不因 finding 不存在而变 E_NOT_FOUND），使 eval 契约用例 EC-02「无证据确认」可确定性断言。
+      invariants: ['evidenceExists', 'findingExists'],
       timeout_ms: 60000,
       agent_note: '把待验证候选/信号确认为 confirmed（status+confidence+noise 原子三联动，候选同时出池进信号面）。evidence 必填且必须真实存在（run_id 的 results 目录 / evidence/{id}/ 证据包 / flow 文件 / oob 交互记录）。确认前自查：verify.must_pass 全过、falsification 逐项排除、verify_replay 机械复核通过。候选被他人认领时会被告知换下一条。',
       deprecated: false,
