@@ -28,4 +28,4 @@
 ## 深挖队列规则
 
 `owner=confirmed 且 level∈{S,A,B} 且 accept≠none`，按 score 降序逐资产挖穿再走下一个；
-accept:intrusion-only 照常挖但仅入侵类才 finding_add，非入侵类留 intel 不提交。
+accept:intrusion-only 照常挖但仅入侵类才 vuln_register_signal，非入侵类留 intel 不提交。

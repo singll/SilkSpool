@@ -32,7 +32,7 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 5. **负例即价值**：0 产出日的报告同等重要；禁止为凑产出报噪音。
 6. 报告统计数字以台账实际为准（coverage-report.py 生成），禁手填。
 7. CONFIRMED 建证据包 `data/evidence/{finding_id}/`：request.txt/response.txt（含时间戳+出口IP）/reproduce.md（含影响场景具体化）/falsification.md/verify-log.md。
-8. **finding_add 五要素齐才登记**：规范标题（`<组件/业务语境> <漏洞类型与后果>（关键特征）`，如 "Oceanus 404 调试页泄露内网节点 IP+appkey"，禁止工具原始输出当标题）+ 证据 + 复现步骤 + 影响 + 修复建议。完整性闸门（v4.2）：缺复现步骤/影响的登记自动归入"待验证候选"（noise=1，漏洞列表不可见）——这是登记未完成的信号，补全后重新 finding_add 即可升级，不是流程终点。
+8. **vuln_register_signal 五要素齐才登记**：规范标题（`<组件/业务语境> <漏洞类型与后果>（关键特征）`，如 "Oceanus 404 调试页泄露内网节点 IP+appkey"，禁止工具原始输出当标题）+ 证据 + 复现步骤 + 影响 + 修复建议。完整性闸门（v4.2）：缺复现步骤/影响的登记自动归入"待验证候选"（noise=1，漏洞列表不可见）——这是登记未完成的信号，补全后重新 vuln_register_signal 即可升级，不是流程终点。
 
 ## 4. 每日任务结构 = 规定动作 + 自选动作
 
@@ -53,16 +53,16 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 
 | 工具 | 用途 |
 |---|---|
-| `attempts_log` | 六态台账追加（写入即校验，违规拒绝）——每个探测动作后立即调用 |
-| `card_usage_log` | 卡片使用记录（deviation 必填） |
-| `radar_read` | 变化雷达队列读取（recon 开局，drain） |
-| `pipeline_validate` | 产物格式机器校验（收尾强制） |
-| `coverage_report` | 覆盖矩阵视图（报告数字唯一来源） |
-| `verify_replay` | CONFIRMED 机械复核（重放+hash+verify-log） |
-| `surface_queue` | 参数 URL 队列（喂 dalfox/sqlmap） |
-| `surface_scan` | 敏感信息回扫（VC-027，打码） |
+| `ledger_log_attempt` | 六态台账追加（写入即校验，违规拒绝）——每个探测动作后立即调用 |
+| `ledger_log_card_usage` | 卡片使用记录（deviation 必填） |
+| `ledger_radar_drain` | 变化雷达队列读取（recon 开局，drain） |
+| `ledger_pipeline_validate` | 产物格式机器校验（收尾强制） |
+| `ledger_coverage_report` | 覆盖矩阵视图（报告数字唯一来源） |
+| `vuln_verify_replay` | CONFIRMED 机械复核（重放+hash+verify-log） |
+| `endpoint_queue_surface` | 参数 URL 队列（喂 dalfox/sqlmap） |
+| `endpoint_surface_scan` | 敏感信息回扫（VC-027，打码） |
 
-系统层（非 agent 调用）：`l2-collect` 已注册为 run_cli 工具（recon 收集接口层用 `run_cli tool=l2-collect program=<prog> target=<host>`）；ct-watch/js-watch 为 systemd 守护，产出 radar-queue.jsonl。
+系统层（非 agent 调用）：`l2-collect` 已注册为 exec_run_cli 工具（recon 收集接口层用 `exec_run_cli tool=l2-collect program=<prog> target=<host>`）；ct-watch/js-watch 为 systemd 守护，产出 radar-queue.jsonl。
 
 注意：xray flows/*.jsonl 只有扫描统计计数、无请求内容（已核实）——参数面以 l2-collect 产出为准，勿再依赖 flows 文件。
 
@@ -80,18 +80,18 @@ description: 挖掘流水线纪律——覆盖矩阵六态台账、漏洞卡驱�
 
 ## 9. 流程守卫（P15，机器强制——纪律不再依赖自觉）
 
-`task_update status=done` 时引擎硬校验三个纪律产物，缺一即拦截并返回缺失清单，补齐后重试：
+旧版 `status=done` 自由态通道已关闭（v5 收尾权归调度器 task_finish / 审批 task_complete）；调度器 task_finish 收尾时引擎硬校验三个纪律产物，缺一即在 task.finished 的 guard 里标 missing（不拒绝事务），补齐后重跑：
 
 1. `attempts-{program}.tsv` 近 24h 有增量行（六态皆可，含 N/A 与 BLOCKED——零探测日也要给存量目标落终态行）；
 2. `card_usage-*.jsonl` 近 24h 有记录（当日未用卡则对规程复盘落一条 deviation）；
 3. `handoff-{date}.md` 存在（北京日期）。
 
-被拦截 ≠ 失败：按缺失清单用 `attempts_log` / `card_usage_log` 补产物，再 task_update。守卫拦截以 `guard_blocked` + missing 清单返回（看板 ops 健康度红条可观测台账空转），长期零拦截+零台账才是异常。
+被拦截 ≠ 失败：按缺失清单用 `ledger_log_attempt` / `ledger_log_card_usage` 补产物。守卫结果以 guard.missing 清单在 task.finished 里呈现（看板 ops 健康度红条可观测台账空转），长期零拦截+零台账才是异常。
 
 ## 10. 资产准入与每日 Slice（P15）
 
-- **准入**：主动扫描（risk≥active 的 run_cli）只打已分级资产——`asset_query level_in=S,A,B` 取队列；未分级资产先 `grade_assets` 分级或 `vision_triage` 截图分诊（喂 dsh-browser/httpx 截图，返回 page_type/has_login/interesting）。
+- **准入**：主动扫描（risk≥active 的 exec_run_cli）只打已分级资产——`asset_list level_in=S,A,B` 取队列；未分级资产先 `grade_assets` 分级或 `vision_triage` 截图分诊（喂 dsh-browser/httpx 截图，返回 page_type/has_login/interesting）。
 - **Slice 化**：每日任务的硬指标是消化覆盖矩阵的一个切片（如 top-10 BLOCKED/PENDING 格子 + radar 事件全清），**不是**"覆盖全部资产"——完成切片即达标，剩余预算进研究模式（产 IdeaCard）。跑不完登记次日队列，禁止为凑覆盖率跑低价值全量。
 - **蒸馏中置**：每完成一个目标的验证链立即评估 exp_store/pb_save（三问：会过期吗/换目标有用吗/谁会读），不要攒到收尾——预算耗尽时收尾蒸馏永远轮不到。
-- 报告只列信号：info 级模板指纹已被引擎闸门隔离（noise=1），`finding_query` 默认看不到，无需再自行过滤。
+- 报告只列信号：info 级模板指纹已被引擎闸门隔离（noise=1），`vuln_list` 默认看不到，无需再自行过滤。
 

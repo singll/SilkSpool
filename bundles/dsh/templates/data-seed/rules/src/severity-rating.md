@@ -16,11 +16,11 @@
 
 - **信息泄露默认低危甚至忽略**；仅泄露凭证/大量 PII/源码/内部核心配置才上探
 - 拿不准级别的往低报；证据不足 downgrade 到 tentative
-- accept:intrusion-only 资产：仅入侵类（通生产 SSRF/可逃逸 RCE/主站 getshell/进内网入口/可证核心 SQLi）才 finding_add，其余留 intel
+- accept:intrusion-only 资产：仅入侵类（通生产 SSRF/可逃逸 RCE/主站 getshell/进内网入口/可证核心 SQLi）才 vuln_register_signal，其余留 intel
 
 ## 对抗性校准（定级两段制，v4.7）
 
-- **提交者不算数，复核者才算数**：hunt/biz-logic 角色自报的严重度只是候选值（proposed）；finding 落库时的最终 severity 由复核方写入——verify_replay 机械复核 / spawn_worker 独立复验 / review 复盘，三者任一先到即覆盖。未复核的严重度 = 候选。
+- **提交者不算数，复核者才算数**：hunt/biz-logic 角色自报的严重度只是候选值（proposed）；finding 落库时的最终 severity 由复核方写入——vuln_verify_replay 机械复核 / exec_spawn_worker 独立复验 / review 复盘，三者任一先到即覆盖。未复核的严重度 = 候选。
 - **校准轨迹必留**：覆盖发生时在 finding 的 reason 追加 `sev: <自报>→<校准值>（依据：…）`；两值不一致时依据句必填，无依据的改动视为未校准，按候选处理。
 - **可升可降，但必须有依据**：复核不是只砍不涨——升档同样写依据（如"三包对照齐全+批量可遍历，中危→高危"）。
 - 复核方须用**独立上下文**复核（同会话自己给自己复验无效），与 sec-verification 第 7 条多路独立复验同源。

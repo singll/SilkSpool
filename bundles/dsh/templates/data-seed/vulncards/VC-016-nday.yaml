@@ -7,7 +7,7 @@ status: active
 severity_potential: [medium, high, critical]
 risk_level: active
 applicable_when:
-  - 指纹命中具体组件+版本（fp_add 台账）
+  - 指纹命中具体组件+版本（asset_fp_record 台账）
   - intel 出现对应组件 CVE
 not_applicable_when: [tech-mismatch]
 prerequisites: {egress: 任意, auth: none, tools: [nuclei, afrog]}

@@ -5,21 +5,21 @@ description: 运行环境公共纪律——代理出口/授权边界/派单/inte
 
 # 运行环境公共纪律
 
-1. **出口**：一切出网走代理池网关 http://127.0.0.1:8899（scope.yml defaults.egress_proxy）。run_cli 已模板化代理；手工 curl 必须显式 http_proxy=https_proxy=http://127.0.0.1:8899；开局 proxy_pool_stats 确认 active，失效代理用 proxy_pool_report_bad 上报；禁止任何直连出网。
+1. **出口**：一切出网走代理池网关 http://127.0.0.1:8899（scope.yml defaults.egress_proxy）。exec_run_cli 已模板化代理；手工 curl 必须显式 http_proxy=https_proxy=http://127.0.0.1:8899；开局 proxy_stats 确认 active，失效代理用 proxy_report_bad 上报；禁止任何直连出网。
 2. **授权**：scope.yml 是唯一权威（开工必读当前清单，严禁依赖提示词内联的历史清单/数量）；scope-guard fail-closed，边界外工具层直接拒绝，严禁绕过；max_risk=active，intrusive 一律一次性人工确认，禁挂周期。资产收集发现疑似 scope 外但归属证据明确的新资产（CNAME 指向授权资产/品牌印证/收购关系）→ 必须 `approval_request kind=scope-domain` 提请人工审批（subject=域名、program_name=归属项目、evidence≥30 字具体归属证据、equity_basis/independent_src/corroboration 按表单填写——判据口径见 rules/src/equity-gate.md 股权闸：默认不入池=参股/战略/财务投资/合资非100%/联营，independent_src=有→不并入本项目）；批准前目标依旧全拒绝，不要尝试打点；禁止只写事实不提请求，也禁止把归属不确定的资产凑数提请。scope-domain 批准后系统自动入队首轮资产收集种子任务（objective 带 `[审批入队]` 前缀，只做资产收集禁漏洞探测），无需手工派单。项目排除清单内的域名若掌握新归属证据 → `approval_request kind=exclude-exception` 提请排除例外评估（批准=移出排除+并入 scope+留 durable fact 记录判据）。
-3. **派单**：spawn_worker 批量必须小批量短超时——单批 ≤3 目标、timeout ≤600s；禁止 ≥1500s 大单阻塞（父 worker 预算 3600s 硬上限，阻塞等子=烧自己预算）；跑不完记台账留次日，逐日增量推进。
+3. **派单**：exec_spawn_worker 批量必须小批量短超时——单批 ≤3 目标、timeout ≤600s；禁止 ≥1500s 大单阻塞（父 worker 预算 3600s 硬上限，阻塞等子=烧自己预算）；跑不完记台账留次日，逐日增量推进。
 4. **interval 任务**：一行固定实体，跑完自动续排（latest-only）；严禁 task_create 次日 once 模拟周期。
 5. **失败留痕**：失败/被杀 run 先读 results/<run_id>/meta.json（exit_code/duration）再处置——数据多已落盘，可幂等重跑；onnxruntime 的 pthread_setaffinity 报错为良性噪声，不是失败信号。
-6. **大输出**：一律 grep_result/page_result 摘要取，禁止在会话铺全文；nuclei 等大输出默认取命中行。
-7. **日期标签**：日报/黑板键/台账文件名统一 YYYY-MM-DD；定时任务收尾 task_update 的 **note 必须以【{项目}·{角色}·MMdd】开头**（如【美团·vuln·0828】），保证看板执行历史左侧标题一眼可分辨哪天哪个任务。
+6. **大输出**：一律 exec_grep_result/exec_page_result 摘要取，禁止在会话铺全文；nuclei 等大输出默认取命中行。
+7. **日期标签**：日报/黑板键/台账文件名统一 YYYY-MM-DD；定时任务收尾 note 必须以【{项目}·{角色}·MMdd】开头（如【美团·vuln·0828】），保证看板执行历史左侧标题一眼可分辨哪天哪个任务。
 8. **知识检索三步顺序（2026-09-05 起 v4.6）**：任务开局按固定顺序检索，不要面对一堆检索工具挑花眼——
     1. `fact_search`（事实类：目标/资产/存活当前状态，program 维度，会过期）
     2. `exp_search`（经验类：打法链+经验卡同表，kind 标记区分，实战置信度最高）
     3. `kb_search`（文献类：curated: 前缀=人工蒸馏规则高置信，其余外部文献低置信）
-    环境故障查 blackboard [env-issue] 前缀键（现行有效才参考）；任务内决策链用 fgs_next；变化队列 radar_read。黑板不再存业务快照（sweep 守卫自动转 facts）。
+    环境故障查 blackboard [env-issue] 前缀键（现行有效才参考）；任务内决策链用 fgs_next；变化队列 ledger_radar_drain。黑板不再存业务快照（sweep 守卫自动转 facts）。
 9. **事实生命周期**：note 类=agent 工作速记（ephemeral，14 天滚动消亡）——失败记录/当日结论/临时观察写 note；**长期知识必须写 target/asset/finding 等分类**（durable，30 天复验，被引用即续期）；带明确时效的事实用 intent.ttl_days 显式声明。禁止把需要长期保留的知识写进 note（14 天后会被 sweeper 归档）。打法链沉淀用 exp_store（kind=playbook 语义由 pb_save 兼容入口承接）。
-10. **web_fetch 边界（2026-09-04 起，DSH 0.1.2 默认启用）**：目标域（scope.yml 内资产）交互一律走 run_cli（scope-guard 管控）；web_fetch 仅限**非目标域公开资料**（文档/CVE/POC 公开页等），**禁止对 scope 内资产使用 web_fetch**（绕过 scope-guard 与代理池出口纪律，且出口直连公网不经 mubeng 网关）。对 scope 内资产的网页取证用 run_cli + curl（模板化代理）。
-11. **模型路由**：worker 禁止自主切换 provider/模型——一律默认路由（bellkeeper/pool-secagent，由 model-failover 做平台级熔断回退）。子代理的 provider/模型覆盖只能由派单方（人工/父任务规划）通过 spawn_worker `--patch` 显式指定，worker 会话内不得自行改选 providers 列表里的其他渠道（直连 deepseek 等会绕过网关的额度/熔断/审计）。
+10. **web_fetch 边界（2026-09-04 起，DSH 0.1.2 默认启用）**：目标域（scope.yml 内资产）交互一律走 exec_run_cli（scope-guard 管控）；web_fetch 仅限**非目标域公开资料**（文档/CVE/POC 公开页等），**禁止对 scope 内资产使用 web_fetch**（绕过 scope-guard 与代理池出口纪律，且出口直连公网不经 mubeng 网关）。对 scope 内资产的网页取证用 exec_run_cli + curl（模板化代理）。
+11. **模型路由**：worker 禁止自主切换 provider/模型——一律默认路由（bellkeeper/pool-secagent，由 model-failover 做平台级熔断回退）。子代理的 provider/模型覆盖只能由派单方（人工/父任务规划）通过 exec_spawn_worker `--patch` 显式指定，worker 会话内不得自行改选 providers 列表里的其他渠道（直连 deepseek 等会绕过网关的额度/熔断/审计）。
 12. **审批判定口径（2026-09-05 起 v4.5）**：scope 外资产提请 `approval_request` 时按层级分流——**整个注册域归属该项目**（主体核证级证据：ICP 备案主体/官网品牌一致/收购公告/SRC 规则页明示）→ `kind=scope-wildcard`（subject=裸 apex，如 catpaw.com，一次审批覆盖 `*.catpaw.com` 全部子域，判据仅限 控股/全资 或 收购/财团）；**仅单个子域有具体归属证据**（CNAME 指向授权资产/内容同源）→ `kind=scope-domain`（subject=完整子域，evidence≥30 字）。禁止拿裸 apex 走 scope-domain（会产生无通配的裸域授权，次日 recon 对 www 子域照样被拒）。
-13. **needs_approval 不重试（2026-09-05 起 v4.5）**：run_cli 返回 `needs_approval: true` / 带 `approval_hint` 字段时——系统已自动落 tool-intrusive 审批（看板审批 tab），该次调用维持拒绝。**禁止自行绕过、换参数重试、或反复调用同工具**；继续任务其他步骤，等人工批准后下个调度周期自然放行。
+13. **needs_approval 不重试（2026-09-05 起 v4.5）**：exec_run_cli 返回 `needs_approval: true` / 带 `approval_hint` 字段时——系统已自动落 tool-intrusive 审批（看板审批 tab），该次调用维持拒绝。**禁止自行绕过、换参数重试、或反复调用同工具**；继续任务其他步骤，等人工批准后下个调度周期自然放行。
 

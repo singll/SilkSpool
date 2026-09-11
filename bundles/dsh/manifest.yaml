@@ -75,6 +75,8 @@ templates:
   - data-seed/scripts/data-quality.py
   - data-seed/scripts/vault-export-build.sh
   - data-seed/scripts/discipline-audit.py
+  # --- v5 Phase 5.1 prompt 体系全量改写（tasks objective 工具引用 → 语义动词，p14 模式，幂等可重跑）---
+  - data-seed/scripts/p19-tool-refs.py
   # --- v4.6 流水线脚本接线（此前仅历史推送存活于 scripts/pipeline/，全量重部署会丢）---
   - data-seed/scripts/l2-collect.sh
   - data-seed/scripts/surface-consume.py
