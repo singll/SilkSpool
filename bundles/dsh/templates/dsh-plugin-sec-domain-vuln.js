@@ -296,7 +296,7 @@ export const VULN_MANIFEST = {
       agent_note: '检索漏洞发现。visibility=signal（默认，仅信号面）/ candidate（待验证候选队列）/ all。按 host/severity/status/program_id/q 过滤，分页+排序。',
     },
     vuln_get: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'reactor', 'system'],
       params: schema({ id: int() }, ['id']),
       predicates: [],
       agent_note: '取单条 finding 全量详情（含 evidence 证据链全文）。',

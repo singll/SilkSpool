@@ -1,0 +1,4 @@
+# silksec-sec-domain-eval bundle layer
+- insert:
+    - id: sec-domain-eval
+      name: '@silksec/sec-domain-eval'

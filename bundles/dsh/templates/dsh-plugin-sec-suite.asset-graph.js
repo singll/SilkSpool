@@ -429,7 +429,8 @@ export function apply(ctx) {
   // v5：fact_upsert/fact_get/fact_search/fact_link/fact_graph/fact_reindex/neg_check
   // 由 fact 域接管（零改名，ToolProjector 投影），此处 v4 注册移除避免同名冲突。
 
-  reg(ctx, {
+  // v5 切流（15-eval）：eval_stats 由 eval 域 ToolProjector 零改名接管（同名查询），旧注册停用（函数体留待删旧路径）。
+  false && reg(ctx, {
     name: 'eval_stats',
     description: '活评测回流（P9 环3）：读打标历史（confirmed/false_positive），返回各漏洞类型的确认数/误报数/误报率。用于判断新发现可信度、校准复核优先级——高误报率类型需更谨慎验证。',
     parameters: { type: 'object', properties: {}, additionalProperties: false },

@@ -1555,11 +1555,9 @@ export function updateFinding({ id, status, note = '', bounty = null, vendor_sta
     d.prepare('UPDATE findings SET evidence = ? WHERE id = ?')
       .run(`${cur.evidence}\n[${new Date().toISOString().slice(0, 16)}] ${status}: ${note}`, Number(id))
   }
-  // 活评测集（P9）：confirmed/false_positive 判定回流成评测用例，供误报率统计
-  if (status === 'confirmed' || status === 'false_positive') {
-    const f = d.prepare('SELECT title, host, url, vuln_type FROM findings WHERE id = ?').get(Number(id))
-    if (f) appendLiveEval({ finding_id: Number(id), host: f.host || '', url: f.url || '', title: f.title, vuln_type: f.vuln_type || '', verdict: status })
-  }
+  // v5 切流（15-eval）：confirmed/false_positive 判定回流改由 eval 域订阅
+  // vuln.signal.confirmed/rejected → eval_case_append 落盘 data/eval/eval-live.jsonl（弱联动），
+  // 此处 v4 直调 appendLiveEval 已移除（避免双写）。appendLiveEval/evalStats 函数体留待删旧路径。
   return { ok: true, id: Number(id), status }
 }
 

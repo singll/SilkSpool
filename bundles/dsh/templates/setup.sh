@@ -296,6 +296,12 @@ if [ -f "$BASE_DIR/sec-proxy-domain-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-proxy-domain-plugin-setup.sh"
 fi
 
+# -------------------- 8.5991 v5 eval 域插件（Phase 2 九节点：活评测集回流/假阳性消融/契约合规评测） --------------------
+# 依赖总线（8.55）+ vuln（8.56，vuln.signal.confirmed/rejected 订阅回流）；契约测试不过 = setup 中止（fail-closed）。
+if [ -f "$BASE_DIR/sec-eval-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-eval-domain-plugin-setup.sh"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"
