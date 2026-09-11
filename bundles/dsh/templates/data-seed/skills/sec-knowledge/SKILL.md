@@ -30,7 +30,7 @@ description: 记忆治理纪律——写记忆前三问、开局检索、用完�
 
 ## 规则先验层（data/rules/）
 
-命中技术栈（指纹/asset_fp_record）后、上专项扫描前：查 `data/rules/<域>/<栈>.md` 是否存在（如 web/spring.md、web/nextjs.md、web/selfhosted-supabase.md、php/thinkphp.md），存在则读入作为该栈审计先验（入口点模式/特有攻击面/验证要点）。
+命中技术栈（指纹/fp_record）后、上专项扫描前：查 `data/rules/<域>/<栈>.md` 是否存在（如 web/spring.md、web/nextjs.md、web/selfhosted-supabase.md、php/thinkphp.md），存在则读入作为该栈审计先验（入口点模式/特有攻击面/验证要点）。
 
 **SRC 评级规则（rules/src/）**：recon 评分打标前读 `src/asset-scoring.md`；漏洞定级、写报告、提交判断前读 `src/severity-rating.md`——定级不膨胀、不确定往低报。这层是**人工蒸馏的静态先验**，与 memcore 经验卡（实战后验）互补：先验给方向，后验给打法。复盘时发现某栈规则缺失或有新心得 → 在复盘报告里提议新增/修订规则文件（人工评审后落盘，agent 不自写规则层）。
 
