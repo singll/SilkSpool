@@ -1,12 +1,12 @@
 // ==============================================================================
 // SilkSecAgent 安全套件（dsh 原生插件，零依赖）
 //
-// 包含两个层面（对应方案 §5.1 / §九）：
+// 职责（对应方案 §5.1 / §九）：
 //   scope-guard     授权白名单硬校验（data/scope.yml）+ 风险四级 + 全量审计
 //                   —— fail-closed：无授权记录的目标一律拒绝，不依赖模型自觉
-//   sec-cli-adapter CLI 工具适配：run_cli / grep_result / page_result
-//                   —— manifest 驱动（data/tools.d/*.yaml），模板渲染、超时控制、
-//                      代理注入、全量落盘 results/<run_id>/、≤20 行摘要回模型
+//   sec-cli-adapter authz_diff 越权对比 harness + 定时调度循环 + 看板 RPC 宿主
+//                   （run_cli/grep_result/page_result 等 CLI 工具已迁 exec 域，
+//                   经 bus 兼容别名 grep_result→exec_grep_result 等路由）
 //
 // 环境变量：
 //   SEC_DATA_DIR        数据目录（默认 /opt/silkspool/dsh/data）
@@ -16,16 +16,13 @@
 
 import { spawn } from 'node:child_process'
 import * as crypto from 'node:crypto'
-import * as dns from 'node:dns'
 import * as fs from 'node:fs'
-import * as http from 'node:http'
 import * as path from 'node:path'
 import * as assetDb from './asset-db.js'
-import * as parsers from './parsers.js'
 import * as exp from './experience.js'
 import { startXrayWebhook } from './webhook.js'
 import { startScheduler } from './scheduler.js'
-import { initDashboardRpc, planChain, taskChain, handleDashboardRpc } from './dashboard-rpc.js'
+import { initDashboardRpc, handleDashboardRpc } from './dashboard-rpc.js'
 
 export const name = 'sec-cli-adapter'
 export const inject = ['tools']
@@ -36,18 +33,6 @@ const TOOLS_DIR = path.join(DATA_DIR, 'tools.d')
 const RESULTS_DIR = path.join(DATA_DIR, 'results')
 const AUDIT_LOG = path.join(DATA_DIR, 'audit.jsonl')
 const EGRESS_PROXY = process.env.SEC_EGRESS_PROXY || ''
-
-const RISK_ORDER = ['passive', 'active', 'intrusive', 'manual']
-
-// S5 写动词守卫（scope-guard 链渲染后一步）：写/副作用动词段。由 BugHunter 真实事故而来——
-// 子代理被告知 READ-ONLY 仍向 generate* 端点发 {} 在生产创建了真实记录；教训是 deny 必须按
-// 「动词出现在 URL path 段里」优先判定，否则 refund/batch/status 会被读形关键词（status）放行。
-const WRITE_VERBS = new Set([
-  'create', 'add', 'new', 'update', 'edit', 'modify', 'delete', 'remove', 'drop',
-  'settle', 'refund', 'pay', 'payment', 'transfer', 'withdraw', 'reset', 'generate',
-  'send', 'sms', 'upload', 'import', 'exec', 'eval', 'trigger', 'deploy', 'launch',
-  'approve', 'submit', 'order', 'trade', 'cash', 'bind', 'unbind',
-])
 
 // ==============================================================================
 // 极简 YAML 解析（仅覆盖 tools.d/scope.yml 用到的子集：
@@ -192,16 +177,6 @@ function hostOf(raw) {
   return s.toLowerCase()
 }
 
-// 内网目标判定（代理池仅供出公网；内网目标注入公网代理必然失败）
-function isInternalHost(host) {
-  if (!host) return false
-  if (host === 'localhost' || host.endsWith('.singll.net') || host.endsWith('.internal') || host.endsWith('.lan')) return true
-  const ip = ipToInt(host)
-  if (ip === null) return false
-  const a = (ip >>> 24) & 255; const b = (ip >>> 16) & 255
-  return a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254)
-}
-
 function entryMatches(entry, host) {
   entry = String(entry).trim().toLowerCase()
   if (!entry) return false
@@ -222,40 +197,6 @@ function loadScope() {
   const data = parseYaml(fs.readFileSync(SCOPE_FILE, 'utf8'))
   scopeCache = { mtime: stat.mtimeMs, data }
   return data
-}
-
-// ==============================================================================
-// 主动扫描全局限速执行点（v4.6 修复：scope.defaults.rate_limit_qps 此前只是声明值，
-// 无任何代码读它——「限速 50 QPS 机器强制」实为不成立）。
-// 语义：active+ 级工具的 run_cli 启动节流（进程级全局令牌桶，跨会话/worker 共享，
-// 重启清零无妨）。单次 CLI 运行内部的请求速率由工具自身 flag 控制（tools.d 各自的
-// rate/limit 参数），引擎保证的是「引擎级主动扫描启动速率」不超声明值；批量临时升速
-// 走 T-16 scan-burst 审批设计（批准写 defaults.rate_limit_qps 即时生效——loadScope 按
-// mtime 缓存，改文件自动重读）。
-// ==============================================================================
-const qpsBucket = { tokens: Infinity, cap: 50, last: 0 }
-function acquireQpsToken() {
-  const qps = Math.max(1, Number(loadScope().defaults?.rate_limit_qps) || 50)
-  const now = Date.now()
-  if (!qpsBucket.last) { qpsBucket.last = now; qpsBucket.cap = qps }
-  // qps 变更时桶容量随之调整（scan-burst 批准后放大）
-  if (qpsBucket.cap !== qps) qpsBucket.cap = qps
-  qpsBucket.tokens = Math.min(qpsBucket.cap, qpsBucket.tokens + ((now - qpsBucket.last) / 1000) * qps)
-  qpsBucket.last = now
-  if (qpsBucket.tokens >= 1) { qpsBucket.tokens -= 1; return 0 }
-  const waitMs = Math.ceil(((1 - qpsBucket.tokens) / qps) * 1000)
-  qpsBucket.tokens = 0
-  return waitMs
-}
-async function throttleQps(toolName) {
-  let waited = 0
-  for (;;) {
-    const w = acquireQpsToken()
-    if (w <= 0) break
-    waited += w
-    if (waited > 100) process.stderr.write(`[sec-suite] QPS 限速：${toolName} 等待 ${waited}ms（rate_limit_qps 节流）\n`)
-    await new Promise((r) => setTimeout(r, w))
-  }
 }
 
 // P6：scope.yml 程序 → programs 表运行态镜像（幂等，启动时调用）
@@ -688,13 +629,13 @@ const APPROVAL_KINDS = {
       return { ok: true, note: `${host} 已移出项目 ${program_name} 排除清单并加入授权范围（fail-closed 即时生效；例外决策已留档 facts）` }
     },
   },
-  // v4.5 异步审批：intrusive 工具放行。runCli 遇 allow_risk 拒绝（needsApproval 路径）自动落库，
+  // v4.5 异步审批：intrusive 工具放行。exec 域 run_cli 遇 allow_risk 拒绝（needsApproval 路径）自动落库，
   // 不经 approval_request 工具（agent 无法替人工编 evidence）。批准 = 写项目 allow_intrusive_tools
-  // 白名单（scope.yml rules 新字段），下个调度周期任务重试时 checkRisk 自然放行；驳回 = 维持拒绝。
+  // 白名单（scope.yml rules 新字段），下个调度周期任务重试时风险闸自然放行；驳回 = 维持拒绝。
   // 审计全量保留（audit.jsonl deny→approve 链条完整）。
   'tool-intrusive': {
     label: '侵入工具放行',
-    validate() { return { ok: false, error: 'tool-intrusive 由 runCli 拒绝点自动提请（payload 带工具/风险级/目标/参数），agent 不可直接提请' } },
+    validate() { return { ok: false, error: 'tool-intrusive 由 exec 域 run_cli 拒绝点自动提请（payload 带工具/风险级/目标/参数），agent 不可直接提请' } },
     onApprove({ subject, program_name, payload }) {
       const tool = String(payload && payload.tool || '').trim()
       if (!tool || !program_name) return { ok: false, error: 'payload 缺 tool 或 program_name（历史请求格式不符，请驳回）' }
@@ -814,58 +755,6 @@ const APPROVAL_KINDS = {
   },
 }
 
-// agent 工具入口：通用校验（kind 注册/去重/evidence）+ kind.validate 专属校验（含 payload 股权判据）
-function approvalRequest(args, exec) {
-  const kind = String(args.kind || '').trim()
-  const subject = String(args.subject || '').trim()
-  const evidence = String(args.evidence || '').trim()
-  const def = APPROVAL_KINDS[kind]
-  if (!def) return { ok: false, error: `未知审批类型 ${kind}（可选: ${Object.keys(APPROVAL_KINDS).join('/')}）` }
-  if (!subject) return { ok: false, error: 'subject 必填' }
-  if (evidence.length < 10) return { ok: false, error: 'evidence 必填且 ≥10 字（归属证据/依据摘要）' }
-  const payload = {
-    equity_basis: String(args.equity_basis || '').trim(),
-    independent_src: String(args.independent_src || '').trim(),
-    corroboration: String(args.corroboration || '').trim(),
-  }
-  // P2-3 knowledge-adopt 专属字段透传（card_id/draft/source_url 进 payload，validate 里把关）；
-  // 其余 kind 无这些字段概念，不受影响。
-  if (kind === 'knowledge-adopt') {
-    payload.card_id = (args.card_id === undefined || args.card_id === null || args.card_id === '') ? null : args.card_id
-    payload.draft = String(args.draft || '')
-    payload.source_url = String(args.source_url || '')
-  }
-  const v = def.validate({ subject, program_name: String(args.program_name || '').trim(), evidence, payload })
-  if (!v.ok) return v
-  const add = assetDb.approvalAdd({
-    kind, subject: v.value?.host || subject, program_name: String(args.program_name || '').trim() || null,
-    payload: v.value?.payload || null, evidence, requested_by: sessionIdOf ? safeSessionId(exec) : 'agent',
-  })
-  if (!add.ok) return add
-  audit({ ts: Date.now(), run_id: '-', tool: 'approval_request', decision: 'executed', detail: { kind, subject, request_id: add.request_id, equity_basis: payload.equity_basis || undefined, independent_src: payload.independent_src || undefined } })
-  return { ok: true, request_id: add.request_id, hint: '已提请人工审批（看板「审批」tab）。批准前目标仍被 scope-guard 拒绝，不要尝试打点。' }
-}
-
-function safeSessionId(exec) {
-  try { const id = sessionIdOf(exec); return id ? String(id) : 'agent' } catch { return 'agent' }
-}
-
-// tool-intrusive 审批 payload 的参数脱敏：只保留短标量值（供人工判断该工具拿什么参数打哪），
-// 长文本/疑似敏感值截断打码，防审批看板泄漏凭据类参数
-function sanitizeParamsForApproval(params) {
-  const out = {}
-  for (const [k, v] of Object.entries(params || {})) {
-    if (typeof v === 'string') {
-      out[k] = v.length > 60 ? v.slice(0, 60) + '…' : v
-    } else if (typeof v === 'number' || typeof v === 'boolean') {
-      out[k] = v
-    } else {
-      out[k] = `[${Array.isArray(v) ? 'list:' + v.length : typeof v}]`
-    }
-  }
-  return out
-}
-
 // 看板决策入口（dashboard-rpc approvalDecide 调用）：批准先执行 kind.onApprove 副作用，成功才落 approved
 function approvalDecideAction({ id, decision, note = '' }) {
   const row = assetDb.approvalGet(Number(id))
@@ -948,117 +837,6 @@ function checkTarget(rawTarget) {
   return { allow: false, reason: `目标 ${host} 不在任何授权项目范围内（scope.yml fail-closed）` }
 }
 
-function checkRisk(manifestRisk, programCfg) {
-  const scope = loadScope()
-  const allowRisk = (scope.defaults && scope.defaults.allow_risk) || ['passive', 'active']
-  const maxRisk = (programCfg && programCfg.rules && programCfg.rules.max_risk) || null
-  const effective = maxRisk || null
-  if (manifestRisk === 'manual') return { allow: false, reason: 'risk=manual 工具默认禁用，需人工放行' }
-  if (effective && RISK_ORDER.indexOf(manifestRisk) > RISK_ORDER.indexOf(effective)) {
-    return { allow: false, reason: `工具风险级 ${manifestRisk} 超过项目上限 ${effective}` }
-  }
-  // v4.5 异步放行白名单：项目 rules.allow_intrusive_tools 列出的工具对 intrusive 级放行
-  //（task-intrusive 审批批准后写入，下个调度周期任务重试时自然通过）
-  const allowIntrusive = programCfg && programCfg.rules && Array.isArray(programCfg.rules.allow_intrusive_tools)
-    ? programCfg.rules.allow_intrusive_tools.map((s) => String(s).toLowerCase()) : []
-  if (allowIntrusive.length && manifestRisk === 'intrusive' && toolNameOfRiskCheck) {
-    if (allowIntrusive.includes(String(toolNameOfRiskCheck).toLowerCase())) return { allow: true }
-  }
-  if (!allowRisk.includes(manifestRisk)) {
-    return { allow: false, reason: `工具风险级 ${manifestRisk} 需要人工确认（allow_risk: ${allowRisk.join('/') }）`, needsApproval: manifestRisk === 'intrusive' }
-  }
-  return { allow: true }
-}
-// checkRisk 与 toolName 的桥（checkRisk 签名历史遗留无 tool 名，intrusive 白名单按工具名匹配）
-let toolNameOfRiskCheck = null
-
-// ==============================================================================
-// S1 解析后校验（审计）：active+ 目标执行前 DNS 解析，解析 IP 落内网/保留段且未授权 → 拒绝
-// 防「授权域名 CNAME/解析到 scope 外、内网 IP 打内网」越界。passive 工具跳过（不主动连目标）。
-// ==============================================================================
-
-const RESERVED_CIDRS = [
-  { base: 0x00000000, bits: 8 },      // 0.0.0.0/8
-  { base: 0x0a000000, bits: 8 },      // 10.0.0.0/8
-  { base: 0x64400000, bits: 10 },     // 100.64.0.0/10 (CGNAT)
-  { base: 0x7f000000, bits: 8 },      // 127.0.0.0/8
-  { base: 0xa9fe0000, bits: 16 },     // 169.254.0.0/16
-  { base: 0xac100000, bits: 12 },     // 172.16.0.0/12
-  { base: 0xc0a80000, bits: 16 },     // 192.168.0.0/16
-]
-
-function ipInReserved(ipInt) {
-  for (const c of RESERVED_CIDRS) {
-    const mask = c.bits === 32 ? 0xffffffff : (0xffffffff << (32 - c.bits)) >>> 0
-    if (((c.base & mask) >>> 0) === ((ipInt & mask) >>> 0)) return true
-  }
-  return false
-}
-
-function programAllowsIp(programCfg, ip) {
-  const entries = Array.isArray(programCfg && programCfg.scope) ? programCfg.scope : []
-  const ipi = ipToInt(ip)
-  return entries.some((e) => {
-    e = String(e).trim().toLowerCase()
-    if (e.includes('/')) return ipi !== null && cidrContains(e, ip)
-    return ipi !== null && ipToInt(e) === ipi
-  })
-}
-
-// 返回违规原因字符串，或 null（通过）
-async function verifyResolved(targets, manifest) {
-  if (RISK_ORDER.indexOf(String(manifest.risk || 'passive')) < RISK_ORDER.indexOf('active')) return null
-  for (const t of targets) {
-    const host = hostOf(t)
-    if (!host) continue
-    const chk = checkTarget(host)
-    const cfg = chk.programCfg || null
-    const ipi = ipToInt(host)
-    if (ipi !== null) {
-      if (ipInReserved(ipi) && !programAllowsIp(cfg, host)) {
-        return `目标 ${host} 为内网/保留 IP 且不在项目 ${chk.program || '?'} 授权 CIDR 内`
-      }
-      continue
-    }
-    // 域名 → 解析后校验（失败不阻断，被动工具/临时 DNS 故障容错）
-    let ips = []
-    try { ips = await dns.promises.resolve4(host) } catch { ips = [] }
-    for (const ip of ips) {
-      const ri = ipToInt(ip)
-      if (ri !== null && ipInReserved(ri) && !programAllowsIp(cfg, ip)) {
-        return `目标 ${host} 解析到内网/保留 IP ${ip} 且不在项目 ${chk.program || '?'} 授权 CIDR 内`
-      }
-    }
-  }
-  return null
-}
-
-// ==============================================================================
-// S5 写动词守卫（渲染后校验）：risk=passive 的只读工具（httpx/katana 探测类）渲染命令里
-// 任一 http(s) URL 的 path 段命中 WRITE_VERBS → 拒绝。只按 path 段精确比对（段内再按
-// -/_ 拆 token、剥段尾文件扩展名），不对整个命令做子串匹配——query 参数里的普通词
-// （如 ?q=news）不会被误伤。段级比对保 deny 优先：refund/batch/status 因含 refund 拒绝。
-// ==============================================================================
-
-// 返回首个命中 { verb, url }，或 null（通过）
-function findWriteVerbHit(renderedCmd) {
-  const urls = String(renderedCmd).match(/https?:\/\/[^\s"'<>|`]+/gi) || []
-  for (const u of urls) {
-    const m = u.match(/^https?:\/\/[^/?#]+([^?#]*)/i) // path = 去 scheme/host/query/fragment
-    const pathSegs = m && m[1] ? m[1].split('/') : []
-    for (const seg of pathSegs) {
-      // 剥段两端非字母数字（命令行粘连的逗号/括号等）+ 尾部文件扩展名（generate.json → generate）
-      const clean = seg.toLowerCase().replace(/^[^a-z0-9]+/, '').replace(/(\.[a-z0-9]{1,5})?[^a-z0-9]*$/, '')
-      if (!clean) continue
-      // 段本身或 -/_ 拼接的子 token（generate-report / create_user）任一命中即算
-      for (const tok of clean.split(/[-_]/)) {
-        if (WRITE_VERBS.has(tok)) return { verb: tok, url: u }
-      }
-    }
-  }
-  return null
-}
-
 // ==============================================================================
 // sec-cli-adapter：manifest 加载 / 模板渲染 / 执行 / 落盘 / 摘要
 // ==============================================================================
@@ -1075,45 +853,6 @@ function listManifests() {
   try {
     return fs.readdirSync(TOOLS_DIR).filter((f) => f.endsWith('.yaml')).map((f) => f.replace(/\.yaml$/, ''))
   } catch { return [] }
-}
-
-function renderTemplate(tpl, params, runDir, runId) {
-  return String(tpl).replace(/\{\{\s*([a-zA-Z0-9_]+)(\|([^}]*))?\s*\}\}/g, (_m, key, _d, def) => {
-    if (key === 'outdir') return runDir
-    if (key === 'run_id') return runId
-    const v = params[key]
-    if (v === undefined || v === null || v === '') {
-      if (def !== undefined) return def
-      throw new Error(`缺少必填参数: ${key}`)
-    }
-    return String(v)
-  })
-}
-
-function shellSplit(s) {
-  const out = []; let cur = ''; let q = null
-  for (const c of s) {
-    if (q) { if (c === q) q = null; else cur += c; continue }
-    if (c === '"' || c === "'") { q = c; continue }
-    if (/\s/.test(c)) { if (cur) { out.push(cur); cur = '' } continue }
-    cur += c
-  }
-  if (cur) out.push(cur)
-  return out
-}
-
-function extractTargets(manifest, params) {
-  const tp = manifest.target_param
-  if (!tp) return []
-  const v = params[tp]
-  if (v === undefined || v === null || v === '') return []
-  if (tp.endsWith('_file')) {
-    // 目标清单文件：逐行校验
-    try {
-      return fs.readFileSync(String(v), 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
-    } catch { return [`__unreadable_file__:${v}`] }
-  }
-  return String(v).split(',').map((s) => s.trim()).filter(Boolean)
 }
 
 function audit(record) {
@@ -1140,47 +879,6 @@ function tailAudit(n) {
   } catch { return [] }
 }
 
-// ==============================================================================
-// sandbox（审计 S2）：run_cli 经 bwrap 白名单隔离执行
-// 白名单只挂 /usr /etc /home /opt/silkspool/dsh/{venv,opt} + runDir(写) + /tmp /dev /proc。
-// 效果：平台密钥（.env/settings.yaml/silkspool.yaml/keys）与系统写路径对工具不可见，
-//       且除 runDir 外全部只读。SEC_NO_SANDBOX=1 或 bwrap 缺失时 graceful 降级为不沙箱。
-// ==============================================================================
-
-const BWRAP_BIN = process.env.SEC_BWRAP_BIN || '/usr/bin/bwrap'
-const SANDBOX_DISABLED = process.env.SEC_NO_SANDBOX === '1'
-const HOME_DIR = process.env.HOME || '/home/silkspool'
-const VENV_DIR = '/opt/silkspool/dsh/venv'
-const OPT_DIR = '/opt/silkspool/dsh/opt'
-
-function bwrapAvailable() {
-  try { return fs.existsSync(BWRAP_BIN) } catch { return false }
-}
-
-// 返回 { cmd, args } 或 null（不沙箱）。仅对有 target_param 的网络工具沙箱；
-// 本地代码审计工具（semgrep/codeql/gitleaks 等无 target_param）需读任意源码路径，不沙箱。
-function buildSandboxCommand(binary, argv, runDir) {
-  if (SANDBOX_DISABLED || !bwrapAvailable()) return null
-  const args = [
-    '--unshare-all', '--share-net', '--die-with-parent', '--new-session',
-    '--proc', '/proc',
-    '--dev', '/dev',
-    '--tmpfs', '/tmp',
-    '--ro-bind', '/usr', '/usr',
-    '--ro-bind', '/etc', '/etc',
-    '--symlink', 'usr/bin', '/bin',
-    '--symlink', 'usr/sbin', '/sbin',
-    '--symlink', 'usr/lib', '/lib',
-    '--symlink', 'usr/lib64', '/lib64',
-    '--bind', HOME_DIR, HOME_DIR,
-  ]
-  if (fs.existsSync(VENV_DIR)) args.push('--ro-bind', VENV_DIR, VENV_DIR)
-  if (fs.existsSync(OPT_DIR)) args.push('--ro-bind', OPT_DIR, OPT_DIR)
-  args.push('--bind', runDir, runDir)
-  args.push('--', binary, ...argv)
-  return { cmd: BWRAP_BIN, args }
-}
-
 // 工具执行上下文（rc.7 ToolRunContext）：exec.agent.id === SessionId，run→session 映射的捕获点
 function sessionIdOf(exec) {
   try {
@@ -1203,324 +901,6 @@ function resolveProgramId(explicit, exec) {
   if (pid) return pid
   const cwd = execCwd(exec)
   return (cwd && assetDb.programByWorkspacePath(cwd)) || ''
-}
-
-async function runCli(args, exec) {
-  const sessionId = sessionIdOf(exec)
-  const toolName = String(args.tool || '')
-  const params = args.params || {}
-  const manifest = loadManifest(toolName)
-  if (!manifest) {
-    return { ok: false, error: `工具 ${toolName} 无 manifest（data/tools.d/${toolName}.yaml 不存在）`, available: listManifests() }
-  }
-
-  const runId = 'r' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex')
-  const runDir = path.join(RESULTS_DIR, runId)
-  fs.mkdirSync(runDir, { recursive: true })
-
-  // ---- scope-guard：目标硬校验 ----
-  const targets = extractTargets(manifest, params)
-
-  // S3 守卫（审计）：manifest 无 target_param 且 risk≥active → 拒绝（防 scope 校验空转绕过）
-  if (!manifest.target_param && RISK_ORDER.indexOf(String(manifest.risk || 'passive')) >= RISK_ORDER.indexOf('active')) {
-    audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: '无 target_param 且 risk≥active' })
-    return { ok: false, run_id: runId, error: `manifest 未声明 target_param 且 risk=${manifest.risk}≥active：无法做 scope 校验，拒绝执行（补 target_param 或降 risk）` }
-  }
-  // S4 守卫（审计）：参数注入防护——值禁换行；target 参数禁空白（防 argv 注入危险 flag）
-  for (const [k, v] of Object.entries(params)) {
-    if (typeof v !== 'string') continue
-    if (/[\r\n]/.test(v)) {
-      return { ok: false, run_id: runId, error: `参数 ${k} 含换行符，拒绝（防参数注入）` }
-    }
-    if (k === manifest.target_param && /\s/.test(v)) {
-      return { ok: false, run_id: runId, error: `target 参数含空白字符，拒绝（防参数注入）` }
-    }
-  }
-
-  for (const t of targets) {
-    const chk = checkTarget(t)
-    audit({ ts: Date.now(), run_id: runId, tool: toolName, target: t, decision: chk.allow ? 'allow' : 'deny', reason: chk.reason })
-    if (!chk.allow) return { ok: false, run_id: runId, error: `scope-guard 拒绝: ${chk.reason}` }
-  }
-  const firstChk = targets.length ? checkTarget(targets[0]) : { programCfg: null }
-  const programId = firstChk.program || null
-  // v4.5 异步审批：intrusive 级被拒 → 自动落 tool-intrusive 审批（payload 带完整重试上下文），
-  // 同步拒绝语义不变（fail-closed 当场生效），agent 不重试；批准写入项目 allow_intrusive_tools
-  // 白名单后下个调度周期重试自然放行。
-  toolNameOfRiskCheck = toolName
-  const riskChk = checkRisk(String(manifest.risk || 'passive'), firstChk.programCfg)
-  toolNameOfRiskCheck = null
-  if (!riskChk.allow) {
-    let approvalHint = null
-    if (riskChk.needsApproval && programId) {
-      try {
-        const add = assetDb.approvalAdd({
-          kind: 'tool-intrusive', subject: `${toolName}:${targets[0] || '-'}`, program_name: programId,
-          payload: { tool: toolName, risk: manifest.risk, target: targets[0] || null, params: sanitizeParamsForApproval(params), program: programId },
-          evidence: `intrusive 工具 ${toolName}（risk=${manifest.risk}）对 ${targets[0] || '目标'} 的调用被 allow_risk 拒绝，请求人工放行`,
-          requested_by: sessionIdOf ? safeSessionId(exec) : 'agent',
-        })
-        if (add.ok || add.request_id) approvalHint = `已自动提请 tool-intrusive 审批 #${add.request_id || add.id}（批准后该工具加入项目 ${programId} allow_intrusive_tools 白名单，下个调度周期重试即放行）。本次调用维持拒绝，勿重试。`
-      } catch { /* 审批落库失败不改变拒绝语义 */ }
-    }
-    audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: riskChk.reason, approval_filed: !!approvalHint })
-    return { ok: false, run_id: runId, error: `scope-guard 拒绝: ${riskChk.reason}`, needs_approval: !!riskChk.needsApproval, ...(approvalHint ? { approval_hint: approvalHint } : {}) }
-  }
-
-  // S1 解析后校验（active+）：DNS 解析 IP 落内网/保留段且未授权 → 拒绝
-  if (targets.length > 0) {
-    const resolvedViolation = await verifyResolved(targets, manifest)
-    if (resolvedViolation) {
-      audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: resolvedViolation })
-      return { ok: false, run_id: runId, error: `scope-guard 解析后校验拒绝: ${resolvedViolation}` }
-    }
-  }
-
-  // ---- 主动扫描全局限速（v4.6 执行点）：active+ 工具启动节流，passive 不限 ----
-  if (RISK_ORDER.indexOf(String(manifest.risk || 'passive')) >= RISK_ORDER.indexOf('active')) {
-    await throttleQps(toolName)
-  }
-
-  // ---- 渲染 + 执行 ----
-  let argv
-  try {
-    argv = shellSplit(renderTemplate(String(manifest.args_template || ''), params, runDir, runId))
-  } catch (e) {
-    return { ok: false, run_id: runId, error: `参数渲染失败: ${e.message}` }
-  }
-
-  // S5 写动词守卫（渲染后校验，BugHunter 事故防线）：passive 只读工具的渲染命令里出现
-  // 写动词 URL path → 拒绝。与 tool-intrusive 审批同一白名单（rules.allow_intrusive_tools）：
-  // 人工批准把该工具写进白名单后，S5 与 checkRisk 同源放行（重试即通过）——工具已被人工
-  // 授信更高风险，无须再按只读口径约束。
-  if (String(manifest.risk || 'passive') === 'passive') {
-    const allowList = (firstChk.programCfg && firstChk.programCfg.rules && Array.isArray(firstChk.programCfg.rules.allow_intrusive_tools)
-      ? firstChk.programCfg.rules.allow_intrusive_tools : []).map((s) => String(s).toLowerCase())
-    const hit = allowList.includes(toolName.toLowerCase()) ? null : findWriteVerbHit(argv.join(' '))
-    if (hit) {
-      // 桥接 tool-intrusive 异步审批（同 checkRisk 拒绝点模式）：同步拒绝语义不变（fail-closed
-      // 当场生效），批准后白名单放行。S5 只对 passive 工具触发，不会消耗 QPS 令牌（passive 不限速）。
-      let approvalHint = null
-      if (programId) {
-        try {
-          const add = assetDb.approvalAdd({
-            kind: 'tool-intrusive', subject: `${toolName}:${targets[0] || hostOf(hit.url) || '-'}`, program_name: programId,
-            payload: { tool: toolName, risk: manifest.risk, target: targets[0] || null, params: sanitizeParamsForApproval(params), program: programId, guard: 'S5-write-verb', verb: hit.verb, url: hit.url },
-            evidence: `只读工具（risk=passive）${toolName} 渲染命令含写动词路径 ${hit.url}（动词 "${hit.verb}"），被 S5 写动词守卫拒绝，请求人工放行`,
-            requested_by: safeSessionId(exec),
-          })
-          if (add.ok || add.request_id) approvalHint = `已自动提请 tool-intrusive 审批 #${add.request_id || add.id}（批准后 ${toolName} 加入项目 ${programId} allow_intrusive_tools 白名单，S5 写动词守卫与风险闸同源放行，重试即通过）。本次调用维持拒绝，勿重试。`
-        } catch { /* 审批落库失败不改变拒绝语义 */ }
-      }
-      audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'deny', reason: `S5 写动词守卫：passive 工具命令含写动词路径 ${hit.url}（${hit.verb}）`, approval_filed: !!approvalHint })
-      return {
-        ok: false, run_id: runId,
-        error: `scope-guard S5 写动词守卫拒绝: 只读工具（risk=passive）${toolName} 的命令中 URL ${hit.url} 的路径含写动词 "${hit.verb}"——只读工具打写动词路径。确属写操作须改用 active/intrusive 风险级的工具 manifest，或等 tool-intrusive 审批放行后重试`,
-        needs_approval: true,
-        ...(approvalHint ? { approval_hint: approvalHint } : {}),
-      }
-    }
-  }
-  const binary = String(manifest.binary || toolName)
-  const timeoutMs = Math.min(Number(manifest.timeout || 300), 3600) * 1000
-  const env = { ...process.env }
-  // 代理注入仅对公网目标生效；内网/环回目标直连（公网代理到不了内网）
-  const allInternal = targets.length > 0 && targets.every((t) => isInternalHost(hostOf(t)))
-  if (manifest.env_proxy && EGRESS_PROXY && !allInternal) {
-    env.http_proxy = EGRESS_PROXY; env.https_proxy = EGRESS_PROXY
-    env.HTTP_PROXY = EGRESS_PROXY; env.HTTPS_PROXY = EGRESS_PROXY
-  }
-
-  const started = Date.now()
-  // sandbox（S2）：有 target_param 的网络工具经 bwrap 白名单隔离；本地审计工具不沙箱。
-  // manifest 可显式 `sandbox: false` 逐工具豁免——留给极少数与 bwrap user-ns 真不兼容的工具的 escape hatch（默认仍沙箱）。
-  const sandbox = (manifest.target_param && manifest.sandbox !== false) ? buildSandboxCommand(binary, argv, runDir) : null
-  const spawnCmd = sandbox ? sandbox.cmd : binary
-  const spawnArgs = sandbox ? sandbox.args : argv
-  const result = await new Promise((resolve) => {
-    let child
-    try {
-      // stdin 必须置 /dev/null（stdio[0]='ignore'）：默认 spawn 的 stdin 是常开管道，
-      // ProjectDiscovery 系工具（httpx/nuclei/dnsx/naabu…）的 fileutil.HasStdin() 会把管道识别为
-      // 「有 stdin 输入」→ 阻塞等待从 stdin 读目标直到 EOF；父进程从不写也不关 → 永久卡死（httpx v1.10 实测 300s 零输出）。
-      // 关闭后 stdin=/dev/null（字符设备）→ HasStdin()=false → 工具改用 -u/-l 参数正常执行。stdout/stderr 仍为管道（下方要读）。
-      child = spawn(spawnCmd, spawnArgs, { env, cwd: runDir, stdio: ['ignore', 'pipe', 'pipe'] })
-    } catch (e) {
-      resolve({ error: `启动失败: ${e.message}`, code: null, stdout: '', stderr: '' })
-      return
-    }
-    const out = fs.createWriteStream(path.join(runDir, 'stdout.log'))
-    const errBuf = []
-    child.stdout.pipe(out)
-    child.stderr.on('data', (d) => { errBuf.push(d); if (Buffer.concat(errBuf).length > 65536) errBuf.splice(0, errBuf.length - 1) })
-    const killer = setTimeout(() => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 5000).unref() }, timeoutMs)
-    child.on('error', (e) => { clearTimeout(killer); resolve({ error: String(e.message), code: null }) })
-    child.on('close', (code, signal) => { clearTimeout(killer); resolve({ code, signal }) })
-  })
-
-  fs.writeFileSync(path.join(runDir, 'cmd.txt'), (sandbox ? '[sandbox] ' : '') + [binary, ...argv].join(' ') + '\n')
-  const meta = {
-    run_id: runId, tool: toolName, argv: [binary, ...argv], params,
-    started_at: new Date(started).toISOString(), duration_ms: Date.now() - started,
-    exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null,
-    risk: manifest.risk || 'passive', stage: manifest.stage || null,
-    sandboxed: !!sandbox, session_id: sessionId,
-  }
-  fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 1) + '\n')
-  audit({ ts: Date.now(), run_id: runId, tool: toolName, decision: 'executed', exit_code: meta.exit_code, duration_ms: meta.duration_ms, sandboxed: meta.sandboxed })
-
-  // P1-1 环1 自动沉淀：工具执行统计（成功率/耗时）→ playbook，驱动 pb_rank 进化（无需 agent 手动 pb_outcome）
-  try { exp.pbOutcome({ name: `tool:${toolName}`, success: result.code === 0, duration_ms: meta.duration_ms }) } catch { /* 统计失败不阻断 */ }
-  // P1-1 环1 负知识：执行失败/超时自动写 note 证伪，neg_check 派单前据此拦截重复尝试（免踩同一坑）
-  if (programId && result.code !== 0) {
-    const why = result.error ? `启动失败: ${result.error}` : result.signal ? `超时/被杀 ${result.signal}` : `exit ${result.code}`
-    try {
-      assetDb.factUpsert({
-        program_id: programId,
-        fact_key: `note/fail-${toolName}-${hostOf(targets[0] || 'na')}`.slice(0, 100),
-        category: 'note',
-        summary: `${toolName} 对 ${targets[0] || '?'} 执行失败（${why}）`,
-        body: `run_id=${runId} tool=${toolName} target=${targets[0] || ''} ${why} duration=${meta.duration_ms}ms（自动证伪，neg_check 用于拦截重复尝试）`,
-        confidence: 'tentative',
-        source: 'auto:runcli-fail',
-      })
-    } catch { /* 证伪写入失败不阻断 */ }
-  }
-
-  // ---- 摘要（≤20 行）----
-  let stdoutText = ''
-  try { stdoutText = fs.readFileSync(path.join(runDir, 'stdout.log'), 'utf8') } catch { /* 无输出 */ }
-
-  // ---- 自动入资产图谱（manifest store: asset-graph 且执行成功；parser 注册表路由；自动回填 program_id）----
-  let ingested = null
-  if (manifest.store === 'asset-graph' && result.code === 0 && stdoutText) {
-    try {
-      ingested = parsers.applyParsedResult(manifest, toolName, runId, stdoutText, programId, sessionId)
-    } catch (e) {
-      process.stderr.write(`[sec-suite] ${toolName} 自动入库异常: ${e?.message ?? String(e)}\n`)
-    }
-  }
-
-  const lines = stdoutText.split('\n')
-  const head = lines.slice(0, 20).join('\n')
-  const out = {
-    ok: result.code === 0,
-    run_id: runId,
-    exit_code: result.code ?? null,
-    duration_ms: meta.duration_ms,
-    total_lines: lines.length,
-    summary: head,
-    error: result.error || null,
-  }
-  // 无损 JSON 纪律：条件字段只在有值时才设置（undefined 键会破坏 round-trip 校验）
-  if (ingested) out.ingested = ingested
-  if (lines.length > 20) out.hint = `输出共 ${lines.length} 行，仅显示前 20 行；用 grep_result/page_result 按需取`
-  return out
-}
-
-function resultFile(runId) {
-  if (!/^r[a-z0-9]+$/.test(String(runId))) return null
-  const f = path.join(RESULTS_DIR, runId, 'stdout.log')
-  return fs.existsSync(f) ? f : null
-}
-
-function grepResult(args) {
-  // 搜索范围：run 目录下全部文本产物（stdout.log + 工具 -o 落盘文件），不只是 stdout
-  const dir = /^r[a-z0-9]+$/.test(String(args.run_id)) ? path.join(RESULTS_DIR, args.run_id) : null
-  if (!dir || !fs.existsSync(dir)) return { ok: false, error: `run_id 不存在: ${args.run_id}` }
-  let re
-  try { re = new RegExp(String(args.pattern), 'i') } catch (e) { return { ok: false, error: `正则无效: ${e.message}` } }
-  const max = Math.min(Number(args.max) || 50, 200)
-  const matched = []
-  const files = []
-  const walk = (d) => {
-    for (const f of fs.readdirSync(d, { withFileTypes: true })) {
-      const p = path.join(d, f.name)
-      if (f.isDirectory()) walk(p)
-      else if (!/\.(png|jpg|jpeg|gif|zip|gz|zstd|bin)$/i.test(f.name)) files.push(p)
-    }
-  }
-  walk(dir)
-  for (const f of files) {
-    let lines
-    try { lines = fs.readFileSync(f, 'utf8').split('\n') } catch { continue }
-    const rel = path.relative(dir, f)
-    for (let i = 0; i < lines.length && matched.length < max; i++) {
-      if (re.test(lines[i])) matched.push(`${rel}:${i + 1}: ${lines[i].slice(0, 500)}`)
-    }
-    if (matched.length >= max) break
-  }
-  return { ok: true, run_id: args.run_id, files_searched: files.length, matched: matched.length, lines: matched.join('\n') }
-}
-
-function pageResult(args) {
-  const f = resultFile(args.run_id)
-  if (!f) return { ok: false, error: `run_id 不存在或无输出: ${args.run_id}` }
-  const offset = Math.max(0, Number(args.offset) || 0)
-  const limit = Math.min(Number(args.limit) || 50, 200)
-  const lines = fs.readFileSync(f, 'utf8').split('\n')
-  return {
-    ok: true, run_id: args.run_id, total_lines: lines.length, offset, limit,
-    lines: lines.slice(offset, offset + limit).join('\n'),
-  }
-}
-
-// ==============================================================================
-// burp-ingest：Burp Suite 导出 XML 导入（proxy history items / scanner issues）
-// ==============================================================================
-
-function xmlTag(block, tag) {
-  const m = block.match(new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${tag}>`))
-  return m ? m[1].trim() : ''
-}
-
-function burpImport(args) {
-  const file = String(args.file || '')
-  if (!file || !fs.existsSync(file)) return { ok: false, error: `文件不存在: ${file}` }
-  const text = fs.readFileSync(file, 'utf8')
-  const importId = 'burp-' + Date.now().toString(36)
-  const outDir = path.join(DATA_DIR, 'imports')
-  fs.mkdirSync(outDir, { recursive: true })
-
-  const isIssues = /<issues>/.test(text)
-  const blocks = text.match(/<(item|issue)>[\s\S]*?<\/\1>/g) || []
-  const outFile = path.join(outDir, `${importId}.jsonl`)
-  const out = fs.createWriteStream(outFile)
-  const hosts = new Set()
-  let count = 0
-
-  if (isIssues) {
-    for (const b of blocks) {
-      const name = xmlTag(b, 'name')
-      const host = hostOf(xmlTag(b, 'host'))
-      const rec = {
-        type: 'issue', name, host,
-        path: xmlTag(b, 'path'), severity: xmlTag(b, 'severity'),
-        confidence: xmlTag(b, 'confidence'),
-      }
-      if (host) hosts.add(host)
-      out.write(JSON.stringify(rec) + '\n'); count++
-    }
-  } else {
-    for (const b of blocks) {
-      const url = xmlTag(b, 'url')
-      const host = hostOf(xmlTag(b, 'host') || url)
-      const rec = {
-        type: 'item', host, url,
-        method: xmlTag(b, 'method'), status: xmlTag(b, 'status'),
-        mimetype: xmlTag(b, 'mimetype'),
-      }
-      if (host) hosts.add(host)
-      out.write(JSON.stringify(rec) + '\n'); count++
-    }
-  }
-  out.end()
-  audit({ ts: Date.now(), run_id: importId, tool: 'burp_import', decision: 'executed', detail: `${count} records from ${path.basename(file)}` })
-  return {
-    ok: true, import_id: importId, kind: isIssues ? 'scanner issues' : 'proxy history',
-    records: count, hosts: [...hosts].slice(0, 20), output: outFile,
-    hint: '完整数据已落盘 JSONL；接入 asset-graph（P3）后自动入图谱',
-  }
 }
 
 // ==============================================================================
@@ -1734,37 +1114,6 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
   }
 }
 
-async function spawnWorker(args, exec) {
-  const task = String(args.task || '').trim()
-  if (!task) return { ok: false, error: 'task 不能为空' }
-  // 幂等去重键 = sha1(task+cwd)；force:true 时不传 → 显式重跑。交互路径 cwd 恒为 null。
-  const dedupeKey = args.force === true ? null
-    : crypto.createHash('sha1').update(task + '\0').digest('hex')
-  const provider = args.provider || null
-  const model = args.model || null
-  return runWorker({ task, timeoutSec: args.timeout, originSessionId: sessionIdOf(exec), dedupeKey, provider, model })
-}
-
-// worker run 状态查询（重启后 "interrupted/outcome unknown" 时确认真实结局；结果已落盘）
-function workerStatus(args) {
-  const runId = String(args.run_id || '').trim()
-  if (!runId) return { ok: false, error: 'run_id 不能为空' }
-  const row = assetDb.workerGet(runId)
-  if (!row) return { ok: false, error: `无 run ${runId} 记录` }
-  let tail = ''; let logLines = 0
-  try {
-    const logText = fs.readFileSync(path.join(row.run_dir || path.join(RESULTS_DIR, runId), 'worker.log'), 'utf8')
-    const lines = logText.split('\n').filter(Boolean)
-    logLines = lines.length
-    tail = lines.slice(-20).join('\n')
-  } catch { /* 日志已清理 */ }
-  return {
-    ok: true, run_id: runId, status: row.status, exit_code: row.exit_code ?? null,
-    started_at: row.started_at, finished_at: row.finished_at, duration_ms: (row.finished_at && row.started_at) ? row.finished_at - row.started_at : null,
-    log_lines: logLines, tail,
-  }
-}
-
 // ==============================================================================
 // P11 定时任务调度循环已拆分至 ./scheduler.js（startScheduler 注入依赖调用）。
 // pidAlive 保留在主文件：runWorker 幂等恢复（上文）与 scheduler.js 锁心跳共用，经参数注入传入调度器。
@@ -1784,68 +1133,6 @@ let dashboardRpcRegistered = false
 // 看板 RPC 端点分发 handleDashboardRpc 已拆分至 ./dashboard-rpc.js（initDashboardRpc 注入依赖，注册点见 apply）。
 
 // ==============================================================================
-// intel_hunt：component-vuln-intel 触发器（P9）——指纹命中后查本地 nuclei 模板库找 N-day
-// ==============================================================================
-
-const NUCLEI_TEMPLATES = path.join(HOME_DIR, 'nuclei-templates')
-
-function intelHunt(args, exec) {
-  const tech = String(args.tech || '').toLowerCase().trim()
-  if (!tech) return { ok: false, error: 'tech 必填（如 weblogic / ruoyi / spring）' }
-  const version = String(args.version || '').trim()
-  if (!fs.existsSync(NUCLEI_TEMPLATES)) return { ok: false, error: `nuclei 模板库不存在: ${NUCLEI_TEMPLATES}` }
-  const matches = []
-  const walk = (dir, depth) => {
-    if (depth > 3 || matches.length >= 30) return
-    let entries
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
-    for (const e of entries) {
-      if (matches.length >= 30) return
-      const p = path.join(dir, e.name)
-      if (e.isDirectory()) {
-        if (e.name.toLowerCase().includes(tech)) {
-          try { matches.push(...fs.readdirSync(p).filter((f) => f.endsWith('.yaml')).map((f) => path.join(p, f)).slice(0, 30)) } catch { /* skip */ }
-        } else {
-          walk(p, depth + 1)
-        }
-      } else if (e.name.toLowerCase().includes(tech) && e.name.endsWith('.yaml')) {
-        matches.push(p)
-      }
-    }
-  }
-  walk(NUCLEI_TEMPLATES, 0)
-  const rel = matches.slice(0, 30).map((m) => path.relative(NUCLEI_TEMPLATES, m))
-  if (!rel.length) return { ok: true, tech, version, templates: [], task_id: null, hint: `模板库无 ${tech} 相关模板` }
-
-  // P2-3：命中模板 → 自动产出 N-day 候选任务（普通 queued，非自动跑；tentative，验证附证据才 confirmed）
-  const programId = resolveProgramId(args.program_id, exec)
-  const host = String(args.host || '').trim()
-  const label = `[N-day ${tech}${version ? '@' + version : ''}]`
-  let task = null
-  if (programId) {
-    // 幂等去重：同 program 下已有未终结（queued/running/blocked）的同技术栈候选任务则不重复建
-    const dup = assetDb.taskList({ programId, q: label, limit: 50 })
-      .find((t) => ['queued', 'running', 'blocked'].includes(t.status))
-    if (dup) {
-      task = { id: dup.id, deduped: true }
-    } else {
-      const objective = `${label} 验证 ${tech}${version ? ' ' + version : ''} N-day 漏洞`
-        + `${host ? `（目标 ${host}）` : ''}：命中 ${rel.length} 个 nuclei 模板，逐一验证。`
-        + '结果强制 tentative——附 PoC/响应证据方可 confirmed，无证据保持 tentative 或证伪。'
-      const r = assetDb.taskCreate({ program_id: programId, phase: 'vuln', objective, priority: 1, session_id: sessionIdOf(exec) })
-      if (r.ok) {
-        task = { id: r.id, deduped: false }
-        audit({ ts: Date.now(), run_id: '-', tool: 'intel_hunt.autotask', decision: 'executed', detail: { program_id: programId, tech, version, task_id: r.id, templates: rel.length }, session_id: sessionIdOf(exec) })
-      }
-    }
-  }
-  const hint = task
-    ? `命中 ${rel.length} 个模板 → 已${task.deduped ? '存在' : '产出'} N-day 候选任务 #${task.id}（phase=vuln, priority=1, tentative）。验证附证据才 confirmed。`
-    : `命中 ${rel.length} 个 ${tech}${version ? '@' + version : ''} 相关模板；未绑定 program（传 program_id 或在工作区会话内调用）故未自动建任务。结果强制 tentative。`
-  return { ok: true, tech, version, templates: rel, task_id: task ? task.id : null, deduped: task ? task.deduped : false, hint }
-}
-
-// ==============================================================================
 // 注册
 // ==============================================================================
 
@@ -1856,128 +1143,6 @@ function renderJSON(_args, value) {
 export function apply(ctx, config) {
   // P6：启动时把 scope.yml 程序镜像到 programs 表（幂等）
   try { syncPrograms() } catch { /* 镜像失败不影响插件加载 */ }
-
-  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：run_cli 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
-    name: 'run_cli',
-    description: '运行已登记的安全 CLI 工具（manifest 驱动）。目标经 scope-guard 白名单硬校验，参数模板化渲染，'
-      + '输出全量落盘 results/<run_id>/，只回 ≤20 行摘要。细节用 grep_result/page_result 按需取。',
-    parameters: {
-      type: 'object',
-      properties: {
-        tool: { type: 'string', description: '工具名（data/tools.d/<tool>.yaml）' },
-        params: { type: 'object', description: '模板参数键值对，如 {"target": "example.com"}' },
-      },
-      required: ['tool', 'params'],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    timeoutMs: 3670000,
-    execute: async (args, exec) => runCli(args || {}, exec),
-  })
-
-  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：grep_result 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
-    name: 'grep_result',
-    description: '在指定 run_id 的完整输出中按正则检索（大小写不敏感），返回匹配行（含行号，最多 max 条）。',
-    parameters: {
-      type: 'object',
-      properties: {
-        run_id: { type: 'string' },
-        pattern: { type: 'string', description: '正则表达式' },
-        max: { type: 'integer', description: '最多返回条数，默认 50，上限 200' },
-      },
-      required: ['run_id', 'pattern'],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    execute: async (args) => grepResult(args || {}),
-  })
-
-  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：page_result 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
-    name: 'page_result',
-    description: '按行区间分页读取指定 run_id 的完整输出（offset 起始行，limit 行数，上限 200）。',
-    parameters: {
-      type: 'object',
-      properties: {
-        run_id: { type: 'string' },
-        offset: { type: 'integer', description: '起始行（0 基），默认 0' },
-        limit: { type: 'integer', description: '行数，默认 50，上限 200' },
-      },
-      required: ['run_id'],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    execute: async (args) => pageResult(args || {}),
-  })
-
-  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：burp_import 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
-    name: 'burp_import',
-    description: '导入 Burp Suite 导出文件（XML：proxy history 或 scanner issues），结构化落盘 data/imports/ 并回摘要。'
-      + '人工在 Burp 里测试后导出 XML，用本工具回流系统沉淀资产与发现。',
-    parameters: {
-      type: 'object',
-      properties: {
-        file: { type: 'string', description: 'Burp 导出的 XML 文件路径（本机绝对路径）' },
-      },
-      required: ['file'],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    timeoutMs: 180000,
-    execute: async (args) => burpImport(args || {}),
-  })
-
-  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：spawn_worker 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
-    name: 'spawn_worker',
-    description: '派一个隔离的无头 worker 执行自包含任务（批量复扫、大日志蒸馏等），worker 上下文独立，'
-      + '跑完只回尾部摘要，全文落盘 results/<run_id>/worker.log。批任务用它，不要在主会话直接跑大输出工具。'
-      + '幂等：宿主重启后本调用报 "interrupted/outcome unknown" 时，原样重试即可确定性拿回真实结果'
-      + '（已完成→回读、被杀→重跑）；要显式强制重跑同一任务传 force:true。',
-    parameters: {
-      type: 'object',
-      properties: {
-        task: { type: 'string', description: '自包含的任务描述（worker 看不到本会话上下文，目标/范围/产出要求要写全）' },
-        timeout: { type: 'integer', description: '超时秒数，默认 900，上限 3600' },
-        force: { type: 'boolean', description: '跳过幂等去重，强制重跑同一任务（默认 false）' },
-        provider: { type: 'string', description: '可选：覆盖 LLM provider（如 deepseek / sensenova）' },
-        model: { type: 'string', description: '可选：覆盖 LLM model（如 deepseek-v4-flash / glm-5.2）' },
-      },
-      required: ['task'],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    timeoutMs: 3670000,
-    execute: async (args, exec) => spawnWorker(args || {}, exec),
-  })
-
-  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：worker_status 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
-    name: 'worker_status',
-    description: '查询某个 spawn_worker 的 run 结局（running/done/failed/killed）+ 尾部日志。'
-      + '重启后 spawn_worker 报 "interrupted/outcome unknown" 时，用它确认 worker 真实结果（已落盘）。',
-    parameters: {
-      type: 'object',
-      properties: { run_id: { type: 'string' } },
-      required: ['run_id'],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    execute: async (args) => workerStatus(args || {}),
-  })
-
-  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：worker_list 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
-    name: 'worker_list',
-    description: '列出最近的 spawn_worker run（可按 status 过滤），总览在飞/历史 worker。',
-    parameters: {
-      type: 'object',
-      properties: {
-        status: { type: 'string', description: 'running / done / failed / killed，不传=全部' },
-        limit: { type: 'integer', description: '默认 20，上限 200' },
-      },
-      required: [],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    execute: async (args) => ({ ok: true, workers: assetDb.workerList(args || {}) }),
-  })
 
   ctx.tools.register({
     name: 'authz_diff',
@@ -1998,98 +1163,6 @@ export function apply(ctx, config) {
     output: { schema: { type: 'object' }, render: renderJSON },
     timeoutMs: 90000,
     execute: async (args, exec) => authzDiff(args || {}, exec),
-  })
-
-  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：plan_chain 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
-    name: 'plan_chain',
-    description: '能力原语凑链：给定已拥有的能力（have）与想要的能力（want），'
-      + '按 manifest 的 requires/produces 做 BFS 图搜索，返回有序工具链。'
-      + '侦察阶段免手工记工具顺序。',
-    parameters: {
-      type: 'object',
-      properties: {
-        have: { type: 'array', items: { type: 'string' }, description: '已拥有的能力，如 ["company_name"]' },
-        want: { type: 'string', description: '想要的能力，如 findings / live_hosts / subdomains' },
-      },
-      required: ['want'],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    execute: async (args) => planChain(args || {}),
-  })
-
-  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：task_chain 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
-    name: 'task_chain',
-    description: '一条 objective 自动展开为任务依赖链（P2-2）：复用 plan_chain BFS 按 manifest requires/produces 凑链，'
-      + '反向剪枝到达成 want 的最小链，落成 parent 串联的 once 调度任务——前置未完成不派单，parent 完成后调度器自动放行下一级（链式自动推进）。'
-      + '默认 have=["domains"]、want=findings（资产收集→存活→指纹→N-day）。链尾多为 active 扫描且会自动执行，仅对已授权 scope 使用。',
-    parameters: {
-      type: 'object',
-      properties: {
-        program_id: { type: 'string', description: '不传则按当前会话工作区自动绑定' },
-        objective: { type: 'string', description: '整体目标描述（写入每级任务作上下文，可选）' },
-        want: { type: 'string', description: '目标能力，默认 findings（见 plan_chain）' },
-        have: { type: 'array', items: { type: 'string' }, description: '起始已有能力，默认 ["domains"]' },
-        priority: { type: 'integer', description: '链上任务优先级，默认 3' },
-        parent_id: { type: 'integer', description: '把链挂在某个已有任务之后（可选）' },
-      },
-      required: [],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    execute: async (args, exec) => taskChain(args || {}, exec),
-  })
-
-  false && ctx.tools.register({ // v5 切流（10-exec/05-task）：intel_hunt 由 task/exec 域接管（别名/域投影），旧注册停用，函数体留待删旧路径
-    name: 'intel_hunt',
-    description: 'component-vuln-intel（P9/P2-3）：指纹命中后查本地 nuclei 模板库找 tech 相关的 N-day 模板/CVE。'
-      + '命中即自动产出一条 phase=vuln、priority=1 的 N-day 候选任务（普通 queued，非自动跑；tentative，验证附证据才 confirmed）。'
-      + '未绑定 program 时仅返回模板列表不建任务。',
-    parameters: {
-      type: 'object',
-      properties: {
-        tech: { type: 'string', description: '技术栈/组件，如 weblogic / ruoyi / spring' },
-        version: { type: 'string', description: '版本号（可选）' },
-        program_id: { type: 'string', description: '归属项目；不传则按当前会话工作区自动绑定' },
-        host: { type: 'string', description: '命中该指纹的主机（写入候选任务目标，可选）' },
-      },
-      required: ['tech'],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    execute: async (args, exec) => intelHunt(args || {}, exec),
-  })
-
-  // v5 切流（09-approval）：approval_request 由 approval 域 ToolProjector 零改名接管——旧注册停用（函数体留待删旧路径）。
-  false && ctx.tools.register({
-    name: 'approval_request',
-    description: '统一审批入口（fail-closed 之下的正规放行通道）：向人工提请审批。'
-      + '类型判定口径：①整个注册域归属该项目（主体核证级证据：ICP 备案主体/官网品牌一致/收购公告/SRC 规则页明示）→ kind=scope-wildcard，'
-      + '一次审批覆盖 *.example.com 全部子域；②仅单个子域有具体归属证据（CNAME 指向授权资产/内容同源比对）→ kind=scope-domain，'
-      + 'subject 填完整子域，禁止拿裸 apex 走单域通道；③被排除资产的人工评估 → exclude-exception；'
-      + '④外部经验（writeup/案例）蒸馏采纳进经验库 → kind=knowledge-adopt（payload: card_id 可选/draft ≥50 字/source_url 必填）。'
-      + '资产收集发现疑似 scope 外资产时必须提请，禁止只写事实不提请求，也禁止把归属不确定的资产凑数提请。'
-      + '股权判据口径见 data/rules/src/equity-gate.md：100% 控股算、参股/投资不算、有自身 SRC 渠道的不并入。'
-      + '登记是被动观察行为：批准前目标依旧被 scope-guard fail-closed 拒绝，授权边界不变。',
-    parameters: {
-      type: 'object',
-      properties: {
-        kind: { type: 'string', enum: ['scope-domain', 'scope-wildcard', 'exclude-exception', 'knowledge-adopt'], description: '审批类型：scope-wildcard=整域授权（subject 填注册域 apex，如 example.com）；scope-domain=单子域授权（subject 填完整子域）；exclude-exception=被排除资产的例外评估（解除排除）；knowledge-adopt=外部经验蒸馏采纳进经验库' },
-        subject: { type: 'string', description: '审批对象（域名；scope-wildcard 传注册域 apex 如 catpaw.com，scope-domain 传完整子域如 www.catpaw.com；knowledge-adopt 传经验卡 scenario 一句话）' },
-        program_name: { type: 'string', description: '建议归属的 scope.yml 项目名（exclude-exception 为排除该域的项目名；knowledge-adopt 可不填）' },
-        equity_basis: { type: 'string', enum: ['控股/全资', '收购/财团', '品牌/产品线', '技术印证', '其他'], description: '股权/归属判据类型（scope 域类必填）。整域（scope-wildcard）只接受 控股/全资 或 收购/财团。「技术印证」=CNAME 指向授权资产/内部部署域等部署关系' },
-        independent_src: { type: 'string', enum: ['无', '有', '不确定'], description: '目标是否有自身 SRC 收洞渠道（scope-domain/scope-wildcard 必填；有→不并入本项目）' },
-        corroboration: { type: 'string', description: '旁证（选填，如 "meituan.com 下 126 个内部部署域印证"）' },
-        card_id: { type: 'integer', description: '（knowledge-adopt）要转正的 exp_cards 卡 id；draft 直落新卡时不传' },
-        draft: { type: 'string', description: '（knowledge-adopt）蒸馏后的可迁移模式（≥50 字），批准后作为经验卡 takeaway' },
-        source_url: { type: 'string', description: '（knowledge-adopt）外部来源完整 URL（http(s):// 开头，可溯源）' },
-        evidence: { type: 'string', description: '归属证据/依据摘要。单子域 ≥30 字且须具体归属证据；整域 ≥30 字且须主体核证级证据（备案主体/收购公告/SRC 规则页）；knowledge-adopt ≥30 字（覆盖了哪个缺口/哪个案例支撑）' },
-      },
-      required: ['kind', 'subject', 'evidence'],
-      additionalProperties: false,
-    },
-    output: { schema: { type: 'object' }, render: renderJSON },
-    execute: async (args, exec) => approvalRequest(args || {}, exec),
   })
 
   // xray webhook 接收器只在 web 宿主面启动（connection 服务存在时；headless worker 不起，避免 EADDRINUSE 噪声）。

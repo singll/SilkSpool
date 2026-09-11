@@ -771,30 +771,6 @@ function taskWhere({ programId = '', status = '', phase = '', q = '', bucket = '
   return { where, args }
 }
 
-export function taskNext(programId) {
-  const d = getDb()
-  const rows = plain(d.prepare(
-    'SELECT * FROM tasks WHERE program_id = ? AND status = ? ORDER BY priority ASC, created_at ASC'
-  ).all(programId, 'queued'))
-  for (const t of rows) {
-    if (t.parent_id) {
-      const p = d.prepare('SELECT status FROM tasks WHERE id = ?').get(t.parent_id)
-      if (!p || p.status !== 'done') continue
-    }
-    return t
-  }
-  return null
-}
-
-export function taskStats(programId) {
-  const d = getDb()
-  const rows = plain(d.prepare(
-    'SELECT phase, status, COUNT(*) AS n FROM tasks WHERE program_id = ? GROUP BY phase, status'
-  ).all(programId))
-  const total = d.prepare('SELECT COUNT(*) AS n FROM tasks WHERE program_id = ?').get(programId).n
-  return { program_id: programId, total, by_phase_status: rows }
-}
-
 // -------------------- P11：定时调度 --------------------
 
 // 修改/暂停/恢复调度。schedule=null 表示清除调度（变普通任务）。
@@ -1001,30 +977,6 @@ export function fgsListNodes({ task_id, type = '', status = '', run_id = '', lim
     try { r.depends_on = r.depends_on ? JSON.parse(r.depends_on) : null } catch { r.depends_on = null }
   }
   return rows
-}
-
-export function fgsNextStep(task_id) {
-  const d = getDb()
-  // 取状态为 open 且依赖已满足的 step；若依赖为空直接可执行
-  const rows = plain(d.prepare(
-    `SELECT id, content, score, depends_on FROM fgs_nodes
-     WHERE task_id = ? AND type = 'step' AND status = 'open'
-     ORDER BY score DESC, updated_at DESC LIMIT 50`
-  ).all(Number(task_id)))
-  const doneIds = new Set(
-    plain(d.prepare("SELECT id FROM fgs_nodes WHERE task_id = ? AND type = 'step' AND status = 'done'")
-      .all(Number(task_id))).map((r) => r.id)
-  )
-  const ready = []
-  for (const r of rows) {
-    let deps = []
-    try { deps = r.depends_on ? JSON.parse(r.depends_on) : [] } catch { deps = [] }
-    if (!Array.isArray(deps) || deps.length === 0 || deps.every((id) => doneIds.has(id))) {
-      try { r.content = JSON.parse(r.content) } catch { r.content = {} }
-      ready.push(r)
-    }
-  }
-  return ready.slice(0, 10)
 }
 
 export function fgsClearTask(task_id) {
@@ -1452,24 +1404,6 @@ export function fpQuery({ host = '', tech = '', program_id = '', limit = 50 }) {
   return plain(getDb().prepare(sql).all(...args))
 }
 
-export function credAdd({ program_id = null, host = '', cred_type = '', ref = '', role = '', note = '' }) {
-  const r = getDb().prepare(`
-    INSERT INTO credentials (program_id, host, cred_type, ref, role, note, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(program_id, host, cred_type, ref, role, note, now())
-  return { ok: true, id: Number(r.lastInsertRowid) }
-}
-
-export function credQuery({ program_id = '', host = '', limit = 50 }) {
-  let sql = 'SELECT id, program_id, host, cred_type, ref, role, note, created_at FROM credentials WHERE 1=1'
-  const args = []
-  if (program_id) { sql += ' AND program_id = ?'; args.push(program_id) }
-  if (host) { sql += ' AND host = ?'; args.push(host) }
-  sql += ' ORDER BY created_at DESC LIMIT ?'
-  args.push(Math.min(limit, 200))
-  return plain(getDb().prepare(sql).all(...args))
-}
-
 export function bbSet(key, value, intent = null) {
   const lc = LC()
   const nowTs = now()
@@ -1557,17 +1491,8 @@ export function updateFinding({ id, status, note = '', bounty = null, vendor_sta
   }
   // v5 切流（15-eval）：confirmed/false_positive 判定回流改由 eval 域订阅
   // vuln.signal.confirmed/rejected → eval_case_append 落盘 data/eval/eval-live.jsonl（弱联动），
-  // 此处 v4 直调 appendLiveEval 已移除（避免双写）。appendLiveEval/evalStats 函数体留待删旧路径。
+  // 此处 v4 直调 appendLiveEval 已删旧路径（避免双写）；evalStats 仍保留作 dashboard-rpc v4 兜底（观察期）。
   return { ok: true, id: Number(id), status }
-}
-
-// 活评测集落盘：data/eval/eval-live.jsonl（每行一条实战判定，用于误报率/发现率复盘）
-function appendLiveEval(rec) {
-  try {
-    const dir = path.join(DATA_DIR, 'eval')
-    fs.mkdirSync(dir, { recursive: true })
-    fs.appendFileSync(path.join(dir, 'eval-live.jsonl'), JSON.stringify({ ...rec, ts: Date.now() }) + '\n')
-  } catch { /* 评测回流失败不阻断 */ }
 }
 
 // 活评测回流（P9 环3）：读 eval-live.jsonl 聚合各漏洞类型的确认/误报统计，供 eval_stats 工具与报告校准可信度
@@ -1816,54 +1741,3 @@ export function opsHealth() {
   }
 }
 
-// -------------------- P16：SRC 提交半自动化（草稿生成 + 查重检索） --------------------
-// finding CONFIRMED → 平台提交草稿（复现步骤/影响/放大面/脱敏证据指针）+ 同目标同类型查重。
-// 人只做最终审校与粘贴——挖到到提交之间不再断链。
-export function submissionDraft(findingId, { platform = '' } = {}) {
-  const d = getDb()
-  const f = d.prepare('SELECT * FROM findings WHERE id = ?').get(Number(findingId))
-  if (!f) return { ok: false, error: `finding 不存在: ${findingId}` }
-  // 查重：同 host 或同 vuln_type 的历史提交/已确认项（提交前必看，防平台判重）
-  const dups = plain(d.prepare(
-    `SELECT id, title, severity, status, host FROM findings
-     WHERE id != ? AND noise = 0 AND (host = ? OR (vuln_type IS NOT NULL AND vuln_type = ?))
-     ORDER BY created_at DESC LIMIT 10`
-  ).all(Number(findingId), f.host || '', f.vuln_type || ''))
-  const sevName = { critical: '严重', high: '高危', medium: '中危', low: '低危', info: '信息' }[f.severity] || f.severity
-  const md = [
-    `# 漏洞提交草稿（finding #${f.id}，人工审校后提交）`,
-    '',
-    `- 平台: ${platform || '（按目标 SRC 平台填写）'}`,
-    `- 漏洞类型: ${f.vuln_type || '（回填 vuln_type）'}${f.cwe ? ` / ${f.cwe}` : ''}`,
-    `- 等级自评: ${sevName}`,
-    `- 目标: ${f.url || f.host}`,
-    '',
-    '## 漏洞描述',
-    f.title,
-    f.impact ? `\n**影响**: ${f.impact}` : '',
-    '',
-    '## 复现步骤',
-    f.reproduction_steps || '（补全：1. … 2. … 3. …，每步附请求/响应关键片段）',
-    f.preconditions ? `\n**前置条件**: ${f.preconditions}` : '',
-    '',
-    '## 证据',
-    '```',
-    String(f.evidence || '').slice(0, 2000),
-    '```',
-    f.endpoint_ref ? `\n关联接口: ${f.endpoint_ref}` : '',
-    '',
-    '## 修复建议',
-    f.recommendation || '（补全修复建议）',
-    '',
-    '## 提交前查重结果',
-    dups.length ? dups.map((x) => `- #${x.id} [${x.severity}] ${x.title}（${x.host}，status=${x.status}）`).join('\n') : '- 无同目标/同类型历史记录',
-    '',
-    '---',
-    `数据指针：finding #${f.id} · session ${f.session_id || '—'} · source ${f.source || '—'} · ${new Date().toISOString()}`,
-  ].join('\n')
-  const dir = path.join(DATA_DIR, 'reports', 'submissions')
-  fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, `draft-finding-${f.id}-${beijingDate()}.md`)
-  fs.writeFileSync(file, md)
-  return { ok: true, file, finding_id: f.id, dup_candidates: dups, hint: '人工审校后提交；提交成功用 finding_update status=submitted 回流' }
-}
