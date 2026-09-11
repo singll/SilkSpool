@@ -8,7 +8,7 @@
 - **全局契约宪法**：`00-conventions.md`
 - **文档状态**：00-18 全量定稿（2026-09-06，commit `2e593e9`）
 - **领域语言**：`bundles/dsh/CONTEXT.md`
-- **当前 Phase**：**Phase 3 进行中（Phase 1 + Phase 2 全部 14 域 + 看板 52 case 已收口上线；Phase 3.1 部署验收命令集 sec-v5-accept.sh 已完成；下一节点：3.2 事件可靠性回放演练）**
+- **当前 Phase**：**Phase 3 进行中（Phase 1 + Phase 2 全部 14 域 + 看板 52 case 已收口上线；Phase 3.1 部署验收命令集 + 3.2 事件可靠性回放演练已完成；下一节点：3.3 memcore 完全旁路化）**
 
 ## 二、已完成节点（附 commit 追踪）
 
@@ -33,6 +33,7 @@
 | **2.7（第四批）eval 域本体** | `@silksec/sec-domain-eval`+`sec-backend-eval-file`（file 单后端，owns data/eval/ 整目录：eval-live.jsonl 原地接管零迁移、fp-cases.jsonl/contract-cases.jsonl 种子、runs/、fp/contract/range 报告）；命令 eval_case_append/eval_run_fp/eval_run_contract（三写动词模型禁入 INV-1）+ 查询 eval_stats/eval_cases/eval_reports（eval_stats 同名直传无别名，60s TTL 缓存）；订阅 vuln.signal.confirmed/rejected（async 弱联动，失败不阻断 vuln 命令主体）→ eval_case_append 回流，替代 v4 updateFinding 直调 appendLiveEval；异步执行载体=域内进程内执行器（LLM 走 Bellkeeper pool-secagent，SEC_EVAL_LLM_KEY/BELLKEEPER_API_KEY 零明文）+ runs/ 孤儿扫描（宿主重启标 failed 不自动续跑）；vuln_get 查询白名单补 reactor/system（跨域读使能）；切流移除 asset-db.js updateFinding 直调 appendLiveEval（函数体留待删旧路径）+ asset-graph.js 停用 eval_stats 工具注册（同名查询 ToolProjector 零改名接管，无别名成本） | `84af75f` | ✅ 契约测试 eval 16/16 全绿（本地 + csai setup 内双跑，全量回归 bus 39/vuln 44/report 11 无回归）；服务 active；eval 域 registered（bus.domain.registered commands=3/queries=3，AGENTS.md secbus 区块 eval_ case_append/run_fp/run_contract）；真实链冒烟 eval_stats.live.total=34（与 v4 eval-live.jsonl 原地接管一致，by_type 9 类聚合 + fp_rate）、eval_cases.total=34、eval_reports(range)=4（v4 eval-run.js 产物）；迁移种子 p-v5-1-migrate-eval.js 幂等（fp-cases/contract-cases 6 用例/runs/ 初始化，原地接管断言 34→34 行）；数据无回归（findings=78/signal=42/pending=9/programs=5/approval=10/scheduled=10 自然漂移）；看板 evalStats case 仍走 v4（dashboard 批次切 RPC，其余看板 case 待后续会话） |
 | **2.7（第五批）看板其余 case 切总线** | dashboard-rpc 十四 case 逐批改走 `deps.getSecDomainBus()` query/dispatch（v4 兜底观察期）：taskRunNow/taskCancel→`task.run_now`/`task.cancel`、reportBuild→`report.build`（content 读回壳侧）、evalStats→`eval.stats`（live 直传）、audit→`bus.audit_tail`（总线收编+旧 client 形状映射）、programs→`scope.program_list`、tasks→`task.list`（active 桶默认 exclude 定时）、scheduledTasks→`task.scheduled`、taskRuns→`task.runs`、taskScheduleUpdate→`task.schedule`、taskSetStatus→拆 `task.block`/`task.resume`、taskCreate→`task.create`、reports→`report.list`（索引直出+size/mtime 回填+programs 分组）、reportRead→`report.read`；顺带补 report 域 v4 存量 heal 兜底（12-report §2.5：frontmatter 缺失→文件名正则+mtime+首行标题回退补行，31 份 v4 存量报告入索引） | `2bffe05` | ✅ 契约测试 14 套全绿（report 12/12 含新增 v4 heal 用例，全量回归无 fail）；服务 active；真实库冒烟 task.scheduled=4（24/37/100007/100008 非终态）、task.list active 非定时=3、task.runs total=133、scope.program_list=5、report.list=31（v4 存量全入索引）、eval.stats.live.total=43 与 v4 口径一致；看板 52 case 的自动投影 41 + 拆分映射 4 全部收口（剩 stats/ops/memcore/sessions/workspaces 五壳聚合端点为壳插件 Phase D0/D1 职责） |
 | **3.1 部署验收命令集** | `sec-v5-accept.sh` 只读幂等部署验收脚本（18-migration §五「部署验收命令集」契约化）：R0 基础健康（6 systemd 单元 active + data-quality.py --json + data/AUTHORITY.md + data/events/ + web/headless 双 profile --dump-config 含 sec-domain-bus 与全部 14 域）+ R4 owns 唯一性（14 域插件在 plugins/ 齐全，域被拒载则缺投影）；`--json` 出机器可读报告、退出码 0/1。manifest 登记入 bundle | `5b74ccd` | ✅ 线上 25/25 全 PASS（6 单元 active / data-quality exit 0 / AUTHORITY 存在 / events 目录存在 / 双 profile dump-config 15 插件全在 / 14 域插件齐全）；`--json` EXIT=0；服务 active；findings=78 无回归 |
+| **3.2 事件可靠性回放演练** | 线上演练验证 dispatcher 崩溃恢复 + `bus_replay` 回放恢复；演练暴露并修复两处弱联动投递缺陷：① `bus_subscription` 订阅者键由 `pattern` 改为 `source::pattern`（修多域订阅同一事件模式互相覆盖——`exec.run.completed` ×5 / `approval.approved` ×2 / `task.finished` ×2 原先仅首个被投递）；② dispatcher 首 tick 加启动宽限期（默认 3s，防宿主重启时域未注册即扫 pending 把待投递事件误判无订阅者而丢投递）；`sec-bus-cli.mjs` 补齐 14 域加载（`dispatch`/`query`/`bus.replay` 具备真实订阅者，01-bus §1.8 human 应急通道落地）；契约测试 +2（多订阅者各自投递 / 启动宽限期），总线套 39→41 全绿 | `f64227b` | ✅ 演练两步全过：① stop silksecagent→注入合成 `exec.run.completed` pending→start 后 dispatcher 续扫恢复，5 订阅者（asset/endpoint/know/ledger/vuln）各自独立 `X::exec.run.completed` delivered + jsonl 留痕 1 行；② 删 5 条消费记录 + outbox 置 dead_letter → `bus_replay` 回放 redispatched 恢复 5 条订阅记录 delivered；服务 active；findings=79 无回归；15 域 registered、outbox pending/dead=0、degraded=null；interval 定时任务 16/17/19/24/37/100005 完好、scheduler.lock 持有无扰动 |
 
 ## 三、待办节点（Phase 1，按顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
@@ -57,7 +58,7 @@
 > Phase 3 = 跨域事件化收尾。§五 bullet 4（eval 域订阅）已在 eval 域本体收口（commit `84af75f`）；approval 六 kind effect outbox 已在 approval 域收口（commit `1a96cb8`）。余下四子节点：
 
 - [x] **3.1 部署验收命令集（R0/R4 契约化）**：`sec-v5-accept.sh` 只读幂等验收脚本（6 systemd 单元 + data-quality + AUTHORITY.md + events/ 目录 + 双 profile dump-config 含 bus+14 域 + 14 域插件齐全），`--json` 出机器可读报告。**✅ 已完成（commit 见 §二）**
-- [ ] **3.2 事件可靠性回放演练**：dispatcher kill/restart 后 outbox `pending` 续扫恢复 + 删一个 async 订阅者消费记录 → `bus_replay` 回放恢复（01-bus §2.2.5/§2.3）。
+- [x] **3.2 事件可靠性回放演练**：dispatcher kill/restart 后 outbox `pending` 续扫恢复 + 删一个 async 订阅者消费记录 → `bus_replay` 回放恢复（01-bus §2.2.5/§2.3）。**✅ 已完成（commit `f64227b`；演练暴露并修复多订阅者键碰撞 + dispatcher 启动宽限期两处弱联动投递缺陷）**
 - [ ] **3.3 memcore 完全旁路化**：`grep -c 'prepare(' sec-memcore` 仅剩自身迁移表（当前 69 处裸 SQL，须归零经 fact/know lifecycle 命令）。
 - [ ] **3.4 各域删旧路径**：Phase 2 各域「函数体留待删旧路径」的 v4 直写残留清理（asset-db/asset-graph/sec-suite/sec-pipeline/experience 停用段），观察期 1 个调度周期满后逐个删除。
 
