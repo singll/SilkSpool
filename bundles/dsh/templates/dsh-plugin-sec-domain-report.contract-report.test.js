@@ -237,6 +237,28 @@ test('report_list: 过滤（program/kind）+ 行数=total + 孤儿行惰性清�
   assert.equal(after.total, 0)
 })
 
+test('report_list: v4 存量无 frontmatter → 文件名正则 + mtime + 首行标题回退补行', async () => {
+  const env = makeEnv()
+  await seedEnv(env)
+  const reportsDir = path.join(env.dataDir, 'reports')
+  fs.mkdirSync(path.join(reportsDir, 'submissions'), { recursive: true })
+  fs.writeFileSync(path.join(reportsDir, 'report-meituan-20260901-1420.md'), '# SilkSecAgent 漏洞报告\n\n- 合计: 3 个发现\n')
+  fs.writeFileSync(path.join(reportsDir, 'submissions', 'draft-finding-42-2026-09-01.md'), '# 漏洞提交草稿（finding #42，人工审校后提交）\n')
+  const list = await env.bus.query('report', 'list', {}, { actor: 'dashboard' })
+  assert.equal(list.total, 2)
+  const reportRow = list.rows.find((r) => r.file === 'report-meituan-20260901-1420.md')
+  assert.ok(reportRow, 'report 存量文件应被补行')
+  assert.equal(reportRow.kind, 'report')
+  assert.equal(reportRow.program, 'meituan')
+  assert.equal(reportRow.date, '2026-09-01')
+  assert.equal(reportRow.title, 'SilkSecAgent 漏洞报告')
+  const draftRow = list.rows.find((r) => r.file === 'submissions/draft-finding-42-2026-09-01.md')
+  assert.ok(draftRow, 'submission 存量文件应被补行')
+  assert.equal(draftRow.kind, 'submission_draft')
+  assert.equal(draftRow.date, '2026-09-01')
+  assert.equal(draftRow.title, '漏洞提交草稿（finding #42，人工审校后提交）')
+})
+
 test('report_read: 全文读取 + 不存在 + 路径穿越', async () => {
   const env = makeEnv()
   await seedEnv(env)

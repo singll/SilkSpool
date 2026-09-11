@@ -344,17 +344,65 @@ export async function handleDashboardRpc(endpoint, payload) {
     case 'taskRunNow': {
       const id = Number(p.id)
       if (!id) throw new Error('taskRunNow 需要 id')
+      // v5：task.run_now（task 域 task_run_now 命令）接管（05-task §1.7）；v4 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.dispatch('task', 'run_now', { task_id: id }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+          if (r.ok) return { ok: true, id, ...(r.data || {}) }
+          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
+          const err = new Error(msg); err.code = r.error?.code; throw err
+        } catch (e) {
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
+          else throw e
+        }
+      }
       deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskRunNow', decision: 'executed', detail: { id } })
       return deps.assetDb.taskRunNow(id)
     }
     case 'taskCancel': {
       const id = Number(p.id)
       if (!id) throw new Error('taskCancel 需要 id')
+      // v5：task.cancel（task 域 task_cancel 命令）接管（05-task §1.7）；v4 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.dispatch('task', 'cancel', { task_id: id, note: String(p.note || '看板手动取消') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+          if (r.ok) return { ok: true, id, ...(r.data || {}) }
+          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
+          const err = new Error(msg); err.code = r.error?.code; throw err
+        } catch (e) {
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
+          else throw e
+        }
+      }
       const r = deps.assetDb.taskUpdate({ id, status: 'cancelled', note: String(p.note || '看板手动取消') })
       deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskCancel', decision: 'executed', detail: { id } })
       return r
     }
     case 'reportBuild': {
+      // v5：report.build（report 域 report_build 命令）接管（12-report §1.7）；v4 buildReport 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.dispatch('report', 'build', {
+            host_like: String(p.host_like || ''), program_id: String(p.program_id || ''),
+            since_days: Number(p.since_days) || 0,
+            status_filter: String(p.status || ''), // R3 裁决：report_build 过滤参数更名 status_filter（语义不变）
+            severity: String(p.severity || ''), source: String(p.source || ''),
+          }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+          if (r.ok && r.data && r.data.file) {
+            let content = ''
+            try { content = fs.readFileSync(path.join(deps.dataDir, 'reports', r.data.file), 'utf8') } catch { /* 读回失败仅少 content，不阻断 */ }
+            return { ...r.data, content }
+          }
+          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
+          const err = new Error(msg); err.code = r.error?.code; throw err
+        } catch (e) {
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
+          else throw e
+        }
+      }
       const r = deps.assetDb.buildReport({
         hostLike: String(p.host_like || ''), programId: String(p.program_id || ''),
         status: String(p.status || ''), sinceDays: Number(p.since_days) || 0,
@@ -365,10 +413,37 @@ export async function handleDashboardRpc(endpoint, payload) {
       deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.reportBuild', decision: 'executed', detail: { file: r.file, total: r.total } })
       return { ...r, content }
     }
-    case 'evalStats':
+    case 'evalStats': {
+      // v5：eval.stats（eval 域 eval_stats 查询）接管（15-eval §1.7）；v4 evalStats 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+          if (r.ok && r.data && r.data.live) return { total: r.data.live.total, by_type: r.data.live.by_type }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return deps.assetDb.evalStats()
-    case 'audit':
+    }
+    case 'audit': {
+      // v5：bus.audit_tail（总线审计尾读）接管（16-dashboard §1.7 #14）；v4 tailAudit 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('bus', 'audit_tail', { n: Math.min(Number(p.limit) || 120, 300) }, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) {
+            return {
+              rows: r.rows.map((x) => ({
+                ts: x.ts,
+                tool: x.cmd || '—',
+                decision: x.result || '—',
+                detail: { domain: x.domain, actor: x.actor, operator: x.operator, session_id: x.session_id, kind: x.kind, before: x.before, after: x.after, target: x.target, error_code: x.error_code, backend: x.backend, legacy: x.legacy, alias: x.alias },
+              })),
+            }
+          }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return { rows: deps.tailAudit(Math.min(Number(p.limit) || 120, 300)) }
+    }
     case 'assets': {
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
@@ -539,8 +614,17 @@ export async function handleDashboardRpc(endpoint, payload) {
       }
       return deps.assetDb.factGraph(programId, factKey)
     }
-    case 'programs':
+    case 'programs': {
+      // v5：scope.program_list（scope 域 program_list 查询）接管（08-scope §1.7）；v4 listPrograms 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('scope', 'program_list', { limit: 500 }, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) return r.rows
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return deps.assetDb.listPrograms()
+    }
     case 'tasks': {
       const filters = {
         programId: String(p.program_id || ''), status: String(p.status || ''),
@@ -551,22 +635,63 @@ export async function handleDashboardRpc(endpoint, payload) {
       if (!filters.scheduled && filters.bucket === 'active') filters.scheduled = 'exclude'
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
+      // v5：task.list（task 域 task_list 查询）接管（05-task §1.7）；v4 taskList 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('task', 'list', {
+            program_id: filters.programId, status: filters.status, phase: filters.phase, q: filters.q,
+            bucket: filters.bucket, scheduled: filters.scheduled, limit, offset,
+          }, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return { rows: deps.assetDb.taskList({ ...filters, limit, offset }), total: deps.assetDb.countTasks(filters) }
     }
     // ---- P12：固定定时任务卡片区 + 执行历史 ----
-    case 'scheduledTasks':
+    case 'scheduledTasks': {
+      // v5：task.scheduled（task 域 task_scheduled 查询）接管（05-task §1.7）；v4 taskScheduledList 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('task', 'scheduled', {}, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return { rows: deps.assetDb.taskScheduledList() }
+    }
     case 'taskRuns': {
       const taskId = Number(p.task_id) || 0
       const programId = String(p.program_id || '')
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
+      // v5：task.runs（task 域 task_runs 查询）接管（05-task §1.7）；v4 taskRunsList 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('task', 'runs', { task_id: taskId, program_id: programId, limit, offset }, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       return { rows: deps.assetDb.taskRunsList({ taskId, programId, limit, offset }), total: deps.assetDb.countTaskRuns({ taskId, programId }) }
     }
     case 'taskScheduleUpdate': {
       const id = Number(p.id)
       if (!id) throw new Error('taskScheduleUpdate 需要 id')
       const schedule = p.schedule && typeof p.schedule === 'object' ? p.schedule : null
+      // v5：task.schedule（task 域 task_schedule 命令）接管（05-task §1.7）；v4 taskSchedule 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.dispatch('task', 'schedule', { task_id: id, schedule }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+          if (r.ok) return { ok: true, ...(r.data || {}) }
+          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
+          const err = new Error(msg); err.code = r.error?.code; throw err
+        } catch (e) {
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
+          else throw e
+        }
+      }
       const r = deps.assetDb.taskSchedule({ id, schedule })
       deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskScheduleUpdate', decision: 'executed', detail: { id, schedule } })
       return r
@@ -576,6 +701,21 @@ export async function handleDashboardRpc(endpoint, payload) {
       const id = Number(p.id)
       const status = String(p.status || '')
       if (!id || !['blocked', 'queued'].includes(status)) throw new Error('taskSetStatus 需要 id 且 status 仅支持 blocked/queued')
+      // v5：拆分 task.block / task.resume（task 域命令）接管（16-dashboard §1.7 #32）；v4 taskUpdate 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const verb = status === 'blocked' ? 'block' : 'resume'
+          const args = status === 'blocked' ? { task_id: id, blocked_reason: '看板手动暂停' } : { task_id: id }
+          const r = await bus.dispatch('task', verb, args, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+          if (r.ok) return { ok: true, id, ...(r.data || {}) }
+          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
+          const err = new Error(msg); err.code = r.error?.code; throw err
+        } catch (e) {
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
+          else throw e
+        }
+      }
       const r = deps.assetDb.taskUpdate({ id, status, note: status === 'blocked' ? '看板手动暂停' : '看板手动恢复' })
       deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskSetStatus', decision: 'executed', detail: { id, status } })
       return r
@@ -586,6 +726,24 @@ export async function handleDashboardRpc(endpoint, payload) {
       const objective = String(p.objective || '').trim()
       if (!programId || !objective) throw new Error('taskCreate 需要 program_id 与 objective')
       const schedule = p.schedule && typeof p.schedule === 'object' ? p.schedule : null
+      // v5：task.create（task 域 task_create 命令）接管（05-task §1.7）；v4 taskCreate 兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const args = { program_id: programId, objective, phase: String(p.phase || ''), priority: Number(p.priority) || 5 }
+          if (schedule) args.schedule = schedule
+          if (p.provider) args.provider = String(p.provider)
+          if (p.model) args.model = String(p.model)
+          if (p.reasoning_effort) args.reasoning_effort = String(p.reasoning_effort)
+          const r = await bus.dispatch('task', 'create', args, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+          if (r.ok) return { ok: true, id: r.data?.task_id, deduped: !!r.data?.deduped, ...(r.data || {}) }
+          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
+          const err = new Error(msg); err.code = r.error?.code; throw err
+        } catch (e) {
+          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
+          else throw e
+        }
+      }
       const r = deps.assetDb.taskCreate({
         program_id: programId, objective, phase: String(p.phase || ''),
         priority: Number(p.priority) || 5, schedule,
@@ -950,6 +1108,29 @@ export async function handleDashboardRpc(endpoint, payload) {
     // v4.3：列表元数据化——文件名解析 program/date（report-{prog}-{YYYYMMDD-HHmm}.md，旧 report-{ts}.md 回退 mtime），
     // 首行 # 标题；支持 program/q 筛选，供看板按项目分组。
     case 'reports': {
+      // v5：report.list（report 域 report_list 查询，索引直出）接管（12-report §1.7）；v4 文件名解析兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const r = await bus.query('report', 'list', { program: String(p.program || ''), q: String(p.q || ''), limit: 200 }, { actor: 'dashboard' })
+          if (r.ok && Array.isArray(r.rows)) {
+            const base = path.join(deps.dataDir, 'reports')
+            const fmt = (ts) => {
+              if (!ts) return ''
+              const d = new Date(ts + 8 * 3600 * 1000)
+              const p2 = (n) => String(n).padStart(2, '0')
+              return `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}-${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}`
+            }
+            const rows = r.rows.map((x) => {
+              let size = 0, mtime = Number(x.generated_at) || 0
+              try { const st = fs.statSync(path.join(base, x.file)); size = st.size; mtime = st.mtimeMs } catch { /* 索引行无文件 → size 0 */ }
+              return { file: x.file, program: x.program || '', date: fmt(Number(x.generated_at) || 0) || (x.date || ''), title: x.title || '', size, mtime }
+            })
+            const programs = [...new Set(rows.map((x) => x.program || 'all'))].sort()
+            return { rows, programs }
+          }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       const base = path.join(deps.dataDir, 'reports')
       const programFilter = String(p.program || '').toLowerCase()
       const qFilter = String(p.q || '').toLowerCase()
@@ -987,6 +1168,15 @@ export async function handleDashboardRpc(endpoint, payload) {
       return { rows: filtered.slice(0, 200), programs: [...new Set(out.map((r) => r.program || 'all'))].sort() }
     }
     case 'reportRead': {
+      // v5：report.read（report 域 report_read 查询）接管（12-report §1.7）；v4 直读兜底（观察期）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (bus) {
+        try {
+          const rel0 = String(p.file || '').replace(/^\/+/, '')
+          const r = await bus.query('report', 'read', { file: rel0 }, { actor: 'dashboard' })
+          if (r.ok && r.data && r.data.content) return { file: r.data.file, content: r.data.content, truncated: !!r.data.truncated, size: r.data.size }
+        } catch { /* 总线查询异常 → v4 兜底 */ }
+      }
       const base = path.join(deps.dataDir, 'reports')
       const rel = String(p.file || '').replace(/^\/+/, '')
       const full = path.resolve(base, rel)

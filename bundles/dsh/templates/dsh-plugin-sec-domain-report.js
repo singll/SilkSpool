@@ -500,7 +500,46 @@ function makeHandlers(opts) {
       if (repo.getReportRowByFile(rel)) continue
       const content = repo.readReportFile(rel)
       const fm = content ? parseFrontmatter(content) : null
-      if (!fm) continue
+      if (!fm) {
+        // v4 存量兜底（12-report §2.5）：frontmatter 缺失 → 文件名正则 + mtime + 首行标题回退提取
+        // （复用 v4 reports case 的解析逻辑作为迁移兜底，不进主路径——只服务历史存量文件的索引补行）
+        const stat = repo.statReportFile(rel)
+        const mtimeMs = (stat && stat.exists && stat.mtimeMs) ? stat.mtimeMs : 0
+        const base = rel.split('/').pop() || rel
+        const isDraft = rel.startsWith('submissions/')
+        let program = ''
+        let date = ''
+        let findingId = null
+        const m = base.match(/^report-([a-z0-9_-]+)-(\d{8}-\d{4})\.md$/i)
+        const dm = base.match(/^draft-finding-(\d+)-(\d{4}-\d{2}-\d{2})\.md$/i)
+        if (m) {
+          program = m[1]
+          date = `${m[2].slice(0, 4)}-${m[2].slice(4, 6)}-${m[2].slice(6, 8)}`
+        } else if (dm) {
+          findingId = Number(dm[1])
+          date = dm[2]
+        }
+        if (!date && mtimeMs) date = beijingDate(mtimeMs)
+        let title = ''
+        try { title = ((content || '').match(/^#\s+(.+)$/m) || [])[1] || '' } catch { title = '' }
+        repo.insertReportRow({
+          report_id: `rpt_backfill_${sha1(rel)}`,
+          kind: isDraft ? 'submission_draft' : 'report',
+          file: rel,
+          program,
+          title: title || (isDraft ? `漏洞提交草稿 finding #${findingId || '?'}` : 'SilkSecAgent 漏洞报告'),
+          generated_at: mtimeMs,
+          date,
+          filters: null,
+          total: 0,
+          by_severity: null,
+          noise_filtered: 0,
+          actor: '',
+          session_id: '',
+          content_sha: sha1(content || ''),
+        })
+        continue
+      }
       repo.insertReportRow({
         report_id: String(fm.report_id || `rpt_backfill_${sha1(rel)}`),
         kind: fm.kind || 'report',
