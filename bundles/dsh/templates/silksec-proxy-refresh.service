@@ -10,4 +10,8 @@ WorkingDirectory={{BASE_DIR}}/proxy-pool
 TimeoutStartSec=2400
 # 上游二进制带 TUI（编译期特性，无关闭开关），经包装器提供伪终端并在产出落盘后自动退出
 ExecStart={{BASE_DIR}}/proxy-pool/proxy-pool-run-refresh.sh
-ExecStartPost=/usr/bin/python3 {{BASE_DIR}}/proxy-pool/proxy_grade.py
+# v5 切流（13-proxy §2.3）：分级纯计算 → out/proposal.json；落池唯一写入口是 proxy_refresh 命令。
+# 落池以 silkspool 跑（域命令同用户）——否则 root 落池会把 data/events/proxy.jsonl 写成 root-owned，
+# 域内（silkspool）后续 proxy_report_bad/sticky_bind 的事件 jsonl 追加会 EACCES。
+ExecStartPost=/usr/bin/python3 {{BASE_DIR}}/proxy-pool/proxy_grade.py --proposal-only
+ExecStartPost=/usr/bin/sudo -u silkspool /usr/local/node/bin/node {{BASE_DIR}}/scripts/pipeline/sec-proxy-land.mjs

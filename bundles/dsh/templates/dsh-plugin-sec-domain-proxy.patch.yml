@@ -1,0 +1,4 @@
+# silksec-sec-domain-proxy bundle layer
+- insert:
+    - id: sec-domain-proxy
+      name: '@silksec/sec-domain-proxy'

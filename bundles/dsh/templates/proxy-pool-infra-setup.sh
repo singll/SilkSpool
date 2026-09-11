@@ -62,7 +62,11 @@ migrate_legacy() {
 # -------------------- 1. mubeng --------------------
 install_mubeng() {
     local bin="$POOL_DIR/bin/mubeng"
-    if [ -x "$bin" ] && "$bin" -V 2>/dev/null | grep -q "$MUBENG_VERSION"; then
+    # mubeng -V 打印版本但退出码非 0；set -o pipefail 下 `-V | grep` 会误判为「未安装」而反复重下。
+    # 改为命令替换捕获输出（忽略退出码）再 grep，避免版本检查误判阻塞后续 arrange_files（proxy_grade.py 部署）。
+    local ver=""
+    if [ -x "$bin" ]; then ver="$("$bin" -V 2>&1 || true)"; fi
+    if [ -n "$ver" ] && echo "$ver" | grep -q "$MUBENG_VERSION"; then
         log "mubeng $MUBENG_VERSION 已就绪"
         return
     fi

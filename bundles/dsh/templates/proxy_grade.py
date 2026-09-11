@@ -27,10 +27,16 @@ from pathlib import Path
 
 POOL_DIR = Path(__file__).resolve().parent
 OUT_JSON = POOL_DIR / "out" / "proxies.json"
+OUT_PROPOSAL = POOL_DIR / "out" / "proposal.json"
 POOL_JSON = POOL_DIR / "pool.json"
 LIVE_TXT = POOL_DIR / "live.txt"
 BLOCKLIST = POOL_DIR / "blocklist.txt"
 STATS_JSON = POOL_DIR / "stats.json"
+
+# v5 切流（13-proxy §3.1）：`--proposal-only` 只做纯计算（分级/过滤/排序 → out/proposal.json），
+# 池三文件（pool.json/live.txt/stats.json）由 proxy_refresh 命令落池（唯一写入口）。无该 flag 保留
+# 旧直写路径（观察期兜底，删旧路径阶段移除）。
+PROPOSAL_ONLY = "--proposal-only" in sys.argv
 
 GRADE_WORKERS = 64
 GRADE_TIMEOUT = 8.0
@@ -162,6 +168,15 @@ def main() -> int:
             e["grade"] = "unknown"
 
     entries.sort(key=lambda e: e.get("timeout", 999))
+
+    if PROPOSAL_ONLY:
+        OUT_PROPOSAL.parent.mkdir(parents=True, exist_ok=True)
+        tmp = OUT_PROPOSAL.with_suffix(".tmp")
+        tmp.write_text(json.dumps(entries, ensure_ascii=False, indent=1))
+        tmp.replace(OUT_PROPOSAL)
+        log(f"proposal 已落盘 {len(entries)} 条（--proposal-only，池文件由 proxy_refresh 命令接管）")
+        return 0
+
     POOL_JSON.write_text(json.dumps(entries, ensure_ascii=False, indent=1))
 
     usable = [e for e in entries if e["grade"] in ("elite", "anonymous", "socks")][:LIVE_LIMIT]

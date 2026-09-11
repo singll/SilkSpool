@@ -220,8 +220,11 @@ function renderJSON(_args, value) {
 
 const PROTOCOLS = ['http', 'https', 'socks4', 'socks5']
 
+// v5 切流（13-proxy）：proxy_* 工具由 proxy 域 ToolProjector 零改名接管 + 兼容别名（proxy_pool_* → proxy_*）
+// 投影。本插件 6 个 proxy_pool_* 旧注册停用（函数体 toolStats/toolGet/... 留待删旧路径）；采集/分级链
+// （silksec-proxy-refresh.service → proxy_grade.py --proposal-only → sec domain call proxy refresh）接管落池。
 export function apply(ctx) {
-  ctx.tools.register(tool({
+  false && ctx.tools.register(tool({
     name: 'proxy_pool_stats',
     description: '查看代理池整体状态：总数、各协议/匿名度分布、可用队列规模、上次刷新时间、轮换网关运行状态。',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -229,7 +232,7 @@ export function apply(ctx) {
     execute: async () => toolStats(),
   }))
 
-  ctx.tools.register(tool({
+  false && ctx.tools.register(tool({
     name: 'proxy_pool_get',
     description: '从可用队列取一个代理。可按 protocol(http/https/socks4/socks5)、max_latency_ms、country(ISO 两位码如 US) 过滤；'
       + '传入 sticky_key 可在多次调用间复用同一出口（会话保持）。返回代理 URL 及元数据；注入方式：'
@@ -248,7 +251,7 @@ export function apply(ctx) {
     execute: async (args) => toolGet(args),
   }))
 
-  ctx.tools.register(tool({
+  false && ctx.tools.register(tool({
     name: 'proxy_pool_list',
     description: '列出可用代理队列（按延迟升序）。可选 protocol / grade(elite|anonymous|socks) 过滤，limit 默认 20。',
     parameters: {
@@ -264,7 +267,7 @@ export function apply(ctx) {
     execute: async (args) => toolList(args),
   }))
 
-  ctx.tools.register(tool({
+  false && ctx.tools.register(tool({
     name: 'proxy_pool_report_bad',
     description: '上报失效/被目标封禁的代理：加入 blocklist 并从轮换队列移除（mubeng 热加载自动生效）。'
       + 'proxy 形如 http://1.2.3.4:8080 或 1.2.3.4:8080；reason 可选，如 timeout / banned_403 / captcha。',
@@ -281,7 +284,7 @@ export function apply(ctx) {
     execute: async (args) => toolReportBad(args),
   }))
 
-  ctx.tools.register(tool({
+  false && ctx.tools.register(tool({
     name: 'proxy_pool_refresh',
     description: '触发一次代理池刷新（后台执行：重新采集免费代理→验证存活→匿名度分级→更新轮换队列，约需 5-15 分钟）。'
       + '当池子耗尽、队列过旧或大量代理失效时调用。',
@@ -290,7 +293,7 @@ export function apply(ctx) {
     execute: async () => toolRefresh(),
   }))
 
-  ctx.tools.register(tool({
+  false && ctx.tools.register(tool({
     name: 'proxy_pool_gateway',
     description: '查看本地轮换网关用法。网关每请求自动更换出口 IP、失败自动轮换/剔除，是批量探测防封的首选方式。',
     parameters: { type: 'object', properties: {}, additionalProperties: false },

@@ -289,6 +289,13 @@ if [ -f "$BASE_DIR/sec-report-domain-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-report-domain-plugin-setup.sh"
 fi
 
+# -------------------- 8.599 v5 proxy 域插件（Phase 2 八节点：免费代理池落池/网关/会话保持） --------------------
+# 依赖总线（8.55）；契约测试不过 = setup 中止（fail-closed）。落池唯一写入口收敛到 proxy_refresh 命令，
+# timer 链 ExecStartPost 改 proxy_grade.py --proposal-only → sec-proxy-land.mjs（本脚本归位）。
+if [ -f "$BASE_DIR/sec-proxy-domain-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/sec-proxy-domain-plugin-setup.sh"
+fi
+
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"

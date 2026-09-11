@@ -389,6 +389,8 @@ const DOMAIN_OF_ROUTER = {
   card_usage_router: 'ledger',
   coverage_report_router: 'ledger',
   fgs_update_router: 'fgs',
+  proxy_refresh_router: 'proxy',
+  proxy_get_router: 'proxy',
 }
 
 const BUILTIN_ROUTERS = {
@@ -558,6 +560,22 @@ const BUILTIN_ROUTERS = {
     if (st === 'deprecated') { deriveReason(); if (!String(rest.reason || '').trim()) return { error: { code: 'E_SCHEMA', message: 'fgs_update→deprecated 需要 reason', hint: '废弃必须写 reason（误报/重复依据）', retryable: false } }; return { verb: 'deprecate', args: rest } }
     if (st === 'open') return { error: { code: 'E_STATE', message: 'fgs_update status=open 是回退，不合法', hint: '新节点初始即 open（fgs_add），不需要回退到 open', retryable: false } }
     return { error: { code: 'E_STATE', message: `fgs_update 非法流转 status=${st}`, hint: '合法子集：running/done/failed/blocked/deprecated/无 status+content/score', retryable: false } }
+  },
+  // proxy_pool_refresh 旧工具 → proxy_refresh（13-proxy §3.2）：v4 只触发采集（结果由脚本直写池），
+  // v5 主语义是落池、trigger_collect 才触发采集。别名期行为：无参调用 → trigger_collect:true 等价
+  // （兼容旧用法「叫一声就采集」），hint 引导新语义。
+  proxy_refresh_router() {
+    return { verb: 'refresh', args: { trigger_collect: true } }
+  },
+  // proxy_pool_get 旧工具 → proxy_sticky_bind（13-proxy §3.2）：v4 允许无 sticky_key 单取一个；
+  // v5 单次取用改走 8899 网关（自动轮换更优）或 proxy_list 自选。别名映射到 sticky_bind 且
+  // sticky_key 必填——无 key 调用得 E_SCHEMA + hint。
+  proxy_get_router(args) {
+    if (args && typeof args.sticky_key === 'string' && args.sticky_key.trim()) {
+      const out = { ...args, sticky_key: String(args.sticky_key) }
+      return { verb: 'sticky_bind', args: out }
+    }
+    return { error: { code: 'E_SCHEMA', message: 'proxy_pool_get 无 sticky_key 不再支持单次取用', hint: '单次取用走网关 8899（proxy_gateway 查看用法）；会话保持用 proxy_sticky_bind', retryable: false } }
   },
 }
 

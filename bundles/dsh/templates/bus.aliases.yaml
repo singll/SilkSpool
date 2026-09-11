@@ -26,6 +26,10 @@
 # Phase 2 七节点：report 域已注册——submission_draft → report_draft_submission 别名生效（12-report §3.2）：
 #   别名过网关全管线（v4 旧工具名 submission_draft / 归档稿 vuln_draft_submission 均归一 report_draft_submission）。
 #   report_build 同名零改名（域 ToolProjector 零改名接管，切流时移除 v4 同名工具注册）。
+# Phase 2 八节点：proxy 域已注册——填充 13-proxy §3.2 别名表（proxy_pool_* → proxy_*）。
+#   proxy_pool_stats/list/gateway/report_bad 是纯改名（静态直通）；proxy_pool_refresh（v4 只触发采集 → v5
+#   trigger_collect:true 等价）与 proxy_pool_get（v4 允许无 sticky_key 单取 → v5 sticky_key 必填、单次取用走
+#   8899 网关）是语义变更 → 走分派别名（router），hint 引导新语义。
 # ==============================================================================
 aliases:
   submission_draft: report_draft_submission
@@ -44,6 +48,10 @@ aliases:
   plan_chain: exec_plan_chain
   intel_hunt: exec_intel_hunt
   burp_import: exec_burp_import
+  proxy_pool_stats: proxy_stats
+  proxy_pool_list: proxy_list
+  proxy_pool_gateway: proxy_gateway
+  proxy_pool_report_bad: proxy_report_bad
 dispatch_aliases:
   finding_add:
     router: finding_add_router
@@ -105,3 +113,11 @@ dispatch_aliases:
     router: fgs_update_router
     domain: fgs
     warn: "fgs_update 是自由态旧动词，已按 status 分派（running→start/done→complete/failed→fail/blocked→block/deprecated→deprecate；无 status→annotate）——请改用语义动词"
+  proxy_pool_refresh:
+    router: proxy_refresh_router
+    domain: proxy
+    warn: "proxy_pool_refresh 已映射为 proxy_refresh(trigger_collect:true)——v5 落池为主语义，请改用 proxy_refresh"
+  proxy_pool_get:
+    router: proxy_get_router
+    domain: proxy
+    warn: "proxy_pool_get 已映射为 proxy_sticky_bind（sticky_key 必填）——单次取用走网关 8899（proxy_gateway 查看用法），请改用语义动词"
