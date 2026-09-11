@@ -8,7 +8,7 @@
 - **全局契约宪法**：`00-conventions.md`
 - **文档状态**：00-18 全量定稿（2026-09-06，commit `2e593e9`）
 - **领域语言**：`bundles/dsh/CONTEXT.md`
-- **当前 Phase**：**Phase 2 进行中（asset+endpoint、fact+know、ledger、task+exec、fgs、scope+approval、report、proxy、eval 已完成并上线；看板 52 case 的自动投影 41 + 拆分映射 4 已全部切总线收口，剩 stats/ops/memcore/sessions/workspaces 五壳聚合端点为壳插件 Phase D0/D1 职责；下一节点：观察期复核/删旧路径或 Phase 3 规划）**
+- **当前 Phase**：**Phase 3 进行中（Phase 1 + Phase 2 全部 14 域 + 看板 52 case 已收口上线；Phase 3.1 部署验收命令集 sec-v5-accept.sh 已完成；下一节点：3.2 事件可靠性回放演练）**
 
 ## 二、已完成节点（附 commit 追踪）
 
@@ -32,6 +32,7 @@
 | **2.7（第三批）proxy 域本体** | `@silksec/sec-domain-proxy`+`sec-backend-proxy-file`（file 后端单实现，owns {POOL_DIR} 五文件 pool/live/blocklist/stats/sticky + proposal inbox 只读）；命令 proxy_refresh/report_bad/sticky_bind + 查询 proxy_stats/list/gateway；落池算法照抄 13-proxy §1.3.1（blocklist/transparent 过滤→延迟升序→live 截断→sticky 失效清理→三文件 tmp+rename 原子写）；幂等域内文件态表达（idempotent:'none'：refresh=proposal sha / report_bad=blocklist 去重 / sticky=cache 复用）；总线补 proxy_refresh_router/proxy_get_router 分派路由器；bus.aliases.yaml 填 6 别名（4 static + 2 dispatch）；proxy_grade.py 拆纯计算段（--proposal-only 出 out/proposal.json）+ silksec-proxy-refresh.service ExecStartPost 落池链（sudo -u silkspool 防 root-owned events jsonl）；切流停用 v4 dsh-plugin-proxy-pool.js 6 工具注册（函数体留待删旧路径）；顺带修 proxy-pool-infra-setup.sh mubeng 版本检查 pipefail 误判（阻塞 arrange_files 部署 proxy_grade.py） | `c3870c2` | ✅ 契约测试 proxy 17/17 全绿（本地 + csai setup 内双跑）；服务 active；proxy 域 registered（AGENTS.md secbus 区块 proxy_ refresh/report_bad/sticky_bind）；真实链冒烟：timer 链 scraper→grade --proposal-only→sec-proxy-land 落池 v5 stats.json（total=202/live=145/blocked_applied=2/proposal_sha），proxy_stats writable=true rotator=active refresh_timer=active，sticky_bind 绑定+复用同出口，别名 proxy_pool_stats→proxy_stats 生效（runtime 别名副本已推送 15 处 proxy）；数据无回归（findings=78/programs=5/approval=10/scheduled=10 自然漂移）；全量回归 14 套无回归 |
 | **2.7（第四批）eval 域本体** | `@silksec/sec-domain-eval`+`sec-backend-eval-file`（file 单后端，owns data/eval/ 整目录：eval-live.jsonl 原地接管零迁移、fp-cases.jsonl/contract-cases.jsonl 种子、runs/、fp/contract/range 报告）；命令 eval_case_append/eval_run_fp/eval_run_contract（三写动词模型禁入 INV-1）+ 查询 eval_stats/eval_cases/eval_reports（eval_stats 同名直传无别名，60s TTL 缓存）；订阅 vuln.signal.confirmed/rejected（async 弱联动，失败不阻断 vuln 命令主体）→ eval_case_append 回流，替代 v4 updateFinding 直调 appendLiveEval；异步执行载体=域内进程内执行器（LLM 走 Bellkeeper pool-secagent，SEC_EVAL_LLM_KEY/BELLKEEPER_API_KEY 零明文）+ runs/ 孤儿扫描（宿主重启标 failed 不自动续跑）；vuln_get 查询白名单补 reactor/system（跨域读使能）；切流移除 asset-db.js updateFinding 直调 appendLiveEval（函数体留待删旧路径）+ asset-graph.js 停用 eval_stats 工具注册（同名查询 ToolProjector 零改名接管，无别名成本） | `84af75f` | ✅ 契约测试 eval 16/16 全绿（本地 + csai setup 内双跑，全量回归 bus 39/vuln 44/report 11 无回归）；服务 active；eval 域 registered（bus.domain.registered commands=3/queries=3，AGENTS.md secbus 区块 eval_ case_append/run_fp/run_contract）；真实链冒烟 eval_stats.live.total=34（与 v4 eval-live.jsonl 原地接管一致，by_type 9 类聚合 + fp_rate）、eval_cases.total=34、eval_reports(range)=4（v4 eval-run.js 产物）；迁移种子 p-v5-1-migrate-eval.js 幂等（fp-cases/contract-cases 6 用例/runs/ 初始化，原地接管断言 34→34 行）；数据无回归（findings=78/signal=42/pending=9/programs=5/approval=10/scheduled=10 自然漂移）；看板 evalStats case 仍走 v4（dashboard 批次切 RPC，其余看板 case 待后续会话） |
 | **2.7（第五批）看板其余 case 切总线** | dashboard-rpc 十四 case 逐批改走 `deps.getSecDomainBus()` query/dispatch（v4 兜底观察期）：taskRunNow/taskCancel→`task.run_now`/`task.cancel`、reportBuild→`report.build`（content 读回壳侧）、evalStats→`eval.stats`（live 直传）、audit→`bus.audit_tail`（总线收编+旧 client 形状映射）、programs→`scope.program_list`、tasks→`task.list`（active 桶默认 exclude 定时）、scheduledTasks→`task.scheduled`、taskRuns→`task.runs`、taskScheduleUpdate→`task.schedule`、taskSetStatus→拆 `task.block`/`task.resume`、taskCreate→`task.create`、reports→`report.list`（索引直出+size/mtime 回填+programs 分组）、reportRead→`report.read`；顺带补 report 域 v4 存量 heal 兜底（12-report §2.5：frontmatter 缺失→文件名正则+mtime+首行标题回退补行，31 份 v4 存量报告入索引） | `2bffe05` | ✅ 契约测试 14 套全绿（report 12/12 含新增 v4 heal 用例，全量回归无 fail）；服务 active；真实库冒烟 task.scheduled=4（24/37/100007/100008 非终态）、task.list active 非定时=3、task.runs total=133、scope.program_list=5、report.list=31（v4 存量全入索引）、eval.stats.live.total=43 与 v4 口径一致；看板 52 case 的自动投影 41 + 拆分映射 4 全部收口（剩 stats/ops/memcore/sessions/workspaces 五壳聚合端点为壳插件 Phase D0/D1 职责） |
+| **3.1 部署验收命令集** | `sec-v5-accept.sh` 只读幂等部署验收脚本（18-migration §五「部署验收命令集」契约化）：R0 基础健康（6 systemd 单元 active + data-quality.py --json + data/AUTHORITY.md + data/events/ + web/headless 双 profile --dump-config 含 sec-domain-bus 与全部 14 域）+ R4 owns 唯一性（14 域插件在 plugins/ 齐全，域被拒载则缺投影）；`--json` 出机器可读报告、退出码 0/1。manifest 登记入 bundle | `5b74ccd` | ✅ 线上 25/25 全 PASS（6 单元 active / data-quality exit 0 / AUTHORITY 存在 / events 目录存在 / 双 profile dump-config 15 插件全在 / 14 域插件齐全）；`--json` EXIT=0；服务 active；findings=78 无回归 |
 
 ## 三、待办节点（Phase 1，按顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
@@ -44,16 +45,25 @@
 ## 三·五、待办节点（Phase 2，按 18-migration §四 顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
 - [x] **2.1 `@silksec/sec-domain-asset` + `@silksec/sec-domain-endpoint`**：从 asset-db.js/asset-graph.js/sec-pipeline.js 平移拆语义动词（asset：upsert/upsert_bulk/grade/state/fp_record/fp_record_bulk；endpoint：upsert/queue_surface/consume_queue/mark_auth）+ 双后端 + 契约测试 + 别名 + dashboard-rpc 六读 case 切总线。契约见 03-asset.md §2.2 / 04-endpoint.md §2.2。**✅ 已完成（2026-09-10 上线；commit `8df0e50`；观察期 1 个调度周期后删旧路径）**
-- [ ] **2.2 fact + know 域**：fact 域（fact_upsert/link/search/get/reindex + 生命周期 mem_class）+ know 域（kb_import/kb_list/kb_read/harvest）。memcore 映射层随 fact/know 分两批迁（06-fact.md 映射表）**✅ 已完成（2026-09-10 上线；commit `5f13c76`；观察期 1 个调度周期后删旧路径——memcore 69 处裸 SQL 归零随 Phase 3 收口）**
-- [ ] **2.3 ledger 域**：雷达/台账/attempts/card_usage（sec-pipeline 8 工具直写 → ledger 命令，写入即校验；11-ledger.md）**✅ 已完成（2026-09-10 上线；commit `8b85e80`；观察期 1 个调度周期后删旧路径）**
-- [ ] **2.4 task + exec 域**：任务/调度/执行事件（exec.run.completed 是多个域的基础，parser 直写 → proposal 回灌；05-task.md / 10-exec.md）**✅ 已完成（2026-09-10 上线；commit `b654b73`；观察期 1 个调度周期后删旧路径——task 调度器休眠待 v4 调度器退役后启用）**
+- [x] **2.2 fact + know 域**：fact 域（fact_upsert/link/search/get/reindex + 生命周期 mem_class）+ know 域（kb_import/kb_list/kb_read/harvest）。memcore 映射层随 fact/know 分两批迁（06-fact.md 映射表）**✅ 已完成（2026-09-10 上线；commit `5f13c76`；观察期 1 个调度周期后删旧路径——memcore 69 处裸 SQL 归零随 Phase 3 收口）**
+- [x] **2.3 ledger 域**：雷达/台账/attempts/card_usage（sec-pipeline 8 工具直写 → ledger 命令，写入即校验；11-ledger.md）**✅ 已完成（2026-09-10 上线；commit `8b85e80`；观察期 1 个调度周期后删旧路径）**
+- [x] **2.4 task + exec 域**：任务/调度/执行事件（exec.run.completed 是多个域的基础，parser 直写 → proposal 回灌；05-task.md / 10-exec.md）**✅ 已完成（2026-09-10 上线；commit `b654b73`；观察期 1 个调度周期后删旧路径——task 调度器休眠待 v4 调度器退役后启用）**
 - [x] **2.5 fgs 域**：FGS 图节点（persistFgsFacts/appendFgsToHandoff 直写 → 事件协作）**✅ 已完成（2026-09-10 上线；commit `c847220`；观察期 1 个调度周期后删旧路径）**
 - [x] **2.6 scope + approval 域**：scope.yml 白名单 + 统一审批中心（APPROVAL_KINDS 六 kind + task-complete；QPS mtime 轮询 → scope.rules.changed 事件；onApprove 跨四域直写 → approval.approved 事件 + effect outbox）**✅ 已完成（2026-09-10 上线；commit `1a96cb8`；观察期 1 个调度周期后删旧路径）**
-- [ ] **2.7 report / proxy / eval / dashboard 域**：报告导出/代理池/评测/看板 52 case 逐批切 RpcProjector。**✅ 看板 scope/approval 六 case 已切总线（commit `6f070bb`）；report 域本体已完成（commit `b001a2c`）；proxy 域本体已完成（commit `c3870c2`）；eval 域本体已完成（commit `84af75f`）；看板其余十四 case（task/audit/programs/report/eval 等）已切总线（commit `2bffe05`）——自动投影 41 + 拆分映射 4 全部收口（剩 stats/ops/memcore/sessions/workspaces 五壳聚合端点为壳插件 Phase D0/D1 职责）**
+- [x] **2.7 report / proxy / eval / dashboard 域**：报告导出/代理池/评测/看板 52 case 逐批切 RpcProjector。**✅ 看板 scope/approval 六 case 已切总线（commit `6f070bb`）；report 域本体已完成（commit `b001a2c`）；proxy 域本体已完成（commit `c3870c2`）；eval 域本体已完成（commit `84af75f`）；看板其余十四 case（task/audit/programs/report/eval 等）已切总线（commit `2bffe05`）——自动投影 41 + 拆分映射 4 全部收口（剩 stats/ops/memcore/sessions/workspaces 五壳聚合端点为壳插件 Phase D0/D1 职责）**
+
+## 三·六、待办节点（Phase 3，按 18-migration §五 顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
+
+> Phase 3 = 跨域事件化收尾。§五 bullet 4（eval 域订阅）已在 eval 域本体收口（commit `84af75f`）；approval 六 kind effect outbox 已在 approval 域收口（commit `1a96cb8`）。余下四子节点：
+
+- [x] **3.1 部署验收命令集（R0/R4 契约化）**：`sec-v5-accept.sh` 只读幂等验收脚本（6 systemd 单元 + data-quality + AUTHORITY.md + events/ 目录 + 双 profile dump-config 含 bus+14 域 + 14 域插件齐全），`--json` 出机器可读报告。**✅ 已完成（commit 见 §二）**
+- [ ] **3.2 事件可靠性回放演练**：dispatcher kill/restart 后 outbox `pending` 续扫恢复 + 删一个 async 订阅者消费记录 → `bus_replay` 回放恢复（01-bus §2.2.5/§2.3）。
+- [ ] **3.3 memcore 完全旁路化**：`grep -c 'prepare(' sec-memcore` 仅剩自身迁移表（当前 69 处裸 SQL，须归零经 fact/know lifecycle 命令）。
+- [ ] **3.4 各域删旧路径**：Phase 2 各域「函数体留待删旧路径」的 v4 直写残留清理（asset-db/asset-graph/sec-suite/sec-pipeline/experience 停用段），观察期 1 个调度周期满后逐个删除。
 
 ## 四、Phase 2-5 概览（后续会话，勿提前开工）
 
-- Phase 2：数据域滚动搬迁（asset+endpoint → fact+know → ledger → task+exec → fgs → scope+approval → report/proxy/eval/dashboard）
+- Phase 2：数据域滚动搬迁（asset+endpoint → fact+know → ledger → task+exec → fgs → scope+approval → report/proxy/eval/dashboard）✅ 已完成
 - Phase 3：跨域事件化收尾（outbox 验收 / bus replay 演练 / memcore 旁路化 / eval 订阅）
 - Phase 4：http-remote 后端试点（vuln 域）
 - Phase 5：LLM 面收敛 + 守卫加固 + 评测（删别名 / 挂载矩阵 / 单写者复评）
