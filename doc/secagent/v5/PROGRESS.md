@@ -8,7 +8,7 @@
 - **全局契约宪法**：`00-conventions.md`
 - **文档状态**：00-18 全量定稿（2026-09-06，commit `2e593e9`）
 - **领域语言**：`bundles/dsh/CONTEXT.md`
-- **当前 Phase**：**Phase 5 进行中（5.1 prompt 体系全量改写已完成；下一节点：5.2 删兼容别名）**
+- **当前 Phase**：**Phase 5 进行中（5.1 已完成并残余修复收口；5.2 别名删除处于 7 天零使用观察期，闸口 ≈ 2026-09-18；下一节点：5.2 观察期复核）**
 
 ## 二、已完成节点（附 commit 追踪）
 
@@ -38,6 +38,7 @@
 | **3.4 各域删旧路径** | Phase 2 各域「函数体留待删旧路径」的 v4 直写残留清理（观察期 1 个调度周期满逐个删除）：asset-graph.js 删 18 个 `false && reg()` 停用注册块（submission_draft/report_build/program_list/task_*/eval_stats/cred_*/fgs_*）+ execCwd 死函数；sec-suite.js 删 11 个 `false && register()` 停用块（run_cli/grep_result/page_result/burp_import/spawn_worker/worker_status/worker_list/plan_chain/task_chain/intel_hunt/approval_request）+ 孤儿函数 runCli/grepResult/pageResult/resultFile/xmlTag/burpImport/spawnWorker/workerStatus/intelHunt/approvalRequest 及独占 scope-guard/sandbox/QPS helper（checkRisk/verifyResolved/findWriteVerbHit/throttleQps/buildSandboxCommand 等）+ 移除 parsers/planChain/taskChain/dns/http 未用 import；proxy-pool.js 删 6 个 proxy_pool_* 停用注册块 + 死函数（toolStats/toolGet/toolList/toolReportBad/toolRefresh/toolGateway + 数据访问 helper），收为无操作壳；sec-pipeline.js 删 5 个 ledger 工具函数体（toolAttemptsLog/toolCardUsageLog/toolRadarRead/toolPipelineValidate/toolCoverageReport）+ validateFile/SCHEMA_MATCH/TS_RE/readTsv/tsvAppend/TSV_HEADERS/makeRunId/RESULT_ENUM/BANNED_REASON 死 helper；asset-db.js 删 appendLiveEval + 6 个死函数（submissionDraft/taskNext/taskStats/credAdd/credQuery/fgsNextStep）。保留：authz_diff 工具 + runWorker/pidAlive/调度器 + dashboard-rpc v4 兜底 + 审批中心 + evalStats（dashboard-rpc 兜底）+ experience.js 底层函数（kbVaultSync 等内部调用方仍走 v4 路径，保留） | `ff90051` | ✅ 5 文件 -1929 行（20+ 增/1929 删）；契约测试全绿（proxy 17/17 + eval 16/16 等 setup 内双跑）；服务 active；线上验收 `sec-v5-accept.sh` PASS=25 FAIL=0；findings=80 / scheduled tasks 7（16/17/19/24/37/100007/100008）无回归；authz_diff 存活、调度循环正常启动、vault 回流正常（skipped_existing=312）；silksecagent-edge 曾 inactive（11:58 UTC 干净退出，会话前既有，已重启恢复）；vuln/asset/endpoint/fact/know/ledger/task/exec/fgs/scope/approval/report/proxy/eval 无回归 |
 | **4.1 http-remote 后端试点（vuln 域）** | `@silksec/sec-backend-vuln-http`：repository-http + 本地 sqlite overlay 混布（候选池留本地、信号面 outbox 异步同步远端）+ 能力矩阵（纯模式 register_candidate/claim/release 三动词 unsupported）+ 同步器（独立 DatabaseSync 连接、remote_id/remote_synced_at 回写、指数退避 30s/2m/10m/1h/6h/24h ×8 封顶、远端 4xx→sync_state=failed 不再重试、网络失败退回 pending、E_BACKEND_UNAVAILABLE 混布命令本地成功不阻断业务）；同步边界在域 commands 层 `repo.markSyncPending?.(id)`（register_signal/confirm/reject/submit/note 信号面写后标记，claim/release/verify_replay/attach_fgs/register_candidate 不同步）；`buildVulnDomain` 后端选择（`SEC_DOMAIN_VULN_BACKEND=sqlite-local\|http-remote` 一行切换）+ 总线 `registerDomain` 读取 `backend.name` 报告真实后端 + sqlite 后端补 name + `statsFindings` 真实 sync 统计；契约测试 `contract-vuln-http.test.js`（mock 远端 REST）混布 happy path / 同步回写 / 纯模式能力矩阵 / 降级退避重试 / 4xx failed / 查询路由本地镜像 | `5a85fe2` | ✅ 契约测试 53/53 全绿（vuln sqlite 44 + http 9，本地 + csai setup 内双跑，bus 41 无回归）；服务 active；线上切换演练：sqlite-local（默认）→ `.env` 加 `SEC_DOMAIN_VULN_BACKEND=http-remote` 重启 → journal/`bus.domain.registered` 报告 backend=http-remote + 同步器启动 → CLI 登记测试信号 → 同步器 30s 内推 mock 远端 + `remote_id=demo-remote-1` 回写 + `sync_state=synced` → `vuln.stats.sync` 反映 → 删测试行 → 还原 `.env` 重启 → backend=sqlite-local + findings=80 无回归；`sec-v5-accept.sh` PASS=25 FAIL=0；scheduled tasks=19 无扰动 |
 | **5.1 prompt 体系全量改写** | persona 7 角色（seed-presets.sh）工具引用 → 新动词（run_cli→exec_run_cli / spawn_worker→exec_spawn_worker / finding_add→vuln_register_signal / endpoint_query→endpoint_list / proxy_pool_*→proxy_* / 写黑板→fact_bb_publish 等），PERSONA_VERSION 4→5；7 个 SKILL.md + rules/src/{technique-index,asset-scoring,severity-rating}.md + VC-016 工具引用收敛；`task_update status=done` 旧通道 → 调度器 task_finish 自动收尾语义；新建 `p19-tool-refs.py`（tasks objective SQL 改写，p14 模式，边界感知幂等可重跑，41 对映射）+ manifest 登记 | `ce3bb8a` | ✅ 线上 12 个任务 objective 改写完成（interval + 历史 once），p19 复跑零变更（幂等）；全 prompt 资产悬空旧工具引用 = 0（persona/skills/rules/objective 边界感知扫描）；persona 7 角色重建至 v5（含 exec_run_cli/exec_spawn_worker/fact_bb_publish）；`sec-v5-accept.sh` PASS=25 FAIL=0；服务 active；findings=80 无回归；scheduled tasks 4（24/37/100007/100008）无扰动 |
+| **5.1 残余修复 + 5.2 观察期启动** | 修复 5.1 边界感知扫描漏掉的代码内硬编码旧工具名：`dsh-plugin-sec-domain-task.js` onScopeGranted / `dsh-plugin-sec-suite.js` enqueueScopeSeed 两处审批种子任务 objective（radar_read→ledger_radar_drain、attempts_log→ledger_log_attempt、store:asset-graph→asset_upsert/endpoint_upsert）+ asset 域 agent_note（radar_read）+ ops 提示（attempts_log），消除确定性 deprecated_use 来源；核实现场 deprecated_use 共 104 条、最近 2026-09-11T12:00 UTC（仍在活跃使用）→ **5.2 别名删除不满足「7 天零使用」前置，本次不删**，进入观察期（起点 2026-09-11，闸口 ≈ 2026-09-18） | `1ac5db6` | ✅ 契约测试全绿（setup 内 14 套无 fail）；服务 active；`sec-v5-accept.sh` PASS=25 FAIL=0；bus_status aliases=37（20 静态 + 17 分派）、15 域 registered；findings=80 无回归；别名清单/契约测试/ToolProjector 未动（观察期不删） |
 
 ## 三、待办节点（Phase 1，按顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
@@ -75,7 +76,7 @@
 ## 三·八、待办节点（Phase 5，按 18-migration §七 顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
 - [x] **5.1 prompt 体系全量改写**：persona/objective/skills/technique-index 工具引用 → 新动词表（脚本化 p19-tool-refs.py，p14 模式）；AGENTS.md 受管区块 manifest 生成（Phase 1 已收口，本节点确认）。**✅ 已完成（2026-09-11 上线；commit `ce3bb8a`）**
-- [ ] **5.2 删兼容别名**：逐个走宪法 §十五废弃三段式（deprecated → 7 天 audit 零使用 → 删除）。前置：5.1 完成后观察 7 天 deprecated_use 计数。
+- [ ] **5.2 删兼容别名**：逐个走宪法 §十五废弃三段式（deprecated → 7 天 audit 零使用 → 删除）。前置：5.1 完成后观察 7 天 deprecated_use 计数。**🔄 观察期进行中**（起点 2026-09-11，闸口 ≈ 2026-09-18；5.1 残余已修复 commit `1ac5db6`，别名/契约测试/ToolProjector 未动，观察期不删）
 - [ ] **5.3 worker 挂载矩阵实施**：profile × actor 白名单；setup.sh 冒烟断言 owns×sandbox 交叉校验（17-llm-surface §1.6/§2.2）。
 - [ ] **5.4 eval 契约合规用例上线**：模型越权 100% 被拒 + hint 可引导（15-eval.md EC-01~05）。
 - [ ] **5.5 discipline-audit.py 增「悬空工具引用」断言**（17-llm-surface §3.3 执行点）。
@@ -86,7 +87,7 @@
 - Phase 2：数据域滚动搬迁（asset+endpoint → fact+know → ledger → task+exec → fgs → scope+approval → report/proxy/eval/dashboard）✅ 已完成
 - Phase 3：跨域事件化收尾（outbox 验收 / bus replay 演练 / memcore 旁路化 / eval 订阅）✅ 已完成（3.1 部署验收 + 3.2 事件可靠性回放 + 3.3 memcore 旁路化 + 3.4 删旧路径）
 - Phase 4：http-remote 后端试点（vuln 域）✅ 已完成（repository-http + 混布 overlay + outbox 同步 + 能力矩阵 + 三后端同套跑 + 切换演练可回切）
-- Phase 5：LLM 面收敛 + 守卫加固 + 评测（删别名 / 挂载矩阵 / 单写者复评）🔄 进行中（5.1 prompt 体系全量改写已完成）
+- Phase 5：LLM 面收敛 + 守卫加固 + 评测（删别名 / 挂载矩阵 / 单写者复评）🔄 进行中（5.1 prompt 体系全量改写已完成并残余修复；5.2 别名删除处于观察期，闸口 ≈ 2026-09-18）
 
 ## 五、关键决策（已定，勿推翻）
 
