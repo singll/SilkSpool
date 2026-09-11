@@ -29,8 +29,17 @@ function ensureCol(db, table, col, ddl) {
 }
 
 function ensureArchive(db, table) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => `${c.name} ${c.type || 'TEXT'}`)
-  db.exec(`CREATE TABLE IF NOT EXISTS ${table}_archive (${cols.join(', ')}, archived_at INTEGER, archive_reason TEXT)`)
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all()
+  db.exec(`CREATE TABLE IF NOT EXISTS ${table}_archive (${cols.map((c) => `${c.name} ${c.type || 'TEXT'}`).join(', ')}, archived_at INTEGER, archive_reason TEXT)`)
+  // 幂等补齐：archive 表若早于源表新列创建（如 exp_cards 后加 kind/runs/successes/exportable），逐列 ensureCol 同步
+  const archCols = db.prepare(`PRAGMA table_info(${table}_archive)`).all().map((c) => c.name)
+  for (const c of cols) {
+    if (!archCols.includes(c.name)) {
+      try { db.exec(`ALTER TABLE ${table}_archive ADD COLUMN ${c.name} ${c.type || 'TEXT'}`) } catch (e) {
+        if (!/duplicate column/i.test(String(e?.message))) throw e
+      }
+    }
+  }
 }
 
 function hasTable(db, t) {
@@ -144,7 +153,7 @@ function createRepo(db) {
       db.prepare('INSERT OR REPLACE INTO exp_embeddings (card_id, vec) VALUES (?, ?)').run(Number(id), JSON.stringify(vec))
     },
     listExpWhere(whereSql, args, order, limit, offset) {
-      const sql = `SELECT id, scenario, takeaway, source, confidence, last_validated_at, created_at, status, score, uses, adopted, pos_fb, neg_fb, kind, runs, successes, exportable, tags, deviation FROM exp_cards WHERE ${whereSql} ORDER BY ${order} LIMIT ? OFFSET ?`
+      const sql = `SELECT id, scenario, takeaway, source, confidence, last_validated_at, created_at, status, status_at, mem_class, scope, score, uses, adopted, pos_fb, neg_fb, kind, runs, successes, exportable, tags, deviation FROM exp_cards WHERE ${whereSql} ORDER BY ${order} LIMIT ? OFFSET ?`
       return db.prepare(sql).all(...args, Math.min(Number(limit) || 50, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
     },
     countExpWhere(whereSql, args) {
@@ -228,7 +237,7 @@ function createRepo(db) {
     deleteKbFts(doc_id) { db.prepare('DELETE FROM kb_fts WHERE rowid = ?').run(Number(doc_id)) },
     replaceKbEmbedding(doc_id, vec) { db.prepare('INSERT OR REPLACE INTO kb_embeddings (doc_id, vec) VALUES (?, ?)').run(Number(doc_id), JSON.stringify(vec)) },
     listKbWhere(whereSql, args, limit, offset) {
-      const sql = `SELECT id, title, file, source_url, tainted, imported_at, status, uses, revalidate_by, last_validated_at, mem_class FROM kb_docs WHERE ${whereSql} ORDER BY (status = 'curated') DESC, uses DESC, imported_at DESC LIMIT ? OFFSET ?`
+      const sql = `SELECT id, title, file, source_url, tainted, imported_at, status, status_at, uses, revalidate_by, last_validated_at, mem_class FROM kb_docs WHERE ${whereSql} ORDER BY (status = 'curated') DESC, uses DESC, imported_at DESC LIMIT ? OFFSET ?`
       return db.prepare(sql).all(...args, Math.min(Number(limit) || 50, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r, curated: r.status === 'curated' ? 1 : 0 }))
     },
     countKbWhere(whereSql, args) { return db.prepare(`SELECT COUNT(*) AS n FROM kb_docs WHERE ${whereSql}`).get(...args).n },

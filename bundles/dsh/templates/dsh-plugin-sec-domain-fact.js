@@ -235,7 +235,7 @@ export const FACT_MANIFEST = {
   },
   queries: {
     fact_search: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'system'],
       params: schema({
         program_id: str({ default: '' }),
         category: str({ default: '' }),
@@ -270,13 +270,13 @@ export const FACT_MANIFEST = {
       agent_note: '返回某条事实的关系子图（节点 + 出边 + 入边）。',
     },
     fact_overview: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'system'],
       params: schema({}, []),
       predicates: [],
       agent_note: '事实分类计数总览（active 口径）+ 黑板活跃/env-issue + FGS 沉淀数。',
     },
     fact_stats: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'system'],
       params: schema({}, []),
       predicates: [],
       agent_note: '事实图谱 facet 总览：分类/置信/生命周期分布 + 置顶 + 边规模。',
@@ -292,7 +292,7 @@ export const FACT_MANIFEST = {
       agent_note: '负知识账本：查 note/* 已证伪路径（验证失败/前提不满足）。派单/尝试前必查，命中即放弃。',
     },
     fact_bb_read: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'system'],
       params: schema({
         key: str(),
         reader: en(['task', 'review'], { default: 'task' }),
@@ -700,7 +700,7 @@ function makeHandlers(opts) {
       const excludeNotes = args.exclude_notes !== false
       const { where, args: wa } = combinedWhere(reader, { program_id: args.program_id || '', category: args.category || '', q: args.q || '', confidence: args.confidence || '', has_edges: !!args.has_edges, mem_class: args.mem_class || '', status: args.status || '', exclude_notes: excludeNotes }, now)
       const sort = args.sort || 'updated_at'
-      const rows = repo.listFactsWhere(where, wa, sort, 500, 0).map((r) => ({ ...r, _cooling: r.status === 'cooling' ? true : undefined }))
+      const rows = repo.listFactsWhere(where, wa, sort, 5000, 0).map((r) => ({ ...r, _cooling: r.status === 'cooling' ? true : undefined }))
       const total = repo.countFactsWhere(where, wa)
       return { rows, total }
     },

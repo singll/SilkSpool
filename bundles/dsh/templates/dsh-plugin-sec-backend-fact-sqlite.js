@@ -92,8 +92,17 @@ function ensureCol(db, table, col, ddl) {
 }
 
 function ensureArchive(db, table) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => `${c.name} ${c.type || 'TEXT'}`)
-  db.exec(`CREATE TABLE IF NOT EXISTS ${table}_archive (${cols.join(', ')}, archived_at INTEGER, archive_reason TEXT)`)
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all()
+  db.exec(`CREATE TABLE IF NOT EXISTS ${table}_archive (${cols.map((c) => `${c.name} ${c.type || 'TEXT'}`).join(', ')}, archived_at INTEGER, archive_reason TEXT)`)
+  // 幂等补齐：archive 表若早于源表新列创建（如 facts 后加 uses/last_used_at），逐列 ensureCol 同步，否则归档 INSERT 报「no column」
+  const archCols = db.prepare(`PRAGMA table_info(${table}_archive)`).all().map((c) => c.name)
+  for (const c of cols) {
+    if (!archCols.includes(c.name)) {
+      try { db.exec(`ALTER TABLE ${table}_archive ADD COLUMN ${c.name} ${c.type || 'TEXT'}`) } catch (e) {
+        if (!/duplicate column/i.test(String(e?.message))) throw e
+      }
+    }
+  }
 }
 
 function createRepo(db) {
@@ -206,7 +215,7 @@ function createRepo(db) {
       const sql = `SELECT ${FACT_LIST_COLS},
         (SELECT COUNT(*) FROM fact_edges e WHERE e.program_id = facts.program_id AND (e.src_key = facts.fact_key OR e.dst_key = facts.fact_key)) AS edge_count
         FROM facts WHERE ${whereSql} ORDER BY pinned DESC, ${orderBy} LIMIT ? OFFSET ?`
-      return db.prepare(sql).all(...args, Math.min(Number(limit) || 50, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
+      return db.prepare(sql).all(...args, Math.min(Number(limit) || 50, 5000), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
     },
 
     countFactsWhere(whereSql, args) {

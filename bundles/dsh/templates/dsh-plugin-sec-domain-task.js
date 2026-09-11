@@ -306,7 +306,7 @@ export const TASK_MANIFEST = {
   },
   queries: {
     task_list: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'system'],
       params: schema({
         program_id: str({ default: '' }),
         status: str({ default: '' }),
