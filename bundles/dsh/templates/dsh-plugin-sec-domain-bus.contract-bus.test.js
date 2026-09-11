@@ -658,7 +658,7 @@ test('弱联动: async 订阅者失败 → 命令成功 + attempt/next_retry + �
   const db = bus._internal.db()
   const out = db.prepare('SELECT * FROM event_outbox WHERE event_id=?').get(env.event_ids[0])
   assert.equal(out.status, 'pending')
-  const sub = db.prepare('SELECT * FROM bus_subscription WHERE event_id=? AND subscriber=?').get(env.event_ids[0], 'vuln.signal.confirmed')
+  const sub = db.prepare('SELECT * FROM bus_subscription WHERE event_id=? AND subscriber=?').get(env.event_ids[0], 'programmatic::vuln.signal.confirmed')
   assert.equal(sub.status, 'pending')
   assert.equal(sub.attempt, 0)
   assert.equal(countJsonl(dir, 'vuln'), 1, 'confirm 的 async 事件未派发前不追加 jsonl（仅 register_signal 的 1 行）')
@@ -744,6 +744,59 @@ test('重放: bus_replay 重放 async 订阅者，二次重放零副作用', asy
   const replay2 = await bus.dispatch('bus', 'replay', { since: 0, domains: ['vuln'], dry_run: true }, { actor: 'human' })
   assert.equal(replay2.ok, true)
   assert.equal(replay2.data.scanned, replay.data.scanned)
+})
+
+// ---------------------------------------------------------------------------
+// 12b. 多订阅者同模式：不同 source 的订阅者各自独立投递（bus_subscription 键 source::pattern）
+// ---------------------------------------------------------------------------
+
+test('多订阅者: 同事件模式两个订阅者各自投递且 bus_subscription 键互不覆盖', async () => {
+  const { dir, bus } = makeBus()
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  let callsA = 0
+  let callsB = 0
+  bus.events.subscribe('vuln.signal.confirmed', async () => { callsA++; return { ok: true, data: {} } }, { mode: 'async', as: 'reactor', source: 'src-a' })
+  bus.events.subscribe('vuln.signal.confirmed', async () => { callsB++; return { ok: true, data: {} } }, { mode: 'async', as: 'reactor', source: 'src-b' })
+  const seed = await bus.dispatch('vuln', 'register_signal', { title: '多订阅者测试信号一二三四五六七', host: 'mm.example.com' }, { actor: 'model' })
+  const env = await bus.dispatch('vuln', 'confirm', { finding_id: seed.data.id, evidence: 'x' }, { actor: 'model' })
+  await bus._internal.dispatcherTick()
+  assert.equal(callsA, 1, '订阅者 src-a 被投递一次')
+  assert.equal(callsB, 1, '订阅者 src-b 被投递一次')
+  const db = bus._internal.db()
+  const rows = db.prepare('SELECT subscriber, status FROM bus_subscription WHERE event_id=? ORDER BY subscriber').all(env.event_ids[0])
+  assert.equal(rows.length, 2, '两条独立 bus_subscription 记录')
+  assert.deepEqual(rows.map((r) => r.subscriber).sort(), ['src-a::vuln.signal.confirmed', 'src-b::vuln.signal.confirmed'])
+  assert.ok(rows.every((r) => r.status === 'delivered'))
+})
+
+// ---------------------------------------------------------------------------
+// 12c. 启动宽限期：dispatcher 首 tick 延迟，待域注册后才续扫 pending（防误判无订阅者丢投递）
+// ---------------------------------------------------------------------------
+
+test('启动宽限期: dispatcher 首 tick 前事件保持 pending，域注册后正常投递', async () => {
+  // bus1 产一个 pending 事件（有 async 订阅者但未 tick 即关闭，模拟崩溃）
+  const dir = tmpDir()
+  const bus1 = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
+  bus1.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  bus1.events.subscribe('vuln.signal.confirmed', async () => ({ ok: true, data: {} }), { mode: 'async', as: 'reactor' })
+  const seed = await bus1.dispatch('vuln', 'register_signal', { title: '宽限期测试信号一二三四五六七八', host: 'nn.example.com' }, { actor: 'model' })
+  const env = await bus1.dispatch('vuln', 'confirm', { finding_id: seed.data.id, evidence: 'x' }, { actor: 'model' })
+  bus1._internal.close()
+
+  // bus2：web 宿主面，首 tick 延迟 120ms（域插件经 inject 稍后才注册）
+  const bus2 = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), profile: 'web', sidecars: true, dispatcherStartDelayMs: 120, dispatcherIntervalMs: 1000000 })
+  bus2._internal.startBackground()
+  const out0 = bus2._internal.db().prepare('SELECT status FROM event_outbox WHERE event_id=?').get(env.event_ids[0])
+  assert.equal(out0.status, 'pending', '宽限期内（域未注册）事件不被误标 delivered')
+
+  bus2.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  let delivered = 0
+  bus2.events.subscribe('vuln.signal.confirmed', async () => { delivered++; return { ok: true, data: {} } }, { mode: 'async', as: 'reactor' })
+  await new Promise((r) => setTimeout(r, 300))
+  const out1 = bus2._internal.db().prepare('SELECT status FROM event_outbox WHERE event_id=?').get(env.event_ids[0])
+  assert.equal(out1.status, 'delivered')
+  assert.equal(delivered, 1, '订阅者在宽限期后收到投递')
+  bus2._internal.close()
 })
 
 // ---------------------------------------------------------------------------

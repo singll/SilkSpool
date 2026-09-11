@@ -756,6 +756,7 @@ export function createBus(opts = {}) {
   const rpcOperator = opts.rpcOperator || null
   const mountDeprecated = opts.mountDeprecated !== false
   const dispatcherIntervalMs = opts.dispatcherIntervalMs || 1000
+  const dispatcherStartDelayMs = opts.dispatcherStartDelayMs ?? 3000
   const startDispatcherTimer = opts.startDispatcherTimer !== false
 
   const now = () => clock()
@@ -836,6 +837,9 @@ export function createBus(opts = {}) {
   // 订阅匹配：manifest events / handler 事件名 = 全名 {domain}.{name}（宪法 §八.1），
   // envelope.name 直接承载全名，订阅 pattern（vuln.*）按全名匹配
   function matchSubscribers(eventName) { return subscribers.filter((s) => s.regex.test(eventName)) }
+  // 订阅者唯一键：source::pattern。多域订阅同一事件模式（如 exec.run.completed ×5、approval.approved ×2）时，
+  // bus_subscription 主键 (event_id, subscriber) 不能只用 pattern 否则互相覆盖（后订阅者被误判 delivered 而跳过）。
+  function subKey(sub) { return `${sub.source}::${sub.pattern}` }
 
   function publishSyncEvent(name, payload, actor, sessionId, domain) {
     if (!db) return
@@ -942,7 +946,7 @@ export function createBus(opts = {}) {
         anyAsync = true
         db.prepare(`INSERT OR IGNORE INTO bus_subscription(event_id,subscriber,mode,status,attempt,last_error,consumed_at)
                     VALUES(?,?,?,'pending',0,NULL,NULL)`)
-          .run(envelope.id, sub.pattern, 'async')
+          .run(envelope.id, subKey(sub), 'async')
       }
     }
     if (!anyAsync) db.prepare(`UPDATE event_outbox SET status='delivered' WHERE event_id=?`).run(envelope.id)
@@ -1410,13 +1414,13 @@ export function createBus(opts = {}) {
       }
       let allDone = true
       for (const sub of matched) {
-        const rec = plain(db.prepare(`SELECT * FROM bus_subscription WHERE event_id=? AND subscriber=?`).get(row.event_id, sub.pattern))
+        const rec = plain(db.prepare(`SELECT * FROM bus_subscription WHERE event_id=? AND subscriber=?`).get(row.event_id, subKey(sub)))
         if (rec && rec.status === 'delivered') continue
         try {
           const subEnv = await sub.handler(envelope)
           if (subEnv && subEnv.ok === true) {
             db.prepare(`INSERT OR REPLACE INTO bus_subscription(event_id,subscriber,mode,status,attempt,last_error,consumed_at) VALUES(?,?,?,?,?,?,?)`)
-              .run(row.event_id, sub.pattern, 'async', 'delivered', rec?.attempt || 0, null, now())
+              .run(row.event_id, subKey(sub), 'async', 'delivered', rec?.attempt || 0, null, now())
           } else {
             throw new Error(`订阅者失败: ${subEnv?.error?.code || 'unknown'} ${subEnv?.error?.message || ''}`)
           }
@@ -1427,8 +1431,8 @@ export function createBus(opts = {}) {
           const dead = attempt > BACKOFF_MS.length
           const status = dead ? 'dead_letter' : 'pending'
           db.prepare(`INSERT OR REPLACE INTO bus_subscription(event_id,subscriber,mode,status,attempt,last_error,consumed_at) VALUES(?,?,?,?,?,?,NULL)`)
-            .run(row.event_id, sub.pattern, 'async', status, attempt, String(e?.message || e))
-          auditBestEffort({ ts: now(), kind: 'subscriber_failed', event_id: row.event_id, subscriber: sub.pattern, as: sub.as, error: String(e?.message || e), attempt })
+            .run(row.event_id, subKey(sub), 'async', status, attempt, String(e?.message || e))
+          auditBestEffort({ ts: now(), kind: 'subscriber_failed', event_id: row.event_id, subscriber: subKey(sub), as: sub.as, error: String(e?.message || e), attempt })
           if (dead) {
             db.prepare(`UPDATE event_outbox SET status='dead_letter', retry_count=?, last_error=? WHERE event_id=?`)
               .run(attempt, String(e?.message || e), row.event_id)
@@ -1475,14 +1479,14 @@ export function createBus(opts = {}) {
           scanned.push(env)
           const matched = matchSubscribers(env.name).filter((s) => s.mode === 'async' && (!subFilter || s.pattern === subFilter))
           for (const sub of matched) {
-            if (dryRun) { results.push({ event_id: env.id, subscriber: sub.pattern, ok: null, dry_run: true }); continue }
+            if (dryRun) { results.push({ event_id: env.id, subscriber: subKey(sub), ok: null, dry_run: true }); continue }
             try {
               const subEnv = await sub.handler(env)
               const ok = !!(subEnv && subEnv.ok === true)
-              results.push({ event_id: env.id, subscriber: sub.pattern, ok, error_code: ok ? null : subEnv?.error?.code || 'E_INTERNAL' })
+              results.push({ event_id: env.id, subscriber: subKey(sub), ok, error_code: ok ? null : subEnv?.error?.code || 'E_INTERNAL' })
               if (ok) redispatched++
             } catch (e) {
-              results.push({ event_id: env.id, subscriber: sub.pattern, ok: false, error_code: 'E_INTERNAL', error: String(e?.message || e) })
+              results.push({ event_id: env.id, subscriber: subKey(sub), ok: false, error_code: 'E_INTERNAL', error: String(e?.message || e) })
             }
           }
         }
@@ -1497,18 +1501,18 @@ export function createBus(opts = {}) {
         try { env = JSON.parse(row.payload) } catch { continue }
         const matched = matchSubscribers(env.name).filter((s) => s.mode === 'async' && (!subFilter || s.pattern === subFilter))
         for (const sub of matched) {
-          if (dryRun) { results.push({ event_id: env.id, subscriber: sub.pattern, ok: null, dry_run: true }); continue }
+          if (dryRun) { results.push({ event_id: env.id, subscriber: subKey(sub), ok: null, dry_run: true }); continue }
           try {
             const subEnv = await sub.handler(env)
             const ok = !!(subEnv && subEnv.ok === true)
-            results.push({ event_id: env.id, subscriber: sub.pattern, ok, error_code: ok ? null : subEnv?.error?.code || 'E_INTERNAL' })
+            results.push({ event_id: env.id, subscriber: subKey(sub), ok, error_code: ok ? null : subEnv?.error?.code || 'E_INTERNAL' })
             if (ok) {
               redispatched++
               db.prepare(`INSERT OR REPLACE INTO bus_subscription(event_id,subscriber,mode,status,attempt,last_error,consumed_at) VALUES(?,?,?,?,?,?,?)`)
-                .run(env.id, sub.pattern, 'async', 'delivered', 0, null, now())
+                .run(env.id, subKey(sub), 'async', 'delivered', 0, null, now())
             }
           } catch (e) {
-            results.push({ event_id: env.id, subscriber: sub.pattern, ok: false, error_code: 'E_INTERNAL', error: String(e?.message || e) })
+            results.push({ event_id: env.id, subscriber: subKey(sub), ok: false, error_code: 'E_INTERNAL', error: String(e?.message || e) })
           }
         }
       }
@@ -1792,6 +1796,7 @@ export function createBus(opts = {}) {
   // --- 后台单例（web 宿主面）：dispatcher tick + 心跳 + AGENTS.md secbus 区块 ---
   const isWeb = profile === 'web' || process.argv.includes('web')
   let timer = null
+  let firstTimer = null
   let lockHeld = false
   const dispatcherLockPath = path.join(dataDir, 'dispatcher.lock')
   const busLockPath = path.join(dataDir, 'bus.lock')
@@ -1807,13 +1812,20 @@ export function createBus(opts = {}) {
       } catch (e) { log(`dispatcher tick 异常: ${e?.message}`) }
       touchLock(dispatcherLockPath, process.pid)
     }
-    run()
-    timer = setInterval(run, dispatcherIntervalMs)
-    timer.unref?.()
+    // 首个 tick 延迟启动宽限期：宿主面 apply 先 provide bus、域插件经 ctx.inject 在后续微任务才
+    // 注册 subscribes——若 dispatcher 立即扫 pending，会把「域尚未注册」误判为「无订阅者」而
+    // 将待投递事件标记 delivered（丢失投递）。宽限期内域已注册完毕，再续扫恢复才可靠。
+    firstTimer = setTimeout(() => {
+      run()
+      timer = setInterval(run, dispatcherIntervalMs)
+      timer.unref?.()
+    }, dispatcherStartDelayMs)
+    firstTimer.unref?.()
     return { started: true }
   }
 
   function stopBackground() {
+    if (firstTimer) { clearTimeout(firstTimer); firstTimer = null }
     if (timer) { clearInterval(timer); timer = null }
     if (lockHeld) releaseLock(dispatcherLockPath, process.pid)
   }
