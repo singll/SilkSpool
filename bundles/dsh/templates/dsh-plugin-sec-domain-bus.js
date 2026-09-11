@@ -905,7 +905,7 @@ export function createBus(opts = {}) {
       manifest, handlers, backend,
       state: {
         registered: true, version: manifest.version, contract_compatible: true,
-        backend: 'sqlite-local', backend_reachable: true, capabilities: {},
+        backend: backend.name || 'sqlite-local', backend_reachable: true, capabilities: {},
         commands: Object.keys(manifest.commands).length, queries: Object.keys(manifest.queries).length,
         last_dispatch: null,
       },
@@ -917,7 +917,7 @@ export function createBus(opts = {}) {
     for (const [pattern, sub] of Object.entries(manifest.subscribes || {})) {
       subscribers.push({ pattern, regex: patternToRegex(pattern), handler: handlers.subscribers[sub.handler], mode: sub.mode, as: sub.as, source: manifest.domain })
     }
-    publishSyncEvent('bus.domain.registered', { domain: manifest.domain, version: manifest.version, backend: 'sqlite-local', commands: entry.state.commands, queries: entry.state.queries }, 'system', null, 'bus')
+    publishSyncEvent('bus.domain.registered', { domain: manifest.domain, version: manifest.version, backend: backend.name || 'sqlite-local', commands: entry.state.commands, queries: entry.state.queries }, 'system', null, 'bus')
     // 域注册成功后再投影工具面 + 刷新 AGENTS.md 速查（registerTools 早于域注册的时序修复；
     // bus 域自注册时 toolsCtx 尚为空，由 apply 显式投影兜底）
     try { if (toolsCtx) registerTools(toolsCtx) } catch (e) { log(`域 ${manifest.domain} 注册后工具再投影失败: ${e?.message}`) }

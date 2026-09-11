@@ -221,7 +221,9 @@ templates:
   - dsh-plugin-sec-domain-vuln.js
   - dsh-plugin-sec-domain-vuln.patch.yml
   - dsh-plugin-sec-domain-vuln.contract-vuln.test.js
+  - dsh-plugin-sec-domain-vuln.contract-vuln-http.test.js
   - dsh-plugin-sec-backend-vuln-sqlite.js
+  - dsh-plugin-sec-backend-vuln-http.js
   - sec-vuln-domain-plugin-setup.sh
   # --- v5 asset 域插件（Phase 2 首域：资产/指纹/分级/生命周期，契约 03-asset.md）---
   - dsh-plugin-sec-domain-asset.js

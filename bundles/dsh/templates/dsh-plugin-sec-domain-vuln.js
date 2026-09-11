@@ -43,8 +43,16 @@ const log = (msg) => { try { process.stderr.write(`[sec-domain-vuln] ${msg}\n`) 
 const sha1 = (s) => crypto.createHash('sha1').update(String(s)).digest('hex')
 const iso16 = () => new Date().toISOString().slice(0, 16)
 
-const backendUrl = new URL('../sec-backend-vuln-sqlite/index.js', import.meta.url)
-const { createVulnSqliteBackend } = await import(backendUrl.href)
+const sqliteBackendUrl = new URL('../sec-backend-vuln-sqlite/index.js', import.meta.url)
+const { createVulnSqliteBackend } = await import(sqliteBackendUrl.href)
+// http-remote 后端（Phase 4）懒加载且容错：未组装时不影响 sqlite-local（两后端随域插件一同部署）
+let createVulnHttpBackend = null
+try {
+  const httpBackendUrl = new URL('../sec-backend-vuln-http/index.js', import.meta.url)
+  ;({ createVulnHttpBackend } = await import(httpBackendUrl.href))
+} catch (e) {
+  log(`sec-backend-vuln-http 未组装（${e?.message}），http-remote 模式不可用；sqlite-local 照常`)
+}
 
 // ---------------------------------------------------------------------------
 // manifest（02-vuln §1.2/§1.4/§1.5 的机器形态；R1-R7 lint 全部经 validateManifestShape/Lint）
@@ -648,6 +656,7 @@ function makeHandlers(opts) {
           updated_at: now,
         }, strong)
         if (merged.changed) {
+          repo.markSyncPending?.(cand.id)
           return {
             data: { id: cand.id, dup: false, upgraded: true, noise: false, status: merged.after?.status || 'new' },
             events: [
@@ -669,6 +678,7 @@ function makeHandlers(opts) {
         fgs_node_id: args.fgs_node_id || null, discovery_step: args.discovery_step || null,
         created_at: now, updated_at: now,
       })
+      repo.markSyncPending?.(row.id)
       return {
         data: { id: row.id, dup: false, upgraded: false, noise: false, status: 'new' },
         events: [{ name: 'vuln.signal.registered', payload: { finding_id: row.id, fingerprint: strong, severity: args.severity, host, session_id: ctx.session_id || null, fgs_node_id: args.fgs_node_id || null } }],
@@ -719,6 +729,7 @@ function makeHandlers(opts) {
       const changed = repo.transitionFinding(args.finding_id, 'new', { status: 'confirmed', confidence: 'confirmed', noise: 0, claimed_by: null, claimed_at: null, updated_at: Date.now() })
       if (!changed.changed) throwErr('E_STATE', `finding #${args.finding_id} 状态非 new 或已终态`, 'finding 已处于终态/已确认，不可再次流转。补证据用 vuln_note；提交用 vuln_submit', false)
       if (args.note) repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} confirm: ${args.note}`)
+      repo.markSyncPending?.(args.finding_id)
       const fromCandidate = row.noise === 1
       const events = [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, from: { status: 'new', noise: row.noise }, evidence_ref: refPrefix(args.evidence), confidence: 'confirmed', fgs_node_id: row.fgs_node_id || null, vuln_type: row.vuln_type || null } }]
       if (fromCandidate) events.push({ name: 'vuln.candidate.promoted', payload: { finding_id: args.finding_id, from: { noise: 1, status: 'new' }, to: { noise: 0, status: 'confirmed' }, cause_cmd: 'vuln_confirm' } })
@@ -741,6 +752,7 @@ function makeHandlers(opts) {
       const changed = repo.transitionFinding(args.finding_id, ['new', 'confirmed', 'submitted'], set)
       if (!changed.changed) throwErr('E_STATE', `finding #${args.finding_id} 状态 ${row.status} 不可 reject`, '已终态不可再流转', false)
       if (args.note) repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} reject(${args.verdict}): ${args.note}`)
+      if (row.noise === 0) repo.markSyncPending?.(args.finding_id)
       return {
         data: { id: args.finding_id, status: args.verdict, noise: row.noise === 1, rejected: true },
         events: [{ name: 'vuln.signal.rejected', payload: { finding_id: args.finding_id, verdict: args.verdict, from: { status: row.status, noise: row.noise }, reason_head: String(args.reason || '').slice(0, 60), dup_of: args.dup_of || null, fgs_node_id: row.fgs_node_id || null } }],
@@ -767,6 +779,7 @@ function makeHandlers(opts) {
       sets.updated_at = now
       const changed = repo.updateFields(args.finding_id, sets)
       if (!changed.changed) throwErr('E_STATE', `finding #${args.finding_id} 更新失败`, '提交前必须先 vuln_confirm', false)
+      repo.markSyncPending?.(args.finding_id)
       const metaNote = []
       if (args.platform) metaNote.push(`platform=${args.platform}`)
       if (args.submission_url) metaNote.push(`submission_url=${args.submission_url}`)
@@ -788,6 +801,7 @@ function makeHandlers(opts) {
       const text = ref ? `note: ${note} （ref: ${ref}）` : `note: ${note}`
       repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} ${text}`)
       const row = repo.getFinding(args.finding_id)
+      if (row.noise === 0) repo.markSyncPending?.(args.finding_id)
       return {
         data: { id: args.finding_id, status: row.status, noted: true },
         events: [],
@@ -1020,7 +1034,15 @@ function makeHandlers(opts) {
 
 export function buildVulnDomain(opts = {}) {
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
-  const backend = createVulnSqliteBackend(opts.backendOptions || {})
+  const backendSel = opts.backend || process.env.SEC_DOMAIN_VULN_BACKEND || 'sqlite-local'
+  const dbFile = opts.dbFile || path.join(dataDir, 'asset-graph.db')
+  let backend
+  if (backendSel === 'http-remote') {
+    if (!createVulnHttpBackend) throw new Error('http-remote 后端未组装（缺 @silksec/sec-backend-vuln-http）；回退 sqlite-local 请设 SEC_DOMAIN_VULN_BACKEND=sqlite-local')
+    backend = createVulnHttpBackend({ ...(opts.backendOptions || {}), dataDir, dbFile })
+  } else {
+    backend = createVulnSqliteBackend(opts.backendOptions || {})
+  }
   return {
     manifest: VULN_MANIFEST,
     handlers: makeHandlers({ ...opts, dataDir }),
@@ -1040,17 +1062,29 @@ export const vulnUtils = {
 
 export function apply(ctx, config = {}) {
   const dataDir = process.env.SEC_DATA_DIR || process.env.DSH_HOME || DEFAULT_DATA_DIR
+  const backendSel = process.env.SEC_DOMAIN_VULN_BACKEND || 'sqlite-local'
   try {
     ctx.inject(['secDomainBus'], (child) => {
       const bus = child.secDomainBus
-      const domain = buildVulnDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) })
+      const domain = buildVulnDomain({
+        dataDir,
+        backend: backendSel,
+        backendOptions: config.backendOptions || {},
+        dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c),
+      })
       const res = bus.registry.register(domain)
       if (res.ok) {
-        log(`vuln 域注册成功（registered=${res.registered}）`)
+        log(`vuln 域注册成功（registered=${res.registered}，backend=${domain.backend.name || 'sqlite-local'}）`)
       } else {
         log(`vuln 域注册被拒：${res.error?.code} ${res.error?.message}`)
       }
-      return () => { /* 域生命周期随宿主进程；不 provide 无需 dispose */ }
+      // http-remote：启动同步器（混布 overlay 已就位，同步异步化不阻断业务）
+      if (backendSel === 'http-remote' && typeof domain.backend.startSyncer === 'function') {
+        try { domain.backend.startSyncer() } catch (e) { log(`同步器启动失败：${e?.message}`) }
+      }
+      return () => {
+        if (typeof domain.backend.stopSyncer === 'function') { try { domain.backend.stopSyncer() } catch { /* noop */ } }
+      }
     })
   } catch (e) {
     log(`secDomainBus 注入失败：${e?.message}——vuln 域未注册（总线必须先行挂载）`)

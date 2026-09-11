@@ -238,7 +238,11 @@ function createRepo(db) {
           oldest_pending_at: oldest ?? null,
         },
         terminal_in_pool: terminal,
-        sync: { pending: 0, failed: 0, last_synced_at: null },
+        sync: {
+          pending: one("SELECT COUNT(*) AS n FROM findings WHERE sync_state = 'pending'").n,
+          failed: one("SELECT COUNT(*) AS n FROM findings WHERE sync_state = 'failed'").n,
+          last_synced_at: one("SELECT MAX(remote_synced_at) AS m FROM findings").m ?? null,
+        },
       }
     },
     ensureCol(col, ddl) {
@@ -293,6 +297,7 @@ function orderClause(order = {}) {
 
 export function createVulnSqliteBackend(_opts = {}) {
   return {
+    name: 'sqlite-local',
     capabilities: {},
     factory(db) {
       let repo = _cache.get(db)
