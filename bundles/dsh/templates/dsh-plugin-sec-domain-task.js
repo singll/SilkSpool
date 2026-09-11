@@ -885,7 +885,7 @@ function makeHandlers(opts) {
       const host = p.subject || p.domain || ''
       const programId = p.program_id || ''
       if (!host || !programId) return { ok: true, data: { skipped: true } }
-      const objective = `[审批入队] 新授权域名 ${host} 首轮资产面收集：radar_read 读入 scope-approved 事件 → subfinder 子域枚举 → dnsx 解析 → httpx 存活+指纹入图谱。只做资产收集，禁止主动漏洞探测。`
+      const objective = `[审批入队] 新授权域名 ${host} 首轮资产面收集：ledger_radar_drain 读入 scope-approved 事件 → subfinder 子域枚举 → dnsx 解析 → httpx 存活+指纹 asset_upsert/endpoint_upsert 入图谱。只做资产收集，禁止主动漏洞探测。`
       try {
         const r = await dispatchRef('task', 'create', {
           program_id: programId, phase: 'recon', objective, priority: 1,

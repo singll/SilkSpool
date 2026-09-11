@@ -142,7 +142,7 @@ export const ASSET_MANIFEST = {
       event_limit: 1,
       invariants: ['assetExists', 'stateTransition'],
       timeout_ms: 60000,
-      agent_note: '资产生命周期流转（new/changed/stable/dead）。传观测信号（content_changed / probe_alive_unchanged / probe_failed / revived）+ 证据 run_id，不传目标状态——状态机由域校验。变化雷达（radar_read）命中后应尽快登记 changed（新内容黄金窗口优先测）；探活失败登记 dead 自动出深挖队列。',
+      agent_note: '资产生命周期流转（new/changed/stable/dead）。传观测信号（content_changed / probe_alive_unchanged / probe_failed / revived）+ 证据 run_id，不传目标状态——状态机由域校验。变化雷达（ledger_radar_drain）命中后应尽快登记 changed（新内容黄金窗口优先测）；探活失败登记 dead 自动出深挖队列。',
       deprecated: false,
     },
     fp_record: {

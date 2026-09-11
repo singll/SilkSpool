@@ -407,7 +407,7 @@ const EQUITY_BASIS = ['控股/全资', '收购/财团', '品牌/产品线', '技
 const INDEPENDENT_SRC = ['无', '有', '不确定']
 
 // P19' 批准 → 种子入队：新授权域名当天启动首轮资产收集。双通道（once 种子任务 5 分钟后由
-// scheduler 派发 + radar 事件供每日 recon 链 radar_read 兜底）。best-effort：入队失败不影响批准结果。
+// scheduler 派发 + radar 事件供每日 recon 链 ledger_radar_drain 兜底）。best-effort：入队失败不影响批准结果。
 function enqueueScopeSeed(host, programName) {
   const notes = []
   try {
@@ -418,7 +418,7 @@ function enqueueScopeSeed(host, programName) {
     notes.push('radar 事件已入队')
   } catch (e) { notes.push(`radar 入队失败: ${e.message}`) }
   try {
-    const objective = `[审批入队] 新授权域名 ${host} 首轮资产面收集：radar_read 读入 scope-approved 事件 → subfinder 子域枚举 → dnsx 解析 → httpx 存活+指纹入图谱（store:asset-graph）。只做资产收集，禁止主动漏洞探测。完成后 attempts_log 落台账（asset=${host}，card_id=- 非卡片动作，N/A 须理由）。`
+    const objective = `[审批入队] 新授权域名 ${host} 首轮资产面收集：ledger_radar_drain 读入 scope-approved 事件 → subfinder 子域枚举 → dnsx 解析 → httpx 存活+指纹 asset_upsert/endpoint_upsert 入图谱。只做资产收集，禁止主动漏洞探测。完成后 ledger_log_attempt 落台账（asset=${host}，card_id=- 非卡片动作，N/A 须理由）。`
     const dup = assetDb.taskList({ programId: programName, q: host, bucket: 'active', limit: 10 })
       .filter((t) => (t.objective || '').includes('[审批入队]'))
     if (dup.length) notes.push('种子任务已存在（幂等跳过）')

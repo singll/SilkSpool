@@ -685,7 +685,7 @@ function pipelineGuardStatus(programId) {
     const lines = fs.readFileSync(attemptsFile, 'utf8').split('\n').filter((l) => l.trim())
     ledgerRows = lines.slice(1).filter((l) => { const d = (l.split('\t')[0] || '').slice(0, 10); return d === today || d === yesterday }).length
   } catch { /* 无台账文件 */ }
-  if (ledgerRows === 0) missing.push(`attempts 台账近 24h 零增量：用 attempts_log 逐目标落六态行（含 NOT_APPLICABLE/BLOCKED，理由必填）→ ${attemptsFile}`)
+  if (ledgerRows === 0) missing.push(`attempts 台账近 24h 零增量：用 ledger_log_attempt 逐目标落六态行（含 NOT_APPLICABLE/BLOCKED，理由必填）→ ${attemptsFile}`)
   // 2) 卡片使用记录（文件名日期 今天/昨天，或 mtime 24h 内）
   let cardUsage = false
   try {
