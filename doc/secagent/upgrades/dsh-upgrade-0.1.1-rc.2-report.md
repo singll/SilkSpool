@@ -1,14 +1,13 @@
-> ⚠️ **历史归档文档（2026-09-06 起过期，仅供回溯查看）**
-> 本文档描述的是 SilkSecAgent **v4.x 单体架构**的设计/状态/研究，已被 **v5 领域插件化架构**全面取代。
-> 当前设计真相源：[`../v5/README.md`](../v5/README.md)（总设计）+ [`../v5/00-conventions.md`](../v5/00-conventions.md)（全局契约约定）。
-> 本文件原文如下，未做任何内容修改。
+> **历史升级记录：2026-08-23，DSH 0.1.1-rc.2 已实施。**
+> 2026-09-12 从 archive/ 移入统一升级目录；保留当时的实施结论，仅调整导航和路径。
+> 当前架构见 [v5](../v5/README.md)，历次升级见 [时间线](README.md)。旧回滚操作有版本前提，V3 会话升级以 [0.1.5-rc.2 方案](2026-09-12-dsh-0.1.5-rc.2-plan.md) 为准。
 
 ---
 
 # SilkSecAgent DSH 升级报告：0.1.0-rc.7 → 0.1.1-rc.2
 
 > 执行日期：2026-08-23 ｜ 主机：csai ｜ 执行人：Claude Code（spool 运维）
-> 关联文档：[dsh-secagent-plan-v6.md](dsh-secagent-plan-v6.md)（主计划）
+> 关联文档：[dsh-secagent-plan-v6.md](../archive/dsh-secagent-plan-v6.md)（历史主计划）
 > 一句话：**升级成功、领域数据零丢失、五插件全部加载、httpx 卡死根治**；本次同时补齐了升级保护的两处缺口，让今后每次 rc 升级都能自验证 + 自动回滚，"升级很麻烦"的问题从机制上解决。
 
 ---
@@ -35,7 +34,7 @@
 
 不是沙箱、不是 `-duc`、不是 RocksDB —— 是 **run_cli 的 `spawn` 没有关闭 stdin**。
 
-[dsh-plugin-sec-suite.js:757](../bundles/dsh/templates/dsh-plugin-sec-suite.js)（修复前）：
+[dsh-plugin-sec-suite.js:757](../../../bundles/dsh/templates/dsh-plugin-sec-suite.js)（修复前）：
 
 ```js
 child = spawn(spawnCmd, spawnArgs, { env, cwd: runDir })   // ← 未指定 stdio
@@ -49,7 +48,7 @@ Node `spawn` 默认 `stdio: ['pipe','pipe','pipe']`，**stdin 是一根常开管
 
 ### 1.2 修复（改在共享 spawn 路径 → 一并根治所有 CLI 工具）
 
-[dsh-plugin-sec-suite.js:762](../bundles/dsh/templates/dsh-plugin-sec-suite.js)：
+[dsh-plugin-sec-suite.js:762](../../../bundles/dsh/templates/dsh-plugin-sec-suite.js)：
 
 ```js
 child = spawn(spawnCmd, spawnArgs, { env, cwd: runDir, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -61,7 +60,7 @@ stdin → `/dev/null`（字符设备）→ `HasStdin()=false` → 工具改用 `
 
 既然卡死与沙箱无关，`sandbox:false` 这个错误 workaround 就没必要了。实测（下方 test C）证明**沙箱内 httpx 关闭 stdin 后 3.2s 正常返回**，于是：
 
-- 代码新增 `manifest.sandbox === false` 逐工具豁免开关（escape hatch，留给极少数真与 bwrap user-ns 不兼容的工具，[:752](../bundles/dsh/templates/dsh-plugin-sec-suite.js)）——同时消除了此前直接热补 csai 造成的"运行时 ≠ 仓库"漂移。
+- 代码新增 `manifest.sandbox === false` 逐工具豁免开关（escape hatch，留给极少数真与 bwrap user-ns 不兼容的工具，[:752](../../../bundles/dsh/templates/dsh-plugin-sec-suite.js)）——同时消除了此前直接热补 csai 造成的"运行时 ≠ 仓库"漂移。
 - csai 的 `httpx.yaml` 移除 `sandbox:false`，**httpx 重新回到 bwrap 白名单隔离**（S2 审计项恢复）。
 
 ### 1.4 三段式证据（node spawn 精确复刻 runTool 调用）
@@ -95,7 +94,7 @@ run_id rmt59f7h36a09  exit_code 0  signal None  duration_ms 20051  sandboxed Tru
 | **备份不含 `data/`** | rc.8 起存储格式声明"不兼容"，若 DSH 对 `storages/` 单向迁移，仅回滚 npm 版本无法复原旧数据 | **升级前自动打数据快照**（`dsh-datasnap-*.tgz`，含 asset-graph.db/scope.yml/storages/tools.d/profiles…，排除 results/flows 瞬态）；rollback 路径打印数据恢复指引 |
 | **冒烟太浅** | 只看 `is-active` + HTTP 有响应；"DSH 起来了但自研插件加载失败"会被漏判为成功 | **新增深冒烟**：`--dump-config` 校验 `sec-cli-adapter` 是否在组合树，不在则判失败并回滚（fail-safe：若新版改了 --dump-config 也只会保守回滚，不会误放行） |
 
-改动见 [dsh-upgrade.sh](../bundles/dsh/templates/dsh-upgrade.sh)。**本次升级两项加固均实测触发**：数据快照 187M 落盘、深冒烟通过（sec-cli-adapter 在 web 组合树）。
+改动见 [dsh-upgrade.sh](../../../bundles/dsh/templates/dsh-upgrade.sh)。**本次升级两项加固均实测触发**：数据快照 187M 落盘、深冒烟通过（sec-cli-adapter 在 web 组合树）。
 
 ### 2.3 对"升级很麻烦"的机制性回答
 
@@ -158,9 +157,9 @@ dsh-browser 截图（已有）
 
 | 文件 | 改动 |
 |---|---|
-| [bundles/dsh/templates/dsh-plugin-sec-suite.js](../bundles/dsh/templates/dsh-plugin-sec-suite.js) | ① spawn 关闭 stdin（根治卡死）；② `manifest.sandbox===false` 逐工具豁免开关 |
-| [bundles/dsh/templates/dsh-upgrade.sh](../bundles/dsh/templates/dsh-upgrade.sh) | ① 升级前数据快照；② 深冒烟（插件组合树校验）；③ rollback 数据恢复指引；④ warn() 辅助 |
-| [bundles/dsh/templates/seed-manifests.sh](../bundles/dsh/templates/seed-manifests.sh) | httpx 种子 args 加 `-duc`（新装主机默认关闭更新检查，沙箱化不变） |
+| [bundles/dsh/templates/dsh-plugin-sec-suite.js](../../../bundles/dsh/templates/dsh-plugin-sec-suite.js) | ① spawn 关闭 stdin（根治卡死）；② `manifest.sandbox===false` 逐工具豁免开关 |
+| [bundles/dsh/templates/dsh-upgrade.sh](../../../bundles/dsh/templates/dsh-upgrade.sh) | ① 升级前数据快照；② 深冒烟（插件组合树校验）；③ rollback 数据恢复指引；④ warn() 辅助 |
+| [bundles/dsh/templates/seed-manifests.sh](../../../bundles/dsh/templates/seed-manifests.sh) | httpx 种子 args 加 `-duc`（新装主机默认关闭更新检查，沙箱化不变） |
 
 csai 运行时同步：`spool bundle dsh setup csai`（推模板 + 组装插件 + 重启）→ 移除 httpx.yaml 的 sandbox:false → 重启 → `spool bundle dsh upgrade csai`。
 

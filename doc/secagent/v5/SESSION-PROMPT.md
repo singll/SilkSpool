@@ -1,61 +1,57 @@
-# SilkSecAgent v5 迁移开工提示词（递归模板）
+# SilkSecAgent v5 延续会话模板
 
-你是 SilkSecAgent v5 领域插件化重构的执行 agent。这是一次**延续性会话**——前面的会话已完成部分节点，你必须先读进度、再判断本次该做哪一步，不要从零开始、不要重做已完成的工作。
+你是 SilkSecAgent 的协作 agent。先确认用户本次要做的是迁移实施、平台升级、能力优化，还是检查/方案/文档整理，再读取对应进度。延续已有工作，不从 Phase 0 重做。
 
-本次会话只完成**一个「可上线、可验收、可回滚」的节点**，不要贪多跨节点。
+**用户本次授权范围优先。** 这份模板用于导航与实施纪律；读到模板不代表获准升级、部署或扫描。用户只要求检查和方案时，交付检查证据与文档即可。
 
----
+## 一、先确定任务入口
 
-## 一、开工第一步：读进度，判定当前节点（必须最先做）
+| 用户任务 | 先读 | 进度写在哪里 |
+|---|---|---|
+| 继续 v5 领域迁移 | [PROGRESS](PROGRESS.md) → [18-migration](18-migration.md) → 对应域 | PROGRESS 对应节点 |
+| 升级 DSH 底座 | [升级目录](../upgrades/README.md) → 当次 record → plan | 当次升级 record；完成后更新时间线和当前版本入口 |
+| 自学习/漏洞探测优化 | [自学习专项](../upgrades/2026-09-12-self-learning-design.md) → 受影响域契约 | 对应 L 工作包的执行记录；正式改契约后再实施 |
+| 检查、审查、方案或整理文档 | [文档入口](../README.md) → 用户指定文档 → 最新运行/源码证据 | 标明检查日期、范围和未验证项；不勾选开发/部署节点 |
 
-按顺序读，读完后你应当能回答「当前在哪、本次该做哪个节点」：
+共同依据：[00-conventions](00-conventions.md) 与[领域语言](../../../bundles/dsh/CONTEXT.md)。[9 月 11 日总线审查](REVIEW-bus-atomization.md)是历史报告，应结合后续修复和各域文末最新审查。
 
-1. `doc/secagent/v5/PROGRESS.md` —— **进度真相源**（先读它）
-2. `doc/secagent/v5/18-migration.md` —— 迁移计划真相源（Phase 0-5 与每步验收）
-3. `bundles/dsh/CONTEXT.md` —— 领域语言术语表（Workspace/Program/Task/Finding/Scope 等词义以此为准）
+## 二、确定本次可执行工作
 
-交叉确认线上真实状态（防 PROGRESS.md 与线上脱节）：
+迁移实施默认选择一个可独立验收、可回滚的未完成节点；先检查前置，不机械选择第一项。**5.2 删别名须连续七天 audit 零使用**，尚在观察时不得删除，也不得把等待当作其他已授权工作不能进行的理由。
+
+升级按当次计划的 U 工作包推进，自学习按 L 工作包推进。检查/文档任务不自动转成实现任务。当前状态从最新进度读取，不在提示词里固化“只完成 Phase 0”等旧判断。
+
+需要核对运行态时，先读本次已有证据，避免重复扫描；补充远程检查一律通过 PATH 中的 spool，例如：
 
 ```bash
 git log --oneline -5
-spool exec csai "systemctl is-active silksecagent && sqlite3 /opt/silkspool/dsh/data/asset-graph.db 'SELECT status FROM findings LIMIT 0' && echo db-ok"
+spool exec csai 'systemctl is-active silksecagent'
 ```
 
-**判定规则**：取 PROGRESS.md「待办节点」列表里**当前第一个未勾选**的项作为本次节点。勾选进度落后于线上实际时，以 git log 的 commit 为准校正 PROGRESS.md。
+git 提交证明代码变化，运行态证据证明部署情况；两者不能互相替代。数据库检查使用只读模式，不输出凭据、令牌或完整私有会话。
 
-## 二、本次执行节点
+## 三、已定架构与执行纪律
 
-只做上面判定出的那一个节点。节点定义、范围、验收见 PROGRESS.md §三 + 对应域文档（01-bus / 02-vuln / …）。**不要跨节点、不要提前做后续 Phase、不要顺手重构无关代码。**
+- 源码：`/home/ubuntu/SilkSpool`，bundle 模板在 `bundles/dsh/templates/`；生产：csai `/opt/silkspool/dsh/`。
+- 采用 **14 业务域 + 总线**；scope 为授权域唯一注册名；多进程 + SQLite WAL，不另建一套记忆库或调度真相源。
+- 所有写入经域命令与 actor 校验；跨域走事件/approval_effects；sync 与 async 的事务和失败语义按现行契约；审计主链路 fail-closed。
+- 改实现前读命令、参数、身份、幂等、事件、证据、错误码和 owns；新增能力先同步受影响契约。未实施的升级提议不能直接冒充已定稿能力。
+- 兼容别名删除遵守观察期；双 profile 的实际工具与最终 prompt 一致；治理脚本不得直写其他域库和 owned 目录。
+- 已获准部署的模板变更，先同步仓库到 `/opt/SilkSpool/bundles/dsh/` 运行时副本，再按该发布的 spool 手册操作。setup/upgrade 会安装或重启，不能当作只读检查；DSH V3 升级须先完成完整备份和恢复预演。
 
-## 三、关键背景与已定决策（勿推翻、勿重新设计）
+## 四、按任务验收
 
-- **目标**：SilkSecAgent（csai 主机授权漏洞发现平台，DSH + pi-ai）从 v4 单体（`dsh-plugin-sec-suite.js` 等）重构为 v5 领域插件化（14 域 + 总线）。
-- **真相源**：源码 `/home/ubuntu/SilkSpool`（bundle 模板在 `bundles/dsh/templates/`）；文档 `doc/secagent/v5/`（00-18 已全量定稿）。
-- **已定架构决策**：多进程 + SQLite WAL；event_outbox + dispatcher 跨进程投递；sync（同事务 SAVEPOINT 可回滚）/ async（outbox 派发 + retry/dead-letter）事件语义；approval_effects 幂等 effect outbox；audit fail-closed（主链路写命令）；LLM 工具面 phase 动态子集；兼容别名贯穿（7 天观察期）；不改表名不迁库（ensureCol 幂等列演进）。
-- **已完成**：Phase 0 候选池热修（commit `4ae57cb`）已上线验收；文档定稿（commit `2e593e9`）。
+| 任务 | 完成条件 |
+|---|---|
+| 领域实现 | 相应契约及真实调用验证通过；在授权范围内完成部署时，记录服务、双 profile、关键链路与回滚依据 |
+| 平台升级 | 当次 U 验收矩阵与恢复预演通过，执行记录有版本/产物/备份/结果；观察未结束时仍标“观察中” |
+| 学习增量 | 对应 L 包的证据、独立评测、晋升/撤回验证达标；健康检查不代替学习效果 |
+| 检查/方案/文档 | 证据来源与时点可追溯，事实/推断/提议分开；链接有效、无敏感信息、diff 检查通过 |
 
-## 四、执行纪律
+完整任务全部完成后，按根 [CLAUDE.md](../../../CLAUDE.md) 判断 `.gitignore` 并逐个暂存文件，一次中文 commit + push 到当前分支。禁止 `git add -f`；不要为给文档写入本次提交自身的 hash 再拆一个提交，最终回复报告 hash，后续追踪可回填引用。
 
-- 改代码前先读对应域文档契约，严格对齐：命名（snake_case 动词 / 点分 RPC / 事件 `domain.obj.verb`）、actor 白名单、幂等键、事件 payload、错误码（宪法全局保留码 + `E_{DOMAIN}_*`）。
-- 域命令拆自 `asset-db.js` 时：**保留 v4 兼容**——在别名切换前，旧工具名/旧函数路径不能断，每日链路（03:00/04:00 任务）不能中断超过一个调度周期。
-- 新插件组装沿用现有 `sec-*-plugin-setup.sh` 模式（复制模板进 plugins/<name>/ + package.json + `dsh plugin add` + dump-config 冒烟）。
+## 五、收尾与下次会话
 
-## 五、验收标准（本次会话完成的硬性门槛，全部满足才算完成）
+总结交付内容、真实验收范围、未执行或剩余工作、提交结果。需要继续实施时只指明下一工作包及阅读入口，无须把整份模板重复粘贴。
 
-1. **契约测试全绿**：对应域文档 §契约测试矩阵（宪法 §十三 8 用例类）全部通过。
-2. **上线且系统正常**：部署后 `spool exec csai "systemctl is-active silksecagent"` = active；v4 现有功能无回归（看板/工具/每日任务正常）。
-3. **代码提交 + 追踪**：`git add`（逐个文件，禁 `-f`）→ 有意义的中文 commit → `git push origin main`；把 commit hash 写进 PROGRESS.md 对应节点。
-4. **更新 PROGRESS.md**：勾选完成节点、更新「当前 Phase」、若本节点产出后续待办则补充。
-
-## 六、收尾：总结 + 生成下次提示词（递归）
-
-本次会话结束时必须输出两部分：
-
-1. **本次总结**：完成节点 / 验收结果（含线上 `systemctl is-active` 与关键口径数据）/ commit hash。
-2. **下一步开工提示词**：内容与本模板**完全一致**（递归复用），唯一引导新会话去读**已更新后的** PROGRESS.md 来判定下一节点。
-
-**递归终止条件**：当 PROGRESS.md「待办节点」全部勾选、Phase 5 完成、且 18-migration §十 DoD 6 条全部满足时，输出「v5 迁移全部完成」的最终验收总结，**不再**生成下次提示词。
-
----
-
-（本提示词由上一次会话生成。开工前请先执行 §一，读到最新的 PROGRESS.md。）
+v5 迁移全部完成须同时满足 PROGRESS 全部必要节点和 18-migration 的 DoD；DSH 升级完成另按升级记录关账。两者不能互相代替。

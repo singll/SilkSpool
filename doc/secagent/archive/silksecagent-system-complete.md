@@ -1,7 +1,7 @@
 > ⚠️ **历史归档文档（2026-09-06 起过期，仅供回溯查看）**
 > 本文档描述的是 SilkSecAgent **v4.x 单体架构**的设计/状态/研究，已被 **v5 领域插件化架构**全面取代。
 > 当前设计真相源：[`../v5/README.md`](../v5/README.md)（总设计）+ [`../v5/00-conventions.md`](../v5/00-conventions.md)（全局契约约定）。
-> 本文件原文如下，未做任何内容修改。
+> 正文保留历史结论；2026-09-12 仅调整已迁移升级文档的导航链接。
 
 ---
 
@@ -554,9 +554,9 @@ manifest 字段：`name/binary/stage/risk(passive|active|intrusive|manual)/timeo
 | `README.md` | 唯一持续推进入口（当前状态/待人工/待办/工作规范/里程碑） |
 | **本文** | 系统全景（运行代码解剖，长期有效） |
 | `dsh-secagent-plan-v6.md` | P11 时代主计划（历史快照，2026-08-22 校准） |
-| `dsh-upgrade-0.1.1-rc.2-report.md` | 升级方法论与回滚手册（历史报告） |
-| `dsh-0.1.2-upgrade-arch-plan.md` | 0.1.2 升级架构方案（B0-B3 排查，历史） |
-| `dsh-0.1.2-rc.1-upgrade-plan.md` | 0.1.2-rc.1 升级方案与 71 条变更影响分析（§十 为升级实录） |
+| [dsh-upgrade-0.1.1-rc.2-report.md](../upgrades/dsh-upgrade-0.1.1-rc.2-report.md) | 升级方法论与回滚手册（历史报告） |
+| [dsh-0.1.2-upgrade-arch-plan.md](../upgrades/dsh-0.1.2-upgrade-arch-plan.md) | 0.1.2 升级架构方案（B0-B3 排查，历史） |
+| [dsh-0.1.2-rc.1-upgrade-plan.md](../upgrades/dsh-0.1.2-rc.1-upgrade-plan.md) | 0.1.2-rc.1 升级方案与 71 条变更影响分析（§十 为升级实录） |
 | `dsh-llm-routing-discipline.md` | 模型路由纪律（应急直连切换规程） |
 | `silksecagent-cairn-y-fusion-optimization.md` | Cairn_Y 融合优化方案（FGS/沉淀路线，历史设计） |
 | `sec-memory-governance-design.md` / `sec-memcore-implementation.md` | 记忆基架设计与实施记录（**2026-09-05 起为历史快照**，见各自文首标注） |

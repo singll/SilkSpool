@@ -2,6 +2,7 @@
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 前置：全部 00-17 模块文档定稿（用户评审通过）后方可启动对应 Phase 的代码动工
 > 本文是 v4.x 单体 → v5 领域插件化的**唯一**迁移计划。原则：**文档先行、每阶段独立可回滚、热修不等重构、重构期间每日链路（03:00/04:00 任务）中断不超过一个调度周期。**
+> 进度见 [PROGRESS](PROGRESS.md)。DSH 底座升级另见 [upgrades](../upgrades/README.md)，不按本页已完成的 Phase 重新迁移；生产调度窗口以实测活跃任务为准，03:00/04:00 是原迁移基线。
 
 ---
 
@@ -124,7 +125,7 @@
 
 - 仓库 `bundles/dsh/` 改模板 → `rsync -a bundles/dsh/ /opt/SilkSpool/bundles/dsh/` → `spool bundle dsh setup csai`（模板按相对路径推送 + 各域 setup 脚本组装 + 契约测试 + reconcile_service 收尾重启）。
 - 域插件组装：沿用 sec-*-plugin-setup.sh 模式（复制模板进 plugins/<name>/ + package.json + `dsh plugin add` + dump-config 冒烟）。
-- 升级与回滚手册：归档 `../archive/dsh-upgrade-0.1.1-rc.2-report.md` §6 仍适用。
+- 升级与回滚手册统一在 [upgrades](../upgrades/README.md)；[0.1.1-rc.2 报告](../upgrades/dsh-upgrade-0.1.1-rc.2-report.md)仅是历史经验。DSH V3 会话迁移按 [0.1.5-rc.2 方案](../upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md)恢复整套产物与状态，不能仅回退依赖版本。
 - **红线不变**：一切远程操作走 PATH 中 `spool`；n8n 等有状态服务与本迁移无关不受影响。
 
 ### 9.2 systemd 单元全景（13 个，csai 实查 2026-09-06）

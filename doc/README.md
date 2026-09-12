@@ -14,6 +14,14 @@
 | [api.md](api.md) | API 参考：Go 包文档 |
 | [bundle-development.md](bundle-development.md) | Bundle 开发：创建、测试、部署新 Bundle |
 
+## SilkSecAgent（csai）
+
+| 入口 | 内容 |
+|---|---|
+| [文档导航](secagent/README.md) | 按任务选择架构、进度、升级和历史资料 |
+| [v5 架构主线](secagent/v5/README.md) · [实施进度](secagent/v5/PROGRESS.md) | 当前领域契约与已上线状态 |
+| [升级目录](secagent/upgrades/README.md) | 历次升级记录、本次 DSH 0.1.5-rc.2 方案与自学习设计 |
+
 ## 架构决策记录 (ADR)
 
 | 编号 | 标题 |
@@ -26,5 +34,5 @@
 
 ## 文档维护规则
 
-1. **SilkSpool** 仅包含 IaC 工具本身的文档（CLI、配置、部署）
-2. **Bellkeeper** 相关文档（知识系统、n8n、Matrix、存储等）位于 [Bellkeeper/doc](../Bellkeeper/doc/)
+1. **SilkSpool** 保存 IaC 工具文档及本仓库 bundle 的配套设计；SilkSecAgent 以 [v5](secagent/v5/README.md) 为架构主线，升级文档统一放 [upgrades/](secagent/upgrades/README.md)
+2. **Bellkeeper** 相关文档（知识系统、n8n、Matrix、存储等）位于同级仓库的 [Bellkeeper/doc](../../Bellkeeper/doc/)

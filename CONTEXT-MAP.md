@@ -10,4 +10,4 @@ SilkSpool 仓库包含两个不同的领域上下文：
 ## Relationships
 
 - **SilkSpool → SilkSecAgent**：SilkSpool 作为运维层，通过 `bundles/dsh/` bundle 安装、升级、纳管 SilkSecAgent 的运行态（systemd 服务、数据目录、插件装载）。
-- 两个上下文共享 `docs/adr/`（系统级架构决策）；SilkSecAgent 的领域语言与设计记录在 `bundles/dsh/CONTEXT.md` 与 `doc/secagent/dsh-secagent-plan-v6.md`。
+- 两个上下文共享 `docs/adr/`（系统级架构决策）；SilkSecAgent 的[领域语言](bundles/dsh/CONTEXT.md)与[文档入口](doc/secagent/README.md)分工维护：当前设计在 [v5](doc/secagent/v5/README.md)，实施状态在 [PROGRESS](doc/secagent/v5/PROGRESS.md)，历次升级在 [upgrades](doc/secagent/upgrades/README.md)。

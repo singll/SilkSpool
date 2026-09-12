@@ -370,8 +370,10 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 
 | 维度 | 结论 |
 |---|---|
-| 逻辑/功能 | 域动词投影、actor 白名单与 phase/subset 挂载矩阵可用；discipline-audit 当前悬空工具引用为 0。 |
+| 逻辑/功能 | 域动词投影、actor 白名单与 phase/subset 挂载矩阵可用；已有 discipline-audit 扫描范围内悬空工具引用为 0。晚间源码核对发现 scheduler 仍拼装 finding_add，后续须加入最终 prompt 的检查。 |
 | hook 判定 | ToolProjector/RpcProjector 是契约投影，不是旁路；兼容别名同样过网关校验。 |
-| 未实现/观察期 | 37 个兼容别名仍在 7 天零使用观察期，闸口顺延至 2026-09-18；契约测试自身会制造 finding_update 使用，删别名前须改用例。 |
+| 未实现/观察期 | 37 个兼容别名继续保留。9 月 12 日预检：deprecated_use 累计 147，最后一条 2026-09-12T15:23:24.420+08:00，最早删除闸口为 2026-09-19T15:23:24.420+08:00；使用不只来自契约 fixture，须同时修调用方与测试，后续新调用继续顺延。 |
 | 性能 | 挂载投影按 profile 组合树生成，启动时一次性；工具数量当前无运行时热点。 |
 | 独立升级 | 域工具面可随域插件更新；但 prompt/skills/objective 引用必须同步 discipline-audit，防止悬空引用。 |
+
+补充证据见 [csai 升级预检](../upgrades/2026-09-12-dsh-0.1.5-rc.2-record.md)：当前 `llm_probe=true` 尚未实际调用模型，不能由 Mode A 的 7/7 推定模型恢复率或漏洞探测能力；修复与验收设计见 [自学习专项](../upgrades/2026-09-12-self-learning-design.md)。

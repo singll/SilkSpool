@@ -1,14 +1,18 @@
 # SilkSecAgent v5 迁移进度追踪
 
-> 本文件是 v5 领域插件化重构的**唯一进度真相源**。每次会话开工先读它判断当前进度；每次会话收尾必须更新它并附 commit hash。它被开工提示词（SESSION-PROMPT.md）引用，是递归推进的锚点。
+> 本文件是 v5 领域迁移的进度真相源；历史里程碑中的数值与验收结论仅代表当次范围。开工按 [会话模板](SESSION-PROMPT.md) 选择任务入口；DSH 底座升级另记在 [upgrades](../upgrades/README.md)，不混入迁移完成状态。
 
 ## 一、总览
 
-- **迁移计划真相源**：`18-migration.md`（Phase 0-5）
-- **全局契约宪法**：`00-conventions.md`
+- **迁移计划真相源**：[18-migration](18-migration.md)（Phase 0–5）
+- **全局契约宪法**：[00-conventions](00-conventions.md)
 - **文档状态**：00-18 全量定稿（2026-09-06，commit `2e593e9`）
-- **领域语言**：`bundles/dsh/CONTEXT.md`
-- **当前 Phase**：**Phase 5 进行中（5.1 已完成并残余修复收口；5.2 别名删除处于 7 天零使用观察期，2026-09-11 复核仍活跃不删、闸口顺延 ≈ 2026-09-18；5.3 worker 挂载矩阵 + owns×sandbox 交叉断言已完成；5.4 eval 契约合规用例已上线（EC-01~05 越权 100% 被拒 + hint 可引导）；5.5 discipline-audit.py「悬空工具引用」断言已上线——全 prompt 资产悬空引用 = 0，并修复 5.1 遗留的 p19 fp 动词错误映射（asset_fp_record/asset_fp_query 悬空 3 处）；5.6 单写者守护进程复评已落定——维持多进程+WAL 终态（E_CONFLICT=0、无 SQLITE_BUSY、event_outbox 2135 全 delivered 无死信）；5.7 总线/原子化审查修复已上线——`fp_query` 旧注册冲突清零、FGS 改 async 弱联动、R8 事件命名 + R9 悬空订阅对账上线、`authz` 伪域移除；5.8 全域深度审查与文档回填已完成——15 域包边界具备单域升级条件，dashboard/v4 scheduler 为主要债务；下一节点：5.2 别名删除（观察期闸口 ≈ 2026-09-18 后回补，Phase 5 唯一剩余））**
+- **领域语言**：[CONTEXT](../../../bundles/dsh/CONTEXT.md)
+- **当前 Phase**：**Phase 5 收尾中**。Phase 0–4 已完成；5.1、5.3–5.8 已完成，迁移清单剩 5.2 别名删除。dashboard 的 v4 fallback、v4 scheduler 与逐域审查中的未修项仍需按影响处理，不能由节点勾选推定全部 DoD 已满足。
+- **5.2 最新闸口（2026-09-12 核查）**：deprecated_use 累计 147，最后一条 2026-09-12T15:23:24.420+08:00；连续七天零使用最早到 **2026-09-19T15:23:24.420+08:00**。37 个别名保留；真实调用与契约 fixture 都需处理，新调用继续顺延。
+- **当前运行基线**：DSH **0.1.2-rc.1**；本次基础健康验收 **25/25**，抽样部署文件 **15/15** 与模板一致。完整取证、学习数据和确定性缺口见 [csai 预检](../upgrades/2026-09-12-dsh-0.1.5-rc.2-record.md)。
+- **验收口径补充**：5.4 的 7/7 是网关 Mode A；当前 llm_probe 未实际调用模型。5.5 的零悬空引用只覆盖原扫描范围，scheduler 仍拼装 finding_add。这些缺口进入新方案，不改写历史通过记录。
+- **升级与学习方案**：[DSH 0.1.5-rc.2 升级](../upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md)与[自学习专项](../upgrades/2026-09-12-self-learning-design.md)已写入；**仅 U0 预检/文档完成，U1–U4、L0–L6 均未实施，生产未升级**。
 
 ## 二、已完成节点（附 commit 追踪）
 
@@ -83,20 +87,20 @@
 ## 三·八、待办节点（Phase 5，按 18-migration §七 顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
 - [x] **5.1 prompt 体系全量改写**：persona/objective/skills/technique-index 工具引用 → 新动词表（脚本化 p19-tool-refs.py，p14 模式）；AGENTS.md 受管区块 manifest 生成（Phase 1 已收口，本节点确认）。**✅ 已完成（2026-09-11 上线；commit `ce3bb8a`）**
-- [ ] **5.2 删兼容别名**：逐个走宪法 §十五废弃三段式（deprecated → 7 天 audit 零使用 → 删除）。前置：5.1 完成后观察 7 天 deprecated_use 计数。**🔄 观察期进行中**（起点 2026-09-11；2026-09-11 复核：观察期内 8 条 deprecated_use 仍活跃（最新 2026-09-11T12:00Z），不满足 7 天零使用前置 → 本次不删、观察期顺延，新闸口以最后一条 deprecated_use 为锚再计 7 天 ≈ 2026-09-18；别名 37 条/契约测试/ToolProjector 未动）⚠️ **5.4 侧记**：契约用例 `freeform-status-update` 刻意经 `finding_update` 别名验证「别名层同样过网关校验」（15-eval §2.1），会在每次契约评测时产生 finding_update 的 deprecated_use——5.2 删别名时须同步把该用例 attempt 改为直连语义动词（或保留 finding_update 直至契约用例改版），否则契约评测会因别名缺失而报 E_BUS_DOMAIN_UNKNOWN
+- [ ] **5.2 删兼容别名**：逐个走宪法 §十五废弃三段式（deprecated → 连续七天 audit 零使用 → 删除）。**🔄 观察中**：2026-09-12 核查累计 deprecated_use=147，最后一条 2026-09-12T15:23:24.420+08:00，最早闸口 **2026-09-19T15:23:24.420+08:00**；真实调用仍存在，不能只剔除评测样本。37 个别名继续保留；修复 scheduler 的 finding_add 等调用方后重新观察。⚠️ **5.4 侧记**：契约用例 `freeform-status-update` 刻意经 `finding_update` 别名验证「别名层同样过网关校验」（15-eval §2.1），会在每次契约评测时产生 finding_update 的 deprecated_use——5.2 删别名时须同步把该用例 attempt 改为直连语义动词（或保留 finding_update 直至契约用例改版），否则契约评测会因别名缺失而报 E_BUS_DOMAIN_UNKNOWN
 - [x] **5.3 worker 挂载矩阵实施**：profile × actor 白名单；setup.sh 冒烟断言 owns×sandbox 交叉校验（17-llm-surface §1.6/§2.2）。**✅ 已完成（2026-09-11 上线；commit `7594f7d`）**
 - [x] **5.4 eval 契约合规用例上线**：模型越权 100% 被拒 + hint 可引导（15-eval.md EC-01~05）。**✅ 已完成（2026-09-11 上线；commit `cb46d86`；真实管线 Mode A 7/7 越权拒绝率 100%，`eval_stats.last_contract` 回灌；vuln_confirm 缺证据收紧为 E_EVIDENCE_REQUIRED 引导性 hint）**
 - [x] **5.5 discipline-audit.py 增「悬空工具引用」断言**（17-llm-surface §3.3 执行点）。**✅ 已完成（2026-09-12 上线；commit `4371ebc`；全 prompt 资产悬空引用 = 0；顺带修复 5.1 遗留 p19 fp 动词错误映射 + 3 处悬空引用）**
 - [x] **5.6 复评「单写者守护进程」**：Phase 1-5 期间无 E_CONFLICT 频发 → 维持多进程+WAL 终态。**✅ 已完成（2026-09-12 上线；commit 见 §二；E_CONFLICT=0、无 SQLITE_BUSY、event_outbox 2135 全 delivered 无死信 → 不启动单写者架构专项）**
 - [x] **5.7 总线/原子化审查修复**：`fp_query` 冲突、FGS sync/async 语义、事件命名校验、悬空订阅对账、`authz` 伪域与无效 exec 订阅收口。**✅ 已完成（2026-09-12 上线；commit `00173d0`）**
-- [x] **5.8 全域深度审查与文档回填**：15 域 + 总线/后端/横切插件逐项检查逻辑、功能、性能、静默错误、未实现分支、hook 兼容层与独立升级能力；全部结论写入对应 00-17 文档。**✅ 已完成（2026-09-12；commit `3eb2da9`）**
+- [x] **5.8 全域深度审查与文档回填**：14 业务域 + 总线/后端/横切插件逐项检查逻辑、功能、性能、静默错误、未实现分支、hook 兼容层与独立升级能力；全部结论写入对应 00-17 文档。**✅ 已完成（2026-09-12；commit `3eb2da9`）**
 
 ## 四、Phase 2-5 概览（后续会话，勿提前开工）
 
 - Phase 2：数据域滚动搬迁（asset+endpoint → fact+know → ledger → task+exec → fgs → scope+approval → report/proxy/eval/dashboard）✅ 已完成
 - Phase 3：跨域事件化收尾（outbox 验收 / bus replay 演练 / memcore 旁路化 / eval 订阅）✅ 已完成（3.1 部署验收 + 3.2 事件可靠性回放 + 3.3 memcore 旁路化 + 3.4 删旧路径）
 - Phase 4：http-remote 后端试点（vuln 域）✅ 已完成（repository-http + 混布 overlay + outbox 同步 + 能力矩阵 + 三后端同套跑 + 切换演练可回切）
-- Phase 5：LLM 面收敛 + 守卫加固 + 评测（删别名 / 挂载矩阵 / 单写者复评 / 审查修复）🔄 进行中（5.1 prompt 体系全量改写已完成并残余修复；5.2 别名删除处于观察期，闸口 ≈ 2026-09-18；5.3 worker 挂载矩阵 + owns×sandbox 交叉断言已完成；5.4 eval 契约合规用例已上线——EC-01~05 越权 100% 被拒 + hint 可引导，真实管线 Mode A 7/7；5.5 discipline-audit 悬空工具引用断言已上线——全 prompt 资产悬空引用 = 0；5.6 单写者守护进程复评已落定——维持多进程+WAL 终态；5.7 总线/原子化审查修复已上线；余 5.2 别名删除观察期后回补，为 Phase 5 唯一剩余节点）
+- Phase 5：LLM 面收敛 + 守卫加固 + 评测 🔄 收尾中；5.1、5.3–5.8 已完成，5.2 观察期最早到 2026-09-19T15:23:24.420+08:00。历史验收范围与最新缺口见 §一，后续仍须逐条核对 18-migration 的 DoD。
 
 ## 五、关键决策（已定，勿推翻）
 

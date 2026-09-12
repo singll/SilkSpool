@@ -1,11 +1,23 @@
 # SilkSecAgent v5 · 领域插件化架构 · 总设计文档
 
-> 版本：v5.0 ｜ 状态：**全量设计定稿（00-18 全部定稿；代码重构按 18-migration.md 的 Phase 顺序启动）**
-> 性质：设计真相源。v4.x 全部文档已归档至 [`../archive/`](../archive/INDEX.md)（过期，仅供回溯）。
+> 版本：v5.0 ｜ 状态：**00–18 已定稿；Phase 0–4 已实施，Phase 5 收尾中**。实际进度与最新核查见 [PROGRESS](PROGRESS.md)。
+> 性质：当前架构设计真相源。历史架构资料在 [archive](../archive/INDEX.md)，历次升级方案与记录统一在 [upgrades](../upgrades/README.md)。
 > 工程位置：csai `/opt/silkspool/dsh/`；版本受控源文件在 SilkSpool 仓库 `bundles/dsh/templates/`。
 > **最高约定**：[`00-conventions.md`](00-conventions.md)（全局契约宪法——命名/actor/命令八铁律/信封/错误码/幂等/事件/审计/后端/测试/安全/版本化）。模块文档与它冲突时以它为准。
 
 ---
+
+## 阅读入口
+
+| 本次任务 | 阅读路径 |
+|---|---|
+| 快速了解系统 | [文档总入口](../README.md) → 本页分层图 → [全局契约](00-conventions.md) |
+| 继续迁移实施 | [PROGRESS](PROGRESS.md) → [迁移路线](18-migration.md) → 对应域；用 [会话模板](SESSION-PROMPT.md) 确认范围 |
+| 检查当前缺陷 | 对应域文末的 2026-09-12 深度审查 + [本次 csai 预检](../upgrades/2026-09-12-dsh-0.1.5-rc.2-record.md)；[9 月 11 日总线审查](REVIEW-bus-atomization.md) 是历史基线 |
+| 升级 DSH | [升级时间线](../upgrades/README.md) → [0.1.5-rc.2 方案](../upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md) |
+| 优化自学习与漏洞探测 | [自学习专项](../upgrades/2026-09-12-self-learning-design.md) → know / ledger / exec / eval 等相关域契约 |
+
+2026-09-12 核查：生产仍为 DSH 0.1.2-rc.1，基础健康检查 25/25；rc.2 升级和学习增量仅完成方案。5.2 别名删除须等连续七天零使用，当前最早闸口为 2026-09-19T15:23:24.420+08:00，新调用继续顺延。
 
 ## 一、为什么重构（一段话版）
 
@@ -38,7 +50,7 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 │    ▲ provide('secDomain.{domain}') / inject（memcore 已验证的 DI 模式）
 ├────────────────────────────────────────────────────────────────┤
 │  领域模块层（14 域，每域一文档）                                  │
-│  vuln │ asset │ endpoint │ task │ fact │ know │ authz │ approval │
+│  vuln │ asset │ endpoint │ task │ fact │ know │ scope │ approval │
 │  exec │ ledger │ report │ proxy │ fgs │ eval                    │
 │    ▲ 每域只依赖自己的 repository 接口                             │
 ├────────────────────────────────────────────────────────────────┤
@@ -51,7 +63,7 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 
 ## 四、文档地图（设计完成度索引）
 
-> 编号即阅读顺序；**每份模块文档的对外暴露面（§一）永远在最前**。状态：`起草中` → `草案` → **`定稿`**（用户评审通过后冻结，才允许对应域代码动工）。各模块文档 §四为开放问题（实现期观察项，按所列倾向推进、实证后复评），不影响契约主体。
+> 编号是依赖索引，按任务选读相关模块；**每份模块文档的对外暴露面（§一）永远在最前**。状态：`起草中` → `草案` → **`定稿`**（用户评审通过后冻结，才允许对应域代码动工）。各模块文档 §四为开放问题（实现期观察项，按所列倾向推进、实证后复评），文末审查记录用于区分设计与当前实现。
 
 | # | 文档 | 域职责（一句话） | owns（单写者） | 状态 |
 |---|---|---|---|---|
@@ -75,7 +87,7 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 | 17 | [llm-surface](17-llm-surface.md) | LLM 工具面/挂载矩阵/prompt 体系对接 | — | 定稿 |
 | 18 | [migration](18-migration.md) | 迁移路线 Phase 0-5/回滚/数据修复 | — | 定稿 |
 
-**依赖关系速览**（阅读时的心智图）：bus 是所有域的宿主；vuln/asset/endpoint/fact/know 相互只通过事件联动；authz 是 exec 的前置（守卫链）；approval 只发事件不直写任何域；ledger 订阅 exec 产物；task 调 exec 派生 worker；memcore 订阅全部域的 lifecycle 事件。
+**依赖关系速览**：bus 是所有域的宿主；vuln/asset/endpoint/fact/know 相互只通过事件联动；scope 是 exec 的前置（守卫链）；approval 只发事件不直写任何域；ledger 订阅 exec 产物；task 调 exec 派生 worker；memcore 订阅全部域的 lifecycle 事件。
 
 ## 五、LLM 只见动词不见存储（总则，细节在 17）
 
@@ -98,7 +110,7 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 
 ## 七、与归档文档的关系
 
-- v4.x 运行态快照（进程清单/数据规模/待人工 H-001/H-002）：归档 `../archive/README.md`（2026-09-05 v4.7 时点）——v5 落地前的日常运维仍参考它；
-- v4.x 系统解剖（写路径/表结构/工具清单）：归档 `../archive/silksecagent-system-complete.md`——各模块文档"现状代码映射"节的取证来源；
-- DSH 升级手册/回滚手册：归档对应文件，升级操作时仍有效；
-- 本目录文档是**唯一**设计真相源；归档文档与本文冲突，一律以本文为准。
+- [v4.x 运行态快照](../archive/README.md)记录 2026-09-05 的进程、规模和人工事项；当时的“当前/待办/必做”不能直接当作今天的状态或升级规则。
+- [v4.x 系统解剖](../archive/silksecagent-system-complete.md)是各模块“现状代码映射”节的历史取证来源。
+- [升级目录](../upgrades/README.md)集中维护历次方案、实施与回滚记录；尤其 DSH V3 会话的回滚须采用新方案，不能照搬旧版退包操作。
+- 当前架构契约以本目录为准；upgrades 中未实施的提议在批准和同步契约之前不改变它。运行是否符合契约须看最新核查，不能由“定稿”推定。

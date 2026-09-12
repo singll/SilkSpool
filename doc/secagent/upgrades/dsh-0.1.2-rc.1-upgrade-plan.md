@@ -1,7 +1,6 @@
-> ⚠️ **历史归档文档（2026-09-06 起过期，仅供回溯查看）**
-> 本文档描述的是 SilkSecAgent **v4.x 单体架构**的设计/状态/研究，已被 **v5 领域插件化架构**全面取代。
-> 当前设计真相源：[`../v5/README.md`](../v5/README.md)（总设计）+ [`../v5/00-conventions.md`](../v5/00-conventions.md)（全局契约约定）。
-> 本文件原文如下，未做任何内容修改。
+> **历史升级方案与实施复盘：2026-09-04，DSH 0.1.2-rc.1 已上线；原 B3 观察期未在本文正式关账。**
+> 2026-09-12 从 archive/ 移入统一升级目录；保留当时的结论及 BrowserAuth 更正，仅调整导航和路径。
+> 当前架构见 [v5](../v5/README.md)，历次升级见 [时间线](README.md)。新的接口与 V3 回滚要求见 [0.1.5-rc.2 方案](2026-09-12-dsh-0.1.5-rc.2-plan.md)。
 
 ---
 
@@ -9,7 +8,7 @@
 
 > 版本：v1.1 · 2026-09-04 ｜ 性质：**已实施——B0'/B1'/B2' 完成，B3' 观察期进行中（2-3 天）**
 > 实施结果：csai 线上已运行 0.1.2-rc.1（2026-09-04 升级成功，NRestarts=0 稳定）；V1-V10 验证全过（edge token 走方案 A 零改动、157 插件 id 组合树、sec-* 全在 web+headless 树、7 preset persona 完好、spawn_worker pong、web_fetch 实测直连公网）；F-6/F-7/F-8 适配全部落地（纪律 +10/+11 条、plugin-package-inventory enabled:false 双 profile、版本钉+version-watch dist-tags.latest）。升级过程五个坑（TTY→CI→lockfile→patch 升版→projcache v3→v5）全部根因修复并回写仓库模板。
-> 前置文档：`dsh-0.1.2-upgrade-arch-plan.md`（v1.2，目标当时为 alpha.1/alpha.2；其 §三/§四/§五/§六 架构优化部分 B2-B5 已执行完毕，本文只处理**剩余的 B1：DSH 本体升级**，并按 rc.1 最终 release notes 重新逐条校准）
+> 前置文档：[dsh-0.1.2-upgrade-arch-plan.md](dsh-0.1.2-upgrade-arch-plan.md)（v1.2，目标当时为 alpha.1/alpha.2；其 §三/§四/§五/§六 架构优化部分 B2-B5 已执行完毕，本文只处理**剩余的 B1：DSH 本体升级**，并按 rc.1 最终 release notes 重新逐条校准）
 > 升级状态：`0.1.2-rc.1` 已上 npm **dist-tag latest**（2026-09-03 发布）；GitHub 同日出现 `0.1.3-alpha.1`（2026-09-04，含破坏性 Session API 变更 + 已知性能回退）→ **本文目标锁定 rc.1，0.1.3-alpha.1 只做前瞻避让不升级**（§五）。
 > 事实源：本文所有「当前系统」结论均来自 2026-09-04 对 csai `/opt/silkspool/dsh/` 的只读实查（grep 插件依赖、读 settings.yaml/edge-Caddyfile/dsh-upgrade.sh/scheduler.js、查 asset-graph.db 表结构），非文档推断。
 
