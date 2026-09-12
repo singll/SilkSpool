@@ -29,7 +29,7 @@ func NewServiceManager(baseDir string) (*ServiceManager, error) {
 
 	return &ServiceManager{
 		baseDir: baseDir,
-		sshKey: sshKey,
+		sshKey:  sshKey,
 	}, nil
 }
 
@@ -129,7 +129,7 @@ func (m *ServiceManager) StartService(host, serviceAlias string) error {
 		return fmt.Errorf("service %s not found", serviceAlias)
 	}
 
-	cmd := m.buildStartCommand(svc.Type, svc.Name)
+	cmd := m.buildStartCommand(svc.Type, svc.Name, !isRootSSHUser(hostCfg.Address))
 	if cmd == "" {
 		return fmt.Errorf("unknown service type: %s", svc.Type)
 	}
@@ -156,7 +156,7 @@ func (m *ServiceManager) StopService(host, serviceAlias string) error {
 		return fmt.Errorf("service %s not found", serviceAlias)
 	}
 
-	cmd := m.buildStopCommand(svc.Type, svc.Name)
+	cmd := m.buildStopCommand(svc.Type, svc.Name, !isRootSSHUser(hostCfg.Address))
 	if cmd == "" {
 		return fmt.Errorf("unknown service type: %s", svc.Type)
 	}
@@ -183,7 +183,7 @@ func (m *ServiceManager) RestartService(host, serviceAlias string) error {
 		return fmt.Errorf("service %s not found", serviceAlias)
 	}
 
-	cmd := m.buildRestartCommand(svc.Type, svc.Name)
+	cmd := m.buildRestartCommand(svc.Type, svc.Name, !isRootSSHUser(hostCfg.Address))
 	if cmd == "" {
 		return fmt.Errorf("unknown service type: %s", svc.Type)
 	}
@@ -210,7 +210,7 @@ func (m *ServiceManager) GetServiceLogs(host, serviceAlias string, lines int) (s
 		return "", fmt.Errorf("service %s not found", serviceAlias)
 	}
 
-	cmd := m.buildLogsCommand(svc.Type, svc.Name, lines)
+	cmd := m.buildLogsCommand(svc.Type, svc.Name, lines, !isRootSSHUser(hostCfg.Address))
 	if cmd == "" {
 		return "", fmt.Errorf("unknown service type: %s", svc.Type)
 	}
@@ -219,6 +219,22 @@ func (m *ServiceManager) GetServiceLogs(host, serviceAlias string, lines int) (s
 }
 
 // ==================== 命令构建 ====================
+
+// isRootSSHUser 判断 SSH 登录用户是否为 root（root 用户无需 sudo，如 OpenWrt/iStoreOS）
+func isRootSSHUser(address string) bool {
+	if i := strings.Index(address, "@"); i > 0 {
+		return address[:i] == "root"
+	}
+	return false
+}
+
+// sudoPrefix 返回 sudo 前缀（非 root 用户需要提权）
+func sudoPrefix(useSudo bool) string {
+	if useSudo {
+		return "sudo "
+	}
+	return ""
+}
 
 func (m *ServiceManager) buildStatusCommand(svcType, name string) string {
 	switch svcType {
@@ -235,51 +251,51 @@ func (m *ServiceManager) buildStatusCommand(svcType, name string) string {
 	}
 }
 
-func (m *ServiceManager) buildStartCommand(svcType, name string) string {
+func (m *ServiceManager) buildStartCommand(svcType, name string, useSudo bool) string {
 	switch svcType {
 	case "docker":
 		return fmt.Sprintf("docker start %s", name)
 	case "systemd":
-		return fmt.Sprintf("sudo systemctl start %s", name)
+		return fmt.Sprintf("%ssystemctl start %s", sudoPrefix(useSudo), name)
 	case "initd", "openwrt":
-		return fmt.Sprintf("sudo /etc/init.d/%s start", name)
+		return fmt.Sprintf("%s/etc/init.d/%s start", sudoPrefix(useSudo), name)
 	default:
 		return ""
 	}
 }
 
-func (m *ServiceManager) buildStopCommand(svcType, name string) string {
+func (m *ServiceManager) buildStopCommand(svcType, name string, useSudo bool) string {
 	switch svcType {
 	case "docker":
 		return fmt.Sprintf("docker stop %s", name)
 	case "systemd":
-		return fmt.Sprintf("sudo systemctl stop %s", name)
+		return fmt.Sprintf("%ssystemctl stop %s", sudoPrefix(useSudo), name)
 	case "initd", "openwrt":
-		return fmt.Sprintf("sudo /etc/init.d/%s stop", name)
+		return fmt.Sprintf("%s/etc/init.d/%s stop", sudoPrefix(useSudo), name)
 	default:
 		return ""
 	}
 }
 
-func (m *ServiceManager) buildRestartCommand(svcType, name string) string {
+func (m *ServiceManager) buildRestartCommand(svcType, name string, useSudo bool) string {
 	switch svcType {
 	case "docker":
 		return fmt.Sprintf("docker restart %s", name)
 	case "systemd":
-		return fmt.Sprintf("sudo systemctl restart %s", name)
+		return fmt.Sprintf("%ssystemctl restart %s", sudoPrefix(useSudo), name)
 	case "initd", "openwrt":
-		return fmt.Sprintf("sudo /etc/init.d/%s restart", name)
+		return fmt.Sprintf("%s/etc/init.d/%s restart", sudoPrefix(useSudo), name)
 	default:
 		return ""
 	}
 }
 
-func (m *ServiceManager) buildLogsCommand(svcType, name string, lines int) string {
+func (m *ServiceManager) buildLogsCommand(svcType, name string, lines int, useSudo bool) string {
 	switch svcType {
 	case "docker":
 		return fmt.Sprintf("docker logs --tail %d %s 2>&1", lines, name)
 	case "systemd":
-		return fmt.Sprintf("sudo journalctl -u %s -n %d --no-pager", name, lines)
+		return fmt.Sprintf("%sjournalctl -u %s -n %d --no-pager", sudoPrefix(useSudo), name, lines)
 	case "initd", "openwrt":
 		return fmt.Sprintf("logread -e %s | tail -n %d", name, lines)
 	default:
