@@ -4,7 +4,7 @@
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线：网关/事件/幂等/审计）
 > owns（单写者）：`assets` 表、`fingerprints` 表（含全部列级演进）
 > 不 owns：`endpoints`（endpoint 域）、`findings`（vuln 域）、`programs`/scope（authz 域）
-> 订阅：`exec.run.completed`（httpx / l2 parser proposal 回灌）；被订阅：vuln（fp.recorded → intel N-day 候选）、task/exec（asset_deep_queue 取派单队列）、ledger（asset.graded 台账联动）、dashboard（overview/stats）
+> 订阅：`exec.run.completed`（httpx / l2 parser proposal 回灌）；被订阅：vuln（asset.fp.recorded → intel N-day 候选）、task/exec（asset_deep_queue 取派单队列）、ledger（asset.graded 台账联动）、dashboard（overview/stats）
 
 ---
 
@@ -38,8 +38,8 @@
 | `asset_upsert_bulk` | 批量登记（httpx parser proposal 回灌） | model, script | 自然键逐行 + 文件指纹 `asset:upsert:bulk:{sha256}` | asset.registered × 新行数（≤ 批量行数） |
 | `asset_grade` | 分级落库：score 派生 level + accept/biz 标注（单资产或 proposal 批量） | model, script, dashboard | 见 §1.3.3 | asset.graded × 实际变更行 |
 | `asset_state` | 生命周期流转：new/changed/stable/dead（signal→state 映射域私有） | model, script, dashboard | 自动指纹 `(domain,verb,核心参数)` | asset.state.changed（状态实际变化才发） |
-| `fp_record` | 指纹登记 / 版本升级（host+tech 自然键） | model, script, dashboard | 自然键 `asset:fp:{host}\|{tech}` | fp.recorded（新登记或版本变化） |
-| `fp_record_bulk` | 批量指纹登记（httpx tech 数组） | model, script | 逐行自然键 | fp.recorded × 行数 |
+| `fp_record` | 指纹登记 / 版本升级（host+tech 自然键） | model, script, dashboard | 自然键 `asset:fp:{host}\|{tech}` | asset.fp.recorded（新登记或版本变化） |
+| `fp_record_bulk` | 批量指纹登记（httpx tech 数组） | model, script | 逐行自然键 | asset.fp.recorded × 行数 |
 
 **禁用词自查**：无 `update`/`set`/`save`/`modify`；每个动词都是登记或状态机入口。
 
@@ -314,7 +314,7 @@
 **错误码**：`E_SCHEMA` / `E_INVARIANT`（scope）/ `E_NOT_FOUND`——**指纹不要求 host 先在 assets 表**（v4 行为：fpAdd 独立可写；v5 保留——httpx tech 偶尔先于资产行到达 proposal 分支，强制 INV-4 反而丢数据。指纹是读模型，弱一致可接受）。注：此决策与 INV-4（分级要求先登记）不对称是有意的——分级是决策、指纹是观测。
 
 **agent_note**：
-> 登记指纹（技术栈+版本，host+tech 去重）。指纹命中是 N-day 检索的触发器（intel_hunt 订阅 fp.recorded 自动建候选任务）。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。
+> 登记指纹（技术栈+版本，host+tech 去重）。指纹命中是 N-day 检索的触发器（intel_hunt 订阅 asset.fp.recorded 自动建候选任务）。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。
 
 #### 1.3.6 `fp_record_bulk`
 
@@ -406,13 +406,13 @@
 { "host": "api.example.com", "type": "web", "from": "stable", "to": "changed", "signal": "content_changed", "evidence": "run_01HZZZ" }
 ```
 
-#### `fp.recorded`
+#### `asset.fp.recorded`
 
 ```json
 { "host": "oa.example.com", "tech": "ruoyi", "version": "4.7.2", "version_from": "", "source": "httpx:run_01H", "program_id": "bytedance" }
 ```
 
-订阅方（供其域文档引用）：vuln 域 intel_hunt（fp.recorded → N-day 候选任务，v4 行为事件化）、task/exec（asset.graded → 派单队列刷新提示）、ledger（asset.graded → 台账联动）、memcore（**不订阅**——资产无 memcore 生命周期，显式排除防误配）。
+订阅方（供其域文档引用）：vuln 域 intel_hunt（asset.fp.recorded → N-day 候选任务，v4 行为事件化）、task/exec（asset.graded → 派单队列刷新提示）、ledger（asset.graded → 台账联动）、memcore（**不订阅**——资产无 memcore 生命周期，显式排除防误配）。
 
 ### 1.6 模型工具面投影（ToolProjector 自动生成，工具名 = 命令/查询名）
 
@@ -422,7 +422,7 @@
 | `asset_upsert_bulk` | 批量登记资产（≤500 行，httpx 探活结果回灌用）。行级结果数组返回，单行失败不影响其余。评级与状态仍分别走 asset_grade / asset_state。 |
 | `asset_grade` | 资产分级落库（本域唯一写 score/level/accept/biz 的入口）。两种用法：① grade_assets 脚本产出 proposal 文件后传 proposal_path 批量落库（≤2000 行）；② 单资产传 host+score+rationale（vision_triage 分诊/人工调级）。level 由 score 自动派生（S≥75/A60-74/B40-59/C<40），不可直接指定。已分级资产重评需 regrade: true。 |
 | `asset_state` | 资产生命周期流转（new/changed/stable/dead）。传观测信号（content_changed / probe_alive_unchanged / probe_failed / revived）+ 证据 run_id，不传目标状态——状态机由域校验。变化雷达（radar_read）命中后应尽快登记 changed（新内容黄金窗口优先测）；探活失败登记 dead 自动出深挖队列。 |
-| `fp_record` | 登记指纹（技术栈+版本，host+tech 去重）。指纹命中是 N-day 检索的触发器（intel_hunt 订阅 fp.recorded 自动建候选任务）。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。 |
+| `fp_record` | 登记指纹（技术栈+版本，host+tech 去重）。指纹命中是 N-day 检索的触发器（intel_hunt 订阅 asset.fp.recorded 自动建候选任务）。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。 |
 | `fp_record_bulk` | 批量登记指纹（≤500 行）。 |
 | `asset_list` | 检索资产图谱：host_like 模糊、type/program_id/level/level_in/accept/state 过滤。level='none' 筛未分级资产（分级前的待办清单）。 |
 | `asset_get` | 单主机钻取：多类型资产行 + 指纹 + 接口计数 + 漏洞分级统计 + 同族主机。 |
@@ -688,3 +688,14 @@ countFingerprintsWhere(filters) → n
 4. **http-remote CMDB 字段映射**：外部资产系统（设想）的 host/type/attrs 字段差异、severity 映射（SABC→远端等级）需在 Phase 4 试点时定稿；能力矩阵的 partial 差异清单届时具化。
 5. **B 级占比过高**：score 基线 40（未知业务子域起步 B 下沿）导致 B 48,403 / C 28,017 的分布，深挖队列 S+A+B 命中 ~5.1 万行——评分基线是否调参（或在 deep_queue 增加 score 下限参数）？
 6. **proposal 上限 2,000 vs 单事务时长**：2,000 行 UPDATE 单事务实测 <100ms，但若未来 proposal 行数上限提高，是否改为分片多事务（牺牲整批原子性换吞吐）需实测后定。
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 30/30 契约通过；分级、状态、指纹和深挖队列入口分离，无直写旁路。 |
+| 性能 | bulk/TSV 有 500/5000 行上限，索引覆盖 program/level/score；当前 96k 资产规模可用。 |
+| 静默错误 | `exec.run.completed` 投影中 upsert/fp/state 单项失败只增加 `failed` 并返回 `partial:true`，没有日志或 subscriber_failed 明细；批次失败可观测性不足。 |
+| 文档漂移 | 已修正 `asset.fp.recorded` 事件名。 |
+| hook 判定 | v4 `fp_query` 已移除，由 QueryProjector 零改名接管；无 hook 替代。 |
+| 独立升级 | 包边界支持单域更新；须回归 asset、exec parser、vuln intel_hunt 与 dashboard 查询。 |

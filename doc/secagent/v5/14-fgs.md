@@ -239,7 +239,7 @@
 
 payload 只含 ID 与判据快照（宪法 §八.1），不含行全量——订阅方需要详情自己 fgs_list。
 
-**订阅**：`task.finished`（sync，actor=reactor，cause 链带源事件）——ok=false 时为该任务补记失败节点：`fgs_add{task_id, type: 'step', status 直接由域内 service 落 'failed', content: {summary: '任务失败: <note>', run_id}}`；truth.rejected=true 时改记 `type:'finding', content:{summary:'worker 拒执或 API 错误', reason, run_id}}`（原 taskFinishScheduledRun 的 P17 内嵌逻辑事件化，供复盘模型行为）。
+**订阅**：`task.finished`（async，actor=reactor，cause 链带源事件）——ok=false 时为该任务补记失败节点：先 `fgs_add` 创建 step/finding 节点，再 `fgs_fail` 写入失败原因；truth.rejected=true 时补记 finding 类节点。2026-09-12 审查后改为弱联动：补记失败不回滚任务事实，失败进入 outbox 重试/死信，避免“名义 sync、实际 best-effort”的语义漂移。
 
 **事件协作时序（任务全生命周期，fact 沉淀链全景）**：
 
@@ -410,7 +410,7 @@ stateDiagram-v2
 |---|---|
 | 单命令事务 | fgs_add/complete/… 各一个 BEGIN IMMEDIATE：单行 INSERT 或 UPDATE（status+updated_at+content 合并+score）；跨域效果（fact 沉淀、handoff、vuln 联动）一律事件，最终一致 |
 | **生命周期绑定** | 任务启动：task 域调度器经总线 `fgs_clear` + `fgs_add(goal)`（actor=scheduler；goal content.summary=objective 截 200，detail=全文）。任务收尾：图随 task.finished 封存（INV-F1 转只读）。**清图与沉淀是图的一体两面**——先沉淀（fact 域 async 订阅者）后清图（下周期 scheduler），事件序天然保证（task.finished 先于下一 claim） |
-| **失败节点补记** | 本域订阅 task.finished（sync）：ok=false → 域内 service 直接落 failed step 节点（cause 链带源事件；绕过网关 INV-F1 是设计内的——任务此刻刚离 running，补记的是历史事实）。truth.rejected → finding 类 failed 节点 |
+| **失败节点补记** | 本域订阅 task.finished（async）：ok=false → 经 `fgs_add` + `fgs_fail` 补记 failed 节点（cause 链带源事件；补记的是历史事实）。truth.rejected → finding 类 failed 节点；订阅失败走 outbox 重试，不回滚任务收尾 |
 | **fact 沉淀（协作而非直写）** | fact 域订阅 fgs.node.done（async，维护待沉淀清单）+ task.finished（async，ok=true 触发批量转正，判据与时序见 §1.5 图）。**本域零 fact 写入**——persistFgsFacts 从 scheduler.js 整体迁出 |
 | **handoff 追加（归属裁决，任务书要求论证）** | **handoff 归 ledger 域**。理由：handoff-{date}.md 与 attempts-{program}.tsv、card_usage-{date}.jsonl 同目录（`data/pipeline/{program}/`）、同生命周期（北京日切滚动）、同消费方（vault 同步/次日任务交接阅读）——五段结构（状态快照/今日动作/明日队列/阻塞与求助/数据指针）本身就是纪律台账体系的一环；若归 fgs 域则 pipeline 目录出现第二个写者，且 fgs 域被迫 owns 一个与决策图无关的文件形态。**原 appendFgsToHandoff 的直写归零**：ledger 域订阅 task.finished → 调本域查询 fgs_export(format=markdown) → 追加进当日 handoff（跨域只读 + 本域写，合法形态）。本域只保证 fgs_export 输出与 v4.x 追加段落逐字兼容 |
 | 失败语义 | 同步订阅者异常被网关捕获 → audit `subscriber_failed`，不回滚命令；async 可经 `sec bus replay --since` 重放 |
@@ -513,3 +513,14 @@ deleteNodesByTask(taskId) → n                              // fgs_clear
 3. **历史图保留策略**：终态任务图累积（只读）。节点量级小（每任务数十），暂不清理；若长期膨胀再议「导出后归档」。
 4. **fgs.node.done 是否足以独立驱动沉淀**：当前设计 fact 域双订阅（fgs.node.done 记清单 + task.finished 触发转正），沉淀被任务收尾门控（与图生命周期一致）。若未来出现「任务中途即沉淀」的实时性需求，需评估 mid-task 沉淀对复验周期（30d）锚点的影响。
 5. **blocked 节点复活**：当前 blocked 不自动复活（新 step 重试）。是否需要 `fgs_unblock`（blocked→open）动词——倾向不加（避免状态机膨胀，重试新建节点语义更清晰），待实证。
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 19/19 契约通过；goal/fact/step/finding 依赖与状态语义清晰。 |
+| 逻辑修正 | `task.finished` 已改为 async 弱联动：补记失败不回滚任务事实，失败走 outbox 重试。 |
+| 性能 | `fgs_next` 候选 LIMIT 50 + done set；当前图规模可用，超大图需任务级索引。 |
+| 静默错误 | 补记链的 fgs_add/fgs_fail 失败会记录日志并保留事件重试；无主流程吞错。 |
+| hook 判定 | 无直写；fact/ledger 均通过查询/命令协作。 |
+| 独立升级 | 支持单域替换；须与 task、fact、ledger 联测。 |

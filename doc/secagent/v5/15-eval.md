@@ -32,6 +32,7 @@
 | C1 | `eval_case_append` | 活评测集追加一条判定回流（订阅通道；模型禁用） | system, script, human | eval.case.appended | 自然键（finding_id+verdict+ts 当日） |
 | C2 | `eval_run_fp` | 触发假阳性消融评测（12 用例双条件，异步执行） | dashboard, human, script | eval.report.built | 自动指纹（cases+model），10 分钟窗口 |
 | C3 | `eval_run_contract` | 触发契约合规评测（模型越权用例：网关直断言 + 可选 LLM 诱导层） | dashboard, human, script | eval.report.built | 自动指纹（cases+llm_probe），10 分钟窗口 |
+| C4 | `eval_run_finish` | 异步执行器唯一收尾通道（内部；模型/看板不可见） | system | eval.report.built | 自然键（run_id） |
 
 ### 1.3 命令逐个详述
 
@@ -324,3 +325,14 @@ export const repositoryV1 = {
 3. **靶场回归（eval-run.js）域化时机**：若 exec 域提供批量编排查询（exec_run_batch），可收编为 `eval_run_range` 命令；当前保留脚本形态成本最低。
 4. **eval-live 翻案语义**：同一 finding 先 confirmed 后 false_positive 产生两行，fp_rate 同时计入分子分母——是否按 finding_id 取最新判定重算（更准确但丢失时间演化）待数据量上来后定。
 5. **评测报告进 vault**：fp 增益曲线是否随 memcore vault 导出同步 keeper（Obsidian 可视化）——弱联动试验点。
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 18/18 契约通过；异步 run 状态机、报告落盘与事件收尾统一走 `eval_run_finish`。 |
+| 性能 | file 后端 `listRuns` / `listReports` 每次扫描并逐文件 JSON.parse；历史报告增长后需要索引或分页目录。 |
+| 静默错误 | 归档快照 copy 失败不阻断主报告写入，但没有 warning；run_finish 失败有 stderr 日志。 |
+| 未实现 | 无占位命令；`eval_run_finish` 为内部 system-only 命令，已补入契约表。 |
+| hook 判定 | vuln confirmed/rejected 订阅经本域 case_append 回流，无直写。 |
+| 独立升级 | 支持单域替换；须与 vuln、dashboard 联测。 |

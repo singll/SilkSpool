@@ -662,3 +662,13 @@ prompt 引用同步：persona/objective/skills/technique-index 中 `blackboard_s
 3. **fact_purge_archive**（映射表 #7 的 90 天硬删命令）已正式列为 C10（system/human actor + repository 原语 `purgeArchives`），不再占位。
 4. **派生边型**（same-domain/same-subnet）不在七种语义边型内，仅 C9 可写——是否在 schema 层把 edge_type 拆成 `semantic|derived` 两字段，待图规模上来后复评。
 5. **timeline 黑板键形态**：`[timeline]` bracket 键与带日期快照键（已被 INV-F7 拒绝）历史并存；是否对 `[timeline]` 键也强制日期后缀，待存量盘点。
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 22/22 契约通过；事实 key、置信、生命周期与沉淀判据清晰。 |
+| 静默错误 | FGS list 查询失败返回 0；单个 fact_upsert 失败跳过其余；任务成功订阅最终仍返回 ok，只暴露 persisted 数，无法区分“无 eligible”与“查询失败”。 |
+| 性能 | task.finished 对账最多串行处理 500 个 FGS fact 节点；当前规模可用，超过后应分批。 |
+| hook 判定 | v4 `persistFgsFacts` 已事件化到 fact 域，无直写。 |
+| 独立升级 | 支持单域替换；须与 fgs/task 联合回归。 |

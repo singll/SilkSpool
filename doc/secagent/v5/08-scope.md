@@ -49,7 +49,7 @@
 | `scope_revoke` | 从项目移除授权条目；条目清空 → 整项目出 yml + programs 行归档（fail-closed 立即生效） | approval / dashboard / human / system | 自然键 `{program}:{entries 指纹}` | `scope.revoked` |
 | `scope_exclude` | 向项目追加排除条目（须与任何授权互斥） | approval / dashboard / human / system | 自然键 `{program}:{entries 指纹}` | `scope.excluded` |
 | `scope_rules_apply` | 对全局 defaults 或项目 rules 应用一份通过校验的规则补丁（QPS/风险级/侵入白名单增删） | approval / dashboard / human / system | 自动指纹（target+patch sha1） | `scope.rules.changed` |
-| `program_bind_workspace` | 项目 ↔ DSH 工作区 1:1 软绑定 / 解绑 | dashboard / human / system | 自然键 `{program}` | `program.bound` |
+| `program_bind_workspace` | 项目 ↔ DSH 工作区 1:1 软绑定 / 解绑 | dashboard / human / system | 自然键 `{program}` | `scope.program.bound` |
 | `program_archive` | 归档 programs 镜像行（数据归属保留；前提：已不在 yml） | dashboard / human / system | 自然键 `{program}` | （无） |
 | `cred_add` | 登记凭据**引用**（绝不存明文）；host 必须在授权范围内 | model / script / human | 自然键 `(program_id,host,cred_type,ref)` | （无） |
 
@@ -222,7 +222,7 @@
 | `program_name` | string | 是 | — | 项目须在 programs 表（yml 或 archived 镜像）→ `E_NOT_FOUND` |
 | `workspace` | string \| null | 是 | — | 工作区**标题或路径**（与 v4.x 声明口径一致）；`null` = 解绑。解析经 workspaceRegistry 适配器（§2.4），找不到 → `E_NOT_FOUND`（hint：`工作区不存在——先用 workspaces 查询核对标题/路径`） |
 
-**返回信封**：`data: { program_name, workspace_id, workspace_path, unbound: false }`；事件 `program.bound`。
+**返回信封**：`data: { program_name, workspace_id, workspace_path, unbound: false }`；事件 `scope.program.bound`。
 
 **错误码**：`E_SCHEMA` / `E_NOT_FOUND`（项目或工作区）/ `E_CAPABILITY_UNSUPPORTED`（headless worker 进程无 workspaceRegistry——绑定动词只在 web 宿主面可用，worker 面投影不注册）。
 
@@ -381,13 +381,13 @@ payload：`{ program_name, entries[], program_removed: bool, programs_archived: 
 }
 ```
 
-**订阅方：exec 域（mode: sync，强联动）**——QPS 令牌桶容量、风险上限缓存、侵入工具白名单缓存即时刷新。**这是 v4.x mtime 轮询的替代**：v4.x `loadScope` 按 mtime 缓存重读、`acquireQpsToken` 每次取令牌时对账容量；v5 改为"域内命令写 → 强联动事件 → exec 缓存确定性刷新"，消除轮询窗口（轮询窗口内桶容量可能滞后一个令牌周期）。外部写入路径（spool sync / 人工）经 §2.5 的接管流程后由域**补发本事件快照**，同样走事件通道。
+**当前无 exec 域订阅**——QPS 令牌桶容量、风险上限与侵入工具白名单在每次执行守卫时按 scope 域真相源实时读取，不维护跨进程缓存。此前设计的 sync 强联动订阅会在跨进程 worker 面制造“事件已投递但本进程缓存未刷新”的假象，已在 2026-09-12 审查中删除。外部写入路径（spool sync / 人工）经 §2.5 的接管流程后由域补发本事件快照，供审计与看板消费。
 
 #### 1.5.4 `scope.excluded`
 
 payload：`{ program_name, entries[] }`。订阅方：看板通知（弱）。
 
-#### 1.5.5 `program.bound`
+#### 1.5.5 `scope.program.bound`
 
 payload：`{ program_name, workspace_id, workspace_path, unbound: bool }`。订阅方：看板工作区视图刷新（弱）。
 
@@ -691,3 +691,13 @@ v4.x scope.yml 有三个写入方：serializeScope（域内）、spool sync push
 | O-5 | http-remote 全 unsupported——多主机/中心化授权管理的未来形态 | Phase 4 评审时与 vuln http-remote 一并议 |
 | O-6 | `_persistScope` 序列化丢注释（v4.x 已知协同痛点） | 评估 YAML AST 保注释写（js-yaml 保持注释能力有限，可能引入轻量自研） |
 | O-7 | scan-burst（T-16）：临时调高 defaults.rate_limit_qps 的审批 kind——需要"TTL 到期自动回落"的规则状态（临时补丁 + 恢复事件），与 `scope_rules_apply` 的永久补丁模型不同 | 与 09 §四 O-1 联动设计 |
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 15/15 契约通过；grant/revoke/apply/bind/archive 均有明确状态与幂等。 |
+| 静默错误 | scope.yml 写入前 `.bak` 失败不阻断主写；没有告警，灾备链路可能静默退化。 |
+| 性能 | yml 规模小，实时解析/查询开销可忽略；QPS 守卫每次读取换取一致性，符合当前规模。 |
+| 文档漂移 | 已修正：无 exec 订阅，`scope.program.bound` 为完整事件名。 |
+| 独立升级 | 支持单域替换；scope 是全局安全依赖，升级必须全量受影响域冒烟，不能只跑本域测试。 |

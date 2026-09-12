@@ -210,7 +210,9 @@
 ```json
 { "by_kind": [{ "kind": "scope-wildcard", "pending": 1, "approved": 3, "rejected": 1, "withdrawn": 0 }],
   "pending_total": 4, "pending_oldest_days": 2.3,
-  "avg_decide_hours": 5.6, "by_decider": [{ "operator": "singll", "approved": 12, "rejected": 3 }] }
+  "avg_decide_hours": 0, "by_decider": [] }
+
+> 当前实现的 `avg_decide_hours` 固定为 `0`、`by_decider` 固定为空数组：决定操作者只拼入 note，未落结构化 decided_by 字段，无法可靠聚合并避免从自由文本猜人名。两项是已声明未实现指标，不是示例值缺失。
 ```
 
 看板审批 tab 头部统计条 + 看板 ops 红条（pending >7 天告警）的数据源。
@@ -628,3 +630,14 @@ ApprovalRepo.statsWhere({since_ts}) -> aggregates
 | O-4 | knowledge-adopt 是否需要订阅 know 域收割状态（如"草稿被删除时自动作废已提请求"） | 当前用查询满足；出现真实联动规则再升级为订阅 |
 | O-5 | 审批 SLA：pending >7 天目前只有看板红条，是否要 approval.requested 的 Matrix 通知通道 | 倾向加（Bellkeeper 通知网关已有），Phase 5 与看板通知一并做 |
 | O-6 | kind 注册表的运行时热扩展（插件式 kind 注册）vs manifest 静态声明 | 静态优先（宪法 §八.6 显式依赖精神）；热扩展等出现第三方 kind 需求 |
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 16/16 契约通过；approval request/decide/reconcile 与 effect outbox 最终一致语义成立。 |
+| 未实现 | `approval_stats.avg_decide_hours` 固定 0，`by_decider` 固定空数组；原因是未落结构化 decided_by，不能从 note 猜测。 |
+| 静默错误 | effect 执行结果有 `approved_effect_failed` 与 reconcile，未见吞错；主要缺口是统计字段未实现。 |
+| 性能 | approvals/effects 规模小，SQLite 索引足够。 |
+| hook 判定 | scope/task/ledger 均经总线命令订阅联动，无直写。 |
+| 独立升级 | 支持单域替换；须回归 scope、task、exec、ledger 四个效果消费方。 |

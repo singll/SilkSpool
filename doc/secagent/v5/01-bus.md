@@ -689,3 +689,14 @@ dispatch_aliases:
 | Q3 | **强联动嵌套与环**。subscribes 图的强联动环已在注册时检测，但 sync 订阅者动态 dispatch（handler 里调另一域命令又触发 sync 订阅）只能靠深度闸 3 兜底。 | 需确认：深度 3 是否够（vuln→asset→scope 链已 3 层）；是否要在 audit 里显式记录嵌套链 |
 | Q4 | **operator 身份注入通道**。v4.x dashboard RPC 不携带操作者身份（approvalDecide 审计无 operator 字段，实测取证）。v5 设计假定 auth-gate 0.7.2 可在 RPC 连接上下文暴露用户身份，未实测验证。 | 回退方案：看板登录后向 `/silksec-domain` 发一次性 operator 登记调用（token 换绑连接→operator），bus 维护连接↔operator 映射。Phase 1 第一周内定 |
 | Q5 | **http-remote 后端的幂等语义边界**。远程端点部分成功（网络超时但远端已提交）时，本地幂等表未落行 → 重试会在远端二次执行。能力矩阵 partial 声明 + 远端幂等头（Idempotency-Key 透传）是方案，但依赖外部系统配合。 | Phase 4 vuln 试点时定；需用户确认目标外部漏洞管理系统是否支持幂等头 |
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 通过：R0-R9 注册与运行闸门齐全；线上 14 域 registered，`dangling_subscriptions=[]`，outbox 无 pending/dead letter。 |
+| 性能 | `bus_replay` 会把每个事件 JSONL 整体读入内存后再应用 limit；事件日志增长后需改为按行流式读取/倒序索引。outbox 派发有批量与状态谓词，当前规模健康。 |
+| 静默错误 | 事件日志坏行/半行在 replay 中直接跳过，没有 `corrupt_lines` 汇总；建议后续补计数。 |
+| 未实现 | `high_frequency` 仍为保留字段，统一 8KB 事件上限。 |
+| hook 判定 | ToolProjector/RpcProjector 是契约投影，不是绕总线 hook；合法。 |
+| 独立升级 | bus 是底座，不能单独替换后跳过域回归；升级必须全量契约矩阵 + 部署验收。 |

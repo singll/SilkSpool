@@ -450,3 +450,13 @@ readStats()
 3. **blocklist 撤销**：误报永久损失代理（§1.3.2）；是否需要 human actor 的 `proxy_unblock`（与"谨慎上报"RoE 权衡）。
 4. **付费代理源**：http-remote 采集输入（商业代理 API 直灌 proposal）的账号与配额管理归 authz 域还是本域。
 5. **代理质量信号回流**：proxy.bad.reported 事件按 reason/目标维度聚合分析（哪些目标对免费代理敌意高）——eval 域还是本域查询，待 eval 域定稿。
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 契约测试通过；list/gateway/sticky/report_bad 的所有权清晰。 |
+| 静默错误 | 文件后端读取 live/blocklist 失败会得到空集合或 false；查询层可见“无代理”，但不区分文件缺失、格式错误与空池。 |
+| 性能 | 代理池文件规模小，读全量可接受；sticky map 进程内缓存无持久化，重启后重建。 |
+| hook 判定 | 无跨域直写；exec 仅通过本域命令 report_bad。 |
+| 独立升级 | 支持单域替换；须回归 exec 的代理注入与 report_bad。 |

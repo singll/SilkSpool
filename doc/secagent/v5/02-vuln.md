@@ -802,3 +802,14 @@ prompt 引用同步：persona/objective/skills/technique-index 中的 finding_ad
 6. **dup_of 自动推荐**：verdict=dup 时 dup_of 目前必填；可否在错误 hint 中内嵌 vuln_dedup_check 的 top-3 候选降低模型重试成本。
 7. **OOB 证据通道（带外验证）**：csai 已部署 `oob/interactsh-server`（未启用，阻塞点=公网 NS 委派未做）。v5 证据引用已扩展 `oob:` 前缀（C1 正则 + C3 INV-2 校验），interactsh 交互记录（DNS/HTTP/LDAP 回连）作为第五类证据形态。待定项：① interactsh 轮询与归属匹配（payload correlation-id → 任务 → finding）落在 exec 域（worker 内轮询）还是本域（reactor 周期轮询）——倾向 exec 域 worker 内轮询（回连窗口与任务生命周期绑定），本域只做 evidence 校验；② 公网 NS 委派打通前 OOB 通道整体不可用，payload 生成端（模型/工具面）须能感知"OOB 不可用"并降级为盲注+延迟复验策略；③ interactsh 交互记录的存储归属（data/oob/ 谁 owns）。启用时间表跟随公网 NS 委派（基础设施前置，非 v5 代码项）。
 
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 契约测试通过；候选/信号状态机、幂等、证据引用与 replay 语义清晰。 |
+| 真实缺陷 | worker 沙箱内生成的 `/home/silkspool/...` 证据文件对服务端 `vuln_confirm` 不可见，`evidenceProbe` 只探测 `SEC_DATA_DIR/results`、`SEC_DATA_DIR/evidence`、flows/oob；2026-09-12 #100007 中 #404/#405 因此卡在 E_EVIDENCE_REQUIRED。需要统一“证据生产者写服务端可见 run 目录/证据包”或提供 exec 域证据上传契约。 |
+| 性能 | list/stats 走 SQLite 谓词；replay 有 20s 超时。风险集中在证据文件大包读取与后续外部后端网络延迟。 |
+| 静默错误 | HTTP redirect URL 解析失败保留 raw，可接受；http backend 的同步失败需依赖 syncer 日志观察。 |
+| 未实现 | 无占位分支；文档承诺与 manifest 对齐。 |
+| hook 判定 | parser 提案经事件转 candidate，不直写 findings，合格。 |
+| 独立升级 | 可以单域替换 sqlite/http 后端，但 eval/report 是直接消费方，升级须回归二者。 |

@@ -310,6 +310,8 @@ session_id: sess_...
 
 **联动**：无同步订阅者、无强联动。跨域读（vuln_list/vuln_stats/vuln_get）走 QueryGateway 同步调用，失败即命令失败（E_BACKEND_UNAVAILABLE，retryable）——报告宁可不生成也不生成残缺快照。
 
+`program_exists` 是例外：scope 域不可达或返回异常时软校验放行，仅在 scope 正常返回列表时拒绝不存在项目。这是为了报告可用性保留的降级，但缺少 degraded 标记；生成结果目前无法区分“scope 校验通过”与“scope 校验未执行”。
+
 ### 2.4 后端适配器
 
 repository 接口（JSDoc，方法名=原语）：
@@ -396,3 +398,14 @@ statReportFile(relPath)      // mtime/size/sha
 3. **报告模板可配置化**：当前模板硬编码在域内；是否抽出模板文件（类似 vulncards 的 file 后端形态）供人工调整。
 4. **http-remote**：外部漏洞平台的报告附件上传（与 vuln 域 http-remote 试点同期评估）。
 5. **报告归档**：产物不可变 + 无删除动词——一年后的清理策略（人工运维 or 归档谓词进 report_list）。
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 11/11 契约通过；报告索引 + frontmatter 权威 + 惰性 heal 语义成立。 |
+| 功能缺口 | `program_exists` 在 scope 不可达时软放行且无 degraded 标记，无法区分校验通过与校验未执行。 |
+| 性能 | report_build 分页拉全量 findings 后内存过滤，10,000 行硬上限；当前数百级可用，接近上限时需把过滤下沉到 vuln 查询。 |
+| 静默错误 | vuln 数据源失败是 fail-closed；noise stats 失败降级为 0，报告仍生成。 |
+| hook 判定 | 只读 vuln/scope，写本域文件/索引，无替代功能 hook。 |
+| 独立升级 | 支持单域替换；须与 vuln、scope、dashboard 联测。 |

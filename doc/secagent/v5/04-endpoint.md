@@ -35,8 +35,8 @@
 | 动词 | 语义（状态机入口） | actor 白名单 | 幂等键 | 事件 |
 |---|---|---|---|---|
 | `endpoint_upsert` | 登记接口（单行或 TSV 批量入库——l2-collect 产出消费口） | model, script, dashboard | 自然键逐行 `(host,method,path)` | endpoint.registered（仅新行） |
-| `endpoint_queue_surface` | 参数面入队：从 TSV/文本提取带参数 URL，全局去重（seen 域内）追加 param-queue | model, script | 自动指纹 `(program, source, 文件 sha256)` | queue.enqueued |
-| `endpoint_consume_queue` | 队列消费：dalfox/sqlmap 取料后标记消化（出队；seen 保留防重回） | model, script | 自然键 `endpoint:consume:{program}:{run_id}` | queue.consumed |
+| `endpoint_queue_surface` | 参数面入队：从 TSV/文本提取带参数 URL，全局去重（seen 域内）追加 param-queue | model, script | 自动指纹 `(program, source, 文件 sha256)` | endpoint.queue.enqueued |
+| `endpoint_consume_queue` | 队列消费：dalfox/sqlmap 取料后标记消化（出队；seen 保留防重回） | model, script | 自然键 `endpoint:consume:{program}:{run_id}` | endpoint.queue.consumed |
 | `endpoint_mark_auth` | 鉴权标注：auth_required / roles_seen（越权矩阵唯一数据源） | model, script, dashboard | 自然键 `(host,method,path)` | endpoint.auth_marked |
 
 **结构性闸门**：`auth_required` / `roles_seen` 两列**只出现在 `endpoint_mark_auth` 的参数表里**；`endpoint_upsert` schema 不含（v4.x `endpoint_add` 工具带这两个参数、l2-collect TSV 也有 `auth_required` 列恒为 `unknown`——v5 一律剥离，登记与标注分动词）。
@@ -279,13 +279,13 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 （仅新行；批量入库时逐新行发布，≤ 行数上限。）
 
-#### `queue.enqueued`
+#### `endpoint.queue.enqueued`
 
 ```json
 { "program": "bytedance", "new_urls": 217, "pool": 1130, "source": "results/run_01H/endpoints-proposal.tsv" }
 ```
 
-#### `queue.consumed`
+#### `endpoint.queue.consumed`
 
 ```json
 { "program": "bytedance", "consumed": 913, "remaining": 0, "scanner": "dalfox", "run_id": "run_01HY" }
@@ -300,7 +300,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
   "evidence": "run_01HZ" }
 ```
 
-订阅方：vuln 域（endpoint.auth_marked → 越权测试候选提示；queue.enqueued → param 喂料任务上下文）、ledger 域（endpoint.registered → 接口台账 TSV 联动，见 §2.3）、dashboard（queue.consumed → 队列徽章）。
+订阅方：vuln 域（endpoint.auth_marked → 越权测试候选提示；endpoint.queue.enqueued → param 喂料任务上下文）、ledger 域（endpoint.registered → 接口台账 TSV 联动，见 §2.3）、dashboard（endpoint.queue.consumed → 队列徽章）。
 
 ### 1.6 模型工具面投影（工具名 = 命令/查询名）
 
@@ -550,3 +550,14 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 5. **http-remote 对接系统选型**：外部 API 清单系统（设想）的 (host,method,path) 主键兼容性、鉴权字段命名、bulk 端点限额——Phase 4 与 asset 域 CMDB 对接一并调研。
 6. **roles_seen 的角色词表**：当前自由字符串（admin/user/guest…），跨项目口径不一——是否由 authz 域统一角色注册表（credentials 的 role 字段已有雏形）供本域引用校验？
 7. **consume 的自动化**：dalfox/sqlmap 经 run_cli 跑完后由模型显式调 consume_queue（当前设计）；是否在 exec.run.completed handler 里对 scanner ∈ {dalfox, sqlmap} 的 run 自动消化当次喂料（依赖 exec 域 proposal 携带喂料清单）？
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 24/24 契约通过；endpoint 登记与鉴权标注状态入口分离，param queue 原子写。 |
+| 性能 | upsert ≤5000 行；surface_scan 会扫描 endpoints path/params 与 param-queue，当前万级以内可用，后续需加专用索引/词表预过滤。 |
+| 静默错误 | parser 投影失败仅返回 `partial:true`，没有逐项错误；与 asset 同为可观测性缺口。 |
+| 文档漂移 | 已修正 `endpoint.queue.enqueued` / `endpoint.queue.consumed` 事件名。 |
+| hook 判定 | parser proposal 经事件由本域 `endpoint_upsert` 落库，不直写，合格。 |
+| 独立升级 | 支持单域替换；须回归 endpoint、exec parser、vuln 越权提示与 ledger 联动。 |

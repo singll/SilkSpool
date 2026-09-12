@@ -507,6 +507,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | `task_stats` | 任务进度总览：按 phase×status 计数 + 总数。 |
 | `task_runs` | 任务执行历史（每任务保留最近 200 行）：run_id/ok/note/时长/会话，可按 task 或 program 过滤。 |
 | `task_scheduled` | 固定定时任务清单（卡片数据源）：未终态+带调度，附运行统计（run 数/失败数/最近一次结局）。 |
+| `task_drift` | 调度漂移体检（内部/看板用）：最近执行年龄、越界 running 与过期 queued 概览，供 ledger discipline_stats 与 ops 红条消费。 |
 | `task_worker_list` | 列出最近的 spawn_worker run（可按 status 过滤：running/done/failed/killed），总览在飞/历史 worker。 |
 | `task_worker_status` | 查询某个 spawn_worker run 的结局（running/done/failed/killed）+ 恢复指引。重启后 spawn_worker 报 interrupted/outcome unknown 时，用它确认真实结果（已落盘）；尾部日志用 grep_result/page_result 取。 |
 
@@ -829,3 +830,14 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 2. **workers 表保留策略**：v4.x 终态行无限累积；本稿提议 30 天清理（dedupe 窗口 30min 不受影响）。需与「重启恢复窗口」复核。
 3. **task_runs 200 行上限可配性**：排障时可能需要更长历史；是否升为 manifest 配置（默认 200）。
 4. **http-remote 入站形态**：远端任务系统若要下发任务，走 webhook→task_create（actor=webhook）即可；是否需要专用的 `task_import_bulk` 批量动词（≤500 行）待需求实证。
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 21/21 契约通过；`task_run_now` 已改为非幂等写，失败回 queued 后可安全重跑；claim 原子防重复。 |
+| 功能缺口 | v5 task scheduler 观察期休眠，`data/scheduler.lock` 由 v4 `sec-suite.scheduler.js` 持有；当前定时功能依赖过渡 hook，不是 v5 域内正式调度。 |
+| 静默错误 | `ledger_task_proof` 查询异常时 guard 降级为 missing=[] 且无日志；task_runs 收尾异常兜底吞掉后仅影响执行史。 |
+| 性能 | task_runs 每任务 LRU 200 行；workers 终态行尚无 30 天清理，长期会膨胀。 |
+| 文档漂移 | 已补 `task_drift` 查询。 |
+| 独立升级 | 包边界可单域更新，但调度切换需 v4/v5 锁互斥演练；不能在生产直接删除 v4 scheduler。 |

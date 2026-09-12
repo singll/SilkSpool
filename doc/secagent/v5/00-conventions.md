@@ -315,3 +315,16 @@
 2. **动词废弃三段式**：`deprecated`（manifest 标记，工具描述加"已废弃，改用 X"，audit 记 deprecated_use）→ 观察期一个调度周期（7 天，audit 零使用为验收）→ 删除（契约测试同步删）。
 3. **兼容别名**：v4.x → v5 旧工具名映射表由总线维护（`aliases: { finding_add: vuln_register_signal }`），别名同样过网关全管线（不绕校验）；别名删除走废弃三段式。
 4. **prompt 引用同步**：动词改名/废弃时，persona/objective/skills/technique-index 中的工具引用由脚本化改写（复用 p14-1-tool-refs.py 模式），改写后 `discipline-audit.py` 增加"悬空工具引用"断言。
+
+## 十六、2026-09-12 深度审查与独立升级基线
+
+**审查范围**：15 个业务域 + 总线、17 个后端/横切插件、20 个安装器、全部 v5 文档。维度覆盖逻辑正确性、功能可用性、性能容量、错误吞没、未实现分支、hook/兼容层替代正式功能、单域更新能力。
+
+| 判定 | 结论 |
+|---|---|
+| 总线 | 14 域 + bus 注册正常；R8/R9 生效；outbox `pending=0`、`dead_letter=0`、悬空订阅为空。 |
+| 域插件原子化 | 15 个业务域均通过 manifest + handler + backend 自包含组装；生产代码无跨域 import，跨域读写经 QueryGateway/DispatchGateway。 |
+| 独立更新 | 架构上支持单域替换（各自 plugin package + 后端 + 契约测试）；操作上仍依赖全量 `spool bundle dsh setup`，尚无单域安装/回滚命令。 |
+| 主要风险 | v4 dashboard 63 处兜底、v4 scheduler 持锁替代 v5 调度器、vuln evidence 工作区/服务端路径缝错位、task 守卫查询异常静默降级、know 索引清理失败无日志、approval 决策指标未实现。 |
+
+**单域升级纪律**：更新 bus 必须全量 14 域契约回归；更新任一业务域至少回归本域 + 直接消费方（bus_status 悬空订阅为 0 + 受影响域契约 + `sec-v5-accept.sh`）。在单域安装命令落地前，不得宣称“可独立部署”，只能说“包边界具备独立升级条件”。

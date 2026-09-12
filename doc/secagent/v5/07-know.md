@@ -43,7 +43,7 @@
 | C13 | `kb_record_usage` | kb | 使用回执（uses+1；kb_search 投影层补发，v5 新增补齐对称性） | model, system | 自动指纹 | （无） |
 | C14 | `rule_seed` | rules | 物化规则文件到 data/rules/ 并建 curated 索引行（actor 物理闸：禁 model） | script, human, system | 自然键（path hash） | know.rule.seeded |
 | C15 | `vc_save` | vulncards | 存入/升版漏洞卡（version+1，deviation+changelog 必填） | model, dashboard, script | 自然键（id+version） | know.vc.saved |
-| C16 | —（原 `vc_log_usage` 废止，改**消费通道**：卡片使用记录归 ledger 域 `ledger_log_card_usage`，见本表下注） | vulncards | 本域经订阅 `card_usage.logged` 事件 + ledger 查询消费（registry 健康度/零使用卡清理判据）；usage jsonl 写入不在本域 | model, script, system（ledger 侧动词的 actor） | —（本域无此命令） | （ledger 域发 `card_usage.logged`） |
+| C16 | —（原 `vc_log_usage` 废止，改**消费通道**：卡片使用记录归 ledger 域 `ledger_log_card_usage`，见本表下注） | vulncards | 本域经订阅 `ledger.card_usage.logged` 事件 + ledger 查询消费（registry 健康度/零使用卡清理判据）；usage jsonl 写入不在本域 | model, script, system（ledger 侧动词的 actor） | —（本域无此命令） | （ledger 域发 `ledger.card_usage.logged`） |
 | C17 | `vc_activate` | vulncards | 激活卡片（draft→active，registry 同步） | dashboard, human, script | 自然键 | know.vc.activated |
 | C18 | `vc_deprecate` | vulncards | 弃置卡片（active→deprecated，registry 同步） | dashboard, human, script | 自然键 | know.vc.deprecated |
 | C19 | `harvest_ingest` | harvest | 收割队列投喂（feed/inbox/stdin → drafts + candidates.json，绝不自动写 rules/） | script, system, webhook | 自然键（item hash） | know.harvest.ingested |
@@ -51,7 +51,7 @@
 | C21 | `know_transition` | 跨仓 | 治理通道：exp/kb 生命周期降级（memcore sweep 专用） | system, human | 自然键 | know.exp.cooled/archived/expired、know.kb.* |
 | C22 | `know_purge_archive` | 跨仓 | 归档表 90 天硬删（占位动词，Phase 2 正式化，同 06-fact 映射表 #7） | system | 自然键 | （无） |
 
-> **卡片使用记录（原 `card_usage_log`）归属**：归 **ledger 域**（动词 `ledger_log_card_usage`），文件 `data/pipeline/{program}/card_usage-{date}.jsonl`（sec-pipeline.js L146，`pipelineDir()` 即 ledger 台账树）：① attempts/card_usage/handoff 三产物同一纪律节奏写入、被 task_finish 流程守卫同批校验、走同一 vault 回放链路——拆域会让守卫跨域取证；② 一棵目录树一个 owner（单写者律同款理由）。**本域消费路径**：订阅 `card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询，驱动 registry 健康度与 know_health 零使用卡清理——读消费不受 owns 影响。字段语义（card_id/deviation/suggest）的知识视角归本域解读，写入动作归 ledger。
+> **卡片使用记录（原 `card_usage_log`）归属**：归 **ledger 域**（动词 `ledger_log_card_usage`），文件 `data/pipeline/{program}/card_usage-{date}.jsonl`（sec-pipeline.js L146，`pipelineDir()` 即 ledger 台账树）：① attempts/card_usage/handoff 三产物同一纪律节奏写入、被 task_finish 流程守卫同批校验、走同一 vault 回放链路——拆域会让守卫跨域取证；② 一棵目录树一个 owner（单写者律同款理由）。**本域消费路径**：订阅 `ledger.card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询，驱动 registry 健康度与 know_health 零使用卡清理——读消费不受 owns 影响。字段语义（card_id/deviation/suggest）的知识视角归本域解读，写入动作归 ledger。
 
 ### 1.3 命令逐个详述
 
@@ -257,7 +257,7 @@
 
 **语义**：v4 `card_usage_log` 工具（sec-pipeline.js L130-158）在 v5 归 **ledger 域 `ledger_log_card_usage`**（见 §1.2 表下注）——落 `data/pipeline/{program}/card_usage-{北京日期}.jsonl`：`{ts, card_id, card_version, asset, result, deviation?, suggest?, run_id}`。
 
-**本域角色**：纯消费方。① 订阅 `card_usage.logged` 事件（弱联动）刷新 registry 健康度缓存；② `know_health` 体检经跨域查询 `ledger_usage_query(card_id, since_days)` 取零使用卡清理判据（不读 ledger 文件）。卡片升版原料分析（deviation 聚合）同样走该查询。
+**本域角色**：纯消费方。① 订阅 `ledger.card_usage.logged` 事件（弱联动）刷新 registry 健康度缓存；② `know_health` 体检经跨域查询 `ledger_usage_query(card_id, since_days)` 取零使用卡清理判据（不读 ledger 文件）。卡片升版原料分析（deviation 聚合）同样走该查询。
 
 **模型侧行为不变**：worker 执行遵循卡片后记录使用与偏离——只是工具落在 ledger 域（`ledger_log_card_usage`），本域工具面不重复注册（宪法单写者律：一个动词一个 owner）。
 
@@ -802,3 +802,13 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 4. **curated 行与 kb 治理的边界**：curated 免复验免流转是 v4 语义；若 rules 升级后旧 curated 行内容过时，唯一通道是 rule_seed 覆盖——是否需要 vc_deprecate 同款 curated 下架动词，待规程库运维经验积累。
 5. **know_adopt 的 payload 二次校验深度**：C20 把 payload 按目标子仓分派后重跑该子仓全部不变量（含 INV-K8/K10）；approval 侧已做第一层校验（subject/draft/source_url/evidence 长度）——双层校验的字段重叠部分是否会产生"审批通过但落库被拒"的悬空审批单，需在 09-approval.md 定稿时对齐失败回写语义。
 6. **harvest drafts 的清理责任**：30 天未采纳草稿清理（2.6）未定义归属命令——本域 sweep 类维护任务（system actor）还是 know_health warnings 驱动的人工动作，待定。
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 19/19 契约通过；六仓动词、脱敏硬门、生命周期与导出资格清晰。 |
+| 静默错误 | archive/delete 时 `exp_fts`、`kb_fts`、embeddings 清理失败被吞，可能残留索引；语义去重失败回退新建，后台 embedding 失败也静默。 |
+| 性能 | `exp_store` 语义去重加载全部 embedding 并逐条 cosine，O(n)；卡片数上万后必须换向量索引或预筛。 |
+| 文档漂移 | 已修正“事务内索引清理必然成功”的强承诺：当前是主行事务成功、索引清理 best-effort。 |
+| 独立升级 | 支持单域替换；embedding 模块可选，缺席时 FTS-only 降级明确。 |

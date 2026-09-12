@@ -1,7 +1,7 @@
 # 11 · ledger 域设计（纪律台账 / 卡使用 / 覆盖 / 雷达队列 / 交接包）
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：`ledger/1`
-> 依赖：订阅 `exec.run.completed`（对账统计，弱联动）、`approval.approved`（scope-approved 雷达入队，弱联动）；被订阅：`attempt.logged` / `card_usage.logged` / `handoff.written`（task 域——task_finish 三产物校验的计数缓存）、`radar.drained`（task/recon 派单侧）
+> 依赖：订阅 `exec.run.completed`（对账统计，弱联动）、`approval.approved`（scope-approved 雷达入队，弱联动）；被订阅：`ledger.attempt.logged` / `ledger.card_usage.logged` / `ledger.handoff.written`（task 域——task_finish 三产物校验的计数缓存）、`ledger.radar.drained`（task/recon 派单侧）
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：把 agent 的**纪律动作**（台账落行/卡使用/交接包/雷达处置）变成机器强制、写入即校验、可聚合取证的文件型台账——"执行了什么、覆盖到哪、纪律是否在线"的唯一真相源。
 
@@ -24,7 +24,7 @@
 
 **owns 边界的三条论证**：
 
-1. **card_usage 与 know 域的边界**：card_usage 归**本域**——动词 `ledger_log_card_usage`，文件 owns `data/pipeline/{program}/card_usage-{date}.jsonl`。理由：① v4 实测文件在 `pipelineDir(program)` 台账树（sec-pipeline.js L146）；② 三产物（attempts / card_usage / handoff）在同一纪律节奏写入（每动作/每日收尾）、被同一流程守卫校验（task_finish 三查）、走同一 vault 回放链路——拆到两个域会让流程守卫跨域取证、让 vault 导出跨域拼目录；③ 一棵目录树一个 owner。know 域是**纯消费方**：订阅 `card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询（registry 健康度 / 零使用卡清理 / 升版原料 deviation 聚合），不读本域文件。
+1. **card_usage 与 know 域的边界**：card_usage 归**本域**——动词 `ledger_log_card_usage`，文件 owns `data/pipeline/{program}/card_usage-{date}.jsonl`。理由：① v4 实测文件在 `pipelineDir(program)` 台账树（sec-pipeline.js L146）；② 三产物（attempts / card_usage / handoff）在同一纪律节奏写入（每动作/每日收尾）、被同一流程守卫校验（task_finish 三查）、走同一 vault 回放链路——拆到两个域会让流程守卫跨域取证、让 vault 导出跨域拼目录；③ 一棵目录树一个 owner。know 域是**纯消费方**：订阅 `ledger.card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询（registry 健康度 / 零使用卡清理 / 升版原料 deviation 聚合），不读本域文件。
 2. **handoff 与 fgs/task 域的边界**：交接包是"纪律台账的第五件产物"（收尾强制、被流程守卫校验、vault 回放），不是任务执行史（task 域）也不是决策图（fgs 域）。v4 的 `appendFgsToHandoff` 直写 handoff 文件——v5 废止：FGS 决策链摘要由模型调 `fgs_export` 查询后并入 `ledger_handoff_write` 的"动作"段输入（fgs 域不写本域文件）。
 3. **param-queue / assets-{program}.tsv / endpoints-{program}.tsv 不在本域**：参数队列归 endpoint 域（`endpoint_queue_surface`/`endpoint_consume_queue`，见 04-endpoint.md）；assets/endpoints TSV 是采集建议文件，归各自域经命令入库。本域只在校验查询（`ledger_pipeline_validate`）里核它们的**表头格式契约**（格式契约定义于 §2.1，文件本体 owner 在彼域）。
 
@@ -32,11 +32,11 @@
 
 | 动词 | 一句话语义 | actor 白名单 | 幂等策略 | 事件 |
 |---|---|---|---|---|
-| `ledger_log_attempt` | 六态台账落行（写入即机器校验） | model, script, human | 自动指纹 | `attempt.logged` |
-| `ledger_log_card_usage` | 卡片使用记录（实战偏差必填 deviation） | model, script | 自动指纹 | `card_usage.logged` |
-| `ledger_radar_push` | 变化雷达事件入队（ct-watch / js-watch / scope-approved） | script, approval, model, system | 自动指纹 | `radar.pushed` |
-| `ledger_radar_drain` | 读后清空雷达队列（破坏性读） | model, script | 天然幂等（再 drain 返回空） | `radar.drained` |
-| `ledger_handoff_write` | 交接包五段全量写（快照/动作/明日队列/阻塞/数据指针） | model, script, human | 自动指纹（内容级） | `handoff.written` |
+| `ledger_log_attempt` | 六态台账落行（写入即机器校验） | model, script, human | 自动指纹 | `ledger.attempt.logged` |
+| `ledger_log_card_usage` | 卡片使用记录（实战偏差必填 deviation） | model, script | 自动指纹 | `ledger.card_usage.logged` |
+| `ledger_radar_push` | 变化雷达事件入队（ct-watch / js-watch / scope-approved） | script, approval, model, system | 自动指纹 | `ledger.radar.pushed` |
+| `ledger_radar_drain` | 读后清空雷达队列（破坏性读） | model, script | 天然幂等（再 drain 返回空） | `ledger.radar.drained` |
+| `ledger_handoff_write` | 交接包五段全量写（快照/动作/明日队列/阻塞/数据指针） | model, script, human | 自动指纹（内容级） | `ledger.handoff.written` |
 | `ledger_pipeline_validate` | —（**查询**，见 1.4.5；保留为复核而非写入） | — | — | — |
 
 ### 1.3 命令逐个详述
@@ -90,7 +90,7 @@
 | `run_id` | string | 否 | 自动 `cu…` | — |
 
 不变量：I5 `outcome=deviated ⇒ deviation ≥10 字`——v4 的"实战偏差必填"是调用纪律，v5 从 hint 升级为 schema 级硬校验。
-写入：JSONL 追加 `card_usage-{北京日期}.jsonl`。幂等：自动指纹。事件：`card_usage.logged`。
+写入：JSONL 追加 `card_usage-{北京日期}.jsonl`。幂等：自动指纹。事件：`ledger.card_usage.logged`。
 **actor**：model, script。
 
 #### 1.3.3 `ledger_radar_push`
@@ -112,7 +112,7 @@
 
 > `version-intel` 语义边界：指**目标组件指纹版本**（JS bundle / 响应头 / favicon 识别出的组件升版，驱动 N-day 派单）。它与 `scripts/pipeline/dsh-version-watch.sh`（监控**上游 DSH 平台自身版本**、产 pipeline/dsh-version-watch.log、不进雷达队列）语义不同源不同表——后者是运维观测通道，v5 保持独立不合并（18-migration §9.4）。
 
-写入：JSONL 追加 `radar-queue.jsonl`（记录结构见 2.1.3）。事件：`radar.pushed`。幂等：自动指纹 `sha1(program,type,payload 核心键)`。
+写入：JSONL 追加 `radar-queue.jsonl`（记录结构见 2.1.3）。事件：`ledger.radar.pushed`。幂等：自动指纹 `sha1(program,type,payload 核心键)`。
 **接入方迁移**：v4 的 ct-watch-all.sh / js-watch.py **直接写文件**——v5 改调总线 CLI `sec ledger radar-push --program X --type ct-new-subdomain --payload '{"domain":"a.x.com"}'`（actor=script 由 CLI 环境注入）；观察期内域启动时收割 inbox 兼容（`radar-inbox.jsonl` 由脚本旧版写入、域启动 drain 入正式队列后清空，一个观察期后删 inbox 路径）。v4 index.js `enqueueScopeSeed` 的 radar 直写 → approval 域订阅 `approval.approved` 后**调本命令**（actor=approval，弱联动 best-effort，入队失败不影响批准结果——v4 双通道语义保留）。
 **actor**：script, approval, model, system。
 
@@ -125,7 +125,7 @@
 | `program` | string | 是 | — |
 
 行为：读 `radar-queue.jsonl` 全部行 → 解析为事件数组（坏行降级为 `{raw: line}` 保留）→ **清空文件**（tmp 空文件 + rename，原子）→ 返回事件清单。返回 data：`{count, events[], drained: true}`。
-幂等：天然——再 drain 返回空集（信封 replay 语义不适用，每次 drain 都是新读）。事件：`radar.drained {program, count}`（count=0 也发，供对账）。
+幂等：天然——再 drain 返回空集（信封 replay 语义不适用，每次 drain 都是新读）。事件：`ledger.radar.drained {program, count}`（count=0 也发，供对账）。
 **为什么是命令不是查询**：清空是文件状态变更（宪法 §七 查询纯读）；只读面拆给 `ledger_radar_status`。
 **actor**：model, script。
 
@@ -142,7 +142,7 @@
 | `blockers` | string | 是 | 段四·阻塞：当前阻塞项（无则显式"无"） |
 | `data_refs` | string | 是 | 段五·数据指针：关键数据文件路径清单 |
 
-不变量：五段全部必填且非空（`E_SCHEMA`；blockers 无内容须传 `"无"`——显式确认而非缺省）。写入：`handoff-{北京日期}.md` 全量覆盖（tmp+rename 原子；覆盖前旧版存 `.prev`，仅保留一代）。幂等：自动指纹 `sha1(program + 五段内容)`——同日同内容重写 = replay；同日内容演进 = 新指纹新写（覆盖 + .prev 备份），无 `E_IDEMPOTENT_CONFLICT` 误伤。事件：`handoff.written {program, date, file}`。
+不变量：五段全部必填且非空（`E_SCHEMA`；blockers 无内容须传 `"无"`——显式确认而非缺省）。写入：`handoff-{北京日期}.md` 全量覆盖（tmp+rename 原子；覆盖前旧版存 `.prev`，仅保留一代）。幂等：自动指纹 `sha1(program + 五段内容)`——同日同内容重写 = replay；同日内容演进 = 新指纹新写（覆盖 + .prev 备份），无 `E_IDEMPOTENT_CONFLICT` 误伤。事件：`ledger.handoff.written {program, date, file}`。
 **actor**：model, script, human。
 
 ### 1.4 查询（读投影）逐个详述
@@ -243,11 +243,11 @@ know 域（07-know.md C16 消费通道）经本查询获取卡片使用信号，
 
 | 事件 | payload 顶层字段 |
 |---|---|
-| `attempt.logged` | `program, asset, card_id, result, reason?, run_id` |
-| `card_usage.logged` | `program, card_id, card_version, outcome, deviation?` |
-| `radar.pushed` | `program, type, digest（payload 核心键 sha256 前 16）` |
-| `radar.drained` | `program, count` |
-| `handoff.written` | `program, date, file` |
+| `ledger.attempt.logged` | `program, asset, card_id, result, reason?, run_id` |
+| `ledger.card_usage.logged` | `program, card_id, card_version, outcome, deviation?` |
+| `ledger.radar.pushed` | `program, type, digest（payload 核心键 sha256 前 16）` |
+| `ledger.radar.drained` | `program, count` |
+| `ledger.handoff.written` | `program, date, file` |
 
 全部按域追加 `data/events/ledger.jsonl`。payload 只含判据快照（宪法 §八.1）。
 
@@ -257,8 +257,9 @@ know 域（07-know.md C16 消费通道）经本查询获取卡片使用信号，
 |---|---|---|---|
 | `exec.run.completed` | async（弱） | `onRunCompleted` | **对账统计，不自动代写台账**：维护 per-program 每日 `exec_runs` 计数，与 attempts 日增量对账——执行了 N 次工具但台账只有 M 行（M ≪ N）→ discipline_stats 告警"台账漂移"。**不自动写台账的理由**：台账是 agent 的纪律动作本身（每动作的反身记录），机器代写会消解纪律并污染覆盖矩阵的"agent 判定"语义；机器只负责暴露漂移 |
 | `approval.approved`（kind=scope-domain / scope-wildcard） | async（弱） | `onScopeApproved` | 调 `ledger_radar_push`（type=scope-approved，actor=approval）——v4 enqueueScopeSeed 直写 radar 文件的归零路径；best-effort，失败记 `subscriber_failed` 不影响批准 |
+| `task.finished` | async（弱） | `onTaskFinished` | 调 `fgs_export(format=markdown)` 跨域只读决策链摘要，并合并进当日 handoff 的 actions 段；失败走 outbox 重试，不回滚任务收尾 |
 
-**task 域对本域三事件的订阅（对侧声明，此处仅备案）**：`attempt.logged` / `card_usage.logged` / `handoff.written` → task 域计数缓存（看板红条）。**守卫依据不是这个缓存**——两种方案的取舍论证见 §2.3.3。
+**task 域对本域三事件的订阅（对侧声明，此处仅备案）**：`ledger.attempt.logged` / `ledger.card_usage.logged` / `ledger.handoff.written` → task 域计数缓存（看板红条）。**守卫依据不是这个缓存**——两种方案的取舍论证见 §2.3.3。
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
@@ -406,13 +407,13 @@ approval.approved → radar_push（§1.5.2）；订阅者失败不回滚批准�
 
 #### 2.3.3 流程守卫（task_finish 前置不变量）与 ledger 的数据契约
 
-**契约**：task 域 `task_finish`（actor=scheduler）标 done 前校验三产物——作用域限 `schedule_kind='interval'` 且 `data/pipeline/{program}/` 存在的任务（无管线目录不拦，v4 语义）；缺失 → `E_INVARIANT` + missing 清单，任务不落 done（blocked/failed/cancelled 不拦——失败与放弃必须能落库）。
+**契约**：task 域 `task_finish`（actor=scheduler）收尾时校验三产物——作用域限 `schedule_kind='interval'` 且 `data/pipeline/{program}/` 存在的任务（无管线目录不拦，v4 语义）。真实产物缺失会进入 missing 清单并把本次 run 判为失败，但**不阻止任务回 queued**（防调度死锁，权威语义见 05-task §1.3.8）。若 `ledger_task_proof` 查询本身异常，task 域当前会静默降级为 missing=[]；这属于可观测性缺口，不是 fail-closed。
 
 **两种实现方案的取舍**：
 
 | | 方案 A：事件计数 | 方案 B'：文件取证（v5 选择） |
 |---|---|---|
-| 机制 | task 域订阅 attempt.logged / card_usage.logged / handoff.written 三事件，维护 per-program per-day 计数器；task_finish 查计数器 | task_finish 调 ledger 域 `ledger_task_proof` 查询（同步，经 QueryGateway），由 ledger 直接取证文件（24h 增量行数 / 卡记录数 / handoff 当日存在） |
+| 机制 | task 域订阅 ledger.attempt.logged / ledger.card_usage.logged / ledger.handoff.written 三事件，维护 per-program per-day 计数器；task_finish 查计数器 | task_finish 调 ledger 域 `ledger_task_proof` 查询（同步，经 QueryGateway），由 ledger 直接取证文件（24h 增量行数 / 卡记录数 / handoff 当日存在） |
 | 优点 | O(1) 查询；跨域解耦 | **锚定真相源**——文件是唯一真相，取证结果与产物永远一致；计数器是派生信号 |
 | 缺点 | 计数器需持久化（重启丢失 → 回退全量扫，否则误拦）；事件丢失/乱序 → 假阴 → fail-closed **误伤任务收尾**（调度链卡死）；24h 滚动窗口在计数器上要带时间衰减，实现易错 | 每次收尾多一次跨域查询（毫秒级，每日 ≤ 数十次，可忽略） |
 | 结论 | 仅作看板红条缓存 | **守卫依据**（正确性必须锚定真相源；派生信号丢失会造成 fail-closed 误伤，而文件取证不可能与产物漂移） |
@@ -525,3 +526,14 @@ hasHandoff(program, date) → boolean
 | 2 | ct-watch/js-watch 改走 `sec` CLI 后，systemd 单元依赖总线 CLI 可用性（总线未起时事件丢失） | inbox 文件兜底（脚本降级写 radar-inbox.jsonl，域启动收割）；或接受丢失（雷达是 best-effort 旁路，CT 日志可重放） |
 | 3 | 台账"每动作立即落行"与模型攒批倾向的张力——discipline_stats 对账告警是唯一机器压力 | 保持：不自动代写（§1.5.2 论证），告警 + 周复盘人工施压；若漂移持续超标再评估"run 完成后自动落 PENDING 行、agent 补态"的折中（会引入 PENDING 落行，破坏 2.2.1 隐式态设计，慎动） |
 | 4 | handoff 同日多次覆盖只保留一代 `.prev`，人工可能想看更早版本 | vault 链路有日级归档兜底；暂不加版本链 |
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 22/22 契约通过；五产物与 task_proof 取证语义成立。 |
+| 性能 | attempts/coverage 是文件全量扫描；当前 <100ms，单项目 >50k 行或 P95 >500ms 时启用 sqlite 派生视图。 |
+| 静默错误 | know/task 不可达时指标 `unavailable`，这是明示降级；task 守卫查询异常的静默降级记录在 05-task。 |
+| 文档漂移 | 已修正全部事件名为 `ledger.*` 前缀；§2.3.3 不再声称 fail-closed 阻止 finish。 |
+| hook 判定 | FGS 摘要经 `fgs_export` 查询后写入本域 handoff，无直写他域。 |
+| 独立升级 | 支持单域替换；须与 task、know、fgs 联合回归。 |

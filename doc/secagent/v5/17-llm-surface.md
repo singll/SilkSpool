@@ -365,3 +365,13 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 | Q3 | **失败信封的投递形态**。现设计返回 JSON 信封（不 throw）。备选：DSH 工具层 throw（走平台错误通道） | 建议 JSON 信封（模型可结构化读 hint/retryable）；Phase 1 用 eval EC-06 类用例验证模型对 JSON 信封的遵循率，不达标再评估 throw 混合形态 |
 | Q4 | **eval 契约合规的验收阈值**。现设计：越权拒绝率 100% 必达、hint 恢复率 ≥90% | 恢复率 90% 是否合理无先例数据；建议 Phase 1 末先跑一轮基线（预期 70-85%），据基线定验收线，写进 15-eval.md 定稿 |
 | Q5 | **速查表与技能的职责边界**。AGENTS.md secbus 区块（动词清单）与 sec-pipeline/sec-knowledge 技能（使用纪律）存在内容重叠风险——v4.x 用"技能只留指针"纪律（G5 单一来源）解决过同类问题 | 建议：secbus 区块只放动词名+一行纪律钩子，完整 RoE 一律回技能/agent_note；由 discipline-audit 加"区块长度上限"断言防膨胀 |
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 域动词投影、actor 白名单与 phase/subset 挂载矩阵可用；discipline-audit 当前悬空工具引用为 0。 |
+| hook 判定 | ToolProjector/RpcProjector 是契约投影，不是旁路；兼容别名同样过网关校验。 |
+| 未实现/观察期 | 37 个兼容别名仍在 7 天零使用观察期，闸口顺延至 2026-09-18；契约测试自身会制造 finding_update 使用，删别名前须改用例。 |
+| 性能 | 挂载投影按 profile 组合树生成，启动时一次性；工具数量当前无运行时热点。 |
+| 独立升级 | 域工具面可随域插件更新；但 prompt/skills/objective 引用必须同步 discipline-audit，防止悬空引用。 |

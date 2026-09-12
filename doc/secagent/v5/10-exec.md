@@ -485,7 +485,7 @@ parser 注册表（`parsers/` 目录，v4 parsers.js 172 行平移）：路由�
 
 #### 2.3.3 审批联动（G5/G9 拒绝点）
 
-intrusive 拒绝 / S5 写动词拒绝 → `dispatch('approval','request',{kind:"tool-intrusive", subject:"<tool>:<target>", payload:{tool,risk,target,params(脱敏),program[,guard,verb,url]}})`；approval 域负责登记与看板渲染；批准后 scope 域写白名单 → 本域无需订阅任何事件（重试时 G5/G9 查 scope 域数据自然放行）。审批落库失败不改变拒绝语义（catch + audit）。
+intrusive 拒绝 / S5 写动词拒绝 → `dispatch('approval','request',{kind:"tool-intrusive", subject:"<tool>:<target>", payload:{tool,risk,target,params(脱敏),program[,guard,verb,url]}})`；approval 域负责登记与看板渲染；批准后 scope 域写白名单 → 本域无需订阅任何事件（重试时 G5/G9 查 scope 域数据自然放行）。审批落库失败不改变拒绝语义，但当前实现仅退回通用 hint、**不产生独立 audit 记录**；这是 2026-09-12 审查确认的可观测性缺口。
 
 ### 2.4 后端适配器
 
@@ -621,3 +621,14 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 | 3 | 代理注入对"混合目标"（部分内网部分公网）一刀切注入，内网目标走代理必失败 | 保持现状（负知识自动沉淀兜底）；按目标分进程执行是模型侧纪律（拆两次 run_cli） |
 | 4 | events/exec.jsonl 无轮转（年 ~200MB） | 总线层议题（按域轮转策略统一设计），不在本域单独处理 |
 | 5 | `exec_manifest_list` 的 `domain` 字段与事件订阅路由是两份人工同步的真相 | 接受（标注仅文档性）；setup.sh 冒烟可加"domain 字段与订阅方清单一致性"软断言 |
+
+## 五、2026-09-12 深度审查结论
+
+| 维度 | 结论 |
+|---|---|
+| 逻辑/功能 | 11/11 契约通过；scope/risk/sandbox/QPS/timeout/parser proposal/worker 守卫链完整。 |
+| 静默错误 | 自动 approval 落库失败被 `fileApproval` 吞掉并退回通用 hint，无独立 audit；intel_hunt 建任务失败也不阻断检索。 |
+| 性能 | run_cli 输出全量落盘、只回 20 行摘要，设计正确；大文件由 grep/page 分页。 |
+| 风险 | task `worker_recent` 查询失败时 dedupe 预检被跳过，极端情况下可重复 spawn；worker 并发上限仍兜底。 |
+| hook 判定 | parser 只写 proposal + 事件，由 asset/endpoint/vuln 域消费；合格。 |
+| 独立升级 | 支持单域替换；须与 scope、task、proxy、know 及三个 parser 消费域联测。 |
