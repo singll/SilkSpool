@@ -10,7 +10,8 @@
 //  - FGS 图生命周期与任务绑定：写命令（除 fgs_deprecate 外）要求目标 task 处于 running（INV-F1）；
 //  - 状态机拆为语义动词族（start/complete/fail/block/deprecate）+ content/score 增量独立 annotate；
 //  - fgs_clear 仅 actor=scheduler（任务启动序列）；fgs_next 依赖满足只认同任务 step 类 done 节点；
-//  - 订阅 task.finished（sync）：ok=false 时域内 service 直接补记 failed step/finding 节点（绕过 INV-F1 是设计内）；
+//  - 订阅 task.finished（async）：ok=false 时经网关 dispatch fgs_add+fgs_fail 补记 failed step/finding 节点
+//    （弱联动重试/死信；不回滚 task_finish——任务结果已是事实）；
 //  - 沉淀（fact 转正）与 handoff 追加不归本域：本域只出 fgs.node.done 事件 + fgs_export 查询。
 // ==============================================================================
 
@@ -61,7 +62,7 @@ export const FGS_MANIFEST = {
     + 'Decide 时用 fgs_next 取下一步，Execute 后用 fgs_complete/fgs_annotate 提交结果。',
   commands: {
     fgs_add: {
-      actor: ['model', 'scheduler', 'system'],
+      actor: ['model', 'scheduler', 'system', 'reactor'],
       schema: schema({
         task_id: int(),
         type: en(NODE_TYPE),
@@ -213,7 +214,7 @@ export const FGS_MANIFEST = {
     'fgs.task.cleared': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
-    'task.finished': { handler: 'onTaskFinished', mode: 'sync', as: 'reactor' },
+    'task.finished': { handler: 'onTaskFinished', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -240,10 +241,15 @@ function makeHandlers(opts) {
   }
 
   const invariants = {
-    taskExistsRunning: async (args, repo) => {
+    taskExistsRunning: async (args, repo, ctx) => {
       const t = repo.getTask(Number(args.task_id))
       if (!t) return { code: 'E_NOT_FOUND', message: `task 不存在: ${args.task_id}`, hint: '核对 task_get；FGS 节点必须挂在真实任务上', retryable: false }
-      if (t.status !== 'running') return { code: 'E_FGS_TASK_NOT_RUNNING', message: `task #${args.task_id} 不在运行中（当前 ${t.status}）`, hint: 'FGS 图与任务生命周期绑定，只写当前运行任务的图；历史图用 fgs_list 只读', retryable: false }
+      // INV-F1 豁免：reactor 经 task.finished 事件补记失败节点（任务此刻刚离 running，补记的是历史事实）
+      if (t.status !== 'running') {
+        const causeName = ctx && ctx.cause && (ctx.cause.name || (ctx.cause.cause && ctx.cause.cause.name))
+        if (ctx && ctx.actor === 'reactor' && causeName === 'task.finished') return null
+        return { code: 'E_FGS_TASK_NOT_RUNNING', message: `task #${args.task_id} 不在运行中（当前 ${t.status}）`, hint: 'FGS 图与任务生命周期绑定，只写当前运行任务的图；历史图用 fgs_list 只读', retryable: false }
+      }
       return null
     },
     nodeExists: async (args, repo) => {
@@ -251,11 +257,16 @@ function makeHandlers(opts) {
       if (!n) return { code: 'E_NOT_FOUND', message: `节点不存在: ${args.node_id}`, hint: '核对 fgs_list 里的 node id', retryable: false }
       return null
     },
-    nodeExistsRunning: async (args, repo) => {
+    nodeExistsRunning: async (args, repo, ctx) => {
       const n = repo.getNode(Number(args.node_id))
       if (!n) return { code: 'E_NOT_FOUND', message: `节点不存在: ${args.node_id}`, hint: '核对 fgs_list 里的 node id', retryable: false }
       const t = repo.getTask(Number(n.task_id))
-      if (!t || t.status !== 'running') return { code: 'E_FGS_TASK_NOT_RUNNING', message: `节点所属 task #${n.task_id} 不在运行中`, hint: 'FGS 图与任务生命周期绑定，只写当前运行任务的图', retryable: false }
+      if (!t || t.status !== 'running') {
+        // INV-F1 豁免：reactor 经 task.finished 事件补记失败节点（fgs_add 补记后立即 fgs_fail，任务已收尾）
+        const causeName = ctx && ctx.cause && (ctx.cause.name || (ctx.cause.cause && ctx.cause.cause.name))
+        if (ctx && ctx.actor === 'reactor' && causeName === 'task.finished') return null
+        return { code: 'E_FGS_TASK_NOT_RUNNING', message: `节点所属 task #${n.task_id} 不在运行中`, hint: 'FGS 图与任务生命周期绑定，只写当前运行任务的图', retryable: false }
+      }
       return null
     },
     nodeRefsValid: async (args, repo) => {
@@ -437,24 +448,31 @@ function makeHandlers(opts) {
   }
 
   const subscribers = {
-    // 订阅 task.finished（sync，reactor）：ok=false 时域内 service 直接落 failed 节点——
-    // 绕过网关 INV-F1 是设计内（任务此刻刚离 running，补记的是历史事实）。best-effort：
-    // 自身异常不回滚 task_finish（always {ok:true}）。
+    // 订阅 task.finished（async，reactor）：ok=false 时经网关 dispatch fgs_add + fgs_fail 补记 failed 节点——
+    // INV-F1 对 reactor + task.finished cause 链豁免（任务此刻刚离 running，补记的是历史事实）。
+    // best-effort：补记失败只记日志/audit，不回滚 task_finish（任务结果已是事实）。
     onTaskFinished: async (envelope) => {
       const p = envelope?.payload || {}
       if (p.ok !== false) return { ok: true, data: { skipped: true } }
-      const db = typeof getDb === 'function' ? getDb() : null
-      if (!db) return { ok: true, data: { skipped: false, error: 'no db handle' } }
+      if (!dispatchRef) return { ok: true, data: { skipped: false, error: 'no dispatch ref' } }
+      const taskId = Number(p.task_id)
+      const runId = p.run_id || null
+      const rejected = !!(p.truth && p.truth.rejected)
+      const type = rejected ? 'finding' : 'step'
+      const content = rejected
+        ? { summary: 'worker 拒执或 API 错误', reason: String(p.truth.reason || ''), run_id: runId }
+        : { summary: `任务失败: ${p.note || 'unknown'}`, run_id: runId }
       try {
-        const repo = repoFor(db)
-        const taskId = Number(p.task_id)
-        const runId = p.run_id || null
-        if (p.truth && p.truth.rejected) {
-          repo.insertNode({ task_id: taskId, run_id: runId, type: 'finding', status: 'failed', content: { summary: 'worker 拒执或 API 错误', reason: String(p.truth.reason || ''), run_id: runId }, score: 0 })
-        } else {
-          repo.insertNode({ task_id: taskId, run_id: runId, type: 'step', status: 'failed', content: { summary: `任务失败: ${p.note || 'unknown'}`, run_id: runId }, score: 0 })
+        const add = await dispatchRef('fgs', 'add', { task_id: taskId, type, content, run_id: runId, score: 0 }, { actor: 'reactor', cause: envelope })
+        if (!add || !add.ok) {
+          log(`task.finished 补记 fgs_add 失败: ${add && add.error && add.error.code} ${add && add.error && add.error.message}`)
+          return { ok: true, data: { skipped: false, error: add && add.error && add.error.code } }
         }
-        return { ok: true, data: { skipped: false } }
+        const nodeId = add.data && add.data.node_id
+        const reason = rejected ? `worker 拒执或 API 错误: ${p.truth.reason || ''}`.slice(0, 500) : String(`任务失败: ${p.note || 'unknown'}`).slice(0, 500)
+        const fail = await dispatchRef('fgs', 'fail', { node_id: nodeId, reason }, { actor: 'reactor', cause: envelope })
+        if (!fail || !fail.ok) log(`task.finished 补记 fgs_fail 失败: ${fail && fail.error && fail.error.code}`)
+        return { ok: true, data: { skipped: false, node_id: nodeId } }
       } catch (e) {
         log(`task.finished 补记失败节点异常: ${e?.message}`)
         return { ok: true, data: { skipped: false, error: String(e?.message) } }

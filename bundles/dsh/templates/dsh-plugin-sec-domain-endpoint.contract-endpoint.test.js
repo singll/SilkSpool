@@ -358,7 +358,7 @@ test('concurrency: 双并发 queue_surface 入队，seen 含两者并集', async
 // 8. 事件载荷
 // ---------------------------------------------------------------------------
 
-test('event payload: endpoint.registered / endpoint.auth_marked / queue.enqueued', async () => {
+test('event payload: endpoint.registered / endpoint.auth_marked / endpoint.queue.enqueued', async () => {
   const { dataDir, bus } = makeEnv()
   await bus.dispatch('endpoint', 'upsert', { rows: [{ url: 'https://api.example.com/v1', method: 'POST' }] }, { actor: 'model' })
   await bus.dispatch('endpoint', 'mark_auth', { host: 'api.example.com', path: '/v1', method: 'POST', auth_required: 'no', evidence: 'run_test_20260910_000000' }, { actor: 'model' })
@@ -369,7 +369,7 @@ test('event payload: endpoint.registered / endpoint.auth_marked / queue.enqueued
   const names = outbox.map((o) => JSON.parse(o.payload).name)
   assert.ok(names.includes('endpoint.registered'))
   assert.ok(names.includes('endpoint.auth_marked'))
-  assert.ok(names.includes('queue.enqueued'))
+  assert.ok(names.includes('endpoint.queue.enqueued'))
 })
 
 // ---------------------------------------------------------------------------

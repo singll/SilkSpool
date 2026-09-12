@@ -231,6 +231,23 @@ test('claim: scheduler 原子认领到期任务 + task.claimed', async () => {
   assert.equal(row.status, 'running')
 })
 
+test('run_now: 失败回 queued 后可再次手动触发（不被幂等表吞写）', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'create', {
+    program_id: 'test-src', objective: 'retry run now',
+    schedule: { kind: 'interval', at: Date.now() + 3600000, every_seconds: 86400 },
+  }, { actor: 'model' })
+  const first = await bus.dispatch('task', 'run_now', { task_id: c.data.task_id }, { actor: 'model' })
+  assert.equal(first.ok, true)
+  await bus.dispatch('task', 'claim', { now: Date.now() }, { actor: 'scheduler' })
+  await bus.dispatch('task', 'finish', { task_id: c.data.task_id, run_id: 'run_retry_1', outcome: 'failed', note: 'API 400' }, { actor: 'scheduler' })
+  const row = bus._internal.db().prepare('SELECT status FROM tasks WHERE id=?').get(c.data.task_id)
+  assert.equal(row.status, 'queued')
+  const second = await bus.dispatch('task', 'run_now', { task_id: c.data.task_id }, { actor: 'model' })
+  assert.equal(second.ok, true)
+  assert.notEqual(second.replay, true)
+})
+
 test('worker 注册表: register/finish + task_worker_list/status 查询', async () => {
   const { bus } = makeEnv()
   const reg = await bus.dispatch('task', 'worker_register', { run_id: 'w1', dedupe_key: 'k1', task: 't', cwd: '/x', pid: 123, timeout_sec: 900 }, { actor: 'reactor' })

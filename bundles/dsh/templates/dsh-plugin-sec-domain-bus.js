@@ -34,7 +34,7 @@ const IDEM_MAX_ROWS = 10000
 
 const DOMAIN_WHITELIST = new Set([
   'vuln', 'asset', 'endpoint', 'task', 'fact', 'know', 'scope', 'approval',
-  'exec', 'ledger', 'report', 'proxy', 'fgs', 'eval', 'authz', 'bus',
+  'exec', 'ledger', 'report', 'proxy', 'fgs', 'eval', 'bus',
 ])
 const ACTOR_WHITELIST = new Set([
   'model', 'dashboard', 'script', 'webhook', 'scheduler', 'approval',
@@ -234,6 +234,7 @@ function actualType(v) {
 // ---------------------------------------------------------------------------
 
 function sha1(str) { return crypto.createHash('sha1').update(String(str)).digest('hex') }
+function escapeRegExp(str) { return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
 function createId(prefix = 'evt') { return `${prefix}_${Date.now().toString(36)}${crypto.randomBytes(8).toString('hex')}` }
 function canonicalStringify(obj) {
   const seen = new WeakSet()
@@ -372,6 +373,9 @@ export function validateManifestLint(manifest) {
     if (!isPlainObject(edef)) errs.push(`事件 ${nm} 定义缺失`)
     else if (!edef.payload || !isPlainObject(edef.payload)) errs.push(`事件 ${nm} payload schema 缺失`)
     else if (!Array.isArray(edef.redact)) errs.push(`事件 ${nm} redact 必须为数组`)
+    if (!new RegExp(`^${escapeRegExp(manifest.domain)}\\.[a-z0-9_]+(?:\\.[a-z0-9_]+)*$`).test(nm)) {
+      errs.push(`R8 事件命名：${nm} 必须以 ${manifest.domain}. 开头且至少两段`)
+    }
   }
   for (const [pattern, sub] of Object.entries(subscribes)) {
     if (!isPlainObject(sub)) errs.push(`订阅 ${pattern} 定义缺失`)
@@ -1636,6 +1640,12 @@ export function createBus(opts = {}) {
         }
         const aliasCount = Object.keys(aliasesDoc.aliases).length + Object.keys(aliasesDoc.dispatchAliases).length
         const deprecated = Object.entries(aliasesDoc.aliases).filter(([, t]) => t && t.startsWith('_')).map(([k]) => k)
+        const knownEvents = new Set()
+        for (const entry of domains.values()) for (const name of Object.keys(entry.manifest.events || {})) knownEvents.add(name)
+        for (const name of Object.keys(BUS_MANIFEST.events || {})) knownEvents.add(name)
+        const danglingSubscriptions = subscribers
+          .filter((s) => s.source !== 'programmatic' && !knownEvents.has(s.pattern))
+          .map((s) => ({ source: s.source, pattern: s.pattern, mode: s.mode }))
         return {
           process: { profile: profile || 'unknown', pid: process.pid, uptime_ms: now() - (busStartedAt), sidecar_singleton: sidecars },
           mount: {
@@ -1654,6 +1664,7 @@ export function createBus(opts = {}) {
           },
           domains: domainsOut,
           subscribers: subscribers.map((s) => ({ source: s.source, pattern: s.pattern, mode: s.mode, as: s.as, last_error: null })),
+          event_contract: { rule: '{domain}.{object}[.{action}]', dangling_subscriptions: danglingSubscriptions },
         }
       },
       audit_tail: async (args) => {

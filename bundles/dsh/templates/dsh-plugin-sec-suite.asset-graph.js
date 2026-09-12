@@ -256,21 +256,8 @@ export function apply(ctx) {
     execute: async (a) => ({ ok: db.fpAdd({ program_id: a.program_id || null, host: a.host, tech: a.tech, version: a.version || '', source: a.source || '' }) }),
   })
 
-  reg(ctx, {
-    name: 'fp_query',
-    description: '检索指纹（按 host/tech/program）。命中技术栈后查 N-day。',
-    parameters: {
-      type: 'object',
-      properties: {
-        host: { type: 'string' },
-        tech: { type: 'string' },
-        program_id: { type: 'string' },
-        limit: { type: 'integer' },
-      },
-      additionalProperties: false,
-    },
-    execute: async (a) => ({ ok: true, items: db.fpQuery({ host: a.host || '', tech: a.tech || '', program_id: a.program_id || '', limit: a.limit || 50 }) }),
-  })
+  // v5：fp_query 由 asset 域 QueryProjector 零改名接管；此处保留旧注册会因
+  // ToolProjector 后注册而冲突，导致模型继续命中 v4 直连 DB 路径。
 
   reg(ctx, {
     name: 'asset_graph',

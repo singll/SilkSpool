@@ -198,7 +198,7 @@ export const KNOW_MANIFEST = {
       deprecated: false,
     },
     pb_outcome: {
-      actor: ['model', 'dashboard', 'system'],
+      actor: ['model', 'dashboard', 'system', 'script'],
       schema: schema({
         name: str({ minLength: 1 }),
         outcome: en(PB_OUTCOME),
@@ -545,7 +545,6 @@ export const KNOW_MANIFEST = {
   },
   subscribes: {
     'fact.bb.published': { handler: 'onFactBbPublished', mode: 'async', as: 'reactor' },
-    'exec.run.completed': { handler: 'onExecRunCompleted', mode: 'async', as: 'reactor' },
     'fact.expired': { handler: 'onFactArchived', mode: 'async', as: 'reactor' },
     'fact.archived': { handler: 'onFactArchived', mode: 'async', as: 'reactor' },
   },
@@ -1208,7 +1207,6 @@ function makeHandlers(opts) {
 
   const subscribers = {
     onFactBbPublished: async (envelope) => ({ ok: true, data: { skipped: true } }),
-    onExecRunCompleted: async (envelope) => ({ ok: true, data: { skipped: true } }),
     onFactArchived: async (envelope) => ({ ok: true, data: { skipped: true } }),
   }
 

@@ -60,11 +60,11 @@
 
 | 对象 | 规范 | 示例 |
 |---|---|---|
-| 域名 | 小写单词，单数，业务域名词 | `vuln` `asset` `task` `fact` `know` `scope` `approval` `exec` `ledger` `report` `proxy` `fgs` `eval` `authz`* |
+| 域名 | 小写单词，单数，业务域名词 | `vuln` `asset` `task` `fact` `know` `scope` `approval` `exec` `ledger` `report` `proxy` `fgs` `eval` |
 | cordis 服务名 | `secDomain.{domain}` | `secDomain.vuln` |
 | 插件包名 | `@silksec/sec-domain-{domain}` | `@silksec/sec-domain-vuln` |
 | 后端插件包名 | `@silksec/sec-backend-{domain}-{backend}` | `@silksec/sec-backend-vuln-sqlite` |
-| **命令（写动词）** | `{domain}_{子仓?}_{对象?}_{动作}`，snake_case，中段可省；**动作必须是状态机语义动词**（confirm/reject/register/promote…），禁自由态 update | `vuln_confirm` `asset_grade` `know_exp_promote` `exp_store`* |
+| **命令（写动词）** | `{domain}_{子仓?}_{对象?}_{动作}`，snake_case，中段可省；**动作必须是状态机语义动词**（confirm/reject/register/promote…），禁自由态 update | `vuln_confirm` `asset_grade` `exp_store`* |
 | **查询** | `{domain}_{对象}_{读法}` | `vuln_candidates` `asset_deep_queue` |
 | 工具名（模型面） | 与命令/查询名**完全一致**（投影零改名） | 工具 `vuln_confirm` = 命令 `vuln.confirm` |
 | RPC 名（看板面） | `{domain}.{verb}` 点分（RPC 通道允许点号） | RPC `vuln.confirm` |
@@ -75,11 +75,17 @@
 | 表名 | 复数名词（沿用 v4.x，**不改名不迁库**） | `findings` `assets` |
 | 模块文档文件 | `v5/{NN}-{domain}.md` | `v5/02-vuln.md` |
 
-*authz（scope+credentials）为单一授权域，见 `08-scope.md`。
+*授权域的唯一注册名是 `scope`（见 `08-scope.md`）；"authz"仅是叙述性别名（指 scope+credentials 的职责集合），**不可**作为域名/服务名/包名注册或引用（实现已统一为 `secDomain.scope` / `@silksec/sec-domain-scope`）。
 
-**子仓前缀豁免**：know 域六子仓动词保持 v4 原名（`exp_store` / `kb_import` / `vc_save` / `rule_seed`…），不加 `know_` 域前缀——子仓前缀（`exp_`/`kb_`/`vc_`/`pb_`）天然构成命名空间，且 12 个工具名在 prompt 体系高度内化，改名收益为零、行为漂移风险为实。`know_` 前缀只留给跨子仓动词（`know_adopt` / `know_health` / `know_transition`）。总线寻址 `dispatch('know', 'exp_store')` 域前缀由总线承担。其他域无子仓结构，不适用本豁免。
+**子仓前缀豁免**：know 域六子仓动词保持 v4 原名（`exp_store` / `kb_import` / `vc_save` / `rule_seed`…），不加 `know_` 域前缀——子仓前缀（`exp_`/`kb_`/`vc_`/`pb_`）天然构成命名空间，且 12 个工具名在 prompt 体系高度内化，改名收益为零、行为漂移风险为实。`know_` 前缀只留给跨子仓动词（`know_adopt` / `know_health` / `know_transition`）。总线寻址 `dispatch('know', 'exp_store')` 域前缀由总线承担。
 
-**禁用词**：任何新动词不得叫 `update` / `set` / `save` / `modify`（自由态写入口）。确需"改一个可选字段集合"的，必须先回答"这是不是一个状态机流转"——是则起语义名，否则拆成多个动词。
+**豁免登记制（2026-09-12 增补）**：子仓豁免逻辑推广为显式登记——以下两处与 know 同构，工具名已在 prompt 体系与实现中内化，豁免改名：
+- **asset 域指纹子仓**：`fp_record` / `fp_record_bulk` / `fp_query`（`fp_` 前缀天然命名空间）；
+- **endpoint 域队列查询**：`queue_status`（param-queue 子域；其余 endpoint_* 仍带域前缀）。
+
+事件名**不适用**子仓豁免（事件不进 prompt 体系、无改名成本）：事件名必须以发布域为第一段，且至少包含 `{domain}.{object}` 两段；需要子对象时可扩展为三段（`{domain}.{object}.{action}`）。总线 R8 强制校验域前缀与段数，R9 在 `bus_status` 输出跨域订阅悬空对账（2026-09-12 修复：`fp.recorded`→`asset.fp.recorded`、`queue.enqueued/consumed`→`endpoint.queue.*`、`program.bound`→`scope.program.bound`）。
+
+**禁用词**：任何新动词不得叫 `update` / `set` / `save` / `modify`（自由态写入口）。确需"改一个可选字段集合"的，必须先回答"这是不是一个状态机流转"——是则起语义名，否则拆成多个动词。禁令按**动词名 lint**（总线 R2）执行；豁免须逐条登记于 01-bus §2.2.1 R2（现有唯一豁免：`task_update_note`——语义为"追加备注"而非自由态改字段，`vc_save`/`pb_save` 等属 know 子仓原名豁免不走此通道）。
 
 ## 三、调用方模型（actor）
 
@@ -93,8 +99,8 @@
 | `webhook` | xray 等机器事件接收器 | 仅机器直灌通道（`vuln_register_candidate` 等） |
 | `scheduler` | 调度循环 | `task_finish` 等 task 域内部动词 |
 | `approval` | 审批批准事件的订阅执行 | `scope_grant` 等（由 approval.approved 事件携带） |
-| `reactor` | **域事件订阅反应器**（approval 事件之外的跨域事件订阅处理器调用面，由总线从订阅回调注入，模型/看板不可见、不可伪造；审计 cause 链指向源事件及其原始 actor） | 事件联动回写类（`task_worker_register` / `vuln_attach_fgs` 等），各命令白名单显式列出 |
-| `system` | 总线/域自身生命周期（迁移、初始化） | 全部；仅限启动/迁移窗口 |
+| `reactor` | **域事件订阅反应器**（跨域事件订阅处理器调用面，由总线从订阅回调注入 manifest 声明的 `as` 身份，模型/看板不可见、不可伪造；审计 cause 链指向源事件及其原始 actor；handler 内可按业务语义显式覆盖身份——如 task 域 onScopeGranted 以 `approval` 身份建种子任务） | 事件联动回写类（`task_worker_register` / `vuln_attach_fgs` 等），各命令白名单显式列出 |
+| `system` | 总线/域自身生命周期（迁移、初始化）**与治理旁路通道**（memcore sweep 直调 lifecycle 动词、eval 回流落账等；每条治理通道须在所属域文档显式声明） | 全部；启动/迁移窗口 + 已声明的治理通道 |
 | `platform` | DSH 平台层外部写入方（systemd timer、浏览器共驾、采集链脚本）——不经 CommandGateway，属受控外部写入 | 各域显式声明的接管路径（如 `intel.jsonl` 由 silksec-intel.timer 单写、proxy 采集 proposal） |
 | `human` | 人工经 CLI 直调（运维应急通道） | 只读查询 + 显式标注 `--actor human` 的写；审计高亮 |
 
@@ -111,7 +117,7 @@
    - **治理通道豁免（仅此一例）**：治理通道的周期判定型流转（`fact_transition`）允许 `to` 参数。边界三条件缺一不可：① 目标状态由外部调度计算得出（sweep 判定"逾期"），调用时才可知，无法预编进动词名；② actor 白名单仅 `system/human`；③ 不向模型注册工具——"自由态写入口"对模型物理不存在。其他域援引本豁免须逐条满足三条件并单独评审。
 2. **一个命令一个事务**：后端在 BEGIN IMMEDIATE 内完成该命令的全部行变更（含联动列）。跨域效果不进本事务——发事件，最终一致。
 3. **幂等必填**：见 §六。重放同一命令必须返回与首次相同的结果（信封带 `replay: true` 标记）。
-4. **证据即参数**：语义上"确认/验证/落账/结论"类动词，证据参数（run_id / evidence_path / flow_id）是 schema required。缺证据 = `E_EVIDENCE_REQUIRED`，不是运行时警告。
+4. **证据即参数**：语义上"确认/验证/落账/结论/采纳"类动词，证据参数（run_id / evidence_path / flow_id / evidence）是 schema required。缺证据 = `E_EVIDENCE_REQUIRED`，不是运行时警告。**判定/驳回类动词**（`vuln_reject`、`fact_deprecate` 等）的证据形态可以是**结构化判据**（`reason ≥10 字`、`verdict` 枚举等）——判据本身就是证据的记录形态，不强制引用外部产物；但"确认成立"方向的动词不在此列，必须引用可复核产物。
 5. **前置不变量在网关**：manifest 的 invariants 清单由 CommandGateway 在事务前逐条执行，失败返回对应错误码。域实现内部不重复校验（也不可能有绕过——service 实例只由网关构造）。
 6. **事件必发**：命令事务提交成功后必然发布 manifest 声明的事件（写入 `event_outbox` 同事务）；事务失败不发。sync 订阅者在同一事务内执行（失败即整体回滚）；async 订阅者事务提交后由 dispatcher 派发（失败重试/dead-letter，见 §八）。
 7. **审计唯一落点**：每个命令一条统一 audit 记录（§九），域内禁止私自追加审计行。
@@ -119,7 +125,7 @@
 
 补充规则：
 - **参数 schema 严格模式**：`additionalProperties: false`；未知参数 `E_SCHEMA`。参数一律显式类型（禁 `any`）。
-- **副作用声明**：manifest 中每个命令必须标注 `side_effects: [rows_touched, events, files, caches]`——看板与文档据此渲染。
+- **副作用声明**：manifest 中每个命令**建议**标注 `side_effects: [rows_touched, events, files, caches]`——看板与文档据此渲染（2026-09-12 裁决：降级为建议项，注册校验不强制；新动词应默认带上）。
 - **批量动词**：需要批量时显式提供（`{...}_bulk` 后缀），上限进 schema（如 ≤500 行），逐行校验、单事务、行级结果数组返回。
 - **命令不得隐含查询副作用**：写命令返回的信封只含受影响对象的关键标识 + 状态快照，不返回大结果集。
 
@@ -174,16 +180,19 @@
 
 ## 六、幂等规范
 
-1. **键构造三级**（模块文档为每个命令指定其一）：
-   - **自然键**：域内已有唯一约束（fingerprint / (program_id, fact_key) / dedupe_key）——网关以 `{domain}:{verb}:{自然键值}` 构造；
-   - **显式键**：调用方传 `idempotency_key`（模型/脚本侧推荐）；
-   - **自动指纹**：无自然键的命令（如 vuln_note），网关对 `(domain, verb, args 核心字段)` 取 sha1。
+1. **键构造策略**（模块文档为每个命令指定其一；2026-09-12 起三级扩为五级）：
+   - **自然键 `natural`**：域内已有唯一约束（fingerprint / (program_id, fact_key) / dedupe_key）——网关以 `{domain}:{verb}:{自然键值}` 构造；
+   - **显式键 `explicit`**：调用方传 `idempotency_key`（模型/脚本侧推荐）；
+   - **自动指纹 `auto`**：无自然键的命令（如 vuln_note），网关对 `(domain, verb, idempotent_fields 核心字段)` 取 sha1；
+   - **仅显式 `explicit_only`**：仅调用方显式传 key 才落幂等表，不传则每次执行（exec_run_cli 类——同一命令行的重复执行是合法新意图）；
+   - **无 `none`**：不落幂等表——域内天然幂等（读后清空如 ledger_radar_drain、状态合并类如 scope_grant）或长时非事务命令（exec_spawn_worker，其去重由命令内预检承担）。
 2. **保留窗口**：`idempotency` 表保留最近 7 天或 10,000 条（LRU 淘汰）；命中同 key 同参数 → 返回首次结果 + `replay: true`；同 key 不同参数 → `E_IDEMPOTENT_CONFLICT`。
 3. **实现位置**：网关统一实现，域不写幂等逻辑（v4.x spawn_worker dedupe_key、webhook 指纹去重的经验泛化）。
 
 ## 七、查询规范
 
-1. **纯读**：查询绝不产生行变更。原"搜索即记 uses"类副作用 → 拆为独立命令（如 `know_exp_record_usage`），由投影层在查询后补发（audit 可见、失败不影响查询结果）。
+1. **纯读**：查询绝不产生行变更。原"搜索即记 uses"类副作用 → 拆为独立命令（如 `exp_record_usage`），由投影层在查询后补发（audit 可见、失败不影响查询结果）。
+   - **条件豁免（2026-09-12 裁决，仅此一形态）**：查询路径的**缓存物化与惰性 heal**（如 `ledger_coverage_report(materialize=true)` 物化 coverage-latest.md、`report_list` 删除孤儿索引行、`know_coverage(refresh=true)` 重算缓存）允许保留，当且仅当四条同时满足：① 操作幂等（重放同果）；② 落统一 audit（`kind:"heal"` / `kind:"materialize"`）；③ 不改变查询返回的业务语义（只影响新鲜度/一致性，不造业务数据）；④ 域文档显式声明该例外。除此形态外的查询写副作用一律禁止。
 2. **统一分页信封**：`{ rows: [...], total: N, limit, offset }`；`limit` 默认 50、上限 500；`sort` 白名单列 + `dir=asc|desc`。
 3. **可见域谓词与计数同口径**：每个列表查询与其对应 `total` 必须由同一个 where 构造器生成——这是 v4.3 修过的病（countFacts/factSearch、queryFindings 行数≠总数），**契约测试必须有"行数=total"断言**。
 4. **可见域谓词是查询参数**（archived / noise / memcore status / program 归属），默认值在模块文档声明；谓词实现放查询层不放 SQL 散点。
@@ -212,6 +221,7 @@
 4. **留痕与回放**：全部事件按域追加 `data/events/{domain}.jsonl`（dispatcher 派发后追加）；投递可靠性由 `event_outbox` 保证（跨进程），jsonl 仅作观测与回放源；`sec bus replay --since <ts>` 支持按事件日志重放 async 订阅者（灾备与调试）。
 5. **禁止事件风暴**：一个命令的事件发布数量有上限（默认 1，批量命令 ≤ 批量行数）；高频信号类（如 exec.run.completed 每次工具调用）payload ≤ 2KB。
 6. **订阅声明**：域在 manifest `subscribes` 里声明订阅 + 模式 + 处理器名——**未声明订阅的域收不到事件**（显式依赖，防止隐式耦合）。
+   - **"被订阅"对账纪律（2026-09-12 增补）**：模块文档头部/事件节的"被订阅"清单只允许写**对端文档已声明的订阅**；无对端声明的联动预期一律写进"开放问题"。总线 `bus_status` 提供订阅对账视图（各域声明事件 × 实际订阅者计数），零订阅者事件在 `bus_status.domains[].events_unsubscribed` 可见。
 
 ## 九、审计规范
 

@@ -14,7 +14,7 @@
 //    endpoint_upsert schema 不含（TSV 的 auth_required 列读入即弃）；
 //  - 队列消费语义显式化：consume 把已喂 URL 出队，seen 保留防重回（INV-2）；
 //  - 文件安全：param-queue/param-seen 域 owned，tmp+rename 原子写（沙箱不可写）；
-//  - scope 校验（INV-3）与 asset 域同口径（scope.yml 自查，authz 域上线前过渡）；
+//  - scope 校验（INV-3）与 asset 域同口径（scope.yml 自查，scope 域查询上线前过渡）；
 //  - 订阅 exec.run.completed（l2-collect/katana proposal 回灌，async 弱联动）。
 //
 // 零依赖：node:fs / node:path / node:crypto（sqlite 在总线）
@@ -96,7 +96,7 @@ export const ENDPOINT_MANIFEST = {
       }, ['program', 'source']),
       idempotent: 'auto',
       idempotent_fields: ['program', 'source'],
-      events: ['queue.enqueued'],
+      events: ['endpoint.queue.enqueued'],
       event_limit: 1,
       invariants: ['queueSourceExists'],
       timeout_ms: 60000,
@@ -114,7 +114,7 @@ export const ENDPOINT_MANIFEST = {
       }, ['program', 'scanner', 'run_id']),
       idempotent: 'natural',
       idempotent_natural: ['program', 'run_id'],
-      events: ['queue.consumed'],
+      events: ['endpoint.queue.consumed'],
       event_limit: 1,
       invariants: ['consumeEvidence'],
       timeout_ms: 60000,
@@ -198,8 +198,8 @@ export const ENDPOINT_MANIFEST = {
   },
   events: {
     'endpoint.registered': { payload: { type: 'object' }, redact: [] },
-    'queue.enqueued': { payload: { type: 'object' }, redact: [] },
-    'queue.consumed': { payload: { type: 'object' }, redact: [] },
+    'endpoint.queue.enqueued': { payload: { type: 'object' }, redact: [] },
+    'endpoint.queue.consumed': { payload: { type: 'object' }, redact: [] },
     'endpoint.auth_marked': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
@@ -296,7 +296,7 @@ function scopeCheckResult(programId, host, dataDir) {
   if (!programId) return { ok: true }
   const programs = loadScopePrograms(dataDir)
   const prog = programs.find((p) => p.name === programId)
-  if (!prog) { log(`scope 自查：program ${programId} 未找到，fail-open（authz 域上线前过渡）`); return { ok: true } }
+  if (!prog) { log(`scope 自查：program ${programId} 未找到，fail-open（scope 域查询上线前过渡）`); return { ok: true } }
   if (hostInPatterns(host, prog.exclude || [])) return { ok: false, code: 'E_INVARIANT', message: `接口 ${host} 命中项目 ${programId} 排除清单`, hint: '该域在项目排除清单内，需单独授权', retryable: false }
   if (!hostInPatterns(host, prog.scope || [])) return { ok: false, code: 'E_INVARIANT', message: `接口 ${host} 不在项目 ${programId} 授权范围内`, hint: '域外参考请不带 program_id，或先经审批扩 scope', retryable: false }
   return { ok: true }
@@ -476,7 +476,7 @@ function makeHandlers(opts) {
       const paths = repo.queuePaths(program)
       return {
         data: { program, new_urls: fresh.length, pool: stat.seen_lines, queue: paths.queue, hint: `dalfox file ${paths.queue} / sqlmap -m ${paths.queue} --batch --level 1 --risk 1` },
-        events: fresh.length ? [{ name: 'queue.enqueued', payload: { program, new_urls: fresh.length, pool: stat.seen_lines, source: args.source } }] : [],
+        events: fresh.length ? [{ name: 'endpoint.queue.enqueued', payload: { program, new_urls: fresh.length, pool: stat.seen_lines, source: args.source } }] : [],
         before: null, after: { new_urls: fresh.length },
       }
     },
@@ -505,7 +505,7 @@ function makeHandlers(opts) {
       }
       return {
         data: { program, consumed, remaining: remaining.length, not_in_queue: notInQueue, scanner: args.scanner, run_id: args.run_id },
-        events: consumed ? [{ name: 'queue.consumed', payload: { program, consumed, remaining: remaining.length, scanner: args.scanner, run_id: args.run_id } }] : [],
+        events: consumed ? [{ name: 'endpoint.queue.consumed', payload: { program, consumed, remaining: remaining.length, scanner: args.scanner, run_id: args.run_id } }] : [],
         before: { queue_lines: queue.length }, after: { queue_lines: remaining.length },
       }
     },

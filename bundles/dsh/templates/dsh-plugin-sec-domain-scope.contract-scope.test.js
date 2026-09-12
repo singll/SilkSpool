@@ -242,14 +242,28 @@ test('cred_add: host 在授权范围 + ref 存在 → 成功；host 越界 → E
 // 8. 幂等
 // ---------------------------------------------------------------------------
 
-test('幂等: grant 同参重放 → replay:true', async () => {
+test('幂等: grant 同参重放 → 重复执行无副作用（none 策略，防状态演进吞写）', async () => {
   const { bus } = makeEnv()
-  const args = { program_name: 'idem-src', entries: ['idem.com'] }
+  const args = { program_name: 'idem-src', entries: ['*.idem.com'] }
   const r1 = await bus.dispatch('scope', 'grant', args, { actor: 'dashboard' })
   const r2 = await bus.dispatch('scope', 'grant', args, { actor: 'dashboard' })
   assert.equal(r1.ok, true)
   assert.equal(r2.ok, true)
-  assert.equal(r2.replay, true)
+  // 幂等策略 none：不命中幂等表、不返回 replay，重复执行是状态合并 no-op（结果幂等）
+  assert.notEqual(r2.replay, true)
+  const chk = await bus.query('scope', 'check', { target: 'a.idem.com' }, { actor: 'dashboard' })
+  assert.equal(chk.ok, true)
+  assert.equal(chk.data.allow, true)
+  // 关键安全语义：grant → revoke → 再 grant 必须真实再授权（不得命中幂等表吞写）
+  const rv = await bus.dispatch('scope', 'revoke', { program_name: 'idem-src', entries: ['*.idem.com', 'idem.com'] }, { actor: 'dashboard' })
+  assert.equal(rv.ok, true)
+  const chk2 = await bus.query('scope', 'check', { target: 'a.idem.com' }, { actor: 'dashboard' })
+  assert.equal(chk2.data.allow, false)
+  const g3 = await bus.dispatch('scope', 'grant', args, { actor: 'dashboard' })
+  assert.equal(g3.ok, true)
+  assert.notEqual(g3.replay, true)
+  const chk3 = await bus.query('scope', 'check', { target: 'a.idem.com' }, { actor: 'dashboard' })
+  assert.equal(chk3.data.allow, true, '再授权必须真实生效，不允许幂等吞写')
 })
 
 // ---------------------------------------------------------------------------

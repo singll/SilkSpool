@@ -134,16 +134,23 @@ cordis 容器
       "contract_compatible": true, "backend": "sqlite-local", "backend_reachable": true,
       "capabilities": { "full": 7, "partial": 0, "unsupported": 0 },
       "commands": 7, "queries": 5,
+      "events_unsubscribed": ["vuln.candidate.claimed"],
       "last_dispatch": { "ts": 1789000000000, "ok": true }
     }
   ],
   "subscribers": [
     { "source": "memcore", "pattern": "vuln.*", "mode": "async", "as": "reactor", "last_error": null }
-  ]
+  ],
+  "event_contract": {
+    "rule": "{domain}.{object}[.{action}]",
+    "dangling_subscriptions": []
+  }
 }
 ```
 
-memcore / eval 等治理订阅者执行 lifecycle / 回流命令的 actor 身份即 `reactor`（宪法 §三），白名单为各自 manifest 显式列出的 lifecycle / 回流类动词。
+`events_unsubscribed`（2026-09-12 增补，宪法 §八.6 对账纪律的执行点）：该域声明发布但当前零订阅者的事件清单——文档"被订阅"清单只允许写对端已声明的订阅，运行时以本字段对账。零订阅不必然是缺陷（观测性事件合法），但出现在此的事件若在某域文档"被订阅"栏被声称有消费方，即为文档失真。
+
+memcore / eval 等治理订阅者执行命令的 actor 身份由订阅声明的 `as` 字段决定（推荐 `reactor`；handler 内可显式覆盖，如 eval 回流以 `system` 落账、task 域 onScopeGranted 以 `approval` 建种子任务）；memcore 治理旁路（sweep 直调 lifecycle 动词）使用 `system`（宪法 §三 system 定义含治理旁路通道）。白名单为各自 manifest 显式列出的 lifecycle / 回流类动词。
 
 ### 1.5 事件
 
@@ -159,8 +166,8 @@ memcore / eval 等治理订阅者执行 lifecycle / 回流命令的 actor 身份
 
 **域事件的留痕与回放**（EventOutbox/EventDispatcher 职责，宪法 §八.4）：
 
-- 命令事务提交后，事件信封随 outbox 行已持久化；dispatcher 派发后按序追加 `data/events/{domain}.jsonl`（O_APPEND 单次 write；payload 序列化后 >8KB 拒发 `E_BUS_EVENT_TOO_LARGE`，高频事件类声明 `high_frequency: true` 时上限 2KB——宪法 §八.5 防风暴的执行点）；
-- 一个命令的事件数上限：默认 1；`{...}_bulk` 动词上限=批量行数（schema 已限 ≤500）；
+- 命令事务提交后，事件信封随 outbox 行已持久化；dispatcher 派发后按序追加 `data/events/{domain}.jsonl`（O_APPEND 单次 write；payload 序列化后 >8KB 拒发 `E_BUS_EVENT_TOO_LARGE`——宪法 §八.5 防风暴的执行点。`high_frequency` 为**保留字段当前未实现**：全事件统一 8KB 上限，高频事件的体积约束由"payload 只含 ID 与判据快照"自律，exec.run.completed 的 parse_proposal 内联行数受各订阅方消费契约约束）；
+- 一个命令的事件数上限：默认 1；可经 manifest `event_limit` 显式上调（如 exec_spawn_worker=2）；`{...}_bulk` 动词上限=批量行数（行数上限进各域 schema，如 500/2000/5000）；
 - async 联动失败：dispatcher 指数退避重试（`bus_subscription` 记录 attempt/next_retry_at），超过阈值 → `dead_letter`；audit 记 `kind: "subscriber_failed"`（字段：event_id / subscriber / as / error）；`bus_replay` 可重放 dead/pending 的 async 订阅；
 - 强联动失败：见 §2.3。
 
@@ -190,7 +197,7 @@ memcore / eval 等治理订阅者执行 lifecycle / 回流命令的 actor 身份
 
 ```json
 // 工具调用：vuln_confirm
-{ "candidate_id": 88, "evidence_run_id": "r8f2k1", "note": "双出口复现一致，反证假设 2 项已排除" }
+{ "finding_id": 88, "evidence": "run_r8f2k1 双出口复现一致，反证假设 2 项已排除" }
 // 信封返回：
 { "ok": true, "domain": "vuln", "cmd": "confirm",
   "data": { "id": 341, "status": "confirmed", "signal": true },
@@ -284,13 +291,15 @@ CREATE TABLE IF NOT EXISTS bus_subscription (
 );
 ```
 
-**幂等键构造三级**（宪法 §六.1，manifest 每命令声明其一）：
+**幂等键构造策略**（宪法 §六.1，manifest 每命令声明其一；2026-09-12 起三级扩为五级）：
 
 | 策略 | 构造 | 例 |
 |---|---|---|
 | `natural` | `{domain}:{verb}:{manifest.idempotent_natural(fields) 计算值}` | `vuln:confirm:id:88`、`vuln:register_signal:fpr:a3f...`（fingerprint） |
-| `explicit` | 调用方传 `idempotency_key`（schema 里是可选参数，网关剥离后不进域实现） | `task:create:dedupe:9b1c...`（spawn_worker 链） |
-| `auto` | `{domain}:{verb}:{sha1(排序后 args 核心 fields)}` | `vuln:note:auto:c7d...` |
+| `explicit` | 调用方传 `idempotency_key`（schema 里是可选参数，网关剥离后不进域实现） | 调用方自带键的场景 |
+| `explicit_only` | 仅调用方显式传 key 才落幂等表；不传则每次执行（exec_run_cli 类——同一命令行的重复执行是合法新意图） | `exec_run_cli` |
+| `auto` | `{domain}:{verb}:{sha1(排序后 args 核心 fields)}`（核心字段由 `idempotent_fields` 声明） | `vuln:note:auto:c7d...` |
+| `none` | 不落幂等表：域内天然幂等（读后清空、状态合并）或长时非事务命令 | `ledger_radar_drain`、`exec_spawn_worker`（其去重由 dedupe_key 自然键在命令内预检，见下） |
 
 > `auto` 策略可选 `idempotent_ctx_fields`（如 `session_id`/`operator`）：把调用面身份折进键尾（`|session_id=...`），用于认领类动词（vuln claim/release）——不同会话认领同一对象键不碰撞，同会话重放仍命中 replay。身份来自网关 ctx（actor 注入同源），域实现不可伪造。
 
@@ -318,12 +327,18 @@ commands:
   {verb}:
     actor: string[]               # 非空；值域=宪法 §三 八 actor
     schema: object                # JSON Schema；必须 additionalProperties:false（lint 强制）
-    idempotent: natural|explicit|auto      # natural 时必须给 idempotent_natural 表达式
+    idempotent: natural|explicit|auto|explicit_only|none  # natural 时必须给 idempotent_natural 表达式；
+                                  # explicit_only=仅调用方显式传 key 才落幂等表（exec_run_cli 类）；
+                                  # none=域内天然幂等/读后清空类（ledger_radar_drain 等），不落幂等表
+    idempotent_fields: string[]   # auto 策略的核心字段清单（缺省=全参数）
+    event_limit: integer          # 可选，默认 1；非批量命令需发多事件时显式声明（如 spawn_worker=2）；bulk 动词上限=行数
+    backend_transactional: boolean # 可选，默认 true；false=非事务域（长时执行不占 BEGIN IMMEDIATE 写锁，如 exec 域；
+                                  # 事件 outbox/审计在命令收尾段落库，不享受单事务原子性——能力矩阵须声明差异）
     events: string[]              # 引用本域 events 声明，悬空引用拒绝
     invariants: string[]          # 引用域内不变量函数名，悬空拒绝
-    side_effects: { rows?, events?, files?, caches? }
+    side_effects: { rows?, events?, files?, caches? }   # 建议项（宪法 §四，2026-09-12 起非强制）
     timeout_ms: integer           # 默认 60000，上限 3670000
-    agent_note: string            # ≤240 字（查询 ≤120 字），缺失拒绝
+    agent_note: string            # ≤240 字（查询 ≤120 字），缺失拒绝（含不向模型注册的动词——lint 不区分可见性）
     deprecated: boolean           # 默认 false
 queries:
   {name}:
@@ -333,12 +348,12 @@ queries:
     default_sort: { col, dir }
     agent_note: string            # ≤120 字
 events:
-  {name}: { payload: object(JSON Schema), redact: string[], high_frequency?: boolean }
+  {name}: { payload: object(JSON Schema), redact: string[], high_frequency?: boolean }   # high_frequency 保留字段，当前未实现（统一 8KB 上限）
 subscribes:
   '{source.event.name}':
     handler: string               # 域内处理器函数名
     mode: sync|async
-    as: string                    # 订阅者执行命令时的 actor 身份（reactor；approval 事件的订阅执行用专用 approval actor）
+    as: string                    # 订阅者执行命令时的 actor 身份（推荐 reactor；approval 事件的 effect 执行用专用 approval actor；handler 内可显式覆盖）
 backend: repository-v1
 ```
 
@@ -347,12 +362,14 @@ backend: repository-v1
 | # | 校验 | 失败动作 |
 |---|---|---|
 | R1 | manifest 符合上述 schema（含 additionalProperties:false、agent_note 预算） | 拒载 + `bus.domain.rejected` 事件 |
-| R2 | 禁用词检查：动词名含 `update/set/save/modify` 拒绝（宪法 §二） | 拒载 |
-| R3 | 参数名 lint：**命令** schema 含 `status` / `to` / `state` 参数名拒绝（状态机私有——写侧禁传目标状态；查询 params 是可见域谓词按 status 过滤合法，豁免——17 §2.2 负向第 4 条同源） | 拒载 |
+| R2 | 禁用词检查：动词名含 `update/set/save/modify` 拒绝（宪法 §二）。**豁免登记**（2026-09-12）：`task_update_note`（语义=追加备注，非自由态改字段）；know 子仓原名（vc_save/pb_save 等）走宪法 §二子仓豁免不占此登记 | 拒载 |
+| R3 | 参数名 lint：**命令** schema **顶层**参数名含 `status` / `to` / `state` 拒绝（状态机私有——写侧禁传目标状态；行级内嵌字段如 endpoint 行的 HTTP status 不在此列；查询 params 是可见域谓词按 status 过滤合法，豁免——17 §2.2 负向第 4 条同源） | 拒载 |
 | R4 | owns 唯一性：tables/files 与已注册域交叉 | 拒载 + `E_BUS_DOMAIN_OWNS_CONFLICT` 进事件 detail（**重复注册冲突**：同 `domain` 二次 register 也在此拒——幂等重注册（同 version 同内容）返回已注册，静默通过） |
 | R5 | 引用完整性：commands.events / invariants / subscribes.handler 悬空引用 | 拒载 |
 | R6 | **域版本兼容检查**：`version` 必须 ≤ 总线支持的 manifest schema 大版本；且 ≥ bus_meta 记录的该域已见 version（**版本回退拒绝**——防"setup.sh 硬钉旧版本"式混版，DSH 0.1.2 升级教训的泛化） | 拒载 |
 | R7 | 后端可用性：`sec_domain_{domain}_backend` 配置解析 + 能力矩阵加载 | 后端不可达 → 域标 `backend_reachable:false` 挂载（查询降级按后端能力），写命令 `E_BACKEND_UNAVAILABLE` |
+| R8 | 事件命名契约：事件名必须以发布域为第一段，且至少 `{domain}.{object}` 两段；子对象可扩展第三段 | 拒载 |
+| R9 | 跨域订阅对账：`bus_status.event_contract.dangling_subscriptions` 输出已注册域订阅但当前无发布方的事件 | `bus_status` 红条/治理告警（不阻断注册，因多域加载顺序不同） |
 
 拒载后果：该域动词不进任何投影（模型看不见、RPC 查不到、dispatch 报 `E_BUS_DOMAIN_REJECTED`），`bus_status.domains[].registered:false` + 看板横幅。**不阻断其他域与总线自身启动**（fail-closed 只在域边界内）。
 
@@ -573,7 +590,7 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 | 事件载荷 | payload 符合 manifest events schema、redact 字段被过滤、不含行全量 |
 | 重放 | bus_replay 重放 weak/dead_letter → 订阅者幂等消化（第二次 replay 零副作用） |
 | 别名 | 别名过全管线（同 E_ACTOR_FORBIDDEN / E_SCHEMA 路径）；分派型别名路由正确 |
-| 注册校验 | R1-R7 各至少一个反例（禁用词动词 / status 参数名 / owns 冲突 / 版本回退）→ 域拒载且总线存活 |
+| 注册校验 | R1-R8 各至少一个反例（禁用词动词 / status 参数名 / owns 冲突 / 版本回退 / 事件名）→ 域拒载且总线存活；R9 bus_status 输出悬空订阅对账 |
 | 查询 | 行数=total / 谓词默认值 / 分页边界（offset 越界返回空 rows 且 total 不变） |
 | 防绕过 | cordis inject('secDomainBus') 只见门面 API；域模块不 provide 业务方法（加载后扫描 provide 名单断言） |
 
@@ -610,23 +627,23 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 `data/bus.aliases.yaml`（bundle 模板版本受控，Phase 1-4 观察期贯穿，Phase 5 删）：
 
 ```yaml
-# 静态别名：一对一映射
+# 静态别名：一对一映射（以下为代表性示例；**唯一真相源是 data/bus.aliases.yaml**，bundle 模板版本受控）
 aliases:
-  finding_add:        vuln_register_signal
+  finding_add:        vuln_register_signal   # 实际为分派别名（按 actor/参数路由），见运行表
   finding_get:        vuln_get
   asset_add:          asset_upsert
   asset_query:        asset_list
   blackboard_set:     fact_bb_publish
   blackboard_get:     fact_bb_read
   attempts_log:       ledger_log_attempt
-  card_usage_log:     ledger_log_card_usage
+  card_usage_log:     ledger_log_card_usage  # 实际为分派别名（router 判定）
   radar_read:         ledger_radar_drain
   surface_queue:      endpoint_queue_surface
-  coverage_report:    ledger_coverage
-  pipeline_validate:  ledger_validate
+  coverage_report:    ledger_coverage        # 实际为分派别名
+  pipeline_validate:  ledger_validate        # 实际指 ledger_pipeline_validate，见运行表
   proxy_pool_stats:   proxy_stats
-  proxy_pool_get:     proxy_gateway        # 语义归并别名：见注
-  task_create:        task_create          # 同名（域前缀恰好一致），可省
+  proxy_pool_get:     proxy_sticky_bind      # 语义归并别名（v4 无 key 单取 → v5 sticky_key 必填；单次取用走 proxy_gateway 网关），见 13-proxy §3.2
+  submission_draft:   report_draft_submission
 # 分派型别名：带状态参数的旧自由态动词，按参数路由
 dispatch_aliases:
   finding_update:
@@ -636,7 +653,13 @@ dispatch_aliases:
     warn: "finding_update 是自由态旧动词，已按 status 分派；请改用语义动词"
   task_update:
     router: task_status_router     # blocked→task_block；note→task_update_note；done→守卫提示（model 不可直接 finish）
+  finding_query:
+    router: query_visibility_router  # include_noise/noise → visibility 映射
+  exp_validate:
+    router: exp_validate_router      # 折叠进 exp_feedback(verdict=validated)
 ```
+
+> `task_chain` 无别名：v4 的 `exec_task_chain` 能力已迁移为 task 域 `task_chain`（05-task C9）+ exec 域只读查询 `exec_plan_chain`；v4 工具名 `task_chain` 与 v5 同名直通，不需要别名条目。
 
 规则（宪法 §十五.3 的执行细则）：
 
@@ -652,7 +675,7 @@ dispatch_aliases:
 |---|---|
 | audit.jsonl v4/v5 并存 | **同文件追加，不回改旧记录**。判别：v5 记录含 `kind` 字段（command/guard/subscriber_failed/query_human）且含 `idempotency_key`；v4 记录含 `tool`/`decision` 字段。`audit_tail` 双格式解析（v4 行映射为 `{kind:'legacy-v4', domain:'-', cmd: tool, result: decision}` 渲染），看板审计视图过渡期两色显示 |
 | audit v4→v5 backfill | **不做全量转换**（旧记录语义不完整，强转制造假数据）；仅 18-migration 在 Phase 1 做**僵尸数据修复**（31 条 confirmed+noise=1 → noise=0 等）时，把修复动作本身作为 v5 命令落新格式审计。v4 记录随 50MB 轮转自然消退 |
-| idempotency 表 | 空表启动，无需迁移；spawn_worker 的 dedupe_key 语义由 task 域文档声明为 explicit 幂等键，历史 dedupe 不回填 |
+| idempotency 表 | 空表启动，无需迁移；`exec_spawn_worker` 的去重语义由 **exec 域命令内预检**承担（`idempotent: 'none'` + dedupe_key=sha1(task) 查询 `task_worker_recent` 30 分钟窗：running→in_progress / done·failed→回读真实结果 / killed→重跑），历史 dedupe 不回填 |
 | bus_meta | 启动时写入 `seen.{domain}.version` 初值（首次注册时记录）；`replay.watermark` 置 0 |
 | events/*.jsonl | 空目录启动；存量 radar-queue.jsonl / flows/ 不迁（它们是 exec/proxy/ledger 域的 3.3 主题） |
 

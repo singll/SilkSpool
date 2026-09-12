@@ -1,7 +1,7 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：task domain manifest v1
-> 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）；`task_budget_extend` 由 approval 域 `approval_effects` 经 dispatcher 幂等执行。
+> 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）；`task_budget_extend` / `task_complete` 由 approval 域 `approval_effects`（effect outbox）经 dispatcher 幂等执行——执行失败记 `approval_effects.failed` 重试，不回滚 decide（09-approval §2.3）。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
 
@@ -33,7 +33,7 @@
 |---|---|---|---|---|---|---|
 | C1 | `task_create` | 登记新任务（普通 / once / interval），含任务级模型覆盖与预算参数 | model, dashboard, script, approval, system | 自然键（interval）/ 自动指纹 | task.created | ✅ |
 | C2 | `task_schedule` | 设置 / 修改 / 清除任务的调度（终态不可改） | model, dashboard | 显式 / 自动指纹 | — | ✅ |
-| C3 | `task_run_now` | 立即触发一次（拨 next_run_at=now，不动节律） | model, dashboard | 自动指纹 | — | ✅ |
+| C3 | `task_run_now` | 立即触发一次（拨 next_run_at=now，不动节律） | model, dashboard | none（认领层防重复） | — | ✅ |
 | C4 | `task_update_note` | 向 result 证据链追加一条带时间戳的记录（不改状态） | model, dashboard, scheduler, script | 自动指纹 | — | ✅ |
 | C5 | `task_block` | HITL 暂停：非终态 → blocked（blocked_reason 必填） | model, dashboard | 自动指纹 | task.blocked | ✅ |
 | C6 | `task_resume` | 恢复：blocked → queued（节律不动） | model, dashboard | 自动指纹 | — | ✅ |
@@ -47,7 +47,7 @@
 | C14 | `task_worker_finish` | worker 注册表收尾（exec.worker.finished 订阅执行） | reactor | 自然键（run_id） | — | ❌ |
 | C15 | `task_worker_reap` | worker 注册表启动/周期对账（meta 回读 → pid 判活 → 孤儿执法） | scheduler | 状态条件（running） | — | ❌ |
 | C16 | `task_submit_complete` | **自执行任务完成声明**（不改状态，提请 task-complete 审批） | model | 自然键（task_id+声明时刻） | — | ✅ |
-| C17 | `task_complete` | **审批落成收尾**（approval.approved kind=task-complete 订阅执行，自执行任务唯一 done 入口） | approval | 自然键（task_id） | task.finished | ❌ |
+| C17 | `task_complete` | **审批落成收尾**（approval 域 `approval_effects` effect outbox 执行（kind=task-complete），自执行任务唯一 done 入口） | approval | 自然键（task_id） | task.finished | ❌ |
 
 > \* actor 为 `reactor`（宪法 §三 域事件订阅反应器）：C13/C14 由总线从 `exec.worker.*` 订阅回调注入 actor=reactor，审计 cause 链指向源事件及其原始 actor；approval 事件的订阅执行保留专用 `approval` actor（语义更具体的先例身份）。
 
@@ -56,7 +56,7 @@
 | 职责 | 归属 | 内容 |
 |---|---|---|
 | 执行动作 | **exec 域** | `exec_spawn_worker` 命令：dedupe_key 构造（sha1(task 全文)）、`force` 跳过语义、幂等预检（调本域查询 `task_worker_recent`）、进程 spawn/超时杀组、run_dir 文件（worker.log/meta.json）、RoE 块注入、真实性校验（worker.log 拒执标记扫描——它读的是 exec owned 文件） |
-| 任务执行史 | **task 域（本域）** | workers 表行：注册（spawn 后）、收尾（退出后）、对账（重启后）。exec 域**不直接写 workers 表**——spawn 成功后发布 `exec.worker.spawned {run_id, dedupe_key, pid, task, cwd, timeout_sec, session_id, run_dir}`（**强联动 sync**），本域订阅后执行 C13；进程退出后发布 `exec.worker.finished {run_id, status, exit_code, truth}`，本域执行 C14。强联动失败 → exec_spawn_worker 整体报错回滚（exec 域负责 kill 刚 spawn 的进程组再返回）——**注册行丢失 = dedupe 语义失效 = 重复 spawn**，故必须强联动 |
+| 任务执行史 | **task 域（本域）** | workers 表行：注册（spawn 后）、收尾（退出后）、对账（重启后）。exec 域**不直接写 workers 表**——spawn 成功后发布 `exec.worker.spawned {run_id, dedupe_key, pid, task, cwd, timeout_sec, session_id, run_dir}`（**强联动 sync**），本域订阅后执行 C13；进程退出后发布 `exec.worker.finished {run_id, status, exit_code, duration_ms}`（**不携带 truth**——truth 经 spawn_worker 返回值流向 task_finish，见 C8），本域执行 C14。强联动失败 → exec_spawn_worker 整体报错回滚（exec 域负责 kill 刚 spawn 的进程组再返回）——**注册行丢失 = dedupe 语义失效 = 重复 spawn**，故必须强联动 |
 
 ### 1.3 命令逐个详述
 
@@ -167,7 +167,7 @@
 
 **错误码**：`E_NOT_FOUND`（hint「核对 task_list 里的 id」）；`E_STATE`（hint「仅 queued 可立即触发；running 用 task_worker_status 查进度，blocked 先 task_resume」）。
 
-**幂等**：自动指纹。**actor**：model, dashboard。**事件**：无（状态未变，审计留痕）。
+**幂等**：`none`——手动重跑是合法状态请求；重复触发在认领层由 `queued→running` 原子流转防重，失败回 queued 后允许再次触发。**actor**：model, dashboard。**事件**：无（状态未变，审计留痕）。
 
 **agent_note**：
 
@@ -271,7 +271,7 @@
 
 #### C8 `task_finish`（actor=scheduler 专用）
 
-**语义**：调度器收尾一个 run：① 真实性判定（以 exec.worker.finished 事件的 `truth` 为准，拒执/API 错误即使 exit 0 也翻转为失败）；② **流程守卫前置不变量**（见下）；③ 落 task_runs 执行史；④ interval 任务 latest-only 续期回 queued / once 任务进终态；⑤ 写 last_run_at/last_run_id/session_id；⑥ 发布 `task.finished`。
+**语义**：调度器收尾一个 run：① 真实性判定（以调度器透传的 `truth` 参数为准——其来源是 exec_spawn_worker 返回值的拒执标记扫描结果，见 10-exec §1.3.2；拒执/API 错误即使 exit 0 也翻转为失败）；② **流程守卫前置不变量**（见下）；③ 落 task_runs 执行史；④ interval 任务 latest-only 续期回 queued / once 任务进终态；⑤ 写 last_run_at/last_run_id/session_id；⑥ 发布 `task.finished`。
 
 **参数表**：
 
@@ -282,13 +282,13 @@
 | `outcome` | string | ✅ | — | 枚举 `done / failed / busy / crash`：busy=exec 并发满（回 queued 不落史）；crash=调度执行异常（视同 failed，run_id 可空） |
 | `note` | string | ❌ | `''` | 摘要 ≤500 字（v4.x：worker 尾部去噪后 3 行） |
 | `session_id` | string | ❌ | null | 会话反查回填值（findWorkerSessionId 结果） |
-| `truth` | object | ❌ | `{checked:false,rejected:false,reason:''}` | 由 exec.worker.finished 事件透传；`truth.rejected=true` ⇒ outcome 强制翻转为 failed |
+| `truth` | object | ❌ | `{checked:false,rejected:false,reason:''}` | 由调度器取 `exec_spawn_worker` 返回值（`data.truth`，拒执标记扫描结果）透传；`truth.rejected=true` ⇒ outcome 强制翻转为 failed（**不经 worker 事件**——`exec.worker.finished` 无 truth 字段） |
 
 **流程守卫（前置不变量，从 v4.x taskUpdate 拆出，成为 finish 的私有不变量）**：
 
 | ID | 校验 | 作用域 | 失败语义 |
 |---|---|---|---|
-| INV-T6a | ① attempts 台账近 24h（北京日切：今天/昨天）有增量行（六态皆可）——**经 ledger 域查询 `ledger_pipeline_guard`** | `schedule_kind='interval'` 且 `data/pipeline/{program}/` 目录存在的任务 | 守卫结果不拒绝 finish（见下），进 payload |
+| INV-T6a | ① attempts 台账近 24h（北京日切：今天/昨天）有增量行（六态皆可）——**经 ledger 域查询 `ledger_task_proof`**（11-ledger §1.4.6） | `schedule_kind='interval'` 且 `data/pipeline/{program}/` 目录存在的任务 | 守卫结果不拒绝 finish（见下），进 payload |
 | INV-T6b | ② card_usage-*.jsonl 近 24h 有记录（文件名日期或 mtime 24h 内）——同上经 ledger 查询 | 同上 | 同上 |
 | INV-T6c | ③ handoff-<北京日期>.md 存在（今天或昨天）——同上经 ledger 查询 | 同上 | 同上 |
 

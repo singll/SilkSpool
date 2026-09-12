@@ -413,7 +413,7 @@ test('query: fp_query 补 offset/total 分页信封', async () => {
 // 8. 事件载荷 / 并发
 // ---------------------------------------------------------------------------
 
-test('event payload: asset.registered / asset.graded / fp.recorded 载荷字段', async () => {
+test('event payload: asset.registered / asset.graded / asset.fp.recorded 载荷字段', async () => {
   const { dir, bus } = makeEnv()
   await bus.dispatch('asset', 'upsert', { host: 'a.example.com', source: 'httpx:run_1', program_id: 'test-src' }, { actor: 'model' })
   const ev = readEvents(dir)

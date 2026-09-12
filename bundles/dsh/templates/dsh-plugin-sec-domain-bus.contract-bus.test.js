@@ -393,6 +393,8 @@ test('R4: owns 表冲突 → 第二域拒载', () => {
   const m2 = makeVulnManifest()
   m2.domain = 'asset'
   m2.service = 'secDomain.asset'
+  for (const [name] of Object.entries(m2.events)) delete m2.events[name]
+  for (const command of Object.values(m2.commands)) command.events = []
   const r2 = bus.registry.register({ manifest: m2, handlers: { ...makeVulnHandlers(), vuln_confirm: async () => ({ data: {} }), vuln_reject: async () => ({ data: {} }), vuln_register_signal: async () => ({ data: {} }) }, backend: makeVulnBackend() })
   assert.equal(r2.ok, false)
   assert.match(r2.error.message, /owns 冲突/)
@@ -421,6 +423,30 @@ test('R7: 后端 factory 缺失 → 拒载', () => {
   const r = bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: { capabilities: {} } })
   assert.equal(r.ok, false)
   assert.match(r.error.message, /R7/)
+})
+
+test('R8: 事件缺域前缀或段数不足 → 拒载', () => {
+  const { bus } = makeBus()
+  const m = makeVulnManifest()
+  m.events['invalid-event'] = m.events['vuln.signal.confirmed']
+  const r = bus.registry.register({ manifest: m, handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  assert.equal(r.ok, false)
+  assert.match(r.error.message, /R8/)
+})
+
+test('R9: bus_status 输出跨域订阅悬空对账', async () => {
+  const { bus } = makeBus()
+  const m = makeVulnManifest()
+  m.subscribes = { 'asset.registered': { handler: 'onAssetRegistered', mode: 'async', as: 'reactor' } }
+  const r = bus.registry.register({
+    manifest: m,
+    handlers: { ...makeVulnHandlers(), subscribers: { onAssetRegistered: async () => ({ ok: true }) } },
+    backend: makeVulnBackend(),
+  })
+  assert.equal(r.ok, true)
+  const st = await bus.query('bus', 'status', {}, { actor: 'dashboard' })
+  assert.equal(st.ok, true)
+  assert.deepEqual(st.data.event_contract.dangling_subscriptions, [{ source: 'vuln', pattern: 'asset.registered', mode: 'async' }])
 })
 
 test('重复注册同内容 → 幂等通过；bus 域已自注册', () => {

@@ -91,11 +91,11 @@ export const EXEC_MANIFEST = {
       deprecated: false,
     },
     exec_spawn_worker: {
-      actor: ['model', 'dashboard'],
+      actor: ['model', 'dashboard', 'scheduler'],
       schema: schema({
         task: str({ minLength: 1 }),
         phase: str(),
-        timeout: int({ minimum: 1, maximum: 3600 }),
+        timeout: int({ minimum: 1, maximum: 7200 }),
         force: { type: 'boolean' },
         provider: str(),
         model: str(),
@@ -204,7 +204,9 @@ export const EXEC_MANIFEST = {
     'exec.import.completed': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
-    'scope.rules.changed': { handler: 'onRulesChanged', mode: 'sync', as: 'reactor' },
+    // QPS cap 在 acquireQpsToken 中每次对齐 loadScope 的 rate_limit_qps。
+    // 不订阅 scope.rules.changed：sync 订阅无法跨 headless worker 进程生效，
+    // 且当前 handler 本身就是 no-op，保留会制造虚假的事件依赖。
   },
   backend: 'repository-v1',
 }
@@ -674,7 +676,7 @@ function makeHandlers(opts) {
         } catch { /* 查询失败不阻断 */ }
       }
       if (activeWorkers >= MAX_WORKERS) throwErr('E_EXEC_WORKER_BUSY', `worker 并发上限 ${MAX_WORKERS}`, '稍后重试（busy 时调度器回 queued）', true)
-      const timeoutMs = Math.min(Number(args.timeout) || 900, 3600) * 1000
+      const timeoutMs = Math.min(Number(args.timeout) || 900, 7200) * 1000
       const { runId, runDir } = repo.createRunDir('w')
       const workCwd = runDir
       const fullTask = task.includes(ROE_ANCHOR) ? task : `${task}\n\n${ROE_BLOCK}`
@@ -692,9 +694,11 @@ function makeHandlers(opts) {
       activeWorkers++
       const started = Date.now()
       const originSessionId = ctx.session_id || null
+      let childPid = 0
       const result = await new Promise((resolve) => {
         let child
         try { child = spawn(NODE_BIN, dshArgs, { env, cwd: workCwd, detached: true }) } catch (e) { resolve({ code: null, error: String(e.message) }); return }
+        childPid = child.pid || 0
         const out = fs.createWriteStream(path.join(runDir, 'worker.log'))
         child.stdout.pipe(out)
         child.stderr.pipe(out)
@@ -725,7 +729,7 @@ function makeHandlers(opts) {
       for (const mark of rejectMarks) { if (tailLog.includes(mark)) { truth.rejected = true; truth.reason = `worker.log 命中拒执/错误标记: ${mark}`; break } }
 
       const events = [
-        { name: 'exec.worker.spawned', payload: { run_id: runId, dedupe_key: dedupeKey, cwd: workCwd, timeout_sec: Math.round(timeoutMs / 1000), pid: 0, origin_session_id: originSessionId } },
+        { name: 'exec.worker.spawned', payload: { run_id: runId, dedupe_key: dedupeKey, cwd: workCwd, run_dir: runDir, timeout_sec: Math.round(timeoutMs / 1000), pid: childPid, origin_session_id: originSessionId } },
         { name: 'exec.worker.finished', payload: { run_id: runId, status: finalStatus, exit_code: result.code ?? null, duration_ms: meta.duration_ms } },
       ]
       return {
@@ -882,12 +886,7 @@ function makeHandlers(opts) {
     },
   }
 
-  const subscribers = {
-    onRulesChanged: async (envelope) => {
-      // QPS 桶容量即时生效：cap 在 acquireQpsToken 里每次对齐 loadScope 的 rate_limit_qps，无需额外动作
-      return { ok: true, data: { skipped: false } }
-    },
-  }
+  const subscribers = {}
 
   return { ...commands, queries, invariants, subscribers }
 }

@@ -14,7 +14,7 @@
 //  - level 永远非入参：由 score 派生（S≥75/A60-74/B40-59/C<40），域私有映射（INV-6）；
 //  - 分级保留确认点：proposal 不自动落库（订阅 handler 只回灌 assets/fingerprints/state）；
 //  - scope 校验（INV-3）：带 program_id 时 host 须命中该 program scope（scope.yml 自查，
-//    authz 域上线前 fail-open 于"program 未找到"，program 找到则严格执行）；
+//    scope 域查询上线前 fail-open 于"program 未找到"，program 找到则严格执行）；
 //  - 订阅 exec.run.completed（httpx parser proposal 回灌，async 弱联动）。
 //
 // 零依赖：node:fs / node:path / node:crypto（sqlite 在总线）
@@ -156,11 +156,11 @@ export const ASSET_MANIFEST = {
       }, ['host', 'tech']),
       idempotent: 'auto',
       idempotent_fields: ['host', 'tech', 'version', 'source', 'program_id'],
-      events: ['fp.recorded'],
+      events: ['asset.fp.recorded'],
       event_limit: 1,
       invariants: ['scopeCheck'],
       timeout_ms: 60000,
-      agent_note: '登记指纹（技术栈+版本，host+tech 去重）。指纹命中是 N-day 检索的触发器（intel_hunt 订阅 fp.recorded 自动建候选任务）。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。',
+      agent_note: '登记指纹（技术栈+版本，host+tech 去重）。指纹命中后用 exec_intel_hunt 检索 N-day 模板并可建候选任务。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。',
       deprecated: false,
     },
     fp_record_bulk: {
@@ -177,7 +177,7 @@ export const ASSET_MANIFEST = {
       }, ['rows']),
       idempotent: 'auto',
       idempotent_fields: ['rows', 'proposal_ref'],
-      events: ['fp.recorded'],
+      events: ['asset.fp.recorded'],
       event_limit: 500,
       invariants: ['bulkRowLimit'],
       timeout_ms: 60000,
@@ -252,7 +252,7 @@ export const ASSET_MANIFEST = {
     'asset.registered': { payload: { type: 'object' }, redact: [] },
     'asset.graded': { payload: { type: 'object' }, redact: [] },
     'asset.state.changed': { payload: { type: 'object' }, redact: [] },
-    'fp.recorded': { payload: { type: 'object' }, redact: [] },
+    'asset.fp.recorded': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'exec.run.completed': { handler: 'onRunProposal', mode: 'async', as: 'reactor' },
@@ -336,13 +336,13 @@ function hostInPatterns(host, patterns) {
 }
 
 // INV-3：program_id 非空时 host 必须命中该 program scope 且不在 exclude。
-// program 未找到 / scope.yml 不可读 → fail-open（authz 域上线前过渡，记 log）。
+// program 未找到 / scope.yml 不可读 → fail-open（scope 域查询上线前过渡，记 log）。
 function scopeCheckResult(programId, host, dataDir) {
   if (!programId) return { ok: true }
   const programs = loadScopePrograms(dataDir)
   const prog = programs.find((p) => p.name === programId)
   if (!prog) {
-    log(`scope 自查：program ${programId} 未在 scope.yml 找到，fail-open（authz 域上线前过渡）`)
+    log(`scope 自查：program ${programId} 未在 scope.yml 找到，fail-open（scope 域查询上线前过渡）`)
     return { ok: true }
   }
   if (hostInPatterns(host, prog.exclude || [])) {
@@ -617,7 +617,7 @@ function makeHandlers(opts) {
       const changed = r.version_changed || r.created
       return {
         data: { host, tech: String(args.tech).toLowerCase(), version: r.after?.version ?? args.version, created: r.created, version_from: r.version_from },
-        events: changed ? [{ name: 'fp.recorded', payload: { host, tech: String(args.tech).toLowerCase(), version: r.after?.version ?? '', version_from: r.version_from, source: args.source || '', program_id: args.program_id ?? null } }] : [],
+        events: changed ? [{ name: 'asset.fp.recorded', payload: { host, tech: String(args.tech).toLowerCase(), version: r.after?.version ?? '', version_from: r.version_from, source: args.source || '', program_id: args.program_id ?? null } }] : [],
         before: r.before ? { version: r.before.version } : null,
         after: { version: r.after?.version ?? '' },
       }
@@ -634,7 +634,7 @@ function makeHandlers(opts) {
         const changed = r.version_changed || r.created
         if (r.created) created++; else updated++
         results.push({ host, tech: String(row.tech).toLowerCase(), created: r.created, ok: true })
-        if (changed) events.push({ name: 'fp.recorded', payload: { host, tech: String(row.tech).toLowerCase(), version: r.after?.version ?? '', version_from: r.version_from, source: row.source || '', program_id: row.program_id ?? null } })
+        if (changed) events.push({ name: 'asset.fp.recorded', payload: { host, tech: String(row.tech).toLowerCase(), version: r.after?.version ?? '', version_from: r.version_from, source: row.source || '', program_id: row.program_id ?? null } })
       }
       return {
         data: { created, updated, results, proposal_ref: args.proposal_ref ?? null },

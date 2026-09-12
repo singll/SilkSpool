@@ -42,7 +42,6 @@ const REPLAY_WINDOW_MS = 10 * 60 * 1000
 
 function sha1(str) { return crypto.createHash('sha1').update(String(str)).digest('hex') }
 function makeRunId(prefix = 'evalrun') { return `${prefix}_${Date.now().toString(36)}${crypto.randomBytes(4).toString('hex')}` }
-function makeEventId() { return `evt_${Date.now().toString(36)}${crypto.randomBytes(8).toString('hex')}` }
 
 function canonicalize(obj) {
   const norm = (v) => {
@@ -109,8 +108,7 @@ export const EVAL_MANIFEST = {
         timeout_sec: int({ minimum: 60, maximum: 3600 }),
       }, []),
       idempotent: 'none',
-      events: ['eval.report.built'],
-      event_limit: 1,
+      events: [],
       invariants: ['fpCasesExist'],
       timeout_ms: 60000,
       agent_note: '（模型不可见——评测触发是治理动作：LLM 成本控制 + 被评对象不得启动评测）',
@@ -124,11 +122,30 @@ export const EVAL_MANIFEST = {
         model: str({ maxLength: 64 }),
       }, []),
       idempotent: 'none',
-      events: ['eval.report.built'],
-      event_limit: 1,
+      events: [],
       invariants: ['contractCasesExist'],
       timeout_ms: 60000,
       agent_note: '（模型不可见——评测触发是治理动作：LLM 成本控制 + 被评对象不得启动评测）',
+      deprecated: false,
+    },
+    eval_run_finish: {
+      actor: ['system'],
+      schema: schema({
+        run_id: str({ minLength: 1 }),
+        outcome: en(['done', 'failed']),
+        report: { type: 'object' },
+        report_file: str({ maxLength: 512 }),
+        error: str({ maxLength: 2000 }),
+        pass_rate: { type: 'number' },
+        gain: { type: 'object' },
+      }, ['run_id', 'outcome']),
+      idempotent: 'natural',
+      idempotent_natural: ['run_id'],
+      events: ['eval.report.built'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '（内部命令——评测异步执行器的唯一收尾落账通道：报告落盘 + run 状态翻转 + eval.report.built 事件，全部经网关 audit；不向模型/看板注册）',
       deprecated: false,
     },
   },
@@ -273,7 +290,6 @@ function makeHandlers(opts) {
   const queryRef = opts.query
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const schedule = opts.schedule || ((fn) => { const t = setTimeout(fn, 0); t.unref?.(); return t })
-  const publishRef = opts.publish || (() => {})
   const executor = opts.executor || makeDefaultExecutor({ ...opts, dataDir })
   const statsCache = { at: 0, value: null }
 
@@ -375,11 +391,18 @@ function makeHandlers(opts) {
       })
       schedule(() => executor.runFp({ runId, cases: selected, conditions, model, timeoutSec, repo })
         .then((result) => {
-          repo.finishRun(runId, { status: result.status || 'done', finished_at: Date.now(), ...(result.report_file ? { report_file: result.report_file } : {}), ...(result.error ? { error: result.error } : {}) })
-          publishRef(buildEventEnvelope('eval.report.built', { run_id: runId, kind: 'fp', file: result.report_file || null, pass_rate: result.pass_rate ?? null, gain: result.gain ?? null }))
+          const fin = { run_id: runId, outcome: result.status || 'done' }
+          if (result.report && typeof result.report === 'object') fin.report = result.report
+          if (result.report_file) fin.report_file = result.report_file
+          if (result.error) fin.error = String(result.error)
+          if (result.pass_rate != null) fin.pass_rate = result.pass_rate
+          if (result.gain && typeof result.gain === 'object') fin.gain = result.gain
+          dispatchRef('eval', 'run_finish', fin, { actor: 'system' })
+            .catch((e) => { log(`eval_run_finish 落账失败: ${e?.message}`) })
         })
         .catch((e) => {
-          repo.finishRun(runId, { status: 'failed', finished_at: Date.now(), error: String(e?.message || e) })
+          dispatchRef('eval', 'run_finish', { run_id: runId, outcome: 'failed', error: String(e?.message || e) }, { actor: 'system' })
+            .catch((e2) => { log(`eval_run_finish 失败落账失败: ${e2?.message}`) })
         }))
       return { data: { run_id: runId, status: 'running', cases: selected.length, conditions }, events: [] }
     },
@@ -401,13 +424,44 @@ function makeHandlers(opts) {
       })
       schedule(() => executor.runContract({ runId, cases: selected, llmProbe, model, repo })
         .then((result) => {
-          repo.finishRun(runId, { status: result.status || 'done', finished_at: Date.now(), ...(result.report_file ? { report_file: result.report_file } : {}), ...(result.error ? { error: result.error } : {}) })
-          publishRef(buildEventEnvelope('eval.report.built', { run_id: runId, kind: 'contract', file: result.report_file || null, pass_rate: result.pass_rate ?? null, gain: null }))
+          const fin = { run_id: runId, outcome: result.status || 'done' }
+          if (result.report && typeof result.report === 'object') fin.report = result.report
+          if (result.report_file) fin.report_file = result.report_file
+          if (result.error) fin.error = String(result.error)
+          if (result.pass_rate != null) fin.pass_rate = result.pass_rate
+          dispatchRef('eval', 'run_finish', fin, { actor: 'system' })
+            .catch((e) => { log(`eval_run_finish 落账失败: ${e?.message}`) })
         })
         .catch((e) => {
-          repo.finishRun(runId, { status: 'failed', finished_at: Date.now(), error: String(e?.message || e) })
+          dispatchRef('eval', 'run_finish', { run_id: runId, outcome: 'failed', error: String(e?.message || e) }, { actor: 'system' })
+            .catch((e2) => { log(`eval_run_finish 失败落账失败: ${e2?.message}`) })
         }))
       return { data: { run_id: runId, status: 'running', cases: selected.length, llm_probe: llmProbe }, events: [] }
+    },
+
+    // 评测异步执行器的唯一收尾落账通道（actor=system）：报告落盘 + run 状态翻转 + 事件，
+    // 全部经网关全管线（audit/幂等/outbox），替代 v5 初版执行器直写 repo.finishRun 的形态。
+    eval_run_finish: async (args, repo) => {
+      const run = repo.listRuns().find((r) => r.run_id === args.run_id)
+      if (!run) throwErr('E_NOT_FOUND', `run 不存在: ${args.run_id}`, '核对 eval_reports')
+      if (run.status !== 'running') {
+        return { data: { run_id: args.run_id, status: run.status, already: true }, events: [] }
+      }
+      let reportFile = args.report_file || null
+      if (args.report && typeof args.report === 'object') {
+        const w = repo.writeReport(run.kind, JSON.stringify(args.report, null, 1) + '\n')
+        reportFile = w.file
+      }
+      repo.finishRun(args.run_id, {
+        status: args.outcome, finished_at: Date.now(),
+        ...(reportFile ? { report_file: reportFile } : {}),
+        ...(args.error ? { error: String(args.error).slice(0, 2000) } : {}),
+      })
+      return {
+        data: { run_id: args.run_id, status: args.outcome, report_file: reportFile },
+        events: [{ name: 'eval.report.built', payload: { run_id: args.run_id, kind: run.kind, status: args.outcome, file: reportFile, pass_rate: args.pass_rate ?? null, gain: args.gain ?? null } }],
+        after: { run_id: args.run_id, status: args.outcome },
+      }
     },
   }
 
@@ -529,13 +583,6 @@ function makeHandlers(opts) {
   return { ...commands, queries, invariants, subscribers }
 }
 
-function buildEventEnvelope(name, payload) {
-  return {
-    id: makeEventId(), domain: 'eval', name, ts: Date.now(), actor: 'system', session_id: null,
-    operator: null, cause: { cmd: 'eval_report', idempotency_key: null }, payload,
-  }
-}
-
 // ---------------------------------------------------------------------------
 // 默认异步执行器（真实 LLM：fp 双条件消融 / contract Mode A 网关直断言）
 // ---------------------------------------------------------------------------
@@ -593,13 +640,13 @@ function makeDefaultExecutor(opts) {
       purpose: 'sec-verification 验证纪律对防误报的增益（skill=off vs skill=on）',
       model: client.model, scores, gain, cases: condResults,
     }
-    const w = repo.writeReport('fp', JSON.stringify(report, null, 1) + '\n')
-    return { status: 'done', report_file: w.file, pass_rate: null, gain }
+    // 报告落盘与状态收尾统一由 eval_run_finish 命令承担（网关 audit/事件），执行器不直写
+    return { status: 'done', report, pass_rate: null, gain }
   }
 
   // 契约用例 attempt 分派：tool 形如 vuln_confirm（域前缀）→ dispatch(vuln, confirm)；
   // 形如 finding_update（v4 旧裸工具名）→ dispatch('', finding_update) 走别名归一。
-  const KNOWN_DOMAINS = new Set(['vuln', 'asset', 'endpoint', 'task', 'fact', 'know', 'scope', 'approval', 'exec', 'ledger', 'report', 'proxy', 'fgs', 'eval', 'authz', 'bus'])
+  const KNOWN_DOMAINS = new Set(['vuln', 'asset', 'endpoint', 'task', 'fact', 'know', 'scope', 'approval', 'exec', 'ledger', 'report', 'proxy', 'fgs', 'eval', 'bus'])
 
   async function dispatchAttempt(attempt) {
     if (!dispatchRef) throw new Error('no dispatch ref')
@@ -650,8 +697,8 @@ function makeDefaultExecutor(opts) {
       ts: new Date().toISOString(), eval: 'contract-compliance', mode,
       pass, total, pass_rate: passRate, failures,
     }
-    const w = repo.writeReport('contract', JSON.stringify(report, null, 1) + '\n')
-    return { status: 'done', report_file: w.file, pass_rate: passRate }
+    // 报告落盘与状态收尾统一由 eval_run_finish 命令承担（网关 audit/事件），执行器不直写
+    return { status: 'done', report, pass_rate: passRate }
   }
 
   return { runFp, runContract }

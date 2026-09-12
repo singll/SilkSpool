@@ -109,8 +109,7 @@ export const TASK_MANIFEST = {
     task_run_now: {
       actor: ['model', 'dashboard'],
       schema: schema({ task_id: int() }, ['task_id']),
-      idempotent: 'auto',
-      idempotent_fields: ['task_id'],
+      idempotent: 'none',
       events: [],
       invariants: ['runNowQueued'],
       timeout_ms: 60000,
@@ -118,7 +117,7 @@ export const TASK_MANIFEST = {
       deprecated: false,
     },
     task_update_note: {
-      actor: ['model', 'dashboard', 'scheduler', 'script'],
+      actor: ['model', 'dashboard', 'scheduler', 'script', 'approval', 'system'],
       schema: schema({ task_id: int(), note: str({ minLength: 1, maxLength: 2000 }) }, ['task_id', 'note']),
       idempotent: 'auto',
       idempotent_fields: ['task_id', 'note'],
