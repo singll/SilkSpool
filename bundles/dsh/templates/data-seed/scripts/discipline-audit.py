@@ -12,8 +12,10 @@
 # ==============================================================================
 import argparse
 import glob
+import importlib.util
 import json
 import os
+from pathlib import Path
 import re
 import sqlite3
 import sys
@@ -28,7 +30,7 @@ TOOL_PREFIXES = {
     "scope", "approval", "report", "proxy", "eval", "bus",   # 域前缀
     "exp", "kb", "pb", "vc", "rule", "harvest",              # know 域子仓前缀（工具名无 know_ 前缀）
     "fp", "neg", "queue", "audit", "events",                 # 非标准域工具名前缀（零改名接管）
-    "browser", "authz",                                      # 独立工具前缀
+    "browser", "authz", "finding",                           # 独立工具及历史别名前缀
 }
 
 # 非工具 token（共享工具前缀但语义是字段/指令/存储名，非动词）——显式豁免，避免误报
@@ -116,16 +118,36 @@ def scan_tool_refs(text, valid):
     return dangling
 
 
-def collect_prompt_texts(data_dir):
-    """收集 prompt 资产文本（persona/skills/rules）。返回 [(label, text), ...]。"""
+def persona_module(base_dir):
+    candidates = [Path(base_dir) / "plugins/sec-suite/persona.py",
+                  Path(base_dir) / "dsh-plugin-sec-suite.persona.py",
+                  Path(__file__).resolve().parents[2] / "dsh-plugin-sec-suite.persona.py"]
+    filename = next((p for p in candidates if p.is_file()), None)
+    if filename is None:
+        raise ValueError("缺少受管 persona 解析器")
+    spec = importlib.util.spec_from_file_location("silksec_persona_audit", filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def collect_prompt_texts(data_dir, base_dir=None, errors=None, prompt_files=()):
+    """收集 persona/skills/rules/调度模板/已捕获的最终 prompt；失败不能等价为空文本。"""
+    base_dir = base_dir or os.path.dirname(os.path.abspath(data_dir))
+    errors = errors if errors is not None else []
     items = []
-    for f in sorted(glob.glob(os.path.join(data_dir, ".agent-presets", "*", "agent.cordis.yml"))):
+    persona = persona_module(base_dir)
+    persona_files = sorted(glob.glob(os.path.join(data_dir, ".agent-presets", "*", "agent.cordis.yml")))
+    present = {Path(f).parent.name for f in persona_files}
+    for missing in sorted(persona.MANAGED_IDS - present):
+        errors.append({"file": f".agent-presets/{missing}/agent.cordis.yml", "error": "MissingManagedPersona"})
+    for f in persona_files:
         try:
-            src = open(f, encoding="utf-8").read()
-        except OSError:
+            parts = persona.persona_parts(persona.read_yaml(f))
+            items.append((os.path.relpath(f, data_dir), parts["prefix"] + "\n" + parts["suffix"]))
+        except (OSError, ValueError, persona.yaml.YAMLError) as error:
+            errors.append({"file": os.path.relpath(f, data_dir), "error": type(error).__name__})
             continue
-        m = re.search(r"text: >-\n((?:      .*\n)+)", src)
-        items.append((os.path.relpath(f, data_dir), m.group(1) if m else ""))
     for f in sorted(glob.glob(os.path.join(data_dir, "skills", "*", "SKILL.md"))):
         try:
             items.append((os.path.relpath(f, data_dir), open(f, encoding="utf-8").read()))
@@ -136,6 +158,22 @@ def collect_prompt_texts(data_dir):
             items.append((os.path.relpath(f, data_dir), open(f, encoding="utf-8").read()))
         except OSError:
             continue
+    runtime = Path(base_dir) / "plugins/sec-suite/host-compat.js"
+    if not runtime.is_file():
+        runtime = Path(base_dir) / "dsh-plugin-sec-suite.host-compat.js"
+    try:
+        src = runtime.read_text(encoding="utf-8")
+        template = src.split("// PROMPT_AUDIT_BEGIN", 1)[1].split("// PROMPT_AUDIT_END", 1)[0]
+        if "// PROMPT_AUDIT_END" not in src or not template.strip():
+            raise ValueError("缺少调度 prompt 扫描边界")
+        items.append(("runtime/scheduled-prompt", template))
+    except (OSError, ValueError, IndexError) as error:
+        errors.append({"file": "runtime/scheduled-prompt", "error": type(error).__name__})
+    for filename in prompt_files:
+        try:
+            items.append(("rendered/" + Path(filename).name, Path(filename).read_text(encoding="utf-8")))
+        except OSError as error:
+            errors.append({"file": "rendered/" + Path(filename).name, "error": type(error).__name__})
     return items
 
 
@@ -146,6 +184,8 @@ def beijing_date(ts=None):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default=DATA_DEFAULT)
+    ap.add_argument("--base-dir", help="部署根目录（默认 data-dir 的父目录）")
+    ap.add_argument("--prompt-file", action="append", default=[], help="附加实际拼装后的 prompt 文件，可重复；输出仅报告工具 token")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
     ddir = args.data_dir
@@ -203,7 +243,7 @@ def main() -> int:
     metrics["idea_cards"] = ideas
 
     # 5) 调度漂移 + task_runs 新鲜度
-    con = sqlite3.connect(db_file)
+    con = sqlite3.connect(Path(db_file).resolve().as_uri() + "?mode=ro", uri=True)
     cur = con.cursor()
     drift = cur.execute(
         "SELECT id, program_id, CAST(next_run_at AS REAL)/NULLIF(CAST(last_run_at + every_seconds*1000 AS REAL),0)"
@@ -215,22 +255,32 @@ def main() -> int:
     con.close()
 
     # 6) 悬空工具引用（v5 Phase 5.5：persona/skills/rules/tasks objective 对照挂载矩阵）
-    base_dir = os.path.dirname(ddir)
+    base_dir = args.base_dir or os.path.dirname(os.path.abspath(ddir))
     valid, n_verbs, n_aliases = build_valid_tools(base_dir, ddir)
     dangling = []
-    for label, text in collect_prompt_texts(ddir):
+    prompt_errors = []
+    alias_file = os.path.join(ddir, "bus.aliases.yaml")
+    aliases = set(re.findall(r"(?m)^  ([a-z][a-z0-9_]*):", Path(alias_file).read_text(encoding="utf-8"))) if os.path.isfile(alias_file) else set()
+    deprecated = []
+    for label, text in collect_prompt_texts(ddir, base_dir, prompt_errors, args.prompt_file):
         for tok in sorted(scan_tool_refs(text, valid)):
             dangling.append({"file": label, "token": tok})
+        for tok in sorted(set(TOKEN_RE.findall(text)) & aliases):
+            deprecated.append({"file": label, "token": tok})
     try:
-        con = sqlite3.connect(db_file)
+        con = sqlite3.connect(Path(db_file).resolve().as_uri() + "?mode=ro", uri=True)
         cur = con.cursor()
         for tid, obj in cur.execute("SELECT id, objective FROM tasks WHERE objective IS NOT NULL AND objective != ''"):
             for tok in sorted(scan_tool_refs(obj, valid)):
                 dangling.append({"file": f"tasks/#{tid}", "token": tok})
+            for tok in sorted(set(TOKEN_RE.findall(obj)) & aliases):
+                deprecated.append({"file": f"tasks/#{tid}", "token": tok})
         con.close()
-    except sqlite3.Error:
-        pass
+    except sqlite3.Error as error:
+        prompt_errors.append({"file": "tasks/objective", "error": type(error).__name__})
     metrics["dangling_tool_refs"] = dangling
+    metrics["deprecated_tool_refs"] = deprecated  # 仍存在的别名不是悬空工具，但会阻止别名清理。
+    metrics["prompt_read_errors"] = prompt_errors
     metrics["tool_surface"] = {"verbs": n_verbs, "aliases": n_aliases, "valid_total": len(valid)}
 
     alerts = []
@@ -251,6 +301,8 @@ def main() -> int:
         alerts.append(f"悬空工具引用 {len(dangling)} 处: {brief}")
     if n_verbs == 0:
         alerts.append("挂载矩阵不可解析（域 manifest 0 动词，悬空断言失效）")
+    if prompt_errors:
+        alerts.append(f"prompt 资产读取失败 {len(prompt_errors)} 项")
 
     result = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S+08:00", time.gmtime(time.time() + 8 * 3600)), **metrics, "alerts": alerts, "healthy": not alerts}
     if args.json:
@@ -261,6 +313,7 @@ def main() -> int:
         print(f"card_usage(7d)={cu7}  handoff(7d)={ho7}  IdeaCard={ideas}")
         print(f"调度漂移: {metrics['schedule_drift'] or '无'}  task_runs 新鲜度: {lr}h")
         print(f"挂载矩阵: 动词={n_verbs} 别名={n_aliases} 有效工具={len(valid)}")
+        print(f"旧别名引用: {len(deprecated)}（仍有效；清理前需改写并重新观察）")
         if dangling:
             print(f"悬空工具引用 {len(dangling)} 处:")
             for d in dangling:

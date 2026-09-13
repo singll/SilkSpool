@@ -37,7 +37,7 @@ git 提交证明代码变化，运行态证据证明部署情况；两者不能�
 - 所有写入经域命令与 actor 校验；跨域走事件/approval_effects；sync 与 async 的事务和失败语义按现行契约；审计主链路 fail-closed。
 - 改实现前读命令、参数、身份、幂等、事件、证据、错误码和 owns；新增能力先同步受影响契约。未实施的升级提议不能直接冒充已定稿能力。
 - 兼容别名删除遵守观察期；双 profile 的实际工具与最终 prompt 一致；治理脚本不得直写其他域库和 owned 目录。
-- 已获准部署的模板变更，先同步仓库到 `/opt/SilkSpool/bundles/dsh/` 运行时副本，再按该发布的 spool 手册操作。setup/upgrade 会安装或重启，不能当作只读检查；DSH V3 升级须先完成完整备份和恢复预演。
+- 已获准部署的模板变更，先同步仓库到 `/opt/SilkSpool/bundles/dsh/` 运行时副本，再按该发布的 spool 手册操作。setup/upgrade 会安装或重启，不能当作只读检查；DSH Session V3 升级须先完成完整备份和恢复预演。
 
 ## 四、按任务验收
 

@@ -125,7 +125,7 @@
 
 - 仓库 `bundles/dsh/` 改模板 → `rsync -a bundles/dsh/ /opt/SilkSpool/bundles/dsh/` → `spool bundle dsh setup csai`（模板按相对路径推送 + 各域 setup 脚本组装 + 契约测试 + reconcile_service 收尾重启）。
 - 域插件组装：沿用 sec-*-plugin-setup.sh 模式（复制模板进 plugins/<name>/ + package.json + `dsh plugin add` + dump-config 冒烟）。
-- 升级与回滚手册统一在 [upgrades](../upgrades/README.md)；[0.1.1-rc.2 报告](../upgrades/dsh-upgrade-0.1.1-rc.2-report.md)仅是历史经验。DSH V3 会话迁移按 [0.1.5-rc.2 方案](../upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md)恢复整套产物与状态，不能仅回退依赖版本。
+- 升级与回滚手册统一在 [upgrades](../upgrades/README.md)；[0.1.1-rc.2 报告](../upgrades/dsh-upgrade-0.1.1-rc.2-report.md)仅是历史经验。DSH Session V3 会话迁移按 [0.1.5-rc.2 方案](../upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md)恢复整套产物与状态，不能仅回退依赖版本。
 - **红线不变**：一切远程操作走 PATH 中 `spool`；n8n 等有状态服务与本迁移无关不受影响。
 
 ### 9.2 systemd 单元全景（13 个，csai 实查 2026-09-06）

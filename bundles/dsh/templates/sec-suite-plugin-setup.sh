@@ -25,6 +25,8 @@ assemble() {
     cp "$BASE_DIR/dsh-plugin-sec-suite.parsers.js" "$PLUGIN_DIR/parsers.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.webhook.js" "$PLUGIN_DIR/webhook.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.scheduler.js" "$PLUGIN_DIR/scheduler.js"
+    cp "$BASE_DIR/dsh-plugin-sec-suite.host-compat.js" "$PLUGIN_DIR/host-compat.js"
+    cp "$BASE_DIR/dsh-plugin-sec-suite.persona.py" "$PLUGIN_DIR/persona.py"
     cp "$BASE_DIR/dsh-plugin-sec-suite.dashboard-rpc.js" "$PLUGIN_DIR/dashboard-rpc.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.patch.yml" "$PLUGIN_DIR/cordis.patch.yml"
     # package.json 完全由本脚本管理，始终重写（结构升级时不需要手工干预）
@@ -41,7 +43,7 @@ assemble() {
     "./experience": "./experience.js",
     "./package.json": "./package.json"
   },
-  "files": ["index.js", "asset-db.js", "asset-graph.js", "experience.js", "parsers.js", "webhook.js", "scheduler.js", "dashboard-rpc.js", "cordis.patch.yml"],
+  "files": ["index.js", "asset-db.js", "asset-graph.js", "experience.js", "parsers.js", "webhook.js", "scheduler.js", "host-compat.js", "persona.py", "dashboard-rpc.js", "cordis.patch.yml"],
   "license": "MIT",
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
 }
@@ -138,7 +140,7 @@ if [ -f "$BASE_DIR/seed-skills.sh" ]; then
     DSH_HOME="$DATA_DIR" bash "$BASE_DIR/seed-skills.sh" || warn "Skill 种子失败（不影响主程序）"
 fi
 if [ -f "$BASE_DIR/seed-presets.sh" ]; then
-    DSH_HOME="$DATA_DIR" bash "$BASE_DIR/seed-presets.sh" || warn "Preset 种子失败（不影响主程序）"
+    DSH_HOME="$DATA_DIR" bash "$BASE_DIR/seed-presets.sh"
 fi
 install_plugin
 smoke || true

@@ -1,5 +1,5 @@
 // ==============================================================================
-// SilkSecAgent 安全套件（dsh 原生插件，零依赖）
+// SilkSecAgent 安全套件（dsh 原生插件；无额外 npm 依赖，角色 YAML 使用系统 PyYAML）
 //
 // 职责（对应方案 §5.1 / §九）：
 //   scope-guard     授权白名单硬校验（data/scope.yml）+ 风险四级 + 全量审计
@@ -22,6 +22,7 @@ import * as assetDb from './asset-db.js'
 import * as exp from './experience.js'
 import { startXrayWebhook } from './webhook.js'
 import { startScheduler } from './scheduler.js'
+import { listSessionHeaders } from './host-compat.js'
 import { initDashboardRpc, handleDashboardRpc } from './dashboard-rpc.js'
 
 export const name = 'sec-cli-adapter'
@@ -805,17 +806,24 @@ async function sessionsList(workspaceId) {
   if (!workspaceRegistryRef) return { available: false, items: [] }
   const ws = workspaceRegistryRef.get(workspaceId)
   if (!ws) return { available: true, items: [], error: `工作区不存在: ${workspaceId}` }
-  const headers = {}
+  const headers = Object.create(null)
+  const diagnostics = []
   if (sessionPersistenceRef) {
     try {
-      for (const h of await sessionPersistenceRef.list()) headers[String(h.id)] = h
-    } catch { /* 头部投影失败降级为纯 id 列表 */ }
+      const result = await listSessionHeaders(sessionPersistenceRef)
+      diagnostics.push(...result.diagnostics)
+      for (const h of result.headers) headers[h.id] = h
+    } catch (e) { diagnostics.push({ code: 'E_SESSION_LIST', message: e.message }) }
+  } else {
+    diagnostics.push({ code: 'E_SESSION_PERSISTENCE_UNAVAILABLE' })
   }
   const items = ws.sessionIds.map((id) => {
     const h = headers[String(id)] || null
-    return { id: String(id), created_at: h && h.createdAt ? h.createdAt : null }
+    if (!h) diagnostics.push({ code: 'E_SESSION_HEADER_MISSING', id: String(id) })
+    return { id: String(id), created_at: h?.createdAt ?? null, metadata_available: !!h }
   })
-  return { available: true, items, workspace: { id: String(ws.id), title: ws.title, path: ws.path } }
+  return { available: true, items, partial: diagnostics.length > 0, diagnostics,
+    workspace: { id: String(ws.id), title: ws.title, path: ws.path } }
 }
 
 // 返回 { allow, reason, program }

@@ -32,6 +32,7 @@ templates:
   - edge-static/browser.html
   # --- 一键升级（spool bundle dsh upgrade csai）---
   - dsh-upgrade.sh
+  - dsh-session-rehearsal.mjs
   # --- 安全工具链管理（安装/升级/卸载，幂等）---
   - tools-manager.sh
   # --- 工具清单（tools-manager 读取）---
@@ -60,6 +61,10 @@ templates:
   - dsh-plugin-sec-suite.experience.js
   - dsh-plugin-sec-suite.parsers.js
   - dsh-plugin-sec-suite.scheduler.js
+  - dsh-plugin-sec-suite.host-compat.js
+  - dsh-plugin-sec-suite.persona.py
+  - dsh-plugin-sec-suite.host-compat.test.js
+  - dsh-plugin-sec-suite.persona.test.py
   - dsh-plugin-sec-suite.webhook.js
   - dsh-plugin-sec-suite.dashboard-rpc.js
   - dsh-plugin-sec-suite.patch.yml
