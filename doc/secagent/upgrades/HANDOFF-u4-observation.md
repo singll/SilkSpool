@@ -87,7 +87,19 @@ spool exec csai "sudo python3 /opt/silkspool/dsh-upgrades/20260913-rc2/recovery-
 
 ---
 
-## 三、工作纪律（照搬前序纪律，不改动）
+## 四、进度快照（给新会话的初始坐标）
+
+- **Git 提交**：`3f61e12 feat: 完成 DSH 0.1.5-rc.2 生产切换，进入 U4 观察期`
+- **发布目录**：`/opt/silkspool/dsh-upgrades/20260913-rc2/dsh-release-2non9v70`，`state.json` `phase=observing`
+- **冻结点**：`dsh-snapshot-ready-8jhp928l`，manifest SHA `fdeea4b34fce80a2f2c742d6caa6bccb170449bc9b62f005d4b1ab1aaac5a0cd`
+- **P3 smoke 证据**：`cf718b2a3ec2dd472df748a40c9d86ed5facd12acbd8f33883a145937b1f0a5a`
+- **pre_resume_invariants 证据**：`0ddb25b0ad45783593f0b6364e6b8bffa2fa7062a8ea666405392041c0ddfc68`
+- **maintenance-state 证据**：`be3931f80ed0af14d36d4f75d6147c5a89798583aa25ba70b6e154f989759ff4`
+- **生产版本**：`0.1.5-rc.2`、MainPID `3848865`、NRestarts `0`、active/running
+- **observation_until**：`2026-09-18T14:16:35.602762+00:00`
+- **兼容别名观察期**：`2026-09-19T15:23:24.420+08:00`
+
+## 五、工作纪律（照搬前序纪律，不改动）
 
 1. 隔离预演优先；一切测试在副本做，除非整套重验通过并经用户明确批准否则不切生产。
 2. 证据驱动：每步产出报告+SHA-256；未执行项写「未执行」。
@@ -96,3 +108,26 @@ spool exec csai "sudo python3 /opt/silkspool/dsh-upgrades/20260913-rc2/recovery-
 5. 数据不变量门禁：outbox/事件字节前缀/44表/证据哈希逐项核对。
 6. 诚实记录失败：失败证据保留，不掩盖、不删减。
 7. U4 到期才宣告关账；L 工作包独立进度独立账，不混入平台验收。
+
+---
+
+## 六、自续规则（本提示词的核心）
+
+**本会话结束前必须判断升级是否真正完成，并二选一：**
+
+### A. 若仍有未完成阶段（当前默认：U4 观察 + L0–L6）
+1. 把本次会话的结论、新证据文件路径与 SHA-256、生产实测状态（版本/MainPID/NRestarts/健康）追加写入
+   [执行记录](2026-09-12-dsh-0.1.5-rc.2-record.md) 的下一个 §小节，并更新 §7 表与 [时间线](README.md)。
+2. `git add` 相关文件（禁止 `git add -f`，敏感文件不入库）并提交，记录新 commit 短哈希。
+3. **重写本文件 `HANDOFF-u4-observation.md`**：更新「四、进度快照」为最新哈希/commit/observation 状态，
+   更新「二、任务」为下一阶段的具体步骤（例如 U4 关账后转入 L0–L6，则把 L0–L6 的可执行步骤写进来）。
+4. 在会话最终回复里，把「给下一个新会话的提示词」整段贴出，其正文 = 本文件的「一~六」结构（已刷新版），
+   并要求下一个会话同样在结束时执行本「六、自续规则」。这样一路自续，直到情况 B。
+
+### B. 仅当 U0–U4 全部关账 且 L0–L6 按专项设计验收通过 且 用户确认时
+- 在执行记录写明「升级完成」，README 时间线标「已完成」，PROGRESS 同步。
+- 不再生成新提示词，改为一句话总结 + 后续常规运维观察建议。
+- 删除或归档本 handoff 文件（可选），链条终止。
+
+**判定纪律**：观察期未满、任一 § 步骤缺证据、任何非预期不变量差异未归因、L0–L6 未单独验收——一律走 A，
+不得因为「服务在跑」就宣布升级完成。诚实优先：没做的写「未执行」。
