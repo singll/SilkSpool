@@ -10,9 +10,9 @@
 - **领域语言**：[CONTEXT](../../../bundles/dsh/CONTEXT.md)
 - **当前 Phase**：**Phase 5 收尾中**。Phase 0–4 已完成；5.1、5.3–5.8 已完成，迁移清单剩 5.2 别名删除。dashboard 的 v4 fallback、v4 scheduler 与逐域审查中的未修项仍需按影响处理，不能由节点勾选推定全部 DoD 已满足。
 - **5.2 最新闸口（2026-09-12 核查）**：deprecated_use 累计 147，最后一条 2026-09-12T15:23:24.420+08:00；连续七天零使用最早到 **2026-09-19T15:23:24.420+08:00**。37 个别名保留；真实调用与契约 fixture 都需处理，新调用继续顺延。
-- **当前运行基线**：DSH **0.1.2-rc.1**，2026-09-13 仍 active/running；9 月 12 日基础健康验收 **25/25**，抽样部署文件 **15/15** 与当时模板一致。完整取证与实施结果见 [升级记录](../upgrades/2026-09-12-dsh-0.1.5-rc.2-record.md)。
+- **当前运行基线**：DSH **0.1.5-rc.2**（U3 生产切换完成 2026-09-15），MainPID 3848865、NRestarts=0、active/running；观察期至 2026-09-18T14:16:35Z，U4 未关账。完整取证与实施结果见 [升级记录](../upgrades/2026-09-12-dsh-0.1.5-rc.2-record.md) §14。
 - **验收口径补充**：5.4 的 7/7 是网关 Mode A；当前 llm_probe 未实际调用模型。5.5 的历史零悬空引用只覆盖原扫描范围。9 月 13 日新模板已修 scheduler 的 finding_add 并扩展 persona/调度提示审计，但尚未覆盖到生产；不能据此提前开始新的别名零使用观察期。
-- **升级与学习实施**：[DSH 0.1.5-rc.2 升级](../upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md)已开始：**U1 的 Session/persona 兼容切片完成，17 项针对性测试通过；Session 专项副本预演 249/253，4 个历史序号冲突阻止切换**。U1 整包/U2 全矩阵尚未完成，U3/U4 与[自学习 L0–L6](../upgrades/2026-09-12-self-learning-design.md)未实施，生产未升级。
+- **升级与学习实施**：[DSH 0.1.5-rc.2 升级](../upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md)U1–U3 已关账；生产切换完成（§14），U4 观察进行中，首次巡检 §14.5 全部健康；[自学习 L0–L6](../upgrades/2026-09-12-self-learning-design.md) 未执行。
 
 ## 二、已完成节点（附 commit 追踪）
 
@@ -87,7 +87,7 @@
 ## 三·八、待办节点（Phase 5，按 18-migration §七 顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
 - [x] **5.1 prompt 体系全量改写**：persona/objective/skills/technique-index 工具引用 → 新动词表（脚本化 p19-tool-refs.py，p14 模式）；AGENTS.md 受管区块 manifest 生成（Phase 1 已收口，本节点确认）。**✅ 已完成（2026-09-11 上线；commit `ce3bb8a`）**
-- [ ] **5.2 删兼容别名**：逐个走宪法 §十五废弃三段式（deprecated → 连续七天 audit 零使用 → 删除）。**🔄 观察中**：2026-09-12 核查累计 deprecated_use=147，最后一条 2026-09-12T15:23:24.420+08:00，最早闸口 **2026-09-19T15:23:24.420+08:00**；真实调用仍存在，不能只剔除评测样本。37 个别名继续保留；修复 scheduler 的 finding_add 等调用方后重新观察。⚠️ **5.4 侧记**：契约用例 `freeform-status-update` 刻意经 `finding_update` 别名验证「别名层同样过网关校验」（15-eval §2.1），会在每次契约评测时产生 finding_update 的 deprecated_use——5.2 删别名时须同步把该用例 attempt 改为直连语义动词（或保留 finding_update 直至契约用例改版），否则契约评测会因别名缺失而报 E_BUS_DOMAIN_UNKNOWN
+- [ ] **5.2 删兼容别名**：逐个走宪法 §十五废弃三段式（deprecated → 连续七天 audit 零使用 → 删除）。**🔄 观察中**：2026-09-15 巡检累计 `deprecated_use=180`（较 §3 基线 147 增 33），最后一条 **2026-09-15T15:07:10+08:00**（切流前），切流后增量 0；最早闸口顺延至 **2026-09-22T15:07:10.543+08:00**；37 个别名继续保留。⚠️ **5.4 侧记**：契约用例 `freeform-status-update` 刻意经 `finding_update` 别名验证「别名层同样过网关校验」（15-eval §2.1），会在每次契约评测时产生 finding_update 的 deprecated_use——5.2 删别名时须同步把该用例 attempt 改为直连语义动词（或保留 finding_update 直至契约用例改版），否则契约评测会因别名缺失而报 E_BUS_DOMAIN_UNKNOWN
 - [x] **5.3 worker 挂载矩阵实施**：profile × actor 白名单；setup.sh 冒烟断言 owns×sandbox 交叉校验（17-llm-surface §1.6/§2.2）。**✅ 已完成（2026-09-11 上线；commit `7594f7d`）**
 - [x] **5.4 eval 契约合规用例上线**：模型越权 100% 被拒 + hint 可引导（15-eval.md EC-01~05）。**✅ 已完成（2026-09-11 上线；commit `cb46d86`；真实管线 Mode A 7/7 越权拒绝率 100%，`eval_stats.last_contract` 回灌；vuln_confirm 缺证据收紧为 E_EVIDENCE_REQUIRED 引导性 hint）**
 - [x] **5.5 discipline-audit.py 增「悬空工具引用」断言**（17-llm-surface §3.3 执行点）。**✅ 已完成（2026-09-12 上线；commit `4371ebc`；全 prompt 资产悬空引用 = 0；顺带修复 5.1 遗留 p19 fp 动词错误映射 + 3 处悬空引用）**
