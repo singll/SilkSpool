@@ -41,6 +41,27 @@ async function embeddings() {
 const CONFIDENCE_RANK = { high: 3, medium: 2, low: 1 }
 const SOURCE_RANK = { 'human-verified': 3, '实战': 2, 'external': 1 }
 
+// 兼容期旧入口也维护 external-content FTS：保留旧文本删词，与原文更新同事务。
+function updateIndexedCard(d, id, fields) {
+  const before = d.prepare('SELECT * FROM exp_cards WHERE id=?').get(id)
+  const indexed = ['scenario', 'takeaway', 'chain'].some((key) => key in fields && fields[key] !== before[key])
+  d.exec('SAVEPOINT legacy_exp_update')
+  try {
+    if (indexed) d.prepare("INSERT INTO exp_fts(exp_fts,rowid,scenario,takeaway,chain) VALUES ('delete',?,?,?,?)")
+      .run(id, before.scenario, before.takeaway, before.chain)
+    const keys = Object.keys(fields)
+    d.prepare(`UPDATE exp_cards SET ${keys.map((key) => `${key}=?`).join(',')} WHERE id=?`).run(...keys.map((key) => fields[key]), id)
+    if (indexed) {
+      const after = d.prepare('SELECT scenario,takeaway,chain FROM exp_cards WHERE id=?').get(id)
+      d.prepare('INSERT INTO exp_fts(rowid,scenario,takeaway,chain) VALUES (?,?,?,?)').run(id, after.scenario, after.takeaway, after.chain)
+    }
+    d.exec('RELEASE legacy_exp_update')
+  } catch (error) {
+    d.exec('ROLLBACK TO legacy_exp_update; RELEASE legacy_exp_update')
+    throw error
+  }
+}
+
 // -------------------- memcore 治理服务（可选注入，缺席透传 fail-open） --------------------
 let _lifecycle = null
 export function _bindLifecycle(lc) { _lifecycle = lc }
@@ -146,7 +167,7 @@ function migratePlaybooksIntoExp() {
           mem?.mem_class, mem?.status || 'active', Date.now(), mem?.scope, mem?.justification,
           Math.round(rate * 100), 0, pb.successes)
       const newId = Number(r.lastInsertRowid)
-      d.prepare('INSERT INTO exp_fts (rowid, scenario, takeaway, chain) VALUES (?, ?, ?, ?)').run(newId, scenario, `打法链 ${pb.name}`, JSON.stringify(chain))
+      d.prepare('INSERT INTO exp_fts (rowid, scenario, takeaway, chain) VALUES (?, ?, ?, ?)').run(newId, scenario, `打法链 ${pb.name}：${chain.join(' → ') || '(空链)'}`, JSON.stringify(chain))
       migrated++
       doneNames.push(pb.name)
     } catch (e) { failures.push(`${pb.name}: ${e?.message ?? String(e)}`) } // 失败可见：不吞错，不删源行
@@ -189,10 +210,8 @@ async function expStore(a) {
     const mergedAttempts = [...JSON.parse(existing.attempts || '[]'), ...(Array.isArray(a.attempts) ? a.attempts : [])].slice(-20)
     const newConf = (CONFIDENCE_RANK[confidence] > CONFIDENCE_RANK[existing.confidence]) ? confidence : existing.confidence
     const newSource = (SOURCE_RANK[source] > SOURCE_RANK[existing.source]) ? source : existing.source
-    d.prepare(`UPDATE exp_cards SET takeaway=?, chain=?, attempts=?, evidence=?, confidence=?, source=?, last_validated_at=? WHERE id=?`)
-      .run(String(a.takeaway), JSON.stringify(a.chain || []), JSON.stringify(mergedAttempts), JSON.stringify(mergedEvidence), newConf, newSource, now, existing.id)
-    d.prepare(`UPDATE exp_fts SET takeaway=?, chain=? WHERE rowid=?`)
-      .run(String(a.takeaway), JSON.stringify(a.chain || []), existing.id)
+    updateIndexedCard(d, existing.id, { takeaway: String(a.takeaway), chain: JSON.stringify(a.chain || []),
+      attempts: JSON.stringify(mergedAttempts), evidence: JSON.stringify(mergedEvidence), confidence: newConf, source: newSource, last_validated_at: now })
     return { ok: true, id: existing.id, merged: true, evidence_count: mergedEvidence.length, status: existing.status || 'candidate' }
   }
 
@@ -214,9 +233,8 @@ async function expStore(a) {
           const mergedEvidence = [...new Set([...JSON.parse(tgt.evidence || '[]'), ...evidence])]
           const newConf = (CONFIDENCE_RANK[confidence] > CONFIDENCE_RANK[tgt.confidence]) ? confidence : tgt.confidence
           const newSource = (SOURCE_RANK[source] > SOURCE_RANK[tgt.source]) ? source : tgt.source
-          d.prepare(`UPDATE exp_cards SET takeaway=?, evidence=?, confidence=?, source=?, last_validated_at=? WHERE id=?`)
-            .run(String(a.takeaway), JSON.stringify(mergedEvidence), newConf, newSource, now, best)
-          d.prepare(`UPDATE exp_fts SET takeaway=? WHERE rowid=?`).run(String(a.takeaway), best)
+          updateIndexedCard(d, best, { takeaway: String(a.takeaway), evidence: JSON.stringify(mergedEvidence),
+            confidence: newConf, source: newSource, last_validated_at: now })
           return { ok: true, id: best, merged: true, semantic: Math.round(bestSim * 100) / 100, evidence_count: mergedEvidence.length }
         }
       }
@@ -376,8 +394,7 @@ export function expUpdate(a) {
   if (!cur) return { ok: false, error: `卡 #${a.id} 不存在` }
   const takeaway = a.takeaway !== undefined ? String(a.takeaway) : cur.takeaway
   const chain = a.chain !== undefined ? JSON.stringify(a.chain) : cur.chain
-  d.prepare('UPDATE exp_cards SET takeaway=?, chain=?, last_validated_at=? WHERE id=?').run(takeaway, chain, Date.now(), cur.id)
-  d.prepare('UPDATE exp_fts SET takeaway=?, chain=? WHERE rowid=?').run(takeaway, chain, cur.id)
+  updateIndexedCard(d, cur.id, { takeaway, chain, last_validated_at: Date.now() })
   return { ok: true, id: cur.id, updated: true }
 }
 
@@ -636,10 +653,7 @@ function pbSave(a) {
   const now = Date.now()
   let card = d.prepare("SELECT * FROM exp_cards WHERE kind = 'playbook' AND scenario = ?").get(String(a.name))
   if (card) {
-    d.prepare('UPDATE exp_cards SET takeaway=?, chain=?, last_validated_at=? WHERE id=?')
-      .run(`打法链 ${a.name}：${a.chain.join(' → ')}`, JSON.stringify(a.chain), now, card.id)
-    d.prepare('INSERT INTO exp_fts (rowid, scenario, takeaway, chain) VALUES (?, ?, ?, ?) ON CONFLICT (rowid) DO UPDATE SET takeaway = excluded.takeaway, chain = excluded.chain')
-      .run(card.id, card.scenario, `打法链 ${a.name}`, JSON.stringify(a.chain))
+    updateIndexedCard(d, card.id, { takeaway: `打法链 ${a.name}：${a.chain.join(' → ')}`, chain: JSON.stringify(a.chain), last_validated_at: now })
     return { ok: true, id: card.id, name: a.name, steps: a.chain.length, merged: true }
   }
   const lc = LC()
@@ -654,7 +668,7 @@ function pbSave(a) {
     .run(String(a.name), `打法链 ${a.name}：${a.chain.join(' → ')}`, JSON.stringify(a.chain), '[]', JSON.stringify([`playbook:${a.name}`]), '实战', 'medium', now, now, 'playbook',
       mem?.mem_class || 'permanent', mem?.status || 'active', now, mem?.scope, mem?.justification || 'playbook 沉淀（v4.6 归一入口）')
   const newId = Number(r.lastInsertRowid)
-  d.prepare('INSERT INTO exp_fts (rowid, scenario, takeaway, chain) VALUES (?, ?, ?, ?)').run(newId, String(a.name), `打法链 ${a.name}`, JSON.stringify(a.chain))
+  d.prepare('INSERT INTO exp_fts (rowid, scenario, takeaway, chain) VALUES (?, ?, ?, ?)').run(newId, String(a.name), `打法链 ${a.name}：${a.chain.join(' → ')}`, JSON.stringify(a.chain))
   return { ok: true, id: newId, name: a.name, steps: a.chain.length }
 }
 
@@ -672,6 +686,8 @@ export function pbOutcome(a) {
     const r = d.prepare("INSERT INTO exp_cards (scenario, takeaway, chain, attempts, evidence, source, confidence, created_at, last_validated_at, kind, runs, successes, mem_class, status, status_at, justification) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'playbook', 0, 0, 'permanent', 'active', ?, ?)")
       .run(name, `打法链 ${name}（自动登记，链待补）`, '[]', '[]', JSON.stringify([`playbook:${name}`]), '实战', 'medium', Date.now(), Date.now(), Date.now(), 'runCli 自动统计登记（P1-1 环1，v4.6 归一后落 exp_cards）')
     card = d.prepare('SELECT * FROM exp_cards WHERE id = ?').get(Number(r.lastInsertRowid))
+    d.prepare('INSERT INTO exp_fts(rowid,scenario,takeaway,chain) VALUES (?,?,?,?)')
+      .run(card.id, card.scenario, card.takeaway, card.chain)
   }
   const dur = Math.max(0, Number(a.duration_ms) || 0)
   const runs = card.runs + 1

@@ -102,6 +102,8 @@ function createRepo(db) {
     ['budget_timeout_sec', 'budget_timeout_sec INTEGER'],
   ]) ensureCol(db, 'tasks', col, ddl)
   ensureCol(db, 'task_runs', 'session_id', 'session_id TEXT')
+  // workers.session_id 保持历史来源会话语义；新列只保存经核实的子会话。
+  ensureCol(db, 'workers', 'worker_session_id', 'worker_session_id TEXT')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(program_id, status, priority)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(schedule_kind, next_run_at)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id, id DESC)')

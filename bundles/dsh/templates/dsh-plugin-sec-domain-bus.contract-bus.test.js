@@ -11,6 +11,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
 import { createBus } from '../index.js'
 
 // ---------------------------------------------------------------------------
@@ -353,6 +354,70 @@ function countJsonl(dir, domain) {
   if (!fs.existsSync(f)) return 0
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).length
 }
+
+test('长任务启动事件立即持久化，等待完成时其他连接仍可写入', async () => {
+  const { dir, bus } = makeBus()
+  let release, started
+  const waiting = new Promise(resolve => { release = resolve })
+  const ready = new Promise(resolve => { started = resolve })
+  const manifest = { ...makeVulnManifest(), backend_transactional: false }
+  const handlers = { ...makeVulnHandlers(), vuln_register_signal: async (_args, _repo, ctx) => {
+    await ctx.emit({ name: 'vuln.signal.registered', payload: { fixture: true } })
+    started()
+    await waiting
+    return { data: { completed: true } }
+  } }
+  assert.equal(bus.registry.register({ manifest, handlers, backend: makeVulnBackend() }).ok, true)
+  const running = bus.dispatch('vuln', 'register_signal', { title: '隔离长任务启动事件验证', host: 'fixture.test' }, { actor: 'model' })
+  try {
+    await ready
+    const observer = new DatabaseSync(path.join(dir, 'asset-graph.db'))
+    try {
+      assert.equal(observer.prepare("SELECT count(*) AS n FROM event_outbox WHERE name='vuln.signal.registered'").get().n, 1)
+      observer.exec('BEGIN IMMEDIATE; CREATE TABLE concurrent_fixture (id INTEGER); COMMIT')
+      assert.equal(countJsonl(dir, 'vuln'), 1)
+    } finally { observer.close() }
+  } finally { release() }
+  const result = await running
+  assert.equal(result.ok, true)
+  assert.equal(result.event_ids.length, 1)
+  bus._internal.close()
+})
+
+test('正式工具与兼容别名均把工作区和取消信号送入长任务', async () => {
+  const aliasesFile = writeAliases(tmpDir(), { aliases: { legacy_wait: 'vuln_register_signal' } })
+  const { dir, bus } = makeBus({ aliasesFile })
+  const registered = []
+  bus._internal.setToolsCtx({ tools: { register: tool => registered.push(tool) } })
+  const manifest = { ...makeVulnManifest(), backend_transactional: false }
+  let started
+  const handlers = { ...makeVulnHandlers(), vuln_register_signal: async (_args, _repo, ctx) => {
+    started()
+    const cancelled = await new Promise(resolve => {
+      const timeout = setTimeout(() => resolve(false), 250)
+      ctx.signal?.addEventListener('abort', () => { clearTimeout(timeout); resolve(true) }, { once: true })
+    })
+    return { data: { cancelled, cwd: ctx.cwd } }
+  } }
+  assert.equal(bus.registry.register({ manifest, handlers, backend: makeVulnBackend() }).ok, true)
+  try {
+    for (const name of ['vuln_register_signal', 'legacy_wait']) {
+      const tool = registered.find(row => row.name === name)
+      const controller = new AbortController()
+      const ready = new Promise(resolve => { started = resolve })
+      const running = tool.execute({ title: '隔离取消信号与工作区传递 ' + name, host: 'fixture.test' }, {
+        agent: { id: 'session-fixture', session: { header: { cwd: dir } } }, signal: controller.signal,
+      })
+      await ready
+      controller.abort()
+      const result = await running
+      assert.equal(result.ok, true, name)
+      assert.equal(result.data.cancelled, true, name + ' 应传递取消')
+      assert.equal(result.data.cwd, dir, name + ' 应保留实际工作区')
+      assert.equal(tool.timeoutMs, manifest.commands.vuln_register_signal.timeout_ms, name + ' 应继承目标超时')
+    }
+  } finally { bus._internal.close() }
+})
 
 // ---------------------------------------------------------------------------
 // 1. 注册校验 R1-R7（每项至少一个反例 → 域拒载且总线存活）
@@ -798,6 +863,18 @@ test('多订阅者: 同事件模式两个订阅者各自投递且 bus_subscripti
 // ---------------------------------------------------------------------------
 // 12c. 启动宽限期：dispatcher 首 tick 延迟，待域注册后才续扫 pending（防误判无订阅者丢投递）
 // ---------------------------------------------------------------------------
+
+test('暂停 dispatcher 保留宿主总线查询且不获取后台锁', async () => {
+  const dir = tmpDir()
+  const bus = createBus({ dataDir: dir, profile: 'web', sidecars: true, startDispatcherTimer: false })
+  try {
+    assert.equal(bus._internal.startBackground().started, false)
+    assert.equal(fs.existsSync(path.join(dir, 'dispatcher.lock')), false)
+    const state = await bus.query('bus', 'status', {}, { actor: 'dashboard' })
+    assert.equal(state.ok, true)
+    assert.ok(bus.registry.list().includes('bus'))
+  } finally { bus._internal.close() }
+})
 
 test('启动宽限期: dispatcher 首 tick 前事件保持 pending，域注册后正常投递', async () => {
   // bus1 产一个 pending 事件（有 async 订阅者但未 tick 即关闭，模拟崩溃）

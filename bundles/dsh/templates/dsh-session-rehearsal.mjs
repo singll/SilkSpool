@@ -20,9 +20,12 @@ for (let i = 2; i < process.argv.length; i++) {
   if (flag === '--source') args.sources.push(value)
   else if (flag === '--app-dir') args.app = value
   else if (flag === '--work-dir') args.work = value
+  else if (flag === '--recovery-report') args.recovery = value
+  else if (flag === '--recovery-source-root') args.recoveryRoot = value
   else throw new Error(`未知参数: ${flag}`)
 }
 if (!args.app || !args.work || !args.sources.length) throw new Error('必须指定 --app-dir、--work-dir 与至少一个 --source')
+if (args.recoveryRoot && !args.recovery) throw new Error('--recovery-source-root 必须配合 --recovery-report')
 
 async function hashFile(filename) {
   const hash = createHash('sha256')
@@ -85,6 +88,37 @@ const report = { started_at: new Date().toISOString(), dsh_version: dsh.version,
   scope: 'Session 副本格式演练；不是业务全量一致性快照或完整 U2 验收',
   sources: [], sessions: [], physical_versions: {}, original_files_unchanged: false, failures: 0 }
 const originals = []
+const recoveries = new Map()
+const recoveryApplied = new Set()
+if (args.recovery) {
+  const filename = await fs.realpath(args.recovery)
+  const recovery = JSON.parse(await fs.readFile(filename, 'utf8'))
+  assert.ok(recovery.ok && recovery.target_version === dsh.version, '分支恢复报告未通过或版本不符')
+  assert.ok(Array.isArray(recovery.sessions) && recovery.sessions.length, '分支恢复报告为空')
+  const recoveryRoot = args.recoveryRoot ? await fs.realpath(args.recoveryRoot) : null
+  for (const row of recovery.sessions) {
+    assert.ok(row.ok && row.original_unchanged && row.raw_rows_preserved && row.strict_branches_validated
+      && row.sequence_renumbered === false && row.kind === 'interrupted-closers-overlap', '分支恢复证明不完整')
+    let sourceFile = row.source_file
+    if (recoveryRoot) {
+      assert.ok(typeof row.relative === 'string' && !path.isAbsolute(row.relative), '恢复相对路径非法')
+      sourceFile = path.resolve(recoveryRoot, row.relative)
+      assert.ok(sourceFile.startsWith(recoveryRoot + path.sep), '恢复相对路径逃逸来源')
+    }
+    sourceFile = await fs.realpath(sourceFile)
+    assert.ok(!recoveries.has(sourceFile), '重复的分支恢复来源')
+    assert.equal(await hashFile(row.archive), row.source_sha256, '恢复原件存档不符')
+    for (const branch of Object.values(row.branches)) {
+      assert.ok(branch.fresh_backend_read, '分支没有独立读回结果')
+      assert.equal(await hashFile(branch.file), branch.stored_sha256, '分支旧代原件不符')
+      assert.equal(await hashFile(branch.published), branch.published_sha256, '分支 Session V3 产物不符')
+    }
+    assert.ok(row.branches.continued && row.branches.interrupted, '必须保留实际执行和中断两条分支')
+    recoveries.set(sourceFile, row)
+  }
+  report.recovery = { report: filename, sha256: await hashFile(filename), supplied: recoveries.size, applied: 0 }
+  if (recoveryRoot) report.recovery.relocated_source_root = recoveryRoot
+}
 
 async function checkWriteOwnership() {
   const root = path.join(runDir, 'lock-fixture')
@@ -151,10 +185,25 @@ try {
       originals.push({ filename, copied, sha256: before })
       const header = await physicalHeader(copied)
       sessionFormatCatalog.readHeader(header) // 版本来自官方物理 header 校验，不从后缀推断。
+      const recovery = recoveries.get(filename)
+      if (recovery) {
+        assert.equal(header.version, 0, '恢复产物只替代已验证的 Session V0 读取结果')
+        assert.equal(header.id, recovery.id)
+        assert.equal(before, recovery.source_sha256, '源日志与恢复时原件不符，必须重新恢复')
+        const branch = recovery.branches.continued
+        const target = path.join(path.dirname(copied), path.basename(branch.published))
+        assert.ok(/^session\.v3\.jsonl(?:\.zstd)?$/.test(path.basename(target)), '恢复产物不是规范 Session V3 文件')
+        await fs.copyFile(branch.published, target, constants.COPYFILE_EXCL)
+        assert.equal(await hashFile(target), branch.published_sha256)
+        const publishedHeader = await physicalHeader(target)
+        assert.equal(publishedHeader.version, 3)
+        assert.equal(publishedHeader.id, header.id)
+        recoveryApplied.add(filename)
+      }
       const compression = filename.endsWith('.zstd') ? 'zstd' : 'none'
       const key = `${compression}:${header.id}`
       const prior = expected.get(key)
-      if (!prior || prior.version < header.version) expected.set(key, { ...header, compression })
+      if (!prior || prior.version < header.version) expected.set(key, { ...header, compression, recovery })
       report.physical_versions[`Session V${header.version}`] = (report.physical_versions[`Session V${header.version}`] || 0) + 1
     }
     report.sources.push({ source, destination, files: files.length, sessions: expected.size })
@@ -183,6 +232,10 @@ try {
               }
             } finally { await reader.close() }
             const digest = hashValue(events)
+            if (original.recovery) {
+              assert.equal(digest, original.recovery.branches.continued.event_sha256, '恢复执行分支内容不符')
+              result.recovered_branch = 'recorded-continuation'
+            }
             const writer = await sp.open(original.id, 'write') // 仅在新建副本中发布 Session V3。
             try { await writer.flush() } finally { await writer.close() }
             const reopened = await sp.open(original.id, 'read')
@@ -225,6 +278,8 @@ try {
     }
   }
   report.lock_checks = await checkWriteOwnership()
+  assert.equal(recoveryApplied.size, recoveries.size, '恢复报告含未使用的 Session 来源')
+  if (report.recovery) report.recovery.applied = recoveryApplied.size
   for (const original of originals) {
     assert.equal(await hashFile(original.filename), original.sha256, '生产源日志在演练期间发生变化；需重新取样')
     assert.equal(await hashFile(original.copied), original.sha256, '副本旧代日志必须原样保留')

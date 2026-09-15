@@ -255,7 +255,7 @@ export const TASK_MANIFEST = {
     },
     task_worker_finish: {
       actor: ['reactor', 'scheduler'],
-      schema: schema({ run_id: str({ minLength: 1 }), outcome: en(['done', 'failed', 'killed']), exit_code: int() }, ['run_id', 'outcome']),
+      schema: schema({ run_id: str({ minLength: 1 }), outcome: en(['done', 'failed', 'killed']), exit_code: int(), worker_session_id: str() }, ['run_id', 'outcome']),
       idempotent: 'natural',
       idempotent_natural: ['run_id'],
       events: [],
@@ -764,7 +764,8 @@ function makeHandlers(opts) {
     },
 
     task_worker_finish: async (args, repo) => {
-      const r = repo.finishWorker(args.run_id, { status: args.outcome, exit_code: args.exit_code ?? null }, true)
+      const r = repo.finishWorker(args.run_id, { status: args.outcome, exit_code: args.exit_code ?? null,
+        ...(args.worker_session_id ? { worker_session_id: args.worker_session_id } : {}) }, true)
       return { data: { run_id: args.run_id, changed: r === 1 } }
     },
 
@@ -900,19 +901,23 @@ function makeHandlers(opts) {
       if (!dispatchRef) return { ok: true, data: { skipped: true } }
       const p = envelope?.payload || {}
       if (!p.run_id) return { ok: true, data: { skipped: true } }
-      const r = await dispatchRef('task', 'worker_register', {
-        run_id: p.run_id, dedupe_key: p.dedupe_key || null, task: p.task || '', cwd: p.cwd || null,
-        pid: p.pid ?? null, timeout_sec: p.timeout_sec ?? null, session_id: p.origin_session_id || p.session_id || null, run_dir: p.run_dir || null,
-      }, { actor: 'reactor' })
-      return { ok: !!r.ok, data: { skipped: false } }
+      // 事件用 null 表示未知；命令 schema 的可选字段应省略，不能把 null
+      // 当作 string/integer 传入（dashboard 发起的 worker 通常没有来源 Session）。
+      const args = Object.fromEntries(Object.entries({
+        run_id: p.run_id, dedupe_key: p.dedupe_key, task: p.task, cwd: p.cwd,
+        pid: p.pid, timeout_sec: p.timeout_sec, session_id: p.origin_session_id || p.session_id, run_dir: p.run_dir,
+      }).filter(([, value]) => value != null))
+      return dispatchRef('task', 'worker_register', args, { actor: 'reactor' })
     },
     onWorkerFinished: async (envelope) => {
       if (!dispatchRef) return { ok: true, data: { skipped: true } }
       const p = envelope?.payload || {}
       if (!p.run_id) return { ok: true, data: { skipped: true } }
       const outcome = p.status === 'done' ? 'done' : (p.status === 'killed' ? 'killed' : 'failed')
-      const r = await dispatchRef('task', 'worker_finish', { run_id: p.run_id, outcome, exit_code: p.exit_code ?? null }, { actor: 'reactor' })
-      return { ok: !!r.ok, data: { skipped: false } }
+      return dispatchRef('task', 'worker_finish', {
+        run_id: p.run_id, outcome, ...(p.exit_code == null ? {} : { exit_code: p.exit_code }),
+        ...(p.worker_session_id ? { worker_session_id: p.worker_session_id } : {}),
+      }, { actor: 'reactor' })
     },
   }
 

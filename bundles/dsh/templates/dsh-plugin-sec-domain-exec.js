@@ -17,6 +17,7 @@ import * as crypto from 'node:crypto'
 import * as dns from 'node:dns'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { executeWorkerProcess } from '../sec-suite/worker-runtime.js'
 
 export const name = 'sec-domain-exec'
 export const version = '1.0.0'
@@ -676,7 +677,7 @@ function makeHandlers(opts) {
         } catch { /* 查询失败不阻断 */ }
       }
       if (activeWorkers >= MAX_WORKERS) throwErr('E_EXEC_WORKER_BUSY', `worker 并发上限 ${MAX_WORKERS}`, '稍后重试（busy 时调度器回 queued）', true)
-      const timeoutMs = Math.min(Number(args.timeout) || 900, 7200) * 1000
+      const timeoutMs = Math.max(1, Math.min(Number(args.timeout) || 900, 7200)) * 1000
       const { runId, runDir } = repo.createRunDir('w')
       const workCwd = runDir
       const fullTask = task.includes(ROE_ANCHOR) ? task : `${task}\n\n${ROE_BLOCK}`
@@ -684,7 +685,7 @@ function makeHandlers(opts) {
       const dshArgs = [DSH_BIN, '--profile', 'headless']
       if (args.provider && args.model) {
         const patchPath = path.join(runDir, 'model-patch.yml')
-        fs.writeFileSync(patchPath, `- id: agent-default-model\n  config:\n    provider: ${String(args.provider)}\n    model: ${String(args.model)}\n`)
+        fs.writeFileSync(patchPath, JSON.stringify([{ id: 'agent-default-model', config: { provider: String(args.provider), model: String(args.model) } }]))
         dshArgs.push('--patch', patchPath)
       }
       dshArgs.push(fullTask)
@@ -694,30 +695,23 @@ function makeHandlers(opts) {
       activeWorkers++
       const started = Date.now()
       const originSessionId = ctx.session_id || null
-      let childPid = 0
-      const result = await new Promise((resolve) => {
-        let child
-        try { child = spawn(NODE_BIN, dshArgs, { env, cwd: workCwd, detached: true }) } catch (e) { resolve({ code: null, error: String(e.message) }); return }
-        childPid = child.pid || 0
-        const out = fs.createWriteStream(path.join(runDir, 'worker.log'))
-        child.stdout.pipe(out)
-        child.stderr.pipe(out)
-        const killGroup = (sig) => { try { process.kill(-child.pid, sig) } catch { /* 进程组已退 */ } }
-        const killer = setTimeout(() => { killGroup('SIGTERM'); setTimeout(() => killGroup('SIGKILL'), 5000).unref() }, timeoutMs)
-        let settled = false
-        let childDone = false
-        let streamDone = false
-        let childExitCode = null
-        let childSignal = null
-        const finalize = (payload) => { if (settled) return; settled = true; clearTimeout(killer); resolve(payload) }
-        out.on('finish', () => { streamDone = true; if (childDone) finalize({ code: childExitCode, signal: childSignal }) })
-        child.on('error', (e) => { childDone = true; finalize({ code: null, error: String(e.message) }) })
-        child.on('close', (code, signal) => { childExitCode = code; childSignal = signal; childDone = true; if (streamDone) finalize({ code, signal }) })
-      })
-      activeWorkers--
-      const meta = { run_id: runId, tool: 'spawn_worker', task: fullTask, cwd: workCwd, started_at: new Date(started).toISOString(), duration_ms: Date.now() - started, exit_code: result.code ?? null, session_id: originSessionId }
+      let result
+      try {
+        result = await executeWorkerProcess({ node: NODE_BIN, args: dshArgs, env, cwd: workCwd, runDir, runId, timeoutMs,
+          signal: ctx.signal, persistence: opts.getSessionPersistence?.(),
+          onSpawn: ({ pid }) => ctx.emit({ name: 'exec.worker.spawned', payload: {
+            run_id: runId, dedupe_key: dedupeKey, task: fullTask, cwd: workCwd, run_dir: runDir,
+            timeout_sec: Math.round(timeoutMs / 1000), pid, origin_session_id: originSessionId,
+          } }),
+        })
+      } finally { activeWorkers-- }
+      const successful = result.code === 0 && !result.error && !result.cancelled && !result.timed_out
+        && (!opts.getSessionPersistence || !!result.session_id)
+      const meta = { run_id: runId, tool: 'spawn_worker', task: fullTask, cwd: workCwd, started_at: new Date(started).toISOString(),
+        duration_ms: Date.now() - started, exit_code: result.code ?? null, session_id: result.session_id, origin_session_id: originSessionId,
+        signal: result.signal, error: result.error || null, cancelled: result.cancelled, timed_out: result.timed_out, session_diagnostic: result.session_diagnostic }
       repo.writeMeta(runDir, meta)
-      const finalStatus = result.code === 0 ? 'done' : (result.code == null && result.signal ? 'killed' : 'failed')
+      const finalStatus = successful ? 'done' : (result.cancelled || result.timed_out || result.signal ? 'killed' : 'failed')
       let logText = ''
       try { logText = repo.readFile(path.join(runDir, 'worker.log')) || '' } catch { /* 无输出 */ }
       const lines = logText.split('\n').filter(Boolean)
@@ -729,11 +723,13 @@ function makeHandlers(opts) {
       for (const mark of rejectMarks) { if (tailLog.includes(mark)) { truth.rejected = true; truth.reason = `worker.log 命中拒执/错误标记: ${mark}`; break } }
 
       const events = [
-        { name: 'exec.worker.spawned', payload: { run_id: runId, dedupe_key: dedupeKey, cwd: workCwd, run_dir: runDir, timeout_sec: Math.round(timeoutMs / 1000), pid: childPid, origin_session_id: originSessionId } },
-        { name: 'exec.worker.finished', payload: { run_id: runId, status: finalStatus, exit_code: result.code ?? null, duration_ms: meta.duration_ms } },
+        { name: 'exec.worker.finished', payload: { run_id: runId, status: finalStatus, exit_code: result.code ?? null,
+          duration_ms: meta.duration_ms, worker_session_id: result.session_id } },
       ]
       return {
-        data: { ok: result.code === 0, run_id: runId, exit_code: result.code ?? null, duration_ms: meta.duration_ms, log_lines: lines.length, tail: lines.slice(-20).join('\n'), truth, session_id: originSessionId },
+        data: { ok: successful, run_id: runId, exit_code: result.code ?? null, duration_ms: meta.duration_ms, log_lines: lines.length,
+          tail: lines.slice(-20).join('\n'), truth, session_id: result.session_id, origin_session_id: originSessionId,
+          cancelled: result.cancelled, timed_out: result.timed_out, session_diagnostic: result.session_diagnostic },
         events,
         after: { run_id: runId, status: finalStatus },
       }
@@ -896,7 +892,9 @@ function readWorkerResult(repo, row) {
   let logText = ''
   try { logText = fs.readFileSync(path.join(row.run_dir, 'worker.log'), 'utf8') } catch { return null }
   const lines = logText.split('\n').filter(Boolean)
-  return { ok: row.status === 'done', run_id: row.run_id, exit_code: row.exit_code ?? null, recovered: true, status: row.status, log_lines: lines.length, tail: lines.slice(-20).join('\n'), hint: '恢复自既有 run（未重跑）；强制重跑传 force:true' }
+  return { ok: row.status === 'done', run_id: row.run_id, exit_code: row.exit_code ?? null, recovered: true, status: row.status,
+    session_id: row.worker_session_id || null, origin_session_id: row.session_id || null,
+    log_lines: lines.length, tail: lines.slice(-20).join('\n'), hint: '恢复自既有 run（未重跑）；强制重跑传 force:true' }
 }
 
 // ---------------------------------------------------------------------------
@@ -915,6 +913,11 @@ export function buildExecDomain(opts = {}) {
 
 export function apply(ctx, config = {}) {
   const dataDir = process.env.SEC_DATA_DIR || process.env.DSH_HOME || DEFAULT_DATA_DIR
+  let persistence = null
+  ctx.inject(['sessionPersistence'], child => {
+    persistence = child.sessionPersistence
+    return () => { persistence = null }
+  })
   try {
     ctx.inject(['secDomainBus'], (child) => {
       const bus = child.secDomainBus
@@ -922,6 +925,7 @@ export function apply(ctx, config = {}) {
         dataDir,
         dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c),
         query: (d, n, a, c) => bus.query(d, n, a, c),
+        getSessionPersistence: () => persistence,
       })
       const res = bus.registry.register(domain)
       if (res.ok) log(`exec 域注册成功（registered=${res.registered}）`)

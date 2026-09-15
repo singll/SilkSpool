@@ -9,11 +9,24 @@ set -euo pipefail
 BASE_DIR="{{BASE_DIR}}"
 APP_DIR="$BASE_DIR/app"
 DATA_DIR="$BASE_DIR/data"
-DSH_VERSION="0.1.2-rc.1"          # pin：升级只走 dsh-upgrade.sh（2026-09-04 从 0.1.1-rc.2 升至 0.1.2-rc.1；setup 版本钉必须与线上一致，否则重跑 setup 会降版重解析浮动依赖致 web boot 混版）
+DSH_VERSION="0.1.5-rc.2"          # 升级必须走已封存候选 + 完整恢复点，setup 不跨版本安装。
 NODE_MAJOR=22
 
 log()  { echo "[setup] $*"; }
 warn() { echo "[setup][WARN] $*"; }
+
+# 在依赖安装/配置覆盖前拒绝跨版本操作，避免旧 pin 或重复 setup 改写 Session V3 的运行产物。
+if [ -f "$APP_DIR/node_modules/@deepseek-ai/dsh/package.json" ]; then
+    installed_version=$(python3 - "$APP_DIR/node_modules/@deepseek-ai/dsh/package.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))['version'])
+PY
+)
+    if [ "$installed_version" != "$DSH_VERSION" ]; then
+        echo "[setup][ERROR] 当前 $installed_version，目标 $DSH_VERSION；请先使用完整冻结点与已封存候选执行升级。" >&2
+        exit 1
+    fi
+fi
 
 SUDO=''
 if [ "$(id -u)" -ne 0 ]; then SUDO='sudo'; fi
@@ -141,14 +154,13 @@ ensure_data() {
     else
         log "scope.yml 已存在，不覆盖"
     fi
-    # 模型路由配置：受控覆盖（纪律要求默认必须走 Bellkeeper LLM 网关）
-    if [ -f "$BASE_DIR/settings.yaml" ]; then
-        cp "$DATA_DIR/settings.yaml" "$DATA_DIR/settings.yaml.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-        # 备份滚动：仅保留最近 1 份（旧版每次 setup 无限堆积，2026-09-04 清理时已积 23 份）
-        ls -t "$DATA_DIR"/settings.yaml.bak* 2>/dev/null | tail -n +2 | xargs -r rm -f --
+    # 已有模型路由由设置服务维护；setup 只初始化缺失的配置。
+    if [ -f "$DATA_DIR/settings.yaml" ]; then
+        log "模型路由已存在，保留设置服务配置"
+    elif [ -f "$BASE_DIR/settings.yaml" ]; then
         cp "$BASE_DIR/settings.yaml" "$DATA_DIR/settings.yaml"
         chmod 600 "$DATA_DIR/settings.yaml"
-        log "覆盖模型路由配置: $DATA_DIR/settings.yaml"
+        log "初始化模型路由配置: $DATA_DIR/settings.yaml"
     else
         log "未找到 settings.yaml 模板，跳过"
     fi
@@ -194,7 +206,7 @@ fi
 
 # -------------------- 8. 安全套件插件（sec-cli-adapter + scope-guard） --------------------
 if [ -f "$BASE_DIR/sec-suite-plugin-setup.sh" ]; then
-    bash "$BASE_DIR/sec-suite-plugin-setup.sh" || warn "安全套件插件安装失败（不影响 DSH 主程序）"
+    bash "$BASE_DIR/sec-suite-plugin-setup.sh"
 fi
 
 # -------------------- 8.4 流水线插件（sec-pipeline：台账/卡片使用/机械复核原生化工具） --------------------
@@ -317,7 +329,7 @@ fi
 
 # -------------------- 8.5 浏览器 fork（流量入总线） --------------------
 if [ -f "$BASE_DIR/sec-browser-plugin-setup.sh" ]; then
-    bash "$BASE_DIR/sec-browser-plugin-setup.sh" || warn "浏览器 fork 安装失败（不影响 DSH 主程序）"
+    bash "$BASE_DIR/sec-browser-plugin-setup.sh"
 fi
 
 # -------------------- 8.6 向量嵌入模块 --------------------
@@ -327,23 +339,26 @@ fi
 
 # -------------------- 8.6.1 headless worker 模型熔断回退（2026-08-24 线上修复固化） --------------------
 if [ -f "$BASE_DIR/headless-failover-setup.sh" ]; then
-    bash "$BASE_DIR/headless-failover-setup.sh" || warn "headless failover 安装失败（不影响 DSH 主程序）"
+    bash "$BASE_DIR/headless-failover-setup.sh"
 fi
 
 # -------------------- 8.6.2 设置镜像补丁（域名访问时 Models 页可用；上游 loopback-only 设计） --------------------
 if [ -f "$BASE_DIR/settings-mirror-patch.sh" ]; then
-    bash "$BASE_DIR/settings-mirror-patch.sh" || warn "设置镜像补丁失败（不影响 DSH 主程序）"
+    bash "$BASE_DIR/settings-mirror-patch.sh"
 fi
 
 # -------------------- 8.7 安全看板客户端插件（DSH Web UI slot） --------------------
 if [ -f "$BASE_DIR/sec-dashboard-plugin-setup.sh" ]; then
-    bash "$BASE_DIR/sec-dashboard-plugin-setup.sh" || warn "安全看板插件安装失败（不影响 DSH 主程序）"
+    bash "$BASE_DIR/sec-dashboard-plugin-setup.sh"
 fi
 
 # -------------------- 8.8 丝之歌全局主题客户端插件 --------------------
 if [ -f "$BASE_DIR/theme-silksong-plugin-setup.sh" ]; then
-    bash "$BASE_DIR/theme-silksong-plugin-setup.sh" || warn "丝之歌主题插件安装失败（不影响 DSH 主程序）"
+    bash "$BASE_DIR/theme-silksong-plugin-setup.sh"
 fi
+
+# 插件安装可能重新生成依赖；全部完成后按版本 + 整文件摘要重放兼容策略。
+python3 "$BASE_DIR/dsh-runtime-compat.py" --base-dir "$BASE_DIR"
 
 # -------------------- 9. 情报刷新定时器（intel-feeder v1，每日） --------------------
 if [ -f "$BASE_DIR/intel-refresh.sh" ]; then

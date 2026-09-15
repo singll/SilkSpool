@@ -23,6 +23,8 @@ import * as exp from './experience.js'
 import { startXrayWebhook } from './webhook.js'
 import { startScheduler } from './scheduler.js'
 import { listSessionHeaders } from './host-compat.js'
+import { executeWorkerProcess, installWorkerSessionReporter } from './worker-runtime.js'
+import { installNativeToolGuard } from './native-guard.js'
 import { initDashboardRpc, handleDashboardRpc } from './dashboard-rpc.js'
 
 export const name = 'sec-cli-adapter'
@@ -1023,13 +1025,15 @@ function readWorkerResult(row) {
     status: row.status,
     log_lines: lines.length,
     tail: lines.slice(-20).join('\n'),
+    session_id: row.worker_session_id || null,
+    origin_session_id: row.session_id || null,
     hint: `恢复自既有 run ${row.run_id}（未重跑）；完整日志用 grep_result/page_result 取；强制重跑传 force:true`,
   }
 }
 
 // worker 核心（工具与调度循环共用）。cwd 默认 runDir；调度任务传工作区路径——
 // headless 会话 header cwd = workspace path → workspaceRegistry 自动归组 → 看板可跳链
-async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId = null, enforceLimit = true, dedupeKey = null, provider = null, model = null, reasoningEffort = null, phase = null }) {
+async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId = null, enforceLimit = true, dedupeKey = null, provider = null, model = null, reasoningEffort = null, phase = null, signal = null }) {
   // 幂等恢复（仅交互路径传 dedupeKey）：重启→重试时确定性拿回结果，而非 "outcome unknown"。
   // 早返回全部在 activeWorkers++ 之前 → 不占也不错减并发 slot。
   if (dedupeKey) {
@@ -1054,7 +1058,7 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
   if (enforceLimit && activeWorkers >= MAX_WORKERS) {
     return { ok: false, busy: true, error: `worker 并发上限 ${MAX_WORKERS}，请稍后重试` }
   }
-  const timeoutMs = Math.min(Number(timeoutSec) || 900, 3600) * 1000
+  const timeoutMs = Math.max(1, Math.min(Number(timeoutSec) || 900, 7200)) * 1000
   const runId = 'w' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex')
   const runDir = path.join(RESULTS_DIR, runId)
   fs.mkdirSync(runDir, { recursive: true })
@@ -1064,7 +1068,8 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
   const dshArgs = [DSH_BIN, '--profile', 'headless']
   if (provider && model) {
     const patchPath = path.join(runDir, 'model-patch.yml')
-    const patchYaml = `- id: agent-default-model\n  config:\n    provider: ${String(provider)}\n    model: ${String(model)}\n`
+    const patchYaml = JSON.stringify([{ id: 'agent-default-model', config: { provider: String(provider), model: String(model),
+      ...(reasoningEffort ? { reasoningEffort: String(reasoningEffort) } : {}) } }])
     fs.writeFileSync(patchPath, patchYaml)
     dshArgs.push('--patch', patchPath)
   }
@@ -1080,43 +1085,42 @@ async function runWorker({ task, cwd = null, timeoutSec = 900, originSessionId =
 
   activeWorkers++
   const started = Date.now()
-  const result = await new Promise((resolve) => {
-    const out = fs.createWriteStream(path.join(runDir, 'worker.log'))
-    const child = spawn(NODE_BIN, dshArgs, {
-      env, cwd: workCwd, detached: true,
+  let result
+  try {
+    result = await executeWorkerProcess({ node: NODE_BIN, args: dshArgs, env, cwd: workCwd, runDir, runId, timeoutMs,
+      signal, persistence: sessionPersistenceRef,
+      onSpawn: ({ pid }) => {
+        const registered = assetDb.workerRegister({ run_id: runId, dedupe_key: dedupeKey, task: fullTask, cwd: workCwd, pid,
+          timeout_sec: Math.round(timeoutMs / 1000), session_id: originSessionId, run_dir: runDir })
+        if (!registered.ok) throw new Error('E_WORKER_REGISTER: 无法登记 worker，已停止执行')
+      },
     })
-    // 注册表登记（带 pid）：供重启对账 + 重试幂等恢复。登记的是含 RoE 的实际 prompt（fullTask）。登记失败不阻断执行。
-    try {
-      assetDb.workerRegister({ run_id: runId, dedupe_key: dedupeKey, task: fullTask, cwd: workCwd, pid: child.pid,
-        timeout_sec: Math.round(timeoutMs / 1000), session_id: originSessionId, run_dir: runDir })
-    } catch { /* ignore */ }
-    child.stdout.pipe(out)
-    child.stderr.pipe(out)
-    // 超时杀整个进程组（派生子 worker/CLI 子进程随父一起回收，防孤儿）
-    const killGroup = (sig) => { try { process.kill(-child.pid, sig) } catch { /* 进程组已退 */ } }
-    const killer = setTimeout(() => { killGroup('SIGTERM'); setTimeout(() => killGroup('SIGKILL'), 5000).unref() }, timeoutMs)
-    child.on('error', (e) => { clearTimeout(killer); resolve({ code: null, error: String(e.message) }) })
-    child.on('close', (code, signal) => { clearTimeout(killer); resolve({ code, signal }) })
-  })
-  activeWorkers--
+  } finally { activeWorkers-- }
+  const successful = result.code === 0 && !result.error && !result.cancelled && !result.timed_out && !!result.session_id
 
   const meta = {
     run_id: runId, tool: 'spawn_worker', task: fullTask, cwd: workCwd, started_at: new Date(started).toISOString(),
-    duration_ms: Date.now() - started, exit_code: result.code ?? null, session_id: originSessionId,
+    duration_ms: Date.now() - started, exit_code: result.code ?? null, session_id: result.session_id, origin_session_id: originSessionId,
+    signal: result.signal, error: result.error || null, cancelled: result.cancelled, timed_out: result.timed_out, session_diagnostic: result.session_diagnostic,
   }
   fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 1) + '\n')
   // 注册表收尾：exit0→done / 非0→failed / 被信号杀（超时）→killed
-  const finalStatus = result.code === 0 ? 'done' : (result.code == null && result.signal ? 'killed' : 'failed')
-  try { assetDb.workerFinish(runId, { status: finalStatus, exit_code: result.code ?? null }) } catch { /* ignore */ }
+  const finalStatus = successful ? 'done' : (result.cancelled || result.timed_out || result.signal ? 'killed' : 'failed')
+  assetDb.workerFinish(runId, { status: finalStatus, exit_code: result.code ?? null, worker_session_id: result.session_id })
 
   let logText = ''
   try { logText = fs.readFileSync(path.join(runDir, 'worker.log'), 'utf8') } catch { /* 无输出 */ }
   const lines = logText.split('\n').filter(Boolean)
   return {
-    ok: result.code === 0,
+    ok: successful,
     run_id: runId,
     exit_code: result.code ?? null,
     duration_ms: meta.duration_ms,
+    session_id: result.session_id,
+    origin_session_id: originSessionId,
+    cancelled: result.cancelled,
+    timed_out: result.timed_out,
+    session_diagnostic: result.session_diagnostic,
     log_lines: lines.length,
     tail: lines.slice(-20).join('\n'),
     hint: `完整日志 ${lines.length} 行已落盘，用 grep_result/page_result 取 ${runId} 的细节`,
@@ -1150,6 +1154,8 @@ function renderJSON(_args, value) {
 }
 
 export function apply(ctx, config) {
+  installNativeToolGuard(ctx, { baseDir: process.env.SEC_BASE_DIR || path.dirname(DATA_DIR), dataDir: DATA_DIR })
+  installWorkerSessionReporter(ctx, DATA_DIR)
   // P6：启动时把 scope.yml 程序镜像到 programs 表（幂等）
   try { syncPrograms() } catch { /* 镜像失败不影响插件加载 */ }
 
@@ -1179,13 +1185,12 @@ export function apply(ctx, config) {
 
   // 看板 Remote：仅在 connection 服务存在时挂载（headless 无此服务，gracefully 跳过）。
   // 用 child fiber 等待服务初始化，避免 bare ctx.get 在 carrier 就绪前静默失效。
-  // module 级幂等守卫：DSH 启动期 connection 服务会短暂重配（webServer 就绪后再 re-provide 一次），
-  // 导致 child fiber 二次激活、重复注册同名 prefix 路由。守卫保证只注册一次，杜绝 duplicate 报错。
+  // module 级守卫防止同进程重复挂载；随 fiber 卸载复位，允许服务重建后重新注册。
   try {
-    ctx.inject(['connection'], (child) => {
+    // rc.2 的 connection.rpc.handle 使用调用者的 webServer，需显式声明两项依赖。
+    ctx.inject(['connection', 'webServer'], (child) => {
       child.effect(() => {
         if (dashboardRpcRegistered) return
-        dashboardRpcRegistered = true
         const dispose = child.connection.rpc.handle('/silksec-dashboard',
           async (endpoint, payload) => {
             try {
@@ -1195,12 +1200,15 @@ export function apply(ctx, config) {
             }
           },
           { authority: 'loopback' })
+        dashboardRpcRegistered = true
         // P11：调度循环只随宿主面 bundle 加载启动（preset 的 agent 面挂载 sidecars:false，跳过；
         // agent 可能跑在 worker 线程，globalThis 不共享，单例守卫不够，只能从入口侧收敛）
         if (!config || config.sidecars !== false) startScheduler({ dataDir: DATA_DIR, audit, assetDb, exp, runWorker, pidAlive, getWorkspaceRegistry: () => workspaceRegistryRef, getSessionPersistence: () => sessionPersistenceRef })
         // xray webhook 同样只在 web 宿主面启动（模块内单例幂等，不随 fiber dispose 回收）
         if (!config || config.sidecars !== false) startXrayWebhook({ dataDir: DATA_DIR, assetDb, hostOf })
-        return () => { void dispose() }
+        return async () => {
+          try { await dispose() } finally { dashboardRpcRegistered = false }
+        }
       }, 'sec-suite: dashboard rpc')
     })
   } catch (e) {

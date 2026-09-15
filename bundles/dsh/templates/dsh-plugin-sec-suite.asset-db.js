@@ -232,6 +232,7 @@ export function getDb() {
   db.exec("UPDATE findings SET noise = 1 WHERE severity = 'info' AND noise = 0 AND status = 'new'")
   // ---- P15：调度 run 的 worker 会话 id（看板跳链）----
   ensureCol('task_runs', 'session_id', 'session_id TEXT')
+  ensureCol('workers', 'worker_session_id', 'worker_session_id TEXT')
   // ---- P17：Cairn_Y 融合——FGS 图（Fact-Goal-Step Graph）作为任务状态外化记忆 ----
   db.exec(`
     CREATE TABLE IF NOT EXISTS fgs_nodes (
@@ -1127,10 +1128,10 @@ export function workerRegister({ run_id, dedupe_key = null, task = '', cwd = nul
   return { ok: true, run_id }
 }
 
-export function workerFinish(run_id, { status = 'done', exit_code = null } = {}) {
+export function workerFinish(run_id, { status = 'done', exit_code = null, worker_session_id = null } = {}) {
   if (!run_id) return { ok: false }
-  const r = getDb().prepare('UPDATE workers SET status = ?, exit_code = ?, finished_at = ? WHERE run_id = ?')
-    .run(status, exit_code, now(), run_id)
+  const r = getDb().prepare("UPDATE workers SET status = ?, exit_code = ?, worker_session_id = COALESCE(?, worker_session_id), finished_at = ? WHERE run_id = ? AND status = 'running'")
+    .run(status, exit_code, worker_session_id, now(), run_id)
   return { ok: r.changes === 1 }
 }
 
@@ -1740,4 +1741,3 @@ export function opsHealth() {
     healthy: alerts.length === 0,
   }
 }
-

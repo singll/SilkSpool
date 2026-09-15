@@ -3,14 +3,14 @@
 # SilkSecAgent headless worker 模型熔断回退安装器（spool bundle dsh setup 调用，幂等）
 # 背景 2026-08-24：worker（headless profile）未挂 dsh-model-failover 时，
 # provider 一次瞬时 TRANSPORT 错误 = 定时任务硬失败（web 对话会自动切 deepseek，worker 不会）。
-# 本脚本确保 headless profile 装入 dsh-model-failover（复用 web profile 的 npm 副本，软链不重复下载），
+# 本脚本确保 headless profile 装入固定 dsh-model-failover 0.1.4（由 pnpm 锁管理），
 # 并写入 worker 侧 cordis.patch.yml（fallbacks=deepseek/deepseek-chat，六类错误熔断）。
 # 注意：headless cordis.patch.yml 同时由 spool sync（hosts/<host>/dsh/headless.cordis.patch.yml）管理；
 # 本脚本仅在文件缺失时写默认，不覆盖 sync 下发的版本。
 # ==============================================================================
 set -euo pipefail
 
-BASE_DIR="{{BASE_DIR}}"
+BASE_DIR="${SEC_BASE_DIR:-{{BASE_DIR}}}"
 DATA_DIR="${DSH_HOME:-$BASE_DIR/data}"
 WEB_PROFILE="$DATA_DIR/profiles/web"
 HEADLESS_PROFILE="$DATA_DIR/profiles/headless"
@@ -21,12 +21,12 @@ warn() { echo "[headless-failover][WARN] $*"; }
 
 # -------------------- 0. 前置检查 --------------------
 if [ ! -d "$HEADLESS_PROFILE" ]; then
-    warn "headless profile 不存在（$HEADLESS_PROFILE），跳过"
-    exit 0
+    warn "headless profile 不存在（$HEADLESS_PROFILE）"
+    exit 1
 fi
 if [ ! -d "$FAILOVER_SRC" ]; then
-    warn "web profile 未安装 dsh-model-failover（$FAILOVER_SRC），跳过"
-    exit 0
+    warn "web profile 未安装 dsh-model-failover（$FAILOVER_SRC）"
+    exit 1
 fi
 
 # -------------------- 1. package.json：依赖 + bundles 条目（node 幂等改写） --------------------
@@ -38,8 +38,8 @@ const pkgFile = path.join(profileDir, 'package.json')
 const pkg = JSON.parse(fs.readFileSync(pkgFile, 'utf8'))
 let changed = false
 pkg.dependencies = pkg.dependencies || {}
-if (!pkg.dependencies['dsh-model-failover']) {
-    pkg.dependencies['dsh-model-failover'] = 'file:/opt/silkspool/dsh/data/profiles/web/node_modules/dsh-model-failover'
+if (pkg.dependencies['dsh-model-failover'] !== '0.1.4') {
+    pkg.dependencies['dsh-model-failover'] = '0.1.4'
     changed = true
 }
 const bundles = (((pkg.dsh || {}).profile || {}).bundles) || []
@@ -56,14 +56,13 @@ if (changed) {
 }
 EOF
 
-# -------------------- 2. node_modules 软链（复用 web 副本） --------------------
-mkdir -p "$HEADLESS_PROFILE/node_modules"
-if [ ! -e "$HEADLESS_PROFILE/node_modules/dsh-model-failover" ]; then
-    ln -s ../../web/node_modules/dsh-model-failover "$HEADLESS_PROFILE/node_modules/dsh-model-failover"
-    log "软链已建: headless/node_modules/dsh-model-failover -> web 副本"
-else
-    log "软链已存在，跳过"
-fi
+# -------------------- 2. 固定依赖和锁（禁止跨 profile 手建软链） --------------------
+(
+    cd "$HEADLESS_PROFILE"
+    export PATH=/usr/local/node/bin:$PATH CI=true
+    pnpm install --prod --ignore-scripts --no-frozen-lockfile
+    pnpm install --prod --ignore-scripts --frozen-lockfile --offline
+)
 
 # -------------------- 3. worker 侧 cordis.patch.yml（缺失才写默认；sync 管理的版本不覆盖） --------------------
 if [ ! -s "$HEADLESS_PROFILE/cordis.patch.yml" ]; then
@@ -100,11 +99,13 @@ else
     log "cordis.patch.yml 已存在（spool sync 管理），跳过"
 fi
 
-# -------------------- 4. 冒烟：软链目标可读 --------------------
-if [ -f "$HEADLESS_PROFILE/node_modules/dsh-model-failover/package.json" ]; then
-    log "冒烟通过：headless 可解析 dsh-model-failover"
-else
-    warn "冒烟失败：软链目标不可读"
-    exit 1
-fi
+# -------------------- 4. 验证两个 profile 的实际版本 --------------------
+python3 - "$WEB_PROFILE" "$HEADLESS_PROFILE" <<'PY'
+import json, sys
+from pathlib import Path
+for profile in sys.argv[1:]:
+    package = Path(profile) / 'node_modules/dsh-model-failover/package.json'
+    if json.loads(package.read_text())['version'] != '0.1.4':
+        raise RuntimeError('failover 安装版本不符')
+PY
 log "完成。重启生效: spool restart <host> silksecagent"

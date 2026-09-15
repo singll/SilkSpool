@@ -30,9 +30,38 @@ templates:
   - silksecagent-edge.service
   - edge-Caddyfile
   - edge-static/browser.html
-  # --- 一键升级（spool bundle dsh upgrade csai）---
+  # --- 显式版本升级：经 spool exec 分阶段冻结、准备、验收和切换 ---
   - dsh-upgrade.sh
   - dsh-session-rehearsal.mjs
+  - dsh-session-recovery.mjs
+  - dsh-session-recover.mjs
+  - dsh-session-recovery.test.mjs
+  - dsh-upgrade-snapshot.py
+  - dsh-upgrade-snapshot.test.py
+  - dsh-upgrade-freeze.py
+  - dsh-upgrade-freeze.test.py
+  - dsh-upgrade-freezer-smoke.py
+  - dsh-upgrade-local-client.py
+  - dsh-upgrade-local-client.test.py
+  - dsh-upgrade-maintenance.py
+  - dsh-upgrade-maintenance.test.py
+  - dsh-upgrade-candidate.py
+  - dsh-upgrade-release.py
+  - dsh-upgrade-release.test.py
+  - dsh-upgrade-invariants.py
+  - dsh-upgrade-invariants.test.py
+  - dsh-upgrade-installer.test.py
+  - dsh-upgrade-sandbox.py
+  - dsh-upgrade-runtime-smoke.py
+  - dsh-upgrade-session-read.mjs
+  - dsh-upgrade-session-trace.mjs
+  - dsh-upgrade-worker-smoke.py
+  - dsh-upgrade-browser-smoke.mjs
+  - dsh-upgrade-browser-scope.mjs
+  - dsh-upgrade-contracts.py
+  - dsh-upgrade-egress.py
+  - dsh-upgrade-egress.mjs
+  - dsh-upgrade-rpc.test.mjs
   # --- 安全工具链管理（安装/升级/卸载，幂等）---
   - tools-manager.sh
   # --- 工具清单（tools-manager 读取）---
@@ -62,6 +91,10 @@ templates:
   - dsh-plugin-sec-suite.parsers.js
   - dsh-plugin-sec-suite.scheduler.js
   - dsh-plugin-sec-suite.host-compat.js
+  - dsh-plugin-sec-suite.native-guard.js
+  - dsh-plugin-sec-suite.worker-runtime.js
+  - dsh-plugin-sec-suite.worker-runtime.test.mjs
+  - dsh-plugin-sec-suite.experience.test.mjs
   - dsh-plugin-sec-suite.persona.py
   - dsh-plugin-sec-suite.host-compat.test.js
   - dsh-plugin-sec-suite.persona.test.py
@@ -342,10 +375,17 @@ templates:
   - sec-browser-plugin-setup.sh
   - dsh-browser-upstream.index.js
   - dsh-browser-upstream.browser-manager.js
+  - dsh-browser-fork.py
+  - dsh-browser-fork.index.js
+  - dsh-browser-fork.browser-manager.js
+  - dsh-browser-scope.js
+  - dsh-browser-scope.test.mjs
+  - dsh-shared-browser-host.mjs
   # --- headless worker 模型熔断回退（2026-08-24 线上修复固化，幂等）---
   - headless-failover-setup.sh
   # --- 设置镜像补丁（域名访问 Models 页可用；setup/upgrade 重放，幂等）---
   - settings-mirror-patch.sh
+  - dsh-runtime-compat.py
   # --- 社区插件锁（pin 版本 + hash，先扫后装）---
   - plugins.lock
 services:

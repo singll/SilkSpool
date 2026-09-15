@@ -1276,9 +1276,52 @@ export function createBus(opts = {}) {
 
     async function runCommandTxn(domain, verb, fullName, args, ctx, cmdDef, key, argsHash, entry, started) {
       const handler = entry.handlers[fullName] || entry.handlers[verb]
+      const eventIdsLocal = []
+      // file 后端长任务可在启动时发布事实。每批事件以短事务完成强联动，
+      // 不把 SQLite 写锁持有到 worker 退出；失败时已提交的启动事实仍可恢复。
+      const emitEvents = async (events) => {
+        if (eventIdsLocal.length + events.length > (cmdDef.event_limit || EVENT_MAX_PER_CMD)) {
+          const error = new Error('事件风暴闸：单命令事件超限')
+          error.code = 'E_BUS_EVENT_TOO_LARGE'
+          throw error
+        }
+        const ids = []
+        const publish = async () => {
+          for (const ev of events) {
+            if (!ev || typeof ev.name !== 'string' || !(cmdDef.events || []).includes(ev.name)) throw new Error('事件未在命令契约中声明')
+            const envelope = buildEnvelope({ domain, name: ev.name, payload: ev.payload || {}, actor, sessionId: ctx.session_id, operator: ctx.operator, cmd: verb, idemKey: key })
+            const { syncSubs, hasAsync } = publishInTx(envelope)
+            ids.push(envelope.id)
+            pendingEventLog.set(envelope.id, { ...envelope, _noAsync: !hasAsync })
+            for (const sub of syncSubs) {
+              let result
+              try { result = await sub.handler(envelope) } catch (error) { result = { ok: false, error: { message: error.message } } }
+              if (result?.ok !== true) {
+                const error = new Error(`订阅者 ${sub.pattern} 失败: ${result?.error?.code || 'unknown'} ${result?.error?.message || ''}`)
+                error.code = 'E_BUS_STRONG_LINK_FAILED'
+                throw error
+              }
+            }
+          }
+        }
+        if (nonTransactional && !als.getStore()?.inTxn && events.length) {
+          await withWriteLock(() => als.run({ depth: 0, inTxn: true, eventIds: [] }, async () => {
+            txnBegin()
+            try { await publish(); txnCommit() }
+            catch (error) { txnRollback(); for (const id of ids) pendingEventLog.delete(id); throw error }
+          }))
+          for (const id of ids) {
+            const envelope = pendingEventLog.get(id)
+            if (envelope?._noAsync) appendEventLog(envelope)
+            pendingEventLog.delete(id)
+          }
+        } else await publish()
+        eventIdsLocal.push(...ids)
+      }
       let handlerResult
       try {
-        handlerResult = await handler(args, entry.backend.factory(db), { actor, session_id: ctx.session_id || null, operator: ctx.operator || null, cwd: ctx.cwd || null, dispatch, now })
+        handlerResult = await handler(args, entry.backend.factory(db), { actor, session_id: ctx.session_id || null, operator: ctx.operator || null, cwd: ctx.cwd || null,
+          signal: ctx.signal, dispatch, now, ...(nonTransactional ? { emit: event => emitEvents([event]) } : {}) })
       } catch (e) {
         const err = new Error(e?.message || '域命令执行失败')
         err.code = e?.code || 'E_INTERNAL'
@@ -1289,33 +1332,7 @@ export function createBus(opts = {}) {
       if (!handlerResult || typeof handlerResult !== 'object') throw new Error('域命令 handler 必须返回 {data, events?}')
       const data = handlerResult.data
       const events = Array.isArray(handlerResult.events) ? handlerResult.events : []
-      const limit = cmdDef.event_limit || EVENT_MAX_PER_CMD
-      if (events.length > limit) {
-        const err = new Error(`事件风暴闸：单命令事件 ${events.length} > ${limit}`)
-        err.code = 'E_BUS_EVENT_TOO_LARGE'
-        throw err
-      }
-      const eventIdsLocal = []
-      for (const ev of events) {
-        if (!ev || typeof ev.name !== 'string') throw new Error('事件缺少 name')
-        const envelope = buildEnvelope({ domain, name: ev.name, payload: ev.payload || {}, actor, sessionId: ctx.session_id, operator: ctx.operator, cmd: verb, idemKey: key })
-        const { syncSubs, hasAsync } = publishInTx(envelope)
-        eventIdsLocal.push(envelope.id)
-        pendingEventLog.set(envelope.id, { ...envelope, _noAsync: !hasAsync })
-        for (const sub of syncSubs) {
-          let subEnv
-          try { subEnv = await sub.handler(envelope) } catch (e) {
-            const err = new Error(`订阅者 ${sub.pattern} 执行异常: ${e?.message}`)
-            err.code = 'E_BUS_STRONG_LINK_FAILED'
-            throw err
-          }
-          if (!subEnv || subEnv.ok !== true) {
-            const err = new Error(`订阅者 ${sub.pattern} 失败: ${subEnv?.error?.code || 'unknown'} ${subEnv?.error?.message || ''}`)
-            err.code = 'E_BUS_STRONG_LINK_FAILED'
-            throw err
-          }
-        }
-      }
+      await emitEvents(events)
       const envelope = okEnvelope(domain, verb, data, eventIdsLocal, key, false)
       if (key) {
         db.prepare(`INSERT INTO idempotency(idempotency_key,domain,verb,args_hash,result_json,created_at) VALUES(?,?,?,?,?,?)`)
@@ -1762,7 +1779,7 @@ export function createBus(opts = {}) {
           parameters: def.schema || {},
           output: { schema: { type: 'object' }, render: renderJSON },
           ...(Number.isInteger(def.timeout_ms) ? { timeoutMs: def.timeout_ms } : {}),
-          execute: async (args, exec) => dispatch(d, verb, args || {}, { actor: 'model', session_id: sessionIdOf(exec), cwd: execCwd(exec) }),
+          execute: async (args, exec) => dispatch(d, verb, args || {}, { actor: 'model', session_id: sessionIdOf(exec), cwd: execCwd(exec), signal: exec?.signal }),
         })
         count++
       }
@@ -1797,9 +1814,10 @@ export function createBus(opts = {}) {
         description: `[兼容别名 → ${target}] ${tdef.agent_note || ''}`,
         parameters: isQuery ? (tdef.params || {}) : (tdef.schema || {}),
         output: { schema: { type: 'object' }, render: renderJSON },
+        ...(!isQuery && Number.isInteger(tdef.timeout_ms) ? { timeoutMs: tdef.timeout_ms } : {}),
         execute: async (args, exec) => isQuery
-          ? query('', alias, args || {}, { actor: 'model', session_id: sessionIdOf(exec) })
-          : dispatch('', alias, args || {}, { actor: 'model', session_id: sessionIdOf(exec) }),
+          ? query('', alias, args || {}, { actor: 'model', session_id: sessionIdOf(exec), cwd: execCwd(exec) })
+          : dispatch('', alias, args || {}, { actor: 'model', session_id: sessionIdOf(exec), cwd: execCwd(exec), signal: exec?.signal }),
       })
       count++
     }
@@ -1845,6 +1863,7 @@ export function createBus(opts = {}) {
 
   function startBackground() {
     if (!sidecars || !isWeb) return { started: false, reason: '非 web 宿主面或 sidecars=false' }
+    if (!startDispatcherTimer) return { started: false, reason: 'dispatcher 已暂停' }
     if (!acquireLock(dispatcherLockPath, process.pid)) return { started: false, reason: 'dispatcher.lock 已被占用' }
     lockHeld = true
     const run = async () => {
@@ -1917,6 +1936,9 @@ export function apply(ctx, config = {}) {
     profile: process.argv.includes('web') ? 'web' : 'headless',
     phase: process.env.SEC_WORKER_PHASE || '',
     sidecars: config.sidecars !== false,
+    startDispatcherTimer: config.startDispatcherTimer !== false,
+    dispatcherIntervalMs: config.dispatcherIntervalMs,
+    dispatcherStartDelayMs: config.dispatcherStartDelayMs,
   })
   // host 面（sidecars !== false）provide 门面；agent 面（sidecars:false）不 provide——
   // 同一进程内 web profile 与 agent preset 会双挂载本插件，重复 provide 冲突；
@@ -1934,7 +1956,8 @@ export function apply(ctx, config = {}) {
   try { bus._internal.registerTools(ctx) } catch (e) { log(`ToolProjector 失败: ${e?.message}`) }
   // RpcProjector（仅 connection 服务存在时）
   try {
-    ctx.inject(['connection'], (child) => {
+    // rc.2 的 RPC 路由归属调用者 fiber，注册时从该 fiber 读取 webServer。
+    ctx.inject(['connection', 'webServer'], (child) => {
       child.effect(() => {
         const dispose = bus._internal.registerRpc(child.connection)
         return () => { try { dispose() } catch { /* noop */ } }

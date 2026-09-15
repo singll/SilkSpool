@@ -37,7 +37,7 @@ function makeEnv(opts = {}) {
   const domain = buildTaskDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, n, a, c) => bus.query(d, n, a, c) })
   const reg = bus.registry.register(domain)
   assert.equal(reg.ok, true, `task 域应注册成功：${reg.error?.message || ''}`)
-  return { dir, dataDir, bus }
+  return { dir, dataDir, bus, domain }
 }
 
 function readAudit(dir) {
@@ -259,6 +259,39 @@ test('worker 注册表: register/finish + task_worker_list/status 查询', async
   assert.equal(q.rows[0].status, 'done')
   const st = await bus.query('task', 'worker_status', { run_id: 'w1' }, { actor: 'dashboard' })
   assert.equal(st.data.status, 'done')
+})
+
+test('worker 事件订阅: dashboard 无来源会话、超时无退出码仍可登记收尾', async () => {
+  const { bus, domain } = makeEnv()
+  const subscribers = domain.handlers.subscribers
+  const registered = await subscribers.onWorkerSpawned({ payload: {
+    run_id: 'w-dashboard', dedupe_key: null, cwd: '/fixture', run_dir: '/fixture',
+    pid: 123, timeout_sec: 8, origin_session_id: null,
+  } })
+  assert.equal(registered.ok, true, JSON.stringify(registered))
+  const finished = await subscribers.onWorkerFinished({ payload: {
+    run_id: 'w-dashboard', status: 'killed', exit_code: null,
+  } })
+  assert.equal(finished.ok, true, JSON.stringify(finished))
+  const result = await bus.query('task', 'worker_status', { run_id: 'w-dashboard' }, { actor: 'dashboard' })
+  assert.equal(result.data.status, 'killed')
+  assert.equal(result.data.exit_code, null)
+})
+
+test('worker 收尾: 保留来源会话，另记子会话，事件重放不重复收尾', async () => {
+  const { bus, domain } = makeEnv()
+  const subscribers = domain.handlers.subscribers
+  assert.equal((await subscribers.onWorkerSpawned({ payload: { run_id: 'wchild', origin_session_id: 'session-origin' } })).ok, true)
+  const event = { payload: { run_id: 'wchild', status: 'done', exit_code: 0, worker_session_id: 'session-child' } }
+  assert.equal((await subscribers.onWorkerFinished(event)).ok, true)
+  const before = await bus.query('task', 'worker_status', { run_id: 'wchild' }, { actor: 'dashboard' })
+  const replay = await subscribers.onWorkerFinished(event)
+  assert.equal(replay.ok, true)
+  assert.equal(replay.replay, true)
+  const after = await bus.query('task', 'worker_status', { run_id: 'wchild' }, { actor: 'dashboard' })
+  assert.equal(after.data.session_id, 'session-origin')
+  assert.equal(after.data.worker_session_id, 'session-child')
+  assert.equal(after.data.finished_at, before.data.finished_at)
 })
 
 // ---------------------------------------------------------------------------

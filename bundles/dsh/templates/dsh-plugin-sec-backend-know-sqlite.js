@@ -113,7 +113,24 @@ function createRepo(db) {
     updateExpCard(id, fields) {
       const keys = Object.keys(fields)
       if (!keys.length) return repo.getExpCard(id)
-      db.prepare(`UPDATE exp_cards SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => fields[k]), Number(id))
+      const previous = repo.getExpCard(id)
+      if (!previous) return null
+      const indexed = ['scenario', 'takeaway', 'chain'].some((key) => key in fields && fields[key] !== previous[key])
+      db.exec('SAVEPOINT know_exp_update')
+      try {
+        // external-content FTS 必须用变更前的文本移除旧词；先改主表会读到新词而留下旧倒排项。
+        if (indexed) db.prepare("INSERT INTO exp_fts(exp_fts,rowid,scenario,takeaway,chain) VALUES ('delete',?,?,?,?)")
+          .run(Number(id), previous.scenario, previous.takeaway, previous.chain)
+        db.prepare(`UPDATE exp_cards SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => fields[k]), Number(id))
+        if (indexed) {
+          const current = repo.getExpCard(id)
+          repo.insertExpFts(id, current.scenario, current.takeaway, current.chain)
+        }
+        db.exec('RELEASE know_exp_update')
+      } catch (error) {
+        db.exec('ROLLBACK TO know_exp_update; RELEASE know_exp_update')
+        throw error
+      }
       return repo.getExpCard(id)
     },
     insertExpFts(id, scenario, takeaway, chain) {
@@ -121,9 +138,8 @@ function createRepo(db) {
       db.prepare('INSERT INTO exp_fts (rowid, scenario, takeaway, chain) VALUES (?, ?, ?, ?)').run(Number(id), String(scenario), String(takeaway), String(chain || '[]'))
     },
     upsertExpFts(id, scenario, takeaway, chain) {
-      // 既有卡：exp_fts 是 external content（content='exp_cards'），DELETE 会删主表行——
-      // 必须用 UPDATE 而非先删后插（kb_fts 才是 standalone 可先删后插）
-      db.prepare('UPDATE exp_fts SET scenario = ?, takeaway = ?, chain = ? WHERE rowid = ?').run(String(scenario), String(takeaway), String(chain || '[]'), Number(id))
+      // 兼容已有调用者，原文与索引由同一事务维护；已经同步的重复调用不会再改索引。
+      return repo.updateExpCard(id, { scenario: String(scenario), takeaway: String(takeaway), chain: String(chain || '[]') })
     },
     appendExpEvidence(id, evidenceArr, takeaway, confidence, source) {
       const cur = repo.getExpCard(id)
@@ -199,8 +215,10 @@ function createRepo(db) {
       const cols = Object.keys(row)
       db.prepare(`INSERT INTO exp_cards_archive (${cols.join(', ')}, archived_at, archive_reason) VALUES (${cols.map(() => '?').join(', ')}, ?, ?)`)
         .run(...cols.map((c) => row[c]), at, String(reason || ''))
+      db.prepare("INSERT INTO exp_fts(exp_fts,rowid,scenario,takeaway,chain) VALUES ('delete',?,?,?,?)")
+        .run(Number(id), row.scenario, row.takeaway, row.chain)
       db.prepare('DELETE FROM exp_cards WHERE id = ?').run(Number(id))
-      try { db.prepare('DELETE FROM exp_fts WHERE rowid = ?').run(Number(id)); db.prepare('DELETE FROM exp_embeddings WHERE card_id = ?').run(Number(id)) } catch { /* noop */ }
+      db.prepare('DELETE FROM exp_embeddings WHERE card_id = ?').run(Number(id))
       return { changed: true }
     },
     purgeExpArchives(before) { return db.prepare('DELETE FROM exp_cards_archive WHERE archived_at < ?').run(before).changes },

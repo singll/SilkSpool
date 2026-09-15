@@ -57,7 +57,7 @@ const WORKER_NOISE_RE = /ExperimentalWarning|trace-warnings|EADDRINUSE|xray webh
 
 // P15：按 cwd + 时间窗反查 headless worker 自己的会话 id（跳链地基）。
 // worker 会话 header.cwd 与 createdAt 必须匹配；并发歧义/缺少时间戳时不造跳链。
-async function findWorkerSessionId(cwd, startedAt) {
+async function findWorkerSessionId(cwd, startedAt, reportedId = null) {
   try {
     const sp = deps.getSessionPersistence()
     if (!sp || !cwd) return null
@@ -66,7 +66,7 @@ async function findWorkerSessionId(cwd, startedAt) {
       process.stderr.write(`[sec-suite] worker Session 列表不完整，拒绝反查: ${JSON.stringify(diagnostics)}\n`)
       return null
     }
-    const result = matchWorkerSession(headers, { cwd, startedAt, finishedAt: Date.now() })
+    const result = matchWorkerSession(headers, { cwd, startedAt, finishedAt: Date.now(), reportedId })
     if (result.code) process.stderr.write(`[sec-suite] worker Session 关联: ${JSON.stringify(result)}\n`)
     return result.id
   } catch (e) { process.stderr.write(`[sec-suite] worker Session 反查失败: ${e.message}\n`); return null }
@@ -177,7 +177,7 @@ async function schedulerTick() {
       }
       // P15 修复跳链断链：headless worker 的会话按 cwd 反查（header.cwd=工作区 → workspaceRegistry 归组），
       // 回填 meta.json 与 task_runs.session_id——调度 run 此前 session_id 恒为 null。
-      const workerSessionId = await findWorkerSessionId(cwd, startedAt)
+      const workerSessionId = await findWorkerSessionId(cwd, startedAt, r.session_id || null)
       if (workerSessionId && r.run_id) {
         try {
           const metaPath = path.join(deps.dataDir, 'results', r.run_id, 'meta.json')

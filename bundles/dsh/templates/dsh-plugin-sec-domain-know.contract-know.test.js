@@ -72,6 +72,46 @@ test('happy path: exp_store 同 scenario 合并（merged=true）', async () => {
   assert.equal(r2.data.id, r1.data.id)
 })
 
+test('FTS 外部内容索引：同场景合并及修改必须移除旧词，并与经验原文一致', async () => {
+  const { bus } = makeEnv()
+  const first = await bus.dispatch('know', 'exp_store', {
+    scenario: SCEN, takeaway: `${TAKE} oldtokenfixture`, justification: JUST,
+  }, { actor: 'model' })
+  assert.equal(first.ok, true)
+  const db = bus._internal.db()
+  const hits = (term) => db.prepare('SELECT rowid FROM exp_fts WHERE exp_fts MATCH ?').all(term).map((r) => r.rowid)
+  assert.deepEqual(hits('oldtokenfixture'), [first.data.id])
+  const merged = await bus.dispatch('know', 'exp_store', {
+    scenario: SCEN, takeaway: `${TAKE2} mergedtokenfixture`, justification: JUST,
+  }, { actor: 'model' })
+  assert.equal(merged.ok, true)
+  assert.deepEqual(hits('oldtokenfixture'), [])
+  assert.deepEqual(hits('mergedtokenfixture'), [first.data.id])
+  const updated = await bus.dispatch('know', 'exp_update', {
+    id: first.data.id, takeaway: `${TAKE} updatedtokenfixture`, justification: JUST,
+  }, { actor: 'model' })
+  assert.equal(updated.ok, true)
+  assert.deepEqual(hits('mergedtokenfixture'), [])
+  assert.deepEqual(hits('updatedtokenfixture'), [first.data.id])
+  assert.doesNotThrow(() => db.prepare("INSERT INTO exp_fts(exp_fts,rank) VALUES ('integrity-check',1)").run())
+})
+
+test('FTS 外部内容索引：归档经验同时移除索引，保留归档原文', async () => {
+  const { bus } = makeEnv()
+  const first = await bus.dispatch('know', 'exp_store', {
+    scenario: SCEN, takeaway: `${TAKE} archivetokenfixture`, justification: JUST,
+  }, { actor: 'model' })
+  assert.equal(first.ok, true)
+  const archived = await bus.dispatch('know', 'transition', {
+    subrepo: 'exp', id: first.data.id, to: 'archived', reason: JUST,
+  }, { actor: 'system' })
+  assert.equal(archived.ok, true, JSON.stringify(archived.error))
+  const db = bus._internal.db()
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM exp_cards_archive WHERE id=?').get(first.data.id).n, 1)
+  assert.deepEqual(db.prepare("SELECT rowid FROM exp_fts WHERE exp_fts MATCH 'archivetokenfixture'").all(), [])
+  assert.doesNotThrow(() => db.prepare("INSERT INTO exp_fts(exp_fts,rank) VALUES ('integrity-check',1)").run())
+})
+
 test('happy path: exp_feedback 五判定驱动 score 重算', async () => {
   const { bus } = makeEnv()
   const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'model' })
