@@ -63,6 +63,29 @@ function createRepo(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS exp_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, card_id INTEGER, verdict TEXT, note TEXT, ts INTEGER, source TEXT)`)
   db.exec(`CREATE TABLE IF NOT EXISTS playbooks (name TEXT PRIMARY KEY, scenario TEXT, chain TEXT, runs INTEGER NOT NULL DEFAULT 0, successes INTEGER NOT NULL DEFAULT 0, avg_duration_ms INTEGER NOT NULL DEFAULT 0, last_run_at INTEGER)`)
 
+  // L1（2026-09-16 学习专项 §3.1）：learning_episodes 执行学习记录（幂等建表）。
+  // 去重双闸：UNIQUE(source_event_id, consumer_version)（事件回放零重复记功，保留期=表本身，不依赖总线 7 天幂等缓存）
+  // + 部分唯一索引 biz_key（业务归因：program|来源事件名|exec_run|attempt|card_version）。
+  db.exec(`CREATE TABLE IF NOT EXISTS learning_episodes (
+    episode_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    source_event_id TEXT NOT NULL,
+    source_event_name TEXT NOT NULL,
+    consumer_version TEXT NOT NULL,
+    program_id TEXT, task_id INTEGER, exec_run_id TEXT, attempt_id TEXT, session_id TEXT,
+    card_id TEXT, card_version TEXT, model_id TEXT,
+    outcome TEXT NOT NULL, reason_code TEXT,
+    evidence_refs TEXT, fgs_snapshot_hash TEXT, fgs_snapshot_summary TEXT, fgs_snapshot_path TEXT,
+    request_count INTEGER, token_count INTEGER, duration_ms INTEGER,
+    source_credibility TEXT, supersedes TEXT,
+    context_json TEXT, biz_key TEXT,
+    observed_at INTEGER, created_at INTEGER NOT NULL,
+    UNIQUE(source_event_id, consumer_version)
+  )`)
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_episode_biz ON learning_episodes(biz_key) WHERE biz_key IS NOT NULL`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_episode_program ON learning_episodes(program_id, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_episode_outcome ON learning_episodes(outcome)`)
+
   // 生命周期/评分/合并列（v4.6/v4.7 已加，幂等补齐）
   const expCols = ['mem_class', 'status', 'status_at', 'scope', 'justification', 'uses', 'adopted', 'pos_fb', 'neg_fb', 'score', 'last_used_at', 'exportable', 'runs', 'successes', 'tags', 'deviation']
   for (const [col, ddl] of [
@@ -294,6 +317,53 @@ function createRepo(db) {
       return { changed: true }
     },
     purgeKbArchives(before) { return db.prepare('DELETE FROM kb_docs_archive WHERE archived_at < ?').run(before).changes },
+
+    // ---- L1 learning_episodes（同一 episode 不覆写；重复事件/业务归因命中唯一约束 → duplicate，不抛错）----
+    insertEpisode(row) {
+      try {
+        db.prepare(`INSERT INTO learning_episodes (
+          episode_id, schema_version, source_event_id, source_event_name, consumer_version,
+          program_id, task_id, exec_run_id, attempt_id, session_id,
+          card_id, card_version, model_id,
+          outcome, reason_code,
+          evidence_refs, fgs_snapshot_hash, fgs_snapshot_summary, fgs_snapshot_path,
+          request_count, token_count, duration_ms,
+          source_credibility, supersedes, context_json, biz_key,
+          observed_at, created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(
+            row.episode_id, row.schema_version ?? 1, row.source_event_id, row.source_event_name, row.consumer_version,
+            row.program_id ?? null, row.task_id ?? null, row.exec_run_id ?? null, row.attempt_id ?? null, row.session_id ?? null,
+            row.card_id ?? null, row.card_version ?? null, row.model_id ?? null,
+            row.outcome, row.reason_code ?? null,
+            row.evidence_refs ?? null, row.fgs_snapshot_hash ?? null, row.fgs_snapshot_summary ?? null, row.fgs_snapshot_path ?? null,
+            row.request_count ?? null, row.token_count ?? null, row.duration_ms ?? null,
+            row.source_credibility ?? null, row.supersedes ?? null, row.context_json ?? null, row.biz_key ?? null,
+            row.observed_at ?? null, row.created_at,
+          )
+        return { created: true, episode_id: row.episode_id }
+      } catch (e) {
+        if (!/UNIQUE/i.test(String(e?.message || ''))) throw e
+        const dup = db.prepare('SELECT episode_id FROM learning_episodes WHERE source_event_id=? AND consumer_version=?').get(row.source_event_id, row.consumer_version)
+        if (dup) return { created: false, duplicate: 'source', episode_id: dup.episode_id }
+        const biz = row.biz_key ? db.prepare('SELECT episode_id FROM learning_episodes WHERE biz_key=?').get(row.biz_key) : null
+        return { created: false, duplicate: 'biz', episode_id: biz ? biz.episode_id : null }
+      }
+    },
+    getEpisode(episodeId) {
+      const r = db.prepare('SELECT * FROM learning_episodes WHERE episode_id=?').get(String(episodeId))
+      return r ? { ...r } : null
+    },
+    listEpisodes({ program_id = '', outcome = '', limit = 50, offset = 0 } = {}) {
+      const where = []
+      const vals = []
+      if (program_id) { where.push('program_id = ?'); vals.push(String(program_id)) }
+      if (outcome) { where.push('outcome = ?'); vals.push(String(outcome)) }
+      const w = where.length ? `WHERE ${where.join(' AND ')}` : ''
+      const total = db.prepare(`SELECT COUNT(*) AS c FROM learning_episodes ${w}`).get(...vals).c
+      const rows = db.prepare(`SELECT * FROM learning_episodes ${w} ORDER BY created_at DESC, episode_id DESC LIMIT ? OFFSET ?`).all(...vals, limit, offset)
+      return { rows, total }
+    },
   }
   return repo
 }

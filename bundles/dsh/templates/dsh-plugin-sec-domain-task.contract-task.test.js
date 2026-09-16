@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import * as crypto from 'node:crypto'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildTaskDomain } from '../index.js'
 
@@ -473,4 +474,79 @@ test('alias: task_update{status:done} → E_ACTOR_FORBIDDEN（模型手动标 do
   const r = await bus.dispatch('', 'task_update', { id: c.data.task_id, status: 'done' }, { actor: 'model' })
   assert.equal(r.ok, false)
   assert.equal(r.error.code, 'E_ACTOR_FORBIDDEN')
+})
+
+// ---------------------------------------------------------------------------
+// L1（学习专项 §3.1）：task_finish 收尾前固定 FGS 快照进 task.finished payload
+// ---------------------------------------------------------------------------
+
+test('L1: task_finish 发布前固定 FGS 快照（fgs 域在册 → payload.fgs_snapshot 有 hash；缺席 → 显式 null）', async () => {
+  const { dir, dataDir, bus } = makeEnv()
+  const db = bus._internal.db()
+  // fgs 缺席：快照显式缺失（null），收尾不受影响
+  const c0 = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '无 fgs 域收尾' }, { actor: 'model' })
+  db.prepare("UPDATE tasks SET status='running', started_at=? WHERE id=?").run(Date.now() - 10000, c0.data.task_id)
+  const f0 = await bus.dispatch('task', 'finish', { task_id: c0.data.task_id, run_id: 'wnofgs000001', outcome: 'done' }, { actor: 'scheduler' })
+  assert.equal(f0.ok, true, f0.error?.message)
+  const ev0 = readEvents(dir).filter((e) => e.name === 'task.finished' && e.payload.task_id === c0.data.task_id)
+  assert.equal(ev0.length, 1)
+  assert.equal(ev0[0].payload.fgs_snapshot, null)
+
+  // fgs 在册（最小桩域）：快照 hash/path/summary 进 payload，快照文件真实落盘。
+  // 注：setup.sh 组装顺序 fgs 在 task 之后，本套件不能回引已组装 fgs 插件（否则升级/首装形成
+  // 循环依赖——fgs 套件已正向依赖 task 插件）。桩契约面对齐 fgs_snapshot（F9）：verb=snapshot、
+  // actor 含 reactor、自然键 (task_id,run_id)、返回 {hash,path,nodes,summary} 并真实落盘；
+  // fgs_snapshot 本体（哈希/不可变/actor 闸/幂等）由 fgs 契约套件全覆盖。
+  const fgsStub = {
+    manifest: {
+      domain: 'fgs', version: 1, service: 'secDomain.fgs',
+      description: 'task 套件 L1 测试桩：fgs_snapshot 契约面',
+      owns: { tables: [], files: [] },
+      commands: {
+        fgs_snapshot: {
+          actor: ['reactor', 'scheduler', 'system'],
+          schema: { type: 'object', additionalProperties: false, required: ['task_id'], properties: { task_id: { type: 'integer' }, run_id: { type: 'string' }, reason: { type: 'string' } } },
+          idempotent: 'natural', idempotent_natural: ['task_id', 'run_id'],
+          events: ['fgs.snapshot.pinned'], event_limit: 1, invariants: [], timeout_ms: 30000,
+          agent_note: 'task 契约测试桩：固定 FGS 快照（对齐 fgs 域 F9 返回形状）', deprecated: false,
+        },
+      },
+      queries: {},
+      events: { 'fgs.snapshot.pinned': { payload: { type: 'object' }, redact: [] } },
+      subscribes: {},
+      backend: 'repository-v1',
+    },
+    handlers: {
+      fgs_snapshot: async (args) => {
+        const body = JSON.stringify({ schema_version: 1, task_id: Number(args.task_id), run_id: args.run_id || null, nodes: [{ id: 1, type: 'goal', content: { summary: '桩节点' } }] })
+        const hash = crypto.createHash('sha256').update(body).digest('hex')
+        const snapDir = path.join(dataDir, 'fgs', 'snapshots')
+        fs.mkdirSync(snapDir, { recursive: true })
+        fs.writeFileSync(path.join(snapDir, `${args.task_id}-stub.json`), body + '\n')
+        return {
+          data: { task_id: Number(args.task_id), run_id: args.run_id || null, hash, path: `fgs/snapshots/${args.task_id}-stub.json`, nodes: 1, summary: `task#${args.task_id} FGS 快照：节点 1（桩）` },
+          events: [{ name: 'fgs.snapshot.pinned', payload: { task_id: Number(args.task_id), run_id: args.run_id || null, hash, nodes: 1 } }],
+          after: { task_id: Number(args.task_id), nodes: 1 },
+        }
+      },
+      invariants: {},
+      subscribers: {},
+    },
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  }
+  assert.equal(bus.registry.register(fgsStub).ok, true, 'fgs 桩域应注册成功')
+  const c1 = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '有 fgs 域收尾' }, { actor: 'model' })
+  const tid = c1.data.task_id
+  db.prepare("UPDATE tasks SET status='running', started_at=? WHERE id=?").run(Date.now() - 10000, tid)
+  const f1 = await bus.dispatch('task', 'finish', { task_id: tid, run_id: 'wwithfgs0001', outcome: 'done' }, { actor: 'scheduler' })
+  assert.equal(f1.ok, true, f1.error?.message)
+  const ev1 = readEvents(dir).filter((e) => e.name === 'task.finished' && e.payload.task_id === tid).map((e) => e.payload)
+  assert.equal(ev1.length, 1)
+  const snap = ev1[0].fgs_snapshot
+  assert.ok(snap && typeof snap === 'object', '快照应固定进 payload')
+  assert.match(snap.hash, /^[0-9a-f]{64}$/)
+  assert.equal(snap.nodes, 1)
+  assert.ok(fs.existsSync(path.join(dataDir, snap.path)), '快照文件已落盘')
+  const body = JSON.parse(fs.readFileSync(path.join(dataDir, snap.path), 'utf8'))
+  assert.equal(body.nodes.length, 1)
 })

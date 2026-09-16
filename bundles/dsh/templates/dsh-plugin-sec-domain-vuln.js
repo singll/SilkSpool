@@ -304,6 +304,23 @@ export const VULN_MANIFEST = {
       agent_note: '双权凭证重放对比（越权/IDOR 探测 harness）：同一 URL 以低权与高权凭证各请求一次，机器比对状态码与响应相似度给出 unlikely/review/suspected 三档判定。suspected（低权 200 且响应与高权高度相似）会自动登记为待验证候选——你要继续取证数据归属并走常规验证流。目标必须经授权白名单。',
       deprecated: false,
     },
+    // C12（L1 学习专项，2026-09-16）：从可信 exec 证据清单挂载证据到 finding（设计 §3.3.3）
+    vuln_evidence_attach: {
+      actor: ['model', 'dashboard', 'reactor'],
+      schema: schema({
+        finding_id: int(),
+        evidence_ref: str({ minLength: 3 }),
+        note: str(),
+      }, ['finding_id', 'evidence_ref']),
+      idempotent: 'auto',
+      idempotent_fields: ['finding_id', 'evidence_ref'],
+      events: ['vuln.evidence.attached'],
+      event_limit: 1,
+      invariants: ['findingExists', 'publishedEvidence'],
+      timeout_ms: 120000,
+      agent_note: '把已发布的 exec 证据包挂载到 finding：evidence_ref 填已 exec_evidence_publish 发布的 run_id。网关核验证据清单（SHA-256 逐文件）与 Program 归属一致后，复制进 evidence/<finding_id>/<run_id>/ 并记入证据链。只接受已发布证据；worker staging 原文不受信。',
+      deprecated: false,
+    },
   },
   queries: {
     vuln_list: {
@@ -379,6 +396,7 @@ export const VULN_MANIFEST = {
     'vuln.signal.confirmed': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.rejected': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.submitted': { payload: { type: 'object' }, redact: [] },
+    'vuln.evidence.attached': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'exec.run.completed': { handler: 'onParserProposal', mode: 'async', as: 'reactor' },
@@ -448,6 +466,48 @@ function evidenceProbe(evidence, findingId, dataDir) {
   return { ok: probes.some((p) => {
     try { return fs.realpathSync(p).startsWith(root) } catch { return false }
   }), probes, token }
+}
+
+// L1（C12）：读取并核验 exec 已发布证据清单——存在性、digest 自洽、逐文件 sha256 与实况一致。
+// 读取用 O_NOFOLLOW 安全句柄；清单内路径逐条拒 .. 与绝对路径。
+function readPublishedManifest(evidenceRef, dataDir) {
+  const runId = String(evidenceRef || '').trim().replace(/^run_id:/, '')
+  if (!/^[rw][a-z0-9]+$/.test(runId)) {
+    return { ok: false, code: 'E_EVIDENCE_REQUIRED', message: `evidence_ref 须为已发布证据的 run_id: ${evidenceRef}`, hint: '先由宿主 exec_evidence_publish 发布 staging 证据，再挂载（run_id:<run> 或裸 run_id）' }
+  }
+  const dir = path.join(dataDir, 'results', runId)
+  const manifestPath = path.join(dir, 'evidence-manifest.json')
+  if (!fs.existsSync(manifestPath)) {
+    return { ok: false, code: 'E_EVIDENCE_REQUIRED', message: `run ${runId} 无已发布证据清单`, hint: 'run 产物须先经 exec_evidence_publish（宿主 system 通道）发布；staging 原文不受信' }
+  }
+  let manifest = null
+  try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) } catch { manifest = null }
+  if (!manifest || manifest.run_id !== runId || !Array.isArray(manifest.files) || !manifest.files.length) {
+    return { ok: false, code: 'E_EVIDENCE_REQUIRED', message: `证据清单损坏或为空: ${runId}`, hint: '重新发布证据（exec_evidence_publish）' }
+  }
+  const { digest, ...body } = manifest
+  const recomputed = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex')
+  if (digest !== recomputed) {
+    return { ok: false, code: 'E_VULN_EVIDENCE_TAMPERED', message: `证据清单 digest 不符: ${runId}`, hint: '清单被篡改或损坏；从 staging 重新发布' }
+  }
+  for (const f of manifest.files) {
+    if (!f || typeof f.path !== 'string' || f.path.includes('..') || path.isAbsolute(f.path)) {
+      return { ok: false, code: 'E_VULN_EVIDENCE_TAMPERED', message: `清单路径非法: ${f && f.path}`, hint: '清单被篡改或损坏；从 staging 重新发布' }
+    }
+    const abs = path.join(dir, f.path)
+    let buf = null
+    try {
+      const fd = fs.openSync(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      try { buf = fs.readFileSync(fd) } finally { fs.closeSync(fd) }
+    } catch {
+      return { ok: false, code: 'E_VULN_EVIDENCE_TAMPERED', message: `证据文件缺失或不可信: ${f.path}`, hint: '证据发布后不可改动；重新发布' }
+    }
+    const h = crypto.createHash('sha256').update(buf).digest('hex')
+    if (h !== f.sha256) {
+      return { ok: false, code: 'E_VULN_EVIDENCE_TAMPERED', message: `证据文件哈希不符: ${f.path}`, hint: '证据发布后不可改动；重新发布' }
+    }
+  }
+  return { ok: true, runId, manifest }
 }
 
 // ---------------------------------------------------------------------------
@@ -591,6 +651,18 @@ function makeHandlers(opts) {
       const probe = evidenceProbe(args.evidence, args.finding_id, dataDir)
       if (!probe.ok) {
         return { code: 'E_EVIDENCE_REQUIRED', message: `证据引用不存在：${probe.token || args.evidence}`, hint: '确认必须附真实存在的证据引用（run_id 的 results 目录 / evidence/{id}/ 证据包）。CONFIRMED 还须 verify_replay 机械复核通过', retryable: false }
+      }
+      return null
+    },
+    // L1（INV-10）：vuln_evidence_attach 的证据必须是 exec 已发布清单——清单存在、digest 自洽、
+    // 逐文件 sha256 与 results/<run_id>/ 实况一致；且 Program 归属不跨项目（双方均有归属时须一致）。
+    publishedEvidence: async (args, repo) => {
+      const chk = readPublishedManifest(args.evidence_ref, dataDir)
+      if (!chk.ok) return { code: chk.code, message: chk.message, hint: chk.hint, retryable: false }
+      const finding = repo.getFinding(args.finding_id)
+      const evProgram = chk.manifest.program_id || null
+      if (finding && finding.program_id && evProgram && String(finding.program_id) !== String(evProgram)) {
+        return { code: 'E_VULN_PROGRAM_MISMATCH', message: `finding #${args.finding_id} 属 ${finding.program_id}，证据 run 属 ${evProgram}，跨项目挂载拒绝`, hint: '证据与 finding 必须同 Program；确属同项目的归属漂移先修正 program_id', retryable: false }
       }
       return null
     },
@@ -946,6 +1018,40 @@ function makeHandlers(opts) {
         data: { id: args.finding_id, fgs_node_id: args.fgs_node_id },
         events: [],
         before: null, after: { fgs_node_id: args.fgs_node_id },
+      }
+    },
+
+    // C12（L1）：从可信 exec 清单复制证据进 evidence/<finding_id>/<run_id>/（tmp+rename 原子），
+    // 副本哈希二次核验；证据链追加挂载记录。数据副本归 vuln owns，与 exec 原件经哈希关联。
+    vuln_evidence_attach: async (args, repo) => {
+      const chk = readPublishedManifest(args.evidence_ref, dataDir)
+      if (!chk.ok) throwErr(chk.code, chk.message, chk.hint, false)
+      const { runId, manifest } = chk
+      const srcRoot = path.join(dataDir, 'results', runId)
+      const destRoot = path.join(dataDir, 'evidence', String(args.finding_id), runId)
+      fs.mkdirSync(destRoot, { recursive: true })
+      let bytes = 0
+      for (const f of manifest.files) {
+        const src = path.join(srcRoot, f.path)
+        const fd = fs.openSync(src, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+        let buf
+        try { buf = fs.readFileSync(fd) } finally { fs.closeSync(fd) }
+        if (crypto.createHash('sha256').update(buf).digest('hex') !== f.sha256) {
+          throwErr('E_VULN_EVIDENCE_TAMPERED', `证据文件哈希不符: ${f.path}`, '证据发布后不可改动；重新发布', false)
+        }
+        const dest = path.join(destRoot, f.path)
+        fs.mkdirSync(path.dirname(dest), { recursive: true })
+        const tmp = `${dest}.tmp-${crypto.randomBytes(4).toString('hex')}`
+        fs.writeFileSync(tmp, buf)
+        fs.renameSync(tmp, dest)
+        bytes += buf.length
+      }
+      const note = `[${iso16()}] evidence attached: run_id:${runId}（${manifest.files.length} 个文件 / ${bytes}B / digest ${String(manifest.digest).slice(0, 16)}…）${args.note ? ' — ' + String(args.note).slice(0, 200) : ''}`
+      repo.appendEvidence(args.finding_id, note)
+      return {
+        data: { finding_id: Number(args.finding_id), evidence_ref: runId, files: manifest.files.length, bytes, dir: `evidence/${args.finding_id}/${runId}`, digest: manifest.digest },
+        events: [{ name: 'vuln.evidence.attached', payload: { finding_id: Number(args.finding_id), evidence_ref: runId, files: manifest.files.length, bytes, digest: manifest.digest } }],
+        after: { finding_id: Number(args.finding_id), evidence_ref: runId },
       }
     },
 

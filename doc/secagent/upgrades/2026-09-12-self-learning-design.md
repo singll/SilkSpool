@@ -1,6 +1,6 @@
 # SilkSecAgent v5 自学习与漏洞学习探测设计
 
-> 日期：2026-09-12；状态：**L0 已实施上线（2026-09-16，csai 生产）；L1–L6 未执行**。本文 L0 覆盖的"新增命令、表、评测和发布策略"中其余部分（learning_episodes / knowledge_revisions / 新评测层 / 晋升门禁）仍未上线。
+> 日期：2026-09-12；状态：**L0/L1 已实施上线（2026-09-16，csai 生产）；L2–L6 未执行**。本文的 knowledge_revisions / 新评测层 / 晋升门禁仍未上线；learning_episodes 与证据发布/挂载已随 L1 落地（§11.2）。
 > 配套：[平台升级方案](2026-09-12-dsh-0.1.5-rc.2-plan.md) · [csai 实测基线](2026-09-12-dsh-0.1.5-rc.2-record.md) · [升级目录](README.md)
 > 约束：沿用 v5 的 14 业务域、CommandGateway、actor、owns 和事件契约；实施前同步受影响的域文档与 manifest，本文不直接覆盖现行契约。
 
@@ -320,6 +320,21 @@ L0 五项交付全部上线（契约：bus 52/52、know 26/26、task 29/29、eva
 6. **标准评测入口恢复**（K3）：eval-run.js 迁 v5 总线（exec_run_cli + exec_grep_result 经网关），报告直写标准 eval-range-report.json（旧报告归档 reports/）。
 
 回归口径：真实缺陷均可复现（契约用例先红后绿）；不再有"Mode B 已跑"伪成功标签；模型行为层明确 unsupported。**L1–L6 状态继续记为未执行**（首个端到端里程碑的 fixture/候选卡/独立评测/受控发布均未开始）。
+
+## 11.2 L1 实施记录（2026-09-16，csai 生产）
+
+L1 四项交付全部上线（契约：本地 14 域全绿——bus 52/52、know 26→31、task 29→30、exec 18→23、vuln 48→50（+http 9/9）、fgs 19→21、eval 19/19，csai setup 内双跑同绿；生产冒烟通过）：
+
+1. **exec 证据发布**（§3.3 第 1/2/5 步）：C8 `exec_evidence_publish`（actor=system 专用，宿主收尾通道）+ 事件 `exec.evidence.published`。staging（`results/<run_id>/staging/`，不受信）→ run 归属校验（meta.json 一致性，E_EXEC_RUN_MISMATCH）→ 安全检查全集（软链拒/硬链 nlink>1 拒/非常规文件拒/路径穿越与 realpath 容器内断言/单文件 64MB、总量 256MB/双 stat 120ms 写完校验 E_EXEC_EVIDENCE_UNFINISHED retryable）→ O_NOFOLLOW 安全句柄 + fstat 复检读取 → tmp+rename 复制 + 副本哈希二次比对 → 原子发布 `evidence-manifest.json`（逐文件 SHA-256 + 整体 digest）→ 清空 staging。幂等自然键 run_id：发布一次性、内容冻结、重复=回放。
+2. **vuln 证据挂载**（§3.3 第 3 步）：C12 `vuln_evidence_attach`（model/dashboard/reactor）+ 事件 `vuln.evidence.attached` + 不变量 INV-10 `publishedEvidence`（清单存在/digest 自洽/逐文件 sha256 与实况一致（O_NOFOLLOW）/路径禁 `..` 与绝对路径/Program 归属一致——不符分别 E_EVIDENCE_REQUIRED / E_VULN_EVIDENCE_TAMPERED / E_VULN_PROGRAM_MISMATCH）。复制进 `evidence/{finding_id}/{run_id}/`（tmp+rename），证据链追加挂载记录；数据副本各有 owner、哈希关联。
+3. **know 学习记录**（§3.1/§3.2）：`learning_episodes` 表（owner=know，幂等建表）+ C23 `know_episode_record`（actor=reactor 专用）+ 事件 `know.episode.recorded` + 查询 Q16 `know_episode_list`。六类结果分类落地（confirmed/valid_clean/inapplicable/blocked_auth/infra_error/inconclusive，消费侧映射版本 `episode-v1`）；归属由宿主从事件信封注入（session_id 取 ctx，不采信模型自填）。去重三层：总线自然键 `(source_event_id, consumer_version)` + 表级 UNIQUE（保留期=表本身，覆盖总线 7 天幂等缓存之外的晚到回放）+ `biz_key` 部分唯一索引（业务归因）；命中即 `{recorded:false, duplicate}` 不发事件不记功。订阅落地：`exec.run.completed`（exit≠0→infra_error；exit 0 无判定→inconclusive/run_ok_no_verdict）、`vuln.signal.confirmed/rejected`（confirmed→confirmed/model-proposed；rejected→inconclusive——FALSE_POSITIVE 是修正标签不当阴性）、`task.finished`（truth 拒执→inconclusive/truth_rejected；crash/失败→infra_error；正常→inconclusive/task_done）。旧「exec.run.completed→pb_outcome 自动回填」表述勘误废止（防伪造 tool 战绩污染 pbRank）。
+4. **FGS 快照**（§3.1 末段）：F9 `fgs_snapshot`（reactor/scheduler/system；自然键 task_id+run_id；事件 `fgs.snapshot.pinned`）——节点按 id 排序 canonical 序列化 + sha256 + tmp+rename 落 `data/fgs/snapshots/`（fgs owns 新增）；task 域 `task_finish`/`task_complete` 在收尾事件发布**前**经总线调 fgs_snapshot 固定快照进 `task.finished` payload（弱联动：fgs 缺席/失败显式 `fgs_snapshot:null`，不阻断收尾，绝不事后读"当前图"）。
+
+验收对照（§11 L1 行）：正常/超时/取消/无身份/重启/晚到事件归因——订阅映射 + 双去重契约用例覆盖（含幂等表删除后表级 UNIQUE 兜底、同键异参 E_IDEMPOTENT_CONFLICT、bus_replay 重复回放零重复记功）；越权文件被拒——软链/硬链逃逸/路径穿越/不存在 run/空 staging/增长中文件/篡改清单/跨 Program 挂载全部契约用例红→绿；契约测试全套（bus/know/task/eval/exec/vuln + 其余 8 域）全绿。生产冒烟：learning_episodes 幂等建表已演进、know_episode_list 真库查询 ok、三条新命令 actor 闸生产实测（model 全拒 E_ACTOR_FORBIDDEN）、vuln_evidence_attach 未发布证据实测拒（E_EVIDENCE_REQUIRED）、服务 active NRestarts=0、journal 无异常。
+
+部署记事：本次部署在 U4 观察期内（至 2026-09-18T14:16:35Z），已记入 [U4 handoff](HANDOFF-u4-observation.md) 基线变更。实施中发现并修复一个组装顺序缺陷：task 契约套件曾回引**后组装**的 fgs 插件（setup.sh 顺序 task→fgs，首装/升级时读到旧版 fgs 致 csai setup 中止）——改为对齐 F9 契约面的最小桩域，保持"测试只依赖先组装域"的单向纪律；fgs_snapshot 本体验收由 fgs 套件承担。
+
+**L2–L6 状态继续记为未执行**（候选 revision/独立评测/受控发布/检索计分/运营面板均未开始；valid_clean、blocked_auth 两类 outcome 待 L2 候选规程与证据对照接入后产生真实流量）。
 
 ## 12. 契约与来源
 

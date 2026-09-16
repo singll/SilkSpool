@@ -411,3 +411,52 @@ test('总线集成: bus_status fgs registered:true + 订阅在册 + 后端共享
   assert.equal(fgs.queries, Object.keys(FGS_MANIFEST.queries).length)
   assert.ok(st.data.subscribers.some((s) => s.pattern === 'task.finished' && s.source === 'fgs'))
 })
+
+// ---------------------------------------------------------------------------
+// L1（学习专项 §3.1）：fgs_snapshot——收尾前固定不可变快照
+// ---------------------------------------------------------------------------
+
+test('L1: fgs_snapshot 固定图快照（hash+摘要+不可变文件+事件），空图也落快照', async () => {
+  const { dir, dataDir, bus } = makeEnv()
+  const taskId = seedRunningTask(bus)
+  await bus.dispatch('fgs', 'add', { task_id: taskId, type: 'goal', content: { summary: '目标快照测试' } }, { actor: 'model' })
+  await bus.dispatch('fgs', 'add', { task_id: taskId, type: 'step', content: { summary: '步骤一' } }, { actor: 'model' })
+  const snap = await bus.dispatch('fgs', 'snapshot', { task_id: taskId, run_id: 'wtestrun00001' }, { actor: 'reactor' })
+  assert.equal(snap.ok, true, snap.error?.message)
+  assert.equal(snap.data.nodes, 2)
+  assert.match(snap.data.hash, /^[0-9a-f]{64}$/)
+  assert.match(snap.data.summary, /task#/)
+  const file = path.join(dataDir, snap.data.path)
+  assert.ok(fs.existsSync(file), '快照文件已落盘')
+  const body = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.equal(body.task_id, taskId)
+  assert.equal(body.nodes.length, 2)
+  // 快照后图变化不影响已固定内容（不可变）
+  await bus.dispatch('fgs', 'add', { task_id: taskId, type: 'step', content: { summary: '步骤二' } }, { actor: 'model' })
+  const body2 = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.equal(body2.nodes.length, 2)
+  // 事件已发布
+  const evts = fs.readFileSync(path.join(dir, 'events', 'fgs.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  assert.ok(evts.some((e) => e.name === 'fgs.snapshot.pinned' && e.payload.hash === snap.data.hash))
+  // 空图也落快照
+  const empty = await bus.dispatch('fgs', 'snapshot', { task_id: 99999, run_id: 'wempty0000001' }, { actor: 'reactor' })
+  assert.equal(empty.ok, true)
+  assert.equal(empty.data.nodes, 0)
+})
+
+test('L1: fgs_snapshot actor 闸（model 被拒）+ 自然键幂等（同 task+run 重放不覆盖）', async () => {
+  const { bus } = makeEnv()
+  const taskId = seedRunningTask(bus)
+  await bus.dispatch('fgs', 'add', { task_id: taskId, type: 'goal', content: { summary: '幂等测试目标' } }, { actor: 'model' })
+  const denied = await bus.dispatch('fgs', 'snapshot', { task_id: taskId }, { actor: 'model' })
+  assert.equal(denied.ok, false)
+  assert.equal(denied.error.code, 'E_ACTOR_FORBIDDEN')
+  const first = await bus.dispatch('fgs', 'snapshot', { task_id: taskId, run_id: 'widem00000001' }, { actor: 'reactor' })
+  assert.equal(first.ok, true)
+  // 图演进后同键重放：返回首个快照（发布内容不覆写）
+  await bus.dispatch('fgs', 'add', { task_id: taskId, type: 'step', content: { summary: '新增步骤' } }, { actor: 'model' })
+  const again = await bus.dispatch('fgs', 'snapshot', { task_id: taskId, run_id: 'widem00000001' }, { actor: 'reactor' })
+  assert.equal(again.ok, true)
+  assert.equal(again.replay, true)
+  assert.equal(again.data.hash, first.data.hash)
+})

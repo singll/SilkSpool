@@ -17,6 +17,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'sec-domain-fgs'
@@ -51,7 +52,7 @@ export const FGS_MANIFEST = {
   description: '任务内决策图 Fact-Goal-Step Graph：任务执行过程的外化记忆（fact/goal/step/finding 节点 + 状态机），生命周期与任务绑定，跨任务唯一出口是 fact 沉淀',
   owns: {
     tables: ['fgs_nodes'],
-    files: ['data/events/fgs.jsonl'],
+    files: ['data/events/fgs.jsonl', 'data/fgs/snapshots/'],
   },
   // prompt_hint：注入调度任务 prompt 的 FGS 使用说明模板（task 域调度器消费，05-task §2.3）；
   // v4.x 硬编码在 scheduler.js 的文本随 task 域调度器启用后改由本域版本受控。
@@ -179,6 +180,25 @@ export const FGS_MANIFEST = {
       agent_note: '调度器启动序列专用：清空某任务的旧图（图生命周期与任务绑定，新周期硬边界，防上一轮残留节点污染本轮 Decide）。模型勿调用。',
       deprecated: false,
     },
+    // F9（L1 学习专项，2026-09-16）：收尾前固定 FGS 图快照——episode 引用不可变快照而非"当前图"
+    //（设计 2026-09-12-self-learning-design §3.1：task_runs 有保留上限、FGS 会被下轮 fgs_clear 重置，
+    //  宿主必须在收尾前固定内容；异步订阅时读"当前图"存在串到下一次运行的风险）。
+    fgs_snapshot: {
+      actor: ['reactor', 'scheduler', 'system'],
+      schema: schema({
+        task_id: int(),
+        run_id: str(),
+        reason: str(),
+      }, ['task_id']),
+      idempotent: 'natural',
+      idempotent_natural: ['task_id', 'run_id'],
+      events: ['fgs.snapshot.pinned'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 30000,
+      agent_note: '固定某任务当前 FGS 图快照（落不可变快照文件 data/fgs/snapshots/，返回 sha256/摘要/路径）。宿主在 task 收尾前调用，把决策图内容固定进学习 episode 引用；不读"当前图"事后补。模型勿调用。',
+      deprecated: false,
+    },
   },
   queries: {
     fgs_list: {
@@ -212,6 +232,7 @@ export const FGS_MANIFEST = {
     'fgs.node.updated': { payload: { type: 'object' }, redact: [] },
     'fgs.node.done': { payload: { type: 'object' }, redact: [] },
     'fgs.task.cleared': { payload: { type: 'object' }, redact: [] },
+    'fgs.snapshot.pinned': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'task.finished': { handler: 'onTaskFinished', mode: 'async', as: 'reactor' },
@@ -395,6 +416,35 @@ function makeHandlers(opts) {
         data: { task_id: Number(args.task_id), removed },
         events: [{ name: 'fgs.task.cleared', payload: { task_id: Number(args.task_id), removed } }],
         after: { task_id: Number(args.task_id), removed },
+      }
+    },
+    // F9（L1）：固定 FGS 图快照。读自己域的 fgs_nodes，按 id 排序 canonical 序列化后 sha256，
+    // 原子落盘（tmp+rename）到 data/fgs/snapshots/。空图也落快照（hash 固定），调用方据 nodes=0 自行判断。
+    fgs_snapshot: async (args, repo) => {
+      const taskId = Number(args.task_id)
+      const nodes = repo.listNodesWhere({ task_id: taskId, type: '', status: '', run_id: '' }, 500, 0)
+        .map((n) => ({ ...n }))
+        .sort((a, b) => a.id - b.id)
+      const capturedAt = Date.now()
+      const snap = {
+        schema_version: 1, task_id: taskId, run_id: args.run_id || null,
+        reason: args.reason || null, captured_at: capturedAt, nodes,
+      }
+      const body = JSON.stringify(snap)
+      const hash = crypto.createHash('sha256').update(body).digest('hex')
+      const dir = path.join(dataDir, 'fgs', 'snapshots')
+      fs.mkdirSync(dir, { recursive: true })
+      const nameSafe = String(args.run_id || capturedAt).replace(/[^A-Za-z0-9_-]/g, '_')
+      const file = path.join(dir, `${taskId}-${nameSafe}.json`)
+      fs.writeFileSync(`${file}.tmp`, body + '\n')
+      fs.renameSync(`${file}.tmp`, file)
+      const byType = { fact: 0, goal: 0, step: 0, finding: 0 }
+      for (const n of nodes) byType[n.type] = (byType[n.type] || 0) + 1
+      const summary = `task#${taskId} FGS 快照：节点 ${nodes.length}（fact ${byType.fact} / goal ${byType.goal} / step ${byType.step} / finding ${byType.finding}），captured_at ${new Date(capturedAt).toISOString()}`
+      return {
+        data: { task_id: taskId, run_id: args.run_id || null, hash, path: `fgs/snapshots/${path.basename(file)}`, nodes: nodes.length, summary },
+        events: [{ name: 'fgs.snapshot.pinned', payload: { task_id: taskId, run_id: args.run_id || null, hash, nodes: nodes.length } }],
+        after: { task_id: taskId, nodes: nodes.length },
       }
     },
   }

@@ -328,3 +328,107 @@ test('alias: run_cli → exec_run_cli（static 直通 + deprecated_use）', asyn
   assert.equal(r.cmd, 'run_cli')
   assert.ok(readAudit(dir).find((a) => a.kind === 'deprecated_use' && a.alias === 'run_cli'))
 })
+
+// ---------------------------------------------------------------------------
+// 8. L1（学习专项 §3.3）：exec_evidence_publish——staging → 宿主校验 → 发布 + manifest/SHA-256
+// ---------------------------------------------------------------------------
+
+async function runWithStaging(bus, dataDir, files = { 'poc.txt': 'proof-of-concept 证据内容', 'sub/resp.bin': 'binary-ish' }) {
+  const run = await bus.dispatch('exec', 'run_cli', { tool: 'echo-test', params: { msg: 'evidence source' } }, { actor: 'model' })
+  assert.equal(run.ok, true)
+  const runId = run.data.run_id
+  const staging = path.join(dataDir, 'results', runId, 'staging')
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = path.join(staging, rel)
+    fs.mkdirSync(path.dirname(abs), { recursive: true })
+    fs.writeFileSync(abs, content)
+  }
+  return runId
+}
+
+test('L1: evidence_publish happy path——manifest+SHA-256+staging 清空+事件', async () => {
+  const { dir, dataDir, bus } = makeEnv()
+  const runId = await runWithStaging(bus, dataDir)
+  const pub = await bus.dispatch('exec', 'evidence_publish', { run_id: runId }, { actor: 'system' })
+  assert.equal(pub.ok, true, pub.error?.message)
+  assert.equal(pub.data.files, 2)
+  assert.match(pub.data.digest, /^[0-9a-f]{64}$/)
+  const manifest = JSON.parse(fs.readFileSync(path.join(dataDir, 'results', runId, 'evidence-manifest.json'), 'utf8'))
+  assert.equal(manifest.run_id, runId)
+  assert.equal(manifest.files.length, 2)
+  const crypto = await import('node:crypto')
+  for (const f of manifest.files) {
+    const dest = path.join(dataDir, 'results', runId, f.path)
+    assert.ok(fs.existsSync(dest), `已发布文件存在: ${f.path}`)
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(dest)).digest('hex'), f.sha256)
+  }
+  assert.ok(!fs.existsSync(path.join(dataDir, 'results', runId, 'staging')), '发布后 staging 清空')
+  assert.ok(readEvents(dir).find((e) => e.name === 'exec.evidence.published' && e.payload.run_id === runId))
+})
+
+test('L1: evidence_publish actor 闸（model/dashboard 被拒，E_ACTOR_FORBIDDEN）', async () => {
+  const { dataDir, bus } = makeEnv()
+  const runId = await runWithStaging(bus, dataDir)
+  for (const actor of ['model', 'dashboard']) {
+    const r = await bus.dispatch('exec', 'evidence_publish', { run_id: runId }, { actor })
+    assert.equal(r.ok, false)
+    assert.equal(r.error.code, 'E_ACTOR_FORBIDDEN')
+  }
+})
+
+test('L1: evidence_publish 拒绝越权/不受信文件——软链、硬链逃逸、不存在 run、空 staging', async () => {
+  const { dataDir, bus } = makeEnv()
+  // 不存在的 run
+  const missing = await bus.dispatch('exec', 'evidence_publish', { run_id: 'rmissing000000' }, { actor: 'system' })
+  assert.equal(missing.ok, false)
+  assert.equal(missing.error.code, 'E_NOT_FOUND')
+  // 软链逃逸
+  const runId = await runWithStaging(bus, dataDir)
+  const staging = path.join(dataDir, 'results', runId, 'staging')
+  fs.symlinkSync(path.join(dataDir, 'scope.yml'), path.join(staging, 'escape.txt'))
+  const symlinked = await bus.dispatch('exec', 'evidence_publish', { run_id: runId }, { actor: 'system' })
+  assert.equal(symlinked.ok, false)
+  assert.equal(symlinked.error.code, 'E_EXEC_EVIDENCE_UNSAFE')
+  fs.unlinkSync(path.join(staging, 'escape.txt'))
+  // 硬链逃逸嫌疑（nlink>1）
+  fs.linkSync(path.join(staging, 'poc.txt'), path.join(staging, 'hardlinked.txt'))
+  const hardlinked = await bus.dispatch('exec', 'evidence_publish', { run_id: runId }, { actor: 'system' })
+  assert.equal(hardlinked.ok, false)
+  assert.equal(hardlinked.error.code, 'E_EXEC_EVIDENCE_UNSAFE')
+  fs.unlinkSync(path.join(staging, 'hardlinked.txt'))
+  // 空 staging
+  const run2 = await bus.dispatch('exec', 'run_cli', { tool: 'echo-test', params: { msg: 'x' } }, { actor: 'model' })
+  const empty = await bus.dispatch('exec', 'evidence_publish', { run_id: run2.data.run_id }, { actor: 'system' })
+  assert.equal(empty.ok, false)
+  assert.equal(empty.error.code, 'E_EXEC_STAGING_EMPTY')
+  // 清理障碍后正常发布
+  const ok = await bus.dispatch('exec', 'evidence_publish', { run_id: runId }, { actor: 'system' })
+  assert.equal(ok.ok, true, ok.error?.message)
+})
+
+test('L1: evidence_publish 写完校验——仍在增长的文件被拒（retryable），写停后可发布', async () => {
+  const { dataDir, bus } = makeEnv()
+  const runId = await runWithStaging(bus, dataDir, { 'growing.log': 'seed\n' })
+  const target = path.join(dataDir, 'results', runId, 'staging', 'growing.log')
+  const writer = setInterval(() => { try { fs.appendFileSync(target, `tick ${Date.now()}\n`) } catch { /* noop */ } }, 10)
+  const busy = await bus.dispatch('exec', 'evidence_publish', { run_id: runId }, { actor: 'system' })
+  clearInterval(writer)
+  assert.equal(busy.ok, false)
+  assert.equal(busy.error.code, 'E_EXEC_EVIDENCE_UNFINISHED')
+  assert.equal(busy.error.retryable, true)
+  const ok = await bus.dispatch('exec', 'evidence_publish', { run_id: runId }, { actor: 'system' })
+  assert.equal(ok.ok, true, ok.error?.message)
+})
+
+test('L1: evidence_publish 自然键幂等——重复发布回放首个结果，已发布内容冻结不覆盖', async () => {
+  const { dataDir, bus } = makeEnv()
+  const runId = await runWithStaging(bus, dataDir)
+  const first = await bus.dispatch('exec', 'evidence_publish', { run_id: runId }, { actor: 'system' })
+  assert.equal(first.ok, true)
+  // 发布后篡改已发布文件，再重放：返回首个结果（发布内容冻结），不重新执行
+  fs.appendFileSync(path.join(dataDir, 'results', runId, 'poc.txt'), 'tamper')
+  const again = await bus.dispatch('exec', 'evidence_publish', { run_id: runId }, { actor: 'system' })
+  assert.equal(again.ok, true)
+  assert.equal(again.replay, true)
+  assert.equal(again.data.digest, first.data.digest)
+})

@@ -2,7 +2,7 @@
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：task domain manifest v1
 > 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）；`task_budget_extend` / `task_complete` 由 approval 域 `approval_effects`（effect outbox）经 dispatcher 幂等执行——执行失败记 `approval_effects.failed` 重试，不回滚 decide（09-approval §2.3）。
-> 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加**）、`task.blocked` / `task.cancelled`（看板/memcore）
+> 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加、know 域学习 episode（L1）**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
 
 ---
@@ -466,7 +466,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 |---|---|---|
 | `task.created` | task_create / task_chain | `{task_id, program_id, phase, objective_head(≤80字), schedule_kind, parent_id, priority, source: "model"|"dashboard"|"approval"|"chain"}` |
 | `task.claimed` | task_claim | `{task_id, program_id, phase, priority, claimed_at, worker_slot: 1..4}` |
-| `task.finished` | task_finish / task_reap | `{task_id, program_id, run_id, ok, outcome, schedule_kind, next_run_at, session_id, guard: {checked, missing[]}, truth: {checked, rejected, reason}, cause: "run"|"reap"}` |
+| `task.finished` | task_finish / task_reap | `{task_id, program_id, run_id, ok, outcome, schedule_kind, next_run_at, session_id, guard: {checked, missing[]}, truth: {checked, rejected, reason}, fgs_snapshot: {hash, path, nodes, summary}|null（L1：宿主收尾前固定的 FGS 快照引用；null=显式缺快照）, cause: "run"|"reap"|"approval"}` |
 | `task.blocked` | task_block | `{task_id, program_id, from_status, blocked_reason}` |
 | `task.cancelled` | task_cancel | `{task_id, program_id, from_status, note}` |
 

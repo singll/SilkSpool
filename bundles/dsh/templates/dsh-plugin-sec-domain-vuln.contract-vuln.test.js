@@ -997,3 +997,91 @@ test('别名: submission_draft 目标域未注册 → ToolProjector 跳过 / dis
   const st = await bus.query('bus', 'status', {}, { actor: 'dashboard' })
   assert.equal(st.data.bus.aliases.count, 4, 'bus_status 别名计数含静态+分派别名')
 })
+
+// ---------------------------------------------------------------------------
+// L1（学习专项 §3.3）：vuln_evidence_attach——可信 exec 清单挂载证据
+// ---------------------------------------------------------------------------
+
+// 手工构造"exec_evidence_publish 产物"（清单字段序与 exec 域发布实现一致）
+function publishFixture(dataDir, runId, files, programId = null) {
+  const dir = path.join(dataDir, 'results', runId)
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({ run_id: runId, program_id: programId }))
+  const entries = []
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = path.join(dir, rel)
+    fs.mkdirSync(path.dirname(abs), { recursive: true })
+    fs.writeFileSync(abs, content)
+    entries.push({ path: rel, size: Buffer.byteLength(content), sha256: crypto.createHash('sha256').update(content).digest('hex') })
+  }
+  entries.sort((a, b) => a.path.localeCompare(b.path))
+  const manifest = { schema_version: 1, run_id: runId, program_id: programId, published_at: Date.now(), note: null, files: entries }
+  manifest.digest = crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
+  fs.writeFileSync(path.join(dir, 'evidence-manifest.json'), JSON.stringify(manifest, null, 1) + '\n')
+  return manifest
+}
+
+test('L1 C12: evidence_attach happy path——复制进 evidence/<id>/<run>/ + 证据链 + 事件 + 幂等回放', async () => {
+  const { dir, dataDir, bus } = makeEnv()
+  const runId = 'rpubl1test00001'
+  publishFixture(dataDir, runId, { 'poc.txt': 'PoC 请求与响应', 'shots/a.txt': '对照证据' }, 'test-src')
+  const sig = await seedSignal(bus, { evidence: runId })
+  assert.equal(sig.ok, true, sig.error?.message)
+  const r = await bus.dispatch('vuln', 'evidence_attach', { finding_id: sig.data.id, evidence_ref: runId, note: 'L1 契约测试挂载' }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.files, 2)
+  assert.equal(r.data.evidence_ref, runId)
+  for (const rel of ['poc.txt', 'shots/a.txt']) {
+    const dest = path.join(dataDir, 'evidence', String(sig.data.id), runId, rel)
+    assert.ok(fs.existsSync(dest), `副本落盘: ${rel}`)
+  }
+  const row = bus._internal.db().prepare('SELECT evidence FROM findings WHERE id=?').get(sig.data.id)
+  assert.match(row.evidence, /evidence attached: run_id:/)
+  assert.ok(readEvents(dir).some((e) => e.name === 'vuln.evidence.attached' && e.payload.finding_id === sig.data.id))
+  // 幂等回放
+  const again = await bus.dispatch('vuln', 'evidence_attach', { finding_id: sig.data.id, evidence_ref: runId, note: 'L1 契约测试挂载' }, { actor: 'model' })
+  assert.equal(again.ok, true)
+  assert.equal(again.replay, true)
+})
+
+test('L1 C12: evidence_attach 拒绝未发布 run / 篡改文件 / 非法清单路径 / 跨 Program / webhook actor', async () => {
+  const { dataDir, bus } = makeEnv()
+  const sig = await seedSignal(bus)
+  const fid = sig.data.id
+  // 未发布（meta.json 有、清单无）
+  const runId0 = 'runpubnotl1test00'
+  fs.mkdirSync(path.join(dataDir, 'results', runId0), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'results', runId0, 'meta.json'), JSON.stringify({ run_id: runId0 }))
+  const unpub = await bus.dispatch('vuln', 'evidence_attach', { finding_id: fid, evidence_ref: runId0 }, { actor: 'model' })
+  assert.equal(unpub.ok, false)
+  assert.equal(unpub.error.code, 'E_EVIDENCE_REQUIRED')
+  // 篡改：发布后改动文件 → 哈希不符
+  const runId = 'rtamper0l1test01'
+  publishFixture(dataDir, runId, { 'poc.txt': '原始证据' })
+  fs.writeFileSync(path.join(dataDir, 'results', runId, 'poc.txt'), '被篡改的内容')
+  const tampered = await bus.dispatch('vuln', 'evidence_attach', { finding_id: fid, evidence_ref: runId }, { actor: 'model' })
+  assert.equal(tampered.ok, false)
+  assert.equal(tampered.error.code, 'E_VULN_EVIDENCE_TAMPERED')
+  // 清单内非法路径（digest 合法但路径穿越）
+  const runId2 = 'rpathl1test00002'
+  const dir2 = path.join(dataDir, 'results', runId2)
+  fs.mkdirSync(dir2, { recursive: true })
+  fs.writeFileSync(path.join(dir2, 'meta.json'), JSON.stringify({ run_id: runId2 }))
+  const bad = { schema_version: 1, run_id: runId2, program_id: null, published_at: Date.now(), note: null, files: [{ path: '../escape.txt', size: 1, sha256: 'x'.repeat(64) }] }
+  bad.digest = crypto.createHash('sha256').update(JSON.stringify(bad)).digest('hex')
+  fs.writeFileSync(path.join(dir2, 'evidence-manifest.json'), JSON.stringify(bad))
+  const traversal = await bus.dispatch('vuln', 'evidence_attach', { finding_id: fid, evidence_ref: runId2 }, { actor: 'model' })
+  assert.equal(traversal.ok, false)
+  assert.equal(traversal.error.code, 'E_VULN_EVIDENCE_TAMPERED')
+  // 跨 Program：finding.program_id=test-src，证据 run 属 other-prog
+  bus._internal.db().prepare('UPDATE findings SET program_id=? WHERE id=?').run('test-src', fid)
+  const runId3 = 'rcrossp0l1test003'
+  publishFixture(dataDir, runId3, { 'poc.txt': '跨项目证据' }, 'other-prog')
+  const cross = await bus.dispatch('vuln', 'evidence_attach', { finding_id: fid, evidence_ref: runId3 }, { actor: 'model' })
+  assert.equal(cross.ok, false)
+  assert.equal(cross.error.code, 'E_VULN_PROGRAM_MISMATCH')
+  // actor 闸
+  const denied = await bus.dispatch('vuln', 'evidence_attach', { finding_id: fid, evidence_ref: runId3 }, { actor: 'webhook' })
+  assert.equal(denied.ok, false)
+  assert.equal(denied.error.code, 'E_ACTOR_FORBIDDEN')
+})

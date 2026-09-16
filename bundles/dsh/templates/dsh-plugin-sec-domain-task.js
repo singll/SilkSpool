@@ -570,6 +570,22 @@ function makeHandlers(opts) {
     return ''
   }
 
+  // L1（学习专项 §3.1）：宿主在收尾事件发布前固定 FGS 快照（fgs 域 fgs_snapshot 命令）。
+  // 弱联动——快照不可用（fgs 域未注册/失败）时显式返回 null（缺快照标记），不阻断收尾。
+  async function pinFgsSnapshot(taskId, runId) {
+    if (!dispatchRef) return null
+    try {
+      const snap = await dispatchRef('fgs', 'snapshot', { task_id: Number(taskId), run_id: runId || null }, { actor: 'reactor' })
+      if (snap && snap.ok && snap.data) {
+        return { hash: snap.data.hash, path: snap.data.path, nodes: snap.data.nodes, summary: String(snap.data.summary || '').slice(0, 200) }
+      }
+      log(`FGS 快照失败 task#${taskId}: ${snap && snap.error && snap.error.code} ${snap && snap.error && snap.error.message}`)
+    } catch (e) {
+      log(`FGS 快照异常 task#${taskId}: ${e?.message}`)
+    }
+    return null
+  }
+
   const invariants = {
     scheduleValid: async (args, repo, ctx) => {
       const nowTs = Date.now()
@@ -815,6 +831,11 @@ function makeHandlers(opts) {
         return { data: { task_id: Number(args.task_id), status: 'queued', run_recorded: false } }
       }
 
+      // L1（学习专项 §3.1/§4 交付）：收尾事件发布前固定 FGS 快照——episode 必须引用
+      // 不可变快照而非"当前图"（下一轮 fgs_clear 会重置图）。弱联动：快照失败显式记
+      // fgs_snapshot=null（缺快照标记），不回滚任务收尾。
+      const fgsSnapshot = await pinFgsSnapshot(Number(args.task_id), runId || null)
+
       const finished = nowTs
       let status
       let nextRunAt = null
@@ -834,7 +855,7 @@ function makeHandlers(opts) {
       repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null })
       return {
         data: { task_id: Number(args.task_id), status, next_run_at: nextRunAt, run_recorded: true, guard: { checked: guard.checked, missing: guard.missing } },
-        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, cause: 'run' } }],
+        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, fgs_snapshot: fgsSnapshot, cause: 'run' } }],
         after: { task_id: Number(args.task_id), status, ok },
       }
     },
@@ -961,10 +982,12 @@ function makeHandlers(opts) {
         repo.transitionTask(Number(args.task_id), { result: tail })
         return { data: { task_id: Number(args.task_id), scheduled: true, status: t.status, next_run_at: t.next_run_at, acknowledged: true } }
       }
+      // L1：审批落成收尾同样先固定 FGS 快照（弱联动，缺快照显式 null）
+      const fgsSnapshot = await pinFgsSnapshot(Number(args.task_id), null)
       repo.transitionTask(Number(args.task_id), { status: 'done', result: tail, finished_at: nowTs }, t.status)
       return {
         data: { task_id: Number(args.task_id), status: 'done' },
-        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: '', ok: true, outcome: 'done', schedule_kind: t.schedule_kind, next_run_at: null, session_id: null, guard: { checked: false, missing: [] }, truth: { checked: false, rejected: false, reason: '' }, cause: 'approval' } }],
+        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: '', ok: true, outcome: 'done', schedule_kind: t.schedule_kind, next_run_at: null, session_id: null, guard: { checked: false, missing: [] }, truth: { checked: false, rejected: false, reason: '' }, fgs_snapshot: fgsSnapshot, cause: 'approval' } }],
         after: { task_id: Number(args.task_id), status: 'done' },
       }
     },

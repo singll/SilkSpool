@@ -39,6 +39,7 @@
 | C9 | `vuln_verify_replay` | CONFIRMED 机械复核（重放 request.txt + sha256 比对 + verify-log 追加；"LLM 不给自己当法官"） | model, script | 无（防事件风暴） | 自动指纹（finding_id+expect_hash+分钟） |
 | C10 | `vuln_attach_fgs` | 关联 FGS finding 节点到行（fgs 域事件订阅回写通道，Phase 1 可选落地） | model, reactor | 无 | 自动指纹（finding_id+fgs_node_id） |
 | C11 | `vuln_authz_diff` | 双权凭证重放对比 harness（低权/高权各发一次，三档判定；suspected 机器落候选） | model | 无（suspected 时经 C2 发 candidate.registered） | 自动指纹（url+method+headers 指纹+分钟） |
+| C12 | `vuln_evidence_attach` | 从已发布 exec 证据清单挂载证据到 finding（复制进 `evidence/{finding_id}/{run_id}/`，哈希关联） | model, dashboard, reactor | `vuln.evidence.attached` | 自动指纹（finding_id+evidence_ref） |
 
 > 说明：宪法 §三 actor 表无 `parser` 类型——exec 域 parser 提案与 authz_diff 机器判定统一以 **actor=script** 注入，身份细分（`identity: "parser:nuclei:{run_id}"` / `"authz_diff:{session_id}"`）进审计，不新增 actor 枚举。
 
@@ -358,6 +359,30 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 
 > 双权凭证重放对比（越权/IDOR 探测 harness）：同一 URL 以低权与高权凭证各请求一次，机器比对状态码与响应相似度给出 unlikely/review/suspected 三档判定。suspected（低权 200 且响应与高权高度相似）会自动登记为待验证候选——你要继续取证数据归属并走常规验证流；review 档请人工看两个 body_head 自行判断。目标必须经授权白名单。凭证从 cred_query 取（勿在会话里裸贴 token）。
 
+#### C12 · vuln_evidence_attach（证据挂载，L1 2026-09-16 上线）
+
+**语义**：设计 §3.3 第三步——finding 证据包从**可信 exec 清单**导入 `evidence/{finding_id}/{run_id}/`（本域 owns），与 exec 原件经 SHA-256 哈希关联（数据副本各有 owner）。只接受已发布证据（`exec_evidence_publish` 产物）；worker staging 原文不受信。
+
+**参数表**：
+
+| 参数 | 类型 | 必填 | 校验规则 |
+|---|---|---|---|
+| finding_id | integer | 是 | 行存在（E_NOT_FOUND） |
+| evidence_ref | string | 是 | 已发布 run 的 run_id（兼容 `run_id:` 前缀），须匹配 `^[rw][a-z0-9]+$` |
+| note | string | 否 | 挂载说明（进证据链，截 200 字） |
+
+**网关核验（INV-10，fail-closed，逐条）**：
+
+1. 清单存在：`results/<run_id>/evidence-manifest.json`（无 → E_EVIDENCE_REQUIRED，hint 引导先发布）；
+2. 清单自洽：`run_id` 一致、files 非空、`digest == sha256(去 digest 的清单)`（不符 → E_VULN_EVIDENCE_TAMPERED）；
+3. 逐文件真实：`path` 禁 `..`/绝对路径；O_NOFOLLOW 安全句柄读取，`sha256` 与清单一致（篡改/缺失 → E_VULN_EVIDENCE_TAMPERED）；
+4. **Program 归属**：finding.program_id 与清单 program_id 双方均已知且不同 → E_VULN_PROGRAM_MISMATCH（跨项目证据挂载拒绝）。
+
+**行为**：逐文件复制进 `evidence/{finding_id}/{run_id}/`（tmp+rename 原子，副本哈希二次核验）→ 证据链追加 `[ts] evidence attached: run_id:<run>（N 个文件 / B 字节 / digest 头16）` → 发 `vuln.evidence.attached`。
+**幂等**：自动指纹（finding_id+evidence_ref），重放 replay:true。
+**actor**：model, dashboard, reactor。**事件**：`vuln.evidence.attached {finding_id, evidence_ref, files, bytes, digest}`。
+**模型可见**：✅（描述即上表语义）。
+
 ### 1.4 查询（读投影）逐个详述
 
 统一分页信封 `{rows, total, limit, offset}`；limit 默认 50、上限 500；sort 白名单 + dir=asc|desc；**行数与 total 同一 where 构造器**（契约测试强制断言，v4.3 病根不复发）。
@@ -427,6 +452,7 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 | `vuln.signal.confirmed` | C3 | `{finding_id:int, from:{status:'new',noise:int}, evidence_ref:string, confidence:'confirmed', fgs_node_id:int\|null, vuln_type:string\|null}` |
 | `vuln.signal.rejected` | C4 | `{finding_id:int, verdict:enum, from:{status:string,noise:int}, reason_head:string(≤60字), dup_of:int\|null, fgs_node_id:int\|null}` |
 | `vuln.signal.submitted` | C5 | `{finding_id:int, from:{status:string}, to:{status:string}, bounty:number\|null, vendor_status:string, platform:string}` |
+| `vuln.evidence.attached` | C12 | `{finding_id:int, evidence_ref:string, files:int, bytes:int, digest:string}` |
 
 事件信封（含 id/ts/actor/session_id/cause）由总线统一生成；全部事件追加 `data/events/vuln.jsonl` 可回放。
 
@@ -463,6 +489,7 @@ ToolProjector 从 manifest 自动 `ctx.tools.register`：工具名=动词/查询
 | `vuln_verify_replay` | 是 | "机械复核（LLM 不给自己当法官）。重放 evidence/{id}/request.txt，响应体 sha256 与 expect_hash 比对，结果追加 verify-log.md。CONFIRMED 纪律自查要求本复核通过。" |
 | `vuln_attach_fgs` | 是（Phase 1 可选） | "把 FGS finding 节点关联到 finding 行（任务内显式建图时用；调度会话内自动关联由 fgs 域事件完成，通常无需手动）。" |
 | `vuln_authz_diff` | 是 | "双权凭证重放对比（越权/IDOR 探测 harness）：同一 URL 以低权与高权凭证各请求一次，机器比对状态码与响应相似度给出 unlikely/review/suspected 三档判定。suspected（低权 200 且响应与高权高度相似）会自动登记为待验证候选——你要继续取证数据归属并走常规验证流；review 档请人工看两个 body_head 自行判断。目标必须经授权白名单。凭证从 cred_query 取（勿在会话里裸贴 token）。" |
+| `vuln_evidence_attach` | 是 | "把已发布的 exec 证据包挂载到 finding：evidence_ref 填已 exec_evidence_publish 发布的 run_id。网关核验证据清单（SHA-256 逐文件）与 Program 归属一致后，复制进 evidence/<finding_id>/<run_id>/ 并记入证据链。只接受已发布证据；worker staging 原文不受信。" |
 | （草稿工具） | — | `submission_draft` / `vuln_draft_submission` 旧名经总线别名指向 **report 域 `report_draft_submission`**（见 12-report.md §一）——本域不注册草稿工具 |
 | `vuln_list` | 是 | "检索漏洞发现。visibility=signal（默认，仅信号面）/ candidate（待验证候选队列）/ all。按 host/severity/status/program_id/q 过滤，分页+排序。" |
 | `vuln_get` | 是 | "取单条 finding 全量详情（含 evidence 证据链全文）。" |
@@ -610,6 +637,7 @@ spool exec csai "node /opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/b
 | INV-7 | 认领互斥：claim/confirm(model) 对他人未超时认领的候选拒绝；dashboard 豁免（人工终审） | E_VULN_CLAIMED |
 | INV-8 | verify_replay 的 evidence 目录由 finding_id 域内派生（不接受调用方任意路径——v4 任意 evidence_dir 参数收窄） | E_SCHEMA |
 | INV-9 | verdict=dup 必带存在的 dup_of | E_VULN_DUP_TARGET_REQUIRED |
+| INV-10 | evidence_attach 只接受已发布 exec 清单：清单存在+digest 自洽+逐文件 sha256 一致+Program 归属一致 | E_EVIDENCE_REQUIRED / E_VULN_EVIDENCE_TAMPERED / E_VULN_PROGRAM_MISMATCH |
 
 **契约测试矩阵落点**（宪法 §十三逐项到本域，`test/contract-{verb}.test.js`，sqlite-local 必跑、http-remote Phase 4 同套）：
 
@@ -813,3 +841,9 @@ prompt 引用同步：persona/objective/skills/technique-index 中的 finding_ad
 | 未实现 | 无占位分支；文档承诺与 manifest 对齐。 |
 | hook 判定 | parser 提案经事件转 candidate，不直写 findings，合格。 |
 | 独立升级 | 可以单域替换 sqlite/http 后端，但 eval/report 是直接消费方，升级须回归二者。 |
+
+## 六、2026-09-16 学习专项 L1 实施回填（证据挂载）
+
+- 新增命令 C12 `vuln_evidence_attach`（model/dashboard/reactor）+ 事件 `vuln.evidence.attached` + 不变量 INV-10（已发布清单存在/digest 自洽/逐文件 sha256 一致/Program 归属一致）。
+- §五审查的"worker 沙箱证据对 vuln_confirm 不可见"缺陷的正式通道落地：worker → `results/<run_id>/staging/`（不受信）→ exec `exec_evidence_publish`（宿主校验发布）→ vuln `vuln_evidence_attach`（清单核验后复制进 `evidence/{finding_id}/{run_id}/`，哈希关联）。staging 原文依然不可作证据——这是设计意图（先检查后复制的信任边界），不是残留缺陷。
+- 契约测试：vuln 48→50 全绿（happy+幂等回放 / 未发布 run / 篡改文件 / 非法清单路径 / 跨 Program / actor 闸）。

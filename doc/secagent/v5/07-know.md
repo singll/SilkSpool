@@ -1,9 +1,9 @@
 # 07 · know 域设计（知识六仓：经验 / 文献 / 先验规程 / 漏洞卡 / 收割 / 体检）
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：know@1
-> 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（订阅 `approval.approved` 承接 knowledge-adopt / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 工具统计回填 playbook）。
+> 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（订阅 `approval.approved` 承接 knowledge-adopt / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 记学习 episode，L1）；vuln 域（订阅 `vuln.signal.confirmed/rejected` 记判定 episode，L1）；task 域（订阅 `task.finished` 记任务级 episode，L1）。
 > 被订阅：`know.*` 全系事件——memcore（治理旁路）、dashboard、eval（评测回流）。
-> owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
+> owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` / `playbooks` / `learning_episodes` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
 
 ---
 
@@ -50,6 +50,7 @@
 | C20 | `know_adopt` | 跨仓 | 人工采纳收割草稿/外部卡为正式知识（approval.approved kind=knowledge-adopt 的执行端） | approval, dashboard, human | 自然键 | know.adopted |
 | C21 | `know_transition` | 跨仓 | 治理通道：exp/kb 生命周期降级（memcore sweep 专用） | system, human | 自然键 | know.exp.cooled/archived/expired、know.kb.* |
 | C22 | `know_purge_archive` | 跨仓 | 归档表 90 天硬删（占位动词，Phase 2 正式化，同 06-fact 映射表 #7） | system | 自然键 | （无） |
+| C23 | `know_episode_record` | episode | 执行学习记录落账（reactor 专用；宿主注入归属；六类结果分类；双唯一去重） | **reactor**（模型/脚本/dashboard 物理不可调） | 自然键（source_event_id+consumer_version） | know.episode.recorded |
 
 > **卡片使用记录（原 `card_usage_log`）归属**：归 **ledger 域**（动词 `ledger_log_card_usage`），文件 `data/pipeline/{program}/card_usage-{date}.jsonl`（sec-pipeline.js L146，`pipelineDir()` 即 ledger 台账树）：① attempts/card_usage/handoff 三产物同一纪律节奏写入、被 task_finish 流程守卫同批校验、走同一 vault 回放链路——拆域会让守卫跨域取证；② 一棵目录树一个 owner（单写者律同款理由）。**本域消费路径**：订阅 `ledger.card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询，驱动 registry 健康度与 know_health 零使用卡清理——读消费不受 owns 影响。字段语义（card_id/deviation/suggest）的知识视角归本域解读，写入动作归 ledger。
 
@@ -304,6 +305,18 @@
 
 占位动词（同 06-fact 映射表 #7）：archive 表 90 天硬删。actor=system；repository 原语 `purgeExpArchives(before)` / `purgeKbArchives(before)`。Phase 2 正式入 manifest。
 
+#### C23 · know_episode_record（执行学习记录落账，L1 2026-09-16 上线）
+
+**语义**（设计 §3.1/§6.3）：每次执行/判定/收尾的**学习 episode** 落 `learning_episodes` 表。actor=**reactor 专用**——调用方只能是本域订阅宿主（消费 `exec.run.completed` / `vuln.signal.confirmed` / `vuln.signal.rejected` / `task.finished`），归属（session_id 由调用面 ctx 注入；program/run/task/finding 取自事件 payload——可信生产者）**不采信模型自填**。
+
+**参数 schema**（`additionalProperties: false`）：必填 `source_event_id` / `source_event_name` / `consumer_version` / `outcome`；可选 `reason_code / program_id / task_id / exec_run_id / attempt_id / card_id / card_version / model_id / evidence_refs[] / fgs_snapshot_hash / fgs_snapshot_summary / fgs_snapshot_path / request_count / token_count / duration_ms / source_credibility / supersedes / observed_at / context{}`。
+
+**六类结果分类**（§3.2，不替换 ledger 六态，消费侧映射版本 = consumer_version `episode-v1`）：`confirmed`（有可复核证据的成立判定）/ `valid_clean` / `inapplicable` / `blocked_auth` / `infra_error` / `inconclusive`。当前订阅映射：`vuln.signal.confirmed → confirmed`；`vuln.signal.rejected(false_positive/dup/ignored) → inconclusive`（FALSE_POSITIVE 是修正标签，不当阴性，§3.2）；`exec.run.completed exit≠0/错误 → infra_error`，`exit 0 无判定 → inconclusive(run_ok_no_verdict)`；`task.finished` truth 拒执 → inconclusive(truth_rejected)、crash/失败 → infra_error、正常收尾 → inconclusive(task_done)（任务完成不是漏洞结论）。
+
+**不覆写与双去重**：同一 episode 不覆写——总线自然键 `(source_event_id, consumer_version)` 同键异参 = E_IDEMPOTENT_CONFLICT；修正走 `supersedes` 新记录。重复记功防护双层：总线幂等表 + 表级 `UNIQUE(source_event_id, consumer_version)`（**保留期 = 表本身，不依赖总线 7 天幂等缓存**，七天后再回放也不重复记功）+ 部分唯一索引 `biz_key = program|source_event_name|exec_run_id|attempt|card_version`（业务归因去重：同 run 按 proposal kind 多发的 run.completed 只记一集）。命中去重 → `{recorded:false, duplicate:'source'|'biz'}`，**不发事件不记功**。
+
+**事件**：`know.episode.recorded {episode_id, source_event_id, source_event_name, outcome, program_id, exec_run_id}`。
+
 ### 1.4 查询（读投影）逐个详述
 
 > 列表统一分页信封 `{rows, total, limit, offset}`；行数=total 同口径断言（`expVisibleWhere()` / `kbVisibleWhere()` 单一构造器）。
@@ -354,6 +367,8 @@
 
 无参。返回覆盖矩阵（漏洞卡 × 攻面 TAXONOMY 映射缺口 + 规程库覆盖统计），供看板「覆盖缺口交叉表」。**实现口径**：读缓存文件 `data/knowledge-coverage.json`（7 天新鲜直读，过期由纯计算脚本重算产物——生成是脚本产缓存文件，本查询只读，无写动词；`refresh: true` 强制重算）。返回：`{ generated_at, cards_total, taxonomy_total, uncovered: [{attack_surface, missing_cards}], coverage: [{card_id, attack_surface, covered}] }`。
 
+#### Q16 · know_episode_list（L1）：参数 program_id / outcome / 分页；返回 learning_episodes 行（来源事件/归属/六类结果/证据与 FGS 快照引用，按 created_at 倒序）。复盘「学到了什么、依据是什么」的只读投影。
+
 ### 1.5 事件
 
 **发布**：
@@ -377,19 +392,22 @@
 | `know.vc.activated` / `know.vc.deprecated` | C17/C18 | `{ id, status, reason 摘要 }` |
 | `know.harvest.ingested` | C19 | `{ count, drafts_path }` |
 | `know.adopted` | C20 | `{ target, adopted_id, source_cmd, evidence }` |
+| `know.episode.recorded` | C23 | `{ episode_id, source_event_id, source_event_name, outcome, program_id, exec_run_id }` |
 
 **订阅**（manifest subscribes）：
 
 | 订阅事件 | 模式 | 处理器 | 动作 |
 |---|---|---|---|
 | `fact.bb.published` | weak | `onFactBbPublished` | key 前缀 `[env-issue]` → 触发 AGENTS.md 受管区块即时刷新（防抖 5s）——env-issue 是开局上下文的组成 |
-| `exec.run.completed` | weak | `onExecRunCompleted` | 工具执行统计 → 匹配 playbook 触发词命中记录 → **pb_outcome 自动回填**（actor=reactor，payload ≤2KB，宪法 §八.5）。v4 宿主 runCli 钩子直调 pbOutcome 的域化 |
+| `exec.run.completed` | weak | `onExecRunCompleted` | **L1（2026-09-16 勘误并落地）**：run 级学习 episode 落账（exit≠0→infra_error；exit 0 无判定→inconclusive(run_ok_no_verdict)；actor=reactor）。原"工具统计 → pb_outcome 自动回填"未实施且**废止**——单次 CLI 退出码不是打法链效果，伪造 tool:<name> 战绩会污染 pbRank（10-exec §2.3.2 同款裁决） |
+| `vuln.signal.confirmed` / `vuln.signal.rejected` | weak | `onVulnVerdict` | **L1**：判定级 episode（confirmed→confirmed/model-proposed；rejected(false_positive/dup/ignored)→inconclusive——修正标签不当阴性）；attempt 粒度挂 `finding:<id>`，evidence_ref 解析 run 归属 |
+| `task.finished` | weak | `onTaskFinished` | **L1**：任务级 episode；FGS 快照引用取事件 payload 中宿主已固定的 `fgs_snapshot`（hash/path/summary），**绝不事后读"当前图"**；payload 无快照 → context 显式 `fgs_snapshot_missing:true` |
 | `approval.approved` | — | **不订阅（勘误）** | kind=knowledge-adopt 的采纳由 approval 域 `approval_effects` 经 dispatcher 幂等执行 `know_adopt`（C20，actor=approval，cause 链带 request_id；target/payload 取审批单字段，校验：subject≥8 字/draft≥50 字/source_url http(s)/evidence≥30 字——v4 校验规则保留为 manifest 前置） |
 | `fact.expired` / `fact.archived` | weak | `onFactArchived` | 受管区块依赖的 fact 计数变化 → AGENTS.md 定时全量刷新提前触发（防抖） |
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
-挂载：web + headless × actor=model。**不向模型注册**：`exp_approve_export`/`exp_revoke_export`（dashboard/human/approval/system）、`rule_seed`（script/human/system——先验库物理闸）、`know_adopt`（approval/dashboard/human）、`know_transition`（system/human）、`know_purge_archive`（system）、`exp_update`（v4 同款限制保留：模型改卡风险高，修正走 dashboard；如模型必须修，用 exp_store 重写 + deviation 说明）。投影零改名。
+挂载：web + headless × actor=model。**不向模型注册**：`exp_approve_export`/`exp_revoke_export`（dashboard/human/approval/system）、`rule_seed`（script/human/system——先验库物理闸）、`know_adopt`（approval/dashboard/human）、`know_transition`（system/human）、`know_purge_archive`（system）、`know_episode_record`（**reactor 专用**——学习归属不采信模型自填）、`exp_update`（v4 同款限制保留：模型改卡风险高，修正走 dashboard；如模型必须修，用 exp_store 重写 + deviation 说明）。投影零改名。
 
 | 工具名 | 描述全文要点（即 agent_note，全文见 1.3/1.4） |
 |---|---|
@@ -528,6 +546,10 @@ sec query know know_health --actor script
 #### kb_embeddings 表：`doc_id TEXT PK, vec BLOB(384)`。
 
 #### kb_archive 表：同构 + archived_at/archive_reason。
+
+#### learning_episodes 表（L1，2026-09-16；owner=know，幂等建表）
+
+执行学习记录（设计 §3.1 最小数据模型的 L1 落地）。列：`episode_id PK / schema_version / source_event_id / source_event_name / consumer_version / program_id / task_id / exec_run_id / attempt_id / session_id / card_id / card_version / model_id / outcome / reason_code / evidence_refs(JSON) / fgs_snapshot_hash / fgs_snapshot_summary / fgs_snapshot_path / request_count / token_count / duration_ms / source_credibility / supersedes / context_json / biz_key / observed_at / created_at`。约束：`UNIQUE(source_event_id, consumer_version)`（事件级去重，保留期=表本身）；部分唯一索引 `idx_episode_biz(biz_key) WHERE biz_key IS NOT NULL`（业务归因去重：`program|source_event_name|exec_run_id|attempt|card_version`）；普通索引 program_id+created_at、outcome。只插不改——同一 episode 不覆写，判定修正形成带 `supersedes` 的新记录。
 
 **file 后端**：
 
@@ -822,3 +844,11 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **K2 内容闭环已上线**：`kb_revalidate(changed)` 必须带 `new_body`（否则 E_SCHEMA）——正文原子换新 + content_hash 更新 + body_revision+1 + taint 重扫 + 分类重算 + FTS 同步重建 + 向量异步重建（失败落 last_fetch_error，不再静默）；`fetch_failed` 只记计数与原因，**不刷新** last_validated_at/revalidate_by；`unchanged` 清零失败计数。幂等指纹扩为 (doc_id, evidence, result, new_body)。
 - 契约测试 26/26 全绿（含 ensureCol 幂等、changed 闭环、fetch_failed 语义、缺 new_body 拒绝）；csai 生产冒烟：kb_docs 新列已演进、know.health / kb_list 真库只读查询通过。
 - 遗留（进 L2）：正文换新后的「依赖该版本的候选/已发布卡标记需复验」尚未实现（依赖 knowledge_revisions 表族）；kb_import 与 revalidate 的向量重建仍是 best-effort 异步（失败已可见，未入待修复队列）。
+
+## 七、2026-09-16 学习专项 L1 实施回填（learning_episodes）
+
+- **`learning_episodes` 表上线**（幂等建表，见 2.1）：`UNIQUE(source_event_id, consumer_version)` + `biz_key` 部分唯一索引双去重，同一 episode 不覆写。
+- **C23 `know_episode_record`**（actor=reactor 专用）+ 事件 `know.episode.recorded` + 查询 Q16 `know_episode_list`。
+- **订阅落地**：`exec.run.completed` / `vuln.signal.confirmed` / `vuln.signal.rejected` / `task.finished` → episode（分类映射见 C23）；归属由宿主从事件信封注入（session_id 取 ctx，不采信 args）；FGS 快照引用取 task.finished payload 中宿主固定的快照（缺快照显式标记，不事后读当前图）。
+- 原 1.5 订阅表 `exec.run.completed → pb_outcome 自动回填`一行系未实现的旧设计表述，本次勘误废止（见该行注记）。
+- 契约测试：know 26→31 全绿（happy/actor 闸/六类 outcome/双去重含幂等表过期兜底/同键异参拒覆写/订阅回放含重复回放零记功）。

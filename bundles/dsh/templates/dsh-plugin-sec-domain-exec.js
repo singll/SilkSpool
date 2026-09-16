@@ -65,6 +65,10 @@ const OPT_DIR = '/opt/silkspool/dsh/opt'
 const DSH_BIN = process.env.SEC_DSH_BIN || '/opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/bin.js'
 const NODE_BIN = process.env.SEC_NODE_BIN || '/usr/local/node/bin/node'
 const MAX_WORKERS = 4
+// L1 证据发布限额（exec_evidence_publish，设计 §3.3）
+const EVIDENCE_MAX_FILE_BYTES = 64 * 1024 * 1024
+const EVIDENCE_MAX_TOTAL_BYTES = 256 * 1024 * 1024
+const EVIDENCE_STABLE_MS = 120
 
 export const EXEC_MANIFEST = {
   domain: 'exec',
@@ -162,6 +166,24 @@ export const EXEC_MANIFEST = {
       agent_note: '机器通道：xray webhook 原始 flow 落盘（不向模型注册）。',
       deprecated: false,
     },
+    // C8（L1 学习专项，2026-09-16）：证据发布——worker staging → 宿主校验 run 归属 →
+    // 复制到服务端可见 results/<run_id>/ 并生成 manifest+SHA-256（设计 §3.3）。
+    exec_evidence_publish: {
+      actor: ['system'],
+      schema: schema({
+        run_id: str({ pattern: '^[rw][a-z0-9]+$', minLength: 3 }),
+        note: str(),
+      }, ['run_id']),
+      // 自然键 run_id：发布是一次性原子动作，发布后内容冻结；重复发布 = 幂等回放（不覆盖已发布证据）。
+      idempotent: 'natural',
+      idempotent_natural: ['run_id'],
+      events: ['exec.evidence.published'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 120000,
+      agent_note: '（宿主收尾通道，actor=system，不向模型注册）把 results/<run_id>/staging/ 的 worker 暂存证据发布到服务端可见的 results/<run_id>/：校验 run 归属（meta.json）、路径穿越/软链硬链逃逸/类型/大小/写完校验，安全文件句柄读取，逐文件 SHA-256，原子发布 evidence-manifest.json。发布后 staging 清空、内容冻结；重复调用幂等回放。',
+      deprecated: false,
+    },
   },
   queries: {
     exec_grep_result: {
@@ -204,6 +226,7 @@ export const EXEC_MANIFEST = {
     'exec.worker.finished': { payload: { type: 'object' }, redact: [] },
     'exec.flow.appended': { payload: { type: 'object' }, redact: [] },
     'exec.import.completed': { payload: { type: 'object' }, redact: [] },
+    'exec.evidence.published': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     // QPS cap 在 acquireQpsToken 中每次对齐 loadScope 的 rate_limit_qps。
@@ -860,6 +883,100 @@ function makeHandlers(opts) {
         data: { flow_file: flowFile, host, ok: true },
         events: [{ name: 'exec.flow.appended', payload: { flow_file: flowFile, host, title: payload.title || '' } }],
         after: { flow_file: flowFile },
+      }
+    },
+    // C8（L1）：证据发布。staging=results/<run_id>/staging/（worker 暂存，不受信）→
+    // 校验+逐文件 SHA-256 → 复制到 results/<run_id>/（宿主核验区）→ 原子发布
+    // evidence-manifest.json → 清空 staging。安全检查全集：路径穿越、软链（拒）、
+    // 硬链逃逸（nlink>1 拒）、类型（仅常规文件）、大小（单文件/总量上限）、写完校验
+    // （双 stat 稳定窗）、realpath 容器内断言；读取用 O_NOFOLLOW 安全句柄（防检查后替换）。
+    exec_evidence_publish: async (args, repo) => {
+      const runId = String(args.run_id)
+      const runDir = repo.runDirOf(runId)
+      if (!runDir) throwErr('E_NOT_FOUND', `run 不存在: ${runId}`, '核对 run_id（exec_manifest_list / results 目录）')
+      // run 归属校验：meta.json 必须存在且 run_id 一致（ staging 归属真实 run 的宿主裁决）
+      let meta = null
+      try { meta = JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8')) } catch { meta = null }
+      if (!meta || meta.run_id !== runId) {
+        throwErr('E_EXEC_RUN_MISMATCH', `run ${runId} 归属校验失败（meta.json 缺失或 run_id 不符）`, 'staging 证据只能挂在真实存在的 run 上；核对 run_id', false)
+      }
+      const stagingDir = path.join(runDir, 'staging')
+      const stagingReal = fs.existsSync(stagingDir) ? fs.realpathSync(stagingDir) : null
+      if (!stagingReal || !stagingReal.startsWith(fs.realpathSync(runDir) + path.sep)) {
+        throwErr('E_EXEC_STAGING_EMPTY', `run ${runId} 无 staging 暂存目录`, 'worker 先把证据写入 results/<run_id>/staging/ 再发布', false)
+      }
+      // 收集候选文件（拒绝目录穿越符号链接：walk 全程 lstat，不跟随 symlink）
+      const candidates = []
+      const walk = (dir) => {
+        const entries = fs.readdirSync(dir, { withFileTypes: true })
+        for (const e of entries) {
+          const p = path.join(dir, e.name)
+          if (e.isSymbolicLink()) throwErr('E_EXEC_EVIDENCE_UNSAFE', `staging 含符号链接: ${path.relative(stagingDir, p)}`, '符号链接可能逃逸暂存区，移除后重试', false)
+          if (e.isDirectory()) { walk(p); continue }
+          if (!e.isFile()) throwErr('E_EXEC_EVIDENCE_UNSAFE', `staging 含非常规文件: ${path.relative(stagingDir, p)}`, '只允许常规文件（禁 socket/fifo/设备）', false)
+          candidates.push(p)
+        }
+      }
+      try { walk(stagingDir) } catch (e) {
+        if (e && e.code && String(e.code).startsWith('E_')) throw e
+        throwErr('E_EXEC_STAGING_EMPTY', `staging 读取失败: ${e?.message}`, '检查 staging 目录权限', false)
+      }
+      if (!candidates.length) throwErr('E_EXEC_STAGING_EMPTY', `run ${runId} staging 为空`, 'worker 先把证据写入 results/<run_id>/staging/ 再发布', false)
+
+      const files = []
+      let totalBytes = 0
+      for (const abs of candidates) {
+        const rel = path.relative(stagingDir, abs)
+        if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throwErr('E_EXEC_EVIDENCE_UNSAFE', `路径穿越: ${rel}`, 'staging 文件必须位于暂存区内', false)
+        const st1 = fs.statSync(abs)
+        if (st1.nlink > 1) throwErr('E_EXEC_EVIDENCE_UNSAFE', `硬链逃逸嫌疑: ${rel}（nlink=${st1.nlink}）`, '证据文件不得有额外硬链', false)
+        if (st1.size > EVIDENCE_MAX_FILE_BYTES) throwErr('E_EXEC_EVIDENCE_TOO_LARGE', `文件超限: ${rel}（${st1.size}B > ${EVIDENCE_MAX_FILE_BYTES}B）`, '拆分或裁剪证据文件', false)
+        totalBytes += st1.size
+        if (totalBytes > EVIDENCE_MAX_TOTAL_BYTES) throwErr('E_EXEC_EVIDENCE_TOO_LARGE', `证据总量超限（>${EVIDENCE_MAX_TOTAL_BYTES}B）`, '拆分多次 run 或裁剪证据', false)
+        // realpath 容器内断言（防绑定挂载/逃逸）
+        const real = fs.realpathSync(abs)
+        if (!real.startsWith(stagingReal + path.sep)) throwErr('E_EXEC_EVIDENCE_UNSAFE', `realpath 逃逸: ${rel}`, '证据文件必须位于暂存区内', false)
+        // 写完校验：双 stat 稳定窗内 size/mtime 不变（仍在写入 → retryable 拒绝）
+        await new Promise((r) => setTimeout(r, EVIDENCE_STABLE_MS))
+        const st2 = fs.statSync(abs)
+        if (st2.size !== st1.size || st2.mtimeMs !== st1.mtimeMs) {
+          throwErr('E_EXEC_EVIDENCE_UNFINISHED', `文件仍在写入: ${rel}`, '等待写入完成后重试发布', true)
+        }
+        // 安全文件句柄读取（O_NOFOLLOW + fstat 复检，防"先检查路径、再被换掉"）
+        const fd = fs.openSync(abs, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+        let buf
+        try {
+          const fst = fs.fstatSync(fd)
+          if (!fst.isFile() || fst.size !== st1.size) throwErr('E_EXEC_EVIDENCE_UNSAFE', `句柄复检失败: ${rel}`, '文件在检查后被替换，重试发布', true)
+          buf = fs.readFileSync(fd)
+        } finally { fs.closeSync(fd) }
+        const sha256 = crypto.createHash('sha256').update(buf).digest('hex')
+        // 复制到宿主核验区（tmp+rename 原子；目标子目录按需建）
+        const dest = path.join(runDir, rel)
+        fs.mkdirSync(path.dirname(dest), { recursive: true })
+        const tmp = path.join(runDir, `.publish-${crypto.randomBytes(4).toString('hex')}.tmp`)
+        fs.writeFileSync(tmp, buf)
+        fs.renameSync(tmp, dest)
+        // 写完校验（副本哈希必须等于源哈希）
+        const copied = crypto.createHash('sha256').update(fs.readFileSync(dest)).digest('hex')
+        if (copied !== sha256) throwErr('E_EXEC_EVIDENCE_UNSAFE', `副本校验失败: ${rel}`, '存储异常，重试发布', true)
+        files.push({ path: rel, size: buf.length, sha256 })
+      }
+      files.sort((a, b) => a.path.localeCompare(b.path))
+      const manifest = { schema_version: 1, run_id: runId, program_id: meta.program_id || null, published_at: Date.now(), note: args.note || null, files }
+      const digest = crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
+      manifest.digest = digest
+      // 原子发布清单（最后一步：清单落地即发布完成；崩溃残留的已复制文件可按清单对账清理）
+      const manifestPath = path.join(runDir, 'evidence-manifest.json')
+      fs.writeFileSync(`${manifestPath}.tmp`, JSON.stringify(manifest, null, 1) + '\n')
+      fs.renameSync(`${manifestPath}.tmp`, manifestPath)
+      // 发布完成 → 清空 staging（已登记文件的对账清理；半落盘残留由 retention 兜底）
+      for (const abs of candidates) { try { fs.unlinkSync(abs) } catch { /* noop */ } }
+      try { fs.rmSync(stagingDir, { recursive: true, force: true }) } catch { /* noop */ }
+      return {
+        data: { run_id: runId, files: files.length, bytes: totalBytes, manifest: `results/${runId}/evidence-manifest.json`, digest },
+        events: [{ name: 'exec.evidence.published', payload: { run_id: runId, program_id: meta.program_id || null, files: files.length, bytes: totalBytes, digest } }],
+        after: { run_id: runId, files: files.length },
       }
     },
   }

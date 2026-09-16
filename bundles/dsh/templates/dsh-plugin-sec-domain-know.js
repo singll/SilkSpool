@@ -68,6 +68,10 @@ const bool = () => ({ type: 'boolean' })
 const EXP_CONFIDENCE = ['high', 'medium', 'low']
 const EXP_VERDICT = ['useful', 'adopted', 'wrong', 'outdated', 'validated']
 const PB_OUTCOME = ['win', 'loss']
+// L1（设计 §3.2）：学习 episode 六类结果分类（不替换 ledger 六态，另建有版本映射——EPISODE_CONSUMER_VERSION）
+const EPISODE_OUTCOMES = ['confirmed', 'valid_clean', 'inapplicable', 'blocked_auth', 'infra_error', 'inconclusive']
+const EPISODE_CREDIBILITY = ['machine', 'model-proposed', 'independently-verified', 'human-reviewed', 'vendor-confirmed']
+const EPISODE_CONSUMER_VERSION = 'episode-v1'
 
 export const KNOW_MANIFEST = {
   domain: 'know',
@@ -75,7 +79,7 @@ export const KNOW_MANIFEST = {
   service: 'secDomain.know',
   description: '知识六仓（经验卡/文献/先验规程/漏洞卡/收割/体检——换目标也有用的可迁移方法论，目标事实归 fact 域）',
   owns: {
-    tables: ['exp_cards', 'exp_embeddings', 'exp_feedback', 'exp_cards_archive', 'kb_docs', 'kb_fts', 'kb_embeddings', 'kb_docs_archive', 'playbooks'],
+    tables: ['exp_cards', 'exp_embeddings', 'exp_feedback', 'exp_cards_archive', 'kb_docs', 'kb_fts', 'kb_embeddings', 'kb_docs_archive', 'playbooks', 'learning_episodes'],
     files: ['data/rules/', 'data/vulncards/', 'data/harvest/', 'data/events/know.jsonl'],
   },
   commands: {
@@ -408,6 +412,44 @@ export const KNOW_MANIFEST = {
       agent_note: '归档表 90 天硬删（memcore sweep 经此命令替代 v4 裸 DELETE）。',
       deprecated: false,
     },
+    // C23（L1 学习专项，2026-09-16，设计 §3.1/§6.3）：执行学习记录落账。reactor 专用——
+    // 由订阅宿主从事件信封注入归属（不采信模型自填归属）；同一 episode 不覆写。
+    know_episode_record: {
+      actor: ['reactor'],
+      schema: schema({
+        source_event_id: str({ minLength: 1 }),
+        source_event_name: str({ minLength: 1 }),
+        consumer_version: str({ minLength: 1 }),
+        outcome: en(EPISODE_OUTCOMES),
+        reason_code: str(),
+        program_id: str(),
+        task_id: int(),
+        exec_run_id: str(),
+        attempt_id: str(),
+        card_id: str(),
+        card_version: str(),
+        model_id: str(),
+        evidence_refs: { type: 'array', items: { type: 'string' } },
+        fgs_snapshot_hash: str(),
+        fgs_snapshot_summary: str(),
+        fgs_snapshot_path: str(),
+        request_count: int(),
+        token_count: int(),
+        duration_ms: int(),
+        source_credibility: en(EPISODE_CREDIBILITY),
+        supersedes: str(),
+        observed_at: int(),
+        context: { type: 'object' },
+      }, ['source_event_id', 'source_event_name', 'consumer_version', 'outcome']),
+      idempotent: 'natural',
+      idempotent_natural: ['source_event_id', 'consumer_version'],
+      events: ['know.episode.recorded'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '（reactor 专用，不向模型注册）执行学习 episode 落账：归属由宿主从真实事件信封注入；六类结果分类（confirmed/valid_clean/inapplicable/blocked_auth/infra_error/inconclusive）；(source_event_id, consumer_version) + 业务归因双唯一去重，重复回放不重复记功；同一 episode 不覆写，修正走 supersedes 新记录。',
+      deprecated: false,
+    },
   },
   queries: {
     exp_search: {
@@ -521,6 +563,18 @@ export const KNOW_MANIFEST = {
       predicates: [],
       agent_note: '知识覆盖缺口（漏洞卡 × 攻面 TAXONOMY 映射缺口 + 规程库覆盖统计）。',
     },
+    // Q16（L1）：学习 episode 只读投影
+    know_episode_list: {
+      actor: ['model', 'dashboard', 'human', 'system'],
+      params: schema({
+        program_id: str({ default: '' }),
+        outcome: en([...EPISODE_OUTCOMES, ''], { default: '' }),
+        limit: int({ minimum: 1, maximum: 500 }),
+        offset: int({ minimum: 0 }),
+      }, []),
+      predicates: [],
+      agent_note: '执行学习记录投影：来源事件/归属/六类结果/证据与 FGS 快照引用（按时间倒序）。复盘"学到了什么、依据是什么"用。',
+    },
   },
   events: {
     'know.exp.stored': { payload: { type: 'object' }, redact: [] },
@@ -544,11 +598,17 @@ export const KNOW_MANIFEST = {
     'know.vc.deprecated': { payload: { type: 'object' }, redact: [] },
     'know.harvest.ingested': { payload: { type: 'object' }, redact: [] },
     'know.adopted': { payload: { type: 'object' }, redact: [] },
+    'know.episode.recorded': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'fact.bb.published': { handler: 'onFactBbPublished', mode: 'async', as: 'reactor' },
     'fact.expired': { handler: 'onFactArchived', mode: 'async', as: 'reactor' },
     'fact.archived': { handler: 'onFactArchived', mode: 'async', as: 'reactor' },
+    // L1（设计 §3）：执行学习记录——消费执行/判定/收尾事件，宿主注入归属落 episode
+    'exec.run.completed': { handler: 'onExecRunCompleted', mode: 'async', as: 'reactor' },
+    'vuln.signal.confirmed': { handler: 'onVulnVerdict', mode: 'async', as: 'reactor' },
+    'vuln.signal.rejected': { handler: 'onVulnVerdict', mode: 'async', as: 'reactor' },
+    'task.finished': { handler: 'onTaskFinished', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -1101,6 +1161,57 @@ function makeHandlers(opts) {
       const kbPurged = repo.purgeKbArchives(args.before_ts)
       return { data: { purged: expPurged + kbPurged, exp_purged: expPurged, kb_purged: kbPurged }, events: [], before: null, after: { purged: expPurged + kbPurged } }
     },
+
+    // C23（L1）：执行学习 episode 落账。归属字段（session_id 由 ctx 宿主注入，不采信 args 自填；
+    // program/run/task 等由订阅宿主从可信事件 payload 提取——reactor actor 物理闸保证模型不可直调）。
+    // 双去重：总线自然键（source_event_id+consumer_version）+ 表级 UNIQUE（保留期覆盖学习记录，
+    // 不依赖总线 7 天幂等缓存）+ biz_key 业务归因部分唯一索引。命中即 duplicate 返回，不发事件不记功。
+    know_episode_record: async (args, repo, ctx) => {
+      const episodeId = `ep_${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}`
+      const bizKey = args.exec_run_id
+        ? [args.program_id || '', args.source_event_name, args.exec_run_id, args.attempt_id || '', args.card_version || ''].join('|')
+        : null
+      const row = {
+        episode_id: episodeId,
+        schema_version: 1,
+        source_event_id: String(args.source_event_id),
+        source_event_name: String(args.source_event_name),
+        consumer_version: String(args.consumer_version),
+        program_id: args.program_id || null,
+        task_id: args.task_id ?? null,
+        exec_run_id: args.exec_run_id || null,
+        attempt_id: args.attempt_id || null,
+        session_id: (ctx && ctx.session_id) || null,
+        card_id: args.card_id || null,
+        card_version: args.card_version !== undefined && args.card_version !== null ? String(args.card_version) : null,
+        model_id: args.model_id || null,
+        outcome: args.outcome,
+        reason_code: args.reason_code || null,
+        evidence_refs: Array.isArray(args.evidence_refs) ? JSON.stringify(args.evidence_refs.slice(0, 20)) : null,
+        fgs_snapshot_hash: args.fgs_snapshot_hash || null,
+        fgs_snapshot_summary: args.fgs_snapshot_summary ? String(args.fgs_snapshot_summary).slice(0, 300) : null,
+        fgs_snapshot_path: args.fgs_snapshot_path || null,
+        request_count: args.request_count ?? null,
+        token_count: args.token_count ?? null,
+        duration_ms: args.duration_ms ?? null,
+        source_credibility: args.source_credibility || 'machine',
+        supersedes: args.supersedes || null,
+        context_json: args.context && typeof args.context === 'object' ? JSON.stringify(args.context).slice(0, 4000) : null,
+        biz_key: bizKey,
+        observed_at: args.observed_at ?? Date.now(),
+        created_at: Date.now(),
+      }
+      const r = repo.insertEpisode(row)
+      if (!r.created) {
+        // 重复回放/业务归因命中：零重复记功，不发事件
+        return { data: { episode_id: r.episode_id, recorded: false, duplicate: r.duplicate } }
+      }
+      return {
+        data: { episode_id: episodeId, recorded: true, outcome: args.outcome },
+        events: [{ name: 'know.episode.recorded', payload: { episode_id: episodeId, source_event_id: row.source_event_id, source_event_name: row.source_event_name, outcome: args.outcome, program_id: row.program_id, exec_run_id: row.exec_run_id } }],
+        after: { episode_id: episodeId, outcome: args.outcome },
+      }
+    },
   }
 
   const queries = {
@@ -1244,11 +1355,121 @@ function makeHandlers(opts) {
       if (cached && !args.refresh) return cached
       return { generated_at: Date.now(), cards_total: 0, taxonomy_total: 25, uncovered: [], coverage: [], note: 'knowledge-coverage.py 未生成缓存；refresh 需纯计算脚本' }
     },
+    // Q16（L1）：学习 episode 投影（同 where 构造器保证 rows/total 口径一致）
+    know_episode_list: async (args, repo) => {
+      return repo.listEpisodes({ program_id: args.program_id || '', outcome: args.outcome || '', limit: args.limit ?? 50, offset: args.offset ?? 0 })
+    },
+  }
+
+  // L1：从 evidence_ref 提取 run token（兼容 run_id: 前缀 / run_ 历史形态）
+  function runTokenOf(ref) {
+    const m = String(ref || '').match(/(?:run_id:)?([rw][a-z0-9]{12,})/)
+    return m ? m[1] : null
+  }
+
+  // L1：episode 落账通道（actor=reactor；session_id 由事件信封注入——归属不采信模型自填）。
+  // 域名命令天然幂等/去重；返回 ok:false 让总线把失败放进可见重试/死信链。
+  async function recordEpisode(args, envelope) {
+    if (!dispatchRef) return { ok: false, error: { code: 'E_BACKEND_UNAVAILABLE', message: 'no dispatch ref' } }
+    let r
+    try {
+      r = await dispatchRef('know', 'episode_record', args, { actor: 'reactor', session_id: (envelope && envelope.session_id) || null, cause: envelope })
+    } catch (e) {
+      return { ok: false, error: { code: e?.code || 'E_INTERNAL', message: String(e?.message || e) } }
+    }
+    if (r && r.ok) return { ok: true, data: r.data }
+    return { ok: false, error: { code: r?.error?.code || 'E_INTERNAL', message: r?.error?.message || 'episode_record 失败' } }
   }
 
   const subscribers = {
     onFactBbPublished: async (envelope) => ({ ok: true, data: { skipped: true } }),
     onFactArchived: async (envelope) => ({ ok: true, data: { skipped: true } }),
+
+    // ---- L1（设计 §3）：执行学习记录订阅。归属全部取自事件信封/payload（可信生产者），
+    // 失败返回 ok:false 进入总线可见重试/死信链；重复投递由 know_episode_record 双去重吸收。----
+
+    // exec.run.completed → run 级 episode：exit≠0/错误=infra_error；exit 0 无判定=inconclusive
+    //（一次 run 可能按 proposal kind 发多条 run.completed——biz_key 去重保证一轮只记一集）
+    onExecRunCompleted: async (envelope) => {
+      const p = envelope?.payload || {}
+      if (!p.run_id) return { ok: true, data: { skipped: true } }
+      const exitCode = p.exit_code ?? null
+      const outcome = exitCode === 0 ? 'inconclusive' : 'infra_error'
+      const reason = exitCode === 0 ? 'run_ok_no_verdict' : (p.error ? 'run_error' : `exit_${exitCode ?? 'null'}`)
+      return recordEpisode({
+        source_event_id: envelope.id,
+        source_event_name: 'exec.run.completed',
+        consumer_version: EPISODE_CONSUMER_VERSION,
+        outcome,
+        reason_code: reason,
+        program_id: p.program_id || undefined,
+        exec_run_id: p.run_id,
+        duration_ms: p.duration_ms ?? undefined,
+        evidence_refs: [p.parse_proposal && p.parse_proposal.proposal_file ? p.parse_proposal.proposal_file : `results/${p.run_id}/`],
+        observed_at: envelope.ts,
+        context: { tool: p.tool || null, stage: p.stage || null, risk: p.risk || null, sandboxed: p.sandboxed ?? null },
+      }, envelope)
+    },
+
+    // vuln 判定事件 → 判定级 episode：confirmed → confirmed；rejected(false_positive/dup/ignored) → inconclusive
+    //（FALSE_POSITIVE 是修正标签不是 valid_clean，§3.2；attempt 粒度挂 finding id，同 run 多 finding 不误去重）
+    onVulnVerdict: async (envelope) => {
+      const p = envelope?.payload || {}
+      if (!p.finding_id) return { ok: true, data: { skipped: true } }
+      const name = String(envelope.name || '')
+      const runId = runTokenOf(p.evidence_ref)
+      let outcome = 'inconclusive'
+      let reason = 'verdict'
+      if (name === 'vuln.signal.confirmed') { outcome = 'confirmed'; reason = 'vuln_confirm' }
+      else { reason = `vuln_reject_${p.verdict || 'unknown'}` }
+      return recordEpisode({
+        source_event_id: envelope.id,
+        source_event_name: name,
+        consumer_version: EPISODE_CONSUMER_VERSION,
+        outcome,
+        reason_code: reason,
+        exec_run_id: runId || undefined,
+        attempt_id: `finding:${p.finding_id}`,
+        evidence_refs: p.evidence_ref ? [String(p.evidence_ref).slice(0, 300)] : undefined,
+        source_credibility: envelope.actor === 'model' ? 'model-proposed' : 'machine',
+        observed_at: envelope.ts,
+        context: { finding_id: p.finding_id, verdict: p.verdict || null, vuln_type: p.vuln_type || null },
+      }, envelope)
+    },
+
+    // task.finished → 任务级 episode：FGS 快照引用取事件 payload 中宿主已固定的快照
+    //（绝不事后读"当前图"；payload 无快照即显式缺快照，归属照常）
+    onTaskFinished: async (envelope) => {
+      const p = envelope?.payload || {}
+      if (!p.task_id) return { ok: true, data: { skipped: true } }
+      let outcome = 'inconclusive'
+      let reason = 'task_done'
+      if (p.truth && p.truth.rejected) { outcome = 'inconclusive'; reason = 'truth_rejected' }
+      else if (p.ok === true) { outcome = 'inconclusive'; reason = 'task_done' }
+      else if (p.outcome === 'crash') { outcome = 'infra_error'; reason = 'crash' }
+      else if (p.guard && Array.isArray(p.guard.missing) && p.guard.missing.length) { outcome = 'inconclusive'; reason = 'process_guard_missing' }
+      else { outcome = 'infra_error'; reason = 'task_failed' }
+      const snap = p.fgs_snapshot && typeof p.fgs_snapshot === 'object' ? p.fgs_snapshot : null
+      return recordEpisode({
+        source_event_id: envelope.id,
+        source_event_name: 'task.finished',
+        consumer_version: EPISODE_CONSUMER_VERSION,
+        outcome,
+        reason_code: reason,
+        program_id: p.program_id || undefined,
+        task_id: Number(p.task_id),
+        exec_run_id: p.run_id || undefined,
+        fgs_snapshot_hash: snap ? snap.hash : undefined,
+        fgs_snapshot_summary: snap ? snap.summary : undefined,
+        fgs_snapshot_path: snap ? snap.path : undefined,
+        observed_at: envelope.ts,
+        context: {
+          cause: p.cause || null, outcome_raw: p.outcome || null, ok: p.ok ?? null,
+          guard_missing: (p.guard && p.guard.missing) || [],
+          fgs_snapshot_missing: !snap,
+        },
+      }, envelope)
+    },
   }
 
   return { ...commands, queries, invariants, subscribers }

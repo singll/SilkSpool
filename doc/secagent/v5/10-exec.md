@@ -1,7 +1,7 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：`exec/1`
-> 依赖：订阅 `scope.rules.changed`（QPS 即时生效）、`approval.approved`（tool-intrusive 白名单放行后重试自然通过，无需显式订阅——白名单在 scope 域数据里）；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal）、`exec.flow.appended`（vuln 域）、`exec.worker.spawned/.finished`（task 域）、`exec.import.completed`（endpoint/vuln 域）
+> 依赖：订阅 `scope.rules.changed`（QPS 即时生效）、`approval.approved`（tool-intrusive 白名单放行后重试自然通过，无需显式订阅——白名单在 scope 域数据里）；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.flow.appended`（vuln 域）、`exec.worker.spawned/.finished`（task 域）、`exec.import.completed`（endpoint/vuln 域）、`exec.evidence.published`（证据发布留痕）
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
 
@@ -35,6 +35,7 @@
 | `exec_report_bad_proxy` | 坏代理上报（经总线 dispatch 调 proxy 域命令） | model, script, dashboard | 自然键 `sha1(proxy_url)` | （proxy 域发） |
 | `exec_intel_hunt` | 指纹命中 → 本地 nuclei 模板检索 +（可选）委托 task 域建 N-day 候选任务 | model, dashboard | 显式键 | （task 域发 `task.created`） |
 | `exec_flow_append` | 机器通道：xray webhook 原始 flow 落盘 | webhook | 自动指纹 `sha1(源 payload)` | `exec.flow.appended` |
+| `exec_evidence_publish` | 证据发布：worker staging → 宿主校验 run 归属 → 复制进 `results/<run_id>/` + 生成 manifest+SHA-256（设计 §3.3，L1） | **system**（宿主收尾专用通道，模型不可见） | 自然键 `run_id`（发布一次性、内容冻结，重复=回放） | `exec.evidence.published` |
 
 > `exec_intel_hunt` 的"建任务"副作用**全部经总线 `dispatch('task', ...)` 走 task 域命令全管线**（schema/不变量/事务/审计一个不少）——exec 域不 import task 域模块、不直调其函数、不写 tasks 表。这是域间协作的合法形态②（同步命令调用，需要返回 task_id / 强顺序），与形态①（事件订阅，异步解耦）并存；被禁止的只是 import 他域内部函数或绕网关写。
 > 任务链展开（原 v4 dashboard-rpc taskChain）统一归 **task 域 `task_chain`**（05-task.md C9）——它的事务主体是写 task 域 owned 的 tasks 表；本域只保留能力图**只读查询** `exec_plan_chain`（§1.4），旧 `exec_task_chain` 名经总线别名指向 task_chain。
@@ -213,6 +214,32 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 行为：追加 `flows/xray-{北京日期}.jsonl` → 发布 `exec.flow.appended`（payload: flow_file/host/title）→ **vuln 域订阅**后调 `vuln_register_candidate`（actor=webhook，标题「{host} 被动审计候选：{title}」——v4.x 直调 addFinding 的归零路径）。幂等：自动指纹 `sha1(payload JSON)`。
 **边界论证**：flows/ 是 exec owns（流量总线原始记录）；findings 候选是 vuln owns。接收器只做"收包→落盘→发事件"，入库判定（完整性闸门/噪声归位）全部在 vuln 域命令里。
 
+#### 1.3.8 `exec_evidence_publish`（证据发布，宿主收尾通道；L1 2026-09-16 上线）
+
+**语义**：设计 §3.3 第一步——worker 只写自己的 run staging（`results/<run_id>/staging/`，**不受信区**）；宿主经本命令校验真实 run 归属后，把暂存证据复制到服务端可见的 `results/<run_id>/`（核验区），生成 `evidence-manifest.json`（逐文件 SHA-256 + 整体 digest）。**staging 原文对 vuln_confirm/vuln_evidence_attach 不可见**——下游只认已发布清单。**actor=system 专用**（模型/dashboard 物理不可调，E_ACTOR_FORBIDDEN）。
+
+**参数 schema**（`additionalProperties: false`）：
+
+| 参数 | 类型 | 必填 | 校验 |
+|---|---|---|---|
+| `run_id` | string | 是 | `^[rw][a-z0-9]+$` |
+| `note` | string | 否 | 发布说明（进清单 note 字段） |
+
+**处理顺序**（fail-closed，任一不满足即整批拒）：
+
+1. **run 归属校验**：`results/<run_id>/` 存在（E_NOT_FOUND）且 `meta.json` 的 `run_id` 与请求一致（E_EXEC_RUN_MISMATCH）——staging 只能挂在真实 run 上。
+2. **staging 存在且非空**：`results/<run_id>/staging/`，空 → E_EXEC_STAGING_EMPTY。
+3. **逐文件安全检查**：walk 全程 lstat 不跟随链接——符号链接拒（E_EXEC_EVIDENCE_UNSAFE）；非常规文件（socket/fifo/设备）拒；硬链逃逸嫌疑（nlink>1）拒；路径穿越（`..`/绝对路径/realpath 跑出 staging 容器）拒；单文件 >64MB / 总量 >256MB 拒（E_EXEC_EVIDENCE_TOO_LARGE）。
+4. **写完校验**：双 stat 稳定窗（120ms）内 size/mtime 不变的文件才接收；仍在写入 → E_EXEC_EVIDENCE_UNFINISHED（retryable）。
+5. **安全文件句柄读取**：`O_RDONLY|O_NOFOLLOW` 打开 + fstat 复检（防"先检查路径、再被换掉"），计算 SHA-256。
+6. **复制**：写入 `results/<run_id>/<相对路径>`（tmp+rename 原子），副本哈希与源二次比对。
+7. **原子发布清单**：`evidence-manifest.json`（tmp+rename）——`{schema_version, run_id, program_id, published_at, note, files:[{path,size,sha256}], digest=sha256(去 digest 字段的清单)}`；清单落地即发布完成，崩溃残留的已复制文件可按清单对账清理。
+8. 发布成功后清空 staging。
+
+**幂等**：自然键 `run_id`——发布是一次性原子动作，**已发布内容冻结**；同 run 重复调用 = 幂等回放首个结果（不覆盖、不重新校验）。
+**事件**：`exec.evidence.published`（payload `{run_id, program_id, files, bytes, digest}`）。
+**actor**：system（明确登记的宿主收尾通道；worker/模型产出的证据要可用，必须由宿主走此门）。
+
 ### 1.4 查询（读投影）逐个详述
 
 | 查询 | 参数 | 返回 | 说明 |
@@ -237,6 +264,7 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 | `exec.worker.finished` | worker 收尾（done/failed/killed） | `run_id, status, exit_code, duration_ms` | **强（sync）**——终态是 dedupe 真相的一部分；孤儿兜底由 task 域 reap 对账 |
 | `exec.flow.appended` | flow 落盘后 | `flow_file, host, title` | 弱（vuln 候选登记） |
 | `exec.import.completed` | burp 等导入落盘后 | `import_id, kind, records, hosts(≤20)` | 弱（endpoint/vuln 入库） |
+| `exec.evidence.published` | evidence_publish 清单原子发布后 | `run_id, program_id, files, bytes, digest` | 弱（留痕；下游 vuln 挂载只认清单文件本身） |
 
 全部事件按域追加 `data/events/exec.jsonl`（回放基础）。run.completed 为高频事件，**payload ≤ 2KB**（宪法 §八.5）——proposal 行本体不进 payload，落 proposal.json 文件 + 摘要（见下）。
 
@@ -303,6 +331,7 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 | `exec_intel_hunt` | component-vuln-intel：指纹命中后查本地 nuclei 模板库找 tech 相关的 N-day 模板/CVE。命中即自动产出一条 phase=vuln、priority=1 的 N-day 候选任务（普通 queued，非自动跑；tentative，验证附证据才 confirmed）。未绑定 program 时仅返回模板列表不建任务。 | 是 |
 | `exec_task_chain` | 一条 objective 自动展开为任务依赖链：能力图 BFS 凑链 + 反向剪枝到最小链，落成 parent 串联的 once 调度任务（前置未完成不派单，链式自动推进）。默认 have=["domains"]、want=findings（资产收集→存活→指纹→N-day）。链尾多为 active 扫描且会自动执行，仅对已授权 scope 使用。 | 是 |
 | `exec_flow_append` | （机器通道，不向模型注册）xray webhook 原始 flow 落盘。 | 否 |
+| `exec_evidence_publish` | （宿主收尾通道，不向模型注册）staging 证据校验+发布，见 1.3.8。 | 否 |
 | `exec_grep_result` | 在指定 run_id 的完整输出中按正则检索（大小写不敏感），返回匹配行（含行号与文件相对路径，最多 max 条，默认 50 上限 200）。 | 是 |
 | `exec_page_result` | 按行区间分页读取指定 run_id 的完整输出（offset 起始行 0 基，limit 行数上限 200）。 | 是 |
 | `exec_plan_chain` | 能力原语凑链：给定已拥有的能力（have）与想要的能力（want），按 manifest 的 requires/produces 做 BFS 图搜索，返回有序工具链。侦察阶段免手工记工具顺序。 | 是 |
@@ -404,6 +433,8 @@ sec bus replay --domain exec --since 1789000000000
 | `proposal.json` | 后处理 ③ 前 | 见 1.5.2 schema；无 parser 或 exit≠0 不生成 |
 | `worker.log` | worker 专用 | worker 全量输出（stdout+stderr 合流） |
 | `model-patch.yml` | worker 专用 | 任务级模型覆盖（provider/model） |
+| `staging/` | worker 运行期（L1） | **不受信暂存区**：worker/模型要发布的证据先落这里；只有 `exec_evidence_publish` 能把内容提升为可信 |
+| `evidence-manifest.json` | evidence_publish 收尾（L1） | 已发布证据清单：`{schema_version, run_id, program_id, published_at, note, files:[{path,size,sha256}], digest}`——下游（vuln 挂载）唯一可信依据 |
 
 run_id 形态：`r` + ts36 + 4 hex（CLI）/ `w` + ts36 + 4 hex（worker）。retention：results/ 30 天清理（retention.timer 既有职责，不动）。
 
@@ -632,3 +663,10 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 | 风险 | task `worker_recent` 查询失败时 dedupe 预检被跳过，极端情况下可重复 spawn；worker 并发上限仍兜底。 |
 | hook 判定 | parser 只写 proposal + 事件，由 asset/endpoint/vuln 域消费；合格。 |
 | 独立升级 | 支持单域替换；须与 scope、task、proxy、know 及三个 parser 消费域联测。 |
+
+## 六、2026-09-16 学习专项 L1 实施回填（证据发布）
+
+- 新增命令 `exec_evidence_publish`（1.3.8，actor=system）+ 事件 `exec.evidence.published`；`results/<run_id>/staging/` 不受信暂存区与 `evidence-manifest.json` 可信清单进入 2.1.2 数据模型。
+- 安全检查落地：run 归属（meta.json 一致性）、软链拒、硬链逃逸（nlink>1）拒、类型（仅常规文件）、单文件 64MB/总量 256MB、双 stat 写完校验（E_EXEC_EVIDENCE_UNFINISHED retryable）、O_NOFOLLOW 安全句柄 + fstat 复检、tmp+rename 原子复制与清单发布、副本哈希二次比对、发布后 staging 清空。
+- 幂等：自然键 run_id，发布内容冻结，重复调用回放。
+- 契约测试：exec 18→23 全绿（happy/actor 闸/软链+硬链+空 staging+不存在 run/写完校验/幂等回放冻结）。

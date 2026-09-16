@@ -17,7 +17,7 @@
 | cordis 服务名 | `secDomain.fgs`（`ctx.provide('secDomain.fgs')`） |
 | 插件包名 | `@silksec/sec-domain-fgs` |
 | 后端插件包名 | `@silksec/sec-backend-fgs-sqlite` |
-| owns（单写者声明） | 表：`fgs_nodes`。**不 owns 任何文件**——handoff 追加（appendFgsToHandoff）归 ledger 域、fact 沉淀（persistFgsFacts）归 fact 域，本域对二者只提供查询/事件（见 §1.5、§2.3） |
+| owns（单写者声明） | 表：`fgs_nodes`；文件：`data/fgs/snapshots/`（F9 快照，L1 新增）。handoff 追加（appendFgsToHandoff）归 ledger 域、fact 沉淀（persistFgsFacts）归 fact 域，本域对二者只提供查询/事件（见 §1.5、§2.3） |
 | 事件日志 | `data/events/fgs.jsonl` |
 | prompt_hint | manifest 字段：注入调度任务 prompt 的 FGS 使用说明模板（task 域调度器消费，见 05-task.md §2.3） |
 
@@ -42,6 +42,7 @@
 | F6 | `fgs_deprecate` | 任意态（含终态任务图）→ deprecated（误报/重复闭环落点） | model, dashboard, script | 自动指纹 | fgs.node.updated | ✅ |
 | F7 | `fgs_annotate` | content 增量合并 + score 调整（**不动状态**） | model | 自动指纹 | fgs.node.updated | ✅ |
 | F8 | `fgs_clear` | 清空某任务旧图（任务启动序列，调度器专用） | scheduler | 状态条件 | fgs.task.cleared | ❌ |
+| F9 | `fgs_snapshot` | 固定任务图快照（不可变文件 + sha256 + 摘要；episode 引用快照而非"当前图"） | reactor, scheduler, system | 自然键（task_id+run_id） | fgs.snapshot.pinned | ❌ |
 
 > \* F4 含 reactor：本域订阅 `task.finished(ok=false)` 后补记 failed 节点走域内 service（cause 链带源事件，宪法 §三）。
 
@@ -218,6 +219,15 @@
 
 **幂等**：状态条件（无残留即 removed:0）。**actor**：scheduler。**事件**：`fgs.task.cleared`（payload `{task_id, removed}`——铁律 6 命令必发事件；无订阅方，仅 jsonl 留痕）。**模型不可见**。
 
+#### F9 `fgs_snapshot`（宿主收尾快照，L1 2026-09-16 上线）
+
+**语义**（设计 §3.1）：`task_runs` 有保留上限、图会被下一轮 `fgs_clear` 重置——学习 episode 不能引用"当前图"（异步订阅时读图存在串到下一次运行的风险）。本命令把某任务当前图**固定**为不可变快照：节点按 id 排序 canonical 序列化 → sha256 → 原子落盘（tmp+rename）`data/fgs/snapshots/{task_id}-{run_id|ts}.json`。
+
+**参数表**：`task_id` integer ✅；`run_id` string（本轮 run，进文件名与幂等键）；`reason` string。
+**时机**：由宿主（task 域 task_finish/task_complete，actor=reactor）在收尾事件发布**前**调用；空图也落快照（nodes=0，调用方自判）。任务任何状态可调用（读已封存图合法；INV-F1 只约束写）。
+**幂等**：自然键（task_id+run_id）——同轮重放返回首个快照，**已固定内容不覆写**。
+**返回**：`{task_id, run_id, hash, path, nodes, summary}`。**事件**：`fgs.snapshot.pinned {task_id, run_id, hash, nodes}`。**actor**：reactor/scheduler/system。**模型不可见**。
+
 ### 1.4 查询逐个详述
 
 统一分页信封；**本域无跨对象可见域谓词**（图的可见性由 INV-F1 生命周期不变量承载：运行中任务的图可写、终态任务的图只读）。
@@ -236,6 +246,7 @@
 | `fgs.node.updated` | fgs_start / fgs_fail / fgs_block / fgs_deprecate / fgs_annotate | `{node_id, task_id, type, from: {status, score}, to: {status, score}, cause: "start"\|"fail"\|"block"\|"deprecate"\|"annotate", reason?}` |
 | `fgs.node.done` | fgs_complete | `{node_id, task_id, run_id, type, from: {status}, persist_eligible, content_head: {summary}}` |
 | `fgs.task.cleared` | fgs_clear | `{task_id, removed}` |
+| `fgs.snapshot.pinned` | fgs_snapshot | `{task_id, run_id, hash, nodes}` |
 
 payload 只含 ID 与判据快照（宪法 §八.1），不含行全量——订阅方需要详情自己 fgs_list。
 
@@ -363,7 +374,7 @@ curl -s http://127.0.0.1:3000/silksec-dashboard -H 'content-type: application/js
 
 索引：`idx_fgs_task(task_id, type, status)`（fgs_list/fgs_next 主路径）、`idx_fgs_run(run_id)`。
 
-**owner 声明**：fgs_nodes 唯 fgs 域可写；findings.fgs_node_id 列由 vuln 域写（引用本域 id，弱外键）；本域不 owns 任何文件。
+**owner 声明**：fgs_nodes 唯 fgs 域可写；findings.fgs_node_id 列由 vuln 域写（引用本域 id，弱外键）；文件 owns 仅 `data/fgs/snapshots/`（F9 快照目录，tmp+rename 原子落盘，落盘后不可变）。
 
 ### 2.2 状态机与不变量
 
@@ -524,3 +535,9 @@ deleteNodesByTask(taskId) → n                              // fgs_clear
 | 静默错误 | 补记链的 fgs_add/fgs_fail 失败会记录日志并保留事件重试；无主流程吞错。 |
 | hook 判定 | 无直写；fact/ledger 均通过查询/命令协作。 |
 | 独立升级 | 支持单域替换；须与 task、fact、ledger 联测。 |
+
+## 六、2026-09-16 学习专项 L1 实施回填（F9 快照）
+
+- 新增命令 `fgs_snapshot`（reactor/scheduler/system）+ 事件 `fgs.snapshot.pinned` + owns.files 增 `data/fgs/snapshots/`。
+- 宿主（task 域 task_finish/task_complete）在收尾事件发布前固定快照；快照文件不可变（自然键 task_id+run_id，重放不覆写）；空图落 nodes=0 快照。
+- 契约测试：fgs 19→21 全绿（快照落盘+不可变+事件 / actor 闸+同键重放冻结）。
