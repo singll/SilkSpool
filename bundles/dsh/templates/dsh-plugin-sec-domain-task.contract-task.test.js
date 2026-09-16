@@ -51,6 +51,96 @@ function readEvents(dir) {
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
 
+test('周期任务声明本轮完成不进入永久完结审批；既有审批只留确认记录', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '每日完成确认', schedule: { kind: 'interval', every_seconds: 86400 } }, { actor: 'model' })
+  const id = c.data.task_id
+  const before = bus._internal.db().prepare('SELECT * FROM tasks WHERE id=?').get(id)
+  const submit = await bus.dispatch('task', 'submit_complete', { task_id: id, summary: '本轮工作完成，所有检查步骤与执行证据已经保存，交接记录已经写入。' }, { actor: 'model' })
+  assert.equal(submit.ok, true, submit.error?.message)
+  assert.equal(submit.data.scheduled, true)
+  const approve = await bus.dispatch('task', 'complete', { task_id: id, request_id: 900, summary: '确认本轮结果' }, { actor: 'approval' })
+  assert.equal(approve.ok, true)
+  const after = bus._internal.db().prepare('SELECT * FROM tasks WHERE id=?').get(id)
+  assert.equal(after.status, before.status)
+  assert.equal(after.next_run_at, before.next_run_at)
+})
+
+test('周期依赖只接受本周期成功，前置回 queued 后仍能放行下一阶段', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const now = Date.now()
+  const parent = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '链侦察', schedule: { kind: 'interval', every_seconds: 86400 } }, { actor: 'model' })
+  const pid = parent.data.task_id
+  const child = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '链验证', parent_id: pid, schedule: { kind: 'interval', every_seconds: 86400 } }, { actor: 'model' })
+  const cid = child.data.task_id
+  db.prepare('UPDATE tasks SET run_at=?,next_run_at=? WHERE id IN (?,?)').run(now-10000,now-10000,pid,cid)
+  const first = await bus.dispatch('task', 'claim', { now }, { actor: 'scheduler' })
+  assert.deepEqual(first.data.claimed, [pid])
+  const finished = await bus.dispatch('task', 'finish', { task_id: pid, run_id: 'parent-current', outcome: 'done' }, { actor: 'scheduler' })
+  assert.equal(finished.data.status, 'queued')
+  const second = await bus.dispatch('task', 'claim', { now: Date.now()+1000 }, { actor: 'scheduler' })
+  assert.deepEqual(second.data.claimed, [cid])
+  await bus.dispatch('task', 'finish', { task_id: cid, run_id: 'child-current', outcome: 'done' }, { actor: 'scheduler' })
+  db.prepare('UPDATE tasks SET next_run_at=? WHERE id=?').run(now-10000,cid)
+  const tomorrow = await bus.dispatch('task', 'claim', { now: now+86400000 }, { actor: 'scheduler' })
+  assert.ok(!tomorrow.data.claimed.includes(cid), '昨天的成功不能放行今天的下一阶段')
+})
+
+test('2 小时预算 worker 在 75 分钟回收检查时仍然存活', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '长预算执行', schedule: { kind: 'interval', every_seconds: 86400 } }, { actor: 'model' })
+  db.prepare("UPDATE tasks SET status='running',started_at=?,budget_timeout_sec=7200 WHERE id=?").run(Date.now()-4800000,c.data.task_id)
+  const r = await bus.dispatch('task', 'reap', { max_age: 4500000, pid_alive: true }, { actor: 'scheduler' })
+  assert.equal(r.data.reaped, 0)
+  db.prepare("UPDATE tasks SET started_at=?,last_run_id='wprevious',active_run_id='wcurrent' WHERE id=?").run(Date.now()-9000000,c.data.task_id)
+  await bus.dispatch('task', 'worker_register', { run_id: 'wcurrent', pid: process.pid, timeout_sec: 7200 }, { actor: 'scheduler' })
+  const alive = await bus.dispatch('task', 'reap', { max_age: 4500000, pid_alive: true }, { actor: 'scheduler' })
+  assert.equal(alive.data.reaped, 0, '回收应看当前 worker，不能看上一次 last_run_id')
+})
+
+test('回收记录当前执行并退避；旧回调不覆盖回收结果或人工暂停', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '崩溃续跑', schedule: { kind: 'interval', every_seconds: 86400 } }, { actor: 'model' })
+  const id = c.data.task_id
+  const now = Date.now()
+  db.prepare("UPDATE tasks SET status='running',started_at=?,run_at=?,next_run_at=?,active_run_id='wcrash' WHERE id=?").run(now-9000000,now-10000000,now-9000000,id)
+  const reap = await bus.dispatch('task', 'reap', { max_age: 0 }, { actor: 'scheduler' })
+  assert.equal(reap.data.reaped, 1)
+  const task = db.prepare('SELECT * FROM tasks WHERE id=?').get(id)
+  assert.equal(task.active_run_id, null)
+  assert.equal(task.last_run_id, 'wcrash')
+  assert.ok(task.next_run_at >= now+300000)
+  assert.equal(db.prepare('SELECT run_id FROM task_runs WHERE task_id=?').get(id).run_id, 'wcrash')
+  const late = await bus.dispatch('task', 'finish', { task_id: id, run_id: 'wcrash', outcome: 'done' }, { actor: 'scheduler' })
+  assert.equal(late.data.superseded, true)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM task_runs WHERE task_id=?').get(id).n, 1)
+  await bus.dispatch('task', 'block', { task_id: id, blocked_reason: '人工暂停' }, { actor: 'model' })
+  const paused = await bus.dispatch('task', 'finish', { task_id: id, run_id: 'wlate', outcome: 'done' }, { actor: 'scheduler' })
+  assert.equal(paused.data.superseded, true)
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id=?').get(id).status, 'blocked')
+})
+
+test('调度依赖支持完成后延迟并拒绝循环', async () => {
+  const { bus } = makeEnv()
+  const now = Date.now()
+  const parent = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '延迟链前置', schedule: { kind: 'interval', every_seconds: 86400 } }, { actor: 'model' })
+  const pid = parent.data.task_id
+  const child = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '延迟链后续', schedule: { kind: 'interval', every_seconds: 86400, after_task_id: pid, after_delay_seconds: 120 } }, { actor: 'model' })
+  assert.equal(child.ok, true)
+  const cid = child.data.task_id
+  const db = bus._internal.db()
+  db.prepare('UPDATE tasks SET run_at=?,next_run_at=? WHERE id IN (?,?)').run(now-10000,now-10000,pid,cid)
+  await bus.dispatch('task', 'claim', { now }, { actor: 'scheduler' })
+  await bus.dispatch('task', 'finish', { task_id: pid, run_id: 'delay-parent', outcome: 'done' }, { actor: 'scheduler' })
+  assert.deepEqual((await bus.dispatch('task', 'claim', { now: now+1000 }, { actor: 'scheduler' })).data.claimed, [])
+  assert.deepEqual((await bus.dispatch('task', 'claim', { now: now+121000 }, { actor: 'scheduler' })).data.claimed, [cid])
+  const cycle = await bus.dispatch('task', 'schedule', { task_id: pid, schedule: { kind: 'interval', every_seconds: 86400, after_task_id: cid } }, { actor: 'model' })
+  assert.equal(cycle.error.code, 'E_TASK_DEPENDENCY')
+})
+
 // ---------------------------------------------------------------------------
 // 1. happy path
 // ---------------------------------------------------------------------------
@@ -191,16 +281,28 @@ test('finish: once 任务 done + task.finished + 执行史 + 自然键幂等 rep
 test('finish: interval latest-only 续期以 run_at 为锚（不漂移）', async () => {
   const { bus } = makeEnv()
   const every = 86400
-  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: 'interval 续期', schedule: { kind: 'interval', every_seconds: every } }, { actor: 'model' })
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', phase: 'recon', objective: 'interval 续期', schedule: { kind: 'interval', every_seconds: every } }, { actor: 'model' })
   const id = c.data.task_id
+  // 验证 run_at 已在创建时固化（夜间窗口锚点）
+  const row0 = bus._internal.db().prepare('SELECT run_at, next_run_at FROM tasks WHERE id=?').get(id)
+  assert.ok(row0.run_at > 0, 'run_at 应在创建时固化（非 null）')
+  // next_run_at 对齐 run_at 锚点格点（next_run_at = run_at + N * step，N 为正整数）
+  const step = every * 1000
+  const alignDelta = (row0.next_run_at - row0.run_at) % step
+  assert.equal(alignDelta, 0, 'next_run_at 对齐 run_at 格点（差值整除 step）')
+  assert.ok(row0.next_run_at > Date.now(), 'next_run_at 在未来')
+  // 第一次续期
   const f = await bus.dispatch('task', 'finish', { task_id: id, run_id: 'r1', outcome: 'done' }, { actor: 'scheduler' })
   assert.equal(f.ok, true)
   assert.equal(f.data.status, 'queued')
-  const row = bus._internal.db().prepare('SELECT * FROM tasks WHERE id=?').get(id)
-  assert.equal(row.status, 'queued')
-  assert.ok(row.next_run_at > Date.now(), '续期后 next_run_at 应在未来')
-  // 标称锚点=创建时 next_run_at（run_at 为 null → 退回 next_run_at 初始值）
-  assert.ok(row.next_run_at >= row.created_at + every * 1000 - 60000, '续期到下一格点')
+  const row1 = bus._internal.db().prepare('SELECT * FROM tasks WHERE id=?').get(id)
+  assert.equal(row1.status, 'queued')
+  assert.ok(row1.next_run_at > Date.now(), '续期后 next_run_at 应在未来')
+  // 续期仍对齐 run_at 格点（锚点不变，续期只是跳到下一个未来格点）
+  const delta1 = (row1.next_run_at - row0.run_at) % step
+  assert.equal(delta1, 0, '续期后仍对齐 run_at 格点（锚点不漂移）')
+  // run_at 锚点不变（续期只更新 next_run_at，不触碰 run_at）
+  assert.equal(row1.run_at, row0.run_at, 'run_at 锚点不因续期而变化')
 })
 
 test('finish: superseded 路径（终态任务再 finish 只补史不改状态）', async () => {

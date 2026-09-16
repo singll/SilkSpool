@@ -83,6 +83,29 @@ function startServer(handler) {
 function serverPort(srv) { return srv.address().port }
 async function closeServer(srv) { await new Promise((r) => srv.close(r)) }
 
+test('authz_diff 接受 JSON 字符串 headers，改变 body 可重试且格式错误不当作网络重试', async t => {
+  let requests = 0
+  const srv = await startServer((req, res) => {
+    requests++
+    res.writeHead(req.headers['x-role'] === 'high' ? 200 : 403)
+    res.end(req.headers['x-role'] === 'high' ? '{"ok":true}' : '{"denied":true}')
+  })
+  t.after(() => closeServer(srv))
+  const { bus } = makeEnv()
+  const args = { url: `http://127.0.0.1:${serverPort(srv)}/fixture`, method: 'POST',
+    headers_low: '{"X-Role":"low"}', headers_high: '{"X-Role":"high"}', body: 'first' }
+  const first = await bus.dispatch('vuln', 'authz_diff', args, { actor: 'model' })
+  assert.equal(first.ok, true, first.error?.message)
+  const second = await bus.dispatch('vuln', 'authz_diff', { ...args, body: 'second' }, { actor: 'model' })
+  assert.equal(second.ok, true, second.error?.message)
+  assert.equal(requests, 4)
+  const bad = await bus.dispatch('vuln', 'authz_diff', { ...args, headers_low: '{broken' }, { actor: 'model' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'E_SCHEMA')
+  assert.equal(bad.error.retryable, false)
+  assert.equal(requests, 4)
+})
+
 function makeEvidence({ dataDir, id, target, body }) {
   const dir = path.join(dataDir, 'evidence', String(id))
   fs.mkdirSync(dir, { recursive: true })
@@ -388,6 +411,17 @@ test('不变量 INV-2: confirm evidence 引用不存在 → E_EVIDENCE_REQUIRED'
   const r = await bus.dispatch('vuln', 'confirm', { finding_id: cand.data.id, evidence: 'run_does_not_exist_123' }, { actor: 'model' })
   assert.equal(r.ok, false)
   assert.equal(r.error.code, 'E_EVIDENCE_REQUIRED')
+})
+
+test('证据引用不能通过 flow 路径或软链逃出平台数据目录', async () => {
+  const { bus, dir, dataDir } = makeEnv()
+  fs.writeFileSync(path.join(dir, 'outside.txt'), 'local-only fixture')
+  fs.symlinkSync(path.join(dir, 'outside.txt'), path.join(dataDir, 'escape.txt'))
+  const cand = await seedCandidate(bus)
+  for (const evidence of ['flow:../outside.txt', 'flow:escape.txt']) {
+    const r = await bus.dispatch('vuln', 'confirm', { finding_id: cand.data.id, evidence }, { actor: 'model' })
+    assert.equal(r.error.code, 'E_EVIDENCE_REQUIRED')
+  }
 })
 
 test('不变量 INV-9: reject dup 缺 dup_of → E_VULN_DUP_TARGET_REQUIRED；dup_of 不存在 → E_NOT_FOUND', async () => {

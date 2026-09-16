@@ -25,6 +25,8 @@ assemble() {
     cp "$BASE_DIR/dsh-plugin-sec-suite.parsers.js" "$PLUGIN_DIR/parsers.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.webhook.js" "$PLUGIN_DIR/webhook.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.scheduler.js" "$PLUGIN_DIR/scheduler.js"
+    cp "$BASE_DIR/dsh-plugin-sec-suite.task-policy.js" "$PLUGIN_DIR/task-policy.js"
+    cp "$BASE_DIR/dsh-plugin-sec-suite.parse-proposal.js" "$PLUGIN_DIR/parse-proposal.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.host-compat.js" "$PLUGIN_DIR/host-compat.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.native-guard.js" "$PLUGIN_DIR/native-guard.js"
     cp "$BASE_DIR/dsh-plugin-sec-suite.worker-runtime.js" "$PLUGIN_DIR/worker-runtime.js"
@@ -45,7 +47,7 @@ assemble() {
     "./experience": "./experience.js",
     "./package.json": "./package.json"
   },
-  "files": ["index.js", "asset-db.js", "asset-graph.js", "experience.js", "parsers.js", "webhook.js", "scheduler.js", "host-compat.js", "native-guard.js", "worker-runtime.js", "persona.py", "dashboard-rpc.js", "cordis.patch.yml"],
+  "files": ["index.js", "asset-db.js", "asset-graph.js", "experience.js", "parsers.js", "webhook.js", "scheduler.js", "task-policy.js", "parse-proposal.js", "host-compat.js", "native-guard.js", "worker-runtime.js", "persona.py", "dashboard-rpc.js", "cordis.patch.yml"],
   "license": "MIT",
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
 }

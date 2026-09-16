@@ -11,6 +11,10 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { createBus } from '../../sec-domain-bus/index.js'
+import { buildKnowDomain } from '../../sec-domain-know/index.js'
+import { buildAssetDomain } from '../../sec-domain-asset/index.js'
+import { buildEndpointDomain } from '../../sec-domain-endpoint/index.js'
+import { buildVulnDomain } from '../../sec-domain-vuln/index.js'
 
 process.env.SEC_NODE_BIN = '/bin/echo'
 process.env.SEC_DSH_BIN = '/bin/echo'
@@ -42,6 +46,7 @@ function makeEnv(opts = {}) {
     eventsDir: path.join(dir, 'events'),
     sidecars: false,
     startDispatcherTimer: false,
+    dispatcherStartDelayMs: 0,
   })
   const domain = buildExecDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, n, a, c) => bus.query(d, n, a, c) })
   const reg = bus.registry.register(domain)
@@ -59,6 +64,94 @@ function readEvents(dir) {
   if (!fs.existsSync(f)) return []
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
+
+test('真实 exec run_id 可用于漏洞证据，裸 ID 与解析器 run_id: 前缀均验证落盘', async () => {
+  const { dataDir, bus } = makeEnv()
+  assert.equal(bus.registry.register(buildVulnDomain({ dataDir })).ok, true)
+  const run = await bus.dispatch('exec', 'run_cli', { tool: 'echo-test', params: { msg: 'local evidence fixture' } }, { actor: 'model' })
+  assert.equal(run.ok, true)
+  for (const [i, evidence] of [run.data.run_id, `run_id:${run.data.run_id} template:fixture`].entries()) {
+    const signal = await bus.dispatch('vuln', 'register_signal', {
+      title: `本地证据编号兼容测试用例 ${i}`, severity: 'low', host: 'a.example.com',
+      evidence, reproduction_steps: '仅验证本地 echo 执行产物的引用格式', impact: '本地契约测试，无外部目标',
+    }, { actor: 'model' })
+    assert.equal(signal.ok, true, signal.error?.message)
+    const confirm = await bus.dispatch('vuln', 'confirm', { finding_id: signal.data.id, evidence }, { actor: 'model' })
+    assert.equal(confirm.ok, true, confirm.error?.message)
+  }
+  const missing = await bus.dispatch('vuln', 'confirm', { finding_id: 99999, evidence: 'run_id:rmissing000000' }, { actor: 'model' })
+  assert.equal(missing.error.code, 'E_EVIDENCE_REQUIRED')
+})
+
+test('失败 CLI 保留 stderr；manifest_list 返回可直接核对的必填参数与默认值', async () => {
+  const { dataDir, bus } = makeEnv()
+  const missingFile = path.join(dataDir, 'fixture-does-not-exist')
+  const r = await bus.dispatch('exec', 'run_cli', { tool: 'httpx', params: { fixture: missingFile } }, { actor: 'model' })
+  assert.equal(r.ok, true)
+  assert.equal(r.data.exit_code, 1)
+  assert.match(r.data.stderr_tail, /fixture-does-not-exist/)
+  assert.match(fs.readFileSync(path.join(dataDir, 'results', r.data.run_id, 'stderr.log'), 'utf8'), /fixture-does-not-exist/)
+  const required = await bus.query('exec', 'manifest_list', { name: 'httpx' }, { actor: 'model' })
+  assert.equal(required.total, 1)
+  assert.deepEqual(required.rows[0].params, [{ name: 'fixture', required: true, default: null }])
+  const defaults = await bus.query('exec', 'manifest_list', { name: 'echo-test' }, { actor: 'model' })
+  assert.deepEqual(defaults.rows[0].params, [{ name: 'msg', required: false, default: 'hello' }])
+  assert.equal(defaults.rows[0].timeout_sec, 30)
+  writeManifest(dataDir, 'implicit-params', 'name: implicit-params\nbinary: /bin/echo\nargs_template: "{{outdir}} {{run_id}} {{target}} {{target}} {{count|5}}"\n')
+  const implicit = await bus.query('exec', 'manifest_list', { name: 'implicit-params' }, { actor: 'model' })
+  assert.deepEqual(implicit.rows[0].params, [{ name: 'target', required: true, default: null }, { name: 'count', required: false, default: '5' }])
+})
+
+test('CLI 退出不伪造 tool:name 打法链反馈，也不产生后台 E_SCHEMA', async () => {
+  const { dir, dataDir, bus } = makeEnv()
+  assert.equal(bus.registry.register(buildKnowDomain({ dataDir })).ok, true)
+  const result = await bus.dispatch('exec', 'run_cli', { tool: 'echo-test', params: { msg: 'ok' } }, { actor: 'model' })
+  assert.equal(result.ok, true)
+  assert.deepEqual(readAudit(dir).filter(a => a.domain === 'know' && a.cmd === 'pb_outcome'), [])
+})
+
+test('大批 parser 产物落盘后事件仍低于 8KiB，不把执行成功变成总线错误', async () => {
+  const { dir, dataDir, bus } = makeEnv()
+  const options = { dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) }
+  const asset = buildAssetDomain(options), endpoint = buildEndpointDomain(options)
+  assert.equal(bus.registry.register(asset).ok, true)
+  assert.equal(bus.registry.register(endpoint).ok, true)
+  const file = path.join(dir, 'batch.jsonl')
+  fs.writeFileSync(file, Array.from({ length: 100 }, (_, i) => JSON.stringify({ host: `h${i}.example.com`, url: `https://h${i}.example.com/api/${'a'.repeat(80)}`, status_code: 200 })).join('\n'))
+  const r = await bus.dispatch('exec', 'run_cli', { tool: 'httpx', params: { fixture: file } }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const proposal = JSON.parse(fs.readFileSync(path.join(dataDir, 'results', r.data.run_id, 'proposal.json')))
+  assert.equal(proposal.endpoints.length, 100)
+  await bus._internal.dispatcherTick()
+  assert.ok(readEvents(dir).filter(e => e.name === 'exec.run.completed').length >= 2)
+  for (const e of readEvents(dir)) assert.ok(Buffer.byteLength(JSON.stringify(e.payload)) < 8192)
+  for (const e of readEvents(dir).filter(e => e.name === 'exec.run.completed')) {
+    await asset.handlers.subscribers.onRunProposal(e)
+    await endpoint.handlers.subscribers.onRunProposal(e)
+  }
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM assets').get().n, 100)
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM endpoints').get().n, 100)
+  const event = readEvents(dir).find(e => e.payload?.parse_proposal?.kind === 'endpoints')
+  fs.writeFileSync(path.join(dataDir, 'results', r.data.run_id, 'proposal.json'), '{}')
+  await assert.rejects(endpoint.handlers.subscribers.onRunProposal(event), { code: 'E_EXEC_PROPOSAL_INTEGRITY' })
+})
+
+test('worker 工具投影超时覆盖可申请的 7200 秒，父会话收尾时不再派工', async () => {
+  const { bus } = makeEnv()
+  const tools = []
+  bus._internal.registerTools({ tools: { register: def => tools.push(def) } })
+  const tool = tools.find(t => t.name === 'exec_spawn_worker')
+  assert.ok(tool.timeoutMs > 7200 * 1000)
+  const before = process.env.SEC_WORKER_DEADLINE_MS
+  process.env.SEC_WORKER_DEADLINE_MS = String(Date.now()+30000)
+  try {
+    const result = await tool.execute({ task: '本地预算 fixture' }, {})
+    assert.equal(result.error.code, 'E_EXEC_WORKER_BUDGET')
+    assert.equal(result.error.retryable, false)
+  } finally {
+    if (before === undefined) delete process.env.SEC_WORKER_DEADLINE_MS; else process.env.SEC_WORKER_DEADLINE_MS = before
+  }
+})
 
 // ---------------------------------------------------------------------------
 // 1. happy path

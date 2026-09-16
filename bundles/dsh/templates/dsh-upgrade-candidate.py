@@ -11,10 +11,12 @@ import yaml
 
 VERSION = "0.1.5-rc.2"
 TEMPLATES = ["dsh-plugin-sec-suite.js", "dsh-plugin-sec-suite.scheduler.js", "dsh-plugin-sec-suite.host-compat.js",
+             "dsh-plugin-sec-suite.task-policy.js", "dsh-plugin-sec-suite.parse-proposal.js",
              "dsh-plugin-sec-suite.persona.py", "dsh-plugin-sec-suite.native-guard.js", "dsh-plugin-sec-suite.worker-runtime.js",
              "dsh-plugin-sec-suite.asset-db.js", "dsh-plugin-sec-suite.experience.js", "dsh-plugin-sec-backend-know-sqlite.js",
              "dsh-plugin-sec-domain-bus.js", "dsh-plugin-sec-domain-exec.js",
              "dsh-plugin-sec-domain-task.js", "dsh-plugin-sec-backend-task-sqlite.js", "dsh-runtime-compat.py",
+             "dsh-plugin-sec-domain-fact.js", "dsh-plugin-sec-domain-asset.js", "dsh-plugin-sec-domain-endpoint.js", "dsh-plugin-sec-domain-vuln.js",
              "seed-presets.sh", "sec-suite-plugin-setup.sh"]
 TEMPLATES += ["setup.sh", "headless-failover-setup.sh", "settings-mirror-patch.sh", "sec-browser-plugin-setup.sh", "plugins.lock"]
 
@@ -128,17 +130,18 @@ def main():
         write(release / "scripts/pipeline/dsh-version-watch.sh", watcher)
         write(release / "data-seed/scripts/dsh-version-watch.sh", watcher)
         for name, target in {"dsh-plugin-sec-suite.js": "index.js", "dsh-plugin-sec-suite.scheduler.js": "scheduler.js",
+                             "dsh-plugin-sec-suite.task-policy.js": "task-policy.js", "dsh-plugin-sec-suite.parse-proposal.js": "parse-proposal.js",
                              "dsh-plugin-sec-suite.host-compat.js": "host-compat.js", "dsh-plugin-sec-suite.native-guard.js": "native-guard.js",
                              "dsh-plugin-sec-suite.persona.py": "persona.py", "dsh-plugin-sec-suite.worker-runtime.js": "worker-runtime.js",
                              "dsh-plugin-sec-suite.asset-db.js": "asset-db.js", "dsh-plugin-sec-suite.experience.js": "experience.js"}.items():
             write(release / "plugins/sec-suite" / target, (release / name).read_text())
         write(release / "plugins/sec-domain-bus/index.js", (release / "dsh-plugin-sec-domain-bus.js").read_text())
-        for plugin in ("sec-domain-exec", "sec-domain-task", "sec-backend-task-sqlite", "sec-backend-know-sqlite"):
+        for plugin in ("sec-domain-exec", "sec-domain-task", "sec-backend-task-sqlite", "sec-backend-know-sqlite", "sec-domain-fact", "sec-domain-asset", "sec-domain-endpoint", "sec-domain-vuln"):
             write(release / "plugins" / plugin / "index.js", (release / ("dsh-plugin-" + plugin + ".js")).read_text())
         run(["python3", str(release / "dsh-runtime-compat.py"), "--base-dir", str(release)], release, "runtime-compat.log")
         pkgfile = release / "plugins/sec-suite/package.json"
         package = json.loads(pkgfile.read_text())
-        package["files"] = sorted(set(package["files"]) | {"host-compat.js", "native-guard.js", "worker-runtime.js", "persona.py"})
+        package["files"] = sorted(set(package["files"]) | {"host-compat.js", "native-guard.js", "worker-runtime.js", "persona.py", "task-policy.js", "parse-proposal.js"})
         write(pkgfile, json.dumps(package, indent=2) + "\n")
         run(["bash", str(release / "seed-presets.sh")], release, "presets.log",
             {"SEC_BASE_DIR": str(release), "SEC_DATA_DIR": str(release / "data"), "DSH_HOME": str(release / "data")})

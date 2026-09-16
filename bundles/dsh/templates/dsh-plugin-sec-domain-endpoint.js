@@ -24,6 +24,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { readParseProposal } from '../sec-suite/parse-proposal.js'
 
 export const name = 'sec-domain-endpoint'
 export const version = '1.0.0'
@@ -615,16 +616,24 @@ function makeHandlers(opts) {
   const subscribers = {
     onRunProposal: async (envelope) => {
       const payload = envelope?.payload || {}
-      const p = payload.parse_proposal
+      const p = readParseProposal(dataDir, payload)
       if (!p || p.kind !== 'endpoints' || !dispatchRef) return { ok: true, data: { skipped: true } }
       const runId = String(payload.run_id || envelope?.cause?.run_id || '')
       let registered = 0
       let failed = 0
       try {
-        const r = await dispatchRef('endpoint', 'upsert', { tsv_path: p.tsv_path, program_id: payload.program_id || null }, { actor: 'script', session_id: payload.session_id || null, run_id: runId })
-        if (r.ok) registered += (r.data?.created || 0); else failed++
+        const program = payload.program_id ? { program_id: payload.program_id } : {}
+        const batches = p.tsv_path ? [{ tsv_path: p.tsv_path, ...program }] : []
+        if (!p.tsv_path && Array.isArray(p.endpoints)) {
+          for (let i = 0; i < p.endpoints.length; i += 500) batches.push({ rows: p.endpoints.slice(i, i + 500), ...program })
+        }
+        for (const args of batches) {
+          const r = await dispatchRef('endpoint', 'upsert', args, { actor: 'script', session_id: payload.session_id || null, run_id: runId })
+          if (r.ok) registered += (r.data?.created || 0); else failed++
+        }
       } catch { failed++ }
-      return { ok: true, data: { registered, failed, partial: failed > 0 } }
+      if (failed) throw Object.assign(new Error(`接口提案入库失败: ${failed} 批`), { code: 'E_ENDPOINT_PROPOSAL_FAILED' })
+      return { ok: true, data: { registered, failed, partial: false } }
     },
   }
 

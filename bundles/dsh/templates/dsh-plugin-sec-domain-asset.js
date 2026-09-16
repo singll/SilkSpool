@@ -24,6 +24,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { readParseProposal } from '../sec-suite/parse-proposal.js'
 
 export const name = 'sec-domain-asset'
 export const version = '1.0.0'
@@ -693,15 +694,17 @@ function makeHandlers(opts) {
   const subscribers = {
     onRunProposal: async (envelope) => {
       const payload = envelope?.payload || {}
-      const p = payload.parse_proposal
+      const p = readParseProposal(dataDir, payload)
       if (!p || p.kind !== 'assets' || !dispatchRef) return { ok: true, data: { skipped: true } }
       const runId = String(payload.run_id || envelope?.cause?.run_id || '')
       let registered = 0
       let failed = 0
       try {
         if (Array.isArray(p.assets) && p.assets.length) {
-          const r = await dispatchRef('asset', 'upsert_bulk', { rows: p.assets, proposal_ref: runId }, { actor: 'script', session_id: payload.session_id || null, run_id: runId })
-          if (r.ok) registered += (r.data?.created || 0); else failed++
+          for (let i = 0; i < p.assets.length; i += 500) {
+            const r = await dispatchRef('asset', 'upsert_bulk', { rows: p.assets.slice(i, i + 500), proposal_ref: runId }, { actor: 'script', session_id: payload.session_id || null, run_id: runId })
+            if (r.ok) registered += (r.data?.created || 0); else failed++
+          }
         }
         if (Array.isArray(p.fingerprints) && p.fingerprints.length) {
           const r = await dispatchRef('asset', 'fp_record_bulk', { rows: p.fingerprints, proposal_ref: runId }, { actor: 'script', session_id: payload.session_id || null, run_id: runId })

@@ -700,7 +700,7 @@ function makeHandlers(opts) {
       const excludeNotes = args.exclude_notes !== false
       const { where, args: wa } = combinedWhere(reader, { program_id: args.program_id || '', category: args.category || '', q: args.q || '', confidence: args.confidence || '', has_edges: !!args.has_edges, mem_class: args.mem_class || '', status: args.status || '', exclude_notes: excludeNotes }, now)
       const sort = args.sort || 'updated_at'
-      const rows = repo.listFactsWhere(where, wa, sort, 5000, 0).map((r) => ({ ...r, _cooling: r.status === 'cooling' ? true : undefined }))
+      const rows = repo.listFactsWhere(where, wa, sort, 5000, 0).map((r) => ({ ...r, ...(r.status === 'cooling' ? { _cooling: true } : {}) }))
       const total = repo.countFactsWhere(where, wa)
       return { rows, total }
     },

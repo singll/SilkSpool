@@ -7,6 +7,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { listSessionHeaders, matchWorkerSession, createPersonaReader, buildScheduledPrompt } from './host-compat.js'
+import { MAX_WORKER_TIMEOUT_SEC } from './task-policy.js'
 
 // 依赖注入（由 index.js 调用 startScheduler 时传入，避免循环依赖）：
 //   dataDir                数据目录（主文件 DATA_DIR，用于推导锁文件与 preset 目录）
@@ -21,7 +22,7 @@ let deps = null
 
 const SCHEDULER_TICK_MS = 60000
 let lastVaultSyncDay = ''
-// 定时任务 worker 执行上限：原 1800s 与任务体量不匹配导致每晚超时被杀，放宽到 runWorker 上限 3600s
+// 默认 1h，任务可配置到 2h；超时后按周期策略保留检查点续跑。
 const SCHEDULER_TASK_TIMEOUT_SEC = 3600
 
 function workspacePathOfProgram(programId) {
@@ -116,7 +117,8 @@ function persistFgsFacts(task) {
 
 function safeJsonParse(s) { try { return JSON.parse(s) } catch { return null } }
 
-async function schedulerTick() {
+export async function schedulerTick(injected = null) {
+  if (injected) deps = injected
   let due
   try { due = deps.assetDb.taskClaimDue(Date.now()) } catch (e) {
     process.stderr.write(`[sec-suite] 调度认领失败: ${e?.message ?? String(e)}\n`)
@@ -129,47 +131,51 @@ async function schedulerTick() {
     try {
       const cwd = workspacePathOfProgram(task.program_id)
       const role = personaOfPhase(task.phase, cwd)
+      const timeoutSec = Math.max(SCHEDULER_TASK_TIMEOUT_SEC, Math.min(Number(task.budget_timeout_sec) || 0, MAX_WORKER_TIMEOUT_SEC))
+      const progress = deps.assetDb.taskScheduledProgress(task, startedAt)
       // P17：任务启动前初始化 FGS 图（外化记忆），清除旧图并写入顶层 Goal
       try {
-        deps.assetDb.fgsClearTask(task.id)
-        deps.assetDb.fgsAddNode({
-          task_id: task.id,
-          type: 'goal',
-          status: 'open',
-          content: { summary: task.objective?.slice(0, 200) || '定时任务目标', detail: task.objective }
-        })
+        if (!progress.resume) {
+          deps.assetDb.fgsClearTask(task.id)
+          deps.assetDb.fgsAddNode({
+            task_id: task.id,
+            type: 'goal',
+            status: 'open',
+            content: { summary: task.objective?.slice(0, 200) || '定时任务目标', detail: task.objective }
+          })
+        }
       } catch (e) {
         process.stderr.write(`[sec-suite] 任务 #${task.id} FGS 初始化失败: ${e?.message ?? String(e)}\n`)
       }
-      const prompt = buildScheduledPrompt(task, role)
+      const prompt = buildScheduledPrompt(task, role, { ...progress, timeoutSec, startedAt })
       deps.audit({ ts: Date.now(), run_id: '-', tool: 'scheduler', decision: 'executed', detail: { task_id: task.id, program_id: task.program_id, provider: task.provider, model: task.model } })
       // v4.5 任务预算：task-budget-extend 批准写入 budget_timeout_sec → 本周期起 runWorker 用
       // max(默认上限, 该值)（7200s 封顶，防 2 小时外的失控 worker 占死调度槽）
-      const taskBudget = Math.min(Number(task.budget_timeout_sec) || 0, 7200)
-      const timeoutSec = Math.max(SCHEDULER_TASK_TIMEOUT_SEC, taskBudget)
-      const r = await deps.runWorker({ task: prompt, cwd, timeoutSec, enforceLimit: true, provider: task.provider, model: task.model, reasoningEffort: task.reasoning_effort, phase: task.phase || '' })
+      const r = await deps.runWorker({ task: prompt, cwd, timeoutSec, scheduledTaskId: task.id, enforceLimit: true, provider: task.provider, model: task.model, reasoningEffort: task.reasoning_effort, phase: task.phase || '' })
       if (r.busy) {
         try { deps.assetDb.taskUpdate({ id: task.id, status: 'queued', note: 'worker 并发已满，延后到下一 tick' }) } catch { /* ignore */ }
         return
       }
       let note = ''
       let timedOut = false
-      if (!r.ok && r.exit_code === null && r.duration_ms >= SCHEDULER_TASK_TIMEOUT_SEC * 1000 - 15000) {
-        note = `worker 超时被杀（${SCHEDULER_TASK_TIMEOUT_SEC} 秒上限）`  // 显式写原因，不再展示日志尾部噪声
+      if (r.timed_out || (r.timed_out === undefined && !r.ok && r.exit_code === null && r.duration_ms >= timeoutSec * 1000 - 15000)) {
+        note = `worker 超时（${timeoutSec} 秒预算，本周期第 ${progress.attempts + 1}/3 次）；FGS 与执行产物已保留供续跑`
         timedOut = true
+      } else if (r.cancelled) {
+        note = 'worker 被取消；执行产物已保留'
       } else {
         note = (r.tail || '').split('\n').filter((l) => l.trim() && !WORKER_NOISE_RE.test(l)).slice(-3).join(' ').slice(0, 300)
       }
       // v4.5 异步审批：超时自动提请 task-budget-extend（拒绝语义不变——本周期已杀；批准写
       // tasks.budget_timeout_sec，下个周期 runWorker 取 max(默认, 该值)）。幂等去重靠 approvalAdd
       // 的同 (kind, subject) pending 查重。worker 尾部有实质产出迹象（非空 tail）才提，纯空跑不配延预算。
-      if (timedOut) {
+      if (timedOut && timeoutSec < MAX_WORKER_TIMEOUT_SEC) {
         try {
           const tailEvidence = (r.tail || '').split('\n').filter((l) => l.trim() && !WORKER_NOISE_RE.test(l)).slice(-5).join(' ').slice(0, 400)
           const add = deps.assetDb.approvalAdd({
             kind: 'task-budget-extend', subject: `task:${task.id}`, program_name: task.program_id,
-            payload: { task_id: task.id, program: task.program_id, timed_out_at_sec: SCHEDULER_TASK_TIMEOUT_SEC, budget_timeout_sec: 7200, run_id: r.run_id || null, tail: tailEvidence || '(无尾部输出)' },
-            evidence: `任务 #${task.id}（${task.program_id}/${task.phase || '-'}）worker 跑满 ${SCHEDULER_TASK_TIMEOUT_SEC}s 上限被杀${tailEvidence ? '，尾部显示工作仍在推进（接近产出）' : '，尾部无输出（空跑嫌疑，谨慎批准）'}。批准后下周期预算上限 7200s`,
+            payload: { task_id: task.id, program: task.program_id, timed_out_at_sec: timeoutSec, budget_timeout_sec: MAX_WORKER_TIMEOUT_SEC, run_id: r.run_id || null, tail: tailEvidence || '(无尾部输出)' },
+            evidence: `任务 #${task.id}（${task.program_id}/${task.phase || '-'}）worker 跑满 ${timeoutSec}s 预算。批准后下周期预算上限 ${MAX_WORKER_TIMEOUT_SEC}s；尾部输出不能单独证明实际进度`,
             requested_by: 'scheduler:auto',
           })
           if (add.ok) process.stderr.write(`[sec-suite] 任务 #${task.id} 超时，已自动提请 task-budget-extend 审批 #${add.request_id}\n`)
@@ -186,11 +192,11 @@ async function schedulerTick() {
           fs.writeFileSync(metaPath, JSON.stringify(meta, null, 1) + '\n')
         } catch { /* meta 回填失败不影响主流程 */ }
       }
-      deps.assetDb.taskFinishScheduledRun({ id: task.id, ok: !!r.ok, run_id: r.run_id || '', note, session_id: workerSessionId ?? null })
+      const finished = deps.assetDb.taskFinishScheduledRun({ id: task.id, ok: !!r.ok && !timedOut && !r.cancelled, run_id: r.run_id || '', note, session_id: workerSessionId ?? null, timed_out: timedOut })
       // v4.5 FGS 跨任务沉淀（cairn-y §5.8 遗留落地）：任务 done 时把该任务 FGS 图中已完成的 fact
       // 节点同步为 durable facts——FGS 图本是"一次性记忆"（任务结束节点沉睡，下个任务不复用），
       // 此钩子把带证据的结论性事实转正进 facts 表供后续任务检索。best-effort：失败不阻断收尾。
-      if (r.ok) {
+      if (r.ok && finished.run_ok !== false && !finished.superseded) {
         try { persistFgsFacts(task) } catch (e) {
           process.stderr.write(`[sec-suite] 任务 #${task.id} FGS 沉淀失败: ${e?.message ?? String(e)}\n`)
         }

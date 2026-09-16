@@ -12,7 +12,28 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
+import { spawn } from 'node:child_process'
 import { createBus } from '../index.js'
+
+test('并发启动在切换 WAL 前等待已有写者，初始化不降级', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-bus-startup-lock-'))
+  const dbFile = path.join(dir, 'fixture.db')
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { DatabaseSync } from 'node:sqlite'
+    const db = new DatabaseSync(${JSON.stringify(dbFile)})
+    db.exec('CREATE TABLE fixture(n INTEGER); BEGIN IMMEDIATE; INSERT INTO fixture VALUES(1)')
+    process.stdout.write('locked\\n')
+    setTimeout(() => { db.exec('COMMIT'); db.close() }, 300)
+  `], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const closed = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', code => code === 0 ? resolve() : reject(new Error(`fixture exit ${code}`))) })
+  t.after(async () => { await closed; fs.rmSync(dir, { recursive: true, force: true }) })
+  await new Promise((resolve, reject) => { child.stdout.once('data', resolve); child.once('error', reject) })
+  const bus = createBus({ dataDir: dir, dbFile, sidecars: false, startDispatcherTimer: false })
+  try {
+    assert.equal(bus._internal.db().prepare('PRAGMA journal_mode').get().journal_mode, 'wal')
+    assert.ok(bus._internal.db().prepare("SELECT name FROM sqlite_master WHERE name='event_outbox'").get())
+  } finally { bus._internal.close() }
+})
 
 // ---------------------------------------------------------------------------
 // 测试域 fixture（vuln 伪域：命令/查询/不变量/事件/后端全覆盖）
@@ -1289,14 +1310,14 @@ function collectTools(bus, manifest) {
   return registered.map((t) => t.name)
 }
 
-test('挂载矩阵: headless+phase=vuln 只注册 phase 域（vuln 可见 / proxy 不可见）', () => {
+test('挂载矩阵: headless+phase=vuln 只注册 phase 域（vuln 与代理诊断可见）', () => {
   const dir = tmpDir()
   const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false, profile: 'headless', phase: 'vuln' })
   bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
   const names = collectTools(bus, makeProxyManifest())
   assert.ok(names.includes('vuln_register_signal'), 'vuln phase 可见 vuln 动词')
-  assert.ok(!names.includes('proxy_refresh'), 'vuln phase 不投影 proxy 命令')
-  assert.ok(!names.includes('proxy_stats'), 'vuln phase 不投影 proxy 查询')
+  assert.ok(names.includes('proxy_refresh'), 'vuln phase 需要代理恢复工具')
+  assert.ok(names.includes('proxy_stats'), 'vuln phase 需要代理诊断查询')
   assert.ok(names.includes('bus_status'), '跨 phase 基础设施 bus 恒可见')
 })
 

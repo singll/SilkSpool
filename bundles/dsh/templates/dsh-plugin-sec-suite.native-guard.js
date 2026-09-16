@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 const UNGOVERNED_NETWORK_TOOLS = new Set(['bash', 'web_fetch'])
 const FILE_WRITERS = new Set(['write', 'edit'])
-const RUN_CONTROL_FILES = new Set(['meta.json', 'model-patch.yml', 'worker-session.json', 'worker.log', 'cmd.txt'])
+const RUN_CONTROL_FILES = new Set(['meta.json', 'model-patch.yml', 'worker-session.json', 'worker.log', 'cmd.txt', 'proposal.json', 'stdout.log', 'stderr.log'])
 
 function inside(child, parent) {
   const relative = path.relative(parent, child)

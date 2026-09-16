@@ -18,6 +18,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { nextScheduledRun, validateDependency } from '../sec-suite/task-policy.js'
 
 export const name = 'sec-domain-task'
 export const version = '1.0.0'
@@ -51,8 +52,12 @@ const scheduleSchema = (allowNull = false) => ({
   type: allowNull ? ['object', 'null'] : 'object',
   properties: {
     kind: en(['once', 'interval']),
-    at: int(),
+    at: { type: ['integer', 'string'], description: 'once 执行时刻：epoch 毫秒/秒，或 ISO 8601 字符串；带时区按声明时区换算，不带时区一律按北京时间（+08:00）。interval 时可作相位锚点。' },
     every_seconds: int(),
+    anchor: { type: ['string', 'integer'], description: 'interval 标称相位锚点：HH:mm（北京墙钟）或 epoch/ISO。缺省时步长为整日/整周者锚定北京 03:00，其余锚定创建时刻。' },
+    tz: { type: 'string', description: '仅为不带时区的输入声明解释时区：±HH:MM / UTC / IANA 名（缺省 Asia/Shanghai）。' },
+    after_task_id: { type: ['integer', 'null'], minimum: 1, description: '前置任务；周期任务须在本周期成功后放行。null 清除依赖。' },
+    after_delay_seconds: int({ minimum: 0, maximum: 86400, description: '前置成功后的延迟秒数，缺省 0；仍受 60 秒调度 tick 影响。' }),
   },
   required: allowNull ? [] : ['kind'],
   additionalProperties: false,
@@ -89,7 +94,7 @@ export const TASK_MANIFEST = {
       event_limit: 1,
       invariants: ['scheduleValid', 'intrusiveInterval'],
       timeout_ms: 60000,
-      agent_note: '创建任务（看板任务视图立即可见）。program_id 不传则按会话工作区自动带出；phase: recon/vuln/biz-logic/code-audit/intranet/review；priority 0 最高。定时任务传 schedule（{kind:"once",at} 或 {kind:"interval",every_seconds:>=300}）。',
+      agent_note: '创建任务；program_id 缺省按工作区解析，priority 0 最高。schedule：{kind:"once",at} 或 {kind:"interval",every_seconds:>=300,anchor}。at/anchor 接受 epoch、ISO、HH:mm；无时区按北京时间。回显 next_run_bj。parent_id 指定前置任务，周期任务等待前置本周期成功后接续。',
       deprecated: false,
     },
     task_schedule: {
@@ -103,7 +108,7 @@ export const TASK_MANIFEST = {
       events: [],
       invariants: ['scheduleValid', 'intrusiveInterval', 'terminalImmutable'],
       timeout_ms: 60000,
-      agent_note: '设置/修改/清除任务的定时调度（schedule 传 null 清除变普通任务）。终态任务不可改。修改 every_seconds 后续期锚点仍为原 run_at（节律相位不重置）。',
+      agent_note: '设置/修改/清除任务的定时调度（schedule 传 null 清除变普通任务，时间校准规则同 task_create）。终态任务不可改。修改 every_seconds 后续期锚点仍为原 run_at（节律相位不重置）；可通过 schedule.anchor（HH:mm 或 ISO/epoch）显式重设相位。',
       deprecated: false,
     },
     task_run_now: {
@@ -113,7 +118,7 @@ export const TASK_MANIFEST = {
       events: [],
       invariants: ['runNowQueued'],
       timeout_ms: 60000,
-      agent_note: '立即触发一次任务（不动调度节律）：排入调度队列，下一 tick（≤60s）认领执行。手动提前跑 interval 不会跳过原定运行。',
+      agent_note: '立即触发一次任务（不动调度节律）：排入调度队列，下一 tick（≤60s）认领执行。返回体 nominal_next_run_bj 展示手动跑完后仍回到的标称北京时间格点，应告知用户；节律由 run_at 锚点保护，立即运行不会将其挪到当前时刻。',
       deprecated: false,
     },
     task_update_note: {
@@ -171,6 +176,7 @@ export const TASK_MANIFEST = {
         note: str({ default: '' }),
         session_id: str(),
         truth: { type: 'object' },
+        timed_out: { type: 'boolean' },
       }, ['task_id', 'outcome']),
       idempotent: 'natural',
       idempotent_natural: ['task_id', 'run_id'],
@@ -395,35 +401,151 @@ export const TASK_MANIFEST = {
 // 工具函数
 // ---------------------------------------------------------------------------
 
-function normalizeSchedule(schedule, nowTs) {
+// ---------------------------------------------------------------------------
+// 时间转换与校准（00-conventions §十）
+//  输入：epoch 毫秒/秒（≥1e12 视毫秒否则秒）、ISO 8601（Z / ±HH:MM 优先；不带时区
+//       一律按北京时间或 schedule.tz 指定时区解释）、纯时刻 HH:mm/HH:mm:ss（取最近
+//       北京墙钟格点）。
+//  校准：解析失败返回明确错误+可读线索（北京时间），绝不静默猜测。
+//  输出：统一回显北京时间 ISO（+08:00），创建/改调度后可直接核对落点。
+// ---------------------------------------------------------------------------
+const _BEIJING_OFFSET_MS = 8 * 3600_000
+const _DAY_MS = 86_400_000
+// 夜间批次默认相位（北京时间）：recon 03:00 / vuln 04:00 / 其余 05:00。未显式给 anchor 的新任务
+// 落进对应窗口；同批需要错开的由调用方传 anchor（历史批量见 migrate-schedule-anchor.js）。
+const _NIGHT_SLOTS = { recon: [3, 0], vuln: [4, 0] }
+const _NIGHT_SLOT_DEFAULT = [5, 0]
+const _SCHEDULE_PAST_GRACE_MS = 60_000  // once 刚过期 60 秒内允许校准为立即执行
+
+function _beijingIso(ts) {
+  const n = Number(ts)
+  return Number.isFinite(n) ? `${new Date(n + _BEIJING_OFFSET_MS).toISOString().slice(0, 16)}+08:00` : null
+}
+
+// 时区标识 → 相对 UTC 的毫秒偏移（识别失败返回 null）。
+const _TZ_OFFSET_ALIASES = { beijing: _BEIJING_OFFSET_MS, '北京': _BEIJING_OFFSET_MS, '北京时间': _BEIJING_OFFSET_MS, '中国标准时间': _BEIJING_OFFSET_MS, cst: _BEIJING_OFFSET_MS, prc: _BEIJING_OFFSET_MS, utc: 0, gmt: 0, z: 0 }
+function _timeZoneOffsetMs(tz, refTs) {
+  const key = String(tz ?? '').trim()
+  if (!key) return null
+  const lower = key.toLowerCase()
+  if (_TZ_OFFSET_ALIASES[lower] !== undefined) return _TZ_OFFSET_ALIASES[lower]
+  const m = key.match(/^([+-])(\d{2}):?(\d{2})?$/)
+  if (m) { const mins = Number(m[2]) * 60 + Number(m[3] || 0); return m[1] === '-' ? -mins * 60_000 : mins * 60_000 }
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', { timeZone: key, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const p = {}; for (const x of dtf.formatToParts(new Date(refTs))) if (x.type !== 'literal') p[x.type] = x.value
+    const wall = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second)
+    return Math.round((wall - Math.floor(refTs / 1000) * 1000) / 60_000) * 60_000
+  } catch { return null }
+}
+
+// ≤ nowTs 的最近一次"北京墙钟 = wallMs"时刻（或 > nowTs 的下一次，按 nearest）。
+function _wallClockMs(wallMs, nowTs, nearest) {
+  const bjMidnight = Math.floor((nowTs + _BEIJING_OFFSET_MS) / _DAY_MS) * _DAY_MS - _BEIJING_OFFSET_MS
+  let t = bjMidnight + wallMs
+  if (nearest === 'past') { if (t > nowTs) t -= _DAY_MS } else if (t <= nowTs) t += _DAY_MS
+  return t
+}
+
+function _parseZoneToken(tok) {
+  if (!tok) return undefined
+  if (tok === 'Z' || tok === 'z') return 0
+  const m = tok.match(/^([+-])(\d{2}):?(\d{2})$/); if (!m) return undefined
+  const mins = Number(m[2]) * 60 + Number(m[3]); return m[1] === '-' ? -mins * 60_000 : mins * 60_000
+}
+
+function _parseScheduleTime(input, opts = {}) {
+  const nowTs = Number.isFinite(opts.nowTs) ? opts.nowTs : Date.now()
+  const nearest = opts.nearest === 'past' ? 'past' : 'future'
+  const label = opts.label || '时间'
+  if (input === null || input === undefined || input === '') return { error: `${label} 为空` }
+  if (typeof input === 'number') {
+    if (!Number.isFinite(input)) return { error: `${label} 不是有限数值` }
+    return { ms: Math.abs(input) >= 1e12 ? input : input * 1000 }
+  }
+  const raw = String(input).trim()
+  // 纯数字字符串视为 epoch
+  if (/^-?\d+$/.test(raw)) {
+    const n = Number(raw)
+    return { ms: Math.abs(n) >= 1e12 ? n : n * 1000 }
+  }
+  // 规范化中文标点（年/月/日/点/：）并拆尾部时区
+  let s = raw.replace(/年/g, '-').replace(/月/g, '-').replace(/日/g, '').replace(/点/g, ':').replace(/分/g, '').replace(/：/g, ':').replace(/\s+/g, ' ').trim()
+  // 纯时刻 HH:mm[:ss]
+  const hm = s.match(/^([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/)
+  if (hm) {
+    const secs = Number(hm[1]) * 3600 + Number(hm[2]) * 60 + Number(hm[3] || 0)
+    return { ms: _wallClockMs(secs * 1000, nowTs, nearest) }
+  }
+  // 日期[时间][时区]
+  const dt = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:?\d{2})?$/)
+  if (!dt) return { error: `无法解析 ${label}：${raw}（接受 epoch 毫秒/秒、ISO 8601、HH:mm 时刻）` }
+  const [, ys, mos, ds, hs, mis, ss, mss, zone] = dt
+  const y = +ys, mo = +mos, d = +ds, h = +(hs || 0), mi = +(mis || 0), sec = +(ss || 0), millis = Number((mss || '0').padEnd(3, '0'))
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 59) return { error: `${label} 字段越界：${raw}` }
+  let offMs = _parseZoneToken(zone)
+  if (offMs === undefined) {
+    if (opts.tz) {
+      offMs = _timeZoneOffsetMs(opts.tz, Date.UTC(y, mo - 1, d, h, mi, sec))
+      if (offMs === null) return { error: `无法识别 tz：${opts.tz}（接受 ±HH:MM / UTC / IANA 时区名）` }
+    } else {
+      offMs = _BEIJING_OFFSET_MS   // 宪法 §十：不带时区 = 北京时间
+    }
+  }
+  const epochMs = Date.UTC(y, mo - 1, d, h, mi, sec, millis) - offMs
+  return { ms: epochMs }
+}
+
+// interval 标称锚点：≤ nowTs 的格点原点（续期以它为相位基准，不随手动触发/失败重试漂移）。
+function _resolveIntervalAnchor(schedule, every, nowTs, prev) {
+  const step = every * 1000
+  const explicit = schedule.anchor !== undefined && schedule.anchor !== null && schedule.anchor !== ''
+    ? schedule.anchor : (schedule.at !== undefined && schedule.at !== null && schedule.at !== '' ? schedule.at : null)
+  if (explicit !== null) {
+    const p = _parseScheduleTime(explicit, { tz: schedule.tz, nowTs, nearest: 'past', label: 'interval 锚点' })
+    if (p.error) return p
+    // 将绝对时刻回滚到最接近 now 的格点（step 对齐）
+    return { ms: p.ms - Math.ceil((p.ms - nowTs) / step) * step }
+  }
+  // 改调度沿用原相位（05-task C2：修改 every_seconds 后续期锚点仍为原 run_at，节律不重置）
+  const prevRunAt = prev && prev.schedule_kind === 'interval' ? Number(prev.run_at) : NaN
+  if (Number.isFinite(prevRunAt) && prevRunAt > 0) return { ms: prevRunAt - Math.ceil((prevRunAt - nowTs) / step) * step }
+  // 新建：落到设计好的夜间窗口（北京墙钟，按 phase 分槽），短周期再按步长回退到格点。
+  // 日级任务由此恒定在凌晨——不会因为"创建时刻在下午"就把节律定在下午。
+  const slot = _NIGHT_SLOTS[String(prev && prev.phase || '').toLowerCase()] || _NIGHT_SLOT_DEFAULT
+  let a = _wallClockMs((slot[0] * 3600 + slot[1] * 60) * 1000, nowTs, 'past')
+  if (step < _DAY_MS) a -= Math.floor((nowTs - a) / step) * step
+  return { ms: a }
+}
+
+function _firstGridAfter(anchor, step, nowTs) {
+  if (anchor > nowTs) return anchor
+  return anchor + (Math.floor((nowTs - anchor) / step) + 1) * step
+}
+
+function normalizeSchedule(schedule, nowTs, prev) {
   if (!schedule) return { kind: null, run_at: null, every_seconds: null, next_run_at: null }
   const kind = String(schedule.kind || '')
   if (kind === 'once') {
-    const at = Number(schedule.at)
-    if (!Number.isFinite(at) || at <= nowTs) return { error: 'once 调度需要未来的 at 时间戳（毫秒）', code: 'E_TASK_SCHEDULE_PAST' }
-    return { kind, run_at: at, every_seconds: null, next_run_at: at }
+    const parsed = _parseScheduleTime(schedule.at, { tz: schedule.tz, nowTs, nearest: 'future', label: 'once.at' })
+    if (parsed.error) return { error: parsed.error, code: parsed.code || 'E_SCHEMA' }
+    let at = parsed.ms
+    if (at <= nowTs) {
+      if (nowTs - at <= _SCHEDULE_PAST_GRACE_MS) at = nowTs + 1000
+      else return { error: `once.at 需为未来时刻（解析=北京 ${_beijingIso(parsed.ms)}，现在=北京 ${_beijingIso(nowTs)}）`, code: 'E_TASK_SCHEDULE_PAST' }
+    }
+    return { kind, run_at: at, every_seconds: null, next_run_at: at, next_run_bj: _beijingIso(at) }
   }
   if (kind === 'interval') {
     const every = Number(schedule.every_seconds)
     if (!Number.isInteger(every) || every < MIN_INTERVAL_SECONDS) return { error: `interval 调度需要 every_seconds ≥ ${MIN_INTERVAL_SECONDS} 的整数`, code: 'E_TASK_INTERVAL_MIN' }
-    return { kind, run_at: null, every_seconds: every, next_run_at: nowTs + every * 1000 }
+    const anchor = _resolveIntervalAnchor(schedule, every, nowTs, prev || {})
+    if (anchor.error) return anchor
+    const step = every * 1000
+    const next = _firstGridAfter(anchor.ms, step, nowTs)
+    return { kind, run_at: anchor.ms, every_seconds: every, next_run_at: next, next_run_bj: _beijingIso(next), anchor_bj: _beijingIso(anchor.ms) }
   }
   return { error: `非法 schedule.kind: ${kind || '(空)'}`, code: 'E_SCHEMA' }
-}
-
-// interval latest-only 续期锚点算法（05-task §1.3.1 C8，含全部防漂移注释）
-function nextRunAfterInterval(t, finished, ok) {
-  const step = t.every_seconds * 1000
-  const anchor = (t.run_at && t.run_at > 0) ? t.run_at : (t.next_run_at || finished)
-  let next
-  if (finished <= anchor) {
-    next = anchor
-  } else {
-    next = anchor + Math.max(1, Math.ceil((finished - anchor) / step)) * step
-    if (next <= finished) next += step
-    if (!ok) next = Math.min(next, finished + 2 * 3600 * 1000)
-  }
-  return next
 }
 
 // ---------------------------------------------------------------------------
@@ -451,8 +573,8 @@ function makeHandlers(opts) {
   const invariants = {
     scheduleValid: async (args, repo, ctx) => {
       const nowTs = Date.now()
-      const s = normalizeSchedule(args.schedule, nowTs)
-      if (s.error) return { code: s.code || 'E_SCHEMA', message: s.error, hint: 'once 传未来毫秒时间戳；interval 传 every_seconds ≥300 整数', retryable: false }
+      const s = normalizeSchedule(args.schedule, nowTs, { phase: args.phase || '' })
+      if (s.error) return { code: s.code || 'E_SCHEMA', message: s.error, hint: '时刻接受 epoch 毫秒/秒、ISO 8601（带时区按声明时区，不带时区按北京时间）、HH:mm；interval 需 every_seconds ≥300 整数，可用 anchor 指定北京墙钟相位', retryable: false }
       return null
     },
     intrusiveInterval: async (args, repo) => {
@@ -501,8 +623,12 @@ function makeHandlers(opts) {
       if (!programId) throwErr('E_TASK_PROGRAM_UNRESOLVED', 'program_id 缺失且会话不在已绑定工作区', '传 program_id（见 program_list），或在绑定工作区的会话里调用')
       if (args.provider && !args.model) throwErr('E_SCHEMA', 'provider+model 须成对出现', '模型覆盖须 provider+model 成对', false)
       if (!args.provider && args.model) throwErr('E_SCHEMA', 'provider+model 须成对出现', '模型覆盖须 provider+model 成对', false)
-      const sched = normalizeSchedule(args.schedule, nowTs)
+      const sched = normalizeSchedule(args.schedule, nowTs, { phase: args.phase || '' })
       if (sched.error) throwErr(sched.code || 'E_SCHEMA', sched.error, '修正 schedule 后重试')
+      const parentId = args.schedule?.after_task_id !== undefined ? args.schedule.after_task_id : args.parent_id ?? null
+      const afterDelay = args.schedule?.after_delay_seconds ?? 0
+      const dependencyError = validateDependency(id => repo.getTask(id), { program_id: programId, schedule_kind: sched.kind, every_seconds: sched.every_seconds }, parentId, afterDelay)
+      if (dependencyError) throwErr('E_TASK_DEPENDENCY', dependencyError, '核对前置任务与周期，不能自引用或形成循环')
       // INV-T2：interval 固定实体幂等去重
       if (sched.kind === 'interval') {
         const dup = repo.findActiveInterval(programId, args.objective)
@@ -515,7 +641,8 @@ function makeHandlers(opts) {
       }
       const id = repo.insertTask({
         program_id: programId,
-        parent_id: args.parent_id ?? null,
+        parent_id: parentId,
+        after_delay_seconds: afterDelay,
         phase: args.phase || '',
         objective: args.objective,
         priority: args.priority ?? 5,
@@ -532,10 +659,10 @@ function makeHandlers(opts) {
       })
       const payload = {
         task_id: id, program_id: programId, phase: args.phase || '', objective_head: String(args.objective || '').slice(0, 80),
-        schedule_kind: sched.kind, parent_id: args.parent_id ?? null, priority: args.priority ?? 5, source: 'model',
+        schedule_kind: sched.kind, parent_id: parentId, priority: args.priority ?? 5, source: 'model',
       }
       return {
-        data: { task_id: id, status: 'queued', schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at } : null, deduped: false },
+        data: { task_id: id, status: 'queued', schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at, next_run_bj: sched.next_run_bj ?? _beijingIso(sched.next_run_at) } : null, deduped: false },
         events: [{ name: 'task.created', payload }],
         after: { task_id: id },
       }
@@ -546,12 +673,17 @@ function makeHandlers(opts) {
       const t = repo.getTask(Number(args.task_id))
       if (!t) throwErr('E_NOT_FOUND', `task 不存在: ${args.task_id}`, '核对 task_list 里的 id')
       if (TERMINAL.has(t.status)) throwErr('E_STATE', `task #${args.task_id} 已终态（${t.status}），不能改调度`, '终态任务不能改调度；需要重跑请新建任务')
-      const sched = normalizeSchedule(args.schedule, nowTs)
+      const sched = normalizeSchedule(args.schedule, nowTs, t)
       if (sched.error) throwErr(sched.code || 'E_SCHEMA', sched.error, '修正 schedule 后重试')
+      const parentId = args.schedule?.after_task_id !== undefined ? args.schedule.after_task_id : t.parent_id
+      const afterDelay = args.schedule?.after_delay_seconds ?? t.after_delay_seconds ?? 0
+      const dependencyError = validateDependency(id => repo.getTask(id), { ...t, schedule_kind: sched.kind, every_seconds: sched.every_seconds }, parentId, afterDelay)
+      if (dependencyError) throwErr('E_TASK_DEPENDENCY', dependencyError, '核对前置任务与周期，不能自引用或形成循环')
       repo.transitionTask(Number(args.task_id), {
         schedule_kind: sched.kind, run_at: sched.run_at, every_seconds: sched.every_seconds, next_run_at: sched.next_run_at,
+        parent_id: parentId, after_delay_seconds: afterDelay,
       })
-      return { data: { task_id: Number(args.task_id), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at } : null } }
+      return { data: { task_id: Number(args.task_id), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at, next_run_bj: sched.next_run_bj ?? _beijingIso(sched.next_run_at) } : null } }
     },
 
     task_run_now: async (args, repo) => {
@@ -559,10 +691,24 @@ function makeHandlers(opts) {
       const t = repo.getTask(Number(args.task_id))
       if (!t) throwErr('E_NOT_FOUND', `task 不存在: ${args.task_id}`, '核对 task_list 里的 id')
       if (t.status !== 'queued') throwErr('E_STATE', `task #${args.task_id} 当前 ${t.status}，仅 queued 可立即触发`, '仅 queued 可立即触发；running 用 task_worker_status 查进度')
-      repo.transitionTask(Number(args.task_id), {
-        schedule_kind: t.schedule_kind || 'once', next_run_at: nowTs,
-      })
-      return { data: { task_id: Number(args.task_id), hint: '已排入调度队列，下一 tick（≤60s）认领执行' } }
+      // 手动触发只覆写 next_run_at，绝不触碰 run_at（标称相位锚点）——这是"立即运行后节律错乱"的根因。
+      // interval 行若锚点缺失（历史数据），先把当前标称格点固化进 run_at，续期才有不可覆写的基准。
+      const patch = { schedule_kind: t.schedule_kind || 'once', next_run_at: nowTs }
+      const nominal = (t.run_at && t.run_at > 0) ? Number(t.run_at) : Number(t.next_run_at) || 0
+      if (t.schedule_kind === 'interval' && !(t.run_at > 0) && nominal > 0) patch.run_at = nominal
+      repo.transitionTask(Number(args.task_id), patch)
+      const anchor = patch.run_at ?? t.run_at
+      const nextNominal = (t.schedule_kind === 'interval' && t.every_seconds && anchor > 0)
+        ? _firstGridAfter(anchor, t.every_seconds * 1000, nowTs) : null
+      return {
+        data: {
+          task_id: Number(args.task_id),
+          hint: nextNominal
+            ? `已排入调度队列（下一 tick 认领）；本次手动执行不改动节律，跑完仍回到 ${_beijingIso(nextNominal)}`
+            : '已排入调度队列，下一 tick（≤60s）认领执行',
+          nominal_next_run_at: nextNominal, nominal_next_run_bj: nextNominal ? _beijingIso(nextNominal) : null,
+        },
+      }
     },
 
     task_update_note: async (args, repo) => {
@@ -620,17 +766,16 @@ function makeHandlers(opts) {
       const nowTs = Date.now()
       const t = repo.getTask(Number(args.task_id))
       if (!t) throwErr('E_NOT_FOUND', `task 不存在: ${args.task_id}`, '核对 task_list 里的 id')
-      if (t.status !== 'running' && t.status !== 'blocked') {
-        // superseded：任务已被 cancel/reap 抢先终态，只补执行史不改状态
-        if (TERMINAL.has(t.status)) {
-          const runId = args.run_id || ''
-          if (runId) repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok: args.outcome === 'done', note: args.note || '', started_at: t.started_at, finished_at: nowTs, session_id: args.session_id ?? null })
-          return { data: { task_id: Number(args.task_id), superseded: true } }
-        }
+      const runId = args.run_id || t.active_run_id || ''
+      const recorded = runId && repo.hasTaskRun(Number(args.task_id), runId)
+      if (recorded || TERMINAL.has(t.status) || t.status === 'blocked' || (t.active_run_id && runId !== t.active_run_id)) {
+        // 晚到回调不能改写取消/暂停/回收，也不能覆盖正在运行的另一轮。
+        if (runId && !recorded) repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok: args.outcome === 'done' && !args.timed_out, note: args.note || '', started_at: t.started_at, finished_at: nowTs, session_id: args.session_id ?? null })
+        return { data: { task_id: Number(args.task_id), superseded: true } }
       }
 
       // 真实性判定（truth.rejected ⇒ 强制 failed）
-      let ok = args.outcome === 'done'
+      let ok = args.outcome === 'done' && !args.timed_out
       const truth = args.truth && typeof args.truth === 'object' ? args.truth : { checked: false, rejected: false, reason: '' }
       let note = args.note || ''
       if (truth.rejected) {
@@ -669,23 +814,21 @@ function makeHandlers(opts) {
       let status
       let nextRunAt = null
       if (t.schedule_kind === 'interval' && t.every_seconds) {
-        nextRunAt = nextRunAfterInterval(t, finished, ok)
+        nextRunAt = nextScheduledRun(t, finished, ok, repo.scheduledProgress(t, t.started_at || finished).attempts, !!args.timed_out)
         status = 'queued'
       } else {
         status = ok ? 'done' : 'failed'
       }
-      const runId = args.run_id || ''
       const tailNote = `${t.result || ''}\n[${new Date().toISOString().slice(0, 16)}] run ${runId || '-'}: ${ok ? 'done' : 'failed'}${note ? ' — ' + note : ''}`.trim()
       repo.transitionTask(Number(args.task_id), {
         status, result: tailNote.slice(-8000), last_run_at: finished, last_run_id: runId || null, next_run_at: nextRunAt,
         session_id: args.session_id ?? t.session_id,
+        active_run_id: null,
         finished_at: (status === 'done' || status === 'failed') ? finished : t.finished_at,
       })
-      if (runId) {
-        repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null })
-      }
+      repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null })
       return {
-        data: { task_id: Number(args.task_id), status, next_run_at: nextRunAt, run_recorded: !!runId, guard: { checked: guard.checked, missing: guard.missing } },
+        data: { task_id: Number(args.task_id), status, next_run_at: nextRunAt, run_recorded: true, guard: { checked: guard.checked, missing: guard.missing } },
         events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, cause: 'run' } }],
         after: { task_id: Number(args.task_id), status, ok },
       }
@@ -781,17 +924,21 @@ function makeHandlers(opts) {
     task_submit_complete: async (args, repo, ctx) => {
       const t = repo.getTask(Number(args.task_id))
       if (!t) throwErr('E_NOT_FOUND', `task 不存在: ${args.task_id}`, '核对 task_list 里的 id')
+      if (t.schedule_kind === 'interval') {
+        const result = `${t.result || ''}\n[${new Date().toISOString()}] 本轮摘要: ${args.summary || ''}`.trim().slice(-8000)
+        repo.transitionTask(Number(args.task_id), { result })
+        return { data: { task_id: Number(args.task_id), scheduled: true, hint: '本轮摘要已保存；定时任务由调度器自动收尾并续期，无需人工完结审批。' } }
+      }
       // 提请 approval（approval 域；未就绪时降级为本地留痕 + 返回失败引导）
       let requestId = null
       if (dispatchRef) {
-        try {
           const r = await dispatchRef('approval', 'request', {
             kind: 'task-complete', subject: `task:${args.task_id}`,
             evidence: String(args.summary || ''),
             payload: { task_id: Number(args.task_id), summary: args.summary, evidence: args.evidence || [], follow_up: args.follow_up || '' },
           }, { actor: 'model', session_id: ctx.session_id || null })
           if (r && r.ok) requestId = r.data?.request_id ?? r.data?.id ?? null
-        } catch { /* approval 域未就绪 */ }
+          else if (r?.error) throwErr(r.error.code, r.error.message, r.error.hint, r.error.retryable)
       }
       if (!requestId) {
         throwErr('E_BUS_DOMAIN_UNKNOWN', 'approval 域未就绪，无法提请 task-complete 审批', '任务保持 in_progress；待审批中心上线后重试 task_submit_complete', true)
@@ -805,6 +952,10 @@ function makeHandlers(opts) {
       if (!t) throwErr('E_NOT_FOUND', `task 不存在: ${args.task_id}`, '核对 task_list 里的 id')
       if (TERMINAL.has(t.status)) return { data: { task_id: Number(args.task_id), superseded: true } }
       const tail = `${t.result || ''}\n[${new Date().toISOString().slice(0, 16)}] 人工确认 #${args.request_id}: ${args.summary || ''}`.trim().slice(-8000)
+      if (t.schedule_kind === 'interval') {
+        repo.transitionTask(Number(args.task_id), { result: tail })
+        return { data: { task_id: Number(args.task_id), scheduled: true, status: t.status, next_run_at: t.next_run_at, acknowledged: true } }
+      }
       repo.transitionTask(Number(args.task_id), { status: 'done', result: tail, finished_at: nowTs }, t.status)
       return {
         data: { task_id: Number(args.task_id), status: 'done' },
@@ -861,20 +1012,27 @@ function makeHandlers(opts) {
     },
     task_drift: async (args, repo) => {
       const rows = repo.scheduledTasksAgg()
-      let maxDriftMinutes = 0
       const nowTs = Date.now()
+      const intervalRows = []
+      let maxDriftMinutes = 0
+      let anchorMissing = 0
       for (const t of rows) {
-        if (t.schedule_kind === 'interval' && t.every_seconds && t.next_run_at) {
-          const drift = Math.abs(t.next_run_at - nowTs) / 60000
-          if (drift > maxDriftMinutes && drift < t.every_seconds / 60) maxDriftMinutes = Math.round(drift)
-        }
+        if (t.schedule_kind !== 'interval' || !t.every_seconds || !t.next_run_at) continue
+        const hasAnchor = Number.isFinite(t.run_at) && t.run_at > 0
+        const nextBj = _beijingIso(t.next_run_at)
+        const driftMin = Math.round(Math.abs(t.next_run_at - nowTs) / 60_000)
+        if (driftMin < t.every_seconds / 60 && driftMin > maxDriftMinutes) maxDriftMinutes = driftMin
+        if (!hasAnchor) anchorMissing++
+        intervalRows.push({ id: t.id, program_id: t.program_id, phase: t.phase, anchor_ok: hasAnchor, next_run_at: t.next_run_at, next_run_bj: nextBj, drift_minutes: driftMin })
       }
+      // 异常任务：锚点缺失（需迁移脚本校准）或 next_run_at 明显错位到白天
+      const anchorMissingIds = intervalRows.filter((r) => !r.anchor_ok).map((r) => r.id)
       let taskRunsLastAgeHours = null
       try {
         const last = repo.listTaskRunsWhere({}, 1, 0)
         if (last && last.length && last[0].finished_at) taskRunsLastAgeHours = Math.round((nowTs - last[0].finished_at) / 3600000)
       } catch { /* ignore */ }
-      return { scheduled_drift: maxDriftMinutes, task_runs_last_age_hours: taskRunsLastAgeHours }
+      return { scheduled_drift: maxDriftMinutes, anchor_missing: anchorMissing, anchor_missing_ids: anchorMissingIds, interval_tasks: intervalRows, task_runs_last_age_hours: taskRunsLastAgeHours }
     },
   }
 

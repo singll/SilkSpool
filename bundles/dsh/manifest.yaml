@@ -90,6 +90,10 @@ templates:
   - dsh-plugin-sec-suite.experience.js
   - dsh-plugin-sec-suite.parsers.js
   - dsh-plugin-sec-suite.scheduler.js
+  - dsh-plugin-sec-suite.task-policy.js
+  - dsh-plugin-sec-suite.parse-proposal.js
+  - dsh-plugin-sec-suite.scheduler.test.mjs
+  - dsh-plugin-sec-suite.task-policy.test.mjs
   - dsh-plugin-sec-suite.host-compat.js
   - dsh-plugin-sec-suite.native-guard.js
   - dsh-plugin-sec-suite.worker-runtime.js

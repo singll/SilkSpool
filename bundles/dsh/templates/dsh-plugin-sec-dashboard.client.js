@@ -1165,6 +1165,10 @@ window.__ModuleLoader__.load({
           el('span', { style: brandPill, title: '下次运行: ' + fmtTime(t.next_run_at) },
             t.schedule_kind === 'interval' ? fmtEvery(t.every_seconds) : '一次性'),
           t.phase ? el('span', { style: pill, title: '任务阶段' }, t.phase) : null,
+          t.parent_id ? el('span', { style: pill, title: '本周期前置任务成功后自动接续；前置失败时等待其恢复' },
+            '接续 #' + t.parent_id + (t.after_delay_seconds ? ' · 延迟 ' + t.after_delay_seconds + 's' : '')) : null,
+          el('span', { style: pill, title: '单次执行预算；每个周期最多执行三次，超时保留检查点续跑' },
+            Math.round(Math.max(3600, Math.min(7200, t.budget_timeout_sec || 0)) / 60) + ' 分钟/次'),
           t.provider ? el('span', { style: { ...pill, color: T.label3 }, title: t.model || '' }, t.provider + (t.model ? '/' + t.model : '')) : null,
           taskPill(t.status),
           el('span', { style: { marginLeft: 'auto', display: 'inline-flex', gap: 6 } },
@@ -1186,7 +1190,7 @@ window.__ModuleLoader__.load({
               onClick: function () { props.onCancel(t.id) } }, opIcon('stop')))),
         el('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 6, color: T.label3, ...F.xxxs } },
           el('span', { title: '所属授权项目（工作区）' }, '🏢 ' + (t.program_id || '—')),
-          el('span', { title: '下次运行: ' + fmtTime(t.next_run_at) }, paused ? '⏸ 已暂停（恢复后继续节律）' : '⏭ ' + (t.next_run_at ? fmtRel(t.next_run_at) : '—')),
+          el('span', { title: '最早运行: ' + fmtTime(t.next_run_at) }, paused ? '⏸ 已暂停（恢复后继续节律）' : '⏭ ' + (t.next_run_at ? fmtRel(t.next_run_at) : '—') + (t.parent_id ? ' · 前置成功后运行' : '')),
           t.last_run_at
             ? el('span', { style: { color: lastOk === false ? T.error : undefined }, title: (t.last_note || '') + '\n时间: ' + fmtTime(t.last_run_at) },
                 (lastOk === false ? '✗ 上次失败 ' : '✓ 上次成功 ') + fmtRel(t.last_run_at))

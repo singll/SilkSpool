@@ -97,11 +97,11 @@ test('受管角色拒绝丢失运行指导、歧义字段和未解析变量；�
   assert.equal(f.reader(f.dir, 'maintenance', null), '')
 })
 
-test('调度最终 prompt 包含角色/任务/知识检索，候选登记与确认分开', () => {
+test('调度最终 prompt 包含角色/任务/知识检索，线索、信号与确认分开', () => {
   const prompt = buildScheduledPrompt({ id: 42, program_id: 'fixture', phase: 'recon', objective: '仅检查本地 fixture' }, '角色职责')
   assert.match(prompt, /角色职责/)
   assert.match(prompt, /仅检查本地 fixture/)
-  assert.match(prompt, /vuln_register_signal.*候选.*vuln_confirm/)
+  assert.match(prompt, /仅有线索时写 fact\/FGS.*vuln_register_signal.*信号.*vuln_confirm/)
   assert.doesNotMatch(prompt, /finding_add/)
   assert.match(prompt, /fact_search.*exp_search.*kb_search/)
 })

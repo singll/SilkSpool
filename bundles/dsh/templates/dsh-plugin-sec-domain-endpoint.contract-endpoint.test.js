@@ -57,6 +57,17 @@ function readAudit(dir) {
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
 
+test('真实 httpx parser 提案的 endpoints 数组与空 program 能入库', async () => {
+  const { bus, domain } = makeEnv()
+  const r = await domain.handlers.subscribers.onRunProposal({ payload: {
+    run_id: 'rfixture', program_id: null,
+    parse_proposal: { kind: 'endpoints', endpoints: [{ host: 'api.example.com', method: 'GET', path: '/parser', status: '200', source: 'httpx:rfixture' }] },
+  } })
+  assert.equal(r.ok, true)
+  assert.equal(r.data.failed, 0)
+  assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM endpoints WHERE path='/parser'").get().n, 1)
+})
+
 function makeAliasEnv(dispatchAliases) {
   const dir = tmpDir()
   const dataDir = path.join(dir, 'data')

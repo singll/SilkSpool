@@ -14,8 +14,11 @@ let extractorPromise = null
 function getExtractor() {
   if (!extractorPromise) {
     extractorPromise = import('@huggingface/transformers').then((m) =>
-      m.pipeline('feature-extraction', 'Xenova/multilingual-e5-small', { dtype: 'q8' })
-    )
+      // LXC/cpuset 下自动 affinity 会尝试绑定不可用 CPU；显式线程数避免启动报错和 worker 争抢。
+      m.pipeline('feature-extraction', 'Xenova/multilingual-e5-small', {
+        dtype: 'q8', session_options: { intraOpNumThreads: 1, interOpNumThreads: 1 },
+      })
+    ).catch(error => { extractorPromise = null; throw error })
   }
   return extractorPromise
 }

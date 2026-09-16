@@ -18,6 +18,7 @@ import * as dns from 'node:dns'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { executeWorkerProcess } from '../sec-suite/worker-runtime.js'
+import { compactProposalEvents } from '../sec-suite/parse-proposal.js'
 
 export const name = 'sec-domain-exec'
 export const version = '1.0.0'
@@ -105,7 +106,7 @@ export const EXEC_MANIFEST = {
       events: ['exec.worker.spawned', 'exec.worker.finished'],
       event_limit: 2,
       invariants: [],
-      timeout_ms: 3670000,
+      timeout_ms: 7270000,
       agent_note: '派一个隔离的无头 worker 执行自包含任务（批量复扫、大日志蒸馏等），跑完只回尾部摘要，全文落盘 results/<run_id>/worker.log。幂等：宿主重启后原样重试确定性拿回真实结果；强制重跑传 force:true。',
       deprecated: false,
     },
@@ -191,8 +192,8 @@ export const EXEC_MANIFEST = {
     },
     exec_manifest_list: {
       actor: ['model', 'dashboard', 'human'],
-      params: schema({ stage: str(), risk: str(), domain: str() }, []),
-      agent_note: '枚举已登记 CLI 工具 manifest（按 stage/risk/产物域过滤），含能力与沙箱声明。',
+      params: schema({ name: str(), stage: str(), risk: str(), domain: str() }, []),
+      agent_note: '查询已登记 CLI 工具；name 精确过滤，stage/risk/domain 分类过滤。返回 params 必填项/缺省值与 timeout_sec；调用 exec_run_cli 前先核对，勿猜工具名或参数。',
     },
   },
   events: {
@@ -610,7 +611,7 @@ function makeHandlers(opts) {
         let settled = false
         let childDone = false
         let streamDone = false
-        const finalize = (payload) => { if (settled) return; settled = true; clearTimeout(killer); resolve(payload) }
+        const finalize = (payload) => { if (settled) return; settled = true; clearTimeout(killer); resolve({ ...payload, stderr: Buffer.concat(errBuf).toString('utf8') }) }
         out.on('finish', () => { streamDone = true; if (childDone) finalize({ code: childExitCode, signal: childSignal }) })
         let childExitCode = null
         let childSignal = null
@@ -620,9 +621,9 @@ function makeHandlers(opts) {
       const meta = { run_id: runId, tool: toolName, argv: [binary, ...argv], params, started_at: new Date(started).toISOString(), duration_ms: Date.now() - started, exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null, risk: manifest.risk || 'passive', stage: manifest.stage || null, sandboxed: !!sandbox, session_id: sessionId, program_id: programId }
       repo.writeCmd(runDir, (sandbox ? '[sandbox] ' : '') + [binary, ...argv].join(' ') + '\n')
       repo.writeMeta(runDir, meta)
+      fs.writeFileSync(path.join(runDir, 'stderr.log'), result.stderr || '')
 
-      // 后处理 ① know pb_outcome（弱联动）
-      try { await ctx.dispatch('know', 'pb_outcome', { name: `tool:${toolName}`, success: result.code === 0, duration_ms: meta.duration_ms }, { actor: 'script', session_id: sessionId }) } catch { /* 弱联动 */ }
+      // 单次 CLI 的退出码不是打法链效果，不能伪造 tool:name 的 pb_outcome 回执。
 
       if (programId && result.code !== 0) {
         const why = result.error ? `启动失败: ${result.error}` : result.signal ? `超时/被杀 ${result.signal}` : `exit ${result.code}`
@@ -646,12 +647,14 @@ function makeHandlers(opts) {
         }
       }
 
+      compactProposalEvents(events, proposal)
       const lines = stdoutText.split('\n')
       const head = lines.slice(0, 20).join('\n')
       const data = {
         run_id: runId, exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null,
         duration_ms: meta.duration_ms, total_lines: lines.length, summary: head, sandboxed: !!sandbox, program_id: programId,
         parse_counts: proposal ? proposal.counts : null,
+        ...(result.code !== 0 ? { stderr_tail: String(result.stderr || '').slice(-2000) } : {}),
       }
       if (lines.length > 20) data.hint = `输出共 ${lines.length} 行，仅显示前 20 行；用 exec_grep_result/exec_page_result 按需取`
       return { data, events, after: { run_id: runId, exit_code: result.code ?? null } }
@@ -677,7 +680,13 @@ function makeHandlers(opts) {
         } catch { /* 查询失败不阻断 */ }
       }
       if (activeWorkers >= MAX_WORKERS) throwErr('E_EXEC_WORKER_BUSY', `worker 并发上限 ${MAX_WORKERS}`, '稍后重试（busy 时调度器回 queued）', true)
-      const timeoutMs = Math.max(1, Math.min(Number(args.timeout) || 900, 7200)) * 1000
+      let timeoutMs = Math.max(1, Math.min(Number(args.timeout) || 900, 7200)) * 1000
+      const parentDeadline = Number(process.env.SEC_WORKER_DEADLINE_MS)
+      if (parentDeadline > 0) {
+        const remaining = parentDeadline - Date.now() - 60000
+        if (remaining < 1000) throwErr('E_EXEC_WORKER_BUDGET', '父任务已进入收尾窗口', '保存检查点，由调度器续跑；不要再派子任务', false)
+        timeoutMs = Math.min(timeoutMs, remaining)
+      }
       const { runId, runDir } = repo.createRunDir('w')
       const workCwd = runDir
       const fullTask = task.includes(ROE_ANCHOR) ? task : `${task}\n\n${ROE_BLOCK}`
@@ -690,6 +699,7 @@ function makeHandlers(opts) {
       }
       dshArgs.push(fullTask)
       const env = { ...process.env, DSH_HOME: dataDir, PATH: '/usr/local/node/bin:' + (process.env.PATH || '') }
+      env.SEC_WORKER_DEADLINE_MS = String(Date.now() + timeoutMs)
       if (args.phase) env.SEC_WORKER_PHASE = String(args.phase)
 
       activeWorkers++
@@ -871,12 +881,20 @@ function makeHandlers(opts) {
     exec_manifest_list: async (args, repo) => {
       const rows = []
       for (const nm of repo.listManifests()) {
+        if (args.name && nm !== args.name) continue
         const m = repo.loadManifest(nm)
         if (!m) continue
         if (args.stage && m.stage !== args.stage) continue
         if (args.risk && m.risk !== args.risk) continue
         if (args.domain && m.domain !== args.domain) continue
-        rows.push({ name: nm, stage: m.stage || null, risk: m.risk || null, target_param: m.target_param || null, requires: m.requires || [], produces: m.produces || [], parser: m.parser || null, domain: m.domain || null, sandbox: m.sandbox !== false, deprecated_store: m.store || null })
+        const paramMap = new Map()
+        for (const match of String(m.args_template || '').matchAll(/\{\{\s*([a-zA-Z0-9_]+)(\|([^}]*))?\s*\}\}/g)) {
+          if (match[1] === 'outdir' || match[1] === 'run_id') continue
+          const required = match[3] === undefined || paramMap.get(match[1])?.required === true
+          paramMap.set(match[1], { name: match[1], required, default: required ? null : match[3] })
+        }
+        const params = [...paramMap.values()]
+        rows.push({ name: nm, params, timeout_sec: Math.min(Number(m.timeout) || 300, 3600), stage: m.stage || null, risk: m.risk || null, target_param: m.target_param || null, requires: m.requires || [], produces: m.produces || [], parser: m.parser || null, domain: m.domain || null, sandbox: m.sandbox !== false, deprecated_store: m.store || null })
       }
       return { rows, total: rows.length }
     },

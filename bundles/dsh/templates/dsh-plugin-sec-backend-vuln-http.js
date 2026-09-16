@@ -145,8 +145,16 @@ export function createVulnHttpBackend(opts = {}) {
   function openSyncDb() {
     if (syncDb) return syncDb
     syncDb = new DatabaseSync(dbFile)
-    syncDb.exec('PRAGMA journal_mode = WAL')
     syncDb.exec('PRAGMA busy_timeout = 5000')
+    // journal_mode 切换不受 busy_timeout 保护（锁定即抛错），多进程启动需显式重试。
+    const deadline = Date.now() + 5000
+    for (;;) {
+      try { syncDb.exec('PRAGMA journal_mode = WAL'); break } catch (e) {
+        if (!/database is locked/i.test(e?.message || '') || Date.now() >= deadline) throw e
+        const end = Date.now() + 25
+        while (Date.now() < end) { /* 同步短重试 */ }
+      }
+    }
     syncDb.exec('PRAGMA synchronous = NORMAL')
     ensureSyncCols(syncDb)
     return syncDb

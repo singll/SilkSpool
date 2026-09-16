@@ -8,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
+import { selectDueTasks, scheduledProgress, nextScheduledRun, validateDependency, taskWorkerAlive, withinTaskBudget } from './task-policy.js'
 
 const DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const DB_FILE = path.join(DATA_DIR, 'asset-graph.db')
@@ -18,12 +19,31 @@ function beijingDate(ts = Date.now()) {
 
 let db = null
 
+// journal_mode 切换不受 busy_timeout 保护（锁定即抛错），多 worker 同时启动需显式重试。
+const LOCK_RETRY_SHARED = typeof SharedArrayBuffer === 'function' ? new SharedArrayBuffer(4) : null
+function sleepSync(ms) {
+  if (LOCK_RETRY_SHARED) {
+    try { Atomics.wait(new Int32Array(LOCK_RETRY_SHARED), 0, 0, ms); return } catch { /* 退化 */ }
+  }
+  const end = Date.now() + ms
+  while (Date.now() < end) { /* 自旋兜底，仅启动期毫秒级重试 */ }
+}
+function execWithLockRetry(database, sql, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try { database.exec(sql); return } catch (e) {
+      if (!/database is locked/i.test(e?.message || '') || Date.now() >= deadline) throw e
+      sleepSync(20 + Math.random() * 30)
+    }
+  }
+}
+
 export function getDb() {
   if (db) return db
   fs.mkdirSync(DATA_DIR, { recursive: true })
   db = new DatabaseSync(DB_FILE)
-  db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA busy_timeout = 5000')       // P0-2：争锁等待 5s，取代立即抛 database is locked
+  execWithLockRetry(db, 'PRAGMA journal_mode = WAL')
   db.exec('PRAGMA synchronous = NORMAL')      // P0-2：WAL 下安全且更快
   db.exec('PRAGMA wal_autocheckpoint = 1000') // P0-2：约 4MB 自动 checkpoint，防 WAL 无限膨胀
   db.exec(`
@@ -119,6 +139,8 @@ export function getDb() {
   ensureCol('tasks', 'reasoning_effort', 'reasoning_effort TEXT')
   // ---- v4.5 异步审批：任务预算上限（task-budget-extend 批准后写入，runWorker 取 max(默认, 该值)）----
   ensureCol('tasks', 'budget_timeout_sec', 'budget_timeout_sec INTEGER')
+  ensureCol('tasks', 'active_run_id', 'active_run_id TEXT')
+  ensureCol('tasks', 'after_delay_seconds', 'after_delay_seconds INTEGER NOT NULL DEFAULT 0')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(schedule_kind, next_run_at)')
   // ---- P12：定时任务执行历史（task 行不再因重复跑而增殖；每次运行落一行历史）----
   db.exec(`
@@ -627,46 +649,181 @@ const TASK_STATUS = ['queued', 'running', 'blocked', 'done', 'failed', 'cancelle
 const MIN_INTERVAL_SECONDS = 300 // 对齐 dsh-schedule 下限
 
 // schedule: { kind: 'once', at: <epoch ms> } | { kind: 'interval', every_seconds: <s>=300+ } | 缺省=普通任务
-function normalizeSchedule(schedule) {
+// ---------------------------------------------------------------------------
+// 时间转换与校准（同步自 v5 sec-domain-task；00-conventions §十：存储 UTC epoch 毫秒）
+//   - 带时区的输入按声明时区换算；不带时区一律按北京时间（+08:00）解释。
+//   - interval 任务从创建时刻起固化标称锚点（run_at），续期以此为相位基准，不受手动触发影响。
+// ---------------------------------------------------------------------------
+const _BEIJING_OFFSET_MS = 8 * 3600_000
+const _DAY_MS = 86_400_000
+// 夜间批次默认相位（北京时间）：recon 03:00 / vuln 04:00 / 其余 05:00。
+// 同步自 v5 sec-domain-task；未显式给 anchor 的新任务落进对应窗口，同批需错开的由调用方传 anchor。
+const _NIGHT_SLOTS = { recon: [3, 0], vuln: [4, 0] }
+const _NIGHT_SLOT_DEFAULT = [5, 0]
+const _SCHEDULE_PAST_GRACE_MS = 60_000 // once 刚过点 60 秒内校准为立即执行（模型算时刻与服务器时钟抖动）
+
+function _beijingIso(ts) {
+  const n = Number(ts)
+  return Number.isFinite(n) ? `${new Date(n + _BEIJING_OFFSET_MS).toISOString().slice(0, 16)}+08:00` : null
+}
+
+// 时区标识 → 相对 UTC 的毫秒偏移（识别失败返回 null）。
+const _TZ_OFFSET_ALIASES = { beijing: _BEIJING_OFFSET_MS, '北京': _BEIJING_OFFSET_MS, '北京时间': _BEIJING_OFFSET_MS, '中国标准时间': _BEIJING_OFFSET_MS, cst: _BEIJING_OFFSET_MS, prc: _BEIJING_OFFSET_MS, utc: 0, gmt: 0, z: 0 }
+function _timeZoneOffsetMs(tz, refTs) {
+  const key = String(tz ?? '').trim()
+  if (!key) return null
+  const lower = key.toLowerCase()
+  if (_TZ_OFFSET_ALIASES[lower] !== undefined) return _TZ_OFFSET_ALIASES[lower]
+  const m = key.match(/^([+-])(\d{2}):?(\d{2})?$/)
+  if (m) { const mins = Number(m[2]) * 60 + Number(m[3] || 0); return m[1] === '-' ? -mins * 60_000 : mins * 60_000 }
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', { timeZone: key, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    const p = {}; for (const x of dtf.formatToParts(new Date(refTs))) if (x.type !== 'literal') p[x.type] = x.value
+    const wall = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second)
+    return Math.round((wall - Math.floor(refTs / 1000) * 1000) / 60_000) * 60_000
+  } catch { return null }
+}
+
+// ≤ nowTs 的最近一次"北京墙钟 = wallMs"时刻（nearest=future 则取 > nowTs 的下一次）。
+function _wallClockMs(wallMs, nowTs, nearest) {
+  const bjMidnight = Math.floor((nowTs + _BEIJING_OFFSET_MS) / _DAY_MS) * _DAY_MS - _BEIJING_OFFSET_MS
+  let t = bjMidnight + wallMs
+  if (nearest === 'past') { if (t > nowTs) t -= _DAY_MS } else if (t <= nowTs) t += _DAY_MS
+  return t
+}
+
+function _parseZoneToken(tok) {
+  if (!tok) return undefined
+  if (tok === 'Z' || tok === 'z') return 0
+  const m = tok.match(/^([+-])(\d{2}):?(\d{2})$/)
+  if (!m) return undefined
+  const mins = Number(m[2]) * 60 + Number(m[3])
+  return m[1] === '-' ? -mins * 60_000 : mins * 60_000
+}
+
+function _parseScheduleTime(input, opts = {}) {
+  const nowTs = Number.isFinite(opts.nowTs) ? opts.nowTs : Date.now()
+  const nearest = opts.nearest === 'past' ? 'past' : 'future'
+  const label = opts.label || '时间'
+  if (input === null || input === undefined || input === '') return { error: `${label} 为空` }
+  if (typeof input === 'number') {
+    if (!Number.isFinite(input)) return { error: `${label} 不是有限数值` }
+    return { ms: Math.abs(input) >= 1e12 ? input : input * 1000 }
+  }
+  const raw = String(input).trim()
+  if (/^-?\d+$/.test(raw)) { const n = Number(raw); return { ms: Math.abs(n) >= 1e12 ? n : n * 1000 } }
+  // 中文标点归一：2026年9月16日03:00 / 3点 → 可解析形态
+  const s = raw.replace(/年/g, '-').replace(/月/g, '-').replace(/日/g, '').replace(/点/g, ':').replace(/分/g, '').replace(/：/g, ':').replace(/\s+/g, ' ').trim()
+  const hm = s.match(/^([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/)
+  if (hm) {
+    const secs = Number(hm[1]) * 3600 + Number(hm[2]) * 60 + Number(hm[3] || 0)
+    return { ms: _wallClockMs(secs * 1000, nowTs, nearest) }
+  }
+  const dt = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:?\d{2})?$/)
+  if (!dt) return { error: `无法解析 ${label}：${raw}（接受 epoch 毫秒/秒、ISO 8601、HH:mm 时刻）` }
+  const [, ys, mos, ds, hs, mis, ss, mss, zone] = dt
+  const y = +ys, mo = +mos, d = +ds
+  const h = +(hs || 0), mi = +(mis || 0), sec = +(ss || 0), millis = Number((mss || '0').padEnd(3, '0'))
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 59) return { error: `${label} 字段越界：${raw}` }
+  let offMs = _parseZoneToken(zone)
+  if (offMs === undefined) {
+    if (opts.tz) {
+      offMs = _timeZoneOffsetMs(opts.tz, Date.UTC(y, mo - 1, d, h, mi, sec))
+      if (offMs === null) return { error: `无法识别 tz：${opts.tz}（接受 ±HH:MM / UTC / IANA 时区名）` }
+    } else {
+      offMs = _BEIJING_OFFSET_MS // 宪法 §十：不带时区 = 北京时间
+    }
+  }
+  return { ms: Date.UTC(y, mo - 1, d, h, mi, sec, millis) - offMs }
+}
+
+// interval 标称锚点：≤ nowTs 的格点原点，续期以它为相位基准（手动触发/失败重试都不改写它）。
+function _resolveIntervalAnchor(schedule, every, nowTs, prev) {
+  const step = every * 1000
+  const explicit = schedule.anchor !== undefined && schedule.anchor !== null && schedule.anchor !== ''
+    ? schedule.anchor
+    : (schedule.at !== undefined && schedule.at !== null && schedule.at !== '' ? schedule.at : null)
+  if (explicit !== null) {
+    const p = _parseScheduleTime(explicit, { tz: schedule.tz, nowTs, nearest: 'past', label: 'interval 锚点' })
+    if (p.error) return p
+    return { ms: p.ms - Math.ceil((p.ms - nowTs) / step) * step }
+  }
+  // 改调度沿用原相位（节律不因改步长而重置）
+  const prevRunAt = prev && prev.schedule_kind === 'interval' ? Number(prev.run_at) : NaN
+  if (Number.isFinite(prevRunAt) && prevRunAt > 0) return { ms: prevRunAt - Math.ceil((prevRunAt - nowTs) / step) * step }
+  // 新建：按 phase 分配夜间窗口锚点（recon 03:00 / vuln 04:00 / 其余 05:00），
+  // 短周期从该锚点按步长回退到最接近 now 的格点（v5 对齐：所有步长共用 phase 窗口）。
+  const slot = _NIGHT_SLOTS[String(prev && prev.phase || '').toLowerCase()] || _NIGHT_SLOT_DEFAULT
+  const bjMidnight = Math.floor((nowTs + _BEIJING_OFFSET_MS) / _DAY_MS) * _DAY_MS - _BEIJING_OFFSET_MS
+  const nightWall = (slot[0] * 3600 + slot[1] * 60) * 1000
+  let a = bjMidnight + nightWall
+  if (a > nowTs) a -= _DAY_MS
+  if (step < _DAY_MS) a -= Math.floor((nowTs - a) / step) * step
+  return { ms: a }
+}
+
+function _firstGridAfter(anchor, step, nowTs) {
+  if (anchor > nowTs) return anchor
+  return anchor + (Math.floor((nowTs - anchor) / step) + 1) * step
+}
+
+// schedule: { kind:'once', at } | { kind:'interval', every_seconds, anchor?, tz? } | 缺省=普通任务
+// prev：改调度时传入既有行，用于沿用标称相位（taskSchedule 用）。
+function normalizeSchedule(schedule, prev) {
   if (!schedule) return { kind: null, run_at: null, every_seconds: null, next_run_at: null }
   const kind = String(schedule.kind || '')
+  const nowTs = now()
   if (kind === 'once') {
-    const at = Number(schedule.at)
-    if (!Number.isFinite(at) || at <= now()) return { error: 'once 调度需要未来的 at 时间戳（毫秒）' }
-    return { kind, run_at: at, every_seconds: null, next_run_at: at }
+    const parsed = _parseScheduleTime(schedule.at, { tz: schedule.tz, nowTs, nearest: 'future', label: 'once.at' })
+    if (parsed.error) return parsed
+    let at = parsed.ms
+    if (at <= nowTs) {
+      if (nowTs - at <= _SCHEDULE_PAST_GRACE_MS) at = nowTs + 1000
+      else return { error: `once.at 需为未来时刻（解析=北京 ${_beijingIso(parsed.ms)}，现在=北京 ${_beijingIso(nowTs)}）` }
+    }
+    return { kind, run_at: at, every_seconds: null, next_run_at: at, next_run_bj: _beijingIso(at) }
   }
   if (kind === 'interval') {
     const every = Number(schedule.every_seconds)
     if (!Number.isInteger(every) || every < MIN_INTERVAL_SECONDS) {
       return { error: `interval 调度需要 every_seconds ≥ ${MIN_INTERVAL_SECONDS} 的整数` }
     }
-    return { kind, run_at: null, every_seconds: every, next_run_at: now() + every * 1000 }
+    const anchor = _resolveIntervalAnchor(schedule, every, nowTs, prev)
+    if (anchor.error) return anchor
+    const next = _firstGridAfter(anchor.ms, every * 1000, nowTs)
+    return { kind, run_at: anchor.ms, every_seconds: every, next_run_at: next, next_run_bj: _beijingIso(next), anchor_bj: _beijingIso(anchor.ms) }
   }
   return { error: `非法 schedule.kind: ${kind || '(空)'}（可选: once/interval）` }
 }
 
 export function taskCreate({ program_id, phase = '', objective, priority = 5, budget_tokens = null, parent_id = null, assignee = '', session_id = null, schedule = null, provider = null, model = null, reasoning_effort = null }) {
   if (!program_id || !objective) return { ok: false, error: 'program_id 与 objective 必填' }
-  const sched = normalizeSchedule(schedule)
+  // 传入 phase（schedule_kind=null 触发夜间槽位分配）；有显式 anchor 时槽位被覆盖。
+  const sched = normalizeSchedule(schedule, { phase })
   if (sched.error) return { ok: false, error: sched.error }
   const d = getDb()
+  parent_id = schedule?.after_task_id !== undefined ? schedule.after_task_id : parent_id
+  const afterDelay = schedule?.after_delay_seconds ?? 0
+  const dependencyError = validateDependency(id => d.prepare('SELECT * FROM tasks WHERE id=?').get(id),
+    { program_id, schedule_kind: sched.kind, every_seconds: sched.every_seconds }, parent_id, afterDelay)
+  if (dependencyError) return { ok: false, error: dependencyError }
   // P12 幂等去重：interval 周期任务是「固定任务」实体——同 program 下同 objective 的活跃周期任务只保留一行，
   // 重复创建（链/会话复读）直接返回已有任务，不再让任务表增殖。
   if (sched.kind === 'interval') {
     const dup = d.prepare(
-      "SELECT id FROM tasks WHERE program_id = ? AND objective = ? AND schedule_kind = 'interval' AND status NOT IN ('done','failed','cancelled') LIMIT 1"
+      "SELECT id, next_run_at FROM tasks WHERE program_id = ? AND objective = ? AND schedule_kind = 'interval' AND status NOT IN ('done','failed','cancelled') LIMIT 1"
     ).get(program_id, objective)
-    if (dup) return { ok: true, id: Number(dup.id), deduped: true, schedule: { kind: 'interval' } }
+    if (dup) return { ok: true, id: Number(dup.id), deduped: true, schedule: { kind: 'interval', next_run_at: dup.next_run_at, next_run_bj: _beijingIso(dup.next_run_at) } }
   }
   const r = d.prepare(`
     INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
       session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at,
-      provider, model, reasoning_effort)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+      provider, model, reasoning_effort, after_delay_seconds)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
   `).run(program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
     session_id, sched.kind, sched.run_at, sched.every_seconds, sched.next_run_at, now(), now(),
-    provider ?? null, model ?? null, reasoning_effort ?? null)
-  return { ok: true, id: Number(r.lastInsertRowid), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at } : null }
+    provider ?? null, model ?? null, reasoning_effort ?? null, afterDelay)
+  return { ok: true, id: Number(r.lastInsertRowid), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at, next_run_bj: sched.next_run_bj } : null }
 }
 
 // ---- P15 流程守卫：interval 日任务标 done 前硬校验纪律产物（台账增量/卡片使用/交接包）----
@@ -777,28 +934,52 @@ function taskWhere({ programId = '', status = '', phase = '', q = '', bucket = '
 // 修改/暂停/恢复调度。schedule=null 表示清除调度（变普通任务）。
 export function taskSchedule({ id, schedule }) {
   const d = getDb()
-  const t = d.prepare('SELECT id, status FROM tasks WHERE id = ?').get(Number(id))
+  const t = d.prepare('SELECT * FROM tasks WHERE id = ?').get(Number(id))
   if (!t) return { ok: false, error: `task 不存在: ${id}` }
   if (['done', 'failed', 'cancelled'].includes(t.status)) return { ok: false, error: `task #${id} 已终态（${t.status}），不能改调度` }
-  const sched = normalizeSchedule(schedule)
+  // 传入既有行：改步长时沿用原标称相位（schedule.anchor 显式给出时以其为准）
+  const sched = normalizeSchedule(schedule, t)
   if (sched.error) return { ok: false, error: sched.error }
-  d.prepare('UPDATE tasks SET schedule_kind = ?, run_at = ?, every_seconds = ?, next_run_at = ?, updated_at = ? WHERE id = ?')
-    .run(sched.kind, sched.run_at, sched.every_seconds, sched.next_run_at, now(), Number(id))
-  return { ok: true, id: Number(id), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at } : null }
+  const parentId = schedule?.after_task_id !== undefined ? schedule.after_task_id : t.parent_id
+  const afterDelay = schedule?.after_delay_seconds ?? t.after_delay_seconds ?? 0
+  const dependencyError = validateDependency(parent => d.prepare('SELECT * FROM tasks WHERE id=?').get(parent),
+    { ...t, schedule_kind: sched.kind, every_seconds: sched.every_seconds }, parentId, afterDelay)
+  if (dependencyError) return { ok: false, error: dependencyError }
+  d.prepare('UPDATE tasks SET schedule_kind = ?, run_at = ?, every_seconds = ?, next_run_at = ?, parent_id = ?, after_delay_seconds = ?, updated_at = ? WHERE id = ?')
+    .run(sched.kind, sched.run_at, sched.every_seconds, sched.next_run_at, parentId, afterDelay, now(), Number(id))
+  return { ok: true, id: Number(id), schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at, next_run_bj: _beijingIso(sched.next_run_at) } : null }
 }
 
 // 立即触发一次（不动调度节律）：把 next_run_at 拨到现在，调度循环下个 tick 认领。
 // 节律不漂移的保证在 taskFinishScheduledRun：interval 续期以 run_at（标称相位）为锚，
 // 手动触发的 next_run_at 覆写不会污染下次运行时间。
+// interval 行缺 run_at（历史数据）时，这里先把当前标称格点固化进 run_at —— 否则续期只能退回
+// 被本函数覆写成"现在"的 next_run_at，整条节律会永久漂到手动触发时刻（2026-09-02 事故根因）。
 // 对未设置 schedule_kind 的一次性任务，自动标为 'once'，否则调度循环永远不会认领它。
 export function taskRunNow(id) {
   const d = getDb()
-  const t = d.prepare('SELECT id, status, schedule_kind FROM tasks WHERE id = ?').get(Number(id))
+  const t = d.prepare('SELECT id, status, schedule_kind, run_at, every_seconds, next_run_at FROM tasks WHERE id = ?').get(Number(id))
   if (!t) return { ok: false, error: `task 不存在: ${id}` }
   if (t.status !== 'queued') return { ok: false, error: `task #${id} 当前 ${t.status}，仅 queued 可立即触发` }
-  d.prepare('UPDATE tasks SET schedule_kind = COALESCE(schedule_kind, \'once\'), next_run_at = ?, updated_at = ? WHERE id = ?')
-    .run(now(), now(), Number(id))
-  return { ok: true, id: Number(id), hint: '已排入调度队列，下一 tick（≤60s）认领执行' }
+  const nowTs = now()
+  const nominal = Number(t.run_at) > 0 ? Number(t.run_at) : Number(t.next_run_at) || 0
+  const anchorPatch = t.schedule_kind === 'interval' && !(Number(t.run_at) > 0) && nominal > 0
+  const nextNominal = (t.schedule_kind === 'interval' && t.every_seconds && nominal > 0)
+    ? _firstGridAfter(nominal, t.every_seconds * 1000, nowTs) : null
+  if (anchorPatch) {
+    d.prepare('UPDATE tasks SET schedule_kind = COALESCE(schedule_kind, \'once\'), run_at = ?, next_run_at = ?, updated_at = ? WHERE id = ?')
+      .run(nominal, nowTs, nowTs, Number(id))
+  } else {
+    d.prepare('UPDATE tasks SET schedule_kind = COALESCE(schedule_kind, \'once\'), next_run_at = ?, updated_at = ? WHERE id = ?')
+      .run(nowTs, nowTs, Number(id))
+  }
+  return {
+    ok: true, id: Number(id),
+    hint: nextNominal
+      ? `已排入调度队列（下一 tick 认领）；本次手动执行不改动节律，跑完仍回到 ${_beijingIso(nextNominal)}`
+      : '已排入调度队列，下一 tick（≤60s）认领执行',
+    nominal_next_run_at: nextNominal, nominal_next_run_bj: nextNominal ? _beijingIso(nextNominal) : null,
+  }
 }
 
 // 调度循环认领（原子抢占，防重启/双实例重复派单）：到期 scheduled 任务 → running
@@ -806,18 +987,17 @@ export function taskClaimDue(nowTs) {
   const d = getDb()
   d.exec('BEGIN IMMEDIATE')
   try {
-    const due = plain(d.prepare(
-      `SELECT id FROM tasks t WHERE schedule_kind IS NOT NULL AND status = 'queued' AND next_run_at IS NOT NULL AND next_run_at <= ?
-         AND (parent_id IS NULL OR EXISTS (SELECT 1 FROM tasks p WHERE p.id = t.parent_id AND p.status = 'done'))
-       ORDER BY priority ASC, next_run_at ASC LIMIT 4`
-    ).all(nowTs))
+    const due = selectDueTasks(d, nowTs)
     const claimed = []
     // P15 修复（env-issue scheduler-reap-double-dispatch）：认领时间必须每次刷新。
     // 旧逻辑 COALESCE(started_at, now) 使 interval 任务跨日复用首次认领时间 → taskReapStale 按
     // started_at 判龄时把正在跑的任务误判为僵尸回收 → 双重派单 + 恢复行风暴。
-    const upd = d.prepare("UPDATE tasks SET status = 'running', started_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'")
+    // interval 行缺 run_at 时在认领瞬间回填标称格点：这是覆写 next_run_at 前最后一次的取样机会。
+    const upd = d.prepare(
+      "UPDATE tasks SET status = 'running', started_at = ?, updated_at = ?, run_at = CASE WHEN schedule_kind = 'interval' AND (run_at IS NULL OR run_at <= 0) THEN COALESCE(next_run_at, ?) ELSE run_at END WHERE id = ? AND status = 'queued'"
+    )
     for (const row of due) {
-      const r = upd.run(nowTs, nowTs, row.id)
+      const r = upd.run(nowTs, nowTs, nowTs, row.id)
       if (r.changes === 1) claimed.push(row.id)
     }
     if (!claimed.length) { d.exec('COMMIT'); return [] }
@@ -831,14 +1011,31 @@ export function taskClaimDue(nowTs) {
   }
 }
 
+export function taskScheduledProgress(task, at = Date.now()) {
+  return scheduledProgress(getDb(), task, at)
+}
+
+export function taskBindWorker(id, runId) {
+  const changed = getDb().prepare("UPDATE tasks SET active_run_id=? WHERE id=? AND status='running'").run(runId, Number(id)).changes
+  if (changed !== 1) throw new Error(`E_TASK_WORKER_BIND: task #${id} 已不在运行态`)
+}
+
 // 调度执行收尾：记录 last_run_* + 落 task_runs 执行历史，interval 任务 latest-only 续期回 queued，once 任务进终态。
 // P15：可选 session_id（调度器从 sessionPersistence 反查 worker 会话）→ task_runs.session_id + tasks.session_id 回填（看板跳链）。
 // P17：增加结果真实性校验——worker.log 中出现模型拒执/API 错误等标记时，即使 worker 返回 exit 0 也标失败/待复核。
-export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id = null }) {
+export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id = null, timed_out = false }) {
   session_id = session_id ?? null
   const d = getDb()
   const t = d.prepare('SELECT * FROM tasks WHERE id = ?').get(Number(id))
   if (!t) return { ok: false, error: `task 不存在: ${id}` }
+  run_id = run_id || t.active_run_id || ''
+  if (timed_out) ok = false
+  if (run_id && d.prepare('SELECT 1 FROM task_runs WHERE task_id=? AND run_id=?').get(Number(id), run_id)) return { ok: true, replay: true }
+  // 晚到的 worker 回调不能撤销人工暂停/取消，也不能覆盖另一轮执行。
+  if (['done', 'failed', 'cancelled', 'blocked'].includes(t.status) || (t.active_run_id && run_id !== t.active_run_id)) {
+    taskRunRecord({ task_id: Number(id), run_id, ok, note, started_at: t.started_at, finished_at: now(), session_id })
+    return { ok: true, superseded: true, status: t.status }
+  }
 
   // P17：真实性校验
   let truth = { checked: false, rejected: false, reason: '' }
@@ -875,22 +1072,8 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id =
   let nextRunAt = null
   let status = ok ? 'done' : 'failed'
   if (t.schedule_kind === 'interval' && t.every_seconds) {
-    // latest-only：从**标称锚点 run_at**（任务创建/改调度时的原始节律相位）按整数倍推进到
-    // 第一个未来点，错过的不补跑。绝不能用 next_run_at 当锚——taskRunNow 会把它拨到"现在"，
-    // 用它续期会把整个节律漂移到手动触发时刻（2026-09-02 手动立即执行后每日任务从凌晨 3 点
-    // 漂到晚上 19 点的根因）。run_at 无效（epoch 0/NULL，老数据）时退回 next_run_at。
-    const step = t.every_seconds * 1000
-    const anchor = (t.run_at && t.run_at > 0 ? t.run_at : (t.next_run_at || finished))
-    if (finished <= anchor) {
-      // 手动提前跑（taskRunNow）：未到期的原定运行仍保留，不跳格
-      nextRunAt = anchor
-    } else {
-      nextRunAt = anchor + Math.max(1, Math.ceil((finished - anchor) / step)) * step
-      if (nextRunAt <= finished) nextRunAt += step // finish 恰落在格点上时防立即重复认领
-      // 失败快速重试：失败后 2 小时内重试一次（额度窗口/凭证类故障常在数十分钟内恢复），
-      // 但不越过下一个标称格点——持续失败也只是每小时段重试，成功后自动回到原节律。
-      if (!ok) nextRunAt = Math.min(nextRunAt, finished + 2 * 3600 * 1000)
-    }
+    const progress = scheduledProgress(d, t, t.started_at || finished)
+    nextRunAt = nextScheduledRun(t, finished, ok, progress.attempts, timed_out)
     status = 'queued'
   }
   // P17：任务失败时记录失败节点（blocked），把错误/超时写入 FGS 图
@@ -902,7 +1085,7 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id =
   }
   const tailNote = `${t.result || ''}\n[${new Date().toISOString().slice(0, 16)}] run ${run_id}: ${ok ? 'done' : 'failed'}${note ? ' — ' + note : ''}`.trim()
   d.prepare(`UPDATE tasks SET status = ?, result = ?, last_run_at = ?, last_run_id = ?, next_run_at = ?,
-    session_id = COALESCE(?, session_id),
+    session_id = COALESCE(?, session_id), active_run_id = NULL, blocked_reason = NULL,
     finished_at = CASE WHEN ? IN ('done','failed') THEN ? ELSE finished_at END, updated_at = ? WHERE id = ?`)
     .run(status, tailNote.slice(-8000), finished, run_id || null, nextRunAt, session_id, status, finished, now(), Number(id))
   try {
@@ -918,7 +1101,7 @@ export function taskFinishScheduledRun({ id, ok, run_id, note = '', session_id =
   } catch (e) {
     process.stderr.write(`[asset-db] FGS handoff 追加异常(task=${id}): ${e?.message ?? e}\n`)
   }
-  return { ok: true, id: Number(id), status, next_run_at: nextRunAt }
+  return { ok: true, id: Number(id), status, next_run_at: nextRunAt, run_ok: ok }
 }
 
 // -------------------- FGS 图操作（P17 Cairn_Y 融合）--------------------
@@ -1090,23 +1273,23 @@ export function taskReapStale(maxAgeMs = 3600000, pidAliveFn = null) {
   const d = getDb()
   const cutoff = now() - maxAgeMs
   const stale = plain(d.prepare(
-    "SELECT id, schedule_kind, started_at, last_run_id FROM tasks WHERE status = 'running' AND schedule_kind IS NOT NULL AND started_at IS NOT NULL AND started_at < ?"
+    "SELECT * FROM tasks WHERE status = 'running' AND schedule_kind IS NOT NULL AND started_at IS NOT NULL AND started_at < ?"
   ).all(cutoff))
   let reaped = 0
   let skipped = 0
   for (const t of stale) {
     // P15 修复：last_run 对应的 worker 进程还活着 → 任务在真实执行，不是僵尸，跳过回收。
     // （旧逻辑只看 started_at 年龄，与 3600s 超时上限同量级，会把跑满预算的正常任务误杀+双重派单。）
-    if (t.last_run_id) {
-      const w = d.prepare('SELECT pid, status FROM workers WHERE run_id = ?').get(t.last_run_id)
-      if (w && w.status === 'running' && alive(w.pid)) { skipped++; continue }
-    }
+    if (withinTaskBudget(t, now(), maxAgeMs) || taskWorkerAlive(d, t, alive)) { skipped++; continue }
+    const finished = now()
     const status = t.schedule_kind === 'interval' ? 'queued' : 'failed'
-    const r = d.prepare("UPDATE tasks SET status = ?, blocked_reason = '宿主重启/超时回收', updated_at = ? WHERE id = ? AND status = 'running'")
-      .run(status, now(), t.id)
+    const nextRunAt = status === 'queued' ? nextScheduledRun(t, finished, false, scheduledProgress(d, t, t.started_at).attempts) : null
+    const runId = t.active_run_id || ''
+    const r = d.prepare("UPDATE tasks SET status = ?, active_run_id = NULL, last_run_id = ?, last_run_at = ?, next_run_at = ?, blocked_reason = '宿主重启/超时回收', updated_at = ? WHERE id = ? AND status = 'running'")
+      .run(status, runId || null, finished, nextRunAt, finished, t.id)
     if (r.changes === 1) {
       reaped++
-      try { taskRunRecord({ task_id: t.id, run_id: '', ok: false, note: '宿主重启/超时回收', started_at: t.started_at, finished_at: now() }) }
+      try { taskRunRecord({ task_id: t.id, run_id: runId, ok: false, note: '宿主重启/超时回收', started_at: t.started_at, finished_at: finished }) }
       catch (e) { process.stderr.write(`[asset-db] task_runs 记录失败(task=${t.id}): ${e?.message ?? e}\n`) }
     }
   }
@@ -1171,7 +1354,7 @@ export function workerReapStale() {
         const meta = JSON.parse(fs.readFileSync(path.join(w.run_dir, 'meta.json'), 'utf8'))
         if (meta && meta.exit_code !== undefined && meta.exit_code !== null) {
           exitCode = meta.exit_code
-          status = meta.exit_code === 0 ? 'done' : 'failed'
+          status = meta.timed_out || meta.cancelled || meta.signal ? 'killed' : meta.exit_code === 0 && !meta.error ? 'done' : 'failed'
         }
       }
     } catch { /* 无 meta.json → 落到 pid 判定 */ }

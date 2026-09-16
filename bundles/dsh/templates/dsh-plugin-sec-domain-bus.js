@@ -55,11 +55,11 @@ const BANNED_WORD_EXEMPT_VERBS = new Set(['exp_update', 'vc_save', 'pb_save', 'u
 // 知识检索三步（fact_search/exp_search/kb_search）、台账/回执（ledger_*）、执行（exec_*）。
 // 核心域映射以 §2.5 为基，并按 5.1 改写后的 objective 实测回填（vuln 需 asset+report、recon 需 proxy）。
 // ---------------------------------------------------------------------------
-export const CROSS_CUTTING_DOMAINS = ['bus', 'task', 'exec', 'fact', 'know', 'ledger', 'fgs']
+export const CROSS_CUTTING_DOMAINS = ['bus', 'task', 'exec', 'fact', 'know', 'ledger', 'fgs', 'scope', 'approval']
 export const PHASE_DOMAINS = {
   recon: ['asset', 'endpoint', 'proxy'],
-  vuln: ['vuln', 'asset', 'report'],
-  review: [],
+  vuln: ['vuln', 'asset', 'endpoint', 'proxy', 'report'],
+  review: ['report', 'eval'],
   'biz-logic': ['endpoint'],
   'code-audit': ['vuln', 'asset'],
   intranet: ['asset', 'endpoint', 'vuln'],
@@ -168,6 +168,26 @@ export function parseYaml(text) {
 // 极简 JSON Schema 校验（type/required/properties/additionalProperties/enum/
 // items/minimum/maximum/minLength/maxLength）
 // ---------------------------------------------------------------------------
+
+// SQLite journal_mode 切换需要排他锁且不受 busy_timeout 保护（锁定即抛错）。
+// 多进程 worker 同时启动时显式重试，用 Atomics.wait 做同步休眠（不依赖 worker_threads）。
+const LOCK_RETRY_SHARED = typeof SharedArrayBuffer === 'function' ? new SharedArrayBuffer(4) : null
+function sleepSync(ms) {
+  if (LOCK_RETRY_SHARED) {
+    try { Atomics.wait(new Int32Array(LOCK_RETRY_SHARED), 0, 0, ms); return } catch { /* 不支持则退化 */ }
+  }
+  const end = Date.now() + ms
+  while (Date.now() < end) { /* 自旋兜底，仅用于启动期毫秒级重试 */ }
+}
+function execWithLockRetry(db, sql, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try { db.exec(sql); return } catch (e) {
+      if (!/database is locked/i.test(e?.message || '') || Date.now() >= deadline) throw e
+      sleepSync(20 + Math.random() * 30)
+    }
+  }
+}
 
 export function validateSchema(value, schema) {
   const errors = []
@@ -336,7 +356,7 @@ export function validateManifestLint(manifest) {
     if (!Array.isArray(def.invariants)) errs.push(`命令 ${full} invariants 必须为数组`)
     if (typeof def.agent_note !== 'string' || def.agent_note.length === 0) errs.push(`命令 ${full} agent_note 缺失`)
     else if (def.agent_note.length > 240) errs.push(`命令 ${full} agent_note 超 240 字（${def.agent_note.length}）`)
-    if (def.timeout_ms !== undefined && (!Number.isInteger(def.timeout_ms) || def.timeout_ms <= 0 || def.timeout_ms > 3670000)) errs.push(`命令 ${full} timeout_ms 超限`)
+    if (def.timeout_ms !== undefined && (!Number.isInteger(def.timeout_ms) || def.timeout_ms <= 0 || def.timeout_ms > 7270000)) errs.push(`命令 ${full} timeout_ms 超限`)
     for (const ev of def.events || []) if (!(ev in events)) errs.push(`R5 悬空事件引用：${full} → ${ev}`)
   }
 
@@ -782,12 +802,12 @@ export function createBus(opts = {}) {
   const dispatcherStartDelayMs = opts.dispatcherStartDelayMs ?? 3000
   const startDispatcherTimer = opts.startDispatcherTimer !== false
   // 挂载矩阵：仅 headless 面 + 显式声明 phase 时裁剪；phase 空/未知 → 全量（fail-open）。
-  const mountSubset = profile === 'headless' && workerPhase
+  const mountSubset = profile === 'headless' && Object.hasOwn(PHASE_DOMAINS, workerPhase)
     ? new Set([...CROSS_CUTTING_DOMAINS, ...(PHASE_DOMAINS[workerPhase] || [])])
     : null
   const mountSubsetNames = mountSubset ? [...mountSubset] : null
 
-  const now = () => clock()
+const now = () => clock()
 
   // --- 自举存储 ---
   let db = null
@@ -796,8 +816,10 @@ export function createBus(opts = {}) {
     fs.mkdirSync(dataDir, { recursive: true })
     fs.mkdirSync(eventsDir, { recursive: true })
     db = new DatabaseSync(dbFile)
-    db.exec('PRAGMA journal_mode = WAL')
+    // journal_mode 切换不受 busy_timeout 保护（锁定时立即抛错），需显式重试，
+    // 避免多 worker 同时启动时总线自举降级。
     db.exec('PRAGMA busy_timeout = 5000')
+    execWithLockRetry(db, 'PRAGMA journal_mode = WAL')
     db.exec('PRAGMA synchronous = NORMAL')
     db.exec('PRAGMA wal_autocheckpoint = 1000')
     db.exec(`

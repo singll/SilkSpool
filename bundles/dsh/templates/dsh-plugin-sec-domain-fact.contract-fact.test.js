@@ -46,6 +46,20 @@ function readEvents(dir) {
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
 
+test('fact_search 工具输出可无损往返 JSON（包括非 cooling 的事实）', async () => {
+  const { bus } = makeEnv()
+  const created = await bus.dispatch('fact', 'upsert', {
+    program_id: 'test-src', fact_key: 'note/json-output', category: 'note',
+    summary: '输出契约回归', mem_class: 'ephemeral', ttl_days: 1,
+  }, { actor: 'model' })
+  assert.equal(created.ok, true)
+  const tools = []
+  bus._internal.registerTools({ tools: { register: def => tools.push(def) } })
+  const result = await tools.find(t => t.name === 'fact_search').execute({ program_id: 'test-src', exclude_notes: false }, {})
+  assert.ok(result.rows.length > 0)
+  assert.deepEqual(result, JSON.parse(JSON.stringify(result)))
+})
+
 // ---------------------------------------------------------------------------
 // 1. happy path
 // ---------------------------------------------------------------------------

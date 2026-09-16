@@ -100,6 +100,8 @@ function createRepo(db) {
     ['model', 'model TEXT'],
     ['reasoning_effort', 'reasoning_effort TEXT'],
     ['budget_timeout_sec', 'budget_timeout_sec INTEGER'],
+    ['active_run_id', 'active_run_id TEXT'],
+    ['after_delay_seconds', 'after_delay_seconds INTEGER NOT NULL DEFAULT 0'],
   ]) ensureCol(db, 'tasks', col, ddl)
   ensureCol(db, 'task_runs', 'session_id', 'session_id TEXT')
   // workers.session_id 保持历史来源会话语义；新列只保存经核实的子会话。
@@ -127,13 +129,13 @@ function createRepo(db) {
       const r = db.prepare(`
         INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
           session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at,
-          provider, model, reasoning_effort)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+          provider, model, reasoning_effort, after_delay_seconds)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
       `).run(
         String(row.program_id), row.parent_id ?? null, row.phase === undefined || row.phase === null ? null : String(row.phase),
         String(row.objective), row.priority ?? 5, row.assignee ? String(row.assignee) : '', row.budget_tokens ?? null,
         row.session_id ?? null, row.schedule_kind ?? null, row.run_at ?? null, row.every_seconds ?? null, row.next_run_at ?? null,
-        repo.now(), repo.now(), row.provider ?? null, row.model ?? null, row.reasoning_effort ?? null,
+        repo.now(), repo.now(), row.provider ?? null, row.model ?? null, row.reasoning_effort ?? null, row.after_delay_seconds ?? 0,
       )
       return Number(r.lastInsertRowid)
     },
@@ -169,15 +171,14 @@ function createRepo(db) {
       return db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE ${where}`).get(...args).n
     },
     claimDueTasks(nowTs, limit) {
-      const due = db.prepare(
-        `SELECT id FROM tasks t WHERE schedule_kind IS NOT NULL AND status = 'queued' AND next_run_at IS NOT NULL AND next_run_at <= ?
-           AND (parent_id IS NULL OR EXISTS (SELECT 1 FROM tasks p WHERE p.id = t.parent_id AND p.status = 'done'))
-         ORDER BY priority ASC, next_run_at ASC LIMIT ?`
-      ).all(nowTs, Math.min(Number(limit) || 4, 4)).map((r) => ({ ...r }))
-      const upd = db.prepare("UPDATE tasks SET status = 'running', started_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'")
+      const due = selectDueTasks(db, nowTs, limit)
+      // interval 行缺 run_at 时在认领时回填 next_run_at，防止 run_now 覆写 next_run_at 后续期锚点永久丢失
+      const upd = db.prepare(
+        "UPDATE tasks SET status = 'running', started_at = ?, updated_at = ?, run_at = CASE WHEN schedule_kind='interval' AND (run_at IS NULL OR run_at <= 0) THEN COALESCE(next_run_at, ?) ELSE run_at END WHERE id = ? AND status = 'queued'"
+      )
       const claimed = []
       for (const row of due) {
-        const r = upd.run(nowTs, nowTs, row.id)
+        const r = upd.run(nowTs, nowTs, nowTs, row.id)
         if (r.changes === 1) claimed.push(row.id)
       }
       if (!claimed.length) return []
@@ -208,31 +209,34 @@ function createRepo(db) {
          ORDER BY t.next_run_at ASC`
       ).all().map((r) => ({ ...r }))
     },
+    scheduledProgress(task, at) { return scheduledProgress(db, task, at) },
     reapStale(maxAgeMs, pidAliveFn, nowTs) {
       const cutoff = nowTs - maxAgeMs
       const stale = db.prepare(
-        "SELECT id, schedule_kind, started_at, last_run_id FROM tasks WHERE status = 'running' AND schedule_kind IS NOT NULL AND started_at IS NOT NULL AND started_at < ?"
+        "SELECT * FROM tasks WHERE status = 'running' AND schedule_kind IS NOT NULL AND started_at IS NOT NULL AND started_at < ?"
       ).all(cutoff).map((r) => ({ ...r }))
       const alive = pidAliveFn || (() => false)
       let reaped = 0
       let skipped = 0
       for (const t of stale) {
-        if (t.last_run_id) {
-          const w = db.prepare('SELECT pid, status FROM workers WHERE run_id = ?').get(t.last_run_id)
-          if (w && w.status === 'running' && alive(w.pid)) { skipped++; continue }
-        }
+        if (withinTaskBudget(t, nowTs, maxAgeMs) || taskWorkerAlive(db, t, alive)) { skipped++; continue }
         const status = t.schedule_kind === 'interval' ? 'queued' : 'failed'
-        const r = db.prepare("UPDATE tasks SET status = ?, blocked_reason = '宿主重启/超时回收', updated_at = ? WHERE id = ? AND status = 'running'")
-          .run(status, nowTs, t.id)
+        const nextRunAt = status === 'queued' ? nextScheduledRun(t, nowTs, false, scheduledProgress(db, t, t.started_at).attempts) : null
+        const runId = t.active_run_id || ''
+        const r = db.prepare("UPDATE tasks SET status = ?, active_run_id = NULL, last_run_id = ?, last_run_at = ?, next_run_at = ?, blocked_reason = '宿主重启/超时回收', updated_at = ? WHERE id = ? AND status = 'running'")
+          .run(status, runId || null, nowTs, nextRunAt, nowTs, t.id)
         if (r.changes === 1) {
           reaped++
-          repo.insertTaskRun({ task_id: t.id, run_id: '', ok: false, note: '宿主重启/超时回收', started_at: t.started_at, finished_at: nowTs, session_id: null })
+          repo.insertTaskRun({ task_id: t.id, run_id: runId, ok: false, note: '宿主重启/超时回收', started_at: t.started_at, finished_at: nowTs, session_id: null })
         }
       }
       return { reaped, skipped_alive: skipped }
     },
 
     // ---- task_runs ----
+    hasTaskRun(taskId, runId) {
+      return !!db.prepare('SELECT 1 FROM task_runs WHERE task_id=? AND run_id=?').get(Number(taskId), runId)
+    },
     insertTaskRun(row) {
       const started = row.started_at ?? null
       const finished = row.finished_at ?? null
@@ -335,7 +339,7 @@ function createRepo(db) {
           const meta = readMeta ? readMeta(w.run_dir) : null
           if (meta && meta.exit_code !== undefined && meta.exit_code !== null) {
             exitCode = meta.exit_code
-            status = meta.exit_code === 0 ? 'done' : 'failed'
+            status = meta.timed_out || meta.cancelled || meta.signal ? 'killed' : meta.exit_code === 0 && !meta.error ? 'done' : 'failed'
           }
         } catch { /* 无 meta → pid 判定 */ }
         if (!status) {
@@ -392,3 +396,4 @@ export function createTaskSqliteBackend(_opts = {}) {
     },
   }
 }
+import { selectDueTasks, scheduledProgress, nextScheduledRun, taskWorkerAlive, withinTaskBudget } from '../sec-suite/task-policy.js'

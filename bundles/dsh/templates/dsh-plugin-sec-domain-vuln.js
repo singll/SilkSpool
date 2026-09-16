@@ -25,6 +25,7 @@ import * as crypto from 'node:crypto'
 import * as http from 'node:http'
 import * as https from 'node:https'
 import { fileURLToPath } from 'node:url'
+import { readParseProposal } from '../sec-suite/parse-proposal.js'
 
 export const name = 'sec-domain-vuln'
 export const version = '1.0.0'
@@ -32,7 +33,8 @@ export const version = '1.0.0'
 const DEFAULT_DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const CLAIM_TTL_DEFAULT_SEC = 3600
 const REPLAY_TIMEOUT_MS = 20000
-const EVIDENCE_TOKEN_RE = /run_|flow:|burp_item|evidence\/|oob:/
+// exec 产出 r/w + 时间戳 + 随机尾缀；兼容历史 run_* 及 nuclei 的 run_id: 前缀。
+const EVIDENCE_TOKEN_RE = /^(?:(?:run_id:)?(?:run_[A-Za-z0-9_-]+|[rw][a-z0-9]{12,})(?=\s|$)|flow:[^\s]+|burp_item[: ][^\s]+|evidence\/\d+\/?|oob:[^\s]+)/
 const LOW_INFO_TITLE_RE = /^[a-z0-9_-]+: ?\w+$/
 const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 }
 const FINDING_STATUS = ['new', 'confirmed', 'false_positive', 'submitted', 'accepted', 'dup', 'ignored']
@@ -278,7 +280,7 @@ export const VULN_MANIFEST = {
         body: str(),
       }, ['url', 'headers_low', 'headers_high']),
       idempotent: 'auto',
-      idempotent_fields: ['url', 'method', 'headers_low', 'headers_high'],
+      idempotent_fields: ['url', 'method', 'headers_low', 'headers_high', 'body'],
       events: [],
       event_limit: 0,
       invariants: [],
@@ -400,19 +402,18 @@ function fpWeak(host, title) { return sha1(`${normalizeHost(host)}|${String(titl
 function fpStrong(host, title, url) { return sha1(`${normalizeHost(host)}|${String(title).trim()}|${url || ''}`) }
 
 function refPrefix(evidence) {
-  const m = String(evidence || '').match(/^(run_[A-Za-z0-9_-]+|flow:[^\s]+|burp_item[: ][^\s]+|evidence\/\d+\/?|oob:[^\s]+)/)
-  return m ? m[1] : null
+  const m = String(evidence || '').trim().match(EVIDENCE_TOKEN_RE)
+  return m ? m[0].replace(/^run_id:/, '') : null
 }
 
 function isoPrefix(now) { return `[${new Date(now).toISOString().slice(0, 16)}]` }
 
 // evidence 引用真实存在性（INV-2，02-vuln §1.3 C3）——dataDir 下结果/证据/flows/oob 布局
 function evidenceProbe(evidence, findingId, dataDir) {
-  const e = String(evidence || '')
   const probes = []
-  const token = refPrefix(e)
+  const token = refPrefix(evidence)
   if (!token) return { ok: false, reason: 'no_ref' }
-  if (token.startsWith('run_')) {
+  if (/^(?:run_|[rw][a-z0-9]{12,}$)/.test(token)) {
     probes.push(path.join(dataDir, 'results', token, 'meta.json'))
     probes.push(path.join(dataDir, 'results', token, 'meta.yaml'))
   } else if (token.startsWith('flow:')) {
@@ -427,7 +428,10 @@ function evidenceProbe(evidence, findingId, dataDir) {
   } else if (token.startsWith('oob:')) {
     probes.push(path.join(dataDir, 'oob', token.slice(4)))
   }
-  return { ok: probes.some((p) => fs.existsSync(p)), probes, token }
+  const root = fs.realpathSync(dataDir) + path.sep
+  return { ok: probes.some((p) => {
+    try { return fs.realpathSync(p).startsWith(root) } catch { return false }
+  }), probes, token }
 }
 
 // ---------------------------------------------------------------------------
@@ -562,7 +566,7 @@ function makeHandlers(opts) {
         return { code: 'E_VULN_INCOMPLETE', message: '五要素缺失：标题 ≥10 字符（且非工具原始输出）、复现步骤、具体影响必填', hint: '信号登记要求五要素完整（规范标题≥10 字符、复现步骤、具体影响、证据引用、host）。机器产出或不完整观察请勿用本动词；完成对抗性自检与双出口复现后再登记', retryable: false }
       }
       if (args.severity === 'info') return { code: 'E_VULN_INFO_SEVERITY', message: 'severity=info 不进信号面', hint: 'info 级侦察副产物不进信号面。如确有安全价值，按 rules/src/severity-rating.md 重新定级（信息泄露默认低危）后以 low+具体影响登记', retryable: false }
-      if (!EVIDENCE_TOKEN_RE.test(String(args.evidence || ''))) {
+      if (!refPrefix(args.evidence)) {
         return { code: 'E_EVIDENCE_REQUIRED', message: 'evidence 必须含证据引用', hint: '证据必须是 run_id/flow_id/burp_item/evidence 路径/oob 交互记录引用，无证据不结论（sec-verification 铁律）', retryable: false }
       }
       return null
@@ -799,7 +803,7 @@ function makeHandlers(opts) {
       const note = String(args.note || '').trim()
       if (!note) throwErr('E_SCHEMA', 'note 必须非空', '补充证据链内容后再调用', false)
       const ref = String(args.evidence_ref || '')
-      if (ref && !EVIDENCE_TOKEN_RE.test(ref)) throwErr('E_EVIDENCE_REQUIRED', `evidence_ref 格式非法: ${ref}`, '证据引用须为 run_id/flow_id/burp_item/evidence 路径/oob 之一', false)
+      if (ref && !refPrefix(ref)) throwErr('E_EVIDENCE_REQUIRED', `evidence_ref 格式非法: ${ref}`, '证据引用须为 run_id/flow_id/burp_item/evidence 路径/oob 之一', false)
       const text = ref ? `note: ${note} （ref: ${ref}）` : `note: ${note}`
       repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} ${text}`)
       const row = repo.getFinding(args.finding_id)
@@ -912,10 +916,22 @@ function makeHandlers(opts) {
       const mk = (h) => {
         const base = { 'content-type': 'application/json', 'user-agent': 'SilkSecAgent-authz-diff' }
         if (!h) return base
-        if (typeof h === 'object') return { ...base, ...h }
-        for (const line of String(h).split('\n')) {
-          const i = line.indexOf(':')
-          if (i > 0) base[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim()
+        if (typeof h === 'string' && h.trim().startsWith('{')) {
+          try { h = JSON.parse(h) } catch { throwErr('E_SCHEMA', 'headers JSON 无法解析', '传对象或有效 JSON 对象字符串，也可使用逐行 Header: Value', false) }
+        }
+        const pairs = typeof h === 'object' && h !== null && !Array.isArray(h)
+          ? Object.entries(h) : String(h).split(/\r?\n/).filter(line => line.trim()).map(line => {
+            const i = line.indexOf(':')
+            if (i <= 0) throwErr('E_SCHEMA', 'headers 行缺少冒号', '使用 Header: Value 或 JSON 对象', false)
+            return [line.slice(0, i).trim(), line.slice(i + 1).trim()]
+          })
+        for (const [name, value] of pairs) {
+          try {
+            if (typeof value !== 'string') throw new Error('header 值必须是字符串')
+            http.validateHeaderName(name)
+            http.validateHeaderValue(name, value)
+          } catch { throwErr('E_SCHEMA', 'headers 名称或值无效', '名称必须是合法 HTTP token，值必须是无换行字符串', false) }
+          base[name.toLowerCase()] = value
         }
         return base
       }
@@ -925,8 +941,9 @@ function makeHandlers(opts) {
         return { status: res.status, length: Buffer.byteLength(res.body, 'utf8'), ms: Date.now() - started, body: res.body.slice(0, 2000) }
       }
       let low; let high
-      try { low = await fire(mk(args.headers_low)) } catch (e) { throwErr('E_VULN_REPLAY_FAILED', `低权请求失败: ${e?.message}`, '网络波动可重试', true) }
-      try { high = await fire(mk(args.headers_high)) } catch (e) { throwErr('E_VULN_REPLAY_FAILED', `高权请求失败: ${e?.message}`, '网络波动可重试', true) }
+      const headersLow = mk(args.headers_low), headersHigh = mk(args.headers_high)
+      try { low = await fire(headersLow) } catch (e) { throwErr('E_VULN_REPLAY_FAILED', `低权请求失败: ${e?.message}`, '网络波动可重试', true) }
+      try { high = await fire(headersHigh) } catch (e) { throwErr('E_VULN_REPLAY_FAILED', `高权请求失败: ${e?.message}`, '网络波动可重试', true) }
       const jsonKeys = (b) => { try { return Object.keys(JSON.parse(b)).sort() } catch { return null } }
       const lowKeys = jsonKeys(low.body); const highKeys = jsonKeys(high.body)
       const keysOverlap = lowKeys && highKeys && lowKeys.length
@@ -1002,7 +1019,7 @@ function makeHandlers(opts) {
   const subscribers = {
     onParserProposal: async (envelope) => {
       const payload = envelope?.payload || {}
-      const list = payload.parse_proposal?.findings
+      const list = readParseProposal(dataDir, payload)?.findings
       if (!Array.isArray(list) || !dispatchRef) return { ok: true, data: { skipped: true } }
       let registered = 0
       let failed = 0
@@ -1015,7 +1032,7 @@ function makeHandlers(opts) {
             severity: String(f.severity || 'info'),
             host: String(f.host || ''),
             url: String(f.url || ''),
-            evidence: f.evidence || (runId ? `flow:flows/${runId}` : ''),
+            evidence: f.evidence || (runId ? `run_id:${runId}` : ''),
             source: `parser:${tool}`,
           }, { actor: 'script', identity: `parser:${tool}:${runId}`, session_id: payload.session_id || null })
           if (r.ok) registered++
