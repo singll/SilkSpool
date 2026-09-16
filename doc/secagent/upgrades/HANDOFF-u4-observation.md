@@ -4,10 +4,12 @@
 
 ---
 
-## 一、当前状态（2026-09-15T15:00Z 巡检后）
+## 一、当前状态（2026-09-16 定时任务优化部署后）
 
-- 生产：**0.1.5-rc.2**、MainPID 3848865、NRestarts=0、active/running、FreezerState=running。
-- Git 提交：`ee31b18 docs: 补充 U4 handoff 进度快照与自续规则`（之后将追加 `docs: DSH 0.1.5-rc.2 U4 观察期首次巡检记录`）。
+- 生产：**0.1.5-rc.2**、MainPID **3883528**、NRestarts=0、active/running（2026-09-16 重启过一次：定时任务链式调度与工具稳定性优化部署，见 §14.6）。
+- Git 提交：`b7f4111 fix: 定时任务链式调度与工具调用稳定性优化`（代码与生产文件哈希一致，任务链已配置）。
+- 定时任务链：bytedance `#16 recon → #19 广度 → #100008 深挖`；meituan `#17 recon → #37 广度 → #100007 深挖`。预算 3600/5400/7200s，前置成功后 60s 放行后续；每日锚点 北京 03:00/03:10，下一周期 2026-09-17。误完结的 #16/#17/#19 已恢复 queued。
+- 备份：`/opt/silkspool/dsh/backups/opt-20260916/`（asset-graph.db + 被替换插件 + 根模板 + tasks-before.tsv）。
 - 发布目录：`/opt/silkspool/dsh-upgrades/20260913-rc2/dsh-release-2non9v70`。
 - `state.json`：`phase=observing`，`observation_until=2026-09-18T14:16:35.602762+00:00`。
 - 冻结点：`dsh-snapshot-ready-8jhp928l`，manifest SHA `fdeea4b34fce80a2f2c742d6caa6bccb170449bc9b62f005d4b1ab1aaac5a0cd`。
@@ -97,11 +99,12 @@ git commit -m 'docs: DSH 0.1.5-rc.2 U4 关账记录'
 
 ## 四、进度快照（给新会话的初始坐标）
 
-- **Git 提交**：`ee31b18`（+ 即将追加的巡检提交）
+- **Git 提交**：`b7f4111`（定时任务链式调度与工具稳定性优化；文档 commit 见 §六 规则）
 - **发布目录**：`/opt/silkspool/dsh-upgrades/20260913-rc2/dsh-release-2non9v70`，`state.json` `phase=observing`
 - **observation_until**：`2026-09-18T14:16:35.602762+00:00`
 - **冻结点**：`dsh-snapshot-ready-8jhp928l`，manifest SHA `fdeea4b34fce80a2f2c742d6caa6bccb170449bc9b62f005d4b1ab1aaac5a0cd`
-- **生产版本**：`0.1.5-rc.2`、MainPID `3848865`、NRestarts `0`、active/running
+- **生产版本**：`0.1.5-rc.2`、MainPID `3883528`、NRestarts `0`、active/running（2026-09-16 优化部署重启，旧基线 3848865 作废）
+- **§14.6 优化部署**：2026-09-16 定时任务链式调度 + 工具稳定性优化上线（本地 384 合约全过、生产哈希一致、重启后 16 域注册成功、outbox 0 异常）
 - **§14.5 巡检**：首次巡检完成（2026-09-15T14:57Z），全部健康；别名闸口顺延至 2026-09-22T15:07:10+08:00
 - **L0–L6**：未执行
 
