@@ -281,6 +281,37 @@ function renderTemplate(tpl, params, runDir, runId) {
     return String(v)
   })
 }
+// 目标参数清洗（仅清洗，不校验；授权由 scope-guard 负责）：
+// 重复协议前缀 `https://https://x` / `https://http://x` → 剥到单层。模型常把
+// 资产库里的完整 URL 再包一层模板前缀（ffuf 的 https://{{target}}/FUZZ），
+// 渲染前统一 normalize，避免 https://https:// 的必失败调用。
+function cleanTargetValue(v) {
+  return String(v)
+    .split(',')
+    .map((s) => {
+      s = s.trim()
+      for (let i = 0; i < 3; i++) {
+        const m = s.match(/^https?:\/\/(https?:\/\/.+)$/i)
+        if (!m) break
+        s = m[1]
+      }
+      return s
+    })
+    .filter(Boolean)
+    .join(',')
+}
+// 渲染后兜底：模板自带协议前缀（如 ffuf 的 {{target_url|https://}}）叠加模型传入的
+// 完整 URL 时，双协议前缀出现在渲染结果里而非参数值里，cleanTargetValue 捕获不到。
+// 合法命令不会出现 `://` 紧接 `://`，统一收敛到内层（模型显式给出的）协议。
+function cleanRenderedCmd(cmd) {
+  let s = String(cmd)
+  for (let i = 0; i < 3; i++) {
+    const t = s.replace(/https?:\/\/(https?:\/\/)/gi, '$1')
+    if (t === s) break
+    s = t
+  }
+  return s
+}
 function shellSplit(s) {
   const out = []; let cur = ''; let q = null
   for (const c of s) {
@@ -534,9 +565,14 @@ function makeHandlers(opts) {
   const commands = {
     exec_run_cli: async (args, repo, ctx) => {
       const toolName = String(args.tool || '')
-      const params = args.params || {}
+      const params = { ...(args.params || {}) }
       const manifest = repo.loadManifest(toolName)
       if (!manifest) throwErr('E_EXEC_MANIFEST_MISSING', `工具 ${toolName} 无 manifest（data/tools.d/${toolName}.yaml 不存在）`, `可用工具：${repo.listManifests().join(', ')}`)
+      // 目标参数清洗：剥离重复的协议前缀（https://https://x → https://x），
+      // 保留逗号分隔多目标。授权判定用清洗后的值，渲染也用同一份（guard/render 一致）。
+      if (manifest.target_param && typeof params[manifest.target_param] === 'string') {
+        params[manifest.target_param] = cleanTargetValue(params[manifest.target_param])
+      }
 
       const { runId, runDir } = repo.createRunDir('r')
       currentTool = toolName
@@ -575,7 +611,7 @@ function makeHandlers(opts) {
       if (RISK_ORDER.indexOf(String(manifest.risk || 'passive')) >= RISK_ORDER.indexOf('active')) await throttleQps()
 
       let argv
-      try { argv = shellSplit(renderTemplate(String(manifest.args_template || ''), params, runDir, runId)) } catch (e) { throwErr('E_EXEC_TEMPLATE_PARAM', `参数渲染失败: ${e.message}`, '检查必填参数') }
+      try { argv = shellSplit(cleanRenderedCmd(renderTemplate(String(manifest.args_template || ''), params, runDir, runId))) } catch (e) { throwErr('E_EXEC_TEMPLATE_PARAM', `参数渲染失败: ${e.message}`, '检查必填参数') }
       if (String(manifest.risk || 'passive') === 'passive') {
         const allowList = (firstChk.programCfg && firstChk.programCfg.rules && Array.isArray(firstChk.programCfg.rules.allow_intrusive_tools) ? firstChk.programCfg.rules.allow_intrusive_tools : []).map((s) => String(s).toLowerCase())
         const hit = allowList.includes(toolName.toLowerCase()) ? null : findWriteVerbHit(argv.join(' '))

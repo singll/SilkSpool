@@ -177,7 +177,7 @@ timeout: 900
 target_param: target
 requires: [live_hosts]
 produces: [endpoints]
-args_template: "-u https://{{target}}/FUZZ -w {{wordlist|/usr/share/wordlists/dirb/common.txt}} -of csv -o {{outdir}}/ffuf.csv -t {{threads|20}}"
+args_template: "-u {{target_url|https://}}{{target}}/FUZZ -w {{wordlist|/usr/share/seclists/Discovery/Web-Content/common.txt}} -of csv -o {{outdir}}/ffuf.csv -t {{threads|20}}"
 env_proxy: true
 parser: csv
 summarize: head
@@ -210,7 +210,7 @@ timeout: 1800
 target_param: target
 requires: [live_hosts]
 produces: [findings]
-args_template: "-u {{target}} -jsonl -silent -rl {{rate|50}} -o {{outdir}}/nuclei.jsonl"
+args_template: "-u {{target}} {{templates|}}{{tags|}} -jsonl -silent -rl {{rate|50}} -o {{outdir}}/nuclei.jsonl"
 env_proxy: true
 parser: jsonl
 summarize: head

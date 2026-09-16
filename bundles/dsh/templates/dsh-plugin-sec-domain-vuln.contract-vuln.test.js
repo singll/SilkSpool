@@ -424,6 +424,29 @@ test('证据引用不能通过 flow 路径或软链逃出平台数据目录', as
   }
 })
 
+test('vuln_evidence_put 受管写入证据包，verify_replay 闭环可复核', async t => {
+  const srv = await startServer((req, res) => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('poc-response-body') })
+  t.after(() => closeServer(srv))
+  const { bus, dataDir } = makeEnv()
+  const cand = await seedCandidate(bus)
+  const id = cand.data.id
+  const reqText = `GET http://127.0.0.1:${serverPort(srv)}/poc HTTP/1.1\r\nHost: 127.0.0.1:${serverPort(srv)}\r\n\r\n`
+  const put = await bus.dispatch('vuln', 'evidence_put', { finding_id: id, request_text: reqText, note: '本地 POC' }, { actor: 'model' })
+  assert.equal(put.ok, true, put.error?.message)
+  assert.equal(put.data.method, 'GET')
+  const bad = await bus.dispatch('vuln', 'evidence_put', { finding_id: id, request_text: 'garbage' }, { actor: 'model' })
+  assert.equal(bad.error.code, 'E_SCHEMA')
+  const noHost = await bus.dispatch('vuln', 'evidence_put', { finding_id: id, request_text: 'GET /poc HTTP/1.1\r\n\r\n' }, { actor: 'model' })
+  assert.equal(noHost.error.code, 'E_SCHEMA')
+  assert.equal(fs.readFileSync(path.join(dataDir, 'evidence', String(id), 'request.txt'), 'utf8'), reqText)
+  const replay = await bus.dispatch('vuln', 'verify_replay', { finding_id: id }, { actor: 'model' })
+  assert.equal(replay.ok, true, replay.error?.message)
+  assert.equal(replay.data.sha256, crypto.createHash('sha256').update('poc-response-body', 'utf8').digest('hex'))
+  await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'false_positive', reason: '本地 fixture 结束' }, { actor: 'model' })
+  const terminal = await bus.dispatch('vuln', 'evidence_put', { finding_id: id, request_text: `GET http://127.0.0.1:${serverPort(srv)}/poc2 HTTP/1.1\r\nHost: 127.0.0.1:${serverPort(srv)}\r\n\r\n` }, { actor: 'model' })
+  assert.equal(terminal.error.code, 'E_STATE')
+})
+
 test('不变量 INV-9: reject dup 缺 dup_of → E_VULN_DUP_TARGET_REQUIRED；dup_of 不存在 → E_NOT_FOUND', async () => {
   const { bus } = makeEnv()
   const cand = await seedCandidate(bus)

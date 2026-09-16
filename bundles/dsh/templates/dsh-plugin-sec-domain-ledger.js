@@ -289,7 +289,7 @@ function makeHandlers(opts) {
           return { code: 'E_EVIDENCE_REQUIRED', message: `${args.result} 必须填 evidence_path`, hint: '无证据不结论。CLEAN 与 CONFIRMED 同级举证：evidence_path 指向本次探测的原始输出（如 results/<run_id>/ 或 evidence/ 目录）', retryable: false }
         }
         if (!evidenceExists(args.evidence_path)) {
-          return { code: 'E_LEDGER_EVIDENCE_MISSING', message: `evidence_path 不存在: ${args.evidence_path}`, hint: '证据文件须真实存在（绝对路径或相对 data/ 解析）；无证据不结论', retryable: false }
+          return { code: 'E_LEDGER_EVIDENCE_MISSING', message: `evidence_path 不存在: ${args.evidence_path}`, hint: 'evidence_path 必须是单一真实路径：禁止用 " + " 拼接多个路径、禁止附带中文括号等注释；先用 write 把证据落盘再调用本命令；exec 结果规范目录为 results/<run_id>/（相对 data/ 解析），绝对路径请直接指向已存在的文件', retryable: false }
         }
       }
       return null

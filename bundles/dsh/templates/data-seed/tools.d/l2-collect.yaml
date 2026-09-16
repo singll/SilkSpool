@@ -4,6 +4,7 @@ stage: recon
 risk: active
 timeout: 600
 target_param: target
+sandbox: false
 requires: [live_hosts]
 produces: [endpoints]
 args_template: "{{program}} {{target}}"

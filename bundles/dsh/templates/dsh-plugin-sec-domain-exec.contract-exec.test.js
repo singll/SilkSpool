@@ -102,6 +102,30 @@ test('失败 CLI 保留 stderr；manifest_list 返回可直接核对的必填参
   assert.deepEqual(implicit.rows[0].params, [{ name: 'target', required: true, default: null }, { name: 'count', required: false, default: '5' }])
 })
 
+test('目标参数清洗：重复协议前缀被剥到单层，授权与渲染用同一份', async () => {
+  const { dataDir, bus } = makeEnv()
+  writeManifest(dataDir, 'echo-target', 'name: echo-target\nbinary: /bin/echo\nstage: vuln\nrisk: active\ntimeout: 30\ntarget_param: target\nargs_template: "-u {{target}}"\n')
+  const r = await bus.dispatch('exec', 'run_cli', { tool: 'echo-target', params: { target: 'https://https://https://a.example.com, http://https://b.example.com' } }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const cmd = fs.readFileSync(path.join(dataDir, 'results', r.data.run_id, 'cmd.txt'), 'utf8')
+  assert.match(cmd, /-u https:\/\/a\.example\.com,https:\/\/b\.example\.com/)
+  assert.doesNotMatch(cmd, /https:\/\/https:/)
+})
+
+test('渲染后兜底：模板协议前缀叠加模型传入的完整 URL 不产生双 scheme', async () => {
+  const { dataDir, bus } = makeEnv()
+  writeManifest(dataDir, 'echo-ffuf', 'name: echo-ffuf\nbinary: /bin/echo\nstage: recon\nrisk: active\ntimeout: 30\ntarget_param: target\nargs_template: "-u {{target_url|https://}}{{target}}/FUZZ -w {{wordlist|/tmp/wl.txt}}"\n')
+  const full = await bus.dispatch('exec', 'run_cli', { tool: 'echo-ffuf', params: { target: 'https://a.example.com' } }, { actor: 'model' })
+  assert.equal(full.ok, true, full.error?.message)
+  const cmd1 = fs.readFileSync(path.join(dataDir, 'results', full.data.run_id, 'cmd.txt'), 'utf8')
+  assert.match(cmd1, /-u https:\/\/a\.example\.com\/FUZZ/)
+  assert.doesNotMatch(cmd1, /https?:\/\/https?:\/\//)
+  const bare = await bus.dispatch('exec', 'run_cli', { tool: 'echo-ffuf', params: { target: 'b.example.com' } }, { actor: 'model' })
+  assert.equal(bare.ok, true, bare.error?.message)
+  const cmd2 = fs.readFileSync(path.join(dataDir, 'results', bare.data.run_id, 'cmd.txt'), 'utf8')
+  assert.match(cmd2, /-u https:\/\/b\.example\.com\/FUZZ -w \/tmp\/wl\.txt/)
+})
+
 test('CLI 退出不伪造 tool:name 打法链反馈，也不产生后台 E_SCHEMA', async () => {
   const { dir, dataDir, bus } = makeEnv()
   assert.equal(bus.registry.register(buildKnowDomain({ dataDir })).ok, true)

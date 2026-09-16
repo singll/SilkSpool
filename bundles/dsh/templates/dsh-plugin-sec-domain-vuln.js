@@ -209,6 +209,22 @@ export const VULN_MANIFEST = {
       agent_note: '向 finding 追加证据链条目（不改状态，任意状态可用）。用于补充观察、勘误说明、复验记录。带时间戳前缀追加。',
       deprecated: false,
     },
+    vuln_evidence_put: {
+      actor: ['model'],
+      schema: schema({
+        finding_id: int(),
+        request_text: str({ minLength: 1 }),
+        note: str({ default: '' }),
+      }, ['finding_id', 'request_text']),
+      idempotent: 'auto',
+      idempotent_fields: ['finding_id', 'request_text'],
+      events: [],
+      event_limit: 0,
+      invariants: ['findingExists'],
+      timeout_ms: 60000,
+      agent_note: '把机械复核所需的原始 HTTP 请求写入证据包 evidence/{finding_id}/request.txt（受管写入，原生 write 无法写域数据目录）。request_text 须为完整 HTTP 报文（首行 METHOD target + Host 头）。写后用 vuln_verify_replay 复核。覆盖式写入，重复同内容幂等。',
+      deprecated: false,
+    },
     vuln_claim: {
       actor: ['model', 'dashboard'],
       schema: schema({
@@ -812,6 +828,32 @@ function makeHandlers(opts) {
         data: { id: args.finding_id, status: row.status, noted: true },
         events: [],
         before: null, after: { status: row.status, noise: row.noise },
+      }
+    },
+
+    // C6b：证据包受管写入（verify_replay 的前置：原生 write 无法写域数据目录，
+    // 没有本动词 CONFIRMED 机械复核流程无法闭环——这是 09-12 起 vuln-deep 反复
+    // E_EVIDENCE_REQUIRED + E_SCOPE_FILE_WRITE 的根因之一）。
+    vuln_evidence_put: async (args, repo) => {
+      const row = repo.getFinding(args.finding_id)
+      if (!row) throwErr('E_NOT_FOUND', `finding #${args.finding_id} 不存在`, '先 vuln_get 核实 id', false)
+      if (TERMINAL.includes(row.status)) throwErr('E_STATE', `finding #${args.finding_id} 已终态(${row.status})`, '终态 finding 不可改证据包；如需复验开新 finding', false)
+      const raw = String(args.request_text || '')
+      if (raw.length > 65536) throwErr('E_SCHEMA', 'request_text 超过 64KiB', '原始请求应只含必要报文', false)
+      const parsed = parseRequestText(raw)
+      if (parsed.error) throwErr('E_SCHEMA', parsed.error, 'request_text 须为完整 HTTP 报文（首行 METHOD target + Host 头）', false)
+      if (!parsed.headers.host && !/^https?:\/\//i.test(parsed.target)) {
+        throwErr('E_SCHEMA', 'request_text 缺 Host 头（target 为相对路径时必填）', '补 Host: <目标主机> 头', false)
+      }
+      const dir = path.join(dataDir, 'evidence', String(args.finding_id))
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'request.txt'), raw.endsWith('\n') ? raw : raw + '\n')
+      if (args.note) repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} evidence_put: ${String(args.note).slice(0, 200)}`)
+      if (row.noise === 0) repo.markSyncPending?.(args.finding_id)
+      return {
+        data: { id: args.finding_id, evidence_dir: `evidence/${args.finding_id}/`, method: parsed.method, target: parsed.target.slice(0, 200), written: true },
+        events: [],
+        before: null, after: { status: row.status },
       }
     },
 
