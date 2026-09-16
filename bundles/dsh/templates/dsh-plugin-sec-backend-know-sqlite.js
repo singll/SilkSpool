@@ -75,6 +75,9 @@ function createRepo(db) {
     ['mem_class', 'TEXT'], ['status', "TEXT DEFAULT 'active'"], ['status_at', 'INTEGER'], ['scope', 'TEXT'],
     ['revalidate_by', 'INTEGER'], ['justification', 'TEXT'], ['last_validated_at', 'INTEGER'],
     ['uses', 'INTEGER DEFAULT 0'], ['last_used_at', 'INTEGER'],
+    // L0（2026-09-16 学习专项）：kb 分类/失败计数/内容修订列（07-know §kb_docs 表已声明，此前缺列）
+    ['category', 'TEXT'], ['fetch_failures', 'INTEGER DEFAULT 0'], ['last_fetch_error', 'TEXT'],
+    ['body_revision', 'INTEGER DEFAULT 1'], ['content_hash', 'TEXT'],
   ]) ensureCol(db, 'kb_docs', col, `${col} ${ddl}`)
   ensureArchive(db, 'exp_cards')
   ensureArchive(db, 'kb_docs')
@@ -193,9 +196,9 @@ function createRepo(db) {
     expAggregates() {
       const one = (sql, ...p) => { try { return db.prepare(sql).get(...p) || {} } catch { return {} } }
       const ec = one("SELECT COUNT(*) n, SUM(CASE WHEN COALESCE(uses,0)=0 THEN 1 ELSE 0 END) zero_use, SUM(CASE WHEN status='cooling' THEN 1 ELSE 0 END) cooling, SUM(CASE WHEN status='deprecated' THEN 1 ELSE 0 END) deprecated, SUM(CASE WHEN exportable=1 THEN 1 ELSE 0 END) exportable FROM exp_cards")
-      const kb = one("SELECT COUNT(*) n, SUM(CASE WHEN COALESCE(uses,0)=0 THEN 1 ELSE 0 END) zero_use, SUM(CASE WHEN status='cooling' THEN 1 ELSE 0 END) cooling, SUM(CASE WHEN status='curated' THEN 1 ELSE 0 END) curated, SUM(CASE WHEN tainted=1 THEN 1 ELSE 0 END) tainted, SUM(CASE WHEN status='active' AND revalidate_by IS NOT NULL AND revalidate_by < ? THEN 1 ELSE 0 END) overdue FROM kb_docs", Date.now())
+      const kb = one("SELECT COUNT(*) n, SUM(CASE WHEN COALESCE(uses,0)=0 THEN 1 ELSE 0 END) zero_use, SUM(CASE WHEN status='cooling' THEN 1 ELSE 0 END) cooling, SUM(CASE WHEN status='curated' THEN 1 ELSE 0 END) curated, SUM(CASE WHEN tainted=1 THEN 1 ELSE 0 END) tainted, SUM(CASE WHEN status='active' AND revalidate_by IS NOT NULL AND revalidate_by < ? THEN 1 ELSE 0 END) overdue, SUM(CASE WHEN COALESCE(fetch_failures,0)>0 THEN 1 ELSE 0 END) fetch_failed FROM kb_docs", Date.now())
       const avg = one('SELECT AVG(score) a FROM exp_cards')
-      return { exp: { total: ec.n || 0, zero_use_30d: ec.zero_use || 0, cooling: ec.cooling || 0, deprecated: ec.deprecated || 0, exportable: ec.exportable || 0, avg_score: Math.round((avg.a || 0) * 100) / 100 }, kb: { total: kb.n || 0, curated: kb.curated || 0, tainted: kb.tainted || 0, cooling: kb.cooling || 0, overdue_revalidate: kb.overdue || 0, zero_use: kb.zero_use || 0 } }
+      return { exp: { total: ec.n || 0, zero_use_30d: ec.zero_use || 0, cooling: ec.cooling || 0, deprecated: ec.deprecated || 0, exportable: ec.exportable || 0, avg_score: Math.round((avg.a || 0) * 100) / 100 }, kb: { total: kb.n || 0, curated: kb.curated || 0, tainted: kb.tainted || 0, cooling: kb.cooling || 0, overdue_revalidate: kb.overdue || 0, zero_use: kb.zero_use || 0, fetch_failed: kb.fetch_failed || 0 } }
     },
     expRankTop(limit = 5) {
       return db.prepare("SELECT id, scenario, takeaway, score, adopted, status FROM exp_cards WHERE kind != 'playbook' AND mem_class = 'permanent' AND status = 'active' ORDER BY score DESC LIMIT ?").all(limit).map((r) => ({ ...r }))
@@ -234,10 +237,11 @@ function createRepo(db) {
     },
     insertKbDoc(row) {
       const now = Date.now()
-      const r = db.prepare(`INSERT INTO kb_docs (title, file, source_url, tainted, imported_at, mem_class, status, status_at, scope, revalidate_by, justification, last_validated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      const r = db.prepare(`INSERT INTO kb_docs (title, file, source_url, tainted, imported_at, mem_class, status, status_at, scope, revalidate_by, justification, last_validated_at, category, content_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(String(row.title), String(row.file), row.source_url ?? null, row.tainted ? 1 : 0, now,
-          row.mem_class ?? 'durable', row.status ?? 'active', now, row.scope ?? 'global', row.revalidate_by ?? null, row.justification ?? '', row.last_validated_at ?? now)
+          row.mem_class ?? 'durable', row.status ?? 'active', now, row.scope ?? 'global', row.revalidate_by ?? null, row.justification ?? '', row.last_validated_at ?? now,
+          row.category ?? null, row.content_hash ?? null)
       const id = Number(r.lastInsertRowid)
       repo.upsertKbFts(id, String(row.title), String(row.bodyExcerpt || ''))
       return { id, created: true }
@@ -255,7 +259,7 @@ function createRepo(db) {
     deleteKbFts(doc_id) { db.prepare('DELETE FROM kb_fts WHERE rowid = ?').run(Number(doc_id)) },
     replaceKbEmbedding(doc_id, vec) { db.prepare('INSERT OR REPLACE INTO kb_embeddings (doc_id, vec) VALUES (?, ?)').run(Number(doc_id), JSON.stringify(vec)) },
     listKbWhere(whereSql, args, limit, offset) {
-      const sql = `SELECT id, title, file, source_url, tainted, imported_at, status, status_at, uses, revalidate_by, last_validated_at, mem_class FROM kb_docs WHERE ${whereSql} ORDER BY (status = 'curated') DESC, uses DESC, imported_at DESC LIMIT ? OFFSET ?`
+      const sql = `SELECT id, title, file, source_url, tainted, imported_at, status, status_at, uses, revalidate_by, last_validated_at, mem_class, category, fetch_failures, body_revision FROM kb_docs WHERE ${whereSql} ORDER BY (status = 'curated') DESC, uses DESC, imported_at DESC LIMIT ? OFFSET ?`
       return db.prepare(sql).all(...args, Math.min(Number(limit) || 50, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r, curated: r.status === 'curated' ? 1 : 0 }))
     },
     countKbWhere(whereSql, args) { return db.prepare(`SELECT COUNT(*) AS n FROM kb_docs WHERE ${whereSql}`).get(...args).n },

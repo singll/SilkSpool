@@ -294,3 +294,93 @@ test('ensureCol: exp_cards 含 score/uses/exportable 列；kb_docs 含 uses 列'
   const kbCols = bus._internal.db().prepare('PRAGMA table_info(kb_docs)').all().map((c) => c.name)
   assert.ok(kbCols.includes('uses'))
 })
+
+// ---------------------------------------------------------------------------
+// L0（2026-09-16 学习专项）：kb 缺列修复 + kb_revalidate 内容闭环
+// ---------------------------------------------------------------------------
+
+test('L0-K1: kb_docs ensureCol 幂等补列 category/fetch_failures/body_revision/content_hash', async () => {
+  const { bus, dataDir } = makeEnv()
+  // 表懒初始化（首次命令才 createRepo）；先触发一次命令再查列
+  await bus.dispatch('know', 'kb_import', { title: 't0', url: 'https://example.com/col-check', body: '正文内容足够长以满足最小长度要求' }, { actor: 'model' })
+  const kbCols = bus._internal.db().prepare('PRAGMA table_info(kb_docs)').all().map((c) => c.name)
+  for (const col of ['category', 'fetch_failures', 'last_fetch_error', 'body_revision', 'content_hash']) {
+    assert.ok(kbCols.includes(col), `kb_docs 缺列 ${col}`)
+  }
+  // 二次构建（幂等重开库，模拟重复迁移）不报错
+  const domain2 = buildKnowDomain({ dataDir, dispatch: () => {} })
+  assert.equal(domain2.manifest.domain, 'know')
+})
+
+test('L0-K1: kb_import 写入 category 列，kb_list 按 category 过滤', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.dispatch('know', 'kb_import', {
+    title: 'XSS 反射分析', url: 'https://example.com/xss-writeup', body: '这是一篇关于 xss 反射型漏洞的完整分析文章，长度满足最小要求。',
+  }, { actor: 'model' })
+  assert.equal(r.ok, true)
+  const row = bus._internal.db().prepare('SELECT category FROM kb_docs WHERE id=?').get(r.data.doc_id)
+  assert.equal(row.category, 'xss')
+  const l = await bus.query('know', 'kb_list', { category: 'xss' }, { actor: 'model' })
+  assert.ok(l.ok && l.rows.some((x) => x.id === r.data.doc_id && x.category === 'xss'))
+})
+
+test('L0-K2: kb_revalidate(changed) 内容闭环——正文/哈希/版本/FTS 更新，tainted 重扫', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.dispatch('know', 'kb_import', {
+    title: '旧正文文档', url: 'https://example.com/changed-doc', body: '原始正文内容足够长以满足最小长度要求。',
+  }, { actor: 'model' })
+  assert.equal(r.ok, true)
+  const docId = r.data.doc_id
+  const newBody = '修订后的正文：补充了对 ssrf 带外验证的完整复现步骤与证据要求。'
+  const rv = await bus.dispatch('know', 'kb_revalidate', { doc_id: docId, evidence: '重抓取比对发现正文更新，差异显著', result: 'changed', new_body: newBody }, { actor: 'script' })
+  assert.equal(rv.ok, true)
+  assert.equal(rv.data.body_revision, 2)
+  assert.equal(rv.data.category, 'ssrf')
+  assert.ok(rv.data.content_hash)
+  const row = bus._internal.db().prepare('SELECT body_revision, content_hash, fetch_failures FROM kb_docs WHERE id=?').get(docId)
+  assert.equal(row.body_revision, 2)
+  assert.equal(row.fetch_failures, 0)
+  // 正文文件确实换新，FTS 可命中新词、旧词不再独占命中
+  const rd = await bus.query('know', 'kb_read', { doc_id: docId }, { actor: 'model' })
+  assert.ok(rd.data.content.includes('带外验证'))
+  const s = await bus.query('know', 'kb_search', { q: '带外验证' }, { actor: 'model' })
+  assert.ok(s.rows.some((x) => x.doc_id === docId), 'FTS 应命中新正文')
+  // 幂等重放：同参重放不重复加版本
+  const rv2 = await bus.dispatch('know', 'kb_revalidate', { doc_id: docId, evidence: '重抓取比对发现正文更新，差异显著', result: 'changed', new_body: newBody }, { actor: 'script' })
+  assert.equal(rv2.ok, true)
+  assert.equal(rv2.replay, true)
+})
+
+test('L0-K2: kb_revalidate(changed) 缺 new_body 被拒（E_SCHEMA）', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.dispatch('know', 'kb_import', {
+    title: '文档A', url: 'https://example.com/no-new-body', body: '正文内容足够长以满足最小长度要求。', 
+  }, { actor: 'model' })
+  const rv = await bus.dispatch('know', 'kb_revalidate', { doc_id: r.data.doc_id, evidence: '声称内容变化但未提供正文', result: 'changed' }, { actor: 'script' })
+  assert.equal(rv.ok, false)
+  assert.equal(rv.error.code, 'E_SCHEMA')
+})
+
+test('L0-K2: kb_revalidate(fetch_failed) 不刷新验证时间，计数+原因可见；know_health 报失败', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.dispatch('know', 'kb_import', {
+    title: '文档B', url: 'https://example.com/fetch-fail', body: '正文内容足够长以满足最小长度要求。',
+  }, { actor: 'model' })
+  const docId = r.data.doc_id
+  const before = bus._internal.db().prepare('SELECT last_validated_at FROM kb_docs WHERE id=?').get(docId).last_validated_at
+  await new Promise((res) => setTimeout(res, 5))
+  const rv = await bus.dispatch('know', 'kb_revalidate', { doc_id: docId, evidence: '复验抓取目标站点返回 503 无法获取', result: 'fetch_failed', failure_reason: 'HTTP 503' }, { actor: 'script' })
+  assert.equal(rv.ok, true)
+  assert.equal(rv.data.fetch_failures, 1)
+  const row = bus._internal.db().prepare('SELECT last_validated_at, fetch_failures, last_fetch_error FROM kb_docs WHERE id=?').get(docId)
+  assert.equal(row.last_validated_at, before, '抓取失败不得刷新 last_validated_at')
+  assert.equal(row.last_fetch_error, 'HTTP 503')
+  const h = await bus.query('know', 'health', {}, { actor: 'model' })
+  assert.equal(h.data.kb.fetch_failed, 1)
+  assert.ok(h.data.warnings.some((w) => w.includes('抓取失败')))
+  // unchanged 复验清零失败计数
+  const rv2 = await bus.dispatch('know', 'kb_revalidate', { doc_id: docId, evidence: '人工复核确认内容仍然有效', result: 'unchanged' }, { actor: 'script' })
+  assert.equal(rv2.ok, true)
+  const row2 = bus._internal.db().prepare('SELECT fetch_failures FROM kb_docs WHERE id=?').get(docId)
+  assert.equal(row2.fetch_failures, 0)
+})

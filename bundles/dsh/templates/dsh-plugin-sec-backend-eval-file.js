@@ -91,6 +91,7 @@ function createRepo(opts) {
       return readJsonlLines(file)
     },
 
+
     // ---- 报告（tmp+rename + 历史快照归档，INV-3）----
     readReportFile(kind) {
       return readJSON(REPORT_FILES[kind], null)

@@ -210,11 +210,11 @@
 
 **语义**：文献复验——重抓取比对（script 通道）或人工确认（dashboard/human）。content hash 未变 → 只刷 revalidate_by；变了 → body 更新 + tainted 重扫；重抓失败 → 连续失败计数 +1，超阈值由 memcore 经 know_transition 处理。
 
-**参数表**：doc_id（必填）；evidence（必填：抓取 run_id 或 ≥10 字复核结论）；result（string，可选，∈ {unchanged, changed, fetch_failed}，script 通道必填）。
-**返回 data**：`{ doc_id, revalidate_by, result }`。
-**错误码**：E_NOT_FOUND；E_STATE（curated 行免复验——hint：curated 规程行不做复验）；E_EVIDENCE_REQUIRED。
-**幂等**：自动指纹（doc_id, evidence）。
-**agent_note（RoE）**：复验文献（刷新 90±15 天复验期）。script 通道自动重抓比对；人工通道直接确认。
+**参数表**：doc_id（必填）；evidence（必填：抓取 run_id 或 ≥10 字复核结论）；result（string，可选，∈ {unchanged, changed, fetch_failed}，script 通道必填）；new_body（string，result=changed 必填，≤512KB）；failure_reason（string，fetch_failed 时建议，落 last_fetch_error）。
+**返回 data**：`{ doc_id, revalidate_by, result }`；changed 追加 `{ tainted, category, content_hash, body_revision }`；fetch_failed 返回 `{ fetch_failures }` 且 revalidate_by 保持原值。
+**错误码**：E_NOT_FOUND；E_STATE（curated 行免复验——hint：curated 规程行不做复验）；E_EVIDENCE_REQUIRED；E_SCHEMA（changed 缺 new_body——hint：提供重抓取的新正文，不允许只刷新验证时间）。
+**幂等**：自动指纹（doc_id, evidence, result, new_body）。
+**agent_note（RoE）**：复验文献（刷新 90±15 天复验期）。result=changed 必须带 new_body（正文换新 + 重扫 taint + FTS/向量重建，body_revision+1）；result=fetch_failed 记失败计数与原因，不刷新已验证时间。script 通道自动重抓比对；人工通道直接确认。
 
 #### C13 · kb_record_usage
 
@@ -517,6 +517,9 @@ sec query know know_health --actor script
 | revalidate_by / last_validated_at / created_at / updated_at | INTEGER | — |
 | fetch_failures | INTEGER DEFAULT 0 | 重抓连续失败计数 |
 | uses / last_used_at | INTEGER | v5 ensureCol 补列（C13） |
+| last_fetch_error | TEXT | 最近一次抓取/索引失败原因（≤200 字；embedding 失败也落此处可见） |
+| body_revision | INTEGER DEFAULT 1 | 正文版本号，kb_revalidate(changed) 每次 +1（发布内容不可原地覆盖的计数锚点） |
+| content_hash | TEXT | 正文 sha1（导入/换新时写入，供「内容是否变化」比对） |
 
 #### kb_fts 表（FTS5，**standalone 而非 external content**）
 
@@ -812,3 +815,10 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 | 性能 | `exp_store` 语义去重加载全部 embedding 并逐条 cosine，O(n)；卡片数上万后必须换向量索引或预筛。 |
 | 文档漂移 | 已修正“事务内索引清理必然成功”的强承诺：当前是主行事务成功、索引清理 best-effort。 |
 | 独立升级 | 支持单域替换；embedding 模块可选，缺席时 FTS-only 降级明确。 |
+
+## 六、2026-09-16 学习专项 L0 实施回填（K1/K2）
+
+- **K1 缺列修复已上线**：`kb_docs` ensureCol 幂等补 `category / fetch_failures / last_fetch_error / body_revision / content_hash`（此前源码 `kb_list(category)` 与 `kb_revalidate(fetch_failed)` 走的列线上不存在）。kb_import 起写入 category/content_hash；kb_list/kb_search 透出 category 与 body_revision；`know_health.kb.fetch_failed` 从硬编码 0 改为真实计数并加 warning。
+- **K2 内容闭环已上线**：`kb_revalidate(changed)` 必须带 `new_body`（否则 E_SCHEMA）——正文原子换新 + content_hash 更新 + body_revision+1 + taint 重扫 + 分类重算 + FTS 同步重建 + 向量异步重建（失败落 last_fetch_error，不再静默）；`fetch_failed` 只记计数与原因，**不刷新** last_validated_at/revalidate_by；`unchanged` 清零失败计数。幂等指纹扩为 (doc_id, evidence, result, new_body)。
+- 契约测试 26/26 全绿（含 ensureCol 幂等、changed 闭环、fetch_failed 语义、缺 new_body 拒绝）；csai 生产冒烟：kb_docs 新列已演进、know.health / kb_list 真库只读查询通过。
+- 遗留（进 L2）：正文换新后的「依赖该版本的候选/已发布卡标记需复验」尚未实现（依赖 knowledge_revisions 表族）；kb_import 与 revalidate 的向量重建仍是 best-effort 异步（失败已可见，未入待修复队列）。

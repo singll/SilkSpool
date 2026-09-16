@@ -169,6 +169,7 @@ memcore / eval 等治理订阅者执行命令的 actor 身份由订阅声明的 
 - 命令事务提交后，事件信封随 outbox 行已持久化；dispatcher 派发后按序追加 `data/events/{domain}.jsonl`（O_APPEND 单次 write；payload 序列化后 >8KB 拒发 `E_BUS_EVENT_TOO_LARGE`——宪法 §八.5 防风暴的执行点。`high_frequency` 为**保留字段当前未实现**：全事件统一 8KB 上限，高频事件的体积约束由"payload 只含 ID 与判据快照"自律，exec.run.completed 的 parse_proposal 内联行数受各订阅方消费契约约束）；
 - 一个命令的事件数上限：默认 1；可经 manifest `event_limit` 显式上调（如 exec_spawn_worker=2）；`{...}_bulk` 动词上限=批量行数（行数上限进各域 schema，如 500/2000/5000）；
 - async 联动失败：dispatcher 指数退避重试（`bus_subscription` 记录 attempt/next_retry_at），超过阈值 → `dead_letter`；audit 记 `kind: "subscriber_failed"`（字段：event_id / subscriber / as / error）；`bus_replay` 可重放 dead/pending 的 async 订阅；
+- **partial 语义（2026-09-16 L0 修正）**：订阅者返回 `ok:true` 但 `data.partial:true`（如回流/导入部分行失败）**不再标 delivered**——dispatcher 视作部分失败进 pending 退避重试链（`bus_subscription.last_error` 记 partial 明细），超阈值同样 dead_letter；`bus_replay` 结果以 `error_code: E_PARTIAL` 单列。前提：订阅者写路径必须幂等（UPSERT/INSERT OR IGNORE），重放安全。
 - 强联动失败：见 §2.3。
 
 ### 1.6 模型工具面投影
@@ -697,6 +698,8 @@ dispatch_aliases:
 | 逻辑/功能 | 通过：R0-R9 注册与运行闸门齐全；线上 14 域 registered，`dangling_subscriptions=[]`，outbox 无 pending/dead letter。 |
 | 性能 | `bus_replay` 会把每个事件 JSONL 整体读入内存后再应用 limit；事件日志增长后需改为按行流式读取/倒序索引。outbox 派发有批量与状态谓词，当前规模健康。 |
 | 静默错误 | 事件日志坏行/半行在 replay 中直接跳过，没有 `corrupt_lines` 汇总；建议后续补计数。 |
+
+> 2026-09-16 L0 修复：订阅者 `ok:true + data.partial:true` 此前会被标 delivered（静默吞掉部分失败），已改为进 pending 重试链（契约用例覆盖，bus 域 52/52 全绿）。
 | 未实现 | `high_frequency` 仍为保留字段，统一 8KB 事件上限。 |
 | hook 判定 | ToolProjector/RpcProjector 是契约投影，不是绕总线 hook；合法。 |
 | 独立升级 | bus 是底座，不能单独替换后跳过域回归；升级必须全量契约矩阵 + 部署验收。 |

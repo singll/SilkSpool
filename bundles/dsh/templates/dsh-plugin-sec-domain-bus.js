@@ -1485,11 +1485,16 @@ const now = () => clock()
         if (rec && rec.status === 'delivered') continue
         try {
           const subEnv = await sub.handler(envelope)
-          if (subEnv && subEnv.ok === true) {
+          // L0（学习专项 K6）：ok:true 但 data.partial:true 视为部分失败——进 pending 重试链，
+          // 不让"部分写成功"静默标 delivered（订阅者须保证重放幂等）
+          if (subEnv && subEnv.ok === true && !(subEnv.data && subEnv.data.partial === true)) {
             db.prepare(`INSERT OR REPLACE INTO bus_subscription(event_id,subscriber,mode,status,attempt,last_error,consumed_at) VALUES(?,?,?,?,?,?,?)`)
               .run(row.event_id, subKey(sub), 'async', 'delivered', rec?.attempt || 0, null, now())
           } else {
-            throw new Error(`订阅者失败: ${subEnv?.error?.code || 'unknown'} ${subEnv?.error?.message || ''}`)
+            const reason = (subEnv && subEnv.data && subEnv.data.partial === true)
+              ? `partial: ${JSON.stringify(subEnv.data).slice(0, 200)}`
+              : `${subEnv?.error?.code || 'unknown'} ${subEnv?.error?.message || ''}`
+            throw new Error(`订阅者失败: ${reason}`)
           }
         } catch (e) {
           allDone = false
@@ -1549,8 +1554,9 @@ const now = () => clock()
             if (dryRun) { results.push({ event_id: env.id, subscriber: subKey(sub), ok: null, dry_run: true }); continue }
             try {
               const subEnv = await sub.handler(env)
-              const ok = !!(subEnv && subEnv.ok === true)
-              results.push({ event_id: env.id, subscriber: subKey(sub), ok, error_code: ok ? null : subEnv?.error?.code || 'E_INTERNAL' })
+              const partial = !!(subEnv && subEnv.data && subEnv.data.partial === true)
+              const ok = !!(subEnv && subEnv.ok === true) && !partial
+              results.push({ event_id: env.id, subscriber: subKey(sub), ok, error_code: ok ? null : (partial ? 'E_PARTIAL' : subEnv?.error?.code || 'E_INTERNAL') })
               if (ok) redispatched++
             } catch (e) {
               results.push({ event_id: env.id, subscriber: subKey(sub), ok: false, error_code: 'E_INTERNAL', error: String(e?.message || e) })
@@ -1571,8 +1577,9 @@ const now = () => clock()
           if (dryRun) { results.push({ event_id: env.id, subscriber: subKey(sub), ok: null, dry_run: true }); continue }
           try {
             const subEnv = await sub.handler(env)
-            const ok = !!(subEnv && subEnv.ok === true)
-            results.push({ event_id: env.id, subscriber: subKey(sub), ok, error_code: ok ? null : subEnv?.error?.code || 'E_INTERNAL' })
+            const partial = !!(subEnv && subEnv.data && subEnv.data.partial === true)
+            const ok = !!(subEnv && subEnv.ok === true) && !partial
+            results.push({ event_id: env.id, subscriber: subKey(sub), ok, error_code: ok ? null : (partial ? 'E_PARTIAL' : subEnv?.error?.code || 'E_INTERNAL') })
             if (ok) {
               redispatched++
               db.prepare(`INSERT OR REPLACE INTO bus_subscription(event_id,subscriber,mode,status,attempt,last_error,consumed_at) VALUES(?,?,?,?,?,?,?)`)

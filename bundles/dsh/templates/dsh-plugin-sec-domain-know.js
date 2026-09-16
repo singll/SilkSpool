@@ -262,14 +262,16 @@ export const KNOW_MANIFEST = {
         doc_id: int(),
         evidence: str({ minLength: 10 }),
         result: en(['unchanged', 'changed', 'fetch_failed']),
+        new_body: str({ minLength: 1, maxLength: 524288 }),
+        failure_reason: str(),
       }, ['doc_id', 'evidence']),
       idempotent: 'auto',
-      idempotent_fields: ['doc_id', 'evidence'],
+      idempotent_fields: ['doc_id', 'evidence', 'result', 'new_body'],
       events: ['know.kb.revalidated'],
       event_limit: 1,
       invariants: ['kbExists', 'kbNotCurated'],
       timeout_ms: 60000,
-      agent_note: '复验文献（刷新 90±15 天复验期）。script 通道自动重抓比对；人工通道直接确认。',
+      agent_note: '复验文献（刷新 90±15 天复验期）。result=changed 必须带 new_body（正文换新 + 重扫 taint + FTS/向量重建，body_revision+1）；result=fetch_failed 记失败计数与原因，不刷新已验证时间。script 通道自动重抓比对；人工通道直接确认。',
       deprecated: false,
     },
     kb_record_usage: {
@@ -907,11 +909,13 @@ function makeHandlers(opts) {
       const r = repo.insertKbDoc({
         title: args.title, file, source_url: args.url, tainted, bodyExcerpt: args.body.slice(0, 100000),
         mem_class: 'durable', status: curated ? 'curated' : 'active', revalidate_by, justification: args.source || 'web',
+        category, content_hash: sha1(args.body),
       })
-      embeddings().then((em) => {
+      embeddings().then(async (em) => {
         if (!em) return
-        em.embed(`${args.title} ${args.body.slice(0, 2000)}`).then((vec) => repo.replaceKbEmbedding(r.id, vec)).catch(() => {})
-      }).catch(() => {})
+        try { const vec = await em.embed(`${args.title} ${args.body.slice(0, 2000)}`); repo.replaceKbEmbedding(r.id, vec) }
+        catch (e) { log(`kb embedding 失败 doc=${r.id}: ${e?.message}`); repo.updateKbDoc(r.id, { last_fetch_error: `embedding_failed:${String(e?.message || e).slice(0, 200)}` }) }
+      }).catch((e) => log(`kb embedding 模块加载失败 doc=${r.id}: ${e?.message}`))
       return {
         data: { doc_id: r.id, category, curated, revalidate_by, tainted },
         events: [{ name: 'know.kb.imported', payload: { doc_id: r.id, category, curated, tainted, revalidate_by } }],
@@ -925,9 +929,45 @@ function makeHandlers(opts) {
       const jitter = ((docIdHash(doc.title) % 31) - 15) * DAY
       const revalidate_by = now + 90 * DAY + jitter
       const result = args.result || 'unchanged'
-      const fields = { last_validated_at: now, revalidate_by }
-      if (result === 'fetch_failed') fields.fetch_failures = (doc.fetch_failures || 0) + 1
-      repo.updateKbDoc(args.doc_id, fields)
+      if (result === 'fetch_failed') {
+        // 抓取失败：只记计数与原因，禁止把失败当"已验证"刷新
+        const fields = { fetch_failures: (doc.fetch_failures || 0) + 1, last_fetch_error: String(args.failure_reason || '未给出原因').slice(0, 200) }
+        repo.updateKbDoc(args.doc_id, fields)
+        return {
+          data: { doc_id: args.doc_id, result, fetch_failures: fields.fetch_failures, revalidate_by: doc.revalidate_by },
+          events: [{ name: 'know.kb.revalidated', payload: { doc_id: args.doc_id, result, fetch_failures: fields.fetch_failures, reason: fields.last_fetch_error } }],
+          before: { fetch_failures: doc.fetch_failures || 0 }, after: { fetch_failures: fields.fetch_failures },
+        }
+      }
+      if (result === 'changed') {
+        // 内容闭环（07-know C12 / 学习专项 L0-K2）：正文换新 + 哈希 + 版本 + taint 重扫 + FTS/向量重建
+        if (!args.new_body) throwErr('E_SCHEMA', 'result=changed 必须带 new_body', '提供重抓取的新正文，不允许只刷新验证时间', false)
+        if (String(args.new_body).length > 524288) throwErr('E_SCHEMA', 'new_body 超 512KB', '拆分批导入', false)
+        const tainted = scanInjection(args.new_body)
+        const category = classify(args.new_body)
+        const contentHash = sha1(args.new_body)
+        const bodyRevision = (doc.body_revision || 1) + 1
+        // 正文先落文件（tmp+rename 原子），再更新行与索引；同一 fileId 模式可覆盖旧正文文件
+        const fileId = String(doc.file || '').replace(/^.*\//, '').replace(/\.md$/, '') || now.toString(36)
+        const file = repo.knowledgeWrite(fileId, `# ${doc.title}\n\n${args.new_body}\n`)
+        repo.updateKbDoc(args.doc_id, {
+          file, tainted: tainted ? 1 : 0, category, content_hash: contentHash, body_revision: bodyRevision,
+          fetch_failures: 0, last_fetch_error: null, last_validated_at: now, revalidate_by,
+        })
+        repo.upsertKbFts(args.doc_id, String(doc.title), String(args.new_body).slice(0, 100000))
+        embeddings().then(async (em) => {
+          if (!em) return
+          try { const vec = await em.embed(`${doc.title} ${String(args.new_body).slice(0, 2000)}`); repo.replaceKbEmbedding(args.doc_id, vec) }
+          catch (e) { log(`kb revalidate embedding 失败 doc=${args.doc_id}: ${e?.message}`); repo.updateKbDoc(args.doc_id, { last_fetch_error: `embedding_failed:${String(e?.message || e).slice(0, 200)}` }) }
+        }).catch((e) => log(`kb embedding 模块加载失败 doc=${args.doc_id}: ${e?.message}`))
+        return {
+          data: { doc_id: args.doc_id, result, revalidate_by, tainted, category, content_hash: contentHash, body_revision: bodyRevision },
+          events: [{ name: 'know.kb.revalidated', payload: { doc_id: args.doc_id, result, revalidate_by, content_hash: contentHash, body_revision: bodyRevision, tainted } }],
+          before: { body_revision: doc.body_revision || 1, content_hash: doc.content_hash || null }, after: { body_revision: bodyRevision, content_hash: contentHash },
+        }
+      }
+      // unchanged：只刷新复验期与验证时间，并清零失败计数
+      repo.updateKbDoc(args.doc_id, { last_validated_at: now, revalidate_by, fetch_failures: 0, last_fetch_error: null })
       return {
         data: { doc_id: args.doc_id, revalidate_by, result },
         events: [{ name: 'know.kb.revalidated', payload: { doc_id: args.doc_id, result, revalidate_by } }],
@@ -1126,7 +1166,7 @@ function makeHandlers(opts) {
       const items = [...hits.entries()].map(([id]) => {
         const doc = repo.getKbDoc(id)
         if (!doc || doc.status === 'archived') return null
-        const out = { doc_id: doc.id, title: doc.title, url: doc.source_url, category: '', status: doc.status, curated: doc.status === 'curated' ? 1 : 0, tainted: !!doc.tainted, revalidate_by: doc.revalidate_by }
+        const out = { doc_id: doc.id, title: doc.title, url: doc.source_url, category: doc.category || '', status: doc.status, curated: doc.status === 'curated' ? 1 : 0, tainted: !!doc.tainted, revalidate_by: doc.revalidate_by, body_revision: doc.body_revision || 1 }
         if (semantic.has(doc.id)) out.semantic = Math.round(semantic.get(doc.id) * 100) / 100
         return out
       }).filter(Boolean).sort((x, y) => (y.curated ? 1 : 0) - (x.curated ? 1 : 0))
@@ -1188,9 +1228,10 @@ function makeHandlers(opts) {
       const warnings = []
       if ((agg.exp.zero_use_30d || 0) >= 3) warnings.push(`${agg.exp.zero_use_30d} 张卡 30 天零使用`)
       if ((agg.kb.overdue_revalidate || 0) > 0) warnings.push(`kb 复验逾期 ${agg.kb.overdue_revalidate} 篇`)
+      if ((agg.kb.fetch_failed || 0) > 0) warnings.push(`kb 抓取失败 ${agg.kb.fetch_failed} 篇（fetch_failures>0，需复验）`)
       return {
         exp: { total: agg.exp.total, active: agg.exp.total - (agg.exp.cooling + agg.exp.deprecated), deprecated: agg.exp.deprecated, avg_score: agg.exp.avg_score, zero_use_30d: agg.exp.zero_use_30d, tainted: 0, exportable: agg.exp.exportable, cooling: agg.exp.cooling },
-        kb: { total: agg.kb.total, curated: agg.kb.curated, overdue_revalidate: agg.kb.overdue_revalidate, tainted: agg.kb.tainted, fetch_failed: 0 },
+        kb: { total: agg.kb.total, curated: agg.kb.curated, overdue_revalidate: agg.kb.overdue_revalidate, tainted: agg.kb.tainted, fetch_failed: agg.kb.fetch_failed || 0 },
         rules: { total: rules, last_seed: null },
         vulncards: { total: vc.length, active: vc.filter((c) => c.status === 'active').length, draft: vc.filter((c) => c.status === 'draft').length, usage_30d: 0 },
         facts: {},

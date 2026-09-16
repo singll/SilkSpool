@@ -1,6 +1,6 @@
 # SilkSecAgent v5 自学习与漏洞学习探测设计
 
-> 日期：2026-09-12；状态：**方案待实施**。本文中的新增命令、表、评测和发布策略均未上线。
+> 日期：2026-09-12；状态：**L0 已实施上线（2026-09-16，csai 生产）；L1–L6 未执行**。本文 L0 覆盖的"新增命令、表、评测和发布策略"中其余部分（learning_episodes / knowledge_revisions / 新评测层 / 晋升门禁）仍未上线。
 > 配套：[平台升级方案](2026-09-12-dsh-0.1.5-rc.2-plan.md) · [csai 实测基线](2026-09-12-dsh-0.1.5-rc.2-record.md) · [升级目录](README.md)
 > 约束：沿用 v5 的 14 业务域、CommandGateway、actor、owns 和事件契约；实施前同步受影响的域文档与 manifest，本文不直接覆盖现行契约。
 
@@ -306,7 +306,20 @@ rc.2 反馈确认/失败保留输入改善了采集体验，但反馈不会自�
 
 L0/L1 中会使授权、证据确认或 task 收尾产生伪成功的问题，应在相应 U-D/U-E/U-H 放行前修复或明确阻断相关功能；不能以“以后属于学习包”为由让升级验收虚报通过。其他学习增量可以独立于 DSH 切换发布。
 
-关账必须有：基线和候选报告、固定版本清单、实际 Program 可见范围、发布/effect/回退记录、纠错/撤回验证、仍未覆盖的场景。当前计数器不能证明这些已完成，所有 L0–L6 状态继续记为未执行。
+关账必须有：基线和候选报告、固定版本清单、实际 Program 可见范围、发布/effect/回退记录、纠错/撤回验证、仍未覆盖的场景。当前计数器不能证明这些已完成。
+
+## 11.1 L0 实施记录（2026-09-16，csai 生产）
+
+L0 五项交付全部上线（契约：bus 52/52、know 26/26、task 29/29、eval 19/19 全绿，本地 + 生产冒烟）：
+
+1. **kb 缺列修复**（K1）：kb_docs ensureCol 幂等补 category/fetch_failures/last_fetch_error/body_revision/content_hash；kb_import 写 category；kb_list/kb_search/know_health 透出与聚合真实值。生产库已演进，kb 405 行（curated 79）口径无回归。
+2. **内容复验闭环**（K2）：kb_revalidate(changed) 强制 new_body，正文换新+哈希+body_revision+1+taint 重扫+FTS 重建+向量异步重建（失败落 last_fetch_error 可见）；fetch_failed 不刷新验证时间，只记计数与原因；幂等指纹含 result/new_body。
+3. **task proof 异常显式失败**（K6a）：守卫查询抛错/ok:false 进 guard.missing 并强制 ok=0，不再静默当"无缺失"。
+4. **订阅 partial 可见**（K6b）：订阅者 ok:true+data.partial:true 不再标 delivered，进 pending 退避重试链；bus_replay 以 E_PARTIAL 单列。索引失败可见：embedding 失败落 last_fetch_error + stderr 日志（待修复队列入 L1）。
+5. **llm_probe 模式标签纠正**（K4）：报告 mode 改 `gateway+llm-unsupported`，kind=llm 用例跳过单列不计分母，入口返回 llm_probe_supported:false。
+6. **标准评测入口恢复**（K3）：eval-run.js 迁 v5 总线（exec_run_cli + exec_grep_result 经网关），报告直写标准 eval-range-report.json（旧报告归档 reports/）。
+
+回归口径：真实缺陷均可复现（契约用例先红后绿）；不再有"Mode B 已跑"伪成功标签；模型行为层明确 unsupported。**L1–L6 状态继续记为未执行**（首个端到端里程碑的 fixture/候选卡/独立评测/受控发布均未开始）。
 
 ## 12. 契约与来源
 

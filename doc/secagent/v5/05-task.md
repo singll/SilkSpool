@@ -294,6 +294,8 @@
 
 **守卫失败的处理（设计决策，防死锁）**：v4.x 守卫拦的是 agent 手动标 done；v5 收尾权唯一归 task_finish，而 interval 任务本就不落 done——**守卫失败不拒绝事务**，而是：本次 run 的 task_runs 落 `ok=0`、note 前缀 `[流程守卫缺失]` + missing 清单；task.finished payload 带 `guard:{checked, missing[]}`；ops 健康度红条（看板）呈现缺失清单。理由：拒绝 finish 会让任务卡 running 直至被 reap 误回收——纪律信号用可观测性承载，不用状态死锁承载。缺失清单的补救动作仍是 agent 职责（attempts_log / card_usage_log / handoff 五段结构）。
 
+**守卫查询异常的处理（2026-09-16 L0 修正）**：`ledger_task_proof` 查询**抛错或返回 ok:false 不再静默降级为"无缺失"**——异常原因（截断 120 字）作为 missing 项入 `guard.missing`，本次 run 同样落 `ok=0` + `[流程守卫缺失]` 前缀（与内容缺失同等显式失败，见学习专项 L0-K6）。
+
 **latest-only 续期锚点算法（interval 分支，逐行移植 v4.x，含全部防漂移注释）**：
 
 ```
@@ -838,6 +840,8 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 | 逻辑/功能 | 21/21 契约通过；`task_run_now` 已改为非幂等写，失败回 queued 后可安全重跑；claim 原子防重复。 |
 | 功能缺口 | v5 task scheduler 观察期休眠，`data/scheduler.lock` 由 v4 `sec-suite.scheduler.js` 持有；当前定时功能依赖过渡 hook，不是 v5 域内正式调度。 |
 | 静默错误 | `ledger_task_proof` 查询异常时 guard 降级为 missing=[] 且无日志；task_runs 收尾异常兜底吞掉后仅影响执行史。 |
+
+> 2026-09-16 L0 修复：上行"守卫查询异常静默降级"已关闭——异常进 guard.missing 并强制 ok=0；契约用例覆盖（task 域 29/29 全绿）。
 | 性能 | task_runs 每任务 LRU 200 行；workers 终态行尚无 30 天清理，长期会膨胀。 |
 | 文档漂移 | 已补 `task_drift` 查询。 |
 | 独立升级 | 包边界可单域更新，但调度切换需 v4/v5 锁互斥演练；不能在生产直接删除 v4 scheduler。 |

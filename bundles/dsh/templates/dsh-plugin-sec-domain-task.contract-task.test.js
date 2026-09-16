@@ -34,7 +34,7 @@ function makeEnv(opts = {}) {
   bus._internal.db().exec(`CREATE TABLE IF NOT EXISTS programs (id TEXT PRIMARY KEY, platform TEXT, status TEXT DEFAULT 'active', max_risk TEXT, workspace_id TEXT, workspace_path TEXT)`)
   bus._internal.db().prepare(`INSERT OR REPLACE INTO programs (id, platform, status, max_risk, workspace_path) VALUES (?, ?, ?, ?, ?)`)
     .run('test-src', 'src', 'active', 'active', '/ws/test-src')
-  const domain = buildTaskDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, n, a, c) => bus.query(d, n, a, c) })
+  const domain = buildTaskDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: opts.query || ((d, n, a, c) => bus.query(d, n, a, c)) })
   const reg = bus.registry.register(domain)
   assert.equal(reg.ok, true, `task 域应注册成功：${reg.error?.message || ''}`)
   return { dir, dataDir, bus, domain }
@@ -50,6 +50,28 @@ function readEvents(dir) {
   if (!fs.existsSync(f)) return []
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
+
+// ---------------------------------------------------------------------------
+// L0（2026-09-16 学习专项 K6）：task 流程守卫异常显式失败——ledger 查询抛错
+// 不得被当成"无缺失"静默放行
+// ---------------------------------------------------------------------------
+
+test('L0: task_finish 守卫查询异常 → 显式 failed 且 guard.missing 记录异常原因', async () => {
+  const { bus, dataDir } = makeEnv({ query: () => { throw new Error('ledger db locked') } })
+  // interval 任务 + pipeline 目录存在才触发守卫
+  fs.mkdirSync(path.join(dataDir, 'pipeline', 'test-src'), { recursive: true })
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '守卫异常测试', schedule: { kind: 'interval', every_seconds: 86400 } }, { actor: 'model' })
+  const id = c.data.task_id
+  bus._internal.db().prepare('UPDATE tasks SET run_at=?, next_run_at=? WHERE id=?').run(Date.now() - 10000, Date.now() - 10000, id)
+  const claimed = await bus.dispatch('task', 'claim', { now: Date.now() }, { actor: 'scheduler' })
+  assert.ok(claimed.data.claimed.includes(id), '任务应被认领')
+  const r = await bus.dispatch('task', 'finish', { task_id: id, run_id: 'guard-err-1', outcome: 'done' }, { actor: 'scheduler' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.guard.checked, true)
+  assert.ok(r.data.guard.missing.some((m) => m.includes('task_proof 查询异常') && m.includes('ledger db locked')), '异常必须进 guard.missing，不得吞掉')
+  const ev = readEvents(path.dirname(dataDir)).find((e) => e.name === 'task.finished')
+  assert.equal(ev.payload.ok, false, '守卫异常 ⇒ ok=false 显式失败')
+})
 
 test('周期任务声明本轮完成不进入永久完结审批；既有审批只留确认记录', async () => {
   const { bus } = makeEnv()

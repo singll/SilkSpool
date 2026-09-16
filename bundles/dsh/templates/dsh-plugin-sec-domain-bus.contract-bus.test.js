@@ -882,6 +882,37 @@ test('多订阅者: 同事件模式两个订阅者各自投递且 bus_subscripti
 })
 
 // ---------------------------------------------------------------------------
+// 12b-2. L0（2026-09-16 学习专项 K6）：订阅者 ok:true + data.partial:true 不标 delivered，
+// 进 pending 重试链；全部成功后重放标 delivered（订阅者须幂等）
+// ---------------------------------------------------------------------------
+
+test('订阅者 partial: ok:true 但 data.partial:true → pending 可见可重试，不静默 delivered', async () => {
+  const { dir, bus } = makeBus()
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  let calls = 0
+  bus.events.subscribe('vuln.signal.confirmed', async () => {
+    calls++
+    // 第一次部分失败（asset 回流部分写失败），第二次全部成功
+    if (calls === 1) return { ok: true, data: { registered: 2, failed: 1, partial: true } }
+    return { ok: true, data: { registered: 3, failed: 0, partial: false } }
+  }, { mode: 'async', as: 'reactor', source: 'partial-src' })
+  const seed = await bus.dispatch('vuln', 'register_signal', { title: 'partial 测试信号一二三四五六七八', host: 'pp.example.com' }, { actor: 'model' })
+  const env = await bus.dispatch('vuln', 'confirm', { finding_id: seed.data.id, evidence: 'x' }, { actor: 'model' })
+  await bus._internal.dispatcherTick()
+  const db = bus._internal.db()
+  const rec = db.prepare('SELECT status, attempt, last_error FROM bus_subscription WHERE event_id=?').get(env.event_ids[0])
+  assert.equal(rec.status, 'pending', 'partial 不得标 delivered')
+  assert.ok(rec.last_error.includes('partial'), 'last_error 记录 partial 明细')
+  const out = db.prepare('SELECT status FROM event_outbox WHERE event_id=?').get(env.event_ids[0])
+  assert.equal(out.status, 'pending', 'outbox 保持 pending 待重试')
+  db.prepare('UPDATE event_outbox SET next_retry_at=NULL WHERE event_id=?').run(env.event_ids[0]) // 跳过测试退避等待
+  await bus._internal.dispatcherTick()
+  const rec2 = db.prepare('SELECT status FROM bus_subscription WHERE event_id=?').get(env.event_ids[0])
+  assert.equal(rec2.status, 'delivered', '重试成功后标 delivered')
+  assert.equal(calls, 2)
+})
+
+// ---------------------------------------------------------------------------
 // 12c. 启动宽限期：dispatcher 首 tick 延迟，待域注册后才续扫 pending（防误判无订阅者丢投递）
 // ---------------------------------------------------------------------------
 

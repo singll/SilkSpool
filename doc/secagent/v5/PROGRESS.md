@@ -12,7 +12,7 @@
 - **5.2 最新闸口（2026-09-12 核查）**：deprecated_use 累计 147，最后一条 2026-09-12T15:23:24.420+08:00；连续七天零使用最早到 **2026-09-19T15:23:24.420+08:00**。37 个别名保留；真实调用与契约 fixture 都需处理，新调用继续顺延。
 - **当前运行基线**：DSH **0.1.5-rc.2**（U3 生产切换完成 2026-09-15），MainPID 3848865、NRestarts=0、active/running；观察期至 2026-09-18T14:16:35Z，U4 未关账。完整取证与实施结果见 [升级记录](../upgrades/2026-09-12-dsh-0.1.5-rc.2-record.md) §14。
 - **验收口径补充**：5.4 的 7/7 是网关 Mode A；当前 llm_probe 未实际调用模型。5.5 的历史零悬空引用只覆盖原扫描范围。9 月 13 日新模板已修 scheduler 的 finding_add 并扩展 persona/调度提示审计，但尚未覆盖到生产；不能据此提前开始新的别名零使用观察期。
-- **升级与学习实施**：[DSH 0.1.5-rc.2 升级](../upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md)U1–U3 已关账；生产切换完成（§14），U4 观察进行中，首次巡检 §14.5 全部健康；[自学习 L0–L6](../upgrades/2026-09-12-self-learning-design.md) 未执行。
+- **升级与学习实施**：[DSH 0.1.5-rc.2 升级](../upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md)U1–U3 已关账；生产切换完成（§14），U4 观察进行中，首次巡检 §14.5 全部健康；[自学习](../upgrades/2026-09-12-self-learning-design.md) **L0 已实施上线（2026-09-16）**：K1 kb 缺列修复 + K2 kb_revalidate 内容闭环 + K6 task 守卫异常显式失败/订阅 partial 可见 + K4 llm_probe 标签纠正 + K3 eval-run.js 迁 v5 总线；契约 bus 52/52、know 26/26、task 29/29、eval 19/19 全绿，生产冒烟通过（kb_docs 新列已演进，know.health/kb_list 真库只读查询 OK，服务 active NRestarts=0）。L1–L6 未执行（episode/revision/独立评测/晋升门禁均未开始）。
 
 ## 二、已完成节点（附 commit 追踪）
 

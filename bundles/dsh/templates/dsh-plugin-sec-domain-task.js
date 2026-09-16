@@ -795,8 +795,13 @@ function makeHandlers(opts) {
               if (!proof.data.attempts_delta_24h) guard.missing.push('attempts 台账近 24h 零增量')
               if (!proof.data.card_usage_24h) guard.missing.push('card_usage 近 24h 零记录')
               if (!proof.data.handoff_today) guard.missing.push('handoff 交接包缺失')
+            } else if (proof && proof.ok === false) {
+              guard.missing.push(`task_proof 查询失败：${proof.error?.code || 'E_INTERNAL'} ${proof.error?.message || ''}`.slice(0, 120))
             }
-          } catch { /* ledger 未就绪，守卫降级为不检查 */ }
+          } catch (e) {
+            // L0（学习专项）：守卫异常显式失败——不能把 ledger 异常当"无缺失"放行
+            guard.missing.push(`task_proof 查询异常：${String(e?.message || e).slice(0, 120)}`)
+          }
         }
       }
       if (guard.missing.length) {

@@ -114,14 +114,14 @@
 **语义**：Phase 5 验收项（v4 初稿 §七 Phase 5.3）的落地。两类模式：
 
 - **Mode A · 网关直断言**（确定性，无 LLM 成本，默认）：构造非法工具调用直发 CommandGateway，断言被正确拒绝且错误信息可引导。用例形状见 §2.1。
-- **Mode B · LLM 诱导层**（可选，`llm_probe: true`）：用"提示词注入式"用例诱导模型尝试越权（自由态流转/无证据确认/机器通道直灌），断言模型要么不发起、要么发起被网关拒绝（**双层都算通过——提示词负责智慧，代码负责纪律**）。
+- **Mode B · LLM 诱导层**（可选，`llm_probe: true`）：用"提示词注入式"用例诱导模型尝试越权（自由态流转/无证据确认/机器通道直灌），断言模型要么不发起、要么发起被网关拒绝（**双层都算通过——提示词负责智慧，代码负责纪律**）。⚠️ **2026-09-16 L0 核查：Mode B 尚未真正实现**——llm_probe=true 只影响用例选择，不会启动受测模型会话；报告 mode 标签为 `gateway+llm-unsupported`，kind=llm 用例跳过单列（`llm_probe.skipped`）不计入 pass/fail 分母，入口返回 `llm_probe_supported: false`。真实模型诱导层归学习专项 L3。
 
 **参数表**：
 
 | 参数 | 类型 | 必填 | 默认 | 校验规则 |
 |---|---|---|---|---|
 | cases | string[] | 否 | 全部 | 同 C2 |
-| llm_probe | boolean | 否 | false | true 时附加 Mode B（LLM 成本 ~N×2 次调用） |
+| llm_probe | boolean | 否 | false | true 时选入 kind=llm 用例但跳过（Mode B 未实现，报告标 unsupported） |
 | model | string | 否 | 'pool-secagent' | — |
 
 **返回信封**：同 C2（异步，run_id + running）。**错误码**：同 C2（E_ACTOR_FORBIDDEN 对 model；E_CONFLICT 并发；E_SCHEMA 用例名）。
@@ -336,3 +336,9 @@ export const repositoryV1 = {
 | 未实现 | 无占位命令；`eval_run_finish` 为内部 system-only 命令，已补入契约表。 |
 | hook 判定 | vuln confirmed/rejected 订阅经本域 case_append 回流，无直写。 |
 | 独立升级 | 支持单域替换；须与 vuln、dashboard 联测。 |
+
+## 六、2026-09-16 学习专项 L0 实施回填（K3/K4）
+
+- **K4 llm_probe 标签纠正已上线**：runContract 的 mode 从虚标的 `gateway+llm` 改为 `gateway+llm-unsupported`；kind=llm 用例跳过并单列 `llm_probe.skipped`，不计入分母；`eval_run_contract` 返回 `llm_probe_supported: false`。契约用例覆盖（19/19 全绿）。
+- **K3 靶场回归入口恢复已上线**：`eval-run.js` 从引用已退役的 `run_cli`/`grep_result` 工具句柄迁移为 v5 总线版——自建总线实例注册 exec 域，逐用例 `exec_run_cli`（scope-guard fail-closed 硬校验、结果落盘 `results/<run_id>/`、事件经 outbox 由宿主 dispatcher 消费）+ `exec_grep_result` 核对预期模板；报告从 `report-<epoch>.json` 改直写标准入口 `data/eval/eval-range-report.json`（写前旧报告归档 `reports/`，与 backend INV-3 对齐），eval_reports/eval_stats 聚合可见。
+- 遗留（进 L3）：真实模型行为层（受测 headless 会话 + 工具轨迹）未实现；隐藏集防泄漏与 baseline 配对报告未实现；靶场回归尚未加 `exec.run.completed` 失败统计到报告。

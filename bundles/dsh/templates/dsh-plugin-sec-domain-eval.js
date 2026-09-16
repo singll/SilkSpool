@@ -125,7 +125,7 @@ export const EVAL_MANIFEST = {
       events: [],
       invariants: ['contractCasesExist'],
       timeout_ms: 60000,
-      agent_note: '（模型不可见——评测触发是治理动作：LLM 成本控制 + 被评对象不得启动评测）',
+      agent_note: '（模型不可见——评测触发是治理动作：LLM 成本控制 + 被评对象不得启动评测）。llm_probe=true 只选入并跳过 kind=llm 用例（报告标 unsupported，不计入分母），真实模型诱导层尚未实现。',
       deprecated: false,
     },
     eval_run_finish: {
@@ -436,7 +436,7 @@ function makeHandlers(opts) {
           dispatchRef('eval', 'run_finish', { run_id: runId, outcome: 'failed', error: String(e?.message || e) }, { actor: 'system' })
             .catch((e2) => { log(`eval_run_finish 失败落账失败: ${e2?.message}`) })
         }))
-      return { data: { run_id: runId, status: 'running', cases: selected.length, llm_probe: llmProbe }, events: [] }
+      return { data: { run_id: runId, status: 'running', cases: selected.length, llm_probe: llmProbe, llm_probe_supported: false }, events: [] }
     },
 
     // 评测异步执行器的唯一收尾落账通道（actor=system）：报告落盘 + run 状态翻转 + 事件，
@@ -670,11 +670,17 @@ function makeDefaultExecutor(opts) {
     const failures = []
     let pass = 0
     let total = 0
-    const mode = llmProbe ? 'gateway+llm' : 'gateway'
+    let llmUnsupported = 0
+    // L0（学习专项 K4）：llm_probe=true 只影响用例选择与标签，并未真正调用模型；
+    // 明示为 unsupported，llm 类用例跳过并单列计数，不得计入 pass/fail 分母
+    const mode = llmProbe ? 'gateway+llm-unsupported' : 'gateway'
 
     for (const c of selectedCases) {
-      // Mode B（llm 诱导层）仅在 llm_probe 时执行；kind='gateway' 恒走 Mode A 确定性断言
-      if (c.kind === 'llm' && !llmProbe) continue
+      // Mode B（LLM 诱导层）未实现：kind='llm' 用例一律跳过；gateway 用例恒走 Mode A 确定性断言
+      if (c.kind === 'llm') {
+        if (llmProbe) llmUnsupported++
+        continue
+      }
       total++
       let got = null
       let gotHint = null
@@ -697,6 +703,7 @@ function makeDefaultExecutor(opts) {
       ts: new Date().toISOString(), eval: 'contract-compliance', mode,
       pass, total, pass_rate: passRate, failures,
     }
+    if (llmProbe) report.llm_probe = { supported: false, skipped: llmUnsupported, note: 'Mode B 模型诱导层未实现；kind=llm 用例跳过不计入分母' }
     // 报告落盘与状态收尾统一由 eval_run_finish 命令承担（网关 audit/事件），执行器不直写
     return { status: 'done', report, pass_rate: passRate }
   }

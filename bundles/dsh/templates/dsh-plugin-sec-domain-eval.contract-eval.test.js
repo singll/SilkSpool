@@ -421,6 +421,28 @@ test('契约合规 EC-01~05: 真实网关越权 100% 被拒 + hint 可引导（M
   assert.equal(report.failures.length, 0)
 })
 
+// ---------------------------------------------------------------------------
+// L0（2026-09-16 学习专项 K4）：llm_probe 不得虚标"gateway+llm"——
+// Mode B 未实现，报告明示 unsupported，kind=llm 用例跳过不计入分母
+// ---------------------------------------------------------------------------
+
+test('L0-K4: llm_probe=true 报告模式标签 gateway+llm-unsupported，llm 用例跳过单列', async () => {
+  const env = makeRealPipelineEnv()
+  const r = await env.bus.dispatch('eval', 'run_contract', { llm_probe: true }, { actor: 'dashboard' })
+  assert.equal(r.ok, true, r.error?.message || '')
+  assert.equal(r.data.llm_probe_supported, false, '入口数据明示 llm_probe 未实现')
+  await env.scheduled[0]()
+  const report = readContractReport(env.evalDir)
+  assert.ok(report, '应产出 contract-report.json')
+  assert.equal(report.mode, 'gateway+llm-unsupported', '不得虚标 gateway+llm')
+  const llmCases = env.scheduled.length // sanity
+  assert.ok(llmCases >= 1)
+  // kind=llm 用例被跳过且单列计数；gateway 用例照常全过
+  assert.equal(report.llm_probe?.supported, false)
+  assert.ok(report.llm_probe.skipped >= 0)
+  assert.equal(report.pass, report.total, 'gateway 用例不应受 llm_probe 影响')
+})
+
 test('契约合规: 逐用例断言错误码 + hint 引导 token（EC-01~05）', async () => {
   const env = makeRealPipelineEnv()
   // 直接经真实网关 dispatch（actor 固定注入 model），逐用例核对 code + hint；
@@ -439,4 +461,3 @@ test('契约合规: 逐用例断言错误码 + hint 引导 token（EC-01~05）',
     assert.ok(r.error.hint && String(r.error.hint).includes(hintToken), `${domain ? domain + '_' : ''}${verb} hint 应含「${hintToken}」，实际「${r.error.hint}」`)
   }
 })
-
