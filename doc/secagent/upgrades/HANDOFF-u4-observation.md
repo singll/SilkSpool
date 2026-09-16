@@ -4,12 +4,13 @@
 
 ---
 
-## 一、当前状态（2026-09-16 定时任务优化部署后）
+## 一、当前状态（2026-09-16 第二轮稳定性修复部署后）
 
-- 生产：**0.1.5-rc.2**、MainPID **3883528**、NRestarts=0、active/running（2026-09-16 重启过一次：定时任务链式调度与工具稳定性优化部署，见 §14.6）。
+- 生产：**0.1.5-rc.2**、MainPID **3893882**、NRestarts=0、active/running（2026-09-16 重启过两次：§14.6 定时任务链式调度优化、§14.7 日志巡检第二轮修复）。
 - Git 提交：`b7f4111 fix: 定时任务链式调度与工具调用稳定性优化`（代码与生产文件哈希一致，任务链已配置）。
+- §14.7 第二轮：新增 `vuln_evidence_put` 打通 CONFIRMED 证据闭环；exec 双协议前缀参数清洗+渲染兜底；ffuf wordlist 默认值修正、l2-collect `sandbox:false`、nuclei 可选 templates/tags（远程 tools.d 已直接更新）；ledger E_LEDGER_EVIDENCE_MISSING hint 直指失败模式（12 次归因：模型传参问题、守卫按设计工作，11/12 重试自愈）。本地 387 合约全过。
 - 定时任务链：bytedance `#16 recon → #19 广度 → #100008 深挖`；meituan `#17 recon → #37 广度 → #100007 深挖`。预算 3600/5400/7200s，前置成功后 60s 放行后续；每日锚点 北京 03:00/03:10，下一周期 2026-09-17。误完结的 #16/#17/#19 已恢复 queued。
-- 备份：`/opt/silkspool/dsh/backups/opt-20260916/`（asset-graph.db + 被替换插件 + 根模板 + tasks-before.tsv）。
+- 备份：`/opt/silkspool/dsh/backups/opt-20260916/`（asset-graph.db + 被替换插件 + 根模板 + tasks-before.tsv）、`opt-20260916-r2/`（第二轮被替换文件）、`opt-20260916/tools.d/`（tools.d 原文件）。
 - 发布目录：`/opt/silkspool/dsh-upgrades/20260913-rc2/dsh-release-2non9v70`。
 - `state.json`：`phase=observing`，`observation_until=2026-09-18T14:16:35.602762+00:00`。
 - 冻结点：`dsh-snapshot-ready-8jhp928l`，manifest SHA `fdeea4b34fce80a2f2c742d6caa6bccb170449bc9b62f005d4b1ab1aaac5a0cd`。
@@ -103,8 +104,9 @@ git commit -m 'docs: DSH 0.1.5-rc.2 U4 关账记录'
 - **发布目录**：`/opt/silkspool/dsh-upgrades/20260913-rc2/dsh-release-2non9v70`，`state.json` `phase=observing`
 - **observation_until**：`2026-09-18T14:16:35.602762+00:00`
 - **冻结点**：`dsh-snapshot-ready-8jhp928l`，manifest SHA `fdeea4b34fce80a2f2c742d6caa6bccb170449bc9b62f005d4b1ab1aaac5a0cd`
-- **生产版本**：`0.1.5-rc.2`、MainPID `3883528`、NRestarts `0`、active/running（2026-09-16 优化部署重启，旧基线 3848865 作废）
+- **生产版本**：`0.1.5-rc.2`、MainPID `3893882`、NRestarts `0`、active/running（2026-09-16 两次优化部署重启，旧基线 3848865/3883528 作废）
 - **§14.6 优化部署**：2026-09-16 定时任务链式调度 + 工具稳定性优化上线（本地 384 合约全过、生产哈希一致、重启后 16 域注册成功、outbox 0 异常）
+- **§14.7 巡检与第二轮修复**：2026-09-16 日志巡检（部署后 0 错误复发，历史报错均已归因）+ 第二轮修复上线（本地 387 合约全过、生产哈希一致、重启后 15 域注册成功、NRestarts=0）
 - **§14.5 巡检**：首次巡检完成（2026-09-15T14:57Z），全部健康；别名闸口顺延至 2026-09-22T15:07:10+08:00
 - **L0–L6**：未执行
 
