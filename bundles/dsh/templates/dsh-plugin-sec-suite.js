@@ -682,12 +682,9 @@ const APPROVAL_KINDS = {
     },
   },
   // P2-3 知识采纳：外部经验（writeup/BugHunter 案例蒸馏出的可迁移模式）经人工审批转正 exp_cards。
-  // subject = 经验卡 scenario 一句话；payload = { card_id?, draft, source_url }。
-  // card_id 有（或 scenario 已有同款卡）→ 转正对应 candidate 卡；只有 draft → 落新卡
-  // （source=external, confidence=low——外部来源置信低起点，后续靠实战反馈信号演进）并直接转正。
-  // status 语义（experience 插件 exp_cards + memcore 治理列）：candidate=入口待评审 → active=转正，
-  // cooling=负反馈降级，archived=弃置；exp_cards 本表无 tainted 列（那是 kb_docs 的），不涉及。
-  // 直写路径：本文件与 experience.js 共用同一 SQLite（asset-db getDb → asset-graph.db）。
+  // L4（自学习专项 §6.2，2026-09-17 收口）：v4 直写 exp_cards 的 onApprove 通道已关闭——
+  // knowledge-adopt 的唯一执行路径 = v5 approval 域 decide → effect → know 域 know_adopt；
+  // 本兜底只会在总线/approval 域不可达时到达（v4 残迹），此时禁止直写，fail-closed。
   'knowledge-adopt': {
     label: '知识采纳',
     validate({ subject, payload, evidence }) {
@@ -707,53 +704,9 @@ const APPROVAL_KINDS = {
       }
       return { ok: true, value: { payload: { card_id: cardId, draft, source_url: sourceUrl } } }
     },
-    onApprove({ subject, program_name, payload, evidence }) {
-      const scenario = String(subject || '').trim()
-      const p = payload && typeof payload === 'object' ? payload : {}
-      const draft = String(p.draft || '').trim()
-      const sourceUrl = String(p.source_url || '').trim()
-      const cardId = p.card_id ? Number(p.card_id) : null
-      // 降级出口：exp_cards 未初始化（experience 插件惰性建表）或直写失败——批准本身有效，
-      // 转正动作留给人，note 必须带全草稿摘要（看板可复制）。
-      const degrade = (why) => ({ ok: true, note: `已批准——请按草稿在经验库手工转正（${why}）。草稿：${draft}${draft.length > 300 ? draft.slice(0, 300) + '…' : ''}；来源 ${sourceUrl || '未提供'}` })
-      let d
-      try {
-        d = assetDb.getDb()
-        if (!d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='exp_cards'").get()) return degrade('exp_cards 表尚未初始化')
-      } catch (e) { return degrade(`经验库不可达: ${e?.message ?? e}`) }
-      const now = Date.now()
-      // 治理列（memcore 加载后才有）：无 status 列时卡默认即生效，无 candidate→active 语义
-      const gov = d.prepare('PRAGMA table_info(exp_cards)').all().some((c) => String(c.name) === 'status')
-      const reason = `知识采纳审批批准（来源 ${sourceUrl || '未提供'}${evidence ? '；依据: ' + String(evidence).slice(0, 120) : ''}）`
-      // card_id 缺席时按 scenario 幂等对卡（exp_cards.scenario UNIQUE，裸 INSERT 会撞）
-      const target = cardId
-        ? d.prepare('SELECT id, scenario, status FROM exp_cards WHERE id = ?').get(cardId)
-        : d.prepare('SELECT id, scenario, status FROM exp_cards WHERE scenario = ?').get(scenario)
-      try {
-        if (target) {
-          if (!target.status || target.status !== 'active') {
-            if (gov) {
-              // 优先 experience 晋升通道（memcore_events 治理留痕）；未加载/失败回退直写治理列
-              const promo = exp.expPromote ? exp.expPromote({ id: target.id, reason, actor: 'dashboard' }) : null
-              if (!promo || !promo.ok) d.prepare("UPDATE exp_cards SET status='active', status_at=? WHERE id=?").run(now, target.id)
-            }
-          }
-          if (draft) {
-            d.prepare('UPDATE exp_cards SET takeaway=?, last_validated_at=? WHERE id=?').run(draft, now, target.id)
-            try { d.prepare('UPDATE exp_fts SET takeaway=? WHERE rowid=?').run(draft, target.id) } catch { /* FTS 行残留不阻断转正 */ }
-          }
-          return { ok: true, note: `经验卡 #${target.id}（${target.scenario}）已转正 active${gov ? '' : '（memcore 未加载，仅更新 takeaway/时效）'}${draft ? '，takeaway 已按审批草稿覆盖' : ''}——检索面即时生效` }
-        }
-        // 无对卡：draft 落新卡并直接转正
-        const r = gov
-          ? d.prepare(`INSERT INTO exp_cards (scenario, takeaway, chain, attempts, evidence, source, confidence, created_at, last_validated_at, mem_class, status, status_at, justification) VALUES (?, ?, '[]', '[]', ?, 'external', 'low', ?, ?, 'permanent', 'active', ?, ?)`)
-            .run(scenario, draft, JSON.stringify([`knowledge-adopt:${sourceUrl}`]), now, now, now, reason)
-          : d.prepare(`INSERT INTO exp_cards (scenario, takeaway, chain, attempts, evidence, source, confidence, created_at, last_validated_at) VALUES (?, ?, '[]', '[]', ?, 'external', 'low', ?, ?)`)
-            .run(scenario, draft, JSON.stringify([`knowledge-adopt:${sourceUrl}`]), now, now)
-        const newId = Number(r.lastInsertRowid)
-        try { d.prepare("INSERT INTO exp_fts (rowid, scenario, takeaway, chain) VALUES (?, ?, ?, '[]')").run(newId, scenario, draft) } catch { /* FTS 索引失败不阻断转正 */ }
-        return { ok: true, note: `外部经验已按审批草稿落卡 #${newId} 并直接转正 active（source=external, confidence=low——后续靠实战反馈信号升置信）；scenario: ${scenario}` }
-      } catch (e) { return degrade(`直写失败: ${e?.message ?? e}`) }
+    onApprove() {
+      // L4：v4 直写通道关闭——fail-closed，不落任何 exp_cards 直写。
+      return { ok: false, error: 'knowledge-adopt 的 v4 直写通道已于 L4 关闭：请经 v5 approval 域（approval_request kind=knowledge-adopt → approval_decide）执行，effect 会调 know 域 know_adopt；本路径说明总线/approval 域不可达，请修复后重试，请求保持 pending。' }
     },
   },
 }

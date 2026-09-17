@@ -14,6 +14,7 @@ import { createBus } from '../../sec-domain-bus/index.js'
 import { buildApprovalDomain, APPROVAL_MANIFEST } from '../index.js'
 import { buildScopeDomain } from '../../sec-domain-scope/index.js'
 import { buildTaskDomain } from '../../sec-domain-task/index.js'
+import { buildKnowDomain } from '../../sec-domain-know/index.js'
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'sec-domain-approval-')) }
 
@@ -295,4 +296,150 @@ test('approval_reconcile: 列出 effects 与 drift', async () => {
   assert.equal(rec.data.decision_status, 'approved')
   assert.equal(rec.data.effects.length, 1)
   assert.equal(rec.data.effects[0].status, 'applied')
+})
+
+// ---------------------------------------------------------------------------
+// 7. L4（自学习专项 §6.2/§6.3，2026-09-17）：knowledge-publish 端到端 + effect 重试
+// ---------------------------------------------------------------------------
+
+function makeEnvWithKnow() {
+  const env = makeEnv()
+  const know = buildKnowDomain({ dataDir: env.dataDir, dispatch: (d, v, a, c) => env.bus.dispatch(d, v, a, c), query: (d, n, a, c) => env.bus.query(d, n, a, c) })
+  assert.equal(env.bus.registry.register(know).ok, true, 'know 域应注册成功')
+  return env
+}
+
+const L4_VC_CONTENT = {
+  id: 'VC-AUTHZ-APR', version: 1, parentVersion: null,
+  title: 'API 对象授权约束检查（L4 端到端）', extends: 'vuln_authz_diff',
+  appliesTo: { surface: 'api', prerequisites: ['owned_test_accounts'], invalidatedBy: ['role_change'] },
+  hypothesis: '身份与对象归属之间应满足访问约束：低权身份对他人对象应被拒',
+  minimalProbe: '经 vuln_authz_diff 双权凭证重放同一接口比对',
+  positiveControl: '对象拥有者可执行预期操作并收到 200',
+  negativeControl: '无权限测试身份对他人对象应被拒 401/403/404',
+  evidenceRequired: ['request_context', 'identity_ref'],
+  stopConditions: ['scope_changed', 'rate_limit'],
+  fixtures: { vulnerable: 'fx-a', patched: 'fx-b', invalid_env: 'fx-c' },
+  budget: { maxRequests: 6, maxSeconds: 120 },
+  failureNotes: '正对照失败记 infra_error；凭证缺失记 blocked_auth',
+  changeNote: 'L4 端到端首版候选说明',
+}
+
+// 经 know 域造一条 eligible revision（propose→assess begin/finish，digest 由响应返回）
+async function eligibleRevision(env, evalRun) {
+  const p = await env.bus.dispatch('know', 'revision_propose', {
+    artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-APR', content: L4_VC_CONTENT,
+    source_kind: 'seed', source_ref: 'data-seed/know-revisions/vc-authz-apr.json', change_note: 'L4 端到端候选说明超过十字',
+  }, { actor: 'script' })
+  assert.equal(p.ok, true, p.error?.message)
+  const { revision_id, content_digest } = p.data
+  const b = await env.bus.dispatch('know', 'revision_assess', { revision_id, phase: 'begin', eval_run_id: evalRun, candidate_digest: content_digest }, { actor: 'reactor' })
+  assert.equal(b.ok, true, b.error?.message)
+  const f = await env.bus.dispatch('know', 'revision_assess', { revision_id, phase: 'finish', eval_run_id: evalRun, candidate_digest: content_digest, verdict: 'eligible', report_ref: 'eval-candidate-report.json' }, { actor: 'reactor' })
+  assert.equal(f.ok, true, f.error?.message)
+  return { revision_id, content_digest }
+}
+
+test('L4: knowledge-publish 端到端——提请 → decide approve → know_revision_publish 灰度发布 + 批准绑定哈希', async () => {
+  const env = makeEnvWithKnow()
+  const { bus } = env
+  const { revision_id, content_digest } = await eligibleRevision(env, 'evalrun_apr_ok0001')
+  const req = await bus.dispatch('approval', 'request', {
+    kind: 'knowledge-publish', subject: `VC-AUTHZ-APR ${revision_id} 灰度发布（example-src）`,
+    evidence: '独立评测报告 eval-candidate-report.json 判定 eligible，配对三类 fixture 全过，符合灰度放行门槛。',
+    payload: { revision_id, content_digest, scope_type: 'program', scope_id: 'example-src', eval_report_ref: 'eval-candidate-report.json' },
+  }, { actor: 'model', session_id: 'sess_pub1' })
+  assert.equal(req.ok, true, req.error?.message)
+  const decide = await bus.dispatch('approval', 'decide', { id: req.data.request_id, decision: 'approve' }, { actor: 'dashboard', operator: 'singll' })
+  assert.equal(decide.ok, true)
+  assert.equal(decide.data.status, 'approved')
+  assert.equal(decide.data.effects.length, 1)
+  assert.equal(decide.data.effects[0].status, 'applied')
+  const db = bus._internal.db()
+  const rel = db.prepare('SELECT * FROM know_releases WHERE revision_id=?').get(revision_id)
+  assert.ok(rel, '发布账本落行')
+  assert.equal(rel.status, 'active')
+  assert.equal(rel.scope_type, 'program')
+  assert.equal(rel.scope_id, 'example-src')
+  assert.equal(rel.auth_ref, `approval:${req.data.request_id}`, '批准引用=请求 id')
+  assert.equal(rel.content_digest, content_digest, '发布绑定内容哈希')
+  const rg2 = await bus.query('know', 'revision_get', { revision_id }, { actor: 'dashboard' })
+  assert.equal(rg2.data.status, 'published')
+})
+
+test('L4: 批准绑定哈希失效——批准后 digest 不符 → effect 失败（approved_effect_failed）+ reconcile 可见', async () => {
+  const env = makeEnvWithKnow()
+  const { bus } = env
+  const { revision_id, content_digest } = await eligibleRevision(env, 'evalrun_apr_stale1')
+  const req = await bus.dispatch('approval', 'request', {
+    kind: 'knowledge-publish', subject: `VC-AUTHZ-APR ${revision_id} 灰度发布（错哈希）`,
+    evidence: '独立评测报告 eval-candidate-report.json 判定 eligible，本用例故意携带错误 digest 验证批准失效。',
+    payload: { revision_id, content_digest: `sha256:${'0'.repeat(64)}`, scope_type: 'program', scope_id: 'example-src' },
+  }, { actor: 'model', session_id: 'sess_pub2' })
+  assert.equal(req.ok, true)
+  const decide = await bus.dispatch('approval', 'decide', { id: req.data.request_id, decision: 'approve' }, { actor: 'dashboard' })
+  assert.equal(decide.ok, true)
+  assert.equal(decide.data.status, 'approved_effect_failed', '批准对象=哈希——digest 不符即拒发布')
+  assert.equal(decide.data.effects[0].status, 'failed')
+  const rec = await bus.query('approval', 'reconcile', { request_id: req.data.request_id }, { actor: 'dashboard' })
+  assert.equal(rec.ok, true)
+  assert.equal(rec.data.drift.length, 1)
+  const rels0 = await bus.query('know', 'release_list', {}, { actor: 'dashboard' })
+  assert.equal(rels0.total, 0, '零发布')
+  const rg = await bus.query('know', 'revision_get', { revision_id }, { actor: 'dashboard' })
+  assert.equal(rg.data.status, 'eligible', 'revision 不被失败发布流转')
+  void content_digest
+})
+
+test('L4: effect 重试不重复发布——首次 effect 失败（未评测）→ 评测 eligible 后 approval_effects_retry 补跑，重复重试零重复', async () => {
+  const env = makeEnvWithKnow()
+  const { bus } = env
+  const db = bus._internal.db()
+  // 先提案（candidate），再提请发布——decide 时 revision 未 eligible → effect 失败
+  const p = await bus.dispatch('know', 'revision_propose', {
+    artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-APR', content: L4_VC_CONTENT,
+    source_kind: 'seed', source_ref: 'data-seed/know-revisions/vc-authz-apr.json', change_note: 'L4 端到端候选说明超过十字',
+  }, { actor: 'script' })
+  assert.equal(p.ok, true)
+  const { revision_id, content_digest } = p.data
+  const req = await bus.dispatch('approval', 'request', {
+    kind: 'knowledge-publish', subject: `VC-AUTHZ-APR ${revision_id} 灰度发布（先提后评）`,
+    evidence: '独立评测报告 eval-candidate-report.json 判定 eligible，本用例验证 effect 失败重试路径。',
+    payload: { revision_id, content_digest, scope_type: 'program', scope_id: 'example-src' },
+  }, { actor: 'model', session_id: 'sess_pub3' })
+  assert.equal(req.ok, true)
+  const decide = await bus.dispatch('approval', 'decide', { id: req.data.request_id, decision: 'approve' }, { actor: 'dashboard' })
+  assert.equal(decide.ok, true)
+  assert.equal(decide.data.status, 'approved_effect_failed', 'candidate 不可发布 → effect failed')
+  // 补齐评测（candidate→evaluating→eligible）
+  const b = await bus.dispatch('know', 'revision_assess', { revision_id, phase: 'begin', eval_run_id: 'evalrun_apr_retry1', candidate_digest: content_digest }, { actor: 'reactor' })
+  assert.equal(b.ok, true)
+  const f = await bus.dispatch('know', 'revision_assess', { revision_id, phase: 'finish', eval_run_id: 'evalrun_apr_retry1', candidate_digest: content_digest, verdict: 'eligible', report_ref: 'eval-candidate-report.json' }, { actor: 'reactor' })
+  assert.equal(f.ok, true)
+  // 人工对账后重试 effect——原样重放（接收方幂等）
+  const retry = await bus.dispatch('approval', 'effects_retry', { request_id: req.data.request_id }, { actor: 'dashboard' })
+  assert.equal(retry.ok, true, JSON.stringify(retry.error || retry.data))
+  assert.equal(retry.data.retried, 1, JSON.stringify(retry.data))
+  assert.equal(retry.data.results[0].status, 'applied')
+  assert.equal(retry.data.decision_status, 'approved', '全部补跑成功 → 决策态回归 approved')
+  const rels1 = await bus.query('know', 'release_list', {}, { actor: 'dashboard' })
+  assert.equal(rels1.total, 1)
+  // 重试重试（幂等表过期后的重发；已无 failed effect）= 零动作
+  db.prepare('DELETE FROM idempotency').run()
+  const retry2 = await bus.dispatch('approval', 'effects_retry', { request_id: req.data.request_id }, { actor: 'dashboard' })
+  assert.equal(retry2.ok, true)
+  assert.equal(retry2.data.retried, 0)
+  // 直接重复 dispatch 同 payload（幂等表过期后的极端重放）：同批准既有 release 吸收，零重复
+  db.prepare('DELETE FROM idempotency').run()
+  const again = await bus.dispatch('know', 'revision_publish', {
+    revision_id, content_digest, auth_ref: `approval:${req.data.request_id}`,
+    scope_type: 'program', scope_id: 'example-src', reason: `knowledge-publish 批准 #${req.data.request_id}：重复重放`,
+  }, { actor: 'approval' })
+  assert.equal(again.ok, true)
+  assert.equal(again.data.published, false)
+  assert.equal(again.data.duplicate, 'auth')
+  const rels2 = await bus.query('know', 'release_list', {}, { actor: 'dashboard' })
+  assert.equal(rels2.total, 1, 'effect 重试不重复发布')
+  const evts = db.prepare("SELECT COUNT(*) c FROM event_outbox WHERE payload LIKE '%know.revision.published%'").get().c
+  assert.equal(evts, 1, '零重复发布事件')
 })

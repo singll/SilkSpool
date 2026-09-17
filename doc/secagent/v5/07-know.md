@@ -3,7 +3,7 @@
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：know@1
 > 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（订阅 `approval.approved` 承接 knowledge-adopt / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 记学习 episode，L1）；vuln 域（订阅 `vuln.signal.confirmed/rejected` 记判定 episode，L1）；task 域（订阅 `task.finished` 记任务级 episode，L1）。
 > 被订阅：`know.*` 全系事件——memcore（治理旁路）、dashboard、eval（评测回流）。
-> owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` / `playbooks` / `learning_episodes` / `knowledge_revisions` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
+> owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` / `playbooks` / `learning_episodes` / `knowledge_revisions` / `know_releases` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
 
 ---
 
@@ -28,13 +28,13 @@
 
 | # | 动词 | 子仓 | 一句话语义 | actor 白名单 | 幂等键 | 发布事件 |
 |---|---|---|---|---|---|---|
-| C1 | `exp_store` | exp | 存入/合并一条可迁移经验卡（permanent 方法论的唯一入口；语义去重 embedding≥0.95 合并） | model, dashboard, script, approval | 自然键（dedupe 后行 id） | know.exp.stored / merged |
+| C1 | `exp_store` | exp | 存入/合并一条可迁移经验卡（permanent 方法论的唯一入口；语义去重 embedding≥0.95 合并） | dashboard, script, approval（**L4 起 model 移除**——模型只产候选 revision） | 自然键（dedupe 后行 id） | know.exp.stored / merged |
 | C2 | `exp_feedback` | exp | 对经验卡回执反馈（useful/adopted/wrong/outdated/validated 五判定，驱动 score） | model, dashboard, script | 自动指纹 | know.exp.feedback |
-| C3 | `exp_update` | exp | 修正经验卡内容（scenario/takeaway/chain 全量替换，需 justification） | model, dashboard | 自然键 | know.exp.updated |
-| C4 | `exp_promote` | exp | 晋升外部/低置信卡为正式卡（draft→active，评分重算） | model, dashboard, approval | 自然键 | know.exp.promoted |
+| C3 | `exp_update` | exp | 修正经验卡内容（scenario/takeaway/chain 全量替换，需 justification） | dashboard（**L4 起 model 移除**——原地改 active 通道关闭） | 自然键 | know.exp.updated |
+| C4 | `exp_promote` | exp | 晋升外部/低置信卡为正式卡（draft→active，评分重算） | dashboard, approval（**L4 起 model 移除**——模型不能自我晋升） | 自然键 | know.exp.promoted |
 | C5 | `exp_deprecate` | exp | 证伪弃置经验卡（active→deprecated 终态） | model, dashboard, human | 自然键 | know.exp.deprecated |
 | C6 | `exp_record_usage` | exp | 使用回执（uses+1；exp_search 投影层自动补发） | model, system | 自动指纹 | （无） |
-| C7 | `pb_save` | exp | 存入/更新 playbook 卡（kind=playbook，触发词驱动召回） | model, dashboard, script | 自然键（name） | know.exp.stored |
+| C7 | `pb_save` | exp | 存入/更新 playbook 卡（kind=playbook，触发词驱动召回） | dashboard, script（**L4 起 model 移除**） | 自然键（name） | know.exp.stored |
 | C8 | `pb_outcome` | exp | 回填 playbook 执行结果（win/loss + 笔记，驱动 pbRank） | model, dashboard, system | 自然键（name+date） | know.exp.feedback |
 | C9 | `exp_approve_export` | exp | 批准经验卡进入 vault 导出（exportable 0→1） | dashboard, human, approval | 自然键 | know.exp.export.approved |
 | C10 | `exp_revoke_export` | exp | 撤销导出资格（exportable→0，含授权域命中降级） | dashboard, human, system | 自然键 | know.exp.export.revoked |
@@ -42,17 +42,19 @@
 | C12 | `kb_revalidate` | kb | 复验刷新文献（重抓取 diff 或人工确认） | model, dashboard, script, system | 自然键 | know.kb.revalidated |
 | C13 | `kb_record_usage` | kb | 使用回执（uses+1；kb_search 投影层补发，v5 新增补齐对称性） | model, system | 自动指纹 | （无） |
 | C14 | `rule_seed` | rules | 物化规则文件到 data/rules/ 并建 curated 索引行（actor 物理闸：禁 model） | script, human, system | 自然键（path hash） | know.rule.seeded |
-| C15 | `vc_save` | vulncards | 存入/升版漏洞卡（version+1，deviation+changelog 必填） | model, dashboard, script | 自然键（id+version） | know.vc.saved |
+| C15 | `vc_save` | vulncards | 存入/升版漏洞卡（version+1，deviation+changelog 必填） | dashboard（**L4 起 model/script 移除**——新卡/升版走 know_revision_propose） | 自然键（id+version） | know.vc.saved |
 | C16 | —（原 `vc_log_usage` 废止，改**消费通道**：卡片使用记录归 ledger 域 `ledger_log_card_usage`，见本表下注） | vulncards | 本域经订阅 `ledger.card_usage.logged` 事件 + ledger 查询消费（registry 健康度/零使用卡清理判据）；usage jsonl 写入不在本域 | model, script, system（ledger 侧动词的 actor） | —（本域无此命令） | （ledger 域发 `ledger.card_usage.logged`） |
-| C17 | `vc_activate` | vulncards | 激活卡片（draft→active，registry 同步） | dashboard, human, script | 自然键 | know.vc.activated |
+| C17 | `vc_activate` | vulncards | 激活卡片（draft→active，registry 同步） | dashboard, human（**L4 起 script 移除**——revision 卡发布走 know_revision_publish） | 自然键 | know.vc.activated |
 | C18 | `vc_deprecate` | vulncards | 弃置卡片（active→deprecated，registry 同步） | dashboard, human, script | 自然键 | know.vc.deprecated |
 | C19 | `harvest_ingest` | harvest | 收割队列投喂（feed/inbox/stdin → drafts + candidates.json，绝不自动写 rules/） | script, system, webhook | 自然键（item hash） | know.harvest.ingested |
-| C20 | `know_adopt` | 跨仓 | 人工采纳收割草稿/外部卡为正式知识（approval.approved kind=knowledge-adopt 的执行端） | approval, dashboard, human | 自然键 | know.adopted |
+| C20 | `know_adopt` | 跨仓 | 人工采纳收割草稿/外部卡为正式知识（approval.approved kind=knowledge-adopt 的执行端；**L4 扩展**：revision 来源采纳只认 published revision） | approval, dashboard, human | 自然键 | know.adopted |
 | C21 | `know_transition` | 跨仓 | 治理通道：exp/kb 生命周期降级（memcore sweep 专用） | system, human | 自然键 | know.exp.cooled/archived/expired、know.kb.* |
 | C22 | `know_purge_archive` | 跨仓 | 归档表 90 天硬删（占位动词，Phase 2 正式化，同 06-fact 映射表 #7） | system | 自然键 | （无） |
 | C23 | `know_episode_record` | episode | 执行学习记录落账（reactor 专用；宿主注入归属；六类结果分类；双唯一去重） | **reactor**（模型/脚本/dashboard 物理不可调） | 自然键（source_event_id+consumer_version） | know.episode.recorded |
 | C24 | `know_revision_propose` | revision | 候选知识版本提案（父版本+结构化改动+来源+适用条件；L2 2026-09-17 上线；候选≠发布，绝不覆盖在使用卡片） | model, script, dashboard | 自动指纹（artifact+parent+content）+ 表级 UNIQUE 兜底 | know.revision.proposed |
 | C25 | `know_revision_assess` | revision | 候选评测流转（L3 2026-09-17 上线；candidate→evaluating→eligible/rejected，中断 abort 回 candidate；只信 eval 域事件信封；eligible≠发布） | **reactor**（模型/脚本/dashboard/human 物理不可调） | 自然键（revision_id+phase+eval_run_id） | know.revision.assessed |
+| C26 | `know_revision_publish` | revision | 受控发布（L4 2026-09-17 上线；eligible→published，发布=新增 know_releases 行不原地改旧版本；批准绑定内容哈希；有限灰度先于全局生效） | **approval, human**（model/script/dashboard/reactor 物理不可调） | 自然键（revision_id+scope+digest+auth_ref）+ 同批准既有 release 兜底 | know.revision.published |
+| C27 | `know_release_revoke` | release | 发布撤回与回退（L4 2026-09-17 上线；release 置 revoked + 恢复同 scope 上一 published 版本） | dashboard, human | 自然键（release_id+reason）；已撤销重复撤回 no-op | know.release.revoked |
 
 > **卡片使用记录（原 `card_usage_log`）归属**：归 **ledger 域**（动词 `ledger_log_card_usage`），文件 `data/pipeline/{program}/card_usage-{date}.jsonl`（sec-pipeline.js L146，`pipelineDir()` 即 ledger 台账树）：① attempts/card_usage/handoff 三产物同一纪律节奏写入、被 task_finish 流程守卫同批校验、走同一 vault 回放链路——拆域会让守卫跨域取证；② 一棵目录树一个 owner（单写者律同款理由）。**本域消费路径**：订阅 `ledger.card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询，驱动 registry 健康度与 know_health 零使用卡清理——读消费不受 owns 影响。字段语义（card_id/deviation/suggest）的知识视角归本域解读，写入动作归 ledger。
 
@@ -379,6 +381,30 @@
 
 **错误码**：E_ACTOR_FORBIDDEN（非 reactor）；E_NOT_FOUND（revision 不存在）；E_KNOW_REVISION_CHANGED（digest 不对应——hint：评测须针对当前候选内容重跑）；E_INVARIANT（状态机非法流转/来源待复验——hint 不引导绕过）。
 
+#### C26 · know_revision_publish（受控发布，L4 2026-09-17 上线）
+
+**语义**（自学习设计 §6.2/§6.3）：把 eligible revision 发布进使用面。**批准绑定具体 revision 内容哈希**——`content_digest` 与 revision 当前内容不符即 `E_KNOW_REVISION_CHANGED`（批准对象=哈希，内容变化即批准失效，须对新 revision 重新评测并重批）。**发布为新增 know_releases 行，不原地改旧版本**：同 (artifact, scope) 旧 active release 置 `superseded`；旧 revision 不再有任何 active 使用面时置 `retired`（流程列；内容行原样保留）。**有限灰度先于全局生效**：`scope_type=program/family` 必须带 `scope_id`（单 Program 或单 fixture 家族）；`scope_type=global` 要求同 artifact 已有 active 有限灰度 release 在跑，禁止直升全局。
+
+**参数表**（additionalProperties: false）：revision_id（必填）/ content_digest（必填，`sha256:` + 64 位 hex——批准对象锚点）/ auth_ref（必填，批准引用，effect 通道 = `approval:{request_id}`）/ scope_type（∈ program/family/global，默认 program）/ scope_id（灰度必填）/ reason（必填 ≥10 字）/ eval_report_ref（可选）。
+
+**前置闸**：revision 必须 eligible（或已 published 的新范围发布）；rejected/retired 终态拒（E_STATE）；needs_revalidate=1 拒（E_INVARIANT，来源变更后旧评测结论不作数）。**actor**：approval, human（model/script/dashboard/reactor 物理不可调）。
+**幂等**：自然键 `revision_id+scope_type+scope_id+content_digest+auth_ref`——effect 重试同参重放 replay；幂等表过期后的晚到重放由「同批准+同对象+同内容既有 release」吸收（duplicate:'auth'，零重复发事件）。同 revision 同 scope 换批准（新 auth_ref）= 重新发布（产生新 release 行）。
+**错误码**：E_ACTOR_FORBIDDEN；E_NOT_FOUND；E_STATE（非 eligible/终态）；E_INVARIANT（needs_revalidate/无灰度直升 global）；E_KNOW_REVISION_CHANGED（digest 不符）。
+**事件**：`know.revision.published {release_id, revision_id, artifact_kind, artifact_id, content_digest, scope_type, scope_id, auth_ref, supersedes}`。
+
+#### C27 · know_release_revoke（发布撤回与回退，L4 2026-09-17 上线）
+
+**语义**：撤回发布并回退——release 置 `revoked`（记 revoked_at + 理由），同 (artifact, scope) 恢复最近一条被取代/撤销的 release 为 active（**灰度失败可恢复到上一 published 版本**）；恢复的 revision 置回 published，被撤 revision 无任何 active 使用面时置 retired。历史 episode 不回写；在飞任务保留已绑定版本（紧急边界问题取消在飞任务属 task 域，不在本动词范围）。
+
+**参数表**：release_id（必填）/ reason（必填 ≥10 字）/ correction_event_ref（可选，关联纠错事件）。
+**actor**：dashboard, human。**幂等**：自然键 `release_id+reason`；已撤销的 release 重复撤回 = no-op（零事件零副作用）。
+**事件**：`know.release.revoked {release_id, revision_id, artifact_kind, artifact_id, scope_type, scope_id, reason, correction_event_ref, rolled_back_to}`。
+
+#### C20 补充（L4）：know_adopt 的 revision 来源采纳
+
+`know_adopt` 扩展参数 `artifact_kind / revision_id / eval_report_ref / scope`（payload 可携 content_digest 做一致性断言）。**采用面只认 published revision**：revision_id 存在时 revision 必须已 published——eligible/candidate/evaluating/rejected/retired 一律 `E_INVARIANT`（hint：先经 know_revision_publish 审批+灰度发布）；自带 digest 与 revision 内容不符 `E_KNOW_REVISION_CHANGED`。既有 target（exp/kb/rules 草稿采纳）语义不变。
+
+
 ### 1.4 查询（读投影）逐个详述
 
 > 列表统一分页信封 `{rows, total, limit, offset}`；行数=total 同口径断言（`expVisibleWhere()` / `kbVisibleWhere()` 单一构造器）。
@@ -435,6 +461,10 @@
 
 #### Q18 · know_revision_get（L2）：参数 revision_id；返回单条 revision 全文（content JSON / 来源快照 / 状态链）。
 
+#### Q19 · know_release_list（L4）：参数 artifact_kind / artifact_id / scope_type / scope_id / status（active/superseded/revoked）/ 分页；返回 know_releases 行（按 created_at 倒序）——「谁在哪个范围生效、何时被取代/撤回」的只读投影。
+
+#### Q20 · know_revision_history（L4）：参数 artifact_kind + artifact_id（必填）；返回同一 artifact 的 revision 链 + 各 revision 的发布状态（版本切点审计：哪个版本在哪些范围生效/被撤回）。
+
 ### 1.5 事件
 
 **发布**：
@@ -461,6 +491,8 @@
 | `know.episode.recorded` | C23 | `{ episode_id, source_event_id, source_event_name, outcome, program_id, exec_run_id }` |
 | `know.revision.proposed` | C24 | `{ revision_id, artifact_kind, artifact_id, parent_revision_id, content_digest, source_kind, source_ref, change_note 摘要 }` |
 | `know.revision.assessed` | C25 | `{ revision_id, phase, from, to, eval_run_id, verdict, report_ref }` |
+| `know.revision.published` | C26 | `{ release_id, revision_id, artifact_kind, artifact_id, content_digest, scope_type, scope_id, auth_ref, supersedes }` |
+| `know.release.revoked` | C27 | `{ release_id, revision_id, artifact_kind, artifact_id, scope_type, scope_id, reason, correction_event_ref, rolled_back_to }` |
 
 **订阅**（manifest subscribes）：
 
@@ -477,19 +509,20 @@
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
-挂载：web + headless × actor=model。**不向模型注册**：`exp_approve_export`/`exp_revoke_export`（dashboard/human/approval/system）、`rule_seed`（script/human/system——先验库物理闸）、`know_adopt`（approval/dashboard/human）、`know_transition`（system/human）、`know_purge_archive`（system）、`know_episode_record`（**reactor 专用**——学习归属不采信模型自填）、`know_revision_assess`（**reactor 专用**——评测流转只信 eval 域事件信封）、`exp_update`（v4 同款限制保留：模型改卡风险高，修正走 dashboard；如模型必须修，用 exp_store 重写 + deviation 说明）。投影零改名。
+挂载：web + headless × actor=model。**不向模型注册**：`exp_approve_export`/`exp_revoke_export`（dashboard/human/approval/system）、`rule_seed`（script/human/system——先验库物理闸）、`know_adopt`（approval/dashboard/human）、`know_transition`（system/human）、`know_purge_archive`（system）、`know_episode_record`（**reactor 专用**——学习归属不采信模型自填）、`know_revision_assess`（**reactor 专用**——评测流转只信 eval 域事件信封）、`know_revision_publish`（**approval/human 专用**——发布走审批效果链）、`know_release_revoke`（dashboard/human）。**L4（2026-09-17）起另移除**：`exp_store` / `pb_save` / `vc_save` / `exp_update` / `exp_promote`（模型直写/原地改/自我晋升通道全部关闭——模型只产候选 revision（know_revision_propose），发布走独立评测 + 审批门禁）。投影零改名。
 
 | 工具名 | 描述全文要点（即 agent_note，全文见 1.3/1.4） |
 |---|---|
-| exp_store | 见 C1 |
+| exp_store | 见 C1（**L4 起不再向模型投影**——模型沉淀走 know_revision_propose） |
 | exp_feedback | 见 C2 |
 | exp_record_usage | 见 C6 |
 | exp_deprecate | 见 C5 |
-| pb_save / pb_outcome | 见 C7/C8 |
+| pb_save / pb_outcome | 见 C7/C8（**L4 起 pb_save 不再向模型投影**，pb_outcome 保留） |
 | kb_import / kb_revalidate / kb_record_usage | 见 C11/C12/C13 |
-| vc_save / vc_activate / vc_deprecate | 见 C15/C17/C18（使用记录见 C16 消费通道，写入动词在 ledger 域） |
+| vc_save / vc_activate / vc_deprecate | 见 C15/C17/C18（**L4 起均不再向模型投影**；使用记录见 C16 消费通道，写入动词在 ledger 域） |
 | know_revision_propose | 见 C24（候选知识版本提案；候选≠发布，不覆盖现行卡片；坏来源被拒） |
 | know_revision_list / know_revision_get | 见 Q17/Q18（候选池只读投影） |
+| know_release_list / know_revision_history | 见 Q19/Q20（发布账本/版本链只读投影） |
 | exp_search | 检索经验卡（关键词+标签+置信度，FTS+向量融合）。任务开局三步检索第二步：动手前查历史打法，命中即用（用后回执）。返回按综合评分排序，含冷却降权标记。 |
 | exp_get | 读经验卡全文（scenario/takeaway/chain/证据链）。 |
 | exp_rank | 当前 Top5 经验卡 + playbook 排名（开局注入同源）。 |
@@ -626,6 +659,10 @@ sec query know know_health --actor script
 #### knowledge_revisions 表（L2，2026-09-17；owner=know，幂等建表）
 
 候选知识版本（设计 §3.1/§6.1 的 L2 落地）。列：`revision_id PK / schema_version / artifact_kind / artifact_id / parent_revision_id / content_json / content_digest(sha256 canonical JSON) / source_kind / source_ref / source_snapshot(JSON：kb=doc_id+body_revision+content_hash；episode=episode_id+outcome；seed=模板路径) / applies_predicates(JSON) / status（draft/candidate/evaluating/eligible/published/retired/rejected；L2 只产生 candidate，L3 起 C25 驱动 evaluating/eligible/rejected 流转）/ needs_revalidate（来源变更标记，kb_revalidate(changed) 联动置位）/ eval_report_ref（L3 起用：C25 落评测 run/报告引用）/ change_note / created_by_actor / created_at`。约束：`UNIQUE(artifact_kind, artifact_id, content_digest)`（内容级去重——同参重放不产生新 revision，内容变化必出新行）；索引 `idx_revision_artifact(artifact_kind, artifact_id, created_at)`、`idx_revision_source(source_kind, source_ref)`、`idx_revision_status(status)`。**只插不改内容**：`content_json/content_digest/source_snapshot` 一旦写入不可原地覆盖（published 内容冻结的根基）；后续允许修改的仅 `status/needs_revalidate/eval_report_ref` 三个流程列。
+
+#### know_releases 表（L4，2026-09-17；owner=know，幂等建表）
+
+发布账本（设计 §6.2/§6.3 的 L4 落地）。列：`release_id PK / artifact_kind / artifact_id / revision_id / content_digest / scope_type（program/family/global）/ scope_id（global 为空串）/ auth_ref（批准引用，effect 通道 = approval:{request_id}）/ status（active/superseded/revoked）/ reason / created_by_actor / created_at / revoked_at / revoke_reason`。约束：**部分唯一索引 `UNIQUE(artifact_kind, artifact_id, scope_type, scope_id) WHERE status='active'`**——同 artifact 同范围任一时刻至多一条生效发布（发布=新行 + 旧行置 superseded，不原地改旧版本）；索引 `idx_release_artifact(artifact_kind, artifact_id, created_at)`、`idx_release_revision(revision_id)`。回退 = 撤销当前 release + 恢复最近一条同 scope 的非 active release 为 active（C27）；行只追加不删除，撤回历史全留痕。
 
 **file 后端**：
 
@@ -947,3 +984,12 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **可信输入只取事件信封**：订阅 `eval.candidate.started`（→begin）与 `eval.report.built` kind=candidate（done+verdict→finish；failed/无 verdict→abort，失败不记成功）；candidate_digest 与 revision.content_digest 不对应即 E_KNOW_REVISION_CHANGED。
 - **来源变更闸**：begin 时 needs_revalidate=1 拒评（E_INVARIANT）；finish 时发现评测期间来源变更 → 强制 rejected（source_changed_during_eval），旧来源上的评测结论不作数。
 - **eligible≠发布**：eligible 只表示"通过独立评测"，进使用面仍需 L4 发布门禁（know_revision_publish + approval）；本域不使用面零变化。
+
+## 十、2026-09-17 学习专项 L4 实施回填（受控晋升与撤回）
+
+- **写入口收口（§6.2）**：`exp_store`/`pb_save` 移除 model（沉淀只走 know_revision_propose 候选）；`exp_update` 移除 model（原地改 active 通道关闭）；`exp_promote` 移除 model（模型不能自我晋升）；`vc_save` 移除 model/script、`vc_activate` 移除 script（revision 卡的发布走 C26）；dashboard/human 人工通道保留（legacy exp_cards/VC-xxx YAML 的既有维护语义不变）。alias 清点：无别名指向已收紧动词（exp_validate 折叠进 exp_feedback，观察回执通道，不在收口范围）；看板 RPC 的 expFeedback/expPromote/expDeprecate/expUpdate/expExportable 的 v4 直写兜底全部拆除（fail-closed：总线不可达即报错，不再回退 assetDb 直写）；sec-suite.js v4 `knowledge-adopt` onApprove 的 exp_cards 直写通道关闭（fail-closed，指引走 v5 approval 域 effect）。
+- **C26 `know_revision_publish`**（approval/human 专用）+ 事件 `know.revision.published`：批准绑定内容哈希（digest 不符 E_KNOW_REVISION_CHANGED——内容变化即批准失效重批）；eligible 前置 + needs_revalidate 闸；发布=新增 know_releases 行（部分唯一索引保证同 artifact 同 scope 至多一条 active，不原地改旧版本）；有限灰度（program/family）先于全局生效（global 须有同 artifact 灰度在跑）；effect 重试不重复发布（自然键 + 同批准既有 release 吸收）。
+- **C27 `know_release_revoke`**（dashboard/human）+ 事件 `know.release.revoked`：灰度失败可恢复——release 置 revoked，恢复同 scope 上一 published 版本；重复撤回 no-op。
+- **know_adopt 扩展（C20）**：revision 来源采纳只认 published revision（eligible 不可进使用面，E_INVARIANT；digest 不符 E_KNOW_REVISION_CHANGED）。
+- **使用面发布投影**：`vc_list`/`vc_get` 叠加已发布 revision 卡（data/vulncards/ 无文件且存在 active release 的 published revision 以 `revision:{id}` 虚拟行进入使用面；eligible/candidate 不可见；撤回即退出）；`know_health` 透出 active release 数。新查询 Q19 `know_release_list` / Q20 `know_revision_history`。
+- **新表 `know_releases`**（幂等建表，见 2.1）：发布账本，行只追加不删除。

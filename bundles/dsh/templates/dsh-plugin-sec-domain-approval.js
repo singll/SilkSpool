@@ -182,6 +182,32 @@ export const APPROVAL_KINDS = {
       return [{ domain: 'know', verb: 'adopt', payload: { target: 'exp', payload: { id: cardId ?? null, draft, source_url: url }, evidence: args.evidence } }]
     },
   },
+  // L4（自学习专项 §6.2/§6.3，2026-09-17）：知识版本受控发布——批准对象=具体 revision 内容哈希
+  //（内容变化即批准失效，须重批）；发布=有限灰度（单 Program/单家族）先于全局生效。
+  // 发布门禁在 know 域 C26（eligible 前置 + needs_revalidate 闸 + digest 锚定）；本域只校验判据形状。
+  'knowledge-publish': {
+    label: '知识版本发布',
+    request_actors: ['model', 'dashboard', 'human'],
+    validate: async (subject, args, payload, deps) => {
+      const p = payload && typeof payload === 'object' ? payload : {}
+      if (!p.revision_id || typeof p.revision_id !== 'string') return { code: 'E_INVARIANT', message: 'payload.revision_id 缺失', hint: '发布对象必须是具体候选 revision（know_revision_list 可查）' }
+      if (!/^sha256:[0-9a-f]{64}$/.test(String(p.content_digest || ''))) return { code: 'E_INVARIANT', message: 'payload.content_digest 缺失或非法', hint: '批准绑定内容哈希——取 know_revision_get 返回的 content_digest；内容变化即批准失效' }
+      if (!['program', 'family', 'global'].includes(String(p.scope_type || ''))) return { code: 'E_INVARIANT', message: `payload.scope_type 非法: ${p.scope_type}`, hint: 'scope_type ∈ program/family/global——有限灰度先于全局生效' }
+      if (String(p.scope_type) !== 'global' && !String(p.scope_id || '').trim()) return { code: 'E_INVARIANT', message: '灰度发布缺 scope_id', hint: 'scope_type=program/family 必须带 scope_id（单 Program 或单家族）' }
+      if (String(args.evidence || '').length < 30) return { code: 'E_INVARIANT', message: 'evidence 不足 30 字', hint: '发布依据须引用独立评测结论（eval 配对报告 ref + eligible 判定）' }
+      return null
+    },
+    effects: (requestId, subject, args, payload) => {
+      const p = payload && typeof payload === 'object' ? payload : {}
+      return [{ domain: 'know', verb: 'revision_publish', payload: {
+        revision_id: String(p.revision_id), content_digest: String(p.content_digest),
+        auth_ref: `approval:${requestId}`,
+        scope_type: String(p.scope_type), scope_id: String(p.scope_id || ''),
+        reason: `knowledge-publish 批准 #${requestId}：${String(args.evidence || '').slice(0, 120)}`,
+        eval_report_ref: p.eval_report_ref ? String(p.eval_report_ref) : undefined,
+      } }]
+    },
+  },
   'task-complete': {
     label: '任务完成确认',
     request_actors: ['model', 'scheduler'],
@@ -245,7 +271,7 @@ export const APPROVAL_MANIFEST = {
       event_limit: 1,
       invariants: ['kindValidate'],
       timeout_ms: 60000,
-      agent_note: '统一审批入口（fail-closed 之下的正规放行通道）：向人工提请审批。整域用 scope-wildcard、单子域用 scope-domain、被排除资产用 exclude-exception、外部经验蒸馏用 knowledge-adopt（card_id/draft≥50/source_url）。批准前目标仍被 scope-guard 拒绝。',
+      agent_note: '统一审批入口（fail-closed 之下的正规放行通道）：向人工提请审批。整域用 scope-wildcard、单子域用 scope-domain、被排除资产用 exclude-exception、外部经验蒸馏用 knowledge-adopt、候选知识版本发布用 knowledge-publish（payload 带 revision_id+content_digest+scope——批准绑定内容哈希）。批准前目标仍被 scope-guard 拒绝。',
       deprecated: false,
     },
     approval_decide: {
@@ -278,6 +304,19 @@ export const APPROVAL_MANIFEST = {
       invariants: ['withdrawValid'],
       timeout_ms: 60000,
       agent_note: '撤回自己提请的 pending 审批（提错对象/判据填错时自查自救）。只能撤回 requested_by 为自己会话的请求。',
+      deprecated: false,
+    },
+    // L4：effect 失败重试通道——批准（decision）不动，只对 status=failed 的 effect 原样重放
+    //（同 payload 重放命中接收方幂等键 replay；接收方另有业务级幂等兜底，重试不重复生效）。
+    approval_effects_retry: {
+      actor: ['dashboard', 'human'],
+      schema: schema({ request_id: int() }, ['request_id']),
+      idempotent: 'auto',
+      idempotent_fields: ['request_id'],
+      events: [],
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '重试失败 effect（approval_reconcile 对账出 drift 后的人工补跑）：批准记录不变，只把 status=failed 的 effect 按原 payload 重新 dispatch；接收方幂等键吸收，重试不重复生效。',
       deprecated: false,
     },
   },
@@ -581,6 +620,44 @@ function makeHandlers(opts) {
       const drift = effects.filter((e) => e.status !== 'applied')
       return { decision_status: row.status, effects, drift }
     },
+  }
+
+  // L4：effect 重试 handler 放进 commands（approval_effects_retry）
+  commands.approval_effects_retry = async (args, repo) => {
+    const row = repo.getRequest(args.request_id)
+    if (!row) throwErr('E_NOT_FOUND', `请求不存在: ${args.request_id}`, '核对 request_id', false)
+    if (!String(row.status || '').startsWith('approved')) {
+      throwErr('E_STATE', `请求 #${args.request_id} 非批准态（${row.status}）`, '只有已批准请求的 effect 可重试', false)
+    }
+    const effects = repo.listEffects(args.request_id)
+    const failed = effects.filter((e) => e.status === 'failed')
+    if (!failed.length) return { data: { request_id: args.request_id, retried: 0, results: [] } }
+    const results = []
+    let anyFailed = false
+    for (const ef of failed) {
+      let r = null
+      try {
+        r = await dispatchRef(ef.domain, ef.verb, ef.payload ? JSON.parse(ef.payload) : {}, { actor: 'approval' })
+      } catch (e) {
+        r = { ok: false, error: { code: e?.code || 'E_INTERNAL', message: e?.message || String(e) } }
+      }
+      if (r && r.ok) {
+        repo.markEffect(ef.effect_key, { status: 'applied' })
+        results.push({ effect_key: ef.effect_key, status: 'applied', replay: r.replay === true })
+      } else {
+        anyFailed = true
+        repo.markEffect(ef.effect_key, { status: 'failed', last_error: r?.error?.message || 'unknown' })
+        results.push({ effect_key: ef.effect_key, status: 'failed', error: r?.error?.message || 'unknown' })
+      }
+    }
+    if (!anyFailed && String(row.status) === 'approved_effect_failed') {
+      repo.setRequestStatus(args.request_id, 'approved')
+    }
+    return {
+      data: { request_id: args.request_id, retried: results.length, results, decision_status: anyFailed ? 'approved_effect_failed' : 'approved' },
+      events: [],
+      after: { request_id: args.request_id, retried: results.length },
+    }
   }
 
   return { ...commands, queries, invariants, subscribers: {} }

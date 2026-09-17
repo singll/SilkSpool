@@ -876,11 +876,10 @@ export async function handleDashboardRpc(endpoint, payload) {
         try {
           const r = await bus.dispatch('know', 'exp_feedback', { id, verdict, source: 'dashboard' }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
           if (r.ok) return { ok: true, ...(r.data || {}) }
-        } catch { /* v4 兜底 */ }
+        } catch { /* 总线异常 → fail-closed（L4 起无 legacy 直写兜底） */ }
       }
-      const r = deps.exp.expFeedback({ id, verdict, actor: 'dashboard' })
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expFeedback', decision: 'executed', detail: { id, verdict } })
-      return r
+      // L4（自学习 §6.2）：exp 写路径唯一入口 = 总线 know 域；legacy 直写兜底已拆除
+      throw new Error('expFeedback 需要总线 know 域在线（L4 起已拆除 legacy 直写兜底）；请确认 silksecagent 服务运行后重试')
     }
     case 'expPromote': {
       const id = Number(p.id)
@@ -889,11 +888,9 @@ export async function handleDashboardRpc(endpoint, payload) {
         try {
           const r = await bus.dispatch('know', 'exp_promote', { id, evidence: String(p.reason || '看板人工晋升') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
           if (r.ok) return { ok: true, ...(r.data || {}) }
-        } catch { /* v4 兜底 */ }
+        } catch { /* 总线异常 → fail-closed（L4 起无 legacy 直写兜底） */ }
       }
-      const r = deps.exp.expPromote({ id, reason: String(p.reason || '看板人工晋升'), actor: 'dashboard' })
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expPromote', decision: 'executed', detail: { id } })
-      return r
+      throw new Error('expPromote 需要总线 know 域在线（L4 起已拆除 legacy 直写兜底）；请确认 silksecagent 服务运行后重试')
     }
     case 'expDeprecate': {
       const id = Number(p.id)
@@ -903,11 +900,9 @@ export async function handleDashboardRpc(endpoint, payload) {
         try {
           const r = await bus.dispatch('know', 'exp_deprecate', { id, reason }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
           if (r.ok) return { ok: true, ...(r.data || {}) }
-        } catch { /* v4 兜底 */ }
+        } catch { /* 总线异常 → fail-closed（L4 起无 legacy 直写兜底） */ }
       }
-      const r = deps.exp.expDeprecate({ id, reason, actor: 'dashboard' })
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expDeprecate', decision: 'executed', detail: { id, reason } })
-      return r
+      throw new Error('expDeprecate 需要总线 know 域在线（L4 起已拆除 legacy 直写兜底）；请确认 silksecagent 服务运行后重试')
     }
     case 'expUpdate': {
       const id = Number(p.id)
@@ -917,11 +912,9 @@ export async function handleDashboardRpc(endpoint, payload) {
         try {
           const r = await bus.dispatch('know', 'exp_update', { id, takeaway: p.takeaway, justification }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
           if (r.ok) return { ok: true, ...(r.data || {}) }
-        } catch { /* v4 兜底 */ }
+        } catch { /* 总线异常 → fail-closed（L4 起无 legacy 直写兜底） */ }
       }
-      const r = deps.exp.expUpdate({ id, takeaway: p.takeaway, justification })
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expUpdate', decision: 'executed', detail: { id } })
-      return r
+      throw new Error('expUpdate 需要总线 know 域在线（L4 起已拆除 legacy 直写兜底）；请确认 silksecagent 服务运行后重试')
     }
     case 'expExportable': {
       const id = Number(p.id)
@@ -935,11 +928,9 @@ export async function handleDashboardRpc(endpoint, payload) {
             ? await bus.dispatch('know', 'exp_approve_export', { id, reason }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
             : await bus.dispatch('know', 'exp_revoke_export', { id, reason }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
           if (r.ok) return { ok: true, id, exportable: on }
-        } catch { /* v4 兜底 */ }
+        } catch { /* 总线异常 → fail-closed（L4 起无 legacy 直写兜底） */ }
       }
-      deps.assetDb.getDb().prepare('UPDATE exp_cards SET exportable = ? WHERE id = ?').run(on, id)
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.expExportable', decision: 'executed', detail: { id, exportable: on } })
-      return { ok: true, id, exportable: on }
+      throw new Error('expExportable 需要总线 know 域在线（L4 起已拆除 legacy 直写兜底）；请确认 silksecagent 服务运行后重试')
     }
     case 'playbooks': {
       // v5：know.exp_rank（pbRank 视图）接管；v4 兜底（观察期）

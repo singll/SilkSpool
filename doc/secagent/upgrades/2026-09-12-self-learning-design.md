@@ -1,6 +1,6 @@
 # SilkSecAgent v5 自学习与漏洞学习探测设计
 
-> 日期：2026-09-12；状态：**L0–L3 已实施上线（L0/L1 于 2026-09-16，L2/L3 于 2026-09-17，csai 生产）；L4–L6 未执行**。knowledge_revisions 候选版本层与首个 P1 授权类候选卡已随 L2 落地（§11.3）；独立评测层（真实模型行为 / fixture runner / 分组隐藏集 / baseline 配对报告 + revision 评测状态机）已随 L3 落地（§11.4），VC-AUTHZ-001 r1 已评测 eligible——**eligible≠发布**，晋升门禁（L4）仍未上线；learning_episodes 与证据发布/挂载已随 L1 落地（§11.2）。
+> 日期：2026-09-12；状态：**L0–L4 已实施上线（L0/L1 于 2026-09-16，L2/L3/L4 于 2026-09-17，csai 生产）；L5–L6 未执行**。knowledge_revisions 候选版本层与首个 P1 授权类候选卡已随 L2 落地（§11.3）；独立评测层（真实模型行为 / fixture runner / 分组隐藏集 / baseline 配对报告 + revision 评测状态机）已随 L3 落地（§11.4），VC-AUTHZ-001 r1 已评测 eligible——**eligible≠发布**；受控晋升与撤回门禁（L4）已随 §11.5 落地（know_revision_publish + 审批绑定哈希 + 有限灰度/回退），revision 的 published/retired 流转动词已上线；learning_episodes 与证据发布/挂载已随 L1 落地（§11.2）。
 > 配套：[平台升级方案](2026-09-12-dsh-0.1.5-rc.2-plan.md) · [csai 实测基线](2026-09-12-dsh-0.1.5-rc.2-record.md) · [升级目录](README.md)
 > 约束：沿用 v5 的 14 业务域、CommandGateway、actor、owns 和事件契约；实施前同步受影响的域文档与 manifest，本文不直接覆盖现行契约。
 
@@ -363,7 +363,24 @@ L3 四项交付全部上线（契约：eval 19→27、know 42→50 全绿；14 �
 
 部署记事：本次部署仍在 U4 观察期内（至 2026-09-18T14:16:35Z），已记入 [U4 handoff](HANDOFF-u4-observation.md) 基线变更（三次重启：①插件+种子+fixture/数据集冻结；②`eval-candidate-run.js` runner 归位；③LLM key 链补 `BELLKEEPER_LLM_API_KEY`——生产 .env 实际键名，与 settings.yaml `apiKeyEnv` 同源；最新 MainPID 3946516）。已知行为两条：①孤儿扫描（host_restart）不产生 `eval.report.built`——被扫中断的 run 其 revision 停留 evaluating，可由 reactor abort 回收或下一次评测自愈（evaluating 可再进评测）；②孤儿扫描在服务启动（buildEvalDomain）时执行，与独立 CLI runner 并发存在启动竞态——runner 新 run 恰逢服务 boot 扫描会被误标 host_restart（trial-l3-prod-1 与一次 `--llm-probe` 冒烟均因此失败重跑）；操作纪律：runner 触发前确认 journal 已现「eval 域注册成功」。
 
-**L4–L6 状态继续记为未执行**（**eligible≠发布**：候选卡不进使用面、不改 `vuln_authz_diff` 现行判定；受控发布/灰度/回退属 L4；检索计分 L5；运营面板 L6；revision 的 published/retired 流转动词属 L4）。
+**L5–L6 状态继续记为未执行**（检索计分 L5；运营面板 L6）。L4 已随 §11.5 落地（受控发布/灰度/回退、revision 的 published/retired 流转动词）。
+
+## 11.5 L4 实施记录（2026-09-17，csai 生产）
+
+L4 四项交付全部上线（契约：know 50→60、approval 16→19 全绿，本地 15 套件全套全绿 + 生产冒烟）：
+
+1. **收口所有旧写入口**（§6.2）：actor 面收紧——`exp_store`/`pb_save` 移除 model（模型只走 `know_revision_propose` 候选），`exp_update` 移除 model，`exp_promote` 移除 model（模型不能自我晋升），`vc_save` 移除 model/script，`vc_activate` 移除 script（script 直升 active 通道关闭，revision 卡激活走 `know_revision_publish`+审批）；看板 RPC（dashboard-rpc）的 expFeedback/expPromote/expDeprecate/expUpdate/expExportable 五处 v4 直写兜底全部拆除、改 fail-closed 抛错（无第二写路径残留）；sec-suite v4 `knowledge-adopt` onApprove 直写同改 fail-closed；alias 清单逐一清点无指向旧直写路径；seed-presets.sh persona 文本同步更新（exp_store/pb_save → know_revision_propose）。
+2. **know_adopt 扩展**（采用面只认 published）：`revision_id` 分支校验 revision 状态——非 published（含 eligible）→ `E_INVARIANT`（hint 引导先经 publish 发布），自带 content_digest 与内容不符 → `E_KNOW_REVISION_CHANGED`；eligible 不可进使用面。配套投影：Q19 `know_release_list`、Q20 `know_revision_history`；`vc_list`/`vc_get` 发布投影（published revision 以 `revision:{id}` 虚拟行进使用面，eligible/candidate 不可见，撤回后即退出）；`know_health` 透出 `releases.active` 计数。
+3. **C26 `know_revision_publish`**（§6.2/§6.3，actor=approval/human，model/script/reactor 物理拒）：**批准绑定内容哈希**——`content_digest` 与 revision 当前内容不符即 `E_KNOW_REVISION_CHANGED`（批准对象=哈希，内容变化即批准失效须重批）；前置闸——仅 eligible（或已 published 再发新 scope）可发布（`E_STATE`，eligible≠发布但发布前置=独立评测通过），rejected/retired 终态拒，`needs_revalidate=1`（来源已变更）强制 `E_INVARIANT` 重评；**发布为新状态、不原地改旧版本**——发布=新增 `know_releases` 行（scope_type∈program/family/global，部分唯一索引保证同 artifact+scope 至多一条 active），同 scope 旧 active 行置 superseded，旧 revision 不再有任何 active 使用面时置 retired（流程列，内容行原样保留）；**幂等**——同批准（auth_ref）+同对象+同内容重放命中既有 release，`duplicate:'auth'` 零事件零重复落账（总线幂等表过期后的晚到重放亦安全）。
+4. **有限灰度与回退**：**有限灰度先行**——发布 global 前同 artifact 须已有 active 的 program/family 灰度在跑，否则 `E_INVARIANT`（禁止直升全局；hint 引导先灰度观察再凭新批准晋升）；**C27 `know_release_revoke`**（dashboard/human）——当前 release 置 revoked 并自动恢复同 (artifact, scope) 上一版本 release 为 active（恢复上一 published 版本；被撤 revision 无 active 面时置 retired，被恢复的 retired revision 回 published），重复撤回 no-op 幂等；**approval 域闭环**——kind8 `knowledge-publish`（validate 形状校验 + effect → `know.revision_publish`，`auth_ref=approval:{requestId}` 即批准对象）+ 新命令 `approval_effects_retry`（dashboard/human，只重放 failed effect，全成功后 approved_effect_failed→approved；后端新增 `setRequestStatus`）——effect 重试不重复发布。
+
+验收对照（§11 L4 行）：**模型不能直升/原地改 active**——契约用例（model → exp_store/pb_save/vc_save/exp_update/exp_promote/know_revision_publish 均 `E_ACTOR_FORBIDDEN`；发布不原地改旧版本用例：新版发布 supersede 旧 release、内容行原样保留）+ 生产实测拒；**批准绑定哈希**——契约（批准后 digest 不符 → 发布 `E_KNOW_REVISION_CHANGED` / effect 失败进 approved_effect_failed 且 reconcile 可见）+ 生产实测（错 digest 拒）；**effect 重试不重复发布**——契约（首次 effect 失败 → eligible 后 `approval_effects_retry` 补跑成功，重复重试零重复；同批准 duplicate:'auth'）+ 生产实测（同键异参 `E_IDEMPOTENT_CONFLICT`，know_releases=1、published 事件=1）；**灰度失败可恢复**——契约（revoke 当前 release 自动恢复上一 published 版本、重复撤回 no-op；无灰度直升 global `E_INVARIANT`）+ 生产实测（无灰度直升 global 拒）。
+
+生产冒烟（2026-09-17，部署后）：服务 active NRestarts=0（MainPID 3952870）、journal 无异常、know/approval/eval 域注册成功、vault errors=0；actor 闸实测拒（model → know_revision_publish/exp_store 均 `E_ACTOR_FORBIDDEN`）；批准绑定哈希实测（错 digest → `E_KNOW_REVISION_CHANGED`）；有限灰度前置实测（无灰度发布 global → `E_INVARIANT`）；**真实审批链端到端走通**——approval request #21（model 提请 kind8 knowledge-publish）→ decide approve → effect applied → release `rel_mu54qbjza6defb` active（scope=family/authz，`auth_ref=approval:21`）→ revision `rev_mu4vc96e82991e`（VC-AUTHZ-001 r1）转 published；vc_list 发布投影可见；`approval_effects_retry` 实测 retried=0；幂等实测（同键异参 `E_IDEMPOTENT_CONFLICT`，know_releases 仍 1 行、published 事件 1 条）。**VC-AUTHZ-001 r1 保持 published 状态不回滚**——作为首个端到端里程碑（候选→评测→批准发布→采用面可见）的留存产物。
+
+部署记事：本次部署仍在 U4 观察期内（至 2026-09-18T14:16:35Z），已记入 [U4 handoff](HANDOFF-u4-observation.md) 基线变更（MainPID 3946516→3952870）。变更面：know/approval 两域插件 + know-sqlite（新增 `know_releases` 表，幂等建表已在生产库演进）/approval-sqlite（`setRequestStatus`）两后端 + dashboard-rpc + sec-suite + seed-presets + know setup manifest 描述；其余 12 域插件代码未变。
+
+**L5–L6 状态继续记为未执行**（分层检索与曝光/采用/结果计分 L5；运营面板 L6）。撤回后的效果重算与反馈编辑随 L5 落地。
 
 ## 12. 契约与来源
 

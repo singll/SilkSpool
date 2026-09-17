@@ -53,7 +53,7 @@ const TAKE2 = '这是另一个超过十五个字符的核心结论内容'
 
 test('happy path: exp_store 新卡（active + permanent）+ know.exp.stored', async () => {
   const { dir, bus } = makeEnv()
-  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'model' })
+  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
   assert.equal(r.ok, true)
   assert.equal(r.data.merged, false)
   assert.ok(r.data.id > 0)
@@ -65,8 +65,8 @@ test('happy path: exp_store 新卡（active + permanent）+ know.exp.stored', as
 
 test('happy path: exp_store 同 scenario 合并（merged=true）', async () => {
   const { bus } = makeEnv()
-  const r1 = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'model' })
-  const r2 = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE2, justification: JUST }, { actor: 'model' })
+  const r1 = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
+  const r2 = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE2, justification: JUST }, { actor: 'dashboard' })
   assert.equal(r2.ok, true)
   assert.equal(r2.data.merged, true)
   assert.equal(r2.data.id, r1.data.id)
@@ -76,20 +76,20 @@ test('FTS 外部内容索引：同场景合并及修改必须移除旧词，并�
   const { bus } = makeEnv()
   const first = await bus.dispatch('know', 'exp_store', {
     scenario: SCEN, takeaway: `${TAKE} oldtokenfixture`, justification: JUST,
-  }, { actor: 'model' })
+  }, { actor: 'dashboard' })
   assert.equal(first.ok, true)
   const db = bus._internal.db()
   const hits = (term) => db.prepare('SELECT rowid FROM exp_fts WHERE exp_fts MATCH ?').all(term).map((r) => r.rowid)
   assert.deepEqual(hits('oldtokenfixture'), [first.data.id])
   const merged = await bus.dispatch('know', 'exp_store', {
     scenario: SCEN, takeaway: `${TAKE2} mergedtokenfixture`, justification: JUST,
-  }, { actor: 'model' })
+  }, { actor: 'dashboard' })
   assert.equal(merged.ok, true)
   assert.deepEqual(hits('oldtokenfixture'), [])
   assert.deepEqual(hits('mergedtokenfixture'), [first.data.id])
   const updated = await bus.dispatch('know', 'exp_update', {
     id: first.data.id, takeaway: `${TAKE} updatedtokenfixture`, justification: JUST,
-  }, { actor: 'model' })
+  }, { actor: 'dashboard' })
   assert.equal(updated.ok, true)
   assert.deepEqual(hits('mergedtokenfixture'), [])
   assert.deepEqual(hits('updatedtokenfixture'), [first.data.id])
@@ -100,7 +100,7 @@ test('FTS 外部内容索引：归档经验同时移除索引，保留归档原�
   const { bus } = makeEnv()
   const first = await bus.dispatch('know', 'exp_store', {
     scenario: SCEN, takeaway: `${TAKE} archivetokenfixture`, justification: JUST,
-  }, { actor: 'model' })
+  }, { actor: 'dashboard' })
   assert.equal(first.ok, true)
   const archived = await bus.dispatch('know', 'transition', {
     subrepo: 'exp', id: first.data.id, to: 'archived', reason: JUST,
@@ -114,8 +114,8 @@ test('FTS 外部内容索引：归档经验同时移除索引，保留归档原�
 
 test('happy path: exp_feedback 五判定驱动 score 重算', async () => {
   const { bus } = makeEnv()
-  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'model' })
-  const fb = await bus.dispatch('know', 'exp_feedback', { id: r.data.id, verdict: 'adopted' }, { actor: 'model' })
+  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
+  const fb = await bus.dispatch('know', 'exp_feedback', { id: r.data.id, verdict: 'adopted' }, { actor: 'dashboard' })
   assert.equal(fb.ok, true)
   assert.ok(fb.data.score > 0)
   const row = bus._internal.db().prepare('SELECT adopted, score FROM exp_cards WHERE id=?').get(r.data.id)
@@ -124,10 +124,10 @@ test('happy path: exp_feedback 五判定驱动 score 重算', async () => {
 
 test('happy path: exp_update 全量替换 + exp_deprecate 弃置', async () => {
   const { bus } = makeEnv()
-  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'model' })
-  const u = await bus.dispatch('know', 'exp_update', { id: r.data.id, takeaway: '修正后的结论内容超过十五字', justification: '原结论有误导的修正理由' }, { actor: 'model' })
+  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
+  const u = await bus.dispatch('know', 'exp_update', { id: r.data.id, takeaway: '修正后的结论内容超过十五字', justification: '原结论有误导的修正理由' }, { actor: 'dashboard' })
   assert.equal(u.ok, true)
-  const d = await bus.dispatch('know', 'exp_deprecate', { id: r.data.id, reason: '技术面已淘汰不再适用的弃置理由' }, { actor: 'model' })
+  const d = await bus.dispatch('know', 'exp_deprecate', { id: r.data.id, reason: '技术面已淘汰不再适用的弃置理由' }, { actor: 'dashboard' })
   assert.equal(d.ok, true)
   const row = bus._internal.db().prepare('SELECT status FROM exp_cards WHERE id=?').get(r.data.id)
   assert.equal(row.status, 'deprecated')
@@ -135,10 +135,10 @@ test('happy path: exp_update 全量替换 + exp_deprecate 弃置', async () => {
 
 test('happy path: pb_save / pb_outcome（playbook 卡 runs/successes + rank）', async () => {
   const { bus } = makeEnv()
-  const s = await bus.dispatch('know', 'pb_save', { name: 'dalfox-xss', steps: ['探测反射点', 'payload 注入'], trigger: ['xss', 'dalfox'] }, { actor: 'model' })
+  const s = await bus.dispatch('know', 'pb_save', { name: 'dalfox-xss', steps: ['探测反射点', 'payload 注入'], trigger: ['xss', 'dalfox'] }, { actor: 'dashboard' })
   assert.equal(s.ok, true)
   assert.equal(s.data.kind, 'playbook')
-  const o = await bus.dispatch('know', 'pb_outcome', { name: 'dalfox-xss', outcome: 'win' }, { actor: 'model' })
+  const o = await bus.dispatch('know', 'pb_outcome', { name: 'dalfox-xss', outcome: 'win' }, { actor: 'dashboard' })
   assert.equal(o.ok, true)
   assert.equal(o.data.rank, 1)
 })
@@ -192,7 +192,7 @@ test('happy path: rule_seed / rule_list / rule_read（actor 物理闸）', async
 
 test('happy path: vc_save / vc_list / vc_activate / vc_deprecate', async () => {
   const { bus } = makeEnv()
-  const r = await bus.dispatch('know', 'vc_save', { id: 'VC-100', title: '测试漏洞卡', attack_surface: 'api', severity: 'medium', steps: '步骤一', detection: '特征一' }, { actor: 'model' })
+  const r = await bus.dispatch('know', 'vc_save', { id: 'VC-100', title: '测试漏洞卡', attack_surface: 'api', severity: 'medium', steps: '步骤一', detection: '特征一' }, { actor: 'dashboard' })
   assert.equal(r.ok, true)
   assert.equal(r.data.version, 1)
   const list = await bus.query('know', 'vc_list', {}, { actor: 'dashboard' })
@@ -218,14 +218,14 @@ test('happy path: harvest_ingest（stdin）/ harvest_status', async () => {
 
 test('schema: exp_store 缺 justification 被拒（E_SCHEMA）', async () => {
   const { bus } = makeEnv()
-  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE }, { actor: 'model' })
+  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE }, { actor: 'dashboard' })
   assert.equal(r.ok, false)
   assert.equal(r.error.code, 'E_SCHEMA')
 })
 
 test('invariant INV-K2: exp_store mem_class 非 permanent 被拒', async () => {
   const { bus } = makeEnv()
-  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST, mem_class: 'durable' }, { actor: 'model' })
+  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST, mem_class: 'durable' }, { actor: 'dashboard' })
   assert.equal(r.ok, false)
   assert.equal(r.error.code, 'E_INVARIANT')
 })
@@ -234,7 +234,7 @@ test('invariant INV-K10: kb_import 防回流拒绝（source_system 标记）', a
   const { bus } = makeEnv()
   const r = await bus.dispatch('know', 'kb_import', {
     title: '导出物回流', url: 'https://example.com/reflux', body: '---\nsource_system: silksecagent\n---\n正文内容',
-  }, { actor: 'model' })
+  }, { actor: 'dashboard' })
   assert.equal(r.ok, false)
   assert.equal(r.error.code, 'E_INVARIANT')
 })
@@ -248,9 +248,9 @@ test('invariant INV-K12: model 调 rule_seed 被拒（E_ACTOR_FORBIDDEN）', asy
 
 test('state machine: exp_deprecate 后 exp_update 被拒（E_STATE）', async () => {
   const { bus } = makeEnv()
-  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'model' })
-  await bus.dispatch('know', 'exp_deprecate', { id: r.data.id, reason: '弃置原因说明超过十个字的内容' }, { actor: 'model' })
-  const u = await bus.dispatch('know', 'exp_update', { id: r.data.id, takeaway: '新结论内容超过十五个字', justification: '修正理由超过十个字的内容' }, { actor: 'model' })
+  const r = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
+  await bus.dispatch('know', 'exp_deprecate', { id: r.data.id, reason: '弃置原因说明超过十个字的内容' }, { actor: 'dashboard' })
+  const u = await bus.dispatch('know', 'exp_update', { id: r.data.id, takeaway: '新结论内容超过十五个字', justification: '修正理由超过十个字的内容' }, { actor: 'dashboard' })
   assert.equal(u.ok, false)
   assert.equal(u.error.code, 'E_STATE')
 })
@@ -261,7 +261,7 @@ test('state machine: exp_deprecate 后 exp_update 被拒（E_STATE）', async ()
 
 test('query: exp_list 分页信封；know_health 聚合', async () => {
   const { bus } = makeEnv()
-  await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'model' })
+  await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
   const list = await bus.query('know', 'exp_list', {}, { actor: 'dashboard' })
   assert.ok(list.rows.length >= 1)
   const h = await bus.query('know', 'health', {}, { actor: 'dashboard' })
@@ -276,7 +276,7 @@ test('query: exp_list 分页信封；know_health 聚合', async () => {
 
 test('event payload: know.exp.stored 载荷只含 ID 快照', async () => {
   const { dir, bus } = makeEnv()
-  await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'model' })
+  await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
   const f = path.join(dir, 'events', 'know.jsonl')
   const events = fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
   const ev = events.find((e) => e.name === 'know.exp.stored')
@@ -286,7 +286,7 @@ test('event payload: know.exp.stored 载荷只含 ID 快照', async () => {
 
 test('ensureCol: exp_cards 含 score/uses/exportable 列；kb_docs 含 uses 列', async () => {
   const { bus } = makeEnv()
-  await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'model' })
+  await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
   const expCols = bus._internal.db().prepare('PRAGMA table_info(exp_cards)').all().map((c) => c.name)
   assert.ok(expCols.includes('score'))
   assert.ok(expCols.includes('uses'))
@@ -302,7 +302,7 @@ test('ensureCol: exp_cards 含 score/uses/exportable 列；kb_docs 含 uses 列'
 test('L0-K1: kb_docs ensureCol 幂等补列 category/fetch_failures/body_revision/content_hash', async () => {
   const { bus, dataDir } = makeEnv()
   // 表懒初始化（首次命令才 createRepo）；先触发一次命令再查列
-  await bus.dispatch('know', 'kb_import', { title: 't0', url: 'https://example.com/col-check', body: '正文内容足够长以满足最小长度要求' }, { actor: 'model' })
+  await bus.dispatch('know', 'kb_import', { title: 't0', url: 'https://example.com/col-check', body: '正文内容足够长以满足最小长度要求' }, { actor: 'dashboard' })
   const kbCols = bus._internal.db().prepare('PRAGMA table_info(kb_docs)').all().map((c) => c.name)
   for (const col of ['category', 'fetch_failures', 'last_fetch_error', 'body_revision', 'content_hash']) {
     assert.ok(kbCols.includes(col), `kb_docs 缺列 ${col}`)
@@ -979,4 +979,258 @@ test('L3: 订阅链路——eval.candidate.started / eval.report.built 经 bus_r
   assert.equal(s2b.status, 'candidate', 'abort 后的 candidate 不被回放二次流转')
   const evtCount = db.prepare("SELECT COUNT(*) c FROM event_outbox WHERE payload LIKE '%know.revision.assessed%'").get().c
   assert.equal(evtCount, 4, '重复回放零重复事件')
+})
+
+// ---------------------------------------------------------------------------
+// L4（学习专项 §6.2/§6.3，2026-09-17）：受控晋升与撤回——写入口收口 /
+// know_revision_publish（批准绑定哈希 + 有限灰度）/ know_release_revoke（回退）/
+// 采用面只认 published revision / 发布投影
+// ---------------------------------------------------------------------------
+
+const publish = (bus, over, actor = 'approval') => bus.dispatch('know', 'revision_publish', {
+  revision_id: '', content_digest: '', auth_ref: 'approval:1',
+  scope_type: 'program', scope_id: 'example-src', reason: '灰度发布理由超过十个字符',
+  ...over,
+}, { actor })
+
+// 造一条 eligible 态 revision（propose → begin → finish eligible）
+async function eligibleOne(bus, artifactId = 'VC-AUTHZ-001', evalRun = 'evalrun_l4_ok00001') {
+  const { revision_id, content_digest } = await proposeOne(bus, artifactId)
+  const b = await assess(bus, { revision_id, phase: 'begin', eval_run_id: evalRun, candidate_digest: content_digest })
+  assert.equal(b.ok, true, b.error?.message)
+  const f = await assess(bus, { revision_id, phase: 'finish', eval_run_id: evalRun, candidate_digest: content_digest, verdict: 'eligible', report_ref: 'eval-candidate-report.json' })
+  assert.equal(f.ok, true, f.error?.message)
+  return { revision_id, content_digest }
+}
+
+test('L4: 写入口收口——model 直写/直升全拒（exp_store/pb_save/vc_save/exp_update/exp_promote；vc_activate 的 script）', async () => {
+  const { bus } = makeEnv()
+  const cases = [
+    ['exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, 'model'],
+    ['pb_save', { name: 'l4-gate-pb', steps: ['步骤一', '步骤二'] }, 'model'],
+    ['vc_save', { id: 'VC-900', title: '模型直写漏洞卡', attack_surface: 'api', severity: 'low' }, 'model'],
+    ['vc_save', { id: 'VC-901', title: '脚本直写漏洞卡', attack_surface: 'api', severity: 'low' }, 'script'],
+    ['exp_promote', { id: 1, evidence: '模型自我晋升证据超过十字符' }, 'model'],
+    ['vc_activate', { id: 'VC-902', reason: '脚本直升激活理由超过十字符' }, 'script'],
+  ]
+  for (const [verb, args, actor] of cases) {
+    const r = await bus.dispatch('know', verb, args, { actor })
+    assert.equal(r.ok, false, `${verb}/${actor}`)
+    assert.equal(r.error.code, 'E_ACTOR_FORBIDDEN', `${verb}/${actor}`)
+  }
+  // exp_update 模型原地改 active 内容通道关闭
+  const card = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
+  assert.equal(card.ok, true)
+  const u = await bus.dispatch('know', 'exp_update', { id: card.data.id, takeaway: '模型原地改内容的结论超过十五字', justification: JUST }, { actor: 'model' })
+  assert.equal(u.ok, false)
+  assert.equal(u.error.code, 'E_ACTOR_FORBIDDEN')
+  // 人工通道保留（dashboard）
+  const ok = await bus.dispatch('know', 'exp_update', { id: card.data.id, takeaway: '人工修正后的结论超过十五字', justification: JUST }, { actor: 'dashboard' })
+  assert.equal(ok.ok, true)
+})
+
+test('L4: publish actor 闸——model/script/dashboard/reactor 全拒（approval/human 专用）', async () => {
+  const { bus } = makeEnv()
+  const { revision_id, content_digest } = await eligibleOne(bus)
+  for (const actor of ['model', 'script', 'dashboard', 'reactor', 'system']) {
+    const r = await publish(bus, { revision_id, content_digest }, actor)
+    assert.equal(r.ok, false, actor)
+    assert.equal(r.error.code, 'E_ACTOR_FORBIDDEN')
+  }
+})
+
+test('L4: 批准绑定内容哈希——digest 不符即 E_KNOW_REVISION_CHANGED（批准对象=哈希，内容变化即失效重批）', async () => {
+  const { bus } = makeEnv()
+  const { revision_id } = await eligibleOne(bus)
+  const bad = await publish(bus, { revision_id, content_digest: `sha256:${'0'.repeat(64)}` })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'E_KNOW_REVISION_CHANGED')
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) c FROM know_releases').get().c, 0, 'digest 不符不发布')
+})
+
+test('L4: 发布门禁——candidate/rejected/needs_revalidate 不可发布；eligible 灰度发布 happy（发布为新 release 行）', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  // candidate 不可发布
+  const cand = await proposeOne(bus, 'VC-AUTHZ-G01')
+  const r1 = await publish(bus, { revision_id: cand.revision_id, content_digest: cand.content_digest })
+  assert.equal(r1.ok, false)
+  assert.equal(r1.error.code, 'E_STATE')
+  // needs_revalidate=1 的 eligible 不可发布（来源已变更，评测结论不作数）
+  const stale = await eligibleOne(bus, 'VC-AUTHZ-G02', 'evalrun_l4_g200001')
+  db.prepare('UPDATE knowledge_revisions SET needs_revalidate=1 WHERE revision_id=?').run(stale.revision_id)
+  const r2 = await publish(bus, { revision_id: stale.revision_id, content_digest: stale.content_digest })
+  assert.equal(r2.ok, false)
+  assert.equal(r2.error.code, 'E_INVARIANT')
+  // eligible 灰度发布 happy：release 新行 active + revision → published + 事件
+  const ok = await eligibleOne(bus, 'VC-AUTHZ-G03', 'evalrun_l4_g300001')
+  const p = await publish(bus, { revision_id: ok.revision_id, content_digest: ok.content_digest, auth_ref: 'approval:101' })
+  assert.equal(p.ok, true, p.error?.message)
+  assert.equal(p.data.published, true)
+  assert.ok(p.data.release_id.startsWith('rel_'))
+  const rev = db.prepare('SELECT status FROM knowledge_revisions WHERE revision_id=?').get(ok.revision_id)
+  assert.equal(rev.status, 'published')
+  const rel = db.prepare('SELECT * FROM know_releases WHERE release_id=?').get(p.data.release_id)
+  assert.equal(rel.status, 'active')
+  assert.equal(rel.scope_type, 'program')
+  assert.equal(rel.scope_id, 'example-src')
+  assert.equal(rel.auth_ref, 'approval:101')
+  assert.equal(rel.content_digest, ok.content_digest, '发布行绑定内容哈希')
+  const evts = db.prepare("SELECT COUNT(*) c FROM event_outbox WHERE payload LIKE '%know.revision.published%'").get().c
+  assert.equal(evts, 1)
+})
+
+test('L4: 全局生效前置——global 发布须先有限灰度在跑（禁止直升全局）', async () => {
+  const { bus } = makeEnv()
+  const ok = await eligibleOne(bus, 'VC-AUTHZ-G10', 'evalrun_l4_g100001')
+  const direct = await publish(bus, { revision_id: ok.revision_id, content_digest: ok.content_digest, scope_type: 'global', scope_id: '', auth_ref: 'approval:110' })
+  assert.equal(direct.ok, false)
+  assert.equal(direct.error.code, 'E_INVARIANT')
+  // 先灰度再全局
+  const gray = await publish(bus, { revision_id: ok.revision_id, content_digest: ok.content_digest, scope_type: 'program', scope_id: 'example-src', auth_ref: 'approval:111' })
+  assert.equal(gray.ok, true)
+  const global = await publish(bus, { revision_id: ok.revision_id, content_digest: ok.content_digest, scope_type: 'global', scope_id: '', auth_ref: 'approval:112' })
+  assert.equal(global.ok, true, global.error?.message)
+  assert.equal(global.data.scope.type, 'global')
+  const db = bus._internal.db()
+  const actives = db.prepare("SELECT COUNT(*) c FROM know_releases WHERE artifact_id='VC-AUTHZ-G10' AND status='active'").get().c
+  assert.equal(actives, 2, '灰度与全局指针并存（global 不覆盖灰度）')
+})
+
+test('L4: effect 重试不重复发布——同批准重发（幂等表过期）吸收为既有 release，零重复事件', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const ok = await eligibleOne(bus, 'VC-AUTHZ-G20', 'evalrun_l4_g200002')
+  const args = { revision_id: ok.revision_id, content_digest: ok.content_digest, auth_ref: 'approval:201', scope_type: 'program', scope_id: 'example-src', reason: '灰度发布理由超过十个字符' }
+  const p1 = await publish(bus, args)
+  assert.equal(p1.ok, true)
+  // ① 总线幂等层：同键同参 → replay
+  const p2 = await publish(bus, args)
+  assert.equal(p2.ok, true)
+  assert.equal(p2.replay, true)
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM know_releases').get().c, 1, '重放不重复发布')
+  // ② 幂等缓存过期（7 天后 effect 重试/晚到重放）：同批准既有 release 吸收 → 零重复零事件
+  db.prepare('DELETE FROM idempotency').run()
+  const p3 = await publish(bus, args)
+  assert.equal(p3.ok, true, p3.error?.message)
+  assert.equal(p3.data.published, false)
+  assert.equal(p3.data.duplicate, 'auth')
+  assert.equal(p3.data.release_id, p1.data.release_id, '复用既有 release')
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM know_releases').get().c, 1)
+  const evts = db.prepare("SELECT COUNT(*) c FROM event_outbox WHERE payload LIKE '%know.revision.published%'").get().c
+  assert.equal(evts, 1, '重放零重复事件')
+})
+
+test('L4: 发布不原地改旧版本——新版发布 supersede 旧 release，旧 revision 全退后 retired，内容行原样保留', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const v1 = await eligibleOne(bus, 'VC-AUTHZ-G30', 'evalrun_l4_g300002')
+  const p1 = await publish(bus, { revision_id: v1.revision_id, content_digest: v1.content_digest, auth_ref: 'approval:301' })
+  assert.equal(p1.ok, true)
+  // v2（内容变化 = 新 revision）
+  const v2c = { ...VC_CONTENT, id: 'VC-AUTHZ-G30', version: 2, parentVersion: 1, hypothesis: '修订假设：v2 补充约束', changeNote: 'v2：补充约束' }
+  const pv2 = await propose(bus, { artifact_id: 'VC-AUTHZ-G30', parent_revision_id: v1.revision_id, content: v2c, change_note: 'v2：补充租户隔离约束说明' })
+  assert.equal(pv2.ok, true)
+  const b2 = await assess(bus, { revision_id: pv2.data.revision_id, phase: 'begin', eval_run_id: 'evalrun_l4_g300003', candidate_digest: pv2.data.content_digest })
+  assert.equal(b2.ok, true)
+  const f2 = await assess(bus, { revision_id: pv2.data.revision_id, phase: 'finish', eval_run_id: 'evalrun_l4_g300003', candidate_digest: pv2.data.content_digest, verdict: 'eligible', report_ref: 'eval-candidate-report-v2.json' })
+  assert.equal(f2.ok, true)
+  const p2 = await publish(bus, { revision_id: pv2.data.revision_id, content_digest: pv2.data.content_digest, auth_ref: 'approval:302' })
+  assert.equal(p2.ok, true, p2.error?.message)
+  assert.equal(p2.data.supersedes, p1.data.release_id)
+  const old = db.prepare('SELECT status FROM know_releases WHERE release_id=?').get(p1.data.release_id)
+  assert.equal(old.status, 'superseded')
+  const rev1 = db.prepare('SELECT status, content_digest FROM knowledge_revisions WHERE revision_id=?').get(v1.revision_id)
+  assert.equal(rev1.status, 'retired', '旧版本无 active 使用面 → retired')
+  assert.equal(rev1.content_digest, v1.content_digest, '旧版本内容行原样保留')
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM knowledge_revisions WHERE artifact_id=?').get('VC-AUTHZ-G30').c, 2, '新旧两版本行并存（不原地覆盖）')
+})
+
+test('L4: 灰度失败可恢复——revoke 当前 release 恢复上一 published 版本；重复撤回幂等 no-op', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const v1 = await eligibleOne(bus, 'VC-AUTHZ-G40', 'evalrun_l4_g400001')
+  const p1 = await publish(bus, { revision_id: v1.revision_id, content_digest: v1.content_digest, auth_ref: 'approval:401' })
+  const v2c = { ...VC_CONTENT, id: 'VC-AUTHZ-G40', version: 2, parentVersion: 1, hypothesis: '修订假设：v2 补充约束', changeNote: 'v2：补充约束' }
+  const pv2 = await propose(bus, { artifact_id: 'VC-AUTHZ-G40', parent_revision_id: v1.revision_id, content: v2c, change_note: 'v2：补充租户隔离约束说明' })
+  await assess(bus, { revision_id: pv2.data.revision_id, phase: 'begin', eval_run_id: 'evalrun_l4_g400002', candidate_digest: pv2.data.content_digest })
+  await assess(bus, { revision_id: pv2.data.revision_id, phase: 'finish', eval_run_id: 'evalrun_l4_g400002', candidate_digest: pv2.data.content_digest, verdict: 'eligible', report_ref: 'eval-candidate-report-v2.json' })
+  const p2 = await publish(bus, { revision_id: pv2.data.revision_id, content_digest: pv2.data.content_digest, auth_ref: 'approval:402' })
+  assert.equal(p2.ok, true)
+  assert.equal(db.prepare("SELECT status FROM knowledge_revisions WHERE revision_id=?").get(v1.revision_id).status, 'retired')
+  // 灰度失败 → 撤回 v2，恢复 v1
+  const rev = await bus.dispatch('know', 'release_revoke', { release_id: p2.data.release_id, reason: '灰度误报超阈值撤回理由超过十字符' }, { actor: 'dashboard' })
+  assert.equal(rev.ok, true, rev.error?.message)
+  assert.equal(rev.data.revoked, true)
+  assert.equal(rev.data.rolled_back_to.release_id, p1.data.release_id, '恢复到上一 published 版本')
+  const r1 = db.prepare('SELECT status FROM know_releases WHERE release_id=?').get(p1.data.release_id)
+  assert.equal(r1.status, 'active', 'v1 release 恢复 active')
+  const rr1 = db.prepare('SELECT status FROM knowledge_revisions WHERE revision_id=?').get(v1.revision_id)
+  assert.equal(rr1.status, 'published', 'v1 revision 恢复 published')
+  const rr2 = db.prepare('SELECT status FROM knowledge_revisions WHERE revision_id=?').get(pv2.data.revision_id)
+  assert.equal(rr2.status, 'retired', 'v2 revision 退为 retired')
+  // 重复撤回（effect 重试/操作员重复点击）= no-op，零重复事件
+  db.prepare('DELETE FROM idempotency').run()
+  const again = await bus.dispatch('know', 'release_revoke', { release_id: p2.data.release_id, reason: '灰度误报超阈值撤回理由超过十字符' }, { actor: 'dashboard' })
+  assert.equal(again.ok, true)
+  assert.equal(again.data.revoked, false)
+  assert.equal(again.data.skipped, 'revoked')
+  const evts = db.prepare("SELECT COUNT(*) c FROM event_outbox WHERE payload LIKE '%know.release.revoked%'").get().c
+  assert.equal(evts, 1, '重复撤回零重复事件')
+  // revoke actor 闸：model 不可撤回
+  const m = await bus.dispatch('know', 'release_revoke', { release_id: p1.data.release_id, reason: '模型撤回尝试理由超过十字符' }, { actor: 'model' })
+  assert.equal(m.ok, false)
+  assert.equal(m.error.code, 'E_ACTOR_FORBIDDEN')
+})
+
+test('L4: 采用面只认 published revision——eligible 采纳拒；published 采纳过（哈希不符拒）', async () => {
+  const { bus } = makeEnv()
+  const elig = await eligibleOne(bus, 'VC-AUTHZ-G50', 'evalrun_l4_g500001')
+  const e = await bus.dispatch('know', 'adopt', { target: 'exp', payload: {}, evidence: '采纳依据超过十个字符的说明', artifact_kind: 'vulncard', revision_id: elig.revision_id, eval_report_ref: 'eval-candidate-report.json' }, { actor: 'dashboard' })
+  assert.equal(e.ok, false)
+  assert.equal(e.error.code, 'E_INVARIANT', 'eligible 不可进使用面')
+  // 发布后可采纳
+  const p = await publish(bus, { revision_id: elig.revision_id, content_digest: elig.content_digest, auth_ref: 'approval:501' })
+  assert.equal(p.ok, true)
+  const wrong = await bus.dispatch('know', 'adopt', { target: 'exp', payload: { content_digest: `sha256:${'0'.repeat(64)}` }, evidence: '采纳依据超过十个字符的说明', artifact_kind: 'vulncard', revision_id: elig.revision_id }, { actor: 'dashboard' })
+  assert.equal(wrong.ok, false)
+  assert.equal(wrong.error.code, 'E_KNOW_REVISION_CHANGED', '批准绑定哈希——内容不符即失效')
+  const ok = await bus.dispatch('know', 'adopt', { target: 'exp', payload: { content_digest: elig.content_digest }, evidence: '采纳依据超过十个字符的说明', artifact_kind: 'vulncard', revision_id: elig.revision_id, eval_report_ref: 'eval-candidate-report.json', scope: { type: 'program', id: 'example-src' } }, { actor: 'dashboard' })
+  assert.equal(ok.ok, true, ok.error?.message)
+  assert.equal(ok.data.adopted, true)
+  assert.equal(ok.data.revision_id, elig.revision_id)
+})
+
+test('L4: 使用面发布投影——published revision 进 vc_list/vc_get；eligible/candidate 不可见；撤回后退出使用面', async () => {
+  const { bus } = makeEnv()
+  const ok = await eligibleOne(bus, 'VC-AUTHZ-G60', 'evalrun_l4_g600001')
+  // 未发布：候选不进使用面
+  let list = await bus.query('know', 'vc_list', {}, { actor: 'dashboard' })
+  assert.equal(list.rows.some((r) => r.id === 'VC-AUTHZ-G60'), false, 'eligible 不可见')
+  const miss = await bus.query('know', 'vc_get', { id: 'VC-AUTHZ-G60' }, { actor: 'dashboard' })
+  assert.equal(miss.ok, false)
+  // 灰度发布后进使用面
+  const p = await publish(bus, { revision_id: ok.revision_id, content_digest: ok.content_digest, auth_ref: 'approval:601', scope_type: 'program', scope_id: 'example-src' })
+  assert.equal(p.ok, true)
+  list = await bus.query('know', 'vc_list', {}, { actor: 'dashboard' })
+  const row = list.rows.find((r) => r.id === 'VC-AUTHZ-G60')
+  assert.ok(row, 'published revision 进使用面')
+  assert.equal(row.status, 'active')
+  assert.equal(row.published_revision, ok.revision_id)
+  const get = await bus.query('know', 'vc_get', { id: 'VC-AUTHZ-G60' }, { actor: 'dashboard' })
+  assert.equal(get.ok, true, get.error?.message)
+  assert.equal(get.data.published_revision, ok.revision_id)
+  assert.equal(get.data.content_digest, ok.content_digest)
+  // 版本链 + 发布账本投影
+  const hist = await bus.query('know', 'revision_history', { artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-G60' }, { actor: 'dashboard' })
+  assert.equal(hist.data.total, 1)
+  assert.equal(hist.data.revisions[0].releases.length, 1)
+  assert.equal(hist.data.revisions[0].releases[0].scope_type, 'program')
+  const rels = await bus.query('know', 'release_list', { artifact_id: 'VC-AUTHZ-G60' }, { actor: 'dashboard' })
+  assert.equal(rels.total, 1)
+  // 撤回后退出使用面
+  const rv = await bus.dispatch('know', 'release_revoke', { release_id: p.data.release_id, reason: '灰度失败撤回理由超过十字符' }, { actor: 'dashboard' })
+  assert.equal(rv.ok, true)
+  list = await bus.query('know', 'vc_list', {}, { actor: 'dashboard' })
+  assert.equal(list.rows.some((r) => r.id === 'VC-AUTHZ-G60'), false, '撤回后退出使用面')
 })

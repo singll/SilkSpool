@@ -17,6 +17,13 @@
 //  - C9/C15 授权域脱敏硬门（INV-K8，scope.yml 深匹配）；
 //  - 治理通道 know_transition 带 to 参数（宪法 §四.1 豁免：system+human）。
 //
+// L4（2026-09-17 学习专项 §6.2/§6.3）：写入口收口 + 受控晋升/撤回——
+//  - exp_store/pb_save/vc_save/exp_update/exp_promote 的 model 直写/直升通道关闭（模型只产候选 revision）；
+//  - C26 know_revision_publish（approval/human）：批准绑定具体 revision 内容哈希（内容变化即批准失效重批），
+//    发布=新增 know_releases 行（不原地改旧版本），有限灰度（单 Program/单家族）先于全局生效；
+//  - C27 know_release_revoke（dashboard/human）：灰度失败可恢复到上一 published 版本；
+//  - 采用面只认 published revision（know_adopt 对 revision 来源拒 eligible；vc_list/vc_get 叠加发布投影）。
+//
 // 零依赖：node:fs / node:path / node:crypto（sqlite 在总线）
 // ==============================================================================
 
@@ -77,6 +84,8 @@ const REVISION_ARTIFACT_KINDS = ['vulncard', 'exp_card', 'playbook', 'kb_doc']
 const REVISION_SOURCE_KINDS = ['kb_doc', 'episode', 'seed']
 const REVISION_STATUSES = ['draft', 'candidate', 'evaluating', 'eligible', 'published', 'retired', 'rejected']
 // §6.1 状态机：L2 只产生 candidate；evaluating/eligible/published/retired/rejected 流转属 L3/L4 门禁
+// L4（设计 §6.2）：发布范围——单 Program 灰度 / 单 fixture 家族灰度 / 全局生效（全局须先有限灰度在跑）
+const RELEASE_SCOPE_TYPES = ['program', 'family', 'global']
 
 // canonical JSON（键排序序列化）——content_digest 的唯一事实口径
 function canonicalStringify(v) {
@@ -92,12 +101,14 @@ export const KNOW_MANIFEST = {
   service: 'secDomain.know',
   description: '知识六仓（经验卡/文献/先验规程/漏洞卡/收割/体检——换目标也有用的可迁移方法论，目标事实归 fact 域）',
   owns: {
-    tables: ['exp_cards', 'exp_embeddings', 'exp_feedback', 'exp_cards_archive', 'kb_docs', 'kb_fts', 'kb_embeddings', 'kb_docs_archive', 'playbooks', 'learning_episodes', 'knowledge_revisions'],
+    tables: ['exp_cards', 'exp_embeddings', 'exp_feedback', 'exp_cards_archive', 'kb_docs', 'kb_fts', 'kb_embeddings', 'kb_docs_archive', 'playbooks', 'learning_episodes', 'knowledge_revisions', 'know_releases'],
     files: ['data/rules/', 'data/vulncards/', 'data/harvest/', 'data/events/know.jsonl'],
   },
   commands: {
     exp_store: {
-      actor: ['model', 'dashboard', 'script', 'approval'],
+      // L4（§6.2 收口）：model 直写通道关闭——模型只产候选 revision（know_revision_propose）；
+      // dashboard/script/approval 保留（人工/部署通道），同名修改不覆盖已有卡（合并语义保留）。
+      actor: ['dashboard', 'script', 'approval'],
       schema: schema({
         scenario: str({ minLength: 20 }),
         takeaway: str({ minLength: 15 }),
@@ -116,7 +127,7 @@ export const KNOW_MANIFEST = {
       event_limit: 1,
       invariants: ['expMemClassPermanent', 'expCardSize'],
       timeout_ms: 60000,
-      agent_note: '存入可迁移经验卡（方法论——换目标也有用的打法）。scenario 写适用条件，takeaway 一句核心结论，chain 给可复现步骤。justification 必填（≥10字：会过期吗/换目标有用吗/谁会读它）。系统做语义去重（高相似自动合并）。',
+      agent_note: '存入可迁移经验卡（方法论——换目标也有用的打法）。scenario 写适用条件，takeaway 一句核心结论，chain 给可复现步骤。justification 必填（≥10字：会过期吗/换目标有用吗/谁会读它）。系统做语义去重（高相似自动合并）。（L4 起模型不可直调——沉淀走 know_revision_propose 候选）',
       deprecated: false,
     },
     exp_feedback: {
@@ -137,7 +148,8 @@ export const KNOW_MANIFEST = {
       deprecated: false,
     },
     exp_update: {
-      actor: ['model', 'dashboard'],
+      // L4（§6.2 收口）：模型原地改 active 内容通道关闭——内容变化走新 revision 提案。
+      actor: ['dashboard'],
       schema: schema({
         id: int(),
         scenario: str(),
@@ -152,11 +164,12 @@ export const KNOW_MANIFEST = {
       event_limit: 1,
       invariants: ['expExists', 'expNotDeprecated'],
       timeout_ms: 60000,
-      agent_note: '修正经验卡内容（scenario/takeaway/chain 全量替换，非增量）。发现旧卡表述误导或场景变化时用；justification 必填说明修正原因。',
+      agent_note: '修正经验卡内容（scenario/takeaway/chain 全量替换，非增量）。发现旧卡表述误导或场景变化时用；justification 必填说明修正原因。（L4 起模型不可直调——修正走 know_revision_propose 候选）',
       deprecated: false,
     },
     exp_promote: {
-      actor: ['model', 'dashboard', 'approval'],
+      // L4（§6.2 收口）：模型/脚本自我晋升通道关闭（exp_promote/vc_activate/know_adopt 校验具体 revision 与发布授权）。
+      actor: ['dashboard', 'approval'],
       schema: schema({
         id: int(),
         evidence: str({ minLength: 10 }),
@@ -167,7 +180,7 @@ export const KNOW_MANIFEST = {
       event_limit: 1,
       invariants: ['expExists', 'expIsDraft'],
       timeout_ms: 60000,
-      agent_note: '晋升经验卡 draft→active（外部/收割草稿经复核转正，参与检索与 Top5 注入）。evidence 必填：复核结论或 approval 事件 id。',
+      agent_note: '晋升经验卡 draft→active（外部/收割草稿经复核转正，参与检索与 Top5 注入）。evidence 必填：复核结论或 approval 事件 id。（L4 起模型不可直调——晋升走评测+审批发布链）',
       deprecated: false,
     },
     exp_deprecate: {
@@ -197,7 +210,8 @@ export const KNOW_MANIFEST = {
       deprecated: false,
     },
     pb_save: {
-      actor: ['model', 'dashboard', 'script'],
+      // L4（§6.2 收口）：model 直写通道关闭——剧本沉淀走 know_revision_propose(artifact_kind=playbook)。
+      actor: ['dashboard', 'script'],
       schema: schema({
         name: str({ minLength: 1 }),
         steps: { type: ['string', 'array'] },
@@ -211,7 +225,7 @@ export const KNOW_MANIFEST = {
       event_limit: 1,
       invariants: ['pbCardSize'],
       timeout_ms: 60000,
-      agent_note: '存入/更新 playbook（触发词驱动的行动剧本：name + 步骤 steps）。任务编排时按触发词召回；执行结果用 pb_outcome 回填胜负。',
+      agent_note: '存入/更新 playbook（触发词驱动的行动剧本：name + 步骤 steps）。任务编排时按触发词召回；执行结果用 pb_outcome 回填胜负。（L4 起模型不可直调——沉淀走 know_revision_propose 候选）',
       deprecated: false,
     },
     pb_outcome: {
@@ -319,7 +333,9 @@ export const KNOW_MANIFEST = {
       deprecated: false,
     },
     vc_save: {
-      actor: ['model', 'dashboard', 'script'],
+      // L4（§6.2 收口）：model/script 直写 vulncards 通道关闭——新卡/升版走 know_revision_propose(artifact_kind=vulncard)；
+      // dashboard（人工）保留维护既有 YAML 卡的能力。
+      actor: ['dashboard'],
       schema: schema({
         id: str({ minLength: 1 }),
         title: str({ minLength: 1 }),
@@ -336,11 +352,13 @@ export const KNOW_MANIFEST = {
       event_limit: 1,
       invariants: ['vcIdFormat', 'vcScopeCheck'],
       timeout_ms: 60000,
-      agent_note: '存入/升版漏洞卡（VC-xxx：攻面/步骤/识别特征）。新打法验证有效后沉淀为卡；升版需 deviation+changelog。',
+      agent_note: '存入/升版漏洞卡（VC-xxx：攻面/步骤/识别特征）。新打法验证有效后沉淀为卡；升版需 deviation+changelog。（L4 起限人工通道——模型/脚本走 know_revision_propose 候选 + 评测 + 审批发布）',
       deprecated: false,
     },
     vc_activate: {
-      actor: ['dashboard', 'human', 'script'],
+      // L4（§6.2 收口）：script 直升 active 通道关闭（发布走 know_revision_publish + 审批）；
+      // dashboard/human（人工）保留既有 YAML 卡维护能力。
+      actor: ['dashboard', 'human'],
       schema: schema({ id: str({ minLength: 1 }), reason: str({ minLength: 10 }) }, ['id', 'reason']),
       idempotent: 'natural',
       idempotent_natural: ['id'],
@@ -348,7 +366,7 @@ export const KNOW_MANIFEST = {
       event_limit: 1,
       invariants: ['vcExists'],
       timeout_ms: 60000,
-      agent_note: '激活漏洞卡进 registry active 区（draft 经实战验证后）。',
+      agent_note: '激活漏洞卡进 registry active 区（draft 经实战验证后）。（L4 起限人工通道——revision 卡的激活走 know_revision_publish）',
       deprecated: false,
     },
     vc_deprecate: {
@@ -386,14 +404,21 @@ export const KNOW_MANIFEST = {
         target: en(['exp', 'kb', 'rules']),
         payload: { type: 'object' },
         evidence: str({ minLength: 10 }),
+        // L4（设计 §6.2 knowledge-adopt 扩展）：artifact_kind + revision + eval_report + scope。
+        // 采用面只认 published revision——revision_id 存在时 revision 必须已 published（eligible 不可进使用面）；
+        // digest 与 revision 内容不符即 E_KNOW_REVISION_CHANGED（批准绑定哈希，内容变化即失效重批）。
+        artifact_kind: en(REVISION_ARTIFACT_KINDS),
+        revision_id: str(),
+        eval_report_ref: str(),
+        scope: { type: 'object' },
       }, ['target', 'payload', 'evidence']),
       idempotent: 'auto',
-      idempotent_fields: ['target', 'payload', 'evidence'],
+      idempotent_fields: ['target', 'payload', 'evidence', 'artifact_kind', 'revision_id', 'eval_report_ref'],
       events: ['know.adopted'],
       event_limit: 1,
       invariants: ['adoptRulesActor'],
       timeout_ms: 60000,
-      agent_note: '人工采纳收割草稿为正式知识（target: exp/kb/rules）。rules 目标物理禁模型——先验库只能人工采纳进。',
+      agent_note: '人工采纳收割草稿为正式知识（target: exp/kb/rules）。rules 目标物理禁模型——先验库只能人工采纳进。revision 来源采纳（L4）须 revision 已 published——eligible 不是发布，不可进使用面。',
       deprecated: false,
     },
     know_transition: {
@@ -511,6 +536,49 @@ export const KNOW_MANIFEST = {
       invariants: [],
       timeout_ms: 60000,
       agent_note: '（reactor 专用，不向模型/看板注册）候选评测流转：begin=candidate→evaluating；finish=evaluating→eligible/rejected（verdict 由 eval 配对报告决定，本域不自行判分；评测期间来源变更强制 rejected）；abort=evaluating→candidate（失败/中断不记成功）。',
+      deprecated: false,
+    },
+    // C26（L4，设计 §6.2/§6.3）：受控发布。批准绑定具体 revision 内容哈希——content_digest 与 revision
+    // 内容不符即 E_KNOW_REVISION_CHANGED（批准对象=哈希，内容变化即批准失效需重批）。发布为新增
+    // know_releases 行（不原地改旧版本：旧 release 置 superseded）；有限灰度（单 Program/单家族）先于
+    // 全局生效——scope_type=global 要求同 artifact 已有 active 灰度 release。effect 重试不重复发布
+    //（幂等键 + 同批准既有 release 吸收）。
+    know_revision_publish: {
+      actor: ['approval', 'human'],
+      schema: schema({
+        revision_id: str({ minLength: 1 }),
+        content_digest: str({ pattern: '^sha256:[0-9a-f]{64}$' }),
+        auth_ref: str({ minLength: 1, maxLength: 128 }),
+        scope_type: en(RELEASE_SCOPE_TYPES, { default: 'program' }),
+        scope_id: str({ default: '' }),
+        reason: str({ minLength: 10 }),
+        eval_report_ref: str({ maxLength: 256 }),
+      }, ['revision_id', 'content_digest', 'auth_ref', 'scope_type', 'reason']),
+      idempotent: 'natural',
+      idempotent_natural: ['revision_id', 'scope_type', 'scope_id', 'content_digest', 'auth_ref'],
+      events: ['know.revision.published'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '（审批效果/人工专用，模型物理不可调）把 eligible revision 发布进使用面：有限灰度（scope_type=program/family + scope_id）先于全局生效（global 须先有同 artifact 灰度在跑）。批准绑定内容哈希——内容变化即批准失效，须重新评测+重批。',
+      deprecated: false,
+    },
+    // C27（L4，设计 §6.2/§6.3）：发布撤回与回退。撤销当前 active release；同 scope 存在上一版本
+    // 时恢复其为 active（灰度失败可恢复到上一 published 版本——在飞任务保留已绑定版本，不在本动词范围）。
+    know_release_revoke: {
+      actor: ['dashboard', 'human'],
+      schema: schema({
+        release_id: str({ minLength: 1 }),
+        reason: str({ minLength: 10 }),
+        correction_event_ref: str({ maxLength: 256 }),
+      }, ['release_id', 'reason']),
+      idempotent: 'natural',
+      idempotent_natural: ['release_id', 'reason'],
+      events: ['know.release.revoked'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '撤回发布并回退：release 置 revoked，恢复同 scope 上一版本为 active（灰度失败可恢复）。紧急边界问题取消在飞任务属 task 域，不在本动词范围。',
       deprecated: false,
     },
   },
@@ -658,6 +726,30 @@ export const KNOW_MANIFEST = {
       predicates: [],
       agent_note: '读单条候选知识版本全文（content JSON/来源快照/状态链）。',
     },
+    // Q19/Q20（L4）：发布账本与版本链只读投影（灰度范围/生效版本/撤回历史可审计）
+    know_release_list: {
+      actor: ['model', 'dashboard', 'human', 'system'],
+      params: schema({
+        artifact_kind: en([...REVISION_ARTIFACT_KINDS, ''], { default: '' }),
+        artifact_id: str({ default: '' }),
+        scope_type: en([...RELEASE_SCOPE_TYPES, ''], { default: '' }),
+        scope_id: str(),
+        status: en(['active', 'superseded', 'revoked', ''], { default: '' }),
+        limit: int({ minimum: 1, maximum: 500 }),
+        offset: int({ minimum: 0 }),
+      }, []),
+      predicates: [],
+      agent_note: '发布账本投影：artifact×范围 的 active/superseded/revoked 发布（谁在哪个范围生效、何时被取代/撤回）。',
+    },
+    know_revision_history: {
+      actor: ['model', 'dashboard', 'human', 'system'],
+      params: schema({
+        artifact_kind: en(REVISION_ARTIFACT_KINDS),
+        artifact_id: str({ minLength: 1 }),
+      }, ['artifact_kind', 'artifact_id']),
+      predicates: [],
+      agent_note: '同一 artifact 的 revision 链 + 各 revision 的发布状态（版本切点审计：哪个版本在哪些范围生效/被撤回）。',
+    },
   },
   events: {
     'know.exp.stored': { payload: { type: 'object' }, redact: [] },
@@ -684,6 +776,8 @@ export const KNOW_MANIFEST = {
     'know.episode.recorded': { payload: { type: 'object' }, redact: [] },
     'know.revision.proposed': { payload: { type: 'object' }, redact: [] },
     'know.revision.assessed': { payload: { type: 'object' }, redact: [] },
+    'know.revision.published': { payload: { type: 'object' }, redact: [] },
+    'know.release.revoked': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'fact.bb.published': { handler: 'onFactBbPublished', mode: 'async', as: 'reactor' },
@@ -1287,6 +1381,27 @@ function makeHandlers(opts) {
     know_adopt: async (args, repo) => {
       const target = args.target
       const payload = args.payload || {}
+      // L4（设计 §6.2 knowledge-adopt 扩展）：采用面只认 published revision——
+      // revision_id 存在时 revision 必须已 published（eligible 不可进使用面）；
+      // 批准绑定哈希：自带 content_digest（payload.content_digest）与 revision 内容不符即失效重批。
+      if (args.revision_id) {
+        const rev = repo.getRevision(args.revision_id)
+        if (!rev) throwErr('E_NOT_FOUND', `revision ${args.revision_id} 不存在`, '先 know_revision_list 定位', false)
+        if (args.artifact_kind && args.artifact_kind !== rev.artifact_kind) {
+          throwErr('E_INVARIANT', `artifact_kind 不符（声明 ${args.artifact_kind}，实际 ${rev.artifact_kind}）`, '采纳对象与 revision 归属不一致', false)
+        }
+        if (payload.content_digest && payload.content_digest !== rev.content_digest) {
+          throwErr('E_KNOW_REVISION_CHANGED', `自带 content_digest 与 revision 内容不符（期望 ${rev.content_digest}）`, '内容变化即批准失效——对新 revision 重新评测并重批', false)
+        }
+        if (rev.status !== 'published') {
+          throwErr('E_INVARIANT', `采用面只认 published revision（当前 ${rev.status}）`, 'eligible 不是发布——先经 know_revision_publish（审批+灰度）发布再采纳', false)
+        }
+        return {
+          data: { target, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, status: 'published', adopted: true, source_cmd: 'know_revision_publish' },
+          events: [{ name: 'know.adopted', payload: { target, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, eval_report_ref: args.eval_report_ref || rev.eval_report_ref || null, evidence: args.evidence } }],
+          before: null, after: { revision_id: rev.revision_id, status: 'published' },
+        }
+      }
       if (target === 'exp') {
         return { data: { target, adopted_id: payload.id ?? null, source_cmd: 'exp_promote' }, events: [{ name: 'know.adopted', payload: { target, adopted_id: payload.id ?? null, source_cmd: 'exp_promote', evidence: args.evidence } }], before: null, after: null }
       }
@@ -1437,6 +1552,106 @@ function makeHandlers(opts) {
     // C25（L3）：候选评测流转。只改 status/eval_report_ref 流程列——内容列只插不改的根基不动。
     // begin: candidate→evaluating（来源待复验拒评）；finish: evaluating→eligible/rejected
     //（verdict 由 eval 配对报告决定；评测期间来源变更强制 rejected）；abort: evaluating→candidate。
+    // C26（L4）：受控发布。发布=新增 know_releases 行（不原地改旧版本）；
+    // 批准绑定具体 revision 内容哈希；有限灰度先于全局生效；effect 重试不重复发布。
+    know_revision_publish: async (args, repo, ctx) => {
+      const rev = repo.getRevision(args.revision_id)
+      if (!rev) throwErr('E_NOT_FOUND', `revision ${args.revision_id} 不存在`, '先 know_revision_list 定位', false)
+      // 批准对象=哈希：审批时绑定的 digest 与 revision 当前内容不符 → 批准失效，拒发布
+      if (args.content_digest !== rev.content_digest) {
+        throwErr('E_KNOW_REVISION_CHANGED', `批准绑定 digest 与 revision 内容不符（${args.content_digest} ≠ ${rev.content_digest}）`, '批准对象已变化（内容变化=新 revision）——对新 revision 重新评测并重批', false)
+      }
+      if (rev.status === 'rejected') throwErr('E_STATE', 'revision 已 rejected（终态）', '被拒版本不可发布——修正后以新 revision 提案重评', false)
+      if (rev.status === 'retired') throwErr('E_STATE', 'revision 已 retired', '已退役版本不可再发布——以新 revision 提案', false)
+      // eligible 才能发布（eligible≠发布，但发布前置=独立评测通过）；needs_revalidate=1 = 来源已变更须重评
+      if (rev.status !== 'eligible' && rev.status !== 'published') {
+        throwErr('E_STATE', `只有 eligible 可发布（当前 ${rev.status}）`, '先经 eval_run_candidate 独立评测拿到 eligible 判定（eligible≠发布）', false)
+      }
+      if (rev.needs_revalidate) throwErr('E_INVARIANT', '来源已变更（needs_revalidate=1），旧来源上的评测结论不作数', '复验来源后以新 revision 提案重评', false)
+      const scopeType = args.scope_type
+      const scopeId = scopeType === 'global' ? '' : String(args.scope_id || '').trim()
+      if (scopeType !== 'global' && !scopeId) {
+        throwErr('E_SCHEMA', `scope_type=${scopeType} 必须带 scope_id`, '有限灰度：scope_id 填 Program 名或 fixture 家族名', false)
+      }
+      // 幂等兜底（总线幂等表过期后的晚到重放/同批准重发）：同批准+同对象+同内容已发布过 → 返回既有 release，零重复
+      const dup = repo.findReleaseByAuth(rev.artifact_kind, rev.artifact_id, scopeType, scopeId, rev.revision_id, args.auth_ref)
+      if (dup) {
+        return { data: { release_id: dup.release_id, revision_id: rev.revision_id, published: false, duplicate: 'auth', status: dup.status, scope: { type: scopeType, id: scopeId } } }
+      }
+      // 全局生效前置：同 artifact 须已有 active 有限灰度（单 Program/单家族）在跑——禁止直升全局
+      if (scopeType === 'global') {
+        const gray = repo.listReleases({ artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, status: 'active', limit: 50 }).rows
+          .filter((r) => r.scope_type !== 'global')
+        if (!gray.length) {
+          throwErr('E_INVARIANT', `发布 ${rev.artifact_kind}/${rev.artifact_id} 到 global 前须先有限灰度（单 Program 或单家族）`, '先以 scope_type=program/family 发布灰度，观察后凭新批准晋升 global', false)
+        }
+      }
+      // 有限灰度：同 artifact 已有 global active 时，program/family 灰度仍允许（global 不覆盖灰度指针；回退互不影响）
+      const now = Date.now()
+      const prevActive = repo.activeRelease(rev.artifact_kind, rev.artifact_id, scopeType, scopeId)
+      const releaseId = `rel_${now.toString(36)}${crypto.randomBytes(3).toString('hex')}`
+      if (prevActive) {
+        repo.setReleaseStatus(prevActive.release_id, 'superseded')
+        // 旧版本不再有任何 active 使用面 → revision 置 retired（流程列；内容行原样保留）
+        if (prevActive.revision_id !== rev.revision_id && repo.countActiveReleasesForRevision(prevActive.revision_id) === 0) {
+          const prevRev = repo.getRevision(prevActive.revision_id)
+          if (prevRev && prevRev.status === 'published') repo.updateRevisionFlow(prevActive.revision_id, { status: 'retired', eval_report_ref: prevRev.eval_report_ref })
+        }
+      }
+      repo.insertRelease({
+        release_id: releaseId, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id,
+        revision_id: rev.revision_id, content_digest: rev.content_digest,
+        scope_type: scopeType, scope_id: scopeId, auth_ref: args.auth_ref,
+        status: 'active', reason: String(args.reason).slice(0, 300),
+        created_by_actor: (ctx && ctx.actor) || 'approval', created_at: now,
+      })
+      if (rev.status === 'eligible') repo.updateRevisionFlow(rev.revision_id, { status: 'published', eval_report_ref: rev.eval_report_ref })
+      return {
+        data: {
+          release_id: releaseId, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id,
+          published: true, scope: { type: scopeType, id: scopeId },
+          supersedes: prevActive ? prevActive.release_id : null,
+        },
+        events: [{ name: 'know.revision.published', payload: { release_id: releaseId, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, content_digest: rev.content_digest, scope_type: scopeType, scope_id: scopeId, auth_ref: args.auth_ref, supersedes: prevActive ? prevActive.release_id : null } }],
+        after: { release_id: releaseId, status: 'active' },
+      }
+    },
+
+    // C27（L4）：发布撤回与回退。当前 release 置 revoked；同 scope 恢复上一版本为 active。
+    // 幂等：已撤销的 release 重复撤回 = no-op（零事件）；回退恢复的 revision 仍无任何使用面时置回 published。
+    know_release_revoke: async (args, repo, ctx) => {
+      const rel = repo.getRelease(args.release_id)
+      if (!rel) throwErr('E_NOT_FOUND', `release ${args.release_id} 不存在`, '先 know_release_list 定位', false)
+      if (rel.status !== 'active') {
+        return { data: { release_id: rel.release_id, revoked: false, skipped: rel.status, status: rel.status } }
+      }
+      const now = Date.now()
+      repo.setReleaseStatus(rel.release_id, 'revoked', { revoked_at: now, revoke_reason: String(args.reason).slice(0, 300) })
+      // 回退：同 (artifact, scope) 最近一条被取代/撤销的 release 恢复为 active（恢复上一 published 版本）
+      const prev = repo.previousRelease(rel.artifact_kind, rel.artifact_id, rel.scope_type, rel.scope_id, rel.release_id)
+      let restored = null
+      if (prev) {
+        repo.setReleaseStatus(prev.release_id, 'active')
+        const prevRev = repo.getRevision(prev.revision_id)
+        if (prevRev && prevRev.status === 'retired') repo.updateRevisionFlow(prev.revision_id, { status: 'published', eval_report_ref: prevRev.eval_report_ref })
+        restored = { release_id: prev.release_id, revision_id: prev.revision_id }
+      }
+      // 被撤 revision 不再有任何 active 使用面 → retired（流程列）
+      if (repo.countActiveReleasesForRevision(rel.revision_id) === 0) {
+        const rev = repo.getRevision(rel.revision_id)
+        if (rev && rev.status === 'published') repo.updateRevisionFlow(rel.revision_id, { status: 'retired', eval_report_ref: rev.eval_report_ref })
+      }
+      return {
+        data: {
+          release_id: rel.release_id, revoked: true, revision_id: rel.revision_id,
+          rolled_back_to: restored,
+          scope: { type: rel.scope_type, id: rel.scope_id },
+        },
+        events: [{ name: 'know.release.revoked', payload: { release_id: rel.release_id, revision_id: rel.revision_id, artifact_kind: rel.artifact_kind, artifact_id: rel.artifact_id, scope_type: rel.scope_type, scope_id: rel.scope_id, reason: String(args.reason).slice(0, 120), correction_event_ref: args.correction_event_ref || null, rolled_back_to: restored ? restored.release_id : null } }],
+        after: { release_id: rel.release_id, status: 'revoked' },
+      }
+    },
+
     know_revision_assess: async (args, repo, ctx) => {
       const rev = repo.getRevision(args.revision_id)
       if (!rev) throwErr('E_NOT_FOUND', `revision ${args.revision_id} 不存在`, '先 know_revision_list 定位', false)
@@ -1602,11 +1817,27 @@ function makeHandlers(opts) {
     },
     vc_get: async (args, repo) => {
       const r = repo.vcRead(args.id)
-      if (!r) throwErr('E_NOT_FOUND', `卡 ${args.id} 不存在`, null, false)
-      return r
+      // L4 发布投影：data/vulncards/ 无该 artifact 的 YAML 文件时，回退到已发布 revision
+      //（candidate/eligible 不进使用面——只有存在 active release 的 published revision 才可读）
+      if (r) return r
+      const proj = releaseProjection(repo, 'vulncard', String(args.id).toUpperCase())
+      if (!proj) throwErr('E_NOT_FOUND', `卡 ${args.id} 不存在（无 YAML 文件且无已发布 revision）`, '候选≠发布——先 know_revision_publish（审批+灰度）', false)
+      return proj.card
     },
     vc_list: async (args, repo) => {
       let rows = repo.vcList()
+      // L4 发布投影：已发布 revision 且不在文件面的 artifact 以虚拟行并入（eligible/candidate 不进使用面）
+      const published = repo.listRevisions({ artifact_kind: 'vulncard', status: 'published', limit: 500 }).rows
+      for (const rev of published) {
+        if (rows.some((r) => String(r.id).toUpperCase() === String(rev.artifact_id).toUpperCase())) continue
+        if (!repo.countActiveReleasesForRevision(rev.revision_id)) continue
+        const c = JSON.parse(rev.content_json)
+        rows.push({
+          id: rev.artifact_id, name: c.title || c.name || rev.artifact_id, status: 'active',
+          version: rev.revision_id, severity: c.severity || '', attack_surface: c.surface || c.attack_surface || '',
+          file: `revision:${rev.revision_id}`, published_revision: rev.revision_id, content_digest: rev.content_digest,
+        })
+      }
       if (args.status) rows = rows.filter((r) => r.status === args.status)
       if (args.severity) rows = rows.filter((r) => String(r.severity).includes(args.severity))
       if (args.q) rows = rows.filter((r) => r.name.includes(args.q) || r.id.includes(args.q))
@@ -1632,6 +1863,7 @@ function makeHandlers(opts) {
         kb: { total: agg.kb.total, curated: agg.kb.curated, overdue_revalidate: agg.kb.overdue_revalidate, tainted: agg.kb.tainted, fetch_failed: agg.kb.fetch_failed || 0 },
         rules: { total: rules, last_seed: null },
         vulncards: { total: vc.length, active: vc.filter((c) => c.status === 'active').length, draft: vc.filter((c) => c.status === 'draft').length, usage_30d: 0 },
+        releases: (() => { const r = repo.listReleases({ status: 'active', limit: 500 }); return { active: r.total } })(),
         facts: {},
         harvest,
         warnings,
@@ -1658,6 +1890,40 @@ function makeHandlers(opts) {
       if (!r) throwErr('E_NOT_FOUND', `revision ${args.revision_id} 不存在`, '先 know_revision_list 定位', false)
       return { ...r, content: JSON.parse(r.content_json), source_snapshot: r.source_snapshot ? JSON.parse(r.source_snapshot) : null, applies_predicates: r.applies_predicates ? JSON.parse(r.applies_predicates) : null }
     },
+    // Q19/Q20（L4）：发布账本与版本链投影
+    know_release_list: async (args, repo) => {
+      return repo.listReleases({
+        artifact_kind: args.artifact_kind || '', artifact_id: args.artifact_id || '',
+        scope_type: args.scope_type || '', scope_id: args.scope_id !== undefined ? args.scope_id : null,
+        status: args.status || '', limit: args.limit ?? 50, offset: args.offset ?? 0,
+      })
+    },
+    know_revision_history: async (args, repo) => {
+      const revs = repo.listRevisions({ artifact_kind: args.artifact_kind, artifact_id: args.artifact_id, limit: 500 }).rows
+      const releases = repo.listReleases({ artifact_kind: args.artifact_kind, artifact_id: args.artifact_id, limit: 500 }).rows
+      const byRev = {}
+      for (const r of releases) { (byRev[r.revision_id] = byRev[r.revision_id] || []).push({ release_id: r.release_id, scope_type: r.scope_type, scope_id: r.scope_id, status: r.status, created_at: r.created_at, revoked_at: r.revoked_at || null }) }
+      return {
+        artifact_kind: args.artifact_kind, artifact_id: args.artifact_id,
+        revisions: revs.map((r) => ({
+          revision_id: r.revision_id, status: r.status, parent_revision_id: r.parent_revision_id,
+          content_digest: r.content_digest, needs_revalidate: !!r.needs_revalidate,
+          eval_report_ref: r.eval_report_ref || null, created_at: r.created_at,
+          releases: byRev[r.revision_id] || [],
+        })),
+        total: revs.length,
+      }
+    },
+  }
+
+  // L4 发布投影（vulncard 使用面）：取同 artifact 的 active release（global 兜底）→ published revision 内容。
+  // 只有 published+active release 才进使用面；eligible/candidate/rejected 一律不可见。
+  function releaseProjection(repo, artifactKind, artifactId) {
+    const rel = repo.listReleases({ artifact_kind: artifactKind, artifact_id: artifactId, status: 'active', limit: 1 }).rows[0] || null
+    if (!rel) return null
+    const rev = repo.getRevision(rel.revision_id)
+    if (!rev || rev.status !== 'published') return null
+    return { release: rel, revision: rev, card: { id: artifactId, file: `revision:${rev.revision_id}`, version: rev.revision_id, status: 'active', published_revision: rev.revision_id, content_digest: rev.content_digest, content: rev.content_json, parsed: JSON.parse(rev.content_json) } }
   }
 
   // L1：从 evidence_ref 提取 run token（兼容 run_id: 前缀 / run_ 历史形态）

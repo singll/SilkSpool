@@ -114,6 +114,29 @@ function createRepo(db) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_revision_source ON knowledge_revisions(source_kind, source_ref)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_revision_status ON knowledge_revisions(status)`)
 
+  // L4（2026-09-17 学习专项 §6.2/§6.3）：know_releases 发布账本（受控晋升/有限灰度/回退）。
+  // 发布为新 release 行，不原地改旧版本；同 (artifact, scope) 任一时刻至多一条 active（部分唯一索引强约束）。
+  // 回退 = 撤销当前 release（status→revoked）+ 恢复最近一条同 scope 的 revoked/superseded release 为 active。
+  db.exec(`CREATE TABLE IF NOT EXISTS know_releases (
+    release_id TEXT PRIMARY KEY,
+    artifact_kind TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    scope_type TEXT NOT NULL,
+    scope_id TEXT NOT NULL DEFAULT '',
+    auth_ref TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    reason TEXT,
+    created_by_actor TEXT,
+    created_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    revoke_reason TEXT
+  )`)
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_release_active ON know_releases(artifact_kind, artifact_id, scope_type, scope_id) WHERE status='active'`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_release_artifact ON know_releases(artifact_kind, artifact_id, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_release_revision ON know_releases(revision_id)`)
+
   // 生命周期/评分/合并列（v4.6/v4.7 已加，幂等补齐）
   const expCols = ['mem_class', 'status', 'status_at', 'scope', 'justification', 'uses', 'adopted', 'pos_fb', 'neg_fb', 'score', 'last_used_at', 'exportable', 'runs', 'successes', 'tags', 'deviation']
   for (const [col, ddl] of [
@@ -445,6 +468,59 @@ function createRepo(db) {
     updateRevisionFlow(revisionId, fields) {
       return db.prepare('UPDATE knowledge_revisions SET status=?, eval_report_ref=? WHERE revision_id=?')
         .run(String(fields.status), fields.eval_report_ref ?? null, String(revisionId)).changes
+    },
+
+    // ---- L4 know_releases（发布账本：发布为新行，回退为状态翻转，不原地改旧版本内容）----
+    insertRelease(row) {
+      db.prepare(`INSERT INTO know_releases (
+          release_id, artifact_kind, artifact_id, revision_id, content_digest,
+          scope_type, scope_id, auth_ref, status, reason, created_by_actor, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(row.release_id, row.artifact_kind, row.artifact_id, row.revision_id, row.content_digest,
+          row.scope_type, row.scope_id ?? '', row.auth_ref ?? null, row.status ?? 'active',
+          row.reason ?? null, row.created_by_actor ?? null, row.created_at)
+      return { created: true, release_id: row.release_id }
+    },
+    getRelease(releaseId) {
+      return db.prepare('SELECT * FROM know_releases WHERE release_id=?').get(String(releaseId)) || null
+    },
+    // 幂等兜底（总线幂等表过期后的晚到重放/同批准重放）：同批准+同对象+同内容命中即既有发布
+    findReleaseByAuth(artifactKind, artifactId, scopeType, scopeId, revisionId, authRef) {
+      return db.prepare(`SELECT * FROM know_releases
+        WHERE artifact_kind=? AND artifact_id=? AND scope_type=? AND scope_id=? AND revision_id=? AND auth_ref IS ?
+        ORDER BY created_at DESC LIMIT 1`)
+        .get(String(artifactKind), String(artifactId), String(scopeType), String(scopeId ?? ''), String(revisionId), authRef == null ? null : String(authRef)) || null
+    },
+    activeRelease(artifactKind, artifactId, scopeType, scopeId) {
+      return db.prepare(`SELECT * FROM know_releases
+        WHERE artifact_kind=? AND artifact_id=? AND scope_type=? AND scope_id=? AND status='active'`)
+        .get(String(artifactKind), String(artifactId), String(scopeType), String(scopeId ?? '')) || null
+    },
+    countActiveReleasesForRevision(revisionId) {
+      return db.prepare(`SELECT COUNT(*) AS c FROM know_releases WHERE revision_id=? AND status='active'`).get(String(revisionId)).c
+    },
+    setReleaseStatus(releaseId, status, fields = {}) {
+      return db.prepare('UPDATE know_releases SET status=?, revoked_at=?, revoke_reason=? WHERE release_id=?')
+        .run(String(status), fields.revoked_at ?? null, fields.revoke_reason ?? null, String(releaseId)).changes
+    },
+    // 回退目标：同 (artifact, scope) 最近一条被取代/撤销的非 active release（排除当前这条）
+    previousRelease(artifactKind, artifactId, scopeType, scopeId, excludeReleaseId) {
+      return db.prepare(`SELECT * FROM know_releases
+        WHERE artifact_kind=? AND artifact_id=? AND scope_type=? AND scope_id=? AND status != 'active' AND release_id != ?
+        ORDER BY created_at DESC, release_id DESC LIMIT 1`)
+        .get(String(artifactKind), String(artifactId), String(scopeType), String(scopeId ?? ''), String(excludeReleaseId)) || null
+    },
+    listReleases({ artifact_kind = '', artifact_id = '', scope_type = '', scope_id = null, status = '', limit = 50, offset = 0 } = {}) {
+      const conds = []; const vals = []
+      if (artifact_kind) { conds.push('artifact_kind=?'); vals.push(String(artifact_kind)) }
+      if (artifact_id) { conds.push('artifact_id=?'); vals.push(String(artifact_id)) }
+      if (scope_type) { conds.push('scope_type=?'); vals.push(String(scope_type)) }
+      if (scope_id !== null && scope_id !== undefined) { conds.push('scope_id=?'); vals.push(String(scope_id)) }
+      if (status) { conds.push('status=?'); vals.push(String(status)) }
+      const w = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
+      const total = db.prepare(`SELECT COUNT(*) AS c FROM know_releases ${w}`).get(...vals).c
+      const rows = db.prepare(`SELECT * FROM know_releases ${w} ORDER BY created_at DESC, release_id DESC LIMIT ? OFFSET ?`).all(...vals, limit, offset)
+      return { rows, total }
     },
   }
   return repo

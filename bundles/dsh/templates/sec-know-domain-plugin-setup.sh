@@ -27,7 +27,7 @@ assemble() {
 {
   "name": "@silksec/sec-domain-know",
   "version": "1.0.0",
-  "description": "SilkSecAgent know domain: exp/kb/rules/vulncards/harvest subrepos (exp_store/exp_feedback/kb_import/rule_seed/vc_save/harvest_ingest/know_adopt/know_health ...).",
+  "description": "SilkSecAgent know domain: exp/kb/rules/vulncards/harvest/episodes/revisions/releases subrepos (exp_store/kb_import/rule_seed/know_adopt/know_revision_propose/know_revision_publish/know_release_revoke ...).",
   "type": "module",
   "main": "./index.js",
   "exports": { ".": "./index.js", "./package.json": "./package.json" },

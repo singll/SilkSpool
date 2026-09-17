@@ -37,6 +37,7 @@
 | `approval_request` | 提请审批（kind 注册表 validate 内聚；同 (kind,subject) pending 去重） | model / script / system / scheduler（**按 kind 收窄**，见各 kind `request_actors`） | 自然键 `{kind}:{subject}` | `approval.requested` |
 | `approval_decide` | 人工裁决 pending → approved \| rejected（**副作用 = 提交 decision + effect outbox + 发事件**） | dashboard（operator 必填）/ human | 自然键 `{request_id}:{decision}` | `approval.approved` / `approval.rejected` |
 | `approval_withdraw` | 原提请者撤回自己的 pending 请求（落 rejected 终态 + 撤回标记） | model（原提请者）/ human | 自然键 `{request_id}` | `approval.rejected`（`withdrawn: true`） |
+| `approval_effects_retry` | effect 失败重试（L4 2026-09-17 新增；批准记录不动，只对 status=failed 的 effect 按原 payload 重放——接收方幂等键吸收，重试不重复生效） | dashboard / human | 自动指纹 `{request_id}` | 无 |
 
 ### 1.3 命令逐个详述
 
@@ -178,6 +179,15 @@
 **幂等**：自然键 `approval:withdraw:{id}`。
 
 **事件**：`approval.rejected`（payload `withdrawn: true`）——驳回类订阅方（若有统计）自然兼容。
+
+#### 1.3.4 `approval_effects_retry`（L4 新增，自学习专项 §6.2/§6.3）
+
+effect 失败重试通道：批准（decision）记录不动，只对 `status='failed'` 的 effect 按**原 payload** 重新 dispatch（decide 事务外的补偿执行点）。
+
+**参数**：`request_id`（必填，请求须存在且 status 以 `approved` 开头，否则 E_NOT_FOUND/E_STATE）。
+**语义**：逐条重放 failed effect（同 payload）→ 成功 `applied`、仍失败留 `failed` + `last_error`；全部补跑成功且原状态为 `approved_effect_failed` 时决策态回归 `approved`（只改 status 列，不动 decided_at/note）。**重试不重复生效**：同 payload 重放命中接收方幂等键（7 天窗口内 replay:true）；窗口过期后由接收方业务级幂等兜底（如 know 域 C26 的「同批准既有 release 吸收」）。
+**actor**：dashboard / human（model 不可调）。**幂等**：自动指纹 `{request_id}`（窗口内重放返回首次结果）。
+**返回**：`{ request_id, retried, results: [{effect_key, status, replay?|error?}], decision_status }`；无事件（纯补偿通道，效果由目标域事件体现）。
 
 ### 1.4 查询（读投影）逐个详述
 
@@ -514,6 +524,18 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | validate | ① subject ≥8 字；② draft ≥50 字；③ source_url 合法；④ card_id 为正整数或空；⑤ evidence ≥30 字（为什么值得采纳：覆盖哪个知识缺口/哪个案例支撑/与现有卡的差异）；⑥ card_id/scenario 对卡状态读 know 域查询（harvest 草稿状态——**同步查询，非订阅**，§1.5.4 论证） |
 | 事件映射（approve） | `approval.approved` → **know 域**（effect）`know_adopt`（07-know：card_id 有 → 转正对应 candidate 卡；只有 draft → 落新卡 source=external confidence=low 并直接转正；FTS 索引同步。effect 失败经 approval_effects 退避重试/对账——本地 sqlite 后端下不可达属异常态，人工可修复后重试） |
 
+**kind 8：`knowledge-publish`（知识版本受控发布，L4 2026-09-17 新增）** —— 自学习专项 §6.2/§6.3
+
+| 项 | 值 |
+|---|---|
+| label | 知识版本发布 |
+| request_actors | model / dashboard / human |
+| subject_rule | `{artifact_id} {revision_id} {范围} 灰度发布`（自由文本，说明发布对象与范围） |
+| payload_schema | `{ revision_id: string（必填）, content_digest: string（必填，`sha256:`+64hex——批准对象=内容哈希）, scope_type: program\|family\|global（必填；program/family 须带 scope_id）, scope_id: string, eval_report_ref: string }` |
+| validate | ① revision_id/content_digest/scope_type 形状齐全（global 免 scope_id，灰度必填）；② evidence ≥30 字（须引用独立评测结论：eval 配对报告 ref + eligible 判定） |
+| 事件映射（approve） | `approval.approved` → **know 域**（effect）`know_revision_publish`（07-know C26：eligible 前置 + digest 锚定 + 有限灰度先于全局生效；发布=新增 know_releases 行。批准绑定哈希——批准后 revision 内容变化（=新 revision）即批准失效，effect 落 failed + reconcile 对账 + `approval_effects_retry` 补跑） |
+| 事件映射（reject） | 无 |
+
 **kind 7：`task-complete`（自执行任务完成确认）** —— 05-task C16/C17 三段式收尾的审批段
 
 | 项 | 值 |
@@ -592,7 +614,7 @@ ApprovalRepo.statsWhere({since_ts}) -> aggregates
 | `dsh-plugin-sec-suite.js` L658-687 | exclude-exception onApprove（移出排除 + factUpsert） | `approval.approved` → scope 域 `scope_grant`（吸收排除）+ fact 域订阅 `fact_upsert`（弱） |
 | `dsh-plugin-sec-suite.js` L693-721 | tool-intrusive onApprove（写 allow_intrusive_tools） | `approval.approved` → scope 域 `scope_rules_apply` |
 | `dsh-plugin-sec-suite.js` L724-737 | task-budget-extend onApprove（裸 SQL UPDATE tasks） | `approval.approved` → task 域预算动词（**裸 SQL 归零**） |
-| `dsh-plugin-sec-suite.js` L745-812 | knowledge-adopt onApprove（exp_cards 直写 + FTS + 降级出口） | `approval.approved` → know 域 `know_adopt`（07-know；降级出口收紧为强联动，§2.2.2） |
+| `dsh-plugin-sec-suite.js` L745-812 | knowledge-adopt onApprove（exp_cards 直写 + FTS + 降级出口） | `approval.approved` → know 域 `know_adopt`（07-know）；**L4（2026-09-17）起 v4 直写 onApprove 已 fail-closed 关闭**（残留兜底只报指引错误，不落任何 exp_cards 直写） |
 | `dsh-plugin-sec-suite.js` L1244-1268 | runCli checkRisk needsApproval 自动提请 | exec 域守卫链 → `dispatch('approval','request')`（actor=system） |
 | `dsh-plugin-sec-suite.js` L1290-1315 | S5 写动词守卫的 tool-intrusive 桥接 | 同上（guard: 'S5-write-verb' 进 payload） |
 | `dsh-plugin-sec-suite.scheduler.js` L182-196 | scheduler 超时分支自动提请 | scheduler → `dispatch('approval','request')`（actor=scheduler） |

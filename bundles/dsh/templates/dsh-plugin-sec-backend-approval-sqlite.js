@@ -84,6 +84,10 @@ function createRepo(db) {
     setNote(id, note) {
       return db.prepare('UPDATE approval_requests SET note = ? WHERE id = ?').run(note ?? null, Number(id)).changes
     },
+    // L4：effect 重试补跑后决策态回归（approved_effect_failed → approved，不动 decided_at/note）
+    setRequestStatus(id, status) {
+      return db.prepare('UPDATE approval_requests SET status = ? WHERE id = ?').run(String(status), Number(id)).changes
+    },
     listRequestsWhere({ kind, status, limit, offset }) {
       const where = []
       const args = []
