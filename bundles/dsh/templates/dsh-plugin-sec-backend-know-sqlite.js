@@ -137,6 +137,81 @@ function createRepo(db) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_release_artifact ON know_releases(artifact_kind, artifact_id, created_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_release_revision ON know_releases(revision_id)`)
 
+  // L5（2026-09-17 学习专项 §8.1/§3.1 检索与反馈投影）：曝光/采用/计分/缺口四表（幂等建表）。
+  // 事实行只追加不改（编辑/撤回=新行或 tombstone）；计分投影可重建（know_scores 可从三族不可变事实重放重建）。
+  // know_exposures：检索命中 → 实际展示的曝光回执（宿主补发；查询本身纯读）。
+  db.exec(`CREATE TABLE IF NOT EXISTS know_exposures (
+    exposure_id TEXT PRIMARY KEY,
+    program_id TEXT, q TEXT, artifact_kind TEXT, artifact_id TEXT,
+    artifact_version TEXT, rank INTEGER, selected INTEGER NOT NULL DEFAULT 1,
+    reason TEXT, caller_actor TEXT, session_id TEXT, cost_json TEXT,
+    bucket INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    UNIQUE(program_id, q, artifact_kind, artifact_id, artifact_version, session_id, bucket)
+  )`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_exposure_artifact ON know_exposures(artifact_kind, artifact_id, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_exposure_session ON know_exposures(session_id, created_at)`)
+  // 注：bucket=30s 时间桶——同会话同查询同卡同桶去重（刷新不累计曝光），跨桶=新曝光（真实再展示）
+  // know_adoptions：采用事实（know_adopt 落账 + ledger.card_usage.logged 事件回流）——与曝光/有效结果分开计数。
+  db.exec(`CREATE TABLE IF NOT EXISTS know_adoptions (
+    adoption_id TEXT PRIMARY KEY,
+    artifact_kind TEXT NOT NULL, artifact_id TEXT NOT NULL,
+    revision_id TEXT, card_version TEXT,
+    source_event_id TEXT, source_cmd TEXT, program_id TEXT,
+    actor TEXT, outcome TEXT, note TEXT,
+    created_at INTEGER NOT NULL
+  )`)
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_adoption_event ON know_adoptions(source_event_id) WHERE source_event_id IS NOT NULL`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_adoption_artifact ON know_adoptions(artifact_kind, artifact_id, created_at)`)
+  // know_feedback：原生反馈桥落账（DSH canonical Session 反馈 → 本地事实行；feedback id + revision 幂等；
+  // 编辑=新 revision 行覆盖有效投影，撤回=tombstone 行撤销派生分数；模型自评不从此表进已验证正例）。
+  db.exec(`CREATE TABLE IF NOT EXISTS know_feedback (
+    feedback_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    rating TEXT, category TEXT, note TEXT,
+    tombstone INTEGER NOT NULL DEFAULT 0,
+    attribution_json TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (feedback_id, revision)
+  )`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_feedback_session ON know_feedback(session_id, created_at)`)
+  // know_scores：计分投影（效果与成本而非 uses 榜单；可整体/按 artifact 重放重建——重算不改历史行）。
+  db.exec(`CREATE TABLE IF NOT EXISTS know_scores (
+    artifact_kind TEXT NOT NULL, artifact_id TEXT NOT NULL,
+    exposures INTEGER NOT NULL DEFAULT 0,
+    adoptions INTEGER NOT NULL DEFAULT 0,
+    verified_positives INTEGER NOT NULL DEFAULT 0,
+    valid_cleans INTEGER NOT NULL DEFAULT 0,
+    inconclusives INTEGER NOT NULL DEFAULT 0,
+    inapplicables INTEGER NOT NULL DEFAULT 0,
+    blocked INTEGER NOT NULL DEFAULT 0,
+    infra_errors INTEGER NOT NULL DEFAULT 0,
+    feedback_pos INTEGER NOT NULL DEFAULT 0,
+    feedback_neg INTEGER NOT NULL DEFAULT 0,
+    feedback_pending INTEGER NOT NULL DEFAULT 0,
+    cost_requests INTEGER NOT NULL DEFAULT 0,
+    cost_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_ms INTEGER NOT NULL DEFAULT 0,
+    score REAL NOT NULL DEFAULT 0,
+    sample_size INTEGER NOT NULL DEFAULT 0,
+    build_tag TEXT,
+    rebuilt_at INTEGER NOT NULL,
+    PRIMARY KEY (artifact_kind, artifact_id)
+  )`)
+  // know_gaps：检索 miss/低覆盖登记（补建走 know_revision_propose 候选通道，不直写使用面）。
+  db.exec(`CREATE TABLE IF NOT EXISTS know_gaps (
+    gap_id TEXT PRIMARY KEY,
+    program_id TEXT, q TEXT, surface TEXT,
+    hits INTEGER NOT NULL DEFAULT 0,
+    backfill_revision_id TEXT,
+    caller_actor TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(program_id, q, surface)
+  )`)
+
   // 生命周期/评分/合并列（v4.6/v4.7 已加，幂等补齐）
   const expCols = ['mem_class', 'status', 'status_at', 'scope', 'justification', 'uses', 'adopted', 'pos_fb', 'neg_fb', 'score', 'last_used_at', 'exportable', 'runs', 'successes', 'tags', 'deviation']
   for (const [col, ddl] of [
@@ -520,6 +595,167 @@ function createRepo(db) {
       const w = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
       const total = db.prepare(`SELECT COUNT(*) AS c FROM know_releases ${w}`).get(...vals).c
       const rows = db.prepare(`SELECT * FROM know_releases ${w} ORDER BY created_at DESC, release_id DESC LIMIT ? OFFSET ?`).all(...vals, limit, offset)
+      return { rows, total }
+    },
+
+    // ---- L5 know_exposures（曝光回执：检索命中→实际展示，30s 桶去重）----
+    insertExposure(row) {
+      try {
+        db.prepare(`INSERT INTO know_exposures (
+            exposure_id, program_id, q, artifact_kind, artifact_id, artifact_version,
+            rank, selected, reason, caller_actor, session_id, cost_json, bucket, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(row.exposure_id, row.program_id ?? null, row.q ?? null, row.artifact_kind, row.artifact_id,
+            row.artifact_version ?? null, row.rank ?? null, row.selected ? 1 : 0, row.reason ?? null,
+            row.caller_actor ?? null, row.session_id ?? null, row.cost_json ?? null,
+            row.bucket ?? 0, row.created_at)
+        return { created: true }
+      } catch (e) {
+        if (/UNIQUE/i.test(String(e?.message))) return { created: false, duplicate: 'exposure' }
+        throw e
+      }
+    },
+    listExposures({ artifact_kind = '', artifact_id = '', program_id = '', limit = 50, offset = 0 } = {}) {
+      const conds = []; const vals = []
+      if (artifact_kind) { conds.push('artifact_kind=?'); vals.push(String(artifact_kind)) }
+      if (artifact_id) { conds.push('artifact_id=?'); vals.push(String(artifact_id)) }
+      if (program_id) { conds.push('program_id=?'); vals.push(String(program_id)) }
+      const w = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
+      const total = db.prepare(`SELECT COUNT(*) AS c FROM know_exposures ${w}`).get(...vals).c
+      const rows = db.prepare(`SELECT * FROM know_exposures ${w} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...vals, limit, offset)
+      return { rows, total }
+    },
+    exposureCount(artifactKind, artifactId) {
+      return db.prepare('SELECT COUNT(*) AS c, SUM(selected) AS sel FROM know_exposures WHERE artifact_kind=? AND artifact_id=?')
+        .get(String(artifactKind), String(artifactId))
+    },
+    latestExposureBySession(sessionId) {
+      return db.prepare('SELECT * FROM know_exposures WHERE session_id=? ORDER BY created_at DESC LIMIT 1').get(String(sessionId)) || null
+    },
+
+    // ---- L5 know_adoptions（采用事实：know_adopt + ledger.card_usage.logged 回流）----
+    insertAdoption(row) {
+      try {
+        db.prepare(`INSERT INTO know_adoptions (
+            adoption_id, artifact_kind, artifact_id, revision_id, card_version,
+            source_event_id, source_cmd, program_id, actor, outcome, note, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(row.adoption_id, row.artifact_kind, row.artifact_id, row.revision_id ?? null,
+            row.card_version ?? null, row.source_event_id ?? null, row.source_cmd ?? null,
+            row.program_id ?? null, row.actor ?? null, row.outcome ?? null, row.note ?? null, row.created_at)
+        return { created: true }
+      } catch (e) {
+        if (/UNIQUE/i.test(String(e?.message))) return { created: false, duplicate: 'source' }
+        throw e
+      }
+    },
+    adoptionCount(artifactKind, artifactId) {
+      return db.prepare('SELECT COUNT(*) AS c FROM know_adoptions WHERE artifact_kind=? AND artifact_id=?')
+        .get(String(artifactKind), String(artifactId)).c
+    },
+    adoptionArtifacts() {
+      return db.prepare('SELECT DISTINCT artifact_kind, artifact_id FROM know_adoptions').all()
+    },
+
+    // ---- L5 know_feedback（原生反馈桥事实行：id+revision 幂等；编辑=新 revision；撤回=tombstone）----
+    insertFeedback(row) {
+      try {
+        db.prepare(`INSERT INTO know_feedback (
+            feedback_id, revision, session_id, message_id, kind, rating, category, note,
+            tombstone, attribution_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(row.feedback_id, row.revision, row.session_id, row.message_id, row.kind,
+            row.rating ?? null, row.category ?? null, row.note ?? null,
+            row.tombstone ? 1 : 0, row.attribution_json ?? null, row.created_at)
+        return { created: true }
+      } catch (e) {
+        if (/UNIQUE/i.test(String(e?.message))) return { created: false, duplicate: 'id_revision' }
+        throw e
+      }
+    },
+    latestFeedback(feedbackId) {
+      return db.prepare('SELECT * FROM know_feedback WHERE feedback_id=? ORDER BY revision DESC LIMIT 1').get(String(feedbackId)) || null
+    },
+    // 有效反馈集：取每个 feedback_id 的最新 revision（撤回=该 id 无有效反馈）
+    effectiveFeedback() {
+      return db.prepare(`SELECT f.* FROM know_feedback f
+        JOIN (SELECT feedback_id, MAX(revision) AS rev FROM know_feedback GROUP BY feedback_id) m
+          ON m.feedback_id=f.feedback_id AND m.rev=f.revision
+        WHERE f.tombstone=0`).all()
+    },
+    feedbackCount() {
+      return db.prepare('SELECT COUNT(*) AS c FROM know_feedback').get().c
+    },
+    // 有效反馈覆盖的 artifact 键集合（全量重建 C31 的第三族事实来源——
+    // 只有反馈、无曝光/采用/episode 的卡也必须被重建覆盖，撤回撤销才能回投影）
+    feedbackArtifacts() {
+      return db.prepare(`SELECT DISTINCT
+          json_extract(attribution_json, '$.artifact_kind') AS artifact_kind,
+          json_extract(attribution_json, '$.artifact_id') AS artifact_id
+        FROM know_feedback WHERE attribution_json IS NOT NULL`).all()
+        .filter((r) => r.artifact_kind && r.artifact_id)
+    },
+
+    // ---- L5 know_scores（计分投影：可重放重建；聚合三族不可变事实 + 有效反馈）----
+    upsertScore(row) {
+      db.prepare(`INSERT INTO know_scores (
+          artifact_kind, artifact_id, exposures, adoptions, verified_positives, valid_cleans,
+          inconclusives, inapplicables, blocked, infra_errors,
+          feedback_pos, feedback_neg, feedback_pending,
+          cost_requests, cost_tokens, cost_ms, score, sample_size, build_tag, rebuilt_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(artifact_kind, artifact_id) DO UPDATE SET
+          exposures=excluded.exposures, adoptions=excluded.adoptions,
+          verified_positives=excluded.verified_positives, valid_cleans=excluded.valid_cleans,
+          inconclusives=excluded.inconclusives, inapplicables=excluded.inapplicables,
+          blocked=excluded.blocked, infra_errors=excluded.infra_errors,
+          feedback_pos=excluded.feedback_pos, feedback_neg=excluded.feedback_neg, feedback_pending=excluded.feedback_pending,
+          cost_requests=excluded.cost_requests, cost_tokens=excluded.cost_tokens, cost_ms=excluded.cost_ms,
+          score=excluded.score, sample_size=excluded.sample_size, build_tag=excluded.build_tag, rebuilt_at=excluded.rebuilt_at`)
+        .run(row.artifact_kind, row.artifact_id, row.exposures ?? 0, row.adoptions ?? 0,
+          row.verified_positives ?? 0, row.valid_cleans ?? 0, row.inconclusives ?? 0,
+          row.inapplicables ?? 0, row.blocked ?? 0, row.infra_errors ?? 0,
+          row.feedback_pos ?? 0, row.feedback_neg ?? 0, row.feedback_pending ?? 0,
+          row.cost_requests ?? 0, row.cost_tokens ?? 0, row.cost_ms ?? 0,
+          row.score ?? 0, row.sample_size ?? 0, row.build_tag ?? null, row.rebuilt_at)
+    },
+    deleteScore(artifactKind, artifactId) {
+      return db.prepare('DELETE FROM know_scores WHERE artifact_kind=? AND artifact_id=?').run(String(artifactKind), String(artifactId)).changes
+    },
+    getScore(artifactKind, artifactId) {
+      return db.prepare('SELECT * FROM know_scores WHERE artifact_kind=? AND artifact_id=?').get(String(artifactKind), String(artifactId)) || null
+    },
+    listScores({ artifact_kind = '', limit = 50, offset = 0 } = {}) {
+      const w = artifact_kind ? 'WHERE artifact_kind=?' : ''
+      const vals = artifact_kind ? [String(artifact_kind)] : []
+      const total = db.prepare(`SELECT COUNT(*) AS c FROM know_scores ${w}`).get(...vals).c
+      const rows = db.prepare(`SELECT * FROM know_scores ${w} ORDER BY score DESC LIMIT ? OFFSET ?`).all(...vals, limit, offset)
+      return { rows, total }
+    },
+    episodeAggByCard() {
+      // 有效结果按卡片聚合（card_id 缺记行单列——无法归因不计分；模型自评行另有来源级别标签，
+      // 本聚合不含来源过滤，来源过滤在域命令层做）
+      return db.prepare(`SELECT card_id, card_version, outcome, COUNT(*) AS n,
+          COALESCE(SUM(request_count), 0) AS requests, COALESCE(SUM(token_count), 0) AS tokens,
+          COALESCE(SUM(duration_ms), 0) AS ms
+        FROM learning_episodes WHERE card_id IS NOT NULL AND card_id != ''
+        GROUP BY card_id, card_version, outcome`).all()
+    },
+    exposureAggByArtifact() {
+      return db.prepare(`SELECT artifact_kind, artifact_id, COUNT(*) AS n, SUM(selected) AS sel FROM know_exposures GROUP BY artifact_kind, artifact_id`).all()
+    },
+
+    // ---- L5 know_gaps（检索 miss/低覆盖登记）----
+    upsertGap(row) {
+      db.prepare(`INSERT INTO know_gaps (gap_id, program_id, q, surface, hits, backfill_revision_id, caller_actor, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(program_id, q, surface) DO UPDATE SET hits=excluded.hits, created_at=excluded.created_at`)
+        .run(row.gap_id, row.program_id ?? null, row.q ?? null, row.surface ?? null,
+          row.hits ?? 0, row.backfill_revision_id ?? null, row.caller_actor ?? null, row.created_at)
+    },
+    listGaps({ limit = 50, offset = 0 } = {}) {
+      const total = db.prepare('SELECT COUNT(*) AS c FROM know_gaps').get().c
+      const rows = db.prepare('SELECT * FROM know_gaps ORDER BY created_at DESC LIMIT ? OFFSET ?').all(limit, offset)
       return { rows, total }
     },
   }

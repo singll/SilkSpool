@@ -1,0 +1,4 @@
+# silksec-sec-feedback-bridge bundle layer（web profile only——headless 无 UI 反馈面）
+- insert:
+    - id: sec-feedback-bridge
+      name: '@silksec/sec-feedback-bridge'

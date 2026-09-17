@@ -1,9 +1,9 @@
 # 07 · know 域设计（知识六仓：经验 / 文献 / 先验规程 / 漏洞卡 / 收割 / 体检）
 
-> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：know@1
+> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：know@1（L5 增量见 §十一）
 > 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（订阅 `approval.approved` 承接 knowledge-adopt / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 记学习 episode，L1）；vuln 域（订阅 `vuln.signal.confirmed/rejected` 记判定 episode，L1）；task 域（订阅 `task.finished` 记任务级 episode，L1）。
 > 被订阅：`know.*` 全系事件——memcore（治理旁路）、dashboard、eval（评测回流）。
-> owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` / `playbooks` / `learning_episodes` / `knowledge_revisions` / `know_releases` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
+> owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` / `playbooks` / `learning_episodes` / `knowledge_revisions` / `know_releases` / `know_exposures` / `know_adoptions` / `know_feedback` / `know_scores` / `know_gaps` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
 
 ---
 
@@ -55,6 +55,11 @@
 | C25 | `know_revision_assess` | revision | 候选评测流转（L3 2026-09-17 上线；candidate→evaluating→eligible/rejected，中断 abort 回 candidate；只信 eval 域事件信封；eligible≠发布） | **reactor**（模型/脚本/dashboard/human 物理不可调） | 自然键（revision_id+phase+eval_run_id） | know.revision.assessed |
 | C26 | `know_revision_publish` | revision | 受控发布（L4 2026-09-17 上线；eligible→published，发布=新增 know_releases 行不原地改旧版本；批准绑定内容哈希；有限灰度先于全局生效） | **approval, human**（model/script/dashboard/reactor 物理不可调） | 自然键（revision_id+scope+digest+auth_ref）+ 同批准既有 release 兜底 | know.revision.published |
 | C27 | `know_release_revoke` | release | 发布撤回与回退（L4 2026-09-17 上线；release 置 revoked + 恢复同 scope 上一 published 版本） | dashboard, human | 自然键（release_id+reason）；已撤销重复撤回 no-op | know.release.revoked |
+| C28 | `know_exposure_record` | retrieval | 曝光回执（检索命中→实际展示；30s 桶去重；L5 2026-09-17 上线） | model, system, human | 自动指纹 + UNIQUE(program,q,artifact,version,session,bucket) | know.exposure.recorded |
+| C28b | `know_adoption_record` | retrieval | 采用事实落账（ledger.card_usage.logged 回流；L5） | reactor | 自然键 + UNIQUE(source_event_id) | （无） |
+| C29 | `know_feedback_ingest` | feedback | 原生反馈桥落账（feedback id+revision 幂等；编辑/撤回触发计分重算；L5） | system | 自然键（feedback_id+revision）+ 主键兜底 | know.feedback.ingested |
+| C30 | `know_gap_record` | retrieval | 检索 miss/低覆盖登记（补建走候选通道；L5） | model, dashboard, script, system | 自动指纹 + UNIQUE(program,q,surface) | （无） |
+| C31 | `know_scores_rebuild` | scoring | 计分重放重建（从不可变事实重放，不改历史行；L5） | system, dashboard | 无（重建天然幂等） | know.scores.rebuilt |
 
 > **卡片使用记录（原 `card_usage_log`）归属**：归 **ledger 域**（动词 `ledger_log_card_usage`），文件 `data/pipeline/{program}/card_usage-{date}.jsonl`（sec-pipeline.js L146，`pipelineDir()` 即 ledger 台账树）：① attempts/card_usage/handoff 三产物同一纪律节奏写入、被 task_finish 流程守卫同批校验、走同一 vault 回放链路——拆域会让守卫跨域取证；② 一棵目录树一个 owner（单写者律同款理由）。**本域消费路径**：订阅 `ledger.card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询，驱动 registry 健康度与 know_health 零使用卡清理——读消费不受 owns 影响。字段语义（card_id/deviation/suggest）的知识视角归本域解读，写入动作归 ledger。
 
@@ -404,6 +409,37 @@
 
 `know_adopt` 扩展参数 `artifact_kind / revision_id / eval_report_ref / scope`（payload 可携 content_digest 做一致性断言）。**采用面只认 published revision**：revision_id 存在时 revision 必须已 published——eligible/candidate/evaluating/rejected/retired 一律 `E_INVARIANT`（hint：先经 know_revision_publish 审批+灰度发布）；自带 digest 与 revision 内容不符 `E_KNOW_REVISION_CHANGED`。既有 target（exp/kb/rules 草稿采纳）语义不变。
 
+#### C28 · know_exposure_record（曝光回执，L5 2026-09-17 上线）
+
+**语义**：检索命中→实际展示的宿主回执（§8.1：曝光≠采用≠有效结果）。查询本身纯读，展示/注入上下文后回执。
+**参数表**：q（必填 ≤500 字）/ artifact_kind + artifact_id（必填）/ artifact_version / rank / selected（默认 true；参与评估未入选=false）/ reason / program_id / cost。
+**actor**：model, system, human。**幂等**：自动指纹 + 表级 UNIQUE(program,q,artifact,version,session,bucket) 兜底；**bucket=30s 时间桶**——同会话同查询同卡同桶去重（重复刷新不累计曝光），跨桶=新曝光。session_id 由宿主 ctx 注入（不采信 args 自填）。
+**事件**：`know.exposure.recorded {exposure_id, artifact_kind, artifact_id, selected, program_id}`。
+
+#### C28b · know_adoption_record（采用事实落账，L5）
+
+**语义**：采用事实唯一写入口（采用≠曝光≠有效结果）。know_adopt 内部直落；`ledger.card_usage.logged` 事件经订阅回流本命令。
+**actor**：reactor（不向模型/看板注册）。**幂等**：自然键（artifact+source_event_id+source_cmd）+ 表级 UNIQUE(source_event_id) 兜底——事件重复投递/重放零重复记功。
+
+#### C29 · know_feedback_ingest（原生反馈桥落账，L5，设计 §6.3/§9）
+
+**语义**：DSH rc.2 message-feedback（canonical Session 日志反馈）的唯一落账通道。编辑=更高 revision 覆盖有效投影；撤回=tombstone 撤销派生分数；落账后对归因 artifact 自动重算计分（从不可变事实重放，不改历史行）。人工有用/错误与漏洞真值分开——有用=体验/方法价值，成立与否仍需独立证据；模型自评不经此通道进已验证正例。
+**参数表**：feedback_id + revision + session_id + message_id（必填）/ rating（positive/negative；tombstone 时省略）/ category / note（≤2000 字）/ tombstone / artifact_ref（可选显式归因）。
+**actor**：system（专用——模型/看板/脚本全拒，防伪造反馈流量）。**幂等**：自然键 feedback_id+revision + 表级主键兜底；同 id 已有更高 revision 时旧 revision 乱序到达 no-op（skipped: stale_revision）。
+**归因**：显式 artifact_ref 优先；否则本会话最近一次曝光（latest_exposure）；无法归因进待整理（不给整场会话所有卡片加分）；tombstone 继承该反馈既有归因。
+**事件**：`know.feedback.ingested {feedback_id, revision, tombstone, rating, attribution, session_id}`。
+
+#### C30 · know_gap_record（检索缺口登记，L5，设计 §8.1 覆盖补建）
+
+**语义**：检索 miss（0 命中）/低覆盖登记。**补建走 know_revision_propose 候选通道**——缺口本身不是内容，候选卡须含完整前置/对照/证据（INV-K14 闸不变），不直写使用面。
+**actor**：model, dashboard, script, system。**幂等**：自动指纹 + 表级 UNIQUE(program,q,surface) 覆盖（同缺口重复登记不堆行）。
+
+#### C31 · know_scores_rebuild（计分重放重建，L5）
+
+**语义**：从四族不可变事实（know_exposures / know_adoptions / learning_episodes / 有效 know_feedback）重放重建 know_scores 投影——**重算不改历史行**（episode/exposure/adoption/feedback 原样）。artifact_ref 限定单卡；不带=全量重建（治理对账）。
+**actor**：system, dashboard。**幂等**：无（重建天然幂等——投影可反复重建）。
+**事件**：`know.scores.rebuilt {rebuilt, scope, ts}`。
+
 
 ### 1.4 查询（读投影）逐个详述
 
@@ -465,6 +501,15 @@
 
 #### Q20 · know_revision_history（L4）：参数 artifact_kind + artifact_id（必填）；返回同一 artifact 的 revision 链 + 各 revision 的发布状态（版本切点审计：哪个版本在哪些范围生效/被撤回）。
 
+#### Q21 · know_retrieval_explain（分层检索只读投影，L5，设计 §8.2）
+
+参数 q / program_id / family / artifact_kind / surface / limit（默认 5，上限 50）。**检索与选择顺序**：① 作用域（跨 Program 发布排除——release scope_type=program 且 scope_id≠program_id 即排除；**family 灰度作用域只与调用方显式给出的 family 上下文比对**（如评测家族/漏洞族）——family 不是 bus surface，适用与否由阶段③卡面谓词裁决；无 program_id 时 program 灰度发布不注入）；② 生命周期（published revision + active release；legacy 文件面卡不 deprecated；exp/kb 排除 archived/deprecated）；③ 适用谓词（surface 匹配；**失效负知识不进召回**——invalidatedBy 条件命中查询上下文即排除）；④ 排序=来源等级（发布 revision > legacy active > exp > kb）+ 新鲜度（7 天内 +20），**计分投影随行展示作证据链、不参与 rank**（raw uses 不入排序循环）。返回 stages（各阶段计数）+ selected（含入选原因/版本/计分证据链）+ excluded（含排除原因）+ coverage（miss/low_coverage 提示）+ meta.cost_ms。查询纯读；曝光回执走 C28。
+
+#### Q22 · know_learning_status（学习状态聚合，L5，设计 §8.1/§10）
+
+参数 artifact_kind（可选过滤）。返回 scores（每卡：曝光/采用/verified_positives/valid_cleans/inapplicables/infra_errors/feedback_pos/neg/cost_requests/tokens/ms/score/sample_size——**报告效果与成本而非 uses 榜单**）+ feedback（反馈桥状态与口径说明）+ gaps（检索缺口）+ releases_active。**模型自评（model-proposed）单列，不计已验证正例。**
+
+
 ### 1.5 事件
 
 **发布**：
@@ -493,6 +538,9 @@
 | `know.revision.assessed` | C25 | `{ revision_id, phase, from, to, eval_run_id, verdict, report_ref }` |
 | `know.revision.published` | C26 | `{ release_id, revision_id, artifact_kind, artifact_id, content_digest, scope_type, scope_id, auth_ref, supersedes }` |
 | `know.release.revoked` | C27 | `{ release_id, revision_id, artifact_kind, artifact_id, scope_type, scope_id, reason, correction_event_ref, rolled_back_to }` |
+| `know.exposure.recorded` | C28 | `{ exposure_id, artifact_kind, artifact_id, selected, program_id }` |
+| `know.feedback.ingested` | C29 | `{ feedback_id, revision, tombstone, rating, attribution, session_id }` |
+| `know.scores.rebuilt` | C31 | `{ rebuilt, scope, ts }` |
 
 **订阅**（manifest subscribes）：
 
@@ -663,6 +711,14 @@ sec query know know_health --actor script
 #### know_releases 表（L4，2026-09-17；owner=know，幂等建表）
 
 发布账本（设计 §6.2/§6.3 的 L4 落地）。列：`release_id PK / artifact_kind / artifact_id / revision_id / content_digest / scope_type（program/family/global）/ scope_id（global 为空串）/ auth_ref（批准引用，effect 通道 = approval:{request_id}）/ status（active/superseded/revoked）/ reason / created_by_actor / created_at / revoked_at / revoke_reason`。约束：**部分唯一索引 `UNIQUE(artifact_kind, artifact_id, scope_type, scope_id) WHERE status='active'`**——同 artifact 同范围任一时刻至多一条生效发布（发布=新行 + 旧行置 superseded，不原地改旧版本）；索引 `idx_release_artifact(artifact_kind, artifact_id, created_at)`、`idx_release_revision(revision_id)`。回退 = 撤销当前 release + 恢复最近一条同 scope 的非 active release 为 active（C27）；行只追加不删除，撤回历史全留痕。
+
+#### L5 检索与计分投影表（2026-09-17；owner=know，幂等建表；设计 §3.1「检索/反馈投影」落地）
+
+- **`know_exposures`**：曝光回执（检索命中→实际展示）。列：`exposure_id PK / program_id / q / artifact_kind / artifact_id / artifact_version / rank / selected / reason / caller_actor / session_id / cost_json / bucket / created_at`；UNIQUE(program,q,artifact,version,session,bucket)——30s 桶内同会话同查询同卡去重（刷新不累计曝光）。
+- **`know_adoptions`**：采用事实。列：`adoption_id PK / artifact_kind / artifact_id / revision_id / card_version / source_event_id / source_cmd / program_id / actor / outcome / note / created_at`；部分唯一索引 UNIQUE(source_event_id)——事件重复投递零重复记功。
+- **`know_feedback`**：原生反馈桥事实行。列：`feedback_id+revision 复合主键 / session_id / message_id / kind / rating / category / note / tombstone / attribution_json / created_at`；**行只增不减**——编辑=新 revision 行，撤回=tombstone 行，有效投影=每 id 最新 revision（撤回=无有效反馈）。
+- **`know_scores`**：计分投影（可重放重建，见 C31）。列：`artifact_kind+artifact_id 复合主键 / exposures / adoptions / verified_positives / valid_cleans / inconclusives / inapplicables / blocked / infra_errors / feedback_pos / feedback_neg / feedback_pending / cost_requests / cost_tokens / cost_ms / score / sample_size / build_tag / rebuilt_at`。score=(verified×3 + valid_clean×2 + fb_pos×1.5 − fb_neg×3)×保守平滑 sample/(sample+2)；**model-proposed 自评不计 verified_positives**（单列口径）；infra_error 不扣方法分。
+- **`know_gaps`**：检索缺口登记。列：`gap_id PK / program_id / q / surface / hits / backfill_revision_id / caller_actor / created_at`；UNIQUE(program,q,surface) 覆盖（同缺口不堆行）。
 
 **file 后端**：
 
@@ -993,3 +1049,15 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **know_adopt 扩展（C20）**：revision 来源采纳只认 published revision（eligible 不可进使用面，E_INVARIANT；digest 不符 E_KNOW_REVISION_CHANGED）。
 - **使用面发布投影**：`vc_list`/`vc_get` 叠加已发布 revision 卡（data/vulncards/ 无文件且存在 active release 的 published revision 以 `revision:{id}` 虚拟行进入使用面；eligible/candidate 不可见；撤回即退出）；`know_health` 透出 active release 数。新查询 Q19 `know_release_list` / Q20 `know_revision_history`。
 - **新表 `know_releases`**（幂等建表，见 2.1）：发布账本，行只追加不删除。
+
+## 十一、2026-09-17 学习专项 L5 实施回填（检索与计分）
+
+- **Q21 `know_retrieval_explain` 分层检索只读投影**（设计 §8.2）：作用域→生命周期→适用谓词→来源等级四段过滤排序，stages 计数 + selected（含入选原因/版本/计分证据链）+ excluded（含排除原因）+ coverage（miss/low_coverage 提示）+ meta.cost_ms；**旧版本（superseded release）/跨 Program 发布/失效负知识（invalidatedBy 命中）不进召回**；计分投影不参与 rank（raw uses 不入排序循环）。
+- **曝光/采用/有效结果三条计数分离**（§8.1）：C28 `know_exposure_record`（曝光回执，30s 桶去重）/ C28b `know_adoption_record`（reactor 专用；know_adopt 直落 + `ledger.card_usage.logged` 事件回流，UNIQUE(source_event_id) 幂等）/ 有效结果=learning_episodes 关联推导（model-proposed 自评单列，不计 verified_positives）。
+- **计分可重算**：`know_scores` 投影表从四族不可变事实重放重建（C31 `know_scores_rebuild`；反馈/episode/发布/撤回落账自动触发单卡重算）；重算不改历史行（episode/exposure/adoption/feedback 原样）。
+- **C29 `know_feedback_ingest`**（system 专用，防伪造反馈流量）：feedback id+revision 幂等（主键兜底 + stale_revision 乱序吸收）；编辑=新 revision 覆盖有效投影，撤回=tombstone 撤销派生分数；归因=显式 artifact_ref 优先/本会话最近曝光兜底/不可归因进待整理。
+- **C30 `know_gap_record`**：检索 miss/低覆盖登记；补建走 know_revision_propose 候选通道（INV-K14 闸不变），不直写使用面。
+- **Q22 `know_learning_status`**：每卡曝光/采用/有效结果/成本/计分聚合 + 反馈桥状态 + 缺口 + active release 数——报告效果与成本而非 uses 榜单。
+- **新表 5 张**（幂等建表，见 2.1）：know_exposures / know_adoptions / know_feedback / know_scores / know_gaps。
+- **契约测试**：know 60→69 全绿（L5 九用例：分层召回/跨 Program 排除/eligible 不进召回/撤回恢复旧版本/失效负知识排除/曝光桶去重/采用双通道幂等/计分重放重建+撤回撤销+模型自评单列/反馈幂等与编辑撤回/actor 闸/缺口登记）。
+- **原生反馈桥**（`@silksec/sec-feedback-bridge`，web profile 专用）：消费 DSH rc.2 message-feedback 的 session/event + feedback/committed 事件 → know_feedback_ingest；DSH 侧 messageFeedback 服务未挂载时显式 unsupported（日志 + 状态文件），不伪造反馈流量；反馈留在本地，不落盘正文。

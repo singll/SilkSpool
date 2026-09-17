@@ -24,6 +24,17 @@
 //  - C27 know_release_revoke（dashboard/human）：灰度失败可恢复到上一 published 版本；
 //  - 采用面只认 published revision（know_adopt 对 revision 来源拒 eligible；vc_list/vc_get 叠加发布投影）。
 //
+// L5（2026-09-17 学习专项 §8/§9）：检索与计分——
+//  - Q21 know_retrieval_explain 分层检索只读投影（作用域→生命周期→适用谓词→来源等级排序）；
+//    旧版本（superseded release）/跨 Program 发布/失效负知识不进召回；
+//  - 曝光/采用/有效结果三条计数分离（§8.1）：C28 know_exposure_record 曝光回执（30s 桶去重）；
+//    采用= C20 know_adopt 落账 + ledger.card_usage.logged 事件回流（know_adoptions）；
+//    有效结果= learning_episodes 关联推导（来源级别分离——模型自评不计已验证正例）；
+//  - 计分可重算：know_scores 投影表从三族不可变事实重放重建（C31 know_scores_rebuild）；
+//  - C29 know_feedback_ingest（system 专用原生反馈桥）：feedback id + revision 幂等，
+//    编辑=新 revision 覆盖有效投影、撤回=tombstone 撤销派生分数、落账后自动重算相关计分；
+//  - C30 know_gap_record：检索 miss/低覆盖登记，补建走 know_revision_propose 候选通道（不直写）。
+//
 // 零依赖：node:fs / node:path / node:crypto（sqlite 在总线）
 // ==============================================================================
 
@@ -86,6 +97,9 @@ const REVISION_STATUSES = ['draft', 'candidate', 'evaluating', 'eligible', 'publ
 // §6.1 状态机：L2 只产生 candidate；evaluating/eligible/published/retired/rejected 流转属 L3/L4 门禁
 // L4（设计 §6.2）：发布范围——单 Program 灰度 / 单 fixture 家族灰度 / 全局生效（全局须先有限灰度在跑）
 const RELEASE_SCOPE_TYPES = ['program', 'family', 'global']
+// L5（设计 §8.1/§9）：原生反馈桥 rating 枚举 + 曝光回执去重桶宽（30s——刷新不累计曝光）
+const FEEDBACK_RATINGS = ['positive', 'negative']
+const EXPOSURE_BUCKET_MS = 30000
 
 // canonical JSON（键排序序列化）——content_digest 的唯一事实口径
 function canonicalStringify(v) {
@@ -101,7 +115,7 @@ export const KNOW_MANIFEST = {
   service: 'secDomain.know',
   description: '知识六仓（经验卡/文献/先验规程/漏洞卡/收割/体检——换目标也有用的可迁移方法论，目标事实归 fact 域）',
   owns: {
-    tables: ['exp_cards', 'exp_embeddings', 'exp_feedback', 'exp_cards_archive', 'kb_docs', 'kb_fts', 'kb_embeddings', 'kb_docs_archive', 'playbooks', 'learning_episodes', 'knowledge_revisions', 'know_releases'],
+    tables: ['exp_cards', 'exp_embeddings', 'exp_feedback', 'exp_cards_archive', 'kb_docs', 'kb_fts', 'kb_embeddings', 'kb_docs_archive', 'playbooks', 'learning_episodes', 'knowledge_revisions', 'know_releases', 'know_exposures', 'know_adoptions', 'know_feedback', 'know_scores', 'know_gaps'],
     files: ['data/rules/', 'data/vulncards/', 'data/harvest/', 'data/events/know.jsonl'],
   },
   commands: {
@@ -581,6 +595,114 @@ export const KNOW_MANIFEST = {
       agent_note: '撤回发布并回退：release 置 revoked，恢复同 scope 上一版本为 active（灰度失败可恢复）。紧急边界问题取消在飞任务属 task 域，不在本动词范围。',
       deprecated: false,
     },
+    // C28（L5，设计 §8.1）：曝光回执——检索命中→实际展示的宿主回执。
+    // 查询本身纯读；真实注入/展示后由宿主（system）或人工（human）补发；模型也可回执自己的检索展示
+    //（exp_record_usage 同语义升级——但曝光不计入有效结果，只进曝光计数）。
+    // 去重：30s 桶 + (program, q, artifact, version, session) 唯一键——重复刷新不累计曝光。
+    know_exposure_record: {
+      actor: ['model', 'system', 'human'],
+      schema: schema({
+        q: str({ minLength: 1, maxLength: 500 }),
+        program_id: str({ maxLength: 128 }),
+        artifact_kind: en(REVISION_ARTIFACT_KINDS),
+        artifact_id: str({ minLength: 1, maxLength: 128 }),
+        artifact_version: str({ maxLength: 64 }),
+        rank: int({ minimum: 0 }),
+        selected: bool(),
+        reason: str({ maxLength: 200 }),
+        cost: { type: 'object' },
+      }, ['q', 'artifact_kind', 'artifact_id']),
+      idempotent: 'auto',
+      idempotent_fields: ['q', 'program_id', 'artifact_kind', 'artifact_id', 'artifact_version', 'rank', 'selected', 'reason'],
+      events: ['know.exposure.recorded'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '曝光回执（检索命中→实际展示）：检索后展示/注入上下文的卡须回执（selected=true；未入选但参与评估的候选 selected=false）。30s 桶去重——重复刷新不累计曝光。曝光≠采用≠有效结果。',
+      deprecated: false,
+    },
+    // C28b（L5）：采用事实落账。reactor 专用（know_adopt 内部直调 repo；ledger.card_usage.logged 事件经此命令回流）。
+    // source_event_id 唯一索引幂等——事件重复投递/重放零重复记功。
+    know_adoption_record: {
+      actor: ['reactor'],
+      schema: schema({
+        artifact_kind: en(REVISION_ARTIFACT_KINDS),
+        artifact_id: str({ minLength: 1, maxLength: 128 }),
+        revision_id: str({ maxLength: 64 }),
+        card_version: str({ maxLength: 64 }),
+        source_event_id: str({ maxLength: 128 }),
+        source_cmd: str({ maxLength: 64 }),
+        program_id: str({ maxLength: 128 }),
+        outcome: str({ maxLength: 32 }),
+        note: str({ maxLength: 200 }),
+      }, ['artifact_kind', 'artifact_id']),
+      idempotent: 'natural',
+      idempotent_natural: ['artifact_kind', 'artifact_id', 'source_event_id', 'source_cmd'],
+      events: [],
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '（reactor 专用，不向模型注册）采用事实落账：know_adopt / ledger.card_usage.logged 回流。采用≠曝光≠有效结果——三条计数分离。',
+      deprecated: false,
+    },
+    // C29（L5，设计 §6.3/§9）：原生反馈桥落账。system 专用（DSH message-feedback 桥接收 event）。
+    // feedback id + revision 幂等（重复订阅/重启补扫不重复奖励）；编辑=新 revision 覆盖有效投影；
+    // 撤回=tombstone 撤销派生分数；落账后自动重算相关计分。模型自评不经此通道进已验证正例。
+    know_feedback_ingest: {
+      actor: ['system'],
+      schema: schema({
+        feedback_id: str({ minLength: 1, maxLength: 128 }),
+        revision: int({ minimum: 1 }),
+        session_id: str({ minLength: 1, maxLength: 128 }),
+        message_id: str({ minLength: 1, maxLength: 128 }),
+        rating: en([...FEEDBACK_RATINGS, '']),
+        category: str({ maxLength: 64 }),
+        note: str({ maxLength: 2000 }),
+        tombstone: bool(),
+        artifact_ref: { type: ['object', 'null'] },
+      }, ['feedback_id', 'revision', 'session_id', 'message_id']),
+      idempotent: 'natural',
+      idempotent_natural: ['feedback_id', 'revision'],
+      events: ['know.feedback.ingested'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '（system 专用——DSH 原生反馈桥唯一落账通道，不向模型/看板注册）人工有用/错误反馈按 feedback id + revision 幂等落账；编辑发新 revision，撤回发 tombstone；落账后触发相关 artifact 计分重算。人工反馈是体验/方法价值信号，漏洞成立与否仍需独立证据。',
+      deprecated: false,
+    },
+    // C30（L5，设计 §8.1 覆盖补建）：检索 miss/低覆盖登记。补建走 know_revision_propose 候选通道——
+    // 缺口本身不是内容，候选卡须含完整前置/对照/证据（INV-K14 闸不变）。
+    know_gap_record: {
+      actor: ['model', 'dashboard', 'script', 'system'],
+      schema: schema({
+        q: str({ minLength: 1, maxLength: 500 }),
+        program_id: str({ maxLength: 128 }),
+        surface: str({ maxLength: 64 }),
+        hits: int({ minimum: 0 }),
+      }, ['q', 'hits']),
+      idempotent: 'auto',
+      idempotent_fields: ['q', 'program_id', 'surface', 'hits'],
+      events: [],
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '登记检索缺口（miss=0 命中或低覆盖）。补建：用 know_revision_propose 提候选卡（source_kind=episode 关联偏差 / kb_doc 关联资料），候选≠发布——走评测+审批链。',
+      deprecated: false,
+    },
+    // C31（L5，设计 §8.1）：计分重算。从不可变事实（曝光/采用/episode/有效反馈）重放重建 know_scores 投影；
+    // 不改历史行（episode/exposure/adoption/feedback 原样）。artifact_ref 限定单卡重算（反馈/撤回触发路径）；
+    // 不带 artifact_ref = 全量重建（治理/对账通道）。
+    know_scores_rebuild: {
+      actor: ['system', 'dashboard'],
+      schema: schema({
+        artifact_ref: { type: ['object', 'null'] },
+      }, []),
+      idempotent: 'none',
+      events: ['know.scores.rebuilt'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 120000,
+      agent_note: '（system/dashboard 专用）计分重放重建：从曝光/采用/episode/有效反馈四族不可变事实重算 know_scores 投影。编辑/撤回反馈后自动触发单卡重算；本命令用于全量对账与修复。',
+      deprecated: false,
+    },
   },
   queries: {
     exp_search: {
@@ -750,6 +872,28 @@ export const KNOW_MANIFEST = {
       predicates: [],
       agent_note: '同一 artifact 的 revision 链 + 各 revision 的发布状态（版本切点审计：哪个版本在哪些范围生效/被撤回）。',
     },
+    // Q21（L5，设计 §8.2）：分层检索只读投影——作用域→生命周期→适用谓词→来源等级排序。
+    // 旧版本（superseded release）/跨 Program 发布/失效负知识不进召回；曝光/采用/结果计分供排序但不进 rank 循环加分。
+    know_retrieval_explain: {
+      actor: ['model', 'dashboard', 'human'],
+      params: schema({
+        q: str({ default: '', maxLength: 500 }),
+        program_id: str({ default: '', maxLength: 128 }),
+        family: str({ default: '', maxLength: 64 }),
+        artifact_kind: en([...REVISION_ARTIFACT_KINDS, ''], { default: '' }),
+        surface: str({ default: '', maxLength: 64 }),
+        limit: int({ minimum: 1, maximum: 50 }),
+      }, []),
+      predicates: [],
+      agent_note: '分层检索解释投影：按 作用域→生命周期→适用谓词→来源等级 排序，返回入选/未入选原因、卡版本与计分证据链。展示/注入后用 know_exposure_record 回执曝光；miss/低覆盖用 know_gap_record 登记。',
+    },
+    // Q22（L5，设计 §8.1/§10）：学习状态聚合——曝光/采用/有效结果拆分 + 计分投影 + 反馈桥健康 + 缺口。
+    know_learning_status: {
+      actor: ['model', 'dashboard', 'human', 'system'],
+      params: schema({ artifact_kind: en([...REVISION_ARTIFACT_KINDS, ''], { default: '' }) }, []),
+      predicates: [],
+      agent_note: '学习状态聚合：每张卡的曝光/采用/有效结果计数与计分、反馈桥健康、检索缺口。报告效果与成本（非 uses 榜单）；模型自评行单列不计已验证正例。',
+    },
   },
   events: {
     'know.exp.stored': { payload: { type: 'object' }, redact: [] },
@@ -778,6 +922,9 @@ export const KNOW_MANIFEST = {
     'know.revision.assessed': { payload: { type: 'object' }, redact: [] },
     'know.revision.published': { payload: { type: 'object' }, redact: [] },
     'know.release.revoked': { payload: { type: 'object' }, redact: [] },
+    'know.exposure.recorded': { payload: { type: 'object' }, redact: [] },
+    'know.feedback.ingested': { payload: { type: 'object' }, redact: [] },
+    'know.scores.rebuilt': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'fact.bb.published': { handler: 'onFactBbPublished', mode: 'async', as: 'reactor' },
@@ -791,6 +938,8 @@ export const KNOW_MANIFEST = {
     // L3（设计 §6.3/§7.3）：候选评测流转——eval 域独立评测事件驱动 C25
     'eval.candidate.started': { handler: 'onEvalCandidateStarted', mode: 'async', as: 'reactor' },
     'eval.report.built': { handler: 'onEvalReportBuilt', mode: 'async', as: 'reactor' },
+    // L5（设计 §8.1）：采用事实回流——ledger 卡片使用记录进 know_adoptions（采用≠曝光≠有效结果）
+    'ledger.card_usage.logged': { handler: 'onCardUsageLogged', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -868,6 +1017,94 @@ function makeHandlers(opts) {
 
   const CONF_RANK = { high: 3, medium: 2, low: 1 }
   const SRC_RANK = { 'human-verified': 3, '实战': 2, external: 1 }
+
+  // ---- L5（设计 §8.1）：采用事实落账（know_adopt / ledger.card_usage 回流共用）----
+  function recordAdoption(repo, opts) {
+    const now = Date.now()
+    const key = opts.source_event_id || null
+    const adoptionId = `ado_${sha1(`${opts.artifact_kind}|${opts.artifact_id}|${opts.revision_id || ''}|${opts.source_cmd || ''}|${key || ''}|${now}`).slice(0, 16)}`
+    const r = repo.insertAdoption({
+      adoption_id: adoptionId,
+      artifact_kind: String(opts.artifact_kind), artifact_id: String(opts.artifact_id),
+      revision_id: opts.revision_id || null, card_version: opts.card_version != null ? String(opts.card_version) : null,
+      source_event_id: key, source_cmd: opts.source_cmd || null, program_id: opts.program_id || null,
+      actor: opts.actor || null, outcome: opts.outcome || null, note: opts.note ? String(opts.note).slice(0, 200) : null,
+      created_at: now,
+    })
+    return { ...r, adoption_id: adoptionId }
+  }
+
+  // ---- L5（设计 §8.1）：计分重放——从不可变事实（曝光/采用/episode/有效反馈）重建单卡投影。
+  // 三条计数分离：曝光（know_exposures）/ 采用（know_adoptions）/ 有效结果（learning_episodes 关联）。
+  // 来源级别分离：model-proposed 自评不计已验证正例（单列 self_reported）；
+  // 有效结果只认 machine/independently-verified/human-reviewed/vendor-confirmed；
+  // infra_error 不扣方法分；inapplicable 单列（适用性选择信号）；小样本保守平滑（sample/(sample+2)）。
+  function rebuildArtifactScore(repo, artifactKind, artifactId) {
+    const exp = repo.exposureCount(artifactKind, artifactId)
+    const adoptions = repo.adoptionCount(artifactKind, artifactId)
+    const eps = repo.episodeAggByCard().filter((r) => String(r.card_id) === String(artifactId))
+    const fbRows = repo.effectiveFeedback().filter((f) => {
+      if (!f.attribution_json) return false
+      try { const a = JSON.parse(f.attribution_json); return a.artifact_kind === artifactKind && String(a.artifact_id) === String(artifactId) } catch { return false }
+    })
+    const c = { confirmed: 0, valid_clean: 0, inconclusive: 0, inapplicable: 0, blocked: 0, infra_error: 0 }
+    let costReq = 0, costTok = 0, costMs = 0
+    for (const r of eps) {
+      costReq += r.requests || 0; costTok += r.tokens || 0; costMs += r.ms || 0
+      const n = r.n || 0
+      if (r.outcome === 'confirmed') c.confirmed += n
+      else if (r.outcome === 'valid_clean') c.valid_clean += n
+      else if (r.outcome === 'inapplicable') c.inapplicable += n
+      else if (r.outcome === 'blocked_auth') c.blocked += n
+      else if (r.outcome === 'infra_error') c.infra_error += n
+      else c.inconclusive += n
+    }
+    const fbPos = fbRows.filter((f) => f.rating === 'positive').length
+    const fbNeg = fbRows.filter((f) => f.rating === 'negative').length
+    const fbPending = 0 // 有效集里已排除 tombstone；待整理（无归因）不进本卡计数
+    const sample = eps.reduce((s, r) => s + (r.n || 0), 0)
+    const smooth = sample === 0 ? 1 : sample / (sample + 2)
+    const raw = c.confirmed * 3 + c.valid_clean * 2 + fbPos * 1.5 - fbNeg * 3
+    const score = Math.round(raw * smooth * 100) / 100
+    const hasFacts = (exp.c || 0) > 0 || adoptions > 0 || eps.length > 0 || fbRows.length > 0
+    if (!hasFacts) { repo.deleteScore(artifactKind, artifactId); return null }
+    const row = {
+      artifact_kind: artifactKind, artifact_id: String(artifactId),
+      exposures: exp.c || 0, adoptions,
+      verified_positives: c.confirmed, valid_cleans: c.valid_clean,
+      inconclusives: c.inconclusive, inapplicables: c.inapplicable,
+      blocked: c.blocked, infra_errors: c.infra_error,
+      feedback_pos: fbPos, feedback_neg: fbNeg, feedback_pending: fbPending,
+      cost_requests: costReq, cost_tokens: costTok, cost_ms: costMs,
+      score, sample_size: sample, build_tag: `rebuild:${Date.now().toString(36)}`, rebuilt_at: Date.now(),
+    }
+    repo.upsertScore(row)
+    return row
+  }
+
+  // 全量重建（治理对账）：枚举曝光/采用/episode 归集出现过的 artifact 逐卡重放
+  function rebuildAllScores(repo) {
+    const keys = new Set()
+    for (const r of repo.exposureAggByArtifact()) keys.add(`${r.artifact_kind}|${r.artifact_id}`)
+    for (const r of repo.adoptionArtifacts()) keys.add(`${r.artifact_kind}|${r.artifact_id}`)
+    for (const r of repo.episodeAggByCard()) keys.add(`${r.card_kind || inferKindOf(r.card_id)}|${r.card_id}`)
+    for (const r of repo.feedbackArtifacts()) keys.add(`${r.artifact_kind}|${r.artifact_id}`)
+    let n = 0
+    for (const k of keys) {
+      const [kind, id] = k.split('|')
+      if (rebuildArtifactScore(repo, kind, id)) n++
+    }
+    return n
+  }
+
+  // episode 的 card_id → artifact_kind 推断（VC-*/VC-AUTHZ-* → vulncard；数字 → exp_card；doc:* → kb_doc）
+  function inferKindOf(cardId) {
+    const s = String(cardId || '')
+    if (/^VC-/i.test(s)) return 'vulncard'
+    if (/^doc:/i.test(s)) return 'kb_doc'
+    if (/^pb:/i.test(s)) return 'playbook'
+    return 'exp_card'
+  }
 
   const invariants = {
     expMemClassPermanent: async (args) => {
@@ -1378,7 +1615,7 @@ function makeHandlers(opts) {
       }
     },
 
-    know_adopt: async (args, repo) => {
+    know_adopt: async (args, repo, ctx) => {
       const target = args.target
       const payload = args.payload || {}
       // L4（设计 §6.2 knowledge-adopt 扩展）：采用面只认 published revision——
@@ -1396,6 +1633,12 @@ function makeHandlers(opts) {
         if (rev.status !== 'published') {
           throwErr('E_INVARIANT', `采用面只认 published revision（当前 ${rev.status}）`, 'eligible 不是发布——先经 know_revision_publish（审批+灰度）发布再采纳', false)
         }
+        // L5（§8.1）：采用事实落账（采用≠曝光≠有效结果——三条计数分离）
+        recordAdoption(repo, {
+          artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, revision_id: rev.revision_id,
+          source_cmd: 'know_adopt', actor: (ctx && ctx.actor) || null, outcome: 'adopted',
+          note: String(args.evidence).slice(0, 200),
+        })
         return {
           data: { target, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, status: 'published', adopted: true, source_cmd: 'know_revision_publish' },
           events: [{ name: 'know.adopted', payload: { target, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, eval_report_ref: args.eval_report_ref || rev.eval_report_ref || null, evidence: args.evidence } }],
@@ -1403,9 +1646,11 @@ function makeHandlers(opts) {
         }
       }
       if (target === 'exp') {
+        if (payload.id != null) recordAdoption(repo, { artifact_kind: 'exp_card', artifact_id: String(payload.id), source_cmd: 'know_adopt:exp', actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
         return { data: { target, adopted_id: payload.id ?? null, source_cmd: 'exp_promote' }, events: [{ name: 'know.adopted', payload: { target, adopted_id: payload.id ?? null, source_cmd: 'exp_promote', evidence: args.evidence } }], before: null, after: null }
       }
       if (target === 'kb') {
+        if (payload.doc_id != null) recordAdoption(repo, { artifact_kind: 'kb_doc', artifact_id: String(payload.doc_id), source_cmd: 'know_adopt:kb', actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
         return { data: { target, adopted_id: payload.doc_id ?? null, source_cmd: 'kb_import' }, events: [{ name: 'know.adopted', payload: { target, adopted_id: payload.doc_id ?? null, source_cmd: 'kb_import', evidence: args.evidence } }], before: null, after: null }
       }
       if (target === 'rules') {
@@ -1488,6 +1733,8 @@ function makeHandlers(opts) {
         // 重复回放/业务归因命中：零重复记功，不发事件
         return { data: { episode_id: r.episode_id, recorded: false, duplicate: r.duplicate } }
       }
+      // L5（§8.1）：episode 落账后重算所涉卡片计分投影（从不可变事实重放，不改历史行）
+      if (row.card_id) rebuildArtifactScore(repo, inferKindOf(row.card_id), String(row.card_id))
       return {
         data: { episode_id: episodeId, recorded: true, outcome: args.outcome },
         events: [{ name: 'know.episode.recorded', payload: { episode_id: episodeId, source_event_id: row.source_event_id, source_event_name: row.source_event_name, outcome: args.outcome, program_id: row.program_id, exec_run_id: row.exec_run_id } }],
@@ -1606,6 +1853,8 @@ function makeHandlers(opts) {
         created_by_actor: (ctx && ctx.actor) || 'approval', created_at: now,
       })
       if (rev.status === 'eligible') repo.updateRevisionFlow(rev.revision_id, { status: 'published', eval_report_ref: rev.eval_report_ref })
+      // L5（§8.1）：发布即重算该 artifact 计分投影（使用面变化随行更新）
+      rebuildArtifactScore(repo, rev.artifact_kind, rev.artifact_id)
       return {
         data: {
           release_id: releaseId, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id,
@@ -1641,6 +1890,8 @@ function makeHandlers(opts) {
         const rev = repo.getRevision(rel.revision_id)
         if (rev && rev.status === 'published') repo.updateRevisionFlow(rel.revision_id, { status: 'retired', eval_report_ref: rev.eval_report_ref })
       }
+      // L5（§8.1）：撤回即重算——撤回版本与回退版本的使用面均变化（计分重放，不改历史行）
+      rebuildArtifactScore(repo, rel.artifact_kind, rel.artifact_id)
       return {
         data: {
           release_id: rel.release_id, revoked: true, revision_id: rel.revision_id,
@@ -1649,6 +1900,133 @@ function makeHandlers(opts) {
         },
         events: [{ name: 'know.release.revoked', payload: { release_id: rel.release_id, revision_id: rel.revision_id, artifact_kind: rel.artifact_kind, artifact_id: rel.artifact_id, scope_type: rel.scope_type, scope_id: rel.scope_id, reason: String(args.reason).slice(0, 120), correction_event_ref: args.correction_event_ref || null, rolled_back_to: restored ? restored.release_id : null } }],
         after: { release_id: rel.release_id, status: 'revoked' },
+      }
+    },
+
+    // C28（L5）：曝光回执。30s 桶 + (program,q,artifact,version,session,bucket) 唯一键——
+    // 重复刷新不累计曝光；session_id 由宿主 ctx 注入（不采信 args 自填）。
+    know_exposure_record: async (args, repo, ctx) => {
+      const now = Date.now()
+      const bucket = Math.floor(now / EXPOSURE_BUCKET_MS)
+      const programId = args.program_id ? String(args.program_id).slice(0, 128) : ''
+      const sessionId = (ctx && ctx.session_id) || ''
+      const q = String(args.q).slice(0, 500)
+      const artVersion = args.artifact_version ? String(args.artifact_version).slice(0, 64) : ''
+      const exposureId = `exp_${now.toString(36)}${crypto.randomBytes(3).toString('hex')}`
+      const r = repo.insertExposure({
+        exposure_id: exposureId, program_id: programId || null, q,
+        artifact_kind: args.artifact_kind, artifact_id: String(args.artifact_id),
+        artifact_version: artVersion || null, rank: args.rank ?? null,
+        selected: args.selected !== false, reason: args.reason ? String(args.reason).slice(0, 200) : null,
+        caller_actor: (ctx && ctx.actor) || null, session_id: sessionId || null,
+        cost_json: args.cost && typeof args.cost === 'object' ? JSON.stringify(args.cost).slice(0, 500) : null,
+        bucket, created_at: now,
+      })
+      if (!r.created) {
+        return { data: { exposure_id: null, recorded: false, duplicate: 'exposure', bucket } }
+      }
+      return {
+        data: { exposure_id: exposureId, recorded: true, bucket },
+        events: [{ name: 'know.exposure.recorded', payload: { exposure_id: exposureId, artifact_kind: args.artifact_kind, artifact_id: String(args.artifact_id), selected: args.selected !== false, program_id: programId || null } }],
+        after: { exposure_id: exposureId },
+      }
+    },
+
+    // C28b（L5）：采用事实落账（reactor 专用；source_event_id 幂等）。
+    know_adoption_record: async (args, repo, ctx) => {
+      const r = recordAdoption(repo, {
+        artifact_kind: args.artifact_kind, artifact_id: args.artifact_id,
+        revision_id: args.revision_id || null, card_version: args.card_version ?? null,
+        source_event_id: args.source_event_id || null, source_cmd: args.source_cmd || null,
+        program_id: args.program_id || null, actor: (ctx && ctx.actor) || null,
+        outcome: args.outcome || null, note: args.note || null,
+      })
+      if (!r.created) return { data: { recorded: false, duplicate: r.duplicate } }
+      return { data: { recorded: true, adoption_id: r.adoption_id }, events: [], after: null }
+    },
+
+    // C29（L5）：原生反馈桥落账。feedback id + revision 幂等（主键强约束）；编辑=更高 revision 覆盖
+    // 有效投影；撤回=tombstone；落账后对归因 artifact 自动重算计分（从不可变事实重放，不改历史行）。
+    know_feedback_ingest: async (args, repo, ctx) => {
+      const fbId = String(args.feedback_id).slice(0, 128)
+      const revision = Number(args.revision)
+      const tombstone = args.tombstone === true
+      const rating = args.rating || null
+      if (!tombstone && !rating) throwErr('E_SCHEMA', '非撤回反馈必须携带 rating（positive/negative）', '撤回发 tombstone=true', false)
+      // 幂等兜底：同 id 已有更高 revision → 乱序/过期回放 no-op；同 id+revision → duplicate
+      const cur = repo.latestFeedback(fbId)
+      if (cur && cur.revision > revision) {
+        return { data: { feedback_id: fbId, recorded: false, skipped: 'stale_revision', current_revision: cur.revision } }
+      }
+      // 归因：显式 artifact_ref 优先；否则本会话最近一次曝光（待整理队列=不可归因——不给整场会话所有卡片加分）
+      let attribution = null
+      if (args.artifact_ref && typeof args.artifact_ref === 'object' && args.artifact_ref.artifact_kind && args.artifact_ref.artifact_id) {
+        attribution = { artifact_kind: String(args.artifact_ref.artifact_kind), artifact_id: String(args.artifact_ref.artifact_id), via: 'explicit' }
+      } else if (tombstone && cur && cur.attribution_json) {
+        // 撤回继承该反馈既有归因——撤销的是同一卡的派生分数
+        try { attribution = { ...JSON.parse(cur.attribution_json), via: 'tombstone_inherit' } } catch { attribution = null }
+      } else if (!tombstone) {
+        const latest = repo.latestExposureBySession(String(args.session_id))
+        if (latest) attribution = { artifact_kind: latest.artifact_kind, artifact_id: latest.artifact_id, artifact_version: latest.artifact_version, via: 'latest_exposure' }
+      }
+      const row = {
+        feedback_id: fbId, revision,
+        session_id: String(args.session_id).slice(0, 128), message_id: String(args.message_id).slice(0, 128),
+        kind: 'message', rating: tombstone ? null : rating, category: args.category ? String(args.category).slice(0, 64) : null,
+        note: args.note ? String(args.note).slice(0, 2000) : null, tombstone,
+        attribution_json: attribution ? JSON.stringify(attribution) : null,
+        created_at: Date.now(),
+      }
+      const r = repo.insertFeedback(row)
+      if (!r.created) {
+        return { data: { feedback_id: fbId, revision, recorded: false, duplicate: 'id_revision' } }
+      }
+      // 落账后自动重算相关计分（可重算=从不可变事实重放；不改历史行）
+      let rebuilt = null
+      if (attribution) {
+        rebuilt = rebuildArtifactScore(repo, attribution.artifact_kind, attribution.artifact_id)
+      }
+      return {
+        data: { feedback_id: fbId, revision, recorded: true, tombstone, rating, attribution, score_rebuilt: !!rebuilt },
+        events: [{ name: 'know.feedback.ingested', payload: { feedback_id: fbId, revision, tombstone, rating, attribution, session_id: row.session_id } }],
+        after: { feedback_id: fbId, revision },
+      }
+    },
+
+    // C30（L5）：检索缺口登记。补建走 know_revision_propose 候选通道（本命令不直写使用面）。
+    know_gap_record: async (args, repo, ctx) => {
+      const now = Date.now()
+      const programId = args.program_id ? String(args.program_id).slice(0, 128) : ''
+      const surface = args.surface ? String(args.surface).slice(0, 64) : ''
+      const gapId = `gap_${sha1(`${programId}|${args.q}|${surface}`).slice(0, 16)}`
+      repo.upsertGap({
+        gap_id: gapId, program_id: programId || null, q: String(args.q).slice(0, 500),
+        surface: surface || null, hits: Number(args.hits) || 0, caller_actor: (ctx && ctx.actor) || null,
+        created_at: now,
+      })
+      return {
+        data: { gap_id: gapId, recorded: true, hits: Number(args.hits) || 0 },
+        events: [],
+        after: { gap_id: gapId },
+      }
+    },
+
+    // C31（L5）：计分重放重建。artifact_ref 限定单卡；不带 = 全量重建（治理对账通道）。
+    know_scores_rebuild: async (args, repo) => {
+      const now = Date.now()
+      if (args.artifact_ref && typeof args.artifact_ref === 'object' && args.artifact_ref.artifact_kind && args.artifact_ref.artifact_id) {
+        const one = rebuildArtifactScore(repo, String(args.artifact_ref.artifact_kind), String(args.artifact_ref.artifact_id))
+        return {
+          data: { rebuilt: one ? 1 : 0, scope: 'single', artifact: one ? { kind: one.artifact_kind, id: one.artifact_id } : null, score: one ? one.score : null },
+          events: [{ name: 'know.scores.rebuilt', payload: { rebuilt: one ? 1 : 0, scope: 'single', artifact_kind: String(args.artifact_ref.artifact_kind), artifact_id: String(args.artifact_ref.artifact_id), ts: now } }],
+          after: { rebuilt: one ? 1 : 0 },
+        }
+      }
+      const n = rebuildAllScores(repo)
+      return {
+        data: { rebuilt: n, scope: 'all' },
+        events: [{ name: 'know.scores.rebuilt', payload: { rebuilt: n, scope: 'all', ts: now } }],
+        after: { rebuilt: n },
       }
     },
 
@@ -1914,6 +2292,172 @@ function makeHandlers(opts) {
         total: revs.length,
       }
     },
+    // Q21（L5）：分层检索只读投影。顺序=作用域→生命周期→适用谓词→来源等级排序。
+    // 旧版本（superseded release）/跨 Program 发布/失效负知识不进召回；查询纯读——
+    // 曝光回执走 C28 know_exposure_record（宿主补发），缺口走 C30 know_gap_record。
+    know_retrieval_explain: async (args, repo, ctx) => {
+      const started = Date.now()
+      const q = String(args.q || '').trim()
+      const programId = String(args.program_id || '').trim()
+      const family = String(args.family || '').trim()
+      const surface = String(args.surface || '').trim()
+      const kindFilter = args.artifact_kind || ''
+      const excluded = []
+      const stages = {}
+
+      // ---- 候选池：发布 revision（已知发布范围 → 候选条目）+ legacy 文件面漏洞卡 + exp/kb（FTS 融合）----
+      let pool = []
+      if (!kindFilter || kindFilter === 'vulncard') {
+        // 已发布 revision（只取当前仍有 active release 的——superseded/revoked 已退使用面）
+        const activeRels = repo.listReleases({ artifact_kind: 'vulncard', status: 'active', limit: 500 }).rows
+        for (const rel of activeRels) {
+          const rev = repo.getRevision(rel.revision_id)
+          if (!rev) continue
+          pool.push({ origin: 'release', artifact_kind: 'vulncard', artifact_id: rev.artifact_id, revision_id: rev.revision_id, revision_status: rev.status, content: JSON.parse(rev.content_json), release: rel })
+        }
+        // legacy 文件面卡（vc_list 现行视图——YAML 卡无 Program 绑定，全 Program 可见）
+        for (const v of repo.vcList()) {
+          pool.push({ origin: 'legacy_file', artifact_kind: 'vulncard', artifact_id: v.id, legacy: v })
+        }
+      }
+      if (!kindFilter || kindFilter === 'exp_card') {
+        const hits = q ? repo.ftsSearchExp(q, 100) : new Map(repo.listExpWhere('1=1', [], 'score DESC', 50, 0).map((c) => [c.id, c.score || 0]))
+        for (const [id] of hits) {
+          const c = repo.getExpCard(id)
+          if (c) pool.push({ origin: 'exp', artifact_kind: 'exp_card', artifact_id: String(c.id), card: c })
+        }
+      }
+      if (!kindFilter || kindFilter === 'kb_doc') {
+        const hits = q ? repo.ftsSearchKb(q, 50) : new Map()
+        for (const [id] of hits) {
+          const d = repo.getKbDoc(id)
+          if (d) pool.push({ origin: 'kb', artifact_kind: 'kb_doc', artifact_id: String(d.id), doc: d })
+        }
+      }
+      stages.pool = pool.length
+
+      // ---- 阶段1 作用域：跨 Program 发布/家族不符排除 ----
+      pool = pool.filter((it) => {
+        if (it.origin !== 'release') return true
+        const rel = it.release
+        if (rel.scope_type === 'program') {
+          if (programId && rel.scope_id === programId) return true
+          if (!programId) { excluded.push({ artifact_id: it.artifact_id, stage: 'scope', reason: 'scoped_release_no_program' }); return false }
+          excluded.push({ artifact_id: it.artifact_id, stage: 'scope', reason: 'cross_program', scope: `${rel.scope_type}:${rel.scope_id}` }); return false
+        }
+        if (rel.scope_type === 'family') {
+          // family=灰度家族（如 fixture 家族/漏洞族）。召回适用性由卡面谓词（阶段3）裁决——
+          // 不与 bus surface 比对；仅当调用方显式给出 family 上下文且不符时排除。
+          if (family && rel.scope_id !== family) { excluded.push({ artifact_id: it.artifact_id, stage: 'scope', reason: 'family_mismatch', scope: `${rel.scope_type}:${rel.scope_id}` }); return false }
+          return true
+        }
+        return true // global
+      })
+      stages.scope = pool.length
+
+      // ---- 阶段2 生命周期：published revision 且 active release；legacy 文件面卡不 deprecated；exp/kb 排除 archived ----
+      pool = pool.filter((it) => {
+        if (it.origin === 'release') {
+          if (it.revision_status !== 'published') { excluded.push({ artifact_id: it.artifact_id, stage: 'lifecycle', reason: `revision_${it.revision_status}` }); return false }
+          return true
+        }
+        if (it.origin === 'legacy_file') {
+          if (String(it.legacy.status) === 'deprecated') { excluded.push({ artifact_id: it.artifact_id, stage: 'lifecycle', reason: 'deprecated' }); return false }
+          return true
+        }
+        if (it.origin === 'exp') {
+          const st = it.card.status || 'active'
+          if (st === 'archived' || st === 'deprecated') { excluded.push({ artifact_id: it.artifact_id, stage: 'lifecycle', reason: st }); return false }
+          return true
+        }
+        if (it.origin === 'kb') {
+          if (it.doc.status === 'archived') { excluded.push({ artifact_id: it.artifact_id, stage: 'lifecycle', reason: 'archived' }); return false }
+          return true
+        }
+        return true
+      })
+      stages.lifecycle = pool.length
+
+      // ---- 阶段3 适用谓词：surface 匹配（vulncard 卡面）；失效负知识（invalidated_by 已触发）不进召回 ----
+      pool = pool.filter((it) => {
+        if (it.origin === 'release') {
+          const c = it.content || {}
+          const applies = c.appliesTo || {}
+          if (surface && applies.surface && String(applies.surface) !== surface) {
+            excluded.push({ artifact_id: it.artifact_id, stage: 'applicability', reason: 'surface_mismatch', want: surface, got: applies.surface }); return false
+          }
+          // 失效负知识：invalidatedBy 触发条件已进入当前上下文（revision 内容声明）→ 不召回
+          const inv = Array.isArray(applies.invalidatedBy) ? applies.invalidatedBy : []
+          for (const cond of inv) {
+            const tag = String(cond).split('（')[0].trim()
+            if (tag && q && String(q).includes(tag)) { excluded.push({ artifact_id: it.artifact_id, stage: 'applicability', reason: 'invalidated_negative', condition: tag }); return false }
+          }
+          return true
+        }
+        if (it.origin === 'legacy_file') {
+          const surf = it.legacy.attack_surface || (it.legacy.parsed && it.legacy.parsed.attack_surface) || null
+          if (surface && surf && String(surf) !== surface) { excluded.push({ artifact_id: it.artifact_id, stage: 'applicability', reason: 'surface_mismatch', want: surface, got: surf }); return false }
+          return true
+        }
+        return true
+      })
+      stages.applicability = pool.length
+
+      // ---- 阶段4 排序：来源等级（revision 发布=300 / legacy active=200 / exp=100+score / kb=80）+ 新鲜度（7 天内 +20）。
+      // 计分投影随行展示作证据链，不参与 rank（raw uses 不入排序循环，§8.2 第 2 条）。
+      const scored = pool.map((it) => {
+        const sc = repo.getScore(it.artifact_kind, it.artifact_id) || null
+        let rank = 0
+        if (it.origin === 'release') rank = 300
+        else if (it.origin === 'legacy_file') rank = 200
+        else if (it.origin === 'exp') rank = 100 + (it.card.score || 0)
+        else if (it.origin === 'kb') rank = 80
+        const refTs = it.origin === 'release' ? it.release.created_at : (it.card ? it.card.last_validated_at : (it.doc ? it.doc.imported_at : 0))
+        if (refTs && Date.now() - refTs < 7 * DAY) rank += 20
+        return { ...it, _rank: rank, score: sc }
+      }).sort((x, y) => y._rank - x._rank)
+      stages.ranked = scored.length
+
+      const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 50)
+      const selected = scored.slice(0, limit).map((it) => {
+        const out = {
+          artifact_kind: it.artifact_kind, artifact_id: it.artifact_id, origin: it.origin,
+          rank_score: Math.round(it._rank * 100) / 100,
+          revision_id: it.revision_id || null,
+          scope: it.release ? { type: it.release.scope_type, id: it.release.scope_id } : null,
+        }
+        if (it.content) out.title = it.content.title || null
+        if (it.legacy) out.title = it.legacy.title || it.legacy.name || null
+        if (it.card) { out.scenario = String(it.card.scenario).slice(0, 120); out.confidence = it.card.confidence }
+        if (it.doc) { out.title = it.doc.title; out.category = it.doc.category || null; out.curated = it.doc.status === 'curated' }
+        if (it.score) out.evidence = { exposures: it.score.exposures, adoptions: it.score.adoptions, verified_positives: it.score.verified_positives, valid_cleans: it.score.valid_cleans, score: it.score.score, sample_size: it.score.sample_size }
+        return out
+      })
+      const coverage = { gap: selected.length === 0, hits: selected.length, note: selected.length === 0 ? 'miss——用 know_gap_record 登记缺口，补建走 know_revision_propose 候选通道' : (selected.length < 3 ? 'low_coverage' : 'ok') }
+      return {
+        q, program_id: programId || null, family: family || null, surface: surface || null,
+        stages, selected, excluded: excluded.slice(0, 100),
+        coverage,
+        meta: { cost_ms: Date.now() - started, pool: stages.pool, caller_actor: (ctx && ctx.actor) || 'model' },
+      }
+    },
+
+    // Q22（L5）：学习状态聚合——曝光/采用/有效结果拆分 + 计分投影 + 反馈桥 + 缺口。
+    // 模型自评单列（self_reported 不进 verified_positives）；成本（请求/token/耗时）随卡聚合。
+    know_learning_status: async (args, repo) => {
+      const kindFilter = args.artifact_kind || ''
+      const scores = repo.listScores({ artifact_kind: kindFilter, limit: 500 }).rows
+      const fbCount = repo.feedbackCount()
+      const gaps = repo.listGaps({ limit: 50 }).rows
+      const activeReleases = repo.listReleases({ status: 'active', limit: 500 }).rows
+      return {
+        scores,
+        feedback: { total: fbCount, bridge: 'dsh-message-feedback（web profile 已挂载；headless 无 UI 反馈面）', note: '人工有用/错误与漏洞真值分开——有用=体验/方法价值，成立与否仍需独立证据' },
+        gaps,
+        releases_active: activeReleases.length,
+        note: '三条计数分离：曝光（know_exposures）/ 采用（know_adoptions）/ 有效结果（learning_episodes 关联推导，model-proposed 自评单列）。计分可重放重建（know_scores_rebuild）。',
+      }
+    },
   }
 
   // L4 发布投影（vulncard 使用面）：取同 artifact 的 active release（global 兜底）→ published revision 内容。
@@ -2065,6 +2609,30 @@ function makeHandlers(opts) {
           fgs_snapshot_missing: !snap,
         },
       }, envelope)
+    },
+
+    // L5（§8.1）：采用事实回流——ledger.card_usage.logged 事件进 know_adoptions。
+    // 采用≠曝光≠有效结果：卡片使用记录只证明「被采用」，效果另由 episode 关联推导。
+    onCardUsageLogged: async (envelope) => {
+      const p = envelope?.payload || {}
+      if (!p.card_id) return { ok: true, data: { skipped: true, reason: '载荷缺 card_id' } }
+      if (!dispatchRef) return { ok: false, error: { code: 'E_BACKEND_UNAVAILABLE', message: 'no dispatch ref' } }
+      const kind = inferKindOf(p.card_id)
+      // 域内命令落采用事实（reactor 通道；source_event_id 幂等——事件重复投递零重复）
+      let r
+      try {
+        r = await dispatchRef('know', 'adoption_record', {
+          artifact_kind: kind, artifact_id: String(p.card_id),
+          card_version: p.card_version != null ? String(p.card_version) : undefined,
+          source_event_id: envelope.id, source_cmd: 'ledger.card_usage.logged',
+          program_id: p.program || undefined, outcome: p.outcome || undefined,
+          note: p.deviation ? String(p.deviation).slice(0, 200) : undefined,
+        }, { actor: 'reactor', session_id: envelope.session_id || null, cause: envelope })
+      } catch (e) {
+        return { ok: false, error: { code: e?.code || 'E_INTERNAL', message: String(e?.message || e) } }
+      }
+      if (r && r.ok) return { ok: true, data: r.data }
+      return { ok: false, error: { code: r?.error?.code || 'E_INTERNAL', message: r?.error?.message || 'adoption_record 失败' } }
     },
   }
 

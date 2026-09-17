@@ -257,6 +257,12 @@ if [ -f "$BASE_DIR/sec-know-domain-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-know-domain-plugin-setup.sh"
 fi
 
+# -------------------- 8.591b L5 原生反馈桥（DSH rc.2 message-feedback → know_feedback_ingest） --------------------
+# 依赖 know 域（8.591）；web profile 专用；DSH 侧 message-feedback 缺失时显式 unsupported。
+if [ -f "$BASE_DIR/sec-feedback-bridge-setup.sh" ]; then
+    bash "$BASE_DIR/sec-feedback-bridge-setup.sh"
+fi
+
 # -------------------- 8.592 v5 ledger 域插件（Phase 2 三节点：纪律台账/卡使用/雷达/交接包） --------------------
 # 依赖总线（8.55）；契约测试不过 = setup 中止（fail-closed）。
 if [ -f "$BASE_DIR/sec-ledger-domain-plugin-setup.sh" ]; then

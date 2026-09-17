@@ -1,7 +1,7 @@
 # 11 · ledger 域设计（纪律台账 / 卡使用 / 覆盖 / 雷达队列 / 交接包）
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：`ledger/1`
-> 依赖：订阅 `exec.run.completed`（对账统计，弱联动）、`approval.approved`（scope-approved 雷达入队，弱联动）；被订阅：`ledger.attempt.logged` / `ledger.card_usage.logged` / `ledger.handoff.written`（task 域——task_finish 三产物校验的计数缓存）、`ledger.radar.drained`（task/recon 派单侧）
+> 依赖：订阅 `exec.run.completed`（对账统计，弱联动）、`approval.approved`（scope-approved 雷达入队，弱联动）；被订阅：`ledger.attempt.logged` / `ledger.card_usage.logged` / `ledger.handoff.written`（task 域——task_finish 三产物校验的计数缓存）、`ledger.card_usage.logged`（know 域——L5 采用事实回流 know_adoptions，弱联动）、`ledger.radar.drained`（task/recon 派单侧）
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：把 agent 的**纪律动作**（台账落行/卡使用/交接包/雷达处置）变成机器强制、写入即校验、可聚合取证的文件型台账——"执行了什么、覆盖到哪、纪律是否在线"的唯一真相源。
 
@@ -541,3 +541,7 @@ hasHandoff(program, date) → boolean
 ## 六、2026-09-17 学习专项 L2 实施回填（备案）
 
 - 本域未新增/变更命令与事件。`ledger.card_usage.logged` 的 `deviation/suggest` 字段与 `ledger_usage_query(aggregate=deviations)` 是实战偏差转候选规程卡（know 域 `know_revision_propose`，source_kind=episode/kb_doc）的上游原料——读取消费不变，卡片候选化动作全部发生在 know 域。
+
+## 七、2026-09-17 学习专项 L5 实施回填（备案）
+
+- 本域未新增/变更命令与事件。`ledger.card_usage.logged` 事件新增一名弱联动订阅者（know 域 `onCardUsageLogged` → `know_adoption_record`，采用事实进 know_adoptions）——本域写入路径/文件 owns/事件 payload 均不变；订阅失败只影响 know 侧投影（可重放补偿），不回压本域主链路。

@@ -295,6 +295,10 @@ templates:
   - dsh-plugin-sec-backend-know-sqlite.js
   - dsh-plugin-sec-backend-know-file.js
   - sec-know-domain-plugin-setup.sh
+  # --- L5 原生反馈桥（web profile；DSH rc.2 message-feedback → know_feedback_ingest，契约 07-know.md §L5）---
+  - dsh-plugin-sec-feedback-bridge.js
+  - dsh-plugin-sec-feedback-bridge.patch.yml
+  - sec-feedback-bridge-setup.sh
   # --- L2 候选规程卡种子（版本受控模板；know setup 经 sec-bus-cli 幂等提案进 knowledge_revisions）---
   - data-seed/know-revisions/vc-authz-r1.json
   # --- L3 独立评测种子（版本受控模板；eval 迁移脚本种子进 data/eval/{fixtures,datasets}）---

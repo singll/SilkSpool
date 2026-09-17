@@ -1,6 +1,6 @@
 # SilkSecAgent v5 自学习与漏洞学习探测设计
 
-> 日期：2026-09-12；状态：**L0–L4 已实施上线（L0/L1 于 2026-09-16，L2/L3/L4 于 2026-09-17，csai 生产）；L5–L6 未执行**。knowledge_revisions 候选版本层与首个 P1 授权类候选卡已随 L2 落地（§11.3）；独立评测层（真实模型行为 / fixture runner / 分组隐藏集 / baseline 配对报告 + revision 评测状态机）已随 L3 落地（§11.4），VC-AUTHZ-001 r1 已评测 eligible——**eligible≠发布**；受控晋升与撤回门禁（L4）已随 §11.5 落地（know_revision_publish + 审批绑定哈希 + 有限灰度/回退），revision 的 published/retired 流转动词已上线；learning_episodes 与证据发布/挂载已随 L1 落地（§11.2）。
+> 日期：2026-09-12；状态：**L0–L5 已实施上线（L0/L1 于 2026-09-16，L2–L5 于 2026-09-17，csai 生产）；L6 未执行**。knowledge_revisions 候选版本层与首个 P1 授权类候选卡已随 L2 落地（§11.3）；独立评测层（真实模型行为 / fixture runner / 分组隐藏集 / baseline 配对报告 + revision 评测状态机）已随 L3 落地（§11.4），VC-AUTHZ-001 r1 已评测 eligible——**eligible≠发布**；受控晋升与撤回门禁（L4）已随 §11.5 落地（know_revision_publish + 审批绑定哈希 + 有限灰度/回退），revision 的 published/retired 流转动词已上线；learning_episodes 与证据发布/挂载已随 L1 落地（§11.2）；分层检索与曝光/采用/有效结果计分、覆盖补建登记、原生反馈桥已随 L5 落地（§11.6）。
 > 配套：[平台升级方案](2026-09-12-dsh-0.1.5-rc.2-plan.md) · [csai 实测基线](2026-09-12-dsh-0.1.5-rc.2-record.md) · [升级目录](README.md)
 > 约束：沿用 v5 的 14 业务域、CommandGateway、actor、owns 和事件契约；实施前同步受影响的域文档与 manifest，本文不直接覆盖现行契约。
 
@@ -380,7 +380,24 @@ L4 四项交付全部上线（契约：know 50→60、approval 16→19 全绿，
 
 部署记事：本次部署仍在 U4 观察期内（至 2026-09-18T14:16:35Z），已记入 [U4 handoff](HANDOFF-u4-observation.md) 基线变更（MainPID 3946516→3952870）。变更面：know/approval 两域插件 + know-sqlite（新增 `know_releases` 表，幂等建表已在生产库演进）/approval-sqlite（`setRequestStatus`）两后端 + dashboard-rpc + sec-suite + seed-presets + know setup manifest 描述；其余 12 域插件代码未变。
 
-**L5–L6 状态继续记为未执行**（分层检索与曝光/采用/结果计分 L5；运营面板 L6）。撤回后的效果重算与反馈编辑随 L5 落地。
+**L6 状态继续记为未执行**（运营面板 + 调度器独立切换）。撤回后的效果重算与反馈编辑随 L5 落地（§11.6）。
+
+## 11.6 L5 实施记录（2026-09-17，csai 生产）
+
+L5 四项交付全部上线（契约：know 60→70 全绿，本地 14 域全套 395/395 全绿 + csai setup 内双跑同绿 + 生产冒烟；契约见 [07-know.md](../v5/07-know.md) §十一，[11-ledger.md](../v5/11-ledger.md) §七备案）：
+
+1. **分层检索**（§8.2）：Q21 `know_retrieval_explain` 只读投影按 ①作用域 → ②生命周期 → ③适用谓词 → ④来源等级 顺序执行并返回逐阶段计数与入选/未入选原因。候选池=已发布 revision（仅 active release）+ legacy 文件面漏洞卡 + exp/kb（FTS 融合）；**旧版本**（superseded/revoked release、retired/candidate/eligible revision）、**跨 Program**（program 灰度 scope_id≠program_id）、**失效负知识**（invalidatedBy 条件命中查询上下文）不进召回。作用域修正：family 灰度只与调用方显式 `family` 上下文比对，适用性由卡面 surface/invalidatedBy 谓词裁决（family 不是 bus surface——首版实现误比对已于本切片内修正，契约回归用例固化）。排序=来源等级（发布 revision 300 > legacy 200 > exp 100+score > kb 80）+ 新鲜度（7 天 +20）；**计分投影随行展示作证据链、不参与 rank**（raw uses 不入排序循环）。
+2. **曝光/采用/有效结果拆分**（§8.1）：三条计数分离落库——`know_exposures`（C28 `know_exposure_record`，program+q+artifact+version+session+30s 桶去重）、`know_adoptions`（采用双通道：C14 `know_adopt` 三 target 直接落账 + C28b `know_adoption_record` 由 `ledger.card_usage.logged` 订阅回流；source_event_id 部分唯一索引双去重）、有效结果从 `learning_episodes` 关联推导（独立核验 confirmed/valid_clean 进分；**model-proposed 自评单列不进已验证正例**；infra_error 不扣方法分）。计分投影 `know_scores`（vp×3+vc×2+fb_pos×1.5−fb_neg×3，小样本保守平滑 sample/(sample+2)）可由 C31 `know_scores_rebuild`（system/dashboard）从三族不可变事实**重放重建，不改历史行**；episode/adopt/publish/revoke/feedback 落账后自动触发相关卡重算。
+3. **覆盖补建**（§8.1）：检索 miss（hits=0）/低覆盖（<3）在 explain 返回 `coverage.gap/low_coverage` 提示；C30 `know_gap_record` 登记 `know_gaps`（program+q+surface 自然键 upsert）。**补建走 know_revision_propose 候选通道，不直写使用面**（INV-K14 闸不变——缺口登记不是内容）。
+4. **反馈编辑/撤回重算**（§6.3/§9）：C29 `know_feedback_ingest`（**system 专用**，model/dashboard/human/reactor 物理拒，防伪造反馈流量）按 feedback id + revision 复合主键幂等；编辑=新 revision 覆盖有效投影，撤回=tombstone 继承既有归因并撤销派生分数；乱序到达（已有更高 revision）no-op。归因链：显式 artifact_ref > 本会话最近曝光；**不可归因不给整场会话所有卡片加分**（进待整理队列口径）。原生反馈桥 `@silksec/sec-feedback-bridge`（web profile 专用，headless 无 UI 反馈面不挂载）消费 DSH rc.2 message-feedback 的 `session/event`（feedback/message-put|delete）+ `feedback/committed` 冷通道（借用只读快照先复制再处理，不在回调中等待写操作；退避重试 5s→60s 封顶）；服务探测经 inject 声明——messageFeedback 未挂载时显式 unsupported（日志 + `data/sec-feedback-bridge.status.json`），不伪造反馈流量。
+
+验收对照（§11 L5 行）：**旧版本/跨项目/失效负知识不误召回**——契约用例（撤回后旧版本退出、恢复版本重入；跨 Program 发布 scope 排除；invalidatedBy 命中排除；eligible 不进召回）+ 生产实测（VC-AUTHZ-001 召回=当前 published rev_mu4vc96e82991e，superseded 无迹）；**计分可重算**——契约（全量 scores_rebuild 重放重建、episode/exposure/feedback 历史行数不变、撤回负反馈撤销派生分数、仅反馈卡亦在重建覆盖内）+ 生产实测（rebuilt=1，冒烟反馈 tombstone 后投影行撤销归零）；**能报告效果和成本而非 uses 榜单**——Q22 `know_learning_status` 聚合每卡 曝光/采用/verified_positives/valid_cleans/feedback±/成本（requests/tokens/ms）+ 缺口 + 反馈桥健康，模型自评行单列。
+
+生产冒烟（2026-09-17，部署后）：服务 active NRestarts=0（MainPID 3982156）、journal 无异常、know/eval 域注册成功、反馈桥已挂载（web profile，ds h-message-feedback rc.2 已在组合树，状态文件 ok）；`know_retrieval_explain` 实测（VC-AUTHZ-001 r1 以 family/authz 灰度 + 卡面 surface=api 谓词入召回，rank 320；跨 Program/失效负知识排除路径实测）；`know_feedback_ingest` actor 闸实测拒（model → `E_ACTOR_FORBIDDEN`）；幂等实测（同 id+revision 重放 `duplicate:'id_revision'`）；冒烟反馈已 tombstone 撤销、投影行归零，VC-AUTHZ-001 r1 保持 published 不回滚。
+
+部署记事：本次部署仍在 U4 观察期内（至 2026-09-18T14:16:35Z），已记入 [U4 handoff](HANDOFF-u4-observation.md) 基线变更（MainPID 3952870→3982156）。变更面：know 域插件 + know-sqlite 后端（新增 `know_exposures`/`know_adoptions`/`know_feedback`/`know_scores`/`know_gaps` 五表，幂等建表已在生产库演进）+ 新增反馈桥插件与 setup 8.591b 节 + ledger 域被订阅声明（`ledger.card_usage.logged → know`）；其余域插件代码未变。**pnpm store 修复**：rc.2 profile 依赖链接自 `/opt/silkspool/dsh/.pnpm-store`，已在 `~/.config/pnpm/config.yaml` 持久化 `storeDir`（pnpm v11 全局配置），反馈桥 setup 脚本以 `npm_config_store_dir` 环境变量兜底。
+
+**L6 状态继续记为未执行**（学习面板、证据对照、逐域视图、调度器独立切换；补齐其余 P1 再按证据扩 P2）。
 
 ## 12. 契约与来源
 
