@@ -1,0 +1,60 @@
+{
+  "_comment": "L6（设计 §5 P1 SSRF/带外验证）：run×请求×受控 OOB token 关联判定卡。未打通自有 OOB 通道时记缺前置（blocked_infra），不能声称已具备探测能力——OOB 就绪状态是任务前置，不计为检出失败。",
+  "artifact_kind": "vulncard",
+  "artifact_id": "VC-SSRF-001",
+  "source_kind": "seed",
+  "source_ref": "data-seed/know-revisions/vc-ssrf-r1.json",
+  "change_note": "首版候选：SSRF 带外验证——受控 OOB token 关联 + 回连时间窗 + 扫描器/预览器自身访问辨别",
+  "applies_predicates": {
+    "surface": "api",
+    "card_family": "P1-ssrf",
+    "extends": null
+  },
+  "content": {
+    "id": "VC-SSRF-001",
+    "version": 1,
+    "parentVersion": null,
+    "title": "SSRF 带外验证（受控 OOB token×回连关联）",
+    "appliesTo": {
+      "surface": "api",
+      "prerequisites": [
+        "owned_oob_channel（已部署且归属明确的自有回连端点，token 签发/查询可用；未打通记 blocked_infra，不得声称具备能力）",
+        "oob_token_controlled（OOB token 由本系统生成且单次唯一，可与 run/请求严格关联）",
+        "scope_authorized（目标接口在当前 Program 授权范围内）"
+      ],
+      "invalidatedBy": [
+        "oob_channel_change（OOB 端点/委派变更——回连关联失效；历史 NS 委派阻塞未解除前整卡 blocked_infra）",
+        "egress_change（目标出口策略变更——回连可达性结论失效）"
+      ]
+    },
+    "hypothesis": "SSRF 成立的判据是目标服务端向受控 OOB 端点发起回连：请求中携带的单次 token 与回连记录严格关联（同 run、同参数、时间窗内），且可辨别并排除扫描器/预览器/安全设备自身访问。",
+    "minimalProbe": "对候选参数注入受控 OOB URL（含单次 token），每个注入点最多 2 请求；随后在回连端点按 token 查询时间窗内回连记录。不探测内网地址段、不枚举端口。",
+    "positiveControl": "自触发回连（受控通道自检请求）能在回连端点按 token 查到记录——对照失败判定 OOB 通道不可用（blocked_infra），停止本卡全部探测。",
+    "negativeControl": "未触发的 token 在回连端点应零记录；命中但来源为已知扫描器/预览器 UA/IP 段的回连记为干扰，不计成立。",
+    "evidenceRequired": [
+      "oob_token_link（token×run×注入请求的严格关联记录）",
+      "callback_record（回连端点原始记录：时间/来源/请求头，时间窗匹配）",
+      "interference_ruling（对扫描器/预览器自身访问的辨别结论）",
+      "oob_channel_attribution（回连端点归属与部署凭据引用）"
+    ],
+    "stopConditions": [
+      "oob_unavailable（自有回连通道不可用/未打通——停止，记 blocked_infra；这是前置缺口而非检出失败）",
+      "internal_target_suspected（目标可能回连内网地址产生副作用——停止，只做 OOB 判据）",
+      "scope_changed（目标或授权范围变更——立即停止并上报）"
+    ],
+    "fixtures": {
+      "vulnerable": "fixture-ssrf-a（缺 URL 校验的受控接口：服务端回连 OOB token）",
+      "patched": "fixture-ssrf-b（已修复接口：URL 白名单拒绝外部回连）",
+      "invalid_env": "fixture-ssrf-c（环境异常：OOB 通道不可用——正对照应失败，整卡 blocked_infra）"
+    },
+    "budget": { "maxRequests": 8, "maxSeconds": 180 },
+    "failureNotes": "无回连=未见回连证据（inconclusive 起步，出口策略可能拦截）；回连但 token 无法关联=干扰记录（不计）；token 关联+来源辨别通过=confirmed；OOB 通道未打通记 blocked_infra 并整卡停探测——能力就绪状态需显示缺 OOB，不计为检出失败。",
+    "changeNote": "首版候选：SSRF 带外验证卡（设计 §5 P1），OOB 就绪状态显式建模为前置缺口。",
+    "applicabilityConfidence": "low",
+    "suggestedAlternatives": [
+      "OOB 未打通时：只做接口侧 URL 参数指纹与重定向行为观察，产出缺前置登记（know_gap_record），不做带外判定",
+      "回连受出口限制时：退化为 DNS-only token 探测（若 DNS 回连通道可用）"
+    ],
+    "evalRef": null
+  }
+}

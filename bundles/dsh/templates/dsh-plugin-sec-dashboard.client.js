@@ -41,6 +41,7 @@ window.__ModuleLoader__.load({
       layer2: 'var(--dsw-alias-bg-layer-2)',
       hover: 'var(--dsw-alias-interactive-bg-hover)',
       brand: 'var(--dsw-alias-brand-primary)',
+      business: 'var(--dsw-alias-state-business-primary, #5B8DD9)',
       success: 'var(--dsw-alias-state-success-primary)',
       warn: 'var(--dsw-alias-state-warn-primary)',
       error: 'var(--dsw-alias-state-error-primary)',
@@ -1584,6 +1585,194 @@ window.__ModuleLoader__.load({
     // 后续新审批类型挂进后端 APPROVAL_KINDS 即自动出现在此列表，前端零改动。
     var APPROVAL_KIND_LABEL = { 'scope-domain': '授权域名', 'scope-wildcard': '整域授权(通配)', 'exclude-exception': '排除例外', 'tool-intrusive': '侵入工具放行', 'task-budget-extend': '任务预算延长' }
     var APPROVAL_STATUS_COLOR = { pending: T.warn, approved: T.success, rejected: T.label3 }
+    APPROVAL_KIND_LABEL['knowledge-publish'] = '知识版本发布'
+    APPROVAL_KIND_LABEL['knowledge-adopt'] = '外部经验蒸馏'
+
+    // ── 学习面板（L6，学习专项 §10 看板五问口径）────────────────────────────
+    // 普通业务语言五问：学到了什么 / 依据是什么 / 比旧版改善多少 / 在哪生效 / 如何恢复旧版。
+    // 技术字段（episode/outbox/run_id 等）收进展开详情，不要求用户理解。
+    // 写操作只有「撤回」（C27 know_release_revoke 受控动词，面板不直写台账）。
+    var EPISODE_OUTCOME_LABEL = {
+      verified_positive: '已证实有效', verified_negative: '已排除误报', inconclusive: '未定论',
+      infra_error: '执行出错', hypothesis_rejected: '假设被否', model_proposed: '模型自评',
+    }
+    var RELEASE_STATUS_LABEL = { active: '生效中', superseded: '已被取代', revoked: '已撤回' }
+    var RELEASE_STATUS_COLOR = { active: T.success, superseded: T.label3, revoked: T.error }
+    var REVISION_STATUS_LABEL = { candidate: '候选', evaluating: '评测中', eligible: '评测通过', rejected: '评测未过', published: '已发布', reverted: '已回退' }
+    var CONFIDENCE_LABEL = function (c) { return c === 'high' ? '样本充分' : c === 'medium' ? '样本中等' : '小样本·结论保守' }
+
+    function LearningView(props) {
+      var state = props.state
+      var busy = props.busy
+      var ts = React.useState(0)
+      var tick = ts[0]; var reload = function () { ts[1](function (t) { return t + 1 }); props.state.reload && props.state.reload() }
+      var sel = React.useState(null)
+      var traceSel = sel[0]; var setTraceSel = sel[1]
+      var tr = React.useState({ loading: false, data: null, error: null })
+      var trace = tr[0]; var setTrace = tr[1]
+
+      function openTrace(selKey) {
+        setTraceSel(selKey)
+        setTrace({ loading: true, data: null, error: null })
+        callRpc('learningTrace', selKey).then(function (data) {
+          setTrace({ loading: false, data: data, error: null })
+        }).catch(function (e) {
+          setTrace({ loading: false, data: null, error: e && e.message ? e.message : String(e) })
+        })
+      }
+      function onRevoke(rel) {
+        var reason = window.prompt('撤回理由（≥10 字，留痕可审计）。撤回后系统自动恢复该范围上一版本：', '')
+        if (!reason || reason.trim().length < 10) { if (reason !== null) alert('理由不足 10 字，已取消'); return }
+        if (busy) return
+        callRpc('learningRevokeRelease', { release_id: rel.release_id, reason: reason })
+          .then(function () { alert('已撤回，该范围上一版本已恢复生效'); reload(); if (traceSel) openTrace(traceSel) })
+          .catch(function (e) { alert('撤回失败: ' + (e && e.message ? e.message : e)) })
+      }
+
+      if (state.error) return el('div', { style: errorLine }, '学习面板加载失败: ' + state.error)
+      if (!state.data) return el(SkeletonRows, null)
+      var d = state.data
+
+      function qCard(title, body, extra) {
+        return el('div', { key: title, style: { ...card, marginTop: 10 } },
+          el('div', { style: { color: T.label, ...F.sStrong } }, title),
+          el('div', { style: { ...cardL, marginTop: 6, lineHeight: '18px' } }, body),
+          extra || null)
+      }
+
+      // ── 证据对照（trace 展开区）─────────────────────────────────────────
+      var tracePane = null
+      if (traceSel) {
+        var chain = trace.data && trace.data.chain
+        var links = trace.data && trace.data.links
+        tracePane = el('div', { style: { ...card, marginTop: 10, borderColor: 'color-mix(in srgb, ' + T.brand + ' 40%, transparent)' } },
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+            el('span', { style: { color: T.label, ...F.sStrong } }, '证据对照'),
+            el('span', { style: { ...pill, fontFamily: MONO } }, (traceSel.episode_id || (traceSel.artifact_kind + '/' + traceSel.artifact_id))),
+            el('button', { type: 'button', className: 'silksec-btn', style: { marginLeft: 'auto', height: 24 }, onClick: function () { setTraceSel(null); setTrace({ loading: false, data: null, error: null }) } }, '收起')),
+          trace.loading ? el(SkeletonRows, null)
+            : trace.error ? el('div', { style: errorLine }, trace.error)
+            : !chain ? null
+            : el('div', null,
+                // 链节①：学习记录（episode→证据清单）
+                el('div', { style: { ...cardL, marginTop: 8, ...F.xxsStrong, color: T.label2 } }, '① 学习记录（每次执行学到的东西 + 证据引用）'),
+                (chain.episodes || []).length === 0 ? el('div', { style: cardL }, '（无）') :
+                el('div', null, (chain.episodes || []).slice(0, 10).map(function (e) {
+                  return el('div', { key: e.episode_id, style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 } },
+                    el('span', { style: { ...pill, color: e.outcome === 'verified_positive' ? T.success : e.outcome === 'verified_negative' || e.outcome === 'infra_error' ? T.warn : T.label2 }, title: '六类结果之一（episode 口径）' }, EPISODE_OUTCOME_LABEL[e.outcome] || e.outcome),
+                    el('span', { style: { ...pill, fontFamily: MONO }, title: 'episode_id' }, e.episode_id.slice(0, 18)),
+                    e.program_id ? el('span', { style: pill }, e.program_id) : null,
+                    (e.evidence_refs || []).length ? el('span', { style: { ...pill, color: T.business }, title: (e.evidence_refs || []).join('\n') }, '证据 ' + (e.evidence_refs || []).length) : null,
+                    e.fgs_snapshot_hash ? el('span', { style: { ...pill, fontFamily: MONO }, title: '执行快照哈希（不可变留痕）' }, '快照 ' + String(e.fgs_snapshot_hash).slice(0, 8)) : null,
+                    e.cost && (e.cost.requests || e.cost.tokens) ? el('span', { style: pill, title: '成本：模型请求/Token/耗时' }, '成本 ' + (e.cost.tokens || 0) + ' tok') : null,
+                    el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, fmtTime(e.created_at)))
+                })),
+                // 链节②：候选版本（→评测报告）
+                el('div', { style: { ...cardL, marginTop: 10, ...F.xxsStrong, color: T.label2 } }, '② 候选版本（每次学习沉淀成什么改动 + 评测结论）'),
+                (chain.revisions || []).length === 0 ? el('div', { style: cardL }, '（无）') :
+                el('div', null, (chain.revisions || []).map(function (r) {
+                  return el('div', { key: r.revision_id, style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 } },
+                    el('span', { style: { ...pill, fontFamily: MONO }, title: 'revision_id · 内容哈希 ' + (r.content_digest || '').slice(0, 16) }, r.revision_id),
+                    el('span', { style: { ...pill, color: r.status === 'published' ? T.success : r.status === 'eligible' ? T.business : r.status === 'rejected' || r.status === 'reverted' ? T.error : T.label2 } }, REVISION_STATUS_LABEL[r.status] || r.status),
+                    r.eval_report_ref ? el('span', { style: { ...pill, color: T.business }, title: '独立评测报告引用（eval 域）' }, '评测 ✓') : null,
+                    r.change_note ? el('span', { style: { color: T.label3, ...F.xxxs }, title: r.change_note }, String(r.change_note).slice(0, 60)) : null,
+                    el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, fmtTime(r.created_at)))
+                })),
+                // 链节③：发布账本（→批准→生效范围；撤回入口）
+                el('div', { style: { ...cardL, marginTop: 10, ...F.xxsStrong, color: T.label2 } }, '③ 发布账本（在哪生效 / 如何恢复旧版）'),
+                (chain.releases || []).length === 0 ? el('div', { style: cardL }, '（尚未发布——候选还不在任何范围生效）') :
+                el('div', null, (chain.releases || []).map(function (rel) {
+                  return el('div', { key: rel.release_id, style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 } },
+                    el('span', { style: { ...pill, color: RELEASE_STATUS_COLOR[rel.status] || T.label2 } }, RELEASE_STATUS_LABEL[rel.status] || rel.status),
+                    el('span', { style: pill, title: '生效范围' }, rel.scope_type === 'global' ? '全局' : (rel.scope_type === 'family' ? '漏洞族 ' + rel.scope_id : '项目 ' + rel.scope_id)),
+                    el('span', { style: { ...pill, fontFamily: MONO }, title: '发布版本' }, rel.revision_id),
+                    rel.auth_ref ? el('span', { style: { ...pill, color: T.business }, title: '批准凭据（审批单引用）' }, '批准 ✓') : null,
+                    rel.status === 'active'
+                      ? el('button', { type: 'button', className: 'silksec-btn silksec-icon-btn-danger', disabled: !!busy, style: { height: 24 }, title: '撤回此发布（受控动词 C27）：系统恢复该范围上一版本生效', onClick: function () { onRevoke(rel) } }, '撤回')
+                      : null,
+                    rel.status === 'revoked' && rel.reason ? el('span', { style: { color: T.label3, ...F.xxxs }, title: rel.reason }, '撤回原因: ' + String(rel.reason).slice(0, 60)) : null,
+                    el('span', { style: { marginLeft: 'auto', color: T.label3, ...F.xxxs } }, fmtTime(rel.created_at)))
+                })),
+                // 链节④：采用与反馈（→实际结果）
+                el('div', { style: { ...cardL, marginTop: 10, ...F.xxsStrong, color: T.label2 } }, '④ 实际结果（被用过几次 / 效果如何 / 人工反馈）'),
+                el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 } },
+                  el('span', { style: pill, title: '检索命中后实际展示/注入次数（不等于有效）' }, '曝光 ' + ((chain.exposures && chain.exposures.total) || 0)),
+                  el('span', { style: pill, title: 'worker 实际采纳次数（references 声明）' }, '采用 ' + ((chain.adoptions && chain.adoptions.total) || 0)),
+                  (chain.feedback || []).length ? el('span', { style: pill, title: '人工反馈（有用/错误）' }, '反馈 ' + chain.feedback.length) : null,
+                  chain.score ? el('span', { style: { ...pill, color: T.business }, title: '计分投影（可重放重建；样本量与不确定性见逐域视图）' }, '计分 ' + chain.score.score + ' · 样本 ' + chain.score.sample_size) : null),
+                (links && (links.eval_report_refs || []).length) ? el('div', { style: { ...cardL, marginTop: 6, fontFamily: MONO, wordBreak: 'break-all' } }, '评测报告: ' + links.eval_report_refs.join('，')) : null,
+                (links && (links.approval_refs || []).length) ? el('div', { style: { ...cardL, marginTop: 2, fontFamily: MONO, wordBreak: 'break-all' } }, '批准凭据: ' + links.approval_refs.join('，')) : null))
+      }
+
+      // ── 逐域视图（三层：漏洞类型族 / 技术栈面 / 身份前置）─────────────────
+      function domainTable(title, rows) {
+        if (!rows || !rows.length) return null
+        return el('div', { style: { marginTop: 8 } },
+          el('div', { style: { ...F.xxsStrong, color: T.label2 } }, title),
+          el('div', null, rows.slice(0, 12).map(function (g) {
+            return el('div', { key: g.key, style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 } },
+              el('span', { style: { color: T.label, ...F.xs, minWidth: 90 } }, g.key),
+              el('span', { style: pill, title: '该分组下的知识卡数' }, '卡 ' + g.artifacts),
+              el('span', { style: pill }, '曝光 ' + g.exposures),
+              el('span', { style: pill }, '采用 ' + g.adoptions),
+              el('span', { style: { ...pill, color: T.success }, title: '已证实有效的学习记录数' }, '有效 ' + g.verified_positives),
+              el('span', { style: { ...pill, color: T.warn }, title: '排除误报/无效方向' }, '排除 ' + g.valid_cleans),
+              el('span', { style: { ...pill, color: g.confidence.indexOf('low') === 0 ? T.warn : T.label2 }, title: '样本量 ' + g.sample_size + '（小样本结论保守，沿用 L5 平滑口径）' }, '样本 ' + g.sample_size + ' · ' + CONFIDENCE_LABEL(g.confidence)),
+              el('span', { style: pill, title: '成本：模型请求 ' + g.cost.requests + ' · Token ' + g.cost.tokens + ' · 耗时 ' + Math.round((g.cost.ms || 0) / 60000) + ' 分钟' }, '成本 ' + (g.cost.tokens || 0) + ' tok'),
+              el('span', { style: { ...pill, color: T.business }, title: '平滑计分（0-1，sample/(sample+2) 保守口径）' }, '分 ' + g.score))
+          })))
+      }
+
+      return el('div', null,
+        // 五问
+        qCard('① 学到了什么', d.learned.summary,
+          el('div', { style: { marginTop: 6 } }, (d.learned.episodes_recent || []).slice(0, 8).map(function (e) {
+            return el('div', { key: e.episode_id, style: { display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' } },
+              el('span', { style: { ...pill, color: e.outcome === 'verified_positive' ? T.success : T.label2 } }, EPISODE_OUTCOME_LABEL[e.outcome] || e.outcome),
+              el('span', { style: { color: T.label2, ...F.xxs } }, (e.card_id || '-') + (e.program_id ? ' · ' + e.program_id : '')),
+              el('button', { type: 'button', className: 'silksec-btn', style: { height: 22, marginLeft: 'auto' }, onClick: function () { openTrace({ episode_id: e.episode_id }) } }, '证据对照'),
+              el('span', { style: { color: T.label3, ...F.xxxs } }, fmtTime(e.created_at)))
+          }))),
+        qCard('② 依据是什么', d.evidence.summary + '。' + (d.evidence.note || '')),
+        qCard('③ 比旧版改善多少', d.improvement.summary,
+          (d.improvement.scores || []).length
+            ? el('div', { style: { marginTop: 6 } }, d.improvement.scores.slice(0, 8).map(function (s) {
+                return el('div', { key: s.artifact_kind + '/' + s.artifact_id, style: { display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' } },
+                  el('span', { style: { ...pill, fontFamily: MONO }, title: s.artifact_kind }, s.artifact_id),
+                  el('span', { style: { ...pill, color: T.business } }, '分 ' + s.score),
+                  el('span', { style: pill }, '样本 ' + s.sample_size),
+                  el('span', { style: { ...pill, color: T.success } }, '有效 ' + (s.verified_positives || 0)),
+                  el('button', { type: 'button', className: 'silksec-btn', style: { height: 22, marginLeft: 'auto' }, onClick: function () { openTrace({ artifact_kind: s.artifact_kind, artifact_id: s.artifact_id }) } }, '证据对照'))
+              }))
+            : null),
+        qCard('④ 在哪生效', d.effective_where.summary,
+          (d.effective_where.releases || []).filter(function (r) { return r.status === 'active' }).length
+            ? el('div', { style: { marginTop: 6 } }, d.effective_where.releases.filter(function (r) { return r.status === 'active' }).slice(0, 10).map(function (rel) {
+                return el('div', { key: rel.release_id, style: { display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' } },
+                  el('span', { style: { ...pill, fontFamily: MONO } }, rel.artifact_id),
+                  el('span', { style: { ...pill, color: T.success } }, rel.scope_type === 'global' ? '全局生效' : (rel.scope_type === 'family' ? '漏洞族 ' + rel.scope_id : '项目 ' + rel.scope_id)),
+                  el('span', { style: { ...pill, fontFamily: MONO }, title: '生效版本' }, rel.revision_id),
+                  el('button', { type: 'button', className: 'silksec-btn', style: { height: 22, marginLeft: 'auto' }, onClick: function () { openTrace({ artifact_kind: rel.artifact_kind, artifact_id: rel.artifact_id }) } }, '证据对照'))
+              }))
+            : null),
+        qCard('⑤ 如何恢复旧版', d.rollback.summary + '（' + d.rollback.hint + '）'),
+        tracePane,
+        // 逐域视图
+        d.domains ? el('div', { style: { ...card, marginTop: 10 } },
+          el('div', { style: { color: T.label, ...F.sStrong } }, '逐域视图（效果与成本分层，不是使用次数榜）'),
+          el('div', { style: { ...cardL, marginTop: 4 } }, d.domains.note || ''),
+          domainTable('按漏洞类型族', d.domains.by_family),
+          domainTable('按技术栈面', d.domains.by_surface),
+          domainTable('按身份前置', d.domains.by_prerequisite)) : null,
+        // 缺口与反馈桥
+        (d.gaps && d.gaps.length) ? el('div', { style: { ...card, marginTop: 10 } },
+          el('div', { style: { color: T.label, ...F.sStrong } }, '知识缺口（检索落空/低覆盖登记）'),
+          el('div', { style: { marginTop: 6 } }, d.gaps.slice(0, 8).map(function (g, i) {
+            return el('div', { key: i, style: { ...cardL, marginTop: 4 } }, (g.gap_type || '缺口') + '：' + (g.q || g.note || JSON.stringify(g)).slice(0, 120))
+          }))) : null,
+        d.feedback ? el('div', { style: { ...cardL, marginTop: 10 } }, '反馈桥：' + (d.feedback.note || '') + '（累计 ' + (d.feedback.total || 0) + ' 条）') : null)
+    }
+
     function ApprovalsView(props) {
       var state = props.state
       var busy = props.busy
@@ -2267,6 +2456,10 @@ window.__ModuleLoader__.load({
       var covState = useRpc(function () {
         return activeTab === 'knowledge' ? { endpoint: 'knowledgeCoverage' } : null
       }, [activeTab])
+      // L6 学习面板（五问 + 逐域视图）：learningOverview 聚合 Q22 学习状态 + Q19/Q20 投影
+      var learningState = useRpc(function () {
+        return activeTab === 'learning' ? { endpoint: 'learningOverview' } : null
+      }, [activeTab])
       var rptFilter = React.useState({ program: '', q: '' })
       var reportFilter = rptFilter[0]; var setReportFilter = rptFilter[1]
       var reportsState = useRpc(function () {
@@ -2429,6 +2622,7 @@ window.__ModuleLoader__.load({
         { id: 'facts', label: '事实' },
         { id: 'tasks', label: '任务' },
         { id: 'knowledge', label: '知识' },
+        { id: 'learning', label: '学习' },
         { id: 'reports', label: '报告' },
         { id: 'approvals', label: '审批' + (approvalsState.data && approvalsState.data.pending ? ' · ' + approvalsState.data.pending : '') },
         { id: 'scope', label: '授权' },
@@ -2521,6 +2715,8 @@ window.__ModuleLoader__.load({
           }))
       } else if (activeTab === 'knowledge') {
         content = el(KnowledgeView, { memState: memState, cardsState: cardsState, pbsState: pbsState, rulesState: rulesState, kbState: kbState, factOvState: factOvState, covState: covState, busy: isBusy })
+      } else if (activeTab === 'learning') {
+        content = el(LearningView, { state: learningState, busy: isBusy })
       } else if (activeTab === 'reports') {
         content = el(ReportsView, { state: reportsState, onReload: function (f) { setReportFilter({ program: f.program || '', q: f.q || '' }) } })
       } else if (activeTab === 'approvals') {

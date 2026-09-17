@@ -197,16 +197,27 @@ function createRepo(opts) {
       return rows
     },
 
-    // ---- 孤儿扫描（宿主重启）：running → failed(error='host_restart')，不自动续跑 ----
-    orphanScan() {
-      let marked = 0
+    // ---- 孤儿扫描（宿主重启/执行器猝死）：running → failed(error='host_restart')，不自动续跑 ----
+    // L6 修复：sec-bus-cli 独立进程 buildEvalDomain 也会触发本扫描——CLI 查询（如 revision_get）
+    // 会把宿主正在执行的 running run 误标为孤儿。加新鲜度闸：run 文件 mtime 在 10 分钟内跳过
+    // （candidate 预算上限 max_seconds≤300s，10min 覆盖最坏静默期；执行器持续写状态/产物），
+    // 只回收真正停摆的孤儿。
+    // L6 修复²：dryRun=true 只列出孤儿不落账——域层 reapOrphans 借此逐个走 run_finish
+    // 受控动词（事件流完整），避免直写 finishRun 导致 know 侧 revision 永卡 evaluating。
+    orphanScan(opts = {}) {
+      const dryRun = opts.dryRun === true
+      const orphans = []
       for (const rec of repo.listRuns()) {
         if (rec.status === 'running') {
-          repo.finishRun(rec.run_id, { status: 'failed', finished_at: Date.now(), error: 'host_restart' })
-          marked++
+          try {
+            const st = fs.statSync(path.join(RUNS, `${rec.run_id}.json`))
+            if (Date.now() - st.mtimeMs < 10 * 60 * 1000) continue // 新鲜 run：他进程在执行，非孤儿
+          } catch { /* stat 失败按孤儿处理 */ }
+          orphans.push(rec)
+          if (!dryRun) repo.finishRun(rec.run_id, { status: 'failed', finished_at: Date.now(), error: 'host_restart' })
         }
       }
-      return { marked }
+      return { marked: dryRun ? 0 : orphans.length, orphans }
     },
   }
   return repo
@@ -218,6 +229,6 @@ export function createEvalFileBackend(opts = {}) {
   return {
     capabilities: {},
     factory() { return createRepo({ evalDir }) },
-    orphanScan() { return createRepo({ evalDir }).orphanScan() },
+    orphanScan(opts) { return createRepo({ evalDir }).orphanScan(opts) },
   }
 }

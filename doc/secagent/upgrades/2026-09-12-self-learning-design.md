@@ -1,6 +1,6 @@
 # SilkSecAgent v5 自学习与漏洞学习探测设计
 
-> 日期：2026-09-12；状态：**L0–L5 已实施上线（L0/L1 于 2026-09-16，L2–L5 于 2026-09-17，csai 生产）；L6 未执行**。knowledge_revisions 候选版本层与首个 P1 授权类候选卡已随 L2 落地（§11.3）；独立评测层（真实模型行为 / fixture runner / 分组隐藏集 / baseline 配对报告 + revision 评测状态机）已随 L3 落地（§11.4），VC-AUTHZ-001 r1 已评测 eligible——**eligible≠发布**；受控晋升与撤回门禁（L4）已随 §11.5 落地（know_revision_publish + 审批绑定哈希 + 有限灰度/回退），revision 的 published/retired 流转动词已上线；learning_episodes 与证据发布/挂载已随 L1 落地（§11.2）；分层检索与曝光/采用/有效结果计分、覆盖补建登记、原生反馈桥已随 L5 落地（§11.6）。
+> 日期：2026-09-12；状态：**L0–L6 全部实施上线（L0/L1 于 2026-09-16，L2–L6 于 2026-09-17，csai 生产）——专项收官**。knowledge_revisions 候选版本层与首个 P1 授权类候选卡已随 L2 落地（§11.3）；独立评测层（真实模型行为 / fixture runner / 分组隐藏集 / baseline 配对报告 + revision 评测状态机）已随 L3 落地（§11.4），VC-AUTHZ-001 r1 已评测 eligible——**eligible≠发布**；受控晋升与撤回门禁（L4）已随 §11.5 落地（know_revision_publish + 审批绑定哈希 + 有限灰度/回退），revision 的 published/retired 流转动词已上线；learning_episodes 与证据发布/挂载已随 L1 落地（§11.2）；分层检索与曝光/采用/有效结果计分、覆盖补建登记、原生反馈桥已随 L5 落地（§11.6）；学习面板五问/证据对照追溯链/逐域视图/调度器独立切换（task 域调度器唯一持锁，v4 循环停用）与其余 P1 候选卡已随 L6 落地（§11.7），撤回→自动恢复上一版→change-retest 复测任务全链生产实测走通。
 > 配套：[平台升级方案](2026-09-12-dsh-0.1.5-rc.2-plan.md) · [csai 实测基线](2026-09-12-dsh-0.1.5-rc.2-record.md) · [升级目录](README.md)
 > 约束：沿用 v5 的 14 业务域、CommandGateway、actor、owns 和事件契约；实施前同步受影响的域文档与 manifest，本文不直接覆盖现行契约。
 
@@ -397,7 +397,31 @@ L5 四项交付全部上线（契约：know 60→70 全绿，本地 14 域全套
 
 部署记事：本次部署仍在 U4 观察期内（至 2026-09-18T14:16:35Z），已记入 [U4 handoff](HANDOFF-u4-observation.md) 基线变更（MainPID 3952870→3982156）。变更面：know 域插件 + know-sqlite 后端（新增 `know_exposures`/`know_adoptions`/`know_feedback`/`know_scores`/`know_gaps` 五表，幂等建表已在生产库演进）+ 新增反馈桥插件与 setup 8.591b 节 + ledger 域被订阅声明（`ledger.card_usage.logged → know`）；其余域插件代码未变。**pnpm store 修复**：rc.2 profile 依赖链接自 `/opt/silkspool/dsh/.pnpm-store`，已在 `~/.config/pnpm/config.yaml` 持久化 `storeDir`（pnpm v11 全局配置），反馈桥 setup 脚本以 `npm_config_store_dir` 环境变量兜底。
 
-**L6 状态继续记为未执行**（学习面板、证据对照、逐域视图、调度器独立切换；补齐其余 P1 再按证据扩 P2）。
+**L6 已随 §11.7 落地**（学习面板、证据对照、逐域视图、调度器独立切换；其余 P1 候选卡已补齐——专项收官）。
+
+## 11.7 L6 实施记录（2026-09-17，csai 生产）——专项收官
+
+L6 六项交付全部上线（契约：know 70→73、task 30→38、exec 23→24、eval 28→29、scope 15/15，本地 15 套件全套全绿 + csai setup 内硬门槛同绿 + 生产冒烟；契约见 [07-know.md](../v5/07-know.md) §十二、[05-task.md](../v5/05-task.md)、[15-eval.md](../v5/15-eval.md) §2.3、[16-dashboard.md](../v5/16-dashboard.md)、[10-exec.md](../v5/10-exec.md)）：
+
+1. **学习面板（§10 看板五问）**：dashboard 新增「学习」tab（LearningView），宿主侧 RPC 三端点——`learningOverview`（五问聚合：Q22 `know_learning_status` + Q17 episode 近录 + Q19 revision + Q20 release + eval.stats；普通业务语言摘要 + 技术字段收进 `*_detail`/候选项列表，用户无需理解 episode/outbox）、`learningTrace`（Q23 投影直透）、`learningRevokeRelease`（reason≥10 字闸 → **只走 C27** `know_release_revoke`，总线缺席 fail-closed，无 v4 直写兜底）。审批类型标签补 knowledge-publish/knowledge-adopt。
+2. **证据对照（§10 追溯链）**：Q23 `know_learning_trace`（model/dashboard/human/system 只读）——episode/artifact 双入口聚合 一次学习→证据引用→revision→评测报告锚点→批准（auth_ref）→发布账本→采用→反馈/计分 全链，附五问口径说明；面板「证据对照」按 revision/release/eval/approval 四链节渲染，撤回按钮经 learningRevokeRelease → C27。
+3. **逐域视图（§10 效果与成本分层）**：Q22 新增 `domains` 三层聚合（groupScoresByDomain：漏洞类型族/技术栈 surface/身份前置），每层给样本量与保守平滑后得分（沿用 L5 sample/(sample+2) 口径）——不是 uses 榜单；面板按三层表格渲染，小样本不确定性可见。
+4. **调度器独立切换（§10 独立切片纪律）**：先验证等价再切换——task 域内建调度器全量重写为 v4 等价语义（persona/buildScheduledPrompt 复用 host-compat、FGS 初始化、续跑检测 repo.scheduledProgress、预算 max(3600,min(budget,7200)) + goal 帽、worker busy 回 queued（E_EXEC_WORKER_BUSY 抛错/envelope 双形态识别）、超时走 approval task-budget-extend（空跑不提）、会话反查、每 10 tick reap/worker_reap/reconcile、每日 05 时后 vault sync），契约测试钉死后同包部署原子切换：sec-suite `startScheduler` 调用停用（代码与测试保留作回滚路径，回滚=恢复调用+停用 task 域调度器），**全程无并行第二派单循环窗口**。配套：exec_spawn_worker 加 `cwd`（仅 scheduler actor + realpath 校验）与 `task_id` 透传；task_worker_register 绑 active_run_id；取任务失败显式 finish crash 不再静默卡 running。生产冒烟任务 #100020：run_now → v5 调度器 claim → spawn → worker 执行 → finish done（run wmu5q2yfx818e）全链走通；scheduler.lock pid=MainPID 心跳新鲜，journal 双侧日志确认（「task 调度循环已启动（唯一持锁者）」+「v4 调度循环已停用」）。
+5. **调度任务类型（§10 四类节奏）**：task 域新增 `goal` 列——`research`（实时证据记录）/`learn-daily`（日常整理）/`eval-batch`（周期评测批）/`change-retest`（变更触发重测）；know 域 `know.release.revoked` 订阅 → 自动生成 change-retest 任务（`_global` 桶、marker 去重、prompt 引导复验相关 finding/负知识）。C32 `know_kb_vault_sync`（system/scheduler 专用）把 vault 回流从 v4 循环迁入受控动词，由调度器每日触发。
+6. **补齐其余 P1（§5）**：VC-BIZFLOW-001（业务流/越权）、VC-XSS-001（注入类）、VC-SSRF-001（标注缺 OOB 带外前置，诚实暴露能力缺口）三张候选卡版本受控种子（`data-seed/know-revisions/`，setup 目录遍历经 sec-bus-cli 幂等提案）——生产已种入均 candidate 状态。P2 按证据再扩（未开始）。
+
+**撤回→复测演示链（生产实测，2026-09-17T16:31–17:11Z）**：VC-AUTHZ-001 r2（`rev_mu5q7djx21b066`，演示改动 maxRequests 6→8）→ 提案 → eval_run_candidate（trial `l6-demo-r2-20260917-d`，ds-authz-dev-v1）配对评测 **eligible**（tp=1/fp=0/fn=0/tn=1）→ approval #22（knowledge-publish，批准绑定 digest sha256:45e2c6a5…80449）→ decide approve → effect → release `rel_mu5rzwy1bf5975` active（family/authz，r1 release 自动 superseded）→ Q23 全链投影核对（revisions/releases/eval 锚点/approval refs 齐全）→ **C27 撤回**（actor=dashboard）→ r1 release `rel_mu54qbjza6defb` 自动恢复 **active**、r1 revision 回 published、r2 置 retired/revoked → `know.release.revoked` 事件驱动 task 域自动生成 change-retest 任务 **#100021**（goal=change-retest，queued）。**r1 终态保持 published + active（首个端到端里程碑留存产物不受影响）。**
+
+**L6 生产事故与修复（全部记入契约）**：
+
+- **eval 孤儿扫描竞态①（误标在飞 run）**：sec-bus-cli 独立进程每次调用都 buildEvalDomain → 触发 orphanScan，把宿主/他进程正在执行的 running run 误标 host_restart（生产实测：两次 CLI 触发的 r2 评测 run 被误标）。修复：新鲜度闸——run 文件 mtime <10min 跳过（candidate 预算 max_seconds≤300s，10min 覆盖最坏静默期）。契约 L6 用例固化。
+- **孤儿扫描竞态②（回收绕事件流，revision 卡死）**：backend.orphanScan 直写 finishRun 不产生 eval.report.built → know 侧 revision 永卡 evaluating（生产实测：r2 卡死，手动 know_revision_assess abort 恢复）。修复：域层 `reapOrphans()` 改走 dryRun 扫描 + 逐个 `eval_run_finish` 受控动词收尾（事件流完整：failed + verdict=null → know abort 回 candidate）；触发点改为 apply() 注册成功后延迟 2s 初扫 + 每 10min 周期扫描；backend 原语保留（支持 dryRun）。契约 L6 用例固化（回收后 revision 回 candidate + 幂等 + 新鲜不误标）。
+- **CLI 触发评测的进程寿命**：sec-bus-cli dispatch 返回即 process.exit，unref 调度的异步执行器随之死亡（run 留 running）。L6 演示链改用一次性保活触发脚本（/tmp，不进 bundle）；常规触发面为看板/宿主内调度任务（执行器在宿主进程内，无此问题）。
+- **排障补授**：task_get actor 加 scheduler、program_list actor 加 scheduler（调度器派单/ vault sync 生产排障发现）；契约回归固化。
+
+**验收对照（§11 L6 行）**：**人能追溯一次学习到实际结果并撤回**——Q23 全链投影 + 看板证据对照 + C27 撤回自动恢复上一版，生产演示链实测走通（见上）；**只有一个调度持锁者**——scheduler.lock pid=MainPID、journal 双侧日志、v4 循环停用原子生效；**Web/worker 行为验收**——看板 RPC 三端点以真实模块 + 生产数据实测（五问聚合/逐域分层/全链追溯/撤回参数闸），client.js 已部署且语法校验通过；worker 全链（任务 #100020 run_now→claim→spawn→执行→finish done）实测走通。
+
+部署记事：本次 L6 在 U4 观察期（至 2026-09-18T14:16:35Z）内四次部署重启（MainPID 3995975→4001116→4005781→4010742），已记入 [U4 handoff](HANDOFF-u4-observation.md) §四 基线变更。变更面：know/task/exec/eval/scope 五域插件 + eval-file 后端 + dashboard-rpc + dashboard client + sec-suite（v4 调度停用）+ P1 种子卡四张 + manifest 登记；其余域插件代码未变。**首轮 setup 漏登 manifest 致三张新 P1 卡未推送生产（know_revision_list 只读核对发现），补登后种入——种子核对已列入部署冒烟固定项。**
 
 ## 12. 契约与来源
 

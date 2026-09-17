@@ -1,7 +1,7 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
-> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：task domain manifest v1
-> 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）；`task_budget_extend` / `task_complete` 由 approval 域 `approval_effects`（effect outbox）经 dispatcher 幂等执行——执行失败记 `approval_effects.failed` 重试，不回滚 decide（09-approval §2.3）。
+> 版本：v5.1 ｜ 状态：定稿（L6 调度器切换已实施，2026-09-17）｜ 契约版本：task domain manifest v1
+> 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）、`know.release.revoked`（L6：撤回 → change-retest 重测需求任务入队，§2.3 变更触发节奏）；`task_budget_extend` / `task_complete` 由 approval 域 `approval_effects`（effect outbox）经 dispatcher 幂等执行——执行失败记 `approval_effects.failed` 重试，不回滚 decide（09-approval §2.3）。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加、know 域学习 episode（L1）**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
 
@@ -31,7 +31,7 @@
 
 | # | 动词 | 一句话语义 | actor | 幂等键 | 发布事件 | 模型可见 |
 |---|---|---|---|---|---|---|
-| C1 | `task_create` | 登记新任务（普通 / once / interval），含任务级模型覆盖与预算参数 | model, dashboard, script, approval, system | 自然键（interval）/ 自动指纹 | task.created | ✅ |
+| C1 | `task_create` | 登记新任务（普通 / once / interval），含任务级模型覆盖、预算参数与 goal 目标类型（L6） | model, dashboard, script, approval, system, reactor | 自然键（interval）/ 自动指纹 | task.created | ✅ |
 | C2 | `task_schedule` | 设置 / 修改 / 清除任务的调度（终态不可改） | model, dashboard | 显式 / 自动指纹 | — | ✅ |
 | C3 | `task_run_now` | 立即触发一次（拨 next_run_at=now，不动节律） | model, dashboard | none（认领层防重复） | — | ✅ |
 | C4 | `task_update_note` | 向 result 证据链追加一条带时间戳的记录（不改状态） | model, dashboard, scheduler, script | 自动指纹 | — | ✅ |
@@ -71,6 +71,7 @@
 | `program_id` | string | 条件 | 会话工作区反查 | 须存在于 programs（scope 域镜像）；显式传入优先；反查无果 → `E_TASK_PROGRAM_UNRESOLVED` |
 | `objective` | string | ✅ | — | 非空；≤4000 字符；interval 任务额外过 objective lint（故障词/陈旧日期，memcore 既有口径） |
 | `phase` | string | ❌ | `''` | 建议枚举 recon/vuln/biz-logic/code-audit/intranet/review（不硬校验，PHASE_PRESET 未命中则不注入人格） |
+| `goal` | string | ❌ | `''`（=research） | L6（学习专项 §10）任务目标类型枚举：`research`（授权研究，默认）/ `learn-daily`（日常整理：补索引/复验到期来源/整偏，只产候选）/ `eval-batch`（周期评测批：候选对照/误报复盘/晋升审阅）/ `change-retest`（变更触发重测：撤回/失效驱动，`know.release.revoked` 订阅自动生成）。goal 进 `task.created`/`task.claimed` 载荷与 task_list 过滤；调度器对 learn-daily/eval-batch/change-retest 限流（每 tick ≤1）并按 goal 上限帽收紧无延长批准的预算（1800/3600/3600s） |
 | `priority` | integer | ❌ | `5` | 0 最高；0–9 |
 | `parent_id` | integer | ❌ | null | 须存在且非本任务自身；父任务终态后子任务才可被认领（链式放行） |
 | `budget_tokens` | integer | ❌ | null | ≥0 |
@@ -114,7 +115,7 @@
 
 **幂等**：interval 分支走**自然键** `task:create:interval:{program_id}:{objective}`（活跃唯一约束）；once/普通分支走自动指纹（网关 sha1 核心字段）。重放同 key 同参 → 首次结果 + `replay:true`。
 
-**actor**：model, dashboard, script, approval（审批种子任务订阅执行）, system。`approval` actor 的调用 cause 链带源审批 id。
+**actor**：model, dashboard, script, approval（审批种子任务订阅执行）, system, reactor（L6：`know.release.revoked` 订阅自动生成 change-retest 重测任务，cause 链带撤回事件）。`approval`/`reactor` actor 的调用 cause 链带源审批 id / 源事件 id。
 
 **agent_note（模型面工具描述全文）**：
 
@@ -606,6 +607,7 @@ curl -s http://127.0.0.1:3000/silksec-dashboard -H 'content-type: application/js
 | `model` | TEXT | nullable | 同上 |
 | `reasoning_effort` | TEXT | nullable | low/medium/high |
 | `budget_timeout_sec` | INTEGER | nullable | 任务预算上限（task-budget-extend 审批落点；≤7200 硬顶） |
+| `goal` | TEXT | NOT NULL DEFAULT '' | L6 任务目标类型（''/research=授权研究、learn-daily、eval-batch、change-retest；DDL 幂等加列，§2.3 四类节奏） |
 
 索引：`idx_tasks_queue(program_id, status, priority)`、`idx_tasks_due(schedule_kind, next_run_at)`。
 
@@ -694,7 +696,7 @@ stateDiagram-v2
 
 **事务边界**：每个命令一个 BEGIN IMMEDIATE（含联动列）；跨域效果一律事件（见 §1.5 订阅表）。强联动仅两处：worker 注册表记账（exec.worker.spawned/finished sync）——注册行丢失即 dedupe 失效。
 
-**调度器（scheduler）实现**——域内部组件，仅 web profile 启动：
+**调度器（scheduler）实现**——域内部组件，仅 web profile 启动（`apply()` 内 `process.argv.includes('web')` 且 `sidecars!==false` 才启动；L6 起为**唯一持锁者**——v4 `sec-suite.scheduler.js` 循环已停用，见 §3.x 验收）：
 
 | 机制 | 实现（v4.x 移植 + 命令化改造） |
 |---|---|
@@ -708,8 +710,10 @@ stateDiagram-v2
 | **超时审批** | 超时被杀且尾部有实质产出（非空 tail 去噪后）→ 经 approval 域命令 `approval_request{kind:'task-budget-extend', subject:'task:{id}', payload:{task_id, timed_out_at_sec, budget_timeout_sec:7200, run_id, tail}}`（actor=scheduler；幂等靠 approval 同 (kind,subject) pending 查重）。纯空跑不提（不配延预算） |
 | **真实性校验** | 移入 exec 域（拒执标记扫描读的是 exec owned worker.log）；exec.worker.finished 事件 payload 带 `truth{checked,rejected,reason}`，task_finish 据此翻转 outcome。标记表：`I won't produce / refuse to continue / 拒绝执行 / INVALID_REQUEST / reasoning_content must be passed back` 等（manifest 版本受控） |
 | **回收** | 每 10 tick（≈10min）：`task_reap`（宽限=超时+15min，传 pidAlive 跳过活 worker）+ `task_worker_reap`（孤儿执法）。启动时：`task_reap(0)` 无条件回收 + `task_worker_reap` 对账 |
-| **vault 回流** | 每日 05 时后首个 tick 触发 know 域 kb 同步（经 know 域命令，弱联动）——细节归 07-know.md，本域只保留触发器 |
+| **vault 回流** | 每日 05 时（北京）后首个 tick 触发 know 域 kb 同步（`know_kb_vault_sync` C32，弱联动，失败只记日志）——细节归 07-know.md，本域只保留触发器 |
 | **FGS 初始化** | 认领后、派 worker 前：经总线 `dispatch('fgs','clear', {task_id})` + `dispatch('fgs','add', {task_id, type:'goal', content:{summary:objective}})`（actor=scheduler；详见 14-fgs.md 生命周期绑定） |
+| **L6 目标类型调度** | `goal` 四类节奏：research（默认，无额外套餐）/ learn-daily / eval-batch / change-retest。学习/评测类 goal **每 tick 至多认领 1 个**（其余 `task_finish(outcome=busy)` 回 queued 下一 tick）；无显式 `budget_timeout_sec` 时按 goal 上限帽收紧预算（learn-daily 1800s / eval-batch 3600s / change-retest 3600s）。change-retest 任务由 `know.release.revoked` 订阅自动生成（program 灰度归该 program，family/global 归 `_global` 桶），**入队不自动起 worker**（无 schedule 不被认领），由人/编排决定 `task_run_now` |
+| **L6 派单参数** | `exec_spawn_worker` 调度器扩展参数：`cwd=program 工作区路径`（仅 scheduler actor；会话反查/工作区归组依赖 header.cwd 一致）、`task_id`（透传 `exec.worker.spawned` 载荷，worker_register 绑定 `tasks.active_run_id`）、`force:true`（周期任务重跑跳过 dedupe 恢复窗——dedupe 的 30min done 窗口会把"已收尾再启动"的周期吞掉） |
 
 **失败语义**：单任务执行异常全段 try/catch + stderr 落日志（任何单任务异常可见可查），兜底 `task_finish(outcome=crash)`。task_runs 落库失败不丢任务状态但必须可见（v4.x 教训：静默丢行导致断链无人发觉）。
 
@@ -838,7 +842,7 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 | 维度 | 结论 |
 |---|---|
 | 逻辑/功能 | 21/21 契约通过；`task_run_now` 已改为非幂等写，失败回 queued 后可安全重跑；claim 原子防重复。 |
-| 功能缺口 | v5 task scheduler 观察期休眠，`data/scheduler.lock` 由 v4 `sec-suite.scheduler.js` 持有；当前定时功能依赖过渡 hook，不是 v5 域内正式调度。 |
+| 功能缺口 | ~~v5 task scheduler 观察期休眠~~ **已关闭（L6，2026-09-17）**：v5 task scheduler 接管为唯一持锁者（claim→FGS 初始化→spawn_worker(cwd+task_id+force)→finish 链、续跑检测、超时审批、busy 回队列、回收对账、vault 回流触发器逐项经契约测试钉死后切换；v4 scheduler.js 循环停用、模块与测试保留供回滚）。 |
 | 静默错误 | `ledger_task_proof` 查询异常时 guard 降级为 missing=[] 且无日志；task_runs 收尾异常兜底吞掉后仅影响执行史。 |
 
 > 2026-09-16 L0 修复：上行"守卫查询异常静默降级"已关闭——异常进 guard.missing 并强制 ok=0；契约用例覆盖（task 域 29/29 全绿）。

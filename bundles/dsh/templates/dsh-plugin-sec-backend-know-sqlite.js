@@ -490,6 +490,11 @@ function createRepo(db) {
       const rows = db.prepare(`SELECT * FROM learning_episodes ${w} ORDER BY created_at DESC, episode_id DESC LIMIT ? OFFSET ?`).all(...vals, limit, offset)
       return { rows, total }
     },
+    // L6（设计 §10 证据对照）：按卡反查 episode（一次学习 → 实际结果的追溯链起点）
+    listEpisodesByCard(cardId, limit = 50) {
+      const rows = db.prepare('SELECT * FROM learning_episodes WHERE card_id = ? ORDER BY created_at DESC, episode_id DESC LIMIT ?').all(String(cardId), limit)
+      return rows.map((r) => ({ ...r }))
+    },
 
     // ---- L2 knowledge_revisions（内容只插不改；命中内容级唯一约束 → 复用原 revision，不抛错）----
     insertRevision(row) {
@@ -656,6 +661,16 @@ function createRepo(db) {
     adoptionArtifacts() {
       return db.prepare('SELECT DISTINCT artifact_kind, artifact_id FROM know_adoptions').all()
     },
+    // L6（设计 §10 证据对照）：按 artifact 列采用事实（追溯链「采用」环节）
+    listAdoptions({ artifact_kind = '', artifact_id = '', limit = 50, offset = 0 } = {}) {
+      const conds = []; const vals = []
+      if (artifact_kind) { conds.push('artifact_kind=?'); vals.push(String(artifact_kind)) }
+      if (artifact_id) { conds.push('artifact_id=?'); vals.push(String(artifact_id)) }
+      const w = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
+      const total = db.prepare(`SELECT COUNT(*) AS c FROM know_adoptions ${w}`).get(...vals).c
+      const rows = db.prepare(`SELECT * FROM know_adoptions ${w} ORDER BY created_at DESC, adoption_id DESC LIMIT ? OFFSET ?`).all(...vals, limit, offset)
+      return { rows: rows.map((r) => ({ ...r })), total }
+    },
 
     // ---- L5 know_feedback（原生反馈桥事实行：id+revision 幂等；编辑=新 revision；撤回=tombstone）----
     insertFeedback(row) {
@@ -685,6 +700,14 @@ function createRepo(db) {
     },
     feedbackCount() {
       return db.prepare('SELECT COUNT(*) AS c FROM know_feedback').get().c
+    },
+    // L6（设计 §10 证据对照）：按 artifact 列反馈事实行（追溯链「反馈/计分」环节）
+    listFeedbackForArtifact(artifactKind, artifactId, limit = 50) {
+      const rows = db.prepare(`SELECT * FROM know_feedback
+        WHERE json_extract(attribution_json, '$.artifact_kind') = ?
+          AND json_extract(attribution_json, '$.artifact_id') = ?
+        ORDER BY created_at DESC, revision DESC LIMIT ?`).all(String(artifactKind), String(artifactId), limit)
+      return rows.map((r) => ({ ...r }))
     },
     // 有效反馈覆盖的 artifact 键集合（全量重建 C31 的第三族事实来源——
     // 只有反馈、无曝光/采用/episode 的卡也必须被重建覆盖，撤回撤销才能回投影）

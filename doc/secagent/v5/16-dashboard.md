@@ -191,6 +191,7 @@ function dispatch(verb, args) {           // verb = 'vuln.confirm'
 | 审批 | `sec-domain-approval/dashboard-view.js` | `approval.list`（pending 前置 + 判据 chip + 历史）| `approval.decide` | 待审批数进 tab 徽章（保留）；判据 chip 渲染改消费 approval 域 payload schema |
 | 授权 | `sec-domain-authz/dashboard-view.js` | `scope.list`、`scope.program_list`、`dashboard.workspaces` | `scope.grant/rules.apply/revoke`、`program.bind_workspace` | 顶部跳转条（待审批候选 → 审批 tab）保留；表单按 grant/rules_apply 字段拆分提交；scope.yml 同步提示（spool sync 回收纪律提示保留）|
 | 审计 | **壳自带**（消费总线查询，不属业务域）| `bus.audit_tail`（domain/cmd/actor/operator/session/时间窗过滤）| 无 | **v5 审计增强展示**：actor 维度（model session vs dashboard operator）可过滤——写操作审计增强（operator 身份）的消费面；deprecated_use 标记高亮 |
+| 学习（L6，2026-09-17 落地于 v4 壳） | `learningOverview` / `learningTrace` / `learningRevokeRelease`（dashboard-rpc 端点） | know 域 Q22（learning_status，含 domains 逐域视图）/ Q23（learning_trace）/ Q17/Q19/episode 投影 + eval.stats | **learningRevokeRelease → C27 know_release_revoke（受控动词，面板不直写台账）** | **看板五问口径（普通业务语言）**：①学到了什么 ②依据是什么 ③比旧版改善多少 ④在哪生效 ⑤如何恢复旧版；技术字段（episode/run_id/哈希）收进证据对照展开区；逐域视图按 漏洞类型族/技术栈面/身份前置 三层展示效果与成本（样本量+信心档可见，小样本保守，非 uses 榜单）；总线缺席 fail-closed（学习台账只在 v5 域，无 v4 兜底） |
 
 ### 1.8 外部调用示例
 

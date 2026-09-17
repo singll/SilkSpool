@@ -299,8 +299,11 @@ templates:
   - dsh-plugin-sec-feedback-bridge.js
   - dsh-plugin-sec-feedback-bridge.patch.yml
   - sec-feedback-bridge-setup.sh
-  # --- L2 候选规程卡种子（版本受控模板；know setup 经 sec-bus-cli 幂等提案进 knowledge_revisions）---
+  # --- L2/L6 候选规程卡种子（版本受控模板；know setup 经 sec-bus-cli 幂等提案进 knowledge_revisions）---
   - data-seed/know-revisions/vc-authz-r1.json
+  - data-seed/know-revisions/vc-bizflow-r1.json
+  - data-seed/know-revisions/vc-xss-r1.json
+  - data-seed/know-revisions/vc-ssrf-r1.json
   # --- L3 独立评测种子（版本受控模板；eval 迁移脚本种子进 data/eval/{fixtures,datasets}）---
   - data-seed/eval/fixtures/fixture-authz-a.json
   - data-seed/eval/fixtures/fixture-authz-b.json

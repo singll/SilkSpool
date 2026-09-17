@@ -99,29 +99,33 @@ install_plugin
 run_contract_tests
 smoke
 
-# -------------------- L2 候选规程卡种子（2026-09-17 学习专项）--------------------
-# 版本受控模板 data-seed/know-revisions/vc-authz-r1.json → know_revision_propose（actor=script）。
+# -------------------- 候选规程卡种子（L2 首卡 + L6 补齐 P1，2026-09-17 学习专项）--------------------
+# 版本受控模板 data-seed/know-revisions/*.json → know_revision_propose（actor=script）。
 # 幂等：自动指纹（artifact+parent+content）+ 表级 UNIQUE(artifact,content_digest)——重跑 replay/复用，零重复。
-# 候选≠发布：只写 knowledge_revisions，不动 data/vulncards/ 现行卡片。
+# 候选≠发布：只写 knowledge_revisions，不动 data/vulncards/ 现行卡片。L6 起遍历目录全部模板
+# （vc-authz-r1 / vc-bizflow-r1 / vc-xss-r1 / vc-ssrf-r1——设计 §5 四张 P1 卡）。
 seed_revision_candidates() {
-    local seed="$BASE_DIR/data-seed/know-revisions/vc-authz-r1.json"
+    local seed_dir="$BASE_DIR/data-seed/know-revisions"
     local cli="$BASE_DIR/scripts/pipeline/sec-bus-cli.mjs"
-    [ -f "$seed" ] || { log "L2 种子模板缺失，跳过: $seed"; return 0; }
-    [ -f "$cli" ] || { log "sec-bus-cli 未归位（总线 setup 先行保证），跳过 L2 种子"; return 0; }
-    local payload
-    payload="$("$NODE" -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));delete s._comment;process.stdout.write(JSON.stringify(s))' "$seed")" \
-        || die "L2 种子模板 JSON 解析失败"
-    local out
-    out="$(SEC_BASE_DIR="$BASE_DIR" SEC_DATA_DIR="$DATA_DIR" PATH=/usr/local/node/bin:$PATH \
-        "$NODE" "$cli" dispatch know.revision_propose --args "$payload" --actor script --operator setup 2>&1)" \
-        || die "L2 候选卡种子提案失败：$out"
-    if echo "$out" | grep -q '"recorded": true'; then
-        log "L2 候选卡已提案：VC-AUTHZ-001 r1（knowledge_revisions，status=candidate）"
-    elif echo "$out" | grep -q '"replay": true\|"duplicate": "content"'; then
-        log "L2 候选卡已存在（幂等回放，零重复）"
-    else
-        die "L2 候选卡种子返回异常：$out"
-    fi
+    [ -d "$seed_dir" ] || { log "候选卡种子目录缺失，跳过: $seed_dir"; return 0; }
+    [ -f "$cli" ] || { log "sec-bus-cli 未归位（总线 setup 先行保证），跳过候选卡种子"; return 0; }
+    local seed payload out label
+    for seed in "$seed_dir"/*.json; do
+        [ -f "$seed" ] || continue
+        label="$(basename "$seed")"
+        payload="$("$NODE" -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));delete s._comment;process.stdout.write(JSON.stringify(s))' "$seed")" \
+            || die "候选卡种子模板 JSON 解析失败: $label"
+        out="$(SEC_BASE_DIR="$BASE_DIR" SEC_DATA_DIR="$DATA_DIR" PATH=/usr/local/node/bin:$PATH \
+            "$NODE" "$cli" dispatch know.revision_propose --args "$payload" --actor script --operator setup 2>&1)" \
+            || die "候选卡种子提案失败（$label）：$out"
+        if echo "$out" | grep -q '"recorded": true'; then
+            log "候选卡已提案：$label（knowledge_revisions，status=candidate）"
+        elif echo "$out" | grep -q '"replay": true\|"duplicate": "content"'; then
+            log "候选卡已存在：$label（幂等回放，零重复）"
+        else
+            die "候选卡种子返回异常（$label）：$out"
+        fi
+    done
 }
 seed_revision_candidates
 

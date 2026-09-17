@@ -12,7 +12,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { createBus } from '../../sec-domain-bus/index.js'
-import { buildTaskDomain } from '../index.js'
+import { buildTaskDomain, startTaskScheduler } from '../index.js'
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'sec-domain-task-')) }
 
@@ -549,4 +549,287 @@ test('L1: task_finish 发布前固定 FGS 快照（fgs 域在册 → payload.fgs
   assert.ok(fs.existsSync(path.join(dataDir, snap.path)), '快照文件已落盘')
   const body = JSON.parse(fs.readFileSync(path.join(dataDir, snap.path), 'utf8'))
   assert.equal(body.nodes.length, 1)
+})
+
+// ---------------------------------------------------------------------------
+// L6（2026-09-17 学习专项 §10）：任务目标类型 + 变更触发重测 + 调度器切换等价性
+// ---------------------------------------------------------------------------
+
+test('L6: goal 列——创建落库/事件载荷/认领透传/list 过滤', async () => {
+  const { bus, dir } = makeEnv()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '每日整理学习证据', goal: 'learn-daily', schedule: { kind: 'interval', every_seconds: 86400 } }, { actor: 'model' })
+  assert.equal(c.ok, true, c.error?.message)
+  const id = c.data.task_id
+  const row = bus._internal.db().prepare('SELECT goal FROM tasks WHERE id=?').get(id)
+  assert.equal(row.goal, 'learn-daily', 'goal 应落库')
+  const evs = readEvents(dir).filter((e) => e.name === 'task.created' && e.payload.task_id === id)
+  assert.equal(evs[0].payload.goal, 'learn-daily', 'task.created 载荷应带 goal')
+  // claim 透传 goal
+  bus._internal.db().prepare('UPDATE tasks SET run_at=?, next_run_at=? WHERE id=?').run(Date.now() - 10000, Date.now() - 10000, id)
+  const claimed = await bus.dispatch('task', 'claim', { now: Date.now() }, { actor: 'scheduler' })
+  assert.ok(claimed.data.claimed.includes(id))
+  const claimEv = readEvents(dir).filter((e) => e.name === 'task.claimed' && e.payload.task_id === id)
+  assert.equal(claimEv[0].payload.goal, 'learn-daily')
+  // list 过滤
+  const lst = await bus.query('task', 'list', { goal: 'learn-daily' }, { actor: 'dashboard' })
+  assert.ok(lst.ok && lst.rows.some((r) => r.id === id), 'goal 过滤应命中')
+  // 非法 goal 拒
+  const bad = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: 'x', goal: 'hack-the-planet' }, { actor: 'model' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'E_SCHEMA')
+})
+
+test('L6: know.release.revoked → change-retest 任务入队（幂等去重）+ program 灰度归属', async () => {
+  const { bus, dir } = makeEnv()
+  const envelope = (over = {}) => ({
+    id: `evt-${crypto.randomUUID()}`, domain: 'know', name: 'know.release.revoked', ts: Date.now(), actor: 'system', session_id: null, operator: null,
+    cause: { cmd: 'release_revoke', idempotency_key: null },
+    payload: { release_id: 'rel_test123', artifact_kind: 'checklist', artifact_id: 'VC-AUTHZ-001', revision_id: 'rev_x', scope_type: 'family', scope_id: 'authz', reason: '测试撤回', ...over },
+  })
+  bus.events.publish(envelope())
+  let res = await bus._internal.dispatcherTick()
+  assert.ok(res.processed >= 1)
+  const tasks = await bus.query('task', 'list', { q: '[change-retest rel_test123]', bucket: 'active' }, { actor: 'dashboard' })
+  assert.equal(tasks.total, 1, '撤回事件应生成一个 change-retest 任务')
+  const t = tasks.rows[0]
+  assert.equal(t.goal, 'change-retest')
+  assert.equal(t.program_id, '_global', 'family 范围撤回的重测需求归 _global 桶')
+  assert.equal(t.priority, 3)
+  assert.equal(t.budget_tokens, 200000)
+  assert.equal(t.status, 'queued', '入队不自动起 worker')
+  assert.ok(!t.schedule_kind, '无 schedule——不自动被调度循环认领')
+  // 事件重放/重复事件 → 查重跳过，零重复任务
+  bus.events.publish(envelope())
+  bus.events.publish(envelope())
+  res = await bus._internal.dispatcherTick()
+  const again = await bus.query('task', 'list', { q: '[change-retest rel_test123]', bucket: 'active' }, { actor: 'dashboard' })
+  assert.equal(again.total, 1, '重放不得生成重复任务')
+  // program 灰度 → 归属 program
+  bus.events.publish(envelope({ payload: undefined }))
+  bus.events.publish({
+    id: `evt-${crypto.randomUUID()}`, domain: 'know', name: 'know.release.revoked', ts: Date.now(), actor: 'system', session_id: null, operator: null,
+    cause: { cmd: 'release_revoke', idempotency_key: null },
+    payload: { release_id: 'rel_prog1', artifact_kind: 'checklist', artifact_id: 'VC-X', revision_id: 'rev_y', scope_type: 'program', scope_id: 'test-src', reason: 'r' },
+  })
+  await bus._internal.dispatcherTick()
+  const prog = await bus.query('task', 'list', { q: '[change-retest rel_prog1]', bucket: 'active' }, { actor: 'dashboard' })
+  assert.equal(prog.total, 1)
+  assert.equal(prog.rows[0].program_id, 'test-src')
+  assert.equal(prog.rows[0].goal, 'change-retest')
+})
+
+test('L6: worker_register 带 task_id → tasks.active_run_id 绑定（reap 活 worker 跳过依据）', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '绑定测试' }, { actor: 'model' })
+  const id = c.data.task_id
+  bus._internal.db().prepare("UPDATE tasks SET status='running', started_at=? WHERE id=?").run(Date.now(), id)
+  const reg = await bus.dispatch('task', 'worker_register', { run_id: 'wbind001', task_id: id, pid: process.pid, task: 'x', cwd: '/tmp' }, { actor: 'reactor' })
+  assert.equal(reg.ok, true, reg.error?.message)
+  const row = bus._internal.db().prepare('SELECT active_run_id FROM tasks WHERE id=?').get(id)
+  assert.equal(row.active_run_id, 'wbind001', 'active_run_id 应绑定到 worker run')
+})
+
+// --- 调度器切换等价性（05-task §2.3 表逐项）：fake dispatch/query 记录调用序列 ---
+
+function schedulerFakeEnv(opts = {}) {
+  const dir = tmpDir()
+  const dataDir = path.join(dir, 'data')
+  fs.mkdirSync(dataDir, { recursive: true })
+  const calls = []
+  const state = { spawnResult: opts.spawnResult, spawnThrows: opts.spawnThrows || null, programRows: opts.programRows ?? [{ id: 'test-src', workspace_path: '/ws/test-src' }] }
+  const task = {
+    id: 42, program_id: 'test-src', phase: opts.phase ?? 'recon', goal: opts.goal ?? '',
+    objective: '验证等价性调度任务', schedule_kind: 'interval', every_seconds: 86400,
+    run_at: Date.now() - 60000, next_run_at: Date.now() - 60000, started_at: Date.now(),
+    priority: 5, budget_tokens: null, budget_timeout_sec: opts.budgetTimeoutSec ?? null,
+    provider: null, model: null, reasoning_effort: null, parent_id: null, status: 'running',
+    ...(opts.task || {}),
+  }
+  const dispatch = async (domain, verb, args, ctx) => {
+    calls.push({ kind: 'dispatch', domain, verb, args, actor: ctx?.actor })
+    if (domain === 'task' && verb === 'claim') return { ok: true, data: { claimed: state.claimedOnce ? [] : [42], count: state.claimedOnce ? 0 : 1 } , ...(state.claimedOnce = true, {}) }
+    if (domain === 'task' && verb === 'finish') { state.finished = args; return { ok: true, data: { task_id: args.task_id } } }
+    if (domain === 'task' && verb === 'reap') return { ok: true, data: { reaped: 0, skipped_alive: 0 } }
+    if (domain === 'task' && verb === 'worker_reap') return { ok: true, data: {} }
+    if (domain === 'exec' && verb === 'spawn_worker') {
+      if (state.spawnThrows) throw state.spawnThrows
+      return { ok: true, data: state.spawnResult }
+    }
+    if (domain === 'fgs' && verb === 'clear') { state.fgsCleared = (state.fgsCleared || 0) + 1; return { ok: true, data: {} } }
+    if (domain === 'fgs' && verb === 'add') { state.fgsAdded = (state.fgsAdded || 0) + 1; return { ok: true, data: {} } }
+    if (domain === 'approval' && verb === 'request') { state.approvals = [...(state.approvals || []), args]; return { ok: true, data: { request_id: 99 } } }
+    if (domain === 'know' && verb === 'kb_vault_sync') { state.vaultSync = (state.vaultSync || 0) + 1; return { ok: true, data: { imported: 0 } } }
+    return { ok: true, data: {} }
+  }
+  const query = async (domain, name, args, ctx) => {
+    calls.push({ kind: 'query', domain, name, args, actor: ctx?.actor })
+    if (domain === 'task' && name === 'get') return { ok: true, data: task }
+    if (domain === 'scope' && name === 'program_list') return { ok: true, data: { rows: state.programRows, total: state.programRows.length } }
+    return { ok: true, data: null }
+  }
+  const repo = { scheduledProgress: () => (opts.progress || { attempts: 0, resume: false, resume_run_id: null }) }
+  return { dir, dataDir, calls, state, task, dispatch, query, repo }
+}
+
+async function withScheduler(env, fn) {
+  const r = startTaskScheduler({ dataDir: env.dataDir, dispatch: env.dispatch, query: env.query, repo: env.repo, tickMs: 60 })
+  assert.equal(r.started, true, `调度器应启动：${r.reason || ''}`)
+  try { await fn() } finally {
+    clearInterval(globalThis.__silksecTaskScheduler)
+    globalThis.__silksecTaskScheduler = null
+  }
+}
+// 等待条件（测试内 tick=60ms，轮询收敛）
+async function waitFor(cond, timeoutMs = 15000) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const v = await cond()
+    if (v) return v
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  return null
+}
+
+test('L6: 调度器等价——claim→FGS 初始化→spawn(cwd+task_id+force)→finish 链 + 预算公式', async () => {
+  const env = schedulerFakeEnv({
+    spawnResult: { ok: true, run_id: 'wl6a001', exit_code: 0, duration_ms: 5000, tail: '步骤一完成\n步骤二完成', truth: { checked: true, rejected: false, reason: '' }, session_id: 'sess-1', timed_out: false, cancelled: false },
+  })
+  await withScheduler(env, async () => {
+    const lock = JSON.parse(fs.readFileSync(path.join(env.dataDir, 'scheduler.lock'), 'utf8'))
+    assert.equal(lock.pid, process.pid, '锁应为当前进程持有')
+    // 启动回收已发
+    const reaps = env.calls.filter((c) => c.domain === 'task' && c.verb === 'reap' && c.args.max_age === 0)
+    assert.ok(reaps.length >= 1, '启动即无条件回收')
+    const wreaps = env.calls.filter((c) => c.domain === 'task' && c.verb === 'worker_reap')
+    assert.ok(wreaps.length >= 1, '启动即 worker 对账')
+    // 双开被拒（同进程 globalThis 守卫）
+    const again = startTaskScheduler({ dataDir: env.dataDir, dispatch: env.dispatch, query: env.query })
+    assert.equal(again.started, false)
+    // 等 tick 跑完一轮
+    const spawn = await waitFor(() => env.calls.find((c) => c.domain === 'exec' && c.verb === 'spawn_worker'))
+    assert.ok(spawn, '到期任务应被认领并派 worker')
+    // 顺序：claim 在 spawn 前；FGS 初始化在 spawn 前；finish 在 spawn 后
+    const idx = (f) => env.calls.findIndex(f)
+    const iClaim = idx((c) => c.domain === 'task' && c.verb === 'claim')
+    const iClear = idx((c) => c.domain === 'fgs' && c.verb === 'clear')
+    const iAdd = idx((c) => c.domain === 'fgs' && c.verb === 'add')
+    const iSpawn = idx((c) => c.domain === 'exec' && c.verb === 'spawn_worker')
+    const iFinish = idx((c) => c.domain === 'task' && c.verb === 'finish')
+    assert.ok(iClaim > -1 && iClaim < iSpawn, 'claim 先于 spawn')
+    assert.ok(iClear > -1 && iClear < iSpawn, 'FGS clear 先于 spawn（非续跑初始化）')
+    assert.ok(iAdd > -1 && iAdd < iSpawn, 'FGS add goal 先于 spawn')
+    assert.ok(iFinish > iSpawn, 'finish 在 spawn 后')
+    // spawn 参数：cwd=工作区 + task_id 绑定 + force（dedupe 不吞周期重跑）+ 预算公式 max(3600,min(budget,7200))
+    assert.equal(spawn.args.cwd, '/ws/test-src')
+    assert.equal(spawn.args.task_id, 42)
+    assert.equal(spawn.args.force, true)
+    assert.equal(spawn.args.timeout, 3600, '无延长批准 → 默认 3600')
+    assert.ok(String(spawn.args.task).includes('[定时任务 #42 / recon] 验证等价性调度任务'), 'prompt 含任务头')
+    assert.equal(spawn.actor, 'scheduler')
+    // finish 载荷：done + run_id + session_id + note 尾部
+    assert.ok(env.state.finished, 'task_finish 已调用')
+    assert.equal(env.state.finished.outcome, 'done')
+    assert.equal(env.state.finished.run_id, 'wl6a001')
+    assert.equal(env.state.finished.session_id, 'sess-1')
+    assert.ok(env.state.finished.note.includes('步骤二完成'))
+    // 超时未发生 → 不提审批
+    assert.ok(!env.state.approvals, '未超时不提 task-budget-extend')
+  })
+})
+
+test('L6: 调度器等价——续跑跳过 FGS 初始化 + 超时提请 task-budget-extend（空跑不提）+ 预算延长生效', async () => {
+  // ① 续跑：progress.resume=true → 不清 FGS；budget_timeout_sec=5000 → timeout=5000
+  const env = schedulerFakeEnv({
+    progress: { attempts: 1, resume: true, resume_run_id: 'wprev' },
+    budgetTimeoutSec: 5000,
+    spawnResult: { ok: false, run_id: 'wl6b001', exit_code: null, duration_ms: 5000000, tail: '已收集 80% 资产\n写入检查点', truth: { checked: true, rejected: false, reason: '' }, session_id: null, timed_out: true, cancelled: false },
+  })
+  await withScheduler(env, async () => {
+    const spawn = await waitFor(() => env.calls.find((c) => c.domain === 'exec' && c.verb === 'spawn_worker'))
+    assert.ok(spawn)
+    assert.equal(spawn.args.timeout, 5000, '预算延长批准 → max(3600, min(5000,7200))')
+    assert.ok(!env.calls.some((c) => c.domain === 'fgs' && c.verb === 'clear'), '续跑不得清 FGS')
+    assert.ok(String(spawn.args.task).includes('[续跑]'), 'prompt 含续跑提示')
+    const fin = await waitFor(() => env.state.finished)
+    assert.equal(fin.outcome, 'failed')
+    assert.equal(fin.timed_out, true)
+    const ap = await waitFor(() => env.state.approvals)
+    assert.ok(ap && ap.length === 1, '超时且有实质产出 → 提请 task-budget-extend')
+    assert.equal(ap[0].kind, 'task-budget-extend')
+    assert.equal(ap[0].subject, 'task:42')
+    assert.equal(ap[0].payload.budget_timeout_sec, 7200)
+    assert.ok(ap[0].payload.tail.includes('检查点'))
+  })
+  // ② 纯空跑（去噪后无尾部）→ 不提审批
+  const env2 = schedulerFakeEnv({
+    spawnResult: { ok: false, run_id: 'wl6c001', exit_code: null, duration_ms: 3600000, tail: '', truth: { checked: true, rejected: false, reason: '' }, session_id: null, timed_out: true, cancelled: false },
+  })
+  await withScheduler(env2, async () => {
+    await waitFor(() => env2.state.finished)
+    assert.ok(env2.state.finished, '收尾发生')
+    assert.equal(env2.state.finished.timed_out, true)
+    await new Promise((r) => setTimeout(r, 300))
+    assert.ok(!env2.state.approvals, '纯空跑不配延预算（05-task §2.3）')
+  })
+})
+
+test('L6: 调度器等价——busy 回 queued 不落 run 史 + spawn 分发异常兜底 crash', async () => {
+  // ① busy：E_EXEC_WORKER_BUSY 抛错 → finish(busy)
+  const env = schedulerFakeEnv({ spawnThrows: Object.assign(new Error('worker 并发上限'), { code: 'E_EXEC_WORKER_BUSY' }) })
+  await withScheduler(env, async () => {
+    const fin = await waitFor(() => env.state.finished)
+    assert.ok(fin)
+    assert.equal(fin.outcome, 'busy')
+    assert.equal(fin.run_id, '', 'busy 不落 run 史')
+  })
+  // ② 非 busy 异常 → crash 兜底
+  const env2 = schedulerFakeEnv({ spawnThrows: Object.assign(new Error('exec 域未注册'), { code: 'E_BUS_DOMAIN_UNKNOWN' }) })
+  await withScheduler(env2, async () => {
+    const fin = await waitFor(() => env2.state.finished)
+    assert.ok(fin)
+    assert.equal(fin.outcome, 'crash')
+    assert.ok(fin.note.includes('调度执行异常'))
+  })
+})
+
+test('L6: 学习目标节奏闸——goal 上限帽（无延长时）+ 工作区缺失时 cwd 省略', async () => {
+  const env = schedulerFakeEnv({
+    goal: 'learn-daily',
+    spawnResult: { ok: true, run_id: 'wl6d001', exit_code: 0, duration_ms: 1000, tail: 'ok', truth: { checked: true, rejected: false, reason: '' }, session_id: 's', timed_out: false, cancelled: false },
+  })
+  await withScheduler(env, async () => {
+    const spawn = await waitFor(() => env.calls.find((c) => c.domain === 'exec' && c.verb === 'spawn_worker'))
+    assert.ok(spawn)
+    assert.equal(spawn.args.timeout, 1800, 'learn-daily 无显式预算 → 上限帽 1800s')
+    await waitFor(() => env.state.finished)
+    assert.equal(env.state.finished.outcome, 'done')
+  })
+  // program 镜像缺失 → cwd 省略（v4 cwd=null 等价：spawn 回落 runDir）
+  const env2 = schedulerFakeEnv({
+    programRows: [],
+    spawnResult: { ok: true, run_id: 'wl6e001', exit_code: 0, duration_ms: 1000, tail: 'ok', truth: { checked: true, rejected: false, reason: '' }, session_id: 's', timed_out: false, cancelled: false },
+  })
+  await withScheduler(env2, async () => {
+    const spawn = await waitFor(() => env2.calls.find((c) => c.domain === 'exec' && c.verb === 'spawn_worker'))
+    assert.ok(spawn)
+    assert.ok(!('cwd' in spawn.args), '无工作区路径不传 cwd')
+  })
+})
+
+test('L6: 调度器锁——活持锁者拒绝抢锁，死锁可接管', async () => {
+  const dir = tmpDir()
+  const dataDir = path.join(dir, 'data')
+  fs.mkdirSync(dataDir, { recursive: true })
+  // 活持锁（用父进程 PID——kill(ppid,0) 必活；pid=1 在非 root 容器里 kill 抛 EPERM 会被当成死进程）
+  fs.writeFileSync(path.join(dataDir, 'scheduler.lock'), JSON.stringify({ pid: process.ppid, ts: Date.now() }))
+  const noop = async () => ({ ok: true, data: {} })
+  const r1 = startTaskScheduler({ dataDir, dispatch: noop, query: noop })
+  assert.equal(r1.started, false, '活锁持有者未过期 → 拒抢')
+  assert.match(r1.reason, /持有/)
+  // 心跳过期 → 可抢
+  fs.writeFileSync(path.join(dataDir, 'scheduler.lock'), JSON.stringify({ pid: process.ppid, ts: Date.now() - 200000 }))
+  const r2 = startTaskScheduler({ dataDir, dispatch: noop, query: noop })
+  assert.equal(r2.started, true, '心跳过期可接管')
+  clearInterval(globalThis.__silksecTaskScheduler)
+  globalThis.__silksecTaskScheduler = null
 })

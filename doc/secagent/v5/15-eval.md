@@ -280,6 +280,7 @@ running 期间同类触发 → E_CONFLICT；done/failed 后可重跑（新 run_i
 
 - **事务边界**：C1 单行追加（单文件 O_APPEND，fsync 后返回——单文件追加即事务）；C2/C3 触发即写 runs/{run_id}.json（status=running），异步执行完成改 done/failed + 写报告 + 发事件。**弱联动订阅**（vuln 两个事件）失败不阻断 vuln 命令主体（宪法 §八.3）。
 - **异步执行载体**：域内 `setTimeout`/微任务驱动的执行器（进程内，无需子进程——LLM 调用是纯网络 IO）；宿主重启时启动扫描 `runs/*.json` 中 status=running 的孤儿 → 标记 failed（error='host_restart'），不自动续跑（评测幂等便宜，重跑干净）。
+- **孤儿回收口径（L6 修订，2026-09-17）**：① **新鲜度闸**——run 文件 mtime 在 10 分钟内跳过（candidate 预算上限 max_seconds≤300s，10min 覆盖最坏静默期），防止 sec-bus-cli 独立进程/周期扫描误标他进程在飞 run；② **事件流回收**——域层 `reapOrphans()` 先 dryRun 扫描再逐个走 `eval_run_finish` 受控动词收尾（outcome=failed、error='host_restart'、无 verdict），`eval.report.built` 事件驱动 know 侧 revision abort 回 candidate；禁止绕过总线直写 finishRun（直写会让 candidate revision 永卡 evaluating——生产已观测并修复）。触发点：apply() 注册成功后延迟 2s 初扫（等全域注册齐）+ 每 10min 周期扫描；backend 层 `orphanScan()` 原语保留（契约测试/应急直用，支持 `dryRun`）。
 - **LLM 供给**（沿用 v4 eval-fp.js 全部约定）：Bellkeeper 网关 `http://192.168.7.230:8090/api/llm/v1`（keeper 本机跑可 `SEC_EVAL_LLM_URL=http://localhost:8080/api/llm/v1`），模型默认 `pool-secagent`；鉴权 Bearer，key 取 `SEC_EVAL_LLM_KEY` 或 `BELLKEEPER_API_KEY`（**环境变量引用，域文档零明文**——宪法 §十四.4）；非流式 `chat/completions`，max_tokens 1500、temperature 0.2、超时 120s、失败重试 1 次；双条件 system prompt 构造（OUTPUT_RULE 输出格式两条件一致保证公平）与 `判定: ACCEPT/REJECT` 解析逻辑从 eval-fp.js L59-123 原样平移。
 
 #### 2.3.4 L3 执行器增量（Mode B 受测会话 + fixture runner）

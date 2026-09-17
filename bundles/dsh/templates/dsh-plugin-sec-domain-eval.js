@@ -1183,12 +1183,33 @@ export function buildEvalDomain(opts = {}) {
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const evalDir = opts.evalDir || process.env.SEC_EVAL_DIR || path.join(dataDir, 'eval')
   const backend = createEvalFileBackend({ dataDir, evalDir })
-  // 孤儿扫描（宿主重启）：running → failed(host_restart)，不自动续跑
-  try { backend.orphanScan() } catch (e) { log(`孤儿扫描失败: ${e?.message}`) }
+  // 孤儿回收（L6 修复²）：不在构建期直写 backend.orphanScan()——直写 finishRun 绕过总线
+  // 事件流，candidate run 被回收后 know 侧 revision 永卡 evaluating（无 eval.report.built →
+  // 无 abort，生产已观测：rev_mu5q7djx21b066）。改由 reapOrphans 经 run_finish 受控动词收尾
+  // （outcome=failed + 无 verdict → know abort 回 candidate，失败不记成功）。
+  // 触发点：apply() 注册成功后延迟初扫 + 10min 周期扫描；测试/应急可显式调用。
+  const dispatchRef = opts.dispatch
+  const reapOrphans = async () => {
+    if (!dispatchRef) return { reaped: 0, skipped: 'no_dispatch' }
+    let orphans = []
+    try { orphans = backend.orphanScan({ dryRun: true }).orphans || [] }
+    catch (e) { log(`孤儿扫描失败: ${e?.message}`); return { reaped: 0, error: String(e?.message || e) } }
+    let reaped = 0
+    for (const rec of orphans) {
+      try {
+        const r = await dispatchRef('eval', 'run_finish', { run_id: rec.run_id, outcome: 'failed', error: 'host_restart' }, { actor: 'system' })
+        if (r && r.ok) reaped++
+        else log(`孤儿回收落账被拒 ${rec.run_id}: ${r?.error?.code || '?'} ${r?.error?.message || ''}`)
+      } catch (e) { log(`孤儿回收异常 ${rec.run_id}: ${e?.message}`) }
+      }
+    if (reaped > 0) log(`孤儿回收完成：${reaped} 个 running run 置 failed(host_restart)（经 run_finish 事件流）`)
+    return { reaped }
+  }
   return {
     manifest: EVAL_MANIFEST,
     handlers: makeHandlers({ ...opts, dataDir, evalDir }),
     backend,
+    reapOrphans,
   }
 }
 
@@ -1204,9 +1225,15 @@ export function apply(ctx, config = {}) {
         publish: (env) => { try { bus.events.publish(env) } catch (e) { log(`事件发布失败 ${env?.name}: ${e?.message}`) } },
       })
       const res = bus.registry.register(domain)
-      if (res.ok) log(`eval 域注册成功（registered=${res.registered}）`)
-      else log(`eval 域注册被拒：${res.error?.code} ${res.error?.message}`)
-      return () => {}
+      if (!res.ok) { log(`eval 域注册被拒：${res.error?.code} ${res.error?.message}`); return () => {} }
+      log(`eval 域注册成功（registered=${res.registered}）`)
+      // 孤儿回收：注册成功后延迟初扫（等全域注册齐——run_finish 须经总线派发自家处理器），
+      // 之后每 10min 周期扫（覆盖执行器进程猝死；新鲜度闸保护他进程在飞 run）。
+      const t0 = setTimeout(() => { domain.reapOrphans().catch((e) => log(`孤儿初扫异常: ${e?.message}`)) }, 2000)
+      t0.unref?.()
+      const iv = setInterval(() => { domain.reapOrphans().catch((e) => log(`孤儿周期扫描异常: ${e?.message}`)) }, 10 * 60 * 1000)
+      iv.unref?.()
+      return () => { clearTimeout(t0); clearInterval(iv) }
     })
   } catch (e) {
     log(`secDomainBus 注入失败：${e?.message}——eval 域未注册（总线必须先行挂载）`)

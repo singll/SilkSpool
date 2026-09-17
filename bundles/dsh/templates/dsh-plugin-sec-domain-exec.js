@@ -105,6 +105,11 @@ export const EXEC_MANIFEST = {
         force: { type: 'boolean' },
         provider: str(),
         model: str(),
+        // L6（学习专项 §10 调度器切换）：调度器派单可指定工作目录（=program 工作区路径，
+        // 会话反查/工作区归组依赖 header.cwd 一致）与宿主任务绑定号。均不向 model 开放：
+        // cwd 仅 actor=scheduler 可用（防任意目录逃逸），task_id 进 worker.spawned 事件供 task 域记账。
+        cwd: str({ description: 'worker 工作目录（仅调度器派单可传；须为已存在的目录，realpath 后校验）' }),
+        task_id: int({ minimum: 1, description: '宿主任务号（仅调度器派单携带，透传 exec.worker.spawned）' }),
       }, ['task']),
       idempotent: 'none',
       events: ['exec.worker.spawned', 'exec.worker.finished'],
@@ -747,7 +752,16 @@ function makeHandlers(opts) {
         timeoutMs = Math.min(timeoutMs, remaining)
       }
       const { runId, runDir } = repo.createRunDir('w')
-      const workCwd = runDir
+      // L6：调度器派单指定 cwd（program 工作区）——仅 actor=scheduler 可用；realpath 校验存在且为目录，
+      // 防路径逃逸/拼写错误落到随机 runDir。model/dashboard 不传 cwd 时维持 runDir 隔离语义不变。
+      let workCwd = runDir
+      if (args.cwd) {
+        if (String(ctx.actor || '') !== 'scheduler') throwErr('E_EXEC_CWD_FORBIDDEN', 'cwd 仅调度器派单可用', '模型/看板派单不传 cwd（默认 runDir 隔离）', false)
+        let resolved
+        try { resolved = fs.realpathSync(String(args.cwd)) } catch { throwErr('E_EXEC_CWD_INVALID', `cwd 不存在: ${args.cwd}`, '核对 program 工作区路径', false) }
+        try { if (!fs.statSync(resolved).isDirectory()) throwErr('E_EXEC_CWD_INVALID', `cwd 不是目录: ${args.cwd}`, '核对 program 工作区路径', false) } catch (e) { if (e.code === 'E_EXEC_CWD_INVALID') throw e; throwErr('E_EXEC_CWD_INVALID', `cwd 不可读: ${args.cwd}`, '核对 program 工作区路径', false) }
+        workCwd = resolved
+      }
       const fullTask = task.includes(ROE_ANCHOR) ? task : `${task}\n\n${ROE_BLOCK}`
 
       const dshArgs = [DSH_BIN, '--profile', 'headless']
@@ -771,6 +785,7 @@ function makeHandlers(opts) {
           onSpawn: ({ pid }) => ctx.emit({ name: 'exec.worker.spawned', payload: {
             run_id: runId, dedupe_key: dedupeKey, task: fullTask, cwd: workCwd, run_dir: runDir,
             timeout_sec: Math.round(timeoutMs / 1000), pid, origin_session_id: originSessionId,
+            task_id: Number.isInteger(args.task_id) ? args.task_id : null,
           } }),
         })
       } finally { activeWorkers-- }

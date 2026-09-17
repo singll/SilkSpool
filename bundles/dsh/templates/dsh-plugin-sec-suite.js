@@ -1158,7 +1158,12 @@ export function apply(ctx, config) {
         dashboardRpcRegistered = true
         // P11：调度循环只随宿主面 bundle 加载启动（preset 的 agent 面挂载 sidecars:false，跳过；
         // agent 可能跑在 worker 线程，globalThis 不共享，单例守卫不够，只能从入口侧收敛）
-        if (!config || config.sidecars !== false) startScheduler({ dataDir: DATA_DIR, audit, assetDb, exp, runWorker, pidAlive, getWorkspaceRegistry: () => workspaceRegistryRef, getSessionPersistence: () => sessionPersistenceRef })
+        // L6（学习专项 §10 调度器独立切换）：v4 调度循环停用——派单唯一持锁者切换为
+        // sec-domain-task 内建调度器（task_claim/finish/reap 命令化等价，先经契约测试钉死再切换，
+        // 同包部署原子生效、无并行第二派单循环窗口）。scheduler.js 模块与其测试保留，
+        // 回滚=恢复下方调用 + 停用 task 域调度器。
+        // if (!config || config.sidecars !== false) startScheduler({ dataDir: DATA_DIR, audit, assetDb, exp, runWorker, pidAlive, getWorkspaceRegistry: () => workspaceRegistryRef, getSessionPersistence: () => sessionPersistenceRef })
+        if (!config || config.sidecars !== false) process.stderr.write('[sec-suite] v4 调度循环已停用（L6 切换：task 域调度器为唯一持锁者）\n')
         // xray webhook 同样只在 web 宿主面启动（模块内单例幂等，不随 fiber dispose 回收）
         if (!config || config.sidecars !== false) startXrayWebhook({ dataDir: DATA_DIR, assetDb, hostOf })
         return async () => {

@@ -41,6 +41,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'sec-domain-know'
@@ -116,7 +117,7 @@ export const KNOW_MANIFEST = {
   description: '知识六仓（经验卡/文献/先验规程/漏洞卡/收割/体检——换目标也有用的可迁移方法论，目标事实归 fact 域）',
   owns: {
     tables: ['exp_cards', 'exp_embeddings', 'exp_feedback', 'exp_cards_archive', 'kb_docs', 'kb_fts', 'kb_embeddings', 'kb_docs_archive', 'playbooks', 'learning_episodes', 'knowledge_revisions', 'know_releases', 'know_exposures', 'know_adoptions', 'know_feedback', 'know_scores', 'know_gaps'],
-    files: ['data/rules/', 'data/vulncards/', 'data/harvest/', 'data/events/know.jsonl'],
+    files: ['data/rules/', 'data/vulncards/', 'data/harvest/', 'data/vault-import/', 'data/events/know.jsonl'],
   },
   commands: {
     exp_store: {
@@ -703,6 +704,24 @@ export const KNOW_MANIFEST = {
       agent_note: '（system/dashboard 专用）计分重放重建：从曝光/采用/episode/有效反馈四族不可变事实重算 know_scores 投影。编辑/撤回反馈后自动触发单卡重算；本命令用于全量对账与修复。',
       deprecated: false,
     },
+    // C32（L6，设计 §10 日常节奏 + vault 回流归属收口）：vault 回流同步。
+    // 自 v4 scheduler.js 迁入本域（v4 调度循环随 L6 调度器切换停用）——know 独占 kb 写入面，
+    // 调度器（task 域）只保留每日触发器（dispatch 本命令，弱联动失败不阻断）。
+    know_kb_vault_sync: {
+      actor: ['system', 'scheduler'],
+      schema: schema({
+        source_dir: str({ maxLength: 500 }),
+        remote: str({ maxLength: 500 }),
+        dry_run: { type: 'boolean' },
+      }, []),
+      idempotent: 'none',
+      events: ['know.kb.vault_synced'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 180000,
+      agent_note: '（system/scheduler 专用，不向模型/看板注册）vault 回流：rsync 拉取 Bellkeeper 安全域原子卡 → 新卡入库（taint 扫描 + 外部低置信）。防循环：frontmatter 含 source_system: silksecagent 的卡禁止回流。source_url 自然键去重，重放安全。source_dir 覆盖仅供测试/人工导入。',
+      deprecated: false,
+    },
   },
   queries: {
     exp_search: {
@@ -894,6 +913,20 @@ export const KNOW_MANIFEST = {
       predicates: [],
       agent_note: '学习状态聚合：每张卡的曝光/采用/有效结果计数与计分、反馈桥健康、检索缺口。报告效果与成本（非 uses 榜单）；模型自评行单列不计已验证正例。',
     },
+    // Q23（L6，设计 §10 证据对照）：一次学习 → 实际结果的可追溯链投影。
+    // 链：episode（证据清单/FGS 快照引用）→ 候选 revision（评测报告引用）→ 批准（auth_ref）→ 发布/撤回账本 → 采用 → 反馈/计分。
+    // 撤回操作不在本查询——面板写操作只走 C27 know_release_revoke。
+    know_learning_trace: {
+      actor: ['model', 'dashboard', 'human', 'system'],
+      params: schema({
+        episode_id: str({ maxLength: 128 }),
+        artifact_kind: en([...REVISION_ARTIFACT_KINDS, ''], { default: '' }),
+        artifact_id: str({ maxLength: 128 }),
+        limit: int({ minimum: 1, maximum: 200 }),
+      }, []),
+      predicates: [],
+      agent_note: '学习追溯链（只读）：按 episode 或 artifact 聚合 episode/证据引用/revision/发布账本/采用/反馈/计分；恢复旧版走 know_release_revoke。',
+    },
   },
   events: {
     'know.exp.stored': { payload: { type: 'object' }, redact: [] },
@@ -925,6 +958,7 @@ export const KNOW_MANIFEST = {
     'know.exposure.recorded': { payload: { type: 'object' }, redact: [] },
     'know.feedback.ingested': { payload: { type: 'object' }, redact: [] },
     'know.scores.rebuilt': { payload: { type: 'object' }, redact: [] },
+    'know.kb.vault_synced': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'fact.bb.published': { handler: 'onFactBbPublished', mode: 'async', as: 'reactor' },
@@ -1018,6 +1052,31 @@ function makeHandlers(opts) {
   const CONF_RANK = { high: 3, medium: 2, low: 1 }
   const SRC_RANK = { 'human-verified': 3, '实战': 2, external: 1 }
 
+  // kb 导入核心（kb_import 与 know_kb_vault_sync 共用；事件由调用方汇总，去重返回 E_DUPLICATE 供计数）
+  async function kbImportCore(repo, { title, url, body, source, category, curated }) {
+    const dup = repo.findKbByUrl(url)
+    if (dup) return { ok: false, code: 'E_DUPLICATE', doc_id: dup.id }
+    const tainted = scanInjection(body)
+    const cat = category || classify(body)
+    const now = Date.now()
+    const jitter = ((docIdHash(title) % 31) - 15) * DAY
+    const revalidate_by = curated ? null : (now + 90 * DAY + jitter)
+    // 正文先落文件（tmp+rename 原子）；fileId 带标题哈希防同毫秒批量导入撞名
+    const fileId = `${now.toString(36)}-${docIdHash(String(title)).toString(36)}`
+    const file = repo.knowledgeWrite(fileId, `# ${title}\n\n${body}\n`)
+    const r = repo.insertKbDoc({
+      title: String(title), file, source_url: String(url), tainted, bodyExcerpt: String(body).slice(0, 100000),
+      mem_class: 'durable', status: curated ? 'curated' : 'active', revalidate_by, justification: source || 'web',
+      category: cat, content_hash: sha1(body),
+    })
+    embeddings().then(async (em) => {
+      if (!em) return
+      try { const vec = await em.embed(`${title} ${String(body).slice(0, 2000)}`); repo.replaceKbEmbedding(r.id, vec) }
+      catch (e) { log(`kb embedding 失败 doc=${r.id}: ${e?.message}`); repo.updateKbDoc(r.id, { last_fetch_error: `embedding_failed:${String(e?.message || e).slice(0, 200)}` }) }
+    }).catch((e) => log(`kb embedding 模块加载失败 doc=${r.id}: ${e?.message}`))
+    return { ok: true, doc_id: r.id, category: cat, curated: !!curated, revalidate_by, tainted }
+  }
+
   // ---- L5（设计 §8.1）：采用事实落账（know_adopt / ledger.card_usage 回流共用）----
   function recordAdoption(repo, opts) {
     const now = Date.now()
@@ -1081,6 +1140,70 @@ function makeHandlers(opts) {
     repo.upsertScore(row)
     return row
   }
+
+  // L6（设计 §10 逐域视图）：scores 按 漏洞类型族/技术栈面/身份前置 分层聚合效果与成本。
+  // 组级只读聚合：样本量与不确定性可见（confidence 档），小样本沿用 L5 保守平滑口径（卡级 score 已含 sample/(sample+2)）。
+  function groupScoresByDomain(repo, scores) {
+    const safeParse = (s) => { try { return JSON.parse(s) } catch { return null } }
+    const normPrereq = (p) => String(p || '').split(/（|\(/)[0].trim() || '未声明'
+    const groups = { by_family: new Map(), by_surface: new Map(), by_prerequisite: new Map() }
+    const addTo = (map, key, row) => {
+      let g = map.get(key)
+      if (!g) {
+        g = { key, artifacts: 0, exposures: 0, adoptions: 0, verified_positives: 0, valid_cleans: 0, inconclusives: 0, feedback_pos: 0, feedback_neg: 0, cost_requests: 0, cost_tokens: 0, cost_ms: 0, sample_size: 0, score_sum: 0 }
+        map.set(key, g)
+      }
+      g.artifacts++
+      g.exposures += row.exposures || 0
+      g.adoptions += row.adoptions || 0
+      g.verified_positives += row.verified_positives || 0
+      g.valid_cleans += row.valid_cleans || 0
+      g.inconclusives += row.inconclusives || 0
+      g.feedback_pos += row.feedback_pos || 0
+      g.feedback_neg += row.feedback_neg || 0
+      g.cost_requests += row.cost_requests || 0
+      g.cost_tokens += row.cost_tokens || 0
+      g.cost_ms += row.cost_ms || 0
+      g.sample_size += row.sample_size || 0
+      g.score_sum += row.score || 0
+    }
+    for (const row of scores) {
+      let family = ''; let surface = ''; let prereqs = []
+      const rev = repo.listRevisions({ artifact_kind: row.artifact_kind, artifact_id: row.artifact_id, limit: 1 }).rows[0]
+      if (rev) {
+        const pred = safeParse(rev.applies_predicates) || {}
+        const content = safeParse(rev.content_json) || {}
+        family = String(pred.card_family || '')
+        surface = String(pred.surface || (content.appliesTo && content.appliesTo.surface) || '')
+        const pr = content.appliesTo && Array.isArray(content.appliesTo.prerequisites) ? content.appliesTo.prerequisites : []
+        prereqs = pr.map(normPrereq)
+      }
+      if (!family) family = row.artifact_kind === 'vulncard' ? '未分组' : `kind:${row.artifact_kind}`
+      if (!surface) surface = '未声明'
+      if (!prereqs.length) prereqs = ['未声明']
+      addTo(groups.by_family, family, row)
+      addTo(groups.by_surface, surface, row)
+      for (const p of new Set(prereqs)) addTo(groups.by_prerequisite, p, row)
+    }
+    const finalize = (map) => [...map.values()].map((g) => ({
+      key: g.key, artifacts: g.artifacts, exposures: g.exposures, adoptions: g.adoptions,
+      verified_positives: g.verified_positives, valid_cleans: g.valid_cleans, inconclusives: g.inconclusives,
+      feedback_pos: g.feedback_pos, feedback_neg: g.feedback_neg,
+      cost: { requests: g.cost_requests, tokens: g.cost_tokens, ms: g.cost_ms },
+      sample_size: g.sample_size,
+      score: Math.round((g.score_sum / Math.max(1, g.artifacts)) * 100) / 100,
+      // 不确定性可见：小样本组结论保守（信心档 low 时不作晋升依据）
+      confidence: g.sample_size < 5 ? 'low（小样本，结论保守）' : g.sample_size < 20 ? 'medium' : 'high',
+    })).sort((a, b) => b.sample_size - a.sample_size)
+    return {
+      by_family: finalize(groups.by_family),
+      by_surface: finalize(groups.by_surface),
+      by_prerequisite: finalize(groups.by_prerequisite),
+      note: '分层视图=效果与成本（曝光/采用/有效结果/反馈/成本），不是 uses 榜单；小样本保守平滑口径沿用 L5。',
+    }
+  }
+
+  function safeParseArr(s) { try { const v = JSON.parse(s); return Array.isArray(v) ? v : [] } catch { return [] } }
 
   // 全量重建（治理对账）：枚举曝光/采用/episode 归集出现过的 artifact 逐卡重放
   function rebuildAllScores(repo) {
@@ -1450,31 +1573,69 @@ function makeHandlers(opts) {
     },
 
     kb_import: async (args, repo) => {
-      const dup = repo.findKbByUrl(args.url)
-      if (dup) throwErr('E_DUPLICATE', `url 已存在（doc_id=${dup.id}）`, '同 URL 已导入；如需刷新用 kb_revalidate', false)
-      const tainted = scanInjection(args.body)
-      const category = args.category || classify(args.body)
-      const curated = args.source === 'rules-curated'
-      const now = Date.now()
-      const jitter = ((docIdHash(args.title) % 31) - 15) * DAY
-      const revalidate_by = curated ? null : (now + 90 * DAY + jitter)
-      // 正文先落文件（tmp+rename 原子）
-      const fileId = now.toString(36)
-      const file = repo.knowledgeWrite(fileId, `# ${args.title}\n\n${args.body}\n`)
-      const r = repo.insertKbDoc({
-        title: args.title, file, source_url: args.url, tainted, bodyExcerpt: args.body.slice(0, 100000),
-        mem_class: 'durable', status: curated ? 'curated' : 'active', revalidate_by, justification: args.source || 'web',
-        category, content_hash: sha1(args.body),
+      // L6：导入核心抽出共用（know_kb_vault_sync 批量回流复用同一入库路径——taint 扫描/分类/复验期一致）
+      const r = await kbImportCore(repo, {
+        title: args.title, url: args.url, body: args.body,
+        source: args.source, category: args.category, curated: args.source === 'rules-curated',
       })
-      embeddings().then(async (em) => {
-        if (!em) return
-        try { const vec = await em.embed(`${args.title} ${args.body.slice(0, 2000)}`); repo.replaceKbEmbedding(r.id, vec) }
-        catch (e) { log(`kb embedding 失败 doc=${r.id}: ${e?.message}`); repo.updateKbDoc(r.id, { last_fetch_error: `embedding_failed:${String(e?.message || e).slice(0, 200)}` }) }
-      }).catch((e) => log(`kb embedding 模块加载失败 doc=${r.id}: ${e?.message}`))
+      if (!r.ok) throwErr(r.code, `url 已存在（doc_id=${r.doc_id}）`, '同 URL 已导入；如需刷新用 kb_revalidate', false)
       return {
-        data: { doc_id: r.id, category, curated, revalidate_by, tainted },
-        events: [{ name: 'know.kb.imported', payload: { doc_id: r.id, category, curated, tainted, revalidate_by } }],
-        before: null, after: { doc_id: r.id },
+        data: { doc_id: r.doc_id, category: r.category, curated: r.curated, revalidate_by: r.revalidate_by, tainted: r.tainted },
+        events: [{ name: 'know.kb.imported', payload: { doc_id: r.doc_id, category: r.category, curated: r.curated, tainted: r.tainted, revalidate_by: r.revalidate_by } }],
+        before: null, after: { doc_id: r.doc_id },
+      }
+    },
+
+    // C32（L6，设计 §10 日常节奏）：vault 回流同步。自 v4 scheduler.js kbVaultSync 迁入本域
+    // （kb 写入面归 know 独占；task 域调度器只保留每日触发器）。
+    // 注意：rsync 拉取在命令事务内执行（async spawn 不阻塞事件循环；DB 写锁持有 ≤ rsync 时长，
+    // 故 --timeout 收紧至 30s / 总上限 45s；每日一次低谷窗口，拉取失败 retryable 下个 tick 重试）。
+    know_kb_vault_sync: async (args, repo) => {
+      const stats = { imported: 0, skipped_loop: 0, skipped_existing: 0, errors: 0 }
+      const errorNotes = []
+      let srcDir = args.source_dir ? String(args.source_dir) : ''
+      if (!srcDir) {
+        const cacheDir = path.join(dataDir, 'vault-import')
+        fs.mkdirSync(cacheDir, { recursive: true })
+        const remote = String(args.remote || process.env.SEC_VAULT_IMPORT_REMOTE || 'silkspool@192.168.7.230:/mnt/NAS/data/knowledge/vault/安全/')
+        const r = await new Promise((resolve) => {
+          execFile('rsync', ['-a', '--timeout=30', remote, cacheDir + '/'], { timeout: 45000, encoding: 'utf8' },
+            (error, _stdout, stderr) => resolve({ error, stderr }))
+        })
+        if (r.error) throwErr('E_BACKEND_UNAVAILABLE', `vault rsync 拉取失败: ${String(r.stderr || r.error.message || r.error).slice(-200)}`, '检查 vault 远端可达性/凭据；下一个日常 tick 自动重试', true)
+        srcDir = cacheDir
+      }
+      if (!fs.existsSync(srcDir) || !fs.statSync(srcDir).isDirectory()) {
+        throwErr('E_NOT_FOUND', `vault 来源目录不存在: ${srcDir}`, 'source_dir 需为本机已存在的目录（测试/人工导入通道）', false)
+      }
+      for (const f of fs.readdirSync(srcDir)) {
+        if (!f.endsWith('.md')) continue
+        const full = path.join(srcDir, f)
+        let head = ''
+        try { head = fs.readFileSync(full, 'utf8').slice(0, 2000) } catch { stats.errors++; continue }
+        // 防循环铁律：导出物禁止回流（导出卡 frontmatter 带 source_system: silksecagent）
+        if (/^source_system:\s*silksecagent/m.test(head)) { stats.skipped_loop++; continue }
+        const srcUrl = 'vault://安全/' + f
+        if (repo.findKbByUrl(srcUrl)) { stats.skipped_existing++; continue }
+        if (args.dry_run) { stats.imported++; continue }
+        try {
+          let body = fs.readFileSync(full, 'utf8')
+          if (body.length > 524288) { stats.errors++; errorNotes.push(`${f}: 超 512KB`); continue }
+          body = body.replace(/^---\n[\s\S]*?\n---\n/, '') // 剥 frontmatter（循环判定已在头部完成）
+          const r = await kbImportCore(repo, {
+            title: f.replace(/\.md$/, ''), url: srcUrl, body,
+            source: 'vault 回流：Bellkeeper 安全域原子卡，外部公开知识提炼，供 sec 侧方法论借鉴',
+          })
+          if (r.ok) stats.imported++
+          else if (r.code === 'E_DUPLICATE') stats.skipped_existing++
+          else { stats.errors++; errorNotes.push(`${f}: ${r.code}`) }
+        } catch (e) { stats.errors++; errorNotes.push(`${f}: ${String(e?.message || e).slice(0, 120)}`) }
+        if (stats.imported >= 500) { errorNotes.push('单次同步上限 500 篇，其余下个周期续传'); break }
+      }
+      return {
+        data: { ...stats, dry_run: !!args.dry_run, source_dir: srcDir, error_notes: errorNotes.slice(0, 10) },
+        events: [{ name: 'know.kb.vault_synced', payload: { ...stats, dry_run: !!args.dry_run } }],
+        after: { ...stats },
       }
     },
 
@@ -1925,6 +2086,9 @@ function makeHandlers(opts) {
       if (!r.created) {
         return { data: { exposure_id: null, recorded: false, duplicate: 'exposure', bucket } }
       }
+      // L6：曝光落账同步触发单卡计分重算（Q22 逐域视图/学习面板的曝光计数须新鲜；
+      // 单卡重算=聚合查询，量级小；不改历史行，幂等安全）
+      rebuildArtifactScore(repo, args.artifact_kind, String(args.artifact_id))
       return {
         data: { exposure_id: exposureId, recorded: true, bucket },
         events: [{ name: 'know.exposure.recorded', payload: { exposure_id: exposureId, artifact_kind: args.artifact_kind, artifact_id: String(args.artifact_id), selected: args.selected !== false, program_id: programId || null } }],
@@ -2452,10 +2616,70 @@ function makeHandlers(opts) {
       const activeReleases = repo.listReleases({ status: 'active', limit: 500 }).rows
       return {
         scores,
+        // L6（设计 §10 逐域视图）：按 漏洞类型族/技术栈面/身份前置 分层聚合效果与成本。
+        // 样本量与不确定性可见（sample_size + confidence），小样本沿用 L5 保守平滑（score 已含 sample/(sample+2)）。
+        // 这是效果/成本分层视图，不是 uses 榜单（原始使用次数不展示、不参与排序）。
+        domains: groupScoresByDomain(repo, scores),
         feedback: { total: fbCount, bridge: 'dsh-message-feedback（web profile 已挂载；headless 无 UI 反馈面）', note: '人工有用/错误与漏洞真值分开——有用=体验/方法价值，成立与否仍需独立证据' },
         gaps,
         releases_active: activeReleases.length,
         note: '三条计数分离：曝光（know_exposures）/ 采用（know_adoptions）/ 有效结果（learning_episodes 关联推导，model-proposed 自评单列）。计分可重放重建（know_scores_rebuild）。',
+      }
+    },
+
+    // Q23（L6，设计 §10 证据对照）：一次学习 → 实际结果的可追溯链（只读投影）。
+    know_learning_trace: async (args, repo) => {
+      const lim = Math.min(Number(args.limit) || 50, 200)
+      let episode = null
+      let artifactKind = String(args.artifact_kind || '')
+      let artifactId = String(args.artifact_id || '')
+      if (args.episode_id) {
+        episode = repo.getEpisode(String(args.episode_id))
+        if (!episode) throwErr('E_NOT_FOUND', `episode 不存在: ${args.episode_id}`, '先 know_episode_list 定位 episode_id', false)
+        if (!artifactId && episode.card_id) { artifactId = String(episode.card_id); if (!artifactKind) artifactKind = 'vulncard' }
+      }
+      if (!artifactId) throwErr('E_SCHEMA', '需要 episode_id 或 artifact_kind + artifact_id', '追溯链以 episode（一次学习）或 artifact（一张卡）为入口', false)
+      if (!artifactKind) artifactKind = 'vulncard'
+      const revisions = repo.listRevisions({ artifact_kind: artifactKind, artifact_id: artifactId, limit: lim }).rows
+      const releases = repo.listReleases({ artifact_kind: artifactKind, artifact_id: artifactId, limit: lim }).rows
+      const episodeRows = repo.listEpisodesByCard(artifactId, lim)
+      if (episode && !episodeRows.some((e) => e.episode_id === episode.episode_id)) episodeRows.unshift(episode)
+      const exposures = repo.listExposures({ artifact_kind: artifactKind, artifact_id: artifactId, limit: 20 })
+      const adoptions = repo.listAdoptions({ artifact_kind: artifactKind, artifact_id: artifactId, limit: 20 })
+      const feedback = repo.listFeedbackForArtifact(artifactKind, artifactId, 20)
+      const score = repo.getScore(artifactKind, artifactId)
+      const trimEpisode = (e) => ({
+        episode_id: e.episode_id, outcome: e.outcome, reason_code: e.reason_code,
+        program_id: e.program_id, task_id: e.task_id, exec_run_id: e.exec_run_id, session_id: e.session_id,
+        card_version: e.card_version, source_event_name: e.source_event_name, source_credibility: e.source_credibility,
+        evidence_refs: safeParseArr(e.evidence_refs), fgs_snapshot_path: e.fgs_snapshot_path, fgs_snapshot_hash: e.fgs_snapshot_hash,
+        cost: { requests: e.request_count, tokens: e.token_count, ms: e.duration_ms },
+        observed_at: e.observed_at, created_at: e.created_at,
+      })
+      const trimRevision = (r) => ({
+        revision_id: r.revision_id, status: r.status, parent_revision_id: r.parent_revision_id,
+        content_digest: r.content_digest, source_kind: r.source_kind, source_ref: r.source_ref,
+        needs_revalidate: !!r.needs_revalidate, eval_report_ref: r.eval_report_ref || null,
+        change_note: r.change_note, created_by_actor: r.created_by_actor, created_at: r.created_at,
+      })
+      return {
+        subject: { artifact_kind: artifactKind, artifact_id: artifactId, episode_id: episode ? episode.episode_id : null },
+        chain: {
+          episodes: episodeRows.map(trimEpisode),
+          revisions: revisions.map(trimRevision),
+          releases,
+          exposures: { total: exposures.total, recent: exposures.rows },
+          adoptions: { total: adoptions.total, recent: adoptions.rows },
+          feedback: feedback.map((f) => ({ feedback_id: f.feedback_id, revision: f.revision, rating: f.rating, category: f.category, note: f.note, tombstone: !!f.tombstone, created_at: f.created_at })),
+          score: score || null,
+        },
+        links: {
+          eval_report_refs: [...new Set(revisions.map((r) => r.eval_report_ref).filter(Boolean))],
+          approval_refs: [...new Set(releases.map((r) => r.auth_ref).filter(Boolean))],
+          evidence_refs: [...new Set(episodeRows.flatMap((e) => safeParseArr(e.evidence_refs)))],
+          fgs_snapshots: [...new Set(episodeRows.map((e) => e.fgs_snapshot_path).filter(Boolean))],
+        },
+        note: '五问口径：学到了什么=revisions/episodes；依据=evidence_refs + eval_report_ref（评测报告归 eval 域）；比旧版改善多少=评测配对报告 totals；在哪生效=releases(status=active 的 scope)；如何恢复旧版=know_release_revoke（面板只走 C27，不直写）。',
       }
     },
   }

@@ -1,0 +1,60 @@
+{
+  "_comment": "L6（设计 §5 P1 XSS 误报消减）：区分反射/编码/DOM sink/实际执行的上下文判定卡。反射本身不能直接 confirmed；无害执行标记只在隔离浏览器中验证。",
+  "artifact_kind": "vulncard",
+  "artifact_id": "VC-XSS-001",
+  "source_kind": "seed",
+  "source_ref": "data-seed/know-revisions/vc-xss-r1.json",
+  "change_note": "首版候选：XSS 上下文分级判定——反射≠可执行，编码/过滤对照 + 隔离浏览器无害标记执行",
+  "applies_predicates": {
+    "surface": "web",
+    "card_family": "P1-xss",
+    "extends": null
+  },
+  "content": {
+    "id": "VC-XSS-001",
+    "version": 1,
+    "parentVersion": null,
+    "title": "XSS 上下文分级判定（反射/编码/DOM sink/实际执行）",
+    "appliesTo": {
+      "surface": "web",
+      "prerequisites": [
+        "isolated_browser（隔离浏览器环境可用于无害执行标记验证；无则只能做到反射/编码分级，不得 confirmed）",
+        "harmless_marker（无害执行标记约定：无网络外联、无副作用的标记字符串，如 window.__xss_marker 赋值）",
+        "scope_authorized（目标页面在当前 Program 授权范围内）"
+      ],
+      "invalidatedBy": [
+        "frontend_change（前端渲染/编码逻辑变更——上下文判定失效）",
+        "csp_change（CSP 策略变更——可利用性结论失效）"
+      ]
+    },
+    "hypothesis": "XSS 成立要求注入内容在具体输出上下文中未被编码/过滤且可执行：仅反射（reflection）不构成漏洞；需区分 HTML 正文/属性/JS 字符串/DOM sink 上下文，并经无害标记在隔离浏览器中确认实际执行。",
+    "minimalProbe": "对每个反射点最多 4 个探针：① 上下文指纹（回显位置判定）② 编码对照（特殊字符回显形态）③ 上下文逃逸标记 ④ 隔离浏览器无害执行标记。不弹窗、不外联、不采集。",
+    "positiveControl": "已知可执行的 fixture 页面（fixture-xss-a）在隔离浏览器中触发无害标记——对照失败判定浏览器环境不可用。",
+    "negativeControl": "已修复页面（fixture-xss-b，输出编码完整）所有探针被编码、标记不执行。编码/过滤对照失败（标记执行）即误报消减失败信号。",
+    "evidenceRequired": [
+      "reflection_context（回显上下文判定：正文/属性/JS 字符串/DOM sink）",
+      "encoding_trace（特殊字符回显形态对照记录）",
+      "execution_marker（隔离浏览器无害标记执行证据——确认成立的必要条件）",
+      "page_source_ref（页面来源与完整轨迹引用）"
+    ],
+    "stopConditions": [
+      "no_isolated_browser（隔离浏览器不可用——停在反射/编码分级，不升级 confirmed）",
+      "real_user_session（探测命中真实用户会话页面——停止，仅在授权测试路径继续）",
+      "scope_changed（目标或授权范围变更——立即停止并上报）"
+    ],
+    "fixtures": {
+      "vulnerable": "fixture-xss-a（未编码反射的受控页面：标记可执行）",
+      "patched": "fixture-xss-b（输出编码完整的受控页面：标记不执行）",
+      "invalid_env": "fixture-xss-c（环境异常：页面 500——正对照应失败）"
+    },
+    "budget": { "maxRequests": 12, "maxSeconds": 240 },
+    "failureNotes": "仅反射无执行=反射级线索（review，不入 confirmed）；编码完整=unlikely；标记执行+上下文证据=confirmed；隔离浏览器不可用记 blocked_env（环境前置缺口）；扫描器命中但无上下文判定一律留 candidate。",
+    "changeNote": "首版候选：XSS 上下文分级判定卡（设计 §5 P1），核心是误报消减——反射不能直接 confirmed。",
+    "applicabilityConfidence": "medium",
+    "suggestedAlternatives": [
+      "无隔离浏览器时：产出反射/编码分级报告供人工复核，不做执行判定",
+      "DOM sink 场景无源码时：只做 sink 输入可达性判定"
+    ],
+    "evalRef": null
+  }
+}

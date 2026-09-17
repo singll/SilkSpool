@@ -424,6 +424,84 @@ export async function handleDashboardRpc(endpoint, payload) {
       }
       return deps.assetDb.evalStats()
     }
+    // ---- L6（学习专项 §10）：学习面板——普通业务语言五问 + 证据对照 + 逐域视图 ----
+    // 看板五问：①学到了什么 ②依据是什么 ③比旧版改善多少 ④在哪生效 ⑤如何恢复旧版。
+    // 全部只走域投影（Q22 know_learning_status / Q19-Q20 发布账本与版本链 / Q21 检索解释 /
+    // Q17-Q18 候选版本 / episode 投影），技术字段收进 detail 供展开。总线缺席 fail-closed
+    // （学习面板无 v4 直写兜底——学习台账只在 v5 域）。
+    case 'learningOverview': {
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (!bus) throw new Error('学习台账需要 v5 领域总线（本端点无 v4 兜底）')
+      const artifactKind = String(p.artifact_kind || '')
+      const q = (d, n, a) => bus.query(d, n, a, { actor: 'dashboard' })
+      const [status, episodes, revisions, releases, evals] = await Promise.all([
+        q('know', 'learning_status', { artifact_kind: artifactKind }),
+        q('know', 'episode_list', { limit: 30 }),
+        q('know', 'revision_list', { artifact_kind: artifactKind, limit: 50 }),
+        q('know', 'release_list', { artifact_kind: artifactKind, limit: 50 }),
+        q('eval', 'stats', {}).catch(() => null),
+      ])
+      if (!status.ok) throw new Error(`学习状态查询失败: ${status.error?.code || ''} ${status.error?.message || ''}`)
+      const sd = status.data || {}
+      const revRows = revisions.ok ? (revisions.rows || revisions.data?.rows || []) : []
+      const relRows = releases.ok ? (releases.rows || releases.data?.rows || []) : []
+      const epRows = episodes.ok ? (episodes.rows || episodes.data?.rows || []) : []
+      const byOutcome = {}
+      for (const e of epRows) byOutcome[e.outcome] = (byOutcome[e.outcome] || 0) + 1
+      const evalLive = evals && evals.ok && evals.data ? (evals.data.live || evals.data) : null
+      // 五问聚合（普通业务语言；技术字段在 *_detail 里，用户不必理解 episode/outbox）
+      return {
+        learned: {
+          summary: `学习记录 ${episodes.total ?? epRows.length} 条（近 30 条：成立 ${byOutcome.verified_positive || 0} / 排除误报 ${byOutcome.verified_negative || 0} / 未定论 ${byOutcome.inconclusive || 0}）；候选版本 ${revisions.total ?? revRows.length} 个，生效发布 ${sd.releases_active ?? relRows.filter((r) => r.status === 'active').length} 个`,
+          candidates: revRows.slice(0, 20),
+          episodes_recent: epRows.slice(0, 15),
+        },
+        evidence: {
+          summary: '每条学习记录携带证据引用与执行快照哈希；点击"证据对照"可看完整链（记录→版本→评测→批准→发布→采用→反馈）',
+          note: sd.note || '',
+        },
+        improvement: {
+          summary: evalLive ? `对照评测累计 ${evalLive.total ?? 0} 次` : '尚无对照评测记录',
+          eval: evalLive,
+          scores: sd.scores || [],
+        },
+        effective_where: {
+          summary: `${sd.releases_active ?? 0} 个发布正在生效（按适用范围分层）`,
+          releases: relRows,
+        },
+        rollback: {
+          summary: '生效中的发布可在"证据对照"里撤回，系统自动恢复该范围上一版本；撤回动作留痕可审计',
+          hint: '撤回走受控动词 know_release_revoke（面板不直写台账）',
+        },
+        // 逐域视图：按漏洞类型族/技术栈/身份前置分层（样本量与不确定性可见，非 uses 榜单）
+        domains: sd.domains || null,
+        feedback: sd.feedback || null,
+        gaps: sd.gaps || [],
+      }
+    }
+    case 'learningTrace': {
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (!bus) throw new Error('证据对照需要 v5 领域总线（本端点无 v4 兜底）')
+      const args = { limit: Math.min(Number(p.limit) || 50, 200) }
+      if (p.episode_id) args.episode_id = String(p.episode_id)
+      if (p.artifact_kind) args.artifact_kind = String(p.artifact_kind)
+      if (p.artifact_id) args.artifact_id = String(p.artifact_id)
+      const r = await bus.query('know', 'learning_trace', args, { actor: 'dashboard' })
+      if (!r.ok) { const err = new Error(String(r.error?.message || '追溯链查询失败') + (r.error?.hint ? `（${r.error.hint}）` : '')); err.code = r.error?.code; throw err }
+      return r.data
+    }
+    case 'learningRevokeRelease': {
+      const releaseId = String(p.release_id || '')
+      const reason = String(p.reason || '')
+      if (!releaseId) throw new Error('learningRevokeRelease 需要 release_id')
+      if (reason.trim().length < 10) throw new Error('撤回原因至少 10 字（可审计留痕）')
+      // 面板写操作只走受控动词 C27（16-dashboard §纪律：禁止旁路直写学习台账）
+      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+      if (!bus) throw new Error('撤回需要 v5 领域总线（本端点无 v4 兜底）')
+      const r = await bus.dispatch('know', 'release_revoke', { release_id: releaseId, reason }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      if (r.ok) return { ok: true, ...(r.data || {}) }
+      const err = new Error(String(r.error?.message || '撤回失败') + (r.error?.hint ? `（${r.error.hint}）` : '')); err.code = r.error?.code; throw err
+    }
     case 'audit': {
       // v5：bus.audit_tail（总线审计尾读）接管（16-dashboard §1.7 #14）；v4 tailAudit 兜底（观察期）
       const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null

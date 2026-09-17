@@ -317,6 +317,29 @@ test('spawn_worker: 伪 worker 完成 + worker.spawned/finished 事件', async (
 })
 
 // ---------------------------------------------------------------------------
+// 6b. L6（学习专项 §10 调度器切换）：spawn_worker cwd/task_id——调度器派单契约
+// ---------------------------------------------------------------------------
+
+test('L6: spawn_worker cwd 仅 scheduler 可用 + 目录校验 + spawned 事件带 task_id/cwd', async () => {
+  const { dir, bus } = makeEnv()
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-exec-cwd-'))
+  // model 传 cwd → 拒（防任意目录逃逸）
+  const denied = await bus.dispatch('exec', 'spawn_worker', { task: '逃逸尝试', cwd: '/etc' }, { actor: 'model' })
+  assert.equal(denied.ok, false)
+  assert.equal(denied.error.code, 'E_EXEC_CWD_FORBIDDEN')
+  // scheduler 传不存在目录 → 拒
+  const bad = await bus.dispatch('exec', 'spawn_worker', { task: '坏目录', cwd: '/no/such/dir-l6' }, { actor: 'scheduler' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'E_EXEC_CWD_INVALID')
+  // scheduler 传合法目录 + task_id → 放行，spawned 事件带 task_id 与 cwd（任务域强联动记账依据）
+  const ok = await bus.dispatch('exec', 'spawn_worker', { task: '调度派单', timeout: 5, cwd: ws, task_id: 4242 }, { actor: 'scheduler' })
+  assert.equal(ok.ok, true, ok.error?.message)
+  const spawned = readEvents(dir).find((e) => e.name === 'exec.worker.spawned')
+  assert.equal(spawned.payload.task_id, 4242)
+  assert.equal(spawned.payload.cwd, fs.realpathSync(ws), '工作区路径 realpath 后透传')
+})
+
+// ---------------------------------------------------------------------------
 // 7. 别名
 // ---------------------------------------------------------------------------
 

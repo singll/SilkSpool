@@ -102,6 +102,8 @@ function createRepo(db) {
     ['budget_timeout_sec', 'budget_timeout_sec INTEGER'],
     ['active_run_id', 'active_run_id TEXT'],
     ['after_delay_seconds', 'after_delay_seconds INTEGER NOT NULL DEFAULT 0'],
+    // L6（学习专项 §10）：任务目标类型（research 默认 / learn-daily / eval-batch / change-retest）
+    ['goal', 'goal TEXT'],
   ]) ensureCol(db, 'tasks', col, ddl)
   ensureCol(db, 'task_runs', 'session_id', 'session_id TEXT')
   // workers.session_id 保持历史来源会话语义；新列只保存经核实的子会话。
@@ -129,13 +131,14 @@ function createRepo(db) {
       const r = db.prepare(`
         INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
           session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at,
-          provider, model, reasoning_effort, after_delay_seconds)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
+          provider, model, reasoning_effort, after_delay_seconds, goal)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)
       `).run(
         String(row.program_id), row.parent_id ?? null, row.phase === undefined || row.phase === null ? null : String(row.phase),
         String(row.objective), row.priority ?? 5, row.assignee ? String(row.assignee) : '', row.budget_tokens ?? null,
         row.session_id ?? null, row.schedule_kind ?? null, row.run_at ?? null, row.every_seconds ?? null, row.next_run_at ?? null,
         repo.now(), repo.now(), row.provider ?? null, row.model ?? null, row.reasoning_effort ?? null, row.after_delay_seconds ?? 0,
+        row.goal ? String(row.goal) : null,
       )
       return Number(r.lastInsertRowid)
     },
@@ -365,12 +368,13 @@ function createRepo(db) {
   return repo
 }
 
-function taskWhere({ program_id = '', status = '', phase = '', q = '', bucket = '', scheduled = '' }) {
+function taskWhere({ program_id = '', status = '', phase = '', q = '', bucket = '', scheduled = '', goal = '' }) {
   let where = '1=1'
   const args = []
   if (program_id) { where += ' AND program_id = ?'; args.push(String(program_id)) }
   if (status) { where += ' AND status = ?'; args.push(String(status)) }
   if (phase) { where += ' AND phase = ?'; args.push(String(phase)) }
+  if (goal) { where += ' AND goal = ?'; args.push(String(goal)) }
   if (q) { where += ' AND objective LIKE ?'; args.push(`%${q}%`) }
   if (bucket === 'active') where += " AND status IN ('queued', 'running', 'blocked')"
   else if (bucket === 'history') where += " AND status IN ('done', 'failed', 'cancelled')"

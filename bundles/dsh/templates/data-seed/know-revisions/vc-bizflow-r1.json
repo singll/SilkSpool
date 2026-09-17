@@ -1,0 +1,60 @@
+{
+  "_comment": "L6（设计 §5 P1 业务流程与状态约束）：状态不变量/跳步校验检查卡。部署通道与 vc-authz-r1 相同（setup 幂等提案，候选≠发布）。操作限定在可恢复测试数据；涉及资金/消息/外部副作用只走隔离环境或明确批准的测试流程。",
+  "artifact_kind": "vulncard",
+  "artifact_id": "VC-BIZFLOW-001",
+  "source_kind": "seed",
+  "source_ref": "data-seed/know-revisions/vc-bizflow-r1.json",
+  "change_note": "首版候选：从接口文档与流程轨迹提出状态不变量，校验缺少的状态/顺序约束",
+  "applies_predicates": {
+    "surface": "api",
+    "card_family": "P1-bizflow",
+    "extends": null
+  },
+  "content": {
+    "id": "VC-BIZFLOW-001",
+    "version": 1,
+    "parentVersion": null,
+    "title": "业务流程状态约束检查（状态不变量×跳步检测）",
+    "appliesTo": {
+      "surface": "api",
+      "prerequisites": [
+        "recoverable_test_data（操作限定在可恢复测试对象/测试订单，不触真实资金与外部消息）",
+        "flow_documented（正常流程轨迹可获取：接口文档或已采集的合法流程序列）",
+        "scope_authorized（目标接口在当前 Program 授权范围内，scope-guard 通过）"
+      ],
+      "invalidatedBy": [
+        "flow_change（业务流程改版——状态机与不变量失效）",
+        "endpoint_contract_change（接口契约变更——参数/状态字段漂移）"
+      ]
+    },
+    "hypothesis": "多步业务流程应满足状态不变量与顺序约束：每一步只能在合法前置状态下执行；跳过中间步骤、逆向流转或重复提交应被拒绝或幂等吸收。",
+    "minimalProbe": "在可恢复测试数据上重放合法流程建立基线状态，然后尝试一次跳步/逆序调用（直接调用后续步骤接口）；每流程最多 3 次探测调用，全部限定测试对象，不构造批量遍历。",
+    "positiveControl": "按文档顺序的合法流程在测试对象上走通（最终状态可达）——对照失败判定环境/测试数据问题，不得解释为无漏洞。",
+    "negativeControl": "跳步/逆序调用应被拒绝（4xx + 状态未迁移）；若跳步成功且状态迁移生效即为约束违例信号，须取证前后状态证据后才可升级 confirmed。",
+    "evidenceRequired": [
+      "flow_trace（合法流程的接口调用序列与状态迁移记录）",
+      "state_before_after（违例调用的前后状态快照对比）",
+      "invariant_statement（被违反的状态不变量的明确表述与来源）",
+      "recoverability_proof（测试数据已恢复/隔离的证明）"
+    ],
+    "stopConditions": [
+      "real_side_effect（探测可能触发真实资金/消息/外部副作用——立即停止，只允许隔离环境或明确批准的测试流程）",
+      "scope_changed（目标或授权范围变更——立即停止并上报）",
+      "unexpected_sensitive_data（响应中出现真实用户数据——停止、不复制内容、脱敏上报）"
+    ],
+    "fixtures": {
+      "vulnerable": "fixture-bizflow-a（缺状态校验的受控流程：可跳步完成）",
+      "patched": "fixture-bizflow-b（已修复流程：跳步 409 拒绝）",
+      "invalid_env": "fixture-bizflow-c（环境异常：测试数据不可用——正对照应失败）"
+    },
+    "budget": { "maxRequests": 10, "maxSeconds": 180 },
+    "failureNotes": "跳步 4xx=状态机正常（unlikely）；跳步成功但状态未迁移=幂等接口设计（review）；跳步成功且状态迁移=suspected，须补前后状态证据链；正对照失败（合法流程走不通）记 infra_error，不计为检出失败；无可恢复测试数据记 blocked_env，是任务前置缺口。",
+    "changeNote": "首版候选：业务流程与状态约束检查卡（设计 §5 P1），操作限定可恢复测试数据，外部副作用只走隔离环境。",
+    "applicabilityConfidence": "medium",
+    "suggestedAlternatives": [
+      "无可恢复测试数据时：只做接口文档静态比对，产出任务前置缺口上报，不做动态探测",
+      "流程轨迹不可获取时：退化为单接口幂等性检查"
+    ],
+    "evalRef": null
+  }
+}

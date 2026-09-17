@@ -1482,3 +1482,134 @@ test('L5: know_gap_record 缺口登记——补建走候选通道（不直写使
   assert.equal(st.ok, true, st.error?.message)
   assert.equal(st.data.gaps.length, 1)
 })
+
+// ---------------------------------------------------------------------------
+// L6（学习专项 §10，2026-09-17）：完整运营体验——学习追溯链（Q23）/
+// 逐域视图（Q22 domains 分组）/ vault 回流收口（C32）
+// ---------------------------------------------------------------------------
+
+test('L6: know_kb_vault_sync——导入/防循环/去重幂等/干跑；actor 闸（model/dashboard 物理拒）', async () => {
+  const { bus, dataDir } = makeEnv()
+  const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'sec-vault-src-'))
+  fs.writeFileSync(path.join(vault, 'SSRF-回连验证.md'), '---\nsource_system: silksecagent\n---\n# 导出物\n导出内容禁止回流。')
+  fs.writeFileSync(path.join(vault, '越权检测方法论.md'), '# 越权检测方法论\n\n对象归属断言优先于响应相似度。\n')
+  fs.writeFileSync(path.join(vault, '笔记.txt'), '非 md 不进回流')
+  // actor 闸
+  for (const actor of ['model', 'dashboard', 'human', 'reactor', 'script']) {
+    const r = await bus.dispatch('know', 'kb_vault_sync', { source_dir: vault }, { actor })
+    assert.equal(r.ok, false, actor)
+    assert.equal(r.error.code, 'E_ACTOR_FORBIDDEN')
+  }
+  // 干跑：只统计不落库
+  const dry = await bus.dispatch('know', 'kb_vault_sync', { source_dir: vault, dry_run: true }, { actor: 'system' })
+  assert.equal(dry.ok, true, dry.error?.message)
+  assert.equal(dry.data.imported, 1)
+  assert.equal(dry.data.skipped_loop, 1, '导出物（source_system: silksecagent）禁止回流')
+  const db = bus._internal.db()
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM kb_docs WHERE source_url LIKE 'vault://%'").get().c, 0, '干跑不落库')
+  // 实跑：导入 1 篇
+  const r1 = await bus.dispatch('know', 'kb_vault_sync', { source_dir: vault }, { actor: 'system' })
+  assert.equal(r1.ok, true, r1.error?.message)
+  assert.equal(r1.data.imported, 1)
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM kb_docs WHERE source_url LIKE 'vault://%'").get().c, 1)
+  // 重放幂等：source_url 自然键去重（幂等表过期后也安全）
+  db.prepare('DELETE FROM idempotency').run()
+  const r2 = await bus.dispatch('know', 'kb_vault_sync', { source_dir: vault }, { actor: 'system' })
+  assert.equal(r2.ok, true)
+  assert.equal(r2.data.imported, 0)
+  assert.equal(r2.data.skipped_existing, 1)
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM kb_docs WHERE source_url LIKE 'vault://%'").get().c, 1, '重放零重复导入')
+  // 调度器触发通道（scheduler actor）
+  const r3 = await bus.dispatch('know', 'kb_vault_sync', { source_dir: vault }, { actor: 'scheduler' })
+  assert.equal(r3.ok, true, r3.error?.message)
+  // 来源目录缺失显式失败
+  const bad = await bus.dispatch('know', 'kb_vault_sync', { source_dir: path.join(vault, 'nope') }, { actor: 'system' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'E_NOT_FOUND')
+})
+
+test('L6: know_learning_status 逐域视图——按 family/surface/前置分层聚合，样本量与信心档可见', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  // 一张 published 卡（family=P1-authz, surface=api，前置 owned_test_accounts 等）
+  const pr = await propose(bus, { artifact_id: 'VC-AUTHZ-D10', content: { ...VC_CONTENT, id: 'VC-AUTHZ-D10' }, applies_predicates: { surface: 'api', card_family: 'P1-authz' } })
+  assert.equal(pr.ok, true, pr.error?.message)
+  const d10 = { revision_id: pr.data.revision_id, content_digest: pr.data.content_digest }
+  const b = await assess(bus, { revision_id: d10.revision_id, phase: 'begin', eval_run_id: 'evalrun_l6_d10_0001', candidate_digest: d10.content_digest })
+  assert.equal(b.ok, true, b.error?.message)
+  const f = await assess(bus, { revision_id: d10.revision_id, phase: 'finish', eval_run_id: 'evalrun_l6_d10_0001', candidate_digest: d10.content_digest, verdict: 'eligible', report_ref: 'eval-candidate-report.json' })
+  assert.equal(f.ok, true, f.error?.message)
+  const p = await publish(bus, { revision_id: d10.revision_id, content_digest: d10.content_digest, auth_ref: 'approval:l6-d10', scope_type: 'program', scope_id: 'example-src' })
+  assert.equal(p.ok, true, p.error?.message)
+  // 效果事实：episode（独立核验 confirmed）+ 曝光 + 采用 → 落计分投影
+  const ep = { ...EP_ARGS, source_event_id: 'evt_l6_d10', outcome: 'confirmed', source_credibility: 'independently-verified', card_id: 'VC-AUTHZ-D10', card_version: 'rev_x', exec_run_id: 'rl6d10test0000001', request_count: 4, token_count: 900, duration_ms: 3000 }
+  const r0 = await bus.dispatch('know', 'episode_record', ep, { actor: 'reactor' })
+  assert.equal(r0.ok, true, r0.error?.message)
+  await bus.dispatch('know', 'exposure_record', { q: 'q', artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-D10', selected: true }, { actor: 'system', session_id: 'sess_d10' })
+  const st = await bus.query('know', 'learning_status', {}, { actor: 'dashboard' })
+  assert.equal(st.ok, true, st.error?.message)
+  assert.ok(st.data.domains, 'Q22 必须带逐域分组')
+  const fam = st.data.domains.by_family.find((g) => g.key === 'P1-authz')
+  assert.ok(fam, '按 family 分层（P1-authz）')
+  assert.equal(fam.verified_positives, 1)
+  assert.equal(fam.exposures, 1)
+  assert.equal(fam.sample_size, 1)
+  assert.ok(fam.confidence.startsWith('low'), '小样本信心档 low（保守口径可见）')
+  assert.equal(fam.cost.tokens, 900, '成本随组聚合')
+  const surf = st.data.domains.by_surface.find((g) => g.key === 'api')
+  assert.ok(surf, '按技术栈面分层（api）')
+  const pre = st.data.domains.by_prerequisite.find((g) => g.key === 'owned_test_accounts')
+  assert.ok(pre, '按身份前置分层（归一化键）')
+  assert.ok(st.data.domains.note.includes('不是 uses 榜单'), '口径声明：非 uses 榜单')
+})
+
+test('L6: know_learning_trace 证据对照——episode→证据→revision→评测→批准→发布→采用→反馈 全链', async () => {
+  const { bus } = makeEnv()
+  // 一次学习：episode（带证据与 FGS 快照引用）
+  const epArgs = {
+    ...EP_ARGS, source_event_id: 'evt_l6_trace1', outcome: 'confirmed', source_credibility: 'independently-verified',
+    card_id: 'VC-AUTHZ-T01', card_version: 'rev_placeholder', exec_run_id: 'rl6trace00000001',
+    evidence_refs: ['run_id:rl6trace00000001', 'evidence:sha256:abc'], fgs_snapshot_path: 'data/fgs/snapshots/t1.json',
+  }
+  const ep = await bus.dispatch('know', 'episode_record', epArgs, { actor: 'reactor' })
+  assert.equal(ep.ok, true, ep.error?.message)
+  const episodeId = ep.data.episode_id
+  // 候选 → 评测 → 发布（批准锚定 auth_ref）
+  const pub = await publishedOne(bus, 'VC-AUTHZ-T01', 'example-src')
+  // 采用 + 反馈
+  await bus.dispatch('know', 'adoption_record', { artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-T01', revision_id: pub.revision_id, source_cmd: 'know_adopt', outcome: 'adopted' }, { actor: 'reactor' })
+  await bus.dispatch('know', 'exposure_record', { q: 'q', artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-T01', selected: true }, { actor: 'system', session_id: 'sess_t01' })
+  const fb = await bus.dispatch('know', 'feedback_ingest', { feedback_id: 'sess_t01:m1', revision: 1, session_id: 'sess_t01', message_id: 'm1', rating: 'positive', artifact_ref: { artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-T01' } }, { actor: 'system', session_id: 'sess_t01' })
+  assert.equal(fb.ok, true)
+  // artifact 入口：全链聚合
+  const tr = await bus.query('know', 'learning_trace', { artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-T01' }, { actor: 'dashboard' })
+  assert.equal(tr.ok, true, tr.error?.message)
+  assert.equal(tr.data.chain.episodes.length, 1, 'episode 环节')
+  assert.deepEqual(tr.data.chain.episodes[0].evidence_refs, ['run_id:rl6trace00000001', 'evidence:sha256:abc'], '证据清单可见')
+  assert.equal(tr.data.chain.episodes[0].fgs_snapshot_path, 'data/fgs/snapshots/t1.json', 'FGS 快照引用可见')
+  assert.equal(tr.data.chain.revisions.length, 1, 'revision 环节')
+  assert.equal(tr.data.chain.revisions[0].eval_report_ref, 'eval-candidate-report.json', '评测报告引用可见')
+  assert.equal(tr.data.chain.releases.length, 1, '发布账本环节')
+  assert.equal(tr.data.chain.releases[0].auth_ref, 'approval:l5-VC-AUTHZ-T01', '批准引用可见')
+  assert.equal(tr.data.chain.adoptions.total, 1, '采用环节')
+  assert.equal(tr.data.chain.exposures.total, 1, '曝光环节')
+  assert.equal(tr.data.chain.feedback.length, 1, '反馈环节')
+  assert.ok(tr.data.chain.score, '计分投影环节')
+  assert.deepEqual(tr.data.links.eval_report_refs, ['eval-candidate-report.json'])
+  assert.deepEqual(tr.data.links.approval_refs, ['approval:l5-VC-AUTHZ-T01'])
+  assert.ok(tr.data.links.evidence_refs.includes('evidence:sha256:abc'))
+  assert.ok(tr.data.note.includes('know_release_revoke'), '恢复旧版只走 C27')
+  // episode 入口：从一次学习反查整链
+  const tr2 = await bus.query('know', 'learning_trace', { episode_id: episodeId }, { actor: 'dashboard' })
+  assert.equal(tr2.ok, true, tr2.error?.message)
+  assert.equal(tr2.data.subject.episode_id, episodeId)
+  assert.equal(tr2.data.subject.artifact_id, 'VC-AUTHZ-T01', 'episode 反查卡归属')
+  assert.equal(tr2.data.chain.releases.length, 1)
+  // 错误面：episode 不存在 / 参数全缺
+  const nf = await bus.query('know', 'learning_trace', { episode_id: 'ep_nope' }, { actor: 'dashboard' })
+  assert.equal(nf.ok, false)
+  assert.equal(nf.error.code, 'E_NOT_FOUND')
+  const es = await bus.query('know', 'learning_trace', {}, { actor: 'dashboard' })
+  assert.equal(es.ok, false)
+  assert.equal(es.error.code, 'E_SCHEMA')
+})

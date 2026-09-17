@@ -285,7 +285,7 @@ export const SCOPE_MANIFEST = {
       agent_note: '列出授权全景：全局默认策略 + 各项目授权条目/排除清单/规则/工作区绑定（yml 与镜像同框）。',
     },
     program_list: {
-      actor: ['model', 'dashboard', 'human', 'system', 'approval'],
+      actor: ['model', 'dashboard', 'human', 'system', 'approval', 'scheduler'],
       params: schema({
         status: str({ default: '' }),
         limit: int({ minimum: 1, maximum: 500 }),

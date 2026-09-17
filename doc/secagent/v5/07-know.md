@@ -1,6 +1,6 @@
 # 07 · know 域设计（知识六仓：经验 / 文献 / 先验规程 / 漏洞卡 / 收割 / 体检）
 
-> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：know@1（L5 增量见 §十一）
+> 版本：v5.1 ｜ 状态：定稿 ｜ 契约版本：know@1（L5/L6 增量见 §十一）
 > 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（订阅 `approval.approved` 承接 knowledge-adopt / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 记学习 episode，L1）；vuln 域（订阅 `vuln.signal.confirmed/rejected` 记判定 episode，L1）；task 域（订阅 `task.finished` 记任务级 episode，L1）。
 > 被订阅：`know.*` 全系事件——memcore（治理旁路）、dashboard、eval（评测回流）。
 > owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` / `playbooks` / `learning_episodes` / `knowledge_revisions` / `know_releases` / `know_exposures` / `know_adoptions` / `know_feedback` / `know_scores` / `know_gaps` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
@@ -60,6 +60,7 @@
 | C29 | `know_feedback_ingest` | feedback | 原生反馈桥落账（feedback id+revision 幂等；编辑/撤回触发计分重算；L5） | system | 自然键（feedback_id+revision）+ 主键兜底 | know.feedback.ingested |
 | C30 | `know_gap_record` | retrieval | 检索 miss/低覆盖登记（补建走候选通道；L5） | model, dashboard, script, system | 自动指纹 + UNIQUE(program,q,surface) | （无） |
 | C31 | `know_scores_rebuild` | scoring | 计分重放重建（从不可变事实重放，不改历史行；L5） | system, dashboard | 无（重建天然幂等） | know.scores.rebuilt |
+| C32 | `know_kb_vault_sync` | kb | vault 回流（每日 05 时调度触发；防循环/去重/500 篇上限；L6 自 v4 迁入） | system, scheduler | source_url 去重 + 防循环标记 | know.kb.vault_synced |
 
 > **卡片使用记录（原 `card_usage_log`）归属**：归 **ledger 域**（动词 `ledger_log_card_usage`），文件 `data/pipeline/{program}/card_usage-{date}.jsonl`（sec-pipeline.js L146，`pipelineDir()` 即 ledger 台账树）：① attempts/card_usage/handoff 三产物同一纪律节奏写入、被 task_finish 流程守卫同批校验、走同一 vault 回放链路——拆域会让守卫跨域取证；② 一棵目录树一个 owner（单写者律同款理由）。**本域消费路径**：订阅 `ledger.card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询，驱动 registry 健康度与 know_health 零使用卡清理——读消费不受 owns 影响。字段语义（card_id/deviation/suggest）的知识视角归本域解读，写入动作归 ledger。
 
@@ -509,6 +510,12 @@
 
 参数 artifact_kind（可选过滤）。返回 scores（每卡：曝光/采用/verified_positives/valid_cleans/inapplicables/infra_errors/feedback_pos/neg/cost_requests/tokens/ms/score/sample_size——**报告效果与成本而非 uses 榜单**）+ feedback（反馈桥状态与口径说明）+ gaps（检索缺口）+ releases_active。**模型自评（model-proposed）单列，不计已验证正例。**
 
+**L6 扩展（设计 §10 逐域视图）**：返回体新增 `domains`——按 **漏洞类型族**（applies_predicates.card_family）/ **技术栈面**（surface）/ **身份前置**（content.appliesTo.prerequisites 归一化键）三层聚合效果与成本（卡数/曝光/采用/有效结果/反馈/成本/平滑计分），每组携带 `sample_size` 与 `confidence` 档（<5 样本标 low「小样本，结论保守」，沿用 L5 sample/(sample+2) 保守平滑口径）。这是效果/成本分层视图，不是 uses 榜单（原始使用次数不展示、不参与排序）。
+
+#### Q23 · know_learning_trace（学习追溯链，L6，设计 §10 证据对照）
+
+参数 episode_id **或** artifact_kind+artifact_id（二选一入口）+ limit。返回一次学习 → 实际结果的完整可追溯链（只读）：`subject`（入口锚点）+ `chain`{ episodes（含 evidence_refs/FGS 快照哈希/成本）, revisions（含 eval_report_ref/内容哈希/状态链）, releases（发布账本全史含撤回）, exposures/adoptions（计数+最近样本）, feedback（人工反馈/撤回墓碑）, score（当前计分投影）} + `links`{ eval_report_refs / approval_refs / evidence_refs / fgs_snapshots }（跨域引用汇总）。撤回操作不在本查询——面板写操作只走 C27。
+
 
 ### 1.5 事件
 
@@ -541,6 +548,11 @@
 | `know.exposure.recorded` | C28 | `{ exposure_id, artifact_kind, artifact_id, selected, program_id }` |
 | `know.feedback.ingested` | C29 | `{ feedback_id, revision, tombstone, rating, attribution, session_id }` |
 | `know.scores.rebuilt` | C31 | `{ rebuilt, scope, ts }` |
+| `know.kb.vault_synced` | C32 | `{ scanned, imported, skipped_existing, skipped_loop_guard, errors }` |
+
+#### C32 · know_kb_vault_sync（vault 回流，L6 命令化）
+
+**语义**：每日 vault→kb 回流的域内受控命令（L6 从 v4 experience.kbVaultSync 迁入）：扫描 vault 源目录 → 逐篇走 C11 kb_import 同款校验（防循环 source_system:silksecagent 拒绝、source_url 去重幂等、单次 500 篇上限）→ 落 kb_docs。**actor**：system, scheduler（task 域调度器每日 05 时后首个 tick 触发）。幂等（同日重跑零重复导入）。`source_dir` 覆盖参数仅测试/运维用。
 
 **订阅**（manifest subscribes）：
 
@@ -604,6 +616,9 @@
 | `know.coverage` | knowledgeCoverage 覆盖缺口交叉表 | Q15 |
 | `know.playbooks` | playbooks | Q3（pbRank 视图） |
 | `know.harvest.status` | （v5 补） | Q13 |
+| `learningOverview` | （L6 学习面板五问，v5 补） | Q22（+Q17/Q19/episode 投影聚合） |
+| `learningTrace` | （L6 证据对照，v5 补） | Q23 |
+| `learningRevokeRelease` | （L6 撤回入口，v5 补；**只走受控动词**） | C27 |
 
 ### 1.8 外部调用示例
 
@@ -851,7 +866,7 @@ memcore 对 exp_*/kb_* 的直写（validateWrite 分支、transition、recordSig
 | 5 | sweep 的 exp/kb 分支（复验逾期→cooling→archived、90d 硬删） | memcore 订阅者调 know_transition / know_purge_archive |
 | 6 | rewriteAgentsMd | 本域受管区块生成器（2.3 上节） |
 | 7 | exportVault | exp_approve_export / exp_revoke_export + 导出桥维护任务 |
-| 8 | kbVaultSync（每日 05:00 vault→kb 回流） | 调度任务调 kb_import（actor=script）；来源即 vault 目录扫描 |
+| 8 | kbVaultSync（每日 05:00 vault→kb 回流） | **L6：task 域调度器每日 05 时后首个 tick 调 C32 `know_kb_vault_sync`（actor=scheduler）**——自 v4 experience.kbVaultSync 迁入域内受控命令；防循环/去重口径不变 |
 | 9 | verifyExpRefs（卡引用校验） | 契约测试与 know_health 体检（Q14 warnings） |
 | 10 | scopeReload 缓存 | authz 域只读查询 + 本域 5min mtime 缓存（语义保留） |
 
@@ -1061,3 +1076,12 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **新表 5 张**（幂等建表，见 2.1）：know_exposures / know_adoptions / know_feedback / know_scores / know_gaps。
 - **契约测试**：know 60→69 全绿（L5 九用例：分层召回/跨 Program 排除/eligible 不进召回/撤回恢复旧版本/失效负知识排除/曝光桶去重/采用双通道幂等/计分重放重建+撤回撤销+模型自评单列/反馈幂等与编辑撤回/actor 闸/缺口登记）。
 - **原生反馈桥**（`@silksec/sec-feedback-bridge`，web profile 专用）：消费 DSH rc.2 message-feedback 的 session/event + feedback/committed 事件 → know_feedback_ingest；DSH 侧 messageFeedback 服务未挂载时显式 unsupported（日志 + 状态文件），不伪造反馈流量；反馈留在本地，不落盘正文。
+
+## 十二、2026-09-17 学习专项 L6 实施回填（完整运营体验）
+
+- **Q22 `domains` 逐域视图**（设计 §10）：按漏洞类型族（card_family）/技术栈面（surface）/身份前置（prerequisites 归一化键）三层聚合效果与成本；每组携带 sample_size 与 confidence 档（<5 样本 low 保守），小样本沿用 L5 sample/(sample+2) 平滑口径——效果/成本分层视图，不是 uses 榜单。
+- **Q23 `know_learning_trace`**（设计 §10 证据对照）：episode 或 artifact 双入口的可追溯链只读投影——episodes（证据引用/FGS 快照哈希/成本）→ revisions（评测报告引用/内容哈希）→ releases（发布账本全史含撤回）→ exposures/adoptions/feedback/score；links 汇总 eval_report_refs/approval_refs/evidence_refs/fgs_snapshots 跨域引用。撤回不在本查询，走 C27。
+- **C32 `know_kb_vault_sync`**（设计 §10 调度切换配套）：vault 回流自 v4 experience.kbVaultSync 迁入域内受控命令（actor=system/scheduler；防循环 source_system 拒绝、source_url 去重幂等、单次 500 篇上限不变），task 域调度器每日 05 时（北京）后首个 tick 触发。owns.files 增 `data/vault-import/`。
+- **曝光计分修复**：C28 `know_exposure_record` 落账现在同步触发单卡计分重算（L5 遗留缺口——曝光数此前不刷新 know_scores 投影）。
+- **后端增量**：listEpisodesByCard / listAdoptions（分页）/ listFeedbackForArtifact（追溯链取数原语）。
+- **契约测试**：know 69→73 全绿（L6 用例：C32 导入/防循环/幂等/actor 闸、Q22 三层聚合与小样本档、Q23 双入口全链）。

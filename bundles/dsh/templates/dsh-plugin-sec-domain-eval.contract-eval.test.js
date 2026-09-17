@@ -653,7 +653,7 @@ function makeCandidateEnv() {
     schedule: (fn) => { scheduled.push(fn) },
   })
   assert.equal(bus.registry.register(evalDomain).ok, true, 'eval 域注册')
-  return { dir, dataDir, evalDir, bus, scheduled }
+  return { dir, dataDir, evalDir, bus, scheduled, evalDomain }
 }
 
 async function proposeCandidate(bus) {
@@ -873,4 +873,69 @@ test('契约合规: 逐用例断言错误码 + hint 引导 token（EC-01~05）',
     assert.equal(r.error.code, code, `${domain ? domain + '_' : ''}${verb} 错误码`)
     assert.ok(r.error.hint && String(r.error.hint).includes(hintToken), `${domain ? domain + '_' : ''}${verb} hint 应含「${hintToken}」，实际「${r.error.hint}」`)
   }
+})
+
+// ---------------------------------------------------------------------------
+// L6（2026-09-17）：孤儿扫描新鲜度闸——CLI 独立进程不得误标宿主在飞 run
+// ---------------------------------------------------------------------------
+
+test('L6: orphanScan 新鲜度闸——新鲜 running run（他进程在执行）不误标 host_restart，停摆孤儿正常回收', async () => {
+  const { createEvalFileBackend } = await import('../../sec-backend-eval-file/index.js')
+  const dir = tmpDir()
+  const dataDir = path.join(dir, 'data')
+  const evalDir = path.join(dataDir, 'eval')
+  fs.mkdirSync(path.join(evalDir, 'runs'), { recursive: true })
+  const backendWrap = createEvalFileBackend({ dataDir, evalDir })
+  const backend = backendWrap.factory() // repository 原语（createRun/finishRun/listRuns/orphanScan）
+  // ① 新鲜 running（模拟宿主在飞 run：文件刚写）
+  backend.createRun('evalrun_fresh01', { run_id: 'evalrun_fresh01', kind: 'candidate', status: 'running', started_at: Date.now(), trial_id: 't-fresh01', fingerprint: 'f', params: {} })
+  // ② 停摆 running（started_at/mtime 久远——真孤儿）
+  backend.createRun('evalrun_stale01', { run_id: 'evalrun_stale01', kind: 'candidate', status: 'running', started_at: Date.now() - 3600000, trial_id: 't-stale01', fingerprint: 's', params: {} })
+  const staleFile = path.join(evalDir, 'runs', 'evalrun_stale01.json')
+  const old = new Date(Date.now() - 3600000)
+  fs.utimesSync(staleFile, old, old) // 模拟停摆（mtime 超 10min）
+  const r = backend.orphanScan()
+  assert.equal(r.marked, 1, '只回收停摆孤儿')
+  const fresh = backend.listRuns().find((x) => x.run_id === 'evalrun_fresh01')
+  const stale = backend.listRuns().find((x) => x.run_id === 'evalrun_stale01')
+  assert.equal(fresh.status, 'running', '新鲜 run 不得被误标')
+  assert.equal(stale.status, 'failed')
+  assert.equal(stale.error, 'host_restart')
+})
+
+// ---------------------------------------------------------------------------
+// L6（2026-09-17 修复²）：孤儿回收走 run_finish 事件流——candidate run 停摆回收后
+// know 侧 revision 必须回 candidate（不得永卡 evaluating；生产事故：CLI 进程退出留
+// running 孤儿，backend.orphanScan 直写回收无事件 → revision 卡死）。
+// ---------------------------------------------------------------------------
+
+test('L6: 孤儿回收经 run_finish 事件流——停摆 candidate run 回收 + revision 回 candidate', async () => {
+  const env = makeCandidateEnv()
+  const rev = await proposeCandidate(env.bus)
+  const r = await env.bus.dispatch('eval', 'run_candidate', { trial_id: 'trial-orphan-1', candidate_revision_id: rev.revision_id, dataset_id: 'ds-test-dev' }, { actor: 'dashboard' })
+  assert.equal(r.ok, true, r.error?.message || '')
+  const runId = r.data.run_id
+  await env.bus._internal.dispatcherTick() // 投递 eval.candidate.started → know begin
+  const revMid = await env.bus.query('know', 'revision_get', { revision_id: rev.revision_id }, { actor: 'system' })
+  assert.equal(revMid.data.status, 'evaluating', 'started 后 revision 进入 evaluating')
+  // 模拟执行器猝死：不跑 scheduled executor，run 永远 running；backdate mtime 超新鲜度闸
+  const runFile = path.join(env.evalDir, 'runs', `${runId}.json`)
+  const old = new Date(Date.now() - 3600000)
+  fs.utimesSync(runFile, old, old)
+  // 域级孤儿回收：dryRun 扫描 + 逐个 run_finish（事件流完整）
+  const reap = await env.evalDomain.reapOrphans()
+  assert.equal(reap.reaped, 1, '回收 1 个停摆孤儿')
+  const rec = readRunRec(env.evalDir, runId)
+  assert.equal(rec.status, 'failed')
+  assert.equal(rec.error, 'host_restart')
+  const built = readEvalEvents(env.bus).find((e) => e.name === 'eval.report.built' && e.payload.run_id === runId)
+  assert.ok(built, '回收经 run_finish 发 eval.report.built（非直写）')
+  assert.equal(built.payload.verdict, null, '失败不记成功')
+  assert.equal(built.payload.candidate_revision_id, rev.revision_id)
+  await env.bus._internal.dispatcherTick() // 投递 report.built → know abort
+  const revAfter = await env.bus.query('know', 'revision_get', { revision_id: rev.revision_id }, { actor: 'system' })
+  assert.equal(revAfter.data.status, 'candidate', '回收后 revision 回 candidate，可再评')
+  // 幂等：再扫无孤儿；新鲜 run 不误标
+  const reap2 = await env.evalDomain.reapOrphans()
+  assert.equal(reap2.reaped, 0)
 })

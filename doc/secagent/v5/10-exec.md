@@ -30,7 +30,7 @@
 | 动词 | 一句话语义 | actor 白名单 | 幂等策略 | 事件 |
 |---|---|---|---|---|
 | `exec_run_cli` | 经守卫链运行一个已登记 CLI 工具，全量落盘，回 ≤20 行摘要 | model, dashboard, script, human | `explicit_only`（见 1.3.1 说明） | `exec.run.started`、`exec.run.completed` |
-| `exec_spawn_worker` | 派生隔离无头 worker 执行自包含任务（RoE 契约注入） | model, dashboard | 自然键 `sha1(task)` | `exec.worker.spawned`、`exec.worker.finished` |
+| `exec_spawn_worker` | 派生隔离无头 worker 执行自包含任务（RoE 契约注入） | model, dashboard, scheduler | 自然键 `sha1(task)` | `exec.worker.spawned`、`exec.worker.finished` |
 | `exec_burp_import` | Burp XML 导入 → 结构化 JSONL 落盘 + proposal 事件 | model, human | 自然键 `sha1(file 内容前 1MB)` | `exec.import.completed` |
 | `exec_report_bad_proxy` | 坏代理上报（经总线 dispatch 调 proxy 域命令） | model, script, dashboard | 自然键 `sha1(proxy_url)` | （proxy 域发） |
 | `exec_intel_hunt` | 指纹命中 → 本地 nuclei 模板检索 +（可选）委托 task 域建 N-day 候选任务 | model, dashboard | 显式键 | （task 域发 `task.created`） |
@@ -132,6 +132,8 @@ renderTemplate → shellSplit → spawn
 | `force` | boolean | 否 | false | true = 绕过自然键去重强制重跑（审计高亮） |
 | `provider` | string | 否 | — | 与 `model` 成对出现；经 `--patch` 写 model-patch.yml 注入子进程（任务级模型覆盖，不受默认路由约束） |
 | `model` | string | 否 | — | 同上 |
+| `cwd` | string | 否 | runDir | **仅 actor=scheduler 可用**（L6 调度器切换：cwd=program 工作区路径，会话反查/工作区归组依赖 header.cwd 一致）；realpath 校验存在且为目录，其他 actor 传 → `E_EXEC_CWD_FORBIDDEN`，路径不存在/非目录 → `E_EXEC_CWD_INVALID` |
+| `task_id` | integer | 否 | — | 宿主任务号（调度器派单携带），透传 `exec.worker.spawned` 载荷 → task 域 worker_register 绑定 `tasks.active_run_id`（僵尸回收的活 worker 跳过依据） |
 
 **幂等**：自然键 `exec:spawn_worker:sha1(task + '\0')`（**RoE 块注入是 task 的确定性函数**——task 已含 RoE 锚点则不重复堆叠——故 dedupeKey 语义不受注入影响）。重试路径（v4.x 原样）：
 
@@ -154,9 +156,9 @@ renderTemplate → shellSplit → spawn
 4. 被拒后不换姿势重试，改走审批（scope-guard 是 fail-closed 硬校验）。
 5. 只读工具打写动词路径会被 S5 拒绝；确需写操作用 active/intrusive 工具并走审批。
 
-**事件**：spawn 落地后发 `exec.worker.spawned`；进程收尾后发 `exec.worker.finished`。
-**错误**：`E_EXEC_WORKER_BUSY`（并发满，retryable）/ `E_EXEC_WORKER_IN_PROGRESS`（同任务在跑，非错误路径返回 in_progress 信封）/ `E_EXEC_WORKER_START_FAILED`（spawn 异常）。
-**actor**：model, dashboard。
+**事件**：spawn 落地后发 `exec.worker.spawned`（L6 起载荷含 `task_id`（可空）与 `cwd`）；进程收尾后发 `exec.worker.finished`。
+**错误**：`E_EXEC_WORKER_BUSY`（并发满，retryable）/ `E_EXEC_WORKER_IN_PROGRESS`（同任务在跑，非错误路径返回 in_progress 信封）/ `E_EXEC_WORKER_START_FAILED`（spawn 异常）/ `E_EXEC_CWD_FORBIDDEN`（cwd 仅调度器可用）/ `E_EXEC_CWD_INVALID`（cwd 不存在或非目录）。
+**actor**：model, dashboard, scheduler（task 域调度循环）。
 
 #### 1.3.3 `exec_burp_import`
 

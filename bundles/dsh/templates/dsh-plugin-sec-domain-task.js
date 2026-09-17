@@ -18,7 +18,9 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { nextScheduledRun, validateDependency } from '../sec-suite/task-policy.js'
+import { nextScheduledRun, validateDependency, MAX_WORKER_TIMEOUT_SEC } from '../sec-suite/task-policy.js'
+// L6 调度器切换：persona/定时任务 prompt/会话反查与 v4 完全同源（复用 sec-suite 版本受控实现，防双份漂移）
+import { listSessionHeaders, matchWorkerSession, createPersonaReader, buildScheduledPrompt } from '../sec-suite/host-compat.js'
 
 export const name = 'sec-domain-task'
 export const version = '1.0.0'
@@ -32,6 +34,10 @@ const { createTaskSqliteBackend } = await import(backendUrl.href)
 
 const TASK_STATUS = ['queued', 'running', 'blocked', 'done', 'failed', 'cancelled']
 const TERMINAL = new Set(['done', 'failed', 'cancelled'])
+// L6（学习专项 §10）：任务目标类型——学习/评测作为明确任务类型调度（四类节奏）。
+// ''/research=授权研究（默认）；learn-daily=日常整理（补索引/复验到期来源/整偏，只产候选）；
+// eval-batch=周期评测批（候选对照/误报复盘/晋升审阅）；change-retest=变更触发重测（撤回/失效驱动）。
+const TASK_GOALS = ['research', 'learn-daily', 'eval-batch', 'change-retest']
 const MIN_INTERVAL_SECONDS = 300
 const OUTCOME_ENUM = ['done', 'failed', 'busy', 'crash']
 const SCHEDULER_TICK_MS = 60000
@@ -74,11 +80,12 @@ export const TASK_MANIFEST = {
   },
   commands: {
     task_create: {
-      actor: ['model', 'dashboard', 'script', 'approval', 'system'],
+      actor: ['model', 'dashboard', 'script', 'approval', 'system', 'reactor'],
       schema: schema({
         program_id: str(),
         objective: str({ maxLength: 4000 }),
         phase: str({ default: '' }),
+        goal: en([...TASK_GOALS, ''], { default: '', description: '任务目标类型（L6 §10）：research=授权研究（默认）；learn-daily=日常整理；eval-batch=周期评测批；change-retest=变更触发重测。' }),
         priority: int({ minimum: 0, maximum: 9 }),
         parent_id: int(),
         budget_tokens: int({ minimum: 0 }),
@@ -89,7 +96,7 @@ export const TASK_MANIFEST = {
         reasoning_effort: en(['low', 'medium', 'high']),
       }, ['objective']),
       idempotent: 'auto',
-      idempotent_fields: ['program_id', 'objective', 'phase', 'priority', 'parent_id', 'budget_tokens', 'assignee', 'schedule', 'provider', 'model', 'reasoning_effort'],
+      idempotent_fields: ['program_id', 'objective', 'phase', 'goal', 'priority', 'parent_id', 'budget_tokens', 'assignee', 'schedule', 'provider', 'model', 'reasoning_effort'],
       events: ['task.created'],
       event_limit: 1,
       invariants: ['scheduleValid', 'intrusiveInterval'],
@@ -244,6 +251,7 @@ export const TASK_MANIFEST = {
       schema: schema({
         run_id: str({ minLength: 1 }),
         dedupe_key: str(),
+        task_id: int(),
         task: str(),
         cwd: str(),
         pid: int(),
@@ -256,7 +264,7 @@ export const TASK_MANIFEST = {
       events: [],
       invariants: [],
       timeout_ms: 60000,
-      agent_note: 'worker 注册表登记（订阅 exec.worker.spawned 强联动执行；不向模型注册）。',
+      agent_note: 'worker 注册表登记（订阅 exec.worker.spawned 强联动执行；不向模型注册）。带 task_id 时把 tasks.active_run_id 绑定到该 run（僵尸回收的活 worker 跳过依据）。',
       deprecated: false,
     },
     task_worker_finish: {
@@ -316,6 +324,7 @@ export const TASK_MANIFEST = {
         program_id: str({ default: '' }),
         status: str({ default: '' }),
         phase: str({ default: '' }),
+        goal: en([...TASK_GOALS, ''], { default: '' }),
         q: str({ default: '' }),
         bucket: en(['active', 'history'], { default: '' }),
         scheduled: en(['only', 'exclude'], { default: '' }),
@@ -327,7 +336,7 @@ export const TASK_MANIFEST = {
       agent_note: '列出任务（看板数据源）。按 program/status/phase/bucket(active|history)/scheduled(only|exclude) 过滤，priority 升序。',
     },
     task_get: {
-      actor: ['model', 'dashboard', 'human', 'system', 'reactor'],
+      actor: ['model', 'dashboard', 'human', 'system', 'reactor', 'scheduler'],
       params: schema({ task_id: int() }, ['task_id']),
       agent_note: '取单个任务全列（调度/预算/模型覆盖/最近 run/证据链尾部）。',
     },
@@ -393,6 +402,9 @@ export const TASK_MANIFEST = {
     'scope.granted': { handler: 'onScopeGranted', mode: 'async', as: 'reactor' },
     'exec.worker.spawned': { handler: 'onWorkerSpawned', mode: 'sync', as: 'reactor' },
     'exec.worker.finished': { handler: 'onWorkerFinished', mode: 'sync', as: 'reactor' },
+    // L6（学习专项 §10 变更触发节奏）：卡片撤回 → 生成有预算的重测需求任务（goal=change-retest）。
+    // 已暂停任务不自行恢复；重测任务入队（queued 无调度，不自动起 worker）——由人/编排决定何时 task_run_now。
+    'know.release.revoked': { handler: 'onReleaseRevoked', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -660,6 +672,7 @@ function makeHandlers(opts) {
         parent_id: parentId,
         after_delay_seconds: afterDelay,
         phase: args.phase || '',
+        goal: args.goal || '',
         objective: args.objective,
         priority: args.priority ?? 5,
         budget_tokens: args.budget_tokens ?? null,
@@ -675,7 +688,7 @@ function makeHandlers(opts) {
       })
       const payload = {
         task_id: id, program_id: programId, phase: args.phase || '', objective_head: String(args.objective || '').slice(0, 80),
-        schedule_kind: sched.kind, parent_id: parentId, priority: args.priority ?? 5, source: 'model',
+        schedule_kind: sched.kind, parent_id: parentId, priority: args.priority ?? 5, goal: args.goal || '', source: 'model',
       }
       return {
         data: { task_id: id, status: 'queued', schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at, next_run_bj: sched.next_run_bj ?? _beijingIso(sched.next_run_at) } : null, deduped: false },
@@ -915,7 +928,7 @@ function makeHandlers(opts) {
       const tasks = repo.claimDueTasks(Number(args.now), 4)
       return {
         data: { claimed: tasks.map((t) => Number(t.id)), count: tasks.length },
-        events: tasks.map((t) => ({ name: 'task.claimed', payload: { task_id: Number(t.id), program_id: t.program_id, phase: t.phase, priority: t.priority, claimed_at: Number(args.now), worker_slot: 1 } })),
+        events: tasks.map((t) => ({ name: 'task.claimed', payload: { task_id: Number(t.id), program_id: t.program_id, phase: t.phase, goal: t.goal || '', priority: t.priority, claimed_at: Number(args.now), worker_slot: 1 } })),
         after: { count: tasks.length },
       }
     },
@@ -929,6 +942,12 @@ function makeHandlers(opts) {
 
     task_worker_register: async (args, repo) => {
       repo.upsertWorker(args)
+      // L6：scheduler 派单绑定——tasks.active_run_id=run_id（task_reap 的活 worker 跳过依据，
+      // 防回收后双重派单）。仅当任务确在 running（认领态）才绑，晚到事件不改写已收尾任务。
+      if (args.task_id) {
+        const t = repo.getTask(Number(args.task_id))
+        if (t && t.status === 'running') repo.transitionTask(Number(args.task_id), { active_run_id: String(args.run_id) }, 'running')
+      }
       return { data: { run_id: args.run_id, registered: true } }
     },
 
@@ -995,7 +1014,7 @@ function makeHandlers(opts) {
 
   const queries = {
     task_list: async (args, repo) => {
-      const filters = { program_id: args.program_id, status: args.status, phase: args.phase, q: args.q, bucket: args.bucket, scheduled: args.scheduled }
+      const filters = { program_id: args.program_id, status: args.status, phase: args.phase, goal: args.goal, q: args.q, bucket: args.bucket, scheduled: args.scheduled }
       const total = repo.countTasksWhere(filters)
       const rows = repo.listTasksWhere(filters, args.limit, args.offset, args.sort)
       return { rows, total }
@@ -1065,6 +1084,33 @@ function makeHandlers(opts) {
   }
 
   const subscribers = {
+    // L6（设计 §10 变更触发节奏）：卡片撤回 → 生成有预算的重测需求（goal=change-retest）。
+    // 入队不自动起 worker（无 schedule 不被调度循环认领）——由人/编排决定 task_run_now；
+    // 已暂停（blocked）任务不因此自行恢复。去重：同 release 已有活动重测任务则跳过（事件重放零重复）。
+    onReleaseRevoked: async (envelope) => {
+      if (!dispatchRef) return { ok: true, data: { skipped: true } }
+      const p = envelope?.payload || {}
+      if (!p.release_id) return { ok: true, data: { skipped: true, reason: '载荷缺 release_id' } }
+      const marker = `[change-retest ${p.release_id}]`
+      try {
+        const dup = await queryRef('task', 'list', { q: marker, bucket: 'active', limit: 10 }, { actor: 'reactor' })
+        // 总线 rows 类查询平铺返回 {rows,total}（非 data 包装）
+        if (dup && (dup.total || 0) > 0) return { ok: true, data: { skipped: true, reason: '已有活动重测任务', task_id: dup.rows[0]?.id } }
+        // program 灰度按 Program 归属；family/global 撤回的重测需求入 '_global' 桶（跨项目事项，不伪造项目归属）
+        const programId = p.scope_type === 'program' && p.scope_id ? String(p.scope_id) : '_global'
+        const objective = `${marker} 已发布知识卡 ${p.artifact_kind}/${p.artifact_id}（revision ${p.revision_id}，范围 ${p.scope_type}/${p.scope_id || '全局'}）被撤回（原因：${String(p.reason || '未给出').slice(0, 120)}）。`
+          + '请按预算复核：① 该卡此前参与结论的 finding/episode 是否需要复验或翻案；② 相关负知识是否因撤回失效；③ 结论写入 task_update_note。'
+          + '本任务由撤回事件自动生成；证据对照与版本链见看板「学习」tab。'
+        const r = await dispatchRef('task', 'create', {
+          program_id: programId,
+          goal: 'change-retest', objective, priority: 3, budget_tokens: 200000,
+        }, { actor: 'reactor', cause: envelope })
+        if (r && r.ok) return { ok: true, data: { skipped: false, task_id: r.data.task_id } }
+        return { ok: false, error: { code: r?.error?.code || 'E_INTERNAL', message: r?.error?.message || 'change-retest 任务创建失败' } }
+      } catch (e) {
+        return { ok: false, error: { code: 'E_INTERNAL', message: String(e?.message || e) } }
+      }
+    },
     onScopeGranted: async (envelope) => {
       if (!dispatchRef) return { ok: true, data: { skipped: true } }
       const p = envelope?.payload || {}
@@ -1090,7 +1136,7 @@ function makeHandlers(opts) {
       // 事件用 null 表示未知；命令 schema 的可选字段应省略，不能把 null
       // 当作 string/integer 传入（dashboard 发起的 worker 通常没有来源 Session）。
       const args = Object.fromEntries(Object.entries({
-        run_id: p.run_id, dedupe_key: p.dedupe_key, task: p.task, cwd: p.cwd,
+        run_id: p.run_id, dedupe_key: p.dedupe_key, task: p.task, cwd: p.cwd, task_id: p.task_id,
         pid: p.pid, timeout_sec: p.timeout_sec, session_id: p.origin_session_id || p.session_id, run_dir: p.run_dir,
       }).filter(([, value]) => value != null))
       return dispatchRef('task', 'worker_register', args, { actor: 'reactor' })
@@ -1111,14 +1157,36 @@ function makeHandlers(opts) {
 }
 
 // ---------------------------------------------------------------------------
-// 调度器（域内部组件，仅 web profile；文件锁与 v4 调度器互斥）
+// 调度器（域内部组件，仅 web profile；L6 接管：v5 唯一持锁者）
+// 行为口径 = 05-task.md §2.3「调度器实现」表 + v4 scheduler.js 逐项移植（命令化）：
+//   文件锁单例（180s 心跳超时可抢/exit 删锁）→ 60s tick → task_claim（≤4/tick）→
+//   工作区 cwd 解析（scope 域 program_list）→ persona（host-compat PHASE_PRESET 同读）→
+//   预算 max(3600, min(budget_timeout_sec,7200)) + goal 上限帽 → 非续跑 FGS 初始化 →
+//   buildScheduledPrompt → dispatch exec.spawn_worker（cwd+task_id+force）→
+//   busy 回 queued / timed_out→超时审批（纯空跑不提）/ 会话反查回填 → task_finish；
+//   每 10 tick：reap+worker_reap+会话归组；每日 05 时后首个 tick 触发 know.kb_vault_sync。
 // ---------------------------------------------------------------------------
 
 function pidAlive(pid) {
   try { process.kill(pid, 0); return true } catch { return false }
 }
 
-export function startTaskScheduler({ dataDir, dispatch, query }) {
+// worker.log 尾部噪声（headless 进程 stderr 杂讯）不进任务摘要/超时审批证据（与 v4 同表）
+const WORKER_NOISE_RE = /ExperimentalWarning|trace-warnings|EADDRINUSE|xray webhook 启动失败|onnxruntime|pthread_setaffinity|\[memcore|secMemoryLifecycle|sweeper 未启动/
+
+// 学习目标（§10 四类节奏）每 tick 至多认领 1 个（其余 finish(busy) 回 queued 下一 tick 再试）
+const LEARNING_GOALS = new Set(['learn-daily', 'eval-batch', 'change-retest'])
+// 学习/评测任务无显式预算延长时的上限帽（秒）——有批准过的 budget_timeout_sec 时沿用通用规则
+const GOAL_TIMEOUT_CAPS = { 'learn-daily': 1800, 'eval-batch': 3600, 'change-retest': 3600 }
+
+function _ok(result) { return !!(result && result.ok) }
+function _errCode(result) { return result && result.error && result.error.code ? result.error.code : 'E_INTERNAL' }
+function _errMsg(result) { return (result && result.error && result.error.message) || '' }
+
+export function startTaskScheduler(opts) {
+  const { dataDir, dispatch, query, getSessionPersistence, getWorkspaceRegistry } = opts
+  const repo = opts.repo || null // backend 直传（scheduledProgress 续跑检测需要）；为 null 时按全新运行处理
+  const tickMs = Number(opts.tickMs) > 0 ? Number(opts.tickMs) : SCHEDULER_TICK_MS // tickMs 仅测试注入（生产恒 60s）
   if (globalThis.__silksecTaskScheduler) return { started: false, reason: '已启动' }
   const lockPath = path.join(dataDir, 'scheduler.lock')
   const acquire = () => {
@@ -1129,10 +1197,209 @@ export function startTaskScheduler({ dataDir, dispatch, query }) {
     try { fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() })); return true } catch { return false }
   }
   const holds = () => { try { return JSON.parse(fs.readFileSync(lockPath, 'utf8')).pid === process.pid } catch { return false } }
-  if (!acquire()) return { started: false, reason: 'scheduler.lock 被 v4 调度器或其他进程持有（观察期本域休眠）' }
+  if (!acquire()) return { started: false, reason: 'scheduler.lock 被其他进程持有（活锁心跳未过期）' }
+  process.once('exit', () => { try { if (holds()) fs.unlinkSync(lockPath) } catch { /* ignore */ } })
 
+  // 启动即回收：本进程新启动意味着旧调度进程已终止，其派发的 running 任务均为孤儿 → 无条件回收
   try { dispatch('task', 'reap', { max_age: 0 }, { actor: 'scheduler' }).catch(() => {}) } catch { /* 启动回收失败不阻断 */ }
   try { dispatch('task', 'worker_reap', {}, { actor: 'scheduler' }).catch(() => {}) } catch { /* 启动对账失败不阻断 */ }
+
+  const readPersona = createPersonaReader()
+
+  // 工作区路径解析：v4 查 assetDb.listPrograms()；v5 走 scope 域 program_list（queryRef）——
+  // 弱联动：查不到返回 null（沿用 v4 语义），spawn 回落 runDir 工作目录。
+  let programCache = { at: 0, rows: [] }
+  async function workspacePathOfProgram(programId) {
+    if (!programId) return null
+    if (Date.now() - programCache.at > 60000) {
+      try {
+        const r = await query('scope', 'program_list', {}, { actor: 'scheduler' })
+        if (_ok(r) && r.data) programCache = { at: Date.now(), rows: r.data.rows || [] }
+      } catch (e) { log(`program_list 查询失败（沿用缓存）: ${e?.message}`) }
+    }
+    const hit = (programCache.rows || []).find((x) => x.id === programId)
+    return (hit && hit.workspace_path) || null
+  }
+
+  // P15 会话反查回填：headless worker 的会话按 header.cwd=工作区 + 时间窗（±60s 在 matchWorkerSession 内）取，
+  // 并发歧义/列表不完整时不造跳链（返回 null）。
+  async function findWorkerSessionId(cwd, startedAt, reportedId = null) {
+    try {
+      const sp = getSessionPersistence ? getSessionPersistence() : null
+      if (!sp || !cwd) return null
+      const { headers, diagnostics } = await listSessionHeaders(sp)
+      if (diagnostics.length) { log(`worker Session 列表不完整，拒绝反查: ${JSON.stringify(diagnostics)}`); return null }
+      const result = matchWorkerSession(headers, { cwd, startedAt, finishedAt: Date.now(), reportedId })
+      if (result.code) log(`worker Session 关联: ${JSON.stringify(result)}`)
+      return result.id
+    } catch (e) { log(`worker Session 反查失败: ${e?.message}`); return null }
+  }
+
+  // 工作区会话归组 reconcile：headless worker/CLI 会话按 header.cwd 匹配工作区 attachSession（幂等）
+  async function reconcileWorkspaceSessions() {
+    const wr = getWorkspaceRegistry ? getWorkspaceRegistry() : null
+    const sp = getSessionPersistence ? getSessionPersistence() : null
+    if (!wr || !sp) return
+    let headers
+    try {
+      const result = await listSessionHeaders(sp)
+      headers = result.headers
+      if (result.diagnostics.length) log(`Session 列表存在无效记录: ${JSON.stringify(result.diagnostics)}`)
+    } catch (e) { log(`Session 列表读取失败: ${e?.message}`); return }
+    let workspaces
+    try { workspaces = wr.list() } catch { return }
+    const byPath = {}
+    for (const w of workspaces) byPath[w.path] = w
+    for (const h of headers) {
+      const w = h && h.cwd ? byPath[String(h.cwd)] : null
+      if (!w) continue
+      try { await w.attachSession(h.id) } catch { /* 单个失败不影响其余 */ }
+    }
+  }
+
+  async function schedulerTick() {
+    let claimed = []
+    try {
+      const r = await dispatch('task', 'claim', { now: Date.now() }, { actor: 'scheduler' })
+      claimed = (_ok(r) && r.data && r.data.claimed) || []
+    } catch (e) { log(`调度认领失败: ${e?.message}`); return }
+    if (!claimed.length) { await dailyVaultSync(); return }
+    const tasks = []
+    for (const taskId of claimed) {
+      try {
+        const g = await query('task', 'get', { task_id: taskId }, { actor: 'scheduler' })
+        const row = _ok(g) && g.data ? g.data : null
+        if (!row) throw new Error(`task_get ${_errCode(g)}: ${_errMsg(g)}`)
+        tasks.push(row)
+      } catch (e) {
+        log(`调度取任务 #${taskId} 失败: ${e?.message}`)
+        // 取数失败也要显式收尾（crash）——认领后静默跳过会把任务卡死在 running 直到回收宽限
+        try { await dispatch('task', 'finish', { task_id: taskId, run_id: '', outcome: 'crash', note: `调度取任务失败: ${e?.message || ''}`.slice(0, 300) }, { actor: 'scheduler' }) } catch { /* ignore */ }
+      }
+    }
+    // 学习目标节奏闸：每 tick 至多 1 个 learn-daily/eval-batch/change-retest，其余回 queued
+    let learningTaken = 0
+    await Promise.allSettled(tasks.map((task) => (async () => {
+      const startedAt = Date.now()
+      try {
+        if (task.goal && LEARNING_GOALS.has(task.goal)) {
+          learningTaken++
+          if (learningTaken > 1) {
+            log(`任务 #${task.id}（goal=${task.goal}）学习节奏闸：本 tick 已有学习任务，回 queued`)
+            await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'busy' }, { actor: 'scheduler' })
+            return
+          }
+        }
+        const cwd = await workspacePathOfProgram(task.program_id)
+        let role = ''
+        try { role = readPersona(dataDir, task.phase || '', cwd) } catch (e) {
+          // E_PERSONA_READ：v4 拒绝无角色派单（异常进兜底 crash），v5 降级为空角色并显式留痕
+          log(`任务 #${task.id} 人格读取失败（按无角色继续）: ${e?.message}`)
+        }
+        // 预算：max(默认上限 3600, min(批准延长, 7200))；学习目标无显式延长时按 goal 帽收紧
+        let timeoutSec = Math.max(SCHEDULER_TASK_TIMEOUT_SEC, Math.min(Number(task.budget_timeout_sec) || 0, MAX_WORKER_TIMEOUT_SEC))
+        const cap = GOAL_TIMEOUT_CAPS[task.goal]
+        if (cap && !(Number(task.budget_timeout_sec) > 0)) timeoutSec = Math.min(timeoutSec, cap)
+        // 续跑检测（v4 taskScheduledProgress 同源）：上一轮失败 → 保留 FGS 检查点续跑
+        let progress = { attempts: 0, resume: false, resume_run_id: null }
+        if (repo && typeof repo.scheduledProgress === 'function') {
+          try { progress = repo.scheduledProgress(task, startedAt) } catch (e) { log(`任务 #${task.id} 续跑检测失败（按全新运行）: ${e?.message}`) }
+        }
+        // FGS 初始化：非续跑周期清旧图并写入顶层 goal（图生命周期与任务绑定，14-fgs 契约）
+        if (!progress.resume) {
+          try {
+            await dispatch('fgs', 'clear', { task_id: task.id }, { actor: 'scheduler' })
+            await dispatch('fgs', 'add', { task_id: task.id, type: 'goal', content: { summary: String(task.objective || '').slice(0, 200) || '定时任务目标', detail: String(task.objective || '') } }, { actor: 'scheduler' })
+          } catch (e) { log(`任务 #${task.id} FGS 初始化失败: ${e?.message}`) }
+        }
+        const prompt = buildScheduledPrompt(task, role, { ...progress, timeoutSec, startedAt })
+        // 派 worker：cwd=工作区（v4 等价——会话反查/工作区归组依赖 header.cwd 一致）；
+        // force 跳过 dedupe 恢复窗（周期任务重跑是必然，dedupe 的 done 窗口恢复会把"已收尾再启动"的周期吞掉）
+        const spawnArgs = { task: prompt, timeout: timeoutSec, force: true, provider: task.provider || undefined, model: task.model || undefined, phase: task.phase || '', task_id: task.id }
+        if (cwd) spawnArgs.cwd = cwd
+        let r
+        try {
+          r = await dispatch('exec', 'spawn_worker', spawnArgs, { actor: 'scheduler' })
+        } catch (e) {
+          // busy（并发上限）是瞬态：回 queued 下 tick 再认领（不落 run 史）；
+          // 其余抛错（域未注册/宿主故障等）非瞬态——抛给外层兜底记 crash，可见可查
+          if (e && e.code === 'E_EXEC_WORKER_BUSY') {
+            log(`任务 #${task.id} worker 并发已满，回 queued`)
+            await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'busy' }, { actor: 'scheduler' }).catch(() => {})
+            return
+          }
+          throw e
+        }
+        if (!_ok(r)) {
+          const code = _errCode(r)
+          if (code === 'E_EXEC_WORKER_BUSY') {
+            await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'busy' }, { actor: 'scheduler' })
+            return
+          }
+          throw new Error(`spawn_worker ${code}: ${_errMsg(r)}`)
+        }
+        const w = r.data || {}
+        // 幂等恢复路径命中在飞 worker：本 tick 让位（任务回 queued，在飞的那轮由宿主重启恢复路径负责）
+        if (w.in_progress) {
+          log(`任务 #${task.id} 同任务 worker 在飞（run ${w.run_id}），本 tick 让位`)
+          await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'busy' }, { actor: 'scheduler' })
+          return
+        }
+        const tailLines = String(w.tail || '').split('\n').filter((l) => l.trim() && !WORKER_NOISE_RE.test(l))
+        let note = ''
+        let timedOut = false
+        if (w.timed_out || (w.timed_out === undefined && !w.ok && w.exit_code === null && Number(w.duration_ms || 0) >= timeoutSec * 1000 - 15000)) {
+          note = `worker 超时（${timeoutSec} 秒预算，本周期第 ${(progress.attempts || 0) + 1}/3 次）；FGS 与执行产物已保留供续跑`
+          timedOut = true
+        } else if (w.cancelled) {
+          note = 'worker 被取消；执行产物已保留'
+        } else {
+          note = tailLines.slice(-3).join(' ').slice(0, 300)
+        }
+        // 超时自动提请 task-budget-extend（审批域同 (kind,subject) pending 查重天然幂等）。
+        // 纯空跑不提（尾部去噪后无实质产出不配延预算）——按 05-task §2.3 口径。
+        if (timedOut && timeoutSec < MAX_WORKER_TIMEOUT_SEC && tailLines.length) {
+          try {
+            const tailEvidence = tailLines.slice(-5).join(' ').slice(0, 400)
+            const add = await dispatch('approval', 'request', {
+              kind: 'task-budget-extend', subject: `task:${task.id}`, program_name: task.program_id,
+              payload: { task_id: task.id, program: task.program_id, timed_out_at_sec: timeoutSec, budget_timeout_sec: MAX_WORKER_TIMEOUT_SEC, run_id: w.run_id || null, tail: tailEvidence },
+              evidence: `任务 #${task.id}（${task.program_id}/${task.phase || '-'}）worker 跑满 ${timeoutSec}s 预算。批准后下周期预算上限 ${MAX_WORKER_TIMEOUT_SEC}s；尾部输出不能单独证明实际进度`,
+            }, { actor: 'scheduler' })
+            if (_ok(add)) log(`任务 #${task.id} 超时，已自动提请 task-budget-extend 审批`)
+            else log(`任务 #${task.id} 超时审批提请未成功: ${_errCode(add)} ${_errMsg(add)}`)
+          } catch (e) { log(`任务 #${task.id} 超时审批提请失败: ${e?.message}`) }
+        }
+        // 会话反查回填：exec meta.json 由 worker 侧写 session_id（宿主回执可能缺），这里按 cwd+时间窗补齐跳链
+        const workerSessionId = w.session_id || await findWorkerSessionId(cwd, startedAt, null)
+        const truth = w.truth && typeof w.truth === 'object' ? w.truth : { checked: false, rejected: false, reason: '' }
+        const outcome = (w.ok && !timedOut && !w.cancelled) ? 'done' : 'failed'
+        const fin = await dispatch('task', 'finish', {
+          task_id: task.id, run_id: w.run_id || '', outcome, note,
+          session_id: workerSessionId ?? null, truth, timed_out: timedOut,
+        }, { actor: 'scheduler' })
+        if (!_ok(fin)) log(`任务 #${task.id} task_finish 未成功: ${_errCode(fin)} ${_errMsg(fin)}`)
+      } catch (e) {
+        log(`调度任务 #${task.id} 执行异常: ${e?.stack || e?.message || String(e)}`)
+        try { await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'crash', note: `调度执行异常: ${e?.message || ''}`.slice(0, 300) }, { actor: 'scheduler' }) } catch { /* ignore */ }
+      }
+    })()))
+    await dailyVaultSync()
+  }
+
+  // vault 回流（Bellkeeper 融合方向②）：每日 05 时（北京）后首个 tick 触发 know 域 kb 同步——
+  // v4 走 experience.kbVaultSync 直调；v5 经 know 域命令 C32 know_kb_vault_sync（弱联动，失败不阻断调度）。
+  let lastVaultSyncDay = ''
+  async function dailyVaultSync() {
+    const bj = new Date(Date.now() + _BEIJING_OFFSET_MS)
+    const day = bj.toISOString().slice(0, 10)
+    if (lastVaultSyncDay === day || bj.getUTCHours() < 5) return
+    lastVaultSyncDay = day
+    try {
+      const r = await dispatch('know', 'kb_vault_sync', {}, { actor: 'scheduler' })
+      log(`vault 回流: ${JSON.stringify(r && r.data ? r.data : r)}`)
+    } catch (e) { log(`vault 回流异常: ${e?.message}`) }
+  }
 
   let tick = 0
   globalThis.__silksecTaskScheduler = setInterval(async () => {
@@ -1142,33 +1409,10 @@ export function startTaskScheduler({ dataDir, dispatch, query }) {
     if (tick % 10 === 0) {
       try { await dispatch('task', 'reap', { max_age: (SCHEDULER_TASK_TIMEOUT_SEC + 900) * 1000, pid_alive: true }, { actor: 'scheduler' }) } catch (e) { log(`周期回收失败: ${e?.message}`) }
       try { await dispatch('task', 'worker_reap', {}, { actor: 'scheduler' }) } catch (e) { log(`worker 对账失败: ${e?.message}`) }
+      try { await reconcileWorkspaceSessions() } catch (e) { log(`工作区会话归组失败: ${e?.message}`) }
     }
-    let claimed = []
-    try {
-      const r = await dispatch('task', 'claim', { now: Date.now() }, { actor: 'scheduler' })
-      claimed = (r && r.ok && r.data && r.data.claimed) || []
-    } catch (e) { log(`调度认领失败: ${e?.message}`); return }
-    await Promise.allSettled(claimed.map(async (taskId) => {
-      try {
-        const get = await query('task', 'get', { task_id: taskId }, { actor: 'scheduler' })
-        const task = get && get.ok ? get.data : null
-        if (!task) return
-        const prompt = `[定时任务 #${task.id}${task.phase ? ' / ' + task.phase : ''}] ${task.objective}`
-        const r = await dispatch('exec', 'spawn_worker', { task: prompt, timeout: Math.min(7200, Math.max(3600, Number(task.budget_timeout_sec) || 0)), provider: task.provider, model: task.model }, { actor: 'scheduler' })
-        if (r && r.ok && r.data && r.data.busy) {
-          await dispatch('task', 'finish', { task_id: taskId, run_id: '', outcome: 'busy' }, { actor: 'scheduler' })
-          return
-        }
-        const ok = !!(r && r.ok && r.data && r.data.exit_code === 0)
-        const note = r && r.data && r.data.tail ? String(r.data.tail).split('\n').filter(Boolean).slice(-3).join(' ').slice(0, 300) : ''
-        const truth = r && r.data && r.data.truth ? r.data.truth : { checked: false, rejected: false, reason: '' }
-        await dispatch('task', 'finish', { task_id: taskId, run_id: (r && r.data && r.data.run_id) || '', outcome: ok ? 'done' : 'failed', note, session_id: (r && r.data && r.data.session_id) || null, truth }, { actor: 'scheduler' })
-      } catch (e) {
-        log(`调度任务 #${taskId} 执行异常: ${e?.message}`)
-        try { await dispatch('task', 'finish', { task_id: taskId, run_id: '', outcome: 'crash', note: String(e?.message || '').slice(0, 300) }, { actor: 'scheduler' }) } catch { /* ignore */ }
-      }
-    }))
-  }, SCHEDULER_TICK_MS)
+    try { await schedulerTick() } catch (e) { log(`调度 tick 异常: ${e?.stack || e?.message}`) }
+  }, tickMs)
   globalThis.__silksecTaskScheduler.unref?.()
   return { started: true }
 }
@@ -1189,6 +1433,20 @@ export function buildTaskDomain(opts = {}) {
 
 export function apply(ctx, config = {}) {
   const dataDir = process.env.SEC_DATA_DIR || process.env.DSH_HOME || DEFAULT_DATA_DIR
+  let persistenceRef = null      // 宿主会话头部投影（会话反查/归组；headless profile 无此服务）
+  let workspaceRegistryRef = null // 工作区注册表（会话归组；headless profile 无此服务）
+  try {
+    ctx.inject(['sessionPersistence'], (child) => {
+      persistenceRef = child.sessionPersistence
+      return () => { persistenceRef = null }
+    })
+  } catch { /* 无 sessionPersistence（headless）*/ }
+  try {
+    ctx.inject(['workspaceRegistry'], (child) => {
+      workspaceRegistryRef = child.workspaceRegistry
+      return () => { workspaceRegistryRef = null }
+    })
+  } catch { /* 无 workspaceRegistry（headless）*/ }
   try {
     ctx.inject(['secDomainBus'], (child) => {
       const bus = child.secDomainBus
@@ -1200,10 +1458,26 @@ export function apply(ctx, config = {}) {
       const res = bus.registry.register(domain)
       if (res.ok) {
         log(`task 域注册成功（registered=${res.registered}）`)
-        // 观察期：调度器不启动——v4 调度器（sec-suite scheduler.js）仍持 data/scheduler.lock 运行，
-        // 保证 03:00/04:00 每日链路不中断。删旧路径（移除 v4 调度器）时再启用本域调度器：
-        //   if (config.sidecars !== false) startTaskScheduler({ dataDir, dispatch, query })
-        log('task 调度器观察期休眠（v4 调度器持锁；删旧路径后启用）')
+        // L6（学习专项 §10 调度器独立切换）：v5 调度器接管为唯一持锁者——v4 sec-suite
+        // scheduler.js 循环已在本切片停用（同包部署原子生效，无并行第二派单循环窗口）。
+        // 仅 web 宿主面启动：调度循环与 claim/finish/reap 等价性经契约测试钉死后切换；
+        // 文件锁 + 60s tick 与 v4 同口径，启动即回收旧进程孤儿任务。
+        const isWeb = process.argv.includes('web')
+        if (isWeb && config.sidecars !== false) {
+          const started = startTaskScheduler({
+            dataDir,
+            dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c),
+            query: (d, n, a, c) => bus.query(d, n, a, c),
+            repo: domain.backend,
+            getSessionPersistence: () => persistenceRef,
+            getWorkspaceRegistry: () => workspaceRegistryRef,
+          })
+          log(started.started
+            ? `task 调度循环已启动（唯一持锁者，60s tick，pid=${process.pid}）`
+            : `task 调度器未启动：${started.reason}`)
+        } else {
+          log('task 调度器未启动（非 web 宿主面或 sidecars 关闭）')
+        }
       } else {
         log(`task 域注册被拒：${res.error?.code} ${res.error?.message}`)
       }
