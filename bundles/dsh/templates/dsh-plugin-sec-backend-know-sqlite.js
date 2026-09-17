@@ -86,6 +86,34 @@ function createRepo(db) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_episode_program ON learning_episodes(program_id, created_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_episode_outcome ON learning_episodes(outcome)`)
 
+  // L2（2026-09-17 学习专项 §3.1/§6.1）：knowledge_revisions 候选知识版本（幂等建表）。
+  // 只插不改内容——UNIQUE(artifact_kind, artifact_id, content_digest) 内容级去重：
+  // 同参重放不产生新 revision；内容变化必出新行（旧行原样保留，published 冻结的根基）。
+  // 流程列（status/needs_revalidate/eval_report_ref）允许 UPDATE；内容列禁原地覆盖（域命令层守卫）。
+  db.exec(`CREATE TABLE IF NOT EXISTS knowledge_revisions (
+    revision_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    artifact_kind TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    parent_revision_id TEXT,
+    content_json TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    source_snapshot TEXT,
+    applies_predicates TEXT,
+    status TEXT NOT NULL DEFAULT 'candidate',
+    needs_revalidate INTEGER NOT NULL DEFAULT 0,
+    eval_report_ref TEXT,
+    change_note TEXT,
+    created_by_actor TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(artifact_kind, artifact_id, content_digest)
+  )`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_revision_artifact ON knowledge_revisions(artifact_kind, artifact_id, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_revision_source ON knowledge_revisions(source_kind, source_ref)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_revision_status ON knowledge_revisions(status)`)
+
   // 生命周期/评分/合并列（v4.6/v4.7 已加，幂等补齐）
   const expCols = ['mem_class', 'status', 'status_at', 'scope', 'justification', 'uses', 'adopted', 'pos_fb', 'neg_fb', 'score', 'last_used_at', 'exportable', 'runs', 'successes', 'tags', 'deviation']
   for (const [col, ddl] of [
@@ -363,6 +391,55 @@ function createRepo(db) {
       const total = db.prepare(`SELECT COUNT(*) AS c FROM learning_episodes ${w}`).get(...vals).c
       const rows = db.prepare(`SELECT * FROM learning_episodes ${w} ORDER BY created_at DESC, episode_id DESC LIMIT ? OFFSET ?`).all(...vals, limit, offset)
       return { rows, total }
+    },
+
+    // ---- L2 knowledge_revisions（内容只插不改；命中内容级唯一约束 → 复用原 revision，不抛错）----
+    insertRevision(row) {
+      try {
+        db.prepare(`INSERT INTO knowledge_revisions (
+          revision_id, schema_version, artifact_kind, artifact_id, parent_revision_id,
+          content_json, content_digest, source_kind, source_ref, source_snapshot,
+          applies_predicates, status, needs_revalidate, eval_report_ref,
+          change_note, created_by_actor, created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(
+            row.revision_id, row.schema_version ?? 1, row.artifact_kind, row.artifact_id, row.parent_revision_id ?? null,
+            row.content_json, row.content_digest, row.source_kind, row.source_ref, row.source_snapshot ?? null,
+            row.applies_predicates ?? null, row.status ?? 'candidate', row.needs_revalidate ?? 0, row.eval_report_ref ?? null,
+            row.change_note ?? null, row.created_by_actor ?? null, row.created_at,
+          )
+        return { created: true, revision_id: row.revision_id }
+      } catch (e) {
+        if (!/UNIQUE/i.test(String(e?.message || ''))) throw e
+        const dup = db.prepare('SELECT revision_id FROM knowledge_revisions WHERE artifact_kind=? AND artifact_id=? AND content_digest=?')
+          .get(row.artifact_kind, row.artifact_id, row.content_digest)
+        return { created: false, duplicate: 'content', revision_id: dup ? dup.revision_id : null }
+      }
+    },
+    getRevision(revisionId) {
+      const r = db.prepare('SELECT * FROM knowledge_revisions WHERE revision_id=?').get(String(revisionId))
+      return r ? { ...r } : null
+    },
+    getRevisionByArtifactDigest(kind, artifactId, digest) {
+      const r = db.prepare('SELECT * FROM knowledge_revisions WHERE artifact_kind=? AND artifact_id=? AND content_digest=?').get(String(kind), String(artifactId), String(digest))
+      return r ? { ...r } : null
+    },
+    listRevisions({ artifact_kind = '', artifact_id = '', status = '', needs_revalidate = null, limit = 50, offset = 0 } = {}) {
+      const where = []
+      const vals = []
+      if (artifact_kind) { where.push('artifact_kind = ?'); vals.push(String(artifact_kind)) }
+      if (artifact_id) { where.push('artifact_id = ?'); vals.push(String(artifact_id)) }
+      if (status) { where.push('status = ?'); vals.push(String(status)) }
+      if (needs_revalidate !== null && needs_revalidate !== undefined) { where.push('needs_revalidate = ?'); vals.push(needs_revalidate ? 1 : 0) }
+      const w = where.length ? `WHERE ${where.join(' AND ')}` : ''
+      const total = db.prepare(`SELECT COUNT(*) AS c FROM knowledge_revisions ${w}`).get(...vals).c
+      const rows = db.prepare(`SELECT * FROM knowledge_revisions ${w} ORDER BY created_at DESC, revision_id DESC LIMIT ? OFFSET ?`).all(...vals, limit, offset)
+      return { rows, total }
+    },
+    // 来源变更联动（kb_revalidate(changed)）：依赖该文献版本的 revision 标 needs_revalidate=1，原始引用保留
+    markRevisionsNeedRevalidate(sourceKind, sourceRef) {
+      return db.prepare('UPDATE knowledge_revisions SET needs_revalidate=1 WHERE source_kind=? AND source_ref=?')
+        .run(String(sourceKind), String(sourceRef)).changes
     },
   }
   return repo

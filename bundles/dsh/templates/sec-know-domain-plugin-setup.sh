@@ -98,4 +98,31 @@ assemble
 install_plugin
 run_contract_tests
 smoke
+
+# -------------------- L2 候选规程卡种子（2026-09-17 学习专项）--------------------
+# 版本受控模板 data-seed/know-revisions/vc-authz-r1.json → know_revision_propose（actor=script）。
+# 幂等：自动指纹（artifact+parent+content）+ 表级 UNIQUE(artifact,content_digest)——重跑 replay/复用，零重复。
+# 候选≠发布：只写 knowledge_revisions，不动 data/vulncards/ 现行卡片。
+seed_revision_candidates() {
+    local seed="$BASE_DIR/data-seed/know-revisions/vc-authz-r1.json"
+    local cli="$BASE_DIR/scripts/pipeline/sec-bus-cli.mjs"
+    [ -f "$seed" ] || { log "L2 种子模板缺失，跳过: $seed"; return 0; }
+    [ -f "$cli" ] || { log "sec-bus-cli 未归位（总线 setup 先行保证），跳过 L2 种子"; return 0; }
+    local payload
+    payload="$("$NODE" -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));delete s._comment;process.stdout.write(JSON.stringify(s))' "$seed")" \
+        || die "L2 种子模板 JSON 解析失败"
+    local out
+    out="$(SEC_BASE_DIR="$BASE_DIR" SEC_DATA_DIR="$DATA_DIR" PATH=/usr/local/node/bin:$PATH \
+        "$NODE" "$cli" dispatch know.revision_propose --args "$payload" --actor script --operator setup 2>&1)" \
+        || die "L2 候选卡种子提案失败：$out"
+    if echo "$out" | grep -q '"recorded": true'; then
+        log "L2 候选卡已提案：VC-AUTHZ-001 r1（knowledge_revisions，status=candidate）"
+    elif echo "$out" | grep -q '"replay": true\|"duplicate": "content"'; then
+        log "L2 候选卡已存在（幂等回放，零重复）"
+    else
+        die "L2 候选卡种子返回异常：$out"
+    fi
+}
+seed_revision_candidates
+
 log "完成。重启生效: spool restart <host> silksecagent"

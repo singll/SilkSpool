@@ -342,3 +342,7 @@ export const repositoryV1 = {
 - **K4 llm_probe 标签纠正已上线**：runContract 的 mode 从虚标的 `gateway+llm` 改为 `gateway+llm-unsupported`；kind=llm 用例跳过并单列 `llm_probe.skipped`，不计入分母；`eval_run_contract` 返回 `llm_probe_supported: false`。契约用例覆盖（19/19 全绿）。
 - **K3 靶场回归入口恢复已上线**：`eval-run.js` 从引用已退役的 `run_cli`/`grep_result` 工具句柄迁移为 v5 总线版——自建总线实例注册 exec 域，逐用例 `exec_run_cli`（scope-guard fail-closed 硬校验、结果落盘 `results/<run_id>/`、事件经 outbox 由宿主 dispatcher 消费）+ `exec_grep_result` 核对预期模板；报告从 `report-<epoch>.json` 改直写标准入口 `data/eval/eval-range-report.json`（写前旧报告归档 `reports/`，与 backend INV-3 对齐），eval_reports/eval_stats 聚合可见。
 - 遗留（进 L3）：真实模型行为层（受测 headless 会话 + 工具轨迹）未实现；隐藏集防泄漏与 baseline 配对报告未实现；靶场回归尚未加 `exec.run.completed` 失败统计到报告。
+
+## 七、2026-09-17 学习专项 L2 实施回填（备案）
+
+- 本域未新增/变更命令与事件。L2 交付的候选规程卡（know 域 knowledge_revisions，VC-AUTHZ-001-r1）的 fixtures×3（vulnerable/patched/invalid_env）是 L3 `eval_run_candidate` 的评测对象；独立评测、隐藏集与 baseline 配对报告全部待 L3——候选卡在评测通过前不进任何检索/注入面。

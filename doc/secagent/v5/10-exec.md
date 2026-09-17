@@ -670,3 +670,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 - 安全检查落地：run 归属（meta.json 一致性）、软链拒、硬链逃逸（nlink>1）拒、类型（仅常规文件）、单文件 64MB/总量 256MB、双 stat 写完校验（E_EXEC_EVIDENCE_UNFINISHED retryable）、O_NOFOLLOW 安全句柄 + fstat 复检、tmp+rename 原子复制与清单发布、副本哈希二次比对、发布后 staging 清空。
 - 幂等：自然键 run_id，发布内容冻结，重复调用回放。
 - 契约测试：exec 18→23 全绿（happy/actor 闸/软链+硬链+空 staging+不存在 run/写完校验/幂等回放冻结）。
+
+## 七、2026-09-17 学习专项 L2 实施回填（备案）
+
+- 本域未新增/变更命令与事件。`exec.run.completed` → know 域 episode 订阅链（L1）是实战偏差 episode 的来源，episode 再经 know 域 `know_revision_propose` 转候选规程卡（L2）；执行面零变化——**候选 revision 不触发任何执行**（设计 §4.1 坏资料纪律同款：候选不等于授权）。

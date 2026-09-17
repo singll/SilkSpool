@@ -6,7 +6,7 @@
 
 ## 一、当前状态（2026-09-16 自学习 L1 部署后）
 
-- 生产：**0.1.5-rc.2**、MainPID **3911269**、NRestarts=0、active/running（2026-09-16 重启过三次：§14.6 定时任务链式调度优化、§14.7 日志巡检第二轮修复、自学习 L1 部署——见 §四 基线变更）。
+- 生产：**0.1.5-rc.2**、MainPID **3931430**、NRestarts=0、active/running（2026-09-16 重启过三次：§14.6 定时任务链式调度优化、§14.7 日志巡检第二轮修复、自学习 L1 部署；2026-09-17 自学习 L2 部署又一次重启——见 §四 基线变更）。
 - Git 提交：`b7f4111 fix: 定时任务链式调度与工具调用稳定性优化`（代码与生产文件哈希一致，任务链已配置）。
 - §14.7 第二轮：新增 `vuln_evidence_put` 打通 CONFIRMED 证据闭环；exec 双协议前缀参数清洗+渲染兜底；ffuf wordlist 默认值修正、l2-collect `sandbox:false`、nuclei 可选 templates/tags（远程 tools.d 已直接更新）；ledger E_LEDGER_EVIDENCE_MISSING hint 直指失败模式（12 次归因：模型传参问题、守卫按设计工作，11/12 重试自愈）。本地 387 合约全过。
 - 定时任务链：bytedance `#16 recon → #19 广度 → #100008 深挖`；meituan `#17 recon → #37 广度 → #100007 深挖`。预算 3600/5400/7200s，前置成功后 60s 放行后续；每日锚点 北京 03:00/03:10，下一周期 2026-09-17。误完结的 #16/#17/#19 已恢复 queued。
@@ -110,6 +110,8 @@ git commit -m 'docs: DSH 0.1.5-rc.2 U4 关账记录'
 - **§14.5 巡检**：首次巡检完成（2026-09-15T14:57Z），全部健康；别名闸口顺延至 2026-09-22T15:07:10+08:00
 - **L1 基线变更（2026-09-16T16:23:39Z 重启生效）**：自学习专项 L1（证据与执行学习记录）在观察期内部署上线——`spool bundle dsh setup csai` 全量推送 + 各域契约测试硬门槛全绿 + owns×sandbox 交叉断言 69 项 PASS + 服务重启加载。变更面：exec/know/vuln/task/fgs 五域插件 + know sqlite 后端（新增 `learning_episodes` 表，幂等建表已在生产库演进）。部署后冒烟：服务 active NRestarts=0、journal 无异常、know_episode_list 真库查询 ok、三条新命令 actor 闸实测拒绝、vuln_evidence_attach 未发布证据实测拒（E_EVIDENCE_REQUIRED）。首次 setup 曾因 task 套件回引后组装 fgs 插件中止（已修为桩域并复跑通过；期间服务保持旧代码运行，无窗口期事故）。MainPID 已变更是预期内（重启加载），U4 关账对账时以本次为最新基线。详见[自学习设计 §11.2](2026-09-12-self-learning-design.md)。
 - **L0/L1 已上线；L2–L6 未执行**
+- **L2 基线变更（2026-09-17T01:44Z 前后重启生效，MainPID 3911269→3931430）**：自学习专项 L2（候选规程与来源版本）在观察期内部署上线——`spool bundle dsh setup csai` 全量推送 + 各域契约测试硬门槛全绿（know 42/42 等 14 域 + 总线）+ owns×sandbox 交叉断言 70 项 PASS + 服务重启加载。变更面：know 域插件 + know sqlite 后端（新增 `knowledge_revisions` 表，幂等建表已在生产库演进）+ 版本受控候选卡种子（`data-seed/know-revisions/vc-authz-r1.json` → setup 内 sec-bus-cli 幂等提案）+ manifest 登记；其余 13 域插件代码未变。部署后冒烟：服务 active NRestarts=0、journal 无异常、knowledge_revisions 生产库只读核对（表+三索引+候选行 status=candidate）、know_revision_list 真库查询 ok、actor 闸生产实测拒（human → E_ACTOR_FORBIDDEN）、种子候选 digest 与本地确定性一致（sha256:63fa230a…）。首次 setup 曾因种子步动词名误用全前缀（`know.know_revision_propose`，总线只认去前缀名）中止于 know 段（已修为 `know.revision_propose` 并复跑通过；首跑时序为 post-push hook 先重启旧代码→setup 中止于种子步，进程内始终旧代码，无窗口期事故）。MainPID 变更系预期内重启，U4 关账对账时以本次为最新基线。详见[自学习设计 §11.3](2026-09-12-self-learning-design.md)。
+- **L0/L1/L2 已上线；L3–L6 未执行**
 
 ---
 

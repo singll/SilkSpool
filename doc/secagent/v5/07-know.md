@@ -3,7 +3,7 @@
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：know@1
 > 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（订阅 `approval.approved` 承接 knowledge-adopt / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 记学习 episode，L1）；vuln 域（订阅 `vuln.signal.confirmed/rejected` 记判定 episode，L1）；task 域（订阅 `task.finished` 记任务级 episode，L1）。
 > 被订阅：`know.*` 全系事件——memcore（治理旁路）、dashboard、eval（评测回流）。
-> owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` / `playbooks` / `learning_episodes` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
+> owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` / `playbooks` / `learning_episodes` / `knowledge_revisions` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
 
 ---
 
@@ -51,6 +51,7 @@
 | C21 | `know_transition` | 跨仓 | 治理通道：exp/kb 生命周期降级（memcore sweep 专用） | system, human | 自然键 | know.exp.cooled/archived/expired、know.kb.* |
 | C22 | `know_purge_archive` | 跨仓 | 归档表 90 天硬删（占位动词，Phase 2 正式化，同 06-fact 映射表 #7） | system | 自然键 | （无） |
 | C23 | `know_episode_record` | episode | 执行学习记录落账（reactor 专用；宿主注入归属；六类结果分类；双唯一去重） | **reactor**（模型/脚本/dashboard 物理不可调） | 自然键（source_event_id+consumer_version） | know.episode.recorded |
+| C24 | `know_revision_propose` | revision | 候选知识版本提案（父版本+结构化改动+来源+适用条件；L2 2026-09-17 上线；候选≠发布，绝不覆盖在使用卡片） | model, script, dashboard | 自动指纹（artifact+parent+content）+ 表级 UNIQUE 兜底 | know.revision.proposed |
 
 > **卡片使用记录（原 `card_usage_log`）归属**：归 **ledger 域**（动词 `ledger_log_card_usage`），文件 `data/pipeline/{program}/card_usage-{date}.jsonl`（sec-pipeline.js L146，`pipelineDir()` 即 ledger 台账树）：① attempts/card_usage/handoff 三产物同一纪律节奏写入、被 task_finish 流程守卫同批校验、走同一 vault 回放链路——拆域会让守卫跨域取证；② 一棵目录树一个 owner（单写者律同款理由）。**本域消费路径**：订阅 `ledger.card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询，驱动 registry 健康度与 know_health 零使用卡清理——读消费不受 owns 影响。字段语义（card_id/deviation/suggest）的知识视角归本域解读，写入动作归 ledger。
 
@@ -213,6 +214,7 @@
 
 **参数表**：doc_id（必填）；evidence（必填：抓取 run_id 或 ≥10 字复核结论）；result（string，可选，∈ {unchanged, changed, fetch_failed}，script 通道必填）；new_body（string，result=changed 必填，≤512KB）；failure_reason（string，fetch_failed 时建议，落 last_fetch_error）。
 **返回 data**：`{ doc_id, revalidate_by, result }`；changed 追加 `{ tainted, category, content_hash, body_revision }`；fetch_failed 返回 `{ fetch_failures }` 且 revalidate_by 保持原值。
+**L2 联动**：`result=changed` 成功后，依赖该文献版本的全部 knowledge_revisions 行置 `needs_revalidate=1`（原始引用保留，不静默替换，见 C24）。
 **错误码**：E_NOT_FOUND；E_STATE（curated 行免复验——hint：curated 规程行不做复验）；E_EVIDENCE_REQUIRED；E_SCHEMA（changed 缺 new_body——hint：提供重抓取的新正文，不允许只刷新验证时间）。
 **幂等**：自动指纹（doc_id, evidence, result, new_body）。
 **agent_note（RoE）**：复验文献（刷新 90±15 天复验期）。result=changed 必须带 new_body（正文换新 + 重扫 taint + FTS/向量重建，body_revision+1）；result=fetch_failed 记失败计数与原因，不刷新已验证时间。script 通道自动重抓比对；人工通道直接确认。
@@ -317,6 +319,39 @@
 
 **事件**：`know.episode.recorded {episode_id, source_event_id, source_event_name, outcome, program_id, exec_run_id}`。
 
+#### C24 · know_revision_propose（候选知识版本提案，L2 2026-09-17 上线）
+
+**语义**（设计 §4/§6.1/§6.3）：外部资料（kb 文献版本）与实战偏差（episode）两条输入通道统一转**候选 revision**，落 `knowledge_revisions` 表（2.1）。**候选不覆盖正在使用的卡片**——本动词只写 revisions 表，不动 exp_cards/kb_docs/vulncards 任何现行资产；`published` 内容不可原地覆盖，任何内容变化只能以新 revision（新 content_digest）提出。L2 只有提案入口；评测/晋升/发布门禁（assess/publish/revoke）属 L3/L4，不在本动词范围。
+
+**revision 状态机**（§6.1）：`draft → candidate → evaluating → eligible → published → retired`；失败走 `rejected`；变更内容 = 新 revision。L2 落地 `propose`（draft→candidate，一步落 candidate 态）与来源变更的 `needs_revalidate` 标记；其余流转动词待 L3/L4。
+
+**参数 schema**（`additionalProperties: false`）：
+
+| 参数 | 类型 | 必填 | 校验 |
+|---|---|---|---|
+| artifact_kind | string | 是 | ∈ {vulncard, exp_card, playbook, kb_doc} |
+| artifact_id | string | 是 | `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` |
+| parent_revision_id | string | 否 | 存在时必须是同 artifact 的既有 revision（INV-K13） |
+| content | object | 是 | 结构化改动全文（≤32KB JSON）；artifact_kind=vulncard 时须满足 INV-K14 最小结构 |
+| content_digest | string | 否 | `sha256:` 前缀 64 hex；缺省由网关按 canonical JSON 计算，提供了则一致性校验（不符 → E_KNOW_REVISION_CHANGED） |
+| source_kind | string | 是 | ∈ {kb_doc, episode, seed}（文献版本 / 实战偏差 / 版本受控种子——"internal" 来源禁止伪造 source_url） |
+| source_ref | string | 是 | kb_doc:`<doc_id>`；episode:`<episode_id>`；seed: 模板相对路径。存在性+来源可信度校验（INV-K15） |
+| applies_predicates | object | 否 | 适用谓词（surface/prerequisites/invalidated_by 等，卡片级谓词通常在 content.appliesTo） |
+| change_note | string | 是 | ≥10 字变更说明（新 revision 相对父版本改了什么） |
+
+**行为**：INV-K13（父版本链）→ INV-K14（vulncard 最小结构齐全）→ INV-K15（来源可信）逐条 fail-closed → INSERT revisions 行（status=candidate，needs_revalidate=0，schema_version=1）→ 发 `know.revision.proposed`。
+
+**INV-K14 · vulncard 候选最小结构**（设计 §4.2）：content 必须包含 `appliesTo.prerequisites`（非空）+ `appliesTo.invalidatedBy`（非空）、`hypothesis`、`minimalProbe`、`positiveControl`、`negativeControl`、`evidenceRequired`（非空数组）、`stopConditions`（非空数组）、`fixtures`（≥3 具名：vulnerable/patched/invalid_env）、`budget.maxRequests/maxSeconds`（正整数）、`failureNotes`、`changeNote`——缺一即 E_INVARIANT，hint 逐字段列出缺口。**前置/对照/停止/证据/来源不齐全的资料进不了候选**。
+
+**INV-K15 · 来源可信闸**（设计 §4.1 坏资料纪律）：`kb_doc` 来源须存在且非 archived 且**tainted=0 且 fetch_failures=0**——被污染/抓取失败的资料**不进候选**（E_INVARIANT，hint：先人工核实来源再提案），更绝不触发任何执行；`episode` 来源须存在于 learning_episodes；`seed` 来源为版本受控模板（部署通道，见 3.3 #9）。三类来源都在 revision 行落来源快照（kb: doc_id+body_revision+content_hash；episode: episode_id+outcome）。
+
+**幂等**：自动指纹 `artifact_kind+artifact_id+parent_revision_id+content`（内容 canonical 哈希即 digest 语义，等价设计 §6.3「artifact+parent+content digest」）+ 表级 `UNIQUE(artifact_kind, artifact_id, content_digest)` 兜底（总线幂等表过期后的晚到重放由唯一约束吸收，复用原 revision 不重复发布事件）——同参重放 replay；同键异参 E_IDEMPOTENT_CONFLICT。**内容不变 = 不产生新 revision**；内容变 = 新 digest = 新 revision 行（旧行原样保留）。
+
+**错误码**：E_SCHEMA（参数形状）；E_INVARIANT（INV-K13/K14/K15）；E_KNOW_REVISION_CHANGED（自带 digest 与 canonical 不符——hint：内容变化请去掉 content_digest 让网关重算，或修正 digest 后作为新 revision 提案）。**actor**：model, script, dashboard。
+**事件**：`know.revision.proposed {revision_id, artifact_kind, artifact_id, parent_revision_id, content_digest, source_kind, source_ref, change_note 摘要}`。
+
+**来源变更联动**：`kb_revalidate(result=changed)` 成功后，把 `source_kind=kb_doc 且 source_ref=该 doc_id` 的全部 revision 标记 `needs_revalidate=1`（原始引用与来源版本快照保留——**依赖旧版本的候选/已发布卡显式待复验，不静默替换**；4.3 闭环）。
+
 ### 1.4 查询（读投影）逐个详述
 
 > 列表统一分页信封 `{rows, total, limit, offset}`；行数=total 同口径断言（`expVisibleWhere()` / `kbVisibleWhere()` 单一构造器）。
@@ -369,6 +404,10 @@
 
 #### Q16 · know_episode_list（L1）：参数 program_id / outcome / 分页；返回 learning_episodes 行（来源事件/归属/六类结果/证据与 FGS 快照引用，按 created_at 倒序）。复盘「学到了什么、依据是什么」的只读投影。
 
+#### Q17 · know_revision_list（L2）：参数 artifact_kind / artifact_id / status / needs_revalidate / 分页；返回 knowledge_revisions 行（按 created_at 倒序）。「候选池里有什么、来源是什么、是否待复验」的只读投影。
+
+#### Q18 · know_revision_get（L2）：参数 revision_id；返回单条 revision 全文（content JSON / 来源快照 / 状态链）。
+
 ### 1.5 事件
 
 **发布**：
@@ -393,6 +432,7 @@
 | `know.harvest.ingested` | C19 | `{ count, drafts_path }` |
 | `know.adopted` | C20 | `{ target, adopted_id, source_cmd, evidence }` |
 | `know.episode.recorded` | C23 | `{ episode_id, source_event_id, source_event_name, outcome, program_id, exec_run_id }` |
+| `know.revision.proposed` | C24 | `{ revision_id, artifact_kind, artifact_id, parent_revision_id, content_digest, source_kind, source_ref, change_note 摘要 }` |
 
 **订阅**（manifest subscribes）：
 
@@ -418,6 +458,8 @@
 | pb_save / pb_outcome | 见 C7/C8 |
 | kb_import / kb_revalidate / kb_record_usage | 见 C11/C12/C13 |
 | vc_save / vc_activate / vc_deprecate | 见 C15/C17/C18（使用记录见 C16 消费通道，写入动词在 ledger 域） |
+| know_revision_propose | 见 C24（候选知识版本提案；候选≠发布，不覆盖现行卡片；坏来源被拒） |
+| know_revision_list / know_revision_get | 见 Q17/Q18（候选池只读投影） |
 | exp_search | 检索经验卡（关键词+标签+置信度，FTS+向量融合）。任务开局三步检索第二步：动手前查历史打法，命中即用（用后回执）。返回按综合评分排序，含冷却降权标记。 |
 | exp_get | 读经验卡全文（scenario/takeaway/chain/证据链）。 |
 | exp_rank | 当前 Top5 经验卡 + playbook 排名（开局注入同源）。 |
@@ -551,6 +593,10 @@ sec query know know_health --actor script
 
 执行学习记录（设计 §3.1 最小数据模型的 L1 落地）。列：`episode_id PK / schema_version / source_event_id / source_event_name / consumer_version / program_id / task_id / exec_run_id / attempt_id / session_id / card_id / card_version / model_id / outcome / reason_code / evidence_refs(JSON) / fgs_snapshot_hash / fgs_snapshot_summary / fgs_snapshot_path / request_count / token_count / duration_ms / source_credibility / supersedes / context_json / biz_key / observed_at / created_at`。约束：`UNIQUE(source_event_id, consumer_version)`（事件级去重，保留期=表本身）；部分唯一索引 `idx_episode_biz(biz_key) WHERE biz_key IS NOT NULL`（业务归因去重：`program|source_event_name|exec_run_id|attempt|card_version`）；普通索引 program_id+created_at、outcome。只插不改——同一 episode 不覆写，判定修正形成带 `supersedes` 的新记录。
 
+#### knowledge_revisions 表（L2，2026-09-17；owner=know，幂等建表）
+
+候选知识版本（设计 §3.1/§6.1 的 L2 落地）。列：`revision_id PK / schema_version / artifact_kind / artifact_id / parent_revision_id / content_json / content_digest(sha256 canonical JSON) / source_kind / source_ref / source_snapshot(JSON：kb=doc_id+body_revision+content_hash；episode=episode_id+outcome；seed=模板路径) / applies_predicates(JSON) / status（draft/candidate/evaluating/eligible/published/retired/rejected；L2 只产生 candidate）/ needs_revalidate（来源变更标记，kb_revalidate(changed) 联动置位）/ eval_report_ref（L3 起用）/ change_note / created_by_actor / created_at`。约束：`UNIQUE(artifact_kind, artifact_id, content_digest)`（内容级去重——同参重放不产生新 revision，内容变化必出新行）；索引 `idx_revision_artifact(artifact_kind, artifact_id, created_at)`、`idx_revision_source(source_kind, source_ref)`、`idx_revision_status(status)`。**只插不改内容**：`content_json/content_digest/source_snapshot` 一旦写入不可原地覆盖（published 内容冻结的根基）；后续允许修改的仅 `status/needs_revalidate/eval_report_ref` 三个流程列。
+
 **file 后端**：
 
 | 路径 | 形态 | 写入者 |
@@ -608,6 +654,9 @@ kb_import ──▶ active（revalidate_by = 90d ±15d 抖动）
 | INV-K10 | 防回流 | 导出内容 frontmatter 必带 `source_system: silksecagent`；kb_import 检测到该标记的文档**拒绝导入**（防知识循环污染） | E_INVARIANT |
 | INV-K11 | curated 闸 | curated 行禁止：kb_revalidate / know_transition / taintguard 生命周期 / 评分参与 | E_STATE |
 | INV-K12 | rules 物理闸 | rule_seed / know_adopt(target=rules) actor 禁 model | E_ACTOR_FORBIDDEN |
+| INV-K13 | revision 父链 | parent_revision_id 必须是同 artifact 既有 revision；revision 内容只插不改（变化=新行） | E_NOT_FOUND / E_INVARIANT |
+| INV-K14 | vulncard 候选最小结构 | artifact_kind=vulncard 的 content 须含设计 §4.2 全字段（前置/失效条件/hypothesis/minimal_probe/正负对照/证据要求/停止条件/fixtures×3/预算/失败解释/变更说明） | E_INVARIANT |
+| INV-K15 | 来源可信闸 | kb_doc 来源存在且未 archived 且 tainted=0 且 fetch_failures=0；episode 来源存在；坏资料（taint/抓取失败）不进候选、绝不触发执行 | E_INVARIANT |
 
 ### 2.3 事务与联动
 
@@ -816,6 +865,7 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 6. data/vault-export-cards/ 目录初始化（空目录 + .gitignore）；与 data/vault-export/ 的存量混淆排查（如发现旧导出残留，移入新目录并补 source_system frontmatter）。
 7. AGENTS.md 受管区块首次全量生成（迁移时刻起本域接管；v4 memcore 的区块标记注释沿用，非受管区不动）。
 8. 事件日志 data/events/know.jsonl 从迁移时刻起算；回滚 = 域插件停用回 v4 直调路径（表结构向后兼容）。
+9. **L2 候选卡种子**（2026-09-17）：`know_revision_propose` 部署通道种子——know 域 setup 契约测试通过后，经 `scripts/pipeline/sec-bus-cli.mjs dispatch know.know_revision_propose --actor script` 把版本受控的候选卡模板（`data-seed/know-revisions/vc-authz-r1.json`）幂等写入 knowledge_revisions（自然键 artifact+digest 保证重放零重复）。
 
 ---
 
@@ -843,7 +893,7 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **K1 缺列修复已上线**：`kb_docs` ensureCol 幂等补 `category / fetch_failures / last_fetch_error / body_revision / content_hash`（此前源码 `kb_list(category)` 与 `kb_revalidate(fetch_failed)` 走的列线上不存在）。kb_import 起写入 category/content_hash；kb_list/kb_search 透出 category 与 body_revision；`know_health.kb.fetch_failed` 从硬编码 0 改为真实计数并加 warning。
 - **K2 内容闭环已上线**：`kb_revalidate(changed)` 必须带 `new_body`（否则 E_SCHEMA）——正文原子换新 + content_hash 更新 + body_revision+1 + taint 重扫 + 分类重算 + FTS 同步重建 + 向量异步重建（失败落 last_fetch_error，不再静默）；`fetch_failed` 只记计数与原因，**不刷新** last_validated_at/revalidate_by；`unchanged` 清零失败计数。幂等指纹扩为 (doc_id, evidence, result, new_body)。
 - 契约测试 26/26 全绿（含 ensureCol 幂等、changed 闭环、fetch_failed 语义、缺 new_body 拒绝）；csai 生产冒烟：kb_docs 新列已演进、know.health / kb_list 真库只读查询通过。
-- 遗留（进 L2）：正文换新后的「依赖该版本的候选/已发布卡标记需复验」尚未实现（依赖 knowledge_revisions 表族）；kb_import 与 revalidate 的向量重建仍是 best-effort 异步（失败已可见，未入待修复队列）。
+- 遗留（已在 L2 闭环/继续）：正文换新后的「依赖该版本的候选/已发布卡标记需复验」已随 L2 上线（knowledge_revisions.needs_revalidate 联动，见 §八）；kb_import 与 revalidate 的向量重建仍是 best-effort 异步（失败已可见，未入待修复队列）。
 
 ## 七、2026-09-16 学习专项 L1 实施回填（learning_episodes）
 
@@ -852,3 +902,11 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **订阅落地**：`exec.run.completed` / `vuln.signal.confirmed` / `vuln.signal.rejected` / `task.finished` → episode（分类映射见 C23）；归属由宿主从事件信封注入（session_id 取 ctx，不采信 args）；FGS 快照引用取 task.finished payload 中宿主固定的快照（缺快照显式标记，不事后读当前图）。
 - 原 1.5 订阅表 `exec.run.completed → pb_outcome 自动回填`一行系未实现的旧设计表述，本次勘误废止（见该行注记）。
 - 契约测试：know 26→31 全绿（happy/actor 闸/六类 outcome/双去重含幂等表过期兜底/同键异参拒覆写/订阅回放含重复回放零记功）。
+
+## 八、2026-09-17 学习专项 L2 实施回填（knowledge_revisions）
+
+- **`knowledge_revisions` 表上线**（幂等建表，见 2.1）：候选知识版本，`UNIQUE(artifact_kind, artifact_id, content_digest)` 内容级去重，只插不改内容（变化=新 revision 行）。
+- **C24 `know_revision_propose`**（model/script/dashboard）+ 事件 `know.revision.proposed` + 查询 Q17/Q18；INV-K13（父版本链）/ INV-K14（vulncard 最小结构齐全闸）/ INV-K15（来源可信闸：tainted/fetch_failed 的 kb 来源不进候选）。
+- **两条输入通道落地**：`source_kind=kb_doc`（外部资料，带来源版本快照 doc_id+body_revision+content_hash）与 `source_kind=episode`（实战偏差）统一落候选 revision；候选不覆盖任何在使用卡片。
+- **kb_revalidate(changed) 联动**：来源变更后依赖该文献版本的 revision 置 `needs_revalidate=1`，原始引用保留不静默替换（§4.3 遗留项闭环）。
+- **首个完整卡片切片**：P1 授权类 `VC-AUTHZ-001-r1`（扩展现有 vuln_authz_diff 的角色×对象×动作约束检查）作为 artifact_kind=vulncard 的版本化候选卡，经版本受控模板 + setup 种子通道落库（3.3 #9）；卡片本体不进 data/vulncards/（候选≠发布）。

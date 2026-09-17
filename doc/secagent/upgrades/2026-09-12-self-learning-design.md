@@ -1,6 +1,6 @@
 # SilkSecAgent v5 自学习与漏洞学习探测设计
 
-> 日期：2026-09-12；状态：**L0/L1 已实施上线（2026-09-16，csai 生产）；L2–L6 未执行**。本文的 knowledge_revisions / 新评测层 / 晋升门禁仍未上线；learning_episodes 与证据发布/挂载已随 L1 落地（§11.2）。
+> 日期：2026-09-12；状态：**L0/L1/L2 已实施上线（L0/L1 于 2026-09-16，L2 于 2026-09-17，csai 生产）；L3–L6 未执行**。knowledge_revisions 候选版本层与首个 P1 授权类候选卡已随 L2 落地（§11.3）；独立评测层 / 晋升门禁仍未上线；learning_episodes 与证据发布/挂载已随 L1 落地（§11.2）。
 > 配套：[平台升级方案](2026-09-12-dsh-0.1.5-rc.2-plan.md) · [csai 实测基线](2026-09-12-dsh-0.1.5-rc.2-record.md) · [升级目录](README.md)
 > 约束：沿用 v5 的 14 业务域、CommandGateway、actor、owns 和事件契约；实施前同步受影响的域文档与 manifest，本文不直接覆盖现行契约。
 
@@ -335,6 +335,20 @@ L1 四项交付全部上线（契约：本地 14 域全绿——bus 52/52、know
 部署记事：本次部署在 U4 观察期内（至 2026-09-18T14:16:35Z），已记入 [U4 handoff](HANDOFF-u4-observation.md) 基线变更。实施中发现并修复一个组装顺序缺陷：task 契约套件曾回引**后组装**的 fgs 插件（setup.sh 顺序 task→fgs，首装/升级时读到旧版 fgs 致 csai setup 中止）——改为对齐 F9 契约面的最小桩域，保持"测试只依赖先组装域"的单向纪律；fgs_snapshot 本体验收由 fgs 套件承担。
 
 **L2–L6 状态继续记为未执行**（候选 revision/独立评测/受控发布/检索计分/运营面板均未开始；valid_clean、blocked_auth 两类 outcome 待 L2 候选规程与证据对照接入后产生真实流量）。
+
+## 11.3 L2 实施记录（2026-09-17，csai 生产）
+
+L2 三项交付全部上线（契约：know 31→42 全绿，14 域 + 总线全套本地全绿：bus 52/52、vuln 59/59、asset 30/30、endpoint 25/25、fact 23/23、know 42/42、ledger 22/22、task 30/30、exec 23/23、fgs 21/21、scope 15/15、approval 16/16、report 12/12、proxy 17/17、eval 19/19；csai setup 内契约硬门槛 + owns×sandbox 交叉断言 70 项 PASS）：
+
+1. **know 域候选版本层**（§3.1/§6.1）：`knowledge_revisions` 表（owner=know，幂建表已在生产库演进）——`UNIQUE(artifact_kind, artifact_id, content_digest)` 内容级去重，内容列只插不改（变化=新 revision 行，旧行原样保留——published 冻结的根基）；流程列仅 status/needs_revalidate/eval_report_ref。C24 `know_revision_propose`（model/script/dashboard；human/system/reactor/approval 物理拒）+ 事件 `know.revision.proposed`（载荷只含判据快照 ≤2KB）+ 查询 Q17 `know_revision_list` / Q18 `know_revision_get`。三道网关闸：INV-K13 父版本链（父版本须同 artifact 既有 revision）、INV-K14 vulncard 最小结构（§4.2 全字段缺一即拒）、INV-K15 来源可信（见 2）。幂等：自动指纹（artifact+parent+content canonical 哈希）+ 表级 UNIQUE 兜底（幂等缓存过期后的晚到重放复用原 revision，零重复发事件）；自带 content_digest 与 canonical 不符 → E_KNOW_REVISION_CHANGED。
+2. **两条输入通道转候选**（§4.1）：`source_kind=kb_doc`（外部资料，来源快照钉 doc_id+body_revision+content_hash）/ `source_kind=episode`（实战偏差，快照钉 episode_id+outcome）/ `source_kind=seed`（版本受控模板部署通道）。**坏资料闸**：tainted / fetch_failures>0 / 已归档的 kb 来源一律 E_INVARIANT 不进候选；候选只写 revisions 表，**绝不触碰在使用卡片、绝不触发执行**（契约用例断言 vulncards/exp/kb 现行资产零变化）。§4.3 遗留闭环：`kb_revalidate(changed)` 成功后依赖该文献旧版本的 revision 置 `needs_revalidate=1`（`revisions_flagged` 计数透出），原始引用与来源版本快照保留不静默替换。
+3. **首个完整卡片切片**（§4.2/§5 P1 授权类）：`VC-AUTHZ-001` r1——扩展现有 `vuln_authz_diff` 为角色×对象×动作约束检查卡，前置（owned_test_accounts/known_object_owner/scope_authorized）/失效条件（role_change/endpoint_contract_change/test_account_expired）/hypothesis/minimal_probe（vuln_authz_diff 为最小探针）/正对照（拥有者 200）/负对照（低权 401-404 或归属隔离）/evidence_required×4/stop_conditions×3/fixtures×3（vulnerable/patched/invalid_env）/budget（6 请求/120 秒）/失败解释/变更说明齐全。部署通道：版本受控模板 `data-seed/know-revisions/vc-authz-r1.json` → know setup 内 `sec-bus-cli dispatch know.revision_propose --actor script`（幂等，重跑 replay 零重复）。**候选≠发布**：卡不进 data/vulncards/，不改 vuln_authz_diff 现行判定行为；进使用面待 L3 评测 + L4 发布门禁。
+
+验收对照（§11 L2 行）：前置/对照/停止/证据/来源齐全——INV-K14 网关强校验 + 种子卡实测落库（生产 digest `sha256:63fa230a…`，与本地确定性一致）；内容变化不覆盖已发布版本——表级 UNIQUE + 父子链用例（v1 行原样保留断言）；坏资料不触发执行——INV-K15 五类坏来源用例全拒 + 候选层无任何执行通道；契约测试全套全绿（上列计数）。生产冒烟：knowledge_revisions 生产库已演进（只读 .schema 核对）、种子候选在库（status=candidate）、revision_list 真库查询 ok、actor 闸生产实测拒（human → E_ACTOR_FORBIDDEN）、服务 active NRestarts=0、journal 无异常。
+
+部署记事：本次部署仍在 U4 观察期内（至 2026-09-18T14:16:35Z），已记入 [U4 handoff](HANDOFF-u4-observation.md) 基线变更。实施中发现一个部署通道缺陷并已修复：know setup 种子步首跑以全动词名 `know.know_revision_propose` 调 sec-bus-cli 命中 E_BUS_VERB_UNKNOWN（总线 findCommandDef 只接受去前缀动词名）——改为 `know.revision_propose` 后复跑通过。首跑时序：推送阶段 post-push hook 先重启服务（plugins 装配目录尚未更新，进程内为旧代码）→ setup 中止于 know 种子步（know 插件文件已装配为新版且契约测试通过，但无重启加载，进程内仍是旧代码，无窗口期事故）→ 第二次 setup 全量复跑完成并重启加载新版。MainPID 变更（3931430）为预期内重启。
+
+**L3–L6 状态继续记为未执行**（独立评测/受控发布/检索计分/运营面板均未开始；revision 的 evaluating/eligible/published/retired/rejected 流转动词属 L3/L4；候选卡 fixtures 仅为声明，受控 fixture 家族实体待 L3 v5 fixture runner 落地）。
 
 ## 12. 契约与来源
 

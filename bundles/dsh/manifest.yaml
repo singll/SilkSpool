@@ -295,6 +295,8 @@ templates:
   - dsh-plugin-sec-backend-know-sqlite.js
   - dsh-plugin-sec-backend-know-file.js
   - sec-know-domain-plugin-setup.sh
+  # --- L2 候选规程卡种子（版本受控模板；know setup 经 sec-bus-cli 幂等提案进 knowledge_revisions）---
+  - data-seed/know-revisions/vc-authz-r1.json
   # --- v5 ledger 域插件（Phase 2 三节点：纪律台账/卡使用/雷达队列/交接包，契约 11-ledger.md）---
   - dsh-plugin-sec-domain-ledger.js
   - dsh-plugin-sec-domain-ledger.patch.yml

@@ -72,6 +72,19 @@ const PB_OUTCOME = ['win', 'loss']
 const EPISODE_OUTCOMES = ['confirmed', 'valid_clean', 'inapplicable', 'blocked_auth', 'infra_error', 'inconclusive']
 const EPISODE_CREDIBILITY = ['machine', 'model-proposed', 'independently-verified', 'human-reviewed', 'vendor-confirmed']
 const EPISODE_CONSUMER_VERSION = 'episode-v1'
+// L2（设计 §4/§6.1）：候选知识版本——两条输入通道（kb 文献版本 / 实战偏差 episode / 版本受控种子）
+const REVISION_ARTIFACT_KINDS = ['vulncard', 'exp_card', 'playbook', 'kb_doc']
+const REVISION_SOURCE_KINDS = ['kb_doc', 'episode', 'seed']
+const REVISION_STATUSES = ['draft', 'candidate', 'evaluating', 'eligible', 'published', 'retired', 'rejected']
+// §6.1 状态机：L2 只产生 candidate；evaluating/eligible/published/retired/rejected 流转属 L3/L4 门禁
+
+// canonical JSON（键排序序列化）——content_digest 的唯一事实口径
+function canonicalStringify(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v)
+  if (Array.isArray(v)) return `[${v.map(canonicalStringify).join(',')}]`
+  return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalStringify(v[k])}`).join(',')}}`
+}
+const sha256hex = (s) => crypto.createHash('sha256').update(String(s)).digest('hex')
 
 export const KNOW_MANIFEST = {
   domain: 'know',
@@ -79,7 +92,7 @@ export const KNOW_MANIFEST = {
   service: 'secDomain.know',
   description: '知识六仓（经验卡/文献/先验规程/漏洞卡/收割/体检——换目标也有用的可迁移方法论，目标事实归 fact 域）',
   owns: {
-    tables: ['exp_cards', 'exp_embeddings', 'exp_feedback', 'exp_cards_archive', 'kb_docs', 'kb_fts', 'kb_embeddings', 'kb_docs_archive', 'playbooks', 'learning_episodes'],
+    tables: ['exp_cards', 'exp_embeddings', 'exp_feedback', 'exp_cards_archive', 'kb_docs', 'kb_fts', 'kb_embeddings', 'kb_docs_archive', 'playbooks', 'learning_episodes', 'knowledge_revisions'],
     files: ['data/rules/', 'data/vulncards/', 'data/harvest/', 'data/events/know.jsonl'],
   },
   commands: {
@@ -450,6 +463,34 @@ export const KNOW_MANIFEST = {
       agent_note: '（reactor 专用，不向模型注册）执行学习 episode 落账：归属由宿主从真实事件信封注入；六类结果分类（confirmed/valid_clean/inapplicable/blocked_auth/infra_error/inconclusive）；(source_event_id, consumer_version) + 业务归因双唯一去重，重复回放不重复记功；同一 episode 不覆写，修正走 supersedes 新记录。',
       deprecated: false,
     },
+    // C24（L2 学习专项，2026-09-17，设计 §4/§6.1/§6.3）：候选知识版本提案。
+    // 两条输入通道（kb 文献版本 / 实战偏差 episode / 版本受控种子）统一落 knowledge_revisions；
+    // 候选≠发布——只写 revisions 表，绝不覆盖在使用卡片；坏来源（taint/抓取失败）不进候选。
+    know_revision_propose: {
+      actor: ['model', 'script', 'dashboard'],
+      schema: schema({
+        artifact_kind: en(REVISION_ARTIFACT_KINDS),
+        artifact_id: str({ minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' }),
+        parent_revision_id: str(),
+        content: { type: 'object' },
+        content_digest: str({ pattern: '^sha256:[0-9a-f]{64}$' }),
+        source_kind: en(REVISION_SOURCE_KINDS),
+        source_ref: str({ minLength: 1, maxLength: 256 }),
+        applies_predicates: { type: 'object' },
+        change_note: str({ minLength: 10 }),
+      }, ['artifact_kind', 'artifact_id', 'content', 'source_kind', 'source_ref', 'change_note']),
+      // 自动指纹（artifact_kind+artifact_id+content 全量哈希——内容即 digest，等价设计 §6.3「artifact+parent+content digest」，
+      // 且调用方省略 content_digest 时键仍稳定）；表级 UNIQUE(artifact,artifact_id,content_digest) 兜底内容级去重。
+      idempotent: 'auto',
+      idempotent_fields: ['artifact_kind', 'artifact_id', 'content', 'parent_revision_id'],
+      events: ['know.revision.proposed'],
+      event_limit: 1,
+      invariants: ['revisionParentExists', 'revisionContentSize', 'vulncardMinStructure', 'revisionSourceTrusted'],
+      invariants: ['revisionArtifactIdFormat', 'revisionParentExists', 'revisionContentSize', 'vulncardMinStructure', 'revisionSourceTrusted'],
+      timeout_ms: 60000,
+      agent_note: '提出候选知识版本（资料/实战偏差→候选 revision，不覆盖在用卡片）。vulncard 须含 §4.2 最小结构（前置/对照/停止/证据/fixtures/预算/失败解释）。坏来源（taint/抓取失败）不进候选。',
+      deprecated: false,
+    },
   },
   queries: {
     exp_search: {
@@ -575,6 +616,26 @@ export const KNOW_MANIFEST = {
       predicates: [],
       agent_note: '执行学习记录投影：来源事件/归属/六类结果/证据与 FGS 快照引用（按时间倒序）。复盘"学到了什么、依据是什么"用。',
     },
+    // Q17/Q18（L2）：候选知识版本只读投影（候选池里有什么、来源是什么、是否待复验）
+    know_revision_list: {
+      actor: ['model', 'dashboard', 'human', 'system'],
+      params: schema({
+        artifact_kind: en([...REVISION_ARTIFACT_KINDS, ''], { default: '' }),
+        artifact_id: str({ default: '' }),
+        status: en([...REVISION_STATUSES, ''], { default: '' }),
+        needs_revalidate: { type: ['boolean', 'null'] },
+        limit: int({ minimum: 1, maximum: 500 }),
+        offset: int({ minimum: 0 }),
+      }, []),
+      predicates: [],
+      agent_note: '候选知识版本投影：artifact/状态/来源/待复验筛选（按时间倒序）。复盘"候选池里有什么、依据是什么"用。',
+    },
+    know_revision_get: {
+      actor: ['model', 'dashboard', 'human', 'system'],
+      params: schema({ revision_id: str({ minLength: 1 }) }, ['revision_id']),
+      predicates: [],
+      agent_note: '读单条候选知识版本全文（content JSON/来源快照/状态链）。',
+    },
   },
   events: {
     'know.exp.stored': { payload: { type: 'object' }, redact: [] },
@@ -599,6 +660,7 @@ export const KNOW_MANIFEST = {
     'know.harvest.ingested': { payload: { type: 'object' }, redact: [] },
     'know.adopted': { payload: { type: 'object' }, redact: [] },
     'know.episode.recorded': { payload: { type: 'object' }, redact: [] },
+    'know.revision.proposed': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'fact.bb.published': { handler: 'onFactBbPublished', mode: 'async', as: 'reactor' },
@@ -790,6 +852,82 @@ function makeHandlers(opts) {
         if (args.to === 'cooling' && r.status !== 'active') return { code: 'E_STATE', message: `非法流转: ${r.status}→cooling`, hint: null, retryable: false }
         if (args.to === 'archived' && !['active', 'cooling'].includes(r.status || 'active')) return { code: 'E_STATE', message: `非法流转: ${r.status}→archived`, hint: null, retryable: false }
       }
+      return null
+    },
+
+    // ---- L2（设计 §4.2/§6.1）：候选知识版本闸 ----
+    // artifact_id 形态（总线 validateSchema 不支持 pattern，格式闸放不变量层）
+    revisionArtifactIdFormat: async (args) => {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(args.artifact_id || ''))) {
+        return { code: 'E_SCHEMA', message: 'artifact_id 形态非法', hint: 'artifact_id 限字母数字开头 + [A-Za-z0-9._-]，≤64 字符', retryable: false }
+      }
+      return null
+    },
+    // INV-K13 父版本链：parent_revision_id 必须指向同 artifact 的既有 revision
+    revisionParentExists: async (args, repo) => {
+      if (!args.parent_revision_id) return null
+      const parent = repo.getRevision(args.parent_revision_id)
+      if (!parent) return { code: 'E_NOT_FOUND', message: `父版本 ${args.parent_revision_id} 不存在`, hint: '先 know_revision_list 定位父版本；首个版本不传 parent_revision_id', retryable: false }
+      if (parent.artifact_kind !== args.artifact_kind || parent.artifact_id !== args.artifact_id) {
+        return { code: 'E_INVARIANT', message: `INV-K13: 父版本属 ${parent.artifact_kind}/${parent.artifact_id}，与本提案 ${args.artifact_kind}/${args.artifact_id} 不同`, hint: '父版本必须是同一 artifact 的既有 revision', retryable: false }
+      }
+      return null
+    },
+    revisionContentSize: async (args) => {
+      const size = canonicalStringify(args.content || {}).length
+      if (size > 32768) return { code: 'E_INVARIANT', message: `候选内容超 32KB（${size} 字符）`, hint: '候选 revision 只存结构化摘要与规程字段，大段原文引用 source_ref', retryable: false }
+      return null
+    },
+    // INV-K14 vulncard 候选最小结构（设计 §4.2 全字段，缺一即拒——前置/对照/停止/证据/来源不齐全的资料进不了候选）
+    vulncardMinStructure: async (args) => {
+      if (args.artifact_kind !== 'vulncard') return null
+      const c = args.content || {}
+      const missing = []
+      const needStr = (k, label) => { if (typeof c[k] !== 'string' || c[k].trim().length < 4) missing.push(label) }
+      const needArr = (k, label) => { if (!Array.isArray(c[k]) || c[k].length === 0) missing.push(label) }
+      const applies = c.appliesTo && typeof c.appliesTo === 'object' ? c.appliesTo : null
+      if (!applies) missing.push('appliesTo')
+      else {
+        if (!Array.isArray(applies.prerequisites) || applies.prerequisites.length === 0) missing.push('appliesTo.prerequisites（前置条件）')
+        if (!Array.isArray(applies.invalidatedBy) || applies.invalidatedBy.length === 0) missing.push('appliesTo.invalidatedBy（失效条件）')
+      }
+      needStr('hypothesis', 'hypothesis（假设）')
+      needStr('minimalProbe', 'minimalProbe（最小探针）')
+      needStr('positiveControl', 'positiveControl（正对照）')
+      needStr('negativeControl', 'negativeControl（负对照）')
+      needArr('evidenceRequired', 'evidenceRequired（证据要求）')
+      needArr('stopConditions', 'stopConditions（停止条件）')
+      const fixtures = c.fixtures && typeof c.fixtures === 'object' ? Object.keys(c.fixtures).filter((k) => c.fixtures[k]) : []
+      if (fixtures.length < 3) missing.push('fixtures（≥3 具名：vulnerable/patched/invalid_env）')
+      const budget = c.budget && typeof c.budget === 'object' ? c.budget : null
+      if (!budget || !Number.isInteger(budget.maxRequests) || budget.maxRequests < 1 || !Number.isInteger(budget.maxSeconds) || budget.maxSeconds < 1) {
+        missing.push('budget.maxRequests/maxSeconds（正整数）')
+      }
+      needStr('failureNotes', 'failureNotes（失败解释）')
+      needStr('changeNote', 'changeNote（变更说明）')
+      if (missing.length) {
+        return { code: 'E_INVARIANT', message: `INV-K14: vulncard 候选缺最小结构字段：${missing.join('、')}`, hint: '对照设计 §4.2 补齐：前置/失效条件、hypothesis、minimalProbe、正/负对照、证据要求、停止条件、三类 fixture、预算、失败解释、变更说明', retryable: false }
+      }
+      return null
+    },
+    // INV-K15 来源可信闸（设计 §4.1）：坏资料（taint/抓取失败/来源不存在）不进候选，绝不触发执行
+    revisionSourceTrusted: async (args, repo) => {
+      if (args.source_kind === 'kb_doc') {
+        const docId = Number(args.source_ref)
+        const doc = Number.isInteger(docId) ? repo.getKbDoc(docId) : null
+        if (!doc) return { code: 'E_NOT_FOUND', message: `来源文献 #${args.source_ref} 不存在`, hint: 'source_kind=kb_doc 时 source_ref 填 doc_id；先 kb_list 定位', retryable: false }
+        if (doc.status === 'archived') return { code: 'E_INVARIANT', message: `INV-K15: 来源文献 #${docId} 已归档`, hint: '归档资料不进候选', retryable: false }
+        if (doc.tainted) return { code: 'E_INVARIANT', message: `INV-K15: 来源文献 #${docId} 被标 tainted（疑似提示注入）`, hint: '坏资料不进候选——先人工核实来源，确认可信后以人工复核结论再提案', retryable: false }
+        if ((doc.fetch_failures || 0) > 0) return { code: 'E_INVARIANT', message: `INV-K15: 来源文献 #${docId} 抓取失败 ${doc.fetch_failures} 次（${doc.last_fetch_error || '原因未记录'}）`, hint: '抓取失败的资料不进候选——先 kb_revalidate 恢复可信来源', retryable: false }
+        return null
+      }
+      if (args.source_kind === 'episode') {
+        if (!repo.getEpisode(args.source_ref)) return { code: 'E_NOT_FOUND', message: `来源 episode ${args.source_ref} 不存在`, hint: 'source_kind=episode 时 source_ref 填 episode_id；先 know_episode_list 定位', retryable: false }
+        return null
+      }
+      // seed：版本受控模板（部署通道）；来源即模板相对路径，禁路径穿越形态
+      const ref = String(args.source_ref)
+      if (ref.includes('..') || path.isAbsolute(ref)) return { code: 'E_SCHEMA', message: 'seed 来源路径非法', hint: 'source_kind=seed 时 source_ref 填 data-seed/ 下的相对路径（无 ..）', retryable: false }
       return null
     },
   }
@@ -1020,8 +1158,11 @@ function makeHandlers(opts) {
           try { const vec = await em.embed(`${doc.title} ${String(args.new_body).slice(0, 2000)}`); repo.replaceKbEmbedding(args.doc_id, vec) }
           catch (e) { log(`kb revalidate embedding 失败 doc=${args.doc_id}: ${e?.message}`); repo.updateKbDoc(args.doc_id, { last_fetch_error: `embedding_failed:${String(e?.message || e).slice(0, 200)}` }) }
         }).catch((e) => log(`kb embedding 模块加载失败 doc=${args.doc_id}: ${e?.message}`))
+        // L2 来源变更联动（设计 §4.3）：依赖该文献旧版本的候选/已发布 revision 标"需复验"，
+        // 原始引用与来源版本快照保留——评测通过前不静默替换发布内容。
+        const flagged = repo.markRevisionsNeedRevalidate('kb_doc', String(args.doc_id))
         return {
-          data: { doc_id: args.doc_id, result, revalidate_by, tainted, category, content_hash: contentHash, body_revision: bodyRevision },
+          data: { doc_id: args.doc_id, result, revalidate_by, tainted, category, content_hash: contentHash, body_revision: bodyRevision, revisions_flagged: flagged },
           events: [{ name: 'know.kb.revalidated', payload: { doc_id: args.doc_id, result, revalidate_by, content_hash: contentHash, body_revision: bodyRevision, tainted } }],
           before: { body_revision: doc.body_revision || 1, content_hash: doc.content_hash || null }, after: { body_revision: bodyRevision, content_hash: contentHash },
         }
@@ -1212,6 +1353,60 @@ function makeHandlers(opts) {
         after: { episode_id: episodeId, outcome: args.outcome },
       }
     },
+
+    // C24（L2）：候选知识版本提案。只写 knowledge_revisions——候选≠发布，绝不覆盖在使用卡片
+    //（exp_cards/kb_docs/vulncards 现行资产零触碰）。内容 canonical digest 由网关计算；
+    // 自带 digest 一致性校验（不符 = 内容在传输中被改动，拒收引导重算）。
+    know_revision_propose: async (args, repo, ctx) => {
+      const contentJson = canonicalStringify(args.content)
+      const digest = `sha256:${sha256hex(contentJson)}`
+      if (args.content_digest && args.content_digest !== digest) {
+        throwErr('E_KNOW_REVISION_CHANGED', `自带 content_digest 与内容不符（期望 ${digest}）`, '内容变化请去掉 content_digest 让网关重算，或修正 digest 后作为新 revision 提案——批准后内容变更的旧批准即失效', false)
+      }
+      // 内容级去重兜底（总线幂等表过期后的晚到重放由表级 UNIQUE 吸收）：同 digest 复用原 revision，不发事件
+      const same = repo.getRevisionByArtifactDigest(args.artifact_kind, args.artifact_id, digest)
+      if (same) {
+        return { data: { revision_id: same.revision_id, recorded: false, duplicate: 'content', status: same.status } }
+      }
+      // 来源快照（kb 文献版本 / episode 结果 / seed 模板路径）——版本可追溯的锚点
+      let snapshot = null
+      if (args.source_kind === 'kb_doc') {
+        const doc = repo.getKbDoc(Number(args.source_ref))
+        snapshot = { doc_id: doc.id, title: doc.title, body_revision: doc.body_revision || 1, content_hash: doc.content_hash || null, url: doc.source_url || null }
+      } else if (args.source_kind === 'episode') {
+        const ep = repo.getEpisode(args.source_ref)
+        snapshot = { episode_id: ep.episode_id, outcome: ep.outcome, reason_code: ep.reason_code, program_id: ep.program_id, exec_run_id: ep.exec_run_id }
+      } else {
+        snapshot = { seed: args.source_ref }
+      }
+      const revisionId = `rev_${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}`
+      const row = {
+        revision_id: revisionId,
+        schema_version: 1,
+        artifact_kind: args.artifact_kind,
+        artifact_id: args.artifact_id,
+        parent_revision_id: args.parent_revision_id || null,
+        content_json: contentJson,
+        content_digest: digest,
+        source_kind: args.source_kind,
+        source_ref: String(args.source_ref),
+        source_snapshot: JSON.stringify(snapshot),
+        applies_predicates: args.applies_predicates && typeof args.applies_predicates === 'object' ? JSON.stringify(args.applies_predicates).slice(0, 4000) : null,
+        status: 'candidate',
+        change_note: String(args.change_note).slice(0, 500),
+        created_by_actor: (ctx && ctx.actor) || null,
+        created_at: Date.now(),
+      }
+      const r = repo.insertRevision(row)
+      if (!r.created) {
+        return { data: { revision_id: r.revision_id, recorded: false, duplicate: r.duplicate } }
+      }
+      return {
+        data: { revision_id: revisionId, recorded: true, status: 'candidate', content_digest: digest },
+        events: [{ name: 'know.revision.proposed', payload: { revision_id: revisionId, artifact_kind: args.artifact_kind, artifact_id: args.artifact_id, parent_revision_id: row.parent_revision_id, content_digest: digest, source_kind: args.source_kind, source_ref: row.source_ref, change_note: String(args.change_note).slice(0, 120) } }],
+        after: { revision_id: revisionId, status: 'candidate' },
+      }
+    },
   }
 
   const queries = {
@@ -1358,6 +1553,18 @@ function makeHandlers(opts) {
     // Q16（L1）：学习 episode 投影（同 where 构造器保证 rows/total 口径一致）
     know_episode_list: async (args, repo) => {
       return repo.listEpisodes({ program_id: args.program_id || '', outcome: args.outcome || '', limit: args.limit ?? 50, offset: args.offset ?? 0 })
+    },
+    // Q17/Q18（L2）：候选知识版本投影
+    know_revision_list: async (args, repo) => {
+      return repo.listRevisions({
+        artifact_kind: args.artifact_kind || '', artifact_id: args.artifact_id || '', status: args.status || '',
+        needs_revalidate: args.needs_revalidate ?? null, limit: args.limit ?? 50, offset: args.offset ?? 0,
+      })
+    },
+    know_revision_get: async (args, repo) => {
+      const r = repo.getRevision(args.revision_id)
+      if (!r) throwErr('E_NOT_FOUND', `revision ${args.revision_id} 不存在`, '先 know_revision_list 定位', false)
+      return { ...r, content: JSON.parse(r.content_json), source_snapshot: r.source_snapshot ? JSON.parse(r.source_snapshot) : null, applies_predicates: r.applies_predicates ? JSON.parse(r.applies_predicates) : null }
     },
   }
 

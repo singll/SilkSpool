@@ -1,0 +1,62 @@
+{
+  "_comment": "L2 首个完整卡片切片（设计 §4.2/§5 P1 授权类）：扩展现有 vuln_authz_diff 的角色×对象×动作约束检查卡。部署通道：sec-know-domain-plugin-setup.sh 经 sec-bus-cli dispatch know.know_revision_propose（actor=script）幂等提案；内容变化改本文件后重跑 setup 即产生新 revision（旧 revision 原样保留）。候选≠发布——本卡不进入 data/vulncards/，不改变 worker 现行行为。",
+  "artifact_kind": "vulncard",
+  "artifact_id": "VC-AUTHZ-001",
+  "source_kind": "seed",
+  "source_ref": "data-seed/know-revisions/vc-authz-r1.json",
+  "change_note": "首版候选：从响应相似度三档判定扩展为角色×对象×动作约束卡，前置/对照/停止/证据/预算齐全",
+  "applies_predicates": {
+    "surface": "api",
+    "card_family": "P1-authz",
+    "extends": "vuln_authz_diff"
+  },
+  "content": {
+    "id": "VC-AUTHZ-001",
+    "version": 1,
+    "parentVersion": null,
+    "title": "API 对象/功能/租户授权约束检查（角色×对象×动作）",
+    "extends": "vuln_authz_diff",
+    "appliesTo": {
+      "surface": "api",
+      "prerequisites": [
+        "owned_test_accounts（成对受控测试身份：同租户两账号或 owner/非 owner 两角色）",
+        "known_object_owner（目标测试对象的归属身份已知且可断言）",
+        "scope_authorized（目标接口在当前 Program 授权范围内，scope-guard 通过）"
+      ],
+      "invalidatedBy": [
+        "role_change（目标角色模型变更——权限矩阵失效）",
+        "endpoint_contract_change（接口契约变更——路径/参数/响应结构漂移）",
+        "test_account_expired（测试身份失效或被回收）"
+      ]
+    },
+    "hypothesis": "身份与对象归属之间应满足访问约束：对象/功能操作只允许其归属身份或被授权角色执行；低权身份对他人对象的读/写应被拒绝（401/403/404）或返回归属隔离后的空集。",
+    "minimalProbe": "对受控测试对象执行允许范围内的最少检查：经 vuln_authz_diff 双权凭证重放同一接口（低权=非归属测试身份，高权=对象归属身份），比对状态码与响应结构；每对象最多 2 请求，不构造批量遍历。",
+    "positiveControl": "对象拥有者（高权测试身份）可执行预期操作并收到 200 与预期数据结构——对照失败（高权也被拒）判定环境/凭证问题，不得解释为漏洞不存在。",
+    "negativeControl": "无相应权限的测试身份（低权）对他人对象应被拒绝（401/403/404）或返回归属隔离数据——对照失败（低权拿到归属数据）即为约束违例信号。suspected 判定（低权 200 且高相似）本身不构成成立，须补对象归属证据链。",
+    "evidenceRequired": [
+      "request_context（双权重放的完整请求上下文：method/url/headers 指纹）",
+      "identity_ref（两个测试身份的凭据引用，凭据本体经 cred_query，不进知识）",
+      "object_owner（目标对象的归属身份断言与取证过程）",
+      "behavior_assertion（正/负对照结果与响应差异断言）"
+    ],
+    "stopConditions": [
+      "scope_changed（目标或授权范围变更——立即停止并上报）",
+      "unexpected_sensitive_data（响应中出现非测试身份的真实用户数据——停止、不复制内容、按证据纪律脱敏上报）",
+      "rate_limit（触发限流/WAF 封禁——停止本卡探测，记 blocked_auth/infra_error）"
+    ],
+    "fixtures": {
+      "vulnerable": "fixture-authz-a（缺对象归属校验的受控接口：低权可读他人对象）",
+      "patched": "fixture-authz-b（已修复接口：低权 403）",
+      "invalid_env": "fixture-authz-c（环境异常：高权凭证失效——正对照应失败）"
+    },
+    "budget": { "maxRequests": 6, "maxSeconds": 120 },
+    "failureNotes": "低权 401/403=鉴权正常（unlikely）；状态码不一致需人工看响应（review）；低权 200 且响应相似=suspected，须取证对象归属后才可升级；正对照失败（高权也被拒）=环境/凭证问题记 infra_error 或 blocked_auth，不计为检出失败也不计为漏洞不存在；凭证缺失（无成对测试身份）记 blocked_auth，是任务前置缺口。",
+    "changeNote": "首版候选：从响应相似度三档判定扩展为角色×对象×动作约束卡（设计 §5 P1 授权类），补齐前置/失效条件、正/负对照、证据要求、停止条件、fixtures 与预算。",
+    "applicabilityConfidence": "medium",
+    "suggestedAlternatives": [
+      "无成对测试身份时：退化为文档/接口契约静态比对 + 任务前置缺口上报",
+      "对象归属不可断言时：只做负对照（拒绝面），不做数据相似度判定"
+    ],
+    "evalRef": null
+  }
+}

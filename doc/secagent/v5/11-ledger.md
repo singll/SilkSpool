@@ -537,3 +537,7 @@ hasHandoff(program, date) → boolean
 | 文档漂移 | 已修正全部事件名为 `ledger.*` 前缀；§2.3.3 不再声称 fail-closed 阻止 finish。 |
 | hook 判定 | FGS 摘要经 `fgs_export` 查询后写入本域 handoff，无直写他域。 |
 | 独立升级 | 支持单域替换；须与 task、know、fgs 联合回归。 |
+
+## 六、2026-09-17 学习专项 L2 实施回填（备案）
+
+- 本域未新增/变更命令与事件。`ledger.card_usage.logged` 的 `deviation/suggest` 字段与 `ledger_usage_query(aggregate=deviations)` 是实战偏差转候选规程卡（know 域 `know_revision_propose`，source_kind=episode/kb_doc）的上游原料——读取消费不变，卡片候选化动作全部发生在 know 域。

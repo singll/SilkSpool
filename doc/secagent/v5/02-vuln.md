@@ -847,3 +847,9 @@ prompt 引用同步：persona/objective/skills/technique-index 中的 finding_ad
 - 新增命令 C12 `vuln_evidence_attach`（model/dashboard/reactor）+ 事件 `vuln.evidence.attached` + 不变量 INV-10（已发布清单存在/digest 自洽/逐文件 sha256 一致/Program 归属一致）。
 - §五审查的"worker 沙箱证据对 vuln_confirm 不可见"缺陷的正式通道落地：worker → `results/<run_id>/staging/`（不受信）→ exec `exec_evidence_publish`（宿主校验发布）→ vuln `vuln_evidence_attach`（清单核验后复制进 `evidence/{finding_id}/{run_id}/`，哈希关联）。staging 原文依然不可作证据——这是设计意图（先检查后复制的信任边界），不是残留缺陷。
 - 契约测试：vuln 48→50 全绿（happy+幂等回放 / 未发布 run / 篡改文件 / 非法清单路径 / 跨 Program / actor 闸）。
+
+## 七、2026-09-17 学习专项 L2 实施回填（P1 授权类卡片切片）
+
+- 首个有版本的候选规程卡上线：`VC-AUTHZ-001-r1`（artifact_kind=vulncard 落 know 域 `knowledge_revisions`），把 `vuln_authz_diff`（C11）从「响应相似度三档判定」扩展为**角色×对象×动作约束**检查卡——前置（成对测试身份/已知对象归属）、失效条件、hypothesis、minimal_probe（C11 为最小探针）、正/负对照、evidence_required、stop_conditions、fixtures×3、预算、失败解释与变更说明齐全（设计 §4.2 最小结构）。
+- **候选≠发布**：卡内容不进 `data/vulncards/`，不改 C11 的判定阈值与候选登记行为；worker 现行流程零变化。新约束（如「suspected 须补对象归属证据」）在 L3 评测通过、L4 发布后才会进入卡的使用面。
+- 本域未新增命令/事件；变化面 = C11 的**文档引用**（候选卡作为其规程演化对象）。
