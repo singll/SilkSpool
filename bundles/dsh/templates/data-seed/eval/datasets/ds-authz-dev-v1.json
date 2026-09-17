@@ -1,0 +1,13 @@
+{
+  "_comment": "L3 冻结数据集（开发集，VC-AUTHZ-001 评测）：三类 fixture 各一（vulnerable/patched/invalid_env）。dataset_digest/frozen_at 由 p-v5-1-migrate-eval.js 种子时计算冻结（canonical cases sha256）；改 cases 即漂移，INV-8 拒评。冒烟覆盖，不替代足量独立样本的统计结论。",
+  "dataset_id": "ds-authz-dev-v1",
+  "kind": "fixture",
+  "visibility": "dev",
+  "groups": { "program": "fixture-lab", "tech_stack": "http-api", "case_family": "P1-authz" },
+  "thresholds": { "min_tp": 1, "max_fp": 0, "max_fn": 0, "require_infra_handling": true },
+  "cases": [
+    { "case_id": "authz-dev-vulnerable", "fixture": "fixture-authz-a", "expect": "vulnerable" },
+    { "case_id": "authz-dev-patched", "fixture": "fixture-authz-b", "expect": "patched" },
+    { "case_id": "authz-dev-invalid-env", "fixture": "fixture-authz-c", "expect": "invalid_env" }
+  ]
+}

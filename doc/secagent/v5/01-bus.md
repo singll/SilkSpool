@@ -703,3 +703,5 @@ dispatch_aliases:
 | 未实现 | `high_frequency` 仍为保留字段，统一 8KB 事件上限。 |
 | hook 判定 | ToolProjector/RpcProjector 是契约投影，不是绕总线 hook；合法。 |
 | 独立升级 | bus 是底座，不能单独替换后跳过域回归；升级必须全量契约矩阵 + 部署验收。 |
+
+> 2026-09-17 L3 备案：总线零变更。eval 域新增事件 `eval.candidate.started` 与 `eval.report.built`（kind=candidate）经既有 outbox/dispatcher 投递，know 域以 reactor 订阅消费（多订阅者键 `source::pattern` 机制覆盖）；新动词 eval_run_candidate / know_revision_assess 走常规 11 段管线（actor 白名单 + 幂等自然键 + audit）。

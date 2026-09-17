@@ -1,0 +1,9 @@
+{
+  "_comment": "L3 受控 fixture（开发集，VC-AUTHZ-001）：缺对象归属校验——低权身份也能读到他人对象数据（vulnerable 真值由运行期状态断言产生）。tokens 为受控随机串，仅评测 fixture 用，非真实凭据。",
+  "fixture_id": "fixture-authz-a",
+  "family": "P1-authz",
+  "variant": "missing_ownership_check",
+  "object": { "id": "obj-dev-1001", "owner": "acct-owner-dev-a", "data": "owner-marker-dev-a-7f3e" },
+  "tokens": { "owner": "tok-owner-dev-a-9c21", "low": "tok-low-dev-a-4b88" },
+  "path": "/api/objects/obj-dev-1001"
+}

@@ -1,0 +1,9 @@
+{
+  "_comment": "L3 受控 fixture（隐藏集，VC-AUTHZ-001）：已修复（patched）。隐藏集——被评 worker 不可读。",
+  "fixture_id": "fixture-authz-h2",
+  "family": "P1-authz",
+  "variant": "enforced",
+  "object": { "id": "obj-hid-2001", "owner": "acct-owner-hid-b", "data": "owner-marker-hid-b-94c1" },
+  "tokens": { "owner": "tok-owner-hid-b-61fa", "low": "tok-low-hid-b-2709" },
+  "path": "/api/objects/obj-hid-2001"
+}

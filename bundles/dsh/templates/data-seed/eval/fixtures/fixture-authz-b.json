@@ -1,0 +1,9 @@
+{
+  "_comment": "L3 受控 fixture（开发集，VC-AUTHZ-001）：已修复——低权身份读他人对象得 403（patched 真值）。",
+  "fixture_id": "fixture-authz-b",
+  "family": "P1-authz",
+  "variant": "enforced",
+  "object": { "id": "obj-dev-2001", "owner": "acct-owner-dev-b", "data": "owner-marker-dev-b-2a6d" },
+  "tokens": { "owner": "tok-owner-dev-b-55e0", "low": "tok-low-dev-b-81c3" },
+  "path": "/api/objects/obj-dev-2001"
+}

@@ -1,0 +1,9 @@
+{
+  "_comment": "L3 受控 fixture（开发集，VC-AUTHZ-001）：环境异常——高权（owner）凭证失效，正对照应失败；候选卡须判 infra_error，不得记为检出失败也不得记为漏洞不存在（invalid_env 真值）。",
+  "fixture_id": "fixture-authz-c",
+  "family": "P1-authz",
+  "variant": "owner_token_invalid",
+  "object": { "id": "obj-dev-3001", "owner": "acct-owner-dev-c", "data": "owner-marker-dev-c-60b2" },
+  "tokens": { "owner": "tok-owner-dev-c-expired", "low": "tok-low-dev-c-3d47" },
+  "path": "/api/objects/obj-dev-3001"
+}

@@ -441,6 +441,11 @@ function createRepo(db) {
       return db.prepare('UPDATE knowledge_revisions SET needs_revalidate=1 WHERE source_kind=? AND source_ref=?')
         .run(String(sourceKind), String(sourceRef)).changes
     },
+    // L3（C25 know_revision_assess）：流程列更新——只允许 status/eval_report_ref，内容列只插不改的根基不动
+    updateRevisionFlow(revisionId, fields) {
+      return db.prepare('UPDATE knowledge_revisions SET status=?, eval_report_ref=? WHERE revision_id=?')
+        .run(String(fields.status), fields.eval_report_ref ?? null, String(revisionId)).changes
+    },
   }
   return repo
 }

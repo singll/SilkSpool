@@ -485,10 +485,32 @@ export const KNOW_MANIFEST = {
       idempotent_fields: ['artifact_kind', 'artifact_id', 'content', 'parent_revision_id'],
       events: ['know.revision.proposed'],
       event_limit: 1,
-      invariants: ['revisionParentExists', 'revisionContentSize', 'vulncardMinStructure', 'revisionSourceTrusted'],
       invariants: ['revisionArtifactIdFormat', 'revisionParentExists', 'revisionContentSize', 'vulncardMinStructure', 'revisionSourceTrusted'],
       timeout_ms: 60000,
       agent_note: '提出候选知识版本（资料/实战偏差→候选 revision，不覆盖在用卡片）。vulncard 须含 §4.2 最小结构（前置/对照/停止/证据/fixtures/预算/失败解释）。坏来源（taint/抓取失败）不进候选。',
+      deprecated: false,
+    },
+    // C25（L3 学习专项，2026-09-17，设计 §6.1/§6.3/§7.3）：候选评测流转。
+    // reactor 专用——评测流转只信 eval 域事件信封（eval.candidate.started / eval.report.built kind=candidate）；
+    // candidate_digest 与 revision.content_digest 不对应即拒（评测对象锚定）；eligible≠发布（L4 门禁）。
+    know_revision_assess: {
+      actor: ['reactor'],
+      schema: schema({
+        revision_id: str({ minLength: 1 }),
+        phase: en(['begin', 'finish', 'abort']),
+        eval_run_id: str({ minLength: 1 }),
+        candidate_digest: str({ pattern: '^sha256:[0-9a-f]{64}$' }),
+        verdict: en(['eligible', 'rejected']),
+        report_ref: str({ maxLength: 256 }),
+        note: str({ maxLength: 500 }),
+      }, ['revision_id', 'phase', 'eval_run_id']),
+      idempotent: 'natural',
+      idempotent_natural: ['revision_id', 'phase', 'eval_run_id'],
+      events: ['know.revision.assessed'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '（reactor 专用，不向模型/看板注册）候选评测流转：begin=candidate→evaluating；finish=evaluating→eligible/rejected（verdict 由 eval 配对报告决定，本域不自行判分；评测期间来源变更强制 rejected）；abort=evaluating→candidate（失败/中断不记成功）。',
       deprecated: false,
     },
   },
@@ -661,6 +683,7 @@ export const KNOW_MANIFEST = {
     'know.adopted': { payload: { type: 'object' }, redact: [] },
     'know.episode.recorded': { payload: { type: 'object' }, redact: [] },
     'know.revision.proposed': { payload: { type: 'object' }, redact: [] },
+    'know.revision.assessed': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'fact.bb.published': { handler: 'onFactBbPublished', mode: 'async', as: 'reactor' },
@@ -671,6 +694,9 @@ export const KNOW_MANIFEST = {
     'vuln.signal.confirmed': { handler: 'onVulnVerdict', mode: 'async', as: 'reactor' },
     'vuln.signal.rejected': { handler: 'onVulnVerdict', mode: 'async', as: 'reactor' },
     'task.finished': { handler: 'onTaskFinished', mode: 'async', as: 'reactor' },
+    // L3（设计 §6.3/§7.3）：候选评测流转——eval 域独立评测事件驱动 C25
+    'eval.candidate.started': { handler: 'onEvalCandidateStarted', mode: 'async', as: 'reactor' },
+    'eval.report.built': { handler: 'onEvalReportBuilt', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -1407,6 +1433,72 @@ function makeHandlers(opts) {
         after: { revision_id: revisionId, status: 'candidate' },
       }
     },
+
+    // C25（L3）：候选评测流转。只改 status/eval_report_ref 流程列——内容列只插不改的根基不动。
+    // begin: candidate→evaluating（来源待复验拒评）；finish: evaluating→eligible/rejected
+    //（verdict 由 eval 配对报告决定；评测期间来源变更强制 rejected）；abort: evaluating→candidate。
+    know_revision_assess: async (args, repo, ctx) => {
+      const rev = repo.getRevision(args.revision_id)
+      if (!rev) throwErr('E_NOT_FOUND', `revision ${args.revision_id} 不存在`, '先 know_revision_list 定位', false)
+      // 评测对象锚定：digest 不对应 = 评测的不是这个候选内容
+      if (args.phase !== 'abort') {
+        if (!args.candidate_digest) throwErr('E_SCHEMA', `phase=${args.phase} 必须携带 candidate_digest`, '取 eval 事件载荷中的 candidate_digest', false)
+        if (args.candidate_digest !== rev.content_digest) {
+          throwErr('E_KNOW_REVISION_CHANGED', `评测锚定 digest 与候选内容不符（${args.candidate_digest} ≠ ${rev.content_digest}）`, '评测须针对当前候选内容重跑——内容变化请提新 revision', false)
+        }
+      }
+      const from = rev.status
+      if (args.phase === 'begin') {
+        // 幂等吸收：同 run 的 begin 已应用（幂等表过期后的晚到重放）→ no-op，不进重试/死信
+        if (from === 'evaluating' && rev.eval_report_ref === `run:${args.eval_run_id}`) {
+          return { data: { revision_id: rev.revision_id, phase: 'begin', skipped: 'already', status: from } }
+        }
+        // 同 run 已 abort 回 candidate（失败 run 的重放不再触发二次流转）
+        if (from === 'candidate' && rev.eval_report_ref === `run:${args.eval_run_id}:failed`) {
+          return { data: { revision_id: rev.revision_id, phase: 'begin', skipped: 'already_aborted', status: from } }
+        }
+        // 终态 revision 的 begin 到达 = 重放残留（eligible/rejected 的 revision 在 eval 触发侧已不可评）
+        if (from === 'eligible' || from === 'rejected' || from === 'published' || from === 'retired') {
+          return { data: { revision_id: rev.revision_id, phase: 'begin', skipped: 'terminal', status: from } }
+        }
+        if (from !== 'candidate') throwErr('E_INVARIANT', `只有 candidate 可开始评测（当前 ${from}）`, 'eligible/rejected 的内容变化请提新 revision 再评', false)
+        if (rev.needs_revalidate) throwErr('E_INVARIANT', '来源已变更（needs_revalidate=1），旧来源上的候选不进评测', '先复验来源，再以新 revision 提案重评', false)
+        repo.updateRevisionFlow(rev.revision_id, { status: 'evaluating', eval_report_ref: `run:${args.eval_run_id}` })
+        return {
+          data: { revision_id: rev.revision_id, phase: 'begin', from, to: 'evaluating' },
+          events: [{ name: 'know.revision.assessed', payload: { revision_id: rev.revision_id, phase: 'begin', from, to: 'evaluating', eval_run_id: args.eval_run_id, verdict: null, report_ref: null } }],
+          after: { revision_id: rev.revision_id, status: 'evaluating' },
+        }
+      }
+      if (args.phase === 'finish') {
+        if (!args.verdict) throwErr('E_SCHEMA', 'phase=finish 必须携带 verdict（eligible/rejected）', 'verdict 由 eval 配对报告冻结阈值决定', false)
+        // 幂等吸收：终态 revision 的 finish 到达 = 晚到重放（终态 verdict 不被改写）→ no-op
+        if (from === 'eligible' || from === 'rejected' || from === 'published' || from === 'retired') {
+          return { data: { revision_id: rev.revision_id, phase: 'finish', skipped: 'terminal', status: from } }
+        }
+        if (from !== 'evaluating') throwErr('E_INVARIANT', `只有 evaluating 可收尾（当前 ${from}）`, '评测先经 eval.candidate.started 置 evaluating；乱序/重放由幂等键吸收', false)
+        // 评测期间来源变更：旧来源上的评测结论不作数，强制 rejected
+        const stale = !!rev.needs_revalidate
+        const to = stale ? 'rejected' : args.verdict
+        const note = [args.note || '', stale ? 'source_changed_during_eval' : ''].filter(Boolean).join(' ').slice(0, 500)
+        repo.updateRevisionFlow(rev.revision_id, { status: to, eval_report_ref: args.report_ref || `run:${args.eval_run_id}` })
+        return {
+          data: { revision_id: rev.revision_id, phase: 'finish', from, to, verdict: args.verdict, forced_reject: stale },
+          events: [{ name: 'know.revision.assessed', payload: { revision_id: rev.revision_id, phase: 'finish', from, to, eval_run_id: args.eval_run_id, verdict: args.verdict, report_ref: args.report_ref || null, note: note || null } }],
+          after: { revision_id: rev.revision_id, status: to },
+        }
+      }
+      // abort：评测失败/中断回退 candidate——失败不记成功；非 evaluating 幂等 no-op（乱序吸收）
+      if (from !== 'evaluating') {
+        return { data: { revision_id: rev.revision_id, phase: 'abort', skipped: true, status: from } }
+      }
+      repo.updateRevisionFlow(rev.revision_id, { status: 'candidate', eval_report_ref: `run:${args.eval_run_id}:failed` })
+      return {
+        data: { revision_id: rev.revision_id, phase: 'abort', from, to: 'candidate' },
+        events: [{ name: 'know.revision.assessed', payload: { revision_id: rev.revision_id, phase: 'abort', from, to: 'candidate', eval_run_id: args.eval_run_id, verdict: null, report_ref: args.report_ref || null } }],
+        after: { revision_id: rev.revision_id, status: 'candidate' },
+      }
+    },
   }
 
   const queries = {
@@ -1591,6 +1683,37 @@ function makeHandlers(opts) {
   const subscribers = {
     onFactBbPublished: async (envelope) => ({ ok: true, data: { skipped: true } }),
     onFactArchived: async (envelope) => ({ ok: true, data: { skipped: true } }),
+
+    // ---- L3（设计 §6.3/§7.3）：候选评测流转订阅。输入只取事件信封/payload（可信生产者=eval 域），
+    // digest 锚定校验在 C25 命令体内 fail-closed；失败返回 ok:false 进总线可见重试/死信链。----
+
+    // eval.candidate.started → revision candidate→evaluating
+    onEvalCandidateStarted: async (envelope) => {
+      const p = envelope?.payload || {}
+      if (!p.candidate_revision_id || !p.run_id) return { ok: true, data: { skipped: true, reason: '载荷缺 candidate_revision_id/run_id' } }
+      if (!dispatchRef) return { ok: false, error: { code: 'E_BACKEND_UNAVAILABLE', message: 'no dispatch ref' } }
+      const r = await dispatchRef('know', 'revision_assess', {
+        revision_id: p.candidate_revision_id, phase: 'begin', eval_run_id: p.run_id,
+        candidate_digest: p.candidate_digest || '', report_ref: `run:${p.run_id}`,
+      }, { actor: 'reactor', cause: envelope })
+      if (r && r.ok) return { ok: true, data: r.data }
+      return { ok: false, error: { code: r?.error?.code || 'E_INTERNAL', message: r?.error?.message || 'revision_assess begin 失败' } }
+    },
+
+    // eval.report.built（kind=candidate）→ finish（eligible/rejected）或 abort（failed/无 verdict，失败不记成功）
+    onEvalReportBuilt: async (envelope) => {
+      const p = envelope?.payload || {}
+      if (p.kind !== 'candidate') return { ok: true, data: { skipped: true, reason: '非 candidate 报告' } }
+      if (!p.candidate_revision_id || !p.run_id) return { ok: true, data: { skipped: true, reason: '载荷缺 candidate_revision_id/run_id' } }
+      if (!dispatchRef) return { ok: false, error: { code: 'E_BACKEND_UNAVAILABLE', message: 'no dispatch ref' } }
+      const hasVerdict = p.status === 'done' && (p.verdict === 'eligible' || p.verdict === 'rejected')
+      const args = hasVerdict
+        ? { revision_id: p.candidate_revision_id, phase: 'finish', eval_run_id: p.run_id, candidate_digest: p.candidate_digest || '', verdict: p.verdict, report_ref: p.file || `run:${p.run_id}` }
+        : { revision_id: p.candidate_revision_id, phase: 'abort', eval_run_id: p.run_id, report_ref: p.file || `run:${p.run_id}` }
+      const r = await dispatchRef('know', 'revision_assess', args, { actor: 'reactor', cause: envelope })
+      if (r && r.ok) return { ok: true, data: r.data }
+      return { ok: false, error: { code: r?.error?.code || 'E_INTERNAL', message: r?.error?.message || `revision_assess ${args.phase} 失败` } }
+    },
 
     // ---- L1（设计 §3）：执行学习记录订阅。归属全部取自事件信封/payload（可信生产者），
     // 失败返回 ok:false 进入总线可见重试/死信链；重复投递由 know_episode_record 双去重吸收。----

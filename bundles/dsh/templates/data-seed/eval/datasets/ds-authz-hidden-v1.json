@@ -1,0 +1,13 @@
+{
+  "_comment": "L3 冻结数据集（隐藏验收集）：与开发集不同 fixture 实例、不共享答案；对 actor=model 只回汇总（15-eval INV-6）。注：当前只有一个 case_family（P1-authz），家族级隔离待后续家族落地——设计 §7.2 限制已显式记录。",
+  "dataset_id": "ds-authz-hidden-v1",
+  "kind": "fixture",
+  "visibility": "hidden",
+  "groups": { "program": "fixture-lab", "tech_stack": "http-api", "case_family": "P1-authz" },
+  "thresholds": { "min_tp": 1, "max_fp": 0, "max_fn": 0, "require_infra_handling": true },
+  "cases": [
+    { "case_id": "authz-hid-vulnerable", "fixture": "fixture-authz-h1", "expect": "vulnerable" },
+    { "case_id": "authz-hid-patched", "fixture": "fixture-authz-h2", "expect": "patched" },
+    { "case_id": "authz-hid-invalid-env", "fixture": "fixture-authz-h3", "expect": "invalid_env" }
+  ]
+}

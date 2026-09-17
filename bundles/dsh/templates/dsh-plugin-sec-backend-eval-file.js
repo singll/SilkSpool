@@ -52,14 +52,21 @@ function createRepo(opts) {
   const FP_REPORT = path.join(evalDir, 'fp-report.json')
   const CONTRACT_REPORT = path.join(evalDir, 'contract-report.json')
   const RANGE_REPORT = path.join(evalDir, 'eval-range-report.json')
+  const CANDIDATE_REPORT = path.join(evalDir, 'eval-candidate-report.json')
   const RUNS = path.join(evalDir, 'runs')
   const REPORTS_HIST = path.join(evalDir, 'reports')
+  const DATASETS = path.join(evalDir, 'datasets')
+  const FIXTURES = path.join(evalDir, 'fixtures')
 
   const REPORT_FILES = {
     fp: FP_REPORT,
     contract: CONTRACT_REPORT,
     range: RANGE_REPORT,
+    candidate: CANDIDATE_REPORT,
   }
+
+  // 数据集/fixture id 白名单（防路径穿越——查询/命令入参直接拼路径）
+  const SAFE_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/
 
   function beijingDate(ts = Date.now()) {
     return new Date(ts + 8 * 3600_000).toISOString().slice(0, 10)
@@ -115,13 +122,13 @@ function createRepo(opts) {
       const rows = []
       const main = REPORT_FILES[kind]
       const mainObj = readJSON(main, null)
-      if (mainObj) rows.push({ kind, file: path.basename(main), ts: mainObj.ts || null })
+      if (mainObj) rows.push({ kind, file: path.basename(main), ts: mainObj.ts || null, visibility: mainObj.visibility || 'dev' })
       // 历史快照（reports/{kind}-report-{ts}.json）
       let hist = []
       try { hist = fs.readdirSync(REPORTS_HIST).filter((f) => f.startsWith(`${kind}-report-`) && f.endsWith('.json')) } catch { hist = [] }
       for (const f of hist) {
         const obj = readJSON(path.join(REPORTS_HIST, f), null)
-        rows.push({ kind, file: `reports/${f}`, ts: obj && obj.ts ? obj.ts : null })
+        rows.push({ kind, file: `reports/${f}`, ts: obj && obj.ts ? obj.ts : null, visibility: (obj && obj.visibility) || 'dev' })
       }
       // v4 eval-run.js 产物（report-<epoch>.json）与 eval-range-report.json 同属 range
       if (kind === 'range') {
@@ -134,6 +141,38 @@ function createRepo(opts) {
       }
       rows.sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')))
       return rows
+    },
+
+    // ---- L3：冻结数据集与受控 fixture 定义（只读；种子经 p-v5-1-migrate-eval.js 写入）----
+    readDataset(datasetId) {
+      const id = String(datasetId || '')
+      if (!SAFE_ID.test(id)) return null
+      return readJSON(path.join(DATASETS, `${id}.json`), null)
+    },
+    listDatasets() {
+      let files = []
+      try { files = fs.readdirSync(DATASETS).filter((f) => f.endsWith('.json')) } catch { files = [] }
+      const rows = []
+      for (const f of files) {
+        const d = readJSON(path.join(DATASETS, f), null)
+        if (!d || typeof d !== 'object') continue
+        rows.push({
+          dataset_id: d.dataset_id || f.replace(/\.json$/, ''),
+          kind: d.kind || 'fixture',
+          visibility: d.visibility || 'dev',
+          case_count: Array.isArray(d.cases) ? d.cases.length : 0,
+          groups: d.groups || null,
+          frozen_at: d.frozen_at || null,
+          dataset_digest: d.dataset_digest || null,
+        })
+      }
+      rows.sort((a, b) => String(a.dataset_id).localeCompare(String(b.dataset_id)))
+      return rows
+    },
+    readFixture(fixtureId) {
+      const id = String(fixtureId || '')
+      if (!SAFE_ID.test(id)) return null
+      return readJSON(path.join(FIXTURES, `${id}.json`), null)
     },
 
     // ---- runs/{run_id}.json（评测运行状态机）----

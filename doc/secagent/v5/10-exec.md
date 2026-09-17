@@ -674,3 +674,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 ## 七、2026-09-17 学习专项 L2 实施回填（备案）
 
 - 本域未新增/变更命令与事件。`exec.run.completed` → know 域 episode 订阅链（L1）是实战偏差 episode 的来源，episode 再经 know 域 `know_revision_propose` 转候选规程卡（L2）；执行面零变化——**候选 revision 不触发任何执行**（设计 §4.1 坏资料纪律同款：候选不等于授权）。
+
+## 八、2026-09-17 学习专项 L3 实施回填（备案）
+
+- 本域未新增/变更命令与事件。L3 的受控 fixture runner 在 eval 域内自起 127.0.0.1 ephemeral 端口 HTTP fixture（不经 exec_run_cli、不占真实 QPS、不产生 run 落盘）；沙箱边界不变——`data/` 不挂载进 run_cli 沙箱（§2.2.4），被评 worker 无文件级通道读取 `data/eval/datasets|fixtures/` 隐藏答案（15-eval INV-6 的前提）。

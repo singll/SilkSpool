@@ -794,3 +794,189 @@ test('L2: 事件载荷——know.revision.proposed 只含判据快照，不含�
   assert.equal(payload.content, undefined, '事件载荷不含候选内容全文')
   assert.ok(JSON.stringify(payload).length <= 2048, '载荷 ≤2KB')
 })
+
+// ---------------------------------------------------------------------------
+// L3（学习专项 §6.1/§6.3/§7.3，2026-09-17）：know_revision_assess 候选评测流转
+// ---------------------------------------------------------------------------
+
+const assess = (bus, over, actor = 'reactor') => bus.dispatch('know', 'revision_assess', over, { actor })
+
+// 造一条 candidate 态 revision，返回 { revision_id, content_digest }
+async function proposeOne(bus, artifactId = 'VC-AUTHZ-001') {
+  const r = await propose(bus, artifactId === 'VC-AUTHZ-001' ? {} : { artifact_id: artifactId, content: { ...VC_CONTENT, id: artifactId } })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.recorded, true)
+  return { revision_id: r.data.revision_id, content_digest: r.data.content_digest }
+}
+
+test('L3: know_revision_assess actor 闸——model/script/dashboard/human/system 全拒（reactor 专用）', async () => {
+  const { bus } = makeEnv()
+  const { revision_id, content_digest } = await proposeOne(bus)
+  for (const actor of ['model', 'script', 'dashboard', 'human', 'system']) {
+    const r = await assess(bus, { revision_id, phase: 'begin', eval_run_id: 'evalrun_actor0001', candidate_digest: content_digest }, actor)
+    assert.equal(r.ok, false, actor)
+    assert.equal(r.error.code, 'E_ACTOR_FORBIDDEN')
+  }
+})
+
+test('L3: 评测流转 happy——begin（candidate→evaluating）+ finish（→eligible）+ 事件 + eval_report_ref 落列', async () => {
+  const { bus } = makeEnv()
+  const { revision_id, content_digest } = await proposeOne(bus)
+  const begin = await assess(bus, { revision_id, phase: 'begin', eval_run_id: 'evalrun_happy0001', candidate_digest: content_digest })
+  assert.equal(begin.ok, true, begin.error?.message)
+  assert.equal(begin.data.from, 'candidate')
+  assert.equal(begin.data.to, 'evaluating')
+  assert.equal(begin.event_ids.length, 1)
+  const db = bus._internal.db()
+  let row = db.prepare('SELECT * FROM knowledge_revisions WHERE revision_id=?').get(revision_id)
+  assert.equal(row.status, 'evaluating')
+  assert.equal(row.eval_report_ref, 'run:evalrun_happy0001')
+  const finish = await assess(bus, { revision_id, phase: 'finish', eval_run_id: 'evalrun_happy0001', candidate_digest: content_digest, verdict: 'eligible', report_ref: 'eval-candidate-report.json' })
+  assert.equal(finish.ok, true, finish.error?.message)
+  assert.equal(finish.data.to, 'eligible')
+  assert.equal(finish.data.forced_reject, false)
+  row = db.prepare('SELECT * FROM knowledge_revisions WHERE revision_id=?').get(revision_id)
+  assert.equal(row.status, 'eligible')
+  assert.equal(row.eval_report_ref, 'eval-candidate-report.json')
+  // 事件载荷
+  const evtRow = db.prepare('SELECT * FROM event_outbox WHERE event_id=?').get(finish.event_ids[0])
+  const env = JSON.parse(evtRow.payload)
+  assert.equal(env.name, 'know.revision.assessed')
+  assert.equal(env.payload.to, 'eligible')
+  assert.equal(env.payload.verdict, 'eligible')
+  // 内容列未被流程流转触碰（只插不改根基）
+  assert.equal(row.content_digest, content_digest)
+})
+
+test('L3: digest 锚定——candidate_digest 与候选内容不符 → E_KNOW_REVISION_CHANGED', async () => {
+  const { bus } = makeEnv()
+  const { revision_id } = await proposeOne(bus)
+  const bad = await assess(bus, { revision_id, phase: 'begin', eval_run_id: 'evalrun_dig000001', candidate_digest: `sha256:${'0'.repeat(64)}` })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'E_KNOW_REVISION_CHANGED')
+  const row = bus._internal.db().prepare('SELECT status FROM knowledge_revisions WHERE revision_id=?').get(revision_id)
+  assert.equal(row.status, 'candidate', 'digest 不符不流转')
+})
+
+test('L3: 状态机闸——finish 须从 evaluating；begin 只从 candidate；eligible 后不再评', async () => {
+  const { bus } = makeEnv()
+  const { revision_id, content_digest } = await proposeOne(bus)
+  // finish from candidate → E_INVARIANT
+  const earlyFinish = await assess(bus, { revision_id, phase: 'finish', eval_run_id: 'evalrun_sm00000001', candidate_digest: content_digest, verdict: 'eligible' })
+  assert.equal(earlyFinish.ok, false)
+  assert.equal(earlyFinish.error.code, 'E_INVARIANT')
+  // begin → evaluating
+  const begin = await assess(bus, { revision_id, phase: 'begin', eval_run_id: 'evalrun_sm00000001', candidate_digest: content_digest })
+  assert.equal(begin.ok, true)
+  // 再次 begin（不同 run，避开幂等回放）→ E_INVARIANT
+  const reBegin = await assess(bus, { revision_id, phase: 'begin', eval_run_id: 'evalrun_sm00000002', candidate_digest: content_digest })
+  assert.equal(reBegin.ok, false)
+  assert.equal(reBegin.error.code, 'E_INVARIANT')
+  // finish → eligible；eligible 后再 begin → 终态静默吸收（skipped=terminal，状态不改写——
+  // 终态 revision 在 eval 触发侧已不可评，事件侧到达必为重放残留）
+  const finish = await assess(bus, { revision_id, phase: 'finish', eval_run_id: 'evalrun_sm00000001', candidate_digest: content_digest, verdict: 'eligible' })
+  assert.equal(finish.ok, true)
+  const lateBegin = await assess(bus, { revision_id, phase: 'begin', eval_run_id: 'evalrun_sm00000003', candidate_digest: content_digest })
+  assert.equal(lateBegin.ok, true)
+  assert.equal(lateBegin.data.skipped, 'terminal')
+  const row = bus._internal.db().prepare('SELECT status FROM knowledge_revisions WHERE revision_id=?').get(revision_id)
+  assert.equal(row.status, 'eligible', '终态不被 begin 重放改写')
+})
+
+test('L3: 来源变更闸——begin 时 needs_revalidate=1 拒评；finish 时发现来源变更强制 rejected', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  // ① begin 拒评
+  const a = await proposeOne(bus, 'VC-AUTHZ-A01')
+  db.prepare('UPDATE knowledge_revisions SET needs_revalidate=1 WHERE revision_id=?').run(a.revision_id)
+  const beginStale = await assess(bus, { revision_id: a.revision_id, phase: 'begin', eval_run_id: 'evalrun_stale00001', candidate_digest: a.content_digest })
+  assert.equal(beginStale.ok, false)
+  assert.equal(beginStale.error.code, 'E_INVARIANT')
+  // ② finish 强制 rejected（评测期间来源变更）
+  const b = await proposeOne(bus, 'VC-AUTHZ-A02')
+  const beginOk = await assess(bus, { revision_id: b.revision_id, phase: 'begin', eval_run_id: 'evalrun_stale00002', candidate_digest: b.content_digest })
+  assert.equal(beginOk.ok, true)
+  db.prepare('UPDATE knowledge_revisions SET needs_revalidate=1 WHERE revision_id=?').run(b.revision_id)
+  const finishStale = await assess(bus, { revision_id: b.revision_id, phase: 'finish', eval_run_id: 'evalrun_stale00002', candidate_digest: b.content_digest, verdict: 'eligible' })
+  assert.equal(finishStale.ok, true)
+  assert.equal(finishStale.data.to, 'rejected', '来源变更期间 eligible 被强制降级')
+  assert.equal(finishStale.data.forced_reject, true)
+  const row = db.prepare('SELECT status FROM knowledge_revisions WHERE revision_id=?').get(b.revision_id)
+  assert.equal(row.status, 'rejected')
+})
+
+test('L3: abort——评测失败/中断回 candidate（失败不记成功）；非 evaluating 幂等 no-op', async () => {
+  const { bus } = makeEnv()
+  const { revision_id, content_digest } = await proposeOne(bus)
+  const begin = await assess(bus, { revision_id, phase: 'begin', eval_run_id: 'evalrun_abort00001', candidate_digest: content_digest })
+  assert.equal(begin.ok, true)
+  const abort = await assess(bus, { revision_id, phase: 'abort', eval_run_id: 'evalrun_abort00001' })
+  assert.equal(abort.ok, true)
+  assert.equal(abort.data.to, 'candidate')
+  const row = bus._internal.db().prepare('SELECT status, eval_report_ref FROM knowledge_revisions WHERE revision_id=?').get(revision_id)
+  assert.equal(row.status, 'candidate', '中断回 candidate，可重新评测')
+  assert.match(row.eval_report_ref, /failed/, '失败 run 留痕')
+  // 非 evaluating 的 abort（乱序/重放吸收）
+  const lateAbort = await assess(bus, { revision_id, phase: 'abort', eval_run_id: 'evalrun_abort00002' })
+  assert.equal(lateAbort.ok, true)
+  assert.equal(lateAbort.data.skipped, true)
+})
+
+test('L3: 幂等——同自然键（revision+phase+run）重放 replay，不重复流转不发事件', async () => {
+  const { bus } = makeEnv()
+  const { revision_id, content_digest } = await proposeOne(bus)
+  const args = { revision_id, phase: 'begin', eval_run_id: 'evalrun_idem00001', candidate_digest: content_digest }
+  const r1 = await assess(bus, args)
+  const r2 = await assess(bus, args)
+  assert.equal(r1.ok, true)
+  assert.equal(r2.ok, true)
+  assert.equal(r2.replay, true)
+  const row = bus._internal.db().prepare('SELECT status FROM knowledge_revisions WHERE revision_id=?').get(revision_id)
+  assert.equal(row.status, 'evaluating')
+  const evtCount = bus._internal.db().prepare("SELECT COUNT(*) c FROM event_outbox WHERE payload LIKE '%know.revision.assessed%'").get().c
+  assert.equal(evtCount, 1, '重放不重复发事件')
+})
+
+test('L3: 订阅链路——eval.candidate.started / eval.report.built 经 bus_replay 驱动流转；失败 run abort 回 candidate；重复回放零重复', async () => {
+  const { dir, bus } = makeEnv()
+  const db = bus._internal.db()
+  const ok1 = await proposeOne(bus, 'VC-AUTHZ-S01')
+  const ok2 = await proposeOne(bus, 'VC-AUTHZ-S02')
+  const eventsDir = path.join(dir, 'events')
+  fs.mkdirSync(eventsDir, { recursive: true })
+  const now = Date.now()
+  const lines = [
+    // rev1：started → done+eligible
+    { id: 'evt_l3_start1', domain: 'eval', name: 'eval.candidate.started', ts: now, actor: 'script', session_id: null, payload: { run_id: 'evalrun_sub000001', trial_id: 'trial-sub-1', candidate_revision_id: ok1.revision_id, candidate_digest: ok1.content_digest, dataset_id: 'ds-authz-dev-v1', dataset_digest: 'sha256:x' } },
+    { id: 'evt_l3_built1', domain: 'eval', name: 'eval.report.built', ts: now + 1, actor: 'system', session_id: null, payload: { run_id: 'evalrun_sub000001', kind: 'candidate', status: 'done', file: 'eval-candidate-report.json', pass_rate: null, gain: null, verdict: 'eligible', candidate_revision_id: ok1.revision_id, candidate_digest: ok1.content_digest, dataset_id: 'ds-authz-dev-v1', dataset_digest: 'sha256:x', visibility: 'dev' } },
+    // rev2：started → failed（无 verdict）→ abort 回 candidate（失败不记成功）
+    { id: 'evt_l3_start2', domain: 'eval', name: 'eval.candidate.started', ts: now + 2, actor: 'script', session_id: null, payload: { run_id: 'evalrun_sub000002', trial_id: 'trial-sub-2', candidate_revision_id: ok2.revision_id, candidate_digest: ok2.content_digest, dataset_id: 'ds-authz-dev-v1', dataset_digest: 'sha256:x' } },
+    { id: 'evt_l3_built2', domain: 'eval', name: 'eval.report.built', ts: now + 3, actor: 'system', session_id: null, payload: { run_id: 'evalrun_sub000002', kind: 'candidate', status: 'failed', file: null, pass_rate: null, gain: null, verdict: null, candidate_revision_id: ok2.revision_id, candidate_digest: ok2.content_digest, dataset_id: 'ds-authz-dev-v1', dataset_digest: 'sha256:x', visibility: 'dev' } },
+    // 非 candidate 报告（fp）→ 跳过
+    { id: 'evt_l3_fp', domain: 'eval', name: 'eval.report.built', ts: now + 4, actor: 'system', session_id: null, payload: { run_id: 'evalrun_sub000003', kind: 'fp', status: 'done', file: 'fp-report.json', pass_rate: 91.7, gain: null } },
+  ]
+  fs.appendFileSync(path.join(eventsDir, 'eval.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+  const replay = await bus.dispatch('bus', 'replay', { since: now - 1000, limit: 1000 }, { actor: 'system' })
+  assert.equal(replay.ok, true, replay.error?.message)
+  const failed = replay.data.results.filter((r) => r.ok === false)
+  assert.deepEqual(failed, [], `订阅回放全部成功: ${JSON.stringify(failed)}`)
+  const s1 = db.prepare('SELECT status, eval_report_ref FROM knowledge_revisions WHERE revision_id=?').get(ok1.revision_id)
+  assert.equal(s1.status, 'eligible', 'started→done(eligible) 全链流转')
+  assert.equal(s1.eval_report_ref, 'eval-candidate-report.json')
+  const s2 = db.prepare('SELECT status FROM knowledge_revisions WHERE revision_id=?').get(ok2.revision_id)
+  assert.equal(s2.status, 'candidate', '失败 run abort 回 candidate——失败不记成功')
+  const evtCount0 = db.prepare("SELECT COUNT(*) c FROM event_outbox WHERE payload LIKE '%know.revision.assessed%'").get().c
+  assert.equal(evtCount0, 4, '首轮流转事件：begin+finish（rev1）+ begin+abort（rev2）')
+  // 重复回放（重启补扫/七天后重放）：状态不二次流转、不重复发事件
+  db.prepare('DELETE FROM idempotency').run()
+  const again = await bus.dispatch('bus', 'replay', { since: now - 1000, limit: 1000 }, { actor: 'system' })
+  assert.equal(again.ok, true)
+  const failed2 = again.data.results.filter((r) => r.ok === false)
+  assert.deepEqual(failed2, [], `重复回放被幂等/同 run 吸收逻辑静默吸收，不进重试链: ${JSON.stringify(failed2)}`)
+  const s1b = db.prepare('SELECT status FROM knowledge_revisions WHERE revision_id=?').get(ok1.revision_id)
+  assert.equal(s1b.status, 'eligible', 'eligible 终态不被回放改写')
+  const s2b = db.prepare('SELECT status FROM knowledge_revisions WHERE revision_id=?').get(ok2.revision_id)
+  assert.equal(s2b.status, 'candidate', 'abort 后的 candidate 不被回放二次流转')
+  const evtCount = db.prepare("SELECT COUNT(*) c FROM event_outbox WHERE payload LIKE '%know.revision.assessed%'").get().c
+  assert.equal(evtCount, 4, '重复回放零重复事件')
+})

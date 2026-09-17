@@ -52,6 +52,7 @@
 | C22 | `know_purge_archive` | 跨仓 | 归档表 90 天硬删（占位动词，Phase 2 正式化，同 06-fact 映射表 #7） | system | 自然键 | （无） |
 | C23 | `know_episode_record` | episode | 执行学习记录落账（reactor 专用；宿主注入归属；六类结果分类；双唯一去重） | **reactor**（模型/脚本/dashboard 物理不可调） | 自然键（source_event_id+consumer_version） | know.episode.recorded |
 | C24 | `know_revision_propose` | revision | 候选知识版本提案（父版本+结构化改动+来源+适用条件；L2 2026-09-17 上线；候选≠发布，绝不覆盖在使用卡片） | model, script, dashboard | 自动指纹（artifact+parent+content）+ 表级 UNIQUE 兜底 | know.revision.proposed |
+| C25 | `know_revision_assess` | revision | 候选评测流转（L3 2026-09-17 上线；candidate→evaluating→eligible/rejected，中断 abort 回 candidate；只信 eval 域事件信封；eligible≠发布） | **reactor**（模型/脚本/dashboard/human 物理不可调） | 自然键（revision_id+phase+eval_run_id） | know.revision.assessed |
 
 > **卡片使用记录（原 `card_usage_log`）归属**：归 **ledger 域**（动词 `ledger_log_card_usage`），文件 `data/pipeline/{program}/card_usage-{date}.jsonl`（sec-pipeline.js L146，`pipelineDir()` 即 ledger 台账树）：① attempts/card_usage/handoff 三产物同一纪律节奏写入、被 task_finish 流程守卫同批校验、走同一 vault 回放链路——拆域会让守卫跨域取证；② 一棵目录树一个 owner（单写者律同款理由）。**本域消费路径**：订阅 `ledger.card_usage.logged` 事件（弱联动）+ `ledger_usage_query` 跨域查询，驱动 registry 健康度与 know_health 零使用卡清理——读消费不受 owns 影响。字段语义（card_id/deviation/suggest）的知识视角归本域解读，写入动作归 ledger。
 
@@ -323,7 +324,7 @@
 
 **语义**（设计 §4/§6.1/§6.3）：外部资料（kb 文献版本）与实战偏差（episode）两条输入通道统一转**候选 revision**，落 `knowledge_revisions` 表（2.1）。**候选不覆盖正在使用的卡片**——本动词只写 revisions 表，不动 exp_cards/kb_docs/vulncards 任何现行资产；`published` 内容不可原地覆盖，任何内容变化只能以新 revision（新 content_digest）提出。L2 只有提案入口；评测/晋升/发布门禁（assess/publish/revoke）属 L3/L4，不在本动词范围。
 
-**revision 状态机**（§6.1）：`draft → candidate → evaluating → eligible → published → retired`；失败走 `rejected`；变更内容 = 新 revision。L2 落地 `propose`（draft→candidate，一步落 candidate 态）与来源变更的 `needs_revalidate` 标记；其余流转动词待 L3/L4。
+**revision 状态机**（§6.1）：`draft → candidate → evaluating → eligible → published → retired`；失败走 `rejected`；变更内容 = 新 revision。L2 落地 `propose`（draft→candidate，一步落 candidate 态）与来源变更的 `needs_revalidate` 标记；L3 落地 C25 `know_revision_assess`（candidate→evaluating→eligible/rejected，中断 abort 回 candidate；见 C25）；publish/retire 待 L4。
 
 **参数 schema**（`additionalProperties: false`）：
 
@@ -351,6 +352,32 @@
 **事件**：`know.revision.proposed {revision_id, artifact_kind, artifact_id, parent_revision_id, content_digest, source_kind, source_ref, change_note 摘要}`。
 
 **来源变更联动**：`kb_revalidate(result=changed)` 成功后，把 `source_kind=kb_doc 且 source_ref=该 doc_id` 的全部 revision 标记 `needs_revalidate=1`（原始引用与来源版本快照保留——**依赖旧版本的候选/已发布卡显式待复验，不静默替换**；4.3 闭环）。
+
+#### C25 · know_revision_assess（候选评测流转，L3 2026-09-17 上线）
+
+**语义**（设计 §6.3/§7.3）：消费 eval 域独立评测结果，驱动 revision 状态机 `candidate → evaluating → eligible/rejected`（中断/失败 abort 回 candidate）。**reactor 专用**（订阅 `eval.candidate.started` / `eval.report.built` kind=candidate 触发；模型/看板/人工均不可直调——评测流转只信 eval 域事件信封，eligible≠发布，发布门禁属 L4）。
+
+**参数 schema**（`additionalProperties: false`）：
+
+| 参数 | 类型 | 必填 | 校验 |
+|---|---|---|---|
+| revision_id | string | 是 | 必须存在（E_NOT_FOUND） |
+| phase | string(enum) | 是 | begin / finish / abort |
+| eval_run_id | string | 是 | 评测批次 run 标识（幂等自然键组分） |
+| candidate_digest | string | begin/finish 必填 | `sha256:` 前缀 64 hex；**必须与 revision.content_digest 一致**（不符 → E_KNOW_REVISION_CHANGED——评测对象与候选内容哈希对应关系是流转前提） |
+| verdict | string(enum) | finish 必填 | eligible / rejected（由 eval 配对报告与冻结阈值决定，本域不自行判分） |
+| report_ref | string | 否 | 报告文件引用（落 eval_report_ref 列） |
+| note | string | 否 | ≤500 字摘要 |
+
+**行为**：
+
+- `begin`：candidate → evaluating（记录 eval_report_ref=run 引用）。`needs_revalidate=1` → E_INVARIANT（来源已变更，先复验来源再以新 revision 提案重评）。非 candidate 态 → E_INVARIANT。
+- `finish`：evaluating → eligible（verdict=eligible）或 rejected（verdict=rejected），落 eval_report_ref=report_ref。**评测期间来源变更**（needs_revalidate=1）强制 rejected（note 记 source_changed_during_eval）——旧来源上的评测结论不作数。
+- `abort`：evaluating → candidate（评测失败/中断回退，eval_report_ref 记失败 run）；非 evaluating → 幂等 no-op（ok）。
+
+**幂等**：自然键 `revision_id+phase+eval_run_id`——事件重放 replay 零重复流转。**事件**：`know.revision.assessed {revision_id, phase, from, to, eval_run_id, verdict, report_ref}`。
+
+**错误码**：E_ACTOR_FORBIDDEN（非 reactor）；E_NOT_FOUND（revision 不存在）；E_KNOW_REVISION_CHANGED（digest 不对应——hint：评测须针对当前候选内容重跑）；E_INVARIANT（状态机非法流转/来源待复验——hint 不引导绕过）。
 
 ### 1.4 查询（读投影）逐个详述
 
@@ -433,6 +460,7 @@
 | `know.adopted` | C20 | `{ target, adopted_id, source_cmd, evidence }` |
 | `know.episode.recorded` | C23 | `{ episode_id, source_event_id, source_event_name, outcome, program_id, exec_run_id }` |
 | `know.revision.proposed` | C24 | `{ revision_id, artifact_kind, artifact_id, parent_revision_id, content_digest, source_kind, source_ref, change_note 摘要 }` |
+| `know.revision.assessed` | C25 | `{ revision_id, phase, from, to, eval_run_id, verdict, report_ref }` |
 
 **订阅**（manifest subscribes）：
 
@@ -442,12 +470,14 @@
 | `exec.run.completed` | weak | `onExecRunCompleted` | **L1（2026-09-16 勘误并落地）**：run 级学习 episode 落账（exit≠0→infra_error；exit 0 无判定→inconclusive(run_ok_no_verdict)；actor=reactor）。原"工具统计 → pb_outcome 自动回填"未实施且**废止**——单次 CLI 退出码不是打法链效果，伪造 tool:<name> 战绩会污染 pbRank（10-exec §2.3.2 同款裁决） |
 | `vuln.signal.confirmed` / `vuln.signal.rejected` | weak | `onVulnVerdict` | **L1**：判定级 episode（confirmed→confirmed/model-proposed；rejected(false_positive/dup/ignored)→inconclusive——修正标签不当阴性）；attempt 粒度挂 `finding:<id>`，evidence_ref 解析 run 归属 |
 | `task.finished` | weak | `onTaskFinished` | **L1**：任务级 episode；FGS 快照引用取事件 payload 中宿主已固定的 `fgs_snapshot`（hash/path/summary），**绝不事后读"当前图"**；payload 无快照 → context 显式 `fgs_snapshot_missing:true` |
+| `eval.candidate.started` | weak | `onEvalCandidateStarted` | **L3**：候选对照评测启动 → C25 `know_revision_assess(phase=begin)`（candidate→evaluating；digest 对应校验） |
+| `eval.report.built` | weak | `onEvalReportBuilt` | **L3**：kind=candidate 才消费——done+verdict → C25 finish（eligible/rejected）；failed/无 verdict → C25 abort（回 candidate，失败不记成功）；其余 kind 跳过 |
 | `approval.approved` | — | **不订阅（勘误）** | kind=knowledge-adopt 的采纳由 approval 域 `approval_effects` 经 dispatcher 幂等执行 `know_adopt`（C20，actor=approval，cause 链带 request_id；target/payload 取审批单字段，校验：subject≥8 字/draft≥50 字/source_url http(s)/evidence≥30 字——v4 校验规则保留为 manifest 前置） |
 | `fact.expired` / `fact.archived` | weak | `onFactArchived` | 受管区块依赖的 fact 计数变化 → AGENTS.md 定时全量刷新提前触发（防抖） |
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
-挂载：web + headless × actor=model。**不向模型注册**：`exp_approve_export`/`exp_revoke_export`（dashboard/human/approval/system）、`rule_seed`（script/human/system——先验库物理闸）、`know_adopt`（approval/dashboard/human）、`know_transition`（system/human）、`know_purge_archive`（system）、`know_episode_record`（**reactor 专用**——学习归属不采信模型自填）、`exp_update`（v4 同款限制保留：模型改卡风险高，修正走 dashboard；如模型必须修，用 exp_store 重写 + deviation 说明）。投影零改名。
+挂载：web + headless × actor=model。**不向模型注册**：`exp_approve_export`/`exp_revoke_export`（dashboard/human/approval/system）、`rule_seed`（script/human/system——先验库物理闸）、`know_adopt`（approval/dashboard/human）、`know_transition`（system/human）、`know_purge_archive`（system）、`know_episode_record`（**reactor 专用**——学习归属不采信模型自填）、`know_revision_assess`（**reactor 专用**——评测流转只信 eval 域事件信封）、`exp_update`（v4 同款限制保留：模型改卡风险高，修正走 dashboard；如模型必须修，用 exp_store 重写 + deviation 说明）。投影零改名。
 
 | 工具名 | 描述全文要点（即 agent_note，全文见 1.3/1.4） |
 |---|---|
@@ -595,7 +625,7 @@ sec query know know_health --actor script
 
 #### knowledge_revisions 表（L2，2026-09-17；owner=know，幂等建表）
 
-候选知识版本（设计 §3.1/§6.1 的 L2 落地）。列：`revision_id PK / schema_version / artifact_kind / artifact_id / parent_revision_id / content_json / content_digest(sha256 canonical JSON) / source_kind / source_ref / source_snapshot(JSON：kb=doc_id+body_revision+content_hash；episode=episode_id+outcome；seed=模板路径) / applies_predicates(JSON) / status（draft/candidate/evaluating/eligible/published/retired/rejected；L2 只产生 candidate）/ needs_revalidate（来源变更标记，kb_revalidate(changed) 联动置位）/ eval_report_ref（L3 起用）/ change_note / created_by_actor / created_at`。约束：`UNIQUE(artifact_kind, artifact_id, content_digest)`（内容级去重——同参重放不产生新 revision，内容变化必出新行）；索引 `idx_revision_artifact(artifact_kind, artifact_id, created_at)`、`idx_revision_source(source_kind, source_ref)`、`idx_revision_status(status)`。**只插不改内容**：`content_json/content_digest/source_snapshot` 一旦写入不可原地覆盖（published 内容冻结的根基）；后续允许修改的仅 `status/needs_revalidate/eval_report_ref` 三个流程列。
+候选知识版本（设计 §3.1/§6.1 的 L2 落地）。列：`revision_id PK / schema_version / artifact_kind / artifact_id / parent_revision_id / content_json / content_digest(sha256 canonical JSON) / source_kind / source_ref / source_snapshot(JSON：kb=doc_id+body_revision+content_hash；episode=episode_id+outcome；seed=模板路径) / applies_predicates(JSON) / status（draft/candidate/evaluating/eligible/published/retired/rejected；L2 只产生 candidate，L3 起 C25 驱动 evaluating/eligible/rejected 流转）/ needs_revalidate（来源变更标记，kb_revalidate(changed) 联动置位）/ eval_report_ref（L3 起用：C25 落评测 run/报告引用）/ change_note / created_by_actor / created_at`。约束：`UNIQUE(artifact_kind, artifact_id, content_digest)`（内容级去重——同参重放不产生新 revision，内容变化必出新行）；索引 `idx_revision_artifact(artifact_kind, artifact_id, created_at)`、`idx_revision_source(source_kind, source_ref)`、`idx_revision_status(status)`。**只插不改内容**：`content_json/content_digest/source_snapshot` 一旦写入不可原地覆盖（published 内容冻结的根基）；后续允许修改的仅 `status/needs_revalidate/eval_report_ref` 三个流程列。
 
 **file 后端**：
 
@@ -910,3 +940,10 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **两条输入通道落地**：`source_kind=kb_doc`（外部资料，带来源版本快照 doc_id+body_revision+content_hash）与 `source_kind=episode`（实战偏差）统一落候选 revision；候选不覆盖任何在使用卡片。
 - **kb_revalidate(changed) 联动**：来源变更后依赖该文献版本的 revision 置 `needs_revalidate=1`，原始引用保留不静默替换（§4.3 遗留项闭环）。
 - **首个完整卡片切片**：P1 授权类 `VC-AUTHZ-001-r1`（扩展现有 vuln_authz_diff 的角色×对象×动作约束检查）作为 artifact_kind=vulncard 的版本化候选卡，经版本受控模板 + setup 种子通道落库（3.3 #9）；卡片本体不进 data/vulncards/（候选≠发布）。
+
+## 九、2026-09-17 学习专项 L3 实施回填（know_revision_assess）
+
+- **C25 `know_revision_assess`**（reactor 专用）+ 事件 `know.revision.assessed`：revision 状态机 `candidate→evaluating→eligible/rejected` 流转落地（abort 回 candidate）；内容与流程列严格分离（只改 status/eval_report_ref）。
+- **可信输入只取事件信封**：订阅 `eval.candidate.started`（→begin）与 `eval.report.built` kind=candidate（done+verdict→finish；failed/无 verdict→abort，失败不记成功）；candidate_digest 与 revision.content_digest 不对应即 E_KNOW_REVISION_CHANGED。
+- **来源变更闸**：begin 时 needs_revalidate=1 拒评（E_INVARIANT）；finish 时发现评测期间来源变更 → 强制 rejected（source_changed_during_eval），旧来源上的评测结论不作数。
+- **eligible≠发布**：eligible 只表示"通过独立评测"，进使用面仍需 L4 发布门禁（know_revision_publish + approval）；本域不使用面零变化。

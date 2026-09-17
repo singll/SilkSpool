@@ -297,6 +297,15 @@ templates:
   - sec-know-domain-plugin-setup.sh
   # --- L2 候选规程卡种子（版本受控模板；know setup 经 sec-bus-cli 幂等提案进 knowledge_revisions）---
   - data-seed/know-revisions/vc-authz-r1.json
+  # --- L3 独立评测种子（版本受控模板；eval 迁移脚本种子进 data/eval/{fixtures,datasets}）---
+  - data-seed/eval/fixtures/fixture-authz-a.json
+  - data-seed/eval/fixtures/fixture-authz-b.json
+  - data-seed/eval/fixtures/fixture-authz-c.json
+  - data-seed/eval/fixtures/fixture-authz-h1.json
+  - data-seed/eval/fixtures/fixture-authz-h2.json
+  - data-seed/eval/fixtures/fixture-authz-h3.json
+  - data-seed/eval/datasets/ds-authz-dev-v1.json
+  - data-seed/eval/datasets/ds-authz-hidden-v1.json
   # --- v5 ledger 域插件（Phase 2 三节点：纪律台账/卡使用/雷达队列/交接包，契约 11-ledger.md）---
   - dsh-plugin-sec-domain-ledger.js
   - dsh-plugin-sec-domain-ledger.patch.yml
@@ -357,6 +366,8 @@ templates:
   - p-v5-1-migrate-eval.js
   # --- v5 Phase 5.4 契约合规评测 runner（Mode A 确定性真实管线跑，无 LLM 成本）---
   - eval-contract-run.js
+  # --- 自学习专项 L3 候选配对评测 runner（设计 §7，契约 15-eval.md C5）---
+  - eval-candidate-run.js
   # --- v5 Phase 3 部署验收（18-migration §五：R0 基础健康 + R4 owns 唯一性，契约化）---
   - sec-v5-accept.sh
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---

@@ -853,3 +853,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中的 finding_ad
 - 首个有版本的候选规程卡上线：`VC-AUTHZ-001-r1`（artifact_kind=vulncard 落 know 域 `knowledge_revisions`），把 `vuln_authz_diff`（C11）从「响应相似度三档判定」扩展为**角色×对象×动作约束**检查卡——前置（成对测试身份/已知对象归属）、失效条件、hypothesis、minimal_probe（C11 为最小探针）、正/负对照、evidence_required、stop_conditions、fixtures×3、预算、失败解释与变更说明齐全（设计 §4.2 最小结构）。
 - **候选≠发布**：卡内容不进 `data/vulncards/`，不改 C11 的判定阈值与候选登记行为；worker 现行流程零变化。新约束（如「suspected 须补对象归属证据」）在 L3 评测通过、L4 发布后才会进入卡的使用面。
 - 本域未新增命令/事件；变化面 = C11 的**文档引用**（候选卡作为其规程演化对象）。
+
+## 八、2026-09-17 学习专项 L3 实施回填（备案）
+
+- 本域未新增/变更命令与事件。L3 的候选对照评测（eval 域 `eval_run_candidate`）在受控 fixture 上双跑 baseline（C11 旧三档判定的执行器内置副本 `builtin:authz-legacy-3tier`）与候选卡约束规则；**评测不调用 C11**（避免 suspected 档自动落候选池污染真实信号面），不改 C11 现行判定行为。eligible≠发布——VC-AUTHZ-001 进使用面仍待 L4。

@@ -7,8 +7,10 @@
 // 模型越权 100% 被拒（错误码匹配）+ hint 可引导（含引导 token），产出
 // data/eval/contract-report.json，退出码 0（全过）/1（有失败）。
 //
-// 用法: SEC_BASE_DIR=/opt/silkspool/dsh node eval-contract-run.js [case ...]
+// 用法: SEC_BASE_DIR=/opt/silkspool/dsh node eval-contract-run.js [--llm-probe] [case ...]
 //   [case ...] 可选，只跑指定用例名（须存在于 data/eval/contract-cases.jsonl）。
+//   --llm-probe（L3 Mode B）：加跑 llm 探针用例——真实受测 headless 会话经 Bellkeeper
+//   网关（key 取 SEC_EVAL_LLM_KEY/BELLKEEPER_LLM_API_KEY），工具轨迹/轮次/拒绝恢复落报告。
 // 全部用例为确定性拒绝（不写 findings），可安全并发于运行中的 silksecagent。
 // ==============================================================================
 
@@ -37,7 +39,9 @@ const DOMAIN_BUILDERS = {
 }
 
 async function main() {
-  const only = process.argv.slice(2)
+  const argv = process.argv.slice(2)
+  const llmProbe = argv.includes('--llm-probe')
+  const only = argv.filter((a) => a !== '--llm-probe')
   const busMod = await import(path.join(BASE_DIR, 'plugins', 'sec-domain-bus', 'index.js'))
   const bus = busMod.createBus({ dataDir: DATA_DIR, profile: 'cli' })
 
@@ -65,6 +69,7 @@ async function main() {
   console.log(`[eval-contract] 已注册域: ${registered.join(',')}`)
 
   const args = only.length ? { cases: only } : {}
+  if (llmProbe) args.llm_probe = true
   const r = await bus.dispatch('eval', 'run_contract', args, { actor: 'script' })
   if (!r.ok) {
     console.error(`[eval-contract] 触发 eval_run_contract 失败: ${r.error?.code} ${r.error?.message}`)
