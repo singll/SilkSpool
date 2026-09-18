@@ -1,6 +1,6 @@
 # 19 · 看板 UI 原生面集成设计（表面分散 + 原子化隔离 + 深度绑定）
 
-> 版本：v1.0 ｜ 状态：**定稿**（2026-09-18 用户评审通过）｜ 执行：**UI-0 前置硬闸 + P0 地基 + P1 主面板已完成（2026-09-18），P2 待起动工** ｜ 契约版本：1
+> 版本：v1.0 ｜ 状态：**定稿**（2026-09-18 用户评审通过）｜ 执行：**UI-0 前置硬闸 + P0 地基 + P1 主面板 + P2 审批套件已完成（2026-09-18），P3 待起动工** ｜ 契约版本：1
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）；本文是 [`16-dashboard.md`](16-dashboard.md) §一挂载模型的**修订设计**——16 的「壳 + 域视图注册表 + RPC 投影消费」数据层架构不变，本文把「一个 Modal 装十一个 tab」的呈现层拆散到 DSH 原生承载面。
 > 证据基线：DSH **0.1.5-rc.2**（csai 生产当前版本）npm 包 `@deepseek-ai/dsh-client-ui-{layout,sidebar,sidebar-right,conversation,chat,settings,primitives,slots}` 的 `lib/types/**.d.ts` **逐字验证**（2026-09-18 拉取核对的类型声明，非推测）；生态调研见 §一。
 > 领域语言以 [bundles/dsh/CONTEXT.md](../../../bundles/dsh/CONTEXT.md) 为准：看板 = 全局面的正式名称；行内只放摘要 + 跳链，详细内容一律在会话里看。
@@ -67,7 +67,7 @@
 
 | 面 | 接口 |
 |---|---|
-| tab 类型注册 | `ctx.sidebarRightTabs.registerType({ id, kind, patterns?, priority, title, guide? })`——两阶段：类型进注册表，tab 体注册进 `sidebar.right.pane.tab` keyed 槽（key=类型 id） |
+| tab 类型注册 | `ctx.sidebarRightTabs.register({ id, kind, patterns?, priority, title, guide? })`——两阶段：类型进注册表，tab 体注册进 `sidebar.right.pane.tab` keyed 槽（key=类型 id）。**P2 实测修正**：官方方法名是 `register`（`SidebarRightTabRegistry.register`），本设计原写的 `registerType` 不存在；`title(address)` 是 open 时捕获的 chip 初值，动态计数须另注册 `sidebar.right.pane.tab.title` keyed 体 |
 | 页面打开 | `ctx.sidebarRight.openTab(kind)`；资源寻址 `dsh-resource://` + `openResource` |
 | 优先级带 | `extension > builtin > fallback`（VS Code 同款解析器）；卸载后 builtin 自动复位 |
 
@@ -127,7 +127,7 @@ ctx.inject(['layout', 'slots'], function () {
 ### 4.2 审批套件（三件套，本设计最高价值项）
 
 1. **通知胶囊（`shell.overlay`）**：右下角常驻胶囊「待审批 · N」（丝线金徽章，纪律告警时叠绯红描边——填充即行动的铁律不变）。点击弹出**快捷处理浮卡**（自绘 popover，`bg-layer-3`）：pending 列表逐条「批准 / 驳回」（图标 + title 悬停纪律），底部「打开审批中心 →」调 `ctx.sidebarRight.openTab('silksec-approval')`。零会话时胶囊照常工作（root scope），快捷浮卡自足完成审批，右侧栏只是深读入口。
-2. **审批中心 tab（右侧栏 page type）**：`registerType({ id: 'silksec-approval-view', kind: 'silksec-approval', priority: 'extension', title: () => '审批', guide: [{ order: 60, title: () => '审批中心', icon }] })` + tab 体注册进 `sidebar.right.pane.tab`。完整列表/筛选/留痕，与会话并排。宽度拖拽、浮窗、全屏由 dockkit 原生提供（零代码）。
+2. **审批中心 tab（右侧栏 page type）**：`register({ id: 'silksec-approval-view', kind: 'silksec-approval', priority: 'extension', title: () => '审批', guide: [{ order: 60, title: () => '审批中心', icon }] })`（**P2 实测：官方方法名为 `register`，非 `registerType`**）+ tab 体注册进 `sidebar.right.pane.tab`，动态计数另注册 `sidebar.right.pane.tab.title`。完整列表/筛选/留痕，与会话并排。宽度拖拽、浮窗、全屏由 dockkit 原生提供（零代码）。
 3. **会话内审批卡（spike，§九 #2）**：agent 用 `approval_request` 工具提请时，工具调用在聊天里渲染为可交互审批卡（类型/主体/判据/批准驳回按钮）。若 `conversation.chat.node` keyed 渲染器支持按工具名扩展则落地；不支持则降级为 `assistant-actions` 的「去审批」跳链。**未验证前不进入关键路径**。
 
 数据全部走 `approval.*` RPC 投影；批准副作用（scope 写回/种子任务）在宿主域内，UI 不感知。
@@ -238,7 +238,7 @@ ctx.inject(['layout', 'slots'], function () {
 |---|---|---|---|
 | **P0** 地基 ✅ 已完成（2026-09-18） | `ui-core` 包骨架（token 表/ErrorBoundary/hooks/secUiBus/视图注册表）；`ui-surface-deps.yaml` 首版；11 视图原样注册进注册表（文件不拆，行为不变） | 十一 tab 行为逐项比对现状；ErrorBoundary 注入故障演练（人为抛错只炸单面） | revert 包部署 |
 | **P1** 主面板 ✅ 已完成（2026-09-18） | `ui-panel`：`main`+`panellist`+`selectPanel` 落地；footer 入口改跳转；Modal 形态保留为降级分支 | 双形态各跑一遍视图回归；`beginNavigation` 连点竞态测试 | 模式开关回 Modal |
-| **P2** 审批套件 | overlay 胶囊 + 快捷浮卡 + 审批右侧栏 tab；看板「审批」tab 保留观察 | 待办计数与审批列表一致；批准/驳回快捷路径 audit 留痕与主面板路径等价；零会话下胶囊自足可用 | 单包 disable，tab 回主面板 |
+| **P2** 审批套件 ✅ 已完成（2026-09-18） | overlay 胶囊 + 快捷浮卡 + 审批右侧栏 tab；看板「审批」tab 保留观察 | 待办计数与审批列表一致；批准/驳回快捷路径 audit 留痕与主面板路径等价；零会话下胶囊自足可用 | 单包 disable，tab 回主面板 |
 | **P3** 任务 tab | 任务右侧栏 tab（四区块栏宽重排）；会话头「本会话任务」计数 | 栏宽 320–720px 响应式目检；写操作等价对照 | 同上 |
 | **P4** 授权迁设置 | `settings.section`「授权范围」节；看板「授权」tab 观察一周后删 | 设置节与旧 tab 的 scope 读写逐项等价 | 单包 disable |
 | **P5** 会话绑定 | conversation.view 安全产出 + header 钮 + assistant-actions 登记/沉淀 | 按 session_id 过滤正确性抽样；消息动作写操作经 RPC 全管线（actor=dashboard） | 单包 disable |
@@ -250,9 +250,9 @@ ctx.inject(['layout', 'slots'], function () {
 ## 九、开放问题
 
 1. **主面板 URL 直达**：`selectPanel` 是否随 URL hash 持久化（刷新回会话是可接受的官方默认，better-sidebar 证实原生布局只存内存）；如需直达链接，用 `shell.overlay` 级别自管 hash 属自绘层，待 P1 实测后定。
-2. **会话内审批卡**：`conversation.chat.node` keyed 渲染器对「按工具名自定义工具调用呈现」的扩展性未验证（`dsh-agent-tool-presentation` 包存在，机制待读）；P2 期间 spike，失败则降级 `assistant-actions` 跳链。
-3. **官方 Toast 服务**：primitives 导出 `Toast` 组件，是否存在跨插件 toast 服务（`ctx.toast` 类）未验证；若有，新审批到达时补一条瞬态通知（胶囊之外的增强，非关键路径）。
-4. **零会话时右侧栏可达性**：右侧栏 tab 会话作用域——无会话时审批/任务深读入口由胶囊快捷浮卡与主面板降级承接，是否需要「无会话也展开右栏」待真机确认宿主行为。
+2. **会话内审批卡**：`conversation.chat.node` keyed 渲染器对「按工具名自定义工具调用呈现」的扩展性未验证（`dsh-agent-tool-presentation` 包存在，机制待读）。**P2 未做 spike（不阻塞，降级路径 `assistant-actions` 跳链留 P5）**。
+3. **官方 Toast 服务**：primitives 导出 `Toast` 组件，是否存在跨插件 toast 服务（`ctx.toast` 类）未验证。**P2 未发现跨插件 toast 服务；新审批到达经 secUiBus `approval:pending` 广播（胶囊之外的增强，非关键路径）**。
+4. **零会话时右侧栏可达性**：右侧栏 tab 会话作用域。**P2 真机确认：根 scope 胶囊照常工作，快捷浮卡自足完成审批；无在屏会话时 `openTab` 抛错已由 `secUiBus` + 主面板/Modal 降级承接（不阻塞）**。
 5. **`ui-core` 跨包 require**：**已验证可行（P0，2026-09-18）**。`dsh-client-modules@0.1.5-rc.2` 契约：`WebBootEntry.inject` 声明「消费方物化前必须到达 factory 的包行」，`arriveGraphRow` 逐包 arrive 后消费方同步 `require` 命中；`stripClientSuffix` 使 `require('@silksec/ui-core')` 与 `.../client` 归一。落地：ui-core 独立 client bundle，sec-dashboard 在 `dsh.client.inject` 声明 `@silksec/ui-core` 后直接 require（与 theme 插件 require primitives 同路径）。已登记 [`bundles/dsh/doc/ui-surface-deps.yaml`](../../../bundles/dsh/doc/ui-surface-deps.yaml)；不采用源码并入备选。
 6. **任务/审批 tab 的 badge**：`sidebarRightTabs` 的 title thunk 每次渲染重读（类型声明明示）——计数放 title 里（「审批 ·3」）即可，无需宿主 badge API。
 

@@ -61,8 +61,12 @@ packages:
     client_entry: true
     inject: ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar", "@silksec/ui-core"]
   - id: "@silksec/ui-approval"
+    file_prefix: dsh-plugin-silksec-ui-approval
     phase: P2
-    status: planned
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar-right", "@silksec/ui-core"]
   - id: "@silksec/ui-task"
     phase: P3
     status: planned
@@ -143,29 +147,56 @@ surfaces:
   - id: approval
     package: "@silksec/ui-approval"
     phase: P2
-    status: planned
-    role: 待审批待办（overlay 胶囊 + 快捷浮卡 + 审批右侧栏 tab）
+    status: implemented
+    role: 待审批待办（shell.overlay 胶囊 + 快捷处理浮卡 + 审批右侧栏 page tab）
+    implementation:
+      client: dsh-plugin-silksec-ui-approval.client.js
+      host: dsh-plugin-silksec-ui-approval.index.js
+      setup: silksec-ui-approval-plugin-setup.sh
+      tests: dsh-plugin-silksec-ui-approval.client.test.mjs（10 例）
     slots:
-      - shell.overlay                 # list，root；additive 浮层
-      - sidebar.right.pane.tab        # keyed 槽（key=类型 id）承载 tab 体
+      - shell.overlay                 # list，root；additive、点击穿透，条目自 pointerEvents:'auto'（用 options.id）
+      - sidebar.right.pane.tab        # keyed 槽（key=类型 id，scope session）承载 tab 体
+      - sidebar.right.pane.tab.title  # keyed 槽（key=类型 id）承载动态标题（「审批 · N」每次渲染重读共享计数）
     services_consume:
-      - sidebarRightTabs.registerType # { id, kind, patterns?, priority, title, guide? }
-      - sidebarRight.openTab          # ctx.sidebarRight.openTab('silksec-approval')
+      - sidebarRightTabs.register     # **实测名称**：SidebarRightTabRegistry.register(definition)
+                                      # （{ id, kind, priority, title(address), guide? }；非设计稿的 registerType）
+      - sidebarRight.openTab          # ctx.sidebarRight.openTab('silksec-approval')；无在屏会话 seat 时抛错 → 降级
+      - slots.register
+      - slots.inject                  # 声明生命周期注册（时序纪律；槽缺席静默降级）
+      - slots.spec                    # 能力探测槽声明是否存在（shell.overlay 缺席 → 徽章降级）
+      - connection.rpc.call           # /silksec-dashboard → approvalList / approvalDecide（actor=dashboard+operator）
+      - layout.selectPanel            # 降级：主面板（silksec-dashboard）
+    owner_props_consume:
+      - TabHookContext                # sidebar.right.pane.tab / .title 的 hookContext（本面不读，仅声明消费面）
     primitives:
-      - Modal
-      - Pill
-      - StateDot
-      - HoverCard
-      - Tooltip
-      - RiskConfirmation
+      - Modal                         # 主面板/layout 也缺席时的 Modal 降级（缺席自绘 fixed 覆盖层）
+      - StateDot                      # 待审批/已批准/已驳回状态点（state: warning/done/error）
+      - HoverCard                     # 判据悬停卡（anchor/content；缺席退回 title）
+      - Tooltip                       # 图标/按钮 title 悬停纪律（label/side/delayMs；缺席退回 title）
+    primitives_deferred:
+      - Pill                          # rc.2 客户端 bundle 未观测到稳定导出；chip 走 ui-core pill 样式
+      - RiskConfirmation              # P2 驳回沿用 legacy 备注 prompt；预留 P5 会话表单（§七.5）
     icons:
-      - IconWarningOutline
-      - IconChecklistOutline
+      - IconWarningOutline            # 胶囊/纪律告警
+      - IconChecklistOutline          # 待审批语义 + 右侧栏 guide 图标
     degradation:
-      - shell.overlay + sidebarRightTabs
-      - sidebarRightTabs 缺席 → 同一视图挂主面板临时 tab（角标「降级」）
-      - 主面板也缺席 → Modal
-      - shell.overlay 缺席 → footer.action 按钮计数徽章
+      - shell.overlay 胶囊 + sidebarRightTabs page tab
+      - sidebarRightTabs 缺席 → 同一视图注册进 ui-core 注册表（主面板「审批 ·降级」临时 tab）
+      - 主面板 / layout 也缺席 → primitives Modal（再缺席自绘覆盖层）
+      - shell.overlay 缺席 → secUiBus 广播 approval:pending（footer.action 由 sec-dashboard legacy
+        单条持有，不重复注册；主面板 approvals tab 自带计数兜底）
+      - 无在屏会话 openTab 抛错 → secUiBus open:approval + layout.selectPanel（或 Modal）
+    rollback:
+      - 从 web profile 移除 @silksec/ui-approval（胶囊/右栏 tab 消失；主面板 legacy「审批」tab 照常）
+    notes:
+      - "计数真相源 = /silksec-dashboard approvalList 的 pending；胶囊、右侧栏动态标题、降级视图
+         共用 ui-core 之外的本包 approvalStore（模块级共享快照）。"
+      - "写路径与主面板等价：approvalDecide RPC → approval.decide（actor=dashboard + operator 由
+         RpcProjector 注入），kind.onApprove 副作用与 audit 留痕一致。"
+      - "开放问题 §九 #6 修正：类型声明中定义 title(address) 是 open 时捕获的 chip 初值；动态计数
+         须注册 keyed sidebar.right.pane.tab.title 体（已落地），非『thunk 每渲染重读』。"
+    verified_dsh: "0.1.5-rc.2 (2026-09-18；sidebar-right tab-registry/service/slots 与 layout shell.overlay 类型声明逐字核对；无会话 openTab 抛错、shell.overlay 点击穿透语义实测)"
 
   - id: task
     package: "@silksec/ui-task"

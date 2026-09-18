@@ -1,0 +1,4 @@
+# silksec-ui-approval bundle layer：把审批套件宿主半面挂进安装它的 profile
+- insert:
+    - id: silksec-ui-approval
+      name: '@silksec/ui-approval'

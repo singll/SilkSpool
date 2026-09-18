@@ -363,6 +363,11 @@ if [ -f "$BASE_DIR/silksec-ui-panel-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-panel-plugin-setup.sh"
 fi
 
+# -------------------- 8.6.5 审批套件（ui-approval，19-ui-surface P2；shell.overlay 胶囊 + 审批右侧栏 tab；消费 ui-core） --------------------
+if [ -f "$BASE_DIR/silksec-ui-approval-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/silksec-ui-approval-plugin-setup.sh"
+fi
+
 # -------------------- 8.7 安全看板客户端插件（DSH Web UI slot，inject ui-core；保留 Modal 降级入口） --------------------
 if [ -f "$BASE_DIR/sec-dashboard-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-dashboard-plugin-setup.sh"
