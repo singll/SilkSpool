@@ -75,8 +75,12 @@ packages:
     client_entry: true
     inject: ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar-right", "@deepseek-ai/dsh-client-ui-conversation", "@silksec/ui-core"]
   - id: "@silksec/ui-settings-scope"
+    file_prefix: dsh-plugin-silksec-ui-settings-scope
     phase: P4
-    status: planned
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@deepseek-ai/dsh-client-ui-settings", "@silksec/ui-core"]
   - id: "@silksec/ui-session"
     phase: P5
     status: planned
@@ -264,20 +268,57 @@ surfaces:
   - id: settings-scope
     package: "@silksec/ui-settings-scope"
     phase: P4
-    status: planned
-    role: 「授权范围」设置节（scope.yml 管理 / 排除清单 / 凭据引用）
+    status: implemented
+    role: 「授权范围」设置节（scope.yml 管理 / 排除清单 / 凭据引用状态）
+    implementation:
+      client: dsh-plugin-silksec-ui-settings-scope.client.js
+      host: dsh-plugin-silksec-ui-settings-scope.index.js
+      setup: silksec-ui-settings-scope-plugin-setup.sh
+      tests: dsh-plugin-silksec-ui-settings-scope.client.test.mjs（12 例）
     slots:
-      - settings.section              # list，root：注册整节新设置区
+      - settings.section              # list，root：注册整节新设置区（用 options.id/order/label）
     services_consume:
       - slots.register
-    primitives: []
-    icons: []
+      - slots.inject                  # 声明生命周期注册（时序纪律；settings.section 缺席静默降级）
+      - slots.spec                    # 能力探测槽声明是否存在（缺席 → ui-core 注册表降级）
+      - connection.rpc.call           # /silksec-dashboard → scopeList / scopeSaveProgram /
+                                      # scopeDeleteProgram / programBindWorkspace / workspaces；
+                                      # /silksec-domain → scope.cred_query（只读，只显示 ref）
+      - layout.selectPanel            # 降级：主面板（silksec-dashboard）也缺席时的入口提示
+    owner_props_consume:
+      - SettingsSectionOwnerProps     # settings.section owner { close: () => void }（本面仅声明消费面）
+    primitives:
+      - Tooltip                       # 行内图标/操作 title 悬停纪律（label/side/delayMs；缺席退回 title）
+      - Modal                         # settings.section + 主面板/layout 均缺席时的 Modal 降级（缺席自绘 fixed 覆盖层）
+    primitives_deferred:
+      - Pill                          # 徽章/条目胶囊走 ui-core styles.pill（与宿主设置行同款），未消费 primitives Pill
+      - StateDot                      # 授权项无状态点需求（max_risk/绑定用文字徽章）
+      - DisclosureRow                 # 凭据引用/归档直接展示，不折叠
+      - RiskConfirmation              # 移除授权沿用原生 confirm（与主面板 legacy 路径一致）
+      - HoverCard                     # 无判据悬停卡需求
+    icons: []                         # 行内图标走 ui-core opIcon（edit/trash/plus/history），不新增官方图标依赖
+    my_icons: [opIcon]
+    slots_avoid:
+      - settings.general.item         # 行级槽，theme 插件持有，本面不抢
+      - conversation.chat.turnTail    # chain 槽，纪律：不碰
     degradation:
-      - settings.section
-      - 缺席 → 主面板「授权」tab（即现状）
-    note: >
-      设置行样式完全复用宿主（与 theme 插件 settings.general.item 同款），
-      只提供文案与控件值；本面不复用 settings.general.item（那是行级槽）。
+      - settings.section 整节（list/root）
+      - settings.section 缺席 → 同一视图注册进 ui-core 注册表（主面板「授权 ·降级」临时 tab，order 102，domain=scope）
+      - 主面板 / layout 也缺席 → primitives Modal（再缺席自绘 fixed 覆盖层）
+      - 主面板 legacy「授权」tab（id='scope'）行为零改动、保留观察（P4 不删）
+    rollback:
+      - 从 web profile 移除 @silksec/ui-settings-scope（设置节消失；主面板 legacy「授权」tab 照常）
+    notes:
+      - "写路径与主面板「授权」tab 等价：scopeList / scopeSaveProgram（scope.grant + scope.exclude 表单分派）/
+         scopeDeleteProgram（scope.revoke，fail-closed 立即生效）/ programBindWorkspace
+         （scope.program_bind_workspace）；actor=dashboard + operator 由 RpcProjector/壳注入，audit 留痕一致。"
+      - "凭据引用经 RpcProjector /silksec-domain 的 scope.cred_query 只读消费（actor=dashboard），
+         只返回 ref/cred_type/role/note/host/program_id，永无明文；本面不提供任何凭据写路径。"
+      - "设置行样式完全复用宿主（与 theme 插件 settings.general.item 行同款：label-primary 文案 + 右侧控件），
+         只提供文案与控件值；本面不复用 settings.general.item（那是行级槽，theme 插件持有）。"
+      - "零颜色字面量（走 --dsw-alias-* / ui-core T 令牌）；原子化隔离：ErrorBoundary 逐面包，
+         settings.section 与降级视图独立 fiber，互不传染。"
+    verified_dsh: "0.1.5-rc.2 (2026-09-18；@deepseek-ai/dsh-client-ui-settings lib/types/client/contract/slots.d.ts 的 settings.section kind=list scope=root + SettingsSectionOwnerProps{close} 逐字核对；ui-settings-general lib/client.js 的 renderSlot('settings.section',{close},{only:active}) 与 General 注册 options{id,order,label,locale} 核对；settings.section 注册项 label 支持函数形态（resolveSlotLabel）)"
 
   - id: session
     package: "@silksec/ui-session"

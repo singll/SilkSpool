@@ -373,6 +373,11 @@ if [ -f "$BASE_DIR/silksec-ui-task-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-task-plugin-setup.sh"
 fi
 
+# -------------------- 8.6.7 授权范围设置节（ui-settings-scope，19-ui-surface P4；settings.section 整节；消费 ui-core） --------------------
+if [ -f "$BASE_DIR/silksec-ui-settings-scope-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/silksec-ui-settings-scope-plugin-setup.sh"
+fi
+
 # -------------------- 8.7 安全看板客户端插件（DSH Web UI slot，inject ui-core；保留 Modal 降级入口） --------------------
 if [ -f "$BASE_DIR/sec-dashboard-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-dashboard-plugin-setup.sh"

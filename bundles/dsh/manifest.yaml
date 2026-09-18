@@ -255,6 +255,12 @@ templates:
   - dsh-plugin-silksec-ui-task.patch.yml
   - dsh-plugin-silksec-ui-task.client.test.mjs
   - silksec-ui-task-plugin-setup.sh
+  # --- 授权范围设置节（19-ui-surface P4：settings.section 整节 scope.yml 管理 / 排除清单 / 凭据引用；消费 ui-core）---
+  - dsh-plugin-silksec-ui-settings-scope.index.js
+  - dsh-plugin-silksec-ui-settings-scope.client.js
+  - dsh-plugin-silksec-ui-settings-scope.patch.yml
+  - dsh-plugin-silksec-ui-settings-scope.client.test.mjs
+  - silksec-ui-settings-scope-plugin-setup.sh
   # --- 安全看板客户端插件（DSH Web UI slot，依赖 sec-suite 的 /silksec/dashboard RPC + ui-core）---
   - dsh-plugin-sec-dashboard.index.js
   - dsh-plugin-sec-dashboard.client.js

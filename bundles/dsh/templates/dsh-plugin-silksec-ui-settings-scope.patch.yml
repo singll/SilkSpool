@@ -1,0 +1,4 @@
+# silksec-ui-settings-scope bundle layer：把授权范围设置节宿主半面挂进安装它的 profile
+- insert:
+    - id: silksec-ui-settings-scope
+      name: '@silksec/ui-settings-scope'
