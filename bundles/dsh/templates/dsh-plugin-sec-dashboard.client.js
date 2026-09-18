@@ -2,7 +2,10 @@
  * @silksec/sec-dashboard — client half (browser bundle).
  *
  * SilkSecAgent「看板」——**全局**入口，不挂任何会话：
- *   - 入口：`sidebar.footer.action`（scope:root，侧边栏底部，任何会话/无会话时都可见）
+ *   - 入口：主面板可用时 `sidebar.footer.action` → `ctx.layout.selectPanel('silksec-dashboard')`
+ *     （19-ui-surface P1；主面板由 @silksec/ui-panel 经 main 槽承载）。主面板/layout 缺席
+ *     （旧 DSH / ui-panel 未装 / localStorage 强制 modal）→ 回落 `sidebar.footer.action` 旧
+ *     Modal 形态（观察期保留）。
  *   - 形态：primitives `Modal`（headless 模式，~1120px），内部五视图 tab：
  *     漏洞（findings，打标+来源会话跳链）/ 资产（assets）/ 事实（facts+遗留 blackboard，纠正·废弃）/
  *     任务（workspaces+tasks，工作区区块+定时调度+会话跳链）/ 授权（scope.yml 管理）
@@ -254,6 +257,20 @@ window.__ModuleLoader__.load({
 
     // 会话跳链（详情一律在会话里看；无 session 显示「—」不造假链）
     var sessionsSvc = null
+    // 19-ui-surface P1：主面板承载面服务引用（apply 时能力探测；缺席即 Modal 降级）
+    var slotsSvc = null
+    var layoutSvc = null
+    var dashboardCtx = null
+    function currentLayout() {
+      if (layoutSvc && typeof layoutSvc.selectPanel === 'function') return layoutSvc
+      if (dashboardCtx && typeof dashboardCtx.get === 'function') {
+        try {
+          var l = dashboardCtx.get('layout')
+          if (l && typeof l.selectPanel === 'function') { layoutSvc = l; return l }
+        } catch (e) {}
+      }
+      return null
+    }
     function openSession(id) {
       if (!sessionsSvc || !id) return
       try { sessionsSvc.open(id) } catch (e) { console.error('[sec-dashboard] openSession 失败:', e) }
@@ -2778,7 +2795,55 @@ window.__ModuleLoader__.load({
         el(ReportModal, { open: reportState.open, state: reportState, onClose: function () { setReportState({ open: false }) } }))
     }
 
-    // ── 侧边栏入口（root scope）：按钮 + 全局 Modal ──────────────────────────
+    // ── 19-ui-surface P1：主面板可达性探测（能力探测，非版本判断） ──────────────
+    // 主面板可用 = layout.selectPanel 存在 + main 槽已注册 silksec-dashboard 条目。
+    // 任一缺席（旧 DSH / ui-panel 未装）→ 回落旧 Modal 形态（观察期保留）。
+    // 回滚开关：localStorage 'silksec.ui.dashboard.mode' === 'modal' 强制 Modal。
+    function panelModeEnabled() {
+      try {
+        if (typeof window !== 'undefined' && window.localStorage &&
+            window.localStorage.getItem('silksec.ui.dashboard.mode') === 'modal') return false
+      } catch (e) {}
+      return true
+    }
+    function panelSlotAvailable() {
+      if (!panelModeEnabled()) return false
+      if (!currentLayout()) return false
+      try {
+        if (slotsSvc) {
+          var fn = (typeof slotsSvc.entriesOfSlot === 'function') ? slotsSvc.entriesOfSlot
+            : (typeof slotsSvc.entries === 'function') ? slotsSvc.entries : null
+          if (fn) {
+            var list = fn.call(slotsSvc, 'main') || []
+            return list.some(function (e) {
+              if (!e) return false
+              if (e.id === 'silksec-dashboard' || e.key === 'silksec-dashboard') return true
+              if (e.options && (e.options.key === 'silksec-dashboard' || e.options.id === 'silksec-dashboard')) return true
+              if (e.registration && (e.registration.id === 'silksec-dashboard' || e.registration.key === 'silksec-dashboard')) return true
+              return false
+            })
+          }
+        }
+      } catch (e) {}
+      return false
+    }
+    // 快速连点竞态：beginNavigation() 作废旧导航（官方服务自带）；旧信号 aborted 即不提交
+    function navigateToPanel(panelId) {
+      var layout = currentLayout()
+      if (!layout) return false
+      var signal = null
+      try { signal = (typeof layout.beginNavigation === 'function') ? layout.beginNavigation() : null } catch (e) {}
+      function commit() {
+        if (signal && signal.aborted) return false
+        try { layout.selectPanel(panelId) } catch (e) { return false }
+        return true
+      }
+      if (signal && typeof Promise !== 'undefined') Promise.resolve().then(commit)
+      else commit()
+      return true
+    }
+
+    // ── 侧边栏入口（root scope）：主面板可用则 selectPanel，否则旧 Modal ──────
     function SidebarAction(props) {
       var wide = props.wide !== false
       var openState = React.useState(false)
@@ -2791,7 +2856,11 @@ window.__ModuleLoader__.load({
         className: 'silksec-dash-action',
         'data-rail': wide ? undefined : 'true',
         title: '安全看板',
-        onClick: function () { setOpen(true) },
+        onClick: function () {
+          // 点击时能力探测（避免首渲染时 ui-panel 尚未注册造成的陈旧判定）
+          if (panelSlotAvailable() && navigateToPanel('silksec-dashboard')) return
+          setOpen(true)
+        },
       },
         spoolIcon(16),
         wide ? el('span', null, '看板') : null)
@@ -2803,28 +2872,316 @@ window.__ModuleLoader__.load({
           el(DashboardShell, null)))
     }
 
-    // ── 19-ui-surface P0：11 视图「原样登记」进 ui-core 视图注册表 ──────────────
-    // 仅登记（组件引用），不接管渲染——旧壳 DashboardShell 的 tab/content 路径完全不变，
-    // 行为零变化。P1 起由 ui-panel 消费该注册表。id 沿用旧 tab id；domain 为
-    // 16-dashboard §1.7 的域映射（P6 逐域拆分时改域 id）。注册幂等，重复 apply 安全。
+    // ── 19-ui-surface P1：自足视图面板（统一 prop bag；挂 ui-panel 主面板） ──────
+    // 每个注册条目 = 一个自足 wrapper（内部自持 query/handler）；主面板只做通用
+    // 渲染器（按 order 渲染 active 条目的 component），不感知任何域。统一 prop bag：
+    //   { rpc, workspaces, stats, approvals, memcore, ops, navigate, pending, reloadShared }
+    // 旧 DashboardShell（Modal 降级形态）保持原样，行为零改动（双形态并行观察期）。
+    function PanelView(props) {
+      var id = props.id
+      var api = props.api || {}
+      var rpcCall = (typeof api.rpc === 'function') ? api.rpc : callRpc
+      var nav = api.navigate || { select: function () {}, consume: function () {} }
+      var busyState = React.useState(false)
+      var isBusy = busyState[0]; var setBusy = busyState[1]
+
+      var statsData = api.stats || {}
+      var workspacesData = api.workspaces || null
+      var approvalsData = api.approvals || null
+      var memData = api.memcore || null
+      var opsData = api.ops || null
+
+      var useRpcCore = uiCore.useRpc
+      var usePagedCore = uiCore.usePagedQuery
+
+      var scopeState = useRpcCore(function () { return id === 'scope' ? { endpoint: 'scopeList' } : null }, [id], rpcCall)
+      var boardState = useRpcCore(function () { return id === 'facts' ? { endpoint: 'blackboard' } : null }, [id], rpcCall)
+      var auditState = useRpcCore(function () { return id === 'audit' ? { endpoint: 'audit' } : null }, [id], rpcCall)
+      var evalState = useRpcCore(function () { return id === 'findings' ? { endpoint: 'evalStats' } : null }, [id], rpcCall)
+      var cardsState = useRpcCore(function () { return id === 'knowledge' ? { endpoint: 'expCards' } : null }, [id], rpcCall)
+      var pbsState = useRpcCore(function () { return id === 'knowledge' ? { endpoint: 'playbooks' } : null }, [id], rpcCall)
+      var rulesState = useRpcCore(function () { return id === 'knowledge' ? { endpoint: 'rulesList' } : null }, [id], rpcCall)
+      var kbState = useRpcCore(function () { return id === 'knowledge' ? { endpoint: 'kbList' } : null }, [id], rpcCall)
+      var factOvState = useRpcCore(function () { return id === 'knowledge' ? { endpoint: 'factOverview' } : null }, [id], rpcCall)
+      var covState = useRpcCore(function () { return id === 'knowledge' ? { endpoint: 'knowledgeCoverage' } : null }, [id], rpcCall)
+      var learningState = useRpcCore(function () { return id === 'learning' ? { endpoint: 'learningOverview' } : null }, [id], rpcCall)
+      var assetsOvState = useRpcCore(function () { return id === 'assets' ? { endpoint: 'assetOverview' } : null }, [id], rpcCall)
+      var factStatsState = useRpcCore(function () { return id === 'facts' ? { endpoint: 'factStats' } : null }, [id], rpcCall)
+      var schedState = useRpcCore(function () { return id === 'tasks' ? { endpoint: 'scheduledTasks' } : null }, [id], rpcCall)
+
+      var rptFilter = React.useState({ program: '', q: '' })
+      var reportFilter = rptFilter[0]; var setReportFilter = rptFilter[1]
+      var reportsState = useRpcCore(function () {
+        return id === 'reports' ? { endpoint: 'reports', payload: { program: reportFilter.program, q: reportFilter.q } } : null
+      }, [id, reportFilter.program, reportFilter.q], rpcCall)
+
+      var findingsQ = usePagedCore('findings', id === 'findings', null, rpcCall)
+      var assetsQ = usePagedCore('assets', id === 'assets', null, rpcCall)
+      var endpointsQ = usePagedCore('endpointHosts', id === 'endpoints', null, rpcCall)
+      var factsQ = usePagedCore('facts', id === 'facts', null, rpcCall)
+      var tasksQ = usePagedCore('tasks', id === 'tasks', { bucket: 'active' }, rpcCall)
+      var runsQ = usePagedCore('taskRuns', id === 'tasks', null, rpcCall)
+
+      var jmp = React.useState(props.pending && props.pending.jump ? props.pending.jump : null)
+      var jump = jmp[0]; var setJump = jmp[1]
+      function jumpToHistory(taskId) {
+        runsQ.setFilter('task_id', taskId)
+        setJump({ id: taskId, ts: Date.now() })
+      }
+      function pickHost(host) { nav.select('assets', { q: host }) }
+      function jumpFindings(host, severity) { nav.select('findings', { q: host, filters: { severity: severity || '' } }) }
+
+      // 面板切到本视图时一次性应用跨视图跳转待办（q/filters）
+      React.useEffect(function () {
+        var p = props.pending
+        if (!p) return
+        var q = id === 'findings' ? findingsQ : id === 'assets' ? assetsQ : id === 'endpoints' ? endpointsQ : id === 'facts' ? factsQ : id === 'tasks' ? tasksQ : null
+        if (q) {
+          if (p.q !== undefined) q.setQ(p.q)
+          if (p.filters) { for (var k in p.filters) if (p.filters[k] !== undefined) q.setFilter(k, p.filters[k]) }
+        }
+        if (typeof nav.consume === 'function') nav.consume(id)
+      }, [])
+
+      var rpt = React.useState({ open: false })
+      var reportState = rpt[0]; var setReportState = rpt[1]
+
+      function withBusy(fn) {
+        return function () {
+          if (isBusy) return
+          setBusy(true)
+          Promise.resolve().then(fn).catch(function (e) {
+            console.error('[sec-dashboard] 写操作失败:', e)
+            try { window.alert('操作失败: ' + (e && e.message ? e.message : e)) } catch (e2) {}
+          }).finally(function () {
+            setBusy(false)
+            findingsQ.reload(); factsQ.reload(); tasksQ.reload(); scopeState.reload(); runsQ.reload()
+            if (typeof api.reloadShared === 'function') api.reloadShared()
+          })
+        }
+      }
+      function onTag(fid, status) { withBusy(function () { return rpcCall('findingUpdate', { id: fid, status: status }) })() }
+      function onDeprecate(programId, factKey) { withBusy(function () { return rpcCall('factDeprecate', { program_id: programId, fact_key: factKey }) })() }
+      function onCorrect(programId, factKey, currentSummary) {
+        var next = null
+        try { next = window.prompt('纠正事实摘要（留空保持原样）:', currentSummary || '') } catch (e) { next = null }
+        if (next === null) return
+        withBusy(function () { return rpcCall('factCorrect', { program_id: programId, fact_key: factKey, summary: next }) })()
+      }
+      function onRunNow(tid) { withBusy(function () { return rpcCall('taskRunNow', { id: tid }) })() }
+      function onCancel(tid) {
+        var yes = false
+        try { yes = window.confirm('确认取消任务 #' + tid + '？将置为终态「已取消」。') } catch (e) { return }
+        if (yes) withBusy(function () { return rpcCall('taskCancel', { id: tid }) })()
+      }
+      function onPause(tid) { withBusy(function () { return rpcCall('taskSetStatus', { id: tid, status: 'blocked' }) })() }
+      function onResume(tid) { withBusy(function () { return rpcCall('taskSetStatus', { id: tid, status: 'queued' }) })() }
+      function onEditEvery(t) {
+        var curMin = Math.round((t.every_seconds || 86400) / 60)
+        var v = null
+        try { v = window.prompt('修改周期（分钟，如 1440=每天，60=每小时）:', String(curMin)) } catch (e) { return }
+        if (v === null) return
+        var min = Number(v)
+        if (!isNaN(min) && min >= 5) {
+          withBusy(function () { return rpcCall('taskScheduleUpdate', { id: t.id, schedule: { kind: 'interval', every_seconds: Math.round(min * 60) } }) })()
+        }
+      }
+      function onCreateScheduled(spec) {
+        withBusy(function () {
+          return rpcCall('taskCreate', spec).then(function (r) {
+            if (r && r.deduped) try { window.alert('已存在相同目标的周期任务（#' + r.id + '），未重复创建。') } catch (e) {}
+          })
+        })()
+      }
+      function onAccept(fid) {
+        var b = null
+        try { b = window.prompt('厂商已接收。记录赏金金额（数字，可留空）:', '') } catch (e) { return }
+        if (b === null) return
+        var payload = { id: fid, status: 'accepted' }
+        var n = Number(b)
+        if (String(b).trim() !== '' && !isNaN(n)) payload.bounty = n
+        withBusy(function () { return rpcCall('findingUpdate', payload) })()
+      }
+      function onBuildReport() {
+        var payload = {}
+        if (findingsQ.filters.program_id) payload.program_id = findingsQ.filters.program_id
+        if (findingsQ.filters.status) payload.status = findingsQ.filters.status
+        if (findingsQ.filters.severity) payload.severity = findingsQ.filters.severity
+        var sevs = []
+        try { sevs = window.prompt('仅包含的级别（逗号分隔，留空=全部）：critical,high,medium,low', '') || '' } catch (e) { sevs = '' }
+        if (sevs.trim()) payload.severity = sevs.trim()
+        if (findingsQ.filters.noise === '1') {
+          try { window.alert('当前处于「仅待验证候选」视图——报告只列信号（noise=0）。将忽略候选筛选生成正式报告。') } catch (e) {}
+        }
+        setReportState({ open: true, loading: true })
+        rpcCall('reportBuild', payload).then(function (res) {
+          setReportState({ open: true, loading: false, content: res.content, file: res.file, total: res.total, by_severity: res.by_severity })
+        }).catch(function (e) {
+          setReportState({ open: true, loading: false, error: e && e.message ? e.message : String(e) })
+        })
+      }
+      function onScopeSave(spec, isNew) {
+        withBusy(function () {
+          return rpcCall('scopeSaveProgram', { ...spec, is_new: isNew }).then(function () { scopeState.reload() })
+        })()
+      }
+      function onApprovalDecide(aid, decision, note) {
+        withBusy(function () {
+          return rpcCall('approvalDecide', { id: aid, decision: decision, note: note || '' }).then(function (res) {
+            if (typeof api.reloadShared === 'function') api.reloadShared()
+            if (res && res.status === 'approved') scopeState.reload()
+            return res
+          })
+        })()
+      }
+      function onScopeDelete(name) {
+        withBusy(function () {
+          return rpcCall('scopeDeleteProgram', { name: name }).then(function () { scopeState.reload() })
+        })()
+      }
+
+      var wsItems = (workspacesData && workspacesData.items) || []
+      var progOpts = wsItems.filter(function (w) { return w.program }).map(function (w) { return { v: w.program.id, l: w.title + '（' + w.program.id + '）' } })
+      var content = null
+      if (id === 'findings') {
+        content = el(React.Fragment, null,
+          el(Toolbar, {
+            query: findingsQ, placeholder: '搜索标题 / 主机 / URL…',
+            filters: [
+              { key: 'severity', label: '级别', options: Object.keys(SEV_LABEL).map(function (k) { return { v: k, l: SEV_LABEL[k] } }) },
+              { key: 'status', label: '状态', options: Object.keys(STATUS_LABEL).map(function (k) { return { v: k, l: STATUS_LABEL[k] } }) },
+              { key: 'noise', label: '验证', options: [{ v: '1', l: '仅待验证候选' }] },
+              { key: 'program_id', label: '工作区', options: progOpts },
+            ],
+            extra: el('button', { type: 'button', className: 'silksec-btn', disabled: isBusy, title: '按当前筛选（项目/状态）生成 markdown 报告', onClick: onBuildReport }, '生成报告'),
+          }),
+          el(FindingsInsight, { bySeverity: statsData.findings_by_severity, byStatus: statsData.findings_by_status, evalData: evalState.data, noiseCount: statsData.findings_noise, query: findingsQ }),
+          el(FindingsView, { query: findingsQ, onTag: onTag, onAccept: onAccept, busy: isBusy }))
+      } else if (id === 'assets') {
+        var typeOpts = ((statsData.assets_by_type) || []).map(function (r) { return { v: r.type, l: r.type + ' (' + r.n + ')' } })
+        content = el(React.Fragment, null,
+          el(Toolbar, {
+            query: assetsQ, placeholder: '搜索主机…',
+            filters: [
+              { key: 'level', label: '评级', options: [{ v: 'S', l: 'S' }, { v: 'A', l: 'A' }, { v: 'B', l: 'B' }, { v: 'C', l: 'C' }, { v: 'none', l: '未分级' }] },
+              { key: 'accept', label: '收录', options: [{ v: 'full', l: '全量收录' }, { v: 'intrusion-only', l: '仅入侵' }, { v: 'none', l: '不收录' }] },
+              { key: 'state', label: '状态', options: [{ v: 'new', l: '新发现' }, { v: 'changed', l: '有变更' }, { v: 'stable', l: '稳定' }, { v: 'dead', l: '已失活' }] },
+              { key: 'type', label: '类型', options: typeOpts },
+              { key: 'program_id', label: '工作区', options: progOpts },
+            ],
+          }),
+          el(AssetsView, { query: assetsQ, overview: assetsOvState.data, onPickHost: pickHost, onFindings: jumpFindings }))
+      } else if (id === 'endpoints') {
+        content = el(React.Fragment, null,
+          el(Toolbar, {
+            query: endpointsQ, placeholder: '搜索路径（全局，命中后按主机聚合）…',
+            filters: [
+              { key: 'program_id', label: '工作区', options: progOpts },
+            ],
+          }),
+          el(EndpointsView, { query: endpointsQ, onPickHost: pickHost }))
+      } else if (id === 'facts') {
+        var factCats = (((factStatsState.data || {}).by_category) || []).filter(function (r) { return r.category })
+          .map(function (r) { return { v: r.category, l: r.category + ' (' + r.n + ')' } })
+        content = el(React.Fragment, null,
+          el(Toolbar, {
+            query: factsQ, placeholder: '搜索事实 key / 摘要 / 正文…',
+            filters: [
+              { key: 'category', label: '分类', options: factCats.length ? factCats : ['note', 'target', 'asset', 'finding', 'recon', 'infra'].map(function (c) { return { v: c, l: c } }) },
+              { key: 'mem_class', label: '生命周期', options: [{ v: 'durable', l: '长期（30天复验）' }, { v: 'ephemeral', l: '时效（14天滚动）' }, { v: 'timeline', l: '时间线' }] },
+              { key: 'confidence', label: '置信', options: Object.keys(CONF_LABEL).map(function (k) { return { v: k, l: CONF_LABEL[k] } }) },
+              { key: 'has_edges', label: '关联', options: [{ v: '1', l: '仅有关联' }] },
+              { key: 'sort', label: '排序', options: [{ v: 'edge_count', l: '关联最多' }, { v: 'category', l: '按分类' }] },
+              { key: 'program_id', label: '工作区', options: progOpts },
+            ],
+          }),
+          el(FactsView, { query: factsQ, stats: factStatsState.data, board: boardState.data, onDeprecate: onDeprecate, onCorrect: onCorrect, onSearchKey: function (k) { factsQ.setQ(k) }, busy: isBusy }))
+      } else if (id === 'tasks') {
+        content = el(React.Fragment, null,
+          el(Toolbar, {
+            query: tasksQ, placeholder: '搜索任务目标…',
+            filters: [
+              { key: 'bucket', label: '视图', options: [{ v: 'active', l: '正在执行' }, { v: 'history', l: '历史' }] },
+              { key: 'status', label: '状态', options: Object.keys(TASK_STATUS_LABEL).map(function (k) { return { v: k, l: TASK_STATUS_LABEL[k] } }) },
+              { key: 'phase', label: '阶段', options: ['recon', 'vuln', 'biz-logic', 'code-audit', 'intranet', 'review'].map(function (c) { return { v: c, l: c } }) },
+              { key: 'program_id', label: '工作区', options: progOpts },
+            ],
+          }),
+          el(TasksView, {
+            query: tasksQ, workspaces: workspacesData, schedData: schedState.data, runsQuery: runsQ,
+            progOpts: progOpts, onRunNow: onRunNow, onCancel: onCancel, onPause: onPause, onResume: onResume,
+            onEditEvery: onEditEvery, onCreateScheduled: onCreateScheduled, busy: isBusy,
+            onJumpHistory: jumpToHistory, jump: jump,
+          }))
+      } else if (id === 'knowledge') {
+        content = el(KnowledgeView, { memState: { data: memData }, cardsState: cardsState, pbsState: pbsState, rulesState: rulesState, kbState: kbState, factOvState: factOvState, covState: covState, busy: isBusy })
+      } else if (id === 'learning') {
+        content = el(LearningView, { state: learningState, busy: isBusy })
+      } else if (id === 'reports') {
+        content = el(ReportsView, { state: reportsState, onReload: function (f) { setReportFilter({ program: f.program || '', q: f.q || '' }) } })
+      } else if (id === 'approvals') {
+        content = el(ApprovalsView, { state: { data: approvalsData, loading: false, error: null, reload: api.reloadShared || function () {} }, busy: isBusy, onDecide: onApprovalDecide })
+      } else if (id === 'scope') {
+        var approvalPending = (approvalsData && approvalsData.pending) || 0
+        content = el(React.Fragment, null,
+          approvalPending
+            ? el('button', {
+                type: 'button', className: 'silksec-btn',
+                style: { ...cardL, marginTop: 10, width: '100%', cursor: 'pointer', color: T.warn, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent)' },
+                title: 'agent 提请的候选授权资产待人工审批',
+                onClick: function () { nav.select('approvals') },
+              }, '🔔 ' + approvalPending + ' 条待审批授权候选 → 前往审批中心')
+            : null,
+          el(ScopeView, {
+            scopeData: scopeState.data, workspaces: workspacesData,
+            onSave: onScopeSave, onDelete: onScopeDelete, busy: isBusy,
+          }))
+      } else if (id === 'audit') {
+        content = el(AuditView, { state: auditState })
+      }
+
+      return el(React.Fragment, null,
+        (opsData && opsData.healthy === false)
+          ? el('div', { style: { ...errorLine, color: T.warn } }, '⚠ 纪律健康度告警（' + (opsData.alerts || []).length + '）：' + (opsData.alerts || []).slice(0, 3).join('；') + '（详见 ops 端点）')
+          : null,
+        (memData && memData.loaded === false)
+          ? el('div', { style: { ...errorLine, color: T.warn } }, '⚠ memcore 记忆治理插件未加载：写入不校验、读取全量可见（fail-open）。检查 profile 是否含 @silksec/sec-memcore。')
+          : null,
+        content,
+        el(ReportModal, { open: reportState.open, state: reportState, onClose: function () { setReportState({ open: false }) } }))
+    }
+
+    // 每个视图 = 一个自足 wrapper（复用同一 PanelView，按 id 分派；文件不拆、行为不变）
+    var PANEL_COMPONENTS = {}
+    function panelComponent(id) {
+      if (!PANEL_COMPONENTS[id]) {
+        PANEL_COMPONENTS[id] = function SilksecPanelView(props) { return el(PanelView, { id: id, api: props }) }
+      }
+      return PANEL_COMPONENTS[id]
+    }
+
+    // ── 19-ui-surface P0/P1：11 视图登记进 ui-core 视图注册表 ────────────────────
+    // P1：登记条目由「裸视图组件」升级为「自足 wrapper」（内部自持 query/handler），
+    // ui-panel 主面板按 order 通用渲染。旧壳 DashboardShell 的 tab/content 路径不变。
+    // id 沿用旧 tab id；domain 为 16-dashboard §1.7 域映射（P6 逐域拆分时改域 id）。
     function registerUiCoreViews() {
       if (!uiCore || !uiCore.viewRegistry || typeof uiCore.viewRegistry.register !== 'function') return
       var core = uiCore.viewRegistry
       var defs = [
-        { id: 'findings', label: '漏洞', order: 20, domain: 'vuln', component: FindingsView },
-        { id: 'assets', label: '资产', order: 30, domain: 'asset', component: AssetsView },
-        { id: 'endpoints', label: '接口', order: 40, domain: 'endpoint', component: EndpointsView },
-        { id: 'facts', label: '事实', order: 50, domain: 'fact', component: FactsView },
-        { id: 'tasks', label: '任务', order: 60, domain: 'task', component: TasksView },
-        { id: 'knowledge', label: '知识', order: 70, domain: 'know', component: KnowledgeView },
-        { id: 'learning', label: '学习', order: 75, domain: 'know', component: LearningView },
-        { id: 'reports', label: '报告', order: 80, domain: 'report', component: ReportsView },
-        { id: 'approvals', label: '审批', order: 90, domain: 'approval', component: ApprovalsView },
-        { id: 'scope', label: '授权', order: 100, domain: 'scope', component: ScopeView },
-        { id: 'audit', label: '审计', order: 110, domain: 'bus', component: AuditView },
+        { id: 'findings', label: '漏洞', order: 20, domain: 'vuln' },
+        { id: 'assets', label: '资产', order: 30, domain: 'asset' },
+        { id: 'endpoints', label: '接口', order: 40, domain: 'endpoint' },
+        { id: 'facts', label: '事实', order: 50, domain: 'fact' },
+        { id: 'tasks', label: '任务', order: 60, domain: 'task' },
+        { id: 'knowledge', label: '知识', order: 70, domain: 'know' },
+        { id: 'learning', label: '学习', order: 75, domain: 'know' },
+        { id: 'reports', label: '报告', order: 80, domain: 'report' },
+        { id: 'approvals', label: '审批', order: 90, domain: 'approval' },
+        { id: 'scope', label: '授权', order: 100, domain: 'scope' },
+        { id: 'audit', label: '审计', order: 110, domain: 'bus' },
       ]
       defs.forEach(function (d) {
-        core.register({ id: d.id, label: d.label, order: d.order, domain: d.domain, component: d.component, source: 'sec-dashboard-legacy' })
+        core.register({ id: d.id, label: d.label, order: d.order, domain: d.domain, component: panelComponent(d.id), source: 'sec-dashboard-legacy' })
       })
       // 冒烟门禁打卡：无头渲染读注册表条数，证跨 bundle require + 登记均成功
       if (typeof uiCore.markSurfaceHealth === 'function') uiCore.markSurfaceHealth('sec-dashboard-views', 'ok', String(defs.length))
@@ -2838,6 +3195,11 @@ window.__ModuleLoader__.load({
 
       var slots = ctx.get('slots')
       if (!slots || typeof slots.inject !== 'function' || typeof slots.register !== 'function') return
+      slotsSvc = slots
+      dashboardCtx = ctx
+      // 19-ui-surface P1：主面板服务（可选；缺席 = footer 回落 Modal，能力探测非版本判断）
+      var layout = ctx.get('layout')
+      if (layout && typeof layout.selectPanel === 'function') layoutSvc = layout
 
       var connection = ctx.get('connection')
       if (connection && connection.rpc && typeof connection.rpc.call === 'function') {

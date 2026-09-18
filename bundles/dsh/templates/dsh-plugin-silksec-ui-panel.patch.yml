@@ -1,0 +1,4 @@
+# silksec-ui-panel bundle layer：把看板主面板宿主半面挂进安装它的 profile
+- insert:
+    - id: silksec-ui-panel
+      name: '@silksec/ui-panel'

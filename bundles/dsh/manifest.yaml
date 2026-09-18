@@ -237,6 +237,12 @@ templates:
   - dsh-plugin-silksec-ui-core.patch.yml
   - dsh-plugin-silksec-ui-core.client.test.mjs
   - silksec-ui-core-plugin-setup.sh
+  # --- 安全看板主面板（19-ui-surface P1：main + sidebar.panellist + selectPanel；消费 ui-core 注册表）---
+  - dsh-plugin-silksec-ui-panel.index.js
+  - dsh-plugin-silksec-ui-panel.client.js
+  - dsh-plugin-silksec-ui-panel.patch.yml
+  - dsh-plugin-silksec-ui-panel.client.test.mjs
+  - silksec-ui-panel-plugin-setup.sh
   # --- 安全看板客户端插件（DSH Web UI slot，依赖 sec-suite 的 /silksec/dashboard RPC + ui-core）---
   - dsh-plugin-sec-dashboard.index.js
   - dsh-plugin-sec-dashboard.client.js

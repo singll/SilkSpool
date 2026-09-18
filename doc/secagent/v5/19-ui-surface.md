@@ -109,7 +109,8 @@
 // 注册（时序纪律：inject 驱动 + effect 包裹，§一.2-4）
 ctx.inject(['layout', 'slots'], function () {
   ctx.effect(() => {
-    var d1 = slots.register({ name: 'main', id: 'silksec-dashboard', order: 30 }, DashboardPanel)
+    // 注意（P1 实测）：keyed 槽用 options.key，list 槽才用 options.id
+    var d1 = slots.register({ name: 'main', key: 'silksec-dashboard', order: 30 }, DashboardPanel)
     var d2 = slots.register({ name: 'sidebar.panellist', id: 'silksec-dashboard', order: 30, label: '看板' }, PanelIcon)
     return function () { d1(); d2() }
   })

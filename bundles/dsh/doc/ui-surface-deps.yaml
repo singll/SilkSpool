@@ -54,8 +54,12 @@ packages:
     host_entry: no-op
     client_entry: true
   - id: "@silksec/ui-panel"
+    file_prefix: dsh-plugin-silksec-ui-panel
     phase: P1
-    status: planned
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar", "@silksec/ui-core"]
   - id: "@silksec/ui-approval"
     phase: P2
     status: planned
@@ -94,26 +98,47 @@ surfaces:
   - id: dashboard-panel
     package: "@silksec/ui-panel"
     phase: P1
-    status: planned
-    role: 看板本体（主面板 + 侧边栏一级导航行 + footer 降级入口）
+    status: implemented
+    role: 看板本体（主面板 + 侧边栏一级导航行；footer/Modal 降级入口由 sec-dashboard legacy 承接）
+    implementation:
+      client: dsh-plugin-silksec-ui-panel.client.js
+      host: dsh-plugin-silksec-ui-panel.index.js
+      setup: silksec-ui-panel-plugin-setup.sh
+      registry_components: dsh-plugin-sec-dashboard.client.js（自足 wrapper，P1 重构）
     slots:
-      - main                          # keyed 槽（root；保留键 conversation）
-      - sidebar.panellist             # list 槽（owner props {size, active}）
-      - sidebar.footer.action         # list 槽（panellist 缺席时的降级入口）
+      - main                          # keyed 槽（root；保留键 conversation）→ DashboardPanel。**用 options.key**（P1 实测：keyed 只认 key，list 才认 id）
+      - sidebar.panellist             # list 槽（owner props {size, active}）→ PanelIcon（用 options.id）
+      - sidebar.footer.action         # list 槽；P1 由 sec-dashboard legacy SidebarAction 单条承接（避免重复），
+                                      # 行为改为 panelSlotAvailable() ? selectPanel : 开 Modal
     services_consume:
       - layout.selectPanel            # ctx.layout.selectPanel(id) / selectPanel(null)
       - layout.beginNavigation        # ctx.layout.beginNavigation() → AbortSignal（防连点竞态）
       - slots.register
-    primitives:
-      - Modal                         # 降级 2：现状 Modal 形态
+      - slots.inject                  # 声明生命周期注册（时序纪律；panellist 缺席静默降级）
+      - slots.entriesOfSlot           # legacy footer 能力探测 main 槽是否已注册（非版本判断）
+    owner_props_consume:
+      - SidebarPanelIconOwnerProps    # sidebar.panellist {size, active}
+    primitives: []                    # 页头/KPI/tab 走 ui-core styles/T；主面板不再依赖 primitives Modal
     icons: []
     my_icons: [spoolIcon]
     slots_avoid:
       - conversation.chat.turnTail    # chain 槽首匹配即占用，纪律：不碰
     degradation:
       - main + sidebar.panellist + selectPanel
-      - sidebar.panellist 缺席 → sidebar.footer.action + selectPanel
-      - layout 缺席 → 现状 Modal（观察期保留）
+      - sidebar.panellist 缺席 → sidebar.footer.action + selectPanel（legacy 入口承接）
+      - layout / main 槽缺席 → 现状 Modal（legacy SidebarAction 承接，观察期保留）
+    rollback:
+      - localStorage 'silksec.ui.dashboard.mode' = 'modal' 强制 Modal（保留旧 sec-dashboard 入口）
+      - 或从 web profile 移除 @silksec/ui-panel（legacy footer 探测不到 main 槽即回落 Modal）
+    notes:
+      - "P1 面板为通用渲染器：消费 ui-core viewRegistry（list() 按 order），传统一 prop bag
+         { rpc, workspaces, stats, approvals, memcore, ops, navigate, pending, reloadShared }。
+         11 视图在 sec-dashboard legacy 侧登记为自足 wrapper（内部自持 query/handler，
+         复用旧 props 契约；视图文件不拆、行为不变）。旧 DashboardShell/Modal 路径零改动。"
+      - "开放问题 §九 #1：P1 未做 URL hash 直达。selectPanel 为 DSH 原生内存态（刷新回会话，
+         官方默认）；自管 hash 属自绘层，未采用。"
+      - "开放问题 §九 #4：零会话时主面板（root scope）照常可达；右侧栏 tab 属 P2 范畴。"
+    verified_dsh: "0.1.5-rc.2 (2026-09-18；ctx.layout service.d.ts + sidebar contract/slots.d.ts + main/panellist SlotMap 逐字核对)"
 
   - id: approval
     package: "@silksec/ui-approval"

@@ -353,12 +353,17 @@ if [ -f "$BASE_DIR/settings-mirror-patch.sh" ]; then
     bash "$BASE_DIR/settings-mirror-patch.sh"
 fi
 
-# -------------------- 8.6.3 看板 UI 内核（ui-core，19-ui-surface P0；须先于 sec-dashboard） --------------------
+# -------------------- 8.6.3 看板 UI 内核（ui-core，19-ui-surface P0；须先于 ui-panel/sec-dashboard） --------------------
 if [ -f "$BASE_DIR/silksec-ui-core-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-core-plugin-setup.sh"
 fi
 
-# -------------------- 8.7 安全看板客户端插件（DSH Web UI slot，inject ui-core） --------------------
+# -------------------- 8.6.4 看板主面板（ui-panel，19-ui-surface P1；消费 ui-core 注册表，须先于 sec-dashboard） --------------------
+if [ -f "$BASE_DIR/silksec-ui-panel-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/silksec-ui-panel-plugin-setup.sh"
+fi
+
+# -------------------- 8.7 安全看板客户端插件（DSH Web UI slot，inject ui-core；保留 Modal 降级入口） --------------------
 if [ -f "$BASE_DIR/sec-dashboard-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-dashboard-plugin-setup.sh"
 fi
