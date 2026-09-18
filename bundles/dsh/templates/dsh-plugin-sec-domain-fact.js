@@ -245,7 +245,7 @@ export const FACT_MANIFEST = {
         mem_class: str({ default: '' }),
         status: str({ default: '' }),
         exclude_notes: bool(),
-        sort: en(['updated_at', 'edge_count', 'category'], { default: 'updated_at' }),
+        sort: en(['updated_at', 'edge_count', 'category', ''], { default: 'updated_at' }),
         reader: en(['task', 'review'], { default: 'task' }),
         limit: int({ minimum: 1, maximum: 500 }),
         offset: int({ minimum: 0 }),
