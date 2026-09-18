@@ -3160,31 +3160,41 @@ window.__ModuleLoader__.load({
       return PANEL_COMPONENTS[id]
     }
 
-    // ── 19-ui-surface P0/P1：11 视图登记进 ui-core 视图注册表 ────────────────────
-    // P1：登记条目由「裸视图组件」升级为「自足 wrapper」（内部自持 query/handler），
-    // ui-panel 主面板按 order 通用渲染。旧壳 DashboardShell 的 tab/content 路径不变。
-    // id 沿用旧 tab id；domain 为 16-dashboard §1.7 域映射（P6 逐域拆分时改域 id）。
+    // ── 19-ui-surface P0/P1/P6：视图登记进 ui-core 视图注册表 ────────────────────
+    // P1：登记条目为「自足 wrapper」（内部自持 query/handler），ui-panel 按 order 通用渲染。
+    // P6：七个浏览型域（vuln/asset/endpoint/fact/know(+学习)/report/audit）拆为独立
+    //   dashboard-view 包并注册**canonical id**；旧单体对应视图在本文件以 `-old` 后缀
+    //   **并排保留观察 7 天**（16-dashboard §3.3 D2；order 紧邻新视图，便于逐 tab 对照）。
+    //   P6 未拆的三视图（任务/审批/授权）仍由本文件注册 canonical id。
+    // 旧壳 DashboardShell 的 tab/content 路径零改动（Modal 降级形态）。
     function registerUiCoreViews() {
       if (!uiCore || !uiCore.viewRegistry || typeof uiCore.viewRegistry.register !== 'function') return
       var core = uiCore.viewRegistry
+      // P6 未拆分：本文件继续持有 canonical id（等 P7 收尾后再议）
       var defs = [
-        { id: 'findings', label: '漏洞', order: 20, domain: 'vuln' },
-        { id: 'assets', label: '资产', order: 30, domain: 'asset' },
-        { id: 'endpoints', label: '接口', order: 40, domain: 'endpoint' },
-        { id: 'facts', label: '事实', order: 50, domain: 'fact' },
         { id: 'tasks', label: '任务', order: 60, domain: 'task' },
-        { id: 'knowledge', label: '知识', order: 70, domain: 'know' },
-        { id: 'learning', label: '学习', order: 75, domain: 'know' },
-        { id: 'reports', label: '报告', order: 80, domain: 'report' },
         { id: 'approvals', label: '审批', order: 90, domain: 'approval' },
         { id: 'scope', label: '授权', order: 100, domain: 'scope' },
-        { id: 'audit', label: '审计', order: 110, domain: 'bus' },
       ]
       defs.forEach(function (d) {
         core.register({ id: d.id, label: d.label, order: d.order, domain: d.domain, component: panelComponent(d.id), source: 'sec-dashboard-legacy' })
       })
+      // P6 已拆分的旧单体视图：`-old` 后缀并排观察（order 紧邻新视图；component 仍按 base id 分派）
+      var splitOld = [
+        { base: 'findings', label: '漏洞', order: 20, domain: 'vuln' },
+        { base: 'assets', label: '资产', order: 30, domain: 'asset' },
+        { base: 'endpoints', label: '接口', order: 40, domain: 'endpoint' },
+        { base: 'facts', label: '事实', order: 50, domain: 'fact' },
+        { base: 'knowledge', label: '知识', order: 70, domain: 'know' },
+        { base: 'learning', label: '学习', order: 75, domain: 'know' },
+        { base: 'reports', label: '报告', order: 80, domain: 'report' },
+        { base: 'audit', label: '审计', order: 110, domain: 'bus' },
+      ]
+      splitOld.forEach(function (d) {
+        core.register({ id: d.base + '-old', label: d.label + ' ·旧', order: d.order + 1, domain: d.domain, component: panelComponent(d.base), source: 'sec-dashboard-legacy' })
+      })
       // 冒烟门禁打卡：无头渲染读注册表条数，证跨 bundle require + 登记均成功
-      if (typeof uiCore.markSurfaceHealth === 'function') uiCore.markSurfaceHealth('sec-dashboard-views', 'ok', String(defs.length))
+      if (typeof uiCore.markSurfaceHealth === 'function') uiCore.markSurfaceHealth('sec-dashboard-views', 'ok', String(defs.length + splitOld.length))
     }
 
     exports.name = '@silksec/sec-dashboard'

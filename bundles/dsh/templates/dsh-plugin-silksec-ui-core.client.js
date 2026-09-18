@@ -182,6 +182,78 @@ window.__ModuleLoader__.load({
       return el('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }, inner)
     }
 
+    // ── 共享展示件（P6 域视图跨 bundle 复用；全部经 T/F 令牌，零颜色字面量） ────
+    // 会话跳链：opener 由持有 sessions 服务的包经 setSessionOpener 注入；缺席渲染「—」。
+    var sessionOpener = null
+    function setSessionOpener(fn) { sessionOpener = (typeof fn === 'function') ? fn : null }
+    function openSession(id) {
+      if (!sessionOpener || !id) return
+      try { sessionOpener(id) } catch (e) { try { console.error('[silksec/ui-core] openSession 失败:', e) } catch (e2) {} }
+    }
+    function SessionLink(props) {
+      if (!props || !props.id) return el('span', { style: { color: T.label3, ...F.xxxs } }, '—')
+      return el('button', {
+        type: 'button', className: 'silksec-icon-btn',
+        title: '打开来源会话（' + String(props.id).slice(0, 18) + '…）', 'aria-label': '打开来源会话',
+        onClick: function () { openSession(props.id) },
+      }, opIcon('jump'))
+    }
+    function sevPill(sev) {
+      var c = SEV_COLOR[sev] || SEV_COLOR.info
+      return el('span', { style: { ...pill, color: c, borderColor: 'color-mix(in srgb, ' + c + ' 40%, transparent)' } }, SEV_LABEL[sev] || sev || 'info')
+    }
+    function statusPill(status) { return el('span', { style: pill }, STATUS_LABEL[status] || status || 'new') }
+    function confPill(conf) {
+      var c = conf === 'deprecated' ? T.label3 : conf === 'confirmed' ? T.success : T.warn
+      return el('span', { style: { ...pill, color: c } }, CONF_LABEL[conf] || conf || 'tentative')
+    }
+    function taskPill(status) {
+      var extra = status === 'blocked' ? { color: T.warn } : status === 'failed' ? { color: T.error } : null
+      return el('span', { style: { ...pill, ...(extra || {}) } }, TASK_STATUS_LABEL[status] || status || 'queued')
+    }
+    function programCell(pid) {
+      if (!pid || pid === '_legacy') {
+        return el('span', { style: { color: T.label3, ...F.xxs }, title: '未关联到授权项目（合法未归属或历史数据）' }, '未关联')
+      }
+      return el('span', { style: F.xs }, pid)
+    }
+    // 可点即筛的洞察 chip（选中态升一档背景；再点清除）——资产/事实等视图共用
+    function insightChip(key, value, label, count, color, query, title) {
+      var on = query.filters[key] === value
+      return el('button', {
+        key: key + '|' + value, type: 'button', className: 'silksec-btn',
+        style: { ...pill, cursor: 'pointer', height: 22, color: color || T.label2, background: on ? T.layer2 : 'transparent' },
+        title: (title || label) + '：' + count + '（点击' + (on ? '清除' : '筛选') + '）',
+        onClick: function () { query.setFilter(key, on ? '' : value) },
+      }, label + ' ' + count)
+    }
+    function sortableTh(label, col, query) {
+      if (!col) return el('th', { style: th }, label)
+      var active = query.sort === col
+      var caret = active ? (query.dir === 'asc' ? ' ↑' : ' ↓') : ''
+      return el('th', {
+        style: { ...th, cursor: 'pointer', color: active ? T.label : T.label2, userSelect: 'none' },
+        title: '点击排序', onClick: function () { query.toggleSort(col) },
+      }, label + caret)
+    }
+    // 搜索词高亮：命中片段丝线金加粗（零依赖 split，React 元素树直构）
+    function hlText(text, term, keyBase) {
+      var s = String(text == null ? '' : text)
+      var t = String(term || '').toLowerCase()
+      if (!t) return s
+      var lower = s.toLowerCase()
+      var out = []
+      var i = 0; var k = 0
+      while (i <= s.length) {
+        var idx = lower.indexOf(t, i)
+        if (idx < 0) { out.push(el('span', { key: keyBase + '-e' + (k++) }, s.slice(i))); break }
+        if (idx > i) out.push(el('span', { key: keyBase + '-t' + (k++) }, s.slice(i, idx)))
+        out.push(el('span', { key: keyBase + '-m' + (k++), style: { color: T.warn, fontWeight: 600 } }, s.slice(idx, idx + t.length)))
+        i = idx + t.length
+      }
+      return out
+    }
+
     // ── 微事件总线 secUiBus（跨面信号；发布/订阅互不知晓，缺席即无操作） ────────
     function createSecUiBus() {
       var handlers = Object.create(null)
@@ -430,12 +502,27 @@ window.__ModuleLoader__.load({
 
     // ── 视图注册表（secDashboardViews 等价物） ───────────────────────────────
     // 16-dashboard §1.1 协议 + 19-ui-surface §5.1 拆分（ui-core 持注册表）。
-    // 注册/卸载幂等；动态订阅供晚注册视图触发重渲染；requires 域缺席降级在消费侧判定。
+    // 注册/卸载幂等；动态订阅供晚注册视图触发重渲染。
+    // requires 能力降级（§六.3）：条目的 required 服务经 probe 判定，缺席者不进
+    // list()/get()（tab 静默隐藏，不抛、不占 order）；probe 由 ui-core apply 绑定 ctx.get。
+    var serviceProbe = function () { return true }
+    function setServiceProbe(fn) { serviceProbe = (typeof fn === 'function') ? fn : function () { return true } }
+    function entryAvailable(entry) {
+      var req = entry && entry.requires
+      if (!req || !req.length) return true
+      for (var i = 0; i < req.length; i++) {
+        var ok = false
+        try { ok = !!serviceProbe(req[i]) } catch (e) { ok = false }
+        if (!ok) return false
+      }
+      return true
+    }
     function createViewRegistry() {
       var entries = Object.create(null)
       var listeners = []
       function snapshot() {
         return Object.keys(entries).map(function (k) { return entries[k] })
+          .filter(entryAvailable)
           .sort(function (a, b) { return (a.order || 0) - (b.order || 0) })
       }
       function notify() {
@@ -469,15 +556,16 @@ window.__ModuleLoader__.load({
         notify()
         return true
       }
-      function get(id) { return entries[id] || null }
-      function has(id) { return !!entries[id] }
+      function get(id) { var e = entries[id]; return (e && entryAvailable(e)) ? e : null }
+      function has(id) { return !!get(id) }
       function subscribe(fn) {
         listeners.push(fn)
         return function () { listeners = listeners.filter(function (f) { return f !== fn }) }
       }
       return {
         register: register, unregister: unregister, list: snapshot, get: get, has: has,
-        subscribe: subscribe, size: function () { return Object.keys(entries).length },
+        subscribe: subscribe, refresh: notify,
+        size: function () { return snapshot().length },
       }
     }
     var viewRegistry = createViewRegistry()
@@ -605,6 +693,11 @@ window.__ModuleLoader__.load({
       // provide 失败（旧宿主/服务名冲突）不抛出：require 侧仍可经 module.exports 取到同一实例。
       try { ctx.provide('secDashboardViews', viewRegistry) } catch (e) {}
       try { ctx.provide('secUiBus', secUiBus) } catch (e) {}
+      // requires 能力探测绑定 cordis ctx（能力探测而非版本判断；§六.3）：
+      // 域视图 requires:['connection'] 等服务缺席 → list() 过滤该 tab（静默隐藏）。
+      setServiceProbe(function (name) {
+        try { return !!ctx.get(name) } catch (e) { return false }
+      })
       // 冒烟门禁打卡（19-ui-surface §6.4③）：无头渲染读 window.__silksecSurfaceHealth
       markSurfaceHealth('ui-core', 'ok')
     }
@@ -622,6 +715,15 @@ window.__ModuleLoader__.load({
     exports.EmptyState = EmptyState; exports.SkeletonRows = SkeletonRows
     exports.Toolbar = Toolbar; exports.Pager = Pager; exports.ViewBody = ViewBody
     exports.DocModal = DocModal
+    // P6 共享展示件（域视图跨 bundle 复用）
+    exports.SessionLink = SessionLink
+    exports.setSessionOpener = setSessionOpener
+    exports.openSession = openSession
+    exports.sevPill = sevPill; exports.statusPill = statusPill
+    exports.confPill = confPill; exports.taskPill = taskPill
+    exports.programCell = programCell; exports.insightChip = insightChip
+    exports.sortableTh = sortableTh; exports.hlText = hlText
+    exports.setServiceProbe = setServiceProbe
     exports.SilksecErrorBoundary = SilksecErrorBoundary
     exports.createErrorBoundary = createErrorBoundary
     exports.reportSurfaceError = reportSurfaceError

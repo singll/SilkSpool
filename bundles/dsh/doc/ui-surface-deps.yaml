@@ -88,6 +88,56 @@ packages:
     host_entry: no-op
     client_entry: true
     inject: ["@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-chat", "@silksec/ui-core"]
+  # P6 逐域视图包：每域一个独立 client bundle（构建隔离），经 ui-core viewRegistry 注册
+  - id: "@silksec/sec-dashboard-view-vuln"
+    file_prefix: dsh-plugin-sec-dashboard.view-vuln
+    phase: P6
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@silksec/ui-core"]
+  - id: "@silksec/sec-dashboard-view-asset"
+    file_prefix: dsh-plugin-sec-dashboard.view-asset
+    phase: P6
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@silksec/ui-core"]
+  - id: "@silksec/sec-dashboard-view-endpoint"
+    file_prefix: dsh-plugin-sec-dashboard.view-endpoint
+    phase: P6
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@silksec/ui-core"]
+  - id: "@silksec/sec-dashboard-view-fact"
+    file_prefix: dsh-plugin-sec-dashboard.view-fact
+    phase: P6
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@silksec/ui-core"]
+  - id: "@silksec/sec-dashboard-view-know"
+    file_prefix: dsh-plugin-sec-dashboard.view-know
+    phase: P6
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@silksec/ui-core"]
+  - id: "@silksec/sec-dashboard-view-report"
+    file_prefix: dsh-plugin-sec-dashboard.view-report
+    phase: P6
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@silksec/ui-core"]
+  - id: "@silksec/sec-dashboard-view-audit"
+    file_prefix: dsh-plugin-sec-dashboard.view-audit
+    phase: P6
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@silksec/ui-core"]
 
 # ── 逐面挂点声明 ────────────────────────────────────────────────────────────
 # 字段：slots=注册的槽（name 形态）；slots_inject=ctx 级注入的槽；services_provide
@@ -385,23 +435,67 @@ surfaces:
     verified_dsh: "0.1.5-rc.2 (2026-09-18；@deepseek-ai/dsh-client-ui-conversation lib/types/client/contract/{slots,views}.d.ts 的 conversation.view kind=list scope=session owner=ConvViewOwnerProps + ViewTab{id,label} + ConversationSessionHeaderInjected.selectView 逐字核对；@deepseek-ai/dsh-client-ui-chat lib/types/client/contract/slots.d.ts 的 conversation.chat.assistant-actions kind=list scope=session owner=AssistantActionOwnerProps{messageId} 逐字核对；ui-trajectory/ui-message-feedback lib/client.js 官方 register({name,id,order,label,inject}) 先例核对；primitives 导出表实测含 Modal/RiskConfirmation/Tooltip/IconChecklistOutline)"
 
   - id: dashboard-domain-views
-    package: 各域 dashboard-view.js（16-dashboard 既定架构）
+    package: 各域 dashboard-view.client.js（16-dashboard 既定架构；P6 落地为独立包 @silksec/sec-dashboard-view-<domain>）
     phase: P6
-    status: planned
-    role: 漏洞/资产/接口/事实/知识/报告/审计 逐域视图（挂 ui-panel 主面板）
-    slots: []                                       # 不直接注册官方槽，由 ui-panel 装配
+    status: implemented
+    role: 漏洞/资产/接口/事实/知识/学习/报告/审计 逐域视图（挂 ui-panel 主面板）
+    implementation:
+      client:
+        - dsh-plugin-sec-dashboard.view-vuln.client.js       # findings order 20
+        - dsh-plugin-sec-dashboard.view-asset.client.js      # assets order 30
+        - dsh-plugin-sec-dashboard.view-endpoint.client.js   # endpoints order 40
+        - dsh-plugin-sec-dashboard.view-fact.client.js       # facts order 50
+        - dsh-plugin-sec-dashboard.view-know.client.js       # knowledge order 70 + learning order 75
+        - dsh-plugin-sec-dashboard.view-report.client.js     # reports order 80
+        - dsh-plugin-sec-dashboard.view-audit.client.js      # audit order 110
+      tests: 7 个 *.view-*.client.test.mjs（注册/卸载幂等 + connection 缺席静默 + 关键行/端点参数 + ErrorBoundary 包裹 + primitives 兜底；共 44 例）
+      setup: sec-dashboard-plugin-setup.sh §4（逐域组装 @silksec/sec-dashboard-view-<domain> 独立包 + 装入 web profile）
+      legacy_side_by_side: sec-dashboard.client.js 对应视图以 `-old` 后缀并排观察 7 天（order=canonical+1，label 加「 ·旧」）
+    slots: []                                       # 不直接注册官方槽，由 ui-panel 主面板装配
     services_consume:
-      - secDashboardViews                            # ui-core 注册表
-    primitives:
-      - Pill
-      - Tag
-      - StateDot
-      - DisclosureRow
-      - MarkdownText
-      - JsonTree
+      - secDashboardViews                            # ui-core 注册表（require('@silksec/ui-core').viewRegistry）
+      - connection.rpc.call                          # /silksec-dashboard 既有端点（与旧 PanelView 同端点同参数）
+      - sessions.open                                # 经 ui-core.setSessionOpener 注入 → SessionLink
+      - viewRegistry.requires                         # requires:['connection'] 缺席 → list() 过滤，tab 静默隐藏
+    endpoints:
+      vuln: [findings, findingGet, findingUpdate, evalStats, reportBuild]
+      asset: [assets, assetOverview, assetDetail, assetFamily]
+      endpoint: [endpointHosts, endpoints]
+      fact: [facts, factStats, blackboard, factGraph, factCorrect, factDeprecate]
+      know: [expCards, playbooks, rulesList, kbList, factOverview, knowledgeCoverage, memcore, kbRead, rulesRead,
+             expFeedback, expPromote, expDeprecate, expUpdate, expExportable]
+      learning: [learningOverview, learningTrace, learningRevokeRelease]
+      report: [reports, reportRead]
+      audit: [audit]
+    owner_props_consume:
+      - "ui-panel 统一 prop bag { rpc, workspaces, stats, approvals, memcore, ops, navigate, pending, reloadShared }"
+    primitives: []                                  # 视图经 ui-core 共享件消费宿主令牌；未直接用 primitives
+    primitives_deferred:
+      - Pill                                          # 状态/筛选胶囊走 ui-core styles.pill（与旧单体一致），未消费 primitives Pill
+      - Tag                                           # 事实/severity 徽章走 ui-core sevPill/confPill，未消费 primitives Tag
+      - StateDot                                      # 状态点走 ui-core 语义 pill（与旧单体一致）
+      - DisclosureRow                                 # 折叠区沿用旧自绘 ▸/▾ 头（行为等价）
+      - MarkdownText                                  # 报告/文献阅读器沿用 ui-core mdBlocks（旧单体同源）
+      - JsonTree                                      # audit detail 沿用旧 JSON 字符串 + 点击展开（行为等价）
+    my_icons: [opIcon, spoolIcon]
     icons: []
+    slots_avoid:
+      - conversation.chat.turnTail                    # chain 槽首匹配即占用，纪律：不碰
     degradation:
-      - requires 声明的域服务缺席 → 该 tab 静默隐藏
+      - requires 声明的 connection 服务缺席 → 该 tab 静默隐藏（不注册、不抛、不占 order）
+      - 单域 bundle 加载/apply 崩溃 → 该包 fiber 销毁，其余域 bundle 照常（构建隔离）
+      - 单域视图渲染崩溃 → 该域 DomainRoot 的 SilksecErrorBoundary 兜底（ui-panel 再包一层），其余 tab 不受影响
+      - ui-core / ui-panel 缺席 → 旧单体 Modal 路径照常（P6 不删旧路径）
+    rollback:
+      - revert 单域 dashboard-view 文件 + 从 web profile 移除该 @silksec/sec-dashboard-view-<domain>（旧单体 `-old`/Modal 行为不变）
+      - 视图注册表取消注册即主面板回到旧实现
+    notes:
+      - "P6 不改数据层（RpcProjector/域动词/audit）：全部消费既有 /silksec-dashboard 端点，端点名/参数与旧单体逐项一致。"
+      - "隔离五道墙：每域独立包（构建隔离）+ 每域 DomainRoot 包 SilksecErrorBoundary（渲染隔离，surface=dashboard-view-<domain>，经 bus.audit_tail 口径上报）+ requires 过滤（注册隔离）+ 视图自持 query/handler（状态/数据隔离）。"
+      - "候选/信号 visibility 口径：vuln 视图沿用旧 findings 分支（noise/status/severity 筛选与列渲染不变）；fact 视图沿用 exclude_notes 服务端默认 + mem_class 生命周期 facet；report 保留 Modal 阅读器（ui-core.DocModal）；audit 经 bus audit 端点（actor/decision 列逐字保留）。"
+      - "零颜色字面量（走 --dsw-alias-* / --silksec-sev-* / ui-core 令牌）；P6 不碰 conversation.chat.turnTail chain 槽。"
+      - "旧单体对应视图保留 7 天并排观察（`-old` 后缀、order=canonical+1）；P7 收尾删旧单体与 Modal 主形态。"
+    verified_dsh: "0.1.5-rc.2 (2026-09-18；ui-core viewRegistry.requires 能力探测 + 跨 bundle require @silksec/ui-core；主面板 main/panellist 承载见 dashboard-panel 面；本地 node --test 44 例 + 真机无头逐 tab 渲染)"
 
 # ── 明确不消费的官方面（避免误列 + 升级 diff 白名单） ───────────────────────
 not_used:

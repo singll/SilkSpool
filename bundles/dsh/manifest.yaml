@@ -272,6 +272,23 @@ templates:
   - dsh-plugin-sec-dashboard.client.js
   - dsh-plugin-sec-dashboard.patch.yml
   - sec-dashboard-plugin-setup.sh
+  # --- 看板逐域视图（19-ui-surface P6：vuln/asset/endpoint/fact/know(+学习)/report/audit
+  #     从旧单体拆为独立 client bundle，经 ui-core viewRegistry 挂 ui-panel 主面板；
+  #     setup 脚本逐域组装为 @silksec/sec-dashboard-view-<domain> 独立包）---
+  - dsh-plugin-sec-dashboard.view-vuln.client.js
+  - dsh-plugin-sec-dashboard.view-vuln.client.test.mjs
+  - dsh-plugin-sec-dashboard.view-asset.client.js
+  - dsh-plugin-sec-dashboard.view-asset.client.test.mjs
+  - dsh-plugin-sec-dashboard.view-endpoint.client.js
+  - dsh-plugin-sec-dashboard.view-endpoint.client.test.mjs
+  - dsh-plugin-sec-dashboard.view-fact.client.js
+  - dsh-plugin-sec-dashboard.view-fact.client.test.mjs
+  - dsh-plugin-sec-dashboard.view-know.client.js
+  - dsh-plugin-sec-dashboard.view-know.client.test.mjs
+  - dsh-plugin-sec-dashboard.view-report.client.js
+  - dsh-plugin-sec-dashboard.view-report.client.test.mjs
+  - dsh-plugin-sec-dashboard.view-audit.client.js
+  - dsh-plugin-sec-dashboard.view-audit.client.test.mjs
   # --- 丝之歌全局主题客户端插件（设计规范：doc/silksong-theme-design.md）---
   - dsh-plugin-theme-silksong.index.js
   - dsh-plugin-theme-silksong.client.js

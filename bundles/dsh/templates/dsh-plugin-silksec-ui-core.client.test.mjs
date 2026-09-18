@@ -224,12 +224,75 @@ test('sec-dashboard → ui-core：11 视图原样登记，行为路径不变', (
   dash.apply(ctx)
 
   assert.deepEqual(slotCalls, ['sidebar.footer.action'], '旧壳入口仍注册 sidebar.footer.action（行为不变）')
-  assert.equal(uiCore.viewRegistry.size(), 11, '11 视图必须全部登记')
+  // P6：旧单体只保留 P6 未拆的三视图 canonical + 已拆八视图的 `-old` 并排观察（3 + 8 = 11 条）
+  assert.equal(uiCore.viewRegistry.size(), 11, '旧单体登记 3 canonical + 8 -old')
   const ids = uiCore.viewRegistry.list().map((v) => v.id)
-  assert.equal(ids.join(','), 'findings,assets,endpoints,facts,tasks,knowledge,learning,reports,approvals,scope,audit')
+  assert.equal(ids.join(','), 'findings-old,assets-old,endpoints-old,facts-old,tasks,knowledge-old,learning-old,reports-old,approvals,scope,audit-old')
   assert.ok(uiCore.viewRegistry.list().every((v) => typeof v.component === 'function' && v.source === 'sec-dashboard-legacy'))
+  const labels = uiCore.viewRegistry.list().map((v) => v.label)
+  assert.ok(labels.includes('漏洞 ·旧') && labels.includes('任务'), '已拆视图带 ·旧 后缀，未拆视图保持 canonical')
   assert.equal(uiCoreSandbox.window.__silksecSurfaceHealth['sec-dashboard-views'].status, 'ok')
   assert.equal(uiCoreSandbox.window.__silksecSurfaceHealth['sec-dashboard-views'].detail, '11')
+})
+
+// ── 4. P6 共享契约：requires 能力探测 + 展示件 + session opener ────────────────
+test('viewRegistry.requires：服务缺席的条目 list/get 过滤（tab 静默隐藏），probe 到位后可见', () => {
+  const { mod } = loadBundle()
+  const r = mod.createViewRegistry()
+  const c = () => {}
+  const d = r.register({ id: 'findings', label: '漏洞', order: 20, component: c, requires: ['connection'] })
+  // 缺省 probe 视为可用（旧行为兼容）
+  assert.equal(r.size(), 1)
+  // probe 判定 connection 缺席 → 过滤且不占 order
+  mod.setServiceProbe((n) => n !== 'connection')
+  r.refresh()
+  assert.equal(r.size(), 0)
+  assert.equal(r.get('findings'), null)
+  assert.equal(r.list().length, 0)
+  // 服务到位 → 重新可见
+  mod.setServiceProbe((n) => n === 'connection')
+  r.refresh()
+  assert.equal(r.size(), 1)
+  assert.equal(r.list()[0].id, 'findings')
+  // 无 requires 的条目不受 probe 影响
+  r.register({ id: 'audit', label: '审计', order: 110, component: c })
+  mod.setServiceProbe(() => false)
+  r.refresh()
+  assert.equal(r.list().map((x) => x.id).join(','), 'audit')
+  d()
+})
+
+test('P6 共享展示件：sevPill/statusPill/programCell/insightChip/sortableTh/hlText 导出可用', () => {
+  const { mod } = loadBundle()
+  assert.equal(typeof mod.sevPill, 'function')
+  assert.equal(typeof mod.statusPill, 'function')
+  assert.equal(typeof mod.confPill, 'function')
+  assert.equal(typeof mod.taskPill, 'function')
+  assert.equal(typeof mod.programCell, 'function')
+  assert.equal(typeof mod.insightChip, 'function')
+  assert.equal(typeof mod.sortableTh, 'function')
+  assert.equal(typeof mod.hlText, 'function')
+  assert.equal(typeof mod.SessionLink, 'function')
+  assert.equal(typeof mod.setSessionOpener, 'function')
+  // programCell 未归属 → 「未关联」
+  const unlinked = mod.programCell('_legacy')
+  assert.equal(unlinked.type, 'span')
+  // hlText 命中片段高亮为 warn 令牌
+  const hl = mod.hlText('abcSQLdef', 'sql', 'k')
+  assert.ok(Array.isArray(hl) && hl.some((n) => n && n.props && n.props.style && n.props.style.color === mod.T.warn))
+})
+
+test('SessionLink：setSessionOpener 注入后点击跳链；未注入渲染「—」', () => {
+  const { mod } = loadBundle()
+  const opened = []
+  mod.setSessionOpener((id) => opened.push(id))
+  const link = mod.SessionLink({ id: 'session-abc' })
+  assert.equal(typeof link.props.onClick, 'function')
+  link.props.onClick()
+  assert.deepEqual(opened, ['session-abc'])
+  const empty = mod.SessionLink({ id: null })
+  assert.equal(empty.type, 'span')
+  mod.setSessionOpener(null)
 })
 
 test('createSecUiBus：订阅/退订/emitter 异常隔离', () => {
