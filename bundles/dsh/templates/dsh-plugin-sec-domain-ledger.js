@@ -537,10 +537,13 @@ function makeHandlers(opts) {
     let cardUsage7d = 0
     let handoff7d = 0
     for (const p of programs) {
-      const { rows } = repo.readAttempts(p)
-      ledgerToday[p] = { total: rows.length, today: repo.statAttemptsDelta(p, now - 86400000) }
       cardUsage7d += repo.countCardUsageDays(p, 7)
       handoff7d += repo.countHandoffDays(p, 7)
+      // 台账空转只针对「有台账文件」的项目（与 data-quality.py / discipline-audit.py 口径一致）；
+      // _global/__legacy__ 等内部桶从无台账文件，不是纪律脱节。
+      if (typeof repo.hasAttempts === 'function' && !repo.hasAttempts(p)) continue
+      const { rows } = repo.readAttempts(p)
+      ledgerToday[p] = { total: rows.length, today: repo.statAttemptsDelta(p, now - 86400000) }
     }
     // 跨域：IdeaCard 数（know 域查询委托；know 尚未暴露 ideas 计数时降级）
     let ideaCards = 'unavailable'

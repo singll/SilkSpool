@@ -36,7 +36,7 @@ TOOL_PREFIXES = {
 # 非工具 token（共享工具前缀但语义是字段/指令/存储名，非动词）——显式豁免，避免误报
 NON_TOOL_TOKENS = {
     "proxy_pass", "proxy_cache", "proxy_host",  # Nginx 反向代理指令（rules/techniques 内）
-    "exp_cards",                                # know 域存储子仓表名（「沉淀为 exp_cards」）
+    "exp_card", "exp_cards",                    # know 域 artifact_kind 枚举值 / 存储子仓表名
     "approval_hint",                            # 失败信封字段（needs_approval/approval_hint）
 }
 

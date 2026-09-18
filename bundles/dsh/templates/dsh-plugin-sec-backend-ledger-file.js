@@ -145,6 +145,11 @@ function createRepo(dataDir) {
     readAttempts(program) {
       return readTsv(attemptsFile(program))
     },
+    // 台账文件是否已存在（区分「项目从无台账」与「台账存在但零行」——
+    // 后者才是纪律空转；_global/__legacy__ 等内部桶无台账文件，不应告警）
+    hasAttempts(program) {
+      return fs.existsSync(path.join(pipelineRoot(program), `attempts-${program}.tsv`))
+    },
 
     // ---- card_usage ----
     appendCardUsage(program, record) {
