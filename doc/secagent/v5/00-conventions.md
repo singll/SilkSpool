@@ -325,6 +325,6 @@
 | 总线 | 14 域 + bus 注册正常；R8/R9 生效；outbox `pending=0`、`dead_letter=0`、悬空订阅为空。 |
 | 域插件原子化 | 15 个业务域均通过 manifest + handler + backend 自包含组装；生产代码无跨域 import，跨域读写经 QueryGateway/DispatchGateway。 |
 | 独立更新 | 架构上支持单域替换（各自 plugin package + 后端 + 契约测试）；操作上仍依赖全量 `spool bundle dsh setup`，尚无单域安装/回滚命令。 |
-| 主要风险 | v4 dashboard 63 处兜底、v4 scheduler 持锁替代 v5 调度器、vuln evidence 工作区/服务端路径缝错位、task 守卫查询异常静默降级、know 索引清理失败无日志、approval 决策指标未实现。 |
+| 主要风险 | ~~v4 dashboard 63 处兜底~~（2026-09-18 UI-0 清除，业务端点 fail-closed）、v4 scheduler 持锁替代 v5 调度器、vuln evidence 工作区/服务端路径缝错位、task 守卫查询异常静默降级、know 索引清理失败无日志、approval 决策指标未实现。 |
 
 **单域升级纪律**：更新 bus 必须全量 14 域契约回归；更新任一业务域至少回归本域 + 直接消费方（bus_status 悬空订阅为 0 + 受影响域契约 + `sec-v5-accept.sh`）。在单域安装命令落地前，不得宣称“可独立部署”，只能说“包边界具备独立升级条件”。

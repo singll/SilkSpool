@@ -9,6 +9,7 @@
 - **文档状态**：00-18 全量定稿（2026-09-06，commit `2e593e9`）
 - **领域语言**：[CONTEXT](../../../bundles/dsh/CONTEXT.md)
 - **当前 Phase**：**Phase 5 收尾中**。Phase 0–4 已完成；5.1、5.3–5.8 已完成，迁移清单剩 5.2 别名删除。dashboard 的 v4 fallback、v4 scheduler 与逐域审查中的未修项仍需按影响处理，不能由节点勾选推定全部 DoD 已满足。
+- **UI 原生面升级（19-ui-surface）**：2026-09-18 启动，前置硬闸 UI-0（dashboard-rpc 去 v4 兜底）已完成（见 §二、§三·九）；下一步 P0（`ui-core` 地基）。
 - **5.2 最新闸口（2026-09-15 巡检）**：deprecated_use 累计 180，最后一条 2026-09-15T07:07:10.543Z（切流前；此后至 U4 关账切流后增量为 0）；连续七天零使用最早到 **2026-09-22T15:07:10.543+08:00**。37 个别名保留；真实调用与契约 fixture 都需处理，新调用继续顺延。
 - **当前运行基线**：DSH **0.1.5-rc.2**（U3 生产切换完成 2026-09-15；**U4 于 2026-09-18 关账——用户授权提前，详见升级记录 §14.9**），关账后 MainPID 4025919、NRestarts=0、active/running、15 域注册；**DSH 0.1.2-rc.1 → 0.1.5-rc.2 升级已完成**。完整取证与实施结果见 [升级记录](../upgrades/2026-09-12-dsh-0.1.5-rc.2-record.md) §14。
 - **验收口径补充**：5.4 的 7/7 是网关 Mode A；当前 llm_probe 未实际调用模型。5.5 的历史零悬空引用只覆盖原扫描范围。9 月 13 日新模板已修 scheduler 的 finding_add 并扩展 persona/调度提示审计，但尚未覆盖到生产；不能据此提前开始新的别名零使用观察期。
@@ -50,6 +51,7 @@
 | **5.6 复评「单写者守护进程」** | 18-migration §七 bullet 6 复评（只读核查，无代码改动无部署）：判定 Phase 1-5（2026-09-07 上线至今）跨进程写冲突是否频发。数据源三路核查：① `grep -c E_CONFLICT audit.jsonl` = **0**，error_code 分布无任何 E_CONFLICT/E_BUS_CONFLICT（E_ACTOR_FORBIDDEN 50 / E_SCHEMA 19 / E_EVIDENCE_REQUIRED 14 / E_NOT_FOUND 8 / E_STATE 2 / E_LEDGER_EVIDENCE_MISSING 2 / E_BUS_STRONG_LINK_FAILED 2 / E_VULN_INFO_SEVERITY 1 / E_PROXY_NO_PROPOSAL 1 / E_EXEC_TEMPLATE_PARAM 1 / E_EXEC_SCOPE_DENIED 1）；② `grep -c 'SQLITE_BUSY|database is locked' audit.jsonl` = **0**（全 data/ 仅 2 处 `.pre-split` 备份源码字符串字面量，非运行时痕迹），bus 域 journal `events/bus.jsonl` 1800 行 0 冲突痕迹；③ `event_outbox` 2135 行全 `delivered`、`retry_count=0`、无 pending/dead_letter/failed（无并发写导致的投递劣化），`bus_meta` replay.watermark=0、15 域 seen version=1，`journal_mode=wal`。**结论：无 E_CONFLICT 频发 → 维持多进程 + SQLite WAL 终态，不启动单写者架构专项** | `5e94839` | ✅ 服务 active（`systemctl is-active silksecagent`=active）；`sec-v5-accept.sh` PASS=25 FAIL=0；findings=80 无回归；event_outbox 零死信零重试；WAL 终态确认（纯文档复评，无线上改动） |
 | **5.7 总线/原子化审查修复** | ① 移除 v4 `asset-graph` 的 `fp_query` 注册，模型工具面由 v5 asset 域 QueryProjector 零改名接管，消除 ToolProjector 冲突与旧直连路径；② FGS `task.finished` 由“名义 sync + 实际 best-effort”改为 async 弱联动（outbox 重试/死信，不回滚任务事实）；③ 总线新增 R8 事件命名校验（发布域前缀 + 至少两段，允许子对象多段）与 R9 `bus_status.event_contract.dangling_subscriptions` 对账，契约测试覆盖；④ 移除 `authz` 叙述别名伪域，授权域唯一注册名固定 `scope`；⑤ exec 删除无效 `scope.rules.changed` sync 订阅（QPS cap 每次读取对齐，跨进程无生效假象）；⑥ 修复 `task_run_now` 自动幂等吞写——改为 `none`，失败回 queued 后允许人工重跑（认领层原子流转防重复）；⑦ 同步前一日未收口修复：eval 异步收尾统一 `eval_run_finish`、scope grant/revoke 取消吞写 auto 幂等、worker truth 走 spawn 返回值、task 守卫改 ledger 查询、事件子仓命名修正 | `00173d0` | ✅ 本地 bus 59 + 14 域契约测试全绿；csai setup 内 14 域 + owns×sandbox 67 项全绿；最终重启后 14 域 registered、`fp_query already registered` 消失、启动无 E_BUS/投影错误；`sec-v5-accept.sh` PASS=25 FAIL=0；部署态 9 个受影响域契约测试 204/204（bus 47 + asset 30 + endpoint 24 + eval 18 + exec 11 + fgs 19 + know 19 + scope 15 + task 21）；R9 dangling=[]；event_outbox/bus_subscription 全 delivered、pending=0/dead_letter=0；4 个活跃定时任务（24/37/100007/100008）重跑全部 done/exit 0 并回 queued，100007 首轮因外部模型 `reasoning_content` API 400 失败，修复幂等后第二轮 `wmty04fc004da` done/exit 0 |
 | **5.8 全域深度审查与文档回填** | 逐域审查 15 个业务域 + 总线、17 个后端/横切插件、20 个安装器与 18 份 v5 文档；在 00-17 文档逐域补“2026-09-12 深度审查结论”，覆盖逻辑/功能/性能/静默错误/未实现/hook 兼容层/独立升级七维。修正文档漂移：ledger/asset/endpoint/scope 事件全名、FGS async 弱联动、eval 内部 `eval_run_finish`、task `task_drift`、approval 统计未实现、report scope 软校验、know FTS best-effort、dashboard 插件化未实施。结论：15 个域包边界均具备单域升级条件，但 bus 更新需全量回归，当前操作仍走全量 bundle setup；dashboard 与 v4 scheduler 是原子化主要债务 | `3eb2da9` | ✅ 静态审计 + manifest/文档对账完成（14 域 commands/queries/events/subscribes 全覆盖）；未修改业务代码；部署态契约测试 347/347（bus 47 + 14 业务域 300）；`git diff --check` 通过 |
+| **UI-0 看板 UI 原生面升级前置硬闸：dashboard-rpc 去 v4 兜底** | 清除 `dsh-plugin-sec-suite.dashboard-rpc.js` 全部 `v4 兜底`：新增 `busOrThrow/busError/busQuery/busDispatch` 四个 fail-closed helper，把 50 个业务端点从「总线优先 + 总线缺席/域动词未知/查询异常即直调 assetDb」改为「业务读写唯一入口 = 领域总线」；`findingUpdate` 分派别名、`expFeedback/expPromote/expDeprecate/expUpdate/expExportable` 五处 L4 已 fail-closed 端点统一收口到 helper（域错误码/hint 透传不再被吞成「需要总线」）；删除随兜底失效的 `knowledge-coverage.py` 现场生成兜底（`COVERAGE_FRESH_MS/locateCoverageScript/runCoverageScript` + `child_process.spawn` import）；纯壳聚合端点 `stats/workspaces/sessions/memcore` 保留壳内实现。新增 4 例契约测试 `dsh-plugin-sec-suite.dashboard-rpc.test.mjs`（总线缺席 fail-closed / 域错误码+hint 透传 / 总线可用且零 assetDb 泄漏 / 壳端点不受门禁） | （见 §三·九） | ✅ 本地单测 4/4 全绿；`node --check` 通过；`grep -c "v4 兜底"` 归零（仅注释留档）；assetDb 调用仅剩 `stats` 壳端点与 `taskChain` 宿主 helper；未部署（模板改动待后续 UI 包一起 rollout） |
 
 ## 三、待办节点（Phase 1，按顺序，每个节点 = 一次会话 = 一个可上线可回滚增量）
 
@@ -94,6 +96,20 @@
 - [x] **5.6 复评「单写者守护进程」**：Phase 1-5 期间无 E_CONFLICT 频发 → 维持多进程+WAL 终态。**✅ 已完成（2026-09-12 上线；commit 见 §二；E_CONFLICT=0、无 SQLITE_BUSY、event_outbox 2135 全 delivered 无死信 → 不启动单写者架构专项）**
 - [x] **5.7 总线/原子化审查修复**：`fp_query` 冲突、FGS sync/async 语义、事件命名校验、悬空订阅对账、`authz` 伪域与无效 exec 订阅收口。**✅ 已完成（2026-09-12 上线；commit `00173d0`）**
 - [x] **5.8 全域深度审查与文档回填**：14 业务域 + 总线/后端/横切插件逐项检查逻辑、功能、性能、静默错误、未实现分支、hook 兼容层与独立升级能力；全部结论写入对应 00-17 文档。**✅ 已完成（2026-09-12；commit `3eb2da9`）**
+
+## 三·九、UI 原生面升级（19-ui-surface，每阶段 = 一次会话 = 一个可上线可回滚增量）
+
+> 设计真相源：[19-ui-surface](19-ui-surface.md)。目标：把「一个 Modal 装十一 tab」拆到 DSH 原生承载面（主面板 / 右侧栏 / 设置页 / overlay / 会话绑定），原子化隔离到 fiber 级，DSH 升级按挂点清单定点复验。
+
+- [x] **UI-0 前置硬闸：dashboard-rpc 去 v4 兜底**（19-ui-surface §八「P0 之前」）：见 §二 对应行。**✅ 2026-09-18 完成（本地单测 4/4，模板未部署）**
+- [ ] **P0 地基**：`ui-core` 包骨架（token 表 / `SilksecErrorBoundary` / `useRpc` 等 hooks / `secUiBus` / 视图注册表）；`bundles/dsh/doc/ui-surface-deps.yaml` 首版；11 视图原样注册进注册表（文件不拆，行为不变）。验收：十一 tab 行为逐项比对现状；ErrorBoundary 注入故障演练（人为抛错只炸单面）。回滚：revert 包部署。
+- [ ] **P1 主面板**：`ui-panel`——`main` keyed 槽 + `sidebar.panellist` + `ctx.layout.selectPanel`；footer 入口改跳转；Modal 形态保留为降级分支。验收：双形态各跑一遍视图回归；`beginNavigation` 连点竞态测试。回滚：模式开关回 Modal。
+- [ ] **P2 审批套件**：`shell.overlay` 待办胶囊 + 快捷浮卡 + 审批右侧栏 tab；看板「审批」tab 保留观察。验收：待办计数一致；快捷路径 audit 留痕等价；零会话下胶囊自足。
+- [ ] **P3 任务 tab**：任务右侧栏 tab（四区块栏宽重排）；会话头「本会话任务」计数。验收：320–720px 响应式目检；写操作等价。
+- [ ] **P4 授权迁设置**：`settings.section`「授权范围」节；看板「授权」tab 观察一周后删。验收：scope 读写逐项等价。
+- [ ] **P5 会话绑定**：`conversation.view` 安全产出 + header 钮 + `assistant-actions` 登记/沉淀。验收：按 session_id 过滤正确性抽样；消息动作写操作经 RPC 全管线（actor=dashboard）。
+- [ ] **P6 逐域视图拆分**：vuln→asset→endpoint→fact→know(+学习)→report→audit 每域 `dashboard-view.js`，7 天并排观察。验收：每域新旧并排等价 + audit 对照；域缺席 tab 静默隐藏。
+- [ ] **P7 收尾**：删旧单体 client 与 Modal 主形态；16-dashboard 状态回填；主题规范 v4.2 落盘；accept 冒烟段固化。验收：组合树无旧包；文档与实现一一对应。
 
 ## 四、Phase 2-5 概览（后续会话，勿提前开工）
 

@@ -358,7 +358,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在 RpcProjector（�
 |---|---|
 | 逻辑/功能 | 当前 v4 单体看板功能可用，能覆盖十视图与主要写操作。 |
 | 文档漂移 | §2.1 的“壳 + 逐域 dashboard-view.js”是设计目标，未实施：仓库没有 domain `dashboard-view.js`，实际仍是 2,628 行单体 client。 |
-| hook/兼容层 | `dashboard-rpc.js` 存在 63 处 `v4 兜底`，总线失败即直调 `assetDb`；这会绕过域审计/幂等/事件，是当前最大原子化缺口。 |
+| hook/兼容层 | `dashboard-rpc.js` 存在 63 处 `v4 兜底`，总线失败即直调 `assetDb`；这会绕过域审计/幂等/事件，是当前最大原子化缺口。**2026-09-18 已清除（UI-0 前置硬闸，19-ui-surface §八）：业务端点统一 `busQuery/busDispatch` fail-closed，`v4 兜底` 归零；assetDb 仅剩 `stats` 壳聚合与 `taskChain` 宿主 helper。** |
 | 性能 | 30s 轮询分页查询可用；单体 client 对构建/维护成本影响大于运行时性能。 |
-| 静默错误 | 兜底 catch 不记录总线失败原因，无法区分域故障、契约漂移与数据错误。 |
+| 静默错误 | 兜底 catch 不记录总线失败原因，无法区分域故障、契约漂移与数据错误。**2026-09-18 已消除：总线错误码/hint 经 `busError` 透传，不再静默降级。** |
 | 独立升级 | 当前 dashboard 不能随域独立升级；必须先落地壳/视图拆分并删除 v4 直调。 |

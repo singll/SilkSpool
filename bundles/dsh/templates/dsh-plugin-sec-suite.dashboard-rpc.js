@@ -7,25 +7,21 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { spawn } from 'node:child_process'
 
 // 依赖注入（由 index.js 模块加载时调用 initDashboardRpc 传入，避免循环依赖）：
 //   dataDir              数据目录（主文件 deps.dataDir，reports 目录推导）
-//   audit                主文件 audit()：审计 JSONL 落盘
-//   tailAudit            主文件 deps.tailAudit()：审计日志尾部读取（audit 端点）
-//   assetDb              asset-db.js 模块命名空间（看板全部读写查询）
-//   exp                  experience.js 模块命名空间（memcore/expCards/expFeedback 等记忆治理）
+//   audit                主文件 audit()：审计 JSONL 落盘（taskChain 建任务）
+//   assetDb              asset-db.js 模块命名空间（仅壳聚合端点 stats 与 taskChain 使用；业务读写一律走领域总线）
+//   exp                  experience.js 模块命名空间（memcore 记忆治理壳端点）
 //   listManifests        主文件 deps.listManifests()：工具 manifest 枚举（planChain BFS）
 //   loadManifest         主文件 deps.loadManifest()：单工具 manifest 加载（planChain/taskChain）
 //   resolveProgramId     主文件 deps.resolveProgramId()：program_id 显式/会话工作区解析（taskChain）
 //   sessionIdOf          主文件 deps.sessionIdOf()：会话 ID 提取（taskChain 审计/建任务）
-//   pairWorkspaces       主文件 deps.pairWorkspaces()：工作区幂等配对（workspaces/scopeList 端点）
+//   pairWorkspaces       主文件 deps.pairWorkspaces()：工作区幂等配对（workspaces 端点）
 //   workspacesList       主文件 deps.workspacesList()：工作区清单（workspaces 端点）
 //   sessionsList         主文件 deps.sessionsList()：会话清单（sessions 端点）
-//   scopeList            主文件 deps.scopeList()：授权清单（scopeList 端点）
-//   scopeSaveProgram     主文件 deps.scopeSaveProgram()：授权保存（scopeSaveProgram 端点）
-//   scopeDeleteProgram   主文件 deps.scopeDeleteProgram()：授权删除（scopeDeleteProgram 端点）
 //   getWorkspaceRegistry () => 主文件 workspaceRegistryRef（fiber 注入，可能为 null，须惰性读取）
+//   getSecDomainBus      () => 主文件 secDomainBusRef（v5 领域总线；看板业务读写唯一入口）
 let deps = null
 
 export function initDashboardRpc(injected) {
@@ -137,54 +133,39 @@ export function taskChain(args, exec) {
 // 看板 Remote（Host↔Client RPC 通道 /silksec-dashboard，authority=loopback）
 // 只读查询 + 受控写（打标 findingUpdate / 事实纠正 factCorrect·factDeprecate /
 // P11：授权管理 scopeSaveProgram·scopeDeleteProgram / 工作区绑定 programBindWorkspace / 任务立即跑 taskRunNow）。
-// 底层直接复用 assetDb 现有函数——「一份校验、一条 audit.jsonl、一个真相源」。
+// 业务读写唯一入口 = v5 领域总线（busQuery/busDispatch，fail-closed）；assetDb 仅服务壳聚合端点。
 // ==============================================================================
 
 const FINDING_TAG_STATUS = ['confirmed', 'false_positive', 'ignored', 'new', 'submitted', 'accepted', 'dup']
 
 // ==============================================================================
-// 知识覆盖度审计（攻面 × rules/VC 卡交叉表，借鉴 Claude-Red MINDMAP：空行即缺口）
-// 数据文件 data/knowledge-coverage.json 由 knowledge-coverage.py 生成（stdlib only）；
-// 看板端点 knowledgeCoverage：缓存新鲜（<7 天）直接返回，否则现场 python3 生成。
+// v5 原子化：看板读写一律走领域总线，fail-closed（19-ui-surface §八 前置硬闸）。
+// 原 63 处 `v4 兜底`（总线缺席/域动词未知/查询异常即直调 assetDb）已拆除——绕过域
+// 审计/幂等/事件是最大原子化缺口。总线缺席或域/动词未注册即显式报错，不再静默降级。
+// 例外：纯壳聚合端点（stats/workspaces/sessions/memcore）不含业务域写读，保留壳内实现。
 // ==============================================================================
-const COVERAGE_FRESH_MS = 7 * 24 * 3600 * 1000
-function locateCoverageScript() {
-  // 脚本落点：部署后 <BASE>/scripts/pipeline/（sec-suite-plugin-setup.sh install_scripts 归位）；
-  // 兼容扁平 <BASE>/scripts/、模板 data-seed/scripts/，以及插件目录反推（plugins/sec-suite → BASE）
-  const base = path.dirname(path.resolve(deps.dataDir))
-  const cands = [path.join(base, 'scripts', 'pipeline', 'knowledge-coverage.py')]
-  let here = ''
-  try { here = new URL('.', import.meta.url).pathname } catch { /* 非 ESM 场景忽略 */ }
-  if (here) {
-    cands.push(path.resolve(here, '..', '..', 'scripts', 'pipeline', 'knowledge-coverage.py'))
-    cands.push(path.resolve(here, '..', '..', 'scripts', 'knowledge-coverage.py'))
-    cands.push(path.resolve(here, '..', '..', 'data-seed', 'scripts', 'knowledge-coverage.py'))
-  }
-  cands.push(path.join(base, 'data-seed', 'scripts', 'knowledge-coverage.py'))
-  for (const c of cands) { try { if (fs.existsSync(c)) return c } catch { /* ignore */ } }
-  return null
+function busOrThrow() {
+  const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
+  if (!bus) throw new Error('该看板端点需要 v5 领域总线（legacy 直写兜底已拆除）；请确认 silksecagent 服务运行且领域总线已注册')
+  return bus
 }
-function runCoverageScript(script, out) {
-  return new Promise((resolve) => {
-    let child
-    try {
-      child = spawn('python3', [script,
-        '--rules-dir', path.join(deps.dataDir, 'rules'),
-        '--vulncards-dir', path.join(deps.dataDir, 'vulncards'),
-        '--out', out], { stdio: ['ignore', 'pipe', 'pipe'] })
-    } catch (e) { resolve({ ok: false, error: 'python3 启动失败: ' + (e?.message ?? String(e)) }); return }
-    let stderr = ''
-    child.stdout.on('data', () => {}) // 控制台摘要不回传看板
-    child.stderr.on('data', (d) => { stderr += String(d) })
-    const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch { /* ignore */ } }, 60000)
-    child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, error: 'python3 不可用: ' + (e?.message ?? String(e)) }) })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      if (code !== 0) { resolve({ ok: false, error: 'knowledge-coverage.py 退出码 ' + code + (stderr.trim() ? '：' + stderr.trim().slice(0, 300) : '') }); return }
-      try { resolve({ ok: true, data: JSON.parse(fs.readFileSync(out, 'utf8')) }) } catch (e) { resolve({ ok: false, error: '生成结果解析失败: ' + (e?.message ?? String(e)) }) }
-    })
-  })
+function busError(r) {
+  const msg = String(r?.error?.message || '未知错误') + (r?.error?.hint ? `（${r.error.hint}）` : '')
+  const err = new Error(msg)
+  err.code = r?.error?.code
+  return err
 }
+async function busQuery(domain, verb, args, ctx) {
+  const r = await busOrThrow().query(domain, verb, args, ctx || { actor: 'dashboard' })
+  if (!r.ok) throw busError(r)
+  return r
+}
+async function busDispatch(domain, verb, args, ctx) {
+  const r = await busOrThrow().dispatch(domain, verb, args, ctx || { actor: 'dashboard' })
+  if (!r.ok) throw busError(r)
+  return r
+}
+
 export async function handleDashboardRpc(endpoint, payload) {
   const p = (payload && typeof payload === 'object') ? payload : {}
   switch (endpoint) {
@@ -192,15 +173,9 @@ export async function handleDashboardRpc(endpoint, payload) {
       return deps.assetDb.stats()
     // ---- P15：纪律健康度（五指标：台账/卡使用/交接包/IdeaCard/调度漂移）----
     case 'ops': {
-      // v5：ledger.discipline_stats 接管（11-ledger §1.7）；v4 opsHealth 兜底（观察期，总线缺席时）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('ledger', 'discipline_stats', { program: String(p.program || '') }, { actor: 'dashboard' })
-          if (r.ok && r.data) return r.data
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return deps.assetDb.opsHealth()
+      // v5：ledger.discipline_stats 接管（11-ledger §1.7），fail-closed
+      const r = await busQuery('ledger', 'discipline_stats', { program: String(p.program || '') })
+      return r.data
     }
     // ---- P11：工作区 / 会话 / 授权管理 ----
     case 'workspaces':
@@ -210,219 +185,101 @@ export async function handleDashboardRpc(endpoint, payload) {
       const programId = String(p.program_id || '')
       if (!programId) throw new Error('programBindWorkspace 需要 program_id')
       const workspaceId = p.workspace_id ? String(p.workspace_id) : null
-      // v5：program.bind_workspace（scope 域 program_bind_workspace）接管（08-scope §1.7）；v4 直写兜底
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          let workspace = null
-          if (workspaceId) {
-            const reg = deps.getWorkspaceRegistry ? deps.getWorkspaceRegistry() : null
-            const ws = reg ? reg.get(workspaceId) : null
-            workspace = ws ? (ws.path || ws.title) : workspaceId
-          }
-          const r = await bus.dispatch('scope', 'program_bind_workspace', { program_name: programId, workspace }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, program_id: programId, workspace_id: workspaceId, ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
+      // v5：program.bind_workspace（scope 域 program_bind_workspace）接管（08-scope §1.7），fail-closed
+      let workspace = null
+      if (workspaceId) {
+        const reg = deps.getWorkspaceRegistry ? deps.getWorkspaceRegistry() : null
+        const ws = reg ? reg.get(workspaceId) : null
+        workspace = ws ? (ws.path || ws.title) : workspaceId
       }
-      let wsPath = null
-      if (workspaceId && deps.getWorkspaceRegistry()) {
-        const ws = deps.getWorkspaceRegistry().get(workspaceId)
-        if (!ws) throw new Error(`工作区不存在: ${workspaceId}`)
-        wsPath = ws.path
-      }
-      if (!deps.assetDb.bindProgramWorkspace(programId, workspaceId, wsPath)) throw new Error(`program 不存在: ${programId}`)
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.programBindWorkspace', decision: 'executed', detail: { program_id: programId, workspace_id: workspaceId } })
-      return { ok: true, program_id: programId, workspace_id: workspaceId }
+      const r = await busDispatch('scope', 'program_bind_workspace', { program_name: programId, workspace }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, program_id: programId, workspace_id: workspaceId, ...(r.data || {}) }
     }
     case 'scopeList': {
-      // v5：scope.list（scope 域 scope_list 查询）接管（08-scope §1.7）；v4 兜底
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('scope', 'list', { include_archived: true }, { actor: 'dashboard' })
-          if (r.ok && r.data && Array.isArray(r.data.programs)) return r.data
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      deps.pairWorkspaces()
-      return deps.scopeList()
+      // v5：scope.list（scope 域 scope_list 查询）接管（08-scope §1.7），fail-closed
+      const r = await busQuery('scope', 'list', { include_archived: true })
+      return r.data
     }
     case 'scopeSaveProgram': {
       // v5：scope.grant（+ scope.exclude + program.bind_workspace，按表单字段分派）接管
-      // （16-dashboard §1.7 #6）；v4 scopeSaveProgram 兜底
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const name = String(p.name || '').trim()
-          const entries = [...new Set((Array.isArray(p.scope) ? p.scope : []).map((s) => String(s).trim()).filter(Boolean))]
-          if (!entries.length) throw new Error('scope 至少一条授权条目（域名/IP/CIDR）')
-          const ctx = { actor: 'dashboard', operator: p.operator ? String(p.operator) : null }
-          const grantArgs = { program_name: name, entries }
-          if (p.platform) grantArgs.platform = String(p.platform).trim()
-          if (p.max_risk) grantArgs.max_risk = String(p.max_risk)
-          const g = await bus.dispatch('scope', 'grant', grantArgs, ctx)
-          if (!g.ok) { const msg = String(g.error?.message || '未知错误') + (g.error?.hint ? `（${g.error.hint}）` : ''); const err = new Error(msg); err.code = g.error?.code; throw err }
-          const excludeEntries = [...new Set((Array.isArray(p.exclude) ? p.exclude : []).map((s) => String(s).trim()).filter(Boolean))]
-          if (excludeEntries.length) {
-            const e = await bus.dispatch('scope', 'exclude', { program_name: name, entries: excludeEntries }, ctx)
-            if (!e.ok) { const msg = String(e.error?.message || '未知错误') + (e.error?.hint ? `（${e.error.hint}）` : ''); const err = new Error(msg); err.code = e.error?.code; throw err }
-          }
-          const ws = p.workspace ? String(p.workspace).trim() : ''
-          if (ws) {
-            const b = await bus.dispatch('scope', 'program_bind_workspace', { program_name: name, workspace: ws }, ctx)
-            if (!b.ok) { const msg = String(b.error?.message || '未知错误') + (b.error?.hint ? `（${b.error.hint}）` : ''); const err = new Error(msg); err.code = b.error?.code; throw err }
-          }
-          return { ok: true, name, ...(g.data || {}) }
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
+      // （16-dashboard §1.7 #6），fail-closed
+      const name = String(p.name || '').trim()
+      const entries = [...new Set((Array.isArray(p.scope) ? p.scope : []).map((s) => String(s).trim()).filter(Boolean))]
+      if (!entries.length) throw new Error('scope 至少一条授权条目（域名/IP/CIDR）')
+      const ctx = { actor: 'dashboard', operator: p.operator ? String(p.operator) : null }
+      const grantArgs = { program_name: name, entries }
+      if (p.platform) grantArgs.platform = String(p.platform).trim()
+      if (p.max_risk) grantArgs.max_risk = String(p.max_risk)
+      const g = await busDispatch('scope', 'grant', grantArgs, ctx)
+      const excludeEntries = [...new Set((Array.isArray(p.exclude) ? p.exclude : []).map((s) => String(s).trim()).filter(Boolean))]
+      if (excludeEntries.length) {
+        await busDispatch('scope', 'exclude', { program_name: name, entries: excludeEntries }, ctx)
       }
-      return deps.scopeSaveProgram(p, !!p.is_new)
+      const ws = p.workspace ? String(p.workspace).trim() : ''
+      if (ws) {
+        await busDispatch('scope', 'program_bind_workspace', { program_name: name, workspace: ws }, ctx)
+      }
+      return { ok: true, name, ...(g.data || {}) }
     }
     case 'scopeDeleteProgram': {
-      // v5：scope.revoke（清空全部条目 → 整项目出 yml + programs 归档）接管（08-scope §1.7）；v4 兜底
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const name = String(p.name || '').trim()
-          const list = await bus.query('scope', 'list', { include_archived: false }, { actor: 'dashboard' })
-          const prog = (list.ok && list.data && Array.isArray(list.data.programs)) ? list.data.programs.find((x) => x.name === name) : null
-          if (!prog) { const err = new Error(`项目 ${name} 不在 scope.yml`); err.code = 'E_NOT_FOUND'; throw err }
-          const entries = prog.scope || []
-          if (!entries.length) { const err = new Error(`项目 ${name} 无授权条目`); err.code = 'E_NOT_FOUND'; throw err }
-          const r = await bus.dispatch('scope', 'revoke', { program_name: name, entries }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, name, hint: '已从 scope.yml 移除（fail-closed 立即生效），programs 表归档保留归属', ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
-      }
-      return deps.scopeDeleteProgram(p.name)
+      // v5：scope.revoke（清空全部条目 → 整项目出 yml + programs 归档）接管（08-scope §1.7），fail-closed
+      const name = String(p.name || '').trim()
+      const list = await busQuery('scope', 'list', { include_archived: false })
+      const prog = (list.data && Array.isArray(list.data.programs)) ? list.data.programs.find((x) => x.name === name) : null
+      if (!prog) { const err = new Error(`项目 ${name} 不在 scope.yml`); err.code = 'E_NOT_FOUND'; throw err }
+      const entries = prog.scope || []
+      if (!entries.length) { const err = new Error(`项目 ${name} 无授权条目`); err.code = 'E_NOT_FOUND'; throw err }
+      const r = await busDispatch('scope', 'revoke', { program_name: name, entries }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, name, hint: '已从 scope.yml 移除（fail-closed 立即生效），programs 表归档保留归属', ...(r.data || {}) }
     }
     // ---- v4.3 统一审批中心 ----
     case 'approvalList': {
-      // v5：approval.list（approval 域 approval_list 查询）接管（09-approval §1.7）；v4 兜底
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('approval', 'list', { kind: String(p.kind || ''), status: String(p.status || ''), limit: Math.min(Number(p.limit) || 100, 200) }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) {
-            let pending = 0
-            try {
-              const pc = await bus.query('approval', 'list', { status: 'pending', limit: 1 }, { actor: 'dashboard' })
-              if (pc.ok) pending = Number(pc.total) || 0
-            } catch { pending = r.rows.filter((x) => x.status === 'pending').length }
-            return { rows: r.rows, pending }
-          }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return { rows: deps.assetDb.approvalList({ kind: String(p.kind || ''), status: String(p.status || ''), limit: Math.min(Number(p.limit) || 100, 200) }), pending: deps.assetDb.approvalCount({ status: 'pending' }) }
+      // v5：approval.list（approval 域 approval_list 查询）接管（09-approval §1.7），fail-closed
+      const r = await busQuery('approval', 'list', { kind: String(p.kind || ''), status: String(p.status || ''), limit: Math.min(Number(p.limit) || 100, 200) })
+      let pending = 0
+      try {
+        const pc = await busQuery('approval', 'list', { status: 'pending', limit: 1 })
+        pending = Number(pc.total) || 0
+      } catch { pending = (r.rows || []).filter((x) => x.status === 'pending').length }
+      return { rows: r.rows, pending }
     }
     case 'approvalDecide': {
-      // v5：approval.decide（approval 域 approval_decide 命令）接管（09-approval §1.7）；v4 兜底
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('approval', 'decide', { id: Number(p.id), decision: String(p.decision || ''), note: String(p.note || '') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
-      }
-      return deps.approvalDecideAction({ id: Number(p.id), decision: String(p.decision || ''), note: String(p.note || '') })
+      // v5：approval.decide（approval 域 approval_decide 命令）接管（09-approval §1.7），fail-closed
+      const r = await busDispatch('approval', 'decide', { id: Number(p.id), decision: String(p.decision || ''), note: String(p.note || '') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
     }
     case 'taskRunNow': {
       const id = Number(p.id)
       if (!id) throw new Error('taskRunNow 需要 id')
-      // v5：task.run_now（task 域 task_run_now 命令）接管（05-task §1.7）；v4 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('task', 'run_now', { task_id: id }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, id, ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
-      }
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskRunNow', decision: 'executed', detail: { id } })
-      return deps.assetDb.taskRunNow(id)
+      // v5：task.run_now（task 域 task_run_now 命令）接管（05-task §1.7），fail-closed
+      const r = await busDispatch('task', 'run_now', { task_id: id }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, id, ...(r.data || {}) }
     }
     case 'taskCancel': {
       const id = Number(p.id)
       if (!id) throw new Error('taskCancel 需要 id')
-      // v5：task.cancel（task 域 task_cancel 命令）接管（05-task §1.7）；v4 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('task', 'cancel', { task_id: id, note: String(p.note || '看板手动取消') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, id, ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
-      }
-      const r = deps.assetDb.taskUpdate({ id, status: 'cancelled', note: String(p.note || '看板手动取消') })
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskCancel', decision: 'executed', detail: { id } })
-      return r
+      // v5：task.cancel（task 域 task_cancel 命令）接管（05-task §1.7），fail-closed
+      const r = await busDispatch('task', 'cancel', { task_id: id, note: String(p.note || '看板手动取消') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, id, ...(r.data || {}) }
     }
     case 'reportBuild': {
-      // v5：report.build（report 域 report_build 命令）接管（12-report §1.7）；v4 buildReport 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('report', 'build', {
-            host_like: String(p.host_like || ''), program_id: String(p.program_id || ''),
-            since_days: Number(p.since_days) || 0,
-            status_filter: String(p.status || ''), // R3 裁决：report_build 过滤参数更名 status_filter（语义不变）
-            severity: String(p.severity || ''), source: String(p.source || ''),
-          }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok && r.data && r.data.file) {
-            let content = ''
-            try { content = fs.readFileSync(path.join(deps.dataDir, 'reports', r.data.file), 'utf8') } catch { /* 读回失败仅少 content，不阻断 */ }
-            return { ...r.data, content }
-          }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
-      }
-      const r = deps.assetDb.buildReport({
-        hostLike: String(p.host_like || ''), programId: String(p.program_id || ''),
-        status: String(p.status || ''), sinceDays: Number(p.since_days) || 0,
-        severity: String(p.severity || ''), source: String(p.source || ''), // v4.3 报告筛选增强
-      })
+      // v5：report.build（report 域 report_build 命令）接管（12-report §1.7），fail-closed
+      const r = await busDispatch('report', 'build', {
+        host_like: String(p.host_like || ''), program_id: String(p.program_id || ''),
+        since_days: Number(p.since_days) || 0,
+        status_filter: String(p.status || ''), // R3 裁决：report_build 过滤参数更名 status_filter（语义不变）
+        severity: String(p.severity || ''), source: String(p.source || ''),
+      }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
       let content = ''
-      try { content = fs.readFileSync(r.file, 'utf8') } catch { /* 读回失败仅少 content，不阻断 */ }
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.reportBuild', decision: 'executed', detail: { file: r.file, total: r.total } })
-      return { ...r, content }
+      if (r.data && r.data.file) {
+        try { content = fs.readFileSync(path.join(deps.dataDir, 'reports', r.data.file), 'utf8') } catch { /* 读回失败仅少 content，不阻断 */ }
+      }
+      return { ...r.data, content }
     }
     case 'evalStats': {
-      // v5：eval.stats（eval 域 eval_stats 查询）接管（15-eval §1.7）；v4 evalStats 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('eval', 'stats', {}, { actor: 'dashboard' })
-          if (r.ok && r.data && r.data.live) return { total: r.data.live.total, by_type: r.data.live.by_type }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return deps.assetDb.evalStats()
+      // v5：eval.stats（eval 域 eval_stats 查询）接管（15-eval §1.7），fail-closed
+      const r = await busQuery('eval', 'stats', {})
+      return { total: r.data?.live?.total, by_type: r.data?.live?.by_type }
     }
     // ---- L6（学习专项 §10）：学习面板——普通业务语言五问 + 证据对照 + 逐域视图 ----
     // 看板五问：①学到了什么 ②依据是什么 ③比旧版改善多少 ④在哪生效 ⑤如何恢复旧版。
@@ -503,117 +360,66 @@ export async function handleDashboardRpc(endpoint, payload) {
       const err = new Error(String(r.error?.message || '撤回失败') + (r.error?.hint ? `（${r.error.hint}）` : '')); err.code = r.error?.code; throw err
     }
     case 'audit': {
-      // v5：bus.audit_tail（总线审计尾读）接管（16-dashboard §1.7 #14）；v4 tailAudit 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('bus', 'audit_tail', { n: Math.min(Number(p.limit) || 120, 300) }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) {
-            return {
-              rows: r.rows.map((x) => ({
-                ts: x.ts,
-                tool: x.cmd || '—',
-                decision: x.result || '—',
-                detail: { domain: x.domain, actor: x.actor, operator: x.operator, session_id: x.session_id, kind: x.kind, before: x.before, after: x.after, target: x.target, error_code: x.error_code, backend: x.backend, legacy: x.legacy, alias: x.alias },
-              })),
-            }
-          }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
+      // v5：bus.audit_tail（总线审计尾读）接管（16-dashboard §1.7 #14），fail-closed
+      const r = await busQuery('bus', 'audit_tail', { n: Math.min(Number(p.limit) || 120, 300) })
+      return {
+        rows: (r.rows || []).map((x) => ({
+          ts: x.ts,
+          tool: x.cmd || '—',
+          decision: x.result || '—',
+          detail: { domain: x.domain, actor: x.actor, operator: x.operator, session_id: x.session_id, kind: x.kind, before: x.before, after: x.after, target: x.target, error_code: x.error_code, backend: x.backend, legacy: x.legacy, alias: x.alias },
+        })),
       }
-      return { rows: deps.tailAudit(Math.min(Number(p.limit) || 120, 300)) }
     }
     case 'assets': {
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
-      // v5：asset.list 接管（03-asset §1.7）；v4 queryAssets 兜底（观察期，总线缺席时）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('asset', 'list', {
-            host_like: String(p.q || ''), type: String(p.type || ''), program_id: String(p.program_id || ''),
-            level: String(p.level || ''), accept: String(p.accept || ''), state: String(p.state || ''),
-            limit, offset, sort: String(p.sort || ''), dir: String(p.dir || ''),
-          }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      const filters = { hostLike: String(p.q || ''), type: String(p.type || ''), programId: String(p.program_id || ''), level: String(p.level || ''), accept: String(p.accept || ''), state: String(p.state || '') }
-      return { rows: deps.assetDb.queryAssets({ ...filters, limit, offset, sort: String(p.sort || ''), dir: String(p.dir || '') }), total: deps.assetDb.countAssets(filters) }
+      // v5：asset.list 接管（03-asset §1.7），fail-closed
+      const r = await busQuery('asset', 'list', {
+        host_like: String(p.q || ''), type: String(p.type || ''), program_id: String(p.program_id || ''),
+        level: String(p.level || ''), accept: String(p.accept || ''), state: String(p.state || ''),
+        limit, offset, sort: String(p.sort || ''), dir: String(p.dir || ''),
+      })
+      return { rows: r.rows, total: r.total }
     }
     // ---- 看板 v4.1：资产多维（域名族总览 + 单主机钻取）、接口按主机分组、事实 facet ----
     case 'assetOverview': {
-      // v5：asset.overview 接管；v4 assetOverview 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('asset', 'overview', {}, { actor: 'dashboard' })
-          if (r.ok && r.data) return r.data
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return deps.assetDb.assetOverview()
+      // v5：asset.overview 接管，fail-closed
+      const r = await busQuery('asset', 'overview', {})
+      return r.data
     }
     case 'assetDetail': {
       const host = String(p.host || '')
       if (!host) throw new Error('assetDetail 需要 host')
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('asset', 'get', { host }, { actor: 'dashboard' })
-          if (r.ok && r.data) return { ok: true, ...r.data }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return deps.assetDb.assetDetail(host)
+      const r = await busQuery('asset', 'get', { host })
+      return { ok: true, ...(r.data || {}) }
     }
     case 'assetFamily': {
       const root = String(p.root || '')
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('asset', 'family', { root }, { actor: 'dashboard' })
-          if (r.ok && r.data) return { ok: true, root, hosts: r.data.hosts || [] }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return deps.assetDb.assetFamily(root)
+      const r = await busQuery('asset', 'family', { root })
+      return { ok: true, root, hosts: (r.data && r.data.hosts) || [] }
     }
     case 'endpointHosts': {
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
-      // v5：endpoint.hosts 接管（04-endpoint §1.7）；v4 endpointHosts 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('endpoint', 'hosts', {
-            path_like: String(p.q || ''), program_id: String(p.program_id || ''), limit, offset,
-          }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return deps.assetDb.endpointHosts({ pathLike: String(p.q || ''), programId: String(p.program_id || ''), limit, offset })
+      // v5：endpoint.hosts 接管（04-endpoint §1.7），fail-closed
+      const r = await busQuery('endpoint', 'hosts', { path_like: String(p.q || ''), program_id: String(p.program_id || ''), limit, offset })
+      return { rows: r.rows, total: r.total }
     }
     case 'factStats': {
-      // v5：fact.stats 接管（06-fact §1.7）；v4 factStats 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try { const r = await bus.query('fact', 'stats', {}, { actor: 'dashboard' }); if (r.ok && r.data) return r.data } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return deps.assetDb.factStats()
+      // v5：fact.stats 接管（06-fact §1.7），fail-closed
+      const r = await busQuery('fact', 'stats', {})
+      return r.data
     }
     case 'endpoints': {
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
-      // v5：endpoint.list 接管（04-endpoint §1.7）；v4 queryEndpoints 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('endpoint', 'list', {
-            host: String(p.host || ''), path_like: String(p.q || ''), program_id: String(p.program_id || ''),
-            limit, offset, sort: String(p.sort || ''), dir: String(p.dir || ''),
-          }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      const filters = { host: String(p.host || ''), pathLike: String(p.q || ''), programId: String(p.program_id || '') }
-      return { rows: deps.assetDb.queryEndpoints({ ...filters, limit, offset, sort: String(p.sort || ''), dir: String(p.dir || '') }), total: deps.assetDb.countEndpoints(filters) }
+      // v5：endpoint.list 接管（04-endpoint §1.7），fail-closed
+      const r = await busQuery('endpoint', 'list', {
+        host: String(p.host || ''), path_like: String(p.q || ''), program_id: String(p.program_id || ''),
+        limit, offset, sort: String(p.sort || ''), dir: String(p.dir || ''),
+      })
+      return { rows: r.rows, total: r.total }
     }
     case 'findings': {
       const filters = {
@@ -623,39 +429,24 @@ export async function handleDashboardRpc(endpoint, payload) {
       }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
-      // v5：vuln.list 接管（02-vuln §1.7）；v4 queryFindings 兜底（观察期，总线缺席时）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('vuln', 'list', {
-            visibility: filters.noise === '1' ? 'candidate' : (p.include_noise ? 'all' : 'signal'),
-            severity: filters.severity, status: filters.status, program_id: filters.programId, q: filters.q,
-            limit, offset, sort: String(p.sort || ''), dir: String(p.dir || ''),
-          }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return { rows: deps.assetDb.queryFindings({ ...filters, limit, offset, sort: String(p.sort || ''), dir: String(p.dir || '') }), total: deps.assetDb.countFindings(filters) }
+      // v5：vuln.list 接管（02-vuln §1.7），fail-closed
+      const r = await busQuery('vuln', 'list', {
+        visibility: filters.noise === '1' ? 'candidate' : (p.include_noise ? 'all' : 'signal'),
+        severity: filters.severity, status: filters.status, program_id: filters.programId, q: filters.q,
+        limit, offset, sort: String(p.sort || ''), dir: String(p.dir || ''),
+      })
+      return { rows: r.rows, total: r.total }
     }
     case 'findingGet': {
       const id = Number(p.id)
       if (!id) throw new Error('findingGet 需要 id')
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('vuln', 'get', { id }, { actor: 'dashboard' })
-          if (r.ok && r.data) return r.data
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return deps.assetDb.findingGet(id)
+      const r = await busQuery('vuln', 'get', { id })
+      return r.data
     }
     case 'blackboard': {
-      // v5：fact.bb_read 接管；v4 bbGet 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try { const r = await bus.query('fact', 'bb_read', {}, { actor: 'dashboard' }); if (r.ok) return { ok: true, result: r.data } } catch { /* v4 兜底 */ }
-      }
-      return deps.assetDb.bbGet()
+      // v5：fact.bb_read 接管，fail-closed
+      const r = await busQuery('fact', 'bb_read', {})
+      return { ok: true, result: r.data }
     }
     case 'facts': {
       const filters = {
@@ -667,41 +458,26 @@ export async function handleDashboardRpc(endpoint, payload) {
       }
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
-      // v5：fact.search 接管（06-fact §1.7）；v4 factSearch 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('fact', 'search', {
-            program_id: filters.program_id, category: filters.category, q: filters.q, confidence: filters.confidence,
-            has_edges: filters.hasEdges, mem_class: filters.memClass, status: filters.status,
-            exclude_notes: filters.excludeNotes, sort: filters.sort, limit, offset,
-          }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return { rows: deps.assetDb.factSearch({ ...filters, limit, offset }), total: deps.assetDb.countFacts(filters) }
+      // v5：fact.search 接管（06-fact §1.7），fail-closed
+      const r = await busQuery('fact', 'search', {
+        program_id: filters.program_id, category: filters.category, q: filters.q, confidence: filters.confidence,
+        has_edges: filters.hasEdges, mem_class: filters.memClass, status: filters.status,
+        exclude_notes: filters.excludeNotes, sort: filters.sort, limit, offset,
+      })
+      return { rows: r.rows, total: r.total }
     }
     case 'factGraph': {
       const programId = String(p.program_id || '')
       const factKey = String(p.fact_key || '')
       if (!programId || !factKey) throw new Error('factGraph 需要 program_id 与 fact_key')
-      // v5：fact.graph 接管；v4 factGraph 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try { const r = await bus.query('fact', 'graph', { program_id: programId, fact_key: factKey }, { actor: 'dashboard' }); if (r.ok && r.data) return { ok: true, ...r.data } } catch { /* v4 兜底 */ }
-      }
-      return deps.assetDb.factGraph(programId, factKey)
+      // v5：fact.graph 接管，fail-closed
+      const r = await busQuery('fact', 'graph', { program_id: programId, fact_key: factKey })
+      return { ok: true, ...(r.data || {}) }
     }
     case 'programs': {
-      // v5：scope.program_list（scope 域 program_list 查询）接管（08-scope §1.7）；v4 listPrograms 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('scope', 'program_list', { limit: 500 }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return r.rows
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return deps.assetDb.listPrograms()
+      // v5：scope.program_list（scope 域 program_list 查询）接管（08-scope §1.7），fail-closed
+      const r = await busQuery('scope', 'program_list', { limit: 500 })
+      return r.rows
     }
     case 'tasks': {
       const filters = {
@@ -713,90 +489,46 @@ export async function handleDashboardRpc(endpoint, payload) {
       if (!filters.scheduled && filters.bucket === 'active') filters.scheduled = 'exclude'
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
-      // v5：task.list（task 域 task_list 查询）接管（05-task §1.7）；v4 taskList 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('task', 'list', {
-            program_id: filters.programId, status: filters.status, phase: filters.phase, q: filters.q,
-            bucket: filters.bucket, scheduled: filters.scheduled, limit, offset,
-          }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return { rows: deps.assetDb.taskList({ ...filters, limit, offset }), total: deps.assetDb.countTasks(filters) }
+      // v5：task.list（task 域 task_list 查询）接管（05-task §1.7），fail-closed
+      const r = await busQuery('task', 'list', {
+        program_id: filters.programId, status: filters.status, phase: filters.phase, q: filters.q,
+        bucket: filters.bucket, scheduled: filters.scheduled, limit, offset,
+      })
+      return { rows: r.rows, total: r.total }
     }
     // ---- P12：固定定时任务卡片区 + 执行历史 ----
     case 'scheduledTasks': {
-      // v5：task.scheduled（task 域 task_scheduled 查询）接管（05-task §1.7）；v4 taskScheduledList 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('task', 'scheduled', {}, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return { rows: deps.assetDb.taskScheduledList() }
+      // v5：task.scheduled（task 域 task_scheduled 查询）接管（05-task §1.7），fail-closed
+      const r = await busQuery('task', 'scheduled', {})
+      return { rows: r.rows }
     }
     case 'taskRuns': {
       const taskId = Number(p.task_id) || 0
       const programId = String(p.program_id || '')
       const limit = Math.min(Number(p.limit) || 20, 200)
       const offset = Math.max(0, Number(p.offset) || 0)
-      // v5：task.runs（task 域 task_runs 查询）接管（05-task §1.7）；v4 taskRunsList 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('task', 'runs', { task_id: taskId, program_id: programId, limit, offset }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, total: r.total }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      return { rows: deps.assetDb.taskRunsList({ taskId, programId, limit, offset }), total: deps.assetDb.countTaskRuns({ taskId, programId }) }
+      // v5：task.runs（task 域 task_runs 查询）接管（05-task §1.7），fail-closed
+      const r = await busQuery('task', 'runs', { task_id: taskId, program_id: programId, limit, offset })
+      return { rows: r.rows, total: r.total }
     }
     case 'taskScheduleUpdate': {
       const id = Number(p.id)
       if (!id) throw new Error('taskScheduleUpdate 需要 id')
       const schedule = p.schedule && typeof p.schedule === 'object' ? p.schedule : null
-      // v5：task.schedule（task 域 task_schedule 命令）接管（05-task §1.7）；v4 taskSchedule 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('task', 'schedule', { task_id: id, schedule }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
-      }
-      const r = deps.assetDb.taskSchedule({ id, schedule })
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskScheduleUpdate', decision: 'executed', detail: { id, schedule } })
-      return r
+      // v5：task.schedule（task 域 task_schedule 命令）接管（05-task §1.7），fail-closed
+      const r = await busDispatch('task', 'schedule', { task_id: id, schedule }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
     }
     case 'taskSetStatus': {
       // 暂停/恢复定时任务：blocked=暂停（调度器只认 queued），queued=恢复。其余状态走 taskCancel。
       const id = Number(p.id)
       const status = String(p.status || '')
       if (!id || !['blocked', 'queued'].includes(status)) throw new Error('taskSetStatus 需要 id 且 status 仅支持 blocked/queued')
-      // v5：拆分 task.block / task.resume（task 域命令）接管（16-dashboard §1.7 #32）；v4 taskUpdate 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const verb = status === 'blocked' ? 'block' : 'resume'
-          const args = status === 'blocked' ? { task_id: id, blocked_reason: '看板手动暂停' } : { task_id: id }
-          const r = await bus.dispatch('task', verb, args, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, id, ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
-      }
-      const r = deps.assetDb.taskUpdate({ id, status, note: status === 'blocked' ? '看板手动暂停' : '看板手动恢复' })
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskSetStatus', decision: 'executed', detail: { id, status } })
-      return r
+      // v5：拆分 task.block / task.resume（task 域命令）接管（16-dashboard §1.7 #32），fail-closed
+      const verb = status === 'blocked' ? 'block' : 'resume'
+      const args = status === 'blocked' ? { task_id: id, blocked_reason: '看板手动暂停' } : { task_id: id }
+      const r = await busDispatch('task', verb, args, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, id, ...(r.data || {}) }
     }
     case 'taskCreate': {
       // 看板建任务（主要面向固定周期任务；interval 幂等去重，重复目标返回已有）
@@ -804,31 +536,14 @@ export async function handleDashboardRpc(endpoint, payload) {
       const objective = String(p.objective || '').trim()
       if (!programId || !objective) throw new Error('taskCreate 需要 program_id 与 objective')
       const schedule = p.schedule && typeof p.schedule === 'object' ? p.schedule : null
-      // v5：task.create（task 域 task_create 命令）接管（05-task §1.7）；v4 taskCreate 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const args = { program_id: programId, objective, phase: String(p.phase || ''), priority: Number(p.priority) || 5 }
-          if (schedule) args.schedule = schedule
-          if (p.provider) args.provider = String(p.provider)
-          if (p.model) args.model = String(p.model)
-          if (p.reasoning_effort) args.reasoning_effort = String(p.reasoning_effort)
-          const r = await bus.dispatch('task', 'create', args, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, id: r.data?.task_id, deduped: !!r.data?.deduped, ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
-      }
-      const r = deps.assetDb.taskCreate({
-        program_id: programId, objective, phase: String(p.phase || ''),
-        priority: Number(p.priority) || 5, schedule,
-        provider: p.provider || null, model: p.model || null, reasoning_effort: p.reasoning_effort || null,
-      })
-      if (r.ok) deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.taskCreate', decision: 'executed', detail: { id: r.id, program_id: programId, schedule, provider: p.provider, model: p.model, deduped: !!r.deduped } })
-      return r
+      // v5：task.create（task 域 task_create 命令）接管（05-task §1.7），fail-closed
+      const args = { program_id: programId, objective, phase: String(p.phase || ''), priority: Number(p.priority) || 5 }
+      if (schedule) args.schedule = schedule
+      if (p.provider) args.provider = String(p.provider)
+      if (p.model) args.model = String(p.model)
+      if (p.reasoning_effort) args.reasoning_effort = String(p.reasoning_effort)
+      const r = await busDispatch('task', 'create', args, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, id: r.data?.task_id, deduped: !!r.data?.deduped, ...(r.data || {}) }
     }
     case 'sessions':
       return deps.sessionsList(String(p.workspace_id || ''))
@@ -838,421 +553,151 @@ export async function handleDashboardRpc(endpoint, payload) {
       if (!id || !FINDING_TAG_STATUS.includes(status)) {
         throw new Error(`findingUpdate 需要合法 id 与 status（${FINDING_TAG_STATUS.join('/')}）`)
       }
-      // v5：分派别名 finding_update → 语义动词（02-vuln §3.2 / §1.7）；v4 updateFinding 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('', 'finding_update', {
-            finding_id: id, status,
-            note: String(p.note || ''), bounty: p.bounty ?? null, vendor_status: String(p.vendor_status || ''),
-          }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null, session_id: null })
-          if (r.ok) return { ok: true, id: (r.data && Number.isInteger(Number(r.data.id))) ? Number(r.data.id) : id, ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg)
-          err.code = r.error?.code
-          throw err
-        } catch (e) {
-          // 总线缺席/域未注册才兜底 v4；域业务错误（E_STATE/E_EVIDENCE_REQUIRED 等收紧）不静默降级
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN' || e.code === 'E_BUS_ALIAS_DANGLING') {
-            const r = deps.assetDb.updateFinding({ id, status, note: String(p.note || ''), bounty: p.bounty, vendor_status: String(p.vendor_status || '') })
-            deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.findingUpdate', decision: 'executed', detail: { id, status, bounty: p.bounty ?? null } })
-            return r
-          }
-          throw e
-        }
-      }
-      const r = deps.assetDb.updateFinding({ id, status, note: String(p.note || ''), bounty: p.bounty, vendor_status: String(p.vendor_status || '') })
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.findingUpdate', decision: 'executed', detail: { id, status, bounty: p.bounty ?? null } })
-      return r
+      // v5：分派别名 finding_update → 语义动词（02-vuln §3.2 / §1.7），fail-closed
+      const r = await busDispatch('', 'finding_update', {
+        finding_id: id, status,
+        note: String(p.note || ''), bounty: p.bounty ?? null, vendor_status: String(p.vendor_status || ''),
+      }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null, session_id: null })
+      return { ok: true, id: (r.data && Number.isInteger(Number(r.data.id))) ? Number(r.data.id) : id, ...(r.data || {}) }
     }
     case 'factCorrect': {
       const programId = String(p.program_id || '')
       const factKey = String(p.fact_key || '')
       if (!programId || !factKey) throw new Error('factCorrect 需要 program_id 与 fact_key')
-      // v5：fact.correct 接管（06-fact §1.7）；v4 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('fact', 'correct', {
-            program_id: programId, fact_key: factKey,
-            category: p.category !== undefined && p.category !== null ? String(p.category) : undefined,
-            summary: p.summary !== undefined && p.summary !== null ? String(p.summary) : undefined,
-            body: p.body !== undefined && p.body !== null ? String(p.body) : undefined,
-            evidence: String(p.evidence || '人工复核确认'),
-          }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
-      }
-      const cur = deps.assetDb.factGet(programId, factKey)
-      if (!cur) return { ok: false, error: `fact 不存在: ${programId}/${factKey}` }
-      const r = deps.assetDb.factUpsert({
+      // v5：fact.correct 接管（06-fact §1.7），fail-closed
+      const r = await busDispatch('fact', 'correct', {
         program_id: programId, fact_key: factKey,
-        category: p.category !== undefined && p.category !== null ? String(p.category) : cur.category,
-        summary: p.summary !== undefined && p.summary !== null ? String(p.summary) : cur.summary,
-        body: p.body !== undefined && p.body !== null ? String(p.body) : cur.body,
-        confidence: 'confirmed',
-        pinned: cur.pinned, related_finding_id: cur.related_finding_id, source: cur.source,
-      })
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.factCorrect', decision: 'executed', detail: { program_id: programId, fact_key: factKey } })
-      return r
+        category: p.category !== undefined && p.category !== null ? String(p.category) : undefined,
+        summary: p.summary !== undefined && p.summary !== null ? String(p.summary) : undefined,
+        body: p.body !== undefined && p.body !== null ? String(p.body) : undefined,
+        evidence: String(p.evidence || '人工复核确认'),
+      }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
     }
     case 'factDeprecate': {
       const programId = String(p.program_id || '')
       const factKey = String(p.fact_key || '')
       if (!programId || !factKey) throw new Error('factDeprecate 需要 program_id 与 fact_key')
-      // v5：fact.deprecate 接管；v4 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('fact', 'deprecate', {
-            program_id: programId, fact_key: factKey, reason: String(p.reason || '看板弃置（证伪）'),
-          }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, ...(r.data || {}) }
-          const msg = String(r.error?.message || '未知错误') + (r.error?.hint ? `（${r.error.hint}）` : '')
-          const err = new Error(msg); err.code = r.error?.code; throw err
-        } catch (e) {
-          if (!e || !e.code || e.code === 'E_BUS_DOMAIN_UNKNOWN' || e.code === 'E_BUS_VERB_UNKNOWN') { /* v4 兜底 */ }
-          else throw e
-        }
-      }
-      const cur = deps.assetDb.factGet(programId, factKey)
-      if (!cur) return { ok: false, error: `fact 不存在: ${programId}/${factKey}` }
-      const r = deps.assetDb.factUpsert({
-        program_id: programId, fact_key: factKey,
-        category: cur.category, summary: cur.summary, body: cur.body,
-        confidence: 'deprecated', pinned: cur.pinned,
-        related_finding_id: cur.related_finding_id, source: cur.source,
-      })
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.factDeprecate', decision: 'executed', detail: { program_id: programId, fact_key: factKey } })
-      return r
+      // v5：fact.deprecate 接管，fail-closed
+      const r = await busDispatch('fact', 'deprecate', {
+        program_id: programId, fact_key: factKey, reason: String(p.reason || '看板弃置（证伪）'),
+      }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
     }
     // ---- 记忆治理（memcore）：知识 tab ----
     case 'memcore':
       return deps.exp.memStatus()
     case 'expCards': {
-      // v5：know.exp_list 接管（07-know §1.7）；v4 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try { const r = await bus.query('know', 'exp_list', { reader: 'review', limit: 200 }, { actor: 'dashboard' }); if (r.ok && Array.isArray(r.rows)) return { rows: r.rows } } catch { /* v4 兜底 */ }
-      }
-      const memCols = deps.exp.memStatus().loaded
-        ? ', status, score, uses, adopted, pos_fb, neg_fb, justification, mem_class, exportable' : ''
-      const rows = deps.assetDb.getDb().prepare(
-        `SELECT id, scenario, takeaway, source, confidence, last_validated_at, created_at${memCols} FROM exp_cards ORDER BY ${memCols ? 'score DESC, ' : ''}last_validated_at DESC LIMIT 200`).all()
-      return { rows: rows.map((r) => ({ ...r })) }
+      // v5：know.exp_list 接管（07-know §1.7），fail-closed
+      const r = await busQuery('know', 'exp_list', { reader: 'review', limit: 200 })
+      return { rows: r.rows }
     }
     case 'expFeedback': {
       const id = Number(p.id)
       const verdict = String(p.verdict || '')
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('know', 'exp_feedback', { id, verdict, source: 'dashboard' }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, ...(r.data || {}) }
-        } catch { /* 总线异常 → fail-closed（L4 起无 legacy 直写兜底） */ }
-      }
-      // L4（自学习 §6.2）：exp 写路径唯一入口 = 总线 know 域；legacy 直写兜底已拆除
-      throw new Error('expFeedback 需要总线 know 域在线（L4 起已拆除 legacy 直写兜底）；请确认 silksecagent 服务运行后重试')
+      // L4（自学习 §6.2）：exp 写路径唯一入口 = 总线 know 域，fail-closed
+      const r = await busDispatch('know', 'exp_feedback', { id, verdict, source: 'dashboard' }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
     }
     case 'expPromote': {
       const id = Number(p.id)
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('know', 'exp_promote', { id, evidence: String(p.reason || '看板人工晋升') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, ...(r.data || {}) }
-        } catch { /* 总线异常 → fail-closed（L4 起无 legacy 直写兜底） */ }
-      }
-      throw new Error('expPromote 需要总线 know 域在线（L4 起已拆除 legacy 直写兜底）；请确认 silksecagent 服务运行后重试')
+      const r = await busDispatch('know', 'exp_promote', { id, evidence: String(p.reason || '看板人工晋升') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
     }
     case 'expDeprecate': {
       const id = Number(p.id)
       const reason = String(p.reason || '看板弃置')
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('know', 'exp_deprecate', { id, reason }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, ...(r.data || {}) }
-        } catch { /* 总线异常 → fail-closed（L4 起无 legacy 直写兜底） */ }
-      }
-      throw new Error('expDeprecate 需要总线 know 域在线（L4 起已拆除 legacy 直写兜底）；请确认 silksecagent 服务运行后重试')
+      const r = await busDispatch('know', 'exp_deprecate', { id, reason }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
     }
     case 'expUpdate': {
       const id = Number(p.id)
       const justification = String(p.justification || '')
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.dispatch('know', 'exp_update', { id, takeaway: p.takeaway, justification }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, ...(r.data || {}) }
-        } catch { /* 总线异常 → fail-closed（L4 起无 legacy 直写兜底） */ }
-      }
-      throw new Error('expUpdate 需要总线 know 域在线（L4 起已拆除 legacy 直写兜底）；请确认 silksecagent 服务运行后重试')
+      const r = await busDispatch('know', 'exp_update', { id, takeaway: p.takeaway, justification }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
     }
     case 'expExportable': {
       const id = Number(p.id)
       const on = p.exportable ? 1 : 0
       if (!id) throw new Error('expExportable 需要 id')
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const reason = on ? '看板批准导出' : '看板撤销导出'
-          const r = on
-            ? await bus.dispatch('know', 'exp_approve_export', { id, reason }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-            : await bus.dispatch('know', 'exp_revoke_export', { id, reason }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
-          if (r.ok) return { ok: true, id, exportable: on }
-        } catch { /* 总线异常 → fail-closed（L4 起无 legacy 直写兜底） */ }
-      }
-      throw new Error('expExportable 需要总线 know 域在线（L4 起已拆除 legacy 直写兜底）；请确认 silksecagent 服务运行后重试')
+      const reason = on ? '看板批准导出' : '看板撤销导出'
+      const r = on
+        ? await busDispatch('know', 'exp_approve_export', { id, reason }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+        : await busDispatch('know', 'exp_revoke_export', { id, reason }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, id, exportable: on, ...(r.data || {}) }
     }
     case 'playbooks': {
-      // v5：know.exp_rank（pbRank 视图）接管；v4 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('know', 'exp_rank', {}, { actor: 'dashboard' })
-          if (r.ok && r.data && Array.isArray(r.data.playbooks)) return { rows: r.data.playbooks.map((x) => ({ ...x, last_run_at: null })) }
-        } catch { /* v4 兜底 */ }
-      }
-      const rows = deps.assetDb.getDb().prepare("SELECT id, scenario AS name, scenario, takeaway, chain, runs, successes, last_validated_at AS last_run_at, status FROM exp_cards WHERE kind = 'playbook' ORDER BY runs DESC LIMIT 100").all()
-      return { rows: rows.map((r) => ({ ...r, success_rate: r.runs ? Math.round((r.successes / r.runs) * 100) / 100 : 0 })) }
+      // v5：know.exp_rank（pbRank 视图）接管，fail-closed
+      const r = await busQuery('know', 'exp_rank', {})
+      const playbooks = (r.data && Array.isArray(r.data.playbooks)) ? r.data.playbooks : []
+      return { rows: playbooks.map((x) => ({ ...x, last_run_at: null })) }
     }
     // ---- v4.6 知识全景（knowledge tab 分区数据）：kbList 文献浏览 / factOverview 事实分类计数 ----
     // kbList：kb_docs 检索面全量分页（curated 与 external 混排，curated 排前）；kbRead 读单篇正文。
     case 'kbList': {
-      // v5：know.kb_list 接管（07-know §1.7）；v4 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('know', 'kb_list', { q: String(p.q || ''), status: String(p.kind === 'curated' ? 'curated' : (p.kind === 'external' ? 'active' : '')), limit: 200 }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, counts: r.counts || { curated: 0, external: 0, tainted: 0, zero_use: 0 } }
-        } catch { /* v4 兜底 */ }
-      }
-      const d = deps.assetDb.getDb()
-      const q = String(p.q || '').toLowerCase()
-      const kindFilter = String(p.kind || '')
-      let rows
-      if (q) {
-        rows = d.prepare(`SELECT id, title, file, source_url, tainted, imported_at, status, uses, revalidate_by FROM kb_docs
-          WHERE (title LIKE ? OR file LIKE ?) AND status != 'archived'
-          ${kindFilter ? (kindFilter === 'curated' ? "AND status = 'curated'" : "AND status != 'curated'") : ''}
-          ORDER BY (status = 'curated') DESC, uses DESC, imported_at DESC LIMIT 200`).all(`%${q}%`, `%${q}%`)
-      } else {
-        rows = d.prepare(`SELECT id, title, file, source_url, tainted, imported_at, status, uses, revalidate_by FROM kb_docs
-          WHERE status != 'archived'
-          ${kindFilter ? (kindFilter === 'curated' ? "AND status = 'curated'" : "AND status != 'curated'") : ''}
-          ORDER BY (status = 'curated') DESC, uses DESC, imported_at DESC LIMIT 200`).all()
-      }
-      const counts = {
-        curated: d.prepare("SELECT COUNT(*) AS n FROM kb_docs WHERE status = 'curated' AND status != 'archived'").get().n,
-        external: d.prepare("SELECT COUNT(*) AS n FROM kb_docs WHERE status != 'curated' AND status != 'archived'").get().n,
-        tainted: d.prepare('SELECT COUNT(*) AS n FROM kb_docs WHERE tainted = 1').get().n,
-        zero_use: d.prepare("SELECT COUNT(*) AS n FROM kb_docs WHERE status != 'curated' AND (uses IS NULL OR uses = 0)").get().n,
-      }
-      return { rows: rows.map((r) => ({ ...r, curated: r.status === 'curated' ? 1 : 0 })), counts }
+      // v5：know.kb_list 接管（07-know §1.7），fail-closed
+      const r = await busQuery('know', 'kb_list', { q: String(p.q || ''), status: String(p.kind === 'curated' ? 'curated' : (p.kind === 'external' ? 'active' : '')), limit: 200 })
+      return { rows: r.rows, counts: r.counts || { curated: 0, external: 0, tainted: 0, zero_use: 0 } }
     }
     case 'kbRead': {
       const id = Number(p.id || 0)
-      // v5：know.kb_read 接管；v4 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try { const r = await bus.query('know', 'kb_read', { doc_id: id }, { actor: 'dashboard' }); if (r.ok && r.data) return r.data } catch { /* v4 兜底 */ }
-      }
-      const d = deps.assetDb.getDb()
-      const doc = d.prepare('SELECT * FROM kb_docs WHERE id = ?').get(id)
-      if (!doc) throw new Error(`文献不存在: #${id}`)
-      const fs = await import('node:fs')
-      if (!fs.existsSync(doc.file)) throw new Error(`文件缺失: ${doc.file}`)
-      const st = fs.statSync(doc.file)
-      if (st.size > 512 * 1024) throw new Error('文件过大（>512KB），请在主机查看')
-      return { id: doc.id, title: doc.title, file: doc.file, source_url: doc.source_url, curated: doc.status === 'curated', tainted: !!doc.tainted, content: fs.readFileSync(doc.file, 'utf8'), size: st.size }
+      // v5：know.kb_read 接管，fail-closed
+      const r = await busQuery('know', 'kb_read', { doc_id: id })
+      return r.data
     }
     // factOverview：知识 tab 事实区分类计数（active/cooling + mem_class 分布）——facts 全量列表在事实 tab
     case 'factOverview': {
-      // v5：fact.overview 接管（06-fact §1.7）；v4 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try { const r = await bus.query('fact', 'overview', {}, { actor: 'dashboard' }); if (r.ok && r.data) return r.data } catch { /* v4 兜底 */ }
-      }
-      const d = deps.assetDb.getDb()
-      const cats = d.prepare("SELECT category, mem_class, COUNT(*) AS n FROM facts WHERE status = 'active' GROUP BY category, mem_class").all()
-      const byCategory = {}
-      for (const r of cats) {
-        byCategory[r.category || '(空)'] = byCategory[r.category || '(空)'] || { total: 0, durable: 0, ephemeral: 0 }
-        byCategory[r.category || '(空)'].total += r.n
-        if (r.mem_class === 'ephemeral') byCategory[r.category || '(空)'].ephemeral += r.n
-        else byCategory[r.category || '(空)'].durable += r.n
-      }
-      const board = d.prepare("SELECT COUNT(*) AS n FROM blackboard WHERE status = 'active'").get().n
-      const envIssues = d.prepare("SELECT COUNT(*) AS n FROM blackboard WHERE status = 'active' AND key LIKE '[env-issue]%'").get().n
-      return { byCategory, total: d.prepare("SELECT COUNT(*) AS n FROM facts WHERE status = 'active'").get().n, blackboard: { active: board, envIssues } }
+      // v5：fact.overview 接管（06-fact §1.7），fail-closed
+      const r = await busQuery('fact', 'overview', {})
+      return r.data
     }
     // ---- 静态先验 rules/（知识 tab v4.4：人工蒸馏先验层此前无任何观测入口）----
     // 只读两件套：rulesList（目录树+元数据）/ rulesRead（单文件内容，防路径穿越）。写入口仍是 seed-skills.sh 版本受控通道。
     case 'rulesList': {
-      // v5：know.rule_list 接管（07-know §1.7）；v4 兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('know', 'rule_list', { q: String(p.q || ''), limit: 500 }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) return { rows: r.rows, dirs: r.dirs || [] }
-        } catch { /* v4 兜底 */ }
-      }
-      const base = path.join(deps.dataDir, 'rules')
-      const qFilter = String(p.q || '').toLowerCase()
-      const out = []
-      const walk = (dir, rel) => {
-        let entries
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
-        for (const e of entries) {
-          const rp = rel ? `${rel}/${e.name}` : e.name
-          if (e.isDirectory()) walk(path.join(dir, e.name), rp)
-          else if (e.name.endsWith('.md')) {
-            const st = fs.statSync(path.join(dir, e.name))
-            out.push({ file: rp, mtime: st.mtimeMs, size: st.size, dir: rel || '' })
-          }
-        }
-      }
-      walk(base, '')
-      for (const r of out) {
-        try {
-          const head = fs.readFileSync(path.join(base, r.file), 'utf8').slice(0, 2048)
-          r.title = (head.match(/^#\s+(.+)$/m) || [])[1] || ''
-        } catch { r.title = '' }
-      }
-      const filtered = qFilter ? out.filter((r) => r.file.toLowerCase().includes(qFilter) || (r.title || '').toLowerCase().includes(qFilter)) : out
-      filtered.sort((a, b) => a.file.localeCompare(b.file))
-      return { rows: filtered, dirs: [...new Set(out.map((r) => r.dir))].sort() }
+      // v5：know.rule_list 接管（07-know §1.7），fail-closed
+      const r = await busQuery('know', 'rule_list', { q: String(p.q || ''), limit: 500 })
+      return { rows: r.rows, dirs: r.dirs || [] }
     }
     case 'rulesRead': {
-      // v5：know.rule_read 接管；v4 兜底（观察期）
+      // v5：know.rule_read 接管，fail-closed
       const rel0 = String(p.file || '').replace(/^\/+/, '')
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try { const r = await bus.query('know', 'rule_read', { path: rel0 }, { actor: 'dashboard' }); if (r.ok && r.data && r.data.content) return r.data } catch { /* v4 兜底 */ }
-      }
-      const base = path.join(deps.dataDir, 'rules')
-      const full = path.resolve(base, rel0)
-      if (!full.startsWith(base + path.sep)) throw new Error('非法路径')
-      if (!fs.existsSync(full)) throw new Error(`先验文件不存在: ${rel0}`)
-      const st = fs.statSync(full)
-      if (st.size > 512 * 1024) throw new Error('文件过大（>512KB），请在主机查看')
-      return { file: rel0, content: fs.readFileSync(full, 'utf8'), mtime: st.mtimeMs, size: st.size }
+      const r = await busQuery('know', 'rule_read', { path: rel0 })
+      return r.data
     }
     // ---- 知识覆盖缺口（知识 tab：攻面 × rules/VC 卡交叉表，MINDMAP 式空行即缺口）----
     // 返回 { ok, generated_at, taxonomy[], summary{}, cached, regenerated }；
     // 失败时 { ok: false, error, stale: <旧 JSON 或 null> }。payload.refresh=true 强制重新生成。
     case 'knowledgeCoverage': {
-      // v5：know.know_coverage 接管（缓存直读）；v4 现场生成兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('know', 'coverage', { refresh: !!p.refresh }, { actor: 'dashboard' })
-          if (r.ok && r.data && r.data.taxonomy_total) return { ok: true, ...r.data, cached: true }
-        } catch { /* v4 兜底 */ }
-      }
-      const out = path.join(deps.dataDir, 'knowledge-coverage.json')
-      let stale = null
-      let fresh = false
-      try {
-        stale = JSON.parse(fs.readFileSync(out, 'utf8'))
-        fresh = Date.now() - fs.statSync(out).mtimeMs < COVERAGE_FRESH_MS
-      } catch { stale = null }
-      if (stale && fresh && !p.refresh) return { ok: true, ...stale, cached: true }
-      const script = locateCoverageScript()
-      if (!script) {
-        return { ok: false, error: 'knowledge-coverage.py 未找到（部署后应位于 scripts/pipeline/ 或 data-seed/scripts/）', stale }
-      }
-      const r = await runCoverageScript(script, out)
-      if (!r.ok) return { ok: false, error: r.error, stale }
-      deps.audit({ ts: Date.now(), run_id: '-', tool: 'dashboard.knowledgeCoverage', decision: 'executed', detail: { script, out, refresh: !!p.refresh } })
-      return { ok: true, ...r.data, cached: false, regenerated: true }
+      // v5：know.coverage 接管（缓存直读，refresh 由 know 域算法层承接），fail-closed
+      const r = await busQuery('know', 'coverage', { refresh: !!p.refresh })
+      return { ok: true, ...(r.data || {}), cached: true }
     }
     // ---- 报告查看（只读）----
     // v4.3：列表元数据化——文件名解析 program/date（report-{prog}-{YYYYMMDD-HHmm}.md，旧 report-{ts}.md 回退 mtime），
     // 首行 # 标题；支持 program/q 筛选，供看板按项目分组。
     case 'reports': {
-      // v5：report.list（report 域 report_list 查询，索引直出）接管（12-report §1.7）；v4 文件名解析兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const r = await bus.query('report', 'list', { program: String(p.program || ''), q: String(p.q || ''), limit: 200 }, { actor: 'dashboard' })
-          if (r.ok && Array.isArray(r.rows)) {
-            const base = path.join(deps.dataDir, 'reports')
-            const fmt = (ts) => {
-              if (!ts) return ''
-              const d = new Date(ts + 8 * 3600 * 1000)
-              const p2 = (n) => String(n).padStart(2, '0')
-              return `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}-${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}`
-            }
-            const rows = r.rows.map((x) => {
-              let size = 0, mtime = Number(x.generated_at) || 0
-              try { const st = fs.statSync(path.join(base, x.file)); size = st.size; mtime = st.mtimeMs } catch { /* 索引行无文件 → size 0 */ }
-              return { file: x.file, program: x.program || '', date: fmt(Number(x.generated_at) || 0) || (x.date || ''), title: x.title || '', size, mtime }
-            })
-            const programs = [...new Set(rows.map((x) => x.program || 'all'))].sort()
-            return { rows, programs }
-          }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
+      // v5：report.list（report 域 report_list 查询，索引直出）接管（12-report §1.7），fail-closed
+      const r = await busQuery('report', 'list', { program: String(p.program || ''), q: String(p.q || ''), limit: 200 })
       const base = path.join(deps.dataDir, 'reports')
-      const programFilter = String(p.program || '').toLowerCase()
-      const qFilter = String(p.q || '').toLowerCase()
-      const out = []
-      const walk = (dir, rel) => {
-        let entries
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
-        for (const e of entries) {
-          const rp = rel ? `${rel}/${e.name}` : e.name
-          if (e.isDirectory()) walk(path.join(dir, e.name), rp)
-          else if (e.name.endsWith('.md')) {
-            const st = fs.statSync(path.join(dir, e.name))
-            out.push({ file: rp, mtime: st.mtimeMs, size: st.size })
-          }
-        }
+      const fmt = (ts) => {
+        if (!ts) return ''
+        const d = new Date(ts + 8 * 3600 * 1000)
+        const p2 = (n) => String(n).padStart(2, '0')
+        return `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}-${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}`
       }
-      walk(base, '')
-      // 元数据抽取：新命名 report-{program}-{YYYYMMDD-HHmm}.md；标题读首行（仅前 4KB，控制开销）
-      for (const r of out) {
-        const m = r.file.match(/report-([a-z0-9_-]+)-(\d{8}-\d{4})\.md$/i)
-        r.program = m ? m[1] : ''
-        r.date = m ? m[2] : ''
-        if (!r.date) { const d = new Date(r.mtime); const pad = (n) => String(n).padStart(2, '0'); r.date = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}` }
-        try {
-          const head = fs.readFileSync(path.join(base, r.file), 'utf8').slice(0, 4096)
-          r.title = (head.match(/^#\s+(.+)$/m) || [])[1] || ''
-        } catch { r.title = '' }
-      }
-      const filtered = out.filter((r) => {
-        if (programFilter && programFilter !== 'all' && (r.program || 'all') !== programFilter) return false
-        if (qFilter && !(r.file.toLowerCase().includes(qFilter) || (r.title || '').toLowerCase().includes(qFilter) || r.program.includes(qFilter))) return false
-        return true
+      const rows = (r.rows || []).map((x) => {
+        let size = 0, mtime = Number(x.generated_at) || 0
+        try { const st = fs.statSync(path.join(base, x.file)); size = st.size; mtime = st.mtimeMs } catch { /* 索引行无文件 → size 0 */ }
+        return { file: x.file, program: x.program || '', date: fmt(Number(x.generated_at) || 0) || (x.date || ''), title: x.title || '', size, mtime }
       })
-      filtered.sort((a, b) => b.mtime - a.mtime)
-      return { rows: filtered.slice(0, 200), programs: [...new Set(out.map((r) => r.program || 'all'))].sort() }
+      const programs = [...new Set(rows.map((x) => x.program || 'all'))].sort()
+      return { rows, programs }
     }
     case 'reportRead': {
-      // v5：report.read（report 域 report_read 查询）接管（12-report §1.7）；v4 直读兜底（观察期）
-      const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
-      if (bus) {
-        try {
-          const rel0 = String(p.file || '').replace(/^\/+/, '')
-          const r = await bus.query('report', 'read', { file: rel0 }, { actor: 'dashboard' })
-          if (r.ok && r.data && r.data.content) return { file: r.data.file, content: r.data.content, truncated: !!r.data.truncated, size: r.data.size }
-        } catch { /* 总线查询异常 → v4 兜底 */ }
-      }
-      const base = path.join(deps.dataDir, 'reports')
-      const rel = String(p.file || '').replace(/^\/+/, '')
-      const full = path.resolve(base, rel)
-      if (!full.startsWith(base + path.sep)) throw new Error('非法路径')
-      if (!fs.existsSync(full)) throw new Error(`报告不存在: ${rel}`)
-      const content = fs.readFileSync(full, 'utf8')
-      return { file: rel, content: content.slice(0, 300000), truncated: content.length > 300000 }
+      // v5：report.read（report 域 report_read 查询）接管（12-report §1.7），fail-closed
+      const rel0 = String(p.file || '').replace(/^\/+/, '')
+      const r = await busQuery('report', 'read', { file: rel0 })
+      return { file: r.data?.file, content: r.data?.content, truncated: !!r.data?.truncated, size: r.data?.size }
     }
     default:
       throw new Error(`未知看板端点: ${endpoint}`)

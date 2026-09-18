@@ -88,6 +88,7 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 | 16 | [dashboard](16-dashboard.md) | 看板壳 + 域视图插件化 + RPC 投影消费 | client 资源 | 定稿 |
 | 17 | [llm-surface](17-llm-surface.md) | LLM 工具面/挂载矩阵/prompt 体系对接 | — | 定稿 |
 | 18 | [migration](18-migration.md) | 迁移路线 Phase 0-5/回滚/数据修复 | — | 定稿 |
+| 19 | [ui-surface](19-ui-surface.md) | 看板 UI 原生面集成：表面分散 + 原子化隔离 + 会话深度绑定 | client 资源 | 定稿 |
 
 **依赖关系速览**：bus 是所有域的宿主；vuln/asset/endpoint/fact/know 相互只通过事件联动；scope 是 exec 的前置（守卫链）；approval 只发事件不直写任何域；ledger 订阅 exec 产物；task 调 exec 派生 worker；memcore 订阅全部域的 lifecycle 事件。
 
