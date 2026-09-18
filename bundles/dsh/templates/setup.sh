@@ -378,6 +378,11 @@ if [ -f "$BASE_DIR/silksec-ui-settings-scope-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-settings-scope-plugin-setup.sh"
 fi
 
+# -------------------- 8.6.8 会话内绑定（ui-session，19-ui-surface P5；conversation.view 安全产出 + 会话头钮 + assistant-actions；消费 ui-core） --------------------
+if [ -f "$BASE_DIR/silksec-ui-session-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/silksec-ui-session-plugin-setup.sh"
+fi
+
 # -------------------- 8.7 安全看板客户端插件（DSH Web UI slot，inject ui-core；保留 Modal 降级入口） --------------------
 if [ -f "$BASE_DIR/sec-dashboard-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-dashboard-plugin-setup.sh"

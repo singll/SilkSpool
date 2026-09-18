@@ -82,8 +82,12 @@ packages:
     client_entry: true
     inject: ["@deepseek-ai/dsh-client-ui-settings", "@silksec/ui-core"]
   - id: "@silksec/ui-session"
+    file_prefix: dsh-plugin-silksec-ui-session
     phase: P5
-    status: planned
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-chat", "@silksec/ui-core"]
 
 # ── 逐面挂点声明 ────────────────────────────────────────────────────────────
 # 字段：slots=注册的槽（name 形态）；slots_inject=ctx 级注入的槽；services_provide
@@ -323,24 +327,62 @@ surfaces:
   - id: session
     package: "@silksec/ui-session"
     phase: P5
-    status: planned
-    role: 会话内安全产出绑定（header 钮 + conversation.view + 消息动作）
+    status: implemented
+    role: 会话内安全产出绑定（会话头钮 + conversation.view 安全视图 + assistant-actions 登记/沉淀）
+    implementation:
+      client: dsh-plugin-silksec-ui-session.client.js
+      host: dsh-plugin-silksec-ui-session.index.js
+      setup: silksec-ui-session-plugin-setup.sh
+      tests: dsh-plugin-silksec-ui-session.client.test.mjs（17 例）
     slots:
-      - conversation.view                          # list：ViewTab { id, label }
-      - conversation.session.header.utilities      # list，右对齐
-      - conversation.chat.assistant-actions        # list，owner { messageId }（additive）
+      - conversation.view                          # list/session；ViewTab{id,label} 由 options 投影（id=silksec-security，label 函数「安全产出」；order 60）
+      - conversation.session.header.utilities      # list/session，右对齐；id=silksec-security-header，运行时 props 含 sessionId + selectView（P3 同槽先例）
+      - conversation.chat.assistant-actions        # list/session，owner { messageId }（additive；id=silksec-message-actions，order 30；每 messageId 两动作）
     services_consume:
-      - sessions.open                              # ctx.sessions.open(sessionId) 跳链
+      - sessions.open                              # ctx.sessions.open(sessionId) 行内跳链（会话内视图行）
+      - sidebarRight.openTab                       # 反向回路：打开审批中心（缺失经 secUiBus/layout.selectPanel 降级）
+      - layout.selectPanel                         # 反向回路：打开看板主面板（silksec-dashboard）
+      - slots.register
+      - slots.inject                               # 声明生命周期注册（时序纪律；任一会话槽缺席静默降级）
+      - slots.spec                                 # 能力探测会话槽声明是否存在（非版本判断）
+      - connection.rpc.call                        # /silksec-dashboard → findings/facts/scheduledTasks/tasks/taskRuns/programs（读）
+                                                   # /silksec-domain → vuln.finding_add（登记候选漏洞）/ fact.upsert（沉淀事实）（写，actor=dashboard）
+    owner_props_consume:
+      - ConversationHeaderActionOwnerProps         # conversation.session.header.utilities owner（children?: never）；运行时 props 含 sessionId / selectView（ConversationSessionHeaderInjected）
+      - AssistantActionOwnerProps                  # conversation.chat.assistant-actions owner { messageId }
+      - ConvViewOwnerProps                         # conversation.view owner（viewRequest/openView/completeViewRequest；本面只读 view 生命周期）
     primitives:
-      - Modal
-      - RiskConfirmation
+      - Modal                                      # 登记/沉淀小表单（缺席自绘 fixed 覆盖层）
+      - RiskConfirmation                           # 写操作二次确认（open/title/description/acknowledgeLabel/cancelLabel/confirmLabel/acknowledged/onAcknowledgedChange/onCancel/onConfirm；缺席退 window.confirm）
+      - Tooltip                                     # 图标/按钮 title 悬停纪律（label/side/delayMs；缺席退回 title）
+    primitives_deferred:
+      - Pill                                       # 本面状态/标签胶囊走 ui-core 令牌 pill 样式自绘，不消费 primitives Pill
+      - StateDot                                   # 本面无独立状态点需求（状态走 pill 文案）
     icons:
-      - IconChecklistOutline
+      - IconChecklistOutline                       # 「安全产出」语义（会话头钮、视图页签上下文、动作行）
     degradation:
-      - 各会话槽
-      - 缺席 → 不注册（会话面无全局影响）
+      - conversation.view + conversation.session.header.utilities + conversation.chat.assistant-actions 三处 additive
+      - 任一会话槽缺席 → 不注册该面（会话面无全局影响，不抛）
+      - 三槽全缺席 → 仅 markSurfaceHealth('ui-session','degraded')，不注册、不改主面板 11 视图
+      - selectView API 缺席 → openSecurityView 退 secUiBus emit('open:security-view') 不抛
+      - primitives.Modal/RiskConfirmation/Tooltip 缺席 → 自绘覆盖层 / window.confirm / title 兜底
+    rollback:
+      - 从 web profile 移除 @silksec/ui-session（会话头钮/安全视图/消息动作消失；主面板 legacy 11 视图零变化）
     slots_avoid:
-      - conversation.chat.turnTail                 # chain 槽，纪律：不碰
+      - conversation.chat.turnTail                 # chain 槽首匹配即占用，纪律：不碰
+    notes:
+      - "按生产者会话 id 过滤：finding/task/task_run 落 session_id 列直接过滤；fact 表无 session_id 列
+         （跨会话自然键），本面「沉淀事实」写入时把会话 id 编进 source=`dashboard:session:<id>`，视图按 source 解析归属
+         （既有无归属 fact 不显示）。测试用两会话数据交叉断言不混入。"
+      - "写操作依据（实测修正 ⑥ 的端点决策）：domain 语义动词 vuln.register_candidate actor 白名单为 webhook/script
+         （dashboard 禁入），vuln.register_signal 为 model/human；看板 actor=dashboard 对二者均不可用，且纪律禁止改域动词/actor。
+         「登记候选漏洞」走 compat 分派别名 vuln.finding_add（severity=info → register_candidate 候选降级，dashboard actor_bypass，
+         审计记 deprecated_use + via_alias 可区分）；「沉淀事实」走 fact.upsert（actor 白名单含 dashboard）。
+         均经 RpcProjector /silksec-domain，actor=dashboard + operator 注入，审计留痕可区分。"
+      - "⚠️ 5.2 耦合备案：vuln.finding_add 是观察期兼容别名，P5 会话动作是其合法人工使用面；启用后 5.2 删别名须与
+        本面协调（改为新的受控候选通道或同步改端点），否则删除后本动作报 E_BUS_VERB_UNKNOWN。"
+      - "零颜色字面量（走 --dsw-alias-* / ui-core 令牌）；原子化隔离：ErrorBoundary 本面包，三处注册独立 fiber，互不传染。"
+    verified_dsh: "0.1.5-rc.2 (2026-09-18；@deepseek-ai/dsh-client-ui-conversation lib/types/client/contract/{slots,views}.d.ts 的 conversation.view kind=list scope=session owner=ConvViewOwnerProps + ViewTab{id,label} + ConversationSessionHeaderInjected.selectView 逐字核对；@deepseek-ai/dsh-client-ui-chat lib/types/client/contract/slots.d.ts 的 conversation.chat.assistant-actions kind=list scope=session owner=AssistantActionOwnerProps{messageId} 逐字核对；ui-trajectory/ui-message-feedback lib/client.js 官方 register({name,id,order,label,inject}) 先例核对；primitives 导出表实测含 Modal/RiskConfirmation/Tooltip/IconChecklistOutline)"
 
   - id: dashboard-domain-views
     package: 各域 dashboard-view.js（16-dashboard 既定架构）

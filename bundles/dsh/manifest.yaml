@@ -261,6 +261,12 @@ templates:
   - dsh-plugin-silksec-ui-settings-scope.patch.yml
   - dsh-plugin-silksec-ui-settings-scope.client.test.mjs
   - silksec-ui-settings-scope-plugin-setup.sh
+  # --- 会话内绑定（19-ui-surface P5：conversation.view 安全产出 + 会话头钮 + assistant-actions 登记/沉淀；消费 ui-core）---
+  - dsh-plugin-silksec-ui-session.index.js
+  - dsh-plugin-silksec-ui-session.client.js
+  - dsh-plugin-silksec-ui-session.patch.yml
+  - dsh-plugin-silksec-ui-session.client.test.mjs
+  - silksec-ui-session-plugin-setup.sh
   # --- 安全看板客户端插件（DSH Web UI slot，依赖 sec-suite 的 /silksec/dashboard RPC + ui-core）---
   - dsh-plugin-sec-dashboard.index.js
   - dsh-plugin-sec-dashboard.client.js
