@@ -1,0 +1,4 @@
+# silksec-ui-core bundle layer：把看板 UI 内核宿主半面挂进安装它的 profile
+- insert:
+    - id: silksec-ui-core
+      name: '@silksec/ui-core'

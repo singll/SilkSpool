@@ -1,0 +1,236 @@
+# ==============================================================================
+# ui-surface-deps — 看板 UI 原生面「官方挂点清单」（19-ui-surface §六.1）
+#
+# 作用：把每个 UI 包实际消费的 DSH 官方承载面（槽名 / 服务 / 方法 / primitives
+# 组件 / 官方图标）显式登记。DSH 升级（freeze→prepare→switch）时按新旧 tag diff
+# 清单内的挂点文件（dsh-client-ui-*/lib/types/** + primitives 导出表）：
+#   命中哪个面的清单 → 复验哪个面；未命中的面直接放行 → 「升级尽量不动」。
+#
+# 维护纪律：新增/改动一个面对官方挂点的消费 → 同一次提交更新本清单。
+# 契约版本：1 ｜ 设计真相源：doc/secagent/v5/19-ui-surface.md
+# ==============================================================================
+
+contract_version: 1
+design_doc: doc/secagent/v5/19-ui-surface.md
+
+verified_dsh:
+  version: 0.1.5-rc.2
+  verified_at: "2026-09-18"
+  method: >
+    对 csai 生产 npm 包 @deepseek-ai/dsh-client-ui-{layout,sidebar,sidebar-right,
+    conversation,chat,settings,primitives,slots} 的 lib/types/**.d.ts 逐字核对；
+    槽名以各 client/contract/slots.d.ts 的 keyed 声明为准，另以 dsh-client-modules
+    的 WebBootEntry 契约核对 dsh.client.inject 的跨包 factory 到达语义。
+  upgrade_policy: >
+    rc 间升级先 diff 本文件所引用的挂点（槽名/服务方法/primitives/图标）；
+    diff 未命中 → 只更新本文件的 verified_dsh 徽章，零代码改动；
+    命中 → 只动命中的面（适配层），并在本文件对应 surface 记录影响。
+
+# ── 开放问题 §九 #5：ui-core 跨 bundle require ──────────────────────────────
+# 结论：可行（P0 已本地契约验证 + csai 部署验证）。
+# 证据：dsh-client-modules 契约（lib/types/client/manifest.d.ts + lib/client.js）：
+#   - WebBootEntry.inject「names package rows whose factories must arrive before
+#     this row materializes」；
+#   - ClientModuleSystem.arriveGraphRow 对 row.inject 逐包 arrive 后，消费方
+#     factory 同步物化时 makeRequire 命中已注册 factory → 跨包 require 成功；
+#   - require('<pkg>/client') 与 require('<pkg>') 经 stripClientSuffix 归一。
+#   - 官方先例：client bundle require('@deepseek-ai/dsh-client-ui-primitives')。
+# 落地：@silksec/ui-core 独立 client bundle；sec-dashboard 在
+#   package.json dsh.client.inject 声明 "@silksec/ui-core" 后直接 require 内核。
+# 备选（未采用，仅在 inject 语义变更时启用）：ui-core 以源码并入各包构建。
+cross_bundle_require:
+  feasible: true
+  mechanism: dsh.client.inject + ModuleLoader 跨 bundle factory 到达
+  evidence: dsh-client-modules@0.1.5-rc.2 lib/types/client/manifest.d.ts · lib/client.js
+  consumer_example: "@silksec/sec-dashboard dsh.client.inject 含 @silksec/ui-core"
+  fallback: ui-core 源码并入各包构建（牺牲体积换零风险）
+
+# ── 包 → 面 ─────────────────────────────────────────────────────────────────
+packages:
+  - id: "@silksec/ui-core"
+    file_prefix: dsh-plugin-silksec-ui-core
+    phase: P0
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+  - id: "@silksec/ui-panel"
+    phase: P1
+    status: planned
+  - id: "@silksec/ui-approval"
+    phase: P2
+    status: planned
+  - id: "@silksec/ui-task"
+    phase: P3
+    status: planned
+  - id: "@silksec/ui-settings-scope"
+    phase: P4
+    status: planned
+  - id: "@silksec/ui-session"
+    phase: P5
+    status: planned
+
+# ── 逐面挂点声明 ────────────────────────────────────────────────────────────
+# 字段：slots=注册的槽（name 形态）；slots_inject=ctx 级注入的槽；services_provide
+# =本面提供的 cordis 客户端服务；services_consume=消费的官方服务/方法；primitives
+# =用到的官方可复用组件；icons=用到的官方图标；degradation=降级链。
+surfaces:
+  - id: ui-core
+    package: "@silksec/ui-core"
+    phase: P0
+    status: implemented
+    role: 共享内核（token/ErrorBoundary/hooks/secUiBus/视图注册表/共享组件）
+    slots: []
+    services_provide:
+      - secDashboardViews   # 视图注册表（16-dashboard §1.1 协议等价物）
+      - secUiBus            # 跨面客户端微事件（open:approval / refresh:badges …）
+    services_consume:
+      - slots               # ctx.inject 声明；仅经 ctx.get 读取，缺失不影响启动
+    primitives:
+      - Modal               # DocModal 容器（prim 缺失时降级为不渲染）
+    icons: []
+    dsh_client_inject: []
+    degradation: []
+
+  - id: dashboard-panel
+    package: "@silksec/ui-panel"
+    phase: P1
+    status: planned
+    role: 看板本体（主面板 + 侧边栏一级导航行 + footer 降级入口）
+    slots:
+      - main                          # keyed 槽（root；保留键 conversation）
+      - sidebar.panellist             # list 槽（owner props {size, active}）
+      - sidebar.footer.action         # list 槽（panellist 缺席时的降级入口）
+    services_consume:
+      - layout.selectPanel            # ctx.layout.selectPanel(id) / selectPanel(null)
+      - layout.beginNavigation        # ctx.layout.beginNavigation() → AbortSignal（防连点竞态）
+      - slots.register
+    primitives:
+      - Modal                         # 降级 2：现状 Modal 形态
+    icons: []
+    my_icons: [spoolIcon]
+    slots_avoid:
+      - conversation.chat.turnTail    # chain 槽首匹配即占用，纪律：不碰
+    degradation:
+      - main + sidebar.panellist + selectPanel
+      - sidebar.panellist 缺席 → sidebar.footer.action + selectPanel
+      - layout 缺席 → 现状 Modal（观察期保留）
+
+  - id: approval
+    package: "@silksec/ui-approval"
+    phase: P2
+    status: planned
+    role: 待审批待办（overlay 胶囊 + 快捷浮卡 + 审批右侧栏 tab）
+    slots:
+      - shell.overlay                 # list，root；additive 浮层
+      - sidebar.right.pane.tab        # keyed 槽（key=类型 id）承载 tab 体
+    services_consume:
+      - sidebarRightTabs.registerType # { id, kind, patterns?, priority, title, guide? }
+      - sidebarRight.openTab          # ctx.sidebarRight.openTab('silksec-approval')
+    primitives:
+      - Modal
+      - Pill
+      - StateDot
+      - HoverCard
+      - Tooltip
+      - RiskConfirmation
+    icons:
+      - IconWarningOutline
+      - IconChecklistOutline
+    degradation:
+      - shell.overlay + sidebarRightTabs
+      - sidebarRightTabs 缺席 → 同一视图挂主面板临时 tab（角标「降级」）
+      - 主面板也缺席 → Modal
+      - shell.overlay 缺席 → footer.action 按钮计数徽章
+
+  - id: task
+    package: "@silksec/ui-task"
+    phase: P3
+    status: planned
+    role: 任务右侧栏（定时任务卡片 + 一次性队列 + 执行历史）
+    slots:
+      - sidebar.right.pane.tab        # keyed
+      - conversation.session.header.utilities  # list，右对齐（本会话任务计数）
+    services_consume:
+      - sidebarRightTabs.registerType
+      - sidebarRight.openTab
+    primitives:
+      - Pill
+      - StateDot
+      - DisclosureRow
+      - Tooltip
+    icons:
+      - IconAlarmClockOutline
+      - IconQueueOutline
+    degradation:
+      - sidebarRightTabs
+      - 缺席 → 同一视图挂主面板临时 tab（角标「降级」）
+      - 主面板也缺席 → Modal
+
+  - id: settings-scope
+    package: "@silksec/ui-settings-scope"
+    phase: P4
+    status: planned
+    role: 「授权范围」设置节（scope.yml 管理 / 排除清单 / 凭据引用）
+    slots:
+      - settings.section              # list，root：注册整节新设置区
+    services_consume:
+      - slots.register
+    primitives: []
+    icons: []
+    degradation:
+      - settings.section
+      - 缺席 → 主面板「授权」tab（即现状）
+    note: >
+      设置行样式完全复用宿主（与 theme 插件 settings.general.item 同款），
+      只提供文案与控件值；本面不复用 settings.general.item（那是行级槽）。
+
+  - id: session
+    package: "@silksec/ui-session"
+    phase: P5
+    status: planned
+    role: 会话内安全产出绑定（header 钮 + conversation.view + 消息动作）
+    slots:
+      - conversation.view                          # list：ViewTab { id, label }
+      - conversation.session.header.utilities      # list，右对齐
+      - conversation.chat.assistant-actions        # list，owner { messageId }（additive）
+    services_consume:
+      - sessions.open                              # ctx.sessions.open(sessionId) 跳链
+    primitives:
+      - Modal
+      - RiskConfirmation
+    icons:
+      - IconChecklistOutline
+    degradation:
+      - 各会话槽
+      - 缺席 → 不注册（会话面无全局影响）
+    slots_avoid:
+      - conversation.chat.turnTail                 # chain 槽，纪律：不碰
+
+  - id: dashboard-domain-views
+    package: 各域 dashboard-view.js（16-dashboard 既定架构）
+    phase: P6
+    status: planned
+    role: 漏洞/资产/接口/事实/知识/报告/审计 逐域视图（挂 ui-panel 主面板）
+    slots: []                                       # 不直接注册官方槽，由 ui-panel 装配
+    services_consume:
+      - secDashboardViews                            # ui-core 注册表
+    primitives:
+      - Pill
+      - Tag
+      - StateDot
+      - DisclosureRow
+      - MarkdownText
+      - JsonTree
+    icons: []
+    degradation:
+      - requires 声明的域服务缺席 → 该 tab 静默隐藏
+
+# ── 明确不消费的官方面（避免误列 + 升级 diff 白名单） ───────────────────────
+not_used:
+  slots:
+    - conversation.chat.turnTail
+    - conversation.input.dock
+    - conversation.input.overlay
+    - settings.plugins.tab
+    - settings.general.item       # theme 插件持有，本设计不抢
+  patches: "宿主源码 patch（dshui/plugin-market 路线）——本项目纪律：永不走此路"

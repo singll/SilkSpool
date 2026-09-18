@@ -231,7 +231,13 @@ templates:
   - seed-manifests.sh
   - seed-skills.sh
   - seed-presets.sh
-  # --- 安全看板客户端插件（DSH Web UI slot，依赖 sec-suite 的 /silksec/dashboard RPC）---
+  # --- 安全看板 UI 内核（19-ui-surface P0：token/ErrorBoundary/hooks/secUiBus/视图注册表）---
+  - dsh-plugin-silksec-ui-core.index.js
+  - dsh-plugin-silksec-ui-core.client.js
+  - dsh-plugin-silksec-ui-core.patch.yml
+  - dsh-plugin-silksec-ui-core.client.test.mjs
+  - silksec-ui-core-plugin-setup.sh
+  # --- 安全看板客户端插件（DSH Web UI slot，依赖 sec-suite 的 /silksec/dashboard RPC + ui-core）---
   - dsh-plugin-sec-dashboard.index.js
   - dsh-plugin-sec-dashboard.client.js
   - dsh-plugin-sec-dashboard.patch.yml

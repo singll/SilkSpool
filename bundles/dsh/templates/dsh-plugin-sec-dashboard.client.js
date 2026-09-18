@@ -26,6 +26,10 @@ window.__ModuleLoader__.load({
     var React = require('react')
     var primitives = require('@deepseek-ai/dsh-client-ui-primitives')
     var Modal = (primitives && typeof primitives.Modal === 'function') ? primitives.Modal : null
+    // 19-ui-surface P0：跨 bundle require 看板 UI 内核（dsh.client.inject 声明随 setup 脚本）。
+    // 缺席（旧部署未装 ui-core）时静默降级为旧单体，行为不变。
+    var uiCore = null
+    try { uiCore = require('@silksec/ui-core') } catch (e) { uiCore = null }
     var el = React.createElement
 
     // ── 设计令牌 ─────────────────────────────────────────────────────────────
@@ -2799,9 +2803,39 @@ window.__ModuleLoader__.load({
           el(DashboardShell, null)))
     }
 
+    // ── 19-ui-surface P0：11 视图「原样登记」进 ui-core 视图注册表 ──────────────
+    // 仅登记（组件引用），不接管渲染——旧壳 DashboardShell 的 tab/content 路径完全不变，
+    // 行为零变化。P1 起由 ui-panel 消费该注册表。id 沿用旧 tab id；domain 为
+    // 16-dashboard §1.7 的域映射（P6 逐域拆分时改域 id）。注册幂等，重复 apply 安全。
+    function registerUiCoreViews() {
+      if (!uiCore || !uiCore.viewRegistry || typeof uiCore.viewRegistry.register !== 'function') return
+      var core = uiCore.viewRegistry
+      var defs = [
+        { id: 'findings', label: '漏洞', order: 20, domain: 'vuln', component: FindingsView },
+        { id: 'assets', label: '资产', order: 30, domain: 'asset', component: AssetsView },
+        { id: 'endpoints', label: '接口', order: 40, domain: 'endpoint', component: EndpointsView },
+        { id: 'facts', label: '事实', order: 50, domain: 'fact', component: FactsView },
+        { id: 'tasks', label: '任务', order: 60, domain: 'task', component: TasksView },
+        { id: 'knowledge', label: '知识', order: 70, domain: 'know', component: KnowledgeView },
+        { id: 'learning', label: '学习', order: 75, domain: 'know', component: LearningView },
+        { id: 'reports', label: '报告', order: 80, domain: 'report', component: ReportsView },
+        { id: 'approvals', label: '审批', order: 90, domain: 'approval', component: ApprovalsView },
+        { id: 'scope', label: '授权', order: 100, domain: 'scope', component: ScopeView },
+        { id: 'audit', label: '审计', order: 110, domain: 'bus', component: AuditView },
+      ]
+      defs.forEach(function (d) {
+        core.register({ id: d.id, label: d.label, order: d.order, domain: d.domain, component: d.component, source: 'sec-dashboard-legacy' })
+      })
+      // 冒烟门禁打卡：无头渲染读注册表条数，证跨 bundle require + 登记均成功
+      if (typeof uiCore.markSurfaceHealth === 'function') uiCore.markSurfaceHealth('sec-dashboard-views', 'ok', String(defs.length))
+    }
+
     exports.name = '@silksec/sec-dashboard'
     exports.inject = ['slots', 'sessions']
     exports.apply = function (ctx) {
+      // 注册表登记不依赖 slots：先登记，保证 ui-core 缺席/slots 缺席时也不影响旧壳降级
+      registerUiCoreViews()
+
       var slots = ctx.get('slots')
       if (!slots || typeof slots.inject !== 'function' || typeof slots.register !== 'function') return
 

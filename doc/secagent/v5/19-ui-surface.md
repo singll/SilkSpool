@@ -1,6 +1,6 @@
 # 19 · 看板 UI 原生面集成设计（表面分散 + 原子化隔离 + 深度绑定）
 
-> 版本：v1.0 ｜ 状态：**定稿**（2026-09-18 用户评审通过）｜ 执行：**UI-0 前置硬闸已完成（2026-09-18），P0 待起动工** ｜ 契约版本：1
+> 版本：v1.0 ｜ 状态：**定稿**（2026-09-18 用户评审通过）｜ 执行：**UI-0 前置硬闸 + P0 地基已完成（2026-09-18），P1 待起动工** ｜ 契约版本：1
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）；本文是 [`16-dashboard.md`](16-dashboard.md) §一挂载模型的**修订设计**——16 的「壳 + 域视图注册表 + RPC 投影消费」数据层架构不变，本文把「一个 Modal 装十一个 tab」的呈现层拆散到 DSH 原生承载面。
 > 证据基线：DSH **0.1.5-rc.2**（csai 生产当前版本）npm 包 `@deepseek-ai/dsh-client-ui-{layout,sidebar,sidebar-right,conversation,chat,settings,primitives,slots}` 的 `lib/types/**.d.ts` **逐字验证**（2026-09-18 拉取核对的类型声明，非推测）；生态调研见 §一。
 > 领域语言以 [bundles/dsh/CONTEXT.md](../../../bundles/dsh/CONTEXT.md) 为准：看板 = 全局面的正式名称；行内只放摘要 + 跳链，详细内容一律在会话里看。
@@ -235,7 +235,7 @@ ctx.inject(['layout', 'slots'], function () {
 
 | 阶段 | 内容 | 验收 | 回滚 |
 |---|---|---|---|
-| **P0** 地基 | `ui-core` 包骨架（token 表/ErrorBoundary/hooks/secUiBus/视图注册表）；`ui-surface-deps.yaml` 首版；11 视图原样注册进注册表（文件不拆，行为不变） | 十一 tab 行为逐项比对现状；ErrorBoundary 注入故障演练（人为抛错只炸单面） | revert 包部署 |
+| **P0** 地基 ✅ 已完成（2026-09-18） | `ui-core` 包骨架（token 表/ErrorBoundary/hooks/secUiBus/视图注册表）；`ui-surface-deps.yaml` 首版；11 视图原样注册进注册表（文件不拆，行为不变） | 十一 tab 行为逐项比对现状；ErrorBoundary 注入故障演练（人为抛错只炸单面） | revert 包部署 |
 | **P1** 主面板 | `ui-panel`：`main`+`panellist`+`selectPanel` 落地；footer 入口改跳转；Modal 形态保留为降级分支 | 双形态各跑一遍视图回归；`beginNavigation` 连点竞态测试 | 模式开关回 Modal |
 | **P2** 审批套件 | overlay 胶囊 + 快捷浮卡 + 审批右侧栏 tab；看板「审批」tab 保留观察 | 待办计数与审批列表一致；批准/驳回快捷路径 audit 留痕与主面板路径等价；零会话下胶囊自足可用 | 单包 disable，tab 回主面板 |
 | **P3** 任务 tab | 任务右侧栏 tab（四区块栏宽重排）；会话头「本会话任务」计数 | 栏宽 320–720px 响应式目检；写操作等价对照 | 同上 |
@@ -252,7 +252,7 @@ ctx.inject(['layout', 'slots'], function () {
 2. **会话内审批卡**：`conversation.chat.node` keyed 渲染器对「按工具名自定义工具调用呈现」的扩展性未验证（`dsh-agent-tool-presentation` 包存在，机制待读）；P2 期间 spike，失败则降级 `assistant-actions` 跳链。
 3. **官方 Toast 服务**：primitives 导出 `Toast` 组件，是否存在跨插件 toast 服务（`ctx.toast` 类）未验证；若有，新审批到达时补一条瞬态通知（胶囊之外的增强，非关键路径）。
 4. **零会话时右侧栏可达性**：右侧栏 tab 会话作用域——无会话时审批/任务深读入口由胶囊快捷浮卡与主面板降级承接，是否需要「无会话也展开右栏」待真机确认宿主行为。
-5. **`ui-core` 跨包 require**：`dsh.client.inject` 声明 + ModuleLoader 跨 bundle require 自家包的稳定性（theme 插件 require primitives 是官方先例，自家包同路径待 P0 验证；备选：ui-core 以源码并入各包构建，牺牲体积换零风险）。
+5. **`ui-core` 跨包 require**：**已验证可行（P0，2026-09-18）**。`dsh-client-modules@0.1.5-rc.2` 契约：`WebBootEntry.inject` 声明「消费方物化前必须到达 factory 的包行」，`arriveGraphRow` 逐包 arrive 后消费方同步 `require` 命中；`stripClientSuffix` 使 `require('@silksec/ui-core')` 与 `.../client` 归一。落地：ui-core 独立 client bundle，sec-dashboard 在 `dsh.client.inject` 声明 `@silksec/ui-core` 后直接 require（与 theme 插件 require primitives 同路径）。已登记 [`bundles/dsh/doc/ui-surface-deps.yaml`](../../../bundles/dsh/doc/ui-surface-deps.yaml)；不采用源码并入备选。
 6. **任务/审批 tab 的 badge**：`sidebarRightTabs` 的 title thunk 每次渲染重读（类型声明明示）——计数放 title 里（「审批 ·3」）即可，无需宿主 badge API。
 
 ---
