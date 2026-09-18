@@ -1,6 +1,6 @@
 # 19 · 看板 UI 原生面集成设计（表面分散 + 原子化隔离 + 深度绑定）
 
-> 版本：v1.0 ｜ 状态：**定稿**（2026-09-18 用户评审通过）｜ 执行：**UI-0 前置硬闸 + P0 地基已完成（2026-09-18），P1 待起动工** ｜ 契约版本：1
+> 版本：v1.0 ｜ 状态：**定稿**（2026-09-18 用户评审通过）｜ 执行：**UI-0 前置硬闸 + P0 地基 + P1 主面板已完成（2026-09-18），P2 待起动工** ｜ 契约版本：1
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）；本文是 [`16-dashboard.md`](16-dashboard.md) §一挂载模型的**修订设计**——16 的「壳 + 域视图注册表 + RPC 投影消费」数据层架构不变，本文把「一个 Modal 装十一个 tab」的呈现层拆散到 DSH 原生承载面。
 > 证据基线：DSH **0.1.5-rc.2**（csai 生产当前版本）npm 包 `@deepseek-ai/dsh-client-ui-{layout,sidebar,sidebar-right,conversation,chat,settings,primitives,slots}` 的 `lib/types/**.d.ts` **逐字验证**（2026-09-18 拉取核对的类型声明，非推测）；生态调研见 §一。
 > 领域语言以 [bundles/dsh/CONTEXT.md](../../../bundles/dsh/CONTEXT.md) 为准：看板 = 全局面的正式名称；行内只放摘要 + 跳链，详细内容一律在会话里看。
@@ -237,7 +237,7 @@ ctx.inject(['layout', 'slots'], function () {
 | 阶段 | 内容 | 验收 | 回滚 |
 |---|---|---|---|
 | **P0** 地基 ✅ 已完成（2026-09-18） | `ui-core` 包骨架（token 表/ErrorBoundary/hooks/secUiBus/视图注册表）；`ui-surface-deps.yaml` 首版；11 视图原样注册进注册表（文件不拆，行为不变） | 十一 tab 行为逐项比对现状；ErrorBoundary 注入故障演练（人为抛错只炸单面） | revert 包部署 |
-| **P1** 主面板 | `ui-panel`：`main`+`panellist`+`selectPanel` 落地；footer 入口改跳转；Modal 形态保留为降级分支 | 双形态各跑一遍视图回归；`beginNavigation` 连点竞态测试 | 模式开关回 Modal |
+| **P1** 主面板 ✅ 已完成（2026-09-18） | `ui-panel`：`main`+`panellist`+`selectPanel` 落地；footer 入口改跳转；Modal 形态保留为降级分支 | 双形态各跑一遍视图回归；`beginNavigation` 连点竞态测试 | 模式开关回 Modal |
 | **P2** 审批套件 | overlay 胶囊 + 快捷浮卡 + 审批右侧栏 tab；看板「审批」tab 保留观察 | 待办计数与审批列表一致；批准/驳回快捷路径 audit 留痕与主面板路径等价；零会话下胶囊自足可用 | 单包 disable，tab 回主面板 |
 | **P3** 任务 tab | 任务右侧栏 tab（四区块栏宽重排）；会话头「本会话任务」计数 | 栏宽 320–720px 响应式目检；写操作等价对照 | 同上 |
 | **P4** 授权迁设置 | `settings.section`「授权范围」节；看板「授权」tab 观察一周后删 | 设置节与旧 tab 的 scope 读写逐项等价 | 单包 disable |
