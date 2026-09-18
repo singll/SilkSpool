@@ -1,6 +1,6 @@
 # 16 · 看板设计（sec-dashboard 壳插件 + 域视图插件化 + RPC 投影消费）
 
-> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：1
+> 版本：v5.1 ｜ 状态：定稿（**2026-09-18 实施状态回填**：壳/视图拆分、RPC 投影消费、v4 直调清除均已落地；见 §2.1/§3.3/§五/§六）｜ 契约版本：1
 > 依赖：**订阅**：无（30s 轮询模型不变——事件推送是开放问题 §四）；**被订阅**：无；**消费**：全部 14 域的查询与命令，经 RpcProjector 的 `{domain}.{verb}` 端点 + 壳自有 5 个聚合端点。
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）；消费的域契约见 02-15 各文档。
 > v4 取证基线：client.js 2628 行（十视图 + 30s 轮询 + 侧边栏 Modal）；dashboard-rpc.js 625 行（**实测清点 53 个 case**——v4 文档口径"52 case"，差 1 为 evalStats 漏记）。
@@ -242,6 +242,10 @@ curl -s -H "Authorization: Bearer $DSH_LOOPBACK_TOKEN" \
 
 **部署通道**（延续 v4 sec-dashboard-plugin-setup.sh 模式）：每个域插件的 setup 脚本（`sec-domain-{domain}-plugin-setup.sh`）组装包时，把模板 `dsh-plugin-sec-domain-{domain}.dashboard-view.js` 复制为 `$PLUGIN_DIR/dashboard-view.js` 并在 package.json 声明 `"exports": {"./dashboard-view": "./dashboard-view.js"}`；DSH client 的 ModuleLoader 扫描到 client 资源即装载（与 v4 `exports["./client"]` 同机制，export 名不同）。壳的 setup 脚本组装三文件（shell/shared/rpc + index no-op）。**冒烟断言**（setup.sh 阶段）：`--profile web --dump-config` 组合树含壳 + 至少一个域视图；`requires` 声明的域服务全部在组合树内（缺席 = 该域视图 tab 隐藏，属合法降级，仅 warn）。
 
+> **实施回填（2026-09-18，19-ui-surface P6）**：上表拆分方案已落地，但**最终文件去向与原设计不同**——每个浏览型域视图拆为**独立客户端包** `@silksec/sec-dashboard-view-<domain>`（模板 `dsh-plugin-sec-dashboard.view-<domain>.client.js`，由 `sec-dashboard-plugin-setup.sh` §4 逐域组装为独立包并装入 web profile），经 `@silksec/ui-core` 的 `viewRegistry` 以 canonical id 注册、`@silksec/ui-panel` 主面板装配；**而非**原设计的「域插件包内 `dashboard-view.js` 资源 + `exports["./dashboard-view"]`」。
+>
+> **与本节部署通道差异的裁决理由**：域插件是宿主侧 cordis 服务（数据层），把 client 资源挂进域插件会让 UI 装载与域宿主装载耦合，破坏 19-ui-surface §5.1 的「每面一个 fiber / 构建隔离」——单包 client 语法错误会随域插件装载拖垮域宿主。独立包使 7 个视图各自独立 client bundle、独立升级、独立回滚，故障隔离到 fiber 级；部署通道相应改为 §4 的独立包组装，域插件包保持纯数据层。公开的注册协议（`secDashboardViews`）在 19-ui-surface P0 更名为 `@silksec/ui-core` 的 `viewRegistry`（字段语义不变：`id/label/order/domain/component/requires/source`）。
+
 **状态归属**：视图组件的筛选/分页/Modal 态是组件私有 React state（tab 切换即销毁，v4 纪律保留）；跨视图跳链（pickHost/jumpFindings/jumpToHistory）经壳提供的 navigate 服务（`navigate(viewId, mutator)`）传递——v4 是闭包直调，v5 跨文件必须走壳服务。
 
 ### 2.2 状态机与不变量（UI 纪律）
@@ -339,6 +343,12 @@ operator 注入的**安全边界**：auth-gate 用户身份在 RpcProjector（�
 | D2 | 视图逐域插件化：**vuln 先行**（候选工作队列升级一并落地），随后 asset→endpoint→fact→task→know→report→approval→authz；每域一次独立提交 | 该域视图新旧并排（tab 加 `-old` 后缀临时双开）观察一个调度周期（7 天），audit 对照新旧端点写操作等价 | revert 单域视图文件 |
 | D3 | 删兼容层旧端名 + 删旧单体视图残余 + prompt/文档同步 | 旧端名 audit 7 天零使用 | — |
 
+> **实施状态（2026-09-18，19-ui-surface P0–P7）**：
+> - **D0 壳上线** ✅ 已实施；但壳不再是 v4 的「一个 Modal 单体 + 视图注册表」——按 19-ui-surface 拆为 `@silksec/ui-core`（注册表/隔离/hooks）+ `@silksec/ui-panel`（`main` keyed 槽主面板）+ 承载面包（审批/任务/设置/会话）。
+> - **D1 投影通道** ✅ 已实施：RpcProjector `{domain}.{verb}` 端点可用；`dashboard-rpc.js` 的 63 处 `v4 兜底` 已于 2026-09-18（UI-0 前置硬闸）清除，业务端点统一 `busQuery/busDispatch` fail-closed。
+> - **D2 视图逐域插件化** ✅ 已实施（19-ui-surface P6，commit `6f4086c` 收口，逐域另见 `f4e7f88`/`73acd34`/`64bb8a9`/`9273c53`/`d29dcad`）：vuln/asset/endpoint/fact/know(+学习)/report/audit 七域拆为独立 `@silksec/sec-dashboard-view-<domain>` 包（见 §2.1 实施回填）；旧单体对应视图以 `-old` 后缀**并排观察**（canonical id 归新包，`-old` order=canonical+1）。**P6 观察起点 2026-09-18，7 天闸口 ≥2026-09-25。**
+> - **D3 删旧** ⏳ **未执行**：按用户 P7 纪律与本文观察期设计，删除旧单体 client（`dsh-plugin-sec-dashboard.client.js`，含 `-old` 视图与 Modal 主形态）、`sec-dashboard.index.js`/`patch.yml`、setup 旧单体组装、`ui-surface-deps.yaml` legacy 提及须**待并排观察满 7 天（≥2026-09-25）**后单文件/单包 revert 执行。2026-09-18 的 P7 会话完成本状态回填、主题规范 v4.2、`sec-v5-accept.sh` UI 冒烟固化；旧包删除动作顺延至闸口（删除时同步收紧 accept 与 deps、回填 commit）。
+
 并行观察期的判定信号：`bus.audit_tail` 按 `actor=dashboard` 过滤——新旧端点（旧裸名 vs 点分名）的写操作比率、错误率对照；新端点错误率高即延长观察。
 
 ---
@@ -357,8 +367,32 @@ operator 注入的**安全边界**：auth-gate 用户身份在 RpcProjector（�
 | 维度 | 结论 |
 |---|---|
 | 逻辑/功能 | 当前 v4 单体看板功能可用，能覆盖十视图与主要写操作。 |
-| 文档漂移 | §2.1 的“壳 + 逐域 dashboard-view.js”是设计目标，未实施：仓库没有 domain `dashboard-view.js`，实际仍是 2,628 行单体 client。 |
+| 文档漂移 | **已消除（2026-09-18，19-ui-surface P6/P7）**：§2.1 拆分方案已落地为 7 个独立客户端包 `@silksec/sec-dashboard-view-<domain>`（与本节原「域插件内 `dashboard-view.js`」的差异及裁决理由见 §2.1 实施回填；注册协议由 `secDashboardViews` 更名为 `@silksec/ui-core` 的 `viewRegistry`）。旧单体 client 仍以 `-old` 并排观察（删除待 ≥2026-09-25 观察闸口，见 §3.3 D3）。 |
 | hook/兼容层 | `dashboard-rpc.js` 存在 63 处 `v4 兜底`，总线失败即直调 `assetDb`；这会绕过域审计/幂等/事件，是当前最大原子化缺口。**2026-09-18 已清除（UI-0 前置硬闸，19-ui-surface §八）：业务端点统一 `busQuery/busDispatch` fail-closed，`v4 兜底` 归零；assetDb 仅剩 `stats` 壳聚合与 `taskChain` 宿主 helper。** |
 | 性能 | 30s 轮询分页查询可用；单体 client 对构建/维护成本影响大于运行时性能。 |
 | 静默错误 | 兜底 catch 不记录总线失败原因，无法区分域故障、契约漂移与数据错误。**2026-09-18 已消除：总线错误码/hint 经 `busError` 透传，不再静默降级。** |
-| 独立升级 | 当前 dashboard 不能随域独立升级；必须先落地壳/视图拆分并删除 v4 直调。 |
+| 独立升级 | **已落地（2026-09-18，19-ui-surface P0–P6）**：视图拆为 7 个独立 `@silksec/sec-dashboard-view-<domain>` 包（各自 client bundle = 构建隔离 + 独立注册 fiber = 运行隔离），可随域独立升级/回滚；壳由 `@silksec/ui-core` + `@silksec/ui-panel` + 承载面包拆分承担，`v4 直调` 已清除。旧单体 `sec-dashboard` 在删除前仍作 Modal 降级兜底（不影响新面独立升级）。 |
+
+---
+
+## 六、实施状态回填（2026-09-18，19-ui-surface P6/P7）
+
+> 本节是 §2.1/§3.3/§五「设计目标」的**实现落点**，供后续维护直接对照文件。
+
+### 6.1 最终文件去向
+
+| 原设计（§2.1）| 实施落点（2026-09-18）| 备注 |
+|---|---|---|
+| 壳 `@silksec/sec-dashboard`（client 资源）| 拆为 `@silksec/ui-core`（注册表/ErrorBoundary/hooks/secUiBus/共享件）+ `@silksec/ui-panel`（`main` 主面板 + `sidebar.panellist`）| 旧 sec-dashboard 仅作 Modal 降级兜底（待删）|
+| 各域 `dashboard-view.js`（域插件内）| 7 个独立包 `@silksec/sec-dashboard-view-{vuln,asset,endpoint,fact,know,report,audit}` | 模板 `dsh-plugin-sec-dashboard.view-<domain>.client.js`；`sec-dashboard-plugin-setup.sh` §4 组装 |
+| 注册协议 `secDashboardViews` | `@silksec/ui-core` `viewRegistry.register({id,label,order,domain,component,requires,source})` | 跨 bundle `require('@silksec/ui-core')`（见 `doc/ui-surface-deps.yaml`）|
+| `dashboard.*` 5 个聚合端点 | 不变 | 由壳插件宿主侧（`@silksec/sec-suite`）承接 |
+| audit→总线 / knowledgeCoverage→know / reports→report 索引 | 不变 | 见 §1.7 53 case 去向表 |
+
+### 6.2 commit 追踪
+
+- UI-0 去 v4 兜底：`e9dd1f1`；P0 地基：`3ed10de`；P1 主面板：`a384fef`；P2 审批：`5880674`；P3 任务：`b557402`；P4 授权设置：`22c8c98`；P5 会话绑定：`e029af0`；P6 逐域视图：`6f4086c`（逐域 `f4e7f88`/`73acd34`/`64bb8a9`/`9273c53`/`d29dcad`）；P7 收尾（文档/主题/accept 冒烟）：见 [PROGRESS](PROGRESS.md) §三·九。
+
+### 6.3 未决项（删除闸口）
+
+**D3 删旧未执行**（见 §3.3）：旧单体 client + Modal 主形态 + `-old` 视图 + 旧包 setup/manifest/deps 提及，须待 P6 并排观察满 7 天（**≥2026-09-25**）后单文件/单包 revert 执行；删除时同步收紧 `sec-v5-accept.sh`（不再要求 `@silksec/sec-dashboard`）与 `ui-surface-deps.yaml`（移除 legacy 面），并在 PROGRESS 回填删除 commit。P4 授权旧 tab 的同批观察期同样至 ≥2026-09-25。

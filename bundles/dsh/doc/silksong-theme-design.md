@@ -4,7 +4,7 @@
 > 本文档是所有 UI 工作的**唯一权威**：新模块、新组件、新视图一律照此组装，不得各自发明。
 > 术语以 [../CONTEXT.md](../CONTEXT.md) 为准；平台文档见 [SilkSecAgent 入口](../../../doc/secagent/README.md)，当前架构以 [v5](../../../doc/secagent/v5/README.md) 为主。
 >
-> 版本：v4.1（2026-09-02）。v1 grill 定稿 → v2/v3 真机校准（文字/边框/背景提亮、表格定宽、KPI 可交互、打标图标化、刷新反馈、轮询只刷活跃视图）→ **v4 看板体验改造**：行内操作全面图标化（opIcon 扩展集，全部带 title 悬停）、任务视图折叠分区（工作区/执行历史默认折叠）+ 执行历史按任务过滤跳转（task_id chip）、报告查看统一 Modal 查看器 + 零依赖 markdown 渲染（React 元素树，不经 innerHTML）、显示不全修复（知识卡换行/审计详情点击展开/历史 note 全文）→ **v4.1 资产/接口/事实多维改造**：资产洞察条（评级/收录/状态 chip 可点即筛）+ 列表/域名族双模式（域名族=同注册域/同 /24 聚合，成员按需拉取防轮询膨胀）+ 单主机钻取（指纹/接口/漏洞/同族）、接口按主机分组手风琴（子维度不平铺）、事实 facet 洞察 + 搜索词高亮（丝线金）+ 关联过滤/关联最多排序。令牌全表与实现一一对应，已审计无漂移。
+> 版本：v4.2（2026-09-18）。v1 grill 定稿 → v2/v3 真机校准（文字/边框/背景提亮、表格定宽、KPI 可交互、打标图标化、刷新反馈、轮询只刷活跃视图）→ **v4 看板体验改造**：行内操作全面图标化（opIcon 扩展集，全部带 title 悬停）、任务视图折叠分区（工作区/执行历史默认折叠）+ 执行历史按任务过滤跳转（task_id chip）、报告查看统一 Modal 查看器 + 零依赖 markdown 渲染（React 元素树，不经 innerHTML）、显示不全修复（知识卡换行/审计详情点击展开/历史 note 全文）→ **v4.1 资产/接口/事实多维改造**：资产洞察条（评级/收录/状态 chip 可点即筛）+ 列表/域名族双模式（域名族=同注册域/同 /24 聚合，成员按需拉取防轮询膨胀）+ 单主机钻取（指纹/接口/漏洞/同族）、接口按主机分组手风琴（子维度不平铺）、事实 facet 洞察 + 搜索词高亮（丝线金）+ 关联过滤/关联最多排序。→ **v4.2 UI 原生面集成增补七条**（19-ui-surface §七，2026-09-18）：主面板页头 / overlay 胶囊 / 右侧栏内容区 / 设置节 / 会话绑定件 / 右侧栏 guide 陷阱 / 零颜色字面量 CI 断言（见 §十一）。令牌全表与实现一一对应，已审计无漂移。
 
 ---
 
@@ -296,3 +296,40 @@ transition 只碰 `background-color / color / border-color / opacity`（不触�
 - [ ] 看板四视图均有工具条；分页 {rows,total} 正确；搜索防抖生效
 - [ ] 全站无位移动画/循环动画/投影；transition 均 ≤300ms 且只碰合成层属性
 - [ ] 数据列（host/ID/时间戳）等宽字体渲染
+
+---
+
+## 十一、v4.2 增补：UI 原生面集成（2026-09-18，19-ui-surface §七）
+
+> **零新色值**。新表面全部消费既有 `--dsw-alias-*`；chrome（槽位框架、tab 条、设置页骨架、右侧栏分栏/浮窗）由宿主渲染 = 自动吃 silksong 令牌，零额外主题工作。以下七条与 19-ui-surface P0–P6 实现一一对应。
+
+### 11.1 主面板页头（`@silksec/ui-panel`）
+
+标题行 + KPI 顶条用 `--dsw-alias-bg-layer-1` 托底；**当前视图指示 = 绯红 2px 下划线**（`--dsw-alias-brand-primary`）——Modal 内 tab 样式的平移，识别延续；视图切换下划线用宿主 `--ds-ease-in-out` 200ms（§四.1）。
+
+### 11.2 overlay 胶囊（`@silksec/ui-approval`，`shell.overlay`）
+
+`--dsw-alias-bg-layer-3`（最高浮层）+ `--dsw-alias-border-l2` 描边 + 圆角胶囊（999px）。**待审批计数 = 丝线金**（`--dsw-alias-state-warn-*`，warn 语义）；**纪律告警 = 绯红描边/文字（禁填充）**（`--dsw-alias-state-error-*`，遵守 §1.2「绯红填充=行动，绯红文字/描边=危险」）。图标用官方 `IconWarningOutline` / `IconChecklistOutline`；快捷浮卡 `bg-layer-3`，行内批准/驳回为图标 + title 悬停。
+
+### 11.3 右侧栏 tab 内容区（`@silksec/ui-approval` / `@silksec/ui-task`）
+
+背景 `--dsw-alias-bg-base`（与宿主 tab 体一致）；卡片 `--dsw-alias-bg-layer-1`；**tab 条/分栏把/浮窗框全部宿主 chrome，不动**。栏内表格窄形态（<480px）换卡片行，容器查询 `@container`，零颜色字面量。
+
+### 11.4 设置节（`@silksec/ui-settings-scope`，`settings.section`）
+
+完全使用宿主设置行样式（与 theme 插件 `settings.general.item` 行同款：`label-primary` 文案 + 右侧控件）；本面只提供文案与控件值。行内图标走 ui-core `opIcon`，不新增官方图标依赖；不抢 `settings.general.item` 行级槽（theme 插件持有）。
+
+### 11.5 会话绑定件（`@silksec/ui-session`）
+
+会话头钮 / 消息动作沿用宿主按钮样式（`--dsw-alias-interactive-bg-hover` 反馈参数不变）；「登记候选漏洞 / 沉淀事实」弹表单用 primitives `Modal` + `RiskConfirmation`（缺失时自绘覆盖层 / `window.confirm` 兜底）；`conversation.view`「安全产出」页签为宿主原生 ViewTab。
+
+### 11.6 右侧栏 guide 陷阱（上游约束）
+
+`sidebarRightTabs.register({ guide })` 的条目说明在 **guide >4 条时整列不渲染**（上游 `MAX_DESCRIBED_ENTRIES=4`，better-sidebar 实测）——**关键信息只放 `title`，`description` 仅锦上添花**。本平台 `silksec-approval` / `silksec-task` 的 guide 均 ≤4 条并保证 title 自足。
+
+### 11.7 零颜色字面量（纪律重申 + CI 断言）
+
+**视图/表面文件禁止颜色字面量（hex/rgb/named）**；令牌唯一合法来源 = `@silksec/ui-core` 的 `T` / `styles` / `F`（其 `--silksec-sev-*` fallback 是唯一豁免）。severity 五色继续走 `--silksec-sev-*`（theme/change 注入 + fallback）不变。
+
+- **断言落点**：`dsh-plugin-sec-dashboard.view-*.client.test.mjs` 已含「源码不含 `#hex` / `rgb()` / `rgba()`」用例；`sec-v5-accept.sh --ui-headless` 的 UI 冒烟段对 13 个 UI 面 client bundle 做运行时/结构复验（见下）。
+- **grep 口径**：对 `dsh-plugin-silksec-ui-*.client.js`（`ui-core` 除外，它是令牌源）与 `dsh-plugin-sec-dashboard.view-*.client.js` 扫描 `#[0-9a-fA-F]{3,8}` / `\brgba?\s*\(`，命中即失败。

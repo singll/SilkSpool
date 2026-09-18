@@ -430,6 +430,9 @@ templates:
   - eval-candidate-run.js
   # --- v5 Phase 3 部署验收（18-migration §五：R0 基础健康 + R4 owns 唯一性，契约化）---
   - sec-v5-accept.sh
+  # --- 看板 UI 原生面运行时冒烟（19-ui-surface §6.4；sec-v5-accept.sh --ui-headless 经既有 headless 通道调用）---
+  - dsh-ui-surface-smoke.mjs
+  - dsh-ui-surface-smoke.py
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---
   - retention.sh
   # --- SQLite 一致性快照备份 + 紧急恢复（P0-5：DB down 应急 + 集中存储归宿）---

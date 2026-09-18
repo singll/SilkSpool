@@ -26,6 +26,19 @@ verified_dsh:
     diff 未命中 → 只更新本文件的 verified_dsh 徽章，零代码改动；
     命中 → 只动命中的面（适配层），并在本文件对应 surface 记录影响。
 
+# ── P7 收尾状态（2026-09-18） ──────────────────────────────────────────────
+# 文档/主题 v4.2/accept UI 冒烟已固化；旧单体 @silksec/sec-dashboard 的删除
+# （含 dashboard-panel 的 footer/Modal legacy 承接、dashboard-domain-views 的 -old 并排）
+# 按 P6 7 天并排观察闸口（起点 2026-09-18，闸口 ≥2026-09-25）顺延——未满不删。
+# 删除执行时须：移除本文件 dashboard-panel 的 legacy 承接描述、dashboard-domain-views
+# 的 legacy_side_by_side/-old 项与「P6 不删旧路径」降级行；sec-v5-accept.sh 的 UI 冒烟
+# 已按删除后口径编写（只要求 13 个 UI 包，不要求 @silksec/sec-dashboard）。
+p7_review:
+  doc_backfill: true          # 16-dashboard §六 + 19-ui-surface 头部/§八
+  theme_v42: true             # doc/silksong-theme-design.md §十一
+  accept_ui_smoke: true       # sec-v5-accept.sh R5（结构断言 + --ui-headless 运行时断言）
+  legacy_deletion: deferred   # 闸口 >=2026-09-25（未满不删）
+
 # ── 开放问题 §九 #5：ui-core 跨 bundle require ──────────────────────────────
 # 结论：可行（P0 已本地契约验证 + csai 部署验证）。
 # 证据：dsh-client-modules 契约（lib/types/client/manifest.d.ts + lib/client.js）：
@@ -494,7 +507,7 @@ surfaces:
       - "隔离五道墙：每域独立包（构建隔离）+ 每域 DomainRoot 包 SilksecErrorBoundary（渲染隔离，surface=dashboard-view-<domain>，经 bus.audit_tail 口径上报）+ requires 过滤（注册隔离）+ 视图自持 query/handler（状态/数据隔离）。"
       - "候选/信号 visibility 口径：vuln 视图沿用旧 findings 分支（noise/status/severity 筛选与列渲染不变）；fact 视图沿用 exclude_notes 服务端默认 + mem_class 生命周期 facet；report 保留 Modal 阅读器（ui-core.DocModal）；audit 经 bus audit 端点（actor/decision 列逐字保留）。"
       - "零颜色字面量（走 --dsw-alias-* / --silksec-sev-* / ui-core 令牌）；P6 不碰 conversation.chat.turnTail chain 槽。"
-      - "旧单体对应视图保留 7 天并排观察（`-old` 后缀、order=canonical+1）；P7 收尾删旧单体与 Modal 主形态。"
+      - "旧单体对应视图保留 7 天并排观察（`-old` 后缀、order=canonical+1）；P7（2026-09-18）完成文档/主题/accept 冒烟固化，旧单体与 Modal 主形态的删除按观察闸口（≥2026-09-25）顺延，未满不删（见本文件 p7_review）。"
     verified_dsh: "0.1.5-rc.2 (2026-09-18；ui-core viewRegistry.requires 能力探测 + 跨 bundle require @silksec/ui-core；主面板 main/panellist 承载见 dashboard-panel 面；本地 node --test 44 例 + 真机无头逐 tab 渲染)"
 
 # ── 明确不消费的官方面（避免误列 + 升级 diff 白名单） ───────────────────────
