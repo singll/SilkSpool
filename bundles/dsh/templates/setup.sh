@@ -368,6 +368,11 @@ if [ -f "$BASE_DIR/silksec-ui-approval-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-approval-plugin-setup.sh"
 fi
 
+# -------------------- 8.6.6 任务套件（ui-task，19-ui-surface P3；任务右侧栏 tab + 会话头任务计数；消费 ui-core） --------------------
+if [ -f "$BASE_DIR/silksec-ui-task-plugin-setup.sh" ]; then
+    bash "$BASE_DIR/silksec-ui-task-plugin-setup.sh"
+fi
+
 # -------------------- 8.7 安全看板客户端插件（DSH Web UI slot，inject ui-core；保留 Modal 降级入口） --------------------
 if [ -f "$BASE_DIR/sec-dashboard-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-dashboard-plugin-setup.sh"

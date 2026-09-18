@@ -249,6 +249,12 @@ templates:
   - dsh-plugin-silksec-ui-approval.patch.yml
   - dsh-plugin-silksec-ui-approval.client.test.mjs
   - silksec-ui-approval-plugin-setup.sh
+  # --- 任务套件（19-ui-surface P3：任务右侧栏 tab 四区块 + 会话头「本会话任务」计数；消费 ui-core）---
+  - dsh-plugin-silksec-ui-task.index.js
+  - dsh-plugin-silksec-ui-task.client.js
+  - dsh-plugin-silksec-ui-task.patch.yml
+  - dsh-plugin-silksec-ui-task.client.test.mjs
+  - silksec-ui-task-plugin-setup.sh
   # --- 安全看板客户端插件（DSH Web UI slot，依赖 sec-suite 的 /silksec/dashboard RPC + ui-core）---
   - dsh-plugin-sec-dashboard.index.js
   - dsh-plugin-sec-dashboard.client.js

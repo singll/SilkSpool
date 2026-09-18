@@ -1,0 +1,4 @@
+# silksec-ui-task bundle layer：把任务套件宿主半面挂进安装它的 profile
+- insert:
+    - id: silksec-ui-task
+      name: '@silksec/ui-task'

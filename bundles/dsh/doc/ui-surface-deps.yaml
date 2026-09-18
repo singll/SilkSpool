@@ -68,8 +68,12 @@ packages:
     client_entry: true
     inject: ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar-right", "@silksec/ui-core"]
   - id: "@silksec/ui-task"
+    file_prefix: dsh-plugin-silksec-ui-task
     phase: P3
-    status: planned
+    status: implemented
+    host_entry: no-op
+    client_entry: true
+    inject: ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-sidebar-right", "@deepseek-ai/dsh-client-ui-conversation", "@silksec/ui-core"]
   - id: "@silksec/ui-settings-scope"
     phase: P4
     status: planned
@@ -201,26 +205,61 @@ surfaces:
   - id: task
     package: "@silksec/ui-task"
     phase: P3
-    status: planned
-    role: 任务右侧栏（定时任务卡片 + 一次性队列 + 执行历史）
+    status: implemented
+    role: 任务右侧栏 page tab（定时任务卡片 + 一次性队列 + 工作区快块 + 执行历史）+ 会话头「本会话任务」计数
+    implementation:
+      client: dsh-plugin-silksec-ui-task.client.js
+      host: dsh-plugin-silksec-ui-task.index.js
+      setup: silksec-ui-task-plugin-setup.sh
+      tests: dsh-plugin-silksec-ui-task.client.test.mjs（11 例）
     slots:
-      - sidebar.right.pane.tab        # keyed
-      - conversation.session.header.utilities  # list，右对齐（本会话任务计数）
+      - sidebar.right.pane.tab        # keyed 槽（key=类型 id，scope session）承载 tab 体（四区块）
+      - sidebar.right.pane.tab.title  # keyed 槽（key=类型 id）承载动态标题（「任务 · N」每次渲染重读共享计数）
+      - conversation.session.header.utilities  # list，右对齐（本会话活跃任务计数；owner props 无专属值，运行时 props 含 sessionId）
     services_consume:
-      - sidebarRightTabs.registerType
-      - sidebarRight.openTab
+      - sidebarRightTabs.register     # **P2 实测名称**：SidebarRightTabRegistry.register(definition)
+                                      # （{ id, kind, priority, title(address), guide? }；设计稿 registerType 有误）
+      - sidebarRight.openTab          # ctx.sidebarRight.openTab('silksec-task')；无在屏会话 seat 时抛错 → 降级
+      - slots.register
+      - slots.inject                  # 声明生命周期注册（时序纪律；槽缺席静默降级）
+      - layout.selectPanel            # 降级：主面板（silksec-dashboard）
+      - connection.rpc.call           # /silksec-dashboard → 读 scheduledTasks/tasks/taskRuns/workspaces；
+                                      # 写 taskRunNow/taskCancel/taskSetStatus/taskScheduleUpdate/taskCreate
+                                      # （task.run_now/cancel/block/resume/schedule/create，actor=dashboard+operator）
+    owner_props_consume:
+      - ConversationHeaderActionOwnerProps   # conversation.session.header.utilities owner（children?: never）；
+                                             # 运行时 props 携带 sessionId / useSessions（官方 open-in-app 同槽先例）
+      - TabHookContext                       # sidebar.right.pane.tab / .title 的 hookContext（本面不读，仅声明消费面）
     primitives:
-      - Pill
-      - StateDot
-      - DisclosureRow
-      - Tooltip
+      - Pill                          # 状态/筛选/元信息胶囊（active + onClick；缺席走 ui-core pill 样式）
+      - StateDot                      # 队列/定时状态点（ongoing/warning/done/error）
+      - DisclosureRow                 # 执行历史默认折叠区（title/open/onToggle/icon；缺席走自绘折叠头）
+      - Tooltip                       # 图标/按钮 title 悬停纪律（label/side/delayMs；缺席退回 title）
+      - Modal                         # 主面板/layout 也缺席时的 Modal 降级（缺席自绘 fixed 覆盖层）
+    primitives_deferred:
+      - RiskConfirmation              # 任务行内操作为低风险（run_now/cancel/block/resume/edit schedule），
+                                      # 沿用原生 confirm/prompt；RiskConfirmation 预留 P5 会话写表单
     icons:
-      - IconAlarmClockOutline
-      - IconQueueOutline
+      - IconAlarmClockOutline         # 定时任务语义 + 右侧栏 guide 图标 + 会话头计数钮
+      - IconQueueOutline              # 一次性队列语义
+      - IconClockOutline              # 执行历史语义（未导出时回退 ui-core opIcon('history')）
     degradation:
-      - sidebarRightTabs
-      - 缺席 → 同一视图挂主面板临时 tab（角标「降级」）
-      - 主面板也缺席 → Modal
+      - sidebarRightTabs page tab + conversation.session.header.utilities 计数
+      - sidebarRightTabs 缺席 → 同一任务视图注册进 ui-core 注册表（主面板「任务 ·降级」临时 tab）
+      - 主面板 / layout 也缺席 → primitives Modal（再缺席自绘覆盖层）
+      - conversation.session.header.utilities 缺席 → 不注册（会话面无全局影响）
+      - 无在屏会话 openTab 抛错 → secUiBus open:task + layout.selectPanel（或 Modal）
+    rollback:
+      - 从 web profile 移除 @silksec/ui-task（右侧栏 tab / 会话头计数消失；主面板 legacy「任务」tab 照常）
+    notes:
+      - "活跃计数真相源（tab 标题 + 会话头共用）= task.scheduled 未终态行 + task.list(active) 非定时行；
+         会话头按运行时 props.sessionId 过滤两数组（本会话任务数）。"
+      - "四区块栏宽自适应：container-type:inline-size + @container (max-width:480px)，表格 <480px 换卡片行
+         （资产视图双模式先例）；工作区快块在窄栏由顶部 program 筛选 Pill 组承接。零颜色字面量（走 --dsw-alias-*）。"
+      - "写路径与主面板等价：taskAction(op) → 同 RPC 端点/参数；actor=dashboard + operator 由 RpcProjector 注入，
+         audit 留痕与主面板任务 tab 一致。"
+      - "会话内审批卡/任务卡 spike 不在 P3；P3 不动主面板 id='tasks' 分支行为（观察期保留）。"
+    verified_dsh: "0.1.5-rc.2 (2026-09-18；sidebar-right tab-registry/service/slots 逐字核对；conversation contract/slots.d.ts 的 conversation.session.header.utilities list/session 声明 + 官方 open-in-app 同槽 props.sessionId 先例；primitives 导出表实测含 Pill/StateDot/DisclosureRow/Tooltip/IconAlarmClockOutline/IconQueueOutline/IconClockOutline)"
 
   - id: settings-scope
     package: "@silksec/ui-settings-scope"
