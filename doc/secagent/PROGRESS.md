@@ -54,7 +54,7 @@
 
 ```text
 继续 SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」。
-先读 doc/secagent/PROGRESS.md 的「§〇·补、文档漂移排查」章节，找到状态为 ⬜ 的第一个批次（B4→B5；B2/B3 已完成）。
+先读 doc/secagent/PROGRESS.md 的「§〇·补、文档漂移排查」章节，找到状态为 ⬜ 的第一个批次（B2/B3/B4 已完成；B5 为末批，完成后即闭环）。
 本会话只做该批次（不要跨批）：
 1) 用 PATH 中的 spool 调查 csai 真实运行态（服务/域注册/别名表/契约测试），对照 bundles/dsh/templates/ 下该域 manifest 与文档 §1.2/§1.4/§1.5/§3.1/§3.2 逐项核验；
 2) 修复该批次所有文档漂移（只改文档与必要的引用注释；改代码一律克制并说明理由）；历史映射必须显式标注「历史留档」；
