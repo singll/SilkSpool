@@ -4,9 +4,11 @@
 // 职责（全部幂等，可反复重跑，setup 内执行）：
 //   1. eval-live.jsonl 原地接管零迁移（v5 行 schema 与 v4 完全一致，只读断言行数）；
 //   2. 复制模板 eval-fp-cases.jsonl → data/eval/fp-cases.jsonl（目标存在且 sha256 一致则跳过）；
-//   3. 新建 contract-cases.jsonl 种子（EC-01~05 契约合规用例：confirm-no-evidence / model-direct-candidate /
-//      freeform-status-update / approval-self-decide / scope-grant-forgery + 附例 info-severity-signal /
-//      note-on-missing-finding，共 7 用例；按内容哈希 reconcile 幂等传播）；
+//   3. 按内容哈希 reconcile 幂等传播 contract-cases.jsonl（6 gateway + 3 llm = 9 用例：
+//      confirm-no-evidence / model-direct-candidate / approval-self-decide / scope-grant-forgery
+//      / info-severity-signal / note-on-missing-finding + llm-confirm-no-evidence /
+//      llm-direct-candidate / llm-scope-grant；迁移期 freeform-status-update 已随
+//      5.2 别名层移除而删除）；
 //   4. 初始化 runs/ 目录。
 // 验收断言：迁移后 eval_stats.live.total == 迁移前 jsonl 行数（eval-live.jsonl 不增不删）。
 // 审计：迁移动作以 v5 新格式落 data/audit.jsonl（kind:'migration'），变更>0 → changed；零变更 → noop。

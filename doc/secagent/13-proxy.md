@@ -1,7 +1,7 @@
 # 13 · proxy 域设计（免费代理池：采集提案落池、轮换网关消费、会话保持）
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：1
-> 依赖：**订阅**：无（不订阅任何事件）；**被订阅**：`proxy.pool.refreshed` / `proxy.bad.reported` / `proxy.sticky.bound`（当前零强联动订阅者——mubeng 热加载不依赖事件，见 §2.3 论证）；**被引用**：exec 域（env_proxy 8899 注入前引用 `proxy_stats` 做健康观测）、16-dashboard（网关健康展示）。
+> 依赖：**订阅**：无（不订阅任何事件）；**被订阅**：`proxy.pool.refreshed` / `proxy.bad.reported` / `proxy.sticky.bound`（当前零强联动订阅者——mubeng 热加载不依赖事件，见 §2.3 论证）；**被引用**：exec 域（env_proxy 8899 注入——**设计原计划注入前引用 `proxy_stats` 做健康观测，实测未实现**：exec 仅按 `env_proxy` 注 `http_proxy/https_proxy`，不查 proxy 域，见 §2.3）、16-dashboard（网关健康展示——**未接入**，见 §1.7）。
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）。
 
 ---
@@ -17,7 +17,7 @@
 | 插件包名 | `@silksec/sec-domain-proxy` |
 | 后端插件包名 | `@silksec/sec-backend-proxy-file`（file 后端单实现）|
 | profile 挂载 | web + headless 均挂载（worker 会话要用 sticky_bind / list）|
-| owns（单写者）| `{POOL_DIR}/pool.json`、`live.txt`、`blocklist.txt`、`stats.json`、`sticky.json` 五文件（POOL_DIR = env `SEC_PROXY_POOL_DIR`，默认 `/opt/silkspool/dsh/proxy-pool`）|
+| owns（单写者）| `{POOL_DIR}/pool.json`、`live.txt`、`blocklist.txt`、`stats.json`、`sticky.json` 五文件（POOL_DIR = env `SEC_PROXY_POOL_DIR`，默认 `/opt/silkspool/dsh/proxy-pool`）；事件日志 `data/events/proxy.jsonl`（manifest `owns.files`）|
 | 文件权限 | 采集 systemd 单元（silksec-proxy-refresh.service）以 root 跑，产出 `out/proxies.json`/`out/proposal.json` 可能 root-owned；本域命令以 silkspool 用户写五文件——**落池前须校验五文件对域用户可写**（`proxy_stats` 增 `writable: bool` 健康指标，不可写时告警并引导 `chown`/sudo 修复，不静默失败） |
 | 只读 inbox（非 owns）| `{POOL_DIR}/out/proxies.json`（proxy-scraper-checker 采集验证原始产物）、`{POOL_DIR}/out/proposal.json`（proxy_grade.py 纯计算产出的落池提案）|
 | 环境变量 | `SEC_PROXY_POOL_DIR`（池目录）、`SEC_EGRESS_PROXY`（网关地址，默认 `http://127.0.0.1:8899`）|
@@ -28,9 +28,11 @@ owns 边界说明：v4 中 mubeng 网关消费 `live.txt`（`-w` watch 模式）
 
 | 动词 | 一句话语义 | actor 白名单 | 幂等键 | 事件 |
 |---|---|---|---|---|
-| `proxy_refresh` | 读采集 proposal，应用 blocklist/分级过滤，原子落池五文件 | script, model, dashboard, human | 自然键（proposal 内容 sha1）| `proxy.pool.refreshed` |
-| `proxy_report_bad` | 失效代理入 blocklist + 从 live 同步移除 | model, script, dashboard, human | 自然键（hostport）| `proxy.bad.reported` |
-| `proxy_sticky_bind` | 会话保持：同 sticky_key 复用同出口，失效自动重选 | model, script | 自然键（sticky_key）| `proxy.sticky.bound` |
+| `proxy_refresh` | 读采集 proposal，应用 blocklist/分级过滤，原子落池五文件 | script, model, dashboard, human | manifest `idempotent:'none'`（域内文件态幂等：proposal 内容 sha1）| `proxy.pool.refreshed` |
+| `proxy_report_bad` | 失效代理入 blocklist + 从 live 同步移除 | model, script, dashboard, human | manifest `idempotent:'none'`（域内文件态幂等：hostport）| `proxy.bad.reported` |
+| `proxy_sticky_bind` | 会话保持：同 sticky_key 复用同出口，失效自动重选 | model, script | manifest `idempotent:'none'`（域内文件态幂等：sticky_key）| `proxy.sticky.bound` |
+
+> 三条命令 manifest 幂等策略均为 `idempotent:'none'`——网关不落幂等表（本域无行级状态机，file 是滚动全量重建队列）；重放语义由命令体内的文件态表达（proposal_sha / blocklist 命中 / sticky 缓存复用），与 11-ledger §1.3.4 radar_drain「每次都是新读」同构。
 
 ### 1.3 命令逐个详述
 
@@ -79,11 +81,11 @@ owns 边界说明：v4 中 mubeng 网关消费 `live.txt`（`-w` watch 模式）
 |---|---|---|
 | `E_SCHEMA` | 参数类型错 | message 指明字段 |
 | `E_PROXY_NO_PROPOSAL` | proposal 不存在/损坏/空 | "proposal 缺失——先 trigger_collect:true 触发采集，或等 30min timer 自动链" |
-| `E_PROXY_LIVE_EMPTY`（警告级，不报错）| 过滤后 live 为空 | 返回 live_count=0 + hint："池被过滤空，检查 blocklist 是否误报过多或采集源失效" |
+| 空池警告（**不发错误码**）| 过滤后 live 为空 | 命令成功返回 `live_count=0` + 追加 `hint`："池被过滤空，检查 blocklist 是否误报过多或采集源失效"（handler 只写 `data.hint`，无 `E_PROXY_LIVE_EMPTY` 信封）|
 | `E_BACKEND_UNAVAILABLE` | POOL_DIR 不可写 / systemd 调用失败 | retryable=true |
 | `E_ACTOR_FORBIDDEN` | webhook/approval/scheduler/system 调用 | — |
 
-**幂等**：自然键 = proposal 文件内容 sha1 → `proxy:refresh:sha:{hash}`。同 proposal 重放 → 返回首次结果 + `replay: true`（文件不重写）；不同 proposal（新采集）→ 正常落池。
+**幂等**：manifest `idempotent:'none'`（不落网关幂等表）。命令体以 `stats.json.proposal_sha` 与本次 proposal 内容 sha1 比对表达重放：相同 → 返回首次结果 + `status:'replay'`（文件不重写）；不同 proposal（新采集）→ 正常落池；`force:true` 绕过。
 
 **actor**：`script`（**timer 链主通道**——silksec-proxy-refresh.service 的 ExecStartPost 调总线 CLI，§2.3）、`model`（手动触发采集/落池）、`dashboard`（看板刷新按钮）、`human`。
 
@@ -111,7 +113,7 @@ owns 边界说明：v4 中 mubeng 网关消费 `live.txt`（`-w` watch 模式）
 | `E_PROXY_BAD_ADDRESS` | proxy 无法解析出 host:port | "代理地址格式：http://1.2.3.4:8080 或 1.2.3.4:8080" |
 | `E_BACKEND_UNAVAILABLE` | 文件读写失败 | retryable=true |
 
-**幂等**：自然键 = hostport → `proxy:report_bad:{hostport}`。已 blocklisted 的重放 → `replay: true`，返回 `{blocked, removed_from_live: false}`（不重复追加）。注意：**blocklist 无撤销动词**（下一轮采集不会复活被拉黑条目——blocklist 是跨轮持久语义），误报的代价是永久失去该代理。
+**幂等**：manifest `idempotent:'none'`；命令体以 blocklist 命中表达幂等。已 blocklisted 的重放 → 返回 `{blocked, removed_from_live:false, sticky_invalidated:0}`（不重复追加）。注意：**blocklist 无撤销动词**（下一轮采集不会复活被拉黑条目——blocklist 是跨轮持久语义），误报的代价是永久失去该代理。
 
 **actor**：`model`（工具调用）、`script`（exec 域 run_cli 失败诊断脚本、verify_replay 重放失败自动上报）、`dashboard`、`human`。
 
@@ -155,7 +157,7 @@ owns 边界说明：v4 中 mubeng 网关消费 `live.txt`（`-w` watch 模式）
 | `E_PROXY_POOL_EMPTY` | live.txt 为空 | "可用队列为空，先 proxy_refresh（trigger_collect:true）" |
 | `E_PROXY_NO_MATCH` | 过滤条件无命中 | "无符合过滤条件的代理——放宽 max_latency_ms/country 或 proxy_list 查看可用面" |
 
-**幂等**：自然键 = sticky_key → `proxy:sticky_bind:{key}`。同 key 同参重放 → 返回当前绑定 + `replay: true`（缓存健康即复用，不重选）。
+**幂等**：manifest `idempotent:'none'`；命令体以 sticky.json 缓存复用表达幂等。同 key 同参重放 → 返回当前绑定 + `sticky: true`（缓存健康即复用，不重选）；`rebind:true` 强制换出口。
 
 **actor**：`model`、`script`（worker 流程内固定出口）。
 
@@ -179,7 +181,8 @@ owns 边界说明：v4 中 mubeng 网关消费 `live.txt`（`-w` watch 模式）
   "sticky_keys": 12,
   "gateway": "http://127.0.0.1:8899",
   "rotator_status": "active",       // systemctl is-active silksec-proxy-rotator
-  "refresh_timer": "active"         // systemctl is-active silksec-proxy-refresh.timer
+  "refresh_timer": "active",        // systemctl is-active silksec-proxy-refresh.timer
+  "writable": true                  // POOL_DIR 可写可遍历（fs.access W_OK|X_OK；root-owned 产出告警引导修复）
 }
 ```
 
@@ -193,10 +196,10 @@ owns 边界说明：v4 中 mubeng 网关消费 `live.txt`（`-w` watch 模式）
 | `grade` | string | 否 | `''` | enum elite/anonymous/unknown/socks |
 | `max_latency_ms` | integer | 否 | 0 | |
 | `country` | string | 否 | `''` | ISO 两位码 |
-| `limit` | integer | 否 | 20 | 1-100 |
+| `limit` | integer | 否 | 50 | 1-100（总线统一分页闸默认 50；manifest schema 上限 100）|
 | `offset` | integer | 否 | 0 | |
 
-返回 `{rows, total_live, limit, offset}`；rows 仅 live ∩ pool 条目（元数据投影 = v4 `meta()`：proxy URL/protocol/grade/latency_ms/exit_ip/country/city），按延迟升序。**行数 = total_live 口径说明**：total_live 是 live 总数（非过滤后数）——过滤后计数以 rows.length 为准（本域特例：live 是滚动队列，精确过滤计数无业务价值；契约测试断言改为 rows.length ≤ limit 且 rows 全部满足过滤条件）。
+返回 `{rows, total_live, total, limit, offset}`——总线路由层在 handler 返回值上统一套分页信封并合并 `meta.total_live`：`rows` 为 `live ∩ pool` 条目按延迟升序切片（handler 先返回全量过滤集，网关按 limit/offset 切片）；`total`/`total_live` 均为 live 总数（非过滤后数）——过滤后计数以 `rows.length` 为准（本域特例：live 是滚动队列，精确过滤计数无业务价值；契约测试断言 `rows.length ≤ limit` 且 `rows` 全部满足过滤条件，`total_live = live 总数`）。
 
 #### 1.4.3 `proxy_gateway`（各工具代理注入用法速查——RoE 文档型查询）
 
@@ -230,7 +233,7 @@ owns 边界说明：v4 中 mubeng 网关消费 `live.txt`（`-w` watch 模式）
 | `proxy.bad.reported` | proxy_report_bad | `{proxy: "host:port", reason, live_remaining}` | ≤1 次/命令 |
 | `proxy.sticky.bound` | proxy_sticky_bind | `{sticky_key, proxy: "host:port", reused: bool}` | ≤1 次/命令 |
 
-事件落 `data/events/proxy.jsonl`。**当前零订阅者**——事件保留给观测者（看板池健康、exec 域审计对照、未来 eval 的"代理质量对工具成功率影响"分析）。**mubeng 热加载不依赖事件**（§2.3 论证）。
+事件落 `data/events/proxy.jsonl`。**当前零订阅者**——事件保留给未来观测者（看板池健康、exec 域审计对照、未来 eval 的"代理质量对工具成功率影响"分析；上述观测面目前均**未接入**）。**mubeng 热加载不依赖事件**（§2.3 论证）。
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
@@ -240,18 +243,20 @@ owns 边界说明：v4 中 mubeng 网关消费 `live.txt`（`-w` watch 模式）
 | `proxy_report_bad` | 上报失效/被目标封禁的代理：加入 blocklist 并从轮换队列移除（mubeng 热加载自动生效，不可撤销）。proxy 形如 http://1.2.3.4:8080 或 1.2.3.4:8080；reason 建议 timeout / banned_403 / captcha / dead。谨慎上报：一次 timeout 不等于失效，确认重试仍失败再报。 |
 | `proxy_sticky_bind` | 会话保持：同 sticky_key 多次调用复用同一出口 IP（登录态/多步交互场景）。可按 protocol/max_latency_ms/country 过滤；出口失效自动重选（延迟最优前 5 随机取一）。返回代理 URL 及元数据，注入方式：http_proxy=<url> https_proxy=<url> <命令>。经免费代理的流量绝不携带真实凭证。 |
 | `proxy_stats` | 查看代理池整体状态：总数、各协议/匿名度分布、可用队列规模、上次刷新时间、轮换网关（127.0.0.1:8899）运行状态。 |
-| `proxy_list` | 列出可用代理队列（按延迟升序）。可选 protocol / grade(elite/anonymous/socks) / max_latency_ms / country 过滤，limit 默认 20 最大 100。单个 socks 代理（nmap --proxies 等场景）从这里取。 |
+| `proxy_list` | 列出可用代理队列（按延迟升序）。可选 protocol / grade(elite/anonymous/socks) / max_latency_ms / country 过滤，limit 默认 20 最大 100。单个 socks 代理（nmap --proxies 等场景）从这里取。（上为 manifest `agent_note` 原文；**网关实际分页默认 50**，见 §1.4.2）|
 | `proxy_gateway` | 查看本地轮换网关用法速查。网关每请求自动更换出口 IP、失败自动轮换/剔除，是批量探测防封的首选方式；各工具的代理注入参数写法见返回。 |
 
 ### 1.7 看板 RPC 投影
 
+> **通道说明**：RpcProjector 为 14 域统一注册 `/silksec-domain` 端点（`<域>.<动词>`，authority=loopback、actor=dashboard），故上表六端点均经 `/silksec-domain` 可达。下列"壳层用法"中标注**未接入**者，指 `dsh-plugin-sec-suite.dashboard-rpc.js`（`/silksec-dashboard`）与看板 UI **尚无对应 case/视图**——勿把"端点可达"误读为"看板已在用"。
+
 | RPC 名 | 来源 | 壳层用法（16-dashboard.md）|
 |---|---|---|
-| `proxy.stats` | 查询 proxy_stats | 壳顶部健康区（可选 proxy 卡片：池规模/网关状态）；exec 域工具执行失败时的旁证 |
-| `proxy.list` | 查询 proxy_list | （预留）proxy 视图插件 |
-| `proxy.gateway` | 查询 proxy_gateway | 帮助信息（只读）|
-| `proxy.refresh` | 命令 proxy_refresh | 看板"刷新代理池"按钮（actor=dashboard + operator）|
-| `proxy.report_bad` | 命令 proxy_report_bad | （预留）池列表行内上报 |
+| `proxy.stats` | 查询 proxy_stats | **未接入**：dashboard-rpc 无 proxy case，看板亦无 proxy 卡片；16-dashboard 七视图不含 proxy（仅经 `/silksec-domain` 通用域 RPC 可达）|
+| `proxy.list` | 查询 proxy_list | **未接入**（预留 proxy 视图插件）|
+| `proxy.gateway` | 查询 proxy_gateway | **未接入**（帮助信息只读）|
+| `proxy.refresh` | 命令 proxy_refresh | **未接入**（原规划看板"刷新代理池"按钮）|
+| `proxy.report_bad` | 命令 proxy_report_bad | **未接入**（预留池列表行内上报）|
 | `proxy.sticky_bind` | 命令 proxy_sticky_bind | 不进看板（model/script 专用面）|
 
 ### 1.8 外部调用示例
@@ -351,25 +356,29 @@ mubeng (silksec-proxy-rotator.service, -w watch live.txt)  # 热加载消费方
 **与 exec 域的接口（env_proxy 8899 注入约定）**：
 
 1. exec 域 run_cli：manifest `env_proxy: true` 且目标是公网（isInternalHost 判定保留在 exec 域：localhost/.singll.net/.internal/.lan/RFC1918/169.254/127 → 直连）→ 注入 `http_proxy=http://127.0.0.1:8899 https_proxy=http://127.0.0.1:8899`；
-2. v5 增强：注入前 exec 域引用本域 `proxy_stats` 查询（loopback，毫秒级）——`rotator_status !== 'active'` 时记 audit 警告（kind=guard，warn 级），**注入决策不变**（fail-open 限定于此：代理是可用性增强不是安全边界，mubeng Restart=always 自愈，中断采集不值得）；
+2. **未实现（原 v5 设计增强）**：原计划注入前 exec 域引用本域 `proxy_stats` 查询，`rotator_status !== 'active'` 时记 audit 警告。**实测 exec 域不引用 proxy 域任何查询**（仅读 `SEC_EGRESS_PROXY` 注 env），该健康观测未接线；设计意图仍是 fail-open（代理是可用性增强不是安全边界，mubeng Restart=always 自愈）；
 3. SOCKS / 单代理需求：模型走 `proxy_list` 挑选自行注入（RoE 见 proxy_gateway notes）；
-4. verify_replay（CONFIRMED 机械复核）默认走 8899 的 v4 行为保留（sec-pipeline → ledger 域迁移时维持）。
+4. verify_replay（CONFIRMED 机械复核）默认走 8899 的 v4 行为保留——v5 归 **vuln 域 `vuln_verify_replay`**（原 sec-pipeline 旧工具已删，见 02-vuln）。
 
-**跨域读**：无（本域不读其他域）。被读：exec/dashboard 读 proxy_stats。
+**跨域读**：无（本域不读其他域）。被读：exec 域按 manifest `env_proxy:true` 注入 8899（不查本域查询）；proxy_stats 暂无看板消费者。
 
 ### 2.4 后端适配器
 
 repository 接口（file 后端原语）：
 
 ```js
+readProposal(path)              // inbox 解析（防穿越 + sha1）
 readPool()                      // pool.json → array
 readLiveSet()                   // live.txt → Set<url>
+readBlocklistSet()              // blocklist.txt → Set<hostport>
 appendBlocklist(hostport, reason, ts)
 removeFromLive(hostport)        // tmp+rename
 writePoolAtomic(pool, live, stats)   // 三文件同批原子写（refresh 主路径）
 readSticky() / writeStickyAtomic(obj)
-readProposal(path)              // inbox 解析
+cleanStickyNotInLive(liveSet)   // INV-P5 清理失效绑定 → removed 数
 readStats()
+poolWritable()                  // POOL_DIR W_OK|X_OK（proxy_stats.writable）
+systemctlIsActive(unit) / systemctlStartNoBlock(unit)   // 系统调用封装
 ```
 
 **能力矩阵**：
@@ -401,6 +410,7 @@ readStats()
 ## 三、迁移与兼容
 
 ### 3.1 现状代码映射（行级）
+> **历史留档（v4→v5 迁移期）**：本节描述 v4.x 时期的代码落点与拆分决策，其中 `dsh-plugin-proxy-pool.js` 旧单体与 `proxy_grade.py` 直写池族三处调用均已退役——现 `dsh-plugin-proxy-pool.js` 仅剩无操作部署壳（`apply()` 空实现），五文件唯一写者是 proxy 域；本表只作迁移溯源，不代表当前运行态。
 
 | v4.x 位置（dsh-plugin-proxy-pool.js）| 内容 | v5 去向 |
 |---|---|---|
@@ -458,6 +468,6 @@ readStats()
 |---|---|
 | 逻辑/功能 | 契约测试通过；list/gateway/sticky/report_bad 的所有权清晰。 |
 | 静默错误 | 文件后端读取 live/blocklist 失败会得到空集合或 false；查询层可见“无代理”，但不区分文件缺失、格式错误与空池。 |
-| 性能 | 代理池文件规模小，读全量可接受；sticky map 进程内缓存无持久化，重启后重建。 |
-| hook 判定 | 无跨域直写；exec 仅通过本域命令 report_bad。 |
+| 性能 | 代理池文件规模小，读全量可接受。**勘误（B5 核验）**：sticky 绑定**非**进程内缓存——`sticky.json` 是持久文件（`readSticky`/`writeStickyAtomic`，tmp+rename），重启后不丢；原"sticky map 进程内缓存无持久化，重启后重建"表述有误，与 §2.1/§2.5「sticky.json 是数据不是缓存」矛盾。 |
+| hook 判定 | 无跨域直写；exec 经 `exec_report_bad_proxy` 调本域 `proxy_report_bad`（v4 直连已删）。 |
 | 独立升级 | 支持单域替换；须回归 exec 的代理注入与 report_bad。 |

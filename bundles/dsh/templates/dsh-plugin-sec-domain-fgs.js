@@ -59,7 +59,7 @@ export const FGS_MANIFEST = {
   prompt_hint: '你拥有 fgs_add/fgs_start/fgs_complete/fgs_fail/fgs_block/fgs_deprecate/fgs_annotate/fgs_list/fgs_next/fgs_export 工具。'
     + '请把任务执行过程中的事实(fact)、目标(goal)、待执行步骤(step)、中间发现(finding)实时写入 FGS 图。'
     + '对每个漏洞卡，先 fgs_add detect step、fgs_start 开工，完成后 fgs_complete 并创建 verify step（depends_on 依赖 detect）；'
-    + 'CONFIRMED 的发现用 finding_add 登记（会自动关联 FGS）。'
+    + 'CONFIRMED 的发现用 vuln_register_signal 登记（会自动关联 FGS）。'
     + 'Decide 时用 fgs_next 取下一步，Execute 后用 fgs_complete/fgs_annotate 提交结果。',
   commands: {
     fgs_add: {
@@ -105,7 +105,7 @@ export const FGS_MANIFEST = {
       event_limit: 1,
       invariants: ['nodeExistsRunning'],
       timeout_ms: 60000,
-      agent_note: '完成一个节点（open/running → done），可同时补结果 content（增量合并不覆盖）与 score。fact 类节点完成时 content 务必带 detail/evidence——带证据的结论性事实会在任务收尾时自动沉淀进跨任务事实库（fact_search 可检索）；空泛的感想不会被沉淀。CONFIRMED 的发现同时用 finding_add 登记（vuln 域），会自动关联 FGS 节点。',
+      agent_note: '完成一个节点（open/running → done），可同时补结果 content（增量合并不覆盖）与 score。fact 类节点完成时 content 务必带 detail/evidence——带证据的结论性事实会在任务收尾时自动沉淀进跨任务事实库（fact_search 可检索）；空泛的感想不会被沉淀。CONFIRMED 的发现同时用 vuln_register_signal 登记（vuln 域），会自动关联 FGS 节点。',
       deprecated: false,
     },
     fgs_fail: {

@@ -19,7 +19,7 @@
 | 后端插件包名 | `@silksec/sec-backend-fgs-sqlite` |
 | owns（单写者声明） | 表：`fgs_nodes`；文件：`data/fgs/snapshots/`（F9 快照，L1 新增）。handoff 追加（appendFgsToHandoff）归 ledger 域、fact 沉淀（persistFgsFacts）归 fact 域，本域对二者只提供查询/事件（见 §1.5、§2.3） |
 | 事件日志 | `data/events/fgs.jsonl` |
-| prompt_hint | manifest 字段：注入调度任务 prompt 的 FGS 使用说明模板（task 域调度器消费，见 05-task.md §2.3） |
+| prompt_hint | manifest 字段：FGS 使用说明模板。**未接线**：task 域调度器实际用的是 `sec-suite/host-compat.js` 内硬编码的 `buildScheduledPrompt` 文本（与本文 §1.6/agent_note 同义），**不读本域 manifest `prompt_hint`**；该字段为设计预留（`host-compat.js` 文本方为现行）。 |
 
 **profile 挂载矩阵**：
 
@@ -34,15 +34,17 @@
 
 | # | 动词 | 一句话语义 | actor | 幂等键 | 发布事件 | 模型可见 |
 |---|---|---|---|---|---|---|
-| F1 | `fgs_add` | 登记节点（fact/goal/step/finding，status 起 open） | model, scheduler, system | 自动指纹 | fgs.node.added | ✅ |
-| F2 | `fgs_start` | open → running（step 开工） | model | 自动指纹 | fgs.node.updated | ✅ |
-| F3 | `fgs_complete` | open/running → done（可同时补结果 content/score） | model | 自动指纹 | **fgs.node.done** | ✅ |
-| F4 | `fgs_fail` | 任意活跃态 → failed（reason 必填） | model, reactor* | 自动指纹 | fgs.node.updated | ✅ |
-| F5 | `fgs_block` | 任意活跃态 → blocked（reason 必填） | model | 自动指纹 | fgs.node.updated | ✅ |
-| F6 | `fgs_deprecate` | 任意态（含终态任务图）→ deprecated（误报/重复闭环落点） | model, dashboard, script | 自动指纹 | fgs.node.updated | ✅ |
-| F7 | `fgs_annotate` | content 增量合并 + score 调整（**不动状态**） | model | 自动指纹 | fgs.node.updated | ✅ |
-| F8 | `fgs_clear` | 清空某任务旧图（任务启动序列，调度器专用） | scheduler | 状态条件 | fgs.task.cleared | ❌ |
+| F1 | `fgs_add` | 登记节点（fact/goal/step/finding，status 起 open） | model, scheduler, system, reactor | auto 字段指纹 | fgs.node.added | ✅ |
+| F2 | `fgs_start` | open → running（step 开工） | model | `none`（状态机前置） | fgs.node.updated | ✅ |
+| F3 | `fgs_complete` | open/running → done（可同时补结果 content/score） | model | `none`（状态机前置） | **fgs.node.done** | ✅ |
+| F4 | `fgs_fail` | 任意活跃态 → failed（reason 必填） | model, reactor* | `none`（状态机前置） | fgs.node.updated | ✅ |
+| F5 | `fgs_block` | 任意活跃态 → blocked（reason 必填） | model | `none`（状态机前置） | fgs.node.updated | ✅ |
+| F6 | `fgs_deprecate` | 任意态（含终态任务图）→ deprecated（误报/重复闭环落点） | model, dashboard, script | `none`（状态机前置） | fgs.node.updated | ✅ |
+| F7 | `fgs_annotate` | content 增量合并 + score 调整（**不动状态**） | model | auto 字段指纹 | fgs.node.updated | ✅ |
+| F8 | `fgs_clear` | 清空某任务旧图（任务启动序列，调度器专用） | scheduler | `none`（清空后再清空无副作用） | fgs.task.cleared | ❌ |
 | F9 | `fgs_snapshot` | 固定任务图快照（不可变文件 + sha256 + 摘要；episode 引用快照而非"当前图"） | reactor, scheduler, system | 自然键（task_id+run_id） | fgs.snapshot.pinned | ❌ |
+
+> 幂等列=manifest `idempotent` 策略：F1/F7 为 `auto`（`idempotent_fields` 字段指纹，防同参重放叠加）；F2–F6/F8 为 `none`——**网关不落幂等表**，幂等性由状态机前置校验承载（重复流转 → `E_STATE`；F8 无残留即 removed:0）；F9 为 `natural`（`task_id+run_id`，同轮重放返回首个快照、不覆写）。
 
 > \* F4 含 reactor：本域订阅 `task.finished(ok=false)` 后补记 failed 节点走域内 service（cause 链带源事件，宪法 §三）。
 
@@ -62,6 +64,7 @@
 | `run_id` | string | ❌ | 会话注入 | 关联 exec run（归属与导出用） |
 | `score` | number | ❌ | `0` | 排序权重（fgs_next 取最优 step） |
 | `parent_id` | integer | ❌ | null | 同任务内节点引用（须存在），否则 `E_FGS_PARENT_INVALID` |
+| `depends_on` | integer[] | ❌ | null | 依赖节点 id 数组；须为同任务内已存在节点，否则 `E_FGS_DEP_INVALID`（fgs_next 只认同任务 **step 类 done** 依赖） |
 | `status` | — | **不接受** | `open` | 状态机私有（铁律 1）；v4.x 的 status 参数废除 |
 
 **不变量（网关前置）**：
@@ -90,8 +93,9 @@
 | `E_NOT_FOUND` | task_id 不存在 | 「核对 task_get；FGS 节点必须挂在真实任务上」 | false |
 | `E_FGS_TASK_NOT_RUNNING` | INV-F1 | 「该任务不在运行中——FGS 图与任务生命周期绑定，只写当前运行任务的图；历史图用 fgs_list 只读」 | false |
 | `E_FGS_DEP_INVALID` | depends_on 引用不存在或跨任务 | 「depends_on 只能引用同任务内已存在的节点 id」 | false |
+| `E_FGS_PARENT_INVALID` | parent_id 引用不存在或跨任务 | 「parent_id 只能引用同任务内已存在的节点 id」 | false |
 
-**幂等**：自动指纹（网关 sha1 核心字段）。**actor**：model, scheduler（启动 goal 种子）, system。**side_effects**：`[rows_touched: fgs_nodes+1, events: fgs.node.added×1]`
+**幂等**：manifest `idempotent:'auto'`（`idempotent_fields: task_id/run_id/type/content/score/parent_id/depends_on` 字段指纹）。**actor**：model, scheduler（启动 goal 种子）, system, reactor（task.finished 失败补记，§2.3）。**side_effects**：`[rows_touched: fgs_nodes+1, events: fgs.node.added×1]`
 
 **agent_note（模型面工具描述全文）**：
 
@@ -107,7 +111,7 @@
 
 **返回**：`data: {node_id, task_id, status: "running"}`。**错误码**：`E_NOT_FOUND`；`E_STATE`（hint「open 才能开工；已 running 无须重复 start，已完成用 fgs_annotate 补内容」）；`E_FGS_TASK_NOT_RUNNING`。
 
-**幂等**：自动指纹。**actor**：model。**事件**：`fgs.node.updated`。
+**幂等**：`none`（状态机前置 open；重复 start → `E_STATE`）。**actor**：model。**事件**：`fgs.node.updated`。
 
 **agent_note**：
 
@@ -131,11 +135,11 @@
 
 **错误码**：`E_NOT_FOUND`；`E_STATE`（hint「节点已终态；补内容用 fgs_annotate」）；`E_FGS_TASK_NOT_RUNNING`。
 
-**幂等**：自动指纹。**actor**：model。**事件**：**`fgs.node.done`**（payload 见 §1.5）。
+**幂等**：`none`（状态机前置 open/running；终态再 complete → `E_STATE`）。**actor**：model。**事件**：**`fgs.node.done`**（payload 见 §1.5）。
 
 **agent_note**：
 
-> 完成一个节点（open/running → done），可同时补结果 content（增量合并不覆盖）与 score。fact 类节点完成时 content 务必带 detail/evidence——带证据的结论性事实会在任务收尾时自动沉淀进跨任务事实库（fact_search 可检索）；空泛的感想不会被沉淀。CONFIRMED 的发现同时用 finding_add 登记（vuln 域），会自动关联 FGS 节点。
+> 完成一个节点（open/running → done），可同时补结果 content（增量合并不覆盖）与 score。fact 类节点完成时 content 务必带 detail/evidence——带证据的结论性事实会在任务收尾时自动沉淀进跨任务事实库（fact_search 可检索）；空泛的感想不会被沉淀。CONFIRMED 的发现同时用 vuln_register_signal 登记（vuln 域），会自动关联 FGS 节点。
 
 #### F4 `fgs_fail`
 
@@ -153,7 +157,7 @@
 
 **返回**：`data: {node_id, task_id, status: "failed"}`。**错误码**：`E_NOT_FOUND`；`E_STATE`；`E_SCHEMA`（reason 空，hint「失败必须写 reason——复盘依赖归因」）。
 
-**幂等**：自动指纹。**actor**：model, reactor（reactor 供订阅 `task.finished` 补记失败节点，宪法 §三）。**事件**：`fgs.node.updated`。
+**幂等**：`none`（状态机前置非终态；终态再 fail → `E_STATE`）。**actor**：model, reactor（reactor 供订阅 `task.finished` 补记失败节点，宪法 §三）。**事件**：`fgs.node.updated`。
 
 **agent_note**：
 
@@ -167,7 +171,7 @@
 
 **不变量**：INV-F1；前置=非终态。**返回**：`data: {node_id, status: "blocked"}`。**错误码**：`E_NOT_FOUND`；`E_STATE`；`E_SCHEMA`（reason 空）。
 
-**幂等**：自动指纹。**actor**：model。**事件**：`fgs.node.updated`。
+**幂等**：`none`（状态机前置非终态）。**actor**：model。**事件**：`fgs.node.updated`。
 
 **agent_note**：
 
@@ -183,7 +187,7 @@
 
 **返回**：`data: {node_id, status: "deprecated"}`。**错误码**：`E_NOT_FOUND`；`E_STATE`；`E_SCHEMA`。
 
-**幂等**：自动指纹。**actor**：model, dashboard（看板误报打标联动）, script。**事件**：`fgs.node.updated`（payload 带 cause=deprecate + reason）。
+**幂等**：`none`（状态机前置；已 deprecated 再 deprecate → `E_STATE`）。**actor**：model, dashboard（看板误报打标联动）, script。**事件**：`fgs.node.updated`（payload 带 cause=deprecate + reason）。
 
 **agent_note**：
 
@@ -217,7 +221,7 @@
 
 **返回**：`data: {task_id, removed: N}`。**错误码**：`E_NOT_FOUND`；`E_ACTOR_FORBIDDEN`（hint「fgs_clear 是调度器启动序列专用；模型不要清图——新周期由调度器自动清」）。
 
-**幂等**：状态条件（无残留即 removed:0）。**actor**：scheduler。**事件**：`fgs.task.cleared`（payload `{task_id, removed}`——铁律 6 命令必发事件；无订阅方，仅 jsonl 留痕）。**模型不可见**。
+**幂等**：manifest `idempotent:'none'`（清空后再清空 removed:0，无副作用）。**actor**：scheduler。**事件**：`fgs.task.cleared`（payload `{task_id, removed}`——铁律 6 命令必发事件；无订阅方，仅 jsonl 留痕）。**模型不可见**。
 
 #### F9 `fgs_snapshot`（宿主收尾快照，L1 2026-09-16 上线）
 
@@ -234,7 +238,7 @@
 
 | 查询 | 参数 | 返回 | 算法/说明 |
 |---|---|---|---|
-| `fgs_list` | task_id ✅ / type / status / run_id / limit（默认 200 上限 500）/ offset | `{rows, total}` | 按 task 过滤（+可选 type/status/run_id）；order `score DESC, updated_at DESC`；返回行 content/depends_on 已 JSON 反序列化。**行数=total 同 where 构造器**（契约测试断言） |
+| `fgs_list` | task_id ✅ / type / status / run_id / limit（bus 分页默认 50、上限 500）/ offset | `{rows, total}` | 按 task 过滤（+可选 type/status/run_id）；order `score DESC, updated_at DESC`；返回行 content/depends_on 已 JSON 反序列化。**行数=total 同 where 构造器**（契约测试断言）。manifest schema `limit` 上限 500，网关统一分页闸默认 50（handler 候选上限 500） |
 | `fgs_next` | task_id ✅ | `{steps: [≤10]}` | **依赖满足算法**（逐行移植 v4.x fgsNextStep）：① 取 `type='step' AND status='open'` 的候选（order score DESC, updated_at DESC，LIMIT 50）；② 构造 done 集 = 同任务 `type='step' AND status='done'` 的节点 id 集合；③ 逐候选解析 depends_on（JSON 数组，解析失败视为空=无依赖），**全部元素 ∈ done 集**（或依赖为空）才算 ready；④ 取前 10 返回（含已解析 content）。注意：依赖判定只认 **step 类 done 节点**——依赖一个 fact 节点不会使 step ready（fact 用 fgs_complete 表达"已知"，step 依赖链表达"先做什么"） |
 | `fgs_export` | task_id ✅ / format（`markdown`\|`json`，默认 markdown） | `{task_id, markdown}` 或 `{task_id, nodes}` | 聚合导出：按 type 四分组（goal/fact/step/finding），markdown 模板=「FGS 决策链摘要」章节（任务号、节点总数、四类计数、每类 `[status] summary`，finding 额外带 host/score）。**ledger 域订阅 task.finished 后调本查询（format=markdown）追加进 handoff——原 appendFgsToHandoff 的文件写入归 ledger，本域只出内容** |
 
@@ -277,7 +281,7 @@ payload 只含 ID 与判据快照（宪法 §八.1），不含行全量——订
 │ exec.worker.finished{run_id, status, exit_code, truth}                    │
 │   → task_worker_finish（强联动）                                          │
 │ task_finish{task_id, run_id, outcome, truth} → 发布 task.finished         │
-│   ├─ fgs 域（sync，ok=false）：补记 failed step/finding 节点              │
+│   ├─ fgs 域（async，ok=false）：补记 failed step/finding 节点             │
 │   ├─ fact 域（async，ok=true）：fgs_list(type=fact,status=done) →          │
 │   │   对 persist_eligible 节点逐条 fact_upsert{                           │
 │   │     program_id, fact_key='fgs/{task_id}/{node_id}', category='fgs',  │
@@ -297,7 +301,7 @@ payload 只含 ID 与判据快照（宪法 §八.1），不含行全量——订
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
-工具名=命令/查询名，零改名；headless+web 均挂。模型**看不见**：fgs_clear（scheduler 专用）。
+工具名=命令/查询名，零改名；headless+web 均挂。模型**看不见**：`fgs_clear`（scheduler 专用）、`fgs_snapshot`（reactor/scheduler/system 专用，L1 快照）。
 
 | 工具 | 描述全文（manifest agent_note） |
 |---|---|
@@ -312,14 +316,16 @@ payload 只含 ID 与判据快照（宪法 §八.1），不含行全量——订
 | `fgs_next` | 返回任务 FGS 图中当前可执行的 Step 列表（依赖已满足、状态 open），按 score 降序。Decide 循环用此工具决定下一步动作。 |
 | `fgs_export` | 导出某任务 FGS 图摘要（按 type/status 聚合，markdown 可直接嵌入 handoff；json 返回全节点）。 |
 
-**兼容别名**（观察期 7 天）：`fgs_update` → 按 status 参数分派（`running`→fgs_start、`done`→fgs_complete、`failed`→fgs_fail、`blocked`→fgs_block、`deprecated`→fgs_deprecate；仅 content/score 无 status → fgs_annotate；带 status 参数本身在别名层吸收，不进新契约）；`fgs_add` / `fgs_list` / `fgs_next` / `fgs_export` 名称本就合规，仅 schema 变化（status 参数移除）。
+**历史留档：兼容别名已移除（2026-09-19）**。迁移期 `fgs_update` 曾按 status 参数分派（`running`→fgs_start、`done`→fgs_complete、`failed`→fgs_fail、`blocked`→fgs_block、`deprecated`→fgs_deprecate；仅 content/score → fgs_annotate）；`data/bus.aliases.yaml` 已清空，`fgs_update` 不再注册/投影/分派（调用返回 `E_BUS_VERB_UNKNOWN`），总线路由器 `fgs_update_router` 保留为通用改名能力（见 §3.2 与 01-bus §3.2）。`fgs_add` / `fgs_list` / `fgs_next` / `fgs_export` 名称本就合规。
 
 ### 1.7 看板 RPC 投影
 
+> **通道说明**：RpcProjector 统一注册 `/silksec-domain`（`<域>.<动词>`，loopback、actor=dashboard），下方两端点均经该通用端点可达。**看板壳/UI 接入状态**：`dsh-plugin-sec-suite.dashboard-rpc.js` 与七视图 UI **均无 fgs case**——知识视图「任务内」位读的是 `memcore` 的 `knowledgeHealth` 聚合（fgs_nodes 计数），任务右栏无决策链入口；两端点目前无看板消费者。
+
 | RPC 名（v5 点分） | 投影到 | 说明 |
 |---|---|---|
-| `fgs.list` | 查询 fgs_list | 知识 tab「任务内」位（六类型知识全景图之一）+ 任务视图执行历史钻取（决策链 Modal） |
-| `fgs.export` | 查询 fgs_export | 决策链 markdown 预览/复制（供人工贴入交接材料） |
+| `fgs.list` | 查询 fgs_list | **未接入**（原规划知识 tab「任务内」位/任务视图执行历史钻取；实测无调用方）|
+| `fgs.export` | 查询 fgs_export | **未接入**（ledger 域经总线内域查询消费，非看板 RPC；决策链 markdown 预览未做）|
 
 无写 RPC（fgs_deprecate 的看板入口走 vuln 域误报打标联动，不单独暴露）。
 
@@ -344,12 +350,15 @@ const r = await bus.dispatch('fgs', 'complete', {
 }, { actor: 'model', session_id: 'sess-worker-96' })
 ```
 
-**脚本调用（复盘脚本只读导出）**：
+**脚本调用（复盘脚本只读导出——经通用域 RPC 端点）**：
 
 ```bash
-curl -s http://127.0.0.1:3000/silksec-dashboard -H 'content-type: application/json' \
-  -d '{"method":"fgs.export","params":{"task_id":96,"format":"markdown"}}'
+# /silksec-domain 端点：endpoint=<域>.<动词>；authority=loopback
+curl -s http://127.0.0.1:3000/silksec-domain -H 'content-type: application/json' \
+  -d '{"endpoint":"fgs.export","payload":{"task_id":96,"format":"markdown"}}'
 ```
+
+> 注：`/silksec-dashboard` 壳层无 `fgs.export` case（见 §1.7），导出须走 `/silksec-domain`。
 
 ---
 
@@ -457,7 +466,7 @@ deleteNodesByTask(taskId) → n                              // fgs_clear
 | 缓存 | 说明 |
 |---|---|
 | **无查询缓存** | 图在任务运行期间高频变更（每个 step 流转都改 status），任何缓存都会造成 fgs_next 取到陈旧 ready 集——直查 SQLite（WAL 读不阻塞写，单任务节点量级下 <1ms） |
-| prompt_hint 模板 | manifest 静态字段，域加载时读入，版本随 bundle 受控 |
+| prompt_hint 模板 | manifest 静态字段，**当前未被调度器消费**（见 §1.1；实际 prompt 文本在 `sec-suite/host-compat.js`，版本随 bundle 受控） |
 | fgs_export markdown | 不缓存（消费方 ledger 每任务收尾调一次，频率低） |
 
 ### 2.6 性能与容量
@@ -474,21 +483,22 @@ deleteNodesByTask(taskId) → n                              // fgs_clear
 ## 三、迁移与兼容
 
 ### 3.1 现状代码映射（行级）
+> **历史留档（v4→v5 迁移期）**：本节为 v4.x 代码到 v5 域的落点映射，其中 `dsh-plugin-sec-suite.scheduler.js`（v4 调度循环）已删除、`aliases/fgs_update.js` 随别名层于 2026-09-19 移除；仅作迁移溯源，不代表当前运行态。v5 调度/收尾改由 task 域调度器经总线 dispatch 本域动词承载。
 
 | v4.x 文件 : 行 | 函数/段 | v5 落点 |
 |---|---|---|
 | `dsh-plugin-sec-suite.asset-db.js` L233-249 | fgs_nodes DDL + 索引 | `sec-backend-fgs-sqlite/schema.js` |
 | 同上 L945-954 | fgsAddNode | `commands/fgs_add.js`（status 参数移除） |
-| 同上 L956-984 | fgsUpdateNode（status/content/score 自由更新） | **拆分**：status→`commands/fgs_{start,complete,fail,block,deprecate}.js`；content 合并+score→`commands/fgs_annotate.js`；兼容分派→`aliases/fgs_update.js` |
+| 同上 L956-984 | fgsUpdateNode（status/content/score 自由更新） | **拆分**：status→`commands/fgs_{start,complete,fail,block,deprecate}.js`；content 合并+score→`commands/fgs_annotate.js`；兼容分派→历史 `aliases/fgs_update.js`（已删） |
 | 同上 L986-1001 | fgsListNodes | `queries/fgs_list.js`（补 total 信封） |
 | 同上 L1003-1025 | fgsNextStep（依赖满足算法） | `queries/fgs_next.js`（算法逐行移植，见 §1.4） |
 | 同上 L1027-1030 | fgsClearTask | `commands/fgs_clear.js`（actor=scheduler 化） |
 | 同上 L1033-1068 | appendFgsToHandoff（读图+拼 markdown+写文件） | **拆两半**：markdown 拼装→本域 `queries/fgs_export.js`（模板逐字兼容）；文件追加→ledger 域 task.finished 订阅者（11-ledger.md） |
 | `dsh-plugin-sec-suite.scheduler.js` L96-129 | persistFgsFacts（done fact → factUpsert 转正） | **整体移出** → fact 域订阅链（06-fact.md：fgs.node.done 待沉淀清单 + task.finished 批量转正） |
-| 同上 L146-157 | 任务启动 FGS 初始化（fgsClearTask + goal 节点） | task 域调度器经总线 dispatch（本域 fgs_clear/fgs_add，actor=scheduler） |
-| 同上 L158-163 | 调度 prompt 的 FGS 使用说明注入 | 本域 manifest `prompt_hint`（task 域调度器消费；**v4.x 硬编码在 scheduler.js 的文本改为本域版本受控**） |
+| 同上 L146-157 | 任务启动 FGS 初始化（fgsClearTask + goal 节点） | task 域调度器经总线 dispatch（本域 fgs_clear/fgs_add，actor=scheduler；现行落点 `dsh-plugin-sec-domain-task.js` L1316-1317） |
+| 同上 L158-163 | 调度 prompt 的 FGS 使用说明注入 | **实际落点 `sec-suite/host-compat.js` `buildScheduledPrompt`（硬编码）；本域 manifest `prompt_hint` 未被消费（§1.1）** |
 | `dsh-plugin-sec-suite.asset-db.js` L884-892, 916-922 | taskFinishScheduledRun 内嵌的 FGS 失败/拒执节点补记 | 本域 `subscribers/task_finished.js`（订阅 task.finished，ok=false） |
-| `dsh-plugin-sec-suite.asset-graph.js` L649-748 | fgs_add/fgs_update/fgs_list/fgs_next/fgs_export 工具注册 | ToolProjector（§1.6；fgs_update 走别名层） |
+| `dsh-plugin-sec-suite.asset-graph.js` L649-748 | fgs_add/fgs_update/fgs_list/fgs_next/fgs_export 工具注册 | ToolProjector（§1.6；fgs_update 走历史别名层，已删） |
 | `dsh-plugin-sec-suite.asset-graph.js` L177-196 | finding_add 前的 activeTaskBySession 反查 + running step 关联 | vuln 域消费 task 域查询 `task_active_by_session` + 本域 fgs_list（跨域只读） |
 
 ### 3.2 兼容别名与观察期
@@ -506,7 +516,7 @@ deleteNodesByTask(taskId) → n                              // fgs_clear
 | `fgs_list` / `fgs_next` / `fgs_export` | 同名 | 仅信封/schema 升级 |
 | `fgsClearTask`（内部函数名） | `fgs_clear` | 无外部调用方，无观察期 |
 
-别名过网关全管线；观察期 7 天（audit 零使用验收）后删除；prompt（调度 prompt_hint、objective 模板）中的 `fgs_update` 引用由脚本化改写 + discipline-audit 悬空引用断言。
+**历史留档**：上述别名随 2026-09-19 别名层移除而删除（不再过网关、不再投影）。迁移期 prompt（调度 prompt、objective 模板）中的 `fgs_update` 引用已由 5.1 脚本化改写并纳入 discipline-audit 悬空引用断言（当前悬空=0）。总线内置 `fgs_update_router` 作为通用改名能力保留（空注册表下不可达）。
 
 ### 3.3 数据迁移脚本要点
 

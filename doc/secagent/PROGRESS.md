@@ -10,6 +10,7 @@
 
 | 日期 | 变更 | 结果 |
 |---|---|---|
+| 2026-09-19 | **文档漂移排查 B5（`13-proxy`/`14-fgs`/`15-eval`，末批闭环）**：以 csai 运行态 + manifest/backend/契约测试逐域核验——**proxy** 三命令幂等键按 manifest 改 `none`+域内文件态（proposal sha1 / hostport / sticky_key），删「自然键」误述；空池改「不发 `E_PROXY_LIVE_EMPTY`、只回 `data.hint`」；`proxy_stats` 补 `writable`；`proxy_list` 分页默认 20→50、返回 `{rows,total_live,total,limit,offset}` 说明按总线信封；§1.7 六 RPC 端点标注看板**未接入**（dashboard-rpc 无 proxy case）；exec 注入前 `proxy_stats` 健康观测**未实现**、verify_replay 归 vuln 域（sec-pipeline 已删）；§2.4 repository 原语补全；§3.1 历史留档；§五 sticky「进程内缓存无持久化」勘误为持久 `sticky.json`。**fgs** F1 actor 补 `reactor`；F2–F6/F8 幂等改 `none`（状态机前置）、F7 auto、F9 natural；F1 参数补 `depends_on`、错误补 `E_FGS_PARENT_INVALID`；时序图 fgs 补记 `sync`→**async**；`prompt_hint` 标注**未接线**（调度器实际走 `sec-suite/host-compat.js` 硬编码 `buildScheduledPrompt`）；模型不可见补 `fgs_snapshot`；§1.6 别名段改历史留档；§1.7 `fgs.list`/`fgs.export` 标未接入、§1.8 导出改 `/silksec-domain`；§3.1/§3.2 历史留档。**eval** C1 幂等去「当日窗口」（manifest natural `finding_id+verdict`）、C2/C3 标 `none`+命令体指纹 10 分钟窗口；owns 补 `data/events/eval.jsonl`、模型禁入补 `eval_run_finish`；Q1 返回字段按实测、Q3 limit 20→50；§1.6 补 `eval_run_finish` 行；§1.7 仅 `eval.stats` 已接入、其余未接入；§2.1 eval-live 补 `source/label_source/visibility`、contract-cases 示例改真实 **9 用例**（删已废 `freeform-update`）；§3.1 历史留档、§3.3 种子 7→9 纠正；§五/§六测试数实测 29/29。**顺带修复**：fgs manifest `prompt_hint`/`fgs_complete` agent_note 中已删别名 `finding_add` 悬空引用→`vuln_register_signal`（模型面描述，不改行为）；`p-v5-1-migrate-eval.js` 过期种子注释（7 用例/freeform）纠正。**清理**：csai 四处过期重复测试副本（fgs/asset/bus/endpoint 的 `dsh-plugin-*.contract-*.test.js`，setup 只维护 `contract-*.test.js`，重复副本令 `node --test` 双计） | B5 闭环、**B1–B5 全部批次完成**；csai 服务 active、14 域 registered、`aliases=0`；契约测试 proxy 17/17、fgs 21/21、eval 29/29 全绿；`sec-v5-accept.sh` PASS=39 FAIL=0；`bundle dsh setup csai` 重部署（rsync 模板→`/opt/SilkSpool/bundles/dsh/` + 重启 silksecagent）后 fgs manifest 悬空引用归零；未改业务逻辑、未动运行态数据 |
 | 2026-09-19 | **文档漂移排查 B4（`08-scope`/`09-approval`/`10-exec`/`11-ledger`/`12-report`）**：以 csai 运行态 + manifest/backend 逐域核验——scope 幂等键按 manifest 改 `none`/auto 字段指纹、`program_bind_workspace` 未接 workspaceRegistry、外部写入接管/`fs.watch`/pairWorkspaces 标注未实现、§1.7 伪 RPC 名纠偏（`scope.program_bind_workspace` 等）、`scope.rules.changed` 零订阅者、§3.1 历史留档；approval owns 补 `approval_effects`、decide effect 改为**命令内同步 dispatch**（非 dispatcher outbox）、状态机持久列仅三态（`approved_pending_effects`/`approved_effect_failed` 未落列）、kind 注册表=代码内 `APPROVAL_KINDS` 共 8 kind、`tool-intrusive` 收窄纠偏为 system/model、§1.3.4 回归分支不可达与 §3.1 deleted scheduler.js 标注；exec 订阅置空（scope.rules.changed 移订阅）、G4 仍本地读 scope.yml 过渡桥、know `pb_outcome` 回执未实现、`exec_task_chain` 迁出+别名移除、burp 幂等 `file`、spawn/worker 注册表去重、§3.1 历史留档；ledger task 域不订阅任何 ledger 事件（方案 A 未实施，唯一守卫=同步 `ledger_task_proof`）、radar-inbox 收割未实现、discipline_stats 补 `exec_runs_24h`、§3.1 历史留档；report 参数 `status`→`status_filter`（R3）、`report_index_rebuild` 未实现（改惰性 heal）、§3.1 历史留档；顺带清理 csai `plugins/sec-domain-scope/test/` 下与 `contract-scope.test.js` 内容重复的过期副本（setup 只维护前者，重复副本令 `node --test` 双计） | B4 闭环；csai 服务 active、15 域 registered、`aliases=0`；契约测试 scope 15/approval 19/exec 24/ledger 22/report 12 全绿；仅改文档 + 清过期测试副本，未动运行态数据 |
 | 2026-09-19 | **文档漂移排查 B3（`02-vuln`/`03-asset`/`04-endpoint`/`05-task`/`06-fact`/`07-know`）**：以 csai 运行态 + manifest/后端逐域核验——vuln 补 `vuln_evidence_put`（实为 13 命令）、C2 actor 增 dashboard、C9/C11 去伪「+分钟」、§1.7 删不可达 RPC（verifyReplay/registerSignal）；asset 六命令幂等键改为 auto 字段指纹、`owner` 列与 `--proposal` 标注未实现、RPC `asset.detail→asset.get`；endpoint 幂等键/`E_ENDPOINT_QUEUE_EMPTY`/`urls 上限`/RPC 名纠偏（实际仅 endpoints/endpointHosts）、surface_scan 形状 `{url,keyword,source}`；task 17 命令/11 查询对齐（补 task_drift）、续期重试与状态机纠偏（`in_progress` 不存在）、§1.5 补 `know.release.revoked`；fact 工具 13→14（补 fact_overview）、C1 actor 增 reactor、RPC `fact.bb.read→fact.bb_read`、行数 873/761 刷新；know 表/列名回正（exp_cards / exp_cards_archive / kb_docs_archive / scenario·chain / pos_fb·neg_fb）、§1.7 去伪点分 RPC 名、L5/L6 用例 60→70→73；六域 §3.1 统一加「历史留档（v4→v5 迁移期）」横幅、§3.2 观察期段落改历史时态、测试数按实测（vuln 50+9 / asset 30 / endpoint 25 / task 38 / fact 23 / know 73） | B3 闭环；仅改文档未动运行态（05-task 因执行顺序已单独先行提交） |
 | 2026-09-19 | **文档漂移排查 B2（`00-conventions` / `01-bus`）**：以 csai 运行态为准逐项核验——bus_status 实测 `aliases.count=0`（旧例 31/finding_update 系漂移）、`mount`/`bus.degraded` 字段缺失、audit_tail/events_tail 缺 `operator`/`offset`；`bus_replay` 的 `E_BUS_REPLAY_RANGE`、replay 锁 `E_CONFLICT`、`result_json` 64KB 截断、audit 重试队列均为未实现的设计预留，已显式标注；R3 补 `to` 治理豁免（fact/know_transition）、R4 改指实际 `bus.domain.rejected`/`E_BUS_DOMAIN_REJECTED`；audit「⑪不回滚」矛盾改为 fail-closed 回滚；actor 值域八→十、timeout 上限 3670000→7270000；`/silksec-dashboard` 52→56 case fail-closed UI 适配层；bus 契约数 52→51；业务域数 15→14；文档路径 `v5/{NN}`→`doc/secagent/{NN}`；§3.1 加「历史留档」横幅 | B2 闭环；BUS 51/51 全绿（csai 实跑） |
@@ -29,6 +30,7 @@
 
 > **目的**：以「运行态/代码为真相源」逐域核验 `doc/secagent/00–18`，消除历史口径漂移（动词/查询/事件/actor/幂等/schema、已删除的旧实现、已移除的别名层、合并后的章节引用）。
 > **规则**：一次会话 = 一个批次（≤3–6 个文档）；每批次收尾必须：① 更新本表状态；② 追加 §〇 更新日志一行；③ 在会话末尾输出「自递归提示词」（下一批次）；④ 提交并推送。
+> **状态（2026-09-19）**：B1–B5 **全部 ✅ 闭环**，无 ⬜ 批次；自递归已终止（见本节末模板，禁止自动续批）。此后如需复查，显式新建批次后按同规则执行。
 > **真相源优先级**：运行态证据（`spool`）> 代码/manifest > 契约测试 > 文档；文档内部冲突以 [00-conventions](00-conventions.md) 为上位。
 
 ### 分批分配与状态
@@ -39,7 +41,7 @@
 | **B2** | `00-conventions`、`01-bus` | 宪法条款 vs 总线实现（R1–R9、幂等三级键、audit fail-closed、别名空表、端点命名）；宪法 §十一/§十五 与运行态对照 | ✅ **2026-09-19 完成（本会话）** |
 | **B3** | `02-vuln`、`03-asset`、`04-endpoint`、`05-task`、`06-fact`、`07-know` | 各域 manifest commands/queries/events/actor 白名单/invariants 与文档 §1.2/§1.4/§1.5 逐项对照；L0–L6 新增动词回填；§3.1 引用的 v4 文件是否已删 | ✅ **2026-09-19 完成（本会话）**：六域命令/查询/actor/幂等/事件按 manifest 对齐（vuln 13+6、asset 6+6、endpoint 4+5、task 17+11、fact 10+7、know 32+23）；补 `vuln_evidence_put`、`task_drift`、`fact_overview`；修正伪 RPC 名与伪幂等键；未实现项显式标注；§3.1 统一加「历史留档」横幅；契约数实测 50+9/30/25/38/23/73 |
 | **B4** | `08-scope`、`09-approval`、`10-exec`、`11-ledger`、`12-report` | 同上 + approval kind 注册表（7/8 kind）、effect outbox、report 索引 heal、ledger 纪律指标 | ✅ **2026-09-19 完成（本会话）**：五域命令/查询/事件/actor 按 manifest 与 csai 运行态对齐（scope 7+4、approval 4+3、exec 7+4、ledger 5+7、report 2+2；服务 active、15 域 registered、`aliases=0`；契约测试 scope 15/approval 19/exec 24/ledger 22/report 12 全绿）。**主要纠正**：① 幂等键统一改为 manifest `idempotent` 策略（scope 多为 `none`+命令层数据级幂等、approval/report/exec 部分为 auto 字段指纹，删「自然键」误述）；② approval 批准副作用改为 **decide 内同步 dispatch effect + 登记 `approval_effects`**（非 dispatcher outbox），状态机持久列仅 `pending/approved/rejected`（`approved_pending_effects`/`approved_effect_failed` 为未落列的设计预留），kind 注册表实为**代码内 `APPROVAL_KINDS` 共 8 kind**（非 manifest `kinds` 段），`tool-intrusive` request_actors = system/model；③ scope 不订阅 approval.approved（改 effect 视角）、`scope.rules.changed` 零订阅者、ledger radar 由 `approval.approved` 触发（非 scope.granted）；④ exec `subscribes` 为空（scope.rules.changed 订阅已删）、G4 仍用本地 `loadScope()` 读 scope.yml 过渡桥、know `pb_outcome` 回执未实现、`exec_task_chain` 已迁出且别名移除、burp 幂等 natural `file`；⑤ ledger task 域**不订阅**任何 ledger 事件（方案 A 未实施，唯一守卫=同步 `ledger_task_proof` B'）、radar-inbox 收割未实现、discipline_stats 补 `exec_runs_24h`/`data_source=unavailable`；⑥ report 参数 `status`→`status_filter`（R3）、`report_index_rebuild` 未实现（改惰性 heal）；⑦ 五域 §3.1 统一加「历史留档」横幅（`sec-suite.scheduler.js`/`sec-suite.parsers.js`/旧 `sec-dashboard.client.js` 已删标注）、§1.7 伪 RPC 名纠偏 |
-| **B5** | `13-proxy`、`14-fgs`、`15-eval` | 同上 + proxy 落池算法、fgs 快照/语义动词族、eval 数据集/评测链 | ⬜ 待执行 |
+| **B5** | `13-proxy`、`14-fgs`、`15-eval` | 同上 + proxy 落池算法、fgs 快照/语义动词族、eval 数据集/评测链 | ✅ **2026-09-19 完成（本会话，末批；B1–B5 全部闭环）**：三域命令/查询/事件/actor/幂等按 manifest 与 csai 运行态对齐（proxy 3+3、fgs 9+3、eval 5+4；服务 active、14 域 registered、`aliases=0`；契约测试 proxy 17/17、fgs 21/21、eval 29/29 全绿）。**主要纠正**：① proxy 三命令幂等策略=`none`+域内文件态幂等（proposal sha1/hostport/sticky_key），空池不抛 `E_PROXY_LIVE_EMPTY` 只回 hint，`proxy_stats` 增 `writable`，`proxy_list` 网关实际分页默认 50，看板 RPC 六端点均未接入，exec 注入前 `proxy_stats` 健康观测未实现，§五 sticky 持久化勘误；② fgs F1 actor 补 reactor、F2–F6/F8 幂等 `none`（状态机前置）而 F7 `auto`/F9 `natural`，F1 补 `depends_on`/`E_FGS_PARENT_INVALID`，失败补记 sync→async，`prompt_hint` 未接线（实际 host-compat 硬编码），模型不可见补 `fgs_snapshot`，§1.7/§1.8 未接入与端点纠正；③ eval C1 幂等去当日窗口（natural finding_id+verdict），C2/C3 manifest `none`+命令体 10 分钟指纹窗口，owns 补事件日志、模型禁入补 `eval_run_finish`，Q1 字段/Q3 分页按实测，§2.1 contract-cases 改真实 9 用例（删已废 freeform-update），§三项种子/测试数纠正；④ 三域 §3.1 历史留档；⑤ 修复 fgs manifest 悬空 `finding_add` 引用 + 迁移脚本过期注释；⑥ 清理 csai 四处过期重复测试副本（fgs/asset/bus/endpoint）。**部署验证**：`rsync` 模板→`/opt/SilkSpool/bundles/dsh/` 后 `bundle dsh setup csai` + 重启，服务 active、NRestarts=0、14 域注册无错、`sec-v5-accept.sh` PASS=39 FAIL=0 |
 
 ### 每域核验方法（B2–B5 通用）
 
@@ -50,19 +52,20 @@
 5. **契约测试计数**：文档头部/状态行的测试数（如 know 73、task 38）与 `bundles/dsh/templates/*.contract-*.test.js` 实际用例数核对。
 6. **章节引用**：合并后引用 `16-dashboard.md §x` 须真实存在；发现悬空锚点一并修。
 
-### 自递归提示词模板（每批次末尾原样输出给下一会话）
+### 自递归提示词模板（**已终止**：B1–B5 全部 ✅，2026-09-19 闭环）
+
+> B5（末批）完成后本递归自然终止，不再输出「下一批」提示词。如需再查，请新建显式批次并分配文档范围，勿复用自动递归。
 
 ```text
-继续 SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」。
-先读 doc/secagent/PROGRESS.md 的「§〇·补、文档漂移排查」章节，找到状态为 ⬜ 的第一个批次（B2/B3/B4 已完成；B5 为末批，完成后即闭环）。
-本会话只做该批次（不要跨批）：
-1) 用 PATH 中的 spool 调查 csai 真实运行态（服务/域注册/别名表/契约测试），对照 bundles/dsh/templates/ 下该域 manifest 与文档 §1.2/§1.4/§1.5/§3.1/§3.2 逐项核验；
-2) 修复该批次所有文档漂移（只改文档与必要的引用注释；改代码一律克制并说明理由）；历史映射必须显式标注「历史留档」；
-3) 在 PROGRESS.md §〇·补 把该批次标为 ✅ 并注明日期与要点，同时在 §〇 更新日志追加一行；
-4) 清理本次发现的过时/无效归档或缓存（不得影响运行态；保留必要历史，不用 git add -f）；
-5) 完成后按仓库规范 commit + push（中文信息）；
-6) 在本会话最后，原样输出一个「下一步」提示词（把批次推进到下一个 ⬜），保证下一个会话完成后仍能继续自我递归——即本提示词每执行一次就自动指向再下一批，直到 B5 全部 ✅。
-约束：远程一切操作走 spool；不改 spool 源码；不新建进度副本；不执行危险 Docker 操作。
+【全部批次已完成 · 递归终止】
+SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」B1–B5 已全部 ✅ 闭环
+（B5 = 13-proxy / 14-fgs / 15-eval，2026-09-19）。
+- 状态真相源：doc/secagent/PROGRESS.md §〇·补「分批分配与状态」表（无 ⬜ 项）。
+- 本轮收口：三域 manifest/文档对齐、悬空引用修复（fgs finding_add）、过期重复测试副本清理；
+  契约测试 proxy 17/17、fgs 21/21、eval 29/29；csai 服务 active、14 域 registered、aliases=0。
+- 后续如需复查：请显式新建批次（分配 00–18 文档范围），按 §〇·补「每域核验方法」执行；
+  不要复用本模板自动递归，也不要跨批混做。
+约束不变：远程一切操作走 spool；不改 spool 源码；不新建进度副本；不执行危险 Docker 操作。
 ```
 
 ## 一、总览
