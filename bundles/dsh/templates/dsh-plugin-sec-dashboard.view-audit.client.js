@@ -72,10 +72,15 @@ window.__ModuleLoader__.load({
               var isOpen = !!expanded[i]
               return el('tr', { key: i, className: 'silksec-row' },
                 el('td', { style: uiCore.styles.tdMono }, uiCore.fmtTime(r.ts)),
-                el('td', { style: uiCore.styles.tdMono }, r.tool || '—'),
+                el('td', { style: uiCore.styles.tdMono, title: r.tool || '' }, r.tool || '—'),
                 el('td', { style: { ...uiCore.styles.td, color: decColor(r.decision) } }, r.decision || '—'),
                 el('td', {
-                  style: { ...uiCore.styles.tdMono, color: uiCore.T.label2, cursor: detail.length > 200 ? 'pointer' : 'default' },
+                  style: {
+                    ...uiCore.styles.tdMono, color: uiCore.T.label2,
+                    cursor: detail.length > 200 ? 'pointer' : 'default',
+                    // 展开时允许换行完整显示（默认单行省略，保持行高整齐）
+                    ...(isOpen ? { whiteSpace: 'normal', wordBreak: 'break-all', overflow: 'visible', textOverflow: 'clip' } : {}),
+                  },
                   title: detail.length > 200 ? (isOpen ? '点击收起' : '点击展开全文') : detail,
                   onClick: function () { if (detail.length > 200) setExpanded({ ...expanded, [i]: !isOpen }) },
                 },

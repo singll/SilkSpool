@@ -193,13 +193,14 @@ transition 只碰 `background-color / color / border-color / opacity`（不触�
 
 ## 五、装饰元素与图标
 
-### 5.1 装饰白名单（全站就这三处，其余一律不装饰）
+### 5.1 装饰白名单（全站就这两处，其余一律不装饰）
+
+> 2026-09-19（19-ui-unify 补丁）：侧边栏「安全中心」入口图标与页头丝轴徽章已移除——安全中心与会话/工作区条目**同层级、纯文字行**，不再有抢眼图标；丝轴意象仅保留在空状态线稿。
 
 | 位置 | 元素 |
 |---|---|
-| 侧边栏「看板」入口图标 | **丝轴 + 引出一段丝线**（SilkSpool/Silksong 双关），内联 SVG，16×16，1.5px stroke，currentColor |
-| 看板标题区 | 标题旁小号丝轴徽章 + 标题下 1px 丝线分隔线（纯 CSS/SVG，无动画） |
 | 各视图空状态 | 单色线稿小图标（丝轴/针），label-tertiary 色，不彩色、不插画化 |
+| 安全中心页头 | 标题下 1px 丝线分隔线（纯 CSS/SVG，无动画；无徽章、无前置图标） |
 
 ### 5.2 禁止清单
 
@@ -353,3 +354,7 @@ transition 只碰 `background-color / color / border-color / opacity`（不触�
 | `.silksec-dash-dialog` | Modal 兜底容器：fill=`bg-layer-3` / border=`border-l2` / 12px；遮罩由宿主 Modal 自带（无 rgba 字面量）|
 
 **CI 双重断言**（`sec-v5-accept.sh` UI 段，19-ui-unify §5.2）：① `ui-shared-css-unique`——上述选择器定义（带前导点）只允许出现在 ui-core；② `ui-class-defined`——全部被使用的 `silksec-*` className 必须有 CSS 定义（白名单：`silksec-approval-capsule` 为 overlay inline 定位 hook）。
+
+### 11.9 表格统一显示（2026-09-19，19-ui-unify 补丁）
+
+**行高恒定 + 列宽固定 + 单行省略**：所有 `ui-core.styles.td/tdMono/tdClosed` 一律 `white-space:nowrap; overflow:hidden; text-overflow:ellipsis`，表格 `table-layout:fixed` + 每表 `<colgroup>` 定列宽。长 ID / 长 URL / 长标题不再撑高行或顶破列——无论内容多少，行高一致、左右对齐；完整内容一律走单元格 `title` 悬停。需要换行完整展示的场景（如审计详情展开）在展开态局部覆盖 `white-space:normal; overflow:visible`。已关闭漏洞行不再用更小内距（`tdClosed` 与 `td` 同骨架），靠整行 opacity 降权，保证与常规行等高。

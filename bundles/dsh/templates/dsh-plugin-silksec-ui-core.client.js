@@ -144,8 +144,10 @@ window.__ModuleLoader__.load({
     var errorLine = { ...stateLine, color: T.error, padding: '8px 0' }
     var pill = { display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px', borderRadius: 999, fontSize: 12, lineHeight: '16px', border: '1px solid ' + T.border2, color: T.label2, background: 'transparent', flexShrink: 0, whiteSpace: 'nowrap' }
     var th = { textAlign: 'left', color: T.label2, padding: '8px 12px', ...F.xxsStrong, whiteSpace: 'nowrap' }
-    var td = { padding: '8px 12px', color: T.label, ...F.xs, verticalAlign: 'middle', wordBreak: 'break-word' }
-    var tdClosed = { padding: '3px 12px', color: T.label2, ...F.xxxs, verticalAlign: 'middle', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }
+    // 表格统一单行省略：无论内容多少，行高恒定、列宽由 colgroup 固定，杜绝长 ID/长文本
+    // 撑高行或顶破列（19-ui-unify 补丁）。完整内容一律走 cell 的 title 悬停。
+    var td = { padding: '8px 12px', color: T.label, ...F.xs, verticalAlign: 'middle', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }
+    var tdClosed = { ...td, color: T.label2 }
     var tdMono = { ...td, fontFamily: MONO, fontSize: 13 }
     var tableStyle = { width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }
     var theadRow = { borderBottom: '1px solid ' + T.border3 }
@@ -213,7 +215,7 @@ window.__ModuleLoader__.load({
         el('path', { d: 'M5.5 5.5h4M5.5 8h4M5.5 10.5h4' }),
         el('path', { d: 'M9.5 10.5c3 0.5 3 2.5 4.5 3' }))
     }
-    function opIcon(kind) {
+    function opIcon(kind, size) {
       var inner
       if (kind === 'confirm') inner = el('path', { d: 'M3.5 8.5l3 3 6-6.5' })
       else if (kind === 'false_positive' || kind === 'close') inner = el(React.Fragment, null, el('path', { d: 'M4.5 4.5l7 7M11.5 4.5l-7 7' }))
@@ -233,7 +235,8 @@ window.__ModuleLoader__.load({
       else if (kind === 'back') inner = el(React.Fragment, null, el('path', { d: 'M12.5 8H3.5' }), el('path', { d: 'M7 4.5L3.5 8l3.5 3.5' }))
       else if (kind === 'refresh') inner = el(React.Fragment, null, el('path', { d: 'M13 8a5 5 0 1 1-1.6-3.6' }), el('path', { d: 'M13.5 2.5V5.5H10.5' }))
       else inner = el(React.Fragment, null, el('path', { d: 'M2.5 8s2.2-3.8 5.5-3.8S13.5 8 13.5 8 11.3 11.8 8 11.8 2.5 8 2.5 8z' }), el('path', { d: 'M4 13l8-10' }))
-      return el('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }, inner)
+      var px = size || 14
+      return el('svg', { width: px, height: px, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }, inner)
     }
 
     // ── 共享展示件（P6 域视图跨 bundle 复用；全部经 T/F 令牌，零颜色字面量） ────

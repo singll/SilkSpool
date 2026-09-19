@@ -322,8 +322,14 @@ test('消息动作：每 messageId 渲染「登记候选漏洞」「沉淀事实
   const wrapper = collect(tree, (n) => n.props['data-silksec-surface'] === 'message-actions')[0]
   assert.ok(wrapper, '必须渲染消息动作容器')
   assert.equal(wrapper.props['data-message-id'], 'm-1')
-  const labels = collect(tree, (n) => n.type === 'button' && n.props['data-silksec-action']).map((b) => b.props['data-silksec-action']).sort()
-  assert.deepEqual(labels, ['fact', 'finding'])
+  const btns = collect(tree, (n) => n.type === 'button' && n.props['data-silksec-action'])
+  assert.deepEqual(btns.map((b) => b.props['data-silksec-action']).sort(), ['fact', 'finding'])
+  // 19-ui-unify 补丁：动作图标化（26×26 icon-btn + aria-label/title 说明），不再渲染文字标签
+  for (const b of btns) {
+    assert.equal(b.props.className, 'silksec-icon-btn', '动作必须是图标按钮')
+    assert.ok(b.props['aria-label'], '图标按钮必须有 aria-label')
+    assert.ok(!String(deepText(b)).match(/登记候选漏洞|沉淀事实/), '按钮内不得再出现文字标签')
+  }
   // 不同 messageId 独立渲染（additive 语义：list 槽每 messageId 一条）
   const tree2 = mod.MessageSecurityActions({ messageId: 'm-2', sessionId: 's1' })
   const wrapper2 = collect(tree2, (n) => n.props['data-silksec-surface'] === 'message-actions')[0]

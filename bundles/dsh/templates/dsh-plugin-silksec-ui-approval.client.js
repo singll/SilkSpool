@@ -222,16 +222,13 @@ window.__ModuleLoader__.load({
       return String(v)
     }
 
-    // 打开审批中心：右侧栏 page tab 优先；缺席则 secUiBus + 主面板；再缺席由调用方弹 Modal
+    // 打开审批中心：右侧栏 page tab 优先；无在屏会话 seat → 'none'，由调用方弹 Modal。
+    // （19-ui-unify 补丁：不再回退 layout.selectPanel 主面板——主面板已无审批 tab，
+    // 原先的 'panel' 分支会静默无效果，导致「待审批点击无效」。）
     function openApprovalCenter() {
       var sr = getService('sidebarRight')
       if (sr && typeof sr.openTab === 'function') {
         try { sr.openTab(TAB_KIND); return 'tab' } catch (e) { /* 无在屏会话 seat → 降级 */ }
-      }
-      try { uiCore.secUiBus.emit('open:approval', {}) } catch (e) {}
-      var layout = getService('layout')
-      if (layout && typeof layout.selectPanel === 'function') {
-        try { layout.selectPanel(DASHBOARD_PANEL_ID); return 'panel' } catch (e) {}
       }
       return 'none'
     }
@@ -314,6 +311,17 @@ window.__ModuleLoader__.load({
       var busy = bs[0]; var setBusy = bs[1]
       var ms = React.useState(false)
       var modalOpen = ms[0]; var setModalOpen = ms[1]
+
+      // 外部入口（安全中心 KPI 待审批 / 会话「安全产出」按钮）经 secUiBus 请求打开：
+      // 有在屏会话 → 右侧栏 tab；否则弹 Modal（与右下角胶囊同款）。19-ui-unify 补丁。
+      React.useEffect(function () {
+        if (!uiCore.secUiBus || typeof uiCore.secUiBus.on !== 'function') return
+        return uiCore.secUiBus.on('open:approval', function () {
+          setOpen(false)
+          var where = openApprovalCenter()
+          if (where === 'none') setModalOpen(true)
+        })
+      }, [])
 
       var pending = snap.pending || 0
       var rows = (state.data && state.data.rows) || snap.rows || []

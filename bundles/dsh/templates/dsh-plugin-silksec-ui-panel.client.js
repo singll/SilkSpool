@@ -76,14 +76,9 @@ window.__ModuleLoader__.load({
     }
 
     // ── 侧边栏一级导航行图标（owner props {size, active}） ─────────────────────
-    function PanelIcon(props) {
-      var p = props || {}
-      return el('span', {
-        style: {
-          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          color: p.active ? uiCore.T.brand : uiCore.T.label2,
-        },
-      }, uiCore.spoolIcon(p.size || 16))
+    // 19-ui-unify 补丁：去掉安全中心前的丝轴图标，与会话/工作区条目同层级（纯文字行）。
+    function PanelIcon() {
+      return null
     }
 
     // ── 打开审批/任务中心（右侧栏 page tab 优先；缺席则 secUiBus + 主面板降级视图） ──
@@ -258,9 +253,7 @@ window.__ModuleLoader__.load({
       return el('div', { style: { ...uiCore.styles.root, height: '100%' } },
         el('div', { style: { ...uiCore.styles.header, minHeight: 40, marginBottom: 10, paddingBottom: 8, borderBottom: '1px solid ' + uiCore.T.border } },
           el('div', { style: { minWidth: 0 } },
-            el('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-              el('span', { style: { color: uiCore.T.brand, display: 'inline-flex' } }, uiCore.spoolIcon(16)),
-              el('div', { style: uiCore.styles.pageT }, '安全中心')),
+            el('div', { style: uiCore.styles.pageT }, '安全中心'),
             el('div', { style: uiCore.styles.pageSub, title: '写操作全部写入 audit.jsonl；行内跳链回来源会话（详情一律在会话里看）' }, '全局安全态势 · 漏洞 / 资产 / 接口 / 事实 / 知识 / 报告 / 审计')),
           el('span', { style: { display: 'inline-flex', gap: 6 } },
             el('button', { type: 'button', className: 'silksec-icon-btn', title: '返回当前会话', 'aria-label': '返回当前会话', onClick: function () { navigate.selectPanel(null) } }, uiCore.opIcon('back')),

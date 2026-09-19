@@ -91,11 +91,11 @@ window.__ModuleLoader__.load({
                   title: '点击展开该主机的接口明细',
                   onClick: function () { setExpandedHost(isOpen ? null : r.host) },
                 },
-                  el('td', { style: uiCore.styles.tdMono },
+                  el('td', { style: uiCore.styles.tdMono, title: r.host },
                     el('span', { style: { color: uiCore.T.label3, marginRight: 6, ...uiCore.F.xxxs } }, isOpen ? '▾' : '▸'),
                     r.host),
                   el('td', { style: uiCore.styles.tdMono }, String(r.n)),
-                  el('td', { style: uiCore.styles.td }, (r.methods || '').split(',').filter(Boolean).map(function (m) {
+                  el('td', { style: uiCore.styles.td, title: r.methods || '' }, (r.methods || '').split(',').filter(Boolean).map(function (m) {
                     return el('span', { key: m, style: { ...uiCore.styles.pill, fontFamily: uiCore.MONO, fontSize: 11 } }, m)
                   })),
                   el('td', { style: uiCore.styles.td }, uiCore.programCell(r.program_id)),

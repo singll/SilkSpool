@@ -40,7 +40,7 @@ p7_review:
 # ── 19-ui-unify：看板 UI 全局统一（2026-09-19） ────────────────────────────
 # 视觉/交互统一，挂点清单不变；仅 viewRegistry 协议 minor 变更（新增可选 group）。
 ui_unify_19:
-  design_doc: doc/secagent/19-ui-unify.md
+  design_doc: doc/secagent/archive/19-ui-unify.md   # 已实施验收并归档
   registry_protocol:
     version: 2                 # 1 = id/label/order/component/requires；2 = 增可选 group
     added: viewRegistry.register({ group: 'primary' | 'more' })  # 缺省 primary（旧视图包兼容）

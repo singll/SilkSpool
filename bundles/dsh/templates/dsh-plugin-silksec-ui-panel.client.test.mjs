@@ -166,6 +166,12 @@ test('DashboardPanel：按 viewRegistry order 渲染 tab，active = 第一条', 
   assert.equal(active.length, 1, 'active 必须是 registry 首条（审计）组件')
 })
 
+test('PanelIcon：无图标（安全中心与会话/工作区条目同层级，纯文字行）', () => {
+  const { mod } = loadBundle(makeUiCore())
+  assert.equal(mod.PanelIcon({ size: 16, active: true }), null)
+  assert.equal(mod.PanelIcon({ size: 16, active: false }), null)
+})
+
 test('DashboardPanel：group=more 收敛进「更多」二级导航，一级 tab 只留 primary', () => {
   const uiCore = makeUiCore()
   const { mod } = loadBundle(uiCore)

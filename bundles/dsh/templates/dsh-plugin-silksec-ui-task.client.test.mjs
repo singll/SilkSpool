@@ -254,6 +254,10 @@ const FULL_RPC_STATE = {
   tasks: { data: { rows: QUEUE, total: QUEUE.length } },
   taskRuns: { data: { rows: RUNS, total: 1 } },
   workspaces: { data: WORKSPACES },
+  // 筛选选项的稳定来源（19-ui-unify 补丁）：即使某 program 当前无任务也保留筛选项
+  programs: { data: [
+    { id: 'meituan' }, { id: 'bytedance' }, { id: 'autohome' }, { id: 'didi' }, { id: 'pdd' },
+  ] },
 }
 
 // ── ① 注册/卸载幂等 + tab 体/标题 + 标题计数 ─────────────────────────────────
@@ -346,18 +350,16 @@ test('降级：sidebarRightTabs 缺席 → 主面板临时 tab（角标「降级
   assert.equal(uiCore.__health['ui-task'].status, 'degraded')
 })
 
-test('降级：openTaskCenter 无右栏/主面板返回 none；无会话 openTab 抛错回退 secUiBus + selectPanel', () => {
+test('降级：openTaskCenter 无右栏/无会话 seat → none（交 Modal 宿主），不抛', () => {
   const uiCore = makeUiCore()
   const { mod } = loadBundle(uiCore, makePrimitives())
   const { slots } = makeSlots([], [])
   mod.apply(makeCtx({ slots }))
-  assert.equal(mod.openTaskCenter(), 'none', '无 sidebarRight / layout 时返回 none（交由 Modal）')
-  assert.ok(uiCore.__busEmits.some((e) => e.name === 'open:task'), '须经 secUiBus 广播 open:task')
-  const selectCalls = []
-  const ctx2 = makeCtx({ slots: makeSlots([], []).slots, sidebarRightTabs: makeSidebarRightTabs(), sidebarRight: { openTab() { throw new Error('no mounted seat') } }, layout: makeLayout(selectCalls) })
+  assert.equal(mod.openTaskCenter(), 'none', '无 sidebarRight 时返回 none（交由 Modal 宿主）')
+  // 19-ui-unify 补丁：不再回退主面板 selectPanel（主面板无任务 tab，旧 'panel' 静默无效）
+  const ctx2 = makeCtx({ slots: makeSlots([], []).slots, sidebarRightTabs: makeSidebarRightTabs(), sidebarRight: { openTab() { throw new Error('no mounted seat') } }, layout: makeLayout([]) })
   mod.apply(ctx2)
-  assert.equal(mod.openTaskCenter(), 'panel')
-  assert.deepEqual(selectCalls, ['silksec-dashboard'])
+  assert.equal(mod.openTaskCenter(), 'none', '无会话 seat → none')
 })
 
 // ── ④ 写操作等价 ─────────────────────────────────────────────────────────────
@@ -402,8 +404,10 @@ test('四区块：定时卡片/队列表格+卡片双模式/工作区/执行历�
   // 双模式（表格在宽栏、卡片在窄栏，由 container query 切换）
   assert.ok(collect(tree, (n) => n.props && n.props.className === 'silksec-task-queue-table').length === 1, '必须有队列表格（宽栏）')
   assert.ok(collect(tree, (n) => n.props && n.props.className === 'silksec-task-queue-cards').length === 1, '必须有队列卡片（窄栏 <480px）')
-  // program 筛选 Pill 组（窄栏工作区降级）
-  assert.ok(collect(tree, (n) => n.type === 'pill-stub').length >= 2, '必须有 program 筛选 Pill 组')
+  // program 筛选胶囊（.silksec-chip，19-ui-unify 补丁）：选项来自 workspaces ∪ programs，稳定不塌缩
+  const chips = collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-chip')
+  assert.ok(chips.length >= 6, '必须有「全部」+ 5 个 program 筛选胶囊（实际 ' + chips.length + '）')
+  assert.ok(chips.some((c) => c.children[0] === '全部'), '含「全部」胶囊')
   // 写操作图标按钮（run_now/cancel/history）
   assert.ok(collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-icon-btn').length >= 2)
 })

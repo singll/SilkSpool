@@ -181,11 +181,11 @@ window.__ModuleLoader__.load({
                   el('td', { style: cell }, closed ? el('span', { style: { ...uiCore.styles.pill, padding: '1px 6px', fontSize: 11 } }, uiCore.SEV_LABEL[r.severity] || r.severity) : uiCore.sevPill(r.severity)),
                   el('td', { style: cell }, closed ? el('span', { style: { ...uiCore.styles.pill, padding: '1px 6px', fontSize: 11 } }, uiCore.STATUS_LABEL[r.status] || r.status) : uiCore.statusPill(r.status)),
                   el('td', { style: { ...cell, color: uiCore.T.label2 } }, uiCore.fmtTs(r.created_at)),
-                  el('td', { style: cell },
+                  el('td', { style: cell, title: r.title || '' },
                     el('span', { style: { color: uiCore.T.label3, marginRight: 6, ...uiCore.F.xxxs } }, isOpen ? '▾' : '▸'),
                     r.title,
                     r.bounty ? el('span', { style: { ...uiCore.styles.pill, color: uiCore.T.success, marginLeft: 6 } }, '赏金 ' + r.bounty) : null),
-                  el('td', { style: cellMono }, r.url || r.host || '—'),
+                  el('td', { style: cellMono, title: r.url || r.host || '' }, r.url || r.host || '—'),
                   el('td', { style: cell, onClick: function (e) { e.stopPropagation() } }, closed ? '—' : el(uiCore.SessionLink, { id: r.session_id })),
                   el('td', { style: { ...cell, whiteSpace: 'nowrap' }, onClick: function (e) { e.stopPropagation() } },
                     taggable

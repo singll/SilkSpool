@@ -1,8 +1,8 @@
 # 19 · 看板 UI 全局统一重构（设计 + 实施规范）
 
-> 版本：v1.0（设计 + 实施双轨，实施者必须逐条对照执行）｜ 状态：**U1–U4 已实施，csai 无头验收 PASS=72 FAIL=0（2026-09-19）；仅视觉截图待人工，通过后本文归档**
+> 版本：v1.0（设计 + 实施双轨，实施者必须逐条对照执行）｜ 状态：**已实施 + 走查补丁 + csai 验收完成（PASS=72 FAIL=0）；结论已回填 16-dashboard/主题；本文已归档（只读）**
 > 契约版本：1 ｜ 运行基线：DSH **0.1.5-rc.2**（csai 生产）
-> 上位文档：[`16-dashboard.md`](16-dashboard.md)（架构与挂点以它为准，本文只管**视觉与交互统一**）；主题令牌以 [`bundles/dsh/doc/silksong-theme-design.md`](../../bundles/dsh/doc/silksong-theme-design.md) 为准。
+> 上位文档：[`16-dashboard.md`](../16-dashboard.md)（架构与挂点以它为准，本文只管**视觉与交互统一**）；主题令牌以 [`bundles/dsh/doc/silksong-theme-design.md`](../../../bundles/dsh/doc/silksong-theme-design.md) 为准。
 > 触发：2026-09-19 走查截图发现——看板新面与 DSH 原生界面**样式、元素、操作逻辑全局不统一**；主面板 8 tab 信息架构过载；统计卡片口径过时；此前实施未完全遵守 16-dashboard §四（丝之歌 v4.2）规范。
 > 实施完成并验收后：本文结论回填 16-dashboard §四 与 silksong-theme-design §十一，本文移入 archive/。
 
@@ -218,7 +218,7 @@ KPI 卡行下方一条 `F.xxxs label-tertiary` 文本行：`库存 · 漏洞 61 
    - 反向断言：所有被使用的 `.silksec-*` className 必须在 ui-core 基样式表或本包布局类白名单中有定义——脚本提取 className 字面量集合，减去（基样式选择器 ∪ 本包布局类），差集非空即失败。
 2. **颜色字面量断言**（已有，保持）：视图/表面文件禁 hex/rgb；基样式表规则里只允许 `var(--dsw-*)` / `var(--silksec-sev-*)` / `var(--ds-*)` 与 transparent 关键字（dash-dialog 遮罩例外须登记）。
 3. **评审三问**（进评审清单）：新增任何 UI 元素前回答——一、用 ui-core 哪个控件类？二、没有就先加进基样式表（同 PR）？三、操作语义属于 §2.3 哪一行？答不出 = 设计缺失，不许写。
-4. **视觉验收截图**：每相落地后在 csai 截 4 张对比图（主面板/会话页/右侧栏任务/审批浮卡）**贴进本文 §六 验收清单（专项记录随本文走）**，与清单逐项对照；收尾仅在 [PROGRESS.md](PROGRESS.md) 记一行结果。
+4. **视觉验收截图**：每相落地后在 csai 截 4 张对比图（主面板/会话页/右侧栏任务/审批浮卡）**贴进本文 §六 验收清单（专项记录随本文走）**，与清单逐项对照；收尾仅在 [PROGRESS.md](../PROGRESS.md) 记一行结果。
 
 ### 5.3 与既有纪律的关系
 
@@ -232,8 +232,8 @@ KPI 卡行下方一条 `F.xxxs label-tertiary` 文本行：`库存 · 漏洞 61 
 
 > 验收证据（2026-09-19）：csai `bundle dsh setup` + `restart silksecagent`（active、NRestarts=0）后
 > `sec-v5-accept.sh --ui-headless` **PASS=72 FAIL=0**（含 `ui-shared-css-unique` / `ui-class-defined`
-> 两条新门禁与 13 面 headless health/RPC 断言）；本地 UI 单测 118 例全绿。视觉四图（主面板/会话页/
-> 右侧栏任务/审批浮卡）待操作者在 csai 截图贴入本节后归档。
+> 两条新门禁与 13 面 headless health/RPC 断言）；本地 UI 单测 119 例全绿。视觉验收改为操作者走查
+> 确认（免截图），五条观感缺陷已修复（§六·补）并二次部署复验通过；本文已归档。
 
 - [x] 全站 `.silksec-btn/-confirm/icon-btn/-danger/input/tab/kpi/row/chip/dash-dialog` 有且仅有 ui-core 一份 CSS 定义（`ui-shared-css-unique` 门禁）；截图中不再出现裸按钮
 - [x] 主面板 tab 选中态 = 绯红 2px 下划线 + 200ms 过渡；与会话页 tab（对话/轨迹/费用/安全产出）选中视觉同族
@@ -244,17 +244,31 @@ KPI 卡行下方一条 `F.xxxs label-tertiary` 文本行：`库存 · 漏洞 61 
 - [x] 批准/驳回、生成报告、登记候选漏洞等文字按钮呈现 elevated/primary 规格；行内操作全部 26×26 图标钮
 - [x] 丝之歌主题关闭 → 内置 dark：全部新样式自动回落（零 silksec 专属色，只消费 --dsw-alias-*）
 - [x] `sec-v5-accept.sh --ui-headless` 通过（含 5.2 新增两条门禁）
-- [x] 主题文档 §十一 增补基样式表清单；CONTEXT.md 登记「安全中心」术语；本文结论回填 16-dashboard；[PROGRESS.md](PROGRESS.md) 记结果
-- [ ] 视觉验收：csai 四张对比截图贴入本节（操作者人工；通过后本文移入 archive/）
+- [x] 主题文档 §十一 增补基样式表清单；CONTEXT.md 登记「安全中心」术语；本文结论回填 16-dashboard；[PROGRESS.md](../PROGRESS.md) 记结果
+- [x] 视觉验收：改由操作者走查确认（免截图流程），五条观感缺陷已修复并于 §六·补 记录；本文已移入 archive/
 
 ---
+
+## 六·补 实施后人工走查修复（2026-09-19，验收收尾）
+
+首轮无头验收通过后操作者走查截图发现五处观感缺陷，已修复并二次部署（csai `PASS=72 FAIL=0`）：
+
+| # | 问题 | 修复 |
+|---|---|---|
+| 1 | 侧边栏「安全中心」前的丝轴图标、页头徽章抢眼，与会话/工作区条目不齐 | 移除两处前置图标（`PanelIcon` 返回 null）；安全中心降为纯文字行同层级。主题 §5.1 装饰白名单同步删项 |
+| 2 | 会话消息下方「登记候选漏洞 / 沉淀事实」为文字钮，与原生图标不一致 | 改 26×26 图标钮：finding=`IconWarningOutline`、fact=`IconChecklistOutline`（缺席回退 opIcon），Tooltip 说明功能，aria-label 保留 |
+| 3 | 安全中心 KPI「待审批」点击无效（主面板无审批 tab，旧 selectPanel 回退静默失效） | `openApprovalCenter` 去掉主面板回退 → 'tab'\|'none'；ui-approval 订阅 `secUiBus 'open:approval'`，无会话 seat 弹 Modal（与右下角胶囊同路径）。任务 KPI 同法（`open:task` + shell.overlay 常驻 Modal 宿主） |
+| 4 | 任务 tab「工作区」筛选胶囊点击后选项塌缩（5→3）、样式异常 | 选项改为 workspaces ∪ `programs` 全量（与当前筛选无关，稳定不塌缩）；筛选胶囊统一走 `.silksec-chip`（active 态 data-on） |
+| 5 | 长 ID/长文本把表格撑出高低左右错位 | `td/tdMono/tdClosed` 统一单行省略 + `table-layout:fixed` + colgroup 定列宽；长内容走 title 悬停；审计详情展开态局部允许换行。见主题 §11.9 |
+
+> 验收方式：本地 UI 单测 119 例全绿；csai `bundle dsh setup` + `restart silksecagent`（active、NRestarts=0）后 `sec-v5-accept.sh --ui-headless` PASS=72 FAIL=0。视觉四图改由操作者走查确认，本文随之归档。
 
 ## 七、与相邻文档的关系
 
 | 文档 | 关系 |
 |---|---|
-| [16-dashboard.md](16-dashboard.md) | 架构/挂点/数据链路以上位为准；本文结论验收后回填其 §四（视觉统一口径）|
-| [silksong-theme-design.md](../../bundles/dsh/doc/silksong-theme-design.md) | 令牌与形态语言真相源；§2.2 全部规格是其既有令牌的组合，零新色值；基样式表清单增补进其 §十一 |
-| [ui-surface-deps.yaml](../../bundles/dsh/doc/ui-surface-deps.yaml) | 挂点清单不变；viewRegistry `group` 协议变更同步登记 |
-| [PROGRESS.md](PROGRESS.md) | 只记一行落地结果；本相的详细记录与验收截图随本文，验收后一并归档 |
-| [`bundles/dsh/CONTEXT.md`](../../bundles/dsh/CONTEXT.md) | 「安全中心」术语登记处（看板 = 内部代号保留，UI 文案一律安全中心）|
+| [16-dashboard.md](../16-dashboard.md) | 架构/挂点/数据链路以上位为准；本文结论验收后回填其 §四（视觉统一口径）|
+| [silksong-theme-design.md](../../../bundles/dsh/doc/silksong-theme-design.md) | 令牌与形态语言真相源；§2.2 全部规格是其既有令牌的组合，零新色值；基样式表清单增补进其 §十一 |
+| [ui-surface-deps.yaml](../../../bundles/dsh/doc/ui-surface-deps.yaml) | 挂点清单不变；viewRegistry `group` 协议变更同步登记 |
+| [PROGRESS.md](../PROGRESS.md) | 只记一行落地结果；本相的详细记录与验收截图随本文，验收后一并归档 |
+| [`bundles/dsh/CONTEXT.md`](../../../bundles/dsh/CONTEXT.md) | 「安全中心」术语登记处（看板 = 内部代号保留，UI 文案一律安全中心）|

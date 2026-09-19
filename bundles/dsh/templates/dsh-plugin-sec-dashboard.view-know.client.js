@@ -237,7 +237,7 @@ window.__ModuleLoader__.load({
                 return el('tr', { key: c.id, className: 'silksec-row' },
                   el('td', { style: tdMono }, String(c.id)),
                   el('td', { style: td, title: c.scenario }, c.kind === 'playbook' ? el('span', null, el('span', { style: { ...pill, color: T.business } }, '链'), ' ', c.scenario) : c.scenario),
-                  el('td', { style: td }, c.takeaway),
+                  el('td', { style: td, title: c.takeaway }, c.takeaway),
                   el('td', { style: tdMono, title: '评分 = adopted×3 + 👍×2 + uses×0.5 − 👎×5 − 时效衰减' }, String(c.score !== undefined ? c.score : '—')),
                   el('td', { style: { ...tdMono, title: 'uses / adopted / 👍 / 👎' } }, c.uses !== undefined ? c.uses + '/' + c.adopted + '/' + c.pos_fb + '/' + c.neg_fb : '—'),
                   el('td', { style: td }, memStatusPill(c.status)),
@@ -381,7 +381,7 @@ window.__ModuleLoader__.load({
                       style: { cursor: 'pointer' }, title: '点击查看（Modal 打开，只读）',
                       onClick: function () { open(r.file) },
                     },
-                      el('td', { style: tdMono }, (r.title || '').slice(0, 70) || '📄 ' + r.file,
+                      el('td', { style: tdMono, title: (r.title || '') + ' · ' + r.file }, (r.title || '').slice(0, 70) || '📄 ' + r.file,
                         el('span', { style: { color: T.label3, marginLeft: 8 } }, r.file)),
                       el('td', { style: tdMono }, (r.size / 1024).toFixed(1) + ' KB'),
                       el('td', { style: td }, el('button', { type: 'button', className: 'silksec-icon-btn', title: '查看先验（Modal 打开）', 'aria-label': '查看', onClick: function (e) { e.stopPropagation(); open(r.file) } }, opIcon('eye'))))

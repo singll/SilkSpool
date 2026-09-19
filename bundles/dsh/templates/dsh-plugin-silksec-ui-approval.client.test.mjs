@@ -305,7 +305,7 @@ test('降级：shell.overlay 缺席 → secUiBus 徽章兜底；openApprovalCent
   ctx.__effects.forEach((d) => d()); ctx2.__effects.forEach((d) => d())
 })
 
-test('降级：无会话 openTab 抛错 → 回退 secUiBus + 主面板 selectPanel，不抛', () => {
+test('降级：无会话 openTab 抛错 → openApprovalCenter 返回 none（交调用方 Modal），不抛', () => {
   const uiCore = makeUiCore()
   const { mod } = loadBundle(uiCore, makePrimitives())
   const selectCalls = []
@@ -317,9 +317,9 @@ test('降级：无会话 openTab 抛错 → 回退 secUiBus + 主面板 selectPa
     sidebarRight: throwingSidebarRight,
     layout: makeLayout(selectCalls),
   }))
-  assert.equal(mod.openApprovalCenter(), 'panel')
-  assert.deepEqual(selectCalls, ['silksec-dashboard'])
-  assert.ok(uiCore.__busEmits.some((e) => e.name === 'open:approval'))
+  // 19-ui-unify 补丁：不再回退主面板 selectPanel（主面板已无审批 tab，旧 'panel' 静默无效）
+  assert.equal(mod.openApprovalCenter(), 'none', '无会话 seat → none，由调用方弹 Modal')
+  assert.deepEqual(selectCalls, [], '不得回退主面板 selectPanel')
 })
 
 // ── ④ 审批路径等价（approvalDecide RPC；胶囊浮卡 / 审批中心共用 decideApproval） ─

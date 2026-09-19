@@ -603,12 +603,22 @@ window.__ModuleLoader__.load({
       function open(kind, ev) {
         setModal({ kind: kind, summary: readMessageSummary(ev && ev.currentTarget) })
       }
+      // 图标化（19-ui-unify 补丁）：文字 → 26×26 图标钮 + 悬停 Tooltip 说明；图标优先
+      // 用官方 primitives（与原生图标同族 16×16 stroke），缺席回退 ui-core opIcon。
+      function actionIcon(kind) {
+        if (kind === 'finding') {
+          var I = prim('IconWarningOutline')
+          return I ? el(I, { size: 14 }) : icon('eye')
+        }
+        var J = prim('IconChecklistOutline')
+        return J ? el(J, { size: 14 }) : icon('up')
+      }
       function actionButton(kind, label, hint) {
         return tip(label + '：' + hint, el('button', {
           type: 'button', className: 'silksec-icon-btn', 'data-silksec-action': kind,
-          'aria-label': label, style: { width: 'auto', height: 24, padding: '0 8px', ...((F && F.xxs) || {}) },
+          'aria-label': label,
           onClick: function (ev) { open(kind, ev) },
-        }, label))
+        }, actionIcon(kind)))
       }
       return el('span', { className: 'silksec-session-actions', 'data-silksec-surface': 'message-actions', 'data-message-id': messageId },
         actionButton('finding', '登记候选漏洞', '把本条消息登记为漏洞候选（入候选池待验证）'),

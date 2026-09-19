@@ -66,6 +66,7 @@ window.__ModuleLoader__.load({
     var TAB_ID = 'silksec-task-view'       // 右侧栏实现身份（= keyed 槽 key）
     var TAB_KIND = 'silksec-task'          // 页面类型判别式（= openTab 参数）
     var HEADER_ID = 'silksec-task-header'  // 会话头 utilities 条目 id
+    var TASK_MODAL_HOST_ID = 'silksec-task-modal-host'  // shell.overlay 常驻 Modal 宿主 id
     var DEGRADED_VIEW_ID = 'task-degraded'
     var DASHBOARD_PANEL_ID = 'silksec-dashboard'
     var POLL_MS = 30000
@@ -251,18 +252,30 @@ window.__ModuleLoader__.load({
       }, uiCore && uiCore.opIcon ? uiCore.opIcon('jump') : null))
     }
 
-    // 打开任务中心：右侧栏 page tab 优先；缺席则 secUiBus + 主面板；再缺席由调用方弹 Modal
+    // 打开任务中心：右侧栏 page tab 优先；无在屏会话 seat → 'none'，由调用方弹 Modal。
+    // （19-ui-unify 补丁：不再回退主面板 selectPanel——主面板无任务 tab，旧 'panel' 静默无效。）
     function openTaskCenter() {
       var sr = getService('sidebarRight')
       if (sr && typeof sr.openTab === 'function') {
         try { sr.openTab(TAB_KIND); return 'tab' } catch (e) { /* 无在屏会话 seat → 降级 */ }
       }
-      try { uiCore.secUiBus.emit('open:task', {}) } catch (e) {}
-      var layout = getService('layout')
-      if (layout && typeof layout.selectPanel === 'function') {
-        try { layout.selectPanel(DASHBOARD_PANEL_ID); return 'panel' } catch (e) {}
-      }
       return 'none'
+    }
+
+    // 常驻任务中心 Modal 宿主（shell.overlay list/root）：外部经 secUiBus 'open:task'
+    // 请求（如安全中心 KPI「运行中/阻塞任务」）时，有会话 → 右侧栏 tab；无 → 弹 Modal。
+    function TaskModalHost() {
+      var ms = React.useState(false)
+      var open = ms[0]; var setOpen = ms[1]
+      React.useEffect(function () {
+        if (!uiCore.secUiBus || typeof uiCore.secUiBus.on !== 'function') return
+        return uiCore.secUiBus.on('open:task', function () {
+          var where = openTaskCenter()
+          if (where === 'none') setOpen(true)
+        })
+      }, [])
+      if (!open) return null
+      return renderModal(true, getRpc(), function () { setOpen(false) })
     }
 
     // ── 四区块：定时任务卡片 / 一次性队列 / 工作区快块 / 执行历史 ──────────────
@@ -348,6 +361,12 @@ window.__ModuleLoader__.load({
       var th = styles.th || {}; var td = styles.td || {}
       return el('div', { className: 'silksec-task-queue-table', style: { overflowX: 'auto', minWidth: 0, marginTop: 10 } },
         el('table', { style: styles.tableStyle || { width: '100%', borderCollapse: 'collapse' } },
+          el('colgroup', null,
+            el('col', { style: { width: 52 } }),
+            el('col', { style: { width: 90 } }),
+            el('col', null),
+            el('col', { style: { width: 70 } }),
+            el('col', { style: { width: 108 } })),
           el('thead', null, el('tr', { style: styles.theadRow || {} },
             el('th', { style: th }, '#'),
             el('th', { style: th }, '工作区'),
@@ -486,6 +505,8 @@ window.__ModuleLoader__.load({
         return { endpoint: 'taskRuns', payload: payload }
       }, [runTaskId], rpc || undefined)
       var wsState = useRpcCore(function () { return { endpoint: 'workspaces' } }, [], rpc || undefined)
+      // 全量授权项目：筛选选项的数据源（不随 progFilter 变化，19-ui-unify 补丁）
+      var progsState = useRpcCore(function () { return { endpoint: 'programs' } }, [], rpc || undefined)
 
       var scheduled = (schedState.data && schedState.data.rows) || []
       var queue = (tasksState.data && tasksState.data.rows) || []
@@ -494,17 +515,29 @@ window.__ModuleLoader__.load({
       var runTotal = (runsState.data && runsState.data.total) || runs.length
       var wsItems = (wsState.data && wsState.data.items) || []
 
-      // 顶部 program 筛选 Pill 组（窄栏工作区快块的降级形态）
+      // 顶部 program 筛选胶囊（窄栏工作区快块的降级形态）。
+      // 选项 = 工作区 ∪ 全量 programs，**与当前筛选无关**——点击筛选后选项不塌缩。
       var progMap = {}
-      wsItems.forEach(function (w) { if (w.program) progMap[w.program.id] = w.title })
-      scheduled.concat(queue).forEach(function (t) { if (t.program_id && !progMap[t.program_id]) progMap[t.program_id] = t.program_id })
+      wsItems.forEach(function (w) { if (w.program && w.program.id) progMap[w.program.id] = w.title })
+      ;((progsState.data) || []).forEach(function (p) {
+        var id = p && (p.id || p.program_id || p.name)
+        if (id && !progMap[id]) progMap[id] = String(id)
+      })
       var progOpts = Object.keys(progMap)
+      function filterChip(pid, label) {
+        var active = pid ? progFilter === pid : !progFilter
+        return el('button', {
+          type: 'button', className: 'silksec-chip', 'data-on': active ? 'true' : undefined,
+          title: pid ? '筛选工作区 ' + pid : '显示全部工作区',
+          onClick: function () { setProgFilter(pid ? (progFilter === pid ? '' : pid) : '') },
+        }, label)
+      }
       var filterRow = progOpts.length
         ? el('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 10 } },
             el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}) } }, '工作区'),
-            pillNode({ title: '全部工作区', active: !progFilter, onClick: function () { setProgFilter('') } }, '全部'),
+            filterChip('', '全部'),
             progOpts.map(function (pid) {
-              return el('span', { key: pid }, pillNode({ title: '筛选工作区 ' + pid, active: progFilter === pid, onClick: function () { setProgFilter(progFilter === pid ? '' : pid) } }, progMap[pid]))
+              return el('span', { key: pid }, filterChip(pid, progMap[pid]))
             }))
         : null
 
@@ -698,6 +731,10 @@ window.__ModuleLoader__.load({
           if (slots && typeof slots.inject === 'function') {
             disposers.push(slots.inject('conversation.session.header.utilities', function () {
               return slots.register({ name: 'conversation.session.header.utilities', id: HEADER_ID, order: 40 }, HeaderTaskCount)
+            }))
+            // 常驻 Modal 宿主：外部 open:task 请求（安全中心 KPI）无会话 seat 时的兜底
+            disposers.push(slots.inject('shell.overlay', function () {
+              return slots.register({ name: 'shell.overlay', id: TASK_MODAL_HOST_ID, order: 62 }, TaskModalHost)
             }))
           }
           if (!getService('sidebarRightTabs')) installDegraded(slots)

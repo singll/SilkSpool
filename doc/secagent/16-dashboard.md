@@ -466,7 +466,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 5. **会话绑定件**：沿用宿主按钮样式；「登记/沉淀」弹表单用 primitives `Modal` + `RiskConfirmation`。
 6. **右侧栏 guide 陷阱**：条目说明在 guide >4 条时整列不渲染（上游 `MAX_DESCRIBED_ENTRIES=4`）——关键信息只放 title。
 7. **纪律重申**：视图/表面文件禁止颜色字面量（hex/rgb/named），grep 断言进 CI；severity 五色继续走 `--silksec-sev-*`（theme/change 注入 + fallback）不变。
-8. **全局统一（2026-09-19 回填 [19-ui-unify](19-ui-unify.md)，验收后归档）**：① 共享控件类（`silksec-btn/-confirm/icon-btn/-confirm/-danger/input/tab/kpi/row/chip/dash-dialog`）CSS 唯一定义源 = ui-core `ensureBaseStyles()`，承载面本地样式只留布局类；② 主面板改名**安全中心**，页头返回/刷新为 26×26 图标钮，tab 收敛为「漏洞/资产/接口/事实 + 更多（知识/学习/报告/审计二级导航）」（registry `group` 协议 minor 变更）；③ KPI 从库存量改为「今日待办 + 风险暴露」五卡（待审批/待处理漏洞/待验证候选/运行中·阻塞任务/纪律告警）+ 库存副条，全部可点击跳链。规格与 CI 双重断言见主题文档 §11.8。
+8. **全局统一（2026-09-19 回填 [archive/19-ui-unify.md](archive/19-ui-unify.md)，已归档）**：① 共享控件类（`silksec-btn/-confirm/icon-btn/-confirm/-danger/input/tab/kpi/row/chip/dash-dialog`）CSS 唯一定义源 = ui-core `ensureBaseStyles()`，承载面本地样式只留布局类；② 主面板改名**安全中心**，页头返回/刷新为 26×26 图标钮，tab 收敛为「漏洞/资产/接口/事实 + 更多（知识/学习/报告/审计二级导航）」（registry `group` 协议 minor 变更）；③ KPI 从库存量改为「今日待办 + 风险暴露」五卡（待审批/待处理漏洞/待验证候选/运行中·阻塞任务/纪律告警）+ 库存副条，全部可点击跳链。规格与 CI 双重断言见主题文档 §11.8。走查补丁（2026-09-19）：去侧栏/页头图标、消息动作用图标钮、待审批/任务 KPI 无会话 seat 时弹 Modal、任务工作区筛选选项稳定不塌缩、全表单行省略等高（主题 §11.9）。
 
 ---
 

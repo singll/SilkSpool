@@ -67,7 +67,7 @@ window.__ModuleLoader__.load({
           style: { cursor: 'pointer' }, title: '点击查看报告（Modal 打开，可复制/下载）',
           onClick: function () { props.onOpen(r.file) },
         },
-          el('td', { style: uiCore.styles.tdMono }, (r.title || '').slice(0, 60) || '📄 ' + r.file),
+          el('td', { style: uiCore.styles.tdMono, title: (r.title || '') + (r.file ? ' · ' + r.file : '') }, (r.title || '').slice(0, 60) || '📄 ' + r.file),
           el('td', { style: uiCore.styles.tdMono }, (r.date || '').replace(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/, '$1-$2-$3 $4:$5') || new Date(r.mtime).toISOString().slice(0, 16).replace('T', ' ')),
           el('td', { style: uiCore.styles.tdMono }, (r.size / 1024).toFixed(1) + ' KB'),
           el('td', { style: uiCore.styles.td, onClick: function (e) { e.stopPropagation() } },
