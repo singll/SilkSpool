@@ -47,14 +47,15 @@ CREATE TABLE IF NOT EXISTS fingerprints (
   PRIMARY KEY (host, tech)
 )`
 
-// v5 新增列（ensureCol 幂等）：state 流转时刻 / 分级时刻
+// v5 新增列（ensureCol 幂等）：state 流转时刻 / 分级时刻 / owner 归属
 const V5_COLS = [
   ['changed_at', 'changed_at INTEGER'],
   ['graded_at', 'graded_at INTEGER'],
+  ['owner', 'owner TEXT'],
 ]
 
 // 列表投影列（03-asset §1.4 asset_list 返回行字段）
-const ASSET_LIST_COLS = 'host, type, source, program_id, last_seen, score, level, accept, biz, state'
+const ASSET_LIST_COLS = 'host, type, source, program_id, last_seen, score, level, accept, biz, owner, state'
 const FP_LIST_COLS = 'program_id, host, tech, version, source, last_seen'
 
 const ASSET_SORT = {

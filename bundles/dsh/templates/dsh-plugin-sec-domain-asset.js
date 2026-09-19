@@ -337,14 +337,14 @@ function hostInPatterns(host, patterns) {
 }
 
 // INV-3：program_id 非空时 host 必须命中该 program scope 且不在 exclude。
-// program 未找到 / scope.yml 不可读 → fail-open（scope 域查询上线前过渡，记 log）。
+// program 未找到（撤销/拼错/伪造）或 scope.yml 不可读 → fail-closed，拒绝登记。
+// 域外参考站请不带 program_id 登记（level NULL），不得借道 fail-open 污染归属。
 function scopeCheckResult(programId, host, dataDir) {
   if (!programId) return { ok: true }
   const programs = loadScopePrograms(dataDir)
   const prog = programs.find((p) => p.name === programId)
   if (!prog) {
-    log(`scope 自查：program ${programId} 未在 scope.yml 找到，fail-open（scope 域查询上线前过渡）`)
-    return { ok: true }
+    return { ok: false, code: 'E_INVARIANT', message: `program ${programId} 不在 scope.yml 授权清单中`, hint: `program_id ${programId} 未在 scope.yml 找到（撤销/拼错/scope.yml 不可读）。域外参考站请不带 program_id 登记；确需授权先走 scope 审批`, retryable: false }
   }
   if (hostInPatterns(host, prog.exclude || [])) {
     return { ok: false, code: 'E_INVARIANT', message: `资产 ${host} 命中项目 ${programId} 排除清单`, hint: '该域在项目排除清单内，需单独授权后才能登记（走 exclude-exception 审批）', retryable: false }

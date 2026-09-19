@@ -408,7 +408,7 @@ approval.approved → radar_push（§1.5.2）；订阅者失败不回滚批准�
 
 #### 2.3.3 流程守卫（task_finish 前置不变量）与 ledger 的数据契约
 
-**契约**：task 域 `task_finish`（actor=scheduler）收尾时校验三产物——作用域限 `schedule_kind='interval'` 且 `data/pipeline/{program}/` 存在的任务（无管线目录不拦，v4 语义）。真实产物缺失会进入 missing 清单并把本次 run 判为失败，但**不阻止任务回 queued**（防调度死锁，权威语义见 05-task §1.3.8）。若 `ledger_task_proof` 查询本身异常，task 域当前会静默降级为 missing=[]；这属于可观测性缺口，不是 fail-closed。
+**契约**：task 域 `task_finish`（actor=scheduler）收尾时校验三产物——作用域限 `schedule_kind='interval'` 且 `data/pipeline/{program}/` 存在的任务（无管线目录不拦，v4 语义）。真实产物缺失会进入 missing 清单并把本次 run 判为失败，但**不阻止任务回 queued**（防调度死锁，权威语义见 05-task §1.3.8）。若 `ledger_task_proof` 查询本身异常，task 域**不再静默降级**——查询抛错或返回 `ok:false` 时显式失败（L0 修复，2026-09-16，权威语义见 05-task §1.3.8；宪法 §十三 已划除该风险）。
 
 **两种实现方案的取舍**：
 

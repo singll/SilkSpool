@@ -68,8 +68,8 @@ window.__ModuleLoader__.load({
           onClick: function () { props.onOpen(r.file) },
         },
           el('td', { style: uiCore.styles.tdMono, title: (r.title || '') + (r.file ? ' · ' + r.file : '') }, (r.title || '').slice(0, 60) || '📄 ' + r.file),
-          el('td', { style: uiCore.styles.tdMono }, (r.date || '').replace(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/, '$1-$2-$3 $4:$5') || new Date(r.mtime).toISOString().slice(0, 16).replace('T', ' ')),
-          el('td', { style: uiCore.styles.tdMono }, (r.size / 1024).toFixed(1) + ' KB'),
+          el('td', { style: uiCore.styles.tdMono }, (r.date || '').replace(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/, '$1-$2-$3 $4:$5') || (isFinite(Number(r.mtime)) ? new Date(Number(r.mtime)).toISOString().slice(0, 16).replace('T', ' ') : '—')),
+          el('td', { style: uiCore.styles.tdMono }, (isFinite(Number(r.size)) ? (Number(r.size) / 1024).toFixed(1) : '—') + ' KB'),
           el('td', { style: uiCore.styles.td, onClick: function (e) { e.stopPropagation() } },
             el('button', { type: 'button', className: 'silksec-icon-btn', title: '查看报告（Modal 打开）', 'aria-label': '查看报告', onClick: function () { props.onOpen(r.file) } }, uiCore.opIcon('eye'))))
       }
@@ -115,11 +115,15 @@ window.__ModuleLoader__.load({
       }, [reportFilter.program, reportFilter.q], rpcCall)
       var reading = React.useState(null)
       var cur = reading[0]; var setCur = reading[1]
+      var openSeq = React.useRef(0)
       function open(file) {
+        var seq = ++openSeq.current
         setCur({ file: file, loading: true, content: null })
         rpcCall('reportRead', { file: file }).then(function (res) {
+          if (seq !== openSeq.current) return
           setCur({ file: file, loading: false, content: res.content, truncated: res.truncated })
         }).catch(function (e) {
+          if (seq !== openSeq.current) return
           setCur({ file: file, loading: false, content: null, error: e && e.message ? e.message : String(e) })
         })
       }

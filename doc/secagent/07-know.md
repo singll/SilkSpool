@@ -1,7 +1,7 @@
 # 07 · know 域设计（知识六仓：经验 / 文献 / 先验规程 / 漏洞卡 / 收割 / 体检）
 
 > 版本：v5.1 ｜ 状态：定稿 ｜ 契约版本：know@1（L5 增量见 §十一、L6 增量见 §十二）
-> 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（**不订阅**——knowledge-adopt 由 approval 域 `approval_effects` 执行端幂等调 `know_adopt` / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 记学习 episode，L1）；vuln 域（订阅 `vuln.signal.confirmed/rejected` 记判定 episode，L1）；task 域（订阅 `task.finished` 记任务级 episode，L1）。
+> 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（**不订阅**——knowledge-adopt 由 approval 域 `approval_effects` 执行端幂等调 `know_adopt` / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 记学习 episode，L1）；vuln 域（订阅 `vuln.signal.confirmed/rejected` 记判定 episode，L1）；task 域（订阅 `task.finished` 记任务级 episode，L1）；ledger 域（订阅 `ledger.card_usage.logged` 回流采用记 `know_adoptions`，L5）。
 > 被订阅：`know.*` 全系事件——memcore（治理旁路）、dashboard、eval（评测回流）。
 > owns（单写者）：`exp_cards` / `exp_embeddings` / `exp_feedback` / `exp_cards_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_docs_archive` / `playbooks` / `learning_episodes` / `knowledge_revisions` / `know_releases` / `know_exposures` / `know_adoptions` / `know_feedback` / `know_scores` / `know_gaps` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-import/` 目录；`data/events/know.jsonl`（`AGENTS.md` 受管区块由 memcore 生成，见 2.3）。
 

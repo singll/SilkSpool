@@ -60,7 +60,7 @@
 
 | 对象 | 规范 | 示例 |
 |---|---|---|
-| 域名 | 小写单词，单数，业务域名词 | `vuln` `asset` `task` `fact` `know` `scope` `approval` `exec` `ledger` `report` `proxy` `fgs` `eval` |
+| 域名 | 小写单词，单数，业务域名词 | `vuln` `asset` `endpoint` `task` `fact` `know` `scope` `approval` `exec` `ledger` `report` `proxy` `fgs` `eval` |
 | cordis 服务名 | `secDomain.{domain}` | `secDomain.vuln` |
 | 插件包名 | `@silksec/sec-domain-{domain}` | `@silksec/sec-domain-vuln` |
 | 后端插件包名 | `@silksec/sec-backend-{domain}-{backend}` | `@silksec/sec-backend-vuln-sqlite` |
@@ -301,7 +301,7 @@
 ## 十四、安全基线
 
 1. **证据铁律类型化**：确认/结论/落账类动词的证据参数 required（§四.4）——"无证据不结论"从纪律变为接口。
-2. **机器直灌与模型登记分流**：`*_register_candidate` 类通道 actor 限 webhook/script/parser；模型只能走完整登记或显式确认——闸门从 if 变成不存在的接口。
+2. **机器直灌与模型登记分流**：`*_register_candidate` 类通道 actor 限 webhook/script（解析器经 `script` 身份 + `identity=parser:…` 标注，见 02-vuln §1.1）；模型只能走完整登记或显式确认——闸门从 if 变成不存在的接口。
 3. **run_cli 沙箱交叉校验**：域 manifest `owns.files` 与沙箱可写白名单在 setup.sh 冒烟时交叉断言——**域 owned 文件对沙箱必须不可写**。
 4. **凭据零明文**：credentials 只存引用（.env 600），域文档中任何示例不得出现明文 key。
 5. **脱敏规则**：事件 payload 与 audit 的 before/after 快照经域声明的 `redact` 字段清单过滤（如 params 脱敏、cookie 剥离）；导出类命令过授权域脱敏硬门（scope.yml 域名命中拒绝——v4.x vault 导出桥规则保留）。

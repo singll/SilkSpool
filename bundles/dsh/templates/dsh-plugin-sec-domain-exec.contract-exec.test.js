@@ -455,3 +455,45 @@ test('L1: evidence_publish 自然键幂等——重复发布回放首个结果�
   assert.equal(again.replay, true)
   assert.equal(again.data.digest, first.data.digest)
 })
+
+// ---- H2 回归：exclude 优先于 scope（跨项目顺序不得让先前项目的 scope 放行排除域名）----
+test('H2: 多项目时任一 exclude 命中即拒——不被排前项目的 scope 放行', async () => {
+  const { dataDir, bus } = makeEnv()
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), [
+    'programs:',
+    '  - name: "a-program"',
+    '    scope:',
+    '      - "*.example.com"',
+    '  - name: "b-program"',
+    '    scope:',
+    '      - "*.other.com"',
+    '    exclude:',
+    '      - "target.example.com"',
+    '',
+  ].join('\n'))
+  const r = await bus.dispatch('exec', 'run_cli', { tool: 'subfinder', params: { target: 'target.example.com' } }, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_EXEC_SCOPE_DENIED')
+})
+
+// ---- H1 回归：风险闸逐目标判定（多目标跨项目时不得只按首目标放行）----
+test('H1: 多目标跨项目——任一项目未放行 intrusive 工具即拒', async () => {
+  const { dataDir, bus } = makeEnv()
+  writeManifest(dataDir, 'intrusive-tool', 'name: intrusive-tool\nbinary: /bin/echo\nstage: vuln\nrisk: intrusive\ntimeout: 30\ntarget_param: target\nargs_template: "-t {{target}}"\n')
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), [
+    'programs:',
+    '  - name: "a-program"',
+    '    scope:',
+    '      - "*.example.com"',
+    '    rules:',
+    '      allow_intrusive_tools:',
+    '        - "intrusive-tool"',
+    '  - name: "b-program"',
+    '    scope:',
+    '      - "*.other.com"',
+    '',
+  ].join('\n'))
+  const r = await bus.dispatch('exec', 'run_cli', { tool: 'intrusive-tool', params: { target: 'a.example.com,b.other.com' } }, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.ok(['E_EXEC_RISK_NEEDS_APPROVAL', 'E_EXEC_RISK_FORBIDDEN'].includes(r.error.code), `实际错误码 ${r.error.code}`)
+})

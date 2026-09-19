@@ -1,7 +1,7 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
 > 版本：v5.1 ｜ 状态：定稿（L6 调度器切换已实施，2026-09-17）｜ 契约版本：task domain manifest v1
-> 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）、`know.release.revoked`（L6：撤回 → change-retest 重测需求任务入队，§2.3 变更触发节奏）；`task_budget_extend` / `task_complete` 由 approval 域 `approval_effects`（effect outbox）经 dispatcher 幂等执行——执行失败记 `approval_effects.failed` 重试，不回滚 decide（09-approval §2.3）。
+> 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）、`know.release.revoked`（L6：撤回 → change-retest 重测需求任务入队，§2.3 变更触发节奏）；`task_budget_extend` / `task_complete` 由 approval 域在 `approval_decide` 事务内**同步 dispatch**（actor=approval，幂等账本 `approval_effects`）执行——执行失败记 `approval_effects.failed`，**无独立 dispatcher 自动重试**，需人工 `approval_effects_retry` 补跑，不回滚 decide（09-approval §2.3；两域以此线为准）。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加、know 域学习 episode（L1）**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
 
@@ -428,7 +428,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | 动词 | 触发面 | 语义 | 关键细节 |
 |---|---|---|---|
 | C16 `task_submit_complete` | 模型（会话内） | **完成声明，不改状态**：向 approval 域提请 kind=task-complete 审批 | 参数：task_id（必填）、summary（≥30 字，做了什么/结论）、evidence（产物指针：run_id / result note 引用，可多个）、follow_up（可选，≤500 字——希望人工顺带裁决的后续操作建议，进审批单 payload 供用户参考）。域内仅校验：task 存在、非终态（**不校验 assignee=model，也不经 task_active_by_session 确认无活动 worker**）。**interval 任务分支绕过审批**：直接把"本轮摘要"追加 result 并返回 `{scheduled:true}`，不提请审批；其余任务 dispatch approval_request（kind=task-complete，subject=task_id，payload={summary, evidence, follow_up}）。返回审批 request_id + hint（"已提请人工确认（看板「审批」tab）。任务保持非终态（queued/running），不要自行标记完成"） |
-| C17 `task_complete` | approval 域 `approval_effects`（effect outbox，kind=task-complete）经 dispatcher 执行——**不经订阅 `approval.approved`** | 落 done（仅非 interval）：status→done、finished_at、result 追加"人工确认 {request_id} + summary"；**interval 分支不改状态**：仅追加 result 并返回 `{scheduled:true, acknowledged:true}`（status/next_run_at 原样） | actor=approval（宪法 §三 先例身份），cause 链指向审批单与 C16 声明。三产物守卫在此**降为展示不拦截**：自执行任务无 worker 产物，守卫结果（含 missing 清单）已在审批单 payload 里呈现给用户——**人工裁决即守卫**（fail-open 的合法形态：放行决策权在人，且全程审计留痕） |
+| C17 `task_complete` | approval 域在 `approval_decide` 内同步 dispatch（幂等账本 `approval_effects`，kind=task-complete）执行——**不经订阅 `approval.approved`** | 落 done（仅非 interval）：status→done、finished_at、result 追加"人工确认 {request_id} + summary"；**interval 分支不改状态**：仅追加 result 并返回 `{scheduled:true, acknowledged:true}`（status/next_run_at 原样） | actor=approval（宪法 §三 先例身份），cause 链指向审批单与 C16 声明。三产物守卫在此**降为展示不拦截**：自执行任务无 worker 产物，守卫结果（含 missing 清单）已在审批单 payload 里呈现给用户——**人工裁决即守卫**（fail-open 的合法形态：放行决策权在人，且全程审计留痕） |
 
 **统一拦截任务（防漏声明兜底）——⚠️ 未实现（设计预留）**：设计为调度器每 tick 附带扫描——`assignee=model AND status IN ('queued','running') AND 会话已结束（session idle >30min）AND 无 pending 的 task-complete 审批单` → 自动以 actor=scheduler 补提审批（summary="拦截任务自动提请：会话结束未声明完成"，evidence=最后的 task_update_note 摘录）。现行 `dsh-plugin-sec-domain-task.js` 调度循环（`startTaskScheduler`）无此扫描，自执行任务不因此兜底闭环。
 
@@ -478,7 +478,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 | 订阅方 | 模式 | 动作 |
 |---|---|---|
-| **fgs 域** | sync | ok=false 时补记 failed step/finding 节点（原 taskFinishScheduledRun 的 P17 内嵌逻辑事件化）；图生命周期收口 |
+| **fgs 域** | async | ok=false 时补记 failed step/finding 节点（原 taskFinishScheduledRun 的 P17 内嵌逻辑事件化）；图生命周期收口（2026-09-12 审查后改为弱联动，见 14-fgs.md §1.4；manifest 亦为 `mode:'async'`） |
 | **fact 域** | async | ok=true 时把该任务 FGS 图中带证据的 done fact 节点转正 durable facts（原 persistFgsFacts 直写归零；fact 域再结合订阅 fgs.node.done 形成待沉淀清单，详见 14-fgs.md §1.5） |
 | **ledger 域** | async | 调 fgs 域查询 fgs_export(markdown) → 追加 handoff-{北京日期}.md（原 appendFgsToHandoff 直写归零——handoff 文件归 ledger 域 owns） |
 | memcore / 看板 | async | 生命周期治理、红条刷新 |
@@ -488,7 +488,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | 事件 | 模式 | 处理器 |
 |---|---|---|
 | `scope.granted` | async（best-effort，入队失败不影响授权） | 种子任务入队：`task_create{program_id, phase:'recon', priority:1, objective:'[审批入队] 新授权域名 {host} 首轮资产面收集：radar_read 读入 scope-approved 事件 → subfinder → dnsx → httpx 存活+指纹入图谱。只做资产收集，禁止主动漏洞探测。完成后 attempts_log 落台账…', schedule:{kind:'once', at:now+5min}}`；幂等=同 program 活跃 `[审批入队]`+host 任务存在即跳过（**原 onApprove 直调 taskCreate 改事件**，v4.x enqueueScopeSeedTask 移植；授权效果本身由 approval 域 `approval_effects` 经 dispatcher 执行 scope_grant，本域只消费 scope.granted） |
-| （task-budget-extend） | — | `task_budget_extend`（C10）由 approval 域 `approval_effects` 经 dispatcher 幂等执行（actor=approval，cause 链带 request_id），**非本域订阅 approval.approved** |
+| （task-budget-extend） | — | `task_budget_extend`（C10）由 approval 域在 `approval_decide` 内同步 dispatch（幂等账本 `approval_effects`；actor=approval，cause 链带 request_id），**非本域订阅 approval.approved** |
 | `exec.worker.spawned` | **sync（强联动）** | `task_worker_register`（C13） |
 | `exec.worker.finished` | **sync（强联动）** | `task_worker_finish`（C14） |
 | `know.release.revoked` | async（reactor；best-effort） | `onReleaseRevoked`（task.js:1090）：卡片撤回 → 生成 `goal=change-retest` 重测需求任务（去重标记 `[change-retest {release_id}]`；program 归属 scope_id，family/global 归 `_global` 桶）；入队不自动起 worker（无 schedule），由人/编排决定 `task_run_now` |

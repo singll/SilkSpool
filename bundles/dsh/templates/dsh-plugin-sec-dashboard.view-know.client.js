@@ -203,7 +203,7 @@ window.__ModuleLoader__.load({
       // v4.6 知识全景图：六类型分区导航（每类知识一个位置一个工具，类型间正交不合并）
       var typeSections = [
         { icon: '🧠', name: '经验类', where: 'exp_cards 表', tool: 'exp_search', n: cards.length, extra: (pbs.length ? '+ 打法链 ' + pbs.length : '') },
-        { icon: '🌍', name: '事实类', where: 'facts 表', tool: 'fact_search', n: factOv ? factOv.total : '—', extra: factOv ? (Object.keys(factOv.byCategory).length + ' 分类') : '' },
+        { icon: '🌍', name: '事实类', where: 'facts 表', tool: 'fact_search', n: factOv ? factOv.total : '—', extra: (factOv && factOv.byCategory) ? (Object.keys(factOv.byCategory).length + ' 分类') : '' },
         { icon: '📚', name: '文献类', where: 'kb_docs + knowledge/ + rules/', tool: 'kb_search', n: kbCounts.curated !== undefined ? (kbCounts.curated + kbCounts.external) : '—', extra: (kbCounts.curated || 0) + ' curated + ' + (kbCounts.external || 0) + ' external' },
         { icon: '📋', name: '规程类', where: 'vulncards/*.yaml + rules/src', tool: '按指纹读卡', n: '18 VC', extra: '人工版本受控' },
         { icon: '🧭', name: '任务内类', where: 'fgs_nodes（任务生命周期）', tool: 'fgs_next', n: (kh && kh.fgs ? kh.fgs.nodes : '—'), extra: kh && kh.fgs ? ('沉淀 ' + kh.fgs.persisted_facts + ' facts') : '' },
@@ -263,10 +263,10 @@ window.__ModuleLoader__.load({
                   el('td', { style: tdMono }, String(pb.runs)),
                   el('td', { style: tdMono }, String(pb.success_rate)),
                   el('td', { style: td }, memStatusPill(pb.status)),
-                  el('td', { style: tdMono }, pb.last_run_at ? new Date(pb.last_run_at).toISOString().slice(0, 10) : '—'))
+                  el('td', { style: tdMono }, isFinite(Number(pb.last_run_at)) ? new Date(Number(pb.last_run_at)).toISOString().slice(0, 10) : '—'))
               }))),
         KbSection({ rows: kbRows, counts: kbCounts, q: kbQ, setQ: setKbQ, kind: kbKind, setKind: setKbKind, loading: props.kbState.loading, onOpen: openKb, onReload: reloadKb, busy: props.busy }),
-        RulesSection(props),
+        el(RulesSection, props),
         kbCur ? el(DocModal, {
           open: true, onClose: function () { setKbCur(null) }, errorPrefix: '读取',
           title: (kbCur.title || '文献').slice(0, 60),

@@ -1078,3 +1078,11 @@ test('L1 C12: evidence_attach 拒绝未发布 run / 篡改文件 / 非法清单�
   assert.equal(denied.ok, false)
   assert.equal(denied.error.code, 'E_ACTOR_FORBIDDEN')
 })
+
+// ---- M10 回归：dedup_check host/vuln_type 至少其一（禁止空条件全表扫描）----
+test('M10: dedup_check 既无 host 也无 vuln_type → E_SCHEMA', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.query('vuln', 'dedup_check', {}, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_SCHEMA')
+})

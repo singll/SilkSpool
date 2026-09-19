@@ -1,7 +1,7 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：`exec/1`
-> 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.flow.appended`（vuln 域）、`exec.worker.spawned/.finished`（task 域）、`exec.import.completed`（endpoint/vuln 域）、`exec.evidence.published`（证据发布留痕）
+> 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.worker.spawned/.finished`（task 域，强联动）；`exec.flow.appended`、`exec.import.completed`、`exec.evidence.published` 当前**无订阅方（设计预留）**——各域 manifest 未声明，待实现后回填
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
 

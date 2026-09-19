@@ -614,7 +614,7 @@ window.__ModuleLoader__.load({
 
           // 区块四：执行历史（默认折叠 DisclosureRow）
           el('div', { ref: histRef, style: { marginTop: 16 } },
-            HistoryBlock({ open: histOpen, onToggle: function () { setHistOpen(!histOpen) }, rows: runs, total: runTotal, runTaskId: runTaskId, onClearFilter: function () { setRunTaskId('') } }))))
+            el(HistoryBlock, { open: histOpen, onToggle: function () { setHistOpen(!histOpen) }, rows: runs, total: runTotal, runTaskId: runTaskId, onClearFilter: function () { setRunTaskId('') } }))))
     }
 
     // 右侧栏 tab 体（keyed `sidebar.right.pane.tab`，key = TAB_ID）

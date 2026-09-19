@@ -302,7 +302,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
   "evidence": "run_01HZ" }
 ```
 
-订阅方：vuln 域（endpoint.auth_marked → 越权测试候选提示；endpoint.queue.enqueued → param 喂料任务上下文）、ledger 域（endpoint.registered → 接口台账 TSV 联动，见 §2.3）、dashboard（endpoint.queue.consumed → 队列徽章）。
+订阅方（**未实现/设计预留**）：vuln 域（endpoint.auth_marked → 越权测试候选提示；endpoint.queue.enqueued → param 喂料任务上下文）、ledger 域（endpoint.registered → 接口台账 TSV 联动，见 §2.3）、dashboard（endpoint.queue.consumed → 队列徽章）。当前 endpoint manifest `subscribes` 仅含 `exec.run.completed`（onRunProposal），上述对端在各域 manifest 中**均未声明**；按 00-conventions §六 只允许写对端已声明的订阅，故此处标注为设计预留，待各域实现后回填。
 
 ### 1.6 模型工具面投影（工具名 = 命令/查询名）
 

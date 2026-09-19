@@ -1157,7 +1157,11 @@ function makeHandlers(opts) {
       }
     },
     vuln_dedup_check: async (args, repo) => {
-      const { rows, total } = repo.listDedup({ host: String(args.host || ''), vuln_type: String(args.vuln_type || ''), exclude_id: args.exclude_id || null }, args.limit || 10)
+      const host = String(args.host || '').trim()
+      const vulnType = String(args.vuln_type || '').trim()
+      // 不变量：host / vuln_type 至少其一必填，禁止空条件全表扫描（返回全量信号）
+      if (!host && !vulnType) throwErr('E_SCHEMA', 'vuln_dedup_check 需至少提供 host 或 vuln_type', '补 host（精确匹配）或 vuln_type（同类型去重）后再查', false)
+      const { rows, total } = repo.listDedup({ host, vuln_type: vulnType, exclude_id: args.exclude_id || null }, args.limit || 10)
       return { rows, total, meta: { limit: args.limit || 10 } }
     },
   }

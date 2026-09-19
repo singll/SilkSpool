@@ -65,6 +65,21 @@ const OPT_DIR = '/opt/silkspool/dsh/opt'
 const DSH_BIN = process.env.SEC_DSH_BIN || '/opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/bin.js'
 const NODE_BIN = process.env.SEC_NODE_BIN || '/usr/local/node/bin/node'
 const MAX_WORKERS = 4
+// M3 本地文件读取边界：_file 目标清单与 Burp 导入仅允许 HOME/data/tmp 内的常规文件，
+// 阻断模型读取 /etc、其它用户目录、密钥文件（realpath 解析，拒绝符号链接逃逸）。
+const SAFE_FILE_ROOTS = [HOME_DIR, process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data', '/tmp']
+function isSafeLocalFile(p) {
+  try {
+    const abs = fs.realpathSync(String(p))
+    const st = fs.statSync(abs)
+    if (!st.isFile()) return false
+    return SAFE_FILE_ROOTS.some((root) => {
+      let r
+      try { r = fs.realpathSync(root) } catch { return false }
+      return abs === r || abs.startsWith(r.endsWith(path.sep) ? r : r + path.sep)
+    })
+  } catch { return false }
+}
 // L1 证据发布限额（exec_evidence_publish，设计 §3.3）
 const EVIDENCE_MAX_FILE_BYTES = 64 * 1024 * 1024
 const EVIDENCE_MAX_TOTAL_BYTES = 256 * 1024 * 1024
@@ -357,7 +372,9 @@ function extractTargets(manifest, params) {
   const v = params[tp]
   if (v === undefined || v === null || v === '') return []
   if (tp.endsWith('_file')) {
-    try { return fs.readFileSync(String(v), 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#')) } catch { return [`__unreadable_file__:${v}`] }
+    const p = String(v)
+    if (!isSafeLocalFile(p)) return [`__unsafe_file__:${p}`]
+    try { return fs.readFileSync(p, 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#')) } catch { return [`__unreadable_file__:${p}`] }
   }
   return String(v).split(',').map((s) => s.trim()).filter(Boolean)
 }
@@ -520,9 +537,13 @@ function makeHandlers(opts) {
     const host = hostOf(rawTarget)
     if (!host) return { allow: false, reason: `无法解析目标: ${rawTarget}` }
     const scope = loadScope()
+    // §1.4.1 顺序强制：先遍历全部项目检查 exclude（任一命中即拒），再按 scope 匹配。
+    // 与 scope 域 checkTargetScope 同源语义，禁止「先命中本项目 scope 即放行」的 fail-open。
     for (const p of scope.programs || []) {
       const excludes = Array.isArray(p.exclude) ? p.exclude : []
       if (excludes.some((e) => entryMatches(e, host))) return { allow: false, reason: `目标 ${host} 在项目 ${p.name} 的排除清单中`, program: p.name }
+    }
+    for (const p of scope.programs || []) {
       const entries = Array.isArray(p.scope) ? p.scope : []
       if (entries.some((e) => entryMatches(e, host))) return { allow: true, reason: `命中项目 ${p.name} 授权范围`, program: p.name, programCfg: p }
     }
@@ -550,6 +571,7 @@ function makeHandlers(opts) {
       if (ipi !== null) { if (ipInReserved(ipi) && !programAllowsIp(cfg, host)) return `目标 ${host} 为内网/保留 IP 且不在项目 ${chk.program || '?'} 授权 CIDR 内`; continue }
       let ips = []
       try { ips = await dns.promises.resolve4(host) } catch { ips = [] }
+      try { ips = ips.concat(await dns.promises.resolve6(host)) } catch { /* 无 AAAA 记录 */ }
       for (const ip of ips) { const ri = ipToInt(ip); if (ri !== null && ipInReserved(ri) && !programAllowsIp(cfg, ip)) return `目标 ${host} 解析到内网/保留 IP ${ip} 且不在项目 ${chk.program || '?'} 授权 CIDR 内` }
     }
     return null
@@ -618,18 +640,31 @@ function makeHandlers(opts) {
         if (k === manifest.target_param && /\s/.test(v)) throwErr('E_EXEC_PARAM_INJECTION', `target 参数含空白字符`, '多目标用英文逗号分隔，清单用 <target>_file 传文件')
       }
       let programId = null
+      const targetChecks = []
       for (const t of targets) {
         const chk = checkTarget(t)
         guardAudit.push({ target: t, decision: chk.allow ? 'allow' : 'deny', reason: chk.reason })
         if (!chk.allow) throwErr('E_EXEC_SCOPE_DENIED', `scope-guard 拒绝: ${chk.reason}`, '目标不在任何授权项目（fail-closed）。候选资产走 approval_request 提请 scope-domain/scope-wildcard')
+        targetChecks.push({ target: t, chk })
         if (programId === null && chk.program) programId = chk.program
       }
-      const firstChk = targets.length ? checkTarget(targets[0]) : { programCfg: null }
-      const riskChk = checkRisk(String(manifest.risk || 'passive'), firstChk.programCfg, toolName)
+      const firstChk = targetChecks.length ? targetChecks[0].chk : { programCfg: null }
+      // 风险闸逐目标判定（fail-closed）：多目标跨项目时，任一目标所属项目未放行该风险级即拒绝，
+      // 禁止只按 targets[0] 的项目配置给整批目标放行（跨项目顺带打点）。
+      let riskChk = { allow: true }
+      if (targetChecks.length === 0) {
+        riskChk = checkRisk(String(manifest.risk || 'passive'), null, toolName)
+      } else {
+        for (const { target: t, chk } of targetChecks) {
+          const rc = checkRisk(String(manifest.risk || 'passive'), chk.programCfg, toolName)
+          if (!rc.allow) { riskChk = { ...rc, target: t }; break }
+        }
+      }
       if (!riskChk.allow) {
+        const riskTarget = riskChk.target || targets[0] || '-'
         let approvalHint = null
         if (riskChk.needsApproval && programId) {
-          const add = await fileApproval(ctx.dispatch, 'tool-intrusive', `${toolName}:${targets[0] || '-'}`, { tool: toolName, risk: manifest.risk, target: targets[0] || null, params: sanitizeParamsForApproval(params), program: programId }, `intrusive 工具 ${toolName} 对 ${targets[0] || '目标'} 的调用被 allow_risk 拒绝`, 'model', sessionId)
+          const add = await fileApproval(ctx.dispatch, 'tool-intrusive', `${toolName}:${riskTarget}`, { tool: toolName, risk: manifest.risk, target: riskTarget, params: sanitizeParamsForApproval(params), program: programId }, `intrusive 工具 ${toolName} 对 ${riskTarget} 的调用被 allow_risk 拒绝`, 'model', sessionId)
           if (add && add.ok) approvalHint = `已自动提请 tool-intrusive 审批（批准后下个调度周期重试即放行）。本次维持拒绝，勿重试。`
         }
         throwErr(riskChk.needsApproval ? 'E_EXEC_RISK_NEEDS_APPROVAL' : 'E_EXEC_RISK_FORBIDDEN', `scope-guard 拒绝: ${riskChk.reason}`, approvalHint || '工具风险级超过授权，走审批或换工具', false)
@@ -641,8 +676,10 @@ function makeHandlers(opts) {
       let argv
       try { argv = shellSplit(cleanRenderedCmd(renderTemplate(String(manifest.args_template || ''), params, runDir, runId))) } catch (e) { throwErr('E_EXEC_TEMPLATE_PARAM', `参数渲染失败: ${e.message}`, '检查必填参数') }
       if (String(manifest.risk || 'passive') === 'passive') {
-        const allowList = (firstChk.programCfg && firstChk.programCfg.rules && Array.isArray(firstChk.programCfg.rules.allow_intrusive_tools) ? firstChk.programCfg.rules.allow_intrusive_tools : []).map((s) => String(s).toLowerCase())
-        const hit = allowList.includes(toolName.toLowerCase()) ? null : findWriteVerbHit(argv.join(' '))
+        const allowListFor = (cfg) => (cfg && cfg.rules && Array.isArray(cfg.rules.allow_intrusive_tools) ? cfg.rules.allow_intrusive_tools : []).map((s) => String(s).toLowerCase())
+        // 多目标时，仅当每个目标所属项目都放行该工具才豁免写动词检查（fail-closed）
+        const allAllowIntrusive = targetChecks.length > 0 && targetChecks.every(({ chk }) => allowListFor(chk.programCfg).includes(toolName.toLowerCase()))
+        const hit = allAllowIntrusive ? null : findWriteVerbHit(argv.join(' '))
         if (hit) {
           let approvalHint = null
           if (programId) {
@@ -822,6 +859,7 @@ function makeHandlers(opts) {
     exec_burp_import: async (args, repo) => {
       const file = String(args.file || '')
       if (!file || !fs.existsSync(file)) throwErr('E_EXEC_FILE_NOT_FOUND', `文件不存在: ${file}`, '本机绝对路径')
+      if (!isSafeLocalFile(file)) throwErr('E_EXEC_FILE_FORBIDDEN', `文件不在允许读取范围内: ${file}`, `仅允许 HOME / data / tmp 内的常规文件（realpath 校验，拒绝符号链接逃逸）`)
       const text = fs.readFileSync(file, 'utf8')
       const importId = 'burp-' + Date.now().toString(36)
       const isIssues = /<issues>/.test(text)
@@ -1001,7 +1039,11 @@ function makeHandlers(opts) {
       const dir = repo.runDirOf(args.run_id)
       if (!dir) throwErr('E_NOT_FOUND', `run_id 不存在: ${args.run_id}`, '核对 run_id')
       let re
-      try { re = new RegExp(String(args.pattern), 'i') } catch (e) { throwErr('E_SCHEMA', `正则无效: ${e.message}`, '修正正则') }
+      const pat = String(args.pattern == null ? '' : args.pattern)
+      if (pat.length > 200) throwErr('E_SCHEMA', `正则过长（${pat.length} > 200）`, '缩短检索正则')
+      // 拒绝嵌套量词（如 (a+)+$）等典型灾难性回溯形态，避免 ReDoS 阻塞事件循环
+      if (/\((?:\\.|[^()\\])*[+*]\)\s*[+*?{]/.test(pat)) throwErr('E_SCHEMA', '正则含嵌套量词（ReDoS 风险）', '改写正则，避免 (a+)+ / (a*)* 形态')
+      try { re = new RegExp(pat, 'i') } catch (e) { throwErr('E_SCHEMA', `正则无效: ${e.message}`, '修正正则') }
       const max = Math.min(Number(args.max) || 50, 200)
       const matched = []
       const files = repo.readRunDirTree(args.run_id)

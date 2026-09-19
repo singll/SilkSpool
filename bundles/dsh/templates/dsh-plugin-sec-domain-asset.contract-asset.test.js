@@ -480,3 +480,11 @@ test('alias: asset_query → asset_list / asset_stats → asset_overview / fp_ad
   assert.equal(f.ok, true)
   assert.equal(f.cmd, 'fp_record')
 })
+
+// ---- H3 回归：program_id 不在 scope.yml → fail-closed（不得 fail-open 放行）----
+test('H3: program_id 未授权 → E_INVARIANT（scope 自查 fail-closed）', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.dispatch('asset', 'upsert', { host: 'ghost.example.com', type: 'host', program_id: 'no-such-program' }, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_INVARIANT')
+})

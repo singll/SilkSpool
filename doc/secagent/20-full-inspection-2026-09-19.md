@@ -72,8 +72,8 @@
 
 ### 3.1 严重
 
-- **S1 订阅关系成片冲突**：`09-approval.md:4` 称 `approval.approved` 被 scope/task/know/fact/exec 订阅，但 `08-scope.md:573`、`07-know.md:568`、`10-exec.md:4`、`05-task.md:431` 均声明「不订阅 / 经 decide 内同步 effect」。5 个声称订阅方仅 fact 成立，违反 `00-conventions.md:224`。
-- **S2 完成度过度声明**：`18-migration.md:3/5` 与 `PROGRESS.md:10` 称「Phase 0–5 全部完成」，但 Phase 4（http-remote 后端试点）在 `02-vuln.md:853`、`03-asset.md:708` 仍是「预留/设想」，从未实施，DoD #4 不可能满足。PROGRESS 自身第 13 行「DoD 仍须核对」与第 10 行自相矛盾。
+- **S1 订阅关系成片冲突**：`09-approval.md:4` 称 `approval.approved` 被 scope/task/know/fact/exec 订阅，但代码复核实际订阅方为 **fact / ledger**（`fact.js:318`、`ledger.js`），`08-scope.md`、`07-know.md`、`10-exec.md`、`05-task.md` 均声明「不订阅 / 经 decide 内同步 effect」。09:4 既多列（scope/task/know/exec）又漏列（ledger），违反 `00-conventions.md:224`。
+- **S2（初查误报，已更正）**：初查曾称 Phase 4（http-remote 后端）从未实施。**复核后确认该结论错误**——`dsh-plugin-sec-backend-vuln-http.js` 已存在，且 `sec-vuln-domain-plugin-setup.sh` 组装该后端并运行 `contract-vuln-http.test.js` 契约测试，故 18-migration「Phase 0–4 已上线」属实。仅 `02-vuln.md:853`、`03-asset.md:708` 仍以「Phase 4 试点时定稿」措辞描述已实现的机制，属**文档措辞过时**（轻微），非未实现。**教训：文档审查结论必须对照 manifest/代码复核后再采信。**
 - **S3 effect 机制互斥**：`05-task.md:4/431/491` 说 `approval_effects` 经 dispatcher 幂等执行、失败自动重试；`09-approval.md:438/562` 说同步 dispatch、无独立 outbox dispatcher、失败需人工 `approval_effects_retry`。09 为 owner，应以其为准回改 05。
 - **S4 预留订阅写成现行**：`04-endpoint.md:305`、`10-exec.md:4` 把 vuln/ledger/dashboard 的订阅写成现行机制，但 `02-vuln.md:478`、`11-ledger.md:4` 的 manifest 无此声明。对照 `03-asset.md:416` 已正确标注「未实现/设计预留」。
 
@@ -350,7 +350,7 @@ UI client 单测 **114/114 全绿**；全 glob 单测 125 例 **123 pass / 2 fai
 | 服务健康 | systemd status、journalctl 24h、端口 | 见 §二 |
 
 ### 附录 A · 文档逐模块问题索引
-S1 approval 订阅冲突（09:4）｜S2 Phase 4 过度声明（18:3/5、PROGRESS:10）｜S3 effect 机制互斥（05:4/431/491 vs 09:438/562）｜S4 预留订阅写成现行（04:305、10:4）｜M1 task→fgs sync/async（05:481 vs 14:255）｜M2 ledger 旧述（11:411）｜M3 查询可见口径（17:65/144）｜M4 know 头部漏订阅（07:4）｜M5 域枚举漏 endpoint（00:63）｜M6 parser actor（00:304）｜M7 eval 缺 C4 节（15）｜N1 别名样板重复（14 文件）｜N3 archive INDEX 路径（archive/INDEX.md:13）。
+S1 approval 订阅冲突（09:4；实际订阅方=fact/ledger，初查误写「仅 fact」）｜S2 初查误报已更正（http-remote 实已实现）｜S3 effect 机制互斥（05:4/431/491 vs 09:438/562）｜S4 预留订阅写成现行（04:305、10:4）｜M1 task→fgs sync/async（05:481 vs 14:255）｜M2 ledger 旧述（11:411）｜M3 查询可见口径（17:65/144）｜M4 know 头部漏订阅（07:4）｜M5 域枚举漏 endpoint（00:63）｜M6 parser actor（00:304）｜M7 eval 缺 C4 节（15）｜N1 别名样板重复（14 文件）｜N3 archive INDEX 路径（archive/INDEX.md:13）。
 
 ### 附录 B · 代码问题索引
 H1 exec.js:621-623｜H2 exec.js:519-529 vs scope.js:122-140｜H3 asset.js:341-357｜H4 asset.js:578 + asset-sqlite.js 无 owner 列｜M1 bus.js:1171-1184 vs :1244｜M2 exec.js:552｜M3 exec.js:359-360/822-825｜M4 exec.js:1004｜M5 exec.js:955｜M6 exec.js:575｜M7 asset-db.js:254｜M8 tools-manager.sh:86-124｜M9 approval.js:556/653｜M10 vuln-sqlite.js:206-216｜L1 sec-suite.js:413/714/319/360｜L2 dashboard-rpc.js:341/762｜L3 webhook.js:21-44｜L4 asset-sqlite.js:309-319 vs approval.js:55-61｜L7 task-policy.js:20-29。
@@ -360,4 +360,50 @@ B1 view-asset.client.js:40｜B2 panel.client.js:138-148 + view-vuln.client.js:23
 
 ---
 
-*报告生成：2026-09-19 · 只读检查，未修改线上任何数据。*
+## 十一、本会话修复记录（2026-09-19）
+
+> 依据本报告第一批（安全红线）、第二批（部分）与 UI 高优先项执行修复；改动落在版本受控源 `bundles/dsh/templates/`，经本地契约/UI 测试与 csai 部署验收。
+
+### 11.1 已修复（含验证证据）
+
+| 编号 | 修复内容 | 文件 | 验证 |
+|---|---|---|---|
+| H1 | exec 风险闸改**逐目标**判定（多目标跨项目任一未放行即拒） | `dsh-plugin-sec-domain-exec.js` | 新增 `H1` 契约用例通过（exec 26/26） |
+| H2 | exec `checkTarget` 改**全项目先 exclude 再 scope**（与 scope 域同源） | 同上 | 新增 `H2` 契约用例通过 |
+| H3 | asset scope 自查 program 不存在改 **fail-closed `E_INVARIANT`** | `dsh-plugin-sec-domain-asset.js` | 新增 `H3` 契约用例通过（asset 31/31） |
+| H4 | assets 表补 `owner` 列（`V5_COLS` + `ASSET_LIST_COLS`） | `dsh-plugin-sec-backend-asset-sqlite.js` | 线上 `PRAGMA table_info(assets)` 出现 `owner TEXT`；factory 幂等建列成功 |
+| M2 | DNS 校验补 `resolve6`（IPv6 解析后内网判定） | `dsh-plugin-sec-domain-exec.js` | 语法校验 + 回归套件通过 |
+| M3 | `_file` 清单与 Burp 导入限制在 HOME/data/tmp 常规文件（realpath，拒绝符号链接逃逸） | 同上 | 语法校验 + exec 套件通过 |
+| M4 | `exec_grep_result` 正则长度上限 + 拒绝嵌套量词（ReDoS） | 同上 | 语法校验 + exec 套件通过 |
+| M7 | info 噪声回填改**一次性迁移**（仅在 noise 列新建时执行，不再每次启动覆盖人工判定） | `dsh-plugin-sec-suite.asset-db.js` | 语法校验 |
+| M10 | `vuln_dedup_check` 强制 host/vuln_type 至少其一 | `dsh-plugin-sec-domain-vuln.js` | 新增 `M10` 契约用例通过（vuln 51/51） |
+| B1 | asset 视图模块级 `uiCore.T` 解引用加守卫（ui-core 缺席不再崩 bundle） | `dsh-plugin-sec-dashboard.view-asset.client.js` | UI 单测 114/114 |
+| B2 | 漏洞/资产视图 pending effect 依赖 `[api.pending]`（同视图 KPI 跳链生效） | `view-asset.client.js` / `view-vuln.client.js` | UI 单测 114/114 |
+| B3 | 报告/知识时间与大小渲染防御式取值 | `view-report.client.js` / `view-know.client.js` | UI 单测 114/114 |
+| B4 | 知识全景图 `byCategory` 缺失防御 | `view-know.client.js` | UI 单测 114/114 |
+| B5 | 报告阅读器加请求序号守卫（防内容错配） | `view-report.client.js` | UI 单测 114/114 |
+| B7 | `RulesSection` / `HistoryBlock` 改 `React.createElement`（消除 Rules of Hooks 隐患） | `view-know.client.js` / `dsh-plugin-silksec-ui-task.client.js` | UI 单测 114/114 |
+| B9 | ui-core 基样式补 `.silksec-btn-danger` | `dsh-plugin-silksec-ui-core.client.js` | `sec-v5-accept.sh` `ui-class-defined` PASS |
+
+### 11.2 文档漂移已回填（均经 manifest/代码复核）
+
+- S1 `09-approval.md:4`：被订阅方改为 **fact / ledger**（实际 `subscribes`），scope/task/know/exec 注明改走 decide 内同步 effect。
+- S3 `05-task.md:4/428/492`：approval effect 表述改为「`approval_decide` 内同步 dispatch + `approval_effects` 幂等账本，无独立 dispatcher 自动重试」，与 09 对齐。
+- S4 `04-endpoint.md:305`、`10-exec.md:4`：未实现的订阅方/事件标注「设计预留」，并注明对端 manifest 未声明。
+- M1 `05-task.md:481`：task.finished→fgs 改 **async**，与 `fgs.js` manifest 及 14-fgs 对齐。
+- M2 `11-ledger.md:411`：删除 L0 前的「静默降级」旧述。
+- M4 `07-know.md:4`：补 `ledger.card_usage.logged` 订阅。
+- M5 `00-conventions.md:63`：域枚举补 `endpoint`。
+- M6 `00-conventions.md:304`：`parser` 改为「经 script 身份 + `identity=parser:…`」。
+- **S2 更正**：初查误报 Phase 4（http-remote）未实现；复核确认 `dsh-plugin-sec-backend-vuln-http.js` 及契约测试均已存在并部署。
+
+### 11.3 部署与验收
+
+- `rsync -a bundles/dsh/ /opt/SilkSpool/bundles/dsh/` → `spool bundle dsh setup csai`（setup 内契约测试硬门槛全绿，服务已重启）。
+- 本地：exec 26/26、asset 31/31、vuln 51/51、bus 51/51、task 38/38、approval 19/19、fact 23/23、know 73/73、ledger 22/22、endpoint 25/25、scope 15/15；UI 114/114。
+- 线上：`sec-v5-accept.sh` **PASS=41 FAIL=0**；`silksecagent` active、NRestarts=0。
+- 代码 md5：本地 templates 与线上 `/opt/silkspool/dsh` 一致。
+
+### 11.4 仍未处理（需策略决策，非本次代码修复）
+
+- 漏洞确认→提交闭环（43 confirmed 0 提交）、候选池污染/`noise`↔`status` 脱节、任务租约/超时、DLQ 消费者加固、外键回填、授权时效字段、`_file`/沙箱 `$HOME` 之外的进一步收敛、UI B6/B8/B10–B13、代码 M1/M5/M6/M8/M9 及 L 类卫生项、17-llm-surface/15-eval/16-dashboard/ui-surface-deps 的文档回填。

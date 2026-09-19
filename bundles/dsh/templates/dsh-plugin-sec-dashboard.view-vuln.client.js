@@ -234,7 +234,7 @@ window.__ModuleLoader__.load({
         if (p.q !== undefined) findingsQ.setQ(p.q)
         if (p.filters) { for (var k in p.filters) if (p.filters[k] !== undefined) findingsQ.setFilter(k, p.filters[k]) }
         if (typeof nav.consume === 'function') nav.consume('findings')
-      }, [])
+      }, [api.pending])
 
       var rpt = React.useState({ open: false })
       var reportState = rpt[0]; var setReportState = rpt[1]

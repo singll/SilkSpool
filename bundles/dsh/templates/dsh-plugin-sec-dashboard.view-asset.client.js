@@ -37,7 +37,8 @@ window.__ModuleLoader__.load({
     // ── 资产视图（v4.1 多维改造）：洞察条 + 列表/域名族双模式 + 行内钻取 ──────
     // 资产记录多且扁平，看不出结构——多维入口：评级/收录/状态 chip 即点即筛，
     // 域名族（同注册域 / 同 /24 网段）呈现资产间的联系，单主机钻取聚合指纹/接口/漏洞/同族。
-    var ASSET_LV_COLOR = { S: uiCore.T.error, A: uiCore.T.warn, B: uiCore.T.label, C: uiCore.T.label2 }
+    var T = (uiCore && uiCore.T) ? uiCore.T : {}
+    var ASSET_LV_COLOR = { S: T.error, A: T.warn, B: T.label, C: T.label2 }
     var ASSET_STATE_LABEL = { new: '新发现', changed: '有变更', stable: '稳定', dead: '已失活' }
     var ASSET_ACCEPT_LABEL = { full: '全量收录', 'intrusion-only': '仅入侵', none: '不收录' }
 
@@ -305,7 +306,7 @@ window.__ModuleLoader__.load({
         if (p.q !== undefined) assetsQ.setQ(p.q)
         if (p.filters) { for (var k in p.filters) if (p.filters[k] !== undefined) assetsQ.setFilter(k, p.filters[k]) }
         if (typeof nav.consume === 'function') nav.consume('assets')
-      }, [])
+      }, [api.pending])
 
       function onPickHost(host) { assetsQ.setQ(host) }
       function onFindings(host, severity) { nav.select('findings', { q: host, filters: { severity: severity || '' } }) }

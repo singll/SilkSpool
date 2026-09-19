@@ -246,12 +246,16 @@ export function getDb() {
   }
   // ---- P15 噪声闸门：info 级模板指纹（ssl-issuer/wildcard-tls…）默认不进信号面 ----
   // noise=1 的行全查询/报告/KPI 默认排除（includeNoise 显式查看）；存量 info 一次性回填。
+  const hadNoiseCol = db.prepare('PRAGMA table_info(findings)').all().some((c) => c.name === 'noise')
   ensureCol('findings', 'noise', "noise INTEGER NOT NULL DEFAULT 0")
   db.exec('CREATE INDEX IF NOT EXISTS idx_findings_noise ON findings(noise)')
   // v5 Phase 0：仅对仍是待验证候选（status='new'）的 info 级行强制 noise=1；
-  //   已 confirmed/submitted/终态的 info 级行（经人工/模型确认升级）保持 noise=0（信号面），
-  //   避免每次 getDb() 初始化把已确认的 info 级发现反复拉回噪声（候选池口径 = noise=1 AND status='new'）。
-  db.exec("UPDATE findings SET noise = 1 WHERE severity = 'info' AND noise = 0 AND status = 'new'")
+  //   已 confirmed/submitted/终态的 info 级行（经人工/模型确认升级）保持 noise=0（信号面）。
+  //   一次性迁移：仅在 noise 列本次新建时回填，避免每次 getDb() 初始化把人工摘除 noise 的
+  //   候选再次打回（候选池口径 = noise=1 AND status='new'）。
+  if (!hadNoiseCol) {
+    db.exec("UPDATE findings SET noise = 1 WHERE severity = 'info' AND noise = 0 AND status = 'new'")
+  }
   // ---- P15：调度 run 的 worker 会话 id（看板跳链）----
   ensureCol('task_runs', 'session_id', 'session_id TEXT')
   ensureCol('workers', 'worker_session_id', 'worker_session_id TEXT')
