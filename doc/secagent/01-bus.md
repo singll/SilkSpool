@@ -66,7 +66,7 @@ cordis 容器
 
 域的 service 实例（持有 repository 句柄的闭包）**只由 CommandGateway 在 dispatch 时构造**，不进任何 provide/inject 通道——memcore 的 DI 先例（`ctx.provide('secMemoryLifecycle')`）在这里推广为"提供的是门面，不是内脏"。
 
-**后台单例任务收敛**（沿用 v4.x 两段先例）：幂等清理、事件轮转检查、AGENTS.md secbus 区块再生成只在 **web 宿主面**执行——判定 `config.sidecars !== false`（sec-suite.js:2113 的入口侧收敛模式，agent 面 preset 挂载行写 `config: { sidecars: false }`）+ 文件锁 `data/bus.lock`（PID+心跳 3 分钟，沿用 `data/scheduler.lock` 模式），双保险防多进程重复跑。
+**后台单例任务收敛**（沿用 v4.x 两段先例）：幂等清理、事件轮转检查、AGENTS.md secbus 区块再生成只在 **web 宿主面**执行——判定 `config.sidecars !== false`（`dsh-plugin-sec-suite.js:1005-1008` 的入口侧收敛模式，agent 面 preset 挂载行写 `config: { sidecars: false }`）+ 文件锁 `data/dispatcher.lock`（PID + `touchLock` 心跳，配合 3s `dispatcherStartDelayMs` 宽限），防多进程重复派发。`data/bus.lock` 路径当前已声明但未实际加锁（仅 `dispatcher.lock` 生效）。
 
 ### 1.2 命令（写动词）总表
 
@@ -85,9 +85,8 @@ cordis 容器
 |---|---|
 | schema | `{ since?: integer(epoch ms, 默认=24h 前), domains?: string[], subscriber?: string, dry_run?: boolean(默认 false), limit?: integer(默认 1000, 上限 10000), additionalProperties: false }` |
 | 返回 data | `{ scanned: N, redispatched: M, skipped_sync: K, results: [{event_id, subscriber, ok, error_code?}] }` |
-| 错误 | `E_SCHEMA`；`E_BUS_REPLAY_RANGE`（since 早于事件日志保留窗）；`E_CONFLICT`（replay 锁被占——同一进程已有 replay 在跑） |
-| hint（E_BUS_REPLAY_RANGE） | "事件日志仅保留 90 天，since 不可早于 {最早事件 ts}；更早的弱联动需人工核对 data/events/ 后补命令" |
-| 幂等 | 自动指纹 = sha1(domain, verb, since, subscriber, dry_run, limit)——同参数重放直接返回首次结果 |
+| 错误 | 当前仅 `E_SCHEMA`。设计预留但**当前未实现**：`E_BUS_REPLAY_RANGE`（since 保留窗校验，实际按 since 过滤、无下限）与 replay 锁 `E_CONFLICT`（实际不加锁） |
+| 幂等 | 自动指纹 = sha1(domain, verb, since, subscriber, dry_run, limit, domains)——同参数重放直接返回首次结果 |
 | actor | human（CLI 应急通道）、system（定时兜底任务，每日 05:10 与 retention 同窗） |
 | RoE | ① 只重放 `mode: async` 的订阅者——强联动已在命令事务内闭环，重放语义不存在；② 订阅者 handler 必须以幂等命令消化事件（网关幂等表兜底，重复消化返回 replay:true 无害）；③ dry_run 只输出将要重放的 (event, subscriber) 对，不执行 |
 | side_effects | events: `bus.replay.completed`；rows: bus_meta 水位更新；caches: 无 |
@@ -100,7 +99,7 @@ cordis 容器
 |---|---|
 | schema | `{ force?: boolean(默认 false；false 时若距离上次清理 <6h 则跳过并返回 skipped) }` |
 | 返回 data | `{ idempotency_pruned: N, events_files_rotated: M, audit_bytes: B }` |
-| 错误 | `E_BACKEND_UNAVAILABLE`（sqlite 忙超时，retryable）；`E_CONFLICT` |
+| 错误 | 无显式业务错误码（运维命令）：幂等清理/轮转/审计读异常各自 catch 后记日志降级，不抛错；存储整体不可用时由网关前置返回 `E_BACKEND_UNAVAILABLE` |
 | hint | 无需（运维命令） |
 | 幂等 | 自动指纹 |
 | actor | human, system |
@@ -112,21 +111,23 @@ cordis 容器
 | 查询 | 参数 | 返回 | actor | 说明 |
 |---|---|---|---|---|
 | `bus_status` | `{ domains?: string[] }` | 见下 | model, dashboard, human, script | 总线健康自检：各域注册状态/契约版本/后端/能力矩阵摘要 |
-| `audit_tail` | `{ n?(默认 50, 上限 500), domain?, cmd?, actor?, session_id?, since?, until? }` | `{ rows: [...], total, limit, offset }` | dashboard, human | 统一审计尾读（过滤维度=宪法 §九） |
-| `events_tail` | `{ domain?(必填，单域), n?(默认 50, 上限 500), name? }` | `{ rows: [...], total, limit, offset }` | dashboard, human, model | 事件日志尾读（model 可见：事件是模型可观察的世界状态） |
+| `audit_tail` | `{ n?(默认 50, 上限 500), domain?, cmd?, actor?, session_id?, operator?, since?, until?, offset?(默认 0) }` | `{ rows: [...], total, limit, offset }` | dashboard, human | 统一审计尾读（过滤维度=宪法 §九） |
+| `events_tail` | `{ domain(必填，单域), n?(默认 50, 上限 500), name?, offset?(默认 0) }` | `{ rows: [...], total, limit, offset }` | dashboard, human, model | 事件日志尾读（model 可见：事件是模型可观察的世界状态） |
 
 `bus_status` 返回结构（完整 schema）：
 
 ```json
 {
   "process": { "profile": "web|headless", "pid": 1234, "uptime_ms": 86400000, "sidecar_singleton": true },
+  "mount": { "phase": null, "subset": null, "mode": "full|phase-subset" },
   "bus": {
     "manifest_schema_version": 1,
     "idempotency": { "rows": 4210, "oldest_created_at": 1788400000000, "pruned_last_24h": 33 },
     "audit": { "writable": true, "bytes": 22000000 },
     "events": { "files": 12, "total_lines": 88214 },
     "outbox": { "pending": 3, "dead_letter": 1, "max_lag_ms": 4120, "last_delivered_at": 1789000000000 },
-    "aliases": { "count": 31, "deprecated": ["finding_update"] }
+    "aliases": { "count": 0, "deprecated": [], "source": "data/bus.aliases.yaml" },
+    "degraded": null
   },
   "domains": [
     {
@@ -134,12 +135,11 @@ cordis 容器
       "contract_compatible": true, "backend": "sqlite-local", "backend_reachable": true,
       "capabilities": { "full": 7, "partial": 0, "unsupported": 0 },
       "commands": 7, "queries": 5,
-      "events_unsubscribed": ["vuln.candidate.claimed"],
       "last_dispatch": { "ts": 1789000000000, "ok": true }
     }
   ],
   "subscribers": [
-    { "source": "memcore", "pattern": "vuln.*", "mode": "async", "as": "reactor", "last_error": null }
+    { "source": "know", "pattern": "vuln.signal.confirmed", "mode": "async", "as": "reactor", "last_error": null }
   ],
   "event_contract": {
     "rule": "{domain}.{object}[.{action}]",
@@ -148,7 +148,7 @@ cordis 容器
 }
 ```
 
-`events_unsubscribed`（2026-09-12 增补，宪法 §八.6 对账纪律的执行点）：该域声明发布但当前零订阅者的事件清单——文档"被订阅"清单只允许写对端已声明的订阅，运行时以本字段对账。零订阅不必然是缺陷（观测性事件合法），但出现在此的事件若在某域文档"被订阅"栏被声称有消费方，即为文档失真。
+`event_contract.dangling_subscriptions`（2026-09-12 增补，宪法 §八.6 对账纪律的执行点）：已注册域**声明订阅但当前无发布方**的事件清单（R9，`dangling_subscriptions=[]` 为健康）。注意运行时**只输出这一方向**（订阅→发布方）；文档"被订阅"清单只允许写对端已声明的订阅，反向的"发布但零订阅者"事件计数（旧稿 `domains[].events_unsubscribed`）**当前未实现**，不构成运行时字段。
 
 memcore / eval 等治理订阅者执行命令的 actor 身份由订阅声明的 `as` 字段决定（推荐 `reactor`；handler 内可显式覆盖，如 eval 回流以 `system` 落账、task 域 onScopeGranted 以 `approval` 建种子任务）；memcore 治理旁路（sweep 直调 lifecycle 动词）使用 `system`（宪法 §三 system 定义含治理旁路通道）。白名单为各自 manifest 显式列出的 lifecycle / 回流类动词。
 
@@ -168,7 +168,7 @@ memcore / eval 等治理订阅者执行命令的 actor 身份由订阅声明的 
 
 - 命令事务提交后，事件信封随 outbox 行已持久化；dispatcher 派发后按序追加 `data/events/{domain}.jsonl`（O_APPEND 单次 write；payload 序列化后 >8KB 拒发 `E_BUS_EVENT_TOO_LARGE`——宪法 §八.5 防风暴的执行点。`high_frequency` 为**保留字段当前未实现**：全事件统一 8KB 上限，高频事件的体积约束由"payload 只含 ID 与判据快照"自律，exec.run.completed 的 parse_proposal 内联行数受各订阅方消费契约约束）；
 - 一个命令的事件数上限：默认 1；可经 manifest `event_limit` 显式上调（如 exec_spawn_worker=2）；`{...}_bulk` 动词上限=批量行数（行数上限进各域 schema，如 500/2000/5000）；
-- async 联动失败：dispatcher 指数退避重试（`bus_subscription` 记录 attempt/next_retry_at），超过阈值 → `dead_letter`；audit 记 `kind: "subscriber_failed"`（字段：event_id / subscriber / as / error）；`bus_replay` 可重放 dead/pending 的 async 订阅；
+- async 联动失败：dispatcher 指数退避重试（退避水位 `event_outbox.retry_count/next_retry_at`，逐订阅者 `bus_subscription.attempt/last_error`），超过阈值 → `dead_letter`；audit 记 `kind: "subscriber_failed"`（字段：event_id / subscriber / as / error）；`bus_replay` 可重放 dead/pending 的 async 订阅；
 - **partial 语义（2026-09-16 L0 修正）**：订阅者返回 `ok:true` 但 `data.partial:true`（如回流/导入部分行失败）**不再标 delivered**——dispatcher 视作部分失败进 pending 退避重试链（`bus_subscription.last_error` 记 partial 明细），超阈值同样 dead_letter；`bus_replay` 结果以 `error_code: E_PARTIAL` 单列。前提：订阅者写路径必须幂等（UPSERT/INSERT OR IGNORE），重放安全。
 - 强联动失败：见 §2.3。
 
@@ -186,7 +186,7 @@ memcore / eval 等治理订阅者执行命令的 actor 身份由订阅声明的 
 
 | 项 | 值 |
 |---|---|
-| RPC 通道 | `connection.rpc.handle('/silksec-domain', handler, { authority: 'loopback' })`——沿用 `/silksec-dashboard` 通道的全部先例（sec-suite.js:2099-2112：child fiber 等服务就绪 + **module 级幂等守卫**防 connection re-provide 期重复注册） |
+| RPC 通道 | `connection.rpc.handle('/silksec-domain', handler, { authority: 'loopback' })`（`dsh-plugin-sec-domain-bus.js:1830-1857`）——沿用 `/silksec-dashboard` 通道的全部先例（`dsh-plugin-sec-suite.js:992-1012`：child fiber 等服务就绪 + **module 级幂等守卫** `dashboardRpcRegistered` 防 connection re-provide 期重复注册） |
 | endpoint 命名 | `{domain}.{verb}` 点分（宪法 §二），如 `vuln.confirm`、`bus.status`、`bus.replay` |
 | handler 行为 | endpoint 拆成 (domain, verb) → `gateway.dispatch(domain, verb, payload, { actor: 'dashboard', operator })`；返回 `{ ok: true, value: envelope }` / `{ ok: false, error: { code, message, details } }`（与 v4.x dashboard RPC 信封形状一致，看板 client 改造成本最小） |
 | operator 注入 | **不可伪造**：handler 从连接上下文读取 auth-gate 用户身份（payload 内的 `operator` 字段一律忽略并覆盖）。注入通道在 Phase 1 与 dsh-auth-gate 0.7.2 实测对齐；若 auth-gate 不暴露用户上下文服务，回退方案见开放问题 Q4 |
@@ -252,7 +252,7 @@ CREATE TABLE IF NOT EXISTS idempotency (
   domain         TEXT NOT NULL,
   verb           TEXT NOT NULL,
   args_hash      TEXT NOT NULL,          -- sha1(规范化 args JSON)——同 key 异参检测
-  result_json    TEXT NOT NULL,          -- 首次信封全文（>64KB 截断 data，标 truncated:true）
+  result_json    TEXT NOT NULL,          -- 首次信封全文（当前原样存；>64KB 截断 data 标 truncated:true 为设计预留，未实现）
   created_at     INTEGER NOT NULL        -- UTC epoch ms
 );
 CREATE INDEX IF NOT EXISTS idx_idempotency_created ON idempotency(created_at);
@@ -326,7 +326,7 @@ description: string
 owns: { tables: string[], files: string[] }
 commands:
   {verb}:
-    actor: string[]               # 非空；值域=宪法 §三 八 actor
+    actor: string[]               # 非空；值域=宪法 §三 十 actor（model/dashboard/script/webhook/scheduler/approval/reactor/system/platform/human）
     schema: object                # JSON Schema；必须 additionalProperties:false（lint 强制）
     idempotent: natural|explicit|auto|explicit_only|none  # natural 时必须给 idempotent_natural 表达式；
                                   # explicit_only=仅调用方显式传 key 才落幂等表（exec_run_cli 类）；
@@ -338,7 +338,7 @@ commands:
     events: string[]              # 引用本域 events 声明，悬空引用拒绝
     invariants: string[]          # 引用域内不变量函数名，悬空拒绝
     side_effects: { rows?, events?, files?, caches? }   # 建议项（宪法 §四，2026-09-12 起非强制）
-    timeout_ms: integer           # 默认 60000，上限 3670000
+    timeout_ms: integer           # 默认 60000，上限 7270000（exec_spawn_worker 用满；exec_run_cli 为 3670000）
     agent_note: string            # ≤240 字（查询 ≤120 字），缺失拒绝（含不向模型注册的动词——lint 不区分可见性）
     deprecated: boolean           # 默认 false
 queries:
@@ -363,9 +363,9 @@ backend: repository-v1
 | # | 校验 | 失败动作 |
 |---|---|---|
 | R1 | manifest 符合上述 schema（含 additionalProperties:false、agent_note 预算） | 拒载 + `bus.domain.rejected` 事件 |
-| R2 | 禁用词检查：动词名含 `update/set/save/modify` 拒绝（宪法 §二）。**豁免登记**（2026-09-12）：`task_update_note`（语义=追加备注，非自由态改字段）；know 子仓原名（vc_save/pb_save 等）走宪法 §二子仓豁免不占此登记 | 拒载 |
-| R3 | 参数名 lint：**命令** schema **顶层**参数名含 `status` / `to` / `state` 拒绝（状态机私有——写侧禁传目标状态；行级内嵌字段如 endpoint 行的 HTTP status 不在此列；查询 params 是可见域谓词按 status 过滤合法，豁免——17 §2.2 负向第 4 条同源） | 拒载 |
-| R4 | owns 唯一性：tables/files 与已注册域交叉 | 拒载 + `E_BUS_DOMAIN_OWNS_CONFLICT` 进事件 detail（**重复注册冲突**：同 `domain` 二次 register 也在此拒——幂等重注册（同 version 同内容）返回已注册，静默通过） |
+| R2 | 禁用词检查：动词名（去域前缀后的裸动词）含 `update/set/save/modify` 拒绝（宪法 §二）。**豁免登记**（bare verb）：`update_note`（=task_update_note，语义=追加备注，非自由态改字段）；`exp_update`/`vc_save`/`pb_save`（know 子仓原名，走宪法 §二子仓豁免；实现常量 `BANNED_WORD_EXEMPT_VERBS` 一并登记） | 拒载 |
+| R3 | 参数名 lint：**命令** schema **顶层**参数名含 `status` / `to` / `state` 拒绝（状态机私有——写侧禁传目标状态；行级内嵌字段如 endpoint 行的 HTTP status 不在此列；查询 params 是可见域谓词按 status 过滤合法，豁免——17 §2.2 负向第 4 条同源）。**`to` 治理通道豁免**（宪法 §四.1）：`fact_transition`/`know_transition` 的 `to` 在 actor 白名单仅含 system/human 时放行（谓词为「actor.every ∈ {system,human}」，`status`/`state` 不豁免） | 拒载 |
+| R4 | owns 唯一性：tables/files 与已注册域交叉 | 拒载：`bus.domain.rejected` 事件 detail 记 `R4 owns 冲突：表/文件 ...`，调用方收到 `E_BUS_DOMAIN_REJECTED`（无独立 owns-conflict 错误码）（**重复注册冲突**：同 `domain` 二次 register 也在此拒——幂等重注册（同 version 同内容）返回已注册，静默通过） |
 | R5 | 引用完整性：commands.events / invariants / subscribes.handler 悬空引用 | 拒载 |
 | R6 | **域版本兼容检查**：`version` 必须 ≤ 总线支持的 manifest schema 大版本；且 ≥ bus_meta 记录的该域已见 version（**版本回退拒绝**——防"setup.sh 硬钉旧版本"式混版，DSH 0.1.2 升级教训的泛化） | 拒载 |
 | R7 | 后端可用性：`sec_domain_{domain}_backend` 配置解析 + 能力矩阵加载 | 后端不可达 → 域标 `backend_reachable:false` 挂载（查询降级按后端能力），写命令 `E_BACKEND_UNAVAILABLE` |
@@ -399,7 +399,7 @@ dispatch(domain, verb, args, ctx)
 - ⑥在⑦前：**重放必须直接返回首次结果**，不再跑不变量——时过境迁后不变量可能对重放命令失败，而重放语义要求 bit-for-bit 返回。
 - ⑦在⑧前：不变量失败不应占用写锁（BEGIN IMMEDIATE 会串行化所有进程的写）。
 - ⑨强联动在事务内执行、async 出事务由 dispatcher 派发：见 §2.3。
-- ⑪审计在最后且不回滚：命令数据已持久化，回滚只会制造"执行了但没记录"的更坏状态。
+- ⑪审计在最后且 **fail-closed**：主链路写命令 audit 落盘失败 → 命令整体 ROLLBACK（`E_BUS_AUDIT_FAILED`，审计写不进=命令不许成，宪法 §九/§十四.7）；查询与弱联动订阅的 audit 失败保持 fail-open（仅告警）。实现见 `dsh-plugin-sec-domain-bus.js:1337-1351`。
 
 **每段的失败信封都带 hint**（宪法 §五；典型文案在各域文档，总线自有码的 hint）：
 
@@ -409,6 +409,8 @@ dispatch(domain, verb, args, ctx)
 | `E_BUS_VERB_UNKNOWN` | "域 {domain} 无动词 {verb}；该域动词清单见 AGENTS.md 域动词速查表" |
 | `E_BUS_ALIAS_DANGLING` | "别名 {alias} 指向的 {target} 不存在（域未注册或版本不兼容）；直接改用新动词" |
 | `E_BUS_STRONG_LINK_FAILED` | "强联动订阅者 {subscriber} 失败（{原因}），命令已整体回滚；修复联动问题后原样重试（幂等保护在）" |
+| `E_BUS_STRONG_LINK_NESTING` | "订阅环或嵌套过深（>3），检查 subscribes 图" |
+| `E_BUS_AUDIT_FAILED` | "审计通道不可写，命令已回滚"（fail-closed，宪法 §九） |
 | `E_BUS_EVENT_TOO_LARGE` | 域开发者错误，不面向调用方 |
 
 #### 2.2.3 不变量执行协议
@@ -431,9 +433,9 @@ manifest `invariants: [name1, name2]` 引用域模块导出的纯校验函数：
 
 | 保证 | 实现机制 |
 |---|---|
-| 纯读 | 查询 handler 只拿到 repository 的**只读方法子集**（`get*/list*Where/count*`——repository 接口按读写分两组导出，网关按查询/命令分别注入）；查询语句不进任何事务 |
-| 分页信封 | 网关强制包裹 `{ rows, total, limit, offset }`；limit 默认 50 上限 500（超限 `E_SCHEMA`）；sort 白名单列 + `dir=asc\|desc`（白名单外列 `E_SCHEMA`） |
-| 可见域谓词参数化 | manifest `predicates` 声明（archived/noise/lifecycle/program）→ 网关注入默认值 → repository 的**单一 where 构造器**消费；SQL 散点拼谓词是契约测试否决项 |
+| 纯读 | 约定查询 handler 只调用 repository 的只读方法（`get*/list*Where/count*`），且查询路径不 `BEGIN`；约束靠约定+评审（网关不物理隔离读写方法，查询/命令共用 `backend.factory(db)` 实例） |
+| 分页信封 | 网关对返回 `rows` 的查询强制包裹 `{ rows, total, limit, offset }`；limit 默认 50、**超 500 收敛为 500**（不报 `E_SCHEMA`），offset 负数归一为 0。`sort`/`dir` 由**各域查询 handler 自行实现**（网关不统一校验；`default_sort` 为 manifest 声明项） |
+| 可见域谓词参数化 | manifest `predicates` 为声明性元数据（各域可扩展，如 `visibility`/`claim_state` 等），**网关不注入默认值**；默认值与 where 构造器由各域查询 handler 内聚实现；SQL 散点拼谓词是契约测试否决项 |
 | 计数同口径 | `total` 必须由 rows 的同一 where 构造器 COUNT 出（v4.3 countFacts/factSearch 病的根治）；契约测试"行数=total"断言（§2.8） |
 | 查询副作用 | 禁止。原"搜索即记 uses"类 → 拆独立命令，由 ToolProjector 查询后补发（17 §2.3） |
 
@@ -464,7 +466,7 @@ dispatcher tick（web 宿主面，1s）:
       try sub.handler(row.envelope)
         → bus_subscription.status='delivered'；event_outbox.status='delivered'（全部订阅者 delivered 后）
       catch e:
-        → attempt++, next_retry_at = now + backoff(attempt)   # 指数退避 1s/5s/30s/2m/10m/1h/6h…
+        → bus_subscription.attempt++，event_outbox.retry_count/next_retry_at = now + backoff   # 指数退避 1s/5s/30s/2m/10m/1h/6h…
         → attempt > 8 → bus_subscription.status='dead_letter'，event_outbox.status='dead_letter'
 ```
 
@@ -490,7 +492,7 @@ for domain of registry.registered():
       description: agent_note(def),                   # deprecated 时前缀 "[已废弃，改用 X] "
       parameters: def.schema,                         # JSON Schema 直投（R1 lint 已保证严格模式）
       output: { schema: envelopeSchema, render: renderJSON },
-      timeoutMs: def.timeout_ms ?? 60000,             # 超时透传（exec_run_cli 类 3670000）
+      timeoutMs: def.timeout_ms ?? 60000,             # 超时透传（exec_run_cli=3670000，exec_spawn_worker=7270000，manifests 上限 7270000）
       execute: (args, exec) => gateway.dispatch(domain, verb, args,
                  { actor: 'model', session_id: sessionIdOf(exec), cwd: execCwd(exec) })  # actor 注入不可伪造
     })
@@ -498,7 +500,7 @@ for domain of registry.registered():
 for alias of aliases: if alias.target 对 model 可见: register 别名工具（§3.2）
 ```
 
-RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 dispatch/query（§1.7），**不存在逐 case 手写分发**——v4.x dashboard-rpc.js 52 case 的手写分发模式废止，仅 16-dashboard 保留少量纯 UI 聚合 case（只准调查询）。
+RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 dispatch/query（§1.7），**不存在逐 case 手写分发**。`/silksec-dashboard` 的 56 个手写 case（`dsh-plugin-sec-suite.dashboard-rpc.js`）作为 **UI 适配层保留**（全部 fail-closed 走 `busQuery`/`busDispatch`，无 v4 直写兜底，实测去向见 16-dashboard §1.7），不再新增逐 case 分发。
 
 ### 2.3 事务与联动
 
@@ -522,13 +524,13 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 
 ### 2.4 后端适配器（总线是自举的）
 
-总线是自己的第一个客户：**bus 域的存储（idempotency / bus_meta）走自己的 sqlite-local 后端**，与被管域同一套 repository 协议——总线吃自己的狗粮，任何契约缺陷在总线自身先行暴露。
+总线是自己的第一个客户：**bus 域自身以 `registerDomain({ ..., backend: { factory: () => ({}), capabilities: {} } })` 自注册**，其存储（idempotency / bus_meta / event_outbox / bus_subscription）由网关内建的 sqlite 直连层维护；对被管域则强制执行 `repository-v1` 协议——总线吃自己的狗粮，任何契约缺陷在总线自身先行暴露。
 
 | 项 | 值 |
 |---|---|
-| repository 接口 | `getIdem(key) / insertIdem(row) / pruneIdem(olderThan, maxRows) / metaGet(key) / metaSet(key, value)` + 只读组 |
+| 自身存储访问 | 内建 sqlite 直连（`metaGet/metaSet` + 预编译 idempotency/outbox/subscription SQL）；`getIdem/insertIdem/pruneIdem` 为设计命名，当前未落地为可注入 repository 接口（bus manifest `backend: repository-v1` 声明的是对被管域的协议约束） |
 | 实现 | node:sqlite，`asset-graph.db` 内建表（§2.1 DDL），WAL，busy_timeout 5s |
-| 域后端配置 | `sec_domain_{domain}_backend: sqlite-local|http-remote|file`（bundle 配置一行；热切换仅 sqlite↔sqlite，切 http 重启宿主面——宪法 §十二.5） |
+| 域后端配置 | `sec_domain_{domain}_backend: sqlite-local\|http-remote\|file`（bundle 配置一行；热切换仅 sqlite↔sqlite，切 http 重启宿主面——宪法 §十二.5） |
 | http-remote 下的幂等/审计 | **幂等表与 audit 永远留在本地 sqlite**（总线 owns，不随后端走）——远程后端挂掉时幂等与审计链不断；域命令在远程执行，⑧ 的"事务"由远程原子端点承担，⑨-async/⑩/⑪ 语义不变。弱于本地的事务边界（远程部分成功）由能力矩阵 partial 声明兜底（fail-closed，不静默降级） |
 | 能力矩阵 | 后端 manifest 对每命令声明 full/partial(说明)/unsupported；④ 段执行检查 |
 
@@ -537,9 +539,9 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 | 缓存 | 内容 | 失效 |
 |---|---|---|
 | manifest 内存缓存 | 注册后的域 manifest 常驻（dispatch 热路径零 IO） | 不失效（变更=重启；域版本演进走 §十五三段式） |
-| bus_status 健康缓存 | TTL 30s（`backend_reachable` 探测结果、idempotency 计数） | TTL 到期或任一 dispatch 失败即失效 |
-| audit 写入 | appendFileSync 直写（v4.x audit() 同款）；写失败 → 内存队列重试 3 次（间隔 1s/5s/30s）→ 仍失败：stderr + `bus_status.bus.audit.writable:false` + 看板红条。**主链路写命令 fail-closed（audit 写失败 → 命令回滚）**；查询与弱联动订阅的 audit 失败保持 fail-open（仅告警）——宪法 §九/§十四.7 |
-| 事件文件句柄 | 每域 fd 常驻 O_APPEND | 轮转时重开 |
+| bus_status 健康数据 | **无 TTL 缓存**：每次调用实时读 SQLite 计数 + `fs.statSync`；当前规模下开销可接受 | 不适用 |
+| audit 写入 | `fs.appendFileSync` 直写（v4.x audit() 同款）。**无重试队列**（`AUDIT_RETRY_MS` 常量保留未用）：主链路 `auditAppend` 失败立即抛 `E_BUS_AUDIT_FAILED` → 事务回滚（fail-closed）；`auditBestEffort`（查询/弱联动/前置拒绝路径）失败仅 `log` 告警（fail-open）——宪法 §九/§十四.7。`bus_status.bus.audit.writable = !degraded`，看板红条随 `degraded` 亮起 | 不适用（写失败即回滚或告警，无缓存失效语义） |
+| 事件文件写入 | **无常驻 fd**：每次 `fs.appendFileSync`（O_APPEND 语义），随写随开随关 | 不适用（轮转时 rename 自然生效） |
 
 ### 2.6 性能与容量
 
@@ -548,30 +550,33 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 | 单命令网关开销 | —（无网关） | <5ms（manifest 命中内存缓存 + 3 条 SQL） | ⑧-⑩ 全在单事务 |
 | audit.jsonl | ~22MB（v4.x 2026-09） | 持平（v5 每命令 1 行 ≈ v4.x 每工具调用 1-3 行） | 50MB 轮转沿用 |
 | events/*.jsonl | 无（新增） | 日增 ~2-5k 行（调度+模型日命令量 1-2k，bulk 命令放大） | 90 天保留 ≈ 单域 <25MB |
-| idempotency | 无（spawn_worker dedupe_key 单点） | 上限 10,000 行常驻（LRU） | 单行 <1KB（result 截断 64KB 上限） |
+| idempotency | 无（spawn_worker dedupe_key 单点） | 上限 10,000 行常驻（LRU） | 单行 <1KB（result 当前原样存，64KB 截断为设计预留） |
 | 并发写 | 多进程 WAL（v4.x 现状） | 不变；网关 BEGIN IMMEDIATE 串行化 | 总设计 §六已定 |
 | 幂等表查询 | — | PRIMARY KEY 点查，<0.1ms | 热路径唯一额外读 |
 
 ### 2.7 启动顺序与冒烟（setup.sh 执行点）
 
-`sec-domain-bus-plugin-setup.sh`（沿用 sec-suite-plugin-setup.sh 幂等模式）在 `spool bundle dsh setup csai` 链内的步骤与执行点：
+`sec-domain-bus-plugin-setup.sh`（沿用 sec-suite-plugin-setup.sh 幂等模式）实现 §A/§B/§D/§F/§G，并附带别名表部署与 sec-bus-cli 归位；§C/§E/§H 由 `setup.sh` 链执行；§I/§J 属部署验收目标（部分未内置，见文末实测口径）。各步骤与执行点：
 
 ```
 §A  组装：模板 → plugins/sec-domain-bus/ + 生成 package.json（零外部依赖，只用 node 内置模块）
 §B  profile 挂载：web 与 headless package.json 增行 + dsh plugin --profile web|headless add
 §C  后端插件组装：@silksec/sec-backend-{domain}-sqlite（各域 setup 各自负责，总线只校验在场）
-§D  别名表校验：node -e 校验 data/bus.aliases.yaml 全部目标存在且无环（失败=setup 中止）
+§D  别名表校验：node 校验 data/bus.aliases.yaml 语法/环/自环；**空表直接通过**，非空时目标
+     存在性留到注册期检查（E_BUS_ALIAS_DANGLING）；失败=setup 中止
 §E  owns × sandbox 交叉断言：各域 manifest owns.files/tables 推导路径 ∉ bwrap 可写白名单（宪法 §十四.3）
-§F  契约测试：node --test plugins/*/test/contract-*.test.js（sqlite-local 全跑；不过=中止，宪法 §十三）
+§F  契约测试：node --test plugins/sec-domain-bus/test/contract-bus.test.js（当前 51 用例；不过=中止，宪法 §十三）
 §G  dump-config 冒烟：--dump-config 组合树校验 sec-domain-bus / 各域插件在树（沿用 dsh-upgrade 深冒烟）
 §H  reconcile_service 重启（§G 之后——v4.6.1 顺序缺陷教训：重启必须排在组装后）
 §I  启动后冒烟：RPC bus.status 或 sec-bus-cli.mjs query bus.status —— domains 全部 registered:true 才算过
 §J  边缘基础设施探活（域外不动清单，10-exec §2.7）：① systemctl is-active silksecagent-edge
-    silksec-shared-browser；② curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/ 期望 200/302
-    （edge-Caddyfile :3080→3081 Host/Origin 改写通道，Web UI 唯一 LAN 入口）；③ :9223 basicauth
-    入口探活（浏览器共驾入口，期望 401 未带凭证）；④ CDP :9222 /json/version 探活（常驻 Chromium）
-    ——四项任一失败=警告不中止（平台层资产非总线 owns，告警进部署报告人工处置）
+     silksec-shared-browser；② curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/ 期望 200/302
+     （edge-Caddyfile :3080→3081 Host/Origin 改写通道，Web UI 唯一 LAN 入口）；③ :9223 basicauth
+     入口探活（浏览器共驾入口，期望 401 未带凭证）；④ CDP :9222 /json/version 探活（常驻 Chromium）
+     ——四项任一失败=警告不中止（平台层资产非总线 owns，告警进部署报告人工处置）
 ```
+
+> 实测口径（2026-09-19 csai）：`sec-v5-accept.sh` 覆盖 R0 服务健康/双 profile dump-config/R4 域插件齐全；§I/§J 的启动后 RPC 冒烟与边缘端口探活当前未内置在该脚本内，由人工/后续验收补齐。
 
 ### 2.8 契约测试矩阵（总线自身的测试义务）
 
@@ -582,7 +587,7 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 | happy path 全管线 | 信封结构 / event_ids 非空 / audit 落盘（kind=command，v5 schema）/ 幂等行存在 |
 | 顺序敏感性 | actor 错 + schema 错同时存在 → 报 E_ACTOR_FORBIDDEN（③先于⑤）；幂等命中 → 不变量函数未被调用（spy 断言） |
 | schema 拒绝 | 缺 required / 未知参数 / 类型错 → E_SCHEMA（message 含字段名） |
-| actor 拒绝 | 八 actor × 非白名单动词各至少一例 → E_ACTOR_FORBIDDEN 且已审计 |
+| actor 拒绝 | 十 actor × 非白名单动词各至少一例 → E_ACTOR_FORBIDDEN 且已审计 |
 | 幂等 | 同 key 同参 → replay:true 且 bit-for-bit 同果；同 key 异参 → E_IDEMPOTENT_CONFLICT；natural/explicit/auto 三策略各一例 |
 | 并发 | 两进程同时 dispatch 同一候选 confirm → 一成一 `E_STATE`（或一成一 E_CONFLICT），最终状态一致（仅 sqlite-local 跑） |
 | 强联动 | sync 订阅者 throw → 命令行变更回滚（before/after 断言）+ E_BUS_STRONG_LINK_FAILED |
@@ -608,6 +613,8 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 
 ### 3.1 现状代码映射（v4.x → 总线各部件，文件行级）
 
+> **历史留档**：本表记录 v4.x → v5 的搬迁血缘，源文件/行号为 2026-09 搬迁时实测位置。其中 `dsh-plugin-sec-suite.parsers.js`、`dsh-plugin-sec-suite.scheduler.js` 已删除，`dsh-plugin-sec-suite.js` / `dsh-plugin-sec-suite.asset-graph.js` 已大幅收敛——行号不再对应当前代码，仅作追溯用途，不作为运维依据。
+
 | 总线部件 | 血缘来源（实测位置） | 搬迁方式 |
 |---|---|---|
 | CommandGateway 管线骨架 | `dsh-plugin-sec-suite.js:1206-1340` runCli 的 scope-guard 链（manifest 存在性→S3→S4→目标提取→checkTarget→checkRisk→S1→QPS，每步有 audit 落点、deny 即返回） | **模式平移**：守卫链的"逐 stage 校验+逐 stage 审计+首错返回"结构原样复制到 11 段管线；守卫内容留在 exec 域 |
@@ -615,9 +622,9 @@ RpcProjector：单一 handler 按 `'{domain}.{verb}'` 拆分路由到同一 disp
 | provide/inject 依赖反转 | `dsh-plugin-sec-memcore.js:849-879`（apply→loadDb→migrate→provide('secMemoryLifecycle', api)）+ `asset-graph.js:39-54`（可选注入 + 缺席 fail-open 告警 + 黑板留言） | 推广为全域：provide 门面 + inject 可选 + 缺席告警三板斧 |
 | 统一 audit 落点 | `dsh-plugin-sec-suite.js:1117-1122` `audit()`（appendFileSync，写失败不阻断）+ `:1125-1139` `tailAudit()`（256KB 尾读、跳半行、新→旧） | audit() → AuditSink（schema 升 v5）；tailAudit() → `audit_tail` 查询（逻辑原样，加过滤维度） |
 | 幂等 | `dsh-plugin-sec-suite.js:1642+` spawn_worker dedupeKey（sha1(task)；重启重试→running 活= in_progress / done=回读真实结果 / killed=重跑） | dedupe_key 单点机制 → 幂等表三级键构造 + 保留窗口（"重启后原样重试即确定性拿回结果"的经验写进 replay 语义） |
-| RpcProjector | `dsh-plugin-sec-suite.js:2099-2123`（child fiber 等 connection 就绪 + module 级 `dashboardRpcRegistered` 幂等守卫 + authority loopback + ok/error 信封） | 通道先例整体沿用：`/silksec-dashboard` → `/silksec-domain`；52 case 手写分发废止 |
+| RpcProjector | `dsh-plugin-sec-suite.js:992-1012`（child fiber 等 connection 就绪 + module 级 `dashboardRpcRegistered` 幂等守卫 + authority loopback + ok/error 信封） | 通道先例整体沿用：`/silksec-dashboard` → `/silksec-domain`；看板侧 56 个手写 case 降级为 fail-closed UI 适配层（见 §2.2.6 与 16-dashboard §1.7） |
 | ToolProjector 注册单元 | `dsh-plugin-sec-suite.asset-graph.js:15-22` `reg(ctx, def)` helper（name/description/parameters/output/timeoutMs/execute 六件套） | reg() 的字段形状就是投影器的输出形状；38 个手写 def → manifest 自动生成 |
-| 后台单例收敛 | `dsh-plugin-sec-memcore.js:881-893`（isWeb + config.sweeper!==false 双条件 + interval.unref）+ `scheduler.js` 文件锁 | 双条件 + `data/bus.lock` 文件锁，防多进程重复清理 |
+| 后台单例收敛 | `dsh-plugin-sec-memcore.js:881-893`（isWeb + config.sweeper!==false 双条件 + interval.unref）+ `scheduler.js` 文件锁 | 双条件 + `data/dispatcher.lock` 文件锁（`data/bus.lock` 声明未启用），防多进程重复派发 |
 | 事件留痕 | `flows/xray-*.jsonl` / `radar-queue.jsonl` 的 appendFile 模式 | 统一为 `data/events/{domain}.jsonl` + 事件信封 |
 | 事件留痕（豁免） | `data/intel/intel.jsonl` | **维持原样不统一**：nuclei 模板库版本记录由 silksec-intel.timer 域外单写（systemd 计时器，无进程内事件可发），非域产物——10-exec §2.7 不动清单声明 |
 | parser proposal 管道 | `dsh-plugin-sec-suite.parsers.js` applyParsedResult（store=asset-graph 直写） | 改为 exec.run.completed 事件 + proposal 文件 + 各域订阅经命令入库（直写归零） |
@@ -632,7 +639,7 @@ aliases: {}
 dispatch_aliases: {}
 ```
 
-历史映射（v5 Phase 1–4 期间存在，现仅在各域文档 §3.2 留档）：静态别名如 `blackboard_set→fact_bb_publish`、`attempts_log→ledger_log_attempt`、`proxy_pool_stats→proxy_stats`、`submission_draft→report_draft_submission`；分派别名如 `finding_add`（按 actor 分派）、`finding_update`（按 status 分派）、`task_update`、`finding_query`、`asset_add` 等。总线内置路由器（`BUILTIN_ROUTERS`）与 `aliases`/`dispatch_aliases` 机制保留为通用能力，供未来跨域改名复用。
+历史映射【历史留档】（v5 Phase 1–4 期间存在，现仅在各域文档 §3.2 留档）：静态别名如 `blackboard_set→fact_bb_publish`、`attempts_log→ledger_log_attempt`、`proxy_pool_stats→proxy_stats`、`submission_draft→report_draft_submission`；分派别名如 `finding_add`（按 actor 分派）、`finding_update`（按 status 分派）、`task_update`、`finding_query`、`asset_add` 等。总线内置路由器（`BUILTIN_ROUTERS`）与 `aliases`/`dispatch_aliases` 机制保留为通用能力，供未来跨域改名复用。
 
 > 删除方式（2026-09-19）：不再走「7 天零使用」观察期——`finding_add`/`finding_update` 是当时看板写路径的承重结构。改为先把调用方迁到语义动词（dashboard-rpc finding 状态流转直达 `vuln_confirm/reject/submit`；ui-session「登记候选漏洞」直达 `vuln_register_candidate`），再清空注册表；详见 [PROGRESS §〇](PROGRESS.md)。
 >
@@ -671,13 +678,15 @@ dispatch_aliases: {}
 
 | 维度 | 结论 |
 |---|---|
-| 逻辑/功能 | 通过：R0-R9 注册与运行闸门齐全；线上 14 域 registered，`dangling_subscriptions=[]`，outbox 无 pending/dead letter。 |
+| 逻辑/功能 | 通过：R1-R9 注册与运行闸门齐全；线上 14 业务域 + bus 全部 registered，`dangling_subscriptions=[]`。 |
 | 性能 | `bus_replay` 会把每个事件 JSONL 整体读入内存后再应用 limit；事件日志增长后需改为按行流式读取/倒序索引。outbox 派发有批量与状态谓词，当前规模健康。 |
 | 静默错误 | 事件日志坏行/半行在 replay 中直接跳过，没有 `corrupt_lines` 汇总；建议后续补计数。 |
-
-> 2026-09-16 L0 修复：订阅者 `ok:true + data.partial:true` 此前会被标 delivered（静默吞掉部分失败），已改为进 pending 重试链（契约用例覆盖，bus 域 52/52 全绿）。
 | 未实现 | `high_frequency` 仍为保留字段，统一 8KB 事件上限。 |
 | hook 判定 | ToolProjector/RpcProjector 是契约投影，不是绕总线 hook；合法。 |
 | 独立升级 | bus 是底座，不能单独替换后跳过域回归；升级必须全量契约矩阵 + 部署验收。 |
 
+> 时点说明（2026-09-12 快照）：outbox `pending=0`、`dead_letter=0`；2026-09-19 csai 实测 `dead_letter=3`（历史残留，pending=0），不改变上述口径。
+>
+> 2026-09-16 L0 修复：订阅者 `ok:true + data.partial:true` 此前会被标 delivered（静默吞掉部分失败），已改为进 pending 重试链（契约用例覆盖，bus 域 **51/51** 全绿）。
+>
 > 2026-09-17 L3 备案：总线零变更。eval 域新增事件 `eval.candidate.started` 与 `eval.report.built`（kind=candidate）经既有 outbox/dispatcher 投递，know 域以 reactor 订阅消费（多订阅者键 `source::pattern` 机制覆盖）；新动词 eval_run_candidate / know_revision_assess 走常规 11 段管线（actor 白名单 + 幂等自然键 + audit）。

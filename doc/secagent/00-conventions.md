@@ -73,7 +73,7 @@
 | 事件 jsonl 文件 | `data/events/{domain}.jsonl` | |
 | 幂等键前缀 | `{domain}:{verb}:{自然键}` | `vuln:confirm:fpr:<fingerprint>` |
 | 表名 | 复数名词（沿用 v4.x，**不改名不迁库**） | `findings` `assets` |
-| 模块文档文件 | `v5/{NN}-{domain}.md` | `v5/02-vuln.md` |
+| 模块文档文件 | `doc/secagent/{NN}-{domain}.md`（扁平，00–18） | `doc/secagent/02-vuln.md` |
 
 *授权域的唯一注册名是 `scope`（见 `08-scope.md`）；"authz"仅是叙述性别名（指 scope+credentials 的职责集合），**不可**作为域名/服务名/包名注册或引用（实现已统一为 `secDomain.scope` / `@silksec/sec-domain-scope`）。
 
@@ -114,7 +114,7 @@
 **写动词八条铁律**（每个命令详述页必须逐条对齐）：
 
 1. **动词即状态机入口**：命令只做一件事——把对象从一个合法状态迁移到另一个（或登记新对象）。目标状态是动词名的一部分，**调用方永远不传 `status`/`to` 参数**。状态机图是模块私有资产，只通过动词集合对外可见。
-   - **治理通道豁免（仅此一例）**：治理通道的周期判定型流转（`fact_transition`）允许 `to` 参数。边界三条件缺一不可：① 目标状态由外部调度计算得出（sweep 判定"逾期"），调用时才可知，无法预编进动词名；② actor 白名单仅 `system/human`；③ 不向模型注册工具——"自由态写入口"对模型物理不存在。其他域援引本豁免须逐条满足三条件并单独评审。
+   - **治理通道豁免（登记制，当前两例：`fact_transition` / `know_transition`）**：治理通道的周期判定型流转允许 `to` 参数。边界三条件缺一不可：① 目标状态由外部调度计算得出（sweep 判定"逾期"），调用时才可知，无法预编进动词名；② actor 白名单仅 `system/human`；③ 不向模型注册工具——"自由态写入口"对模型物理不存在。其他域援引本豁免须逐条满足三条件并在总线 R3 登记（`BANNED_PARAM_NAMES` 的 `to` 放行逻辑按「命令 actor 白名单 every ∈ {system,human}」判定）后单独评审。
 2. **一个命令一个事务**：后端在 BEGIN IMMEDIATE 内完成该命令的全部行变更（含联动列）。跨域效果不进本事务——发事件，最终一致。
 3. **幂等必填**：见 §六。重放同一命令必须返回与首次相同的结果（信封带 `replay: true` 标记）。
 4. **证据即参数**：语义上"确认/验证/落账/结论/采纳"类动词，证据参数（run_id / evidence_path / flow_id / evidence）是 schema required。缺证据 = `E_EVIDENCE_REQUIRED`，不是运行时警告。**判定/驳回类动词**（`vuln_reject`、`fact_deprecate` 等）的证据形态可以是**结构化判据**（`reason ≥10 字`、`verdict` 枚举等）——判据本身就是证据的记录形态，不强制引用外部产物；但"确认成立"方向的动词不在此列，必须引用可复核产物。
@@ -195,7 +195,7 @@
    - **条件豁免（2026-09-12 裁决，仅此一形态）**：查询路径的**缓存物化与惰性 heal**（如 `ledger_coverage_report(materialize=true)` 物化 coverage-latest.md、`report_list` 删除孤儿索引行、`know_coverage(refresh=true)` 重算缓存）允许保留，当且仅当四条同时满足：① 操作幂等（重放同果）；② 落统一 audit（`kind:"heal"` / `kind:"materialize"`）；③ 不改变查询返回的业务语义（只影响新鲜度/一致性，不造业务数据）；④ 域文档显式声明该例外。除此形态外的查询写副作用一律禁止。
 2. **统一分页信封**：`{ rows: [...], total: N, limit, offset }`；`limit` 默认 50、上限 500；`sort` 白名单列 + `dir=asc|desc`。
 3. **可见域谓词与计数同口径**：每个列表查询与其对应 `total` 必须由同一个 where 构造器生成——这是 v4.3 修过的病（countFacts/factSearch、queryFindings 行数≠总数），**契约测试必须有"行数=total"断言**。
-4. **可见域谓词是查询参数**（archived / noise / memcore status / program 归属），默认值在模块文档声明；谓词实现放查询层不放 SQL 散点。
+4. **可见域谓词是查询参数**（archived / noise / lifecycle / program 归属，见 §十一），默认值在模块文档声明；谓词实现放查询层不放 SQL 散点。
 5. **聚合查询**（stats/overview/coverage）独立命名，不与列表查询混用参数。
 
 ## 八、事件规范
@@ -221,7 +221,7 @@
 4. **留痕与回放**：全部事件按域追加 `data/events/{domain}.jsonl`（dispatcher 派发后追加）；投递可靠性由 `event_outbox` 保证（跨进程），jsonl 仅作观测与回放源；`sec bus replay --since <ts>` 支持按事件日志重放 async 订阅者（灾备与调试）。
 5. **禁止事件风暴**：一个命令的事件发布数量有上限（默认 1，批量命令 ≤ 批量行数）；高频信号类（如 exec.run.completed 每次工具调用）payload ≤ 2KB。
 6. **订阅声明**：域在 manifest `subscribes` 里声明订阅 + 模式 + 处理器名——**未声明订阅的域收不到事件**（显式依赖，防止隐式耦合）。
-   - **"被订阅"对账纪律（2026-09-12 增补）**：模块文档头部/事件节的"被订阅"清单只允许写**对端文档已声明的订阅**；无对端声明的联动预期一律写进"开放问题"。总线 `bus_status` 提供订阅对账视图（各域声明事件 × 实际订阅者计数），零订阅者事件在 `bus_status.domains[].events_unsubscribed` 可见。
+   - **"被订阅"对账纪律（2026-09-12 增补）**：模块文档头部/事件节的"被订阅"清单只允许写**对端文档已声明的订阅**；无对端声明的联动预期一律写进"开放问题"。总线 `bus_status.event_contract.dangling_subscriptions` 提供订阅对账视图（已声明订阅 × 是否存在发布方），悬空项即文档失真（R9）。反向的"发布但零订阅者"计数当前未实现。
 
 ## 九、审计规范
 
@@ -283,7 +283,7 @@
 
 ## 十三、契约测试矩阵
 
-每个命令的**最低测试义务**（三后端跑同一套，`test/contract-{verb}.test.js`）：
+每个命令的**最低测试义务**（三后端跑同一套，`test/contract-{domain}.test.js`）：
 
 | 用例类 | 断言 |
 |---|---|
@@ -318,13 +318,13 @@
 
 ## 十六、2026-09-12 深度审查与独立升级基线
 
-**审查范围**：15 个业务域 + 总线、17 个后端/横切插件、20 个安装器、全部 v5 文档。维度覆盖逻辑正确性、功能可用性、性能容量、错误吞没、未实现分支、hook/兼容层替代正式功能、单域更新能力。
+**审查范围**：14 个业务域 + 总线、17 个后端/横切插件、20 个安装器、全部 v5 文档。维度覆盖逻辑正确性、功能可用性、性能容量、错误吞没、未实现分支、hook/兼容层替代正式功能、单域更新能力。
 
 | 判定 | 结论 |
 |---|---|
-| 总线 | 14 域 + bus 注册正常；R8/R9 生效；outbox `pending=0`、`dead_letter=0`、悬空订阅为空。 |
-| 域插件原子化 | 15 个业务域均通过 manifest + handler + backend 自包含组装；生产代码无跨域 import，跨域读写经 QueryGateway/DispatchGateway。 |
+| 总线 | 14 域 + bus 注册正常；R8/R9 生效；outbox `pending=0`、`dead_letter=0`、悬空订阅为空（2026-09-12 快照；2026-09-19 实测 `dead_letter=3` 历史残留、pending=0）。 |
+| 域插件原子化 | 14 个业务域均通过 manifest + handler + backend 自包含组装；生产代码无跨域 import，跨域读写经 QueryGateway/DispatchGateway。 |
 | 独立更新 | 架构上支持单域替换（各自 plugin package + 后端 + 契约测试）；操作上仍依赖全量 `spool bundle dsh setup`，尚无单域安装/回滚命令。 |
-| 主要风险 | ~~v4 dashboard 63 处兜底~~（2026-09-18 UI-0 清除，业务端点 fail-closed）、v4 scheduler 持锁替代 v5 调度器、vuln evidence 工作区/服务端路径缝错位、task 守卫查询异常静默降级、know 索引清理失败无日志、approval 决策指标未实现。 |
+| 主要风险 | ~~v4 dashboard 63 处兜底~~（2026-09-18 UI-0 清除，业务端点 fail-closed）、~~v4 scheduler 持锁替代 v5 调度器~~（2026-09-19 删除 `sec-suite.scheduler.js`，派单唯一持锁者为 task 域内建调度器）、vuln evidence 工作区/服务端路径缝错位、~~task 守卫查询异常静默降级~~（L0 已改守卫异常显式失败，`task.js` INV-T6）、know 索引清理失败无日志、approval 决策指标未实现。 |
 
 **单域升级纪律**：更新 bus 必须全量 14 域契约回归；更新任一业务域至少回归本域 + 直接消费方（bus_status 悬空订阅为 0 + 受影响域契约 + `sec-v5-accept.sh`）。在单域安装命令落地前，不得宣称“可独立部署”，只能说“包边界具备独立升级条件”。

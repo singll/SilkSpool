@@ -10,6 +10,7 @@
 
 | 日期 | 变更 | 结果 |
 |---|---|---|
+| 2026-09-19 | **文档漂移排查 B2（`00-conventions` / `01-bus`）**：以 csai 运行态为准逐项核验——bus_status 实测 `aliases.count=0`（旧例 31/finding_update 系漂移）、`mount`/`bus.degraded` 字段缺失、audit_tail/events_tail 缺 `operator`/`offset`；`bus_replay` 的 `E_BUS_REPLAY_RANGE`、replay 锁 `E_CONFLICT`、`result_json` 64KB 截断、audit 重试队列均为未实现的设计预留，已显式标注；R3 补 `to` 治理豁免（fact/know_transition）、R4 改指实际 `bus.domain.rejected`/`E_BUS_DOMAIN_REJECTED`；audit「⑪不回滚」矛盾改为 fail-closed 回滚；actor 值域八→十、timeout 上限 3670000→7270000；`/silksec-dashboard` 52→56 case fail-closed UI 适配层；bus 契约数 52→51；业务域数 15→14；文档路径 `v5/{NN}`→`doc/secagent/{NN}`；§3.1 加「历史留档」横幅 | B2 闭环；BUS 51/51 全绿（csai 实跑） |
 | 2026-09-19 | **兼容别名层彻底移除**：迁 dashboard-rpc finding 状态流转与 ui-session「登记候选漏洞」到语义动词（`vuln_confirm/reject/submit`、`vuln_register_candidate` actor 增 dashboard）；`bus.aliases.yaml` 空注册表；删 bus v4-dup-shape/dup_of 放宽；eval 契约删 `freeform-status-update` | 全 14 域契约测试全绿；accept 39/39、ui-headless 70/70；discipline-audit `aliases=0 / dangling=0 / deprecated=0` |
 | 2026-09-19 | **旧版统一清理**（用户授权跳过并排观察）：删看板旧单体 `@silksec/sec-dashboard`（含 `-old`/Modal/footer）、v4 调度循环 `sec-suite.scheduler.js`、v4 重复工具（asset-graph 9 + sec-pipeline 3）、一次性脚本与旧构建产物、死码 `sec-suite.parsers.js` | 看板唯一形态 = ui-core/ui-panel + 6 承载面包 + 7 域视图包；14 域 registered；定时任务无扰动 |
 | 2026-09-19 | **文档统一**：v5 模块文档扁平化到 `doc/secagent/`（00–18 各自滚动维护）；本文件成为**唯一**进度/更新文档（合并 upgrades 时间线）；旧 README/审查/会话模板/历次升级方案与记录全部移入 `archive/`；全仓库跨文档链接与代码契约注释路径同步 | 链接漂移归零；`doc/secagent/{archive,00–18,PROGRESS,README}` 单一结构 |
@@ -33,7 +34,7 @@
 | 批次 | 文档 | 核验重点 | 状态 |
 |---|---|---|---|
 | **B1** | `16-dashboard`（合并原 19）、`17-llm-surface`、`18-migration`、`README`/本文件结构 | 看板/UI 文档合并；两 RPC 通道实测；56 case 口径；别名层已删；D3 删旧；旧单体删除 | ✅ **2026-09-19 完成（本会话）** |
-| **B2** | `00-conventions`、`01-bus` | 宪法条款 vs 总线实现（R1–R9、幂等三级键、audit fail-closed、别名空表、端点命名）；宪法 §十一/§十五 与运行态对照 | ⬜ 待执行 |
+| **B2** | `00-conventions`、`01-bus` | 宪法条款 vs 总线实现（R1–R9、幂等三级键、audit fail-closed、别名空表、端点命名）；宪法 §十一/§十五 与运行态对照 | ✅ **2026-09-19 完成（本会话）** |
 | **B3** | `02-vuln`、`03-asset`、`04-endpoint`、`05-task`、`06-fact`、`07-know` | 各域 manifest commands/queries/events/actor 白名单/invariants 与文档 §1.2/§1.4/§1.5 逐项对照；L0–L6 新增动词回填；§3.1 引用的 v4 文件是否已删 | ⬜ 待执行 |
 | **B4** | `08-scope`、`09-approval`、`10-exec`、`11-ledger`、`12-report` | 同上 + approval kind 注册表（7/8 kind）、effect outbox、report 索引 heal、ledger 纪律指标 | ⬜ 待执行 |
 | **B5** | `13-proxy`、`14-fgs`、`15-eval` | 同上 + proxy 落池算法、fgs 快照/语义动词族、eval 数据集/评测链 | ⬜ 待执行 |
