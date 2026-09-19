@@ -19,15 +19,15 @@
 | 插件包名 | `@silksec/sec-domain-fact` |
 | 后端插件包名 | `@silksec/sec-backend-fact-sqlite`（默认 sqlite-local）；http-remote 为 Phase 4+ 规划（见 2.4） |
 | profile 挂载矩阵 | `web` 与 `headless` **都挂载**（worker 任务开局三步检索第一步即 fact_search；写入与读取两侧都不可缺席） |
-| 模型工具面 | 见 1.6（13 个工具，与命令/查询名零改名） |
+| 模型工具面 | 见 1.6（14 个工具，与命令/查询名零改名） |
 | 看板 RPC 面 | 见 1.7 |
-| 后端配置键 | `sec_domain_fact_backend: sqlite-local`（运行态唯一合法值；http 切换需重启宿主面） |
+| 后端配置键 | `sec_domain_fact_backend: sqlite-local`（**未实现/设计预留**：现行代码从不读取此键——后端由插件 import 静态绑定 sqlite-local，无切换读取路径；http 切换需重启宿主面是设计意图） |
 
 ### 1.2 命令（写动词）总表
 
 | # | 动词 | 一句话语义 | actor 白名单 | 幂等键 | 发布事件 |
 |---|---|---|---|---|---|
-| C1 | `fact_upsert` | 写入/覆盖一条事实（自然键 (program_id, fact_key)，memcore 分类自声明） | model, dashboard, script, approval, system | 自动指纹 | fact.upserted |
+| C1 | `fact_upsert` | 写入/覆盖一条事实（自然键 (program_id, fact_key)，memcore 分类自声明） | model, dashboard, script, approval, system, reactor | 自动指纹 | fact.upserted |
 | C2 | `fact_correct` | 人工纠正确认：覆盖显式字段并将 confidence 升为 confirmed | dashboard, human | 自然键 | fact.upserted |
 | C3 | `fact_deprecate` | 证伪弃置：confidence → deprecated（终态） | model, dashboard, human | 自然键 | fact.deprecated |
 | C4 | `fact_link` | 建立两条事实的关系边（7 种语义边型） | model, dashboard | 自动指纹 | fact.linked |
@@ -38,9 +38,11 @@
 | C9 | `fact_reindex` | 图谱自动建边：按共享域名根 / C 段建 star 型关系边 | model, dashboard, script, system | 自然键 | （无，events: []） |
 | C10 | `fact_purge_archive` | 归档表 90 天硬删（memcore sweep 经此命令，替代 v4 裸 DELETE） | system, human | 自动指纹（before_ts） | （无） |
 
-> 命名说明：v4 的 `blackboard_set` 在 v5 更名为 `fact_bb_publish`（宪法 §二 禁用词 `set`）；`blackboard_get` 更名为查询 `fact_bb_read`。旧名走别名（3.2）。
+> 命名说明：v4 的 `blackboard_set` 在 v5 更名为 `fact_bb_publish`（宪法 §二 禁用词 `set`）；`blackboard_get` 更名为查询 `fact_bb_read`。旧名曾走别名（3.2；别名层已于 2026-09-19 移除）。
 
 ### 1.3 命令逐个详述
+
+> **文案口径**：以下各动词的 `agent_note（RoE）` 与 §1.4 查询说明均为**设计叙事摘要**，与 manifest `agent_note` 字段**并非逐字一致**（部分条目含额外治理说明）。模型工具面的权威文案以 manifest `agent_note` 为准，投影层不做机械搬运（见 1.6）。
 
 #### C1 · fact_upsert
 
@@ -77,7 +79,7 @@
 | E_INVARIANT (INV-F4) | revalidate_days 越界 | durable 复验期须在 7~90 天，默认 30 天 |
 | E_INVARIANT (INV-F9) | summary>300 或 body>4000 字符 | 压缩 summary 为一行索引，全文拆进 body；超大内容走 report 域 |
 
-**幂等**：自动指纹（网关对 `(program_id, fact_key, summary, body, confidence, mem_class, ttl/revalidate_days)` 取 sha1）。同参重放返回首次结果 + `replay:true`，**不产生第二次写**——v4 "FGS 冲突即刷新 last_validated_at" 的语义由 replay 通道承接；确需刷新时效用 C5 fact_record_validation。异参 = 新指纹 = 正常覆盖执行。
+**幂等**：自动指纹（网关对 `(program_id, fact_key, category, summary, body, confidence, pinned, related_finding_id, source, mem_class, ttl_days, revalidate_days, justification, scope)` 共 14 字段取 sha1）。同参重放返回首次结果 + `replay:true`，**不产生第二次写**——v4 "FGS 冲突即刷新 last_validated_at" 的语义由 replay 通道承接；确需刷新时效用 C5 fact_record_validation。异参 = 新指纹 = 正常覆盖执行。
 
 **事务边界**：BEGIN IMMEDIATE 内完成 facts 行 UPSERT（含生命周期列推导）；无跨表联动。
 
@@ -130,7 +132,7 @@
 
 **返回 data**：`{ program_id, src_key, dst_key, edge_type, confidence }`。
 **错误码**：E_NOT_FOUND（src/dst 不存在——hint：先 fact_upsert 两端再建边）；E_SCHEMA（edge_type 非法/自环）。
-**幂等**：自动指纹（src/dst/edge_type/confidence）。
+**幂等**：自动指纹（program_id, src/dst_key, edge_type, confidence）。
 **事务边界**：fact_edges 单行 REPLACE。
 **agent_note（RoE）**：建立两条事实的关系边。edge_type: resolves_to/hosts/exposes/depends_on/leads_to/enables/exploits。边是攻击面聚类与关系遍历（fact_graph）的骨架；确认的解析关系用 confirmed，推断用 tentative。
 
@@ -192,7 +194,7 @@
 
 **返回 data**：`{ object, id, from, to }`。
 **错误码**：E_NOT_FOUND；E_STATE（非法流转：如 cooling→cooling、bb→cooling、终态再流转）；E_ACTOR_FORBIDDEN（model/dashboard 调用即拒——越权尝试本身进审计）。
-**幂等**：自动指纹（object, id, to, reason）。
+**幂等**：自动指纹（object, program_id, fact_key, bb_key, to, reason）。
 **事务边界**：to=archived 时单事务完成"复制进 `*_archive`（+archived_at/archive_reason）+ 主表删除"；to=cooling 为状态列 UPDATE。全程留统一 audit（宪法 §九，替代 v4 memcore_events 的域内私账——memcore_events 表转只读历史，见 3.3）。
 **事件映射**：to=cooling → `fact.cooled`；to=archived 且 mem_class ∈ {ephemeral, timeline}（自然到期类）→ `fact.expired`；to=archived 其余 → `fact.archived`。
 **agent_note（RoE）**：（治理通道，模型不注册）memcore sweep / 迁移脚本的生命周期降级流转：复验逾期→cooling、过期/超龄/cooling 超 30 天→archived。复活走 fact_record_validation。
@@ -217,12 +219,24 @@
 **返回 data**：`{ program_id, facts, groups, edges }`。
 **错误码**：E_SCHEMA（缺 program_id）；E_CAPABILITY_UNSUPPORTED（http-remote 后端，见 2.4）。
 **幂等**：自然键 `fact:reindex:{program_id}`；重跑重建（结果幂等）。
-**事务边界**：逐边 REPLACE（单事务批量，≤500 边/事务，超量分批）；无事件（audit 记行数）。
+**事务边界**：逐边 REPLACE（网关单事务）；原述"单事务批量，≤500 边/事务，超量分批"**未实现**——C9 handler 仅逐条 replaceEdge，不切分事务；无事件（audit 记行数）。
 **agent_note（RoE）**：事实图谱自动建边：扫描项目全部事实，按共享域名根 / C 段建 same-domain/same-subnet 关系边，让孤立事实成图（支撑攻击面聚类与 fact_graph 遍历）。周期任务或新增一批事实后调用。
+
+#### C10 · fact_purge_archive
+
+**语义**：归档表 90 天硬删（memcore sweep 经此命令，替代 v4 裸 DELETE）：对 `facts_archive`/`blackboard_archive` 中 `archived_at < before_ts` 的行物理删除。
+
+**参数表**：before_ts（integer，必填：epoch 毫秒阈值）。
+
+**返回 data**：`{ purged, fact_purged, bb_purged }`。
+**错误码**：E_SCHEMA（缺 before_ts）。
+**幂等**：自动指纹（before_ts）。
+**事务边界**：两张 archive 表 DELETE（网关单事务）；无事件（audit 记行数）。
+**agent_note（RoE）**：（治理通道，模型不注册）归档表 90 天硬删。before_ts 为 epoch 毫秒阈值；memcore sweep 周期经系统通道调用，替代 v4 裸 DELETE。
 
 ### 1.4 查询（读投影）逐个详述
 
-> 全部纯读（宪法 §七.1）；列表查询统一分页信封 `{ rows, total, limit, offset }`；**rows 与 total 由同一个 where 构造器生成**（`factVisibleWhere()`，v4.3 countFacts/factSearch 口径病的契约化根除，契约测试必有"行数=total"断言）。
+> 全部纯读（宪法 §七.1）；列表查询信封为 `{ rows, total }`（**无 limit/offset 回显**）；**rows 与 total 由同一个组合 where 构造器生成**（实现为 `combinedWhere()` = `filterWhere()` 筛选 + `visibleWhere()` 可见域；文档原述的 `factVisibleWhere()` 不存在，v4.3 countFacts/factSearch 口径病的契约化根除，契约测试必有"行数=total"断言）。
 
 #### Q1 · fact_search（核心检索）
 
@@ -238,14 +252,14 @@
 | mem_class / status | string | 否 | `''` | 生命周期维度筛选（review 视图用） |
 | exclude_notes | bool | 否 | **true** | **默认隐藏 note 类速记**（流水账治理；neg_check 显式查 note 不受影响） |
 | sort | string | 否 | `updated_at` | 白名单：updated_at / edge_count / category（置顶 pinned 恒在最前） |
-| limit / offset | int | 否 | 50 / 0 | limit 上限 500 |
+| limit / offset | int | 否 | 50 / 0 | limit 上限 500；**未实现**——handler 忽略本参数，硬编码 `limit=5000, offset=0` |
 | reader | string | 否 | `task` | `task`=执行角色；`review`=复盘角色全量可见（含 timeline/archived） |
 
 **可见域谓词（reader=task，构造器默认值）**：排除 `status='archived'`、排除 `mem_class='timeline'`、排除已过期 ephemeral（`expires_at < now`）、exclude_notes 默认 true；cooling 行**打标可见**（`_cooling: true`，不隐藏——用到即复验）。
 
-**投影层补偿动作**（不进查询事务，失败不影响结果）：① 返回行补发 `fact_record_signal(used)`；② 发现"已过期未归档"行补发 `fact_transition(to=archived, actor=system, reason='lazy: ephemeral 过期')`——v4 惰性即时归档的 v5 化（查询仍纯读，物理归档经命令，失败由 sweep 兜底）。
+**投影层补偿动作**（设计目标：不进查询事务，失败不影响结果）：① 返回行补发 `fact_record_signal(used)`；② 发现"已过期未归档"行补发 `fact_transition(to=archived, actor=system, reason='lazy: ephemeral 过期')`——v4 惰性即时归档的 v5 化（查询仍纯读，物理归档经命令，失败由 sweep 兜底）。**未实现**：现行 Q1 handler 只做可见域过滤 + 读投影，不补发任何命令（`fact_record_signal`/`fact_transition` 均未接线）。
 
-**返回**：`{ rows: [...不含 body 的索引行 + edge_count + _cooling], total, limit, offset }`。
+**返回**：`{ rows: [...不含 body 的索引行 + edge_count + _cooling], total }`（无 limit/offset）。
 
 #### Q2 · fact_get
 
@@ -275,7 +289,7 @@
 
 | 事件名 | 触发命令 | payload schema |
 |---|---|---|
-| `fact.upserted` | C1/C2 | `{ program_id, fact_key, mem_class, confidence, merged, from_confidence?, cause?: {cmd, actor} }` |
+| `fact.upserted` | C1/C2 | `{ program_id, fact_key, mem_class, confidence, merged, from_confidence?, cause?: {cmd, idempotency_key} }`（actor 为顶层信封字段，不在 cause 内） |
 | `fact.deprecated` | C3 | `{ program_id, fact_key, from_confidence, reason 摘要 }` |
 | `fact.validated` | C5 | `{ program_id, fact_key, revalidate_by \| expires_at, healed: bool }` |
 | `fact.expired` | C7（to=archived 且自然到期类） | `{ object_kind: 'fact'\|'bb', program_id?, fact_key?/bb_key?, mem_class }` |
@@ -312,10 +326,11 @@ payload 只含 ID 与判据快照，不含行全量（宪法 §八.1）；事件
 | fact_get | 读单条事实全文（含 body）。摘要不够时按需拉取，禁止臆造。 |
 | fact_graph | 返回某条事实的关系子图（节点 + 出边 + 入边）。资产关系/攻击链可遍历。 |
 | fact_stats | 事实图谱 facet 总览：分类/置信/生命周期分布 + 置顶 + 边规模。 |
+| fact_overview | 事实分类计数总览（active 口径）+ 黑板活跃/env-issue + FGS 沉淀数。 |
 | neg_check | 负知识账本：查 note/* 已证伪路径（验证失败/前提不满足）。派单/尝试前必查，命中即放弃，免踩同一坑。 |
 | fact_bb_read | 读黑板环境层。带 key 读单条，不带列最近 100 条。默认不返回 timeline/已归档/已过期项；reader=review 全量。环境故障查 [env-issue]。 |
 
-（描述全文以 1.3/1.4 各动词 agent_note 为准，上表为登记清单——投影层机械搬运，无第二份文案。）
+（上表描述与 1.3/1.4 的 agent_note 段落同为**设计叙事摘要**，与 manifest `agent_note` 字段存在文字出入（部分条目更长/更短，如 fact_search/fact_get/neg_check/fact_bb_read 均带 manifest 之外的补充句）；权威文案以 manifest `agent_note` 为准，投影层按 manifest 字段绑定，故"无第二份文案"的说法不成立。）
 
 ### 1.7 看板 RPC 投影
 
@@ -330,7 +345,7 @@ RPC 名 `{domain}.{verb}` 点分；同一 handler 双投影（物理消灭两套
 | `fact.correct` | factCorrect | C2 |
 | `fact.deprecate` | factDeprecate | C3 |
 | `fact.reindex` | （新增） | C9 |
-| `fact.bb.read` | blackboard | Q7 |
+| `fact.bb_read` | blackboard | Q7 |
 
 ### 1.8 外部调用示例
 
@@ -495,7 +510,8 @@ tentative/confirmed ──fact_deprecate──▶ deprecated（终态；复活=�
 | C6 | blackboard UPSERT | fact.bb.published（[env-issue] → know 域即时刷 AGENTS.md） |
 | C7 | 状态 UPDATE 或 archive 复制+删除 | fact.cooled / fact.expired / fact.archived |
 | C8 | uses/last_used_at UPDATE | —（仅 audit） |
-| C9 | fact_edges 批量 REPLACE（≤500/事务分批） | —（仅 audit） |
+| C9 | fact_edges 批量 REPLACE（网关单事务；文档原述 ≤500/事务分批未实现） | —（仅 audit） |
+| C10 | facts_archive / blackboard_archive 90d 硬删（DELETE） | —（仅 audit） |
 
 #### FGS 沉淀时序（原 persistFgsFacts 直写归零）
 
@@ -515,16 +531,16 @@ worker 结束 ──task.finished──▶ fact 域 onTaskFinished：补漏对�
 
 best-effort 语义保留：任一环节失败不阻断任务收尾（弱联动，audit 记 subscriber_failed，事件可 `sec bus replay` 重放）。
 
-#### memcore 关系重设计（69 处裸 SQL 归零）
+#### memcore 关系重设计（v4 历史口径：69 处裸 SQL 归零）
 
-v4 中 memcore 直写 facts/blackboard 的全部 SQL（validateWrite 分支、transition 的 selectRow/deleteRow/updateStatus、sweep 的 facts/blackboard 循环、guardBlackboardSnapshots、migrateStock/migrateBlackboardSnapshots，合计 memcore.js 内 69 处 prepare/exec 写调用的一部分，其余属 know 域见 07-know.md §2.3）在 v5 **全部归零**。memcore 变为纯订阅者：订阅 `fact.*` 事件 + 调域命令。
+v4 中 memcore 直写 facts/blackboard 的全部 SQL（validateWrite 分支、transition 的 selectRow/deleteRow/updateStatus、sweep 的 facts/blackboard 循环、guardBlackboardSnapshots、migrateStock/migrateBlackboardSnapshots）在 v5 **全部归零**（**历史留档**：v4 曾记 `dsh-plugin-sec-memcore.js` 内约 69 处 prepare/exec 写调用，其余属 know 域见 07-know.md §2.3；该计数与行号为迁移当时口径，文件此后已改名/重构）。memcore 变为纯订阅者：订阅 `fact.*` 事件 + 调域命令。
 
 **memcore 治理动作 → fact 域命令完整映射表**：
 
 | # | v4 memcore 动作（对 facts/blackboard） | v5 通道 |
 |---|---|---|
 | 1 | `validateWrite('facts'\|'blackboard')`（R1-R7 入口校验） | fact 域网关不变量 INV-F1~F7（前置，事务前执行） |
-| 2 | `visibilityFilter(role, 'facts'\|'blackboard')`（读过滤 + 惰性归档） | Q1/Q7 可见域谓词构造器 + 投影层补发 fact_transition（2.3） |
+| 2 | `visibilityFilter(role, 'facts'\|'blackboard')`（读过滤 + 惰性归档） | Q1/Q7 可见域谓词构造器；**投影层补发 fact_transition 未实现**（现行查询只过滤，不补发归档命令） |
 | 3 | sweep：durable 逾期 → cooling | 订阅 `fact.validated`/周期扫描（经 Q5 stats）→ C7 fact_transition(to=cooling, actor=system) |
 | 4 | sweep：cooling 超 30d → archived | C7 fact_transition(to=archived) |
 | 5 | sweep：ephemeral 过期 → archived | C7 fact_transition(to=archived, reason=lazy/sweep 过期) → fact.expired |
@@ -543,23 +559,32 @@ memcore 旁路语义保持 fail-open（宪法 §十四.6）：memcore 缺席/订
 
 ### 2.4 后端适配器
 
-**repository 接口**（`backend/repository.js`，JSDoc；方法名=原语，无 SQL 语义、无业务校验）：
+**repository 接口**（`dsh-plugin-sec-backend-fact-sqlite.js`，JSDoc；方法名=原语，无 SQL 语义、无业务校验）：
 
 ```js
 /** @returns {FactRow|null} */
 getFact(program_id, fact_key)
 /** UPSERT 单行（生命周期列已由网关算好） */
 upsertFact(row)
-/** 状态列更新；@returns {number} 受影响行数 */
+/** 状态列更新 */
 setFactStatus(program_id, fact_key, status, status_at)
+/** confidence 列更新（C3） */
+setFactConfidence(program_id, fact_key, confidence, updated_at)
+/** 复验刷新（C5）：last_validated_at + 时效列顺延 + cooling 自愈 */
+refreshFactValidation(program_id, fact_key, nowTs, newExpiresAt, newRevalidateBy)
+/** 使用信号（C8）：uses+1、last_used_at */
+recordFactUse(program_id, fact_key, nowTs)
 /** 归档：复制进 facts_archive + 删主行，单事务 */
 archiveFact(program_id, fact_key, reason, archived_at)
 /** 归档表 90d 硬删；@returns {number} */
 purgeFactArchives(before_ts)
 replaceEdge(program_id, src_key, dst_key, edge_type, confidence)
-listFactsWhere(whereSql, args, limit, offset)   // 可见域谓词由查询层构造
+listFactsWhere(whereSql, args, order, limit, offset)   // 可见域谓词由查询层构造；order 进 FACT_SORT 白名单
 countFactsWhere(whereSql, args)
-factAggregates()                                  // Q4/Q5 所需分组计数
+factAggregates()                                  // Q5 facet 计数
+factOverviewAggregate()                           // Q4 分类总览
+listEdges(program_id, fact_key)                   // Q3 单跳子图 out/in
+listAllFactsForReindex(program_id)                // C9 全表扫描源
 getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) / archiveBb(key, reason, at) / purgeBbArchives(before_ts)
 ```
 
@@ -570,9 +595,10 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 | C1-C6、C8 | full | full（重试+超时+降级策略见 01-bus） | unsupported（E_CAPABILITY_UNSUPPORTED） |
 | C7 fact_transition | full | partial：archive 复制+删除需远端事务语义，不支持时返回 partial 说明 | unsupported |
 | C9 fact_reindex | full | unsupported（需全表扫描，只能本地跑） | unsupported |
+| C10 fact_purge_archive | full | partial：archive 表硬删需远端 DELETE 语义 | unsupported |
 | Q1-Q7 | full | partial：Q3 fact_graph 仅单跳（多跳遍历远端不做）；Q4/Q5 聚合由远端实现 | unsupported |
 
-混布：fact 域无 file 形态，不混布。切换：`sec_domain_fact_backend` 配置一行；sqlite↔sqlite 热切，切 http 重启宿主面。
+混布：fact 域无 file 形态，不混布。切换：`sec_domain_fact_backend` 配置一行（**未实现/设计预留**，见 1.1——现行后端静态绑定 sqlite-local）；sqlite↔sqlite 热切，切 http 重启宿主面为设计意图。
 
 ### 2.5 缓存与失效
 
@@ -581,18 +607,18 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 | 幂等表 | 总线（LRU 7 天/万条） | 自动 |
 | fact 检索 | **无应用层缓存**（LIKE 直查；1e4 行内 <10ms，见 2.6） | — |
 | Q4/Q5 聚合 | 看板客户端 30s 节流（不进域） | — |
-| 投影层补偿命令（Q1 的 signal/transition 补发） | 进程内待发队列 | 失败仅 audit 记录，不重试——sweep 兜底（过期行物理归档最迟延迟一个 sweep 周期 6h，可见性不受影响） |
+| 投影层补偿命令（Q1 的 signal/transition 补发） | 进程内待发队列 | **未实现**（Q1 handler 未接线补发）；设计目标：失败仅 audit 记录，不重试——sweep 兜底（过期行物理归档最迟延迟一个 sweep 周期 6h，可见性不受影响） |
 | FTS/向量索引 | **本域无**（facts 用 LIKE；FTS/向量在 know 域） | — |
 
 ### 2.6 性能与容量
 
 | 项 | 现状（2026-09-06） | 预期与上限 |
 |---|---|---|
-| facts 行数 | 1,143 | FGS 沉淀主通道接通后（现状 `fgs/%` 已有 1 条，事件化后预计 +5~20/日）+ note 负知识自动证伪；durable 复验 30d 淘汰，稳态预估 3~5 千行 |
-| fact_edges | 数百（以 fact_stats 实查为准） | C9 star 建边受"组 2~50"约束，边数 = O(facts)；idx_edges_src/dst 覆盖遍历 |
+| facts 行数 | 873 | FGS 沉淀主通道接通后（现状 `fgs/%` 已有 29 条，事件化后预计 +5~20/日）+ note 负知识自动证伪；durable 复验 30d 淘汰，稳态预估 3~5 千行 |
+| fact_edges | 761 | C9 star 建边受"组 2~50"约束，边数 = O(facts)；idx_edges_src/dst 覆盖遍历 |
 | blackboard active | ≤100（Q7 只列最近 100） | ephemeral 7d/timeline 30d 自然消亡 |
 | archive 表 | 与主表同量级 | 90 天硬删封顶 |
-| 检索延迟 | LIKE 三字段全表扫，1,143 行 <5ms | 1e4 行 <20ms；超过后引入 FTS5（列演进，不动表名） |
+| 检索延迟 | LIKE 三字段全表扫，873 行 <5ms | 1e4 行 <20ms；超过后引入 FTS5（列演进，不动表名） |
 | 写并发 | WAL + busy_timeout 5s + 网关进程内单入口 | E_CONFLICT 重试语义（宪法保留码） |
 
 ---
@@ -601,6 +627,8 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 
 ### 3.1 现状代码映射（行级）
 
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
+
 | v4 位置 | 内容 | v5 去向 |
 |---|---|---|
 | asset-db.js L140-172 | facts/fact_edges/blackboard DDL + 索引 | 域内 schema（沿用，+2 列 +2 索引，见 2.1） |
@@ -608,7 +636,7 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 | asset-db.js L1254-1292 | factUpsert（含 memcore validateWrite 分支） | C1 commands/fact_upsert.js（validateWrite 分支删除，网关 INV-F1~F5 承接；无 memcore 的旧列分支删除） |
 | asset-db.js L1294-1297 | factGet | Q2 |
 | asset-db.js L1299-1313 | factSearch（role 过滤、FACT_SORT、edge_count 子查询） | Q1（排序白名单/edge_count 保留） |
-| asset-db.js L1315-1344 | visibleFactsWhere + countFacts（口径对齐） | Q1 的 `factVisibleWhere()` 单一构造器（rows/total 同源，契约测试"行数=total"） |
+| asset-db.js L1315-1344 | visibleFactsWhere + countFacts（口径对齐） | Q1 的 `combinedWhere()`/`visibleWhere()`/`filterWhere()` 组合构造器（rows/total 同源，契约测试"行数=total"） |
 | asset-db.js L1346-1361 | factWhere | Q1 筛选构造器（+program 谓词默认值声明） |
 | asset-db.js L1366-1378 | factStats | Q5 |
 | asset-db.js L1380-1387 | factLink | C4（+INV-F10 两端存在校验，v5 新增） |
@@ -623,7 +651,7 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 | dashboard-rpc.js L498-512 | factOverview case | Q4（+fgs_persisted） |
 | scheduler.js L100-129 | persistFgsFacts（直写） | **删除**——fgs.node.done/task.finished 订阅（2.3 时序） |
 | sec-suite.js L1372-1388 | runCli 失败自动写 note 证伪（直调 factUpsert） | **删除**——exec.run.failed 事件订阅 onExecRunFailed |
-| sec-suite.js L679-688 | approval exclude-exception 直写 scope/exception-{host} | **删除**——approval.approved 订阅 onApprovalApproved |
+| sec-suite.js L679-688 | approval exclude-exception 直写 scope/exception-{host} | **未删除**——现行仍在 `dsh-plugin-sec-suite.js:624` 直写（approval.approved 订阅 onApprovalApproved 并未取代它） |
 | memcore.js L35-67 | POLICIES.facts/blackboard | 域不变量 INV-F1~F7 + mem_class 体系表（2.2） |
 | memcore.js L262-323 | validateWrite | 网关不变量（映射表 #1） |
 | memcore.js L325-349 | visibilityFilter（惰性归档） | Q1 谓词 + 投影层补发（映射表 #2） |
@@ -632,10 +660,19 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 | memcore.js L176-224 | migrateBlackboardSnapshots/guardBlackboardSnapshots | 迁移脚本 + **INV-F7 前置拒绝**（守卫归零，映射表 #9/#11） |
 | memcore.js L758-795 | rewriteAgentsMd 的 [env-issue] 读取 | know 域订阅 fact.bb.published（映射表 #12/#15） |
 
+> **勘误（2026-09-19 核对）**：
+> - `asset-db.js` 已重命名为 `dsh-plugin-sec-suite.asset-db.js`；上表行号全部失效，现行锚点：DDL 81（blackboard）/162（facts）/175（fact_edges）、`factUpsert` 1393、`factGet` 1433、`factSearch` 1438、`factReindexEdges` 1540、`bbSet` 1591、`bbGet` 1622。
+> - `asset-graph.js` 已重命名为 `dsh-plugin-sec-suite.asset-graph.js`，其中 fact/blackboard 工具注册**已删除**（现行文件仅 40 行）。
+> - `dashboard-rpc.js` 已重命名为 `dsh-plugin-sec-suite.dashboard-rpc.js`；case 现行位置：factStats 409、blackboard 446、facts 451、factGraph 469、factCorrect 578、factDeprecate 592、factOverview 664。
+> - `scheduler.js` **已删除**；`persistFgsFacts` → fact 插件的 `persistFgsFactsForTask`（订阅驱动，无直写调度器）。
+> - `sec-suite.js L1372-1388` runCli 失败自动写 note：现行 `dsh-plugin-sec-suite.js` 中**无匹配代码**（行号失效）。
+> - `sec-suite.js L679-688` approval exclude-exception 直写：**并未删除**，仍存在于 `dsh-plugin-sec-suite.js:624`（`assetDb.factUpsert` scope/exception-{host}）——上表"删除"结论有误。
+> - `memcore.js` 已重命名为 `dsh-plugin-sec-memcore.js`；现行锚点：POLICIES L38、validateWrite L77、visibilityFilter L133、sweepFacts L247 / sweepBlackboard L275、rewriteAgentsMd L353；`transition`/`selectRow`/`deleteRow`/`updateStatus`/`migrateStock`/`migrateBlackboardSnapshots`/`guardBlackboardSnapshots` 均已移除。
+
 ### 3.2 兼容别名与观察期
 > **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
-总线别名表（别名同样过网关全管线，不绕校验）；观察期一个调度周期（7 天，audit 零使用为验收），删除走宪法 §十五 三段式：
+> **历史留档**：总线别名表曾同样过网关全管线、不绕校验；观察期为当时一个调度周期（7 天，audit 零使用为验收），删除走宪法 §十五 三段式。下表仅为迁移期历史映射：
 
 | v4 工具名 | v5 动词/查询 | 备注 |
 |---|---|---|
@@ -644,7 +681,7 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 | `fact_upsert` / `fact_search` / `fact_get` / `fact_link` / `fact_graph` / `fact_reindex` / `neg_check` | 同名 | 零改名直通 |
 | RPC `factCorrect`/`factDeprecate`/`factStats`/`facts`/`factGraph`/`blackboard`/`factOverview` | `fact.correct`/`fact.deprecate`/`fact.stats`/`fact.search`/`fact.graph`/`fact.bb.read`/`fact.overview` | 看板客户端同步改写 |
 
-prompt 引用同步：persona/objective/skills/technique-index 中 `blackboard_set/blackboard_get` 引用由脚本化改写（复用 p14-1-tool-refs.py 模式），改写后 discipline-audit.py 增"悬空工具引用"断言（宪法 §十五.4）。
+> **历史留档**：迁移期 prompt 引用同步——persona/objective/skills/technique-index 中 `blackboard_set/blackboard_get` 引用由脚本化改写（复用 p14-1-tool-refs.py 模式），改写后 discipline-audit.py 增"悬空工具引用"断言（宪法 §十五.4）。
 
 ### 3.3 数据迁移脚本要点
 
@@ -668,7 +705,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中 `blackboard_s
 
 | 维度 | 结论 |
 |---|---|
-| 逻辑/功能 | 22/22 契约通过；事实 key、置信、生命周期与沉淀判据清晰。 |
+| 逻辑/功能 | 23/23 契约通过；事实 key、置信、生命周期与沉淀判据清晰。 |
 | 静默错误 | FGS list 查询失败返回 0；单个 fact_upsert 失败跳过其余；任务成功订阅最终仍返回 ok，只暴露 persisted 数，无法区分“无 eligible”与“查询失败”。 |
 | 性能 | task.finished 对账最多串行处理 500 个 FGS fact 节点；当前规模可用，超过后应分批。 |
 | hook 判定 | v4 `persistFgsFacts` 已事件化到 fact 域，无直写。 |

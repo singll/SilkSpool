@@ -1,9 +1,9 @@
 # 02 · vuln 域设计（漏洞信号 / 候选队列 / 证据 / 提交）
 
-> 版本：v5.0 ｜ 状态：定稿
+> 版本：v5.0 ｜ 状态：随实现更新（2026-09-19 复核）
 > 依赖：**遵守** [`00-conventions.md`](00-conventions.md)（全局契约宪法，冲突以它为准）；被总线 `@silksec/sec-domain-bus` 宿主挂载。
 > 订阅（本域消费）：`exec.run.completed`（parser proposal 机器直灌分流）。
-> 被订阅（本域发布）：`vuln.candidate.registered / vuln.candidate.promoted / vuln.candidate.claimed / vuln.signal.registered / vuln.signal.confirmed / vuln.signal.rejected / vuln.signal.submitted`——消费方：eval 域（判定回流）、fgs 域（节点状态联动）、report 域（提交统计）、asset 域（总览缓存失效）。
+> 被订阅（本域发布）：`vuln.candidate.registered / vuln.candidate.promoted / vuln.candidate.claimed / vuln.signal.registered / vuln.signal.confirmed / vuln.signal.rejected / vuln.signal.submitted / vuln.evidence.attached`——消费方：eval 域（判定回流）、fgs 域（节点状态联动）、report 域（提交统计）、asset 域（总览缓存失效）。
 > 契约版本：manifest `version: 1`（repository 接口 `repository-v1`）。
 > 定位：**v5 试点域**——总线抽象的表达力在此域先行验证；候选池状态机是 v5 对 v4.x 实证缺陷（2026-09-06「执行确认但待验证候选不消减」，31 条 confirmed 僵君 + 25 条终态滞留）的根治点。
 
@@ -20,7 +20,7 @@
 | 后端插件包 | `@silksec/sec-backend-vuln-sqlite`（默认）/ `@silksec/sec-backend-vuln-http`（Phase 4） |
 | 后端切换 | bundle 配置一行：`sec_domain_vuln_backend: sqlite-local` 或 `http-remote`；运行时热切换仅允许 sqlite↔sqlite，切 http 需重启宿主面（连接池初始化） |
 | profile 挂载 | **web 与 headless 双面挂载**（worker 要登记/确认/认领候选；双面各自实例化域服务，SQLite WAL 跨进程，写收敛于各进程内 CommandGateway——与 README §六取舍一致） |
-| owns（单写者律） | 表：`findings`（asset-graph.db，**不改名不迁库**，sqlite-local 后端直接接管现表）；文件：`data/evidence/{finding_id}/`（证据包目录树 + verify-log.md 追加写，C9）。**不 own 任何 md 报告文件**——提交草稿归 report 域（12-report.md 方案 A：report owns `reports/` 全树含 `submissions/`；v4 工具 `submission_draft` 经总线别名指向 `report_draft_submission`，本域契约不再含草稿动词） |
+| owns（单写者律） | 表：`findings`（asset-graph.db，**不改名不迁库**，sqlite-local 后端直接接管现表）；文件：`data/evidence/{finding_id}/`（证据包目录树 + verify-log.md 追加写，C9）。**不 own 任何 md 报告文件**——提交草稿归 report 域（12-report.md 方案 A：report owns `reports/` 全树含 `submissions/`；v4 工具 `submission_draft` 直达 report 域 `report_draft_submission`（别名层已移除，2026-09-19），本域契约不再含草稿动词） |
 | owns × 沙箱白名单 | setup.sh 冒烟交叉断言：asset-graph.db 与 `data/evidence/` 对 run_cli 沙箱不可写 |
 | 模型禁入通道 | `vuln_register_candidate`（机器直灌）根本不向模型注册工具——负向保障第一层（宪法 §三.2） |
 
@@ -29,16 +29,17 @@
 | # | 动词 | 一句话语义 | actor 白名单 | 发布事件 | 幂等键 |
 |---|---|---|---|---|---|
 | C1 | `vuln_register_signal` | 登记完整漏洞信号（五要素闸门为不变量；弱指纹命中候选自动 promote） | model, human | signal.registered（命中候选时另发 candidate.promoted） | 自然键=强指纹 |
-| C2 | `vuln_register_candidate` | 机器直灌唯一入口（候选池登记，模型禁用） | webhook, script | candidate.registered | 自动指纹（title/host/url/source） |
+| C2 | `vuln_register_candidate` | 机器直灌唯一入口（候选池登记，模型禁用） | webhook, script, dashboard | candidate.registered | 自动指纹（title/host/url/source） |
 | C3 | `vuln_confirm` | 候选/信号 → confirmed 原子升级（status+confidence+noise 三联动，evidence 必填） | model, dashboard | signal.confirmed（自候选池另发 candidate.promoted） | 自动指纹（finding_id+evidence_ref） |
 | C4 | `vuln_reject` | 判定 false_positive / dup / ignored（候选出池 + FGS deprecated 走事件） | model, dashboard | signal.rejected | 自动指纹（finding_id+verdict+reason） |
 | C5 | `vuln_submit` | confirmed → submitted（运营列回流；vendor_status=accepted 时 submitted → accepted） | model, dashboard | signal.submitted | 自动指纹（finding_id+bounty+vendor_status+platform） |
 | C6 | `vuln_note` | 证据链追加（不改状态，任意状态可用） | model, dashboard | 无（防事件风暴） | 自动指纹（finding_id+note） |
+| C6b | `vuln_evidence_put` | 证据包受管写入（把机械复核用 `request.txt` 写入 `evidence/{id}/`） | model | 无 | 自动指纹（finding_id+request_text） |
 | C7 | `vuln_claim` | 认领候选（防多 worker 重复验证，TTL 软锁） | model, dashboard | candidate.claimed | 自动指纹（finding_id+认领者） |
-| C8 | `vuln_release` | 释放认领 | model, dashboard | 无（认领状态经 vuln_candidates 查询可见） | 宽松幂等（重放返回 ok） |
-| C9 | `vuln_verify_replay` | CONFIRMED 机械复核（重放 request.txt + sha256 比对 + verify-log 追加；"LLM 不给自己当法官"） | model, script | 无（防事件风暴） | 自动指纹（finding_id+expect_hash+分钟） |
-| C10 | `vuln_attach_fgs` | 关联 FGS finding 节点到行（fgs 域事件订阅回写通道，Phase 1 可选落地） | model, reactor | 无 | 自动指纹（finding_id+fgs_node_id） |
-| C11 | `vuln_authz_diff` | 双权凭证重放对比 harness（低权/高权各发一次，三档判定；suspected 机器落候选） | model | 无（suspected 时经 C2 发 candidate.registered） | 自动指纹（url+method+headers 指纹+分钟） |
+| C8 | `vuln_release` | 释放认领 | model, dashboard | 无（认领状态经 vuln_candidates 查询可见） | 自动指纹（finding_id；ctx: session_id/operator） |
+| C9 | `vuln_verify_replay` | CONFIRMED 机械复核（重放 request.txt + sha256 比对 + verify-log 追加；"LLM 不给自己当法官"） | model, script | 无（防事件风暴） | 自动指纹（finding_id+expect_hash） |
+| C10 | `vuln_attach_fgs` | 关联 FGS finding 节点到行（fgs 域事件订阅回写通道） | model, reactor | 无 | 自动指纹（finding_id+fgs_node_id） |
+| C11 | `vuln_authz_diff` | 双权凭证重放对比 harness（低权/高权各发一次，三档判定；suspected 机器落候选） | model | 无（suspected 时经 C2 发 candidate.registered） | 自动指纹（url+method+headers_low+headers_high+body） |
 | C12 | `vuln_evidence_attach` | 从已发布 exec 证据清单挂载证据到 finding（复制进 `evidence/{finding_id}/{run_id}/`，哈希关联） | model, dashboard, reactor | `vuln.evidence.attached` | 自动指纹（finding_id+evidence_ref） |
 
 > 说明：宪法 §三 actor 表无 `parser` 类型——exec 域 parser 提案与 authz_diff 机器判定统一以 **actor=script** 注入，身份细分（`identity: "parser:nuclei:{run_id}"` / `"authz_diff:{session_id}"`）进审计，不新增 actor 枚举。
@@ -136,8 +137,10 @@
 
 | code | 触发 | hint | retryable |
 |---|---|---|---|
-| E_ACTOR_FORBIDDEN | actor=model（或 dashboard/human） | "机器直灌通道仅限 webhook/script。模型请走 vuln_register_signal（完整信号）或对已有候选用 vuln_confirm" | false |
+| E_ACTOR_FORBIDDEN | actor=model / human | "机器直灌通道仅限 webhook/script/dashboard。模型请走 vuln_register_signal（完整信号）或对已有候选用 vuln_confirm" | false |
 | E_SCHEMA | 缺 source/title/host/severity | — | false |
+
+> dashboard（操作员）侧的「登记候选漏洞」入口**只产候选**（noise=1）——确权仍须走 `vuln_confirm`，不会经本命令进信号面。
 
 **幂等**：自动指纹（title/host/url/source 核心字段）；webhook 重复投递同 payload → replay:true；同指纹不同 payload → 不报错走 dup:true 宽容路径（与 C1 的严格路径刻意不同：**模型通道严格、机器通道宽容**）。
 
@@ -274,6 +277,22 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 
 ---
 
+#### C6b · vuln_evidence_put（证据包受管写入）
+
+**语义**：机械复核的前置动词——把 `vuln_verify_replay` 所需的原始 HTTP 请求写入本域 owns 的证据包 `data/evidence/{finding_id}/request.txt`。原生 write 无法写域数据目录（`E_SCOPE_FILE_WRITE`），没有本动词 CONFIRMED 机械复核流程无法闭环。
+
+**参数表**：
+
+| 参数 | 类型 | 必填 | 默认 | 校验规则 |
+|---|---|---|---|---|
+| finding_id | integer | 是 | — | 行存在（E_NOT_FOUND）；终态行拒绝（E_STATE） |
+| request_text | string | 是 | — | minLength 1；≤64KiB（超出 E_SCHEMA）；须为完整 HTTP 报文（首行 `METHOD target`）；target 为相对路径时须含 `Host` 头 |
+| note | string | 否 | '' | 证据链说明（截 200 字） |
+
+**行为**：受管写入 `evidence/{finding_id}/request.txt`（覆盖式，tmp 语义由域内保证）；首行 method/path + headers/body 由 `parseRequestText` 解析校验；note 非空则追加证据链；无事件、不改状态。**幂等**：自动指纹（finding_id+request_text），同内容重复写重放。**actor**：model（`vuln_verify_replay` 的 model/script 两侧共用同一受管写入路径）。
+
+---
+
 #### C7 / C8 · vuln_claim / vuln_release（候选认领）
 
 **语义**：候选池成为一等公民工作队列后的协作锁——多 worker（每日 vuln 任务、spawn_worker 派生）并发消化候选时防重复验证。软锁：TTL 过期自动可抢占，无需显式释放。
@@ -295,7 +314,7 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 | E_VULN_NOT_CANDIDATE | 目标非候选（noise=0 或 status≠new） | "认领只作用于候选池行（noise=1 AND status='new'）。信号面行的验证由任务编排保证，无需认领" | false |
 | E_VULN_CLAIMED | 他人活跃认领 | "候选 #{id} 已被 {claimed_by} 认领（X 分钟前，TTL 3600s）。用 vuln_candidates claim_state=available 取下一条" | true |
 
-**actor**：model, dashboard。**幂等**：claim 自动指纹（finding_id+认领者）；release 宽松幂等。
+**actor**：model, dashboard。**幂等**：claim 自动指纹（finding_id+认领者）；release 自动指纹（finding_id；ctx: session_id/operator）。
 
 ---
 
@@ -313,7 +332,7 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 
 **行为**：读 `data/evidence/{finding_id}/request.txt` → 解析首行 method/path + headers（须含 Host）+ body → 经 proxy（或 direct）重放 → 响应体 sha256 → 与 expect_hash 比对 → **追加** `verify-log.md` 一行（`| 北京ISO时间 | 出口 | status | sha256 前 16 位 | verdict |`）。返回 `{status, sha256, verdict}`。**不改 findings 行**——复核结论经证据引用链被 `vuln_confirm` 的自查引用（机械判定本身不自动改状态，确认仍是一次显式命令）。
 
-**错误码**：E_NOT_FOUND（finding 或 request.txt 不存在，hint："先在任务内产出证据包（request.txt 落 evidence/{id}/）再复核"）；`E_EVIDENCE_LEGACY_UNAVAILABLE`（finding 为 legacy-inline 证据，无 request/response，hint："历史 finding 无机械复核能力，先取证产出新证据包"）；`E_VULN_REPLAY_FAILED`（网络/首行解析失败，retryable=true，hint："网络波动可重试；首行无法解析说明 request.txt 非标准 HTTP 报文，重新产出证据包"）。**幂等**：自动指纹（finding_id+expect_hash+分钟）。**actor**：model, script（run_cli 侧治理脚本）。
+**错误码**：E_NOT_FOUND（finding 或 request.txt 不存在，hint："先在任务内产出证据包（request.txt 落 evidence/{id}/）再复核"）；`E_EVIDENCE_LEGACY_UNAVAILABLE`（finding 为 legacy-inline 证据，无 request/response，hint："历史 finding 无机械复核能力，先取证产出新证据包"）；`E_VULN_REPLAY_FAILED`（网络/首行解析失败，retryable=true，hint："网络波动可重试；首行无法解析说明 request.txt 非标准 HTTP 报文，重新产出证据包"）。**幂等**：自动指纹（finding_id+expect_hash）。**actor**：model, script（run_cli 侧治理脚本）。
 
 ---
 
@@ -339,7 +358,7 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 | headers_high | string\|object | 是 | — | 高权凭证头（同上格式） |
 | body | string | 否 | — | 请求体（重放载荷） |
 
-**行为**（v4 算法原样保留）：`redirect: manual` + 30s 超时各发一次 → 比对 status / body 长度比 / JSON 键重合度 → 三档判定：
+**行为**（v4 三档判定保留；重放改用 v5 `replayHttp`）：自动跟随最多 5 次重定向（非 `redirect: manual`）+ 30s 超时各发一次 → 比对 status / body 长度比 / JSON 键重合度 → 三档判定：
 
 | verdict | 判据 | 含义 |
 |---|---|---|
@@ -353,7 +372,7 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 
 **错误码**：E_ACTOR_FORBIDDEN（scope-guard 拒绝）；`E_VULN_REPLAY_FAILED`（低权/高权请求网络失败，retryable=true）。
 
-**幂等**：自动指纹（url+method+headers_low/high 指纹+分钟）。**actor**：model。**事件**：无（判定返回模型；候选落库经 C2 发 candidate.registered）。**模型可见**：✅。
+**幂等**：自动指纹（url+method+headers_low+headers_high+body）。**actor**：model。**事件**：无（判定返回模型；候选落库经 C2 发 candidate.registered）。**模型可见**：✅。
 
 **agent_note（模型面工具描述全文）**：
 
@@ -433,11 +452,11 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 
 - `candidate.pending = COUNT(*) WHERE noise=1 AND status='new'`——**任何"候选计数"KPI 一律用此值**（v4 `findings_noise` 只看 noise 列、永远 58 只增不减的病在契约层根除）；
 - `terminal_in_pool` = noise=1 AND status≠new（历史候选遗骸，出池归档参考，见开放问题）；
-- `sync` 仅 http-remote 模式非空（§2.4）。
+- `sync` 对象两后端均返回；sqlite-local 下恒为全零计数（pending/failed=0、last_synced_at=null），http-remote 混布模式才有实际同步值（§2.4）。
 
 **Q5 · vuln_by_asset**：参数 host（必填）、include_candidates（bool，默认 false）。返回 `{host, total, by_severity: [{severity, n}], candidates_total}`——原 v4 assetDetail 的 findings 片段抽出（asset 域保留资产/接口/指纹/同族部分，跨域读经本查询）。
 
-**Q6 · vuln_dedup_check**：参数 host、vuln_type（至少其一必填）、exclude_id（可选）、limit（默认 10）。返回同 host 或同 vuln_type 的信号面历史行（id/title/severity/status/host/created_at）+ total。提交前必查（防平台判重，v4 submissionDraft 内嵌逻辑抽出为独立查询）。
+**Q6 · vuln_dedup_check**：参数 host、vuln_type（文档称至少其一必填；**未实现：当前可全空，返回全部 noise=0 行**）、exclude_id（可选）、limit（默认 10）。返回同 host 或同 vuln_type 的信号面历史行（id/title/severity/status/host/created_at）+ total。提交前必查（防平台判重，v4 submissionDraft 内嵌逻辑抽出为独立查询）。
 
 ### 1.5 事件（发布 / 订阅）
 
@@ -460,7 +479,7 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 
 | 订阅事件 | 模式 | 处理器 | 行为 |
 |---|---|---|---|
-| `exec.run.completed` | async（弱联动） | `on_parser_proposal` | payload 含 `parse_proposal.findings[]` 时（nuclei/afrog parser 产物，v4 parsers.js L166-170 直写路径的事件化），逐条 `dispatch('vuln','register_candidate', …, ctx={actor:'script', identity:'parser:{tool}:{run_id}'})`，source=`parser:{tool}`。订阅者失败 → audit 记 `subscriber_failed` + 事件保留可重放（不回滚 exec 的 run 收尾）。assets/endpoints 段本域**忽略**（asset/endpoint 域各自订阅同一事件取自己的段） |
+| `exec.run.completed` | async（弱联动） | `onParserProposal` | payload 含 `parse_proposal.findings[]` 时（nuclei/afrog parser 产物，v4 parsers.js L166-170 直写路径的事件化；**v4 文件已删除，历史留档**），逐条 `dispatch('vuln','register_candidate', …, ctx={actor:'script', identity:'parser:{tool}:{run_id}'})`，source=`parser:{tool}`。订阅者失败 → audit 记 `subscriber_failed` + 事件保留可重放（不回滚 exec 的 run 收尾）。assets/endpoints 段本域**忽略**（asset/endpoint 域各自订阅同一事件取自己的段） |
 | `approval.approved` | — | **不订阅**（勘误） | v4 初稿 manifest 曾把它列入 vuln 订阅——错误：授权批准的联动方是 scope 域（scope_grant）与 task 域（种子任务），与漏洞数据无联动。v5 从本域 manifest 移除 |
 
 **机器直灌调用方关系**（v4 → v5 角色变化，它们从「直调 addFinding」变为「事件/命令调用方」）：
@@ -468,32 +487,35 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 | v4 调用方 | v4 行为 | v5 行为 |
 |---|---|---|
 | xray webhook（webhook.js → addFinding） | 直调函数，机器与模型共用动词 | HTTP 接收器保留在 exec 域边缘 → `dispatch vuln_register_candidate` actor=webhook |
-| authz_diff suspected（sec-suite.js L1582） | 工具 execute 内直调 addFinding（high + 无复现 → 完整性闸门归候选） | 本域 C11 判定 suspected 后**域内** `dispatch vuln_register_candidate` actor=script，identity=`authz_diff:{session_id}`，source='authz_diff'（启发式判定是机器语义，不得冒充模型登记） |
-| intel_hunt（sec-suite.js L1790） | 不写 findings（产 N-day 候选**任务**） | 不变——产物是 task 域实体，与 vuln 域无直写关系；任务执行后的发现仍走 C1/C2 |
-| parser 入库（parsers.js applyParsedResult → addFinding） | run_cli 后处理直写 | `exec.run.completed` 事件 → 本域 on_parser_proposal → C2（见上表） |
+| authz_diff suspected（sec-suite.js L1582；**v4 文件已删除，历史留档**） | 工具 execute 内直调 addFinding（high + 无复现 → 完整性闸门归候选） | 本域 C11 判定 suspected 后**域内** `dispatch vuln_register_candidate` actor=script，identity=`authz_diff:{session_id}`，source='authz_diff'（启发式判定是机器语义，不得冒充模型登记） |
+| intel_hunt（sec-suite.js L1790；**v4 文件已删除，历史留档**） | 不写 findings（产 N-day 候选**任务**） | 不变——产物是 task 域实体，与 vuln 域无直写关系；任务执行后的发现仍走 C1/C2 |
+| parser 入库（parsers.js applyParsedResult → addFinding；**文件已删除，历史留档**） | run_cli 后处理直写 | `exec.run.completed` 事件 → 本域 onParserProposal → C2（见上表） |
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
 ToolProjector 从 manifest 自动 `ctx.tools.register`：工具名=动词/查询名（零改名）、schema=命令 schema、description=`agent_note`。挂载矩阵：web/headless 双面全量投影查询；命令按 actor 白名单投影（model 不可用的动词根本不注册）。
 
+> 说明：下表「描述全文」为叙述性摘要（可能含设计语境补充与排版），**非 manifest `agent_note` 逐字投影**；权威文案以 manifest（`dsh-plugin-sec-domain-vuln.js` 的 `VULN_MANIFEST`）为准。
+
 | 工具名 | 对模型可见 | 描述全文（agent_note） |
 |---|---|---|
-| `vuln_register_signal` | 是 | "登记一个**完整验证过**的漏洞发现（唯一能新建信号面行的动词）。五要素强制：规范标题（≥10 字符，『<组件/业务语境> <漏洞类型与后果>（关键特征）』，禁止工具原始输出当标题）、复现步骤、具体化影响、证据引用（run_id/flow_id/burp_item）、host。severity 禁 info（信息类按 severity-rating 规则以 low+具体影响重评）。同 host+title+url 指纹自动去重；命中待验证候选会就地补全升级（upgraded:true）。纪律：登记前必须完成对抗性自检（≥2 反证假设逐一排除）+ 高危双出口复现；CONFIRMED 还须 verify_replay 机械复核。" |
-| `vuln_register_candidate` | **否**（机器通道） | （不向模型注册——webhook/script 专用） |
-| `vuln_confirm` | 是 | "把待验证候选/信号确认为 confirmed（status+confidence+noise 原子三联动，候选同时出池进信号面）。evidence 必填且必须真实存在（run_id 的 results 目录 / evidence/{id}/ 证据包）。确认前自查：verify.must_pass 全过、falsification 逐项排除、verify_replay 机械复核通过；高危走独立 worker 复验（双路一致才确认）。候选被他人认领时会被告知换下一条。" |
-| `vuln_reject` | 是 | "判定 false_positive / dup / ignored。reason ≥10 字可追溯；dup 必须指回被重复的 finding（dup_of，可先用 vuln_dedup_check 查）。被拒候选自动出池；关联 FGS 节点自动 deprecated。误报判定会回流活评测集（eval-live）用于校准同类判定——认真判，它影响后续可信度评估。" |
-| `vuln_submit` | 是 | "确认后的运营流转：confirmed → submitted（平台提交后）；vendor 反馈（accepted/bounty/vendor_status）在 submitted 态再次调用回流运营列。提交前先 report_draft_submission（report 域，旧名 submission_draft）出草稿人工审校。" |
+| `vuln_register_signal` | 是 | "登记一个**完整验证过**的漏洞发现（唯一能新建信号面行的动词）。五要素强制：规范标题（≥10 字符，『<组件/业务语境> <漏洞类型与后果>（关键特征）』，禁止工具原始输出当标题）、复现步骤、具体化影响、证据引用（run_id/flow_id/burp_item/evidence 路径/oob）、host。severity 禁 info（信息类按 severity-rating 规则以 low+具体影响重评）。同 host+title+url 指纹自动去重；命中待验证候选会就地补全升级（upgraded:true）。纪律：登记前必须完成对抗性自检（≥2 反证假设逐一排除）+ 高危双出口复现；CONFIRMED 还须 verify_replay 机械复核。" |
+| `vuln_register_candidate` | **否**（机器通道） | （不向模型注册——webhook/script/dashboard 专用） |
+| `vuln_confirm` | 是 | "把待验证候选/信号确认为 confirmed（status+confidence+noise 原子三联动，候选同时出池进信号面）。evidence 必填且必须真实存在（run_id 的 results 目录 / evidence/{id}/ 证据包 / flow 文件 / oob 交互记录）。确认前自查：verify.must_pass 全过、falsification 逐项排除、verify_replay 机械复核通过；高危走独立 worker 复验（双路一致才确认）。候选被他人认领时会被告知换下一条。" |
+| `vuln_reject` | 是 | "判定 false_positive / dup / ignored。reason ≥10 字可追溯；dup 必须指回被重复的 finding（dup_of，可先用 vuln_dedup_check 查）。被拒候选自动出池；关联 FGS 节点自动 deprecated。误报判定会回流活评测集用于校准同类判定。" |
+| `vuln_submit` | 是 | "确认后的运营流转：confirmed → submitted（平台提交后）；vendor 反馈（accepted/bounty/vendor_status）在 submitted 态再次调用回流运营列。提交前先 report_draft_submission（report 域）出草稿人工审校。" |
 | `vuln_note` | 是 | "向 finding 追加证据链条目（不改状态，任意状态可用）。用于补充观察、勘误说明、复验记录。带时间戳前缀追加。" |
+| `vuln_evidence_put` | 是 | "把机械复核所需的原始 HTTP 请求写入证据包 evidence/{finding_id}/request.txt（受管写入，原生 write 无法写域数据目录）。request_text 须为完整 HTTP 报文（首行 METHOD target + Host 头）。写后用 vuln_verify_replay 复核。覆盖式写入，重复同内容幂等。" |
 | `vuln_claim` | 是 | "认领一条待验证候选（防多 worker 重复验证）。软锁 TTL 3600s，超时自动可抢占。认领后尽快验证并 vuln_confirm / vuln_reject，不再处理时 vuln_release。" |
 | `vuln_release` | 是 | "释放自己认领的候选（改做其他事时必须释放，别让锁白占到超时）。" |
 | `vuln_verify_replay` | 是 | "机械复核（LLM 不给自己当法官）。重放 evidence/{id}/request.txt，响应体 sha256 与 expect_hash 比对，结果追加 verify-log.md。CONFIRMED 纪律自查要求本复核通过。" |
-| `vuln_attach_fgs` | 是（Phase 1 可选） | "把 FGS finding 节点关联到 finding 行（任务内显式建图时用；调度会话内自动关联由 fgs 域事件完成，通常无需手动）。" |
-| `vuln_authz_diff` | 是 | "双权凭证重放对比（越权/IDOR 探测 harness）：同一 URL 以低权与高权凭证各请求一次，机器比对状态码与响应相似度给出 unlikely/review/suspected 三档判定。suspected（低权 200 且响应与高权高度相似）会自动登记为待验证候选——你要继续取证数据归属并走常规验证流；review 档请人工看两个 body_head 自行判断。目标必须经授权白名单。凭证从 cred_query 取（勿在会话里裸贴 token）。" |
+| `vuln_attach_fgs` | 是 | "把 FGS finding 节点关联到 finding 行（任务内显式建图时用；调度会话内自动关联由 fgs 域事件完成，通常无需手动）。" |
+| `vuln_authz_diff` | 是 | "双权凭证重放对比（越权/IDOR 探测 harness）：同一 URL 以低权与高权凭证各请求一次，机器比对状态码与响应相似度给出 unlikely/review/suspected 三档判定。suspected（低权 200 且响应与高权高度相似）会自动登记为待验证候选——你要继续取证数据归属并走常规验证流。目标必须经授权白名单。" |
 | `vuln_evidence_attach` | 是 | "把已发布的 exec 证据包挂载到 finding：evidence_ref 填已 exec_evidence_publish 发布的 run_id。网关核验证据清单（SHA-256 逐文件）与 Program 归属一致后，复制进 evidence/<finding_id>/<run_id>/ 并记入证据链。只接受已发布证据；worker staging 原文不受信。" |
-| （草稿工具） | — | `submission_draft` / `vuln_draft_submission` 旧名经总线别名指向 **report 域 `report_draft_submission`**（见 12-report.md §一）——本域不注册草稿工具 |
+| （草稿工具） | — | `submission_draft` / `vuln_draft_submission` 旧名直达 **report 域 `report_draft_submission`**（见 12-report.md §一；别名层已移除，2026-09-19）——本域不注册草稿工具 |
 | `vuln_list` | 是 | "检索漏洞发现。visibility=signal（默认，仅信号面）/ candidate（待验证候选队列）/ all。按 host/severity/status/program_id/q 过滤，分页+排序。" |
 | `vuln_get` | 是 | "取单条 finding 全量详情（含 evidence 证据链全文）。" |
-| `vuln_candidates` | 是 | "待验证候选工作队列。claim_state=available（默认，未认领+认领超时）/ unclaimed / claimed / stale / all。带池摘要（pending/claimed/by_severity）。消化候选池是 vuln 任务 Slice 的合法硬指标来源。" |
+| `vuln_candidates` | 是 | "待验证候选工作队列。claim_state=available（默认，未认领+认领超时）可筛 unclaimed/claimed/stale/all，带池摘要。" |
 | `vuln_stats` | 是 | "漏洞计数总览：信号面（by severity/status）与候选面（pending/claimed）分开计数。候选口径=待消化（noise=1 且 status=new），不是噪声总数。" |
 | `vuln_by_asset` | 是 | "单资产漏洞视图（按 severity 分组计数，可选含候选）。" |
 | `vuln_dedup_check` | 是 | "同目标/同类型历史查重（host 或 vuln_type 至少其一）。提交前必查，防平台判重。" |
@@ -504,9 +526,10 @@ RpcProjector 自动投影（RPC 名 `{domain}.{verb}` 点分；写操作自动�
 
 | RPC 名 | 类型 | 替代的 v4 dashboard-rpc case |
 |---|---|---|
-| `vuln.list` / `vuln.get` / `vuln.candidates` / `vuln.stats` / `vuln.byAsset` / `vuln.dedupCheck` | 读 | `findings`（L283）/ `findingGet`（L293） |
-| `vuln.confirm` / `vuln.reject` / `vuln.submit` / `vuln.note` / `vuln.claim` / `vuln.release` / `vuln.verifyReplay` | 写（operator 必填） | `findingUpdate`（L375-388，**双面同病的第二入口消灭**） |
-| `vuln.registerSignal` | 写 | （新增：看板人工登记通道，operator 审计高亮） |
+| `vuln.list` / `vuln.get` / `vuln.candidates` / `vuln.stats` / `vuln.byAsset` / `vuln.dedupCheck` | 读 | `findings`（`dsh-plugin-sec-suite.dashboard-rpc.js:424`）/ `findingGet`（`:440`） |
+| `vuln.confirm` / `vuln.reject` / `vuln.submit` / `vuln.note` / `vuln.claim` / `vuln.release` / `vuln.evidenceAttach` | 写（operator 必填） | `findingUpdate`（`dsh-plugin-sec-suite.dashboard-rpc.js:550`，**双面同病的第二入口消灭**） |
+
+> 注：写 RPC 仅投影 manifest actor 含 `dashboard` 的动词。`vuln.registerSignal`（actor 仅 model/human）与 `vuln.verifyReplay`（actor 仅 model/script）**不可**经看板调用，已从写列表移除；`vuln.evidenceAttach`（actor 含 dashboard）已加入。`FINDING_TAG_STATUS` 枚举在 `dsh-plugin-sec-suite.dashboard-rpc.js:139` 仍然存在（未消亡）。
 
 看板 UI 侧：候选 tab 升级为**工作队列视图**（认领/确认/驳回快捷操作全走上述 RPC）；顶部 KPI 的「待验证候选」徽章改用 `vuln.stats → candidate.pending`。stats 大盘中 findings 相关数字全部改由 `vuln.stats` 供给（不再手拼 SQL）。
 
@@ -685,7 +708,7 @@ spool exec csai "node /opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/b
 
 ### 2.4 后端适配器
 
-**repository 接口**（`backend/repository.js`，JSDoc；方法名=命令/查询所需原语，不含 SQL 语义、不含业务校验）：
+**repository 接口**（**无独立 `backend/repository.js` 文件**——接口契约内联于 sqlite backend 的 `createRepo`（`dsh-plugin-sec-backend-vuln-sqlite.js`），三后端同契约测试；方法名=命令/查询所需原语，不含 SQL 语义、不含业务校验）：
 
 ```js
 /** repository-v1 —— vuln 域后端接口（三后端同契约测试） */
@@ -744,13 +767,13 @@ export const repositoryV1 = {
 
 | 缓存 | 策略 | 失效 |
 |---|---|---|
-| vuln_stats 聚合 | 进程内 10s TTL（看板 30s 轮询足够新鲜；65 行直查 <1ms 本可不安缓存，防的是未来 http-remote 模式下的远端往返） | 本进程任何命令成功即失效 + 订阅远端事件失效（跨进程靠 TTL 短容忍） |
+| vuln_stats 聚合 | 进程内 10s TTL（看板 30s 轮询足够新鲜；65 行直查 <1ms 本可不安缓存，防的是未来 http-remote 模式下的远端往返）——**未实现：vuln_stats 无 10s TTL 缓存，直接查询后端** | 本进程任何命令成功即失效 + 订阅远端事件失效（跨进程靠 TTL 短容忍） |
 | 列表/详情查询 | 不缓存 | — |
 | asset 域 _ovCache（finding_count） | 归 asset 域 | asset 域订阅本域事件失效（§2.3），取代 v4 addFinding 里的 invalidateOverview 直调 |
 
-### 2.6 性能与容量（当前 68 行规模）
+### 2.6 性能与容量（2026-09-06 基线；2026-09-19 实测 365 行）
 
-- **现状**（2026-09-06 实测）：68 行 = 信号面（noise=0）10 行 + 候选池 58 行；候选池中真正的待消化候选（status='new'）仅 **2 行**，其余 56 行为 v4 缺陷遗留的终态滞留（31 confirmed + 7 dup + 5 fp + 13 ignored——§3.3 Phase 0 修复对象）。
+- **现状**（2026-09-06 实测，下述分布为基线快照）：68 行 = 信号面（noise=0）10 行 + 候选池 58 行；候选池中真正的待消化候选（status='new'）仅 **2 行**，其余 56 行为 v4 缺陷遗留的终态滞留（31 confirmed + 7 dup + 5 fp + 13 ignored——§3.3 Phase 0 修复对象）。2026-09-19 复核实测全表 365 行。
 - **预期增长**：信号 + 候选合计年增 10²~10³ 行（每日 vuln 任务的产出量级），10 年内 <10⁴ 行——sqlite 单表毫无压力。
 - **查询成本**：全部查询走索引（fingerprint UNIQUE / idx_findings_host / idx_findings_pool），P95 <5ms；vuln_stats 为 4 个聚合 COUNT，<2ms。
 - **写成本**：单行 UPDATE/INSERT，事务持有时间 <1ms，多 worker 并发下 SQLITE_BUSY 概率可忽略（busy_timeout 5s 兜底）。
@@ -762,6 +785,8 @@ export const repositoryV1 = {
 
 ### 3.1 现状代码映射（行级）
 
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
+
 | v4 代码位置 | 函数/段落 | v5 落点 |
 |---|---|---|
 | asset-db.js L309-366 | `addFinding`（噪声闸门+完整性闸门+弱/强指纹+补全升级） | 拆两半：完整性闸门/五要素 → C1 网关不变量 INV-4；机器宽容路径（noise=1、弱指纹、dup:true）→ C2 `commands/register-candidate.js`；弱指纹命中升级段（L331-348）→ C1 的 promote 分支（`commands/register-signal.js`）+ `repository.mergeCandidate` |
@@ -769,24 +794,24 @@ export const repositoryV1 = {
 | asset-db.js L1526-1558 | `updateFinding`（200 行混合动词） | 按语义拆分：status=confirmed → C3；false_positive/dup/ignored → C4；submitted/accepted + bounty/vendor_status → C5；note 追加（L1547-1550）→ C6；FGS 直调（L1544-1546）→ fgs 域订阅事件（§2.3）；eval 回流（L1553-1556）→ eval 域订阅（15-eval.md §1.5） |
 | asset-db.js L538-563 | `queryFindings/countFindings/findingWhere` | Q1 `queries/list.js`——findingWhere 升级为域内谓词构造器（visibility/claim_state 进谓词），rows 与 total 同源（宪法 §七.3 契约测试强制） |
 | asset-db.js L565-580 | `stats()` 的 findings/findings_noise/by_severity/by_status | Q4 `queries/stats.js`——**口径修正**：findings_noise（只看 noise 列）→ candidate.pending（noise=1 AND status='new'） |
-| asset-db.js L1561-1567 | `appendLiveEval` | 移出本域 → eval 域订阅 signal.confirmed/rejected 后执行 eval_case_append |
+| asset-db.js L1561-1567 | `appendLiveEval`（**已删除**） | 移出本域 → eval 域订阅 signal.confirmed/rejected 后执行 eval_case_append |
 | asset-db.js L1594-1664 | `buildReport` | **归 report 域**（report_build，经 vuln_list 跨域取数）——报告与提交草稿均归 report 域（终审方案 A：report owns `reports/` 全树含 submissions/） |
-| asset-db.js L1818-1865 | `submissionDraft` | **归 report 域** `report_draft_submission`（查重段抽出为 Q6 供其跨域调用）；旧工具名经总线别名指向 |
+| asset-db.js L1818-1865 | `submissionDraft`（**已删除**） | **归 report 域** `report_draft_submission`（查重段抽出为 Q6 供其跨域调用）；旧工具名直达 report 域（别名层已移除） |
 | asset-db.js L1808 | `opsHealth` 的 findings_noise | 改调 Q4（opsHealth 其余指标归各自域/总线聚合） |
-| asset-graph.js L139-198 | `finding_add` 工具（schema+FGS 自动创建段 L168-196） | schema → manifest 命令 schema（ToolProjector 投影）；FGS 自动创建段 → fgs 域订阅 signal.registered + C10 回写 |
-| asset-graph.js L200-216 | `finding_query` 工具 | Q1 投影（include_noise/noise 参数 → visibility） |
-| asset-graph.js L218-231 | `submission_draft` 工具 | 别名 → report 域 `report_draft_submission` 投影（本域不注册） |
-| asset-graph.js L276-289 | `finding_update` 工具 | **删除**——别名分派（§3.2） |
-| dashboard-rpc.js L283-296, L375-388 | `findings`/`findingGet`/`findingUpdate` case | RpcProjector 自动投影（§1.7）；FINDING_TAG_STATUS 枚举随之消亡 |
+| asset-graph.js L139-198（**已删除**） | `finding_add` 工具（schema+FGS 自动创建段 L168-196） | schema → manifest 命令 schema（ToolProjector 投影）；FGS 自动创建段 → fgs 域订阅 signal.registered + C10 回写 |
+| asset-graph.js L200-216（**已删除**） | `finding_query` 工具 | Q1 投影（include_noise/noise 参数 → visibility） |
+| asset-graph.js L218-231（**已删除**） | `submission_draft` 工具 | 直达 report 域 `report_draft_submission` 投影（本域不注册） |
+| asset-graph.js L276-289（**已删除**） | `finding_update` 工具 | **删除**——旧调用方已迁语义动词（§3.2） |
+| dashboard-rpc.js L283-296, L375-388 | `findings`/`findingGet`/`findingUpdate` case | RpcProjector 自动投影（§1.7；v5 现行行号 `dsh-plugin-sec-suite.dashboard-rpc.js:424/440/550`）；`FINDING_TAG_STATUS` 枚举仍存在于 dashboard-rpc.js:139（未消亡） |
 | webhook.js L54 | xray → addFinding | 接收器留 exec 域边缘 → C2（actor=webhook） |
 | sec-suite.js L1529-1594 | authz_diff 工具（双权重放+三档判定；suspected → addFinding L1579-1587） | 工具整体迁入本域 → **C11 vuln_authz_diff**；suspected 段 → 域内 dispatch C2（actor=script, identity=authz_diff:{session_id}）。exec 域只保留 hostOf 借用 |
 | sec-suite.js L1785-1845 | intel_hunt（产 N-day 任务，不写 findings） | 不变（task 域实体），无本域迁移项 |
-| parsers.js L158-171 | applyParsedResult findings 段 | `exec.run.completed` 事件 proposal → 本域 on_parser_proposal → C2（actor=script, identity=parser:{tool}:{run_id}） |
+| parsers.js L158-171（**文件已删除**） | applyParsedResult findings 段 | `exec.run.completed` 事件 proposal → 本域 onParserProposal → C2（actor=script, identity=parser:{tool}:{run_id}） |
 
 ### 3.2 兼容别名与观察期
 > **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
-总线维护 `aliases` 映射（别名同样过网关全管线，不绕校验）；观察期一个调度周期（7 天），audit 记 `deprecated_use`，零使用后删除（宪法 §十五）：
+> **历史留档**：别名层曾由总线维护 `aliases` 映射（别名同样过网关全管线，不绕校验）；观察期为一个调度周期（7 天），audit 记 `deprecated_use`，零使用后即删除（宪法 §十五）。以下映射为历史行为记录，在当前空注册表（`aliases: {}`）下均已不生效：
 
 | v4 工具/RPC 名 | 分派目标 | 分派规则与兼容期行为差异 |
 |---|---|---|
@@ -796,7 +821,7 @@ export const repositoryV1 = {
 | `submission_draft` | **`report_draft_submission`（report 域跨域别名）** | 直传（本域别名表登记转发；INV-R6 对未确认行拒绝——v4 允许，收紧） |
 | RPC `findings` / `findingGet` / `findingUpdate` | `vuln.list` / `vuln.get` / 按 finding_update 同规则分派 | 看板 client.js 的 RPC 名同步改写（Phase 5 随域视图插件化） |
 
-prompt 引用同步：persona/objective/skills/technique-index 中的 finding_add/finding_update 引用由脚本化改写（复用 p14-1-tool-refs.py 模式），改写后 discipline-audit.py 增加"悬空工具引用"断言。
+> **历史留档**：prompt 引用同步——persona/objective/skills/technique-index 中的 finding_add/finding_update 引用曾由脚本化改写（复用 p14-1-tool-refs.py 模式），改写后 discipline-audit.py 增加"悬空工具引用"断言。
 
 ### 3.3 数据迁移脚本要点
 
@@ -804,7 +829,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中的 finding_ad
 
 1. **updateFinding 联动 noise**（asset-db.js 热修）：status 进入 confirmed/submitted/accepted 时同事务 `noise=0`；进入 false_positive/dup/ignored 时保持 noise 但依赖口径修正出池。单测：确认→候选计数 −1 ∧ 信号计数 +1；重复确认幂等。
 2. **KPI 口径**：`stats().findings_noise` 与 `opsHealth().findings_noise` 改为 `COUNT(*) WHERE noise=1 AND status='new'`。
-3. **56 行僵尸数据修复脚本**（`p-v5-0-fix-noise.js`，幂等可重跑）：
+3. **56 行僵尸数据修复脚本**（`p-v5-0-fix-noise.js`，幂等可重跑；**已退役/未入库，历史留档**——仓库内无此文件）：
    - 前置：silksec-backup VACUUM INTO 快照先行（回滚保障）；
    - `UPDATE findings SET noise=0 WHERE noise=1 AND status IN ('confirmed','submitted','accepted')` —— **31 条 confirmed 僵君归位信号面**；
    - 其余 25 条终态滞留（dup 7 + fp 5 + ignored 13）不动 noise，靠口径修正自动出候选计数；
@@ -814,7 +839,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中的 finding_ad
 
 #### Phase 1 正式版（随域上线）
 
-1. `p-v5-1-migrate-vuln.js`：复跑 Phase 0 修复（幂等，应零变更）+ ensureCol 补 claimed_by/claimed_at/updated_at + `UPDATE findings SET updated_at=created_at WHERE updated_at IS NULL` 回填。
+1. `p-v5-1-migrate-vuln.js`（**已退役/未入库，历史留档**）：复跑 Phase 0 修复（幂等，应零变更）+ ensureCol 补 claimed_by/claimed_at/updated_at + `UPDATE findings SET updated_at=created_at WHERE updated_at IS NULL` 回填。
 2. 契约测试全绿后切流：工具/RPC 双投影 + 别名层上线（§3.2），观察 1 周（audit 监控 deprecated_use 频次）。
 3. 验收（Phase 1 出口条件）：模拟 xray webhook 重放 / 人工确认 / parser 入库**三路写同一候选**，`vuln_candidates.total` 与 `vuln_stats.candidate.pending` 与看板徽章三处一致；audit 三条记录 actor 可区分。
 4. 删兼容层 + prompt 改写（Phase 5）。
@@ -839,7 +864,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中的 finding_ad
 | 真实缺陷 | worker 沙箱内生成的 `/home/silkspool/...` 证据文件对服务端 `vuln_confirm` 不可见，`evidenceProbe` 只探测 `SEC_DATA_DIR/results`、`SEC_DATA_DIR/evidence`、flows/oob；2026-09-12 #100007 中 #404/#405 因此卡在 E_EVIDENCE_REQUIRED。需要统一“证据生产者写服务端可见 run 目录/证据包”或提供 exec 域证据上传契约。 |
 | 性能 | list/stats 走 SQLite 谓词；replay 有 20s 超时。风险集中在证据文件大包读取与后续外部后端网络延迟。 |
 | 静默错误 | HTTP redirect URL 解析失败保留 raw，可接受；http backend 的同步失败需依赖 syncer 日志观察。 |
-| 未实现 | 无占位分支；文档承诺与 manifest 对齐。 |
+| 未实现 | `vuln_dedup_check` 的 host/vuln_type「至少其一必填」未在网关或后端强制（可全空，返回全部 noise=0 行）；`vuln_stats` 未实现 10s TTL 缓存（直接查询后端）。文档承诺与 manifest 已于 2026-09-19 复核对齐。 |
 | hook 判定 | parser 提案经事件转 candidate，不直写 findings，合格。 |
 | 独立升级 | 可以单域替换 sqlite/http 后端，但 eval/report 是直接消费方，升级须回归二者。 |
 
@@ -847,7 +872,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中的 finding_ad
 
 - 新增命令 C12 `vuln_evidence_attach`（model/dashboard/reactor）+ 事件 `vuln.evidence.attached` + 不变量 INV-10（已发布清单存在/digest 自洽/逐文件 sha256 一致/Program 归属一致）。
 - §五审查的"worker 沙箱证据对 vuln_confirm 不可见"缺陷的正式通道落地：worker → `results/<run_id>/staging/`（不受信）→ exec `exec_evidence_publish`（宿主校验发布）→ vuln `vuln_evidence_attach`（清单核验后复制进 `evidence/{finding_id}/{run_id}/`，哈希关联）。staging 原文依然不可作证据——这是设计意图（先检查后复制的信任边界），不是残留缺陷。
-- 契约测试：vuln 48→50 全绿（happy+幂等回放 / 未发布 run / 篡改文件 / 非法清单路径 / 跨 Program / actor 闸）。
+- 契约测试：vuln 50/50 全绿（sqlite，`contract-vuln.test.js`）+ 9/9（http，`contract-vuln-http.test.js`）（happy+幂等回放 / 未发布 run / 篡改文件 / 非法清单路径 / 跨 Program / actor 闸）。
 
 ## 七、2026-09-17 学习专项 L2 实施回填（P1 授权类卡片切片）
 

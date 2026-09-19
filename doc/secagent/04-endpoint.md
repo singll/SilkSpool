@@ -16,8 +16,8 @@
 |---|---|
 | cordis 服务名 | `secDomain.endpoint` |
 | 域插件包 | `@silksec/sec-domain-endpoint` |
-| 后端插件包 | **双后端组合**：`@silksec/sec-backend-endpoint-sqlite`（endpoints 表）+ `@silksec/sec-backend-endpoint-file`（param-queue/param-seen 文件）——本域 manifest 声明双 owns，两组件同插件内组装 |
-| bundle 配置 | `sec_domain_endpoint_backend: sqlite-local`（表后端；文件后端恒挂，不可切） |
+| 后端插件包 | `@silksec/sec-backend-endpoint-sqlite`（endpoints 表 + param-queue/param-seen 文件原语同一插件）——`@silksec/sec-backend-endpoint-file` 包**不存在**（"双后端组合"是早期设计设想，未落地；文件原语已并入 sqlite 后端） |
+| bundle 配置 | 无（`sec_domain_endpoint_backend` 配置键**不存在**于任何代码/配置；域 manifest 以 `backend: 'repository-v1'` 固定，sqlite-local 单实现，无后端切换开关） |
 | 事件日志 | `data/events/endpoint.jsonl` |
 | profile 挂载矩阵 | **web + headless 双面都挂**（worker 要入队/喂料/标注；无仅宿主面动词） |
 
@@ -32,12 +32,14 @@
 
 ### 1.2 命令总表
 
-| 动词 | 语义（状态机入口） | actor 白名单 | 幂等键 | 事件 |
+| 动词 | 语义（状态机入口） | actor 白名单 | 幂等键（manifest `idempotent` / `idempotent_fields`） | 事件 |
 |---|---|---|---|---|
-| `endpoint_upsert` | 登记接口（单行或 TSV 批量入库——l2-collect 产出消费口） | model, script, dashboard | 自然键逐行 `(host,method,path)` | endpoint.registered（仅新行） |
-| `endpoint_queue_surface` | 参数面入队：从 TSV/文本提取带参数 URL，全局去重（seen 域内）追加 param-queue | model, script | 自动指纹 `(program, source, 文件 sha256)` | endpoint.queue.enqueued |
-| `endpoint_consume_queue` | 队列消费：dalfox/sqlmap 取料后标记消化（出队；seen 保留防重回） | model, script | 自然键 `endpoint:consume:{program}:{run_id}` | endpoint.queue.consumed |
-| `endpoint_mark_auth` | 鉴权标注：auth_required / roles_seen（越权矩阵唯一数据源） | model, script, dashboard | 自然键 `(host,method,path)` | endpoint.auth_marked |
+| `endpoint_upsert` | 登记接口（单行或 TSV 批量入库——l2-collect 产出消费口） | model, script, dashboard | `auto`：`(rows, tsv_path, program_id)` | endpoint.registered（仅新行） |
+| `endpoint_queue_surface` | 参数面入队：从 TSV/文本提取带参数 URL，全局去重（seen 域内）追加 param-queue | model, script | `auto`：`(program, source)`（**无文件 sha256**） | endpoint.queue.enqueued |
+| `endpoint_consume_queue` | 队列消费：dalfox/sqlmap 取料后标记消化（出队；seen 保留防重回） | model, script | `natural`：`(program, run_id)` | endpoint.queue.consumed |
+| `endpoint_mark_auth` | 鉴权标注：auth_required / roles_seen（越权矩阵唯一数据源） | model, script, dashboard | `auto`：`(host, method, path, auth_required, roles_seen, evidence)` | endpoint.auth_marked |
+
+**invariants / timeout_ms**（manifest 逐命令声明，网关前置执行）：`endpoint_upsert` invariants `[upsertMode, batchLimit]` / `timeout_ms: 120000`；`endpoint_queue_surface` `[queueSourceExists]` / `60000`；`endpoint_consume_queue` `[consumeEvidence]` / `60000`；`endpoint_mark_auth` `[endpointExists, authEvidence]` / `60000`。
 
 **结构性闸门**：`auth_required` / `roles_seen` 两列**只出现在 `endpoint_mark_auth` 的参数表里**；`endpoint_upsert` schema 不含（v4.x `endpoint_add` 工具带这两个参数、l2-collect TSV 也有 `auth_required` 列恒为 `unknown`——v5 一律剥离，登记与标注分动词）。
 
@@ -134,7 +136,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 }
 ```
 
-**幂等**：自动指纹 `(program, source 路径, 文件 sha256)`——同文件重放，fresh 已空，返回 `new_urls: 0` + `replay: true`（队列消费幂等的入队侧：seen 拦截重复 URL，天然防重）。
+**幂等**：`auto`：`(program, source)`——同文件重放由总线幂等表直接返回**首次结果**（`replay: true`，`new_urls` = 首次值，契约测试用例为 `new_urls === 2`），**不是 `new_urls: 0`**；seen 拦截重复 URL 只在非重放的二次运行中生效。
 
 **错误码**：`E_NOT_FOUND`（source 文件不存在 / program 不存在）、`E_SCHEMA`、`E_INVARIANT`（source 文件在域 owned 写保护目录且非只读语义——见 §2.3）。
 
@@ -153,7 +155,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 |---|---|---|---|---|
 | `program` | string | ✅ | — | 项目名 |
 | `mode` | string | ❌ | `'all'` | `all`（消化当前队列全部）/ `urls`（消化显式清单） |
-| `urls` | array | mode=urls 必填 | — | 1..5000 条；每条必须当前在队列中（不在的计入 `not_in_queue`，非错误——重放安全） |
+| `urls` | array | ❌（mode=urls 时逻辑上使用，schema 未强制必填） | — | 字符串数组；**无 1..5000 条数限制**；不在队列的计入 `not_in_queue`（非错误——重放安全） |
 | `scanner` | string | ✅ | — | enum `dalfox` / `sqlmap` / `arjun` / `other`（审计与统计维度） |
 | `run_id` | string | ✅ | — | **证据即参数**：扫描 run 的 run_id（`results/<run_id>/` 须存在，E_EVIDENCE_REQUIRED） |
 
@@ -161,9 +163,9 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 **返回**：`data: { program, consumed: 913, remaining: 0, scanner: "dalfox", run_id: "run_..." }`。
 
-**幂等**：自然键 `endpoint:consume:{program}:{run_id}`——同 run 重放返回首次结果（此时队列已清，mode=all 会得 consumed:0 + replay:true，安全）；不同 run 消费同一队列是合法的二次喂料。
+**幂等**：`natural`：`(program, run_id)`——同 run 重放由总线幂等表返回**首次结果**（`consumed` = 首次值，契约测试用例为 `consumed === 1`；**不是 0**）；不同 run 消费同一队列是合法的二次喂料。
 
-**错误码**：`E_EVIDENCE_REQUIRED`（run_id 缺失或 results 目录不存在）、`E_ENDPOINT_QUEUE_EMPTY`（队列本就为空且非重放——hint："队列已空；先用 endpoint_queue_surface 增量入队，或 queue_status 查看现状"）、`E_SCHEMA`。
+**错误码**：`E_EVIDENCE_REQUIRED`（run_id 缺失或 results 目录不存在）、`E_SCHEMA`。**`E_ENDPOINT_QUEUE_EMPTY` 未实现**——mode=all 且队列本就为空时返回成功 `data: {..., consumed: 0, remaining: 0, empty: true}`（不抛错）。
 
 **actor**：model / script。
 
@@ -179,7 +181,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 | 参数 | 类型 | 必填 | 校验 |
 |---|---|---|---|
 | `host` | string | ✅ | 已登记端点（E_NOT_FOUND——先 endpoint_upsert） |
-| `method` | string | ✅ | 大写 |
+| `method` | string | ❌ | 默认 `GET`；大写 |
 | `path` | string | ✅ | — |
 | `auth_required` | string | ❌ | enum `yes` / `no` / `unknown`；缺省不动既有值 |
 | `roles_seen` | array[string] | ❌ | 角色名数组（如 `["admin", "user_anon"]`）；**并集合并**（不覆盖——多轮观测累积） |
@@ -199,7 +201,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 ### 1.4 查询逐个详述（纯读）
 
-统一分页信封 `{ rows, total, limit, offset }`；limit 默认 50 上限 500；**行数 = total 断言进契约测试**。
+统一分页信封 `{ rows, total, limit, offset }`（**只适用于返回 `rows` 的列表/聚合查询**：`endpoint_list` / `endpoint_hosts` / `endpoint_matrix`）；limit 默认 50 上限 500；**行数 = total 断言进契约测试**。`queue_status` / `endpoint_surface_scan` 不走该信封，各自返回自身的 `data` 结构（见下）。
 
 **可见域谓词**：
 
@@ -267,7 +269,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 #### `endpoint_surface_scan`（敏感参数/路径回扫，v4 toolSurfaceScan 收编）
 
-参数：`program`（必填）/ `q`（可选，敏感关键词，默认内置词表：`token/key/secret/password/passwd/pwd/access_key/cookie/authorization` 等）。纯读：扫描 `endpoints` 表（path/params）与 `param-queue.txt` 中命中敏感关键词的 URL/参数，返回 `{hits: [{host, method, path, param, keyword}], total}`。**脱敏检查用途**——发现敏感参数面是越权/未授权访问的排查线索，不回写、不改数据。归本域（操作对象是接口面/参数数据，与 endpoint_queue_surface 同族；v4 在 sec-pipeline，11-ledger §3.1 #9 记录归属裁决）。
+参数：`program`（必填）/ `q`（可选，敏感关键词，默认内置词表：`token/key/secret/password/passwd/pwd/access_key/cookie/authorization` 等）。纯读：扫描 `endpoints` 表（路径/参数）与 `param-queue.txt` 中命中敏感关键词的 URL/参数，返回 `{program, total, hits: [{url, keyword, source}]}`——**hits 形状是 `{url, keyword, source}`**（`source` ∈ `endpoints` / `endpoints.params` / `param-queue`），不是 `host/method/path/param/keyword`；且 `endpoints` 侧**只取 `program_id` 过滤后按 `last_seen` 排序的前 500 行**（500 为硬编码上限，超出部分不扫）。**脱敏检查用途**——发现敏感参数面是越权/未授权访问的排查线索，不回写、不改数据。归本域（操作对象是接口面/参数数据，与 endpoint_queue_surface 同族；v4 在 sec-pipeline，11-ledger §3.1 #9 记录归属裁决）。
 
 ### 1.5 事件
 
@@ -314,19 +316,18 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 | `endpoint_hosts` | 接口按主机分组（路径搜索命中后聚合，看板主视图口径）。 |
 | `endpoint_matrix` | 越权矩阵聚合：每主机的鉴权分布（yes/no/unknown）+ 角色并集 + 多角色端点数。no_auth 与多角色并存的主机是越权/未授权访问优先面。 |
 | `queue_status` | 参数队列现状：各项目 queue/seen 行数、最近入队/消化时间（last_consumed_at=null 即从未消化——纪律红灯）。 |
+| `endpoint_surface_scan` | 敏感参数/路径回扫（v4 toolSurfaceScan 收编）：扫描 endpoints 表与 param-queue 命中敏感关键词的 URL/参数，脱敏检查用途，不回写。 |
 
 ### 1.7 看板 RPC 投影
 
-| RPC 名 | 对应 | 看板用途（接口视图） |
-|---|---|---|
-| `endpoint.list` | endpoint_list | 接口表格（v4 `endpoints` case 平移，补 params/auth 列） |
-| `endpoint.hosts` | endpoint_hosts | 接口 tab 主视图（v4 `endpointHosts`） |
-| `endpoint.matrix` | endpoint_matrix | **新增**：越权矩阵视图（biz-logic 入口） |
-| `endpoint.queueStatus` | queue_status | **新增**：参数队列卡（queue/seen/消化时间） |
-| `endpoint.upsert` | endpoint_upsert（actor=dashboard） | 手工补录接口表单 |
-| `endpoint.markAuth` | endpoint_mark_auth（actor=dashboard，带 operator） | 看板标注鉴权/角色 |
+实际 RPC case 只有两个（均为 `dsh-plugin-sec-suite.dashboard-rpc.js` 手写 case，非 `endpoint.*` 投影命名）：
 
-v4 `endpoints` / `endpointHosts` 两个 case 删除，由投影替代。
+| RPC case（dashboard-rpc） | 对应查询 | 看板用途（接口视图） |
+|---|---|---|
+| `endpointHosts`（`dashboard-rpc.js:402`） | endpoint_hosts（内部 `busQuery('endpoint','hosts',…)`） | 接口 tab 主视图（按主机分组） |
+| `endpoints`（`dashboard-rpc.js:414`） | endpoint_list（内部 `busQuery('endpoint','list',…)`） | 接口表格（补 params/auth 列） |
+
+`endpoint.matrix` / `endpoint.queueStatus` / `endpoint.upsert` / `endpoint.markAuth` 以及 `endpoint.list` / `endpoint.hosts` **均不存在**；v4 的 `endpoints` / `endpointHosts` 两个 case **未被删除、仍在**（只是内部改为走总线查询）。
 
 ### 1.8 外部调用示例
 
@@ -369,7 +370,7 @@ sec cmd endpoint consume-queue --program bytedance --scanner dalfox --run-id run
 
 ### 2.1 数据模型（逐列，owner = endpoint 域）
 
-**`endpoints` 表**（PK `(host, method, path)`；v4 仅 114 行——TSV 断层，迁移后 ~6,700 行，见 §3.3）：
+**`endpoints` 表**（PK `(host, method, path)`；v4 仅 114 行——TSV 断层，**运行时实测 357 行 / 212 主机**，§3.3 的 TSV 回填未执行，见 §3.3）：
 
 | 列 | 类型 | 写入者（唯一动词） | 定义 |
 |---|---|---|---|
@@ -391,7 +392,7 @@ sec cmd endpoint consume-queue --program bytedance --scanner dalfox --run-id run
 | 形态 | 每行一条带参数的完整 URL，UTF-8 文本，按入队批内排序追加 |
 | 写入者 | endpoint_queue_surface（追加）/ endpoint_consume_queue（重写删行）——**均 tmp+rename 原子写** |
 | 消费方 | dalfox `file <path>` / sqlmap `-m <path>`（只读，外部进程） |
-| 现状 | bytedance 913 行 / meituan-src 26 行 / dsh-ops 1 行（2026-09-06 实测） |
+| 现状 | bytedance 0 行 / meituan-src 0 行 / dsh-ops 1 行（运行时实测——前两者已被 consume 消化清空） |
 
 **`data/pipeline/{program}/param-seen.txt`**（file 后端；owner = endpoint 域）：
 
@@ -399,7 +400,7 @@ sec cmd endpoint consume-queue --program bytedance --scanner dalfox --run-id run
 |---|---|
 | 形态 | 同上；**只增不减**的全局 seen 集合（入队防重 + 消化后防重回） |
 | 写入者 | endpoint_queue_surface（追加） |
-| 现状 | 与 queue 完全相同（913/26/1）——v4 无消化语义的直接证据 |
+| 现状 | bytedance 913 行 / meituan-src 52 行 / dsh-ops 1 行（运行时实测）——**与 queue（0/0/1）不再相同**：seen 只增不减，queue 已被 consume 清空，是消化语义生效的直接证据 |
 
 **索引**：
 
@@ -407,7 +408,7 @@ sec cmd endpoint consume-queue --program bytedance --scanner dalfox --run-id run
 |---|---|---|
 | PK `(host, method, path)` | 现有 | upsert 冲突合并 / endpoint_list host 精确 |
 | `idx_endpoints_host` | 现有 | endpoint_hosts 分组 / matrix 聚合 |
-| `idx_endpoints_program (program_id)` | **v5 新增** | program 谓词（迁移后 6,700 行规模 + l2 持续增长） |
+| `idx_endpoints_program (program_id)` | **v5 新增** | program 谓词（运行时 357 行；为 l2 持续增长预留） |
 | `idx_endpoints_auth (auth_required)` | **v5 新增** | auth 谓词 / matrix 的 auth 分布聚合 |
 
 ### 2.2 状态机与不变量
@@ -430,17 +431,21 @@ sec cmd endpoint consume-queue --program bytedance --scanner dalfox --run-id run
      └────────────── 不可回退：seen 保留，已消化 URL 永不再入队 ────────────────────┘
 ```
 
-**manifest invariants 清单**（网关前置执行）：
+**不变量清单**（设计层 INV-1..9 与 manifest 网关 invariant 名称对应）：
 
-| # | 不变量 | 失败码 |
-|---|---|---|
-| INV-1 | `auth_required`/`roles_seen` 只经 endpoint_mark_auth 写入——结构性：endpoint_upsert schema 不含（TSV 的 auth_required 列读入即弃） | E_SCHEMA |
-| INV-2 | **队列消费幂等**：seen 集合域内维护——同 URL 重复入队被 seen 拦截（fresh=0 幂等）；同 (program, run_id) 重复消化返回首次结果；已消化 URL 不可重回队列 | 重放安全（无错误码）；`E_IDEMPOTENT_CONFLICT` 仅同 key 异参 |
-| INV-3 | 带 program_id 的行，host 必须命中该 program scope（经 authz 域 scope_check，只读跨域） | E_INVARIANT |
-| INV-4 | 批量上限：rows ≤500 / tsv ≤5,000（进 schema） | E_SCHEMA / E_ENDPOINT_BATCH_TOO_LARGE |
-| INV-5 | mark_auth 的目标端点必须已登记（先 upsert 后标注） | E_NOT_FOUND |
-| INV-6 | auth_required 从 unknown → yes/no 必带 evidence（**证据即参数**：鉴权判定是越权测试的准入结论） | E_EVIDENCE_REQUIRED |
-| INV-7 | 队列文件只经域命令变更（tmp+rename 原子写）；run_cli 沙箱对两个文件不可写（setup.sh owns×sandbox 交叉断言） | （安全基线，非运行时码） |
+manifest 实际声明的 invariants 键只有 6 个：`upsertMode` / `batchLimit` / `queueSourceExists` / `consumeEvidence` / `endpointExists` / `authEvidence`。INV-1（鉴权列只经 mark_auth）是**结构性闸门**（endpoint_upsert schema 不含该列）、INV-2（队列消费幂等）由**总线幂等三级键**负责、INV-3（scope）是 handler 内 `scopeCheckResult` 自查、INV-7 是安全基线——四者均非 gateway invariant 键。
+
+| # | 不变量 | manifest invariant | 失败码 |
+|---|---|---|---|
+| INV-1 | `auth_required`/`roles_seen` 只经 endpoint_mark_auth 写入——结构性：endpoint_upsert schema 不含（TSV 的 auth_required 列读入即弃） | （结构性，非 gateway invariant） | E_SCHEMA |
+| INV-2 | **队列消费幂等**：seen 集合域内维护——同 URL 重复入队被 seen 拦截（fresh=0 幂等）；同 (program, run_id) 重复消化返回首次结果；已消化 URL 不可重回队列 | （总线幂等键 `auto`/`natural`，非 gateway invariant） | 重放安全（无错误码）；`E_IDEMPOTENT_CONFLICT` 仅同 key 异参 |
+| INV-3 | 带 program_id 的行，host 必须命中该 program scope（handler 内 `scopeCheckResult` 读 scope.yml 自查，与 asset 域同口径；scope 域查询上线前的过渡） | （handler 自查，非 gateway invariant） | E_INVARIANT |
+| INV-4 | 批量上限：rows ≤500 / tsv ≤5,000（进 schema） | `upsertMode` + `batchLimit` | E_SCHEMA / E_ENDPOINT_BATCH_TOO_LARGE |
+| INV-5 | mark_auth 的目标端点必须已登记（先 upsert 后标注） | `endpointExists` | E_NOT_FOUND |
+| INV-6 | auth_required 从 unknown → yes/no 必带 evidence（**证据即参数**：鉴权判定是越权测试的准入结论） | `authEvidence` | E_EVIDENCE_REQUIRED |
+| INV-7 | 队列文件只经域命令变更（tmp+rename 原子写）；run_cli 沙箱对两个文件不可写（setup.sh owns×sandbox 交叉断言） | （安全基线，非运行时码） | （安全基线，非运行时码） |
+| INV-8 | queue_surface 的 source 文件必须存在 | `queueSourceExists` | E_NOT_FOUND |
+| INV-9 | consume_queue 的 run_id 证据目录 `results/<run_id>/` 必须存在 | `consumeEvidence` | E_EVIDENCE_REQUIRED |
 
 ### 2.3 事务与联动
 
@@ -486,19 +491,19 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 
 | 缓存 | 内容 | TTL | 失效 |
 |---|---|---|---|
-| `_hostsCache` | endpoint_hosts 聚合（v4 endpointHosts 无缓存——v5 增加是因为迁移后 6,700 行 + l2 增长） | 25s（对齐 asset overview 节奏） | endpoint_upsert / mark_auth 成功 |
+| `_hostsCache`（及任何 hosts 缓存） | **未实现**——后端无 `_hostsCache`，`invalidateHosts()` 是 noop（预留）；hosts 聚合每次实时查询 | — | — |
 | queue_status | **不缓存**（文件 stat 即时读，开销可忽略；消化红灯必须实时） | — | — |
 | matrix | 不缓存（biz-logic 低频调用） | — | — |
 
 ### 2.6 性能与容量
 
-| 指标 | 现状（2026-09-06 实测） | 迁移后 | 预期增长 |
+| 指标 | 现状（运行时实测） | 迁移后 | 预期增长 |
 |---|---|---|---|
-| endpoints 表 | 114 行 / 65 主机（bytedance 42 / meituan-src 45 / vulhub 27） | ~6,700 行（TSV 回填后） | l2-collect 每批新增百级~千级；单项目 ~1 万行量级 |
-| param-queue | bytedance 913 / meituan-src 26 / dsh-ops 1（共 940） | 同（文件原地收编） | 入队-消化平衡后稳态在数百行；**无消化则单调涨**（v5 consume 语义根治） |
-| param-seen | 与 queue 完全相同 | 同 | 单调增长，千行/项目量级，文本 IO 无压力 |
+| endpoints 表 | 357 行 / 212 主机（v4 基线 114 行 / 65 主机；bytedance 42 / meituan-src 45 / vulhub 27） | TSV 回填未执行（§3.3 未落地） | l2-collect 每批新增百级~千级；单项目 ~1 万行量级 |
+| param-queue | bytedance 0 / meituan-src 0 / dsh-ops 1（共 1，前两者已消化清空） | 同（文件原地收编） | 入队-消化平衡后稳态在数百行；**无消化则单调涨**（v5 consume 语义根治） |
+| param-seen | bytedance 913 / meituan-src 52 / dsh-ops 1（与 queue 不再相同） | 同 | 单调增长，千行/项目量级，文本 IO 无压力 |
 
-**查询代价**：迁移后 6,700 行全表聚合（hosts/matrix）<10ms + 25s 缓存；`idx_endpoints_program` / `idx_endpoints_auth` 覆盖谓词。**文件 IO**：千行文本读写 <5ms；原子 rename 同量级。**TSV 批量**：5,000 行解析 + 逐行 upsert 单事务 <200ms（SQLite 预编译语句批量绑定）。
+**查询代价**：运行时 357 行全表聚合（hosts/matrix）<10ms（**无缓存**，后端 `invalidateHosts` 为 noop）；`idx_endpoints_program` / `idx_endpoints_auth` 覆盖谓词。**文件 IO**：千行文本读写 <5ms；原子 rename 同量级。**TSV 批量**：5,000 行解析 + 逐行 upsert 单事务 <200ms（SQLite 预编译语句批量绑定）。
 
 ---
 
@@ -506,15 +511,17 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 
 ### 3.1 现状代码映射（行级）
 
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
+
 | v4.x 现状（文件:行） | 内容 | v5 去向 |
 |---|---|---|
 | `dsh-plugin-sec-suite.asset-db.js:293-307` upsertEndpoint | INSERT ON CONFLICT + auth 列 COALESCE | `commands/upsert.js`——**auth_required/roles_seen 的 COALESCE 两段废除**（剥离到 mark_auth），另加静态资源过滤与 TSV 批量 |
 | `asset-db.js:406-430` queryEndpoints/countEndpoints/endpointHosts + `:524-531` endpointWhere | 谓词/聚合 | `queries/list.js` + `queries/hosts.js` + backend 原语（补 method/auth 谓词、分页信封、limit 500） |
-| `dsh-plugin-sec-suite.asset-graph.js:102-136` endpoint_add/endpoint_query 工具 | 手写 schema | ToolProjector 投影 + §3.2 别名 |
-| `dsh-plugin-sec-pipeline.js:404-443` toolSurfaceQueue（surface_queue 工具） | seen/queue 双 appendFileSync + 提取逻辑 | `commands/queue_surface.js`——提取正则与 TSV 解析**原样平移**，appendFileSync 改 tmp+rename 原子；param-seen/param-queue 文件 owner 收编本域 |
-| `dsh-plugin-sec-pipeline.js:447-457` 注册表 | 8 工具注册 | surface_queue 行删除（endpoint 域投影接管），其余 7 工具归 ledger 域（11-ledger 文档） |
-| `data-seed/scripts/surface-consume.py` | 旧脚本版（已在退役观察期） | **彻底删除**（surface_queue 工具的 v4 前身；v5 的 endpoint_consume_queue 是新语义非其平移） |
-| `data-seed/scripts/l2-collect.sh:11-14` 直写 `data/pipeline/{program}/endpoints-{program}.tsv` | TSV 追加 + 批内去重 | **改为产出 proposal**：写 `results/<run_id>/endpoints-proposal.tsv`（沙箱可写区），manifest `store: proposal`；`data/pipeline/` 下台账文件改由 ledger 域订阅 endpoint.registered 维护 |
+| `dsh-plugin-sec-suite.asset-graph.js:102-136` endpoint_add/endpoint_query 工具（**已删除**，2026-09-19 旧版清理） | 手写 schema | ToolProjector 投影（别名层已于 2026-09-19 移除，见 §3.2） |
+| `dsh-plugin-sec-pipeline.js:404-443` toolSurfaceQueue（surface_queue 工具）（**已删除**——文件现为 16 行无操作壳） | seen/queue 双 appendFileSync + 提取逻辑 | `commands/queue_surface.js`——提取正则与 TSV 解析**原样平移**，appendFileSync 改 tmp+rename 原子；param-seen/param-queue 文件 owner 收编本域 |
+| `dsh-plugin-sec-pipeline.js:447-457` 注册表（**已删除**——文件现为 16 行无操作壳） | 8 工具注册 | surface_queue 行删除（endpoint 域投影接管），其余 7 工具归 ledger 域（11-ledger 文档） |
+| `data-seed/scripts/surface-consume.py` | 旧脚本版（已在退役观察期） | **保留**（文档旧称"彻底删除"有误——文件仍存在且已随 data-seed 部署；surface_queue 工具的 v4 前身；v5 的 endpoint_consume_queue 是新语义非其平移） |
+| `data-seed/scripts/l2-collect.sh:11-14` 直写 `data/pipeline/{program}/endpoints-{program}.tsv` | TSV 追加 + 批内去重 | **proposal 化未实现**：脚本仍直写 TSV（运行时实测）；设计目标是写 `results/<run_id>/endpoints-proposal.tsv`（沙箱可写区），manifest `store: proposal`；`data/pipeline/` 下台账文件改由 ledger 域订阅 endpoint.registered 维护 |
 | `l2-collect.sh:37-74` 归一化 python 段 | 去静态/去重/提参数 | 保留在脚本（首滤）；域内 endpoint_upsert 再滤一道（双保险） |
 | `data-seed/tools.d/l2-collect.yaml`（parser: lines / store: asset-graph） | parser 直写 | `parser` 改 proposal（kind=endpoints），`store: proposal` |
 | `asset-db.js:1723-1744` ingestText（endpoint 部分） | regex 兜底登记 | exec 域 proposal（kind=endpoints）→ 本域 handler |
@@ -529,16 +536,16 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 | `surface_queue` | `endpoint_queue_surface` | 参数一一对应（program/source）；工具改名，prompt 引用脚本化改写 |
 | `fp_query` 等 asset 域别名 | 见 03-asset.md §3.2 | — |
 
-观察期同宪法 §十五：7 天 audit 零使用 → 删别名；discipline-audit 增"悬空工具引用"断言。
+> **历史留档**：观察期曾按宪法 §十五执行——7 天 audit 零使用后删别名；discipline-audit 曾增设"悬空工具引用"断言。别名层已于 2026-09-19 移除，上表映射仅供回溯，不再代表现行机制。
 
 ### 3.3 数据迁移脚本要点
 
 1. **表不迁**：sqlite-local 接管 `endpoints` 现表（114 行原地保留）。
-2. **TSV 断层回填**（一次性数据修复，幂等可重跑）：`data/pipeline/bytedance/endpoints-bytedance.tsv`（6,593 数据行）经 `endpoint_upsert --tsv-path` 分两批（≤5,000 + 余量）入库，program_id=bytedance；行级 (host,method,path) 自然键使重跑安全。回填后表 ~6,700 行，与台账对账（行数 = total 断言）。
+2. **TSV 断层回填**（一次性数据修复，幂等可重跑）：`data/pipeline/bytedance/endpoints-bytedance.tsv`（6,593 数据行）经 `endpoint_upsert --tsv-path` 分两批（≤5,000 + 余量）入库，program_id=bytedance；行级 (host,method,path) 自然键使重跑安全。**该回填未执行**——运行时表仅 357 行 / 212 主机（§2.1）；设计预期回填后 ~6,700 行，与台账对账（行数 = total 断言）。
 3. **队列文件收编**：`param-queue.txt` / `param-seen.txt` 原地不动（路径不变，owner 变更——sec-pipeline 工具的直写路径随 §3.1 下线）；文件权限核对（silkspool 可写、沙箱不可写）。
 4. **ensureCol 增列**：无新列（auth_required/roles_seen/params 已有）；只增索引（§2.1）。
 5. **基线快照**：VACUUM INTO 先行 + dry-run。
-6. **验收**：契约测试矩阵过（含 INV-2 双进程入队幂等用例、TSV 5,001 行超限拒绝、mark_auth 无证据拒绝）；queue_status 的 `last_consumed_at=null` 三项目现状截图留档（v5 健康指标基线）。
+6. **验收**：契约测试矩阵过（含 INV-2 双进程入队幂等用例、TSV 5,001 行超限拒绝、mark_auth 无证据拒绝）；queue_status 的基线截图留档（设计基线为三项目 `last_consumed_at=null`；运行时 bytedance/meituan-src 队列已消化清空、`last_consumed_at` 不再为 null）。
 
 ---
 
@@ -556,7 +563,7 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 
 | 维度 | 结论 |
 |---|---|
-| 逻辑/功能 | 24/24 契约通过；endpoint 登记与鉴权标注状态入口分离，param queue 原子写。 |
+| 逻辑/功能 | 25/25 契约通过；endpoint 登记与鉴权标注状态入口分离，param queue 原子写。 |
 | 性能 | upsert ≤5000 行；surface_scan 会扫描 endpoints path/params 与 param-queue，当前万级以内可用，后续需加专用索引/词表预过滤。 |
 | 静默错误 | parser 投影失败仅返回 `partial:true`，没有逐项错误；与 asset 同为可观测性缺口。 |
 | 文档漂移 | 已修正 `endpoint.queue.enqueued` / `endpoint.queue.consumed` 事件名。 |

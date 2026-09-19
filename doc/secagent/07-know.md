@@ -1,9 +1,9 @@
 # 07 · know 域设计（知识六仓：经验 / 文献 / 先验规程 / 漏洞卡 / 收割 / 体检）
 
-> 版本：v5.1 ｜ 状态：定稿 ｜ 契约版本：know@1（L5/L6 增量见 §十一）
-> 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（订阅 `approval.approved` 承接 knowledge-adopt / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 记学习 episode，L1）；vuln 域（订阅 `vuln.signal.confirmed/rejected` 记判定 episode，L1）；task 域（订阅 `task.finished` 记任务级 episode，L1）。
+> 版本：v5.1 ｜ 状态：定稿 ｜ 契约版本：know@1（L5 增量见 §十一、L6 增量见 §十二）
+> 依赖：总线（01-bus.md）；宪法（00-conventions.md）；fact 域（订阅 `fact.bb.published` 取 [env-issue]）；authz 域（只读授权域名集，vault 导出脱敏硬门）；approval 域（**不订阅**——knowledge-adopt 由 approval 域 `approval_effects` 执行端幂等调 `know_adopt` / exclude-exception 不在本域）；exec 域（订阅 `exec.run.completed` 记学习 episode，L1）；vuln 域（订阅 `vuln.signal.confirmed/rejected` 记判定 episode，L1）；task 域（订阅 `task.finished` 记任务级 episode，L1）。
 > 被订阅：`know.*` 全系事件——memcore（治理旁路）、dashboard、eval（评测回流）。
-> owns（单写者）：`exp_store` / `exp_embeddings` / `exp_feedback` / `exp_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_archive` / `playbooks` / `learning_episodes` / `knowledge_revisions` / `know_releases` / `know_exposures` / `know_adoptions` / `know_feedback` / `know_scores` / `know_gaps` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-export-cards/` 目录；`AGENTS.md` 受管区块；`data/events/know.jsonl`。
+> owns（单写者）：`exp_cards` / `exp_embeddings` / `exp_feedback` / `exp_cards_archive` / `kb_docs` / `kb_fts` / `kb_embeddings` / `kb_docs_archive` / `playbooks` / `learning_episodes` / `knowledge_revisions` / `know_releases` / `know_exposures` / `know_adoptions` / `know_feedback` / `know_scores` / `know_gaps` 表；`data/rules/`、`data/vulncards/`、`data/harvest/`、`data/vault-import/` 目录；`data/events/know.jsonl`（`AGENTS.md` 受管区块由 memcore 生成，见 2.3）。
 
 ---
 
@@ -18,11 +18,11 @@
 | 插件包名 | `@silksec/sec-domain-know` |
 | 后端插件包 | `@silksec/sec-backend-know-sqlite`（exp/kb 子仓）+ `@silksec/sec-backend-know-file`（rules/vulncards/harvest 子仓）——**一域两后端混布**（宪法 §十二.4 首个落地实例） |
 | profile 挂载矩阵 | `web` 与 `headless` **都挂载**（任务开局三步检索第二/三步 exp_search/kb_search；vulncards 规程遵循） |
-| 模型工具面 | 见 1.6（16 个工具） |
+| 模型工具面 | 见 1.6（模型可见 33 个：10 命令 + 23 查询） |
 | 看板 RPC 面 | 见 1.7 |
-| 后端配置键 | `sec_domain_know_backend_exp: sqlite-local`、`sec_domain_know_backend_file: file`（运行态唯一合法组合） |
+| 后端配置键 | `sec_domain_know_backend_exp` / `sec_domain_know_backend_file`（**未实现**——域插件固定 import `dsh-plugin-sec-backend-know-{sqlite,file}.js`，运行态不读取本项目配置键） |
 
-**命名裁定**（本域最重要的一条设计决定）：know 域内**子仓动词保持 v4 原名**（`exp_store` / `kb_import` / `vc_save` / `pb_save` / `rule_seed`……），不用 `know_` 前缀重命名——v4 的 12 个工具名在 prompt 体系（persona/objective/skills/technique-index）与模型行为里已高度内化，改名收益为零、prompt 改写成本与行为漂移风险为实。`know_` 前缀只留给**跨子仓动词**（`know_adopt` / `know_health` / `know_transition`）。总线寻址统一 `dispatch('know', 'exp_store', ...)`——域前缀由总线承担，动词本身不需重复。宪法 §二 命名规范在此**豁免 `know_exp_promote` 型全前缀**，以本节为准。
+**命名裁定**（本域最重要的一条设计决定）：know 域内**子仓动词保持 v4 原名**（`exp_store` / `kb_import` / `vc_save` / `pb_save` / `rule_seed`……），不用 `know_` 前缀重命名——v4 的 12 个工具名在 prompt 体系（persona/objective/skills/technique-index）与模型行为里已高度内化，改名收益为零、prompt 改写成本与行为漂移风险为实。`know_` 前缀现用于跨子仓 / 版本评测 / 计分 / 治理类命令（manifest 共 14 个：`know_adopt` / `know_transition` / `know_purge_archive` / `know_episode_record` / `know_revision_propose` / `know_revision_assess` / `know_revision_publish` / `know_release_revoke` / `know_exposure_record` / `know_adoption_record` / `know_feedback_ingest` / `know_gap_record` / `know_scores_rebuild` / `know_kb_vault_sync`），不再局限于最初的 `know_adopt` / `know_health` / `know_transition` 三个。总线寻址统一 `dispatch('know', 'exp_store', ...)`——域前缀由总线承担，动词本身不需重复。宪法 §二 命名规范在此**豁免 `know_exp_promote` 型全前缀**，以本节为准。
 
 ### 1.2 命令（写动词）总表
 
@@ -35,7 +35,7 @@
 | C5 | `exp_deprecate` | exp | 证伪弃置经验卡（active→deprecated 终态） | model, dashboard, human | 自然键 | know.exp.deprecated |
 | C6 | `exp_record_usage` | exp | 使用回执（uses+1；exp_search 投影层自动补发） | model, system | 自动指纹 | （无） |
 | C7 | `pb_save` | exp | 存入/更新 playbook 卡（kind=playbook，触发词驱动召回） | dashboard, script（**L4 起 model 移除**） | 自然键（name） | know.exp.stored |
-| C8 | `pb_outcome` | exp | 回填 playbook 执行结果（win/loss + 笔记，驱动 pbRank） | model, dashboard, system | 自然键（name+date） | know.exp.feedback |
+| C8 | `pb_outcome` | exp | 回填 playbook 执行结果（win/loss + 笔记，驱动 pbRank） | model, dashboard, system, script | 自动指纹（name, outcome, notes） | know.exp.feedback |
 | C9 | `exp_approve_export` | exp | 批准经验卡进入 vault 导出（exportable 0→1） | dashboard, human, approval | 自然键 | know.exp.export.approved |
 | C10 | `exp_revoke_export` | exp | 撤销导出资格（exportable→0，含授权域命中降级） | dashboard, human, system | 自然键 | know.exp.export.revoked |
 | C11 | `kb_import` | kb | 导入一篇文献（自动分类/taintguard/±15 天复验抖动/curated 行免复验） | model, dashboard, script, approval | 自然键（url hash） | know.kb.imported |
@@ -48,8 +48,8 @@
 | C18 | `vc_deprecate` | vulncards | 弃置卡片（active→deprecated，registry 同步） | dashboard, human, script | 自然键 | know.vc.deprecated |
 | C19 | `harvest_ingest` | harvest | 收割队列投喂（feed/inbox/stdin → drafts + candidates.json，绝不自动写 rules/） | script, system, webhook | 自然键（item hash） | know.harvest.ingested |
 | C20 | `know_adopt` | 跨仓 | 人工采纳收割草稿/外部卡为正式知识（approval.approved kind=knowledge-adopt 的执行端；**L4 扩展**：revision 来源采纳只认 published revision） | approval, dashboard, human | 自然键 | know.adopted |
-| C21 | `know_transition` | 跨仓 | 治理通道：exp/kb 生命周期降级（memcore sweep 专用） | system, human | 自然键 | know.exp.cooled/archived/expired、know.kb.* |
-| C22 | `know_purge_archive` | 跨仓 | 归档表 90 天硬删（占位动词，Phase 2 正式化，同 06-fact 映射表 #7） | system | 自然键 | （无） |
+| C21 | `know_transition` | 跨仓 | 治理通道：exp/kb 生命周期降级（memcore sweep 专用） | system, human | 自动指纹（subrepo, id/doc_id, to, reason） | know.exp.cooled/archived、know.kb.*（**无 `know.exp.expired`**——expired 仅是 kb 事件） |
+| C22 | `know_purge_archive` | 跨仓 | 归档表 90 天硬删（已注册动词，同 06-fact 映射表 #7） | system | 自动指纹（before_ts） | （无） |
 | C23 | `know_episode_record` | episode | 执行学习记录落账（reactor 专用；宿主注入归属；六类结果分类；双唯一去重） | **reactor**（模型/脚本/dashboard 物理不可调） | 自然键（source_event_id+consumer_version） | know.episode.recorded |
 | C24 | `know_revision_propose` | revision | 候选知识版本提案（父版本+结构化改动+来源+适用条件；L2 2026-09-17 上线；候选≠发布，绝不覆盖在使用卡片） | model, script, dashboard | 自动指纹（artifact+parent+content）+ 表级 UNIQUE 兜底 | know.revision.proposed |
 | C25 | `know_revision_assess` | revision | 候选评测流转（L3 2026-09-17 上线；candidate→evaluating→eligible/rejected，中断 abort 回 candidate；只信 eval 域事件信封；eligible≠发布） | **reactor**（模型/脚本/dashboard/human 物理不可调） | 自然键（revision_id+phase+eval_run_id） | know.revision.assessed |
@@ -160,7 +160,7 @@
 
 **语义**：存入/更新 playbook 卡（exp_store 的 kind=playbook 特化通道：name+trigger 触发词驱动召回、steps 结构化步骤，pbRank 评分独立）。同 name 重存 = 合法覆盖。
 
-**参数表**：name（string，必填，唯一键）；trigger（string[]，必填，触发词集）；steps（string，必填）；notes（可选）；source（默认 `agent`）。
+**参数表**：name（string，必填，唯一键）；steps（string，必填；manifest 接受 string|array）；trigger（string[]，**可选**，触发词集）；notes（可选）；source（默认 `agent`）。
 **返回 data**：`{ name, kind: 'playbook' }`。
 **错误码**：E_SCHEMA；E_INVARIANT（INV-K9）。
 **幂等**：自然键 `know:pb:save:{name}`。
@@ -178,7 +178,7 @@
 
 #### C9 · exp_approve_export
 
-**语义**：批准经验卡进入 vault 导出（exportable 0→1）。前置硬门（网关不变量，事务前执行）：卡须 permanent+active 且**不命中授权域域名集**（authz 域 scope.yml 域名集，经只读查询 + mtime 缓存）——命中即 E_INVARIANT（fail-closed，不是自动降级；自动降级是 C10 的 system 通道职责）。
+**语义**：批准经验卡进入 vault 导出（exportable 0→1）。前置硬门（网关不变量，事务前执行）：卡须 permanent+active 且**不命中授权域域名集**（authz 域 scope.yml 域名集，**直接读文件系统 + 每次调用按 mtime 比对重载——不经总线、无 5min TTL**）——命中即 E_INVARIANT（fail-closed，不是自动降级；自动降级是 C10 的 system 通道职责）。
 
 **参数表**：id（必填）；reason（必填 ≥10 字）。
 **返回 data**：`{ id, exportable: 1 }`。
@@ -314,7 +314,7 @@
 
 #### C22 · know_purge_archive
 
-占位动词（同 06-fact 映射表 #7）：archive 表 90 天硬删。actor=system；repository 原语 `purgeExpArchives(before)` / `purgeKbArchives(before)`。Phase 2 正式入 manifest。
+已注册动词（同 06-fact 映射表 #7）：archive 表 90 天硬删。actor=system；schema `before_ts`（int，必填）；幂等 auto（before_ts）；repository 原语 `purgeExpArchives(before)` / `purgeKbArchives(before)`；无事件（manifest events: []）。
 
 #### C23 · know_episode_record（执行学习记录落账，L1 2026-09-16 上线）
 
@@ -468,7 +468,7 @@
 
 #### Q10 · vc_get：参数 id；返回卡全文（当前版）+ 版本链摘要。
 #### Q11 · vc_list：参数 status（默认 active）/severity/q；返回 registry 视图（active ~11 张 + draft 6 张，按 severity 降序）。
-#### Q12 · vc_coverage：无参；按 attack_surface 分组的覆盖矩阵（18 卡对 25 攻面 TAXONOMY 的映射缺口）——know_health 体检的卡片维度输入。
+#### Q12 · vc_coverage：无参；逐卡返回 `{ card_id, attack_surface, covered }`（`covered` = 该卡是否声明了 `attack_surface`——逐卡布尔，**不是**按攻面分组的 25 面缺口矩阵），并附 `{ cards_total, taxonomy_total: 25 }`。按攻面分组的覆盖缺口见 Q15 `know_coverage`。
 
 #### Q13 · harvest_status：无参；`{ drafts, candidates, last_ingest }`（收割队列健康度）。
 
@@ -558,18 +558,19 @@
 
 | 订阅事件 | 模式 | 处理器 | 动作 |
 |---|---|---|---|
-| `fact.bb.published` | weak | `onFactBbPublished` | key 前缀 `[env-issue]` → 触发 AGENTS.md 受管区块即时刷新（防抖 5s）——env-issue 是开局上下文的组成 |
+| `fact.bb.published` | weak | `onFactBbPublished` | **no-op 占位**（handler 实测返回 `{skipped:true}`；AGENTS.md 受管区块刷新归 memcore，本域不渲染——见 2.3） |
 | `exec.run.completed` | weak | `onExecRunCompleted` | **L1（2026-09-16 勘误并落地）**：run 级学习 episode 落账（exit≠0→infra_error；exit 0 无判定→inconclusive(run_ok_no_verdict)；actor=reactor）。原"工具统计 → pb_outcome 自动回填"未实施且**废止**——单次 CLI 退出码不是打法链效果，伪造 tool:<name> 战绩会污染 pbRank（10-exec §2.3.2 同款裁决） |
 | `vuln.signal.confirmed` / `vuln.signal.rejected` | weak | `onVulnVerdict` | **L1**：判定级 episode（confirmed→confirmed/model-proposed；rejected(false_positive/dup/ignored)→inconclusive——修正标签不当阴性）；attempt 粒度挂 `finding:<id>`，evidence_ref 解析 run 归属 |
 | `task.finished` | weak | `onTaskFinished` | **L1**：任务级 episode；FGS 快照引用取事件 payload 中宿主已固定的 `fgs_snapshot`（hash/path/summary），**绝不事后读"当前图"**；payload 无快照 → context 显式 `fgs_snapshot_missing:true` |
 | `eval.candidate.started` | weak | `onEvalCandidateStarted` | **L3**：候选对照评测启动 → C25 `know_revision_assess(phase=begin)`（candidate→evaluating；digest 对应校验） |
 | `eval.report.built` | weak | `onEvalReportBuilt` | **L3**：kind=candidate 才消费——done+verdict → C25 finish（eligible/rejected）；failed/无 verdict → C25 abort（回 candidate，失败不记成功）；其余 kind 跳过 |
+| `ledger.card_usage.logged` | weak | `onCardUsageLogged` | **L5**：卡片使用记录回流 → C28b `know_adoption_record`（采用事实落账；采用≠曝光≠有效结果；UNIQUE(source_event_id) 幂等）。usage jsonl 写入归 ledger 域，本域只消费 |
 | `approval.approved` | — | **不订阅（勘误）** | kind=knowledge-adopt 的采纳由 approval 域 `approval_effects` 经 dispatcher 幂等执行 `know_adopt`（C20，actor=approval，cause 链带 request_id；target/payload 取审批单字段，校验：subject≥8 字/draft≥50 字/source_url http(s)/evidence≥30 字——v4 校验规则保留为 manifest 前置） |
-| `fact.expired` / `fact.archived` | weak | `onFactArchived` | 受管区块依赖的 fact 计数变化 → AGENTS.md 定时全量刷新提前触发（防抖） |
+| `fact.expired` / `fact.archived` | weak | `onFactArchived` | **no-op 占位**（handler 实测返回 `{skipped:true}`；AGENTS.md 刷新归 memcore） |
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
-挂载：web + headless × actor=model。**不向模型注册**：`exp_approve_export`/`exp_revoke_export`（dashboard/human/approval/system）、`rule_seed`（script/human/system——先验库物理闸）、`know_adopt`（approval/dashboard/human）、`know_transition`（system/human）、`know_purge_archive`（system）、`know_episode_record`（**reactor 专用**——学习归属不采信模型自填）、`know_revision_assess`（**reactor 专用**——评测流转只信 eval 域事件信封）、`know_revision_publish`（**approval/human 专用**——发布走审批效果链）、`know_release_revoke`（dashboard/human）。**L4（2026-09-17）起另移除**：`exp_store` / `pb_save` / `vc_save` / `exp_update` / `exp_promote`（模型直写/原地改/自我晋升通道全部关闭——模型只产候选 revision（know_revision_propose），发布走独立评测 + 审批门禁）。投影零改名。
+挂载：web + headless × actor=model。**不向模型注册**：`exp_approve_export`/`exp_revoke_export`（dashboard/human/approval/system）、`rule_seed`（script/human/system——先验库物理闸）、`know_adopt`（approval/dashboard/human）、`know_transition`（system/human）、`know_purge_archive`（system）、`know_episode_record`（**reactor 专用**——学习归属不采信模型自填）、`know_revision_assess`（**reactor 专用**——评测流转只信 eval 域事件信封）、`know_revision_publish`（**approval/human 专用**——发布走审批效果链）、`know_release_revoke`（dashboard/human）、`know_adoption_record`（**reactor 专用**——采用事实落账）、`know_feedback_ingest`（**system 专用**——原生反馈桥）、`know_scores_rebuild`（system/dashboard）、`know_kb_vault_sync`（system/scheduler）。**L4（2026-09-17）起另移除**：`exp_store` / `pb_save` / `vc_save` / `exp_update` / `exp_promote`（模型直写/原地改/自我晋升通道全部关闭——模型只产候选 revision（know_revision_propose），发布走独立评测 + 审批门禁）。投影零改名。
 
 | 工具名 | 描述全文要点（即 agent_note，全文见 1.3/1.4） |
 |---|---|
@@ -590,35 +591,42 @@
 | kb_list / kb_read | 文献列表（curated first）/ 读全文（512KB 上限）。 |
 | rule_list / rule_read | 先验规程库索引/全文（79 篇：静态规程+案例库）。执行遵循规程优先级。 |
 | vc_get / vc_list | 漏洞卡全文（含版本链）/ registry 视图（active 优先）。 |
+| exp_list | 经验卡列表（status/tags/source 筛选 + 分页；reader=review 可看 cooling/archived）。 |
+| vc_coverage | 逐卡攻面覆盖（`{card_id, attack_surface, covered}`，非分组缺口矩阵）。 |
+| harvest_status | 收割队列健康度（drafts/candidates/last_ingest）。 |
+| know_health | 知识体检：exp/kb/rules/vulncards 各存储点 count/零使用占比/到期预警。 |
+| know_coverage | 知识覆盖缺口（漏洞卡 × 攻面 TAXONOMY 映射缺口 + 规程库覆盖统计）。 |
+| know_episode_list | 执行学习记录投影（来源事件/归属/六类结果/证据与 FGS 快照引用，按时间倒序）。 |
+| know_retrieval_explain | 分层检索解释（作用域→生命周期→适用谓词→来源等级；入选/未入选原因 + 计分证据链）。 |
+| know_learning_status | 学习状态聚合（每卡曝光/采用/有效结果/成本/计分 + 反馈桥 + 缺口 + active release 数）。 |
+| know_learning_trace | 学习追溯链（episode 或 artifact 入口 → 证据/revision/发布/采用/反馈/计分）。 |
+| know_exposure_record | 曝光回执（检索命中→实际展示，30s 桶去重；曝光≠采用≠有效结果）。 |
+| know_gap_record | 检索 miss/低覆盖登记；补建走候选通道（不直写使用面）。 |
+
+> **注**：上表为模型可见工具全量（10 命令 + 23 查询 = 33）。`exp_list` / `vc_coverage` / `harvest_status` / `know_health` / `know_coverage` / `know_episode_list` / `know_retrieval_explain` / `know_learning_status` / `know_learning_trace` / `know_exposure_record` / `know_gap_record` 为此前遗漏、本轮补齐。
 
 ### 1.7 看板 RPC 投影
 
-| RPC 名 | v4 来源 case | 投影到 |
-|---|---|---|
-| `know.exp.list` | expCards | Q4 |
-| `know.exp.get` | expCard 详情 | Q2 |
-| `know.exp.search` | （搜索走通用查询面） | Q1 |
-| `know.exp.feedback` | expFeedback | C2 |
-| `know.exp.promote` | expPromote | C4 |
-| `know.exp.deprecate` | expDeprecate | C5 |
-| `know.exp.update` | expUpdate | C3 |
-| `know.exp.approve_export` | expExportable | C9 |
-| `know.exp.revoke_export` | expExportable(0) | C10 |
-| `know.kb.list` | kbList（curated first + counts） | Q6 |
-| `know.kb.read` | kbRead（512KB） | Q7 |
-| `know.kb.import` | （v4 无看板导入，v5 补） | C11 |
-| `know.rules.list` | rulesList | Q8 |
-| `know.rules.read` | rulesRead | Q9 |
-| `know.vc.list` | （看板卡片区，v5 补） | Q11 |
-| `know.vc.save` | （v5 补） | C15 |
-| `know.vc.activate` / `know.vc.deprecate` | （v5 补） | C17/C18 |
-| `know.health` | knowledgeHealth 区 | Q14 |
-| `know.coverage` | knowledgeCoverage 覆盖缺口交叉表 | Q15 |
-| `know.playbooks` | playbooks | Q3（pbRank 视图） |
-| `know.harvest.status` | （v5 补） | Q13 |
-| `learningOverview` | （L6 学习面板五问，v5 补） | Q22（+Q17/Q19/episode 投影聚合） |
-| `learningTrace` | （L6 证据对照，v5 补） | Q23 |
-| `learningRevokeRelease` | （L6 撤回入口，v5 补；**只走受控动词**） | C27 |
+| 看板 case（dashboard-rpc） | 投影到（总线 v5） |
+|---|---|
+| `expCards` | Q4 `exp_list`（reader=review） |
+| `expFeedback` | C2 `exp_feedback`（actor=dashboard） |
+| `expPromote` | C4 `exp_promote` |
+| `expDeprecate` | C5 `exp_deprecate` |
+| `expUpdate` | C3 `exp_update` |
+| `expExportable` | C9 `exp_approve_export` / C10 `exp_revoke_export`（on=1/0） |
+| `kbList` | Q6 `kb_list`（curated first + counts） |
+| `kbRead` | Q7 `kb_read`（512KB） |
+| `rulesList` | Q8 `rule_list` |
+| `rulesRead` | Q9 `rule_read` |
+| `playbooks` | Q3 `exp_rank`（pbRank 视图） |
+| `knowledgeCoverage` | Q15 `know_coverage`（缓存直读，refresh 传参） |
+| `learningOverview` | Q22 `know_learning_status`（+Q16/Q17/Q19 投影聚合） |
+| `learningTrace` | Q23 `know_learning_trace` |
+| `learningRevokeRelease` | C27 `know_release_revoke`（**只走受控动词**） |
+| `memcore` | `memStatus`（knowledgeHealth 区；内部读 `exp_rank` / `fact_bb_read`） |
+
+> **勘误**：`know.*` 点分 RPC 名（`know.exp.list` / `know.kb.read` / `know.health` / `know.vc.*` / `know.harvest.status` 等）**不存在**。看板客户端仍用上列 v4 case 名，经 `dsh-plugin-sec-suite.dashboard-rpc.js` 适配层转总线 v5 查询/命令（`callRpc('expCards'|'kbList'|'rulesList'|'playbooks'|'knowledgeCoverage'|'learningOverview'|'learningTrace'|'learningRevokeRelease')` 等）。表中无对应 case 的能力（`exp_get` 搜索面、`kb_import`、`vc_list/save/activate/deprecate`、`harvest_status`）当前**无看板 RPC 入口**。
 
 ### 1.8 外部调用示例
 
@@ -657,63 +665,62 @@ sec query know know_health --actor script
 
 ### 2.1 数据模型
 
-**sqlite 后端**（`asset-db.db`——experience.js 建的库；表名不改）：
+**sqlite 后端**（`asset-graph.db`——WAL；表名不改）：
 
-#### exp_store 表（经验卡，kind: card|playbook）
+#### exp_cards 表（经验卡，kind: card|playbook；逻辑名 exp_store）
 
 | 列 | 类型 | 语义 |
 |---|---|---|
 | id | INTEGER PK AUTOINCREMENT | — |
 | kind | TEXT DEFAULT 'card' | card / playbook |
-| name | TEXT | playbook 唯一键（card 为空） |
-| trigger_words | TEXT(JSON array) | playbook 召回词集 |
-| scenario / takeaway / chain | TEXT | 卡主体（INV-K9 合计 ≤6000 字符） |
-| steps | TEXT | playbook 结构化步骤 |
+| scenario / takeaway / chain | TEXT | 卡主体（INV-K9 合计 ≤6000 字符）。**playbook 复用**：`scenario`=name、`chain`=JSON 步骤数组（steps）——无独立 `name` / `trigger_words` / `steps` 列 |
 | status | TEXT DEFAULT 'active' | draft / active / candidate(外部导入) / deprecated / cooling |
 | confidence | TEXT DEFAULT 'high' | high / medium / low |
-| source / source_url | TEXT | 溯源 |
+| source | TEXT | 溯源（source_url 存 evidence JSON，无独立列） |
 | evidence | TEXT(JSON array) | 合并追加的 {source, url, date} 集 |
-| score | REAL DEFAULT 0 | adopted×3 + useful×2 + uses×0.5 − wrong×5 − 复验天数×0.1（帽 top5） |
-| adopted / useful / wrong / uses | INTEGER DEFAULT 0 | 计数器 |
-| last_validated_at / updated_at / created_at | INTEGER | — |
+| score | REAL DEFAULT 0 | adopted×3 + pos_fb×2 + uses×0.5 − neg_fb×5 − min(复验天数×0.1, 5) |
+| adopted / pos_fb / neg_fb / uses | INTEGER DEFAULT 0 | 计数器（`pos_fb`=useful；`neg_fb`=wrong/outdated） |
+| last_validated_at / created_at | INTEGER | —（**无 updated_at 列**） |
 | exportable | INTEGER DEFAULT 0 | **fail-closed 默认 0**；vault 导出桥唯一开关 |
 | mem_class | TEXT DEFAULT 'permanent' | 只允许 permanent（INV-K2） |
 | justification | TEXT | R5 语义层必填 |
 | tags | TEXT(JSON array) | — |
 
-索引：`idx_exp_status(status, kind)`、`idx_exp_name(name)`；向量检索经 exp_embeddings。
+索引：`idx_exp_status(status, kind)`、`idx_exp_name(scenario)`（**索引列是 `scenario`，非 `name`**）；向量检索经 exp_embeddings。
 
-#### exp_embeddings 表：`card_id INTEGER PK, vec BLOB(384×float32)`（e5 模型，384 维）。
+#### exp_embeddings 表：`card_id INTEGER PK, vec TEXT`（JSON 序列化 384 维 float 数组；e5 模型，384 维）。
 #### exp_feedback 表：`id PK, card_id, verdict, note, ts, source`（评分重算的原始流水）。
-#### exp_archive 表：同构 + archived_at/archive_reason（C21 写入，90 天硬删）。
+#### exp_cards_archive 表：同构 + archived_at/archive_reason（C21 写入，90 天硬删）。
 
 #### kb_docs 表（文献索引——正文在文件系统）
 
-> **现状 schema 映射（Phase 2 硬前置，禁止无必要重命名）**：线上 `kb_docs` 表实列为 `id / title / file / source_url / category / status / revalidate_by / created_at ...`（358 行，2026-09-06 实测），正文文件在 `data/knowledge/`（**不是**早期草稿的 `data/kb/`）。v5 采用**保留现表列名 + 文档用逻辑名映射**：逻辑 `doc_id` = 现表 `id`（或内容 hash 派生），逻辑 `body_path` = 现表 `file`；正文路径按现状 `data/knowledge/` 为 backend root，**不做正文迁移、不新建 data/kb/**，未来若换路径另起版本。
+> **现状 schema 映射（禁止无必要重命名）**：`kb_docs` 基表实列为 `id / title / file / source_url / tainted / imported_at`，其余生命周期/分类列经 `ensureCol` 幂等补齐（见下表）；正文文件在 `data/knowledge/`（**不是**早期草稿的 `data/kb/`）。逻辑 `doc_id` = 现表 `id`（INTEGER，**不是** TEXT 内容哈希列），逻辑 `body_path` = 现表 `file`。表**无** `confidence` / `tags` / `source` / `doc_id_hash` / `updated_at` 列；复验抖动种子在代码中由 `docIdHash(title)` 计算（不落库）。
 
 | 列 | 类型 | 语义 |
 |---|---|---|
-| doc_id | TEXT PK | 内容 hash 派生（逻辑名；映射现表主键） |
-| title / url / category | TEXT | url sha1 = 导入幂等自然键 |
-| body_path | TEXT | `data/knowledge/{doc_id}.md`（**正文不进表**；映射现表 `file` 列） |
-| status | TEXT | active / curated / cooling / archived / expired |
-| confidence / tags / source | TEXT | — |
-| tainted | INTEGER DEFAULT 0 | taintguard 命中标记 |
-| doc_id_hash | INTEGER | **复验抖动种子**：`revalidate_by = now + 90d + ((doc_id_hash % 31) − 15)d` |
-| revalidate_by / last_validated_at / created_at / updated_at | INTEGER | — |
-| fetch_failures | INTEGER DEFAULT 0 | 重抓连续失败计数 |
-| uses / last_used_at | INTEGER | v5 ensureCol 补列（C13） |
+| id | INTEGER PK AUTOINCREMENT | 逻辑名 `doc_id`（非 TEXT 内容哈希列） |
+| title | TEXT NOT NULL | 标题 |
+| file | TEXT NOT NULL | 正文路径 `data/knowledge/{file}.md`（**正文不进表**；逻辑名 `body_path`） |
+| source_url | TEXT | 导入幂等自然键（url / `curated:<path>` / `vault://…`） |
+| tainted | INTEGER DEFAULT 0 | taintguard 命中标记（基表列） |
+| imported_at | INTEGER NOT NULL | 入库时间（基表列） |
+| status | TEXT DEFAULT 'active' | active / curated / cooling / archived / expired（ensureCol 补） |
+| category | TEXT | 自动分类（ensureCol 补） |
+| revalidate_by / last_validated_at | INTEGER | 复验期 / 最近确认（ensureCol 补） |
+| mem_class / scope / status_at / justification | TEXT/INTEGER | 生命周期列（ensureCol 补） |
+| fetch_failures | INTEGER DEFAULT 0 | 重抓连续失败计数（ensureCol 补） |
+| uses / last_used_at | INTEGER | ensureCol 补列（C13） |
 | last_fetch_error | TEXT | 最近一次抓取/索引失败原因（≤200 字；embedding 失败也落此处可见） |
-| body_revision | INTEGER DEFAULT 1 | 正文版本号，kb_revalidate(changed) 每次 +1（发布内容不可原地覆盖的计数锚点） |
+| body_revision | INTEGER DEFAULT 1 | 正文版本号，kb_revalidate(changed) 每次 +1 |
 | content_hash | TEXT | 正文 sha1（导入/换新时写入，供「内容是否变化」比对） |
 
 #### kb_fts 表（FTS5，**standalone 而非 external content**）
 
 设计裁定（修正任务书表述）：v4 实现（experience.js）中 kb_fts 是独立 FTS5 表，非 external content 模式——因为 kb_docs 表**不含 body 列**（正文在文件系统），external content 需要内容列在宿主表，结构性不可行（exp_fts 用 external content 是因 exp_store 有 scenario/takeaway 实列）。v5 保留 standalone 模式：kb_import/kb_revalidate 事务内同步维护 fts 行（title+body 前若干 KB）；代价是正文变更需双写，收益是 drop 查询无回表依赖。契约测试补"fts 行数 = kb_docs 行数"断言。
 
-#### kb_embeddings 表：`doc_id TEXT PK, vec BLOB(384)`。
+#### kb_embeddings 表：`doc_id INTEGER PK, vec TEXT`。
 
-#### kb_archive 表：同构 + archived_at/archive_reason。
+#### kb_docs_archive 表：同构 + archived_at/archive_reason。
 
 #### learning_episodes 表（L1，2026-09-16；owner=know，幂等建表）
 
@@ -739,11 +746,11 @@ sec query know know_health --actor script
 
 | 路径 | 形态 | 写入者 |
 |---|---|---|
-| `data/rules/` | 79 篇 Markdown（static 57 + cases 22；src 4/srcskill 2/techniques 46/web 3/php 1 分层） | C14 rule_seed（tmp+rename 原子） |
+| `data/rules/` | 79 篇 Markdown（static 57 + cases 22；src 4/srcskill 2/techniques 47/web 3/php 1 分层） | C14 rule_seed（tmp+rename 原子） |
 | `data/vulncards/` | VC-xxx YAML 18 张 + registry.md + ideas/IdeaCard | C15/C17/C18（usage 台账在 ledger 域 `data/pipeline/`，本域不 owns） |
 | `data/harvest/drafts/` + `candidates.json` | 收割草稿 | C19 |
 | `data/knowledge/{doc_id}.md` | 文献正文 | C11（kb 子仓，file 形态由 sqlite 命令带出） |
-| `data/vault-export-cards/` | **vault 导出暂存（独立目录，不复用 data/vault-export/）** | 导出桥（域内维护任务，见 2.3） |
+| `data/vault-import/` | vault 回流收件目录（owns） | C32 `know_kb_vault_sync`（rsync 拉取）；**导出桥 `data/vault-export-cards/` 未实现（见 2.3）** |
 
 ### 2.2 状态机与不变量
 
@@ -755,7 +762,7 @@ sec query know know_health --actor script
                     ▼                                  ▼
    draft ──exp_promote──▶ active ──exp_deprecate──▶ deprecated（终态）
    （外部导入 status=candidate，降权 ×0.5 可见，promote 转正）
-   active ──know_transition(to=archived)──▶ exp_archive 表（memcore sweep：score 长期 <0 / 90d 零使用零反馈）
+   active ──know_transition(to=archived)──▶ exp_cards_archive 表（memcore sweep：score 长期 <0 / 90d 零使用零反馈）
    active: score 动态重算（feedback/usage 事件驱动），Top5 注入开局上下文
 ```
 
@@ -769,7 +776,7 @@ kb_import ──▶ active（revalidate_by = 90d ±15d 抖动）
    ├─ kb_revalidate(unchanged) ──▶ 刷 revalidate_by（仍是 active）
    ├─ kb_revalidate(changed) ──▶ body 更新 + tainted 重扫（仍 active）
    ├─ 复验逾期（sweep 判定）──know_transition──▶ cooling（降权 ×0.7 可见）
-   ├─ cooling 超 30d ──know_transition──▶ archived（kb_archive 表）
+   ├─ cooling 超 30d ──know_transition──▶ archived（kb_docs_archive 表）
    ├─ 重抓连续失败超阈值 ──know_transition──▶ archived（reason=fetch_failed）
    └─ curated 行：恒 curated（免复验、免 taintguard 生命周期、免治理流转、检索恒在前）
 ```
@@ -802,9 +809,9 @@ kb_import ──▶ active（revalidate_by = 90d ±15d 抖动）
 
 | 命令 | 事务内 | 事务后（最终一致） |
 |---|---|---|
-| C1 exp_store | embedding 比对读 + UPSERT + embeddings 行 | know.exp.stored / merged；受管区块刷新（防抖） |
+| C1 exp_store | embedding 比对读 + UPSERT + embeddings 行 | know.exp.stored / merged（AGENTS.md 受管区块由 memcore 周期重写，非本域事件） |
 | C2 exp_feedback | feedback INSERT + score 重算 | know.exp.feedback |
-| C4 exp_promote | status UPDATE + score 重算 | know.exp.promoted；受管区块刷新 |
+| C4 exp_promote | status UPDATE + score 重算 | know.exp.promoted（受管区块刷新归 memcore） |
 | C7/C8 | playbook UPSERT / rank 重算 | know.exp.stored / feedback |
 | C9/C10 | exportable UPDATE | export.approved/revoked；C10 tombstone → vault 删除（弱联动） |
 | C11 kb_import | kb_docs INSERT + kb_fts + kb_embeddings 三写 | know.kb.imported |
@@ -815,16 +822,20 @@ kb_import ──▶ active（revalidate_by = 90d ±15d 抖动）
 | C20 know_adopt | 分派子仓命令（其事务即本事务语义） | know.adopted + 子仓事件 |
 | C21 know_transition | archive 复制 + 主表删 | know.*.cooled/expired/archived |
 
-#### AGENTS.md 受管区块（本域生成与维护）
+#### AGENTS.md 受管区块（memcore 生成，本域只提供数据投影）
 
-**内容**（v4 rewriteAgentsMd 四区块，v5 归 know 域）：
+**生成者**：`dsh-plugin-sec-memcore.js` 的 `rewriteAgentsMd()`（标记 `<!-- memcore:begin -->`…`<!-- memcore:end -->`），经总线只读查询 `know.exp_rank` + `fact.bb_read` 取数后写 `data/AGENTS.md`。**know 域不生成、不维护该区块**（本域 manifest 无对应写入动词，也无触发其刷新的事件订阅）。**刷新机制**：memcore sweeper 按 `config.intervalHours`（默认 6h）调 `sweep({ agentsMd: true })` 重写；**无 5s 防抖事件刷新**。
 
-1. Top5 经验卡（score 前五，含 scenario 摘要 + takeaway）；
-2. env-issue 区（**数据源跨域**：订阅 `fact.bb.published` 取 [env-issue] 前缀条目——fact 域 owns 数据，know 域 owns 渲染）；
-3. 任务开局三步检索指引（fact_search → exp_search → kb_search）+ 写记忆前三问；
-4. 动词速查表（按域分组的工具名一览）。
+**内容**（memcore 四区块）：
 
-**刷新时机**：
+1. 高分经验卡（permanent·active Top5，score 降序，含 scenario 摘要 + takeaway）；
+2. 现行环境故障 [env-issue]（数据源跨域：取 `fact.bb_read` 黑板 `[env-issue]` 前缀 active 条目——fact 域 owns 数据、memcore owns 渲染）；
+3. 记忆纪律（写记忆前三问）；
+4. 知识检索三步顺序（fact_search → exp_search → kb_search）。
+
+> **设计意图留档（未实现的事件化刷新）**：下表为早期设计的 know 事件驱动防抖刷新；现行实现只有 memcore sweeper 周期重写，know 域未订阅这些事件，故整表标记为未实现。
+
+**刷新时机（设计意图，未实现）**：
 
 | 触发 | 模式 |
 |---|---|
@@ -833,29 +844,31 @@ kb_import ──▶ active（revalidate_by = 90d ±15d 抖动）
 | know.adopted | 防抖 5s |
 | 每日定时（调度 04:50，早于 kbVaultSync 05:00） | 全量兜底刷新 |
 
-与 17-llm-surface.md 分工：本域定义**数据来源与生成时机**；AGENTS.md 的挂载位置与 prompt 注入方式归 17。
+与 17-llm-surface.md 分工：memcore 定义**数据来源与生成时机**；AGENTS.md 的挂载位置与 prompt 注入方式归 17。
 
-#### vault 导出桥（域内维护任务，6h 周期 + 事件触发）
+#### vault 导出桥（**未实现**——无 6h 维护任务、无 `data/vault-export-cards/` 目录）
+
+> **未实现**：现行代码只有 `exp_approve_export` / `exp_revoke_export` 两个命令（exportable 0↔1）与 `data/vault-import/`（vault 回流收件目录）；**没有域内 6h 周期导出维护任务，也没有 `data/vault-export-cards/` 暂存目录 / rsync 推送 / tombstone 同步**。以下为设计留档。
 
 ```
-[资格判定] exp_store 行: permanent ∧ active ∧ exportable=1（默认 0 fail-closed）
+[资格判定] exp_cards 行: permanent ∧ active ∧ exportable=1（默认 0 fail-closed）
       │
-[脱敏硬门] authz 域 scope.yml 域名集（经总线只读查询，mtime 缓存 5min——缓存语义保留 v4）
-      │ 命中 → exp_revoke_export(actor=system, tombstone=true)  ← 自动降级通道
+[脱敏硬门] authz 域 scope.yml 域名集（**直接读文件系统，每次调用按 mtime 比对重载——非总线查询、非 5min TTL**）
+      │ 命中 → exp_revoke_export(actor=system, tombstone=true)  ← 自动降级通道（设计；未实现周期扫描）
       ▼
 [导出] 生成 Markdown（frontmatter: source_system: silksecagent  ← 防循环铁律）
-      → data/vault-export-cards/（独立暂存目录——不复用 data/vault-export/，
+      → data/vault-export-cards/（**未实现**；实际 vault 目录为 data/vault-import/，
         避免与 Obsidian LiveSync 双向目录混淆）
       → rsync silkspool@192.168.7.230（VAULT_IMPORT_REMOTE，v4 管道沿用）
 [tombstone] C10 撤销时：vault 端对应文件删除（rsync --delete 语义经清单比对）
 ```
 
-- **防循环铁律**：导出 frontmatter `source_system: silksecagent`；kb_import 检测该标记拒绝导入（INV-K10）——vault 回流（K07 → kb_import）与导出形成单向环，物理防死循环。
-- 失败语义：弱联动（audit 记 failed，下一周期重试）；导出失败不阻断任何写命令。
+- **防循环铁律**（该部分已实现）：导出 frontmatter `source_system: silksecagent`；`kb_import`/`know_kb_vault_sync` 检测该标记拒绝导入（INV-K10）——vault 回流与导出形成单向环，物理防死循环。
+- 失败语义（设计）：弱联动（audit 记 failed，下一周期重试）；导出失败不阻断任何写命令。
 
 #### memcore 关系（本域 69 处裸 SQL 的 know 部分）
 
-memcore 对 exp_*/kb_* 的直写（validateWrite 分支、transition、recordSignal、sweep、rewriteAgentsMd、exportVault、kbVaultSync 触发的复验判定）全部归零：
+memcore 对 exp_*/kb_* 的直写（validateWrite 分支、transition、recordSignal、sweep、exportVault、kbVaultSync 触发的复验判定）全部归零；**`rewriteAgentsMd` 例外——它仍由 memcore 自持**（只读经总线，见 2.3 上节）：
 
 | # | v4 memcore 动作（对 exp/kb） | v5 通道 |
 |---|---|---|
@@ -864,32 +877,37 @@ memcore 对 exp_*/kb_* 的直写（validateWrite 分支、transition、recordSig
 | 3 | transition（archive 复制 + FTS/向量索引清理） | know_transition + 事务内 kb_fts/kb_embeddings/exp_embeddings 行删除 |
 | 4 | recordSignal（score 重算） | exp_feedback / exp_record_usage / kb_record_usage 命令 |
 | 5 | sweep 的 exp/kb 分支（复验逾期→cooling→archived、90d 硬删） | memcore 订阅者调 know_transition / know_purge_archive |
-| 6 | rewriteAgentsMd | 本域受管区块生成器（2.3 上节） |
-| 7 | exportVault | exp_approve_export / exp_revoke_export + 导出桥维护任务 |
+| 6 | rewriteAgentsMd | **仍由 memcore 自持**（读总线 exp_rank + fact.bb_read 后写 data/AGENTS.md；know 域不生成，见 2.3 上节） |
+| 7 | exportVault | exp_approve_export / exp_revoke_export（命令已实现）；导出桥维护任务 **未实现**（2.3） |
 | 8 | kbVaultSync（每日 05:00 vault→kb 回流） | **L6：task 域调度器每日 05 时后首个 tick 调 C32 `know_kb_vault_sync`（actor=scheduler）**——自 v4 experience.kbVaultSync 迁入域内受控命令；防循环/去重口径不变 |
 | 9 | verifyExpRefs（卡引用校验） | 契约测试与 know_health 体检（Q14 warnings） |
-| 10 | scopeReload 缓存 | authz 域只读查询 + 本域 5min mtime 缓存（语义保留） |
+| 10 | scopeReload 缓存 | 本域直接读文件系统 scope.yml + 每次调用按 mtime 比对重载（不经总线、无 5min TTL） |
 
 （fact 部分映射表见 06-fact.md §2.3；两表合计覆盖 memcore.js 全部 69 处裸 SQL 写调用。）
 
 ### 2.4 后端适配器
 
-**repository 接口**（`backend/repository.js`，两实现——sqlite 与 file，域内 commands 层按子仓路由）：
+**repository 接口**（实际为 `dsh-plugin-sec-backend-know-sqlite.js` 与 `dsh-plugin-sec-backend-know-file.js` 两个独立插件，均导出 `repositoryV1 = 'repository-v1'`；域内 commands 层按子仓路由——**不存在 `backend/repository.js` 统一接口文件**）：
 
 ```js
-// sqlite 子仓（exp/kb）
-getExpCard(id) / findExpByContentHash(hash) / upsertExpCard(row) / appendExpEvidence(id, ev)
+// sqlite 子仓（exp/kb）—— dsh-plugin-sec-backend-know-sqlite.js
+getExpCard(id) / findExpByScenario(scenario) / findExpPlaybookByName(name)
+insertExpCard(row) / updateExpCard(id, fields) / appendExpEvidence(id, ev, takeaway, confidence, source)
 insertExpFeedback(row) / recomputeExpScore(id) / replaceExpEmbedding(id, vec)
-listExpWhere(whereSql, args, limit, offset) / countExpWhere(whereSql, args)
-ftsSearchExp(q) / vectorNeighbors(vec, k)          // 检索原语，融合在查询层
-getKbDoc(doc_id) / findKbByUrlHash(h) / insertKbDoc(row) / updateKbDoc(doc_id, fields)
-upsertKbFts(doc_id, title, bodyExcerpt) / deleteKbFts(doc_id)
-replaceKbEmbedding(doc_id, vec) / listKbWhere(...) / countKbWhere(...)
+listExpWhere(whereSql, args, order, limit, offset) / countExpWhere(whereSql, args)
+ftsSearchExp(q, limit) / allExpEmbeddings()            // 检索原语，融合在查询层（无 vectorNeighbors）
+expAggregates() / expRankTop(limit) / pbRankTop()
+getKbDoc(doc_id) / findKbByUrl(url) / insertKbDoc(row) / updateKbDoc(doc_id, fields)
+upsertKbFts(doc_id, title, bodyExcerpt) / deleteKbFts(doc_id) / ftsSearchKb(q, limit)
+replaceKbEmbedding(doc_id, vec) / listKbWhere(...) / countKbWhere(...) / allKbEmbeddings()
 archiveExp(id, reason, at) / archiveKb(doc_id, reason, at) / purgeExpArchives(before) / purgeKbArchives(before)
 
-// file 子仓（rules/vulncards/harvest/usage）
+// file 子仓（rules/vulncards/harvest）—— dsh-plugin-sec-backend-know-file.js
 writeFileAtomic(path, content) / readFile(path) / listDir(path)
-appendJsonl(path, line)
+rulesList(q) / ruleRead(rel) / ruleSeed(rel, content)
+vcRead(id) / vcList() / vcSave(id, content, slug) / vcSetStatus(id, status)
+harvestStatus() / harvestWrite(drafts, candidates)
+knowledgeWrite(docId, content) / knowledgeRead(docId) / coverageRead()   // 无 appendJsonl
 ```
 
 **能力矩阵**：
@@ -923,11 +941,11 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 
 | 缓存 | 位置 | 失效 |
 |---|---|---|
-| scope.yml 域名集 | 域内，mtime 检查 5min | 文件 mtime 变化即重载（v4 scopeReload 语义保留） |
+| scope.yml 域名集 | 域内直接读文件系统 | 每次调用按 mtime 比对，变化即重载（**无 5min TTL**） |
 | embedding 模型实例 | 进程内单例 | — |
 | kb_import 的 url hash | 幂等表（自然键） | 7 天 LRU |
 | AGENTS.md 受管区块 | 文件即缓存本体 | 事件防抖刷新 + 每日全量兜底（2.3 时机表） |
-| Q3 exp_rank / Top5 | 计算缓存 60s | 任何 exp.* 事件即失效 |
+| Q3 exp_rank / Top5 | **未实现**（无 60s 计算缓存——每次直查 DB） | — |
 | curated 索引行 | sqlite（真相在 file） | rule_seed 时同步；每日兜底任务校对行数 = 文件数 |
 
 ### 2.6 性能与容量
@@ -950,6 +968,10 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 
 ### 3.1 现状代码映射（行级）
 
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
+
+> **experience.js 现状（2026-09-19）**：文件 751 行，函数实际位置 `186`(expStore)/`282`(ftsSearch)/`299`(expSearch)/`434`(kbImport)/`505`(kbSearch)/`567`(kbIndexCuratedRules)/`622`(kbVaultSync)/`650`(pbSave)/`678`(pbOutcome)/`702`(pbRank)；**已无工具注册**（`apply()` 仅保留 memcore 生命周期注入与 curated 索引 / playbook 迁移，工具面由 know 域接管）。下表全部 `experience.js L…` 行号均为迁移期旧值、已失效。
+
 | v4 位置 | 内容 | v5 去向 |
 |---|---|---|
 | experience.js L30-90 | exp_store/exp_embeddings/exp_feedback/kb_docs/kb_fts/kb_embeddings DDL | sqlite 子仓 schema（2.1） |
@@ -959,26 +981,26 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 | experience.js L262-300 | kbImport（抖动 `((docIdHash % 31) − 15) × DAY` + taintguard + 分类） | C11 |
 | experience.js L302-340 | kbSearch（curated first） | Q5 |
 | experience.js L342-380 | kbIndexCuratedRules（79 篇建 curated 行） | C14 rule_seed 的 curated 联动半 |
-| experience.js L382-450 | kbVaultSync（VAULT_IMPORT_REMOTE rsync） | 调度任务调 C11（2.3 导出桥对向） |
-| experience.js L452-520 | pbSave/pbOutcome/pbRank | C7/C8/Q3 |
-| experience.js L522-908 | 12 个工具注册 | 1.6 投影（描述更新 v5 语义） |
+| experience.js L382-450（旧行号） | kbVaultSync（VAULT_IMPORT_REMOTE rsync，**旧行号已失效；现 622 行**） | **C32 `know_kb_vault_sync`（actor=system/scheduler）**——vault 回流迁入域内受控命令（非"调度任务调 C11"） |
+| experience.js L452-520（旧行号） | pbSave/pbOutcome/pbRank | C7/C8/Q3 |
+| experience.js L522-908（旧行号） | 12 个工具注册（**已失效**） | **现已无工具注册**——工具面由 1.6 投影，`apply()` 不再 register |
 | memcore.js POLICIES.exp/kb | 策略值 | 2.2 状态机 + INV-K1~K12 |
 | memcore.js validateWrite（exp/kb 分支） | R5/R8/R9 校验 | 网关不变量 |
 | memcore.js recordSignal | score 重算 | C2/C6/C13 命令 |
 | memcore.js transition（exp/kb 分支 + 索引清理） | 归档 | know_transition（事务内含 fts/embeddings 清理） |
 | memcore.js sweep（exp/kb 分支） | 复验/硬删 | memcore 订阅者调 C21/C22 |
-| memcore.js rewriteAgentsMd | 受管区块 | 本域生成器（2.3） |
-| memcore.js exportVault | 导出桥 | C9/C10 + 维护任务 |
-| memcore.js scopeReload | 域名集缓存 | authz 只读查询 + 5min 缓存 |
-| dashboard-rpc.js expCards/expFeedback/expPromote/expDeprecate/expUpdate/expExportable | 看板经验区 | RPC know.exp.*（1.7） |
-| dashboard-rpc.js kbList/kbRead | 看板文献区 | RPC know.kb.* |
-| dashboard-rpc.js rulesList/rulesRead | 看板规程区 | RPC know.rules.* |
-| dashboard-rpc.js playbooks | 看板剧本区 | RPC know.playbooks |
-| dashboard-rpc.js knowledgeCoverage | 体检区 | Q14 know_health |
-| sec-suite.js knowledge-adopt 审批 kind | 校验（subject≥8/draft≥50/source_url/evidence≥30）+ onApprove（expPromote 或 INSERT external/low） | approval.approved 订阅 → C20 know_adopt（校验规则进 manifest 前置） |
-| scheduler.js kbVaultSync 05:00 | 每日回流 | 调度任务调 C11（actor=script） |
+| memcore.js rewriteAgentsMd | 受管区块 | **仍由 memcore 自持**（读总线 exp_rank + fact.bb_read；know 域不生成——见 2.3） |
+| memcore.js exportVault | 导出桥 | C9/C10 命令已实现；**导出桥维护任务未实现**（2.3） |
+| memcore.js scopeReload | 域名集缓存 | 本域直接读文件系统 + 每次调用按 mtime 比对（不经总线、无 5min TTL） |
+| dashboard-rpc.js expCards/expFeedback/expPromote/expDeprecate/expUpdate/expExportable | 看板经验区 | 看板 case 名不变，适配层转总线 v5 命令/查询（1.7；**无 `know.exp.*` 点分 RPC**） |
+| dashboard-rpc.js kbList/kbRead | 看板文献区 | 看板 case 名不变，转 Q6/Q7（**无 `know.kb.*`**） |
+| dashboard-rpc.js rulesList/rulesRead | 看板规程区 | 看板 case 名不变，转 Q8/Q9（**无 `know.rules.*`**） |
+| dashboard-rpc.js playbooks | 看板剧本区 | 看板 case 名不变，转 Q3 `exp_rank`（**无 `know.playbooks`**） |
+| dashboard-rpc.js knowledgeCoverage | 体检区 | 看板 case 名不变，转 Q15 `know_coverage`（**Q14 `know_health` 经 memcore `memStatus`**） |
+| sec-suite.js knowledge-adopt 审批 kind（**已 shut closed**） | 校验（subject≥8/draft≥50/source_url/evidence≥30）+ onApprove（expPromote 或 INSERT external/low）——v4 exp_cards 直写通道已关闭 | 改由 **approval 域 `approval_effects` 执行端幂等调 C20 `know_adopt`**（actor=approval；校验规则进 manifest 前置）；本域**不订阅** `approval.approved` |
+| scheduler.js kbVaultSync 05:00 | 每日回流 | **C32 `know_kb_vault_sync`（actor=system/scheduler）**——v4 调度循环已停用，task 域调度器每日 05 时后首个 tick 触发 |
 | seed-skills.sh | 79 篇 install+cmp 幂等安装 | C14 rule_seed（file 后端；bundle 升级链沿用 install+cmp 语义） |
-| kb-harvest.py | 收割管道（TAXONOMY 25 攻面） | C19 harvest_ingest 的 exec 域 run_cli 包装（脚本本体微改：落库改调总线命令） |
+| kb-harvest.py | 收割管道（TAXONOMY 25 攻面） | **未被 C19 harvest_ingest 调用**——`harvest_ingest` 用内联 `classify()`（12 关键词正则）；kb-harvest.py 仅由部署脚本安装，未接入总线命令 |
 
 ### 3.2 兼容别名与观察期
 > **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
@@ -986,13 +1008,13 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 | v4 工具名 | v5 动词/查询 | 备注 |
 |---|---|---|
 | `exp_store` / `exp_search` / `exp_feedback` / `pb_save` / `pb_outcome` / `kb_import` / `kb_search` / `kb_list` / `kb_read` / `vc_get` / `rule_list`（等 12 工具名） | 同名直通 | 零改名（1.1 命名裁定） |
-| `exp_validate` | `exp_feedback(verdict='validated')` | 折叠别名（一个观察期后删） |
-| `card_usage_log` | `ledger_log_card_usage`（**ledger 域跨域别名**） | 改名别名（exec 域工具统计侧同步改引） |
-| `exp_exportable`（RPC） | `know.exp.approve_export` / `revoke_export` | RPC 别名（v4 单 case 拆两动词） |
-| `knowledge_health` | `know_health` | 别名 |
-| RPC expCards/kbList/rulesList/playbooks/knowledgeCoverage | know.** 点分名 | 看板客户端同步改写 |
+| `exp_validate` | `exp_feedback(verdict='validated')` | **历史留档**：折叠别名，别名层已于 2026-09-19 移除 |
+| `card_usage_log` | `ledger_log_card_usage`（**ledger 域跨域别名**） | **历史留档**：改名别名，调用方当时已迁 `ledger_log_card_usage`（exec 域工具统计侧同步改引）；别名层已移除 |
+| `exp_exportable`（RPC） | `know.exp.approve_export` / `revoke_export` | **历史留档**：RPC 别名（v4 单 case 拆两动词）；看板实际仍用 `expExportable` case 适配 |
+| `knowledge_health` | `know_health` | **历史留档**：别名，别名层已移除 |
+| RPC expCards/kbList/rulesList/playbooks/knowledgeCoverage | know.** 点分名 | **历史留档**：看板客户端当时同步改写；实际点分 RPC 未落地，仍用 v4 case 名（1.7） |
 
-观察期一个调度周期（7 天，audit 零使用验收）；prompt 引用脚本化改写（p14-1 模式）+ discipline-audit.py 悬空引用断言（宪法 §十五.4）。**注意 exp_validate 折叠与 card_usage_log 改名涉及 exec/scheduler 侧调用方**，改写清单在 18-migration.md 汇总。
+观察期原为一个调度周期（7 天，audit 零使用验收）；prompt 引用已按 p14-1 模式脚本化改写，并由 discipline-audit.py 悬空引用断言（宪法 §十五.4）复核。**当时 `exp_validate` 折叠与 `card_usage_log` 改名涉及 exec/scheduler 侧调用方**，改写清单在 18-migration.md 汇总。
 
 ### 3.3 数据迁移脚本要点
 
@@ -1001,7 +1023,7 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 3. curated 行校验：`kb_docs WHERE status='curated'` 计数 = 79；偏差则重跑 rule_seed 幂等修复。
 4. mem_class 校验：exp_store 全行 permanent（v4.7 已迁移）；异常行打 report 人工处置（不自动改写——permanent 资产）。
 5. exportable 资格复核：对现有 exportable=1 行过一遍 INV-K8 脱敏门（scope.yml 当前域名集）；命中者 exp_revoke_export(actor=system, reason='migration rescan')。
-6. data/vault-export-cards/ 目录初始化（空目录 + .gitignore）；与 data/vault-export/ 的存量混淆排查（如发现旧导出残留，移入新目录并补 source_system frontmatter）。
+6. ~~`data/vault-export-cards/` 目录初始化~~（**未实现**——导出桥未落地，见 2.3；实际 vault 回流收件目录为 `data/vault-import/`，由 C32 维护）。
 7. AGENTS.md 受管区块首次全量生成（迁移时刻起本域接管；v4 memcore 的区块标记注释沿用，非受管区不动）。
 8. 事件日志 data/events/know.jsonl 从迁移时刻起算；回滚 = 域插件停用回 v4 直调路径（表结构向后兼容）。
 9. **L2 候选卡种子**（2026-09-17）：`know_revision_propose` 部署通道种子——know 域 setup 契约测试通过后，经 `scripts/pipeline/sec-bus-cli.mjs dispatch know.know_revision_propose --actor script` 把版本受控的候选卡模板（`data-seed/know-revisions/vc-authz-r1.json`）幂等写入 knowledge_revisions（自然键 artifact+digest 保证重放零重复）。
@@ -1075,7 +1097,7 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **C30 `know_gap_record`**：检索 miss/低覆盖登记；补建走 know_revision_propose 候选通道（INV-K14 闸不变），不直写使用面。
 - **Q22 `know_learning_status`**：每卡曝光/采用/有效结果/成本/计分聚合 + 反馈桥状态 + 缺口 + active release 数——报告效果与成本而非 uses 榜单。
 - **新表 5 张**（幂等建表，见 2.1）：know_exposures / know_adoptions / know_feedback / know_scores / know_gaps。
-- **契约测试**：know 60→69 全绿（L5 九用例：分层召回/跨 Program 排除/eligible 不进召回/撤回恢复旧版本/失效负知识排除/曝光桶去重/采用双通道幂等/计分重放重建+撤回撤销+模型自评单列/反馈幂等与编辑撤回/actor 闸/缺口登记）。
+- **契约测试**：know 60→70 全绿（L5 十用例：分层召回/跨 Program 排除/eligible 不进召回/撤回恢复旧版本/失效负知识排除/曝光桶去重/采用双通道幂等/计分重放重建+撤回撤销+模型自评单列/反馈幂等与编辑撤回/actor 闸/缺口登记）。
 - **原生反馈桥**（`@silksec/sec-feedback-bridge`，web profile 专用）：消费 DSH rc.2 message-feedback 的 session/event + feedback/committed 事件 → know_feedback_ingest；DSH 侧 messageFeedback 服务未挂载时显式 unsupported（日志 + 状态文件），不伪造反馈流量；反馈留在本地，不落盘正文。
 
 ## 十二、2026-09-17 学习专项 L6 实施回填（完整运营体验）
@@ -1085,4 +1107,4 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **C32 `know_kb_vault_sync`**（设计 §10 调度切换配套）：vault 回流自 v4 experience.kbVaultSync 迁入域内受控命令（actor=system/scheduler；防循环 source_system 拒绝、source_url 去重幂等、单次 500 篇上限不变），task 域调度器每日 05 时（北京）后首个 tick 触发。owns.files 增 `data/vault-import/`。
 - **曝光计分修复**：C28 `know_exposure_record` 落账现在同步触发单卡计分重算（L5 遗留缺口——曝光数此前不刷新 know_scores 投影）。
 - **后端增量**：listEpisodesByCard / listAdoptions（分页）/ listFeedbackForArtifact（追溯链取数原语）。
-- **契约测试**：know 69→73 全绿（L6 用例：C32 导入/防循环/幂等/actor 闸、Q22 三层聚合与小样本档、Q23 双入口全链）。
+- **契约测试**：know 70→73 全绿（L6 用例：C32 导入/防循环/幂等/actor 闸、Q22 三层聚合与小样本档、Q23 双入口全链）。

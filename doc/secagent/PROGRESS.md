@@ -10,6 +10,7 @@
 
 | 日期 | 变更 | 结果 |
 |---|---|---|
+| 2026-09-19 | **文档漂移排查 B3（`02-vuln`/`03-asset`/`04-endpoint`/`05-task`/`06-fact`/`07-know`）**：以 csai 运行态 + manifest/后端逐域核验——vuln 补 `vuln_evidence_put`（实为 13 命令）、C2 actor 增 dashboard、C9/C11 去伪「+分钟」、§1.7 删不可达 RPC（verifyReplay/registerSignal）；asset 六命令幂等键改为 auto 字段指纹、`owner` 列与 `--proposal` 标注未实现、RPC `asset.detail→asset.get`；endpoint 幂等键/`E_ENDPOINT_QUEUE_EMPTY`/`urls 上限`/RPC 名纠偏（实际仅 endpoints/endpointHosts）、surface_scan 形状 `{url,keyword,source}`；task 17 命令/11 查询对齐（补 task_drift）、续期重试与状态机纠偏（`in_progress` 不存在）、§1.5 补 `know.release.revoked`；fact 工具 13→14（补 fact_overview）、C1 actor 增 reactor、RPC `fact.bb.read→fact.bb_read`、行数 873/761 刷新；know 表/列名回正（exp_cards / exp_cards_archive / kb_docs_archive / scenario·chain / pos_fb·neg_fb）、§1.7 去伪点分 RPC 名、L5/L6 用例 60→70→73；六域 §3.1 统一加「历史留档（v4→v5 迁移期）」横幅、§3.2 观察期段落改历史时态、测试数按实测（vuln 50+9 / asset 30 / endpoint 25 / task 38 / fact 23 / know 73） | B3 闭环；仅改文档未动运行态（05-task 因执行顺序已单独先行提交） |
 | 2026-09-19 | **文档漂移排查 B2（`00-conventions` / `01-bus`）**：以 csai 运行态为准逐项核验——bus_status 实测 `aliases.count=0`（旧例 31/finding_update 系漂移）、`mount`/`bus.degraded` 字段缺失、audit_tail/events_tail 缺 `operator`/`offset`；`bus_replay` 的 `E_BUS_REPLAY_RANGE`、replay 锁 `E_CONFLICT`、`result_json` 64KB 截断、audit 重试队列均为未实现的设计预留，已显式标注；R3 补 `to` 治理豁免（fact/know_transition）、R4 改指实际 `bus.domain.rejected`/`E_BUS_DOMAIN_REJECTED`；audit「⑪不回滚」矛盾改为 fail-closed 回滚；actor 值域八→十、timeout 上限 3670000→7270000；`/silksec-dashboard` 52→56 case fail-closed UI 适配层；bus 契约数 52→51；业务域数 15→14；文档路径 `v5/{NN}`→`doc/secagent/{NN}`；§3.1 加「历史留档」横幅 | B2 闭环；BUS 51/51 全绿（csai 实跑） |
 | 2026-09-19 | **兼容别名层彻底移除**：迁 dashboard-rpc finding 状态流转与 ui-session「登记候选漏洞」到语义动词（`vuln_confirm/reject/submit`、`vuln_register_candidate` actor 增 dashboard）；`bus.aliases.yaml` 空注册表；删 bus v4-dup-shape/dup_of 放宽；eval 契约删 `freeform-status-update` | 全 14 域契约测试全绿；accept 39/39、ui-headless 70/70；discipline-audit `aliases=0 / dangling=0 / deprecated=0` |
 | 2026-09-19 | **旧版统一清理**（用户授权跳过并排观察）：删看板旧单体 `@silksec/sec-dashboard`（含 `-old`/Modal/footer）、v4 调度循环 `sec-suite.scheduler.js`、v4 重复工具（asset-graph 9 + sec-pipeline 3）、一次性脚本与旧构建产物、死码 `sec-suite.parsers.js` | 看板唯一形态 = ui-core/ui-panel + 6 承载面包 + 7 域视图包；14 域 registered；定时任务无扰动 |
@@ -35,7 +36,7 @@
 |---|---|---|---|
 | **B1** | `16-dashboard`（合并原 19）、`17-llm-surface`、`18-migration`、`README`/本文件结构 | 看板/UI 文档合并；两 RPC 通道实测；56 case 口径；别名层已删；D3 删旧；旧单体删除 | ✅ **2026-09-19 完成（本会话）** |
 | **B2** | `00-conventions`、`01-bus` | 宪法条款 vs 总线实现（R1–R9、幂等三级键、audit fail-closed、别名空表、端点命名）；宪法 §十一/§十五 与运行态对照 | ✅ **2026-09-19 完成（本会话）** |
-| **B3** | `02-vuln`、`03-asset`、`04-endpoint`、`05-task`、`06-fact`、`07-know` | 各域 manifest commands/queries/events/actor 白名单/invariants 与文档 §1.2/§1.4/§1.5 逐项对照；L0–L6 新增动词回填；§3.1 引用的 v4 文件是否已删 | ⬜ 待执行 |
+| **B3** | `02-vuln`、`03-asset`、`04-endpoint`、`05-task`、`06-fact`、`07-know` | 各域 manifest commands/queries/events/actor 白名单/invariants 与文档 §1.2/§1.4/§1.5 逐项对照；L0–L6 新增动词回填；§3.1 引用的 v4 文件是否已删 | ✅ **2026-09-19 完成（本会话）**：六域命令/查询/actor/幂等/事件按 manifest 对齐（vuln 13+6、asset 6+6、endpoint 4+5、task 17+11、fact 10+7、know 32+23）；补 `vuln_evidence_put`、`task_drift`、`fact_overview`；修正伪 RPC 名与伪幂等键；未实现项显式标注；§3.1 统一加「历史留档」横幅；契约数实测 50+9/30/25/38/23/73 |
 | **B4** | `08-scope`、`09-approval`、`10-exec`、`11-ledger`、`12-report` | 同上 + approval kind 注册表（7/8 kind）、effect outbox、report 索引 heal、ledger 纪律指标 | ⬜ 待执行 |
 | **B5** | `13-proxy`、`14-fgs`、`15-eval` | 同上 + proxy 落池算法、fgs 快照/语义动词族、eval 数据集/评测链 | ⬜ 待执行 |
 
@@ -52,7 +53,7 @@
 
 ```text
 继续 SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」。
-先读 doc/secagent/PROGRESS.md 的「§〇·补、文档漂移排查」章节，找到状态为 ⬜ 的第一个批次（B2→B3→B4→B5）。
+先读 doc/secagent/PROGRESS.md 的「§〇·补、文档漂移排查」章节，找到状态为 ⬜ 的第一个批次（B4→B5；B2/B3 已完成）。
 本会话只做该批次（不要跨批）：
 1) 用 PATH 中的 spool 调查 csai 真实运行态（服务/域注册/别名表/契约测试），对照 bundles/dsh/templates/ 下该域 manifest 与文档 §1.2/§1.4/§1.5/§3.1/§3.2 逐项核验；
 2) 修复该批次所有文档漂移（只改文档与必要的引用注释；改代码一律克制并说明理由）；历史映射必须显式标注「历史留档」；

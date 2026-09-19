@@ -4,7 +4,7 @@
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线：网关/事件/幂等/审计）
 > owns（单写者）：`assets` 表、`fingerprints` 表（含全部列级演进）
 > 不 owns：`endpoints`（endpoint 域）、`findings`（vuln 域）、`programs`/scope（authz 域）
-> 订阅：`exec.run.completed`（httpx / l2 parser proposal 回灌）；被订阅：vuln（asset.fp.recorded → intel N-day 候选）、task/exec（asset_deep_queue 取派单队列）、ledger（asset.graded 台账联动）、dashboard（overview/stats）
+> 订阅：`exec.run.completed`（httpx / l2 parser proposal 回灌）；被订阅（**运行时订阅方均未实现，设计预留**）：vuln（asset.fp.recorded → intel N-day 候选）（未实现/设计预留）、task/exec（asset_deep_queue 取派单队列——经查询非事件订阅）、ledger（asset.graded 台账联动）（未实现/设计预留）、dashboard（overview/stats——经查询投影非事件订阅）
 
 ---
 
@@ -34,12 +34,14 @@
 
 | 动词 | 语义（状态机入口） | actor 白名单 | 幂等键 | 事件 |
 |---|---|---|---|---|
-| `asset_upsert` | 登记新资产 / 触活既有资产（刷 last_seen） | model, script, dashboard | 自然键 `asset:upsert:{host}\|{type}` | asset.registered（仅新行） |
-| `asset_upsert_bulk` | 批量登记（httpx parser proposal 回灌） | model, script | 自然键逐行 + 文件指纹 `asset:upsert:bulk:{sha256}` | asset.registered × 新行数（≤ 批量行数） |
-| `asset_grade` | 分级落库：score 派生 level + accept/biz 标注（单资产或 proposal 批量） | model, script, dashboard | 见 §1.3.3 | asset.graded × 实际变更行 |
-| `asset_state` | 生命周期流转：new/changed/stable/dead（signal→state 映射域私有） | model, script, dashboard | 自动指纹 `(domain,verb,核心参数)` | asset.state.changed（状态实际变化才发） |
-| `fp_record` | 指纹登记 / 版本升级（host+tech 自然键） | model, script, dashboard | 自然键 `asset:fp:{host}\|{tech}` | asset.fp.recorded（新登记或版本变化） |
-| `fp_record_bulk` | 批量指纹登记（httpx tech 数组） | model, script | 逐行自然键 | asset.fp.recorded × 行数 |
+| `asset_upsert` | 登记新资产 / 触活既有资产（刷 last_seen） | model, script, dashboard | `auto`（fields: host, type, source, attrs, program_id） | asset.registered（仅新行） |
+| `asset_upsert_bulk` | 批量登记（httpx parser proposal 回灌） | model, script | `auto`（fields: rows, proposal_ref） | asset.registered × 新行数（≤ 批量行数） |
+| `asset_grade` | 分级落库：score 派生 level + accept/biz 标注（单资产或 proposal 批量） | model, script, dashboard | `auto`（11 fields: proposal_path, host, type, score, accept, biz, rationale, regrade, run_id, owner, owner_evidence） | asset.graded × 实际变更行 |
+| `asset_state` | 生命周期流转：new/changed/stable/dead（signal→state 映射域私有） | model, script, dashboard | `auto`（fields: host, type, signal, evidence） | asset.state.changed（状态实际变化才发） |
+| `fp_record` | 指纹登记 / 版本升级（host+tech 自然键） | model, script, dashboard | `auto`（fields: host, tech, version, source, program_id） | asset.fp.recorded（新登记或版本变化） |
+| `fp_record_bulk` | 批量指纹登记（httpx tech 数组） | model, script | `auto`（fields: rows, proposal_ref） | asset.fp.recorded × 行数 |
+
+> 幂等键以域 manifest 为准：六命令全部 `idempotent:'auto'`，key 由网关对 `idempotent_fields`（即上表所列）做 canonical 序列化后取哈希派生，而非任何手写自然键字符串。上表原先杜撰的 `asset:upsert:{host}|{type}`、`asset:grade:...`、`asset:fp:...` 等自然键一律作废。
 
 **禁用词自查**：无 `update`/`set`/`save`/`modify`；每个动词都是登记或状态机入口。
 
@@ -68,7 +70,7 @@
   "ok": true, "domain": "asset", "cmd": "upsert",
   "data": { "host": "admin.example.com", "type": "web", "created": true, "program_id": "bytedance" },
   "event_ids": ["evt_01J..."],
-  "idempotency_key": "asset:upsert:admin.example.com|web",
+  "idempotency_key": "asset:upsert:<sha1(idempotent_fields)>",
   "replay": false
 }
 ```
@@ -84,7 +86,7 @@
 | `E_INVARIANT` | program_id 非空但 host 不在该 program 的 scope 域模式/CIDR 内（INV-3） | "资产 {host} 不在项目 {program_id} 授权范围内——域外参考站请不带 program_id 登记（保持 level NULL，不进主动队列），或先经审批扩 scope" |
 | `E_CONFLICT` | SQLITE_BUSY 超时（retryable） | "并发写冲突，稍后重试" |
 
-**幂等**：自然键 `(host, type)`（表主键）。同 key 同参重放 → 返回首次结果 + `replay: true`；同 key 异参 → `E_IDEMPOTENT_CONFLICT`。
+**幂等**：`idempotent:'auto'`，`idempotent_fields: [host, type, source, attrs, program_id]`（key 由网关哈希派生；重放同参 → 返回首次结果 + `replay: true`）。
 
 **actor**：model / script / dashboard（xray webhook 不写资产；parser proposal 经订阅 handler 以 actor=script、细粒度身份 run_id dispatch）。
 
@@ -106,7 +108,7 @@
 
 **返回**：`data: { created: N, touched: M, results: [{host, type, created, error?}] }`（行级结果数组；单行 schema 失败不炸整批——该行标 `error: "E_SCHEMA: ..."`，其余照常提交；**INV-3（scope）失败的行同样行级报错不回滚整批**，因为登记域外资产不带 program_id 是合法的，错在归属声明）。
 
-**幂等**：文件级 `asset:upsert:bulk:{proposal_ref}`（重放同 proposal 返回首次结果）；行级由 (host,type) 自然键兜底。
+**幂等**：`idempotent:'auto'`，`idempotent_fields: [rows, proposal_ref]`（整批 rows + proposal_ref 共同构成 key，重放同 proposal 返回首次结果）。
 
 **事件**：`asset.registered` × 新行数（宪法 §八.5：批量 ≤ 行数，合法）。
 
@@ -137,7 +139,7 @@
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `proposal_path` | string | 模式①必填 | proposal 文件绝对路径（必须在 `results/<run_id>/` 或 `data/proposals/` 下——沙箱可写区，域读取后落库） |
+| `proposal_path` | string | 模式①必填 | proposal 文件绝对路径（设计意图：须在 `results/<run_id>/` 或 `data/proposals/` 下——沙箱可写区，域读取后落库）。**未实现**：handler 仅做绝对/相对路径 resolve，未强制目录白名单（见 §五） |
 | `host` | string | 模式②必填 | 已登记资产的主机（**INV-4：必须先 asset_upsert 存在**，否则 `E_NOT_FOUND`） |
 | `type` | string | 模式②❌ | 默认 `'host'` |
 | `score` | integer | 模式②必填 | 0–100 |
@@ -149,12 +151,12 @@
 | `owner` | string | ❌ | enum `confirmed` / `suspect` / `third_party`（缺省不动既有值）。判据口径 `rules/src/asset-scoring.md` |
 | `owner_evidence` | string | owner 传入时必填 | ≥10 字归属证据（ICP 备案号/证书 Organization/whois 摘录/favicon 同源依据）——**证据即参数**铁律（宪法 §四.4）：无证据不打 owner 标 |
 
-**owner 归属标注与两步固化**（判据口径 `rules/src/asset-scoring.md`：confirmed = ICP 备案/证书 Organization/whois 强证据；suspect = 仅 favicon/同 C 段弱证据→挂起；第三方 SaaS/CDN → third_party 排除）：
+**owner 归属标注与两步固化（未实现/设计预留；运行时 `assets` 表无 `owner` 列）**（判据口径 `rules/src/asset-scoring.md`：confirmed = ICP 备案/证书 Organization/whois 强证据；suspect = 仅 favicon/同 C 段弱证据→挂起；第三方 SaaS/CDN → third_party 排除）：
 
-- **列落地**：`assets` 表 ensureCol 增 `owner TEXT NULL`（enum 同上）；
+- **列落地（未实现/设计预留）**：设计拟 ensureCol 增 `owner TEXT NULL`（enum 同上）；**实际后端与 runtime 的 `assets` 表无 `owner` 列**（15 列），asset_grade 的 `owner`/`owner_evidence` 入参当前写入不存在的列（待实现）；
 - **第一步（只记录不固化）**：deep_queue 不加 owner 条件——新分级必带 owner 标注，存量按接触回填（每次 asset_grade / 雷达命中 / 深挖前取队时补判）；
 - **第二步（固化条件打开）**：`confirmed+third_party 覆盖 ≥60% 深挖候选集（S+A+B 且 accept≠none 行）`后，把 `owner='confirmed'` 加进 deep_queue 固化 where。固化当日队列显著缩小属预期（SaaS/CDN 本就不该挖，正是纪律本意）；
-- **报表口径**：asset_stats 增加 owner 分布计数，回填进度看板可见。
+- **报表口径（未实现/设计预留）**：设计拟增加 owner 分布计数供看板看回填进度；`asset_stats` 动词已不存在（并入 `asset_overview`），当前总览未输出 owner 分布。
 
 **proposal 文件格式（样板全文，`silksec/asset-grade-proposal@1`）**：
 
@@ -207,16 +209,15 @@
     "mode": "proposal", "proposal_path": "results/run_01HXYZ/grade-proposal.json",
     "graded": 1782, "skipped_graded": 3, "failed": 0,
     "by_level": { "S": 3, "A": 209, "B": 1201, "C": 369 },
-    "ungraded_remaining": 55,
     "results": [{ "host": "admin.example.com", "level": "S", "ok": true }]
   },
   "event_ids": ["evt_...", "..."],
-  "idempotency_key": "asset:grade:proposal:sha256:9f3a...",
+  "idempotency_key": "asset:grade:<sha1(idempotent_fields)>",
   "replay": false
 }
 ```
 
-**幂等**：proposal 模式 = 自然键 `asset:grade:proposal:sha256:{文件指纹}`（重放整文件返回首次结果——脚本重跑产同内容文件天然免疫）；单资产模式 = 显式键 `asset:grade:{host}|{type}`（同资产同分重放安全）。
+**幂等**：`idempotent:'auto'`，`idempotent_fields: [proposal_path, host, type, score, accept, biz, rationale, regrade, run_id, owner, owner_evidence]`（11 字段；proposal 模式由 `proposal_path` 等字段共同成 key，单资产模式由 host/score/… 成 key——重放同参返回首次结果）。
 
 **错误码汇总**：
 
@@ -286,12 +287,12 @@
 
 **返回**：`data: { host, type, from: "stable", to: "changed", changed: true }`；自环 no-op 返回 `changed: false`、不发事件（幂等语义）。
 
-**幂等**：自动指纹（同 host+signal+evidence 重放 → 首次结果）。
+**幂等**：`idempotent:'auto'`，`idempotent_fields: [host, type, signal, evidence]`（重放同 host+signal+evidence → 首次结果）。
 
 **actor**：model（recon 任务消化雷达后登记状态变化）、script（订阅 handler 的 httpx 探活 proposal 自动派生 probe_alive_unchanged / probe_failed）、dashboard。
 
 **agent_note**：
-> 资产生命周期流转（new/changed/stable/dead）。传观测信号（content_changed / probe_alive_unchanged / probe_failed / revived）+ 证据 run_id，不传目标状态——状态机由域校验。变化雷达（radar_read）命中后应尽快登记 changed（新内容黄金窗口优先测）；探活失败登记 dead 自动出深挖队列。
+> 资产生命周期流转（new/changed/stable/dead）。传观测信号（content_changed / probe_alive_unchanged / probe_failed / revived）+ 证据 run_id，不传目标状态——状态机由域校验。变化雷达（ledger_radar_drain）命中后应尽快登记 changed（新内容黄金窗口优先测）；探活失败登记 dead 自动出深挖队列。
 
 #### 1.3.5 `fp_record` —— 指纹登记
 
@@ -309,16 +310,16 @@
 
 **返回**：`data: { host, tech, version, created: false, version_from: "2.8" }`。
 
-**幂等**：自然键 `asset:fp:{host}|{tech}`。
+**幂等**：`idempotent:'auto'`，`idempotent_fields: [host, tech, version, source, program_id]`。
 
 **错误码**：`E_SCHEMA` / `E_INVARIANT`（scope）/ `E_NOT_FOUND`——**指纹不要求 host 先在 assets 表**（v4 行为：fpAdd 独立可写；v5 保留——httpx tech 偶尔先于资产行到达 proposal 分支，强制 INV-4 反而丢数据。指纹是读模型，弱一致可接受）。注：此决策与 INV-4（分级要求先登记）不对称是有意的——分级是决策、指纹是观测。
 
 **agent_note**：
-> 登记指纹（技术栈+版本，host+tech 去重）。指纹命中是 N-day 检索的触发器（intel_hunt 订阅 asset.fp.recorded 自动建候选任务）。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。
+> 登记指纹（技术栈+版本，host+tech 去重）。指纹命中后用 exec_intel_hunt 检索 N-day 模板并可建候选任务。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。
 
 #### 1.3.6 `fp_record_bulk`
 
-参数：`rows`（1..500，每行 = fp_record 参数）、`proposal_ref`。语义/校验/事件同 fp_record 逐行展开，行级结果数组。幂等 = `asset:fp:bulk:{proposal_ref}` + 逐行自然键。actor：model / script。
+参数：`rows`（1..500，每行 = fp_record 参数）、`proposal_ref`。语义/校验/事件同 fp_record 逐行展开，行级结果数组。幂等 = `idempotent:'auto'`，`idempotent_fields: [rows, proposal_ref]`。actor：model / script。
 
 ### 1.4 查询逐个详述（读投影，纯读无副作用）
 
@@ -350,7 +351,7 @@
 
 #### `asset_get`（单主机钻取）
 
-参数：`host`（必填）、`type`（❌）。返回多类型资产行 + **跨域只读聚合**：`fingerprints`（本域 fp_query）、`endpoint_total`（endpoint 域查询）、`findings_by_severity`（vuln 域查询，noise=0 口径）、`siblings`（同 root 前 20）。跨域读经 QueryGateway 注入的查询接口（只读允许跨域，禁止跨域**写**）。目标不存在 → `E_NOT_FOUND`。
+参数：`host`（必填）、`type`（❌）。返回多类型资产行 + **跨域只读聚合**：`fingerprints`（本域 fp_query）、`endpoint_total`（endpoint 域查询）、`findings`（vuln 域查询，noise=0 口径）、`siblings`（同 root 前 20）。跨域读经 QueryGateway 注入的查询接口（只读允许跨域，禁止跨域**写**）。目标不存在 → `E_NOT_FOUND`。
 
 #### `asset_family`（域名族 / 网段聚合）
 
@@ -412,7 +413,7 @@
 { "host": "oa.example.com", "tech": "ruoyi", "version": "4.7.2", "version_from": "", "source": "httpx:run_01H", "program_id": "bytedance" }
 ```
 
-订阅方（供其域文档引用）：vuln 域 intel_hunt（asset.fp.recorded → N-day 候选任务，v4 行为事件化）、task/exec（asset.graded → 派单队列刷新提示）、ledger（asset.graded → 台账联动）、memcore（**不订阅**——资产无 memcore 生命周期，显式排除防误配）。
+订阅方（供其域文档引用）：vuln 域 exec_intel_hunt（asset.fp.recorded → N-day 候选任务，v4 行为事件化）**（未实现/设计预留）**、task/exec（asset.graded → 派单队列刷新提示）**（未实现/设计预留）**、ledger（asset.graded → 台账联动）**（未实现/设计预留）**、memcore（**不订阅**——资产无 memcore 生命周期，显式排除防误配）。运行时本域 manifest 的 `subscribes` 仅声明 `exec.run.completed`；`asset.registered` / `asset.graded` / `asset.fp.recorded` 均无运行时订阅方（订阅关系为设计预留）。
 
 ### 1.6 模型工具面投影（ToolProjector 自动生成，工具名 = 命令/查询名）
 
@@ -421,8 +422,8 @@
 | `asset_upsert` | 登记或触活一个资产（域名/IP/存活 web 站点）。本工具只登记"资产存在"：host + type + 来源；评级（score/level/accept/biz）与生命周期（state）分别走 asset_grade / asset_state。带 program_id 时主机必须在项目授权范围内。重复登记安全（幂等，只刷 last_seen）。 |
 | `asset_upsert_bulk` | 批量登记资产（≤500 行，httpx 探活结果回灌用）。行级结果数组返回，单行失败不影响其余。评级与状态仍分别走 asset_grade / asset_state。 |
 | `asset_grade` | 资产分级落库（本域唯一写 score/level/accept/biz 的入口）。两种用法：① grade_assets 脚本产出 proposal 文件后传 proposal_path 批量落库（≤2000 行）；② 单资产传 host+score+rationale（vision_triage 分诊/人工调级）。level 由 score 自动派生（S≥75/A60-74/B40-59/C<40），不可直接指定。已分级资产重评需 regrade: true。 |
-| `asset_state` | 资产生命周期流转（new/changed/stable/dead）。传观测信号（content_changed / probe_alive_unchanged / probe_failed / revived）+ 证据 run_id，不传目标状态——状态机由域校验。变化雷达（radar_read）命中后应尽快登记 changed（新内容黄金窗口优先测）；探活失败登记 dead 自动出深挖队列。 |
-| `fp_record` | 登记指纹（技术栈+版本，host+tech 去重）。指纹命中是 N-day 检索的触发器（intel_hunt 订阅 asset.fp.recorded 自动建候选任务）。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。 |
+| `asset_state` | 资产生命周期流转（new/changed/stable/dead）。传观测信号（content_changed / probe_alive_unchanged / probe_failed / revived）+ 证据 run_id，不传目标状态——状态机由域校验。变化雷达（ledger_radar_drain）命中后应尽快登记 changed（新内容黄金窗口优先测）；探活失败登记 dead 自动出深挖队列。 |
+| `fp_record` | 登记指纹（技术栈+版本，host+tech 去重）。指纹命中后用 exec_intel_hunt 检索 N-day 模板并可建候选任务。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。 |
 | `fp_record_bulk` | 批量登记指纹（≤500 行）。 |
 | `asset_list` | 检索资产图谱：host_like 模糊、type/program_id/level/level_in/accept/state 过滤。level='none' 筛未分级资产（分级前的待办清单）。 |
 | `asset_get` | 单主机钻取：多类型资产行 + 指纹 + 接口计数 + 漏洞分级统计 + 同族主机。 |
@@ -431,19 +432,22 @@
 | `fp_query` | 检索指纹（host 精确 / tech 模糊 / program 过滤）。命中技术栈后查 N-day。 |
 | `asset_deep_queue` | 深挖队列（固化查询）：level∈{S,A,B} + accept≠none + 非 dead，按 score 降序。**主动扫描/派单取目标一律走本查询**——未分级与 C 级资产取不到，这是资产准入纪律的物理形态。 |
 
+> 注：本表 `agent_note` 文本现已与域 manifest 对齐。§1.6 早期版本为叙事摘要，曾与 manifest 有出入（如 `radar_read` / `intel_hunt` 工具名）；凡本表与 manifest 不一致处，一律以 manifest 为准。
+
 ### 1.7 看板 RPC 投影（RpcProjector 自动生成，RPC 名 = `{domain}.{verb}` 点分）
 
 | RPC 名 | 对应 | 看板用途（资产视图） |
 |---|---|---|
 | `asset.list` | asset_list | 资产表格（分页/筛选，v4 `assets` case 平移） |
 | `asset.overview` | asset_overview | 总览大盘 + 域名族聚合（v4 `assetOverview`） |
-| `asset.detail` | asset_get | 主机钻取面板（v4 `assetDetail`） |
+| `asset.get` | asset_get | 主机钻取面板（v4 `assetDetail`） |
 | `asset.family` | asset_family | 族行展开（v4 `assetFamily`） |
 | `asset.grade` | asset_grade（actor=dashboard，带 operator） | 看板手工调级/重评表单 |
 | `asset.state` | asset_state（actor=dashboard） | 看板标 dead/复活 |
-| `asset.fpQuery` | fp_query | 资产视图指纹子表 |
+| `asset.fp_query` | fp_query | 资产视图指纹子表 |
+| `asset.deep_queue` | asset_deep_queue | 深挖队列（主动扫描/派单取目标） |
 
-写操作审计带 `operator`（auth-gate 用户名）。v4 `assets/assetOverview/assetDetail/assetFamily` 四个 case 删除，由投影替代。
+写操作审计带 `operator`（auth-gate 用户名）。**注意**：v4 `assets/assetOverview/assetDetail/assetFamily` 四个 case **并未删除**，仍存在于 `dsh-plugin-sec-suite.dashboard-rpc.js`（`assets`:374 / `assetOverview`:386 / `assetDetail`:391 / `assetFamily`:397），其内部改为经 `busQuery('asset', ...)` fail-closed 调用域查询，由投影接管数据来源。
 
 ### 1.8 外部调用示例
 
@@ -500,7 +504,7 @@ async function onRunProposal(evt) {
 
 ### 2.1 数据模型（逐列，owner = asset 域；表名沿用 v4 不迁库）
 
-**`assets` 表**（PK `(host, type)`；81,028 行，2026-09-06 实测）：
+**`assets` 表**（PK `(host, type)`；96,814 行，2026-09-19 实测）：
 
 | 列 | 类型 | 写入者（唯一动词） | 定义 |
 |---|---|---|---|
@@ -511,7 +515,7 @@ async function onRunProposal(evt) {
 | `first_seen` | INTEGER NOT NULL | asset_upsert | 登记时刻（UTC epoch ms） |
 | `last_seen` | INTEGER NOT NULL | asset_upsert | 最近触活 |
 | `program_id` | TEXT | asset_upsert | 项目归属（INV-3 校验；null = 域外参考资产） |
-| `root` | TEXT | asset_upsert | **冗余列**（域内从 host 派生）：域名取注册域近似（末两标签；.com.cn 等双后缀取三），IP 取 /24 网段——域名族/网段聚合索引（v4.1），8 万行免全量正则 |
+| `root` | TEXT | asset_upsert | **冗余列**（域内从 host 派生）：域名取注册域近似（末两标签；.com.cn 等双后缀取三），IP 取 /24 网段——域名族/网段聚合索引（v4.1），9.7 万行免全量正则 |
 | `score` | INTEGER | **asset_grade** | 可挖掘性评分 0–100（SABC 打分表：A 漏洞价值 40 / B 出洞概率 45 / C 时效 15） |
 | `level` | TEXT | **asset_grade（派生）** | SABC：S≥75 优先挖穿 / A 60-74 深挖主力 / B 40-59 常规覆盖 / C<40 仅登记 / **NULL=未分级=禁入主动扫描队列（准入门）** |
 | `accept` | TEXT | **asset_grade** | SRC 收录政策：`full`（默认，NULL 视同）/ `intrusion-only`（只报入侵类）/ `none`（暂停收录，可算分不驱动挖掘） |
@@ -520,7 +524,7 @@ async function onRunProposal(evt) {
 | `changed_at` | INTEGER | asset_state | **v5 新增列**（ensureCol 幂等）：最近一次状态流转时刻（changed 自环也刷新） |
 | `graded_at` | INTEGER | asset_grade | **v5 新增列**：最近分级时刻（重评刷新） |
 
-**`fingerprints` 表**（PK `(host, tech)`；119 行 / 79 主机）：
+**`fingerprints` 表**（PK `(host, tech)`；473 行，2026-09-19 实测）：
 
 | 列 | 类型 | 写入者 | 定义 |
 |---|---|---|---|
@@ -556,18 +560,19 @@ async function onRunProposal(evt) {
 | INV-4 | asset_grade 的目标行必须已登记（先 asset_upsert 后 grade）；proposal 行级失败跳过不炸批 | E_NOT_FOUND（行级） |
 | INV-5 | 已分级资产重评必须显式 regrade: true | E_ASSET_ALREADY_GRADED |
 | INV-6 | score ∈ [0,100] 整数；level 由域私有映射从 score 派生，永不作为参数出现 | E_SCHEMA |
+| INV-7 | 批量命令 rows 行数 1..500（asset_upsert_bulk / fp_record_bulk）——manifest 不变量 `bulkRowLimit` | E_SCHEMA |
 
 ### 2.3 事务与联动
 
 - **一个命令一个事务**：每个动词的全部行变更在 BEGIN IMMEDIATE 内完成（proposal 分级 = 整批 2,000 行一个事务；行级 P8 失败在事务内跳过该行，其余提交）。跨域效果不进事务。
-- **事件时序**：事务提交成功后发布 manifest 声明事件（行级事件 ≤ 行数）；失败不发。同步订阅者异常 → audit 记 `subscriber_failed`，不回滚命令（本域无强联动订阅——intel_hunt 候选任务、ledger 台账均为弱联动 async，丢失可经 `sec bus replay --since <ts>` 重放）。
+- **事件时序**：事务提交成功后发布 manifest 声明事件（行级事件 ≤ 行数）；失败不发。同步订阅者异常 → audit 记 `subscriber_failed`，不回滚命令（本域无强联动订阅——exec_intel_hunt 候选任务、ledger 台账均为弱联动 async，丢失可经 `sec bus replay --since <ts>` 重放）。
 - **缓存失效**：所有写命令成功后调 `invalidateOverview()`（v4 模式保留）。
 - **订阅联动**（exec.run.completed，mode: async）：见 §1.8 handler。httpx 探活 proposal 自动登记资产+指纹+状态信号；**grade proposal 不自动落库**（§1.3.3 设计决策）。
 - **失败语义**：E_BACKEND_UNAVAILABLE（http 后端）与 E_CONFLICT（busy 超时）retryable=true，信封标注，网关不自动重试（调用方/调度决策）。
 
 ### 2.4 后端适配器
 
-**repository 接口**（`backend/repository.js`，JSDoc；方法名 = 命令/查询所需**原语**，不含 SQL 语义、不含业务校验）：
+**repository 接口**（**无独立 `backend/repository.js` 文件**——`createRepo(db)` 内联在 `dsh-plugin-sec-backend-asset-sqlite.js`；方法名 = 命令/查询所需**原语**，不含 SQL 语义、不含业务校验）：
 
 ```js
 /** @returns {Promise<AssetRow|null>} */
@@ -592,6 +597,16 @@ getFingerprint(host, tech)
 upsertFingerprint(row) → { created, version_from }
 listFingerprintsWhere(filters, order, limit, offset) → rows
 countFingerprintsWhere(filters) → n
+/** 深挖队列固化查询（level∈{S,A,B} + accept≠none + 非 dead，score desc） */
+deepQueue(program_id, limit, offset) → rows
+/** 单主机全部类型资产行（asset_get 多类型展开） */
+getAssetsByHost(host) → rows
+/** 钻取附加聚合：endpoints / fingerprints / endpoint_total / findings */
+assetDetailExtras(host) → { endpoints, fingerprints, endpoint_total, findings }
+/** 缓存失效（任一写命令成功后调用） */
+invalidateOverview()
+/** 列演进（幂等；changed_at / graded_at） */
+ensureCol(col, ddl)
 ```
 
 **三后端实现要点与能力矩阵**：
@@ -605,7 +620,7 @@ countFingerprintsWhere(filters) → n
 | asset_list/get/family/overview/fp_query/deep_queue | full | **partial**：family/overview 聚合远端不支持 → **本地计算**（拉平铺行本地聚合）；deep_queue 固化 where 必须本地重写为远端查询再聚合 | 不适用 |
 | 事件 | full | 事件由本地域发布（远端镜像经订阅推送，非能力项） | — |
 
-**不适用 file 后端的理由**（记录决策）：assets 是主键冲突合并 + 事务 + 8 万行聚合的关系语义，TSV/YAML 均无法承载；本域无 file 形态产物。**混布设想**：sqlite-local 主库 + http-remote 镜像（订阅 asset.registered/graded 推送 CMDB），同步边界在域内 commands 层，调用方无感。**切换**：bundle 配置一行；sqlite↔sqlite 热切换允许，切 http 需重启宿主面。
+**不适用 file 后端的理由**（记录决策）：assets 是主键冲突合并 + 事务 + 9.7 万行聚合的关系语义，TSV/YAML 均无法承载；本域无 file 形态产物。**混布设想**：sqlite-local 主库 + http-remote 镜像（订阅 asset.registered/graded 推送 CMDB），同步边界在域内 commands 层，调用方无感。**切换**：bundle 配置一行；sqlite↔sqlite 热切换允许，切 http 需重启宿主面。
 
 ### 2.5 缓存与失效
 
@@ -617,18 +632,18 @@ countFingerprintsWhere(filters) → n
 
 ### 2.6 性能与容量
 
-**现状规模**（2026-09-06 csai 实测，sqlite 直查）：
+**现状规模**（csai 实测；标注"2026-09-19"者为最新实测，其余为 2026-09-06 基线）：
 
 | 指标 | 值 |
 |---|---|
-| assets 总行数 | 81,028 |
-| 分级分布 | S 338 / A 2,433 / B 48,403 / C 28,017 / **NULL（未分级）1,837** |
-| state 分布 | new 10,799 / stable 1,665 / changed 34 / dead 16 / NULL ~68,500 |
-| accept 分布 | full 12,494 / intrusion-only 9 / NULL 其余 |
-| fingerprints | 119 行 / 79 主机（bytedance 46 / meituan-src 73） |
-| root 冗余列 | 已全量回填（NULL 0 行） |
+| assets 总行数 | 96,814（2026-09-19 实测） |
+| 分级分布 | S 347 / A 2,451 / B 48,416 / C 28,025 / **NULL（未分级）17,575**（2026-09-19 实测） |
+| state 分布 | new 10,799 / stable 1,665 / changed 34 / dead 16 / NULL ~68,500（2026-09-06 基线） |
+| accept 分布 | full 12,494 / intrusion-only 9 / NULL 其余（2026-09-06 基线） |
+| fingerprints | 473 行（2026-09-19 实测） |
+| root 冗余列 | 已全量回填（NULL 0 行）（2026-09-06 基线） |
 
-**查询路径与代价**（8 万行实测口径，v4 验证过）：overview 族聚合纯 SQL 走 `root` 冗余列 + `idx_assets_root`，接口/漏洞计数 LEFT JOIN 预聚合子查询，数十 ms / 25s 缓存（看板 30s 轮询安全）；deep_queue 走新 `idx_assets_level_score`，命中行 ~5.1 万（S+A+B），LIMIT top-N 即停，<10ms；family/get 主键/索引直查 <5ms。
+**查询路径与代价**（9.7 万行实测口径，v4 验证过）：overview 族聚合纯 SQL 走 `root` 冗余列 + `idx_assets_root`，接口/漏洞计数 LEFT JOIN 预聚合子查询，数十 ms / 25s 缓存（看板 30s 轮询安全）；deep_queue 走新 `idx_assets_level_score`，命中行 ~5.1 万（S+A+B），LIMIT top-N 即停，<10ms；family/get 主键/索引直查 <5ms。
 
 **预期增长**：recon 每日新增资产百级（子域枚举+探活），分级 proposal 每批 ≤2,000；年增长 ~3–5 万行，SQLite 单表百万行内无压力。**WAL 参数**沿用 v4（busy_timeout 5s / synchronous NORMAL / wal_autocheckpoint 1000）。**proposal 校验**：2,000 行 JSON 解析 + 逐行 P4-P9 在事务前完成，<100ms。
 
@@ -637,6 +652,8 @@ countFingerprintsWhere(filters) → n
 ## 三、迁移与兼容
 
 ### 3.1 现状代码映射（行级）
+
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
 
 | v4.x 现状（文件:行） | 内容 | v5 去向 |
 |---|---|---|
@@ -649,17 +666,19 @@ countFingerprintsWhere(filters) → n
 | `asset-db.js:1431-1439` fpAdd | 指纹 upsert | `commands/fp_record.js`（version 变化检测 + 事件） |
 | `asset-db.js:1441-1450` fpQuery | 指纹查询 | `queries/fp_query.js`（补 offset/total） |
 | `asset-db.js:1723-1744` ingestText（asset 部分） | regex 兜底抽取登记 | exec 域 proposal（kind=assets）+ 本域订阅 handler |
-| `dsh-plugin-sec-suite.asset-graph.js:57-99` asset_add/asset_query 工具 | 手写 zod schema | ToolProjector 投影 + §3.2 别名 |
-| `dsh-plugin-sec-suite.asset-graph.js:584-616` fp_add/fp_query 工具 | 同上 | 投影 + 别名 |
-| `dsh-plugin-sec-suite.parsers.js:52-76,159-164` parseJsonlHttpx + tech 自动 fpAdd | parser 直写 assets/fp | exec 域产 proposal（assets+fingerprints+state_signals 三段）→ 本域 handler 命令回灌（§1.8） |
-| `data-seed/scripts/grade-assets.py:37-147` | **纯计算段**（KW_A/B/C 表 / score_host / level_of / scope 过滤 / 行组装） | **保留**，输出改 `--proposal` JSON（P1-P7 格式） |
-| `grade-assets.py:151-157` | **UPDATE 段**（Python sqlite3 直写，绕过全部闸门） | **废除**——落库唯一通道 = asset_grade |
-| `data-seed/tools.d/grade-assets.yaml`（store 语义） | store 落库 | manifest `store: proposal`（宪法 §五"脚本产 proposal 不落库"） |
+| `dsh-plugin-sec-suite.asset-graph.js:57-99` asset_add/asset_query 工具 | 手写 zod schema（**已删除**，文件现仅 40 行、只注册 `asset_graph`） | ToolProjector 投影（已实现；别名层 2026-09-19 移除） |
+| `dsh-plugin-sec-suite.asset-graph.js:584-616` fp_add/fp_query 工具 | 同上（**已删除**，同文件现仅注册 `asset_graph`） | ToolProjector 投影（已实现；别名层 2026-09-19 移除） |
+| `dsh-plugin-sec-suite.parsers.js:52-76,159-164` parseJsonlHttpx + tech 自动 fpAdd | parser 直写 assets/fp（**文件已删除**） | exec 域产 proposal（assets+fingerprints+state_signals 三段）→ 本域 handler 命令回灌（§1.8） |
+| `data-seed/scripts/grade-assets.py:37-147` | **纯计算段**（KW_A/B/C 表 / score_host / level_of / scope 过滤 / 行组装） | **（未实现/保留，历史留档）**：设计拟保留纯计算段并输出改 `--proposal` JSON（P1-P7 格式）；实际脚本无 `--proposal` 参数（仅 `--dry-run`） |
+| `grade-assets.py:151-157` | **UPDATE 段**（Python sqlite3 直写，绕过全部闸门） | **（未实现，历史留档）**：设计拟废除直写、落库唯一通道 = asset_grade；实际 Python sqlite3 直写 UPDATE 仍在 `grade-assets.py:151-157` |
+| `data-seed/tools.d/grade-assets.yaml`（store 语义） | store 落库（**已删除**） | manifest `store: proposal`（宪法 §五"脚本产 proposal 不落库"） |
+
+> 上表「v5 去向」列中的 `commands/*.js` / `queries/*.js` / `lib/root.js` 为**设计拟拆分的模块化落点**；实际实现为单文件插件 `dsh-plugin-sec-domain-asset.js`（全部命令/查询/工具函数与 root 逻辑内联于该文件），这些模块文件从未创建。
 
 ### 3.2 兼容别名与观察期
 > **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
-总线别名表（同过网关全管线，不绕校验；别名使用全程审计 `deprecated_use`）：
+> **历史留档**：总线别名曾同过网关全管线、不绕校验；别名使用曾全程审计 `deprecated_use`：
 
 | 旧名 | 新名 | 语义差异处理 |
 |---|---|---|
@@ -675,7 +694,7 @@ countFingerprintsWhere(filters) → n
 
 1. **不迁库不改表名**：sqlite-local 直接接管 `assets`/`fingerprints` 现表（宪法 §六 取舍）。
 2. **ensureCol 增列**（幂等，启动时）：`assets.changed_at INTEGER` / `assets.graded_at INTEGER`——存量行留 NULL（首次流转/重评时填）。`root` 已全量回填，无需处理。
-3. **无僵尸数据修复**：asset 域不存在 vuln 域式的状态-可见性断裂病（grade-assets.py 直写是**通道**问题不是数据问题）；1,837 行未分级是合法状态（域外/待分诊），不回填。
+3. **无僵尸数据修复**：asset 域不存在 vuln 域式的状态-可见性断裂病（grade-assets.py 直写是**通道**问题不是数据问题）；17,575 行未分级（2026-09-19 实测）是合法状态（域外/待分诊），不回填。
 4. **基线快照**：切换前 `silksec-backup` VACUUM INTO 快照先行；迁移脚本 dry-run 模式 + 幂等可重跑。
 5. **验收**：契约测试矩阵（宪法 §十三：happy path / schema 拒绝 / 不变量反例 / 状态机反例 / actor 拒绝 / 幂等重放 / 并发 / 事件载荷）三后端跑同一套（http/file 按 §2.4 能力矩阵跳过 unsupported 并断言 fail-closed）后才允许切流；`asset_deep_queue` 的 total 与手工 SQL 对账一次。
 
@@ -687,7 +706,7 @@ countFingerprintsWhere(filters) → n
 2. **grade proposal 自动落库**：分级保留模型确认点（§1.3.3），代价是 recon 任务忘调 asset_grade 时未分级资产堆积——是否对调度任务（#16/#17 recon）的 objective 固化"grade_assets → asset_grade"两步链，或允许 script actor 在特定 manifest 下自动落库？
 3. **hostRoot 的归属**：域名注册域近似算法被 authz 域（scope-wildcard 审批 apex 判定）复用——保留跨域导出，还是 authz 域自带副本（复制漂移风险 vs 域自治）？
 4. **http-remote CMDB 字段映射**：外部资产系统（设想）的 host/type/attrs 字段差异、severity 映射（SABC→远端等级）需在 Phase 4 试点时定稿；能力矩阵的 partial 差异清单届时具化。
-5. **B 级占比过高**：score 基线 40（未知业务子域起步 B 下沿）导致 B 48,403 / C 28,017 的分布，深挖队列 S+A+B 命中 ~5.1 万行——评分基线是否调参（或在 deep_queue 增加 score 下限参数）？
+5. **B 级占比过高**：score 基线 40（未知业务子域起步 B 下沿）导致 B 48,416 / C 28,025 的分布（2026-09-19 实测），深挖队列 S+A+B 命中 ~5.1 万行——评分基线是否调参（或在 deep_queue 增加 score 下限参数）？
 6. **proposal 上限 2,000 vs 单事务时长**：2,000 行 UPDATE 单事务实测 <100ms，但若未来 proposal 行数上限提高，是否改为分片多事务（牺牲整批原子性换吞吐）需实测后定。
 
 ## 五、2026-09-12 深度审查结论
@@ -699,4 +718,4 @@ countFingerprintsWhere(filters) → n
 | 静默错误 | `exec.run.completed` 投影中 upsert/fp/state 单项失败只增加 `failed` 并返回 `partial:true`，没有日志或 subscriber_failed 明细；批次失败可观测性不足。 |
 | 文档漂移 | 已修正 `asset.fp.recorded` 事件名。 |
 | hook 判定 | v4 `fp_query` 已移除，由 QueryProjector 零改名接管；无 hook 替代。 |
-| 独立升级 | 包边界支持单域更新；须回归 asset、exec parser、vuln intel_hunt 与 dashboard 查询。 |
+| 独立升级 | 包边界支持单域更新；须回归 asset、exec parser、vuln exec_intel_hunt 与 dashboard 查询。 |
