@@ -16,12 +16,12 @@
 | cordis 服务名 | `secDomain.approval` |
 | 插件包名 | `@silksec/sec-domain-approval` |
 | 后端插件 | `@silksec/sec-backend-approval-sqlite` |
-| owns（单写者） | `approval_requests` 表（沿用户库 `asset-graph.db`，不改名不迁库） |
+| owns（单写者） | `approval_requests` 表 + `approval_effects` 表（后者为批准域效果的幂等执行账本；均沿用户库 `asset-graph.db`，不改名不迁库） |
 | 事件 jsonl | `data/events/approval.jsonl` |
 
-**域职责一句话**：持有全系统唯一的"人工放行"请求账本——agent 与自动接线点提请（kind 注册表校验判据）、人工经看板/CLI 裁决；**批准的唯一副作用是发布 `approval.approved` 事件**，各域订阅后执行自己的命令（v4.x `onApprove` 跨域直写四处的问题由此根除）。
+**域职责一句话**：持有全系统唯一的"人工放行"请求账本——agent 与自动接线点提请（kind 注册表校验判据）、人工经看板/CLI 裁决；**批准的副作用 = 在 decide 内同步 dispatch 各域命令（effect，actor=approval）并逐条登记 `approval_effects` 账本 + 发布 `approval.approved` 事件**（弱联动订阅者消费），v4.x `onApprove` 跨域直写四处的问题由此根除。
 
-**与 scope 域的边界**：approval 只管"请求与裁决"的状态机；授权/规则/预算的实际变更全部由 scope/task/know 域在自己的订阅处理器里执行。approval 域 commands **不 dispatch 任何其他域的命令**（结构性保证"批准前 fail-closed 不变"，见不变量 I5）。
+**与 scope 域的边界**：approval 只管"请求与裁决"的状态机；授权/规则/预算的实际变更全部由 scope/task/know 域经各自命令执行。**`approval_request` 不 dispatch 任何其他域命令**（提请是纯登记，执行面零变化）；只有**人工批准**后的 `approval_decide` 才按 kind effect 映射 dispatch 目标域命令（actor=approval）——结构性保证"批准前 fail-closed 不变"（见不变量 I5）。
 
 **挂载矩阵**（profile × actor 白名单）：
 
@@ -34,10 +34,10 @@
 
 | 命令 | 一句话语义 | actor 白名单 | 幂等键 | 发布事件 |
 |---|---|---|---|---|
-| `approval_request` | 提请审批（kind 注册表 validate 内聚；同 (kind,subject) pending 去重） | model / script / system / scheduler（**按 kind 收窄**，见各 kind `request_actors`） | 自然键 `{kind}:{subject}` | `approval.requested` |
-| `approval_decide` | 人工裁决 pending → approved \| rejected（**副作用 = 提交 decision + effect outbox + 发事件**） | dashboard（operator 必填）/ human | 自然键 `{request_id}:{decision}` | `approval.approved` / `approval.rejected` |
-| `approval_withdraw` | 原提请者撤回自己的 pending 请求（落 rejected 终态 + 撤回标记） | model（原提请者）/ human | 自然键 `{request_id}` | `approval.rejected`（`withdrawn: true`） |
-| `approval_effects_retry` | effect 失败重试（L4 2026-09-17 新增；批准记录不动，只对 status=failed 的 effect 按原 payload 重放——接收方幂等键吸收，重试不重复生效） | dashboard / human | 自动指纹 `{request_id}` | 无 |
+| `approval_request` | 提请审批（kind 注册表 validate 内聚；同 (kind,subject) pending 去重） | model / script / system / scheduler（**按 kind 收窄**，见各 kind `request_actors`） | 自动指纹（manifest `idempotent_fields`：kind/subject/program_name/evidence/payload/equity_basis/independent_src/corroboration/card_id/draft/source_url） | `approval.requested` |
+| `approval_decide` | 人工裁决 pending → approved \| rejected（**副作用 = 提交 decision + 同步执行 effect + 登记 approval_effects + 发事件**） | dashboard（operator 必填）/ human | 自动指纹（`id`/`decision`/`note`） | `approval.approved` / `approval.rejected` |
+| `approval_withdraw` | 原提请者撤回自己的 pending 请求（落 rejected 终态 + 撤回标记） | model（原提请者）/ human | 自动指纹（`id`/`reason`） | `approval.rejected`（`withdrawn: true`） |
+| `approval_effects_retry` | effect 失败重试（L4 2026-09-17 新增；批准记录不动，只对 status=failed 的 effect 按原 payload 重放——接收方幂等键吸收，重试不重复生效） | dashboard / human | 自动指纹（`request_id`） | 无 |
 
 ### 1.3 命令逐个详述
 
@@ -85,10 +85,10 @@
 |---|---|---|---|
 | `E_SCHEMA` | kind/enum/长度/URL 格式/未知参数 | false | message 含字段与期望 |
 | `E_INVARIANT` | kind 专属交叉校验失败（已在 scope / apex 判定 / 排除清单命中 / 任务不存在等，message 指明哪条） | false | 各 kind 表的"validate 规则"列即 hint 文案来源 |
-| `E_APPROVAL_KIND_ACTOR` | actor 不在该 kind 的 `request_actors` 内（如 model 直提 tool-intrusive） | false | 该 kind 只由 XX 接线点自动提请，不可人工代提 |
+| `E_APPROVAL_KIND_ACTOR` | actor 不在该 kind 的 `request_actors` 内（如 dashboard 直提 task-budget-extend） | false | 该 kind 只由清单内接线点提请，不可越权代提 |
 | `E_APPROVAL_PENDING_EXISTS` | 同 (kind,subject) pending 去重命中 | false | 同对象已有待审批请求 #N——勿重复提请，可等决策或补充证据后在新请求中体现 |
 
-**幂等**：自然键 `approval:request:{kind}:{subject}`（7 天窗口；pending 期内同键同参 → 首次结果 + `replay: true`）。
+**幂等**：自动指纹（manifest `idempotent_fields`，含 kind/subject/program_name/evidence/payload 等；7 天窗口；同参重放 → 首次结果 + `replay: true`）。pending 去重另由不变量 I2 承接（见上）。
 
 **actor**：model（agent 提请）/ script / system（exec 守卫接线点）/ scheduler（超时接线点）——**再按 kind 收窄**（§2.2.2 各 kind `request_actors`）；dashboard / approval / webhook 不可提请。
 
@@ -113,7 +113,7 @@
 
 #### 1.3.2 `approval_decide`
 
-人工裁决。**批准的副作用 = 提交 decision + effect outbox + 发布 `approval.approved` 事件**（驳回发 `approval.rejected`）——本命令自身不改任何其他域的数据（域效果由 dispatcher 按 `approval_effects` 幂等执行）。
+人工裁决。**批准的副作用 = 提交 decision + 同步执行 effect（dispatch 目标域命令，actor=approval）+ 登记 `approval_effects` 行 + 发布 `approval.approved` 事件**（驳回则只发 `approval.rejected`）——本命令自身不直写任何其他域的表/文件，域效果全部经 CommandGateway 走目标域全管线。
 
 **关于 `decision` 参数与"动词即状态机入口"的说明**：`decision: approve|reject` 是**封闭二值枚举的裁决语义参数**（两个目标终态的选择），不是自由态 `status` 注入——等价于 `approval_approve` / `approval_reject` 两个动词在看板单页交互上的合并投影；宪法 §四.1 禁的是"调用方任意传 status"的开放集合，此处集合封闭且网关校验。
 
@@ -140,7 +140,7 @@
 }
 ```
 
-`effect` 字段是**effect outbox 的登记回显**（decide 已提交 decision + effect，具体域效果由 dispatcher 幂等执行，最终一致）——看板操作者据此确认已批准，效果落定经 `approval_list` 的 status（approved_pending_effects→approved）与 `approval_reconcile` 对账。
+`effect` 字段是**本次 effect 执行结果摘要**（decide 已提交 decision 并同步 dispatch 各域命令、逐条登记 `approval_effects`）——全部 applied → 返回/落库 `approved`；任一失败 → 返回 `approved_effect_failed`（持久列仍为 `approved`，见 §2.1 注），可经 `approval_reconcile` 对账后 `approval_effects_retry` 补跑。
 
 **错误码**：
 
@@ -149,9 +149,8 @@
 | `E_NOT_FOUND` | 请求不存在 | false | 核对 request_id（approval_list 可查） |
 | `E_STATE` | 请求已处于终态 | false | 请求 #N 已决策（approved/rejected），勿重复操作 |
 | `E_BACKEND_UNAVAILABLE` / `E_CONFLICT` | 落库失败 / 并发裁决 | true | 稍后重试 |
-| `E_STATE` | 请求已处于终态 | false | 请求 #N 已决策（approved/rejected），勿重复操作 |
 
-**幂等**：自然键 `approval:decide:{id}:{decision}`。并发的两个 decide → 一成一 `E_STATE`（或经 `E_CONFLICT` 串行化，契约测试断言）。
+**幂等**：自动指纹（`id`/`decision`/`note`）。并发的两个 decide → 一成一 `E_STATE`（或经 `E_CONFLICT` 串行化，契约测试断言）。
 
 **actor**：dashboard（operator 必填）/ human。**model / system / scheduler / approval 一律不可裁决**——审批裁决是全系统模型禁入区的核心（宪法 §三）。
 
@@ -176,7 +175,7 @@
 
 **返回信封**：`data: { request_id, status: "rejected", withdrawn: true }`。
 
-**幂等**：自然键 `approval:withdraw:{id}`。
+**幂等**：自动指纹（`id`/`reason`）。
 
 **事件**：`approval.rejected`（payload `withdrawn: true`）——驳回类订阅方（若有统计）自然兼容。
 
@@ -185,7 +184,7 @@
 effect 失败重试通道：批准（decision）记录不动，只对 `status='failed'` 的 effect 按**原 payload** 重新 dispatch（decide 事务外的补偿执行点）。
 
 **参数**：`request_id`（必填，请求须存在且 status 以 `approved` 开头，否则 E_NOT_FOUND/E_STATE）。
-**语义**：逐条重放 failed effect（同 payload）→ 成功 `applied`、仍失败留 `failed` + `last_error`；全部补跑成功且原状态为 `approved_effect_failed` 时决策态回归 `approved`（只改 status 列，不动 decided_at/note）。**重试不重复生效**：同 payload 重放命中接收方幂等键（7 天窗口内 replay:true）；窗口过期后由接收方业务级幂等兜底（如 know 域 C26 的「同批准既有 release 吸收」）。
+**语义**：逐条重放 failed effect（同 payload）→ 成功 `applied`、仍失败留 `failed` + `last_error`；全部补跑成功且原状态为 `approved_effect_failed` 时决策态回归 `approved`（只改 status 列，不动 decided_at/note）。**注**：现网 decide 持久列恒为 `approved`（`approved_effect_failed` 仅为返回态，见 §2.1 注），故该回归分支当前不可达——effect 成败以 `approval_effects` 行为准。**重试不重复生效**：同 payload 重放命中接收方幂等键（7 天窗口内 replay:true）；窗口过期后由接收方业务级幂等兜底（如 know 域 C26 的「同批准既有 release 吸收」）。
 **actor**：dashboard / human（model 不可调）。**幂等**：自动指纹 `{request_id}`（窗口内重放返回首次结果）。
 **返回**：`{ request_id, retried, results: [{effect_key, status, replay?|error?}], decision_status }`；无事件（纯补偿通道，效果由目标域事件体现）。
 
@@ -268,7 +267,7 @@ payload 同 approved + `note`（驳回理由，看板必填引导）+ `withdrawn
 
 #### 1.5.4 订阅：无——论证
 
-approval 域 manifest `subscribes` 为空数组。理由：
+approval 域 manifest `subscribes` 为**空**（无任何订阅）。理由：
 
 1. **approval 是联动源头，不是联动消费者**：其状态机（pending → approved/rejected）完全由自身数据 + 人工裁决驱动，没有任何业务规则需要"对外部域的状态变化做出反应"。
 2. **validate 所需的外部状态是即时校验输入，不是联动触发器**：`approval_request` 的 validate 需要读 scope.yml（"已在授权范围无须审批"）、programs（项目存在性）、know 域收割草稿状态（knowledge-adopt 的 card_id/scenario 对卡）——这些全部经**查询网关同步读**（`scope_list` / `scope_check` / know 域 `harvest_status`），而非订阅。宪法 §八.6 的订阅声明机制是为"状态变化驱动的联动"设计的；把校验输入做成订阅反而引入时序耦合（订阅回放期间提请会读到旧状态，而同步查询永远读到当下）。
@@ -290,23 +289,23 @@ v4.x 批准副作用直写四处：`serializeScope` 写回（scopeSaveProgram）
    │                 │                   │                  │               │              │
    [看板] approval_decide(id, approve, operator)             │               │              │
    │                 │                   │                  │               │              │
-   │                 │─approval.approved（effect outbox）────>|              │              │
+   │                 │─decide effect（同步 dispatch, actor=approval）─────>|              │
    │                 │                   │ scope_grant       │               │              │
    │                 │                   │ (entries=[*.x.com,│              │              │
    │                 │                   │  x.com] 双条目)   │               │              │
    │                 │                   │─scope.granted（弱）─> task_create │              │
    │                 │                   │  （[审批入队]种子） │               │              │
-   │                 │                   │─scope.granted（弱）──────────────>|              │
+   │                 │─approval.approved（弱）───────────────────>|              │              │
    │                 │                   │                   │               │ ledger_radar_push
-   │                 │<─effect(applied)──│（effect 幂等执行成功回执）           │              │
-   │                 │ 事务提交: pending→approved_pending_effects→approved    │              │
+   │                 │<─effect(applied)──│（decide 内同步 dispatch 成功回执）  │              │
+   │                 │ 提交 decision: pending→approved（effect 明细见 approval_effects）      │
    │                 │                   │                  │               │              │
-   │                 │（kind=exclude-exception 时：fact 域订阅 approval.approved（弱）→ fact_upsert  │
-   │                 │  durable scope/exception-{host}；scope 域 grant 吸收排除项）              │
+   │                 │（kind=exclude-exception 时：decide effect scope_grant 吸收排除；        │
+   │                 │  另发 approval.approved（弱）→ fact 域 fact_upsert durable scope/exception-{host}）│
    │                 │                   │                  │               │              │
    [effect 失败示例] scope_grant 报 E_NOT_FOUND（项目已被移出 yml）                            │
    │                 │<─effect failed─────│                  │               │              │
-   │                 │ 状态机停 approved_effect_failed；approval_reconcile 对账，人工修复后重试 │
+   │                 │ 返回态 approved_effect_failed（持久列 approved）；approval_reconcile 对账，人工修复后 approval_effects_retry 补跑 │
 ```
 
 **异步审批协议的两个接线决策点（事件化路径）**：
@@ -321,13 +320,13 @@ worker 模型                 exec 域守卫链              approval 域       
    │<─error + approval_hint────│                          │                    │
    │  （勿重试——纪律第13条）     │                          │                    │
    [人工批准 tool-intrusive]     │                          │                    │
-   │                           │                          │─approval.approved（effect）─> scope_rules_apply
+   │                           │                          │─decide effect ───────────────> scope_rules_apply
    │                           │                          │                    │ (allow_intrusive_tools_add)
-   │                           │                          │                    │─scope.rules.changed（effect）─> exec 缓存刷新
-   [下个调度周期] worker 重试 run_cli(sqlmap) → checkRisk 白名单放行 → 自然执行（无需感知审批存在）
+   │                           │                          │                    │（发布 scope.rules.changed，当前零订阅）
+   [下个调度周期] worker 重试 run_cli(sqlmap) → checkRisk 实时读 scope.yml 白名单放行 → 自然执行（无需感知审批存在）
 ```
 
-task-budget-extend 同构：scheduler 超时分支 → `approval_request`（actor=scheduler，payload 含 task_id/run_id/tail 完整重试上下文）→ 人工批准 → task 域订阅 `approval.approved` → task 预算动词写 `tasks.budget_timeout_sec`（≤7200 封顶）→ 下周期 runWorker 取 `max(默认, 该值)`。
+task-budget-extend 同构：scheduler 超时分支 → `approval_request`（actor=scheduler，payload 含 task_id/run_id/tail 完整重试上下文）→ 人工批准 → decide effect dispatch `task_budget_extend` 写 `tasks.budget_timeout_sec`（≤7200 封顶）→ 下周期 runWorker 取 `max(默认, 该值)`。
 
 ### 1.6 模型工具面投影（模型实际看到的工具名 + 描述全文）
 
@@ -395,7 +394,7 @@ sec domain approval call approval_decide --actor human --operator singll \
 | `program_name` | string | nullable | 建议归属项目 |
 | `payload` | string (JSON TEXT) | nullable | **kind 专属判据结构化快照**（§2.2.2 各 kind payload schema；看板判据 chip 数据源） |
 | `evidence` | string | NOT NULL | 归属证据/依据摘要（validate 长度下限） |
-| `status` | string | NOT NULL DEFAULT 'pending' CHECK IN (pending, approved, rejected, approved_pending_effects, approved_effect_failed) | 状态机列（approve 提交后先落 `approved_pending_effects`，effects 全部 applied 后落 `approved`） |
+| `status` | string | NOT NULL DEFAULT 'pending' CHECK IN (pending, approved, rejected) | 状态机列（**仅三态**，沿 v4 CHECK 不动）。`approved_pending_effects` / `approved_effect_failed` 为**设计预留、未落列**：decide 提交时即落 `approved`，effect 成败另记 `approval_effects`；失败时 decide 返回 `approved_effect_failed` 但持久列仍为 `approved` |
 | `requested_by` | string | nullable | 提请者细粒度身份（session_id / `scheduler:auto` / `exec-guard:…`）——**网关注入** |
 | `created_at` | INTEGER | | UTC epoch ms |
 | `decided_at` | INTEGER | nullable | 裁决时刻 |
@@ -426,17 +425,17 @@ sec domain approval call approval_decide --actor human --operator singll \
   (不存在) ─────────────────────────────────────────> pending
                           │                              │
         approval_decide(approve)              approval_decide(reject)
-        [提交 decision + effect outbox]                   │ approval_withdraw（原提请者）
+        [提交 decision + 同步执行 effect + 登记 approval_effects]
+                          │                              │ approval_withdraw（原提请者）
                           │                              │ （落 rejected + [已撤回] 标记）
                           ▼                              ▼
-                  approved_pending_effects           rejected（终态）
-                          │
-                          │ dispatcher 逐个执行 approval_effects（幂等 effect）
-                          ├─ 全部 applied ──────────▶ approved（终态）
-                          └─ 任一 effect 超阈值失败 ─▶ approved_effect_failed（reconcile/重试后回 approved）
+                  approved（持久终态）                 rejected（终态）
+                  返回态：全部 applied→approved；
+                  任一失败→approved_effect_failed（仅返回态，持久列仍 approved；
+                  reconcile 对账 + approval_effects_retry 补跑）
 ```
 
-**effect 状态机（与 decision 分离）**：批准 = 人工对判据的背书（decision 账本，本域事务内提交）；具体域效果 = 幂等执行的 `approval_effects` 账本（dispatcher 派发，最终一致）。两者不再伪装成"单事务强联动"。
+> **实现注**：effect 在 `approval_decide` 命令内**同步**逐条 dispatch（actor=approval），无独立 outbox dispatcher 派发环节；`approval_effects` 仍作为幂等执行账本逐条登记（UNIQUE(request_id, effect_key) + 接收方幂等）。`approved_pending_effects`/`approved_effect_failed` 是设计预留的持久态，当前未落列（见 §2.1）。
 
 **网关前置不变量清单**：
 
@@ -446,13 +445,13 @@ sec domain approval call approval_decide --actor human --operator singll \
 | I2 | 同 `(kind, subject)` 至多一条 pending | `E_APPROVAL_PENDING_EXISTS` |
 | I3 | decide/withdraw 只允许 `pending → approved \| rejected`；终态不可再流转 | `E_STATE` |
 | I4 | evidence ≥10 字（通用）+ kind 专属下限（§2.2.2）；请求判据字段经 kind validate 全量通过 | `E_SCHEMA` / `E_INVARIANT` |
-| I5 | **批准前 fail-closed 不变（结构性）**：approval 域 commands 不 dispatch 任何其他域命令、不写 approval_requests 以外的任何表/文件——提请是纯登记，执行面状态零变化。守卫链的拒绝语义在批准前不可能被本域任何路径软化 | （结构保证；eval 契约合规用例覆盖：`模型试图经 approval_request 后立即重试被拒目标 → 仍被拒`） |
-| I6 | kind 的 `request_actors` 收窄（tool-intrusive 仅 system、task-budget-extend 仅 scheduler） | `E_APPROVAL_KIND_ACTOR` |
+| I5 | **批准前 fail-closed 不变（结构性）**：`approval_request` 不 dispatch 任何其他域命令、不写 `approval_requests`/`approval_effects` 以外的任何表/文件——提请是纯登记，执行面状态零变化；只有**人工批准**后 decide 才执行 effect。守卫链的拒绝语义在批准前不可能被本域任何路径软化 | （结构保证；eval 契约合规用例覆盖：`模型试图经 approval_request 后立即重试被拒目标 → 仍被拒`） |
+| I6 | kind 的 `request_actors` 收窄（tool-intrusive = system/model、task-budget-extend = scheduler、task-complete = model/scheduler） | `E_APPROVAL_KIND_ACTOR` |
 | I7 | withdraw 权限：model actor 限原提请者（requested_by == session_id）；human 任意 | `E_APPROVAL_WITHDRAW_FORBIDDEN` |
 
-#### 2.2.2 kind 注册表（声明式，manifest `kinds` 段）
+#### 2.2.2 kind 注册表（代码内声明式注册表，`APPROVAL_KINDS`）
 
-v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifest 声明：每 kind 一个条目，字段 = `label` / `request_actors` / `subject_rule` / `payload_schema` / `validate`（规则表）/ `on_approve`（**纯事件映射**——approve 后发什么事件、谁订阅执行什么命令）。**新增审批类型 = 注册表加条目，工具面/RPC/看板零改动**（v4.x 注册表的核心收益保留）。
+v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从域内代码对象迁入 `dsh-plugin-sec-domain-approval.js` 的 `APPROVAL_KINDS` 导出（**非 manifest `kinds` 段**）：每 kind 一个条目，字段 = `label` / `request_actors` / `validate`（规则）/ `effects`（**纯事件/命令映射**——approve 后 dispatch 什么命令）。**新增审批类型 = 注册表加条目，工具面/RPC/看板零改动**（v4.x 注册表的核心收益保留）。当前共 **8 kind**（§2.2.2 kind 1–8）。
 
 **kind 1：`scope-wildcard`（整域授权·通配）** —— v4.5 整域通配口径
 
@@ -463,7 +462,7 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | subject_rule | 裸 apex 注册域（`hostRoot(subject) === subject`，注册域近似算法：末两标签，.com.cn 等双后缀取三） |
 | payload_schema | `{ equity_basis: enum[控股/全资, 收购/财团], independent_src: enum[无, 有, 不确定] 且 ≠有, domain_level: const 'apex', corroboration?: string }` |
 | validate | ① hostOf 可解析；② subject 是 apex（子域 → `E_INVARIANT`，hint 引导走 scope-domain）；③ program 在 scope.yml（读 scope_list）；④ `*.subject` 或裸域已在项目 scope（→ 无须审批，`E_INVARIANT`）；⑤ equity_basis 仅 控股/全资 或 收购/财团（品牌/产品线/技术印证不足以开整域）；⑥ independent_src 必填且 ≠有（有自身 SRC 渠道不并入——H-004 教训）；⑦ evidence ≥30 字且须主体核证级（ICP 备案主体/收购公告/SRC 规则页明示） |
-| 事件映射（approve） | `approval.approved` → **scope 域**（effect）`scope_grant`（entries = `["*.x.com","x.com"]` **双条目**——对齐 v4.x 批准写回形态，根因：09-04 批准裸 apex 次日 recon 对 www 子域照样被拒的覆盖缺口）→ `scope.granted` → **task 域**（弱）种子任务 + **ledger 域**（弱）radar 追加 |
+| 事件映射（approve） | **decide effect** → **scope 域** `scope_grant`（entries = `["*.x.com","x.com"]` **双条目**——对齐 v4.x 批准写回形态，根因：09-04 批准裸 apex 次日 recon 对 www 子域照样被拒的覆盖缺口）→ 发布 `scope.granted` → **task 域**（弱）种子任务；另发 `approval.approved`（弱）→ **ledger 域** radar 追加 |
 | 事件映射（reject） | 无执行订阅方（决策留痕） |
 
 **kind 2：`scope-domain`（单子域授权）**
@@ -475,7 +474,7 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | subject_rule | 完整子域（hostRoot(subject) !== subject） |
 | payload_schema | `{ equity_basis: enum[全部五值], independent_src: enum[无,有,不确定], domain_level: const 'subdomain', corroboration?: string }` |
 | validate | ① hostOf 可解析；② program 在 scope.yml；③ 不在任何项目授权范围（读 scope_check——已授权无须审批）；④ 命中排除清单 → 引导改提 exclude-exception；⑤ subject 是裸 apex → **拒绝并引导改提 scope-wildcard**（防"逐子域提审批"口径缺口复现）；⑥ equity_basis/independent_src 必填；⑦ evidence ≥30 字且含具体归属证据（CNAME 指向授权资产/内容同源/主体核证——"疑似/字典枚举"不构成依据） |
-| 事件映射（approve） | `approval.approved` → scope 域（effect）`scope_grant`（entries=[subject]）→ `scope.granted` → task/ledger（弱，同 wildcard） |
+| 事件映射（approve） | **decide effect** → scope 域 `scope_grant`（entries=[subject]）→ 发布 `scope.granted` → task 种子（弱）；`approval.approved`（弱）→ ledger radar |
 
 **kind 3：`exclude-exception`（排除例外评估）** —— 被排除资产的人工评估正规入口
 
@@ -486,7 +485,7 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | subject_rule | 须命中目标项目 exclude 清单（entryMatches 语义） |
 | payload_schema | `{ equity_basis: enum[全部五值] }` |
 | validate | ① hostOf 可解析；② program_name 必填且在 scope.yml；③ subject 在该项目排除清单中（不在 → 引导走 scope-domain）；④ equity_basis 必填（解除排除须给出比 scope-domain 更强的归属证据） |
-| 事件映射（approve） | `approval.approved` → **scope 域**（effect）`scope_grant`（**授权吸收排除**：条目移出 exclude 并入 scope，08 §1.3.1 吸收语义）→ `scope.granted`；**fact 域**（弱）`fact_upsert`（durable，`fact_key = scope/exception-{host}`，summary"排除例外已批准"，留档失败不阻断——v4.x best-effort 语义保留） |
+| 事件映射（approve） | **decide effect** → **scope 域** `scope_grant`（**授权吸收排除**：条目移出 exclude 并入 scope，08 §1.3.1 吸收语义）→ 发布 `scope.granted`；`approval.approved`（弱）→ **fact 域** `fact_upsert`（durable，`fact_key = scope/exception-{host}`，summary"排除例外已批准"，留档失败不阻断——v4.x best-effort 语义保留） |
 | 事件映射（reject） | 无（维持排除，决策留痕） |
 
 **kind 4：`tool-intrusive`（侵入工具放行）** —— 异步审批接线点 ①
@@ -494,11 +493,11 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | 项 | 值 |
 |---|---|
 | label | 侵入工具放行 |
-| request_actors | **system**（exec 域守卫 checkRisk needsApproval 路径 + S5 写动词守卫路径自动提请；**model 直提拒绝**——agent 无法替人工编 evidence） |
+| request_actors | **system / model**（exec 域守卫 checkRisk needsApproval 路径 + S5 写动词守卫路径以 system 自动提请；model 亦可显式提请） |
 | subject_rule | `{tool}:{target}` |
 | payload_schema | `{ tool: string, risk: string, target: string|null, params: object（脱敏：短标量原样、>60 字截断打标、复合值 `[list:N]`——脱敏在提请方，本域只校验值均为短标量）, program: string, guard?: string, verb?: string, url?: string }` |
 | validate | ① payload.tool 非空；② program 在 scope.yml；③ params 值域校验（防绕过脱敏直灌长文本/凭据特征——命中 `Bearer `/长 base64 特征 → `E_INVARIANT`） |
-| 事件映射（approve） | `approval.approved` → **scope 域**（effect）`scope_rules_apply`（`allow_intrusive_tools_add: [tool]`）→ `scope.rules.changed` → **exec 域**（effect）白名单缓存刷新 → 下个调度周期任务重试自然放行（S5 写动词守卫与风险闸同源放行） |
+| 事件映射（approve） | **decide effect** → **scope 域** `scope_rules_apply`（`allow_intrusive_tools_add: [tool]`）→ 发布 `scope.rules.changed`（**当前零订阅者**，仅留痕）→ 下个调度周期 exec 守卫实时读 scope.yml 自然放行（S5 写动词守卫与风险闸同源放行） |
 | 幂等 | on_approve 侧：tool 已在白名单 → scope_rules_apply 数据级幂等（before==after 成功返回） |
 
 **kind 5：`task-budget-extend`（任务预算延长）** —— 异步审批接线点 ②
@@ -510,7 +509,7 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | subject_rule | `task:{id}` |
 | payload_schema | `{ task_id: integer, program: string, timed_out_at_sec: integer, budget_timeout_sec: integer = 7200, run_id: string|null, tail: string（尾部产出摘要，≤400 字） }` |
 | validate | ① task_id 存在（读 task 域查询）；② budget_timeout_sec ≤7200（封顶，防 2 小时外失控 worker 占死调度槽） |
-| 事件映射（approve） | `approval.approved` → **task 域**（effect）任务预算动词（写 `tasks.budget_timeout_sec`，7200 封顶；05-task.md 定义，工作名 `task_budget_extend`）→ 下周期 runWorker 取 `max(默认, 该值)` |
+| 事件映射（approve） | **decide effect** → **task 域** 预算动词（写 `tasks.budget_timeout_sec`，7200 封顶；05-task.md 定义，工作名 `task_budget_extend`）→ 下周期 runWorker 取 `max(默认, 该值)` |
 | 事件映射（reject） | 无（维持默认预算） |
 
 **kind 6：`knowledge-adopt`（知识采纳）** —— 外部经验蒸馏入库
@@ -522,7 +521,7 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | subject_rule | 经验卡 scenario 一句话，≥8 字 |
 | payload_schema | `{ card_id?: integer（exp_cards.id；draft 直落新卡时不传）, draft: string ≥50 字（蒸馏后可迁移模式——原文摘抄/链接描述不构成 draft）, source_url: string（http(s) 完整 URL，外部知识须可溯源） }` |
 | validate | ① subject ≥8 字；② draft ≥50 字；③ source_url 合法；④ card_id 为正整数或空；⑤ evidence ≥30 字（为什么值得采纳：覆盖哪个知识缺口/哪个案例支撑/与现有卡的差异）；⑥ card_id/scenario 对卡状态读 know 域查询（harvest 草稿状态——**同步查询，非订阅**，§1.5.4 论证） |
-| 事件映射（approve） | `approval.approved` → **know 域**（effect）`know_adopt`（07-know：card_id 有 → 转正对应 candidate 卡；只有 draft → 落新卡 source=external confidence=low 并直接转正；FTS 索引同步。effect 失败经 approval_effects 退避重试/对账——本地 sqlite 后端下不可达属异常态，人工可修复后重试） |
+| 事件映射（approve） | **decide effect** → **know 域** `know_adopt`（07-know：card_id 有 → 转正对应 candidate 卡；只有 draft → 落新卡 source=external confidence=low 并直接转正；FTS 索引同步。effect 失败经 approval_effects 对账/补跑——本地 sqlite 后端下不可达属异常态，人工可修复后重试） |
 
 **kind 8：`knowledge-publish`（知识版本受控发布，L4 2026-09-17 新增）** —— 自学习专项 §6.2/§6.3
 
@@ -533,7 +532,7 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | subject_rule | `{artifact_id} {revision_id} {范围} 灰度发布`（自由文本，说明发布对象与范围） |
 | payload_schema | `{ revision_id: string（必填）, content_digest: string（必填，`sha256:`+64hex——批准对象=内容哈希）, scope_type: program\|family\|global（必填；program/family 须带 scope_id）, scope_id: string, eval_report_ref: string }` |
 | validate | ① revision_id/content_digest/scope_type 形状齐全（global 免 scope_id，灰度必填）；② evidence ≥30 字（须引用独立评测结论：eval 配对报告 ref + eligible 判定） |
-| 事件映射（approve） | `approval.approved` → **know 域**（effect）`know_revision_publish`（07-know C26：eligible 前置 + digest 锚定 + 有限灰度先于全局生效；发布=新增 know_releases 行。批准绑定哈希——批准后 revision 内容变化（=新 revision）即批准失效，effect 落 failed + reconcile 对账 + `approval_effects_retry` 补跑） |
+| 事件映射（approve） | **decide effect** → **know 域** `know_revision_publish`（07-know C26：eligible 前置 + digest 锚定 + 有限灰度先于全局生效；发布=新增 know_releases 行。批准绑定哈希——批准后 revision 内容变化（=新 revision）即批准失效，effect 落 failed + reconcile 对账 + `approval_effects_retry` 补跑） |
 | 事件映射（reject） | 无 |
 
 **kind 7：`task-complete`（自执行任务完成确认）** —— 05-task C16/C17 三段式收尾的审批段
@@ -545,22 +544,22 @@ v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从代码对象迁移为 manifes
 | subject_rule | `task:{task_id}`（正整数 id；task 域同步查询校验存在、assignee=model、非终态——**同步查询，非订阅**，同 kind 6 模式） |
 | payload_schema | `{ task_id: integer, summary: string ≥30 字（做了什么/结论）, evidence: string（产物指针：run_id / result note 引用）, follow_up?: string ≤500 字（希望人工顺带裁决的后续操作建议）, guard_snapshot?: object（三产物检查快照，拦截任务补提时携带） }` |
 | validate | ① task 存在且 assignee=model 且非终态（否则 `E_INVARIANT`，hint："task-complete 只用于模型自执行任务；worker 型任务的收尾由调度器 task_finish 自动完成"）；② 无活动 worker（task_active_by_session）；③ summary ≥30 字；④ evidence 非空 |
-| 事件映射（approve） | `approval.approved` → **task 域**（effect）`task_complete`（C17：status→done + finished_at + result 追加"人工确认 {request_id} + summary"）。三产物守卫降为展示不拦截——守卫结果已在 payload 呈现，**人工裁决即守卫**（fail-open 合法形态：放行决策权在人，全程审计留痕） |
+| 事件映射（approve） | **decide effect** → **task 域** `task_complete`（C17：status→done + finished_at + result 追加"人工确认 {request_id} + summary"）。三产物守卫降为展示不拦截——守卫结果已在 payload 呈现，**人工裁决即守卫**（fail-open 合法形态：放行决策权在人，全程审计留痕） |
 | 事件映射（reject） | 无执行订阅方（任务保持 in_progress + 驳回理由进审批留痕；用户看板 task_block/cancel 收尾或模型补证重新声明） |
 
 ### 2.3 事务与联动实现
 
 **`approval_request` 事务**：BEGIN IMMEDIATE 内 INSERT 单行（I2 去重查询 + 插入同事务防并发穿透）；提交后发 `approval.requested`（无强联动订阅方）。
 
-**`approval_decide` 事务（decision + effect outbox 模型，替代 v4 onApprove 跨域直写与伪两阶段回滚）**：
+**`approval_decide` 事务（decision + `approval_effects` 幂等账本，替代 v4 onApprove 跨域直写与伪两阶段回滚）**：
 
 1. 读行校验（I3：pending）；
-2. BEGIN IMMEDIATE：UPDATE `status='approved_pending_effects'` + `decided_at/note` + **写 `approval_effects` 行（status=pending）**——effect = {request_id, kind, 目标域命令, payload}，由 kind 的 effect 映射（§2.2.2 事件映射列）派生，同事务落库 → COMMIT；
-3. 事务提交后，总线 dispatcher 逐个执行 `approval_effects`（幂等：每条 effect 有唯一 (request_id, effect_key) 键 + 订阅方命令幂等表兜底，重复派发零副作用）；
-4. 全部 applied → `status='approved'`（UPDATE 同事务）；任一 effect 指数退避重试超阈值 → `status='approved_effect_failed'` + audit，`approval_reconcile` 查询对账后经人工/定时重试回 `approved`；
-5. 发布 `approval.approved`（弱联动订阅者——fact 留档、看板通知——异步执行，失败仅 audit `subscriber_failed`）。
+2. BEGIN IMMEDIATE：UPDATE `status='approved'` + `decided_at/note`（驳回则 `rejected`）→ COMMIT；
+3. 命令内**同步**逐条执行 kind 的 effect 映射（§2.2.2）：`repo.insertEffect`（UNIQUE(request_id, effect_key)）→ `dispatch(domain, verb, payload, { actor: 'approval' })` → `markEffect(applied|failed)`（幂等：effect_key 唯一 + 接收方命令幂等表兜底，重复派发零副作用）；
+4. 全部 applied → decide 返回 `approved`；任一 effect 失败 → 返回 `approved_effect_failed`（**持久列仍 `approved`**，见 §2.1 注），`approval_reconcile` 查询对账后经 `approval_effects_retry` 补跑；
+5. 发布 `approval.approved`（弱联动订阅者——fact 留档、看板通知、ledger radar——异步执行，失败仅 audit `subscriber_failed`）。
 
-> 与旧设计的区别：**不再有"强联动订阅者全部成功才提交、任一失败整体回滚"的伪两阶段**——decide 只写账本（decision + effect outbox），具体域效果由 dispatcher 幂等执行；授权类效果（scope_grant）提供 reconcile 查询确保 scope.yml、programs 镜像、approval effect 三者最终一致。崩溃窗口：decide 已提交而 effects 未全部 applied → 状态机停在 `approved_pending_effects`，dispatcher 续扫恢复，**不再产生"scope 已授权但请求仍 pending"的分裂态**。
+> 与旧设计的区别：**不再有"强联动订阅者全部成功才提交、任一失败整体回滚"的伪两阶段**——也不再依赖独立 outbox dispatcher；decide 登记 decision + 同步执行 effect（计入 `approval_effects` 账本），授权类效果（scope_grant）另有 reconcile 查询确保 scope.yml、programs 镜像、approval effect 三者一致。崩溃窗口：decide 已提交而 effect 未执行完 → 该 effect 行停在 `pending`/`failed`，`approval_reconcile` 可对账（**注意**：`pending` effect 无自动续跑 dispatcher，需 `approval_effects_retry` 人工补跑，属已知可观测性/自动恢复缺口）。
 
 **`approval_withdraw` 事务**：单行 UPDATE，无强联动。
 
@@ -575,6 +574,10 @@ ApprovalRepo.findPending(kind, subject) -> row | null          // I2 去重路�
 ApprovalRepo.decide({id, status, decided_at, note}) -> changes  // 仅 pending 行可更（WHERE status='pending'）
 ApprovalRepo.listWhere({kind, status, limit, offset}) -> {rows, total}   // 排序契约：pending 前置 + created_at DESC；列表与 total 同 where 构造器
 ApprovalRepo.statsWhere({since_ts}) -> aggregates
+// effect 账本（approval_effects）
+ApprovalRepo.insertEffect({request_id, effect_key, domain, verb, payload}) -> void   // INSERT OR IGNORE（UNIQUE(request_id,effect_key)）
+ApprovalRepo.markEffect(effect_key, {status, last_error}) -> changes
+ApprovalRepo.listEffects(request_id) -> rows
 ```
 
 **能力矩阵**（`sec_domain_approval_backend: sqlite-local`，默认且当前唯一）：
@@ -603,21 +606,23 @@ ApprovalRepo.statsWhere({since_ts}) -> aggregates
 
 ### 3.1 现状代码映射（行级，v4.7 时点源文件在 `bundles/dsh/templates/`）
 
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重写（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest/`APPROVAL_KINDS` 与 backend 为准。
+
 | v4.x 位置 | 函数/段 | v5 落点 |
 |---|---|---|
-| `dsh-plugin-sec-suite.js` L494-813 | `APPROVAL_KINDS` 注册表（6 kind 的 label/validate/onApprove） | manifest `kinds` 声明（§2.2.2）；**onApprove 全部拆除**改事件映射 |
+| `dsh-plugin-sec-suite.js` L494-813 | `APPROVAL_KINDS` 注册表（6 kind 的 label/validate/onApprove） | 迁入域内 `APPROVAL_KINDS`（§2.2.2，共 8 kind）；**onApprove 全部拆除**改 effect 映射（decide 内同步 dispatch） |
 | `dsh-plugin-sec-suite.js` L816-845 | `approvalRequest(args, exec)` | 命令 `approval_request`（判据字段平铺兼容 v4.x 工具面） |
-| `dsh-plugin-sec-suite.js` L868-884 | `approvalDecideAction({id, decision, note})` | 命令 `approval_decide`（副作用从"执行 onApprove + 落库"改为"只发事件"） |
+| `dsh-plugin-sec-suite.js` L868-884 | `approvalDecideAction({id, decision, note})` | 命令 `approval_decide`（副作用从"onApprove 直写 + 落库"改为"同步 dispatch effect + 登记 approval_effects + 发 acceptance 事件"） |
 | `dsh-plugin-sec-suite.js` L853-865 | `sanitizeParamsForApproval` | **提请方（exec 域守卫）职责**；本域保留 params 值域防绕过校验 |
-| `dsh-plugin-sec-suite.js` L468-492 | `enqueueScopeSeed`（种子任务 + radar 双通道，best-effort） | **拆除**：`scope.granted` → task 域（task_create 种子）+ ledger 域（ledger_radar_push）订阅 |
-| `dsh-plugin-sec-suite.js` L537-559 / 609-633 | scope-domain / scope-wildcard onApprove 的 `scopeSaveProgram` 直写 | `approval.approved` → scope 域订阅 → `scope_grant`（双条目语义在订阅处理器） |
-| `dsh-plugin-sec-suite.js` L658-687 | exclude-exception onApprove（移出排除 + factUpsert） | `approval.approved` → scope 域 `scope_grant`（吸收排除）+ fact 域订阅 `fact_upsert`（弱） |
-| `dsh-plugin-sec-suite.js` L693-721 | tool-intrusive onApprove（写 allow_intrusive_tools） | `approval.approved` → scope 域 `scope_rules_apply` |
-| `dsh-plugin-sec-suite.js` L724-737 | task-budget-extend onApprove（裸 SQL UPDATE tasks） | `approval.approved` → task 域预算动词（**裸 SQL 归零**） |
-| `dsh-plugin-sec-suite.js` L745-812 | knowledge-adopt onApprove（exp_cards 直写 + FTS + 降级出口） | `approval.approved` → know 域 `know_adopt`（07-know）；**L4（2026-09-17）起 v4 直写 onApprove 已 fail-closed 关闭**（残留兜底只报指引错误，不落任何 exp_cards 直写） |
+| `dsh-plugin-sec-suite.js` L468-492 | `enqueueScopeSeed`（种子任务 + radar 双通道，best-effort） | **拆除**：`scope.granted` → task 域（task_create 种子）；`approval.approved` → ledger 域（ledger_radar_push） |
+| `dsh-plugin-sec-suite.js` L537-559 / 609-633 | scope-domain / scope-wildcard onApprove 的 `scopeSaveProgram` 直写 | decide effect → dispatch `scope_grant`（双条目语义在 effect 映射） |
+| `dsh-plugin-sec-suite.js` L658-687 | exclude-exception onApprove（移出排除 + factUpsert） | decide effect → scope 域 `scope_grant`（吸收排除）+ `approval.approved` → fact 域订阅 `fact_upsert`（弱） |
+| `dsh-plugin-sec-suite.js` L693-721 | tool-intrusive onApprove（写 allow_intrusive_tools） | decide effect → scope 域 `scope_rules_apply` |
+| `dsh-plugin-sec-suite.js` L724-737 | task-budget-extend onApprove（裸 SQL UPDATE tasks） | decide effect → task 域预算动词（**裸 SQL 归零**） |
+| `dsh-plugin-sec-suite.js` L745-812 | knowledge-adopt onApprove（exp_cards 直写 + FTS + 降级出口） | decide effect → know 域 `know_adopt`（07-know）；**L4（2026-09-17）起 v4 直写 onApprove 已 fail-closed 关闭**（残留兜底只报指引错误，不落任何 exp_cards 直写） |
 | `dsh-plugin-sec-suite.js` L1244-1268 | runCli checkRisk needsApproval 自动提请 | exec 域守卫链 → `dispatch('approval','request')`（actor=system） |
 | `dsh-plugin-sec-suite.js` L1290-1315 | S5 写动词守卫的 tool-intrusive 桥接 | 同上（guard: 'S5-write-verb' 进 payload） |
-| `dsh-plugin-sec-suite.scheduler.js` L182-196 | scheduler 超时分支自动提请 | scheduler → `dispatch('approval','request')`（actor=scheduler） |
+| ~~`dsh-plugin-sec-suite.scheduler.js` L182-196~~（**该文件已删除**） | scheduler 超时分支自动提请 | scheduler → `dispatch('approval','request')`（actor=scheduler）；现行 scheduler 已在 task 域 |
 | `dsh-plugin-sec-suite.asset-db.js` L204-218 | approval_requests DDL + 索引 | sqlite 后端接管（表不动） |
 | `dsh-plugin-sec-suite.asset-db.js` L1670-1725 | approvalAdd / approvalList / approvalGet / approvalDecide / approvalCount | ApprovalRepo 原语（approvalCount 并入 statsWhere） |
 | `dsh-plugin-sec-suite.js` L2062-2095 | `approval_request` 工具注册（长描述） | ToolProjector 自动投影（描述全文 §1.6，原文保留） |
@@ -638,7 +643,7 @@ ApprovalRepo.statsWhere({since_ts}) -> aggregates
 
 1. **表零迁移**：approval_requests 沿用现库现表；存量 pending/approved/rejected 行原样保留（已决策行是审计资产）。
 2. **存量 payload 兼容**：v4.4 起判据已结构化（equity_basis 等 JSON），v5 读取无损；更早的 NULL payload 行渲染为无 chip。
-3. **迁移窗口的请求处理**：Phase 3 切换期间，v4.x onApprove 与 v5 事件订阅**不并存**（同一请求只能被一条路径裁决）——切换顺序：先上 scope/task/know 域订阅 → 再切 decide 到新命令；切换时刻的存量 pending 请求在新链路裁决（判据字段齐全，无兼容缺口）。
+3. **迁移窗口的请求处理**：Phase 3 切换期间，v4.x onApprove 直写与 v5 decide effect 执行**不并存**（同一请求只能被一条路径裁决）——切换顺序：先上 scope/task/know 域命令 → 再切 decide 到新命令；切换时刻的存量 pending 请求在新链路裁决（判据字段齐全，无兼容缺口）。
 4. 回滚：切回 v4.x 插件即恢复 onApprove 直写路径（表双向兼容）。
 
 ---
@@ -649,7 +654,7 @@ ApprovalRepo.statsWhere({since_ts}) -> aggregates
 |---|---|---|
 | O-1 | **scan-burst（T-16）新 kind 预留**：批量临时升速的审批——批准写 defaults.rate_limit_qps 临时值 + **TTL 到期自动回落**。现有 `scope_rules_apply` 是永久补丁模型，临时性需要"规则租约"（补丁 + 到期事件 + 回滚命令），与 08 §四 O-7 联动设计 | kind 注册表已预留扩展位（加条目零改动）；规则租约机制等 T-16 立项时在 scope 域设计 |
 | O-2 | `withdrawn` 复用 rejected 终态（note 前缀 + 事件标记区分）——stats 区分靠 note LIKE，不够刚性 | 下次表重建窗口（新增列/约束集中变更时）引入独立 `withdrawn` 终态 + CHECK 重建 |
-| O-3 | decide effect outbox 的崩溃窗口（decide 已提交、effects 未全部 applied）→ 状态机停在 `approved_pending_effects` | dispatcher 续扫 + `approval_reconcile` 幂等对账（effect 唯一键 + 订阅方幂等兜底）；是否需 saga 补偿标记待崩溃注入测试结果 |
+| O-3 | decide 同步 effect 的崩溃窗口（decide 已落 `approved`、部分 effect 未执行/失败）→ effect 行停 `pending`/`failed`，请求无持久失败态 | `approval_reconcile` 幂等对账（effect 唯一键 + 接收方幂等兜底）+ `approval_effects_retry` 人工补跑；未实现 effect 的自动续跑 dispatcher，是否补造待崩溃注入测试结果 |
 | O-4 | knowledge-adopt 是否需要订阅 know 域收割状态（如"草稿被删除时自动作废已提请求"） | 当前用查询满足；出现真实联动规则再升级为订阅 |
 | O-5 | 审批 SLA：pending >7 天目前只有看板红条，是否要 approval.requested 的 Matrix 通知通道 | 倾向加（Bellkeeper 通知网关已有），Phase 5 与看板通知一并做 |
 | O-6 | kind 注册表的运行时热扩展（插件式 kind 注册）vs manifest 静态声明 | 静态优先（宪法 §八.6 显式依赖精神）；热扩展等出现第三方 kind 需求 |
@@ -658,7 +663,7 @@ ApprovalRepo.statsWhere({since_ts}) -> aggregates
 
 | 维度 | 结论 |
 |---|---|
-| 逻辑/功能 | 16/16 契约通过；approval request/decide/reconcile 与 effect outbox 最终一致语义成立。 |
+| 逻辑/功能 | 16/16 契约通过；approval request/decide/reconcile 与 `approval_effects` 幂等账本最终一致语义成立（effect 在 decide 内同步执行，失败态仅返回不落列）。 |
 | 未实现 | `approval_stats.avg_decide_hours` 固定 0，`by_decider` 固定空数组；原因是未落结构化 decided_by，不能从 note 猜测。 |
 | 静默错误 | effect 执行结果有 `approved_effect_failed` 与 reconcile，未见吞错；主要缺口是统计字段未实现。 |
 | 性能 | approvals/effects 规模小，SQLite 索引足够。 |

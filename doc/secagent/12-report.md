@@ -36,10 +36,10 @@ v4.x 中 `buildReport`（asset-db.js L1592-1664）与 `submissionDraft`（L1818-
 
 | 动词 | 一句话语义 | actor 白名单 | 幂等键 | 事件 |
 |---|---|---|---|---|
-| `report_build` | 按筛选生成漏洞报告 md + 登记索引 | model, dashboard, human | 自动指纹（args 核心 + 北京分钟桶）| `report.built` |
-| `report_draft_submission` | 按 finding 生成 SRC 提交草稿 + 查重 | model, dashboard, human | 自然键（finding_id + 北京日期）| `report.draft.generated` |
+| `report_build` | 按筛选生成漏洞报告 md + 登记索引 | model, dashboard, human | 自动指纹（manifest `idempotent_fields`：host_like/program_id/since_days/status_filter/severity/source） | `report.built` |
+| `report_draft_submission` | 按 finding 生成 SRC 提交草稿 + 查重 | model, dashboard, human | 自动指纹（finding_id/platform/regenerate）+ 命令内同日草稿幂等（无 regenerate 命中已有文件 → replay） | `report.draft.generated` |
 
-无其他写动词：**报告产物不可变**（built 即终态，无流转、无 update、无删除动词——删除走人工运维 + `report_index_rebuild` 修复索引，见 §2.5）。这是刻意设计：报告是"生成时刻的快照"，改内容 = 重新生成新报告（新时间戳文件名），不留任何就地改写入口。
+无其他写动词：**报告产物不可变**（built 即终态，无流转、无 update、无删除动词——删除走人工运维 + 索引惰性 heal 修复，见 §2.5）。这是刻意设计：报告是"生成时刻的快照"，改内容 = 重新生成新报告（新时间戳文件名），不留任何就地改写入口。
 
 ### 1.3 命令逐个详述
 
@@ -54,7 +54,7 @@ v4.x 中 `buildReport`（asset-db.js L1592-1664）与 `submissionDraft`（L1818-
 | `host_like` | string | 否 | `''` | 长度 ≤200；按 host/url 模糊匹配 |
 | `program_id` | string | 否 | `''` | 空=全部项目；非空须存在于 vuln 域 program 维度（经 `scope_program_list` 校验），否则 `E_NOT_FOUND` |
 | `since_days` | integer | 否 | `0` | 0-3650；0=全部；>0 时只含 created_at ≥ now−N×86400000 的行 |
-| `status` | string | 否 | `''` | enum `['', 'confirmed', 'false_positive', 'submitted', 'accepted', 'dup', 'ignored']`；空=全部 |
+| `status_filter` | string | 否 | `''` | enum `['', 'confirmed', 'false_positive', 'submitted', 'accepted', 'dup', 'ignored']`；空=全部。**参数名**：总线 R3 禁命令 schema 顶层 `status`，v5 更名 `status_filter`（语义不变，见 §2.2/节点备注） |
 | `severity` | string | 否 | `''` | 逗号分隔多选，每项 ∈ `['critical','high','medium','low','info']`；空=全部；重复项去重；全白空格项丢弃 |
 | `source` | string | 否 | `''` | 精确匹配 findings.source（如 `xray` / `agent`）|
 
@@ -71,7 +71,7 @@ v4.x 中 `buildReport`（asset-db.js L1592-1664）与 `submissionDraft`（L1818-
   "sections": [
     { "title": "## meituan（17）", "rows": 17 }
   ],
-  "filters": { "host_like": "", "program_id": "meituan", "since_days": 0, "status": "", "severity": "", "source": "" },
+  "filters": { "host_like": "", "program_id": "meituan", "since_days": 0, "status_filter": "", "severity": "", "source": "" },
   "hint": "报告已落盘，提交 SRC 前必须人工逐条核实"
 }
 ```
@@ -95,7 +95,7 @@ v4.x 中 `buildReport`（asset-db.js L1592-1664）与 `submissionDraft`（L1818-
 | `E_BACKEND_UNAVAILABLE` | sqlite 不可达 / reports/ 不可写 | "检查 SEC_DATA_DIR 与磁盘；sqlite-local 后端 busy_timeout 5s 后重试" |
 | `E_CONFLICT` | 索引写 SQLITE_BUSY | retryable=true |
 
-**幂等**：自动指纹 = sha1(`args 核心字段` + 北京分钟桶)。同分钟同参重放 → 命中幂等表返回首次结果 + `replay: true`（文件已存在不重写）；同分钟异参 → 指纹不同，正常生成新文件（文件名序号防冲突）。模型/看板也可显式传 `idempotency_key`。
+**幂等**：自动指纹 = manifest `idempotent_fields`（host_like/program_id/since_days/status_filter/severity/source）。同参重放 → 命中幂等表返回首次结果 + `replay: true`（文件已存在不重写）；异参 → 指纹不同，正常生成新文件。**"北京分钟桶"只用于文件名去冲突**（`report-{nameTag}-{YYYYMMDD-HHmm}[-N].md` 同分钟同名序号递增），不进幂等键。模型/看板也可显式传 `idempotency_key`。
 
 **actor**：`model`（worker/宿主会话工具调用）、`dashboard`（携带 auth-gate operator）、`human`（CLI 应急）。禁止 `script`/`webhook`/`scheduler`——报告是人工审校前的产物，机器不自动生成（每日链自动报告是开放问题 §四）。
 
@@ -139,7 +139,7 @@ v4.x 中 `buildReport`（asset-db.js L1592-1664）与 `submissionDraft`（L1818-
 | `E_REPORT_NOT_SIGNAL` | finding 为候选（noise=1）| "候选不生成提交草稿——先补全证据并 vuln_confirm，或 vuln_reject 出池" |
 | `E_CONFLICT` | 同日草稿被并发重写 | retryable=true |
 
-**幂等**：自然键 = `report:draft_submission:{finding_id}:{北京日期}`。同键同参重放 → 返回现有文件 + `replay: true`（**不重写**，即使 finding 字段此后变了——审计可见）；`regenerate: true` 时绕过幂等命中、覆盖重写（regenerate 进指纹，视为新键）。
+**幂等**：网关自动指纹（`finding_id`/`platform`/`regenerate`）+ **命令内同日草稿幂等**：无 `regenerate` 且 `submissions/draft-finding-{id}-{北京日期}.md` 已存在 → 返回现有文件 + `replay: true`（**不重写**，即使 finding 字段此后变了——审计可见）；`regenerate: true` 绕过文件命中、覆盖重写。
 
 **actor**：`model`、`dashboard`、`human`（同 report_build；机器不自动产草稿）。
 
@@ -186,7 +186,7 @@ ToolProjector 自动注册（name=动词名，schema=命令 schema，description
 
 | 工具名 | 描述全文（manifest agent_note）|
 |---|---|
-| `report_build` | 生成漏洞报告（markdown）：按项目分节（无项目按严重级分组）+ 明细表（级别/状态/类型/标题/目标/证据），落盘 data/reports/ 并登记索引。可按 severity（逗号多选，如 high,critical）/source/status/host_like/program_id/近 N 天筛选。报告只列信号（noise=0），噪声仅计数；候选先 vuln_confirm 再进报告。提交 SRC 前必须人工逐条核实。 |
+| `report_build` | 生成漏洞报告（markdown）：按项目分节（无项目按严重级分组）+ 明细表（级别/状态/类型/标题/目标/证据），落盘 data/reports/ 并登记索引。可按 severity（逗号多选，如 high,critical）/source/status_filter/host_like/program_id/近 N 天筛选。报告只列信号（noise=0），噪声仅计数；候选先 vuln_confirm 再进报告。提交 SRC 前必须人工逐条核实。 |
 | `report_draft_submission` | SRC 提交半自动化：按 finding 生成平台提交草稿（复现步骤/影响/证据/修复建议 markdown）+ 同目标同类型查重检索，落盘 data/reports/submissions/。仅信号面 finding 可生成；查重结果提交前必看；提交成功后用 vuln_submit 回流状态。同日重复生成幂等，regenerate=true 刷新内容。 |
 | `report_list` | 报告列表查询：按项目/关键字/日期/类型（report|submission_draft）筛选，返回元数据（program/日期/级别分布/总数），不读正文。 |
 | `report_read` | 读单份报告全文：file 为 report_list 返回的相对路径；>300KB 截断。 |
@@ -338,7 +338,7 @@ statReportFile(relPath)      // mtime/size/sha
 
 - **索引 = 缓存，frontmatter = 真相**：写命令同事务更新；list 时逐行校验 `content_sha`（开销：sha1 单文件 <1ms，≤500 行阈值内全量校验，超过抽样 10%）。
 - **heal 规则**：索引有行无文件/不匹配 → 删行 + audit（kind=heal）；文件存在无索引行（人工放入/历史存量）→ 读 frontmatter 补行；frontmatter 缺失（v4 存量）→ 文件名正则 + mtime + 首行标题回退提取（复用 v4 reports case 的解析逻辑作为**迁移兜底**，不进主路径）。
-- `report_index_rebuild`：human actor 的运维命令（CLI 直调，不进模型工具面）——全量扫描重建索引，幂等可重跑。
+- **索引重建未提供独立命令**：`report_index_rebuild` 为**设计预留、现网未实现**（manifest 仅 2 命令）。现状由 `report_list` 查询内联 `healIndex()` 惰性维护（索引有行无文件→删行；文件在无索引→读 frontmatter 补行，v4 存量走文件名正则兜底），无需人工重建。
 - report_read 无缓存（每次读盘，300KB 上限控制开销）。
 
 ### 2.6 性能与容量
@@ -357,6 +357,8 @@ statReportFile(relPath)      // mtime/size/sha
 ## 三、迁移与兼容
 
 ### 3.1 现状代码映射（行级）
+
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；`dsh-plugin-sec-dashboard.client.js` 旧单体已删除（2026-09-19，见 [PROGRESS](PROGRESS.md) §〇）、`dsh-plugin-sec-suite.asset-db.js` 相关函数体已清理，行号可能失效，现行实现以域 manifest 与 backend 为准。
 
 | v4.x 位置 | 内容 | v5 去向 |
 |---|---|---|

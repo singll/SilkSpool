@@ -1,7 +1,7 @@
 # 08 · scope 域设计（授权白名单 / 项目镜像 / 排除 / 凭据引用 / 规则）
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：1
-> 依赖：订阅 [`approval.approved`](09-approval.md)（授权类 kind 批准 → 本域执行 grant/rules）；被订阅：`scope.rules.changed`（exec 域令牌桶与风险闸缓存）、`scope.granted`（task 域种子任务链 + ledger 域 radar 追加）。
+> 依赖：**不订阅任何事件**——授权/规则变更由 [approval 域](09-approval.md) `approval_decide` 经 effect 同步 dispatch 本域命令（actor=approval，见 09 §2.3）；被订阅：`scope.granted`（task 域种子任务链）。`scope.rules.changed` 当前**零订阅者**（exec 域每次执行实时读 scope.yml，不缓存不订阅，见 10-exec §2.2.3）；ledger 域 radar 追加由 `approval.approved` 触发（非 `scope.granted`，见 11-ledger §1.5.2）。
 > 最高约定：[00-conventions.md](00-conventions.md)；本文与它冲突时以它为准。
 
 ---
@@ -45,21 +45,21 @@
 
 | 命令 | 一句话语义 | actor 白名单 | 幂等键 | 发布事件 |
 |---|---|---|---|---|
-| `scope_grant` | 向项目追加授权条目（新建项目亦可）；通配条目自动配对裸域；吸收冲突排除项 | approval / dashboard / human / system | 自然键 `{program}:{entries 指纹}` | `scope.granted` |
-| `scope_revoke` | 从项目移除授权条目；条目清空 → 整项目出 yml + programs 行归档（fail-closed 立即生效） | approval / dashboard / human / system | 自然键 `{program}:{entries 指纹}` | `scope.revoked` |
-| `scope_exclude` | 向项目追加排除条目（须与任何授权互斥） | approval / dashboard / human / system | 自然键 `{program}:{entries 指纹}` | `scope.excluded` |
-| `scope_rules_apply` | 对全局 defaults 或项目 rules 应用一份通过校验的规则补丁（QPS/风险级/侵入白名单增删） | approval / dashboard / human / system | 自动指纹（target+patch sha1） | `scope.rules.changed` |
-| `program_bind_workspace` | 项目 ↔ DSH 工作区 1:1 软绑定 / 解绑 | dashboard / human / system | 自然键 `{program}` | `scope.program.bound` |
-| `program_archive` | 归档 programs 镜像行（数据归属保留；前提：已不在 yml） | dashboard / human / system | 自然键 `{program}` | （无） |
-| `cred_add` | 登记凭据**引用**（绝不存明文）；host 必须在授权范围内 | model / script / human | 自然键 `(program_id,host,cred_type,ref)` | （无） |
+| `scope_grant` | 向项目追加授权条目（新建项目亦可）；通配条目自动配对裸域；吸收冲突排除项 | approval / dashboard / human / system | 网关 `none`（命令层数据级幂等：重复条目入 `skipped_existing` 不报错） | `scope.granted` |
+| `scope_revoke` | 从项目移除授权条目；条目清空 → 整项目出 yml + programs 行归档（fail-closed 立即生效） | approval / dashboard / human / system | 网关 `none`（重复 revoke 不存在条目 → `E_NOT_FOUND`，收紧防静默漂移） | `scope.revoked` |
+| `scope_exclude` | 向项目追加排除条目（须与任何授权互斥） | approval / dashboard / human / system | 网关 `none`（命令层数据级幂等：已在 exclude 的条目入 skipped） | `scope.excluded` |
+| `scope_rules_apply` | 对全局 defaults 或项目 rules 应用一份通过校验的规则补丁（QPS/风险级/侵入白名单增删） | approval / dashboard / human / system | 自动指纹（manifest `idempotent_fields`：target/program_name/rate_limit_qps/allow_risk/max_risk/fixed_egress_ip/allow_intrusive_tools_add/remove） | `scope.rules.changed` |
+| `program_bind_workspace` | 项目 ↔ DSH 工作区 1:1 软绑定 / 解绑 | dashboard / human / system | 网关 `none` | `scope.program.bound` |
+| `program_archive` | 归档 programs 镜像行（数据归属保留；前提：已不在 yml） | dashboard / human / system | 网关 `none` | （无） |
+| `cred_add` | 登记凭据**引用**（绝不存明文）；host 必须在授权范围内 | model / script / human | 自动指纹（manifest `idempotent_fields`：program_id/host/cred_type/ref/role/note）+ 命令层 `(program_id,host,cred_type,ref)` 判重 | （无） |
 
-> 命名说明：种子设计（归档 §4.7）中的 `scope_set_rules` 因宪法 §二禁用词（`set`）更名为 `scope_rules_apply`——"应用一份经校验的规则补丁"是一次带前置不变量的规则状态流转，不是自由态写入口。起草期名称 `scope_set_rules` 在总线别名表注册一个观察期别名，避免文档间引用断裂（§3.2）。
+> 命名说明：种子设计（归档 §4.7）中的 `scope_set_rules` 因宪法 §二禁用词（`set`）更名为 `scope_rules_apply`——"应用一份经校验的规则补丁"是一次带前置不变量的规则状态流转，不是自由态写入口。起草期名称 `scope_set_rules` 的**观察期别名已随 2026-09-19 别名层清理移除**（`bus.aliases.yaml` 空注册表；历史映射见 §3.2 留档），现无任何别名通道。
 
 ### 1.3 命令逐个详述
 
 #### 1.3.1 `scope_grant`
 
-向指定项目追加授权条目。项目不存在时创建（新建分支接受项目元数据可选项）；已存在时追加。这是审批批准链（`approval.approved` → scope 域订阅 → `scope_grant`）与看板授权视图共用的唯一授权写入口。
+向指定项目追加授权条目。项目不存在时创建（新建分支接受项目元数据可选项）；已存在时追加。这是审批批准链（`approval_decide` 的 effect → `dispatch('scope','grant')`，见 09 §2.3）与看板授权视图共用的唯一授权写入口。
 
 **参数 schema**（`additionalProperties: false`）：
 
@@ -88,7 +88,7 @@
     "removed_excludes": [],
     "scope_size": 12
   },
-  "event_ids": ["evt_01J..."], "idempotency_key": "scope:grant:example-src:sha1:9c2f...", "replay": false
+  "event_ids": ["evt_01J..."], "idempotency_key": null, "replay": false
 }
 ```
 
@@ -102,13 +102,13 @@
 | `E_SCOPE_MUTUAL_EXCLUSION` | 条目命中其他项目排除清单 | false | 该目标在项目 X 的排除清单中——先与 X 协调（或经 approval 提请 exclude-exception）再授权 |
 | `E_SCOPE_EMPTY_SCOPE` | （内部防御）规范化后条目集为空 | false | entries 至少一条有效条目 |
 
-**幂等**：自然键 `scope:grant:{program_name}:{sha1(entries 排序去重后 join)}`。同键同参重放 → 首次结果 + `replay: true`。数据级幂等另行存在：对已在 scope 的条目再次 grant 不报错，计入 `skipped_existing`（yml 可能被外部改动，宽松合并是安全方向——扩大授权的重复无害，`scope.granted` 只对实际新增发事件）。
+**幂等**：manifest `idempotent: 'none'`——网关不生成幂等键（`idempotency_key: null`），**每次调用独立执行**。重复语义由命令层数据级幂等承接：对已在 scope 的条目再次 grant 不报错，计入 `skipped_existing`（yml 可能被外部改动，宽松合并是安全方向——扩大授权的重复无害，`scope.granted` 只对实际新增发事件）。契约测试显式断言 none 策略（防状态演进被幂等表吞写）。
 
-**actor**：approval（`approval.approved` 订阅执行，事件携带 request_id）/ dashboard（operator 必填，进审计）/ human（CLI 直调应急，审计高亮）/ system（迁移窗口）。**model 不在白名单**——模型禁改 scope 是本域的第一安全边界（宪法 §三）。
+**actor**：approval（approval_decide 的 effect 同步 dispatch，cause 链携带 request_id）/ dashboard（operator 必填，进审计）/ human（CLI 直调应急，审计高亮）/ system（迁移窗口）。**model 不在白名单**——模型禁改 scope 是本域的第一安全边界（宪法 §三）。
 
-**RoE / agent_note**（投影层描述摘录，全文见 §1.6）：本动词不向模型注册。approval 订阅处理器必须以事件 payload 中的 program/entries 原样派发，不得自行扩充条目（网关侧不变量 I2 兜底）。
+**RoE / agent_note**（投影层描述摘录，全文见 §1.6）：本动词不向模型注册。approval effect 处理器必须以 kind 判据（program/entries）原样派发，不得自行扩充条目（网关侧不变量 I2 兜底）。
 
-**副作用声明**：`rows_touched: programs(镜像 upsert)`、`files: scope.yml + .bak`、`events: scope.granted`、`caches: 域内快照失效`。
+**副作用声明**：`rows_touched: programs(镜像 upsert)`、`files: scope.yml + .bak`、`events: scope.granted`、`caches: 无（每次直读）`。
 
 #### 1.3.2 `scope_revoke`
 
@@ -131,19 +131,19 @@
     "program_removed": true, "programs_archived": true,
     "note": "已从 scope.yml 移除（fail-closed 立即生效），programs 表归档保留归属"
   },
-  "event_ids": ["evt_01J..."], "idempotency_key": "scope:revoke:example-src:sha1:...", "replay": false
+  "event_ids": ["evt_01J..."], "idempotency_key": null, "replay": false
 }
 ```
 
 **错误码**：`E_SCHEMA` / `E_NOT_FOUND`（项目或条目不存在，hint：`先用 scope_list 核对项目当前条目——yml 可能已被 spool sync 或人工修改`）。
 
-**幂等**：自然键 `scope:revoke:{program_name}:{sha1(entries)}`。重放语义同上；重复 revoke 不存在的条目走 `E_NOT_FOUND`（收紧方向严格，防止静默漂移）。
+**幂等**：网关 `none`（不生成幂等键）；重复 revoke 不存在的条目走 `E_NOT_FOUND`（收紧方向严格，防止静默漂移）。
 
 **actor**：approval / dashboard / human / system。model 不可用。
 
 **RoE**：revoke 是破坏性动作（下个调度周期起该范围全部任务被守卫拒绝）。看板调用必须二次确认；audit 记录 before/after 全量条目快照。
 
-**副作用声明**：`rows_touched: programs(archive)`、`files: scope.yml + .bak`、`events: scope.revoked`、`caches: 域内快照失效`。
+**副作用声明**：`rows_touched: programs(archive)`、`files: scope.yml + .bak`、`events: scope.revoked`、`caches: 无（每次直读）`。
 
 #### 1.3.3 `scope_exclude`
 
@@ -162,7 +162,7 @@
 
 **错误码**：`E_SCHEMA` / `E_NOT_FOUND` / `E_SCOPE_ENTRY_INVALID` / `E_SCOPE_MUTUAL_EXCLUSION`（hint：`该目标已授权给项目 X——先对 X scope_revoke，或走 approval 提请 exclude-exception 重新评估`）。
 
-**幂等**：自然键 `scope:exclude:{program_name}:{sha1(entries)}`；数据级幂等：已在 exclude 的条目计入 skipped。
+**幂等**：网关 `none`（不生成幂等键）；命令层数据级幂等：已在 exclude 的条目计入 skipped。
 
 **actor**：approval / dashboard / human / system。model 不可用。
 
@@ -203,13 +203,13 @@
 
 **错误码**：`E_SCHEMA` / `E_NOT_FOUND` / `E_SCOPE_RULES_INVALID`（hint：message 指明字段与合法域；QPS 取值 1..1000；`allow_intrusive_tools_add/remove` 不得交集）。
 
-**幂等**：自动指纹 `sha1(target + program_name? + patch 核心字段)`。数据级幂等：补丁目标值已是现状 → `data` 中 before==after，正常成功（不报错）。
+**幂等**：自动指纹（manifest `idempotent_fields` = target/program_name/rate_limit_qps/allow_risk/max_risk/fixed_egress_ip/allow_intrusive_tools_add/remove）。数据级幂等：补丁目标值已是现状 → `data` 中 before==after，正常成功（不报错）。
 
 **actor**：approval（`tool-intrusive` 批准链）/ dashboard / human / system。model 不可用。
 
-**RoE / agent_note**：本动词不向模型注册。`approval.approved(kind=tool-intrusive)` 订阅处理器以 payload.tool 派发 `allow_intrusive_tools_add: [tool]`，其余字段一律不碰。
+**RoE / agent_note**：本动词不向模型注册。approval `tool-intrusive` 的 effect 以 payload.tool 派发 `allow_intrusive_tools_add: [tool]`，其余字段一律不碰。
 
-**副作用声明**：`files: scope.yml + .bak`、`events: scope.rules.changed`（**exec 域强联动订阅**：令牌桶容量 / 风险上限缓存 / 侵入白名单即时刷新——替代 v4.x mtime 轮询，见 §1.5.3）、`rows_touched: programs(镜像 max_risk)`。
+**副作用声明**：`files: scope.yml + .bak`、`events: scope.rules.changed`（**当前零订阅者**——exec 域每次执行实时读 scope.yml，不维护缓存，见 §1.5.3）、`rows_touched: programs(镜像 max_risk)`。
 
 #### 1.3.5 `program_bind_workspace`
 
@@ -220,13 +220,13 @@
 | 参数 | 类型 | 必填 | 默认 | 校验规则 |
 |---|---|---|---|---|
 | `program_name` | string | 是 | — | 项目须在 programs 表（yml 或 archived 镜像）→ `E_NOT_FOUND` |
-| `workspace` | string \| null | 是 | — | 工作区**标题或路径**（与 v4.x 声明口径一致）；`null` = 解绑。解析经 workspaceRegistry 适配器（§2.4），找不到 → `E_NOT_FOUND`（hint：`工作区不存在——先用 workspaces 查询核对标题/路径`） |
+| `workspace` | string \| null | 是 | — | 工作区**标题或路径**（与 v4.x 声明口径一致）；`null` = 解绑。**当前实现未接 workspaceRegistry**：非空值原样作为 `workspace_id`/`workspace_path` 落库（headless/测试以字符串兜底）；`workspaceRegistry` 解析与不存在校验为设计目标未实现（见 §2.4 注） |
 
 **返回信封**：`data: { program_name, workspace_id, workspace_path, unbound: false }`；事件 `scope.program.bound`。
 
-**错误码**：`E_SCHEMA` / `E_NOT_FOUND`（项目或工作区）/ `E_CAPABILITY_UNSUPPORTED`（headless worker 进程无 workspaceRegistry——绑定动词只在 web 宿主面可用，worker 面投影不注册）。
+**错误码**：`E_SCHEMA`；`program_name` 不在 programs 表 → `E_NOT_FOUND`。**`E_CAPABILITY_UNSUPPORTED`（headless 无 workspaceRegistry）当前不触发**——绑定动词在 web/headless 均注册且不依赖 registry（未实现的设计预留）。
 
-**幂等**：自然键 `scope:bind:{program_name}`；重复绑定同一工作区 → 数据级幂等成功。
+**幂等**：网关 `none`（不生成幂等键）；重复绑定同一工作区为普通覆盖写（`bindWorkspace` 幂等更新）。
 
 **actor**：dashboard / human / system。approval / model 不可用。
 
@@ -246,7 +246,7 @@
 
 **错误码**：`E_SCHEMA` / `E_NOT_FOUND` / `E_INVARIANT`（hint：`项目仍在 scope.yml 授权中——先 scope_revoke（条目清空自动归档），不要直接归档镜像`）。
 
-**幂等**：自然键 `scope:archive:{program_name}`。
+**幂等**：网关 `none`（不生成幂等键）。
 
 **actor**：dashboard / human / system。
 
@@ -276,7 +276,7 @@
 | `E_SCOPE_CRED_HOST_OUT_OF_SCOPE` | host 不在授权范围 | 该 host 未授权（scope.yml fail-closed）——先经 approval 提请授权，凭据范围必须与授权范围一致 |
 | `E_SCOPE_CRED_DUPLICATE` | 同 (program_id, host, cred_type, ref) 已存在 | 该引用已登记（id=N）——勿重复登记 |
 
-**幂等**：自然键 `scope:cred:{program_id|''}:{host}:{cred_type}:{ref}`（域内判重，不加 DB 唯一约束——存量表可能有历史重复行，约束会阻断迁移；判重在网关不变量层完成）。
+**幂等**：自动指纹（manifest `idempotent_fields` = program_id/host/cred_type/ref/role/note）+ 命令层 `(program_id,host,cred_type,ref)` 判重（命中 → `E_SCOPE_CRED_DUPLICATE`）。**不加 DB 唯一约束**——存量表可能有历史重复行，约束会阻断迁移，判重在命令/网关层完成。
 
 **actor**：model（worker 登记 harvested 凭据引用）/ script / human。dashboard / approval 不需要。
 
@@ -360,10 +360,9 @@ payload 只含判据快照（program、条目、是否吸收了排除），不�
 | 订阅域 | 模式 | 处理 |
 |---|---|---|
 | task 域（05） | async（弱） | **审批种子任务链**：`task_create`（objective 带 `[审批入队]` 前缀，once +5min，只做资产收集禁漏洞探测；同 program 同域幂等去重）。弱联动 + 事件日志可重放（v4.x enqueueScopeSeed 的 best-effort 语义保留：种子入队失败不影响授权生效） |
-| ledger 域（11） | async（弱） | `ledger_radar_push`（radar-queue.jsonl 追加 `scope-approved` 事件，供每日 recon 链 radar_read 兜底——双通道的第二通道） |
 | 看板通知 | async | 授权变更横幅 |
 
-> 种子任务链的订阅方是 **task 域与 ledger 域**，不是 approval 域：approval 是联动源头、不订阅任何域（09 §1.5 有完整论证）；v4.x `enqueueScopeSeed` 内嵌在 onApprove 的跨域直写由此拆解为纯事件订阅。
+> 种子任务链的订阅方**仅 task 域**（manifest 实测 `task.subscribes['scope.granted']`）。radar 追加**不**由本事件触发——ledger 域订阅的是 `approval.approved`（`onScopeApproved` → `ledger_radar_push`，见 11-ledger §1.5.2），双通道的第二通道挂在审批批准事件上。approval 是联动源头、不订阅任何域（09 §1.5 有完整论证）；v4.x `enqueueScopeSeed` 内嵌在 onApprove 的跨域直写由此拆解为事件订阅/effect 执行。
 
 #### 1.5.2 `scope.revoked`
 
@@ -393,7 +392,7 @@ payload：`{ program_name, workspace_id, workspace_path, unbound: bool }`。订�
 
 ### 1.6 模型工具面投影（模型实际看到的工具名 + 描述全文）
 
-以下 5 个工具向模型注册（web 与 headless 双 profile）；**1.2 节全部写动词不向模型注册**（actor 白名单无 model → 投影层物理不注册，负向保障第一层）。
+以下 5 个工具向模型注册（web 与 headless 双 profile）：`scope_check` / `scope_list` / `program_list` / `cred_query` 四个查询 + `cred_add`（唯一对模型开放的写动词）。**§1.2 其余写动词不向模型注册**（actor 白名单无 model → 投影层物理不注册，负向保障第一层）。
 
 | 工具名 | 描述全文（manifest agent_note 单一来源） |
 |---|---|
@@ -405,20 +404,20 @@ payload：`{ program_name, workspace_id, workspace_path, unbound: bool }`。订�
 
 ### 1.7 看板 RPC 投影
 
-RPC 名 `{domain}.{verb}` 点分；写操作 actor=dashboard 且 operator 必填（auth-gate 用户身份，进审计）。
+RPC 名 `{domain}.{verb}` 点分（verb = 命令/查询全名去掉域前缀，见 01-bus RpcProjector）；写操作 actor=dashboard 且 operator 必填（auth-gate 用户身份，进审计）。
 
 | RPC 名 | 对应命令/查询 | 说明 |
 |---|---|---|
 | `scope.grant` | scope_grant | 授权视图"新增授权"（替代 v4.x scopeSaveProgram） |
 | `scope.revoke` | scope_revoke | 授权视图"移除授权"（替代 v4.x scopeDeleteProgram），二次确认 |
 | `scope.exclude` | scope_exclude | 授权视图"加入排除" |
-| `scope.rules.apply` | scope_rules_apply | 规则编辑（QPS/风险级/侵入白名单） |
-| `program.bind_workspace` | program_bind_workspace | 工作区区块绑定（替代 v4.x programBindWorkspace） |
-| `program.archive` | program_archive | 镜像归档兜底 |
+| `scope.rules_apply` | scope_rules_apply | 规则编辑（QPS/风险级/侵入白名单） |
+| `scope.program_bind_workspace` | program_bind_workspace | 工作区区块绑定（替代 v4.x programBindWorkspace） |
+| `scope.program_archive` | program_archive | 镜像归档兜底 |
 | `scope.list` | scope_list | 授权视图主数据源 |
 | `scope.check` | scope_check | 授权视图"试一把"预检框 |
-| `program.list` | program_list | 项目下拉 |
-| `cred.query` | cred_query | 凭据引用列表（授权视图子页） |
+| `scope.program_list` | program_list | 项目下拉 |
+| `scope.cred_query` | cred_query | 凭据引用列表（授权视图子页） |
 
 ### 1.8 外部调用示例
 
@@ -429,16 +428,16 @@ RPC 名 `{domain}.{verb}` 点分；写操作 actor=dashboard 且 operator 必填
 → { "ok": true, "data": { "host": "api.example.com", "allow": true, "program": "example-src", "matched_entry": "*.example.com", "matched_kind": "wildcard", "reason": "命中项目 example-src 授权范围" } }
 ```
 
-**代码调用**（approval 域订阅 `approval.approved` 的处理器，经总线 dispatch）：
+**代码调用**（approval 域 `approval_decide` 的 effect 执行，经总线 dispatch）：
 
 ```js
-// @silksec/sec-domain-scope 订阅处理器（manifest subscribes 声明，mode: sync）
+// @silksec/sec-domain-approval executeEffects()：按 kind.effects() 映射派发（actor=approval）
 bus.dispatch('scope', 'grant', {
-  program_name: evt.payload.program_name,
-  entries: evt.payload.kind === 'scope-wildcard'
-    ? [`*.${evt.payload.subject}`, evt.payload.subject]   // 双条目语义
-    : [evt.payload.subject],
-}, { actor: 'approval', request_id: evt.payload.request_id })
+  program_name: args.program_name,
+  entries: kind === 'scope-wildcard'
+    ? [`*.${subject}`, subject]   // 双条目语义
+    : [subject],
+}, { actor: 'approval', request_id: requestId })
 ```
 
 **人工 / 脚本调用**（CLI 直调，actor=human，审计高亮）：
@@ -555,7 +554,9 @@ v4.x 的 `serializeScope`（sec-suite.js L320-367）从"外部可直调的函数
 | ④ | `renameSync(tmp → scope.yml)`（原子） | 同上 |
 | ⑤ | audit（网关统一记录，before/after 条目快照） | — |
 | ⑥ | **syncPrograms 镜像**：yml 在档项目 upsert（active）；yml 出档项目 archive；BEGIN IMMEDIATE 单事务 | 失败 → 命令报 `E_BACKEND_UNAVAILABLE`，**yml 已写不回滚**（yml 是真相源，授权已生效方向安全）；镜像由下次任意命令的 ⑥ 或启动首跑自愈（幂等 upsert）；audit 记 `partial: mirror_pending` |
-| ⑦ | pairWorkspaces 重配对（声明式 rules.workspace 解析 → workspace_id/path 回写）+ 域内快照缓存失效 + 发布事件 | 失败 → audit `subscriber_failed`，不影响命令结果（v4.x 绑定失败不阻断语义保留） |
+| ⑦ | 发布事件（handler `return { events }` → 网关内 sync 订阅 + outbox async 投递） | 失败 → audit `subscriber_failed`，不影响命令结果 |
+
+> **实现现状注**：现网 scope.yml **无内存快照缓存**——每条命令 `repo.read()` 直读文件（量小，见 §2.5）；⑦ 的 `pairWorkspaces` 重配对与"域内快照缓存失效"**未实现**（工作区绑定现仅经 `program_bind_workspace` 显式写库，声明式 `rules.workspace` 解析未落地，见 §1.3.5）。
 
 **双仓（file+sqlite）无分布式事务**：采用"yml 真相源 + 镜像自愈"模式——授权语义只由 yml 决定（fail-closed 读路径只读 yml），镜像落后最多影响看板展示与 task 归属推断，且可由幂等 ⑥ 收敛。这是显式取舍，不追求伪原子。
 
@@ -563,15 +564,15 @@ v4.x 的 `serializeScope`（sec-suite.js L320-367）从"外部可直调的函数
 
 | 事件 | 订阅方 | 模式 | 失败语义 |
 |---|---|---|---|
-| `scope.rules.changed` | exec 域（缓存刷新） | **sync 强** | 失败 → rules_apply 整体回滚报错（风险上限/白名单变更须确定性生效） |
-| `scope.granted` | task 域（种子任务）/ ledger 域（radar） | async 弱 | audit `subscriber_failed` + 事件日志可重放（`sec bus replay`） |
+| `scope.rules.changed` | **无订阅者**（exec 域不缓存、每次执行实时读 scope.yml） | — | rules_apply 正常成功；事件仅落 jsonl 供审计/看板 |
+| `scope.granted` | task 域（种子任务） | async 弱 | audit `subscriber_failed` + 事件日志可重放（`sec bus replay`） |
 | `scope.granted/revoked/excluded/program.bound` | 看板通知 | async 弱 | 同上 |
 
 #### 2.3.3 与 approval 域的协作（effect 执行方视角）
 
-scope 域**不再订阅** `approval.approved` 事件——授权批准效果由 approval 域写 `approval_effects` 行（domain=scope, verb=grant/rules_apply），总线 dispatcher 经 CommandGateway 幂等执行 `scope_grant` / `scope_rules_apply`（actor=approval，cause 链带 request_id）。effect 失败 → approval 状态机停在 `approved_effect_failed`，`approval_reconcile` 对账后重试（09 §2.3）——v4.x "批准副作用失败 → 请求保持 pending，可修复后重试或驳回"语义由 effect outbox 承接。
+scope 域**不订阅** `approval.approved` 事件——授权批准效果由 approval 域 `approval_decide` **在命令内同步**经 `dispatch('scope', 'grant'|'rules_apply', …, { actor: 'approval' })` 执行，并写 `approval_effects` 行登记成败（09 §2.3）。effect 失败 → approval 请求状态记 `approved_effect_failed`（决策返回态；持久列仍为 approved，见 09 §2.1 注），`approval_reconcile` 对账后经 `approval_effects_retry` 补跑（09 §2.3）。
 
-scope 域 manifest `subscribes` 仅保留对下游自身事件的声明（`scope.rules.changed` 由本域发布、exec 域订阅；本域不订阅 approval 域）。
+scope 域 manifest `subscribes` 为**空**（本域不订阅任何事件；`scope.rules.changed` 由本域发布、当前零订阅者）。
 
 ### 2.4 后端适配器
 
@@ -581,7 +582,7 @@ scope 域 manifest `subscribes` 仅保留对下游自身事件的声明（`scope
 // file 仓（scope.yml）
 ScopeFileStore.readSnapshot() -> { version, defaults, programs[] } | null
 ScopeFileStore.writeSnapshotAtomic(serializedYaml) -> void       // tmp+rename+.bak，§2.3.1 ②-④
-ScopeFileStore.watch(onChange) -> dispose                         // mtime 检测，§2.5
+// 注：watch(onChange) mtime 检测为设计预留——现网后端未提供（外部写入接管流程未实现，见 §2.5）
 // sqlite 仓（programs/credentials）
 ProgramRepo.upsert({id, platform, max_risk}) / archive(id) / list() / get(id)
 ProgramRepo.bindWorkspace(id, workspace_id|null, workspace_path|null)
@@ -603,21 +604,20 @@ http-remote 全列 unsupported 的理由：**授权白名单与凭据引用是�
 
 | 缓存 | 位置 | 失效 |
 |---|---|---|
-| 域内 scope 快照 `{ mtime, data }` | 域进程内存 | ① 域命令写后主动失效；② **外部写入检测**：`fs.watch` mtime 变化（1s 去抖）且非本域写 → 触发接管流程（下） |
-| exec 令牌桶容量 / 风险上限 / 侵入白名单 | exec 域内存 | 订阅 `scope.rules.changed`（强联动）刷新——**替代 v4.x mtime 轮询** |
+| 域内 scope 快照 | **无内存缓存**：每条命令 `repo.read()` 直读 scope.yml（量小，读一致性天然） | — |
+| exec 令牌桶容量 / 风险上限 / 侵入白名单 | exec 域内存 | **不订阅**——exec 每次执行经 `loadScope()` 实时读 scope.yml 对齐（10-exec §2.2.3） |
 | programs/credentials | 无缓存 | 直查（量小） |
 
-**外部写入接管流程**（不变量 I6 的执行机制——"三个写入方收敛为一个"的完整语义）：
+> **外部写入接管流程（I6）与 `fs.watch` 检测为设计预留，现网未实现**：现网 scope.yml 仅由域命令原子写维护，`spool sync push`/人工 vim 的覆盖不会被自动检测、代校验或留痕；`scope.rules.changed` 的"外部写入补发快照"同样未实现。运维纪律（下）是当前唯一保障。
 
-v4.x scope.yml 有三个写入方：serializeScope（域内）、spool sync push（运维通道）、人工 vim（例外路径）。v5 收敛原则：**域命令是唯一"经校验"写入口；外部物理写入不被禁止（运维现实），但必须被检测、代校验、留痕**：
-
+**设计目标（未实现）**：v4.x scope.yml 有三个写入方：serializeScope（域内）、spool sync push（运维通道）、人工 vim（例外路径）。v5 设计原则：**域命令是唯一"经校验"写入口；外部物理写入不被禁止（运维现实），但必须被检测、代校验、留痕**：
 1. mtime 检测到非本域写入 → 以 actor=human 重载快照；
 2. parse 校验：失败 → 告警事件 + 看板红条 + audit（`external_write_broken`），**不自动回滚**（.bak 在，人工决策恢复）；
 3. 一致性校验：yml ↔ programs 镜像 diff → 自动补镜像（upsert/archive，幂等）；
 4. 补发 `scope.rules.changed` 快照（defaults 级，before=null 标记 external）→ exec 缓存对齐；
 5. audit 记 `external_write_adopted`（actor=human，含 diff 摘要）。
 
-**spool sync 协同纪律**（v4.x 既定，v5 原样保留并写入域文档）：scope.yml 受 spool sync 管理——界面/审批写入后**必须** `spool sync pull csai` 回收管理机副本，否则下次 push 覆盖（接管流程会把覆盖后的状态当作又一次外部写入对齐，但授权条目丢失需要靠 .bak 恢复，故回收是纪律不是可选项）；`_persistScope` 序列化规范化会**丢弃注释**，回收后需人工补回关键注释（开放问题 O-6）。
+**spool sync 协同纪律**（v4.x 既定，v5 原样保留并写入域文档）：scope.yml 受 spool sync 管理——界面/审批写入后**必须** `spool sync pull csai` 回收管理机副本，否则下次 push 覆盖（**注意：接管流程未实现，覆盖不会被自动检测**；授权条目丢失只能靠 `.bak` 人工恢复，故回收是纪律不是可选项）；`_persistScope` 序列化规范化会**丢弃注释**，回收后需人工补回关键注释（开放问题 O-6）。
 
 ### 2.6 性能与容量
 
@@ -635,6 +635,8 @@ v4.x scope.yml 有三个写入方：serializeScope（域内）、spool sync push
 
 ### 3.1 现状代码映射（行级，v4.7 时点源文件在 `bundles/dsh/templates/`）
 
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重写（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
+
 | v4.x 位置 | 函数/段 | v5 落点 |
 |---|---|---|
 | `dsh-plugin-sec-suite.js` L320-367 | `serializeScope` | 域私有 `_persistScope`（§2.3.1 七步），**外部可见性归零** |
@@ -647,7 +649,7 @@ v4.x scope.yml 有三个写入方：serializeScope（域内）、spool sync push
 | `dsh-plugin-sec-suite.js` L218-225 | `loadScope`（mtime 缓存） | 域内快照缓存 + 事件失效（§2.5） |
 | `dsh-plugin-sec-suite.js` L931-947 | `checkTarget` | 查询 `scope_check`（算法逐字保留） |
 | `dsh-plugin-sec-suite.js` L949-969 | `checkRisk` | **主体留 exec 域守卫链**（10-exec.md）；本域只供数据（rules 经 `scope_list`/rules.changed 事件） |
-| `dsh-plugin-sec-suite.js` L236-259 | `acquireQpsToken` / `throttleQps` | exec 域令牌桶（不变）；容量刷新改订阅 `scope.rules.changed` |
+| `dsh-plugin-sec-suite.js` L236-259 | `acquireQpsToken` / `throttleQps` | exec 域令牌桶（不变）；**现网容量每次执行实时读 scope.yml（无事件订阅）** |
 | `dsh-plugin-sec-suite.js` L468-492 | `enqueueScopeSeed` | **拆除**：`scope.granted` 事件 → task 域/ledger 域各自订阅（§1.5.1） |
 | `dsh-plugin-sec-suite.asset-db.js` L71-80 | programs DDL | sqlite 后端 ProgramRepo 接管（表不动） |
 | `dsh-plugin-sec-suite.asset-db.js` L165-170 | credentials DDL | sqlite 后端 CredRepo 接管 |
@@ -656,7 +658,7 @@ v4.x scope.yml 有三个写入方：serializeScope（域内）、spool sync push
 | `dsh-plugin-sec-suite.asset-db.js` L585-630 | `upsertProgram`/`bindProgramWorkspace`/`archiveProgram`/`listPrograms` | ProgramRepo 原语 |
 | `dsh-plugin-sec-suite.asset-graph.js` L617-647 | `cred_add`/`cred_query` 工具注册 | ToolProjector 自动投影（描述全文 §1.6） |
 | `dsh-plugin-sec-suite.dashboard-rpc.js` L214-225、L200-211 | scopeList/scopeSaveProgram/scopeDeleteProgram/approvalList 旁路、programBindWorkspace case | RpcProjector 自动投影（§1.7） |
-| approval onApprove 内的 `scopeSaveProgram` 直调（sec-suite.js L537-721） | 四处跨域直写 | `approval.approved` 事件 → 本域订阅 → `scope_grant`/`scope_rules_apply`（09 §1.5 时序图） |
+| approval onApprove 内的 `scopeSaveProgram` 直调（sec-suite.js L537-721） | 四处跨域直写 | approval_decide 的 effect 同步 dispatch `scope_grant`/`scope_rules_apply`（09 §2.3；原设计为 `approval.approved` 事件订阅） |
 
 ### 3.2 兼容别名与观察期
 > **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
@@ -685,7 +687,7 @@ v4.x scope.yml 有三个写入方：serializeScope（域内）、spool sync push
 
 | # | 问题 | 现状倾向 |
 |---|---|---|
-| O-1 | `approval.approved` 强联动订阅中，scope_grant 因"项目已被移出 yml"失败 → decide 回滚保持 pending——是否需要"重定向到其他项目"的修复流？ | 保持简单（驳回重提）；出现频率低 |
+| O-1 | `approval_decide` 的 effect 中，scope_grant 因"项目已被移出 yml"失败 → 请求记 `approved_effect_failed`，需人工修复后 `approval_effects_retry` 补跑——是否需要"重定向到其他项目"的修复流？ | 保持简单（驳回重提）；出现频率低 |
 | O-2 | `finding_db` 字段只在 scope_grant 新建分支可设，无独立动词 | 等 report/ledger 域定稿后评估归属（疑似应归 vuln 域历史指纹） |
 | O-3 | "纯移除排除（不授权）"无动词——语义上移除排除=授权（吸收语义），但清理误加的排除项需要绕道 | 若出现真实需求，加 `scope_unexclude` |
 | O-4 | IPv6 CIDR 不支持（v4.x `ipToInt` 仅 IPv4） | 内网靶场出现 IPv6 授权需求时补 |

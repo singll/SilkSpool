@@ -1,7 +1,7 @@
 # 11 · ledger 域设计（纪律台账 / 卡使用 / 覆盖 / 雷达队列 / 交接包）
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：`ledger/1`
-> 依赖：订阅 `exec.run.completed`（对账统计，弱联动）、`approval.approved`（scope-approved 雷达入队，弱联动）；被订阅：`ledger.attempt.logged` / `ledger.card_usage.logged` / `ledger.handoff.written`（task 域——task_finish 三产物校验的计数缓存）、`ledger.card_usage.logged`（know 域——L5 采用事实回流 know_adoptions，弱联动）、`ledger.radar.drained`（task/recon 派单侧）
+> 依赖：订阅 `exec.run.completed`（对账统计，弱联动）、`approval.approved`（scope-approved 雷达入队，弱联动）、`task.finished`（FGS 摘要入 handoff，弱联动）；被订阅：`ledger.card_usage.logged`（know 域——L5 采用事实回流 know_adoptions，弱联动）。`ledger.attempt.logged` / `ledger.handoff.written` 当前**零订阅者**（task 域守卫改经 `ledger_task_proof` 同步查询取证，不再订阅计数缓存，见 §2.3.3）。
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：把 agent 的**纪律动作**（台账落行/卡使用/交接包/雷达处置）变成机器强制、写入即校验、可聚合取证的文件型台账——"执行了什么、覆盖到哪、纪律是否在线"的唯一真相源。
 
@@ -113,7 +113,7 @@
 > `version-intel` 语义边界：指**目标组件指纹版本**（JS bundle / 响应头 / favicon 识别出的组件升版，驱动 N-day 派单）。它与 `scripts/pipeline/dsh-version-watch.sh`（监控**上游 DSH 平台自身版本**、产 pipeline/dsh-version-watch.log、不进雷达队列）语义不同源不同表——后者是运维观测通道，v5 保持独立不合并（18-migration §9.4）。
 
 写入：JSONL 追加 `radar-queue.jsonl`（记录结构见 2.1.3）。事件：`ledger.radar.pushed`。幂等：自动指纹 `sha1(program,type,payload 核心键)`。
-**接入方迁移**：v4 的 ct-watch-all.sh / js-watch.py **直接写文件**——v5 改调总线 CLI `sec ledger radar-push --program X --type ct-new-subdomain --payload '{"domain":"a.x.com"}'`（actor=script 由 CLI 环境注入）；观察期内域启动时收割 inbox 兼容（`radar-inbox.jsonl` 由脚本旧版写入、域启动 drain 入正式队列后清空，一个观察期后删 inbox 路径）。v4 index.js `enqueueScopeSeed` 的 radar 直写 → approval 域订阅 `approval.approved` 后**调本命令**（actor=approval，弱联动 best-effort，入队失败不影响批准结果——v4 双通道语义保留）。
+**接入方迁移**：v4 的 ct-watch-all.sh / js-watch.py **直接写文件**——v5 改调总线 CLI `sec ledger radar-push --program X --type ct-new-subdomain --payload '{"domain":"a.x.com"}'`（actor=script 由 CLI 环境注入）。**注**：`radar-inbox.jsonl` 收割兼容为设计预留、**现网未实现**（后端无 inbox 路径处理）；旧脚本直接写文件的内容不会被域自动收割，需人工经 CLI 重灌（开放问题 O-2 已记录）。v4 index.js `enqueueScopeSeed` 的 radar 直写 → approval 域订阅 `approval.approved` 后**调本命令**（actor=approval，弱联动 best-effort，入队失败不影响批准结果——v4 双通道语义保留）。
 **actor**：script, approval, model, system。
 
 #### 1.3.4 `ledger_radar_drain`
@@ -192,9 +192,10 @@
 | 台账日增量 | 近 24h attempts 新增行数 | 本域文件 |
 | 卡使用 7d | 近 7 天 card_usage 记录数 | 本域文件 |
 | 交接包 7d | 近 7 天 handoff 文件数 | 本域文件 |
-| IdeaCard 数 | vulncards/ideas/ 计数 | **know 域查询**（`dispatch('know', …)` 经 QueryGateway） |
-| 调度漂移 + task_runs 新鲜度 | 漂移任务数 / 最近 run 距今 | **task 域查询**（同上） |
-| **数据源新鲜度/错误率** | ct-watch / js-watch 最近一次成功拉取距今 + 近期 429/error 率——**"systemd active"≠功能健康**（ct-watch 长期 429 时本指标告警，不因进程 active 而 healthy） | 雷达源日志 + `ledger_radar_status` 的 oldest_ts |
+| IdeaCard 数 | vulncards/ideas/ 计数（取 know_health.vulncards.total） | **know 域查询**（`dispatch('know','health')` 经 QueryGateway）；不可达 → `unavailable` |
+| 调度漂移 + task_runs 新鲜度 | 漂移任务数 / 最近 run 距今（`task_drift` 的 scheduled_drift / task_runs_last_age_hours） | **task 域查询**（同上）；不可达 → `unavailable` |
+| 执行对账（台账漂移） | 近 24h exec_runs 计数 vs attempts 增量（run 落本域 `exec_runs` 对账桶，`onRunCompleted` 维护） | 本域文件 + 阈值告警 |
+| 数据源新鲜度/错误率 | ct-watch / js-watch 最近一次成功拉取距今 + 近期 429/error 率——**"systemd active"≠功能健康** | **现网未接入**：`data_source.ct_watch/js_watch` 恒 `unavailable`（设计预留）；radar 队列健康度经 `radar` 字段（oldest_ts）提供 |
 
 跨域指标全部经 QueryGateway 委托查询（不 import、不直读他域文件）；know/task 域不可达时对应指标降级为 `unavailable` 并入告警清单（查询整体不失败）。60s 内存缓存（§2.5）。
 
@@ -259,7 +260,7 @@ know 域（07-know.md C16 消费通道）经本查询获取卡片使用信号，
 | `approval.approved`（kind=scope-domain / scope-wildcard） | async（弱） | `onScopeApproved` | 调 `ledger_radar_push`（type=scope-approved，actor=approval）——v4 enqueueScopeSeed 直写 radar 文件的归零路径；best-effort，失败记 `subscriber_failed` 不影响批准 |
 | `task.finished` | async（弱） | `onTaskFinished` | 调 `fgs_export(format=markdown)` 跨域只读决策链摘要，并合并进当日 handoff 的 actions 段；失败走 outbox 重试，不回滚任务收尾 |
 
-**task 域对本域三事件的订阅（对侧声明，此处仅备案）**：`ledger.attempt.logged` / `ledger.card_usage.logged` / `ledger.handoff.written` → task 域计数缓存（看板红条）。**守卫依据不是这个缓存**——两种方案的取舍论证见 §2.3.3。
+**task 域对本域事件的订阅：无**——`ledger.attempt.logged` / `ledger.card_usage.logged` / `ledger.handoff.written` 均无订阅者（实测 task manifest `subscribes` 不含任何 `ledger.*`）。task_finish 三产物守卫**不依赖事件计数缓存**，而是同步调 `ledger_task_proof` 直接取证文件（§2.3.3 B' 方案）。看板红条若需实时计数，需另接（当前未接）。`ledger.card_usage.logged` 的订阅者是 **know 域**（L5 采用事实回流，`onCardUsageLogged` → `know_adoption_record`，见第七节）。
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
@@ -411,14 +412,14 @@ approval.approved → radar_push（§1.5.2）；订阅者失败不回滚批准�
 
 **两种实现方案的取舍**：
 
-| | 方案 A：事件计数 | 方案 B'：文件取证（v5 选择） |
+| | 方案 A：事件计数（未实施） | 方案 B'：文件取证（v5 实现） |
 |---|---|---|
 | 机制 | task 域订阅 ledger.attempt.logged / ledger.card_usage.logged / ledger.handoff.written 三事件，维护 per-program per-day 计数器；task_finish 查计数器 | task_finish 调 ledger 域 `ledger_task_proof` 查询（同步，经 QueryGateway），由 ledger 直接取证文件（24h 增量行数 / 卡记录数 / handoff 当日存在） |
 | 优点 | O(1) 查询；跨域解耦 | **锚定真相源**——文件是唯一真相，取证结果与产物永远一致；计数器是派生信号 |
 | 缺点 | 计数器需持久化（重启丢失 → 回退全量扫，否则误拦）；事件丢失/乱序 → 假阴 → fail-closed **误伤任务收尾**（调度链卡死）；24h 滚动窗口在计数器上要带时间衰减，实现易错 | 每次收尾多一次跨域查询（毫秒级，每日 ≤ 数十次，可忽略） |
-| 结论 | 仅作看板红条缓存 | **守卫依据**（正确性必须锚定真相源；派生信号丢失会造成 fail-closed 误伤，而文件取证不可能与产物漂移） |
+| 结论 | 设计预留（**task 域未订阅任何 ledger 事件，A 未实施**） | **唯一守卫依据**（正确性必须锚定真相源；派生信号丢失会造成 fail-closed 误伤，而文件取证不可能与产物漂移） |
 
-task 域对三事件的订阅**保留**（弱联动），用于 discipline_stats 实时对账与看板红条预览——两方案并存、各司其职：**A 管快，B' 管对**。
+> **实现注**：task 域 manifest `subscribes` 实测仅含 `scope.granted` / `exec.worker.spawned` / `exec.worker.finished` / `know.release.revoked`，**不含任何 ledger 事件**——方案 A 的计数缓存与看板红条预览均未实施；`ledger_task_proof` 同步取证（B'）是唯一守卫依据。`ledger.card_usage.logged` 唯一订阅者是 know 域。
 
 ### 2.4 后端适配器
 
@@ -470,6 +471,8 @@ hasHandoff(program, date) → boolean
 ### 3.1 现状代码映射（行级）
 
 来源：`bundles/dsh/templates/dsh-plugin-sec-pipeline.js`（467 行）+ `dsh-plugin-sec-suite.js` + `scripts/pipeline/`。
+
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；`dsh-plugin-sec-pipeline.js` 的 ledger 工具函数体已在 Phase 3.4 清理（见 [PROGRESS](PROGRESS.md) §〇），行号失效，现行实现以域 manifest 与 backend 为准。
 
 | # | v4 位置 | 内容 | v5 去向 |
 |---|---|---|---|

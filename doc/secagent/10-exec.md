@@ -1,7 +1,7 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
 > 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：`exec/1`
-> 依赖：订阅 `scope.rules.changed`（QPS 即时生效）、`approval.approved`（tool-intrusive 白名单放行后重试自然通过，无需显式订阅——白名单在 scope 域数据里）；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.flow.appended`（vuln 域）、`exec.worker.spawned/.finished`（task 域）、`exec.import.completed`（endpoint/vuln 域）、`exec.evidence.published`（证据发布留痕）
+> 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.flow.appended`（vuln 域）、`exec.worker.spawned/.finished`（task 域）、`exec.import.completed`（endpoint/vuln 域）、`exec.evidence.published`（证据发布留痕）
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
 
@@ -29,16 +29,16 @@
 
 | 动词 | 一句话语义 | actor 白名单 | 幂等策略 | 事件 |
 |---|---|---|---|---|
-| `exec_run_cli` | 经守卫链运行一个已登记 CLI 工具，全量落盘，回 ≤20 行摘要 | model, dashboard, script, human | `explicit_only`（见 1.3.1 说明） | `exec.run.started`、`exec.run.completed` |
-| `exec_spawn_worker` | 派生隔离无头 worker 执行自包含任务（RoE 契约注入） | model, dashboard, scheduler | 自然键 `sha1(task)` | `exec.worker.spawned`、`exec.worker.finished` |
-| `exec_burp_import` | Burp XML 导入 → 结构化 JSONL 落盘 + proposal 事件 | model, human | 自然键 `sha1(file 内容前 1MB)` | `exec.import.completed` |
-| `exec_report_bad_proxy` | 坏代理上报（经总线 dispatch 调 proxy 域命令） | model, script, dashboard | 自然键 `sha1(proxy_url)` | （proxy 域发） |
-| `exec_intel_hunt` | 指纹命中 → 本地 nuclei 模板检索 +（可选）委托 task 域建 N-day 候选任务 | model, dashboard | 显式键 | （task 域发 `task.created`） |
-| `exec_flow_append` | 机器通道：xray webhook 原始 flow 落盘 | webhook | 自动指纹 `sha1(源 payload)` | `exec.flow.appended` |
+| `exec_run_cli` | 经守卫链运行一个已登记 CLI 工具，全量落盘，回 ≤20 行摘要 | model, dashboard, script, human | `explicit_only`（见 1.3.1 说明） | `exec.run.started`、`exec.run.failed`、`exec.run.completed` |
+| `exec_spawn_worker` | 派生隔离无头 worker 执行自包含任务（RoE 契约注入） | model, dashboard, scheduler | 网关 `none`（命令层 worker 注册表按 `sha1(task)` 自然键去重，见 1.3.2） | `exec.worker.spawned`、`exec.worker.finished` |
+| `exec_burp_import` | Burp XML 导入 → 结构化 JSONL 落盘 + proposal 事件 | model, human | 自然键 `file`（参数原值，非内容哈希） | `exec.import.completed` |
+| `exec_report_bad_proxy` | 坏代理上报（经总线 dispatch 调 proxy 域命令） | model, script, dashboard | 自然键 `proxy_url` | （proxy 域发） |
+| `exec_intel_hunt` | 指纹命中 → 本地 nuclei 模板检索 +（可选）委托 task 域建 N-day 候选任务 | model, dashboard | 自动指纹（manifest `idempotent_fields`：tech/version/program_id/host/create_task） | （task 域发 `task.created`） |
+| `exec_flow_append` | 机器通道：xray webhook 原始 flow 落盘 | webhook | 自动指纹（`source`/`payload`） | `exec.flow.appended` |
 | `exec_evidence_publish` | 证据发布：worker staging → 宿主校验 run 归属 → 复制进 `results/<run_id>/` + 生成 manifest+SHA-256（设计 §3.3，L1） | **system**（宿主收尾专用通道，模型不可见） | 自然键 `run_id`（发布一次性、内容冻结，重复=回放） | `exec.evidence.published` |
 
 > `exec_intel_hunt` 的"建任务"副作用**全部经总线 `dispatch('task', ...)` 走 task 域命令全管线**（schema/不变量/事务/审计一个不少）——exec 域不 import task 域模块、不直调其函数、不写 tasks 表。这是域间协作的合法形态②（同步命令调用，需要返回 task_id / 强顺序），与形态①（事件订阅，异步解耦）并存；被禁止的只是 import 他域内部函数或绕网关写。
-> 任务链展开（原 v4 dashboard-rpc taskChain）统一归 **task 域 `task_chain`**（05-task.md C9）——它的事务主体是写 task 域 owned 的 tasks 表；本域只保留能力图**只读查询** `exec_plan_chain`（§1.4），旧 `exec_task_chain` 名经总线别名指向 task_chain。
+> 任务链展开（原 v4 dashboard-rpc taskChain）统一归 **task 域 `task_chain`**（05-task.md C9）——它的事务主体是写 task 域 owned 的 tasks 表；本域只保留能力图**只读查询** `exec_plan_chain`（§1.4）。旧 `exec_task_chain` 工具名**已随 2026-09-19 别名层清理移除**（调用方改用 task 域 `task_chain`，见 §3.2 留档）。
 
 ### 1.3 命令逐个详述
 
@@ -64,7 +64,7 @@
 | G1 | S3 守卫 | manifest 无 `target_param` 且 `risk ≥ active` → 拒（防 scope 校验空转绕过） | `E_EXEC_TARGETLESS_ACTIVE` | `补 manifest target_param 或降 risk；本地审计类工具 risk 应为 passive` |
 | G2 | S4 参数注入守卫 | 字符串参数值禁 `\r`/`\n`；`target_param` 参数值禁任意空白（防 argv 注入危险 flag） | `E_EXEC_PARAM_INJECTION` | `参数含换行/空白，拒绝。多目标用英文逗号分隔，清单用 <target>_file 参数传文件` |
 | G3 | 目标提取 | `target_param` 逗号分隔多目标，或 `*_file` 清单文件逐行（`#` 注释行跳过；文件不可读 → 以哨兵值进入 G4 必拒） | —（提取阶段） | — |
-| G4 | 逐目标 checkTarget | 对每个目标：`hostOf` 归一化（去 scheme/端口/IPv6 括号/路径、小写）→ 调 **scope 域 `scope_check` 查询**（先项目 exclude 清单后 scope 清单；条目匹配支持字面域 / `*.后缀`（含裸域本身）/ CIDR）→ 未命中即拒 | `E_EXEC_SCOPE_DENIED`（message 含 scope 域返回的 reason） | `目标不在任何授权项目（fail-closed）。候选资产走 approval_request 提请 scope-domain/scope-wildcard` |
+| G4 | 逐目标 checkTarget | 对每个目标：`hostOf` 归一化（去 scheme/端口/IPv6 括号/路径、小写）→ **exec 域本地 `checkTarget()` 读 `loadScope()` 解析 scope.yml**（先项目 exclude 清单后 scope 清单；条目匹配支持字面域 / `*.后缀`（含裸域本身）/ CIDR）→ 未命中即拒。**注**：设计目标为改调 scope 域 `scope_check` 查询，当前仍是 exec 本地读 scope.yml 的过渡桥（见 §3.1 #10） | `E_EXEC_SCOPE_DENIED`（message 含 reason） | `目标不在任何授权项目（fail-closed）。候选资产走 approval_request 提请 scope-domain/scope-wildcard` |
 | G5 | checkRisk | `risk=manual` 恒拒；超项目 `rules.max_risk` 上限拒；`defaults.allow_risk` 之外（intrusive）→ needs_approval 路径（见下） | `E_EXEC_RISK_FORBIDDEN` / `E_EXEC_RISK_NEEDS_APPROVAL` | manual：`risk=manual 工具默认禁用`；超上限：`工具风险级 X 超过项目上限 Y`；intrusive：`已自动提请 tool-intrusive 审批 #N（批准后下个调度周期重试即放行）。本次维持拒绝，勿重试` |
 | G6 | S1 解析后校验 | 仅 active+：每目标 DNS `resolve4` → 任一 IP 落保留段（0/8、10/8、100.64/10、127/8、169.254/16、172.16/12、192.168/16）且该 IP 不在项目授权 CIDR → 拒（防授权域名解析到内网的 SSRF 式越界）。DNS 解析失败不阻断（容错） | `E_EXEC_RESERVED_IP` | `目标解析到内网/保留 IP 且不在授权 CIDR 内。若确属授权资产，scope 条目须以 CIDR 形式显式授权` |
 | G7 | QPS 令牌桶 | 仅 active+：进程级全局令牌桶（跨会话/worker 共享），容量 = `defaults.rate_limit_qps`；令牌不足时循环等待放行（**不拒绝、不绕过**） | —（节流） | —（stderr 记录等待毫秒数） |
@@ -89,15 +89,16 @@ renderTemplate → shellSplit → spawn
   stdout.log  全量 stdout（流式写入）
   meta.json   见 2.1.2 字段表
   proposal.json  parser 产出的结构化提案（store 语义废止后新增，见 2.1.3）
- 后处理（顺序固定）:
-   ① know 域命令：dispatch('know','pb_outcome',{name:"tool:<tool>", success, duration_ms})
-      —— 工具成功率/EWMA 统计（环1 自动沉淀）；弱联动 best-effort，失败 audit 记 dispatch_failed
-   ② 发布 exec.run.failed（exit_code ≠ 0 且 program 已解析时，payload 含 tool/host/exit_code/error）
+ 后处理（现网实现）:
+   ① 发布 exec.run.failed（exit_code ≠ 0 且 program 已解析时，payload 含 tool/host/exit_code/error）
       —— fact 域订阅后写负知识 note（note/fail-<tool>-<host>，neg_check 派单前拦截重复尝试）；
          事件化替代 v4 runCli 直调 factUpsert；弱联动
-   ③ 发布 exec.run.completed（payload 携带 parse_proposal 摘要，见 1.5.2）
+   ② 发布 exec.run.completed（payload 携带 parse_proposal 摘要，见 1.5.2）
       —— parser 入库直写归零的核心：asset/endpoint/vuln 域订阅后各自经命令入库
-回模型：≤20 行 summary + total_lines + hint（>20 行时提示用 grep/page 取）
+ 未实现（设计预留）:
+   ③ know 域 pb_outcome 工具成功率/EWMA 回执——**当前不派发**：单次 CLI 退出码不等于打法链效果，
+      不伪造 `tool:<tool>` 的 pb_outcome（代码内显式注释）
+ 回模型：≤20 行 summary + total_lines + hint（>20 行时提示用 grep/page 取）
 ```
 
 **返回信封 data**：
@@ -135,7 +136,7 @@ renderTemplate → shellSplit → spawn
 | `cwd` | string | 否 | runDir | **仅 actor=scheduler 可用**（L6 调度器切换：cwd=program 工作区路径，会话反查/工作区归组依赖 header.cwd 一致）；realpath 校验存在且为目录，其他 actor 传 → `E_EXEC_CWD_FORBIDDEN`，路径不存在/非目录 → `E_EXEC_CWD_INVALID` |
 | `task_id` | integer | 否 | — | 宿主任务号（调度器派单携带），透传 `exec.worker.spawned` 载荷 → task 域 worker_register 绑定 `tasks.active_run_id`（僵尸回收的活 worker 跳过依据） |
 
-**幂等**：自然键 `exec:spawn_worker:sha1(task + '\0')`（**RoE 块注入是 task 的确定性函数**——task 已含 RoE 锚点则不重复堆叠——故 dedupeKey 语义不受注入影响）。重试路径（v4.x 原样）：
+**幂等**：网关 `none`（manifest 声明），去重由**命令层 worker 注册表**承接——`dedupeKey = sha1(task + '\0')`（**RoE 块注入是 task 的确定性函数**——task 已含 RoE 锚点则不重复堆叠——故 dedupeKey 语义不受注入影响），经 task 域 `worker_recent` 查 30 分钟窗口；`force:true` 绕过。重试路径（v4.x 原样）：
 
 | 注册表既有状态 | 行为 |
 |---|---|
@@ -168,7 +169,7 @@ renderTemplate → shellSplit → spawn
 |---|---|---|---|
 | `file` | string | 是 | 本机绝对路径，须存在（`E_EXEC_FILE_NOT_FOUND`） |
 
-行为：解析 `<item>`/`<issue>` 块 → 逐条 JSONL 落盘 `imports/burp-{ts36}.jsonl`（issue: type/name/host/path/severity/confidence；item: type/host/url/method/status/mimetype）→ 发 `exec.import.completed`（payload: import_id/kind/records/hosts 前 20）。**v5 变化**：v4 的"接入 asset-graph 后自动入图谱"hint 兑现为事件——endpoint/vuln 域订阅后经命令入库（actor=script, run_id=import_id）。幂等：自然键 `sha1(文件内容前 1MB)`（同文件重复导入 replay）。
+行为：解析 `<item>`/`<issue>` 块 → 逐条 JSONL 落盘 `imports/burp-{ts36}.jsonl`（issue: type/name/host/path/severity/confidence；item: type/host/url/method/status/mimetype）→ 发 `exec.import.completed`（payload: import_id/kind/records/hosts 前 20）。**v5 变化**：v4 的"接入 asset-graph 后自动入图谱"hint 兑现为事件——endpoint/vuln 域订阅后经命令入库（actor=script, run_id=import_id）。幂等：自然键 `file`（manifest `idempotent_natural: ['file']`，按参数路径原值；同路径重复导入 replay。**不再对文件内容做哈希**——该 v4 语义未迁移）。
 **actor**：model, human。
 
 #### 1.3.4 `exec_report_bad_proxy`
@@ -182,7 +183,7 @@ renderTemplate → shellSplit → spawn
 | `run_id` | string | 否 | 关联执行（取证链） |
 
 行为：`dispatch('proxy', 'report_bad', {proxy_url, evidence, run_id})`，透传 proxy 域结果信封（proxy 域发自己的事件、记自己的审计；exec 侧 audit 记一条 dispatch）。proxy 域不可达 → `E_BACKEND_UNAVAILABLE`（retryable: true）。
-幂等：自然键 `exec:report_bad_proxy:sha1(proxy_url)`。**actor**：model, script, dashboard。
+幂等：自然键 `proxy_url`（manifest `idempotent_natural: ['proxy_url']`）。**actor**：model, script, dashboard。
 
 #### 1.3.5 `exec_intel_hunt`
 
@@ -202,7 +203,7 @@ renderTemplate → shellSplit → spawn
 
 #### 1.3.6 `exec_task_chain`（已迁出，见 task 域 task_chain）
 
-任务链展开命令**归 task 域 `task_chain`**（05-task.md C9，唯一写命令）：它的事务主体是写 tasks 表 N 行（parent 串联 once 链），落点全在 task 域。本域只保留能力图**只读查询** `exec_plan_chain`（§1.4.2）供 task_chain 跨域调用（纯读 BFS，无副作用）。旧 `exec_task_chain` 工具名经总线别名指向 `task_chain`（05-task §3.2），本域契约不再声明该写命令。**actor**：model, dashboard（走 task 域投影）。
+任务链展开命令**归 task 域 `task_chain`**（05-task.md C9，唯一写命令）：它的事务主体是写 tasks 表 N 行（parent 串联 once 链），落点全在 task 域。本域只保留能力图**只读查询** `exec_plan_chain`（§1.4）供 task_chain 跨域调用（纯读 BFS，无副作用）。旧 `exec_task_chain` 工具名**已于 2026-09-19 随别名层清理移除**（调用方改用 task 域 `task_chain`，见 §3.2 留档），本域契约不声明该写命令。**actor**：model, dashboard（走 task 域投影）。
 
 #### 1.3.7 `exec_flow_append`（机器通道）
 
@@ -213,7 +214,7 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 | `source` | string | 是 | 固定 `xray`（v5 预留多来源） |
 | `payload` | object | 是 | 原始 webhook JSON（≤1MB，超限接收器直接 destroy） |
 
-行为：追加 `flows/xray-{北京日期}.jsonl` → 发布 `exec.flow.appended`（payload: flow_file/host/title）→ **vuln 域订阅**后调 `vuln_register_candidate`（actor=webhook，标题「{host} 被动审计候选：{title}」——v4.x 直调 addFinding 的归零路径）。幂等：自动指纹 `sha1(payload JSON)`。
+行为：追加 `flows/xray-{北京日期}.jsonl` → 发布 `exec.flow.appended`（payload: flow_file/host/title）→ **vuln 域订阅**后调 `vuln_register_candidate`（actor=webhook，标题「{host} 被动审计候选：{title}」——v4.x 直调 addFinding 的归零路径）。幂等：自动指纹（`source`/`payload`）。
 **边界论证**：flows/ 是 exec owns（流量总线原始记录）；findings 候选是 vuln owns。接收器只做"收包→落盘→发事件"，入库判定（完整性闸门/噪声归位）全部在 vuln 域命令里。
 
 #### 1.3.8 `exec_evidence_publish`（证据发布，宿主收尾通道；L1 2026-09-16 上线）
@@ -246,10 +247,10 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 
 | 查询 | 参数 | 返回 | 说明 |
 |---|---|---|---|
-| `exec_grep_result` | `run_id`*（匹配 `^r[a-z0-9]+$` 或 `^w[a-z0-9]+$`）、`pattern`*（正则，大小写不敏感）、`max`（默认 50 上限 200） | `{files_searched, matched, lines}`（`相对路径:行号: 内容`，行截 500 字符） | 搜索范围 = run 目录下**全部文本产物**（stdout.log + 工具 `-o` 落盘文件），排除二进制扩展名（png/jpg/gif/zip/gz/zstd/bin）；正则无效 → `E_SCHEMA`；run_id 不存在 → `E_NOT_FOUND` |
+| `exec_grep_result` | `run_id`*（非空，须存在对应 run 目录）、`pattern`*（正则，大小写不敏感）、`max`（默认 50 上限 200） | `{files_searched, matched, lines}`（`相对路径:行号: 内容`，行截 500 字符） | 搜索范围 = run 目录下**全部文本产物**（stdout.log + 工具 `-o` 落盘文件），排除二进制扩展名（png/jpg/gif/zip/gz/zstd/bin）；正则无效 → `E_SCHEMA`；run_id 不存在 → `E_NOT_FOUND` |
 | `exec_page_result` | `run_id`*、`offset`（0 基，默认 0）、`limit`（默认 50 上限 200） | `{total_lines, offset, limit, lines}` | 仅 stdout.log 按行分页 |
 | `exec_plan_chain` | `have`: string[]、`want`* | `{have, want, chain[], available[]}` | 能力图 BFS：按 manifest `requires`/`produces` 迭代扩张（v4.x 算法原样）；凑不到 → `E_EXEC_CHAIN_UNREACHABLE` + available 清单（hint：调整 have/want 或检查 manifest） |
-| `exec_manifest_list` | `stage?`、`risk?`、`domain?` | `{rows: [{name, stage, risk, target_param, requires, produces, parser, domain, sandbox, deprecated_store}], total}` | manifest 元数据枚举（v4 的"错误 message 附可用清单"升为一等查询；`domain` 字段见 2.1.1） |
+| `exec_manifest_list` | `name?`（精确）、`stage?`、`risk?`、`domain?` | `{rows: [{name, stage, risk, target_param, requires, produces, parser, domain, sandbox, deprecated_store}], total}` | manifest 元数据枚举（v4 的"错误 message 附可用清单"升为一等查询；`domain` 字段见 2.1.1） |
 
 `exec_plan_chain` 能力链主干（当前 manifest 图的实际形态）：`domains → subdomains → live_hosts → endpoints → findings`。
 
@@ -318,9 +319,7 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 
 #### 1.5.3 订阅声明
 
-| 订阅事件 | 模式 | 处理器 | 用途 |
-|---|---|---|---|
-| `scope.rules.changed` | sync | `onRulesChanged` | **QPS 令牌桶容量即时生效**（v4 mtime 轮询废止；scan-burst 批准 → defaults.rate_limit_qps 调大 → 桶容量同 tick 调整） |
+**本域 `subscribes` 为空**——不订阅任何事件。QPS 令牌桶容量、风险上限与侵入工具白名单在每次执行守卫时经 `loadScope()` **实时读 scope.yml** 对齐（`acquireQpsToken` 每次都取 `defaults.rate_limit_qps`），不维护跨进程缓存，故无需 `scope.rules.changed` 订阅（2026-09-12 审查移除此前的 sync 空订阅，见 §2.2.3/§2.5）。
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
@@ -331,7 +330,7 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 | `exec_burp_import` | 导入 Burp Suite 导出文件（XML：proxy history 或 scanner issues），结构化落盘 data/imports/ 并发 proposal 事件回流资产/接口/候选。人工在 Burp 里测试后导出 XML，用本工具回流系统。 | 是 |
 | `exec_report_bad_proxy` | 上报坏代理（加入 blocklist + 从 live 移除，mubeng 热加载生效）。跨域命令：经 proxy 域落池。 | 是 |
 | `exec_intel_hunt` | component-vuln-intel：指纹命中后查本地 nuclei 模板库找 tech 相关的 N-day 模板/CVE。命中即自动产出一条 phase=vuln、priority=1 的 N-day 候选任务（普通 queued，非自动跑；tentative，验证附证据才 confirmed）。未绑定 program 时仅返回模板列表不建任务。 | 是 |
-| `exec_task_chain` | 一条 objective 自动展开为任务依赖链：能力图 BFS 凑链 + 反向剪枝到最小链，落成 parent 串联的 once 调度任务（前置未完成不派单，链式自动推进）。默认 have=["domains"]、want=findings（资产收集→存活→指纹→N-day）。链尾多为 active 扫描且会自动执行，仅对已授权 scope 使用。 | 是 |
+| ~~`exec_task_chain`~~ | **已迁出**：任务链展开命令归 task 域 `task_chain`（见 §1.3.6）；旧别名已于 2026-09-19 移除，本域不再注册该工具。 | 否 |
 | `exec_flow_append` | （机器通道，不向模型注册）xray webhook 原始 flow 落盘。 | 否 |
 | `exec_evidence_publish` | （宿主收尾通道，不向模型注册）staging 证据校验+发布，见 1.3.8。 | 否 |
 | `exec_grep_result` | 在指定 run_id 的完整输出中按正则检索（大小写不敏感），返回匹配行（含行号与文件相对路径，最多 max 条，默认 50 上限 200）。 | 是 |
@@ -468,7 +467,7 @@ pid 死的 running ──对账──▶ killed（僵尸回收）
 
 #### 2.2.3 QPS 令牌桶
 
-进程级单例 `{tokens, cap, last}`；仅 active+ 工具执行 `throttleQps` 循环等待（不拒绝）；容量 = `defaults.rate_limit_qps`（下限 1）；**订阅 `scope.rules.changed` 即时调整 cap**（替代 v4 loadScope mtime 缓存轮询）；重启清零无妨（启动即满速补充语义可接受）；单次 CLI 内部请求速率仍由工具自身 flag 控制（tools.d 各自 rate/limit 参数）。
+进程级单例 `{tokens, cap, last}`；仅 active+ 工具执行 `throttleQps` 循环等待（不拒绝）；容量 = `defaults.rate_limit_qps`（下限 1）；**每次 `acquireQpsToken` 都经 `loadScope()` 实时读 scope.yml 对齐 cap**（不订阅 `scope.rules.changed`、无跨进程缓存——规避 sync 订阅在 headless worker 进程不生效的假象）；重启清零无妨（启动即满速补充语义可接受）；单次 CLI 内部请求速率仍由工具自身 flag 控制（tools.d 各自 rate/limit 参数）。
 
 #### 2.2.4 bwrap 沙箱（S2）与 owns × 沙箱交叉断言（宪法 §十四.3 本域实施）
 
@@ -510,9 +509,9 @@ exec 域后端为 file——**没有跨行事务需求**：单文件追加（flo
 
 | 步 | 目标域 | 形态 | 失败语义 |
 |---|---|---|---|
-| ① | know | `dispatch('know','pb_outcome',{name:"tool:<tool>",success,duration_ms})` | 弱：audit 记 `dispatch_failed`，run 结果不受影响 |
-| ② | fact（仅 exit≠0 且有 program） | `dispatch('fact','upsert',{fact_key:"note/fail-<tool>-<host>"…, confidence:"tentative", source:"auto:runcli-fail"})` | 弱：同上 |
-| ③ | 总线 EventBus | 发布 `exec.run.completed`（proposal 摘要） | 弱：订阅者（asset/endpoint/vuln）失败记 `subscriber_failed`，可重放 |
+| ① | 总线 EventBus | 发布 `exec.run.failed`（仅 exit≠0 且有 program） | 弱：fact 域订阅写负知识；订阅者失败记 `subscriber_failed`，可重放 |
+| ② | 总线 EventBus | 发布 `exec.run.completed`（proposal 摘要，按 assets/endpoints/findings 分条） | 弱：订阅者（asset/endpoint/vuln/know）失败记 `subscriber_failed`，可重放 |
+| — | know（未实现） | `dispatch('know','pb_outcome',…)` 工具成功率回执 | **设计预留未实现**——单次 CLI 退出码不等于打法链效果，不伪造 pb_outcome 回执 |
 
 parser 注册表（`parsers/` 目录，v4 parsers.js 172 行平移）：路由三级——`<parser>_<tool>` 精确 → `<parser>` 通用 → 回退 `ingest` 纯正则抽取（回退路径 v5 同样只产 proposal）。解析器**只读 stdout 文本、只写 proposal.json**，不 import 任何域模块、不开数据库连接——v4 `applyParsedResult` 里 `db.upsertAsset/upsertEndpoint/addFinding/fpAdd` 四处直写全部废止。
 
@@ -548,8 +547,8 @@ exec 域**没有** sqlite/http 后端计划——owns 全是文件，域内无�
 
 | 缓存 | 位置 | 失效 |
 |---|---|---|
-| QPS 桶容量 | 进程级单例 | `scope.rules.changed` 事件（**mtime 轮询废止**） |
-| scope 数据 | **不在本域**（G4 每目标同步查 scope 域 `scope_check`，缓存归 scope 域管辖） | scope 域自治 |
+| QPS 桶容量 | 进程级单例 | 每次 `acquireQpsToken` 实时 `loadScope()` 对齐（不订阅事件、无缓存） |
+| scope 数据 | **本域 `loadScope()` 每次直读 scope.yml**（过渡桥，见 §3.1 #10；设计目标为改调 scope 域 `scope_check`） | 无缓存，每次读盘 |
 | manifest | 无缓存（每次 dispatch 读文件解析；31 个 YAML × 每日数百次调用 <10ms 级，不值得缓存换失效复杂度；v4 同款决策保留） | — |
 | grep/page | 无缓存（文件原语直读） | — |
 
@@ -586,18 +585,20 @@ exec 域的运行依赖一批**平台层边缘资产**——它们不属于任�
 
 来源：`bundles/dsh/templates/dsh-plugin-sec-suite.js`（index.js 2142 行）+ `dsh-plugin-sec-suite.parsers.js`（172 行）+ `dsh-plugin-sec-suite.dashboard-rpc.js` + `dsh-plugin-sec-suite.webhook.js`。
 
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；`dsh-plugin-sec-suite.parsers.js` 已删除，`dsh-plugin-sec-suite.js` 内多数函数体已在 Phase 3.4 清理（见 [PROGRESS](PROGRESS.md) §〇），行号失效，现行实现以域 manifest 与 backend 为准。
+
 | # | v4 位置（文件:行） | 内容 | v5 去向 |
 |---|---|---|---|
 | 1 | index.js:1078-1101 | renderTemplate / shellSplit | `commands/run-cli.js` 渲染段 |
 | 2 | index.js:1206-1417 | runCli 主体（守卫编排/执行/落盘/摘要） | `commands/run-cli.js`（守卫拆为网关 invariants G0-G9） |
 | 3 | index.js:1103-1115 | extractTargets（target_param / *_file 清单） | 守卫 G3 |
-| 4 | index.js:186-214, 931-947 | hostOf / entryMatches / cidrContains / checkTarget | **授权语义归 scope 域**（08-scope.md）；exec 保留 hostOf 工具函数（归一化是执行域的参数处理，白名单判定是 scope 域查询） |
-| 5 | index.js:164-184 | ipToInt / cidrContains | scope 域（S1 判定用）；exec 域不复制 |
-| 6 | index.js:949-971 | checkRisk + toolNameOfRiskCheck 桥 | 守卫 G5（白名单查询经 scope 域；桥变量废止——守卫签名显式带 tool） |
+| 4 | index.js:186-214, 931-947 | hostOf / entryMatches / cidrContains / checkTarget | **设计目标授权语义归 scope 域**（08-scope.md）；**现网仍保留 exec 本地 hostOf/entryMatches/cidrContains/checkTarget + loadScope 读 scope.yml 的过渡桥**（§1.3.1 G4 / §2.5） |
+| 5 | index.js:164-184 | ipToInt / cidrContains | 设计归 scope 域；**现网 exec 域仍有本地实现**（过渡桥未拆） |
+| 6 | index.js:949-971 | checkRisk + toolNameOfRiskCheck 桥 | 守卫 G5（风险判定在 exec，项目 rules 仍经 `loadScope()` 本地读） |
 | 7 | index.js:973-1032 | RESERVED_CIDRS / ipInReserved / verifyResolved | 守卫 G6（原样保留，DNS resolve4 容错语义不变） |
 | 8 | index.js:42-50, 1041-1058 | WRITE_VERBS 33 词表 / findWriteVerbHit | 守卫 G9（词表冻结进契约） |
-| 9 | index.js:236-259 | qpsBucket / acquireQpsToken / throttleQps | 2.2.3（mtime 轮询→rules.changed 订阅） |
-| 10 | index.js:216-225 | loadScope / scopeCache | **废止**（scope 域接管；exec 不再读 scope.yml） |
+| 9 | index.js:236-259 | qpsBucket / acquireQpsToken / throttleQps | 2.2.3（每次 `loadScope()` 实时对齐 cap；无事件订阅） |
+| 10 | index.js:216-225 | loadScope / scopeCache | **现网仍保留 `loadScope()`（每次直读 scope.yml）+ 本地 checkTarget；未切 scope 域查询，无内存缓存**——过渡桥待拆（设计目标为 scope 域接管） |
 | 11 | index.js:1148-1180 | bwrap 参数 / buildSandboxCommand | `sandbox/bwrap.js` + 2.2.4 交叉断言 |
 | 12 | index.js:1359-1368 | cmd.txt / meta.json 落盘 | `commands/run-cli.js` 落盘段（meta 增 program_id） |
 | 13 | index.js:1371 | exp.pbOutcome 调用 | dispatch know 命令（弱联动） |
