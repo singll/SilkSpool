@@ -201,10 +201,12 @@ function createRepo(db) {
       db.prepare('SELECT state, COUNT(*) AS n FROM assets WHERE state IS NOT NULL GROUP BY state').all().forEach((r) => { byState[r.state] = r.n })
       const byAccept = {}
       db.prepare('SELECT accept, COUNT(*) AS n FROM assets WHERE accept IS NOT NULL GROUP BY accept').all().forEach((r) => { byAccept[r.accept] = r.n })
+      // 类型分布（看板 stats 壳聚合的 assets_by_type 兼容面；assetDb.stats 直查已拆除）
+      const byType = db.prepare('SELECT type, COUNT(*) AS n FROM assets WHERE type IS NOT NULL GROUP BY type ORDER BY n DESC').all().map((r) => ({ type: r.type, n: r.n }))
       const data = {
         total: db.prepare('SELECT COUNT(*) AS n FROM assets').get().n,
         family_count: db.prepare('SELECT COUNT(DISTINCT root) AS n FROM assets WHERE root IS NOT NULL').get().n,
-        by_level: byLevel, by_state: byState, by_accept: byAccept,
+        by_level: byLevel, by_state: byState, by_accept: byAccept, by_type: byType,
         families,
       }
       _ovCache = { at: Date.now(), data }

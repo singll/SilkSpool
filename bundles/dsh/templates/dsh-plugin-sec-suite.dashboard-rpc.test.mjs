@@ -180,12 +180,34 @@ test('总线可用：全部业务端点只走总线，任何端点都不触碰 a
   assert.deepEqual(leaked, [], `总线可用时不得出现 assetDb 调用（泄漏: ${leaked.join(',')}）`)
 })
 
-test('壳聚合端点（stats/workspaces/sessions/memcore）不经总线门禁', async () => {
+test('壳聚合端点（stats/workspaces/sessions/memcore）不经总线门禁，stats 不再直查 assetDb', async () => {
   const { leaked } = depsWith(null)
   for (const [endpoint, payload] of SHELL_CALLS) {
-    if (endpoint === 'stats' || endpoint === 'memcore') continue // 这两个走 assetDb/exp 壳函数，不在本门禁范围
     const out = await handleDashboardRpc(endpoint, payload)
     assert.ok(out !== undefined, `${endpoint} 应返回壳聚合结果`)
   }
   assert.deepEqual(leaked, [], '壳聚合端点不应触发业务 assetDb 泄漏')
+})
+
+test('stats：经各域查询聚合，单域失败 → null + degraded，不整体失败', async () => {
+  // 总线缺席：全部来源失败 → 五指标 null + degraded 覆盖，并返回对象（不抛）
+  const { leaked } = depsWith(null)
+  const out = await handleDashboardRpc('stats', {})
+  assert.equal(out.approval, null)
+  assert.equal(out.vuln, null)
+  assert.equal(out.tasks, null)
+  assert.equal(out.discipline, null)
+  assert.equal(out.inventory, null)
+  assert.deepEqual(out.degraded.sort(), ['approval', 'asset', 'ledger', 'task', 'vuln'])
+  assert.deepEqual(leaked, [], 'stats 不得直查 assetDb')
+
+  // 总线可用：stats 只走域查询，五域各自发起（approval/vuln/task×3/ledger/asset/endpoint/fact）
+  const bus = okBus()
+  depsWith(bus)
+  const ok = await handleDashboardRpc('stats', {})
+  assert.ok(Array.isArray(ok.degraded))
+  const domains = new Set(bus.calls.map((c) => c.domain))
+  for (const d of ['approval', 'vuln', 'task', 'ledger', 'asset', 'endpoint', 'fact']) {
+    assert.ok(domains.has(d), `stats 应经 ${d} 域查询聚合`)
+  }
 })

@@ -56,8 +56,9 @@ window.__ModuleLoader__.load({
       if (byCat.note) {
         var noteOn = query.filters.include_notes === '1'
         chips.push(el('button', {
-          type: 'button', className: 'silksec-btn',
-          style: { ...uiCore.styles.pill, cursor: 'pointer', height: 22, color: noteOn ? T.business : T.label3, background: noteOn ? T.layer2 : 'transparent' },
+          type: 'button', className: 'silksec-chip',
+          'data-on': noteOn ? 'true' : undefined,
+          style: { color: noteOn ? T.business : T.label3 },
           title: 'note 类=agent 工作速记（14 天滚动消亡的 ephemeral）。默认隐藏防流水账淹没长期知识；点击' + (noteOn ? '隐藏' : '显示'),
           onClick: function () { query.setFilter('include_notes', noteOn ? '' : '1') },
         }, '工作速记 ' + byCat.note))
@@ -109,8 +110,8 @@ window.__ModuleLoader__.load({
           el('span', { style: { color: T.label, ...uiCore.F.sStrong, wordBreak: 'break-all' } }, uiCore.hlText(f.fact_key, hl, 'fk')),
           f.category
             ? el('button', {
-                type: 'button', className: 'silksec-btn',
-                style: { ...uiCore.styles.pill, cursor: 'pointer', height: 20, color: T.label3 },
+                type: 'button', className: 'silksec-chip',
+                style: { color: T.label3 },
                 title: '事实分类（点击筛选该分类）',
                 onClick: function () { props.onFilterCategory(f.category) },
               }, f.category)

@@ -86,7 +86,22 @@ window.__ModuleLoader__.load({
       }, uiCore.spoolIcon(p.size || 16))
     }
 
+    // ── 打开审批/任务中心（右侧栏 page tab 优先；缺席则 secUiBus + 主面板降级视图） ──
+    function openRightTab(kind, busEvent, degradedId) {
+      var sr = getService('sidebarRight')
+      if (sr && typeof sr.openTab === 'function') {
+        try { sr.openTab(kind); return 'tab' } catch (e) { /* 无在屏会话 seat → 降级 */ }
+      }
+      try { uiCore.secUiBus.emit(busEvent, {}) } catch (e) {}
+      if (degradedId && uiCore.viewRegistry && typeof uiCore.viewRegistry.has === 'function' && uiCore.viewRegistry.has(degradedId)) {
+        return 'degraded:' + degradedId
+      }
+      return 'none'
+    }
+
     // ── 主面板（main keyed 槽 occupant；通用渲染器，不感知任何域） ─────────────
+    // 19-ui-unify §2.4/2.5/3.2：自有 chrome（40px 页头 + 图标钮）+ 频次分层 tab
+    // （一线 4 视图 + 「更多」二级导航）；KPI 改「今日待办 + 风险暴露」五卡 + 库存副条。
     function DashboardPanel() {
       var registry = uiCore.viewRegistry
       var useRpcCore = uiCore.useRpc
@@ -99,6 +114,8 @@ window.__ModuleLoader__.load({
       var pending = ps[0]; var setPending = ps[1]
       var fts = React.useState(0)
       var refreshTick = fts[0]; var setRefreshTick = fts[1]
+      var mms = React.useState(null)
+      var lastMoreId = mms[0]; var setLastMoreId = mms[1]
 
       // 动态注册：sec-dashboard 视图可能晚于本面板挂载（cordis client 加载顺序不保证）
       React.useEffect(function () {
@@ -118,29 +135,73 @@ window.__ModuleLoader__.load({
       var effActiveId = activeEntry ? activeEntry.id : null
       var activePending = (pending && pending.id === effActiveId) ? pending.payload : null
 
+      var primaryEntries = entries.filter(function (e) { return e.group !== 'more' })
+      var moreEntries = entries.filter(function (e) { return e.group === 'more' })
+      var activeInMore = !!(activeEntry && activeEntry.group === 'more')
+      var effMoreId = activeInMore ? effActiveId : (lastMoreId || (moreEntries[0] ? moreEntries[0].id : null))
+
       var navigate = {
         select: function (id, p) {
           if (p !== undefined) setPending({ id: id, payload: p }); else setPending(null)
+          var merged = null
+          for (var j = 0; j < entries.length; j++) { if (entries[j].id === id) { merged = entries[j]; break } }
+          if (merged && merged.group === 'more') setLastMoreId(id)
           setActiveId(id)
         },
         consume: function (id) { setPending(function (cur) { return (cur && cur.id === id) ? null : cur }) },
         selectPanel: function (id) { return navigateToPanel(getLayout(), id) },
       }
 
+      // 右侧栏/降级跳链：待审批 / 任务
+      function openApproval() {
+        var where = openRightTab('silksec-approval', 'open:approval', 'approval-degraded')
+        if (where.indexOf('degraded:') === 0) navigate.select(where.slice(9))
+      }
+      function openTask() {
+        var where = openRightTab('silksec-task', 'open:task', 'task-degraded')
+        if (where.indexOf('degraded:') === 0) navigate.select(where.slice(9))
+      }
+
       var s = statsState.data || {}
       var wsItems = (wsState.data && wsState.data.items) || []
       var wsCount = (wsState.data && wsState.data.available) ? wsItems.length : null
-      var approvalPending = (approvalsState.data && approvalsState.data.pending) || 0
+      var approvalPending = (s.approval && s.approval.pending) || 0
+      var v = s.vuln || {}
+      var t = s.tasks || {}
+      var disc = s.discipline || null
+      var inv = s.inventory || {}
+      function num(x) { return (x === undefined || x === null) ? '—' : uiCore.fmtNum(x) }
       var kpis = [
-        { label: '漏洞', value: uiCore.fmtBytes(s.findings), tab: 'findings' },
-        { label: '资产', value: uiCore.fmtBytes(s.assets), tab: 'assets' },
-        { label: '接口', value: uiCore.fmtBytes(s.endpoints), tab: 'endpoints' },
-        { label: '工作区', value: wsCount === null ? '—' : uiCore.fmtBytes(wsCount), tab: 'tasks' },
-        { label: '任务', value: uiCore.fmtBytes(s.tasks), tab: 'tasks' },
-        { label: '事实', value: uiCore.fmtBytes(s.facts !== undefined ? s.facts : s.blackboard_keys), tab: 'facts' },
+        {
+          key: 'approval', label: '待审批', value: num(s.approval ? s.approval.pending : null),
+          sub: (s.approval && s.approval.pending > 0 && s.approval.oldest_days > 0) ? '最老等待 ' + s.approval.oldest_days + ' 天' : '无待办',
+          onClick: openApproval, title: '打开审批中心（右侧栏；无会话时降级主面板）',
+        },
+        {
+          key: 'vuln-new', label: '待处理漏洞', value: num(s.vuln ? v.new : null),
+          sub: (v.critical || v.high) ? '严重/高危 ' + ((v.critical || 0) + (v.high || 0)) : '均为中低危',
+          subColor: ((v.critical || 0) + (v.high || 0)) > 0 ? uiCore.T.warn : null,
+          onClick: function () { navigate.select('findings', { filters: { status: 'new' } }) }, title: '漏洞视图（预置 status=new）',
+        },
+        {
+          key: 'candidate', label: '待验证候选', value: num(s.vuln ? v.candidate : null),
+          sub: '评测回流判定', onClick: function () { navigate.select('findings', { filters: { noise: '1' } }) }, title: '漏洞视图（仅待验证候选 noise=1）',
+        },
+        {
+          key: 'tasks', label: '运行中/阻塞任务', value: num(s.tasks ? ((t.running || 0) + (t.blocked || 0)) : null),
+          sub: (t.blocked || 0) > 0 ? '阻塞 ' + t.blocked + (t.failed ? ' · 失败 ' + t.failed : '') : (t.failed ? '失败 ' + t.failed : '无阻塞'),
+          subColor: (t.blocked || 0) > 0 ? uiCore.T.warn : null,
+          onClick: openTask, title: '打开任务中心（右侧栏；无会话时降级主面板）',
+        },
+        {
+          key: 'discipline', label: '纪律告警', value: disc ? uiCore.fmtNum((disc.alerts || []).length) : '—',
+          sub: disc && (disc.alerts || []).length ? String(disc.alerts[0]).slice(0, 40) : (disc ? '纪律在线 ✓' : '数据不可用'),
+          subColor: disc && (disc.alerts || []).length ? uiCore.T.warn : (disc ? uiCore.T.success : null),
+          onClick: function () { navigate.select('audit') }, title: '审计视图（台账纪律）',
+        },
       ]
 
-      var tabs = entries.map(function (entry) {
+      var tabs = primaryEntries.map(function (entry) {
         var label = entry.label
         if (entry.id === 'approvals' && approvalPending) label += ' · ' + approvalPending
         return el('button', {
@@ -149,6 +210,26 @@ window.__ModuleLoader__.load({
           onClick: function () { setPending(null); setActiveId(entry.id) },
         }, label)
       })
+      if (moreEntries.length) {
+        var moreCur = activeInMore ? activeEntry : null
+        tabs.push(el('button', {
+          key: '__more', type: 'button', className: 'silksec-tab',
+          'data-on': activeInMore ? 'true' : undefined,
+          title: '低频浏览/管理面：知识 / 学习 / 报告 / 审计',
+          onClick: function () { var id = effMoreId; if (id) navigate.select(id) },
+        }, '更多' + (moreCur ? ' · ' + moreCur.label : '')))
+      }
+
+      var secondaryTabs = activeInMore
+        ? el('div', { style: { ...uiCore.styles.tabBar, marginTop: 4, marginBottom: 0 } }, moreEntries.map(function (entry) {
+            return el('button', {
+              key: 'more-' + entry.id, type: 'button', className: 'silksec-tab',
+              style: { height: 26, ...uiCore.F.xxs },
+              'data-on': effActiveId === entry.id ? 'true' : undefined,
+              onClick: function () { setPending(null); navigate.select(entry.id) },
+            }, entry.label)
+          }))
+        : null
 
       var activeNode = activeEntry
         ? el(uiCore.SilksecErrorBoundary, { surface: 'dashboard-panel:' + activeEntry.id, title: activeEntry.label },
@@ -166,25 +247,46 @@ window.__ModuleLoader__.load({
             }))
         : el(uiCore.EmptyState, { text: '视图注册表为空（域视图包未加载？）' })
 
+      var invItems = [
+        { label: '漏洞', value: inv.findings, tab: 'findings' },
+        { label: '资产', value: inv.assets, tab: 'assets' },
+        { label: '接口', value: inv.endpoints, tab: 'endpoints' },
+        { label: '事实', value: inv.facts, tab: 'facts' },
+        { label: '工作区', value: wsCount, tab: 'tasks' },
+      ]
+
       return el('div', { style: { ...uiCore.styles.root, height: '100%' } },
-        el('div', { style: uiCore.styles.header },
-          el('div', null,
+        el('div', { style: { ...uiCore.styles.header, minHeight: 40, marginBottom: 10, paddingBottom: 8, borderBottom: '1px solid ' + uiCore.T.border } },
+          el('div', { style: { minWidth: 0 } },
             el('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
               el('span', { style: { color: uiCore.T.brand, display: 'inline-flex' } }, uiCore.spoolIcon(16)),
-              el('div', { style: uiCore.styles.pageT }, '安全看板')),
-            el('div', { style: uiCore.styles.pageSub, title: '写操作全部写入 audit.jsonl；行内跳链回来源会话（详情一律在会话里看）' }, '全局安全态势 · 漏洞 / 资产 / 任务 / 知识 / 授权 / 审计'),
-            el('div', { style: uiCore.styles.silkDivider })),
-          el('span', { style: { display: 'inline-flex', gap: 8 } },
-            el('button', { type: 'button', className: 'silksec-btn', title: '返回当前会话', onClick: function () { navigate.selectPanel(null) } }, '返回会话'),
-            el('button', { type: 'button', className: 'silksec-btn', title: '重新加载主面板数据', onClick: function () { setRefreshTick(function (t) { return t + 1 }) } }, '刷新'))),
-        statsState.error ? el('div', { style: uiCore.styles.errorLine }, '统计加载失败: ' + statsState.error) : el('div', {
-          style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 140px), 1fr))', gap: 8, marginBottom: 12 },
-        }, kpis.map(function (kpi) {
-          return el('button', {
-            key: kpi.label, type: 'button', className: 'silksec-kpi', title: '查看' + kpi.label,
-            onClick: function () { setPending(null); setActiveId(kpi.tab) },
-          }, el('div', { style: uiCore.styles.cardL }, kpi.label), el('div', { style: uiCore.styles.cardV }, kpi.value))
-        })),
+              el('div', { style: uiCore.styles.pageT }, '安全中心')),
+            el('div', { style: uiCore.styles.pageSub, title: '写操作全部写入 audit.jsonl；行内跳链回来源会话（详情一律在会话里看）' }, '全局安全态势 · 漏洞 / 资产 / 接口 / 事实 / 知识 / 报告 / 审计')),
+          el('span', { style: { display: 'inline-flex', gap: 6 } },
+            el('button', { type: 'button', className: 'silksec-icon-btn', title: '返回当前会话', 'aria-label': '返回当前会话', onClick: function () { navigate.selectPanel(null) } }, uiCore.opIcon('back')),
+            el('button', { type: 'button', className: 'silksec-icon-btn', title: '重新加载主面板数据', 'aria-label': '刷新', onClick: function () { setRefreshTick(function (x) { return x + 1 }) } }, uiCore.opIcon('refresh')))),
+        statsState.error ? el('div', { style: uiCore.styles.errorLine }, '统计加载失败: ' + statsState.error) : el('div', null,
+          el('div', {
+            style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 150px), 1fr))', gap: 8 },
+          }, kpis.map(function (kpi) {
+            return el('button', {
+              key: kpi.key, type: 'button', className: 'silksec-kpi', title: kpi.title,
+              onClick: kpi.onClick,
+            },
+              el('div', { style: uiCore.styles.cardL }, kpi.label),
+              el('div', { style: uiCore.styles.cardV }, kpi.value),
+              el('div', { style: { color: kpi.subColor || uiCore.T.label3, ...uiCore.F.xxxs, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: kpi.sub }, kpi.sub))
+          })),
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', marginTop: 8, color: uiCore.T.label3, ...uiCore.F.xxxs } },
+            el('span', { style: { color: uiCore.T.label3 } }, '库存'),
+            invItems.map(function (it) {
+              return el('button', {
+                key: 'inv-' + it.label, type: 'button', className: 'silksec-chip',
+                style: { height: 20, padding: '0 6px', border: 'none', background: 'transparent', color: uiCore.T.label3 },
+                title: '打开' + it.label,
+                onClick: function () { navigate.select(it.tab) },
+              }, it.label + ' ' + num(it.value))
+            }))),
         (memState.data && memState.data.loaded === false)
           ? el('div', { style: { ...uiCore.styles.errorLine, color: uiCore.T.warn } }, '⚠ memcore 记忆治理插件未加载：写入不校验、读取全量可见（fail-open）。检查 profile 是否含 @silksec/sec-memcore。')
           : null,
@@ -192,6 +294,7 @@ window.__ModuleLoader__.load({
           ? el('div', { style: { ...uiCore.styles.errorLine, color: uiCore.T.warn } }, '⚠ 纪律健康度告警（' + (opsState.data.alerts || []).length + '）：' + (opsState.data.alerts || []).slice(0, 3).join('；') + '（详见 ops 端点）')
           : null,
         el('div', { style: uiCore.styles.tabBar }, tabs),
+        secondaryTabs,
         el('div', { style: uiCore.styles.body }, activeNode))
     }
 
@@ -214,7 +317,7 @@ window.__ModuleLoader__.load({
         }))
         // panellist 缺席不抛：silent degradation
         disposers.push(slots.inject('sidebar.panellist', function () {
-          return slots.register({ name: 'sidebar.panellist', id: 'silksec-dashboard', order: 30, label: '看板' }, PanelIcon)
+          return slots.register({ name: 'sidebar.panellist', id: 'silksec-dashboard', order: 30, label: '安全中心' }, PanelIcon)
         }))
         return function () {
           disposers.forEach(function (d) { try { if (typeof d === 'function') d() } catch (e) {} })

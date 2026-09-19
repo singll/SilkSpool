@@ -333,3 +333,23 @@ transition 只碰 `background-color / color / border-color / opacity`（不触�
 
 - **断言落点**：`dsh-plugin-sec-dashboard.view-*.client.test.mjs` 已含「源码不含 `#hex` / `rgb()` / `rgba()`」用例；`sec-v5-accept.sh --ui-headless` 的 UI 冒烟段对 13 个 UI 面 client bundle 做运行时/结构复验（见下）。
 - **grep 口径**：对 `dsh-plugin-silksec-ui-*.client.js`（`ui-core` 除外，它是令牌源）与 `dsh-plugin-sec-dashboard.view-*.client.js` 扫描 `#[0-9a-fA-F]{3,8}` / `\brgba?\s*\(`，命中即失败。
+
+### 11.8 共享控件基样式表（2026-09-19，19-ui-unify U1）
+
+**唯一来源纪律**：所有 `.silksec-*` 共享控件类的 CSS 规则**只允许**定义在 `@silksec/ui-core` 的 `ensureBaseStyles()`（apply 时一次性注入，幂等守卫 `data-plugin-css="silksec-ui-core-base"`）。各承载面/视图包的本地 `ensureStyles()` **只允许布局类**（flex/grid/container-query/高度），禁止定义颜色、边框、圆角、按钮、输入、tab 样式。全部规格消费既有 `--dsw-alias-*` / `--dsw-specific-*` / `--ds-*` 令牌，**零新色值、零颜色字面量**。
+
+| 类 | 规格（既定令牌组合） |
+|---|---|
+| `.silksec-btn` | 28px 高 / `0 12px` / 6px 圆角 / `F.xs`；fill=`button-elevated-fill`、color=`label-secondary`、border=`border-l2`；hover fill=`button-floating-hover` + color=`label-primary`；disabled opacity .45 |
+| `.silksec-btn-confirm` | 同骨架；fill=`button-primary-fill`（绯红）、color=`button-contrast-fill`、border=transparent；hover→`button-primary-hover` |
+| `.silksec-icon-btn` | 26×26 / 6px；fill=transparent、color=`label-secondary`；hover fill=`interactive-bg-hover` + color=`label-primary` |
+| `.silksec-icon-btn-confirm` | color=`brand-primary`；hover fill=`interactive-bg-hover-accent`（语义修饰，随 `-icon-btn` 组合）|
+| `.silksec-icon-btn-danger` | color=`state-error-primary`；hover fill=`interactive-bg-hover-danger`（语义修饰，可随 `-btn`/`-icon-btn` 组合）|
+| `.silksec-input` | 28px 高 / `0 10px` / 6px；fill=`specific-input-major`、color=`label-primary`、border=`border-l2`；focus border=`brand-primary`（无 outline 环）；placeholder=`label-tertiary` |
+| `.silksec-tab` | 32px 高 / `0 10px` / `F.xs`；color=`label-secondary`；`[data-on="true"]` color=`label-primary` + `inset 0 -2px 0 brand-primary`（绯红下划线）；过渡 200ms `--ds-ease-in-out` |
+| `.silksec-kpi` | fill=`bg-layer-1` / border=`border-l1` / 8px / `10px 14px`；hover fill=`bg-layer-2` + border=`border-l3`；数字 20px/600 `label-primary` |
+| `.silksec-row` | tbody 行 hover background=`interactive-bg-hover`（150ms）|
+| `.silksec-chip` | pill 骨架（999px）；`[data-on="true"]` background=`interactive-bg-active`；cursor=pointer 仅本类携带（视图内联 pill+cursor 散写一律删除）|
+| `.silksec-dash-dialog` | Modal 兜底容器：fill=`bg-layer-3` / border=`border-l2` / 12px；遮罩由宿主 Modal 自带（无 rgba 字面量）|
+
+**CI 双重断言**（`sec-v5-accept.sh` UI 段，19-ui-unify §5.2）：① `ui-shared-css-unique`——上述选择器定义（带前导点）只允许出现在 ui-core；② `ui-class-defined`——全部被使用的 `silksec-*` className 必须有 CSS 定义（白名单：`silksec-approval-capsule` 为 overlay inline 定位 hook）。

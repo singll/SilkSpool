@@ -41,7 +41,7 @@ function makeUiCore() {
   function notify() { const l = listeners.slice(); l.forEach((fn) => fn(registry.list())) }
   const registry = {
     register(d) {
-      entries[d.id] = { id: d.id, label: d.label || d.id, order: d.order === undefined ? 100 : d.order, component: d.component, domain: d.domain, source: d.source }
+      entries[d.id] = { id: d.id, label: d.label || d.id, order: d.order === undefined ? 100 : d.order, component: d.component, domain: d.domain, source: d.source, group: d.group === 'more' ? 'more' : 'primary' }
       notify()
       return () => { delete entries[d.id]; notify() }
     },
@@ -59,8 +59,11 @@ function makeUiCore() {
     T: { brand: 'brand', label2: 'label2', label3: 'label3', warn: 'warn', label: 'label', error: 'error', border: 'border', base: 'base', layer1: 'layer1', hover: 'hover', success: 'success', border2: 'border2', border3: 'border3', skeleton: 'skeleton' },
     F: { xxxs: {}, xxs: {}, xxsStrong: {}, xs: {}, s: {}, sStrong: {}, baseStrong: {} },
     styles: { root: {}, header: {}, pageT: {}, pageSub: {}, silkDivider: {}, errorLine: {}, tabBar: {}, body: {}, cardL: {}, cardV: {}, pill: {} },
+    secUiBus: { emit() {}, on() { return () => {} } },
     spoolIcon: () => null,
+    opIcon: () => null,
     fmtBytes: (n) => (n === undefined || n === null ? '—' : String(n)),
+    fmtNum: (n) => (n === undefined || n === null ? '—' : String(n)),
     EmptyState: function EmptyState() {},
     SilksecErrorBoundary: function SilksecErrorBoundary() {},
     useRpc: () => ({ loading: true, data: null, error: null, reload() {} }),
@@ -134,8 +137,8 @@ test('注册幂等：apply 两次同 id 只一条，disposer 幂等；main/panel
   assert.ok(registered['main:silksec-dashboard'], 'main 槽必须注册 silksec-dashboard（不静默不注册）')
   assert.equal(registered['main:silksec-dashboard'].cfg.key, 'silksec-dashboard', 'keyed 槽必须用 options.key')
   assert.equal(registered['main:silksec-dashboard'].cfg.order, 30)
-  assert.ok(registered['sidebar.panellist:silksec-dashboard'], 'panellist 槽必须注册「看板」导航行')
-  assert.equal(registered['sidebar.panellist:silksec-dashboard'].cfg.label, '看板')
+  assert.ok(registered['sidebar.panellist:silksec-dashboard'], 'panellist 槽必须注册「安全中心」导航行')
+  assert.equal(registered['sidebar.panellist:silksec-dashboard'].cfg.label, '安全中心')
   assert.equal(Object.keys(registered).length, 2, 'main + panellist 两条（同 id 两个槽）')
 
   // 幂等：第二次 apply 不抛、数量不增
@@ -161,6 +164,24 @@ test('DashboardPanel：按 viewRegistry order 渲染 tab，active = 第一条', 
   // active = 第一条（order 最小）的组件被渲染
   const active = collect(tree, (n) => n.type === cAudit)
   assert.equal(active.length, 1, 'active 必须是 registry 首条（审计）组件')
+})
+
+test('DashboardPanel：group=more 收敛进「更多」二级导航，一级 tab 只留 primary', () => {
+  const uiCore = makeUiCore()
+  const { mod } = loadBundle(uiCore)
+  uiCore.viewRegistry.register({ id: 'findings', label: '漏洞', order: 20, component: function C1() {} })
+  uiCore.viewRegistry.register({ id: 'assets', label: '资产', order: 30, component: function C2() {} })
+  uiCore.viewRegistry.register({ id: 'knowledge', label: '知识', order: 70, group: 'more', component: function C3() {} })
+  uiCore.viewRegistry.register({ id: 'audit', label: '审计', order: 110, group: 'more', component: function C4() {} })
+
+  const tree = mod.DashboardPanel()
+  const tabs = collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-tab')
+  const labels = tabs.map((t) => (t.children && t.children[0]) || '')
+  assert.ok(labels.includes('漏洞') && labels.includes('资产'), 'primary tab 保留')
+  assert.ok(!labels.includes('知识') && !labels.includes('审计'), 'more 组不得占一级 tab')
+  assert.ok(labels.some((l) => String(l).indexOf('更多') === 0), '出现「更多」入口')
+  // 默认 active = findings（第一条），故二级导航不渲染；仅一级「更多」入口
+  assert.equal(collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-tab' && String((n.children || [])[0] || '').indexOf('更多') >= 0).length, 1)
 })
 
 test('DashboardPanel：注册晚到经 viewRegistry.subscribe 触发重渲染（动态注册）', () => {
@@ -224,8 +245,11 @@ test('降级：layout 缺席时 DashboardPanel 仍可渲染，返回会话按钮
   // serviceRef.ctx 未设置（模拟 layout 缺席）
   let tree = null
   assert.doesNotThrow(() => { tree = mod.DashboardPanel() })
-  const back = collect(tree, (n) => n.type === 'button' && n.children && n.children[0] === '返回会话')
-  assert.equal(back.length, 1, '「返回会话」按钮存在')
+  const back = collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-icon-btn' && n.props.title === '返回当前会话')
+  assert.equal(back.length, 1, '「返回会话」图标按钮存在（19-ui-unify §2.4）')
+  assert.equal(back[0].props['aria-label'], '返回当前会话')
   assert.doesNotThrow(() => back[0].props.onClick())
+  const refresh = collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-icon-btn' && n.props.title === '重新加载主面板数据')
+  assert.equal(refresh.length, 1, '「刷新」图标按钮存在')
   await Promise.resolve()
 })

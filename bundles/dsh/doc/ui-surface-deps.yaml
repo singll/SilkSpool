@@ -37,6 +37,22 @@ p7_review:
   accept_ui_smoke: true       # sec-v5-accept.sh R5（结构断言 + --ui-headless 运行时断言）
   legacy_deletion: done       # 2026-09-19 删除 @silksec/sec-dashboard（跳过观察期）
 
+# ── 19-ui-unify：看板 UI 全局统一（2026-09-19） ────────────────────────────
+# 视觉/交互统一，挂点清单不变；仅 viewRegistry 协议 minor 变更（新增可选 group）。
+ui_unify_19:
+  design_doc: doc/secagent/19-ui-unify.md
+  registry_protocol:
+    version: 2                 # 1 = id/label/order/component/requires；2 = 增可选 group
+    added: viewRegistry.register({ group: 'primary' | 'more' })  # 缺省 primary（旧视图包兼容）
+    consumer: "@silksec/ui-panel：primary 四 tab + 「更多」二级导航（more 组）"
+  base_stylesheet:
+    source: "@silksec/ui-core ensureBaseStyles()（apply 幂等注入 data-plugin-css=silksec-ui-core-base）"
+    classes: [silksec-btn, silksec-btn-confirm, silksec-icon-btn, silksec-icon-btn-confirm,
+              silksec-icon-btn-danger, silksec-input, silksec-tab, silksec-kpi, silksec-row,
+              silksec-chip, silksec-dash-dialog]
+    rule: 共享控件类 CSS 唯一定义源 = 上述基样式表；承载面本地 ensureStyles 只允许布局类
+  accept_gates: sec-v5-accept.sh UI 段新增 ui-shared-css-unique + ui-class-defined（§5.2）
+
 # ── 开放问题 §九 #5：ui-core 跨 bundle require ──────────────────────────────
 # 结论：可行（P0 已本地契约验证 + csai 部署验证）。
 # 证据：dsh-client-modules 契约（lib/types/client/manifest.d.ts + lib/client.js）：
@@ -176,7 +192,7 @@ surfaces:
     package: "@silksec/ui-panel"
     phase: P1
     status: implemented
-    role: 看板本体（主面板 + 侧边栏一级导航行；旧 footer/Modal 承接已随旧单体删除）
+    role: 安全中心本体（主面板 + 侧边栏一级导航行「安全中心」；旧 footer/Modal 承接已随旧单体删除）
     implementation:
       client: dsh-plugin-silksec-ui-panel.client.js
       host: dsh-plugin-silksec-ui-panel.index.js
@@ -190,11 +206,13 @@ surfaces:
       - layout.beginNavigation        # ctx.layout.beginNavigation() → AbortSignal（防连点竞态）
       - slots.register
       - slots.inject                  # 声明生命周期注册（时序纪律；panellist 缺席静默降级）
+      - sidebarRight.openTab          # KPI 待审批/任务卡跳链（19-ui-unify §4.2；缺席降级 secUiBus/主面板）
+      - secUiBus.emit                 # open:approval / open:task 降级广播（无在屏会话时）
     owner_props_consume:
       - SidebarPanelIconOwnerProps    # sidebar.panellist {size, active}
     primitives: []                    # 页头/KPI/tab 走 ui-core styles/T；主面板不依赖 primitives Modal
     icons: []
-    my_icons: [spoolIcon]
+    my_icons: [spoolIcon, opIcon]     # 页头返回/刷新图标（19-ui-unify §2.4）
     slots_avoid:
       - conversation.chat.turnTail    # chain 槽首匹配即占用，纪律：不碰
     degradation:
@@ -211,6 +229,9 @@ surfaces:
       - "开放问题 §九 #1：P1 未做 URL hash 直达。selectPanel 为 DSH 原生内存态（刷新回会话，
          官方默认）；自管 hash 属自绘层，未采用。"
       - "开放问题 §九 #4：零会话时主面板（root scope）照常可达；右侧栏 tab 属 P2 范畴。"
+      - "19-ui-unify（2026-09-19）：改名「安全中心」；页头返回/刷新改 26×26 图标钮（opIcon back/refresh）；
+         主面板一级 tab = 漏洞/资产/接口/事实 + 「更多」（知识/学习/报告/审计二级导航，registry group=more）；
+         KPI 改五卡（待审批/待处理漏洞/待验证候选/运行中·阻塞任务/纪律告警）+ 库存副条，全部可点击跳链。"
     verified_dsh: "0.1.5-rc.2 (2026-09-18；ctx.layout service.d.ts + sidebar contract/slots.d.ts + main/panellist SlotMap 逐字核对)"
 
   - id: approval
@@ -463,6 +484,7 @@ surfaces:
       - connection.rpc.call                          # /silksec-dashboard 既有端点（与旧 PanelView 同端点同参数）
       - sessions.open                                # 经 ui-core.setSessionOpener 注入 → SessionLink
       - viewRegistry.requires                         # requires:['connection'] 缺席 → list() 过滤，tab 静默隐藏
+      - viewRegistry.group                            # 19-ui-unify §3.2：缺省 primary；知识/学习/报告/审计 = more
     endpoints:
       vuln: [findings, findingGet, findingUpdate, evalStats, reportBuild]
       asset: [assets, assetOverview, assetDetail, assetFamily]
@@ -500,6 +522,8 @@ surfaces:
       - "隔离五道墙：每域独立包（构建隔离）+ 每域 DomainRoot 包 SilksecErrorBoundary（渲染隔离，surface=dashboard-view-<domain>，经 bus.audit_tail 口径上报）+ requires 过滤（注册隔离）+ 视图自持 query/handler（状态/数据隔离）。"
       - "候选/信号 visibility 口径：vuln 视图沿用旧 findings 分支（noise/status/severity 筛选与列渲染不变）；fact 视图沿用 exclude_notes 服务端默认 + mem_class 生命周期 facet；report 保留 Modal 阅读器（ui-core.DocModal）；audit 经 bus audit 端点（actor/decision 列逐字保留）。"
       - "零颜色字面量（走 --dsw-alias-* / --silksec-sev-* / ui-core 令牌）；P6 不碰 conversation.chat.turnTail chain 槽。"
+      - "19-ui-unify §3.2：registry 协议 minor 变更——知识(order70)/学习(75)/报告(80)/审计(110) 注册 group:'more'，
+         由 ui-panel「更多」二级导航承载；旧视图包无 group 字段全部落 primary，升级顺序无要求。"
       - "旧单体对应视图保留 7 天并排观察（`-old` 后缀、order=canonical+1）；P7（2026-09-18）完成文档/主题/accept 冒烟固化，旧单体与 Modal 主形态的删除按观察闸口（≥2026-09-25）顺延，未满不删（见本文件 p7_review）。"
     verified_dsh: "0.1.5-rc.2 (2026-09-18；ui-core viewRegistry.requires 能力探测 + 跨 bundle require @silksec/ui-core；主面板 main/panellist 承载见 dashboard-panel 面；本地 node --test 44 例 + 真机无头逐 tab 渲染)"
 

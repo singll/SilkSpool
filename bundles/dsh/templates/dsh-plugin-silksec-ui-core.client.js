@@ -122,6 +122,12 @@ window.__ModuleLoader__.load({
       var p = function (n) { return (n < 10 ? '0' : '') + n }
       return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
     }
+    // 千分位（库存副条等大数可读性；非数值原样返回）
+    function fmtNum(n) {
+      if (n === undefined || n === null) return '—'
+      if (typeof n !== 'number' || !isFinite(n)) return String(n)
+      return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+    }
 
     // ── 通用内联样式对象（自旧单体原样提取；全部经 T，零颜色字面量） ──────────
     var root = { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, boxSizing: 'border-box', padding: '18px 22px 0' }
@@ -152,6 +158,52 @@ window.__ModuleLoader__.load({
       tableStyle: tableStyle, theadRow: theadRow, toolbar: toolbar, pagerBar: pagerBar,
     }
 
+    // ── 共享控件基样式表（19-ui-unify §2.1/2.2） ─────────────────────────────
+    // **唯一合法定义源**：所有 `.silksec-*` 共享控件类（btn/icon-btn/input/tab/kpi/
+    // row/chip/dash-dialog）的 CSS 规则只在此处定义。承载面/视图包的本地
+    // ensureStyles() 只允许布局类（flex/grid/container-query/高度），禁止定义颜色、
+    // 边框、圆角、按钮、输入、tab 样式。apply 时一次性注入，幂等守卫
+    // data-plugin-css="silksec-ui-core-base"。零颜色字面量（全部 var(--dsw-*)）。
+    var BASE_CSS_KEY = 'silksec-ui-core-base'
+    function ensureBaseStyles() {
+      try {
+        if (typeof document === 'undefined' || !document.head) return
+        if (document.querySelector('style[data-plugin-css=' + JSON.stringify(BASE_CSS_KEY) + ']')) return
+        var tag = document.createElement('style')
+        tag.dataset.plugin = '@silksec/ui-core'
+        tag.dataset.pluginCss = BASE_CSS_KEY
+        tag.textContent = [
+          '.silksec-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 12px;border-radius:6px;font:var(--dsw-font-xs-13);background:var(--dsw-alias-button-elevated-fill);color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l2);cursor:pointer;box-sizing:border-box;white-space:nowrap;transition:background-color 150ms ease-out,color 150ms ease-out,border-color 150ms ease-out}',
+          '.silksec-btn:hover:not(:disabled){background:var(--dsw-alias-button-floating-hover);color:var(--dsw-alias-label-primary)}',
+          '.silksec-btn:disabled{opacity:.45;cursor:not-allowed}',
+          '.silksec-btn-confirm{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-button-contrast-fill);border-color:transparent}',
+          '.silksec-btn-confirm:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover);color:var(--dsw-alias-button-contrast-fill)}',
+          '.silksec-icon-btn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);border:1px solid transparent;cursor:pointer;box-sizing:border-box;transition:background-color 150ms ease-out,color 150ms ease-out,border-color 150ms ease-out}',
+          '.silksec-icon-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+          '.silksec-icon-btn:disabled{opacity:.45;cursor:not-allowed}',
+          '.silksec-icon-btn-confirm{color:var(--dsw-alias-brand-primary)}',
+          '.silksec-icon-btn-confirm:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-accent);color:var(--dsw-alias-brand-primary)}',
+          '.silksec-icon-btn-danger{color:var(--dsw-alias-state-error-primary)}',
+          '.silksec-icon-btn-danger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}',
+          '.silksec-input{height:28px;padding:0 10px;border-radius:6px;font:var(--dsw-font-xs-13);background:var(--dsw-specific-input-major);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);box-sizing:border-box;transition:border-color 150ms ease-out}',
+          '.silksec-input:focus{border-color:var(--dsw-alias-brand-primary);outline:none}',
+          '.silksec-input::placeholder{color:var(--dsw-alias-label-tertiary)}',
+          '.silksec-tab{display:inline-flex;align-items:center;height:32px;padding:0 10px;font:var(--dsw-font-xs-13);color:var(--dsw-alias-label-secondary);background:transparent;border:0;border-radius:0;cursor:pointer;transition:color 200ms var(--ds-ease-in-out),box-shadow 200ms var(--ds-ease-in-out)}',
+          '.silksec-tab:hover{color:var(--dsw-alias-label-primary)}',
+          '.silksec-tab[data-on="true"]{color:var(--dsw-alias-label-primary);box-shadow:inset 0 -2px 0 var(--dsw-alias-brand-primary)}',
+          '.silksec-kpi{display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:2px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:10px 14px;cursor:pointer;font-family:inherit;box-sizing:border-box;transition:background-color 150ms ease-out,border-color 150ms ease-out}',
+          '.silksec-kpi:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l3)}',
+          '.silksec-row{transition:background-color 150ms ease-out}',
+          '.silksec-row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+          '.silksec-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;font-size:12px;line-height:16px;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:transparent;cursor:pointer;white-space:nowrap;font-family:inherit;box-sizing:border-box;transition:background-color 150ms ease-out,color 150ms ease-out,border-color 150ms ease-out}',
+          '.silksec-chip:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+          '.silksec-chip[data-on="true"]{background:var(--dsw-alias-interactive-bg-active);color:var(--dsw-alias-label-primary)}',
+          '.silksec-dash-dialog{background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:12px}',
+        ].join('\n')
+        document.head.appendChild(tag)
+      } catch (e) { /* 样式注入失败不阻断功能 */ }
+    }
+
     // ── 图标（内联 SVG，stroke 1.5，currentColor） ────────────────────────────
     function spoolIcon(size) {
       return el('svg', { width: size || 16, height: size || 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', style: { flexShrink: 0 } },
@@ -178,6 +230,8 @@ window.__ModuleLoader__.load({
       else if (kind === 'trash') inner = el(React.Fragment, null, el('path', { d: 'M3 4.5h10M6.3 4.5V3h3.4v1.5' }), el('path', { d: 'M4.7 4.5l.6 8h5.4l.6-8M8 7v3.5' }))
       else if (kind === 'up') inner = el(React.Fragment, null, el('path', { d: 'M8 12.5V4' }), el('path', { d: 'M4.5 7.5L8 4l3.5 3.5' }))
       else if (kind === 'chev') inner = el('path', { d: 'M4 6l4 4 4-4' })
+      else if (kind === 'back') inner = el(React.Fragment, null, el('path', { d: 'M12.5 8H3.5' }), el('path', { d: 'M7 4.5L3.5 8l3.5 3.5' }))
+      else if (kind === 'refresh') inner = el(React.Fragment, null, el('path', { d: 'M13 8a5 5 0 1 1-1.6-3.6' }), el('path', { d: 'M13.5 2.5V5.5H10.5' }))
       else inner = el(React.Fragment, null, el('path', { d: 'M2.5 8s2.2-3.8 5.5-3.8S13.5 8 13.5 8 11.3 11.8 8 11.8 2.5 8 2.5 8z' }), el('path', { d: 'M4 13l8-10' }))
       return el('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' }, inner)
     }
@@ -217,12 +271,15 @@ window.__ModuleLoader__.load({
       }
       return el('span', { style: F.xs }, pid)
     }
-    // 可点即筛的洞察 chip（选中态升一档背景；再点清除）——资产/事实等视图共用
+    // 可点即筛的洞察 chip（选中态升一档背景；再点清除）——资产/事实等视图共用。
+    // 19-ui-unify §2.2：样式唯一来源 = ui-core 基样式表 `.silksec-chip`；此处只传
+    // 语义色（token）与选中态，不再散写 pill+cursor。
     function insightChip(key, value, label, count, color, query, title) {
       var on = query.filters[key] === value
       return el('button', {
-        key: key + '|' + value, type: 'button', className: 'silksec-btn',
-        style: { ...pill, cursor: 'pointer', height: 22, color: color || T.label2, background: on ? T.layer2 : 'transparent' },
+        key: key + '|' + value, type: 'button', className: 'silksec-chip',
+        'data-on': on ? 'true' : undefined,
+        style: color ? { color: color } : undefined,
         title: (title || label) + '：' + count + '（点击' + (on ? '清除' : '筛选') + '）',
         onClick: function () { query.setFilter(key, on ? '' : value) },
       }, label + ' ' + count)
@@ -543,6 +600,9 @@ window.__ModuleLoader__.load({
           requires: desc.requires || [],
           domain: desc.domain || null,
           source: desc.source || null,
+          // 19-ui-unify §3.2：频次分层（缺省 primary，兼容旧视图包）。'more' 组由
+          // 主面板收敛进「更多」二级导航；旧包无此字段全部落 primary，行为不变。
+          group: desc.group === 'more' ? 'more' : 'primary',
         }
         notify()
         return function () { return unregister(desc.id, desc) }
@@ -690,6 +750,9 @@ window.__ModuleLoader__.load({
     exports.name = 'silksec-ui-core'
     exports.inject = ['slots']
     exports.apply = function (ctx) {
+      // 共享控件基样式表：apply 时一次性注入（幂等）。这是全部 `.silksec-*` 共享控件类
+      // 的唯一合法 CSS 定义源（19-ui-unify §2.1）；各承载面只允许布局类。
+      ensureBaseStyles()
       // provide 失败（旧宿主/服务名冲突）不抛出：require 侧仍可经 module.exports 取到同一实例。
       try { ctx.provide('secDashboardViews', viewRegistry) } catch (e) {}
       try { ctx.provide('secUiBus', secUiBus) } catch (e) {}
@@ -711,7 +774,9 @@ window.__ModuleLoader__.load({
     exports.styles = styles
     exports.fmtTime = fmtTime; exports.fmtBytes = fmtBytes; exports.fmtEvery = fmtEvery
     exports.fmtRel = fmtRel; exports.fmtDur = fmtDur; exports.fmtTs = fmtTs
+    exports.fmtNum = fmtNum
     exports.spoolIcon = spoolIcon; exports.opIcon = opIcon; exports.mdBlocks = mdBlocks
+    exports.ensureBaseStyles = ensureBaseStyles; exports.BASE_CSS_KEY = BASE_CSS_KEY
     exports.EmptyState = EmptyState; exports.SkeletonRows = SkeletonRows
     exports.Toolbar = Toolbar; exports.Pager = Pager; exports.ViewBody = ViewBody
     exports.DocModal = DocModal

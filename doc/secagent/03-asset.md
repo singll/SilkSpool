@@ -359,7 +359,7 @@
 
 #### `asset_overview`（总览聚合）
 
-无参数。返回 `{ total, family_count, by_level, by_state, by_accept, families: [≤300 族行 {root, kind: domain|subnet, host_count, endpoint_count, finding_count, max_score, top_level, last_seen}] }`。缓存 25s TTL + 写命令失效（§2.5）。
+无参数。返回 `{ total, family_count, by_level, by_state, by_accept, by_type: [{type, n}], families: [≤300 族行 {root, kind: domain|subnet, host_count, endpoint_count, finding_count, max_score, top_level, last_seen}] }`。缓存 25s TTL + 写命令失效（§2.5）。
 
 #### `fp_query`
 
@@ -589,7 +589,7 @@ updateAssetState(host, type, state, ts)
 listAssetsWhere(filters, order, limit, offset) → rows
 countAssetsWhere(filters) → n
 /** 聚合原语 */
-overviewAggregate() → { total, family_count, by_level, by_state, by_accept, families }
+overviewAggregate() → { total, family_count, by_level, by_state, by_accept, by_type, families }
 familyMembers(root, limit) → rows
 siblingsOfHost(host, root, limit) → rows
 /** 指纹 */

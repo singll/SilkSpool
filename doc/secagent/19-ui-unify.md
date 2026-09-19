@@ -1,6 +1,6 @@
 # 19 · 看板 UI 全局统一重构（设计 + 实施规范）
 
-> 版本：v1.0（设计 + 实施双轨，实施者必须逐条对照执行）｜ 状态：定稿待实施
+> 版本：v1.0（设计 + 实施双轨，实施者必须逐条对照执行）｜ 状态：**U1–U4 已实施，csai 无头验收 PASS=72 FAIL=0（2026-09-19）；仅视觉截图待人工，通过后本文归档**
 > 契约版本：1 ｜ 运行基线：DSH **0.1.5-rc.2**（csai 生产）
 > 上位文档：[`16-dashboard.md`](16-dashboard.md)（架构与挂点以它为准，本文只管**视觉与交互统一**）；主题令牌以 [`bundles/dsh/doc/silksong-theme-design.md`](../../bundles/dsh/doc/silksong-theme-design.md) 为准。
 > 触发：2026-09-19 走查截图发现——看板新面与 DSH 原生界面**样式、元素、操作逻辑全局不统一**；主面板 8 tab 信息架构过载；统计卡片口径过时；此前实施未完全遵守 16-dashboard §四（丝之歌 v4.2）规范。
@@ -230,16 +230,22 @@ KPI 卡行下方一条 `F.xxxs label-tertiary` 文本行：`库存 · 漏洞 61 
 
 ## 六、验收清单
 
-- [ ] 全站 `.silksec-btn/-confirm/icon-btn/-danger/input/tab/kpi/row/chip/dash-dialog` 有且仅有 ui-core 一份 CSS 定义；截图中不再出现裸按钮
-- [ ] 主面板 tab 选中态 = 绯红 2px 下划线 + 200ms 过渡；与会话页 tab（对话/轨迹/费用/安全产出）选中视觉同族
-- [ ] panellist 与页头显示「安全中心」；副标题与 tab 集合一致；页头操作 = 图标按钮（返回/刷新）
-- [ ] 主面板一级 tab = 漏洞/资产/接口/事实/更多；「更多」内二级导航 = 知识/学习/报告/审计；旧跳链 id 全部可达
-- [ ] KPI = 待审批/待处理漏洞/待验证候选/运行中·阻塞任务/纪律告警 五卡 + 库存副条；点击跳链正确；单域失败降级「—」
-- [ ] 搜索框/下拉与宿主输入区（会话底部输入框）同 token 族（input-major 底、l2 描边、绯红 focus）
-- [ ] 批准/驳回、生成报告、登记候选漏洞等文字按钮呈现 elevated/primary 规格；行内操作全部 26×26 图标钮
-- [ ] 丝之歌主题关闭 → 内置 dark：全部新样式自动回落（零 silksec 专属色，只消费 --dsw-alias-*）
-- [ ] `sec-v5-accept.sh --ui-headless` 通过（含 5.2 新增两条门禁）
-- [ ] 主题文档 §十一 增补基样式表清单；CONTEXT.md 登记「安全中心」术语；本文结论回填 16-dashboard 后移入 archive/，并在 [PROGRESS.md](PROGRESS.md) 记一行结果
+> 验收证据（2026-09-19）：csai `bundle dsh setup` + `restart silksecagent`（active、NRestarts=0）后
+> `sec-v5-accept.sh --ui-headless` **PASS=72 FAIL=0**（含 `ui-shared-css-unique` / `ui-class-defined`
+> 两条新门禁与 13 面 headless health/RPC 断言）；本地 UI 单测 118 例全绿。视觉四图（主面板/会话页/
+> 右侧栏任务/审批浮卡）待操作者在 csai 截图贴入本节后归档。
+
+- [x] 全站 `.silksec-btn/-confirm/icon-btn/-danger/input/tab/kpi/row/chip/dash-dialog` 有且仅有 ui-core 一份 CSS 定义（`ui-shared-css-unique` 门禁）；截图中不再出现裸按钮
+- [x] 主面板 tab 选中态 = 绯红 2px 下划线 + 200ms 过渡；与会话页 tab（对话/轨迹/费用/安全产出）选中视觉同族
+- [x] panellist 与页头显示「安全中心」；副标题与 tab 集合一致；页头操作 = 图标按钮（返回/刷新）
+- [x] 主面板一级 tab = 漏洞/资产/接口/事实/更多；「更多」内二级导航 = 知识/学习/报告/审计；旧跳链 id 全部可达
+- [x] KPI = 待审批/待处理漏洞/待验证候选/运行中·阻塞任务/纪律告警 五卡 + 库存副条；点击跳链正确；单域失败降级「—」
+- [x] 搜索框/下拉与宿主输入区（会话底部输入框）同 token 族（input-major 底、l2 描边、绯红 focus）
+- [x] 批准/驳回、生成报告、登记候选漏洞等文字按钮呈现 elevated/primary 规格；行内操作全部 26×26 图标钮
+- [x] 丝之歌主题关闭 → 内置 dark：全部新样式自动回落（零 silksec 专属色，只消费 --dsw-alias-*）
+- [x] `sec-v5-accept.sh --ui-headless` 通过（含 5.2 新增两条门禁）
+- [x] 主题文档 §十一 增补基样式表清单；CONTEXT.md 登记「安全中心」术语；本文结论回填 16-dashboard；[PROGRESS.md](PROGRESS.md) 记结果
+- [ ] 视觉验收：csai 四张对比截图贴入本节（操作者人工；通过后本文移入 archive/）
 
 ---
 

@@ -111,8 +111,8 @@ window.__ModuleLoader__.load({
                   det.findings.map(function (f) {
                     var c = uiCore.SEV_COLOR[f.severity] || uiCore.T.label2
                     return el('button', {
-                      key: f.severity, type: 'button', className: 'silksec-btn',
-                      style: { ...uiCore.styles.pill, cursor: 'pointer', color: c, height: 22, borderColor: 'color-mix(in srgb, ' + c + ' 40%, transparent)' },
+                      key: f.severity, type: 'button', className: 'silksec-chip',
+                      style: { color: c, borderColor: 'color-mix(in srgb, ' + c + ' 40%, transparent)' },
                       title: '跳转漏洞视图并按该主机' + (uiCore.SEV_LABEL[f.severity] || f.severity) + '过滤',
                       onClick: function () { props.onFindings(det.host, f.severity) },
                     }, (uiCore.SEV_LABEL[f.severity] || f.severity) + ' ' + f.n)
@@ -123,8 +123,8 @@ window.__ModuleLoader__.load({
               ? el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', maxWidth: 340 } },
                   det.siblings.map(function (s) {
                     return el('button', {
-                      key: s.host, type: 'button', className: 'silksec-btn',
-                      style: { ...uiCore.styles.pill, cursor: 'pointer', fontFamily: uiCore.MONO, fontSize: 11, height: 22 },
+                      key: s.host, type: 'button', className: 'silksec-chip',
+                      style: { fontFamily: uiCore.MONO, fontSize: 11 },
                       title: '同属 ' + det.root + ' · 评级 ' + (s.level || '—') + (s.score !== null && s.score !== undefined ? ' · ' + s.score + ' 分' : '') + ' · 点击搜索该主机',
                       onClick: function () { props.onPickHost(s.host) },
                     }, s.host)
@@ -154,8 +154,8 @@ window.__ModuleLoader__.load({
         el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', maxHeight: 300, overflowY: 'auto' } },
           hosts.map(function (h) {
             return el('button', {
-              key: h.host, type: 'button', className: 'silksec-btn',
-              style: { ...uiCore.styles.pill, cursor: 'pointer', fontFamily: uiCore.MONO, fontSize: 11, height: 22, color: ASSET_LV_COLOR[h.level] || uiCore.T.label2 },
+              key: h.host, type: 'button', className: 'silksec-chip',
+              style: { fontFamily: uiCore.MONO, fontSize: 11, color: ASSET_LV_COLOR[h.level] || uiCore.T.label2 },
               title: '类型 ' + (h.type || '—') + ' · 评级 ' + (h.level || '—') + (h.score !== null && h.score !== undefined ? ' · ' + h.score + ' 分' : '') + (h.accept ? ' · 收录 ' + (ASSET_ACCEPT_LABEL[h.accept] || h.accept) : '') + ' · ' + uiCore.fmtTime(h.last_seen) + ' · 点击在列表视图搜索',
               onClick: function () { props.onPickHost(h.host) },
             }, h.host)

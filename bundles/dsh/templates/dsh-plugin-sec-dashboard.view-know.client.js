@@ -628,12 +628,13 @@ window.__ModuleLoader__.load({
             })
           }
         }
+        // 19-ui-unify §3.2：知识/学习属低频浏览面，收敛进主面板「更多」二级导航
         var d1 = uiCore.viewRegistry.register({
-          id: 'knowledge', label: '知识', order: 70, domain: 'know',
+          id: 'knowledge', label: '知识', order: 70, group: 'more', domain: 'know',
           component: KnowledgeRoot, requires: ['connection'], source: 'dashboard-view-know',
         })
         var d2 = uiCore.viewRegistry.register({
-          id: 'learning', label: '学习', order: 75, domain: 'know',
+          id: 'learning', label: '学习', order: 75, group: 'more', domain: 'know',
           component: LearningRoot, requires: ['connection'], source: 'dashboard-view-know',
         })
         if (typeof uiCore.markSurfaceHealth === 'function') uiCore.markSurfaceHealth('sec-dashboard-view-know', 'ok')

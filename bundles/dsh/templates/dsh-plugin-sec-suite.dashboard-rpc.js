@@ -11,7 +11,7 @@ import * as path from 'node:path'
 // 依赖注入（由 index.js 模块加载时调用 initDashboardRpc 传入，避免循环依赖）：
 //   dataDir              数据目录（主文件 deps.dataDir，reports 目录推导）
 //   audit                主文件 audit()：审计 JSONL 落盘（taskChain 建任务）
-//   assetDb              asset-db.js 模块命名空间（仅壳聚合端点 stats 与 taskChain 使用；业务读写一律走领域总线）
+//   assetDb              asset-db.js 模块命名空间（仅 taskChain 宿主 helper 使用；业务读写一律走领域总线）
 //   exp                  experience.js 模块命名空间（memcore 记忆治理壳端点）
 //   listManifests        主文件 deps.listManifests()：工具 manifest 枚举（planChain BFS）
 //   loadManifest         主文件 deps.loadManifest()：单工具 manifest 加载（planChain/taskChain）
@@ -133,7 +133,8 @@ export function taskChain(args, exec) {
 // 看板 Remote（Host↔Client RPC 通道 /silksec-dashboard，authority=loopback）
 // 只读查询 + 受控写（打标 findingUpdate / 事实纠正 factCorrect·factDeprecate /
 // P11：授权管理 scopeSaveProgram·scopeDeleteProgram / 工作区绑定 programBindWorkspace / 任务立即跑 taskRunNow）。
-// 业务读写唯一入口 = v5 领域总线（busQuery/busDispatch，fail-closed）；assetDb 仅服务壳聚合端点。
+// 业务读写唯一入口 = v5 领域总线（busQuery/busDispatch，fail-closed）；assetDb 仅剩 taskChain
+// 宿主 helper（19-ui-unify §4.4 后 stats 亦全走壳聚合查询，assetDb.stats 直查已删除）。
 // ==============================================================================
 
 const FINDING_TAG_STATUS = ['confirmed', 'false_positive', 'ignored', 'new', 'submitted', 'accepted', 'dup']
@@ -142,7 +143,8 @@ const FINDING_TAG_STATUS = ['confirmed', 'false_positive', 'ignored', 'new', 'su
 // v5 原子化：看板读写一律走领域总线，fail-closed（16-dashboard §5.3 前置硬闸）。
 // 原 63 处 `v4 兜底`（总线缺席/域动词未知/查询异常即直调 assetDb）已拆除——绕过域
 // 审计/幂等/事件是最大原子化缺口。总线缺席或域/动词未注册即显式报错，不再静默降级。
-// 例外：纯壳聚合端点（stats/workspaces/sessions/memcore）不含业务域写读，保留壳内实现。
+// 例外：壳聚合端点（stats/workspaces/sessions/memcore）——stats 经各域查询聚合
+// （19-ui-unify §4.4，不再直查 assetDb）；workspaces/sessions/memcore 为平台/壳自有面。
 // ==============================================================================
 function busOrThrow() {
   const bus = deps.getSecDomainBus ? deps.getSecDomainBus() : null
@@ -169,8 +171,72 @@ async function busDispatch(domain, verb, args, ctx) {
 export async function handleDashboardRpc(endpoint, payload) {
   const p = (payload && typeof payload === 'object') ? payload : {}
   switch (endpoint) {
-    case 'stats':
-      return deps.assetDb.stats()
+    case 'stats': {
+      // 19-ui-unify §4.4：壳聚合端点改为**只调各域查询**（assetDb.stats 直查已删）。
+      // 聚合「今日待办 + 风险暴露」五指标 + 库存副条；任一来源失败 → 该指标 null +
+      // degraded:[域]，卡片渲染「—」，不整体失败（16-dashboard §1.6 不变量）。
+      // 兼容面：assets_by_type / findings_by_severity / findings_by_status /
+      // findings_noise（资产/漏洞视图洞察条继续消费）。
+      const out = { degraded: [] }
+      const failed = (domain) => { if (out.degraded.indexOf(domain) < 0) out.degraded.push(domain) }
+      // 待审批（approval.stats：pending 总数 + 最老等待天数）
+      try {
+        const r = await busQuery('approval', 'stats', {})
+        const d = r.data || {}
+        out.approval = { pending: Number(d.pending_total) || 0, oldest_days: Number(d.pending_oldest_days) || 0 }
+      } catch (e) { out.approval = null; failed('approval') }
+      // 漏洞（vuln.stats：信号 by_severity/by_status + 候选待消化 pending）
+      try {
+        const r = await busQuery('vuln', 'stats', {})
+        const d = r.data || {}
+        const sev = (d.signal && d.signal.by_severity) || {}
+        const st = (d.signal && d.signal.by_status) || {}
+        out.vuln = {
+          new: Number(st.new) || 0,
+          critical: Number(sev.critical) || 0,
+          high: Number(sev.high) || 0,
+          candidate: Number(d.candidate && d.candidate.pending) || 0,
+          total: Number(d.signal && d.signal.total) || 0,
+        }
+        out.findings_by_severity = Object.keys(sev).map((k) => ({ severity: k, n: Number(sev[k]) || 0 }))
+        out.findings_by_status = Object.keys(st).map((k) => ({ status: k, n: Number(st[k]) || 0 }))
+        out.findings_noise = out.vuln.candidate
+      } catch (e) {
+        out.vuln = null; out.findings_by_severity = []; out.findings_by_status = []; out.findings_noise = 0
+        failed('vuln')
+      }
+      // 任务（task.list 全局 status 过滤；task.stats 需 program_id，全局口径用 list total）
+      try {
+        const [run, blk, fail] = await Promise.all([
+          busQuery('task', 'list', { status: 'running', limit: 1 }),
+          busQuery('task', 'list', { status: 'blocked', limit: 1 }),
+          busQuery('task', 'list', { status: 'failed', limit: 1 }),
+        ])
+        out.tasks = { running: Number(run.total) || 0, blocked: Number(blk.total) || 0, failed: Number(fail.total) || 0 }
+      } catch (e) { out.tasks = null; failed('task') }
+      // 纪律告警（ledger.discipline_stats）
+      try {
+        const r = await busQuery('ledger', 'discipline_stats', { program: '' })
+        const d = r.data || {}
+        out.discipline = { alerts: Array.isArray(d.alerts) ? d.alerts : [], healthy: !!d.healthy }
+      } catch (e) { out.discipline = null; failed('ledger') }
+      // 库存副条（asset.overview + endpoint.list + fact.stats；工作区由 UI 侧平台数据补）
+      try {
+        const [ov, ep, ft] = await Promise.all([
+          busQuery('asset', 'overview', {}),
+          busQuery('endpoint', 'list', { limit: 1 }),
+          busQuery('fact', 'stats', {}),
+        ])
+        out.inventory = {
+          assets: Number(ov.data && ov.data.total) || 0,
+          endpoints: Number(ep.total) || 0,
+          facts: Number(ft.data && ft.data.total) || 0,
+          findings: out.vuln ? out.vuln.total : null,
+        }
+        out.assets_by_type = (ov.data && Array.isArray(ov.data.by_type)) ? ov.data.by_type : []
+      } catch (e) { out.inventory = null; out.assets_by_type = []; failed('asset') }
+      return out
+    }
     // ---- P15：纪律健康度（五指标：台账/卡使用/交接包/IdeaCard/调度漂移）----
     case 'ops': {
       // v5：ledger.discipline_stats 接管（11-ledger §1.7），fail-closed

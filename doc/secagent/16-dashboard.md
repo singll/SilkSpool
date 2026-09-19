@@ -39,7 +39,7 @@
 
 | 通道 | 注册者 | 端点形态 | 消费方 | 纪律 |
 |---|---|---|---|---|
-| `/silksec-dashboard` | `dsh-plugin-sec-suite.js:995`（child fiber + `dashboardRpcRegistered` 幂等守卫，authority=loopback）| **56 个手写 case**（`dashboard-rpc.js`，v4 case 名保留为 UI 适配层）| 6 承载面包 + 7 域视图包（`connection.rpc.call('/silksec-dashboard', endpoint, payload)`）| 每个 case **fail-closed 走总线**（`busQuery`/`busDispatch`），无 v4 直写兜底；`assetDb` 仅服务 `stats` 壳聚合与 `taskChain` 宿主 helper |
+| `/silksec-dashboard` | `dsh-plugin-sec-suite.js:995`（child fiber + `dashboardRpcRegistered` 幂等守卫，authority=loopback）| **56 个手写 case**（`dashboard-rpc.js`，v4 case 名保留为 UI 适配层）| 6 承载面包 + 7 域视图包（`connection.rpc.call('/silksec-dashboard', endpoint, payload)`）| 每个 case **fail-closed 走总线**（`busQuery`/`busDispatch`），无 v4 直写兜底；`assetDb` 仅剩 `taskChain` 宿主 helper（`stats` 于 19-ui-unify §4.4 改壳聚合查询） |
 | `/silksec-domain` | `dsh-plugin-sec-domain-bus.js:1833`（RpcProjector，authority=loopback）| `{domain}.{verb}` **点分全名**（从域 manifest 自动投影命令 + 查询）| 脚本 / 模型 / 人 / 外部自动化 | operator 从连接上下文注入；业务端点统一 fail-closed |
 
 > **与旧设计的差异（回填）**：原 16-dashboard 设计「UI 视图从第一天就调 `{domain}.{verb}`、`/silksec-dashboard` 的 case 代码删除」**未按此执行**。实际落地是：视图包继续调 `/silksec-dashboard` 的 v4 case 名，但 `dashboard-rpc.js` 把这些 case 整体改写为 **总线的瘦适配层**（UI-0，commit `e9dd1f1`；2026-09-18 的 63 处 `v4 兜底` 归零）。`{domain}.{verb}` 自动投影通道（`/silksec-domain`）服务非 UI 调用面。两通道并存、各司其职；`/silksec-dashboard` 端点是 **UI 专用适配层**，不是遗留待删代码。
@@ -208,7 +208,7 @@ ctx.inject(['layout', 'slots'], function () {
 
 | case | 数据接口（聚合来源）| 消费位置 |
 |---|---|---|
-| `stats` | `deps.assetDb.stats()` + 各域计数合并为 KPI 大盘 | 顶部 StatsHeader（tab 跳链入口）|
+| `stats` | 壳聚合**各域查询**：`approval.stats` + `vuln.stats` + `task.list` + `ledger.discipline_stats` + `asset.overview`/`endpoint.list`/`fact.stats` → 五待办卡 + 库存副条（19-ui-unify §4.4；`assetDb.stats` 直查已删）| 顶部 KPI 五卡 + 库存副条 |
 | `ops` | `ledger.discipline_stats` + `know.health` + `task.stats`/`task.scheduled` + `vuln.stats` + `asset.overview` → 五指标 + alerts + healthy | 红条横幅 + ops 卡片 |
 | `memcore` | `deps.exp.memStatus()`（memcore 治理旁路观测：loaded/策略摘要）| memcore 缺席横幅（fail-open 提示）|
 | `sessions` | DSH 平台会话清单（按 workspace 过滤）| 任务视图会话跳链（`ctx.sessions.open`）|
@@ -226,7 +226,7 @@ ctx.inject(['layout', 'slots'], function () {
 
 | # | case | 读/写 | 去向（总线命令/查询）| 类型 |
 |---|---|---|---|---|
-| 1 | `stats` | 读 | 壳聚合（`assetDb.stats` + 各域计数）| 壳自有 |
+| 1 | `stats` | 读 | 壳聚合各域查询（approval.stats/vuln.stats/task.list/ledger.discipline_stats/asset.overview/endpoint.list/fact.stats）| 壳自有 |
 | 2 | `ops` | 读 | 壳聚合（ledger/know/task/vuln/asset 查询）| 壳自有 |
 | 3 | `workspaces` | 读 | DSH 平台工作区清单 | 平台面 |
 | 4 | `sessions` | 读 | DSH 平台会话清单 | 平台面 |
@@ -466,6 +466,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 5. **会话绑定件**：沿用宿主按钮样式；「登记/沉淀」弹表单用 primitives `Modal` + `RiskConfirmation`。
 6. **右侧栏 guide 陷阱**：条目说明在 guide >4 条时整列不渲染（上游 `MAX_DESCRIBED_ENTRIES=4`）——关键信息只放 title。
 7. **纪律重申**：视图/表面文件禁止颜色字面量（hex/rgb/named），grep 断言进 CI；severity 五色继续走 `--silksec-sev-*`（theme/change 注入 + fallback）不变。
+8. **全局统一（2026-09-19 回填 [19-ui-unify](19-ui-unify.md)，验收后归档）**：① 共享控件类（`silksec-btn/-confirm/icon-btn/-confirm/-danger/input/tab/kpi/row/chip/dash-dialog`）CSS 唯一定义源 = ui-core `ensureBaseStyles()`，承载面本地样式只留布局类；② 主面板改名**安全中心**，页头返回/刷新为 26×26 图标钮，tab 收敛为「漏洞/资产/接口/事实 + 更多（知识/学习/报告/审计二级导航）」（registry `group` 协议 minor 变更）；③ KPI 从库存量改为「今日待办 + 风险暴露」五卡（待审批/待处理漏洞/待验证候选/运行中·阻塞任务/纪律告警）+ 库存副条，全部可点击跳链。规格与 CI 双重断言见主题文档 §11.8。
 
 ---
 
@@ -537,7 +538,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 |---|---|
 | 逻辑/功能 | 6 承载面包 + 7 域视图包 + 8 主面板 tab 全部部署 csai；`/silksec-dashboard` 56 case fail-closed 到总线。|
 | 文档漂移 | **已消除**：原 16/19 的「设计 vs 实施」双轨叙述合并为单一事实文档；「53 case/自动投影/case 删除」等不实口径按实测 56 case 修正；「兼容别名观察期」「-old 并排观察」「Modal 兜底」「待删旧单体」等过时表述全部更新为删旧后口径。|
-| hook/兼容层 | `dashboard-rpc.js` 的 63 处 `v4 兜底` 已清除（`e9dd1f1`）；`assetDb` 仅剩壳聚合 `stats` 与 `taskChain` 宿主 helper；总线错误码/hint 经信封透传，不再静默降级。|
+| hook/兼容层 | `dashboard-rpc.js` 的 63 处 `v4 兜底` 已清除（`e9dd1f1`）；`assetDb` 仅剩 `taskChain` 宿主 helper（`stats` 改壳聚合查询）；总线错误码/hint 经信封透传，不再静默降级。|
 | 静默错误 | 兜底 catch 不记录总线失败原因的问题已消除：总线错误码/hint 经 `busError` 透传。|
 | 独立升级 | 13 个独立 client bundle（构建隔离）+ 独立注册 fiber（运行隔离），可随域独立升级/回滚；旧单体已删，无 Modal 耦合。|
 

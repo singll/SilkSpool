@@ -199,13 +199,14 @@ window.__ModuleLoader__.load({
       var P = prim('Pill')
       var label = props.children
       if (P) return el(P, { active: !!props.active, onClick: props.onClick, title: props.title, style: props.style }, label)
-      var node = props.onClick ? 'button' : 'span'
-      var extra = props.onClick ? { type: 'button' } : {}
-      return el(node, {
-        ...extra, title: props.title,
-        style: { ...(styles.pill || {}), ...(props.active ? { color: T.brand } : {}), ...(props.style || {}), ...(props.onClick ? { cursor: 'pointer' } : {}) },
-        onClick: props.onClick,
-      }, label)
+      // 可点 pill = chip 语义（19-ui-unify §2.3）：样式唯一来源为 ui-core 基样式表
+      if (props.onClick) {
+        return el('button', {
+          type: 'button', className: 'silksec-chip', 'data-on': props.active ? 'true' : undefined,
+          title: props.title, style: props.style, onClick: props.onClick,
+        }, label)
+      }
+      return el('span', { title: props.title, style: { ...(styles.pill || {}), ...(props.active ? { color: T.brand } : {}), ...(props.style || {}) } }, label)
     }
     function stateDot(status) {
       var SD = prim('StateDot')

@@ -58,7 +58,9 @@ window.__ModuleLoader__.load({
         chips,
         pending ? el('span', { style: { ...uiCore.styles.pill, color: uiCore.T.brand, borderColor: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent)' }, title: '状态为「新发现」的未处理漏洞' }, '待处理 ' + pending) : null,
         noiseN ? el('button', {
-          type: 'button', style: { ...uiCore.styles.pill, color: uiCore.T.warn, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent)', cursor: 'pointer', background: 'transparent' },
+          type: 'button', className: 'silksec-chip',
+          'data-on': (props.query && props.query.filters && props.query.filters.noise === '1') ? 'true' : undefined,
+          style: { color: uiCore.T.warn, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent)' },
           title: '机器直灌 / 缺复现步骤与影响的待验证候选（默认不进漏洞信号面），点击筛出复核',
           onClick: function () { props.query && props.query.setFilter('noise', '1') },
         }, '待验证候选 ' + noiseN) : null,
@@ -224,6 +226,15 @@ window.__ModuleLoader__.load({
 
       var findingsQ = usePagedCore('findings', true, null, rpcCall)
       var evalState = useRpcCore(function () { return { endpoint: 'evalStats' } }, [], rpcCall)
+
+      // KPI 跳链预置筛选（status=new / noise=1）：面板切到本视图时一次性应用（19-ui-unify §4.2）
+      React.useEffect(function () {
+        var p = api.pending
+        if (!p) return
+        if (p.q !== undefined) findingsQ.setQ(p.q)
+        if (p.filters) { for (var k in p.filters) if (p.filters[k] !== undefined) findingsQ.setFilter(k, p.filters[k]) }
+        if (typeof nav.consume === 'function') nav.consume('findings')
+      }, [])
 
       var rpt = React.useState({ open: false })
       var reportState = rpt[0]; var setReportState = rpt[1]

@@ -42,11 +42,12 @@ const primitives = { Modal: function Modal() {} }
 
 function loadBundle() {
   let registration = null
+  const styles = []
   const sandbox = {
     window: { __ModuleLoader__: { load: (r) => { registration = r } } },
     document: {
       querySelector: () => null,
-      createElement: () => ({ dataset: {}, style: {}, appendChild() {}, set textContent(_) {} }),
+      createElement: () => { const tag = { dataset: {}, style: {}, textContent: '', appendChild() {} }; styles.push(tag); return tag },
       head: { appendChild() {} },
       body: { appendChild() {}, removeChild() {} },
     },
@@ -63,7 +64,7 @@ function loadBundle() {
     if (spec === '@deepseek-ai/dsh-client-ui-primitives') return primitives
     throw new Error('unexpected require: ' + spec)
   })
-  return { mod, sandbox }
+  return { mod, sandbox, styles }
 }
 
 // ── 1. ErrorBoundary 单面隔离 ────────────────────────────────────────────────
@@ -241,6 +242,41 @@ test('SessionLink：setSessionOpener 注入后点击跳链；未注入渲染「�
   const empty = mod.SessionLink({ id: null })
   assert.equal(empty.type, 'span')
   mod.setSessionOpener(null)
+})
+
+test('viewRegistry：group 缺省 primary，more 组透传', () => {
+  const { mod } = loadBundle()
+  const r = mod.createViewRegistry()
+  const c = () => {}
+  r.register({ id: 'findings', label: '漏洞', order: 20, component: c })
+  r.register({ id: 'knowledge', label: '知识', order: 70, group: 'more', component: c })
+  const byId = {}
+  r.list().forEach((e) => { byId[e.id] = e })
+  assert.equal(byId.findings.group, 'primary', '缺省 group = primary（旧视图包兼容）')
+  assert.equal(byId.knowledge.group, 'more')
+})
+
+test('ensureBaseStyles：apply 注入唯一基样式表，覆盖 9 类共享控件，零颜色字面量', () => {
+  const { mod, styles } = loadBundle()
+  mod.apply({ provide: () => {} })
+  const base = styles.find((s) => s.dataset && s.dataset.pluginCss === mod.BASE_CSS_KEY)
+  assert.ok(base, 'apply 必须注入 data-plugin-css=silksec-ui-core-base 的基样式表')
+  for (const cls of ['silksec-btn', 'silksec-btn-confirm', 'silksec-icon-btn', 'silksec-icon-btn-danger', 'silksec-input', 'silksec-tab', 'silksec-kpi', 'silksec-row', 'silksec-chip', 'silksec-dash-dialog']) {
+    assert.ok(base.textContent.indexOf('.' + cls) >= 0, '基样式表须含 .' + cls)
+  }
+  assert.ok(base.textContent.indexOf('.silksec-tab[data-on="true"]') >= 0, 'tab 选中态绯红下划线规则须存在')
+  assert.ok(base.textContent.indexOf('.silksec-kpi:hover') >= 0, 'KPI hover 升档规则须存在')
+  // 零颜色字面量（只允许 var(--dsw-*) / var(--silksec-*) / var(--ds-*) 与 transparent）
+  assert.ok(!/#[0-9a-fA-F]{3,8}\b|\brgba?\s*\(/.test(base.textContent), '基样式表不得含 hex/rgb 字面量')
+})
+
+test('fmtNum：千分位；opIcon back/refresh 新增', () => {
+  const { mod } = loadBundle()
+  assert.equal(mod.fmtNum(96814), '96,814')
+  assert.equal(mod.fmtNum(0), '0')
+  assert.equal(mod.fmtNum(null), '—')
+  assert.equal(mod.fmtNum(357), '357')
+  assert.ok(mod.opIcon('back') && mod.opIcon('refresh'), 'opIcon 支持 back/refresh')
 })
 
 test('createSecUiBus：订阅/退订/emitter 异常隔离', () => {

@@ -152,6 +152,56 @@ else
   check "ui-no-color-literals" 1 "命中:$ui_color_hits"
 fi
 
+# 19-ui-unify §5.2：共享控件类定义唯一性（两条门禁，防漂移）
+#  ① 正向：.silksec-btn/-confirm/-icon-btn/-icon-btn-{confirm,danger}/-input/-tab/-kpi/
+#     -row/-chip/-dash-dialog 的 CSS 选择器定义（带前导点）只允许出现在 ui-core；
+#     其余 12 个 client bundle 命中即失败。
+#  ② 反向：全部被使用的 silksec-* className 必须在本仓任一 bundle 有 CSS 定义
+#     （白名单：语义 hook 无 CSS，见 §2.2 注——silksec-approval-capsule 为 overlay
+#     自绘胶囊，inline 定位，合格保留，无基样式）。
+SHARED_CLS_RE='\.silksec-(btn|btn-confirm|icon-btn|icon-btn-danger|icon-btn-confirm|input|tab|kpi|row|chip|dash-dialog)([^a-z0-9-]|$)'
+ui_rule_hits=""
+for dir in "${UI_PKG_DIRS[@]}"; do
+  [ "$dir" = "ui-core" ] && continue
+  f="$BASE_DIR/plugins/$dir/client.js"
+  [ -f "$f" ] || continue
+  if grep -Eq "$SHARED_CLS_RE" "$f"; then ui_rule_hits="$ui_rule_hits $dir"; fi
+done
+if [ -z "$ui_rule_hits" ]; then
+  check "ui-shared-css-unique" 0 "共享控件类定义只在 ui-core（12 包无规则定义）"
+else
+  check "ui-shared-css-unique" 1 "非 ui-core 包定义共享控件类:$ui_rule_hits"
+fi
+
+# 反向：className 字面量中的 silksec-* 必须有 CSS 定义（含本包布局类）
+orphans="$(python3 - "$BASE_DIR" "${UI_PKG_DIRS[@]}" <<'PY'
+import os, re, sys
+base = sys.argv[1]; dirs = sys.argv[2:]
+allow = {'silksec-approval-capsule'}
+defined = set(); used = {}
+for d in dirs:
+    f = os.path.join(base, 'plugins', d, 'client.js')
+    if not os.path.isfile(f):
+        continue
+    src = open(f, encoding='utf-8', errors='replace').read()
+    for m in re.finditer(r'\.(silksec-[a-z0-9-]+)', src):
+        defined.add(m.group(1))
+    for m in re.finditer(r'className\s*:\s*(["\'])(.*?)\1', src):
+        for t in re.findall(r'silksec-[a-z0-9-]+', m.group(2)):
+            used.setdefault(t, set()).add(d)
+out = []
+for t in sorted(used):
+    if t not in defined and t not in allow:
+        out.append('%s(%s)' % (t, ','.join(sorted(used[t]))))
+print(' '.join(out))
+PY
+)"
+if [ -z "$orphans" ]; then
+  check "ui-class-defined" 0 "全部 silksec-* className 均有 CSS 定义"
+else
+  check "ui-class-defined" 1 "无定义类: $orphans"
+fi
+
 if [ "$UI_HEADLESS" = "1" ]; then
   ui_out=""; ui_rc=0
   if [ -f "$BASE_DIR/dsh-ui-surface-smoke.py" ]; then
