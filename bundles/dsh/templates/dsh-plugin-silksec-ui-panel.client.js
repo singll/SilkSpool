@@ -11,13 +11,13 @@
  * DashboardPanel 是**通用渲染器**：消费 @silksec/ui-core 的 viewRegistry（list() 按
  * order 排序），只渲染 active 条目的 component，并传统一 prop bag：
  *   { rpc, workspaces, stats, approvals, memcore, ops, navigate, pending, reloadShared }
- * 视图组件（自足 wrapper，内部自持 query/handler，定义在 sec-dashboard legacy 半面）
- * 是无挂载感知的纯组件——同一组件可挂主面板，也是降级链的基础。
+ * 视图组件由 7 个独立 @silksec/sec-dashboard-view-<domain> 包登记为自足 wrapper
+ * （内部自持 query/handler），是无挂载感知的纯组件——同一组件可挂主面板。
  *
  * 降级链（能力探测，非版本判断；§六.3）：
  *   main + panellist + selectPanel（首选）
- *     ├ panellist 缺席 → 侧边栏 footer.action + selectPanel（由 sec-dashboard legacy 入口承接）
- *     └ layout/main 缺席 → 现状 Modal 形态（sec-dashboard legacy SidebarAction 承接，观察期保留）
+ *     ├ panellist 缺席 → 侧边栏行内 selectPanel 兜底
+ *     └ layout/main 缺席 → 不渲染主面板（旧单体 Modal 兜底已于 2026-09-19 删除）
  *
  * 隔离：每个视图包 SilksecErrorBoundary（崩溃只炸单面）；本包 apply 崩溃只销毁自身 fiber。
  * 视觉遵循丝之歌主题规范：chrome 由宿主渲染自动吃令牌，页头/KPI 用 ui-core styles/T。
@@ -164,7 +164,7 @@ window.__ModuleLoader__.load({
               pending: activePending,
               reloadShared: function () { approvalsState.reload() },
             }))
-        : el(uiCore.EmptyState, { text: '视图注册表为空（sec-dashboard 未加载？）' })
+        : el(uiCore.EmptyState, { text: '视图注册表为空（域视图包未加载？）' })
 
       return el('div', { style: { ...uiCore.styles.root, height: '100%' } },
         el('div', { style: uiCore.styles.header },
@@ -202,7 +202,7 @@ window.__ModuleLoader__.load({
       serviceRef.ctx = ctx
       var slots = ctx.get('slots')
       if (!slots || typeof slots.register !== 'function' || typeof slots.inject !== 'function') return
-      // ui-core 缺席 → 不注册主面板；sec-dashboard footer 保持 Modal 降级（能力探测）
+      // ui-core 缺席 → 不注册主面板（能力探测；旧 Modal 兜底已删）
       if (!uiCore || !uiCore.viewRegistry || typeof uiCore.viewRegistry.list !== 'function') return
 
       function install() {
@@ -212,7 +212,7 @@ window.__ModuleLoader__.load({
         disposers.push(slots.inject('main', function () {
           return slots.register({ name: 'main', key: 'silksec-dashboard', order: 30 }, DashboardPanel)
         }))
-        // panellist 缺席不抛：silent degradation（sidebar.footer.action + selectPanel 降级）
+        // panellist 缺席不抛：silent degradation
         disposers.push(slots.inject('sidebar.panellist', function () {
           return slots.register({ name: 'sidebar.panellist', id: 'silksec-dashboard', order: 30, label: '看板' }, PanelIcon)
         }))

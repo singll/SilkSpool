@@ -183,58 +183,6 @@ test('viewRegistry：apply 提供 secDashboardViews/secUiBus 服务且与模块�
   assert.equal(sandbox.window.__silksecSurfaceHealth['ui-core'].status, 'ok')
 })
 
-// ── 3. 跨 bundle 桥接：旧 sec-dashboard 把 11 视图原样登记进 ui-core 注册表 ─────
-test('sec-dashboard → ui-core：11 视图原样登记，行为路径不变', () => {
-  const { mod: uiCore, sandbox: uiCoreSandbox } = loadBundle()
-
-  // 物化旧单体 client：require('@silksec/ui-core') 返回已物化的内核
-  const DASH = path.join(HERE, 'dsh-plugin-sec-dashboard.client.js')
-  const dashCode = fs.readFileSync(DASH, 'utf8')
-  let reg = null
-  const sandbox = {
-    window: { __ModuleLoader__: { load: (r) => { reg = r } } },
-    document: {
-      querySelector: () => null,
-      createElement: () => ({ dataset: {}, style: {}, appendChild() {}, set textContent(_) {} }),
-      head: { appendChild() {} },
-      body: { appendChild() {}, removeChild() {} },
-    },
-    console,
-    setTimeout, clearTimeout, setInterval, clearInterval,
-  }
-  sandbox.globalThis = sandbox
-  vm.createContext(sandbox)
-  vm.runInContext(dashCode, sandbox, { filename: DASH })
-  assert.ok(reg && reg.id === '@silksec/sec-dashboard')
-  const dash = reg.factory((spec) => {
-    if (spec === 'react') return React
-    if (spec === '@deepseek-ai/dsh-client-ui-primitives') return primitives
-    if (spec === '@silksec/ui-core') return uiCore
-    throw new Error('unexpected require: ' + spec)
-  })
-
-  // 假 cordis ctx：仅提供 apply 需要的最少服务
-  const slotCalls = []
-  const ctx = {
-    get(name) {
-      if (name === 'slots') return { inject: (n) => slotCalls.push(n), register: () => () => {} }
-      return null
-    },
-  }
-  dash.apply(ctx)
-
-  assert.deepEqual(slotCalls, ['sidebar.footer.action'], '旧壳入口仍注册 sidebar.footer.action（行为不变）')
-  // P6：旧单体只保留 P6 未拆的三视图 canonical + 已拆八视图的 `-old` 并排观察（3 + 8 = 11 条）
-  assert.equal(uiCore.viewRegistry.size(), 11, '旧单体登记 3 canonical + 8 -old')
-  const ids = uiCore.viewRegistry.list().map((v) => v.id)
-  assert.equal(ids.join(','), 'findings-old,assets-old,endpoints-old,facts-old,tasks,knowledge-old,learning-old,reports-old,approvals,scope,audit-old')
-  assert.ok(uiCore.viewRegistry.list().every((v) => typeof v.component === 'function' && v.source === 'sec-dashboard-legacy'))
-  const labels = uiCore.viewRegistry.list().map((v) => v.label)
-  assert.ok(labels.includes('漏洞 ·旧') && labels.includes('任务'), '已拆视图带 ·旧 后缀，未拆视图保持 canonical')
-  assert.equal(uiCoreSandbox.window.__silksecSurfaceHealth['sec-dashboard-views'].status, 'ok')
-  assert.equal(uiCoreSandbox.window.__silksecSurfaceHealth['sec-dashboard-views'].detail, '11')
-})
-
 // ── 4. P6 共享契约：requires 能力探测 + 展示件 + session opener ────────────────
 test('viewRegistry.requires：服务缺席的条目 list/get 过滤（tab 静默隐藏），probe 到位后可见', () => {
   const { mod } = loadBundle()

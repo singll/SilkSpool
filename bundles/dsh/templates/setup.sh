@@ -383,7 +383,7 @@ if [ -f "$BASE_DIR/silksec-ui-session-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-session-plugin-setup.sh"
 fi
 
-# -------------------- 8.7 安全看板客户端插件（DSH Web UI slot，inject ui-core；保留 Modal 降级入口） --------------------
+# -------------------- 8.7 看板逐域视图包（DSH Web UI slot，inject ui-core；旧单体已删除） --------------------
 if [ -f "$BASE_DIR/sec-dashboard-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-dashboard-plugin-setup.sh"
 fi

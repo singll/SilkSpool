@@ -1,6 +1,6 @@
 # 19 · 看板 UI 原生面集成设计（表面分散 + 原子化隔离 + 深度绑定）
 
-> 版本：v1.0 ｜ 状态：**定稿**（2026-09-18 用户评审通过）｜ 执行：**UI-0 前置硬闸 + P0–P6 已完成并部署 csai（2026-09-18）；P7 收尾（16-dashboard 状态回填 / 主题规范 v4.2 / `sec-v5-accept.sh` UI 冒烟固化）完成——旧单体 client 与 Modal 主形态的删除按 7 天并排观察闸口（≥2026-09-25）顺延，未满不删** ｜ 契约版本：1
+> 版本：v1.0 ｜ 状态：**定稿**（2026-09-18 用户评审通过）｜ 执行：**UI-0 前置硬闸 + P0–P7 全部完成并部署 csai；2026-09-19 删除旧单体 client 与 Modal 主形态（用户授权跳过 7 天并排观察）——看板只剩 DSH 原生承载形态，旧 `@silksec/sec-dashboard` 整包移除** ｜ 契约版本：1
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）；本文是 [`16-dashboard.md`](16-dashboard.md) §一挂载模型的**修订设计**——16 的「壳 + 域视图注册表 + RPC 投影消费」数据层架构不变，本文把「一个 Modal 装十一个 tab」的呈现层拆散到 DSH 原生承载面。
 > 证据基线：DSH **0.1.5-rc.2**（csai 生产当前版本）npm 包 `@deepseek-ai/dsh-client-ui-{layout,sidebar,sidebar-right,conversation,chat,settings,primitives,slots}` 的 `lib/types/**.d.ts` **逐字验证**（2026-09-18 拉取核对的类型声明，非推测）；生态调研见 §一。
 > 领域语言以 [bundles/dsh/CONTEXT.md](../../../bundles/dsh/CONTEXT.md) 为准：看板 = 全局面的正式名称；行内只放摘要 + 跳链，详细内容一律在会话里看。
@@ -201,7 +201,7 @@ ctx.inject(['layout', 'slots'], function () {
 
 | 面 | 首选 | 降级 1 | 降级 2 |
 |---|---|---|---|
-| 看板页面 | `main` + `panellist` + `selectPanel` | `panellist` 缺席 → footer.action + selectPanel | `layout` 缺席 → 现状 Modal 形态（保留一个观察期） |
+| 看板页面 | `main` + `panellist` + `selectPanel` | `panellist` 缺席 → 侧边栏行内 selectPanel 兜底 | `layout` 缺席 → 不渲染主面板（旧 Modal 形态已随旧单体删除，2026-09-19） |
 | 审批/任务 | 右侧栏 page tab | `sidebarRightTabs` 缺席 → **同一视图组件挂进主面板临时 tab**（角标「降级」） | 主面板也缺席 → Modal |
 | 通知 | `shell.overlay` 胶囊 | 缺席 → footer.action 按钮上挂计数徽章 | — |
 | 授权 | `settings.section` | 缺席 → 主面板「授权」tab（即现状） | — |
@@ -243,7 +243,7 @@ ctx.inject(['layout', 'slots'], function () {
 | **P4** 授权迁设置 ✅ 已完成（2026-09-18） | `settings.section`「授权范围」节；看板「授权」tab 观察一周后删 | 设置节与旧 tab 的 scope 读写逐项等价 | 单包 disable |
 | **P5** 会话绑定 ✅ 已完成（2026-09-18） | conversation.view 安全产出 + header 钮 + assistant-actions 登记/沉淀 | 按 session_id 过滤正确性抽样；消息动作写操作经 RPC 全管线（actor=dashboard） | 单包 disable |
 | **P6** 逐域视图拆分 ✅ 已完成（2026-09-18，收口 `6f4086c`） | 16-dashboard 既定路线：vuln→asset→endpoint→fact→know(+学习)→report→audit 每域拆为**独立 `@silksec/sec-dashboard-view-<domain>` 包**（非域插件内 `dashboard-view.js`，裁决理由见 16-dashboard §2.1），7 天并排观察 | 每域新旧并排等价 + audit 对照；域缺席 tab 静默隐藏；真机无头 19 tab + 7 域 health=ok | revert 单域文件 |
-| **P7** 收尾：文档/规范/冒烟 ✅ 完成（2026-09-18）；**旧单体删除 ⏳ 顺延** | 16-dashboard 状态回填；主题规范 v4.2 落盘；`sec-v5-accept.sh` UI 冒烟段固化（结构断言 + `--ui-headless` 运行时断言）。**删旧单体 client 与 Modal 主形态按观察闸口顺延**：P6 `-old` 并排观察起点 2026-09-18，须满 7 天（**≥2026-09-25**）后执行，未满不删 | 文档与实现一一对应（删除项显式标注闸口）；accept（含 UI 冒烟）全 PASS；真机无头 7+3 承载面 health=ok | 逐文件 revert；视图包可独立回滚 |
+| **P7** 收尾：文档/规范/冒烟 ✅ 完成（2026-09-18）；**旧单体删除 ✅ 完成（2026-09-19，用户授权跳过观察）** | 16-dashboard 状态回填；主题规范 v4.2 落盘；`sec-v5-accept.sh` UI 冒烟段固化（结构断言 + `--ui-headless` 运行时断言）。**删旧单体 client 与 Modal 主形态已于 2026-09-19 执行**：`@silksec/sec-dashboard` 整包删除（含 `-old` 视图、Modal 主形态、footer 入口），web profile 移除依赖，`sec-dashboard-plugin-setup.sh` 改为仅组装 7 域视图包 | 文档与实现一一对应；`sec-v5-accept` PASS=39、`--ui-headless` PASS=70；真机无头 13 面 health=ok | 单包 revert + profile 恢复 `@silksec/sec-dashboard` 依赖 |
 
 ---
 

@@ -111,8 +111,8 @@ for d in "${DOMAINS[@]}"; do
 done
 
 # --- R5 UI 冒烟（19-ui-surface §6.4） ---
-# 13 个 UI 面：6 个承载面包 + 7 个逐域视图包（P7 收尾后旧 @silksec/sec-dashboard
-# 不再是必需面，故此处不要求；旧包删除动作按 7 天并排观察闸口另行执行）。
+# 13 个 UI 面：6 个承载面包 + 7 个逐域视图包。旧单体 @silksec/sec-dashboard
+# （Modal 壳 + `-old` 并排视图 + footer 入口）已删除，不再是必需面。
 UI_PKG_IDS=(
   '@silksec/ui-core' '@silksec/ui-panel' '@silksec/ui-approval' '@silksec/ui-task'
   '@silksec/ui-settings-scope' '@silksec/ui-session'

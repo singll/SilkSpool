@@ -207,7 +207,7 @@ test('降级：slots 缺席 → apply 不抛、不注册；panellist 缺席 → 
   const uiCore = makeUiCore()
   const { mod } = loadBundle(uiCore)
 
-  // slots 服务缺席（旧 DSH / 未装载）→ 静默不注册，footer/Modal 由 sec-dashboard 承接
+  // slots 服务缺席（旧 DSH / 未装载）→ 静默不注册
   assert.doesNotThrow(() => mod.apply({ get: () => null, effect: (fn) => fn() }))
 
   // 只有 main、没有 panellist（旧 sidebar）→ main 注册成功、panellist 静默降级

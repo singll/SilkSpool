@@ -424,7 +424,7 @@ export const TASK_MANIFEST = {
 const _BEIJING_OFFSET_MS = 8 * 3600_000
 const _DAY_MS = 86_400_000
 // 夜间批次默认相位（北京时间）：recon 03:00 / vuln 04:00 / 其余 05:00。未显式给 anchor 的新任务
-// 落进对应窗口；同批需要错开的由调用方传 anchor（历史批量见 migrate-schedule-anchor.js）。
+// 落进对应窗口；同批需要错开的由调用方传 anchor。
 const _NIGHT_SLOTS = { recon: [3, 0], vuln: [4, 0] }
 const _NIGHT_SLOT_DEFAULT = [5, 0]
 const _SCHEDULE_PAST_GRACE_MS = 60_000  // once 刚过期 60 秒内允许校准为立即执行

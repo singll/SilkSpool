@@ -21,9 +21,8 @@ import * as path from 'node:path'
 import * as assetDb from './asset-db.js'
 import * as exp from './experience.js'
 import { startXrayWebhook } from './webhook.js'
-import { startScheduler } from './scheduler.js'
 import { listSessionHeaders } from './host-compat.js'
-import { executeWorkerProcess, installWorkerSessionReporter } from './worker-runtime.js'
+import { installWorkerSessionReporter } from './worker-runtime.js'
 import { installNativeToolGuard } from './native-guard.js'
 import { initDashboardRpc, handleDashboardRpc } from './dashboard-rpc.js'
 
@@ -939,159 +938,6 @@ async function authzDiff(args, exec) {
 }
 
 // ==============================================================================
-// spawn_worker：隔离执行的无头 worker（批任务不污染主会话上下文）
-// 复用 DSH 内建 headless profile：子进程跑完只回尾部摘要，全文落盘
-// ==============================================================================
-
-const DSH_BIN = process.env.SEC_DSH_BIN
-  || '/opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/bin.js'
-const NODE_BIN = process.env.SEC_NODE_BIN || '/usr/local/node/bin/node'
-const MAX_WORKERS = 4
-let activeWorkers = 0
-// 幂等恢复窗口：仅约束 done/failed 回读（从 finished_at 计）。重启后重试在数秒~分钟内落地，30min 绰绰有余。
-const WORKER_DEDUPE_WINDOW_MS = 30 * 60 * 1000
-
-// RoE（Rules of Engagement，交战规则）：每次 spawn 注入任务文本末尾的硬约束块。
-// BugHunter 血泪条款：子代理 scope 不隐式继承。锚点子串用于幂等——task 已含（重试/链式
-// 复用同一文本）则不重复堆叠，注入只追加不内嵌，保证确定性（dedupeKey 不受影响）。
-const ROE_ANCHOR = 'Rules of Engagement 交战规则'
-const ROE_BLOCK = [
-  `【${ROE_ANCHOR}（宿主注入，硬约束，与本任务描述冲突时以本块为准）】`,
-  '1. 目标列表必须作为数据逐字出现在本任务里；「目标资产」「上述范围」式指代无效——未逐字列出的目标一律视为未授权，不要尝试打点。',
-  '2. 测程中新发现的主机（CT 日志/JS 文件/CNAME 爆出的）一律 report-only：只记录上报，禁止探测/扫描/打点；要纳入 scope 须先走 scope 审批。',
-  '3. 「read-only/只读」展开为动词清单：GET、HEAD、OPTIONS、DNS 查询、被动指纹采集；POST/PUT/DELETE/PATCH 及一切写操作动词（create/update/generate/refund…）不在只读范围内。',
-  '4. 越权接触的主机会被 scope-audit 标记（audit.jsonl deny 记录）——scope-guard 是 fail-closed 硬校验，不依赖你的自觉；被拒后不要换姿势重试，改走审批。',
-  '5. 只读工具（passive 级）打写动词路径（如 /api/generate、/refund/batch/status）会被 scope-guard S5 写动词守卫拒绝；确需写操作须改用 active/intrusive 风险级的工具并走审批。',
-].join('\n')
-
-// 从注册表行 + 落盘文件重建 worker 返回（幂等恢复用）。文件已清理则回 null → 调用方降级。
-function readWorkerResult(row) {
-  if (!row || !row.run_dir) return null
-  let logText = ''
-  try { logText = fs.readFileSync(path.join(row.run_dir, 'worker.log'), 'utf8') } catch { return null }
-  const lines = logText.split('\n').filter(Boolean)
-  return {
-    ok: row.status === 'done',
-    run_id: row.run_id,
-    exit_code: row.exit_code ?? null,
-    recovered: true,
-    status: row.status,
-    log_lines: lines.length,
-    tail: lines.slice(-20).join('\n'),
-    session_id: row.worker_session_id || null,
-    origin_session_id: row.session_id || null,
-    hint: `恢复自既有 run ${row.run_id}（未重跑）；完整日志用 grep_result/page_result 取；强制重跑传 force:true`,
-  }
-}
-
-// worker 核心（工具与调度循环共用）。cwd 默认 runDir；调度任务传工作区路径——
-// headless 会话 header cwd = workspace path → workspaceRegistry 自动归组 → 看板可跳链
-async function runWorker({ task, cwd = null, timeoutSec = 900, scheduledTaskId = null, originSessionId = null, enforceLimit = true, dedupeKey = null, provider = null, model = null, reasoningEffort = null, phase = null, signal = null }) {
-  // 幂等恢复（仅交互路径传 dedupeKey）：重启→重试时确定性拿回结果，而非 "outcome unknown"。
-  // 早返回全部在 activeWorkers++ 之前 → 不占也不错减并发 slot。
-  if (dedupeKey) {
-    const prev = assetDb.workerFindRecentByKey(dedupeKey, WORKER_DEDUPE_WINDOW_MS)
-    if (prev) {
-      if (prev.status === 'running') {
-        if (pidAlive(prev.pid)) {
-          return { ok: false, in_progress: true, run_id: prev.run_id, status: 'running',
-            hint: `同任务 worker 正在跑（run_id=${prev.run_id}），用 worker_status 查进度；强制重跑传 force:true` }
-        }
-        try { assetDb.workerFinish(prev.run_id, { status: 'killed' }) } catch { /* ignore */ } // pid 死的僵尸 running → 归 killed，落到重跑
-      } else if (prev.status === 'done' || prev.status === 'failed') {
-        const recovered = readWorkerResult(prev)
-        if (recovered) return recovered
-        return { ok: prev.status === 'done', run_id: prev.run_id, exit_code: prev.exit_code ?? null,
-          recovered: true, status: prev.status, tail: '', hint: '原始输出已清理，仅存 DB 终态' } // 文件清理降级
-      }
-      // killed → 落到下方 fresh spawn（无 durable 结果，重跑）
-    }
-  }
-
-  if (enforceLimit && activeWorkers >= MAX_WORKERS) {
-    return { ok: false, busy: true, error: `worker 并发上限 ${MAX_WORKERS}，请稍后重试` }
-  }
-  const timeoutMs = Math.max(1, Math.min(Number(timeoutSec) || 900, 7200)) * 1000
-  const runId = 'w' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex')
-  const runDir = path.join(RESULTS_DIR, runId)
-  fs.mkdirSync(runDir, { recursive: true })
-  const workCwd = (cwd && fs.existsSync(cwd)) ? cwd : runDir
-
-  // P18：任务级模型覆盖。headless profile 默认读 agent-default-model；用 --patch 覆盖。
-  const dshArgs = [DSH_BIN, '--profile', 'headless']
-  if (provider && model) {
-    const patchPath = path.join(runDir, 'model-patch.yml')
-    const patchYaml = JSON.stringify([{ id: 'agent-default-model', config: { provider: String(provider), model: String(model),
-      ...(reasoningEffort ? { reasoningEffort: String(reasoningEffort) } : {}) } }])
-    fs.writeFileSync(patchPath, patchYaml)
-    dshArgs.push('--patch', patchPath)
-  }
-  // RoE 契约注入：子代理 scope 不隐式继承——交战规则随任务文本逐字下发（含 S5 写动词守卫提示）。
-  // worker 的 headless prompt 就是这段文本（无独立 AGENTS.md 读取环节），拼在 task 后即实际生效。
-  // 幂等：task 已含 RoE 锚点不重复堆叠；注入是 task 的确定性函数 → dedupeKey/恢复语义不受影响。
-  const fullTask = task.includes(ROE_ANCHOR) ? task : `${task}\n\n${ROE_BLOCK}`
-  dshArgs.push(fullTask)
-
-  const env = { ...process.env, DSH_HOME: DATA_DIR, PATH: '/usr/local/node/bin:' + (process.env.PATH || '') }
-  env.SEC_WORKER_DEADLINE_MS = String(Date.now() + timeoutMs)
-  if (phase) env.SEC_WORKER_PHASE = String(phase)
-  audit({ ts: Date.now(), run_id: runId, tool: 'spawn_worker', decision: 'executed', detail: fullTask.slice(0, 200), session_id: originSessionId })
-
-  activeWorkers++
-  const started = Date.now()
-  let result
-  try {
-    result = await executeWorkerProcess({ node: NODE_BIN, args: dshArgs, env, cwd: workCwd, runDir, runId, timeoutMs,
-      signal, persistence: sessionPersistenceRef,
-      onSpawn: ({ pid }) => {
-        const registered = assetDb.workerRegister({ run_id: runId, dedupe_key: dedupeKey, task: fullTask, cwd: workCwd, pid,
-          timeout_sec: Math.round(timeoutMs / 1000), session_id: originSessionId, run_dir: runDir })
-        if (!registered.ok) throw new Error('E_WORKER_REGISTER: 无法登记 worker，已停止执行')
-        if (scheduledTaskId) assetDb.taskBindWorker(scheduledTaskId, runId)
-      },
-    })
-  } finally { activeWorkers-- }
-  const successful = result.code === 0 && !result.error && !result.cancelled && !result.timed_out && !!result.session_id
-
-  const meta = {
-    run_id: runId, tool: 'spawn_worker', task: fullTask, cwd: workCwd, started_at: new Date(started).toISOString(),
-    duration_ms: Date.now() - started, exit_code: result.code ?? null, session_id: result.session_id, origin_session_id: originSessionId,
-    signal: result.signal, error: result.error || null, cancelled: result.cancelled, timed_out: result.timed_out, session_diagnostic: result.session_diagnostic,
-  }
-  fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 1) + '\n')
-  // 注册表收尾：exit0→done / 非0→failed / 被信号杀（超时）→killed
-  const finalStatus = successful ? 'done' : (result.cancelled || result.timed_out || result.signal ? 'killed' : 'failed')
-  assetDb.workerFinish(runId, { status: finalStatus, exit_code: result.code ?? null, worker_session_id: result.session_id })
-
-  let logText = ''
-  try { logText = fs.readFileSync(path.join(runDir, 'worker.log'), 'utf8') } catch { /* 无输出 */ }
-  const lines = logText.split('\n').filter(Boolean)
-  return {
-    ok: successful,
-    run_id: runId,
-    exit_code: result.code ?? null,
-    duration_ms: meta.duration_ms,
-    session_id: result.session_id,
-    origin_session_id: originSessionId,
-    cancelled: result.cancelled,
-    timed_out: result.timed_out,
-    session_diagnostic: result.session_diagnostic,
-    log_lines: lines.length,
-    tail: lines.slice(-20).join('\n'),
-    hint: `完整日志 ${lines.length} 行已落盘，用 grep_result/page_result 取 ${runId} 的细节`,
-  }
-}
-
-// ==============================================================================
-// P11 定时任务调度循环已拆分至 ./scheduler.js（startScheduler 注入依赖调用）。
-// pidAlive 保留在主文件：runWorker 幂等恢复（上文）与 scheduler.js 锁心跳共用，经参数注入传入调度器。
-// ==============================================================================
-
-function pidAlive(pid) {
-  try { process.kill(pid, 0); return true } catch { return false }
-}
-
-// ==============================================================================
 // plan_chain / task_chain / 看板 RPC 已拆分至 ./dashboard-rpc.js（initDashboardRpc 注入依赖调用）。
 // FINDING_TAG_STATUS 仅被 handleDashboardRpc 使用，随迁；dashboardRpcRegistered 保留在下方供 apply 注册守卫。
 // ==============================================================================
@@ -1156,14 +1002,8 @@ export function apply(ctx, config) {
           },
           { authority: 'loopback' })
         dashboardRpcRegistered = true
-        // P11：调度循环只随宿主面 bundle 加载启动（preset 的 agent 面挂载 sidecars:false，跳过；
-        // agent 可能跑在 worker 线程，globalThis 不共享，单例守卫不够，只能从入口侧收敛）
-        // L6（学习专项 §10 调度器独立切换）：v4 调度循环停用——派单唯一持锁者切换为
-        // sec-domain-task 内建调度器（task_claim/finish/reap 命令化等价，先经契约测试钉死再切换，
-        // 同包部署原子生效、无并行第二派单循环窗口）。scheduler.js 模块与其测试保留，
-        // 回滚=恢复下方调用 + 停用 task 域调度器。
-        // if (!config || config.sidecars !== false) startScheduler({ dataDir: DATA_DIR, audit, assetDb, exp, runWorker, pidAlive, getWorkspaceRegistry: () => workspaceRegistryRef, getSessionPersistence: () => sessionPersistenceRef })
-        if (!config || config.sidecars !== false) process.stderr.write('[sec-suite] v4 调度循环已停用（L6 切换：task 域调度器为唯一持锁者）\n')
+        // L6：派单唯一持锁者是 sec-domain-task 内建调度器（task_claim/finish/reap 命令化）；
+        // v4 调度循环（scheduler.js）已删除，不再保留第二派单入口。
         // xray webhook 同样只在 web 宿主面启动（模块内单例幂等，不随 fiber dispose 回收）
         if (!config || config.sidecars !== false) startXrayWebhook({ dataDir: DATA_DIR, assetDb, hostOf })
         return async () => {

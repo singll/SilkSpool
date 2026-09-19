@@ -26,18 +26,16 @@ verified_dsh:
     diff 未命中 → 只更新本文件的 verified_dsh 徽章，零代码改动；
     命中 → 只动命中的面（适配层），并在本文件对应 surface 记录影响。
 
-# ── P7 收尾状态（2026-09-18） ──────────────────────────────────────────────
-# 文档/主题 v4.2/accept UI 冒烟已固化；旧单体 @silksec/sec-dashboard 的删除
-# （含 dashboard-panel 的 footer/Modal legacy 承接、dashboard-domain-views 的 -old 并排）
-# 按 P6 7 天并排观察闸口（起点 2026-09-18，闸口 ≥2026-09-25）顺延——未满不删。
-# 删除执行时须：移除本文件 dashboard-panel 的 legacy 承接描述、dashboard-domain-views
-# 的 legacy_side_by_side/-old 项与「P6 不删旧路径」降级行；sec-v5-accept.sh 的 UI 冒烟
-# 已按删除后口径编写（只要求 13 个 UI 包，不要求 @silksec/sec-dashboard）。
+# ── P7 收尾 + 旧单体删除（2026-09-19） ─────────────────────────────────────
+# 文档/主题 v4.2/accept UI 冒烟已固化；旧单体 @silksec/sec-dashboard 已于
+# 2026-09-19 整包删除（用户授权跳过 7 天并排观察；含 footer/Modal legacy 承接、
+# dashboard-domain-views 的 -old 并排视图），看板只剩 DSH 原生承载形态。
+# sec-v5-accept.sh UI 冒烟按删除后口径（只要求 6 承载面包 + 7 域视图包）。
 p7_review:
   doc_backfill: true          # 16-dashboard §六 + 19-ui-surface 头部/§八
   theme_v42: true             # doc/silksong-theme-design.md §十一
   accept_ui_smoke: true       # sec-v5-accept.sh R5（结构断言 + --ui-headless 运行时断言）
-  legacy_deletion: deferred   # 闸口 >=2026-09-25（未满不删）
+  legacy_deletion: done       # 2026-09-19 删除 @silksec/sec-dashboard（跳过观察期）
 
 # ── 开放问题 §九 #5：ui-core 跨 bundle require ──────────────────────────────
 # 结论：可行（P0 已本地契约验证 + csai 部署验证）。
@@ -48,14 +46,14 @@ p7_review:
 #     factory 同步物化时 makeRequire 命中已注册 factory → 跨包 require 成功；
 #   - require('<pkg>/client') 与 require('<pkg>') 经 stripClientSuffix 归一。
 #   - 官方先例：client bundle require('@deepseek-ai/dsh-client-ui-primitives')。
-# 落地：@silksec/ui-core 独立 client bundle；sec-dashboard 在
+# 落地：@silksec/ui-core 独立 client bundle；各视图/承载面包在
 #   package.json dsh.client.inject 声明 "@silksec/ui-core" 后直接 require 内核。
 # 备选（未采用，仅在 inject 语义变更时启用）：ui-core 以源码并入各包构建。
 cross_bundle_require:
   feasible: true
   mechanism: dsh.client.inject + ModuleLoader 跨 bundle factory 到达
   evidence: dsh-client-modules@0.1.5-rc.2 lib/types/client/manifest.d.ts · lib/client.js
-  consumer_example: "@silksec/sec-dashboard dsh.client.inject 含 @silksec/ui-core"
+  consumer_example: "@silksec/sec-dashboard-view-<domain> dsh.client.inject 含 @silksec/ui-core"
   fallback: ui-core 源码并入各包构建（牺牲体积换零风险）
 
 # ── 包 → 面 ─────────────────────────────────────────────────────────────────
@@ -178,42 +176,38 @@ surfaces:
     package: "@silksec/ui-panel"
     phase: P1
     status: implemented
-    role: 看板本体（主面板 + 侧边栏一级导航行；footer/Modal 降级入口由 sec-dashboard legacy 承接）
+    role: 看板本体（主面板 + 侧边栏一级导航行；旧 footer/Modal 承接已随旧单体删除）
     implementation:
       client: dsh-plugin-silksec-ui-panel.client.js
       host: dsh-plugin-silksec-ui-panel.index.js
       setup: silksec-ui-panel-plugin-setup.sh
-      registry_components: dsh-plugin-sec-dashboard.client.js（自足 wrapper，P1 重构）
+      registry_components: dsh-plugin-sec-dashboard.view-<domain>.client.js（7 个独立视图包，自足 wrapper）
     slots:
       - main                          # keyed 槽（root；保留键 conversation）→ DashboardPanel。**用 options.key**（P1 实测：keyed 只认 key，list 才认 id）
       - sidebar.panellist             # list 槽（owner props {size, active}）→ PanelIcon（用 options.id）
-      - sidebar.footer.action         # list 槽；P1 由 sec-dashboard legacy SidebarAction 单条承接（避免重复），
-                                      # 行为改为 panelSlotAvailable() ? selectPanel : 开 Modal
     services_consume:
       - layout.selectPanel            # ctx.layout.selectPanel(id) / selectPanel(null)
       - layout.beginNavigation        # ctx.layout.beginNavigation() → AbortSignal（防连点竞态）
       - slots.register
       - slots.inject                  # 声明生命周期注册（时序纪律；panellist 缺席静默降级）
-      - slots.entriesOfSlot           # legacy footer 能力探测 main 槽是否已注册（非版本判断）
     owner_props_consume:
       - SidebarPanelIconOwnerProps    # sidebar.panellist {size, active}
-    primitives: []                    # 页头/KPI/tab 走 ui-core styles/T；主面板不再依赖 primitives Modal
+    primitives: []                    # 页头/KPI/tab 走 ui-core styles/T；主面板不依赖 primitives Modal
     icons: []
     my_icons: [spoolIcon]
     slots_avoid:
       - conversation.chat.turnTail    # chain 槽首匹配即占用，纪律：不碰
     degradation:
       - main + sidebar.panellist + selectPanel
-      - sidebar.panellist 缺席 → sidebar.footer.action + selectPanel（legacy 入口承接）
-      - layout / main 槽缺席 → 现状 Modal（legacy SidebarAction 承接，观察期保留）
+      - sidebar.panellist 缺席 → 侧边栏行内 selectPanel 兜底
+      - layout / main 槽缺席 → 不渲染主面板（旧 Modal 已随旧单体删除，2026-09-19）
     rollback:
-      - localStorage 'silksec.ui.dashboard.mode' = 'modal' 强制 Modal（保留旧 sec-dashboard 入口）
-      - 或从 web profile 移除 @silksec/ui-panel（legacy footer 探测不到 main 槽即回落 Modal）
+      - 从 web profile 移除 @silksec/ui-panel（看板入口消失；不回落旧 Modal——旧单体已删）
     notes:
       - "P1 面板为通用渲染器：消费 ui-core viewRegistry（list() 按 order），传统一 prop bag
          { rpc, workspaces, stats, approvals, memcore, ops, navigate, pending, reloadShared }。
-         11 视图在 sec-dashboard legacy 侧登记为自足 wrapper（内部自持 query/handler，
-         复用旧 props 契约；视图文件不拆、行为不变）。旧 DashboardShell/Modal 路径零改动。"
+         浏览型七域视图由 7 个独立 @silksec/sec-dashboard-view-<domain> 包登记为自足 wrapper
+         （内部自持 query/handler）；任务/审批/授权不在主面板，迁 DSH 原生右侧栏/设置页。"
       - "开放问题 §九 #1：P1 未做 URL hash 直达。selectPanel 为 DSH 原生内存态（刷新回会话，
          官方默认）；自管 hash 属自绘层，未采用。"
       - "开放问题 §九 #4：零会话时主面板（root scope）照常可达；右侧栏 tab 属 P2 范畴。"
@@ -259,11 +253,10 @@ surfaces:
       - shell.overlay 胶囊 + sidebarRightTabs page tab
       - sidebarRightTabs 缺席 → 同一视图注册进 ui-core 注册表（主面板「审批 ·降级」临时 tab）
       - 主面板 / layout 也缺席 → primitives Modal（再缺席自绘覆盖层）
-      - shell.overlay 缺席 → secUiBus 广播 approval:pending（footer.action 由 sec-dashboard legacy
-        单条持有，不重复注册；主面板 approvals tab 自带计数兜底）
+      - shell.overlay 缺席 → secUiBus 广播 approval:pending（无旧 footer 承接，胶囊缺席即无角标）
       - 无在屏会话 openTab 抛错 → secUiBus open:approval + layout.selectPanel（或 Modal）
     rollback:
-      - 从 web profile 移除 @silksec/ui-approval（胶囊/右栏 tab 消失；主面板 legacy「审批」tab 照常）
+      - 从 web profile 移除 @silksec/ui-approval（胶囊/右栏 tab 消失；审批改由 /silksec-domain RPC 或后续面处理）
     notes:
       - "计数真相源 = /silksec-dashboard approvalList 的 pending；胶囊、右侧栏动态标题、降级视图
          共用 ui-core 之外的本包 approvalStore（模块级共享快照）。"
@@ -462,11 +455,11 @@ surfaces:
         - dsh-plugin-sec-dashboard.view-report.client.js     # reports order 80
         - dsh-plugin-sec-dashboard.view-audit.client.js      # audit order 110
       tests: 7 个 *.view-*.client.test.mjs（注册/卸载幂等 + connection 缺席静默 + 关键行/端点参数 + ErrorBoundary 包裹 + primitives 兜底；共 44 例）
-      setup: sec-dashboard-plugin-setup.sh §4（逐域组装 @silksec/sec-dashboard-view-<domain> 独立包 + 装入 web profile）
-      legacy_side_by_side: sec-dashboard.client.js 对应视图以 `-old` 后缀并排观察 7 天（order=canonical+1，label 加「 ·旧」）
+      setup: sec-dashboard-plugin-setup.sh（逐域组装 @silksec/sec-dashboard-view-<domain> 独立包 + 装入 web profile）
+      legacy_side_by_side: 已删除（2026-09-19 旧单体 sec-dashboard.client.js 整包移除，无 `-old` 并排视图）
     slots: []                                       # 不直接注册官方槽，由 ui-panel 主面板装配
     services_consume:
-      - secDashboardViews                            # ui-core 注册表（require('@silksec/ui-core').viewRegistry）
+      - viewRegistry                                 # ui-core 注册表（require('@silksec/ui-core').viewRegistry）
       - connection.rpc.call                          # /silksec-dashboard 既有端点（与旧 PanelView 同端点同参数）
       - sessions.open                                # 经 ui-core.setSessionOpener 注入 → SessionLink
       - viewRegistry.requires                         # requires:['connection'] 缺席 → list() 过滤，tab 静默隐藏

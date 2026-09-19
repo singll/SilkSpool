@@ -1,4 +1,0 @@
-# silksec-sec-dashboard bundle layer：把安全看板宿主半面挂进安装它的 profile
-- insert:
-    - id: sec-dashboard
-      name: '@silksec/sec-dashboard'

@@ -190,7 +190,9 @@
 
 ### 9.6 豁免清单（已消费，v5 不迁移）
 
-以下一次性产物已完成历史使命，保留在仓库/bundle 只作考古，不进任何域：`backfill-program.js`（历史数据回填）、`migrate-blackboard-to-facts.js` / `migrate-scheduled-tasks.js`（v4 中期迁移）、`import-cyberstrikeai.py`（一次性导入）、`echo-test.yaml`（测试 manifest 保留为契约测试桩，§9.3 之外的唯一例外——它留在 tools.d 但 domain=none）、`dsh-version-watch.sh.bak-*`（备份残留）。
+以下一次性产物已完成历史使命，2026-09-19 旧版清理中**删除**：`backfill-program.js`（历史数据回填）、`migrate-blackboard-to-facts.js` / `migrate-scheduled-tasks.js` / `migrate-schedule-anchor.js`（v4 中期迁移）、`p-v5-0-fix-noise.js` / `p-v5-1-migrate-vuln.js` / `p-v5-2-pilot-accept.js`（Phase 1 一次性迁移与试点验收）、`import-cyberstrikeai.py`（一次性导入）、`dsh-version-watch.sh.bak-*`（备份残留）。保留：`echo-test.yaml`（测试 manifest 契约测试桩，§9.3 之外的唯一例外——它留在 tools.d 但 domain=none）、`p-v5-1-migrate-eval.js`（`sec-eval-domain-plugin-setup.sh` 每次 setup 幂等执行，非一次性）。
+
+同批清理删除的旧实现：`dsh-plugin-sec-suite.scheduler.js`（v4 调度循环，回滚仅需恢复 task 域调度器——现为唯一持锁者）、看板旧单体 `@silksec/sec-dashboard`（19-ui-surface D3，见 [16-dashboard §3.3](16-dashboard.md)）。
 
 ## 十、完成定义（DoD）
 

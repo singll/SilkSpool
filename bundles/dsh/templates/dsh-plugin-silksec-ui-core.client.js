@@ -15,8 +15,8 @@
  *   var uiCore = require('@silksec/ui-core')
  *   uiCore.viewRegistry.register({ id, label, order, component })
  *
- * P0 纪律：本包只提供内核，不接管渲染；旧 sec-dashboard client 仍以 Modal 承载，
- * 行为零变化（11 视图仅「原样登记」进注册表）。
+ * P0 纪律：本包只提供内核，不接管渲染；看板视图由 7 个
+ * `@silksec/sec-dashboard-view-<domain>` 独立包登记进注册表（ui-panel 主面板装配）。
  *
  * 视觉遵循丝之歌主题规范（bundles/dsh/doc/silksong-theme-design.md）；本文件除
  * SEV_COLOR 的 `--silksec-sev-*` fallback 外，零颜色字面量。
@@ -32,7 +32,7 @@ window.__ModuleLoader__.load({
     var Modal = (primitives && typeof primitives.Modal === 'function') ? primitives.Modal : null
     var el = React.createElement
 
-    // ── 设计令牌（与 dsh-plugin-sec-dashboard.client.js 的 T/F 同源） ──────────
+    // ── 设计令牌（看板各面唯一令牌源；源自丝之歌主题规范） ──────────
     var T = {
       label: 'var(--dsw-alias-label-primary)',
       label2: 'var(--dsw-alias-label-secondary)',

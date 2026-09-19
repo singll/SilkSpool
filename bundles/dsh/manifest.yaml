@@ -89,10 +89,8 @@ templates:
   - dsh-plugin-sec-suite.asset-graph.js
   - dsh-plugin-sec-suite.experience.js
   - dsh-plugin-sec-suite.parsers.js
-  - dsh-plugin-sec-suite.scheduler.js
   - dsh-plugin-sec-suite.task-policy.js
   - dsh-plugin-sec-suite.parse-proposal.js
-  - dsh-plugin-sec-suite.scheduler.test.mjs
   - dsh-plugin-sec-suite.task-policy.test.mjs
   - dsh-plugin-sec-suite.host-compat.js
   - dsh-plugin-sec-suite.native-guard.js
@@ -268,9 +266,6 @@ templates:
   - dsh-plugin-silksec-ui-session.client.test.mjs
   - silksec-ui-session-plugin-setup.sh
   # --- 安全看板客户端插件（DSH Web UI slot，依赖 sec-suite 的 /silksec/dashboard RPC + ui-core）---
-  - dsh-plugin-sec-dashboard.index.js
-  - dsh-plugin-sec-dashboard.client.js
-  - dsh-plugin-sec-dashboard.patch.yml
   - sec-dashboard-plugin-setup.sh
   # --- 看板逐域视图（19-ui-surface P6：vuln/asset/endpoint/fact/know(+学习)/report/audit
   #     从旧单体拆为独立 client bundle，经 ui-core viewRegistry 挂 ui-panel 主面板；
@@ -294,18 +289,6 @@ templates:
   - dsh-plugin-theme-silksong.client.js
   - dsh-plugin-theme-silksong.patch.yml
   - theme-silksong-plugin-setup.sh
-  # --- program_id 回填迁移（P6 一次性脚本）---
-  - backfill-program.js
-  # --- 定时任务迁移（P12：once 重复创建 → interval 固定实体，幂等）---
-  - migrate-scheduled-tasks.js
-  # --- 事实迁移（P11：遗留 blackboard → facts 事实图谱，幂等）---
-  - migrate-blackboard-to-facts.js
-  # --- v5 Phase 0 候选池噪声帽归位（31 条 confirmed+noise=1 僵尸 → noise=0，幂等）---
-  - p-v5-0-fix-noise.js
-  # --- v5 Phase 1 正式版数据迁移（复跑 Phase 0 幂等 + ensureCol 6 列 2 索引 + updated_at 回填）---
-  - p-v5-1-migrate-vuln.js
-  # --- v5 Phase 1 试点验收（三路写同一候选 / audit actor 可区分 / 幂等重放，临时库隔离）---
-  - p-v5-2-pilot-accept.js
   # --- v5 领域总线（Phase 1.1：Registry/CommandGateway/QueryGateway/EventOutbox+Dispatcher/
   #     ToolProjector/RpcProjector/幂等/audit v5/别名；全部域插件宿主）---
   - dsh-plugin-sec-domain-bus.js
@@ -441,7 +424,6 @@ templates:
   # --- 情报刷新（intel-feeder v1）---
   - intel-refresh.sh
   # --- CyberStrikeAI 历史数据导入器 ---
-  - import-cyberstrikeai.py
   # --- 向量嵌入模块（experience-hub 语义检索）---
   - embeddings.index.js
   - embeddings-setup.sh
