@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-feedback-bridge — DSH 原生反馈桥（自学习专项 L5，设计 §9）
 //
-// 契约：doc/secagent/v5/07-know.md（know_feedback_ingest 唯一落账通道）
+// 契约：doc/secagent/07-know.md（know_feedback_ingest 唯一落账通道）
 //       + upgrades/2026-09-12-self-learning-design.md §9（原生反馈桥纪律）
 //
 // 职责（web profile 挂载；headless 无 UI 反馈面，不挂载）：

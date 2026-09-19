@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-endpoint-sqlite — endpoint 域 sqlite-local 后端（repository-v1）
 //
-// 契约：doc/secagent/v5/04-endpoint.md §2.1/§2.4（后端适配器：表 + 队列文件双组件）
+// 契约：doc/secagent/04-endpoint.md §2.1/§2.4（后端适配器：表 + 队列文件双组件）
 //
 // 职责：
 //   表（sqlite-local，asset-graph.db WAL 直接接管 endpoints 现表，不改名不迁库）

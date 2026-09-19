@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-domain-endpoint — SilkSecAgent endpoint 域插件（v5 Phase 2 首域）
 //
-// 契约：doc/secagent/v5/04-endpoint.md（域设计，权威）+ 01-bus.md（总线）+ 00-conventions.md（宪法）
+// 契约：doc/secagent/04-endpoint.md（域设计，权威）+ 01-bus.md（总线）+ 00-conventions.md（宪法）
 //
 // 对外（cordis）：name='sec-domain-endpoint'，apply() 把 manifest+handlers+backend 交给
 // 总线 registry.register()（不 provide 任何业务方法）。

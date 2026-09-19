@@ -7,11 +7,11 @@
 #   命中哪个面的清单 → 复验哪个面；未命中的面直接放行 → 「升级尽量不动」。
 #
 # 维护纪律：新增/改动一个面对官方挂点的消费 → 同一次提交更新本清单。
-# 契约版本：1 ｜ 设计真相源：doc/secagent/v5/19-ui-surface.md
+# 契约版本：1 ｜ 设计真相源：doc/secagent/19-ui-surface.md
 # ==============================================================================
 
 contract_version: 1
-design_doc: doc/secagent/v5/19-ui-surface.md
+design_doc: doc/secagent/19-ui-surface.md
 
 verified_dsh:
   version: 0.1.5-rc.2

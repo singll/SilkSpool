@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-task-sqlite — task 域 sqlite-local 后端（repository-v1，唯一合法后端）
 //
-// 契约：doc/secagent/v5/05-task.md §2.1/§2.4（数据模型 + 后端适配器）
+// 契约：doc/secagent/05-task.md §2.1/§2.4（数据模型 + 后端适配器）
 //
 // 职责：直接接管现表 tasks / task_runs / workers（asset-graph.db，WAL，不改名不迁库）；
 // ensureCol 幂等列演进（schedule 六列 / 预算 / 模型覆盖）；idx_tasks_due 等索引。

@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-proxy-file — proxy 域 file 后端（repository-v1，唯一实现）
 //
-// 契约：doc/secagent/v5/13-proxy.md §2.1/§2.4
+// 契约：doc/secagent/13-proxy.md §2.1/§2.4
 //
 // 职责：owns {POOL_DIR}/ 五文件（pool.json / live.txt / blocklist.txt / stats.json / sticky.json）
 // 作为唯一写者（mubeng `-w` 是 live.txt 的原生消费者 + `--remove-on-error` 会回写 live.txt——

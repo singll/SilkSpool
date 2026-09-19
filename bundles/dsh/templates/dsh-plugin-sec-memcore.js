@@ -1,6 +1,6 @@
 // ==============================================================================
 // @silksec/sec-memcore — 统一记忆治理引擎（Memory Substrate · v5 纯总线客户端）
-// 设计：doc/secagent/v5/06-fact.md §2.3 / 07-know.md §2.3（memcore 完全旁路化）
+// 设计：doc/secagent/06-fact.md §2.3 / 07-know.md §2.3（memcore 完全旁路化）
 //
 // v5 定位：memcore 不再是 facts/blackboard/exp_cards/playbooks/kb_docs 的直写者——
 // 这些表由 fact / know 域 owns，memcore 变成**纯总线客户端**：生命周期流转全部经

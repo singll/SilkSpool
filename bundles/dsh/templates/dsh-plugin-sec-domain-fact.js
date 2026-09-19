@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-domain-fact — SilkSecAgent fact 域插件（v5 Phase 2：事实图谱 + 黑板环境层 + 负知识）
 //
-// 契约：doc/secagent/v5/06-fact.md（域设计，权威）+ 01-bus.md（总线）+ 00-conventions.md（宪法）
+// 契约：doc/secagent/06-fact.md（域设计，权威）+ 01-bus.md（总线）+ 00-conventions.md（宪法）
 //
 // 对外（cordis）：name='sec-domain-fact'，apply() 把 manifest+handlers+backend 交给
 // 总线 registry.register()（不 provide 任何业务方法——防绕过核心承诺）。

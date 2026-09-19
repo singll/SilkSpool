@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-asset-sqlite — asset 域 sqlite-local 后端（repository-v1）
 //
-// 契约：doc/secagent/v5/03-asset.md §2.1/§2.4（后端适配器）
+// 契约：doc/secagent/03-asset.md §2.1/§2.4（后端适配器）
 //
 // 职责：直接接管现表 assets / fingerprints（asset-graph.db，WAL，不改名不迁库）；
 // ensureCol 幂等列演进（changed_at / graded_at）；新增评级/状态索引；全部 repository 原语。

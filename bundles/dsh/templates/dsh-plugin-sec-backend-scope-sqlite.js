@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-scope-sqlite — scope 域 sqlite-local 后端（repository-v1）
 //
-// 契约：doc/secagent/v5/08-scope.md §2.1.2/§2.1.3/§2.4
+// 契约：doc/secagent/08-scope.md §2.1.2/§2.1.3/§2.4
 //
 // 职责：直接接管 programs / credentials 表（asset-graph.db，WAL，不改名不迁库）。
 // programs 是 scope.yml 的运行态镜像（status active/archived）；credentials 是凭据引用

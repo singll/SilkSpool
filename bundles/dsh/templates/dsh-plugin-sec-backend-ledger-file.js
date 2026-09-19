@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-ledger-file — ledger 域 file 后端（repository-v1，唯一真相源）
 //
-// 契约：doc/secagent/v5/11-ledger.md §2.4
+// 契约：doc/secagent/11-ledger.md §2.4
 //
 // 职责：data/pipeline/{program}/ 台账树（attempts-{program}.tsv 9 列 / card_usage-{date}.jsonl /
 // radar-queue.jsonl / handoff-{date}.md / coverage-latest.md）。TSV/JSONL 追加走 O_APPEND 单次写，

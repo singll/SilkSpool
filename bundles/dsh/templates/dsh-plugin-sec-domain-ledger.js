@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-domain-ledger — SilkSecAgent ledger 域插件（v5 Phase 2：纪律台账 / 卡使用 / 雷达队列 / 交接包）
 //
-// 契约：doc/secagent/v5/11-ledger.md（域设计，权威）+ 01-bus.md（总线）+ 00-conventions.md（宪法）
+// 契约：doc/secagent/11-ledger.md（域设计，权威）+ 01-bus.md（总线）+ 00-conventions.md（宪法）
 //
 // 对外（cordis）：name='sec-domain-ledger'，apply() 把 manifest+handlers+backend 交给
 // 总线 registry.register()（不 provide 任何业务方法——防绕过核心承诺）。

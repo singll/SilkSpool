@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-domain-eval — SilkSecAgent eval 域插件（v5 Phase 2.7：活评测集 / 假阳性消融 / 契约合规评测）
 //
-// 契约：doc/secagent/v5/15-eval.md（域设计，权威）+ 01-bus.md（总线）+ 00-conventions.md（宪法）
+// 契约：doc/secagent/15-eval.md（域设计，权威）+ 01-bus.md（总线）+ 00-conventions.md（宪法）
 //
 // 对外（cordis）：name='sec-domain-eval'，apply() 把 manifest+handlers+backend 交给
 // 总线 registry.register()（不 provide 任何业务方法——防绕过核心承诺）。

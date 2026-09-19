@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-approval-sqlite — approval 域 sqlite-local 后端（repository-v1）
 //
-// 契约：doc/secagent/v5/09-approval.md §2.1/§2.4
+// 契约：doc/secagent/09-approval.md §2.1/§2.4
 //
 // 职责：直接接管 approval_requests 表（asset-graph.db，不改列不迁库，CHECK 约束不动）；
 // 新增 approval_effects 表（批准后域效果的幂等执行账本，owner=approval）。

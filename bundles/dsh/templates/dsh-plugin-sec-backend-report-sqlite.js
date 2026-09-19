@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-report-sqlite — report 域 sqlite-local 后端（repository-v1，索引加速层）
 //
-// 契约：doc/secagent/v5/12-report.md §2.1/§2.4
+// 契约：doc/secagent/12-report.md §2.1/§2.4
 //
 // 职责：直接接管 reports 索引表（asset-graph.db 内新表，WAL，不改名不迁库）。
 // 索引是「可随时丢弃重建的加速层」——frontmatter 才是权威元数据源（12-report §2.1）。

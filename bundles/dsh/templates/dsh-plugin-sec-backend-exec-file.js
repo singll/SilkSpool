@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-exec-file — exec 域 file 后端（repository-v1，唯一后端）
 //
-// 契约：doc/secagent/v5/10-exec.md §2.1/§2.4（数据模型 + 后端适配器）
+// 契约：doc/secagent/10-exec.md §2.1/§2.4（数据模型 + 后端适配器）
 //
 // 职责：tools.d/*.yaml manifest 读取、results/<run_id>/ 落盘、flows/ imports/ 追加、grep/page 文件原语。
 // 零表零事务：单文件追加依赖 O_APPEND 原子性；runDir 多文件落盘按 run 隔离。不含业务校验。

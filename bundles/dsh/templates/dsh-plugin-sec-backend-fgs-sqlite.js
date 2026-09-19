@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-fgs-sqlite — fgs 域 sqlite-local 后端（repository-v1，唯一合法后端）
 //
-// 契约：doc/secagent/v5/14-fgs.md §2.1/§2.4（数据模型 + 后端适配器）
+// 契约：doc/secagent/14-fgs.md §2.1/§2.4（数据模型 + 后端适配器）
 //
 // 职责：直接接管现表 fgs_nodes（asset-graph.db，WAL，不改名不迁库）；DDL/索引幂等；
 // 状态机原子迁移（updateNodeFields 的 expectStatuses 前置）+ content 增量合并（mergeNodeContent 读-合-写同事务）；

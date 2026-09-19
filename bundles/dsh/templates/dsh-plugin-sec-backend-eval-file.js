@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-eval-file — eval 域 file 后端（repository-v1，唯一实现）
 //
-// 契约：doc/secagent/v5/15-eval.md §2.1/§2.4
+// 契约：doc/secagent/15-eval.md §2.1/§2.4
 //
 // 职责：owns data/eval/ 整目录（eval-live.jsonl / fp-cases.jsonl / contract-cases.jsonl /
 // fp-report.json / contract-report.json / eval-range-report.json / runs/ / reports/）。

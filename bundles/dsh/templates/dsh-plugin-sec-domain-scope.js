@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-domain-scope — SilkSecAgent scope 域插件（v5 Phase 2.6：授权白名单 / 项目镜像 / 排除 / 规则 / 凭据引用）
 //
-// 契约：doc/secagent/v5/08-scope.md（域设计，权威）+ 01-bus.md（总线）+ 00-conventions.md（宪法）
+// 契约：doc/secagent/08-scope.md（域设计，权威）+ 01-bus.md（总线）+ 00-conventions.md（宪法）
 //
 // 对外（cordis）：name='sec-domain-scope'，apply() 把 manifest+handlers+backend 交给
 // 总线 registry.register()（不 provide 任何业务方法——防绕过核心承诺）。

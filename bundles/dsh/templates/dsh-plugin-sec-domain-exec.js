@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-domain-exec — SilkSecAgent exec 域插件（v5 Phase 2.4：工具执行/沙箱/限速/worker 派生/parser 提案）
 //
-// 契约：doc/secagent/v5/10-exec.md（域设计，权威）+ 01-bus.md + 00-conventions.md
+// 契约：doc/secagent/10-exec.md（域设计，权威）+ 01-bus.md + 00-conventions.md
 //
 // 语义要点：
 //  - 一切 CLI/worker 执行的唯一入口：守卫链 G0-G9 fail-closed；

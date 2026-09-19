@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-scope-file — scope 域 file 后端（repository-v1，授权白名单真相源）
 //
-// 契约：doc/secagent/v5/08-scope.md §2.1.1/§2.4
+// 契约：doc/secagent/08-scope.md §2.1.1/§2.4
 //
 // 职责：持有 data/scope.yml（授权白名单唯一真相源）。读 = 解析为规范化快照；
 // 写 = 原子写（.tmp + rename + .bak 保留一代）。格式与 v4.x 完全一致，不迁移不改写。

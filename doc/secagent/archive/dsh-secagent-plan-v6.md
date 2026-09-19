@@ -1,6 +1,6 @@
 > ⚠️ **历史归档文档（2026-09-06 起过期，仅供回溯查看）**
 > 本文档描述的是 SilkSecAgent **v4.x 单体架构**的设计/状态/研究，已被 **v5 领域插件化架构**全面取代。
-> 当前设计真相源：[`../v5/README.md`](../v5/README.md)（总设计）+ [`../v5/00-conventions.md`](../v5/00-conventions.md)（全局契约约定）。
+> 当前设计真相源：[`../v5/README.md`](v5-README.md)（总设计）+ [`../v5/00-conventions.md`](../00-conventions.md)（全局契约约定）。
 > 本文件原文如下，未做任何内容修改。
 
 ---
@@ -45,20 +45,20 @@ SilkSecAgent 已从「跑得通的引擎」进化为「有脊柱、有眼睛的�
 
 | 能力 | 落点 | 状态 |
 |---|---|---|
-| `sec-cli-adapter`（run_cli / grep_result / page_result） | [dsh-plugin-sec-suite.js](../bundles/dsh/templates/dsh-plugin-sec-suite.js) | ✅ manifest 驱动、全量落盘 + ≤20 行摘要，压缩比实测 1146x |
+| `sec-cli-adapter`（run_cli / grep_result / page_result） | [dsh-plugin-sec-suite.js](../../../bundles/dsh/templates/dsh-plugin-sec-suite.js) | ✅ manifest 驱动、全量落盘 + ≤20 行摘要，压缩比实测 1146x |
 | `scope-guard` fail-closed + 风险四级 + `audit.jsonl` | 同上 | ✅ 字面/CIDR/后缀匹配默认拒绝；**S1 解析后校验已补**（active+ 目标 DNS 解析落内网/保留段且未授权 → 拒绝） |
 | **bwrap 沙箱**（审计 S2） | 同上 `SANDBOX_DISABLED` 段 | ✅ run_cli 已接 bwrap 白名单隔离（`--unshare-all --share-net`），可 `SEC_NO_SANDBOX=1` 兜底 |
 | **S3/S4 守卫** | 同上 | ✅ 无 target_param 且 risk≥active → 拒绝；标量参数注入防护 |
-| `asset-graph`（assets/endpoints/findings/blackboard） | [asset-db.js](../bundles/dsh/templates/dsh-plugin-sec-suite.asset-db.js) | ✅ 四表 + WAL |
-| **P6 脊柱**：programs/tasks 表 + task_create/update/list/next/stats + program_list + program_id 自动回填 + orchestrator Preset | asset-db / [asset-graph.js](../bundles/dsh/templates/dsh-plugin-sec-suite.asset-graph.js) | ✅ 表与工具在 |
-| **P7 补血**：parser 注册表（jsonl_httpx/jsonl_nuclei/lines_subfinder/csv_ffuf/excel_enscan）+ nuclei/afrog→findings 去重 + plan_chain 凑链 | [parsers.js](../bundles/dsh/templates/dsh-plugin-sec-suite.parsers.js) / sec-suite | ✅ 主扫描引擎命中进库率 0%→100% 的最大漏斗已堵 |
+| `asset-graph`（assets/endpoints/findings/blackboard） | [asset-db.js](../../../bundles/dsh/templates/dsh-plugin-sec-suite.asset-db.js) | ✅ 四表 + WAL |
+| **P6 脊柱**：programs/tasks 表 + task_create/update/list/next/stats + program_list + program_id 自动回填 + orchestrator Preset | asset-db / [asset-graph.js](../../../bundles/dsh/templates/dsh-plugin-sec-suite.asset-graph.js) | ✅ 表与工具在 |
+| **P7 补血**：parser 注册表（jsonl_httpx/jsonl_nuclei/lines_subfinder/csv_ffuf/excel_enscan）+ nuclei/afrog→findings 去重 + plan_chain 凑链 | [parsers.js](../../../bundles/dsh/templates/dsh-plugin-sec-suite.parsers.js) / sec-suite | ✅ 主扫描引擎命中进库率 0%→100% 的最大漏斗已堵 |
 | **P8 管理增强**：facts/fact_edges/fingerprints/credentials 表 + fact_upsert/get/search/link + fp_add/cred_add + 接口鉴权建模 + finding 报告模板 + report_build(program) | asset-db / asset-graph | ✅ 表与工具在；**facts 已由 P11 迁移灌入 970 条（见 §七）** |
 | **P9 自学习**：neg_check（note/* 证伪拦截）+ 经验卡语义去重（cosine>0.85 合并）+ 活评测（打标→eval-live.jsonl）+ kb 语义召回 + intel_hunt（指纹→N-day 模板） | experience.js / sec-suite | ✅ |
 | **P10 合规**：retention.sh + silksec-retention.timer（flows/results 30 天、audit 50MB 轮转，timer enabled 实测）；kb_import 注入扫描 + 污点标记（taintguard 等价） | retention.sh / experience.js | ✅ |
-| `experience-hub`（经验卡/知识库/playbook + FTS5 + multilingual-e5-small 向量） | [experience.js](../bundles/dsh/templates/dsh-plugin-sec-suite.experience.js) | ✅ |
+| `experience-hub`（经验卡/知识库/playbook + FTS5 + multilingual-e5-small 向量） | [experience.js](../../../bundles/dsh/templates/dsh-plugin-sec-suite.experience.js) | ✅ |
 | `spawn_worker`（DSH headless 子进程，≤4 并发，只回尾部） | sec-suite | ✅ **cwd 支持工作区路径（定时任务执行会话自动归组）** |
 | `authz_diff`（双会话重放 + diff，scope 门正确） | sec-suite | ✅ |
-| 看板（Dashboard）：全局入口 sidebar.footer.action → Modal **五视图**（漏洞/资产/事实/任务/授权），服务端分页/搜索/筛选 + 30s 轮询，打标 + 事实纠正 + **scope 管理 + 任务立即跑**写操作，**行级会话跳链（ctx.sessions.open）**，丝之歌主题 | [sec-dashboard.client.js](../bundles/dsh/templates/dsh-plugin-sec-dashboard.client.js) + sec-suite `/silksec-dashboard` RPC | ✅ 已上线 |
+| 看板（Dashboard）：全局入口 sidebar.footer.action → Modal **五视图**（漏洞/资产/事实/任务/授权），服务端分页/搜索/筛选 + 30s 轮询，打标 + 事实纠正 + **scope 管理 + 任务立即跑**写操作，**行级会话跳链（ctx.sessions.open）**，丝之歌主题 | [sec-dashboard.client.js](../../../bundles/dsh/templates/dsh-plugin-sec-dashboard.client.js) + sec-suite `/silksec-dashboard` RPC | ✅ 已上线 |
 | 代理池（mubeng:8899）/ dsh-bill / auth-gate / model-failover / dsh-browser(fork) / 主题 | plugins.lock / profile | ✅ |
 | Vulhub 靶场 + eval-run.js 回归 / intel-refresh timer | eval/intel | ✅ |
 | 多供应商路由（pi-ai 底座）+ 两级熔断 | settings.yaml + model-failover | ✅ |

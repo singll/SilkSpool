@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-domain-task — SilkSecAgent task 域插件（v5 Phase 2.4：任务/调度/执行史/worker 注册表）
 //
-// 契约：doc/secagent/v5/05-task.md（域设计，权威）+ 01-bus.md + 00-conventions.md
+// 契约：doc/secagent/05-task.md（域设计，权威）+ 01-bus.md + 00-conventions.md
 //
 // 对外（cordis）：name='sec-domain-task'，apply() 把 manifest+handlers+backend 交给
 // 总线 registry.register()（不 provide 业务方法——防绕过核心承诺）。

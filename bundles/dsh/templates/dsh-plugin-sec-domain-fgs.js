@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-domain-fgs — SilkSecAgent fgs 域插件（v5 Phase 2.5：任务内决策图 Fact-Goal-Step Graph）
 //
-// 契约：doc/secagent/v5/14-fgs.md（域设计，权威）+ 01-bus.md + 00-conventions.md
+// 契约：doc/secagent/14-fgs.md（域设计，权威）+ 01-bus.md + 00-conventions.md
 //
 // 对外（cordis）：name='sec-domain-fgs'，apply() 把 manifest+handlers+backend 交给
 // 总线 registry.register()（不 provide 业务方法——防绕过核心承诺）。

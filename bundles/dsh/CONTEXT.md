@@ -1,8 +1,8 @@
 # SilkSecAgent 领域语言 / Domain Language
 
 > SilkSecAgent（DSH + pi）授权范围内漏洞发现平台的统一术语表。
-> 当代码、文档或对话使用这些词时，含义以此为准。当前设计见 [v5](../../doc/secagent/v5/README.md)，部署状态见 [PROGRESS](../../doc/secagent/v5/PROGRESS.md)，升级记录见 [upgrades](../../doc/secagent/upgrades/README.md)。
-> 本文部分示例保留历史工具名；具体命令、状态机与 actor 以 [v5 全局契约](../../doc/secagent/v5/00-conventions.md)及对应域文档为准。历史系统解剖仅用于回溯，不作为当前操作手册。
+> 当代码、文档或对话使用这些词时，含义以此为准。设计契约见 [文档入口](../../doc/secagent/README.md)（模块 00–19），进度与更新见 [PROGRESS](../../doc/secagent/PROGRESS.md)，历史与升级记录见 [archive](../../doc/secagent/archive/)。
+> 本文部分示例保留历史工具名；具体命令、状态机与 actor 以 [全局契约](../../doc/secagent/00-conventions.md)及对应域文档为准。历史系统解剖仅用于回溯，不作为当前操作手册。
 
 ## 核心实体
 

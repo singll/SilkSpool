@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-know-sqlite — know 域 sqlite 子仓后端（exp/kb，repository-v1）
 //
-// 契约：doc/secagent/v5/07-know.md §2.1/§2.4（数据模型 + 后端适配器）
+// 契约：doc/secagent/07-know.md §2.1/§2.4（数据模型 + 后端适配器）
 //
 // 职责：直接接管现表 exp_cards / exp_embeddings / exp_feedback / kb_docs / kb_fts /
 // kb_embeddings / kb_archive / exp_archive（asset-graph.db，WAL，不改名不迁库）；

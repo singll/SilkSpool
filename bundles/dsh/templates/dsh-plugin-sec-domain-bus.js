@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-domain-bus — SilkSecAgent 领域总线（v5）
 //
-// 契约：doc/secagent/v5/01-bus.md（总线）+ doc/secagent/v5/00-conventions.md（宪法）
+// 契约：doc/secagent/01-bus.md（总线）+ doc/secagent/00-conventions.md（宪法）
 //
 // 对外（cordis）：name='sec-domain-bus'，inject=['tools']，apply() provide('secDomainBus')
 // 域插件 apply() 不 provide 任何业务方法，只把 manifest+handlers+backend 交给

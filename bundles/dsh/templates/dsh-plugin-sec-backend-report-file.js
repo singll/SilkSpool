@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-report-file — report 域 file 后端（repository-v1，产物文件真相源）
 //
-// 契约：doc/secagent/v5/12-report.md §2.1/§2.4
+// 契约：doc/secagent/12-report.md §2.1/§2.4
 //
 // 职责：持有 data/reports/ 整目录（含 submissions/）——漏洞报告与 SRC 提交草稿的
 // markdown 产物。写 = tmp + rename 原子落盘；读 = 受控读（前缀校验防穿越）。

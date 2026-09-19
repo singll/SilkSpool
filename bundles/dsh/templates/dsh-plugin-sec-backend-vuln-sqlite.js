@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-vuln-sqlite — vuln 域 sqlite-local 后端（repository-v1）
 //
-// 契约：doc/secagent/v5/02-vuln.md §2.1/§2.4（后端适配器）
+// 契约：doc/secagent/02-vuln.md §2.1/§2.4（后端适配器）
 //
 // 职责：直接接管现表 findings（asset-graph.db，WAL，不改名不迁库）；ensureCol 幂等
 // 列演进（claimed_by/claimed_at/updated_at/remote_id/remote_synced_at/sync_state）；

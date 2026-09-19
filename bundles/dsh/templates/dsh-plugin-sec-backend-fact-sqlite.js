@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-fact-sqlite — fact 域 sqlite-local 后端（repository-v1）
 //
-// 契约：doc/secagent/v5/06-fact.md §2.1/§2.4（后端适配器 + 数据模型）
+// 契约：doc/secagent/06-fact.md §2.1/§2.4（后端适配器 + 数据模型）
 //
 // 职责：直接接管现表 facts / fact_edges / blackboard（asset-graph.db，WAL，不改名不迁库）；
 // ensureCol 幂等列演进（facts.uses / facts.last_used_at + lifecycle/expiry 索引）；

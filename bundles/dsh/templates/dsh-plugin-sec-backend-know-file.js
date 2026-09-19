@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-know-file — know 域 file 子仓后端（rules/vulncards/harvest，repository-v1）
 //
-// 契约：doc/secagent/v5/07-know.md §2.1/§2.4
+// 契约：doc/secagent/07-know.md §2.1/§2.4
 //
 // 职责：data/rules/（79 篇先验规程，只读 + rule_seed 物化）、data/vulncards/（VC-xxx YAML + registry.md）、
 // data/harvest/drafts/ + candidates.json（收割草稿）。写入原子（tmp+rename）。
