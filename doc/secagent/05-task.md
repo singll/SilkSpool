@@ -34,19 +34,19 @@
 | C1 | `task_create` | 登记新任务（普通 / once / interval），含任务级模型覆盖、预算参数与 goal 目标类型（L6） | model, dashboard, script, approval, system, reactor | 自然键（interval）/ 自动指纹 | task.created | ✅ |
 | C2 | `task_schedule` | 设置 / 修改 / 清除任务的调度（终态不可改） | model, dashboard | 显式 / 自动指纹 | — | ✅ |
 | C3 | `task_run_now` | 立即触发一次（拨 next_run_at=now，不动节律） | model, dashboard | none（认领层防重复） | — | ✅ |
-| C4 | `task_update_note` | 向 result 证据链追加一条带时间戳的记录（不改状态） | model, dashboard, scheduler, script | 自动指纹 | — | ✅ |
+| C4 | `task_update_note` | 向 result 证据链追加一条带时间戳的记录（不改状态） | model, dashboard, scheduler, script, approval, system | 自动指纹 | — | ✅ |
 | C5 | `task_block` | HITL 暂停：非终态 → blocked（blocked_reason 必填） | model, dashboard | 自动指纹 | task.blocked | ✅ |
 | C6 | `task_resume` | 恢复：blocked → queued（节律不动） | model, dashboard | 自动指纹 | — | ✅ |
 | C7 | `task_cancel` | 取消：任意非终态 → cancelled | model, dashboard | 自动指纹 | task.cancelled | ✅ |
 | C8 | `task_finish` | **调度器专用收尾**：落执行史 + latest-only 续期 + 流程守卫前置不变量 | scheduler | 自然键（task_id+run_id） | task.finished | ❌ |
-| C9 | `task_chain` | 能力图 BFS + 反向剪枝 → 落 parent 串联 once 链 | model, dashboard | 自然键（链标记） | task.created ×N | ✅ |
+| C9 | `task_chain` | 能力图 BFS + 反向剪枝 → 落 parent 串联 once 链 | model, dashboard | auto（去重在 handler） | task.created ×N | ✅ |
 | C10 | `task_budget_extend` | task-budget-extend 审批落列（budget_timeout_sec ≤7200） | approval | 自然键（task_id） | — | ❌ |
-| C11 | `task_claim` | 调度认领：BEGIN IMMEDIATE 原子抢占 ≤4 条到期任务 | scheduler | 状态条件（queued） | task.claimed ×N | ❌ |
-| C12 | `task_reap` | 僵尸回收：宽限=超时+15min，活 worker 跳过 | scheduler | 状态条件（running） | task.finished ×N | ❌ |
-| C13 | `task_worker_register` | worker 注册表登记（exec.worker.spawned 订阅执行） | reactor | 自然键（run_id） | — | ❌ |
-| C14 | `task_worker_finish` | worker 注册表收尾（exec.worker.finished 订阅执行） | reactor | 自然键（run_id） | — | ❌ |
-| C15 | `task_worker_reap` | worker 注册表启动/周期对账（meta 回读 → pid 判活 → 孤儿执法） | scheduler | 状态条件（running） | — | ❌ |
-| C16 | `task_submit_complete` | **自执行任务完成声明**（不改状态，提请 task-complete 审批） | model | 自然键（task_id+声明时刻） | — | ✅ |
+| C11 | `task_claim` | 调度认领：BEGIN IMMEDIATE 原子抢占 ≤4 条到期任务 | scheduler | none | task.claimed ×N | ❌ |
+| C12 | `task_reap` | 僵尸回收：宽限=超时+15min，活 worker 跳过 | scheduler | none | —（manifest 声明 task.finished ×N，但 handler 返回 events:[]，实际**不发**） | ❌ |
+| C13 | `task_worker_register` | worker 注册表登记（exec.worker.spawned 订阅执行） | reactor, scheduler | 自然键（run_id） | — | ❌ |
+| C14 | `task_worker_finish` | worker 注册表收尾（exec.worker.finished 订阅执行） | reactor, scheduler | 自然键（run_id） | — | ❌ |
+| C15 | `task_worker_reap` | worker 注册表启动/周期对账（meta 回读 → pid 判活 → 孤儿执法） | scheduler | none | — | ❌ |
+| C16 | `task_submit_complete` | **自执行任务完成声明**（不改状态，提请 task-complete 审批） | model | auto（task_id+summary+evidence+follow_up） | — | ✅ |
 | C17 | `task_complete` | **审批落成收尾**（approval 域 `approval_effects` effect outbox 执行（kind=task-complete），自执行任务唯一 done 入口） | approval | 自然键（task_id） | task.finished | ❌ |
 
 > \* actor 为 `reactor`（宪法 §三 域事件订阅反应器）：C13/C14 由总线从 `exec.worker.*` 订阅回调注入 actor=reactor，审计 cause 链指向源事件及其原始 actor；approval 事件的订阅执行保留专用 `approval` actor（语义更具体的先例身份）。
@@ -76,7 +76,7 @@
 | `parent_id` | integer | ❌ | null | 须存在且非本任务自身；父任务终态后子任务才可被认领（链式放行） |
 | `budget_tokens` | integer | ❌ | null | ≥0 |
 | `assignee` | string | ❌ | `''` | 自由文本 |
-| `schedule` | object | ❌ | null | `{kind:'once', at}`：at 须未来毫秒时间戳，否则 `E_TASK_SCHEDULE_PAST`；`{kind:'interval', every_seconds}`：整数且 ≥300，否则 `E_TASK_INTERVAL_MIN`；kind 非法 → `E_SCHEMA` |
+| `schedule` | object | ❌ | null | `{kind:'once', at}`：at 接受整数 epoch（毫秒/秒）或字符串 ISO 8601 / `HH:mm`（带时区按声明时区、不带时区按北京时间），须未来时刻（≤60s 过期宽限内校准为立即执行），否则 `E_TASK_SCHEDULE_PAST`；`{kind:'interval', every_seconds, anchor?, tz?}`：every_seconds 整数且 ≥300，否则 `E_TASK_INTERVAL_MIN`；`anchor`（HH:mm/epoch/ISO）指定标称相位；`after_task_id`（前置任务，null 清除依赖）/ `after_delay_seconds`（0–86400，前置成功后延迟）为依赖参数；kind 非法 → `E_SCHEMA` |
 | `provider` | string | ❌ | null | 任务级模型覆盖（P18）；须 provider+model 成对出现，单传 → `E_SCHEMA` |
 | `model` | string | ❌ | null | 同上 |
 | `reasoning_effort` | string | ❌ | null | 枚举 low/medium/high |
@@ -112,6 +112,7 @@
 | `E_TASK_SCHEDULE_PAST` | once.at ≤ now | 「once 调度需要未来的毫秒时间戳」 | false |
 | `E_TASK_INTERVAL_MIN` | every_seconds <300 或非整数 | 「interval 调度需要 every_seconds ≥300 的整数（对齐 dsh-schedule 下限）」 | false |
 | `E_TASK_INTRUSIVE_INTERVAL` | INV-T1 命中 | 「intrusive 级目标禁止 interval——改用 once 单次执行，或拆出被动采集部分做周期任务」 | false |
+| `E_TASK_DEPENDENCY` | 前置任务不存在 / 跨项目 / 自引用 / 成环，周期依赖周期不一致，或 after_delay_seconds 越界 | 「核对前置任务与周期，不能自引用或形成循环」 | false |
 
 **幂等**：interval 分支走**自然键** `task:create:interval:{program_id}:{objective}`（活跃唯一约束）；once/普通分支走自动指纹（网关 sha1 核心字段）。重放同 key 同参 → 首次结果 + `replay:true`。
 
@@ -209,7 +210,7 @@
 |---|---|---|---|
 | `task_id` | integer | ✅ | 存在 |
 | `blocked_reason` | string | ✅ | 非空；≤500 字 |
-| `note` | string | ❌ | 同 C4 |
+| `note` | string | ❌ | 追加进 result 证据链（**无长度上限**；result 总长仍截断保留尾部 8000 字） |
 
 **不变量**：INV-T5（blocked_reason 必填；终态/已 blocked 不可再 block）→ `E_STATE`。
 
@@ -279,40 +280,41 @@
 | 参数 | 类型 | 必填 | 默认 | 校验 |
 |---|---|---|---|---|
 | `task_id` | integer | ✅ | — | 存在 |
-| `run_id` | string | 条件 | `''` | **证据即参数**（铁律 4）：outcome=done/failed 时必填（exception 路径允许空）；引用须存在于 exec 域 results，否则 `E_EVIDENCE_REQUIRED` |
+| `run_id` | string | 条件 | `''` | **证据即参数**（铁律 4）：outcome=done/failed 时必填（exception 路径允许空）；网关**仅做非空校验**，不校验是否存在于 exec 域 results，否则 `E_EVIDENCE_REQUIRED` |
 | `outcome` | string | ✅ | — | 枚举 `done / failed / busy / crash`：busy=exec 并发满（回 queued 不落史）；crash=调度执行异常（视同 failed，run_id 可空） |
 | `note` | string | ❌ | `''` | 摘要 ≤500 字（v4.x：worker 尾部去噪后 3 行） |
 | `session_id` | string | ❌ | null | 会话反查回填值（findWorkerSessionId 结果） |
 | `truth` | object | ❌ | `{checked:false,rejected:false,reason:''}` | 由调度器取 `exec_spawn_worker` 返回值（`data.truth`，拒执标记扫描结果）透传；`truth.rejected=true` ⇒ outcome 强制翻转为 failed（**不经 worker 事件**——`exec.worker.finished` 无 truth 字段） |
+| `timed_out` | boolean | ❌ | false | 超时收尾标记；true 时 ok 强制为 false，并按超时策略参与续期快速重试（60s） |
 
 **流程守卫（前置不变量，从 v4.x taskUpdate 拆出，成为 finish 的私有不变量）**：
 
 | ID | 校验 | 作用域 | 失败语义 |
 |---|---|---|---|
-| INV-T6a | ① attempts 台账近 24h（北京日切：今天/昨天）有增量行（六态皆可）——**经 ledger 域查询 `ledger_task_proof`**（11-ledger §1.4.6） | `schedule_kind='interval'` 且 `data/pipeline/{program}/` 目录存在的任务 | 守卫结果不拒绝 finish（见下），进 payload |
+| INV-T6a | ① attempts 台账近 24h（北京日切：今天/昨天）有增量行（六态皆可）——**经 ledger 域查询 `ledger.task_proof`**（参数 `{program, since_ts}`，11-ledger §1.4.6） | `schedule_kind='interval'` 且 `data/pipeline/{program}/` 目录存在的任务 | 守卫结果不拒绝 finish（见下），进 payload |
 | INV-T6b | ② card_usage-*.jsonl 近 24h 有记录（文件名日期或 mtime 24h 内）——同上经 ledger 查询 | 同上 | 同上 |
 | INV-T6c | ③ handoff-<北京日期>.md 存在（今天或昨天）——同上经 ledger 查询 | 同上 | 同上 |
 
 **守卫失败的处理（设计决策，防死锁）**：v4.x 守卫拦的是 agent 手动标 done；v5 收尾权唯一归 task_finish，而 interval 任务本就不落 done——**守卫失败不拒绝事务**，而是：本次 run 的 task_runs 落 `ok=0`、note 前缀 `[流程守卫缺失]` + missing 清单；task.finished payload 带 `guard:{checked, missing[]}`；ops 健康度红条（看板）呈现缺失清单。理由：拒绝 finish 会让任务卡 running 直至被 reap 误回收——纪律信号用可观测性承载，不用状态死锁承载。缺失清单的补救动作仍是 agent 职责（attempts_log / card_usage_log / handoff 五段结构）。
 
-**守卫查询异常的处理（2026-09-16 L0 修正）**：`ledger_task_proof` 查询**抛错或返回 ok:false 不再静默降级为"无缺失"**——异常原因（截断 120 字）作为 missing 项入 `guard.missing`，本次 run 同样落 `ok=0` + `[流程守卫缺失]` 前缀（与内容缺失同等显式失败，见学习专项 L0-K6）。
+**守卫查询异常的处理（2026-09-16 L0 修正）**：`ledger.task_proof` 查询**抛错或返回 ok:false 不再静默降级为"无缺失"**——异常原因（截断 120 字）作为 missing 项入 `guard.missing`，本次 run 同样落 `ok=0` + `[流程守卫缺失]` 前缀（与内容缺失同等显式失败，见学习专项 L0-K6）。
 
 **latest-only 续期锚点算法（interval 分支，逐行移植 v4.x，含全部防漂移注释）**：
 
 ```
 step   = every_seconds × 1000
-anchor = (run_at > 0) ? run_at : (next_run_at ?? finished)
+anchor = (run_at > 0) ? run_at : (started_at ?? next_run_at ?? finished)
          // ★ 锚点=标称相位 run_at（任务创建/改调度时的原始节律），绝不能用 next_run_at 当锚——
          //   task_run_now 会把它拨到"现在"，用它续期会把整个节律漂移到手动触发时刻。
-         //   run_at 无效（epoch 0/NULL 老数据）时退回 next_run_at。
+         //   run_at 无效（epoch 0/NULL 老数据）时依次退回 started_at → next_run_at → finished。
 if finished <= anchor:
     next = anchor                      // 手动提前跑（task_run_now）：未到期的原定运行仍保留，不跳格
 else:
     next = anchor + max(1, ceil((finished - anchor) / step)) × step
     if next <= finished: next += step  // finish 恰落在格点上时防立即重复认领
-    if not ok:
-        next = min(next, finished + 2h)  // 失败快速重试：2h 内重试一次（额度窗口/凭证类故障数十分钟内恢复），
-                                         // 但不越过下一个标称格点——持续失败也只是每小时段重试，成功后自动回原节律
+    if not ok and previousAttempts + 1 < 3:  // MAX_SCHEDULED_ATTEMPTS=3：每标称周期最多 3 次
+        delay = timed_out ? 60s : 5min × 2^min(previousAttempts, 1)  // 超时 60s 后续跑；其余失败 5/10min 指数退避
+        next = min(next, finished + delay)   // 但不越过下一个标称格点——成功后自动回原节律
 status = 'queued'
 ```
 
@@ -413,8 +415,8 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 | 动词 | 触发面 | 语义 | 关键细节 |
 |---|---|---|---|
-| C13 `task_worker_register` | 订阅 `exec.worker.spawned`（强联动 sync） | workers 表 upsert（run_id 冲突时刷 pid/status） | 参数=事件 payload 原样：run_id（必填）、dedupe_key、task（含 RoE 的 fullTask，截 2000）、cwd、pid、timeout_sec、session_id、run_dir |
-| C14 `task_worker_finish` | 订阅 `exec.worker.finished`（强联动 sync） | 写终态 status（done/failed/killed）+ exit_code + finished_at | 幂等：run_id 自然键 + status='running' 条件更新 |
+| C13 `task_worker_register` | 订阅 `exec.worker.spawned`（强联动 sync） | workers 表 upsert（run_id 冲突时刷 pid/status） | 参数=事件 payload 原样：run_id（必填）、dedupe_key、**task_id**、task（含 RoE 的 fullTask，截 2000）、cwd、pid、timeout_sec、session_id、run_dir |
+| C14 `task_worker_finish` | 订阅 `exec.worker.finished`（强联动 sync） | 写终态 status（done/failed/killed）+ exit_code + finished_at | 参数：run_id（必填）、outcome（done/failed/killed）、exit_code、**worker_session_id**；幂等：run_id 自然键 + status='running' 条件更新 |
 | C15 `task_worker_reap` | 调度器启动 + 每 10 tick | 注册表对账：先读 run_dir/meta.json（有 exit_code → done/failed，**先读 meta 再判 pid，防把已完成误判 killed**）；pid 死 → killed；pid 活但超 `started_at+timeout_sec+60s` → 代行 SIGTERM→5s→SIGKILL（进程组）标 killed（P12-1 孤儿执法：父 worker 被杀后 killer 定时器随之消失，detached 孙 worker 会无限跑） | actor=scheduler |
 
 三者均不向模型注册；C13/C14 不发事件（exec.worker.* 事件本身即是留痕）。
@@ -425,18 +427,18 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 | 动词 | 触发面 | 语义 | 关键细节 |
 |---|---|---|---|
-| C16 `task_submit_complete` | 模型（会话内） | **完成声明，不改状态**：向 approval 域提请 kind=task-complete 审批 | 参数：task_id（必填）、summary（≥30 字，做了什么/结论）、evidence（产物指针：run_id / result note 引用，可多个）、follow_up（可选，≤500 字——希望人工顺带裁决的后续操作建议，进审批单 payload 供用户参考）。域内先校验：task 存在、assignee=model、非终态、task_active_by_session 确认无活动 worker；然后 dispatch approval_request（kind=task-complete，subject=task_id，payload={summary, evidence, follow_up, 三产物检查快照}）。返回审批 request_id + hint（"已提请人工确认（看板「审批」tab）。任务保持 in_progress，不要自行标记完成"） |
-| C17 `task_complete` | 订阅 `approval.approved`（kind=task-complete，强联动 sync） | 落 done：status→done、finished_at、result 追加"人工确认 {request_id} + summary" | actor=approval（宪法 §三 先例身份），cause 链指向审批单与 C16 声明。三产物守卫在此**降为展示不拦截**：自执行任务无 worker 产物，守卫结果（含 missing 清单）已在审批单 payload 里呈现给用户——**人工裁决即守卫**（fail-open 的合法形态：放行决策权在人，且全程审计留痕） |
+| C16 `task_submit_complete` | 模型（会话内） | **完成声明，不改状态**：向 approval 域提请 kind=task-complete 审批 | 参数：task_id（必填）、summary（≥30 字，做了什么/结论）、evidence（产物指针：run_id / result note 引用，可多个）、follow_up（可选，≤500 字——希望人工顺带裁决的后续操作建议，进审批单 payload 供用户参考）。域内仅校验：task 存在、非终态（**不校验 assignee=model，也不经 task_active_by_session 确认无活动 worker**）。**interval 任务分支绕过审批**：直接把"本轮摘要"追加 result 并返回 `{scheduled:true}`，不提请审批；其余任务 dispatch approval_request（kind=task-complete，subject=task_id，payload={summary, evidence, follow_up}）。返回审批 request_id + hint（"已提请人工确认（看板「审批」tab）。任务保持非终态（queued/running），不要自行标记完成"） |
+| C17 `task_complete` | approval 域 `approval_effects`（effect outbox，kind=task-complete）经 dispatcher 执行——**不经订阅 `approval.approved`** | 落 done（仅非 interval）：status→done、finished_at、result 追加"人工确认 {request_id} + summary"；**interval 分支不改状态**：仅追加 result 并返回 `{scheduled:true, acknowledged:true}`（status/next_run_at 原样） | actor=approval（宪法 §三 先例身份），cause 链指向审批单与 C16 声明。三产物守卫在此**降为展示不拦截**：自执行任务无 worker 产物，守卫结果（含 missing 清单）已在审批单 payload 里呈现给用户——**人工裁决即守卫**（fail-open 的合法形态：放行决策权在人，且全程审计留痕） |
 
-**统一拦截任务（防漏声明兜底）**：调度器每 tick 附带扫描——`assignee=model AND status=in_progress AND 会话已结束（session idle >30min）AND 无 pending 的 task-complete 审批单` → 自动以 actor=scheduler 补提审批（summary="拦截任务自动提请：会话结束未声明完成"，evidence=最后的 task_update_note 摘录）。保证任何自执行任务最终都会进入人工裁决闭环，不悬挂。
+**统一拦截任务（防漏声明兜底）——⚠️ 未实现（设计预留）**：设计为调度器每 tick 附带扫描——`assignee=model AND status IN ('queued','running') AND 会话已结束（session idle >30min）AND 无 pending 的 task-complete 审批单` → 自动以 actor=scheduler 补提审批（summary="拦截任务自动提请：会话结束未声明完成"，evidence=最后的 task_update_note 摘录）。现行 `dsh-plugin-sec-domain-task.js` 调度循环（`startTaskScheduler`）无此扫描，自执行任务不因此兜底闭环。
 
-**驳回路径**：approval.approved 不发生（rejected）→ 任务保持 in_progress，note 追加驳回理由——用户可在看板 task_block / task_cancel 收尾，或让模型补证后重新 C16。
+**驳回路径**：审批被驳回（`approval_effects` 不触发）→ 任务保持非终态（queued/running），note 追加驳回理由——用户可在看板 task_block / task_cancel 收尾，或让模型补证后重新 C16。
 
 三者段式对状态机的影响：done 的写入口仍然唯一收敛（worker 型=task_finish[scheduler]；自执行型=task_complete[approval]——都是"调度/人工裁决"，模型在两种形态下都没有直接落 done 的接口）。
 
 ### 1.4 查询逐个详述
 
-统一分页信封 `{rows, total, limit, offset}`；limit 默认 50、上限 500；sort 白名单 + dir。**行数=total 同 where 构造器**（契约测试必备断言）。
+统一分页信封 `{rows, total, limit, offset}`；limit 默认 50、上限 500；sort 白名单（priority\|created_at）+ `dir`。**注意：`dir` 被 schema 接受但后端忽略（inert）——`listTasksWhere` 恒 ASC（sort=created_at → `created_at ASC`，否则 `priority ASC, created_at ASC`）**。**行数=total 同 where 构造器**（契约测试必备断言）。
 
 **本域可见域谓词**（查询参数，默认值如下）：
 
@@ -448,7 +450,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 | 查询 | 参数 | 返回 | 说明 |
 |---|---|---|---|
-| `task_list` | program_id / status / phase / q（objective LIKE）/ bucket / scheduled / limit / offset / sort（priority\|created_at，默认 priority asc,created_at asc）/ dir | `{rows, total}` | 看板任务视图数据源；bucket=active 且未显式传 scheduled 时默认 `scheduled=exclude`（定时任务由独立卡片区展示，避免重复——v4.x P12 口径保留） |
+| `task_list` | program_id / status / phase / goal / q（objective LIKE）/ bucket / scheduled / limit / offset / sort（priority\|created_at，默认 priority asc,created_at asc）/ dir（**接受但后端忽略，恒 ASC**） | `{rows, total}` | 看板任务视图数据源；bucket=active 且未显式传 scheduled 时默认 `scheduled=exclude`（定时任务由独立卡片区展示，避免重复——v4.x P12 口径保留） |
 | `task_get` | task_id | 单行或 `E_NOT_FOUND` | 全列（含调度/预算/模型覆盖/最近 run） |
 | `task_next` | program_id | 单个任务或 null | 编排器认领：最高优先级 queued 且 **parent gate** 放行（parent 须 done）的第一条 |
 | `task_stats` | program_id | `{total, by_phase_status[]}` | 聚合独立命名（宪法 §七.5） |
@@ -458,6 +460,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | `task_worker_status` | run_id | 单行或 `E_NOT_FOUND` | 注册行 + 恢复 hint；尾部日志经 exec 域查询（grep_result/page_result）——**工具投影层可组合两域查询呈现 v4.x 的 tail 体验** |
 | `task_worker_recent` | dedupe_key / window_ms（默认 30min） | 单行或 null | **exec 域幂等预检专用**（跨域只读）：窗口内该 dedupe_key 最近一条（started_at 倒序） |
 | `task_active_by_session` | session_id / max_age_ms（默认 6h） | `{task_id, program_id, phase, objective, run_id, started_at}` 或 null | 会话→运行中任务反查（vuln 域 finding 归属、fgs 域上下文提示用；v4.x activeTaskBySession 原样） |
+| `task_drift` | —（无参数） | `{scheduled_drift, anchor_missing, anchor_missing_ids, interval_tasks[], task_runs_last_age_hours}` | 调度漂移体检：区间任务锚点/next_run_at 漂移分钟、缺锚点任务 id、执行史最近年龄；actor system/dashboard/human（**模型不可见**，供 ledger discipline_stats 与 ops 红条消费） |
 
 ### 1.5 事件
 
@@ -466,8 +469,8 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | 事件 | 发布者命令 | payload schema |
 |---|---|---|
 | `task.created` | task_create / task_chain | `{task_id, program_id, phase, objective_head(≤80字), schedule_kind, parent_id, priority, source: "model"|"dashboard"|"approval"|"chain"}` |
-| `task.claimed` | task_claim | `{task_id, program_id, phase, priority, claimed_at, worker_slot: 1..4}` |
-| `task.finished` | task_finish / task_reap | `{task_id, program_id, run_id, ok, outcome, schedule_kind, next_run_at, session_id, guard: {checked, missing[]}, truth: {checked, rejected, reason}, fgs_snapshot: {hash, path, nodes, summary}|null（L1：宿主收尾前固定的 FGS 快照引用；null=显式缺快照）, cause: "run"|"reap"|"approval"}` |
+| `task.claimed` | task_claim | `{task_id, program_id, phase, goal, priority, claimed_at, worker_slot}`（**worker_slot 现硬编码为 1**，并发槽位语义未落实现） |
+| `task.finished` | task_finish（**task_reap 实际不发此事件**——handler 返回 `events:[]`，manifest 虽声明） | `{task_id, program_id, run_id, ok, outcome, note, schedule_kind, next_run_at, session_id, guard: {checked, missing[]}, truth: {checked, rejected, reason}, fgs_snapshot: {hash, path, nodes, summary}|null（L1：宿主收尾前固定的 FGS 快照引用；null=显式缺快照）, cause: "run"|"reap"|"approval"}` |
 | `task.blocked` | task_block | `{task_id, program_id, from_status, blocked_reason}` |
 | `task.cancelled` | task_cancel | `{task_id, program_id, from_status, note}` |
 
@@ -488,10 +491,11 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | （task-budget-extend） | — | `task_budget_extend`（C10）由 approval 域 `approval_effects` 经 dispatcher 幂等执行（actor=approval，cause 链带 request_id），**非本域订阅 approval.approved** |
 | `exec.worker.spawned` | **sync（强联动）** | `task_worker_register`（C13） |
 | `exec.worker.finished` | **sync（强联动）** | `task_worker_finish`（C14） |
+| `know.release.revoked` | async（reactor；best-effort） | `onReleaseRevoked`（task.js:1090）：卡片撤回 → 生成 `goal=change-retest` 重测需求任务（去重标记 `[change-retest {release_id}]`；program 归属 scope_id，family/global 归 `_global` 桶）；入队不自动起 worker（无 schedule），由人/编排决定 `task_run_now` |
 
 ### 1.6 模型工具面投影（工具名 + 描述全文）
 
-工具名=命令/查询名，零改名；按 profile × actor 白名单挂载（headless+web 均挂）。模型**看不见**：task_finish / task_claim / task_reap / task_worker_register / task_worker_finish / task_worker_reap / task_budget_extend / task_complete（approval 专用）/ task_worker_recent（exec 内部用）/ task_active_by_session（域内部用）。模型**可见** task_submit_complete（自执行任务完成声明的唯一入口——描述里写明"声明后等人工确认，不要自行标记完成"）。
+工具名=命令/查询名，零改名；按 profile × actor 白名单挂载（headless+web 均挂）。模型**看不见**：task_finish / task_claim / task_reap / task_worker_register / task_worker_finish / task_worker_reap / task_budget_extend / task_complete（approval 专用）/ task_worker_recent（exec 内部用）/ task_active_by_session（域内部用）/ **task_drift（看板/ledger 内部用，actor 不含 model）**。模型**可见** task_submit_complete（自执行任务完成声明的唯一入口——描述里写明"声明后等人工确认，不要自行标记完成"）。
 
 | 工具 | 描述全文（manifest agent_note） |
 |---|---|
@@ -499,7 +503,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | `task_schedule` | 见 C2 agent_note |
 | `task_run_now` | 见 C3 agent_note |
 | `task_update_note` | 见 C4 agent_note |
-| `task_submit_complete` | 见 C16 agent_note（自执行任务完成声明：summary ≥30 字 + evidence 产物指针 + 可选 follow_up；声明后任务保持 in_progress 等人工审批确认，绝不自行标记完成） |
+| `task_submit_complete` | 见 C16 agent_note（自执行任务完成声明：summary ≥30 字 + evidence 产物指针 + 可选 follow_up；声明后任务保持非终态（queued/running）等人工审批确认，绝不自行标记完成） |
 | `task_block` | 见 C5 agent_note |
 | `task_resume` | 见 C6 agent_note |
 | `task_cancel` | 见 C7 agent_note |
@@ -510,15 +514,16 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | `task_stats` | 任务进度总览：按 phase×status 计数 + 总数。 |
 | `task_runs` | 任务执行历史（每任务保留最近 200 行）：run_id/ok/note/时长/会话，可按 task 或 program 过滤。 |
 | `task_scheduled` | 固定定时任务清单（卡片数据源）：未终态+带调度，附运行统计（run 数/失败数/最近一次结局）。 |
-| `task_drift` | 调度漂移体检（内部/看板用）：最近执行年龄、越界 running 与过期 queued 概览，供 ledger discipline_stats 与 ops 红条消费。 |
 | `task_worker_list` | 列出最近的 spawn_worker run（可按 status 过滤：running/done/failed/killed），总览在飞/历史 worker。 |
 | `task_worker_status` | 查询某个 spawn_worker run 的结局（running/done/failed/killed）+ 恢复指引。重启后 spawn_worker 报 interrupted/outcome unknown 时，用它确认真实结果（已落盘）；尾部日志用 grep_result/page_result 取。 |
+
+> **非模型可见查询**：`task_drift`（actor=system/dashboard/human）、`task_worker_recent`（system/scheduler/dashboard）、`task_active_by_session`（system/scheduler/dashboard/reactor）——不向模型注册（上表只列模型可见工具面）。
 
 **兼容别名（已移除，2026-09-19）**：迁移期曾有 `task_update`（分派见 §3.2）、`worker_list`→task_worker_list、`worker_status`→task_worker_status、`scheduled_tasks`→task_scheduled、RPC case 名→点分名。**当前 `bus.aliases.yaml` 为空表，旧名一律 `E_BUS_VERB_UNKNOWN`**（机制留档见 §3.2）。
 
 ### 1.7 看板 RPC 投影
 
-RPC 通道 `/silksec-dashboard`（authority=loopback），RpcProjector 自动投影 + 少量 UI 聚合 case。写操作审计带 operator。
+RPC 通道 `/silksec-domain`（authority=loopback），RpcProjector 按 `{domain}.{verb}` 自动投影（**不是 `/silksec-dashboard`——后者是看板手写 v4-case 适配层通道**）。写操作审计带 operator。
 
 | RPC 名（v5 点分） | 投影到 | v4.x case 名 | operator 审计 |
 |---|---|---|---|
@@ -526,14 +531,16 @@ RPC 通道 `/silksec-dashboard`（authority=loopback），RpcProjector 自动投
 | `task.runs` | 查询 task_runs | `taskRuns` | — |
 | `task.scheduled` | 查询 task_scheduled | `scheduledTasks` | — |
 | `task.create` | 命令 task_create | `taskCreate` | ✅ |
-| `task.runNow` | 命令 task_run_now | `taskRunNow` | ✅ |
+| `task.run_now` | 命令 task_run_now | `taskRunNow` | ✅ |
 | `task.cancel` | 命令 task_cancel | `taskCancel` | ✅ |
 | `task.block` | 命令 task_block（status='blocked'） | `taskSetStatus(blocked)` | ✅ |
 | `task.resume` | 命令 task_resume（status='queued'） | `taskSetStatus(queued)` | ✅ |
 | `task.schedule` | 命令 task_schedule | `taskScheduleUpdate` | ✅ |
 | `task.chain` | 命令 task_chain | —（新增） | ✅ |
-| `task.note` | 命令 task_update_note | —（新增） | ✅ |
-| `task.workerList` / `task.workerStatus` | 查询同门 | —（新增，工作区区块旁） | — |
+| `task.update_note` | 命令 task_update_note | —（新增） | ✅ |
+| `task.worker_list` / `task.worker_status` | 查询同门 | —（新增，工作区区块旁） | — |
+
+> **命名必须为动词后缀全名**：投影按 `{domain}.{verb}` 精确匹配 manifest 动词（`run_now` / `update_note` / `worker_list` / `worker_status`）；camelCase 点分名（`task.runNow` / `task.note` / `task.workerList` / `task.workerStatus`）**不解析**。
 
 任务视图三分区（定时任务卡片 / 一次性队列 / 执行历史）与工作区区块（program 徽章 + 会话跳链 `ctx.sessions.open`）由 16-dashboard.md 的域视图插件渲染，数据全部来自上表。
 
@@ -566,8 +573,8 @@ if (!r.ok) console.error(r.error.code, r.error.hint)
 
 ```bash
 # 脚本产物只出建议 JSON，落库走域命令（机器直灌分流铁律）
-curl -s http://127.0.0.1:3000/silksec-dashboard -H 'content-type: application/json' -d '{
-  "method": "task.runNow", "params": { "task_id": 96 }, "operator": "singll"
+curl -s http://127.0.0.1:3000/silksec-domain -H 'content-type: application/json' -d '{
+  "method": "task.run_now", "params": { "task_id": 96 }, "operator": "singll"
 }'
 ```
 
@@ -584,6 +591,7 @@ curl -s http://127.0.0.1:3000/silksec-dashboard -H 'content-type: application/js
 | `id` | INTEGER | PK AUTOINCREMENT | 任务 id |
 | `program_id` | TEXT | NOT NULL | 所属项目（scope 域 programs 镜像的外键语义） |
 | `parent_id` | INTEGER | nullable | 前置任务（链式放行 gate） |
+| `after_delay_seconds` | INTEGER | NOT NULL DEFAULT 0 | 前置任务成功后的延迟秒数（0–86400；parent gate 放行时校验） |
 | `phase` | TEXT | nullable | recon/vuln/biz-logic/code-audit/intranet/review（PHASE_PRESET 注入键） |
 | `objective` | TEXT | NOT NULL | 任务目标（**禁止承载事实**——memcore objective lint 兜底） |
 | `status` | TEXT | NOT NULL DEFAULT 'queued' | queued/running/blocked/done/failed/cancelled |
@@ -603,11 +611,12 @@ curl -s http://127.0.0.1:3000/silksec-dashboard -H 'content-type: application/js
 | `next_run_at` | INTEGER | nullable | 调度循环扫描键（task_run_now 会临时拨动，续期不以其为锚） |
 | `last_run_at` | INTEGER | nullable | 最近 run 开始时间 |
 | `last_run_id` | TEXT | nullable | 最近 run 的 exec run_id（reap 活性检查关联键） |
+| `active_run_id` | TEXT | nullable | 当前运行中的 exec run_id（scheduler 派单时绑定；task_reap 活 worker 跳过依据，收尾清空） |
 | `provider` | TEXT | nullable | 任务级模型覆盖（P18；NULL=走 agent-default-model） |
 | `model` | TEXT | nullable | 同上 |
 | `reasoning_effort` | TEXT | nullable | low/medium/high |
 | `budget_timeout_sec` | INTEGER | nullable | 任务预算上限（task-budget-extend 审批落点；≤7200 硬顶） |
-| `goal` | TEXT | NOT NULL DEFAULT '' | L6 任务目标类型（''/research=授权研究、learn-daily、eval-batch、change-retest；DDL 幂等加列，§2.3 四类节奏） |
+| `goal` | TEXT | nullable（**无默认**，写入 NULL 表示未指定） | L6 任务目标类型（''/research=授权研究、learn-daily、eval-batch、change-retest；DDL 幂等加列，§2.3 四类节奏） |
 
 索引：`idx_tasks_queue(program_id, status, priority)`、`idx_tasks_due(schedule_kind, next_run_at)`。
 
@@ -640,6 +649,7 @@ curl -s http://127.0.0.1:3000/silksec-dashboard -H 'content-type: application/js
 | `started_at` / `finished_at` | INTEGER | |
 | `timeout_sec` | INTEGER | 该 run 的超时预算（孤儿执法依据） |
 | `session_id` | TEXT | 派生 worker 的源会话 |
+| `worker_session_id` | TEXT | 经核实的子会话 id（与历史来源会话 `session_id` 区分；收尾时写入） |
 | `run_dir` | TEXT | exec 域 run 目录（对账时回读 meta.json） |
 
 索引：`idx_workers_key(dedupe_key, started_at)`（幂等预检查询路径）。
@@ -661,7 +671,7 @@ stateDiagram-v2
     running --> failed : task_finish(once, !ok)
     running --> queued : task_reap(interval)（宽限=超时+15min，活 worker 跳过）
     running --> failed : task_reap(once)
-    running --> queued : task_finish(interval, !ok) 失败快速重试（≤2h，不越下一标称格点）
+    running --> queued : task_finish(interval, !ok) 失败快速重试（超时 60s / 其余 5、10min 指数退避，每标称周期最多 3 次，不越下一标称格点）
     queued --> blocked : task_block（reason 必填）
     running --> blocked : task_block
     blocked --> queued : task_resume（节律不动）
@@ -682,15 +692,15 @@ stateDiagram-v2
 | INV-T3 | once.at 未来；every_seconds ≥300 整数 | `E_TASK_SCHEDULE_PAST` / `E_TASK_INTERVAL_MIN` |
 | INV-T4 | 终态不可 task_schedule / task_run_now | `E_STATE` |
 | INV-T5 | task_block 必填 blocked_reason；task_resume 仅 blocked | `E_SCHEMA` / `E_STATE` |
-| INV-T6 | **守卫三产物**（台账 24h 增量 / card_usage 24h / handoff 当日或昨日），作用域=`schedule_kind='interval'` 且 `data/pipeline/{program}/` 存在；经 ledger 域查询 `ledger_pipeline_guard` 执行；失败不拒事务、进 task.finished payload 与 run ok=0 | （可观测承载） |
+| INV-T6 | **守卫三产物**（台账 24h 增量 / card_usage 24h / handoff 当日或昨日），作用域=`schedule_kind='interval'` 且 `data/pipeline/{program}/` 存在；经 ledger 域查询 `ledger.task_proof`（参数 `{program, since_ts}`）执行；失败不拒事务、进 task.finished payload 与 run ok=0 | （可观测承载） |
 | INV-T7 | task_finish / task_claim / task_reap 仅 actor=scheduler；认领仅 queued→running 原子 | `E_ACTOR_FORBIDDEN` |
-| INV-T8 | 认领 parent gate：parent_id 空或 parent=done 才放行 | （查询条件，不单独报错） |
+| INV-T8 | 认领 parent gate：parent_id 空；或**非 interval** 父任务 `status=done` 且 `finished_at + after_delay_seconds ≤ now`；或 **interval** 父任务 `status=queued` 且其**当前标称周期**（run_at 对齐）内存在 `run_id=last_run_id`、`ok=1` 的执行史且 `finished_at + after_delay_seconds ≤ now` | （查询条件，不单独报错） |
 | INV-T9 | 终态不可再流转（cancel/block/resume/finish 主体变更） | `E_STATE` / superseded |
 | INV-T10 | budget_timeout_sec ≤7200 | `E_SCHEMA` |
 | INV-T11 | 续期锚点=run_at（标称相位），非 next_run_at | （算法内建，非校验） |
 | INV-T12 | run_cli 沙箱对本域 owned 表/文件不可写（manifest owns × 沙箱白名单，setup.sh 冒烟交叉断言） | （部署期断言） |
-| INV-T13 | **provider 路由硬约束**：任务级 `provider` 必须 ∈ 允许清单（默认 `bellkeeper`；`provider` 显式传其它值须在白名单内，否则 `E_TASK_PROVIDER_FORBIDDEN`）。应急直连（临时绕 Bellkeeper）走审批 `approval_request(kind=tool-intrusive)` 之外的人工通道，audit 高亮 + dsh-bill 归因 | `E_TASK_PROVIDER_FORBIDDEN` |
-| INV-T14 | **成本归因**：任务收尾时回填 `spent_tokens`（取自 dsh-bill 该 session/provider 的实际用量）；`budget_tokens` 非空时超支记 `note` 前缀 `[预算超支]`——provider 用量与任务级预算在账本对齐 | （可观测承载） |
+| INV-T13 | **⚠️ 未实现（设计预留）provider 路由硬约束**：任务级 `provider` 必须 ∈ 允许清单（默认 `bellkeeper`；`provider` 显式传其它值须在白名单内，否则 `E_TASK_PROVIDER_FORBIDDEN`）。应急直连（临时绕 Bellkeeper）走审批 `approval_request(kind=tool-intrusive)` 之外的人工通道，audit 高亮 + dsh-bill 归因 | `E_TASK_PROVIDER_FORBIDDEN`（未见代码实现） |
+| INV-T14 | **⚠️ 未实现（设计预留）成本归因**：任务收尾时回填 `spent_tokens`（取自 dsh-bill 该 session/provider 的实际用量）；`budget_tokens` 非空时超支记 `note` 前缀 `[预算超支]`——provider 用量与任务级预算在账本对齐 | （可观测承载；`spent_tokens` 现恒为默认 0，无回填代码） |
 
 ### 2.3 事务与联动实现
 
@@ -707,8 +717,8 @@ stateDiagram-v2
 | **prompt 注入（来源域）** | 拼接顺序：① **角色人格**（PHASE_PRESET：recon→recon / vuln→vuln-hunt / biz-logic / code-audit / intranet / review；读 `data/.agent-presets/<preset>/agent.cordis.yml` 的 text 块，`{{model}}/{{cwd}}` 替换——**文件属 llm-surface 域（17 文档）管理的 DSH preset 层，本域只读**）② 任务头 `[定时任务 #N / phase] objective`（本域）③ **FGS 使用说明**（fgs 域 manifest `prompt_hint` 字段——fgs 域 owns 该模板）④ **kb_search 三步检索指令**（know 域 manifest `prompt_hint`——fact_search → exp_search → kb_search 顺序、curated 优先、tainted 警示）⑤ RoE 块（exec 域 spawn 时注入，非本域职责） |
 | **会话反查回填** | `findWorkerSessionId(cwd, startedAt)`：从 DSH sessionPersistence（平台面只读）按 header.cwd=工作区路径 + createdAt∈运行窗口（±60s）取最新会话 id；查不到返回 null **不造假链**。结果作为 task_finish 的 session_id（落 task_runs + tasks 跳链列），并经 exec 域 run 标注接口回填 meta.json（exec owned 文件，跨域写走 exec 命令） |
 | **busy 处理** | exec 返回 busy → `task_finish(outcome=busy)`：回 queued、不落 run 史、下 tick 再认领 |
-| **超时审批** | 超时被杀且尾部有实质产出（非空 tail 去噪后）→ 经 approval 域命令 `approval_request{kind:'task-budget-extend', subject:'task:{id}', payload:{task_id, timed_out_at_sec, budget_timeout_sec:7200, run_id, tail}}`（actor=scheduler；幂等靠 approval 同 (kind,subject) pending 查重）。纯空跑不提（不配延预算） |
-| **真实性校验** | 移入 exec 域（拒执标记扫描读的是 exec owned worker.log）；exec.worker.finished 事件 payload 带 `truth{checked,rejected,reason}`，task_finish 据此翻转 outcome。标记表：`I won't produce / refuse to continue / 拒绝执行 / INVALID_REQUEST / reasoning_content must be passed back` 等（manifest 版本受控） |
+| **超时审批** | 超时被杀且尾部有实质产出（非空 tail 去噪后）→ 经 approval 域命令 `approval_request{kind:'task-budget-extend', subject:'task:{id}', program_name:<program_id>, payload:{task_id, program:<program_id>, timed_out_at_sec, budget_timeout_sec:7200, run_id, tail}}`（actor=scheduler；幂等靠 approval 同 (kind,subject) pending 查重）。纯空跑不提（不配延预算） |
+| **真实性校验** | 拒执标记扫描读的是 exec 域 owned 的 worker.log，结果**不在 `exec.worker.finished` 事件里**——`spawn_worker` 返回值携带 `data.truth{checked,rejected,reason}`，调度器（`w.truth`）透传给 `task_finish` 的 `truth` 参数，据此翻转 outcome。标记表：`I won't produce / refuse to continue / 拒绝执行 / INVALID_REQUEST / reasoning_content must be passed back` 等（manifest 版本受控） |
 | **回收** | 每 10 tick（≈10min）：`task_reap`（宽限=超时+15min，传 pidAlive 跳过活 worker）+ `task_worker_reap`（孤儿执法）。启动时：`task_reap(0)` 无条件回收 + `task_worker_reap` 对账 |
 | **vault 回流** | 每日 05 时（北京）后首个 tick 触发 know 域 kb 同步（`know_kb_vault_sync` C32，弱联动，失败只记日志）——细节归 07-know.md，本域只保留触发器 |
 | **FGS 初始化** | 认领后、派 worker 前：经总线 `dispatch('fgs','clear', {task_id})` + `dispatch('fgs','add', {task_id, type:'goal', content:{summary:objective}})`（actor=scheduler；详见 14-fgs.md 生命周期绑定） |
@@ -719,9 +729,12 @@ stateDiagram-v2
 
 ### 2.4 后端适配器
 
-**repository 接口**（`backend/repository.js`，JSDoc；方法名=原语，不含 SQL 语义、不含业务校验）：
+**repository 接口**（单文件后端 `dsh-plugin-sec-backend-task-sqlite.js`——**不存在 `backend/repository.js` 子路径**；方法名=原语，不含 SQL 语义、不含业务校验）：
 
 ```js
+now() → epoch_ms                           // 时间源
+getProgram(id) → row|null                  // scope 域 programs 只读反查
+programByWorkspacePath(cwd) → id|null      // 会话工作区 → program 反查
 insertTask(row) → id                      // create 链路（含调度/预算/模型覆盖列）
 getTask(id) → row|null
 findActiveInterval(programId, objective) → row|null   // INV-T2 幂等
@@ -730,13 +743,19 @@ listTasksWhere(filters, limit, offset, sort) → rows  // taskWhere 单一构造
 countTasksWhere(filters) → n
 claimDueTasks(nowTs, limit) → rows        // 认领原语（BEGIN IMMEDIATE 内）
 nextTaskForProgram(programId) → row|null  // parent gate
+scheduledProgress(task, at) → {attempts, resume, resume_run_id}  // 续跑检测
+taskStats(programId) → {total, by_phase_status[]}
 pruneTaskRuns(taskId, keep) → n
 insertTaskRun(row) → id
+hasTaskRun(taskId, runId) → bool
 listTaskRunsWhere(filters, limit, offset) → rows / countTaskRunsWhere(filters) → n
+activeTaskBySession(session_id, maxAgeMs) → row|null
+reapStale(maxAgeMs, pidAliveFn, nowTs) → {reaped, skipped_alive}  // C12 回收原语
 scheduledTasksAgg() → rows                // 卡片聚合
 upsertWorker(row) / finishWorker(runId, patch, expectRunning) → changes
 getWorker(runId) / findWorkerRecentByKey(key, sinceMs) → row|null
 listWorkersWhere(status, limit) → rows / runningWorkers() → rows
+reapWorkers(readMeta, pidAliveFn, nowTs) → {reaped}   // C15 对账原语
 ```
 
 **三后端能力矩阵**：
@@ -765,7 +784,7 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 |---|---|---|---|
 | tasks 行数 | 数十（interval 固定任务 ~10 + once 链/种子任务累积） | 缓增；once 终态行长期累积 | idx_tasks_queue / idx_tasks_due；终态行只读不扫（认领查询天然过滤 status='queued'） |
 | task_runs | 每任务 ≤200 行（写入侧 LRU 剪枝） | 有界 | idx_task_runs_task / idx_task_runs_finished |
-| workers | 随 spawn 累积（v4.x 无清理） | 每日数十行 | **v5 新增保留策略（开放问题 2）：终态行保留 30 天后由 task_worker_reap 顺带清理，dedupe 窗口仅 30min 不受影响** |
+| workers | 随 spawn 累积（v4.x 无清理） | 每日数十行 | **⚠️ 未实现：设计提议终态行保留 30 天后由 task_worker_reap 顺带清理（dedupe 窗口仅 30min 不受影响）；现行 `reapWorkers` 只对账 running 行、无终态清理逻辑** |
 | 认领查询 | tick 60s × idx_tasks_due | — | BEGIN IMMEDIATE 短事务，busy_timeout 5s |
 | 并发 | 认领 ≤4/ tick，MAX_WORKERS=4（调度与交互 spawn 共享） | — | busy → 回 queued 下 tick 重试 |
 | dedupe 窗口 | 30min（done/failed 回读） | — | idx_workers_key 覆盖查询 |
@@ -775,6 +794,8 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 ## 三、迁移与兼容
 
 ### 3.1 现状代码映射（行级）
+
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
 
 | v4.x 文件 : 行 | 函数/段 | v5 落点 |
 |---|---|---|
@@ -804,6 +825,14 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 | `dashboard-rpc.js` L226-237,320-369 | taskRunNow/taskCancel/tasks/scheduledTasks/taskRuns/taskScheduleUpdate/taskSetStatus/taskCreate | RpcProjector 自动投影（§1.7 映射表） |
 | `asset-graph.js` L322-455 | task_* 工具 schema | ToolProjector（描述=manifest agent_note，§1.6） |
 
+> **2026-09-19 行号/文件核验注记**（v4 文件已删除或重命名，上表行号一律以本注记为准）：
+> - **`dsh-plugin-sec-suite.asset-db.js` 全部行号已失效**：tasks/task_runs/workers DDL 实际位于 L99 / L147 / L211；函数实际位于 TASK_STATUS·MIN_INTERVAL_SECONDS=L649、normalizeSchedule=L772、pipelineGuardStatus=L833、taskUpdate=L864、taskClaimDue=L986、taskFinishScheduledRun=L1026、taskRunRecord=L1210、activeTaskBySession=L1221、taskReapStale=L1271、workerList=L1336。
+> - **`dsh-plugin-sec-suite.scheduler.js` 已删除**（2026-09-19 旧版清理）；现行调度器为 `dsh-plugin-sec-domain-task.js` 的 `startTaskScheduler`（L1186-1423）。
+> - **`dsh-plugin-sec-suite.js` 行区间已越界/函数移出**：该文件现仅 1043 行，L1597-1740（runWorker/spawnWorker）、L1927-1978（spawn_worker/worker_status/worker_list 注册）、L2002-2039（planChain/taskChain）、L466-492 等区间不再对应所述函数——相关能力已移至 exec 域 / task 域单文件插件。
+> - **`enqueueScopeSeedTask` / `subscribers/approval_approved.js` 不存在**：实际为 `dsh-plugin-sec-domain-task.js:1114` 的 `onScopeGranted` 订阅 `scope.granted`。
+> - **`dsh-plugin-sec-suite.asset-graph.js` L322-455 的 task_* 工具 schema 已删除**：该文件现仅 40 行，只保留独立工具 `asset_graph`。
+> - **`commands/*.js` / `queries/*.js` / `scheduler/` 等「v5 落点」目录不存在**：task 域为单文件插件 `dsh-plugin-sec-domain-task.js`，后端为单文件 `dsh-plugin-sec-backend-task-sqlite.js`。
+
 ### 3.2 兼容别名与观察期
 > **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
@@ -818,7 +847,7 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 | `worker_list` / `worker_status` / `scheduled_tasks` | `task_worker_list` / `task_worker_status` / `task_scheduled` | 域前缀归位 |
 | RPC case：taskCreate/taskRunNow/taskCancel/taskSetStatus/taskScheduleUpdate | `task.create` 等点分名 | 客户端 16-dashboard.md 同批切换 |
 
-别名同样过网关全管线（不绕校验）；观察期一个调度周期（7 天，audit 零使用验收）后删除；prompt/objective 里的旧工具引用由脚本化改写（p14-1-tool-refs.py 模式）+ discipline-audit 悬空引用断言。
+> **历史留档**：别名同样过网关全管线（不绕校验）；观察期一个调度周期（7 天，audit 零使用验收）后已删除；prompt/objective 里的旧工具引用已由脚本化改写（p14-1-tool-refs.py 模式）+ discipline-audit 悬空引用断言处理。
 
 ### 3.3 数据迁移脚本要点
 
@@ -842,11 +871,11 @@ listWorkersWhere(status, limit) → rows / runningWorkers() → rows
 
 | 维度 | 结论 |
 |---|---|
-| 逻辑/功能 | 21/21 契约通过；`task_run_now` 已改为非幂等写，失败回 queued 后可安全重跑；claim 原子防重复。 |
+| 逻辑/功能 | 38/38 契约通过；`task_run_now` 已改为非幂等写，失败回 queued 后可安全重跑；claim 原子防重复。 |
 | 功能缺口 | ~~v5 task scheduler 观察期休眠~~ **已关闭（L6，2026-09-17）**：v5 task scheduler 接管为唯一持锁者（claim→FGS 初始化→spawn_worker(cwd+task_id+force)→finish 链、续跑检测、超时审批、busy 回队列、回收对账、vault 回流触发器逐项经契约测试钉死后切换）。**2026-09-19 旧版清理**：v4 `sec-suite.scheduler.js` 模块与测试已删除（回滚方式改为 revert 对应 commit + 以 task 域调度器为准）。 |
-| 静默错误 | `ledger_task_proof` 查询异常时 guard 降级为 missing=[] 且无日志；task_runs 收尾异常兜底吞掉后仅影响执行史。 |
+| 静默错误 | `ledger.task_proof` 查询异常时 guard 降级为 missing=[] 且无日志；task_runs 收尾异常兜底吞掉后仅影响执行史。 |
 
-> 2026-09-16 L0 修复：上行"守卫查询异常静默降级"已关闭——异常进 guard.missing 并强制 ok=0；契约用例覆盖（task 域 29/29 全绿）。
+> 2026-09-16 L0 修复：上行"守卫查询异常静默降级"已关闭——异常进 guard.missing 并强制 ok=0；契约用例覆盖（task 域 38/38 全绿）。
 | 性能 | task_runs 每任务 LRU 200 行；workers 终态行尚无 30 天清理，长期会膨胀。 |
 | 文档漂移 | 已补 `task_drift` 查询。 |
 | 独立升级 | 包边界可单域更新，但调度切换需 v4/v5 锁互斥演练；不能在生产直接删除 v4 scheduler。 |
