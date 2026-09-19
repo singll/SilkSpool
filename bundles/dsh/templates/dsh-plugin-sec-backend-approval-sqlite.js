@@ -27,11 +27,18 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   requested_by TEXT,
   created_at INTEGER,
   decided_at INTEGER,
-  note TEXT
+  note TEXT,
+  effect_state TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_approval_pending ON approval_requests(kind, subject, status);
 `
+// M9：effect 执行结果独立列（不改 status 的 CHECK 约束，SQLite 无法 ALTER CHECK）：
+// effect_state ∈ applied | failed | pending。failed 时可经 approval_effects_retry 补跑，
+// 成功后回置 applied——修复「approved_effect_failed 分支不可达」的死逻辑。
+const EFFECT_STATE_COLS = [
+  ['effect_state', 'effect_state TEXT'],
+]
 const EFFECTS_DDL = `
 CREATE TABLE IF NOT EXISTS approval_effects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,9 +66,19 @@ function parseRequest(row) {
 function plain(row) { return row ? { ...row } : null }
 function plainAll(rows) { return rows.map((r) => ({ ...r })) }
 
+function ensureCol(db, table, col, ddl) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all()
+    if (!cols.some((c) => c.name === col)) {
+      try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`) } catch (e) { if (!/duplicate column/i.test(String(e?.message))) throw e }
+    }
+  } catch (e) { process.stderr.write(`[sec-backend-approval-sqlite] ensureCol(${col}) 失败: ${e?.message}\n`) }
+}
+
 function createRepo(db) {
   db.exec(REQUESTS_DDL)
   db.exec(EFFECTS_DDL)
+  for (const [col, ddl] of EFFECT_STATE_COLS) ensureCol(db, 'approval_requests', col, ddl)
 
   const repo = {
     now() { return Date.now() },
@@ -87,6 +104,10 @@ function createRepo(db) {
     // L4：effect 重试补跑后决策态回归（approved_effect_failed → approved，不动 decided_at/note）
     setRequestStatus(id, status) {
       return db.prepare('UPDATE approval_requests SET status = ? WHERE id = ?').run(String(status), Number(id)).changes
+    },
+    // M9：effect 执行结果独立落列（status 的 CHECK 不动）
+    setEffectState(id, effectState) {
+      return db.prepare('UPDATE approval_requests SET effect_state = ? WHERE id = ?').run(effectState == null ? null : String(effectState), Number(id)).changes
     },
     listRequestsWhere({ kind, status, limit, offset }) {
       const where = []

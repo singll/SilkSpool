@@ -553,10 +553,14 @@ function makeHandlers(opts) {
       const summary = effectSummary(kind, row.subject, args, payload, results)
       const finalNote = [args.note, summary].filter(Boolean).join(' | ')
       repo.setNote(args.id, finalNote)
-      const status = anyFailed ? 'approved_effect_failed' : 'approved'
+      // M9：决策 status 恒为 approved（列 CHECK 只允许 pending/approved/rejected）；
+      // effect 成败落独立列 effect_state，使「批准成功但 effect 失败」可被 retry 修复并回归。
+      const status = 'approved'
+      const effectState = anyFailed ? 'failed' : (results.length ? 'applied' : 'pending')
+      if (typeof repo.setEffectState === 'function') repo.setEffectState(args.id, effectState)
       return {
         data: {
-          request_id: args.id, kind: row.kind, subject: row.subject, status, operator,
+          request_id: args.id, kind: row.kind, subject: row.subject, status, effect_state: effectState, operator,
           effects: results, effect: summary,
         },
         events: [{
@@ -567,7 +571,7 @@ function makeHandlers(opts) {
             payload, evidence: row.evidence, operator, note: args.note || null,
           },
         }],
-        after: { request_id: args.id, status, effects: results.map((r) => r.status) },
+        after: { request_id: args.id, status, effect_state: effectState, effects: results.map((r) => r.status) },
         target: { request_id: args.id, decision: 'approve' },
       }
     },
@@ -650,11 +654,10 @@ function makeHandlers(opts) {
         results.push({ effect_key: ef.effect_key, status: 'failed', error: r?.error?.message || 'unknown' })
       }
     }
-    if (!anyFailed && String(row.status) === 'approved_effect_failed') {
-      repo.setRequestStatus(args.request_id, 'approved')
-    }
+    const effectState = anyFailed ? 'failed' : 'applied'
+    if (typeof repo.setEffectState === 'function') repo.setEffectState(args.request_id, effectState)
     return {
-      data: { request_id: args.request_id, retried: results.length, results, decision_status: anyFailed ? 'approved_effect_failed' : 'approved' },
+      data: { request_id: args.request_id, retried: results.length, results, decision_status: 'approved', effect_state: effectState },
       events: [],
       after: { request_id: args.request_id, retried: results.length },
     }

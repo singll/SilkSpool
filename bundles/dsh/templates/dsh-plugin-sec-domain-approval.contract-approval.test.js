@@ -367,7 +367,7 @@ test('L4: knowledge-publish 端到端——提请 → decide approve → know_re
   assert.equal(rg2.data.status, 'published')
 })
 
-test('L4: 批准绑定哈希失效——批准后 digest 不符 → effect 失败（approved_effect_failed）+ reconcile 可见', async () => {
+test('L4: 批准绑定哈希失效——批准后 digest 不符 → effect 失败（effect_state=failed）+ reconcile 可见', async () => {
   const env = makeEnvWithKnow()
   const { bus } = env
   const { revision_id, content_digest } = await eligibleRevision(env, 'evalrun_apr_stale1')
@@ -379,7 +379,7 @@ test('L4: 批准绑定哈希失效——批准后 digest 不符 → effect 失�
   assert.equal(req.ok, true)
   const decide = await bus.dispatch('approval', 'decide', { id: req.data.request_id, decision: 'approve' }, { actor: 'dashboard' })
   assert.equal(decide.ok, true)
-  assert.equal(decide.data.status, 'approved_effect_failed', '批准对象=哈希——digest 不符即拒发布')
+  assert.equal(decide.data.effect_state, 'failed', '批准对象=哈希——digest 不符即拒发布')
   assert.equal(decide.data.effects[0].status, 'failed')
   const rec = await bus.query('approval', 'reconcile', { request_id: req.data.request_id }, { actor: 'dashboard' })
   assert.equal(rec.ok, true)
@@ -410,7 +410,7 @@ test('L4: effect 重试不重复发布——首次 effect 失败（未评测）�
   assert.equal(req.ok, true)
   const decide = await bus.dispatch('approval', 'decide', { id: req.data.request_id, decision: 'approve' }, { actor: 'dashboard' })
   assert.equal(decide.ok, true)
-  assert.equal(decide.data.status, 'approved_effect_failed', 'candidate 不可发布 → effect failed')
+  assert.equal(decide.data.effect_state, 'failed', 'candidate 不可发布 → effect failed')
   // 补齐评测（candidate→evaluating→eligible）
   const b = await bus.dispatch('know', 'revision_assess', { revision_id, phase: 'begin', eval_run_id: 'evalrun_apr_retry1', candidate_digest: content_digest }, { actor: 'reactor' })
   assert.equal(b.ok, true)

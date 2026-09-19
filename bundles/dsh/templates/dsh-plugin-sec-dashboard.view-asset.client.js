@@ -218,10 +218,11 @@ window.__ModuleLoader__.load({
                     var isOpen = expandedFam === f.root
                     return el(React.Fragment, { key: f.root },
                       el('tr', {
-                        className: 'silksec-row',
+                        className: 'silksec-row', role: 'button', tabIndex: 0, 'aria-expanded': isOpen ? 'true' : 'false',
                         style: { cursor: 'pointer', boxShadow: isOpen ? 'inset 2px 0 0 ' + uiCore.T.border3 : undefined },
                         title: '点击展开成员主机（共 ' + f.host_count + ' 台）',
                         onClick: function () { setExpandedFam(isOpen ? null : f.root) },
+                        onKeyDown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpandedFam(isOpen ? null : f.root) } },
                       },
                         el('td', { style: uiCore.styles.tdMono, title: f.root },
                           el('span', { style: { color: uiCore.T.label3, marginRight: 6, ...uiCore.F.xxxs } }, isOpen ? '▾' : '▸'),

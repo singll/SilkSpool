@@ -176,7 +176,7 @@ window.__ModuleLoader__.load({
               var cell = closed ? uiCore.styles.tdClosed : uiCore.styles.td
               var cellMono = closed ? uiCore.styles.tdClosed : uiCore.styles.tdMono
               return el(React.Fragment, { key: String(r.id) },
-                el('tr', { className: 'silksec-row', style: { ...rowStyle, cursor: 'pointer' }, title: closed ? '已定案（重复/误报/忽略）· 点击展开详情' : '点击展开详情', onClick: function () { setExpanded(isOpen ? null : r.id) } },
+                el('tr', { className: 'silksec-row', role: 'button', tabIndex: 0, 'aria-expanded': isOpen ? 'true' : 'false', style: { ...rowStyle, cursor: 'pointer' }, title: closed ? '已定案（重复/误报/忽略）· 点击展开详情' : '点击展开详情', onClick: function () { setExpanded(isOpen ? null : r.id) }, onKeyDown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(isOpen ? null : r.id) } } },
                   el('td', { style: cellMono }, String(r.id)),
                   el('td', { style: cell }, closed ? el('span', { style: { ...uiCore.styles.pill, padding: '1px 6px', fontSize: 11 } }, uiCore.SEV_LABEL[r.severity] || r.severity) : uiCore.sevPill(r.severity)),
                   el('td', { style: cell }, closed ? el('span', { style: { ...uiCore.styles.pill, padding: '1px 6px', fontSize: 11 } }, uiCore.STATUS_LABEL[r.status] || r.status) : uiCore.statusPill(r.status)),

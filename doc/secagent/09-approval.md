@@ -140,7 +140,7 @@
 }
 ```
 
-`effect` 字段是**本次 effect 执行结果摘要**（decide 已提交 decision 并同步 dispatch 各域命令、逐条登记 `approval_effects`）——全部 applied → 返回/落库 `approved`；任一失败 → 返回 `approved_effect_failed`（持久列仍为 `approved`，见 §2.1 注），可经 `approval_reconcile` 对账后 `approval_effects_retry` 补跑。
+`effect` 字段是**本次 effect 执行结果摘要**（decide 已提交 decision 并同步 dispatch 各域命令、逐条登记 `approval_effects`）——全部 applied → `effect_state='applied'`；任一失败 → `effect_state='failed'`（决策 `status` 恒为 `approved`，因列 CHECK 仅三态；effect 成败落独立列 `effect_state`，2026-09-19 修复——此前 `approved_effect_failed` 仅返回态且分支不可达），可经 `approval_reconcile` 对账后 `approval_effects_retry` 补跑（补跑成功 `effect_state` 回置 `applied`）。
 
 **错误码**：
 
@@ -184,7 +184,7 @@
 effect 失败重试通道：批准（decision）记录不动，只对 `status='failed'` 的 effect 按**原 payload** 重新 dispatch（decide 事务外的补偿执行点）。
 
 **参数**：`request_id`（必填，请求须存在且 status 以 `approved` 开头，否则 E_NOT_FOUND/E_STATE）。
-**语义**：逐条重放 failed effect（同 payload）→ 成功 `applied`、仍失败留 `failed` + `last_error`；全部补跑成功且原状态为 `approved_effect_failed` 时决策态回归 `approved`（只改 status 列，不动 decided_at/note）。**注**：现网 decide 持久列恒为 `approved`（`approved_effect_failed` 仅为返回态，见 §2.1 注），故该回归分支当前不可达——effect 成败以 `approval_effects` 行为准。**重试不重复生效**：同 payload 重放命中接收方幂等键（7 天窗口内 replay:true）；窗口过期后由接收方业务级幂等兜底（如 know 域 C26 的「同批准既有 release 吸收」）。
+**语义**：逐条重放 failed effect（同 payload）→ 成功 `applied`、仍失败留 `failed` + `last_error`；全部补跑成功后 `effect_state` 回置 `applied`（决策 `status` 恒为 `approved`，不动 decided_at/note）。**注（2026-09-19 修复）**：effect 成败改由独立列 `approval_requests.effect_state`（applied/failed/pending）承载——`status` 列 CHECK 仍仅三态，原「`approved_effect_failed` 持久态分支不可达」的死逻辑由此消除。**重试不重复生效**：同 payload 重放命中接收方幂等键（7 天窗口内 replay:true）；窗口过期后由接收方业务级幂等兜底（如 know 域 C26 的「同批准既有 release 吸收」）。
 **actor**：dashboard / human（model 不可调）。**幂等**：自动指纹 `{request_id}`（窗口内重放返回首次结果）。
 **返回**：`{ request_id, retried, results: [{effect_key, status, replay?|error?}], decision_status }`；无事件（纯补偿通道，效果由目标域事件体现）。
 

@@ -112,6 +112,7 @@ templates:
   - data-seed/scripts/vision-triage.mjs
   - data-seed/scripts/grade-assets.py
   - data-seed/scripts/data-quality.py
+  - data-seed/scripts/data-hygiene.py
   - data-seed/scripts/vault-export-build.sh
   - data-seed/scripts/discipline-audit.py
   # --- v5 Phase 5.1 prompt 体系全量改写（tasks objective 工具引用 → 语义动词，p14 模式，幂等可重跑）---

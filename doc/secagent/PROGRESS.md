@@ -17,6 +17,16 @@
 
 ## 二、最近进度结果
 
+### 2026-09-19 · 第三轮修复：代码中危 + 供应链 + 数据卫生 + a11y（csai 已部署验收）
+- 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) §十一.5 执行第三轮修复。
+- 安全：沙箱不再整目录挂载 `$HOME`（M6，原暴露 `.ssh`/`fofa.conf`/浏览器登录态）；tools-manager 下载 sha256 校验（M8）。
+- 代码：证据发布稳定窗整批化（M5）；approval 增 `effect_state` 独立列消除 `approved_effect_failed` 死逻辑（M9）。
+- UI：审批/任务首帧骨架屏（B10）、面板降级提示（B11）、大队列单套 DOM（B12）、审计展开态稳定键（B13）、全表 a11y（aria-sort/role/aria-expanded/aria-pressed/aria-selected/aria-label）。
+- 数据：新增 `data-hygiene.py`（program_id 唯一命中回填 / source 归一 / fgs 孤儿清理 / 重复发现报告，默认 dry-run）；候选去重返回 `dedup_reason`。
+- 文档：09-approval（effect_state）、10-exec（沙箱隔离）回填。
+- 验收：本地契约 466 例 + UI 114 全绿；csai 部署后 `sec-v5-accept.sh` PASS=41 FAIL=0。
+- 未处理：存量 43 条 confirmed 批量提交任务、`data-hygiene --apply` 线上执行、授权时效字段、`external_id` 跨源去重、17/15/ui-surface-deps 回填、M1（幂等预检入事务）与 L 类卫生项。
+
 ### 2026-09-19 · 产出闭环 + 数据治理 + 任务回收 + DLQ 加固（csai 已部署验收）
 - 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) §十一.4 建议执行第二轮修复。
 - 产出闭环：`vuln_submit` 增 `remote_id`；新查询 `vuln_submission_queue`（confirmed 未提交，带 age_days/overdue）；`vuln_stats.signal.confirmed_unsubmitted`；看板 KPI 增「待提交 SRC」六卡；task 域订阅 `vuln.signal.confirmed` 幂等入队 `[提交] finding #id` 任务（phase=review）。

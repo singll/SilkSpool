@@ -423,6 +423,26 @@ B1 view-asset.client.js:40｜B2 panel.client.js:138-148 + view-vuln.client.js:23
 
 **第二轮验收**：本地契约 466 例全绿（bus51/exec26/asset31/vuln63/endpoint25/task39/fact23/know73/scope15/approval19/ledger22/report12/proxy17/fgs21/eval29）+ UI 114/114；csai `bundle dsh setup` 部署、`sec-v5-accept.sh` **PASS=41 FAIL=0**、`silksecagent` active/NRestarts=0；outbox 0 dead_letter / 0 pending。
 
-### 11.5 仍未处理（需策略决策或后续会话）
+### 11.5 第三轮修复（代码中危 + 供应链 + 数据卫生 + a11y，2026-09-19 续）
 
-- 存量 43 条 confirmed 的**批量提交**（当前仅暴露队列 + KPI + 新确认自动入队，未对历史批量建任务）、外键历史回填（findings.task_id 等）、source 命名收敛、授权时效字段（`expires_at/reviewed_at`）、`_file`/沙箱 `$HOME` 进一步收敛、tools-manager 下载 integrity（sha256 清单）、UI B8/B10–B13 与 a11y、代码 M1/M5/M6/M8/M9 及 L 类卫生项、17-llm-surface/15-eval/ui-surface-deps 的文档回填。
+| 编号 | 修复内容 | 文件 | 验证 |
+|---|---|---|---|
+| M6 | 沙箱凭据隔离：不再整目录挂载 `$HOME`（暴露 `.ssh/id_ed25519`、`fofa.conf`、浏览器登录态）；改 HOME tmpfs + 工具链目录只读投影 | `dsh-plugin-sec-domain-exec.js` | exec 契约 26/26；线上确认敏感项不可见 |
+| M5 | 证据发布稳定窗由**逐文件 120ms** 改**整批一次**（十万级小文件不再线性拖死） | 同上 | exec 契约 26/26 |
+| M9 | `approval_requests` 增独立列 `effect_state`（applied/failed/pending），消除 `approved_effect_failed` 死逻辑；retry 成功后回置 applied | `dsh-plugin-sec-domain-approval.js` + `-approval-sqlite.js` | approval 契约 19/19 |
+| M8 | tools-manager 下载 integrity：解析 release 的 checksums 文件比对 sha256，不符即拒装，缺失则告警 | `tools-manager.sh` | `bash -n` 通过 |
+| B8 | 降级态双入口去重（保留说明，正常宿主不触发） | 代码复核 | — |
+| B10 | 审批/任务中心首帧接 `SkeletonRows`（加载不再显示「空」） | `ui-task.client.js` | UI 114/114 |
+| B11 | 主面板呈现 `stats.degraded` 数据源降级提示 | `ui-panel.client.js` | UI 114/114 |
+| B12 | 大队列（>60 行）按窄栏判定只渲染一套 DOM | `ui-task.client.js` | UI 114/114 |
+| B13 | 审计展开态改稳定行键（ts+tool+decision），轮询刷新不漂移 | `view-audit.client.js` | UI 114/114 |
+| a11y | 可排序表头 `aria-sort`/键盘；行下钻 `role=button`/`tabIndex`/`aria-expanded`/Enter·Space；chip `aria-pressed`；主面板 tab `role=tablist/tab`+`aria-selected`；搜索框 `aria-label` | ui-core / panel / 4 视图 | UI 114/114 |
+| 数据卫生 | 新增 `data-hygiene.py`：program_id 唯一命中回填、source 空值归一、fgs 孤儿清理、重复发现报告（默认 dry-run，`--apply` 落库） | `data-seed/scripts/data-hygiene.py` + manifest | 本地沙箱验证通过 |
+| 去重口径 | `register_candidate` 返回 `dedup_reason`（same_host_title_url / same_host_title_diff_url） | `dsh-plugin-sec-domain-vuln.js` | vuln 契约 63/63 |
+| 文档 | 09-approval（effect_state）、10-exec（沙箱隔离）回填 | doc/secagent | 人工复核 |
+
+**第三轮验收**：本地契约 466 例 + UI 114 全绿；csai `bundle dsh setup` 部署 + `sec-v5-accept.sh` PASS=41 FAIL=0。
+
+### 11.6 仍未处理（需策略决策或后续会话）
+
+- 存量 43 条 confirmed 的**批量提交任务**（当前仅暴露队列 + KPI + 新确认自动入队；历史批量建任务需人工确认目标 program 归属后执行）、`data-hygiene.py --apply` 的线上历史回填执行、授权时效字段（`expires_at/reviewed_at`，需 scope.yml schema 变更 + 审批联动）、findings 的 `external_id` 列与跨源去重（需上游 parser 提供外部 id）、17-llm-surface/15-eval/ui-surface-deps 的文档回填、代码 M1（幂等预检入事务）与 L 类卫生项。

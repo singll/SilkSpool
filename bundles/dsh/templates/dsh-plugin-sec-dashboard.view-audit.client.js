@@ -41,8 +41,10 @@ window.__ModuleLoader__.load({
       var rpcCall = (typeof api.rpc === 'function') ? api.rpc : ownRpc
       var state = uiCore.useRpc(function () { return { endpoint: 'audit' } }, [], rpcCall)
       // 详情列点击展开全文（默认 200 字截断 + 悬停提示，展开后完整显示）
+      // B13：展开态以稳定行键（ts+tool+decision）为 key，轮询刷新后位置不漂移（原用数组下标）。
       var ex = React.useState({})
       var expanded = ex[0]; var setExpanded = ex[1]
+      function rowKey(r) { return String(r.ts || '') + '|' + String(r.tool || '') + '|' + String(r.decision || '') }
       if (state.error) return el('div', { style: uiCore.styles.errorLine }, '审计加载失败: ' + state.error)
       if (!state.data) return el(uiCore.SkeletonRows, null)
       var rows = (state.data && state.data.rows) || []
@@ -67,10 +69,11 @@ window.__ModuleLoader__.load({
               el('th', { style: uiCore.styles.th }, '工具 / 动作'),
               el('th', { style: uiCore.styles.th }, '决策'),
               el('th', { style: uiCore.styles.th }, '详情'))),
-            el('tbody', null, rows.map(function (r, i) {
+            el('tbody', null, rows.map(function (r) {
               var detail = r.detail ? (typeof r.detail === 'object' ? JSON.stringify(r.detail) : String(r.detail)) : ''
-              var isOpen = !!expanded[i]
-              return el('tr', { key: i, className: 'silksec-row' },
+              var k = rowKey(r)
+              var isOpen = !!expanded[k]
+              return el('tr', { key: k, className: 'silksec-row' },
                 el('td', { style: uiCore.styles.tdMono }, uiCore.fmtTime(r.ts)),
                 el('td', { style: uiCore.styles.tdMono, title: r.tool || '' }, r.tool || '—'),
                 el('td', { style: { ...uiCore.styles.td, color: decColor(r.decision) } }, r.decision || '—'),
@@ -82,7 +85,7 @@ window.__ModuleLoader__.load({
                     ...(isOpen ? { whiteSpace: 'normal', wordBreak: 'break-all', overflow: 'visible', textOverflow: 'clip' } : {}),
                   },
                   title: detail.length > 200 ? (isOpen ? '点击收起' : '点击展开全文') : detail,
-                  onClick: function () { if (detail.length > 200) setExpanded({ ...expanded, [i]: !isOpen }) },
+                  onClick: function () { if (detail.length > 200) setExpanded({ ...expanded, [k]: !isOpen }) },
                 },
                   isOpen ? el('span', null, detail + ' ') : detail.slice(0, 200) + (detail.length > 200 ? '… ⤵' : '')))
             })))))

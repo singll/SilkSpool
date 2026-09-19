@@ -206,7 +206,8 @@ window.__ModuleLoader__.load({
         var label = entry.label
         if (entry.id === 'approvals' && approvalPending) label += ' · ' + approvalPending
         return el('button', {
-          key: entry.id, type: 'button', className: 'silksec-tab',
+          key: entry.id, type: 'button', className: 'silksec-tab', role: 'tab',
+          'aria-selected': effActiveId === entry.id ? 'true' : 'false',
           'data-on': effActiveId === entry.id ? 'true' : undefined,
           onClick: function () { setPending(null); setActiveId(entry.id) },
         }, label)
@@ -222,10 +223,11 @@ window.__ModuleLoader__.load({
       }
 
       var secondaryTabs = activeInMore
-        ? el('div', { style: { ...uiCore.styles.tabBar, marginTop: 4, marginBottom: 0 } }, moreEntries.map(function (entry) {
+        ? el('div', { style: { ...uiCore.styles.tabBar, marginTop: 4, marginBottom: 0 }, role: 'tablist' }, moreEntries.map(function (entry) {
             return el('button', {
-              key: 'more-' + entry.id, type: 'button', className: 'silksec-tab',
+              key: 'more-' + entry.id, type: 'button', className: 'silksec-tab', role: 'tab',
               style: { height: 26, ...uiCore.F.xxs },
+              'aria-selected': effActiveId === entry.id ? 'true' : 'false',
               'data-on': effActiveId === entry.id ? 'true' : undefined,
               onClick: function () { setPending(null); navigate.select(entry.id) },
             }, entry.label)
@@ -286,13 +288,16 @@ window.__ModuleLoader__.load({
                 onClick: function () { navigate.select(it.tab) },
               }, it.label + ' ' + num(it.value))
             }))),
+        (s.degraded && s.degraded.length)
+          ? el('div', { style: { ...uiCore.styles.errorLine, color: uiCore.T.warn }, title: '对应 KPI 显示「—」，其余指标照常' }, '⚠ 部分数据源降级：' + s.degraded.join(' / ') + '（重试刷新或查看服务日志）')
+          : null,
         (memState.data && memState.data.loaded === false)
           ? el('div', { style: { ...uiCore.styles.errorLine, color: uiCore.T.warn } }, '⚠ memcore 记忆治理插件未加载：写入不校验、读取全量可见（fail-open）。检查 profile 是否含 @silksec/sec-memcore。')
           : null,
         (opsState.data && opsState.data.healthy === false)
           ? el('div', { style: { ...uiCore.styles.errorLine, color: uiCore.T.warn } }, '⚠ 纪律健康度告警（' + (opsState.data.alerts || []).length + '）：' + (opsState.data.alerts || []).slice(0, 3).join('；') + '（详见 ops 端点）')
           : null,
-        el('div', { style: uiCore.styles.tabBar }, tabs),
+        el('div', { style: uiCore.styles.tabBar, role: 'tablist' }, tabs),
         secondaryTabs,
         el('div', { style: uiCore.styles.body }, activeNode))
     }

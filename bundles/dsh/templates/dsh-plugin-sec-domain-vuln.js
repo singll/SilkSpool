@@ -813,8 +813,10 @@ function makeHandlers(opts) {
       const dup = repo.getFindingByFingerprint(weak)
       if (dup) {
         if (ctx.session_id && !dup.session_id) repo.backfillSession(dup.id, ctx.session_id)
+        // 去重口径报告：title+host 相同但 url 不同 → same_title_diff_url，供调用方判断是否真重复
+        const sameUrl = String(dup.url || '') === url
         return {
-          data: { id: dup.id, dup: true, noise: dup.noise === 1, status: dup.status },
+          data: { id: dup.id, dup: true, noise: dup.noise === 1, status: dup.status, dedup_reason: sameUrl ? 'same_host_title_url' : 'same_host_title_diff_url' },
           events: [],
           before: { status: dup.status, noise: dup.noise }, after: { status: dup.status, noise: dup.noise },
         }

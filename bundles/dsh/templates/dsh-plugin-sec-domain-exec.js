@@ -592,9 +592,43 @@ function makeHandlers(opts) {
     for (;;) { const w = acquireQpsToken(); if (w <= 0) break; await new Promise((r) => setTimeout(r, w)) }
   }
   function bwrapAvailable() { try { return fs.existsSync(BWRAP_BIN) } catch { return false } }
+  // M6：沙箱凭据隔离。不再整目录读写挂载 $HOME（会暴露 .ssh/id_ed25519、.config/fofa.conf
+  // 及浏览器登录态）。改为「HOME 内建 tmpfs + 只读投影工具链目录 + 只读挂载 HOME 常规文件」，
+  // 凭据/私钥/浏览器 profile 不落盘可见；工具仍可读 ~/.config/<tool>/ 配置（ro-bind 单目录）。
+  const SANDBOX_HOME_READONLY_DIRS = ['.config', '.local', 'go', 'nuclei-templates', '.cache']
+  const SANDBOX_DENY_BASENAMES = new Set(['.ssh', 'id_rsa', 'id_ed25519', 'credentials.yaml', '.credentials.yaml', '.env', '.step', '.xray', '.wpscan', '.semgrep'])
+  // 已只读投影目录内的凭据文件（用 /dev/null 覆盖遮蔽，保持工具可读其它配置）
+  const SANDBOX_MASK_RELS = ['.config/fofa.conf', '.config/google-chrome-for-testing', '.config/gh', '.config/gcloud']
+  function sandboxHomeArgs() {
+    const args = ['--tmpfs', HOME_DIR]
+    for (const rel of SANDBOX_HOME_READONLY_DIRS) {
+      const abs = path.join(HOME_DIR, rel)
+      try { if (fs.existsSync(abs)) args.push('--ro-bind', abs, abs) } catch { /* 忽略不可读目录 */ }
+    }
+    // 遮蔽已知凭据文件/目录（挂载顺序保证后者覆盖前者）
+    for (const rel of SANDBOX_MASK_RELS) {
+      const abs = path.join(HOME_DIR, rel)
+      try {
+        if (!fs.existsSync(abs)) continue
+        if (fs.statSync(abs).isDirectory()) args.push('--tmpfs', abs)
+        else args.push('--ro-bind', '/dev/null', abs)
+      } catch { /* 忽略 */ }
+    }
+    // 只读挂载 HOME 顶层的常规文件（配置类），跳过凭据/私钥/隐藏敏感项
+    try {
+      for (const e of fs.readdirSync(HOME_DIR, { withFileTypes: true })) {
+        if (!e.isFile()) continue
+        if (SANDBOX_DENY_BASENAMES.has(e.name)) continue
+        const abs = path.join(HOME_DIR, e.name)
+        args.push('--ro-bind', abs, abs)
+      }
+    } catch { /* HOME 不可读则仅 tmpfs */ }
+    return args
+  }
   function buildSandboxCommand(binary, argv, runDir) {
     if (SANDBOX_DISABLED || !bwrapAvailable()) return null
-    const args = ['--unshare-all', '--share-net', '--die-with-parent', '--new-session', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--ro-bind', '/usr', '/usr', '--ro-bind', '/etc', '/etc', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/sbin', '/sbin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64', '--bind', HOME_DIR, HOME_DIR]
+    const args = ['--unshare-all', '--share-net', '--die-with-parent', '--new-session', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--ro-bind', '/usr', '/usr', '--ro-bind', '/etc', '/etc', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/sbin', '/sbin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64']
+    args.push(...sandboxHomeArgs())
     if (fs.existsSync(VENV_DIR)) args.push('--ro-bind', VENV_DIR, VENV_DIR)
     if (fs.existsSync(OPT_DIR)) args.push('--ro-bind', OPT_DIR, OPT_DIR)
     args.push('--bind', runDir, runDir)
@@ -978,6 +1012,9 @@ function makeHandlers(opts) {
 
       const files = []
       let totalBytes = 0
+      // M5：整批共享一次稳定窗（原实现逐文件 sleep 120ms，十万级小文件线性拖死）。
+      // 先采集全量 stat 快照，统一等待稳定窗，再复检是否仍在写入。
+      const stats1 = new Map()
       for (const abs of candidates) {
         const rel = path.relative(stagingDir, abs)
         if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throwErr('E_EXEC_EVIDENCE_UNSAFE', `路径穿越: ${rel}`, 'staging 文件必须位于暂存区内', false)
@@ -986,11 +1023,15 @@ function makeHandlers(opts) {
         if (st1.size > EVIDENCE_MAX_FILE_BYTES) throwErr('E_EXEC_EVIDENCE_TOO_LARGE', `文件超限: ${rel}（${st1.size}B > ${EVIDENCE_MAX_FILE_BYTES}B）`, '拆分或裁剪证据文件', false)
         totalBytes += st1.size
         if (totalBytes > EVIDENCE_MAX_TOTAL_BYTES) throwErr('E_EXEC_EVIDENCE_TOO_LARGE', `证据总量超限（>${EVIDENCE_MAX_TOTAL_BYTES}B）`, '拆分多次 run 或裁剪证据', false)
-        // realpath 容器内断言（防绑定挂载/逃逸）
         const real = fs.realpathSync(abs)
         if (!real.startsWith(stagingReal + path.sep)) throwErr('E_EXEC_EVIDENCE_UNSAFE', `realpath 逃逸: ${rel}`, '证据文件必须位于暂存区内', false)
-        // 写完校验：双 stat 稳定窗内 size/mtime 不变（仍在写入 → retryable 拒绝）
-        await new Promise((r) => setTimeout(r, EVIDENCE_STABLE_MS))
+        stats1.set(abs, st1)
+      }
+      await new Promise((r) => setTimeout(r, EVIDENCE_STABLE_MS))
+      for (const abs of candidates) {
+        const rel = path.relative(stagingDir, abs)
+        const st1 = stats1.get(abs)
+        // 写完校验：稳定窗内 size/mtime 不变（仍在写入 → retryable 拒绝）
         const st2 = fs.statSync(abs)
         if (st2.size !== st1.size || st2.mtimeMs !== st1.mtimeMs) {
           throwErr('E_EXEC_EVIDENCE_UNFINISHED', `文件仍在写入: ${rel}`, '等待写入完成后重试发布', true)

@@ -284,18 +284,24 @@ window.__ModuleLoader__.load({
       return el('button', {
         key: key + '|' + value, type: 'button', className: 'silksec-chip',
         'data-on': on ? 'true' : undefined,
+        'aria-pressed': on ? 'true' : 'false',
         style: color ? { color: color } : undefined,
         title: (title || label) + '：' + count + '（点击' + (on ? '清除' : '筛选') + '）',
         onClick: function () { query.setFilter(key, on ? '' : value) },
       }, label + ' ' + count)
     }
     function sortableTh(label, col, query) {
-      if (!col) return el('th', { style: th }, label)
+      if (!col) return el('th', { style: th, scope: 'col' }, label)
       var active = query.sort === col
       var caret = active ? (query.dir === 'asc' ? ' ↑' : ' ↓') : ''
+      // 可访问性：可排序表头键盘可达（Enter/Space），带 aria-sort 语义
       return el('th', {
+        scope: 'col', tabIndex: 0, role: 'columnheader',
+        'aria-sort': active ? (query.dir === 'asc' ? 'ascending' : 'descending') : 'none',
         style: { ...th, cursor: 'pointer', color: active ? T.label : T.label2, userSelect: 'none' },
-        title: '点击排序', onClick: function () { query.toggleSort(col) },
+        title: '点击排序（或按 Enter）',
+        onClick: function () { query.toggleSort(col) },
+        onKeyDown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); query.toggleSort(col) } },
       }, label + caret)
     }
     // 搜索词高亮：命中片段丝线金加粗（零依赖 split，React 元素树直构）
@@ -404,6 +410,7 @@ window.__ModuleLoader__.load({
         el('input', {
           className: 'silksec-input', style: { width: 220 },
           placeholder: props.placeholder || '搜索…',
+          'aria-label': props.placeholder || '搜索',
           value: props.query.q,
           onChange: function (e) { props.query.setQ(e.target.value) },
         }),

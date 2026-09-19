@@ -86,10 +86,11 @@ window.__ModuleLoader__.load({
               var isOpen = expandedHost === r.host
               return el(React.Fragment, { key: r.host },
                 el('tr', {
-                  className: 'silksec-row',
+                  className: 'silksec-row', role: 'button', tabIndex: 0, 'aria-expanded': isOpen ? 'true' : 'false',
                   style: { cursor: 'pointer', boxShadow: isOpen ? 'inset 2px 0 0 ' + uiCore.T.border3 : undefined },
                   title: '点击展开该主机的接口明细',
                   onClick: function () { setExpandedHost(isOpen ? null : r.host) },
+                  onKeyDown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpandedHost(isOpen ? null : r.host) } },
                 },
                   el('td', { style: uiCore.styles.tdMono, title: r.host },
                     el('span', { style: { color: uiCore.T.label3, marginRight: 6, ...uiCore.F.xxxs } }, isOpen ? '▾' : '▸'),

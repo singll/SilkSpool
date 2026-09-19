@@ -63,9 +63,10 @@ window.__ModuleLoader__.load({
       var groupKeys = Object.keys(groups).sort(function (a, b) { return a === 'all' ? 1 : b === 'all' ? -1 : a.localeCompare(b) })
       function rowOf(r) {
         return el('tr', {
-          key: r.file, className: 'silksec-row',
+          key: r.file, className: 'silksec-row', role: 'button', tabIndex: 0,
           style: { cursor: 'pointer' }, title: '点击查看报告（Modal 打开，可复制/下载）',
           onClick: function () { props.onOpen(r.file) },
+          onKeyDown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); props.onOpen(r.file) } },
         },
           el('td', { style: uiCore.styles.tdMono, title: (r.title || '') + (r.file ? ' · ' + r.file : '') }, (r.title || '').slice(0, 60) || '📄 ' + r.file),
           el('td', { style: uiCore.styles.tdMono }, (r.date || '').replace(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/, '$1-$2-$3 $4:$5') || (isFinite(Number(r.mtime)) ? new Date(Number(r.mtime)).toISOString().slice(0, 16).replace('T', ' ') : '—')),

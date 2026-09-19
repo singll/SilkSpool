@@ -83,20 +83,54 @@ install_bin() {
         log "下载 $repo latest release (linux/$arch)"
     fi
     local url
-    url=$(curl -fsSL --connect-timeout 15 "$api" \
+    # 下载 URL 与（可选）发布方提供的 sha256 校验值：优先取同 release 的 checksums 文件中的该资产摘要
+    local url expected_sha
+    read -r url expected_sha < <(curl -fsSL --connect-timeout 15 "$api" \
         | python3 -c '
 import json, sys, re
 d = json.load(sys.stdin)
 arch_re = re.compile(sys.argv[1], re.I)
-for a in d.get("assets", []):
+assets = d.get("assets", [])
+def skip(n):
+    return n.endswith((".sig", ".sha256", ".md5", ".txt", ".deb", ".rpm", ".msi"))
+target = None
+for a in assets:
     n = a["name"]
-    if "linux" in n.lower() and arch_re.search(n) and not n.endswith((".sig", ".sha256", ".md5", ".txt", ".deb", ".rpm", ".msi")):
-        print(a["browser_download_url"]); break
+    if "linux" in n.lower() and arch_re.search(n) and not skip(n):
+        target = a; break
+if not target:
+    print(""); sys.exit(0)
+# 在 checksums/sha256sum 类资产中查找该文件名对应的摘要
+sha = ""
+for a in assets:
+    ln = a["name"].lower()
+    if ("checksum" in ln or "sha256" in ln or "sha256sum" in ln) and not a["name"].endswith((".sig",)):
+        try:
+            import urllib.request
+            body = urllib.request.urlopen(a["browser_download_url"], timeout=15).read().decode("utf-8", "replace")
+        except Exception:
+            continue
+        m = re.search(r"([0-9a-fA-F]{64})[ \t]+\*?" + re.escape(target["name"]) + r"\b", body)
+        if m:
+            sha = m.group(1).lower(); break
+print(target["browser_download_url"] + " " + sha)
 ' "$arch")
     [ -n "$url" ] || { err "$repo 未找到匹配的 release 资产"; return 1; }
     local tmpdir
     tmpdir=$(mktemp -d)
     curl -fsSL "$url" -o "$tmpdir/pkg"
+    # 供应链校验（M8）：若发布方提供 sha256 则强制校验；未提供则告警（无法凭空校验）。
+    if [ -n "$expected_sha" ]; then
+        local actual_sha
+        actual_sha=$(sha256sum "$tmpdir/pkg" | awk '{print $1}')
+        if [ "$actual_sha" != "$expected_sha" ]; then
+            err "$repo 下载校验失败（期望 $expected_sha，实际 $actual_sha）——拒绝安装"
+            rm -rf "$tmpdir"; return 1
+        fi
+        log "sha256 校验通过（$repo）"
+    else
+        warn "$repo 未提供 sha256 校验值，跳过完整性校验（供应链风险自担）"
+    fi
     case "$url" in
         *.zip)    (cd "$tmpdir" && python3 -c 'import zipfile;zipfile.ZipFile("pkg").extractall()') ;;
         *.tar.gz|*.tgz) (cd "$tmpdir" && tar xzf pkg) ;;

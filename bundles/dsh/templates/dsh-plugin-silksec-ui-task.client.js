@@ -495,6 +495,13 @@ window.__ModuleLoader__.load({
         return el('div', { style: { color: T.label3, ...((F && F.xs) || {}) } }, 'ui-core hooks 不可用，任务中心降级为空。')
       }
 
+      // B12：窄栏判定（>60 行时仅渲染一套 DOM；优先容器查询 API，退化为视口宽度）
+      function isNarrow() {
+        try {
+          if (typeof window !== 'undefined' && window.matchMedia) return window.matchMedia('(max-width: 480px)').matches
+        } catch (e) { /* 无 window（测试/SSR）→ 宽栏 */ }
+        return false
+      }
       var schedState = useRpcCore(function () { return { endpoint: 'scheduledTasks' } }, [], rpc || undefined)
       var tasksState = useRpcCore(function () {
         return { endpoint: 'tasks', payload: { bucket: 'active', limit: 200, program_id: progFilter } }
@@ -596,18 +603,27 @@ window.__ModuleLoader__.load({
           // 区块一：定时任务卡片
           sectionHeadNode({ title: '定时任务', count: scheduled.length, icon: alarmIcon(14), subtitle: '固定周期实体：跑完自动续期不增殖；每行「🕘」跳到执行历史。' }),
           schedState.error ? el('div', { style: { ...(styles.errorLine || {}), color: T.error } }, '定时任务加载失败: ' + schedState.error) : null,
-          scheduled.length
-            ? el('div', null, scheduled.map(function (t) { return el(ScheduledCard, { key: String(t.id), task: t, ...busyProps }) }))
-            : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, '暂无定时任务'),
+          schedState.loading && !schedState.data
+            ? el(uiCore.SkeletonRows, { rows: 2 })
+            : (scheduled.length
+              ? el('div', null, scheduled.map(function (t) { return el(ScheduledCard, { key: String(t.id), task: t, ...busyProps }) }))
+              : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, '暂无定时任务')),
 
           // 区块二：一次性队列（<480px 表格换卡片行）
           sectionHeadNode({ title: '一次性队列', count: queue.length, icon: queueIcon(14), subtitle: '编排器派发的一次性任务（链步骤、N-day 候选等）；状态点 + 行内操作。' }),
           tasksState.error ? el('div', { style: { ...(styles.errorLine || {}), color: T.error } }, '任务队列加载失败: ' + tasksState.error) : null,
-          queue.length
-            ? el(React.Fragment, null,
-                el(QueueTable, { rows: queue, ...busyProps }),
-                el(QueueCards, { rows: queue, ...busyProps }))
-            : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, '暂无一次性任务'),
+          tasksState.loading && !tasksState.data
+            ? el(uiCore.SkeletonRows, { rows: 3 })
+            : (queue.length
+              ? (queue.length > 60
+                // B12：大队列按 CSS 容器查询二选一渲染，避免同时构建表格与卡片两套 DOM
+                ? (isNarrow()
+                  ? el(QueueCards, { rows: queue, ...busyProps })
+                  : el(QueueTable, { rows: queue, ...busyProps }))
+                : el(React.Fragment, null,
+                    el(QueueTable, { rows: queue, ...busyProps }),
+                    el(QueueCards, { rows: queue, ...busyProps })))
+              : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, '暂无一次性任务')),
 
           // 区块三：工作区快块（窄栏降级为顶部 program 筛选 Pill 组）
           el(WorkspaceQuick, { items: wsItems }),
