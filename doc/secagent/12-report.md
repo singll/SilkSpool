@@ -358,7 +358,7 @@ statReportFile(relPath)      // mtime/size/sha
 
 ### 3.1 现状代码映射（行级）
 
-> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；`dsh-plugin-sec-dashboard.client.js` 旧单体已删除（2026-09-19，见 [PROGRESS](PROGRESS.md) §〇）、`dsh-plugin-sec-suite.asset-db.js` 相关函数体已清理，行号可能失效，现行实现以域 manifest 与 backend 为准。
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；`dsh-plugin-sec-dashboard.client.js` 旧单体已删除（2026-09-19，见 [进度历史归档](archive/progress-history.md)）、`dsh-plugin-sec-suite.asset-db.js` 相关函数体已清理，行号可能失效，现行实现以域 manifest 与 backend 为准。
 
 | v4.x 位置 | 内容 | v5 去向 |
 |---|---|---|
@@ -372,7 +372,7 @@ statReportFile(relPath)      // mtime/size/sha
 | `dsh-plugin-sec-dashboard.client.js` ReportsView（L2142 起）| 按项目分组列表 + Modal 查看器 | 16-dashboard.md：`@silksec/sec-domain-report/dashboard-view.js` 域视图插件 |
 
 ### 3.2 兼容别名与观察期
-> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
+> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [进度历史归档](archive/progress-history.md) 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
 | v4 旧名 | v5 新名 | 说明 |
 |---|---|---|

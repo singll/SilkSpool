@@ -585,7 +585,7 @@ exec 域的运行依赖一批**平台层边缘资产**——它们不属于任�
 
 来源：`bundles/dsh/templates/dsh-plugin-sec-suite.js`（index.js 2142 行）+ `dsh-plugin-sec-suite.parsers.js`（172 行）+ `dsh-plugin-sec-suite.dashboard-rpc.js` + `dsh-plugin-sec-suite.webhook.js`。
 
-> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；`dsh-plugin-sec-suite.parsers.js` 已删除，`dsh-plugin-sec-suite.js` 内多数函数体已在 Phase 3.4 清理（见 [PROGRESS](PROGRESS.md) §〇），行号失效，现行实现以域 manifest 与 backend 为准。
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；`dsh-plugin-sec-suite.parsers.js` 已删除，`dsh-plugin-sec-suite.js` 内多数函数体已在 Phase 3.4 清理（见 [进度历史归档](archive/progress-history.md)），行号失效，现行实现以域 manifest 与 backend 为准。
 
 | # | v4 位置（文件:行） | 内容 | v5 去向 |
 |---|---|---|---|
@@ -618,7 +618,7 @@ exec 域的运行依赖一批**平台层边缘资产**——它们不属于任�
 | 27 | index.js:1529-1594 | authzDiff | **vuln 域 C11 `vuln_authz_diff`**（02-vuln.md §1.3——判定与候选登记是漏洞域语义；exec 只留 hostOf 借用） |
 
 ### 3.2 兼容别名与观察期
-> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
+> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [进度历史归档](archive/progress-history.md) 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
 总线 `aliases` 表（同样过网关全管线，不绕校验；一个观察期 7 天 audit 零使用后删除）：
 

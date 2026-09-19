@@ -635,7 +635,7 @@ http-remote 全列 unsupported 的理由：**授权白名单与凭据引用是�
 
 ### 3.1 现状代码映射（行级，v4.7 时点源文件在 `bundles/dsh/templates/`）
 
-> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重写（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重写（见 [进度历史归档](archive/progress-history.md)），行号可能失效，现行实现以域 manifest 与 backend 为准。
 
 | v4.x 位置 | 函数/段 | v5 落点 |
 |---|---|---|
@@ -661,7 +661,7 @@ http-remote 全列 unsupported 的理由：**授权白名单与凭据引用是�
 | approval onApprove 内的 `scopeSaveProgram` 直调（sec-suite.js L537-721） | 四处跨域直写 | approval_decide 的 effect 同步 dispatch `scope_grant`/`scope_rules_apply`（09 §2.3；原设计为 `approval.approved` 事件订阅） |
 
 ### 3.2 兼容别名与观察期
-> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
+> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [进度历史归档](archive/progress-history.md) 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
 | 旧名（v4.x） | 新名 | 通道 | 观察期 |
 |---|---|---|---|

@@ -313,7 +313,7 @@
 
 1. **契约版本**：域 manifest `version: N`；新增动词/可选参数 = 兼容（不 bump）；改语义/删参数/改事件 payload = bump major，总线在启动时对已注册域做版本兼容检查。
 2. **动词废弃三段式**：`deprecated`（manifest 标记，工具描述加"已废弃，改用 X"，audit 记 deprecated_use）→ 观察期一个调度周期（7 天，audit 零使用为验收）→ 删除（契约测试同步删）。
-3. **兼容别名**：v4.x → v5 旧工具名映射表由总线维护（`aliases` / `dispatch_aliases`，同样过网关全管线）。**2026-09-19 已全部移除**：所有调用方迁语义动词后，`data/bus.aliases.yaml` 为空注册表（`aliases: {}` / `dispatch_aliases: {}`）；机制保留为通用能力，当前 0 条目。历史映射见各域文档 §3.2 与 [PROGRESS](PROGRESS.md) §〇。
+3. **兼容别名**：v4.x → v5 旧工具名映射表由总线维护（`aliases` / `dispatch_aliases`，同样过网关全管线）。**2026-09-19 已全部移除**：所有调用方迁语义动词后，`data/bus.aliases.yaml` 为空注册表（`aliases: {}` / `dispatch_aliases: {}`）；机制保留为通用能力，当前 0 条目。历史映射见各域文档 §3.2 与 [进度历史归档](archive/progress-history.md)。
 4. **prompt 引用同步**：动词改名/废弃时，persona/objective/skills/technique-index 中的工具引用由脚本化改写（复用 p14-1-tool-refs.py 模式），改写后 `discipline-audit.py` 增加"悬空工具引用"断言。
 
 ## 十六、2026-09-12 深度审查与独立升级基线

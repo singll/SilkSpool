@@ -785,7 +785,7 @@ export const repositoryV1 = {
 
 ### 3.1 现状代码映射（行级）
 
-> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [进度历史归档](archive/progress-history.md)），行号可能失效，现行实现以域 manifest 与 backend 为准。
 
 | v4 代码位置 | 函数/段落 | v5 落点 |
 |---|---|---|
@@ -809,7 +809,7 @@ export const repositoryV1 = {
 | parsers.js L158-171（**文件已删除**） | applyParsedResult findings 段 | `exec.run.completed` 事件 proposal → 本域 onParserProposal → C2（actor=script, identity=parser:{tool}:{run_id}） |
 
 ### 3.2 兼容别名与观察期
-> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
+> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [进度历史归档](archive/progress-history.md) 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
 > **历史留档**：别名层曾由总线维护 `aliases` 映射（别名同样过网关全管线，不绕校验）；观察期为一个调度周期（7 天），audit 记 `deprecated_use`，零使用后即删除（宪法 §十五）。以下映射为历史行为记录，在当前空注册表（`aliases: {}`）下均已不生效：
 

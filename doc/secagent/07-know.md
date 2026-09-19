@@ -968,7 +968,7 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 
 ### 3.1 现状代码映射（行级）
 
-> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [进度历史归档](archive/progress-history.md)），行号可能失效，现行实现以域 manifest 与 backend 为准。
 
 > **experience.js 现状（2026-09-19）**：文件 751 行，函数实际位置 `186`(expStore)/`282`(ftsSearch)/`299`(expSearch)/`434`(kbImport)/`505`(kbSearch)/`567`(kbIndexCuratedRules)/`622`(kbVaultSync)/`650`(pbSave)/`678`(pbOutcome)/`702`(pbRank)；**已无工具注册**（`apply()` 仅保留 memcore 生命周期注入与 curated 索引 / playbook 迁移，工具面由 know 域接管）。下表全部 `experience.js L…` 行号均为迁移期旧值、已失效。
 
@@ -1003,7 +1003,7 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 | kb-harvest.py | 收割管道（TAXONOMY 25 攻面） | **未被 C19 harvest_ingest 调用**——`harvest_ingest` 用内联 `classify()`（12 关键词正则）；kb-harvest.py 仅由部署脚本安装，未接入总线命令 |
 
 ### 3.2 兼容别名与观察期
-> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
+> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [进度历史归档](archive/progress-history.md) 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
 | v4 工具名 | v5 动词/查询 | 备注 |
 |---|---|---|

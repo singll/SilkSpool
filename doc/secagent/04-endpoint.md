@@ -511,7 +511,7 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 
 ### 3.1 现状代码映射（行级）
 
-> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [PROGRESS](PROGRESS.md) §〇），行号可能失效，现行实现以域 manifest 与 backend 为准。
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；相关 v4 文件此后已删除或重命名（见 [进度历史归档](archive/progress-history.md)），行号可能失效，现行实现以域 manifest 与 backend 为准。
 
 | v4.x 现状（文件:行） | 内容 | v5 去向 |
 |---|---|---|
@@ -527,7 +527,7 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 | `asset-db.js:1723-1744` ingestText（endpoint 部分） | regex 兜底登记 | exec 域 proposal（kind=endpoints）→ 本域 handler |
 
 ### 3.2 兼容别名与观察期
-> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
+> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [进度历史归档](archive/progress-history.md) 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
 | 旧名 | 新名 | 语义差异处理 |
 |---|---|---|

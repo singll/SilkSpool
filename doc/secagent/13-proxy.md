@@ -429,7 +429,7 @@ systemctlIsActive(unit) / systemctlStartNoBlock(unit)   // 系统调用封装
 | `proxy-pool-infra-setup.sh` / `proxy-pool-plugin-setup.sh` | 基础设施与插件安装 | 域化后归 setup 脚本链（sec-domain-proxy-plugin-setup.sh）；infra 段不动 |
 
 ### 3.2 兼容别名与观察期
-> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
+> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [进度历史归档](archive/progress-history.md) 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
 | v4 旧工具名 | v5 新名 | 语义差异说明 |
 |---|---|---|

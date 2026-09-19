@@ -641,7 +641,7 @@ dispatch_aliases: {}
 
 历史映射【历史留档】（v5 Phase 1–4 期间存在，现仅在各域文档 §3.2 留档）：静态别名如 `blackboard_set→fact_bb_publish`、`attempts_log→ledger_log_attempt`、`proxy_pool_stats→proxy_stats`、`submission_draft→report_draft_submission`；分派别名如 `finding_add`（按 actor 分派）、`finding_update`（按 status 分派）、`task_update`、`finding_query`、`asset_add` 等。总线内置路由器（`BUILTIN_ROUTERS`）与 `aliases`/`dispatch_aliases` 机制保留为通用能力，供未来跨域改名复用。
 
-> 删除方式（2026-09-19）：不再走「7 天零使用」观察期——`finding_add`/`finding_update` 是当时看板写路径的承重结构。改为先把调用方迁到语义动词（dashboard-rpc finding 状态流转直达 `vuln_confirm/reject/submit`；ui-session「登记候选漏洞」直达 `vuln_register_candidate`），再清空注册表；详见 [PROGRESS §〇](PROGRESS.md)。
+> 删除方式（2026-09-19）：不再走「7 天零使用」观察期——`finding_add`/`finding_update` 是当时看板写路径的承重结构。改为先把调用方迁到语义动词（dashboard-rpc finding 状态流转直达 `vuln_confirm/reject/submit`；ui-session「登记候选漏洞」直达 `vuln_register_candidate`），再清空注册表；详见 [进度历史归档](archive/progress-history.md)。
 >
 > `task_chain` 无别名：v4 的 `exec_task_chain` 能力已迁移为 task 域 `task_chain`（05-task C9）+ exec 域只读查询 `exec_plan_chain`；`task_chain` 与 v5 同名直通。
 

@@ -502,7 +502,7 @@ deleteNodesByTask(taskId) → n                              // fgs_clear
 | `dsh-plugin-sec-suite.asset-graph.js` L177-196 | finding_add 前的 activeTaskBySession 反查 + running step 关联 | vuln 域消费 task 域查询 `task_active_by_session` + 本域 fgs_list（跨域只读） |
 
 ### 3.2 兼容别名与观察期
-> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
+> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [进度历史归档](archive/progress-history.md) 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
 | 旧名 | 分派目标 | 备注 |
 |---|---|---|

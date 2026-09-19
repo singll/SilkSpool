@@ -472,7 +472,7 @@ hasHandoff(program, date) → boolean
 
 来源：`bundles/dsh/templates/dsh-plugin-sec-pipeline.js`（467 行）+ `dsh-plugin-sec-suite.js` + `scripts/pipeline/`。
 
-> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；`dsh-plugin-sec-pipeline.js` 的 ledger 工具函数体已在 Phase 3.4 清理（见 [PROGRESS](PROGRESS.md) §〇），行号失效，现行实现以域 manifest 与 backend 为准。
+> **历史留档（v4→v5 迁移期）**：本节行级映射记录迁移时的 v4 代码位置；`dsh-plugin-sec-pipeline.js` 的 ledger 工具函数体已在 Phase 3.4 清理（见 [进度历史归档](archive/progress-history.md)），行号失效，现行实现以域 manifest 与 backend 为准。
 
 | # | v4 位置 | 内容 | v5 去向 |
 |---|---|---|---|
@@ -497,7 +497,7 @@ hasHandoff(program, date) → boolean
 **verify_replay 归属的边界论证（详）**：三个候选——vuln（证据复核）/ ledger（台账家族）/ eval（假阳性消融）。判 vuln：①操作对象与产物（evidence 包、verify-log）都是 vuln 域 owns；②复核结论驱动 finding 状态机（CONFIRMED 的置信来源）；③ledger 的文件家族（attempts/card_usage/radar/handoff/coverage）全部是"纪律动作的记录"，verify_replay 是"证据的机械判定"——记录 vs 判定不同族；④eval 只消费其结果（回流活评测集），不是 owner。
 
 ### 3.2 兼容别名与观察期
-> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [PROGRESS](PROGRESS.md) §〇 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
+> **状态：别名层已移除（2026-09-19）**。`data/bus.aliases.yaml` 为空注册表（别名机制保留为通用能力，当前 0 条目）；本域旧工具名不再注册/投影/分派，调用方已迁语义动词（见 [进度历史归档](archive/progress-history.md) 与 [01-bus §3.2](01-bus.md)）。下表为历史映射留档。
 
 | 旧名（v4 工具） | 新名 |
 |---|---|

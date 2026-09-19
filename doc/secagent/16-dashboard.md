@@ -541,7 +541,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 | 静默错误 | 兜底 catch 不记录总线失败原因的问题已消除：总线错误码/hint 经 `busError` 透传。|
 | 独立升级 | 13 个独立 client bundle（构建隔离）+ 独立注册 fiber（运行隔离），可随域独立升级/回滚；旧单体已删，无 Modal 耦合。|
 
-**commit 追踪**：UI-0 `e9dd1f1`；P0 `3ed10de`；P1 `a384fef`；P2 `5880674`；P3 `b557402`；P4 `22c8c98`；P5 `e029af0`；P6 `6f4086c`（逐域 `f4e7f88`/`73acd34`/`64bb8a9`/`9273c53`/`d29dcad`）；P7 `d6fe5ac`；删旧 `5fc887a`（2026-09-19）；别名清空 `cf77b79`（2026-09-19）。详细验收见 [PROGRESS](PROGRESS.md) §三·九。
+**commit 追踪**：UI-0 `e9dd1f1`；P0 `3ed10de`；P1 `a384fef`；P2 `5880674`；P3 `b557402`；P4 `22c8c98`；P5 `e029af0`；P6 `6f4086c`（逐域 `f4e7f88`/`73acd34`/`64bb8a9`/`9273c53`/`d29dcad`）；P7 `d6fe5ac`；删旧 `5fc887a`（2026-09-19）；别名清空 `cf77b79`（2026-09-19）。详细验收见 [进度历史归档](archive/progress-history.md)。
 
 ---
 
