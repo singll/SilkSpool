@@ -203,6 +203,28 @@ function createRepo(db) {
       const pool = { pending, claimed, stale, by_severity: bySeverity }
       return { rows, pool }
     },
+    // 候选池 TTL 治理：noise=1 且 status='new' 且 created_at < cutoff 置 ignored 出池。
+    expireCandidates(cutoffMs, limit) {
+      const lim = Math.min(Number(limit) || 500, 5000)
+      const rows = db.prepare("SELECT id FROM findings WHERE noise = 1 AND status = 'new' AND created_at < ? ORDER BY created_at ASC LIMIT ?").all(Number(cutoffMs), lim)
+      if (!rows.length) return { expired: 0, ids: [] }
+      const now = Date.now()
+      const upd = db.prepare('UPDATE findings SET status = ?, updated_at = ? WHERE id = ?')
+      for (const r of rows) upd.run('ignored', now, r.id)
+      return { expired: rows.length, ids: rows.map((r) => r.id) }
+    },
+    // 产出闭环（02-vuln §2.5）：已确认但未提交 SRC 的漏洞队列。
+    // 判据：noise=0 信号面 + status='confirmed' + submitted_at 为空；severity 降序、年龄升序。
+    listSubmissionQueue(limit) {
+      const lim = Math.min(Number(limit) || 50, 200)
+      const sql = `SELECT ${LIST_COLS}, submitted_at, remote_id, remote_synced_at, sync_state, created_at
+        FROM findings WHERE noise = 0 AND status = 'confirmed' AND submitted_at IS NULL
+        ORDER BY CASE severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, created_at ASC
+        LIMIT ?`
+      const rows = db.prepare(sql).all(lim).map((r) => ({ ...r }))
+      const total = db.prepare("SELECT COUNT(*) AS n FROM findings WHERE noise = 0 AND status = 'confirmed' AND submitted_at IS NULL").get().n
+      return { rows, total }
+    },
     listDedup({ host, vuln_type, exclude_id }, limit) {
       const args = []
       let where = "noise = 0"
@@ -225,11 +247,16 @@ function createRepo(db) {
       const candBySev = db.prepare("SELECT severity, COUNT(*) AS n FROM findings WHERE noise = 1 AND status = 'new' GROUP BY severity").all()
       const oldest = one("SELECT MIN(created_at) AS m FROM findings WHERE noise = 1 AND status = 'new'").m
       const terminal = one("SELECT COUNT(*) AS n FROM findings WHERE noise = 1 AND status != 'new'").n
+      // 产出闭环 KPI：已确认未提交（submit backlog）/ 已提交未回执（submitted 且 vendor_status 空）
+      const confirmedUnsubmitted = one("SELECT COUNT(*) AS n FROM findings WHERE noise = 0 AND status = 'confirmed' AND submitted_at IS NULL").n
+      const submittedAwaiting = one("SELECT COUNT(*) AS n FROM findings WHERE noise = 0 AND status = 'submitted' AND (vendor_status IS NULL OR vendor_status = '')").n
       return {
         signal: {
           total: signalTotal,
           by_severity: Object.fromEntries(signalBySev.map((r) => [r.severity || 'info', r.n])),
           by_status: Object.fromEntries(signalByStatus.map((r) => [r.status, r.n])),
+          confirmed_unsubmitted: confirmedUnsubmitted,
+          submitted_awaiting_vendor: submittedAwaiting,
         },
         candidate: {
           pending: candidatePending,

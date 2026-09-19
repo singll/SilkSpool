@@ -405,6 +405,8 @@ export const TASK_MANIFEST = {
     // L6（学习专项 §10 变更触发节奏）：卡片撤回 → 生成有预算的重测需求任务（goal=change-retest）。
     // 已暂停任务不自行恢复；重测任务入队（queued 无调度，不自动起 worker）——由人/编排决定何时 task_run_now。
     'know.release.revoked': { handler: 'onReleaseRevoked', mode: 'async', as: 'reactor' },
+    // 产出闭环：漏洞确认后自动入队「提交」任务（同 finding 幂等去重，见 onVulnConfirmed）
+    'vuln.signal.confirmed': { handler: 'onVulnConfirmed', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -1126,6 +1128,32 @@ function makeHandlers(opts) {
         return { ok: !!r.ok, data: { skipped: false } }
       } catch (e) {
         log(`scope.granted 种子任务入队失败（best-effort）: ${e?.message}`)
+        return { ok: true, data: { skipped: false, error: String(e?.message) } }
+      }
+    },
+    // 产出闭环：confirmed finding → 幂等入队「[提交] finding #id」任务（phase=review）。
+    // 同 finding 已有活跃提交任务则跳过；无 program_id 时归 _global 桶（与既有约定一致）。
+    onVulnConfirmed: async (envelope) => {
+      if (!dispatchRef) return { ok: true, data: { skipped: true } }
+      const p = envelope?.payload || {}
+      const fid = p.finding_id
+      if (!fid) return { ok: true, data: { skipped: true } }
+      const marker = `[提交] finding #${fid}`
+      try {
+        const list = await dispatchRef('task', 'list', { q: marker, bucket: 'active', limit: 20 }, { actor: 'reactor' })
+        const rows = (list && list.ok && list.data && Array.isArray(list.data.rows)) ? list.data.rows : []
+        if (rows.some((t) => String(t.objective || '').includes(marker))) {
+          return { ok: true, data: { skipped: true, reason: 'submission task exists' } }
+        }
+        const host = p.host || p.subject || ''
+        const objective = `${marker} ${host} 确认漏洞待提交 SRC：report_draft_submission 出草稿 → 人工审校 → 平台提交 → vuln_submit(platform/submission_url/remote_id/vendor_status) 回写运营列。`
+        const r = await dispatchRef('task', 'create', {
+          program_id: p.program_id || '_global', phase: 'review', goal: 'research', priority: 2, objective,
+          schedule: { kind: 'once', at: Date.now() + 5 * 60 * 1000 },
+        }, { actor: 'reactor' })
+        return { ok: !!r?.ok, data: { skipped: false } }
+      } catch (e) {
+        log(`vuln.signal.confirmed 提交任务入队失败（best-effort）: ${e?.message}`)
         return { ok: true, data: { skipped: false, error: String(e?.message) } }
       }
     },

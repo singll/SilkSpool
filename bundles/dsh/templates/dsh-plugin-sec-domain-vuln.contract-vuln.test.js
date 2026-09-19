@@ -1086,3 +1086,42 @@ test('M10: dedup_check 既无 host 也无 vuln_type → E_SCHEMA', async () => {
   assert.equal(r.ok, false)
   assert.equal(r.error.code, 'E_SCHEMA')
 })
+
+// ---- 产出闭环：submission_queue 列 confirmed 未提交；submit 回写 remote_id 后出队 ----
+test('产出闭环: submission_queue 列 confirmed 未提交 → submit 回写 remote_id 后出队', async () => {
+  const { bus } = makeEnv()
+  const sig = await seedSignal(bus)
+  await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
+  const q1 = await bus.query('vuln', 'submission_queue', {}, { actor: 'model' })
+  assert.equal(q1.ok, true)
+  assert.equal(q1.total, 1)
+  assert.equal(q1.rows[0].id, sig.data.id)
+  assert.ok(typeof q1.rows[0].age_days === 'number')
+  await bus.dispatch('vuln', 'submit', { finding_id: sig.data.id, platform: '测试SRC', submission_url: 'https://src.example/ticket/1', remote_id: 'SRC-123' }, { actor: 'model' })
+  const row = bus._internal.db().prepare('SELECT remote_id FROM findings WHERE id=?').get(sig.data.id)
+  assert.equal(row.remote_id, 'SRC-123')
+  const q2 = await bus.query('vuln', 'submission_queue', {}, { actor: 'model' })
+  assert.equal(q2.total, 0)
+})
+
+test('产出闭环: vuln_stats 暴露 confirmed_unsubmitted', async () => {
+  const { bus } = makeEnv()
+  const sig = await seedSignal(bus)
+  await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
+  const s = await bus.query('vuln', 'stats', {}, { actor: 'model' })
+  assert.equal(s.ok, true)
+  assert.equal(s.data.signal.confirmed_unsubmitted, 1)
+})
+
+// ---- 数据治理：候选池 TTL——超期未消化候选置 ignored 出池 ----
+test('数据治理: expire_candidates 将超期候选出池', async () => {
+  const { bus } = makeEnv()
+  const cand = await seedCandidate(bus)
+  assert.equal(cand.data.noise, true)
+  bus._internal.db().prepare('UPDATE findings SET created_at = ? WHERE id = ?').run(Date.now() - 30 * 86400000, cand.data.id)
+  const r = await bus.dispatch('vuln', 'expire_candidates', { ttl_days: 14 }, { actor: 'system' })
+  assert.equal(r.ok, true)
+  assert.equal(r.data.expired, 1)
+  const row = bus._internal.db().prepare('SELECT status FROM findings WHERE id=?').get(cand.data.id)
+  assert.equal(row.status, 'ignored')
+})

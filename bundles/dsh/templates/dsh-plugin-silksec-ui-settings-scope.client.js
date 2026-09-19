@@ -156,6 +156,15 @@ window.__ModuleLoader__.load({
       if (p.db && p.db.workspace_id) return p.db.workspace_id
       return ''
     }
+    // B6：下拉选中值须与徽章同源——后端可能只回 workspace（路径/标题）而无 workspace_id，
+    // 此时按 id/title/path 反查工作区，避免「徽章显示已绑定、下拉显示不绑定」的状态错配。
+    function boundWorkspaceId(p, workspaces) {
+      if (p.db && p.db.workspace_id) return p.db.workspace_id
+      var bound = programBound(p)
+      if (!bound) return ''
+      var hit = (workspaces || []).filter(function (w) { return w.id === bound || w.title === bound || w.path === bound })
+      return hit.length ? hit[0].id : ''
+    }
 
     // ── 凭据引用状态（只显示 ref，不显示明文；无写路径） ────────────────────────
     function CredLine(props) {
@@ -221,7 +230,7 @@ window.__ModuleLoader__.load({
           el('select', {
             className: 'silksec-input', style: { maxWidth: 280 }, disabled: !!busy,
             'data-silksec-bind': p.name,
-            value: (p.db && p.db.workspace_id) || '',
+            value: boundWorkspaceId(p, workspaces),
             title: '选择后经 programBindWorkspace 写入 scope.program_bind_workspace',
             onChange: function (e) { props.onBind(p.name, e.target.value) },
           },
@@ -479,6 +488,7 @@ window.__ModuleLoader__.load({
     exports.ScopeDegradedView = ScopeDegradedView
     exports.renderScopeModal = renderScopeModal
     exports.programBound = programBound
+    exports.boundWorkspaceId = boundWorkspaceId
     exports.programCount = programCount
     exports.excludeCount = excludeCount
 

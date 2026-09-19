@@ -197,6 +197,7 @@ export async function handleDashboardRpc(endpoint, payload) {
           high: Number(sev.high) || 0,
           candidate: Number(d.candidate && d.candidate.pending) || 0,
           total: Number(d.signal && d.signal.total) || 0,
+          unsubmitted: Number(d.signal && d.signal.confirmed_unsubmitted) || 0,
         }
         out.findings_by_severity = Object.keys(sev).map((k) => ({ severity: k, n: Number(sev[k]) || 0 }))
         out.findings_by_status = Object.keys(st).map((k) => ({ status: k, n: Number(st[k]) || 0 }))

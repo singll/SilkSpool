@@ -54,4 +54,20 @@ if [ -d "$IMPORT_STAGING_DIR" ]; then
     fi
 fi
 
+# --- 5. SQLite WAL checkpoint（低峰回收 WAL 体积；DB 忙则跳过，失败不阻断） ---
+DB_FILE="$DATA_DIR/asset-graph.db"
+if command -v sqlite3 >/dev/null 2>&1 && [ -f "$DB_FILE" ]; then
+    if sqlite3 "$DB_FILE" 'PRAGMA wal_checkpoint(TRUNCATE);' >/dev/null 2>&1; then
+        log "asset-graph.db WAL checkpoint(TRUNCATE) 完成"
+    else
+        log "WAL checkpoint 跳过（DB 忙或 sqlite3 不可用）"
+    fi
+fi
+
+# --- 6. 残留空库清理（历史遗留 0 字节占位文件；有内容则保留） ---
+for f in assets.db tasks.db sec-suite.db; do
+    p="$DATA_DIR/$f"
+    if [ -f "$p" ] && [ ! -s "$p" ]; then rm -f "$p" && log "清理 0 字节残留 $f"; fi
+done
+
 log "retention 完成"

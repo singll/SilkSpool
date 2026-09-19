@@ -125,21 +125,21 @@ export default {
 | **审计** bus | 主面板视图 | — | 低频宽表 |
 | 全局 KPI/纪律告警 | 主面板页头顶条 + overlay 胶囊 | — | 现状语义保留 |
 
-入口路径：侧边栏「看板」一级导航行（`sidebar.panellist`）= 官方与会话平级的位置。
+入口路径：侧边栏「安全中心」一级导航行（`sidebar.panellist`）= 官方与会话平级的位置（UI 文案一律「安全中心」；「看板」仅作内部代号）。
 
 ### 1.4 各表面详述
 
 **主面板（`@silksec/ui-panel`）**：
 
 ```js
-// 注册（时序纪律：inject 驱动 + effect 包裹）
-ctx.inject(['layout', 'slots'], function () {
-  ctx.effect(() => {
-    // keyed 槽用 options.key；list 槽才用 options.id（P1 实测）
-    var d1 = slots.register({ name: 'main', key: 'silksec-dashboard', order: 30 }, DashboardPanel)
-    var d2 = slots.register({ name: 'sidebar.panellist', id: 'silksec-dashboard', order: 30, label: '看板' }, PanelIcon)
-    return function () { d1(); d2() }
-  })
+// 注册（时序纪律：slots.inject 声明生命周期 + ctx.effect 收口 disposer）
+// 实测形态（panel.client.js）：exports.inject=['slots']，apply 内用 slots.inject(key, cb)，
+// keyed 槽用 options.key；list 槽才用 options.id；key 必须与 panellist 的 id 一致。
+var d1 = slots.inject('main', function () {
+  return slots.register({ name: 'main', key: 'silksec-dashboard', order: 30 }, DashboardPanel)
+})
+var d2 = slots.inject('sidebar.panellist', function () {
+  return slots.register({ name: 'sidebar.panellist', id: 'silksec-dashboard', order: 30, label: '安全中心' }, PanelIcon)
 })
 // 打开：ctx.layout.selectPanel('silksec-dashboard')；返回会话：selectPanel(null)
 // beginNavigation() 信号防快速连点竞态（官方服务自带）
@@ -208,7 +208,7 @@ ctx.inject(['layout', 'slots'], function () {
 
 | case | 数据接口（聚合来源）| 消费位置 |
 |---|---|---|
-| `stats` | 壳聚合**各域查询**：`approval.stats` + `vuln.stats` + `task.list` + `ledger.discipline_stats` + `asset.overview`/`endpoint.list`/`fact.stats` → 五待办卡 + 库存副条（19-ui-unify §4.4；`assetDb.stats` 直查已删）| 顶部 KPI 五卡 + 库存副条 |
+| `stats` | 壳聚合**各域查询**：`approval.stats` + `vuln.stats` + `task.list` + `ledger.discipline_stats` + `asset.overview`/`endpoint.list`/`fact.stats` → 六待办卡 + 库存副条（19-ui-unify §4.4；`assetDb.stats` 直查已删；2026-09-19 增「待提交 SRC」= `vuln.stats.signal.confirmed_unsubmitted`）| 顶部 KPI 六卡 + 库存副条 |
 | `ops` | `ledger.discipline_stats` + `know.health` + `task.stats`/`task.scheduled` + `vuln.stats` + `asset.overview` → 五指标 + alerts + healthy | 红条横幅 + ops 卡片 |
 | `memcore` | `deps.exp.memStatus()`（memcore 治理旁路观测：loaded/策略摘要）| memcore 缺席横幅（fail-open 提示）|
 | `sessions` | DSH 平台会话清单（按 workspace 过滤）| 任务视图会话跳链（`ctx.sessions.open`）|
@@ -466,7 +466,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 5. **会话绑定件**：沿用宿主按钮样式；「登记/沉淀」弹表单用 primitives `Modal` + `RiskConfirmation`。
 6. **右侧栏 guide 陷阱**：条目说明在 guide >4 条时整列不渲染（上游 `MAX_DESCRIBED_ENTRIES=4`）——关键信息只放 title。
 7. **纪律重申**：视图/表面文件禁止颜色字面量（hex/rgb/named），grep 断言进 CI；severity 五色继续走 `--silksec-sev-*`（theme/change 注入 + fallback）不变。
-8. **全局统一（2026-09-19 回填 [archive/19-ui-unify.md](archive/19-ui-unify.md)，已归档）**：① 共享控件类（`silksec-btn/-confirm/icon-btn/-confirm/-danger/input/tab/kpi/row/chip/dash-dialog`）CSS 唯一定义源 = ui-core `ensureBaseStyles()`，承载面本地样式只留布局类；② 主面板改名**安全中心**，页头返回/刷新为 26×26 图标钮，tab 收敛为「漏洞/资产/接口/事实 + 更多（知识/学习/报告/审计二级导航）」（registry `group` 协议 minor 变更）；③ KPI 从库存量改为「今日待办 + 风险暴露」五卡（待审批/待处理漏洞/待验证候选/运行中·阻塞任务/纪律告警）+ 库存副条，全部可点击跳链。规格与 CI 双重断言见主题文档 §11.8。走查补丁（2026-09-19）：去侧栏/页头图标、消息动作用图标钮、待审批/任务 KPI 无会话 seat 时弹 Modal、任务工作区筛选选项稳定不塌缩、全表单行省略等高（主题 §11.9）。
+8. **全局统一（2026-09-19 回填 [archive/19-ui-unify.md](archive/19-ui-unify.md)，已归档）**：① 共享控件类（`silksec-btn/-confirm/icon-btn/-confirm/-danger/input/tab/kpi/row/chip/dash-dialog`）CSS 唯一定义源 = ui-core `ensureBaseStyles()`，承载面本地样式只留布局类；② 主面板改名**安全中心**，页头返回/刷新为 26×26 图标钮，tab 收敛为「漏洞/资产/接口/事实 + 更多（知识/学习/报告/审计二级导航）」（registry `group` 协议 minor 变更）；③ KPI 从库存量改为「今日待办 + 风险暴露」六卡（待审批/待处理漏洞/待验证候选/待提交 SRC/运行中·阻塞任务/纪律告警）+ 库存副条，全部可点击跳链（待提交 SRC 于 2026-09-19 产出闭环补齐）。规格与 CI 双重断言见主题文档 §11.8。走查补丁（2026-09-19）：去侧栏/页头图标、消息动作用图标钮、待审批/任务 KPI 无会话 seat 时弹 Modal、任务工作区筛选选项稳定不塌缩、全表单行省略等高（主题 §11.9）。
 
 ---
 

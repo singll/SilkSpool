@@ -404,6 +404,25 @@ B1 view-asset.client.js:40｜B2 panel.client.js:138-148 + view-vuln.client.js:23
 - 线上：`sec-v5-accept.sh` **PASS=41 FAIL=0**；`silksecagent` active、NRestarts=0。
 - 代码 md5：本地 templates 与线上 `/opt/silkspool/dsh` 一致。
 
-### 11.4 仍未处理（需策略决策，非本次代码修复）
+### 11.4 第二轮修复（产出闭环 + 数据治理 + 任务/事件 + UI + 文档，2026-09-19 续）
 
-- 漏洞确认→提交闭环（43 confirmed 0 提交）、候选池污染/`noise`↔`status` 脱节、任务租约/超时、DLQ 消费者加固、外键回填、授权时效字段、`_file`/沙箱 `$HOME` 之外的进一步收敛、UI B6/B8/B10–B13、代码 M1/M5/M6/M8/M9 及 L 类卫生项、17-llm-surface/15-eval/16-dashboard/ui-surface-deps 的文档回填。
+| 编号 | 修复内容 | 文件 | 验证 |
+|---|---|---|---|
+| 闭环-1 | `vuln_submit` 增 `remote_id`（平台工单号）写入路径 | `dsh-plugin-sec-domain-vuln.js` | 契约用例：submit 后 `remote_id` 落库 |
+| 闭环-2 | 新查询 `vuln_submission_queue`（confirmed 未提交，带 age_days/overdue） | 同上 + 后端 `listSubmissionQueue` | 契约用例：入队→submit→出队 |
+| 闭环-3 | `vuln_stats.signal` 增 `confirmed_unsubmitted` / `submitted_awaiting_vendor` | 后端 `statsFindings` | 契约用例 |
+| 闭环-4 | 看板 KPI 增「待提交 SRC」六卡之一 | `dashboard-rpc.js` / `ui-panel.client.js` | UI 114/114 + accept `ui-class-defined` |
+| 闭环-5 | task 域订阅 `vuln.signal.confirmed` → 幂等入队 `[提交] finding #id` 任务（phase=review） | `dsh-plugin-sec-domain-task.js` | task 契约 39/39 |
+| 治理-1 | 新命令 `vuln_expire_candidates` + 每 6h 候选 TTL 治理（`noise=1 & status=new` 超 14d → ignored，`SEC_CANDIDATE_TTL_DAYS`） | vuln 域 + 后端 `expireCandidates` | 契约用例：超期候选出池 |
+| 治理-2 | `vuln_dedup_check` host/vuln_type 至少其一（已强制 E_SCHEMA） | vuln 域 | 契约用例 M10 |
+| 治理-3 | retention.sh 增 SQLite `wal_checkpoint(TRUNCATE)` + 0 字节残留库清理 | `retention.sh` | 线上手工执行：WAL checkpoint 成功、3 个空库清理 |
+| 任务-1 | `task_reap` 回收范围扩至**一次性任务**（原只回收定时任务，一次性 running 崩溃成永久僵尸） | `dsh-plugin-sec-backend-task-sqlite.js` | 契约用例：无 schedule_kind 僵尸任务回收为 failed |
+| 事件-1 | `exec.run.completed` 订阅者逐条按**重试性**判定：确定性失败逐条登记后丢弃（不再让整事件重试进 DLQ），仅可重试失败返回 partial | `dsh-plugin-sec-domain-vuln.js` | 线上：3 条 dead_letter + 1 条 pending 全部转 delivered，0 残留 |
+| UI-B6 | 授权设置工作区下拉值按 id/title/path 反查，与徽章同源 | `ui-settings-scope.client.js` | UI 114/114 |
+| 文档 | 02-vuln（C13/Q7/remote_id/闭环）、05-task（提交订阅/reap 范围）、16-dashboard（安全中心文案/注册形态/KPI 六卡） | doc/secagent | 人工复核 |
+
+**第二轮验收**：本地契约 466 例全绿（bus51/exec26/asset31/vuln63/endpoint25/task39/fact23/know73/scope15/approval19/ledger22/report12/proxy17/fgs21/eval29）+ UI 114/114；csai `bundle dsh setup` 部署、`sec-v5-accept.sh` **PASS=41 FAIL=0**、`silksecagent` active/NRestarts=0；outbox 0 dead_letter / 0 pending。
+
+### 11.5 仍未处理（需策略决策或后续会话）
+
+- 存量 43 条 confirmed 的**批量提交**（当前仅暴露队列 + KPI + 新确认自动入队，未对历史批量建任务）、外键历史回填（findings.task_id 等）、source 命名收敛、授权时效字段（`expires_at/reviewed_at`）、`_file`/沙箱 `$HOME` 进一步收敛、tools-manager 下载 integrity（sha256 清单）、UI B8/B10–B13 与 a11y、代码 M1/M5/M6/M8/M9 及 L 类卫生项、17-llm-surface/15-eval/ui-surface-deps 的文档回填。

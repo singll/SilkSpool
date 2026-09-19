@@ -215,8 +215,10 @@ function createRepo(db) {
     scheduledProgress(task, at) { return scheduledProgress(db, task, at) },
     reapStale(maxAgeMs, pidAliveFn, nowTs) {
       const cutoff = nowTs - maxAgeMs
+      // 回收所有超预算且无活 worker 的 running 任务（含一次性任务：schedule_kind IS NULL）。
+      // 旧实现仅回收定时任务，一次性 running 任务崩溃后无租约→永久僵尸（2026-09-19 修复）。
       const stale = db.prepare(
-        "SELECT * FROM tasks WHERE status = 'running' AND schedule_kind IS NOT NULL AND started_at IS NOT NULL AND started_at < ?"
+        "SELECT * FROM tasks WHERE status = 'running' AND started_at IS NOT NULL AND started_at < ?"
       ).all(cutoff).map((r) => ({ ...r }))
       const alive = pidAliveFn || (() => false)
       let reaped = 0

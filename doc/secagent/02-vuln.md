@@ -1,6 +1,6 @@
 # 02 · vuln 域设计（漏洞信号 / 候选队列 / 证据 / 提交）
 
-> 版本：v5.0 ｜ 状态：随实现更新（2026-09-19 复核）
+> 版本：v5.1 ｜ 状态：随实现更新（2026-09-19 复核；产出闭环 C13/Q7 + 候选 TTL 治理 + dedup 不变量 + remote_id）
 > 依赖：**遵守** [`00-conventions.md`](00-conventions.md)（全局契约宪法，冲突以它为准）；被总线 `@silksec/sec-domain-bus` 宿主挂载。
 > 订阅（本域消费）：`exec.run.completed`（parser proposal 机器直灌分流）。
 > 被订阅（本域发布）：`vuln.candidate.registered / vuln.candidate.promoted / vuln.candidate.claimed / vuln.signal.registered / vuln.signal.confirmed / vuln.signal.rejected / vuln.signal.submitted / vuln.evidence.attached`——消费方：eval 域（判定回流）、fgs 域（节点状态联动）、report 域（提交统计）、asset 域（总览缓存失效）。
@@ -32,7 +32,7 @@
 | C2 | `vuln_register_candidate` | 机器直灌唯一入口（候选池登记，模型禁用） | webhook, script, dashboard | candidate.registered | 自动指纹（title/host/url/source） |
 | C3 | `vuln_confirm` | 候选/信号 → confirmed 原子升级（status+confidence+noise 三联动，evidence 必填） | model, dashboard | signal.confirmed（自候选池另发 candidate.promoted） | 自动指纹（finding_id+evidence_ref） |
 | C4 | `vuln_reject` | 判定 false_positive / dup / ignored（候选出池 + FGS deprecated 走事件） | model, dashboard | signal.rejected | 自动指纹（finding_id+verdict+reason） |
-| C5 | `vuln_submit` | confirmed → submitted（运营列回流；vendor_status=accepted 时 submitted → accepted） | model, dashboard | signal.submitted | 自动指纹（finding_id+bounty+vendor_status+platform） |
+| C5 | `vuln_submit` | confirmed → submitted（运营列回流；vendor_status=accepted 时 submitted → accepted）；可回写 `remote_id` 平台工单号 | model, dashboard | signal.submitted | 自动指纹（finding_id+bounty+vendor_status+platform+remote_id） |
 | C6 | `vuln_note` | 证据链追加（不改状态，任意状态可用） | model, dashboard | 无（防事件风暴） | 自动指纹（finding_id+note） |
 | C6b | `vuln_evidence_put` | 证据包受管写入（把机械复核用 `request.txt` 写入 `evidence/{id}/`） | model | 无 | 自动指纹（finding_id+request_text） |
 | C7 | `vuln_claim` | 认领候选（防多 worker 重复验证，TTL 软锁） | model, dashboard | candidate.claimed | 自动指纹（finding_id+认领者） |
@@ -41,6 +41,7 @@
 | C10 | `vuln_attach_fgs` | 关联 FGS finding 节点到行（fgs 域事件订阅回写通道） | model, reactor | 无 | 自动指纹（finding_id+fgs_node_id） |
 | C11 | `vuln_authz_diff` | 双权凭证重放对比 harness（低权/高权各发一次，三档判定；suspected 机器落候选） | model | 无（suspected 时经 C2 发 candidate.registered） | 自动指纹（url+method+headers_low+headers_high+body） |
 | C12 | `vuln_evidence_attach` | 从已发布 exec 证据清单挂载证据到 finding（复制进 `evidence/{finding_id}/{run_id}/`，哈希关联） | model, dashboard, reactor | `vuln.evidence.attached` | 自动指纹（finding_id+evidence_ref） |
+| C13 | `vuln_expire_candidates` | 候选池 TTL 治理：noise=1 且 status=new 超期未消化候选置 ignored 出池 | system, dashboard | `vuln.candidate.expired` | none（治理通道，幂等由到期集合界定） |
 
 > 说明：宪法 §三 actor 表无 `parser` 类型——exec 域 parser 提案与 authz_diff 机器判定统一以 **actor=script** 注入，身份细分（`identity: "parser:nuclei:{run_id}"` / `"authz_diff:{session_id}"`）进审计，不新增 actor 枚举。
 
@@ -246,6 +247,7 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 | bounty | number | 否 | null | ≥0 |
 | vendor_status | string(enum) | 否 | '' | submitted/pending/accepted/rejected/duplicate/not_rewarded |
 | submission_url | string | 否 | '' | 平台工单链接 |
+| remote_id | string | 否 | '' | 平台工单号（回写 `findings.remote_id`；与 http-remote 后端同步共用该列） |
 | note | string | 否 | '' | — |
 
 **事务行为**（两段合法流转，其余 E_STATE）：
@@ -257,7 +259,9 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 | submitted | accepted | vendor_status='accepted' 时 |
 | 其他（new/false_positive/dup/ignored/accepted） | — | E_STATE |
 
-发 `signal.submitted`。**幂等**：自动指纹（finding_id+bounty+vendor_status+platform）。**actor**：model, dashboard。
+发 `signal.submitted`。**幂等**：自动指纹（finding_id+bounty+vendor_status+platform+remote_id）。**actor**：model, dashboard。
+
+**产出闭环（2026-09-19 补齐）**：`confirmed → submitted` 的提交 backlog 由 Q7 `vuln_submission_queue` 暴露、`vuln_stats.signal.confirmed_unsubmitted` 计入看板「待提交 SRC」KPI；task 域订阅 `vuln.signal.confirmed` 后自动入队「`[提交] finding #id`」任务（phase=review，同 finding 幂等去重），驱动 report_draft_submission → 人工审校 → 本命令回写。候选池 TTL 由 C13 `vuln_expire_candidates` 每 6h 治理（`noise=1 & status=new` 超 14d 置 ignored，`SEC_CANDIDATE_TTL_DAYS` 可调）。
 
 **错误码**：E_STATE（hint："提交前必须先 vuln_confirm；vendor 翻案（accepted→重复/驳回）用 dashboard 通道 vuln_submit 附 operator 审计"）；E_SCHEMA。
 
@@ -411,9 +415,10 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 | Q1 | `vuln_list` | 信号/候选/全量列表 | visibility=signal（noise=0） |
 | Q2 | `vuln_get` | 单行全量（含 evidence 大字段） | — |
 | Q3 | `vuln_candidates` | 候选工作队列（认领态过滤） | claim_state=available（unclaimed∪stale） |
-| Q4 | `vuln_stats` | 信号面与候选面分开计数（KPI 唯一口径） | — |
+| Q4 | `vuln_stats` | 信号面与候选面分开计数（KPI 唯一口径）；含 `signal.confirmed_unsubmitted` / `submitted_awaiting_vendor` 产出闭环指标 | — |
 | Q5 | `vuln_by_asset` | 单资产漏洞视图 | include_candidates=false |
-| Q6 | `vuln_dedup_check` | 同目标同类型查重（提交前必查） | noise=0 + 状态不限 |
+| Q6 | `vuln_dedup_check` | 同目标同类型查重（提交前必查）；host/vuln_type 至少其一（已强制） | noise=0 + 状态不限 |
+| Q7 | `vuln_submission_queue` | 产出闭环：confirmed 未提交 SRC 队列（severity 降序/年龄升序，带 age_days/overdue） | noise=0 且 status=confirmed 且 submitted_at 为空 |
 
 **Q1 · vuln_list**：
 
@@ -456,7 +461,7 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 
 **Q5 · vuln_by_asset**：参数 host（必填）、include_candidates（bool，默认 false）。返回 `{host, total, by_severity: [{severity, n}], candidates_total}`——原 v4 assetDetail 的 findings 片段抽出（asset 域保留资产/接口/指纹/同族部分，跨域读经本查询）。
 
-**Q6 · vuln_dedup_check**：参数 host、vuln_type（文档称至少其一必填；**未实现：当前可全空，返回全部 noise=0 行**）、exclude_id（可选）、limit（默认 10）。返回同 host 或同 vuln_type 的信号面历史行（id/title/severity/status/host/created_at）+ total。提交前必查（防平台判重，v4 submissionDraft 内嵌逻辑抽出为独立查询）。
+**Q6 · vuln_dedup_check**：参数 host、vuln_type（**至少其一必填，已由命令层强制：两者皆空返回 E_SCHEMA**，2026-09-19 修复）、exclude_id（可选）、limit（默认 10）。返回同 host 或同 vuln_type 的信号面历史行（id/title/severity/status/host/created_at）+ total。提交前必查（防平台判重，v4 submissionDraft 内嵌逻辑抽出为独立查询）。
 
 ### 1.5 事件（发布 / 订阅）
 

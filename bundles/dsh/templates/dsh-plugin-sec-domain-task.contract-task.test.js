@@ -833,3 +833,17 @@ test('L6: 调度器锁——活持锁者拒绝抢锁，死锁可接管', async (
   clearInterval(globalThis.__silksecTaskScheduler)
   globalThis.__silksecTaskScheduler = null
 })
+
+// ---- 回收: 一次性 running 任务（无 schedule_kind）超预算无 worker 也应回收 ----
+test('回收: 一次性 running 僵尸任务（无 schedule_kind）被 reap 回收为 failed', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '一次性僵尸任务' }, { actor: 'model' })
+  const id = c.data.task_id
+  db.prepare("UPDATE tasks SET status='running',started_at=?,active_run_id=NULL WHERE id=?").run(Date.now() - 9000000, id)
+  const reap = await bus.dispatch('task', 'reap', { max_age: 0, pid_alive: true }, { actor: 'scheduler' })
+  assert.ok(reap.data.reaped >= 1)
+  const t = db.prepare('SELECT status, active_run_id FROM tasks WHERE id=?').get(id)
+  assert.equal(t.status, 'failed')
+  assert.equal(t.active_run_id, null)
+})

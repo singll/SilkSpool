@@ -1,7 +1,7 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
 > 版本：v5.1 ｜ 状态：定稿（L6 调度器切换已实施，2026-09-17）｜ 契约版本：task domain manifest v1
-> 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）、`know.release.revoked`（L6：撤回 → change-retest 重测需求任务入队，§2.3 变更触发节奏）；`task_budget_extend` / `task_complete` 由 approval 域在 `approval_decide` 事务内**同步 dispatch**（actor=approval，幂等账本 `approval_effects`）执行——执行失败记 `approval_effects.failed`，**无独立 dispatcher 自动重试**，需人工 `approval_effects_retry` 补跑，不回滚 decide（09-approval §2.3；两域以此线为准）。
+> 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）、`know.release.revoked`（L6：撤回 → change-retest 重测需求任务入队，§2.3 变更触发节奏）、`vuln.signal.confirmed`（产出闭环：确认漏洞自动入队 `[提交] finding #id` 提交任务，同 finding 幂等去重）；`task_budget_extend` / `task_complete` 由 approval 域在 `approval_decide` 事务内**同步 dispatch**（actor=approval，幂等账本 `approval_effects`）执行——执行失败记 `approval_effects.failed`，**无独立 dispatcher 自动重试**，需人工 `approval_effects_retry` 补跑，不回滚 decide（09-approval §2.3；两域以此线为准）。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加、know 域学习 episode（L1）**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
 
@@ -409,7 +409,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 #### C12 `task_reap`（内部）
 
-僵尸回收：候选=`status='running' AND schedule_kind IS NOT NULL AND started_at < now-宽限`。**活 worker 跳过**：last_run_id 对应 workers 行 status='running' 且 pid 活 → skip（P15 修复：旧逻辑按 started_at 判龄与 3600s 超时同量级，会误杀跑满预算的任务并双重派单）。回收动作：interval → queued、once → failed，`blocked_reason='宿主重启/超时回收'`，补落 task_runs（ok=0, note=回收原因），发布 `task.finished`（ok=false, cause=reap）。宽限默认 `(3600+900)s`；调度器启动时以 `max_age=0` 无条件跑一遍（新进程启动=旧进程已死，其 running 任务全是孤儿）。actor=scheduler；模型不可见。
+僵尸回收：候选=`status='running' AND started_at < now-宽限`（2026-09-19 修复：**含一次性任务** `schedule_kind IS NULL`——旧实现只回收定时任务，一次性 running 崩溃后无租约成永久僵尸）。**活 worker 跳过**：last_run_id 对应 workers 行 status='running' 且 pid 活 → skip（P15 修复：旧逻辑按 started_at 判龄与 3600s 超时同量级，会误杀跑满预算的任务并双重派单）。回收动作：interval → queued、once → failed，`blocked_reason='宿主重启/超时回收'`，补落 task_runs（ok=0, note=回收原因），发布 `task.finished`（ok=false, cause=reap）。宽限默认 `(3600+900)s`；调度器启动时以 `max_age=0` 无条件跑一遍（新进程启动=旧进程已死，其 running 任务全是孤儿）。actor=scheduler；模型不可见。
 
 #### C13–C15 `task_worker_register` / `task_worker_finish` / `task_worker_reap`（内部）
 
@@ -488,6 +488,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | 事件 | 模式 | 处理器 |
 |---|---|---|
 | `scope.granted` | async（best-effort，入队失败不影响授权） | 种子任务入队：`task_create{program_id, phase:'recon', priority:1, objective:'[审批入队] 新授权域名 {host} 首轮资产面收集：radar_read 读入 scope-approved 事件 → subfinder → dnsx → httpx 存活+指纹入图谱。只做资产收集，禁止主动漏洞探测。完成后 attempts_log 落台账…', schedule:{kind:'once', at:now+5min}}`；幂等=同 program 活跃 `[审批入队]`+host 任务存在即跳过（**原 onApprove 直调 taskCreate 改事件**，v4.x enqueueScopeSeedTask 移植；授权效果本身由 approval 域 `approval_effects` 经 dispatcher 执行 scope_grant，本域只消费 scope.granted） |
+| `vuln.signal.confirmed` | async（best-effort） | 产出闭环：`task_create{program_id: payload.program_id || '_global', phase:'review', goal:'research', priority:2, objective:'[提交] finding #{id} {host} 确认漏洞待提交 SRC：report_draft_submission → 审校 → 平台提交 → vuln_submit(platform/submission_url/remote_id) 回写', schedule:{kind:'once', at:now+5min}}`；幂等=同 finding 已有活跃 `[提交] finding #id` 任务即跳过（`onVulnConfirmed`） |
 | （task-budget-extend） | — | `task_budget_extend`（C10）由 approval 域在 `approval_decide` 内同步 dispatch（幂等账本 `approval_effects`；actor=approval，cause 链带 request_id），**非本域订阅 approval.approved** |
 | `exec.worker.spawned` | **sync（强联动）** | `task_worker_register`（C13） |
 | `exec.worker.finished` | **sync（强联动）** | `task_worker_finish`（C14） |

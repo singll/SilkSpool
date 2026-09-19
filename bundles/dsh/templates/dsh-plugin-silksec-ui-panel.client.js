@@ -183,6 +183,12 @@ window.__ModuleLoader__.load({
           sub: '评测回流判定', onClick: function () { navigate.select('findings', { filters: { noise: '1' } }) }, title: '漏洞视图（仅待验证候选 noise=1）',
         },
         {
+          key: 'submit', label: '待提交 SRC', value: num(s.vuln ? v.unsubmitted : null),
+          sub: (v.unsubmitted || 0) > 0 ? '确认后未提交' : '无积压',
+          subColor: (v.unsubmitted || 0) > 0 ? uiCore.T.warn : null,
+          onClick: function () { navigate.select('findings', { filters: { status: 'confirmed' } }) }, title: '漏洞视图（预置 status=confirmed；提交闭环见 vuln_submission_queue）',
+        },
+        {
           key: 'tasks', label: '运行中/阻塞任务', value: num(s.tasks ? ((t.running || 0) + (t.blocked || 0)) : null),
           sub: (t.blocked || 0) > 0 ? '阻塞 ' + t.blocked + (t.failed ? ' · 失败 ' + t.failed : '') : (t.failed ? '失败 ' + t.failed : '无阻塞'),
           subColor: (t.blocked || 0) > 0 ? uiCore.T.warn : null,

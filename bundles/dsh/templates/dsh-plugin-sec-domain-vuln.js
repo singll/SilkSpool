@@ -182,15 +182,30 @@ export const VULN_MANIFEST = {
         bounty: { type: ['number', 'null'] },
         vendor_status: en(VENDOR_STATUS, { default: '' }),
         submission_url: str({ default: '' }),
+        remote_id: str({ default: '' }),
         note: str({ default: '' }),
       }, ['finding_id']),
       idempotent: 'auto',
-      idempotent_fields: ['finding_id', 'bounty', 'vendor_status', 'platform'],
+      idempotent_fields: ['finding_id', 'bounty', 'vendor_status', 'platform', 'remote_id'],
       events: ['vuln.signal.submitted'],
       event_limit: 1,
       invariants: ['findingExists', 'submittable'],
       timeout_ms: 60000,
-      agent_note: '确认后的运营流转：confirmed → submitted（平台提交后）；vendor 反馈（accepted/bounty/vendor_status）在 submitted 态再次调用回流运营列。提交前先 report_draft_submission（report 域）出草稿人工审校。',
+      agent_note: '确认后的运营流转：confirmed → submitted（平台提交后）；vendor 反馈（accepted/bounty/vendor_status）在 submitted 态再次调用回流运营列。提交前先 report_draft_submission（report 域）出草稿人工审校。remote_id 填平台工单号。',
+      deprecated: false,
+    },
+    vuln_expire_candidates: {
+      actor: ['system', 'dashboard'],
+      schema: schema({
+        ttl_days: int({ minimum: 1, maximum: 365, default: 14 }),
+        limit: int({ minimum: 1, maximum: 5000, default: 500 }),
+      }, []),
+      idempotent: 'none',
+      events: ['vuln.candidate.expired'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '候选池 TTL 治理（system/dashboard）：noise=1 且 status=new 超 ttl_days 未消化的候选置 ignored 出池，防噪声候选无限堆积。',
       deprecated: false,
     },
     vuln_note: {
@@ -387,10 +402,20 @@ export const VULN_MANIFEST = {
       predicates: [],
       agent_note: '同目标/同类型历史查重（host 或 vuln_type 至少其一）。提交前必查，防平台判重。',
     },
+    vuln_submission_queue: {
+      actor: ['model', 'dashboard', 'human'],
+      params: schema({
+        limit: int({ minimum: 1, maximum: 200, default: 50 }),
+        overdue_days: int({ minimum: 1, maximum: 365, default: 7 }),
+      }, []),
+      predicates: [],
+      agent_note: '产出闭环：confirmed 未提交 SRC 队列（severity 降序/年龄升序），带 age_days/overdue。逐条 report_draft_submission→审校→提交→vuln_submit 回写。',
+    },
   },
   events: {
     'vuln.candidate.registered': { payload: { type: 'object' }, redact: [] },
     'vuln.candidate.promoted': { payload: { type: 'object' }, redact: [] },
+    'vuln.candidate.expired': { payload: { type: 'object' }, redact: [] },
     'vuln.candidate.claimed': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.registered': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.confirmed': { payload: { type: 'object' }, redact: [] },
@@ -859,6 +884,7 @@ function makeHandlers(opts) {
       const sets = {}
       if (args.bounty !== null && args.bounty !== undefined && args.bounty !== '') sets.bounty = Number(args.bounty)
       if (args.vendor_status) sets.vendor_status = String(args.vendor_status)
+      if (args.remote_id) sets.remote_id = String(args.remote_id)
       let to = row.status
       if (row.status === 'confirmed') {
         sets.status = 'submitted'
@@ -881,6 +907,18 @@ function makeHandlers(opts) {
         data: { id: args.finding_id, status: to, from: row.status, submitted_at: to === 'submitted' ? now : row.submitted_at || null },
         events: [{ name: 'vuln.signal.submitted', payload: { finding_id: args.finding_id, from: { status: row.status }, to: { status: to }, bounty: sets.bounty ?? null, vendor_status: args.vendor_status || '', platform: args.platform || '' } }],
         before: { status: row.status, noise: row.noise }, after: { status: to, noise: row.noise },
+      }
+    },
+
+    // C13：候选池 TTL 治理（system/dashboard）——超期未消化候选置 ignored 出池
+    vuln_expire_candidates: async (args, repo) => {
+      if (typeof repo.expireCandidates !== 'function') throwErr('E_BACKEND_UNAVAILABLE', '当前后端不支持候选 TTL 治理（需 sqlite-local）', '切回 sqlite-local 后端', true)
+      const ttlDays = Number(args.ttl_days) || 14
+      const cutoff = Date.now() - ttlDays * 86400000
+      const { expired, ids } = repo.expireCandidates(cutoff, args.limit || 500)
+      return {
+        data: { expired, ttl_days: ttlDays, ids: ids.slice(0, 20) },
+        events: expired ? [{ name: 'vuln.candidate.expired', payload: { count: expired, ids: ids.slice(0, 50), ttl_days: ttlDays } }] : [],
       }
     },
 
@@ -1164,6 +1202,20 @@ function makeHandlers(opts) {
       const { rows, total } = repo.listDedup({ host, vuln_type: vulnType, exclude_id: args.exclude_id || null }, args.limit || 10)
       return { rows, total, meta: { limit: args.limit || 10 } }
     },
+    vuln_submission_queue: async (args, repo) => {
+      if (typeof repo.listSubmissionQueue !== 'function') throwErr('E_BACKEND_UNAVAILABLE', '当前后端不支持提交队列（需 sqlite-local）', '切回 sqlite-local 后端或改用 vuln_list', true)
+      const limit = args.limit || 50
+      const overdueDays = Number(args.overdue_days) || 7
+      const { rows, total } = repo.listSubmissionQueue(limit)
+      const now = Date.now()
+      const cutoff = now - overdueDays * 86400 * 1000
+      const enriched = rows.map((r) => ({
+        ...r,
+        age_days: Math.floor((now - (r.created_at || now)) / 86400000),
+        overdue: (r.created_at || 0) < cutoff,
+      }))
+      return { rows: enriched, total, meta: { limit, overdue_days: overdueDays, overdue: enriched.filter((r) => r.overdue).length } }
+    },
   }
 
   const subscribers = {
@@ -1171,14 +1223,17 @@ function makeHandlers(opts) {
       const payload = envelope?.payload || {}
       const list = readParseProposal(dataDir, payload)?.findings
       if (!Array.isArray(list) || !dispatchRef) return { ok: true, data: { skipped: true } }
+      const runId = String(payload.run_id || envelope?.cause?.run_id || '')
+      const tool = String(payload.tool || 'nuclei')
       let registered = 0
-      let failed = 0
+      let retryableFailed = 0
+      let dropped = 0
+      const failures = []
       for (const f of list) {
-        const runId = String(payload.run_id || envelope?.cause?.run_id || '')
-        const tool = String(payload.tool || 'nuclei')
+        const title = String(f.title || `${f.host || ''} 被动审计候选：${tool}`)
         try {
           const r = await dispatchRef('vuln', 'register_candidate', {
-            title: String(f.title || `${f.host || ''} 被动审计候选：${tool}`),
+            title,
             severity: String(f.severity || 'info'),
             host: String(f.host || ''),
             url: String(f.url || ''),
@@ -1186,11 +1241,21 @@ function makeHandlers(opts) {
             source: `parser:${tool}`,
           }, { actor: 'script', identity: `parser:${tool}:${runId}`, session_id: payload.session_id || null })
           if (r.ok) registered++
-          else failed++
-        } catch { failed++ }
+          else if (r.error && r.error.retryable) { retryableFailed++; failures.push({ title, code: r.error.code, retryable: true }) }
+          else { dropped++; failures.push({ title, code: r.error && r.error.code, message: r.error && r.error.message, retryable: false }) }
+        } catch (e) {
+          // 未预期异常按可重试处理，避免静默丢失
+          retryableFailed++
+          failures.push({ title, code: 'E_EXCEPTION', message: e?.message, retryable: true })
+        }
       }
-      if (failed) return { ok: true, data: { registered, failed, partial: true } }
-      return { ok: true, data: { registered } }
+      // 逐条判定重试性：确定性失败（schema/不变量/权限）逐条登记后丢弃，不再让整事件重试进 DLQ；
+      // 仅当存在可重试失败时才返回 partial:true（进 pending 重试链）。
+      if (dropped) log(`onParserProposal: ${dropped} 条候选确定性失败（不重试），${registered} 条登记成功`)
+      if (retryableFailed) {
+        return { ok: true, data: { registered, failed: dropped + retryableFailed, retryable_failed: retryableFailed, dropped, partial: true, failures: failures.slice(0, 20) } }
+      }
+      return { ok: true, data: { registered, dropped, failures: failures.slice(0, 20) } }
     },
   }
 
@@ -1251,7 +1316,18 @@ export function apply(ctx, config = {}) {
       if (backendSel === 'http-remote' && typeof domain.backend.startSyncer === 'function') {
         try { domain.backend.startSyncer() } catch (e) { log(`同步器启动失败：${e?.message}`) }
       }
+      // 候选池 TTL 治理（02-vuln §2.5）：每 6h 清一次超期未消化候选（幂等；actor=system 治理通道）
+      let expiryTimer = null
+      if (res.ok) {
+        const ttlDays = Number(process.env.SEC_CANDIDATE_TTL_DAYS) || 14
+        const runExpiry = () => bus.dispatch('vuln', 'expire_candidates', { ttl_days: ttlDays }, { actor: 'system' })
+          .then((r) => { const n = r && r.ok && r.data && r.data.expired; if (n) log(`候选 TTL 治理：过期出池 ${n} 条（> ${ttlDays}d）`) })
+          .catch((e) => log(`候选 TTL 治理异常：${e?.message}`))
+        expiryTimer = setInterval(runExpiry, 6 * 3600 * 1000)
+        if (expiryTimer.unref) expiryTimer.unref()
+      }
       return () => {
+        if (expiryTimer) clearInterval(expiryTimer)
         if (typeof domain.backend.stopSyncer === 'function') { try { domain.backend.stopSyncer() } catch { /* noop */ } }
       }
     })

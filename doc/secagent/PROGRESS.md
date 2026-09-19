@@ -17,6 +17,15 @@
 
 ## 二、最近进度结果
 
+### 2026-09-19 · 产出闭环 + 数据治理 + 任务回收 + DLQ 加固（csai 已部署验收）
+- 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) §十一.4 建议执行第二轮修复。
+- 产出闭环：`vuln_submit` 增 `remote_id`；新查询 `vuln_submission_queue`（confirmed 未提交，带 age_days/overdue）；`vuln_stats.signal.confirmed_unsubmitted`；看板 KPI 增「待提交 SRC」六卡；task 域订阅 `vuln.signal.confirmed` 幂等入队 `[提交] finding #id` 任务（phase=review）。
+- 数据治理：新命令 `vuln_expire_candidates` + 每 6h 候选 TTL 治理（`noise=1 & status=new` 超 14d → ignored，`SEC_CANDIDATE_TTL_DAYS` 可调）；`vuln_dedup_check` 强制 host/vuln_type 至少其一；retention.sh 增 WAL checkpoint(TRUNCATE) + 0 字节残留库清理。
+- 任务/事件：`task_reap` 回收范围扩至一次性任务（原只回收定时任务，僵尸 running 永久滞留）；`exec.run.completed` 订阅者按重试性逐条判定，确定性失败登记后丢弃，不再让整事件重试进 DLQ。
+- UI/文档：授权设置工作区下拉与徽章同源（B6）；回填 02-vuln/05-task/16-dashboard。
+- 验收：本地契约 **466 例全绿** + UI 114/114；csai `bundle dsh setup` 部署，`sec-v5-accept.sh` **PASS=41 FAIL=0**；线上 outbox **0 dead_letter / 0 pending**（3 条历史死信 + 1 条毒消息全部转 delivered）。
+- 未处理（需策略决策）：存量 43 条 confirmed 批量提交、外键历史回填、授权时效字段、tools integrity、UI B8/B10–B13 与 a11y、17-llm-surface/15-eval/ui-surface-deps 回填。
+
 ### 2026-09-19 · 全面检查后修复：scope-guard 三处 fail-open + asset owner 列 + UI 健壮性（csai 已部署验收）
 - 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) 执行第一批安全红线与 UI 高优先项修复，全部经契约/UI 测试与线上验收。
 - 安全：exec 风险闸改逐目标判定（H1，跨项目不再放行）；exec `checkTarget` 改全项目先 exclude 再 scope（H2，与 scope 域同源）；asset scope 自查 program 缺失改 fail-closed `E_INVARIANT`（H3）；补 `resolve6`（M2）、`_file`/Burp 文件边界（M3）、grep 正则 ReDoS 限流（M4）；`vuln_dedup_check` 强制 host/vuln_type 至少其一（M10）。
