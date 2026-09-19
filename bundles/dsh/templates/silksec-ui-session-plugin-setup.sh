@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # @silksec/ui-session 安装器（spool bundle dsh setup 调用，幂等）
-# 19-ui-surface P5 会话内绑定：conversation.view「安全产出」+ 会话头计数钮 +
+# 16-dashboard P5 会话内绑定：conversation.view「安全产出」+ 会话头计数钮 +
 # assistant-actions「登记候选漏洞 / 沉淀事实」。
 #   - 宿主半面：no-op cordis 插件（使本包成为 Loader entry，触发 dsh.client 扫描）
 #   - 客户端半面：跨 bundle require @silksec/ui-core；conversation 提供 view /

@@ -8,7 +8,7 @@
 | 要做什么 | 从这里开始 |
 |---|---|
 | 看进度 / 最近改了什么 / 升级记录 | **[PROGRESS.md](PROGRESS.md)**（唯一进度与更新文档，最新在最上 §〇） |
-| 了解架构与模块职责 | [00-conventions.md](00-conventions.md)（全局契约宪法）→ 对应模块 `00–19` |
+| 了解架构与模块职责 | [00-conventions.md](00-conventions.md)（全局契约宪法）→ 对应模块 `00–18` |
 | 查术语 | [领域语言](../../bundles/dsh/CONTEXT.md) |
 | 追溯历史（旧架构/旧状态/历次升级方案与完整记录/会话模板） | [archive/](archive/) · [archive/upgrades/](archive/upgrades/) |
 
@@ -16,7 +16,7 @@
 
 ```
 doc/secagent/
-  00-conventions.md … 19-ui-surface.md   模块契约（每模块自维护，改动时同步 bump）
+  00-conventions.md … 18-migration.md   模块契约（每模块自维护，改动时同步 bump）
   PROGRESS.md                            唯一进度 + 更新日志（滚动）
   README.md                              本页（入口与结构）
   archive/                               历史（只读）：
@@ -24,7 +24,8 @@ doc/secagent/
     v5-README.md, REVIEW-*, SESSION-PROMPT.md, INDEX.md, …
 ```
 
-模块索引：00 契约宪法 · 01 总线 · 02 漏洞 · 03 资产 · 04 接口 · 05 任务 · 06 事实 · 07 知识 · 08 授权 · 09 审批 · 10 执行 · 11 台账 · 12 报告 · 13 代理 · 14 FGS · 15 评测 · 16 看板 · 17 LLM 工具面 · 18 迁移 · 19 UI 原生面。
+模块索引：00 契约宪法 · 01 总线 · 02 漏洞 · 03 资产 · 04 接口 · 05 任务 · 06 事实 · 07 知识 · 08 授权 · 09 审批 · 10 执行 · 11 台账 · 12 报告 · 13 代理 · 14 FGS · 15 评测 · 16 看板与 UI 原生面 · 17 LLM 工具面 · 18 迁移。
+（原 19 UI 原生面已并入 16；模块号 00–18 连续。）
 
 ## 维护规则
 

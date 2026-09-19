@@ -36,7 +36,7 @@ for domain of registry.registered():                  # R1-R7 校验通过的域
   for (name, qdef) of domain.manifest.queries:
     if 'model' ∉ qdef.actor:           continue       # 查询同样过矩阵（bus 的 audit_tail 即在此被滤掉）
     register({ ... execute: => gateway.query(domain, name, args, { actor:'model', session_id, cwd }) })
-for alias of bus.aliases:                              # ② 兼容别名（01 §3.2）
+for alias of bus.aliases:                              # ② 兼容别名（01 §3.2）——当前 bus.aliases 为空表，循环不产出
   if alias 的目标动词 ∉ mounted:        continue       #    目标对 model 不可见 → 别名也不可见（fail-closed）
   register({ name: alias, description: '[兼容别名 → {target}] ' + 目标 agent_note, ... 同目标 schema })
 ```
@@ -60,7 +60,7 @@ for alias of bus.aliases:                              # ② 兼容别名（01 �
 | fgs | 2 | 3 | — | 5 |
 | eval | 2 | 2 | case_add, case_resolve | 2 |
 | bus | 2 | 3 | replay, prune；audit_tail（查询矩阵滤除） | 2（bus_status, events_tail） |
-| **合计** | **81** | **65** | **26 个命令不可见**（含 bus 的 replay/prune） | **≈119**（含观察期别名另计 ~20） |
+| **合计** | **81** | **65** | **26 个命令不可见**（含 bus 的 replay/prune） | **≈119**（别名表当前为空，无额外别名工具） |
 
 口径说明：表中"model 工具数"= 命令可见数 + 查询可见数（146 个动词中 model 可见 119：55 命令 + 64 查询；查询侧仅 audit_tail 被矩阵滤除）。v4.x 现状约 67 个工具（asset-graph 38 + sec-suite 15 + sec-pipeline 8 + proxy-pool 6），v5 全量投影约 119——接近翻倍的主要来源是 know 域六子仓动词显式化（v4.x 的 exp/pb/kb/rule/vc/harvest 入口散在两插件里）。容量影响见 §2.6。
 
@@ -334,12 +334,12 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 | 工具描述与后端能力对齐 | v4.6.1 修复（工具 schema 只暴露 4 参数、severity/source 传不进去） | 根治：schema 单一来源=manifest，工具面不可能落后于后端 |
 | `@silksec/dsh-browser` fork（浏览器共驾工具面） | tarball + `dsh-browser-upstream.index.js`/`browser-manager.js` patch（注入 SEC_FLOW_PROXY 出口代理→xray :7777）；底座=silksec-shared-browser.service（CDP :9222 常驻 Chromium，登录态人机共用） | **零改动**：fork 与常驻浏览器服务原样保留（平台层不动，10-exec §2.7 不动清单）；浏览器工具按同一 ToolProjector 规则投影（fork 内工具定义改读 manifest 是 Phase 5+ 可选项，非 v5 范围） |
 
-### 3.2 兼容别名（工具面视角）
+### 3.2 兼容别名（工具面视角）——已退役
 
-别名表全文与规则见 01 §3.2。工具面只补两条：
+别名表全文与规则见 01 §3.2。**2026-09-19 起 `bus.aliases.yaml` 为空表**，工具面不再投影任何别名工具（旧名调用一律 `E_BUS_VERB_UNKNOWN`）；下面两条为迁移期机制留档（机制仍在，当前 0 条目）：
 
-1. 别名工具的 description 前缀 `[兼容别名 → {target}] `，**目标动词的 agent_note 全文照抄**——模型用旧名也能读到新纪律；
-2. 观察期内 eval 域加"别名使用率"观测（audit deprecated_use 计数进 eval_stats）——Phase 5 删别名的验收数据（7 天零使用）从这里来。
+1. 迁移期别名工具的 description 前缀 `[兼容别名 → {target}] `，**目标动词的 agent_note 全文照抄**——模型用旧名也能读到新纪律；
+2. 迁移期 eval 域曾加"别名使用率"观测（audit `deprecated_use` 计数进 eval_stats）作为删别名的验收数据；别名删除后该观测仅作为历史回归指标保留。
 
 ### 3.3 数据迁移（prompt 体系改写）
 
@@ -371,8 +371,8 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 | 维度 | 结论 |
 |---|---|
 | 逻辑/功能 | 域动词投影、actor 白名单与 phase/subset 挂载矩阵可用；已有 discipline-audit 扫描范围内悬空工具引用为 0。晚间源码核对发现 scheduler 仍拼装 finding_add，后续须加入最终 prompt 的检查。 |
-| hook 判定 | ToolProjector/RpcProjector 是契约投影，不是旁路；兼容别名同样过网关校验。 |
-| 未实现/观察期 | 37 个兼容别名继续保留。9 月 12 日预检：deprecated_use 累计 147，最后一条 2026-09-12T15:23:24.420+08:00，最早删除闸口为 2026-09-19T15:23:24.420+08:00；使用不只来自契约 fixture，须同时修调用方与测试，后续新调用继续顺延。 |
+| hook 判定 | ToolProjector/RpcProjector 是契约投影，不是旁路；别名（若登记）同样过网关校验。 |
+| 未实现/观察期 | **已结清**：37 个兼容别名已于 2026-09-19 删除（未等待满 7 天——别名是当时看板写路径承重结构，改采「先迁调用方再删别名」）；`bus.aliases.yaml` 空表、`discipline-audit aliases=0`、全 prompt 资产悬空引用 = 0。 |
 | 性能 | 挂载投影按 profile 组合树生成，启动时一次性；工具数量当前无运行时热点。 |
 | 独立升级 | 域工具面可随域插件更新；但 prompt/skills/objective 引用必须同步 discipline-audit，防止悬空引用。 |
 

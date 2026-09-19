@@ -1,5 +1,5 @@
 /**
- * @silksec/ui-core — client half (browser bundle)，19-ui-surface P0 地基。
+ * @silksec/ui-core — client half (browser bundle)，16-dashboard P0 地基。
  *
  * 看板 UI 原生面的**共享内核**：把旧单体 client 里散落的 token / hooks / 共享组件
  * 提取为跨 bundle require 的稳定面，并新增原子化隔离所需的三件基础设施：
@@ -501,7 +501,7 @@ window.__ModuleLoader__.load({
     var SilksecErrorBoundary = createErrorBoundary(EmptyState)
 
     // ── 视图注册表（secDashboardViews 等价物） ───────────────────────────────
-    // 16-dashboard §1.1 协议 + 19-ui-surface §5.1 拆分（ui-core 持注册表）。
+    // 16-dashboard §1.1 协议 + 16-dashboard §3.1 拆分（ui-core 持注册表）。
     // 注册/卸载幂等；动态订阅供晚注册视图触发重渲染。
     // requires 能力降级（§六.3）：条目的 required 服务经 probe 判定，缺席者不进
     // list()/get()（tab 静默隐藏，不抛、不占 order）；probe 由 ui-core apply 绑定 ctx.get。
@@ -698,7 +698,7 @@ window.__ModuleLoader__.load({
       setServiceProbe(function (name) {
         try { return !!ctx.get(name) } catch (e) { return false }
       })
-      // 冒烟门禁打卡（19-ui-surface §6.4③）：无头渲染读 window.__silksecSurfaceHealth
+      // 冒烟门禁打卡（16-dashboard §2.6）：无头渲染读 window.__silksecSurfaceHealth
       markSurfaceHealth('ui-core', 'ok')
     }
 

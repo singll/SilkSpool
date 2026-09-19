@@ -1,5 +1,5 @@
 # ==============================================================================
-# ui-surface-deps — 看板 UI 原生面「官方挂点清单」（19-ui-surface §六.1）
+# ui-surface-deps — 看板 UI 原生面「官方挂点清单」（16-dashboard §2.3）
 #
 # 作用：把每个 UI 包实际消费的 DSH 官方承载面（槽名 / 服务 / 方法 / primitives
 # 组件 / 官方图标）显式登记。DSH 升级（freeze→prepare→switch）时按新旧 tag diff
@@ -7,11 +7,11 @@
 #   命中哪个面的清单 → 复验哪个面；未命中的面直接放行 → 「升级尽量不动」。
 #
 # 维护纪律：新增/改动一个面对官方挂点的消费 → 同一次提交更新本清单。
-# 契约版本：1 ｜ 设计真相源：doc/secagent/19-ui-surface.md
+# 契约版本：1 ｜ 设计真相源：doc/secagent/16-dashboard.md
 # ==============================================================================
 
 contract_version: 1
-design_doc: doc/secagent/19-ui-surface.md
+design_doc: doc/secagent/16-dashboard.md
 
 verified_dsh:
   version: 0.1.5-rc.2
@@ -32,7 +32,7 @@ verified_dsh:
 # dashboard-domain-views 的 -old 并排视图），看板只剩 DSH 原生承载形态。
 # sec-v5-accept.sh UI 冒烟按删除后口径（只要求 6 承载面包 + 7 域视图包）。
 p7_review:
-  doc_backfill: true          # 16-dashboard §六 + 19-ui-surface 头部/§八
+  doc_backfill: true          # 16-dashboard §六 + 16-dashboard 头部/§八
   theme_v42: true             # doc/silksong-theme-design.md §十一
   accept_ui_smoke: true       # sec-v5-accept.sh R5（结构断言 + --ui-headless 运行时断言）
   legacy_deletion: done       # 2026-09-19 删除 @silksec/sec-dashboard（跳过观察期）

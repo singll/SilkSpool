@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # @silksec/ui-core 安装器（spool bundle dsh setup 调用，幂等）
-# 19-ui-surface P0 地基：看板 UI 原生面共享内核（token/ErrorBoundary/hooks/
+# 16-dashboard P0 地基：看板 UI 原生面共享内核（token/ErrorBoundary/hooks/
 # secUiBus/视图注册表/共享组件）。组装双面插件包并装入 web profile（headless 不装）。
 #   - 宿主半面：no-op cordis 插件（使本包成为 Loader entry，触发 dsh.client 扫描）
 #   - 客户端半面：dsh.client 声明 + exports["./client"]；消费方经 dsh.client.inject

@@ -10,7 +10,7 @@
 #     5) web + headless 双 profile --dump-config 含 sec-domain-bus 与全部 14 域
 #   R4 owns 唯一性：14 域插件在 plugins/ 齐全。域注册 owns 冲突（R4）会拒载该域、
 #     其动词不进投影 → dump-config 缺域即红（部署级 owns 冲突的红线信号）。
-#   R5 UI 冒烟（19-ui-surface §6.4）：
+#   R5 UI 冒烟（16-dashboard §2.6）：
 #     ① 结构断言（默认，只读幂等）：13 个 UI 包均在 web 组合树、client bundle 落盘；
 #     ②③④ 运行时断言（--ui-headless，经既有 headless 通道）：组合 bundle 200 且含各包、
 #        window.__silksecSurfaceHealth 各面 ok/degraded、1 读 1 写 RPC 往返（写经路由 stub 不落库）。
@@ -110,7 +110,7 @@ for d in "${DOMAINS[@]}"; do
   fi
 done
 
-# --- R5 UI 冒烟（19-ui-surface §6.4） ---
+# --- R5 UI 冒烟（16-dashboard §2.6） ---
 # 13 个 UI 面：6 个承载面包 + 7 个逐域视图包。旧单体 @silksec/sec-dashboard
 # （Modal 壳 + `-old` 并排视图 + footer 入口）已删除，不再是必需面。
 UI_PKG_IDS=(

@@ -1,5 +1,5 @@
 /**
- * @silksec/ui-approval — client half (browser bundle)，19-ui-surface P2 审批套件。
+ * @silksec/ui-approval — client half (browser bundle)，16-dashboard P2 审批套件。
  *
  * 把统一审批中心从「主面板里的一个 tab」拆到 DSH 原生信息架构里它该在的位置：
  *   1. 通知胶囊（`shell.overlay`，list/root，additive）：右下角常驻「待审批 · N」
@@ -13,7 +13,7 @@
  *
  * 官方契约以 DSH 0.1.5-rc.2 类型声明逐字核对：
  *   - `SidebarRightTabRegistry.register(definition)`（**不是** registerType；
- *     19-ui-surface §二.3 的 `registerType` 名称有误，此处以实测为准）；
+ *     16-dashboard §2.1 的 `registerType` 名称有误，此处以实测为准）；
  *     定义字段 id/kind/priority/title(address)/guide[{order,title}]；
  *     阶段二 key = definition.id，openTab 按 kind 寻址。
  *   - `slots.inject(key, cb)` 按「槽声明生命周期」注册（声明先于/晚于回调皆正确）；

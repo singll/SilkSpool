@@ -139,7 +139,7 @@ export function taskChain(args, exec) {
 const FINDING_TAG_STATUS = ['confirmed', 'false_positive', 'ignored', 'new', 'submitted', 'accepted', 'dup']
 
 // ==============================================================================
-// v5 原子化：看板读写一律走领域总线，fail-closed（19-ui-surface §八 前置硬闸）。
+// v5 原子化：看板读写一律走领域总线，fail-closed（16-dashboard §5.3 前置硬闸）。
 // 原 63 处 `v4 兜底`（总线缺席/域动词未知/查询异常即直调 assetDb）已拆除——绕过域
 // 审计/幂等/事件是最大原子化缺口。总线缺席或域/动词未注册即显式报错，不再静默降级。
 // 例外：纯壳聚合端点（stats/workspaces/sessions/memcore）不含业务域写读，保留壳内实现。

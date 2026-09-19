@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # @silksec/ui-settings-scope 安装器（spool bundle dsh setup 调用，幂等）
-# 19-ui-surface P4 授权迁设置页：settings.section（list/root）注册「授权范围」整节
+# 16-dashboard P4 授权迁设置页：settings.section（list/root）注册「授权范围」整节
 # （program 列表 / scope.yml 条目管理 / 排除清单 / 凭据引用状态）。
 #   - 宿主半面：no-op cordis 插件（使本包成为 Loader entry，触发 dsh.client 扫描）
 #   - 客户端半面：跨 bundle require @silksec/ui-core；settings 域提供 settings.section

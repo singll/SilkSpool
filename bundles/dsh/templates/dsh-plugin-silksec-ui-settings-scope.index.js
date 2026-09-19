@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/ui-settings-scope — host half (no-op)
 //
-// 授权范围设置节（19-ui-surface P4）的宿主半面。存在的唯一目的：让本包成为 profile
+// 授权范围设置节（16-dashboard P4）的宿主半面。存在的唯一目的：让本包成为 profile
 // 的 Loader entry，从而 dsh-client-modules 扫描到它，并把 exports["./client"] 作为
 // 客户端 bundle 经 /plugins/@silksec/ui-settings-scope/client.js 提供给浏览器。
 //

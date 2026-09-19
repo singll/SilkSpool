@@ -1,5 +1,5 @@
 // ==============================================================================
-// @silksec/ui-settings-scope 单测（19-ui-surface P4 授权迁设置页）
+// @silksec/ui-settings-scope 单测（16-dashboard P4 授权迁设置页）
 // 运行：node --test dsh-plugin-silksec-ui-settings-scope.client.test.mjs
 //
 // 目标（对齐 P4 验收）：

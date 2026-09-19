@@ -1,7 +1,8 @@
 # 18 · 迁移路线图（Phase 0-5 · 部署 · 回滚 · 数据修复）
 
-> 版本：v5.0 ｜ 状态：定稿 ｜ 前置：全部 00-17 模块文档定稿（用户评审通过）后方可启动对应 Phase 的代码动工
+> 版本：v5.1 ｜ 状态：定稿（**Phase 0–5 全部完成；5.2 兼容别名已于 2026-09-19 删除**）｜ 前置：全部 00-17 模块文档定稿（用户评审通过）后方可启动对应 Phase 的代码动工
 > 本文是 v4.x 单体 → v5 领域插件化的**唯一**迁移计划。原则：**文档先行、每阶段独立可回滚、热修不等重构、重构期间每日链路（03:00/04:00 任务）中断不超过一个调度周期。**
+> **完成态提示**：Phase 0–4 已全部上线（逐节点见 [PROGRESS](PROGRESS.md) §二）；Phase 5 的 prompt 改写、别名删除、挂载矩阵、评测、悬空引用断言全部完成；Phase 5.6（单写者复评）结论为维持多进程 + SQLite WAL。迁移期使用的兼容别名层已清空（`bus.aliases.yaml` 空表，`cf77b79`），下文提及别名的步骤均为历史轨迹。
 > 进度见 [PROGRESS](PROGRESS.md)。DSH 底座升级另见 [upgrades](archive/upgrades/README.md)，不按本页已完成的 Phase 重新迁移；生产调度窗口以实测活跃任务为准，03:00/04:00 是原迁移基线。
 
 ---
@@ -10,7 +11,7 @@
 
 1. **文档定稿门槛**：某域的模块文档状态必须是 `定稿`，该域代码才允许动工。Phase 1 只需要 00/01/02/17/18 定稿。
 2. **一域一提交**：每个域的搬迁是一次独立 commit + 部署 + 观察，可单独 revert。
-3. **兼容别名贯穿**：v4.x 旧工具名经总线 aliases 映射到新动词（同样过网关全管线），prompt/objective 里的旧引用在别名期内新旧皆可——**调度任务 objective 不需要为重构而改**。
+3. **兼容别名过渡（历史）**：迁移期 v4.x 旧工具名曾经总线 aliases 映射到新动词（同样过网关全管线），使调度任务 objective 不必随重构立刻改。**2026-09-19 别名层已彻底移除**（调用方先迁语义动词，`bus.aliases.yaml` 清空）；当前旧名一律 `E_BUS_VERB_UNKNOWN`。
 4. **不动表名不迁库**：sqlite-local 后端直接接管现表；列级演进走域内 ensureCol（幂等）。
 5. **每日验证锚点**：每 Phase 收尾跑四件套——契约测试（新）、discipline-audit.py、data-quality.py、看板 ops 红条；03:00/04:00 任务次日照常出 handoff 即"链路未断"的判据。
 
@@ -69,7 +70,7 @@
 | persistFgsFacts / appendFgsToHandoff 直写 → 事件协作 | fgs |
 | sec-pipeline 8 工具直写文件 → ledger 域命令（写入即校验） | ledger |
 | QPS mtime 轮询 → scope.rules.changed 事件 | scope |
-| 看板 52 case 逐批切 RpcProjector（清单见 16-dashboard.md） | dashboard（Phase 2 期间滚动） |
+| 看板 RPC case 逐批切总线（`/silksec-dashboard` 56 case 瘦适配层，去向见 16-dashboard.md §1.7） | dashboard（Phase 2 期间滚动） |
 
 ## 五、Phase 3 —— 跨域事件化收尾（~3 天）
 
@@ -101,7 +102,7 @@
 ## 七、Phase 5 —— LLM 面收敛 + 守卫加固 + 评测（~1 周）
 
 1. prompt 体系全量改写：persona/objective/skills/technique-index 工具引用 → 新动词表（脚本化，p14-1-tool-refs.py 模式）；AGENTS.md 受管区块改为 manifest 生成。
-2. 删兼容别名（逐个走宪法 §十五废弃三段式：deprecated → 7 天 audit 零使用 → 删除）。
+2. ~~删兼容别名（逐个走宪法 §十五废弃三段式：deprecated → 7 天 audit 零使用 → 删除）。~~ **已完成（2026-09-19，`cf77b79`）**：因别名是当时看板写路径的承重结构，改采「先迁调用方再删别名」（未等待满 7 天），`bus.aliases.yaml` 清空、`discipline-audit aliases=0`。
 3. worker 挂载矩阵实施（profile × actor 白名单）；setup.sh 冒烟断言 owns×sandbox 交叉校验。
 4. eval 契约合规用例上线（模型越权必须被拒且 hint 可引导，见 15-eval.md）。
 5. discipline-audit.py 增加"悬空工具引用"断言。
@@ -111,13 +112,13 @@
 
 | 风险 | 缓解 | 回滚 |
 |---|---|---|
-| 每日链路中断 | 别名贯穿 + 每域独立提交 + Phase 1 试点验收门槛 | revert 单域 commit；别名层保旧 objective 可跑 |
+| 每日链路中断 | 迁移期别名贯穿（已退役）+ 每域独立提交 + Phase 1 试点验收门槛 | revert 单域 commit；当前无别名层，旧 objective 已全部改写（5.1） |
 | 契约设计错误 | 文档定稿评审 + vuln 试点先行验证表达力 | 契约 bump major（总线版本检查拦截不一致域） |
 | memcore 治理断档 | 映射层 fail-open（治理缺席业务照跑）+ memcore_events 前后对照 | memcore 整体回退旧版（裸 SQL 版保留至 Phase 3 验收后删除） |
 | 工具描述劣化影响模型 | agent_note 单一来源 + eval 契实用例 + 首周人工抽查 worker.log | 工具描述 hotfix（manifest 文本级，不涉代码） |
 | 数据修复误伤 | dry-run + VACUUM 快照先行 + 幂等可重跑 | silksec-restore.sh 按快照恢复 |
 | http-remote 不稳 | 能力矩阵 fail-closed + 本地 sqlite 保底 | bundle 配置一行切回 |
-| 工程量失控 | 14 域滚动推进、每域 2-4 天、总线抽象只在试点验证后才铺开 | 任意 Phase 可暂停（v4.x/v5 混布态可长期共存——别名层保证） |
+| 工程量失控 | 14 域滚动推进、每域 2-4 天、总线抽象只在试点验证后才铺开 | 任意 Phase 可暂停（迁移期 v4.x/v5 混布态靠别名层共存——**别名层已于 2026-09-19 移除，当前 v5 新形态为唯一运行时**） |
 
 ## 九、部署通道（沿用既有机制）
 
@@ -192,12 +193,12 @@
 
 以下一次性产物已完成历史使命，2026-09-19 旧版清理中**删除**：`backfill-program.js`（历史数据回填）、`migrate-blackboard-to-facts.js` / `migrate-scheduled-tasks.js` / `migrate-schedule-anchor.js`（v4 中期迁移）、`p-v5-0-fix-noise.js` / `p-v5-1-migrate-vuln.js` / `p-v5-2-pilot-accept.js`（Phase 1 一次性迁移与试点验收）、`import-cyberstrikeai.py`（一次性导入）、`dsh-version-watch.sh.bak-*`（备份残留）。保留：`echo-test.yaml`（测试 manifest 契约测试桩，§9.3 之外的唯一例外——它留在 tools.d 但 domain=none）、`p-v5-1-migrate-eval.js`（`sec-eval-domain-plugin-setup.sh` 每次 setup 幂等执行，非一次性）。
 
-同批清理删除的旧实现：`dsh-plugin-sec-suite.scheduler.js`（v4 调度循环，回滚仅需恢复 task 域调度器——现为唯一持锁者）、看板旧单体 `@silksec/sec-dashboard`（19-ui-surface D3，见 [16-dashboard §3.3](16-dashboard.md)）。
+同批清理删除的旧实现：`dsh-plugin-sec-suite.scheduler.js`（v4 调度循环，回滚仅需恢复 task 域调度器——现为唯一持锁者）、看板旧单体 `@silksec/sec-dashboard`（16-dashboard D3，见 [16-dashboard §5.3](16-dashboard.md)）。
 
 ## 十、完成定义（DoD）
 
 1. 12 条 v4.x 写路径（归档 v5 方案 §1.2 清单）全部收敛到 CommandGateway；
-2. `grep` 验证：memcore 零裸 SQL、无 Python 直连 asset-graph.db、dashboard-rpc 无手写领域写 case；
+2. `grep` 验证：memcore 零裸 SQL、无 Python 直连 asset-graph.db、**dashboard-rpc 无 v4 直写兜底**（56 个 case 全部 fail-closed 走总线；case 本身作为 UI 适配层保留）；
 3. 三后端契约测试在 CI（setup.sh 冒烟）全绿；
 4. http-remote 试点验收通过（外部漏洞管理系统场景）；
 5. eval 契约合规用例：模型越权 100% 被拒；

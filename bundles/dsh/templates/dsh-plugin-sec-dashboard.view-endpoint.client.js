@@ -1,7 +1,7 @@
 /**
- * @silksec/sec-dashboard-view-endpoint — client half (browser bundle)，19-ui-surface P6 逐域视图拆分。
+ * @silksec/sec-dashboard-view-endpoint — client half (browser bundle)，16-dashboard P6 逐域视图拆分。
  *
- * 接口域浏览视图（16-dashboard §1.7「接口」视图 + 19-ui-surface §三「主面板视图」）。
+ * 接口域浏览视图（16-dashboard §1.7「接口」视图 + 16-dashboard §1.3「主面板视图」）。
  * 接口是资产的子维度，平铺千行无浏览价值：主表按主机聚合（endpointHosts），展开主机
  * 看明细（endpoints）；本视图侧重跨主机的路径检索。从旧单体
  * dsh-plugin-sec-dashboard.client.js 拆出，**自持 query/handler**、纯组件、无挂载感知：

@@ -30,7 +30,7 @@ v4.x 中 `buildReport`（asset-db.js L1592-1664）与 `submissionDraft`（L1818-
 | B | vuln 域 owns submissions/，report 域 owns reports/ | 目录树被两个域瓜分，`data/reports/` 的 vault/Obsidian 同步链路要面对两个 owner；草稿渲染逻辑（查重/脱敏证据指针）被迫塞进 vuln 域，域膨胀 |
 | C | 整体归 vuln 域 | vuln 域变成"信号状态机 + 文档生成器"双职责，违背"一张状态机 + 一个 owner 为界"的域粒度公理；报告列表/查看（纯读、面向人）与漏洞流转（面向状态机）混在一起 |
 
-**结论：方案 A。** vuln 域保持"信号状态机"纯度（只 owns findings 表 + submissions 状态列），文档产物统一归 report 域。代价是 v4 的 `submission_draft` 工具跨了域——用总线兼容别名解决（§3.2：`submission_draft` 与 `vuln_draft_submission` 均别名到 `report_draft_submission`，走废弃三段式）。vuln 域的 `vuln_submit` 动词只管状态流转（submitted_at/bounty/vendor_status），不产文件——两者以 finding_id 为唯一关联键。
+**结论：方案 A。** vuln 域保持"信号状态机"纯度（只 owns findings 表 + submissions 状态列），文档产物统一归 report 域。代价是 v4 的 `submission_draft` 工具跨了域——迁移期用总线兼容别名过渡（`submission_draft`/`vuln_draft_submission` → `report_draft_submission`）；**2026-09-19 别名层已移除**，唯一入口 = `report_draft_submission`（见 §3.2 留档）。vuln 域的 `vuln_submit` 动词只管状态流转（submitted_at/bounty/vendor_status），不产文件——两者以 finding_id 为唯一关联键。
 
 ### 1.2 命令（写动词）总表
 

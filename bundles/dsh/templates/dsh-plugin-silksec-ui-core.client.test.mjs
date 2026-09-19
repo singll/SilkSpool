@@ -1,5 +1,5 @@
 // ==============================================================================
-// @silksec/ui-core 单测（19-ui-surface P0 地基）
+// @silksec/ui-core 单测（16-dashboard P0 地基）
 // 运行：node --test dsh-plugin-silksec-ui-core.client.test.mjs
 // 目标：
 //   1. SilksecErrorBoundary 渲染崩溃「只炸单面」：失败面渲染 EmptyState 兜底，

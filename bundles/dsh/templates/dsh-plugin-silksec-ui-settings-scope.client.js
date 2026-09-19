@@ -1,5 +1,5 @@
 /**
- * @silksec/ui-settings-scope — client half (browser bundle)，19-ui-surface P4 授权迁设置页。
+ * @silksec/ui-settings-scope — client half (browser bundle)，16-dashboard P4 授权迁设置页。
  *
  * 把授权域（scope）从主面板旧 tab 迁到 DSH 原生设置页：
  *   `settings.section`（list，root）注册「授权范围」**整节**——program 列表

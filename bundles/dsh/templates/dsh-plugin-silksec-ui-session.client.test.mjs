@@ -1,5 +1,5 @@
 // ==============================================================================
-// @silksec/ui-session 单测（19-ui-surface P5 会话内绑定）
+// @silksec/ui-session 单测（16-dashboard P5 会话内绑定）
 // 运行：node --test dsh-plugin-silksec-ui-session.client.test.mjs
 //
 // 目标（对齐 P5 验收）：

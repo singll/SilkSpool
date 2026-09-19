@@ -1,5 +1,5 @@
 /**
- * @silksec/ui-panel — client half (browser bundle)，19-ui-surface P1 主面板。
+ * @silksec/ui-panel — client half (browser bundle)，16-dashboard P1 主面板。
  *
  * 看板本体的**原生承载面**：把看板从「侧边栏 footer 按钮 → Modal」迁移到 DSH
  * 官方预留的一级页面通道（§四.1）：
@@ -30,7 +30,7 @@ window.__ModuleLoader__.load({
     var exports = module.exports
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
     var React = require('react')
-    // 19-ui-surface P0：跨 bundle require 看板 UI 内核（dsh.client.inject 声明随 setup 脚本）。
+    // 16-dashboard P0：跨 bundle require 看板 UI 内核（dsh.client.inject 声明随 setup 脚本）。
     var uiCore = null
     try { uiCore = require('@silksec/ui-core') } catch (e) { uiCore = null }
     var el = React.createElement

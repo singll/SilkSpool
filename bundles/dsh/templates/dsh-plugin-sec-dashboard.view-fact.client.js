@@ -1,7 +1,7 @@
 /**
- * @silksec/sec-dashboard-view-fact — client half (browser bundle)，19-ui-surface P6 逐域视图拆分。
+ * @silksec/sec-dashboard-view-fact — client half (browser bundle)，16-dashboard P6 逐域视图拆分。
  *
- * 事实域浏览视图（16-dashboard §1.7「事实」视图 + 19-ui-surface §三「主面板视图」）。
+ * 事实域浏览视图（16-dashboard §1.7「事实」视图 + 16-dashboard §1.3「主面板视图」）。
  * 从旧单体 dsh-plugin-sec-dashboard.client.js 拆出，**自持 query/handler**、纯组件、
  * 无挂载感知：经 @silksec/ui-core 的 viewRegistry 注册，ui-panel 主面板按 order 装配。
  *

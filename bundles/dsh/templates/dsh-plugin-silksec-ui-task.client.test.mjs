@@ -1,5 +1,5 @@
 // ==============================================================================
-// @silksec/ui-task 单测（19-ui-surface P3 任务套件）
+// @silksec/ui-task 单测（16-dashboard P3 任务套件）
 // 运行：node --test dsh-plugin-silksec-ui-task.client.test.mjs
 //
 // 目标（对齐 P3 验收）：

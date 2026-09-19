@@ -514,7 +514,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | `task_worker_list` | 列出最近的 spawn_worker run（可按 status 过滤：running/done/failed/killed），总览在飞/历史 worker。 |
 | `task_worker_status` | 查询某个 spawn_worker run 的结局（running/done/failed/killed）+ 恢复指引。重启后 spawn_worker 报 interrupted/outcome unknown 时，用它确认真实结果（已落盘）；尾部日志用 grep_result/page_result 取。 |
 
-**兼容别名**（观察期一个调度周期 7 天，audit 记 deprecated_use）：`task_update`（分派见 §3.2）、`worker_list` → task_worker_list、`worker_status` → task_worker_status、`scheduled_tasks` → task_scheduled、RPC case 名（taskCreate/taskRunNow/taskCancel/taskSetStatus/taskScheduleUpdate）→ 点分新名。
+**兼容别名（已移除，2026-09-19）**：迁移期曾有 `task_update`（分派见 §3.2）、`worker_list`→task_worker_list、`worker_status`→task_worker_status、`scheduled_tasks`→task_scheduled、RPC case 名→点分名。**当前 `bus.aliases.yaml` 为空表，旧名一律 `E_BUS_VERB_UNKNOWN`**（机制留档见 §3.2）。
 
 ### 1.7 看板 RPC 投影
 

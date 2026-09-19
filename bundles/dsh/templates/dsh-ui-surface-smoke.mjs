@@ -1,5 +1,5 @@
 // ==============================================================================
-// dsh-ui-surface-smoke.mjs — 看板 UI 原生面「真机无头」运行时冒烟（19-ui-surface §6.4 ②③④）
+// dsh-ui-surface-smoke.mjs — 看板 UI 原生面「真机无头」运行时冒烟（16-dashboard §2.6 ②③④）
 //
 // 由 dsh-ui-surface-smoke.py 以「临时维护账号同进程还原 users.yaml」的既有 headless
 // 通道调用；本脚本自身只读业务数据（写抽样经浏览器路由 stub，绝不落库）。
@@ -19,7 +19,7 @@ const PROFILE = process.env.SEC_UI_PROFILE || '/opt/silkspool/dsh/data/profiles/
 const cookiesPath = process.argv[2]
 const chromeArg = process.argv[3]
 
-// 面清单与 19-ui-surface §4/§5.1、deps 清单一一对应（P7 收尾后旧 sec-dashboard 不再是必需面）。
+// 面清单与 16-dashboard §1.4/§5.1、deps 清单一一对应（P7 收尾后旧 sec-dashboard 不再是必需面）。
 const UI_PACKAGES = [
   { id: 'ui-core', surface: 'ui-core' },
   { id: 'ui-panel', surface: 'ui-panel' },

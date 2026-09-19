@@ -353,32 +353,32 @@ if [ -f "$BASE_DIR/settings-mirror-patch.sh" ]; then
     bash "$BASE_DIR/settings-mirror-patch.sh"
 fi
 
-# -------------------- 8.6.3 看板 UI 内核（ui-core，19-ui-surface P0；须先于 ui-panel/sec-dashboard） --------------------
+# -------------------- 8.6.3 看板 UI 内核（ui-core，16-dashboard P0；须先于 ui-panel/sec-dashboard） --------------------
 if [ -f "$BASE_DIR/silksec-ui-core-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-core-plugin-setup.sh"
 fi
 
-# -------------------- 8.6.4 看板主面板（ui-panel，19-ui-surface P1；消费 ui-core 注册表，须先于 sec-dashboard） --------------------
+# -------------------- 8.6.4 看板主面板（ui-panel，16-dashboard P1；消费 ui-core 注册表，须先于 sec-dashboard） --------------------
 if [ -f "$BASE_DIR/silksec-ui-panel-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-panel-plugin-setup.sh"
 fi
 
-# -------------------- 8.6.5 审批套件（ui-approval，19-ui-surface P2；shell.overlay 胶囊 + 审批右侧栏 tab；消费 ui-core） --------------------
+# -------------------- 8.6.5 审批套件（ui-approval，16-dashboard P2；shell.overlay 胶囊 + 审批右侧栏 tab；消费 ui-core） --------------------
 if [ -f "$BASE_DIR/silksec-ui-approval-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-approval-plugin-setup.sh"
 fi
 
-# -------------------- 8.6.6 任务套件（ui-task，19-ui-surface P3；任务右侧栏 tab + 会话头任务计数；消费 ui-core） --------------------
+# -------------------- 8.6.6 任务套件（ui-task，16-dashboard P3；任务右侧栏 tab + 会话头任务计数；消费 ui-core） --------------------
 if [ -f "$BASE_DIR/silksec-ui-task-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-task-plugin-setup.sh"
 fi
 
-# -------------------- 8.6.7 授权范围设置节（ui-settings-scope，19-ui-surface P4；settings.section 整节；消费 ui-core） --------------------
+# -------------------- 8.6.7 授权范围设置节（ui-settings-scope，16-dashboard P4；settings.section 整节；消费 ui-core） --------------------
 if [ -f "$BASE_DIR/silksec-ui-settings-scope-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-settings-scope-plugin-setup.sh"
 fi
 
-# -------------------- 8.6.8 会话内绑定（ui-session，19-ui-surface P5；conversation.view 安全产出 + 会话头钮 + assistant-actions；消费 ui-core） --------------------
+# -------------------- 8.6.8 会话内绑定（ui-session，16-dashboard P5；conversation.view 安全产出 + 会话头钮 + assistant-actions；消费 ui-core） --------------------
 if [ -f "$BASE_DIR/silksec-ui-session-plugin-setup.sh" ]; then
     bash "$BASE_DIR/silksec-ui-session-plugin-setup.sh"
 fi

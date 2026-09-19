@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ==============================================================================
 # dsh-ui-surface-smoke.py — 看板 UI 原生面「真机无头」运行时冒烟 harness
-# （19-ui-surface §6.4；与 P0–P6 逐阶段验收同一「既有 headless 通道」）
+# （16-dashboard §2.6；与 P0–P6 逐阶段验收同一「既有 headless 通道」）
 #
 # 流程：临时维护账号经正式密码登录取得 cookie（同一进程内立即还原 users.yaml）
 #       → 把 cookie 交给 playwright-core 子进程做无头渲染与 RPC 抽样

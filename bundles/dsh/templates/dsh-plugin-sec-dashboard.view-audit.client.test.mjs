@@ -1,5 +1,5 @@
 // ==============================================================================
-// @silksec/sec-dashboard-view-audit 单测（19-ui-surface P6 审计域拆分）
+// @silksec/sec-dashboard-view-audit 单测（16-dashboard P6 审计域拆分）
 // 运行：node --test dsh-plugin-sec-dashboard.view-audit.client.test.mjs
 //
 // 目标（对齐 P6 验收）：

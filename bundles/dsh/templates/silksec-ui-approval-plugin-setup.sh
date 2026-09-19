@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # @silksec/ui-approval 安装器（spool bundle dsh setup 调用，幂等）
-# 19-ui-surface P2 审批套件：shell.overlay 待办胶囊 + 快捷处理浮卡 + 审批右侧栏
+# 16-dashboard P2 审批套件：shell.overlay 待办胶囊 + 快捷处理浮卡 + 审批右侧栏
 # page tab（sidebarRightTabs.register + sidebar.right.pane.tab keyed 体）。
 #   - 宿主半面：no-op cordis 插件（使本包成为 Loader entry，触发 dsh.client 扫描）
 #   - 客户端半面：跨 bundle require @silksec/ui-core；layout 提供 shell.overlay，

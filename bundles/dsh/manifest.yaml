@@ -228,37 +228,37 @@ templates:
   - seed-manifests.sh
   - seed-skills.sh
   - seed-presets.sh
-  # --- 安全看板 UI 内核（19-ui-surface P0：token/ErrorBoundary/hooks/secUiBus/视图注册表）---
+  # --- 安全看板 UI 内核（16-dashboard P0：token/ErrorBoundary/hooks/secUiBus/视图注册表）---
   - dsh-plugin-silksec-ui-core.index.js
   - dsh-plugin-silksec-ui-core.client.js
   - dsh-plugin-silksec-ui-core.patch.yml
   - dsh-plugin-silksec-ui-core.client.test.mjs
   - silksec-ui-core-plugin-setup.sh
-  # --- 安全看板主面板（19-ui-surface P1：main + sidebar.panellist + selectPanel；消费 ui-core 注册表）---
+  # --- 安全看板主面板（16-dashboard P1：main + sidebar.panellist + selectPanel；消费 ui-core 注册表）---
   - dsh-plugin-silksec-ui-panel.index.js
   - dsh-plugin-silksec-ui-panel.client.js
   - dsh-plugin-silksec-ui-panel.patch.yml
   - dsh-plugin-silksec-ui-panel.client.test.mjs
   - silksec-ui-panel-plugin-setup.sh
-  # --- 审批套件（19-ui-surface P2：shell.overlay 胶囊 + 快捷浮卡 + 审批右侧栏 tab；消费 ui-core）---
+  # --- 审批套件（16-dashboard P2：shell.overlay 胶囊 + 快捷浮卡 + 审批右侧栏 tab；消费 ui-core）---
   - dsh-plugin-silksec-ui-approval.index.js
   - dsh-plugin-silksec-ui-approval.client.js
   - dsh-plugin-silksec-ui-approval.patch.yml
   - dsh-plugin-silksec-ui-approval.client.test.mjs
   - silksec-ui-approval-plugin-setup.sh
-  # --- 任务套件（19-ui-surface P3：任务右侧栏 tab 四区块 + 会话头「本会话任务」计数；消费 ui-core）---
+  # --- 任务套件（16-dashboard P3：任务右侧栏 tab 四区块 + 会话头「本会话任务」计数；消费 ui-core）---
   - dsh-plugin-silksec-ui-task.index.js
   - dsh-plugin-silksec-ui-task.client.js
   - dsh-plugin-silksec-ui-task.patch.yml
   - dsh-plugin-silksec-ui-task.client.test.mjs
   - silksec-ui-task-plugin-setup.sh
-  # --- 授权范围设置节（19-ui-surface P4：settings.section 整节 scope.yml 管理 / 排除清单 / 凭据引用；消费 ui-core）---
+  # --- 授权范围设置节（16-dashboard P4：settings.section 整节 scope.yml 管理 / 排除清单 / 凭据引用；消费 ui-core）---
   - dsh-plugin-silksec-ui-settings-scope.index.js
   - dsh-plugin-silksec-ui-settings-scope.client.js
   - dsh-plugin-silksec-ui-settings-scope.patch.yml
   - dsh-plugin-silksec-ui-settings-scope.client.test.mjs
   - silksec-ui-settings-scope-plugin-setup.sh
-  # --- 会话内绑定（19-ui-surface P5：conversation.view 安全产出 + 会话头钮 + assistant-actions 登记/沉淀；消费 ui-core）---
+  # --- 会话内绑定（16-dashboard P5：conversation.view 安全产出 + 会话头钮 + assistant-actions 登记/沉淀；消费 ui-core）---
   - dsh-plugin-silksec-ui-session.index.js
   - dsh-plugin-silksec-ui-session.client.js
   - dsh-plugin-silksec-ui-session.patch.yml
@@ -266,7 +266,7 @@ templates:
   - silksec-ui-session-plugin-setup.sh
   # --- 安全看板客户端插件（DSH Web UI slot，依赖 sec-suite 的 /silksec/dashboard RPC + ui-core）---
   - sec-dashboard-plugin-setup.sh
-  # --- 看板逐域视图（19-ui-surface P6：vuln/asset/endpoint/fact/know(+学习)/report/audit
+  # --- 看板逐域视图（16-dashboard P6：vuln/asset/endpoint/fact/know(+学习)/report/audit
   #     从旧单体拆为独立 client bundle，经 ui-core viewRegistry 挂 ui-panel 主面板；
   #     setup 脚本逐域组装为 @silksec/sec-dashboard-view-<domain> 独立包）---
   - dsh-plugin-sec-dashboard.view-vuln.client.js
@@ -412,7 +412,7 @@ templates:
   - eval-candidate-run.js
   # --- v5 Phase 3 部署验收（18-migration §五：R0 基础健康 + R4 owns 唯一性，契约化）---
   - sec-v5-accept.sh
-  # --- 看板 UI 原生面运行时冒烟（19-ui-surface §6.4；sec-v5-accept.sh --ui-headless 经既有 headless 通道调用）---
+  # --- 看板 UI 原生面运行时冒烟（16-dashboard §2.6；sec-v5-accept.sh --ui-headless 经既有 headless 通道调用）---
   - dsh-ui-surface-smoke.mjs
   - dsh-ui-surface-smoke.py
   # --- 数据保留期清理（审计 S7 / output-retention 等价）---

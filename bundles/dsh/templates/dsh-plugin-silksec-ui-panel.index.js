@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/ui-panel — host half (no-op)
 //
-// 看板主面板（19-ui-surface P1）的宿主半面。存在的唯一目的：让本包成为 profile 的
+// 看板主面板（16-dashboard P1）的宿主半面。存在的唯一目的：让本包成为 profile 的
 // Loader entry，从而 dsh-client-modules 扫描到它，并把 exports["./client"] 作为
 // 客户端 bundle 经 /plugins/@silksec/ui-panel/client.js 提供给浏览器。
 //

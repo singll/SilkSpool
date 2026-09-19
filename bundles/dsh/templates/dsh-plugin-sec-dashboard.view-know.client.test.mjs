@@ -1,5 +1,5 @@
 // ==============================================================================
-// @silksec/sec-dashboard-view-know 单测（19-ui-surface P6 知识/学习域视图拆分）
+// @silksec/sec-dashboard-view-know 单测（16-dashboard P6 知识/学习域视图拆分）
 // 运行：node --test dsh-plugin-sec-dashboard.view-know.client.test.mjs
 //
 // 目标（对齐 P6 验收）：

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # @silksec/ui-task 安装器（spool bundle dsh setup 调用，幂等）
-# 19-ui-surface P3 任务套件：任务右侧栏 page tab（四区块栏宽自适应）+ 会话头
+# 16-dashboard P3 任务套件：任务右侧栏 page tab（四区块栏宽自适应）+ 会话头
 # 「本会话任务」计数（conversation.session.header.utilities）。
 #   - 宿主半面：no-op cordis 插件（使本包成为 Loader entry，触发 dsh.client 扫描）
 #   - 客户端半面：跨 bundle require @silksec/ui-core；sidebar-right 提供

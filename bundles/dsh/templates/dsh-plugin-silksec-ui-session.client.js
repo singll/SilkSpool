@@ -1,5 +1,5 @@
 /**
- * @silksec/ui-session — client half (browser bundle)，19-ui-surface P5 会话内绑定。
+ * @silksec/ui-session — client half (browser bundle)，16-dashboard P5 会话内绑定。
  *
  * 把「安全产出」与「登记候选漏洞 / 沉淀事实」深度绑到 DSH 官方会话信息架构上，
  * 全部 additive（只碰 list 槽，绝不碰 chain 槽 conversation.chat.turnTail）：

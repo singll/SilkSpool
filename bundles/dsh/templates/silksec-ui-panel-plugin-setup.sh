@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # @silksec/ui-panel 安装器（spool bundle dsh setup 调用，幂等）
-# 19-ui-surface P1 主面板：看板本体挂 DSH 官方一级页面通道（main + sidebar.panellist
+# 16-dashboard P1 主面板：看板本体挂 DSH 官方一级页面通道（main + sidebar.panellist
 # + ctx.layout.selectPanel）。组装双面插件包并装入 web profile（headless 不装）。
 #   - 宿主半面：no-op cordis 插件（使本包成为 Loader entry，触发 dsh.client 扫描）
 #   - 客户端半面：通用渲染器，消费 @silksec/ui-core 视图注册表；跨 bundle require

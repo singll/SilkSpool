@@ -1,5 +1,5 @@
 // ==============================================================================
-// 看板 RPC 原子化契约测试（19-ui-surface §八 前置硬闸）
+// 看板 RPC 原子化契约测试（16-dashboard §5.3 前置硬闸）
 // 运行：node --test dsh-plugin-sec-suite.dashboard-rpc.test.mjs
 // 目标：看板业务端点一律经 v5 领域总线 fail-closed，legacy assetDb 直写兜底已拆除。
 //   - 总线缺席 → 业务端点显式报错（不再静默降级）

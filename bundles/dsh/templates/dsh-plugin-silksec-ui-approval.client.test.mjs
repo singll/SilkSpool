@@ -1,5 +1,5 @@
 // ==============================================================================
-// @silksec/ui-approval 单测（19-ui-surface P2 审批套件）
+// @silksec/ui-approval 单测（16-dashboard P2 审批套件）
 // 运行：node --test dsh-plugin-silksec-ui-approval.client.test.mjs
 //
 // 目标（对齐 P2 验收）：

@@ -1,7 +1,7 @@
 /**
- * @silksec/sec-dashboard-view-report — client half (browser bundle)，19-ui-surface P6 逐域视图拆分。
+ * @silksec/sec-dashboard-view-report — client half (browser bundle)，16-dashboard P6 逐域视图拆分。
  *
- * 报告域浏览视图（16-dashboard §1.7「报告」视图 + 19-ui-surface §三「主面板视图」）。
+ * 报告域浏览视图（16-dashboard §1.7「报告」视图 + 16-dashboard §1.3「主面板视图」）。
  * 从旧单体 dsh-plugin-sec-dashboard.client.js 的 ReportsView 拆出，**自持 query/筛选态**、
  * 纯组件、无挂载感知：经 @silksec/ui-core 的 viewRegistry 注册，ui-panel 主面板按 order 装配。
  *

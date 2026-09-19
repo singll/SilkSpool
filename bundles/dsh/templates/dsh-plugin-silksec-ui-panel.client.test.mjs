@@ -1,5 +1,5 @@
 // ==============================================================================
-// @silksec/ui-panel 单测（19-ui-surface P1 主面板）
+// @silksec/ui-panel 单测（16-dashboard P1 主面板）
 // 运行：node --test dsh-plugin-silksec-ui-panel.client.test.mjs
 // 目标：
 //   ① 双形态回归——注册/卸载幂等；DashboardPanel 按 ui-core viewRegistry 的 order

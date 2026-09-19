@@ -30,7 +30,7 @@
 
 ### 1.2 命令总表
 
-> **命名说明**：种子设计（归档 §4.13）与任务书的「fgs_update 单动词（status 参数内聚状态机）」与宪法 §二禁用词（新动词不得叫 `update`）及 §四.1（**调用方永远不传 status 参数——目标状态是动词名的一部分**）冲突，故状态机拆为语义动词族（fgs_start / fgs_complete / fgs_fail / fgs_block / fgs_deprecate），content/score 增量合并独立为 `fgs_annotate`；`fgs_update` 降级为**兼容别名**（按 status 参数分派到语义动词，观察期后删除）——与 vuln 域 `updateFinding(status=xxx) → vuln_confirm/vuln_reject/...` 的分派先例完全同型。非法流转在 schema 层拒绝。
+> **命名说明**：种子设计（归档 §4.13）与任务书的「fgs_update 单动词（status 参数内聚状态机）」与宪法 §二禁用词（新动词不得叫 `update`）及 §四.1（**调用方永远不传 status 参数——目标状态是动词名的一部分**）冲突，故状态机拆为语义动词族（fgs_start / fgs_complete / fgs_fail / fgs_block / fgs_deprecate），content/score 增量合并独立为 `fgs_annotate`；`fgs_update` 迁移期曾降级为**兼容别名**（按 status 参数分派到语义动词），**该别名已随 2026-09-19 别名层移除而删除**——与 vuln 域 `updateFinding(status=xxx) → vuln_confirm/vuln_reject/...` 的分派先例完全同型。非法流转在 schema 层拒绝。
 
 | # | 动词 | 一句话语义 | actor | 幂等键 | 发布事件 | 模型可见 |
 |---|---|---|---|---|---|---|

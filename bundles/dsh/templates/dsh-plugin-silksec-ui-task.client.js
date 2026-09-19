@@ -1,5 +1,5 @@
 /**
- * @silksec/ui-task — client half (browser bundle)，19-ui-surface P3 任务套件。
+ * @silksec/ui-task — client half (browser bundle)，16-dashboard P3 任务套件。
  *
  * 把任务域从主面板旧 tab 迁到 DSH 原生信息架构：
  *   1. 任务右侧栏 page tab：`ctx.sidebarRightTabs.register({ id, kind, priority,
