@@ -16,7 +16,7 @@
 // "@deepseek-ai/dsh-client-ui-conversation"（view/header 槽声明方）与
 // "@deepseek-ai/dsh-client-ui-chat"（assistant-actions 槽声明方）与
 // "@silksec/ui-core"（令牌/hooks/注册表/微事件）；宿主先送达这些行，本包 factory
-// 物化时命中。写操作走 /silksec-domain（vuln.finding_add / fact.upsert，actor=dashboard）。
+// 物化时命中。写操作走 /silksec-domain（vuln.register_candidate / fact.upsert，actor=dashboard）。
 // ==============================================================================
 
 export default {

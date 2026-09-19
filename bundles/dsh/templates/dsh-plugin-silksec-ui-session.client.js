@@ -26,12 +26,8 @@
  *   - primitives Modal / RiskConfirmation / IconChecklistOutline 能力探测消费（非版本判断）。
  *
  * 写操作（/silksec-domain，RpcProjector 注入 actor=dashboard + operator，审计可区分）：
- *   - 登记候选漏洞：`vuln.finding_add`（v4 兼容分派别名，severity=info → register_candidate
- *     降级候选池）。**依据**：domain 语义动词 `vuln.register_candidate` 的 actor 白名单为
- *     webhook/script（dashboard 禁入），`vuln.register_signal` 白名单为 model/human；
- *     二者与看板 actor=dashboard 均不兼容，且纪律禁止改域动词/actor（数据层零改动）。
- *     `finding_add` 别名正是设计中的「模型/人类走候选降级」受控通道（审计记
- *     deprecated_use + via_alias，可区分），是 dashboard 可达的唯一候选注册路径。
+ *   - 登记候选漏洞：`vuln.register_candidate`（语义动词，actor 白名单含 dashboard——
+ *     操作员从会话登记只产候选、天然缺口播待验证；确权走 vuln_confirm）。
  *   - 沉淀事实：`fact.upsert`（actor 白名单含 dashboard，原生写动词）。
  *
  * 降级链（§六.3）：任一会话槽缺席 → 不注册该面（会话面无全局影响），不抛；
@@ -228,15 +224,14 @@ window.__ModuleLoader__.load({
 
     // ── 写操作：与主面板同域命令，经正确路由（vuln.*/fact.* → /silksec-domain） ──
     var SECURITY_ACTIONS = {
-      // 登记候选漏洞：v4 兼容分派别名 finding_add；severity=info 触发候选降级
-      // （dashboard actor_bypass，审计 via_alias 可追踪）。见文件头「依据」。
+      // 登记候选漏洞：语义动词 vuln.register_candidate（actor 含 dashboard）
       registerCandidate: function (spec) {
         spec = spec || {}
         return {
-          endpoint: 'vuln.finding_add',
+          endpoint: 'vuln.register_candidate',
           payload: {
             title: String(spec.title || '').trim(),
-            severity: 'info',
+            severity: String(spec.severity || 'info'),
             host: String(spec.host || '').trim(),
             url: String(spec.url || '').trim(),
             evidence: String(spec.evidence || '').slice(0, 1000),

@@ -1138,20 +1138,6 @@ const now = () => clock()
     }
     const fullName = `${domain}_${verb}`
 
-    // ①.5 兼容期差异（02-vuln §3.2 finding_update）：dup 缺 dup_of 时自动以同 host+同 vuln_type
-    // 最高候选行填充；查不到留空（ctx.compat.dup_of_relaxed 供域不变量放宽——观察期后必填）
-    if (aliasUsed && aliasUsed.alias === 'finding_update' && verb === 'reject' && args.verdict === 'dup' && !Number.isInteger(args.dup_of)) {
-      try {
-        const repo = entry.backend.factory(db)
-        const row = repo.getFinding(args.finding_id)
-        if (row && (String(row.host || '') || String(row.vuln_type || ''))) {
-          const dd = repo.listDedup({ host: String(row.host || ''), vuln_type: String(row.vuln_type || ''), exclude_id: Number(args.finding_id) }, 1)
-          if (Array.isArray(dd.rows) && dd.rows.length && Number.isInteger(Number(dd.rows[0].id))) args.dup_of = Number(dd.rows[0].id)
-        }
-      } catch (e) { log(`别名 dup_of 自动填充失败: ${e?.message}`) }
-      ctx = { ...ctx, compat: { ...(ctx.compat || {}), dup_of_relaxed: true, via: aliasUsed.alias } }
-    }
-
     // ② deprecated / 别名使用 → audit deprecated_use（不失败）
     if (aliasUsed) {
       auditBestEffort({ ts: now(), kind: 'deprecated_use', domain: domainIn, cmd: verbIn, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, target: fullName, alias: aliasUsed.alias, warn: aliasUsed.warn || null, result: 'ok', duration_ms: 0 })
@@ -1189,18 +1175,6 @@ const now = () => clock()
     if (key) { try { hit = plain(db.prepare('SELECT * FROM idempotency WHERE idempotency_key=?').get(key)) } catch { /* degraded */ } }
     if (hit) {
       if (hit.args_hash !== argsHash) {
-        // 兼容期宽容（02-vuln §3.2 finding_add）：同指纹异参重放 → v4 形状 {ok:true, dup:true, id}，
-        // 存量 prompt/脚本依赖 dup 语义；仅别名期，新路径严格执行 E_IDEMPOTENT_CONFLICT
-        if (aliasUsed && aliasUsed.alias === 'finding_add') {
-          try {
-            const prior = JSON.parse(hit.result_json)
-            const priorId = prior && prior.data && Number.isInteger(Number(prior.data.id)) ? Number(prior.data.id) : null
-            if (priorId !== null) {
-              auditBestEffort({ ts: now(), kind: 'deprecated_use', domain: domainIn, cmd: verbIn, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, target: fullName, alias: 'finding_add', warn: aliasUsed.warn || null, result: 'ok', compat: 'v4-dup-shape', duration_ms: now() - started })
-              return { ok: true, domain: domainIn, cmd: verbIn, data: { ...(prior.data || {}), id: priorId, dup: true }, dup: true, id: priorId, idempotency_key: key, replay: false, compat: 'v4-dup-shape', via_alias: 'finding_add' }
-            }
-          } catch { /* 转译失败按常规冲突处理 */ }
-        }
         auditBestEffort({ ts: now(), kind: 'command', domain, cmd: verb, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, idempotency_key: key, replay: false, target: null, before: null, after: null, result: 'failed', error_code: 'E_IDEMPOTENT_CONFLICT', duration_ms: now() - started, backend: 'sqlite-local' })
         return errEnvelope(domain, verb, 'E_IDEMPOTENT_CONFLICT', `幂等键 ${key} 已绑定不同参数`, '若是重放请原样重发参数；若是新意图请换 idempotency_key', false, key)
       }

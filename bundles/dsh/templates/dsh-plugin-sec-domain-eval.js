@@ -818,8 +818,8 @@ function makeDefaultExecutor(opts) {
     return { status: 'done', report, pass_rate: null, gain }
   }
 
-  // 契约用例 attempt 分派：tool 形如 vuln_confirm（域前缀）→ dispatch(vuln, confirm)；
-  // 形如 finding_update（v4 旧裸工具名）→ dispatch('', finding_update) 走别名归一。
+  // 契约用例 attempt 分派：tool 一律为域前缀语义动词（vuln_confirm → dispatch(vuln, confirm)）；
+  // v5 Phase 5.2 后无兼容别名层，未知裸名直接 E_BUS_DOMAIN_UNKNOWN。
   const KNOWN_DOMAINS = new Set(['vuln', 'asset', 'endpoint', 'task', 'fact', 'know', 'scope', 'approval', 'exec', 'ledger', 'report', 'proxy', 'fgs', 'eval', 'bus'])
 
   async function dispatchAttempt(attempt) {

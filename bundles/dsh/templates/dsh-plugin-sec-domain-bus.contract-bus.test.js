@@ -1028,20 +1028,6 @@ test('别名: finding_add 按 actor 分派（model→register_signal / webhook�
   assert.equal(direct.error.code, 'E_ACTOR_FORBIDDEN', '直连 C2 模型禁入——负向保障不因旁路放宽')
 })
 
-test('别名: finding_add 同指纹异参 → E_IDEMPOTENT_CONFLICT 转译 v4 dup 形状 {ok,dup:true,id}', async () => {
-  const dir = tmpDir()
-  const aliasesFile = writeAliases(dir, { aliases: {}, dispatch_aliases: { finding_add: { router: 'finding_add_router', domain: 'vuln' } } })
-  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile, auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
-  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
-  const first = await bus.dispatch('', 'finding_add', { title: '指纹冲突测试信号一二三', host: 'dup.example.com', severity: 'high', secret: 'a' }, { actor: 'model' })
-  assert.equal(first.ok, true)
-  const second = await bus.dispatch('', 'finding_add', { title: '指纹冲突测试信号一二三', host: 'dup.example.com', severity: 'high', secret: 'b' }, { actor: 'model' })
-  assert.equal(second.ok, true, '同指纹异参不报错')
-  assert.equal(second.dup, true, '转译为 v4 dup 形状')
-  assert.equal(second.id, first.data.id, 'dup 指向已存在行')
-  assert.equal(second.compat, 'v4-dup-shape')
-})
-
 test('别名: finding_query → vuln_list（include_noise→all / noise=1→candidate）+ deprecated_use', async () => {
   const dir = tmpDir()
   const aliasesFile = writeAliases(dir, { aliases: {}, dispatch_aliases: { finding_query: { router: 'query_visibility_router', domain: 'vuln' } } })

@@ -6,7 +6,7 @@
 #   - 宿主半面：no-op cordis 插件（使本包成为 Loader entry，触发 dsh.client 扫描）
 #   - 客户端半面：跨 bundle require @silksec/ui-core；conversation 提供 view /
 #     session header utilities 槽，chat 提供 assistant-actions 槽；写操作走
-#     /silksec-domain（vuln.finding_add / fact.upsert，actor=dashboard）。
+#     /silksec-domain（vuln.register_candidate / fact.upsert，actor=dashboard）。
 # 必须在 ui-core 之后安装（消费注册表/hooks）；建议在 ui-settings-scope 之后、
 # sec-dashboard 之前。会话槽缺席 → 不注册，不改变主面板 legacy 行为。
 # ==============================================================================

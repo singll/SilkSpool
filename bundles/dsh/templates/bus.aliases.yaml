@@ -1,123 +1,14 @@
 # ==============================================================================
 # SilkSecAgent v5 兼容别名注册表（总线 owns：data/bus.aliases.yaml）
-# 规则（01-bus.md §3.2 / 宪法 §十五.3）：
-#   1. 别名同样过网关全管线（归一在 ①，后续 ③-⑪ 与新动词同路）
-#   2. 别名 actor 可见性 = 目标动词 actor 可见性
-#   3. 别名使用 → audit 记 deprecated_use；观察期 7 天零使用 → 删除（三段式）
-#   4. 启动/部署时校验：目标存在、无环、无重复目标键冲突（E_BUS_ALIAS_DANGLING 中止 setup）
+#
+# 状态：**空注册表**。v5 Phase 5.2 已把所有调用方迁移到语义动词——
+#   - 看板 finding 状态流转：dashboard-rpc 按 status 直达 vuln_confirm/reject/submit（无别名）
+#   - 会话「登记候选漏洞」：ui-session 直达 vuln_register_candidate（actor 含 dashboard）
+#   - 所有 prompt 资产（persona/skills/rules/objective）在 5.1 已改写为新动词
+# 旧工具名不再注册、不再投影、不再分派；调用旧名返回 E_BUS_VERB_UNKNOWN。
+#
+# 别名机制（01-bus.md §3.2）仍作为通用能力保留：未来若发生跨域改名，可在此登记
+# aliases（静态直通）/ dispatch_aliases（路由器分派）条目，同样过网关全管线。
 # ==============================================================================
-# Phase 1.3：vuln 域已注册（1.2）——填充 vuln 相关别名（02-vuln.md §3.2 表）。
-#   submission_draft → report 域（Phase 2 才注册）：目标域未注册时 ToolProjector 跳过、
-#   dispatch 报 E_BUS_DOMAIN_UNKNOWN（v4 工具仍在，无断流）；report 域上线后别名自动生效。
-# Phase 2 首域：asset + endpoint 域已注册——填充 03-asset §3.2 / 04-endpoint §3.2 别名表。
-#   全走 dispatch_aliases（路由器）：分派别名不经 ToolProjector 投影，避免与 v4 旧工具同名冲突。
-# Phase 2 次节点：fact + know 域已注册——填充 06-fact §3.2 / 07-know §3.2 别名表。
-#   blackboard_set/get 是纯改名（同参直通）；fact_*/exp_*/kb_*/pb_*/vc_*/rule_* 同名零改名（无别名，
-#   直接由域动词接管工具名，v4 旧工具注册在切流时移除）；exp_validate 折叠进 exp_feedback(validated)。
-# Phase 2 三节点：ledger 域已注册——填充 11-ledger §3.2 别名表。
-#   attempts_log / pipeline_validate / radar_read 是纯改名（同参直通；radar_read 的 drain=false 只读面
-#   改走 ledger_radar_status，别名默认 drain 语义不变）；card_usage_log（outcome 由 deviation 推导）与
-#   coverage_report（out 自定义路径被固定缓存取代）是语义变更 → 走分派别名（不投影为模型工具）。
-# Phase 2 四节点：task + exec 域已注册——填充 05-task §3.2 / 10-exec §3.2 别名表。
-#   task_create/schedule/run_now/list/next/stats/chain 同名零改名（域 ToolProjector 零改名接管，
-#   切流时移除 v4 同名工具注册）；task_update 走分派别名（task_status_router，模型手动标 done 通道关闭）；
-#   worker_list/worker_status/scheduled_tasks 与 exec 全部 run_cli/spawn_worker/… 是纯改名 → 静态别名
-#   （切流时移除 v4 同名工具注册，别名投影接管旧工具名）。
-# Phase 2 七节点：report 域已注册——submission_draft → report_draft_submission 别名生效（12-report §3.2）：
-#   别名过网关全管线（v4 旧工具名 submission_draft / 归档稿 vuln_draft_submission 均归一 report_draft_submission）。
-#   report_build 同名零改名（域 ToolProjector 零改名接管，切流时移除 v4 同名工具注册）。
-# Phase 2 八节点：proxy 域已注册——填充 13-proxy §3.2 别名表（proxy_pool_* → proxy_*）。
-#   proxy_pool_stats/list/gateway/report_bad 是纯改名（静态直通）；proxy_pool_refresh（v4 只触发采集 → v5
-#   trigger_collect:true 等价）与 proxy_pool_get（v4 允许无 sticky_key 单取 → v5 sticky_key 必填、单次取用走
-#   8899 网关）是语义变更 → 走分派别名（router），hint 引导新语义。
-# ==============================================================================
-aliases:
-  submission_draft: report_draft_submission
-  blackboard_set: fact_bb_publish
-  blackboard_get: fact_bb_read
-  attempts_log: ledger_log_attempt
-  pipeline_validate: ledger_pipeline_validate
-  radar_read: ledger_radar_drain
-  worker_list: task_worker_list
-  worker_status: task_worker_status
-  scheduled_tasks: task_scheduled
-  run_cli: exec_run_cli
-  spawn_worker: exec_spawn_worker
-  grep_result: exec_grep_result
-  page_result: exec_page_result
-  plan_chain: exec_plan_chain
-  intel_hunt: exec_intel_hunt
-  burp_import: exec_burp_import
-  proxy_pool_stats: proxy_stats
-  proxy_pool_list: proxy_list
-  proxy_pool_gateway: proxy_gateway
-  proxy_pool_report_bad: proxy_report_bad
-dispatch_aliases:
-  finding_add:
-    router: finding_add_router
-    domain: vuln
-    warn: "finding_add 已按 actor 分派（model/human→vuln_register_signal；webhook/script→vuln_register_candidate）；severity=info 降级候选；同指纹异参返回 v4 dup 形状——请改用语义动词"
-  finding_query:
-    router: query_visibility_router
-    domain: vuln
-    warn: "finding_query 旧参数 include_noise/noise 已映射为 visibility——请改用 vuln_list"
-  finding_update:
-    router: status_router
-    domain: vuln
-    warn: "finding_update 是自由态旧动词，已按 status 分派（confirm 缺 evidence 收紧）；请改用语义动词"
-  asset_add:
-    router: asset_add_router
-    domain: asset
-    warn: "asset_add 的评级字段（score/level/accept/biz/state）已被丢弃——评级只能经 asset_grade、状态只能经 asset_state，请改用语义动词"
-  asset_query:
-    router: asset_query_router
-    domain: asset
-    warn: "asset_query 已映射为 asset_list（补分页信封与 state 过滤）——请改用语义查询"
-  asset_stats:
-    router: asset_stats_router
-    domain: asset
-    warn: "asset_stats 已映射为 asset_overview——请改用语义查询"
-  fp_add:
-    router: fp_add_router
-    domain: asset
-    warn: "fp_add 已映射为 fp_record——请改用语义动词"
-  endpoint_add:
-    router: endpoint_add_router
-    domain: endpoint
-    warn: "endpoint_add 的鉴权字段（auth_required/roles_seen）已被丢弃——鉴权标注只能经 endpoint_mark_auth，请改用语义动词"
-  endpoint_query:
-    router: endpoint_query_router
-    domain: endpoint
-    warn: "endpoint_query 已映射为 endpoint_list（补 params/auth 列）——请改用语义查询"
-  surface_queue:
-    router: surface_queue_router
-    domain: endpoint
-    warn: "surface_queue 已改名为 endpoint_queue_surface（队列文件 owner 收编 endpoint 域）——请改用语义动词"
-  exp_validate:
-    router: exp_validate_router
-    domain: know
-    warn: "exp_validate 已折叠进 exp_feedback(verdict=validated)——请改用 exp_feedback"
-  card_usage_log:
-    router: card_usage_router
-    domain: ledger
-    warn: "card_usage_log 的 outcome 由 deviation 推导（deviated/applied）——请改用 ledger_log_card_usage 显式声明 outcome"
-  coverage_report:
-    router: coverage_report_router
-    domain: ledger
-    warn: "coverage_report 的 out 自定义路径已被固定缓存 coverage-latest.md 取代——请改用 ledger_coverage_report"
-  task_update:
-    router: task_status_router
-    domain: task
-    warn: "task_update 是自由态旧动词，已按 status 分派（blocked→block/queued→resume/cancelled→cancel）；done/failed/running 通道关闭（收尾权归调度器/审批）——请改用语义动词"
-  fgs_update:
-    router: fgs_update_router
-    domain: fgs
-    warn: "fgs_update 是自由态旧动词，已按 status 分派（running→start/done→complete/failed→fail/blocked→block/deprecated→deprecate；无 status→annotate）——请改用语义动词"
-  proxy_pool_refresh:
-    router: proxy_refresh_router
-    domain: proxy
-    warn: "proxy_pool_refresh 已映射为 proxy_refresh(trigger_collect:true)——v5 落池为主语义，请改用 proxy_refresh"
-  proxy_pool_get:
-    router: proxy_get_router
-    domain: proxy
-    warn: "proxy_pool_get 已映射为 proxy_sticky_bind（sticky_key 必填）——单次取用走网关 8899（proxy_gateway 查看用法），请改用语义动词"
+aliases: {}
+dispatch_aliases: {}

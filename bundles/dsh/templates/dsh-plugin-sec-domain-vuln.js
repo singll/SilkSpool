@@ -119,7 +119,7 @@ export const VULN_MANIFEST = {
       deprecated: false,
     },
     vuln_register_candidate: {
-      actor: ['webhook', 'script'],
+      actor: ['webhook', 'script', 'dashboard'],
       schema: schema({
         title: str({ minLength: 1 }),
         severity: en(SEVERITY),
@@ -135,7 +135,7 @@ export const VULN_MANIFEST = {
       event_limit: 1,
       invariants: [],
       timeout_ms: 60000,
-      agent_note: '机器直灌候选登记入口（webhook/parser/authz_diff，模型禁入）：缺复现/影响的登记天然落候选池待验证。',
+      agent_note: '候选登记入口（webhook/parser/authz_diff 机器直灌 + dashboard 操作员从会话「登记候选漏洞」，模型禁入）：缺复现/影响的登记天然落候选池待验证；操作员侧只产候选，确权走 vuln_confirm。',
       deprecated: false,
     },
     vuln_confirm: {
@@ -669,9 +669,7 @@ function makeHandlers(opts) {
     dupTargetValid: async (args, repo, ctx) => {
       if (args.verdict !== 'dup') return null
       if (!Number.isInteger(args.dup_of)) {
-        // 兼容期（02-vuln §3.2 finding_update）：别名层已尽力自动填充同 host+同 vuln_type 候选行，
-        // 查不到时留空放行（观察期后必填）；直连路径无 ctx.compat，严格要求
-        if (ctx && ctx.compat && ctx.compat.dup_of_relaxed === true) return null
+        // v5 语义动词严格口径（无别名兼容层）：dup 判定必须显式指回被重复行。
         return { code: 'E_VULN_DUP_TARGET_REQUIRED', message: 'verdict=dup 必须带 dup_of', hint: 'dup 判定必须指回被重复的 finding（dup_of）。可先用 vuln_dedup_check 检索同目标同类型历史', retryable: false }
       }
       const target = repo.getFinding(args.dup_of)

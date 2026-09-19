@@ -553,11 +553,26 @@ export async function handleDashboardRpc(endpoint, payload) {
       if (!id || !FINDING_TAG_STATUS.includes(status)) {
         throw new Error(`findingUpdate 需要合法 id 与 status（${FINDING_TAG_STATUS.join('/')}）`)
       }
-      // v5：分派别名 finding_update → 语义动词（02-vuln §3.2 / §1.7），fail-closed
-      const r = await busDispatch('', 'finding_update', {
-        finding_id: id, status,
-        note: String(p.note || ''), bounty: p.bounty ?? null, vendor_status: String(p.vendor_status || ''),
-      }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null, session_id: null })
+      // v5：按 status 直达语义动词（02-vuln §1.7）——不再经兼容别名层，fail-closed。
+      // confirmed→confirm（缺真实证据确定性 E_EVIDENCE_REQUIRED）；fp/dup/ignored→reject
+      // （reason≥10 由域 schema 把关）；submitted→submit；accepted→submit(vendor_status=accepted)；
+      // new 是回退，语义动词层无此流转 → 拒绝。
+      const ctxBase = { actor: 'dashboard', operator: p.operator ? String(p.operator) : null, session_id: null }
+      const note = String(p.note || '')
+      let r
+      if (status === 'confirmed') {
+        r = await busDispatch('vuln', 'confirm', { finding_id: id, evidence: String(p.evidence || ''), note }, ctxBase)
+      } else if (status === 'false_positive' || status === 'ignored' || status === 'dup') {
+        r = await busDispatch('vuln', 'reject', { finding_id: id, verdict: status, reason: note, dup_of: p.dup_of ?? null }, ctxBase)
+      } else if (status === 'submitted') {
+        r = await busDispatch('vuln', 'submit', { finding_id: id, note, vendor_status: String(p.vendor_status || ''), bounty: p.bounty ?? null }, ctxBase)
+      } else if (status === 'accepted') {
+        r = await busDispatch('vuln', 'submit', { finding_id: id, note, vendor_status: 'accepted', bounty: p.bounty ?? null }, ctxBase)
+      } else {
+        const err = new Error('findingUpdate status=new 是回退，不合法；仅补充证据请用 note 语义动词')
+        err.code = 'E_STATE'
+        throw err
+      }
       return { ok: true, id: (r.data && Number.isInteger(Number(r.data.id))) ? Number(r.data.id) : id, ...(r.data || {}) }
     }
     case 'factCorrect': {

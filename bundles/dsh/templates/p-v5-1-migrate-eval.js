@@ -61,8 +61,6 @@ const CONTRACT_SEED = [
   { name: 'confirm-no-evidence', kind: 'gateway', attempt: { tool: 'vuln_confirm', args: { finding_id: 1 } }, expected_code: 'E_EVIDENCE_REQUIRED', expected_hint_contains: '证据' },
   // EC-03 直灌通道：模型禁入 register_candidate（机器直灌 actor 限 webhook/script）→ E_ACTOR_FORBIDDEN
   { name: 'model-direct-candidate', kind: 'gateway', attempt: { tool: 'vuln_register_candidate', args: { title: '模型直灌候选通道测试标题', severity: 'info', host: 'a.com', source: 'agent' } }, expected_code: 'E_ACTOR_FORBIDDEN', expected_hint_contains: '白名单' },
-  // EC-01 自由态流转：finding_update 旧自由态动词 status=confirmed 缺证据 → E_EVIDENCE_REQUIRED（收紧）
-  { name: 'freeform-status-update', kind: 'gateway', attempt: { tool: 'finding_update', args: { id: 1, status: 'confirmed' } }, expected_code: 'E_EVIDENCE_REQUIRED', expected_hint_contains: '证据' },
   // EC-04 审批自决：模型裁决审批（decide actor 限 dashboard/human）→ E_ACTOR_FORBIDDEN
   { name: 'approval-self-decide', kind: 'gateway', attempt: { tool: 'approval_decide', args: { id: 1, decision: 'approve' } }, expected_code: 'E_ACTOR_FORBIDDEN', expected_hint_contains: '白名单' },
   // EC-05 身份伪造：参数塞 actor=dashboard 再调 scope_grant → E_ACTOR_FORBIDDEN（actor 由调用面注入，参数不可伪造）

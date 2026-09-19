@@ -59,11 +59,12 @@ install_plugin() {
 # -------------------- 别名表部署（版本受控副本 → data/bus.aliases.yaml） --------------------
 deploy_aliases() {
     mkdir -p "$DATA_DIR"
-    if [ ! -f "$DATA_DIR/bus.aliases.yaml" ]; then
-        cp "$BASE_DIR/bus.aliases.yaml" "$DATA_DIR/bus.aliases.yaml"
-        log "别名表已初始化: $DATA_DIR/bus.aliases.yaml"
+    # 别名表版本受控（bundle 模板为唯一真相源）：内容变化即覆盖运行时副本（幂等）。
+    if ! cmp -s "$BASE_DIR/bus.aliases.yaml" "$DATA_DIR/bus.aliases.yaml" 2>/dev/null; then
+        install -m 0644 "$BASE_DIR/bus.aliases.yaml" "$DATA_DIR/bus.aliases.yaml"
+        log "别名表已同步（版本受控 → 运行时）: $DATA_DIR/bus.aliases.yaml"
     else
-        log "别名表已存在，不覆盖（运行时副本）"
+        log "别名表已是最新"
     fi
 }
 

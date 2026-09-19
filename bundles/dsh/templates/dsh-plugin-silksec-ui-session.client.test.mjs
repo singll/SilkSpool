@@ -8,7 +8,7 @@
 //   ② 会话头钮按 sessionId 过滤计数（本会话 findings + facts）。
 //   ③ assistant-actions 每 messageId 渲染两个动作（登记候选漏洞 / 沉淀事实）。
 //   ④ 槽缺席 → 不注册、不抛（不改变主面板；health=degraded）。
-//   ⑤ 写操作端点/参数正确（vuln.finding_add / fact.upsert）且经 /silksec-domain 路由。
+//   ⑤ 写操作端点/参数正确（vuln.register_candidate / fact.upsert）且经 /silksec-domain 路由。
 //   ⑥ primitives 缺席兜底：视图/头钮/动作/Modal 均不抛。
 //   ⑦ 按 session_id 过滤正确性：两会话数据交叉，各视图只出本会话产出。
 //
@@ -370,13 +370,13 @@ test('能力探测：slotDeclared 只在槽声明时真', () => {
 })
 
 // ── ⑤ 写操作端点/参数 + 路由 ─────────────────────────────────────────────────
-test('写操作：登记候选漏洞 → vuln.finding_add（severity=info 候选降级）', async () => {
+test('写操作：登记候选漏洞 → vuln.register_candidate（操作员候选登记）', async () => {
   const uiCore = makeUiCore()
   const { mod } = loadBundle(uiCore, makePrimitives())
   const calls = []
   const rpc = (endpoint, payload) => { calls.push({ endpoint, payload }); return Promise.resolve({ ok: true }) }
   await mod.securityAction(rpc, 'registerCandidate', [{ title: ' 未授权 ', host: ' api.s1.com ', url: '/x', program_id: 'meituan', evidence: 'ev' }])
-  assert.equal(calls[0].endpoint, 'vuln.finding_add')
+  assert.equal(calls[0].endpoint, 'vuln.register_candidate')
   assert.equal(calls[0].payload.severity, 'info')
   assert.equal(calls[0].payload.title, '未授权')
   assert.equal(calls[0].payload.host, 'api.s1.com')
@@ -413,15 +413,15 @@ test('RPC 路由：vuln.*/fact.* → /silksec-domain；读端点 → /silksec-da
   mod.apply(ctx)
   const rpc = mod.getRpc ? mod.getRpc() : null
   assert.equal(typeof rpc, 'function', 'getRpc 必须导出')
-  await rpc('vuln.finding_add', {})
+  await rpc('vuln.register_candidate', {})
   await rpc('fact.upsert', {})
   await rpc('findings', { limit: 200 })
   assert.equal(calls[0].route, '/silksec-domain')
-  assert.equal(calls[0].endpoint, 'vuln.finding_add')
+  assert.equal(calls[0].endpoint, 'vuln.register_candidate')
   assert.equal(calls[1].route, '/silksec-domain')
   assert.equal(calls[1].endpoint, 'fact.upsert')
   assert.equal(calls[2].route, '/silksec-dashboard')
-  assert.equal(mod.routeFor('vuln.finding_add'), '/silksec-domain')
+  assert.equal(mod.routeFor('vuln.register_candidate'), '/silksec-domain')
   assert.equal(mod.routeFor('findings'), '/silksec-dashboard')
 })
 

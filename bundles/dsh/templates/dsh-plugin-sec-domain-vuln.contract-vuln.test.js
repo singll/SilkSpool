@@ -549,13 +549,16 @@ test('状态机拒绝: 终态再流转全集（accepted/fp/dup/ignored × confir
 // 5. actor 拒绝（机器通道模型禁入；模型动词机器禁入）
 // ---------------------------------------------------------------------------
 
-test('actor 拒绝: register_candidate × {model,dashboard,human} → E_ACTOR_FORBIDDEN', async () => {
+test('actor: register_candidate × {model,human} 拒 / dashboard 放行（操作员候选登记）', async () => {
   const { bus } = makeEnv()
-  for (const actor of ['model', 'dashboard', 'human']) {
+  for (const actor of ['model', 'human']) {
     const r = await bus.dispatch('vuln', 'register_candidate', { title: 'x.example.com 被动审计候选：xray', severity: 'medium', host: 'x.example.com', source: 'xray-webhook' }, { actor })
     assert.equal(r.ok, false, `${actor} 应被拒`)
     assert.equal(r.error.code, 'E_ACTOR_FORBIDDEN')
   }
+  const d = await bus.dispatch('vuln', 'register_candidate', { title: 'dashboard 会话登记候选一二', severity: 'info', host: 'd.example.com', source: 'dashboard' }, { actor: 'dashboard' })
+  assert.equal(d.ok, true, 'dashboard 操作员可达候选登记（会话「登记候选漏洞」）')
+  assert.equal(d.cmd, 'register_candidate')
 })
 
 test('actor 拒绝: confirm × {webhook,script} / claim × webhook / authz_diff × dashboard → E_ACTOR_FORBIDDEN', async () => {
@@ -896,7 +899,7 @@ const V1_ALIASES = {
   },
 }
 
-test('别名: finding_add model 完整五要素 → register_signal；同指纹异参 → v4 dup 形状（真实域）', async () => {
+test('别名: finding_add model 完整五要素 → register_signal；同指纹异参 → E_IDEMPOTENT_CONFLICT（无 v4 dup 形状）', async () => {
   const { dir, bus } = makeEnv({ aliasesDoc: V1_ALIASES })
   const r1 = await bus.dispatch('', 'finding_add', {
     title: '别名登记完整信号：命令注入可执行系统命令', severity: 'high', host: 'alias1.example.com', url: 'https://alias1.example.com/admin',
@@ -909,10 +912,8 @@ test('别名: finding_add model 完整五要素 → register_signal；同指纹�
     title: '别名登记完整信号：命令注入可执行系统命令', severity: 'medium', host: 'alias1.example.com', url: 'https://alias1.example.com/admin',
     evidence: 'run_test_20260906_000000', reproduction_steps: '另一套复现', impact: '任意命令执行',
   }, { actor: 'model', session_id: 'sess_alias' })
-  assert.equal(r2.ok, true, '同指纹异参 → v4 dup 形状不报错')
-  assert.equal(r2.dup, true)
-  assert.equal(r2.id, r1.data.id)
-  assert.equal(r2.compat, 'v4-dup-shape')
+  assert.equal(r2.ok, false, '同幂等键异参执行严格冲突（兼容 v4 dup 形状已删除）')
+  assert.equal(r2.error.code, 'E_IDEMPOTENT_CONFLICT')
   const audit = readAudit(dir)
   assert.ok(audit.some((a) => a.kind === 'deprecated_use' && a.alias === 'finding_add'))
 })
@@ -955,21 +956,13 @@ test('别名: finding_update confirmed 缺 evidence → E_EVIDENCE_REQUIRED；ac
   assert.equal(row.bounty, 500)
 })
 
-test('别名: finding_update dup 缺 dup_of → 自动填充同 host 信号行；查不到 → 留空放行（兼容期）', async () => {
-  const { dir, bus } = makeEnv({ aliasesDoc: V1_ALIASES })
+test('别名: finding_update dup 缺 dup_of → E_VULN_DUP_TARGET_REQUIRED（无自动填充/放宽）', async () => {
+  const { bus } = makeEnv({ aliasesDoc: V1_ALIASES })
   await seedSignal(bus, { title: '同目标既有信号：SQLi 注入', host: 'dupfill.example.com', vuln_type: 'SQLi', severity: 'high' })
   const cand = await seedCandidate(bus, { title: '同目标重复候选', host: 'dupfill.example.com', severity: 'medium' })
-  const id = cand.data.id
-  const r = await bus.dispatch('', 'finding_update', { finding_id: id, status: 'dup', reason: '重复登记：同 host 同类型已有信号行' }, { actor: 'dashboard' })
-  assert.equal(r.ok, true)
-  assert.equal(r.data.status, 'dup')
-  const audit = readAudit(dir)
-  const rec = audit.find((a) => a.kind === 'command' && a.cmd === 'reject' && a.result === 'ok' && a.via_alias === 'finding_update')
-  assert.ok(rec, 'reject 经 alias 审计')
-  const none = await seedCandidate(bus, { title: '无同目标信号的候选', host: 'orphan.example.com' })
-  const r2 = await bus.dispatch('', 'finding_update', { finding_id: none.data.id, status: 'dup', reason: '查不到同目标信号，留空放行' }, { actor: 'dashboard' })
-  assert.equal(r2.ok, true, '查不到 dup_of → 留空放行（观察期后必填）')
-  assert.equal(r2.data.status, 'dup')
+  const r = await bus.dispatch('', 'finding_update', { finding_id: cand.data.id, status: 'dup', reason: '重复登记：同 host 同类型已有信号行' }, { actor: 'dashboard' })
+  assert.equal(r.ok, false, 'v5 严格口径：dup 必须显式给 dup_of（兼容放宽已删除）')
+  assert.equal(r.error.code, 'E_VULN_DUP_TARGET_REQUIRED')
 })
 
 test('别名: finding_query → vuln_list（noise=1→candidate / include_noise→all 真实过滤）', async () => {
