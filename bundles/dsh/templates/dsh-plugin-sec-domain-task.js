@@ -1214,7 +1214,12 @@ export function startTaskScheduler(opts) {
     if (Date.now() - programCache.at > 60000) {
       try {
         const r = await query('scope', 'program_list', {}, { actor: 'scheduler' })
-        if (_ok(r) && r.data) programCache = { at: Date.now(), rows: r.data.rows || [] }
+        // 列表查询信封把 rows 放在顶层（bus.query 约定），非 r.data.rows；
+        // 读错字段会导致 workspace_path 恒为 null → worker cwd 回落 runDir → 会话无法归组工作区。
+        if (_ok(r)) {
+          const rows = Array.isArray(r.rows) ? r.rows : ((r.data && Array.isArray(r.data.rows)) ? r.data.rows : [])
+          programCache = { at: Date.now(), rows }
+        }
       } catch (e) { log(`program_list 查询失败（沿用缓存）: ${e?.message}`) }
     }
     const hit = (programCache.rows || []).find((x) => x.id === programId)
