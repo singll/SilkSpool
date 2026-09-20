@@ -305,13 +305,18 @@ test('会话头计数：按 sessionId 过滤本会话 findings + facts（s1）',
   assert.match(btn2.props.title, /本会话安全产出 2 项/, 's2: findings 1 + facts 1 = 2')
 })
 
-test('会话头切换：selectView 可用时调用官方 API，缺席降级 secUiBus 不抛', () => {
+test('会话头切换：selectView 可用时调用官方 API，缺席降级 secUiBus 打开 Modal', () => {
   const uiCore = makeUiCore()
+  const bus = []
+  uiCore.secUiBus = { emit: (n, p) => bus.push({ n, p }), on() { return () => {} }, off() {} }
   const { mod } = loadBundle(uiCore, makePrimitives())
   const calls = []
   assert.equal(mod.openSecurityView({ selectView: (v) => calls.push(v) }), 'view')
   assert.deepEqual(calls, [mod.VIEW_ID])
-  assert.equal(mod.openSecurityView({}), 'none')
+  // 官方 utilities 条目不继承 selectView（owner props 为空）→ 经 secUiBus 请求 Modal 宿主
+  assert.equal(mod.openSecurityView({ sessionId: 's1' }), 'modal')
+  assert.equal(JSON.stringify(bus), JSON.stringify([{ n: 'open:security-view', p: { sessionId: 's1' } }]))
+  assert.doesNotThrow(() => mod.SecurityViewModalHost({}))
 })
 
 // ── ③ assistant-actions：每条 messageId 两个动作 ─────────────────────────────

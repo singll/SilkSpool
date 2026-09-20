@@ -17,6 +17,12 @@
 
 ## 二、最近进度结果
 
+### 2026-09-19 · Bug 修复：会话头「安全产出」图标点击无反应（csai 已部署验收）
+- 现象：右上角列表图标（本会话安全产出计数，checklist 图标）显示计数但点击无反应；右下角审批胶囊显示 0（0 待审批为正常）。
+- 根因：`conversation.session.header.utilities` 条目的 owner props 为空（官方 `ConversationHeaderActionOwnerProps = { children?: never }`，运行时 `renderSlot(..., {})`），条目不继承 header 的 inject 面，`props.selectView` 恒为 undefined；降级分支 `secUiBus.emit('open:security-view')` **无任何订阅者** → 点击静默无效。
+- 修复：新增常驻 `shell.overlay` Modal 宿主 `SecurityViewModalHost` 订阅 `open:security-view`，selectView 缺席时打开本会话安全产出 Modal；`openSecurityView` 返回值由 `'none'` 改 `'modal'`。
+- 验收：本地 UI 单测 114/114；csai 部署后 `sec-v5-accept.sh` PASS=41 FAIL=0。
+
 ### 2026-09-19 · 第四轮修复：M1 幂等竞态 + 授权时效 + 批量提交 + external_id + 文档收尾（csai 已部署验收）
 - 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) §十一.6 执行剩余全部建议项。
 - M1：事务内幂等复检，并发同 key 返回 replay 而非 E_CONFLICT。

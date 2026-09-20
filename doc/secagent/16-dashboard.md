@@ -168,7 +168,7 @@ var d2 = slots.inject('sidebar.panellist', function () {
 
 **会话内绑定（`@silksec/ui-session`，三处全部 additive）**：
 
-1. `conversation.session.header.utilities`：「安全产出」图标钮，badge 显示本会话 findings+facts 计数。
+1. `conversation.session.header.utilities`：「安全产出」图标钮，badge 显示本会话 findings+facts 计数。**打开路径**：官方 utilities 条目的 owner props 为空（`ConversationHeaderActionOwnerProps = { children?: never }`，运行时 `renderSlot(..., {})`），条目不继承 header 的 inject 面，故 `props.selectView` 恒不可用——点击经 `secUiBus 'open:security-view'` 请求常驻 `shell.overlay` Modal 宿主打开本会话安全产出（2026-09-19 修复：此前 emit 无订阅者，按钮点击无反应）。
 2. `conversation.view` ViewTab `{ id:'silksec-security', label:'安全产出' }`：会话内整页视图，按 `session_id` 过滤本会话产出的漏洞/事实/任务/Run 跳链。
 3. `conversation.chat.assistant-actions`（list，owner `{messageId}`）：每条定稿消息追加「登记候选漏洞」「沉淀事实」两个动作，点击弹 primitives `Modal` 小表单（预填消息摘要，`RiskConfirmation` 确认写操作），写 `vuln.*` / `fact.*` RPC。
 

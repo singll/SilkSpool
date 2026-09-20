@@ -400,12 +400,34 @@ window.__ModuleLoader__.load({
     }
 
     // ── 会话头「安全产出」计数钮（右对齐 list） ─────────────────────────────────
+    // 注意：conversation.session.header.utilities 的 owner props 为空（官方类型
+    // ConversationHeaderActionOwnerProps = { children?: never }，运行时 renderSlot(..., {})），
+    // 条目不继承 header 的 inject 面，故 props.selectView 恒为 undefined。
+    // 修复：selectView 缺席时经 secUiBus 'open:security-view' 请求常驻 Modal 宿主打开
+    // 本会话安全产出（原先 emit 无任何订阅者 → 点击无反应，即「右上角列表图标点不开」）。
     function openSecurityView(props) {
       if (props && typeof props.selectView === 'function') {
         try { props.selectView(VIEW_ID); return 'view' } catch (e) { /* 切换 API 异常 → 降级 */ }
       }
-      try { uiCore.secUiBus.emit('open:security-view', {}) } catch (e) {}
-      return 'none'
+      try { uiCore.secUiBus.emit('open:security-view', { sessionId: (props && props.sessionId) || null }) } catch (e) {}
+      return 'modal'
+    }
+
+    // 常驻 Modal 宿主（shell.overlay root）：selectView 缺席时渲染本会话安全产出。
+    var SECURITY_MODAL_HOST_ID = 'silksec-security-modal-host'
+    function SecurityViewModalHost() {
+      ensureStyles()
+      var ms = React.useState(null)
+      var sid = ms[0]; var setSid = ms[1]
+      React.useEffect(function () {
+        if (!uiCore.secUiBus || typeof uiCore.secUiBus.on !== 'function') return
+        return uiCore.secUiBus.on('open:security-view', function (payload) {
+          setSid((payload && payload.sessionId) || '')
+        })
+      }, [])
+      if (sid === null) return null
+      return el(ModalShell, { title: '本会话安全产出', onClose: function () { setSid(null) } },
+        el(SecurityView, { sessionId: sid || undefined }))
     }
     function HeaderSecurityCount(props) {
       ensureStyles()
@@ -688,6 +710,10 @@ window.__ModuleLoader__.load({
               markSurfaceHealth('ui-session', 'ok', '会话头安全产出计数注册')
               return slots.register(buildHeaderDefinition(), HeaderSecurityCount)
             }))
+            // 2b. 常驻 Modal 宿主（shell.overlay root）：会话头按钮无 selectView 时的降级打开路径
+            disposers.push(slots.inject('shell.overlay', function () {
+              return slots.register({ name: 'shell.overlay', id: SECURITY_MODAL_HOST_ID, order: 64 }, SecurityViewModalHost)
+            }))
             // 3. conversation.chat.assistant-actions（list/session）→ 登记候选/沉淀事实
             disposers.push(slots.inject('conversation.chat.assistant-actions', function () {
               markSurfaceHealth('ui-session', 'ok', 'assistant-actions 登记/沉淀注册')
@@ -726,6 +752,7 @@ window.__ModuleLoader__.load({
     exports.buildHeaderDefinition = buildHeaderDefinition
     exports.buildActionsDefinition = buildActionsDefinition
     exports.openSecurityView = openSecurityView
+    exports.SecurityViewModalHost = SecurityViewModalHost
     exports.SecurityView = SecurityView
     exports.HeaderSecurityCount = HeaderSecurityCount
     exports.MessageSecurityActions = MessageSecurityActions
