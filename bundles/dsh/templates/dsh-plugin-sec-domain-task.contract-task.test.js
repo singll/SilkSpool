@@ -847,3 +847,25 @@ test('回收: 一次性 running 僵尸任务（无 schedule_kind）被 reap 回�
   assert.equal(t.status, 'failed')
   assert.equal(t.active_run_id, null)
 })
+
+// ---- 产出闭环：task_submission_backlog 为 confirmed 未提交幂等入队 ----
+test('产出闭环: task_submission_backlog 为 confirmed 未提交幂等入队', async () => {
+  let busRef = null
+  const fakeQuery = async (d, n, a, c) => {
+    if (d === 'vuln' && n === 'submission_queue') {
+      return { ok: true, rows: [{ id: 501, host: 'a.example.com', program_id: 'test-src' }, { id: 502, host: 'b.example.com', program_id: 'test-src' }], total: 2 }
+    }
+    // 非 vuln 查询委托真实总线（task list 去重依赖）
+    return busRef ? busRef.query(d, n, a, c) : { ok: true, rows: [], total: 0 }
+  }
+  const { bus } = makeEnv({ query: fakeQuery })
+  busRef = bus
+  const r = await bus.dispatch('task', 'submission_backlog', {}, { actor: 'dashboard' })
+  assert.equal(r.ok, true, JSON.stringify(r.error || r.data))
+  assert.equal(r.data.created, 2)
+  const r2 = await bus.dispatch('task', 'submission_backlog', {}, { actor: 'dashboard' })
+  assert.equal(r2.data.created, 0)
+  assert.equal(r2.data.skipped, 2)
+  const n = bus._internal.db().prepare("SELECT COUNT(*) c FROM tasks WHERE objective LIKE '%[提交] finding #50%'").get().c
+  assert.equal(n, 2)
+})

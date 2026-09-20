@@ -134,6 +134,28 @@
 
 **agent_note**：见 §1.6。
 
+#### C4 · eval_run_finish（异步执行器唯一收尾通道，内部）
+
+**语义**：C2/C3/C5 触发的评测都是**异步执行**——触发命令只写 `runs/{run_id}.json`（status=running）即返回；真正的收尾（报告落盘 + run 状态翻转 + 发 `eval.report.built`）**唯一经本命令**，actor 限 `system`，**不向模型/看板注册**（模型不能自跑评测、不能收尾落账）。孤儿回收（`reapOrphans`，§2.3.5）亦经本命令受控收尾，禁止绕过总线直写 finishRun。
+
+**参数表**：
+
+| 参数 | 类型 | 必填 | 默认 | 校验规则 |
+|---|---|---|---|---|
+| run_id | string | 是 | — | run 文件存在（runs/{run_id}.json） |
+| outcome | enum | 是 | — | done / failed |
+| report | object | 否 | — | 报告体（落盘 + 事件载荷） |
+| report_file | string | 否 | — | 报告文件名（≤512） |
+| error | string | 否 | — | outcome=failed 时的原因（≤2000；宿主重启记 `host_restart`） |
+| pass_rate | number | 否 | — | 通过率（kind=fp/contract/candidate 视用例集） |
+| gain | object | 否 | — | 消融增益（kind=fp 用） |
+
+**行为**：写 `runs/{run_id}.json` 终态（done/failed）+ 报告文件（如 `eval-candidate-report.json`）→ 发 `eval.report.built`（kind 由 run spec 决定，见 §1.5）→ know 域订阅据此把 candidate revision 置 eligible/rejected（kind=candidate）。**失败/中断不记成功**：无 verdict、know 侧 abort 回 candidate，不留"评过"假象。**幂等**：manifest `natural`（run_id）——同 run 重放返回首次结果，收尾不重复发布事件。
+
+**错误码**：E_NOT_FOUND（run 不存在）；E_STATE（run 已终态）；E_SCHEMA。
+
+**agent_note**：见 §1.6。
+
 #### C5 · eval_run_candidate（候选知识版本对照评测，L3 2026-09-17 上线）
 
 **语义**（设计 §6.3/§7.3）：对 know 域的候选 revision 做**独立对照评测**——冻结数据集 + baseline 配对 + 受控 fixture 真值，产出 baseline/candidate 配对报告；结果是 `know_revision_assess`（07-know C25）把 revision 从 evaluating 流转 eligible/rejected 的唯一依据。**模型禁用**（评测触发是治理动作）。

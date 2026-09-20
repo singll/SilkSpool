@@ -215,6 +215,11 @@ export async function handleDashboardRpc(endpoint, payload) {
         ])
         out.tasks = { running: Number(run.total) || 0, blocked: Number(blk.total) || 0, failed: Number(fail.total) || 0 }
       } catch (e) { out.tasks = null; failed('task') }
+      // 授权时效（scope.expiring：30 天内到期/已过期项目）
+      try {
+        const r = await busQuery('scope', 'expiring', { within_days: 30 })
+        out.scope = { expiring: Number(r.total) || 0, expired: Number(r.expired) || 0 }
+      } catch (e) { out.scope = null; failed('scope') }
       // 纪律告警（ledger.discipline_stats）
       try {
         const r = await busQuery('ledger', 'discipline_stats', { program: '' })

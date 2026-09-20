@@ -17,6 +17,16 @@
 
 ## 二、最近进度结果
 
+### 2026-09-19 · 第四轮修复：M1 幂等竞态 + 授权时效 + 批量提交 + external_id + 文档收尾（csai 已部署验收）
+- 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) §十一.6 执行剩余全部建议项。
+- M1：事务内幂等复检，并发同 key 返回 replay 而非 E_CONFLICT。
+- 授权时效：scope.yml 增 `expires_at`/`reviewed_at`；过期 fail-closed（scope_check/exec/asset 三处一致）；`scope_expiring` 查询 + 看板过期/临期告警 + 设置页徽章。
+- 批量提交：`task_submission_backlog` 为历史 confirmed 未提交幂等补建提交任务（线上补建 42 条，queued 不自动起 worker，待人工 task_run_now）。
+- external_id：findings 增列 + 索引，跨源（cyberstrikeai/vuln-pipeline/外部）去重优先键。
+- 文档：17-llm-surface 查询可见口径、15-eval C4 详述节、ui-surface-deps 陈旧条目清理。
+- 验收：本地契约 **483 例** + UI 114 全绿；csai 部署后 `sec-v5-accept.sh` PASS=41 FAIL=0。
+- 全部检查建议项已闭环；仅余需人工判定（重复发现合并）或设计变更（凭据环境变量化）的项，见报告 §11.7。
+
 ### 2026-09-19 · 第三轮修复：代码中危 + 供应链 + 数据卫生 + a11y（csai 已部署验收）
 - 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) §十一.5 执行第三轮修复。
 - 安全：沙箱不再整目录挂载 `$HOME`（M6，原暴露 `.ssh`/`fofa.conf`/浏览器登录态）；tools-manager 下载 sha256 校验（M8）。

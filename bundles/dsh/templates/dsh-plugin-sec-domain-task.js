@@ -246,6 +246,20 @@ export const TASK_MANIFEST = {
       agent_note: '僵尸回收：宽限=超时+15min，活 worker 跳过（内部，不向模型注册）。',
       deprecated: false,
     },
+    task_submission_backlog: {
+      actor: ['dashboard', 'system', 'human'],
+      schema: schema({
+        program_id: str({ default: '' }),
+        limit: int({ minimum: 1, maximum: 200, default: 50 }),
+      }, []),
+      idempotent: 'none',
+      events: [],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 120000,
+      agent_note: '产出闭环补建：扫描 vuln.submission_queue（confirmed 未提交），为每条幂等入队 [提交] finding #id 任务（内部去重）。历史存量一次性使用；新确认由 vuln.signal.confirmed 自动入队。',
+      deprecated: false,
+    },
     task_worker_register: {
       actor: ['reactor', 'scheduler'],
       schema: schema({
@@ -935,6 +949,29 @@ function makeHandlers(opts) {
       }
     },
 
+    task_submission_backlog: async (args) => {
+      if (!dispatchRef || !queryRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 query/dispatch 不可达', '确认 vuln 域已注册', true)
+      const q = await queryRef('vuln', 'submission_queue', { limit: args.limit || 50 })
+      const rows = (q && q.ok !== false && Array.isArray(q.rows)) ? q.rows : []
+      let created = 0
+      let skipped = 0
+      for (const f of rows) {
+        if (args.program_id && String(f.program_id || '') !== String(args.program_id)) continue
+        const marker = `[提交] finding #${f.id}`
+        try {
+          const list = await queryRef('task', 'list', { q: marker, bucket: 'active', limit: 5 }, { actor: 'system' })
+          const existing = (list && list.ok) ? ((list.data && Array.isArray(list.data.rows)) ? list.data.rows : (Array.isArray(list.rows) ? list.rows : [])) : []
+          if (existing.some((t) => String(t.objective || '').includes(marker))) { skipped++; continue }
+          const objective = `${marker} ${f.host || ''} 确认漏洞待提交 SRC：report_draft_submission 出草稿 → 人工审校 → 平台提交 → vuln_submit(platform/submission_url/remote_id/vendor_status) 回写运营列。`
+          const r = await dispatchRef('task', 'create', { program_id: f.program_id || '_global', phase: 'review', goal: 'research', priority: 2, objective }, { actor: 'reactor' })
+          if (r && r.ok) created++; else skipped++
+        } catch (e) {
+          log(`提交任务补建失败 finding #${f.id}: ${e?.message}`)
+          skipped++
+        }
+      }
+      return { data: { created, skipped, scanned: rows.length } }
+    },
     task_reap: async (args, repo) => {
       const nowTs = Date.now()
       const pidAliveFn = args.pid_alive ? (pid) => { try { process.kill(pid, 0); return true } catch { return false } } : undefined
@@ -1140,16 +1177,16 @@ function makeHandlers(opts) {
       if (!fid) return { ok: true, data: { skipped: true } }
       const marker = `[提交] finding #${fid}`
       try {
-        const list = await dispatchRef('task', 'list', { q: marker, bucket: 'active', limit: 20 }, { actor: 'reactor' })
-        const rows = (list && list.ok && list.data && Array.isArray(list.data.rows)) ? list.data.rows : []
+        const list = await queryRef('task', 'list', { q: marker, bucket: 'active', limit: 20 }, { actor: 'system' })
+        const rows = (list && list.ok) ? ((list.data && Array.isArray(list.data.rows)) ? list.data.rows : (Array.isArray(list.rows) ? list.rows : [])) : []
         if (rows.some((t) => String(t.objective || '').includes(marker))) {
           return { ok: true, data: { skipped: true, reason: 'submission task exists' } }
         }
         const host = p.host || p.subject || ''
         const objective = `${marker} ${host} 确认漏洞待提交 SRC：report_draft_submission 出草稿 → 人工审校 → 平台提交 → vuln_submit(platform/submission_url/remote_id/vendor_status) 回写运营列。`
+        // 产出闭环任务不自动起 worker（提交需人工审校/平台操作）——queued 待 task_run_now
         const r = await dispatchRef('task', 'create', {
           program_id: p.program_id || '_global', phase: 'review', goal: 'research', priority: 2, objective,
-          schedule: { kind: 'once', at: Date.now() + 5 * 60 * 1000 },
         }, { actor: 'reactor' })
         return { ok: !!r?.ok, data: { skipped: false } }
       } catch (e) {

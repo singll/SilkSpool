@@ -65,6 +65,8 @@ const V5_COLS = [
   ['remote_id', 'remote_id TEXT'],
   ['remote_synced_at', 'remote_synced_at INTEGER'],
   ['sync_state', 'sync_state TEXT'],
+  // 跨源去重：上游（cyberstrikeai/vuln-pipeline/外部系统）提供的稳定外部 id
+  ['external_id', 'external_id TEXT'],
 ]
 
 const LIST_COLS = `id, title, severity, host, url, source, status, program_id, session_id,
@@ -88,6 +90,7 @@ function createRepo(db) {
   for (const [col, ddl] of V5_COLS) ensureCol(db, col, ddl)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_pool ON findings(noise, status)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_claim ON findings(claimed_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_external ON findings(external_id)`)
 
   const stmts = {
     getFinding: db.prepare('SELECT * FROM findings WHERE id = ?'),
@@ -105,18 +108,23 @@ function createRepo(db) {
       const r = stmts.getByFp.get(String(fp))
       return r ? { ...r } : null
     },
+    getFindingByExternalId(externalId) {
+      if (!externalId) return null
+      const r = db.prepare('SELECT * FROM findings WHERE external_id = ? LIMIT 1').get(String(externalId))
+      return r ? { ...r } : null
+    },
     insertFinding(f) {
       const r = db.prepare(`
         INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, status, created_at,
           program_id, session_id, vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact,
-          recommendation, noise, confidence, fgs_node_id, discovery_step, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          recommendation, noise, confidence, fgs_node_id, discovery_step, updated_at, external_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         f.fingerprint, f.title, f.severity, f.host, f.url, f.evidence || '', f.source || '', f.status || 'new', f.created_at,
         f.program_id || null, f.session_id || null, f.vuln_type || null, f.cwe || null, f.endpoint_ref || null,
         f.preconditions || null, f.reproduction_steps || null, f.impact || null, f.recommendation || null,
         f.noise === 1 ? 1 : 0, f.confidence || 'tentative', f.fgs_node_id || null, f.discovery_step || null,
-        f.updated_at || f.created_at,
+        f.updated_at || f.created_at, f.external_id || null,
       )
       return { id: Number(r.lastInsertRowid) }
     },

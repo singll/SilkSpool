@@ -1273,6 +1273,28 @@ const now = () => clock()
     async function runCommandTxn(domain, verb, fullName, args, ctx, cmdDef, key, argsHash, entry, started) {
       const handler = entry.handlers[fullName] || entry.handlers[verb]
       const eventIdsLocal = []
+      // M1：事务内幂等复检（BEGIN IMMEDIATE 已串行化写者）——闭合「预检在事务外」的
+      // check-then-insert 竞态：并发同 key 请求只有一个落库，另一个在此读到 replay，
+      // 而非撞 PRIMARY KEY 被兜底成 E_CONFLICT。
+      if (key) {
+        try {
+          const priorRow = plain(db.prepare('SELECT * FROM idempotency WHERE idempotency_key=?').get(key))
+          if (priorRow) {
+            if (priorRow.args_hash !== argsHash) {
+              const error = new Error(`幂等键 ${key} 已绑定不同参数`)
+              error.code = 'E_IDEMPOTENT_CONFLICT'
+              error.hint = '若是重放请原样重发参数；若是新意图请换 idempotency_key'
+              throw error
+            }
+            const prior = JSON.parse(priorRow.result_json)
+            auditBestEffort({ ts: now(), kind: 'command', domain, cmd: verb, actor, session_id: ctx.session_id || null, operator: ctx.operator || null, idempotency_key: key, replay: true, target: null, before: null, after: null, result: 'ok', error_code: null, duration_ms: now() - started, backend: 'sqlite-local' })
+            return { envelope: { ...prior, replay: true }, _eventIds: [] }
+          }
+        } catch (e) {
+          if (e?.code === 'E_IDEMPOTENT_CONFLICT') throw e
+          /* 读失败降级：不阻断（外层预检已覆盖正常路径） */
+        }
+      }
       // file 后端长任务可在启动时发布事实。每批事件以短事务完成强联动，
       // 不把 SQLite 写锁持有到 worker 退出；失败时已提交的启动事实仍可恢复。
       const emitEvents = async (events) => {

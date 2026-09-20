@@ -108,6 +108,7 @@ export const VULN_MANIFEST = {
         confidence: en(CONFIDENCE, { default: 'tentative' }),
         fgs_node_id: int(),
         discovery_step: str(),
+        external_id: str({ maxLength: 128, description: '上游系统稳定 id（跨源去重优先键）' }),
       }, ['title', 'severity', 'host', 'evidence', 'reproduction_steps', 'impact']),
       idempotent: 'natural',
       idempotent_natural: ['host', 'title', 'url'],
@@ -128,9 +129,10 @@ export const VULN_MANIFEST = {
         evidence: str({ default: '' }),
         source: str(),
         program_id: str(),
+        external_id: str({ maxLength: 128, description: '上游系统稳定 id（跨源去重优先键）' }),
       }, ['title', 'severity', 'host', 'source']),
       idempotent: 'auto',
-      idempotent_fields: ['title', 'host', 'url', 'source'],
+      idempotent_fields: ['title', 'host', 'url', 'source', 'external_id'],
       events: ['vuln.candidate.registered'],
       event_limit: 1,
       invariants: [],
@@ -752,11 +754,24 @@ function makeHandlers(opts) {
       const weak = fpWeak(host, title)
       const strong = fpStrong(host, title, url)
       const now = Date.now()
+      // 跨源去重（external_id 优先）：上游系统稳定 id 相同即同一发现，防重复导入
+      const extId = String(args.external_id || '').trim()
+      if (extId) {
+        const byExt = repo.getFindingByExternalId?.(extId)
+        if (byExt) {
+          if (ctx.session_id && !byExt.session_id) repo.backfillSession(byExt.id, ctx.session_id)
+          return {
+            data: { id: byExt.id, dup: true, upgraded: false, noise: byExt.noise === 1, status: byExt.status, dedup_reason: 'external_id' },
+            events: [],
+            before: { status: byExt.status, noise: byExt.noise }, after: { status: byExt.status, noise: byExt.noise },
+          }
+        }
+      }
       const dup = repo.getFindingByFingerprint(strong)
       if (dup) {
         if (ctx.session_id) repo.backfillSession(dup.id, ctx.session_id)
         return {
-          data: { id: dup.id, dup: true, upgraded: false, noise: dup.noise === 1, status: dup.status },
+          data: { id: dup.id, dup: true, upgraded: false, noise: dup.noise === 1, status: dup.status, dedup_reason: 'fingerprint' },
           events: [],
           before: { status: dup.status, noise: dup.noise }, after: { status: dup.status, noise: dup.noise },
         }
@@ -793,7 +808,7 @@ function makeHandlers(opts) {
         impact: args.impact || null, recommendation: args.recommendation || null,
         noise: 0, status: 'new', confidence: args.confidence || 'tentative',
         fgs_node_id: args.fgs_node_id || null, discovery_step: args.discovery_step || null,
-        created_at: now, updated_at: now,
+        created_at: now, updated_at: now, external_id: extId || null,
       })
       repo.markSyncPending?.(row.id)
       return {
@@ -810,6 +825,15 @@ function makeHandlers(opts) {
       const url = String(args.url || '')
       const weak = fpWeak(host, title)
       const now = Date.now()
+      const extId = String(args.external_id || '').trim()
+      // 跨源去重：external_id 优先（上游稳定 id）
+      if (extId) {
+        const byExt = repo.getFindingByExternalId?.(extId)
+        if (byExt) {
+          if (ctx.session_id && !byExt.session_id) repo.backfillSession(byExt.id, ctx.session_id)
+          return { data: { id: byExt.id, dup: true, noise: byExt.noise === 1, status: byExt.status, dedup_reason: 'external_id' }, events: [], before: { status: byExt.status, noise: byExt.noise }, after: { status: byExt.status, noise: byExt.noise } }
+        }
+      }
       const dup = repo.getFindingByFingerprint(weak)
       if (dup) {
         if (ctx.session_id && !dup.session_id) repo.backfillSession(dup.id, ctx.session_id)
@@ -829,7 +853,7 @@ function makeHandlers(opts) {
         reproduction_steps: null, impact: null, recommendation: null,
         noise: 1, status: 'new', confidence: 'tentative',
         fgs_node_id: null, discovery_step: null,
-        created_at: now, updated_at: now,
+        created_at: now, updated_at: now, external_id: extId || null,
       })
       return {
         data: { id: row.id, dup: false, noise: true, status: 'new' },
@@ -1241,6 +1265,7 @@ function makeHandlers(opts) {
             url: String(f.url || ''),
             evidence: f.evidence || (runId ? `run_id:${runId}` : ''),
             source: `parser:${tool}`,
+            ...(f.external_id ? { external_id: String(f.external_id) } : {}),
           }, { actor: 'script', identity: `parser:${tool}:${runId}`, session_id: payload.session_id || null })
           if (r.ok) registered++
           else if (r.error && r.error.retryable) { retryableFailed++; failures.push({ title, code: r.error.code, retryable: true }) }

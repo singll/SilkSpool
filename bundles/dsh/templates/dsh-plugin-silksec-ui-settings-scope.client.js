@@ -212,6 +212,12 @@ window.__ModuleLoader__.load({
             : pillNode('未绑工作区', { color: T.label3, title: '未绑定工作区：task_create 无法按会话自动带出归属' }),
           pillNode('条目 ' + programCount(p), { title: '授权条目数' }),
           excludeCount(p) ? pillNode('排除 ' + excludeCount(p), { color: T.error, title: '排除清单条目数' }) : null,
+          // 授权时效：过期 fail-closed 红标；临期（≤30 天）黄标；无到期不显示
+          p.expired
+            ? pillNode('已过期', { color: T.error, title: '授权已于 ' + p.expires_at + ' 过期（fail-closed，不再授权）——复核后经 scope_rules_apply 续期' })
+            : (p.days_left !== null && p.days_left !== undefined && p.days_left <= 30
+              ? pillNode('剩 ' + p.days_left + ' 天', { color: T.warn, title: '授权将于 ' + p.expires_at + ' 到期' })
+              : (p.expires_at ? pillNode('至 ' + p.expires_at, { color: T.label3, title: '授权到期日；复核时间 ' + (p.reviewed_at || '—') }) : null)),
           el('span', { style: { marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' } },
             tip('编辑授权项目（范围 / 排除 / 风险上限）', el('button', { ...iconBtn, disabled: !!busy, 'aria-label': '编辑授权', onClick: function () { props.onEdit(p) } }, icon('edit'))),
             tip('移除授权（fail-closed 立即生效；programs 表归档，资产/漏洞归属保留）', el('button', { ...iconBtn, className: 'silksec-icon-btn silksec-icon-btn-danger', disabled: !!busy, 'aria-label': '移除授权', onClick: function () { props.onRemove(p.name) } }, icon('trash'))))),

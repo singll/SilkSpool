@@ -312,12 +312,13 @@ function parseScopePrograms(text) {
     if (/^#/.test(t) || !t) continue
     const nameM = t.match(/^-\s+name:\s*["']?([^"']+?)["']?\s*$/)
     if (nameM) {
-      cur = { name: nameM[1].trim(), scope: [], exclude: [] }
+      cur = { name: nameM[1].trim(), scope: [], exclude: [], expires_at: null }
       programs.push(cur)
       key = ''
       continue
     }
     if (!cur) continue
+    if (/^expires_at:\s*(.+)$/.test(t)) { cur.expires_at = t.replace(/^expires_at:\s*/, '').trim().replace(/^["']|["']$/g, ''); key = ''; continue }
     if (/^(scope|exclude):\s*$/.test(t)) { key = t.slice(0, t.length - 1); continue }
     const itemM = t.match(/^-\s*["']?([^"']+?)["']?\s*$/)
     if (itemM && (key === 'scope' || key === 'exclude')) { cur[key].push(itemM[1].trim()); continue }
@@ -336,6 +337,15 @@ function hostInPatterns(host, patterns) {
   return false
 }
 
+// 授权时效解析：YYYY-MM-DD（当天 UTC 末刻）或 epoch ms；空/非法 → null（长期有效）
+function expiryMs(v) {
+  if (v === null || v === undefined || v === '') return null
+  const s = String(v).trim()
+  if (/^\d+$/.test(s)) { const n = Number(s); return Number.isFinite(n) ? n : null }
+  const d = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T23:59:59Z` : s)
+  return Number.isNaN(d) ? null : d
+}
+
 // INV-3：program_id 非空时 host 必须命中该 program scope 且不在 exclude。
 // program 未找到（撤销/拼错/伪造）或 scope.yml 不可读 → fail-closed，拒绝登记。
 // 域外参考站请不带 program_id 登记（level NULL），不得借道 fail-open 污染归属。
@@ -348,6 +358,10 @@ function scopeCheckResult(programId, host, dataDir) {
   }
   if (hostInPatterns(host, prog.exclude || [])) {
     return { ok: false, code: 'E_INVARIANT', message: `资产 ${host} 命中项目 ${programId} 排除清单`, hint: '该域在项目排除清单内，需单独授权后才能登记（走 exclude-exception 审批）', retryable: false }
+  }
+  const exp = expiryMs(prog.expires_at)
+  if (exp !== null && exp < Date.now()) {
+    return { ok: false, code: 'E_INVARIANT', message: `项目 ${programId} 授权已于 ${prog.expires_at} 过期`, hint: '授权已过期（fail-closed）——复核后经 scope_rules_apply 续期 expires_at 再登记', retryable: false }
   }
   if (!hostInPatterns(host, prog.scope || [])) {
     return { ok: false, code: 'E_INVARIANT', message: `资产 ${host} 不在项目 ${programId} 授权范围内`, hint: '资产 {host} 不在项目 {program_id} 授权范围内——域外参考站请不带 program_id 登记（保持 level NULL，不进主动队列），或先经审批扩 scope', retryable: false }

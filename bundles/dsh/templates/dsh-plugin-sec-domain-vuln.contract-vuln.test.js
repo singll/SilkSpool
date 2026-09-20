@@ -1125,3 +1125,16 @@ test('数据治理: expire_candidates 将超期候选出池', async () => {
   const row = bus._internal.db().prepare('SELECT status FROM findings WHERE id=?').get(cand.data.id)
   assert.equal(row.status, 'ignored')
 })
+
+// ---- 跨源去重：external_id 相同 → dup，不重复建行 ----
+test('跨源去重: 相同 external_id 的候选登记为 dup', async () => {
+  const { bus } = makeEnv()
+  const a = await bus.dispatch('vuln', 'register_candidate', { title: 'a.example.com 外部导入候选', severity: 'medium', host: 'a.example.com', source: 'cyberstrikeai', external_id: 'EXT-1' }, { actor: 'script' })
+  assert.equal(a.ok, true)
+  assert.equal(a.data.dup, false)
+  const b = await bus.dispatch('vuln', 'register_candidate', { title: 'a.example.com 同外部 id 不同标题', severity: 'high', host: 'a.example.com', source: 'vuln-pipeline', external_id: 'EXT-1' }, { actor: 'script' })
+  assert.equal(b.ok, true)
+  assert.equal(b.data.dup, true)
+  assert.equal(b.data.id, a.data.id)
+  assert.equal(b.data.dedup_reason, 'external_id')
+})

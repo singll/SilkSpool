@@ -118,24 +118,43 @@ function normalizeEntries(entries) {
   return [...out].sort()
 }
 
+// 授权时效（08-scope §1.4）：expires_at 支持 ISO 日期（YYYY-MM-DD，当天 23:59:59 UTC 到期）
+// 或 epoch 毫秒。缺失 = 长期有效（向后兼容）；过期 = 该 program 不再授权（fail-closed）。
+export function parseExpiry(v) {
+  if (v === null || v === undefined || v === '') return null
+  const s = String(v).trim()
+  if (/^\d+$/.test(s)) { const n = Number(s); return Number.isFinite(n) ? n : null }
+  const d = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T23:59:59Z` : s)
+  return Number.isNaN(d) ? null : d
+}
+export function isExpired(program, nowMs) {
+  const exp = parseExpiry(program && program.expires_at)
+  return exp !== null && exp < nowMs
+}
+
 // checkTarget 完整算法（§1.4.1 顺序强制）
-export function checkTargetScope(target, snapshot, programFilter) {
+export function checkTargetScope(target, snapshot, programFilter, nowMs) {
   const host = hostOf(target)
   if (!host) return { allow: false, reason: '无法解析目标', host }
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now()
   for (const p of snapshot.programs || []) {
     for (const e of p.exclude || []) {
       if (entryMatches(e, host)) return { allow: false, reason: `目标在项目 ${p.name} 的排除清单中`, program: p.name, excluded_by: e, host }
     }
   }
+  let expiredMatch = null
   for (const p of snapshot.programs || []) {
     if (programFilter && p.name !== programFilter) continue
     for (const e of p.scope || []) {
       if (entryMatches(e, host)) {
+        // 过期授权不生效（fail-closed）——记录以给出明确拒绝原因
+        if (isExpired(p, now)) { expiredMatch = { program: p.name, entry: e, expires_at: p.expires_at }; continue }
         const kind = e.startsWith('*.') ? 'wildcard' : (e.includes('/') ? 'cidr' : 'literal')
         return { allow: true, program: p.name, matched_entry: e, matched_kind: kind, reason: `命中项目 ${p.name} 授权范围`, program_cfg: p, host }
       }
     }
   }
+  if (expiredMatch) return { allow: false, reason: `项目 ${expiredMatch.program} 授权已于 ${expiredMatch.expires_at} 过期（fail-closed）`, program: expiredMatch.program, expired: true, host }
   return { allow: false, reason: '目标不在任何授权项目范围内（scope.yml fail-closed）', host }
 }
 
@@ -169,6 +188,7 @@ export const SCOPE_MANIFEST = {
         finding_db: str(),
         max_risk: en(RISK_ENUM),
         fixed_egress_ip: bool(),
+        expires_at: str({ maxLength: 32, description: '授权到期（YYYY-MM-DD 或 epoch ms）；空=长期有效' }),
         request_id: int(),
       }, ['program_name', 'entries']),
       idempotent: 'none',
@@ -218,9 +238,11 @@ export const SCOPE_MANIFEST = {
         fixed_egress_ip: bool(),
         allow_intrusive_tools_add: strArr(),
         allow_intrusive_tools_remove: strArr(),
+        expires_at: str({ maxLength: 32, description: '授权到期（YYYY-MM-DD 或 epoch ms；空串=清除）' }),
+        reviewed_at: str({ maxLength: 32, description: '最近人工复核时间（YYYY-MM-DD 或 epoch ms）' }),
       }, ['target']),
       idempotent: 'auto',
-      idempotent_fields: ['target', 'program_name', 'rate_limit_qps', 'allow_risk', 'max_risk', 'fixed_egress_ip', 'allow_intrusive_tools_add', 'allow_intrusive_tools_remove'],
+      idempotent_fields: ['target', 'program_name', 'rate_limit_qps', 'allow_risk', 'max_risk', 'fixed_egress_ip', 'allow_intrusive_tools_add', 'allow_intrusive_tools_remove', 'expires_at', 'reviewed_at'],
       events: ['scope.rules.changed'],
       event_limit: 1,
       invariants: ['rulesPatchValid'],
@@ -278,6 +300,11 @@ export const SCOPE_MANIFEST = {
       actor: ['model', 'dashboard', 'human', 'system', 'approval', 'scheduler', 'reactor', 'script'],
       params: schema({ target: str({ minLength: 1 }), program: str() }, ['target']),
       agent_note: '授权预检（只读）：检查目标是否在授权范围内。传入 URL/host 均可（自动归一化）。对目标执行主动操作前先自查；未授权目标走 approval_request。',
+    },
+    scope_expiring: {
+      actor: ['model', 'dashboard', 'human', 'system', 'approval'],
+      params: schema({ within_days: int({ minimum: 1, maximum: 365, default: 30 }) }, []),
+      agent_note: '授权时效巡检：列出 expires_at 在 within_days 内到期或已过期的项目（带 days_left/expired）。过期项目 fail-closed 不再授权，须复核后 scope_rules_apply 续期。',
     },
     scope_list: {
       actor: ['model', 'dashboard', 'human', 'system', 'approval'],
@@ -459,11 +486,13 @@ function makeHandlers(opts) {
       let program = findProgram(snapshot, args.program_name)
       const programCreated = !program
       if (!program) {
-        program = { name: args.program_name, platform: args.platform || '', scope: [], exclude: [], rules: { max_risk: args.max_risk || 'active', fixed_egress_ip: !!args.fixed_egress_ip, workspace: '', allow_intrusive_tools: [] }, finding_db: args.finding_db || '' }
+        program = { name: args.program_name, platform: args.platform || '', scope: [], exclude: [], rules: { max_risk: args.max_risk || 'active', fixed_egress_ip: !!args.fixed_egress_ip, workspace: '', allow_intrusive_tools: [] }, finding_db: args.finding_db || '', expires_at: null, reviewed_at: null }
         snapshot.programs.push(program)
       } else if (args.max_risk !== undefined) {
         program.rules.max_risk = args.max_risk
       }
+      // 授权时效（可选）：批准扩 scope 时可同时设定到期日
+      if (args.expires_at !== undefined) program.expires_at = args.expires_at || null
       const existingSet = new Set(program.scope || [])
       const granted = []
       const skipped = []
@@ -558,6 +587,8 @@ function makeHandlers(opts) {
         if (!program) throwErr('E_NOT_FOUND', `项目不在 yml: ${args.program_name}`, '先 scope_list 核对现状')
         if (args.max_risk !== undefined) { before.max_risk = program.rules.max_risk; program.rules.max_risk = args.max_risk; after.max_risk = args.max_risk; patch.max_risk = args.max_risk }
         if (args.fixed_egress_ip !== undefined) { before.fixed_egress_ip = program.rules.fixed_egress_ip; program.rules.fixed_egress_ip = args.fixed_egress_ip; after.fixed_egress_ip = args.fixed_egress_ip; patch.fixed_egress_ip = args.fixed_egress_ip }
+        if (args.expires_at !== undefined) { before.expires_at = program.expires_at || null; program.expires_at = args.expires_at || null; after.expires_at = program.expires_at; patch.expires_at = program.expires_at }
+        if (args.reviewed_at !== undefined) { before.reviewed_at = program.reviewed_at || null; program.reviewed_at = args.reviewed_at || null; after.reviewed_at = program.reviewed_at; patch.reviewed_at = program.reviewed_at }
         const tools = new Set(program.rules.allow_intrusive_tools || [])
         for (const t of args.allow_intrusive_tools_add || []) tools.add(t)
         for (const t of args.allow_intrusive_tools_remove || []) tools.delete(t)
@@ -629,11 +660,15 @@ function makeHandlers(opts) {
       const dbRows = repo.listPrograms()
       const programsOut = programs.map((p) => {
         const row = dbRows.find((r) => r.id === p.name)
+        const expMs = parseExpiry(p.expires_at)
         return {
           name: p.name, platform: p.platform || '', scope: p.scope || [], exclude: p.exclude || [],
           max_risk: (p.rules && p.rules.max_risk) || 'active', fixed_egress_ip: !!(p.rules && p.rules.fixed_egress_ip),
           workspace: (p.rules && p.rules.workspace) || '', finding_db: p.finding_db || '',
           allow_intrusive_tools: (p.rules && p.rules.allow_intrusive_tools) || [],
+          expires_at: p.expires_at || null, reviewed_at: p.reviewed_at || null,
+          expired: expMs !== null && expMs < Date.now(),
+          days_left: expMs !== null ? Math.ceil((expMs - Date.now()) / 86400000) : null,
           db: row ? { status: row.status, workspace_id: row.workspace_id || null, workspace_path: row.workspace_path || null } : null,
         }
       })
@@ -641,6 +676,24 @@ function makeHandlers(opts) {
         ? dbRows.filter((r) => r.status === 'archived' && !programs.some((p) => p.name === r.id)).map((r) => ({ id: r.id, status: r.status, platform: r.platform, max_risk: r.max_risk, workspace_id: r.workspace_id || null, workspace_path: r.workspace_path || null }))
         : []
       return { defaults: snapshot.defaults || { egress_proxy: '', rate_limit_qps: 50, allow_risk: ['passive', 'active'] }, programs: programsOut, archived }
+    },
+    scope_expiring: async (args, repo) => {
+      const snapshot = readSnapshot(repo)
+      const now = Date.now()
+      const withinDays = Number(args.within_days) || 30
+      const horizon = now + withinDays * 86400000
+      const rows = (snapshot.programs || []).map((p) => {
+        const expMs = parseExpiry(p.expires_at)
+        return {
+          name: p.name, expires_at: p.expires_at || null, reviewed_at: p.reviewed_at || null,
+          expired: expMs !== null && expMs < now,
+          days_left: expMs !== null ? Math.ceil((expMs - now) / 86400000) : null,
+          _expMs: expMs,
+        }
+      }).filter((r) => r._expMs !== null && r._expMs < horizon)
+        .map(({ _expMs, ...r }) => r)
+        .sort((a, b) => (a.days_left || 0) - (b.days_left || 0))
+      return { rows, total: rows.length, meta: { within_days: withinDays, expired: rows.filter((r) => r.expired).length } }
     },
     program_list: async (args, repo) => {
       let rows = repo.listPrograms()

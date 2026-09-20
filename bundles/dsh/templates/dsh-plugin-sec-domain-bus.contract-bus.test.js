@@ -1365,3 +1365,22 @@ test('挂载矩阵: bus_status 报 mount.phase/subset/mode', async () => {
   assert.ok(st.data.mount.subset.includes('proxy'))
   assert.ok(st.data.mount.subset.includes('bus'))
 })
+
+// ---------------------------------------------------------------------------
+// M1：并发同幂等键——事务内复检闭合 check-then-insert 竞态
+// ---------------------------------------------------------------------------
+
+test('M1: 并发同幂等键只执行一次，后者返回 replay 而非 E_CONFLICT/E_STATE', async () => {
+  const { bus } = makeBus()
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  const seed = await bus.dispatch('vuln', 'register_signal', { title: '并发幂等测试标题一二三四', host: 'b.example.com' }, { actor: 'model' })
+  assert.equal(seed.ok, true)
+  const id = seed.data.id
+  const args = { finding_id: id, evidence: 'run_conc_1' }
+  const [a, b] = await Promise.all([
+    bus.dispatch('vuln', 'confirm', args, { actor: 'model' }),
+    bus.dispatch('vuln', 'confirm', args, { actor: 'model' }),
+  ])
+  assert.equal([a, b].filter((r) => r.ok).length, 2, JSON.stringify([a.error, b.error]))
+  assert.equal([a, b].filter((r) => r.replay === true).length, 1, '恰好一个 replay')
+})

@@ -298,6 +298,14 @@ function entryMatches(entry, host) {
   if (entry.startsWith('*.')) { const suffix = entry.slice(1); return host === entry.slice(2) || host.endsWith(suffix) }
   return host === entry
 }
+// 授权时效解析：YYYY-MM-DD（当天 UTC 末刻）或 epoch ms；空/非法 → null（长期有效）
+function expiryMs(v) {
+  if (v === null || v === undefined || v === '') return null
+  const s = String(v).trim()
+  if (/^\d+$/.test(s)) { const n = Number(s); return Number.isFinite(n) ? n : null }
+  const d = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T23:59:59Z` : s)
+  return Number.isNaN(d) ? null : d
+}
 function ipInReserved(ipInt) {
   for (const c of RESERVED_CIDRS) {
     const mask = c.bits === 32 ? 0xffffffff : (0xffffffff << (32 - c.bits)) >>> 0
@@ -512,8 +520,9 @@ function makeHandlers(opts) {
         if ((m = s.match(/^allow_risk:\s*\[(.*)\]/))) out.defaults.allow_risk = m[1].split(',').map((x) => x.trim()).filter(Boolean)
         if (indent === 0 && !s.startsWith('defaults:')) inDefaults = false
       }
-      if ((m = s.match(/^- name:\s*["']?([^"']+)["']?/))) { curProgram = { name: m[1], scope: [], exclude: [], rules: {} }; out.programs.push(curProgram); inRules = false; continue }
+      if ((m = s.match(/^- name:\s*["']?([^"']+)["']?/))) { curProgram = { name: m[1], scope: [], exclude: [], rules: {}, expires_at: null }; out.programs.push(curProgram); inRules = false; continue }
       if (curProgram) {
+        if ((m = s.match(/^expires_at:\s*(.+)$/))) { curProgram.expires_at = m[1].trim().replace(/^["']|["']$/g, ''); continue }
         if ((m = s.match(/^scope:\s*$/))) { inScopeList = true; inExcludeList = false; inAllowIntrusive = false; inRules = false; continue }
         if ((m = s.match(/^exclude:\s*$/))) { inExcludeList = true; inScopeList = false; inAllowIntrusive = false; inRules = false; continue }
         if ((m = s.match(/^rules:\s*$/))) { inRules = true; inScopeList = false; inExcludeList = false; inAllowIntrusive = false; continue }
@@ -543,10 +552,16 @@ function makeHandlers(opts) {
       const excludes = Array.isArray(p.exclude) ? p.exclude : []
       if (excludes.some((e) => entryMatches(e, host))) return { allow: false, reason: `目标 ${host} 在项目 ${p.name} 的排除清单中`, program: p.name }
     }
+    let expired = null
     for (const p of scope.programs || []) {
       const entries = Array.isArray(p.scope) ? p.scope : []
-      if (entries.some((e) => entryMatches(e, host))) return { allow: true, reason: `命中项目 ${p.name} 授权范围`, program: p.name, programCfg: p }
+      if (entries.some((e) => entryMatches(e, host))) {
+        // 授权时效：过期项目不授权（fail-closed）
+        if (expiryMs(p.expires_at) !== null && expiryMs(p.expires_at) < Date.now()) { expired = p; continue }
+        return { allow: true, reason: `命中项目 ${p.name} 授权范围`, program: p.name, programCfg: p }
+      }
     }
+    if (expired) return { allow: false, reason: `项目 ${expired.name} 授权已于 ${expired.expires_at} 过期（fail-closed）`, program: expired.name, expired: true }
     return { allow: false, reason: `目标 ${host} 不在任何授权项目范围内（scope.yml fail-closed）` }
   }
   function checkRisk(manifestRisk, programCfg, toolName) {

@@ -443,6 +443,20 @@ B1 view-asset.client.js:40｜B2 panel.client.js:138-148 + view-vuln.client.js:23
 
 **第三轮验收**：本地契约 466 例 + UI 114 全绿；csai `bundle dsh setup` 部署 + `sec-v5-accept.sh` PASS=41 FAIL=0。
 
-### 11.6 仍未处理（需策略决策或后续会话）
+### 11.6 第四轮修复（剩余全部建议项，2026-09-19 收尾）
 
-- 存量 43 条 confirmed 的**批量提交任务**（当前仅暴露队列 + KPI + 新确认自动入队；历史批量建任务需人工确认目标 program 归属后执行）、`data-hygiene.py --apply` 的线上历史回填执行、授权时效字段（`expires_at/reviewed_at`，需 scope.yml schema 变更 + 审批联动）、findings 的 `external_id` 列与跨源去重（需上游 parser 提供外部 id）、17-llm-surface/15-eval/ui-surface-deps 的文档回填、代码 M1（幂等预检入事务）与 L 类卫生项。
+| 编号 | 修复内容 | 文件 | 验证 |
+|---|---|---|---|
+| M1 | 事务内幂等复检（`BEGIN IMMEDIATE` 串行化后）闭合 check-then-insert 竞态；并发同 key 返回 replay 而非 E_CONFLICT | `dsh-plugin-sec-domain-bus.js` | 新增并发契约用例：恰好一个 replay（bus 52/52） |
+| 授权时效 | scope.yml program 增 `expires_at`/`reviewed_at`；过期 fail-closed（scope_check/exec/asset 三处一致）；`scope_grant`/`scope_rules_apply` 可设/续期；新查询 `scope_expiring`；看板面板过期/临期告警 + 设置页徽章 | scope 域/后端、exec、asset、dashboard-rpc、ui-panel、ui-settings-scope | 新增 3 契约用例（scope 18/18） |
+| 批量提交 | 新命令 `task_submission_backlog`（dashboard/system）：扫描 `vuln.submission_queue` 幂等补建 `[提交] finding #id` 任务（历史存量一次性；**queued 无调度，不自动起 worker，由人工 `task_run_now`**——避免一次性拉起数十个 LLM 会话）；线上已补建 42 条 | `dsh-plugin-sec-domain-task.js` | 新增契约用例（task 40/40）；线上 42 created / 2 skipped |
+| external_id | findings 增 `external_id` 列 + 索引；`register_signal`/`register_candidate`/parser 订阅支持 external_id 优先去重 | vuln 域/后端 | 新增跨源去重契约用例（vuln 64/64） |
+| 文档 | 17-llm-surface 查询可见口径修正；15-eval 补 C4 逐个详述节；ui-surface-deps 清理旧单体/别名/主面板降级陈旧条目 | doc/secagent、bundles/dsh/doc | 人工复核 |
+
+**第四轮验收**：本地契约 **483 例** + UI 114 全绿；csai `bundle dsh setup` 部署 + `sec-v5-accept.sh` PASS=41 FAIL=0。
+
+### 11.7 说明：不建议继续自动化的项
+
+- 6 组重复发现的**自动合并**：需人工判 `dup_of`（工具无法可靠判定哪个是主记录），`data-hygiene.py` 只报告不合并。
+- 沙箱凭据读取的**彻底消除**：工具（如 fofa_search）合法需要 `~/.config/fofa.conf`，只能做到「遮蔽非必要凭据 + 只读投影」；根治需把凭据改为环境变量注入（设计变更）。
+- L 类卫生项（死代码/命名）属持续清理，不阻塞。

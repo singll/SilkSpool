@@ -291,3 +291,49 @@ test('scope_list: yml 与镜像同框返回', async () => {
   assert.ok(r.data.programs[0].db)
   assert.equal(r.data.programs[0].db.status, 'active')
 })
+
+// ---------------------------------------------------------------------------
+// 12. 授权时效（expires_at / reviewed_at）
+// ---------------------------------------------------------------------------
+
+const EXPIRED_SEED = `version: 1
+defaults:
+  rate_limit_qps: 50
+  allow_risk: [passive, active]
+programs:
+  - name: old-src
+    expires_at: "2020-01-01"
+    scope:
+      - "*.old.example"
+`
+
+test('时效: 过期项目 fail-closed——scope_check 拒绝并给出过期原因', async () => {
+  const { bus } = makeEnv(EXPIRED_SEED)
+  const chk = await bus.query('scope', 'check', { target: 'api.old.example' }, { actor: 'model' })
+  assert.equal(chk.data.allow, false)
+  assert.equal(chk.data.expired, true)
+  assert.ok(String(chk.data.reason).includes('过期'))
+})
+
+test('时效: scope_grant 带 expires_at 写入 + scope_list 暴露 days_left/expired', async () => {
+  const { bus } = makeEnv(SEED)
+  const g = await bus.dispatch('scope', 'grant', { program_name: 'exp-src', entries: ['*.exp.example'], expires_at: '2030-12-31' }, { actor: 'dashboard' })
+  assert.equal(g.ok, true)
+  const list = await bus.query('scope', 'list', {}, { actor: 'dashboard' })
+  const p = list.data.programs.find((x) => x.name === 'exp-src')
+  assert.equal(p.expires_at, '2030-12-31')
+  assert.equal(p.expired, false)
+  assert.ok(p.days_left > 0)
+})
+
+test('时效: scope_rules_apply 续期/清除 + scope_expiring 巡检', async () => {
+  const { bus } = makeEnv(EXPIRED_SEED)
+  const exp0 = await bus.query('scope', 'expiring', { within_days: 365 }, { actor: 'dashboard' })
+  assert.equal(exp0.expired, 1)
+  const r = await bus.dispatch('scope', 'rules_apply', { target: 'program', program_name: 'old-src', expires_at: '2031-01-01', reviewed_at: '2026-09-19' }, { actor: 'dashboard' })
+  assert.equal(r.ok, true)
+  const chk = await bus.query('scope', 'check', { target: 'api.old.example' }, { actor: 'model' })
+  assert.equal(chk.data.allow, true)
+  const exp1 = await bus.query('scope', 'expiring', { within_days: 30 }, { actor: 'dashboard' })
+  assert.equal(exp1.expired, 0)
+})

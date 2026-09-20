@@ -54,12 +54,14 @@ export function parseScopeYaml(text) {
       if (indent === 0) { section = null }
     }
     if ((m = s.match(/^- name:\s*["']?([^"']+)["']?/))) {
-      cur = { name: m[1], platform: '', scope: [], exclude: [], rules: { max_risk: 'active', fixed_egress_ip: false, workspace: '', allow_intrusive_tools: [] }, finding_db: '' }
+      cur = { name: m[1], platform: '', scope: [], exclude: [], rules: { max_risk: 'active', fixed_egress_ip: false, workspace: '', allow_intrusive_tools: [] }, finding_db: '', expires_at: null, reviewed_at: null }
       snapshot.programs.push(cur); listKind = null; continue
     }
     if (cur) {
       if ((m = s.match(/^platform:\s*(.+)$/))) { cur.platform = m[1].trim(); listKind = null; continue }
       if ((m = s.match(/^finding_db:\s*(.+)$/))) { cur.finding_db = m[1].trim(); listKind = null; continue }
+      if ((m = s.match(/^expires_at:\s*(.+)$/))) { cur.expires_at = m[1].trim().replace(/^["']|["']$/g, ''); listKind = null; continue }
+      if ((m = s.match(/^reviewed_at:\s*(.+)$/))) { cur.reviewed_at = m[1].trim().replace(/^["']|["']$/g, ''); listKind = null; continue }
       if ((m = s.match(/^scope:\s*$/))) { listKind = 'scope'; continue }
       if ((m = s.match(/^exclude:\s*$/))) { listKind = 'exclude'; continue }
       if ((m = s.match(/^rules:\s*$/))) { listKind = 'rules'; continue }
@@ -100,6 +102,8 @@ export function serializeScopeYaml(snapshot) {
   for (const p of snapshot.programs || []) {
     lines.push('  - name: ' + p.name)
     if (p.platform) lines.push('    platform: ' + p.platform)
+    if (p.expires_at) lines.push('    expires_at: ' + p.expires_at)
+    if (p.reviewed_at) lines.push('    reviewed_at: ' + p.reviewed_at)
     lines.push('    scope:')
     for (const e of p.scope || []) lines.push('      - "' + e + '"')
     if (Array.isArray(p.exclude) && p.exclude.length) {

@@ -62,7 +62,7 @@ for alias of bus.aliases:                              # ② 兼容别名（01 �
 | bus | 2 | 3 | replay, prune；audit_tail（查询矩阵滤除） | 2（bus_status, events_tail） |
 | **合计** | **81** | **65** | **26 个命令不可见**（含 bus 的 replay/prune） | **≈119**（别名表当前为空，无额外别名工具） |
 
-口径说明：表中"model 工具数"= 命令可见数 + 查询可见数（146 个动词中 model 可见 119：55 命令 + 64 查询；查询侧仅 audit_tail 被矩阵滤除）。v4.x 现状约 67 个工具（asset-graph 38 + sec-suite 15 + sec-pipeline 8 + proxy-pool 6），v5 全量投影约 119——接近翻倍的主要来源是 know 域六子仓动词显式化（v4.x 的 exp/pb/kb/rule/vc/harvest 入口散在两插件里）。容量影响见 §2.6。
+口径说明：表中"model 工具数"= 命令可见数 + 查询可见数（数字随实现演进，以各域 manifest 的 actor 白名单为唯一真相源）。**查询侧对模型不可见的至少包括**：`audit_tail`（bus，矩阵滤除）、`task_drift` / `task_worker_recent` / `task_active_by_session`（task，actor 不含 model，见 05-task §1.5 末注）。v4.x 现状约 67 个工具（asset-graph 38 + sec-suite 15 + sec-pipeline 8 + proxy-pool 6），v5 全量投影约 119——接近翻倍的主要来源是 know 域六子仓动词显式化（v4.x 的 exp/pb/kb/rule/vc/harvest 入口散在两插件里）。容量影响见 §2.6。
 
 ### 1.3 命令（工具）逐个详述——按动词类别的投影规范
 
@@ -147,7 +147,7 @@ agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/ou
 
 | 动词类别（代表） | web 工具面（model，全量） | headless 工具面（model，按 phase 子集） | 看板 RPC 面（dashboard） | human CLI 面 | 注入的 actor |
 |---|---|---|---|---|---|
-| 全部查询（65 个） | ✅ 全量 | ✅（仅本 phase 域子集） | ✅ | ✅ | 各面固定注入 |
+| 全部查询（model 可见子集） | ✅ 全量 | ✅（仅本 phase 域子集） | ✅ | ✅ | 各面固定注入 |
 | A 确认/裁决类 | ✅ | ✅（vuln phase 可见） | ✅ | ✅ | — |
 | B 登记类 | ✅ | ✅（本 phase 域可见） | ✅ | ✅ | — |
 | C 流转类（模型可用子集） | ✅ | ✅（本 phase 域可见） | ✅ | ✅ | — |

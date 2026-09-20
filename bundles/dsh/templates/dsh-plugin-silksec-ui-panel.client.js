@@ -288,6 +288,11 @@ window.__ModuleLoader__.load({
                 onClick: function () { navigate.select(it.tab) },
               }, it.label + ' ' + num(it.value))
             }))),
+        (s.scope && s.scope.expired > 0)
+          ? el('div', { style: { ...uiCore.styles.errorLine, color: uiCore.T.error }, title: '过期项目 fail-closed 不再授权' }, '⛔ ' + s.scope.expired + ' 个授权项目已过期（fail-closed）：请在设置页「授权范围」复核续期')
+          : ((s.scope && s.scope.expiring > 0)
+            ? el('div', { style: { ...uiCore.styles.errorLine, color: uiCore.T.warn }, title: '30 天内到期' }, '⚠ ' + s.scope.expiring + ' 个授权项目将于 30 天内到期，请安排复核')
+            : null),
         (s.degraded && s.degraded.length)
           ? el('div', { style: { ...uiCore.styles.errorLine, color: uiCore.T.warn }, title: '对应 KPI 显示「—」，其余指标照常' }, '⚠ 部分数据源降级：' + s.degraded.join(' / ') + '（重试刷新或查看服务日志）')
           : null,

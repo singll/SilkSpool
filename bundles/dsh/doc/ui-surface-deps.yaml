@@ -217,7 +217,7 @@ surfaces:
       - conversation.chat.turnTail    # chain 槽首匹配即占用，纪律：不碰
     degradation:
       - main + sidebar.panellist + selectPanel
-      - sidebar.panellist 缺席 → 侧边栏行内 selectPanel 兜底
+      - sidebar.panellist 缺席 → 不注册导航行（主面板仍注册但无入口，不抛）
       - layout / main 槽缺席 → 不渲染主面板（旧 Modal 已随旧单体删除，2026-09-19）
     rollback:
       - 从 web profile 移除 @silksec/ui-panel（看板入口消失；不回落旧 Modal——旧单体已删）
@@ -275,7 +275,7 @@ surfaces:
       - sidebarRightTabs 缺席 → 同一视图注册进 ui-core 注册表（主面板「审批 ·降级」临时 tab）
       - 主面板 / layout 也缺席 → primitives Modal（再缺席自绘覆盖层）
       - shell.overlay 缺席 → secUiBus 广播 approval:pending（无旧 footer 承接，胶囊缺席即无角标）
-      - 无在屏会话 openTab 抛错 → secUiBus open:approval + layout.selectPanel（或 Modal）
+      - 无在屏会话 openTab 抛错 → secUiBus open:approval + Modal 宿主（不回退主面板，2026-09-19 走查修正）
     rollback:
       - 从 web profile 移除 @silksec/ui-approval（胶囊/右栏 tab 消失；审批改由 /silksec-domain RPC 或后续面处理）
     notes:
@@ -333,9 +333,9 @@ surfaces:
       - sidebarRightTabs 缺席 → 同一任务视图注册进 ui-core 注册表（主面板「任务 ·降级」临时 tab）
       - 主面板 / layout 也缺席 → primitives Modal（再缺席自绘覆盖层）
       - conversation.session.header.utilities 缺席 → 不注册（会话面无全局影响）
-      - 无在屏会话 openTab 抛错 → secUiBus open:task + layout.selectPanel（或 Modal）
+      - 无在屏会话 openTab 抛错 → secUiBus open:task + Modal 宿主（不回退主面板，2026-09-19 走查修正）
     rollback:
-      - 从 web profile 移除 @silksec/ui-task（右侧栏 tab / 会话头计数消失；主面板 legacy「任务」tab 照常）
+      - 从 web profile 移除 @silksec/ui-task（右侧栏 tab / 会话头计数消失；任务已迁出主面板，无主面板入口）
     notes:
       - "活跃计数真相源（tab 标题 + 会话头共用）= task.scheduled 未终态行 + task.list(active) 非定时行；
          会话头按运行时 props.sessionId 过滤两数组（本会话任务数）。"
@@ -453,11 +453,10 @@ surfaces:
          （既有无归属 fact 不显示）。测试用两会话数据交叉断言不混入。"
       - "写操作依据（实测修正 ⑥ 的端点决策）：domain 语义动词 vuln.register_candidate actor 白名单为 webhook/script
          （dashboard 禁入），vuln.register_signal 为 model/human；看板 actor=dashboard 对二者均不可用，且纪律禁止改域动词/actor。
-         「登记候选漏洞」走 compat 分派别名 vuln.finding_add（severity=info → register_candidate 候选降级，dashboard actor_bypass，
-         审计记 deprecated_use + via_alias 可区分）；「沉淀事实」走 fact.upsert（actor 白名单含 dashboard）。
-         均经 RpcProjector /silksec-domain，actor=dashboard + operator 注入，审计留痕可区分。"
-      - "⚠️ 5.2 耦合备案：vuln.finding_add 是观察期兼容别名，P5 会话动作是其合法人工使用面；启用后 5.2 删别名须与
-        本面协调（改为新的受控候选通道或同步改端点），否则删除后本动作报 E_BUS_VERB_UNKNOWN。"
+         「登记候选漏洞」于 2026-09-19 别名层清空后**直连** vuln.register_candidate（域内对 dashboard 操作员开放）；
+         「沉淀事实」走 fact.upsert（actor 白名单含 dashboard）。均经 RpcProjector /silksec-domain，
+         actor=dashboard + operator 注入，审计留痕可区分。"
+      - "别名层已于 2026-09-19 清空：本面已改直连域动词 vuln.register_candidate / fact.upsert。"
       - "零颜色字面量（走 --dsw-alias-* / ui-core 令牌）；原子化隔离：ErrorBoundary 本面包，三处注册独立 fiber，互不传染。"
     verified_dsh: "0.1.5-rc.2 (2026-09-18；@deepseek-ai/dsh-client-ui-conversation lib/types/client/contract/{slots,views}.d.ts 的 conversation.view kind=list scope=session owner=ConvViewOwnerProps + ViewTab{id,label} + ConversationSessionHeaderInjected.selectView 逐字核对；@deepseek-ai/dsh-client-ui-chat lib/types/client/contract/slots.d.ts 的 conversation.chat.assistant-actions kind=list scope=session owner=AssistantActionOwnerProps{messageId} 逐字核对；ui-trajectory/ui-message-feedback lib/client.js 官方 register({name,id,order,label,inject}) 先例核对；primitives 导出表实测含 Modal/RiskConfirmation/Tooltip/IconChecklistOutline)"
 
@@ -513,9 +512,9 @@ surfaces:
       - requires 声明的 connection 服务缺席 → 该 tab 静默隐藏（不注册、不抛、不占 order）
       - 单域 bundle 加载/apply 崩溃 → 该包 fiber 销毁，其余域 bundle 照常（构建隔离）
       - 单域视图渲染崩溃 → 该域 DomainRoot 的 SilksecErrorBoundary 兜底（ui-panel 再包一层），其余 tab 不受影响
-      - ui-core / ui-panel 缺席 → 旧单体 Modal 路径照常（P6 不删旧路径）
+      - ui-core / ui-panel 缺席 → 视图包 apply no-op（不注册；旧单体 Modal 已于 2026-09-19 删除）
     rollback:
-      - revert 单域 dashboard-view 文件 + 从 web profile 移除该 @silksec/sec-dashboard-view-<domain>（旧单体 `-old`/Modal 行为不变）
+      - revert 单域 dashboard-view 文件 + 从 web profile 移除该 @silksec/sec-dashboard-view-<domain>（旧单体已删除，仅影响该 tab）
       - 视图注册表取消注册即主面板回到旧实现
     notes:
       - "P6 不改数据层（RpcProjector/域动词/audit）：全部消费既有 /silksec-dashboard 端点，端点名/参数与旧单体逐项一致。"
@@ -524,7 +523,7 @@ surfaces:
       - "零颜色字面量（走 --dsw-alias-* / --silksec-sev-* / ui-core 令牌）；P6 不碰 conversation.chat.turnTail chain 槽。"
       - "19-ui-unify §3.2：registry 协议 minor 变更——知识(order70)/学习(75)/报告(80)/审计(110) 注册 group:'more'，
          由 ui-panel「更多」二级导航承载；旧视图包无 group 字段全部落 primary，升级顺序无要求。"
-      - "旧单体对应视图保留 7 天并排观察（`-old` 后缀、order=canonical+1）；P7（2026-09-18）完成文档/主题/accept 冒烟固化，旧单体与 Modal 主形态的删除按观察闸口（≥2026-09-25）顺延，未满不删（见本文件 p7_review）。"
+      - "旧单体视图与 Modal 主形态已于 2026-09-19 删除（见本文件 p7_review.legacy_deletion=done）；看板只剩 DSH 原生承载形态。"
     verified_dsh: "0.1.5-rc.2 (2026-09-18；ui-core viewRegistry.requires 能力探测 + 跨 bundle require @silksec/ui-core；主面板 main/panellist 承载见 dashboard-panel 面；本地 node --test 44 例 + 真机无头逐 tab 渲染)"
 
 # ── 明确不消费的官方面（避免误列 + 升级 diff 白名单） ───────────────────────
