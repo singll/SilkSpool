@@ -12,6 +12,7 @@
 | 查术语 | [领域语言](../../bundles/dsh/CONTEXT.md) |
 | 追溯历史（历次进度/更新日志/已完成节点、旧架构、历次升级方案与完整记录、会话模板） | [archive/](archive/) · [archive/progress-history.md](archive/progress-history.md) · [archive/upgrades/](archive/upgrades/) |
 | 看最近一次全面检查（在办专项） | [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/漏洞产出/执行历史/UI；结论待回填后归档） |
+| 看上级猎面编排对标（在办专项） | [21-benchmark-strikeagent-flash-2026-09-21.md](21-benchmark-strikeagent-flash-2026-09-21.md)（StrikeAgent_AtkBrain-Flash 对标：可借鉴能力/突破性思路/自循环 vs 定时任务/是否大改；结论待决策后回填归档） |
 
 ## 文档结构（唯一形态）
 
