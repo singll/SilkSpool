@@ -166,7 +166,7 @@ window.__ModuleLoader__.load({
         }
         // 19-ui-unify §3.2：报告属低频浏览面，收敛进主面板「更多」二级导航
         var disposer = uiCore.viewRegistry.register({
-          id: 'reports', label: '报告', order: 80, group: 'more', domain: 'report',
+          id: 'reports', label: '报告', order: 80, domain: 'report',
           component: ReportRoot, requires: ['connection'], source: 'dashboard-view-report',
         })
         if (typeof uiCore.markSurfaceHealth === 'function') uiCore.markSurfaceHealth('sec-dashboard-view-report', 'ok')

@@ -172,7 +172,7 @@ test('PanelIcon：无图标（安全中心与会话/工作区条目同层级，�
   assert.equal(mod.PanelIcon({ size: 16, active: false }), null)
 })
 
-test('DashboardPanel：group=more 收敛进「更多」二级导航，一级 tab 只留 primary', () => {
+test('DashboardPanel：所有视图直接平铺为 tab（取消「更多」二级导航）', () => {
   const uiCore = makeUiCore()
   const { mod } = loadBundle(uiCore)
   uiCore.viewRegistry.register({ id: 'findings', label: '漏洞', order: 20, component: function C1() {} })
@@ -183,11 +183,10 @@ test('DashboardPanel：group=more 收敛进「更多」二级导航，一级 tab
   const tree = mod.DashboardPanel()
   const tabs = collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-tab')
   const labels = tabs.map((t) => (t.children && t.children[0]) || '')
-  assert.ok(labels.includes('漏洞') && labels.includes('资产'), 'primary tab 保留')
-  assert.ok(!labels.includes('知识') && !labels.includes('审计'), 'more 组不得占一级 tab')
-  assert.ok(labels.some((l) => String(l).indexOf('更多') === 0), '出现「更多」入口')
-  // 默认 active = findings（第一条），故二级导航不渲染；仅一级「更多」入口
-  assert.equal(collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-tab' && String((n.children || [])[0] || '').indexOf('更多') >= 0).length, 1)
+  // 全部视图（含原 group=more）都直接占一级 tab，不再收敛
+  assert.ok(['漏洞', '资产', '知识', '审计'].every((l) => labels.includes(l)), '所有视图直接显示为 tab：' + JSON.stringify(labels))
+  assert.ok(!labels.some((l) => String(l).indexOf('更多') === 0), '不再出现「更多」入口')
+  assert.equal(tabs.length, 4, 'tab 数 = 视图数')
 })
 
 test('DashboardPanel：注册晚到经 viewRegistry.subscribe 触发重渲染（动态注册）', () => {

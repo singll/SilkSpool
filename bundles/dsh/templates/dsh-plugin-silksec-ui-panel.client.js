@@ -109,8 +109,6 @@ window.__ModuleLoader__.load({
       var pending = ps[0]; var setPending = ps[1]
       var fts = React.useState(0)
       var refreshTick = fts[0]; var setRefreshTick = fts[1]
-      var mms = React.useState(null)
-      var lastMoreId = mms[0]; var setLastMoreId = mms[1]
 
       // 动态注册：sec-dashboard 视图可能晚于本面板挂载（cordis client 加载顺序不保证）
       React.useEffect(function () {
@@ -130,17 +128,11 @@ window.__ModuleLoader__.load({
       var effActiveId = activeEntry ? activeEntry.id : null
       var activePending = (pending && pending.id === effActiveId) ? pending.payload : null
 
-      var primaryEntries = entries.filter(function (e) { return e.group !== 'more' })
-      var moreEntries = entries.filter(function (e) { return e.group === 'more' })
-      var activeInMore = !!(activeEntry && activeEntry.group === 'more')
-      var effMoreId = activeInMore ? effActiveId : (lastMoreId || (moreEntries[0] ? moreEntries[0].id : null))
-
+      // 2026-09-19：视图总数不多（≤8），取消「更多」二级导航——全部视图直接平铺为 tab，
+      // tabBar 自带 flex-wrap 自动换行（原 group:'more' 分层保留在注册表协议里，本面板不再分流）。
       var navigate = {
         select: function (id, p) {
           if (p !== undefined) setPending({ id: id, payload: p }); else setPending(null)
-          var merged = null
-          for (var j = 0; j < entries.length; j++) { if (entries[j].id === id) { merged = entries[j]; break } }
-          if (merged && merged.group === 'more') setLastMoreId(id)
           setActiveId(id)
         },
         consume: function (id) { setPending(function (cur) { return (cur && cur.id === id) ? null : cur }) },
@@ -202,7 +194,7 @@ window.__ModuleLoader__.load({
         },
       ]
 
-      var tabs = primaryEntries.map(function (entry) {
+      var tabs = entries.map(function (entry) {
         var label = entry.label
         if (entry.id === 'approvals' && approvalPending) label += ' · ' + approvalPending
         return el('button', {
@@ -212,27 +204,6 @@ window.__ModuleLoader__.load({
           onClick: function () { setPending(null); setActiveId(entry.id) },
         }, label)
       })
-      if (moreEntries.length) {
-        var moreCur = activeInMore ? activeEntry : null
-        tabs.push(el('button', {
-          key: '__more', type: 'button', className: 'silksec-tab',
-          'data-on': activeInMore ? 'true' : undefined,
-          title: '低频浏览/管理面：知识 / 学习 / 报告 / 审计',
-          onClick: function () { var id = effMoreId; if (id) navigate.select(id) },
-        }, '更多' + (moreCur ? ' · ' + moreCur.label : '')))
-      }
-
-      var secondaryTabs = activeInMore
-        ? el('div', { style: { ...uiCore.styles.tabBar, marginTop: 4, marginBottom: 0 }, role: 'tablist' }, moreEntries.map(function (entry) {
-            return el('button', {
-              key: 'more-' + entry.id, type: 'button', className: 'silksec-tab', role: 'tab',
-              style: { height: 26, ...uiCore.F.xxs },
-              'aria-selected': effActiveId === entry.id ? 'true' : 'false',
-              'data-on': effActiveId === entry.id ? 'true' : undefined,
-              onClick: function () { setPending(null); navigate.select(entry.id) },
-            }, entry.label)
-          }))
-        : null
 
       var activeNode = activeEntry
         ? el(uiCore.SilksecErrorBoundary, { surface: 'dashboard-panel:' + activeEntry.id, title: activeEntry.label },
@@ -303,7 +274,6 @@ window.__ModuleLoader__.load({
           ? el('div', { style: { ...uiCore.styles.errorLine, color: uiCore.T.warn } }, '⚠ 纪律健康度告警（' + (opsState.data.alerts || []).length + '）：' + (opsState.data.alerts || []).slice(0, 3).join('；') + '（详见 ops 端点）')
           : null,
         el('div', { style: uiCore.styles.tabBar, role: 'tablist' }, tabs),
-        secondaryTabs,
         el('div', { style: uiCore.styles.body }, activeNode))
     }
 

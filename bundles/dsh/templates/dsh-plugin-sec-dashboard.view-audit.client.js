@@ -120,7 +120,7 @@ window.__ModuleLoader__.load({
         }
         // 19-ui-unify §3.2：审计属低频浏览面，收敛进主面板「更多」二级导航
         var disposer = uiCore.viewRegistry.register({
-          id: 'audit', label: '审计', order: 110, group: 'more', domain: 'bus',
+          id: 'audit', label: '审计', order: 110, domain: 'bus',
           component: AuditRoot, requires: ['connection'], source: 'dashboard-view-audit',
         })
         if (typeof uiCore.markSurfaceHealth === 'function') uiCore.markSurfaceHealth('sec-dashboard-view-audit', 'ok')
