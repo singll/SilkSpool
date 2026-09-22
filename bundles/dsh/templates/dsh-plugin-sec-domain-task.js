@@ -19,6 +19,7 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { nextScheduledRun, validateDependency, MAX_WORKER_TIMEOUT_SEC } from '../sec-suite/task-policy.js'
+import { h1Hypotheses, taintRoute, strategyKey, compileSituation, detectInjectionPatterns } from '../sec-rules-hypothesis/index.js'
 // L6 调度器切换：persona/定时任务 prompt/会话反查与 v4 完全同源（复用 sec-suite 版本受控实现，防双份漂移）
 import { listSessionHeaders, matchWorkerSession, createPersonaReader, buildScheduledPrompt } from '../sec-suite/host-compat.js'
 
@@ -38,6 +39,10 @@ const TERMINAL = new Set(['done', 'failed', 'cancelled'])
 // ''/research=授权研究（默认）；learn-daily=日常整理（补索引/复验到期来源/整偏，只产候选）；
 // eval-batch=周期评测批（候选对照/误报复盘/晋升审阅）；change-retest=变更触发重测（撤回/失效驱动）。
 const TASK_GOALS = ['research', 'learn-daily', 'eval-batch', 'change-retest']
+// 21 号方案 §3-4：per-program 周期预算闸（环境变量可调；dashboard/approval 人工放行）
+const BUDGET_PERIOD_MS = Number(process.env.SEC_TASK_BUDGET_PERIOD_DAYS || 7) * 86400000
+const BUDGET_MAX_TOKENS = Number(process.env.SEC_TASK_BUDGET_MAX_TOKENS || 2000000)
+const BUDGET_MAX_TASKS = Number(process.env.SEC_TASK_BUDGET_MAX_TASKS || 500)
 const MIN_INTERVAL_SECONDS = 300
 const OUTCOME_ENUM = ['done', 'failed', 'busy', 'crash']
 const SCHEDULER_TICK_MS = 60000
@@ -75,7 +80,7 @@ export const TASK_MANIFEST = {
   service: 'secDomain.task',
   description: '任务/调度/执行史/worker 注册表——编排器派发的工作单元与调度循环的单一真相源，收尾权唯一归调度器/审批',
   owns: {
-    tables: ['tasks', 'task_runs', 'workers'],
+    tables: ['tasks', 'task_runs', 'workers', 'strategy_dedupe'],
     files: ['data/scheduler.lock', 'data/events/task.jsonl'],
   },
   commands: {
@@ -261,6 +266,31 @@ export const TASK_MANIFEST = {
       agent_note: '产出闭环补建：扫描 vuln.submission_queue（confirmed 未提交），为每条幂等入队 [提交] finding #id 任务（内部去重）。历史存量一次性使用；新确认由 vuln.signal.confirmed 自动入队。',
       deprecated: false,
     },
+    task_derive_intent: {
+      actor: ['reactor', 'scheduler', 'system', 'human'],
+      schema: schema({
+        program_id: str({ minLength: 1 }),
+        kind: en(['hypothesis', 'crawl', 'param_enrich']),
+        host: str({ minLength: 1 }),
+        path: str({ default: '' }),
+        vuln_class: str({ default: '' }),
+        param: str({ default: '' }),
+        level: en(['H1', 'H2', 'H3'], { default: 'H2' }),
+        rationale: str({ default: '' }),
+        oracle: str({ default: '' }),
+        h3: { type: 'object' },
+        strategy_key: str({ default: '' }),
+      }, ['program_id', 'kind', 'host']),
+      // 幂等由 handler 内 strategy_dedupe 表自治（返回 deduped:true / 黑名单丢弃）；
+      // 不用 bus 层 natural 幂等——回放会吞掉 deduped 语义并绕过黑名单判定
+      idempotent: 'none',
+      events: ['task.intent.derived'],
+      event_limit: 1,
+      invariants: ['intentSituation'],
+      timeout_ms: 60000,
+      agent_note: '（内部通道，模型不可见）Intent 确定性派生器落任务草稿：H1 指纹保底/H2 污点路由/H3 语义假设（H3 必须引用卡片经局面编译，违规丢弃落审计）。strategy_key 幂等去重、连败 3 次黑名单；一律过预算闸，入队 queued 绝不自动执行。',
+      deprecated: false,
+    },
     task_worker_register: {
       actor: ['reactor', 'scheduler'],
       schema: schema({
@@ -408,6 +438,7 @@ export const TASK_MANIFEST = {
   },
   events: {
     'task.created': { payload: { type: 'object' }, redact: [] },
+    'task.intent.derived': { payload: { type: 'object' }, redact: [] },
     'task.claimed': { payload: { type: 'object' }, redact: [] },
     'task.finished': { payload: { type: 'object' }, redact: [] },
     'task.blocked': { payload: { type: 'object' }, redact: [] },
@@ -422,6 +453,12 @@ export const TASK_MANIFEST = {
     'know.release.revoked': { handler: 'onReleaseRevoked', mode: 'async', as: 'reactor' },
     // 产出闭环：漏洞确认后自动入队「提交」任务（同 finding 幂等去重，见 onVulnConfirmed）
     'vuln.signal.confirmed': { handler: 'onVulnConfirmed', mode: 'async', as: 'reactor' },
+    // 21 号方案 §3-1：Intent 确定性派生器——新端点入库即推导 H2 假设任务草稿（事件驱动有界推进）
+    'endpoint.registered': { handler: 'onEndpointHypothesis', mode: 'async', as: 'reactor' },
+    // 21 号方案 §6.2/§6.4-B4：连败回写 strategy 黑名单（oracle rejected → fails+1；verified → 清零）
+    'vuln.signal.rejected': { handler: 'onStrategyOutcome', mode: 'async', as: 'reactor' },
+    // 21 号方案 §3-1：消费覆盖缺口队列——未爬/无参数格点自动派 crawl/param_enrich 任务草稿（预算闸）
+    'ledger.coverage.marked': { handler: 'onCoverageMarked', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -584,10 +621,121 @@ function normalizeSchedule(schedule, nowTs, prev) {
 function makeHandlers(opts) {
   const dispatchRef = opts.dispatch
   const queryRef = opts.query
+  const backendRepoRef = opts.repoRef
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
+
+  // scope.yml 自查（与 endpoint 域同口径，模块级 mtime 缓存；Intent 局面编译复用）
+  let _scopeCache = null
+  function loadScopePrograms() {
+    const f = path.join(dataDir, 'scope.yml')
+    let mtimeMs = null
+    try { mtimeMs = fs.statSync(f).mtimeMs } catch { mtimeMs = null }
+    if (_scopeCache && _scopeCache.mtimeMs === mtimeMs) return _scopeCache.programs
+    let programs = []
+    try { programs = parseScopePrograms(fs.readFileSync(f, 'utf8')) } catch { programs = [] }
+    _scopeCache = { mtimeMs, programs }
+    return programs
+  }
+  function parseScopePrograms(text) {
+    const programs = []
+    let cur = null
+    let key = ''
+    for (const line of String(text).split('\n')) {
+      const t = line.trim()
+      if (/^#/.test(t) || !t) continue
+      const nameM = t.match(/^-\s+name:\s*["']?([^"']+?)["']?\s*$/)
+      if (nameM) { cur = { name: nameM[1].trim(), scope: [], exclude: [] }; programs.push(cur); key = ''; continue }
+      if (!cur) continue
+      if (/^(scope|exclude):\s*$/.test(t)) { key = t.slice(0, t.length - 1); continue }
+      const itemM = t.match(/^-\s*["']?([^"']+?)["']?\s*$/)
+      if (itemM && (key === 'scope' || key === 'exclude')) { cur[key].push(itemM[1].trim()); continue }
+      if (/^[a-z_]+:/.test(t)) key = ''
+    }
+    return programs
+  }
+  function hostInPatterns(host, patterns) {
+    const h = String(host || '').trim().toLowerCase()
+    for (const p of patterns) {
+      const bare = String(p).replace(/^\*\./, '')
+      if (!bare) continue
+      if (bare === h || h.endsWith('.' + bare)) return true
+    }
+    return false
+  }
+  function scopeCheckResult(programId, host) {
+    if (!programId) return { ok: true }
+    const prog = loadScopePrograms().find((p) => p.name === programId)
+    if (!prog) { log(`scope 自查：program ${programId} 未找到，fail-open（scope 域查询上线前过渡）`); return { ok: true } }
+    if (hostInPatterns(host, prog.exclude || [])) return { ok: false, code: 'E_INVARIANT', message: `${host} 命中项目 ${programId} 排除清单` }
+    if (!hostInPatterns(host, prog.scope || [])) return { ok: false, code: 'E_INVARIANT', message: `${host} 不在项目 ${programId} 授权范围内` }
+    return { ok: true }
+  }
 
   function throwErr(code, message, hint, retryable = false) {
     throw Object.assign(new Error(message), { code, hint, retryable })
+  }
+
+  // ------------------------------------------------------------------
+  // 21 号方案 §3-1/§6：Intent 派生器辅助（H1/H2 生成、H3 局面编译、strategy 键）
+  // ------------------------------------------------------------------
+
+  // H3 语义假设局面编译（§3-2 硬约束纯函数校验，违规丢弃）：
+  // 必须引用 ≥1 张经验卡、声明 vuln_class、目标 host 一致、无注入特征——LLM 只产假说。
+  function compileH3(h3, host) {
+    if (!h3 || typeof h3 !== 'object') return { ok: false, violations: ['h3_missing'] }
+    const violations = []
+    const cardRefs = Array.isArray(h3.card_refs) ? h3.card_refs.filter((c) => String(c || '').trim()) : []
+    if (!cardRefs.length) violations.push('h3_no_card_refs')
+    if (!String(h3.vuln_class || '').trim()) violations.push('h3_no_vuln_class')
+    if (!String(h3.hypothesis || '').trim() || String(h3.hypothesis).length < 20) violations.push('h3_hypothesis_too_short')
+    if (h3.host && String(h3.host) !== String(host)) violations.push('h3_host_mismatch')
+    if (detectInjectionPatterns(`${h3.hypothesis || ''} ${h3.rationale || ''}`).length) violations.push('h3_injection_pattern')
+    return { ok: violations.length === 0, violations }
+  }
+
+  // 假设任务 objective 草稿（污点路由注入 + oracle 判定指引——假设永不直接变 finding）
+  function hypothesisObjective({ level, vulnClass, host, path: p, param, oracle, rationale, programId, extraLines = [] }) {
+    const lines = [
+      `[假设 ${level}] ${vulnClass} @ ${host}${p || ''}${param ? `（参数 ${param}）` : ''}`,
+      `路由依据：${rationale}`,
+      `验证纪律（不可跳过）：`,
+      `1. 构造差分对照请求（攻击 vs 对照），响应特征（status/长度/正文特征/simhash/时延）落 results/<run_id>/；`,
+      `2. 调 exec_oracle_judge（oracle=${oracle || '按类选择'}）做机器判定——模型无权宣布 verified；`,
+      `3. verdict=verified → vuln_oracle_capsule 落 proof capsule → vuln_register_candidate/vuln_confirm 引用 capsule:{id}；rejected/inconclusive → vuln_reject 或补证据重判。`,
+      `program=${programId}；禁止越出 scope；证据不足显式 inconclusive 不猜。`,
+      ...extraLines,
+    ]
+    return lines.join('\n')
+  }
+
+  // 消费覆盖缺口/端点事件推导一条假设任务草稿（战略去重+黑名单+预算闸在 dispatch 链上）
+  async function deriveHypothesis({ programId, host, path: p, endpointRow, repo, cause }) {
+    const params = (() => {
+      try {
+        const raw = endpointRow?.params
+        if (!raw || raw === 'null') return []
+        const obj = typeof raw === 'string' ? JSON.parse(raw) : raw
+        if (Array.isArray(obj)) return obj
+        if (obj && typeof obj === 'object') return Object.keys(obj).map((k) => ({ name: k, value: '' }))
+        return []
+      } catch { return [] }
+    })()
+    const route = taintRoute({
+      path: p || endpointRow?.path || '',
+      auth_state: endpointRow?.auth_state || null,
+      should_auth: endpointRow?.should_auth || null,
+      params,
+    })
+    const out = []
+    for (const h of route.slice(0, 3)) { // 单端点最多派生 3 条（有界推进）
+      const key = strategyKey({ host, path: p || endpointRow?.path || '', param: h.param || '', vuln_class: h.vuln_class })
+      out.push({
+        program_id: programId, kind: 'hypothesis', host, path: p || endpointRow?.path || '',
+        vuln_class: h.vuln_class, param: h.param || '', level: h.level,
+        rationale: h.rationale, oracle: h.oracle, strategy_key: key,
+      })
+    }
+    return out
   }
 
   function resolveProgram(args, ctx, repo) {
@@ -616,6 +764,26 @@ function makeHandlers(opts) {
   }
 
   const invariants = {
+    // 21 号方案 §3-2：Intent 局面硬约束编译（scope/连败黑名单/H3 违规丢弃落审计）
+    intentSituation: async (args, repo) => {
+      // scope fail-closed：host 必须 ∈ program scope（复用 scope.yml 自查，与 asset/endpoint 同口径）
+      const sc = scopeCheckResult(args.program_id, args.host)
+      if (!sc.ok) return { code: sc.code, message: `Intent 派生越界：${sc.message}`, hint: '派生器绝不越出 scope（§3-2 局面编译）', retryable: false }
+      // 连败黑名单：strategy_key 已拉黑 → 丢弃落审计（E_STATE 由调用方记录）
+      const key = args.strategy_key || strategyKey({ host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '' })
+      const st = repo.getStrategy ? repo.getStrategy(key) : null
+      if (st && st.blacklisted) {
+        return { code: 'E_TASK_STRATEGY_BLACKLISTED', message: `strategy ${key} 连败 ${st.fails} 次已拉黑`, hint: '连败 3 次的组合自动出局（§6.3 命中率校准）；换路由或人工解黑', retryable: false }
+      }
+      // H3 局面编译：语义假设必须引用卡片且过校验，违规丢弃
+      if (args.level === 'H3') {
+        const c = compileH3(args.h3, args.host)
+        if (!c.ok) {
+          return { code: 'E_TASK_H3_REJECTED', message: `H3 语义假设局面编译失败：${c.violations.join('/')}`, hint: 'H3 必须 card_refs≥1 + vuln_class + ≥20 字 hypothesis + host 一致 + 无注入特征（§3-2/§6.1）；连败自动退 H2/H1', retryable: false }
+        }
+      }
+      return null
+    },
     scheduleValid: async (args, repo, ctx) => {
       const nowTs = Date.now()
       const s = normalizeSchedule(args.schedule, nowTs, { phase: args.phase || '' })
@@ -682,6 +850,16 @@ function makeHandlers(opts) {
             data: { task_id: Number(dup.id), status: dup.status, deduped: true, schedule: { kind: 'interval', next_run_at: dup.next_run_at } },
             after: { task_id: Number(dup.id), deduped: true },
           }
+        }
+      }
+      // 21 号方案 §3-4：per-program 周期预算闸（超额停派；dashboard/approval 人工放行）
+      if (ctx.actor !== 'dashboard' && ctx.actor !== 'approval' && repo.budgetUsage) {
+        const usage = repo.budgetUsage(programId, nowTs - BUDGET_PERIOD_MS)
+        if (usage.tasks_created >= BUDGET_MAX_TASKS) {
+          throwErr('E_TASK_BUDGET_EXHAUSTED', `program ${programId} 周期任务预算耗尽：${usage.tasks_created}/${BUDGET_MAX_TASKS} 任务/${Math.round(BUDGET_PERIOD_MS / 86400000)}d`, '预算闸停派（§3-4）：人工评估后由 dashboard 建任务放行，或提升 SEC_TASK_BUDGET_MAX_TASKS 上限', false)
+        }
+        if (usage.spent_tokens >= BUDGET_MAX_TOKENS) {
+          throwErr('E_TASK_BUDGET_EXHAUSTED', `program ${programId} 周期 token 预算耗尽：${usage.spent_tokens}/${BUDGET_MAX_TOKENS} tokens/${Math.round(BUDGET_PERIOD_MS / 86400000)}d`, '预算闸停派（§3-4）：人工评估后由 dashboard 建任务放行，或提升 SEC_TASK_BUDGET_MAX_TOKENS 上限', false)
         }
       }
       const id = repo.insertTask({
@@ -961,6 +1139,43 @@ function makeHandlers(opts) {
       }
     },
 
+    // 21 号方案 §3-1：Intent 派生落任务草稿（strategy 去重 + 预算闸 + 绝不自动执行）
+    task_derive_intent: async (args, repo, ctx) => {
+      const key = args.strategy_key || strategyKey({ host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '' })
+      // strategy_key 幂等去重：已测组合不重发
+      const existing = repo.getStrategy ? repo.getStrategy(key) : null
+      if (existing && !existing.blacklisted) {
+        return { data: { deduped: true, strategy_key: key, task_id: existing.last_task_id ?? null }, events: [], after: { deduped: true } }
+      }
+      const extraLines = []
+      if (args.level === 'H3' && args.h3) {
+        extraLines.push(`H3 语义假设：${args.h3.hypothesis}`)
+        extraLines.push(`引用卡片：${(args.h3.card_refs || []).join(', ')}（卡片置信度已吃 wins/fails 校准）`)
+      }
+      let objective
+      if (args.kind === 'crawl') {
+        objective = `[覆盖缺口] ${args.host} 未爬取——端点三件套（katana/gau/waybackurls）+ 登录态判定 endpoint_classify_auth；尊重 program QPS/risk；产物 endpoint_upsert 入库 + ledger_coverage_mark(dim=crawl) 记账。`
+      } else if (args.kind === 'param_enrich') {
+        objective = `[覆盖缺口] ${args.host}${args.path || ''} 无参数——arjun 参数补全 + flows/JS 提取带参 URL → endpoint_queue_surface 修复喂料队列 + ledger_coverage_mark(dim=param) 记账。`
+      } else {
+        objective = hypothesisObjective({ level: args.level || 'H2', vulnClass: args.vuln_class || 'info_disclosure', host: args.host, path: args.path || '', param: args.param || '', oracle: args.oracle, rationale: args.rationale || '覆盖缺口驱动', programId: args.program_id, extraLines })
+      }
+      // 预算闸与任务创建复用 task_create 全链（actor=reactor，预算闸对 reactor 生效）
+      if (!dispatchRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 dispatch 不可达', '确认总线已挂载', true)
+      const r = await dispatchRef('task', 'create', {
+        program_id: args.program_id, objective, priority: args.level === 'H1' ? 4 : 3, phase: 'vuln',
+        budget_tokens: 150000,
+      }, { actor: 'reactor', cause: ctx?.cause })
+      if (!r || !r.ok) throwErr(r?.error?.code || 'E_INTERNAL', r?.error?.message || '派生任务创建失败', r?.error?.hint || '', false)
+      const taskId = r.data.task_id
+      if (repo.upsertStrategy) repo.upsertStrategy(key, { program_id: args.program_id, last_task_id: taskId })
+      return {
+        data: { deduped: false, strategy_key: key, task_id: taskId, kind: args.kind, level: args.level || 'H2' },
+        events: [{ name: 'task.intent.derived', payload: { strategy_key: key, task_id: taskId, program_id: args.program_id, kind: args.kind, level: args.level || 'H2', vuln_class: args.vuln_class || null, host: args.host, path: args.path || '', param: args.param || '', cause: ctx?.cause ? 'event' : 'manual' } }],
+        after: { task_id: taskId, strategy_key: key },
+      }
+    },
+
     task_submission_backlog: async (args) => {
       if (!dispatchRef || !queryRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 query/dispatch 不可达', '确认 vuln 域已注册', true)
       const q = await queryRef('vuln', 'submission_queue', { limit: args.limit || 50 })
@@ -1227,6 +1442,80 @@ function makeHandlers(opts) {
         run_id: p.run_id, outcome, ...(p.exit_code == null ? {} : { exit_code: p.exit_code }),
         ...(p.worker_session_id ? { worker_session_id: p.worker_session_id } : {}),
       }, { actor: 'reactor' })
+    },
+
+    // 21 号方案 §3-1/§6.2：新端点入库 → 污点路由推导 H2 假设任务草稿（有界：单端点 ≤3 条）
+    // 弱联动 best-effort：派生失败不阻断端点入库；派生丢弃（黑名单/预算/越界）落返回供审计。
+    onEndpointHypothesis: async (envelope) => {
+      if (!dispatchRef) return { ok: true, data: { skipped: true } }
+      const p = envelope?.payload || {}
+      const programId = String(p.program_id || '')
+      const host = String(p.host || '')
+      const epPath = String(p.path || '')
+      if (!programId || !host || !epPath) return { ok: true, data: { skipped: true } }
+      // 取端点行（参数/auth_state/should_auth 是路由输入）
+      let row = null
+      try {
+        const q = await queryRef('endpoint', 'list', { host, path_like: epPath, limit: 5 }, { actor: 'reactor' })
+        const rows = (q && (q.rows || q.data?.rows)) || []
+        row = rows.find((r) => r.host === host && r.path === epPath) || null
+      } catch { row = null }
+      const drafts = await deriveHypothesis({ programId, host, path: epPath, endpointRow: row })
+      const derived = []
+      const dropped = []
+      for (const d of drafts) {
+        try {
+          const r = await dispatchRef('task', 'derive_intent', d, { actor: 'reactor', cause: envelope })
+          if (r && r.ok) derived.push({ strategy_key: r.data.strategy_key, task_id: r.data.task_id, deduped: !!r.data.deduped })
+          else dropped.push({ strategy_key: d.strategy_key, code: r?.error?.code || 'E_INTERNAL', message: String(r?.error?.message || '').slice(0, 120) })
+        } catch (e) {
+          dropped.push({ strategy_key: d.strategy_key, code: e?.code || 'E_INTERNAL', message: String(e?.message || e).slice(0, 120) })
+        }
+      }
+      return { ok: true, data: { skipped: false, derived, dropped } }
+    },
+
+    // 21 号方案 §3-1：覆盖缺口队列消费——未爬 host / 无参数端点自动派 crawl/param_enrich 草稿
+    // （缺口态白名单；派生失败 best-effort 不阻断记账主链；去重/预算闸在 derive_intent 链上）
+    onCoverageMarked: async (envelope) => {
+      if (!dispatchRef) return { ok: true, data: { skipped: true } }
+      const p = envelope?.payload || {}
+      const programId = String(p.program || '')
+      const dim = String(p.dim || '')
+      const key = String(p.key || '')
+      const mark = String(p.mark || '')
+      if (!programId || !key) return { ok: true, data: { skipped: true } }
+      let draft = null
+      if (dim === 'crawl' && ['not_crawled', 'failed', 'uncrawled'].includes(mark)) {
+        draft = { program_id: programId, kind: 'crawl', host: key.split('|')[0] }
+      } else if (dim === 'param' && ['no_params', 'missing', 'unenriched'].includes(mark)) {
+        const [host, ...rest] = key.split('|')
+        draft = { program_id: programId, kind: 'param_enrich', host, path: rest.join('|') || '' }
+      }
+      if (!draft) return { ok: true, data: { skipped: true, reason: `${dim}=${mark} 非可派生缺口态` } }
+      try {
+        const r = await dispatchRef('task', 'derive_intent', draft, { actor: 'reactor', cause: envelope })
+        return { ok: true, data: { skipped: false, derived: !!(r && r.ok && !r.data?.deduped), deduped: !!(r && r.ok && r.data?.deduped), code: r && !r.ok ? r.error?.code : null } }
+      } catch (e) {
+        log(`覆盖缺口派生失败（best-effort）: ${e?.message}`)
+        return { ok: true, data: { skipped: false, error: String(e?.message) } }
+      }
+    },
+
+    // 21 号方案 §6.3：verdict 回写命中矩阵——rejected 连败 +1（≥3 拉黑）；后续 verified 由 capsule 通道清零
+    onStrategyOutcome: async (envelope) => {
+      const p = envelope?.payload || {}
+      const key = String(p.strategy_key || '')
+      if (!key) return { ok: true, data: { skipped: true } }
+      try {
+        const repo = backendRepoRef ? backendRepoRef() : null
+        if (!repo || !repo.markStrategyOutcome) return { ok: true, data: { skipped: false, error: 'no repo' } }
+        repo.markStrategyOutcome(key, false, null)
+        return { ok: true, data: { skipped: false } }
+      } catch (e) {
+        log(`strategy 连败回写失败（best-effort）: ${e?.message}`)
+        return { ok: true, data: { skipped: false, error: String(e?.message) } }
+      }
     },
   }
 
@@ -1508,7 +1797,7 @@ export function buildTaskDomain(opts = {}) {
   const backend = createTaskSqliteBackend(opts.backendOptions || {})
   return {
     manifest: TASK_MANIFEST,
-    handlers: makeHandlers({ ...opts, dataDir }),
+    handlers: makeHandlers({ ...opts, dataDir, repoRef: (db) => backend.factory(db) }),
     backend,
   }
 }

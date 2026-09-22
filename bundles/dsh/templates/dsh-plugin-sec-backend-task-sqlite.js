@@ -69,6 +69,18 @@ CREATE TABLE IF NOT EXISTS workers (
   timeout_sec INTEGER, session_id TEXT, run_dir TEXT
 )`
 
+// 21 号方案 §3-1：Intent 派生器 strategy 去重/连败黑名单表（task 域 owns）
+const STRATEGY_DDL = `
+CREATE TABLE IF NOT EXISTS strategy_dedupe (
+  strategy_key TEXT PRIMARY KEY,
+  program_id TEXT,
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  fails INTEGER NOT NULL DEFAULT 0,
+  blacklisted INTEGER NOT NULL DEFAULT 0,
+  last_task_id INTEGER
+)`
+
 const TASK_STATUS = ['queued', 'running', 'blocked', 'done', 'failed', 'cancelled']
 
 function ensureCol(db, table, col, ddl) {
@@ -88,6 +100,7 @@ function createRepo(db) {
   db.exec(TASKS_DDL)
   db.exec(TASK_RUNS_DDL)
   db.exec(WORKERS_DDL)
+  db.exec(STRATEGY_DDL)
   // 平滑迁移：存量库补列（幂等，v4 已建过则跳过）
   for (const [col, ddl] of [
     ['schedule_kind', 'schedule_kind TEXT'],
@@ -172,6 +185,39 @@ function createRepo(db) {
     countTasksWhere(filters) {
       const { where, args } = taskWhere(filters)
       return db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE ${where}`).get(...args).n
+    },
+
+    // 21 号方案 §3-4：per-program 周期预算用量（tasks.spent_tokens 周期和 + 创建数）
+    budgetUsage(programId, sinceMs) {
+      const since = Number(sinceMs) || 0
+      const r = db.prepare(`SELECT COUNT(*) AS tasks_created, COALESCE(SUM(COALESCE(spent_tokens, 0)), 0) AS spent_tokens FROM tasks WHERE program_id = ? AND created_at >= ?`)
+        .get(String(programId), since)
+      return { tasks_created: Number(r?.tasks_created) || 0, spent_tokens: Number(r?.spent_tokens) || 0 }
+    },
+
+    // 21 号方案 §3-1/§6.2：Intent 派生器 strategy 去重 + 连败黑名单
+    // strategy_dedupe：strategy_key PK（host|path|param|class）；fails 连败计数；≥3 连败自动黑名单
+    getStrategy(key) {
+      try {
+        const r = db.prepare('SELECT * FROM strategy_dedupe WHERE strategy_key = ?').get(String(key))
+        return r ? { ...r } : null
+      } catch { return null }
+    },
+    upsertStrategy(key, patch) {
+      const now = repo.now()
+      db.prepare(`INSERT INTO strategy_dedupe (strategy_key, program_id, first_seen, last_seen, fails, blacklisted, last_task_id)
+        VALUES (?, ?, ?, ?, 0, 0, NULL)
+        ON CONFLICT (strategy_key) DO UPDATE SET last_seen = ?, last_task_id = COALESCE(?, last_task_id)`)
+        .run(String(key), String(patch.program_id || ''), now, now, now, patch.last_task_id ?? null)
+    },
+    markStrategyOutcome(key, ok, taskId) {
+      const now = repo.now()
+      if (ok) {
+        db.prepare('UPDATE strategy_dedupe SET fails = 0, last_seen = ?, last_task_id = ? WHERE strategy_key = ?').run(now, taskId ?? null, String(key))
+      } else {
+        db.prepare('UPDATE strategy_dedupe SET fails = fails + 1, last_seen = ?, last_task_id = ? WHERE strategy_key = ?').run(now, taskId ?? null, String(key))
+        db.prepare('UPDATE strategy_dedupe SET blacklisted = 1 WHERE strategy_key = ? AND fails >= 3').run(String(key))
+      }
     },
     claimDueTasks(nowTs, limit) {
       const due = selectDueTasks(db, nowTs, limit)
