@@ -18,6 +18,11 @@
 ## 二、最近进度结果
 
 ### 2026-09-22 · 21 号方案 Phase 0 第一批：规则层 + 登录态判定 + 业务语义 + 覆盖账本 + 硬降级 + 成本归因（本地契约 511/511）
+
+### 2026-09-22 · 21 号方案 Phase 2：机器验证 oracle + proof capsule + confirm 证据门（契约 517/517）
+- exec 域：`exec_oracle_judge` 查询——oracle 五件套（unauthz_diff/idor_diff/info_disclosure_diff/sqli_diff/sqli_time/xss_echo/ssrf_oob）纯函数路由，输入对照特征输出 verdict，**模型无权宣布 verified**（§2-1）。
+- vuln 域：`vuln_oracle_capsule` 动词——proof capsule（oracle verdict + 请求对 + 判定输入 + 环境指纹 + 重放命令）落盘 evidence/oracle-capsules/{id}.json（原子写，digest 自洽，§2-2）；`vuln_confirm` 增 oracleCapsuleGate 不变量：`capsule:{id}` 证据须 digest 自洽 + verdict=verified + host 与 finding 一致（E_VULN_ORACLE_NOT_VERIFIED / E_VULN_ORACLE_TARGET_MISMATCH）。
+- 契约新增 6 例（capsule 三门 + oracle_judge 路由 + eval 例适配硬降级）；全部 517/517 全绿。
 - 依据 [21-benchmark-strikeagent-flash-2026-09-21.md](21-benchmark-strikeagent-flash-2026-09-21.md) §八 Phase 0（0-3/0-4/0-5/0-6/0-7/0-8）执行；0-1/0-2（端点爆发/参数补全的线上跑批）为运营动作待部署后进行。
 - 新规则层 `@silksec/sec-rules-hypothesis`（纯函数，零依赖）：登录态判定 classifyAuthState（§5.1）、业务语义建议 businessSemanticsSuggest（§5.2）、评级硬降级 enforceSeverityCap（§0-6）、污点路由 taintRoute + H1 保底 h1Hypotheses（§6.1）、oracle 五件套（§2-1）、注入防护 fenceUntrusted（§1-5）、局面编译 compileSituation（§3-2）；契约 23 例全绿；sec-rules-hypothesis-setup.sh 接入部署链。
 - endpoint 域：endpoints 表 ensureCol 列演进（auth_state/auth_state_evidence/should_auth/should_auth_source/should_auth_at）；新动词 endpoint_classify_auth（0-3）+ endpoint_annotate_semantics（0-5，人工裁定 > 自动建议、model 显式标注必带 note）；endpoint.registered 订阅自动建议；endpoint_list 增 auth_state/should_auth 过滤；新查询 endpoint_auth_summary（登录态分布/标注率）。
