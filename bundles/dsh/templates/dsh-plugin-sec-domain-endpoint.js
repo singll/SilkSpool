@@ -195,7 +195,7 @@ export const ENDPOINT_MANIFEST = {
   },
   queries: {
     endpoint_list: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'reactor'],
       params: schema({
         host: str({ default: '' }),
         path_like: str({ default: '' }),

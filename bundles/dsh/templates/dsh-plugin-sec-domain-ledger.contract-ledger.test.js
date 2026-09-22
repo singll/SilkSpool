@@ -434,3 +434,29 @@ test('订阅：endpoint.registered/auth_classified/signal.confirmed → 覆盖�
   assert.ok(keys.includes('auth|a.example.com|/y|login_required'))
   assert.ok(keys.includes('vulnclass|a.example.com|idor|verified'))
 })
+
+// 22 号方案回归：safeQuery 须归一「列表查询顶层 rows」与「标量 data」两形态，
+// 否则 coverage_metrics/gaps 对 asset/endpoint 数据全盲（Campaign L2 Planner 无输入）。
+test('coverage_gaps: 跨域 asset/endpoint 列表查询顶层 rows 被正确消费（回归）', async () => {
+  const { bus } = makeEnv()
+  const stub = (domain, name, rows) => ({
+    manifest: {
+      domain, version: 1, service: `secDomain.${domain}`, description: `${domain} stub`,
+      owns: { tables: [], files: [] }, commands: {},
+      queries: { [`${domain}_${name}`]: { actor: ['reactor', 'model', 'dashboard', 'human'], params: { type: 'object', additionalProperties: false, properties: { program_id: { type: 'string' }, type: { type: 'string' }, limit: { type: 'integer' } } }, agent_note: 'stub' } },
+      events: {}, subscribes: {}, backend: 'repository-v1',
+    },
+    handlers: { commands: {}, queries: { [`${name}`]: async () => ({ rows, total: rows.length }) }, invariants: {}, subscribers: {} },
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  })
+  assert.equal(bus.registry.register(stub('asset', 'list', [{ host: 'a.example.com' }])).ok, true)
+  assert.equal(bus.registry.register(stub('endpoint', 'list', [{ host: 'a.example.com', path: '/x', params: null, auth_state: 'public' }])).ok, true)
+  const m = await bus.query('ledger', 'coverage_metrics', { program: 'test-src' }, { actor: 'model' })
+  assert.equal(m.ok, true, m.error?.message)
+  assert.equal(m.data.crawl.available, true, 'crawl 面应可用（此前 safeQuery 读 r.data 恒 null）')
+  assert.equal(m.data.crawl.total_hosts, 1)
+  const g = await bus.query('ledger', 'coverage_gaps', { program: 'test-src' }, { actor: 'model' })
+  assert.equal(g.ok, true, g.error?.message)
+  assert.ok(g.data.total > 0, '应产出缺口（crawl/param/vulnclass）')
+  assert.ok((g.data.gaps || []).some((x) => x.dim === 'crawl' && x.key === 'a.example.com'))
+})

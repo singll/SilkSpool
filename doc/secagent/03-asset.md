@@ -719,3 +719,5 @@ ensureCol(col, ddl)
 | 文档漂移 | 已修正 `asset.fp.recorded` 事件名。 |
 | hook 判定 | v4 `fp_query` 已移除，由 QueryProjector 零改名接管；无 hook 替代。 |
 | 独立升级 | 包边界支持单域更新；须回归 asset、exec parser、vuln exec_intel_hunt 与 dashboard 查询。 |
+
+> 2026-09-22 22 号方案回填：`asset_list` actor 白名单补 `reactor`——ledger 域 `coverage_metrics`/`coverage_gaps` 经 `safeQuery(...,{actor:'reactor'})` 跨域只读资产面（Campaign L2 Planner 的覆盖缺口输入源）。只读，不扩写权。

@@ -322,7 +322,7 @@ export const SCOPE_MANIFEST = {
       agent_note: '列出 programs 表（scope.yml 运行态镜像）。项目是资产/漏洞/任务的顶层作用域。',
     },
     cred_query: {
-      actor: ['model', 'dashboard', 'human', 'system', 'approval'],
+      actor: ['model', 'dashboard', 'human', 'system', 'approval', 'reactor'],
       params: schema({ program_id: str({ default: '' }), host: str({ default: '' }), limit: int({ minimum: 1, maximum: 500 }) }, []),
       agent_note: '检索凭据引用（只返回引用，不返回明文）。按项目/host 过滤。',
     },

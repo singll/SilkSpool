@@ -722,3 +722,5 @@ http-remote 全列 unsupported 的理由：**授权白名单与凭据引用是�
 | 性能 | yml 规模小，实时解析/查询开销可忽略；QPS 守卫每次读取换取一致性，符合当前规模。 |
 | 文档漂移 | 已修正：无 exec 订阅，`scope.program.bound` 为完整事件名。 |
 | 独立升级 | 支持单域替换；scope 是全局安全依赖，升级必须全量受影响域冒烟，不能只跑本域测试。 |
+
+> 2026-09-22 22 号方案回填：`cred_query` actor 白名单补 `reactor`——ledger `ledger_login_blindspot` 经 reactor 跨域只读凭据引用（登录盲区摘要）。只读，不返回明文，不扩写权。

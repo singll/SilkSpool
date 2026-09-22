@@ -1023,3 +1023,5 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 | S4 tick 公平 | 以 `listCampaignsWhere` 的 `ORDER BY last_tick_at ASC` 实现准轮转（每专项跑完即更新时间戳使其排到队尾）；>10 活跃专项为软轮转，未做持久指针 |
 
 契约：task 59 例、approval 新增 2 例（二度批准/预算延长生效、不可达 fail-closed）全绿；全量本地契约 557/557。
+
+> 2026-09-22 22 号方案运行期修复（Campaign 子任务可执行性）：调度器只认领 `schedule_kind IS NOT NULL` 的任务；`task_derive_intent` 对 **campaign_id 非空**的子任务改以 `once` 调度入队（`at=now+3s`），否则 L2 自动派生的 queued 任务永不执行。21 号「无主派生」草稿仍保持 `NULL`（queued 待人工/编排 `task_run_now`）；INV-C7 只禁 interval。

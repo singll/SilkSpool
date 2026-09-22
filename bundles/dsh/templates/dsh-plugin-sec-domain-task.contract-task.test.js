@@ -1179,6 +1179,7 @@ test('22 C25/INV-C5/C7: campaign_dispatch 经唯一派生通道落子任务；in
   const t = bus._internal.db().prepare('SELECT * FROM tasks WHERE campaign_id=?').get(cid)
   assert.equal(t.status, 'queued')            // 绝不自动执行
   assert.equal(t.campaign_role, 'derived')
+  assert.equal(t.schedule_kind, 'once', 'campaign 子任务须带 once 调度，否则调度器不认领')
   assert.ok(t.objective.includes('[假设 H2]'))
   // 幂等：同 strategy 再派 → deduped
   const d2 = await bus.dispatch('task', 'campaign_dispatch', {

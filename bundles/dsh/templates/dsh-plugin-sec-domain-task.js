@@ -1888,6 +1888,9 @@ function makeHandlers(opts) {
         budget_tokens: 150000,
         ...(args.campaign_id != null ? { campaign_id: args.campaign_id } : {}),
         ...(args.campaign_role ? { campaign_role: args.campaign_role } : {}),
+        // 22 号方案：Campaign 子任务以 once 调度入队，才被调度器认领执行（调度器只认领 schedule_kind 非空）。
+        // 21 号「无主派生」草稿仍保持 NULL（queued 待人工/编排 run_now）；INV-C7 只禁 interval。
+        ...(args.campaign_id != null ? { schedule: { kind: 'once', at: Date.now() + 3000 } } : {}),
       }, { actor: 'reactor', cause: ctx?.cause })
       if (!r || !r.ok) throwErr(r?.error?.code || 'E_INTERNAL', r?.error?.message || '派生任务创建失败', r?.error?.hint || '', false)
       const taskId = r.data.task_id

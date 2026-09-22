@@ -591,3 +591,5 @@ hasHandoff(program, date) → boolean
 ## 七、2026-09-17 学习专项 L5 实施回填（备案）
 
 - 本域未新增/变更命令与事件。`ledger.card_usage.logged` 事件新增一名弱联动订阅者（know 域 `onCardUsageLogged` → `know_adoption_record`，采用事实进 know_adoptions）——本域写入路径/文件 owns/事件 payload 均不变；订阅失败只影响 know 侧投影（可重放补偿），不回压本域主链路。
+
+> 2026-09-22 22 号方案修复（覆盖缺口输入源）：`safeQuery` 此前只读 `r.data`，但列表类查询经总线在**信封顶层**返回 `rows/total`（非 data 包装），导致 `coverage_metrics`/`coverage_gaps`/`login_blindspot` 对 asset/endpoint 数据**全盲**（缺口恒空 → Campaign L2 Planner 无输入）。已归一两种形态（`Array.isArray(r.rows) ? r : r.data`），并补 reactor 只读 actor 白名单（asset_list/endpoint_list/cred_query）。回归：ledger 契约新增「跨域列表查询顶层 rows 被正确消费」例。

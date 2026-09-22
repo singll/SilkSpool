@@ -354,12 +354,14 @@ function makeHandlers(opts) {
   // ---- 21 号方案 §四：覆盖账本派生辅助 ----
   const SEVEN_CLASSES = ['idor', 'sqli', 'xss', 'ssrf', 'file', 'info_disclosure', 'authz']
 
-  // 跨域只读安全调用：查询不可达/未注册降级 null（绝不抛进查询面）
+  // 跨域只读安全调用：查询不可达/未注册降级 null（绝不抛进查询面）。
+  // 注意：列表类查询经总线在信封顶层返回 rows/total（非 data 包装），标量类查询才在 data；
+  // 两种形态都要归一（此前只读 r.data，导致 coverage_metrics/gaps 对 asset/endpoint 数据全盲）。
   async function safeQuery(domain, name, qargs) {
     if (!queryRef) return null
     try {
       const r = await queryRef(domain, name, qargs, { actor: 'reactor' })
-      if (r && r.ok && r.data) return r.data
+      if (r && r.ok) return Array.isArray(r.rows) ? r : (r.data || null)
       return null
     } catch { return null }
   }

@@ -188,7 +188,7 @@ export const ASSET_MANIFEST = {
   },
   queries: {
     asset_list: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'reactor'],
       params: schema({
         host_like: str({ default: '' }),
         type: str({ default: '' }),

@@ -605,3 +605,5 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 | 文档漂移 | 已修正 `endpoint.queue.enqueued` / `endpoint.queue.consumed` 事件名。 |
 | hook 判定 | parser proposal 经事件由本域 `endpoint_upsert` 落库，不直写，合格。 |
 | 独立升级 | 支持单域替换；须回归 endpoint、exec parser、vuln 越权提示与 ledger 联动。 |
+
+> 2026-09-22 22 号方案回填：`endpoint_list` actor 白名单补 `reactor`——ledger 域覆盖账本/缺口队列经 reactor 跨域只读端点面（登录态/参数/漏洞类缺口判定）。只读，不扩写权。

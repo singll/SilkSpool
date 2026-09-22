@@ -17,6 +17,12 @@
 
 ## 二、最近进度结果
 
+### 2026-09-22 · Campaign 运营迁移（美团/字节 SRC）+ 两处运行期缺陷修复
+- **运营动作**：将 `meituan-src`/`bytedance` 的挖掘主线 interval 任务迁移到 Campaign——暂停（blocked，可恢复）vuln/vuln-deep 共 4 个（#19/#37/#100007/#100008），保留 recon #16/#17 与周复盘 #24；两个专项经 `campaign-autonomy` 审批（#25/#26、修正 cap 后 #27/#28）升 **L2 有界自动**（`derive_cap_per_tick=3` 以匹配 500k 预算），已自动派生并执行子任务。
+- **运行期缺陷修复 1（ledger `safeQuery`）**：列表类跨域查询经总线在信封顶层返回 `rows`，`safeQuery` 只读 `r.data` → `coverage_metrics`/`coverage_gaps`/`login_blindspot` 对 asset/endpoint 数据全盲、缺口恒空（Campaign L2 Planner 无输入）。归一两种形态 + 补 `asset_list`/`endpoint_list`/`cred_query` 的 reactor 只读 actor；回归新增 1 例。
+- **运行期缺陷修复 2（Campaign 子任务可执行性）**：调度器只认领 `schedule_kind IS NOT NULL` 的任务，`task_derive_intent` 对 campaign 子任务改以 `once` 入队，否则 L2 派生任务永不执行；21 号无主草稿仍保持 NULL。
+- 本地全量契约 **558/558**；csai 部署重启后 accept 面照常；详见 [05-task §7.8](05-task.md)、[11-ledger](11-ledger.md)、[03/04/08](03-asset.md)。
+
 ### 2026-09-22 · 专项 tab 移除（并入任务视图）+ 部署链路修复
 - **部署缺失修复**：方案 A（7cafbf6）改动漏了红线流程的 `rsync bundles/dsh/ → /opt/SilkSpool/bundles/dsh/` 一步——`spool bundle` 读运行时副本，导致当天部署装的仍是 9-19 旧模板。已补 rsync + setup + 重启验收。
 - **安全中心「专项」tab 移除**（用户决策：专项是任务的一种，不独占 tab）：删除 `dsh-plugin-sec-dashboard.view-campaign.client.js`/test.mjs，manifest / `sec-dashboard-plugin-setup.sh`（VIEW_DOMAINS 7 域）/ `sec-v5-accept.sh`（UI_PKG_IDS 13 面）/ `dsh-ui-surface-smoke.mjs` 同步清理；线上 `plugin --profile web remove @silksec/sec-dashboard-view-campaign` + 孤儿目录清理。campaign 相关 4 个 dashboard-rpc **保留**（ui-task 右侧栏专项区块复用）。
