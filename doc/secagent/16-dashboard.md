@@ -148,6 +148,7 @@ var d2 = slots.inject('sidebar.panellist', function () {
 - **视图组件与挂载解耦**：`DashboardPanel` 内部消费 `viewRegistry`；每个域视图是无挂载感知的纯组件。同一组件可挂主面板也可挂右侧栏 tab——这是降级链的基础（§2.5）。
 - 壳保留：页头/KPI 顶条、30s 轮询引擎（`useRpc`/`usePagedQuery`）、共享组件。**壳零自有写命令**。
 - 主题：主面板 chrome 由宿主渲染（自动跟随 silksong）；页内页头规范见 §四。
+- **授权时效告警（2026-09-19 新增）**：`stats.scope.expiring > 0` 时页头下方渲染黄色警示行「⚠ N 个授权项目将于 30 天内到期，请安排复核」（数据源=scope 域 `scope_expiring`，见 08-scope §1.4.5；过期项目已 fail-closed，须复核后续期）。
 - **降级**：`sidebar.panellist` 缺席 → 侧边栏行内 `selectPanel` 兜底；`layout`/`main` 槽缺席 → 不渲染主面板（旧 Modal 形态已随旧单体删除，2026-09-19，**无 Modal 回退**）。
 
 **审批套件（`@silksec/ui-approval`，最高价值项）**：
@@ -164,7 +165,7 @@ var d2 = slots.inject('sidebar.panellist', function () {
 - 写操作：`task.run_now/cancel/block/resume/schedule` RPC；行内操作图标 + title 纪律不变。
 - 栏宽自适应：表格在 <480px 切换为卡片行。
 
-**授权 → 设置页（`@silksec/ui-settings-scope`）**：`settings.section` 注册「授权范围」整节：program 列表（工作区徽章）、scope.yml 条目管理、排除清单、凭据引用状态。写操作走 `scope.*` RPC。设置页骨架/滚动/键盘可达性全部宿主原生。
+**授权 → 设置页（`@silksec/ui-settings-scope`）**：`settings.section` 注册「授权范围」整节：program 列表（工作区徽章 + **授权时效徽章**——已过期红标「已过期」/ 临期 ≤30 天黄标「剩 N 天」/ 远期灰标「至 YYYY-MM-DD」，title 携带复核时间与续期指引，08-scope §1.4）、scope.yml 条目管理、排除清单、凭据引用状态。写操作走 `scope.*` RPC。设置页骨架/滚动/键盘可达性全部宿主原生。
 
 **会话内绑定（`@silksec/ui-session`，三处全部 additive）**：
 

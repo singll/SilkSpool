@@ -460,3 +460,15 @@ B1 view-asset.client.js:40｜B2 panel.client.js:138-148 + view-vuln.client.js:23
 - 6 组重复发现的**自动合并**：需人工判 `dup_of`（工具无法可靠判定哪个是主记录），`data-hygiene.py` 只报告不合并。
 - 沙箱凭据读取的**彻底消除**：工具（如 fofa_search）合法需要 `~/.config/fofa.conf`，只能做到「遮蔽非必要凭据 + 只读投影」；根治需把凭据改为环境变量注入（设计变更）。
 - L 类卫生项（死代码/命名）属持续清理，不阻塞。
+
+### 11.8 归档前补回填（2026-09-22）
+
+归档审查发现第四轮修复有三处**代码已上线但文档漏回填**（README「结论待回填后归档」卡点的实际残余），本次补齐：
+
+| 项 | 回填位置 | 内容 |
+|---|---|---|
+| 授权时效 | `08-scope.md`（v5.1） | `scope_grant`/`scope_rules_apply` 补 `expires_at`/`reviewed_at` 参数（含幂等指纹）；§1.4.1 算法步 4 过期 fail-closed；新 §1.4.5 `scope_expiring` 查询；§2.1.1 yml 字段；不变量 I9 |
+| 提交补建 | `05-task.md`（C18） | `task_submission_backlog` 命令总表行 + 逐个详述（存量幂等补建、queued 不自动起 worker 纪律） |
+| 看板投影 | `16-dashboard.md`（§1.4） | 主面板 30 天临期警示行 + 设置页授权时效徽章（红/黄/灰三态） |
+
+其余 §九建议项均已在此前四轮修复中回填对应模块文档（本次逐项 grep 复核通过）。**至此本报告全部结论闭环，移入 archive/。**

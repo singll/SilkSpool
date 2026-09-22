@@ -11,7 +11,7 @@
 | 了解架构与模块职责 | [00-conventions.md](00-conventions.md)（全局契约宪法）→ 对应模块 `00–18` |
 | 查术语 | [领域语言](../../bundles/dsh/CONTEXT.md) |
 | 追溯历史（历次进度/更新日志/已完成节点、旧架构、历次升级方案与完整记录、会话模板） | [archive/](archive/) · [archive/progress-history.md](archive/progress-history.md) · [archive/upgrades/](archive/upgrades/) |
-| 看最近一次全面检查（在办专项） | [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/漏洞产出/执行历史/UI；结论待回填后归档） |
+| 看最近一次全面检查（已闭环归档） | [archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/漏洞产出/执行历史/UI；四轮修复全部落地，结论已回填 00/02/05/08/09/10/11/15/16/17） |
 | 看上级猎面编排对标（已实施归档） | [archive/21-benchmark-strikeagent-flash-2026-09-21.md](archive/21-benchmark-strikeagent-flash-2026-09-21.md)（SRC 发现体系重构：覆盖账本/登录态判定/假设引擎/机器验证 oracle/Feedback Core；Phase 0–4 已实施验收，结论已回填 02/04/05/07/10/11/15/16） |
 
 ## 文档结构（唯一形态）
@@ -23,6 +23,7 @@ doc/secagent/
   README.md                             本页（入口 · 结构 · 治理规则）
   archive/                              历史（只读）：
     19-ui-unify.md                      看板 UI 全局统一重构（已实施验收，结论已回填 16/主题）
+    20-full-inspection-2026-09-19.md    全面检查报告（四轮修复全部落地验收，结论已回填各模块）
     21-benchmark-strikeagent-flash-2026-09-21.md  SRC 漏洞发现体系重构（Phase 0–4 已实施验收，结论已回填各模块）
     progress-history.md                 历次进度/更新日志/已完成节点/批次守则
     upgrades/                           历次升级方案/记录/自学习专项/交接

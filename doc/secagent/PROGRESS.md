@@ -9,13 +9,18 @@
 - **迁移计划真相源**：[18-migration](18-migration.md)（Phase 0–5）。
 - **Phase 状态**：**Phase 0–5 全部完成并关账**；当前无进行中的迁移/整改批次。
 - **运行基线**：DSH **0.1.5-rc.2**（U3 于 2026-09-15 生产切换、U4 于 2026-09-18 关账）；csai `silksecagent` active、NRestarts=0、14 域 registered、`aliases=0`；`sec-v5-accept.sh` **PASS=41 FAIL=0**（2026-09-19 全面检查修复后重跑）。
-- **最近一次全面检查**：[20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI）；第一批安全红线与 UI 高优先项已修复并部署（见其 §十一）。
+- **最近一次全面检查**：[archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI；**四轮修复全部落地验收，结论已全部回填各模块，2026-09-22 归档**，见其 §十一）。
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）。
 - **已知遗留（非阻塞，待后续会话）**：sec-suite/asset-db/experience 内部少量 v4 读取函数（experience 仍被 dashboard-rpc/task 链路引用）；`18-migration` 的 DoD 仍须逐条核对。
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
 - **领域语言**：[CONTEXT](../../bundles/dsh/CONTEXT.md)。
 
 ## 二、最近进度结果
+
+### 2026-09-22 · 20 号全面检查报告归档（补回填收尾）
+- 归档审查发现第四轮修复三处**代码已上线但文档漏回填**，本次补齐：08-scope v5.1（授权时效 `expires_at`/`reviewed_at` 全套——`scope_grant`/`scope_rules_apply` 参数、§1.4.1 算法步 4 过期 fail-closed、新查询 §1.4.5 `scope_expiring`、yml 字段、不变量 I9）；05-task C18 `task_submission_backlog`（命令总表 + 详述）；16-dashboard §1.4（主面板 30 天临期警示行 + 设置页授权时效徽章三态）。
+- 21 号方案回填完整性逐项 grep 复核通过（`task_derive_intent`→05、`know_distill_verdict`→07、`vuln_capsule_replay`/`vuln_evidence_flags`→02、`eval_discovery_metrics`→15、`exec_flow_triage`/`exec_vision_triage`→10、覆盖账本/登录态判定→11/04，均与代码动词/actor/错误码一致）。
+- 20 号报告补 §11.8 归档记录后移入 [archive/](archive/)；README 索引与本文引用同步改指 archive。纯文档改动，无线上操作。
 
 ### 2026-09-22 · 21 号方案 Phase 1/3/4 全量落地（契约本地全绿 + csai 已部署验收 PASS=72）
 - **Phase 1（假设引擎 + 第二发现面）**：规则层补 `routeFlowsSignal`（flows 信号确定性打分）/`visionTriageRubric`/`decontextualize`/`distillEpisode`；exec 域 `exec_flow_triage` 查询 + `exec_vision_triage` 命令（判读特征→隐藏功能点线索→H1 草稿）；`exec_grep_result/page_result` 附不可信围栏纪律 + 注入特征标注（§1-5）；eval 契约种子 +2 注入用例；新规则种子 `techniques/miniapp-capture-sop.md`（§1-4，79→80）。
@@ -49,7 +54,7 @@
 - 验收：本地 UI 单测 114/114；csai 部署后 `sec-v5-accept.sh` PASS=41 FAIL=0。
 
 ### 2026-09-19 · 第四轮修复：M1 幂等竞态 + 授权时效 + 批量提交 + external_id + 文档收尾（csai 已部署验收）
-- 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) §十一.6 执行剩余全部建议项。
+- 依据 [archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md) §十一.6 执行剩余全部建议项。
 - M1：事务内幂等复检，并发同 key 返回 replay 而非 E_CONFLICT。
 - 授权时效：scope.yml 增 `expires_at`/`reviewed_at`；过期 fail-closed（scope_check/exec/asset 三处一致）；`scope_expiring` 查询 + 看板过期/临期告警 + 设置页徽章。
 - 批量提交：`task_submission_backlog` 为历史 confirmed 未提交幂等补建提交任务（线上补建 42 条，queued 不自动起 worker，待人工 task_run_now）。
@@ -59,7 +64,7 @@
 - 全部检查建议项已闭环；仅余需人工判定（重复发现合并）或设计变更（凭据环境变量化）的项，见报告 §11.7。
 
 ### 2026-09-19 · 第三轮修复：代码中危 + 供应链 + 数据卫生 + a11y（csai 已部署验收）
-- 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) §十一.5 执行第三轮修复。
+- 依据 [archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md) §十一.5 执行第三轮修复。
 - 安全：沙箱不再整目录挂载 `$HOME`（M6，原暴露 `.ssh`/`fofa.conf`/浏览器登录态）；tools-manager 下载 sha256 校验（M8）。
 - 代码：证据发布稳定窗整批化（M5）；approval 增 `effect_state` 独立列消除 `approved_effect_failed` 死逻辑（M9）。
 - UI：审批/任务首帧骨架屏（B10）、面板降级提示（B11）、大队列单套 DOM（B12）、审计展开态稳定键（B13）、全表 a11y（aria-sort/role/aria-expanded/aria-pressed/aria-selected/aria-label）。
@@ -69,7 +74,7 @@
 - 未处理：存量 43 条 confirmed 批量提交任务、`data-hygiene --apply` 线上执行、授权时效字段、`external_id` 跨源去重、17/15/ui-surface-deps 回填、M1（幂等预检入事务）与 L 类卫生项。
 
 ### 2026-09-19 · 产出闭环 + 数据治理 + 任务回收 + DLQ 加固（csai 已部署验收）
-- 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) §十一.4 建议执行第二轮修复。
+- 依据 [archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md) §十一.4 建议执行第二轮修复。
 - 产出闭环：`vuln_submit` 增 `remote_id`；新查询 `vuln_submission_queue`（confirmed 未提交，带 age_days/overdue）；`vuln_stats.signal.confirmed_unsubmitted`；看板 KPI 增「待提交 SRC」六卡；task 域订阅 `vuln.signal.confirmed` 幂等入队 `[提交] finding #id` 任务（phase=review）。
 - 数据治理：新命令 `vuln_expire_candidates` + 每 6h 候选 TTL 治理（`noise=1 & status=new` 超 14d → ignored，`SEC_CANDIDATE_TTL_DAYS` 可调）；`vuln_dedup_check` 强制 host/vuln_type 至少其一；retention.sh 增 WAL checkpoint(TRUNCATE) + 0 字节残留库清理。
 - 任务/事件：`task_reap` 回收范围扩至一次性任务（原只回收定时任务，僵尸 running 永久滞留）；`exec.run.completed` 订阅者按重试性逐条判定，确定性失败登记后丢弃，不再让整事件重试进 DLQ。
@@ -78,7 +83,7 @@
 - 未处理（需策略决策）：存量 43 条 confirmed 批量提交、外键历史回填、授权时效字段、tools integrity、UI B8/B10–B13 与 a11y、17-llm-surface/15-eval/ui-surface-deps 回填。
 
 ### 2026-09-19 · 全面检查后修复：scope-guard 三处 fail-open + asset owner 列 + UI 健壮性（csai 已部署验收）
-- 依据 [20-full-inspection-2026-09-19.md](20-full-inspection-2026-09-19.md) 执行第一批安全红线与 UI 高优先项修复，全部经契约/UI 测试与线上验收。
+- 依据 [archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md) 执行第一批安全红线与 UI 高优先项修复，全部经契约/UI 测试与线上验收。
 - 安全：exec 风险闸改逐目标判定（H1，跨项目不再放行）；exec `checkTarget` 改全项目先 exclude 再 scope（H2，与 scope 域同源）；asset scope 自查 program 缺失改 fail-closed `E_INVARIANT`（H3）；补 `resolve6`（M2）、`_file`/Burp 文件边界（M3）、grep 正则 ReDoS 限流（M4）；`vuln_dedup_check` 强制 host/vuln_type 至少其一（M10）。
 - 功能：assets 补 `owner` 列（H4，线上已建列）；info 噪声回填改一次性迁移（M7）。
 - UI：asset 视图 ui-core 缺席不再崩 bundle（B1）；同视图 KPI 跳链生效（B2）；报告/知识渲染防御（B3/B4）；报告阅读器竞态守卫（B5）；消除直接组件调用（B7）；补 `.silksec-btn-danger`（B9）。

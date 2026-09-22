@@ -48,6 +48,7 @@
 | C15 | `task_worker_reap` | worker 注册表启动/周期对账（meta 回读 → pid 判活 → 孤儿执法） | scheduler | none | — | ❌ |
 | C16 | `task_submit_complete` | **自执行任务完成声明**（不改状态，提请 task-complete 审批） | model | auto（task_id+summary+evidence+follow_up） | — | ✅ |
 | C17 | `task_complete` | **审批落成收尾**（approval 域 `approval_effects` effect outbox 执行（kind=task-complete），自执行任务唯一 done 入口） | approval | 自然键（task_id） | task.finished | ❌ |
+| C18 | `task_submission_backlog` | 产出闭环补建：扫描 `vuln.submission_queue`（confirmed 未提交）幂等补建 `[提交] finding #id` 任务（历史存量一次性；2026-09-19 新增） | dashboard, system, human | none（handler 内按 objective 标记去重） | — | ❌ |
 
 > \* actor 为 `reactor`（宪法 §三 域事件订阅反应器）：C13/C14 由总线从 `exec.worker.*` 订阅回调注入 actor=reactor，审计 cause 链指向源事件及其原始 actor；approval 事件的订阅执行保留专用 `approval` actor（语义更具体的先例身份）。
 
@@ -436,6 +437,14 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 **驳回路径**：审批被驳回（`approval_effects` 不触发）→ 任务保持非终态（queued/running），note 追加驳回理由——用户可在看板 task_block / task_cancel 收尾，或让模型补证后重新 C16。
 
 三者段式对状态机的影响：done 的写入口仍然唯一收敛（worker 型=task_finish[scheduler]；自执行型=task_complete[approval]——都是"调度/人工裁决"，模型在两种形态下都没有直接落 done 的接口）。
+
+#### C18 `task_submission_backlog`（产出闭环补建，2026-09-19 新增）
+
+**背景**：全面检查（archive/20 §八 第二批-5）发现 43 条 confirmed findings 零提交——`vuln.signal.confirmed` 自动入队只覆盖**新确认**，历史存量需要一次性补建通道。
+
+**语义**：经查询网关调 vuln 域 `vuln_submission_queue`（limit ≤200，可按 `program_id` 过滤），逐条检查是否已存在活跃 `[提交] finding #{id}` 任务（`task_list` 按 objective 标记子串判定），无则以 actor=reactor dispatch `task_create`（phase=review, goal=research, priority=2, schedule=once@now+5min），objective 内嵌"report_draft_submission 出草稿 → 人工审校 → 平台提交 → vuln_submit 回写"闭环指引。返回 `{ created, skipped }`。
+
+**纪律**：queued 任务**无调度不起 worker**——避免一次性拉起数十个 LLM 会话；由人工 `task_run_now` 逐条驱动。日常新确认走 `vuln.signal.confirmed` 订阅自动入队（§头部依赖），本命令仅兜底存量与订阅漏报。
 
 ### 1.4 查询逐个详述
 

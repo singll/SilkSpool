@@ -1,6 +1,6 @@
 # 08 · scope 域设计（授权白名单 / 项目镜像 / 排除 / 凭据引用 / 规则）
 
-> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：1
+> 版本：v5.1 ｜ 状态：随实现更新（2026-09-19 复核；授权时效 `expires_at`/`reviewed_at` + 过期 fail-closed + `scope_expiring` 巡检查询）｜ 契约版本：1
 > 依赖：**不订阅任何事件**——授权/规则变更由 [approval 域](09-approval.md) `approval_decide` 经 effect 同步 dispatch 本域命令（actor=approval，见 09 §2.3）；被订阅：`scope.granted`（task 域种子任务链）。`scope.rules.changed` 当前**零订阅者**（exec 域每次执行实时读 scope.yml，不缓存不订阅，见 10-exec §2.2.3）；ledger 域 radar 追加由 `approval.approved` 触发（非 `scope.granted`，见 11-ledger §1.5.2）。
 > 最高约定：[00-conventions.md](00-conventions.md)；本文与它冲突时以它为准。
 
@@ -71,6 +71,7 @@
 | `finding_db` | string | 否 | `''` | 路径形态 `^[^\\s]+$`；仅新建项目时生效（见开放问题 O-2） |
 | `max_risk` | string | 否 | `'active'` | enum `passive/active/intrusive`；仅新建项目时生效 |
 | `fixed_egress_ip` | boolean | 否 | `false` | 仅新建项目时生效 |
+| `expires_at` | string | 否 | — | 授权到期（`YYYY-MM-DD` 或 epoch ms）；空串=清除。**新建与存量项目均生效**（批准扩 scope 时可同时设定/续期，见 §1.4 授权时效） |
 
 **通配双条目语义**：`entries` 中的 `*.x.com` 条目由域**自动配对**补入裸域 `x.com`（对齐 v4.x qiandai/mobike/keeta 现存双条目形态——裸域本身是 `*.后缀` 匹配的包含项，但显式双条目防止未来匹配语义变更时裸域失覆盖）。配对是单向的：传 `*.x.com` 自动补 `x.com`；只传 `x.com` 不自动加通配（单域授权走 approval `scope-domain`，整域走 `scope-wildcard`，口径在 09 §1.3.1）。`data.granted` 返回**实际新增**的条目（含自动配对项，排除已存在项）。
 
@@ -184,6 +185,8 @@
 | `fixed_egress_ip` | boolean | 否 | — | 仅 program 级 |
 | `allow_intrusive_tools_add` | string[] | 否 | `[]` | 工具名，每条 `^[a-z0-9][a-z0-9_-]{0,63}$`；仅 program 级 |
 | `allow_intrusive_tools_remove` | string[] | 否 | `[]` | 同上；与 add 交集 → `E_SCOPE_RULES_INVALID` |
+| `expires_at` | string | 否 | — | 授权到期（`YYYY-MM-DD` 或 epoch ms）；空串=清除（续期/清除唯一入口之一，另一为 `scope_grant`）；仅 program 级 |
+| `reviewed_at` | string | 否 | — | 最近人工复核时间（同格式；授权时效治理留痕）；仅 program 级 |
 
 **补丁原子性**：全部字段同一次 yml 原子写生效；patch 至少含一个字段（空补丁 → `E_SCHEMA`）。
 
@@ -203,7 +206,7 @@
 
 **错误码**：`E_SCHEMA` / `E_NOT_FOUND` / `E_SCOPE_RULES_INVALID`（hint：message 指明字段与合法域；QPS 取值 1..1000；`allow_intrusive_tools_add/remove` 不得交集）。
 
-**幂等**：自动指纹（manifest `idempotent_fields` = target/program_name/rate_limit_qps/allow_risk/max_risk/fixed_egress_ip/allow_intrusive_tools_add/remove）。数据级幂等：补丁目标值已是现状 → `data` 中 before==after，正常成功（不报错）。
+**幂等**：自动指纹（manifest `idempotent_fields` = target/program_name/rate_limit_qps/allow_risk/max_risk/fixed_egress_ip/allow_intrusive_tools_add/remove/expires_at/reviewed_at）。数据级幂等：补丁目标值已是现状 → `data` 中 before==after，正常成功（不报错）。
 
 **actor**：approval（`tool-intrusive` 批准链）/ dashboard / human / system。model 不可用。
 
@@ -297,8 +300,10 @@
 1. **hostOf 归一化**：`trim` → 去 scheme（`^[a-z][a-z0-9+.-]*:\/\/` 前缀）→ 去路径/查询/锚（`split('/')[0].split('?')[0].split('#')[0]`）→ IPv6 字面量取 `[...]` 括号内 → 去尾部端口（`/:\d+$/` 才剥，防误伤 IPv6 冒号）→ **小写**。
 2. 归一化结果为空 → `{ allow: false, reason: '无法解析目标' }`。
 3. **exclude 先查**：遍历 programs（yml 声明序），任一项目的 exclude 条目命中 → `{ allow: false, reason: '目标在项目 X 的排除清单中', program: X, excluded_by: <entry> }`。
-4. **scope 匹配**：遍历 programs（yml 声明序），任一项目的 scope 条目命中 → `{ allow: true, program: X, matched_entry, matched_kind, program_cfg }`。
-5. **fail-closed**：全不命中 → `{ allow: false, reason: '目标不在任何授权项目范围内（scope.yml fail-closed）' }`。
+4. **scope 匹配**：遍历 programs（yml 声明序），任一项目的 scope 条目命中 → 先判**授权时效**（§1.4 授权时效）：该项目 `expires_at` 已过期 ⇒ 本次命中**不生效**，记 `expiredMatch` 后继续遍历其余项目；未过期 ⇒ `{ allow: true, program: X, matched_entry, matched_kind, program_cfg }`。
+5. **fail-closed**：全不命中 → `{ allow: false, reason: '目标不在任何授权项目范围内（scope.yml fail-closed）' }`；仅有过期命中 → `{ allow: false, expired: true, program: X, reason: '项目 X 授权已于 <expires_at> 过期（fail-closed）' }`（过期优先于"不在范围内"报出，给出可行动的拒绝原因）。
+
+**授权时效（2026-09-19 落地）**：`programs[].expires_at` 支持 ISO 日期（`YYYY-MM-DD`，按当天 23:59:59 UTC 到期）或 epoch 毫秒；缺失 = 长期有效（向后兼容）。过期项目**视同未授权**（fail-closed），三处判定共用同一算法实现：本查询 / exec 域守卫链（10-exec §2.2）/ asset 域 scope 自查（03-asset）。续期只能经 `scope_rules_apply`（或 `scope_grant`）显式重设 `expires_at` 并登记 `reviewed_at`——不存在"自动延期"路径。
 
 **条目匹配规则**（`entryMatches`，大小写不敏感）：
 
@@ -335,6 +340,16 @@
 **参数**：`program_id: string = ''`（精确）、`host: string = ''`（精确）、`limit=50（上限500）`。
 
 **返回**：credentials 行 `{ id, program_id, host, cred_type, ref, role, note, created_at }` 按 created_at desc。**只返回引用，永不返回明文**（明文不存在于本域任何存储）。
+
+#### 1.4.5 `scope_expiring`（授权时效巡检，2026-09-19 新增）
+
+**参数**：`within_days: integer = 30`（1..365）。
+
+**返回**：`{ rows: [{ name, expires_at, reviewed_at, expired, days_left }], total, meta: { within_days, expired } }`——列出 `expires_at` 在 `within_days` 内到期**或已过期**的项目（`days_left` 升序；无 `expires_at` 的长期项目不入列）。`scope_list` 的每个 program 行同样携带 `expires_at`/`reviewed_at`/`expired`/`days_left` 四列。
+
+**用途**：看板主面板「N 个授权项目将于 30 天内到期」黄色警示行与设置页授权徽章（过期红标 / 临期黄标，16-dashboard §1.4）的数据源；模型自查授权有效期。过期项目须人工复核后经 `scope_rules_apply` 续期。
+
+**actor**：model / dashboard / human / system / approval。
 
 ### 1.5 事件
 
@@ -474,6 +489,8 @@ YAML 结构（格式与 v4.x 完全一致，**不迁移不改写**，仅由域�
 | `programs[].rules.workspace` | string? | 绑定的工作区标题或路径（声明式绑定，pairWorkspaces 解析） |
 | `programs[].rules.allow_intrusive_tools[]` | string[]? | 侵入工具白名单（tool-intrusive 批准落点） |
 | `programs[].finding_db` | string? | 历史 finding 指纹库路径 |
+| `programs[].expires_at` | string? | 授权到期（`YYYY-MM-DD` 或 epoch ms；缺失=长期有效，向后兼容）；过期后该 program 授权 fail-closed 不生效（§1.4.1 算法步 4） |
+| `programs[].reviewed_at` | string? | 最近人工复核时间（授权时效治理留痕；随续期一并更新） |
 | `runtime.credentials_ref` | string | 恒为 `env`（凭据明文走 .env 引用；保留 v4.x 尾注） |
 
 瞬态文件：`scope.yml.tmp`（原子写中转，写后即 rename）、`scope.yml.bak`（每次域写前备份，保留一代）。
@@ -539,6 +556,7 @@ YAML 结构（格式与 v4.x 完全一致，**不迁移不改写**，仅由域�
 | I6 | **scope.yml 三个写入方收敛为一个**：本域命令是唯一"经校验"写入口；外部物理写入（spool sync push / 人工 vim）被 §2.5 接管流程检测并代校验（actor=human 留痕）——不存在第三个未经检测的写入路径 | （结构保证 + 接管流程告警） |
 | I7 | program_archive 前提：项目不在 yml（防"yml 活着、镜像死了"分裂态） | `E_INVARIANT` |
 | I8 | rules 补丁约束：qps ∈ 1..1000；allow_risk ⊆ {passive,active}；add/remove 无交集；defaults 与 program 级字段不串用 | `E_SCOPE_RULES_INVALID` |
+| I9 | **授权时效 fail-closed**：项目 `expires_at` 已过期 ⇒ scope 匹配视为未命中（`allow:false, expired:true`），三处判定同源（本域 `checkTargetScope` 唯一实现：§1.4.1 / exec 守卫链 / asset 自查）；续期只经 `scope_rules_apply` / `scope_grant` 显式重设，无自动延期路径 | （fail-closed 拒绝，非错误码） |
 
 ### 2.3 事务与联动实现
 
