@@ -881,3 +881,36 @@ reapWorkers(readMeta, pidAliveFn, nowTs) → {reaped}   // C15 对账原语
 | 性能 | task_runs 每任务 LRU 200 行；workers 终态行尚无 30 天清理，长期会膨胀。 |
 | 文档漂移 | 已补 `task_drift` 查询。 |
 | 独立升级 | 包边界可单域更新，但调度切换需 v4/v5 锁互斥演练；不能在生产直接删除 v4 scheduler。 |
+
+## 六、2026-09-22 21 号方案 Phase 3 回填（Intent 派生器 + 预算闸）
+
+### 6.1 新命令 `task_derive_intent`（内部通道，模型不可见）
+
+| 项 | 值 |
+|---|---|
+| actor | reactor, scheduler, system, human |
+| 幂等 | **none**——幂等由 handler 内 `strategy_dedupe` 表自治（bus 层 natural 幂等回放会吞 deduped 语义并绕过黑名单） |
+| 事件 | `task.intent.derived` |
+| 不变量 | `intentSituation`（§6.2 局面编译） |
+
+**语义**：Intent 确定性派生器落任务草稿。kind=hypothesis（H1 指纹保底/H2 污点路由/H3 语义假设）/ crawl / param_enrich。H3 必须引用 ≥1 张经验卡、声明 vuln_class、host 一致、无注入特征，否则 `E_TASK_H3_REJECTED`（违规丢弃）。产出任务一律 `queued` 绝不自动执行，过预算闸。
+
+**去重与黑名单（`strategy_dedupe` 表，本域 owns）**：`strategy_key=host|path|param|vuln_class` 幂等去重（已测组合不重发，返回 `deduped:true`）；`vuln.signal.rejected` 订阅回写连败 `fails+1`，≥3 自动 `blacklisted` → 后续派生 `E_TASK_STRATEGY_BLACKLISTED`。
+
+### 6.2 局面硬约束编译（21 号方案 §3-2）
+
+`intentSituation` 不变量调用规则层纯函数 `compileSituation`：scope 内 host 校验（越界 `E_INVARIANT`）、连败黑名单、授权时效。违规一律丢弃落审计，不进入任务队列。
+
+### 6.3 任务预算闸（21 号方案 §3-4）
+
+`task_create`/`task_derive_intent` 链上的 per-program 周期预算闸：窗口 `SEC_TASK_BUDGET_PERIOD_DAYS`（默认 7 天）内任务数 >`SEC_TASK_BUDGET_MAX_TASKS`（默认 500）或 token 和 >`SEC_TASK_BUDGET_MAX_TOKENS`（默认 2M）→ `E_TASK_BUDGET_EXHAUSTED` 停派（model/reactor 同闸）；`dashboard` 人工放行。用量口径=`tasks.spent_tokens` 周期和 + 创建数（依赖 INV-T14 成本归因）。
+
+### 6.4 订阅新增（reactor）
+
+| 事件 | handler | 语义 |
+|---|---|---|
+| `endpoint.registered` | `onEndpointHypothesis` | 新端点入库 → 污点路由派生 H2 草稿（有界：单端点 ≤3 条；endpoint 查询不可达→无路由输入→不派生，防幻觉第一道闸） |
+| `ledger.coverage.marked` | `onCoverageMarked` | 覆盖缺口队列消费：crawl=not_crawled/failed → crawl 草稿；param=no_params → param_enrich 草稿；非缺口态跳过 |
+| `vuln.signal.rejected` | `onStrategyOutcome` | 连败回写 strategy 黑名单 |
+
+契约：task 47/47 全绿（新增 6 例：预算闸/derive_intent 去重与门禁/H3 编译/端点派生/缺口消费）。

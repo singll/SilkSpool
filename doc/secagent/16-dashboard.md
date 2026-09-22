@@ -557,3 +557,20 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 | [18-migration.md](18-migration.md) | Phase 0–5 总线迁移；本文 §5.3 的 UI 拆分是总线之后的呈现层收尾 |
 | [`ui-surface-deps.yaml`](../../bundles/dsh/doc/ui-surface-deps.yaml) | DSH 官方挂点机器可读清单（升级复验）|
 | [`silksong-theme-design.md`](../../bundles/dsh/doc/silksong-theme-design.md) | 主题令牌全表与 v4.2 增补 |
+
+
+---
+
+## 九、2026-09-22 21 号方案看板投影（覆盖/盲区/记分/三指标）
+
+> 本次重构**未新增视图包**——覆盖与反馈投影经既有视图壳消费域查询，避免再造孤岛：
+
+| 投影 | 数据源（只读查询） | 消费面 |
+|---|---|---|
+| 覆盖四指标（爬取/参数/登录/漏洞类覆盖率） | `ledger.coverage_metrics` | 工作台/ledger 视图 |
+| 覆盖缺口队列（下一步测什么） | `ledger.coverage_gaps` | 任务工作区（缺口→派生草稿） |
+| 登录盲区摘要 + cred_add 行动项 | `ledger.login_blindspot` | scope 视图显著位 |
+| 记分投影（命中矩阵/卡片置信度/缺口清单） | `know.health` + `know.scores` 既有投影 | 知识·学习视图 |
+| 发现机器三指标（转化率/高危占比/新类型） | `eval.discovery_metrics` | 安全中心 KPI 区（周更） |
+
+验收证据：`sec-v5-accept.sh --ui-headless` PASS=72 FAIL=0（2026-09-22）。

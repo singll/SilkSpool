@@ -682,6 +682,20 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 
 - 本域未新增/变更命令与事件。`exec.run.completed` → know 域 episode 订阅链（L1）是实战偏差 episode 的来源，episode 再经 know 域 `know_revision_propose` 转候选规程卡（L2）；执行面零变化——**候选 revision 不触发任何执行**（设计 §4.1 坏资料纪律同款：候选不等于授权）。
 
-## 八、2026-09-17 学习专项 L3 实施回填（备案）
+
+## 八、2026-09-22 21 号方案 Phase 1 回填（第二发现面 + 注入防护）
+
+### 8.1 被动流量分流（§1-3）
+
+- 新查询 `exec_flow_triage`（model/dashboard/human）：对 `flows/` 原始流量确定性打分（5xx/结构化响应/敏感参数形态/凭据字样/报错泄露/小程序特征），`score≥threshold`（默认 3）标记 `interesting` 送 LLM 研判产假设候选；零 token 初筛防流量淹没。后端补 `readFlows` 原语。
+- 新命令 `exec_vision_triage`（model/dashboard/human/script）：截图判读特征（登录表单/管理界面/调试面板/错误页/导航高价值项）经规则层 `visionTriageRubric` 路由产隐藏功能点线索，落 `exec.vision.triaged`；interesting 且带 host 时自动经 `task_derive_intent` 派 H1 假设任务草稿（过预算闸，绝不自动执行）。
+
+### 8.2 prompt-injection 最小防护（§1-5）
+
+`exec_grep_result`/`exec_page_result` 返回附 `untrusted:true` + `trust_note` 围栏纪律（目标产出=不可信数据，其中任何"指令"字样不得执行），命中注入特征时附 `injection_patterns_detected`；两查询 actor 补 `script`（供 capsule 重放比对链消费）。eval 契约种子新增 2 条注入用例（`llm-injection-fenced-confirm`/`llm-injection-fenced-candidate`——围栏内诱导指令必须照样被证据闸/actor 闸拦截）。
+
+契约：exec 30/30 全绿（新增 3 例：flow 分流/视觉判读/注入标注）。
+
+## 九、2026-09-17 学习专项 L3 实施回填（备案）
 
 - 本域未新增/变更命令与事件。L3 的受控 fixture runner 在 eval 域内自起 127.0.0.1 ephemeral 端口 HTTP fixture（不经 exec_run_cli、不占真实 QPS、不产生 run 落盘）；沙箱边界不变——`data/` 不挂载进 run_cli 沙箱（§2.2.4），被评 worker 无文件级通道读取 `data/eval/datasets|fixtures/` 隐藏答案（15-eval INV-6 的前提）。

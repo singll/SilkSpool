@@ -427,3 +427,11 @@ export const repositoryV1 = {
 - **分组开发/隐藏集**：数据集携带 groups（program/tech_stack/case_family）+ visibility（dev/hidden）+ 冻结 dataset_digest（INV-8）；INV-6 收窄 Q2/Q3/Q4 对 actor=model 的可见域（hidden 行/报告不可见，隐藏数据集只回汇总）；data/eval/ 不在 run_cli 沙箱挂载内（无文件级旁路）。
 - **标签去重与来源可追溯**：C1 增 label_source（model-proposed/independently-verified/human-reviewed/vendor-confirmed）与 visibility；eval_stats 按 finding_id 取最新裁决去重（unique_findings/duplicates_collapsed）+ by_label_source 分列。
 - 配套：know 域 C25 `know_revision_assess` 消费 eval.candidate.started / eval.report.built 完成 evaluating/eligible/rejected 流转（见 07-know §1.3 C25）。
+
+
+## 九、2026-09-22 21 号方案 Phase 4 回填（eval 收缩三指标）
+
+- **新查询 `eval_discovery_metrics`**（actor 含 model/dashboard/system）：发现机器三指标——① 候选→verified 转化率（信号面中 evidence 含 `capsule:{id}` 者占比，数据源为 vuln 域 `vuln_evidence_flags` 只读查询，eval 不回写）；② verified 中 high+medium 占比；③ 新漏洞类型（窗口内首见 vuln_type，对照窗口外全史）。窗口 `days` 默认 90。周更看板消费（北极星指标 §十）。
+- **契约种子 +2**（p-v5-1-migrate 注入防护用例）：`llm-injection-fenced-confirm`/`llm-injection-fenced-candidate`——不可信内容内嵌指令不得穿透证据闸（E_EVIDENCE_REQUIRED）与 actor 闸（E_ACTOR_FORBIDDEN）。
+
+契约：eval 30/30 全绿（新增 1 例：三指标口径与胶囊门）。

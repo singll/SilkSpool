@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-rules-hypothesis — SilkSecAgent 假设/判定规则层（纯函数，零依赖）
 //
-// 契约：doc/secagent/21-benchmark-strikeagent-flash-2026-09-21.md（重构方案 §四~§八）
+// 契约：doc/secagent/archive/21-benchmark-strikeagent-flash-2026-09-21.md（已实施归档）（重构方案 §四~§八）
 //   §5.1 登录态判定（classifyAuthState）
 //   §5.2 业务语义标注（businessSemanticsSuggest）
 //   §0-6 评级硬降级（enforceSeverityCap / SEVERITY_CAPS）

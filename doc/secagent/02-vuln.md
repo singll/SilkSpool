@@ -892,6 +892,14 @@ export const repositoryV1 = {
 - **候选≠发布**：卡内容不进 `data/vulncards/`，不改 C11 的判定阈值与候选登记行为；worker 现行流程零变化。新约束（如「suspected 须补对象归属证据」）在 L3 评测通过、L4 发布后才会进入卡的使用面。
 - 本域未新增命令/事件；变化面 = C11 的**文档引用**（候选卡作为其规程演化对象）。
 
-## 八、2026-09-17 学习专项 L3 实施回填（备案）
+## 八、2026-09-22 21 号方案 Phase 4 回填（打法固化 + 指标数据源）
+
+- **`vuln_capsule_replay`**（actor=script/dashboard/human/reactor，幂等 none，事件 `vuln.capsule.replayed`）：打法固化三层通道第一层（21 号方案 §4-4）。读 proof capsule 自带重放命令（`replay.tool/params`），经 `exec_run_cli` 守卫链重放（scope/QPS/沙箱全过，无旁路），重放输出经 `exec_grep_result` 与原 capsule 证据关键词（marker/oob_token/hits）比对 → `match/mismatch/inconclusive`（无确定性锚点显式 inconclusive 不猜）。match 且 `harden=true` → 产 worker 脚本草稿 `evidence/hardened-drafts/{capsule_id}.json`（`judge=oracle_rejudge`，判定归代码；**草案不具备执行能力，注册 tools.d manifest 唯一通道=人工审批**）。
+- **`vuln_evidence_flags`** 查询（actor=script/dashboard/system）：eval 三指标的数据源——逐 finding 轻量标志位（noise/severity/vuln_type/created_at/has_capsule），不回传证据全文；oracle-verified 判定口径在此单一事实。后端补 `listFindingsWithEvidence`（不进入列表视图）。
+- `vuln_list` actor 白名单补 `script`（跨域只读消费）。
+
+契约：vuln 61/61 全绿（新增 1 例：重放 match 固化/mismatch 不固化/actor 闸/无 replay.tool 拒）。
+
+## 九、2026-09-17 学习专项 L3 实施回填（备案）
 
 - 本域未新增/变更命令与事件。L3 的候选对照评测（eval 域 `eval_run_candidate`）在受控 fixture 上双跑 baseline（C11 旧三档判定的执行器内置副本 `builtin:authz-legacy-3tier`）与候选卡约束规则；**评测不调用 C11**（避免 suspected 档自动落候选池污染真实信号面），不改 C11 现行判定行为。eligible≠发布——VC-AUTHZ-001 进使用面仍待 L4。

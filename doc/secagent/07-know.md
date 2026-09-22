@@ -1108,3 +1108,27 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **曝光计分修复**：C28 `know_exposure_record` 落账现在同步触发单卡计分重算（L5 遗留缺口——曝光数此前不刷新 know_scores 投影）。
 - **后端增量**：listEpisodesByCard / listAdoptions（分页）/ listFeedbackForArtifact（追溯链取数原语）。
 - **契约测试**：know 70→73 全绿（L6 用例：C32 导入/防循环/幂等/actor 闸、Q22 三层聚合与小样本档、Q23 双入口全链）。
+
+## 十三、2026-09-22 21 号方案 Phase 4 回填（Feedback Core：蒸馏/记分/缺口）
+
+**形态决策**：不新增第 15 个域。反馈与优化作为 know 域内逻辑中心（Feedback Core）——三个订阅 reactor + 统一记分投影，复用 L0–L6 治理与事件总线。域是写入边界的划分；反馈天然消费全域事件、向全域回灌，其数据形态全部落在既有表（命中矩阵→know_scores、经验卡→exp_cards、缺口→know_gaps）。
+
+### 13.1 蒸馏 reactor（§7.3 第一组件）
+
+`vuln.signal.confirmed`（evidence=`capsule:{id}`，即 oracle 机器验证）合流于 `onVulnVerdict`——episode 落账后自动触发 `know_distill_verdict`（reactor 专用，模型不可见）：
+
+- 规则层 `distillEpisode` 去特化：剥离 host/路径值/大 ID 成战术骨架，按 `栈×参数形态×漏洞类` 聚合（artifact_id=`distill-{sha1(聚合键)[:12]}` 幂等收敛）；**不蒸失败局/无 verdict/非 capsule 证据**（B3 幻觉保底——人工确认无 oracle 证据不蒸馏）。
+- 候选初始 `confidence=low`，经 `know_revision_propose`（source_kind=episode，source_ref=episode_id，revisionSourceTrusted fail-closed）进 L2–L4 治理链；提案 actor=`script`（L2 actor 白名单不扩 reactor）。
+- 蒸馏失败不吞 episode 已落账事实：返回 `partial:true` 进总线重试链。
+
+### 13.2 记分 reactor 双裁判（§7.3 第二组件）
+
+- 裁判一（oracle/复核）：`vuln.signal.confirmed/rejected` → episode（既有 onVulnVerdict）。
+- 裁判二（SRC 平台裁决，终极裁判）：`vuln.signal.submitted` 订阅 `onVendorVerdict`——`vendor_status=accepted` → `outcome=confirmed/reason=vendor_accepted` episode（`source_credibility=machine`，非模型自评）；`rejected/duplicate/ignored` 等驳回 → 负例 episode。裁决事件化使置信度校准可审计、可重放。
+- wins/fails 落 `know_scores`（重放重建，`know_scores_rebuild` 既有设施）——`uses≥4 且 wins=0` 的组合在检索排序自然降权。
+
+### 13.3 缺口 reactor（§7.3 第三组件）
+
+`ledger.coverage.marked` 订阅 `onCoverageGap`：缺口态（crawl=not_crawled/failed、param=no_params、vulnclass/auth=untested）→ `know_gap_record`（surface=`coverage:{dim}`）；已测格点不产生缺口。`know_gap_record` actor 白名单补 `reactor`（唯一 actor 变更）。
+
+契约：know 77/77 全绿（新增 4 例：蒸馏全链/合流触发与幻觉保底/平台裁决双态/缺口登记）。

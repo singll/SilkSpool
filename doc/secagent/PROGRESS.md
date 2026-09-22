@@ -17,13 +17,22 @@
 
 ## 二、最近进度结果
 
+### 2026-09-22 · 21 号方案 Phase 1/3/4 全量落地（契约本地全绿 + csai 已部署验收 PASS=72）
+- **Phase 1（假设引擎 + 第二发现面）**：规则层补 `routeFlowsSignal`（flows 信号确定性打分）/`visionTriageRubric`/`decontextualize`/`distillEpisode`；exec 域 `exec_flow_triage` 查询 + `exec_vision_triage` 命令（判读特征→隐藏功能点线索→H1 草稿）；`exec_grep_result/page_result` 附不可信围栏纪律 + 注入特征标注（§1-5）；eval 契约种子 +2 注入用例；新规则种子 `techniques/miniapp-capture-sop.md`（§1-4，79→80）。
+- **Phase 3（推进层）**：task 域 `task_derive_intent`（reactor 内部通道：H1/H2/H3 假设草稿，queued 绝不自动执行，H3 必须引用卡片过局面编译否则 E_TASK_H3_REJECTED）；`strategy_dedupe` 表（strategy_key 幂等去重 + 连败 3 次黑名单）；任务预算闸（§3-4：per-program 周期 token/任务数预算，超限 E_TASK_BUDGET_EXHAUSTED 停派，dashboard 人工放行）；订阅链 endpoint.registered→H2 派生、ledger.coverage.marked 缺口态→crawl/param_enrich 草稿、vuln.signal.rejected→连败回写。
+- **Phase 4（Feedback Core）**：know 域蒸馏 reactor（§4-1：oracle capsule confirmed 合流 onVulnVerdict → `know_distill_verdict` → 去特化经验卡候选进 L2 治理链，artifact_id 聚合幂等，初始 low 置信）；记分双裁判（§4-2：`vuln.signal.submitted` vendor_status 事件化——accepted=终极正例 episode、驳回=负例；wins/fails 经 know_scores 重放）；缺口 reactor（§4-3：覆盖缺口态 → know_gaps）；vuln 域 `vuln_capsule_replay`（§4-4：exec 守卫链重放 + 证据比对 match→harden 产 worker 脚本草稿，注册 manifest 唯一通道=人工审批）+ `vuln_evidence_flags` 查询；eval 域 `eval_discovery_metrics`（§4-5 三指标：候选→verified 转化率 / verified 高危占比 / 新漏洞类型）。
+- **部署修复**：bundle manifest 补 sec-rules-hypothesis 三件套与 miniapp SOP 种子（Phase 0/2 的 setup 推送缺口——首次部署即发现并已修）。
+- 验收：本地契约 rules 27 / task 47 / vuln 61 / know 77 / exec 30 / eval 30 全绿；csai `spool bundle dsh setup` 全量契约门槛通过 + 重启 NRestarts=0 + 14 域注册；`sec-v5-accept.sh --ui-headless` **PASS=72 FAIL=0**。
+- 文档回填：05-task（§六 Intent/预算闸/订阅）、07-know（§十三 Feedback Core）、10-exec（§八 第二发现面/注入防护）、02-vuln（§八 打法固化）、15-eval（§九 三指标）、16-dashboard（§九 覆盖/盲区/记分投影）；方案文档归档 [archive/21-benchmark-strikeagent-flash-2026-09-21.md](archive/21-benchmark-strikeagent-flash-2026-09-21.md)。
+- 未完成的运营动作（非代码）：0-1 端点爆发/0-2 参数补全线上跑批（需选部署窗口执行，尊重 QPS/risk）；登录凭据登记（cred_add 人工动作）。
+
 ### 2026-09-22 · 21 号方案 Phase 0 第一批：规则层 + 登录态判定 + 业务语义 + 覆盖账本 + 硬降级 + 成本归因（本地契约 511/511）
 
 ### 2026-09-22 · 21 号方案 Phase 2：机器验证 oracle + proof capsule + confirm 证据门（契约 517/517）
 - exec 域：`exec_oracle_judge` 查询——oracle 五件套（unauthz_diff/idor_diff/info_disclosure_diff/sqli_diff/sqli_time/xss_echo/ssrf_oob）纯函数路由，输入对照特征输出 verdict，**模型无权宣布 verified**（§2-1）。
 - vuln 域：`vuln_oracle_capsule` 动词——proof capsule（oracle verdict + 请求对 + 判定输入 + 环境指纹 + 重放命令）落盘 evidence/oracle-capsules/{id}.json（原子写，digest 自洽，§2-2）；`vuln_confirm` 增 oracleCapsuleGate 不变量：`capsule:{id}` 证据须 digest 自洽 + verdict=verified + host 与 finding 一致（E_VULN_ORACLE_NOT_VERIFIED / E_VULN_ORACLE_TARGET_MISMATCH）。
 - 契约新增 6 例（capsule 三门 + oracle_judge 路由 + eval 例适配硬降级）；全部 517/517 全绿。
-- 依据 [21-benchmark-strikeagent-flash-2026-09-21.md](21-benchmark-strikeagent-flash-2026-09-21.md) §八 Phase 0（0-3/0-4/0-5/0-6/0-7/0-8）执行；0-1/0-2（端点爆发/参数补全的线上跑批）为运营动作待部署后进行。
+- 依据 [archive/21-benchmark-strikeagent-flash-2026-09-21.md](archive/21-benchmark-strikeagent-flash-2026-09-21.md) §八 Phase 0（0-3/0-4/0-5/0-6/0-7/0-8）执行；0-1/0-2（端点爆发/参数补全的线上跑批）为运营动作待部署后进行。
 - 新规则层 `@silksec/sec-rules-hypothesis`（纯函数，零依赖）：登录态判定 classifyAuthState（§5.1）、业务语义建议 businessSemanticsSuggest（§5.2）、评级硬降级 enforceSeverityCap（§0-6）、污点路由 taintRoute + H1 保底 h1Hypotheses（§6.1）、oracle 五件套（§2-1）、注入防护 fenceUntrusted（§1-5）、局面编译 compileSituation（§3-2）；契约 23 例全绿；sec-rules-hypothesis-setup.sh 接入部署链。
 - endpoint 域：endpoints 表 ensureCol 列演进（auth_state/auth_state_evidence/should_auth/should_auth_source/should_auth_at）；新动词 endpoint_classify_auth（0-3）+ endpoint_annotate_semantics（0-5，人工裁定 > 自动建议、model 显式标注必带 note）；endpoint.registered 订阅自动建议；endpoint_list 增 auth_state/should_auth 过滤；新查询 endpoint_auth_summary（登录态分布/标注率）。
 - ledger 域：覆盖账本 MVP（0-4）——coverage-ledger.jsonl 四维格点记账（crawl/param/vulnclass/auth，ledger_coverage_mark）+ 派生查询 ledger_coverage_metrics（四指标）/ ledger_coverage_gaps（缺口队列，strategy_key 排序）/ ledger_login_blindspot（登录盲区摘要 + cred_add 行动项）；空转升圈（§3-3）ledger_rotation_tick/rotation_status（3 空轮一圈、3 圈允许 stall）；三个 reactor 订阅自动记账（endpoint.registered/auth_classified/vuln.signal.confirmed）。
@@ -31,7 +40,7 @@
 - task 域：0-8 成本归因（INV-T14 落地）——task_finish 收 spent_tokens 回填 tasks.spent_tokens、超 budget_tokens 记 [预算超支] 并入 task.finished payload。
 - 本地测试基线：`sec-contract-test-local.sh`（仓库内契约组装器，等价部署态目录结构）——全部 15 插件契约 511/511 全绿（基线 472 + 新增 39）。
 - 文档回填：04-endpoint（§5.1/§5.2 动词+列+查询）、11-ledger（覆盖账本/缺口队列/盲区/升圈）、05-task（INV-T14 落地+spent_tokens 参数）、02-vuln（E_VULN_SEVERITY_CAPPED）。
-- 未部署：本机 silksecagent inactive，csai 部署验收待部署窗口。
+- 部署：2026-09-22 已随 Phase 1/3/4 一并部署 csai（setup 契约门槛通过，accept PASS=72）。
 
 ### 2026-09-19 · Bug 修复：会话头「安全产出」图标点击无反应（csai 已部署验收）
 - 现象：右上角列表图标（本会话安全产出计数，checklist 图标）显示计数但点击无反应；右下角审批胶囊显示 0（0 待审批为正常）。
