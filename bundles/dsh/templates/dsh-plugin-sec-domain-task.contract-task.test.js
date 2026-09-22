@@ -807,7 +807,7 @@ function schedulerFakeEnv(opts = {}) {
   }
   const dispatch = async (domain, verb, args, ctx) => {
     calls.push({ kind: 'dispatch', domain, verb, args, actor: ctx?.actor })
-    if (domain === 'task' && verb === 'claim') return { ok: true, data: { claimed: state.claimedOnce ? [] : [42], count: state.claimedOnce ? 0 : 1 } , ...(state.claimedOnce = true, {}) }
+    if (domain === 'task' && verb === 'claim') return { ok: true, data: { claimed: (state.claimedOnce && !opts.alwaysClaim) ? [] : [42], count: (state.claimedOnce && !opts.alwaysClaim) ? 0 : 1 } , ...(state.claimedOnce = true, {}) }
     if (domain === 'task' && verb === 'finish') { state.finished = args; return { ok: true, data: { task_id: args.task_id } } }
     if (domain === 'task' && verb === 'reap') return { ok: true, data: { reaped: 0, skipped_alive: 0 } }
     if (domain === 'task' && verb === 'worker_reap') return { ok: true, data: {} }
@@ -894,6 +894,19 @@ test('L6: 调度器等价——claim→FGS 初始化→spawn(cwd+task_id+force)�
     assert.ok(env.state.finished.note.includes('步骤二完成'))
     // 超时未发生 → 不提审批
     assert.ok(!env.state.approvals, '未超时不提 task-budget-extend')
+  })
+})
+
+test('22 B1: 忙碌 tick（有任务认领）也执行 campaign_tick 段', async () => {
+  const env = schedulerFakeEnv({
+    alwaysClaim: true,
+    spawnResult: { ok: true, run_id: 'wb1x001', exit_code: 0, duration_ms: 3000, tail: 'done', truth: { checked: false, rejected: false, reason: '' }, session_id: null, timed_out: false, cancelled: false },
+  })
+  await withScheduler(env, async () => {
+    const tick = await waitFor(() => env.calls.find((c) => c.domain === 'task' && c.verb === 'campaign_tick'))
+    assert.ok(tick, '有认领的忙碌 tick 仍须驱动 campaign_tick（否则统筹闭环在最忙时停摆）')
+    const claims = env.calls.filter((c) => c.verb === 'claim').length
+    assert.ok(claims >= 1, '确有任务被认领（验证走的是忙碌分支）')
   })
 })
 
@@ -1214,13 +1227,15 @@ test('22 C26/INV-C3/C8: campaign_record_decision 证据铁律 + 一任务一验�
   assert.equal(n, 1)
 })
 
-test('22 Reviewer 订阅: task.finished → 自动验收落账 + spent_tokens 汇聚', async () => {
+test('22 Reviewer 订阅: task.finished → 自动验收落账 + spent_tokens 汇聚（oracle verdict）', async () => {
   const { bus, domain } = makeEnv()
   const c = await bus.dispatch('task', 'campaign_create', { name: 'rv', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
   const cid = c.data.campaign_id
   await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
   await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }] }, { actor: 'model' })
   const tid = bus._internal.db().prepare('SELECT id FROM tasks WHERE campaign_id=?').get(cid).id
+  // 机器 oracle 判定写入任务证据链（exec_oracle_judge verdict=verified）
+  await bus.dispatch('task', 'update_note', { task_id: tid, note: 'exec_oracle_judge verdict=verified（idor_diff）' }, { actor: 'model' })
   const fin = await bus.dispatch('task', 'finish', { task_id: tid, run_id: 'rr1', outcome: 'done', spent_tokens: 700 }, { actor: 'scheduler' })
   assert.equal(fin.ok, true)
   const res = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: tid, campaign_id: cid, spent_tokens: 700, ok: true } })
@@ -1228,13 +1243,32 @@ test('22 Reviewer 订阅: task.finished → 自动验收落账 + spent_tokens �
   assert.equal(res.data.verdict, 'accepted')
   const dec = bus._internal.db().prepare('SELECT * FROM campaign_decisions WHERE task_id=?').get(tid)
   assert.equal(dec.verdict, 'accepted')
-  assert.ok(String(dec.evidence).startsWith('run:'))
+  assert.ok(String(dec.evidence).startsWith('oracle:'), `oracle 证据，实际 ${dec.evidence}`)
   const camp = bus._internal.db().prepare('SELECT spent_tokens FROM campaigns WHERE id=?').get(cid)
   assert.equal(camp.spent_tokens, 700)
   // 重放不重复验收
   const replay = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: tid, campaign_id: cid, spent_tokens: 700 } })
   assert.equal(replay.ok, true)
   assert.equal(replay.data.skipped, true)
+})
+
+test('22 B2: Reviewer 判据——无 verdict 无覆盖推进的 hypothesis → rework；覆盖角色成功 → accepted', async () => {
+  const { bus, domain } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'rv2', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  // hypothesis 正常结束但无 verdict
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }] }, { actor: 'model' })
+  const t1 = bus._internal.db().prepare('SELECT id FROM tasks WHERE campaign_id=? ORDER BY id LIMIT 1').get(cid).id
+  await bus.dispatch('task', 'finish', { task_id: t1, run_id: 'nr1', outcome: 'done' }, { actor: 'scheduler' })
+  const r1 = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: t1, campaign_id: cid } })
+  assert.equal(r1.data.verdict, 'rework', '无 verdict 无覆盖推进应 rework')
+  // 覆盖角色（crawl）成功 = 格点推进 → accepted
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'crawl', host: 'c.example.com', strategy_key: 'crawl|c.example.com' }] }, { actor: 'model' })
+  const t2 = bus._internal.db().prepare("SELECT id FROM tasks WHERE campaign_id=? AND campaign_role='derived' ORDER BY id DESC LIMIT 1").get(cid).id
+  await bus.dispatch('task', 'finish', { task_id: t2, run_id: 'nr2', outcome: 'done' }, { actor: 'scheduler' })
+  const r2 = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: t2, campaign_id: cid } })
+  assert.equal(r2.data.verdict, 'accepted', '覆盖驱动任务成功应 accepted')
 })
 
 test('22 C26/C27: campaign_tick L2 自动派生（stub 缺口）+ pending_drafts 直播', async () => {

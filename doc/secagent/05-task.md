@@ -995,10 +995,28 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 
 调度器单例（同 `scheduler.lock` 持锁者）在 `task_claim` 之后顺带驱动 `campaign_tick`（同一 60s tick；headless 不跑）：逐专项 Supervisor 巡检 → Reviewer 补验 → Planner（autonomy≥1）→ Dispatcher（autonomy=2 自动下发）。单专项异常隔离（记 escalation），不中断其余。
 
-订阅新增：`task.finished` → `onCampaignTaskFinished`（Reviewer 强联动）；`scope.revoked` / `scope.rules.changed`（仅 max_risk 收紧）→ `onScopeChanged`（命中绑定 program 立即 pause，fail-closed）。`know.release.revoked` handler 兼做 Campaign 引用作废留痕（Planner 每 tick 现算无缓存，引用自然失效）。
+订阅新增：`task.finished` → `onCampaignTaskFinished`（Reviewer **异步订阅 + tick 补验双通道**：事件失败进 outbox 重试链，重启/丢失由 tick 的 `unreviewedCampaignTasks` 补验兜底）；`scope.revoked` / `scope.rules.changed`（仅 max_risk 收紧）→ `onScopeChanged`（命中绑定 program 立即 pause，fail-closed）。`know.release.revoked` handler 兼做 Campaign 引用作废留痕（Planner 每 tick 现算无缓存，引用自然失效）。
 
 ### 7.7 已知未实现（Phase C 待办）
 
 - L1/L3 的 `know_scores` 近似命中矩阵「按 campaign/program 分组投影」未实施（Planner 的 `scores` 快照当前为空——不影响确定性派生）。
 - Planner 的 LLM「探索性草稿」通道未实施（设计标注可选）。
 - 看板专项视图为只读 + 立即 tick；L1 待放行队列的一键 `campaign_dispatch` 放行 UI 未接（命令面已就绪）。
+
+### 7.8 2026-09-22 评审修复记录（B1–B7 / S1–S4）
+
+| 项 | 修复 |
+|---|---|
+| B1 忙碌 tick 停摆 | `schedulerTick` 忙碌路径收尾补 `await campaignTick()`（此前仅空转分支执行，统筹闭环在最忙时停摆） |
+| B2 验收判据空壳 | `gatherReviewSignals`（扫 result/run note 的 oracle verdict / capsule 引用 / `vuln_get` finding 复核）+ `campaignVerdict` 三源判据：verified/capsule/finding-confirmed→accepted；rejected→rejected；覆盖驱动角色（crawl/param_enrich）成功→accepted；hypothesis 无 verdict 无推进→rework；证据 `capsule:`/`oracle:` 优先。**只扫实际产出，不扫 objective 模板**（模板含示例 verdict 字样会误判） |
+| B3 幂等吞批准 | `campaign_autonomy_apply` / `campaign_budget_extend` 的 `idempotent_natural` 纳入 `approval_id`（同专项再次批准/同额度二次延长不再被 7 天幂等窗吞掉；effect 重试仍幂等） |
+| B4 validate fail-open | 两 kind 的 `campaignGet === 'unavailable'` 由放行改为阻塞 `E_INTERNAL`（approval 主链 fail-closed） |
+| B5 强联动表述 | 回填改为「异步订阅 + tick 补验双通道」（与实现一致；不改为 sync 以免验收失败反噬任务收尾） |
+| B6 审计 actor | `task_block`/`task_cancel` actor 白名单补 `reactor`；Supervisor 卡死 block、归档级联 cancel 改 actor=reactor（不再冒记 dashboard 人工动作） |
+| B7 死代码/硬编码/语义 | 删 `addPendingDraft`；草稿预估改 `SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT`；checkpoint 新增 kind `learn_gap` 用于 LearnLink 去重（原误用 milestone）；surface 带 vuln_class（从 rework 子任务 objective 取众数）；`campaign_tick` actor 收敛为 scheduler |
+| S1 L1 审批口径 | 设计统一为「**L1 免审批、L2 强制审批**」（与 INV-C4 一致；model 可建 L1 + dashboard 激活，L2 走 campaign-autonomy） |
+| S2 dispatch 收敛 | `sanitizeDraft`：kind/level/role 限枚举、phase 限 allowed_phases、rationale 必填化；优先级不由调用方决定（`task_derive_intent` 按 level 固定 H1=4 其余 3，模型无法绕过 Planner 排序） |
+| S3 证据来源 | 见 B2——`vuln_get`（oracle capsule 复核）与文本信号已接线；`ledger` 覆盖推进以「覆盖驱动角色成功」判定（无 before/after 格点快照，未做差分） |
+| S4 tick 公平 | 以 `listCampaignsWhere` 的 `ORDER BY last_tick_at ASC` 实现准轮转（每专项跑完即更新时间戳使其排到队尾）；>10 活跃专项为软轮转，未做持久指针 |
+
+契约：task 59 例、approval 新增 2 例（二度批准/预算延长生效、不可达 fail-closed）全绿；全量本地契约 557/557。

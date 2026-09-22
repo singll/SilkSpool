@@ -46,6 +46,10 @@ const CAMPAIGN_MODES = ['single', 'cross']
 const CAMPAIGN_VERDICTS = ['accepted', 'rework', 'rejected', 'escalated']
 const CAMPAIGN_MILESTONE_IDLE_MS = Number(process.env.SEC_CAMPAIGN_IDLE_HOURS || 48) * 3600000
 const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
+// 22 号方案：单条派生草稿的预算预估（tokens，环境变量可调；用于 campaign 窗口预算闸）
+const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 150000)
+const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich']
+const CAMPAIGN_LEVELS = ['H1', 'H2', 'H3']
 // 21 号方案 §3-4：per-program 周期预算闸（环境变量可调；dashboard/approval 人工放行）
 const BUDGET_PERIOD_MS = Number(process.env.SEC_TASK_BUDGET_PERIOD_DAYS || 7) * 86400000
 const BUDGET_MAX_TOKENS = Number(process.env.SEC_TASK_BUDGET_MAX_TOKENS || 2000000)
@@ -154,7 +158,7 @@ export const TASK_MANIFEST = {
       deprecated: false,
     },
     task_block: {
-      actor: ['model', 'dashboard'],
+      actor: ['model', 'dashboard', 'reactor'],
       schema: schema({ task_id: int(), blocked_reason: str({ minLength: 1, maxLength: 500 }), note: str({ default: '' }) }, ['task_id', 'blocked_reason']),
       idempotent: 'auto',
       idempotent_fields: ['task_id', 'blocked_reason', 'note'],
@@ -177,7 +181,7 @@ export const TASK_MANIFEST = {
       deprecated: false,
     },
     task_cancel: {
-      actor: ['model', 'dashboard'],
+      actor: ['model', 'dashboard', 'reactor'],
       schema: schema({ task_id: int(), note: str({ default: '' }) }, ['task_id']),
       idempotent: 'auto',
       idempotent_fields: ['task_id', 'note'],
@@ -423,7 +427,7 @@ export const TASK_MANIFEST = {
       deprecated: false,
     },
     campaign_tick: {
-      actor: ['scheduler', 'reactor'],
+      actor: ['scheduler'],
       schema: schema({ campaign_id: int(), limit: int({ minimum: 1, maximum: 50 }) }, []),
       idempotent: 'none',
       events: ['task.campaign.reviewed', 'task.campaign.escalated', 'task.campaign.task.derived', 'task.campaign.status.changed'],
@@ -455,7 +459,7 @@ export const TASK_MANIFEST = {
       actor: ['reactor', 'scheduler', 'system', 'dashboard'],
       schema: schema({
         campaign_id: int(),
-        kind: en(['milestone', 'escalation', 'autonomy_change', 'budget_low', 'stop_condition']),
+        kind: en(['milestone', 'escalation', 'autonomy_change', 'budget_low', 'stop_condition', 'learn_gap']),
         summary: str({ maxLength: 500 }),
         payload: { type: 'object' },
       }, ['campaign_id', 'kind']),
@@ -471,7 +475,7 @@ export const TASK_MANIFEST = {
       actor: ['approval'],
       schema: schema({ name: str({ minLength: 2 }), autonomy: int({ minimum: 1, maximum: 2 }), approval_id: int() }, ['name', 'autonomy', 'approval_id']),
       idempotent: 'natural',
-      idempotent_natural: ['name', 'autonomy'],
+      idempotent_natural: ['name', 'autonomy', 'approval_id'],
       events: ['task.campaign.status.changed'],
       event_limit: 1,
       invariants: [],
@@ -483,7 +487,7 @@ export const TASK_MANIFEST = {
       actor: ['approval'],
       schema: schema({ name: str({ minLength: 2 }), add_tokens: int({ minimum: 1 }), approval_id: int() }, ['name', 'add_tokens', 'approval_id']),
       idempotent: 'natural',
-      idempotent_natural: ['name', 'add_tokens'],
+      idempotent_natural: ['name', 'add_tokens', 'approval_id'],
       events: [],
       event_limit: 1,
       invariants: [],
@@ -1044,17 +1048,51 @@ function makeHandlers(opts) {
     return { id, events }
   }
 
-  function addPendingDraft(repo, campaignId, draft) { /* 预留：drafts 现算不落表 */ }
+  // Reviewer 验收信号采集（22 号方案 §7.6：确定性优先）——机器 oracle 判定 / capsule 证据 /
+  // finding 复核（vuln 域只读）三源。全部来自 task.result / run.note / vuln_get，不猜。
+  async function gatherReviewSignals(task, run) {
+    const sig = { verified: false, rejected: false, capsuleRef: null, findingRef: null }
+    // 只扫「实际产出」（result/run note），不扫 objective 模板文本——模板含示例 verdict 字样会误判
+    const text = `${task.result || ''} ${(run && run.note) || ''}`
+    const cap = text.match(/capsule:([A-Za-z0-9_-]+)/i)
+    if (cap) sig.capsuleRef = cap[1]
+    const fid = text.match(/finding\s*#?\s*(\d+)/i)
+    if (fid) sig.findingRef = Number(fid[1])
+    if (/verdict\s*[:=]\s*(verified|confirmed|accepted)/i.test(text)) sig.verified = true
+    if (/verdict\s*[:=]\s*(rejected|false_positive)/i.test(text)) sig.rejected = true
+    // vuln 域复核：finding 引用 → 是否挂 proof capsule / 已判假阳（vuln_get actor 含 reactor）
+    if (sig.findingRef && queryRef) {
+      try {
+        const g = await queryRef('vuln', 'get', { id: sig.findingRef }, { actor: 'reactor' })
+        const f = (g && g.ok && g.data) ? g.data : null
+        if (f) {
+          const ev = String(f.evidence || '')
+          const m = ev.match(/capsule:([A-Za-z0-9_-]+)/i)
+          if (m) { sig.verified = true; if (!sig.capsuleRef) sig.capsuleRef = m[1] }
+          if (f.status === 'false_positive' || f.status === 'ignored') sig.rejected = true
+        }
+      } catch { /* vuln 域不可达：退化为文本信号（不阻断验收） */ }
+    }
+    return sig
+  }
 
-  // Reviewer 验收判据（确定性优先，按 campaign_role 分派；证据铁律）
-  function campaignVerdict(task, run) {
+  // Reviewer 验收判据（确定性优先，按 campaign_role 分派；证据铁律）：
+  //  accept 条件 = 机器 oracle verified / capsule 证据 / finding 已 confirmed；覆盖驱动角色（crawl/param）
+  //  成功即格点推进；三源皆无的 hypothesis 判 rework（方向对执行差），失败判 rejected（连败回写）。
+  function isCoverageRole(task, role) {
+    if (role !== 'derived') return false
+    const obj = String(task.objective || '')
+    return /\[覆盖缺口\]/.test(obj) || /arjun|katana|gau|waybackurls/.test(obj)
+  }
+  function campaignVerdict(task, run, sig = {}) {
     const role = String(task.campaign_role || 'derived')
     const ok = !!(run && run.ok)
     if (task.status === 'done' && ok) {
       if (role === 'submit' || role === 'learn' || role === 'retest') return 'accepted'
-      const txt = `${task.result || ''} ${run.note || ''}`
-      if (/verdict\s*[:=]\s*rejected|oracle[^\n]*rejected/i.test(txt)) return 'rejected'
-      return 'accepted' // 覆盖推进也是成果（§7.6）
+      if (sig.rejected) return 'rejected'
+      if (sig.verified || sig.capsuleRef) return 'accepted'
+      if (isCoverageRole(task, role)) return 'accepted' // crawl/param 成功 = 覆盖格点推进
+      return 'rework'                                   // 无 verdict 亦无覆盖推进
     }
     if (task.status === 'done' && !run) return 'escalated'
     if (task.status === 'failed') return role === 'verify' ? 'rework' : 'rejected'
@@ -1062,8 +1100,17 @@ function makeHandlers(opts) {
   }
   const EVIDENCE_PREFIX_RE = /^(run|task|capsule|ledger|finding|oracle):/
 
-  function makeGoalDelta(task, verdict, run) {
+  // 验收证据：capsule 优先（证据铁律最强），其次 oracle 判定，再次 run/task 引用
+  function reviewEvidence(task, run, sig, verdict) {
+    if (verdict === 'accepted' && sig.capsuleRef) return `capsule:${sig.capsuleRef}`
+    if (verdict === 'accepted' && sig.verified) return 'oracle:judge'
+    if (run && run.run_id) return `run:${run.run_id}`
+    return `task:${task.id}`
+  }
+
+  function makeGoalDelta(task, verdict, run, sig = {}) {
     const delta = { accepted: verdict === 'accepted' ? 1 : 0, rejected: verdict === 'rejected' ? 1 : 0, rework: verdict === 'rework' ? 1 : 0, role: task.campaign_role || 'derived' }
+    if (verdict === 'accepted' && (sig.capsuleRef || sig.verified)) delta.confirmed = 1
     if (run && Number.isFinite(Number(run.spent_tokens))) delta.spent_tokens = Number(run.spent_tokens)
     return delta
   }
@@ -1110,12 +1157,11 @@ function makeHandlers(opts) {
 
   // campaign 窗口预算闸（显式路径）：不变量阶段执行——写入在事务外提交，命令被拒也保留审计。
   // tick 路径由 dispatchDrafts 内部处理（不抛错，写入随 tick 事务提交）。
-  const _campaignEstimatePerDraft = 150000
   function campaignBudgetGate(repo, c, draftCount) {
     if (c.budget_tokens == null || !(Number(c.budget_tokens) > 0)) return { blocked: false }
     const windowMs = (Number(c.budget_window_days) || 7) * 86400000
     const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
-    const estimate = Number(draftCount || 0) * _campaignEstimatePerDraft
+    const estimate = Number(draftCount || 0) * CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT
     if (Number(usage.spent_tokens) + estimate <= Number(c.budget_tokens)) return { blocked: false, usage }
     repo.insertCheckpoint({ campaign_id: c.id, kind: 'budget_low', summary: `专项预算触顶：窗口已用 ${usage.spent_tokens}/${c.budget_tokens} tokens（本单预估 ${estimate}），停派`, payload: usage })
     if (Number(c.autonomy) >= 2) repo.updateCampaign(c.id, { autonomy: 1 })
@@ -1179,6 +1225,22 @@ function makeHandlers(opts) {
     return actions
   }
 
+  // 草稿字段白名单收敛（S2）：kind/level/role 限枚举、phase 限 allowed_phases、rationale 必填化。
+  // 优先级不由调用方决定——derive_intent 按 level 固定（H1=4 其余 3），模型无法绕过 Planner 排序。
+  function sanitizeDraft(d, c) {
+    const policy = c.policy || {}
+    const kind = CAMPAIGN_KINDS.includes(String(d.kind)) ? String(d.kind) : 'hypothesis'
+    const level = CAMPAIGN_LEVELS.includes(String(d.level)) ? String(d.level) : 'H2'
+    const role = CAMPAIGN_ROLES.includes(String(d.campaign_role)) ? String(d.campaign_role) : 'derived'
+    const phases = Array.isArray(policy.allowed_phases) && policy.allowed_phases.length ? policy.allowed_phases.map(String) : ['vuln']
+    const phase = phases.includes(String(d.phase)) ? String(d.phase) : phases[0]
+    return {
+      program_id: d.program_id, kind, host: d.host, path: d.path || '', param: d.param || '',
+      vuln_class: d.vuln_class || '', level, rationale: String(d.rationale || '合规派生（Dispatcher 收敛）').slice(0, 400),
+      oracle: d.oracle || '', strategy_key: d.strategy_key || '', campaign_role: role, phase, goal: 'research',
+    }
+  }
+
   // Dispatcher 下发（唯一动作=翻译为 derive_intent/task_create；闸顺序：有界→预算→委托链）
   async function dispatchDrafts(c, drafts, repo, { explicit = false } = {}) {
     const result = { derived: 0, deduped: 0, dropped: [], events: [] }
@@ -1202,7 +1264,7 @@ function makeHandlers(opts) {
     if (c.budget_tokens != null && Number(c.budget_tokens) > 0) {
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
-      const estimate = allowed.length * 150000
+      const estimate = allowed.length * CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT
       if (Number(usage.spent_tokens) + estimate > Number(c.budget_tokens)) {
         writeCheckpoint(repo, c.id, 'budget_low', `专项预算将触顶：窗口已用 ${usage.spent_tokens}/${c.budget_tokens} tokens，本 tick 停派`, { usage })
         if (Number(c.autonomy) >= 2) repo.updateCampaign(c.id, { autonomy: 1 })
@@ -1212,15 +1274,16 @@ function makeHandlers(opts) {
       }
     }
     if (!dispatchRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 dispatch 不可达', '确认总线已挂载', true)
-    for (const d of allowed) {
+    for (const rawDraft of allowed) {
+      const d = sanitizeDraft(rawDraft, c)
       const programId = String(d.program_id || c.program_ids[0] || '')
       const sit = await campaignSituationOk(programId, d.host)
       if (!sit.ok) { result.dropped.push({ strategy_key: d.strategy_key || null, code: sit.code, message: sit.message }); continue }
       const args = {
-        program_id: programId, kind: d.kind || 'hypothesis', host: d.host, path: d.path || '', param: d.param || '',
-        vuln_class: d.vuln_class || '', level: d.level || 'H2', rationale: d.rationale || '',
-        oracle: d.oracle || '', strategy_key: d.strategy_key || '',
-        campaign_id: c.id, campaign_role: d.campaign_role || 'derived',
+        program_id: programId, kind: d.kind, host: d.host, path: d.path, param: d.param,
+        vuln_class: d.vuln_class, level: d.level, rationale: d.rationale,
+        oracle: d.oracle, strategy_key: d.strategy_key,
+        campaign_id: c.id, campaign_role: d.campaign_role,
       }
       try {
         const r = await dispatchRef('task', 'derive_intent', args, { actor: 'reactor' })
@@ -1254,7 +1317,7 @@ function makeHandlers(opts) {
           const cp = writeCheckpoint(repo, c.id, 'escalation', '专项空转：目标不可达或能量耗尽（>48h 无 accepted 验收且无新派生）', {})
           events.push(...cp.events); summary.escalated++
         } else if (a.kind === 'stuck') {
-          try { await dispatchRef('task', 'block', { task_id: a.task_id, blocked_reason: `Supervisor：业务卡死（连续 3 轮 ok=0 同类：${String(a.note || '').slice(0, 80)}）` }, { actor: 'dashboard' }) } catch (e) { log(`campaign#${c.id} 卡死处置失败: ${e?.message}`) }
+          try { await dispatchRef('task', 'block', { task_id: a.task_id, blocked_reason: `Supervisor：业务卡死（连续 3 轮 ok=0 同类：${String(a.note || '').slice(0, 80)}）` }, { actor: 'reactor' }) } catch (e) { log(`campaign#${c.id} 卡死处置失败: ${e?.message}`) }
           const cp = writeCheckpoint(repo, c.id, 'escalation', `子任务 #${a.task_id} 业务卡死，已 block 升级人工`, { task_id: a.task_id })
           events.push(...cp.events); summary.escalated++
         } else if (a.kind === 'derive_fail_rate') {
@@ -1274,9 +1337,10 @@ function makeHandlers(opts) {
       for (const t of pending) {
         const runs = repo.listTaskRunsWhere({ task_id: t.id }, 1, 0)
         const run = runs[0] || null
-        const verdict = campaignVerdict(t, run)
-        const evidence = (run && run.run_id) ? `run:${run.run_id}` : `task:${t.id}`
-        const delta = makeGoalDelta(t, verdict, run)
+        const sig = await gatherReviewSignals(t, run)
+        const verdict = campaignVerdict(t, run, sig)
+        const evidence = reviewEvidence(t, run, sig, verdict)
+        const delta = makeGoalDelta(t, verdict, run, sig)
         const rd = recordDecision(repo, { campaign_id: c.id, task_id: t.id, verdict, evidence, goal_delta: delta, decided_by: 'reviewer' })
         if (!rd.duplicate) { summary.reviewed++; events.push(...decisionEvents(rd)) }
       }
@@ -1284,11 +1348,19 @@ function makeHandlers(opts) {
     // 2.5) LearnLink（§11.2-L4）：反复 rework ⇒ 经既有 know_gap_record 登记检索缺口（有界，7d 去重）
     try {
       const reworks = repo.listCampaignDecisions(c.id, 'rework', 50, 0).filter((d) => Date.now() - Number(d.created_at || 0) < 7 * 86400000)
-      if (reworks.length >= 3 && !hasRecentCheckpoint(repo, c.id, 'milestone', 7 * 86400000) && dispatchRef) {
+      if (reworks.length >= 3 && !hasRecentCheckpoint(repo, c.id, 'learn_gap', 7 * 86400000) && dispatchRef) {
+        // vuln_class 维度：从 rework 子任务 objective（[假设 Hn] <class> ...）取众数
+        const clsCount = {}
+        for (const d of reworks) {
+          const m = String(d.objective || '').match(/\[假设\s*H\d\]\s*([a-z_]+)/i)
+          if (m) clsCount[m[1].toLowerCase()] = (clsCount[m[1].toLowerCase()] || 0) + 1
+        }
+        const vulnClass = Object.keys(clsCount).sort((a, b) => clsCount[b] - clsCount[a] || a.localeCompare(b))[0] || 'rework'
+        const surface = `campaign:${c.id}:${vulnClass}`
         await dispatchRef('know', 'gap_record', {
-          q: `专项 #${c.id} ${String(c.goal_spec.objective || '').slice(0, 200)} 反复 rework`, program_id: c.program_ids[0] || '', surface: `campaign:${c.id}:rework`, hits: reworks.length,
+          q: `专项 #${c.id} ${String(c.goal_spec.objective || '').slice(0, 200)} 反复 rework（类 ${vulnClass}）`, program_id: c.program_ids[0] || '', surface, hits: reworks.length,
         }, { actor: 'reactor' })
-        writeCheckpoint(repo, c.id, 'milestone', `反复 rework ${reworks.length} 次，已登记 know 检索缺口（surface=campaign:${c.id}:rework）`, { reworks: reworks.length })
+        writeCheckpoint(repo, c.id, 'learn_gap', `反复 rework ${reworks.length} 次（类 ${vulnClass}），已登记 know 检索缺口（surface=${surface}）`, { reworks: reworks.length, vuln_class: vulnClass })
       }
     } catch (e) { summary.skipped.push({ step: 'learnlink', error: String(e?.message || e) }) }
     // 3) Planner + Dispatcher（autonomy≥1 且 active）
@@ -1892,7 +1964,7 @@ function makeHandlers(opts) {
       let cancelled = 0
       const queued = repo.listTasksWhere({ campaign_id: c.id, status: 'queued' }, 200, 0, 'priority')
       for (const t of queued) {
-        try { const r = await dispatchRef('task', 'cancel', { task_id: t.id, note: `专项 #${c.id} 归档` }, { actor: 'dashboard' }); if (r && r.ok) cancelled++ } catch (e) { log(`归档专项 #${c.id} 取消 queued 子任务 #${t.id} 失败: ${e?.message}`) }
+        try { const r = await dispatchRef('task', 'cancel', { task_id: t.id, note: `专项 #${c.id} 归档` }, { actor: 'reactor' }); if (r && r.ok) cancelled++ } catch (e) { log(`归档专项 #${c.id} 取消 queued 子任务 #${t.id} 失败: ${e?.message}`) }
       }
       return {
         data: { campaign_id: c.id, status: 'archived', cancelled_queued: cancelled },
@@ -2443,9 +2515,10 @@ function makeHandlers(opts) {
         const runs = await queryRef('task', 'runs', { task_id: p.task_id, limit: 1 }, { actor: 'reactor' })
         const rows = runs ? (runs.rows || (runs.data && runs.data.rows) || []) : []
         const run = rows[0] || null
-        const verdict = campaignVerdict(t, run)
-        const evidence = (run && run.run_id) ? `run:${run.run_id}` : `task:${t.id}`
-        const goal_delta = makeGoalDelta(t, verdict, run)
+        const sig = await gatherReviewSignals(t, run)
+        const verdict = campaignVerdict(t, run, sig)
+        const evidence = reviewEvidence(t, run, sig, verdict)
+        const goal_delta = makeGoalDelta(t, verdict, run, sig)
         if (p.spent_tokens != null) goal_delta.spent_tokens = Number(p.spent_tokens) || 0
         const r = await dispatchRef('task', 'campaign_record_decision', {
           campaign_id: Number(p.campaign_id), task_id: Number(t.id), verdict, evidence, goal_delta, decided_by: 'reviewer',
@@ -2722,6 +2795,7 @@ export function startTaskScheduler(opts) {
         try { await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'crash', note: `调度执行异常: ${e?.message || ''}`.slice(0, 300) }, { actor: 'scheduler' }) } catch { /* ignore */ }
       }
     })()))
+    await campaignTick()
     await dailyVaultSync()
   }
 

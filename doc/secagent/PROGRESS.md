@@ -17,6 +17,17 @@
 
 ## 二、最近进度结果
 
+### 2026-09-22 · 22 号方案 Campaign 评审修复（B1–B7 / S1–S4，契约 557/557）
+- **B1（高）**：`schedulerTick` 忙碌路径补 `campaignTick()`——此前仅空转 tick 执行，有任务认领时统筹闭环整体停摆（含 INV-C9 停止条件）。
+- **B2（高）**：Reviewer 判据由「done 即 accepted」改为三源真实判据（oracle verdict / capsule 引用 / `vuln_get` finding 复核）+ 覆盖角色成功判定；hypothesis 无 verdict 无推进判 rework。证据 `capsule:`/`oracle:` 优先。
+- **B3（高）**：`campaign_autonomy_apply`/`campaign_budget_extend` natural 幂等键纳入 `approval_id`（二度批准/二次延长不再被幂等窗吞）。
+- **B4**：campaign 两 kind validate 对 task 域不可达由放行改 `E_INTERNAL` 阻塞（fail-closed）。
+- **B5**：回填改为「异步订阅 + tick 补验双通道」（与实现一致）。
+- **B6**：`task_block`/`task_cancel` actor 补 `reactor`；Supervisor/归档级联不再冒记 dashboard 人工动作。
+- **B7**：删死代码；预估改 `SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT`；新增 checkpoint kind `learn_gap`；LearnLink surface 带 vuln_class；`campaign_tick` actor 收敛 scheduler。
+- **S1**：设计统一「L1 免审批、L2 强制审批」（22 号文档 §7.1/§8.1 修订）。**S2**：`sanitizeDraft` 收敛草稿字段（优先级由 derive_intent 固定）。**S3**：证据来源接线（覆盖推进以角色判定，无格点差分）。**S4**：`last_tick_at` 升序准轮转。
+- 回归：新增「忙碌 tick 也跑 campaign_tick」「二度批准/二次预算延长生效」「campaign kind 不可达 fail-closed」等契约；本地全量 **557/557**；详见 [05-task §7.8](05-task.md)。
+
 ### 2026-09-22 · 22 号方案 Campaign（专项）全量落地（本地契约 553/553 + UI 单测；待部署验收）
 - **task 域内新增常驻统筹实体 Campaign**（不新增域）：`campaigns`/`campaign_decisions`/`campaign_checkpoints` 三表 + `tasks.campaign_id/campaign_role` 幂等加列；命令 C20–C27 + 内部（record_decision/checkpoint/tick/autonomy_apply/budget_extend）；查询 5 个（list/get/progress/pending_drafts/decisions）；事件 6 个；订阅 `task.finished`→Reviewer 强联动、`scope.revoked`/`scope.rules.changed`→Supervisor pause（fail-closed）；调度器单例在 claim 后顺带 `campaign_tick`（Supervisor→Reviewer→Planner→Dispatcher）。自主级别 L0/L1/L2 封顶，升档走 approval。
 - **规则层** `compileCampaignPlan` 纯函数（确定性可重放，缺口优先级×连败降权×经验卡提权×有界 cap）。

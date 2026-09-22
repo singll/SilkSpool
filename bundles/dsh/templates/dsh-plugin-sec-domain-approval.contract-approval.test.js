@@ -484,3 +484,37 @@ test('22 campaign-budget-extend: spent≥80% 才可延长，effect 增量落账'
   const row = bus._internal.db().prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(cid)
   assert.equal(row.budget_tokens, 2000)
 })
+
+test('22 B3: 二度升档/二度预算延长不被幂等吞掉（natural 键含 approval_id）', async () => {
+  const { bus } = makeEnvWithTask()
+  // 二度升档：批准 → 暂停 → 再次批准仍须重新激活
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'camp-r2', program_ids: ['example-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  const r1 = await bus.dispatch('approval', 'request', { kind: 'campaign-autonomy', subject: 'camp-r2', evidence: '首次升 L1 建议模式', payload: { autonomy: 1 } }, { actor: 'dashboard' })
+  await bus.dispatch('approval', 'decide', { id: r1.data.request_id, decision: 'approve', operator: 'op' }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_pause', { campaign_id: cid, note: '人工暂停' }, { actor: 'model' })
+  const r2 = await bus.dispatch('approval', 'request', { kind: 'campaign-autonomy', subject: 'camp-r2', evidence: '二次升 L1 重新激活', payload: { autonomy: 1 } }, { actor: 'dashboard' })
+  const d2 = await bus.dispatch('approval', 'decide', { id: r2.data.request_id, decision: 'approve', operator: 'op' }, { actor: 'dashboard' })
+  assert.equal(d2.ok, true, d2.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT status FROM campaigns WHERE id=?').get(cid).status, 'active', '二次批准必须重新激活')
+
+  // 二度预算延长：同额度第二次仍须生效
+  const c2 = await bus.dispatch('task', 'campaign_create', { name: 'camp-b2', program_ids: ['example-src'], budget_tokens: 1000, goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid2 = c2.data.campaign_id
+  bus._internal.db().prepare('UPDATE campaigns SET spent_tokens=850 WHERE id=?').run(cid2)
+  const e1 = await bus.dispatch('approval', 'request', { kind: 'campaign-budget-extend', subject: 'camp-b2', evidence: '首次预算延长申请 1000 tokens', payload: { add_tokens: 1000 } }, { actor: 'model' })
+  await bus.dispatch('approval', 'decide', { id: e1.data.request_id, decision: 'approve', operator: 'op' }, { actor: 'dashboard' })
+  assert.equal(bus._internal.db().prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(cid2).budget_tokens, 2000)
+  bus._internal.db().prepare('UPDATE campaigns SET spent_tokens=1700 WHERE id=?').run(cid2)
+  const e2 = await bus.dispatch('approval', 'request', { kind: 'campaign-budget-extend', subject: 'camp-b2', evidence: '二次预算延长申请 1000 tokens', payload: { add_tokens: 1000 } }, { actor: 'model' })
+  const d3 = await bus.dispatch('approval', 'decide', { id: e2.data.request_id, decision: 'approve', operator: 'op' }, { actor: 'dashboard' })
+  assert.equal(d3.ok, true, d3.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(cid2).budget_tokens, 3000, '二次延长必须生效')
+})
+
+test('22 B4: campaign kind 的 task 域不可达 → fail-closed（不放行）', async () => {
+  const { bus } = makeEnv() // 不注册 task 域 → campaignGet 返回 unavailable
+  const r = await bus.dispatch('approval', 'request', { kind: 'campaign-autonomy', subject: 'x', evidence: '不可达 fail-closed 测试', payload: { autonomy: 1 } }, { actor: 'dashboard' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_INTERNAL')
+})

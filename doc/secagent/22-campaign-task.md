@@ -197,7 +197,7 @@ draft ──activate──▶ active ◀──resume── paused
 
 task 域调度循环每 tick（≤60s）在 `task_claim` 之后追加 **campaign tick 段**（同一 `scheduler.lock` 持锁者，headless 不跑）：
 
-1. 扫 `status='active'` 的 campaigns（idx_campaigns_status），单 tick 处理上限 10 个（其余下一 tick，轮转指针保证公平）；
+1. 扫 `status='active'` 的 campaigns（idx_campaigns_status，`ORDER BY last_tick_at ASC`），单 tick 处理上限 10 个（其余下一 tick；跑完即刷新 last_tick_at 使其排到队尾，准轮转公平）；
 2. 逐 campaign 顺序跑：Supervisor 巡检 → Reviewer 验收新完结子任务 → Planner 决策（若 autonomy≥1）→ Dispatcher 下发；
 3. 每步有界（INV-C6），tick 摘要（派生数/验收数/跳过原因）写 `data/events/task.jsonl` 与看板投影；
 4. tick 内任何组件异常**隔离到该 campaign**：记 checkpoint(kind=escalation) 并跳过，不中断其他 campaign，fail-closed 不吞错。
@@ -211,7 +211,7 @@ task 域调度循环每 tick（≤60s）在 `task_claim` 之后追加 **campaign
 | 级别 | 语义 | 派生权 | 创建/升档要求 |
 |---|---|---|---|
 | L0 台账模式 | Campaign 只是统筹视图与验收账本 | 仅人工/会话内模型经 `campaign_dispatch` 显式派生 | 无审批 |
-| L1 建议模式 | Planner 每 tick 产**派生草稿**（不落任务），人/模型在看板逐条放行 | 草稿 → 人工 `campaign_dispatch(draft_id)` 才落任务 | approval kind=`campaign-autonomy` |
+| L1 建议模式 | Planner 每 tick 产**派生草稿**（不落任务），人/模型在看板逐条放行 | 草稿 → 人工 `campaign_dispatch(draft_id)` 才落任务 | **免审批**（建单 born=draft，激活经 dashboard；L1 不自动下发，风险低——§8.1 口径统一修订） |
 | L2 有界自动 | Planner 草稿过编译后**自动下发**（INV-C6 有界 + 双预算闸 + 局面编译） | 全自动，超界自动降级为 L1 行为 | approval kind=`campaign-autonomy`（subject=campaign 名） |
 
 **封顶 L2，无 L3 设计**。L2 运行中触发任一条件自动降级为 L1（记 checkpoint）：连败黑名单新增、预算消耗速率超阈值（§7.4）、escalation 未决超过 24h。
@@ -273,7 +273,7 @@ task 域调度循环每 tick（≤60s）在 `task_claim` 之后追加 **campaign
 | # | 动词 | 一句话语义 | actor | 幂等键 | 发布事件 | 模型可见 |
 |---|---|---|---|---|---|---|
 | C20 | `campaign_create` | 登记专项（goal_spec/policy/绑定 programs），born=draft | model, dashboard, script | 自然键（name） | task.campaign.created | ✅ |
-| C21 | `campaign_activate` | draft/paused → active（INV-C1/C4 全量校验；autonomy≥1 需 approval_id） | dashboard, human, approval（effect） | 自动指纹 | task.campaign.status.changed | ❌ |
+| C21 | `campaign_activate` | draft/paused → active（INV-C1/C4 全量校验；autonomy=2 需 approval_id；L1 免审批） | dashboard, human, approval（effect） | 自动指纹 | task.campaign.status.changed | ❌ |
 | C22 | `campaign_pause` / `campaign_resume` | active ↔ paused（不动在跑子任务） | model, dashboard, human | 自动指纹 | task.campaign.status.changed | ✅ |
 | C23 | `campaign_archive` | 非终态 → archived（终态）；同步 cancel 其 queued 子任务 | dashboard, human | 自动指纹 | task.campaign.status.changed | ❌ |
 | C24 | `campaign_goal_update` | 更新 goal_spec/policy（active 中改目标 → 强制转 reviewing 待人工确认） | dashboard, human | 自动指纹 | task.campaign.goal.changed | ❌ |
@@ -281,7 +281,7 @@ task 域调度循环每 tick（≤60s）在 `task_claim` 之后追加 **campaign
 | C26 | `campaign_review_pass` | reviewing → active（人工审阅通过；附决议摘要进 checkpoints） | dashboard, human | 自动指纹 | task.campaign.status.changed | ❌ |
 | C27 | `campaign_tick_now` | 立即对单 campaign 跑一次 tick 段（调试/演示；不超 INV-C6 界） | dashboard, script | none（有界自愈） | — | ❌ |
 
-actor 白名单说明：激活/归档/审阅通过是治理动作，模型不可直调（与 know 域 L4「模型不能自我晋升」同一判据）；模型只开放 create/pause/resume/dispatch。`approval` actor 仅出现在 `campaign-autonomy` 批准的 effect 同步 dispatch（落 autonomy/approval_id 后 activate）。
+actor 白名单说明：激活/归档/审阅通过是治理动作，模型不可直调（与 know 域 L4「模型不能自我晋升」同一判据）；模型只开放 create/pause/resume/dispatch。**L1 免审批、L2 强制审批**（`campaign-autonomy`，见 §7.1 修订）。`approval` actor 仅出现在 `campaign-autonomy` 批准的 effect 同步 dispatch（落 autonomy/approval_id 后 activate）。
 
 ### 8.2 查询总表
 
@@ -430,3 +430,20 @@ L6 四类 goal（research/learn-daily/eval-batch/change-retest）的**调度节�
 ---
 
 > 本文经评审决策后，按治理规则回填：05-task（Campaign 全量契约）/ 07-know（§十一维度扩展）/ 09-approval（两个新 kind）/ 16-dashboard（专项 tab）/ 01-bus（事件注册表）/ CONTEXT.md（Campaign 术语条目），随后本文归档。
+
+---
+
+## 十七、2026-09-22 实施修订（评审后）
+
+> 本文为设计真相源，实施后按治理规则回填 05/07/09/16/01/CONTEXT。以下为实施期相对本文的**有意修订**（评审确认）：
+
+1. **C24 改名**：`campaign_goal_update` → `campaign_goal_revise`（总线 R2 禁用词「update」）。
+2. **S1 L1 审批口径统一**：§7.1/§8.1 改为「L1 免审批、L2 强制审批」（与 INV-C4 一致），不再要求 L1 创建/升档走 `campaign-autonomy`。
+3. **S4 tick 公平**：以 `last_tick_at` 升序实现准轮转（未做持久轮转指针）。
+4. **B2 验收判据**：三源（oracle verdict / capsule 引用 / `vuln_get` finding 复核）+ 覆盖驱动角色成功判定；objective 模板文本不参与判定。
+5. **B7**：checkpoint 增 kind `learn_gap`（LearnLink 去重用）；草稿预算预估环境变量 `SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT`。
+6. **S2**：`campaign_dispatch` 草稿经 `sanitizeDraft` 收敛（枚举/phase/rationale）；优先级由 `task_derive_intent` 固定，不由调用方决定。
+7. **B5**：Reviewer 为**异步订阅 + tick 补验双通道**（非 sync 强联动）。
+8. **B1/B3/B4/B6**：忙碌 tick 也跑 campaign tick；effect 幂等键含 `approval_id`；campaign kind validate fail-closed；block/cancel actor 归 reactor。
+
+完整修复清单见 [05-task §7.8](05-task.md)。

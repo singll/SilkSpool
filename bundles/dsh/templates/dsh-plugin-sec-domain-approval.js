@@ -217,7 +217,7 @@ export const APPROVAL_KINDS = {
       const autonomy = Number(p.autonomy ?? args.autonomy)
       if (!(autonomy === 1 || autonomy === 2)) return { code: 'E_INVARIANT', message: `autonomy=${p.autonomy} 非法`, hint: '升档目标 ∈ 1(L1 建议)|2(L2 有界自动)' }
       const c = await deps.campaignGet(subject)
-      if (c === 'unavailable') return null
+      if (c === 'unavailable') return { code: 'E_INTERNAL', message: 'task 域查询不可达，无法核验专项状态', hint: '总线/域暂不可用——稍后重试提请（fail-closed）' }
       if (!c) return { code: 'E_INVARIANT', message: `专项不存在: ${subject}`, hint: '核对 campaign_list' }
       if (!['draft', 'paused'].includes(c.status)) return { code: 'E_INVARIANT', message: `专项 #${c.id} 状态 ${c.status}，仅 draft/paused 可升档激活`, hint: '先 pause 或新建专项' }
       if (autonomy === 2 && !(Number(c.budget_tokens) > 0)) return { code: 'E_INVARIANT', message: '升 L2 需专项已设 budget_tokens（INV-C4）', hint: '先经 campaign-budget-extend 或重建带预算' }
@@ -237,7 +237,7 @@ export const APPROVAL_KINDS = {
       const add = Number(p.add_tokens)
       if (!Number.isInteger(add) || add <= 0) return { code: 'E_INVARIANT', message: 'payload.add_tokens 须为正整数', hint: '预算增量为正整数 token 数' }
       const c = await deps.campaignGet(subject)
-      if (c === 'unavailable') return null
+      if (c === 'unavailable') return { code: 'E_INTERNAL', message: 'task 域查询不可达，无法核验专项预算', hint: '总线/域暂不可用——稍后重试提请（fail-closed）' }
       if (!c) return { code: 'E_INVARIANT', message: `专项不存在: ${subject}`, hint: '核对 campaign_list' }
       if (!(Number(c.budget_tokens) > 0)) return { code: 'E_INVARIANT', message: '专项无预算基准，无须延长', hint: '先设 budget_tokens' }
       if (Number(c.spent_tokens) < Number(c.budget_tokens) * 0.8) return { code: 'E_INVARIANT', message: `当前 spent=${c.spent_tokens} 未达 budget×0.8（${Math.floor(Number(c.budget_tokens) * 0.8)}）`, hint: '未接近耗尽无须延长' }

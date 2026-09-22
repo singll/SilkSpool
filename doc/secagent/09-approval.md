@@ -681,4 +681,6 @@ ApprovalRepo.listEffects(request_id) -> rows
 | `campaign-autonomy` | campaign 名 | dashboard, system | autonomy ∈ 1\|2；专项存在且 draft/paused；升 L2 需 budget_tokens>0（INV-C4） | dispatch `task.campaign_autonomy_apply`（落 autonomy/approval_id 并激活） |
 | `campaign-budget-extend` | campaign 名 | model, scheduler, system | add_tokens 正整数；专项有预算基准；spent ≥ budget×0.8；add ≤ 原 budget×2 | dispatch `task.campaign_budget_extend`（budget_tokens 增量落账 + checkpoint） |
 
+> 2026-09-22 评审修复：effect 动词 `campaign_autonomy_apply` / `campaign_budget_extend` 的 `idempotent_natural` 均纳入 `approval_id`（同专项再次批准/二次延长不被幂等窗吞；effect 重试仍幂等）；`validate` 遇 task 域查询不可达由放行改 `E_INTERNAL` 阻塞（fail-closed）。
+
 契约：approval 全绿（新增 2 例：campaign-autonomy 升档激活 / campaign-budget-extend 阈值与增量）。
