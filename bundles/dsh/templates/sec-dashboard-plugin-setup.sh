@@ -25,7 +25,7 @@ export PATH="/usr/local/node/bin:$PATH"
 log()  { echo "[sec-dashboard-views] $*"; }
 warn() { echo "[sec-dashboard-views][WARN] $*"; }
 
-VIEW_DOMAINS="vuln asset endpoint fact campaign know report audit"
+VIEW_DOMAINS="vuln asset endpoint fact know report audit"
 
 assemble_view() {
     local d="$1"
@@ -88,7 +88,7 @@ smoke_views() {
         echo "$dump" | grep -q "sec-dashboard-view-$d" || missing="$missing $d"
     done
     if [ -z "$missing" ]; then
-        log "冒烟通过：8 个域视图包均已进组合树"
+        log "冒烟通过：7 个域视图包均已进组合树"
     else
         warn "冒烟未发现视图包:$missing"
         return 1

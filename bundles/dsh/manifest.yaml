@@ -281,8 +281,6 @@ templates:
   - dsh-plugin-sec-dashboard.view-fact.client.test.mjs
   - dsh-plugin-sec-dashboard.view-know.client.js
   - dsh-plugin-sec-dashboard.view-know.client.test.mjs
-  - dsh-plugin-sec-dashboard.view-campaign.client.js
-  - dsh-plugin-sec-dashboard.view-campaign.client.test.mjs
   - dsh-plugin-sec-dashboard.view-report.client.js
   - dsh-plugin-sec-dashboard.view-report.client.test.mjs
   - dsh-plugin-sec-dashboard.view-audit.client.js

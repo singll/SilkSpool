@@ -17,6 +17,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-22 · 专项 tab 移除（并入任务视图）+ 部署链路修复
+- **部署缺失修复**：方案 A（7cafbf6）改动漏了红线流程的 `rsync bundles/dsh/ → /opt/SilkSpool/bundles/dsh/` 一步——`spool bundle` 读运行时副本，导致当天部署装的仍是 9-19 旧模板。已补 rsync + setup + 重启验收。
+- **安全中心「专项」tab 移除**（用户决策：专项是任务的一种，不独占 tab）：删除 `dsh-plugin-sec-dashboard.view-campaign.client.js`/test.mjs，manifest / `sec-dashboard-plugin-setup.sh`（VIEW_DOMAINS 7 域）/ `sec-v5-accept.sh`（UI_PKG_IDS 13 面）/ `dsh-ui-surface-smoke.mjs` 同步清理；线上 `plugin --profile web remove @silksec/sec-dashboard-view-campaign` + 孤儿目录清理。campaign 相关 4 个 dashboard-rpc **保留**（ui-task 右侧栏专项区块复用）。
+- 验收：组合树无 campaign loader entry；`sec-v5-accept.sh --ui-headless` **PASS=72 FAIL=0**（75→72 = 移除 3 项 campaign 视图检查）；ui-task 单测 14/14。
+
 ### 2026-09-22 · 23 号方案 v2 修订：OpenCode Go v4.1-flash 入池 + 统一额度面 + 额度调高
 - **Bellkeeper 池调整（已上线）**：`opencode-go-secagent` 渠道加入 `deepseek-v4.1-flash`（1M ctx），pool-secagent 新增权重 2 成员（介于官方 deepseek 与 v4 兜底之间）；渠道状态/直调冒烟/pool-secagent 组冒烟全部通过。
 - **关键发现**：Bellkeeper 渠道/池成员为 **DB 持久化**（`llm_channels`/`llm_model_groups`），YAML 仅首启空库种子——变更须走 `PUT /api/llm/config/{channels,groups}/:id`（自动 reload）；本次即走 DB API 路径，YAML 种子同步（Bellkeeper commit cb0572d）。此事实已回填 23 号方案 §2.1 备注。

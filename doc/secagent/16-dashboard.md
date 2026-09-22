@@ -581,6 +581,8 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 
 ## 2026-09-22 22 号方案回填（安全中心「专项」tab）
 
+> **2026-09-22 晚修订：独立「专项」tab 已移除**。用户验收决策：专项是任务的一种，不单独占安全中心 tab——其呈现面并入 **ui-task 右侧栏「专项」区块**（五区块之首，见 ui-task 插件注释与单测）。`@silksec/sec-dashboard-view-campaign` 视图包（client.js/test.mjs）已删除，`sec-dashboard-plugin-setup.sh` VIEW_DOMAINS / `sec-v5-accept.sh` UI_PKG_IDS / `dsh-ui-surface-smoke.mjs` 同步移除（UI 面 14→13，accept PASS 75→72 为移除 3 项 campaign 检查所致）；线上 web profile 已 `plugin remove` 卸载。下文保留为当时实现记录（RPC 部分仍现行有效——ui-task 专项区块复用同一组 RPC）。
+
 > 设计真相源：[22-campaign-task](archive/22-campaign-task-2026-09-22.md) §十二。安全中心主面板平铺新增第 8 个逐域视图 **专项（campaign，order 60，domain task）**。
 
 - **客户端**：`@silksec/sec-dashboard-view-campaign`（`dsh-plugin-sec-dashboard.view-campaign.client.js`）——列表（专项/状态/自主级别/绑定 program/验收 accepted-rejected/预算/心跳/操作）+ 行展开详情（goal_spec·预算·验收账本·活跃子任务·里程碑）+「立即 tick」按钮（`campaignTickNow`）。零颜色字面量，经 ui-core 令牌；`requires:['connection']` 缺席静默隐藏；`campaigns` 不可达显示降级提示（B11 规范）。
