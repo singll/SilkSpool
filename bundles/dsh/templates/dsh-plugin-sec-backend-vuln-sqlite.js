@@ -186,6 +186,13 @@ function createRepo(db) {
       const sql = `SELECT ${LIST_COLS} FROM findings WHERE ${where} ORDER BY ${orderClause(order)}`
       return db.prepare(sql).all(...args).map((r) => ({ ...r }))
     },
+    // 21 号方案 §4-5：eval 投影数据源（含 evidence 判定列——只服务 vuln_evidence_flags 查询，不进入列表视图）
+    listFindingsWithEvidence({ program_id = '', limit = 5000 } = {}) {
+      const where = program_id ? 'WHERE program_id = ?' : ''
+      const args = program_id ? [String(program_id)] : []
+      return db.prepare(`SELECT id, noise, severity, status, vuln_type, created_at, program_id, evidence FROM findings ${where} ORDER BY id ASC LIMIT ?`)
+        .all(...args, Math.min(Number(limit) || 5000, 5000)).map((r) => ({ ...r }))
+    },
     listCandidatePool(pred, order) {
       const { where, args } = buildWhere({ ...pred, visibility: 'candidate' })
       const cutoff = Date.now() - 3600 * 1000

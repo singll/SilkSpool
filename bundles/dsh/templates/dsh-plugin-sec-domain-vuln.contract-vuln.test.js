@@ -213,6 +213,82 @@ test('oracle_capsule 门：伪造/不存在的 capsule id → E_EVIDENCE_REQUIRE
 })
 
 // ---------------------------------------------------------------------------
+// 21 号方案 §4-4：capsule 重放 + 打法固化为 worker 脚本草稿
+// ---------------------------------------------------------------------------
+
+test('capsule_replay: 重放证据比对 match + harden 产脚本草稿；mismatch 不固化', async () => {
+  const dir = tmpDir()
+  const dataDir = path.join(dir, 'data')
+  fs.mkdirSync(dataDir, { recursive: true })
+  const bus = createBus({
+    dataDir,
+    dbFile: path.join(dir, 'asset-graph.db'),
+    aliasesFile: path.join(dir, 'bus.aliases.yaml'),
+    auditFile: path.join(dir, 'audit.jsonl'),
+    eventsDir: path.join(dir, 'events'),
+    sidecars: false,
+    startDispatcherTimer: false,
+  })
+  // mock exec 域：run_cli 回 run_id；grep_result 按内容决定是否命中 marker
+  const dispatch = async (d, v, a) => {
+    if (d === 'exec' && v === 'run_cli') return { ok: true, data: { run_id: 'rreplaymock01' } }
+    if (d === 'vuln' && v === 'oracle_capsule') return bus.dispatch('vuln', 'oracle_capsule', a, { actor: 'model' })
+    return { ok: false, error: { code: 'E_MOCK', message: `unmocked ${d}.${v}` } }
+  }
+  const query = async (d, n, a) => {
+    if (d === 'exec' && n === 'grep_result') {
+      const hit = String(a.pattern || '').includes('svx7c2')
+      return { ok: true, data: { lines: hit ? ['stdout.log:3: <script>svx7c2</script>'] : [] } }
+    }
+    return { ok: false, error: { code: 'E_MOCK', message: 'unmocked' } }
+  }
+  const domain = buildVulnDomain({ dataDir, dispatch, query })
+  const reg = bus.registry.register(domain)
+  assert.equal(reg.ok, true, reg.error?.message)
+  const cap = await bus.dispatch('vuln', 'oracle_capsule', {
+    oracle: 'xss_echo', verdict: 'verified',
+    target: { host: 'a.example.com', vuln_class: 'xss', program_id: 'test-src' },
+    rule_input: { marker: 'svx7c2', response_body: '<script>svx7c2</script>' },
+    replay: { tool: 'curl-replay', params: { url: 'https://a.example.com/x?q=svx7c2' } },
+  }, { actor: 'model' })
+  assert.equal(cap.ok, true)
+  const cid = cap.data.capsule_id
+  // match + harden → 脚本草稿（判定归代码）
+  const rep = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: cid, harden: true }, { actor: 'script' })
+  assert.equal(rep.ok, true, rep.error?.message)
+  assert.equal(rep.data.verdict, 'match')
+  assert.equal(rep.data.replay_run_id, 'rreplaymock01')
+  assert.ok(rep.data.hardened_draft)
+  const draft = JSON.parse(fs.readFileSync(path.join(dataDir, rep.data.hardened_draft), 'utf8'))
+  assert.equal(draft.judge, 'oracle_rejudge')
+  assert.equal(draft.status, 'draft') // 草案不具备执行能力；注册 manifest 需人工审批
+  assert.ok(draft.expect_evidence.includes('svx7c2'))
+  const names = bus._internal.db().prepare('SELECT payload FROM event_outbox').all().map((o) => JSON.parse(o.payload).name)
+  assert.ok(names.includes('vuln.capsule.replayed'))
+  // mismatch：marker 换值后 grep 不命中
+  const cap2 = await bus.dispatch('vuln', 'oracle_capsule', {
+    oracle: 'xss_echo', verdict: 'verified', target: { host: 'a.example.com' },
+    rule_input: { marker: 'nomatch9999', response_body: 'x' },
+    replay: { tool: 'curl-replay', params: {} },
+  }, { actor: 'model' })
+  const rep2 = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: cap2.data.capsule_id }, { actor: 'dashboard', operator: 'op1' })
+  assert.equal(rep2.ok, true)
+  assert.equal(rep2.data.verdict, 'mismatch')
+  assert.equal(rep2.data.hardened_draft, null)
+  // 门禁：model 不可见；不存在 capsule；无 replay.tool
+  const forbidden = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: cid }, { actor: 'model' })
+  assert.equal(forbidden.ok, false)
+  assert.equal(forbidden.error.code, 'E_ACTOR_FORBIDDEN')
+  const missing = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: 'deadbeefdeadbeef' }, { actor: 'script' })
+  assert.equal(missing.ok, false)
+  assert.equal(missing.error.code, 'E_NOT_FOUND')
+  const cap3 = await bus.dispatch('vuln', 'oracle_capsule', { oracle: 'xss_echo', verdict: 'verified', target: { host: 'a.example.com' } }, { actor: 'model' })
+  const noReplay = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: cap3.data.capsule_id }, { actor: 'script' })
+  assert.equal(noReplay.ok, false)
+  assert.equal(noReplay.error.code, 'E_SCHEMA')
+})
+
+// ---------------------------------------------------------------------------
 // 1. happy path（每动词一例：信封结构 / data 字段 / 事件 payload / audit 落盘）
 // ---------------------------------------------------------------------------
 

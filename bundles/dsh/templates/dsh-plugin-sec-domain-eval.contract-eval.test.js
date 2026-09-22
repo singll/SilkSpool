@@ -931,3 +931,32 @@ test('L6: 孤儿回收经 run_finish 事件流——停摆 candidate run 回收 
   const reap2 = await env.evalDomain.reapOrphans()
   assert.equal(reap2.reaped, 0)
 })
+
+// ---------------------------------------------------------------------------
+// 21 号方案 §4-5：eval 收缩三指标（发现机器效果投影）
+// ---------------------------------------------------------------------------
+
+test('eval_discovery_metrics: 候选→verified 转化率 / 高危占比 / 新漏洞类型', async () => {
+  const env = makeEnv()
+  const vuln = buildVulnDomain({ dataDir: env.dataDir, dispatch: (d, v, a, c) => env.bus.dispatch(d, v, a, c), query: (d, n, a, c) => env.bus.query(d, n, a, c) })
+  assert.equal(env.bus.registry.register(vuln).ok, true)
+  await env.bus.query('vuln', 'list', {}, { actor: 'dashboard' }) // 物化 findings 表（backend factory 懒建）
+  const now = Date.now()
+  const ins = env.bus._internal.db().prepare(`INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, status, program_id, vuln_type, noise, created_at, updated_at)
+    VALUES (?, ?, ?, 'a.example.com', 'https://a.example.com/x', ?, 'test', 'new', 'test-src', ?, ?, ?, ?)`)
+  // 窗口内：候选 2（1 条晋升 verified capsule）、verified 2（1 high 1 low）、新类型 idor（此前只有 sqli）
+  ins.run('fp_old_sqli', '旧 SQL 注入', 'high', 'capsule:aaaa1111bbbb2222', 'sqli', 0, now - 200 * 86400000, now - 200 * 86400000) // 窗口外旧类型
+  ins.run('fp_c1', '候选信号一', 'medium', '', 'idor', 1, now - 1000, now - 1000) // 候选
+  ins.run('fp_c2', '候选信号二', 'low', '', 'xss', 1, now - 1000, now - 1000) // 候选（未转化）
+  ins.run('fp_v1', '越权读取', 'high', 'capsule:0123456789abcdef', 'idor', 0, now - 2000, now - 2000) // verified high
+  ins.run('fp_v2', '调试信息泄露', 'low', 'capsule:abcdef0123456789', 'info_disclosure', 0, now - 3000, now - 3000) // verified low
+  ins.run('fp_v3', '人工确认无 capsule', 'high', 'run_manual_x', 'sqli', 0, now - 4000, now - 4000) // 非 oracle 不计 verified
+  const r = await env.bus.query('eval', 'discovery_metrics', { days: 90 }, { actor: 'dashboard' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.candidates_total, 2)
+  assert.equal(r.data.oracle_verified, 2, '只有 capsule 证据计 verified（模型无权宣布 verified）')
+  assert.equal(r.data.candidate_to_verified_rate, 1, '2 候选 2 capsule 信号（出池进信号口径）')
+  assert.equal(r.data.verified_hi_med_ratio, 0.5)
+  assert.ok(r.data.new_vuln_types.includes('idor'), '窗口内新类型 idor')
+  assert.ok(!r.data.new_vuln_types.includes('sqli'), 'sqli 窗口外已有，不算新类型')
+})

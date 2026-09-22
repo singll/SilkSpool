@@ -221,6 +221,16 @@ export const EVAL_MANIFEST = {
       predicates: ['visibility'],
       agent_note: '评测数据集列表（分组 program/tech_stack/case_family + 冻结 digest + 可见性）。只读；不返回用例内容与答案，隐藏集对模型只回汇总。',
     },
+    // 21 号方案 §4-5：eval 收缩三指标（发现机器效果投影，周更看板）
+    eval_discovery_metrics: {
+      actor: ['model', 'dashboard', 'script', 'human', 'system'],
+      params: schema({
+        program_id: str({ default: '' }),
+        days: int({ minimum: 1, maximum: 365 }),
+      }, []),
+      predicates: [],
+      agent_note: '发现机器三指标（§4-5）：候选→verified 转化率（oracle capsule 证据占比）、verified 中 high+medium 占比、窗口内新漏洞类型集合。数据来自 vuln 域只读查询，eval 不回写。',
+    },
   },
   events: {
     'eval.case.appended': { payload: { type: 'object' }, redact: [] },
@@ -718,6 +728,32 @@ function makeHandlers(opts) {
           : r))
       }
       return { rows, total: rows.length }
+    },
+
+    // 21 号方案 §4-5：eval 收缩三指标——候选→verified 转化率 / verified 高危占比 / 新漏洞类型
+    eval_discovery_metrics: async (args) => {
+      if (!queryRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 query 不可达', '确认 vuln 域已注册', true)
+      const days = Math.min(Math.max(Number(args.days) || 90, 1), 365)
+      const since = Date.now() - days * 86400000
+      const r = await queryRef('vuln', 'evidence_flags', { program_id: args.program_id || '', limit: 5000 }, { actor: 'script' })
+      const rows = (r && r.ok && (r.rows || r.data?.rows)) || []
+      const win = rows.filter((f) => Number(f.created_at || 0) >= since)
+      const candidates = win.filter((f) => f.noise === 1)
+      const signals = win.filter((f) => f.noise === 0)
+      const verified = signals.filter((f) => f.has_capsule === true)
+      const hiMed = verified.filter((f) => ['high', 'medium', 'critical'].includes(String(f.severity || '')))
+      // 新漏洞类型：窗口内首次出现的 vuln_type（此前 365 天内无更早记录）
+      const earlierTypes = new Set(rows.filter((f) => Number(f.created_at || 0) < since).map((f) => String(f.vuln_type || '').trim()).filter(Boolean))
+      const newTypes = [...new Set(win.map((f) => String(f.vuln_type || '').trim()).filter((t) => t && !earlierTypes.has(t)))].sort()
+      return {
+        window_days: days, program_id: args.program_id || null,
+        candidates_total: candidates.length, signals_total: signals.length,
+        oracle_verified: verified.length,
+        candidate_to_verified_rate: candidates.length ? +(verified.length / candidates.length).toFixed(4) : null,
+        verified_hi_med_ratio: verified.length ? +(hiMed.length / verified.length).toFixed(4) : null,
+        new_vuln_types: newTypes, new_vuln_type_count: newTypes.length,
+        note: 'oracle-verified=evidence 含 capsule:{id} 的信号（模型无权宣布 verified）；转化率分母为候选池出池前基数',
+      }
     },
   }
 

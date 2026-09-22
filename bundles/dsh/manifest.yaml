@@ -220,6 +220,7 @@ templates:
   - data-seed/rules/techniques/waf-bypass.md
   - data-seed/rules/techniques/websocket-test.md
   - data-seed/rules/techniques/xslt-injection-test.md
+  - data-seed/rules/techniques/miniapp-capture-sop.md
   - data-seed/rules/techniques/xss-test.md
   - data-seed/rules/techniques/xxe-test.md
   # --- 记忆治理引擎插件（memcore：生命周期/评分/晋升/遗忘，fail-open 可选注入）---
@@ -306,6 +307,10 @@ templates:
   - dsh-plugin-sec-backend-vuln-sqlite.js
   - dsh-plugin-sec-backend-vuln-http.js
   - sec-vuln-domain-plugin-setup.sh
+  # --- 21 号方案规则层（假设/判定纯函数包：登录态判定/污点路由/H1 保底/oracle 五件套/注入围栏/局面编译/蒸馏）---
+  - dsh-plugin-sec-rules-hypothesis.js
+  - dsh-plugin-sec-rules-hypothesis.test.js
+  - sec-rules-hypothesis-setup.sh
   # --- v5 asset 域插件（Phase 2 首域：资产/指纹/分级/生命周期，契约 03-asset.md）---
   - dsh-plugin-sec-domain-asset.js
   - dsh-plugin-sec-domain-asset.patch.yml

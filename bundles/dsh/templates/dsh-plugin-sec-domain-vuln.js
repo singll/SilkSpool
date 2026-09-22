@@ -87,7 +87,7 @@ export const VULN_MANIFEST = {
   description: '漏洞信号 / 候选队列 / 证据链 / 提交与运营回流（v5 试点域，候选池状态机根治域）',
   owns: {
     tables: ['findings'],
-    files: ['data/evidence/', 'data/events/vuln.jsonl'],
+    files: ['data/evidence/', 'data/evidence/hardened-drafts/', 'data/events/vuln.jsonl'],
   },
   commands: {
     vuln_register_signal: {
@@ -202,6 +202,21 @@ export const VULN_MANIFEST = {
       invariants: [],
       timeout_ms: 60000,
       agent_note: '登记 proof capsule（§2-2）：oracle verdict + 请求对 + 判定输入 + 环境指纹落盘 evidence/oracle-capsules/{id}.json（原子写，digest 自洽，自带重放命令）。capsule:{id} 是 vuln_confirm 的机器验证证据引用。',
+      deprecated: false,
+    },
+    // 21 号方案 §4-4 打法固化三层通道（第一层：capsule 重放 → 脚本草稿）
+    vuln_capsule_replay: {
+      actor: ['script', 'dashboard', 'human', 'reactor'],
+      schema: schema({
+        capsule_id: str({ pattern: '^[a-f0-9]{16}$' }),
+        harden: { type: 'boolean' },
+      }, ['capsule_id']),
+      idempotent: 'none',
+      events: ['vuln.capsule.replayed'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 300000,
+      agent_note: '打法固化第一层（§4-4）：读 proof capsule 自带重放命令，经 exec_run_cli 守卫链重放（scope/QPS 全过），重放输出与原 oracle 再判定比对（match/mismatch）。match 且 harden=true 时产 worker 脚本草稿到 evidence/hardened-drafts/（判定归代码）；脚本→tools.d manifest 的唯一通道是人工审批注册，系统永不自注册工具。',
       deprecated: false,
     },
     vuln_submit: {
@@ -369,7 +384,7 @@ export const VULN_MANIFEST = {
   },
   queries: {
     vuln_list: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'script'],
       params: schema({
         visibility: en(['signal', 'candidate', 'all'], { default: 'signal' }),
         host: str({ default: '' }),
@@ -412,6 +427,16 @@ export const VULN_MANIFEST = {
       predicates: [],
       agent_note: '漏洞计数总览：信号面（by severity/status）与候选面（pending/claimed）分开计数。候选口径=待消化（noise=1 且 status=new）。',
     },
+    // 21 号方案 §4-5：eval 三指标的数据源（has_capsule 标志位，不回传证据全文）
+    vuln_evidence_flags: {
+      actor: ['script', 'dashboard', 'system'],
+      params: schema({
+        program_id: str({ default: '' }),
+        limit: int({ minimum: 1, maximum: 5000 }),
+      }, []),
+      predicates: [],
+      agent_note: '（eval 投影数据源）逐 finding 轻量标志位：noise/severity/vuln_type/created_at/has_capsule。不回传证据全文；oracle-verified 判定口径在此单一事实。',
+    },
     vuln_by_asset: {
       actor: ['model', 'dashboard', 'human'],
       params: schema({
@@ -453,6 +478,7 @@ export const VULN_MANIFEST = {
     'vuln.oracle.capsuled': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.submitted': { payload: { type: 'object' }, redact: [] },
     'vuln.evidence.attached': { payload: { type: 'object' }, redact: [] },
+    'vuln.capsule.replayed': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'exec.run.completed': { handler: 'onParserProposal', mode: 'async', as: 'reactor' },
@@ -728,6 +754,7 @@ function makeHandlers(opts) {
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const ttlSec = opts.claim_ttl_sec || CLAIM_TTL_DEFAULT_SEC
   const dispatchRef = opts.dispatch
+  const queryRef = opts.query
 
   function throwErr(code, message, hint, retryable = false) {
     throw Object.assign(new Error(message), { code, hint, retryable })
@@ -1001,6 +1028,66 @@ function makeHandlers(opts) {
         data: { capsule_id: w.id, evidence_ref: `capsule:${w.id}`, file: w.file, verdict: args.verdict },
         events: [{ name: 'vuln.oracle.capsuled', payload: { capsule_id: w.id, oracle: String(args.oracle), verdict: args.verdict, host: args.target?.host || null, vuln_class: args.target?.vuln_class || null, program_id: args.target?.program_id || null, finding_id: args.finding_id ?? null, session_id: ctx.session_id || null } }],
         after: { capsule_id: w.id, verdict: args.verdict },
+      }
+    },
+
+    // 21 号方案 §4-4 第一层：capsule 重放 + 打法固化为 worker 脚本草稿（判定归代码）
+    vuln_capsule_replay: async (args, repo, ctx) => {
+      const capsule = readCapsule(dataDir, args.capsule_id)
+      if (!capsule) throwErr('E_NOT_FOUND', `proof capsule 不存在或 digest 不符: ${args.capsule_id}`, '核对 capsule_id（vuln_oracle_capsule 返回）')
+      const replay = capsule.replay || {}
+      const tool = String(replay.tool || '')
+      if (!tool) throwErr('E_SCHEMA', 'capsule 无自带重放命令（replay.tool 缺失）', '登记 capsule 时附 replay:{tool, params}——可重放是打法固化前提')
+      if (!dispatchRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 dispatch 不可达', '确认 exec 域已注册', true)
+      // 重放走 exec_run_cli 守卫链（scope fail-closed / QPS / 沙箱全过，无旁路）
+      const r = await dispatchRef('exec', 'run_cli', { tool, params: { ...(replay.params || {}), program_id: capsule.target?.program_id || '' } }, { actor: 'script', cause: ctx?.cause })
+      if (!r || !r.ok) throwErr(r?.error?.code || 'E_INTERNAL', `重放执行失败: ${r?.error?.message || '未知'}`, r?.error?.hint || '', false)
+      const runId = r.data.run_id
+      // 证据比对：原 capsule 判定证据关键词（marker/oob_token/敏感模式命中）须在重放输出中复现
+      const expect = []
+      const ri = capsule.rule_input || {}
+      const rs = capsule.result || {}
+      for (const cand of [ri.marker, ri.oob_token, rs.marker, rs.oob_token, ...(Array.isArray(rs.hits) ? rs.hits : [])].map((x) => String(x || '').trim())) {
+        if (cand && cand.length >= 4 && !expect.includes(cand)) expect.push(cand)
+      }
+      let matched = 0
+      const missing = []
+      if (expect.length && queryRef) {
+        for (const pat of expect) {
+          try {
+            const g = await queryRef('exec', 'grep_result', { run_id: runId, pattern: pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), max: 5 }, { actor: 'script' })
+            const lines = g && g.ok && g.data ? g.data.lines || [] : []
+            if (lines.length) matched++
+            else missing.push(pat.slice(0, 60))
+          } catch { missing.push(pat.slice(0, 60)) }
+        }
+      } else if (!expect.length) {
+        matched = -1 // 无确定性证据可比——判定 inconclusive，不猜
+      }
+      const verdict = matched === -1 ? 'inconclusive' : (missing.length === 0 && matched > 0 ? 'match' : 'mismatch')
+      // match + harden → 打法固化第二层：worker 脚本草稿（判定归代码；注册 manifest 需人工审批，唯一工具扩张通道）
+      let draftFile = null
+      if (verdict === 'match' && args.harden === true) {
+        const dir = path.join(dataDir, 'evidence', 'hardened-drafts')
+        fs.mkdirSync(dir, { recursive: true })
+        draftFile = path.join(dir, `${args.capsule_id}.json`)
+        const draft = {
+          draft_version: 1, capsule_id: args.capsule_id, oracle: capsule.oracle, vuln_class: capsule.target?.vuln_class || '',
+          replay: { tool, params: replay.params || {} },
+          expect_evidence: expect,
+          judge: 'oracle_rejudge', // 判定归代码：worker 只收集，oracle 判定
+          status: 'draft', note: '人工评审后经审批注册 tools.d manifest（唯一工具扩张通道）；本草案不具备执行能力',
+          created_at: new Date().toISOString(),
+        }
+        const tmp = `${draftFile}.tmp.${process.pid}.${Date.now()}`
+        fs.writeFileSync(tmp, JSON.stringify(draft, null, 2) + '\n')
+        fs.renameSync(tmp, draftFile)
+        draftFile = path.join('evidence', 'hardened-drafts', `${args.capsule_id}.json`)
+      }
+      return {
+        data: { capsule_id: args.capsule_id, replay_run_id: runId, verdict, expected: expect.length, matched: Math.max(0, matched), missing, hardened_draft: draftFile, next: draftFile ? '人工评审草案 → 审批注册 manifest' : null },
+        events: [{ name: 'vuln.capsule.replayed', payload: { capsule_id: args.capsule_id, replay_run_id: runId, verdict, matched: Math.max(0, matched), expected: expect.length, hardened_draft: draftFile, program_id: capsule.target?.program_id || null, host: capsule.target?.host || null } }],
+        after: { capsule_id: args.capsule_id, verdict },
       }
     },
 
@@ -1324,6 +1411,16 @@ function makeHandlers(opts) {
     vuln_stats: async (_args, repo) => {
       return repo.statsFindings()
     },
+    // 21 号方案 §4-5：eval 三指标数据源——只回标志位不回证据全文
+    vuln_evidence_flags: async (args, repo) => {
+      const rows = repo.listFindingsWithEvidence ? repo.listFindingsWithEvidence({ program_id: args.program_id || '', limit: args.limit || 5000 }) : []
+      const flags = rows.map((r) => ({
+        id: r.id, noise: r.noise, severity: r.severity || 'info', status: r.status,
+        vuln_type: r.vuln_type || '', created_at: r.created_at, program_id: r.program_id || null,
+        has_capsule: /(^|\s|,|;)capsule:[a-f0-9]{16}/.test(String(r.evidence || '')),
+      }))
+      return { rows: flags, total: flags.length }
+    },
     vuln_by_asset: async (args, repo) => {
       const host = normalizeHost(args.host)
       const rows = repo.listFindingsWhere({ visibility: 'all', host }, { sort: 'severity', dir: 'desc' })
@@ -1453,6 +1550,7 @@ export function apply(ctx, config = {}) {
         backend: backendSel,
         backendOptions: config.backendOptions || {},
         dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c),
+        query: (d, n, a, c) => bus.query(d, n, a, c),
       })
       const res = bus.registry.register(domain)
       if (res.ok) {

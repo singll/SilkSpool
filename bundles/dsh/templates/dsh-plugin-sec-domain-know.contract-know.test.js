@@ -38,7 +38,7 @@ function makeEnv(aliasesYaml = '') {
   const domain = buildKnowDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) })
   const reg = bus.registry.register(domain)
   assert.equal(reg.ok, true, `know 域应注册成功：${reg.error?.message || ''}`)
-  return { dir, dataDir, bus }
+  return { dir, dataDir, bus, domain }
 }
 
 const JUST = '这是一条超过十字符的沉淀理由说明'
@@ -1612,4 +1612,116 @@ test('L6: know_learning_trace 证据对照——episode→证据→revision→�
   const es = await bus.query('know', 'learning_trace', {}, { actor: 'dashboard' })
   assert.equal(es.ok, false)
   assert.equal(es.error.code, 'E_SCHEMA')
+})
+
+// ---------------------------------------------------------------------------
+// 21 号方案 §七 Feedback Core：蒸馏 reactor / 记分双裁判 / 缺口 reactor
+// ---------------------------------------------------------------------------
+
+test('21 §4-1: know_distill_verdict——去特化经验卡候选进 L2 治理链（不蒸无类型/失败局）', async () => {
+  const { bus } = makeEnv()
+  // 先落 episode 锚点（蒸馏要求 episode_id 可解析——L2 来源 fail-closed）
+  const ep = await bus.dispatch('know', 'episode_record', {
+    source_event_id: 'evt_x1', source_event_name: 'vuln.signal.confirmed', consumer_version: 'episode-v1',
+    outcome: 'confirmed', reason_code: 'vuln_confirm', attempt_id: 'finding:41',
+  }, { actor: 'reactor' })
+  assert.equal(ep.ok, true)
+  const episodeId = ep.data.episode_id
+  const r = await bus.dispatch('know', 'distill_verdict', {
+    finding_id: 41, vuln_type: 'IDOR 越权访问', host: 'api.target.com', program_id: 'test-src',
+    evidence_ref: 'capsule:abc123def4567890', source_event_id: 'evt_x1', episode_id: episodeId,
+  }, { actor: 'reactor' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.distilled, true)
+  assert.ok(r.data.artifact_id.startsWith('distill-'))
+  // 候选落 knowledge_revisions（candidate≠发布，走评测+审批链）
+  const rev = bus._internal.db().prepare("SELECT * FROM knowledge_revisions WHERE artifact_id=?").get(r.data.artifact_id)
+  assert.ok(rev, 'revision 候选已落账')
+  assert.equal(rev.status, 'candidate')
+  assert.equal(rev.source_kind, 'episode')
+  assert.equal(rev.source_ref, episodeId, '来源锚定 episode_id')
+  const content = JSON.parse(rev.content_json)
+  assert.ok(!JSON.stringify(content).includes('target.com'), '去特化：目标细节剥离')
+  assert.equal(content.confidence, 'low', '蒸馏候选初始低置信，由真实反馈校准')
+  // 事件
+  const names = bus._internal.db().prepare('SELECT payload FROM event_outbox').all().map((o) => JSON.parse(o.payload).name)
+  assert.ok(names.includes('know.distill.proposed'))
+  // actor 闸：model 不可见内部蒸馏通道
+  const forbidden = await bus.dispatch('know', 'distill_verdict', { finding_id: 1, vuln_type: 'x' }, { actor: 'model' })
+  assert.equal(forbidden.ok, false)
+  assert.equal(forbidden.error.code, 'E_ACTOR_FORBIDDEN')
+  // 聚合幂等：同 finding+vuln_type 重放不重复提案
+  const r2 = await bus.dispatch('know', 'distill_verdict', {
+    finding_id: 41, vuln_type: 'IDOR 越权访问', host: 'api.target.com', program_id: 'test-src',
+    evidence_ref: 'capsule:abc123def4567890', source_event_id: 'evt_x1', episode_id: episodeId,
+  }, { actor: 'reactor' })
+  assert.equal(r2.ok, true)
+  const revCount = bus._internal.db().prepare("SELECT COUNT(*) AS n FROM knowledge_revisions WHERE artifact_id=?").get(r.data.artifact_id).n
+  assert.equal(revCount, 1, '重放不重复提案')
+})
+
+test('21 §4-1: onVulnVerdict 合流——oracle capsule confirmed 自动蒸馏；非 capsule 证据不蒸馏', async () => {
+  const { dir, bus, domain } = makeEnv()
+  // capsule 证据的 confirmed → episode + 蒸馏候选
+  const r = await domain.handlers.subscribers.onVulnVerdict({
+    id: 'evt_distill_1', name: 'vuln.signal.confirmed', actor: 'model', ts: Date.now(),
+    payload: { finding_id: 77, vuln_type: 'SSRF', host: 'a.example.com', program_id: 'test-src', evidence_ref: 'capsule:0123456789abcdef' },
+  })
+  assert.equal(r.ok, true, JSON.stringify(r.error))
+  assert.ok(r.data.distilled, 'capsule 证据触发蒸馏')
+  const rev = bus._internal.db().prepare("SELECT artifact_id, source_ref FROM knowledge_revisions WHERE artifact_id LIKE 'distill-%'").get()
+  assert.ok(rev, `蒸馏候选已入治理链（distill=${JSON.stringify(r.data.distilled)}）`)
+  // 非 capsule（人工确认）→ 只落 episode 不蒸馏（B3 幻觉保底）
+  const r2 = await domain.handlers.subscribers.onVulnVerdict({
+    id: 'evt_distill_2', name: 'vuln.signal.confirmed', actor: 'model', ts: Date.now(),
+    payload: { finding_id: 78, vuln_type: 'XSS', host: 'a.example.com', evidence_ref: 'run_manual01' },
+  })
+  assert.equal(r2.ok, true)
+  assert.equal(r2.data.distilled, undefined)
+  assert.equal(r2.data.recorded, true, 'episode 照常落账')
+})
+
+test('21 §4-2: onVendorVerdict——SRC 平台裁决事件化（accepted=终极正例/驳回=负例 episode）', async () => {
+  const { bus, domain } = makeEnv()
+  const accepted = await domain.handlers.subscribers.onVendorVerdict({
+    id: 'evt_vendor_1', name: 'vuln.signal.submitted', actor: 'dashboard', ts: Date.now(),
+    payload: { finding_id: 90, vendor_status: 'accepted', bounty: 5000, platform: 'hackerone' },
+  })
+  assert.equal(accepted.ok, true)
+  const ep1 = bus._internal.db().prepare("SELECT * FROM learning_episodes WHERE source_event_id='evt_vendor_1'").get()
+  assert.equal(ep1.outcome, 'confirmed')
+  assert.equal(ep1.reason_code, 'vendor_accepted')
+  assert.equal(ep1.source_credibility, 'machine', '平台裁决非模型自评')
+  const rejected = await domain.handlers.subscribers.onVendorVerdict({
+    id: 'evt_vendor_2', name: 'vuln.signal.submitted', actor: 'dashboard', ts: Date.now(),
+    payload: { finding_id: 91, vendor_status: 'duplicate' },
+  })
+  assert.equal(rejected.ok, true)
+  const ep2 = bus._internal.db().prepare("SELECT * FROM learning_episodes WHERE source_event_id='evt_vendor_2'").get()
+  assert.equal(ep2.outcome, 'inconclusive')
+  assert.equal(ep2.reason_code, 'vendor_duplicate')
+  // 非裁决态跳过
+  const skip = await domain.handlers.subscribers.onVendorVerdict({
+    id: 'evt_vendor_3', name: 'vuln.signal.submitted', actor: 'dashboard', ts: Date.now(),
+    payload: { finding_id: 92, vendor_status: '' },
+  })
+  assert.equal(skip.data.skipped, true)
+})
+
+test('21 §4-3: onCoverageGap——覆盖缺口态 → know_gaps（已测格点不产生缺口）', async () => {
+  const { bus, domain } = makeEnv()
+  const r = await domain.handlers.subscribers.onCoverageGap({
+    id: 'evt_gap_1', name: 'ledger.coverage.marked', actor: 'reactor', ts: Date.now(),
+    payload: { program: 'test-src', dim: 'vulnclass', key: 'a.example.com|idor', mark: 'untested' },
+  })
+  assert.equal(r.ok, true, JSON.stringify(r.error))
+  const gap = bus._internal.db().prepare("SELECT * FROM know_gaps WHERE surface='coverage:vulnclass'").get()
+  assert.ok(gap, '覆盖缺口已登记 know_gaps')
+  assert.equal(gap.program_id, 'test-src')
+  // 已测格点不产生缺口
+  const tested = await domain.handlers.subscribers.onCoverageGap({
+    id: 'evt_gap_2', name: 'ledger.coverage.marked', actor: 'reactor', ts: Date.now(),
+    payload: { program: 'test-src', dim: 'vulnclass', key: 'a.example.com|sqli', mark: 'verified' },
+  })
+  assert.equal(tested.data.skipped, true)
 })
