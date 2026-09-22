@@ -617,6 +617,33 @@ export async function handleDashboardRpc(endpoint, payload) {
       const r = await busDispatch('task', 'create', args, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
       return { ok: true, id: r.data?.task_id, deduped: !!r.data?.deduped, ...(r.data || {}) }
     }
+    // ---- 22 号方案 §十二：专项（Campaign）统筹视图 ----
+    case 'campaigns': {
+      const r = await busQuery('task', 'campaign_list', {
+        status: String(p.status || ''), program_id: String(p.program_id || ''),
+        limit: Math.min(Number(p.limit) || 50, 200), offset: Math.max(0, Number(p.offset) || 0),
+      })
+      return { rows: r.rows, total: r.total }
+    }
+    case 'campaignGet': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignGet 需要 id')
+      const r = await busQuery('task', 'campaign_get', { id })
+      return r.data
+    }
+    case 'campaignDecisions': {
+      const r = await busQuery('task', 'campaign_decisions', {
+        campaign_id: Number(p.campaign_id), verdict: String(p.verdict || ''),
+        limit: Math.min(Number(p.limit) || 50, 500), offset: Math.max(0, Number(p.offset) || 0),
+      })
+      return { rows: r.rows, total: r.total }
+    }
+    case 'campaignTickNow': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignTickNow 需要 id')
+      const r = await busDispatch('task', 'campaign_tick_now', { campaign_id: id }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
+    }
     case 'sessions':
       return deps.sessionsList(String(p.workspace_id || ''))
     case 'findingUpdate': {

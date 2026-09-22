@@ -443,3 +443,44 @@ test('L4: effect 重试不重复发布——首次 effect 失败（未评测）�
   const evts = db.prepare("SELECT COUNT(*) c FROM event_outbox WHERE payload LIKE '%know.revision.published%'").get().c
   assert.equal(evts, 1, '零重复发布事件')
 })
+
+// ---------------------------------------------------------------------------
+// 22 号方案 §十：campaign-autonomy / campaign-budget-extend 两个新 kind
+// ---------------------------------------------------------------------------
+
+test('22 campaign-autonomy: L1 升档审批 → effect campaign_autonomy_apply 落档激活', async () => {
+  const { bus } = makeEnvWithTask()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'camp-a', program_ids: ['example-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  const r = await bus.dispatch('approval', 'request', { kind: 'campaign-autonomy', subject: 'camp-a', evidence: '升级 L1 建议模式（草稿人审放行）', payload: { autonomy: 1 } }, { actor: 'dashboard' })
+  assert.equal(r.ok, true, r.error?.message)
+  const rid = r.data.request_id
+  const d = await bus.dispatch('approval', 'decide', { id: rid, decision: 'approve', operator: 'op1' }, { actor: 'dashboard' })
+  assert.equal(d.ok, true, d.error?.message)
+  assert.equal(d.data.effect_state, 'applied')
+  const row = bus._internal.db().prepare('SELECT status, autonomy, approval_id FROM campaigns WHERE id=?').get(cid)
+  assert.equal(row.status, 'active')
+  assert.equal(row.autonomy, 1)
+  assert.equal(row.approval_id, rid)
+  // 非 draft/paused 再升档被拒
+  const r2 = await bus.dispatch('approval', 'request', { kind: 'campaign-autonomy', subject: 'camp-a', evidence: '再次升档 L2 测试', payload: { autonomy: 2 } }, { actor: 'dashboard' })
+  assert.equal(r2.ok, false)
+  assert.equal(r2.error.code, 'E_INVARIANT')
+})
+
+test('22 campaign-budget-extend: spent≥80% 才可延长，effect 增量落账', async () => {
+  const { bus } = makeEnvWithTask()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'camp-b', program_ids: ['example-src'], budget_tokens: 1000, goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  // 未达 80% → 拒绝
+  const early = await bus.dispatch('approval', 'request', { kind: 'campaign-budget-extend', subject: 'camp-b', evidence: '预算延长申请测试（未达阈值）', payload: { add_tokens: 1000 } }, { actor: 'model' })
+  assert.equal(early.ok, false)
+  assert.equal(early.error.code, 'E_INVARIANT')
+  bus._internal.db().prepare('UPDATE campaigns SET spent_tokens=850 WHERE id=?').run(cid)
+  const r = await bus.dispatch('approval', 'request', { kind: 'campaign-budget-extend', subject: 'camp-b', evidence: '窗口预算将触顶，申请追加 1000 tokens', payload: { add_tokens: 1000 } }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const d = await bus.dispatch('approval', 'decide', { id: r.data.request_id, decision: 'approve', operator: 'op1' }, { actor: 'dashboard' })
+  assert.equal(d.ok, true, d.error?.message)
+  const row = bus._internal.db().prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(cid)
+  assert.equal(row.budget_tokens, 2000)
+})

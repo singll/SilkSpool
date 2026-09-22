@@ -1725,3 +1725,20 @@ test('21 §4-3: onCoverageGap——覆盖缺口态 → know_gaps（已测格点�
   })
   assert.equal(tested.data.skipped, true)
 })
+
+// 22 号方案 §11.2-L2：episode 归因加 campaign 维度（幂等加列 + 查询过滤）
+test('22 L2: know_episode_record 带 campaign_id 落账 + episode_list campaign_id 过滤', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.dispatch('know', 'episode_record', {
+    source_event_id: 'evt_camp_001', source_event_name: 'task.finished', consumer_version: 'episode-v1',
+    outcome: 'inconclusive', reason_code: 'task_done', program_id: 'test-src', task_id: 42, campaign_id: '7',
+  }, { actor: 'reactor' })
+  assert.equal(r.ok, true, r.error?.message)
+  const row = bus._internal.db().prepare('SELECT campaign_id FROM learning_episodes WHERE episode_id=?').get(r.data.episode_id)
+  assert.equal(row.campaign_id, '7')
+  const list = await bus.query('know', 'episode_list', { campaign_id: '7' }, { actor: 'dashboard' })
+  assert.equal(list.rows.length, 1)
+  assert.equal(list.rows[0].campaign_id, '7')
+  const none = await bus.query('know', 'episode_list', { campaign_id: '999' }, { actor: 'dashboard' })
+  assert.equal(none.rows.length, 0)
+})

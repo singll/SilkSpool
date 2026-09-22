@@ -8,6 +8,7 @@ import {
   oracleSqliDiff, oracleSqliTime, oracleXssEcho, oracleSsrfOob,
   fenceUntrusted, detectInjectionPatterns, compileSituation, strategyKey, simhashDistance,
   routeFlowsSignal, visionTriageRubric, decontextualize, distillEpisode,
+  compileCampaignPlan, CAMPAIGN_CLASS_PRIORITY, CAMPAIGN_ORACLE, hitMatrixKey,
 } from '../index.js'
 
 // ---------- §5.1 登录态判定 ----------
@@ -230,4 +231,65 @@ test('distillEpisode: 只蒸 confirmed 正例，产出聚合键', () => {
   assert.ok(d.tags.includes('distilled'))
   assert.ok(!d.scenario.includes('target.com')) // 去特化
   assert.equal(d.source_kind, 'episode')
+})
+
+// ---------- 22 §7.3 Campaign 规划器决策编译（确定性可重放） ----------
+
+test('compileCampaignPlan: 缺口→草稿（高危类优先）+ 有界 derive_cap', () => {
+  const plan = compileCampaignPlan({
+    campaign: { program_ids: ['p1'], policy: { derive_cap_per_tick: 2, max_active_tasks: 10 } },
+    gaps: [
+      { program: 'p1', dim: 'crawl', key: 'new.p1.com', mark: 'not_crawled', value: 1 },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|info_disclosure', mark: 'untested' },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|sqli', mark: 'untested' },
+    ],
+  })
+  assert.equal(plan.drafts.length, 2)
+  // sqli（优先级高）排在 info_disclosure 前
+  assert.equal(plan.drafts[0].vuln_class, 'sqli')
+  assert.equal(plan.drafts[0].oracle, 'sqli_diff')
+  assert.ok(plan.skipped.some((s) => s.reason === 'derive_cap'))
+})
+
+test('compileCampaignPlan: 连败降权 / 黑名单丢弃 / 经验卡提权', () => {
+  const key = 'a.p1.com|||sqli'
+  const g = { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|sqli', mark: 'untested' }
+  const base = compileCampaignPlan({
+    campaign: { program_ids: ['p1'] },
+    gaps: [g, { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|idor', mark: 'untested' }],
+  })
+  assert.equal(base.drafts.length, 2)
+  // 黑名单丢弃
+  const bl = compileCampaignPlan({ campaign: { program_ids: ['p1'] }, gaps: [g], strategies: { [key]: { fails: 3, blacklisted: true } } })
+  assert.equal(bl.drafts.length, 0)
+  assert.equal(bl.skipped[0].reason, 'blacklisted')
+  // 连败降权：fails=2 时 priority 数值更大（更低优先）
+  const p0 = compileCampaignPlan({ campaign: { program_ids: ['p1'] }, gaps: [g] })
+  const p2 = compileCampaignPlan({ campaign: { program_ids: ['p1'] }, gaps: [g], strategies: { [key]: { fails: 2, blacklisted: false } } })
+  assert.ok(p2.drafts[0].priority >= p0.drafts[0].priority)
+  // 经验卡提权
+  const hit = hitMatrixKey({ stack: 'generic', param_shape: 'none', vuln_class: 'sqli' })
+  const boost = compileCampaignPlan({ campaign: { program_ids: ['p1'] }, gaps: [g], scores: { [hit]: { wins: 5, fails: 0 } } })
+  assert.ok(boost.drafts[0].priority <= p0.drafts[0].priority)
+})
+
+test('compileCampaignPlan: 有界——活跃满 / 预算低 不派生', () => {
+  const campaign = { program_ids: ['p1'], policy: { max_active_tasks: 3 } }
+  const gaps = [{ program: 'p1', dim: 'crawl', key: 'a.p1.com', mark: 'not_crawled' }]
+  assert.equal(compileCampaignPlan({ campaign, gaps, activeTaskCount: 3 }).drafts.length, 0)
+  assert.equal(compileCampaignPlan({ campaign, gaps, activeTaskCount: 0, budgetRemainingRatio: 0.01 }).drafts.length, 0)
+})
+
+test('compileCampaignPlan: 固定快照可重放（两次输出全等）', () => {
+  const input = {
+    campaign: { program_ids: ['p1', 'p2'], policy: { derive_cap_per_tick: 3 } },
+    gaps: [
+      { program: 'p1', dim: 'crawl', key: 'a.p1.com', mark: 'not_crawled' },
+      { program: 'p2', dim: 'param', key: 'b.p2.com|/api', mark: 'no_params' },
+    ],
+    strategies: { 'a.p1.com|||': { fails: 0, blacklisted: false } },
+    activeTaskCount: 0,
+    budgetRemainingRatio: 0.8,
+  }
+  assert.deepEqual(compileCampaignPlan(input), compileCampaignPlan(input))
 })

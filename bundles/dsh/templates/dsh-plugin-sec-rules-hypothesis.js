@@ -563,3 +563,93 @@ export function distillEpisode(ep = {}) {
     evidence,
   }
 }
+
+// ---------------------------------------------------------------------------
+// 22 号方案 §7.3 Campaign 规划器决策编译（纯函数，确定性可重放）
+//
+// 输入（全为快照，无 IO）：campaign{policy, program_ids}、gaps（覆盖缺口队列）、
+//   strategies（strategy_dedupe map）、scores（know_scores 命中矩阵 map）、activeTaskCount、
+//   budgetRemainingRatio。
+// 输出：{ drafts[], skipped[] }——drafts 每条含 program_id/kind/host/path/param/vuln_class/
+//   level/rationale/oracle/strategy_key/campaign_role/priority/phase/goal/score。
+// 优先级 = 高危漏洞类 × 资产价值 × 新资产面，叠加连败降权 / 经验卡提权 / 预算剩余率。
+// 有界：≤ policy.derive_cap_per_tick；活跃子任务 ≥ max_active_tasks 不派生（INV-C6 编译侧）。
+// ---------------------------------------------------------------------------
+
+export const CAMPAIGN_CLASS_PRIORITY = { idor: 5, sqli: 5, authz: 5, ssrf: 4, file: 3, xss: 2, info_disclosure: 1 }
+
+// vuln_class → oracle 路由（machine oracle 五件套，见 §2-1）
+export const CAMPAIGN_ORACLE = {
+  idor: 'idor_diff', authz: 'idor_diff', sqli: 'sqli_diff', xss: 'xss_echo',
+  ssrf: 'ssrf_oob', info_disclosure: 'info_disclosure_diff', file: 'unauthz_diff',
+}
+
+function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
+
+export function compileCampaignPlan(input = {}) {
+  const campaign = input.campaign || {}
+  const policy = campaign.policy || {}
+  const cap = Number(policy.derive_cap_per_tick) > 0 ? Math.floor(Number(policy.derive_cap_per_tick)) : 5
+  const maxActive = Number(policy.max_active_tasks) > 0 ? Math.floor(Number(policy.max_active_tasks)) : 20
+  const range = Array.isArray(policy.task_priority_range) && policy.task_priority_range.length === 2
+    ? [Number(policy.task_priority_range[0]), Number(policy.task_priority_range[1])] : [1, 6]
+  const gaps = Array.isArray(input.gaps) ? input.gaps : []
+  const strategies = input.strategies || {}
+  const scores = input.scores || {}
+  const activeCount = Number(input.activeTaskCount) || 0
+  const budgetRemainingRatio = input.budgetRemainingRatio == null ? 1 : Number(input.budgetRemainingRatio)
+  const skipped = []
+  if (activeCount >= maxActive) return { drafts: [], skipped: [{ reason: 'max_active_tasks', active: activeCount }] }
+  if (budgetRemainingRatio <= 0.05) return { drafts: [], skipped: [{ reason: 'budget_low', ratio: budgetRemainingRatio }] }
+
+  const defaultProgram = (Array.isArray(campaign.program_ids) ? campaign.program_ids[0] : null) || ''
+  const defaultPhases = Array.isArray(policy.allowed_phases) && policy.allowed_phases.length ? policy.allowed_phases : ['vuln']
+  const seen = new Set()
+  const scored = []
+  for (const g of gaps) {
+    const rawKey = String(g.key || '')
+    const dim = String(g.dim || '')
+    const parts = rawKey.split('|')
+    const host = String(g.host || parts[0] || '')
+    if (!host) continue
+    let path = String(g.path || '')
+    let vulnClass = String(g.vuln_class || '')
+    let kind = String(g.kind || '')
+    // 对齐 11-ledger 缺口键形态：crawl=host；param/auth=host|path；vulnclass=host|class
+    if (!kind) kind = dim === 'crawl' ? 'crawl' : (dim === 'param' ? 'param_enrich' : 'hypothesis')
+    if (!path && (dim === 'param' || dim === 'auth')) path = parts.slice(1).join('|')
+    if (!vulnClass && dim === 'vulnclass') vulnClass = parts[1] || ''
+    if (kind === 'hypothesis' && !vulnClass) vulnClass = 'info_disclosure'
+    const param = String(g.param || '')
+    const key = strategyKey({ host, path, param, vuln_class: vulnClass })
+    if (seen.has(key)) continue
+    seen.add(key)
+    const st = strategies[key] || strategies[String(g.strategy_key || '')] || {}
+    if (st.blacklisted) { skipped.push({ strategy_key: key, reason: 'blacklisted' }); continue }
+    let score = CAMPAIGN_CLASS_PRIORITY[vulnClass] || 1
+    score += Number(g.value || g.asset_score || 0)
+    const mark = String(g.mark || '')
+    if (['not_crawled', 'uncrawled', 'failed'].includes(mark)) score += 2
+    if (['no_params', 'missing', 'unenriched'].includes(mark)) score += 1.5
+    if (Number(g.asset_tier) >= 3) score += 1
+    score -= 0.8 * Number(st.fails || 0)
+    const hitKey = hitMatrixKey({ stack: g.stack || 'generic', param_shape: g.param_shape || (param ? 'id' : 'none'), vuln_class: vulnClass })
+    const sc = scores[hitKey]
+    if (sc && Number(sc.wins) > 0) score += 0.3 * Number(sc.wins)
+    if (sc && Number(sc.fails) > 0) score -= 0.2 * Number(sc.fails)
+    const phase = defaultPhases.includes(String(g.phase || '')) ? String(g.phase) : defaultPhases[0]
+    const programId = String(g.program || g.program_id || defaultProgram)
+    scored.push({
+      program_id: programId, kind, host, path, param, vuln_class: vulnClass, level: 'H2',
+      rationale: `专项规划：${mark || g.dim || 'gap'} 缺口，类优先级 ${CAMPAIGN_CLASS_PRIORITY[vulnClass] || 1}${st.fails ? `，连败 ${st.fails} 降权` : ''}`,
+      oracle: kind === 'hypothesis' ? (CAMPAIGN_ORACLE[vulnClass] || 'unauthz_diff') : '',
+      strategy_key: key, campaign_role: 'derived', priority: _clamp(Math.round(9 - score), range[0], range[1]),
+      phase, goal: 'research', score,
+    })
+  }
+  scored.sort((a, b) => (b.score - a.score) || a.strategy_key.localeCompare(b.strategy_key))
+  const drafts = scored.slice(0, cap)
+  if (scored.length > cap) skipped.push({ reason: 'derive_cap', dropped: scored.length - cap, cap })
+  return { drafts, skipped }
+}
+

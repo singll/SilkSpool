@@ -923,3 +923,82 @@ reapWorkers(readMeta, pidAliveFn, nowTs) → {reaped}   // C15 对账原语
 | `vuln.signal.rejected` | `onStrategyOutcome` | 连败回写 strategy 黑名单 |
 
 契约：task 47/47 全绿（新增 6 例：预算闸/derive_intent 去重与门禁/H3 编译/端点派生/缺口消费）。
+
+---
+
+## 七、2026-09-22 22 号方案回填（Campaign 专项——常驻统筹实体）
+
+> 设计真相源：[22-campaign-task](22-campaign-task.md)。本节为**实现态回填**（契约 58 例全绿：task 58/58）。Campaign 落在 **task 域内**，不新增域；子任务仍是现有 Task（同表/同状态机/同调度器，零改动）。
+
+### 7.1 实体与关系
+
+`Campaign（专项）`：常驻统筹对象，绑定 1 个（single）或多个（cross）已授权 program，持有目标规格 `goal_spec` 与策略 `policy`，以 **派生 → 下发 → 监督 → 验收** 闭环驱动子任务。
+
+```
+Campaign ─1:N─ Task（子任务；schedule_kind ∈ {NULL, once}——禁 interval）
+Task ─1:1─ Run/worker（exec 域，零改动）
+```
+
+组件（均在本域内，原子化）：Core（账本/状态机/tick 编排）、Planner（`compileCampaignPlan` 规则层纯函数，见 rules-hypothesis）、Dispatcher（翻译为 derive_intent/task_create）、Supervisor（巡检五信号）、Reviewer（验收落账）、LearnLink（know 维度扩展）。
+
+### 7.2 数据模型（本域 owns，不改表名不迁库）
+
+| 表/列 | 说明 |
+|---|---|
+| `campaigns` | id/name/mode(single\|cross)/program_ids(JSON)/goal_spec(JSON)/autonomy(0\|1\|2)/policy(JSON)/status(draft\|active\|paused\|reviewing\|archived)/budget_tokens/spent_tokens/budget_window_days/approval_id/last_tick_at/heartbeat_at/created_by/时间戳。索引 `idx_campaigns_status(status,last_tick_at)` |
+| `campaign_decisions` | 验收账本：campaign_id/task_id/verdict(accepted\|rework\|rejected\|escalated)/evidence(required)/goal_delta(JSON)/decided_by。**UNIQUE(task_id)**=一任务一验收 |
+| `campaign_checkpoints` | kind(milestone\|escalation\|autonomy_change\|budget_low\|stop_condition)/summary/payload |
+| `tasks.campaign_id` | nullable 加列（存量 NULL 兼容）；**写入后不可改**（INV-C2，无更新路径） |
+| `tasks.campaign_role` | seed/derived/verify/submit/retest/learn（Reviewer 验收分派） |
+| 索引 | `idx_tasks_campaign(campaign_id,status)` |
+
+### 7.3 命令（§八 C20–C27 + 内部）
+
+| 动词 | actor | 说明 |
+|---|---|---|
+| `campaign_create` | model,dashboard,script,human,system | 登记专项（born=draft）；stop_conditions 非空铁律；cross≥2 program；autonomy=2 需 budget+approval_id（INV-C4）；name 活跃唯一。事件 `task.campaign.created` |
+| `campaign_activate` | dashboard,human,approval | draft\|paused → active；校验绑定 program 授权未过期（INV-C1）与 autonomy 门禁 |
+| `campaign_pause` / `campaign_resume` | model,dashboard,human,reactor | active ↔ paused（不动在跑子任务） |
+| `campaign_archive` | dashboard,human | 非终态 → archived；同步 cancel 其 queued 子任务 |
+| `campaign_goal_revise` | dashboard,human | 更新 goal_spec/policy；active 中改目标强制转 reviewing。**注**：设计文档名 `campaign_goal_update` 因总线 R2 禁用词「update」改名 `campaign_goal_revise` |
+| `campaign_dispatch` | model,dashboard,human,system | 显式派生（L0/L1 唯一派生口）：草稿经 `task_derive_intent` 下发，事件 `task.campaign.task.derived` |
+| `campaign_review_pass` | dashboard,human | reviewing → active；摘要进 checkpoints |
+| `campaign_tick_now` | dashboard,script | 对单专项立即跑一次 tick 段（不向模型注册） |
+| `campaign_tick` | scheduler,reactor | 内部 tick 段：扫 active 专项跑 Supervisor→Reviewer→Planner→Dispatcher |
+| `campaign_record_decision` | reactor,human | 内部：落验收账本（INV-C3/C8） |
+| `campaign_checkpoint` | reactor,scheduler,system,dashboard | 内部：写里程碑/升级记录 |
+| `campaign_autonomy_apply` | approval | campaign-autonomy 批准 effect：落 autonomy/approval_id 并激活 |
+| `campaign_budget_extend` | approval | campaign-budget-extend 批准 effect：budget_tokens 增量落账 |
+
+`task_create` 增 `campaign_id`/`campaign_role` 参数（幂等指纹含之）；`task_derive_intent` 增同参，去重键加 campaign 维度 `c{id}|{bare}`（连败黑名单仍按裸 key 判定——连败是打法属性）。
+
+### 7.4 查询（§八）
+
+`campaign_list`（status/program_id 过滤 + 进度聚合）、`campaign_get`（全文 + decisions + active_tasks + checkpoints + window_usage）、`campaign_progress`（goal_delta 聚合 + 每 program 分解）、`campaign_pending_drafts`（L1 直播编译 `compileCampaignPlan`）、`campaign_decisions`（验收账本行）。
+
+### 7.5 不变量（INV-C）
+
+| ID | 内容 | 错误码 |
+|---|---|---|
+| INV-C1 | 绑定 program 全部存在于 scope 镜像且未过期（activate + 派生前复查） | `E_CAMPAIGN_PROGRAM_UNRESOLVED` |
+| INV-C2 | tasks.campaign_id 写入后不可改 | 结构性 |
+| INV-C3 | 一任务一验收 | `E_CAMPAIGN_REVIEWED` |
+| INV-C4 | autonomy=2 ⇒ budget_tokens + stop_conditions + approval_id 非空 | `E_CAMPAIGN_AUTONOMY_GATE` |
+| INV-C5 | 派生唯一通道=task_create/task_derive_intent | 结构性 |
+| INV-C6 | 单 tick ≤ policy.derive_cap_per_tick（默认 5）；活跃 ≥ max_active_tasks（默认 20）不派生 | tick 静默跳过 / 显式 `E_CAMPAIGN_DERIVE_CAP` |
+| INV-C7 | campaign 子任务禁 interval | `E_CAMPAIGN_INTERVAL_FORBIDDEN` |
+| INV-C8 | 验收证据非空且引用前缀 ∈ run:/task:/capsule:/ledger:/finding:/oracle: | `E_EVIDENCE_REQUIRED` |
+| INV-C9 | stop_condition 命中 ⇒ 转 reviewing + checkpoint，不自动 archive | — |
+| INV-C10 | 双预算闸取严：per-program（现有）∧ campaign 窗口闸 | `E_TASK_BUDGET_EXHAUSTED` / `E_CAMPAIGN_BUDGET_LOW` |
+
+### 7.6 tick 循环与联动
+
+调度器单例（同 `scheduler.lock` 持锁者）在 `task_claim` 之后顺带驱动 `campaign_tick`（同一 60s tick；headless 不跑）：逐专项 Supervisor 巡检 → Reviewer 补验 → Planner（autonomy≥1）→ Dispatcher（autonomy=2 自动下发）。单专项异常隔离（记 escalation），不中断其余。
+
+订阅新增：`task.finished` → `onCampaignTaskFinished`（Reviewer 强联动）；`scope.revoked` / `scope.rules.changed`（仅 max_risk 收紧）→ `onScopeChanged`（命中绑定 program 立即 pause，fail-closed）。`know.release.revoked` handler 兼做 Campaign 引用作废留痕（Planner 每 tick 现算无缓存，引用自然失效）。
+
+### 7.7 已知未实现（Phase C 待办）
+
+- L1/L3 的 `know_scores` 近似命中矩阵「按 campaign/program 分组投影」未实施（Planner 的 `scores` 快照当前为空——不影响确定性派生）。
+- Planner 的 LLM「探索性草稿」通道未实施（设计标注可选）。
+- 看板专项视图为只读 + 立即 tick；L1 待放行队列的一键 `campaign_dispatch` 放行 UI 未接（命令面已就绪）。

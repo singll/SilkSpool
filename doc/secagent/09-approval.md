@@ -669,3 +669,16 @@ ApprovalRepo.listEffects(request_id) -> rows
 | 性能 | approvals/effects 规模小，SQLite 索引足够。 |
 | hook 判定 | scope/task/ledger 均经总线命令订阅联动，无直写。 |
 | 独立升级 | 支持单域替换；须回归 scope、task、exec、ledger 四个效果消费方。 |
+
+---
+
+## 2026-09-22 22 号方案回填（Campaign 两个新 kind）
+
+> 设计真相源：[22-campaign-task](22-campaign-task.md) §十。`approval_request` command actor 白名单增 `dashboard`/`human`（UI 发起的治理类提请；各 kind 的 request_actors 仍逐类收紧）。
+
+| kind | subject | request_actors | validate 判据 | approved effect |
+|---|---|---|---|---|
+| `campaign-autonomy` | campaign 名 | dashboard, system | autonomy ∈ 1\|2；专项存在且 draft/paused；升 L2 需 budget_tokens>0（INV-C4） | dispatch `task.campaign_autonomy_apply`（落 autonomy/approval_id 并激活） |
+| `campaign-budget-extend` | campaign 名 | model, scheduler, system | add_tokens 正整数；专项有预算基准；spent ≥ budget×0.8；add ≤ 原 budget×2 | dispatch `task.campaign_budget_extend`（budget_tokens 增量落账 + checkpoint） |
+
+契约：approval 全绿（新增 2 例：campaign-autonomy 升档激活 / campaign-budget-extend 阈值与增量）。

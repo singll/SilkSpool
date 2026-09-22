@@ -208,6 +208,47 @@ export const APPROVAL_KINDS = {
       } }]
     },
   },
+  // 22 号方案 §十：专项自主级别（L1/L2 创建与升档）
+  'campaign-autonomy': {
+    label: '专项自主级别',
+    request_actors: ['dashboard', 'system'],
+    validate: async (subject, args, payload, deps) => {
+      const p = payload && typeof payload === 'object' ? payload : {}
+      const autonomy = Number(p.autonomy ?? args.autonomy)
+      if (!(autonomy === 1 || autonomy === 2)) return { code: 'E_INVARIANT', message: `autonomy=${p.autonomy} 非法`, hint: '升档目标 ∈ 1(L1 建议)|2(L2 有界自动)' }
+      const c = await deps.campaignGet(subject)
+      if (c === 'unavailable') return null
+      if (!c) return { code: 'E_INVARIANT', message: `专项不存在: ${subject}`, hint: '核对 campaign_list' }
+      if (!['draft', 'paused'].includes(c.status)) return { code: 'E_INVARIANT', message: `专项 #${c.id} 状态 ${c.status}，仅 draft/paused 可升档激活`, hint: '先 pause 或新建专项' }
+      if (autonomy === 2 && !(Number(c.budget_tokens) > 0)) return { code: 'E_INVARIANT', message: '升 L2 需专项已设 budget_tokens（INV-C4）', hint: '先经 campaign-budget-extend 或重建带预算' }
+      return null
+    },
+    effects: (requestId, subject, args, payload) => {
+      const p = payload && typeof payload === 'object' ? payload : {}
+      return [{ domain: 'task', verb: 'campaign_autonomy_apply', payload: { name: subject, autonomy: Number(p.autonomy ?? args.autonomy), approval_id: requestId } }]
+    },
+  },
+  // 22 号方案 §十：专项预算延长（spent ≥ budget×0.8，extend ≤ 原 budget×2）
+  'campaign-budget-extend': {
+    label: '专项预算延长',
+    request_actors: ['model', 'scheduler', 'system'],
+    validate: async (subject, args, payload, deps) => {
+      const p = payload && typeof payload === 'object' ? payload : {}
+      const add = Number(p.add_tokens)
+      if (!Number.isInteger(add) || add <= 0) return { code: 'E_INVARIANT', message: 'payload.add_tokens 须为正整数', hint: '预算增量为正整数 token 数' }
+      const c = await deps.campaignGet(subject)
+      if (c === 'unavailable') return null
+      if (!c) return { code: 'E_INVARIANT', message: `专项不存在: ${subject}`, hint: '核对 campaign_list' }
+      if (!(Number(c.budget_tokens) > 0)) return { code: 'E_INVARIANT', message: '专项无预算基准，无须延长', hint: '先设 budget_tokens' }
+      if (Number(c.spent_tokens) < Number(c.budget_tokens) * 0.8) return { code: 'E_INVARIANT', message: `当前 spent=${c.spent_tokens} 未达 budget×0.8（${Math.floor(Number(c.budget_tokens) * 0.8)}）`, hint: '未接近耗尽无须延长' }
+      if (add > Number(c.budget_tokens) * 2) return { code: 'E_INVARIANT', message: `延长量 ${add} 超原预算×2`, hint: '单次延长 ≤ 原 budget×2' }
+      return null
+    },
+    effects: (requestId, subject, args, payload) => {
+      const p = payload && typeof payload === 'object' ? payload : {}
+      return [{ domain: 'task', verb: 'campaign_budget_extend', payload: { name: subject, add_tokens: Number(p.add_tokens), approval_id: requestId } }]
+    },
+  },
   'task-complete': {
     label: '任务完成确认',
     request_actors: ['model', 'scheduler'],
@@ -251,7 +292,7 @@ export const APPROVAL_MANIFEST = {
   },
   commands: {
     approval_request: {
-      actor: ['model', 'script', 'system', 'scheduler'],
+      actor: ['model', 'script', 'system', 'scheduler', 'dashboard', 'human'],
       schema: schema({
         kind: en(ALL_KINDS),
         subject: str({ minLength: 1, maxLength: 500 }),
@@ -399,6 +440,13 @@ function makeHandlers(opts) {
         const r = await qTry('task', 'get', { task_id: Number(id) })
         if (!r || !r.ok) return 'unavailable'
         return r.data || null
+      },
+      // 22 号方案：专项升档/预算延长审批读 campaign 台账
+      async campaignGet(name) {
+        const r = await qTry('task', 'campaign_list', {})
+        if (!r || !r.ok) return 'unavailable'
+        const rows = r.rows || (r.data && r.data.rows) || []
+        return rows.find((x) => x.name === String(name)) || null
       },
       async prime() { await scopeData() },
     }

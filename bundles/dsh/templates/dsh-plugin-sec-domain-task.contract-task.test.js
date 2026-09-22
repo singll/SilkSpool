@@ -11,6 +11,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
+import { DatabaseSync } from 'node:sqlite'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildTaskDomain, startTaskScheduler } from '../index.js'
 
@@ -47,9 +48,24 @@ function readAudit(dir) {
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
 function readEvents(dir) {
+  const out = []
   const f = path.join(dir, 'events', 'task.jsonl')
-  if (!fs.existsSync(f)) return []
-  return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+  if (fs.existsSync(f)) {
+    out.push(...fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean))
+  }
+  // task.finished 已挂异步订阅（Reviewer）→ 事件滞留 outbox 未落 jsonl（dispatcher 未运行）；
+  // 补读 pending 行，保持调试事件视图完整（delivered 行已落 jsonl，跳过防重复计数）。
+  try {
+    const dbPath = path.join(dir, 'asset-graph.db')
+    if (fs.existsSync(dbPath)) {
+      const db = new DatabaseSync(dbPath, { readOnly: true })
+      for (const r of db.prepare("SELECT payload FROM event_outbox WHERE domain='task' AND status='pending'").all()) {
+        try { out.push(JSON.parse(r.payload)) } catch { /* ignore */ }
+      }
+      db.close()
+    }
+  } catch { /* outbox 不可读时退回 jsonl */ }
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,4 +1028,326 @@ test('产出闭环: task_submission_backlog 为 confirmed 未提交幂等入队'
   assert.equal(r2.data.skipped, 2)
   const n = bus._internal.db().prepare("SELECT COUNT(*) c FROM tasks WHERE objective LIKE '%[提交] finding #50%'").get().c
   assert.equal(n, 2)
+})
+
+// ---------------------------------------------------------------------------
+// 22 号方案：Campaign（专项）契约——表/命令/不变量/状态机/派生/验收/监督/联动/幂等
+// ---------------------------------------------------------------------------
+
+// ledger 覆盖缺口桩域（Planner 输入；契约面最小对齐）
+function registerLedgerStub(bus, gaps) {
+  const stub = {
+    manifest: {
+      domain: 'ledger', version: 1, service: 'secDomain.ledger', description: 'campaign 契约测试桩：ledger_coverage_gaps',
+      owns: { tables: [], files: [] },
+      commands: {},
+      queries: {
+        ledger_coverage_gaps: {
+          actor: ['reactor', 'scheduler', 'model', 'dashboard', 'human'],
+          params: { type: 'object', additionalProperties: false, required: ['program'], properties: { program: { type: 'string' }, dim: { type: 'string' }, limit: { type: 'integer' } } },
+          agent_note: '桩：覆盖缺口队列',
+        },
+      },
+      events: {}, subscribes: {}, backend: 'repository-v1',
+    },
+    handlers: {
+      commands: {},
+      queries: { ledger_coverage_gaps: async (args) => ({ program: args.program, gaps: (gaps || []).filter((g) => !g.program || g.program === args.program), total: (gaps || []).length }) },
+      invariants: {}, subscribers: {},
+    },
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  }
+  return bus.registry.register(stub)
+}
+
+function secondProgramEnv() {
+  const env = makeEnv()
+  fs.writeFileSync(path.join(env.dataDir, 'scope.yml'),
+    'programs:\n  - name: "test-src"\n    scope:\n      - "*.example.com"\n  - name: "test-src-2"\n    scope:\n      - "*.example.org"\n')
+  return env
+}
+
+test('22 C20: campaign_create 登记专项（draft）+ stop_conditions 铁律 + L2 门禁 + 名唯一', async () => {
+  const { bus } = makeEnv()
+  const ok = await bus.dispatch('task', 'campaign_create', {
+    name: 'src-深挖', program_ids: ['test-src'],
+    goal_spec: { objective: 'IDOR 覆盖', targets: { confirmed_min: 3 }, stop_conditions: ['confirmed ≥ 3', '预算耗尽'] },
+  }, { actor: 'model' })
+  assert.equal(ok.ok, true, ok.error?.message)
+  assert.equal(ok.data.status, 'draft')
+  const row = bus._internal.db().prepare('SELECT status, mode, program_ids FROM campaigns WHERE id=?').get(ok.data.campaign_id)
+  assert.equal(row.status, 'draft')
+  assert.equal(row.mode, 'single')
+  // stop_conditions 铁律
+  const noStop = await bus.dispatch('task', 'campaign_create', {
+    name: 'xx', program_ids: ['test-src'], goal_spec: { objective: '无退出条件' },
+  }, { actor: 'model' })
+  assert.equal(noStop.ok, false)
+  assert.equal(noStop.error.code, 'E_INVARIANT')
+  // L2 门禁
+  const l2 = await bus.dispatch('task', 'campaign_create', {
+    name: 'yy', program_ids: ['test-src'], autonomy: 2,
+    goal_spec: { objective: 'z', stop_conditions: ['done'] },
+  }, { actor: 'model' })
+  assert.equal(l2.ok, false)
+  assert.equal(l2.error.code, 'E_CAMPAIGN_AUTONOMY_GATE')
+  // cross 需 ≥2
+  const cross = await bus.dispatch('task', 'campaign_create', {
+    name: 'cc', mode: 'cross', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] },
+  }, { actor: 'model' })
+  assert.equal(cross.error.code, 'E_INVARIANT')
+  // 名唯一
+  const dup = await bus.dispatch('task', 'campaign_create', {
+    name: 'src-深挖', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] },
+  }, { actor: 'model' })
+  assert.equal(dup.error.code, 'E_CONFLICT')
+  const names = bus._internal.db().prepare("SELECT payload FROM event_outbox WHERE name='task.campaign.created'").all()
+  assert.equal(names.length, 1)
+})
+
+test('22 C21: campaign_activate INV-C1（program 未授权）+ 状态机', async () => {
+  const { bus } = makeEnv()
+  const bad = await bus.dispatch('task', 'campaign_create', {
+    name: 'bad', program_ids: ['nope'], goal_spec: { stop_conditions: ['done'] },
+  }, { actor: 'model' })
+  const actBad = await bus.dispatch('task', 'campaign_activate', { campaign_id: bad.data.campaign_id }, { actor: 'dashboard' })
+  assert.equal(actBad.ok, false)
+  assert.equal(actBad.error.code, 'E_CAMPAIGN_PROGRAM_UNRESOLVED')
+  const ok = await bus.dispatch('task', 'campaign_create', {
+    name: 'good', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] },
+  }, { actor: 'model' })
+  const act = await bus.dispatch('task', 'campaign_activate', { campaign_id: ok.data.campaign_id }, { actor: 'dashboard' })
+  assert.equal(act.ok, true, act.error?.message)
+  assert.equal(act.data.status, 'active')
+  // 状态机非法流转：draft 未激活前不可 pause
+  const draftPause = await bus.dispatch('task', 'campaign_pause', { campaign_id: bad.data.campaign_id }, { actor: 'model' })
+  assert.equal(draftPause.error.code, 'E_CAMPAIGN_STATE')
+  // model 不可激活（治理动作）
+  const forbidden = await bus.dispatch('task', 'campaign_activate', { campaign_id: ok.data.campaign_id }, { actor: 'model' })
+  assert.equal(forbidden.error.code, 'E_ACTOR_FORBIDDEN')
+  // pause/resume
+  const p = await bus.dispatch('task', 'campaign_pause', { campaign_id: ok.data.campaign_id }, { actor: 'model' })
+  assert.equal(p.data.status, 'paused')
+  const rs = await bus.dispatch('task', 'campaign_resume', { campaign_id: ok.data.campaign_id }, { actor: 'model' })
+  assert.equal(rs.data.status, 'active')
+})
+
+test('22 C23/C24: archive 同步 cancel queued 子任务；goal_revise 在 active 下强制转 reviewing', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'arch', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: c.data.campaign_id }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', {
+    campaign_id: c.data.campaign_id,
+    drafts: [{ kind: 'hypothesis', host: 'a.example.com', path: '/x', vuln_class: 'idor', param: 'id', strategy_key: 'a.example.com|/x|id|idor' }],
+  }, { actor: 'model' })
+  const tid = bus._internal.db().prepare('SELECT id FROM tasks WHERE campaign_id=?').get(c.data.campaign_id).id
+  const g = await bus.dispatch('task', 'campaign_goal_revise', { campaign_id: c.data.campaign_id, goal_spec: { targets: { confirmed_min: 5 } } }, { actor: 'dashboard' })
+  assert.equal(g.ok, true, g.error?.message)
+  assert.equal(g.data.status, 'reviewing')
+  const a = await bus.dispatch('task', 'campaign_archive', { campaign_id: c.data.campaign_id }, { actor: 'dashboard' })
+  assert.equal(a.ok, true)
+  assert.equal(a.data.status, 'archived')
+  assert.ok(a.data.cancelled_queued >= 1)
+  const trow = bus._internal.db().prepare('SELECT status FROM tasks WHERE id=?').get(tid)
+  assert.equal(trow.status, 'cancelled')
+})
+
+test('22 C25/INV-C5/C7: campaign_dispatch 经唯一派生通道落子任务；interval 禁止', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'dd', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const d = await bus.dispatch('task', 'campaign_dispatch', {
+    campaign_id: cid,
+    drafts: [{ kind: 'hypothesis', host: 'a.example.com', path: '/user', vuln_class: 'idor', param: 'id', level: 'H2', strategy_key: 'a.example.com|/user|id|idor' }],
+  }, { actor: 'model' })
+  assert.equal(d.ok, true, d.error?.message)
+  assert.equal(d.data.derived, 1)
+  const t = bus._internal.db().prepare('SELECT * FROM tasks WHERE campaign_id=?').get(cid)
+  assert.equal(t.status, 'queued')            // 绝不自动执行
+  assert.equal(t.campaign_role, 'derived')
+  assert.ok(t.objective.includes('[假设 H2]'))
+  // 幂等：同 strategy 再派 → deduped
+  const d2 = await bus.dispatch('task', 'campaign_dispatch', {
+    campaign_id: cid,
+    drafts: [{ kind: 'hypothesis', host: 'a.example.com', path: '/user', vuln_class: 'idor', param: 'id', level: 'H2', strategy_key: 'a.example.com|/user|id|idor' }],
+  }, { actor: 'model' })
+  assert.equal(d2.data.derived, 0)
+  assert.equal(d2.data.deduped, 1)
+  // 未绑定 program 的草稿被拒
+  const foreign = await bus.dispatch('task', 'campaign_dispatch', {
+    campaign_id: cid,
+    drafts: [{ kind: 'hypothesis', host: 'a.example.org', vuln_class: 'idor', program_id: 'other' }],
+  }, { actor: 'model' })
+  assert.equal(foreign.error.code, 'E_INVARIANT')
+  // INV-C7：campaign 子任务禁 interval
+  const iv = await bus.dispatch('task', 'create', {
+    program_id: 'test-src', objective: 'x', campaign_id: cid, schedule: { kind: 'interval', every_seconds: 3600 },
+  }, { actor: 'model' })
+  assert.equal(iv.ok, false)
+  assert.equal(iv.error.code, 'E_CAMPAIGN_INTERVAL_FORBIDDEN')
+  // draft 状态不可派生（归档/草稿）
+  const c2 = await bus.dispatch('task', 'campaign_create', { name: 'd2', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const dd = await bus.dispatch('task', 'campaign_dispatch', { campaign_id: c2.data.campaign_id, drafts: [{ kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor' }] }, { actor: 'model' })
+  assert.equal(dd.error.code, 'E_CAMPAIGN_STATE')
+})
+
+test('22 C26/INV-C3/C8: campaign_record_decision 证据铁律 + 一任务一验收', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'rev', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }] }, { actor: 'model' })
+  const tid = bus._internal.db().prepare('SELECT id FROM tasks WHERE campaign_id=?').get(cid).id
+  // 证据非法
+  const bad = await bus.dispatch('task', 'campaign_record_decision', { campaign_id: cid, task_id: tid, verdict: 'accepted', evidence: '没有前缀' }, { actor: 'reactor' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'E_EVIDENCE_REQUIRED')
+  const ok = await bus.dispatch('task', 'campaign_record_decision', { campaign_id: cid, task_id: tid, verdict: 'accepted', evidence: 'run:r1', goal_delta: { accepted: 1, spent_tokens: 500 } }, { actor: 'reactor' })
+  assert.equal(ok.ok, true, ok.error?.message)
+  const dup = await bus.dispatch('task', 'campaign_record_decision', { campaign_id: cid, task_id: tid, verdict: 'rejected', evidence: 'run:r2' }, { actor: 'reactor' })
+  assert.equal(dup.error.code, 'E_CAMPAIGN_REVIEWED')
+  const camp = bus._internal.db().prepare('SELECT spent_tokens, heartbeat_at FROM campaigns WHERE id=?').get(cid)
+  assert.equal(camp.spent_tokens, 500)
+  assert.ok(camp.heartbeat_at > 0)
+  const n = bus._internal.db().prepare('SELECT COUNT(*) c FROM campaign_decisions WHERE task_id=?').get(tid).c
+  assert.equal(n, 1)
+})
+
+test('22 Reviewer 订阅: task.finished → 自动验收落账 + spent_tokens 汇聚', async () => {
+  const { bus, domain } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'rv', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }] }, { actor: 'model' })
+  const tid = bus._internal.db().prepare('SELECT id FROM tasks WHERE campaign_id=?').get(cid).id
+  const fin = await bus.dispatch('task', 'finish', { task_id: tid, run_id: 'rr1', outcome: 'done', spent_tokens: 700 }, { actor: 'scheduler' })
+  assert.equal(fin.ok, true)
+  const res = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: tid, campaign_id: cid, spent_tokens: 700, ok: true } })
+  assert.equal(res.ok, true, JSON.stringify(res.error))
+  assert.equal(res.data.verdict, 'accepted')
+  const dec = bus._internal.db().prepare('SELECT * FROM campaign_decisions WHERE task_id=?').get(tid)
+  assert.equal(dec.verdict, 'accepted')
+  assert.ok(String(dec.evidence).startsWith('run:'))
+  const camp = bus._internal.db().prepare('SELECT spent_tokens FROM campaigns WHERE id=?').get(cid)
+  assert.equal(camp.spent_tokens, 700)
+  // 重放不重复验收
+  const replay = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: tid, campaign_id: cid, spent_tokens: 700 } })
+  assert.equal(replay.ok, true)
+  assert.equal(replay.data.skipped, true)
+})
+
+test('22 C26/C27: campaign_tick L2 自动派生（stub 缺口）+ pending_drafts 直播', async () => {
+  const env = makeEnv()
+  const { bus, domain } = env
+  const gaps = [{ program: 'test-src', dim: 'crawl', key: 'new.example.com', mark: 'not_crawled', value: 2 }]
+  assert.equal(registerLedgerStub(bus, gaps).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: 'auto', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['confirmed ≥ 3'] }, policy: { derive_cap_per_tick: 3, max_active_tasks: 10 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  const act = await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  assert.equal(act.ok, true, act.error?.message)
+  // pending_drafts 直播编译
+  const pd = await bus.query('task', 'campaign_pending_drafts', { id: cid }, { actor: 'model' })
+  assert.equal(pd.ok, true, pd.error?.message)
+  assert.ok(pd.data.drafts.length >= 1)
+  assert.equal(pd.data.drafts[0].kind, 'crawl')
+  // tick 自动派生
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(tk.data.summaries[0].derived, 1)
+  const t = bus._internal.db().prepare('SELECT * FROM tasks WHERE campaign_id=?').get(cid)
+  assert.ok(t, 'L2 tick 应自动派生子任务')
+  assert.equal(t.campaign_role, 'derived')
+  // 二次 tick：strategy 去重 → deduped
+  const tk2 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk2.data.summaries[0].derived, 0)
+  assert.equal(tk2.data.summaries[0].deduped, 1)
+})
+
+test('22 §7.4/INV-C10: campaign 窗口预算闸——超预算停派 + budget_low checkpoint + L2 降 L1', async () => {
+  const env = makeEnv()
+  const { bus } = env
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'b.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: 'budget', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 1000,
+    goal_spec: { stop_conditions: ['budget'] },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const r = await bus.dispatch('task', 'campaign_dispatch', {
+    campaign_id: cid, drafts: [{ kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }],
+  }, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_CAMPAIGN_BUDGET_LOW')
+  const cp = bus._internal.db().prepare("SELECT kind FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_low'").get(cid)
+  assert.ok(cp)
+  const camp = bus._internal.db().prepare('SELECT autonomy FROM campaigns WHERE id=?').get(cid)
+  assert.equal(camp.autonomy, 1)
+})
+
+test('22 §7.5/§9.2: scope.revoked → 命中专项立即 pause + escalation（fail-closed）', async () => {
+  const { bus, domain } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'drift', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const res = await domain.handlers.subscribers.onScopeChanged({ name: 'scope.revoked', payload: { program_name: 'test-src', entries: ['*.example.com'] } })
+  assert.equal(res.ok, true, JSON.stringify(res.error))
+  assert.deepEqual(res.data.paused, [cid])
+  const camp = bus._internal.db().prepare('SELECT status FROM campaigns WHERE id=?').get(cid)
+  assert.equal(camp.status, 'paused')
+  const esc = bus._internal.db().prepare("SELECT COUNT(*) c FROM campaign_checkpoints WHERE campaign_id=? AND kind='escalation'").get(cid)
+  assert.ok(esc.c >= 1)
+  // 不相关的 rules.changed（工具白名单）不触发暂停
+  await bus.dispatch('task', 'campaign_resume', { campaign_id: cid }, { actor: 'model' })
+  const nonRestrict = await domain.handlers.subscribers.onScopeChanged({ name: 'scope.rules.changed', payload: { program_name: 'test-src', patch: { allow_intrusive_tools_add: ['sqlmap'] } } })
+  assert.equal(nonRestrict.data.skipped, true)
+})
+
+test('22 §8.2: campaign_list/get/progress/decisions 查询口径', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'qq', program_ids: ['test-src'], goal_spec: { objective: '目标', targets: { confirmed_min: 2 }, stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }] }, { actor: 'model' })
+  const tid = bus._internal.db().prepare('SELECT id FROM tasks WHERE campaign_id=?').get(cid).id
+  await bus.dispatch('task', 'campaign_record_decision', { campaign_id: cid, task_id: tid, verdict: 'accepted', evidence: 'run:r9' }, { actor: 'reactor' })
+  const list = await bus.query('task', 'campaign_list', { status: 'active' }, { actor: 'dashboard' })
+  assert.equal(list.ok, true, list.error?.message)
+  assert.equal(list.rows.length, 1)
+  assert.equal(list.rows[0].decision_totals.accepted, 1)
+  const get = await bus.query('task', 'campaign_get', { id: cid }, { actor: 'dashboard' })
+  assert.equal(get.ok, true)
+  assert.equal(get.data.active_tasks.length, 1)
+  assert.equal(get.data.decisions.length, 1)
+  assert.equal(get.data.goal_spec.targets.confirmed_min, 2)
+  const prog = await bus.query('task', 'campaign_progress', { id: cid }, { actor: 'dashboard' })
+  assert.equal(prog.ok, true)
+  assert.equal(prog.data.totals.accepted, 1)
+  assert.ok(prog.data.by_program['test-src'])
+  const dec = await bus.query('task', 'campaign_decisions', { campaign_id: cid }, { actor: 'dashboard' })
+  assert.equal(dec.ok, true)
+  assert.equal(dec.total, 1)
+})
+
+test('22 cross 模式：多 program 绑定 + 跨 program 经验卡消费不混事实（派生只校验目标 program scope）', async () => {
+  const { bus } = secondProgramEnv()
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: 'cross', mode: 'cross', program_ids: ['test-src', 'test-src-2'],
+    goal_spec: { stop_conditions: ['done'] },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  const act = await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  assert.equal(act.ok, true, act.error?.message)
+  // 派生到第二个 program（scope 校验按其自身 scope）
+  const d = await bus.dispatch('task', 'campaign_dispatch', {
+    campaign_id: cid,
+    drafts: [{ kind: 'hypothesis', program_id: 'test-src-2', host: 'a.example.org', vuln_class: 'idor', strategy_key: 'a.example.org|||idor' }],
+  }, { actor: 'model' })
+  assert.equal(d.ok, true, d.error?.message)
+  assert.equal(d.data.derived, 1)
+  const t = bus._internal.db().prepare('SELECT program_id, campaign_id FROM tasks WHERE campaign_id=?').get(cid)
+  assert.equal(t.program_id, 'test-src-2')
 })

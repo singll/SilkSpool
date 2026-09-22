@@ -19,6 +19,10 @@ _Avoid_: 项目之外勿用「目标」「客户」。
 定时任务是一行**固定实体**（P12）：interval 任务跑完 latest-only 自动续期，同 program+objective 幂等去重，严禁「每天重建 once 任务」；每次运行落 `task_runs` 执行历史（每任务保留最近 200 行）。看板任务 tab 四区块：工作区（默认折叠）/ 定时任务卡片 / 一次性任务队列 / 执行历史（默认折叠）；任务卡与队列表的「🕘 历史」**跳转**到执行历史区并按 task_id 过滤（chip 可一键清除）。
 _Avoid_: 会话内易失的 goal/plan/todo 不是 Task。
 
+**Campaign（专项）**：
+task 域内的**常驻统筹实体**，绑定一个或多个已授权 Program，持有目标规格（goal_spec：objective/targets/stop_conditions）与策略/预算，以「派生 → 下发 → 监督 → 验收」闭环驱动原子子任务（子任务仍是 Task：同表、同状态机、同调度器）。自主级别 L0 台账 / L1 建议（草稿人审放行）/ L2 有界自动（封顶），升档走 `campaign-autonomy` 审批。**不新增域、不新增「项目」UI 概念**——专项视图是既有 Program/工作区概念的聚合投影（中文名「专项」，英文/表名 `campaign`；勿叫「项目任务」）。
+_Avoid_: 不要把 Campaign 当 Task 的上级状态机（它不直写子任务状态）；不要与 interval 定时任务混用（campaign 子任务禁 interval，节奏权归 campaign tick）。
+
 **Run（执行）**：
 一次工具执行（`run_cli` / `spawn_worker` / `authz_diff`），全量落盘 `results/<run_id>/`，记 `session_id`（谁跑出来的可回溯）。属于会话，是「某条会话干了什么」，不是全局治理对象。
 _Avoid_: 不要把 Run 当成第一公民实体进全局面。

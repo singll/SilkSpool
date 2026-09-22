@@ -85,6 +85,9 @@ function createRepo(db) {
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_episode_biz ON learning_episodes(biz_key) WHERE biz_key IS NOT NULL`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_episode_program ON learning_episodes(program_id, created_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_episode_outcome ON learning_episodes(outcome)`)
+  // 22 号方案 §11.2-L2：episode 归因加 campaign 维度（幂等加列，不改管线）
+  ensureCol(db, 'learning_episodes', 'campaign_id', 'campaign_id TEXT')
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_episode_campaign ON learning_episodes(campaign_id, created_at)`)
 
   // L2（2026-09-17 学习专项 §3.1/§6.1）：knowledge_revisions 候选知识版本（幂等建表）。
   // 只插不改内容——UNIQUE(artifact_kind, artifact_id, content_digest) 内容级去重：
@@ -455,8 +458,8 @@ function createRepo(db) {
           evidence_refs, fgs_snapshot_hash, fgs_snapshot_summary, fgs_snapshot_path,
           request_count, token_count, duration_ms,
           source_credibility, supersedes, context_json, biz_key,
-          observed_at, created_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          observed_at, created_at, campaign_id
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
           .run(
             row.episode_id, row.schema_version ?? 1, row.source_event_id, row.source_event_name, row.consumer_version,
             row.program_id ?? null, row.task_id ?? null, row.exec_run_id ?? null, row.attempt_id ?? null, row.session_id ?? null,
@@ -465,7 +468,7 @@ function createRepo(db) {
             row.evidence_refs ?? null, row.fgs_snapshot_hash ?? null, row.fgs_snapshot_summary ?? null, row.fgs_snapshot_path ?? null,
             row.request_count ?? null, row.token_count ?? null, row.duration_ms ?? null,
             row.source_credibility ?? null, row.supersedes ?? null, row.context_json ?? null, row.biz_key ?? null,
-            row.observed_at ?? null, row.created_at,
+            row.observed_at ?? null, row.created_at, row.campaign_id ?? null,
           )
         return { created: true, episode_id: row.episode_id }
       } catch (e) {
@@ -480,11 +483,12 @@ function createRepo(db) {
       const r = db.prepare('SELECT * FROM learning_episodes WHERE episode_id=?').get(String(episodeId))
       return r ? { ...r } : null
     },
-    listEpisodes({ program_id = '', outcome = '', limit = 50, offset = 0 } = {}) {
+    listEpisodes({ program_id = '', outcome = '', campaign_id = '', limit = 50, offset = 0 } = {}) {
       const where = []
       const vals = []
       if (program_id) { where.push('program_id = ?'); vals.push(String(program_id)) }
       if (outcome) { where.push('outcome = ?'); vals.push(String(outcome)) }
+      if (campaign_id) { where.push('campaign_id = ?'); vals.push(String(campaign_id)) }
       const w = where.length ? `WHERE ${where.join(' AND ')}` : ''
       const total = db.prepare(`SELECT COUNT(*) AS c FROM learning_episodes ${w}`).get(...vals).c
       const rows = db.prepare(`SELECT * FROM learning_episodes ${w} ORDER BY created_at DESC, episode_id DESC LIMIT ? OFFSET ?`).all(...vals, limit, offset)

@@ -19,7 +19,7 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { nextScheduledRun, validateDependency, MAX_WORKER_TIMEOUT_SEC } from '../sec-suite/task-policy.js'
-import { h1Hypotheses, taintRoute, strategyKey, compileSituation, detectInjectionPatterns } from '../sec-rules-hypothesis/index.js'
+import { h1Hypotheses, taintRoute, strategyKey, compileSituation, detectInjectionPatterns, compileCampaignPlan } from '../sec-rules-hypothesis/index.js'
 // L6 调度器切换：persona/定时任务 prompt/会话反查与 v4 完全同源（复用 sec-suite 版本受控实现，防双份漂移）
 import { listSessionHeaders, matchWorkerSession, createPersonaReader, buildScheduledPrompt } from '../sec-suite/host-compat.js'
 
@@ -39,6 +39,13 @@ const TERMINAL = new Set(['done', 'failed', 'cancelled'])
 // ''/research=授权研究（默认）；learn-daily=日常整理（补索引/复验到期来源/整偏，只产候选）；
 // eval-batch=周期评测批（候选对照/误报复盘/晋升审阅）；change-retest=变更触发重测（撤回/失效驱动）。
 const TASK_GOALS = ['research', 'learn-daily', 'eval-batch', 'change-retest']
+// 22 号方案 §5.2：Campaign 子任务角色（归因 + Reviewer 验收分派）
+const CAMPAIGN_ROLES = ['seed', 'derived', 'verify', 'submit', 'retest', 'learn']
+const CAMPAIGN_STATUS = ['draft', 'active', 'paused', 'reviewing', 'archived']
+const CAMPAIGN_MODES = ['single', 'cross']
+const CAMPAIGN_VERDICTS = ['accepted', 'rework', 'rejected', 'escalated']
+const CAMPAIGN_MILESTONE_IDLE_MS = Number(process.env.SEC_CAMPAIGN_IDLE_HOURS || 48) * 3600000
+const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 // 21 号方案 §3-4：per-program 周期预算闸（环境变量可调；dashboard/approval 人工放行）
 const BUDGET_PERIOD_MS = Number(process.env.SEC_TASK_BUDGET_PERIOD_DAYS || 7) * 86400000
 const BUDGET_MAX_TOKENS = Number(process.env.SEC_TASK_BUDGET_MAX_TOKENS || 2000000)
@@ -99,12 +106,14 @@ export const TASK_MANIFEST = {
         provider: str(),
         model: str(),
         reasoning_effort: en(['low', 'medium', 'high']),
+        campaign_id: int({ minimum: 1, description: '归属专项（22 号方案 §5.2）；非空 ⇒ schedule_kind 不得为 interval（INV-C7），写入后不可改（INV-C2）' }),
+        campaign_role: en(CAMPAIGN_ROLES, { description: '专项子任务角色：seed/derived/verify/submit/retest/learn' }),
       }, ['objective']),
       idempotent: 'auto',
-      idempotent_fields: ['program_id', 'objective', 'phase', 'goal', 'priority', 'parent_id', 'budget_tokens', 'assignee', 'schedule', 'provider', 'model', 'reasoning_effort'],
+      idempotent_fields: ['program_id', 'objective', 'phase', 'goal', 'priority', 'parent_id', 'budget_tokens', 'assignee', 'schedule', 'provider', 'model', 'reasoning_effort', 'campaign_id', 'campaign_role'],
       events: ['task.created'],
       event_limit: 1,
-      invariants: ['scheduleValid', 'intrusiveInterval'],
+      invariants: ['scheduleValid', 'intrusiveInterval', 'campaignTaskValid'],
       timeout_ms: 60000,
       agent_note: '创建任务；program_id 缺省按工作区解析，priority 0 最高。schedule：{kind:"once",at} 或 {kind:"interval",every_seconds:>=300,anchor}。at/anchor 接受 epoch、ISO、HH:mm；无时区按北京时间。回显 next_run_bj。parent_id 指定前置任务，周期任务等待前置本周期成功后接续。',
       deprecated: false,
@@ -280,6 +289,8 @@ export const TASK_MANIFEST = {
         oracle: str({ default: '' }),
         h3: { type: 'object' },
         strategy_key: str({ default: '' }),
+        campaign_id: int({ minimum: 1 }),
+        campaign_role: en(CAMPAIGN_ROLES),
       }, ['program_id', 'kind', 'host']),
       // 幂等由 handler 内 strategy_dedupe 表自治（返回 deduped:true / 黑名单丢弃）；
       // 不用 bus 层 natural 幂等——回放会吞掉 deduped 语义并绕过黑名单判定
@@ -289,6 +300,195 @@ export const TASK_MANIFEST = {
       invariants: ['intentSituation'],
       timeout_ms: 60000,
       agent_note: '（内部通道，模型不可见）Intent 确定性派生器落任务草稿：H1 指纹保底/H2 污点路由/H3 语义假设（H3 必须引用卡片经局面编译，违规丢弃落审计）。strategy_key 幂等去重、连败 3 次黑名单；一律过预算闸，入队 queued 绝不自动执行。',
+      deprecated: false,
+    },
+    // ---- 22 号方案 §八：Campaign（专项）命令 ----
+    campaign_create: {
+      actor: ['model', 'dashboard', 'script', 'human', 'system'],
+      schema: schema({
+        name: str({ minLength: 2, maxLength: 120 }),
+        mode: en(CAMPAIGN_MODES, { default: 'single' }),
+        program_ids: { type: 'array', items: { type: 'string' }, minItems: 1 },
+        goal_spec: { type: 'object', description: '{objective, vuln_classes[], targets{...}, stop_conditions[](非空), review_cadence_sec}' },
+        autonomy: int({ minimum: 0, maximum: 2, default: 0 }),
+        policy: { type: 'object', description: '{derive_cap_per_tick, max_active_tasks, task_priority_range, model_override, allowed_phases}' },
+        budget_tokens: int({ minimum: 0 }),
+        budget_window_days: int({ minimum: 1, maximum: 90, default: 7 }),
+        approval_id: int(),
+      }, ['name', 'program_ids', 'goal_spec']),
+      idempotent: 'auto',
+      idempotent_fields: ['name', 'mode', 'program_ids', 'goal_spec', 'autonomy', 'policy', 'budget_tokens', 'budget_window_days', 'approval_id'],
+      events: ['task.campaign.created'],
+      event_limit: 1,
+      invariants: ['campaignCreateValid'],
+      timeout_ms: 60000,
+      agent_note: '登记专项（22 号方案）：绑定 1 个（single）或多个（cross）已授权 program，持有目标规格 goal_spec（stop_conditions 非空）与策略 policy。born=draft，不派生；激活走 campaign_activate。autonomy=2 需 budget_tokens+stop_conditions+approval_id（INV-C4）。',
+      deprecated: false,
+    },
+    campaign_activate: {
+      actor: ['dashboard', 'human', 'approval'],
+      schema: schema({ campaign_id: int() }, ['campaign_id']),
+      idempotent: 'auto',
+      idempotent_fields: ['campaign_id'],
+      events: ['task.campaign.status.changed'],
+      event_limit: 1,
+      invariants: ['campaignStateTransition'],
+      timeout_ms: 60000,
+      agent_note: '（治理动作，模型不可直调）激活/恢复专项：draft|paused → active；全量校验绑定 program 授权（INV-C1）与 autonomy 门禁（INV-C4）。',
+      deprecated: false,
+    },
+    campaign_pause: {
+      actor: ['model', 'dashboard', 'human', 'reactor'],
+      schema: schema({ campaign_id: int(), note: str({ default: '' }) }, ['campaign_id']),
+      idempotent: 'auto',
+      idempotent_fields: ['campaign_id', 'note'],
+      events: ['task.campaign.status.changed'],
+      event_limit: 1,
+      invariants: ['campaignStateTransition'],
+      timeout_ms: 60000,
+      agent_note: '暂停专项（active → paused）：不动在跑子任务；队列中 queued 子任务留待 resume。授权漂移由 Supervisor 自动调用本命令（fail-closed）。',
+      deprecated: false,
+    },
+    campaign_resume: {
+      actor: ['model', 'dashboard', 'human'],
+      schema: schema({ campaign_id: int() }, ['campaign_id']),
+      idempotent: 'auto',
+      idempotent_fields: ['campaign_id'],
+      events: ['task.campaign.status.changed'],
+      event_limit: 1,
+      invariants: ['campaignStateTransition'],
+      timeout_ms: 60000,
+      agent_note: '恢复专项（paused → active）。',
+      deprecated: false,
+    },
+    campaign_archive: {
+      actor: ['dashboard', 'human'],
+      schema: schema({ campaign_id: int(), note: str({ default: '' }) }, ['campaign_id']),
+      idempotent: 'auto',
+      idempotent_fields: ['campaign_id', 'note'],
+      events: ['task.campaign.status.changed'],
+      event_limit: 1,
+      invariants: ['campaignStateTransition'],
+      timeout_ms: 60000,
+      agent_note: '（治理动作，模型不可直调）归档专项（非终态 → archived，只读，台账保留）；同步 cancel 其 queued 子任务，在跑子任务跑完。',
+      deprecated: false,
+    },
+    campaign_goal_revise: {
+      actor: ['dashboard', 'human'],
+      schema: schema({ campaign_id: int(), goal_spec: { type: 'object' }, policy: { type: 'object' } }, ['campaign_id']),
+      idempotent: 'auto',
+      idempotent_fields: ['campaign_id', 'goal_spec', 'policy'],
+      events: ['task.campaign.goal.changed', 'task.campaign.status.changed'],
+      event_limit: 2,
+      invariants: ['campaignGoalUpdateValid'],
+      timeout_ms: 60000,
+      agent_note: '（治理动作）更新目标规格/策略；active 中改目标强制转 reviewing 待人工确认（§6.1），stop_conditions 不得清空。',
+      deprecated: false,
+    },
+    campaign_dispatch: {
+      actor: ['model', 'dashboard', 'human', 'system'],
+      schema: schema({
+        campaign_id: int(),
+        drafts: { type: 'array', items: { type: 'object' }, minItems: 1, description: '派生草稿：{kind,host,path,param,vuln_class,level,rationale,oracle,strategy_key,program_id,campaign_role,priority,phase,goal}' },
+      }, ['campaign_id', 'drafts']),
+      idempotent: 'none',
+      events: ['task.campaign.task.derived'],
+      event_limit: 50,
+      invariants: ['campaignDispatchValid'],
+      timeout_ms: 120000,
+      agent_note: '显式派生（L0/L1 唯一派生口；L2 也可人工补派）：把已编译草稿经 task_derive_intent/task_create 下发为 queued 子任务（actor=campaign）。草稿必须是编译后的硬约束结果；越界/黑名单/预算由派生链原样拒绝。',
+      deprecated: false,
+    },
+    campaign_review_pass: {
+      actor: ['dashboard', 'human'],
+      schema: schema({ campaign_id: int(), summary: str({ maxLength: 500 }) }, ['campaign_id', 'summary']),
+      idempotent: 'auto',
+      idempotent_fields: ['campaign_id', 'summary'],
+      events: ['task.campaign.status.changed'],
+      event_limit: 1,
+      invariants: ['campaignStateTransition'],
+      timeout_ms: 60000,
+      agent_note: '（治理动作，模型不可直调）人工审阅通过：reviewing → active；决议摘要进 checkpoints。',
+      deprecated: false,
+    },
+    campaign_tick_now: {
+      actor: ['dashboard', 'script'],
+      schema: schema({ campaign_id: int() }, ['campaign_id']),
+      idempotent: 'none',
+      events: ['task.campaign.reviewed', 'task.campaign.escalated', 'task.campaign.task.derived', 'task.campaign.status.changed'],
+      event_limit: 100,
+      invariants: [],
+      timeout_ms: 120000,
+      agent_note: '（不向模型注册）立即对单专项跑一次 tick 段（巡检→验收→规划→下发），不超 INV-C6 界。调试/演示用。',
+      deprecated: false,
+    },
+    campaign_tick: {
+      actor: ['scheduler', 'reactor'],
+      schema: schema({ campaign_id: int(), limit: int({ minimum: 1, maximum: 50 }) }, []),
+      idempotent: 'none',
+      events: ['task.campaign.reviewed', 'task.campaign.escalated', 'task.campaign.task.derived', 'task.campaign.status.changed'],
+      event_limit: 200,
+      invariants: [],
+      timeout_ms: 120000,
+      agent_note: '（内部，不向模型注册）tick 段：扫 active 专项逐条跑 Supervisor→Reviewer→Planner→Dispatcher。',
+      deprecated: false,
+    },
+    campaign_record_decision: {
+      actor: ['reactor', 'human'],
+      schema: schema({
+        campaign_id: int(),
+        task_id: int(),
+        verdict: en(CAMPAIGN_VERDICTS),
+        evidence: str({ minLength: 1 }),
+        goal_delta: { type: 'object' },
+        decided_by: en(['reviewer', 'human'], { default: 'reviewer' }),
+      }, ['campaign_id', 'task_id', 'verdict', 'evidence']),
+      idempotent: 'none',
+      events: ['task.campaign.reviewed', 'task.campaign.escalated'],
+      event_limit: 2,
+      invariants: ['campaignReviewGate'],
+      timeout_ms: 60000,
+      agent_note: '（内部，不向模型注册）落验收账本（一任务一验收 INV-C3；证据非空且前缀合法 INV-C8）。',
+      deprecated: false,
+    },
+    campaign_checkpoint: {
+      actor: ['reactor', 'scheduler', 'system', 'dashboard'],
+      schema: schema({
+        campaign_id: int(),
+        kind: en(['milestone', 'escalation', 'autonomy_change', 'budget_low', 'stop_condition']),
+        summary: str({ maxLength: 500 }),
+        payload: { type: 'object' },
+      }, ['campaign_id', 'kind']),
+      idempotent: 'none',
+      events: ['task.campaign.escalated'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '（内部/看板）写里程碑/升级记录；kind=escalation 时发 task.campaign.escalated 供看板强提醒。',
+      deprecated: false,
+    },
+    campaign_autonomy_apply: {
+      actor: ['approval'],
+      schema: schema({ name: str({ minLength: 2 }), autonomy: int({ minimum: 1, maximum: 2 }), approval_id: int() }, ['name', 'autonomy', 'approval_id']),
+      idempotent: 'natural',
+      idempotent_natural: ['name', 'autonomy'],
+      events: ['task.campaign.status.changed'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '（approval 专用）campaign-autonomy 批准 effect：落 autonomy/approval_id 并激活专项；不向模型注册。',
+      deprecated: false,
+    },
+    campaign_budget_extend: {
+      actor: ['approval'],
+      schema: schema({ name: str({ minLength: 2 }), add_tokens: int({ minimum: 1 }), approval_id: int() }, ['name', 'add_tokens', 'approval_id']),
+      idempotent: 'natural',
+      idempotent_natural: ['name', 'add_tokens'],
+      events: [],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '（approval 专用）campaign-budget-extend 批准 effect：budget_tokens 增量落账（审计可追）；不向模型注册。',
       deprecated: false,
     },
     task_worker_register: {
@@ -396,7 +596,7 @@ export const TASK_MANIFEST = {
       agent_note: '任务进度总览：按 phase×status 计数 + 总数。',
     },
     task_runs: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'reactor', 'scheduler'],
       params: schema({
         task_id: int({ default: 0 }),
         program_id: str({ default: '' }),
@@ -435,6 +635,41 @@ export const TASK_MANIFEST = {
       params: schema({}, []),
       agent_note: '调度漂移指标 + 执行史新鲜度（ledger 域纪律视图消费）。',
     },
+    campaign_list: {
+      actor: ['model', 'dashboard', 'human', 'system', 'approval'],
+      params: schema({
+        status: en([...CAMPAIGN_STATUS, '']),
+        program_id: str({ default: '' }),
+        limit: int({ minimum: 1, maximum: 200 }),
+        offset: int({ minimum: 0 }),
+      }, []),
+      agent_note: '列出专项（看板数据源）：id/name/mode/status/autonomy/进度聚合/预算消耗/heartbeat。',
+    },
+    campaign_get: {
+      actor: ['model', 'dashboard', 'human', 'system', 'reactor'],
+      params: schema({ id: int({ minimum: 1 }) }, ['id']),
+      agent_note: '专项全文：goal_spec、policy、program_ids、近 N 条 decisions、活跃子任务、checkpoints、预算。',
+    },
+    campaign_progress: {
+      actor: ['model', 'dashboard', 'human'],
+      params: schema({ id: int({ minimum: 1 }) }, ['id']),
+      agent_note: '目标推进投影：goal_delta 聚合（accepted/rejected/rework/escalated 计数 + confirmed 增量）+ 每 program 分解（只聚合不重算）。',
+    },
+    campaign_pending_drafts: {
+      actor: ['model', 'dashboard', 'human'],
+      params: schema({ id: int({ minimum: 1 }), limit: int({ minimum: 1, maximum: 50 }) }, ['id']),
+      agent_note: 'L1 待放行派生草稿：实时跑 compileCampaignPlan 编译结果（含 skip 原因），一键放行走 campaign_dispatch。',
+    },
+    campaign_decisions: {
+      actor: ['model', 'dashboard', 'human', 'system'],
+      params: schema({
+        campaign_id: int({ minimum: 1 }),
+        verdict: en([...CAMPAIGN_VERDICTS, '']),
+        limit: int({ minimum: 1, maximum: 500 }),
+        offset: int({ minimum: 0 }),
+      }, ['campaign_id']),
+      agent_note: '验收账本行（看板验收队列 + 复盘数据源）。',
+    },
   },
   events: {
     'task.created': { payload: { type: 'object' }, redact: [] },
@@ -443,6 +678,13 @@ export const TASK_MANIFEST = {
     'task.finished': { payload: { type: 'object' }, redact: [] },
     'task.blocked': { payload: { type: 'object' }, redact: [] },
     'task.cancelled': { payload: { type: 'object' }, redact: [] },
+    // 22 号方案 §9.1：Campaign 事件
+    'task.campaign.created': { payload: { type: 'object' }, redact: [] },
+    'task.campaign.status.changed': { payload: { type: 'object' }, redact: [] },
+    'task.campaign.goal.changed': { payload: { type: 'object' }, redact: [] },
+    'task.campaign.task.derived': { payload: { type: 'object' }, redact: [] },
+    'task.campaign.reviewed': { payload: { type: 'object' }, redact: [] },
+    'task.campaign.escalated': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'scope.granted': { handler: 'onScopeGranted', mode: 'async', as: 'reactor' },
@@ -450,6 +692,7 @@ export const TASK_MANIFEST = {
     'exec.worker.finished': { handler: 'onWorkerFinished', mode: 'sync', as: 'reactor' },
     // L6（学习专项 §10 变更触发节奏）：卡片撤回 → 生成有预算的重测需求任务（goal=change-retest）。
     // 已暂停任务不自行恢复；重测任务入队（queued 无调度，不自动起 worker）——由人/编排决定何时 task_run_now。
+    // 22 号方案 §9.2：同事件兼做 Campaign 侧「引用作废」（被撤回卡片曾进 H3 派生草稿 → checkpoint）。
     'know.release.revoked': { handler: 'onReleaseRevoked', mode: 'async', as: 'reactor' },
     // 产出闭环：漏洞确认后自动入队「提交」任务（同 finding 幂等去重，见 onVulnConfirmed）
     'vuln.signal.confirmed': { handler: 'onVulnConfirmed', mode: 'async', as: 'reactor' },
@@ -459,6 +702,11 @@ export const TASK_MANIFEST = {
     'vuln.signal.rejected': { handler: 'onStrategyOutcome', mode: 'async', as: 'reactor' },
     // 21 号方案 §3-1：消费覆盖缺口队列——未爬/无参数格点自动派 crawl/param_enrich 任务草稿（预算闸）
     'ledger.coverage.marked': { handler: 'onCoverageMarked', mode: 'async', as: 'reactor' },
+    // 22 号方案 §9.2：Reviewer 验收（强联动）——campaign_id 非空子任务收尾即验收
+    'task.finished': { handler: 'onCampaignTaskFinished', mode: 'async', as: 'reactor' },
+    // 22 号方案 §7.5：授权漂移 → 专项立即 pause（fail-closed）
+    'scope.revoked': { handler: 'onScopeChanged', mode: 'async', as: 'reactor' },
+    'scope.rules.changed': { handler: 'onScopeChanged', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -747,6 +995,320 @@ function makeHandlers(opts) {
     return ''
   }
 
+  // ------------------------------------------------------------------
+  // 22 号方案：Campaign（专项）辅助——快照解析/授权校验/checkpoint/验收判据
+  // ------------------------------------------------------------------
+
+  function parseJsonSafe(s, fallback) { try { const v = JSON.parse(s); return v == null ? fallback : v } catch { return fallback } }
+  function parseCampaign(row) {
+    if (!row) return null
+    return {
+      ...row,
+      program_ids: Array.isArray(row.program_ids) ? row.program_ids.map(String) : parseJsonSafe(row.program_ids, []).map(String),
+      goal_spec: (row.goal_spec && typeof row.goal_spec === 'object') ? row.goal_spec : parseJsonSafe(row.goal_spec, {}),
+      policy: (row.policy && typeof row.policy === 'object') ? row.policy : parseJsonSafe(row.policy, {}),
+    }
+  }
+  function beijingNowLabel() { return _beijingIso(Date.now()) }
+
+  // scope 授权快照：优先 scope 域（含 expires_at），不可达回落 scope.yml 自查（fail-closed）
+  async function scopeProgramMap() {
+    const map = new Map()
+    if (queryRef) {
+      try {
+        const r = await queryRef('scope', 'list', {}, { actor: 'reactor' })
+        const programs = (r && r.data && Array.isArray(r.data.programs)) ? r.data.programs : ((r && Array.isArray(r.rows)) ? r.rows : [])
+        for (const p of programs) map.set(String(p.name), { expired: !!p.expired })
+        if (map.size) return map
+      } catch { /* fall through */ }
+    }
+    for (const p of loadScopePrograms()) map.set(String(p.name), { expired: false })
+    return map
+  }
+  async function checkCampaignPrograms(programIds) {
+    const map = await scopeProgramMap()
+    const missing = []
+    for (const pid of programIds) {
+      const hit = map.get(String(pid))
+      if (!hit) missing.push({ program_id: String(pid), reason: 'unresolved' })
+      else if (hit.expired) missing.push({ program_id: String(pid), reason: 'expired' })
+    }
+    return missing
+  }
+
+  // checkpoint 落账（audit 链）；kind=escalation 时发强提醒事件
+  function writeCheckpoint(repo, campaignId, kind, summary, payload) {
+    const id = repo.insertCheckpoint({ campaign_id: campaignId, kind, summary, payload })
+    const events = []
+    if (kind === 'escalation') events.push({ name: 'task.campaign.escalated', payload: { campaign_id: campaignId, kind, summary: String(summary || '').slice(0, 300), payload: payload || null, checkpoint_id: id } })
+    return { id, events }
+  }
+
+  function addPendingDraft(repo, campaignId, draft) { /* 预留：drafts 现算不落表 */ }
+
+  // Reviewer 验收判据（确定性优先，按 campaign_role 分派；证据铁律）
+  function campaignVerdict(task, run) {
+    const role = String(task.campaign_role || 'derived')
+    const ok = !!(run && run.ok)
+    if (task.status === 'done' && ok) {
+      if (role === 'submit' || role === 'learn' || role === 'retest') return 'accepted'
+      const txt = `${task.result || ''} ${run.note || ''}`
+      if (/verdict\s*[:=]\s*rejected|oracle[^\n]*rejected/i.test(txt)) return 'rejected'
+      return 'accepted' // 覆盖推进也是成果（§7.6）
+    }
+    if (task.status === 'done' && !run) return 'escalated'
+    if (task.status === 'failed') return role === 'verify' ? 'rework' : 'rejected'
+    return 'escalated'
+  }
+  const EVIDENCE_PREFIX_RE = /^(run|task|capsule|ledger|finding|oracle):/
+
+  function makeGoalDelta(task, verdict, run) {
+    const delta = { accepted: verdict === 'accepted' ? 1 : 0, rejected: verdict === 'rejected' ? 1 : 0, rework: verdict === 'rework' ? 1 : 0, role: task.campaign_role || 'derived' }
+    if (run && Number.isFinite(Number(run.spent_tokens))) delta.spent_tokens = Number(run.spent_tokens)
+    return delta
+  }
+
+  // L1/L2 规划输入采集（缺口/连败/经验卡命中/活跃与预算）——跨域只读，不可达即降级空快照
+  async function gatherPlanInputs(campaign, repo) {
+    const gaps = []
+    if (queryRef) {
+      for (const program of campaign.program_ids) {
+        try {
+          const r = await queryRef('ledger', 'coverage_gaps', { program, limit: 200 }, { actor: 'reactor' })
+          const rows = (r && r.data && Array.isArray(r.data.gaps)) ? r.data.gaps
+            : ((r && r.data && Array.isArray(r.data.rows)) ? r.data.rows : ((r && Array.isArray(r.rows)) ? r.rows : []))
+          for (const row of rows) gaps.push({ ...row, program: row.program || row.program_id || program })
+        } catch { /* 降级：该 program 无缺口 */ }
+      }
+    }
+    const strategies = {}
+    try {
+      const rows = repo.listStrategies ? repo.listStrategies(campaign.program_ids) : []
+      for (const s of rows) strategies[s.strategy_key] = { fails: Number(s.fails) || 0, blacklisted: !!s.blacklisted }
+    } catch { /* ignore */ }
+    const scores = {}
+    const activeTaskCount = repo.activeCampaignTaskCount(campaign.id)
+    let budgetRemainingRatio = 1
+    if (campaign.budget_tokens != null && Number(campaign.budget_tokens) > 0) {
+      const windowMs = (Number(campaign.budget_window_days) || 7) * 86400000
+      const usage = repo.campaignUsage(campaign.id, Date.now() - windowMs)
+      budgetRemainingRatio = Math.max(0, 1 - (usage.spent_tokens / Number(campaign.budget_tokens)))
+    }
+    return { gaps, strategies, scores, activeTaskCount, budgetRemainingRatio }
+  }
+
+  // 局面编译（program/host 授权复查），供 Dispatcher 下发前 fail-closed
+  async function campaignSituationOk(programId, host) {
+    const map = await scopeProgramMap()
+    const hit = map.get(String(programId))
+    if (!hit) return { ok: false, code: 'E_CAMPAIGN_PROGRAM_UNRESOLVED', message: `program ${programId} 未授权`, hint: '绑定 program 必须存在于 scope 镜像且未过期（INV-C1）' }
+    if (hit.expired) return { ok: false, code: 'E_CAMPAIGN_PROGRAM_UNRESOLVED', message: `program ${programId} 授权已过期`, hint: '续期授权后重试（fail-closed）' }
+    const sc = scopeCheckResult(programId, host)
+    if (!sc.ok) return { ok: false, code: sc.code, message: `派生越界：${sc.message}`, hint: '派生绝不越出 scope' }
+    return { ok: true }
+  }
+
+  // campaign 窗口预算闸（显式路径）：不变量阶段执行——写入在事务外提交，命令被拒也保留审计。
+  // tick 路径由 dispatchDrafts 内部处理（不抛错，写入随 tick 事务提交）。
+  const _campaignEstimatePerDraft = 150000
+  function campaignBudgetGate(repo, c, draftCount) {
+    if (c.budget_tokens == null || !(Number(c.budget_tokens) > 0)) return { blocked: false }
+    const windowMs = (Number(c.budget_window_days) || 7) * 86400000
+    const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
+    const estimate = Number(draftCount || 0) * _campaignEstimatePerDraft
+    if (Number(usage.spent_tokens) + estimate <= Number(c.budget_tokens)) return { blocked: false, usage }
+    repo.insertCheckpoint({ campaign_id: c.id, kind: 'budget_low', summary: `专项预算触顶：窗口已用 ${usage.spent_tokens}/${c.budget_tokens} tokens（本单预估 ${estimate}），停派`, payload: usage })
+    if (Number(c.autonomy) >= 2) repo.updateCampaign(c.id, { autonomy: 1 })
+    return { blocked: true, code: 'E_CAMPAIGN_BUDGET_LOW', message: `专项 #${c.id} 窗口预算不足（已用 ${usage.spent_tokens}/${c.budget_tokens}）` }
+  }
+
+  function hasRecentCheckpoint(repo, campaignId, kind, withinMs) {
+    const rows = repo.listCheckpoints(campaignId, 50)
+    const cutoff = Date.now() - withinMs
+    return rows.some((r) => r.kind === kind && Number(r.created_at || 0) >= cutoff)
+  }
+
+  // 验收落账（证据铁律 + spent_tokens 汇聚 + heartbeat 推进）；一任务一验收由 UNIQUE 兜底。
+  // 纯 DB 落账——事件发布由 campaign_record_decision 命令（订阅路径）或 tick 汇总负责。
+  function recordDecision(repo, { campaign_id, task_id, verdict, evidence, goal_delta, decided_by }) {
+    const c = repo.getCampaign(campaign_id)
+    const id = repo.insertCampaignDecision({ campaign_id, task_id, verdict, evidence, goal_delta, decided_by: decided_by || 'reviewer' })
+    if (id == null) return { duplicate: true }
+    const delta = (goal_delta && typeof goal_delta === 'object') ? goal_delta : parseJsonSafe(goal_delta, {})
+    const patch = { heartbeat_at: Date.now() }
+    if (Number(delta.spent_tokens) > 0) patch.spent_tokens = Number(c?.spent_tokens || 0) + Number(delta.spent_tokens)
+    repo.updateCampaign(campaign_id, patch)
+    return { id, delta, verdict, task_id: Number(task_id), campaign_id: Number(campaign_id), evidence, decided_by: decided_by || 'reviewer' }
+  }
+  function decisionEvents(rd) {
+    const events = [{ name: 'task.campaign.reviewed', payload: { campaign_id: rd.campaign_id, task_id: rd.task_id, verdict: rd.verdict, evidence: rd.evidence, goal_delta: rd.delta, decided_by: rd.decided_by } }]
+    if (rd.verdict === 'escalated') {
+      const cid = rd.campaign_id
+      events.push({ name: 'task.campaign.escalated', payload: { campaign_id: cid, kind: 'escalation', summary: `子任务 #${rd.task_id} 无法判定，升级人工`, payload: { task_id: rd.task_id, evidence: rd.evidence } } })
+    }
+    return events
+  }
+
+  // Supervisor 巡检（纯规则）：空转 / 业务卡死 / 连败速率 → 处置动作列表
+  function superviseCampaign(c, repo) {
+    const actions = []
+    const now = Date.now()
+    if (c.status === 'active' && c.heartbeat_at && now - Number(c.heartbeat_at) > CAMPAIGN_MILESTONE_IDLE_MS) {
+      if (!hasRecentCheckpoint(repo, c.id, 'escalation', CAMPAIGN_MILESTONE_IDLE_MS)) actions.push({ kind: 'idle' })
+    }
+    const active = repo.listTasksWhere({ campaign_id: c.id, bucket: 'active' }, 100, 0, 'priority')
+    for (const t of active) {
+      const runs = repo.listTaskRunsWhere({ task_id: t.id }, 3, 0)
+      if (runs.length >= 3 && runs.every((r) => !r.ok)) {
+        const notes = new Set(runs.map((r) => String(r.note || '').slice(0, 40)))
+        if (notes.size === 1) actions.push({ kind: 'stuck', task_id: t.id, note: runs[0].note })
+      }
+    }
+    // 连败速率：近 1h rejected 验收 ≥2 → 降级 L2→L1
+    const hourAgo = now - 3600000
+    const decisions = repo.listCampaignDecisions(c.id, 'rejected', 50, 0)
+    if (decisions.filter((d) => Number(d.created_at || 0) >= hourAgo).length >= 2 && Number(c.autonomy) >= 2) {
+      actions.push({ kind: 'derive_fail_rate' })
+    }
+    // 停止条件（INV-C9）：预算耗尽 ⇒ 转 reviewing 待人审（不自动 archive）
+    if (c.status === 'active' && c.budget_tokens != null && Number(c.budget_tokens) > 0) {
+      const windowMs = (Number(c.budget_window_days) || 7) * 86400000
+      const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
+      if (Number(usage.spent_tokens) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
+    }
+    return actions
+  }
+
+  // Dispatcher 下发（唯一动作=翻译为 derive_intent/task_create；闸顺序：有界→预算→委托链）
+  async function dispatchDrafts(c, drafts, repo, { explicit = false } = {}) {
+    const result = { derived: 0, deduped: 0, dropped: [], events: [] }
+    if (!drafts.length) return result
+    const policy = c.policy || {}
+    const cap = Number(policy.derive_cap_per_tick) > 0 ? Math.floor(Number(policy.derive_cap_per_tick)) : 5
+    const maxActive = Number(policy.max_active_tasks) > 0 ? Math.floor(Number(policy.max_active_tasks)) : 20
+    const activeCount = repo.activeCampaignTaskCount(c.id)
+    if (activeCount >= maxActive) {
+      if (explicit) throwErr('E_CAMPAIGN_DERIVE_CAP', `专项 #${c.id} 活跃子任务已满（${activeCount}/${maxActive}）`, '等待在跑子任务完结后重试（INV-C6）', true)
+      result.dropped.push({ reason: 'max_active_tasks', active: activeCount })
+      return result
+    }
+    let allowed = drafts
+    if (allowed.length > cap) {
+      if (explicit) throwErr('E_CAMPAIGN_DERIVE_CAP', `单次派生超上限（${allowed.length}/${cap}）`, '拆分多次派发（INV-C6）', true)
+      result.dropped.push({ reason: 'derive_cap', dropped: allowed.length - cap })
+      allowed = allowed.slice(0, cap)
+    }
+    // campaign 窗口预算闸（per-program 闸在 task_create 链内叠加，双闸取严）
+    if (c.budget_tokens != null && Number(c.budget_tokens) > 0) {
+      const windowMs = (Number(c.budget_window_days) || 7) * 86400000
+      const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
+      const estimate = allowed.length * 150000
+      if (Number(usage.spent_tokens) + estimate > Number(c.budget_tokens)) {
+        writeCheckpoint(repo, c.id, 'budget_low', `专项预算将触顶：窗口已用 ${usage.spent_tokens}/${c.budget_tokens} tokens，本 tick 停派`, { usage })
+        if (Number(c.autonomy) >= 2) repo.updateCampaign(c.id, { autonomy: 1 })
+        if (explicit) throwErr('E_CAMPAIGN_BUDGET_LOW', `专项 #${c.id} 窗口预算不足（已用 ${usage.spent_tokens}/${c.budget_tokens}）`, '等待窗口滚动或 campaign-budget-extend 审批后重试', false)
+        result.dropped.push({ reason: 'budget_low' })
+        return result
+      }
+    }
+    if (!dispatchRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 dispatch 不可达', '确认总线已挂载', true)
+    for (const d of allowed) {
+      const programId = String(d.program_id || c.program_ids[0] || '')
+      const sit = await campaignSituationOk(programId, d.host)
+      if (!sit.ok) { result.dropped.push({ strategy_key: d.strategy_key || null, code: sit.code, message: sit.message }); continue }
+      const args = {
+        program_id: programId, kind: d.kind || 'hypothesis', host: d.host, path: d.path || '', param: d.param || '',
+        vuln_class: d.vuln_class || '', level: d.level || 'H2', rationale: d.rationale || '',
+        oracle: d.oracle || '', strategy_key: d.strategy_key || '',
+        campaign_id: c.id, campaign_role: d.campaign_role || 'derived',
+      }
+      try {
+        const r = await dispatchRef('task', 'derive_intent', args, { actor: 'reactor' })
+        if (r && r.ok) {
+          if (r.data?.deduped) result.deduped++
+          else {
+            result.derived++
+            result.events.push({ name: 'task.campaign.task.derived', payload: { campaign_id: c.id, task_id: r.data.task_id, strategy_key: d.strategy_key || null, role: d.campaign_role || 'derived' } })
+          }
+        } else {
+          result.dropped.push({ strategy_key: d.strategy_key || null, code: r?.error?.code || 'E_INTERNAL', message: String(r?.error?.message || '').slice(0, 160) })
+        }
+      } catch (e) {
+        if (e && e.code === 'E_CAMPAIGN_DERIVE_CAP') throw e
+        result.dropped.push({ strategy_key: d.strategy_key || null, code: e?.code || 'E_INTERNAL', message: String(e?.message || e).slice(0, 160) })
+      }
+    }
+    return result
+  }
+
+  // 单专项 tick：巡检 → 验收 → 规划 → 下发（每步有界；异常隔离到本 campaign）
+  async function runCampaignTick(campaignRaw, repo, { emit = true } = {}) {
+    const c = parseCampaign(campaignRaw)
+    const summary = { campaign_id: c.id, reviewed: 0, derived: 0, deduped: 0, dropped: 0, escalated: 0, paused: false, autonomous: false, skipped: [] }
+    const events = []
+    // 1) Supervisor
+    try {
+      const actions = superviseCampaign(c, repo)
+      for (const a of actions) {
+        if (a.kind === 'idle') {
+          const cp = writeCheckpoint(repo, c.id, 'escalation', '专项空转：目标不可达或能量耗尽（>48h 无 accepted 验收且无新派生）', {})
+          events.push(...cp.events); summary.escalated++
+        } else if (a.kind === 'stuck') {
+          try { await dispatchRef('task', 'block', { task_id: a.task_id, blocked_reason: `Supervisor：业务卡死（连续 3 轮 ok=0 同类：${String(a.note || '').slice(0, 80)}）` }, { actor: 'dashboard' }) } catch (e) { log(`campaign#${c.id} 卡死处置失败: ${e?.message}`) }
+          const cp = writeCheckpoint(repo, c.id, 'escalation', `子任务 #${a.task_id} 业务卡死，已 block 升级人工`, { task_id: a.task_id })
+          events.push(...cp.events); summary.escalated++
+        } else if (a.kind === 'derive_fail_rate') {
+          repo.updateCampaign(c.id, { autonomy: 1 })
+          const cp = writeCheckpoint(repo, c.id, 'autonomy_change', '连败速率超阈值，L2 自动降级为 L1', {})
+          events.push(...cp.events)
+        } else if (a.kind === 'stop_condition') {
+          repo.updateCampaign(c.id, { status: 'reviewing' }, 'active')
+          const cp = writeCheckpoint(repo, c.id, 'stop_condition', `停止条件命中（${a.reason}），转 reviewing 待人审（不自动 archive）`, { reason: a.reason })
+          events.push(...cp.events); summary.escalated++
+        }
+      }
+    } catch (e) { summary.skipped.push({ step: 'supervisor', error: String(e?.message || e) }) }
+    // 2) Reviewer（补验事件重放/重启遗漏）
+    try {
+      const pending = repo.unreviewedCampaignTasks(c.id, 20)
+      for (const t of pending) {
+        const runs = repo.listTaskRunsWhere({ task_id: t.id }, 1, 0)
+        const run = runs[0] || null
+        const verdict = campaignVerdict(t, run)
+        const evidence = (run && run.run_id) ? `run:${run.run_id}` : `task:${t.id}`
+        const delta = makeGoalDelta(t, verdict, run)
+        const rd = recordDecision(repo, { campaign_id: c.id, task_id: t.id, verdict, evidence, goal_delta: delta, decided_by: 'reviewer' })
+        if (!rd.duplicate) { summary.reviewed++; events.push(...decisionEvents(rd)) }
+      }
+    } catch (e) { summary.skipped.push({ step: 'reviewer', error: String(e?.message || e) }) }
+    // 2.5) LearnLink（§11.2-L4）：反复 rework ⇒ 经既有 know_gap_record 登记检索缺口（有界，7d 去重）
+    try {
+      const reworks = repo.listCampaignDecisions(c.id, 'rework', 50, 0).filter((d) => Date.now() - Number(d.created_at || 0) < 7 * 86400000)
+      if (reworks.length >= 3 && !hasRecentCheckpoint(repo, c.id, 'milestone', 7 * 86400000) && dispatchRef) {
+        await dispatchRef('know', 'gap_record', {
+          q: `专项 #${c.id} ${String(c.goal_spec.objective || '').slice(0, 200)} 反复 rework`, program_id: c.program_ids[0] || '', surface: `campaign:${c.id}:rework`, hits: reworks.length,
+        }, { actor: 'reactor' })
+        writeCheckpoint(repo, c.id, 'milestone', `反复 rework ${reworks.length} 次，已登记 know 检索缺口（surface=campaign:${c.id}:rework）`, { reworks: reworks.length })
+      }
+    } catch (e) { summary.skipped.push({ step: 'learnlink', error: String(e?.message || e) }) }
+    // 3) Planner + Dispatcher（autonomy≥1 且 active）
+    if (c.status === 'active' && Number(c.autonomy) >= 1) {
+      try {
+        const inputs = await gatherPlanInputs(c, repo)
+        const plan = compileCampaignPlan({ campaign: c, ...inputs })
+        summary.skipped.push(...plan.skipped.map((s) => ({ step: 'planner', ...s })))
+        if (Number(c.autonomy) >= 2 && plan.drafts.length) {
+          const res = await dispatchDrafts(c, plan.drafts, repo, { explicit: false })
+          summary.derived += res.derived; summary.deduped += res.deduped; summary.dropped += res.dropped.length
+          summary.autonomous = true
+          events.push(...res.events)
+        }
+      } catch (e) { summary.skipped.push({ step: 'planner', error: String(e?.message || e) }) }
+    }
+    repo.updateCampaign(c.id, { last_tick_at: Date.now() })
+    return { summary, events }
+  }
+
   // L1（学习专项 §3.1）：宿主在收尾事件发布前固定 FGS 快照（fgs 域 fgs_snapshot 命令）。
   // 弱联动——快照不可用（fgs 域未注册/失败）时显式返回 null（缺快照标记），不阻断收尾。
   async function pinFgsSnapshot(taskId, runId) {
@@ -827,6 +1389,83 @@ function makeHandlers(opts) {
       if (TERMINAL.has(t.status)) return { code: 'E_STATE', message: `task #${args.task_id} 已终态`, hint: '终态任务无需再声明完成', retryable: false }
       return null
     },
+    // 22 号方案 不变量：campaign 子任务归属合法（存在/未归档/program 在绑定内/禁 interval）
+    campaignTaskValid: async (args, repo) => {
+      if (args.campaign_id == null) return null
+      const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
+      if (!c) return { code: 'E_CAMPAIGN_STATE', message: `专项不存在: ${args.campaign_id}`, hint: '核对 campaign_list 里的 id', retryable: false }
+      if (c.status === 'archived') return { code: 'E_CAMPAIGN_STATE', message: `专项 #${c.id} 已归档，不可挂子任务`, hint: '归档专项只读；新建专项承接', retryable: false }
+      if (args.program_id && !c.program_ids.includes(String(args.program_id))) {
+        return { code: 'E_INVARIANT', message: `program ${args.program_id} 不在专项 #${c.id} 绑定范围（${c.program_ids.join(', ')}）`, hint: '只可派生到已绑定 program', retryable: false }
+      }
+      if (String(args.schedule?.kind || '') === 'interval') return { code: 'E_CAMPAIGN_INTERVAL_FORBIDDEN', message: 'campaign 子任务禁止 interval', hint: '节奏权唯一归 Campaign tick（INV-C7）', retryable: false }
+      return null
+    },
+    // campaign_create 门禁：mode/program_ids/stop_conditions/autonomy L2（INV-C4）/name 唯一
+    campaignCreateValid: async (args, repo) => {
+      const mode = String(args.mode || 'single')
+      const programIds = (Array.isArray(args.program_ids) ? args.program_ids : []).map(String).filter(Boolean)
+      if (!programIds.length) return { code: 'E_SCHEMA', message: 'program_ids 至少 1 个', hint: '绑定已授权 program（scope_list 可查）', retryable: false }
+      if (mode === 'cross' && programIds.length < 2) return { code: 'E_INVARIANT', message: 'cross 模式须绑定 ≥2 个 program', hint: '单一 SRC 深挖用 single', retryable: false }
+      const gs = args.goal_spec && typeof args.goal_spec === 'object' ? args.goal_spec : {}
+      const stop = Array.isArray(gs.stop_conditions) ? gs.stop_conditions.map((x) => String(x).trim()).filter(Boolean) : []
+      if (!stop.length) return { code: 'E_INVARIANT', message: 'goal_spec.stop_conditions 非空（铁律：任何专项必须有退出条件）', hint: '给出量化/事件化退出条件，如「confirmed ≥ 3」或「预算耗尽」', retryable: false }
+      const autonomy = Number(args.autonomy) || 0
+      if (autonomy >= 2) {
+        if (!(Number(args.budget_tokens) > 0)) return { code: 'E_CAMPAIGN_AUTONOMY_GATE', message: 'autonomy=2 必须带 budget_tokens（INV-C4）', hint: 'L2 有界自动须有专项级预算上限', retryable: false }
+        if (!args.approval_id) return { code: 'E_CAMPAIGN_AUTONOMY_GATE', message: 'autonomy=2 必须带 approval_id（campaign-autonomy 审批）', hint: '先提 campaign-autonomy 审批并批准', retryable: false }
+      }
+      const dup = repo.findCampaignByName(String(args.name))
+      if (dup) return { code: 'E_CONFLICT', message: `活跃专项名已存在: ${args.name}（#${dup.id}）`, hint: '专项名在未归档范围内唯一；改名或归档旧的', retryable: false }
+      return null
+    },
+    // 状态机流转合法性由 handler 判定（invariant 拿不到动词）；此处校验目标存在，保证错误码一致
+    campaignStateTransition: async (args, repo) => {
+      const c = repo.getCampaign(Number(args.campaign_id))
+      if (!c) return { code: 'E_CAMPAIGN_STATE', message: `专项不存在: ${args.campaign_id}`, hint: '核对 campaign_list 里的 id', retryable: false }
+      return null
+    },
+    campaignGoalUpdateValid: async (args, repo) => {
+      const c = repo.getCampaign(Number(args.campaign_id))
+      if (!c) return { code: 'E_CAMPAIGN_STATE', message: `专项不存在: ${args.campaign_id}`, hint: '核对 campaign_list 里的 id', retryable: false }
+      if (c.status === 'archived') return { code: 'E_CAMPAIGN_STATE', message: '归档专项只读', hint: '新建专项承接', retryable: false }
+      if (args.goal_spec && typeof args.goal_spec === 'object') {
+        const stop = Array.isArray(args.goal_spec.stop_conditions) ? args.goal_spec.stop_conditions.map((x) => String(x).trim()).filter(Boolean) : null
+        if (stop && !stop.length) return { code: 'E_INVARIANT', message: 'goal_spec.stop_conditions 不得清空', hint: '退出条件是可更新但不可删除的铁律', retryable: false }
+      }
+      return null
+    },
+    campaignDispatchValid: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
+      if (!c) return { code: 'E_CAMPAIGN_STATE', message: `专项不存在: ${args.campaign_id}`, hint: '核对 campaign_list 里的 id', retryable: false }
+      if (c.status === 'archived') return { code: 'E_CAMPAIGN_STATE', message: '归档专项不可派生', hint: '撤档专项不再下发（INV-C9 终态只读）', retryable: false }
+      if (c.status === 'draft') return { code: 'E_CAMPAIGN_STATE', message: '草稿专项不可派生，先 campaign_activate', hint: 'draft → active 后方可派生', retryable: false }
+      const drafts = Array.isArray(args.drafts) ? args.drafts : []
+      if (!drafts.length) return { code: 'E_SCHEMA', message: 'drafts 至少 1 条', hint: '传编译后的草稿数组', retryable: false }
+      for (const d of drafts) {
+        const pid = String(d.program_id || c.program_ids[0] || '')
+        if (!pid || !c.program_ids.includes(pid)) return { code: 'E_INVARIANT', message: `草稿 program ${pid || '(空)'} 不在专项绑定范围`, hint: '只可派生到已绑定 program', retryable: false }
+        if (!String(d.host || '').trim()) return { code: 'E_SCHEMA', message: '草稿缺 host', hint: '每条草稿须含 host', retryable: false }
+      }
+      // 双预算闸之 campaign 侧（显式路径）：不变量阶段写入 checkpoint/降级并拒绝
+      const bg = campaignBudgetGate(repo, c, drafts.length)
+      if (bg.blocked) return { code: bg.code, message: bg.message, hint: '等待窗口滚动或 campaign-budget-extend 审批后重试（INV-C10）', retryable: false }
+      return null
+    },
+    // 验收证据铁律：非空 + 前缀白名单（INV-C8）；一任务一验收（INV-C3）
+    campaignReviewGate: async (args, repo) => {
+      const c = repo.getCampaign(Number(args.campaign_id))
+      if (!c) return { code: 'E_CAMPAIGN_STATE', message: `专项不存在: ${args.campaign_id}`, hint: '核对 campaign_list 里的 id', retryable: false }
+      if (!String(args.evidence || '').trim() || !EVIDENCE_PREFIX_RE.test(String(args.evidence).trim())) {
+        return { code: 'E_EVIDENCE_REQUIRED', message: `验收证据非空且须为 run:/task:/capsule:/ledger:/finding:/oracle: 引用（收到「${String(args.evidence || '').slice(0, 60)}」）`, hint: '无证据不验收（证据铁律）', retryable: false }
+      }
+      const exists = repo.getDecisionByTask(Number(args.task_id))
+      if (exists) return { code: 'E_CAMPAIGN_REVIEWED', message: `task #${args.task_id} 已验收（decision #${exists.id}，${exists.verdict}）`, hint: '一任务一验收（INV-C3）；重验须先作废原行', retryable: false }
+      const t = repo.getTask(Number(args.task_id))
+      if (!t) return { code: 'E_NOT_FOUND', message: `task 不存在: ${args.task_id}`, hint: '核对 task_list 里的 id', retryable: false }
+      if (Number(t.campaign_id) !== Number(args.campaign_id)) return { code: 'E_INVARIANT', message: `task #${args.task_id} 不属专项 #${args.campaign_id}`, hint: '验收对象必须是本专项子任务', retryable: false }
+      return null
+    },
   }
 
   const commands = {
@@ -838,6 +1477,10 @@ function makeHandlers(opts) {
       if (!args.provider && args.model) throwErr('E_SCHEMA', 'provider+model 须成对出现', '模型覆盖须 provider+model 成对', false)
       const sched = normalizeSchedule(args.schedule, nowTs, { phase: args.phase || '' })
       if (sched.error) throwErr(sched.code || 'E_SCHEMA', sched.error, '修正 schedule 后重试')
+      // INV-C7：campaign 子任务禁止 interval（节奏权唯一归 campaign tick，防双重调度漂移）
+      if (args.campaign_id != null && sched.kind === 'interval') {
+        throwErr('E_CAMPAIGN_INTERVAL_FORBIDDEN', 'campaign 子任务禁止 interval 调度', '挖掘推进归 Campaign tick；基线节奏类工作请建非 campaign 的 interval 任务')
+      }
       const parentId = args.schedule?.after_task_id !== undefined ? args.schedule.after_task_id : args.parent_id ?? null
       const afterDelay = args.schedule?.after_delay_seconds ?? 0
       const dependencyError = validateDependency(id => repo.getTask(id), { program_id: programId, schedule_kind: sched.kind, every_seconds: sched.every_seconds }, parentId, afterDelay)
@@ -880,10 +1523,13 @@ function makeHandlers(opts) {
         provider: args.provider ?? null,
         model: args.model ?? null,
         reasoning_effort: args.reasoning_effort ?? null,
+        campaign_id: args.campaign_id ?? null,
+        campaign_role: args.campaign_role ?? null,
       })
       const payload = {
         task_id: id, program_id: programId, phase: args.phase || '', objective_head: String(args.objective || '').slice(0, 80),
         schedule_kind: sched.kind, parent_id: parentId, priority: args.priority ?? 5, goal: args.goal || '', source: 'model',
+        campaign_id: args.campaign_id ?? null, campaign_role: args.campaign_role ?? null,
       }
       return {
         data: { task_id: id, status: 'queued', schedule: sched.kind ? { kind: sched.kind, next_run_at: sched.next_run_at, next_run_bj: sched.next_run_bj ?? _beijingIso(sched.next_run_at) } : null, deduped: false },
@@ -1074,7 +1720,7 @@ function makeHandlers(opts) {
       repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null })
       return {
         data: { task_id: Number(args.task_id), status, next_run_at: nextRunAt, run_recorded: true, spent_tokens: spentTokens, budget_overrun: budgetOverrun, guard: { checked: guard.checked, missing: guard.missing } },
-        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, spent_tokens: spentTokens, budget_overrun: budgetOverrun, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, fgs_snapshot: fgsSnapshot, cause: 'run' } }],
+        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, spent_tokens: spentTokens, budget_overrun: budgetOverrun, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, fgs_snapshot: fgsSnapshot, cause: 'run', campaign_id: t.campaign_id ?? null, campaign_role: t.campaign_role ?? null } }],
         after: { task_id: Number(args.task_id), status, ok },
       }
     },
@@ -1141,11 +1787,13 @@ function makeHandlers(opts) {
 
     // 21 号方案 §3-1：Intent 派生落任务草稿（strategy 去重 + 预算闸 + 绝不自动执行）
     task_derive_intent: async (args, repo, ctx) => {
-      const key = args.strategy_key || strategyKey({ host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '' })
+      const bare = args.strategy_key || strategyKey({ host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '' })
+      // 22 号方案 §5.5：专项维度去重键（连败黑名单仍按裸 key 判定——打法属性非专项属性）
+      const key = args.campaign_id ? `c${args.campaign_id}|${bare}` : bare
       // strategy_key 幂等去重：已测组合不重发
       const existing = repo.getStrategy ? repo.getStrategy(key) : null
       if (existing && !existing.blacklisted) {
-        return { data: { deduped: true, strategy_key: key, task_id: existing.last_task_id ?? null }, events: [], after: { deduped: true } }
+        return { data: { deduped: true, strategy_key: bare, task_id: existing.last_task_id ?? null }, events: [], after: { deduped: true } }
       }
       const extraLines = []
       if (args.level === 'H3' && args.h3) {
@@ -1165,15 +1813,200 @@ function makeHandlers(opts) {
       const r = await dispatchRef('task', 'create', {
         program_id: args.program_id, objective, priority: args.level === 'H1' ? 4 : 3, phase: 'vuln',
         budget_tokens: 150000,
+        ...(args.campaign_id != null ? { campaign_id: args.campaign_id } : {}),
+        ...(args.campaign_role ? { campaign_role: args.campaign_role } : {}),
       }, { actor: 'reactor', cause: ctx?.cause })
       if (!r || !r.ok) throwErr(r?.error?.code || 'E_INTERNAL', r?.error?.message || '派生任务创建失败', r?.error?.hint || '', false)
       const taskId = r.data.task_id
       if (repo.upsertStrategy) repo.upsertStrategy(key, { program_id: args.program_id, last_task_id: taskId })
       return {
-        data: { deduped: false, strategy_key: key, task_id: taskId, kind: args.kind, level: args.level || 'H2' },
-        events: [{ name: 'task.intent.derived', payload: { strategy_key: key, task_id: taskId, program_id: args.program_id, kind: args.kind, level: args.level || 'H2', vuln_class: args.vuln_class || null, host: args.host, path: args.path || '', param: args.param || '', cause: ctx?.cause ? 'event' : 'manual' } }],
-        after: { task_id: taskId, strategy_key: key },
+        data: { deduped: false, strategy_key: bare, task_id: taskId, kind: args.kind, level: args.level || 'H2' },
+        events: [{ name: 'task.intent.derived', payload: { strategy_key: bare, task_id: taskId, program_id: args.program_id, kind: args.kind, level: args.level || 'H2', vuln_class: args.vuln_class || null, host: args.host, path: args.path || '', param: args.param || '', campaign_id: args.campaign_id ?? null, campaign_role: args.campaign_role ?? null, cause: ctx?.cause ? 'event' : 'manual' } }],
+        after: { task_id: taskId, strategy_key: bare },
       }
+    },
+
+    // ---- 22 号方案 §八：Campaign 命令 handlers ----
+
+    campaign_create: async (args, repo, ctx) => {
+      const mode = String(args.mode || 'single')
+      const programIds = (Array.isArray(args.program_ids) ? args.program_ids : []).map(String)
+      const goalSpec = args.goal_spec && typeof args.goal_spec === 'object' ? args.goal_spec : {}
+      const policy = Object.assign({
+        derive_cap_per_tick: 5, max_active_tasks: 20, task_priority_range: [1, 6], allowed_phases: ['vuln'],
+      }, (args.policy && typeof args.policy === 'object') ? args.policy : {})
+      const id = repo.insertCampaign({
+        name: String(args.name), mode, program_ids: programIds, goal_spec: goalSpec,
+        autonomy: Number(args.autonomy) || 0, policy, status: 'draft',
+        budget_tokens: args.budget_tokens ?? null, budget_window_days: args.budget_window_days ?? 7,
+        approval_id: args.approval_id ?? null, heartbeat_at: Date.now(),
+        created_by: String(ctx?.actor || 'system'),
+      })
+      return {
+        data: { campaign_id: id, name: String(args.name), mode, status: 'draft', autonomy: Number(args.autonomy) || 0, program_ids: programIds },
+        events: [{ name: 'task.campaign.created', payload: { campaign_id: id, name: String(args.name), mode, program_ids: programIds, autonomy: Number(args.autonomy) || 0 } }],
+        after: { campaign_id: id },
+      }
+    },
+
+    campaign_activate: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+      if (!['draft', 'paused'].includes(c.status)) throwErr('E_CAMPAIGN_STATE', `专项 #${c.id} 当前 ${c.status}，仅 draft/paused 可激活`, '状态机：draft|paused → active')
+      const missing = await checkCampaignPrograms(c.program_ids)
+      if (missing.length) throwErr('E_CAMPAIGN_PROGRAM_UNRESOLVED', `绑定 program 未授权：${missing.map((m) => `${m.program_id}(${m.reason})`).join(', ')}`, '先在 scope 中登记并确保未过期（INV-C1）')
+      if (Number(c.autonomy) >= 2 && (!(Number(c.budget_tokens) > 0) || !c.approval_id)) throwErr('E_CAMPAIGN_AUTONOMY_GATE', 'autonomy=2 缺 budget_tokens 或 approval_id（INV-C4）', '补齐后激活')
+      const from = c.status
+      repo.updateCampaign(c.id, { status: 'active' }, from)
+      return {
+        data: { campaign_id: c.id, status: 'active', from },
+        events: [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from, to: 'active', cause: 'activate' } }],
+      }
+    },
+
+    campaign_pause: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+      if (c.status !== 'active') throwErr('E_CAMPAIGN_STATE', `专项 #${c.id} 当前 ${c.status}，仅 active 可暂停`, '状态机：active → paused')
+      repo.updateCampaign(c.id, { status: 'paused' }, 'active')
+      const events = [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: 'active', to: 'paused', cause: args.note || 'manual' } }]
+      return { data: { campaign_id: c.id, status: 'paused' }, events }
+    },
+
+    campaign_resume: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+      if (c.status !== 'paused') throwErr('E_CAMPAIGN_STATE', `专项 #${c.id} 当前 ${c.status}，仅 paused 可恢复`, '状态机：paused → active')
+      const missing = await checkCampaignPrograms(c.program_ids)
+      if (missing.length) throwErr('E_CAMPAIGN_PROGRAM_UNRESOLVED', `绑定 program 未授权：${missing.map((m) => m.program_id).join(', ')}`, '授权漂移 fail-closed，恢复前先修复授权')
+      repo.updateCampaign(c.id, { status: 'active' }, 'paused')
+      return { data: { campaign_id: c.id, status: 'active' }, events: [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: 'paused', to: 'active', cause: 'resume' } }] }
+    },
+
+    campaign_archive: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+      if (c.status === 'archived') return { data: { campaign_id: c.id, status: 'archived', idempotent: true } }
+      repo.updateCampaign(c.id, { status: 'archived', archived_at: Date.now() }, c.status)
+      // 同步 cancel 其 queued 子任务（在跑的跑完）
+      let cancelled = 0
+      const queued = repo.listTasksWhere({ campaign_id: c.id, status: 'queued' }, 200, 0, 'priority')
+      for (const t of queued) {
+        try { const r = await dispatchRef('task', 'cancel', { task_id: t.id, note: `专项 #${c.id} 归档` }, { actor: 'dashboard' }); if (r && r.ok) cancelled++ } catch (e) { log(`归档专项 #${c.id} 取消 queued 子任务 #${t.id} 失败: ${e?.message}`) }
+      }
+      return {
+        data: { campaign_id: c.id, status: 'archived', cancelled_queued: cancelled },
+        events: [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: c.status, to: 'archived', cause: args.note || 'archive' } }],
+      }
+    },
+
+    campaign_goal_revise: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+      const patch = {}
+      let goalChanged = false
+      if (args.goal_spec && typeof args.goal_spec === 'object') {
+        const merged = Object.assign({}, c.goal_spec, args.goal_spec)
+        if (!Array.isArray(merged.stop_conditions) || !merged.stop_conditions.map((x) => String(x).trim()).filter(Boolean).length) throwErr('E_INVARIANT', 'goal_spec.stop_conditions 不得清空', '退出条件是铁律')
+        patch.goal_spec = JSON.stringify(merged); goalChanged = true
+      }
+      if (args.policy && typeof args.policy === 'object') patch.policy = JSON.stringify(Object.assign({}, c.policy, args.policy))
+      if (!Object.keys(patch).length) throwErr('E_SCHEMA', 'goal_spec/policy 至少提供一项', '传 changed 字段')
+      const events = [{ name: 'task.campaign.goal.changed', payload: { campaign_id: c.id, diff: { goal_spec: goalChanged, policy: !!patch.policy } } }]
+      // active 中改目标 → 强制转 reviewing 待人工确认（§6.1）
+      if (goalChanged && c.status === 'active') { patch.status = 'reviewing'; events.push({ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: 'active', to: 'reviewing', cause: 'goal_update' } }) }
+      repo.updateCampaign(c.id, patch, c.status)
+      return { data: { campaign_id: c.id, status: patch.status || c.status, goal_changed: goalChanged }, events }
+    },
+
+    campaign_dispatch: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+      const res = await dispatchDrafts(c, Array.isArray(args.drafts) ? args.drafts : [], repo, { explicit: true })
+      return {
+        data: { campaign_id: c.id, derived: res.derived, deduped: res.deduped, dropped: res.dropped },
+        events: res.events,
+      }
+    },
+
+    campaign_review_pass: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+      if (c.status !== 'reviewing') throwErr('E_CAMPAIGN_STATE', `专项 #${c.id} 当前 ${c.status}，仅 reviewing 可审阅通过`, '状态机：reviewing → active')
+      repo.updateCampaign(c.id, { status: 'active' }, 'reviewing')
+      const cp = writeCheckpoint(repo, c.id, 'milestone', `人工审阅通过：${String(args.summary || '').slice(0, 200)}`, { summary: args.summary })
+      return { data: { campaign_id: c.id, status: 'active' }, events: [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: 'reviewing', to: 'active', cause: 'review_pass' } }, ...cp.events] }
+    },
+
+    campaign_tick_now: async (args, repo) => {
+      const c = repo.getCampaign(Number(args.campaign_id))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+      const { summary, events } = await runCampaignTick(c, repo)
+      return { data: summary, events }
+    },
+
+    campaign_tick: async (args, repo) => {
+      let rows
+      if (args.campaign_id) {
+        const c = repo.getCampaign(Number(args.campaign_id))
+        if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+        rows = [c]
+      } else {
+        rows = repo.listCampaignsWhere({ status: 'active' }, Number(args.limit) || CAMPAIGN_TICK_LIMIT, 0)
+      }
+      const summaries = []
+      const events = []
+      for (const row of rows) {
+        try {
+          const r = await runCampaignTick(row, repo)
+          summaries.push(r.summary); events.push(...r.events)
+        } catch (e) {
+          // tick 内异常隔离到该 campaign：记 escalation 不中断其他（fail-closed 不吞错）
+          log(`campaign#${row.id} tick 异常: ${e?.stack || e?.message || e}`)
+          try { const cp = writeCheckpoint(repo, row.id, 'escalation', `tick 异常：${String(e?.message || e).slice(0, 300)}`, {}); events.push(...cp.events) } catch { /* ignore */ }
+          summaries.push({ campaign_id: row.id, error: String(e?.message || e) })
+        }
+      }
+      return { data: { processed: rows.length, summaries }, events }
+    },
+
+    campaign_record_decision: async (args, repo) => {
+      const c = repo.getCampaign(Number(args.campaign_id))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+      const rd = recordDecision(repo, { campaign_id: c.id, task_id: args.task_id, verdict: args.verdict, evidence: args.evidence, goal_delta: args.goal_delta, decided_by: args.decided_by })
+      if (rd.duplicate) throwErr('E_CAMPAIGN_REVIEWED', `task #${args.task_id} 已验收`, '一任务一验收（INV-C3）')
+      return { data: { campaign_id: c.id, task_id: Number(args.task_id), verdict: args.verdict, decision_id: rd.id }, events: decisionEvents(rd) }
+    },
+
+    campaign_checkpoint: async (args, repo) => {
+      const c = repo.getCampaign(Number(args.campaign_id))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
+      const cp = writeCheckpoint(repo, c.id, args.kind, args.summary, args.payload)
+      return { data: { campaign_id: c.id, checkpoint_id: cp.id, kind: args.kind }, events: cp.events }
+    },
+
+    // （approval 专用）campaign-autonomy 批准 effect：落档 + 激活
+    campaign_autonomy_apply: async (args, repo) => {
+      const c = parseCampaign(repo.findCampaignByName(String(args.name)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.name}`, '核对 campaign_list')
+      if (!['draft', 'paused'].includes(c.status)) throwErr('E_CAMPAIGN_STATE', `专项 #${c.id} 当前 ${c.status}，仅 draft/paused 可升档激活`, '状态机')
+      if (Number(args.autonomy) >= 2 && (!(Number(c.budget_tokens) > 0) || !args.approval_id)) throwErr('E_CAMPAIGN_AUTONOMY_GATE', 'autonomy=2 缺 budget_tokens（INV-C4）', '先补齐预算')
+      const from = c.status
+      repo.updateCampaign(c.id, { autonomy: Number(args.autonomy), approval_id: args.approval_id, status: 'active' }, from)
+      return {
+        data: { campaign_id: c.id, status: 'active', autonomy: Number(args.autonomy), from },
+        events: [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from, to: 'active', cause: 'autonomy_approval' } }],
+      }
+    },
+
+    // （approval 专用）campaign-budget-extend 批准 effect：budget_tokens 增量落账
+    campaign_budget_extend: async (args, repo) => {
+      const c = repo.findCampaignByName(String(args.name))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.name}`, '核对 campaign_list')
+      const next = Number(c.budget_tokens || 0) + Number(args.add_tokens)
+      repo.updateCampaign(c.id, { budget_tokens: next })
+      writeCheckpoint(repo, c.id, 'milestone', `campaign-budget-extend 批准 #${args.approval_id}：预算 +${args.add_tokens} → ${next}`, { approval_id: args.approval_id })
+      return { data: { campaign_id: c.id, budget_tokens: next } }
     },
 
     task_submission_backlog: async (args) => {
@@ -1272,7 +2105,7 @@ function makeHandlers(opts) {
       repo.transitionTask(Number(args.task_id), { status: 'done', result: tail, finished_at: nowTs }, t.status)
       return {
         data: { task_id: Number(args.task_id), status: 'done' },
-        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: '', ok: true, outcome: 'done', schedule_kind: t.schedule_kind, next_run_at: null, session_id: null, guard: { checked: false, missing: [] }, truth: { checked: false, rejected: false, reason: '' }, fgs_snapshot: fgsSnapshot, cause: 'approval' } }],
+        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: '', ok: true, outcome: 'done', schedule_kind: t.schedule_kind, next_run_at: null, session_id: null, guard: { checked: false, missing: [] }, truth: { checked: false, rejected: false, reason: '' }, fgs_snapshot: fgsSnapshot, cause: 'approval', campaign_id: t.campaign_id ?? null, campaign_role: t.campaign_role ?? null } }],
         after: { task_id: Number(args.task_id), status: 'done' },
       }
     },
@@ -1347,6 +2180,74 @@ function makeHandlers(opts) {
       } catch { /* ignore */ }
       return { scheduled_drift: maxDriftMinutes, anchor_missing: anchorMissing, anchor_missing_ids: anchorMissingIds, interval_tasks: intervalRows, task_runs_last_age_hours: taskRunsLastAgeHours }
     },
+    // ---- 22 号方案 §八：Campaign 查询 ----
+    campaign_list: async (args, repo) => {
+      const filters = { status: args.status || '', program_id: args.program_id || '' }
+      const total = repo.countCampaignsWhere(filters)
+      const rows = repo.listCampaignsWhere(filters, args.limit || 50, args.offset || 0).map((row) => {
+        const c = parseCampaign(row)
+        const decisions = repo.listCampaignDecisions(c.id, '', 500, 0)
+        const agg = { accepted: 0, rejected: 0, rework: 0, escalated: 0 }
+        for (const d of decisions) if (agg[d.verdict] !== undefined) agg[d.verdict]++
+        return {
+          id: c.id, name: c.name, mode: c.mode, status: c.status, autonomy: c.autonomy,
+          program_ids: c.program_ids, budget_tokens: c.budget_tokens, spent_tokens: c.spent_tokens,
+          budget_window_days: c.budget_window_days, heartbeat_at: c.heartbeat_at, last_tick_at: c.last_tick_at,
+          created_at: c.created_at, updated_at: c.updated_at, decision_totals: agg,
+          objective: c.goal_spec.objective || '',
+        }
+      })
+      return { rows, total }
+    },
+    campaign_get: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.id)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.id}`, '核对 campaign_list 里的 id')
+      const decisions = repo.listCampaignDecisions(c.id, '', 50, 0)
+      const activeTasks = repo.listTasksWhere({ campaign_id: c.id, bucket: 'active' }, 100, 0, 'priority')
+      const checkpoints = repo.listCheckpoints(c.id, 20)
+      const usage = repo.campaignUsage(c.id, Date.now() - (Number(c.budget_window_days) || 7) * 86400000)
+      return {
+        id: c.id, name: c.name, mode: c.mode, status: c.status, autonomy: c.autonomy, approval_id: c.approval_id,
+        program_ids: c.program_ids, goal_spec: c.goal_spec, policy: c.policy,
+        budget_tokens: c.budget_tokens, spent_tokens: c.spent_tokens, budget_window_days: c.budget_window_days,
+        window_usage: usage, last_tick_at: c.last_tick_at, heartbeat_at: c.heartbeat_at,
+        created_by: c.created_by, created_at: c.created_at, updated_at: c.updated_at, archived_at: c.archived_at,
+        decisions, active_tasks: activeTasks.map((t) => ({ id: t.id, objective: t.objective, status: t.status, campaign_role: t.campaign_role, priority: t.priority, program_id: t.program_id })),
+        checkpoints,
+      }
+    },
+    campaign_progress: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.id)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.id}`, '核对 campaign_list 里的 id')
+      const decisions = repo.listCampaignDecisions(c.id, '', 500, 0)
+      const totals = { decisions: decisions.length, accepted: 0, rejected: 0, rework: 0, escalated: 0, confirmed_delta: 0, spent_tokens: 0 }
+      const byProgram = {}
+      for (const d of decisions) {
+        if (totals[d.verdict] !== undefined) totals[d.verdict]++
+        const delta = parseJsonSafe(d.goal_delta, {})
+        totals.confirmed_delta += Number(delta.confirmed || delta.confirmed_delta || 0)
+        totals.spent_tokens += Number(delta.spent_tokens || 0)
+        const pid = d.program_id || '_unknown'
+        byProgram[pid] = byProgram[pid] || { accepted: 0, rejected: 0, rework: 0, escalated: 0, confirmed_delta: 0 }
+        if (byProgram[pid][d.verdict] !== undefined) byProgram[pid][d.verdict]++
+        byProgram[pid].confirmed_delta += Number(delta.confirmed || delta.confirmed_delta || 0)
+      }
+      return { campaign_id: c.id, totals, by_program: byProgram, targets: c.goal_spec.targets || {}, stop_conditions: c.goal_spec.stop_conditions || [] }
+    },
+    campaign_pending_drafts: async (args, repo) => {
+      const c = parseCampaign(repo.getCampaign(Number(args.id)))
+      if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.id}`, '核对 campaign_list 里的 id')
+      if (Number(c.autonomy) < 1) return { campaign_id: c.id, autonomy: c.autonomy, drafts: [], skipped: [{ reason: 'autonomy_l0_no_drafts' }] }
+      const inputs = await gatherPlanInputs(c, repo)
+      const plan = compileCampaignPlan({ campaign: c, ...inputs })
+      const limit = Number(args.limit) || 20
+      return { campaign_id: c.id, autonomy: c.autonomy, drafts: plan.drafts.slice(0, limit), skipped: plan.skipped, active_task_count: inputs.activeTaskCount, budget_remaining_ratio: inputs.budgetRemainingRatio }
+    },
+    campaign_decisions: async (args, repo) => {
+      const rows = repo.listCampaignDecisions(Number(args.campaign_id), args.verdict || '', args.limit || 50, args.offset || 0)
+      const total = repo.countCampaignDecisions(Number(args.campaign_id), args.verdict || '')
+      return { rows, total }
+    },
   }
 
   const subscribers = {
@@ -1371,6 +2272,18 @@ function makeHandlers(opts) {
           program_id: programId,
           goal: 'change-retest', objective, priority: 3, budget_tokens: 200000,
         }, { actor: 'reactor', cause: envelope })
+        // 22 号方案 §9.2/L6：Planner 现算无缓存，被撤回卡片在 H3 草稿中的引用自然失效；
+        // 对命中撤回 scope 的活跃专项写 checkpoint 留痕（可观测，fail-open）。
+        try {
+          const repo = backendRepoRef ? backendRepoRef() : null
+          if (repo) {
+            for (const row of repo.listCampaignsWhere({ status: 'active' }, 200, 0)) {
+              const c = parseCampaign(row)
+              if (p.scope_type === 'program' && p.scope_id && !c.program_ids.includes(String(p.scope_id))) continue
+              writeCheckpoint(repo, c.id, 'milestone', `知识卡撤回 ${p.artifact_kind || ''}/${p.artifact_id || ''}：H3 草稿引用作废（Planner 现算自然失效）`, { release_id: p.release_id || null })
+            }
+          }
+        } catch { /* best-effort */ }
         if (r && r.ok) return { ok: true, data: { skipped: false, task_id: r.data.task_id } }
         return { ok: false, error: { code: r?.error?.code || 'E_INTERNAL', message: r?.error?.message || 'change-retest 任务创建失败' } }
       } catch (e) {
@@ -1517,6 +2430,60 @@ function makeHandlers(opts) {
         return { ok: true, data: { skipped: false, error: String(e?.message) } }
       }
     },
+
+    // 22 号方案 §7.6/§9.2：Reviewer——campaign 子任务收尾即验收（强联动，进 outbox 重试链）
+    onCampaignTaskFinished: async (envelope) => {
+      const p = envelope?.payload || {}
+      if (!p.campaign_id || !p.task_id) return { ok: true, data: { skipped: true, reason: 'not a campaign task' } }
+      if (!dispatchRef || !queryRef) return { ok: true, data: { skipped: true } }
+      try {
+        const g = await queryRef('task', 'get', { task_id: p.task_id }, { actor: 'reactor' })
+        const t = (g && g.ok && g.data) ? g.data : null
+        if (!t) return { ok: true, data: { skipped: true, reason: 'task not found' } }
+        const runs = await queryRef('task', 'runs', { task_id: p.task_id, limit: 1 }, { actor: 'reactor' })
+        const rows = runs ? (runs.rows || (runs.data && runs.data.rows) || []) : []
+        const run = rows[0] || null
+        const verdict = campaignVerdict(t, run)
+        const evidence = (run && run.run_id) ? `run:${run.run_id}` : `task:${t.id}`
+        const goal_delta = makeGoalDelta(t, verdict, run)
+        if (p.spent_tokens != null) goal_delta.spent_tokens = Number(p.spent_tokens) || 0
+        const r = await dispatchRef('task', 'campaign_record_decision', {
+          campaign_id: Number(p.campaign_id), task_id: Number(t.id), verdict, evidence, goal_delta, decided_by: 'reviewer',
+        }, { actor: 'reactor', cause: envelope })
+        if (r && !r.ok && r.error && r.error.code === 'E_CAMPAIGN_REVIEWED') return { ok: true, data: { skipped: true, reason: 'already reviewed' } }
+        if (r && !r.ok) return { ok: false, error: r.error }
+        return { ok: true, data: { skipped: false, verdict, decision_id: r?.data?.decision_id ?? null } }
+      } catch (e) {
+        return { ok: false, error: { code: e?.code || 'E_INTERNAL', message: String(e?.message || e) } }
+      }
+    },
+
+    // 22 号方案 §7.5/§9.2：Supervisor 授权漂移——命中绑定 program 立即 pause（fail-closed）
+    onScopeChanged: async (envelope) => {
+      const p = envelope?.payload || {}
+      const isRevoke = envelope?.name === 'scope.revoked'
+      // rules.changed 仅当降级 max_risk（收紧授权）才算漂移；工具白名单等变更不触发暂停
+      if (!isRevoke) {
+        const patch = (p && p.patch) || {}
+        if (patch.max_risk === undefined) return { ok: true, data: { skipped: true, reason: 'non-restrictive rules change' } }
+      }
+      const repo = backendRepoRef ? backendRepoRef() : null
+      if (!repo || !dispatchRef) return { ok: true, data: { skipped: true } }
+      const program = String(p.program_name || p.program || p.subject || '')
+      const affected = []
+      let campaigns = []
+      try { campaigns = repo.listCampaignsWhere({ status: 'active' }, 200, 0).concat(repo.listCampaignsWhere({ status: 'reviewing' }, 200, 0)) } catch { campaigns = [] }
+      for (const row of campaigns) {
+        const c = parseCampaign(row)
+        if (program && !c.program_ids.includes(program)) continue
+        try {
+          if (c.status === 'active') await dispatchRef('task', 'campaign_pause', { campaign_id: c.id, note: `授权漂移：${program || 'scope 变更'}` }, { actor: 'reactor', cause: envelope })
+          await dispatchRef('task', 'campaign_checkpoint', { campaign_id: c.id, kind: 'escalation', summary: `授权漂移触发暂停：program ${program || '(scope 变更)'}（fail-closed）`, payload: { program, event: envelope?.name } }, { actor: 'reactor', cause: envelope })
+          affected.push(c.id)
+        } catch (e) { log(`scope 漂移暂停专项 #${c.id} 失败: ${e?.message}`) }
+      }
+      return { ok: true, data: { skipped: false, paused: affected } }
+    },
   }
 
   return { ...commands, queries, invariants, subscribers }
@@ -1634,7 +2601,7 @@ export function startTaskScheduler(opts) {
       const r = await dispatch('task', 'claim', { now: Date.now() }, { actor: 'scheduler' })
       claimed = (_ok(r) && r.data && r.data.claimed) || []
     } catch (e) { log(`调度认领失败: ${e?.message}`); return }
-    if (!claimed.length) { await dailyVaultSync(); return }
+    if (!claimed.length) { await campaignTick(); await dailyVaultSync(); return }
     const tasks = []
     for (const taskId of claimed) {
       try {
@@ -1758,6 +2725,20 @@ export function startTaskScheduler(opts) {
     await dailyVaultSync()
   }
 
+  // 22 号方案 §6.4：campaign tick 段（同一调度器单例持锁者；claim 之后顺带驱动）。
+  // 组件异常已隔离到各 campaign（campaign_tick handler 内），此处只兜底日志。
+  async function campaignTick() {
+    try {
+      const r = await dispatch('task', 'campaign_tick', {}, { actor: 'scheduler' })
+      if (_ok(r) && r.data) {
+        const acted = (r.data.summaries || []).filter((s) => (s.reviewed || 0) + (s.derived || 0) + (s.escalated || 0) > 0)
+        if (acted.length) log(`campaign tick：处理 ${r.data.processed} 专项，${acted.length} 个有动作`)
+      } else if (!_ok(r)) {
+        log(`campaign tick 未成功: ${_errCode(r)} ${_errMsg(r)}`)
+      }
+    } catch (e) { log(`campaign tick 异常: ${e?.message}`) }
+  }
+
   // vault 回流（Bellkeeper 融合方向②）：每日 05 时（北京）后首个 tick 触发 know 域 kb 同步——
   // v4 走 experience.kbVaultSync 直调；v5 经 know 域命令 C32 know_kb_vault_sync（弱联动，失败不阻断调度）。
   let lastVaultSyncDay = ''
@@ -1794,10 +2775,16 @@ export function startTaskScheduler(opts) {
 
 export function buildTaskDomain(opts = {}) {
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
-  const backend = createTaskSqliteBackend(opts.backendOptions || {})
+  const baseBackend = createTaskSqliteBackend(opts.backendOptions || {})
+  // repo 实例缓存：总线经 entry.backend.factory(db) 实例化 repo，此处包装以便订阅者（无 db）复用。
+  const state = { repo: null }
+  const backend = {
+    capabilities: baseBackend.capabilities || {},
+    factory(db) { const r = baseBackend.factory(db); state.repo = r; return r },
+  }
   return {
     manifest: TASK_MANIFEST,
-    handlers: makeHandlers({ ...opts, dataDir, repoRef: (db) => backend.factory(db) }),
+    handlers: makeHandlers({ ...opts, dataDir, repoRef: () => state.repo }),
     backend,
   }
 }

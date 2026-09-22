@@ -494,6 +494,7 @@ export const KNOW_MANIFEST = {
         supersedes: str(),
         observed_at: int(),
         context: { type: 'object' },
+        campaign_id: str(),
       }, ['source_event_id', 'source_event_name', 'consumer_version', 'outcome']),
       idempotent: 'natural',
       idempotent_natural: ['source_event_id', 'consumer_version'],
@@ -867,11 +868,12 @@ export const KNOW_MANIFEST = {
       params: schema({
         program_id: str({ default: '' }),
         outcome: en([...EPISODE_OUTCOMES, ''], { default: '' }),
+        campaign_id: str({ default: '' }),
         limit: int({ minimum: 1, maximum: 500 }),
         offset: int({ minimum: 0 }),
       }, []),
       predicates: [],
-      agent_note: '执行学习记录投影：来源事件/归属/六类结果/证据与 FGS 快照引用（按时间倒序）。复盘"学到了什么、依据是什么"用。',
+      agent_note: '执行学习记录投影：来源事件/归属/六类结果/证据与 FGS 快照引用（按时间倒序）。campaign_id 过滤专项归因（22 号方案 §11.2-L2）。',
     },
     // Q17/Q18（L2）：候选知识版本只读投影（候选池里有什么、来源是什么、是否待复验）
     know_revision_list: {
@@ -1919,6 +1921,7 @@ function makeHandlers(opts) {
         supersedes: args.supersedes || null,
         context_json: args.context && typeof args.context === 'object' ? JSON.stringify(args.context).slice(0, 4000) : null,
         biz_key: bizKey,
+        campaign_id: args.campaign_id || null,
         observed_at: args.observed_at ?? Date.now(),
         created_at: Date.now(),
       }
@@ -2496,7 +2499,7 @@ function makeHandlers(opts) {
     },
     // Q16（L1）：学习 episode 投影（同 where 构造器保证 rows/total 口径一致）
     know_episode_list: async (args, repo) => {
-      return repo.listEpisodes({ program_id: args.program_id || '', outcome: args.outcome || '', limit: args.limit ?? 50, offset: args.offset ?? 0 })
+      return repo.listEpisodes({ program_id: args.program_id || '', outcome: args.outcome || '', campaign_id: args.campaign_id || '', limit: args.limit ?? 50, offset: args.offset ?? 0 })
     },
     // Q17/Q18（L2）：候选知识版本投影
     know_revision_list: async (args, repo) => {
@@ -2965,6 +2968,7 @@ function makeHandlers(opts) {
         fgs_snapshot_hash: snap ? snap.hash : undefined,
         fgs_snapshot_summary: snap ? snap.summary : undefined,
         fgs_snapshot_path: snap ? snap.path : undefined,
+        campaign_id: p.campaign_id ? String(p.campaign_id) : undefined,
         observed_at: envelope.ts,
         context: {
           cause: p.cause || null, outcome_raw: p.outcome || null, ok: p.ok ?? null,

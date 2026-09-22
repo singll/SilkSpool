@@ -575,3 +575,17 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 | 发现机器三指标（转化率/高危占比/新类型） | `eval.discovery_metrics` | 安全中心 KPI 区（周更） |
 
 验收证据：`sec-v5-accept.sh --ui-headless` PASS=72 FAIL=0（2026-09-22）。
+
+---
+
+## 2026-09-22 22 号方案回填（安全中心「专项」tab）
+
+> 设计真相源：[22-campaign-task](22-campaign-task.md) §十二。安全中心主面板平铺新增第 8 个逐域视图 **专项（campaign，order 60，domain task）**。
+
+- **客户端**：`@silksec/sec-dashboard-view-campaign`（`dsh-plugin-sec-dashboard.view-campaign.client.js`）——列表（专项/状态/自主级别/绑定 program/验收 accepted-rejected/预算/心跳/操作）+ 行展开详情（goal_spec·预算·验收账本·活跃子任务·里程碑）+「立即 tick」按钮（`campaignTickNow`）。零颜色字面量，经 ui-core 令牌；`requires:['connection']` 缺席静默隐藏；`campaigns` 不可达显示降级提示（B11 规范）。
+- **RPC**（`/silksec-dashboard`）：`campaigns` / `campaignGet` / `campaignDecisions` / `campaignTickNow`。
+- **呈现红线**：专项不作为新 UI 概念——是既有 Program/工作区概念的聚合投影；单 program 专项徽章挂工作区、cross 专项在安全中心平铺面承载（CONTEXT 红线）。
+- **部署**：`sec-dashboard-plugin-setup.sh` VIEW_DOMAINS + `sec-v5-accept.sh` UI_PKG_IDS 均纳入 `sec-dashboard-view-campaign`（14 个 UI 面）。
+- 单测：`dsh-plugin-sec-dashboard.view-campaign.client.test.mjs` 8/8（注册/卸载/降级/列表/详情/tick/primitives 缺席）。
+
+**未接**：L1 待放行队列的一键 `campaign_dispatch` 放行 UI（命令面 `campaign_pending_drafts`/`campaign_dispatch` 已就绪）。

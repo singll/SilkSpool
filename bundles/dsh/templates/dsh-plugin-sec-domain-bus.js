@@ -1208,6 +1208,10 @@ const now = () => clock()
         if (scope.depth >= NESTING_DEPTH_MAX) {
           return errEnvelope(domain, verb, 'E_BUS_STRONG_LINK_NESTING', `强联动嵌套超深（>${NESTING_DEPTH_MAX}）`, '订阅环或嵌套过深，检查 subscribes 图', false, key)
         }
+        // 嵌套作用域须标记 inTxn：否则该命令 handler 内的再一层嵌套 dispatch 会误判为顶层、
+        // 去抢已被外层持有的 writeLock（同进程单连接自锁死）。三层嵌套（如 campaign_dispatch→
+        // derive_intent→create）依赖此传播。
+        scope.inTxn = true
         scope.depth++
         const sp = `sp_${scope.depth}`
         db.exec(`SAVEPOINT ${sp}`)

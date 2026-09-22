@@ -81,6 +81,52 @@ CREATE TABLE IF NOT EXISTS strategy_dedupe (
   last_task_id INTEGER
 )`
 
+// 22 号方案 §5.1：Campaign（专项）台账（task 域 owns）
+const CAMPAIGNS_DDL = `
+CREATE TABLE IF NOT EXISTS campaigns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'single',
+  program_ids TEXT NOT NULL,
+  goal_spec TEXT NOT NULL,
+  autonomy INTEGER NOT NULL DEFAULT 0,
+  policy TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  budget_tokens INTEGER,
+  spent_tokens INTEGER NOT NULL DEFAULT 0,
+  budget_window_days INTEGER NOT NULL DEFAULT 7,
+  approval_id INTEGER,
+  last_tick_at INTEGER,
+  heartbeat_at INTEGER,
+  created_by TEXT NOT NULL,
+  created_at INTEGER, updated_at INTEGER, archived_at INTEGER
+)`
+
+// 22 号方案 §5.3：验收账本（证据铁律落点；UNIQUE(task_id) = 一任务一验收）
+const CAMPAIGN_DECISIONS_DDL = `
+CREATE TABLE IF NOT EXISTS campaign_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign_id INTEGER NOT NULL,
+  task_id INTEGER NOT NULL,
+  verdict TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  goal_delta TEXT,
+  decided_by TEXT NOT NULL,
+  created_at INTEGER,
+  UNIQUE(task_id)
+)`
+
+// 22 号方案 §5.4：里程碑/升级记录
+const CAMPAIGN_CHECKPOINTS_DDL = `
+CREATE TABLE IF NOT EXISTS campaign_checkpoints (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  summary TEXT,
+  payload TEXT,
+  created_at INTEGER
+)`
+
 const TASK_STATUS = ['queued', 'running', 'blocked', 'done', 'failed', 'cancelled']
 
 function ensureCol(db, table, col, ddl) {
@@ -101,6 +147,9 @@ function createRepo(db) {
   db.exec(TASK_RUNS_DDL)
   db.exec(WORKERS_DDL)
   db.exec(STRATEGY_DDL)
+  db.exec(CAMPAIGNS_DDL)
+  db.exec(CAMPAIGN_DECISIONS_DDL)
+  db.exec(CAMPAIGN_CHECKPOINTS_DDL)
   // 平滑迁移：存量库补列（幂等，v4 已建过则跳过）
   for (const [col, ddl] of [
     ['schedule_kind', 'schedule_kind TEXT'],
@@ -117,12 +166,19 @@ function createRepo(db) {
     ['after_delay_seconds', 'after_delay_seconds INTEGER NOT NULL DEFAULT 0'],
     // L6（学习专项 §10）：任务目标类型（research 默认 / learn-daily / eval-batch / change-retest）
     ['goal', 'goal TEXT'],
+    // 22 号方案 §5.2：子任务专项归属（幂等加列，存量 NULL 天然兼容；写入后不可改 INV-C2）
+    ['campaign_id', 'campaign_id INTEGER'],
+    ['campaign_role', 'campaign_role TEXT'],
   ]) ensureCol(db, 'tasks', col, ddl)
   ensureCol(db, 'task_runs', 'session_id', 'session_id TEXT')
   // workers.session_id 保持历史来源会话语义；新列只保存经核实的子会话。
   ensureCol(db, 'workers', 'worker_session_id', 'worker_session_id TEXT')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(program_id, status, priority)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(schedule_kind, next_run_at)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_campaign ON tasks(campaign_id, status)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status, last_tick_at)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_campaign_decisions_campaign ON campaign_decisions(campaign_id, id DESC)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_campaign_checkpoints_campaign ON campaign_checkpoints(campaign_id, id DESC)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id, id DESC)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_runs_finished ON task_runs(finished_at DESC)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_workers_key ON workers(dedupe_key, started_at)')
@@ -144,14 +200,16 @@ function createRepo(db) {
       const r = db.prepare(`
         INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
           session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at,
-          provider, model, reasoning_effort, after_delay_seconds, goal)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?)
+          provider, model, reasoning_effort, after_delay_seconds, goal, campaign_id, campaign_role)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         String(row.program_id), row.parent_id ?? null, row.phase === undefined || row.phase === null ? null : String(row.phase),
         String(row.objective), row.priority ?? 5, row.assignee ? String(row.assignee) : '', row.budget_tokens ?? null,
         row.session_id ?? null, row.schedule_kind ?? null, row.run_at ?? null, row.every_seconds ?? null, row.next_run_at ?? null,
         repo.now(), repo.now(), row.provider ?? null, row.model ?? null, row.reasoning_effort ?? null, row.after_delay_seconds ?? 0,
         row.goal ? String(row.goal) : null,
+        row.campaign_id == null ? null : Number(row.campaign_id),
+        row.campaign_role ? String(row.campaign_role) : null,
       )
       return Number(r.lastInsertRowid)
     },
@@ -195,6 +253,120 @@ function createRepo(db) {
       return { tasks_created: Number(r?.tasks_created) || 0, spent_tokens: Number(r?.spent_tokens) || 0 }
     },
 
+    // ---- campaigns（22 号方案 §5，task 域 owns） ----
+    insertCampaign(row) {
+      const r = db.prepare(`
+        INSERT INTO campaigns (name, mode, program_ids, goal_spec, autonomy, policy, status,
+          budget_tokens, spent_tokens, budget_window_days, approval_id, last_tick_at, heartbeat_at,
+          created_by, created_at, updated_at, archived_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, ?, ?, ?, ?, NULL)
+      `).run(
+        String(row.name), String(row.mode || 'single'), JSON.stringify(row.program_ids || []),
+        JSON.stringify(row.goal_spec || {}), Number(row.autonomy) || 0, JSON.stringify(row.policy || {}),
+        String(row.status || 'draft'), row.budget_tokens == null ? null : Number(row.budget_tokens),
+        Number(row.budget_window_days) || 7, row.approval_id == null ? null : Number(row.approval_id),
+        row.heartbeat_at == null ? null : Number(row.heartbeat_at),
+        String(row.created_by || 'system'), repo.now(), repo.now(),
+      )
+      return Number(r.lastInsertRowid)
+    },
+    getCampaign(id) {
+      const r = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(Number(id))
+      return r ? { ...r } : null
+    },
+    findCampaignByName(name) {
+      const r = db.prepare("SELECT * FROM campaigns WHERE name = ? AND status != 'archived' ORDER BY id DESC LIMIT 1").get(String(name))
+      return r ? { ...r } : null
+    },
+    updateCampaign(id, patch, expectStatus) {
+      const sets = []
+      const args = []
+      for (const [k, v] of Object.entries(patch)) { sets.push(`${k} = ?`); args.push(v) }
+      sets.push('updated_at = ?'); args.push(repo.now())
+      const where = expectStatus ? ' AND status = ?' : ''
+      args.push(Number(id))
+      if (expectStatus) args.push(expectStatus)
+      return db.prepare(`UPDATE campaigns SET ${sets.join(', ')} WHERE id = ?${where}`).run(...args).changes
+    },
+    listCampaignsWhere({ status = '', program_id = '' } = {}, limit, offset) {
+      let where = '1=1'
+      const args = []
+      if (status) { where += ' AND status = ?'; args.push(String(status)) }
+      const rows = db.prepare(`SELECT * FROM campaigns WHERE ${where} ORDER BY last_tick_at IS NOT NULL, last_tick_at ASC, id ASC LIMIT ? OFFSET ?`)
+        .all(...args, Math.min(Number(limit) || 50, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
+      if (!program_id) return rows
+      return rows.filter((c) => { try { return (JSON.parse(c.program_ids) || []).includes(String(program_id)) } catch { return false } })
+    },
+    countCampaignsWhere({ status = '', program_id = '' } = {}) {
+      let where = '1=1'
+      const args = []
+      if (status) { where += ' AND status = ?'; args.push(String(status)) }
+      const n = db.prepare(`SELECT COUNT(*) AS n FROM campaigns WHERE ${where}`).get(...args).n
+      if (!program_id) return n
+      return repo.listCampaignsWhere({ status }, 500, 0).filter((c) => { try { return (JSON.parse(c.program_ids) || []).includes(String(program_id)) } catch { return false } }).length
+    },
+    // 窗口内专项用量：子任务 spent_tokens 和 + 创建数（双预算闸的 campaign 侧口径）
+    campaignUsage(campaignId, sinceMs) {
+      const since = Number(sinceMs) || 0
+      const r = db.prepare(`SELECT COUNT(*) AS tasks_created, COALESCE(SUM(COALESCE(spent_tokens, 0)), 0) AS spent_tokens FROM tasks WHERE campaign_id = ? AND created_at >= ?`)
+        .get(Number(campaignId), since)
+      return { tasks_created: Number(r?.tasks_created) || 0, spent_tokens: Number(r?.spent_tokens) || 0 }
+    },
+    activeCampaignTaskCount(campaignId) {
+      return Number(db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE campaign_id = ? AND status IN ('queued','running')").get(Number(campaignId)).n) || 0
+    },
+    // 已完结但未验收的专项子任务（Reviewer 补验通道：事件重放/重启后不丢账）
+    unreviewedCampaignTasks(campaignId, limit) {
+      return db.prepare(`
+        SELECT t.* FROM tasks t
+        LEFT JOIN campaign_decisions d ON d.task_id = t.id
+        WHERE t.campaign_id = ? AND t.status IN ('done','failed') AND d.task_id IS NULL
+        ORDER BY t.finished_at ASC, t.id ASC LIMIT ?
+      `).all(Number(campaignId), Math.min(Number(limit) || 50, 200)).map((r) => ({ ...r }))
+    },
+    insertCampaignDecision(row) {
+      try {
+        const r = db.prepare(`INSERT INTO campaign_decisions (campaign_id, task_id, verdict, evidence, goal_delta, decided_by, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          .run(Number(row.campaign_id), Number(row.task_id), String(row.verdict), String(row.evidence),
+            row.goal_delta == null ? null : (typeof row.goal_delta === 'string' ? row.goal_delta : JSON.stringify(row.goal_delta)),
+            String(row.decided_by || 'reviewer'), repo.now())
+        return Number(r.lastInsertRowid)
+      } catch (e) {
+        if (/UNIQUE/i.test(String(e?.message))) return null
+        throw e
+      }
+    },
+    getDecisionByTask(taskId) {
+      const r = db.prepare('SELECT * FROM campaign_decisions WHERE task_id = ?').get(Number(taskId))
+      return r ? { ...r } : null
+    },
+    listCampaignDecisions(campaignId, verdict, limit, offset) {
+      let where = 'd.campaign_id = ?'
+      const args = [Number(campaignId)]
+      if (verdict) { where += ' AND d.verdict = ?'; args.push(String(verdict)) }
+      return db.prepare(`SELECT d.*, t.program_id AS program_id, t.campaign_role AS campaign_role, t.objective AS objective
+        FROM campaign_decisions d LEFT JOIN tasks t ON t.id = d.task_id
+        WHERE ${where} ORDER BY d.id DESC LIMIT ? OFFSET ?`)
+        .all(...args, Math.min(Number(limit) || 50, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
+    },
+    countCampaignDecisions(campaignId, verdict) {
+      let where = 'campaign_id = ?'
+      const args = [Number(campaignId)]
+      if (verdict) { where += ' AND verdict = ?'; args.push(String(verdict)) }
+      return Number(db.prepare(`SELECT COUNT(*) AS n FROM campaign_decisions WHERE ${where}`).get(...args).n) || 0
+    },
+    insertCheckpoint(row) {
+      const r = db.prepare('INSERT INTO campaign_checkpoints (campaign_id, kind, summary, payload, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(Number(row.campaign_id), String(row.kind), row.summary == null ? null : String(row.summary).slice(0, 500),
+          row.payload == null ? null : (typeof row.payload === 'string' ? row.payload : JSON.stringify(row.payload)), repo.now())
+      return Number(r.lastInsertRowid)
+    },
+    listCheckpoints(campaignId, limit) {
+      return db.prepare('SELECT * FROM campaign_checkpoints WHERE campaign_id = ? ORDER BY id DESC LIMIT ?')
+        .all(Number(campaignId), Math.min(Number(limit) || 20, 200)).map((r) => ({ ...r }))
+    },
+
     // 21 号方案 §3-1/§6.2：Intent 派生器 strategy 去重 + 连败黑名单
     // strategy_dedupe：strategy_key PK（host|path|param|class）；fails 连败计数；≥3 连败自动黑名单
     getStrategy(key) {
@@ -218,6 +390,16 @@ function createRepo(db) {
         db.prepare('UPDATE strategy_dedupe SET fails = fails + 1, last_seen = ?, last_task_id = ? WHERE strategy_key = ?').run(now, taskId ?? null, String(key))
         db.prepare('UPDATE strategy_dedupe SET blacklisted = 1 WHERE strategy_key = ? AND fails >= 3').run(String(key))
       }
+    },
+    // 22 号方案 §7.3：Planner 连败/黑名单快照（program 维度过滤；含 campaign 前缀键的裸键回退）
+    listStrategies(programIds) {
+      try {
+        if (Array.isArray(programIds) && programIds.length) {
+          const marks = programIds.map(() => '?').join(',')
+          return db.prepare(`SELECT * FROM strategy_dedupe WHERE program_id IN (${marks})`).all(...programIds.map(String)).map((r) => ({ ...r }))
+        }
+        return db.prepare('SELECT * FROM strategy_dedupe').all().map((r) => ({ ...r }))
+      } catch { return [] }
     },
     claimDueTasks(nowTs, limit) {
       const due = selectDueTasks(db, nowTs, limit)
@@ -416,13 +598,14 @@ function createRepo(db) {
   return repo
 }
 
-function taskWhere({ program_id = '', status = '', phase = '', q = '', bucket = '', scheduled = '', goal = '' }) {
+function taskWhere({ program_id = '', status = '', phase = '', q = '', bucket = '', scheduled = '', goal = '', campaign_id = '' }) {
   let where = '1=1'
   const args = []
   if (program_id) { where += ' AND program_id = ?'; args.push(String(program_id)) }
   if (status) { where += ' AND status = ?'; args.push(String(status)) }
   if (phase) { where += ' AND phase = ?'; args.push(String(phase)) }
   if (goal) { where += ' AND goal = ?'; args.push(String(goal)) }
+  if (campaign_id) { where += ' AND campaign_id = ?'; args.push(Number(campaign_id)) }
   if (q) { where += ' AND objective LIKE ?'; args.push(`%${q}%`) }
   if (bucket === 'active') where += " AND status IN ('queued', 'running', 'blocked')"
   else if (bucket === 'history') where += " AND status IN ('done', 'failed', 'cancelled')"

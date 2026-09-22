@@ -17,6 +17,20 @@
 
 ## 二、最近进度结果
 
+### 2026-09-22 · 22 号方案 Campaign（专项）全量落地（本地契约 553/553 + UI 单测；待部署验收）
+- **task 域内新增常驻统筹实体 Campaign**（不新增域）：`campaigns`/`campaign_decisions`/`campaign_checkpoints` 三表 + `tasks.campaign_id/campaign_role` 幂等加列；命令 C20–C27 + 内部（record_decision/checkpoint/tick/autonomy_apply/budget_extend）；查询 5 个（list/get/progress/pending_drafts/decisions）；事件 6 个；订阅 `task.finished`→Reviewer 强联动、`scope.revoked`/`scope.rules.changed`→Supervisor pause（fail-closed）；调度器单例在 claim 后顺带 `campaign_tick`（Supervisor→Reviewer→Planner→Dispatcher）。自主级别 L0/L1/L2 封顶，升档走 approval。
+- **规则层** `compileCampaignPlan` 纯函数（确定性可重放，缺口优先级×连败降权×经验卡提权×有界 cap）。
+- **合规结构性保证**：派生唯一通道复用 `task_derive_intent`/`task_create`（局面编译/scope/per-program 预算闸零绕过）+ Campaign 窗口预算闸双层取严；INV-C1–C10。
+- **跨域**：approval 新增 `campaign-autonomy`/`campaign-budget-extend` 两 kind（`approval_request` actor 增 dashboard/human）；know `learning_episodes.campaign_id` 加列 + `know_episode_list` campaign 过滤。
+- **看板**：安全中心新增「专项」tab（`@silksec/sec-dashboard-view-campaign`，order 60）+ RPC `campaigns/campaignGet/campaignDecisions/campaignTickNow`；UI_PKG 14 面。
+- **总线修复**：嵌套事务分支补 `scope.inTxn`（三层嵌套 campaign_dispatch→derive_intent→create 自锁死修复）。
+- 验收：本地契约 **553/553**（task 58 / rules / approval / know 等）、专项视图单测 8/8。**未部署**（待 `spool bundle dsh setup` + `sec-v5-accept.sh`）。
+- 未实现（Phase C 待办）：know_scores 按 campaign 分组投影；Planner LLM 探索性草稿；L1 放行队列一键 dispatch UI。
+- 注意：设计文档 C24 `campaign_goal_update` 因总线 R2 禁用词「update」实现为 `campaign_goal_revise`。
+
+### 2026-09-22 · 22 号专项设计：项目型常驻任务（Campaign）——仅设计文档，未实施
+- 针对「定时任务对 SRC 挖掘太死板」的痛点，产出 [22-campaign-task.md](22-campaign-task.md)：在 **task 域内**新增常驻统筹实体 Campaign（专项，绑定单/多 Program），以派生→下发→监督→验收闭环驱动现有 Task 子任务；不新增域，拆六个原子组件（Core/Planner/Dispatcher/Supervisor/Reviewer/LearnLink），派生唯一通道复用 `task_derive_intent`（局面编译/scope/预算闸零绕过），自主级别封顶 L2（approval 新增 `campaign-autonomy`/`campaign-budget-extend` 两个 kind）；知识/学习联动走 know 域既有机制的维度扩展（episode/记分加 campaign_id，缺口回灌复用 `know_gap_record`）；含数据模型、状态机、INV-C1–C10、命令/查询/事件、分 Phase A/B/C 实施与契约测试矩阵。README 索引已登记为在办专项。
+
 ### 2026-09-22 · 20 号全面检查报告归档（补回填收尾）
 - 归档审查发现第四轮修复三处**代码已上线但文档漏回填**，本次补齐：08-scope v5.1（授权时效 `expires_at`/`reviewed_at` 全套——`scope_grant`/`scope_rules_apply` 参数、§1.4.1 算法步 4 过期 fail-closed、新查询 §1.4.5 `scope_expiring`、yml 字段、不变量 I9）；05-task C18 `task_submission_backlog`（命令总表 + 详述）；16-dashboard §1.4（主面板 30 天临期警示行 + 设置页授权时效徽章三态）。
 - 21 号方案回填完整性逐项 grep 复核通过（`task_derive_intent`→05、`know_distill_verdict`→07、`vuln_capsule_replay`/`vuln_evidence_flags`→02、`eval_discovery_metrics`→15、`exec_flow_triage`/`exec_vision_triage`→10、覆盖账本/登录态判定→11/04，均与代码动词/actor/错误码一致）。

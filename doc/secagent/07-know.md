@@ -1132,3 +1132,16 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 `ledger.coverage.marked` 订阅 `onCoverageGap`：缺口态（crawl=not_crawled/failed、param=no_params、vulnclass/auth=untested）→ `know_gap_record`（surface=`coverage:{dim}`）；已测格点不产生缺口。`know_gap_record` actor 白名单补 `reactor`（唯一 actor 变更）。
 
 契约：know 77/77 全绿（新增 4 例：蒸馏全链/合流触发与幻觉保底/平台裁决双态/缺口登记）。
+
+---
+
+## 十五、2026-09-22 22 号方案回填（Campaign 学习联动，原子维度扩展）
+
+> 设计真相源：[22-campaign-task](22-campaign-task.md) §十一。原则：**不为 Campaign 新建子仓**，联动全部经既有机制的维度扩展实现（加列/加可选参数/加订阅过滤），可独立上线与回滚。
+
+- **L2 episode 归因加 campaign 维度**：`learning_episodes` 幂等加列 `campaign_id TEXT`（`ensureCol`，索引 `idx_episode_campaign`）；`know_episode_record` schema 增可选 `campaign_id`；task 域 `task.finished` payload 增 `campaign_id`/`campaign_role` 字段并透传（task 域侧改）。`know_episode_list` 增可选 `campaign_id` 过滤参数（回答「这个专项学到了什么」）。契约 know +1 例。
+- **L4 缺口回灌（surface 约定）**：Campaign Supervisor 对「反复 rework」经既有 `know_gap_record`（actor=reactor，已在白名单）登记缺口，`surface=campaign:{id}:{dim}`；补建仍走 `know_revision_propose` 候选通道，不动既有管线。
+- **L5 蒸馏不重复（纪律声明）**：验收 accepted 的 capsule 证据仍由本域 `onVulnVerdict` 消费 `vuln.signal.confirmed` 触发蒸馏；Reviewer 只验收落账，**不触发、不复制**蒸馏逻辑。
+- **L6 撤回联动**：`know.release.revoked` 既有 change-retest 入队保留；task 域 handler 另对命中撤回 scope 的活跃专项写 checkpoint 留痕（Planner 每 tick 现算无缓存，被撤回卡片在 H3 草稿中的引用自然失效）。
+
+**未实施（Phase C 待办）**：L1/L3 的 `know_scores` 近似命中矩阵「按 program/campaign 分组投影」——计分管线未动，Planner 的 scores 快照暂为空。

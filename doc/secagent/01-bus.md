@@ -690,3 +690,7 @@ dispatch_aliases: {}
 > 2026-09-16 L0 修复：订阅者 `ok:true + data.partial:true` 此前会被标 delivered（静默吞掉部分失败），已改为进 pending 重试链（契约用例覆盖，bus 域 **51/51** 全绿）。
 >
 > 2026-09-17 L3 备案：总线零变更。eval 域新增事件 `eval.candidate.started` 与 `eval.report.built`（kind=candidate）经既有 outbox/dispatcher 投递，know 域以 reactor 订阅消费（多订阅者键 `source::pattern` 机制覆盖）；新动词 eval_run_candidate / know_revision_assess 走常规 11 段管线（actor 白名单 + 幂等自然键 + audit）。
+
+> 2026-09-22 22 号方案：task 域新增 6 个 Campaign 事件入注册表——`task.campaign.created` / `task.campaign.status.changed` / `task.campaign.goal.changed` / `task.campaign.task.derived` / `task.campaign.reviewed` / `task.campaign.escalated`（均 payload object，redact 空）。总线零内核变更，事件经既有 outbox/dispatcher 投递。
+>
+> 2026-09-22 总线修复（嵌套事务传播）：`runTxn` 嵌套分支补 `scope.inTxn = true`。此前嵌套作用域未标记 inTxn，导致三层嵌套（`campaign_dispatch`→`task_derive_intent`→`task_create`）的第二层被误判为顶层、去抢已被外层持有的同进程 `writeLock` 而自锁死。一层嵌套（既有强联动）行为不变。

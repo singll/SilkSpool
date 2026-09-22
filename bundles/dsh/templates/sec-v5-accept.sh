@@ -111,18 +111,18 @@ for d in "${DOMAINS[@]}"; do
 done
 
 # --- R5 UI 冒烟（16-dashboard §2.6） ---
-# 13 个 UI 面：6 个承载面包 + 7 个逐域视图包。旧单体 @silksec/sec-dashboard
+# 14 个 UI 面：6 个承载面包 + 8 个逐域视图包。旧单体 @silksec/sec-dashboard
 # （Modal 壳 + `-old` 并排视图 + footer 入口）已删除，不再是必需面。
 UI_PKG_IDS=(
   '@silksec/ui-core' '@silksec/ui-panel' '@silksec/ui-approval' '@silksec/ui-task'
   '@silksec/ui-settings-scope' '@silksec/ui-session'
   '@silksec/sec-dashboard-view-vuln' '@silksec/sec-dashboard-view-asset' '@silksec/sec-dashboard-view-endpoint'
-  '@silksec/sec-dashboard-view-fact' '@silksec/sec-dashboard-view-know' '@silksec/sec-dashboard-view-report'
-  '@silksec/sec-dashboard-view-audit'
+  '@silksec/sec-dashboard-view-fact' '@silksec/sec-dashboard-view-campaign' '@silksec/sec-dashboard-view-know'
+  '@silksec/sec-dashboard-view-report' '@silksec/sec-dashboard-view-audit'
 )
 UI_PKG_DIRS=(ui-core ui-panel ui-approval ui-task ui-settings-scope ui-session
   sec-dashboard-view-vuln sec-dashboard-view-asset sec-dashboard-view-endpoint
-  sec-dashboard-view-fact sec-dashboard-view-know sec-dashboard-view-report sec-dashboard-view-audit)
+  sec-dashboard-view-fact sec-dashboard-view-campaign sec-dashboard-view-know sec-dashboard-view-report sec-dashboard-view-audit)
 
 ui_dump="$(cd "$APP_DIR" && DSH_HOME="$DATA_DIR" "$NODE" "$DSH_BIN" --profile web --dump-config 2>/dev/null || true)"
 for i in "${!UI_PKG_IDS[@]}"; do
