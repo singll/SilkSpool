@@ -17,6 +17,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-22 · 23 号方案 v2 修订：OpenCode Go v4.1-flash 入池 + 统一额度面 + 额度调高
+- **Bellkeeper 池调整（已上线）**：`opencode-go-secagent` 渠道加入 `deepseek-v4.1-flash`（1M ctx），pool-secagent 新增权重 2 成员（介于官方 deepseek 与 v4 兜底之间）；渠道状态/直调冒烟/pool-secagent 组冒烟全部通过。
+- **关键发现**：Bellkeeper 渠道/池成员为 **DB 持久化**（`llm_channels`/`llm_model_groups`），YAML 仅首启空库种子——变更须走 `PUT /api/llm/config/{channels,groups}/:id`（自动 reload）；本次即走 DB API 路径，YAML 种子同步（Bellkeeper commit cb0572d）。此事实已回填 23 号方案 §2.1 备注。
+- **23 号方案 v2 修订**（[23-llm-supply-throttle.md](23-llm-supply-throttle.md)）：补 SenseNova 双积分池实测口径（通用池/Flash-Lite 专属池各 60k/滚动 5h + 600k/滚动周，flash-lite 消费 1:1 返赠通用积分；滚动窗口非定点清零——不做窗口对齐猜测）；新增 §3.6 **统一额度面**——全部调速参数集中 dsh .env 单一区块（成员表/权重门槛/降速比例/derive_cap 5→8/新建专项默认预算 500k→2M）；存量专项预算调整尊重 budget_extend 既有铁律（spent≥80% 才准延长），配套设计 Supervisor budget_low 自动提请爬坡（步骤 1.5）。
+
 ### 2026-09-22 · 两个 SRC 专项上线（L0）+ 23 号方案设计：LLM 供给联动调速（仅设计）
 - 经 sec-bus-cli 创建并激活：`#1 美团SRC 持续挖掘`（meituan-src）、`#2 字节SRC 持续挖掘`（bytedance）——均 L0 台账模式、500k tokens/7d 窗口、stop_conditions 三条，验证命令面与 INV-C1 授权校验在线上生效。
 - 针对「专项常驻跑 × pool-secagent 成员套餐额度窗口（kimi-code ~5h/7d、deepseek-secagent 500rpd）」产出 [23-llm-supply-throttle.md](23-llm-supply-throttle.md)：LlmSupplyWatch 读 Bellkeeper 既有 `/api/llm/health`+`channels/status`（零改造），规则层 `decideThrottle` 三档供给因子（1.0/0.4/0）叠加成第三道派生闸；额度熔断 → L2 自动降 L1（不回弹，防震荡），恢复人工确认；探测失败先降速后停派（INV-C11/C12）；看板专项卡片加供给徽章。README 已登记为在办专项。
