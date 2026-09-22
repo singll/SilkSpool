@@ -928,7 +928,7 @@ reapWorkers(readMeta, pidAliveFn, nowTs) → {reaped}   // C15 对账原语
 
 ## 七、2026-09-22 22 号方案回填（Campaign 专项——常驻统筹实体）
 
-> 设计真相源：[22-campaign-task](22-campaign-task.md)。本节为**实现态回填**（契约 58 例全绿：task 58/58）。Campaign 落在 **task 域内**，不新增域；子任务仍是现有 Task（同表/同状态机/同调度器，零改动）。
+> 设计真相源：[22-campaign-task](archive/22-campaign-task-2026-09-22.md)。本节为**实现态回填**（契约 58 例全绿：task 58/58）。Campaign 落在 **task 域内**，不新增域；子任务仍是现有 Task（同表/同状态机/同调度器，零改动）。
 
 ### 7.1 实体与关系
 
@@ -1002,6 +1002,9 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - L1/L3 的 `know_scores` 近似命中矩阵「按 campaign/program 分组投影」未实施（Planner 的 `scores` 快照当前为空——不影响确定性派生）。
 - Planner 的 LLM「探索性草稿」通道未实施（设计标注可选）。
 - 看板专项视图为只读 + 立即 tick；L1 待放行队列的一键 `campaign_dispatch` 放行 UI 未接（命令面已就绪）。
+- **N1**：`sanitizeDraft` 计算的 phase/goal 在下游被丢弃——`dispatchDrafts` 不传 phase，`task_derive_intent` 内部 `task_create` 硬编码 `phase:'vuln'` 且不带 goal，故 `policy.allowed_phases` 实际失效（Planner 的 phase 为死代码）。仅影响任务分类标签，不影响安全闸。
+- **N2**：`submit` 角色的验收判据未实装——`campaignVerdict` 对 submit/learn/retest 仍是 `done && ok → accepted`，设计 §7.6「vuln_submit 回写 remote_id 才 accepted / 超期 escalation」未落地。当前 submit 类任务由既有产出闭环订阅直接创建（不经 Campaign 派生），触发面很小，但文档与代码口径需后续收敛。
+- **N3**：Reviewer 证据可拼接性——`/finding\s*#?\s*(\d+)/` 从自由文本提取 finding id 后 `vuln_get` 复核，worker 写错编号时 `capsule:` 证据可能张冠李戴（`vuln_get` 查的是真实状态，风险有限）。建议 Phase C 改为 evidence 强制带结构化 `finding_id` 字段，废弃文本解析。
 
 ### 7.8 2026-09-22 评审修复记录（B1–B7 / S1–S4）
 

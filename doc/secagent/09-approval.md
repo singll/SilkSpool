@@ -674,7 +674,7 @@ ApprovalRepo.listEffects(request_id) -> rows
 
 ## 2026-09-22 22 号方案回填（Campaign 两个新 kind）
 
-> 设计真相源：[22-campaign-task](22-campaign-task.md) §十。`approval_request` command actor 白名单增 `dashboard`/`human`（UI 发起的治理类提请；各 kind 的 request_actors 仍逐类收紧）。
+> 设计真相源：[22-campaign-task](archive/22-campaign-task-2026-09-22.md) §十。`approval_request` command actor 白名单增 `dashboard`/`human`（UI 发起的治理类提请；各 kind 的 request_actors 仍逐类收紧）。
 
 | kind | subject | request_actors | validate 判据 | approved effect |
 |---|---|---|---|---|

@@ -17,6 +17,10 @@
 
 ## 二、最近进度结果
 
+### 2026-09-22 · 22 号方案关账归档（N1–N3 记入待办）
+- 二次评审通过验收；N1（`allowed_phases`/phase 标签未贯通）、N2（submit 角色验收判据未实装）、N3（finding id 文本解析可拼接）记入 [05-task §7.7](05-task.md) 待办（Phase C），不阻塞。
+- 按治理规则归档：`22-campaign-task.md` → [archive/22-campaign-task-2026-09-22.md](archive/22-campaign-task-2026-09-22.md)（内部相对链接已改 `../`，README 索引与各模块「设计真相源」引用同步改指 archive）。纯文档改动。
+
 ### 2026-09-22 · 22 号方案 Campaign 评审修复（B1–B7 / S1–S4，契约 557/557）
 - **B1（高）**：`schedulerTick` 忙碌路径补 `campaignTick()`——此前仅空转 tick 执行，有任务认领时统筹闭环整体停摆（含 INV-C9 停止条件）。
 - **B2（高）**：Reviewer 判据由「done 即 accepted」改为三源真实判据（oracle verdict / capsule 引用 / `vuln_get` finding 复核）+ 覆盖角色成功判定；hypothesis 无 verdict 无推进判 rework。证据 `capsule:`/`oracle:` 优先。
@@ -40,7 +44,7 @@
 - 注意：设计文档 C24 `campaign_goal_update` 因总线 R2 禁用词「update」实现为 `campaign_goal_revise`。
 
 ### 2026-09-22 · 22 号专项设计：项目型常驻任务（Campaign）——仅设计文档，未实施
-- 针对「定时任务对 SRC 挖掘太死板」的痛点，产出 [22-campaign-task.md](22-campaign-task.md)：在 **task 域内**新增常驻统筹实体 Campaign（专项，绑定单/多 Program），以派生→下发→监督→验收闭环驱动现有 Task 子任务；不新增域，拆六个原子组件（Core/Planner/Dispatcher/Supervisor/Reviewer/LearnLink），派生唯一通道复用 `task_derive_intent`（局面编译/scope/预算闸零绕过），自主级别封顶 L2（approval 新增 `campaign-autonomy`/`campaign-budget-extend` 两个 kind）；知识/学习联动走 know 域既有机制的维度扩展（episode/记分加 campaign_id，缺口回灌复用 `know_gap_record`）；含数据模型、状态机、INV-C1–C10、命令/查询/事件、分 Phase A/B/C 实施与契约测试矩阵。README 索引已登记为在办专项。
+- 针对「定时任务对 SRC 挖掘太死板」的痛点，产出 [archive/22-campaign-task-2026-09-22.md](archive/22-campaign-task-2026-09-22.md)：在 **task 域内**新增常驻统筹实体 Campaign（专项，绑定单/多 Program），以派生→下发→监督→验收闭环驱动现有 Task 子任务；不新增域，拆六个原子组件（Core/Planner/Dispatcher/Supervisor/Reviewer/LearnLink），派生唯一通道复用 `task_derive_intent`（局面编译/scope/预算闸零绕过），自主级别封顶 L2（approval 新增 `campaign-autonomy`/`campaign-budget-extend` 两个 kind）；知识/学习联动走 know 域既有机制的维度扩展（episode/记分加 campaign_id，缺口回灌复用 `know_gap_record`）；含数据模型、状态机、INV-C1–C10、命令/查询/事件、分 Phase A/B/C 实施与契约测试矩阵。README 索引已登记为在办专项。
 
 ### 2026-09-22 · 20 号全面检查报告归档（补回填收尾）
 - 归档审查发现第四轮修复三处**代码已上线但文档漏回填**，本次补齐：08-scope v5.1（授权时效 `expires_at`/`reviewed_at` 全套——`scope_grant`/`scope_rules_apply` 参数、§1.4.1 算法步 4 过期 fail-closed、新查询 §1.4.5 `scope_expiring`、yml 字段、不变量 I9）；05-task C18 `task_submission_backlog`（命令总表 + 详述）；16-dashboard §1.4（主面板 30 天临期警示行 + 设置页授权时效徽章三态）。

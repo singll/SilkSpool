@@ -1137,7 +1137,7 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 
 ## 十五、2026-09-22 22 号方案回填（Campaign 学习联动，原子维度扩展）
 
-> 设计真相源：[22-campaign-task](22-campaign-task.md) §十一。原则：**不为 Campaign 新建子仓**，联动全部经既有机制的维度扩展实现（加列/加可选参数/加订阅过滤），可独立上线与回滚。
+> 设计真相源：[22-campaign-task](archive/22-campaign-task-2026-09-22.md) §十一。原则：**不为 Campaign 新建子仓**，联动全部经既有机制的维度扩展实现（加列/加可选参数/加订阅过滤），可独立上线与回滚。
 
 - **L2 episode 归因加 campaign 维度**：`learning_episodes` 幂等加列 `campaign_id TEXT`（`ensureCol`，索引 `idx_episode_campaign`）；`know_episode_record` schema 增可选 `campaign_id`；task 域 `task.finished` payload 增 `campaign_id`/`campaign_role` 字段并透传（task 域侧改）。`know_episode_list` 增可选 `campaign_id` 过滤参数（回答「这个专项学到了什么」）。契约 know +1 例。
 - **L4 缺口回灌（surface 约定）**：Campaign Supervisor 对「反复 rework」经既有 `know_gap_record`（actor=reactor，已在白名单）登记缺口，`surface=campaign:{id}:{dim}`；补建仍走 `know_revision_propose` 候选通道，不动既有管线。

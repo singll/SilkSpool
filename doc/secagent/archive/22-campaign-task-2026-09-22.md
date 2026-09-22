@@ -1,9 +1,9 @@
 # 22 · 项目型常驻任务（Campaign）设计方案——任务模块增强重构与知识/学习联动
 
 > 日期：2026-09-22
-> 性质：**在办专项（设计文档）**，非实施记录；决策落地后按 [README](README.md) 治理规则回填对应模块文档（05-task 为主，07/09/16/01 次之）并归档本文。
+> 性质：**已关账归档**（设计文档；2026-09-22 实施、评审修复并部署验收，accept PASS=75；本文移入 archive 只读）。实施态回填见 05-task §七 / 07-know §十五 / 09-approval / 16-dashboard / 01-bus。
 > 动机：定时任务（interval）对 SRC 挖掘太死板——固定节律、无目标感、无验收、无统筹；21 号方案已补齐「假设引擎/机器验证/Feedback Core」，但**缺一个常驻的统筹实体**把这些能力串成持续运转的项目。
-> 依赖文档：[00-conventions](00-conventions.md)（宪法）、[05-task](05-task.md)（任务域现状，本文的改造对象）、[07-know](07-know.md)（知识/学习）、[08-scope](08-scope.md)（合规红线）、[09-approval](09-approval.md)（人工放行）、[16-dashboard](16-dashboard.md)（看板承载）、[archive/21-benchmark-strikeagent-flash](archive/21-benchmark-strikeagent-flash-2026-09-21.md)（发现体系重构，本文的上游）。
+> 依赖文档：[00-conventions](../00-conventions.md)（宪法）、[05-task](../05-task.md)（任务域现状，本文的改造对象）、[07-know](../07-know.md)（知识/学习）、[08-scope](../08-scope.md)（合规红线）、[09-approval](../09-approval.md)（人工放行）、[16-dashboard](../16-dashboard.md)（看板承载）、[21-benchmark-strikeagent-flash](21-benchmark-strikeagent-flash-2026-09-21.md)（发现体系重构，本文的上游）。
 > 总原则（沿用 21 号方案）：**不新增域**；确定性规则层编译硬约束，LLM 只产草稿；fail-closed；原子化拆分（每个组件可独立契约测试）。
 > 术语裁定：新实体命名 **Campaign（专项）**——「项目」一词在领域语言中已分别被 Workspace（用户可感）与 Program（授权主体）占用（CONTEXT.md 明确「不要另立项目 UI 概念」），故本实体不叫「项目任务」，中文称「专项」，英文/表名用 `campaign`。
 
@@ -446,4 +446,4 @@ L6 四类 goal（research/learn-daily/eval-batch/change-retest）的**调度节�
 7. **B5**：Reviewer 为**异步订阅 + tick 补验双通道**（非 sync 强联动）。
 8. **B1/B3/B4/B6**：忙碌 tick 也跑 campaign tick；effect 幂等键含 `approval_id`；campaign kind validate fail-closed；block/cancel actor 归 reactor。
 
-完整修复清单见 [05-task §7.8](05-task.md)。
+完整修复清单见 [05-task §7.8](../05-task.md)。
