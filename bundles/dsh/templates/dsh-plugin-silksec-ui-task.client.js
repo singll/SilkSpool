@@ -8,6 +8,9 @@
  *      阶段二）。栏内四区块自上而下：定时任务卡片（IconAlarmClockOutline +
  *      next_run_at 相对时间 fmtRel）→ 一次性队列（状态 StateDot）→ 工作区快块
  *      （窄栏降级为顶部 program 筛选 Pill 组）→ 执行历史（默认折叠 DisclosureRow）。
+ *      22 号方案补充（方案 A 合并入任务视图）：栏顶新增「专项」区块（Campaign
+ *      常驻统筹实体）——专项卡片（状态/自主级别/验收计数/预算/心跳 +
+ *      立即 tick），点击卡片按 campaign_id 过滤一次性队列；队列行带专项归属 chip。
  *   2. 会话头「本会话任务」计数：`conversation.session.header.utilities`（list，右对齐，
  *      session scope；owner props 含 sessionId），图标钮 + 本会话活跃任务数；点击
  *      `ctx.sidebarRight.openTab('silksec-task')`（缺 sidebarRight → secUiBus/主面板/Modal）。
@@ -196,9 +199,11 @@ window.__ModuleLoader__.load({
     }
 
     // ── 语义徽章 / 图标（primitives 可选，缺席走 ui-core 样式） ────────────────
-    function pillNode(props) {
+    function pillNode(props, labelArg) {
       var P = prim('Pill')
-      var label = props.children
+      // 调用形态 pillNode(props, label)：label 作为第二参数传入（既有调用约定）；
+      // 此前只读 props.children 导致 label 静默丢失（真实 Pill/button 下徽章空白）——22 号方案 A 修复
+      var label = labelArg !== undefined ? labelArg : props.children
       if (P) return el(P, { active: !!props.active, onClick: props.onClick, title: props.title, style: props.style }, label)
       // 可点 pill = chip 语义（19-ui-unify §2.3）：样式唯一来源为 ui-core 基样式表
       if (props.onClick) {
@@ -340,6 +345,53 @@ window.__ModuleLoader__.load({
         tip('查看该任务的执行历史', el('button', { ...iconBtn, 'aria-label': '执行历史', onClick: function () { props.onJumpHistory(t.id) } }, uiCore.opIcon('history'))))
     }
 
+    // 22 号方案 方案 A：专项归属 chip（campaign_id 非空的子任务标注来源专项；点击按专项过滤队列）
+    function campaignChip(t, props) {
+      if (!t || t.campaign_id == null) return null
+      var name = (props.campaignNames && props.campaignNames[t.campaign_id]) || ('#' + t.campaign_id)
+      return el('span', { style: { marginLeft: 6 } }, pillNode({
+        title: '专项子任务：' + name + (t.campaign_role ? '（' + t.campaign_role + '）' : '') + '——点击过滤该专项的活跃任务',
+        style: { color: T.business },
+        onClick: props.onCampaignFilter ? function () { props.onCampaignFilter(Number(t.campaign_id)) } : undefined,
+      }, '专项 ' + name))
+    }
+
+    // 22 号方案 方案 A：专项区块——常驻统筹实体卡片（状态/自主级别/验收/预算/心跳 + 立即 tick）。
+    // 数据源 = /silksec-dashboard campaigns（task.campaign_list 投影）；写 = campaignTickNow（域命令，actor=dashboard）。
+    function CampaignBlock(props) {
+      var rows = props.rows || []
+      if (!rows.length) return null
+      function autonomyLabel(a) { return Number(a) >= 2 ? 'L2' : (Number(a) >= 1 ? 'L1' : 'L0') }
+      function statusText(s) { return s === 'active' ? '运行中' : s === 'paused' ? '已暂停' : s === 'reviewing' ? '待人审' : s === 'archived' ? '已归档' : '草稿' }
+      return el('div', null, rows.map(function (c) {
+        var t = c.decision_totals || {}
+        var active = props.campaignFilter === c.id
+        return el('div', {
+          key: String(c.id),
+          className: 'silksec-row',
+          style: { ...card, cursor: 'pointer', outline: active ? ('1px solid ' + T.brand) : 'none' },
+          title: (c.objective || '') + '\n点击' + (active ? '清除专项过滤' : '按此专项过滤一次性队列'),
+          onClick: function () { if (props.onCampaignFilter) props.onCampaignFilter(active ? 0 : c.id) },
+        },
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+            el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}), fontFamily: uiCore && uiCore.MONO } }, '#' + c.id),
+            el('span', { style: { color: T.label, ...((F && F.sStrong) || {}), wordBreak: 'break-word', flex: '1 1 140px' } }, c.name),
+            pillNode({ title: '专项状态机：draft/active/paused/reviewing/archived', style: { color: c.status === 'active' ? T.success : (c.status === 'reviewing' ? T.warn : T.label2) } }, statusText(c.status)),
+            pillNode({ title: '自主级别：L0 台账 / L1 建议 / L2 有界自动（封顶）' }, autonomyLabel(c.autonomy)),
+            c.mode === 'cross' ? pillNode({ title: '交叉挖掘：绑定多个已授权 program' }, '交叉') : null),
+          el('div', { style: metaLine },
+            el('span', { title: '绑定授权项目' }, '🏢 ' + ((c.program_ids || []).join('、') || '—')),
+            el('span', { title: '验收账本：accepted / rejected / rework / escalated' }, '验收 ' + (t.accepted || 0) + '/' + (t.rejected || 0) + '/' + (t.rework || 0) + '/' + (t.escalated || 0)),
+            el('span', { title: '专项窗口预算（双层预算闸之 campaign 侧）' }, c.budget_tokens == null ? '预算 不限' : '预算 ' + Number(c.spent_tokens || 0) + '/' + c.budget_tokens),
+            el('span', { title: '最近有 accepted 验收时间（空转监督依据）' }, '心跳 ' + (fmtRel(c.heartbeat_at) || '—')),
+            el('span', { className: 'silksec-task-actions', style: { marginLeft: 'auto' } },
+              tip('立即对该专项跑一次 tick 段（巡检→验收→规划→下发，不超有界）', el('button', {
+                ...iconBtn, disabled: !!props.busy, 'aria-label': '立即 tick',
+                onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); props.onTickNow(c.id) },
+              }, uiCore.opIcon('play'))))))
+      }))
+    }
+
     // 窄栏卡片行（<480px 由 container query 与表格互换）
     function QueueCards(props) {
       var rows = props.rows || []
@@ -352,6 +404,7 @@ window.__ModuleLoader__.load({
           el('div', { style: metaLine },
             t.program_id ? el('span', null, t.program_id) : null,
             t.phase ? el('span', null, t.phase) : null,
+            campaignChip(t, props),
             el(QueueActions, { task: t, busy: props.busy, onRunNow: props.onRunNow, onCancel: props.onCancel, onJumpHistory: props.onJumpHistory })))
       }))
     }
@@ -376,7 +429,7 @@ window.__ModuleLoader__.load({
           el('tbody', null, rows.map(function (t) {
             return el('tr', { key: String(t.id), className: 'silksec-row' },
               el('td', { style: styles.tdMono || td }, String(t.id)),
-              el('td', { style: td }, t.program_id || '—'),
+              el('td', { style: td }, t.program_id || '—', campaignChip(t, props)),
               el('td', { style: td, title: t.objective }, String(t.objective || '').slice(0, 80)),
               el('td', { style: td }, statusPill(t.status)),
               el('td', { style: { ...td, whiteSpace: 'nowrap' } }, el(QueueActions, { task: t, busy: props.busy, onRunNow: props.onRunNow, onCancel: props.onCancel, onJumpHistory: props.onJumpHistory })))
@@ -489,6 +542,8 @@ window.__ModuleLoader__.load({
       var runTaskId = rf[0]; var setRunTaskId = rf[1]
       var cs = React.useState(false)
       var creating = cs[0]; var setCreating = cs[1]
+      var cf = React.useState(0)
+      var campaignFilter = cf[0]; var setCampaignFilter = cf[1]
       var histRef = React.useRef ? React.useRef(null) : { current: null }
 
       if (typeof useRpcCore !== 'function') {
@@ -504,8 +559,12 @@ window.__ModuleLoader__.load({
       }
       var schedState = useRpcCore(function () { return { endpoint: 'scheduledTasks' } }, [], rpc || undefined)
       var tasksState = useRpcCore(function () {
-        return { endpoint: 'tasks', payload: { bucket: 'active', limit: 200, program_id: progFilter } }
-      }, [progFilter], rpc || undefined)
+        var payload = { bucket: 'active', limit: 200, program_id: progFilter }
+        if (campaignFilter) payload.campaign_id = campaignFilter
+        return { endpoint: 'tasks', payload: payload }
+      }, [progFilter, campaignFilter], rpc || undefined)
+      // 22 号方案 方案 A：专项区块数据源（含已归档外的全部状态；查询不可达时区块静默隐藏——降级链）
+      var campState = useRpcCore(function () { return { endpoint: 'campaigns', payload: { limit: 50 } } }, [], rpc || undefined)
       var runsState = useRpcCore(function () {
         var payload = { limit: 20 }
         if (runTaskId) payload.task_id = Number(runTaskId)
@@ -521,6 +580,9 @@ window.__ModuleLoader__.load({
       var runs = (runsState.data && runsState.data.rows) || []
       var runTotal = (runsState.data && runsState.data.total) || runs.length
       var wsItems = (wsState.data && wsState.data.items) || []
+      var campaigns = ((campState.data && campState.data.rows) || []).filter(function (c) { return c.status !== 'archived' })
+      var campaignNames = {}
+      campaigns.forEach(function (c) { campaignNames[c.id] = c.name || ('#' + c.id) })
 
       // 顶部 program 筛选胶囊（窄栏工作区快块的降级形态）。
       // 选项 = 工作区 ∪ 全量 programs，**与当前筛选无关**——点击筛选后选项不塌缩。
@@ -552,6 +614,15 @@ window.__ModuleLoader__.load({
         if (schedState.reload) schedState.reload()
         if (tasksState.reload) tasksState.reload()
         if (runsState.reload) runsState.reload()
+        if (campState.reload) campState.reload()
+      }
+      function onCampaignTickNow(cid) {
+        if (busy) return
+        setBusy(true)
+        Promise.resolve(typeof rpc === 'function' ? rpc('campaignTickNow', { id: Number(cid) }) : Promise.reject(new Error('连接通道不可用')))
+          .then(function () { reloadAll() })
+          .catch(function (e) { try { if (window.alert) window.alert('专项 tick 失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} })
+          .then(function () { setBusy(false) })
       }
       function withBusy(op, args) {
         if (busy) return
@@ -587,7 +658,7 @@ window.__ModuleLoader__.load({
         setCreating(false)
       }
 
-      var busyProps = { busy: busy, onRunNow: function (id) { withBusy('run_now', [id]) }, onCancel: onCancel, onBlock: function (id) { withBusy('block', [id]) }, onResume: function (id) { withBusy('resume', [id]) }, onEditEvery: onEditEvery, onJumpHistory: jumpHistory }
+      var busyProps = { busy: busy, onRunNow: function (id) { withBusy('run_now', [id]) }, onCancel: onCancel, onBlock: function (id) { withBusy('block', [id]) }, onResume: function (id) { withBusy('resume', [id]) }, onEditEvery: onEditEvery, onJumpHistory: jumpHistory, campaignNames: campaignNames, onCampaignFilter: setCampaignFilter }
 
       return el('div', { className: 'silksec-task-center' },
         el('div', { className: 'silksec-task-body' },
@@ -600,6 +671,13 @@ window.__ModuleLoader__.load({
           filterRow,
           creating ? el(CreateForm, { programs: wsItems.filter(function (w) { return w.program }).map(function (w) { return { v: w.program.id, l: w.title + '（' + w.program.id + '）' } }), busy: busy, onCreate: onCreate, onClose: function () { setCreating(false) } }) : null,
 
+          // 区块零（22 号方案 方案 A）：专项——常驻统筹实体（SRC 挖掘主线）；点击卡片过滤其派生任务
+          campaigns.length
+            ? el(React.Fragment, null,
+                sectionHeadNode({ title: '专项', count: campaigns.length, icon: queueIcon(14), subtitle: '常驻统筹实体：派生→下发→监督→验收闭环驱动下方子任务；点击卡片按其派生任务过滤队列。' }),
+                el(CampaignBlock, { rows: campaigns, busy: busy, campaignFilter: campaignFilter, onCampaignFilter: setCampaignFilter, onTickNow: onCampaignTickNow }))
+            : null,
+
           // 区块一：定时任务卡片
           sectionHeadNode({ title: '定时任务', count: scheduled.length, icon: alarmIcon(14), subtitle: '固定周期实体：跑完自动续期不增殖；每行「🕘」跳到执行历史。' }),
           schedState.error ? el('div', { style: { ...(styles.errorLine || {}), color: T.error } }, '定时任务加载失败: ' + schedState.error) : null,
@@ -610,7 +688,12 @@ window.__ModuleLoader__.load({
               : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, '暂无定时任务')),
 
           // 区块二：一次性队列（<480px 表格换卡片行）
-          sectionHeadNode({ title: '一次性队列', count: queue.length, icon: queueIcon(14), subtitle: '编排器派发的一次性任务（链步骤、N-day 候选等）；状态点 + 行内操作。' }),
+          sectionHeadNode({ title: '一次性队列', count: queue.length, icon: queueIcon(14), subtitle: '编排器派发的一次性任务（链步骤、专项派生等）；状态点 + 行内操作。' }),
+          campaignFilter
+            ? el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 } },
+                el('span', { style: { ...pill, color: T.brand } }, '专项 ' + (campaignNames[campaignFilter] || ('#' + campaignFilter))),
+                el('button', { type: 'button', className: 'silksec-btn', title: '清除专项过滤，回到全量队列', onClick: function () { setCampaignFilter(0) } }, '✕ 清除过滤'))
+            : null,
           tasksState.error ? el('div', { style: { ...(styles.errorLine || {}), color: T.error } }, '任务队列加载失败: ' + tasksState.error) : null,
           tasksState.loading && !tasksState.data
             ? el(uiCore.SkeletonRows, { rows: 3 })
@@ -804,6 +887,7 @@ window.__ModuleLoader__.load({
     exports.ScheduledCard = ScheduledCard
     exports.QueueTable = QueueTable
     exports.QueueCards = QueueCards
+    exports.CampaignBlock = CampaignBlock
     exports.WorkspaceQuick = WorkspaceQuick
     exports.HistoryBlock = HistoryBlock
     exports.TaskRunLine = TaskRunLine

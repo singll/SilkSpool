@@ -248,12 +248,16 @@ const RUNS = [
   { id: 900, task_id: 16, ok: 1, note: '完成', started_at: 1700000000000, finished_at: 1700000060000, duration_ms: 60000, session_id: 'sess-1', objective: '每日资产侦察' },
 ]
 const WORKSPACES = { available: true, items: [{ id: 'ws1', title: '美团 SRC', program: { id: 'meituan' }, tasks: 3, assets: 10, findings: 2 }] }
+const CAMPAIGNS = [
+  { id: 7, name: '美团SRC 持续挖掘', mode: 'single', status: 'active', autonomy: 1, program_ids: ['meituan'], budget_tokens: 2000000, spent_tokens: 350000, heartbeat_at: Date.now() - 3600000, decision_totals: { accepted: 3, rejected: 1, rework: 2, escalated: 0 }, objective: '覆盖+七类主粮' },
+]
 
 const FULL_RPC_STATE = {
   scheduledTasks: { data: { rows: SCHEDULED } },
   tasks: { data: { rows: QUEUE, total: QUEUE.length } },
   taskRuns: { data: { rows: RUNS, total: 1 } },
   workspaces: { data: WORKSPACES },
+  campaigns: { data: { rows: CAMPAIGNS, total: 1 } },
   // 筛选选项的稳定来源（19-ui-unify 补丁）：即使某 program 当前无任务也保留筛选项
   programs: { data: [
     { id: 'meituan' }, { id: 'bytedance' }, { id: 'autohome' }, { id: 'didi' }, { id: 'pdd' },
@@ -423,4 +427,54 @@ test('primitives 缺席：四区块仍可渲染（Pill/StateDot/DisclosureRow �
   assert.doesNotThrow(() => mod.TaskTabBody())
   assert.doesNotThrow(() => mod.TaskTabTitle())
   assert.doesNotThrow(() => mod.TaskDegradedView({ rpc: () => Promise.resolve({}) }))
+})
+
+// ── ⑥ 22 号方案 方案 A：专项区块（合并入任务视图） ──────────────────────────
+test('专项区块：卡片渲染（状态/自主级别/验收计数/预算/心跳 + tick 按钮 + 点击过滤）', () => {
+  const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const tree = mod.TaskCenter({ rpc: () => Promise.resolve({}) })
+  const text = deepText(tree)
+  assert.match(text, /专项/, '任务视图必须含「专项」区块')
+  assert.match(text, /美团SRC 持续挖掘/, '专项卡片渲染名称')
+  assert.match(text, /L1/, '自主级别徽章')
+  assert.match(text, /验收 3\/1\/2\/0/, '验收计数 accepted/rejected/rework/escalated')
+  assert.match(text, /预算 350000\/2000000/, '预算条 spent/budget')
+  // 立即 tick 按钮（aria-label）
+  const tickBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '立即 tick')[0]
+  assert.ok(tickBtn, '专项卡片必须有「立即 tick」按钮')
+  // 点击卡片触发专项过滤（回调把 campaign_id 传给 TaskCenter 状态；假 useState 不调 setter，仅验证回调存在且带正确 id）
+  const card = collect(tree, (n) => n.props && n.props.className === 'silksec-row' && typeof n.props.onClick === 'function' && String(textOf(n)).includes('美团SRC 持续挖掘'))[0]
+  assert.ok(card, '专项卡片必须可点击（过滤其派生任务）')
+})
+
+test('专项区块：队列行带专项归属 chip；campaigns 查询不可达 → 区块静默隐藏（降级链）', () => {
+  const uiCore = makeUiCore({ rpcState: {
+    ...FULL_RPC_STATE,
+    tasks: { data: { rows: [{ ...QUEUE[0], campaign_id: 7, campaign_role: 'derived' }], total: 1 } },
+  } })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const tree = mod.TaskCenter({ rpc: () => Promise.resolve({}) })
+  const chips = collect(tree, (n) => String(textOf(n)).startsWith('专项 美团SRC'))
+  assert.ok(chips.length >= 1, '队列行必须带专项归属 chip（表格+卡片双模式至少一处）')
+  // 降级：campaigns 无数据 → 区块不出现，其余区块不受影响
+  const uiCore2 = makeUiCore({ rpcState: { ...FULL_RPC_STATE, campaigns: undefined } })
+  const mod2 = loadBundle(uiCore2, makePrimitives()).mod
+  const tree2 = mod2.TaskCenter({ rpc: () => Promise.resolve({}) })
+  const text2 = deepText(tree2)
+  assert.ok(!/验收 \d+\/\d+\/\d+\/\d+/.test(text2), 'campaigns 不可达时专项区块静默隐藏')
+  assert.match(text2, /定时任务/, '其余区块不受影响')
+})
+
+test('专项 tick 写操作：走 campaignTickNow 端点（与主面板专项 tab 同端点）', async () => {
+  const rpcCalls = []
+  const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const rpc = (endpoint, payload) => { rpcCalls.push({ endpoint, payload }); return Promise.resolve({}) }
+  const tree = mod.TaskCenter({ rpc })
+  const tickBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '立即 tick')[0]
+  assert.ok(tickBtn, '立即 tick 按钮存在')
+  tickBtn.props.onClick({ stopPropagation() {} })
+  await new Promise((r) => setTimeout(r, 0))
+  assert.ok(rpcCalls.some((c) => c.endpoint === 'campaignTickNow' && c.payload.id === 7), '必须调用 campaignTickNow（id=7）')
 })

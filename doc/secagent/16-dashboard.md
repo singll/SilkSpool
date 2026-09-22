@@ -161,8 +161,9 @@ var d2 = slots.inject('sidebar.panellist', function () {
 
 **任务 tab（`@silksec/ui-task`，右侧栏 page type）**：
 
-- kind=`silksec-task`；栏内自上而下：**定时任务卡片**（`IconAlarmClockOutline` + `next_run_at` 相对时间）→ **一次性队列**（状态 `StateDot`）→ **执行历史**（默认折叠 `DisclosureRow`）；工作区块在窄栏形态降级为顶部 program 筛选 `Pill` 组。
+- kind=`silksec-task`；栏内自上而下：**专项**（22 号方案 A 合并入任务视图——Campaign 常驻统筹实体卡片：状态/自主级别 L0–L2/验收计数 accepted/rejected/rework/escalated/预算条/心跳 + 「立即 tick」；点击卡片按 campaign_id 过滤一次性队列，`campaigns` 查询不可达时区块静默隐藏）→ **定时任务卡片**（`IconAlarmClockOutline` + `next_run_at` 相对时间）→ **一次性队列**（状态 `StateDot`；`campaign_id` 非空的行带「专项 <名称>」归属 chip，点击即按专项过滤，chip 可一键清除）→ **执行历史**（默认折叠 `DisclosureRow`）；工作区块在窄栏形态降级为顶部 program 筛选 `Pill` 组。
 - 写操作：`task.run_now/cancel/block/resume/schedule` RPC；行内操作图标 + title 纪律不变。
+- 专项写操作：`campaignTickNow` RPC（task.campaign_tick_now 域命令，actor=dashboard）；专项过滤走 `tasks` RPC 的 `campaign_id` 参数（透传 task 域 task_list）。
 - 栏宽自适应：表格在 <480px 切换为卡片行。
 
 **授权 → 设置页（`@silksec/ui-settings-scope`）**：`settings.section` 注册「授权范围」整节：program 列表（工作区徽章 + **授权时效徽章**——已过期红标「已过期」/ 临期 ≤30 天黄标「剩 N 天」/ 远期灰标「至 YYYY-MM-DD」，title 携带复核时间与续期指引，08-scope §1.4）、scope.yml 条目管理、排除清单、凭据引用状态。写操作走 `scope.*` RPC。设置页骨架/滚动/键盘可达性全部宿主原生。

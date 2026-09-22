@@ -577,12 +577,13 @@ export const TASK_MANIFEST = {
         q: str({ default: '' }),
         bucket: en(['active', 'history'], { default: '' }),
         scheduled: en(['only', 'exclude'], { default: '' }),
+        campaign_id: int({ minimum: 1 }),
         limit: int({ minimum: 1, maximum: 500 }),
         offset: int({ minimum: 0 }),
         sort: en(['priority', 'created_at'], { default: 'priority' }),
         dir: en(['asc', 'desc'], { default: 'asc' }),
       }, []),
-      agent_note: '列出任务（看板数据源）。按 program/status/phase/bucket(active|history)/scheduled(only|exclude) 过滤，priority 升序。',
+      agent_note: '列出任务（看板数据源）。按 program/status/phase/bucket(active|history)/scheduled(only|exclude)/campaign_id 过滤，priority 升序。',
     },
     task_get: {
       actor: ['model', 'dashboard', 'human', 'system', 'reactor', 'scheduler'],
@@ -2185,7 +2186,7 @@ function makeHandlers(opts) {
 
   const queries = {
     task_list: async (args, repo) => {
-      const filters = { program_id: args.program_id, status: args.status, phase: args.phase, goal: args.goal, q: args.q, bucket: args.bucket, scheduled: args.scheduled }
+      const filters = { program_id: args.program_id, status: args.status, phase: args.phase, goal: args.goal, q: args.q, bucket: args.bucket, scheduled: args.scheduled, campaign_id: args.campaign_id }
       const total = repo.countTasksWhere(filters)
       const rows = repo.listTasksWhere(filters, args.limit, args.offset, args.sort)
       return { rows, total }

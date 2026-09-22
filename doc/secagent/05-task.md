@@ -460,7 +460,7 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 | 查询 | 参数 | 返回 | 说明 |
 |---|---|---|---|
-| `task_list` | program_id / status / phase / goal / q（objective LIKE）/ bucket / scheduled / limit / offset / sort（priority\|created_at，默认 priority asc,created_at asc）/ dir（**接受但后端忽略，恒 ASC**） | `{rows, total}` | 看板任务视图数据源；bucket=active 且未显式传 scheduled 时默认 `scheduled=exclude`（定时任务由独立卡片区展示，避免重复——v4.x P12 口径保留） |
+| `task_list` | program_id / status / phase / goal / q（objective LIKE）/ bucket / scheduled / **campaign_id（22 号方案 A：按归属专项过滤，看板任务视图专项 chip/卡片联动用）** / limit / offset / sort（priority\|created_at，默认 priority asc,created_at asc）/ dir（**接受但后端忽略，恒 ASC**） | `{rows, total}` | 看板任务视图数据源；bucket=active 且未显式传 scheduled 时默认 `scheduled=exclude`（定时任务由独立卡片区展示，避免重复——v4.x P12 口径保留） |
 | `task_get` | task_id | 单行或 `E_NOT_FOUND` | 全列（含调度/预算/模型覆盖/最近 run） |
 | `task_next` | program_id | 单个任务或 null | 编排器认领：最高优先级 queued 且 **parent gate** 放行（parent 须 done）的第一条 |
 | `task_stats` | program_id | `{total, by_phase_status[]}` | 聚合独立命名（宪法 §七.5） |

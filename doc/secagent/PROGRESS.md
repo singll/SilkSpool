@@ -17,6 +17,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-22 · 22 号方案方案 A：专项并入任务视图（ui-task 五区块）
+- 任务右侧栏 tab 顶部新增「专项」区块：Campaign 卡片（状态/自主级别/验收计数/预算/心跳 + 立即 tick，走既有 `campaigns`/`campaignTickNow` RPC）；点击卡片按 `campaign_id` 过滤一次性队列（`task_list` 增 `campaign_id` 过滤参数 + dashboard-rpc `tasks` 透传）；队列行带「专项 <名称>」归属 chip（点击即过滤、可一键清除）；campaigns 查询不可达时区块静默隐藏（降级链）。安全中心「专项」tab 保留（cross 全局视角）。
+- 顺带修复 HEAD 既有 bug：`pillNode` 只读 `props.children`，调用方按第二参传 label 导致**真实渲染下徽章文字静默丢失**（定时卡片 phase/下次运行徽章空白）——假 React 测试环境掩盖了该缺陷，已改签名并补注释。
+- 验收：UI 单测 14/14（新增专项区块 3 例），全量 client 套件 126/127（唯一失败仍为 HEAD 既有 dashboard-rpc stats 断言，git stash 复测确认无关）；task 域契约 60/60（csai 环境实跑）；csai 已部署重启（active、NRestarts=0），`sec-v5-accept.sh --ui-headless` PASS=75 FAIL=0。
+
 ### 2026-09-22 · 22 号方案关账归档（N1–N3 记入待办）
 - 二次评审通过验收；N1（`allowed_phases`/phase 标签未贯通）、N2（submit 角色验收判据未实装）、N3（finding id 文本解析可拼接）记入 [05-task §7.7](05-task.md) 待办（Phase C），不阻塞。
 - 按治理规则归档：`22-campaign-task.md` → [archive/22-campaign-task-2026-09-22.md](archive/22-campaign-task-2026-09-22.md)（内部相对链接已改 `../`，README 索引与各模块「设计真相源」引用同步改指 archive）。纯文档改动。

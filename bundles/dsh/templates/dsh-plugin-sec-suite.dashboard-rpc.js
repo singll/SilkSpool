@@ -556,6 +556,7 @@ export async function handleDashboardRpc(endpoint, payload) {
         programId: String(p.program_id || ''), status: String(p.status || ''),
         phase: String(p.phase || ''), q: String(p.q || ''), bucket: String(p.bucket || ''),
         scheduled: String(p.scheduled || ''),
+        campaignId: Number(p.campaign_id) || 0,
       }
       // P12：定时任务由卡片区独立展示；活跃桶默认排除定时行，避免重复显示
       if (!filters.scheduled && filters.bucket === 'active') filters.scheduled = 'exclude'
@@ -564,7 +565,9 @@ export async function handleDashboardRpc(endpoint, payload) {
       // v5：task.list（task 域 task_list 查询）接管（05-task §1.7），fail-closed
       const r = await busQuery('task', 'list', {
         program_id: filters.programId, status: filters.status, phase: filters.phase, q: filters.q,
-        bucket: filters.bucket, scheduled: filters.scheduled, limit, offset,
+        bucket: filters.bucket, scheduled: filters.scheduled,
+        ...(filters.campaignId ? { campaign_id: filters.campaignId } : {}),
+        limit, offset,
       })
       return { rows: r.rows, total: r.total }
     }
