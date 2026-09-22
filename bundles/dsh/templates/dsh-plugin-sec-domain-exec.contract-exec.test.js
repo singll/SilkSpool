@@ -497,3 +497,22 @@ test('H1: 多目标跨项目——任一项目未放行 intrusive 工具即拒',
   assert.equal(r.ok, false)
   assert.ok(['E_EXEC_RISK_NEEDS_APPROVAL', 'E_EXEC_RISK_FORBIDDEN'].includes(r.error.code), `实际错误码 ${r.error.code}`)
 })
+
+// ---------------------------------------------------------------------------
+// 21 号方案 §2-1：exec_oracle_judge（机器验证查询，判定归代码）
+// ---------------------------------------------------------------------------
+
+test('oracle_judge: 七判定器可路由 + verdict 输出；未知 oracle 拒绝', async () => {
+  const { bus } = makeEnv()
+  const v = await bus.query('exec', 'oracle_judge', { oracle: 'sqli_time', input: { baseline_ms: 100, sleep_ms: 5200, requested_delay_ms: 5000 } }, { actor: 'model' })
+  assert.equal(v.ok, true)
+  assert.equal(v.data.verdict, 'verified')
+  assert.ok(v.data.rationale.includes('时间差分'))
+  const r = await bus.query('exec', 'oracle_judge', { oracle: 'xss_echo', input: { marker: 'svx7a9c2', response_body: '<p>no</p>' } }, { actor: 'model' })
+  assert.equal(r.data.verdict, 'rejected')
+  const u = await bus.query('exec', 'oracle_judge', { oracle: 'unauthz_diff', input: { control: { status: 200, has_business_data: true } } }, { actor: 'script' })
+  assert.equal(u.data.verdict, 'verified')
+  const bad = await bus.query('exec', 'oracle_judge', { oracle: 'nope', input: {} }, { actor: 'model' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'E_SCHEMA')
+})

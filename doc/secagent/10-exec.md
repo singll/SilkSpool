@@ -253,6 +253,7 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 | `exec_page_result` | `run_id`*、`offset`（0 基，默认 0）、`limit`（默认 50 上限 200） | `{total_lines, offset, limit, lines}` | 仅 stdout.log 按行分页 |
 | `exec_plan_chain` | `have`: string[]、`want`* | `{have, want, chain[], available[]}` | 能力图 BFS：按 manifest `requires`/`produces` 迭代扩张（v4.x 算法原样）；凑不到 → `E_EXEC_CHAIN_UNREACHABLE` + available 清单（hint：调整 have/want 或检查 manifest） |
 | `exec_manifest_list` | `name?`（精确）、`stage?`、`risk?`、`domain?` | `{rows: [{name, stage, risk, target_param, requires, produces, parser, domain, sandbox, deprecated_store}], total}` | manifest 元数据枚举（v4 的"错误 message 附可用清单"升为一等查询；`domain` 字段见 2.1.1） |
+| `exec_oracle_judge` | `oracle`*（`unauthz_diff` / `idor_diff` / `info_disclosure_diff` / `sqli_diff` / `sqli_time` / `xss_echo` / `ssrf_oob`）、`input`*（对照特征对象） | `{oracle, verdict, rationale, evidence}` | **机器验证 oracle（21 号方案 §2-1）**：纯函数确定性判定（`sec-rules-hypothesis`），输入两次/多次请求的对照特征，输出 `verified / rejected / inconclusive`。模型只能提交对照特征，判定归代码——**模型无权宣布 verified**；verdict 经 `vuln_oracle_capsule` 落 proof capsule 后才是 `vuln_confirm` 的合法机器证据 |
 
 `exec_plan_chain` 能力链主干（当前 manifest 图的实际形态）：`domains → subdomains → live_hosts → endpoints → findings`。
 

@@ -95,6 +95,12 @@
 | E_VULN_INCOMPLETE | 五要素缺失（title<10 字符 / 复现或影响为空 / 低信息标题形状） | "信号登记要求五要素完整（规范标题≥10 字符、复现步骤、具体影响、证据引用、host）。机器产出或不完整观察请勿用本动词；完成对抗性自检与双出口复现后再登记" | false |
 | E_VULN_INFO_SEVERITY | severity=info | "info 级侦察副产物不进信号面。如确有安全价值，按 rules/src/severity-rating.md 重新定级（信息泄露默认低危）后以 low+具体影响登记" | false |
 | E_VULN_SEVERITY_CAPPED | severity × vuln_type 硬降级（21 号方案 §0-6，signalComplete 不变量）：信息泄露/中间件暴露类 ≤ low；XSS/CSRF/CORS/开放跳转等未证明执行类 ≤ medium（`sec-rules-hypothesis.enforceSeverityCap`） | "按评级规则降为 cap 再登记，或在影响与证据中证明进一步利用后走人工裁定" | false |
+| E_VULN_ORACLE_NOT_VERIFIED | 21 号方案 §2-1：`vuln_confirm` 引用 `capsule:{id}` 时 capsule verdict 非 verified（oracleCapsuleGate 不变量）——**oracle 输出是 confirm 的唯一合法机器证据，模型无权宣布 verified** | "oracle 判定 rejected/inconclusive 的假设不得 confirm——补充差分证据重判，或 vuln_reject 结案" | false |
+| E_VULN_ORACLE_TARGET_MISMATCH | capsule 目标 host 与 finding host 不一致（防张冠李戴） | "机器验证证据必须针对同一目标——核对 capsule 的 target.host" | false |
+
+#### `vuln_oracle_capsule`（proof capsule 登记，21 号方案 §2-2）
+
+**语义**：把一次机器验证的证据包（oracle verdict + 请求对 `request_pair` + 判定规则输入 `rule_input` + 结果 `result` + 重放命令 `replay` + 环境指纹 `env`）落盘 `data/evidence/oracle-capsules/{capsule_id}.json`（tmp+rename 原子写，body+digest 自洽防篡改）。actor：model/script/dashboard。返回 `evidence_ref: capsule:{id}`——该引用是 `vuln_confirm` 的机器验证证据形态（oracleCapsuleGate 不变量：digest 自洽 + verdict=verified + host 一致，三者缺一即拒）。事件 `vuln.oracle.capsuled`（记分 reactor 的 wins/fails 数据源）。verdict 必须由 `exec_oracle_judge`（10-exec §1.4）输出——oracle 是纯函数，模型只能提交对照特征，判定归代码。
 | E_EVIDENCE_REQUIRED | evidence 缺失或无证据引用 | "证据必须是 run_id/flow_id/burp_item/evidence 路径/oob 交互记录引用，无证据不结论（sec-verification 铁律）" | false |
 | E_IDEMPOTENT_CONFLICT | 同强指纹异参重放 | "该发现已登记（同 host+title+url）。补充信息用 vuln_note；字段勘误用 vuln_note 附勘误说明" | false |
 | E_SCHEMA / E_ACTOR_FORBIDDEN | 见宪法 | — | false |

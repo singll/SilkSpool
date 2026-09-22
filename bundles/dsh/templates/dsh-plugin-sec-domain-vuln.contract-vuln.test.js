@@ -144,6 +144,75 @@ async function seedCandidate(bus, extra = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// 21 号方案 §2-1/§2-2：proof capsule + oracle 证据门
+// ---------------------------------------------------------------------------
+
+test('oracle_capsule: 登记 → 落盘 digest 自洽 + 事件；capsule:{id} confirm 全链路（verified）', async () => {
+  const { dir, dataDir, bus } = makeEnv()
+  const sig = await seedSignal(bus)
+  assert.equal(sig.ok, true)
+  const cap = await bus.dispatch('vuln', 'oracle_capsule', {
+    oracle: 'sqli_diff', verdict: 'verified',
+    target: { host: 'a.example.com', url: 'https://a.example.com/admin?id=1', param: 'id', vuln_class: 'sqli' },
+    request_pair: { control: { status: 200, len: 1024 }, test: { status: 200, len: 12 } },
+    rule_input: { baseline_body: 'x', true_body: 'x', false_body: 'y' },
+    result: { rationale: '布尔差分成立' },
+    replay: { cmd: 'curl -s "$URL?id=1%20AND%201=1" -o /tmp/t; curl -s "$URL?id=1%20AND%201=2" -o /tmp/f; diff -q /tmp/t /tmp/f' },
+    env: { proxy: 'mubeng', ts: 1 },
+    finding_id: sig.data.id,
+  }, { actor: 'model' })
+  assert.equal(cap.ok, true)
+  const cid = cap.data.capsule_id
+  assert.match(cid, /^[a-f0-9]{16}$/)
+  // 落盘 digest 自洽
+  const raw = JSON.parse(fs.readFileSync(path.join(dataDir, 'evidence', 'oracle-capsules', `${cid}.json`), 'utf8'))
+  assert.equal(raw.capsule_id, cid)
+  assert.equal(raw.verdict, 'verified')
+  assert.ok(raw.digest)
+  assert.ok(raw.replay.cmd.includes('curl'))
+  // 事件
+  const names = bus._internal.db().prepare('SELECT payload FROM event_outbox').all().map((o) => JSON.parse(o.payload).name)
+  assert.ok(names.includes('vuln.oracle.capsuled'))
+  // capsule:{id} 作为 confirm 证据引用全链路通过
+  const confirm = await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: `capsule:${cid}` }, { actor: 'model' })
+  assert.equal(confirm.ok, true, confirm.error?.message)
+  assert.equal(confirm.data.status, 'confirmed')
+  const audit = readAudit(dir)
+  assert.ok(audit.find((a) => a.domain === 'vuln' && a.cmd === 'oracle_capsule'))
+})
+
+test('oracle_capsule 门：rejected/inconclusive 不得 confirm（E_VULN_ORACLE_NOT_VERIFIED）', async () => {
+  const { bus } = makeEnv()
+  const sig = await seedSignal(bus)
+  const cap = await bus.dispatch('vuln', 'oracle_capsule', {
+    oracle: 'sqli_diff', verdict: 'rejected', target: { host: 'a.example.com' },
+  }, { actor: 'model' })
+  assert.equal(cap.ok, true)
+  const c = await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: `capsule:${cap.data.capsule_id}` }, { actor: 'model' })
+  assert.equal(c.ok, false)
+  assert.equal(c.error.code, 'E_VULN_ORACLE_NOT_VERIFIED')
+})
+
+test('oracle_capsule 门：目标 host 与 finding 不一致被拒（E_VULN_ORACLE_TARGET_MISMATCH）', async () => {
+  const { bus } = makeEnv()
+  const sig = await seedSignal(bus)
+  const cap = await bus.dispatch('vuln', 'oracle_capsule', {
+    oracle: 'idor_diff', verdict: 'verified', target: { host: 'b.example.com' },
+  }, { actor: 'model' })
+  const c = await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: `capsule:${cap.data.capsule_id}` }, { actor: 'model' })
+  assert.equal(c.ok, false)
+  assert.equal(c.error.code, 'E_VULN_ORACLE_TARGET_MISMATCH')
+})
+
+test('oracle_capsule 门：伪造/不存在的 capsule id → E_EVIDENCE_REQUIRED', async () => {
+  const { bus } = makeEnv()
+  const sig = await seedSignal(bus)
+  const c = await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: 'capsule:deadbeefdeadbeef' }, { actor: 'model' })
+  assert.equal(c.ok, false)
+  assert.equal(c.error.code, 'E_EVIDENCE_REQUIRED')
+})
+
+// ---------------------------------------------------------------------------
 // 1. happy path（每动词一例：信封结构 / data 字段 / 事件 payload / audit 落盘）
 // ---------------------------------------------------------------------------
 

@@ -17,6 +17,7 @@ import * as crypto from 'node:crypto'
 import * as dns from 'node:dns'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { ORACLES, ORACLE_VERDICTS } from '../sec-rules-hypothesis/index.js'
 import { executeWorkerProcess } from '../sec-suite/worker-runtime.js'
 import { compactProposalEvents } from '../sec-suite/parse-proposal.js'
 
@@ -236,6 +237,14 @@ export const EXEC_MANIFEST = {
       actor: ['model', 'dashboard', 'human'],
       params: schema({ name: str(), stage: str(), risk: str(), domain: str() }, []),
       agent_note: '查询已登记 CLI 工具；name 精确过滤，stage/risk/domain 分类过滤。返回 params 必填项/缺省值与 timeout_sec；调用 exec_run_cli 前先核对，勿猜工具名或参数。',
+    },
+    exec_oracle_judge: {
+      actor: ['model', 'script', 'dashboard', 'human', 'reactor'],
+      params: schema({
+        oracle: str({ minLength: 1 }),
+        input: { type: 'object' },
+      }, ['oracle', 'input']),
+      agent_note: '机器验证 oracle（§2-1 纯函数）：unauthz/idor/info_disclosure/sqli/sqli_time/xss/ssrf 七判定器。输入对照特征输出 verdict——模型无权宣布 verified。',
     },
   },
   events: {
@@ -1163,6 +1172,15 @@ function makeHandlers(opts) {
         rows.push({ name: nm, params, timeout_sec: Math.min(Number(m.timeout) || 300, 3600), stage: m.stage || null, risk: m.risk || null, target_param: m.target_param || null, requires: m.requires || [], produces: m.produces || [], parser: m.parser || null, domain: m.domain || null, sandbox: m.sandbox !== false, deprecated_store: m.store || null })
       }
       return { rows, total: rows.length }
+    },
+    // 21 号方案 §2-1：oracle 纯函数判定（零 IO；模型只能提交对照特征，判定归代码）
+    exec_oracle_judge: async (args) => {
+      const fn = ORACLES[String(args.oracle)]
+      if (!fn) {
+        throw Object.assign(new Error(`未知 oracle: ${args.oracle}`), { code: 'E_SCHEMA', hint: `可用: ${Object.keys(ORACLES).join(', ')}`, retryable: false })
+      }
+      const out = fn(args.input && typeof args.input === 'object' ? args.input : {})
+      return { oracle: String(args.oracle), verdict: out.verdict, rationale: out.rationale, evidence: out.evidence || {}, verdicts: ORACLE_VERDICTS }
     },
   }
 

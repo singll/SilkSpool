@@ -35,7 +35,7 @@ const DEFAULT_DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const CLAIM_TTL_DEFAULT_SEC = 3600
 const REPLAY_TIMEOUT_MS = 20000
 // exec 产出 r/w + 时间戳 + 随机尾缀；兼容历史 run_* 及 nuclei 的 run_id: 前缀。
-const EVIDENCE_TOKEN_RE = /^(?:(?:run_id:)?(?:run_[A-Za-z0-9_-]+|[rw][a-z0-9]{12,})(?=\s|$)|flow:[^\s]+|burp_item[: ][^\s]+|evidence\/\d+\/?|oob:[^\s]+)/
+const EVIDENCE_TOKEN_RE = /^(?:(?:run_id:)?(?:run_[A-Za-z0-9_-]+|[rw][a-z0-9]{12,})(?=\s|$)|flow:[^\s]+|burp_item[: ][^\s]+|evidence\/\d+\/?|oob:[^\s]+|capsule:[a-f0-9]{16})/
 const LOW_INFO_TITLE_RE = /^[a-z0-9_-]+: ?\w+$/
 const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 }
 const FINDING_STATUS = ['new', 'confirmed', 'false_positive', 'submitted', 'accepted', 'dup', 'ignored']
@@ -154,9 +154,9 @@ export const VULN_MANIFEST = {
       event_limit: 2,
       // 证据闸门先于 finding 存在性：缺证据 → 确定性 E_EVIDENCE_REQUIRED（引导性 hint，
       // 不因 finding 不存在而变 E_NOT_FOUND），使 eval 契约用例 EC-02「无证据确认」可确定性断言。
-      invariants: ['evidenceExists', 'findingExists'],
+      invariants: ['evidenceExists', 'findingExists', 'oracleCapsuleGate'],
       timeout_ms: 60000,
-      agent_note: '把待验证候选/信号确认为 confirmed（status+confidence+noise 原子三联动，候选同时出池进信号面）。evidence 必填且必须真实存在（run_id 的 results 目录 / evidence/{id}/ 证据包 / flow 文件 / oob 交互记录）。确认前自查：verify.must_pass 全过、falsification 逐项排除、verify_replay 机械复核通过。候选被他人认领时会被告知换下一条。',
+      agent_note: '把待验证候选/信号确认为 confirmed（status+confidence+noise 原子三联动，候选同时出池进信号面）。evidence 必填且真实存在（run_id 目录 / evidence/{id} 包 / flow / oob / capsule:{id}）。确认前自查：verify.must_pass 全过、falsification 逐项排除、verify_replay 机械复核通过。候选被他人认领时会被告知换下一条。',
       deprecated: false,
     },
     vuln_reject: {
@@ -175,6 +175,33 @@ export const VULN_MANIFEST = {
       invariants: ['findingExists', 'dupTargetValid'],
       timeout_ms: 60000,
       agent_note: '判定 false_positive / dup / ignored。reason ≥10 字可追溯；dup 必须指回被重复的 finding（dup_of，可先用 vuln_dedup_check 查）。被拒候选自动出池；关联 FGS 节点自动 deprecated。误报判定会回流活评测集用于校准同类判定。',
+      deprecated: false,
+    },
+    vuln_oracle_capsule: {
+      actor: ['model', 'script', 'dashboard'],
+      schema: schema({
+        oracle: str({ minLength: 1 }),
+        verdict: en(['verified', 'rejected', 'inconclusive']),
+        target: {
+          type: 'object',
+          properties: { host: str({ minLength: 1 }), url: str({ default: '' }), param: str({ default: '' }), vuln_class: str({ default: '' }), program_id: str({ default: '' }) },
+          required: ['host'],
+          additionalProperties: false,
+        },
+        request_pair: { type: 'object' },
+        rule_input: { type: 'object' },
+        result: { type: 'object' },
+        replay: { type: 'object' },
+        env: { type: 'object' },
+        finding_id: int(),
+      }, ['oracle', 'verdict', 'target']),
+      idempotent: 'auto',
+      idempotent_fields: ['oracle', 'verdict', 'target', 'request_pair', 'rule_input', 'result', 'replay', 'env', 'finding_id'],
+      events: ['vuln.oracle.capsuled'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '登记 proof capsule（§2-2）：oracle verdict + 请求对 + 判定输入 + 环境指纹落盘 evidence/oracle-capsules/{id}.json（原子写，digest 自洽，自带重放命令）。capsule:{id} 是 vuln_confirm 的机器验证证据引用。',
       deprecated: false,
     },
     vuln_submit: {
@@ -423,6 +450,7 @@ export const VULN_MANIFEST = {
     'vuln.signal.registered': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.confirmed': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.rejected': { payload: { type: 'object' }, redact: [] },
+    'vuln.oracle.capsuled': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.submitted': { payload: { type: 'object' }, redact: [] },
     'vuln.evidence.attached': { payload: { type: 'object' }, redact: [] },
   },
@@ -470,12 +498,60 @@ function refPrefix(evidence) {
 
 function isoPrefix(now) { return `[${new Date(now).toISOString().slice(0, 16)}]` }
 
+// ---------------------------------------------------------------------------
+// 21 号方案 §2-2：proof capsule（可重放的机器验证证据包）
+// 文件：data/evidence/oracle-capsules/{capsule_id}.json（原子写；body+digest 自洽）
+// ---------------------------------------------------------------------------
+
+function capsuleDirOf(dataDir) { return path.join(dataDir, 'evidence', 'oracle-capsules') }
+
+function writeCapsule(dataDir, body) {
+  const dir = capsuleDirOf(dataDir)
+  fs.mkdirSync(dir, { recursive: true })
+  const payload = {
+    capsule_version: 1,
+    created_at: new Date().toISOString(),
+    oracle: body.oracle,
+    verdict: body.verdict,
+    target: body.target,
+    request_pair: body.request_pair || null,
+    rule_input: body.rule_input || null,
+    result: body.result || null,
+    replay: body.replay || null,
+    env: body.env || null,
+    finding_id: body.finding_id ?? null,
+  }
+  const id = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 16)
+  const file = path.join(dir, `${id}.json`)
+  if (!fs.existsSync(file)) {
+    const content = { ...payload, capsule_id: id, digest: crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex') }
+    const tmp = `${file}.tmp.${process.pid}.${Date.now()}`
+    fs.writeFileSync(tmp, JSON.stringify(content, null, 2) + '\n')
+    fs.renameSync(tmp, file)
+  }
+  return { id, file: path.join('evidence', 'oracle-capsules', `${id}.json`) }
+}
+
+function readCapsule(dataDir, id) {
+  const file = path.join(capsuleDirOf(dataDir), `${String(id || '')}.json`)
+  if (!/^[a-f0-9]{16}$/.test(String(id || ''))) return null
+  try {
+    const c = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (c.capsule_id !== id) return null
+    const { digest, capsule_id, ...body } = c
+    if (digest !== crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex')) return null
+    return c
+  } catch { return null }
+}
+
 // evidence 引用真实存在性（INV-2，02-vuln §1.3 C3）——dataDir 下结果/证据/flows/oob 布局
 function evidenceProbe(evidence, findingId, dataDir) {
   const probes = []
   const token = refPrefix(evidence)
   if (!token) return { ok: false, reason: 'no_ref' }
-  if (/^(?:run_|[rw][a-z0-9]{12,}$)/.test(token)) {
+  if (token.startsWith('capsule:')) {
+    probes.push(path.join(dataDir, 'evidence', 'oracle-capsules', `${token.slice('capsule:'.length)}.json`))
+  } else if (/^(?:run_|[rw][a-z0-9]{12,}$)/.test(token)) {
     probes.push(path.join(dataDir, 'results', token, 'meta.json'))
     probes.push(path.join(dataDir, 'results', token, 'meta.yaml'))
   } else if (token.startsWith('flow:')) {
@@ -687,6 +763,25 @@ function makeHandlers(opts) {
       }
       return null
     },
+    // 21 号方案 §2-1/§2-2：capsule:{id} 引用的机器验证证据门——
+    // capsule 必须 digest 自洽、verdict=verified（rejected/inconclusive 不得 confirm）、
+    // 且目标 host 与 finding 一致（防张冠李戴）。模型无权宣布 verified——判定只能来自 oracle。
+    oracleCapsuleGate: async (args, repo) => {
+      const token = refPrefix(args.evidence)
+      if (!token || !token.startsWith('capsule:')) return null
+      const capsule = readCapsule(dataDir, token.slice('capsule:'.length))
+      if (!capsule) {
+        return { code: 'E_EVIDENCE_REQUIRED', message: `proof capsule 不存在或 digest 不符: ${token}`, hint: '先 vuln_oracle_capsule 登记 oracle 判定结果（verdict 必须来自 exec_oracle_judge 输出）', retryable: false }
+      }
+      if (capsule.verdict !== 'verified') {
+        return { code: 'E_VULN_ORACLE_NOT_VERIFIED', message: `proof capsule verdict=${capsule.verdict}（非 verified）不可确认`, hint: 'oracle 判定 rejected/inconclusive 的假设不得 confirm——补充差分证据重判，或 vuln_reject 结案', retryable: false }
+      }
+      const row = repo.getFinding(args.finding_id)
+      if (row && capsule.target?.host && normalizeHost(capsule.target.host) !== normalizeHost(row.host || '')) {
+        return { code: 'E_VULN_ORACLE_TARGET_MISMATCH', message: `capsule 目标 ${capsule.target.host} 与 finding #${args.finding_id} 的 host ${row.host} 不一致`, hint: '机器验证证据必须针对同一目标——核对 capsule 的 target.host', retryable: false }
+      }
+      return null
+    },
     // L1（INV-10）：vuln_evidence_attach 的证据必须是 exec 已发布清单——清单存在、digest 自洽、
     // 逐文件 sha256 与 results/<run_id>/ 实况一致；且 Program 归属不跨项目（双方均有归属时须一致）。
     publishedEvidence: async (args, repo) => {
@@ -886,6 +981,26 @@ function makeHandlers(opts) {
         data: { id: args.finding_id, status: 'confirmed', signal: true, promoted_from_candidate: fromCandidate },
         events,
         before: { status: row.status, noise: row.noise, confidence: row.confidence }, after: { status: 'confirmed', noise: 0, confidence: 'confirmed' },
+      }
+    },
+
+    // 21 号方案 §2-2：proof capsule 落盘（请求对 + 判定规则 + 结果 + 环境指纹，可重放）
+    vuln_oracle_capsule: async (args, repo, ctx) => {
+      const w = writeCapsule(dataDir, {
+        oracle: String(args.oracle),
+        verdict: args.verdict,
+        target: args.target,
+        request_pair: args.request_pair || null,
+        rule_input: args.rule_input || null,
+        result: args.result || null,
+        replay: args.replay || null,
+        env: args.env || null,
+        finding_id: args.finding_id ?? null,
+      })
+      return {
+        data: { capsule_id: w.id, evidence_ref: `capsule:${w.id}`, file: w.file, verdict: args.verdict },
+        events: [{ name: 'vuln.oracle.capsuled', payload: { capsule_id: w.id, oracle: String(args.oracle), verdict: args.verdict, host: args.target?.host || null, vuln_class: args.target?.vuln_class || null, program_id: args.target?.program_id || null, finding_id: args.finding_id ?? null, session_id: ctx.session_id || null } }],
+        after: { capsule_id: w.id, verdict: args.verdict },
       }
     },
 
