@@ -25,6 +25,7 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { readParseProposal } from '../sec-suite/parse-proposal.js'
+import { classifyAuthState, businessSemanticsSuggest } from '../sec-rules-hypothesis/index.js'
 
 export const name = 'sec-domain-endpoint'
 export const version = '1.0.0'
@@ -50,6 +51,8 @@ const int = (opts = {}) => ({ type: 'integer', ...opts })
 
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']
 const AUTH = ['yes', 'no', 'unknown']
+const AUTH_STATES = ['public', 'login_required', 'role_required', 'unknown']
+const SHOULD_AUTH = ['yes', 'no', 'unknown']
 const SCANNERS = ['dalfox', 'sqlmap', 'arjun', 'other']
 
 const EP_ROW_SCHEMA = schema({
@@ -142,6 +145,53 @@ export const ENDPOINT_MANIFEST = {
       agent_note: '标注接口鉴权（auth_required: yes/no/unknown）与访问角色（roles_seen 并集累积）——越权矩阵的数据源。auth_required 从 unknown 变为确定值必须带证据（run_id/flow_id）。biz-logic 任务梳理接口图谱后应批量回填，多角色命中的接口是越权测试优先面（endpoint_matrix 查询）。',
       deprecated: false,
     },
+    endpoint_classify_auth: {
+      actor: ['model', 'script'],
+      schema: schema({
+        host: str({ minLength: 1 }),
+        method: str({ default: 'GET' }),
+        path: str({ minLength: 1 }),
+        response: {
+          type: 'object',
+          properties: {
+            status: int(),
+            redirect_location: str(),
+            body_simhash: str(),
+            login_simhash: str(),
+            has_business_data: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+        run_id: str({ minLength: 1 }),
+      }, ['host', 'path', 'response', 'run_id']),
+      idempotent: 'auto',
+      idempotent_fields: ['host', 'method', 'path', 'response', 'run_id'],
+      events: ['endpoint.auth_classified'],
+      event_limit: 1,
+      invariants: ['endpointExists'],
+      timeout_ms: 60000,
+      agent_note: '登录态判定落列（21 号方案 §5.1）：传一次无凭据探测的响应特征（status/redirect_location/body_simhash/login_simhash/has_business_data），域内纯函数分类 public/login_required/unknown 落 auth_state 列。判定确定性执行、证据不足显式 unknown 不猜；主动探测须过 exec 守卫链。run_id 必填（判定证据链）。',
+      deprecated: false,
+    },
+    endpoint_annotate_semantics: {
+      actor: ['model', 'script', 'dashboard'],
+      schema: schema({
+        host: str({ minLength: 1 }),
+        method: str({ default: 'GET' }),
+        path: str({ minLength: 1 }),
+        should_auth: en(SHOULD_AUTH),
+        body_excerpt: str(),
+        note: str(),
+      }, ['host', 'path']),
+      idempotent: 'auto',
+      idempotent_fields: ['host', 'method', 'path', 'should_auth', 'body_excerpt', 'note'],
+      events: ['endpoint.semantics_annotated'],
+      event_limit: 1,
+      invariants: ['endpointExists', 'semanticsRuling'],
+      timeout_ms: 60000,
+      agent_note: '业务语义标注（21 号方案 §5.2）：「应该不应该登录」是业务判断——不传 should_auth 时按路径词表+响应语义自动建议；传 should_auth 为显式标注（dashboard 为人工裁定，审计带 operator）。人工裁定 > 自动建议，已裁定的端点自动建议不覆盖。「本就该公开」反向标注 should_auth=no 防误报批量产生。',
+      deprecated: false,
+    },
   },
   queries: {
     endpoint_list: {
@@ -152,13 +202,24 @@ export const ENDPOINT_MANIFEST = {
         method: str({ default: '' }),
         program_id: str({ default: '' }),
         auth_required: en([...AUTH, 'none', ''], { default: '' }),
+        auth_state: en([...AUTH_STATES, 'none', ''], { default: '' }),
+        should_auth: en([...SHOULD_AUTH, 'none', ''], { default: '' }),
         sort: en(['last_seen', 'host', 'status', 'path', ''], { default: '' }),
         dir: en(['asc', 'desc', ''], { default: '' }),
         limit: int({ minimum: 1, maximum: 500 }),
         offset: int({ minimum: 0 }),
       }, []),
       predicates: ['program', 'auth'],
-      agent_note: '检索接口端点：host 精确 + path_like 模糊 + method/program/auth_required 过滤（auth=\'none\' 筛未标注）。',
+      agent_note: '检索接口端点：host 精确 + path_like 模糊 + method/program/auth_required/auth_state/should_auth 过滤（*=\'none\' 筛未标注）。',
+    },
+    endpoint_auth_summary: {
+      actor: ['model', 'dashboard', 'human', 'reactor'],
+      params: schema({
+        program_id: str({ default: '' }),
+        host: str({ default: '' }),
+      }, []),
+      predicates: ['program'],
+      agent_note: '登录态分布聚合：by_state + by_should_auth + 人工裁定数 + 标注率——覆盖账本登录面与盲区摘要分母（§5.1/§4.4）。',
     },
     endpoint_hosts: {
       actor: ['model', 'dashboard', 'human'],
@@ -202,9 +263,12 @@ export const ENDPOINT_MANIFEST = {
     'endpoint.queue.enqueued': { payload: { type: 'object' }, redact: [] },
     'endpoint.queue.consumed': { payload: { type: 'object' }, redact: [] },
     'endpoint.auth_marked': { payload: { type: 'object' }, redact: [] },
+    'endpoint.auth_classified': { payload: { type: 'object' }, redact: [] },
+    'endpoint.semantics_annotated': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'exec.run.completed': { handler: 'onRunProposal', mode: 'async', as: 'reactor' },
+    'endpoint.registered': { handler: 'onEndpointRegistered', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -349,6 +413,16 @@ function makeHandlers(opts) {
       const cur = row ? row.auth_required : null
       if ((cur === null || cur === undefined || cur === 'unknown') && !String(args.evidence || '').trim()) {
         return { code: 'E_EVIDENCE_REQUIRED', message: 'auth_required 从 unknown 变为确定值必须带 evidence', hint: '证据即参数：鉴权判定是越权测试的准入结论（run_id/flow_id/burp_item）', retryable: false }
+      }
+      return null
+    },
+    semanticsRuling: async (args, repo, ctx) => {
+      // 自动建议（不传 should_auth）永远合法；显式标注才受来源约束。
+      if (args.should_auth === undefined || args.should_auth === null) return null
+      // 人工裁定（dashboard）可任意标注；model/script 显式标注必须带 note 理由（防模型替人做业务裁定）
+      const actor = ctx?.actor
+      if (actor !== 'dashboard' && !String(args.note || '').trim()) {
+        return { code: 'E_EVIDENCE_REQUIRED', message: 'model/script 显式标注 should_auth 必须带 note 理由', hint: '「应该不应该登录」是业务判断：模型只产假说，显式标注须说明依据；人工裁定走 dashboard 通道', retryable: false }
       }
       return null
     },
@@ -542,16 +616,75 @@ function makeHandlers(opts) {
         after: { auth_required: r.after?.auth_required ?? null, roles_seen: roles },
       }
     },
+
+    // 21 号方案 §5.1：登录态判定（纯函数分类，run_id 证据链）
+    endpoint_classify_auth: async (args, repo) => {
+      const host = normalizeHost(args.host)
+      const method = String(args.method || 'GET').toUpperCase()
+      const p = String(args.path)
+      const verdict = classifyAuthState(args.response || {})
+      const evidence = { reasons: verdict.reasons, confidence: verdict.confidence, run_id: String(args.run_id), probed_at: Date.now(), probe: { status: args.response?.status ?? null } }
+      const before = repo.getEndpoint(host, method, p)
+      const r = repo.updateEndpointAuthState(host, method, p, verdict.auth_state, evidence, Date.now())
+      return {
+        data: { host, method, path: p, auth_state: verdict.auth_state, confidence: verdict.confidence, reasons: verdict.reasons },
+        events: [{
+          name: 'endpoint.auth_classified',
+          payload: { host, method, path: p, from: before?.auth_state ?? null, to: verdict.auth_state, confidence: verdict.confidence, run_id: String(args.run_id), program_id: before?.program_id ?? null },
+        }],
+        before: before ? { auth_state: before.auth_state ?? null } : null,
+        after: { auth_state: r.after?.auth_state ?? null },
+      }
+    },
+
+    // 21 号方案 §5.2：业务语义标注（自动建议 + 人工裁定通道；人工裁定 > 自动建议）
+    endpoint_annotate_semantics: async (args, repo, ctx) => {
+      const host = normalizeHost(args.host)
+      const method = String(args.method || 'GET').toUpperCase()
+      const p = String(args.path)
+      const before = repo.getEndpoint(host, method, p)
+      let suggestion = null
+      let shouldAuth = args.should_auth
+      let source = 'auto'
+      if (shouldAuth === undefined || shouldAuth === null) {
+        suggestion = businessSemanticsSuggest({ path: p, body_excerpt: args.body_excerpt || '' })
+        shouldAuth = suggestion.should_auth
+        source = 'auto'
+      } else {
+        source = ctx?.actor === 'dashboard' ? `dashboard:${ctx?.operator || 'operator'}` : String(ctx?.actor || 'model')
+      }
+      const r = repo.updateEndpointSemantics(host, method, p, shouldAuth, source, Date.now())
+      const after = r.after || before
+      return {
+        data: {
+          host, method, path: p,
+          should_auth: after?.should_auth ?? shouldAuth,
+          source: after?.should_auth_source ?? source,
+          applied: r.changed === true,
+          kept_human_ruling: r.skipped === 'human_override_kept' || undefined,
+          suggestion: suggestion || undefined,
+        },
+        events: [{
+          name: 'endpoint.semantics_annotated',
+          payload: { host, method, path: p, from: before?.should_auth ?? null, to: after?.should_auth ?? shouldAuth, source: after?.should_auth_source ?? source, applied: r.changed === true, program_id: before?.program_id ?? null, operator: ctx?.operator || null },
+        }],
+        before: before ? { should_auth: before.should_auth ?? null, source: before.should_auth_source ?? null } : null,
+        after: { should_auth: after?.should_auth ?? null, source: after?.should_auth_source ?? null },
+      }
+    },
   }
 
   const SENSITIVE_KEYWORDS = ['token', 'key', 'secret', 'password', 'passwd', 'pwd', 'access_key', 'cookie', 'authorization', 'apikey', 'api_key', 'jwt', 'session', 'auth']
 
   const queries = {
     endpoint_list: async (args, repo) => {
-      const filters = { host: args.host || '', path_like: args.path_like || '', method: args.method || '', program_id: args.program_id || '', auth_required: args.auth_required || '' }
+      const filters = { host: args.host || '', path_like: args.path_like || '', method: args.method || '', program_id: args.program_id || '', auth_required: args.auth_required || '', auth_state: args.auth_state || '', should_auth: args.should_auth || '' }
       const rows = repo.listEndpointsWhere(filters, { sort: args.sort || 'last_seen', dir: args.dir || 'desc' }, args.limit, args.offset)
       const total = repo.countEndpointsWhere(filters)
       return { rows, total }
+    },
+    endpoint_auth_summary: async (args, repo) => {
+      return repo.authStateSummary({ program_id: args.program_id || '', host: args.host || '' })
     },
     endpoint_hosts: async (args, repo) => {
       return repo.hostsAggregate({ path_like: args.path_like || '', program_id: args.program_id || '' }, args.limit, args.offset)
@@ -614,6 +747,17 @@ function makeHandlers(opts) {
   }
 
   const subscribers = {
+    // 21 号方案 §5.2：端点入库即自动建议 should_auth（路径词表，模型不介入）；
+    // 建议级标注，人工裁定/显式标注可覆盖；repo 层防自动建议覆盖人工裁定。
+    onEndpointRegistered: async (envelope) => {
+      const payload = envelope?.payload || {}
+      if (!payload.host || !payload.path || !dispatchRef) return { ok: true, data: { skipped: true } }
+      try {
+        await dispatchRef('endpoint', 'annotate_semantics', { host: payload.host, method: payload.method || 'GET', path: payload.path }, { actor: 'script', session_id: envelope?.cause?.session_id || null })
+      } catch { /* 自动建议失败不阻断入库（弱联动） */ }
+      return { ok: true, data: { suggested: true } }
+    },
+
     onRunProposal: async (envelope) => {
       const payload = envelope?.payload || {}
       const p = readParseProposal(dataDir, payload)

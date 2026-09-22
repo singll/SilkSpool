@@ -33,6 +33,12 @@ const { createLedgerFileBackend } = await import(backendUrl.href)
 
 const RESULT_ENUM = ['TESTED_CLEAN', 'CONFIRMED', 'FALSE_POSITIVE', 'NOT_APPLICABLE', 'BLOCKED', 'STALE']
 const OUTCOME_ENUM = ['applied', 'deviated', 'blocked', 'na']
+// 21 号方案 §4.1：覆盖账本维度与状态
+const COVER_DIM_ENUM = ['crawl', 'param', 'vulnclass', 'auth']
+const CRAWL_STATUS = ['uncrawled', 'crawled_ok', 'crawl_failed']
+const PARAM_STATUS = ['no_params', 'params_enriched', 'queued', 'consumed']
+const VULNCLASS_STATUS = ['untested', 'verified', 'rejected', 'inconclusive', 'untestable']
+const AUTH_TEST_STATUS = ['untested', 'public', 'login_required', 'role_required', 'unknown']
 const RADAR_TYPE_ENUM = ['ct-new-subdomain', 'js-bundle-change', 'scope-approved', 'version-intel']
 const BANNED_REASON = new Set(['other', 'misc', ''])
 const RADAR_SOURCE = {
@@ -88,6 +94,8 @@ export const LEDGER_MANIFEST = {
       'data/pipeline/{program}/radar-queue.jsonl',
       'data/pipeline/{program}/handoff-{date}.md',
       'data/pipeline/{program}/coverage-latest.md',
+      'data/pipeline/{program}/coverage-ledger.jsonl',
+      'data/pipeline/{program}/rotation-state.json',
       'data/events/ledger.jsonl',
     ],
   },
@@ -182,6 +190,40 @@ export const LEDGER_MANIFEST = {
       agent_note: '写当日交接包（五段：快照/动作/明日队列/阻塞/数据指针，全量覆盖写）。收尾强制产物；FGS 决策链摘要先调 fgs_export 并入动作段。blockers 无内容须传「无」。',
       deprecated: false,
     },
+    ledger_coverage_mark: {
+      actor: ['model', 'script', 'reactor', 'scheduler', 'human'],
+      schema: schema({
+        program: str({ minLength: 1 }),
+        dim: en(COVER_DIM_ENUM),
+        key: str({ minLength: 1 }),
+        mark: str({ minLength: 1 }),
+        detail: { type: 'object' },
+        source: str({ default: '' }),
+      }, ['program', 'dim', 'key', 'mark']),
+      idempotent: 'auto',
+      idempotent_fields: ['program', 'dim', 'key', 'mark', 'detail', 'source'],
+      events: ['ledger.coverage.marked'],
+      event_limit: 1,
+      invariants: ['coverStatusValid'],
+      timeout_ms: 60000,
+      agent_note: '覆盖账本记账（§4.1）：dim=crawl/param/vulnclass/auth，key 为格点（host 或 host|path|类），status 按维度枚举（见 11-ledger §1.3）。缺口队列由 ledger_coverage_gaps 派生。',
+      deprecated: false,
+    },
+    ledger_rotation_tick: {
+      actor: ['scheduler', 'system', 'dashboard', 'human'],
+      schema: schema({
+        program: str({ minLength: 1 }),
+        quality_gain: { type: 'boolean', default: false },
+        note: str({ default: '' }),
+      }, ['program']),
+      idempotent: 'none',
+      events: ['ledger.rotation.ticked'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '空转升圈记账（§3-3）：quality_gain=true 重置轮数；连空 N 轮升圈、满 3 圈允许 stall。调度器周期 tick，无人干预推进的终止条件。',
+      deprecated: false,
+    },
   },
   queries: {
     ledger_attempts_list: {
@@ -236,6 +278,30 @@ export const LEDGER_MANIFEST = {
       }, []),
       agent_note: '卡片使用统计（know 域消费接口：零使用卡判据/registry 健康度/升版原料 deviation 聚合；counts/deviations 两模式）。',
     },
+    ledger_coverage_metrics: {
+      actor: ['model', 'dashboard', 'human', 'reactor', 'scheduler'],
+      params: schema({ program: str({ minLength: 1 }) }, ['program']),
+      agent_note: '覆盖四指标（§4.2）：爬取/参数/登录/漏洞类覆盖率——跨域聚合 asset+endpoint 账本，看板北极星口径。',
+    },
+    ledger_coverage_gaps: {
+      actor: ['model', 'dashboard', 'human', 'reactor', 'scheduler'],
+      params: schema({
+        program: str({ minLength: 1 }),
+        dim: en([...COVER_DIM_ENUM, ''], { default: '' }),
+        limit: int({ minimum: 1, maximum: 500, default: 100 }),
+      }, ['program']),
+      agent_note: '覆盖缺口队列（§4.3）：未爬/无参/未测类/登录盲区格点清单，strategy_key 去重排序——Intent 派生器输入。',
+    },
+    ledger_login_blindspot: {
+      actor: ['model', 'dashboard', 'human', 'reactor'],
+      params: schema({ program: str({ minLength: 1 }) }, ['program']),
+      agent_note: '登录盲区摘要（§4.4）：无凭据 program 的「仅公开面 X%」标注 + 需登录未测清单 + cred_add 人工行动项。',
+    },
+    ledger_rotation_status: {
+      actor: ['model', 'dashboard', 'human', 'reactor', 'scheduler'],
+      params: schema({ program: str({ minLength: 1 }) }, ['program']),
+      agent_note: '空转升圈状态（§3-3）：empty_rounds/circle/last_gain_ts/stall_allowed 只读。',
+    },
   },
   events: {
     'ledger.attempt.logged': { payload: { type: 'object' }, redact: [] },
@@ -243,13 +309,35 @@ export const LEDGER_MANIFEST = {
     'ledger.radar.pushed': { payload: { type: 'object' }, redact: [] },
     'ledger.radar.drained': { payload: { type: 'object' }, redact: [] },
     'ledger.handoff.written': { payload: { type: 'object' }, redact: [] },
+    'ledger.coverage.marked': { payload: { type: 'object' }, redact: [] },
+    'ledger.rotation.ticked': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'exec.run.completed': { handler: 'onRunCompleted', mode: 'async', as: 'reactor' },
     'approval.approved': { handler: 'onScopeApproved', mode: 'async', as: 'reactor' },
     'task.finished': { handler: 'onTaskFinished', mode: 'async', as: 'reactor' },
+    'endpoint.registered': { handler: 'onEndpointRegistered', mode: 'async', as: 'reactor' },
+    'endpoint.auth_classified': { handler: 'onAuthClassified', mode: 'async', as: 'reactor' },
+    'vuln.signal.confirmed': { handler: 'onSignalConfirmed', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
+}
+
+// 21 号方案 §4.1：vuln_type → 七类主粮映射（命中矩阵与覆盖账本共用）
+export const VULNCLASS_MAP = [
+  { match: ['idor', '越权', 'bola', 'privilege', 'unauthorized', '未授权', 'access_control', 'authz'], cls: 'idor' },
+  { match: ['sqli', 'sql', '注入', 'injection', 'rce', '命令执行', 'ssti', 'xxe'], cls: 'sqli' },
+  { match: ['xss', '跨站'], cls: 'xss' },
+  { match: ['ssrf'], cls: 'ssrf' },
+  { match: ['file', 'upload', '上传', '文件', 'lfi', 'rfi', 'path_traversal', '任意文件'], cls: 'file' },
+  { match: ['info', '泄露', 'disclosure', 'exposure', 'leak', '敏感'], cls: 'info_disclosure' },
+  { match: ['auth', '鉴权', '认证', 'session', 'jwt', 'oauth', 'login'], cls: 'authz' },
+]
+export function vulnTypeToClass(vulnType) {
+  const t = String(vulnType || '').toLowerCase()
+  if (!t) return null
+  for (const m of VULNCLASS_MAP) if (m.match.some((x) => t.includes(x))) return m.cls
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +350,29 @@ function makeHandlers(opts) {
   const backendRepoRef = opts.repoRef
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const statsCache = new Map()
+
+  // ---- 21 号方案 §四：覆盖账本派生辅助 ----
+  const SEVEN_CLASSES = ['idor', 'sqli', 'xss', 'ssrf', 'file', 'info_disclosure', 'authz']
+
+  // 跨域只读安全调用：查询不可达/未注册降级 null（绝不抛进查询面）
+  async function safeQuery(domain, name, qargs) {
+    if (!queryRef) return null
+    try {
+      const r = await queryRef(domain, name, qargs, { actor: 'reactor' })
+      if (r && r.ok && r.data) return r.data
+      return null
+    } catch { return null }
+  }
+
+  // 覆盖账本格点最新态：key = `${dim}|${key}` → 行
+  function coverageLatest(repo, program) {
+    const latest = new Map()
+    for (const rec of repo.readCoverage(program)) {
+      if (!rec || typeof rec !== 'object' || !rec.dim || !rec.key) continue
+      latest.set(`${rec.dim}|${rec.key}`, rec)
+    }
+    return latest
+  }
 
   function throwErr(code, message, hint, retryable = false) {
     throw Object.assign(new Error(message), { code, hint, retryable })
@@ -307,6 +418,14 @@ function makeHandlers(opts) {
         if (!(k in payload) || String(payload[k] ?? '').length === 0) {
           return { code: 'E_SCHEMA', message: `radar type=${args.type} 缺 payload 必填键 ${k}`, hint: `type=${args.type} 需要 payload 键: ${keys.join(', ')}`, retryable: false }
         }
+      }
+      return null
+    },
+    coverStatusValid: async (args) => {
+      const enums = { crawl: CRAWL_STATUS, param: PARAM_STATUS, vulnclass: VULNCLASS_STATUS, auth: AUTH_TEST_STATUS }
+      const valid = enums[args.dim] || []
+      if (!valid.includes(args.mark)) {
+        return { code: 'E_SCHEMA', message: `dim=${args.dim} 的 mark 非法: ${args.mark}`, hint: `${args.dim} 允许值: ${valid.join('/')}`, retryable: false }
       }
       return null
     },
@@ -382,6 +501,47 @@ function makeHandlers(opts) {
         after: { date, file: r.file },
       }
     },
+
+    // 21 号方案 §4.1：覆盖账本记账（JSONL 追加；格点最新态由查询派生）
+    ledger_coverage_mark: async (args, repo) => {
+      const rec = {
+        ts: repo.nowIso(), dim: args.dim, key: args.key, mark: args.mark,
+        detail: args.detail && typeof args.detail === 'object' ? args.detail : {},
+        source: args.source || '',
+      }
+      const r = repo.appendCoverage(args.program, rec)
+      return {
+        data: { program: args.program, dim: args.dim, key: args.key, mark: args.mark, file: r.file },
+        events: [{ name: 'ledger.coverage.marked', payload: { program: args.program, dim: args.dim, key: args.key, mark: args.mark, source: rec.source } }],
+        after: { dim: args.dim, key: args.key, mark: args.mark },
+      }
+    },
+
+    // 21 号方案 §3-3：空转升圈（连空 N 轮升圈、满 3 圈允许 stall）
+    ledger_rotation_tick: async (args, repo) => {
+      const prev = repo.readRotation(args.program) || { empty_rounds: 0, circle: 0, last_gain_ts: null }
+      const gain = args.quality_gain === true
+      const next = {
+        program: args.program,
+        empty_rounds: gain ? 0 : (Number(prev.empty_rounds) || 0) + 1,
+        circle: Number(prev.circle) || 0,
+        last_gain_ts: gain ? Date.now() : (prev.last_gain_ts ?? null),
+        updated_at: Date.now(),
+        note: args.note || '',
+      }
+      // 连空 3 轮升一圈；满 3 圈允许 stall
+      if (next.empty_rounds >= 3) {
+        next.circle = next.circle + 1
+        next.empty_rounds = 0
+      }
+      const stallAllowed = next.circle >= 3
+      repo.writeRotation(args.program, next)
+      return {
+        data: { program: args.program, empty_rounds: next.empty_rounds, circle: next.circle, stall_allowed: stallAllowed, quality_gain: gain },
+        events: [{ name: 'ledger.rotation.ticked', payload: { program: args.program, empty_rounds: next.empty_rounds, circle: next.circle, stall_allowed: stallAllowed, quality_gain: gain } }],
+        after: { circle: next.circle, empty_rounds: next.empty_rounds },
+      }
+    },
   }
 
   function buildCoverageMd(program, repo, result, totalRows) {
@@ -412,6 +572,138 @@ function makeHandlers(opts) {
       const dir = args.dir === 'asc' ? 1 : -1
       out.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0) * dir)
       return { rows: out, total: out.length }
+    },
+
+    // ---- 21 号方案 §4.2/§4.3/§4.4/§3-3：覆盖账本派生查询 ----
+
+    ledger_coverage_metrics: async (args, repo) => {
+      const program = args.program
+      const state = coverageLatest(repo, program)
+      // 资产面：web 资产主机清单（asset 域只读，缺失降级 unavailable）
+      const assets = await safeQuery('asset', 'list', { type: 'web', program_id: program, limit: 500 })
+      const hosts = assets ? [...new Set((assets.rows || []).map((r) => r.host).filter(Boolean))] : null
+      const crawledHosts = new Set([...state.entries()].filter(([k, v]) => v.dim === 'crawl' && v.mark === 'crawled_ok').map(([k, v]) => v.key))
+      let crawl = { available: false }
+      if (hosts) {
+        const done = hosts.filter((h) => crawledHosts.has(h))
+        crawl = { available: true, total_hosts: hosts.length, crawled_hosts: done.length,
+          ratio: hosts.length ? Number((done.length / hosts.length).toFixed(4)) : 1 }
+      }
+      // 参数面：endpoint 域带参率
+      const epList = await safeQuery('endpoint', 'list', { program_id: program, limit: 500 })
+      let param = { available: false }
+      if (epList) {
+        const rows = epList.rows || []
+        const withParams = rows.filter((r) => { try { return r.params && r.params !== 'null' } catch { return false } })
+        param = { available: true, total_endpoints: rows.length, with_params: withParams.length,
+          ratio: rows.length ? Number((withParams.length / rows.length).toFixed(4)) : 1 }
+      }
+      // 登录面：endpoint 域登录态分布 + 已登录态测试记账
+      const authSummary = await safeQuery('endpoint', 'auth_summary', { program_id: program })
+      let login = { available: false }
+      if (authSummary) {
+        const needLogin = (authSummary.by_state?.login_required || 0) + (authSummary.by_state?.role_required || 0)
+        const testedLoggedIn = [...state.values()].filter((v) => v.dim === 'auth' && (v.detail?.logged_in === true)).length
+        login = { available: true, need_login_endpoints: needLogin, tested_logged_in: testedLoggedIn,
+          ratio: needLogin ? Number((testedLoggedIn / needLogin).toFixed(4)) : 1, marked_ratio: authSummary.marked_ratio }
+      }
+      // 漏洞类面：七类主粮已测类数（per program）
+      const testedClasses = new Set()
+      for (const v of state.values()) {
+        if (v.dim === 'vulnclass' && (v.mark === 'verified' || v.mark === 'rejected' || v.mark === 'inconclusive')) {
+          const cls = String(v.key).split('|').pop()
+          if (cls) testedClasses.add(cls)
+        }
+      }
+      const vulnclass = { tested_classes: [...testedClasses].sort(), total_classes: 7, ratio: Number((testedClasses.size / 7).toFixed(4)) }
+      return { program, crawl, param, login, vulnclass }
+    },
+
+    ledger_coverage_gaps: async (args, repo) => {
+      const program = args.program
+      const dimFilter = args.dim || ''
+      const limit = Math.min(Number(args.limit) || 100, 500)
+      const state = coverageLatest(repo, program)
+      const gaps = []
+      // 资产面缺口：web 资产中未爬取成功的 host
+      if (!dimFilter || dimFilter === 'crawl') {
+        const assets = await safeQuery('asset', 'list', { type: 'web', program_id: program, limit: 500 })
+        if (assets) {
+          const hosts = [...new Set((assets.rows || []).map((r) => r.host).filter(Boolean))]
+          const done = new Set([...state.values()].filter((v) => v.dim === 'crawl' && v.mark === 'crawled_ok').map((v) => v.key))
+          for (const h of hosts) {
+            if (!done.has(h)) gaps.push({ dim: 'crawl', key: h, strategy_key: `crawl|${h}`, priority: 50, reason: 'web 资产未爬取成功' })
+          }
+        }
+      }
+      // 参数面缺口：无 params 端点 + 需登录未测
+      const epList = (!dimFilter || dimFilter === 'param' || dimFilter === 'auth' || dimFilter === 'vulnclass')
+        ? await safeQuery('endpoint', 'list', { program_id: program, limit: 500 }) : null
+      if (epList) {
+        for (const r of (epList.rows || [])) {
+          const hasParams = (() => { try { return r.params && r.params !== 'null' } catch { return false } })()
+          if ((!dimFilter || dimFilter === 'param') && !hasParams) {
+            gaps.push({ dim: 'param', key: `${r.host}|${r.path}`, strategy_key: `param|${r.host}|${r.path}`, priority: 30, reason: '端点无参数（arjun/flows/JS 补全候选）' })
+          }
+          if ((!dimFilter || dimFilter === 'auth') && (r.auth_state === 'login_required' || r.auth_state === 'role_required')) {
+            const tested = state.get(`auth|${r.host}|${r.path}`)
+            if (!tested || tested.mark === 'untested') {
+              gaps.push({ dim: 'auth', key: `${r.host}|${r.path}`, strategy_key: `auth|${r.host}|${r.path}`, priority: 40, reason: `登录态端点未做登录态测试（${r.auth_state}）` })
+            }
+          }
+        }
+        // 漏洞类面缺口：per host 七类主粮未测类
+        if (!dimFilter || dimFilter === 'vulnclass') {
+          const byHost = new Map()
+          for (const r of (epList.rows || [])) {
+            if (!byHost.has(r.host)) byHost.set(r.host, [])
+            byHost.get(r.host).push(r.path)
+          }
+          const CLASS_PRIORITY = { idor: 10, sqli: 11, ssrf: 12, authz: 13, file: 14, xss: 15, info_disclosure: 20 }
+          for (const [host] of byHost) {
+            for (const cls of SEVEN_CLASSES) {
+              const key = `${host}|${cls}`
+              const st = state.get(`vulnclass|${key}`)
+              if (!st || st.mark === 'untested') {
+                gaps.push({ dim: 'vulnclass', key, strategy_key: `vulnclass|${key}`, priority: CLASS_PRIORITY[cls] ?? 25, reason: `漏洞类 ${cls} 未测` })
+              }
+            }
+          }
+        }
+      }
+      gaps.sort((a, b) => a.priority - b.priority || a.strategy_key.localeCompare(b.strategy_key))
+      return { program, gaps: gaps.slice(0, limit), total: gaps.length }
+    },
+
+    ledger_login_blindspot: async (args, repo) => {
+      const program = args.program
+      const summary = await safeQuery('endpoint', 'auth_summary', { program_id: program })
+      const creds = await safeQuery('scope', 'cred_query', { program_id: program, limit: 500 })
+      const credCount = creds ? (creds.rows || creds.items || []).length : null
+      const epList = await safeQuery('endpoint', 'list', { program_id: program, limit: 500 })
+      const rows = epList ? (epList.rows || []) : []
+      const needLogin = rows.filter((r) => r.auth_state === 'login_required' || r.auth_state === 'role_required')
+      const tested = rows.filter((r) => r.auth_state === 'public').length
+      const highValue = needLogin.filter((r) => /admin|manage|pay|order|user|account|console/i.test(String(r.path || ''))).length
+      const hasCreds = credCount !== null && credCount > 0
+      const publicOnlyRatio = rows.length ? Number((tested / rows.length).toFixed(4)) : null
+      const summaryText = hasCreds
+        ? `${program}：存在 ${credCount} 条凭据引用；需登录端点 ${needLogin.length} 个，登录态覆盖情况见 ledger_coverage_metrics。`
+        : `${program}：未登录状态已覆盖 ${tested}/${rows.length} 端点${publicOnlyRatio !== null ? `（仅公开面 ${Math.round(publicOnlyRatio * 100)}%）` : ''}；判定需登录的端点 ${needLogin.length} 个完全未测，其中高价值功能点 ${highValue} 个。→ 需要：登记登录凭据（scope 域 cred_add，引用形态）。`
+      return {
+        program, has_credentials: hasCreds, credential_count: credCount,
+        endpoints_total: rows.length, public_covered: tested, need_login_untested: needLogin.length,
+        high_value_untested: highValue, public_only_ratio: publicOnlyRatio,
+        summary: summaryText,
+        action_item: hasCreds ? null : { kind: 'cred_add', program, hint: 'scope 域 cred_add 登记凭据引用（明文零入库）' },
+        need_login_endpoints: needLogin.slice(0, 100).map((r) => ({ host: r.host, path: r.path, auth_state: r.auth_state })),
+      }
+    },
+
+    ledger_rotation_status: async (args, repo) => {
+      const st = repo.readRotation(args.program)
+      if (!st) return { program: args.program, empty_rounds: 0, circle: 0, last_gain_ts: null, stall_allowed: false }
+      return { program: args.program, empty_rounds: st.empty_rounds || 0, circle: st.circle || 0, last_gain_ts: st.last_gain_ts ?? null, stall_allowed: (st.circle || 0) >= 3 }
     },
 
     ledger_coverage_report: async (args, repo) => {
@@ -646,6 +938,59 @@ function makeHandlers(opts) {
         return { ok: true, data: { skipped: false, file: r.file } }
       } catch (e) {
         log(`FGS handoff 追加失败（best-effort）: ${e?.message}`)
+        return { ok: true, data: { skipped: false, error: String(e?.message) } }
+      }
+    },
+
+    // 21 号方案 §4.1：端点入库 → 参数面记账（有参 params_enriched / 无参 no_params）
+    onEndpointRegistered: async (envelope) => {
+      const p = envelope?.payload || {}
+      const program = String(p.program_id || '')
+      if (!program || !p.host || !p.path) return { ok: true, data: { skipped: true } }
+      try {
+        const repo = backendRepoRef ? backendRepoRef() : null
+        if (!repo) return { ok: true, data: { skipped: false, error: 'no repo' } }
+        const hasParams = String(p.path || '').includes('?')
+        repo.appendCoverage(program, { ts: repo.nowIso(), dim: 'param', key: `${p.host}|${p.path}`, mark: hasParams ? 'params_enriched' : 'no_params', detail: {}, source: 'endpoint.registered' })
+        return { ok: true, data: { skipped: false } }
+      } catch (e) {
+        log(`覆盖账本 param 记账失败（best-effort）: ${e?.message}`)
+        return { ok: true, data: { skipped: false, error: String(e?.message) } }
+      }
+    },
+
+    // 21 号方案 §4.1/§5：登录态判定 → auth 面记账
+    onAuthClassified: async (envelope) => {
+      const p = envelope?.payload || {}
+      const program = String(p.program_id || '')
+      if (!program || !p.host || !p.path || !p.to) return { ok: true, data: { skipped: true } }
+      try {
+        const repo = backendRepoRef ? backendRepoRef() : null
+        if (!repo) return { ok: true, data: { skipped: false, error: 'no repo' } }
+        repo.appendCoverage(program, { ts: repo.nowIso(), dim: 'auth', key: `${p.host}|${p.path}`, mark: p.to, detail: { confidence: p.confidence ?? null }, source: 'endpoint.auth_classified' })
+        return { ok: true, data: { skipped: false } }
+      } catch (e) {
+        log(`覆盖账本 auth 记账失败（best-effort）: ${e?.message}`)
+        return { ok: true, data: { skipped: false, error: String(e?.message) } }
+      }
+    },
+
+    // 21 号方案 §4.1/§6.3：oracle verified/confirmed → vulnclass 面记账（命中矩阵数据源）
+    onSignalConfirmed: async (envelope) => {
+      const p = envelope?.payload || {}
+      const cls = vulnTypeToClass(p.vuln_type)
+      if (!cls) return { ok: true, data: { skipped: true } }
+      try {
+        const repo = backendRepoRef ? backendRepoRef() : null
+        if (!repo) return { ok: true, data: { skipped: false, error: 'no repo' } }
+        // finding 所属 program 由 payload 携带（缺省归 __legacy__ 外桶，不污染真实 program）
+        const program = String(p.program_id || '')
+        if (!program) return { ok: true, data: { skipped: true, reason: 'no program_id' } }
+        const host = String(p.host || p.asset || '')
+        repo.appendCoverage(program, { ts: repo.nowIso(), dim: 'vulnclass', key: `${host || 'unknown'}|${cls}`, mark: 'verified', detail: { finding_id: p.finding_id ?? null }, source: 'vuln.signal.confirmed' })
+        return { ok: true, data: { skipped: false } }
+      } catch (e) {
+        log(`覆盖账本 vulnclass 记账失败（best-effort）: ${e?.message}`)
         return { ok: true, data: { skipped: false, error: String(e?.message) } }
       }
     },

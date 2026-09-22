@@ -37,7 +37,26 @@
 | `ledger_radar_push` | 变化雷达事件入队（ct-watch / js-watch / scope-approved） | script, approval, model, system | 自动指纹 | `ledger.radar.pushed` |
 | `ledger_radar_drain` | 读后清空雷达队列（破坏性读） | model, script | 天然幂等（再 drain 返回空） | `ledger.radar.drained` |
 | `ledger_handoff_write` | 交接包五段全量写（快照/动作/明日队列/阻塞/数据指针） | model, script, human | 自动指纹（内容级） | `ledger.handoff.written` |
+| `ledger_coverage_mark` | 覆盖账本记账（21 号方案 §4.1：crawl/param/vulnclass/auth 四维格点） | model, script, reactor, scheduler, human | 自动指纹 | `ledger.coverage.marked` |
+| `ledger_rotation_tick` | 空转升圈记账（§3-3：连空 3 轮升圈、满 3 圈允许 stall） | scheduler, system, dashboard, human | none（每次 tick 都是新状态） | `ledger.rotation.ticked` |
 | `ledger_pipeline_validate` | —（**查询**，见 1.4.5；保留为复核而非写入） | — | — | — |
+
+#### 1.3.6 `ledger_coverage_mark`（覆盖账本记账，21 号方案 §4.1）
+
+**语义**：回答「测了多少、还剩多少、下一步测什么」的单一事实源。三维交叉记账（JSONL 追加事件日志 `coverage-ledger.jsonl`，格点最新态由查询派生）：
+
+| 维度（`dim`） | 格点（`key`） | 记账状态（`mark` 枚举，coverStatusValid 网关校验） |
+|---|---|---|
+| `crawl` 资产面 | host | `uncrawled` / `crawled_ok`（detail 带端点数）/ `crawl_failed`（detail 带原因分类） |
+| `param` 参数面 | `host\|path` | `no_params` / `params_enriched` / `queued` / `consumed` |
+| `vulnclass` 漏洞类面 | `host\|{class}`（七类主粮） | `untested` / `verified` / `rejected` / `inconclusive` / `untestable`（detail 注明前提） |
+| `auth` 登录面 | `host\|path` | `untested` / `public` / `login_required` / `role_required` / `unknown` |
+
+订阅自动记账（弱联动 best-effort，均为 reactor 身份）：`endpoint.registered` → param 面（path 含 `?` → params_enriched 否则 no_params）；`endpoint.auth_classified` → auth 面；`vuln.signal.confirmed` → vulnclass 面 verified（vuln_type 经七类映射，见 §2.6）。
+
+#### 1.3.7 `ledger_rotation_tick`（空转升圈，21 号方案 §3-3）
+
+**语义**：自上次高质量增长（`quality_gain=true`——oracle verified / 新端点簇 / 新资产面）的轮数记账：`empty_rounds+1`，连空 3 轮 `circle+1`，满 3 圈 `stall_allowed=true`（允许 stall——无人干预推进的终止条件）。状态落 `rotation-state.json`（tmp+rename 原子写）。调度器周期 tick；`quality_gain` 由调度方据本轮产出判定传入。
 
 ### 1.3 命令逐个详述
 
@@ -237,6 +256,29 @@ know 域（07-know.md C16 消费通道）经本查询获取卡片使用信号，
 | `aggregate` | string | 否 | `counts`（枚举：`counts` 计数 / `deviations` 偏离明细） |
 
 返回：`counts` → `{rows: [{card_id, uses, last_used_at, deviated}], total}`；`deviations` → `{rows: [{ts, card_id, deviation, suggest, run_id}], total}`（分页同宪法 §七）。纯读，跨域消费走 QueryGateway（know_health 零使用卡判据、registry 健康度、卡片升版原料分析）。模型侧亦可直接调用（低频运维用途）。
+
+#### 1.4.8 `ledger_coverage_metrics`（覆盖四指标，21 号方案 §4.2）
+
+跨域只读聚合（QueryGateway，域不可达降级 `available:false` 不失败）：
+
+| 指标 | 口径 | 数据源 |
+|---|---|---|
+| `crawl` 爬取覆盖率 | 账本 crawled_ok host / web 资产 host 总数 | asset_list(type=web) + coverage-ledger |
+| `param` 参数覆盖率 | 带 params 端点 / 端点总数 | endpoint_list |
+| `login` 登录覆盖率 | 已登录态测试端点 / 需登录端点总数 | endpoint_auth_summary + auth 面账本 |
+| `vulnclass` 漏洞类覆盖率 | 七类主粮已测类数 / 7 | vulnclass 面账本 |
+
+#### 1.4.9 `ledger_coverage_gaps`（覆盖缺口队列，§4.3）
+
+**账本的输出不是报表，是队列**：未爬 host（crawl）/ 无参端点（param）/ 未测类（vulnclass，per host 七类）/ 登录态端点未测（auth）四类格点，`strategy_key` 幂等去重，按高危类 × 资产面排序（idor 10 / sqli 11 / ssrf 12 / authz 13 / file 14 / xss 15 / info_disclosure 20 / auth 40 / crawl 50 / param 30）。Phase 3 Intent 派生器的输入。
+
+#### 1.4.10 `ledger_login_blindspot`（登录盲区摘要，§4.4）
+
+program 无可用凭据（scope cred_query 为空）时生成：「未登录状态已覆盖 X/Y 端点（仅公开面 Z%）；判定需登录的端点 N 个完全未测；其中高价值功能点 M 个（admin/pay/order/user…）→ 需要：登记登录凭据（cred_add）」。返回 `action_item: {kind:'cred_add'}` 人工行动项；未登录态下的覆盖必须标注「仅公开面」防虚假安全感。
+
+#### 1.4.11 `ledger_rotation_status`（空转升圈只读，§3-3）
+
+返回 `{empty_rounds, circle, last_gain_ts, stall_allowed}`。
 
 ### 1.5 事件
 

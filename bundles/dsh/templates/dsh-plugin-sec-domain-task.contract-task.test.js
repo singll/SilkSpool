@@ -57,6 +57,30 @@ function readEvents(dir) {
 // 不得被当成"无缺失"静默放行
 // ---------------------------------------------------------------------------
 
+test('21 §0-8（INV-T14）: task_finish 成本归因——spent_tokens 回填 + 预算超支注记', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '成本归因测试', budget_tokens: 1000 }, { actor: 'model' })
+  const id = c.data.task_id
+  const r1 = await bus.dispatch('task', 'finish', { task_id: id, run_id: 'cost-1', outcome: 'done', spent_tokens: 800 }, { actor: 'scheduler' })
+  assert.equal(r1.ok, true, r1.error?.message)
+  assert.equal(r1.data.spent_tokens, 800)
+  assert.equal(r1.data.budget_overrun, false)
+  let row = bus._internal.db().prepare('SELECT spent_tokens FROM tasks WHERE id=?').get(id)
+  assert.equal(row.spent_tokens, 800)
+  // 超支：note 前缀 [预算超支]，事件带 budget_overrun
+  const c2 = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '超支测试', budget_tokens: 1000 }, { actor: 'model' })
+  const id2 = c2.data.task_id
+  const r2 = await bus.dispatch('task', 'finish', { task_id: id2, run_id: 'cost-2', outcome: 'done', spent_tokens: 1500 }, { actor: 'scheduler' })
+  assert.equal(r2.data.budget_overrun, true)
+  assert.equal(r2.data.status, 'done')
+  row = bus._internal.db().prepare('SELECT spent_tokens, result FROM tasks WHERE id=?').get(id2)
+  assert.equal(row.spent_tokens, 1500)
+  assert.ok(row.result.includes('[预算超支]'))
+  const ev = bus._internal.db().prepare('SELECT payload FROM event_outbox').all().map((o) => JSON.parse(o.payload)).filter((e) => e.name === 'task.finished' && e.payload.task_id === id2)
+  assert.equal(ev[0].payload.budget_overrun, true)
+  assert.equal(ev[0].payload.spent_tokens, 1500)
+})
+
 test('L0: task_finish 守卫查询异常 → 显式 failed 且 guard.missing 记录异常原因', async () => {
   const { bus, dataDir } = makeEnv({ query: () => { throw new Error('ledger db locked') } })
   // interval 任务 + pipeline 目录存在才触发守卫

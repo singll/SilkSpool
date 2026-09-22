@@ -135,7 +135,7 @@ function createRepo(dataDir) {
     return entries.filter((f) => /^exec-runs-\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort()
   }
 
-  const repo = {
+const repo = {
     // ---- attempts ----
     appendAttempt(program, row) {
       const file = attemptsFile(program)
@@ -259,6 +259,30 @@ function createRepo(dataDir) {
       return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort()
     },
     listCardUsageFiles,
+
+    // ---- 覆盖账本（21 号方案 §四：三维记账，JSONL 追加事件日志）----
+    // 行：{ts, dim, key, status, detail, source}；dim ∈ crawl/param/vulnclass/auth/rotation
+    appendCoverage(program, record) {
+      const dir = ensurePipeline(program)
+      const file = path.join(dir, 'coverage-ledger.jsonl')
+      fs.appendFileSync(file, JSON.stringify(record) + '\n')
+      return { file }
+    },
+    readCoverage(program) {
+      return readJsonl(path.join(pipelineRoot(program), 'coverage-ledger.jsonl'))
+    },
+
+    // ---- 空转升圈状态（21 号方案 §3-3）----
+    // {program, empty_rounds, circle, last_gain_ts, updated_at}
+    readRotation(program) {
+      const f = path.join(pipelineRoot(program), 'rotation-state.json')
+      try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return null }
+    },
+    writeRotation(program, state) {
+      const f = path.join(ensurePipeline(program), 'rotation-state.json')
+      writeFileAtomic(f, JSON.stringify(state))
+      return { file: f }
+    },
 
     // ---- 格式契约（pipeline_validate 复核） ----
     validateFile,

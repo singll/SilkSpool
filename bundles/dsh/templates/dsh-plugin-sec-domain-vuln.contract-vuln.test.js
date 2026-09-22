@@ -147,6 +147,27 @@ async function seedCandidate(bus, extra = {}) {
 // 1. happy path（每动词一例：信封结构 / data 字段 / 事件 payload / audit 落盘）
 // ---------------------------------------------------------------------------
 
+test('invariant §0-6: severity×vuln_type 硬降级（信息泄露 ≤ low / XSS 未证明执行 ≤ medium）', async () => {
+  const { bus } = makeEnv()
+  const mk = (extra) => bus.dispatch('vuln', 'register_signal', {
+    title: '测试漏洞信号：某接口存在安全问题', severity: 'high', host: 'a.example.com',
+    url: 'https://a.example.com/x', evidence: 'run_test_20260906_000000',
+    reproduction_steps: '访问接口观察响应', impact: '影响描述', ...extra,
+  }, { actor: 'model' })
+  const capped = await mk({ vuln_type: 'info_disclosure', url: 'https://a.example.com/a' })
+  assert.equal(capped.ok, false)
+  assert.equal(capped.error.code, 'E_VULN_SEVERITY_CAPPED')
+  const xss = await mk({ vuln_type: 'xss', severity: 'critical', url: 'https://a.example.com/b' })
+  assert.equal(xss.ok, false)
+  assert.equal(xss.error.code, 'E_VULN_SEVERITY_CAPPED')
+  const okLow = await mk({ vuln_type: 'info_disclosure', severity: 'low', url: 'https://a.example.com/c' })
+  assert.equal(okLow.ok, true)
+  const okNoCap = await mk({ vuln_type: 'sqli', severity: 'high', url: 'https://a.example.com/d' })
+  assert.equal(okNoCap.ok, true)
+  const noType = await mk({ url: 'https://a.example.com/e' })
+  assert.equal(noType.ok, true)
+})
+
 test('happy path C1: register_signal 登记信号面行（noise=0）+ signal.registered', async () => {
   const { dir, bus } = makeEnv()
   const r = await seedSignal(bus)

@@ -26,6 +26,7 @@ import * as http from 'node:http'
 import * as https from 'node:https'
 import { fileURLToPath } from 'node:url'
 import { readParseProposal } from '../sec-suite/parse-proposal.js'
+import { enforceSeverityCap } from '../sec-rules-hypothesis/index.js'
 
 export const name = 'sec-domain-vuln'
 export const version = '1.0.0'
@@ -672,6 +673,11 @@ function makeHandlers(opts) {
       if (!refPrefix(args.evidence)) {
         return { code: 'E_EVIDENCE_REQUIRED', message: 'evidence 必须含证据引用', hint: '证据必须是 run_id/flow_id/burp_item/evidence 路径/oob 交互记录引用，无证据不结论（sec-verification 铁律）', retryable: false }
       }
+      // 21 号方案 §0-6：severity × vuln_type 硬降级（信息泄露 ≤ low、未证明执行 ≤ medium）
+      const cap = enforceSeverityCap(args.vuln_type, args.severity)
+      if (cap) {
+        return { code: 'E_VULN_SEVERITY_CAPPED', message: cap.message, hint: `按评级规则降为 ${cap.cap} 再登记，或在影响与证据中证明进一步利用（如真实数据泄露/会话接管）后走人工裁定`, retryable: false }
+      }
       return null
     },
     evidenceExists: async (args) => {
@@ -874,7 +880,7 @@ function makeHandlers(opts) {
       if (args.note) repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} confirm: ${args.note}`)
       repo.markSyncPending?.(args.finding_id)
       const fromCandidate = row.noise === 1
-      const events = [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, from: { status: 'new', noise: row.noise }, evidence_ref: refPrefix(args.evidence), confidence: 'confirmed', fgs_node_id: row.fgs_node_id || null, vuln_type: row.vuln_type || null } }]
+      const events = [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, from: { status: 'new', noise: row.noise }, evidence_ref: refPrefix(args.evidence), confidence: 'confirmed', fgs_node_id: row.fgs_node_id || null, vuln_type: row.vuln_type || null, host: row.host || null, program_id: row.program_id || null } }]
       if (fromCandidate) events.push({ name: 'vuln.candidate.promoted', payload: { finding_id: args.finding_id, from: { noise: 1, status: 'new' }, to: { noise: 0, status: 'confirmed' }, cause_cmd: 'vuln_confirm' } })
       return {
         data: { id: args.finding_id, status: 'confirmed', signal: true, promoted_from_candidate: fromCandidate },

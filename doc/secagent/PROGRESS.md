@@ -17,6 +17,17 @@
 
 ## 二、最近进度结果
 
+### 2026-09-22 · 21 号方案 Phase 0 第一批：规则层 + 登录态判定 + 业务语义 + 覆盖账本 + 硬降级 + 成本归因（本地契约 511/511）
+- 依据 [21-benchmark-strikeagent-flash-2026-09-21.md](21-benchmark-strikeagent-flash-2026-09-21.md) §八 Phase 0（0-3/0-4/0-5/0-6/0-7/0-8）执行；0-1/0-2（端点爆发/参数补全的线上跑批）为运营动作待部署后进行。
+- 新规则层 `@silksec/sec-rules-hypothesis`（纯函数，零依赖）：登录态判定 classifyAuthState（§5.1）、业务语义建议 businessSemanticsSuggest（§5.2）、评级硬降级 enforceSeverityCap（§0-6）、污点路由 taintRoute + H1 保底 h1Hypotheses（§6.1）、oracle 五件套（§2-1）、注入防护 fenceUntrusted（§1-5）、局面编译 compileSituation（§3-2）；契约 23 例全绿；sec-rules-hypothesis-setup.sh 接入部署链。
+- endpoint 域：endpoints 表 ensureCol 列演进（auth_state/auth_state_evidence/should_auth/should_auth_source/should_auth_at）；新动词 endpoint_classify_auth（0-3）+ endpoint_annotate_semantics（0-5，人工裁定 > 自动建议、model 显式标注必带 note）；endpoint.registered 订阅自动建议；endpoint_list 增 auth_state/should_auth 过滤；新查询 endpoint_auth_summary（登录态分布/标注率）。
+- ledger 域：覆盖账本 MVP（0-4）——coverage-ledger.jsonl 四维格点记账（crawl/param/vulnclass/auth，ledger_coverage_mark）+ 派生查询 ledger_coverage_metrics（四指标）/ ledger_coverage_gaps（缺口队列，strategy_key 排序）/ ledger_login_blindspot（登录盲区摘要 + cred_add 行动项）；空转升圈（§3-3）ledger_rotation_tick/rotation_status（3 空轮一圈、3 圈允许 stall）；三个 reactor 订阅自动记账（endpoint.registered/auth_classified/vuln.signal.confirmed）。
+- vuln 域：0-6 评级硬降级（signalComplete 不变量 E_VULN_SEVERITY_CAPPED：信息泄露/中间件暴露 ≤ low、XSS 类未证明执行 ≤ medium）；vuln.signal.confirmed 事件补 host/program_id（账本记账数据源）。
+- task 域：0-8 成本归因（INV-T14 落地）——task_finish 收 spent_tokens 回填 tasks.spent_tokens、超 budget_tokens 记 [预算超支] 并入 task.finished payload。
+- 本地测试基线：`sec-contract-test-local.sh`（仓库内契约组装器，等价部署态目录结构）——全部 15 插件契约 511/511 全绿（基线 472 + 新增 39）。
+- 文档回填：04-endpoint（§5.1/§5.2 动词+列+查询）、11-ledger（覆盖账本/缺口队列/盲区/升圈）、05-task（INV-T14 落地+spent_tokens 参数）、02-vuln（E_VULN_SEVERITY_CAPPED）。
+- 未部署：本机 silksecagent inactive，csai 部署验收待部署窗口。
+
 ### 2026-09-19 · Bug 修复：会话头「安全产出」图标点击无反应（csai 已部署验收）
 - 现象：右上角列表图标（本会话安全产出计数，checklist 图标）显示计数但点击无反应；右下角审批胶囊显示 0（0 待审批为正常）。
 - 根因：`conversation.session.header.utilities` 条目的 owner props 为空（官方 `ConversationHeaderActionOwnerProps = { children?: never }`，运行时 `renderSlot(..., {})`），条目不继承 header 的 inject 面，`props.selectView` 恒为 undefined；降级分支 `secUiBus.emit('open:security-view')` **无任何订阅者** → 点击静默无效。

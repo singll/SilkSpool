@@ -227,6 +227,12 @@ if [ -f "$BASE_DIR/sec-domain-bus-plugin-setup.sh" ]; then
     bash "$BASE_DIR/sec-domain-bus-plugin-setup.sh"
 fi
 
+# -------------------- 8.55b v5 规则层（sec-rules-hypothesis：假设/判定纯函数，21 号方案） --------------------
+# 域插件 import 的共享规则模块，必须先于 endpoint/vuln 域组装落盘；纯函数无注册、无 profile 挂载。
+if [ -f "$BASE_DIR/sec-rules-hypothesis-setup.sh" ]; then
+    bash "$BASE_DIR/sec-rules-hypothesis-setup.sh"
+fi
+
 # -------------------- 8.56 v5 vuln 域插件（试点域：候选池状态机 + 证据链） --------------------
 # 依赖总线已挂载（顺序在 8.55 之后）；契约测试不过 = setup 中止（fail-closed）。
 if [ -f "$BASE_DIR/sec-vuln-domain-plugin-setup.sh" ]; then

@@ -184,6 +184,7 @@ export const TASK_MANIFEST = {
         session_id: str(),
         truth: { type: 'object' },
         timed_out: { type: 'boolean' },
+        spent_tokens: int({ minimum: 0 }),
       }, ['task_id', 'outcome']),
       idempotent: 'natural',
       idempotent_natural: ['task_id', 'run_id'],
@@ -191,7 +192,7 @@ export const TASK_MANIFEST = {
       event_limit: 1,
       invariants: ['finishEvidence'],
       timeout_ms: 60000,
-      agent_note: '调度器专用收尾：真实性判定 + 流程守卫 + 落执行史 + interval 续期。',
+      agent_note: '调度器专用收尾：真实性判定 + 流程守卫 + 落执行史 + interval 续期 + 成本归因（spent_tokens 回填，超 budget_tokens 记 [预算超支]）。',
       deprecated: false,
     },
     task_chain: {
@@ -854,6 +855,15 @@ function makeHandlers(opts) {
         note = `[流程守卫缺失] ${guard.missing.join('；')}${note ? ' | ' + note : ''}`.slice(0, 500)
       }
 
+      // 21 号方案 §0-8（INV-T14 落地）：成本归因——worker 上报 token 回填 spent_tokens；
+      // 超 budget_tokens 记 [预算超支]（不影响 ok——超支是观测事实不是失败）。
+      const spentTokens = Number.isInteger(args.spent_tokens) && args.spent_tokens >= 0 ? args.spent_tokens : null
+      let budgetOverrun = false
+      if (spentTokens !== null && t.budget_tokens !== null && t.budget_tokens !== undefined && spentTokens > Number(t.budget_tokens)) {
+        budgetOverrun = true
+        note = `[预算超支] spent=${spentTokens} > budget=${t.budget_tokens}${note ? ' | ' + note : ''}`.slice(0, 500)
+      }
+
       // busy：并发满，回 queued 不落史
       if (args.outcome === 'busy') {
         repo.transitionTask(Number(args.task_id), { status: 'queued' }, 'running')
@@ -875,16 +885,18 @@ function makeHandlers(opts) {
         status = ok ? 'done' : 'failed'
       }
       const tailNote = `${t.result || ''}\n[${new Date().toISOString().slice(0, 16)}] run ${runId || '-'}: ${ok ? 'done' : 'failed'}${note ? ' — ' + note : ''}`.trim()
-      repo.transitionTask(Number(args.task_id), {
+      const finishSets = {
         status, result: tailNote.slice(-8000), last_run_at: finished, last_run_id: runId || null, next_run_at: nextRunAt,
         session_id: args.session_id ?? t.session_id,
         active_run_id: null,
         finished_at: (status === 'done' || status === 'failed') ? finished : t.finished_at,
-      })
+      }
+      if (spentTokens !== null) finishSets.spent_tokens = spentTokens
+      repo.transitionTask(Number(args.task_id), finishSets)
       repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null })
       return {
-        data: { task_id: Number(args.task_id), status, next_run_at: nextRunAt, run_recorded: true, guard: { checked: guard.checked, missing: guard.missing } },
-        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, fgs_snapshot: fgsSnapshot, cause: 'run' } }],
+        data: { task_id: Number(args.task_id), status, next_run_at: nextRunAt, run_recorded: true, spent_tokens: spentTokens, budget_overrun: budgetOverrun, guard: { checked: guard.checked, missing: guard.missing } },
+        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, spent_tokens: spentTokens, budget_overrun: budgetOverrun, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, fgs_snapshot: fgsSnapshot, cause: 'run' } }],
         after: { task_id: Number(args.task_id), status, ok },
       }
     },

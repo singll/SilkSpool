@@ -355,3 +355,82 @@ test('alias: coverage_report → ledger_coverage_report（out 丢弃，query 面
   assert.equal(r.query, 'coverage_report')
   assert.equal(r.data.combos, 1)
 })
+
+// ---------------------------------------------------------------------------
+// 21 号方案 §四：覆盖账本（三维记账 + 缺口队列 + 登录盲区 + 空转升圈）
+// ---------------------------------------------------------------------------
+
+test('coverage_mark: 三维记账 + mark 枚举校验 + 事件', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.dispatch('ledger', 'coverage_mark', { program: 'test-src', dim: 'crawl', key: 'a.example.com', mark: 'crawled_ok', detail: { endpoints: 42 } }, { actor: 'script' })
+  assert.equal(r.ok, true)
+  const bad = await bus.dispatch('ledger', 'coverage_mark', { program: 'test-src', dim: 'crawl', key: 'b.example.com', mark: 'verified' }, { actor: 'script' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'E_SCHEMA')
+  const ok = await bus.dispatch('ledger', 'coverage_mark', { program: 'test-src', dim: 'vulnclass', key: 'a.example.com|idor', mark: 'verified' }, { actor: 'reactor' })
+  assert.equal(ok.ok, true)
+  const names = bus._internal.db().prepare('SELECT payload FROM event_outbox').all().map((o) => JSON.parse(o.payload).name)
+  assert.ok(names.includes('ledger.coverage.marked'))
+})
+
+test('coverage_metrics: 跨域聚合（无 asset/endpoint 域时降级 available:false）', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('ledger', 'coverage_mark', { program: 'test-src', dim: 'vulnclass', key: 'h|idor', mark: 'verified' }, { actor: 'script' })
+  const q = await bus.query('ledger', 'coverage_metrics', { program: 'test-src' }, { actor: 'model' })
+  assert.equal(q.ok, true)
+  assert.equal(q.data.crawl.available, false)
+  assert.equal(q.data.param.available, false)
+  assert.deepEqual(q.data.vulnclass.tested_classes, ['idor'])
+  assert.equal(q.data.vulnclass.total_classes, 7)
+})
+
+test('coverage_gaps: 空账本 + 无跨域时为空队列', async () => {
+  const { bus } = makeEnv()
+  const q = await bus.query('ledger', 'coverage_gaps', { program: 'test-src' }, { actor: 'model' })
+  assert.equal(q.ok, true)
+  assert.equal(q.data.total, 0)
+})
+
+test('login_blindspot: 无凭据摘要 + cred_add 行动项', async () => {
+  const { bus } = makeEnv()
+  const q = await bus.query('ledger', 'login_blindspot', { program: 'test-src' }, { actor: 'model' })
+  assert.equal(q.ok, true)
+  assert.equal(q.data.has_credentials, false)
+  assert.ok(q.data.summary.includes('cred_add'))
+  assert.equal(q.data.action_item.kind, 'cred_add')
+})
+
+test('rotation_tick: 空转升圈（3 空轮一圈、3 圈允许 stall）+ gain 重置', async () => {
+  const { bus } = makeEnv()
+  const tick = (gain = false) => bus.dispatch('ledger', 'rotation_tick', { program: 'test-src', quality_gain: gain }, { actor: 'scheduler' })
+  let r = await tick()
+  assert.equal(r.data.empty_rounds, 1)
+  r = await tick(); r = await tick()
+  assert.equal(r.data.circle, 1)
+  assert.equal(r.data.empty_rounds, 0)
+  r = await tick(true)
+  assert.equal(r.data.empty_rounds, 0)
+  assert.equal(r.data.circle, 1)
+  assert.ok(r.data.quality_gain === true)
+  for (let i = 0; i < 6; i++) r = await tick()
+  assert.equal(r.data.circle, 3)
+  assert.equal(r.data.stall_allowed, true)
+  const q = await bus.query('ledger', 'rotation_status', { program: 'test-src' }, { actor: 'model' })
+  assert.equal(q.data.circle, 3)
+  assert.equal(q.data.stall_allowed, true)
+})
+
+test('订阅：endpoint.registered/auth_classified/signal.confirmed → 覆盖账本记账', async () => {
+  const { bus, domain } = makeEnv()
+  const repo = domain.backend.factory()
+  await domain.handlers.subscribers.onEndpointRegistered({ payload: { program_id: 'test-src', host: 'a.example.com', path: '/x?id=1' } })
+  await domain.handlers.subscribers.onEndpointRegistered({ payload: { program_id: 'test-src', host: 'a.example.com', path: '/y' } })
+  await domain.handlers.subscribers.onAuthClassified({ payload: { program_id: 'test-src', host: 'a.example.com', path: '/y', to: 'login_required', confidence: 0.9 } })
+  await domain.handlers.subscribers.onSignalConfirmed({ payload: { program_id: 'test-src', host: 'a.example.com', vuln_type: 'IDOR 越权读取', finding_id: 7 } })
+  const rows = repo.readCoverage('test-src')
+  const keys = rows.map((r) => `${r.dim}|${r.key}|${r.mark}`)
+  assert.ok(keys.includes('param|a.example.com|/x?id=1|params_enriched'))
+  assert.ok(keys.includes('param|a.example.com|/y|no_params'))
+  assert.ok(keys.includes('auth|a.example.com|/y|login_required'))
+  assert.ok(keys.includes('vulnclass|a.example.com|idor|verified'))
+})

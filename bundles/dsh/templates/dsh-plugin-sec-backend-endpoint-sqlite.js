@@ -38,7 +38,34 @@ CREATE TABLE IF NOT EXISTS endpoints (
   PRIMARY KEY (host, method, path)
 )`
 
-const EP_LIST_COLS = 'host, method, path, status, source, program_id, params, auth_required, roles_seen, last_seen'
+const EP_LIST_COLS = 'host, method, path, status, source, program_id, params, auth_required, roles_seen, auth_state, should_auth, should_auth_source, last_seen'
+
+// v5 新增列（ensureCol 幂等列演进，21 号方案 §5.1/§5.2）：
+//   auth_state           — 登录态判定结果（public/login_required/role_required/unknown）
+//   auth_state_evidence  — 判定证据 JSON（reasons/confidence/probe_at）
+//   should_auth          — 业务语义「应该登录」（yes/no/unknown；人工裁定 > 自动建议）
+//   should_auth_source   — 标注来源（auto/model/dashboard:operator）
+//   should_auth_at       — 标注时刻
+const V5_COLS = [
+  ['auth_state', 'auth_state TEXT'],
+  ['auth_state_evidence', 'auth_state_evidence TEXT'],
+  ['should_auth', 'should_auth TEXT'],
+  ['should_auth_source', 'should_auth_source TEXT'],
+  ['should_auth_at', 'should_auth_at INTEGER'],
+]
+
+function ensureCol(db, table, col, ddl) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all()
+    if (!cols.some((c) => c.name === col)) {
+      try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`) } catch (e) {
+        if (!/duplicate column/i.test(String(e?.message))) throw e
+      }
+    }
+  } catch (e) {
+    process.stderr.write(`[sec-backend-endpoint-sqlite] ensureCol(${col}) 失败: ${e?.message}\n`)
+  }
+}
 
 const EP_SORT = {
   last_seen: 'last_seen',
@@ -51,9 +78,12 @@ const _cache = new WeakMap()
 
 function createRepo(db, dataDir) {
   db.exec(ENDPOINTS_DDL)
+  for (const [col, ddl] of V5_COLS) ensureCol(db, 'endpoints', col, ddl)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_host ON endpoints(host)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_program ON endpoints(program_id)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_auth ON endpoints(auth_required)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_auth_state ON endpoints(auth_state)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_should_auth ON endpoints(should_auth)`)
 
   const pipelineDir = (program) => {
     const d = path.join(dataDir, 'pipeline', program)
@@ -140,6 +170,60 @@ function createRepo(db, dataDir) {
         .run(...vals, String(host), String(method).toUpperCase(), String(path))
       const after = r.changes ? repo.getEndpoint(host, method, path) : before
       return { changed: r.changes === 1, before, after }
+    },
+
+    // 21 号方案 §5.1：登录态判定落列（auth_state + 证据 JSON）
+    updateEndpointAuthState(host, method, path, authState, evidence, ts) {
+      const before = repo.getEndpoint(host, method, path)
+      const r = db.prepare(`UPDATE endpoints SET auth_state = ?, auth_state_evidence = ?, last_seen = ? WHERE host = ? AND method = ? AND path = ?`)
+        .run(String(authState), evidence === null || evidence === undefined ? null : JSON.stringify(evidence), ts, String(host), String(method).toUpperCase(), String(path))
+      const after = r.changes ? repo.getEndpoint(host, method, path) : before
+      return { changed: r.changes === 1, before, after }
+    },
+
+    // 21 号方案 §5.2：业务语义标注（人工裁定 source=dashboard 不被自动建议覆盖）
+    updateEndpointSemantics(host, method, path, shouldAuth, source, ts) {
+      const before = repo.getEndpoint(host, method, path)
+      const src = String(source || '')
+      const prevSrc = String(before?.should_auth_source || '')
+      // 人工裁定 > 自动建议：已有 dashboard 裁定且本次为自动建议 → 不改值，只回读
+      if (prevSrc.startsWith('dashboard') && !src.startsWith('dashboard')) {
+        return { changed: false, skipped: 'human_override_kept', before, after: before }
+      }
+      const r = db.prepare(`UPDATE endpoints SET should_auth = ?, should_auth_source = ?, should_auth_at = ?, last_seen = ? WHERE host = ? AND method = ? AND path = ?`)
+        .run(String(shouldAuth), src, ts, ts, String(host), String(method).toUpperCase(), String(path))
+      const after = r.changes ? repo.getEndpoint(host, method, path) : before
+      return { changed: r.changes === 1, before, after }
+    },
+
+    // 21 号方案 §4.4/§5：登录态分布聚合（登录盲区摘要的分母）
+    authStateSummary(filters) {
+      const conds = []
+      const args = []
+      if (filters.program_id) { conds.push('program_id = ?'); args.push(String(filters.program_id)) }
+      if (filters.host) { conds.push('host = ?'); args.push(String(filters.host)) }
+      const where = conds.length ? conds.join(' AND ') : '1=1'
+      const rows = db.prepare(`SELECT host, auth_state, should_auth, should_auth_source FROM endpoints WHERE ${where}`).all(...args)
+      const byState = { public: 0, login_required: 0, role_required: 0, unknown: 0, unmarked: 0 }
+      const byShould = { yes: 0, no: 0, unknown: 0, unmarked: 0 }
+      let humanRuled = 0
+      let loginRequiredHosts = new Set()
+      for (const r of rows) {
+        const s = r.auth_state
+        if (s === 'public' || s === 'login_required' || s === 'role_required' || s === 'unknown') byState[s]++
+        else byState.unmarked++
+        const sh = r.should_auth
+        if (sh === 'yes' || sh === 'no' || sh === 'unknown') byShould[sh]++
+        else byShould.unmarked++
+        if (String(r.should_auth_source || '').startsWith('dashboard')) humanRuled++
+        if (s === 'login_required' || s === 'role_required') loginRequiredHosts.add(r.host)
+      }
+      return {
+        total: rows.length, by_state: byState, by_should_auth: byShould,
+        human_ruled: humanRuled,
+        login_required_hosts: [...loginRequiredHosts].sort(),
+        marked_ratio: rows.length ? Number(((rows.length - byState.unmarked) / rows.length).toFixed(4)) : 0,
+      }
     },
 
     listEndpointsWhere(filters, order, limit, offset) {
@@ -260,6 +344,10 @@ function buildEpWhere(filters = {}) {
   if (filters.program_id) { conds.push('program_id = ?'); args.push(String(filters.program_id)) }
   if (filters.auth_required === 'none') { conds.push('auth_required IS NULL') }
   else if (filters.auth_required) { conds.push('auth_required = ?'); args.push(String(filters.auth_required)) }
+  if (filters.auth_state === 'none') { conds.push('auth_state IS NULL') }
+  else if (filters.auth_state) { conds.push('auth_state = ?'); args.push(String(filters.auth_state)) }
+  if (filters.should_auth === 'none') { conds.push('should_auth IS NULL') }
+  else if (filters.should_auth) { conds.push('should_auth = ?'); args.push(String(filters.should_auth)) }
   return { where: conds.length ? conds.join(' AND ') : '1=1', args }
 }
 

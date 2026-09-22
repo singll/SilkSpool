@@ -1,422 +1,321 @@
-# StrikeAgent_AtkBrain-Flash 对标分析与吸收建议（对 SilkSecAgent）
+# SilkSecAgent SRC 漏洞发现体系重构方案（审查·评估·设计）
 
-> 日期：2026-09-21
-> 对标对象：[Yean-Sec/StrikeAgent_AtkBrain-Flash](https://github.com/Yean-Sec/StrikeAgent_AtkBrain-Flash)（版本 `0.7.0-beta.3`，AGPL-3.0-only）
-> 分析方式：全仓库只读审阅（backend 130 文件 / engine 约 1.2 万行 / graph 约 0.6 万行 + skills + frontend + deploy），并与 `doc/secagent/00–18`、`bundles/dsh/` 现状逐项对照。
-> 性质：**在办专项（研究/决策文档）**，非实施记录；吸收项落地后须按 [README](README.md) 治理规则回填对应模块文档并归档。
-> 定位：这是「上层猎面编排」的对标，不是又一个知识库对标；与 [archive/silksecagent-external-repos-benchmark-2026-09-05.md](archive/silksecagent-external-repos-benchmark-2026-09-05.md)（知识/流程层对标）互补。
-
----
-
-## 〇、一页结论（先给答案）
-
-1. **StrikeAgent 真正的创新不在模型、不在工具，而在「上层推进方式」**：它把「LLM 自由发挥」改造成 **攻击图驱动的状态机**——图是唯一工作记忆，LLM 只产出**参考假说**，循环把图编译成**必须守住的局面硬约束**，每一轮结束自动派生**下一步的有界动作集合（Intent）**。
-2. **它的「自循环」不是定时任务，也不该被理解成「一直跑」**：它是一个有明确终止条件、由状态/事件推进、时间只作守卫阈值的长驻协程。**自循环与定时任务不是替代关系，而是分层**（见 §五）。
-3. **SilkSecAgent 的工程底座（14 域 + 总线 + outbox + scope/approval fail-closed + 审批副作用幂等）明显比 StrikeAgent 更硬**，**不需要架构大改**，更不能退化成它的单体 + SQLite 直连。
-4. **SilkSecAgent 真正缺的不是「执行能力」也不是「知识量」，而是「把它们串成一个目标推进循环」的那层编排器**：目前任务之间相互独立、攻击图/FGS 只活在单个任务内、任务完成后没有任何机制决定「下一步打哪里」。
-5. **建议吸收的 6 个突破性思路**：① 参考假说 vs 局面硬约束的分离；② 图作为唯一工作记忆 + Intent 自动派生；③ 自循环的「有意义终止条件」（防假自循环烧钱）；④ 记忆蒸馏的「去特化」（只留可迁移战术骨架 + 置信度反馈）；⑤ 可信度工程（独立二次复核 + 红队评级 rubric + 未证明执行硬降级）；⑥ 侦察螺旋圈层账本（不打歪又扩面）。
-6. **大改判定：否。** 属于「新增一层编排 + 若干域增强」的中等增量，建议分 3 期（Phase A/B/C，见 §六.4），全程不触碰 fail-closed 红线。
+> 日期：2026-09-22（初版 2026-09-21，历经三轮审查后整体重构）
+> 性质：**在办专项（研究/决策文档）**，非实施记录；决策落地后按 [README](README.md) 治理规则回填对应模块文档并归档。
+> 北极星：**系统自主、持续地发现高质量、可提交的真实 SRC 漏洞（Web / App / 小程序，纯黑盒）**。提交是人的运营动作，不做系统 KPI；0day/打榜/靶场非目标；白盒审计仅预留接口、主线不依赖。
+> 证据基线：全部论断以 `spool exec csai` 2026-09-22 运行态实测为准（§二）。
+> 对标：StrikeAgent_AtkBrain-Flash + 12 个外部项目（Strix / CyberStrikeAI / HexStrike AI / CAI / PentAGI / pentest-ai / DeepAudit / VulnHuntr / Pentest-Swarm-AI / PentestAgent / NeuroSploit / burpgpt），2026-09-22 在线核实，结论压缩在 §三。
+> 总原则：**以减法为主**——不新增域、不盲目扩工具、不接全家桶；架构已够复杂，可靠性优先于能力清单。
+> 文件名说明：沿用原文件名（治理不鼓励新建专项文档）；README 索引描述待回填时更新。
 
 ---
 
-## 一、对标对象画像
+## 一、一页结论
 
-### 1.1 一句话定位
+1. **病灶一句话**：系统握着 96,814 个资产，却只有 357 个端点（平均 1 端点/主机）、11 个带参数、全 program 参数喂料队列合计 1 行——**发现漏斗在第二层就断了，之后所有环节都在为空管道优化**。44 条 confirmed（high 仅 5）几乎全部来自人工点名深挖，自动化产出≈0。
+2. **根因四层**：① **无覆盖机制**——系统不知道「测了多少、还剩多少、下一步该测什么」；② **无登录态判定**——未授权漏洞（SRC 最高产类别之一）无从谈起，无法登录时的盲区也无记录；③ **无假设生成**——发现靠「等扫描器报」，不靠「按参数主动构造验证」；④ **进化闭环断裂**——361 条学习记录 0 条蒸馏成经验，收割通道空转，打法无固化通道。
+3. **重构主线（五步）**：**覆盖账本 → 登录态判定 → 假设引擎 → 机器验证 → 反馈进化**。前两项是本次重构新增的地基，后三项在此前审查基础上整合。
+4. **反馈/优化功能的形态决策（§七）**：**不新增域**。「反馈与优化」作为**逻辑中心**（Feedback Core）落在 know 域内——三个订阅 reactor + 一个统一记分投影，复用 L0–L6 治理与事件总线。域是写入边界的划分，反馈天然消费全域事件、向全域回灌，建新域只会再造一个需要被治理的孤岛。
+5. **工程判定**：零新域、零新通道。Phase 0（基础能力补全）全部用现有工具与机制即可启动，1–2 个会话见效；最重的新增是三个纯函数/订阅处理器（覆盖账本、oracle、蒸馏 reactor）。
 
-StrikeAgent_AtkBrain-Flash 是夜安团队的 **AI 渗透测试猎面平台**，主打「**自循环 · 自监督 · 自进化**」，聚焦**外网打点**（红队 getshell / SRC / CTF），运行时为 **Pi（deepseek-flash）**，控制台 `:2334`、API `:2333`，Docker host 网络（Kali）。README 自称 TSecbench v1 第 1 名（97.89/100），Pro 版落地几十个项目、上千外网授权环境。
+---
 
-### 1.2 角色模型（关键）
+## 二、病灶：运行态诊断（2026-09-22 实测）
 
-| 角色 | 实现 | 职责 |
+### 2.1 发现漏斗实测
+
+```
+assets 96,814（web 1,239）
+  → endpoints 357（覆盖 328 主机，平均 1 端点/主机）        ← 断层 ①
+    → 带 params 的端点 11（2%）；param-queue 全 program 合计 1 行  ← 断层 ②
+      → 假设任务：不存在（机制空白）                        ← 断层 ③
+        → 机器验证：不存在（confirm 只校验证据引用存在）     ← 断层 ④
+          → confirmed 44（high 5 / medium 8 / low 20 / info 11）
+```
+
+工具使用偏科铁证：httpx 385 / subfinder 332 / nuclei 192（侦察类），katana 43 / gau 14 / waybackurls 5（端点三件套合计 62）、arjun 13、**sqlmap 2**（验证类近乎闲置）；nuclei 全程仅直产 1 条 confirmed。confirmed 类型集中在信息泄露 19 / RLS 开放 9 / 中间件暴露 3——**SRC 主粮（越权/IDOR、注入、SSRF）为零**。
+
+### 2.2 进化闭环实测
+
+| 环节 | 实测 | 判定 |
 |---|---|---|
-| **御主（supervisor / AI 监督）** | `engine/ai_supervisor.py`，**无工具的一次性 Pi 查询** | 看攻击图 → 产出下一轮方案 JSON（`diagnosis/stall/next_plan/must_intents/prefer_tactics/...`） |
-| **从者（lead）** | `agents/session.py` `ProjectAgent.run_turn` | 本回合计划、写图、汇总、短验证；不亲自打 HTTP |
-| **工人（role workers）** | 并发 `PiSession`，角色化 | `recon / web-exploit / src-hunt / rce-hunt / privesc / lateral / flag-hunt / protocol-model / reverse` |
-| **复核（finding-review）** | 独立 Pi 角色 | 对每条 finding 做**二次验证 / 二次评级**，不新建条目 |
-| **人** | 对话框 steering | 立刻打断当前轮，优先级高于御主 |
+| episode → 经验卡 | 361 条 learning_episodes，**card_id 关联 = 0**；353 条是 `run_ok_no_verdict`（只记跑完、不记学到什么）；44 张 exp_cards 全部人工/种子来源；knowledge_revisions 全程 5 条、published 1 | **断** |
+| 缺口感知 → 主动学习 | know_gaps **0 条**；`data/harvest/` 空目录、无 candidates.json | **断** |
+| 打法固化 | tools.d 自 2026-08-25 起一个月零新增；「成功打法→脚本/manifest」通道在设计上不存在 | **断** |
+| 知识消费 | kb_docs 413 篇 **85% 零使用**；know_exposures 3 条、know_feedback 4 条 | **卡** |
+| 成本归因 | `spent_tokens` 恒 0（INV-T13/T14 未实现） | **缺** |
 
-### 1.3 核心模块（仅列本对标相关）
+### 2.3 覆盖与登录态实测
 
-- 引擎：`engine/loop.py`（2918 行，`run_project_loop`，攻击图自循环引擎）、`engine/scheduler.py`（并发信号量 + steering，**非 cron**）、`engine/spiral.py`（侦察螺旋账本）、`engine/hunt_clock.py`（配速/空转/卡死/终止）、`engine/supervise.py`（御主门闩）、`engine/advisor_bind.py`（方案 → 局面绑定编译器，1904 行）、`engine/hop_auth_gate.py`、`engine/intranet_reach.py`、`engine/entry_identity.py`、`engine/turn_close.py`。
-- 图：`graph/store.py`（3666 行，nodes/edges/findings/intents 四表 + RCE 最优路径）、`graph/hypothesize.py`（1496 行，Intent 自动派生）、`graph/verify.py`、`graph/finding_claim.py`、`graph/rating_rubric.py`。
-- 记忆：`memory/store.py`（episode）、`memory/evolve.py`（lesson 蒸馏）、`memory/generalize.py`（去特化）、`memory/methodology.py`（手法白名单）、`memory/achievements.py`。
-- Agent 运行时：`agents/pi_runtime.py`（Pi RPC）、`agents/prompts.py`（1136 行）、`agents/tools.py`（2053 行，in-process 工具闭包）、`agents/context.py`。
-- 复核：`review/jobs.py`、`review/flags.py`。
-- 技能：`skills/recon-spiral`、`recon-fanout`、`src-hunt-playbook`、`kali-kit`、`waf-bypass-methodology`。
+- 522 端点中 `auth_required` 标注仅 52 条、`roles_seen` 仅 5 条——**系统不知道哪个接口要登录**；
+- credentials 表仅 1 条——**meituan-src / bytedance 两个真实 program 无任何登录凭据**，意味着登录后攻击面从未被触碰，且**没有任何地方记录这个盲区**；
+- 无任何覆盖率度量：「这个 program 测了多少、还剩多少」全系统无人能答。
 
-### 1.4 与 DSH / SilkSecAgent 的关系
+### 2.4 必须保留的护城河（不可退让）
 
-StrikeAgent 保留了 **DSH（DeepSeek 插件宿主）桥接层**（`backend/atkbrain/dsh/pentest.cordis.yml`、`atkbrain-tools.js`、`pi/extensions/atkbrain-tools.ts`、`agents/mcp_http.py` 的 `/projects/{pid}/mcp` 与 `/agent-tools` REST），**但当前实弹猎面已迁移到 Pi RPC 运行时**（`pi --mode rpc`，JSONL）；DSH compose 的 `render_cordis()` 全仓库无调用方，属遗留路径。
-
-**这意味着**：StrikeAgent 与 SilkSecAgent 共享同一套「插件宿主 + 本地工具桥 + JSONL 会话」范式，但 StrikeAgent 把「编排智能」全部放在了 **DSH/Pi 之外的自研 Python 引擎**里——这正是 SilkSecAgent 目前缺失的那一层。它可对标、可借鉴，但**不应整体迁移**（架构形态与许可都不同）。
+scope.yml fail-closed + exec 守卫链 + 审批 kind 注册表；14 域 + 总线 + outbox + 审计 fail-closed；vuln 状态机与 INV-1~10 不变量；L0–L6 知识治理（模型不能自评/自发布——12 个对标项目无一做到）；eval 物理隔离；31 工具 manifest + bwrap 沙箱 + 凭据隔离。**问题从来不在工具与治理，在编排、覆盖与反馈。**
 
 ---
 
-## 二、架构与流程总对比
+## 三、外部对标压缩结论（12 项目 + StrikeAgent）
 
-### 2.1 定位差异
+> 逐项分析见前三轮审查（已合并入本文结论）。评判标准唯一：对「自主发现更多、更准的真实 SRC 漏洞（纯黑盒）」有无正交贡献。
 
-| 维度 | StrikeAgent_AtkBrain-Flash | SilkSecAgent (DSH) |
-|---|---|---|
-| 首要目标 | **外网打点**（getshell/SRC/CTF），以「一轮接一轮推进到目标」为中心 | **授权范围内漏洞发现平台**，以「可治理、可审计、fail-closed 的工具执行与产出闭环」为中心 |
-| 智能主体 | 自研 Python 猎面引擎（御主+从者+工人） | DSH 原生 agent + 自研 14 域插件 + 任务调度器 |
-| 循环形态 | **单项目一个长驻协程**，状态驱动，有终止条件 | **任务调度器 60s tick** 领取到期任务，逐任务起 headless worker，任务间空闲 |
-| 工作记忆 | **攻击图是唯一真相源**（nodes/edges/findings/intents） | FGS 只活在单任务内；跨任务靠 facts/know/asset 等域表 |
-| 推进决策 | `hypothesize` 从图自动派生 Intent，御主在图上选题 | 任务由人/定时/事件创建；**没有「下一步打哪里」的图驱动决策层** |
-| 幻觉治理 | 二次复核 + 红队评级 rubric + 图纪律硬约束 | 五要素门 + `vuln_verify_replay` 机械重放 + 六态台账 |
-| 学习 | 自动 episode→lesson 蒸馏 + 每轮回灌简报 | L0–L6 已建成但**强门控**，且 kb 消费率低（历史遗留） |
-| 安全模型 | Scope/Guard/`_http_blocked` + 平台自保护（代码级） | scope.yml fail-closed + exec 9 步 guard + 审批 kind + sandbox（**更完备**） |
-| 部署/规模 | 单体 FastAPI + SQLite + Docker/Kali | 14 域 + 总线 + outbox + 13 systemd 单元 + spool bundle |
-| 运行时可插拔 | 绑 Pi/deepseek-flash | DSH 宿主，模型走 Bellkeeper 网关（可换） |
+**值得吸收的五个思想**（按收敛证据排序）：
 
-### 2.2 一次「渗透推进」的流程对照
-
-**StrikeAgent（状态驱动循环）**
-
-```
-项目启动 → run_project_loop 长驻协程
-  while not paused:
-    1. 同步目标/猎钟；人工 steering 优先摄入（可打断）
-    2. 入口可达性 / 重绑 / 平台到期 守卫
-    3. 把图上前置条件刷进 Guard
-    4. 选注入来源：人工 > 御主方案；检索跨局经验
-    5. 编译本轮战术偏置（prefer/defer/exclude）
-    6. 重开误关 Intent；绑定正交化；认领本轮 Intent
-    7. 构造指令（图快照 + 意图 + 纠偏）→ 从者 run_turn（内含角色工人并发）
-    8. 工人结果落图 → 派生新 Intent
-    9. 回合收口 → 问御主（从者整轮打完才问）→ 出新方案
-   10. 空转/卡死/墙钟判定 → 终止或继续
-  终止：goal_reached / stall / turn_cap / runtime_cap / graph_idle / entry_dead / env_closed / 人工
-```
-
-**SilkSecAgent（任务驱动）**
-
-```
-spool bundle setup → systemd silksecagent (web)
-  task scheduler 60s tick（data/scheduler.lock 单实例）
-    领取到期 task → 组装 prompt（persona + phase + FGS hint + kb 三步）
-    → exec_spawn_worker headless → 单任务内 LLM agent loop（FGS 记录）
-    → task_finish 判定 → 写 task_runs
-  任务之间：空闲；下一个任务来自 人工/定时/事件订阅（如 vuln.signal.confirmed → [提交] 任务）
-  事件总线 1s dispatcher 投递 async 订阅者；memcore 6h 治理扫描
-```
-
-**差异的本质**：StrikeAgent 是「**项目 = 一个持续推进的循环**」，SilkSecAgent 是「**平台 = 一个任务执行引擎**」。前者天然会「自行挖掘」，后者需要人/定时喂任务。
-
----
-
-## 三、可借鉴能力清单（按价值/成本分级）
-
-> 有用性标注：★★★ = 直接可用且收益高；★★ = 有价值但需适配；★ = 参考意义为主。
-
-### P0 — 立即可吸收（纯知识/契约层，低风险）
-
-| # | 能力 | StrikeAgent 出处 | 对 SilkSecAgent 的用法 | 有用性 |
-|---|---|---|---|---|
-| P0-1 | **finding 二次复核角色 + 评级 rubric** | `agents/prompts.py` `FINDING_REVIEW_ROLE`、`graph/rating_rubric.py` | 在 `vuln_confirm` 前加一个**独立复核任务**（phase=review）：不得新建条目，只带 `finding_id+node_key`；未证明命令执行**最高 medium**；`redteam_rating` 必须带 ≥40 字理由 | ★★★ |
-| P0-2 | **图纪律（落图判断）写进 prompt** | `prompts.py` 攻击图纪律段 | 在 `data-seed` 的 persona/prompt 中固化：「工具结果必须过落图判断，不写点等于本轮没发生」「漏洞节点必须先挂到服务/信息点」 | ★★★ |
-| P0-3 | **「基础设施失败 ≠ 方法失败」** | `supervise.py` `_detect_infra`/`classify_probe_payload`（transport/app/ignore） | 在 exec 结果回流与 learning_episodes 里显式区分：入口挂掉（infra）不记方法失败、不换路线；只有 app 级失败才更新 exp_card 置信度 | ★★★ |
-| P0-4 | **never-submit / 否证纪律细则** | `prompts.py`「状态码/跳转/Cookie 无差异不否证后端已处理参数」「版本命中或白名单文件写不是 RCE」 | 并入 sec-verification skill，与既有「六态台账 + verify_replay」互补（此前对标 BugHunter 时已列出方向，此处得到第二个独立来源印证） | ★★★ |
-| P0-5 | **侦察螺旋圈层账本** | `engine/spiral.py`（`SPIRAL.json`，小/中/大三圈，`empty_plans` 满 6 才升圈） | 作为 `exec`/`ledger` 的一种「扫描覆盖账本」：以**高质量增长**（已验证洞/凭证/立足点/能力边）清零空转，只有到第 3 圈才允许整猎 stall | ★★★ |
-| P0-6 | **入口身份比对（防靶机重绑/邻题污染）** | `engine/entry_identity.py`（expected stack ∩ live stack） | 资产/接口域增一个「目标身份指纹」比对；换 IP/换栈时不得把旧题指纹套到新题 | ★★ |
-
-### P1 — 需增量改造（编排层/域增强）
-
-| # | 能力 | 出处 | 改造方向 | 有用性 |
-|---|---|---|---|---|
-| P1-1 | **攻击图作为唯一工作记忆** | `graph/store.py`（nodes/edges/findings/intents + strategy_key 去重 + RCE 最优路径） | 新增「**项目级攻击图**」域，从单任务 FGS 上提：节点 target/service/info/vuln/credential/foothold/goal，边 LEADS_TO/EXPLOITS/ESCALATES_TO/PIVOTS_TO；与 asset/vuln/fact 域投影互通 | ★★★ |
-| P1-2 | **Intent 自动派生（hypothesize）** | `graph/hypothesize.py` | 图上每产生一个服务/危险点/漏洞/凭证，自动泛化出正交后续 Intent（带 `strategy_key` 去重）；替代「等任务被创建」 | ★★★ |
-| P1-3 | **参考假说 vs 局面硬约束的分离** | `engine/advisor_bind.py` `compile_binding` + `sanitize_closeout_plan` | 御主（或规划 LLM）输出只作参考假说；编排器按图编译「必须守住」的局面（未消费凭证/未关输入面/已验证洞/跳板禁令/点名 hop_auth）；违反局面的散文被丢弃 | ★★★ |
-| P1-4 | **回合制强收口 + 从者整轮打完再问御主** | `turn_close.py`、`advisor_schedule.should_yield_turn_to_advisor()` 恒 False | 在单任务内部约束「本轮小结写完即停，不得拖住回合」；任务之间由编排器统一决策下一轮，不让单任务自行无限续跑 | ★★★ |
-| P1-5 | **目标推进循环（自循环本体）** | `engine/loop.py` `run_project_loop` | 新增常驻「猎面编排器」（web profile，类似 scheduler 但目标是 **program** 而非单 task），见 §五.4 | ★★★ |
-| P1-6 | **记忆蒸馏「去特化」** | `memory/generalize.py` + `methodology.py` + `evolve.py` | 补进 know 域：episode → lesson 时把含 IP/端口/题面 slug 的制胜链归一为 `entry→service(http)→vuln(lfi)→foothold(rce)→goal` 战术骨架；只留 stack/cue/过程/战术白名单 token | ★★★ |
-| P1-7 | **经验回灌简报 + 置信度反馈** | `retrieve_lessons` + `_confidence(wins,fails,uses)` | 任务 prompt 注入「进化经验」块；采纳后回写 wins/fails，只有实测有效才升置信；`uses≥4 & wins=0` 降权 | ★★ |
-| P1-8 | **track-agnostic 结构守卫** | `turn_close/advisor_schedule/advisor_bind` 的 `_assert_track_agnostic()` | 核心编排函数加签名断言，禁止红队/SRC/CTF 分叉污染核心逻辑（SilkSecAgent 目前靠约定，无结构保证） | ★★ |
-
-### P2 — 突破性思路（需专门设计）
-
-| # | 思路 | 为什么是突破 | 有用性 |
+| # | 思想 | 收敛证据 | 落点 |
 |---|---|---|---|
-| P2-1 | **LLM 不是决策者，是假说生成器；循环把图编译成硬约束** | 从根上解决「LLM 跑偏/说一套做一套/被 prompt 注入带跑」——不是靠更长的 prompt，而是靠**代码层丢弃违规输出** | ★★★ |
-| P2-2 | **有意义的终止条件，而非「一直跑」** | `allowed_ring<3` 禁止 stall、空转以高质量增长清零、8 类显式 exit reason → 自循环既不早停也不无限烧钱 | ★★★ |
-| P2-3 | **去特化记忆 = 跨目标可迁移的战术骨架** | 一般 RAG/记忆存的是「这道题怎么写」，它存的是「这类入口→这类洞→这类立足点的顺序」，换目标仍适用 | ★★★ |
-| P2-4 | **可信度工程：二次评级 + 独立复核 + 硬降级** | 让「AI 报的洞拿着就能用」，而不是「报告好看但一问就虚」，是交付级能力的核心 | ★★★ |
-| P2-5 | **攻击图自动派生 Intent 形成有界自循环** | 从「自由发挥」变成「有界、可去重、可复开/否证的动作集合」，是自循环可控的关键 | ★★★ |
-| P2-6 | **首跳 MITM + 出口代理池 + 内网可达前置条件** | 把「必须经已登记能力访问内网」变成机制（没 SSRF/shell/tunnel 就不能对内网操作） | ★★ |
+| 1 | **机器验证优于模型声明**：oracle 差分判定（攻击 vs 对照），模型无权宣布 verified | pentest-ai（machine oracle）、Strix（PoC）、StrikeAgent（二次复核+硬降级）三方收敛 | Phase 2 |
+| 2 | **input→sink 污点路由**：参数形态决定打哪类洞，是假设引擎的路由表 | VulnHuntr（白盒调用链的黑盒化） | Phase 1 |
+| 3 | **有界推进 + 覆盖驱动**：状态/事件驱动、有空转账本与终止条件，LLM 只产假说、代码编译硬约束 | StrikeAgent、PentAGI（reflector）、Swarm（事件唤醒） | Phase 0/3 |
+| 4 | **去特化记忆 + 真实反馈**：经验剥离目标细节成战术骨架，置信度由 wins/fails 校准；SRC 平台裁决是我们独有的终极裁判 | StrikeAgent；双裁判为本方案强化 | Phase 4 |
+| 5 | **被动流量/视觉分流**：App/小程序端点面的主力来源（主动爬虫对小程序基本无效） | burpgpt（flows 信号路由）、CyberStrikeAI（视觉判读） | Phase 1 |
 
-### 不是能力，但值得记的「小细节」
-
-- **假否证防护**：未验证的 hop_auth 不允许被否证；HTTP 登录「POST 无 body / 重定向后仍像未登录」不能当口令否证。
-- **邻题隔离**：多题共用 `:80` 时只对高位端口做端口标记匹配，避免误判；只连在邻题上的子图被隔离。
-- **假收口识别**：`claimed_secret_disproved` / `plan_claims_obtained_secret` 防「御主声称拿到但图上没有」。
-- **收到人工指令后抑制御主若干轮**（`human_hold_until = turn + 3`），防止人工干预被 AI 规划立刻覆盖。
-- **跨重启续跑**：只接回当时占槽的项目（`hunt_resume.json`），不把集群整表拉起。
+**明确不吸收**（减法红线）：MCP 生态（CyberStrikeAI/HexStrike/PentestAgent——信任边界外移）；工具数量军备（HexStrike 150 工具产出寥寥，证明工具≠发现）；agent 自我繁殖/swarm 大并发/435 专科 agent（PentestAgent/Swarm/NeuroSploit——成本与治理失控）；Langfuse/Grafana 全家桶（PentAGI）；auto-fix/C2/WebShell/CI 门禁（越出授权 SRC 边界）；FAIR 量化（SRC 赏金就是现成价值信号）；CAI 框架本体（已归档，仅取其 prompt-injection 防护研究结论）。
 
 ---
 
-## 四、突破性思路深度拆解
+## 四、地基一：覆盖账本（Coverage Ledger）——回答「测了多少、还剩多少、下一步测什么」
 
-### 4.1 参考假说 vs 局面硬约束（最有价值的一条）
+### 4.1 覆盖矩阵（per-program，单一事实源）
 
-**问题**：所有 LLM Agent 的通病——模型输出的自然语言「计划」被当成命令执行，一旦模型跑偏或自信过头，整个循环跟着歪；而在 prompt 里加更多「不要跑偏」的约束，边际效用递减且容易被上下文淹没。
+落在 ledger 域（不新建域），三个维度交叉记账：
 
-**StrikeAgent 的解法**（`advisor_bind.py`）：
-1. 御主输出 `SupervisorPlan`（纯 JSON，无工具），**只是参考假说**：`next_plan/must_intents/prefer_tactics` 文案明确标注「排到前沿最前，不是只许打这些」。
-2. 循环用 `compile_binding()` 把「图状态」编译成 `AdvisorBinding`——**必须守住**的局面（未消费凭证、未关输入面、已验证洞、跳板禁令、点名的 hop_auth）。局面是**代码从图算出来的，不依赖 LLM 自觉**。
-3. `binding_compliance()` 判定上一步执行情况（oracle/executed/ignored/empty）；`ignored` 触发 `tighten_binding()` 加入口禁令并重注；连续 miss 作废绑定、重开多路线。
-4. `sanitize_closeout_plan()` 直接把御主散文里「假关闭/离开跳板」的后半句剥掉，替换成 `CLOSEOUT_OVERRIDE`。**LLM 说的不算，图说的算。**
+| 维度 | 粒度 | 记账内容 |
+|---|---|---|
+| **资产面** | host × 爬取状态 | 未爬 / 爬取成功（端点数）/ 爬取失败（原因分类） |
+| **参数面** | endpoint × 参数状态 | 无参数 / 已补参（arjun/flows/JS）/ 已入喂料队列 / 已被测试消费 |
+| **漏洞类面** | endpoint 或 host × 七类主粮（IDOR/注入/XSS/SSRF/文件/信息泄露/鉴权） | 未测 / 已测（verdict: verified/rejected/inconclusive）/ 不可测（缺前提，注明原因） |
 
-**对 SilkSecAgent 的意义**：这是「审计 fail-closed」思想在 **AI 规划层**的翻版——SilkSecAgent 已经在命令/授权层做了 fail-closed（scope/approval/audit），但 **LLM 的规划输出目前没有任何代码级校验**。吸收这条 = 给 prompt 层也装上 fail-closed。
+### 4.2 派生指标（看板可查，回答「估算多少已覆盖」）
 
-### 4.2 攻击图作为唯一工作记忆 + Intent 自动派生
+- **爬取覆盖率** = 已成功爬取 host / web 资产 host 总数；
+- **参数覆盖率** = 带 params 端点 / 端点总数（基线 2%）；
+- **登录覆盖率** = 已登录态测试端点 / 需登录端点总数（基线 0%）；
+- **漏洞类覆盖率** = 七类主粮中已测类数 / 7（per host、per program 两档）。
 
-- `--no-session` 不续接旧对话；每轮从者都是全新 Pi，只靠「图快照 + Intent 列表 + 纠偏」重建上下文。**跨轮记忆 = 图，不是聊天历史。**
-- 每次写点即触发 `derive_intents_for_*`：新服务 → 枚举 Intent；新危险点 → 探测 Intent；新漏洞 → 利用 Intent；新凭证 → 消费 Intent；新立足点 → 后渗透 Intent。Intent 带 `strategy_key` 去重、可 `resolve`（verified/disproved）、可重开。
-- 效果：把「智能体只记点不串链」变成「图自动生成有界下一步」，同时天然限制重复死磕（同 `strategy_key` 不重复登记）。
+### 4.3 覆盖缺口队列（回答「接下来覆盖什么」——比估算更重要）
 
-**对 SilkSecAgent 的意义**：SilkSecAgent 有 `fgs`（Fact-Goal-Step）但它是**任务内**的；有 `task_chain` 但需要显式声明。缺的正是「项目级图 + 自动派生下一跳」。这块与 P1-1/P1-2 是同一件事。
+覆盖账本的**输出不是报表，是队列**：每个「未爬/无参数/未测类/登录盲区」格点自动生成一条覆盖缺口项（strategy_key 幂等去重），按优先级（高危类 × 高价值资产 × 新资产面）排序，作为 Phase 3 Intent 派生器的输入。**系统对「下一步该测什么」的回答从「不知道」变成一张可执行、可审计、可排优先级的清单。**
 
-### 4.3 自循环的本质与终止条件
+### 4.4 登录盲区摘要（回答「没法登录时怎么办」）
 
-StrikeAgent 的循环**不是无限跑**，它有 8 类显式终止原因（`loop.py` → `final_project_status`）：
+当 program 无可用凭据（credentials 表为空）或凭据失效时，账本自动生成**登录盲区摘要**并在看板显著呈现：
 
-| 终止 | 触发 |
+> 「meituan-src：未登录状态已覆盖 X/Y 端点；判定需登录的端点 Z 个（占 W%）**完全未测**；其中高价值功能点 N 个（支付/订单/用户中心…）。→ 需要：登记登录凭据（scope 域 cred_add，引用形态）。」
+
+这条摘要同时是一个**人工行动项**（看板一键跳 cred_add 引导），并作为该 program 一切「覆盖率」数字的分母修正——**未登录态下的 100% 覆盖必须被明确标注为「仅公开面 100%」**，防止虚假安全感。
+
+---
+
+## 五、地基二：登录态判定与未授权发现（Auth-State Engine）
+
+### 5.1 端点登录态分类（endpoints 表既有 `auth_required`/`roles_seen` 列，补齐判定器）
+
+| 状态 | 判定方式（确定性优先，LLM 辅助） |
 |---|---|
-| `goal_reached` | 夺旗 / 新达成 getshell |
-| `runtime_cap` | 墙钟硬停（红队 12h、SRC 6h、CTF 40/120/180min，上限 72h） |
-| `turn_cap` | 轮数上限（MAX_TURNS 9999） |
-| `graph_idle` | 图连续无新节点/无交旗/无本地进展 |
-| `stall` | `no_progress` 达上限；**且只有 `allowed_ring>=3` 才允许** |
-| `entry_dead` | 入口连续不可达、重绑仍死，让出槽 |
-| `env_closed/unreachable` | 平台到期/不可达 |
-| `runtime_review_stop` | CTF 御主运行时审查判停 |
+| `public` | 无凭据请求返回 200 且含业务数据（非模板页） |
+| `login_required` | 无凭据请求 → 302 至登录页 / 401/403 / 响应体与登录页高相似度（simhash） |
+| `role_required` | 有低权凭据可访问、但行为表明存在更高权面（经 credentials.role 差分） |
+| `unknown` | 判定证据不足，**显式标记、不许猜** |
 
-关键设计：
-- **时间只是守卫阈值**（挂起检测、冷却、墙钟），不做唤醒源。
-- **空转以「高质量增长」清零**（新节点/交旗/本地长计算/工作区新产物），单纯无脑扫会累积空转并最终触发升圈或 stall。
-- **卡死检测排除「SDK 心跳」和「有命令在跑」**，避免把长计算误判为卡死。
-- **跨重启不丢**：猎钟持久化 + `resume_completed_turn` 重跑被打断的轮，不跳号。
+判定器 = 纯函数（无凭据探测一次 + 响应特征），exec 守卫链内被动/主动随 program risk 配置；结果落 endpoints 列，进覆盖矩阵。
 
-### 4.4 记忆蒸馏「去特化」
+### 5.2 业务语义标注（未授权发现的关键，且必须留人工通道）
 
-`memory/evolve.py` + `generalize.py` + `methodology.py` 的三段式：
+未授权访问漏洞的本质是「**应该登录却没拦**」，而「应该不应该」是业务判断，机器只能给建议。设计三层：
 
-1. **触发资格**：只有 `verification_status ∈ {verified,flaky}` 且（`redteam_rating ∈ {high,critical}` 或二次验证成功且 severity ∈ {high,critical}）的 finding / flag 才允许蒸馏；**不蒸失败局**。
-2. **去特化**（`generalize.py`）：把 `vuln:path-traversal`、`foothold:app-rce` 等题面 node key 归一为类型骨架 `entry→service(http)→vuln(lfi)→vuln(rce)→foothold(rce)→goal`；服务节点只保留协议 token；战术词表归一（`path-traversal→lfi`、`pickle→deserialization`…）。
-3. **清洗与白名单**（`methodology.py`）：只允许 stack/cue/process/tactic 白名单 token；含 IP/端口/路径/题面词的 lesson 直接判不像话丢弃（`scrub_lesson`/`scrub_chain`）。
-4. **置信度反馈**：`_confidence(wins,fails,uses)=0.4+0.12·wins−0.14·fails`（clamp 0.18–0.95），`uses≥4 & wins=0` 再降 0.1；每局用到的 lesson 做 `reinforce_lessons`。
-5. **回灌**：下一局 `retrieve_lessons(limit=6)` 注入简报「进化经验」；经验还转成 `prefer_tactics`/`avoid` 影响规划。
+1. **自动建议**：路径词表（admin/internal/manage/pay/order/user…）+ 响应语义（含他人数据/管理面特征）给出 `should_auth` 建议与置信；
+2. **LLM 业务理解**：对存疑端点，结合页面功能描述（视觉判读/响应文本）生成业务归类建议——**只产假说，不入库为事实**；
+3. **人工裁定通道**：看板端点视图增加 `should_auth` 人工标注（actor=dashboard，走 endpoint 域既有命令，审计留痕）。**人工裁定 > 自动建议**，裁定结果即成为后续 IDOR/未授权假设的硬前提。人工同时可反向标注「此类接口本就该公开」（防误报批量产生）。
 
-**对 SilkSecAgent 的意义**：SilkSecAgent 的 L0–L6 有更严的治理门（候选版本层、独立评测、审批发布、回滚），但**蒸馏的「去特化」与「置信度在线反馈」不足**，且历史遗留「kb 消费率低」。可把这条作为 L 链的「质量提升」，不需要推翻治理。
+**未授权假设生成**：`should_auth=true`（人工或高置信自动）∧ 实测 `public` → 直接产高优先假设任务（oracle：双请求差分——无凭据拿到业务数据即 verified）。
 
-### 4.5 可信度工程：二次评级 + 二次验证
+### 5.3 凭据缺口与人工供给
 
-- `report_finding` 首次上报允许证据不全 → 进 `findings_pending_review`。
-- 后台 `finding-review` 角色（独立 Pi，`--no-session`）**再打一遍**：不得新建条目、必须带原 `finding_id` + `node_key`；版本命中/白名单文件写**不是 RCE**；任意文件读写默认中危；一般 SQLi/存储 XSS/越权不得抬成高危。
-- 硬降级：`coerce_unproven_rce_claim` —— **未证明执行则 severity/rating ≤ medium**。
-- 评级必须带 `redteam_rating_rationale ≥ 40 字`；`RATING_RUBRIC` 四级表（严重/高危/中危/低危）供复核引用。
-- 只有通过复核、够格的 finding 才进记忆蒸馏与交付报告。
-
-**对 SilkSecAgent 的意义**：SilkSecAgent 现有 `vuln_verify_replay` 只做**机械重放**（sha256 比对 request.txt），能防「改口径」，但防不了「AI 夸大」。补一个独立 AI 复核任务 + rubric + 硬降级，是把「五要素门」升级为「交付级可信度」。
-
-### 4.6 侦察螺旋（不打歪又扩面）
-
-`spiral.py` 用 `SPIRAL.json` 账本管理三圈（小→中→大），档位映射：第 1 圈 top-100/common/whatweb，第 2 圈 top-1000/medium/dnsmap/nuclei，第 3 圈 all/large/nikto。规则：
-
-- `note_empty_plan()`：**高质量增长清零空转；非 infra 空转 +1；满 `empty_plan_cap`（默认 6）且未到大圈才 `allowed_ring += 1`**。
-- `redteam_stall_pause_due()`：**只有 `allowed_ring>=3` 之后才允许整猎 stall 暂停**——小/中圈不许因空转停。
-- 简报强调「按本圈完整清单做，不要因小圈做过而省略」「第 1 圈禁止抢跑 top-1000/-p-/中档目录/旁站」。
-
-**对 SilkSecAgent 的意义**：直接补「资产重扫/覆盖度」的节奏管理，避免「一上来全端口大字典」或「扫过一次就当覆盖」。与 ledger 的 `coverage-latest.md`、`radar-queue` 天然契合。
+- 登录态测试依赖 scope 域 `cred_add`（凭据引用，host 必须 ∈ scope，明文零入库——既有红线不变）；
+- worker 执行登录态任务时经凭据引用取会话（cookie/token 注入请求头），全程走 exec 沙箱与审计；
+- 凭据缺失/失效 → 自动触发 §4.4 登录盲区摘要 + 一条 dashboard 待办；**系统永远不尝试自行注册/爆破账号**（合规红线）。
 
 ---
 
-## 五、关键问题：自行持续挖掘 vs 定时任务
+## 六、假设引擎（Hypothesis Engine）——从「等扫描器报」到「按参数打」
 
-> 用户原问：「自行挖掘是否可以实现，自行持续挖掘是否比定时任务更好？」
+> 前置说明：假设的信息底座由 Phase 0 补齐（端点爆发 + 参数补全），**底座不到的层不许出对应级假设**——这是防幻觉的第一道闸。
 
-### 5.1 先澄清：StrikeAgent 的「自循环」到底是什么
+### 6.1 三级假设（级别即保底）
 
-它**不是**一个「每 5 分钟跑一次扫描」的定时器。事实是：
+| 级 | 信息要求 | 生成方式 | 例子 |
+|---|---|---|---|
+| **H1 保底假设** | host 存活 + 栈指纹 | 纯确定性规则，零 LLM | Spring→Actuator 暴露；Shiro→默认 key；Weblogic→wls-wsat；通用→敏感路径 ffuf |
+| **H2 参数路由假设** | 端点 + 参数清单 | 确定性污点路由表：数值 id→IDOR；查询串→SQLi；回显→XSS；URL 参数→SSRF；file→上传；redirect→开放跳转；`should_auth∧public`→未授权 | `/user/detail?id=123` → IDOR（双身份差分） |
+| **H3 语义假设** | 功能画像 + 知识卡片 | LLM 生成但**必须引用卡片与证据**、落 schema、过局面编译，违规丢弃；连败自动退回 H2/H1 | 「先 /init 再 /pay、订单号可枚举未校验归属 → 越权下单」 |
 
-- 一个项目 = **一个长驻协程**（`asyncio.create_task(run_project_loop(...))`），从启动一直跑到终止条件满足。
-- **轮与轮之间没有定时器**：`agent.run_turn()` 返回就立刻进入下一轮。
-- **它也不是「无脑一直跑」**：有 8 类终止条件、空转阈值、墙钟/轮数上限、`allowed_ring` 门槛。
-- **它的「续跑」靠持久化 + 启动重拉**，不是靠调度器：`hunt_clock.py` 存 turn/elapsed/idle，`hunt_resume.py` 重启后只接回当时占槽的项目。
+**任何存活资产至少产出 H1**——全系统永不空转；H1/H2 全程零 token；LLM 只在 H3 介入且被代码校验。
 
-一句话：**StrikeAgent 的自循环 = 一个由「攻击图 + 目标状态」驱动、有界、可中断、可续跑、有终止条件的项目推进循环。**
-
-### 5.2 定时任务的本质与边界
-
-SilkSecAgent 现在的模型：`task scheduler` 60s tick 领取 `next_run_at<=now` 的任务，起 headless worker 执行，任务之间空闲。它的优点：
-
-- **简单、可治理、幂等**（每任务有预算、有 `task_runs`、可 cancel/reap、可审批）。
-- **适合周期性/可拆分/独立**的工作：资产重扫、候选 TTL 治理、报告、备份、知识刷新、代理池刷新。
-- **成本可预测**（每次跑固定预算）。
-
-它的边界（也正是「自行挖掘」要解决的）：
-
-- **任务之间无记忆推进**：一个 recon 任务跑完，系统不会自动决定「因为发现了 Swagger，所以下一步该测未授权接口」——除非人/事件再造一个任务。
-- **FGS 只活在任务内**：任务一结束，决策图就断了，无法跨任务累积成攻击链。
-- **无法表达「本轮没打完」**：定时任务是「一次性/周期性」语义，而渗透推进是「上一步结果决定下一步」的状态机语义。
-- **空转/跑偏无机制**：定时器只会按时再来，不会因为「连续 6 轮无高质量增长」而升圈，也不会因为「还没到第 3 圈」而拒绝停止。
-
-### 5.3 结论：分层，不是替代
-
-**「自行持续挖掘」与「定时任务」不是二选一。** 正确形态是三层：
+### 6.2 生成管线（全确定性优先）
 
 ```
-第 3 层  猎面编排循环（新增）      ← 「下一步打哪里」由攻击图/目标状态驱动，有终止条件
-             ↑ 读图/派生 Intent，调用 ↓
-第 2 层  任务执行引擎（已有）        ← task 域 + scheduler + exec worker，负责「把一件事干完」
-             ↑ 事件订阅 + 定时触发 ↓
-第 1 层  维护/心跳（已有）           ← TTL 治理、记忆 sweep、代理刷新、备份、报告
+端点入库 → 参数补全（arjun/flows/JS 提取，修 param-queue 空队列）
+        → 功能画像 + 登录态判定（§五）
+        → 路由表匹配（栈→H1；参数形态→H2；功能+卡片→H3 候选）
+        → strategy_key 幂等去重（host+param+class 已测组合不重发；连败 N 次黑名单）
+        → 假设任务草稿 → 预算闸 → 入队
 ```
 
-- **定时器**留在第 1 层做「心跳/维护/触发源」，以及第 2 层做「周期性任务续期」——**不要用定时器表达渗透推进**。
-- **自循环**放在第 3 层：由 `exec.run.completed` / `vuln.signal.confirmed` / `asset.upserted` 等事件 + 状态变化驱动，而不是「每 60s 检查一次该不该打」。
-- **定时任务仍然必要**：作为兜底心跳（比如「无事件且未终止且无人工暂停时，每 N 分钟评估一次是否该推进下一 Intent」），以及处理「事件不会来」的维护工作。
+### 6.3 质量保证回路（「质量每次提高」的机制保证）
 
-**对「比定时任务更好吗」的直接回答**：在「多轮、有状态、需要根据上一步结果决定下一步」的渗透推进上，**状态/事件驱动明显更好**（更准、更省、不空转、能终止）；在「周期性、独立、幂等」的工作上，**定时任务仍然更好**（更简单、更可审计）。两者叠加才对，取代是错的。
+假设质量 = **命中率**（假设任务 → verified 的转化率）。三条回路让路由表从静态规则变成被结果校准的权重表：① verdict 回写「参数形态 × 栈 × 漏洞类」命中矩阵（know_scores 既有设施），连续不命中的组合自动降权；② H3 引用的经验卡吃 wins/fails，`uses≥4 且 wins=0` 降权；③ 未测组合自动成缺口驱动扩张。**不提高的组合被数据自动淘汰，这就是"每次提高"的结构保证。**
 
-### 5.4 在 SilkSecAgent 上的具体设计（可实现性论证）
+### 6.4 保底四层
 
-「自行挖掘」在 SilkSecAgent 上**可以实现**，且不需要推翻现有架构。具体形态：
-
-**新增「猎面编排器」（hunt orchestrator）**，作为一个常驻组件（与 task scheduler 同级，仅 web profile，单实例文件锁）：
-
-1. **状态源**：项目级攻击图（nodes/edges/findings/intents）+ 现有 `asset/endpoint/vuln/fact` 域 + `scope.yml`。
-2. **唤醒源**（事件优先，心跳兜底）：
-   - 订阅 `exec.run.completed`、`vuln.signal.confirmed`、`asset.upserted`、`endpoint.queued`、`task.finished`；
-   - 兜底心跳（如 5–15 分钟）评估「是否该推进」；
-   - 人工 chat steering（复用 DSH 会话）→ 立刻打断当前任务并覆盖规划。
-3. **每轮决策**：
-   - 用 `hypothesize` 从图派生/重算 ready Intent；
-   - 编译「局面硬约束」（未消费凭证/未关输入面/已验证洞/跳板禁令/授权到期）；
-   - （可选）调一次无工具规划 LLM 产出参考假说；
-   - 用**确定性规则**把「参考假说 + 局面」合成下一批任务 → 通过现有 `task_create`（actor=scheduler/orchestrator）派发。
-4. **执行**：仍走现有 `exec_spawn_worker`（phase=recon/vuln/review），不新增执行通道。
-5. **回收**：worker 结束 → 结果落图 + FGS 快照合并进项目图 → 更新空转/圈层账本 → 回到 3。
-6. **终止/暂停**：goal（SRC 无 goal，改为「覆盖度达标 / 无 open Intent / 预算耗尽」）、`stall`（需 `allowed_ring>=3`）、预算、scope 过期、入口死、人工暂停。
-7. **安全**：编排器的所有派发仍走 bus → scope/approval/exec guard，**不新增任何绕过**；规划输出必须经「局面编译 + 违规丢弃」，绝不把 LLM 原文当命令。
-
-**可行性**：SilkSecAgent 已具备除「项目级图 + 编排器」之外的全部零件（事件总线、任务、exec、scope、approval、knowledge、FGS）。缺的只是 `graph/intents` 两张表和一层循环。**工程量中等，风险主要集中在「成本控制」和「规划幻觉」两条，而这两条恰好都能用 StrikeAgent 的终止条件 + 局面编译来治。**
+B1 产出保底（H1 永不空转）｜B2 降级保底（H3 连败退 H2、H2 无参退 H1，降级落审计）｜B3 幻觉保底（假设永不直接变 finding，oracle verified 才能 confirm）｜B4 预算保底（预算闸 + 连败黑名单）。
 
 ---
 
-## 六、SilkSecAgent 是否需要大改？
+## 七、反馈与优化中心的形态决策：**不新增域，建 Feedback Core（逻辑中心）**
 
-### 6.1 结论
+### 7.1 问题
 
-**不需要大改。** 属于「**新增一层编排 + 若干域增强 + 知识质量提升**」的中等增量：
+「学习与增强是否需要一个核心反馈/优化功能，还是新增一个域管控全局？」——这是本次重构唯一的架构形态决策点。
 
-- 现有 14 域 + 总线 + outbox + approval/scope fail-closed + sandbox + 六态台账 + L0–L6 学习链，**全部保留**，这些是 StrikeAgent 没有的工程资产。
-- 不需要换运行时（继续 DSH + Bellkeeper 网关），不需要搬 StrikeAgent 代码（AGPL + 架构不兼容）。
-- 最大新增是「项目级攻击图 + 猎面编排器」，但它是**旁挂**在现有 task/exec 之上，而非侵入式改造。
+### 7.2 决策：Feedback Core = know 域内的三个 reactor + 一个统一记分投影
 
-### 6.2 必须保留的资产（不可退让）
+**不新增第 15 个域**，理由：
 
-1. `scope.yml` fail-closed + exec 9 步 guard + 审批 kind + sandbox：**红线**，编排器不得绕过。
-2. 总线 11 段 pipeline + outbox + 审计 fail-closed：所有写路径唯一入口。
-3. 多进程 + SQLite WAL（已复评定案）：不因引入编排器而改。
-4. `task` 的单实例锁与 `task_reap`/`worker_reap`：编排器必须与之协调，不能并存两个调度循环。
-5. L0–L6 的「模型不能自评/自发布」治理：**吸收 StrikeAgent 的去特化/置信度时不得放松发布门控**。
+1. **域是写入边界的划分，不是功能的划分**。反馈中心天然「消费全域事件、向全域回灌」——它没有自己的新数据形态（命中矩阵落 know_scores、经验卡落 exp_cards、缺口落 know_gaps、权重回落路由表），为它建域等于建一个只转发不持有的壳，再造一个需要被治理的孤岛；
+2. **治理复用**：反馈产出的最高风险物是「知识变更」，而 L0–L6 已经解决了「模型不能自评/自发布」——Feedback Core 的产物一律走 revision 候选 → 独立评测 → 审批发布，**新增域反而要重建这套治理**；
+3. **先例**：know_episode_record / know_revision_assess 已是 reactor 物理独占的成功模式，Feedback Core 是同型扩展。
 
-### 6.3 缺口（要补的）
+### 7.3 组成（全部落在既有域与表上）
 
-| 缺口 | 现状 | 补法 |
+| 组件 | 职责 | 落点 |
 |---|---|---|
-| 无项目级攻击图 | FGS 只在任务内 | 新增图域（复用 FGS 思路，上提到 program 维度） |
-| 无 Intent 自动派生 | 任务靠人/定时/事件 | `hypothesize` 移植（确定性规则，非 LLM） |
-| 无目标推进循环 | 任务之间空闲 | 新增猎面编排器（事件驱动 + 心跳兜底） |
-| 规划输出无代码校验 | prompt 层无 fail-closed | 局面编译器（图 → 硬约束）+ 违规丢弃 |
-| 缺独立二次复核 + 评级 | 只有机械重放 | 新增 review 角色任务 + rubric + 硬降级 |
-| 覆盖度/升圈无机制 | 有 coverage/radar 但无升圈门槛 | 螺旋圈层账本 |
-| 记忆去特化/置信度弱 | 有 exp_cards 但蒸馏粗 | 移植 generalize/methodology 白名单 + wins/fails 反馈 |
-| 成本归因缺失 | `spent_tokens` 恒 0（INV-T13/14 未实现） | 自循环前必须先补，否则持续挖掘会失控 |
+| **蒸馏 reactor** | episode/verdict → 按 `栈×参数形态×漏洞类×验证手法` 聚合去特化 → know_revision_propose 候选（不蒸失败局、不蒸无 verdict 的 episode） | know（新订阅，复用 L 链） |
+| **记分 reactor** | verdict/复核/平台裁决 → 命中矩阵 + exp_cards/playbook 的 wins/fails/uses 回写 | know_scores / exp_cards（既有表） |
+| **缺口 reactor** | 覆盖账本副产品 → know_gaps（未测类/未覆盖格点）；gap 分两路：有 playbook 派假设任务、无 playbook 产收割投喂清单 | ledger + know_gaps + harvest（既有通道 C19） |
+| **统一记分投影** | 命中矩阵、卡片置信度、缺口清单一屏可查（只读查询） | 看板查询（know 投影） |
 
-> 注：最后一条是**前置阻塞项**——自循环一旦常驻，没有每任务/每项目成本归因与预算闸，风险不可控。StrikeAgent 用墙钟/轮数/空转三重上限，SilkSecAgent 应先补 `budget_tokens`/`spent_tokens` 与项目级预算。
+### 7.4 反馈回路全景（每一环都有表、有事件、有审计，无一环依赖模型自觉）
 
-### 6.4 分阶段路线图
-
-**Phase A（低风险，1–2 个会话）— 可信度与纪律**
-- A1 二次复核角色任务（P0-1）+ 评级 rubric + 未证明执行硬降级。
-- A2 图纪律/否证纪律/prompt 化（P0-2、P0-4）。
-- A3 基础设施失败 vs 方法失败分类（P0-3），接 `learning_episodes`。
-- A4 螺旋圈层账本接入 ledger/coverage（P0-5）。
-- 验收：契约测试 + `sec-v5-accept.sh` + 一次真实 SRC 流水线对照（复核前后误报率）。
-
-**Phase B（中等，3–6 个会话）— 项目级图与编排器 MVP**
-- B1 新增图域（nodes/edges/intents），与 asset/vuln/fact 投影互通。
-- B2 `hypothesize` 确定性派生 Intent（strategy_key 去重）。
-- B3 猎面编排器 MVP：单项目、事件驱动、心跳兜底、只派 `recon/vuln/review` 三类任务，**先手动开关**（默认关）。
-- B4 局面编译器 + 违规输出丢弃。
-- B5 成本归因与项目级预算（阻塞项，必须在 B3 之前或同时）。
-- 验收：单靶场端到端「图驱动推进 N 轮 → 终止」；无绕过 scope/approval 的证据；预算内完成。
-
-**Phase C（较大，视 B 结果）— 自进化闭环**
-- C1 去特化蒸馏 + 置信度反馈 + 回灌简报。
-- C2 多轮终止条件完备（stall 需 `allowed_ring>=3` 等）+ 跨重启续跑。
-- C3 人工 steering 打断/覆盖规划。
-- C4 与 L0–L6 治理打通（仍由审批把关发布）。
-- 验收：离线回放 + 灰度（单 program）+ 成本曲线 + 记忆质量抽检。
-
-### 6.5 明确不建议做的
-
-- ❌ 整体迁移到 StrikeAgent 的单体 Python + SQLite 直连 + 自研 Pi 运行时。
-- ❌ 用「自循环」替换掉 task 调度器（应叠加，不应替换）。
-- ❌ 让 LLM 规划输出直接当命令执行（必须先过局面编译）。
-- ❌ 在成本归因落地前开启常驻自循环。
-- ❌ 放松 scope/approval/sandbox 以「提高自主性」。
+```
+oracle verdict ─┬─→ 蒸馏 reactor → 去特化经验卡(治理发布) ─→ 任务开局按信号路由注入 ─→ 下轮假设更准
+                ├─→ 记分 reactor → 路由权重/卡片置信度 ────→ 失效组合自动降权出局
+                └─→ 覆盖账本   → 缺口 reactor → 假设任务 / 收割清单 ─→ 发现面变宽
+稳定打法 ─→ capsule 重放 ─→ worker 脚本固化 ─→ 审批注册 manifest（唯一工具扩张通道）
+```
 
 ---
 
-## 七、落地映射表（域 / 表 / 插件）
+## 八、分 Phase 实施路线（每期可独立验收、可回滚）
 
-| 借鉴项 | 落到 SilkSecAgent 的位置 | 类型 |
+### Phase 0 — 基础能力补全：覆盖 + 登录态 + 发现面（1–3 个会话，零新架构）
+
+| # | 动作 | 落点 |
 |---|---|---|
-| 项目级攻击图 | 新域 `attack-graph`（或并入现有 `fgs` 上提）→ 表 `ag_nodes/ag_edges/ag_intents` | 新增域 |
-| Intent 自动派生 | 新域 `attack-graph` 的 reactor 订阅（asset/endpoint/vuln/fact/exec 事件） | 新增订阅 |
-| 猎面编排器 | 新插件 `sec-hunt-orchestrator`（web profile 常驻，单实例锁 `hunt.lock`） | 新增插件 |
-| 局面编译器 | 编排器内纯函数模块（图 → binding），可独立契约测试 | 新增模块 |
-| 二次复核 + 评级 | `task`（phase=review 任务）+ `vuln`（评级列/理由列）+ 新 `rating-rubric` 规则 | 增强 |
-| 硬降级 | `vuln` 域 `vuln_register_signal`/`vuln_confirm` 不变量（未证明执行 ≤ medium） | 增强 |
-| 去特化蒸馏 | `know` 域 `know_episode_record` → `know_revision_propose` 之间加 generalize/scrub | 增强 |
-| 置信度反馈 | `know` 域 `exp_cards` 增 wins/fails/uses；`know_feedback_ingest` 扩展 | 增强 |
-| 螺旋圈层账本 | `ledger` 域（`SPIRAL.json` 语义落 `data/pipeline/{program}/spiral-*.jsonl`）+ `exec` 扫描记账 | 增强 |
-| 入口身份比对 | `asset` 或新 `entry-identity` 查询；与 scope program 绑定 | 增强 |
-| track-agnostic 守卫 | 各核心模块加断言（不改行为） | 增强 |
-| 成本归因 | `task` 域 `spent_tokens`（INV-T13/T14）+ `exec` 上报 + 看板 | 补欠账 |
+| 0-1 | **端点爆发**：1,239 web 资产批量跑端点三件套（katana/gau/waybackurls/ffuf），按 program 分批、尊重 QPS/risk | task + endpoint + exec |
+| 0-2 | **参数补全器**：无 params 端点自动派 arjun；flows/JS 经 `endpoint_queue_surface` 提取带参 URL 修复喂料队列 | endpoint + exec |
+| 0-3 | **登录态判定器**（§5.1）：无凭据探测 + 响应特征分类 public/login_required/unknown，落 endpoints 列 | endpoint + 纯函数 |
+| 0-4 | **覆盖账本 MVP**（§四）：三维记账 + 四指标 + 缺口队列 + 登录盲区摘要，看板呈现 | ledger + 看板 |
+| 0-5 | **业务语义标注通道**（§5.2）：自动建议 + 人工裁定（dashboard actor，审计留痕） | endpoint + 看板 |
+| 0-6 | **候选池止血 + 评级硬降级**：425 条噪声确定性分流；confirm 增 severity×vuln_type 组合校验（信息泄露 ≤ low、未证明执行 ≤ medium） | vuln + rules |
+| 0-7 | **H1 保底假设**：指纹→确定性假设规则（零 token，任何资产必有产出） | 规则层 |
+| 0-8 | **成本归因**：worker 上报 token 写 tasks.spent_tokens，看板一列 | task + exec |
+
+**验收**：端点 ≥5,000 或全量爬取尝试+失败分类；参数覆盖率 ≥60%；端点登录态标注率 ≥90%；每个 program 有覆盖率四指标与缺口队列；无凭据 program 有登录盲区摘要；每个 web 资产 ≥1 条 H1。
+
+### Phase 1 — 假设引擎 + 第二发现面（2–4 个会话）
+
+| # | 动作 | 落点 |
+|---|---|---|
+| 1-1 | **污点路由表**（H2）+ 漏洞类 playbook 补强（任务 prompt 按路由注入，顺带接通知识路由） | endpoint + fact + know rules |
+| 1-2 | **H3 语义假设**：LLM 产假说 + 局面编译 + 违规丢弃 + 连败降级 | 派生器内纯函数 + prompt |
+| 1-3 | **被动流量分流**：flows 信号路由挑「有趣流量」送 LLM 研判产候选；vision_triage 截图判读发现隐藏功能点 | exec flows + rules |
+| 1-4 | **App/小程序抓包 SOP playbook**（微信开发者工具/模拟器代理 → mubeng → xray） | know rules |
+| 1-5 | **prompt-injection 最小防护**：不可信内容围栏 + eval 注入用例 ×2 | llm-surface + eval |
+
+**验收**：五类主粮各 ≥1 条假设任务自动产生；H3 违规输出被丢弃的审计证据；小程序端点经 flows 入库的证据。
+
+### Phase 2 — 机器验证：让「确认」等于「证明了」（2–3 个会话，可与 Phase 1 并行）
+
+| # | 动作 | 落点 |
+|---|---|---|
+| 2-1 | **oracle 五件套**（纯函数）：IDOR/越权（双身份或无凭据差分）、信息泄露（敏感模式+对照）、SQLi（布尔/时间差分）、XSS（标记回显+上下文）、SSRF（OOB 唯一判定）；**oracle 输出是 confirm 的唯一合法证据**（vuln 不变量升级） | exec + vuln |
+| 2-2 | **proof capsule**：请求对 + 判定规则 + 结果 + 环境指纹落 evidence，可重放，自带重放命令 | vuln 证据面 |
+| 2-3 | **登录态 oracle**：should_auth∧public 的未授权假设用「无凭据拿到业务数据」判定；role_required 用高低权凭据差分 | exec + scope 凭据 |
+
+**验收**：五类 oracle 各 ≥3 真阳 + ≥3 假阳进契约测试；一条经 oracle verified 的真实发现；confirmed 池新增条目 100% 附 capsule。
+
+### Phase 3 — 推进层：覆盖驱动的发现（3–5 个会话）
+
+| # | 动作 | 落点 |
+|---|---|---|
+| 3-1 | **Intent 确定性派生器**：订阅 asset/endpoint/vuln/exec 事件 + 消费覆盖缺口队列，派生任务草稿（strategy_key 去重），一律过预算闸，绝不自动执行 | 订阅处理器（挂既有域） |
+| 3-2 | **局面硬约束编译**：scope/预算/连败/授权时效纯函数校验，违规丢弃落审计 | 派生器内 |
+| 3-3 | **空转升圈**：自上次高质量增长（verified/新端点簇/新资产面）的轮数记账，连空 N 轮升圈、满 3 圈允许 stall | ledger |
+| 3-4 | **任务预算闸**：per-program 周期 token/任务数预算，超额停派+告警（依赖 0-8） | task |
+
+**验收**：单 program「新资产→端点→参数→假设→oracle verified」无人干预跑通 ≥1 条；预算耗尽自动停派证据；无绕过 scope/approval 证据。
+
+### Phase 4 — 反馈进化：Feedback Core 全量上线（2–4 个会话，硬依赖 Phase 2 oracle）
+
+| # | 动作 | 落点 |
+|---|---|---|
+| 4-1 | **蒸馏 reactor**（§7.3）：episode→去特化经验卡候选→L2–L4 治理发布 | know |
+| 4-2 | **记分 reactor**：双裁判（oracle/复核 + SRC 平台裁决 vendor_status 事件化）回写 wins/fails | know_scores + vuln |
+| 4-3 | **缺口 reactor**：覆盖缺口→know_gaps→假设任务/收割清单 | ledger + know |
+| 4-4 | **打法固化三层通道**：capsule 重放 → worker 脚本固化（判定归代码）→ 审批注册 manifest（唯一工具扩张通道） | exec + tools.d 评审 |
+| 4-5 | **eval 收缩**：候选→verified 转化率、verified 高危占比、新漏洞类型/季度，三指标周更 | eval |
+
+**验收**：第一张蒸馏产出、治理发布的经验卡；know_gaps 非空且 ≥1 条转化为任务/收割项；一个打法走通 capsule→脚本→manifest；一条经验卡因真实反馈置信度变化且可审计。
 
 ---
 
-## 八、明确不借鉴清单
+## 九、不做清单（减法红线）
 
-| 不借鉴 | 理由 |
+| 不做 | 理由 |
 |---|---|
-| Pi / deepseek-flash 运行时绑定 | SilkSecAgent 已用 DSH + Bellkeeper 网关，模型可换、有额度/熔断/粘性；换运行时是倒退 |
-| 单体 FastAPI + SQLite 直连 | SilkSecAgent 的 14 域 + 总线 + outbox + 审计 fail-closed 是更成熟的工程形态，不应退化 |
-| Yakit MITM 作 HTTP 首跳 | 商业/Windows 组件；SilkSecAgent 已有 xray 被动扫描 + mubeng 代理池 + shared-browser，方向一致不必照搬 |
-| 控制台「随机入口 + Argon2id + RSA-OAEP」机制 | 面向公网暴露的独立产品；SilkSecAgent 经 edge Caddy + 内网，风险面不同。个别点（如 Swagger 关闭）可参考 |
-| 把 `next_plan` 自由散文直接执行 | 与 4.1「参考假说 vs 局面硬约束」原则冲突，是必须避免的反面 |
-| 直接复制 AGPL 代码 | 许可 + 架构不兼容；只吸收设计思想 |
-| 「一直跑」的伪自循环 | 与 4.3 终止条件设计冲突；无界 = 烧钱 + 失控 |
+| 新增任何域（含「反馈中心域」「攻击图域」） | Feedback Core 是 know 内逻辑中心（§7）；图存储是待证伪需求 |
+| 新增工具 manifest（除 4-4 产出驱动通道外） | 工具已齐，缺的是编排（§2.1） |
+| 引入 MCP / 工具多通道 | 违背工具单入口 + manifest 守卫 |
+| agent 自我繁殖 / swarm 大并发 / 435 专科 agent | 成本与治理失控 |
+| Langfuse/Grafana 全家桶 | spent_tokens 一列够用 |
+| auto-fix / C2 / WebShell / CI 门禁 | 越出授权 SRC 黑盒边界 |
+| 系统自行注册/爆破账号获取登录态 | 合规红线；登录凭据只能人工登记（cred_add） |
+| 以提交率为系统 KPI | 提交是人的运营动作 |
+| 成本归因落地前开启任何常驻自循环 | 无预算闸的自主 = 烧钱 + 失控 |
+| FGS 上提扩建 / know 六仓加仓加动词 | 冻结结构，只补路由与蒸馏质量 |
 
 ---
 
-## 九、合规与风险
+## 十、北极星指标（每周看板可见）
 
-- **合规**：StrikeAgent 仅面向「已获明确授权的环境」；SilkSecAgent 的 `scope.yml` fail-closed 是更严的合规基线，吸收任何自主能力都**不得**削弱该基线。自循环 = 更自主，合规审查必须更严。
-- **成本风险**：常驻自循环最可能失控的是 token 成本。**成本归因 + 项目级预算 + 空转上限**是开启前提（见 6.3 阻塞项）。
-- **规划幻觉风险**：用「局面编译 + 违规丢弃 + 独立复核」三层兜底，禁止 LLM 输出直连执行。
-- **审计风险**：编排器的每次决策（选了什么 Intent、为什么、丢弃了什么御主假说）都必须可审计落盘，否则 fail-closed 审计链在规划层出现断点。
-- **漂移风险**：吸收后须在对应模块文档回填（`05-task`/`07-know`/`14-fgs`/`16-dashboard` + 新增图域与编排器文档），并登记 README。
+| 指标 | 方向 | 基线（2026-09-22） |
+|---|---|---|
+| **周新增 oracle-verified 发现数** | ↑ 主指标 | ≈0（44 条存量靠人工） |
+| **爬取覆盖率** | ↑ ~100% | 328/1,239 ≈ 26% 且多数仅 1 端点 |
+| **参数覆盖率** | ↑ ≥60% | 11/522 ≈ 2% |
+| **登录覆盖率**（登录盲区摘要消减） | ↑ | 0%（credentials 仅 1 条，两真实 program 无凭据） |
+| 漏洞类覆盖率（七类主粮） | ↑ | 未测 |
+| **假设命中率**（假设→verified） | ↑ 逐轮被 verdict 校准 | 未测（机制不存在） |
+| verified 中 high+medium 占比 | ↑ | 13/44 ≈ 30% |
+| 新漏洞类型产出/季度 | > 0 | 0（vuln_type 分布数月未变） |
+| episode→经验卡蒸馏量 | > 0 | 0（361 episode / 0 关联） |
+| 单条 verified 成本 | 先可观测再下降 | 不可观测（spent=0） |
+| 护栏：scope 越界 / 平台警告 | = 0 | 0（保持） |
 
 ---
 
-## 十、一句话回答用户四个问题
+## 十一、合规、风险与治理
 
-1. **有哪些能力可以借鉴？** 6 类：攻击图 + Intent 派生、参考假说/局面硬约束分离、二次复核+评级、自循环终止条件、去特化记忆、侦察螺旋；另有若干纪律细则（图纪律、infra vs method、假否证防护、邻题隔离）。
-2. **有哪些方法可以吸收？** P0 的 6 项可立即做（纯知识/prompt/规则层）；P1 的 8 项需增量改造（图域 + 编排器 + 记忆增强）。
-3. **是否有突破性思路？** 有，最有价值的是 **「LLM 只产假说，循环把图编译成硬约束」** 和 **「有终止条件的图驱动自循环」**——这两条直击所有 LLM Agent 的通病。
-4. **自行持续挖掘是否比定时任务更好？需要大改吗？** 不是替代而是分层：**状态/事件驱动负责推进，定时任务负责心跳与周期维护**；自行挖掘可实现且不推翻架构，但**必须等成本归因落地后再开**。SilkSecAgent **不需要大改**，分 Phase A/B/C 三期增量即可。
+- **合规基线不动**：scope fail-closed、审批 kind、sandbox、审计链全部保留；端点爆发、oracle 主动差分、登录态探测、Intent 派生任务全部过 exec 守卫链与预算闸，无旁路；主动探测须 program `rules.max_risk`/QPS 覆盖，否则走 tool-intrusive 审批。
+- **目标负载风险**：Phase 0 端点爆发是千级目标主动爬取，分批 + QPS + 代理池，防打挂 SRC 目标。
+- **凭据安全**：凭据只存引用、明文零入库（scope 域既有红线）；worker 用凭据全程沙箱+审计；系统永不自行获取账号。
+- **误报外溢**：oracle + rubric + 复核全过才允许登记 confirmed；平台警告数一票否决。
+- **文档治理**：决策后回填 02-vuln（不变量）、03-asset/04-endpoint（覆盖/登录态/参数）、05-task（成本/预算）、07-know（Feedback Core/蒸馏/路由）、10-exec（oracle/flows/固化通道）、11-ledger（覆盖账本）、15-eval（三指标）、16-dashboard（覆盖/盲区/记分投影），本文随即移入 archive；README 索引同步更新。
+
+---
+
+## 十二、一句话方案
+
+**先给系统装上「覆盖账本 + 登录态判定」两只眼睛（知道测了多少、还剩多少、哪些要登录），再给「假设引擎 + 机器验证」一双手（按参数主动构造可证伪的测试并由代码判定），最后把「反馈进化」闭环接上（verdict 蒸馏成卡、缺口驱动收割、打法固化成工具）——零新域、零新通道，让 14 个域第一次真正串联成一台发现机器。**

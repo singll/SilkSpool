@@ -38,8 +38,10 @@
 | `endpoint_queue_surface` | 参数面入队：从 TSV/文本提取带参数 URL，全局去重（seen 域内）追加 param-queue | model, script | `auto`：`(program, source)`（**无文件 sha256**） | endpoint.queue.enqueued |
 | `endpoint_consume_queue` | 队列消费：dalfox/sqlmap 取料后标记消化（出队；seen 保留防重回） | model, script | `natural`：`(program, run_id)` | endpoint.queue.consumed |
 | `endpoint_mark_auth` | 鉴权标注：auth_required / roles_seen（越权矩阵唯一数据源） | model, script, dashboard | `auto`：`(host, method, path, auth_required, roles_seen, evidence)` | endpoint.auth_marked |
+| `endpoint_classify_auth` | 登录态判定落列（§5.1 纯函数分类 public/login_required/unknown，run_id 证据链） | model, script | `auto`：`(host, method, path, response, run_id)` | endpoint.auth_classified |
+| `endpoint_annotate_semantics` | 业务语义标注（§5.2 should_auth：自动建议 + 人工裁定，人工 > 自动） | model, script, dashboard | `auto`：`(host, method, path, should_auth, body_excerpt, note)` | endpoint.semantics_annotated |
 
-**invariants / timeout_ms**（manifest 逐命令声明，网关前置执行）：`endpoint_upsert` invariants `[upsertMode, batchLimit]` / `timeout_ms: 120000`；`endpoint_queue_surface` `[queueSourceExists]` / `60000`；`endpoint_consume_queue` `[consumeEvidence]` / `60000`；`endpoint_mark_auth` `[endpointExists, authEvidence]` / `60000`。
+**invariants / timeout_ms**（manifest 逐命令声明，网关前置执行）：`endpoint_upsert` invariants `[upsertMode, batchLimit]` / `timeout_ms: 120000`；`endpoint_queue_surface` `[queueSourceExists]` / `60000`；`endpoint_consume_queue` `[consumeEvidence]` / `60000`；`endpoint_mark_auth` `[endpointExists, authEvidence]` / `60000`；`endpoint_classify_auth` `[endpointExists]` / `60000`；`endpoint_annotate_semantics` `[endpointExists, semanticsRuling]` / `60000`。
 
 **结构性闸门**：`auth_required` / `roles_seen` 两列**只出现在 `endpoint_mark_auth` 的参数表里**；`endpoint_upsert` schema 不含（v4.x `endpoint_add` 工具带这两个参数、l2-collect TSV 也有 `auth_required` 列恒为 `unknown`——v5 一律剥离，登记与标注分动词）。
 
@@ -199,6 +201,29 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 **agent_note**：
 > 标注接口鉴权（auth_required: yes/no/unknown）与访问角色（roles_seen 并集累积）——越权矩阵的数据源。auth_required 从 unknown 变为确定值必须带证据（run_id/flow_id）。biz-logic 任务梳理接口图谱后应批量回填，多角色命中的接口是越权测试优先面（endpoint_matrix 查询）。
 
+#### 1.3.5 `endpoint_classify_auth` —— 登录态判定落列（21 号方案 §5.1）
+
+**语义**：传一次无凭据探测的响应特征，域内纯函数（`sec-rules-hypothesis.classifyAuthState`）分类 `public` / `login_required` / `unknown` 落 `auth_state` 列——**系统知道哪个接口要登录**的判定器。判定确定性执行、证据不足显式 `unknown` 不猜；主动探测须过 exec 守卫链（program `rules.max_risk`/QPS 覆盖，否则走 tool-intrusive 审批）。
+
+**参数 schema**：
+
+| 参数 | 类型 | 必填 | 校验 |
+|---|---|---|---|
+| `host` / `path` | string | ✅ | 已登记端点（E_NOT_FOUND） |
+| `method` | string | ❌ | 默认 `GET` |
+| `response` | object | ✅ | `{status, redirect_location, body_simhash, login_simhash, has_business_data}`（全可选键；additionalProperties=false） |
+| `run_id` | string | ✅ | 判定证据链（探测 run） |
+
+**判定规则**：401/403 → login_required；3xx → Location 命中登录页词表（login/sso/passport/cas…）→ login_required，否则 unknown；200 → 响应体 simhash 与登录页海明距 ≤6 → login_required，含业务数据（非模板页）→ public，证据不足 → unknown。
+
+**返回**：`data: { host, method, path, auth_state, confidence, reasons }`；事件 `endpoint.auth_classified`（from/to/confidence/run_id/program_id——ledger 域订阅记覆盖账本 auth 面）。
+
+#### 1.3.6 `endpoint_annotate_semantics` —— 业务语义标注（21 号方案 §5.2）
+
+**语义**：标注「应该不应该登录」（`should_auth`）——未授权访问漏洞「应该登录却没拦」的业务前提。三层设计：**不传 should_auth = 自动建议**（路径词表 admin/pay/order/user… + 响应含他人数据特征，只产假说）；**dashboard 传 should_auth = 人工裁定**（审计带 operator，最高权威）；model/script 显式标注**必须带 note 理由**（semanticsRuling 不变量，防模型替人做业务裁定）。**人工裁定 > 自动建议**：repo 层拒绝自动建议覆盖 `dashboard:*` 来源（`kept_human_ruling:true`）。反向标注 `should_auth=no`（「本就该公开」）防误报批量产生。`should_auth=yes ∧ auth_state=public` 是未授权假设（污点路由表）的硬前提。
+
+**事件**：`endpoint.semantics_annotated`（from/to/source/applied/operator）。`endpoint.registered` 订阅（onEndpointRegistered）在端点入库时自动跑一次自动建议（弱联动 best-effort）。
+
 ### 1.4 查询逐个详述（纯读）
 
 统一分页信封 `{ rows, total, limit, offset }`（**只适用于返回 `rows` 的列表/聚合查询**：`endpoint_list` / `endpoint_hosts` / `endpoint_matrix`）；limit 默认 50 上限 500；**行数 = total 断言进契约测试**。`queue_status` / `endpoint_surface_scan` 不走该信封，各自返回自身的 `data` 结构（见下）。
@@ -219,10 +244,16 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 | `method` | `''` | 精确（大写化） |
 | `program_id` | `''` | 谓词 |
 | `auth_required` | `''` | `yes/no/unknown/none`（none = NULL——未标注清单） |
+| `auth_state` | `''` | `public/login_required/role_required/unknown/none`（登录态判定过滤） |
+| `should_auth` | `''` | `yes/no/unknown/none`（业务语义过滤） |
 | `sort` | `last_seen` | `last_seen / host / status / path` |
 | `dir` / `limit` / `offset` | desc/50/0 | — |
 
-返回行：`host, method, path, status, source, program_id, params, auth_required, roles_seen, last_seen`（v4 列表不带 params/auth 列——v5 补齐，供接口行内直读鉴权状态）。
+返回行：`host, method, path, status, source, program_id, params, auth_required, roles_seen, auth_state, should_auth, should_auth_source, last_seen`（v4 列表不带 params/auth 列——v5 补齐，供接口行内直读鉴权状态；21 号方案补登录态/语义列）。
+
+#### `endpoint_auth_summary`（登录态分布聚合，21 号方案 §4.4/§5）
+
+参数：`program_id` / `host`。返回 `{ total, by_state: {public, login_required, role_required, unknown, unmarked}, by_should_auth: {yes, no, unknown, unmarked}, human_ruled, login_required_hosts, marked_ratio }`——覆盖账本登录面与登录盲区摘要（ledger_login_blindspot）的分母；`marked_ratio` 即「端点登录态标注率 ≥90%」验收指标的数据源。
 
 #### `endpoint_hosts`（按主机分组——看板接口 tab 主视图）
 
@@ -384,6 +415,11 @@ sec cmd endpoint consume-queue --program bytedance --scanner dalfox --run-id run
 | `params` | TEXT | endpoint_upsert | 参数清单 JSON（对象序列化） |
 | `auth_required` | TEXT | **endpoint_mark_auth** | `yes` / `no` / `unknown` / NULL（未标注）——越权矩阵列 |
 | `roles_seen` | TEXT | **endpoint_mark_auth** | 角色数组 JSON（并集累积）——越权矩阵列 |
+| `auth_state` | TEXT | **endpoint_classify_auth** | `public` / `login_required` / `role_required` / `unknown` / NULL——登录态判定列（21 号方案 §5.1，ensureCol 列演进） |
+| `auth_state_evidence` | TEXT | **endpoint_classify_auth** | 判定证据 JSON（reasons/confidence/run_id/probed_at） |
+| `should_auth` | TEXT | **endpoint_annotate_semantics** | `yes` / `no` / `unknown` / NULL——业务语义「应该登录」（21 号方案 §5.2） |
+| `should_auth_source` | TEXT | **endpoint_annotate_semantics** | 标注来源：`auto` / `model` / `script` / `dashboard:{operator}`（人工裁定 > 自动建议，自动建议不覆盖 dashboard 裁定） |
+| `should_auth_at` | INTEGER | **endpoint_annotate_semantics** | 标注时刻 |
 
 **`data/pipeline/{program}/param-queue.txt`**（file 后端；owner = endpoint 域）：
 

@@ -286,6 +286,7 @@
 | `session_id` | string | ❌ | null | 会话反查回填值（findWorkerSessionId 结果） |
 | `truth` | object | ❌ | `{checked:false,rejected:false,reason:''}` | 由调度器取 `exec_spawn_worker` 返回值（`data.truth`，拒执标记扫描结果）透传；`truth.rejected=true` ⇒ outcome 强制翻转为 failed（**不经 worker 事件**——`exec.worker.finished` 无 truth 字段） |
 | `timed_out` | boolean | ❌ | false | 超时收尾标记；true 时 ok 强制为 false，并按超时策略参与续期快速重试（60s） |
+| `spent_tokens` | integer | ❌ | null | **成本归因（INV-T14，2026-09-22 落地）**：worker 上报该 run 的 token 用量（≥0）；非空时回填 `tasks.spent_tokens` 并入 `task.finished` payload；`budget_tokens` 非空且超支时 note 前缀 `[预算超支]`、payload 带 `budget_overrun:true`（超支是观测事实不置 failed） |
 
 **流程守卫（前置不变量，从 v4.x taskUpdate 拆出，成为 finish 的私有不变量）**：
 
@@ -701,7 +702,7 @@ stateDiagram-v2
 | INV-T11 | 续期锚点=run_at（标称相位），非 next_run_at | （算法内建，非校验） |
 | INV-T12 | run_cli 沙箱对本域 owned 表/文件不可写（manifest owns × 沙箱白名单，setup.sh 冒烟交叉断言） | （部署期断言） |
 | INV-T13 | **⚠️ 未实现（设计预留）provider 路由硬约束**：任务级 `provider` 必须 ∈ 允许清单（默认 `bellkeeper`；`provider` 显式传其它值须在白名单内，否则 `E_TASK_PROVIDER_FORBIDDEN`）。应急直连（临时绕 Bellkeeper）走审批 `approval_request(kind=tool-intrusive)` 之外的人工通道，audit 高亮 + dsh-bill 归因 | `E_TASK_PROVIDER_FORBIDDEN`（未见代码实现） |
-| INV-T14 | **⚠️ 未实现（设计预留）成本归因**：任务收尾时回填 `spent_tokens`（取自 dsh-bill 该 session/provider 的实际用量）；`budget_tokens` 非空时超支记 `note` 前缀 `[预算超支]`——provider 用量与任务级预算在账本对齐 | （可观测承载；`spent_tokens` 现恒为默认 0，无回填代码） |
+| INV-T14 | **成本归因（2026-09-22 落地，21 号方案 §0-8）**：`task_finish` 收可选 `spent_tokens`（worker 上报该 run 的 token 用量），收尾时回填 `tasks.spent_tokens` 并带在 `task.finished` 事件 payload；`budget_tokens` 非空且超支时记 `note` 前缀 `[预算超支]`（超支是观测事实不置 failed）——provider 用量与任务级预算在账本对齐。事件订阅方（看板成本列/预算闸）消费 `spent_tokens`/`budget_overrun` | （已实现；dsh-bill 自动取数仍预留——当前由 worker/调度方上报） |
 
 ### 2.3 事务与联动实现
 

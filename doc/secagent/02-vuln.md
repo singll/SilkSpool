@@ -94,6 +94,7 @@
 |---|---|---|---|
 | E_VULN_INCOMPLETE | 五要素缺失（title<10 字符 / 复现或影响为空 / 低信息标题形状） | "信号登记要求五要素完整（规范标题≥10 字符、复现步骤、具体影响、证据引用、host）。机器产出或不完整观察请勿用本动词；完成对抗性自检与双出口复现后再登记" | false |
 | E_VULN_INFO_SEVERITY | severity=info | "info 级侦察副产物不进信号面。如确有安全价值，按 rules/src/severity-rating.md 重新定级（信息泄露默认低危）后以 low+具体影响登记" | false |
+| E_VULN_SEVERITY_CAPPED | severity × vuln_type 硬降级（21 号方案 §0-6，signalComplete 不变量）：信息泄露/中间件暴露类 ≤ low；XSS/CSRF/CORS/开放跳转等未证明执行类 ≤ medium（`sec-rules-hypothesis.enforceSeverityCap`） | "按评级规则降为 cap 再登记，或在影响与证据中证明进一步利用后走人工裁定" | false |
 | E_EVIDENCE_REQUIRED | evidence 缺失或无证据引用 | "证据必须是 run_id/flow_id/burp_item/evidence 路径/oob 交互记录引用，无证据不结论（sec-verification 铁律）" | false |
 | E_IDEMPOTENT_CONFLICT | 同强指纹异参重放 | "该发现已登记（同 host+title+url）。补充信息用 vuln_note；字段勘误用 vuln_note 附勘误说明" | false |
 | E_SCHEMA / E_ACTOR_FORBIDDEN | 见宪法 | — | false |

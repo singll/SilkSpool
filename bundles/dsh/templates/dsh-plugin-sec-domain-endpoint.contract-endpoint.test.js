@@ -415,3 +415,113 @@ test('alias: endpoint_query → endpoint_list / surface_queue → endpoint_queue
   assert.equal(s.cmd, 'queue_surface')
   assert.equal(s.data.new_urls, 1)
 })
+
+// ---------------------------------------------------------------------------
+// 10. 21 号方案 §5.1/§5.2：登录态判定 + 业务语义标注
+// ---------------------------------------------------------------------------
+
+test('classify_auth: 无凭据 302 至登录页 → login_required 落列 + 事件', async () => {
+  const { dir, bus } = makeEnv()
+  await bus.dispatch('endpoint', 'upsert', { rows: [{ host: 'a.example.com', path: '/user/profile' }] }, { actor: 'model' })
+  const r = await bus.dispatch('endpoint', 'classify_auth', {
+    host: 'a.example.com', path: '/user/profile', run_id: 'run_test_20260910_000000',
+    response: { status: 302, redirect_location: 'https://a.example.com/sso/login?next=/user/profile' },
+  }, { actor: 'script' })
+  assert.equal(r.ok, true)
+  assert.equal(r.data.auth_state, 'login_required')
+  const row = bus._internal.db().prepare('SELECT auth_state, auth_state_evidence FROM endpoints WHERE host=?').get('a.example.com')
+  assert.equal(row.auth_state, 'login_required')
+  assert.ok(row.auth_state_evidence.includes('run_test_20260910_000000'))
+  const outbox = bus._internal.db().prepare('SELECT payload FROM event_outbox').all().map((o) => JSON.parse(o.payload).name)
+  assert.ok(outbox.includes('endpoint.auth_classified'))
+  const audit = readAudit(dir)
+  assert.ok(audit.find((a) => a.domain === 'endpoint' && a.cmd === 'classify_auth'))
+})
+
+test('classify_auth: 200 + 业务数据 → public；未登记端点 E_NOT_FOUND；schema 拒 extra 字段', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('endpoint', 'upsert', { rows: [{ host: 'a.example.com', path: '/x' }] }, { actor: 'model' })
+  const r = await bus.dispatch('endpoint', 'classify_auth', {
+    host: 'a.example.com', path: '/x', run_id: 'run_test_20260910_000000',
+    response: { status: 200, has_business_data: true },
+  }, { actor: 'model' })
+  assert.equal(r.ok, true)
+  assert.equal(r.data.auth_state, 'public')
+  const nf = await bus.dispatch('endpoint', 'classify_auth', {
+    host: 'a.example.com', path: '/nope', run_id: 'run_test_20260910_000000', response: { status: 200 },
+  }, { actor: 'model' })
+  assert.equal(nf.ok, false)
+  assert.equal(nf.error.code, 'E_NOT_FOUND')
+  const bad = await bus.dispatch('endpoint', 'classify_auth', {
+    host: 'a.example.com', path: '/x', run_id: 'run_test_20260910_000000', response: { status: 200, bogus: 1 },
+  }, { actor: 'model' })
+  assert.equal(bad.ok, false)
+})
+
+test('annotate_semantics: 自动建议（不传 should_auth）落 auto 来源', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('endpoint', 'upsert', { rows: [{ host: 'a.example.com', path: '/admin/console' }] }, { actor: 'model' })
+  const r = await bus.dispatch('endpoint', 'annotate_semantics', { host: 'a.example.com', path: '/admin/console' }, { actor: 'script' })
+  assert.equal(r.ok, true)
+  assert.equal(r.data.should_auth, 'yes')
+  assert.equal(r.data.source, 'auto')
+  assert.ok(r.data.suggestion.matched.includes('admin'))
+})
+
+test('annotate_semantics: dashboard 人工裁定 > 自动建议（不覆盖）', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('endpoint', 'upsert', { rows: [{ host: 'a.example.com', path: '/api/share/doc' }] }, { actor: 'model' })
+  const human = await bus.dispatch('endpoint', 'annotate_semantics', { host: 'a.example.com', path: '/api/share/doc', should_auth: 'no', note: '本就该公开的分享接口' }, { actor: 'dashboard', operator: 'op1' })
+  assert.equal(human.ok, true)
+  assert.equal(human.data.source, 'dashboard:op1')
+  // 自动建议（路径含 share→no，但若建议 yes 也不得覆盖人工裁定）
+  const auto = await bus.dispatch('endpoint', 'annotate_semantics', { host: 'a.example.com', path: '/api/share/doc', body_excerpt: '{"phone":"13812345678"}' }, { actor: 'script' })
+  assert.equal(auto.ok, true)
+  assert.equal(auto.data.applied, false)
+  assert.equal(auto.data.kept_human_ruling, true)
+  const row = bus._internal.db().prepare('SELECT should_auth, should_auth_source FROM endpoints WHERE host=?').get('a.example.com')
+  assert.equal(row.should_auth, 'no')
+  assert.equal(row.should_auth_source, 'dashboard:op1')
+})
+
+test('annotate_semantics: model 显式标注必须带 note（E_EVIDENCE_REQUIRED）', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('endpoint', 'upsert', { rows: [{ host: 'a.example.com', path: '/x' }] }, { actor: 'model' })
+  const r = await bus.dispatch('endpoint', 'annotate_semantics', { host: 'a.example.com', path: '/x', should_auth: 'yes' }, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_EVIDENCE_REQUIRED')
+  const ok = await bus.dispatch('endpoint', 'annotate_semantics', { host: 'a.example.com', path: '/x', should_auth: 'yes', note: '接口返回他人订单数据' }, { actor: 'model' })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.data.source, 'model')
+})
+
+test('endpoint.registered 订阅：入库即自动建议 should_auth', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('endpoint', 'upsert', { rows: [{ host: 'a.example.com', path: '/pay/order/list' }] }, { actor: 'model' })
+  await bus._internal.dispatcherTick()
+  const row = bus._internal.db().prepare('SELECT should_auth FROM endpoints WHERE host=?').get('a.example.com')
+  assert.equal(row.should_auth, 'yes')
+})
+
+test('auth_summary: 分布聚合 + 标注率', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('endpoint', 'upsert', { rows: [{ host: 'a.example.com', path: '/pub' }, { host: 'a.example.com', path: '/priv' }] }, { actor: 'model' })
+  await bus.dispatch('endpoint', 'classify_auth', { host: 'a.example.com', path: '/pub', run_id: 'run_test_20260910_000000', response: { status: 200, has_business_data: true } }, { actor: 'script' })
+  await bus.dispatch('endpoint', 'classify_auth', { host: 'a.example.com', path: '/priv', run_id: 'run_test_20260910_000000', response: { status: 401 } }, { actor: 'script' })
+  const q = await bus.query('endpoint', 'auth_summary', {}, { actor: 'model' })
+  assert.equal(q.ok, true)
+  assert.equal(q.data.total, 2)
+  assert.equal(q.data.by_state.public, 1)
+  assert.equal(q.data.by_state.login_required, 1)
+  assert.equal(q.data.marked_ratio, 1)
+})
+
+test('endpoint_list: auth_state/should_auth 过滤', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('endpoint', 'upsert', { rows: [{ host: 'a.example.com', path: '/x' }] }, { actor: 'model' })
+  await bus.dispatch('endpoint', 'classify_auth', { host: 'a.example.com', path: '/x', run_id: 'run_test_20260910_000000', response: { status: 401 } }, { actor: 'script' })
+  const q = await bus.query('endpoint', 'list', { auth_state: 'login_required' }, { actor: 'model' })
+  assert.equal(q.total, 1)
+  const none = await bus.query('endpoint', 'list', { auth_state: 'public' }, { actor: 'model' })
+  assert.equal(none.total, 0)
+})
