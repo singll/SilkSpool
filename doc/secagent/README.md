@@ -14,12 +14,14 @@
 | 看最近一次全面检查（已闭环归档） | [archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/漏洞产出/执行历史/UI；四轮修复全部落地，结论已回填 00/02/05/08/09/10/11/15/16/17） |
 | 看上级猎面编排对标（已实施归档） | [archive/21-benchmark-strikeagent-flash-2026-09-21.md](archive/21-benchmark-strikeagent-flash-2026-09-21.md)（SRC 发现体系重构：覆盖账本/登录态判定/假设引擎/机器验证 oracle/Feedback Core；Phase 0–4 已实施验收，结论已回填 02/04/05/07/10/11/15/16） |
 | 看项目型常驻任务设计（已实施归档） | [archive/22-campaign-task-2026-09-22.md](archive/22-campaign-task-2026-09-22.md)（Campaign 专项实体：派生/下发/监督/验收闭环 + 知识学习联动；task 域内重构，不新增域；已实施评审修复并部署验收 accept PASS=75，结论已回填 05/07/09/16/01/CONTEXT） |
+| 看 LLM 供给调速设计（在办，未实施） | [23-llm-supply-throttle.md](23-llm-supply-throttle.md)（LlmSupplyWatch：Bellkeeper 池额度/熔断感知 → 专项派生供给因子三档；三闸取严；不改 Bellkeeper） |
 
 ## 文档结构（唯一形态）
 
 ```
 doc/secagent/
   00-conventions.md … 18-migration.md   正式模块契约（常驻；每模块自维护，改动时同步 bump）
+  23-llm-supply-throttle.md              【在办专项】LLM 供给联动调速（Campaign × Bellkeeper 池额度感知）设计——仅设计，未实施
   PROGRESS.md                           当前进度（只含当前 + 最近结果 + 通用规则）
   README.md                             本页（入口 · 结构 · 治理规则）
   archive/                              历史（只读）：

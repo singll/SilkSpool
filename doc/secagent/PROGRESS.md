@@ -17,6 +17,10 @@
 
 ## 二、最近进度结果
 
+### 2026-09-22 · 两个 SRC 专项上线（L0）+ 23 号方案设计：LLM 供给联动调速（仅设计）
+- 经 sec-bus-cli 创建并激活：`#1 美团SRC 持续挖掘`（meituan-src）、`#2 字节SRC 持续挖掘`（bytedance）——均 L0 台账模式、500k tokens/7d 窗口、stop_conditions 三条，验证命令面与 INV-C1 授权校验在线上生效。
+- 针对「专项常驻跑 × pool-secagent 成员套餐额度窗口（kimi-code ~5h/7d、deepseek-secagent 500rpd）」产出 [23-llm-supply-throttle.md](23-llm-supply-throttle.md)：LlmSupplyWatch 读 Bellkeeper 既有 `/api/llm/health`+`channels/status`（零改造），规则层 `decideThrottle` 三档供给因子（1.0/0.4/0）叠加成第三道派生闸；额度熔断 → L2 自动降 L1（不回弹，防震荡），恢复人工确认；探测失败先降速后停派（INV-C11/C12）；看板专项卡片加供给徽章。README 已登记为在办专项。
+
 ### 2026-09-22 · 22 号方案方案 A：专项并入任务视图（ui-task 五区块）
 - 任务右侧栏 tab 顶部新增「专项」区块：Campaign 卡片（状态/自主级别/验收计数/预算/心跳 + 立即 tick，走既有 `campaigns`/`campaignTickNow` RPC）；点击卡片按 `campaign_id` 过滤一次性队列（`task_list` 增 `campaign_id` 过滤参数 + dashboard-rpc `tasks` 透传）；队列行带「专项 <名称>」归属 chip（点击即过滤、可一键清除）；campaigns 查询不可达时区块静默隐藏（降级链）。安全中心「专项」tab 保留（cross 全局视角）。
 - 顺带修复 HEAD 既有 bug：`pillNode` 只读 `props.children`，调用方按第二参传 label 导致**真实渲染下徽章文字静默丢失**（定时卡片 phase/下次运行徽章空白）——假 React 测试环境掩盖了该缺陷，已改签名并补注释。
