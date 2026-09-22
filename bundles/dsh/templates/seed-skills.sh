@@ -2,7 +2,7 @@
 # ==============================================================================
 # SilkSecAgent 核心 Skill + 规则先验层 种子（幂等：补缺失 + 内容漂移即刷新）
 # DSH 用户级技能目录：$DSH_HOME/skills/<name>/SKILL.md
-# 规则先验层：$DSH_HOME/rules/<rel>（79 篇 = 57 静态规则 + 22 案例引用层，人工蒸馏）
+# 规则先验层：$DSH_HOME/rules/<rel>（80 篇 = 58 静态规则 + 22 案例引用层，人工蒸馏）
 #
 # v4.5 重构（2026-09-04）：正文全部外移为版本受控文件——
 #   技能源  data-seed/skills/<name>/SKILL.md（7 个 sec-* 技能）
@@ -121,6 +121,7 @@ seed_rule techniques/type-juggling-test.md
 seed_rule techniques/waf-bypass.md
 seed_rule techniques/websocket-test.md
 seed_rule techniques/xslt-injection-test.md
+seed_rule techniques/miniapp-capture-sop.md
 seed_rule techniques/xss-test.md
 seed_rule techniques/xxe-test.md
 
@@ -152,7 +153,7 @@ seed_rule cases/cwe-93-crlf-response-splitting.md
 # -------------------- 3. 源目录整体校验（部署完整性闸门） --------------------
 n_src_rules=$(find "$SEED_SRC/rules" -name '*.md' 2>/dev/null | wc -l || echo 0)
 n_dst_rules=$(find "$RULES_DIR" -name '*.md' 2>/dev/null | wc -l || echo 0)
-if [ "$n_src_rules" != "79" ] || [ "$n_dst_rules" != "79" ]; then
-    log "WARN: 规则数异常（源 $n_src_rules / 已部署 $n_dst_rules，应为 79）——检查 data-seed/rules 完整性"
+if [ "$n_src_rules" != "80" ] || [ "$n_dst_rules" != "80" ]; then
+    log "WARN: 规则数异常（源 $n_src_rules / 已部署 $n_dst_rules，应为 80）——检查 data-seed/rules 完整性"
 fi
 log "seed 完成：7 skills + $n_dst_rules rules（源 $SEED_SRC）"

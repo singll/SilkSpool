@@ -7,6 +7,7 @@ import {
   oracleUnauthzDiff, oracleIdorDiff, oracleInfoDisclosureDiff,
   oracleSqliDiff, oracleSqliTime, oracleXssEcho, oracleSsrfOob,
   fenceUntrusted, detectInjectionPatterns, compileSituation, strategyKey, simhashDistance,
+  routeFlowsSignal, visionTriageRubric, decontextualize, distillEpisode,
 } from '../index.js'
 
 // ---------- §5.1 登录态判定 ----------
@@ -180,4 +181,53 @@ test('compileSituation: 各硬约束违规', () => {
 })
 test('strategyKey: 大小写归一 + 形态', () => {
   assert.equal(strategyKey({ host: 'A.Example.COM', path: '/x', param: 'id', vuln_class: 'idor' }), 'a.example.com|/x|id|idor')
+})
+
+// ---------- §1-3 被动流量分流 ----------
+test('routeFlowsSignal: 有趣流量路由 llm_triage，普通流量归档', () => {
+  // JSON API + 敏感参数 + 凭据字样 → 高分送研判
+  const hot = routeFlowsSignal({ status: 200, content_type: 'application/json', param_names: ['id', 'page'], body_excerpt: '{"token":"abc"}' })
+  assert.equal(hot.interesting, true)
+  assert.equal(hot.route, 'llm_triage')
+  // 5xx + 报错泄露
+  assert.equal(routeFlowsSignal({ status: 500, body_excerpt: 'MySQL syntax error near' }).interesting, true)
+  // 小程序流量特征
+  assert.equal(routeFlowsSignal({ status: 200, host: '12345.servicewechat.com', content_type: 'application/json', param_names: ['uid'] }).interesting, true)
+  // 静态资源/无特征 → 归档
+  const cold = routeFlowsSignal({ status: 200, content_type: 'text/css', url: 'https://a.com/static/main.css' })
+  assert.equal(cold.interesting, false)
+  assert.equal(cold.route, 'archive_only')
+})
+
+test('visionTriageRubric: 视觉特征→隐藏功能点线索', () => {
+  const r = visionTriageRubric({ has_admin_ui: true, has_debug_panel: true, nav_items: ['首页', '数据导出', '用户管理'] })
+  assert.equal(r.verdict, 'interesting')
+  assert.ok(r.leads.some((l) => l.kind === 'admin_surface'))
+  assert.ok(r.leads.some((l) => l.kind === 'hidden_nav' && l.note.includes('数据导出')))
+  assert.equal(visionTriageRubric({}).verdict, 'nothing')
+})
+
+// ---------- §4-1 蒸馏 ----------
+test('decontextualize: 剥离目标细节成战术骨架', () => {
+  const t = decontextualize('对 api.meituan.com 的 /user/detail?id=12345 越权双身份差分，订单 20260922001')
+  assert.ok(!t.includes('meituan'))
+  assert.ok(!t.includes('12345'))
+  assert.ok(!t.includes('20260922001'))
+})
+
+test('distillEpisode: 只蒸 confirmed 正例，产出聚合键', () => {
+  // 失败局/无 verdict 不蒸
+  assert.equal(distillEpisode({ outcome: 'inconclusive' }), null)
+  assert.equal(distillEpisode({ outcome: 'confirmed', context: {} }), null)
+  // confirmed + vuln_type → 去特化候选
+  const d = distillEpisode({
+    outcome: 'confirmed',
+    context: { vuln_type: 'IDOR 越权访问', host: 'api.target.com', param: 'id', stack: 'spring' },
+    evidence_refs: ['capsule:abc123', 'run:ev_1'],
+  })
+  assert.ok(d)
+  assert.equal(d.aggregate_key, 'spring|id|idor')
+  assert.ok(d.tags.includes('distilled'))
+  assert.ok(!d.scenario.includes('target.com')) // 去特化
+  assert.equal(d.source_kind, 'episode')
 })

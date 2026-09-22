@@ -134,6 +134,23 @@ function createRepo(dataDir) {
       fs.appendFileSync(path.join(flowsDir, `xray-${date}.jsonl`), String(line) + '\n')
       return path.join(flowsDir, `xray-${date}.jsonl`)
     },
+    // 21 号方案 §1-3：读回流文件（流量分流输入）。date 缺省=全部文件；limit 行数上限。
+    readFlows({ date = '', limit = 500 } = {}) {
+      try {
+        const files = date
+          ? [path.join(flowsDir, `xray-${String(date).replace(/[^0-9-]/g, '')}.jsonl`)].filter((f) => fs.existsSync(f))
+          : fs.readdirSync(flowsDir).filter((f) => f.endsWith('.jsonl')).sort().map((f) => path.join(flowsDir, f))
+        const out = []
+        for (const f of files) {
+          for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
+            if (!line.trim()) continue
+            try { out.push({ file: path.basename(f), flow: JSON.parse(line) }) } catch { /* 坏行跳过 */ }
+            if (out.length >= limit) return out
+          }
+        }
+        return out
+      } catch { return [] }
+    },
     appendImport(id, line) {
       fs.mkdirSync(importsDir, { recursive: true })
       fs.appendFileSync(path.join(importsDir, `${id}.jsonl`), String(line) + '\n')

@@ -465,3 +465,101 @@ export function strategyKey({ host = '', path = '', param = '', vuln_class = '' 
 export function hitMatrixKey({ stack = '', param_shape = '', vuln_class = '' } = {}) {
   return `${String(stack || 'generic').toLowerCase()}|${param_shape || 'none'}|${vuln_class}`
 }
+
+// ---------------------------------------------------------------------------
+// §1-3 被动流量分流：flows 信号路由——挑「有趣流量」送 LLM 研判
+// 确定性打分，零 token；score≥threshold 才值得送研判（防流量淹没）。
+// ---------------------------------------------------------------------------
+
+const INTEREST_PARAMS = /^(id|uid|user_id|userid|account|order(_?id)?|file|path|filename|url|uri|redirect|next|callback|return(_?url)?|target|dest|host|domain|ip|query|q|search|keyword|s|debug|token|key|admin|role)$/i
+const MINIPROGRAM_HOST_RE = /servicewechat\.com|weixin\.qq\.com|mp\.weixin|taptap|alipay|amap\.com|bytedance.*(mp|mini)/i
+
+// flow: {status, method, content_type, url, host, has_params, param_names[], body_excerpt}
+export function routeFlowsSignal(flow = {}, { threshold = 3 } = {}) {
+  const reasons = []
+  let score = 0
+  const status = Number(flow.status) || 0
+  if (status >= 500) { score += 1; reasons.push(`5xx ${status}（错误面常泄露栈/调试信息）`) }
+  const ct = String(flow.content_type || '').toLowerCase()
+  if (ct.includes('json') || ct.includes('xml')) { score += 1; reasons.push('结构化 API 响应（业务数据面）') }
+  const names = Array.isArray(flow.param_names) ? flow.param_names.map(String) : []
+  const interesting = names.filter((n) => INTEREST_PARAMS.test(n))
+  if (interesting.length) { score += Math.min(2, interesting.length); reasons.push(`敏感形态参数：${interesting.slice(0, 3).join(', ')}`) }
+  if (MINIPROGRAM_HOST_RE.test(String(flow.host || '') + String(flow.url || ''))) { score += 1; reasons.push('小程序/App 流量特征') }
+  const be = String(flow.body_excerpt || '')
+  if (/(token|secret|password|passwd|ak\b|sk\b|app_?key|session)/i.test(be)) { score += 2; reasons.push('响应体疑似含凭据/密钥字样') }
+  if (/(stack ?trace|exception|sql syntax|ORA-\d|MySQL|SQLite3?::|PostgreSQL)/i.test(be)) { score += 2; reasons.push('响应体疑似报错泄露') }
+  const interestingFlag = score >= threshold
+  return {
+    score, interesting: interestingFlag, reasons,
+    route: interestingFlag ? 'llm_triage' : 'archive_only',
+    hint: interestingFlag ? '送 LLM 研判产假设候选（内容须 fenceUntrusted 围栏）' : '归档不研判',
+  }
+}
+
+// ---------------------------------------------------------------------------
+// §1-3 vision_triage 截图判读 rubric（确定性特征输入 → 隐藏功能点线索）
+// 视觉模型输出特征，本函数只路由不判图。
+// ---------------------------------------------------------------------------
+
+// feats: {has_login_form, has_admin_ui, has_debug_panel, has_error_page, nav_items[], text_excerpt}
+export function visionTriageRubric(feats = {}) {
+  const leads = []
+  if (feats.has_login_form) leads.push({ kind: 'login_surface', note: '登录表单——登录后攻击面入口，登记凭据后可差分测试' })
+  if (feats.has_admin_ui) leads.push({ kind: 'admin_surface', note: '管理界面特征——高价值功能点，结合 should_auth 判定未授权可达性' })
+  if (feats.has_debug_panel) leads.push({ kind: 'debug_surface', note: '调试/诊断面板特征——H1 保底假设候选（Actuator/调试端点族）' })
+  if (feats.has_error_page) leads.push({ kind: 'error_surface', note: '错误页特征——信息泄露假设候选（info_disclosure oracle）' })
+  const nav = Array.isArray(feats.nav_items) ? feats.nav_items.map(String).filter(Boolean) : []
+  const hidden = nav.filter((n) => /export|import|admin|manage|system|config|内部|管理|导出|设置/i.test(n))
+  for (const n of hidden.slice(0, 5)) leads.push({ kind: 'hidden_nav', note: `导航含高价值项「${n}」——对应端点优先入覆盖账本` })
+  return { leads, verdict: leads.length ? 'interesting' : 'nothing', count: leads.length }
+}
+
+// ---------------------------------------------------------------------------
+// §4-1 蒸馏：episode → 去特化经验卡候选（战术骨架，剥离目标细节）
+// 不蒸失败局（rejected）、不蒸无 verdict 的 episode。
+// ---------------------------------------------------------------------------
+
+const HOSTLIKE_RE = /([a-zA-Z0-9_-]+\.)+[a-zA-Z]{2,}|\b\d{1,3}(\.\d{1,3}){3}\b/g
+
+// 去特化：把 host/IP/具体路径值替换为占位符，保留战术结构
+export function decontextualize(text) {
+  let t = String(text || '')
+  t = t.replace(HOSTLIKE_RE, '{host}')
+  t = t.replace(/\/[^\s"'`]*\{host\}[^\s"'`]*/g, '{endpoint}')
+  t = t.replace(/[?&][a-zA-Z_][a-zA-Z0-9_]*=[^\s&"'`]+/g, (m) => `${m.split('=')[0]}={value}`)
+  t = t.replace(/\b\d{4,}\b/g, '{id}')
+  return t.trim()
+}
+
+// episode: {outcome, reason_code, context:{vuln_type, host, param, path, stack}, evidence_refs[]}
+// 输出 null=不蒸（失败局/无类型/证据不足）；否则产出去特化候选 {scenario, takeaway, tags, aggregate_key}
+export function distillEpisode(ep = {}) {
+  if (ep.outcome !== 'confirmed') return null // 只蒸真实正例（含平台 accepted 事件化）
+  const ctx = ep.context || {}
+  const vulnType = String(ctx.vuln_type || '').trim()
+  if (!vulnType) return null
+  const cls = (() => {
+    const t = vulnType.toLowerCase()
+    if (/idor|bola|越权|unauthorized|authz|access/.test(t)) return 'idor'
+    if (/sqli|sql|injection|注入/.test(t)) return 'sqli'
+    if (/xss|跨站/.test(t)) return 'xss'
+    if (/ssrf/.test(t)) return 'ssrf'
+    if (/upload|文件|file|path_traversal/.test(t)) return 'file'
+    if (/info|泄露|disclosure|debug|actuator/.test(t)) return 'info_disclosure'
+    return 'info_disclosure'
+  })()
+  const stack = String(ctx.stack || 'generic').toLowerCase()
+  const paramShape = String(ctx.param_shape || (ctx.param ? 'id' : 'none'))
+  const scenario = decontextualize(`${stack} 栈 {endpoint} 的 ${paramShape} 形态参数触发 ${vulnType}`).slice(0, 200)
+  const takeaway = decontextualize(`对 ${stack} 目标按 ${paramShape} 参数形态路由 ${cls} 假设，oracle 差分判定后 capsule 固化`).slice(0, 400)
+  const evidence = Array.isArray(ep.evidence_refs) ? ep.evidence_refs.slice(0, 3).map((e) => String(e).slice(0, 120)) : []
+  return {
+    scenario, takeaway,
+    kind: 'card',
+    tags: ['distilled', cls, stack],
+    aggregate_key: `${stack}|${paramShape}|${cls}`, // 栈×参数形态×漏洞类聚合键
+    source_kind: 'episode',
+    evidence,
+  }
+}
