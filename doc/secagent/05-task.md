@@ -1086,4 +1086,5 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **分档路由（步骤 2.5，已上线）**：新建 Bellkeeper 模型组 `pool-secagent-lite`（flash-lite 优先）/ `pool-secagent-heavy`（glm-5.2 + v4.1-flash），token `silksecagent` 的 `allowed_groups` 放行；dsh `SEC_CAMPAIGN_CLASS_GROUPS=lite:pool-secagent-lite,std:pool-secagent,heavy:pool-secagent-heavy` 按 `task_class` 映射组名——等价「按 task_class 分档路由 + 组内熔断顺延」，无需改 Bellkeeper 路由代码。线上验证：lite 任务命中 flash-lite、heavy 命中 glm-5.2。
 - **Path A（步骤 5，已上线）**：`SEC_CAMPAIGN_MODEL_SELECTOR=dsh` 时派生任务落 `provider=bellkeeper` + `model=<组/模型>`；调度器 `exec.spawn_worker` 经 `model-patch.yml` 注入，线上实测 worker 收到 `{provider:bellkeeper, model:pool-secagent-heavy}`。
 - **kimi-code 入池（步骤 4）**：评估结论 **暂不入池**（编码专用 task_types + 5h/7d 不可预测窗口），复评条件见 [23 号文档 §五.6](23-llm-supply-throttle.md)。
+- **供给徽章恢复修复**：观测异常（llm_probe_failed）恢复后，`lastSupplyState` 归一为 `{state:up|throttled|probe_failed}`，恢复时写 `llm_restored`——修复「观测异常恢复后徽章卡死在观测异常」。
 - **spent_tokens=0**：worker 未上报 token（worker 侧），预算闸仍按预估 token 记账。

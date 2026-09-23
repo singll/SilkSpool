@@ -1224,38 +1224,38 @@ function makeHandlers(opts) {
     return { state: 'unknown', factor: null }
   }
 
-  // 最近一次供给状态（从 checkpoint 反推；null=未知）
+  // 最近一次供给状态（从 checkpoint 反推；null=无历史）。state ∈ up|throttled|probe_failed。
   function lastSupplyState(repo, campaignId) {
     let rows = []
     try { rows = repo.listCheckpoints(campaignId, 50) } catch { rows = [] }
     for (const r of rows) {
-      if (r.kind === 'llm_restored') return 1.0
-      if (r.kind === 'llm_throttled') { const p = parseJsonSafe(r.payload, {}); return Number(p.supply_factor) }
-      if (r.kind === 'llm_probe_failed') return null
+      if (r.kind === 'llm_restored') return { state: 'up', factor: 1 }
+      if (r.kind === 'llm_throttled') { const p = parseJsonSafe(r.payload, {}); return { state: 'throttled', factor: Number(p.supply_factor) } }
+      if (r.kind === 'llm_probe_failed') return { state: 'probe_failed', factor: null }
     }
     return null
   }
 
-  // 供给变化留痕（幂等防抖：同因子不重复发；factor=0 首次发 task.campaign.escalated）
+  // 供给变化留痕（幂等防抖：同状态不重复发；factor=0 首次发 task.campaign.escalated）
   function recordSupplyTransition(repo, c, supply) {
     const events = []
     if (!supply.enabled) return events
     const prev = lastSupplyState(repo, c.id)
     if (supply.probe_failed && supply.supply_factor === 1.0) {
-      if (!hasRecentCheckpoint(repo, c.id, 'llm_probe_failed', 5 * 60000)) {
+      if (prev?.state !== 'probe_failed' || !hasRecentCheckpoint(repo, c.id, 'llm_probe_failed', 5 * 60000)) {
         const cp = writeCheckpoint(repo, c.id, 'llm_probe_failed', `供给观测失败（连续 ${supplyProbeFailures} 次），fail-open 但有界降速（derive_cap≤2）；连续 ${supplyEnv.probeMax} 次转停派`, { probe_failures: supplyProbeFailures })
         events.push(...cp.events)
       }
       return events
     }
     if (supply.supply_factor < 1) {
-      if (prev === supply.supply_factor && hasRecentCheckpoint(repo, c.id, 'llm_throttled', 5 * 60000)) return events
+      if (prev?.state === 'throttled' && prev.factor === supply.supply_factor && hasRecentCheckpoint(repo, c.id, 'llm_throttled', 5 * 60000)) return events
       const cp = writeCheckpoint(repo, c.id, 'llm_throttled', supply.supply_factor === 0
         ? 'LLM 供给停派（成员全部熔断/额度耗尽）：L2→L1，在跑子任务不动'
         : `LLM 供给降速（factor=${supply.supply_factor}）：derive_cap 折算`, { supply_factor: supply.supply_factor, detail: supply.detail, model_hint: supply.model || null })
       events.push(...cp.events)
       if (supply.supply_factor === 0) {
-        if (prev !== 0) events.push({ name: 'task.campaign.escalated', payload: { campaign_id: c.id, kind: 'llm_throttled', summary: 'LLM 池额度熔断中，专项停派；Bellkeeper 探针恢复后自动回弹', payload: { supply_factor: 0, checkpoint_id: cp.id } } })
+        if (!prev || prev.factor !== 0) events.push({ name: 'task.campaign.escalated', payload: { campaign_id: c.id, kind: 'llm_throttled', summary: 'LLM 池额度熔断中，专项停派；Bellkeeper 探针恢复后自动回弹', payload: { supply_factor: 0, checkpoint_id: cp.id } } })
         if (Number(c.autonomy) >= 2) {
           repo.updateCampaign(c.id, { autonomy: 1 })
           const ac = writeCheckpoint(repo, c.id, 'autonomy_change', 'LLM 供给归零，L2 自动降级为 L1（恢复后不自动升回，需人工 review_pass）', { supply_factor: 0 })
@@ -1264,7 +1264,8 @@ function makeHandlers(opts) {
       }
       return events
     }
-    if (prev != null && prev < 1) {
+    // 恢复正常：从降速或观测异常均可回弹（修复「观测异常恢复后徽章卡死」）
+    if (prev && prev.state !== 'up') {
       const cp = writeCheckpoint(repo, c.id, 'llm_restored', 'LLM 供给恢复（factor=1.0）', { supply_factor: 1 })
       events.push(...cp.events)
     }

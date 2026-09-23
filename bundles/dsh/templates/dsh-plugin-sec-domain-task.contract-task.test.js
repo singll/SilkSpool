@@ -1592,6 +1592,33 @@ test('23 INV-C12: 观测失败两阶段——fail-open 有界；连续 3 次转�
   assert.equal(t3.data.summaries[0].derived, 0)
 })
 
+test('23 INV-C12: 观测异常恢复后写 llm_restored（供给徽章不再卡死）', async () => {
+  let fail = true
+  const fetchImpl = async (url) => {
+    if (fail) throw new Error('connect ECONNREFUSED')
+    if (String(url).includes('/groups/status')) {
+      return { json: async () => ({ data: [{ name: 'pool-secagent', members: [{ channel: 'sensenova-secagent', model: 'deepseek-v4.1-flash', weight: 7, available: true, health: { state: 'closed' } }] }] }) }
+    }
+    return { json: async () => ({ data: [] }) }
+  }
+  const env = makeEnv({ supplyEnv: SUPPLY_ENV, supplyFetch: fetchImpl })
+  const { bus } = env
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'rec', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const t1 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(t1.data.summaries[0].supply_factor, 1.0)
+  let list = await bus.query('task', 'campaign_list', {}, { actor: 'dashboard' })
+  assert.equal(list.rows[0].supply.state, 'probe_failed')
+  // 恢复：观测成功 → 写 llm_restored，徽章回正常
+  fail = false
+  const t2 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(t2.data.summaries[0].supply_factor, 1.0)
+  assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='llm_restored'").get(cid), '恢复须写 llm_restored')
+  list = await bus.query('task', 'campaign_list', {}, { actor: 'dashboard' })
+  assert.equal(list.rows[0].supply.state, 'normal', '徽章须从观测异常回弹为正常')
+})
+
 test('23 INV-C11: 显式 campaign_dispatch 供给归零 → E_CAMPAIGN_LLM_EXHAUSTED；dashboard 放行', async () => {
   const members = [
     { channel: 'sensenova-secagent', model: 'ds-v4.1-flash', weight: 7, available: false, health: { state: 'open' } },
