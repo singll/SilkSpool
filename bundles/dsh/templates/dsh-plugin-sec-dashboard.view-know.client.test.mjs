@@ -296,6 +296,67 @@ test('学习域：五问卡片渲染，证据对照按钮发出 learningTrace', 
   assert.ok(calls.some((c) => c.endpoint === 'learningTrace'), 'learningTrace 必须发出')
 })
 
+// ── ⑥ 24 号方案 §3.2/§3.3：治理漏斗 + 学习流水线 ────────────────────────────
+test('24 纯函数：knowledgeFunnel 聚合 memcore tables 状态分布', () => {
+  const uiCore = makeUiCore()
+  const { mod } = loadBundle(uiCore)
+  const mem = { loaded: true, tables: { exp_cards: { candidate: 2, active: 5, cooling: 1 }, kb_docs: { active: 3, deprecated: 4 } } }
+  assert.equal(JSON.stringify(mod.knowledgeFunnel(mem)), JSON.stringify({ candidate: 2, active: 8, cooling: 1, deprecated: 4 }))
+  assert.equal(mod.knowledgeFunnel(null), null)
+  assert.equal(mod.knowledgeFunnel({ loaded: false }), null)
+})
+
+test('24 纯函数：learningPipeline 取 episodes/scores/releases 计数', () => {
+  const uiCore = makeUiCore()
+  const { mod } = loadBundle(uiCore)
+  const d = {
+    learned: { episodes_recent: [{}, {}] },
+    improvement: { scores: [{}] },
+    effective_where: { releases: [{ status: 'active' }, { status: 'revoked' }] },
+  }
+  assert.equal(JSON.stringify(mod.learningPipeline(d)), JSON.stringify({ episodes: 2, artifacts: 1, releases: 2, active: 1, revoked: 1 }))
+  assert.equal(mod.learningPipeline(null), null)
+})
+
+test('24 知识域：治理漏斗条渲染（候选/生效/冷却/归档）', () => {
+  const uiCore = makeUiCore()
+  const { mod } = loadBundle(uiCore)
+  const tree = mod.KnowledgeView({
+    cardsState: { data: { rows: [] }, loading: false, error: null, reload() {} },
+    pbsState: { data: { rows: [] }, loading: false, error: null, reload() {} },
+    rulesState: { data: { rows: [] }, loading: false, error: null, reload() {} },
+    kbState: { data: { rows: [], counts: {} }, loading: false, error: null, reload() {} },
+    factOvState: { data: null, loading: false, error: null, reload() {} },
+    covState: { data: null, loading: false, error: null, reload() {} },
+    memState: { data: { loaded: true, tables: { exp_cards: { candidate: 2, active: 5 } } }, loading: false, error: null, reload() {} },
+    busy: false, callRpc: () => Promise.resolve({}),
+  })
+  const text = deepText(tree)
+  assert.match(text, /治理流水线/, '知识 tab 顶部必须有治理漏斗条')
+  assert.match(text, /候选 2/, '候选计数')
+  assert.match(text, /生效 5/, '生效计数')
+  assert.match(text, /冷却 —/, '缺键显示 —')
+})
+
+test('24 学习域：学习流水线条渲染（观测/记分/发布/撤回）', () => {
+  const uiCore = makeUiCore()
+  const { mod } = loadBundle(uiCore)
+  const d = {
+    learned: { summary: 'x', episodes_recent: [{ episode_id: 'e1', outcome: 'verified_positive' }] },
+    evidence: { summary: 'y', note: '' },
+    improvement: { summary: 'z', scores: [{ artifact_kind: 'exp_card', artifact_id: '1', score: 1, sample_size: 2, verified_positives: 1 }] },
+    effective_where: { summary: 'w', releases: [{ status: 'active', release_id: 'r1', artifact_id: '1', scope_type: 'global' }, { status: 'revoked', release_id: 'r2' }] },
+    rollback: { summary: 'r', hint: 'h' }, gaps: [], feedback: null,
+  }
+  const tree = mod.LearningView({ state: { data: d, loading: false, error: null, reload() {} }, busy: false, callRpc: () => Promise.resolve({}) })
+  const text = deepText(tree)
+  assert.match(text, /学习流水线/, '学习 tab 顶部必须有学习流水线条')
+  assert.match(text, /观测 1/, '观测计数')
+  assert.match(text, /记分 1/, '记分计数')
+  assert.match(text, /发布 2（生效 1）/, '发布计数')
+  assert.match(text, /撤回 1/, '撤回计数')
+})
+
 // ── ⑤ primitives/Modal 缺席 ──────────────────────────────────────────────────
 test('primitives/Modal 缺席：apply 与两个域根渲染均不抛', () => {
   const uiCore = makeUiCore({ modalAbsent: true })

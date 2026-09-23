@@ -133,6 +133,17 @@ try {
   const writeProbe = await call('taskRunNow', { id: 'ui-smoke-stub' }).catch((e) => ({ ok: false, error: { message: clean(e.message) } }))
   check('ui-rpc-write-stubbed', !!writeProbe && writeProbe.ok === true && writeProbe.value && writeProbe.value.stubbed === true, JSON.stringify(writeProbe).slice(0, 200))
 
+  // 24 号方案 §3.0/§3.1/§3.3：专项运行报告三透传 + 学习流水线读端点（运行时只读）
+  const campList = await call('campaigns', { limit: 1 }).catch((e) => ({ ok: false, error: { message: clean(e.message) } }))
+  check('ui-rpc-read-task-campaigns', !!campList && campList.ok === true, 'campaigns => ' + (campList && campList.ok ? 'ok' : JSON.stringify(campList).slice(0, 120)))
+  const cid = campList && campList.ok && campList.value && campList.value.rows && campList.value.rows[0] && campList.value.rows[0].id
+  const prog = cid ? await call('campaignProgress', { id: cid }).catch((e) => ({ ok: false, error: { message: clean(e.message) } })) : { ok: true, value: { skipped: true } }
+  check('ui-rpc-read-task-campaign-progress', !!prog && prog.ok === true, cid ? ('campaignProgress #' + cid + ' => ok') : '无专项（端点可用，跳过）')
+  const pend = cid ? await call('campaignPendingDrafts', { id: cid }).catch((e) => ({ ok: false, error: { message: clean(e.message) } })) : { ok: true, value: { skipped: true } }
+  check('ui-rpc-read-task-campaign-pending', !!pend && pend.ok === true, cid ? ('campaignPendingDrafts #' + cid + ' => ok') : '无专项（端点可用，跳过）')
+  const learn = await call('learningOverview', {}).catch((e) => ({ ok: false, error: { message: clean(e.message) } }))
+  check('ui-rpc-read-know-learning', !!learn && learn.ok === true, 'learningOverview => ' + (learn && learn.ok ? 'ok' : JSON.stringify(learn).slice(0, 120)))
+
   check('ui-no-page-errors', report.pageErrors.length === 0, report.pageErrors.slice(0, 3).join(' | '))
   check('ui-no-console-errors', report.consoleErrors.length === 0, report.consoleErrors.slice(0, 3).join(' | '))
 } catch (error) {

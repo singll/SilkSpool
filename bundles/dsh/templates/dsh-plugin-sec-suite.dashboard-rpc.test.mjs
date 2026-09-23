@@ -45,6 +45,9 @@ const BUSINESS_CALLS = [
   ['taskScheduleUpdate', { id: 1, schedule: { kind: 'interval', every_seconds: 3600 } }],
   ['taskSetStatus', { id: 1, status: 'blocked' }],
   ['taskCreate', { program_id: 'demo', objective: 'x' }],
+  ['campaignProgress', { id: 1 }],
+  ['campaignPendingDrafts', { id: 1 }],
+  ['campaignDispatch', { id: 1, drafts: [{ kind: 'crawl', host: 'example.com' }] }],
   ['findingUpdate', { id: 1, status: 'confirmed' }],
   ['factCorrect', { program_id: 'demo', fact_key: 'k' }],
   ['factDeprecate', { program_id: 'demo', fact_key: 'k' }],
@@ -198,7 +201,8 @@ test('stats：经各域查询聚合，单域失败 → null + degraded，不整�
   assert.equal(out.tasks, null)
   assert.equal(out.discipline, null)
   assert.equal(out.inventory, null)
-  assert.deepEqual(out.degraded.sort(), ['approval', 'asset', 'ledger', 'task', 'vuln'])
+  assert.equal(out.scope, null)
+  assert.deepEqual(out.degraded.sort(), ['approval', 'asset', 'ledger', 'scope', 'task', 'vuln'])
   assert.deepEqual(leaked, [], 'stats 不得直查 assetDb')
 
   // 总线可用：stats 只走域查询，五域各自发起（approval/vuln/task×3/ledger/asset/endpoint/fact）
@@ -207,7 +211,7 @@ test('stats：经各域查询聚合，单域失败 → null + degraded，不整�
   const ok = await handleDashboardRpc('stats', {})
   assert.ok(Array.isArray(ok.degraded))
   const domains = new Set(bus.calls.map((c) => c.domain))
-  for (const d of ['approval', 'vuln', 'task', 'ledger', 'asset', 'endpoint', 'fact']) {
+  for (const d of ['approval', 'vuln', 'task', 'ledger', 'asset', 'endpoint', 'fact', 'scope']) {
     assert.ok(domains.has(d), `stats 应经 ${d} 域查询聚合`)
   }
 })

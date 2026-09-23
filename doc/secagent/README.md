@@ -14,14 +14,14 @@
 | 看最近一次全面检查（已闭环归档） | [archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/漏洞产出/执行历史/UI；四轮修复全部落地，结论已回填 00/02/05/08/09/10/11/15/16/17） |
 | 看上级猎面编排对标（已实施归档） | [archive/21-benchmark-strikeagent-flash-2026-09-21.md](archive/21-benchmark-strikeagent-flash-2026-09-21.md)（SRC 发现体系重构：覆盖账本/登录态判定/假设引擎/机器验证 oracle/Feedback Core；Phase 0–4 已实施验收，结论已回填 02/04/05/07/10/11/15/16） |
 | 看项目型常驻任务设计（已实施归档） | [archive/22-campaign-task-2026-09-22.md](archive/22-campaign-task-2026-09-22.md)（Campaign 专项实体：派生/下发/监督/验收闭环 + 知识学习联动；task 域内重构，不新增域；已实施评审修复并部署验收 accept PASS=75，结论已回填 05/07/09/16/01/CONTEXT） |
-| 看 LLM 供给调速设计（在办，池成员调整已完成，域内调速组件未实施） | [23-llm-supply-throttle.md](23-llm-supply-throttle.md)（v2：LlmSupplyWatch + 统一额度面 .env 区块；OpenCode Go v4.1-flash 已入池；三闸取严；域内零代码改造 Bellkeeper） |
+| 看 LLM 供给调速（已实施归档） | [archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LlmSupplyWatch + 统一额度面 .env 区块 + 任务级选模型；三闸取严；已实施并部署验收 accept PASS=80，结论回填 05/16） |
+| 看运行核查 + 任务/知识/学习工作流可视化（已实施归档） | [archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（专项×LLM 供给逐项核查 W1–W10；任务视图状态化重构 + 专项运行报告抽屉 + 知识/学习工作流状态条；已实施验收，结论回填 16/05） |
 
 ## 文档结构（唯一形态）
 
 ```
 doc/secagent/
   00-conventions.md … 18-migration.md   正式模块契约（常驻；每模块自维护，改动时同步 bump）
-  23-llm-supply-throttle.md              【在办专项】LLM 供给联动调速（Campaign × Bellkeeper 池额度感知）设计——v2 修订：池成员调整已上线，域内调速组件未实施
   PROGRESS.md                           当前进度（只含当前 + 最近结果 + 通用规则）
   README.md                             本页（入口 · 结构 · 治理规则）
   archive/                              历史（只读）：
@@ -29,6 +29,8 @@ doc/secagent/
     20-full-inspection-2026-09-19.md    全面检查报告（四轮修复全部落地验收，结论已回填各模块）
     21-benchmark-strikeagent-flash-2026-09-21.md  SRC 漏洞发现体系重构（Phase 0–4 已实施验收，结论已回填各模块）
     22-campaign-task-2026-09-22.md       项目型常驻任务 Campaign 专项（已实施评审修复并部署验收，结论已回填 05/07/09/16/01/CONTEXT）
+    23-llm-supply-throttle-2026-09-23.md LLM 供给联动调速 + 任务级选模型（已实施部署验收 accept PASS=80，结论已回填 05/16）
+    24-ops-audit-ui-flow-2026-09-23.md   运行核查 + 任务/知识/学习工作流可视化（已实施部署验收，结论已回填 16/05）
     progress-history.md                 历次进度/更新日志/已完成节点/批次守则
     upgrades/                           历次升级方案/记录/自学习专项/交接
     v5-README.md, REVIEW-*, SESSION-PROMPT.md, INDEX.md, …

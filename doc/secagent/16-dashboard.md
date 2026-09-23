@@ -223,9 +223,10 @@ var d2 = slots.inject('sidebar.panellist', function () {
 
 其余读操作走各域查询（`vuln.list`、`asset.list`…），`/silksec-dashboard` 的 case 是薄适配层，`/silksec-domain` 的 `{domain}.{verb}` 是自动投影（§1.7）。
 
-### 1.7 `/silksec-dashboard` 案例逐个去向（56 个，实测）
+### 1.7 `/silksec-dashboard` 案例逐个去向（63 个，实测）
 
-> 说明：本表是 `dashboard-rpc.js` 当前 **56 个手写 case** 的实测去向。原 16-dashboard 的「53 case」表统计于 v4 末期（少记 L6 的三个 learning 端点）；本表为 v6.0 重核口径。所有业务 case 均 fail-closed 到总线（无 v4 直写兜底）。
+> 说明：本表是 `dashboard-rpc.js` 当前 **63 个手写 case** 的实测去向。原 16-dashboard 的「53 case」表统计于 v4 末期（少记 L6 的三个 learning 端点）；本表为 v6.0 重核口径。所有业务 case 均 fail-closed 到总线（无 v4 直写兜底）。
+> 表后 7 个 campaign 端点（22 号方案 4 个 + 24 号方案 3 个）见下方「专项 RPC」注。
 
 | # | case | 读/写 | 去向（总线命令/查询）| 类型 |
 |---|---|---|---|---|
@@ -287,6 +288,8 @@ var d2 = slots.inject('sidebar.panellist', function () {
 | 56 | `reportRead` | 读 | `report.read` | 域查询 |
 
 **去向统计**：域命令 20（含 learningRevokeRelease）+ 域查询 31 + 拆分映射 5（scopeSaveProgram / scopeDeleteProgram / taskSetStatus / findingUpdate / expExportable）+ 壳/平台 7（stats/ops/workspaces/sessions/memcore/learningOverview/learningTrace）= 56（拆分映射中 `scopeDeleteProgram` 同时读 `scope.list`）。`playbooks` 的旧口径（`exp_list{kind:'playbook'}`）已在 L4 收敛为 `exp_rank`。
+
+**专项 RPC（表外 7 个，22/24 号方案）**：`campaigns`→`task.campaign_list`、`campaignGet`→`task.campaign_get`、`campaignDecisions`→`task.campaign_decisions`、`campaignTickNow`→`task.campaign_tick_now`（22 号）；`campaignProgress`→`task.campaign_progress`、`campaignPendingDrafts`→`task.campaign_pending_drafts`（24 号，纯读透传）、`campaignDispatch`→`task.campaign_dispatch`（24 号，actor=dashboard，过预算闸/供给闸）。
 
 ### 1.8 事件
 
@@ -593,3 +596,37 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 - 单测：`dsh-plugin-sec-dashboard.view-campaign.client.test.mjs` 8/8（注册/卸载/降级/列表/详情/tick/primitives 缺席）。
 
 **未接**：L1 待放行队列的一键 `campaign_dispatch` 放行 UI（命令面 `campaign_pending_drafts`/`campaign_dispatch` 已就绪）。
+
+---
+
+## 2026-09-23 24 号方案回填（任务/知识/学习工作流可视化）
+
+> 设计真相源：[24-ops-audit-ui-flow](archive/24-ops-audit-ui-flow-2026-09-23.md)（已归档）。本方案不新增域、不改任何域命令/查询契约语义，只补 dashboard RPC 透传与客户端呈现。**未接**：22 号遗留的 L1 待放行一键放行 UI 本次补齐（走 `campaignDispatch`）。
+
+### 一、RPC 三透传（`dashboard-rpc.js`，纯透传）
+
+| RPC | 去向 | 用途 |
+|---|---|---|
+| `campaignProgress` | `task.campaign_progress`（只读） | 运行报告「目标推进投影」块 |
+| `campaignPendingDrafts` | `task.campaign_pending_drafts`（只读，limit≤50） | L1 待放行草稿预览 + 一键放行 |
+| `campaignDispatch` | `task.campaign_dispatch`（actor=dashboard） | 放行草稿（过预算闸/供给闸，错误码原样上抛） |
+
+### 二、任务视图（`@silksec/ui-task`）——按「状态与时间」重构
+
+- **布局重排**：① 专项卡片 ② 定时任务 ③ 一次性队列 ④ 执行历史 ⑤ 工作区（移到底部）。
+- **专项卡片**：点击语义反转为**展开/收起运行报告**（不再直接过滤队列）；过滤队列改为卡片上的独立 ⌗ 按钮（`aria-label=过滤队列`）；卡片头行增「最近 tick」相对时间。
+- **运行报告抽屉**（展开时三并发 `campaignGet`+`campaignProgress`+`campaignPendingDrafts`，失败各自降级）：① 推进投影（验收合计/推进增量/每 program 分解 pill + 最近 tick + 本次手动 tick 摘要 reviewed/derived/deduped/dropped/skipped——W7 修复点，RPC 返回值不再丢弃）；② 检查点时间线（近 10 条，kind 中文映射 + 语义色 + 相对时间）；③ 待放行草稿（autonomy≥1；单条「放行」+「全部放行」走 `campaignDispatch`；L0 显示「台账级不产草稿」）；④ 活跃子任务（≤8）+ 验收账本近 5 条。
+- **队列状态 tab**：`全部 n · 运行中 n · 排队 n · 阻塞 n`（客户端按 status 分组计数与过滤，零额外 RPC；运行中 chip 用 success 色）；与专项过滤正交叠加。
+- **执行历史**：提到工作区之前；增 `全部/成功/失败` 过滤 chip（客户端过滤当前页）。
+- 纯函数（契约钉死）：`queueStatusCounts` / `filterQueueByStatus` / `filterRuns` / `tickSummaryText` / `checkpointMeta` / `verdictMeta`。
+
+### 三、知识/学习界面（`@silksec/sec-dashboard-view-know`）——工作流状态条
+
+- **知识治理漏斗条**（知识 tab 顶部，零新 RPC）：`候选 n → 生效 n → 冷却 n → 归档 n`，取自 `memcore.tables` 各状态聚合（`knowledgeFunnel`）；缺键显示「—」。
+- **学习流水线条**（学习 tab 五问卡之上，零新 RPC）：`观测 episodes → 记分 artifacts → 发布 releases（生效 n）→ 撤回 n`，取自 `learningOverview`（`learningPipeline`）。
+
+### 四、验收
+
+- 单测：ui-task **19/19**（新增 5 例：纯函数/三并发 RPC/运行报告渲染与放行/L0 空态/状态 tab 计数）；view-know **10/10**（新增 4 例）；dashboard-rpc **5/5**（新增 3 端点入 fail-closed 清单 + 修正 stats scope 断言）。
+- 部署 csai（`bundle dsh setup` + 重启 NRestarts=0）；`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**（72 → 80：新增 4 项静态门禁 `ui-task-campaign-report`/`ui-task-status-tabs`/`ui-know-governance-funnel`/`ui-know-learning-pipeline` + 4 项运行时读端点 `ui-rpc-read-task-campaigns`/`-campaign-progress`/`-campaign-pending`/`ui-rpc-read-know-learning`）。
+- W1（供给徽章恢复翻绿）/W2（Path A 接线 + 模型名归一）已由 commit 4a606b2 / 59da0cc 完成并回填 05-task §7.10.5；W5（Bellkeeper 侧）/W6（worker token 上报）为跨仓/worker 改造，不在本方案范围。

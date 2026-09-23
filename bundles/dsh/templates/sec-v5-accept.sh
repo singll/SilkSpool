@@ -203,6 +203,17 @@ else
   check "ui-class-defined" 1 "无定义类: $orphans"
 fi
 
+# 24 号方案 §3.1–§3.3：任务/知识/学习界面工作流可视化静态门禁（客户端 bundle 必含新组件标记）
+ui_task_bundle="$BASE_DIR/plugins/ui-task/client.js"
+ui_know_bundle="$BASE_DIR/plugins/sec-dashboard-view-know/client.js"
+marker_check() { # $1=name $2=file $3=marker $4=desc
+  if [ -f "$2" ] && grep -qF "$3" "$2"; then check "$1" 0 "$4"; else check "$1" 1 "缺标记 $3"; fi
+}
+marker_check "ui-task-campaign-report" "$ui_task_bundle" "campaignPendingDrafts" "专项运行报告抽屉（campaignGet/Progress/PendingDrafts）"
+marker_check "ui-task-status-tabs" "$ui_task_bundle" "queueStatusCounts" "队列状态 tab（运行中/排队/阻塞计数过滤）"
+marker_check "ui-know-governance-funnel" "$ui_know_bundle" "knowledgeFunnel" "知识治理漏斗条（候选→生效→冷却→归档）"
+marker_check "ui-know-learning-pipeline" "$ui_know_bundle" "learningPipeline" "学习流水线条（观测→记分→发布→撤回）"
+
 if [ "$UI_HEADLESS" = "1" ]; then
   ui_out=""; ui_rc=0
   if [ -f "$BASE_DIR/dsh-ui-surface-smoke.py" ]; then

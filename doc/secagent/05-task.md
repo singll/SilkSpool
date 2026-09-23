@@ -1042,7 +1042,7 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 
 ### 7.10 2026-09-23 23 号方案回填（LLM 供给联动调速 + 任务级选模型）
 
-> 设计真相源：[23-llm-supply-throttle](23-llm-supply-throttle.md)。本节为实现态回填（本地全量契约 575/575；csai 已部署，accept PASS=72）。**不新增域**：供给调速是 task 域内 Supervisor 的第六信号 + Dispatcher 的一道前置闸；Bellkeeper 侧只读其现有管理面 API。
+> 设计真相源：[23-llm-supply-throttle](archive/23-llm-supply-throttle-2026-09-23.md)。本节为实现态回填（本地全量契约 575/575；csai 已部署，accept PASS=72）。**不新增域**：供给调速是 task 域内 Supervisor 的第六信号 + Dispatcher 的一道前置闸；Bellkeeper 侧只读其现有管理面 API。
 
 #### 7.10.1 组件（均在 task 域内）
 
@@ -1085,6 +1085,7 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **v3 Bellkeeper 前置（步骤 0.5，已上线）**：sensenova-secagent 渠道加 `deepseek-v4.1-flash`；pool-secagent 权重序列改为 v4.1-flash 7 → glm-5.2 6 → flash-lite 5 → ds-v4-flash 4（DB API + YAML 种子 `config/bellkeeper.yaml` 同步）；直调/组冒烟 200。
 - **分档路由（步骤 2.5，已上线）**：新建 Bellkeeper 模型组 `pool-secagent-lite`（flash-lite 优先）/ `pool-secagent-heavy`（glm-5.2 + v4.1-flash），token `silksecagent` 的 `allowed_groups` 放行；dsh `SEC_CAMPAIGN_CLASS_GROUPS=lite:pool-secagent-lite,std:pool-secagent,heavy:pool-secagent-heavy` 按 `task_class` 映射组名——等价「按 task_class 分档路由 + 组内熔断顺延」，无需改 Bellkeeper 路由代码。线上验证：lite 任务命中 flash-lite、heavy 命中 glm-5.2。
 - **Path A（步骤 5，已上线）**：`SEC_CAMPAIGN_MODEL_SELECTOR=dsh` 时派生任务落 `provider=bellkeeper` + `model=<组/模型>`；调度器 `exec.spawn_worker` 经 `model-patch.yml` 注入，线上实测 worker 收到 `{provider:bellkeeper, model:pool-secagent-heavy}`。
-- **kimi-code 入池（步骤 4）**：评估结论 **暂不入池**（编码专用 task_types + 5h/7d 不可预测窗口），复评条件见 [23 号文档 §五.6](23-llm-supply-throttle.md)。
+- **kimi-code 入池（步骤 4）**：评估结论 **暂不入池**（编码专用 task_types + 5h/7d 不可预测窗口），复评条件见 [23 号文档 §五.6](archive/23-llm-supply-throttle-2026-09-23.md)。
 - **供给徽章恢复修复**：观测异常（llm_probe_failed）恢复后，`lastSupplyState` 归一为 `{state:up|throttled|probe_failed}`，恢复时写 `llm_restored`——修复「观测异常恢复后徽章卡死在观测异常」。
 - **spent_tokens=0**：worker 未上报 token（worker 侧），预算闸仍按预估 token 记账。
+- **24 号方案接线（2026-09-23）**：`campaign_progress` / `campaign_pending_drafts` / `campaign_dispatch` 三个域查询/命令经 dashboard-rpc 透传（`campaignProgress`/`campaignPendingDrafts`/`campaignDispatch`），任务视图专项卡片可展开运行报告并一键放行草稿（22 号「未接」项补齐）；域侧零改动，详见 [16-dashboard §2026-09-23](16-dashboard.md)。

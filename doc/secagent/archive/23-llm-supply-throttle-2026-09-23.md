@@ -2,9 +2,10 @@
 
 > 日期：2026-09-22（v2 修订：补 SenseNova 双积分池实测口径 + OpenCode Go v4.1-flash 入池 + 统一额度面）
 > **v3 修订（2026-09-23）**：① SenseNova 渠道与 OpenCode Go 均已支持 `deepseek-v4.1-flash`，并升格为 **SenseNova 主力模型**（替代 glm-5.2 的默认主力位）；② 直面「Bellkeeper 只管额度、单一模型链条」现状的不足，新增 **任务级智能选模型**（§3.7）：专项派发时按任务强度/复杂度 × 各模型可用性 × 积分池/美元额度自主选模型——dsh 有选模型能力则派生负载带 model_hint，否则交 Bellkeeper LLM 侧策略路由（Path A/B 两路径）。
-> 性质：**已全量落地（实现态，2026-09-23）**——task 域内调速组件（LlmSupplyWatch / `decideThrottle` / 任务分档选模型 / 统一额度面 / 看板供给徽章 / 预算自动爬坡）完成并部署 csai（本地全量契约 575/575；accept PASS=72 FAIL=0；线上 `campaign_tick` 返回 `supply_factor=1`）；**步骤 0.5**（Bellkeeper sensenova 加 `deepseek-v4.1-flash` 权重 7 入池）、**步骤 2.5**（配置化 `pool-secagent-lite`/`pool-secagent-heavy` 分档组 + dsh `task_class` 映射）、**步骤 5 Path A**（worker `model-patch` 指定模型）均已落地并线上验证；**步骤 4** kimi-code 入池评估结论见 §五.6。回填见 [05-task §7.10](05-task.md) 与 [16-dashboard](16-dashboard.md)。
+> 性质：**已全量落地（实现态，2026-09-23）**——task 域内调速组件（LlmSupplyWatch / `decideThrottle` / 任务分档选模型 / 统一额度面 / 看板供给徽章 / 预算自动爬坡）完成并部署 csai（本地全量契约 575/575；accept PASS=72 FAIL=0；线上 `campaign_tick` 返回 `supply_factor=1`）；**步骤 0.5**（Bellkeeper sensenova 加 `deepseek-v4.1-flash` 权重 7 入池）、**步骤 2.5**（配置化 `pool-secagent-lite`/`pool-secagent-heavy` 分档组 + dsh `task_class` 映射）、**步骤 5 Path A**（worker `model-patch` 指定模型）均已落地并线上验证；**步骤 4** kimi-code 入池评估结论见 §五.6。回填见 [05-task §7.10](../05-task.md) 与 [16-dashboard](../16-dashboard.md)。
 > 动机：22 号方案的 Campaign 专项是常驻持续推进实体（L1/L2 自动派生），其执行面全部经 Bellkeeper `pool-secagent` 消耗 LLM 额度。池成员的套餐有独立额度窗口（SenseNova 滚动 5h/周双积分池、OpenCode Go $12/5h+$30/周+$60/月美元额度、deepseek-secagent 500 rpd），额度耗尽时渠道熔断。**专项若无视供给状态继续派生，会批量产生失败任务**（烧窗口预算、污染连败黑名单、触发错误降级）。
-> 上游：[archive/22-campaign-task-2026-09-22.md](archive/22-campaign-task-2026-09-22.md)（Campaign 本体）；[17-llm-surface.md](17-llm-surface.md)（模型层零改动纪律）。
+> **已归档（2026-09-23）**：本方案已全量落地并验收（accept PASS=80 FAIL=0），结论已回填 [05-task §7.10](../05-task.md)、[16-dashboard](../16-dashboard.md)。只读不改写。
+> 上游：[22-campaign-task-2026-09-22.md](22-campaign-task-2026-09-22.md)（Campaign 本体）；[17-llm-surface.md](../17-llm-surface.md)（模型层零改动纪律）。
 > 总原则：**不新增域**；供给调速是 task 域内 Supervisor 的第六信号 + Dispatcher 的一道前置闸。Bellkeeper 侧原则上只读其现有 API；**v3 例外收窄**：仅允许 Bellkeeper 配置面变更（渠道/池成员表、pool-secagent 组策略，走其 DB API），不动其路由/熔断/计费代码路径（§3.7 Path B）。
 
 ---

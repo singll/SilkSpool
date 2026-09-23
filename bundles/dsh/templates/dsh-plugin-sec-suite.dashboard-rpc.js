@@ -647,6 +647,27 @@ export async function handleDashboardRpc(endpoint, payload) {
       const r = await busDispatch('task', 'campaign_tick_now', { campaign_id: id }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
       return { ok: true, ...(r.data || {}) }
     }
+    // 24 号方案 §3.0：专项运行报告三透传（纯读/纯透传，不改任何域命令语义）
+    case 'campaignProgress': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignProgress 需要 id')
+      const r = await busQuery('task', 'campaign_progress', { id })
+      return r.data
+    }
+    case 'campaignPendingDrafts': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignPendingDrafts 需要 id')
+      const r = await busQuery('task', 'campaign_pending_drafts', { id, limit: Math.min(Number(p.limit) || 20, 50) })
+      return r.data
+    }
+    case 'campaignDispatch': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignDispatch 需要 id')
+      const drafts = Array.isArray(p.drafts) ? p.drafts : []
+      if (!drafts.length) throw new Error('campaignDispatch 需要 drafts（非空数组）')
+      const r = await busDispatch('task', 'campaign_dispatch', { campaign_id: id, drafts }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
+    }
     case 'sessions':
       return deps.sessionsList(String(p.workspace_id || ''))
     case 'findingUpdate': {

@@ -78,6 +78,67 @@ window.__ModuleLoader__.load({
       queued: '排队', running: '运行中', blocked: '阻塞', done: '完成', failed: '失败', cancelled: '取消',
     }
 
+    // ── 24 号方案 §3.1：纯函数（确定性可测，契约钉死） ─────────────────────────
+    // 队列状态计数（客户端分组，零额外 RPC）
+    function queueStatusCounts(rows) {
+      var c = { all: (rows || []).length, running: 0, queued: 0, blocked: 0 }
+      ;(rows || []).forEach(function (t) {
+        var s = t && t.status
+        if (s === 'running') c.running++
+        else if (s === 'queued') c.queued++
+        else if (s === 'blocked') c.blocked++
+      })
+      return c
+    }
+    function filterQueueByStatus(rows, status) {
+      if (!status) return rows || []
+      return (rows || []).filter(function (t) { return t && t.status === status })
+    }
+    // 执行历史成功/失败过滤（客户端过滤当前页）
+    function filterRuns(rows, filter) {
+      if (filter === 'ok') return (rows || []).filter(function (r) { return !!(r && r.ok) })
+      if (filter === 'fail') return (rows || []).filter(function (r) { return !(r && r.ok) })
+      return rows || []
+    }
+    // 手动 tick 结果摘要（W7 修复点：RPC 返回值不再丢弃）
+    function tickSummaryText(res) {
+      if (!res || typeof res !== 'object') return ''
+      var parts = []
+      if (res.reviewed !== undefined) parts.push('验收 ' + res.reviewed)
+      if (res.derived !== undefined) parts.push('派生 ' + res.derived)
+      if (res.deduped !== undefined) parts.push('去重 ' + res.deduped)
+      if (res.dropped !== undefined) parts.push('丢弃 ' + res.dropped)
+      if (res.escalated !== undefined) parts.push('升级 ' + res.escalated)
+      if (Array.isArray(res.skipped) && res.skipped.length) parts.push('跳过 ' + res.skipped.length)
+      if (res.supply_factor !== undefined) parts.push('供给 ' + res.supply_factor)
+      return parts.join(' · ')
+    }
+    // 检查点 kind → 中文 + 语义色（时间线可读性；未知 kind 走中性兜底）
+    function checkpointMeta(kind) {
+      var map = {
+        escalation: { label: '升级', color: T.error },
+        autonomy_change: { label: '自主变更', color: T.warn },
+        budget_extend_request: { label: '预算提请', color: T.warn },
+        budget_low: { label: '预算告警', color: T.warn },
+        llm_throttled: { label: '供给降速', color: T.warn },
+        llm_restored: { label: '供给恢复', color: T.success },
+        llm_probe_failed: { label: '观测异常', color: T.warn },
+        stop_condition: { label: '停止条件', color: T.warn },
+        milestone: { label: '里程碑', color: T.business },
+        learn_gap: { label: '学习缺口', color: T.label2 },
+      }
+      return map[kind] || { label: String(kind || '检查点'), color: T.label2 }
+    }
+    var CAMPAIGN_VERDICT_META = {
+      accepted: { label: '验收通过', color: T.success },
+      rejected: { label: '驳回', color: T.error },
+      rework: { label: '返工', color: T.warn },
+      escalated: { label: '升级', color: T.warn },
+    }
+    function verdictMeta(verdict) {
+      return CAMPAIGN_VERDICT_META[verdict] || { label: String(verdict || '—'), color: T.label2 }
+    }
+
     // apply 时捕获的客户端 root context（渲染期按需读 connection/layout/sidebarRight）
     var serviceRef = { ctx: null }
     function getService(name) {
@@ -141,6 +202,8 @@ window.__ModuleLoader__.load({
       return { get: get, set: set, subscribe: subscribe, listeners: function () { return listeners.slice() } }
     }
     var taskStore = createTaskStore()
+    // 24 号方案 §3.1（W7）：手动 tick 结果摘要按专项留痕（RPC 返回值不再丢弃）
+    var campaignTickSummary = {}
 
     function useStore(store) {
       var s = React.useState(function () { return store.get() })
@@ -356,53 +419,166 @@ window.__ModuleLoader__.load({
       }, '专项 ' + name))
     }
 
-    // 22 号方案 方案 A：专项区块——常驻统筹实体卡片（状态/自主级别/验收/预算/心跳 + 立即 tick）。
-    // 数据源 = /silksec-dashboard campaigns（task.campaign_list 投影）；写 = campaignTickNow（域命令，actor=dashboard）。
+    function autonomyLabel(a) { return Number(a) >= 2 ? 'L2' : (Number(a) >= 1 ? 'L1' : 'L0') }
+    function campaignStatusText(s) { return s === 'active' ? '运行中' : s === 'paused' ? '已暂停' : s === 'reviewing' ? '待人审' : s === 'archived' ? '已归档' : '草稿' }
+    // 23 号方案 §3.4：供给徽章（正常绿/降速黄/停派红/观测异常黄；unknown 不渲染避免噪音）
+    function supplyBadgeNode(s) {
+      if (!s || !s.state || s.state === 'unknown') return null
+      var map = {
+        normal: { text: '供给 正常', color: T.success, tip: 'LLM 池供给正常（factor=1.0）' },
+        slow: { text: '供给 降速', color: T.warn, tip: 'LLM 池供给降速（factor=' + (s.factor == null ? '0.4' : s.factor) + '）：derive_cap 折算' },
+        stop: { text: '供给 停派', color: T.error, tip: 'LLM 池额度熔断中，专项停派；Bellkeeper 探针恢复后自动回弹' },
+        probe_failed: { text: '供给 观测异常', color: T.warn, tip: 'Bellkeeper 管理面不可达，fail-open 有界降速（连续失败转停派）' },
+      }
+      var m = map[s.state]
+      if (!m) return null
+      return pillNode({ title: m.tip + (s.summary ? ('\n' + s.summary) : '') }, m.text)
+    }
+
+    // 24 号方案 §3.1：专项运行报告抽屉（展开时 TaskCenter 三并发拉 campaignGet/Progress/PendingDrafts）
+    function CampaignReport(props) {
+      var r = props.report || {}
+      var detail = r.detail || {}
+      var progress = r.progress || {}
+      var pending = r.pending || {}
+      var busy = !!props.busy
+      var sub = { padding: '6px 0', borderTop: '1px solid ' + T.border3 }
+      var subTitle = { color: T.label2, ...((F && F.xxsStrong) || {}), marginBottom: 4 }
+      // ① 报告头：推进投影 + 最近 tick + 本次手动 tick 摘要
+      var totals = progress.totals || {}
+      var byProgram = progress.by_program || {}
+      var tick = props.tick || null
+      var head = el('div', { style: sub },
+        el('div', { style: subTitle }, '① 推进投影（只聚合不重算）'),
+        el('div', { style: metaLine },
+          el('span', { title: '验收账本合计（campaign_decisions 聚合）' }, '验收 ' + (totals.accepted || 0) + ' · 驳回 ' + (totals.rejected || 0) + ' · 返工 ' + (totals.rework || 0) + ' · 升级 ' + (totals.escalated || 0)),
+          el('span', { title: 'confirmed 增量（目标推进）' }, '推进 +' + (totals.confirmed_delta || 0)),
+          el('span', { title: '最近一次 tick 时间' }, '最近 tick ' + (fmtRel(detail.last_tick_at) || '—'))),
+        Object.keys(byProgram).length
+          ? el('div', { style: { display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 } }, Object.keys(byProgram).map(function (pid) {
+            var p = byProgram[pid] || {}
+            return el('span', { key: pid, style: pill, title: '每 program 分解：通过/驳回/推进增量' }, pid + ' ✓' + (p.accepted || 0) + ' ✗' + (p.rejected || 0) + ' +' + (p.confirmed_delta || 0))
+          }))
+          : null,
+        tick
+          ? el('div', { style: { ...metaLine, color: T.business } }, el('span', { title: '最近一次手动 tick 结果摘要（reviewed/derived/deduped/dropped/skipped）' }, '本次 tick：' + (tickSummaryText(tick.res) || '（无摘要）') + (tick.at ? ' · ' + fmtRel(tick.at) : '')))
+          : null)
+      // ② 检查点时间线（近 10 条）：kind 中文映射 + 语义色 + 相对时间
+      var cps = (detail.checkpoints || []).slice(0, 10)
+      var timeline = el('div', { style: sub },
+        el('div', { style: subTitle }, '② 检查点时间线（近 10 条）'),
+        cps.length
+          ? el('div', null, cps.map(function (cp) {
+            var m = checkpointMeta(cp.kind)
+            return el('div', { key: String(cp.id), style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 3 } },
+              el('span', { style: { ...pill, color: m.color }, title: 'kind=' + cp.kind }, m.label),
+              el('span', { style: { color: T.label2, ...((F && F.xxs) || {}), flex: '1 1 160px', wordBreak: 'break-word' }, title: cp.summary || '' }, String(cp.summary || '').slice(0, 120)),
+              el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}) } }, fmtRel(cp.created_at) || '—'))
+          }))
+          : el('div', { style: { color: T.label3, ...((F && F.xs) || {}) } }, '暂无检查点'))
+      // ③ 待放行草稿（autonomy≥1 才渲染；一键放行过预算闸/供给闸）
+      var autonomy = Number(pending.autonomy)
+      var drafts = pending.drafts || []
+      var draftInner
+      if (autonomy < 1) {
+        draftInner = el('div', { style: { color: T.label3, ...((F && F.xs) || {}) } }, 'L0 台账级不产草稿')
+      } else if (drafts.length) {
+        draftInner = el('div', null,
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 } },
+            el('span', { style: { ...pill, color: T.business } }, '待放行 ' + drafts.length),
+            el('button', { type: 'button', className: 'silksec-btn', disabled: busy, title: '全部放行（经 campaign_dispatch，INV-C4/C11 闸门原样生效）', onClick: function () { if (props.onDispatch) props.onDispatch(r.campaign_id, drafts) } }, '全部放行')),
+          drafts.map(function (d, i) {
+            return el('div', { key: i, style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 3 } },
+              el('span', { style: pill, title: '草稿 kind' }, d.kind || '—'),
+              d.task_class ? el('span', { style: { ...pill, color: T.label2 }, title: '任务分档（lite/std/heavy）' }, d.task_class) : null,
+              el('span', { style: { color: T.label2, ...((F && F.xxs) || {}), flex: '1 1 120px', wordBreak: 'break-word' } }, (d.host || '') + (d.path || '') + (d.vuln_class ? ' · ' + d.vuln_class : '')),
+              el('button', { type: 'button', className: 'silksec-btn', style: { height: 22 }, disabled: busy, title: '放行此草稿', onClick: function () { if (props.onDispatch) props.onDispatch(r.campaign_id, [d]) } }, '放行'))
+          }))
+      } else {
+        draftInner = el('div', { style: { color: T.label3, ...((F && F.xs) || {}) } }, '当前无待放行草稿' + (Array.isArray(pending.skipped) && pending.skipped.length ? '（编译跳过 ' + pending.skipped.length + '）' : ''))
+      }
+      var draftBlock = el('div', { style: sub },
+        el('div', { style: subTitle }, '③ 待放行草稿' + (isFinite(autonomy) ? '（自主 ' + autonomyLabel(autonomy) + '）' : '')),
+        draftInner)
+      // ④ 活跃子任务（≤8）+ 验收账本近 5 条
+      var activeTasks = (detail.active_tasks || []).slice(0, 8)
+      var decisions = (detail.decisions || []).slice(0, 5)
+      var workBlock = el('div', { style: sub },
+        el('div', { style: subTitle }, '④ 活跃子任务 / 验收账本'),
+        activeTasks.length
+          ? el('div', null, activeTasks.map(function (t) {
+            return el('div', { key: String(t.id), style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 3 } },
+              el('span', { style: { ...pill, fontFamily: uiCore && uiCore.MONO } }, '#' + t.id),
+              el('span', { style: { color: T.label2, ...((F && F.xxs) || {}), flex: '1 1 160px', wordBreak: 'break-word' }, title: t.objective }, String(t.objective || '').slice(0, 90)),
+              statusPill(t.status),
+              el('button', { type: 'button', className: 'silksec-btn', style: { height: 22 }, title: '在队列中查看该专项子任务', onClick: function () { if (props.onJumpQueue) props.onJumpQueue(r.campaign_id) } }, '队列中查看'))
+          }))
+          : el('div', { style: { color: T.label3, ...((F && F.xs) || {}) } }, '暂无活跃子任务'),
+        decisions.length
+          ? el('div', { style: { marginTop: 6 } }, decisions.map(function (d, i) {
+            var m = verdictMeta(d.verdict)
+            return el('div', { key: String(d.id || i), style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 3 } },
+              el('span', { style: { ...pill, color: m.color } }, m.label),
+              d.task_id ? el('span', { style: { ...pill, fontFamily: uiCore && uiCore.MONO } }, '#' + d.task_id) : null,
+              el('span', { style: { color: T.label3, ...((F && F.xxs) || {}), flex: '1 1 160px', wordBreak: 'break-word' }, title: d.rationale || d.note || '' }, String(d.rationale || d.note || '').slice(0, 90)),
+              el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}) } }, fmtRel(d.created_at) || '—'))
+          }))
+          : null)
+      return el('div', { style: { ...card, marginTop: 6, background: T.layer1, cursor: 'default' } },
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+          el('span', { style: sectionTitle }, '运行报告 · ' + (detail.name || ('#' + r.campaign_id))),
+          el('button', { type: 'button', className: 'silksec-btn', style: { marginLeft: 'auto', height: 22 }, title: '收起运行报告', onClick: props.onClose }, '收起')),
+        head, timeline, draftBlock, workBlock)
+    }
+
+    // 22 号方案 方案 A / 24 号方案 §3.1：专项区块——常驻统筹实体卡片。
+    // 点击卡片 = 展开/收起运行报告（不再直接过滤队列）；过滤队列改卡片上的独立小按钮（⌗）。
+    // 数据源 = /silksec-dashboard campaigns；写 = campaignTickNow / campaignDispatch（actor=dashboard）。
     function CampaignBlock(props) {
       var rows = props.rows || []
       if (!rows.length) return null
-      function autonomyLabel(a) { return Number(a) >= 2 ? 'L2' : (Number(a) >= 1 ? 'L1' : 'L0') }
-      function statusText(s) { return s === 'active' ? '运行中' : s === 'paused' ? '已暂停' : s === 'reviewing' ? '待人审' : s === 'archived' ? '已归档' : '草稿' }
-      // 23 号方案 §3.4：供给徽章（正常绿/降速黄/停派红/观测异常黄；unknown 不渲染避免噪音）
-      function supplyBadgeNode(s) {
-        if (!s || !s.state || s.state === 'unknown') return null
-        var map = {
-          normal: { text: '供给 正常', color: T.success, tip: 'LLM 池供给正常（factor=1.0）' },
-          slow: { text: '供给 降速', color: T.warn, tip: 'LLM 池供给降速（factor=' + (s.factor == null ? '0.4' : s.factor) + '）：derive_cap 折算' },
-          stop: { text: '供给 停派', color: T.error, tip: 'LLM 池额度熔断中，专项停派；Bellkeeper 探针恢复后自动回弹' },
-          probe_failed: { text: '供给 观测异常', color: T.warn, tip: 'Bellkeeper 管理面不可达，fail-open 有界降速（连续失败转停派）' },
-        }
-        var m = map[s.state]
-        if (!m) return null
-        return pillNode({ title: m.tip + (s.summary ? ('\n' + s.summary) : '') }, m.text)
-      }
       return el('div', null, rows.map(function (c) {
         var t = c.decision_totals || {}
-        var active = props.campaignFilter === c.id
-        return el('div', {
-          key: String(c.id),
-          className: 'silksec-row',
-          style: { ...card, cursor: 'pointer', outline: active ? ('1px solid ' + T.brand) : 'none' },
-          title: (c.objective || '') + '\n点击' + (active ? '清除专项过滤' : '按此专项过滤一次性队列'),
-          onClick: function () { if (props.onCampaignFilter) props.onCampaignFilter(active ? 0 : c.id) },
-        },
-          el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-            el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}), fontFamily: uiCore && uiCore.MONO } }, '#' + c.id),
-            el('span', { style: { color: T.label, ...((F && F.sStrong) || {}), wordBreak: 'break-word', flex: '1 1 140px' } }, c.name),
-            pillNode({ title: '专项状态机：draft/active/paused/reviewing/archived', style: { color: c.status === 'active' ? T.success : (c.status === 'reviewing' ? T.warn : T.label2) } }, statusText(c.status)),
-            pillNode({ title: '自主级别：L0 台账 / L1 建议 / L2 有界自动（封顶）' }, autonomyLabel(c.autonomy)),
-            supplyBadgeNode(c.supply),
-            c.mode === 'cross' ? pillNode({ title: '交叉挖掘：绑定多个已授权 program' }, '交叉') : null),
-          el('div', { style: metaLine },
-            el('span', { title: '绑定授权项目' }, '🏢 ' + ((c.program_ids || []).join('、') || '—')),
-            el('span', { title: '验收账本：accepted / rejected / rework / escalated' }, '验收 ' + (t.accepted || 0) + '/' + (t.rejected || 0) + '/' + (t.rework || 0) + '/' + (t.escalated || 0)),
-            el('span', { title: '专项窗口预算（双层预算闸之 campaign 侧）' }, c.budget_tokens == null ? '预算 不限' : '预算 ' + Number(c.spent_tokens || 0) + '/' + c.budget_tokens),
-            el('span', { title: '最近有 accepted 验收时间（空转监督依据）' }, '心跳 ' + (fmtRel(c.heartbeat_at) || '—')),
-            el('span', { className: 'silksec-task-actions', style: { marginLeft: 'auto' } },
-              tip('立即对该专项跑一次 tick 段（巡检→验收→规划→下发，不超有界）', el('button', {
-                ...iconBtn, disabled: !!props.busy, 'aria-label': '立即 tick',
-                onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); props.onTickNow(c.id) },
-              }, uiCore.opIcon('play'))))))
+        var filtered = props.campaignFilter === c.id
+        var open = props.reportOpen === c.id
+        var report = (props.report && props.report.campaign_id === c.id) ? props.report : { campaign_id: c.id }
+        return el('div', { key: String(c.id) },
+          el('div', {
+            className: 'silksec-row',
+            style: { ...card, cursor: 'pointer', outline: open ? ('1px solid ' + T.brand) : 'none' },
+            title: (c.objective || '') + '\n点击' + (open ? '收起运行报告' : '展开运行报告（推进投影/检查点时间线/待放行草稿/活跃子任务）'),
+            onClick: function () { if (props.onToggleReport) props.onToggleReport(open ? 0 : c.id) },
+          },
+            el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+              el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}), fontFamily: uiCore && uiCore.MONO } }, '#' + c.id),
+              el('span', { style: { color: T.label, ...((F && F.sStrong) || {}), wordBreak: 'break-word', flex: '1 1 140px' } }, c.name),
+              pillNode({ title: '专项状态机：draft/active/paused/reviewing/archived', style: { color: c.status === 'active' ? T.success : (c.status === 'reviewing' ? T.warn : T.label2) } }, campaignStatusText(c.status)),
+              pillNode({ title: '自主级别：L0 台账 / L1 建议 / L2 有界自动（封顶）' }, autonomyLabel(c.autonomy)),
+              supplyBadgeNode(c.supply),
+              c.mode === 'cross' ? pillNode({ title: '交叉挖掘：绑定多个已授权 program' }, '交叉') : null,
+              el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}), marginLeft: 'auto' } }, open ? '▾ 报告' : '▸ 报告')),
+            el('div', { style: metaLine },
+              el('span', { title: '绑定授权项目' }, '🏢 ' + ((c.program_ids || []).join('、') || '—')),
+              el('span', { title: '验收账本：accepted / rejected / rework / escalated' }, '验收 ' + (t.accepted || 0) + '/' + (t.rejected || 0) + '/' + (t.rework || 0) + '/' + (t.escalated || 0)),
+              el('span', { title: '专项窗口预算（双层预算闸之 campaign 侧）' }, c.budget_tokens == null ? '预算 不限' : '预算 ' + Number(c.spent_tokens || 0) + '/' + c.budget_tokens),
+              el('span', { title: '最近一次 tick 时间（含自动/手动）' }, '最近 tick ' + (fmtRel(c.last_tick_at) || '—')),
+              el('span', { title: '最近有 accepted 验收时间（空转监督依据）' }, '心跳 ' + (fmtRel(c.heartbeat_at) || '—')),
+              el('span', { className: 'silksec-task-actions', style: { marginLeft: 'auto' } },
+                tip(filtered ? '清除专项过滤' : '按此专项过滤一次性队列', el('button', {
+                  ...iconBtn, 'aria-label': '过滤队列',
+                  onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onCampaignFilter) props.onCampaignFilter(filtered ? 0 : c.id) },
+                }, '⌗')),
+                tip('立即对该专项跑一次 tick 段（巡检→验收→规划→下发，不超有界）', el('button', {
+                  ...iconBtn, disabled: !!props.busy, 'aria-label': '立即 tick',
+                  onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); props.onTickNow(c.id) },
+                }, uiCore.opIcon('play')))))),
+          open
+            ? el(CampaignReport, {
+              report: report, tick: props.reportTick, busy: props.busy,
+              onDispatch: props.onDispatchDrafts, onJumpQueue: props.onJumpQueue,
+              onClose: function () { if (props.onToggleReport) props.onToggleReport(0) },
+            })
+            : null)
       }))
     }
 
@@ -558,6 +734,18 @@ window.__ModuleLoader__.load({
       var creating = cs[0]; var setCreating = cs[1]
       var cf = React.useState(0)
       var campaignFilter = cf[0]; var setCampaignFilter = cf[1]
+      // 24 号方案 §3.1：运行报告展开态 + 三并发数据 + 手动 tick 摘要
+      var ro = React.useState(0)
+      var reportOpen = ro[0]; var setReportOpen = ro[1]
+      var rd = React.useState(null)
+      var reportData = rd[0]; var setReportData = rd[1]
+      var rt = React.useState(null)
+      var reportTick = rt[0]; var setReportTick = rt[1]
+      // 24 号方案 §3.1：队列状态 tab + 历史成功/失败过滤（客户端过滤，零额外 RPC）
+      var sf = React.useState('')
+      var statusFilter = sf[0]; var setStatusFilter = sf[1]
+      var hf = React.useState('')
+      var histFilter = hf[0]; var setHistFilter = hf[1]
       var histRef = React.useRef ? React.useRef(null) : { current: null }
 
       if (typeof useRpcCore !== 'function') {
@@ -597,6 +785,18 @@ window.__ModuleLoader__.load({
       var campaigns = ((campState.data && campState.data.rows) || []).filter(function (c) { return c.status !== 'archived' })
       var campaignNames = {}
       campaigns.forEach(function (c) { campaignNames[c.id] = c.name || ('#' + c.id) })
+      // 24 号方案 §3.1：状态计数/过滤（客户端，零额外 RPC）
+      var statusCounts = queueStatusCounts(queue)
+      var visibleQueue = filterQueueByStatus(queue, statusFilter)
+      var visibleRuns = filterRuns(runs, histFilter)
+      function statusChip(key, label, n, color) {
+        return el('button', {
+          type: 'button', className: 'silksec-chip', 'data-on': statusFilter === key ? 'true' : undefined,
+          style: color ? { color: color } : undefined,
+          title: '按状态筛选队列（客户端过滤当前页 ≤200）',
+          onClick: function () { setStatusFilter(statusFilter === key ? '' : key) },
+        }, label + ' ' + n)
+      }
 
       // 顶部 program 筛选胶囊（窄栏工作区快块的降级形态）。
       // 选项 = 工作区 ∪ 全量 programs，**与当前筛选无关**——点击筛选后选项不塌缩。
@@ -634,9 +834,46 @@ window.__ModuleLoader__.load({
         if (busy) return
         setBusy(true)
         Promise.resolve(typeof rpc === 'function' ? rpc('campaignTickNow', { id: Number(cid) }) : Promise.reject(new Error('连接通道不可用')))
-          .then(function () { reloadAll() })
+          .then(function (res) {
+            // W7 修复点：摘要落留痕（tick 结果摘要不再丢弃），并刷新报告
+            campaignTickSummary[Number(cid)] = { at: Date.now(), res: res || {} }
+            setReportTick(campaignTickSummary[Number(cid)])
+            reloadAll()
+            if (reportOpen === Number(cid)) loadCampaignReport(Number(cid))
+          })
           .catch(function (e) { try { if (window.alert) window.alert('专项 tick 失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} })
           .then(function () { setBusy(false) })
+      }
+      // 运行报告：展开时三并发拉取（campaignGet/Progress/PendingDrafts）；失败各自降级不炸面
+      function loadCampaignReport(cid) {
+        if (typeof rpc !== 'function') return
+        Promise.all([
+          rpc('campaignGet', { id: cid }).catch(function () { return null }),
+          rpc('campaignProgress', { id: cid }).catch(function () { return null }),
+          rpc('campaignPendingDrafts', { id: cid }).catch(function () { return null }),
+        ]).then(function (res) {
+          setReportData({ campaign_id: cid, detail: res[0], progress: res[1], pending: res[2] })
+        }).catch(function () {})
+      }
+      function toggleCampaignReport(cid) {
+        if (!cid || reportOpen === cid) { setReportOpen(0); setReportData(null); return }
+        setReportOpen(cid)
+        setReportData(null)
+        setReportTick(campaignTickSummary[Number(cid)] || null)
+        loadCampaignReport(Number(cid))
+      }
+      // 待放行草稿一键放行（经 campaign_dispatch；错误码原样上抛）
+      function onDispatchDrafts(cid, drafts) {
+        if (busy || typeof rpc !== 'function') return
+        setBusy(true)
+        rpc('campaignDispatch', { id: Number(cid), drafts: drafts })
+          .then(function () { reloadAll(); loadCampaignReport(Number(cid)) })
+          .catch(function (e) { try { if (window.alert) window.alert('放行失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} })
+          .then(function () { setBusy(false) })
+      }
+      function jumpQueue(cid) {
+        setCampaignFilter(Number(cid))
+        setStatusFilter('')
       }
       function withBusy(op, args) {
         if (busy) return
@@ -685,11 +922,16 @@ window.__ModuleLoader__.load({
           filterRow,
           creating ? el(CreateForm, { programs: wsItems.filter(function (w) { return w.program }).map(function (w) { return { v: w.program.id, l: w.title + '（' + w.program.id + '）' } }), busy: busy, onCreate: onCreate, onClose: function () { setCreating(false) } }) : null,
 
-          // 区块零（22 号方案 方案 A）：专项——常驻统筹实体（SRC 挖掘主线）；点击卡片过滤其派生任务
+          // 区块零（22/24 号方案）：专项——常驻统筹实体；点击卡片展开运行报告，⌗ 按钮过滤队列
           campaigns.length
             ? el(React.Fragment, null,
-                sectionHeadNode({ title: '专项', count: campaigns.length, icon: queueIcon(14), subtitle: '常驻统筹实体：派生→下发→监督→验收闭环驱动下方子任务；点击卡片按其派生任务过滤队列。' }),
-                el(CampaignBlock, { rows: campaigns, busy: busy, campaignFilter: campaignFilter, onCampaignFilter: setCampaignFilter, onTickNow: onCampaignTickNow }))
+                sectionHeadNode({ title: '专项', count: campaigns.length, icon: queueIcon(14), subtitle: '常驻统筹实体：派生→下发→监督→验收闭环驱动下方子任务；点击卡片展开运行报告，⌗ 按专项过滤队列。' }),
+                el(CampaignBlock, {
+                  rows: campaigns, busy: busy, campaignFilter: campaignFilter,
+                  reportOpen: reportOpen, report: reportData, reportTick: reportTick,
+                  onCampaignFilter: setCampaignFilter, onTickNow: onCampaignTickNow,
+                  onToggleReport: toggleCampaignReport, onDispatchDrafts: onDispatchDrafts, onJumpQueue: jumpQueue,
+                }))
             : null,
 
           // 区块一：定时任务卡片
@@ -701,8 +943,14 @@ window.__ModuleLoader__.load({
               ? el('div', null, scheduled.map(function (t) { return el(ScheduledCard, { key: String(t.id), task: t, ...busyProps }) }))
               : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, '暂无定时任务')),
 
-          // 区块二：一次性队列（<480px 表格换卡片行）
+          // 区块二：一次性队列（<480px 表格换卡片行）+ 状态 tab（24 号方案 §3.1）
           sectionHeadNode({ title: '一次性队列', count: queue.length, icon: queueIcon(14), subtitle: '编排器派发的一次性任务（链步骤、专项派生等）；状态点 + 行内操作。' }),
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 8 } },
+            el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}) } }, '状态'),
+            statusChip('', '全部', statusCounts.all),
+            statusChip('running', '运行中', statusCounts.running, T.success),
+            statusChip('queued', '排队', statusCounts.queued),
+            statusChip('blocked', '阻塞', statusCounts.blocked, T.warn)),
           campaignFilter
             ? el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 } },
                 el('span', { style: { ...pill, color: T.brand } }, '专项 ' + (campaignNames[campaignFilter] || ('#' + campaignFilter))),
@@ -711,23 +959,28 @@ window.__ModuleLoader__.load({
           tasksState.error ? el('div', { style: { ...(styles.errorLine || {}), color: T.error } }, '任务队列加载失败: ' + tasksState.error) : null,
           tasksState.loading && !tasksState.data
             ? el(uiCore.SkeletonRows, { rows: 3 })
-            : (queue.length
-              ? (queue.length > 60
+            : (visibleQueue.length
+              ? (visibleQueue.length > 60
                 // B12：大队列按 CSS 容器查询二选一渲染，避免同时构建表格与卡片两套 DOM
                 ? (isNarrow()
-                  ? el(QueueCards, { rows: queue, ...busyProps })
-                  : el(QueueTable, { rows: queue, ...busyProps }))
+                  ? el(QueueCards, { rows: visibleQueue, ...busyProps })
+                  : el(QueueTable, { rows: visibleQueue, ...busyProps }))
                 : el(React.Fragment, null,
-                    el(QueueTable, { rows: queue, ...busyProps }),
-                    el(QueueCards, { rows: queue, ...busyProps })))
-              : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, '暂无一次性任务')),
+                    el(QueueTable, { rows: visibleQueue, ...busyProps }),
+                    el(QueueCards, { rows: visibleQueue, ...busyProps })))
+              : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, queue.length ? '当前状态筛选无任务' : '暂无一次性任务')),
 
-          // 区块三：工作区快块（窄栏降级为顶部 program 筛选 Pill 组）
-          el(WorkspaceQuick, { items: wsItems }),
-
-          // 区块四：执行历史（默认折叠 DisclosureRow）
+          // 区块三：执行历史（提到工作区之前；成功/失败过滤 chip，默认折叠 DisclosureRow）
           el('div', { ref: histRef, style: { marginTop: 16 } },
-            el(HistoryBlock, { open: histOpen, onToggle: function () { setHistOpen(!histOpen) }, rows: runs, total: runTotal, runTaskId: runTaskId, onClearFilter: function () { setRunTaskId('') } }))))
+            el('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 4 } },
+              el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}) } }, '历史'),
+              el('button', { type: 'button', className: 'silksec-chip', 'data-on': histFilter === '' ? 'true' : undefined, onClick: function () { setHistFilter('') } }, '全部 ' + runs.length),
+              el('button', { type: 'button', className: 'silksec-chip', 'data-on': histFilter === 'ok' ? 'true' : undefined, onClick: function () { setHistFilter(histFilter === 'ok' ? '' : 'ok') } }, '成功 ' + filterRuns(runs, 'ok').length),
+              el('button', { type: 'button', className: 'silksec-chip', 'data-on': histFilter === 'fail' ? 'true' : undefined, onClick: function () { setHistFilter(histFilter === 'fail' ? '' : 'fail') } }, '失败 ' + filterRuns(runs, 'fail').length)),
+            el(HistoryBlock, { open: histOpen, onToggle: function () { setHistOpen(!histOpen) }, rows: visibleRuns, total: runTotal, runTaskId: runTaskId, onClearFilter: function () { setRunTaskId('') } })),
+
+          // 区块四：工作区快块（移到底部；窄栏降级为顶部 program 筛选 Pill 组）
+          el(WorkspaceQuick, { items: wsItems })))
     }
 
     // 右侧栏 tab 体（keyed `sidebar.right.pane.tab`，key = TAB_ID）
@@ -902,6 +1155,15 @@ window.__ModuleLoader__.load({
     exports.QueueTable = QueueTable
     exports.QueueCards = QueueCards
     exports.CampaignBlock = CampaignBlock
+    exports.CampaignReport = CampaignReport
+    exports.queueStatusCounts = queueStatusCounts
+    exports.filterQueueByStatus = filterQueueByStatus
+    exports.filterRuns = filterRuns
+    exports.tickSummaryText = tickSummaryText
+    exports.checkpointMeta = checkpointMeta
+    exports.verdictMeta = verdictMeta
+    exports.campaignTickSummary = campaignTickSummary
+    exports.autonomyLabel = autonomyLabel
     exports.WorkspaceQuick = WorkspaceQuick
     exports.HistoryBlock = HistoryBlock
     exports.TaskRunLine = TaskRunLine

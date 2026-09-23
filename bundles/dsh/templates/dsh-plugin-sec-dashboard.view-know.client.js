@@ -51,6 +51,33 @@ window.__ModuleLoader__.load({
     // 本文件自查：零颜色字面量（令牌唯一合法来源 ui-core.T/styles）
     var inputStyle = { width: '100%', boxSizing: 'border-box' }
 
+    // 流水线状态 pill（缺数据显示「—」）
+    function stagePill(label, n, color) {
+      return el('span', { style: { ...pill, color: color } }, label + ' ' + (n == null ? '—' : n))
+    }
+    // ── 24 号方案 §3.2：知识治理漏斗（候选→生效→冷却→归档；取自 memcore tables，零新 RPC）──
+    function knowledgeFunnel(mem) {
+      if (!mem || !mem.loaded || !mem.tables) return null
+      var stages = { candidate: null, active: null, cooling: null, deprecated: null }
+      Object.keys(mem.tables).forEach(function (t) {
+        var m = mem.tables[t] || {}
+        Object.keys(stages).forEach(function (k) {
+          if (m[k] !== undefined) stages[k] = (stages[k] || 0) + (Number(m[k]) || 0)
+        })
+      })
+      return stages
+    }
+    // ── 24 号方案 §3.3：学习流水线（观测→记分→发布→撤回；取自 learningOverview，零新 RPC）──
+    function learningPipeline(d) {
+      if (!d) return null
+      var episodes = (d.learned && d.learned.episodes_recent) || []
+      var scores = (d.improvement && d.improvement.scores) || []
+      var releases = (d.effective_where && d.effective_where.releases) || []
+      var active = releases.filter(function (r) { return r && r.status === 'active' }).length
+      var revoked = releases.filter(function (r) { return r && r.status === 'revoked' }).length
+      return { episodes: episodes.length, artifacts: scores.length, releases: releases.length, active: active, revoked: revoked }
+    }
+
     // 自持 RPC（apply 时从 connection 捕获；ui-panel prop bag 的 rpc 作兜底）
     var serviceRef = { rpc: null }
     function ownRpc(endpoint, payload) {
@@ -218,7 +245,16 @@ window.__ModuleLoader__.load({
               el('div', { style: { ...F.xxs, color: T.label2 } }, t.where),
               el('div', { style: { ...F.xxs, color: T.label3 } }, '工具: ' + t.tool))
           })))
+      // 24 号方案 §3.2：治理流水线状态条（候选→生效→冷却→归档）
+      var funnel = knowledgeFunnel(mem)
+      var funnelBar = funnel ? el('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', margin: '8px 0' }, title: '知识治理流水线：候选 → 生效 → 冷却 → 归档（memcore tables 聚合，零新 RPC）' },
+        el('span', { style: { ...F.xxs, color: T.label3 } }, '治理流水线'),
+        stagePill('候选', funnel.candidate, T.warn), el('span', { style: { color: T.label3 } }, '→'),
+        stagePill('生效', funnel.active, T.success), el('span', { style: { color: T.label3 } }, '→'),
+        stagePill('冷却', funnel.cooling, T.label3), el('span', { style: { color: T.label3 } }, '→'),
+        stagePill('归档', funnel.deprecated, T.label3)) : null
       return el('div', null,
+        funnelBar,
         memChips,
         healthCard,
         coverageCard,
@@ -531,7 +567,17 @@ window.__ModuleLoader__.load({
           })))
       }
 
+      // 24 号方案 §3.3：学习流水线状态条（观测→记分→发布→撤回）
+      var pipeline = learningPipeline(d)
+      var pipelineBar = pipeline ? el('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', margin: '8px 0' }, title: '学习流水线：观测 episode → 记分 artifact → 发布 release（生效）→ 撤回（取自 learningOverview，零新 RPC）' },
+        el('span', { style: { ...F.xxs, color: T.label3 } }, '学习流水线'),
+        stagePill('观测', pipeline.episodes, T.business), el('span', { style: { color: T.label3 } }, '→'),
+        stagePill('记分', pipeline.artifacts, T.business), el('span', { style: { color: T.label3 } }, '→'),
+        el('span', { style: { ...pill, color: T.success } }, '发布 ' + pipeline.releases + '（生效 ' + pipeline.active + '）'), el('span', { style: { color: T.label3 } }, '→'),
+        stagePill('撤回', pipeline.revoked, T.error)) : null
+
       return el('div', null,
+        pipelineBar,
         // 五问
         qCard('① 学到了什么', d.learned.summary,
           el('div', { style: { marginTop: 6 } }, (d.learned.episodes_recent || []).slice(0, 8).map(function (e) {
@@ -655,6 +701,8 @@ window.__ModuleLoader__.load({
     exports.LearningView = LearningView
     exports.KbSection = KbSection
     exports.RulesSection = RulesSection
+    exports.knowledgeFunnel = knowledgeFunnel
+    exports.learningPipeline = learningPipeline
     return module.exports
   },
 })

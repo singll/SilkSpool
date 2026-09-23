@@ -8,14 +8,21 @@
 
 - **迁移计划真相源**：[18-migration](18-migration.md)（Phase 0–5）。
 - **Phase 状态**：**Phase 0–5 全部完成并关账**；当前无进行中的迁移/整改批次。
-- **运行基线**：DSH **0.1.5-rc.2**（U3 于 2026-09-15 生产切换、U4 于 2026-09-18 关账）；csai `silksecagent` active、NRestarts=0、14 域 registered、`aliases=0`；`sec-v5-accept.sh` **PASS=41 FAIL=0**（2026-09-19 全面检查修复后重跑）。
+- **运行基线**：DSH **0.1.5-rc.2**（U3 于 2026-09-15 生产切换、U4 于 2026-09-18 关账）；csai `silksecagent` active、NRestarts=0、14 域 registered、`aliases=0`；`sec-v5-accept.sh` **PASS=80 FAIL=0**（2026-09-23 24 号方案验收后重跑）。
 - **最近一次全面检查**：[archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI；**四轮修复全部落地验收，结论已全部回填各模块，2026-09-22 归档**，见其 §十一）。
-- **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）。
+- **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
 - **已知遗留（非阻塞，待后续会话）**：sec-suite/asset-db/experience 内部少量 v4 读取函数（experience 仍被 dashboard-rpc/task 链路引用）；`18-migration` 的 DoD 仍须逐条核对。
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
 - **领域语言**：[CONTEXT](../../bundles/dsh/CONTEXT.md)。
 
 ## 二、最近进度结果
+
+### 2026-09-23 · 24 号方案落地：任务/知识/学习工作流可视化 + 专项运行报告（accept PASS=80）
+- **RPC 三透传**（`dashboard-rpc.js`，纯透传不改域语义）：`campaignProgress`→`task.campaign_progress`、`campaignPendingDrafts`→`task.campaign_pending_drafts`、`campaignDispatch`→`task.campaign_dispatch`（actor=dashboard，过预算/供给闸）。
+- **任务视图重构（`@silksec/ui-task`）**：布局重排为 专项→定时→队列→历史→工作区；专项卡片点击语义反转=**展开运行报告抽屉**（三并发 `campaignGet`+`Progress`+`PendingDrafts`：推进投影/检查点时间线/待放行草稿一键放行/活跃子任务+验收账本；手动 tick 摘要不再丢弃——W7），过滤队列改独立 ⌗ 按钮；队列增状态 tab（全部/运行中/排队/阻塞 计数过滤）；历史增成功/失败过滤并提到工作区之前。
+- **知识/学习状态条（`view-know`）**：知识 tab 顶部治理漏斗 `候选→生效→冷却→归档`（`memcore.tables` 聚合）；学习 tab 五问之上学习流水线 `观测→记分→发布→撤回`（`learningOverview`）——零新 RPC。
+- **22 号遗留补齐**：L1 待放行队列一键 `campaign_dispatch` 放行 UI（原「未接」）。
+- 验收：ui-task 单测 **19/19**、view-know **10/10**、dashboard-rpc **5/5**；csai `bundle dsh setup` + 重启 NRestarts=0；`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**（72→80：4 静态门禁 + 4 运行时读端点）。详见 [16-dashboard §2026-09-23](16-dashboard.md)、[05-task §7.10.5](05-task.md)；方案归档 [archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)、[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)。
 
 ### 2026-09-23 · 23 号方案落地：LLM 供给联动调速 + 任务级选模型（本地契约 575/575）
 - **供给哨兵 LlmSupplyWatch（task 域内）**：tick 顺带读 Bellkeeper `groups/status`（成员权重/健康）× `channels/status`（rpd 桶余量），规则层 `decideThrottle` 纯函数算 `supply_factor ∈ {0, 0.4, 1.0}`；`dispatchDrafts` 有效上限 = `ceil(derive_cap × factor)`（观测失败再 `min(cap,2)`），factor=0 时 tick 跳过派生、显式路径报 `E_CAMPAIGN_LLM_EXHAUSTED`（dashboard 放行）。供给归零 L2→L1（不回弹，防震荡）。
@@ -25,7 +32,7 @@
 - **预算自动爬坡（步骤 1.5）**：Supervisor 窗口用量达 80% 自动提请 `campaign-budget-extend`（+budget，12h checkpoint 防抖）。
 - **看板**：专项卡片增供给三态徽章（正常绿/降速黄/停派红/观测异常黄）。
 - 验收：本地全量契约 **575/575**（rules +12、task +8）、ui-task 单测 14/14；已部署 csai（`bundle dsh setup` + 重启 NRestarts=0 + `sec-v5-accept.sh --ui-headless` **PASS=72 FAIL=0**）；线上实测 `campaign_tick` 返回 `supply_factor=1`、正常派生，.env 统一额度面区块已落位。详见 [05-task §7.10](05-task.md)、[16-dashboard](16-dashboard.md)。
-- **第二轮（步骤 0.5/2.5/4/5 收口，2026-09-23）**：Bellkeeper sensenova 加 `deepseek-v4.1-flash`（权重 7，池权重序列重排）并新建 `pool-secagent-lite`/`pool-secagent-heavy` 分档组（token `allowed_groups` 放行，DB API + YAML 种子）；dsh `SEC_CAMPAIGN_CLASS_GROUPS` 按 task_class 映射组名 + Path A 落 `provider/model`（worker model-patch）——线上实测 lite→flash-lite、heavy→glm-5.2、worker 收到 `{provider:bellkeeper,model:pool-secagent-heavy}`；kimi-code 评估结论暂不入池（编码专用 + 窗口不可预测）。详见 [05-task §7.10.5](05-task.md)、[23 §五.6](23-llm-supply-throttle.md)。
+- **第二轮（步骤 0.5/2.5/4/5 收口，2026-09-23）**：Bellkeeper sensenova 加 `deepseek-v4.1-flash`（权重 7，池权重序列重排）并新建 `pool-secagent-lite`/`pool-secagent-heavy` 分档组（token `allowed_groups` 放行，DB API + YAML 种子）；dsh `SEC_CAMPAIGN_CLASS_GROUPS` 按 task_class 映射组名 + Path A 落 `provider/model`（worker model-patch）——线上实测 lite→flash-lite、heavy→glm-5.2、worker 收到 `{provider:bellkeeper,model:pool-secagent-heavy}`；kimi-code 评估结论暂不入池（编码专用 + 窗口不可预测）。详见 [05-task §7.10.5](05-task.md)、[23 §五.6](archive/23-llm-supply-throttle-2026-09-23.md)。
 
 ### 2026-09-23 · Campaign 运行期卡点修复（P0–P2）+ 运营复跑
 - **P0-1 去重锁死**：Planner 现跳过已尝试策略并前进到新缺口（`strategy_dedupe` 增 `reopen_after`）——修复「首轮后空转 7h」。
@@ -48,11 +55,11 @@
 ### 2026-09-22 · 23 号方案 v2 修订：OpenCode Go v4.1-flash 入池 + 统一额度面 + 额度调高
 - **Bellkeeper 池调整（已上线）**：`opencode-go-secagent` 渠道加入 `deepseek-v4.1-flash`（1M ctx），pool-secagent 新增权重 2 成员（介于官方 deepseek 与 v4 兜底之间）；渠道状态/直调冒烟/pool-secagent 组冒烟全部通过。
 - **关键发现**：Bellkeeper 渠道/池成员为 **DB 持久化**（`llm_channels`/`llm_model_groups`），YAML 仅首启空库种子——变更须走 `PUT /api/llm/config/{channels,groups}/:id`（自动 reload）；本次即走 DB API 路径，YAML 种子同步（Bellkeeper commit cb0572d）。此事实已回填 23 号方案 §2.1 备注。
-- **23 号方案 v2 修订**（[23-llm-supply-throttle.md](23-llm-supply-throttle.md)）：补 SenseNova 双积分池实测口径（通用池/Flash-Lite 专属池各 60k/滚动 5h + 600k/滚动周，flash-lite 消费 1:1 返赠通用积分；滚动窗口非定点清零——不做窗口对齐猜测）；新增 §3.6 **统一额度面**——全部调速参数集中 dsh .env 单一区块（成员表/权重门槛/降速比例/derive_cap 5→8/新建专项默认预算 500k→2M）；存量专项预算调整尊重 budget_extend 既有铁律（spent≥80% 才准延长），配套设计 Supervisor budget_low 自动提请爬坡（步骤 1.5）。
+- **23 号方案 v2 修订**（[23-llm-supply-throttle.md](archive/23-llm-supply-throttle-2026-09-23.md)）：补 SenseNova 双积分池实测口径（通用池/Flash-Lite 专属池各 60k/滚动 5h + 600k/滚动周，flash-lite 消费 1:1 返赠通用积分；滚动窗口非定点清零——不做窗口对齐猜测）；新增 §3.6 **统一额度面**——全部调速参数集中 dsh .env 单一区块（成员表/权重门槛/降速比例/derive_cap 5→8/新建专项默认预算 500k→2M）；存量专项预算调整尊重 budget_extend 既有铁律（spent≥80% 才准延长），配套设计 Supervisor budget_low 自动提请爬坡（步骤 1.5）。
 
 ### 2026-09-22 · 两个 SRC 专项上线（L0）+ 23 号方案设计：LLM 供给联动调速（仅设计）
 - 经 sec-bus-cli 创建并激活：`#1 美团SRC 持续挖掘`（meituan-src）、`#2 字节SRC 持续挖掘`（bytedance）——均 L0 台账模式、500k tokens/7d 窗口、stop_conditions 三条，验证命令面与 INV-C1 授权校验在线上生效。
-- 针对「专项常驻跑 × pool-secagent 成员套餐额度窗口（kimi-code ~5h/7d、deepseek-secagent 500rpd）」产出 [23-llm-supply-throttle.md](23-llm-supply-throttle.md)：LlmSupplyWatch 读 Bellkeeper 既有 `/api/llm/health`+`channels/status`（零改造），规则层 `decideThrottle` 三档供给因子（1.0/0.4/0）叠加成第三道派生闸；额度熔断 → L2 自动降 L1（不回弹，防震荡），恢复人工确认；探测失败先降速后停派（INV-C11/C12）；看板专项卡片加供给徽章。README 已登记为在办专项。
+- 针对「专项常驻跑 × pool-secagent 成员套餐额度窗口（kimi-code ~5h/7d、deepseek-secagent 500rpd）」产出 [23-llm-supply-throttle.md](archive/23-llm-supply-throttle-2026-09-23.md)：LlmSupplyWatch 读 Bellkeeper 既有 `/api/llm/health`+`channels/status`（零改造），规则层 `decideThrottle` 三档供给因子（1.0/0.4/0）叠加成第三道派生闸；额度熔断 → L2 自动降 L1（不回弹，防震荡），恢复人工确认；探测失败先降速后停派（INV-C11/C12）；看板专项卡片加供给徽章。README 已登记为在办专项。
 
 ### 2026-09-22 · 22 号方案方案 A：专项并入任务视图（ui-task 五区块）
 - 任务右侧栏 tab 顶部新增「专项」区块：Campaign 卡片（状态/自主级别/验收计数/预算/心跳 + 立即 tick，走既有 `campaigns`/`campaignTickNow` RPC）；点击卡片按 `campaign_id` 过滤一次性队列（`task_list` 增 `campaign_id` 过滤参数 + dashboard-rpc `tasks` 透传）；队列行带「专项 <名称>」归属 chip（点击即过滤、可一键清除）；campaigns 查询不可达时区块静默隐藏（降级链）。安全中心「专项」tab 保留（cross 全局视角）。

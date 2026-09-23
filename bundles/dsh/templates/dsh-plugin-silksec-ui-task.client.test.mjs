@@ -479,3 +479,103 @@ test('专项 tick 写操作：走 campaignTickNow 端点（与主面板专项 ta
   await new Promise((r) => setTimeout(r, 0))
   assert.ok(rpcCalls.some((c) => c.endpoint === 'campaignTickNow' && c.payload.id === 7), '必须调用 campaignTickNow（id=7）')
 })
+
+// ── ⑦ 24 号方案 §3.1：状态/过滤纯函数（确定性） ─────────────────────────────
+test('24 纯函数：队列状态计数 / 状态过滤 / 历史成功失败过滤 / tick 摘要', () => {
+  const uiCore = makeUiCore()
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const rows = [
+    { id: 1, status: 'running' }, { id: 2, status: 'queued' }, { id: 3, status: 'queued' }, { id: 4, status: 'blocked' }, { id: 5, status: 'done' },
+  ]
+  assert.equal(JSON.stringify(mod.queueStatusCounts(rows)), JSON.stringify({ all: 5, running: 1, queued: 2, blocked: 1 }))
+  assert.equal(mod.filterQueueByStatus(rows, 'queued').length, 2)
+  assert.equal(mod.filterQueueByStatus(rows, '').length, 5)
+  const runs = [{ ok: 1 }, { ok: 0 }, { ok: 1 }]
+  assert.equal(mod.filterRuns(runs, 'ok').length, 2)
+  assert.equal(mod.filterRuns(runs, 'fail').length, 1)
+  assert.equal(mod.filterRuns(runs, '').length, 3)
+  assert.equal(mod.tickSummaryText({ reviewed: 2, derived: 3, deduped: 1, dropped: 0, skipped: [{ reason: 'x' }], supply_factor: 1 }), '验收 2 · 派生 3 · 去重 1 · 丢弃 0 · 跳过 1 · 供给 1')
+  assert.equal(mod.tickSummaryText(null), '')
+  assert.equal(mod.checkpointMeta('llm_restored').label, '供给恢复')
+  assert.equal(mod.checkpointMeta('escalation').label, '升级')
+  assert.equal(mod.checkpointMeta('unknown_kind').label, 'unknown_kind')
+})
+
+// ── ⑧ 24 号方案 §3.1：专项卡片展开拉三 RPC（campaignGet/Progress/PendingDrafts） ─
+test('24 专项运行报告：点击卡片展开 → 三并发 RPC；⌗ 独立过滤按钮存在', async () => {
+  const rpcCalls = []
+  const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const rpc = (endpoint, payload) => { rpcCalls.push({ endpoint, payload }); return Promise.resolve({}) }
+  const tree = mod.TaskCenter({ rpc })
+  const card = collect(tree, (n) => n.props && n.props.className === 'silksec-row' && typeof n.props.onClick === 'function' && textOf(n).includes('美团SRC 持续挖掘'))[0]
+  assert.ok(card, '专项卡片必须存在')
+  card.props.onClick()
+  await new Promise((r) => setTimeout(r, 0))
+  assert.ok(rpcCalls.some((c) => c.endpoint === 'campaignGet' && c.payload.id === 7), '展开必须拉 campaignGet(id=7)')
+  assert.ok(rpcCalls.some((c) => c.endpoint === 'campaignProgress' && c.payload.id === 7), '展开必须拉 campaignProgress(id=7)')
+  assert.ok(rpcCalls.some((c) => c.endpoint === 'campaignPendingDrafts' && c.payload.id === 7), '展开必须拉 campaignPendingDrafts(id=7)')
+  const filterBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '过滤队列')[0]
+  assert.ok(filterBtn, '专项卡片必须有独立的「过滤队列」按钮（⌗，避免误触）')
+})
+
+// ── ⑨ 24 号方案 §3.1：运行报告抽屉渲染 + 待放行草稿放行 ──────────────────────
+test('24 运行报告：推进投影/检查点时间线/待放行草稿/活跃子任务 渲染；放行走 campaignDispatch', async () => {
+  const uiCore = makeUiCore()
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const calls = []
+  const rpc = (endpoint, payload) => { calls.push({ endpoint, payload }); return Promise.resolve({ ok: true }) }
+  const report = {
+    campaign_id: 7,
+    detail: {
+      name: '美团SRC 持续挖掘', last_tick_at: Date.now() - 60000,
+      checkpoints: [{ id: 1, kind: 'llm_restored', summary: 'LLM 供给恢复（factor=1.0）', created_at: Date.now() - 120000 }],
+      active_tasks: [{ id: 501, objective: '验证 /api 未授权', status: 'running' }],
+      decisions: [{ id: 9, verdict: 'accepted', task_id: 501, rationale: 'oracle 判定通过', created_at: Date.now() - 300000 }],
+    },
+    progress: { totals: { accepted: 3, rejected: 1, rework: 2, escalated: 0, confirmed_delta: 2 }, by_program: { meituan: { accepted: 3, rejected: 1, confirmed_delta: 2 } } },
+    pending: { autonomy: 1, drafts: [{ kind: 'crawl', task_class: 'lite', host: 'api.example.com' }], skipped: [] },
+  }
+  const tree = mod.CampaignReport({ report, tick: { at: Date.now(), res: { reviewed: 1, derived: 2 } }, busy: false, callRpc: rpc, onDispatch: (cid, drafts) => { calls.push({ endpoint: 'campaignDispatch', payload: { id: cid, drafts } }) }, onClose: () => {} })
+  const text = deepText(tree)
+  assert.match(text, /推进投影/, '报告头：推进投影')
+  assert.match(text, /本次 tick：验收 1 · 派生 2/, '报告头：手动 tick 摘要（W7 修复点）')
+  assert.match(text, /检查点时间线/, '检查点时间线')
+  assert.match(text, /供给恢复/, '检查点 kind 中文映射')
+  assert.match(text, /待放行草稿/, '待放行草稿块')
+  assert.match(text, /lite/, '草稿 task_class 渲染')
+  assert.match(text, /活跃子任务/, '活跃子任务块')
+  assert.match(text, /oracle 判定通过/, '验收账本 rationale')
+  // 放行按钮 → onDispatch（进而 campaignDispatch）
+  const releaseBtn = collect(tree, (n) => n.type === 'button' && textOf(n) === '放行')[0]
+  assert.ok(releaseBtn, '单条放行按钮存在')
+  releaseBtn.props.onClick()
+  assert.ok(calls.some((c) => c.endpoint === 'campaignDispatch' && c.payload.id === 7 && c.payload.drafts.length === 1), '放行必须走 campaignDispatch(id=7)')
+})
+
+test('24 运行报告：L0 台账级显示「不产草稿」，无检查点显示空态，不抛', () => {
+  const uiCore = makeUiCore()
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const tree = mod.CampaignReport({ report: { campaign_id: 8, detail: {}, progress: {}, pending: { autonomy: 0, drafts: [] } }, busy: false, onClose: () => {} })
+  const text = deepText(tree)
+  assert.match(text, /L0 台账级不产草稿/)
+  assert.match(text, /暂无检查点/)
+  assert.match(text, /暂无活跃子任务/)
+})
+
+// ── ⑩ 24 号方案 §3.1：队列状态 tab / 历史过滤 chip 渲染 ─────────────────────
+test('24 任务视图：队列状态 tab 计数 + 历史成功/失败过滤 chip 渲染', () => {
+  const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const tree = mod.TaskCenter({ rpc: () => Promise.resolve({}) })
+  const text = deepText(tree)
+  assert.match(text, /状态全部 2/, '队列状态 tab：全部计数')
+  assert.match(text, /运行中 1/, '队列状态 tab：运行中计数')
+  assert.match(text, /排队 1/, '队列状态 tab：排队计数')
+  assert.match(text, /阻塞 0/, '队列状态 tab：阻塞计数')
+  assert.match(text, /历史全部 1/, '历史过滤 chip：全部计数')
+  assert.match(text, /成功 1/, '历史过滤 chip：成功计数')
+  assert.match(text, /失败 0/, '历史过滤 chip：失败计数')
+  // 布局重排：执行历史在工作区之前（文本顺序）
+  assert.ok(text.indexOf('执行历史') >= 0 && text.indexOf('工作区') >= 0, '两区块均存在')
+})
