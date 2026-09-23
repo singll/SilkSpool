@@ -1296,11 +1296,67 @@ test('22 C26/C27: campaign_tick L2 自动派生（stub 缺口）+ pending_drafts
   const t = bus._internal.db().prepare('SELECT * FROM tasks WHERE campaign_id=?').get(cid)
   assert.ok(t, 'L2 tick 应自动派生子任务')
   assert.equal(t.campaign_role, 'derived')
-  // 二次 tick：strategy 去重 → deduped
+  // 二次 tick：该策略已尝试 → Planner 跳过（already_attempted），不重复派生
   const tk2 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
   assert.equal(tk2.data.summaries[0].derived, 0)
-  assert.equal(tk2.data.summaries[0].deduped, 1)
+  assert.ok((tk2.data.summaries[0].skipped || []).some((s) => s.reason === 'already_attempted'))
 })
+
+test('22 P0-1: Planner 跳过已尝试策略并前进到新缺口（不再永久空转）', async () => {
+  const env = makeEnv()
+  const { bus } = env
+  // 两个 crawl 缺口：先派 top-1，第二次 tick 应前进到第二个（而非 deduped 空转）
+  assert.equal(registerLedgerStub(bus, [
+    { program: 'test-src', dim: 'crawl', key: 'a.example.com', mark: 'not_crawled', value: 5 },
+    { program: 'test-src', dim: 'crawl', key: 'b.example.com', mark: 'not_crawled', value: 1 },
+  ]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: 'adv', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1, max_active_tasks: 10 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const t1 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(t1.data.summaries[0].derived, 1)
+  const first = bus._internal.db().prepare('SELECT strategy_key FROM tasks WHERE campaign_id=?').get(cid).strategy_key
+  assert.equal(first, 'a.example.com|||')
+  const t2 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(t2.data.summaries[0].derived, 1, '第二次 tick 应前进到新缺口')
+  const keys = bus._internal.db().prepare('SELECT strategy_key FROM tasks WHERE campaign_id=? ORDER BY id').all(cid).map((r) => r.strategy_key)
+  assert.deepEqual(keys, ['a.example.com|||', 'b.example.com|||'])
+})
+
+test('22 P0-2: infra 失败（宿主重启/回收）判 escalated，不计连招 rejected', async () => {
+  const { bus, domain } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'infra', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }] }, { actor: 'model' })
+  const tid = bus._internal.db().prepare('SELECT id FROM tasks WHERE campaign_id=?').get(cid).id
+  // 模拟回收：无 run_id + 回收 note
+  bus._internal.db().prepare("UPDATE tasks SET status='failed', result='宿主重启/超时回收' WHERE id=?").run(tid)
+  bus._internal.db().prepare("INSERT INTO task_runs (task_id, run_id, ok, note, started_at, finished_at) VALUES (?, '', 0, '宿主重启/超时回收', ?, ?)").run(tid, Date.now() - 1000, Date.now())
+  const res = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: tid, campaign_id: cid } })
+  assert.equal(res.data.verdict, 'escalated', 'infra 失败不得判 rejected')
+  const st = bus._internal.db().prepare("SELECT fails, blacklisted FROM strategy_dedupe WHERE strategy_key='a.example.com|||idor'").get()
+  assert.ok(!st || st.fails === 0, 'infra 失败不计 strategy 连败')
+})
+
+test('22 P1: rework 后策略按冷却重开（Planner 可重试）', async () => {
+  const { bus, domain } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'rw', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }] }, { actor: 'model' })
+  const tid = bus._internal.db().prepare('SELECT id FROM tasks WHERE campaign_id=?').get(cid).id
+  await bus.dispatch('task', 'finish', { task_id: tid, run_id: 'rw1', outcome: 'done' }, { actor: 'scheduler' })
+  const res = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: tid, campaign_id: cid } })
+  assert.equal(res.data.verdict, 'rework')
+  const row = bus._internal.db().prepare("SELECT reopen_after FROM strategy_dedupe WHERE strategy_key='c1|a.example.com|||idor'").get()
+  assert.ok(row && row.reopen_after > Date.now(), 'rework 应设置 reopen_after 冷却')
+})
+
+
 
 test('22 §7.4/INV-C10: campaign 窗口预算闸——超预算停派 + budget_low checkpoint + L2 降 L1', async () => {
   const env = makeEnv()

@@ -1025,3 +1025,17 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 契约：task 59 例、approval 新增 2 例（二度批准/预算延长生效、不可达 fail-closed）全绿；全量本地契约 557/557。
 
 > 2026-09-22 22 号方案运行期修复（Campaign 子任务可执行性）：调度器只认领 `schedule_kind IS NOT NULL` 的任务；`task_derive_intent` 对 **campaign_id 非空**的子任务改以 `once` 调度入队（`at=now+3s`），否则 L2 自动派生的 queued 任务永不执行。21 号「无主派生」草稿仍保持 `NULL`（queued 待人工/编排 `task_run_now`）；INV-C7 只禁 interval。
+
+### 7.9 2026-09-23 运行期卡点修复（P0–P2）
+
+> 现象：上线后首轮各派 3 条后**空转约 7 小时**（`derived=0`）。根因与修复如下（本地全量契约 563/563）。
+
+| 项 | 根因 | 修复 |
+|---|---|---|
+| **P0-1 去重锁死** | `strategy_dedupe` 无 TTL，Planner 每 tick 取同一批 top-N 缺口 → 全被 dedupe → 首轮后再不派生 | `gatherPlanInputs` 归一裸键并标 `attempted`；`compileCampaignPlan` 跳过 `attempted && 未到 reopen_after` 的策略，**Planner 前进到下一批缺口**；`strategy_dedupe` 增 `reopen_after` 列 |
+| **P0-2 infra 失败误判** | 宿主重启/超时回收的 `failed` 被 `campaignVerdict` 判 `rejected` → 写连败 → 误触发 fail-rate 降级 L2→L1 | 新增 `isInfraFailure`（无 run_id / 回收·重启·调度异常·worker 未起等）→ 判 `escalated`，**不计 strategy 连败、不触发 fail-rate** |
+| **P1 rework 无后续** | `rework` 只落决策，不重开策略，闭环断在验收 | 任务增 `strategy_key` 列（derive_intent 落裸键）；Reviewer `rework` → `reopenStrategy(c{id}\|key, now+冷却)`，默认 6h（`SEC_CAMPAIGN_REWORK_REOPEN_HOURS`）；`rejected` → 连败 +1（≥3 黑名单） |
+| **P2 覆盖率不动** | `ledger_coverage_gaps` 按优先级截断 200 条，crawl（低优先级）被 vulnclass 挤出；Planner 永不派覆盖类 | `gatherPlanInputs` **按维度分查**（crawl/param/vulnclass）去重合并；`compileCampaignPlan` 维度多样性——cap≥2 时保证至少 1 条覆盖类入选 |
+| P2 spent_tokens=0 | worker 未上报 token | 未修（worker 侧），预算闸仍按 150k/草稿预估 |
+
+新增契约：Planner 前进到新缺口、infra→escalated 不计连败、rework 重开冷却、维度多样性、attempted 跳过。

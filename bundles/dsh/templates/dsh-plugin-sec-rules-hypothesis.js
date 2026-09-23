@@ -626,6 +626,11 @@ export function compileCampaignPlan(input = {}) {
     seen.add(key)
     const st = strategies[key] || strategies[String(g.strategy_key || '')] || {}
     if (st.blacklisted) { skipped.push({ strategy_key: key, reason: 'blacklisted' }); continue }
+    // 已尝试且未到重开时间 → 跳过（Planner 前进到下一批缺口，避免同一 top-N 永久占位空转）
+    const nowTs = Number(input.now) || Date.now()
+    if (st.attempted && (st.reopen_after == null || Number(st.reopen_after) > nowTs)) {
+      skipped.push({ strategy_key: key, reason: 'already_attempted' }); continue
+    }
     let score = CAMPAIGN_CLASS_PRIORITY[vulnClass] || 1
     score += Number(g.value || g.asset_score || 0)
     const mark = String(g.mark || '')
@@ -648,7 +653,13 @@ export function compileCampaignPlan(input = {}) {
     })
   }
   scored.sort((a, b) => (b.score - a.score) || a.strategy_key.localeCompare(b.strategy_key))
-  const drafts = scored.slice(0, cap)
+  let drafts = scored.slice(0, cap)
+  // 维度多样性（22 号方案运行期）：cap≥2 且存在覆盖类（crawl/param_enrich）草稿时，保证至少 1 条入选，
+  // 否则漏洞类永远压过覆盖类 → 覆盖率长期不动。牺牲最低分位换取覆盖推进。
+  if (drafts.length >= 2 && !drafts.some((d) => d.kind === 'crawl' || d.kind === 'param_enrich')) {
+    const cov = scored.find((d) => (d.kind === 'crawl' || d.kind === 'param_enrich') && !drafts.includes(d))
+    if (cov) drafts = [...drafts.slice(0, cap - 1), cov]
+  }
   if (scored.length > cap) skipped.push({ reason: 'derive_cap', dropped: scored.length - cap, cap })
   return { drafts, skipped }
 }

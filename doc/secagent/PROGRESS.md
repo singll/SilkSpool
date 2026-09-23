@@ -17,6 +17,13 @@
 
 ## 二、最近进度结果
 
+### 2026-09-23 · Campaign 运行期卡点修复（P0–P2）+ 运营复跑
+- **P0-1 去重锁死**：Planner 现跳过已尝试策略并前进到新缺口（`strategy_dedupe` 增 `reopen_after`）——修复「首轮后空转 7h」。
+- **P0-2 infra 误判**：宿主重启/超时回收的 failed 改判 `escalated`（不计 strategy 连败/不触发 fail-rate 降级）；#2 误降级后已重升 L2。
+- **P1**：rework → 策略按 6h 冷却重开（`SEC_CAMPAIGN_REWORK_REOPEN_HOURS`）；rejected → 连败 +1；任务增 `strategy_key` 列。
+- **P2**：覆盖缺口按维度分查 + Planner 维度多样性（保证覆盖类入选）；覆盖率开始推进（已派 crawl 任务）。
+- 本地全量契约 **563/563**；csai 部署复跑：campaign#1 27 条（running/queued 持续）、campaign#2 15 条，均在派生-执行-验收闭环中。详见 [05-task §7.9](05-task.md)。
+
 ### 2026-09-22 · Campaign 运营迁移（美团/字节 SRC）+ 两处运行期缺陷修复
 - **运营动作**：将 `meituan-src`/`bytedance` 的挖掘主线 interval 任务迁移到 Campaign——暂停（blocked，可恢复）vuln/vuln-deep 共 4 个（#19/#37/#100007/#100008），保留 recon #16/#17 与周复盘 #24；两个专项经 `campaign-autonomy` 审批（#25/#26、修正 cap 后 #27/#28）升 **L2 有界自动**（`derive_cap_per_tick=3` 以匹配 500k 预算），已自动派生并执行子任务。
 - **运行期缺陷修复 1（ledger `safeQuery`）**：列表类跨域查询经总线在信封顶层返回 `rows`，`safeQuery` 只读 `r.data` → `coverage_metrics`/`coverage_gaps`/`login_blindspot` 对 asset/endpoint 数据全盲、缺口恒空（Campaign L2 Planner 无输入）。归一两种形态 + 补 `asset_list`/`endpoint_list`/`cred_query` 的 reactor 只读 actor；回归新增 1 例。

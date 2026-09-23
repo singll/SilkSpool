@@ -293,3 +293,36 @@ test('compileCampaignPlan: 固定快照可重放（两次输出全等）', () =>
   }
   assert.deepEqual(compileCampaignPlan(input), compileCampaignPlan(input))
 })
+
+test('22 P2: compileCampaignPlan 维度多样性——保证至少 1 条覆盖类入选', () => {
+  const plan = compileCampaignPlan({
+    campaign: { program_ids: ['p1'], policy: { derive_cap_per_tick: 3 } },
+    gaps: [
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|idor', mark: 'untested' },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|sqli', mark: 'untested' },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|ssrf', mark: 'untested' },
+      { program: 'p1', dim: 'crawl', key: 'b.p1.com', mark: 'not_crawled' },
+    ],
+  })
+  assert.equal(plan.drafts.length, 3)
+  assert.ok(plan.drafts.some((d) => d.kind === 'crawl'), '须至少 1 条覆盖类入选')
+})
+
+test('22 P0-1: compileCampaignPlan 跳过已尝试策略（attempted 且未到 reopen_after）', () => {
+  const now = Date.now()
+  const base = {
+    campaign: { program_ids: ['p1'], policy: { derive_cap_per_tick: 3 } },
+    gaps: [
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|idor', mark: 'untested' },
+      { program: 'p1', dim: 'vulnclass', key: 'b.p1.com|idor', mark: 'untested' },
+    ],
+    now,
+  }
+  const attempted = { 'a.p1.com|||idor': { fails: 0, blacklisted: false, attempted: true, reopen_after: null } }
+  const p1 = compileCampaignPlan({ ...base, strategies: attempted })
+  assert.deepEqual(p1.drafts.map((d) => d.strategy_key), ['b.p1.com|||idor'])
+  // 到 reopen_after 之后可重试
+  const reopened = { 'a.p1.com|||idor': { fails: 0, blacklisted: false, attempted: true, reopen_after: now - 1000 } }
+  const p2 = compileCampaignPlan({ ...base, strategies: reopened })
+  assert.equal(p2.drafts.length, 2)
+})

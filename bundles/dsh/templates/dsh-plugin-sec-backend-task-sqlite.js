@@ -78,7 +78,8 @@ CREATE TABLE IF NOT EXISTS strategy_dedupe (
   last_seen INTEGER NOT NULL,
   fails INTEGER NOT NULL DEFAULT 0,
   blacklisted INTEGER NOT NULL DEFAULT 0,
-  last_task_id INTEGER
+  last_task_id INTEGER,
+  reopen_after INTEGER
 )`
 
 // 22 号方案 §5.1：Campaign（专项）台账（task 域 owns）
@@ -147,6 +148,7 @@ function createRepo(db) {
   db.exec(TASK_RUNS_DDL)
   db.exec(WORKERS_DDL)
   db.exec(STRATEGY_DDL)
+  ensureCol(db, 'strategy_dedupe', 'reopen_after', 'reopen_after INTEGER')
   db.exec(CAMPAIGNS_DDL)
   db.exec(CAMPAIGN_DECISIONS_DDL)
   db.exec(CAMPAIGN_CHECKPOINTS_DDL)
@@ -169,6 +171,7 @@ function createRepo(db) {
     // 22 号方案 §5.2：子任务专项归属（幂等加列，存量 NULL 天然兼容；写入后不可改 INV-C2）
     ['campaign_id', 'campaign_id INTEGER'],
     ['campaign_role', 'campaign_role TEXT'],
+    ['strategy_key', 'strategy_key TEXT'],
   ]) ensureCol(db, 'tasks', col, ddl)
   ensureCol(db, 'task_runs', 'session_id', 'session_id TEXT')
   // workers.session_id 保持历史来源会话语义；新列只保存经核实的子会话。
@@ -200,8 +203,8 @@ function createRepo(db) {
       const r = db.prepare(`
         INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
           session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at,
-          provider, model, reasoning_effort, after_delay_seconds, goal, campaign_id, campaign_role)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          provider, model, reasoning_effort, after_delay_seconds, goal, campaign_id, campaign_role, strategy_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         String(row.program_id), row.parent_id ?? null, row.phase === undefined || row.phase === null ? null : String(row.phase),
         String(row.objective), row.priority ?? 5, row.assignee ? String(row.assignee) : '', row.budget_tokens ?? null,
@@ -210,6 +213,7 @@ function createRepo(db) {
         row.goal ? String(row.goal) : null,
         row.campaign_id == null ? null : Number(row.campaign_id),
         row.campaign_role ? String(row.campaign_role) : null,
+        row.strategy_key ? String(row.strategy_key) : null,
       )
       return Number(r.lastInsertRowid)
     },
@@ -377,9 +381,9 @@ function createRepo(db) {
     },
     upsertStrategy(key, patch) {
       const now = repo.now()
-      db.prepare(`INSERT INTO strategy_dedupe (strategy_key, program_id, first_seen, last_seen, fails, blacklisted, last_task_id)
-        VALUES (?, ?, ?, ?, 0, 0, NULL)
-        ON CONFLICT (strategy_key) DO UPDATE SET last_seen = ?, last_task_id = COALESCE(?, last_task_id)`)
+      db.prepare(`INSERT INTO strategy_dedupe (strategy_key, program_id, first_seen, last_seen, fails, blacklisted, last_task_id, reopen_after)
+        VALUES (?, ?, ?, ?, 0, 0, NULL, NULL)
+        ON CONFLICT (strategy_key) DO UPDATE SET last_seen = ?, last_task_id = COALESCE(?, last_task_id), reopen_after = NULL`)
         .run(String(key), String(patch.program_id || ''), now, now, now, patch.last_task_id ?? null)
     },
     markStrategyOutcome(key, ok, taskId) {
@@ -390,6 +394,11 @@ function createRepo(db) {
         db.prepare('UPDATE strategy_dedupe SET fails = fails + 1, last_seen = ?, last_task_id = ? WHERE strategy_key = ?').run(now, taskId ?? null, String(key))
         db.prepare('UPDATE strategy_dedupe SET blacklisted = 1 WHERE strategy_key = ? AND fails >= 3').run(String(key))
       }
+    },
+    // 22 号方案：rework 后按冷却时间重开策略（Planner 可在 reopen_after 之后重试同一打法）
+    reopenStrategy(key, reopenAfterMs) {
+      if (!key) return 0
+      return db.prepare('UPDATE strategy_dedupe SET reopen_after = ? WHERE strategy_key = ?').run(Number(reopenAfterMs) || 0, String(key)).changes
     },
     // 22 号方案 §7.3：Planner 连败/黑名单快照（program 维度过滤；含 campaign 前缀键的裸键回退）
     listStrategies(programIds) {

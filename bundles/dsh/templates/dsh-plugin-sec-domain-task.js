@@ -49,6 +49,8 @@ const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 // 22 号方案：单条派生草稿的预算预估（tokens，环境变量可调；用于 campaign 窗口预算闸）
 const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 150000)
 const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich']
+// 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
+const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000
 const CAMPAIGN_LEVELS = ['H1', 'H2', 'H3']
 // 21 号方案 §3-4：per-program 周期预算闸（环境变量可调；dashboard/approval 人工放行）
 const BUDGET_PERIOD_MS = Number(process.env.SEC_TASK_BUDGET_PERIOD_DAYS || 7) * 86400000
@@ -112,9 +114,10 @@ export const TASK_MANIFEST = {
         reasoning_effort: en(['low', 'medium', 'high']),
         campaign_id: int({ minimum: 1, description: '归属专项（22 号方案 §5.2）；非空 ⇒ schedule_kind 不得为 interval（INV-C7），写入后不可改（INV-C2）' }),
         campaign_role: en(CAMPAIGN_ROLES, { description: '专项子任务角色：seed/derived/verify/submit/retest/learn' }),
+        strategy_key: str({ description: '（内部）派生策略裸键 host|path|param|vuln_class——供 Reviewer rework 重开/连败回写归因' }),
       }, ['objective']),
       idempotent: 'auto',
-      idempotent_fields: ['program_id', 'objective', 'phase', 'goal', 'priority', 'parent_id', 'budget_tokens', 'assignee', 'schedule', 'provider', 'model', 'reasoning_effort', 'campaign_id', 'campaign_role'],
+      idempotent_fields: ['program_id', 'objective', 'phase', 'goal', 'priority', 'parent_id', 'budget_tokens', 'assignee', 'schedule', 'provider', 'model', 'reasoning_effort', 'campaign_id', 'campaign_role', 'strategy_key'],
       events: ['task.created'],
       event_limit: 1,
       invariants: ['scheduleValid', 'intrusiveInterval', 'campaignTaskValid'],
@@ -1085,6 +1088,12 @@ function makeHandlers(opts) {
     const obj = String(task.objective || '')
     return /\[覆盖缺口\]/.test(obj) || /arjun|katana|gau|waybackurls/.test(obj)
   }
+  // 基础设施失败（宿主重启/超时回收/调度异常/worker 未起）——不是打法失败，不计连败、不判 rejected
+  function isInfraFailure(task, run) {
+    if (!run || !run.run_id) return true
+    const note = `${(run && run.note) || ''} ${task.result || ''}`
+    return /宿主重启|超时回收|调度执行异常|调度取任务失败|spawn_worker|worker 超时|worker 并发|E_EXEC|E_BUS|crash|infra_error/i.test(note)
+  }
   function campaignVerdict(task, run, sig = {}) {
     const role = String(task.campaign_role || 'derived')
     const ok = !!(run && run.ok)
@@ -1096,7 +1105,11 @@ function makeHandlers(opts) {
       return 'rework'                                   // 无 verdict 亦无覆盖推进
     }
     if (task.status === 'done' && !run) return 'escalated'
-    if (task.status === 'failed') return role === 'verify' ? 'rework' : 'rejected'
+    if (task.status === 'failed') {
+      // infra 失败（宿主重启/回收/调度异常）→ escalated：不进 strategy 连败，也不触发 fail-rate 降级
+      if (isInfraFailure(task, run)) return 'escalated'
+      return role === 'verify' ? 'rework' : 'rejected'
+    }
     return 'escalated'
   }
   const EVIDENCE_PREFIX_RE = /^(run|task|capsule|ledger|finding|oracle):/
@@ -1116,23 +1129,58 @@ function makeHandlers(opts) {
     return delta
   }
 
+  // 验收后的策略侧效应：rework → 冷却后重开（Planner 可重试）；rejected → 连败 +1（≥3 黑名单）。
+  // 仅在任务携带 strategy_key（campaign 派生）时生效；manual 验收无 key 跳过。
+  function applyReviewOutcome(repo, task, verdict) {
+    const bare = task && task.strategy_key ? String(task.strategy_key) : ''
+    if (!bare) return
+    // 去重表键带 campaign 维度前缀（derive_intent 以 c{id}|{bare} 落键）；任务上存的是裸键
+    const key = task.campaign_id != null ? `c${task.campaign_id}|${bare}` : bare
+    try {
+      if (verdict === 'rework' && repo.reopenStrategy) repo.reopenStrategy(key, Date.now() + CAMPAIGN_REWORK_REOPEN_MS)
+      else if (verdict === 'rejected' && repo.markStrategyOutcome) repo.markStrategyOutcome(key, false, task.id)
+    } catch (e) { log(`验收策略回写失败 ${key}: ${e?.message}`) }
+  }
+
   // L1/L2 规划输入采集（缺口/连败/经验卡命中/活跃与预算）——跨域只读，不可达即降级空快照
   async function gatherPlanInputs(campaign, repo) {
     const gaps = []
     if (queryRef) {
+      const seenGap = new Set()
       for (const program of campaign.program_ids) {
-        try {
-          const r = await queryRef('ledger', 'coverage_gaps', { program, limit: 200 }, { actor: 'reactor' })
-          const rows = (r && r.data && Array.isArray(r.data.gaps)) ? r.data.gaps
-            : ((r && r.data && Array.isArray(r.data.rows)) ? r.data.rows : ((r && Array.isArray(r.rows)) ? r.rows : []))
-          for (const row of rows) gaps.push({ ...row, program: row.program || row.program_id || program })
-        } catch { /* 降级：该 program 无缺口 */ }
+        // 分维度拉取：ledger_coverage_gaps 按优先级截断，crawl（低优先级）会被 vulnclass 挤出 limit，
+        // 导致 Planner 永远拿不到覆盖类缺口（覆盖率不动）。逐维查询 + 去重合并。
+        for (const dim of ['crawl', 'param', 'vulnclass']) {
+          try {
+            const r = await queryRef('ledger', 'coverage_gaps', { program, dim, limit: 200 }, { actor: 'reactor' })
+            const rows = (r && r.data && Array.isArray(r.data.gaps)) ? r.data.gaps
+              : ((r && r.data && Array.isArray(r.data.rows)) ? r.data.rows : ((r && Array.isArray(r.rows)) ? r.rows : []))
+            for (const row of rows) {
+              const pid = row.program || row.program_id || program
+              const k = `${pid}|${row.dim}|${row.key}`
+              if (seenGap.has(k)) continue
+              seenGap.add(k)
+              gaps.push({ ...row, program: pid })
+            }
+          } catch { /* 降级：该 program/dim 无缺口 */ }
+        }
       }
     }
     const strategies = {}
     try {
       const rows = repo.listStrategies ? repo.listStrategies(campaign.program_ids) : []
-      for (const s of rows) strategies[s.strategy_key] = { fails: Number(s.fails) || 0, blacklisted: !!s.blacklisted }
+      for (const s of rows) {
+        // 去 campaign 维度前缀（derive_intent 以 c{id}|{bare} 落键），归一为裸键供 Planner 判定
+        const bare = String(s.strategy_key || '').replace(/^c\d+\|/, '')
+        if (!bare) continue
+        const cur = strategies[bare] || { fails: 0, blacklisted: false, attempted: true, reopen_after: null }
+        cur.fails = Math.max(cur.fails, Number(s.fails) || 0)
+        cur.blacklisted = cur.blacklisted || !!s.blacklisted
+        cur.attempted = true
+        const ra = s.reopen_after == null ? null : Number(s.reopen_after)
+        if (ra != null) cur.reopen_after = cur.reopen_after == null ? ra : Math.min(cur.reopen_after, ra)
+        strategies[bare] = cur
+      }
     } catch { /* ignore */ }
     const scores = {}
     const activeTaskCount = repo.activeCampaignTaskCount(campaign.id)
@@ -1343,7 +1391,7 @@ function makeHandlers(opts) {
         const evidence = reviewEvidence(t, run, sig, verdict)
         const delta = makeGoalDelta(t, verdict, run, sig)
         const rd = recordDecision(repo, { campaign_id: c.id, task_id: t.id, verdict, evidence, goal_delta: delta, decided_by: 'reviewer' })
-        if (!rd.duplicate) { summary.reviewed++; events.push(...decisionEvents(rd)) }
+        if (!rd.duplicate) { summary.reviewed++; events.push(...decisionEvents(rd)); applyReviewOutcome(repo, t, verdict) }
       }
     } catch (e) { summary.skipped.push({ step: 'reviewer', error: String(e?.message || e) }) }
     // 2.5) LearnLink（§11.2-L4）：反复 rework ⇒ 经既有 know_gap_record 登记检索缺口（有界，7d 去重）
@@ -1598,6 +1646,7 @@ function makeHandlers(opts) {
         reasoning_effort: args.reasoning_effort ?? null,
         campaign_id: args.campaign_id ?? null,
         campaign_role: args.campaign_role ?? null,
+        strategy_key: args.strategy_key ?? null,
       })
       const payload = {
         task_id: id, program_id: programId, phase: args.phase || '', objective_head: String(args.objective || '').slice(0, 80),
@@ -1888,6 +1937,7 @@ function makeHandlers(opts) {
         budget_tokens: 150000,
         ...(args.campaign_id != null ? { campaign_id: args.campaign_id } : {}),
         ...(args.campaign_role ? { campaign_role: args.campaign_role } : {}),
+        strategy_key: bare,
         // 22 号方案：Campaign 子任务以 once 调度入队，才被调度器认领执行（调度器只认领 schedule_kind 非空）。
         // 21 号「无主派生」草稿仍保持 NULL（queued 待人工/编排 run_now）；INV-C7 只禁 interval。
         ...(args.campaign_id != null ? { schedule: { kind: 'once', at: Date.now() + 3000 } } : {}),
@@ -2529,6 +2579,7 @@ function makeHandlers(opts) {
         }, { actor: 'reactor', cause: envelope })
         if (r && !r.ok && r.error && r.error.code === 'E_CAMPAIGN_REVIEWED') return { ok: true, data: { skipped: true, reason: 'already reviewed' } }
         if (r && !r.ok) return { ok: false, error: r.error }
+        try { const repo = backendRepoRef ? backendRepoRef() : null; if (repo) applyReviewOutcome(repo, t, verdict) } catch { /* best-effort */ }
         return { ok: true, data: { skipped: false, verdict, decision_id: r?.data?.decision_id ?? null } }
       } catch (e) {
         return { ok: false, error: { code: e?.code || 'E_INTERNAL', message: String(e?.message || e) } }
