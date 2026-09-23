@@ -103,6 +103,33 @@ test('21 §0-8（INV-T14）: task_finish 成本归因——spent_tokens 回填 +
   assert.equal(ev[0].payload.spent_tokens, 1500)
 })
 
+test('26 号补丁：worker 未上报时按 session_id 从 dsh-bill 归因 spent_tokens（增量游标可续扫）', async () => {
+  const { bus, dataDir } = makeEnv()
+  const sid = 'session-bill-attr-1'
+  fs.mkdirSync(path.join(dataDir, 'dsh-bill'), { recursive: true })
+  const billFile = path.join(dataDir, 'dsh-bill', 'records.jsonl')
+  const rec = (tokens) => JSON.stringify({ time: Date.now(), sessionId: sid, inputTokens: tokens, outputTokens: 100, cacheWriteTokens: 0, cacheReadTokens: 99999 })
+  fs.writeFileSync(billFile, rec(400) + '\n' + rec(500) + '\n')
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '账单归因测试' }, { actor: 'model' })
+  const id = c.data.task_id
+  const r = await bus.dispatch('task', 'finish', { task_id: id, run_id: 'bill-1', outcome: 'done', session_id: sid }, { actor: 'scheduler' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.spent_tokens, 400 + 500 + 200, 'in+out 累加（cacheRead 不计实耗）')
+  const row = bus._internal.db().prepare('SELECT spent_tokens FROM tasks WHERE id=?').get(id)
+  assert.equal(row.spent_tokens, 1100)
+  const run = bus._internal.db().prepare('SELECT spent_tokens FROM task_runs WHERE task_id=?').get(id)
+  assert.equal(run.spent_tokens, 1100, 'task_runs 行同口径（验收汇聚可读）')
+  // 增量续扫：追加账单后下一个 finish 看到全量
+  fs.appendFileSync(billFile, rec(300) + '\n')
+  const c2 = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '续扫测试' }, { actor: 'model' })
+  const r2 = await bus.dispatch('task', 'finish', { task_id: c2.data.task_id, run_id: 'bill-2', outcome: 'done', session_id: sid }, { actor: 'scheduler' })
+  assert.equal(r2.data.spent_tokens, 1100 + 400, '游标续扫不重计不遗漏')
+  // 无账单记录的会话不回填（保持 null，不凭空造 0）
+  const c3 = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '无账单测试' }, { actor: 'model' })
+  const r3 = await bus.dispatch('task', 'finish', { task_id: c3.data.task_id, run_id: 'bill-3', outcome: 'done', session_id: 'session-nonexist' }, { actor: 'scheduler' })
+  assert.equal(r3.data.spent_tokens, null)
+})
+
 test('21 §3-4: 任务预算闸——周期任务数超限停派（E_TASK_BUDGET_EXHAUSTED），dashboard 人工放行', async () => {
   const { bus } = makeEnv()
   // 先建一条任务物化表结构（ensureCol/DDL 在首次 factory 调用时执行）
@@ -167,6 +194,20 @@ test('21 §3-2: derive_intent 局面编译——越出 scope 丢弃；连败 3 �
   const bl = await bus.dispatch('task', 'derive_intent', { program_id: 'test-src', kind: 'hypothesis', host: 'a.example.com', path: '/x', vuln_class: 'sqli', param: 'id' }, { actor: 'reactor' })
   assert.equal(bl.ok, false)
   assert.equal(bl.error.code, 'E_TASK_STRATEGY_BLACKLISTED')
+})
+
+test('26 号补丁：review_finding 派生豁免主机归属校验（finding id 进 host 槽，program 内登记即授权证据）', async () => {
+  const { bus } = makeEnv()
+  // host='501' 不是主机名、不在 scope.yml——hypothesis 必被局面编译拦截，review_finding 放行
+  const blocked = await bus.dispatch('task', 'derive_intent', { program_id: 'test-src', kind: 'hypothesis', host: '501', vuln_class: 'idor' }, { actor: 'reactor' })
+  assert.equal(blocked.ok, false)
+  assert.equal(blocked.error.code, 'E_INVARIANT')
+  const r = await bus.dispatch('task', 'derive_intent', { program_id: 'test-src', kind: 'review_finding', host: '501' }, { actor: 'reactor' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.kind, 'review_finding')
+  const t = bus._internal.db().prepare('SELECT objective, task_class FROM tasks WHERE id=?').get(r.data.task_id)
+  assert.ok(/\[存量复核\] finding #501/.test(t.objective), 'objective 以 finding id 展开')
+  assert.equal(t.task_class, 'lite', '存量复核走 lite 档（23 §3.7 分档）')
 })
 
 test('21 §3-2/§6.1: H3 语义假设局面编译——缺卡片引用/过短/注入特征均丢弃；合规放行', async () => {

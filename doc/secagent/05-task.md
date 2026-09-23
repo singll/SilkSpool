@@ -1087,5 +1087,10 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **Path A（步骤 5，已上线）**：`SEC_CAMPAIGN_MODEL_SELECTOR=dsh` 时派生任务落 `provider=bellkeeper` + `model=<组/模型>`；调度器 `exec.spawn_worker` 经 `model-patch.yml` 注入，线上实测 worker 收到 `{provider:bellkeeper, model:pool-secagent-heavy}`。
 - **kimi-code 入池（步骤 4）**：评估结论 **暂不入池**（编码专用 task_types + 5h/7d 不可预测窗口），复评条件见 [23 号文档 §五.6](archive/23-llm-supply-throttle-2026-09-23.md)。
 - **供给徽章恢复修复**：观测异常（llm_probe_failed）恢复后，`lastSupplyState` 归一为 `{state:up|throttled|probe_failed}`，恢复时写 `llm_restored`——修复「观测异常恢复后徽章卡死在观测异常」。
-- **spent_tokens=0**：worker 未上报 token（worker 侧），预算闸仍按预估 token 记账。
+- **spent_tokens=0**：~~worker 未上报 token（worker 侧），预算闸仍按预估 token 记账。~~ **已于 26 号补丁修复（§7.11）**：worker 未上报时按 session_id 从 dsh-bill `records.jsonl` 增量归因实耗。
 - **24 号方案接线（2026-09-23）**：`campaign_progress` / `campaign_pending_drafts` / `campaign_dispatch` 三个域查询/命令经 dashboard-rpc 透传（`campaignProgress`/`campaignPendingDrafts`/`campaignDispatch`），任务视图专项卡片可展开运行报告并一键放行草稿（22 号「未接」项补齐）；域侧零改动，详见 [16-dashboard §2026-09-23](16-dashboard.md)。
+
+### 7.11 2026-09-23 26 号补丁回填（dsh-bill 成本归因 + 存量复核入专项）
+
+- **成本归因（`spent_tokens` 恒 0 修复）**：task 域内置 dsh-bill `records.jsonl` 增量解析器（按字节偏移续扫，游标落盘 `data/dsh-bill-sum.json`，文件截断/重建自动归零重扫，半行留待下次；会话 map 超 5000 条截顶保 3000）。`task_finish` 优先采用 worker 上报的 `spent_tokens`，未上报时按 `session_id` 归因累计实耗（in+out+cacheWrite；cacheRead 为缓存命中不计）；无记录保持 NULL 不回填（不凭空造 0）。`task_runs` 增 `spent_tokens` 列（验收汇聚与 tasks 同口径）。预算闸（`campaignUsage` 聚合 tasks.spent_tokens）自此按真实消耗触发，昨夜「已用 0/500000 却 budget_low 停派」的预估误报类消除。契约：「26 号补丁：worker 未上报时按 session_id 从 dsh-bill 归因 spent_tokens（增量游标可续扫）」。
+- **存量复核入专项（review_finding）**：`CAMPAIGN_KINDS`/`task_derive_intent` kind 枚举增 `review_finding`——host 槽载 finding id，objective 模板「[存量复核] finding #N 超龄未分诊」（vuln_get 读证 → confirm 需机器 oracle/proof capsule / 复现可差分补 exec_oracle_judge / 证据不足 vuln_reject 或 false_positive 写 reason）；`classifyTaskClass` 归 lite 档；`compileCampaignPlan` 对 review 维缺口（见 11-ledger §1.4.9）出 draft 时 host 改写为 finding id、+3 提权进 top-cap、计入维度多样性保底；`isCoverageRole` 认 `[存量复核]`（成功即格点推进）。**scope 复查豁免**：finding id 非主机名，`intentSituation`（derive 链）与 `campaignSituationOk`（Dispatcher 下发链）对 review_finding 跳过主机归属校验——finding 已登记在 program 内即授权证据；program 级授权/过期校验（INV-C1）不豁免。契约：rules「26 存量复核入专项」、task「26 号补丁：review_finding 派生豁免主机归属校验」。

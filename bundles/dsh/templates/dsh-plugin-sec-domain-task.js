@@ -49,7 +49,7 @@ const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 // 22 号方案：单条派生草稿的预算预估（tokens，环境变量可调；用于 campaign 窗口预算闸）
 // 23 号方案 §3.6：默认随统一额度面调为 30000（worker 未上报 token 前的保守估算）
 const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 30000)
-const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich', 'asset_enum']
+const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding']
 // 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
 const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000
 // 23 号方案 §3.6：每 tick 派生上限默认 8（v2 调高：5→8）
@@ -342,7 +342,7 @@ export const TASK_MANIFEST = {
       actor: ['reactor', 'scheduler', 'system', 'human'],
       schema: schema({
         program_id: str({ minLength: 1 }),
-        kind: en(['hypothesis', 'crawl', 'param_enrich', 'asset_enum']),
+        kind: en(['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding']),
         host: str({ minLength: 1 }),
         path: str({ default: '' }),
         vuln_class: str({ default: '' }),
@@ -1000,6 +1000,79 @@ function makeHandlers(opts) {
     throw Object.assign(new Error(message), { code, hint, retryable })
   }
 
+  // 26 号补丁：dsh-bill 成本归因——records.jsonl 按字节偏移增量解析，
+  // 累计 per-session tokens（in+out+cacheWrite；cacheRead 为缓存命中不计实耗）。
+  // 游标落盘 data/dsh-bill-sum.json，重启零成本续扫；文件截断/重建自动归零重扫。
+  const billSum = (() => {
+    const billFile = path.join(dataDir, 'dsh-bill', 'records.jsonl')
+    const cursorFile = path.join(dataDir, 'dsh-bill-sum.json')
+    const state = { offset: 0, sessions: new Map(), dirty: false }
+    try {
+      const cur = JSON.parse(fs.readFileSync(cursorFile, 'utf8'))
+      state.offset = Number(cur.offset) || 0
+      for (const [k, v] of Object.entries(cur.sessions || {})) state.sessions.set(k, Number(v) || 0)
+    } catch { /* 首次/损坏按全新 */ }
+    let lastSave = 0
+    function scan() {
+      let st
+      try { st = fs.statSync(billFile) } catch { return }
+      if (state.offset > st.size) { state.offset = 0; state.sessions.clear() } // 截断/轮换 → 重扫
+      if (state.offset === st.size) return
+      let buf
+      try {
+        const fd = fs.openSync(billFile, 'r')
+        buf = Buffer.alloc(st.size - state.offset)
+        fs.readSync(fd, buf, 0, buf.length, state.offset)
+        fs.closeSync(fd)
+      } catch { return }
+      let consumed = 0
+      const text = buf.toString('utf8')
+      let idx = 0
+      while (true) {
+        const nl = text.indexOf('\n', idx)
+        if (nl < 0) break // 半行留给下次（写方按行追加）
+        const line = text.slice(idx, nl)
+        consumed = nl + 1
+        idx = nl + 1
+        if (!line.trim()) continue
+        try {
+          const r = JSON.parse(line)
+          const sid = r && r.sessionId
+          if (sid) {
+            const tok = (Number(r.inputTokens) || 0) + (Number(r.outputTokens) || 0) + (Number(r.cacheWriteTokens) || 0)
+            state.sessions.set(sid, (state.sessions.get(sid) || 0) + tok)
+          }
+        } catch { /* 坏行跳过 */ }
+      }
+      state.offset += consumed
+      state.dirty = true
+      // 会话 map 防膨胀：超 5000 条只留最大的 3000
+      if (state.sessions.size > 5000) {
+        const keep = [...state.sessions.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3000)
+        state.sessions.clear()
+        for (const [k, v] of keep) state.sessions.set(k, v)
+      }
+      if (state.dirty && Date.now() - lastSave > 5000) {
+        lastSave = Date.now()
+        state.dirty = false
+        try {
+          const tmp = `${cursorFile}.tmp-${process.pid}`
+          fs.writeFileSync(tmp, JSON.stringify({ offset: state.offset, sessions: Object.fromEntries(state.sessions) }))
+          fs.renameSync(tmp, cursorFile)
+        } catch { /* 落盘失败下次重扫 */ }
+      }
+    }
+    return {
+      // 会话总实耗 tokens；无记录返回 null（调用方保持 spent_tokens 不回填）
+      tokensForSession(sessionId) {
+        if (!sessionId) return null
+        try { scan() } catch { /* best-effort */ }
+        const v = state.sessions.get(String(sessionId))
+        return Number.isFinite(v) && v > 0 ? v : null
+      },
+    }
+  })()
+
   // ------------------------------------------------------------------
   // 21 号方案 §3-1/§6：Intent 派生器辅助（H1/H2 生成、H3 局面编译、strategy 键）
   // ------------------------------------------------------------------
@@ -1306,8 +1379,8 @@ function makeHandlers(opts) {
   function isCoverageRole(task, role) {
     if (role !== 'derived') return false
     const obj = String(task.objective || '')
-    // 25 号补丁：[资产缺口]（asset_enum 根域枚举）同为覆盖驱动角色——成功即格点推进
-    return /\[覆盖缺口\]/.test(obj) || /\[资产缺口\]/.test(obj) || /arjun|katana|gau|waybackurls/.test(obj)
+    // 25/26 号补丁：[资产缺口]（asset_enum 根域枚举）/ [存量复核]（review_finding 分诊）同为覆盖驱动角色——成功即格点推进
+    return /\[覆盖缺口\]/.test(obj) || /\[资产缺口\]/.test(obj) || /\[存量复核\]/.test(obj) || /arjun|katana|gau|waybackurls/.test(obj)
   }
   // 基础设施失败（宿主重启/超时回收/调度异常/worker 未起）——不是打法失败，不计连败、不判 rejected
   function isInfraFailure(task, run) {
@@ -1346,7 +1419,10 @@ function makeHandlers(opts) {
   function makeGoalDelta(task, verdict, run, sig = {}) {
     const delta = { accepted: verdict === 'accepted' ? 1 : 0, rejected: verdict === 'rejected' ? 1 : 0, rework: verdict === 'rework' ? 1 : 0, role: task.campaign_role || 'derived' }
     if (verdict === 'accepted' && (sig.capsuleRef || sig.verified)) delta.confirmed = 1
-    if (run && Number.isFinite(Number(run.spent_tokens))) delta.spent_tokens = Number(run.spent_tokens)
+    // 26 号补丁：run 行无 spent_tokens 列时回退任务行（task_finish 已按 dsh-bill 归因回填）
+    const runSpent = run && Number.isFinite(Number(run.spent_tokens)) ? Number(run.spent_tokens) : null
+    const taskSpent = task && Number.isFinite(Number(task.spent_tokens)) ? Number(task.spent_tokens) : null
+    if (runSpent !== null || taskSpent !== null) delta.spent_tokens = runSpent !== null ? runSpent : taskSpent
     return delta
   }
 
@@ -1372,7 +1448,7 @@ function makeHandlers(opts) {
         // 分维度拉取：ledger_coverage_gaps 按优先级截断，crawl（低优先级）会被 vulnclass 挤出 limit，
         // 导致 Planner 永远拿不到覆盖类缺口（覆盖率不动）。逐维查询 + 去重合并。
         // 25 号补丁：asset 维（根域枚举超窗）并入专项缺口消费
-        for (const dim of ['crawl', 'param', 'vulnclass', 'asset']) {
+        for (const dim of ['crawl', 'param', 'vulnclass', 'asset', 'review']) {
           try {
             const r = await queryRef('ledger', 'coverage_gaps', { program, dim, limit: 200 }, { actor: 'reactor' })
             const rows = (r && r.data && Array.isArray(r.data.gaps)) ? r.data.gaps
@@ -1416,11 +1492,14 @@ function makeHandlers(opts) {
   }
 
   // 局面编译（program/host 授权复查），供 Dispatcher 下发前 fail-closed
-  async function campaignSituationOk(programId, host) {
+  async function campaignSituationOk(programId, host, { skipHostScope = false } = {}) {
     const map = await scopeProgramMap()
     const hit = map.get(String(programId))
     if (!hit) return { ok: false, code: 'E_CAMPAIGN_PROGRAM_UNRESOLVED', message: `program ${programId} 未授权`, hint: '绑定 program 必须存在于 scope 镜像且未过期（INV-C1）' }
     if (hit.expired) return { ok: false, code: 'E_CAMPAIGN_PROGRAM_UNRESOLVED', message: `program ${programId} 授权已过期`, hint: '续期授权后重试（fail-closed）' }
+    // 26 号补丁：review_finding 的 host 槽载 finding id 而非主机名，跳过主机归属校验——
+    // finding 已登记在 program 内即授权证据；program 级授权/过期校验（上方）不豁免。
+    if (skipHostScope) return { ok: true }
     const sc = scopeCheckResult(programId, host)
     if (!sc.ok) return { ok: false, code: sc.code, message: `派生越界：${sc.message}`, hint: '派生绝不越出 scope' }
     return { ok: true }
@@ -1570,7 +1649,7 @@ function makeHandlers(opts) {
     for (const rawDraft of allowed) {
       const d = sanitizeDraft(rawDraft, c)
       const programId = String(d.program_id || c.program_ids[0] || '')
-      const sit = await campaignSituationOk(programId, d.host)
+      const sit = await campaignSituationOk(programId, d.host, { skipHostScope: d.kind === 'review_finding' })
       if (!sit.ok) { result.dropped.push({ strategy_key: d.strategy_key || null, code: sit.code, message: sit.message }); continue }
       // 23 号方案 §3.7：任务分档标注（Path B 纯元数据）；selector=dsh 时附 model_hint（Path A）
       let hint = null
@@ -1733,9 +1812,13 @@ function makeHandlers(opts) {
   const invariants = {
     // 21 号方案 §3-2：Intent 局面硬约束编译（scope/连败黑名单/H3 违规丢弃落审计）
     intentSituation: async (args, repo) => {
-      // scope fail-closed：host 必须 ∈ program scope（复用 scope.yml 自查，与 asset/endpoint 同口径）
-      const sc = scopeCheckResult(args.program_id, args.host)
-      if (!sc.ok) return { code: sc.code, message: `Intent 派生越界：${sc.message}`, hint: '派生器绝不越出 scope（§3-2 局面编译）', retryable: false }
+      // 26 号补丁：review_finding 的 host 槽载 finding id，不做主机归属校验——
+      // finding 已登记在 program 内即授权证据（program 级授权由 campaignSituationOk 前置把关）。
+      if (args.kind !== 'review_finding') {
+        // scope fail-closed：host 必须 ∈ program scope（复用 scope.yml 自查，与 asset/endpoint 同口径）
+        const sc = scopeCheckResult(args.program_id, args.host)
+        if (!sc.ok) return { code: sc.code, message: `Intent 派生越界：${sc.message}`, hint: '派生器绝不越出 scope（§3-2 局面编译）', retryable: false }
+      }
       // 连败黑名单：strategy_key 已拉黑 → 丢弃落审计（E_STATE 由调用方记录）
       const key = args.strategy_key || strategyKey({ host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '' })
       const st = repo.getStrategy ? repo.getStrategy(key) : null
@@ -2091,7 +2174,13 @@ function makeHandlers(opts) {
 
       // 21 号方案 §0-8（INV-T14 落地）：成本归因——worker 上报 token 回填 spent_tokens；
       // 超 budget_tokens 记 [预算超支]（不影响 ok——超支是观测事实不是失败）。
-      const spentTokens = Number.isInteger(args.spent_tokens) && args.spent_tokens >= 0 ? args.spent_tokens : null
+      let spentTokens = Number.isInteger(args.spent_tokens) && args.spent_tokens >= 0 ? args.spent_tokens : null
+      // 26 号补丁：worker 未上报时按 session_id 从 dsh-bill records.jsonl 归因（专项预算闸的真实口径）
+      if (spentTokens === null) {
+        const sid = args.session_id ?? t.session_id
+        const billTok = billSum.tokensForSession(sid)
+        if (billTok !== null) spentTokens = billTok
+      }
       let budgetOverrun = false
       if (spentTokens !== null && t.budget_tokens !== null && t.budget_tokens !== undefined && spentTokens > Number(t.budget_tokens)) {
         budgetOverrun = true
@@ -2127,7 +2216,7 @@ function makeHandlers(opts) {
       }
       if (spentTokens !== null) finishSets.spent_tokens = spentTokens
       repo.transitionTask(Number(args.task_id), finishSets)
-      repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null })
+      repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null, spent_tokens: spentTokens })
       return {
         data: { task_id: Number(args.task_id), status, next_run_at: nextRunAt, run_recorded: true, spent_tokens: spentTokens, budget_overrun: budgetOverrun, guard: { checked: guard.checked, missing: guard.missing } },
         events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, spent_tokens: spentTokens, budget_overrun: budgetOverrun, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, fgs_snapshot: fgsSnapshot, cause: 'run', campaign_id: t.campaign_id ?? null, campaign_role: t.campaign_role ?? null } }],
@@ -2218,6 +2307,9 @@ function makeHandlers(opts) {
       } else if (args.kind === 'asset_enum') {
         // 25 号补丁：资产收集入专项——根域枚举刷新闭环（枚举→探活→入库→enum_fresh 记账）
         objective = `[资产缺口] ${args.host} 根域枚举超窗——subfinder 子域枚举 + dnsx 解析去存 + httpx 探活分级（fofa_search 可作补充信源）；新存活主机 asset_upsert_bulk 入库（source=asset_enum，尊重 program QPS/risk，不越出 scope）；收尾 ledger_coverage_mark(dim=asset, key=${args.host}, mark=enum_fresh) 记账并写 handoff 摘要。`
+      } else if (args.kind === 'review_finding') {
+        // 26 号补丁：存量复核入专项——超龄未分诊 finding 逐条复核（复用验证铁律，一次性消化历史债务）
+        objective = `[存量复核] finding #${args.host} 超龄未分诊——vuln_get 读取候选详情与既有证据；证据充分走复核校准（confirm 需机器 oracle 或 proof capsule，不可凭字段齐全确认）；复现可差分则补 exec_oracle_judge 验证；证据不足/误报则 vuln_reject 或标 false_positive 并写明 reason；全程不越出 scope，结论落 FGS + handoff 引用。`
       } else {
         objective = hypothesisObjective({ level: args.level || 'H2', vulnClass: args.vuln_class || 'info_disclosure', host: args.host, path: args.path || '', param: args.param || '', oracle: args.oracle, rationale: args.rationale || '覆盖缺口驱动', programId: args.program_id, extraLines })
       }

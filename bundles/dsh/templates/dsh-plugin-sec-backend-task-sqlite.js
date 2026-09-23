@@ -179,6 +179,7 @@ function createRepo(db) {
     ['model_hint', 'model_hint TEXT'],
   ]) ensureCol(db, 'tasks', col, ddl)
   ensureCol(db, 'task_runs', 'session_id', 'session_id TEXT')
+  ensureCol(db, 'task_runs', 'spent_tokens', 'spent_tokens INTEGER')
   // workers.session_id 保持历史来源会话语义；新列只保存经核实的子会话。
   ensureCol(db, 'workers', 'worker_session_id', 'worker_session_id TEXT')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(program_id, status, priority)')
@@ -491,8 +492,8 @@ function createRepo(db) {
       const started = row.started_at ?? null
       const finished = row.finished_at ?? null
       const duration = (started && finished) ? finished - started : null
-      const r = db.prepare('INSERT INTO task_runs (task_id, run_id, ok, note, started_at, finished_at, duration_ms, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(Number(row.task_id), String(row.run_id || ''), row.ok ? 1 : 0, String(row.note || '').slice(0, 500), started, finished, duration, row.session_id ?? null)
+      const r = db.prepare('INSERT INTO task_runs (task_id, run_id, ok, note, started_at, finished_at, duration_ms, session_id, spent_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(Number(row.task_id), String(row.run_id || ''), row.ok ? 1 : 0, String(row.note || '').slice(0, 500), started, finished, duration, row.session_id ?? null, row.spent_tokens ?? null)
       repo.pruneTaskRuns(Number(row.task_id), 200)
       return Number(r.lastInsertRowid)
     },

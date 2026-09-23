@@ -17,6 +17,12 @@
 
 ## 二、最近进度结果
 
+### 2026-09-23 · 26 号补丁：dsh-bill 成本归因（spent_tokens 恒 0 修复）+ 存量复核入专项（本地契约 585/585，accept PASS=80）
+- **成本归因**：task 域内置 dsh-bill `records.jsonl` 增量解析（字节偏移游标落盘 `dsh-bill-sum.json`，截断归零重扫、半行留待、map 截顶防膨胀）；`task_finish` 在 worker 未上报时按 `session_id` 归因实耗（in+out+cacheWrite，cacheRead 不计；无记录保持 NULL），`task_runs` 增 `spent_tokens` 列同口径。专项预算闸（`campaignUsage` 聚合 tasks.spent_tokens）自此按真实消耗——昨夜「已用 0/500000 却 budget_low 停派」的预估误报类消除（checkpoint #1/#2 实证）。
+- **存量复核入专项（review_finding）**：`ledger_coverage_gaps` 新增 `review` 维（status=new 且超龄 48h 的 finding 逐条出列，`SEC_LEDGER_REVIEW_STALE_MS` 可调，priority 35，严重度加权 value，triage 后自然出列闭环）；`compileCampaignPlan` review 维 → kind=review_finding（finding id 进 host 槽、+3 提权、计入多样性保底、lite 档）；`task_derive_intent` objective 模板「[存量复核] finding #N」（confirm 需机器 oracle/proof capsule，证据不足 vuln_reject/false_positive 写 reason）；**scope 复查豁免**——finding id 非主机名，`intentSituation`/`campaignSituationOk` 跳过主机归属校验（program 级 INV-C1 授权/过期校验不豁免）；`vuln_list` actor 补 reactor；`isCoverageRole` 认 `[存量复核]`。
+- **验收**：本地契约 585/585（task +2：bill 归因续扫/豁免派生；ledger +1：review 维出列；rules +1：草稿 host=finding id）；csai 部署（rsync + `bundle dsh setup` + 重启 NRestarts=0）+ accept **PASS=80 FAIL=0**。线上实测：专项 tick 正常，campaign#1（美团SRC）pending drafts 已出 2 条 review_finding（finding #672/#405，lite 档）——线上 589 条 status=new（其中 340 条超龄 48h）进入专项消化通道；当前两专项均 autonomy=1（连败降级，合法机制），草稿待人工一键放行或复核后重升 L2。
+- 文档回填：[05-task §7.11](05-task.md)、[11-ledger §1.4.9](11-ledger.md)。
+
 ### 2026-09-23 · 25 号补丁：资产收集入专项（asset_enum）+ 任务弹框加宽（本地契约 581/581）
 - **巡检发现**（昨晚至今运行态）：专项 tick 正常（60s，2 专项）；「宿主重启/超时回收」批量失败全部为夜间部署重启所致（systemd sudo restart 留痕，非崩溃）；供给哨兵实际触发 3 轮 throttle→restore + 1 次观测失败 fail-open；`budget_low` checkpoint 系预估口径（30k/草稿 × 批大小）触发的预警非真超支。
 - **资产收集入专项**：`ledger_coverage_gaps` 新增 `asset` 维（按根域聚合，`enum_fresh` 记账超窗 `SEC_LEDGER_ASSET_STALE_MS` 默认 3 天重开缺口，mark=enum_stale，priority 45）；`compileCampaignPlan` 映射 kind=asset_enum（lite 档，enum_stale +2、前置提权 +3 保证进 top-cap）；`task_derive_intent` kind 枚举 + objective 模板（subfinder/dnsx/httpx → asset_upsert_bulk → enum_fresh 闭环记账）；`gatherPlanInputs` 分维拉取 +asset；`isCoverageRole` 认 `[资产缺口]`。闭环依赖：`asset_list` limit 上限 500（曾误传 5000 被 schema 拒，已修）。契约：ledger +1（asset 维出缺口/闭环）、task +1（tick 派 asset_enum lite 子任务）、rules +1（提权进 top-cap）。

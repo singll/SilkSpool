@@ -610,14 +610,18 @@ export function compileCampaignPlan(input = {}) {
     const rawKey = String(g.key || '')
     const dim = String(g.dim || '')
     const parts = rawKey.split('|')
-    const host = String(g.host || parts[0] || '')
+    let host = String(g.host || parts[0] || '')
     if (!host) continue
     let path = String(g.path || '')
     let vulnClass = String(g.vuln_class || '')
     let kind = String(g.kind || '')
     // 对齐 11-ledger 缺口键形态：crawl=host；param/auth=host|path；vulnclass=host|class
     // 25 号补丁：asset=根域（枚举超窗）→ asset_enum 采集草稿
-    if (!kind) kind = dim === 'crawl' ? 'crawl' : (dim === 'param' ? 'param_enrich' : (dim === 'asset' ? 'asset_enum' : 'hypothesis'))
+    // 26 号补丁：review=finding id（超龄未分诊）→ review_finding 复核草稿
+    if (!kind) kind = dim === 'crawl' ? 'crawl' : (dim === 'param' ? 'param_enrich' : (dim === 'asset' ? 'asset_enum' : (dim === 'review' ? 'review_finding' : 'hypothesis')))
+    // 26 号补丁：review 维 host 槽改载 finding id（真实主机在 objective 内经 vuln_get 还原；
+    // scope 复查按 program 级豁免——finding 已登记在 program 内即授权证据）
+    if (dim === 'review') host = rawKey
     if (!path && (dim === 'param' || dim === 'auth')) path = parts.slice(1).join('|')
     if (!vulnClass && dim === 'vulnclass') vulnClass = parts[1] || ''
     if (kind === 'hypothesis' && !vulnClass) vulnClass = 'info_disclosure'
@@ -639,6 +643,9 @@ export function compileCampaignPlan(input = {}) {
     // 25 号补丁：资产枚举是下游一切缺口的前置（枚举陈旧=资产面失真），
     // 额外 +3 提权保证与 idor/sqli 同档竞争；闭环后（enum_fresh）缺口消失自然让位，不占长期额度。
     if (kind === 'asset_enum') score += 3
+    // 26 号补丁：存量复核是历史债务清理（积压越久越该先消化），
+    // +3 提权保证不被漏洞类长期挤出；单条 triage 后缺口消失，一次性收尾。
+    if (kind === 'review_finding') score += 3
     if (['no_params', 'missing', 'unenriched'].includes(mark)) score += 1.5
     if (Number(g.asset_tier) >= 3) score += 1
     score -= 0.8 * Number(st.fails || 0)
@@ -662,8 +669,8 @@ export function compileCampaignPlan(input = {}) {
   let drafts = scored.slice(0, cap)
   // 维度多样性（22 号方案运行期）：cap≥2 且存在覆盖类（crawl/param_enrich）草稿时，保证至少 1 条入选，
   // 否则漏洞类永远压过覆盖类 → 覆盖率长期不动。牺牲最低分位换取覆盖推进。
-  // 25 号补丁：asset_enum 同为覆盖类（资产枚举），计入多样性保底。
-  const isCoverageKind = (d) => d.kind === 'crawl' || d.kind === 'param_enrich' || d.kind === 'asset_enum'
+  // 25/26 号补丁：asset_enum（资产枚举）/ review_finding（存量复核）同为覆盖类，计入多样性保底。
+  const isCoverageKind = (d) => d.kind === 'crawl' || d.kind === 'param_enrich' || d.kind === 'asset_enum' || d.kind === 'review_finding'
   if (drafts.length >= 2 && !drafts.some(isCoverageKind)) {
     const cov = scored.find((d) => isCoverageKind(d) && !drafts.includes(d))
     if (cov) drafts = [...drafts.slice(0, cap - 1), cov]
@@ -686,8 +693,8 @@ export function compileCampaignPlan(input = {}) {
 export const CAMPAIGN_TASK_CLASSES = ['lite', 'std', 'heavy']
 // 高失败代价漏洞类（需强模型 + 长上下文关联）→ heavy
 export const CAMPAIGN_HEAVY_CLASSES = ['sqli', 'idor', 'authz', 'ssrf', 'file']
-// 轻任务 kind（摘要/归类/字段抽取/采集富化/资产枚举）→ lite
-export const CAMPAIGN_LITE_KINDS = ['crawl', 'param_enrich', 'summary', 'classify', 'extract', 'asset_enum']
+// 轻任务 kind（摘要/归类/字段抽取/采集富化/资产枚举/存量复核）→ lite
+export const CAMPAIGN_LITE_KINDS = ['crawl', 'param_enrich', 'summary', 'classify', 'extract', 'asset_enum', 'review_finding']
 
 // 规则分类器（§3.7）：显式 task_class 优先；否则按长上下文 / kind / vuln_class / 多源信号判定。
 // 输入：{ task_class?, kind?, vuln_class?, context_tokens?, multi_source? }。

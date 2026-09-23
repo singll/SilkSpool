@@ -36,6 +36,8 @@ const OUTCOME_ENUM = ['applied', 'deviated', 'blocked', 'na']
 // 21 号方案 §4.1：覆盖账本维度与状态
 // 25 号补丁：asset 维（根域枚举新鲜度），让资产收集可进专项缺口队列
 const COVER_DIM_ENUM = ['crawl', 'param', 'vulnclass', 'auth', 'asset']
+// 缺口队列额外维度（不可 coverage_mark，只派生）：review=存量 findings 超龄未分诊
+const GAPS_DIM_ENUM = [...COVER_DIM_ENUM, 'review']
 const CRAWL_STATUS = ['uncrawled', 'crawled_ok', 'crawl_failed']
 const PARAM_STATUS = ['no_params', 'params_enriched', 'queued', 'consumed']
 const VULNCLASS_STATUS = ['untested', 'verified', 'rejected', 'inconclusive', 'untestable']
@@ -292,7 +294,7 @@ export const LEDGER_MANIFEST = {
       actor: ['model', 'dashboard', 'human', 'reactor', 'scheduler'],
       params: schema({
         program: str({ minLength: 1 }),
-        dim: en([...COVER_DIM_ENUM, ''], { default: '' }),
+        dim: en([...GAPS_DIM_ENUM, ''], { default: '' }),
         limit: int({ minimum: 1, maximum: 500, default: 100 }),
       }, ['program']),
       agent_note: '覆盖缺口队列（§4.3）：未爬/无参/未测类/登录盲区格点清单，strategy_key 去重排序——Intent 派生器输入。',
@@ -672,6 +674,24 @@ function makeHandlers(opts) {
             if (!(Number.isFinite(freshMs) && nowMs - freshMs <= ASSET_ENUM_STALE_MS)) {
               gaps.push({ dim: 'asset', key: root, strategy_key: `asset|${root}`, mark: 'enum_stale', priority: 45, reason: `根域 ${root} 资产枚举超窗（>${Math.round(ASSET_ENUM_STALE_MS / 86400000)} 天未 enum_fresh 记账）` })
             }
+          }
+        }
+      }
+      // 26 号补丁：存量复核面缺口——超龄未分诊 findings（默认 >48h），逐条出列；
+      // 闭环靠事实（triage 后不再 new 即出列），strategy_dedupe 防同条重派。
+      if (!dimFilter || dimFilter === 'review') {
+        const pend = await safeQuery('vuln', 'list', { visibility: 'all', status: 'new', program_id: program, limit: 500 })
+        if (pend) {
+          const staleMs = Number(process.env.SEC_LEDGER_REVIEW_STALE_MS) > 0 ? Number(process.env.SEC_LEDGER_REVIEW_STALE_MS) : 48 * 3600000
+          const nowMs = Date.now()
+          for (const r of (pend.rows || [])) {
+            if (nowMs - Number(r.created_at || 0) <= staleMs) continue
+            const sevBonus = { critical: 5, high: 4, medium: 2, low: 1 }[String(r.severity || '').toLowerCase()] || 1
+            gaps.push({
+              dim: 'review', key: String(r.id), strategy_key: `review|${r.id}`, mark: 'pending_review',
+              host: String(r.host || ''), path: String(r.url || ''), value: sevBonus,
+              priority: 35, reason: `存量 finding #${r.id}（${String(r.vuln_type || r.title || '').slice(0, 40)}）超 ${Math.round(staleMs / 3600000)}h 未分诊`,
+            })
           }
         }
       }

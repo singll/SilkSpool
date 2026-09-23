@@ -274,6 +274,8 @@ know 域（07-know.md C16 消费通道）经本查询获取卡片使用信号，
 
 > 2026-09-23 25 号补丁（资产收集入专项）：新增 `asset` 维——按根域（assets.root 或二级域兜底）聚合，最近 `enum_fresh` 记账超窗（`SEC_LEDGER_ASSET_STALE_MS`，默认 3 天）即重开缺口（mark=enum_stale，priority 45）；消费方=专项 Planner（kind=asset_enum，见 05-task §7.8），闭环=子任务收尾 `ledger_coverage_mark(dim=asset, key=<根域>, mark=enum_fresh)`。mark 枚举 `enum_stale/enum_fresh` 已入 `coverStatusValid` 与 `COVER_DIM_ENUM`。契约：「coverage_gaps: asset 维——根域无 enum_fresh 记账出缺口，记账后闭环」。
 
+> 2026-09-23 26 号补丁（存量复核入专项）：新增 `review` 维——**只可派生不可 coverage_mark**（GAPS_DIM_ENUM 扩展，COVER_DIM_ENUM 不变）：status=new 且超龄（`SEC_LEDGER_REVIEW_STALE_MS`，默认 48h）的 finding 逐条出列（key=finding id，mark=pending_review，priority 35，value=严重度加权 critical5/high4/medium2/low1）；消费方=专项 Planner（kind=review_finding，见 05-task §7.11），闭环靠事实——triage 后 status 不再是 new 即自然出列，`strategy_dedupe` 防同条重派。配套：`vuln_list` 查询 actor 增补 reactor（Planner 分维拉取经 safeQuery 以 reactor 身份读）。契约：「coverage_gaps: review 维——超龄未分诊 finding 出缺口，新鲜不出列」。
+
 #### 1.4.10 `ledger_login_blindspot`（登录盲区摘要，§4.4）
 
 program 无可用凭据（scope cred_query 为空）时生成：「未登录状态已覆盖 X/Y 端点（仅公开面 Z%）；判定需登录的端点 N 个完全未测；其中高价值功能点 M 个（admin/pay/order/user…）→ 需要：登记登录凭据（cred_add）」。返回 `action_item: {kind:'cred_add'}` 人工行动项；未登录态下的覆盖必须标注「仅公开面」防虚假安全感。

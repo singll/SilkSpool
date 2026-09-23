@@ -492,3 +492,35 @@ test('coverage_gaps: asset 维——根域无 enum_fresh 记账出缺口，记�
   g = await bus.query('ledger', 'coverage_gaps', { program: 'test-src', dim: 'asset' }, { actor: 'model' })
   assert.ok(!(g.data.gaps || []).some((x) => x.dim === 'asset' && x.key === 'example.com'), 'enum_fresh 在窗内 → 缺口闭环')
 })
+
+// 26 号补丁：存量复核入专项——review 维（超龄未分诊 finding）出列；新鲜（<48h）不出列
+test('coverage_gaps: review 维——超龄未分诊 finding 出缺口，新鲜不出列', async () => {
+  const { bus } = makeEnv()
+  const stubVuln = {
+    manifest: {
+      domain: 'vuln', version: 1, service: 'secDomain.vuln', description: 'vuln stub',
+      owns: { tables: [], files: [] }, commands: {},
+      queries: { vuln_list: { actor: ['reactor', 'model', 'dashboard', 'human'], params: { type: 'object', additionalProperties: false, properties: { visibility: { type: 'string' }, status: { type: 'string' }, program_id: { type: 'string' }, limit: { type: 'integer' } } }, agent_note: 'stub' } },
+      events: {}, subscribes: {}, backend: 'repository-v1',
+    },
+    handlers: {
+      commands: {},
+      queries: { list: async () => ({ rows: [
+        { id: 501, status: 'new', host: 'a.example.com', url: '/u', vuln_type: 'idor', severity: 'high', created_at: Date.now() - 72 * 3600000 },
+        { id: 502, status: 'new', host: 'b.example.com', url: '/v', vuln_type: 'xss', severity: 'low', created_at: Date.now() - 3600000 },
+      ], total: 2 }) },
+    },
+    invariants: {}, subscribers: {},
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  }
+  assert.equal(bus.registry.register(stubVuln).ok, true)
+  const g = await bus.query('ledger', 'coverage_gaps', { program: 'test-src', dim: 'review' }, { actor: 'model' })
+  assert.equal(g.ok, true, g.error?.message)
+  const ids = (g.data.gaps || []).filter((x) => x.dim === 'review').map((x) => x.key)
+  assert.ok(ids.includes('501'), '超龄 72h 的 #501 必须出列')
+  assert.ok(!ids.includes('502'), '1h 新的 #502 不出列（活跃流水线自消费）')
+  const gap = (g.data.gaps || []).find((x) => x.dim === 'review' && x.key === '501')
+  assert.equal(gap.strategy_key, 'review|501')
+  assert.equal(gap.host, 'a.example.com')
+  assert.equal(gap.path, '/u')
+})

@@ -384,7 +384,7 @@ export const VULN_MANIFEST = {
   },
   queries: {
     vuln_list: {
-      actor: ['model', 'dashboard', 'human', 'script'],
+      actor: ['model', 'dashboard', 'human', 'script', 'reactor'],
       params: schema({
         visibility: en(['signal', 'candidate', 'all'], { default: 'signal' }),
         host: str({ default: '' }),

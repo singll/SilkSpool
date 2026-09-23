@@ -313,6 +313,22 @@ test('25 资产收集入专项：asset 维缺口 → asset_enum 草稿（lite �
   assert.equal(tight.drafts[0].kind, 'asset_enum', '枚举陈旧草稿应凭前置提权进入 top-cap（不等多样性保底让位）')
 })
 
+test('26 存量复核入专项：review 维缺口 → review_finding 草稿（lite 档、提权进 top-cap）', () => {
+  const plan = compileCampaignPlan({
+    campaign: { program_ids: ['p1'], policy: { derive_cap_per_tick: 2 } },
+    gaps: [
+      { program: 'p1', dim: 'review', key: '501', host: 'a.p1.com', path: '/u', mark: 'pending_review', value: 4 },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|idor', mark: 'untested' },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|sqli', mark: 'untested' },
+    ],
+  })
+  const review = plan.drafts.find((d) => d.kind === 'review_finding')
+  assert.ok(review, 'review_finding 草稿必须入选')
+  assert.equal(review.host, '501', 'finding id 进 host 槽（scope 复查按 program 级豁免）')
+  assert.equal(review.task_class, 'lite')
+  assert.equal(review.strategy_key, strategyKey({ host: '501', path: '/u', param: '', vuln_class: '' }))
+})
+
 test('compileCampaignPlan: 固定快照可重放（两次输出全等）', () => {
   const input = {
     campaign: { program_ids: ['p1', 'p2'], policy: { derive_cap_per_tick: 3 } },
