@@ -460,3 +460,35 @@ test('coverage_gaps: 跨域 asset/endpoint 列表查询顶层 rows 被正确消�
   assert.ok(g.data.total > 0, '应产出缺口（crawl/param/vulnclass）')
   assert.ok((g.data.gaps || []).some((x) => x.dim === 'crawl' && x.key === 'a.example.com'))
 })
+
+// 25 号补丁：资产收集入专项——asset 维缺口（根域枚举超窗）派生与 enum_fresh 闭环
+test('coverage_gaps: asset 维——根域无 enum_fresh 记账出缺口，记账后闭环', async () => {
+  const { bus } = makeEnv()
+  const stubAsset = {
+    manifest: {
+      domain: 'asset', version: 1, service: 'secDomain.asset', description: 'asset stub',
+      owns: { tables: [], files: [] }, commands: {},
+      queries: { asset_list: { actor: ['reactor', 'model', 'dashboard', 'human'], params: { type: 'object', additionalProperties: false, properties: { program_id: { type: 'string' }, limit: { type: 'integer' } } }, agent_note: 'stub' } },
+      events: {}, subscribes: {}, backend: 'repository-v1',
+    },
+    handlers: {
+      commands: {},
+      queries: { list: async () => ({ rows: [{ host: 'a.example.com', root: 'example.com', last_seen: Date.now() }, { host: 'b.example.com', root: 'example.com', last_seen: Date.now() }], total: 2 }) },
+    },
+    invariants: {}, subscribers: {},
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  }
+  assert.equal(bus.registry.register(stubAsset).ok, true)
+  let g = await bus.query('ledger', 'coverage_gaps', { program: 'test-src', dim: 'asset' }, { actor: 'model' })
+  assert.equal(g.ok, true, g.error?.message)
+  const assetGap = (g.data.gaps || []).find((x) => x.dim === 'asset')
+  assert.ok(assetGap, '无 enum_fresh 记账 → 根域枚举缺口必须出列')
+  assert.equal(assetGap.key, 'example.com')
+  assert.equal(assetGap.strategy_key, 'asset|example.com')
+  assert.equal(assetGap.mark, 'enum_stale')
+  // 闭环：enum_fresh 记账后缺口消失
+  const m = await bus.dispatch('ledger', 'coverage_mark', { program: 'test-src', dim: 'asset', key: 'example.com', mark: 'enum_fresh' }, { actor: 'model' })
+  assert.equal(m.ok, true, m.error?.message)
+  g = await bus.query('ledger', 'coverage_gaps', { program: 'test-src', dim: 'asset' }, { actor: 'model' })
+  assert.ok(!(g.data.gaps || []).some((x) => x.dim === 'asset' && x.key === 'example.com'), 'enum_fresh 在窗内 → 缺口闭环')
+})

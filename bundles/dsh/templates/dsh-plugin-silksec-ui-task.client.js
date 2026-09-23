@@ -173,6 +173,8 @@ window.__ModuleLoader__.load({
           '.silksec-task-body{flex:1 1 auto;overflow-y:auto;min-height:0;padding:2px 2px 16px}',
           '.silksec-task-queue-cards{display:none}',
           '.silksec-task-actions{display:inline-flex;gap:6px;flex-wrap:wrap}',
+          // 任务中心弹框宿主默认 fit-content 过窄：钉宽屏下限 + 视口自适应上限
+          '.silksec-task-dialog{width:min(1120px,94vw);max-width:94vw;box-sizing:border-box}',
           '@container silksec-task (max-width:480px){.silksec-task-queue-table{display:none}.silksec-task-queue-cards{display:block}.silksec-task-workspaces{display:none}}',
         ].join('\n')
         document.head.appendChild(tag)
@@ -1032,10 +1034,11 @@ window.__ModuleLoader__.load({
     // Modal 降级（主面板/layout 也缺席）；primitives.Modal 缺席时自绘 fixed 覆盖层
     function renderModal(open, rpc, onClose) {
       if (!open) return null
-      var body = el('div', { style: { height: '70vh', display: 'flex', flexDirection: 'column', padding: 12 } },
+      var body = el('div', { style: { height: '76vh', display: 'flex', flexDirection: 'column', padding: 12 } },
         el(TaskCenter, { surface: 'task-modal', rpc: rpc, compact: true }))
       var M = prim('Modal')
-      if (M) return el(M, { open: true, onClose: onClose, title: '任务中心', headless: true, className: 'silksec-dash-dialog' }, body)
+      // 宽弹框：silksec-task-dialog（ensureStyles 注入）覆盖宿主 Modal 默认窄宽
+      if (M) return el(M, { open: true, onClose: onClose, title: '任务中心', headless: true, className: 'silksec-dash-dialog silksec-task-dialog' }, body)
       return el('div', { style: { position: 'fixed', inset: 0, zIndex: 80, background: T.base, display: 'flex', flexDirection: 'column', padding: 16, pointerEvents: 'auto' } },
         el('div', { style: { display: 'flex', alignItems: 'center' } },
           el('div', { style: { ...((styles.pageT) || {}) } }, '任务中心'),
@@ -1171,6 +1174,7 @@ window.__ModuleLoader__.load({
     exports.openTaskCenter = openTaskCenter
     exports.taskLabel = taskLabel
     exports.slotDeclared = slotDeclared
+    exports.renderTaskModal = renderModal
 
     return module.exports
   },

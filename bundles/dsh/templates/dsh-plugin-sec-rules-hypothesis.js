@@ -616,7 +616,8 @@ export function compileCampaignPlan(input = {}) {
     let vulnClass = String(g.vuln_class || '')
     let kind = String(g.kind || '')
     // 对齐 11-ledger 缺口键形态：crawl=host；param/auth=host|path；vulnclass=host|class
-    if (!kind) kind = dim === 'crawl' ? 'crawl' : (dim === 'param' ? 'param_enrich' : 'hypothesis')
+    // 25 号补丁：asset=根域（枚举超窗）→ asset_enum 采集草稿
+    if (!kind) kind = dim === 'crawl' ? 'crawl' : (dim === 'param' ? 'param_enrich' : (dim === 'asset' ? 'asset_enum' : 'hypothesis'))
     if (!path && (dim === 'param' || dim === 'auth')) path = parts.slice(1).join('|')
     if (!vulnClass && dim === 'vulnclass') vulnClass = parts[1] || ''
     if (kind === 'hypothesis' && !vulnClass) vulnClass = 'info_disclosure'
@@ -634,7 +635,10 @@ export function compileCampaignPlan(input = {}) {
     let score = CAMPAIGN_CLASS_PRIORITY[vulnClass] || 1
     score += Number(g.value || g.asset_score || 0)
     const mark = String(g.mark || '')
-    if (['not_crawled', 'uncrawled', 'failed'].includes(mark)) score += 2
+    if (['not_crawled', 'uncrawled', 'failed', 'enum_stale'].includes(mark)) score += 2
+    // 25 号补丁：资产枚举是下游一切缺口的前置（枚举陈旧=资产面失真），
+    // 额外 +3 提权保证与 idor/sqli 同档竞争；闭环后（enum_fresh）缺口消失自然让位，不占长期额度。
+    if (kind === 'asset_enum') score += 3
     if (['no_params', 'missing', 'unenriched'].includes(mark)) score += 1.5
     if (Number(g.asset_tier) >= 3) score += 1
     score -= 0.8 * Number(st.fails || 0)
@@ -658,8 +662,10 @@ export function compileCampaignPlan(input = {}) {
   let drafts = scored.slice(0, cap)
   // 维度多样性（22 号方案运行期）：cap≥2 且存在覆盖类（crawl/param_enrich）草稿时，保证至少 1 条入选，
   // 否则漏洞类永远压过覆盖类 → 覆盖率长期不动。牺牲最低分位换取覆盖推进。
-  if (drafts.length >= 2 && !drafts.some((d) => d.kind === 'crawl' || d.kind === 'param_enrich')) {
-    const cov = scored.find((d) => (d.kind === 'crawl' || d.kind === 'param_enrich') && !drafts.includes(d))
+  // 25 号补丁：asset_enum 同为覆盖类（资产枚举），计入多样性保底。
+  const isCoverageKind = (d) => d.kind === 'crawl' || d.kind === 'param_enrich' || d.kind === 'asset_enum'
+  if (drafts.length >= 2 && !drafts.some(isCoverageKind)) {
+    const cov = scored.find((d) => isCoverageKind(d) && !drafts.includes(d))
     if (cov) drafts = [...drafts.slice(0, cap - 1), cov]
   }
   if (scored.length > cap) skipped.push({ reason: 'derive_cap', dropped: scored.length - cap, cap })
@@ -680,8 +686,8 @@ export function compileCampaignPlan(input = {}) {
 export const CAMPAIGN_TASK_CLASSES = ['lite', 'std', 'heavy']
 // 高失败代价漏洞类（需强模型 + 长上下文关联）→ heavy
 export const CAMPAIGN_HEAVY_CLASSES = ['sqli', 'idor', 'authz', 'ssrf', 'file']
-// 轻任务 kind（摘要/归类/字段抽取/采集富化）→ lite
-export const CAMPAIGN_LITE_KINDS = ['crawl', 'param_enrich', 'summary', 'classify', 'extract']
+// 轻任务 kind（摘要/归类/字段抽取/采集富化/资产枚举）→ lite
+export const CAMPAIGN_LITE_KINDS = ['crawl', 'param_enrich', 'summary', 'classify', 'extract', 'asset_enum']
 
 // 规则分类器（§3.7）：显式 task_class 优先；否则按长上下文 / kind / vuln_class / 多源信号判定。
 // 输入：{ task_class?, kind?, vuln_class?, context_tokens?, multi_source? }。
@@ -789,4 +795,3 @@ export function selectCampaignModel(input = {}) {
   if (any) return { task_class: taskClass, model: any.model, channel: any.channel || any.name, reason: 'any_available' }
   return { task_class: taskClass, model: '', channel: '', reason: 'no_available' }
 }
-

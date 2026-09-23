@@ -579,3 +579,19 @@ test('24 任务视图：队列状态 tab 计数 + 历史成功/失败过滤 chip
   // 布局重排：执行历史在工作区之前（文本顺序）
   assert.ok(text.indexOf('执行历史') >= 0 && text.indexOf('工作区') >= 0, '两区块均存在')
 })
+
+// ── ⑪ 任务中心弹框：宽 dialog 类 + 可滚动高度 ───────────────────────────────
+test('任务中心弹框：renderTaskModal 带 silksec-task-dialog 宽类与 76vh 体', () => {
+  const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const tree = mod.renderTaskModal(true, () => Promise.resolve({}), () => {})
+  const modal = collect(tree, (n) => n.type === 'modal-stub')[0]
+  assert.ok(modal, '必须经 primitives.Modal 渲染')
+  assert.match(modal.props.className, /silksec-dash-dialog/)
+  assert.match(modal.props.className, /silksec-task-dialog/, '必须钉宽屏类（宿主默认 fit-content 过窄）')
+  const body = collect(tree, (n) => n.props && n.props.style && n.props.style.height === '76vh')[0]
+  assert.ok(body, '弹框体高度 76vh')
+  assert.equal(mod.renderTaskModal(false, () => Promise.resolve({}), () => {}), null, 'open=false 不渲染')
+  // 宽类 CSS 注入纪律：.silksec-task-dialog 选择器在 ensureStyles 注入串里
+  assert.ok(CODE.includes('.silksec-task-dialog{'), 'ensureStyles 必须注入 .silksec-task-dialog 宽规则')
+})

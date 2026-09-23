@@ -34,11 +34,16 @@ const { createLedgerFileBackend } = await import(backendUrl.href)
 const RESULT_ENUM = ['TESTED_CLEAN', 'CONFIRMED', 'FALSE_POSITIVE', 'NOT_APPLICABLE', 'BLOCKED', 'STALE']
 const OUTCOME_ENUM = ['applied', 'deviated', 'blocked', 'na']
 // 21 号方案 §4.1：覆盖账本维度与状态
-const COVER_DIM_ENUM = ['crawl', 'param', 'vulnclass', 'auth']
+// 25 号补丁：asset 维（根域枚举新鲜度），让资产收集可进专项缺口队列
+const COVER_DIM_ENUM = ['crawl', 'param', 'vulnclass', 'auth', 'asset']
 const CRAWL_STATUS = ['uncrawled', 'crawled_ok', 'crawl_failed']
 const PARAM_STATUS = ['no_params', 'params_enriched', 'queued', 'consumed']
 const VULNCLASS_STATUS = ['untested', 'verified', 'rejected', 'inconclusive', 'untestable']
 const AUTH_TEST_STATUS = ['untested', 'public', 'login_required', 'role_required', 'unknown']
+const ASSET_STATUS = ['enum_stale', 'enum_fresh']
+// 资产枚举新鲜度窗口：enum_fresh 记账超过该时长即重开缺口（默认 3 天，可 env 覆盖）
+const ASSET_ENUM_STALE_MS = Number(process.env.SEC_LEDGER_ASSET_STALE_MS) > 0
+  ? Number(process.env.SEC_LEDGER_ASSET_STALE_MS) : 3 * 86400000
 const RADAR_TYPE_ENUM = ['ct-new-subdomain', 'js-bundle-change', 'scope-approved', 'version-intel']
 const BANNED_REASON = new Set(['other', 'misc', ''])
 const RADAR_SOURCE = {
@@ -206,7 +211,7 @@ export const LEDGER_MANIFEST = {
       event_limit: 1,
       invariants: ['coverStatusValid'],
       timeout_ms: 60000,
-      agent_note: '覆盖账本记账（§4.1）：dim=crawl/param/vulnclass/auth，key 为格点（host 或 host|path|类），status 按维度枚举（见 11-ledger §1.3）。缺口队列由 ledger_coverage_gaps 派生。',
+      agent_note: '覆盖账本记账（§4.1）：dim=crawl/param/vulnclass/auth/asset，key 为格点（host、host|path|类 或根域），status 按维度枚举（见 11-ledger §1.3；asset 维 mark=enum_fresh/enum_stale）。缺口队列由 ledger_coverage_gaps 派生。',
       deprecated: false,
     },
     ledger_rotation_tick: {
@@ -376,6 +381,17 @@ function makeHandlers(opts) {
     return latest
   }
 
+  // 由 host 推导二级根域（assets.root 缺席时的兜底；异常输入返回空串）
+  function secondLevelDomain(host) {
+    const parts = String(host || '').toLowerCase().split('.').filter(Boolean)
+    if (parts.length < 2) return ''
+    // 常见二级公共后缀（com.cn/net.cn/org.cn/…）保留三段
+    const twoPartTld = /^(com|net|org|gov|edu|ac)\.(cn|jp|kr|uk|hk|tw)$/
+    const last2 = parts.slice(-2).join('.')
+    if (parts.length >= 3 && twoPartTld.test(last2)) return parts.slice(-3).join('.')
+    return last2
+  }
+
   function throwErr(code, message, hint, retryable = false) {
     throw Object.assign(new Error(message), { code, hint, retryable })
   }
@@ -424,7 +440,7 @@ function makeHandlers(opts) {
       return null
     },
     coverStatusValid: async (args) => {
-      const enums = { crawl: CRAWL_STATUS, param: PARAM_STATUS, vulnclass: VULNCLASS_STATUS, auth: AUTH_TEST_STATUS }
+      const enums = { crawl: CRAWL_STATUS, param: PARAM_STATUS, vulnclass: VULNCLASS_STATUS, auth: AUTH_TEST_STATUS, asset: ASSET_STATUS }
       const valid = enums[args.dim] || []
       if (!valid.includes(args.mark)) {
         return { code: 'E_SCHEMA', message: `dim=${args.dim} 的 mark 非法: ${args.mark}`, hint: `${args.dim} 允许值: ${valid.join('/')}`, retryable: false }
@@ -635,6 +651,27 @@ function makeHandlers(opts) {
           const done = new Set([...state.values()].filter((v) => v.dim === 'crawl' && v.mark === 'crawled_ok').map((v) => v.key))
           for (const h of hosts) {
             if (!done.has(h)) gaps.push({ dim: 'crawl', key: h, strategy_key: `crawl|${h}`, priority: 50, reason: 'web 资产未爬取成功' })
+          }
+        }
+      }
+      // 25 号补丁：资产枚举面缺口——按根域聚合，最近 enum_fresh 记账超窗（默认 3 天）即重开。
+      // 消费方=专项 Planner（kind=asset_enum）；闭环=任务收尾 ledger_coverage_mark(dim=asset, mark=enum_fresh)。
+      if (!dimFilter || dimFilter === 'asset') {
+        // asset_list limit 上限 500（schema maximum）——根域聚合 500 行足够覆盖（同一根域大量 host 行）
+        const assets = await safeQuery('asset', 'list', { program_id: program, limit: 500 })
+        if (assets) {
+          const roots = new Set()
+          for (const r of (assets.rows || [])) {
+            const root = String(r.root || '').trim() || secondLevelDomain(r.host)
+            if (root) roots.add(root)
+          }
+          const nowMs = Date.now()
+          for (const root of roots) {
+            const st = state.get(`asset|${root}`)
+            const freshMs = st && st.mark === 'enum_fresh' ? Date.parse(st.ts || '') : NaN
+            if (!(Number.isFinite(freshMs) && nowMs - freshMs <= ASSET_ENUM_STALE_MS)) {
+              gaps.push({ dim: 'asset', key: root, strategy_key: `asset|${root}`, mark: 'enum_stale', priority: 45, reason: `根域 ${root} 资产枚举超窗（>${Math.round(ASSET_ENUM_STALE_MS / 86400000)} 天未 enum_fresh 记账）` })
+            }
           }
         }
       }

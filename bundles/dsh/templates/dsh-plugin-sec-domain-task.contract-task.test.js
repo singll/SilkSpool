@@ -1308,6 +1308,29 @@ test('22 C26/C27: campaign_tick L2 自动派生（stub 缺口）+ pending_drafts
   assert.ok((tk2.data.summaries[0].skipped || []).some((s) => s.reason === 'already_attempted'))
 })
 
+test('25 资产收集入专项：asset 维缺口 → campaign_tick 派 asset_enum 子任务（lite 档 + 闭环指令）', async () => {
+  const env = makeEnv()
+  const { bus } = env
+  const gaps = [{ program: 'test-src', dim: 'asset', key: 'example.com', mark: 'enum_stale' }]
+  assert.equal(registerLedgerStub(bus, gaps).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: 'asset-enum', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['confirmed ≥ 3'] }, policy: { derive_cap_per_tick: 3, max_active_tasks: 10 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  const act = await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  assert.equal(act.ok, true, act.error?.message)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(tk.data.summaries[0].derived, 1, 'asset 缺口应派生 1 条子任务')
+  const t = bus._internal.db().prepare('SELECT * FROM tasks WHERE campaign_id=?').get(cid)
+  assert.ok(t, 'asset_enum 子任务落库')
+  assert.equal(t.task_class, 'lite', '资产枚举按 lite 档')
+  assert.ok(t.objective.includes('[资产缺口]'), 'objective 带资产缺口标识')
+  assert.ok(t.objective.includes('enum_fresh'), 'objective 带 enum_fresh 闭环记账指令')
+  assert.ok(t.objective.includes('example.com'), 'objective 带根域')
+})
+
 test('22 P0-1: Planner 跳过已尝试策略并前进到新缺口（不再永久空转）', async () => {
   const env = makeEnv()
   const { bus } = env

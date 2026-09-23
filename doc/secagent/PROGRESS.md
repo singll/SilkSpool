@@ -17,6 +17,12 @@
 
 ## 二、最近进度结果
 
+### 2026-09-23 · 25 号补丁：资产收集入专项（asset_enum）+ 任务弹框加宽（本地契约 581/581）
+- **巡检发现**（昨晚至今运行态）：专项 tick 正常（60s，2 专项）；「宿主重启/超时回收」批量失败全部为夜间部署重启所致（systemd sudo restart 留痕，非崩溃）；供给哨兵实际触发 3 轮 throttle→restore + 1 次观测失败 fail-open；`budget_low` checkpoint 系预估口径（30k/草稿 × 批大小）触发的预警非真超支。
+- **资产收集入专项**：`ledger_coverage_gaps` 新增 `asset` 维（按根域聚合，`enum_fresh` 记账超窗 `SEC_LEDGER_ASSET_STALE_MS` 默认 3 天重开缺口，mark=enum_stale，priority 45）；`compileCampaignPlan` 映射 kind=asset_enum（lite 档，enum_stale +2、前置提权 +3 保证进 top-cap）；`task_derive_intent` kind 枚举 + objective 模板（subfinder/dnsx/httpx → asset_upsert_bulk → enum_fresh 闭环记账）；`gatherPlanInputs` 分维拉取 +asset；`isCoverageRole` 认 `[资产缺口]`。闭环依赖：`asset_list` limit 上限 500（曾误传 5000 被 schema 拒，已修）。契约：ledger +1（asset 维出缺口/闭环）、task +1（tick 派 asset_enum lite 子任务）、rules +1（提权进 top-cap）。
+- **任务弹框加宽**：`@silksec/ui-task` Modal 新增 `.silksec-task-dialog{width:min(1120px,94vw)}`（宿主默认 fit-content 过窄），弹框体 70vh→76vh；ui-task 单测 20/20。
+- 验收：本地契约 581/581；csai `bundle dsh setup` + accept PASS=80 FAIL=0。
+
 ### 2026-09-23 · 24 号方案落地：任务/知识/学习工作流可视化 + 专项运行报告（accept PASS=80）
 - **RPC 三透传**（`dashboard-rpc.js`，纯透传不改域语义）：`campaignProgress`→`task.campaign_progress`、`campaignPendingDrafts`→`task.campaign_pending_drafts`、`campaignDispatch`→`task.campaign_dispatch`（actor=dashboard，过预算/供给闸）。
 - **任务视图重构（`@silksec/ui-task`）**：布局重排为 专项→定时→队列→历史→工作区；专项卡片点击语义反转=**展开运行报告抽屉**（三并发 `campaignGet`+`Progress`+`PendingDrafts`：推进投影/检查点时间线/待放行草稿一键放行/活跃子任务+验收账本；手动 tick 摘要不再丢弃——W7），过滤队列改独立 ⌗ 按钮；队列增状态 tab（全部/运行中/排队/阻塞 计数过滤）；历史增成功/失败过滤并提到工作区之前。

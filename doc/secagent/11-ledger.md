@@ -270,7 +270,9 @@ know 域（07-know.md C16 消费通道）经本查询获取卡片使用信号，
 
 #### 1.4.9 `ledger_coverage_gaps`（覆盖缺口队列，§4.3）
 
-**账本的输出不是报表，是队列**：未爬 host（crawl）/ 无参端点（param）/ 未测类（vulnclass，per host 七类）/ 登录态端点未测（auth）四类格点，`strategy_key` 幂等去重，按高危类 × 资产面排序（idor 10 / sqli 11 / ssrf 12 / authz 13 / file 14 / xss 15 / info_disclosure 20 / auth 40 / crawl 50 / param 30）。Phase 3 Intent 派生器的输入。
+**账本的输出不是报表，是队列**：未爬 host（crawl）/ 无参端点（param）/ 未测类（vulnclass，per host 七类）/ 登录态端点未测（auth）/ 根域枚举超窗（asset）五类格点，`strategy_key` 幂等去重，按高危类 × 资产面排序（idor 10 / sqli 11 / ssrf 12 / authz 13 / file 14 / xss 15 / info_disclosure 20 / param 30 / auth 40 / asset 45 / crawl 50）。Phase 3 Intent 派生器的输入。
+
+> 2026-09-23 25 号补丁（资产收集入专项）：新增 `asset` 维——按根域（assets.root 或二级域兜底）聚合，最近 `enum_fresh` 记账超窗（`SEC_LEDGER_ASSET_STALE_MS`，默认 3 天）即重开缺口（mark=enum_stale，priority 45）；消费方=专项 Planner（kind=asset_enum，见 05-task §7.8），闭环=子任务收尾 `ledger_coverage_mark(dim=asset, key=<根域>, mark=enum_fresh)`。mark 枚举 `enum_stale/enum_fresh` 已入 `coverStatusValid` 与 `COVER_DIM_ENUM`。契约：「coverage_gaps: asset 维——根域无 enum_fresh 记账出缺口，记账后闭环」。
 
 #### 1.4.10 `ledger_login_blindspot`（登录盲区摘要，§4.4）
 

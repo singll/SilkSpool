@@ -281,6 +281,38 @@ test('compileCampaignPlan: 有界——活跃满 / 预算低 不派生', () => {
   assert.equal(compileCampaignPlan({ campaign, gaps, activeTaskCount: 0, budgetRemainingRatio: 0.01 }).drafts.length, 0)
 })
 
+test('25 资产收集入专项：asset 维缺口 → asset_enum 草稿（lite 档、enum_stale 加分、多样性保底）', () => {
+  const plan = compileCampaignPlan({
+    campaign: { program_ids: ['p1'], policy: { derive_cap_per_tick: 3 } },
+    gaps: [
+      { program: 'p1', dim: 'asset', key: 'p1.com', mark: 'enum_stale' },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|idor', mark: 'untested' },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|sqli', mark: 'untested' },
+      { program: 'p1', dim: 'vulnclass', key: 'b.p1.com|ssrf', mark: 'untested' },
+    ],
+  })
+  const asset = plan.drafts.find((d) => d.kind === 'asset_enum')
+  assert.ok(asset, 'asset_enum 草稿必须入选（覆盖类多样性保底）')
+  assert.equal(asset.host, 'p1.com')
+  assert.equal(asset.vuln_class, '', '资产枚举草稿不带漏洞类')
+  assert.equal(asset.task_class, 'lite', '资产枚举按 lite 档路由（采集富化类）')
+  assert.equal(asset.strategy_key, 'p1.com|||')
+  // enum_stale 与 not_crawled 同权加分（+2）
+  const only = compileCampaignPlan({ campaign: { program_ids: ['p1'] }, gaps: [{ program: 'p1', dim: 'asset', key: 'p1.com', mark: 'enum_stale' }] })
+  const noMark = compileCampaignPlan({ campaign: { program_ids: ['p1'] }, gaps: [{ program: 'p1', dim: 'asset', key: 'p1.com' }] })
+  assert.ok(only.drafts[0].score > noMark.drafts[0].score)
+  // 资产枚举前置提权（+3）：enum_stale 草稿（1+2+3=6）应压过 idor/sqli（5）进入 top-cap
+  const tight = compileCampaignPlan({
+    campaign: { program_ids: ['p1'], policy: { derive_cap_per_tick: 2 } },
+    gaps: [
+      { program: 'p1', dim: 'asset', key: 'p1.com', mark: 'enum_stale' },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|idor', mark: 'untested' },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|sqli', mark: 'untested' },
+    ],
+  })
+  assert.equal(tight.drafts[0].kind, 'asset_enum', '枚举陈旧草稿应凭前置提权进入 top-cap（不等多样性保底让位）')
+})
+
 test('compileCampaignPlan: 固定快照可重放（两次输出全等）', () => {
   const input = {
     campaign: { program_ids: ['p1', 'p2'], policy: { derive_cap_per_tick: 3 } },

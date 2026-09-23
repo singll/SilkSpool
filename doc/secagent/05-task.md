@@ -902,7 +902,7 @@ reapWorkers(readMeta, pidAliveFn, nowTs) → {reaped}   // C15 对账原语
 | 事件 | `task.intent.derived` |
 | 不变量 | `intentSituation`（§6.2 局面编译） |
 
-**语义**：Intent 确定性派生器落任务草稿。kind=hypothesis（H1 指纹保底/H2 污点路由/H3 语义假设）/ crawl / param_enrich。H3 必须引用 ≥1 张经验卡、声明 vuln_class、host 一致、无注入特征，否则 `E_TASK_H3_REJECTED`（违规丢弃）。产出任务一律 `queued` 绝不自动执行，过预算闸。
+**语义**：Intent 确定性派生器落任务草稿。kind=hypothesis（H1 指纹保底/H2 污点路由/H3 语义假设）/ crawl / param_enrich / asset_enum（25 号补丁：根域资产枚举，objective 带「[资产缺口]」模板——subfinder/dnsx/httpx 枚举探活 → asset_upsert_bulk 入库 → `ledger_coverage_mark(dim=asset, mark=enum_fresh)` 闭环记账）。H3 必须引用 ≥1 张经验卡、声明 vuln_class、host 一致、无注入特征，否则 `E_TASK_H3_REJECTED`（违规丢弃）。产出任务一律 `queued` 绝不自动执行，过预算闸。
 
 **去重与黑名单（`strategy_dedupe` 表，本域 owns）**：`strategy_key=host|path|param|vuln_class` 幂等去重（已测组合不重发，返回 `deduped:true`）；`vuln.signal.rejected` 订阅回写连败 `fails+1`，≥3 自动 `blacklisted` → 后续派生 `E_TASK_STRATEGY_BLACKLISTED`。
 
@@ -1035,7 +1035,7 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 | **P0-1 去重锁死** | `strategy_dedupe` 无 TTL，Planner 每 tick 取同一批 top-N 缺口 → 全被 dedupe → 首轮后再不派生 | `gatherPlanInputs` 归一裸键并标 `attempted`；`compileCampaignPlan` 跳过 `attempted && 未到 reopen_after` 的策略，**Planner 前进到下一批缺口**；`strategy_dedupe` 增 `reopen_after` 列 |
 | **P0-2 infra 失败误判** | 宿主重启/超时回收的 `failed` 被 `campaignVerdict` 判 `rejected` → 写连败 → 误触发 fail-rate 降级 L2→L1 | 新增 `isInfraFailure`（无 run_id / 回收·重启·调度异常·worker 未起等）→ 判 `escalated`，**不计 strategy 连败、不触发 fail-rate** |
 | **P1 rework 无后续** | `rework` 只落决策，不重开策略，闭环断在验收 | 任务增 `strategy_key` 列（derive_intent 落裸键）；Reviewer `rework` → `reopenStrategy(c{id}\|key, now+冷却)`，默认 6h（`SEC_CAMPAIGN_REWORK_REOPEN_HOURS`）；`rejected` → 连败 +1（≥3 黑名单） |
-| **P2 覆盖率不动** | `ledger_coverage_gaps` 按优先级截断 200 条，crawl（低优先级）被 vulnclass 挤出；Planner 永不派覆盖类 | `gatherPlanInputs` **按维度分查**（crawl/param/vulnclass）去重合并；`compileCampaignPlan` 维度多样性——cap≥2 时保证至少 1 条覆盖类入选 |
+| **P2 覆盖率不动** | `ledger_coverage_gaps` 按优先级截断 200 条，crawl（低优先级）被 vulnclass 挤出；Planner 永不派覆盖类 | `gatherPlanInputs` **按维度分查**（crawl/param/vulnclass；25 号补丁起 +asset）去重合并；`compileCampaignPlan` 维度多样性——cap≥2 时保证至少 1 条覆盖类（crawl/param_enrich/asset_enum）入选 |
 | P2 spent_tokens=0 | worker 未上报 token | 未修（worker 侧），预算闸仍按 150k/草稿预估 |
 
 新增契约：Planner 前进到新缺口、infra→escalated 不计连败、rework 重开冷却、维度多样性、attempted 跳过。

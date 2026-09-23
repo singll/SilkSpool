@@ -49,7 +49,7 @@ const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 // 22 号方案：单条派生草稿的预算预估（tokens，环境变量可调；用于 campaign 窗口预算闸）
 // 23 号方案 §3.6：默认随统一额度面调为 30000（worker 未上报 token 前的保守估算）
 const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 30000)
-const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich']
+const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich', 'asset_enum']
 // 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
 const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000
 // 23 号方案 §3.6：每 tick 派生上限默认 8（v2 调高：5→8）
@@ -342,7 +342,7 @@ export const TASK_MANIFEST = {
       actor: ['reactor', 'scheduler', 'system', 'human'],
       schema: schema({
         program_id: str({ minLength: 1 }),
-        kind: en(['hypothesis', 'crawl', 'param_enrich']),
+        kind: en(['hypothesis', 'crawl', 'param_enrich', 'asset_enum']),
         host: str({ minLength: 1 }),
         path: str({ default: '' }),
         vuln_class: str({ default: '' }),
@@ -1306,7 +1306,8 @@ function makeHandlers(opts) {
   function isCoverageRole(task, role) {
     if (role !== 'derived') return false
     const obj = String(task.objective || '')
-    return /\[覆盖缺口\]/.test(obj) || /arjun|katana|gau|waybackurls/.test(obj)
+    // 25 号补丁：[资产缺口]（asset_enum 根域枚举）同为覆盖驱动角色——成功即格点推进
+    return /\[覆盖缺口\]/.test(obj) || /\[资产缺口\]/.test(obj) || /arjun|katana|gau|waybackurls/.test(obj)
   }
   // 基础设施失败（宿主重启/超时回收/调度异常/worker 未起）——不是打法失败，不计连败、不判 rejected
   function isInfraFailure(task, run) {
@@ -1370,7 +1371,8 @@ function makeHandlers(opts) {
       for (const program of campaign.program_ids) {
         // 分维度拉取：ledger_coverage_gaps 按优先级截断，crawl（低优先级）会被 vulnclass 挤出 limit，
         // 导致 Planner 永远拿不到覆盖类缺口（覆盖率不动）。逐维查询 + 去重合并。
-        for (const dim of ['crawl', 'param', 'vulnclass']) {
+        // 25 号补丁：asset 维（根域枚举超窗）并入专项缺口消费
+        for (const dim of ['crawl', 'param', 'vulnclass', 'asset']) {
           try {
             const r = await queryRef('ledger', 'coverage_gaps', { program, dim, limit: 200 }, { actor: 'reactor' })
             const rows = (r && r.data && Array.isArray(r.data.gaps)) ? r.data.gaps
@@ -2213,6 +2215,9 @@ function makeHandlers(opts) {
         objective = `[覆盖缺口] ${args.host} 未爬取——端点三件套（katana/gau/waybackurls）+ 登录态判定 endpoint_classify_auth；尊重 program QPS/risk；产物 endpoint_upsert 入库 + ledger_coverage_mark(dim=crawl) 记账。`
       } else if (args.kind === 'param_enrich') {
         objective = `[覆盖缺口] ${args.host}${args.path || ''} 无参数——arjun 参数补全 + flows/JS 提取带参 URL → endpoint_queue_surface 修复喂料队列 + ledger_coverage_mark(dim=param) 记账。`
+      } else if (args.kind === 'asset_enum') {
+        // 25 号补丁：资产收集入专项——根域枚举刷新闭环（枚举→探活→入库→enum_fresh 记账）
+        objective = `[资产缺口] ${args.host} 根域枚举超窗——subfinder 子域枚举 + dnsx 解析去存 + httpx 探活分级（fofa_search 可作补充信源）；新存活主机 asset_upsert_bulk 入库（source=asset_enum，尊重 program QPS/risk，不越出 scope）；收尾 ledger_coverage_mark(dim=asset, key=${args.host}, mark=enum_fresh) 记账并写 handoff 摘要。`
       } else {
         objective = hypothesisObjective({ level: args.level || 'H2', vulnClass: args.vuln_class || 'info_disclosure', host: args.host, path: args.path || '', param: args.param || '', oracle: args.oracle, rationale: args.rationale || '覆盖缺口驱动', programId: args.program_id, extraLines })
       }
