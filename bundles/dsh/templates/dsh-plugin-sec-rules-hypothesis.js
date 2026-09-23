@@ -760,11 +760,15 @@ export function decideThrottle(members = [], opts = {}) {
   if (!states.some((s) => !s.down)) return { supply_factor: 0, bounded: false, detail: [...detail, { reason: 'all_down' }] }
 
   const mains = states.filter((s) => s.weight >= mainWeight)
+  // 27 号补丁：daily 余量预警改为「全体主力（含 down 的）加权最差值」——
+  // 原实现只看可用主力，主力熔断后该渠道余量从分母消失（deepseek 435/500=87% 被忽略），
+  // 导致「套餐没满却反复 throttle」的误降速；跨渠道对比才是防桶打满的本意。
+  const mainWarn = mains.length > 0 && mains.some((s) => s.dailyLimit > 0) &&
+    Math.min(...mains.map((s) => (s.dailyLimit > 0 ? s.dailyRemainingRatio : 1))) < warnRatio
+  if (mainWarn) return { supply_factor: slowFactor, bounded: false, detail: [...detail, { reason: 'main_daily_low' }] }
   if (mains.length && !mains.some((s) => !s.down)) {
     return { supply_factor: slowFactor, bounded: false, detail: [...detail, { reason: 'main_down_fallback_up' }] }
   }
-  const mainWarn = mains.some((s) => !s.down && s.dailyLimit > 0 && s.dailyRemainingRatio < warnRatio)
-  if (mainWarn) return { supply_factor: slowFactor, bounded: false, detail: [...detail, { reason: 'main_daily_low' }] }
   return { supply_factor: 1.0, bounded: false, detail }
 }
 
@@ -789,8 +793,11 @@ export function selectCampaignModel(input = {}) {
     if (fl) return { task_class: taskClass, model: fl.model, channel: fl.channel || fl.name, reason: 'lite_flashlite' }
   }
   if (taskClass === 'heavy') {
-    const heavy = pick((model) => norm(model) === 'glm-5.2') || pick((model, ch) => /v4\.1-flash/.test(norm(model)) && /opencode-go/i.test(ch))
+    // 27 号补丁：v4.1-flash 升格主力（23 v3）后，heavy 与 std 同主力链，强模型顺延到 fallback
+    // （修复 glm-5.2 已退出当前 token 套餐/渠道熔断时 heavy 无差别撞死的卡口）
+    const heavy = pick((model) => norm(model) === mainModel)
     if (heavy) return { task_class: taskClass, model: heavy.model, channel: heavy.channel || heavy.name, reason: 'heavy_strong' }
+    // 主力全熔断 → 同走 fallback 链（不在此 return，落到下方公共顺延逻辑）
   }
   const main = pick((model) => norm(model) === mainModel)
   if (main) return { task_class: taskClass, model: main.model, channel: main.channel || main.name, reason: 'main' }

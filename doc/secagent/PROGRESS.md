@@ -17,6 +17,12 @@
 
 ## 二、最近进度结果
 
+### 2026-09-23 · 27 号补丁：供给误降速 + heavy 撞死不可用模型修复（本地契约 585/585，accept PASS=80）
+- **排查结论**：① 专项降级 L1 的直接原因是「连败速率≥2/h」——campaign#1/#2 各 2 条 rejected，其中路径性失败仅 1 条（#100496 资产枚举 worker 撞 `INVALID_REQUEST: reasoning_content must be passed back`），其余为目标面 N/A（无认证功能点/泛解析 CDN），机制按设计工作；② 「套餐没满却反复 throttle」是 DSH 误降速——`main_daily_low` 只看可用主力余量，主力熔断后 deepseek 435/500（13%<15%）被分母丢弃；③ 「v4.1-flash 零调用」是 Bellkeeper 坏路由——sensenova 渠道的 v4.1-flash/glm-5.2/glm-5.1 已退出当前 token 套餐（上游 403/404 实测）但渠道/池成员未摘除，渠道 12 连败熔断 + heavy 组首档撞死。
+- **修复**（三层）：DSH `decideThrottle` 余量预警改全体主力跨渠道最差值；`selectCampaignModel` heavy 与 std 同主力链 + fallback 顺延（glm-5.2 退出默认链，.env `SEC_CAMPAIGN_MODEL_MAIN_FALLBACK=deepseek-v4.1-flash,deepseek-v4-flash`）；Bellkeeper 经 DB API 收窄 sensenova 渠道 models（[flash-lite, v4-flash]）+ 摘除 pool-secagent/-heavy 死成员（种子 YAML 同步）——渠道熔断解除 closed、三池冒烟 200、DSH 徽章 normal(factor=1.0)。
+- **验收**：本地契约 585/585；csai rsync+setup+重启（NRestarts=0）accept PASS=80 FAIL=0；线上供给 checkpoint 连续 restored、无新 throttle。
+- **遗留（人工项）**：两专项仍 autonomy=1（降级不自动回升，需人工 review 后走 campaign-autonomy 审批重升 L2）；sensenova 套餐若恢复 v4.1-flash/glm-5.2 需把渠道 models 与 heavy 组首档加回。文档回填 [05-task §7.12](05-task.md)。
+
 ### 2026-09-23 · 26 号补丁：dsh-bill 成本归因（spent_tokens 恒 0 修复）+ 存量复核入专项（本地契约 585/585，accept PASS=80）
 - **成本归因**：task 域内置 dsh-bill `records.jsonl` 增量解析（字节偏移游标落盘 `dsh-bill-sum.json`，截断归零重扫、半行留待、map 截顶防膨胀）；`task_finish` 在 worker 未上报时按 `session_id` 归因实耗（in+out+cacheWrite，cacheRead 不计；无记录保持 NULL），`task_runs` 增 `spent_tokens` 列同口径。专项预算闸（`campaignUsage` 聚合 tasks.spent_tokens）自此按真实消耗——昨夜「已用 0/500000 却 budget_low 停派」的预估误报类消除（checkpoint #1/#2 实证）。
 - **存量复核入专项（review_finding）**：`ledger_coverage_gaps` 新增 `review` 维（status=new 且超龄 48h 的 finding 逐条出列，`SEC_LEDGER_REVIEW_STALE_MS` 可调，priority 35，严重度加权 value，triage 后自然出列闭环）；`compileCampaignPlan` review 维 → kind=review_finding（finding id 进 host 槽、+3 提权、计入多样性保底、lite 档）；`task_derive_intent` objective 模板「[存量复核] finding #N」（confirm 需机器 oracle/proof capsule，证据不足 vuln_reject/false_positive 写 reason）；**scope 复查豁免**——finding id 非主机名，`intentSituation`/`campaignSituationOk` 跳过主机归属校验（program 级 INV-C1 授权/过期校验不豁免）；`vuln_list` actor 补 reactor；`isCoverageRole` 认 `[存量复核]`。

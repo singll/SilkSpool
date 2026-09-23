@@ -82,7 +82,7 @@ export function parseCampaignSupplyEnv(env = process.env) {
     defaultBudgetTokens: num(e.SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS, 2000000),
     modelStrategy: /^weight$/i.test(String(e.SEC_CAMPAIGN_MODEL_STRATEGY || 'auto')) ? 'weight' : 'auto',
     modelMain: String(e.SEC_CAMPAIGN_MODEL_MAIN || 'deepseek-v4.1-flash'),
-    modelFallbacks: list(e.SEC_CAMPAIGN_MODEL_MAIN_FALLBACK, 'glm-5.2,deepseek-v4-flash'),
+    modelFallbacks: list(e.SEC_CAMPAIGN_MODEL_MAIN_FALLBACK, 'deepseek-v4.1-flash,deepseek-v4-flash'),
     flashliteFirst: bool(e.SEC_CAMPAIGN_FLASHLITE_FIRST, true),
     modelSelector: /^dsh$/i.test(String(e.SEC_CAMPAIGN_MODEL_SELECTOR || 'bellkeeper')) ? 'dsh' : 'bellkeeper',
     // §3.7 Path B 配置化承接：task_class → Bellkeeper 模型组（空则不映射，用 member 级具体模型）

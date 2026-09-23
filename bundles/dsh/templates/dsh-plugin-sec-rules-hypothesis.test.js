@@ -422,6 +422,14 @@ test('23 §3.1 decideThrottle: 五档规则（全停/主力熔断/主力余量�
   const rl = decideThrottle([mainLow, fallback])
   assert.equal(rl.supply_factor, 0.4)
   assert.ok(rl.detail.some((d) => d.reason === 'main_daily_low'))
+  // 27 号补丁：主力熔断时「其他主力渠道」的余量低也必须预警（跨渠道最差值，不再只看可用主力）
+  const main2Low = { ...fallback, weight: 4, daily_used: 490, daily_limit: 500 } // deepseek-secagent 435/500 同款场景（余量 2% < 15%）
+  const rl2 = decideThrottle([mainDown, main2Low])
+  assert.equal(rl2.supply_factor, 0.4)
+  assert.ok(rl2.detail.some((d) => d.reason === 'main_daily_low'), '主力熔断不屏蔽其他主力渠道的余量预警')
+  // 主力熔断 + 其他主力余量充足 → 仍按 main_down 0.4（不误升级误降级）
+  const rl3 = decideThrottle([mainDown, fallback])
+  assert.equal(rl3.supply_factor, 0.4)
   // 探测失败两阶段：>0 有界 fail-open；≥3 fail-closed
   const pf = decideThrottle([main, fallback], { probeFailures: 1 })
   assert.equal(pf.supply_factor, 1.0)
@@ -440,7 +448,7 @@ test('23 §3.1 memberSupplyState: channels/status 与 groups/status 两形态归
   assert.equal(b.weight, 2)
 })
 
-test('23 §3.7 selectCampaignModel: 分档选模型（lite→flash-lite / heavy→glm-5.2 / std→主力 / 顺延 / weight 回滚）', () => {
+test('23 §3.7 selectCampaignModel: 分档选模型（lite→flash-lite / heavy→主力 / std→主力 / 顺延 / weight 回滚）', () => {
   const members = [
     { channel: 'sensenova-secagent', model: 'sensenova-6.8-flash-lite', weight: 5, available: true, health: { state: 'closed' } },
     { channel: 'sensenova-secagent', model: 'ds-v4.1-flash', weight: 7, available: true, health: { state: 'closed' } },
@@ -452,12 +460,14 @@ test('23 §3.7 selectCampaignModel: 分档选模型（lite→flash-lite / heavy�
   const std = selectCampaignModel({ kind: 'hypothesis', vuln_class: 'info_disclosure', members })
   assert.equal(std.model, 'ds-v4.1-flash')
   const heavy = selectCampaignModel({ kind: 'hypothesis', vuln_class: 'sqli', members })
-  assert.equal(heavy.model, 'glm-5.2')
-  // heavy 主选熔断 → 顺延 Go v4.1-flash
-  const membersNoGlm = members.map((m) => (m.model === 'glm-5.2' ? { ...m, available: false, health: { state: 'open' } } : m))
-  assert.equal(selectCampaignModel({ kind: 'hypothesis', vuln_class: 'sqli', members: membersNoGlm }).model, 'deepseek-v4.1-flash')
+  assert.equal(heavy.model, 'ds-v4.1-flash', '27 号补丁：heavy 与 std 同主力链（v4.1-flash 升格主力）')
+  // heavy 主力熔断 → 按 fallback 链顺延（Go v4.1-flash → v4-flash）
+  const membersNoMain = [
+    ...members.map((m) => (/v4\.1-flash/.test(m.model) ? { ...m, available: false, health: { state: 'open' } } : m)),
+    { channel: 'deepseek-secagent', model: 'deepseek-v4-flash', weight: 3, available: true, health: { state: 'closed' } },
+  ]
+  assert.equal(selectCampaignModel({ kind: 'hypothesis', vuln_class: 'sqli', members: membersNoMain, fallbacks: ['deepseek-v4-flash'] }).model, 'deepseek-v4-flash')
   // std 主力（两渠道的 v4.1-flash）全熔断 → fallback
-  const membersNoMain = members.map((m) => (/v4\.1-flash/.test(m.model) ? { ...m, available: false, health: { state: 'open' } } : m))
   assert.equal(selectCampaignModel({ kind: 'hypothesis', vuln_class: 'xss', members: membersNoMain, fallbacks: ['glm-5.2'] }).model, 'glm-5.2')
   // weight 策略回滚：空 model 交 Bellkeeper 权重链
   assert.equal(selectCampaignModel({ kind: 'crawl', members, strategy: 'weight' }).model, '')

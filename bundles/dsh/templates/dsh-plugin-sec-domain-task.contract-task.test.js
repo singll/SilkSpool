@@ -1569,7 +1569,7 @@ test('23 §3.6 parseCampaignSupplyEnv: 统一额度面解析 + 非法回落', ()
   assert.equal(d.defaultBudgetTokens, 2000000)
   assert.equal(d.modelStrategy, 'auto')
   assert.equal(d.modelMain, 'deepseek-v4.1-flash')
-  assert.deepEqual(d.modelFallbacks, ['glm-5.2', 'deepseek-v4-flash'])
+  assert.deepEqual(d.modelFallbacks, ['deepseek-v4.1-flash', 'deepseek-v4-flash'])
   assert.equal(d.flashliteFirst, true)
   assert.equal(d.modelSelector, 'bellkeeper')
   const o = parseCampaignSupplyEnv({
