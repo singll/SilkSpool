@@ -363,6 +363,19 @@ window.__ModuleLoader__.load({
       if (!rows.length) return null
       function autonomyLabel(a) { return Number(a) >= 2 ? 'L2' : (Number(a) >= 1 ? 'L1' : 'L0') }
       function statusText(s) { return s === 'active' ? '运行中' : s === 'paused' ? '已暂停' : s === 'reviewing' ? '待人审' : s === 'archived' ? '已归档' : '草稿' }
+      // 23 号方案 §3.4：供给徽章（正常绿/降速黄/停派红/观测异常黄；unknown 不渲染避免噪音）
+      function supplyBadgeNode(s) {
+        if (!s || !s.state || s.state === 'unknown') return null
+        var map = {
+          normal: { text: '供给 正常', color: T.success, tip: 'LLM 池供给正常（factor=1.0）' },
+          slow: { text: '供给 降速', color: T.warn, tip: 'LLM 池供给降速（factor=' + (s.factor == null ? '0.4' : s.factor) + '）：derive_cap 折算' },
+          stop: { text: '供给 停派', color: T.error, tip: 'LLM 池额度熔断中，专项停派；Bellkeeper 探针恢复后自动回弹' },
+          probe_failed: { text: '供给 观测异常', color: T.warn, tip: 'Bellkeeper 管理面不可达，fail-open 有界降速（连续失败转停派）' },
+        }
+        var m = map[s.state]
+        if (!m) return null
+        return pillNode({ title: m.tip + (s.summary ? ('\n' + s.summary) : '') }, m.text)
+      }
       return el('div', null, rows.map(function (c) {
         var t = c.decision_totals || {}
         var active = props.campaignFilter === c.id
@@ -378,6 +391,7 @@ window.__ModuleLoader__.load({
             el('span', { style: { color: T.label, ...((F && F.sStrong) || {}), wordBreak: 'break-word', flex: '1 1 140px' } }, c.name),
             pillNode({ title: '专项状态机：draft/active/paused/reviewing/archived', style: { color: c.status === 'active' ? T.success : (c.status === 'reviewing' ? T.warn : T.label2) } }, statusText(c.status)),
             pillNode({ title: '自主级别：L0 台账 / L1 建议 / L2 有界自动（封顶）' }, autonomyLabel(c.autonomy)),
+            supplyBadgeNode(c.supply),
             c.mode === 'cross' ? pillNode({ title: '交叉挖掘：绑定多个已授权 program' }, '交叉') : null),
           el('div', { style: metaLine },
             el('span', { title: '绑定授权项目' }, '🏢 ' + ((c.program_ids || []).join('、') || '—')),

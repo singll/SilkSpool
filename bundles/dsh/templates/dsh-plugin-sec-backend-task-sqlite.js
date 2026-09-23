@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   provider TEXT,
   model TEXT,
   reasoning_effort TEXT,
-  budget_timeout_sec INTEGER
+  budget_timeout_sec INTEGER,
+  task_class TEXT,
+  model_hint TEXT
 )`
 
 const TASK_RUNS_DDL = `
@@ -172,6 +174,9 @@ function createRepo(db) {
     ['campaign_id', 'campaign_id INTEGER'],
     ['campaign_role', 'campaign_role TEXT'],
     ['strategy_key', 'strategy_key TEXT'],
+    // 23 号方案 §3.7：任务分档标注 + Path A 模型提示（幂等加列，存量 NULL 兼容）
+    ['task_class', 'task_class TEXT'],
+    ['model_hint', 'model_hint TEXT'],
   ]) ensureCol(db, 'tasks', col, ddl)
   ensureCol(db, 'task_runs', 'session_id', 'session_id TEXT')
   // workers.session_id 保持历史来源会话语义；新列只保存经核实的子会话。
@@ -203,8 +208,9 @@ function createRepo(db) {
       const r = db.prepare(`
         INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
           session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at,
-          provider, model, reasoning_effort, after_delay_seconds, goal, campaign_id, campaign_role, strategy_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          provider, model, reasoning_effort, after_delay_seconds, goal, campaign_id, campaign_role, strategy_key,
+          task_class, model_hint)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         String(row.program_id), row.parent_id ?? null, row.phase === undefined || row.phase === null ? null : String(row.phase),
         String(row.objective), row.priority ?? 5, row.assignee ? String(row.assignee) : '', row.budget_tokens ?? null,
@@ -214,6 +220,8 @@ function createRepo(db) {
         row.campaign_id == null ? null : Number(row.campaign_id),
         row.campaign_role ? String(row.campaign_role) : null,
         row.strategy_key ? String(row.strategy_key) : null,
+        row.task_class ? String(row.task_class) : null,
+        row.model_hint ? String(row.model_hint) : null,
       )
       return Number(r.lastInsertRowid)
     },

@@ -13,7 +13,7 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { createBus } from '../../sec-domain-bus/index.js'
-import { buildTaskDomain, startTaskScheduler } from '../index.js'
+import { buildTaskDomain, startTaskScheduler, parseCampaignSupplyEnv } from '../index.js'
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'sec-domain-task-')) }
 
@@ -36,7 +36,13 @@ function makeEnv(opts = {}) {
   bus._internal.db().exec(`CREATE TABLE IF NOT EXISTS programs (id TEXT PRIMARY KEY, platform TEXT, status TEXT DEFAULT 'active', max_risk TEXT, workspace_id TEXT, workspace_path TEXT)`)
   bus._internal.db().prepare(`INSERT OR REPLACE INTO programs (id, platform, status, max_risk, workspace_path) VALUES (?, ?, ?, ?, ?)`)
     .run('test-src', 'src', 'active', 'active', '/ws/test-src')
-  const domain = buildTaskDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: opts.query || ((d, n, a, c) => bus.query(d, n, a, c)) })
+  const domain = buildTaskDomain({
+    dataDir,
+    dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c),
+    query: opts.query || ((d, n, a, c) => bus.query(d, n, a, c)),
+    ...(opts.supplyEnv ? { supplyEnv: opts.supplyEnv } : {}),
+    ...(opts.supplyFetch ? { supplyFetch: opts.supplyFetch } : {}),
+  })
   const reg = bus.registry.register(domain)
   assert.equal(reg.ok, true, `task 域应注册成功：${reg.error?.message || ''}`)
   return { dir, dataDir, bus, domain }
@@ -1441,4 +1447,209 @@ test('22 cross 模式：多 program 绑定 + 跨 program 经验卡消费不混�
   assert.equal(d.data.derived, 1)
   const t = bus._internal.db().prepare('SELECT program_id, campaign_id FROM tasks WHERE campaign_id=?').get(cid)
   assert.equal(t.program_id, 'test-src-2')
+})
+
+// ---------------------------------------------------------------------------
+// 23 号方案：LLM 供给联动调速（采集器接线 / INV-C11 / INV-C12 / 分档 / 徽章 / 预算自动提请）
+// ---------------------------------------------------------------------------
+
+const SUPPLY_ENV = { ...parseCampaignSupplyEnv({}), apiKey: 'test-key' }
+
+// groups/status × channels/status 双端点假 fetch
+function supplyFetchStub(members, channels = []) {
+  const calls = []
+  const fn = async (url) => {
+    calls.push(String(url))
+    if (String(url).includes('/groups/status')) return { json: async () => ({ data: [{ name: 'pool-secagent', members }] }) }
+    if (String(url).includes('/channels/status')) return { json: async () => ({ data: channels }) }
+    return { json: async () => ({ data: [] }) }
+  }
+  fn.calls = calls
+  return fn
+}
+
+function registerApprovalStub(bus) {
+  const requests = []
+  const stub = {
+    manifest: {
+      domain: 'approval', version: 1, service: 'secDomain.approval', description: 'campaign 契约测试桩：approval_request',
+      owns: { tables: [], files: [] },
+      commands: {
+        approval_request: {
+          actor: ['model', 'scheduler', 'system', 'dashboard'],
+          schema: { type: 'object', additionalProperties: false, properties: { kind: { type: 'string' }, subject: { type: 'string' }, evidence: { type: 'string' }, payload: { type: 'object' } }, required: ['kind', 'subject', 'evidence'] },
+          idempotent: 'none', events: [], invariants: [], agent_note: '桩：审批提请',
+        },
+      },
+      queries: {}, events: {}, subscribes: {}, backend: 'repository-v1',
+    },
+    handlers: {
+      request: async (args) => { requests.push(args); return { data: { request_id: requests.length } } },
+      queries: {}, invariants: {}, subscribers: {},
+    },
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  }
+  const reg = bus.registry.register(stub)
+  return { reg, requests }
+}
+
+test('23 §3.6 parseCampaignSupplyEnv: 统一额度面解析 + 非法回落', () => {
+  const d = parseCampaignSupplyEnv({})
+  assert.equal(d.gate, true)
+  assert.equal(d.mainWeight, 4)
+  assert.equal(d.warnRatio, 0.15)
+  assert.equal(d.slowFactor, 0.4)
+  assert.equal(d.probeTimeoutMs, 3000)
+  assert.equal(d.deriveCapPerTick, 8)
+  assert.equal(d.estimateTokensPerDraft, 30000)
+  assert.equal(d.defaultBudgetTokens, 2000000)
+  assert.equal(d.modelStrategy, 'auto')
+  assert.equal(d.modelMain, 'ds-v4.1-flash')
+  assert.deepEqual(d.modelFallbacks, ['glm-5.2', 'ds-v4-flash'])
+  assert.equal(d.flashliteFirst, true)
+  assert.equal(d.modelSelector, 'bellkeeper')
+  const o = parseCampaignSupplyEnv({
+    SEC_CAMPAIGN_SUPPLY_GATE: 'off', SEC_CAMPAIGN_POOL_MEMBERS: 'a, b', SEC_CAMPAIGN_SUPPLY_MAIN_WEIGHT: '5',
+    SEC_CAMPAIGN_SUPPLY_WARN_RATIO: '2', SEC_CAMPAIGN_MODEL_SELECTOR: 'dsh', SEC_CAMPAIGN_MODEL_STRATEGY: 'weight',
+    SEC_CAMPAIGN_FLASHLITE_FIRST: 'false',
+  })
+  assert.equal(o.gate, false)
+  assert.deepEqual(o.members, ['a', 'b'])
+  assert.equal(o.mainWeight, 5)
+  assert.equal(o.warnRatio, 0.15, '非法比例（>1）回落默认')
+  assert.equal(o.modelSelector, 'dsh')
+  assert.equal(o.modelStrategy, 'weight')
+  assert.equal(o.flashliteFirst, false)
+})
+
+test('23 INV-C11: 供给归零 tick 跳过派生 + llm_throttled checkpoint + L2 降 L1', async () => {
+  const members = [
+    { channel: 'sensenova-secagent', model: 'ds-v4.1-flash', weight: 7, available: false, health: { state: 'open', breakdown_class: 'quota_exhausted' } },
+    { channel: 'deepseek-secagent', model: 'deepseek-v4-flash', weight: 3, available: false, health: { state: 'open' } },
+  ]
+  const env = makeEnv({ supplyEnv: SUPPLY_ENV, supplyFetch: supplyFetchStub(members) })
+  const { bus } = env
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'x.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: 'stop', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 3, max_active_tasks: 10 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(tk.data.summaries[0].supply_factor, 0)
+  assert.equal(tk.data.summaries[0].derived, 0, '供给归零不得派生')
+  assert.ok((tk.data.summaries[0].skipped || []).some((s) => s.reason === 'llm_exhausted'))
+  assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='llm_throttled'").get(cid))
+  assert.equal(bus._internal.db().prepare('SELECT autonomy FROM campaigns WHERE id=?').get(cid).autonomy, 1, 'L2 自动降 L1')
+})
+
+test('23 §3.1: 供给 0.4 降速——derive_cap 折算（3→2）', async () => {
+  const members = [
+    { channel: 'sensenova-secagent', model: 'ds-v4.1-flash', weight: 7, available: false, health: { state: 'open' } },
+    { channel: 'deepseek-secagent', model: 'deepseek-v4-flash', weight: 3, available: true, health: { state: 'closed' } },
+  ]
+  const env = makeEnv({ supplyEnv: SUPPLY_ENV, supplyFetch: supplyFetchStub(members) })
+  const { bus } = env
+  assert.equal(registerLedgerStub(bus, [
+    { program: 'test-src', dim: 'crawl', key: 'a.example.com', mark: 'not_crawled' },
+    { program: 'test-src', dim: 'crawl', key: 'b.example.com', mark: 'not_crawled' },
+    { program: 'test-src', dim: 'crawl', key: 'c.example.com', mark: 'not_crawled' },
+  ]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: 'slow', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 3, max_active_tasks: 10 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.data.summaries[0].supply_factor, 0.4)
+  assert.equal(tk.data.summaries[0].derived, 2, 'ceil(3×0.4)=2')
+})
+
+test('23 INV-C12: 观测失败两阶段——fail-open 有界；连续 3 次转停派', async () => {
+  const failFetch = async () => { throw new Error('connect ECONNREFUSED 192.168.7.230:8090') }
+  const env = makeEnv({ supplyEnv: SUPPLY_ENV, supplyFetch: failFetch })
+  const { bus } = env
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'x.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: 'probe', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 3, max_active_tasks: 10 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const t1 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(t1.data.summaries[0].supply_factor, 1.0, '首次失败 fail-open')
+  assert.equal(t1.data.summaries[0].derived, 1, '有界降速仍派生（cap=3→2 内 1 条缺口）')
+  assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='llm_probe_failed'").get(cid))
+  await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  const t3 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(t3.data.summaries[0].supply_factor, 0, '连续 3 次失败转 fail-closed')
+  assert.equal(t3.data.summaries[0].derived, 0)
+})
+
+test('23 INV-C11: 显式 campaign_dispatch 供给归零 → E_CAMPAIGN_LLM_EXHAUSTED；dashboard 放行', async () => {
+  const members = [
+    { channel: 'sensenova-secagent', model: 'ds-v4.1-flash', weight: 7, available: false, health: { state: 'open' } },
+    { channel: 'deepseek-secagent', model: 'deepseek-v4-flash', weight: 3, available: false, health: { state: 'open' } },
+  ]
+  const env = makeEnv({ supplyEnv: SUPPLY_ENV, supplyFetch: supplyFetchStub(members) })
+  const { bus } = env
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'gate', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const draft = { kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }
+  const blocked = await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [draft] }, { actor: 'model' })
+  assert.equal(blocked.ok, false)
+  assert.equal(blocked.error.code, 'E_CAMPAIGN_LLM_EXHAUSTED')
+  assert.equal(blocked.error.retryable, true)
+  const bypass = await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [draft] }, { actor: 'dashboard' })
+  assert.equal(bypass.ok, true, bypass.error?.message)
+  assert.equal(bypass.data.derived, 1, 'dashboard 人工紧急派生放行')
+})
+
+test('23 §3.7: 派生请求带 task_class 落库（Path B 元数据）+ 显式值透传', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'tc', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', {
+    campaign_id: cid, drafts: [
+      { kind: 'crawl', host: 'a.example.com', strategy_key: 'a.example.com|||' },
+      { kind: 'hypothesis', host: 'b.example.com', vuln_class: 'idor', strategy_key: 'b.example.com|||idor', task_class: 'lite' },
+    ],
+  }, { actor: 'model' })
+  const rows = bus._internal.db().prepare('SELECT task_class FROM tasks WHERE campaign_id=? ORDER BY id').all(cid)
+  assert.deepEqual(rows.map((r) => r.task_class), ['lite', 'lite'], 'crawl 自动 lite；显式 lite 透传')
+})
+
+test('23 §3.4: campaign_list 带供给徽章（llm_throttled → slow）', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'badge', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  bus._internal.db().prepare("INSERT INTO campaign_checkpoints (campaign_id, kind, summary, payload, created_at) VALUES (?, 'llm_throttled', '降速', ?, ?)")
+    .run(cid, JSON.stringify({ supply_factor: 0.4 }), Date.now())
+  const list = await bus.query('task', 'campaign_list', {}, { actor: 'dashboard' })
+  assert.equal(list.rows[0].supply.state, 'slow')
+  assert.equal(list.rows[0].supply.factor, 0.4)
+})
+
+test('23 §3.6: Supervisor 预算达 80% 自动提请 campaign-budget-extend', async () => {
+  const { bus } = makeEnv()
+  const appReg = registerApprovalStub(bus)
+  assert.equal(appReg.reg.ok, true, JSON.stringify(appReg.reg.error))
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'z.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '爬坡', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 100000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  // 直接注入一笔已达 85% 的窗口用量（tasks.spent_tokens）
+  bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, spent_tokens, campaign_id) VALUES ('test-src', '用量', 5, '', 'done', ?, ?, 85000, ?)")
+    .run(Date.now(), Date.now(), cid)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_extend_request'").get(cid), '应自动提请预算延长并留痕')
 })

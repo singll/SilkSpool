@@ -9,6 +9,7 @@ import {
   fenceUntrusted, detectInjectionPatterns, compileSituation, strategyKey, simhashDistance,
   routeFlowsSignal, visionTriageRubric, decontextualize, distillEpisode,
   compileCampaignPlan, CAMPAIGN_CLASS_PRIORITY, CAMPAIGN_ORACLE, hitMatrixKey,
+  classifyTaskClass, decideThrottle, selectCampaignModel, memberSupplyState, CAMPAIGN_TASK_CLASSES,
 } from '../index.js'
 
 // ---------- §5.1 登录态判定 ----------
@@ -325,4 +326,91 @@ test('22 P0-1: compileCampaignPlan 跳过已尝试策略（attempted 且未到 r
   const reopened = { 'a.p1.com|||idor': { fails: 0, blacklisted: false, attempted: true, reopen_after: now - 1000 } }
   const p2 = compileCampaignPlan({ ...base, strategies: reopened })
   assert.equal(p2.drafts.length, 2)
+})
+
+// ---------------------------------------------------------------------------
+// 23 号方案：供给联动调速 + 任务分档 + 选模型（纯函数契约）
+// ---------------------------------------------------------------------------
+
+test('23 §3.7 classifyTaskClass: 三档边界（显式/长上下文/kind/vuln_class）', () => {
+  assert.deepEqual(CAMPAIGN_TASK_CLASSES, ['lite', 'std', 'heavy'])
+  // 显式优先
+  assert.equal(classifyTaskClass({ task_class: 'heavy', kind: 'crawl' }), 'heavy')
+  assert.equal(classifyTaskClass({ task_class: 'lite', vuln_class: 'sqli' }), 'lite')
+  // 长上下文 > 128K → heavy
+  assert.equal(classifyTaskClass({ kind: 'crawl', context_tokens: 200000 }), 'heavy')
+  assert.equal(classifyTaskClass({ kind: 'crawl', context_tokens: 128000 }), 'lite')
+  // 轻任务 kind → lite
+  assert.equal(classifyTaskClass({ kind: 'crawl' }), 'lite')
+  assert.equal(classifyTaskClass({ kind: 'param_enrich' }), 'lite')
+  // 高失败代价类 → heavy；默认 std
+  assert.equal(classifyTaskClass({ kind: 'hypothesis', vuln_class: 'sqli' }), 'heavy')
+  assert.equal(classifyTaskClass({ kind: 'hypothesis', vuln_class: 'idor' }), 'heavy')
+  assert.equal(classifyTaskClass({ kind: 'hypothesis', vuln_class: 'info_disclosure' }), 'std')
+  assert.equal(classifyTaskClass({ kind: 'hypothesis', vuln_class: 'xss' }), 'std')
+  assert.equal(classifyTaskClass({}), 'std')
+  // 多源关联 → heavy
+  assert.equal(classifyTaskClass({ kind: 'hypothesis', multi_source: true }), 'heavy')
+})
+
+test('23 §3.1 decideThrottle: 五档规则（全停/主力熔断/主力余量低/全速/探测两阶段）', () => {
+  const main = { channel: 'sensenova-secagent', model: 'deepseek-v4.1-flash', weight: 7, available: true, health: { state: 'closed' }, daily_used: 0, daily_limit: 20000 }
+  const fallback = { channel: 'deepseek-secagent', model: 'deepseek-v4-flash', weight: 3, available: true, health: { state: 'closed' }, daily_used: 0, daily_limit: 500 }
+  // 全速
+  assert.equal(decideThrottle([main, fallback]).supply_factor, 1.0)
+  // 主力熔断，兜底可用 → 0.4
+  const mainDown = { ...main, available: false, health: { state: 'open' } }
+  const r = decideThrottle([mainDown, fallback])
+  assert.equal(r.supply_factor, 0.4)
+  assert.ok(r.detail.some((d) => d.reason === 'main_down_fallback_up'))
+  // 全成员 down → 0
+  const fbDown = { ...fallback, available: false, health: { state: 'open' } }
+  assert.equal(decideThrottle([mainDown, fbDown]).supply_factor, 0)
+  // quota_exhausted 熔断也算 down
+  const mainQuota = { ...main, health: { state: 'open', breakdown_class: 'quota_exhausted' } }
+  assert.equal(decideThrottle([mainQuota, fbDown]).supply_factor, 0)
+  // 主力可用但 daily 余量 < 15% → 0.4
+  const mainLow = { ...main, daily_used: 19000, daily_limit: 20000 }
+  const rl = decideThrottle([mainLow, fallback])
+  assert.equal(rl.supply_factor, 0.4)
+  assert.ok(rl.detail.some((d) => d.reason === 'main_daily_low'))
+  // 探测失败两阶段：>0 有界 fail-open；≥3 fail-closed
+  const pf = decideThrottle([main, fallback], { probeFailures: 1 })
+  assert.equal(pf.supply_factor, 1.0)
+  assert.equal(pf.bounded, true)
+  assert.equal(decideThrottle([main, fallback], { probeFailures: 3 }).supply_factor, 0)
+  // 无成员 → 停派（保守）
+  assert.equal(decideThrottle([]).supply_factor, 0)
+})
+
+test('23 §3.1 memberSupplyState: channels/status 与 groups/status 两形态归一', () => {
+  const a = memberSupplyState({ name: 'sensenova-secagent', health: { state: 'closed' }, daily_used: 100, daily_limit: 1000 })
+  assert.equal(a.down, false)
+  assert.ok(Math.abs(a.dailyRemainingRatio - 0.9) < 1e-9)
+  const b = memberSupplyState({ channel: 'opencode-go-secagent', model: 'deepseek-v4.1-flash', weight: 2, available: false, health: { state: 'open' } })
+  assert.equal(b.down, true)
+  assert.equal(b.weight, 2)
+})
+
+test('23 §3.7 selectCampaignModel: 分档选模型（lite→flash-lite / heavy→glm-5.2 / std→主力 / 顺延 / weight 回滚）', () => {
+  const members = [
+    { channel: 'sensenova-secagent', model: 'sensenova-6.8-flash-lite', weight: 5, available: true, health: { state: 'closed' } },
+    { channel: 'sensenova-secagent', model: 'ds-v4.1-flash', weight: 7, available: true, health: { state: 'closed' } },
+    { channel: 'sensenova-secagent', model: 'glm-5.2', weight: 6, available: true, health: { state: 'closed' } },
+    { channel: 'opencode-go-secagent', model: 'deepseek-v4.1-flash', weight: 2, available: true, health: { state: 'closed' } },
+  ]
+  const lite = selectCampaignModel({ kind: 'crawl', members })
+  assert.equal(lite.model, 'sensenova-6.8-flash-lite')
+  const std = selectCampaignModel({ kind: 'hypothesis', vuln_class: 'info_disclosure', members })
+  assert.equal(std.model, 'ds-v4.1-flash')
+  const heavy = selectCampaignModel({ kind: 'hypothesis', vuln_class: 'sqli', members })
+  assert.equal(heavy.model, 'glm-5.2')
+  // heavy 主选熔断 → 顺延 Go v4.1-flash
+  const membersNoGlm = members.map((m) => (m.model === 'glm-5.2' ? { ...m, available: false, health: { state: 'open' } } : m))
+  assert.equal(selectCampaignModel({ kind: 'hypothesis', vuln_class: 'sqli', members: membersNoGlm }).model, 'deepseek-v4.1-flash')
+  // std 主力熔断 → fallback
+  const membersNoMain = members.map((m) => (m.model === 'ds-v4.1-flash' && m.channel === 'sensenova-secagent' ? { ...m, available: false, health: { state: 'open' } } : m))
+  assert.equal(selectCampaignModel({ kind: 'hypothesis', vuln_class: 'xss', members: membersNoMain, fallbacks: ['glm-5.2'] }).model, 'glm-5.2')
+  // weight 策略回滚：空 model 交 Bellkeeper 权重链
+  assert.equal(selectCampaignModel({ kind: 'crawl', members, strategy: 'weight' }).model, '')
 })

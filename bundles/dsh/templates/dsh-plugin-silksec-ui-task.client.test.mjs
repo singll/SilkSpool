@@ -249,7 +249,7 @@ const RUNS = [
 ]
 const WORKSPACES = { available: true, items: [{ id: 'ws1', title: '美团 SRC', program: { id: 'meituan' }, tasks: 3, assets: 10, findings: 2 }] }
 const CAMPAIGNS = [
-  { id: 7, name: '美团SRC 持续挖掘', mode: 'single', status: 'active', autonomy: 1, program_ids: ['meituan'], budget_tokens: 2000000, spent_tokens: 350000, heartbeat_at: Date.now() - 3600000, decision_totals: { accepted: 3, rejected: 1, rework: 2, escalated: 0 }, objective: '覆盖+七类主粮' },
+  { id: 7, name: '美团SRC 持续挖掘', mode: 'single', status: 'active', autonomy: 1, program_ids: ['meituan'], budget_tokens: 2000000, spent_tokens: 350000, heartbeat_at: Date.now() - 3600000, decision_totals: { accepted: 3, rejected: 1, rework: 2, escalated: 0 }, objective: '覆盖+七类主粮', supply: { state: 'slow', factor: 0.4 } },
 ]
 
 const FULL_RPC_STATE = {
@@ -440,6 +440,7 @@ test('专项区块：卡片渲染（状态/自主级别/验收计数/预算/心�
   assert.match(text, /L1/, '自主级别徽章')
   assert.match(text, /验收 3\/1\/2\/0/, '验收计数 accepted/rejected/rework/escalated')
   assert.match(text, /预算 350000\/2000000/, '预算条 spent/budget')
+  assert.match(text, /供给 降速/, '23 号方案供给徽章（llm_throttled → 降速）')
   // 立即 tick 按钮（aria-label）
   const tickBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '立即 tick')[0]
   assert.ok(tickBtn, '专项卡片必须有「立即 tick」按钮')

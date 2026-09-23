@@ -650,6 +650,8 @@ export function compileCampaignPlan(input = {}) {
       oracle: kind === 'hypothesis' ? (CAMPAIGN_ORACLE[vulnClass] || 'unauthz_diff') : '',
       strategy_key: key, campaign_role: 'derived', priority: _clamp(Math.round(9 - score), range[0], range[1]),
       phase, goal: 'research', score,
+      // 23 号方案 §3.7：任务分档标注（纯元数据，Path B 交 Bellkeeper 侧策略路由）
+      task_class: classifyTaskClass({ kind, vuln_class: vulnClass, context_tokens: g.context_tokens }),
     })
   }
   scored.sort((a, b) => (b.score - a.score) || a.strategy_key.localeCompare(b.strategy_key))
@@ -662,5 +664,127 @@ export function compileCampaignPlan(input = {}) {
   }
   if (scored.length > cap) skipped.push({ reason: 'derive_cap', dropped: scored.length - cap, cap })
   return { drafts, skipped }
+}
+
+// ===========================================================================
+// 23 号方案 · LLM 供给联动调速（纯函数层）
+//
+// 三层职责分离：
+//   - classifyTaskClass：任务分档（lite/std/heavy，规则分类器，零 LLM 成本）
+//   - decideThrottle：供给哨兵决策（members 快照 → supply_factor ∈ {0, 0.4, 1.0}）
+//   - selectCampaignModel：任务级选模型（分档 × 可用性 × 池额度 → model_hint）
+// 全部确定性可重放，契约测试钉死；IO（拉 Bellkeeper 状态）在 task 域采集器内。
+// ===========================================================================
+
+// 任务强度档位（§3.7）：lite=轻任务优先烧 Flash-Lite 专属池；std=主力；heavy=重任务/长上下文
+export const CAMPAIGN_TASK_CLASSES = ['lite', 'std', 'heavy']
+// 高失败代价漏洞类（需强模型 + 长上下文关联）→ heavy
+export const CAMPAIGN_HEAVY_CLASSES = ['sqli', 'idor', 'authz', 'ssrf', 'file']
+// 轻任务 kind（摘要/归类/字段抽取/采集富化）→ lite
+export const CAMPAIGN_LITE_KINDS = ['crawl', 'param_enrich', 'summary', 'classify', 'extract']
+
+// 规则分类器（§3.7）：显式 task_class 优先；否则按长上下文 / kind / vuln_class / 多源信号判定。
+// 输入：{ task_class?, kind?, vuln_class?, context_tokens?, multi_source? }。
+export function classifyTaskClass(input = {}) {
+  const explicit = String(input.task_class || input.taskClass || '').toLowerCase()
+  if (CAMPAIGN_TASK_CLASSES.includes(explicit)) return explicit
+  const ctx = Number(input.context_tokens || input.contextTokens || 0)
+  if (Number.isFinite(ctx) && ctx > 128000) return 'heavy'
+  const kind = String(input.kind || '').toLowerCase()
+  if (CAMPAIGN_LITE_KINDS.includes(kind)) return 'lite'
+  const vuln = String(input.vuln_class || input.vulnClass || '').toLowerCase()
+  if (CAMPAIGN_HEAVY_CLASSES.includes(vuln)) return 'heavy'
+  if (input.multi_source === true || input.long_context === true) return 'heavy'
+  return 'std'
+}
+
+// 成员供给状态归一（§3.1）：熔断/额度耗尽/不可用 → down。
+// 兼容 groups/status 的 {channel, model, weight, available, health} 与 channels/status 的
+// {name, daily_used, daily_limit, available_tokens, max_tokens, health}。
+export function memberSupplyState(m = {}) {
+  const health = (m && typeof m.health === 'object' && m.health) || {}
+  const state = String(health.state || m.state || 'closed').toLowerCase()
+  const cls = String(health.breakdown_class || m.breakdown_class || '').toLowerCase()
+  const open = state === 'open'
+  const quotaExhausted = cls.includes('quota_exhausted')
+  const available = m.available === undefined ? !open : !!m.available
+  const dailyLimit = Number(m.daily_limit || 0)
+  const dailyUsed = Number(m.daily_used || 0)
+  const dailyRemainingRatio = dailyLimit > 0 ? Math.max(0, (dailyLimit - dailyUsed) / dailyLimit) : 1
+  return {
+    name: String(m.channel || m.name || ''),
+    model: String(m.model || ''),
+    weight: Number(m.weight) || 0,
+    available, open, quotaExhausted,
+    dailyLimit, dailyUsed, dailyRemainingRatio,
+    down: !available || open || quotaExhausted,
+  }
+}
+
+// 供给决策纯函数（§3.1 规则表 + §3.3 INV-C12）：
+//   probeFailures ≥ probeMax      → 0（持续观测失败 fail-closed）
+//   probeFailures > 0            → 1.0 但有界（bounded=true，Dispatcher 取 min(cap,2)）
+//   全成员 down                  → 0（停派）
+//   主力（weight≥mainWeight）全 down，兜底可用 → slowFactor（0.4）
+//   主力可用但 daily 余量 < warnRatio → slowFactor（预防性降速）
+//   其余                          → 1.0
+export function decideThrottle(members = [], opts = {}) {
+  const mainWeight = Number(opts.mainWeight) > 0 ? Number(opts.mainWeight) : 4
+  const warnRatio = Number.isFinite(Number(opts.warnRatio)) ? Number(opts.warnRatio) : 0.15
+  const slowFactor = Number.isFinite(Number(opts.slowFactor)) ? Number(opts.slowFactor) : 0.4
+  const probeFailures = Math.max(0, Number(opts.probeFailures) || 0)
+  const probeMax = Number(opts.probeMax) > 0 ? Number(opts.probeMax) : 3
+
+  if (probeFailures >= probeMax) return { supply_factor: 0, bounded: false, detail: [{ reason: 'probe_failed_closed', probe_failures: probeFailures }] }
+  if (probeFailures > 0) return { supply_factor: 1.0, bounded: true, detail: [{ reason: 'probe_failed_open', probe_failures: probeFailures }] }
+
+  const states = (Array.isArray(members) ? members : []).filter(Boolean).map(memberSupplyState)
+  if (!states.length) return { supply_factor: 0, bounded: false, detail: [{ reason: 'no_members' }] }
+  const detail = states.map((s) => ({
+    name: s.name, model: s.model, weight: s.weight, down: s.down,
+    verdict: s.down ? (s.quotaExhausted ? 'quota_exhausted' : (s.open ? 'open' : 'unavailable')) : 'up',
+  }))
+  if (!states.some((s) => !s.down)) return { supply_factor: 0, bounded: false, detail: [...detail, { reason: 'all_down' }] }
+
+  const mains = states.filter((s) => s.weight >= mainWeight)
+  if (mains.length && !mains.some((s) => !s.down)) {
+    return { supply_factor: slowFactor, bounded: false, detail: [...detail, { reason: 'main_down_fallback_up' }] }
+  }
+  const mainWarn = mains.some((s) => !s.down && s.dailyLimit > 0 && s.dailyRemainingRatio < warnRatio)
+  if (mainWarn) return { supply_factor: slowFactor, bounded: false, detail: [...detail, { reason: 'main_daily_low' }] }
+  return { supply_factor: 1.0, bounded: false, detail }
+}
+
+// 任务级选模型（§3.7）：分档 × 可用性 × 池额度 → { task_class, model, channel, reason }。
+// strategy=weight 时退回旧纯权重链（返回空 model，交 Bellkeeper 权重路由）。
+export function selectCampaignModel(input = {}) {
+  const taskClass = classifyTaskClass(input)
+  const strategy = String(input.strategy || 'auto').toLowerCase()
+  if (strategy === 'weight') return { task_class: taskClass, model: '', channel: '', reason: 'weight_chain' }
+  const members = (Array.isArray(input.members) ? input.members : []).filter((m) => m && !memberSupplyState(m).down)
+  const pick = (pred) => members.find((m) => pred(String(m.model || ''), String(m.channel || m.name || '')))
+  const mainModel = String(input.mainModel || 'ds-v4.1-flash')
+  const fallbacks = Array.isArray(input.fallbacks)
+    ? input.fallbacks.map(String)
+    : String(input.fallbacks || '').split(',').map((s) => s.trim()).filter(Boolean)
+  const flashliteFirst = input.flashliteFirst !== false
+
+  if (taskClass === 'lite' && flashliteFirst) {
+    const fl = pick((model) => /flash-lite/i.test(model))
+    if (fl) return { task_class: taskClass, model: fl.model, channel: fl.channel || fl.name, reason: 'lite_flashlite' }
+  }
+  if (taskClass === 'heavy') {
+    const heavy = pick((model) => model === 'glm-5.2') || pick((model, ch) => /v4\.1-flash/.test(model) && /opencode-go/i.test(ch))
+    if (heavy) return { task_class: taskClass, model: heavy.model, channel: heavy.channel || heavy.name, reason: 'heavy_strong' }
+  }
+  const main = pick((model) => model === mainModel)
+  if (main) return { task_class: taskClass, model: main.model, channel: main.channel || main.name, reason: 'main' }
+  for (const f of fallbacks) {
+    const m = pick((model) => model === f)
+    if (m) return { task_class: taskClass, model: m.model, channel: m.channel || m.name, reason: 'fallback' }
+  }
+  const any = members[0]
+  if (any) return { task_class: taskClass, model: any.model, channel: any.channel || any.name, reason: 'any_available' }
+  return { task_class: taskClass, model: '', channel: '', reason: 'no_available' }
 }
 

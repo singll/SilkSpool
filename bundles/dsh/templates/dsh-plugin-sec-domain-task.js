@@ -19,7 +19,7 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { nextScheduledRun, validateDependency, MAX_WORKER_TIMEOUT_SEC } from '../sec-suite/task-policy.js'
-import { h1Hypotheses, taintRoute, strategyKey, compileSituation, detectInjectionPatterns, compileCampaignPlan } from '../sec-rules-hypothesis/index.js'
+import { h1Hypotheses, taintRoute, strategyKey, compileSituation, detectInjectionPatterns, compileCampaignPlan, classifyTaskClass, decideThrottle, selectCampaignModel } from '../sec-rules-hypothesis/index.js'
 // L6 调度器切换：persona/定时任务 prompt/会话反查与 v4 完全同源（复用 sec-suite 版本受控实现，防双份漂移）
 import { listSessionHeaders, matchWorkerSession, createPersonaReader, buildScheduledPrompt } from '../sec-suite/host-compat.js'
 
@@ -47,10 +47,53 @@ const CAMPAIGN_VERDICTS = ['accepted', 'rework', 'rejected', 'escalated']
 const CAMPAIGN_MILESTONE_IDLE_MS = Number(process.env.SEC_CAMPAIGN_IDLE_HOURS || 48) * 3600000
 const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 // 22 号方案：单条派生草稿的预算预估（tokens，环境变量可调；用于 campaign 窗口预算闸）
-const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 150000)
+// 23 号方案 §3.6：默认随统一额度面调为 30000（worker 未上报 token 前的保守估算）
+const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 30000)
 const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich']
 // 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
 const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000
+// 23 号方案 §3.6：每 tick 派生上限默认 8（v2 调高：5→8）
+const CAMPAIGN_DERIVE_CAP_PER_TICK = Number(process.env.SEC_CAMPAIGN_DERIVE_CAP_PER_TICK || 8)
+// 23 号方案 §3.6：新建专项默认窗口预算 2M/7d（autonomy<2；L2 仍须显式预算 INV-C4）
+const CAMPAIGN_DEFAULT_BUDGET_TOKENS = Number(process.env.SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS || 2000000)
+
+// ---------------------------------------------------------------------------
+// 23 号方案 §3.6：专项 LLM 供给统一额度面（一处调额度）
+// 全部从 env 读取的确定性解析（契约测试钉死）；非法值回落默认，永不抛错。
+// ---------------------------------------------------------------------------
+export function parseCampaignSupplyEnv(env = process.env) {
+  const e = env || {}
+  const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d }
+  const ratio = (v, d) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 1 ? n : d }
+  const bool = (v, d) => (v == null || v === '') ? d : !/^(off|0|false|no)$/i.test(String(v))
+  const list = (v, d) => String(v == null || v === '' ? d : v).split(',').map((s) => s.trim()).filter(Boolean)
+  return {
+    gate: bool(e.SEC_CAMPAIGN_SUPPLY_GATE, true),
+    members: list(e.SEC_CAMPAIGN_POOL_MEMBERS, 'sensenova-secagent,deepseek-secagent,opencode-go-secagent'),
+    mainWeight: num(e.SEC_CAMPAIGN_SUPPLY_MAIN_WEIGHT, 4),
+    warnRatio: ratio(e.SEC_CAMPAIGN_SUPPLY_WARN_RATIO, 0.15),
+    slowFactor: ratio(e.SEC_CAMPAIGN_SUPPLY_SLOW_FACTOR, 0.4),
+    probeTimeoutMs: num(e.SEC_CAMPAIGN_SUPPLY_PROBE_TIMEOUT_MS, 3000),
+    probeMax: num(e.SEC_CAMPAIGN_SUPPLY_PROBE_MAX, 3),
+    deriveCapPerTick: num(e.SEC_CAMPAIGN_DERIVE_CAP_PER_TICK, 8),
+    estimateTokensPerDraft: num(e.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT, 30000),
+    defaultBudgetTokens: num(e.SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS, 2000000),
+    modelStrategy: /^weight$/i.test(String(e.SEC_CAMPAIGN_MODEL_STRATEGY || 'auto')) ? 'weight' : 'auto',
+    modelMain: String(e.SEC_CAMPAIGN_MODEL_MAIN || 'ds-v4.1-flash'),
+    modelFallbacks: list(e.SEC_CAMPAIGN_MODEL_MAIN_FALLBACK, 'glm-5.2,ds-v4-flash'),
+    flashliteFirst: bool(e.SEC_CAMPAIGN_FLASHLITE_FIRST, true),
+    modelSelector: /^dsh$/i.test(String(e.SEC_CAMPAIGN_MODEL_SELECTOR || 'bellkeeper')) ? 'dsh' : 'bellkeeper',
+    llmBaseUrl: String(e.SEC_CAMPAIGN_LLM_URL || '').replace(/\/+$/, ''),
+    apiKey: e.BELLKEEPER_LLM_API_KEY || e.BELLKEEPER_API_KEY || e.SEC_EVAL_LLM_KEY || '',
+  }
+}
+
+// Bellkeeper 管理面基址：显式 SEC_CAMPAIGN_LLM_URL 优先，否则从 eval LLM URL 推导，最后默认 keeper。
+function defaultLlmBaseUrl(env = process.env) {
+  const evalUrl = String(env.SEC_EVAL_LLM_URL || '')
+  const m = evalUrl.match(/^(https?:\/\/[^/]+)/)
+  return m ? m[1] : 'http://192.168.7.230:8090'
+}
 const CAMPAIGN_LEVELS = ['H1', 'H2', 'H3']
 // 21 号方案 §3-4：per-program 周期预算闸（环境变量可调；dashboard/approval 人工放行）
 const BUDGET_PERIOD_MS = Number(process.env.SEC_TASK_BUDGET_PERIOD_DAYS || 7) * 86400000
@@ -115,6 +158,8 @@ export const TASK_MANIFEST = {
         campaign_id: int({ minimum: 1, description: '归属专项（22 号方案 §5.2）；非空 ⇒ schedule_kind 不得为 interval（INV-C7），写入后不可改（INV-C2）' }),
         campaign_role: en(CAMPAIGN_ROLES, { description: '专项子任务角色：seed/derived/verify/submit/retest/learn' }),
         strategy_key: str({ description: '（内部）派生策略裸键 host|path|param|vuln_class——供 Reviewer rework 重开/连败回写归因' }),
+        task_class: en(['lite', 'std', 'heavy'], { description: '（内部）23 号方案任务分档标注：lite 轻任务/ std 常规/ heavy 重任务；Path B 交 Bellkeeper 侧策略路由' }),
+        model_hint: str({ description: '（内部）23 号方案 Path A：派生负载带模型提示（selector=dsh 时由 task 域自主选模型）' }),
       }, ['objective']),
       idempotent: 'auto',
       idempotent_fields: ['program_id', 'objective', 'phase', 'goal', 'priority', 'parent_id', 'budget_tokens', 'assignee', 'schedule', 'provider', 'model', 'reasoning_effort', 'campaign_id', 'campaign_role', 'strategy_key'],
@@ -298,6 +343,11 @@ export const TASK_MANIFEST = {
         strategy_key: str({ default: '' }),
         campaign_id: int({ minimum: 1 }),
         campaign_role: en(CAMPAIGN_ROLES),
+        // 23 号方案 §3.7：任务分档标注（Path B 纯元数据）+ Path A 模型提示
+        task_class: en(['lite', 'std', 'heavy']),
+        model_hint: str({ default: '' }),
+        model_channel: str({ default: '' }),
+        model_reason: str({ default: '' }),
       }, ['program_id', 'kind', 'host']),
       // 幂等由 handler 内 strategy_dedupe 表自治（返回 deduped:true / 黑名单丢弃）；
       // 不用 bus 层 natural 幂等——回放会吞掉 deduped 语义并绕过黑名单判定
@@ -879,6 +929,11 @@ function makeHandlers(opts) {
   const queryRef = opts.query
   const backendRepoRef = opts.repoRef
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
+  // 23 号方案：供给哨兵（LlmSupplyWatch）——配置/注入式 fetch/进程内缓存/连续失败计数
+  const supplyEnv = opts.supplyEnv || parseCampaignSupplyEnv(process.env)
+  const supplyFetch = opts.supplyFetch || ((url, init) => fetch(url, init))
+  const supplyCache = { at: 0, snapshot: null }
+  let supplyProbeFailures = 0
 
   // scope.yml 自查（与 endpoint 域同口径，模块级 mtime 缓存；Intent 局面编译复用）
   let _scopeCache = null
@@ -1050,6 +1105,156 @@ function makeHandlers(opts) {
     const events = []
     if (kind === 'escalation') events.push({ name: 'task.campaign.escalated', payload: { campaign_id: campaignId, kind, summary: String(summary || '').slice(0, 300), payload: payload || null, checkpoint_id: id } })
     return { id, events }
+  }
+
+  // ------------------------------------------------------------------
+  // 23 号方案 §3.1：LlmSupplyWatch（供给哨兵）——只读 Bellkeeper 观测面，零改造
+  // ------------------------------------------------------------------
+
+  function unwrapData(json) {
+    if (Array.isArray(json)) return json
+    if (json && Array.isArray(json.data)) return json.data
+    if (json && json.data && Array.isArray(json.data.data)) return json.data.data
+    return []
+  }
+
+  // 采集：groups/status（成员权重+可用性）× channels/status（rpd 桶余量）合并为 members 快照。
+  // 进程内 60s 缓存防抖动；观测失败累计连续失败计数（INV-C12 两阶段）。
+  async function fetchSupplySnapshot({ force = false } = {}) {
+    const now = Date.now()
+    if (!force && supplyCache.snapshot && now - supplyCache.at < 60000) return supplyCache.snapshot
+    const base = supplyEnv.llmBaseUrl || defaultLlmBaseUrl()
+    const headers = { Accept: 'application/json' }
+    if (supplyEnv.apiKey) headers.Authorization = `Bearer ${supplyEnv.apiKey}`
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), supplyEnv.probeTimeoutMs)
+    try {
+      const [gr, ch] = await Promise.all([
+        supplyFetch(`${base}/api/llm/groups/status`, { headers, signal: ctrl.signal }),
+        supplyFetch(`${base}/api/llm/channels/status`, { headers, signal: ctrl.signal }),
+      ])
+      const gjson = await gr.json()
+      const cjson = await ch.json()
+      const groups = unwrapData(gjson)
+      const channels = unwrapData(cjson)
+      const chByName = new Map(channels.map((c) => [String(c.name || ''), c]))
+      const group = groups.find((g) => String(g.name || '') === 'pool-secagent')
+      let members = []
+      if (group && Array.isArray(group.members)) {
+        members = group.members.map((m) => {
+          const ch = chByName.get(String(m.channel || '')) || {}
+          return {
+            channel: String(m.channel || ''), model: String(m.model || ''), weight: Number(m.weight) || 0,
+            available: m.available !== false, health: (ch.health || m.health || {}),
+            daily_used: ch.daily_used, daily_limit: ch.daily_limit,
+            available_tokens: ch.available_tokens, max_tokens: ch.max_tokens,
+          }
+        })
+      } else {
+        // 组不可见时的降级：仅按 channels/status + 统一额度面成员名（权重未知→按主力处理）
+        for (const name of supplyEnv.members) {
+          const ch = chByName.get(name)
+          if (ch) members.push({ channel: name, model: '', weight: supplyEnv.mainWeight, available: true, health: ch.health || {}, daily_used: ch.daily_used, daily_limit: ch.daily_limit, available_tokens: ch.available_tokens, max_tokens: ch.max_tokens })
+        }
+      }
+      // 统一额度面成员过滤（仅保留配置的渠道；空则不裁）
+      if (supplyEnv.members.length) {
+        const keep = new Set(supplyEnv.members)
+        const filtered = members.filter((m) => keep.has(m.channel))
+        if (filtered.length) members = filtered
+      }
+      supplyProbeFailures = 0
+      const snapshot = { members, probe_failed: false, probe_failures: 0, at: now }
+      supplyCache.snapshot = snapshot; supplyCache.at = now
+      return snapshot
+    } catch (e) {
+      supplyProbeFailures++
+      return { members: [], probe_failed: true, probe_failures: supplyProbeFailures, error: String(e?.message || e), at: now }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  // 供给评估：供给闸总开关 off / 无凭据（无法观测）→ 禁用（等效 factor=1.0，不触网）。
+  async function evaluateSupply({ force = false } = {}) {
+    if (!supplyEnv.gate) return { enabled: false, supply_factor: 1.0, bounded: false, detail: [{ reason: 'gate_off' }], probe_failed: false, model: null, members: [] }
+    if (!supplyEnv.apiKey && !supplyEnv.llmBaseUrl) return { enabled: false, supply_factor: 1.0, bounded: false, detail: [{ reason: 'no_credentials' }], probe_failed: false, model: null, members: [] }
+    const snap = await fetchSupplySnapshot({ force })
+    const decision = decideThrottle(snap.members, {
+      mainWeight: supplyEnv.mainWeight, warnRatio: supplyEnv.warnRatio, slowFactor: supplyEnv.slowFactor,
+      probeFailures: snap.probe_failed ? supplyProbeFailures : 0, probeMax: supplyEnv.probeMax,
+    })
+    const model = selectCampaignModel({
+      members: snap.members, strategy: supplyEnv.modelStrategy, mainModel: supplyEnv.modelMain,
+      fallbacks: supplyEnv.modelFallbacks, flashliteFirst: supplyEnv.flashliteFirst,
+    })
+    return {
+      enabled: true, supply_factor: decision.supply_factor, bounded: !!decision.bounded,
+      detail: decision.detail || [], probe_failed: !!snap.probe_failed, model, members: snap.members,
+    }
+  }
+
+  // 看板供给徽章（23 号方案 §3.4）：从最近供给 checkpoint 反推三态（正常绿/降速黄/停派红）
+  function supplyBadge(repo, campaignId) {
+    let rows = []
+    try { rows = repo.listCheckpoints(campaignId, 50) } catch { return { state: 'unknown', factor: null } }
+    for (const r of rows) {
+      if (r.kind === 'llm_restored') return { state: 'normal', factor: 1.0, at: r.created_at, summary: r.summary || '' }
+      if (r.kind === 'llm_throttled') {
+        const p = parseJsonSafe(r.payload, {})
+        const f = Number(p.supply_factor)
+        return { state: f === 0 ? 'stop' : 'slow', factor: Number.isFinite(f) ? f : null, at: r.created_at, summary: r.summary || '', detail: p.detail || [], model_hint: p.model_hint || null }
+      }
+      if (r.kind === 'llm_probe_failed') return { state: 'probe_failed', factor: 1.0, at: r.created_at, summary: r.summary || '' }
+    }
+    return { state: 'unknown', factor: null }
+  }
+
+  // 最近一次供给状态（从 checkpoint 反推；null=未知）
+  function lastSupplyState(repo, campaignId) {
+    let rows = []
+    try { rows = repo.listCheckpoints(campaignId, 50) } catch { rows = [] }
+    for (const r of rows) {
+      if (r.kind === 'llm_restored') return 1.0
+      if (r.kind === 'llm_throttled') { const p = parseJsonSafe(r.payload, {}); return Number(p.supply_factor) }
+      if (r.kind === 'llm_probe_failed') return null
+    }
+    return null
+  }
+
+  // 供给变化留痕（幂等防抖：同因子不重复发；factor=0 首次发 task.campaign.escalated）
+  function recordSupplyTransition(repo, c, supply) {
+    const events = []
+    if (!supply.enabled) return events
+    const prev = lastSupplyState(repo, c.id)
+    if (supply.probe_failed && supply.supply_factor === 1.0) {
+      if (!hasRecentCheckpoint(repo, c.id, 'llm_probe_failed', 5 * 60000)) {
+        const cp = writeCheckpoint(repo, c.id, 'llm_probe_failed', `供给观测失败（连续 ${supplyProbeFailures} 次），fail-open 但有界降速（derive_cap≤2）；连续 ${supplyEnv.probeMax} 次转停派`, { probe_failures: supplyProbeFailures })
+        events.push(...cp.events)
+      }
+      return events
+    }
+    if (supply.supply_factor < 1) {
+      if (prev === supply.supply_factor && hasRecentCheckpoint(repo, c.id, 'llm_throttled', 5 * 60000)) return events
+      const cp = writeCheckpoint(repo, c.id, 'llm_throttled', supply.supply_factor === 0
+        ? 'LLM 供给停派（成员全部熔断/额度耗尽）：L2→L1，在跑子任务不动'
+        : `LLM 供给降速（factor=${supply.supply_factor}）：derive_cap 折算`, { supply_factor: supply.supply_factor, detail: supply.detail, model_hint: supply.model || null })
+      events.push(...cp.events)
+      if (supply.supply_factor === 0) {
+        if (prev !== 0) events.push({ name: 'task.campaign.escalated', payload: { campaign_id: c.id, kind: 'llm_throttled', summary: 'LLM 池额度熔断中，专项停派；Bellkeeper 探针恢复后自动回弹', payload: { supply_factor: 0, checkpoint_id: cp.id } } })
+        if (Number(c.autonomy) >= 2) {
+          repo.updateCampaign(c.id, { autonomy: 1 })
+          const ac = writeCheckpoint(repo, c.id, 'autonomy_change', 'LLM 供给归零，L2 自动降级为 L1（恢复后不自动升回，需人工 review_pass）', { supply_factor: 0 })
+          events.push(...ac.events)
+        }
+      }
+      return events
+    }
+    if (prev != null && prev < 1) {
+      const cp = writeCheckpoint(repo, c.id, 'llm_restored', 'LLM 供给恢复（factor=1.0）', { supply_factor: 1 })
+      events.push(...cp.events)
+    }
+    return events
   }
 
   // Reviewer 验收信号采集（22 号方案 §7.6：确定性优先）——机器 oracle 判定 / capsule 证据 /
@@ -1270,6 +1475,12 @@ function makeHandlers(opts) {
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
       if (Number(usage.spent_tokens) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
+      // 23 号方案 §3.6 步骤 1.5：达 80% 水位自动提请 campaign-budget-extend（平滑爬坡，零人工介入；
+      // 提请幂等由 12h checkpoint 防抖 + approval 同 (kind,subject) pending 去重双保险）
+      else if (Number(usage.spent_tokens) >= Number(c.budget_tokens) * 0.8
+        && !hasRecentCheckpoint(repo, c.id, 'budget_extend_request', 12 * 3600000)) {
+        actions.push({ kind: 'budget_extend', add: Number(c.budget_tokens), spent: Number(usage.spent_tokens) })
+      }
     }
     return actions
   }
@@ -1283,19 +1494,35 @@ function makeHandlers(opts) {
     const role = CAMPAIGN_ROLES.includes(String(d.campaign_role)) ? String(d.campaign_role) : 'derived'
     const phases = Array.isArray(policy.allowed_phases) && policy.allowed_phases.length ? policy.allowed_phases.map(String) : ['vuln']
     const phase = phases.includes(String(d.phase)) ? String(d.phase) : phases[0]
+    const taskClass = ['lite', 'std', 'heavy'].includes(String(d.task_class))
+      ? String(d.task_class) : classifyTaskClass({ kind, vuln_class: d.vuln_class || '' })
     return {
       program_id: d.program_id, kind, host: d.host, path: d.path || '', param: d.param || '',
       vuln_class: d.vuln_class || '', level, rationale: String(d.rationale || '合规派生（Dispatcher 收敛）').slice(0, 400),
       oracle: d.oracle || '', strategy_key: d.strategy_key || '', campaign_role: role, phase, goal: 'research',
+      task_class: taskClass,
     }
   }
 
-  // Dispatcher 下发（唯一动作=翻译为 derive_intent/task_create；闸顺序：有界→预算→委托链）
-  async function dispatchDrafts(c, drafts, repo, { explicit = false } = {}) {
+  // Dispatcher 下发（唯一动作=翻译为 derive_intent/task_create；闸顺序：供给→有界→预算→委托链）
+  // 供给闸（23 号方案 §3.1/INV-C11）：有效上限 = ceil(derive_cap × supply_factor) 取严；
+  // factor=0 tick 路径静默跳过、显式路径报 E_CAMPAIGN_LLM_EXHAUSTED（人工 dashboard 放行见 invariant）。
+  async function dispatchDrafts(c, drafts, repo, { explicit = false, supplyFactor = 1, supplyBounded = false, supplyMembers = [] } = {}) {
     const result = { derived: 0, deduped: 0, dropped: [], events: [] }
     if (!drafts.length) return result
     const policy = c.policy || {}
-    const cap = Number(policy.derive_cap_per_tick) > 0 ? Math.floor(Number(policy.derive_cap_per_tick)) : 5
+    let cap = Number(policy.derive_cap_per_tick) > 0 ? Math.floor(Number(policy.derive_cap_per_tick)) : CAMPAIGN_DERIVE_CAP_PER_TICK
+    if (supplyFactor <= 0) {
+      if (explicit) throwErr('E_CAMPAIGN_LLM_EXHAUSTED', `专项 #${c.id} 派生被供给闸拦截：LLM 池额度熔断中`, 'LLM 池额度熔断中，Bellkeeper 探针恢复后自动回弹；人工紧急派生可经 dashboard 放行', true)
+      result.dropped.push({ reason: 'llm_exhausted' })
+      return result
+    }
+    if (supplyBounded) cap = Math.min(cap, 2)
+    if (supplyFactor < 1) {
+      const scaled = Math.max(1, Math.ceil(cap * supplyFactor))
+      if (scaled < cap) result.dropped.push({ reason: 'supply_factor', from: cap, to: scaled, supply_factor: supplyFactor })
+      cap = scaled
+    }
     const maxActive = Number(policy.max_active_tasks) > 0 ? Math.floor(Number(policy.max_active_tasks)) : 20
     const activeCount = repo.activeCampaignTaskCount(c.id)
     if (activeCount >= maxActive) {
@@ -1328,11 +1555,20 @@ function makeHandlers(opts) {
       const programId = String(d.program_id || c.program_ids[0] || '')
       const sit = await campaignSituationOk(programId, d.host)
       if (!sit.ok) { result.dropped.push({ strategy_key: d.strategy_key || null, code: sit.code, message: sit.message }); continue }
+      // 23 号方案 §3.7：任务分档标注（Path B 纯元数据）；selector=dsh 时附 model_hint（Path A）
+      let hint = null
+      if (supplyEnv.modelSelector === 'dsh' && Array.isArray(supplyMembers) && supplyMembers.length) {
+        hint = selectCampaignModel({
+          task_class: d.task_class, members: supplyMembers, strategy: supplyEnv.modelStrategy,
+          mainModel: supplyEnv.modelMain, fallbacks: supplyEnv.modelFallbacks, flashliteFirst: supplyEnv.flashliteFirst,
+        })
+      }
       const args = {
         program_id: programId, kind: d.kind, host: d.host, path: d.path, param: d.param,
         vuln_class: d.vuln_class, level: d.level, rationale: d.rationale,
         oracle: d.oracle, strategy_key: d.strategy_key,
-        campaign_id: c.id, campaign_role: d.campaign_role,
+        campaign_id: c.id, campaign_role: d.campaign_role, task_class: d.task_class,
+        ...(hint && hint.model ? { model_hint: hint.model, model_channel: hint.channel, model_reason: hint.reason } : {}),
       }
       try {
         const r = await dispatchRef('task', 'derive_intent', args, { actor: 'reactor' })
@@ -1377,6 +1613,20 @@ function makeHandlers(opts) {
           repo.updateCampaign(c.id, { status: 'reviewing' }, 'active')
           const cp = writeCheckpoint(repo, c.id, 'stop_condition', `停止条件命中（${a.reason}），转 reviewing 待人审（不自动 archive）`, { reason: a.reason })
           events.push(...cp.events); summary.escalated++
+        } else if (a.kind === 'budget_extend') {
+          // 23 号方案 §3.6：Supervisor 自动提请预算延长（request_actors 含 scheduler，tick 路径合规）
+          try {
+            if (!dispatchRef) throw new Error('总线 dispatch 不可达')
+            const r = await dispatchRef('approval', 'request', {
+              kind: 'campaign-budget-extend', subject: c.name,
+              payload: { campaign_id: c.id, add_tokens: a.add },
+              evidence: `专项 #${c.id}「${c.name}」窗口预算已用 ${a.spent}/${c.budget_tokens}（≥80%），自动提请延长 +${a.add} tokens（≤原预算×2），批准后平滑爬坡至下一档。`,
+            }, { actor: 'scheduler' })
+            if (r && r.ok) {
+              const cp = writeCheckpoint(repo, c.id, 'budget_extend_request', `预算达 80% 水位，已自动提请 campaign-budget-extend（+${a.add} tokens）`, { add_tokens: a.add, spent: a.spent, request_id: r.data?.request_id ?? null })
+              events.push(...cp.events)
+            } else log(`专项 #${c.id} 预算延长提请未成功: ${r?.error?.code} ${r?.error?.message}`)
+          } catch (e) { log(`专项 #${c.id} 预算延长提请失败: ${e?.message}`) }
         }
       }
     } catch (e) { summary.skipped.push({ step: 'supervisor', error: String(e?.message || e) }) }
@@ -1412,17 +1662,31 @@ function makeHandlers(opts) {
         writeCheckpoint(repo, c.id, 'learn_gap', `反复 rework ${reworks.length} 次（类 ${vulnClass}），已登记 know 检索缺口（surface=${surface}）`, { reworks: reworks.length, vuln_class: vulnClass })
       }
     } catch (e) { summary.skipped.push({ step: 'learnlink', error: String(e?.message || e) }) }
+    // 2.7) 供给哨兵（23 号方案 §3.1）：tick 顺带拉取 pool-secagent 供给，算 supply_factor
+    let supply = { enabled: false, supply_factor: 1.0, bounded: false, detail: [], members: [] }
+    try {
+      supply = await evaluateSupply()
+      summary.supply_factor = supply.supply_factor
+      events.push(...recordSupplyTransition(repo, c, supply))
+    } catch (e) { summary.skipped.push({ step: 'supply', error: String(e?.message || e) }) }
     // 3) Planner + Dispatcher（autonomy≥1 且 active）
     if (c.status === 'active' && Number(c.autonomy) >= 1) {
       try {
-        const inputs = await gatherPlanInputs(c, repo)
-        const plan = compileCampaignPlan({ campaign: c, ...inputs })
-        summary.skipped.push(...plan.skipped.map((s) => ({ step: 'planner', ...s })))
-        if (Number(c.autonomy) >= 2 && plan.drafts.length) {
-          const res = await dispatchDrafts(c, plan.drafts, repo, { explicit: false })
-          summary.derived += res.derived; summary.deduped += res.deduped; summary.dropped += res.dropped.length
-          summary.autonomous = true
-          events.push(...res.events)
+        if (supply.supply_factor <= 0) {
+          // INV-C11：供给归零 ⇒ tick 路径静默跳过派生（checkpoint 已留痕），验收不烧额度照常
+          summary.skipped.push({ step: 'planner', reason: 'llm_exhausted' })
+        } else {
+          const inputs = await gatherPlanInputs(c, repo)
+          const plan = compileCampaignPlan({ campaign: c, ...inputs })
+          summary.skipped.push(...plan.skipped.map((s) => ({ step: 'planner', ...s })))
+          if (Number(c.autonomy) >= 2 && plan.drafts.length) {
+            const res = await dispatchDrafts(c, plan.drafts, repo, {
+              explicit: false, supplyFactor: supply.supply_factor, supplyBounded: supply.bounded, supplyMembers: supply.members,
+            })
+            summary.derived += res.derived; summary.deduped += res.deduped; summary.dropped += res.dropped.length
+            summary.autonomous = true
+            events.push(...res.events)
+          }
         }
       } catch (e) { summary.skipped.push({ step: 'planner', error: String(e?.message || e) }) }
     }
@@ -1561,6 +1825,8 @@ function makeHandlers(opts) {
       if (!c) return { code: 'E_CAMPAIGN_STATE', message: `专项不存在: ${args.campaign_id}`, hint: '核对 campaign_list 里的 id', retryable: false }
       if (c.status === 'archived') return { code: 'E_CAMPAIGN_STATE', message: '归档专项不可派生', hint: '撤档专项不再下发（INV-C9 终态只读）', retryable: false }
       if (c.status === 'draft') return { code: 'E_CAMPAIGN_STATE', message: '草稿专项不可派生，先 campaign_activate', hint: 'draft → active 后方可派生', retryable: false }
+      // 23 号方案 §3.1/INV-C11：供给闸在 handler（dispatchDrafts）执行——显式路径报
+      // E_CAMPAIGN_LLM_EXHAUSTED（retryable:true），dashboard 人工紧急派生放行。此处不重复观测。
       const drafts = Array.isArray(args.drafts) ? args.drafts : []
       if (!drafts.length) return { code: 'E_SCHEMA', message: 'drafts 至少 1 条', hint: '传编译后的草稿数组', retryable: false }
       for (const d of drafts) {
@@ -1647,6 +1913,8 @@ function makeHandlers(opts) {
         campaign_id: args.campaign_id ?? null,
         campaign_role: args.campaign_role ?? null,
         strategy_key: args.strategy_key ?? null,
+        task_class: args.task_class ?? null,
+        model_hint: args.model_hint ?? null,
       })
       const payload = {
         task_id: id, program_id: programId, phase: args.phase || '', objective_head: String(args.objective || '').slice(0, 80),
@@ -1938,6 +2206,9 @@ function makeHandlers(opts) {
         ...(args.campaign_id != null ? { campaign_id: args.campaign_id } : {}),
         ...(args.campaign_role ? { campaign_role: args.campaign_role } : {}),
         strategy_key: bare,
+        // 23 号方案 §3.7：分档标注随子任务落库；Path A 时 model_hint 一并不发（Bellkeeper 按 hint 路由）
+        task_class: args.task_class || classifyTaskClass({ kind: args.kind, vuln_class: args.vuln_class || '' }),
+        ...(args.model_hint ? { model_hint: args.model_hint } : {}),
         // 22 号方案：Campaign 子任务以 once 调度入队，才被调度器认领执行（调度器只认领 schedule_kind 非空）。
         // 21 号「无主派生」草稿仍保持 NULL（queued 待人工/编排 run_now）；INV-C7 只禁 interval。
         ...(args.campaign_id != null ? { schedule: { kind: 'once', at: Date.now() + 3000 } } : {}),
@@ -1958,13 +2229,16 @@ function makeHandlers(opts) {
       const mode = String(args.mode || 'single')
       const programIds = (Array.isArray(args.program_ids) ? args.program_ids : []).map(String)
       const goalSpec = args.goal_spec && typeof args.goal_spec === 'object' ? args.goal_spec : {}
+      const autonomy = Number(args.autonomy) || 0
       const policy = Object.assign({
-        derive_cap_per_tick: 5, max_active_tasks: 20, task_priority_range: [1, 6], allowed_phases: ['vuln'],
+        derive_cap_per_tick: CAMPAIGN_DERIVE_CAP_PER_TICK, max_active_tasks: 20, task_priority_range: [1, 6], allowed_phases: ['vuln'],
       }, (args.policy && typeof args.policy === 'object') ? args.policy : {})
+      // 23 号方案 §3.6：新建专项默认 2M/7d（L2 仍须显式预算 INV-C4，不在此兜底）
+      const budgetTokens = args.budget_tokens != null ? args.budget_tokens : (autonomy < 2 ? CAMPAIGN_DEFAULT_BUDGET_TOKENS : null)
       const id = repo.insertCampaign({
         name: String(args.name), mode, program_ids: programIds, goal_spec: goalSpec,
-        autonomy: Number(args.autonomy) || 0, policy, status: 'draft',
-        budget_tokens: args.budget_tokens ?? null, budget_window_days: args.budget_window_days ?? 7,
+        autonomy, policy, status: 'draft',
+        budget_tokens: budgetTokens, budget_window_days: args.budget_window_days ?? 7,
         approval_id: args.approval_id ?? null, heartbeat_at: Date.now(),
         created_by: String(ctx?.actor || 'system'),
       })
@@ -2045,10 +2319,18 @@ function makeHandlers(opts) {
       return { data: { campaign_id: c.id, status: patch.status || c.status, goal_changed: goalChanged }, events }
     },
 
-    campaign_dispatch: async (args, repo) => {
+    campaign_dispatch: async (args, repo, ctx) => {
       const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
       if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
-      const res = await dispatchDrafts(c, Array.isArray(args.drafts) ? args.drafts : [], repo, { explicit: true })
+      // 供给因子用于有界折算；dashboard 人工放行时不折算（紧急派生通道，与预算闸同款）
+      let supplyFactor = 1; let supplyBounded = false; let supplyMembers = []
+      if (ctx?.actor !== 'dashboard') {
+        try {
+          const supply = await evaluateSupply()
+          supplyFactor = supply.supply_factor; supplyBounded = supply.bounded; supplyMembers = supply.members
+        } catch { /* fail-open：显式路径观测异常不折算 */ }
+      }
+      const res = await dispatchDrafts(c, Array.isArray(args.drafts) ? args.drafts : [], repo, { explicit: true, supplyFactor, supplyBounded, supplyMembers })
       return {
         data: { campaign_id: c.id, derived: res.derived, deduped: res.deduped, dropped: res.dropped },
         events: res.events,
@@ -2321,6 +2603,7 @@ function makeHandlers(opts) {
           budget_window_days: c.budget_window_days, heartbeat_at: c.heartbeat_at, last_tick_at: c.last_tick_at,
           created_at: c.created_at, updated_at: c.updated_at, decision_totals: agg,
           objective: c.goal_spec.objective || '',
+          supply: supplyBadge(repo, c.id),
         }
       })
       return { rows, total }
@@ -2340,6 +2623,7 @@ function makeHandlers(opts) {
         created_by: c.created_by, created_at: c.created_at, updated_at: c.updated_at, archived_at: c.archived_at,
         decisions, active_tasks: activeTasks.map((t) => ({ id: t.id, objective: t.objective, status: t.status, campaign_role: t.campaign_role, priority: t.priority, program_id: t.program_id })),
         checkpoints,
+        supply: supplyBadge(repo, c.id),
       }
     },
     campaign_progress: async (args, repo) => {

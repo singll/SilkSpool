@@ -1039,3 +1039,50 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 | P2 spent_tokens=0 | worker 未上报 token | 未修（worker 侧），预算闸仍按 150k/草稿预估 |
 
 新增契约：Planner 前进到新缺口、infra→escalated 不计连败、rework 重开冷却、维度多样性、attempted 跳过。
+
+### 7.10 2026-09-23 23 号方案回填（LLM 供给联动调速 + 任务级选模型）
+
+> 设计真相源：[23-llm-supply-throttle](23-llm-supply-throttle.md)。本节为实现态回填（本地全量契约 575/575；csai 已部署，accept PASS=72）。**不新增域**：供给调速是 task 域内 Supervisor 的第六信号 + Dispatcher 的一道前置闸；Bellkeeper 侧只读其现有管理面 API。
+
+#### 7.10.1 组件（均在 task 域内）
+
+- **LlmSupplyWatch（供给哨兵）**：tick 顺带采集 `GET /api/llm/groups/status`（pool-secagent 成员权重/可用性/健康）× `GET /api/llm/channels/status`（rpd 桶余量），按 `SEC_CAMPAIGN_POOL_MEMBERS` 过滤合并为 members 快照；进程内 60s 缓存防抖动，观测失败累计连续失败计数。
+- **`decideThrottle(members, opts)`（规则层纯函数，rules-hypothesis）**：确定性可重放，输出 `supply_factor ∈ {0, slowFactor(默认 0.4), 1.0}` + `detail[]`。
+- **`classifyTaskClass(input)` / `selectCampaignModel(input)`（纯函数）**：任务分档（lite/std/heavy）+ 分档选模型（Path A 用）。
+
+#### 7.10.2 供给规则（§3.1）与 INV
+
+| 规则 | supply_factor | 语义 |
+|---|---|---|
+| 全部成员 open / quota_exhausted 熔断 / 不可用 | **0** | 停派：L2→L1 降级 + checkpoint(llm_throttled)，在跑子任务不动 |
+| 主力成员（weight ≥ `SEC_CAMPAIGN_SUPPLY_MAIN_WEIGHT`，默认 4）熔断，兜底可用 | **0.4** | 降速：`derive_cap = ceil(cap × factor)`，checkpoint |
+| 主力可用但 daily 桶余量 < `SEC_CAMPAIGN_SUPPLY_WARN_RATIO`（默认 15%） | **0.4** | 预防性降速 |
+| 其余 | **1.0** | 全速；从 <1 回弹时 checkpoint(llm_restored) |
+| 观测失败（超时/不可达）连续 < `SEC_CAMPAIGN_SUPPLY_PROBE_MAX`（默认 3） | **1.0 有界** | fail-open 但 `derive_cap ≤ 2` + checkpoint(llm_probe_failed) |
+| 观测失败连续 ≥ 3 | **0** | fail-closed 停派 |
+
+| ID | 内容 | 错误码 |
+|---|---|---|
+| INV-C11 | 派生前供给闸：factor=0 ⇒ tick 路径静默跳过（checkpoint 可观测），显式路径报错（dashboard 人工紧急派生放行） | `E_CAMPAIGN_LLM_EXHAUSTED`（retryable） |
+| INV-C12 | 供给观测失败两阶段：先 fail-open 有界降速，连续 3 tick 失败转 fail-closed | — |
+
+#### 7.10.3 接线点与数据
+
+- `runCampaignTick`：Supervisor/Reviewer/LearnLink 之后、Planner 之前评估供给；factor=0 跳过派生段（验收不烧额度照常）；factor<1 时把 `supplyFactor/supplyBounded/supplyMembers` 传给 Dispatcher。
+- `dispatchDrafts`：有效上限 = `ceil(derive_cap × supply_factor)`，观测失败时再 `min(cap, 2)`；factor=0 显式路径 `E_CAMPAIGN_LLM_EXHAUSTED`。
+- `campaign_dispatch` handler：显式路径同过供给闸；`actor=dashboard` 不折算（与预算闸同款人工通道）。
+- 无新表：调速历史全部走 `campaign_checkpoints`，新增 kind `llm_throttled` / `llm_restored` / `llm_probe_failed` / `budget_extend_request`（payload 存成员健康快照）；factor=0 首次发 `task.campaign.escalated`（幂等防抖）。
+- **任务级选模型（§3.7）**：派生草稿/子任务带 `task_class`（lite/std/heavy，`compileCampaignPlan` 与 `sanitizeDraft` 自动分档）；`SEC_CAMPAIGN_MODEL_SELECTOR=dsh` 时另带 `model_hint`（Path A）。默认 `bellkeeper`（Path B，纯标注交 Bellkeeper 侧策略路由）。`SEC_CAMPAIGN_MODEL_STRATEGY=weight` 一键回退纯权重链。
+- **预算自动爬坡（§3.6 步骤 1.5）**：Supervisor 在窗口用量达 80% 水位时经 `approval_request(kind=campaign-budget-extend)` 自动提请延长（`+budget`，≤原预算×2），12h checkpoint 防抖 + approval 同 (kind,subject) pending 去重双保险。
+- 看板：`campaign_list` / `campaign_get` 行附 `supply` 徽章（normal/slow/stop/probe_failed/unknown，从最近供给 checkpoint 反推）。
+
+#### 7.10.4 统一额度面（§3.6，dsh `.env` 单区块）
+
+`parseCampaignSupplyEnv(env)` 确定性解析（契约钉死），键：`SEC_CAMPAIGN_SUPPLY_GATE` / `SEC_CAMPAIGN_POOL_MEMBERS` / `SEC_CAMPAIGN_SUPPLY_MAIN_WEIGHT` / `SEC_CAMPAIGN_SUPPLY_WARN_RATIO` / `SEC_CAMPAIGN_SUPPLY_SLOW_FACTOR` / `SEC_CAMPAIGN_SUPPLY_PROBE_TIMEOUT_MS` / `SEC_CAMPAIGN_SUPPLY_PROBE_MAX` / `SEC_CAMPAIGN_DERIVE_CAP_PER_TICK` / `SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT` / `SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS` / `SEC_CAMPAIGN_MODEL_STRATEGY` / `SEC_CAMPAIGN_MODEL_MAIN` / `SEC_CAMPAIGN_MODEL_MAIN_FALLBACK` / `SEC_CAMPAIGN_FLASHLITE_FIRST` / `SEC_CAMPAIGN_MODEL_SELECTOR`。无凭据（`BELLKEEPER_LLM_API_KEY` 缺失且未显式 `SEC_CAMPAIGN_LLM_URL`）时供给闸自动禁用（等效 factor=1.0，不触网）。
+
+#### 7.10.5 已知未实现（Phase C 待办）
+
+- **Bellkeeper 侧组策略升级（§2.5 Path B 承接）**：pool-secagent 按 `task_class` 分档路由 + 首选熔断顺延未实施——需 Bellkeeper 路由代码变更（现仅支持 `X-Task-Type` / `X-Task-Complexity` 头）；dsh 侧已带 `task_class` 元数据待接线。
+- **v3 Bellkeeper 前置（步骤 0.5）**：sensenova-secagent 渠道加 `deepseek-v4.1-flash` 并入池（权重 7）未做（现池为 flash-lite 6 / glm-5.2 5 / ds-v4-flash 4）。
+- **Path A（`SEC_CAMPAIGN_MODEL_SELECTOR=dsh`）**：`model_hint` 已随任务落库，但调度器 spawn worker 尚未按 hint 指定模型（当前 worker 用任务 `provider/model` 字段；后续可把 hint 写入 `model`）。
+- **spent_tokens=0**：worker 未上报 token（worker 侧），预算闸仍按预估 token 记账。

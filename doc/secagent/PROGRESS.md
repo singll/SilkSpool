@@ -17,6 +17,15 @@
 
 ## 二、最近进度结果
 
+### 2026-09-23 · 23 号方案落地：LLM 供给联动调速 + 任务级选模型（本地契约 575/575）
+- **供给哨兵 LlmSupplyWatch（task 域内）**：tick 顺带读 Bellkeeper `groups/status`（成员权重/健康）× `channels/status`（rpd 桶余量），规则层 `decideThrottle` 纯函数算 `supply_factor ∈ {0, 0.4, 1.0}`；`dispatchDrafts` 有效上限 = `ceil(derive_cap × factor)`（观测失败再 `min(cap,2)`），factor=0 时 tick 跳过派生、显式路径报 `E_CAMPAIGN_LLM_EXHAUSTED`（dashboard 放行）。供给归零 L2→L1（不回弹，防震荡）。
+- **INV-C11/C12**：派生前供给闸 + 观测失败两阶段（先 fail-open 有界降速，连续 3 tick 转 fail-closed）；checkpoint 新增 `llm_throttled`/`llm_restored`/`llm_probe_failed`/`budget_extend_request`。
+- **统一额度面（§3.6）**：`parseCampaignSupplyEnv` 集中解析 dsh `.env` 区块（成员表/权重门槛/降速比例/probe/derive_cap 8/预估 30k/默认预算 2M/模型策略）；无凭据时供给闸自动禁用（不触网）。
+- **任务级选模型（§3.7）**：`classifyTaskClass`（lite/std/heavy）+ `selectCampaignModel`（lite→flash-lite / heavy→glm-5.2→Go v4.1 / std→主力）；派生草稿/子任务带 `task_class`（Path B 元数据），`selector=dsh` 时带 `model_hint`（Path A）。
+- **预算自动爬坡（步骤 1.5）**：Supervisor 窗口用量达 80% 自动提请 `campaign-budget-extend`（+budget，12h checkpoint 防抖）。
+- **看板**：专项卡片增供给三态徽章（正常绿/降速黄/停派红/观测异常黄）。
+- 验收：本地全量契约 **575/575**（rules +12、task +8）、ui-task 单测 14/14；已部署 csai（`bundle dsh setup` + 重启 NRestarts=0 + `sec-v5-accept.sh --ui-headless` **PASS=72 FAIL=0**）；线上实测 `campaign_tick` 返回 `supply_factor=1`、正常派生，.env 统一额度面区块已落位。Bellkeeper 侧步骤 0.5（sensenova v4.1-flash 入池）与 2.5（组策略按 task_class 路由）仍待实施，已在 [05-task §7.10.5](05-task.md) 标注。详见 [05-task §7.10](05-task.md)、[16-dashboard](16-dashboard.md)。
+
 ### 2026-09-23 · Campaign 运行期卡点修复（P0–P2）+ 运营复跑
 - **P0-1 去重锁死**：Planner 现跳过已尝试策略并前进到新缺口（`strategy_dedupe` 增 `reopen_after`）——修复「首轮后空转 7h」。
 - **P0-2 infra 误判**：宿主重启/超时回收的 failed 改判 `escalated`（不计 strategy 连败/不触发 fail-rate 降级）；#2 误降级后已重升 L2。
