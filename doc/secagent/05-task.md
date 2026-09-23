@@ -1080,9 +1080,10 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 
 `parseCampaignSupplyEnv(env)` 确定性解析（契约钉死），键：`SEC_CAMPAIGN_SUPPLY_GATE` / `SEC_CAMPAIGN_POOL_MEMBERS` / `SEC_CAMPAIGN_SUPPLY_MAIN_WEIGHT` / `SEC_CAMPAIGN_SUPPLY_WARN_RATIO` / `SEC_CAMPAIGN_SUPPLY_SLOW_FACTOR` / `SEC_CAMPAIGN_SUPPLY_PROBE_TIMEOUT_MS` / `SEC_CAMPAIGN_SUPPLY_PROBE_MAX` / `SEC_CAMPAIGN_DERIVE_CAP_PER_TICK` / `SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT` / `SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS` / `SEC_CAMPAIGN_MODEL_STRATEGY` / `SEC_CAMPAIGN_MODEL_MAIN` / `SEC_CAMPAIGN_MODEL_MAIN_FALLBACK` / `SEC_CAMPAIGN_FLASHLITE_FIRST` / `SEC_CAMPAIGN_MODEL_SELECTOR`。无凭据（`BELLKEEPER_LLM_API_KEY` 缺失且未显式 `SEC_CAMPAIGN_LLM_URL`）时供给闸自动禁用（等效 factor=1.0，不触网）。
 
-#### 7.10.5 已知未实现（Phase C 待办）
+#### 7.10.5 落地补充（2026-09-23 第二轮）
 
-- **Bellkeeper 侧组策略升级（§2.5 Path B 承接）**：pool-secagent 按 `task_class` 分档路由 + 首选熔断顺延未实施——需 Bellkeeper 路由代码变更（现仅支持 `X-Task-Type` / `X-Task-Complexity` 头）；dsh 侧已带 `task_class` 元数据待接线。
-- **v3 Bellkeeper 前置（步骤 0.5）**：sensenova-secagent 渠道加 `deepseek-v4.1-flash` 并入池（权重 7）未做（现池为 flash-lite 6 / glm-5.2 5 / ds-v4-flash 4）。
-- **Path A（`SEC_CAMPAIGN_MODEL_SELECTOR=dsh`）**：`model_hint` 已随任务落库，但调度器 spawn worker 尚未按 hint 指定模型（当前 worker 用任务 `provider/model` 字段；后续可把 hint 写入 `model`）。
+- **v3 Bellkeeper 前置（步骤 0.5，已上线）**：sensenova-secagent 渠道加 `deepseek-v4.1-flash`；pool-secagent 权重序列改为 v4.1-flash 7 → glm-5.2 6 → flash-lite 5 → ds-v4-flash 4（DB API + YAML 种子 `config/bellkeeper.yaml` 同步）；直调/组冒烟 200。
+- **分档路由（步骤 2.5，已上线）**：新建 Bellkeeper 模型组 `pool-secagent-lite`（flash-lite 优先）/ `pool-secagent-heavy`（glm-5.2 + v4.1-flash），token `silksecagent` 的 `allowed_groups` 放行；dsh `SEC_CAMPAIGN_CLASS_GROUPS=lite:pool-secagent-lite,std:pool-secagent,heavy:pool-secagent-heavy` 按 `task_class` 映射组名——等价「按 task_class 分档路由 + 组内熔断顺延」，无需改 Bellkeeper 路由代码。线上验证：lite 任务命中 flash-lite、heavy 命中 glm-5.2。
+- **Path A（步骤 5，已上线）**：`SEC_CAMPAIGN_MODEL_SELECTOR=dsh` 时派生任务落 `provider=bellkeeper` + `model=<组/模型>`；调度器 `exec.spawn_worker` 经 `model-patch.yml` 注入，线上实测 worker 收到 `{provider:bellkeeper, model:pool-secagent-heavy}`。
+- **kimi-code 入池（步骤 4）**：评估结论 **暂不入池**（编码专用 task_types + 5h/7d 不可预测窗口），复评条件见 [23 号文档 §五.6](23-llm-supply-throttle.md)。
 - **spent_tokens=0**：worker 未上报 token（worker 侧），预算闸仍按预估 token 记账。

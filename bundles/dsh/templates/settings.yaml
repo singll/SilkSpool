@@ -21,10 +21,28 @@ llm-pi-ai:
           maxTokens: 131072
           reasoningEfforts:
             {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
+        - id: pool-secagent-lite
+          name: SilkSecAgent 轻任务池（flash-lite 专属积分优先；23 号方案 task_class=lite）
+          contextWindow: 1048576
+          maxTokens: 131072
+          reasoningEfforts:
+            {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
+        - id: pool-secagent-heavy
+          name: SilkSecAgent 重任务池（glm-5.2 + v4.1-flash；23 号方案 task_class=heavy）
+          contextWindow: 1048576
+          maxTokens: 131072
+          reasoningEfforts:
+            {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
         - id: sensenova-6.8-flash-lite
           name: SenseNova 6.8 Flash Lite（256K 专属积分）
           contextWindow: 262144
           maxTokens: 65536
+          reasoningEfforts:
+            {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
+        - id: deepseek-v4.1-flash
+          name: DeepSeek V4.1 Flash（SenseNova 主力 / OpenCode Go 兜底）
+          contextWindow: 1048576
+          maxTokens: 131072
           reasoningEfforts:
             {"off": none, minimal: low, low: low, medium: medium, high: high, xhigh: high, max: high}
         - id: deepseek-v4-flash

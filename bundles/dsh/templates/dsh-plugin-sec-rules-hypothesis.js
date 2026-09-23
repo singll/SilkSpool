@@ -763,10 +763,12 @@ export function selectCampaignModel(input = {}) {
   if (strategy === 'weight') return { task_class: taskClass, model: '', channel: '', reason: 'weight_chain' }
   const members = (Array.isArray(input.members) ? input.members : []).filter((m) => m && !memberSupplyState(m).down)
   const pick = (pred) => members.find((m) => pred(String(m.model || ''), String(m.channel || m.name || '')))
-  const mainModel = String(input.mainModel || 'ds-v4.1-flash')
-  const fallbacks = Array.isArray(input.fallbacks)
+  // 模型名归一：env 里常用简写 ds-*，实际成员模型为 deepseek-*（两形态都匹配）
+  const norm = (s) => String(s || '').trim().toLowerCase().replace(/^ds-/, 'deepseek-')
+  const mainModel = norm(input.mainModel || 'deepseek-v4.1-flash')
+  const fallbacks = (Array.isArray(input.fallbacks)
     ? input.fallbacks.map(String)
-    : String(input.fallbacks || '').split(',').map((s) => s.trim()).filter(Boolean)
+    : String(input.fallbacks || '').split(',').map((s) => s.trim()).filter(Boolean)).map(norm)
   const flashliteFirst = input.flashliteFirst !== false
 
   if (taskClass === 'lite' && flashliteFirst) {
@@ -774,13 +776,13 @@ export function selectCampaignModel(input = {}) {
     if (fl) return { task_class: taskClass, model: fl.model, channel: fl.channel || fl.name, reason: 'lite_flashlite' }
   }
   if (taskClass === 'heavy') {
-    const heavy = pick((model) => model === 'glm-5.2') || pick((model, ch) => /v4\.1-flash/.test(model) && /opencode-go/i.test(ch))
+    const heavy = pick((model) => norm(model) === 'glm-5.2') || pick((model, ch) => /v4\.1-flash/.test(norm(model)) && /opencode-go/i.test(ch))
     if (heavy) return { task_class: taskClass, model: heavy.model, channel: heavy.channel || heavy.name, reason: 'heavy_strong' }
   }
-  const main = pick((model) => model === mainModel)
+  const main = pick((model) => norm(model) === mainModel)
   if (main) return { task_class: taskClass, model: main.model, channel: main.channel || main.name, reason: 'main' }
   for (const f of fallbacks) {
-    const m = pick((model) => model === f)
+    const m = pick((model) => norm(model) === f)
     if (m) return { task_class: taskClass, model: m.model, channel: m.channel || m.name, reason: 'fallback' }
   }
   const any = members[0]

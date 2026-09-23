@@ -2,7 +2,7 @@
 
 > 日期：2026-09-22（v2 修订：补 SenseNova 双积分池实测口径 + OpenCode Go v4.1-flash 入池 + 统一额度面）
 > **v3 修订（2026-09-23）**：① SenseNova 渠道与 OpenCode Go 均已支持 `deepseek-v4.1-flash`，并升格为 **SenseNova 主力模型**（替代 glm-5.2 的默认主力位）；② 直面「Bellkeeper 只管额度、单一模型链条」现状的不足，新增 **任务级智能选模型**（§3.7）：专项派发时按任务强度/复杂度 × 各模型可用性 × 积分池/美元额度自主选模型——dsh 有选模型能力则派生负载带 model_hint，否则交 Bellkeeper LLM 侧策略路由（Path A/B 两路径）。
-> 性质：**已落地（实现态，2026-09-23）**——task 域内调速组件（LlmSupplyWatch / `decideThrottle` / 任务分档选模型 / 统一额度面 / 看板供给徽章 / 预算自动爬坡）完成并部署 csai（本地全量契约 575/575；accept PASS=72 FAIL=0；线上 `campaign_tick` 返回 `supply_factor=1`）；回填见 [05-task §7.10](05-task.md) 与 [16-dashboard](16-dashboard.md)。**仍待实施**：Bellkeeper 侧步骤 0.5（sensenova `deepseek-v4.1-flash` 入池）与步骤 2.5（组策略按 `task_class` 路由），Path A（`SEC_CAMPAIGN_MODEL_SELECTOR=dsh` 的 worker 侧 model_hint 指定），详见 §四与 05-task §7.10.5。
+> 性质：**已全量落地（实现态，2026-09-23）**——task 域内调速组件（LlmSupplyWatch / `decideThrottle` / 任务分档选模型 / 统一额度面 / 看板供给徽章 / 预算自动爬坡）完成并部署 csai（本地全量契约 575/575；accept PASS=72 FAIL=0；线上 `campaign_tick` 返回 `supply_factor=1`）；**步骤 0.5**（Bellkeeper sensenova 加 `deepseek-v4.1-flash` 权重 7 入池）、**步骤 2.5**（配置化 `pool-secagent-lite`/`pool-secagent-heavy` 分档组 + dsh `task_class` 映射）、**步骤 5 Path A**（worker `model-patch` 指定模型）均已落地并线上验证；**步骤 4** kimi-code 入池评估结论见 §五.6。回填见 [05-task §7.10](05-task.md) 与 [16-dashboard](16-dashboard.md)。
 > 动机：22 号方案的 Campaign 专项是常驻持续推进实体（L1/L2 自动派生），其执行面全部经 Bellkeeper `pool-secagent` 消耗 LLM 额度。池成员的套餐有独立额度窗口（SenseNova 滚动 5h/周双积分池、OpenCode Go $12/5h+$30/周+$60/月美元额度、deepseek-secagent 500 rpd），额度耗尽时渠道熔断。**专项若无视供给状态继续派生，会批量产生失败任务**（烧窗口预算、污染连败黑名单、触发错误降级）。
 > 上游：[archive/22-campaign-task-2026-09-22.md](archive/22-campaign-task-2026-09-22.md)（Campaign 本体）；[17-llm-surface.md](17-llm-surface.md)（模型层零改动纪律）。
 > 总原则：**不新增域**；供给调速是 task 域内 Supervisor 的第六信号 + Dispatcher 的一道前置闸。Bellkeeper 侧原则上只读其现有 API；**v3 例外收窄**：仅允许 Bellkeeper 配置面变更（渠道/池成员表、pool-secagent 组策略，走其 DB API），不动其路由/熔断/计费代码路径（§3.7 Path B）。
@@ -132,11 +132,14 @@ SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT=30000 # 草稿预估（既存，统一迁
 SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS=2000000  # 新建专项默认窗口预算（v2：500k→2M/7d）
 # --- v3 新增：任务级智能选模型（§3.7） ---
 SEC_CAMPAIGN_MODEL_STRATEGY=auto            # auto=按任务分档+额度自主选；weight=退回旧纯权重链（回滚用）
-SEC_CAMPAIGN_MODEL_MAIN=ds-v4.1-flash       # SenseNova 主力模型（v3 升格）
-SEC_CAMPAIGN_MODEL_MAIN_FALLBACK=glm-5.2,ds-v4-flash  # 主力熔断时的池内顺延序
+SEC_CAMPAIGN_MODEL_MAIN=deepseek-v4.1-flash # SenseNova 主力模型（v3 升格）
+SEC_CAMPAIGN_MODEL_MAIN_FALLBACK=glm-5.2,deepseek-v4-flash  # 主力熔断时的池内顺延序
 SEC_CAMPAIGN_FLASHLITE_FIRST=on             # 轻任务优先烧 Flash-Lite 专属池（赚 1:1 返赠）
-SEC_CAMPAIGN_MODEL_SELECTOR=bellkeeper      # dsh=dsh 派生负载带 model_hint（Path A）；bellkeeper=Bellkeeper 侧策略路由（Path B，先落地）
+SEC_CAMPAIGN_MODEL_SELECTOR=dsh             # dsh=派生负载带 provider+model（Path A）；bellkeeper=仅标注 task_class 交 Bellkeeper 侧路由
+SEC_CAMPAIGN_CLASS_GROUPS=lite:pool-secagent-lite,std:pool-secagent,heavy:pool-secagent-heavy  # task_class → Bellkeeper 模型组（分档路由 + 组内熔断顺延）
 ```
+
+> **v3.1 实现说明（2026-09-23 落地）**：Path B 以 **配置化模型组**承接——Bellkeeper 新建 `pool-secagent-lite`（flash-lite 优先）/ `pool-secagent-heavy`（glm-5.2+v4.1-flash）两个模型组，dsh 按 `task_class` 映射组名并作为 `model` 下发（Path A 的 worker `model-patch` 通道），组内保留健康过滤 + 熔断顺延，等价实现「按 task_class 分档路由 + 首选熔断顺延」且**无需改动 Bellkeeper 路由代码**。`SEC_CAMPAIGN_MODEL_SELECTOR=bellkeeper` 时仅带 `task_class` 元数据，交 Bellkeeper 侧策略（需其路由代码支持 `X-Task-Class`，尚未实施）。
 
 **campaign 窗口预算调高路径（v2，尊重既有校验）**：新建专项默认 2M/7d（`SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS`，campaign_create 缺省读取）。**存量专项不走破例直改**——`campaign-budget-extend` 的 validate 铁律（spent ≥ 80% 才准延长、单次 ≤ 原预算×2）是防囤预算设计，保留不动。配套小增强（步骤 1.5）：Supervisor 在 `budget_low` checkpoint 时**自动提请** campaign-budget-extend（request_actors 已含 scheduler，tick 路径天然合规）——在跑的两个专项（500k）到达 400k 水位即自动 +1M → 1.5M → 后续平滑爬坡至 2M+，全程审批留痕、零人工介入。
 
@@ -196,3 +199,5 @@ SEC_CAMPAIGN_MODEL_SELECTOR=bellkeeper      # dsh=dsh 派生负载带 model_hint
 3. **eval 域的 LLM 消耗**（fp/contract 跑批）不在本闸范围——它有自己的 SEC_EVAL_* 通道；是否统一进供给观测待实证。
 4. **SenseNova 积分余额自动观测**：channels/status 只见 Bellkeeper rpd 桶，不见真实积分池余量。若 SenseNova 提供余额查询 API，可由 Bellkeeper balance provider 接入（现有 balanceMgr 框架）——届时 decideThrottle 可把「积分池余量比」纳入降速规则。待调研。
 5. **返赠到账延迟对选模型的影响（v3 新增）**：flash-lite 消费返赠 ~1h 到账且 30 天有效——「烧专属池反哺通用池」存在时滞，通用池临熔断时不能指望即时返赠救场；选模型的池余量判断应以**滚动窗口额度**为准，返赠视为次日级增益。另需观察 lite 档任务边界：若 flash-lite 在某类任务上失败率明显偏高，分类器应把该类上调 std 档（用历史重试率数据说话，步骤 2.5 上线后跑两周再调）。
+
+6. **kimi-code 入池评估结论（步骤 4，2026-09-23）**：**暂不入池**。理由：① kimi-code 为**编码专用**渠道（`kimi-for-coding`，渠道 `task_types` 约束为 coding），pool-secagent 承载的是侦察/假设验证/覆盖推进，非编码任务，成员级 task-type 过滤会将其剔除，入池收益低；② 其套餐为 ~5h/7d 重置窗口（Bellkeeper `kimiCodeProbeLoop` 注释证实），滚动窗口不可预测，作为主供给需窗口对齐策略（见开放问题 1），成本/复杂度高于收益；③ 现有供给曲线（SenseNova 双积分池 × OpenCode Go 美元额度）已覆盖 lite/std/heavy 三档。**复评条件**：若后续引入编码型专项（如 exploit 脚本自动生成）或 SenseNova/Go 双曲线同时频繁熔断，再评估入池。

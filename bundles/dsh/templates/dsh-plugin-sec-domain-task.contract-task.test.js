@@ -1504,8 +1504,8 @@ test('23 §3.6 parseCampaignSupplyEnv: 统一额度面解析 + 非法回落', ()
   assert.equal(d.estimateTokensPerDraft, 30000)
   assert.equal(d.defaultBudgetTokens, 2000000)
   assert.equal(d.modelStrategy, 'auto')
-  assert.equal(d.modelMain, 'ds-v4.1-flash')
-  assert.deepEqual(d.modelFallbacks, ['glm-5.2', 'ds-v4-flash'])
+  assert.equal(d.modelMain, 'deepseek-v4.1-flash')
+  assert.deepEqual(d.modelFallbacks, ['glm-5.2', 'deepseek-v4-flash'])
   assert.equal(d.flashliteFirst, true)
   assert.equal(d.modelSelector, 'bellkeeper')
   const o = parseCampaignSupplyEnv({
@@ -1520,6 +1520,9 @@ test('23 §3.6 parseCampaignSupplyEnv: 统一额度面解析 + 非法回落', ()
   assert.equal(o.modelSelector, 'dsh')
   assert.equal(o.modelStrategy, 'weight')
   assert.equal(o.flashliteFirst, false)
+  assert.deepEqual(d.classGroups, {}, '未配置 class groups 默认为空')
+  const og = parseCampaignSupplyEnv({ SEC_CAMPAIGN_CLASS_GROUPS: 'lite:pool-secagent-lite, heavy:pool-secagent-heavy, junk' })
+  assert.deepEqual(og.classGroups, { lite: 'pool-secagent-lite', heavy: 'pool-secagent-heavy' })
 })
 
 test('23 INV-C11: 供给归零 tick 跳过派生 + llm_throttled checkpoint + L2 降 L1', async () => {
@@ -1622,6 +1625,52 @@ test('23 §3.7: 派生请求带 task_class 落库（Path B 元数据）+ 显式�
   }, { actor: 'model' })
   const rows = bus._internal.db().prepare('SELECT task_class FROM tasks WHERE campaign_id=? ORDER BY id').all(cid)
   assert.deepEqual(rows.map((r) => r.task_class), ['lite', 'lite'], 'crawl 自动 lite；显式 lite 透传')
+})
+
+test('23 §3.7 Path A: selector=dsh 时派生任务带 provider+model（worker model-patch 路由）', async () => {
+  const members = [
+    { channel: 'sensenova-secagent', model: 'sensenova-6.8-flash-lite', weight: 5, available: true, health: { state: 'closed' } },
+    { channel: 'sensenova-secagent', model: 'deepseek-v4.1-flash', weight: 7, available: true, health: { state: 'closed' } },
+    { channel: 'sensenova-secagent', model: 'glm-5.2', weight: 6, available: true, health: { state: 'closed' } },
+    { channel: 'opencode-go-secagent', model: 'deepseek-v4.1-flash', weight: 2, available: true, health: { state: 'closed' } },
+  ]
+  const env = makeEnv({ supplyEnv: { ...SUPPLY_ENV, modelSelector: 'dsh' }, supplyFetch: supplyFetchStub(members) })
+  const { bus } = env
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'pathA', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', {
+    campaign_id: cid, drafts: [{ kind: 'crawl', host: 'a.example.com', strategy_key: 'a.example.com|||' }],
+  }, { actor: 'model' })
+  const row = bus._internal.db().prepare('SELECT provider, model, task_class, model_hint FROM tasks WHERE campaign_id=?').get(cid)
+  assert.equal(row.task_class, 'lite')
+  assert.equal(row.provider, 'bellkeeper', 'Path A 须成对指定 provider')
+  assert.equal(row.model, 'sensenova-6.8-flash-lite', 'lite 档选 flash-lite')
+  assert.equal(row.model_hint, 'sensenova-6.8-flash-lite')
+})
+
+test('23 §2.5: classGroups 映射——task_class 分档路由到 Bellkeeper 模型组（组内熔断顺延）', async () => {
+  const members = [
+    { channel: 'sensenova-secagent', model: 'sensenova-6.8-flash-lite', weight: 5, available: true, health: { state: 'closed' } },
+    { channel: 'sensenova-secagent', model: 'deepseek-v4.1-flash', weight: 7, available: true, health: { state: 'closed' } },
+  ]
+  const env = makeEnv({
+    supplyEnv: { ...SUPPLY_ENV, modelSelector: 'dsh', classGroups: { lite: 'pool-secagent-lite', std: 'pool-secagent', heavy: 'pool-secagent-heavy' } },
+    supplyFetch: supplyFetchStub(members),
+  })
+  const { bus } = env
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'cg', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', {
+    campaign_id: cid, drafts: [
+      { kind: 'crawl', host: 'a.example.com', strategy_key: 'a.example.com|||' },
+      { kind: 'hypothesis', host: 'b.example.com', vuln_class: 'idor', strategy_key: 'b.example.com|||idor' },
+    ],
+  }, { actor: 'model' })
+  const rows = bus._internal.db().prepare('SELECT task_class, provider, model FROM tasks WHERE campaign_id=? ORDER BY id').all(cid)
+  assert.deepEqual(rows.map((r) => r.model), ['pool-secagent-lite', 'pool-secagent-heavy'])
+  assert.ok(rows.every((r) => r.provider === 'bellkeeper'))
 })
 
 test('23 §3.4: campaign_list 带供给徽章（llm_throttled → slow）', async () => {

@@ -56,6 +56,8 @@ const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_
 const CAMPAIGN_DERIVE_CAP_PER_TICK = Number(process.env.SEC_CAMPAIGN_DERIVE_CAP_PER_TICK || 8)
 // 23 号方案 §3.6：新建专项默认窗口预算 2M/7d（autonomy<2；L2 仍须显式预算 INV-C4）
 const CAMPAIGN_DEFAULT_BUDGET_TOKENS = Number(process.env.SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS || 2000000)
+// 23 号方案 §3.7 Path A：worker 指定模型时的 provider（DSH settings.yaml 的网关 provider id）
+const CAMPAIGN_MODEL_PROVIDER = String(process.env.SEC_CAMPAIGN_MODEL_PROVIDER || 'bellkeeper')
 
 // ---------------------------------------------------------------------------
 // 23 号方案 §3.6：专项 LLM 供给统一额度面（一处调额度）
@@ -79,10 +81,19 @@ export function parseCampaignSupplyEnv(env = process.env) {
     estimateTokensPerDraft: num(e.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT, 30000),
     defaultBudgetTokens: num(e.SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS, 2000000),
     modelStrategy: /^weight$/i.test(String(e.SEC_CAMPAIGN_MODEL_STRATEGY || 'auto')) ? 'weight' : 'auto',
-    modelMain: String(e.SEC_CAMPAIGN_MODEL_MAIN || 'ds-v4.1-flash'),
-    modelFallbacks: list(e.SEC_CAMPAIGN_MODEL_MAIN_FALLBACK, 'glm-5.2,ds-v4-flash'),
+    modelMain: String(e.SEC_CAMPAIGN_MODEL_MAIN || 'deepseek-v4.1-flash'),
+    modelFallbacks: list(e.SEC_CAMPAIGN_MODEL_MAIN_FALLBACK, 'glm-5.2,deepseek-v4-flash'),
     flashliteFirst: bool(e.SEC_CAMPAIGN_FLASHLITE_FIRST, true),
     modelSelector: /^dsh$/i.test(String(e.SEC_CAMPAIGN_MODEL_SELECTOR || 'bellkeeper')) ? 'dsh' : 'bellkeeper',
+    // §3.7 Path B 配置化承接：task_class → Bellkeeper 模型组（空则不映射，用 member 级具体模型）
+    classGroups: (() => {
+      const out = {}
+      for (const part of String(e.SEC_CAMPAIGN_CLASS_GROUPS || '').split(',')) {
+        const [cls, grp] = part.split(':').map((s) => String(s || '').trim())
+        if (['lite', 'std', 'heavy'].includes(cls) && grp) out[cls] = grp
+      }
+      return out
+    })(),
     llmBaseUrl: String(e.SEC_CAMPAIGN_LLM_URL || '').replace(/\/+$/, ''),
     apiKey: e.BELLKEEPER_LLM_API_KEY || e.BELLKEEPER_API_KEY || e.SEC_EVAL_LLM_KEY || '',
   }
@@ -348,6 +359,9 @@ export const TASK_MANIFEST = {
         model_hint: str({ default: '' }),
         model_channel: str({ default: '' }),
         model_reason: str({ default: '' }),
+        // Path A：worker 侧模型指定（provider+model 成对，落 tasks 表后由调度器传给 spawn_worker）
+        provider: str({ default: '' }),
+        model: str({ default: '' }),
       }, ['program_id', 'kind', 'host']),
       // 幂等由 handler 内 strategy_dedupe 表自治（返回 deduped:true / 黑名单丢弃）；
       // 不用 bus 层 natural 幂等——回放会吞掉 deduped 语义并绕过黑名单判定
@@ -1563,12 +1577,15 @@ function makeHandlers(opts) {
           mainModel: supplyEnv.modelMain, fallbacks: supplyEnv.modelFallbacks, flashliteFirst: supplyEnv.flashliteFirst,
         })
       }
+      // Path A/B 落地：优先按 task_class 映射到 Bellkeeper 模型组（组内熔断顺延），否则用 member 级具体模型
+      const pathModel = supplyEnv.classGroups[d.task_class] || (hint && hint.model) || ''
       const args = {
         program_id: programId, kind: d.kind, host: d.host, path: d.path, param: d.param,
         vuln_class: d.vuln_class, level: d.level, rationale: d.rationale,
         oracle: d.oracle, strategy_key: d.strategy_key,
         campaign_id: c.id, campaign_role: d.campaign_role, task_class: d.task_class,
-        ...(hint && hint.model ? { model_hint: hint.model, model_channel: hint.channel, model_reason: hint.reason } : {}),
+        // worker 侧经 exec.spawn_worker 的 model-patch 指定模型（provider+model 成对）
+        ...(pathModel ? { model_hint: pathModel, model_channel: hint ? hint.channel : '', model_reason: hint ? hint.reason : 'class_group', provider: CAMPAIGN_MODEL_PROVIDER, model: pathModel } : {}),
       }
       try {
         const r = await dispatchRef('task', 'derive_intent', args, { actor: 'reactor' })
@@ -2209,6 +2226,8 @@ function makeHandlers(opts) {
         // 23 号方案 §3.7：分档标注随子任务落库；Path A 时 model_hint 一并不发（Bellkeeper 按 hint 路由）
         task_class: args.task_class || classifyTaskClass({ kind: args.kind, vuln_class: args.vuln_class || '' }),
         ...(args.model_hint ? { model_hint: args.model_hint } : {}),
+        // Path A：provider+model 成对透传，worker 经 model-patch 指定模型
+        ...(args.provider && args.model ? { provider: String(args.provider), model: String(args.model) } : {}),
         // 22 号方案：Campaign 子任务以 once 调度入队，才被调度器认领执行（调度器只认领 schedule_kind 非空）。
         // 21 号「无主派生」草稿仍保持 NULL（queued 待人工/编排 run_now）；INV-C7 只禁 interval。
         ...(args.campaign_id != null ? { schedule: { kind: 'once', at: Date.now() + 3000 } } : {}),

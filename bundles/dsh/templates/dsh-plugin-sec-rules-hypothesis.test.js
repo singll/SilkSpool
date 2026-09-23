@@ -408,8 +408,8 @@ test('23 §3.7 selectCampaignModel: 分档选模型（lite→flash-lite / heavy�
   // heavy 主选熔断 → 顺延 Go v4.1-flash
   const membersNoGlm = members.map((m) => (m.model === 'glm-5.2' ? { ...m, available: false, health: { state: 'open' } } : m))
   assert.equal(selectCampaignModel({ kind: 'hypothesis', vuln_class: 'sqli', members: membersNoGlm }).model, 'deepseek-v4.1-flash')
-  // std 主力熔断 → fallback
-  const membersNoMain = members.map((m) => (m.model === 'ds-v4.1-flash' && m.channel === 'sensenova-secagent' ? { ...m, available: false, health: { state: 'open' } } : m))
+  // std 主力（两渠道的 v4.1-flash）全熔断 → fallback
+  const membersNoMain = members.map((m) => (/v4\.1-flash/.test(m.model) ? { ...m, available: false, health: { state: 'open' } } : m))
   assert.equal(selectCampaignModel({ kind: 'hypothesis', vuln_class: 'xss', members: membersNoMain, fallbacks: ['glm-5.2'] }).model, 'glm-5.2')
   // weight 策略回滚：空 model 交 Bellkeeper 权重链
   assert.equal(selectCampaignModel({ kind: 'crawl', members, strategy: 'weight' }).model, '')
