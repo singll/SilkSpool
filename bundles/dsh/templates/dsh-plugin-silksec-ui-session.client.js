@@ -134,7 +134,7 @@ window.__ModuleLoader__.load({
 
     // ── 共享安全产出快照（header 计数 / 安全视图共用；轮询按面独立） ─────────────
     function createSessionStore() {
-      var state = { findings: [], facts: [], tasks: [], runs: [], loaded: false, updatedAt: 0 }
+      var state = { findings: [], facts: [], tasks: [], runs: [], campaigns: [], loaded: false, updatedAt: 0 }
       var listeners = []
       function get() { return state }
       function set(patch) {
@@ -202,12 +202,14 @@ window.__ModuleLoader__.load({
         rpc('scheduledTasks', {}).catch(function () { return null }),
         rpc('tasks', { bucket: 'active', limit: 200 }).catch(function () { return null }),
         rpc('taskRuns', { limit: 200 }).catch(function () { return null }),
+        rpc('campaigns', { limit: 50 }).catch(function () { return null }),
       ]).then(function (res) {
         var findings = (res[0] && res[0].rows) || []
         var facts = (res[1] && res[1].rows) || []
         var tasks = ((res[2] && res[2].rows) || []).concat((res[3] && res[3].rows) || [])
         var runs = (res[4] && res[4].rows) || []
-        sessionStore.set({ findings: findings, facts: facts, tasks: tasks, runs: runs, loaded: true, updatedAt: Date.now() })
+        var campaigns = (res[5] && res[5].rows) || []
+        sessionStore.set({ findings: findings, facts: facts, tasks: tasks, runs: runs, campaigns: campaigns, loaded: true, updatedAt: Date.now() })
         return sessionStore.get()
       }).catch(function () { return null })
     }
@@ -335,9 +337,32 @@ window.__ModuleLoader__.load({
         el('span', { className: 'silksec-session-mono', style: { color: T.label3, ...((F && F.xxxs) || {}) } }, '#' + t.id),
         el('span', { style: { color: T.label, ...((F && F.xs) || {}), flex: '1 1 220px', wordBreak: 'break-word' }, title: t.objective }, String(t.objective || '')),
         el('span', { style: { ...pill, color: t.status === 'failed' || t.status === 'cancelled' ? T.error : t.status === 'done' ? T.success : T.label3 }, title: '任务状态' }, TASK_STATUS_LABEL[t.status] || t.status || '—'),
+        // 32 号方案：派生子任务标注来源专项（名称经 campaignNames 解析）
+        t.campaign_id != null ? pillNode('专项 ' + ((props.campaignNames && props.campaignNames[t.campaign_id]) || ('#' + t.campaign_id)), { color: T.business, title: '专项派生子任务（详细进度见专项区块/看板专项卡片）' }) : null,
         t.program_id ? el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}) }, title: '工作区' }, String(t.program_id)) : null,
         el('span', { style: { marginLeft: 'auto', color: T.label3, ...((F && F.xxxs) || {}), whiteSpace: 'nowrap' } }, t.next_run_at ? fmtRel(t.next_run_at) : ''),
         sessionLink(t.session_id))
+    }
+
+    // 32 号方案：专项区块（会话视图内全局常驻，不按会话过滤——专项是跨会话统筹实体；
+    // 会话内只标注「本会话相关」徽标，行内跳链回专项看板）
+    var CAMPAIGN_STATUS_TEXT = { active: '运行中', paused: '已暂停', reviewing: '待人审', archived: '已归档', draft: '草稿' }
+    function campaignAutonomyLabel(a) { return Number(a) >= 2 ? 'L2' : (Number(a) >= 1 ? 'L1' : 'L0') }
+    function CampaignRow(props) {
+      var c = props.campaign
+      var related = props.related
+      var t = c.decision_totals || {}
+      return el('div', { className: 'silksec-session-row' },
+        el('span', { className: 'silksec-session-mono', style: { color: T.label3, ...((F && F.xxxs) || {}) } }, '#' + c.id),
+        el('span', { style: { color: T.label, ...((F && F.xs) || {}), flex: '1 1 200px', wordBreak: 'break-word' }, title: c.objective || '' }, String(c.name || '')),
+        el('span', { style: { ...pill, color: c.status === 'active' ? T.success : (c.status === 'reviewing' ? T.warn : T.label3) }, title: '专项状态机：draft/active/paused/reviewing/archived' }, CAMPAIGN_STATUS_TEXT[c.status] || c.status || '—'),
+        pillNode(campaignAutonomyLabel(c.autonomy), { title: '自主级别：L0 台账 / L1 建议 / L2 有界自动' }),
+        el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}) }, title: '验收 accepted/rejected/rework/escalated' },
+          '验收 ' + (t.accepted || 0) + '/' + (t.rejected || 0) + '/' + (t.rework || 0) + '/' + (t.escalated || 0)),
+        c.budget_tokens != null ? el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}) }, title: '专项窗口预算' }, '预算 ' + Number(c.spent_tokens || 0) + '/' + c.budget_tokens) : null,
+        related ? pillNode('本会话相关', { color: T.brand, title: '本会话有该专项的派生子任务' }) : null,
+        el('span', { style: { marginLeft: 'auto' } },
+          tip('打开看板专项区块', el('button', { ...iconBtn, 'aria-label': '打开专项看板', onClick: props.onOpenDashboard }, icon('jump')))))
     }
     function RunRow(props) {
       var r = props.run
@@ -358,6 +383,12 @@ window.__ModuleLoader__.load({
       var tasks = filterBySession(snap.tasks, sid)
       var runs = filterBySession(snap.runs, sid)
       var counts = sessionCounts(snap, sid)
+      // 32 号方案：专项全局常驻（不按会话过滤）；本会话有派生子任务的专项打徽标
+      var campaigns = (snap.campaigns || []).filter(function (c) { return c && c.status !== 'archived' })
+      var campaignNames = {}
+      campaigns.forEach(function (c) { campaignNames[c.id] = c.name || ('#' + c.id) })
+      var sessionCampaignIds = {}
+      tasks.forEach(function (t) { if (t && t.campaign_id != null) sessionCampaignIds[t.campaign_id] = true })
       function openDashboard() {
         var layout = getService('layout')
         if (layout && typeof layout.selectPanel === 'function') { try { layout.selectPanel(DASHBOARD_PANEL_ID); return } catch (e) {} }
@@ -379,10 +410,15 @@ window.__ModuleLoader__.load({
             tip('打开看板主面板（反向回路）', el('button', { ...iconBtn, 'aria-label': '打开看板', onClick: openDashboard }, icon('jump'))),
             tip('打开审批中心', el('button', { ...iconBtn, 'aria-label': '审批中心', onClick: openApproval }, icon('confirm'))))),
         el('div', { style: sectionSub },
-          '按生产者会话 id 过滤：本会话产出的漏洞/事实/任务/执行（详细内容一律在会话里看，行内可跳链）。'),
+          '按生产者会话 id 过滤：本会话产出的漏洞/事实/任务/执行；专项为跨会话统筹实体，全局常驻不过滤（本会话有派生子任务的专项带徽标）。'),
         sid ? null : el('div', { style: { ...(styles.errorLine || {}), color: T.warn } }, '未取得会话 id：无法过滤本会话产出。'),
 
-        sectionHeadNode({ title: '漏洞', count: findings.length, icon: checklistIcon(13), first: true, subtitle: '本会话 registry/候选登记（含候选池 noise=1）。' }),
+        // 32 号方案：专项区块置顶（全局常驻，最显眼位置与任务中心一致）
+        sectionHeadNode({ title: '专项', count: campaigns.length, icon: checklistIcon(13), first: true, subtitle: '跨会话统筹实体（不按会话过滤）；本会话派生归属打徽标，行内跳链回看板。' }),
+        campaigns.length ? el('div', null, campaigns.map(function (c) { return el(CampaignRow, { key: String(c.id), campaign: c, related: !!sessionCampaignIds[c.id], onOpenDashboard: openDashboard }) }))
+          : el('div', { style: { color: T.label3, padding: '8px 0', ...((F && F.xs) || {}) } }, '暂无专项'),
+
+        sectionHeadNode({ title: '漏洞', count: findings.length, icon: checklistIcon(13), subtitle: '本会话 registry/候选登记（含候选池 noise=1）。' }),
         findings.length ? el('div', null, findings.map(function (f) { return el(FindingRow, { key: String(f.id), finding: f }) }))
           : el('div', { style: { color: T.label3, padding: '8px 0', ...((F && F.xs) || {}) } }, '本会话暂无漏洞产出'),
 
@@ -390,8 +426,8 @@ window.__ModuleLoader__.load({
         facts.length ? el('div', null, facts.map(function (f) { return el(FactRow, { key: String(f.program_id) + '/' + String(f.fact_key), fact: f }) }))
           : el('div', { style: { color: T.label3, padding: '8px 0', ...((F && F.xs) || {}) } }, '本会话暂无事实沉淀'),
 
-        sectionHeadNode({ title: '任务', count: tasks.length, icon: checklistIcon(13), subtitle: '本会话派发/执行的 Task（定时 + 一次性）。' }),
-        tasks.length ? el('div', null, tasks.map(function (t) { return el(TaskRow, { key: String(t.id), task: t }) }))
+        sectionHeadNode({ title: '任务', count: tasks.length, icon: checklistIcon(13), subtitle: '本会话派发/执行的 Task（定时 + 一次性）；专项派生子任务标注来源专项 chip。' }),
+        tasks.length ? el('div', null, tasks.map(function (t) { return el(TaskRow, { key: String(t.id), task: t, campaignNames: campaignNames }) }))
           : el('div', { style: { color: T.label3, padding: '8px 0', ...((F && F.xs) || {}) } }, '本会话暂无任务'),
 
         sectionHeadNode({ title: '执行', count: runs.length, icon: checklistIcon(13), subtitle: '本会话的 Run 执行历史（run 落 session_id 可回溯）。' }),

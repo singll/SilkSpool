@@ -243,6 +243,7 @@ const SCHEDULED = [
 const QUEUE = [
   { id: 101, program_id: 'meituan', phase: 'vuln', objective: '验证 /api 未授权', status: 'running', session_id: 'sess-1' },
   { id: 102, program_id: 'bytedance', phase: 'recon', objective: '资产收集种子', status: 'queued', session_id: 'sess-2' },
+  { id: 103, program_id: 'meituan', phase: 'vuln', objective: '专项派生假设验证', status: 'queued', campaign_id: 7, campaign_role: 'derived' },
 ]
 const RUNS = [
   { id: 900, task_id: 16, ok: 1, note: '完成', started_at: 1700000000000, finished_at: 1700000060000, duration_ms: 60000, session_id: 'sess-1', objective: '每日资产侦察' },
@@ -394,20 +395,32 @@ test('写操作：未知 op / rpc 缺席 → reject 不抛同步异常', async (
 })
 
 // ── ⑤ 四区块渲染 + 响应式双模式 ──────────────────────────────────────────────
-test('四区块：定时卡片/队列表格+卡片双模式/工作区/执行历史 DisclosureRow', () => {
+test('五区块（32 号方案）：专项 → 正在执行 → 队列 → 定时任务折叠 → 历史（近期/存量分界）+ 工作区', () => {
   const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
   const { mod } = loadBundle(uiCore, makePrimitives())
   const tree = mod.TaskCenter({ rpc: () => Promise.resolve({}) })
   const text = deepText(tree)
-  assert.match(text, /定时任务/, '区块一：定时任务')
-  assert.match(text, /每日资产侦察/, '定时卡片渲染目标')
-  assert.match(text, /一次性队列/, '区块二：一次性队列')
-  assert.match(text, /验证 \/api 未授权/, '队列行渲染目标')
-  assert.match(text, /工作区/, '区块三：工作区快块')
-  assert.match(text, /执行历史/, '区块四：执行历史')
+  assert.match(text, /专项/, '区块零：专项常驻最显眼')
+  assert.match(text, /正在执行/, '区块一：正在执行（running+blocked 上移）')
+  assert.match(text, /验证 \/api 未授权/, '正在执行区块含 running 任务（不再淹没在队列里）')
+  assert.match(text, /队列/, '区块二：队列')
+  assert.match(text, /资产收集种子/, '队列默认视图含排队任务')
+  assert.doesNotMatch(text.replace(/验证 \/api 未授权/g, ''), /验证 \/api 未授权/, 'running 任务不出现在队列默认视图（只出现一次=正在执行区块）')
+  // 定时任务折叠区块（DisclosureRow）：标题行存在（stub 直挂 children，经节点断言标题文本）
+  const schedRow = collect(tree, (n) => n.type === 'disclosure-stub' && String(n.props.title || '').startsWith('定时任务'))[0]
+  assert.ok(schedRow, '区块三：定时任务折叠区块存在（DisclosureRow）')
+  assert.equal(schedRow.props.open, false, '定时任务默认收起')
+  // 历史存量分界（DisclosureRow title 在 props，deepText 只吃 children → 节点断言）
+  const oldRow = collect(tree, (n) => n.type === 'disclosure-stub' && String(n.props.title || '').startsWith('历史存量'))[0]
+  assert.ok(oldRow, '历史存量分界（>24h 独立折叠）')
+  assert.match(text, /工作区/, '区块五：工作区快块')
+  // 来源筛选 chip（32）
+  const chipsAll = collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-chip')
+  assert.ok(chipsAll.some((c) => String(deepText(c)).startsWith('专项派生')), '队列必须有「专项派生」来源筛选 chip')
+  assert.ok(chipsAll.some((c) => String(deepText(c)).startsWith('其他')), '队列必须有「其他」来源筛选 chip')
   // 双模式（表格在宽栏、卡片在窄栏，由 container query 切换）
   assert.ok(collect(tree, (n) => n.props && n.props.className === 'silksec-task-queue-table').length === 1, '必须有队列表格（宽栏）')
-  assert.ok(collect(tree, (n) => n.props && n.props.className === 'silksec-task-queue-cards').length === 1, '必须有队列卡片（窄栏 <480px）')
+  assert.ok(collect(tree, (n) => n.props && n.props.className === 'silksec-task-queue-cards').length >= 1, '必须有队列卡片（窄栏 <480px + 正在执行区块复用）')
   // program 筛选胶囊（.silksec-chip，19-ui-unify 补丁）：选项来自 workspaces ∪ programs，稳定不塌缩
   const chips = collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-chip')
   assert.ok(chips.length >= 6, '必须有「全部」+ 5 个 program 筛选胶囊（实际 ' + chips.length + '）')
@@ -467,7 +480,8 @@ test('专项区块：队列行带专项归属 chip；campaigns 查询不可达 �
   const tree2 = mod2.TaskCenter({ rpc: () => Promise.resolve({}) })
   const text2 = deepText(tree2)
   assert.ok(!/验收 \d+\/\d+\/\d+\/\d+/.test(text2), 'campaigns 不可达时专项区块静默隐藏')
-  assert.match(text2, /定时任务/, '其余区块不受影响')
+  const schedRow2 = collect(tree2, (n) => n.type === 'disclosure-stub' && String(n.props.title || '').startsWith('定时任务'))[0]
+  assert.ok(schedRow2, '其余区块不受影响（定时任务折叠区块仍在）')
 })
 
 test('专项 tick 写操作：走 campaignTickNow 端点（与主面板专项 tab 同端点）', async () => {
@@ -492,7 +506,22 @@ test('24 纯函数：队列状态计数 / 状态过滤 / 历史成功失败过�
   ]
   assert.equal(JSON.stringify(mod.queueStatusCounts(rows)), JSON.stringify({ all: 5, running: 1, queued: 2, blocked: 1 }))
   assert.equal(mod.filterQueueByStatus(rows, 'queued').length, 2)
-  assert.equal(mod.filterQueueByStatus(rows, '').length, 5)
+  // 32 号方案：默认视图只显示排队（running/blocked 上移「正在执行」区块）；'all' 显式看全量
+  assert.equal(mod.filterQueueByStatus(rows, '').length, 2, '默认视图只显示排队')
+  assert.equal(mod.filterQueueByStatus(rows, 'all').length, 5, '全部视图看全量')
+  // 32：来源筛选/计数/正在执行行集/历史分界
+  const orows = [
+    { id: 1, status: 'running', campaign_id: 7 }, { id: 2, status: 'queued', campaign_id: 7 },
+    { id: 3, status: 'queued' }, { id: 4, status: 'blocked' }, { id: 5, status: 'queued' },
+  ]
+  assert.equal(JSON.stringify(mod.queueOriginCounts(orows)), JSON.stringify({ all: 5, campaign: 2, manual: 3 }))
+  assert.equal(mod.filterQueueByOrigin(orows, 'campaign').length, 2)
+  assert.equal(mod.filterQueueByOrigin(orows, 'manual').length, 3)
+  assert.equal(mod.activeExecutionRows(orows).map((t) => t.id).join(','), '1,4', '正在执行 = running + blocked')
+  const now = 1800000000000
+  const split = mod.splitRunsRecency([{ id: 1, finished_at: now - 3600000 }, { id: 2, finished_at: now - 90000000 }], now, 86400000)
+  assert.equal(split.recent.length, 1)
+  assert.equal(split.old.length, 1, '>24h 归存量')
   const runs = [{ ok: 1 }, { ok: 0 }, { ok: 1 }]
   assert.equal(mod.filterRuns(runs, 'ok').length, 2)
   assert.equal(mod.filterRuns(runs, 'fail').length, 1)
@@ -572,12 +601,16 @@ test('24 任务视图：队列状态 tab 计数 + 历史成功/失败过滤 chip
   const { mod } = loadBundle(uiCore, makePrimitives())
   const tree = mod.TaskCenter({ rpc: () => Promise.resolve({}) })
   const text = deepText(tree)
-  assert.match(text, /状态全部 2/, '队列状态 tab：全部计数')
+  // 32 号方案：默认 chip = 排队(默认)；'all' = 全部；来源两段筛选
+  assert.match(text, /排队\(默认\) 2/, '队列状态 tab：默认=排队计数')
+  assert.match(text, /全部 3/, '队列状态 tab：全部计数')
   assert.match(text, /运行中 1/, '队列状态 tab：运行中计数')
-  assert.match(text, /排队 1/, '队列状态 tab：排队计数')
   assert.match(text, /阻塞 0/, '队列状态 tab：阻塞计数')
-  assert.match(text, /历史全部 1/, '历史过滤 chip：全部计数')
-  assert.match(text, /成功 1/, '历史过滤 chip：成功计数')
+  assert.match(text, /专项派生 1/, '来源筛选：专项派生计数')
+  assert.match(text, /其他 2/, '来源筛选：其他计数')
+  // 32：历史分界后 chip 只计近期（样例 run finished_at=1700000060000 为存量 → 近期 0）
+  assert.match(text, /历史全部 0/, '历史过滤 chip：近期全部计数（存量不计入）')
+  assert.match(text, /成功 0/, '历史过滤 chip：近期成功计数')
   assert.match(text, /失败 0/, '历史过滤 chip：失败计数')
   // 布局重排：执行历史在工作区之前（文本顺序）
   assert.ok(text.indexOf('执行历史') >= 0 && text.indexOf('工作区') >= 0, '两区块均存在')

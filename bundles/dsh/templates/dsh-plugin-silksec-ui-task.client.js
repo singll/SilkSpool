@@ -90,9 +90,37 @@ window.__ModuleLoader__.load({
       })
       return c
     }
+    // 32 号方案（任务界面整理）：默认视图排除 running/blocked（已上移「正在执行」区块），
+    // 避免存量队列淹没活跃任务；显式选「全部」才看全量。
     function filterQueueByStatus(rows, status) {
-      if (!status) return rows || []
+      if (!status) return (rows || []).filter(function (t) { return t && t.status === 'queued' })
+      if (status === 'all') return rows || []
       return (rows || []).filter(function (t) { return t && t.status === status })
+    }
+    // 来源筛选（32）：campaign=专项派生（campaign_id 非空）/ manual=其他（编排器/人工）
+    function filterQueueByOrigin(rows, origin) {
+      if (!origin) return rows || []
+      if (origin === 'campaign') return (rows || []).filter(function (t) { return t && t.campaign_id != null })
+      return (rows || []).filter(function (t) { return t && t.campaign_id == null })
+    }
+    function queueOriginCounts(rows) {
+      var c = { all: (rows || []).length, campaign: 0, manual: 0 }
+      ;(rows || []).forEach(function (t) { if (t && t.campaign_id != null) c.campaign++; else c.manual++ })
+      return c
+    }
+    // 正在执行区块行集（32）：running + blocked（阻塞也是需要人工看的活跃信号）
+    function activeExecutionRows(rows) {
+      return (rows || []).filter(function (t) { return t && (t.status === 'running' || t.status === 'blocked') })
+    }
+    // 执行历史近期/存量分界（32）：finished_at 距今 >24h 归存量
+    function splitRunsRecency(rows, nowMs, windowMs) {
+      var recent = []; var old = []
+      var cutoff = (nowMs || Date.now()) - (windowMs || 86400000)
+      ;(rows || []).forEach(function (r) {
+        var at = Number(r && (r.finished_at || r.started_at) || 0)
+        if (at && at >= cutoff) recent.push(r); else old.push(r)
+      })
+      return { recent: recent, old: old }
     }
     // 执行历史成功/失败过滤（客户端过滤当前页）
     function filterRuns(rows, filter) {
@@ -659,7 +687,7 @@ window.__ModuleLoader__.load({
           : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, props.runTaskId ? '该任务暂无执行历史' : '暂无执行历史'))
       if (D) {
         return el(D, {
-          title: '执行历史' + (props.total !== undefined ? ' · ' + props.total + ' 条' : ''),
+          title: (props.titlePrefix || '执行历史') + (props.total !== undefined ? ' · ' + props.total + ' 条' : ''),
           open: !!props.open, expandable: true, onToggle: props.onToggle,
           expandOnRowClick: true, icon: historyIcon(14),
         }, body)
@@ -667,8 +695,45 @@ window.__ModuleLoader__.load({
       return el('div', null,
         el('div', { style: { ...sectionHead, cursor: 'pointer' }, onClick: props.onToggle, title: props.open ? '点击收起' : '点击展开' },
           el('span', { style: { color: T.label3 } }, props.open ? '▾' : '▸'),
-          historyIcon(14), el('span', { style: sectionTitle }, '执行历史'),
+          historyIcon(14), el('span', { style: sectionTitle }, props.titlePrefix || '执行历史'),
           props.total !== undefined ? el('span', { style: { ...pill, color: T.label3 } }, String(props.total)) : null),
+        props.open ? body : null)
+    }
+
+    // ── 32 号方案（任务界面整理）────────────────────────────────────────────
+    // 正在执行区块：running + blocked 上移为第二视觉焦点（紧随专项之后）。
+    // 复用 QueueCards 行渲染（含专项归属 chip/行内操作），空态显式提示。
+    function RunningBlock(props) {
+      var rows = props.rows || []
+      return el('div', null,
+        sectionHeadNode({
+          title: '正在执行', count: rows.length, icon: queueIcon(14),
+          subtitle: '当前活跃任务（运行中 + 阻塞——阻塞代表需要人工介入的活跃信号）；排队与历史见下方区块。',
+        }),
+        rows.length
+          ? el(QueueCards, { rows: rows, busy: props.busy, onRunNow: props.onRunNow, onCancel: props.onCancel, onBlock: props.onBlock, onResume: props.onResume, onJumpHistory: props.onJumpHistory, campaignNames: props.campaignNames, onCampaignFilter: props.onCampaignFilter })
+          : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, '当前无在执行任务'))
+    }
+
+    // 定时任务区块（32 折叠）：默认收起只留数量徽标；展开渲染原 ScheduledCard 列表。
+    function ScheduledBlock(props) {
+      var rows = props.rows || []
+      var D = prim('DisclosureRow')
+      var body = rows.length
+        ? el('div', null, rows.map(function (t) { return el(ScheduledCard, { key: String(t.id), task: t, busy: props.busy, onRunNow: props.onRunNow, onCancel: props.onCancel, onBlock: props.onBlock, onResume: props.onResume, onEditEvery: props.onEditEvery, onJumpHistory: props.onJumpHistory }) }))
+        : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, '暂无定时任务')
+      var title = '定时任务' + ' · ' + rows.length + ' 条'
+      if (D) {
+        return el(D, {
+          title: title, open: !!props.open, expandable: true, onToggle: props.onToggle,
+          expandOnRowClick: true, icon: alarmIcon(14),
+        }, body)
+      }
+      return el('div', null,
+        el('div', { style: { ...sectionHead, cursor: 'pointer' }, onClick: props.onToggle, title: props.open ? '点击收起' : '点击展开' },
+          el('span', { style: { color: T.label3 } }, props.open ? '▾' : '▸'),
+          alarmIcon(14), el('span', { style: sectionTitle }, '定时任务'),
+          el('span', { style: { ...pill, color: T.label3 } }, String(rows.length))),
         props.open ? body : null)
     }
 
@@ -752,8 +817,15 @@ window.__ModuleLoader__.load({
       // 24 号方案 §3.1：队列状态 tab + 历史成功/失败过滤（客户端过滤，零额外 RPC）
       var sf = React.useState('')
       var statusFilter = sf[0]; var setStatusFilter = sf[1]
+      // 32 号方案：队列来源筛选（专项派生/其他）+ 定时任务折叠态
+      var of = React.useState('')
+      var originFilter = of[0]; var setOriginFilter = of[1]
+      var so = React.useState(false)
+      var schedOpen = so[0]; var setSchedOpen = so[1]
       var hf = React.useState('')
       var histFilter = hf[0]; var setHistFilter = hf[1]
+      var ho = React.useState(false)
+      var histOldOpen = ho[0]; var setHistOldOpen = ho[1]
       var histRef = React.useRef ? React.useRef(null) : { current: null }
 
       if (typeof useRpcCore !== 'function') {
@@ -795,14 +867,26 @@ window.__ModuleLoader__.load({
       campaigns.forEach(function (c) { campaignNames[c.id] = c.name || ('#' + c.id) })
       // 24 号方案 §3.1：状态计数/过滤（客户端，零额外 RPC）
       var statusCounts = queueStatusCounts(queue)
-      var visibleQueue = filterQueueByStatus(queue, statusFilter)
-      var visibleRuns = filterRuns(runs, histFilter)
+      var originCounts = queueOriginCounts(queue)
+      var visibleQueue = filterQueueByOrigin(filterQueueByStatus(queue, statusFilter), originFilter)
+      // 32 号方案：正在执行区块（running+blocked，上移为第二视觉焦点）
+      var activeExec = activeExecutionRows(queue)
+      var runsRecent = splitRunsRecency(runs)
+      var visibleRuns = filterRuns(runsRecent.recent, histFilter)
+      var visibleRunsOld = filterRuns(runsRecent.old, histFilter)
       function statusChip(key, label, n, color) {
         return el('button', {
           type: 'button', className: 'silksec-chip', 'data-on': statusFilter === key ? 'true' : undefined,
           style: color ? { color: color } : undefined,
           title: '按状态筛选队列（客户端过滤当前页 ≤200）',
           onClick: function () { setStatusFilter(statusFilter === key ? '' : key) },
+        }, label + ' ' + n)
+      }
+      function originChip(key, label, n) {
+        return el('button', {
+          type: 'button', className: 'silksec-chip', 'data-on': originFilter === key ? 'true' : undefined,
+          title: '按来源筛选：专项派生 = campaign_id 非空的子任务；其他 = 编排器/人工派发',
+          onClick: function () { setOriginFilter(originFilter === key ? '' : key) },
         }, label + ' ' + n)
       }
 
@@ -954,23 +1038,26 @@ window.__ModuleLoader__.load({
                 }))
             : null,
 
-          // 区块一：定时任务卡片
-          sectionHeadNode({ title: '定时任务', count: scheduled.length, icon: alarmIcon(14), subtitle: '固定周期实体：跑完自动续期不增殖；每行「🕘」跳到执行历史。' }),
-          schedState.error ? el('div', { style: { ...(styles.errorLine || {}), color: T.error } }, '定时任务加载失败: ' + schedState.error) : null,
-          schedState.loading && !schedState.data
-            ? el(uiCore.SkeletonRows, { rows: 2 })
-            : (scheduled.length
-              ? el('div', null, scheduled.map(function (t) { return el(ScheduledCard, { key: String(t.id), task: t, ...busyProps }) }))
-              : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, '暂无定时任务')),
+          // 区块一（32 号方案）：正在执行——running+blocked 上移为第二视觉焦点（专项之下）
+          el(RunningBlock, {
+            rows: activeExec, busy: busy,
+            onRunNow: busyProps.onRunNow, onCancel: busyProps.onCancel, onBlock: busyProps.onBlock, onResume: busyProps.onResume,
+            onJumpHistory: busyProps.onJumpHistory, campaignNames: campaignNames, onCampaignFilter: setCampaignFilter,
+          }),
 
-          // 区块二：一次性队列（<480px 表格换卡片行）+ 状态 tab（24 号方案 §3.1）
-          sectionHeadNode({ title: '一次性队列', count: queue.length, icon: queueIcon(14), subtitle: '编排器派发的一次性任务（链步骤、专项派生等）；状态点 + 行内操作。' }),
+          // 区块二：队列（<480px 表格换卡片行）+ 状态/来源两段筛选（24 号 §3.1 + 32 号方案）
+          // 32：默认视图只显示排队/失败存量；运行中/阻塞已上移「正在执行」区块。
+          sectionHeadNode({ title: '队列', count: visibleQueue.length, icon: queueIcon(14), subtitle: '排队与存量任务（默认视图不含运行中/阻塞——见上方「正在执行」）；状态 + 来源两段筛选，行内操作。' }),
           el('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 8 } },
             el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}) } }, '状态'),
-            statusChip('', '全部', statusCounts.all),
+            statusChip('', '排队(默认)', statusCounts.queued),
+            statusChip('all', '全部', statusCounts.all),
+            statusChip('blocked', '阻塞', statusCounts.blocked, T.warn),
             statusChip('running', '运行中', statusCounts.running, T.success),
-            statusChip('queued', '排队', statusCounts.queued),
-            statusChip('blocked', '阻塞', statusCounts.blocked, T.warn)),
+            el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}), marginLeft: 8 } }, '来源'),
+            originChip('', '全部', originCounts.all),
+            originChip('campaign', '专项派生', originCounts.campaign),
+            originChip('manual', '其他', originCounts.manual)),
           campaignFilter
             ? el('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 } },
                 el('span', { style: { ...pill, color: T.brand } }, '专项 ' + (campaignNames[campaignFilter] || ('#' + campaignFilter))),
@@ -988,18 +1075,30 @@ window.__ModuleLoader__.load({
                 : el(React.Fragment, null,
                     el(QueueTable, { rows: visibleQueue, ...busyProps }),
                     el(QueueCards, { rows: visibleQueue, ...busyProps })))
-              : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, queue.length ? '当前状态筛选无任务' : '暂无一次性任务')),
+              : el('div', { style: { color: T.label3, padding: '10px 0', ...((F && F.xs) || {}) } }, queue.length ? '当前筛选无任务（默认只显示排队；运行中/阻塞见上方「正在执行」）' : '暂无队列任务')),
 
-          // 区块三：执行历史（提到工作区之前；成功/失败过滤 chip，默认折叠 DisclosureRow）
+          // 区块三（32 号方案）：定时任务折叠（默认收起只留数量徽标；vuln 主线已迁移专项，入口保留）
+          schedState.error ? el('div', { style: { ...(styles.errorLine || {}), color: T.error } }, '定时任务加载失败: ' + schedState.error) : null,
+          el(ScheduledBlock, {
+            rows: scheduled, open: schedOpen, onToggle: function () { setSchedOpen(!schedOpen) },
+            busy: busy, onRunNow: busyProps.onRunNow, onCancel: busyProps.onCancel, onBlock: busyProps.onBlock, onResume: busyProps.onResume,
+            onEditEvery: busyProps.onEditEvery, onJumpHistory: busyProps.onJumpHistory,
+          }),
+
+          // 区块四：执行历史（成功/失败过滤 chip；32 号方案近期/存量分界——默认只显示近 24h，存量折叠）
           el('div', { ref: histRef, style: { marginTop: 16 } },
             el('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 4 } },
               el('span', { style: { color: T.label3, ...((F && F.xxxs) || {}) } }, '历史'),
-              el('button', { type: 'button', className: 'silksec-chip', 'data-on': histFilter === '' ? 'true' : undefined, onClick: function () { setHistFilter('') } }, '全部 ' + runs.length),
-              el('button', { type: 'button', className: 'silksec-chip', 'data-on': histFilter === 'ok' ? 'true' : undefined, onClick: function () { setHistFilter(histFilter === 'ok' ? '' : 'ok') } }, '成功 ' + filterRuns(runs, 'ok').length),
-              el('button', { type: 'button', className: 'silksec-chip', 'data-on': histFilter === 'fail' ? 'true' : undefined, onClick: function () { setHistFilter(histFilter === 'fail' ? '' : 'fail') } }, '失败 ' + filterRuns(runs, 'fail').length)),
-            el(HistoryBlock, { open: histOpen, onToggle: function () { setHistOpen(!histOpen) }, rows: visibleRuns, total: runTotal, runTaskId: runTaskId, onClearFilter: function () { setRunTaskId('') } })),
+              el('button', { type: 'button', className: 'silksec-chip', 'data-on': histFilter === '' ? 'true' : undefined, onClick: function () { setHistFilter('') } }, '全部 ' + runsRecent.recent.length),
+              el('button', { type: 'button', className: 'silksec-chip', 'data-on': histFilter === 'ok' ? 'true' : undefined, onClick: function () { setHistFilter(histFilter === 'ok' ? '' : 'ok') } }, '成功 ' + filterRuns(runsRecent.recent, 'ok').length),
+              el('button', { type: 'button', className: 'silksec-chip', 'data-on': histFilter === 'fail' ? 'true' : undefined, onClick: function () { setHistFilter(histFilter === 'fail' ? '' : 'fail') } }, '失败 ' + filterRuns(runsRecent.recent, 'fail').length)),
+            el(HistoryBlock, { open: histOpen, onToggle: function () { setHistOpen(!histOpen) }, rows: visibleRuns, total: runTotal, runTaskId: runTaskId, onClearFilter: function () { setRunTaskId('') } }),
+            // 存量（>24h）独立折叠：391 条存量失败不再污染近期视图
+            runsRecent.old.length
+              ? el(HistoryBlock, { open: histOldOpen, onToggle: function () { setHistOldOpen(!histOldOpen) }, rows: visibleRunsOld, total: runsRecent.old.length, runTaskId: '', onClearFilter: function () {}, titlePrefix: '历史存量（>24h）' })
+              : null),
 
-          // 区块四：工作区快块（移到底部；窄栏降级为顶部 program 筛选 Pill 组）
+          // 区块五：工作区快块（移到底部；窄栏降级为顶部 program 筛选 Pill 组）
           el(WorkspaceQuick, { items: wsItems })))
     }
 
@@ -1180,6 +1279,10 @@ window.__ModuleLoader__.load({
     exports.queueStatusCounts = queueStatusCounts
     exports.filterQueueByStatus = filterQueueByStatus
     exports.filterRuns = filterRuns
+    exports.filterQueueByOrigin = filterQueueByOrigin
+    exports.queueOriginCounts = queueOriginCounts
+    exports.activeExecutionRows = activeExecutionRows
+    exports.splitRunsRecency = splitRunsRecency
     exports.tickSummaryText = tickSummaryText
     exports.checkpointMeta = checkpointMeta
     exports.verdictMeta = verdictMeta

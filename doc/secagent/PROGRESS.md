@@ -17,6 +17,12 @@
 
 ## 二、最近进度结果
 
+### 2026-09-24 · 32 号方案：任务界面整理（方案 A 状态泳道重排 + 会话专项区块）（ui-task 20/20、ui-session 18/18，accept PASS=45）
+- **任务中心五区块**：① 专项常驻最上 → ② **正在执行**（running+blocked 上移，不再淹没在 127 条存量 queued 里）→ ③ 队列（默认只显排队 + **来源筛选**：专项派生/其他 + 状态筛选）→ ④ 定时任务折叠（默认收起留徽标）→ ⑤ 历史近期/存量分界（>24h 的 391 条存量失败独立折叠）。零 RPC/DB 变更，纯客户端过滤。
+- **会话「安全产出」**：专项区块置顶**全局常驻**（不按会话过滤；本会话有派生任务打「本会话相关」徽标）；任务行带来源专项 chip——派生子任务（worker 执行无 session_id）在会话中从此可见。
+- **定时任务结论**：#19/#37/#100007/#100008 已 blocked 停用可取消（暂缓）；#16/#17 recon 每日**保留**（喂专项 Planner 的 ledger 缺口数据）；#24 周复盘**保留**。
+- 文档回填 [16-dashboard §32](16-dashboard.md)。
+
 ### 2026-09-24 · 31 号补丁：额度提额 ×10 + 升档/延长审批通道修复 + UI 升档入口（accept PASS=45）
 - **额度**：campaign#1/#2 `budget_tokens` 1M → **10M**（×10 管理员直改 + milestone 审计；分轮爬坡审批单次 ≤×2 不适用）。提额后 30 号补丁自动回升闭环生效：#1 自动升回 **L2**（autonomy_recovered）；#2 自动回 **active**（status_recovered，L1 升 L2 走审批——**request #45 已进 pending 待批准**）。
 - **「看不到审批」根因（三重缺口，均修复）**：① reviewing 专项不跑预算段 → budget_exhausted 后自动爬坡提请通道堵死；② approval 的 budget-extend 校验 spent≥80%（台账口径）与窗口口径不一致会误拒 reviewing 延长 → reviewing 豁免；③ campaign-autonomy 校验+effect 限定 draft/paused → 运行中被自动降级的专项**升档提请被拒**且 UI 无入口（用户只能看降级看不到提请）。

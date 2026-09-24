@@ -227,12 +227,18 @@ const FACTS = [
 const TASKS = [
   { id: 16, program_id: 'meituan', objective: 'S1 定时侦察', status: 'queued', session_id: 's1', next_run_at: Date.now() + 3600000 },
   { id: 101, program_id: 'meituan', objective: 'S2 队列任务', status: 'running', session_id: 's2' },
+  // 32 号方案：专项派生子任务（campaign_id 非空；session_id 为空模拟 worker 场景）
+  { id: 102, program_id: 'meituan', objective: 'S1 专项派生假设', status: 'queued', session_id: 's1', campaign_id: 7, campaign_role: 'derived' },
 ]
 const RUNS = [
   { id: 900, task_id: 16, ok: 1, note: 'S1 执行完成', session_id: 's1', finished_at: 1700000060000 },
   { id: 901, task_id: 101, ok: 0, note: 'S2 执行失败', session_id: 's2', finished_at: 1700000060000 },
 ]
 const PROGRAMS = [{ name: 'meituan', platform: '美团 SRC' }]
+const CAMPAIGNS = [
+  { id: 7, name: '美团SRC 持续挖掘', mode: 'single', status: 'active', autonomy: 2, budget_tokens: 10000000, spent_tokens: 911990, decision_totals: { accepted: 12, rejected: 3, rework: 1, escalated: 0 }, objective: '覆盖+七类主粮' },
+  { id: 8, name: '字节SRC 持续挖掘', mode: 'single', status: 'reviewing', autonomy: 1, budget_tokens: 10000000, spent_tokens: 1040735, decision_totals: { accepted: 5, rejected: 1, rework: 0, escalated: 0 }, objective: '字节覆盖' },
+]
 
 const FULL_RPC_STATE = {
   findings: { data: { rows: FINDINGS, total: FINDINGS.length } },
@@ -241,10 +247,11 @@ const FULL_RPC_STATE = {
   scheduledTasks: { data: { rows: [] } },
   taskRuns: { data: { rows: RUNS, total: RUNS.length } },
   programs: { data: PROGRAMS },
+  campaigns: { data: { rows: CAMPAIGNS, total: CAMPAIGNS.length } },
 }
 
 function primeStore(mod) {
-  mod.sessionStore.set({ findings: FINDINGS, facts: FACTS, tasks: TASKS, runs: RUNS, loaded: true, updatedAt: Date.now() })
+  mod.sessionStore.set({ findings: FINDINGS, facts: FACTS, tasks: TASKS, runs: RUNS, campaigns: CAMPAIGNS, loaded: true, updatedAt: Date.now() })
 }
 
 // ── ① 注册/卸载幂等 + 三处 additive 绑定 ─────────────────────────────────────
@@ -476,6 +483,23 @@ test('安全视图：s1 只出 s1 产出（findings/facts/tasks/runs），不混
   assert.match(s2, /S2 执行失败/)
   assert.doesNotMatch(s2, /S1 未授权访问/)
   assert.doesNotMatch(s2, /auth\/s1-token/)
+})
+
+// ── ⑧ 32 号方案：专项区块全局常驻 + 派生子任务标注来源专项 ──────────────────
+test('32 安全视图：专项区块全局常驻（两会话都可见、不按会话过滤），本会话派生带徽标', () => {
+  const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  primeStore(mod)
+  const s1 = deepText(mod.SecurityView({ sessionId: 's1' }))
+  assert.match(s1, /美团SRC 持续挖掘/, '专项区块全局常驻（s1 可见）')
+  assert.match(s1, /字节SRC 持续挖掘/, '跨专项均可见（不按会话过滤）')
+  assert.match(s1, /本会话相关/, 's1 有 #7 派生子任务 → 本会话相关徽标')
+  assert.match(s1, /验收 12\/3\/1\/0/, '专项卡片验收计数')
+  assert.match(s1, /预算 911990\/10000000/, '专项卡片预算条')
+  assert.match(s1, /专项 美团SRC 持续挖掘/, '派生子任务行带来源专项 chip')
+  const s2 = deepText(mod.SecurityView({ sessionId: 's2' }))
+  assert.match(s2, /美团SRC 持续挖掘/, 's2 也可见专项区块（全局常驻）')
+  assert.doesNotMatch(s2, /本会话相关/, 's2 无派生子任务 → 无徽标')
 })
 
 test('过滤辅助函数：sessionFromSource / filterBySession / filterFactsBySession / sessionCounts', () => {

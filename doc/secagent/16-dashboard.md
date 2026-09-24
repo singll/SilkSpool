@@ -630,3 +630,24 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 - 单测：ui-task **19/19**（新增 5 例：纯函数/三并发 RPC/运行报告渲染与放行/L0 空态/状态 tab 计数）；view-know **10/10**（新增 4 例）；dashboard-rpc **5/5**（新增 3 端点入 fail-closed 清单 + 修正 stats scope 断言）。
 - 部署 csai（`bundle dsh setup` + 重启 NRestarts=0）；`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**（72 → 80：新增 4 项静态门禁 `ui-task-campaign-report`/`ui-task-status-tabs`/`ui-know-governance-funnel`/`ui-know-learning-pipeline` + 4 项运行时读端点 `ui-rpc-read-task-campaigns`/`-campaign-progress`/`-campaign-pending`/`ui-rpc-read-know-learning`）。
 - W1（供给徽章恢复翻绿）/W2（Path A 接线 + 模型名归一）已由 commit 4a606b2 / 59da0cc 完成并回填 05-task §7.10.5；W5（Bellkeeper 侧）/W6（worker token 上报）为跨仓/worker 改造，不在本方案范围。
+
+## 2026-09-24 32 号方案回填（任务界面整理：方案 A 状态泳道重排 + 会话专项区块）
+
+> 动机：定时任务（已不依赖，vuln 主线迁移专项后 7 条周期任务中 4 条 blocked 停用）占据仅次于专项的黄金位置；唯一活跃的 running 任务淹没在 127 条存量 queued 里；会话视图完全没有专项。方案 A（状态泳道重排，最小改动）落地，零 RPC/零 DB 变更（全部客户端过滤）。
+
+**任务中心（`@silksec/ui-task`）五区块新布局**：
+
+- **① 专项**：常驻最显眼（不变）。
+- **② 正在执行（新）**：running + blocked 上移为第二视觉焦点（阻塞 = 需要人工介入的活跃信号）；复用 QueueCards 行渲染（专项归属 chip + 行内操作）；空态显式「当前无在执行任务」。
+- **③ 队列**：默认视图**只显示排队**（running/blocked 已上移）；筛选升级两段式——状态 chip（排队(默认)/全部/阻塞/运行中）+ **来源 chip**（全部/专项派生 campaign_id 非空/其他）。
+- **④ 定时任务**：折叠为 DisclosureRow，默认收起只留数量徽标；展开渲染原卡片（含全部行内操作，入口不删除）。
+- **⑤ 执行历史**：近期（≤24h）/存量（>24h）分界——chip 计数只算近期，391 条存量失败独立折叠「历史存量」，不再污染近期视图；工作区快块保持底部。
+
+**会话视图（`@silksec/ui-session`「安全产出」tab）**：
+
+- **专项区块置顶（全局常驻）**：不按会话过滤（专项是跨会话统筹实体）；本会话有该专项派生子任务的打「本会话相关」徽标；卡片含状态/自主级别/验收计数/预算条 + 跳链回看板。
+- **任务行专项归属 chip**：本会话任务中 campaign_id 非空的派生子任务标注「专项 <名称>」（此前派生任务 worker 执行 session_id 为空，在会话里完全不可见——现在经专项区块 + chip 双重可见）。
+
+**定时任务处置结论（未取消，仅折叠降级）**：#19/#37/#100007/#100008（vuln/vuln-deep 每日）已 blocked 且功能被专项替代——可取消但暂缓（blocked 已不调度，折叠后零干扰）；#16/#17（recon 每日）仍在喂 ledger 覆盖缺口数据，专项 Planner 依赖，**保留**；#24（每周知识复盘）独立职能，**保留**。
+
+**验收**：ui-task **20/20**（五区块布局 + 纯函数：默认视图/来源筛选/执行行集/历史分界）、ui-session **18/18**（专项区块全局常驻 + 徽标 + chip）；csai 部署 + 重启，accept PASS=45 FAIL=0。
