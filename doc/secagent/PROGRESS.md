@@ -17,6 +17,10 @@
 
 ## 二、最近进度结果
 
+### 2026-09-24 · 34 号补丁（运维）：DeepSeek 官方 API 移出 secagent 三池
+- 用户指示「当前托底的不是 deepseek 官方 API，先移出」：`pool-secagent`/`pool-secagent-lite`/`pool-secagent-heavy` 摘除 `deepseek-secagent` w1 成员（7→6 / 4→3 / 5→4），末位变为 OpenCode Go；渠道定义保留备加回；重启生效后实测 25 次请求全部走 SenseNova，官方命中 0。
+- 配置不在 git（keeper 线上 bellkeeper.yaml，已备份 .bak-20260924）；文档回填 [05-task §7.17](05-task.md)。注意：此后无付费托底，SenseNova 全员熔断时直接落 OpenCode Go，耗尽时靠供给归零自动降级兜底。
+
 ### 2026-09-24 · 34 号补丁：任务功能权限断点补齐——预算闸在线配置 / 专项归档·改目标·新建 / 任务备注（ui-task 24/24、task/approval 契约通过，accept PASS=45）
 - **断点梳理**（模型与 UI 此前都无法触发）：per-program 预算闸调整只读 env 需重启；专项归档/改 goal_spec 域命令未接 RPC；Dashboard 无法新建专项（种子任务场景，如 Campaign #3 建种子）——现已全部补齐。
 - **预算闸在线化**：`task_settings` KV 表 + `budgetConfigOf`（DB 优先/env 兜底，source 标记）+ approval 新 kind `task-budget-config`（批准即落库生效，无需重启）+ UI 预算卡（提请走审批）。task_create 停派判定同步改用 DB 配置，错误消息带配置来源。

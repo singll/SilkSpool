@@ -1160,3 +1160,15 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **缺口 3（升档通道全断）**：`campaign-autonomy` 校验 + effect 都要求 draft/paused——专项一旦运行中被自动降级，升档提请被拒（`E_INVARIANT`），UI 也没有任何提请入口，用户自然「看不到审批」。修复：① validate/effect 放宽为 active/reviewing 且 autonomy<2 可提请（已是 L2 重复提请才拒）；② effect `campaign_autonomy_apply` 对 active/reviewing 只落 autonomy 不动 status（draft/paused 才顺带激活），发新事件 `task.campaign.autonomy.changed`（事件表 + 命令契约 events 同步声明，否则 effect 报「事件未在命令契约中声明」）；③ 看板 RPC 新增 `campaignAutonomyRequest`（dashboard actor 提请，自动带 campaign_id/autonomy=2/budget 证据）；④ 专项卡片 L1 且非 draft/archived 时显示「⬆L2」按钮，点击提请并提示到审批面板批准。
 - **契约**：approval +3（active/L1 提请升 L2 落档不动 status、已是 L2 拒、reviewing 豁免 80% 校验）、task +1（reviewing 自动提请 budget-extend）、ui-task +1（⬆L2 按钮渲染）；22 号旧断言「非 draft/paused 升档被拒」按新语义更新。
 - **验收**：csai 部署（setup + 重启），accept PASS=45 FAIL=0；线上实测 request #45（campaign#2 升 L2）经新通道成功进入 pending。
+
+### 7.17 2026-09-24 34 号补丁回填（DeepSeek 官方 API 移出 secagent 三池）
+
+> 用户指示：「当前托底的不是 deepseek 官方 API，先把官方 API 从池子里移出」。原 29 号方案池序中 `deepseek-secagent`（官方 api.deepseek.com，付费）以 w1 作为三池末位托底，本轮整体摘除。
+
+- **变更（keeper 线上 `bellkeeper.yaml`，git 外的运维配置；已备份 `bellkeeper.yaml.bak-20260924`）**：
+  - `pool-secagent`：摘除 `deepseek-secagent/deepseek-v4-flash (w1)`——末位变为 OpenCode Go v4-flash (w2)；7→6 成员。
+  - `pool-secagent-lite`：摘除同上；4→3 成员（末位 OpenCode Go v4-flash w2）。
+  - `pool-secagent-heavy`：摘除同上；5→4 成员（末位 OpenCode Go v4.1-flash w3）。
+  - `channels[].deepseek-secagent` **定义保留**（池外渠道不路由，备日后手动加回）；池 description 同步去掉「DeepSeek 官方托底」表述。
+- **生效路径**：`docker compose restart bellkeeper`（配置卷挂载，无需重建）。重启后实测：3 分钟内 secagent 流量 25 次全部命中 `sensenova-secagent`（200），`deepseek-secagent` 命中 **0**。
+- **当前优先级链（pool-secagent）**：SenseNova 免费优先 deepseek-flash w7 → glm-5.2 w6 → flash-lite w5 → ds-v4-flash w4 → **OpenCode Go v4.1-flash w3 → Go v4-flash w2（末位）**。注意：glm-5.2 当前已退出 SenseNova token 套餐（27 号根因 B），实际可用主力为 deepseek-flash / flash-lite / v4-flash；若 SenseNova 全员熔断将直接落到 OpenCode Go，无付费托底——额度耗尽时供给归零自动降级（23/30 号机制）兜底。
