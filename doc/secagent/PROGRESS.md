@@ -17,6 +17,15 @@
 
 ## 二、最近进度结果
 
+### 2026-09-24 · 30 号补丁：分原因自动回升 + budget_low 降级留痕修复（task 82/82，accept PASS=45）
+- **背景**：29 号方案上线后专项仍未恢复 L2。排查：三类降级（连败/供给归零/预算）均无自动回升通道，每次降级都需人工重批（23 号「降自动、升审批」设计的缺口）。
+- **分原因自动回升（tick 步骤 2.8，autoRecover）**：供给型 `llm_restored` 起稳定 15min（`SEC_CAMPAIGN_RECOVER_STABLE_MS`）升回 L2；连败型降级满 1h（`SEC_CAMPAIGN_RECOVER_FAIL_WINDOW_MS`）且无新 rejected 升回 L2；budget_low 型用量回落 <80% 升回 L2；budget_exhausted 型（reviewing）回落 <80% 自动回 active（autonomy 保持 L1，升 L2 仍走审批）。全部写 `autonomy_recovered`/`status_recovered` checkpoint，幂等只回升一次。
+- **振荡根因修复**：budget_low 预算闸原先降 autonomy 不写 autonomy_change → 回升后同 tick 又静默降回且无轨迹可回升（升→降→卡死振荡）。两处预算闸补 `autonomy_change(reason=budget_low)` 留痕；回升判据经实测死锁修正为 <80% 对称判据（闸判据会在 91–100% 水位永远升不回）。
+- **reviewing 进 tick**：campaign_tick 改为 active + reviewing 都进 tick（预算型自动恢复通道；reviewing 派生段本就被门控）。
+- **存量回填**：campaign#1 11:43 的 budget_low 降级人工补插 autonomy_change 回填轨迹。
+- **验收**：task 契约 82/82（+4）、rules 41/41、accept PASS=45 FAIL=0；线上实测 #1 连败型自动回升生效（`autonomy_recovered` checkpoint）。文档回填 [05-task §7.15](05-task.md)。
+- **遗留（机制正常，非缺陷）**：两专项窗口用量顶格（#1 911,990/1M、#2 1,040,735/1M）——需人工批准新一轮 budget-extend 或等 7 天滚动窗口回落，恢复全速。#1 自动提请受 12h 防抖抑制。
+
 ### 2026-09-24 · 29 号方案：LLM 供给链体检——动态重置时长 + 成员级恢复探针 + 真实额度观测 + 滚动额度窗口 + 池序调整（rules 41/41、task 78/78，accept PASS=45）
 - **背景**：用户反馈「SenseNova 积分剩 33 万+、Go 月度窗剩 60%+ 却反复降速/停派」。体检确认多层叠加：Go 5h 滚动窗 429 被一刀切 24h 熔断且无成员级探针；dsh 看不见成员级熔断；降速预警用 Bellkeeper 保守 rpd 桶口径而非真实额度。
 - **Bellkeeper（c52fc77/1ea0730/59b1aa3/c584618，已推送+keeper 重建部署）**：① 分类器解析 `"resets in N hours/minutes"` 动态熔断时长（月度维持 24h，无提示默认 5h）；② 成员级 quota 熔断探针（到期 10min 内 1-token 探回池），探针间隔 `probe_interval_minutes` 可配（默认/下限 10min，原 30min）；③ `quota_window_seconds` 滚动额度窗（SenseNova/Go 配 18000=5h，`SetQuotaWindow` Reload 平滑迁移计数）；④ 新增 `opencodego` balance provider（官方 `/v1/usage` 三窗口最紧剩余比例），`channels/status` 暴露 `quota_ratio_remaining`。

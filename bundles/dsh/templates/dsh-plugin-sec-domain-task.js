@@ -77,6 +77,11 @@ export function parseCampaignSupplyEnv(env = process.env) {
     slowFactor: ratio(e.SEC_CAMPAIGN_SUPPLY_SLOW_FACTOR, 0.4),
     probeTimeoutMs: num(e.SEC_CAMPAIGN_SUPPLY_PROBE_TIMEOUT_MS, 3000),
     probeMax: num(e.SEC_CAMPAIGN_SUPPLY_PROBE_MAX, 3),
+    // 30 号补丁（自动回升）：供给型降级在供给稳定恢复该时长后自动升回 L2；
+    // 连败型降级在该窗口无新 rejected 后自动升回 L2；预算型（reviewing）在
+    // 预算延长获批后用量跌回 80% 以下时自动转 active。0 = 关闭自动回升（人工审批）。
+    recoverStableMs: num(e.SEC_CAMPAIGN_RECOVER_STABLE_MS, 15 * 60000),
+    recoverFailWindowMs: num(e.SEC_CAMPAIGN_RECOVER_FAIL_WINDOW_MS, 3600000),
     deriveCapPerTick: num(e.SEC_CAMPAIGN_DERIVE_CAP_PER_TICK, 8),
     estimateTokensPerDraft: num(e.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT, 30000),
     defaultBudgetTokens: num(e.SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS, 2000000),
@@ -1315,6 +1320,107 @@ function makeHandlers(opts) {
     return null
   }
 
+  // ------------------------------------------------------------------
+  // 30 号补丁：分原因自动回升（2026-09-24）
+  //   供给型降级（reason=llm_supply_zero）：最近一次 llm_restored 起供给稳定
+  //     ≥ SEC_CAMPAIGN_RECOVER_STABLE_MS（默认 15min）→ 自动升回 L2。
+  //   连败型降级（reason=derive_fail_rate）：降级满 SEC_CAMPAIGN_RECOVER_FAIL_WINDOW_MS
+  //     （默认 1h）且该窗口内无新 rejected 验收 → 自动升回 L2。
+  //   预算降级（reason=budget_low，预算闸 L2→L1）：窗口用量回落 <80% → 自动升回 L2。
+  //   预算型停止（stop_condition/budget_exhausted 转 reviewing）：预算延长获批后
+  //     用量跌回 80% 以下 → 自动 active（L1 起草，升 L2 仍需人工审批）。
+  //   全部经 autonomy_recovered / status_recovered checkpoint 留痕，幂等防抖。
+  // ------------------------------------------------------------------
+
+  // budget_low 回升判据：窗口用量 < 80% 预算（与 budget_extend 80% 水位线对称）——
+  // 20% 缓冲足够跑若干 tick 派生，振荡概率极低；用闸判据（用量+预估≤预算）会在
+  // 91–100% 水位与降级死锁（永远升不回）。budget_tokens 未设则不可回升。
+  function budgetUsageLow(c, repo) {
+    if (c.budget_tokens == null || Number(c.budget_tokens) <= 0) return false
+    const windowMs = (Number(c.budget_window_days) || 7) * 86400000
+    const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
+    return { low: Number(usage.spent_tokens) < Number(c.budget_tokens) * 0.8, usage }
+  }
+
+  // 最近一次降级事件：{ reason, at }；降级后的 llm_restored 视为恢复起点。
+  function lastDemotion(repo, campaignId) {
+    let rows = []
+    try { rows = repo.listCheckpoints(campaignId, 50) } catch { return null }
+    let restoredAt = 0 // 最新一条 llm_restored（新→旧扫描，首次命中即最新）
+    for (const r of rows) {
+      if (r.kind === 'autonomy_recovered' || r.kind === 'status_recovered') return null // 已回升过
+      if (r.kind === 'llm_restored') { if (!restoredAt) restoredAt = Number(r.created_at) || 0; continue }
+      if (r.kind === 'autonomy_change') {
+        const p = parseJsonSafe(r.payload, {})
+        let reason = String(p.reason || '')
+        if (!reason) {
+          const s = String(r.summary || '')
+          if (s.includes('供给归零')) reason = 'llm_supply_zero'
+          else if (s.includes('连败')) reason = 'derive_fail_rate'
+          else reason = 'manual'
+        }
+        if (reason === 'manual') continue // 人工降级不自动回升
+        return { kind: 'autonomy', reason, at: Number(r.created_at) || 0, restoredAt }
+      }
+      if (r.kind === 'stop_condition') {
+        const p = parseJsonSafe(r.payload, {})
+        if (String(p.reason || '') === 'budget_exhausted') return { kind: 'budget', reason: 'budget_exhausted', at: Number(r.created_at) || 0 }
+      }
+    }
+    return null
+  }
+
+  function autoRecover(repo, c, supply, summary) {
+    const events = []
+    const stableMs = supplyEnv.recoverStableMs
+    const failWindowMs = supplyEnv.recoverFailWindowMs
+    if (!stableMs && !failWindowMs) return events // 双双关闭
+    const dem = lastDemotion(repo, c.id)
+    if (!dem) return events
+    const now = Date.now()
+    if (dem.kind === 'budget') {
+      // reviewing 专项：预算延长获批后用量跌回 80% → 自动转 active
+      if (c.status !== 'reviewing' || c.budget_tokens == null || Number(c.budget_tokens) <= 0) return events
+      const windowMs = (Number(c.budget_window_days) || 7) * 86400000
+      const usage = repo.campaignUsage(c.id, now - windowMs)
+      if (Number(usage.spent_tokens) < Number(c.budget_tokens) * 0.8) {
+        repo.updateCampaign(c.id, { status: 'active' }, 'reviewing')
+        const cp = writeCheckpoint(repo, c.id, 'status_recovered', `预算水位回落（${usage.spent_tokens}/${c.budget_tokens} < 80%），自动恢复 active（autonomy 保持 L1，升 L2 走审批）`, { spent_tokens: Number(usage.spent_tokens), budget_tokens: Number(c.budget_tokens) })
+        events.push(...cp.events)
+        events.push({ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: 'reviewing', to: 'active', cause: 'budget_recovered' } })
+        summary.escalated++
+      }
+      return events
+    }
+    // autonomy 降级回升（active 或 reviewing 都可——reviewing 由预算型先行恢复）
+    if (Number(c.autonomy) >= 2) return events
+    if (dem.reason === 'llm_supply_zero') {
+      if (supply.supply_factor < 1) return events // 供给未全速，继续观察
+      const restoredAt = dem.restoredAt
+      if (!restoredAt || now - restoredAt < stableMs) return events
+      repo.updateCampaign(c.id, { autonomy: 2 })
+      const cp = writeCheckpoint(repo, c.id, 'autonomy_recovered', `供给稳定恢复 ${Math.round((now - restoredAt) / 60000)} 分钟，L1 自动升回 L2`, { reason: dem.reason, stable_minutes: Math.round(stableMs / 60000) })
+      events.push(...cp.events)
+      summary.escalated++
+    } else if (dem.reason === 'derive_fail_rate') {
+      if (now - dem.at < failWindowMs) return events
+      const decisions = repo.listCampaignDecisions(c.id, 'rejected', 50, 0)
+      if (decisions.some((d) => Number(d.created_at || 0) >= dem.at)) return events // 降级后仍有新 rejected
+      repo.updateCampaign(c.id, { autonomy: 2 })
+      const cp = writeCheckpoint(repo, c.id, 'autonomy_recovered', `连败窗口 ${Math.round(failWindowMs / 60000)} 分钟无新 rejected，L1 自动升回 L2`, { reason: dem.reason, window_minutes: Math.round(failWindowMs / 60000) })
+      events.push(...cp.events)
+      summary.escalated++
+    } else if (dem.reason === 'budget_low') {
+      const b = budgetUsageLow(c, repo)
+      if (!b.low) return events // 水位仍 ≥80%，继续 L1 观察
+      repo.updateCampaign(c.id, { autonomy: 2 })
+      const cp = writeCheckpoint(repo, c.id, 'autonomy_recovered', `预算水位回落（已用 ${b.usage.spent_tokens}/${c.budget_tokens} < 80%），L1 自动升回 L2`, { reason: dem.reason, spent_tokens: Number(b.usage.spent_tokens), budget_tokens: Number(c.budget_tokens) })
+      events.push(...cp.events)
+      summary.escalated++
+    }
+    return events
+  }
+
   // 供给变化留痕（幂等防抖：同状态不重复发；factor=0 首次发 task.campaign.escalated）
   function recordSupplyTransition(repo, c, supply) {
     const events = []
@@ -1337,7 +1443,7 @@ function makeHandlers(opts) {
         if (!prev || prev.factor !== 0) events.push({ name: 'task.campaign.escalated', payload: { campaign_id: c.id, kind: 'llm_throttled', summary: 'LLM 池额度熔断中，专项停派；Bellkeeper 探针恢复后自动回弹', payload: { supply_factor: 0, checkpoint_id: cp.id } } })
         if (Number(c.autonomy) >= 2) {
           repo.updateCampaign(c.id, { autonomy: 1 })
-          const ac = writeCheckpoint(repo, c.id, 'autonomy_change', 'LLM 供给归零，L2 自动降级为 L1（恢复后不自动升回，需人工 review_pass）', { supply_factor: 0 })
+          const ac = writeCheckpoint(repo, c.id, 'autonomy_change', 'LLM 供给归零，L2 自动降级为 L1（供给稳定恢复 SEC_CAMPAIGN_RECOVER_STABLE_MS 后自动升回 L2）', { supply_factor: 0, reason: 'llm_supply_zero' })
           events.push(...ac.events)
         }
       }
@@ -1521,8 +1627,13 @@ function makeHandlers(opts) {
     const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
     const estimate = Number(draftCount || 0) * CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT
     if (Number(usage.spent_tokens) + estimate <= Number(c.budget_tokens)) return { blocked: false, usage }
-    repo.insertCheckpoint({ campaign_id: c.id, kind: 'budget_low', summary: `专项预算触顶：窗口已用 ${usage.spent_tokens}/${c.budget_tokens} tokens（本单预估 ${estimate}），停派`, payload: usage })
-    if (Number(c.autonomy) >= 2) repo.updateCampaign(c.id, { autonomy: 1 })
+  repo.insertCheckpoint({ campaign_id: c.id, kind: 'budget_low', summary: `专项预算触顶：窗口已用 ${usage.spent_tokens}/${c.budget_tokens} tokens（本单预估 ${estimate}），停派`, payload: usage })
+  // 30 号补丁：budget_low 降级补 autonomy_change 留痕（reason=budget_low），
+  // 水位回落 <80% 后由 autoRecover 自动升回 L2——否则与回升机制振荡。
+  if (Number(c.autonomy) >= 2) {
+    repo.updateCampaign(c.id, { autonomy: 1 })
+    repo.insertCheckpoint({ campaign_id: c.id, kind: 'autonomy_change', summary: '专项预算将触顶，L2 自动降级为 L1（水位回落 <80% 后自动升回 L2）', payload: { reason: 'budget_low' } })
+  }
     return { blocked: true, code: 'E_CAMPAIGN_BUDGET_LOW', message: `专项 #${c.id} 窗口预算不足（已用 ${usage.spent_tokens}/${c.budget_tokens}）` }
   }
 
@@ -1647,7 +1758,12 @@ function makeHandlers(opts) {
       const estimate = allowed.length * CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT
       if (Number(usage.spent_tokens) + estimate > Number(c.budget_tokens)) {
         writeCheckpoint(repo, c.id, 'budget_low', `专项预算将触顶：窗口已用 ${usage.spent_tokens}/${c.budget_tokens} tokens，本 tick 停派`, { usage })
-        if (Number(c.autonomy) >= 2) repo.updateCampaign(c.id, { autonomy: 1 })
+        // 30 号补丁：budget_low 降级补 autonomy_change 留痕（reason=budget_low），
+        // 水位回落 <80% 后由 autoRecover 自动升回 L2——否则与回升机制振荡。
+        if (Number(c.autonomy) >= 2) {
+          repo.updateCampaign(c.id, { autonomy: 1 })
+          writeCheckpoint(repo, c.id, 'autonomy_change', '专项预算将触顶，L2 自动降级为 L1（水位回落 <80% 后自动升回 L2）', { reason: 'budget_low' })
+        }
         if (explicit) throwErr('E_CAMPAIGN_BUDGET_LOW', `专项 #${c.id} 窗口预算不足（已用 ${usage.spent_tokens}/${c.budget_tokens}）`, '等待窗口滚动或 campaign-budget-extend 审批后重试', false)
         result.dropped.push({ reason: 'budget_low' })
         return result
@@ -1714,11 +1830,11 @@ function makeHandlers(opts) {
           events.push(...cp.events); summary.escalated++
         } else if (a.kind === 'derive_fail_rate') {
           repo.updateCampaign(c.id, { autonomy: 1 })
-          const cp = writeCheckpoint(repo, c.id, 'autonomy_change', '连败速率超阈值，L2 自动降级为 L1', {})
+          const cp = writeCheckpoint(repo, c.id, 'autonomy_change', '连败速率超阈值，L2 自动降级为 L1', { reason: 'derive_fail_rate' })
           events.push(...cp.events)
         } else if (a.kind === 'stop_condition') {
           repo.updateCampaign(c.id, { status: 'reviewing' }, 'active')
-          const cp = writeCheckpoint(repo, c.id, 'stop_condition', `停止条件命中（${a.reason}），转 reviewing 待人审（不自动 archive）`, { reason: a.reason })
+          const cp = writeCheckpoint(repo, c.id, 'stop_condition', `停止条件命中（${a.reason}），转 reviewing 待人审（不自动 archive）`, { reason: a.reason || 'unknown' })
           events.push(...cp.events); summary.escalated++
         } else if (a.kind === 'budget_extend') {
           // 23 号方案 §3.6：Supervisor 自动提请预算延长（request_actors 含 scheduler，tick 路径合规）
@@ -1776,6 +1892,10 @@ function makeHandlers(opts) {
       summary.supply_factor = supply.supply_factor
       events.push(...recordSupplyTransition(repo, c, supply))
     } catch (e) { summary.skipped.push({ step: 'supply', error: String(e?.message || e) }) }
+    // 2.8) 30 号补丁：分原因自动回升（供给稳定/连败窗口无新 rejected/预算回落）
+    try {
+      events.push(...autoRecover(repo, c, supply, summary))
+    } catch (e) { summary.skipped.push({ step: 'auto_recover', error: String(e?.message || e) }) }
     // 3) Planner + Dispatcher（autonomy≥1 且 active）
     if (c.status === 'active' && Number(c.autonomy) >= 1) {
       try {
@@ -2485,7 +2605,11 @@ function makeHandlers(opts) {
         if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
         rows = [c]
       } else {
-        rows = repo.listCampaignsWhere({ status: 'active' }, Number(args.limit) || CAMPAIGN_TICK_LIMIT, 0)
+        // 30 号补丁：reviewing 也进 tick——预算型停止条件在延长获批后须能自动回 active；
+        // reviewing 专项的 Planner/Dispatcher 段本就被 status!=='active' 门控，不产副作用。
+        const limit = Number(args.limit) || CAMPAIGN_TICK_LIMIT
+        rows = repo.listCampaignsWhere({ status: 'active' }, limit, 0)
+          .concat(repo.listCampaignsWhere({ status: 'reviewing' }, limit, 0))
       }
       const summaries = []
       const events = []

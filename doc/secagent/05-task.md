@@ -1132,3 +1132,20 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 **验收**：Bellkeeper 单测全绿（errors 8 例 + balance 2 例 + llmgateway 滚动窗/迁移）；dsh rules 契约 41/41（新增成员级熔断 5 断言 + 真实额度 3 断言）、task 契约 78/78；csai 部署重启 NRestarts=0，accept PASS=45 FAIL=0；线上 checkpoint 连续 `llm_restored(factor=1.0)`；三池冒烟 200（主力 deepseek-flash / lite flash-lite / heavy glm-5.2）；Go 渠道 `quota_ratio_remaining=0.6` 实时可见。
 
 **遗留**：① SenseNova 真实积分池仍无 API 可观测（控制台人工看）；② 渠道级连败熔断（5 连非配额错误）仍是渠道粒度——频次低暂不细化，复发再评估；③ Go 周/月窗口耗尽时的 24h+ 熔断仍靠「resets in N days→long」+ 10min 探针兜底恢复。
+
+### 7.15 2026-09-24 30 号补丁回填（分原因自动回升 + budget_low 降级留痕修复 + reviewing 进 tick）
+
+> 动机：29 号方案上线后专项仍未恢复 L2。排查确认三类降级（连败速率 / 供给归零 / 预算触顶与预算型停止）**均无自动回升通道**——23 号方案有意设计为「降自动、升审批」，导致每次降级都需人工重批，故障期后专项长期卡 L1/reviewing。30 号补丁在保留审批升级通道的前提下，为可自动判定的恢复条件补齐自动回升。
+
+- **分原因自动回升（`autoRecover`，tick 步骤 2.8）**：`lastDemotion` 逆序扫 checkpoint 定位最近一次降级事件并分类（payload `reason` 优先，存量无 reason 按 summary 关键词回填分类，人工降级跳过）：
+  - `llm_supply_zero`：最近一次 `llm_restored` 起供给稳定满 `SEC_CAMPAIGN_RECOVER_STABLE_MS`（默认 **15min**）且 factor=1.0 → L1 升回 L2；
+  - `derive_fail_rate`：降级满 `SEC_CAMPAIGN_RECOVER_FAIL_WINDOW_MS`（默认 **1h**）且窗口内无新 rejected → 升回 L2；
+  - `budget_low`（预算闸 L2→L1）：窗口用量回落 **<80%**（与 80% 爬坡水位线对称，20% 缓冲）→ 升回 L2；
+  - `budget_exhausted`（stop_condition 转 reviewing）：延长获批后用量回落 <80% → status 自动回 active（**autonomy 保持 L1，升 L2 仍走审批**），并发 `task.campaign.status.changed(cause=budget_recovered)`。
+  - 全部写 `autonomy_recovered`/`status_recovered` checkpoint 留痕；`lastDemotion` 遇 recovered 记录即返回 null——**幂等防抖，回升只发生一次**，再次被降级后新一轮计时。
+- **budget_low 降级留痕修复（振荡根因）**：预算闸（显式 `campaignBudgetGate` + tick `dispatchDrafts`）原先把 autonomy 降 L1 却**只写 budget_low、不写 autonomy_change**——回升后同 tick 预算闸又静默降回，且 `lastDemotion` 找不到轨迹永不回升，形成「升→降→卡死」振荡。修复：两处预算闸降级均补 `autonomy_change(reason=budget_low)`；回升判据初版用闸判据（用量+预估≤预算）实测会在 91–100% 水位与降级死锁，改 <80% 对称判据。
+- **reviewing 进 tick**：`campaign_tick` 由仅 active 改为 active + reviewing 都进 tick——预算型停止在延长获批后须能自动回 active；reviewing 的 Planner/Dispatcher 段本就被 `status!=='active'` 门控，无派生副作用。
+- **存量回填**：campaign#1 的 11:43 budget_low 降级（无 autonomy_change 留痕）人工补插 `autonomy_change(reason=budget_low, backfilled=true)` 恢复回升轨迹。
+- **契约（task 82/82 全绿）**：「连败型满窗无新 rejected 升回 L2 + 幂等」「窗口内有新 rejected 不升」「预算型 reviewing 回落 <80% 回 active（autonomy 保持 L1）」「budget_low 回落升回 / ≥80% 不升」。
+- **验收**：csai 部署（setup + 重启 NRestarts=0），accept PASS=45 FAIL=0；线上实测 campaign#1 连败型自动回升生效（checkpoint `autonomy_recovered: 连败窗口 60 分钟无新 rejected，L1 自动升回 L2`）。
+- **遗留（机制按设计工作，非代码问题）**：两专项窗口用量仍顶格（#1 911,990/1M、#2 1,040,735/1M）——budget_low/budget_exhausted 停派与 L1 停留属正确保护；恢复全速须人工批准新一轮 `campaign-budget-extend`（#1 的自动提请受 12h 防抖抑制）或等 7 天滚动窗口自然回落。

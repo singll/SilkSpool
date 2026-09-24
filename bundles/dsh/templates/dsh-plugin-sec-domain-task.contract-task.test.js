@@ -1806,3 +1806,109 @@ test('23 §3.6: Supervisor 预算达 80% 自动提请 campaign-budget-extend', a
   assert.equal(tk.ok, true, tk.error?.message)
   assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_extend_request'").get(cid), '应自动提请预算延长并留痕')
 })
+
+// ---------------------------------------------------------------------------
+// 30 号补丁（2026-09-24）：分原因自动回升
+//   连败型：降级满窗口且无新 rejected → L1 自动升 L2（autonomy_recovered）
+//   窗口内有新 rejected → 不升
+//   预算型：reviewing 且用量回落 <80% → status_recovered 回 active
+// ---------------------------------------------------------------------------
+
+function injectDemotion(bus, cid, { kind, payload, ageMs }) {
+  bus._internal.db().prepare("INSERT INTO campaign_checkpoints (campaign_id, kind, summary, payload, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run(cid, kind, kind === 'autonomy_change' ? '连败速率超阈值，L2 自动降级为 L1' : '停止条件命中（budget_exhausted），转 reviewing 待人审（不自动 archive）', JSON.stringify(payload), Date.now() - ageMs)
+}
+
+test('30 §自动回升: 连败型降级满窗口且无新 rejected → 自动升回 L2（autonomy_recovered 留痕）', async () => {
+  const { bus } = makeEnv()
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'r1.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '回升-连败', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  injectDemotion(bus, cid, { kind: 'autonomy_change', payload: { reason: 'derive_fail_rate' }, ageMs: 3700000 }) // 61min 前降级
+  bus._internal.db().prepare('UPDATE campaigns SET autonomy=1 WHERE id=?').run(cid)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT autonomy FROM campaigns WHERE id=?').get(cid).autonomy, 2, '满窗口无新 rejected 应升回 L2')
+  const cp = bus._internal.db().prepare("SELECT payload FROM campaign_checkpoints WHERE campaign_id=? AND kind='autonomy_recovered'").get(cid)
+  assert.ok(cp, '须写 autonomy_recovered 留痕')
+  assert.equal(JSON.parse(cp.payload).reason, 'derive_fail_rate')
+  // 幂等：再 tick 不重复回升（autonomy_recovered 阻断 lastDemotion）
+  const tk2 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk2.ok, true, tk2.error?.message)
+  assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM campaign_checkpoints WHERE campaign_id=? AND kind='autonomy_recovered'").get(cid).n, 1, '回升只发生一次')
+})
+
+test('30 §自动回升: 连败型降级后窗口内有新 rejected → 不升回 L2', async () => {
+  const { bus } = makeEnv()
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'r2.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '回升-连败-阻断', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  injectDemotion(bus, cid, { kind: 'autonomy_change', payload: { reason: 'derive_fail_rate' }, ageMs: 3700000 })
+  bus._internal.db().prepare('UPDATE campaigns SET autonomy=1 WHERE id=?').run(cid)
+  // 降级之后仍有新 rejected（created_at > 降级时刻）
+  bus._internal.db().prepare("INSERT INTO campaign_decisions (campaign_id, task_id, verdict, evidence, goal_delta, decided_by, created_at) VALUES (?, 99991, 'rejected', '[]', NULL, 'reviewer', ?)")
+    .run(cid, Date.now() - 1800000)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT autonomy FROM campaigns WHERE id=?').get(cid).autonomy, 1, '窗口内有新 rejected 不得升回')
+  assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM campaign_checkpoints WHERE campaign_id=? AND kind='autonomy_recovered'").get(cid).n, 0)
+})
+
+test('30 §自动回升: 预算型 reviewing 用量回落 <80% → status_recovered 回 active（autonomy 保持 L1）', async () => {
+  const { bus } = makeEnv()
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'r3.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '回升-预算', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 2000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  injectDemotion(bus, cid, { kind: 'stop_condition', payload: { reason: 'budget_exhausted' }, ageMs: 3600000 })
+  bus._internal.db().prepare("UPDATE campaigns SET status='reviewing', autonomy=1 WHERE id=?").run(cid)
+  // 延长获批后窗口用量回落到 1M（=50% < 80%）
+  bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, spent_tokens, campaign_id) VALUES ('test-src', '用量', 5, '', 'done', ?, ?, 1000000, ?)")
+    .run(Date.now(), Date.now(), cid)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT status FROM campaigns WHERE id=?').get(cid).status, 'active', '用量回落应自动回 active')
+  assert.equal(bus._internal.db().prepare('SELECT autonomy FROM campaigns WHERE id=?').get(cid).autonomy, 1, 'autonomy 保持 L1，升 L2 走审批')
+  assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='status_recovered'").get(cid), '须写 status_recovered 留痕')
+  const evt = bus._internal.db().prepare("SELECT payload FROM event_outbox WHERE domain='task'").all().map((o) => JSON.parse(o.payload)).find((e) => e.name === 'task.campaign.status.changed' && e.payload.cause === 'budget_recovered')
+  assert.ok(evt && evt.payload.from === 'reviewing' && evt.payload.to === 'active', '须发 status.changed(budget_recovered) 事件')
+})
+
+test('30 §自动回升: budget_low 降级水位回落 <80% → 自动升回 L2；≥80% 水位则不升', async () => {
+  const { bus } = makeEnv()
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'r4.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '回升-预算闸', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 1000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 2 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  injectDemotion(bus, cid, { kind: 'autonomy_change', payload: { reason: 'budget_low' }, ageMs: 120000 })
+  bus._internal.db().prepare('UPDATE campaigns SET autonomy=1 WHERE id=?').run(cid)
+  // 场景一：用量 95%（≥80% 水位线）→ 不升
+  const t1 = bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, spent_tokens, campaign_id) VALUES ('test-src', '用量', 5, '', 'done', ?, ?, 950000, ?)")
+    .run(Date.now(), Date.now(), cid)
+  const tk1 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk1.ok, true, tk1.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT autonomy FROM campaigns WHERE id=?').get(cid).autonomy, 1, '≥80% 水位不得升回')
+  assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM campaign_checkpoints WHERE campaign_id=? AND kind='autonomy_recovered'").get(cid).n, 0)
+  // 场景二：用量回落到 50%（<80%）→ 升回 L2
+  bus._internal.db().prepare('UPDATE tasks SET spent_tokens=500000 WHERE id=?').run(t1.lastInsertRowid)
+  const tk2 = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk2.ok, true, tk2.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT autonomy FROM campaigns WHERE id=?').get(cid).autonomy, 2, '水位回落应升回 L2')
+  const cp = bus._internal.db().prepare("SELECT payload FROM campaign_checkpoints WHERE campaign_id=? AND kind='autonomy_recovered'").get(cid)
+  assert.ok(cp, '须写 autonomy_recovered 留痕')
+  assert.equal(JSON.parse(cp.payload).reason, 'budget_low')
+})
