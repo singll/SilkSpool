@@ -1912,3 +1912,22 @@ test('30 §自动回升: budget_low 降级水位回落 <80% → 自动升回 L2�
   assert.ok(cp, '须写 autonomy_recovered 留痕')
   assert.equal(JSON.parse(cp.payload).reason, 'budget_low')
 })
+
+test('31 §自动爬坡: reviewing（budget_exhausted 停止）专项继续自动提请 budget-extend', async () => {
+  const { bus } = makeEnv()
+  const appReg = registerApprovalStub(bus)
+  assert.equal(appReg.reg.ok, true, JSON.stringify(appReg.reg.error))
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '爬坡-reviewing', program_ids: ['test-src'], autonomy: 1, approval_id: 1, budget_tokens: 100000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  // 模拟 budget_exhausted 转 reviewing + 窗口用量 ≥80%
+  bus._internal.db().prepare("UPDATE campaigns SET status='reviewing' WHERE id=?").run(cid)
+  bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, spent_tokens, campaign_id) VALUES ('test-src', '用量', 5, '', 'done', ?, ?, 85000, ?)")
+    .run(Date.now(), Date.now(), cid)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_extend_request'").get(cid), 'reviewing 也须自动提请预算延长（用户要能在审批面板看到）')
+})

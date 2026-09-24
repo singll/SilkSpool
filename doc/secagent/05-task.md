@@ -1149,3 +1149,14 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **契约（task 82/82 全绿）**：「连败型满窗无新 rejected 升回 L2 + 幂等」「窗口内有新 rejected 不升」「预算型 reviewing 回落 <80% 回 active（autonomy 保持 L1）」「budget_low 回落升回 / ≥80% 不升」。
 - **验收**：csai 部署（setup + 重启 NRestarts=0），accept PASS=45 FAIL=0；线上实测 campaign#1 连败型自动回升生效（checkpoint `autonomy_recovered: 连败窗口 60 分钟无新 rejected，L1 自动升回 L2`）。
 - **遗留（机制按设计工作，非代码问题）**：两专项窗口用量仍顶格（#1 911,990/1M、#2 1,040,735/1M）——budget_low/budget_exhausted 停派与 L1 停留属正确保护；恢复全速须人工批准新一轮 `campaign-budget-extend`（#1 的自动提请受 12h 防抖抑制）或等 7 天滚动窗口自然回落。
+
+### 7.16 2026-09-24 31 号补丁回填（提额 ×10 + 升档/延长审批通道修复 + UI 升档入口）
+
+> 动机：用户「给额度翻十倍」+「看不到人工审批，是不是升级的审批没有成功发送」。排查确认：自动爬坡（#41/#44 两条 budget-extend）其实**成功发送且已批准**，但此后因三重缺口再也没出现在审批面板。
+
+- **额度提额（管理员直改）**：campaign#1/#2 `budget_tokens` 1,000,000 → **10,000,000**（×10），跳过分轮爬坡审批（审批校验单次延长 ≤ 原预算×2，翻 10 倍要 5 轮），写 milestone checkpoint 审计留痕。提额后下一 tick 30 号补丁自动回升链路闭环生效：#1 `autonomy_recovered` 升回 L2；#2 `status_recovered` 回 active（autonomy 保持 L1，升 L2 走审批——request #45 已提请）。
+- **缺口 1（reviewing 不自动提请预算延长）**：`superviseCampaign` 预算段原先只在 `status==='active'` 跑——budget_exhausted 转 reviewing 后自动提请通道被堵死，用户在看板永远看不到 pending。修复：active + reviewing 都跑预算段（stop_condition 动作仍仅 active，避免重复触发）。
+- **缺口 2（approval 校验堵死延长）**：`campaign-budget-extend` 校验要求 `spent_tokens ≥ budget×0.8`（台账口径）；reviewing 专项窗口用量必然 ≥100%，台账口径不一致时会被误拒。修复：reviewing 豁免 80% 水位校验。
+- **缺口 3（升档通道全断）**：`campaign-autonomy` 校验 + effect 都要求 draft/paused——专项一旦运行中被自动降级，升档提请被拒（`E_INVARIANT`），UI 也没有任何提请入口，用户自然「看不到审批」。修复：① validate/effect 放宽为 active/reviewing 且 autonomy<2 可提请（已是 L2 重复提请才拒）；② effect `campaign_autonomy_apply` 对 active/reviewing 只落 autonomy 不动 status（draft/paused 才顺带激活），发新事件 `task.campaign.autonomy.changed`（事件表 + 命令契约 events 同步声明，否则 effect 报「事件未在命令契约中声明」）；③ 看板 RPC 新增 `campaignAutonomyRequest`（dashboard actor 提请，自动带 campaign_id/autonomy=2/budget 证据）；④ 专项卡片 L1 且非 draft/archived 时显示「⬆L2」按钮，点击提请并提示到审批面板批准。
+- **契约**：approval +3（active/L1 提请升 L2 落档不动 status、已是 L2 拒、reviewing 豁免 80% 校验）、task +1（reviewing 自动提请 budget-extend）、ui-task +1（⬆L2 按钮渲染）；22 号旧断言「非 draft/paused 升档被拒」按新语义更新。
+- **验收**：csai 部署（setup + 重启），accept PASS=45 FAIL=0；线上实测 request #45（campaign#2 升 L2）经新通道成功进入 pending。

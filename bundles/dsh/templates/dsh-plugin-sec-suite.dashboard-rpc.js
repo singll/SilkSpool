@@ -647,6 +647,23 @@ export async function handleDashboardRpc(endpoint, payload) {
       const r = await busDispatch('task', 'campaign_tick_now', { campaign_id: id }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
       return { ok: true, ...(r.data || {}) }
     }
+    // 31 号补丁：专项 L1→L2 升档入口（自动降级后恢复的唯一合规通道 = campaign-autonomy 审批；
+    // 此前 UI 无入口，用户只能看降级看不到提请）
+    case 'campaignAutonomyRequest': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignAutonomyRequest 需要 id')
+      const get = await busQuery('task', 'campaign_get', { id })
+      const c = get && get.data ? get.data : null
+      if (!c) throw new Error(`专项 #${id} 不存在`)
+      if (Number(c.autonomy) >= 2) return { ok: true, already: true, autonomy: Number(c.autonomy) }
+      if (['draft', 'archived'].includes(String(c.status))) throw new Error(`专项 #${id} 状态 ${c.status}，不支持升档提请（draft 走激活审批）`)
+      const r = await busDispatch('approval', 'request', {
+        kind: 'campaign-autonomy', subject: c.name,
+        payload: { campaign_id: id, autonomy: 2 },
+        evidence: `专项 #${id}「${c.name}」当前 L1（可能因自动降级），人工提请升回 L2 有界自动（budget=${c.budget_tokens ?? '—'}）。`,
+      }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, request_id: r.data?.request_id ?? null, ...(r.data || {}) }
+    }
     // 24 号方案 §3.0：专项运行报告三透传（纯读/纯透传，不改任何域命令语义）
     case 'campaignProgress': {
       const id = Number(p.id)

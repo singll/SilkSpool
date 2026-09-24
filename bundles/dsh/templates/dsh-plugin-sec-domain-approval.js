@@ -219,7 +219,9 @@ export const APPROVAL_KINDS = {
       const c = await deps.campaignGet(subject)
       if (c === 'unavailable') return { code: 'E_INTERNAL', message: 'task 域查询不可达，无法核验专项状态', hint: '总线/域暂不可用——稍后重试提请（fail-closed）' }
       if (!c) return { code: 'E_INVARIANT', message: `专项不存在: ${subject}`, hint: '核对 campaign_list' }
-      if (!['draft', 'paused'].includes(c.status)) return { code: 'E_INVARIANT', message: `专项 #${c.id} 状态 ${c.status}，仅 draft/paused 可升档激活`, hint: '先 pause 或新建专项' }
+      // 31 号补丁：active/reviewing 且 autonomy<2 允许升档提请（自动降级后恢复 L2 的合规通道）——
+      // 否则一旦运行中被降级，draft/paused 限定把升档通道彻底堵死（UI 永远看不到可提请入口）。
+      if (!['draft', 'paused'].includes(c.status) && Number(c.autonomy) >= 2) return { code: 'E_INVARIANT', message: `专项 #${c.id} 状态 ${c.status} 且已是 L2，无须升档`, hint: 'L2 专项无须重复提请' }
       if (autonomy === 2 && !(Number(c.budget_tokens) > 0)) return { code: 'E_INVARIANT', message: '升 L2 需专项已设 budget_tokens（INV-C4）', hint: '先经 campaign-budget-extend 或重建带预算' }
       return null
     },
@@ -240,7 +242,9 @@ export const APPROVAL_KINDS = {
       if (c === 'unavailable') return { code: 'E_INTERNAL', message: 'task 域查询不可达，无法核验专项预算', hint: '总线/域暂不可用——稍后重试提请（fail-closed）' }
       if (!c) return { code: 'E_INVARIANT', message: `专项不存在: ${subject}`, hint: '核对 campaign_list' }
       if (!(Number(c.budget_tokens) > 0)) return { code: 'E_INVARIANT', message: '专项无预算基准，无须延长', hint: '先设 budget_tokens' }
-      if (Number(c.spent_tokens) < Number(c.budget_tokens) * 0.8) return { code: 'E_INVARIANT', message: `当前 spent=${c.spent_tokens} 未达 budget×0.8（${Math.floor(Number(c.budget_tokens) * 0.8)}）`, hint: '未接近耗尽无须延长' }
+      // 31 号补丁：reviewing（budget_exhausted 停止）专项豁免 80% 水位校验——
+      // 该场景用量必然 ≥100%，若校验窗口口径不同会被误拒，堵死「获批→恢复」通道。
+      if (c.status !== 'reviewing' && Number(c.spent_tokens) < Number(c.budget_tokens) * 0.8) return { code: 'E_INVARIANT', message: `当前 spent=${c.spent_tokens} 未达 budget×0.8（${Math.floor(Number(c.budget_tokens) * 0.8)}）`, hint: '未接近耗尽无须延长' }
       if (add > Number(c.budget_tokens) * 2) return { code: 'E_INVARIANT', message: `延长量 ${add} 超原预算×2`, hint: '单次延长 ≤ 原 budget×2' }
       return null
     },

@@ -444,6 +444,9 @@ test('专项区块：卡片渲染（状态/自主级别/验收计数/预算/心�
   // 立即 tick 按钮（aria-label）
   const tickBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '立即 tick')[0]
   assert.ok(tickBtn, '专项卡片必须有「立即 tick」按钮')
+  // 31 号补丁：L1 卡片必须有「提请升档 L2」按钮（自动降级后恢复的合规入口）
+  const upBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '提请升档 L2')[0]
+  assert.ok(upBtn, 'L1 专项卡片必须有「提请升档 L2」按钮')
   // 点击卡片触发专项过滤（回调把 campaign_id 传给 TaskCenter 状态；假 useState 不调 setter，仅验证回调存在且带正确 id）
   const card = collect(tree, (n) => n.props && n.props.className === 'silksec-row' && typeof n.props.onClick === 'function' && String(textOf(n)).includes('美团SRC 持续挖掘'))[0]
   assert.ok(card, '专项卡片必须可点击（过滤其派生任务）')

@@ -17,6 +17,12 @@
 
 ## 二、最近进度结果
 
+### 2026-09-24 · 31 号补丁：额度提额 ×10 + 升档/延长审批通道修复 + UI 升档入口（accept PASS=45）
+- **额度**：campaign#1/#2 `budget_tokens` 1M → **10M**（×10 管理员直改 + milestone 审计；分轮爬坡审批单次 ≤×2 不适用）。提额后 30 号补丁自动回升闭环生效：#1 自动升回 **L2**（autonomy_recovered）；#2 自动回 **active**（status_recovered，L1 升 L2 走审批——**request #45 已进 pending 待批准**）。
+- **「看不到审批」根因（三重缺口，均修复）**：① reviewing 专项不跑预算段 → budget_exhausted 后自动爬坡提请通道堵死；② approval 的 budget-extend 校验 spent≥80%（台账口径）与窗口口径不一致会误拒 reviewing 延长 → reviewing 豁免；③ campaign-autonomy 校验+effect 限定 draft/paused → 运行中被自动降级的专项**升档提请被拒**且 UI 无入口（用户只能看降级看不到提请）。
+- **修复**：superviseCampaign 预算段覆盖 active+reviewing；approval 放宽升档状态约束（已是 L2 才拒）+ effect 对 active/reviewing 只落 autonomy 不动 status（新事件 `task.campaign.autonomy.changed` 声明进契约）；看板新增 `campaignAutonomyRequest` RPC + 专项卡片「⬆L2」按钮（L1 且非 draft/archived 显示，提请后去审批面板批准）。
+- **契约**：approval +3、task +1、ui-task +1；22 号旧断言按新语义更新。线上实测 #45 提请成功。文档回填 [05-task §7.16](05-task.md)。
+
 ### 2026-09-24 · 30 号补丁：分原因自动回升 + budget_low 降级留痕修复（task 82/82，accept PASS=45）
 - **背景**：29 号方案上线后专项仍未恢复 L2。排查：三类降级（连败/供给归零/预算）均无自动回升通道，每次降级都需人工重批（23 号「降自动、升审批」设计的缺口）。
 - **分原因自动回升（tick 步骤 2.8，autoRecover）**：供给型 `llm_restored` 起稳定 15min（`SEC_CAMPAIGN_RECOVER_STABLE_MS`）升回 L2；连败型降级满 1h（`SEC_CAMPAIGN_RECOVER_FAIL_WINDOW_MS`）且无新 rejected 升回 L2；budget_low 型用量回落 <80% 升回 L2；budget_exhausted 型（reviewing）回落 <80% 自动回 active（autonomy 保持 L1，升 L2 仍走审批）。全部写 `autonomy_recovered`/`status_recovered` checkpoint，幂等只回升一次。

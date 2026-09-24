@@ -548,7 +548,8 @@ export const TASK_MANIFEST = {
       schema: schema({ name: str({ minLength: 2 }), autonomy: int({ minimum: 1, maximum: 2 }), approval_id: int() }, ['name', 'autonomy', 'approval_id']),
       idempotent: 'natural',
       idempotent_natural: ['name', 'autonomy', 'approval_id'],
-      events: ['task.campaign.status.changed'],
+      // 31 号补丁：active/reviewing 落档（不激活）时发 autonomy.changed 事件
+      events: ['task.campaign.status.changed', 'task.campaign.autonomy.changed'],
       event_limit: 1,
       invariants: [],
       timeout_ms: 60000,
@@ -762,6 +763,8 @@ export const TASK_MANIFEST = {
     'task.campaign.task.derived': { payload: { type: 'object' }, redact: [] },
     'task.campaign.reviewed': { payload: { type: 'object' }, redact: [] },
     'task.campaign.escalated': { payload: { type: 'object' }, redact: [] },
+    // 31 号补丁：升档落 autonomy 不动 status 时发（自动降级后恢复 L2 的批准执行）
+    'task.campaign.autonomy.changed': { payload: { type: 'object' }, redact: [] },
   },
   subscribes: {
     'scope.granted': { handler: 'onScopeGranted', mode: 'async', as: 'reactor' },
@@ -1686,10 +1689,12 @@ function makeHandlers(opts) {
       actions.push({ kind: 'derive_fail_rate' })
     }
     // 停止条件（INV-C9）：预算耗尽 ⇒ 转 reviewing 待人审（不自动 archive）
-    if (c.status === 'active' && c.budget_tokens != null && Number(c.budget_tokens) > 0) {
+    // 31 号补丁：reviewing 也跑预算段——budget_exhausted 转 reviewing 后必须能继续
+    // 自动提请预算延长（否则获批前无提请通道，用户在看板看不到任何 pending）。
+    if ((c.status === 'active' || c.status === 'reviewing') && c.budget_tokens != null && Number(c.budget_tokens) > 0) {
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
-      if (Number(usage.spent_tokens) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
+      if (c.status === 'active' && Number(usage.spent_tokens) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
       // 23 号方案 §3.6 步骤 1.5：达 80% 水位自动提请 campaign-budget-extend（平滑爬坡，零人工介入；
       // 提请幂等由 12h checkpoint 防抖 + approval 同 (kind,subject) pending 去重双保险）
       else if (Number(usage.spent_tokens) >= Number(c.budget_tokens) * 0.8
@@ -2646,13 +2651,19 @@ function makeHandlers(opts) {
     campaign_autonomy_apply: async (args, repo) => {
       const c = parseCampaign(repo.findCampaignByName(String(args.name)))
       if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.name}`, '核对 campaign_list')
-      if (!['draft', 'paused'].includes(c.status)) throwErr('E_CAMPAIGN_STATE', `专项 #${c.id} 当前 ${c.status}，仅 draft/paused 可升档激活`, '状态机')
+      // 31 号补丁：active/reviewing 也允许落档（自动降级后恢复 L2 的批准执行）；
+      // 仅 draft/paused 会在批准时顺带激活，active/reviewing 只落 autonomy 不动 status
+      // （reviewing 的恢复走 budget_recovered/campaign_review 通道）。
+      if (['archived'].includes(c.status)) throwErr('E_CAMPAIGN_STATE', `专项 #${c.id} 当前 ${c.status}，不可升档`, '状态机')
       if (Number(args.autonomy) >= 2 && (!(Number(c.budget_tokens) > 0) || !args.approval_id)) throwErr('E_CAMPAIGN_AUTONOMY_GATE', 'autonomy=2 缺 budget_tokens（INV-C4）', '先补齐预算')
       const from = c.status
-      repo.updateCampaign(c.id, { autonomy: Number(args.autonomy), approval_id: args.approval_id, status: 'active' }, from)
+      const activate = ['draft', 'paused'].includes(c.status)
+      repo.updateCampaign(c.id, { autonomy: Number(args.autonomy), approval_id: args.approval_id, ...(activate ? { status: 'active' } : {}) }, from)
       return {
-        data: { campaign_id: c.id, status: 'active', autonomy: Number(args.autonomy), from },
-        events: [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from, to: 'active', cause: 'autonomy_approval' } }],
+        data: { campaign_id: c.id, status: activate ? 'active' : c.status, autonomy: Number(args.autonomy), from },
+        events: activate
+          ? [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from, to: 'active', cause: 'autonomy_approval' } }]
+          : [{ name: 'task.campaign.autonomy.changed', payload: { campaign_id: c.id, autonomy: Number(args.autonomy), cause: 'autonomy_approval' } }],
       }
     },
 

@@ -570,6 +570,12 @@ window.__ModuleLoader__.load({
                   ...iconBtn, 'aria-label': '过滤队列',
                   onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onCampaignFilter) props.onCampaignFilter(filtered ? 0 : c.id) },
                 }, '⌗')),
+                // 31 号补丁：L1（自动降级后）一键提请升档 L2——走 campaign-autonomy 审批，
+                // 批准后 autonomy 落 2（draft/paused 顺带激活）；此前 UI 无入口，用户看不到提请通道。
+                (Number(c.autonomy) < 2 && c.status !== 'archived' && c.status !== 'draft') ? tip('提请升档 L2（campaign-autonomy 审批；批准后恢复有界自动派生）', el('button', {
+                  ...iconBtn, disabled: !!props.busy, 'aria-label': '提请升档 L2',
+                  onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onAutonomyRequest) props.onAutonomyRequest(c.id) },
+                }, '⬆L2')) : null,
                 tip('立即对该专项跑一次 tick 段（巡检→验收→规划→下发，不超有界）', el('button', {
                   ...iconBtn, disabled: !!props.busy, 'aria-label': '立即 tick',
                   onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); props.onTickNow(c.id) },
@@ -846,6 +852,18 @@ window.__ModuleLoader__.load({
           .catch(function (e) { try { if (window.alert) window.alert('专项 tick 失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} })
           .then(function () { setBusy(false) })
       }
+      // 31 号补丁：提请升档 L2（campaign-autonomy 审批）；批准后 autonomy 落 2
+      function onCampaignAutonomyRequest(cid) {
+        if (busy) return
+        setBusy(true)
+        Promise.resolve(typeof rpc === 'function' ? rpc('campaignAutonomyRequest', { id: Number(cid) }) : Promise.reject(new Error('连接通道不可用')))
+          .then(function (res) {
+            try { if (window.alert) window.alert(res && res.already ? '该专项已是 L2' : ('已提请升档 L2（request_id=' + ((res && res.request_id) || '—') + '），请到「审批」面板批准')) } catch (e) {}
+            reloadAll()
+          })
+          .catch(function (e) { try { if (window.alert) window.alert('提请升档失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} })
+          .then(function () { setBusy(false) })
+      }
       // 运行报告：展开时三并发拉取（campaignGet/Progress/PendingDrafts）；失败各自降级不炸面
       function loadCampaignReport(cid) {
         if (typeof rpc !== 'function') return
@@ -931,7 +949,7 @@ window.__ModuleLoader__.load({
                 el(CampaignBlock, {
                   rows: campaigns, busy: busy, campaignFilter: campaignFilter,
                   reportOpen: reportOpen, report: reportData, reportTick: reportTick,
-                  onCampaignFilter: setCampaignFilter, onTickNow: onCampaignTickNow,
+                  onCampaignFilter: setCampaignFilter, onTickNow: onCampaignTickNow, onAutonomyRequest: onCampaignAutonomyRequest,
                   onToggleReport: toggleCampaignReport, onDispatchDrafts: onDispatchDrafts, onJumpQueue: jumpQueue,
                 }))
             : null,
