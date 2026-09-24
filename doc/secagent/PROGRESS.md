@@ -17,6 +17,13 @@
 
 ## 二、最近进度结果
 
+### 2026-09-24 · 28 号补丁：模型 ID 更正 + headless 计费挂载 + 存量复核误判修复（本地契约 625/625，accept PASS=80）
+- **sensenova V4.1 真实 ID 是 `deepseek-flash`**（用户提示后上游实测：`deepseek-v4.1-flash` 的「not available in current token plan」是名字错误而非套餐剔除；glm-5.2/glm-5.1 名字本就正确，仅 glm-5.1 真 404）——27 号「套餐剔除」结论更正。Bellkeeper 渠道 models=[flash-lite/v4-flash/deepseek-flash/glm-5.2]、pool-secagent 加 deepseek-flash w7、heavy 组加回 glm-5.2 w6、两渠道熔断 reset；三池冒烟 200 主力命中 deepseek-flash。DSH `SEC_CAMPAIGN_MODEL_MAIN` 同步 deepseek-flash。
+- **「无 token 使用记录」根因 = headless profile 从未挂载 dsh-bill**（worker 全部跑 headless，web 有 headless 无）——非额度限制。修复：headless `pnpm add dsh-bill@0.13.1` + bundles 插到 failover 后。修复后记录实时落盘（17k 行持续增长），26 号归因链全通：campaign#1 窗口真实用量 42 万/500k 首次真触发 80% 自动爬坡（budget-extend #41 批准 → 1M）。
+- **存量复核误判 rejected 连败降级**：Reviewer 把 review_finding 的合法 false_positive 分诊当打法失败（#100558-#100560 三连 → campaign#1 升 L2 后 25 分钟再降级）；修复 `campaignVerdict` 覆盖角色成功优先。契约 +1。
+- **L2 恢复**：两专项经审批 #38/#39/#42 重升 autonomy=2（pause→request→approve 状态机全链）；自动降级机制保留（供给归零/连败/预算低仍 L2→L1，升档须审批）。
+- 验收：本地契约 625/625；csai 部署重启 accept PASS=80 FAIL=0；线上实测 L2 自动派生恢复（review_finding 存量复核 + vulnclass 假设 + param 覆盖多 kind 并进，billing 实时记录）。
+
 ### 2026-09-23 · 27 号补丁：供给误降速 + heavy 撞死不可用模型修复（本地契约 585/585，accept PASS=80）
 - **排查结论**：① 专项降级 L1 的直接原因是「连败速率≥2/h」——campaign#1/#2 各 2 条 rejected，其中路径性失败仅 1 条（#100496 资产枚举 worker 撞 `INVALID_REQUEST: reasoning_content must be passed back`），其余为目标面 N/A（无认证功能点/泛解析 CDN），机制按设计工作；② 「套餐没满却反复 throttle」是 DSH 误降速——`main_daily_low` 只看可用主力余量，主力熔断后 deepseek 435/500（13%<15%）被分母丢弃；③ 「v4.1-flash 零调用」是 Bellkeeper 坏路由——sensenova 渠道的 v4.1-flash/glm-5.2/glm-5.1 已退出当前 token 套餐（上游 403/404 实测）但渠道/池成员未摘除，渠道 12 连败熔断 + heavy 组首档撞死。
 - **修复**（三层）：DSH `decideThrottle` 余量预警改全体主力跨渠道最差值；`selectCampaignModel` heavy 与 std 同主力链 + fallback 顺延（glm-5.2 退出默认链，.env `SEC_CAMPAIGN_MODEL_MAIN_FALLBACK=deepseek-v4.1-flash,deepseek-v4-flash`）；Bellkeeper 经 DB API 收窄 sensenova 渠道 models（[flash-lite, v4-flash]）+ 摘除 pool-secagent/-heavy 死成员（种子 YAML 同步）——渠道熔断解除 closed、三池冒烟 200、DSH 徽章 normal(factor=1.0)。

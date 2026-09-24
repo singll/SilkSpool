@@ -81,8 +81,8 @@ export function parseCampaignSupplyEnv(env = process.env) {
     estimateTokensPerDraft: num(e.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT, 30000),
     defaultBudgetTokens: num(e.SEC_CAMPAIGN_DEFAULT_BUDGET_TOKENS, 2000000),
     modelStrategy: /^weight$/i.test(String(e.SEC_CAMPAIGN_MODEL_STRATEGY || 'auto')) ? 'weight' : 'auto',
-    modelMain: String(e.SEC_CAMPAIGN_MODEL_MAIN || 'deepseek-v4.1-flash'),
-    modelFallbacks: list(e.SEC_CAMPAIGN_MODEL_MAIN_FALLBACK, 'deepseek-v4.1-flash,deepseek-v4-flash'),
+    modelMain: String(e.SEC_CAMPAIGN_MODEL_MAIN || 'deepseek-flash'),
+    modelFallbacks: list(e.SEC_CAMPAIGN_MODEL_MAIN_FALLBACK, 'deepseek-v4.1-flash,deepseek-v4-flash,glm-5.2'),
     flashliteFirst: bool(e.SEC_CAMPAIGN_FLASHLITE_FIRST, true),
     modelSelector: /^dsh$/i.test(String(e.SEC_CAMPAIGN_MODEL_SELECTOR || 'bellkeeper')) ? 'dsh' : 'bellkeeper',
     // §3.7 Path B 配置化承接：task_class → Bellkeeper 模型组（空则不映射，用 member 级具体模型）
@@ -1393,7 +1393,9 @@ function makeHandlers(opts) {
     const ok = !!(run && run.ok)
     if (task.status === 'done' && ok) {
       if (role === 'submit' || role === 'learn' || role === 'retest') return 'accepted'
-      if (sig.rejected) return 'rejected'
+      // 28 号补丁：存量复核（review_finding）把 finding 判 false_positive/ignored 是**合法分诊结论**
+      // （消化历史债务的正产出），不是打法失败——sig.rejected 不得压过覆盖推进判 accepted。
+      if (sig.rejected && !isCoverageRole(task, role)) return 'rejected'
       if (sig.verified || sig.capsuleRef) return 'accepted'
       if (isCoverageRole(task, role)) return 'accepted' // crawl/param 成功 = 覆盖格点推进
       return 'rework'                                   // 无 verdict 亦无覆盖推进

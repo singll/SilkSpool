@@ -1319,6 +1319,19 @@ test('22 B2: Reviewer 判据——无 verdict 无覆盖推进的 hypothesis → 
   assert.equal(r2.data.verdict, 'accepted', '覆盖驱动任务成功应 accepted')
 })
 
+test('28 号补丁：存量复核判 false_positive 是合法分诊（accepted），不触发连败降级', async () => {
+  const { bus, domain } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'rv-fp', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'review_finding', host: '501', strategy_key: 'review|501' }] }, { actor: 'model' })
+  const tid = bus._internal.db().prepare("SELECT id FROM tasks WHERE campaign_id=? ORDER BY id DESC LIMIT 1").get(cid).id
+  // worker 合法分诊：result 含 finding 引用 + false_positive 结论（sig.rejected=true 的真实场景复现）
+  await bus.dispatch('task', 'finish', { task_id: tid, run_id: 'fp1', outcome: 'done', note: '【finding#501 复核完成 → false_positive】纯指纹命中，never-submit 类' }, { actor: 'scheduler' })
+  const r = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: tid, campaign_id: cid } })
+  assert.equal(r.data.verdict, 'accepted', '存量复核判假阳 = 债务消化正产出，必须 accepted 而非 rejected')
+})
+
 test('22 C26/C27: campaign_tick L2 自动派生（stub 缺口）+ pending_drafts 直播', async () => {
   const env = makeEnv()
   const { bus, domain } = env
@@ -1568,8 +1581,8 @@ test('23 §3.6 parseCampaignSupplyEnv: 统一额度面解析 + 非法回落', ()
   assert.equal(d.estimateTokensPerDraft, 30000)
   assert.equal(d.defaultBudgetTokens, 2000000)
   assert.equal(d.modelStrategy, 'auto')
-  assert.equal(d.modelMain, 'deepseek-v4.1-flash')
-  assert.deepEqual(d.modelFallbacks, ['deepseek-v4.1-flash', 'deepseek-v4-flash'])
+  assert.equal(d.modelMain, 'deepseek-flash')
+  assert.deepEqual(d.modelFallbacks, ['deepseek-v4.1-flash', 'deepseek-v4-flash', 'glm-5.2'])
   assert.equal(d.flashliteFirst, true)
   assert.equal(d.modelSelector, 'bellkeeper')
   const o = parseCampaignSupplyEnv({
@@ -1661,7 +1674,7 @@ test('23 INV-C12: 观测异常恢复后写 llm_restored（供给徽章不再卡�
   const fetchImpl = async (url) => {
     if (fail) throw new Error('connect ECONNREFUSED')
     if (String(url).includes('/groups/status')) {
-      return { json: async () => ({ data: [{ name: 'pool-secagent', members: [{ channel: 'sensenova-secagent', model: 'deepseek-v4.1-flash', weight: 7, available: true, health: { state: 'closed' } }] }] }) }
+      return { json: async () => ({ data: [{ name: 'pool-secagent', members: [{ channel: 'sensenova-secagent', model: 'deepseek-flash', weight: 7, available: true, health: { state: 'closed' } }] }] }) }
     }
     return { json: async () => ({ data: [] }) }
   }
@@ -1721,7 +1734,7 @@ test('23 §3.7: 派生请求带 task_class 落库（Path B 元数据）+ 显式�
 test('23 §3.7 Path A: selector=dsh 时派生任务带 provider+model（worker model-patch 路由）', async () => {
   const members = [
     { channel: 'sensenova-secagent', model: 'sensenova-6.8-flash-lite', weight: 5, available: true, health: { state: 'closed' } },
-    { channel: 'sensenova-secagent', model: 'deepseek-v4.1-flash', weight: 7, available: true, health: { state: 'closed' } },
+    { channel: 'sensenova-secagent', model: 'deepseek-flash', weight: 7, available: true, health: { state: 'closed' } },
     { channel: 'sensenova-secagent', model: 'glm-5.2', weight: 6, available: true, health: { state: 'closed' } },
     { channel: 'opencode-go-secagent', model: 'deepseek-v4.1-flash', weight: 2, available: true, health: { state: 'closed' } },
   ]
@@ -1743,7 +1756,7 @@ test('23 §3.7 Path A: selector=dsh 时派生任务带 provider+model（worker m
 test('23 §2.5: classGroups 映射——task_class 分档路由到 Bellkeeper 模型组（组内熔断顺延）', async () => {
   const members = [
     { channel: 'sensenova-secagent', model: 'sensenova-6.8-flash-lite', weight: 5, available: true, health: { state: 'closed' } },
-    { channel: 'sensenova-secagent', model: 'deepseek-v4.1-flash', weight: 7, available: true, health: { state: 'closed' } },
+    { channel: 'sensenova-secagent', model: 'deepseek-flash', weight: 7, available: true, health: { state: 'closed' } },
   ]
   const env = makeEnv({
     supplyEnv: { ...SUPPLY_ENV, modelSelector: 'dsh', classGroups: { lite: 'pool-secagent-lite', std: 'pool-secagent', heavy: 'pool-secagent-heavy' } },

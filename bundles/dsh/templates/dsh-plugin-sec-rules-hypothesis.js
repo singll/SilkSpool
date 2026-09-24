@@ -782,7 +782,7 @@ export function selectCampaignModel(input = {}) {
   const pick = (pred) => members.find((m) => pred(String(m.model || ''), String(m.channel || m.name || '')))
   // 模型名归一：env 里常用简写 ds-*，实际成员模型为 deepseek-*（两形态都匹配）
   const norm = (s) => String(s || '').trim().toLowerCase().replace(/^ds-/, 'deepseek-')
-  const mainModel = norm(input.mainModel || 'deepseek-v4.1-flash')
+  const mainModel = norm(input.mainModel || 'deepseek-flash')
   const fallbacks = (Array.isArray(input.fallbacks)
     ? input.fallbacks.map(String)
     : String(input.fallbacks || '').split(',').map((s) => s.trim()).filter(Boolean)).map(norm)
