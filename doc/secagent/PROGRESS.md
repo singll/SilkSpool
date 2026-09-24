@@ -17,6 +17,15 @@
 
 ## 二、最近进度结果
 
+### 2026-09-24 · 29 号方案：LLM 供给链体检——动态重置时长 + 成员级恢复探针 + 真实额度观测 + 滚动额度窗口 + 池序调整（rules 41/41、task 78/78，accept PASS=45）
+- **背景**：用户反馈「SenseNova 积分剩 33 万+、Go 月度窗剩 60%+ 却反复降速/停派」。体检确认多层叠加：Go 5h 滚动窗 429 被一刀切 24h 熔断且无成员级探针；dsh 看不见成员级熔断；降速预警用 Bellkeeper 保守 rpd 桶口径而非真实额度。
+- **Bellkeeper（c52fc77/1ea0730/59b1aa3/c584618，已推送+keeper 重建部署）**：① 分类器解析 `"resets in N hours/minutes"` 动态熔断时长（月度维持 24h，无提示默认 5h）；② 成员级 quota 熔断探针（到期 10min 内 1-token 探回池），探针间隔 `probe_interval_minutes` 可配（默认/下限 10min，原 30min）；③ `quota_window_seconds` 滚动额度窗（SenseNova/Go 配 18000=5h，`SetQuotaWindow` Reload 平滑迁移计数）；④ 新增 `opencodego` balance provider（官方 `/v1/usage` 三窗口最紧剩余比例），`channels/status` 暴露 `quota_ratio_remaining`。
+- **DSH**：`memberSupplyState` 消费 `member_breakdown_*`（单模型熔断不拖垮整渠道，detail 区分 `member_*`）；真实窗口余量（`quota_ratio_remaining`+`window_ratio` 标记）优先于本地桶做降速预警。
+- **池序（DB API + YAML 种子）**：pool-secagent = SenseNova 免费优先（deepseek-flash w7→glm-5.2 w6→flash-lite w5→v4-flash w4）→ **Go v4.1-flash w3 → Go v4-flash w2 → deepseek 官方 v4-flash w1 付费托底**；heavy 补 deepseek-flash w5 + 官方托底 w1。
+- **OpenCode Go key 轮换**：旧 key 失效（渠道历史 breakdown_class=auth_failed），新 key 已入 keeper .env + csai dsh .env，直调冒烟 200（kimi-k2.7-code 走 Go 渠道验证）。
+- **验收**：Bellkeeper 单测全绿（errors 8 + balance 2 + llmgateway 滚动窗）；dsh rules 契约 41/41、task 78/78；csai 重启 NRestarts=0，accept PASS=45 FAIL=0；线上 checkpoint 连续 `llm_restored(factor=1.0)`；三池冒烟 200（deepseek-flash/flash-lite/glm-5.2 各命中）；Go `quota_ratio_remaining=0.6` 实时可见。文档回填 [05-task §7.14](05-task.md)。
+- **遗留**：SenseNova 无公开余额 API（控制台人工看）；渠道级连败熔断仍渠道粒度（低频，复发再评估）。
+
 ### 2026-09-24 · 28 号补丁：模型 ID 更正 + headless 计费挂载 + 存量复核误判修复（本地契约 625/625，accept PASS=80）
 - **sensenova V4.1 真实 ID 是 `deepseek-flash`**（用户提示后上游实测：`deepseek-v4.1-flash` 的「not available in current token plan」是名字错误而非套餐剔除；glm-5.2/glm-5.1 名字本就正确，仅 glm-5.1 真 404）——27 号「套餐剔除」结论更正。Bellkeeper 渠道 models=[flash-lite/v4-flash/deepseek-flash/glm-5.2]、pool-secagent 加 deepseek-flash w7、heavy 组加回 glm-5.2 w6、两渠道熔断 reset；三池冒烟 200 主力命中 deepseek-flash。DSH `SEC_CAMPAIGN_MODEL_MAIN` 同步 deepseek-flash。
 - **「无 token 使用记录」根因 = headless profile 从未挂载 dsh-bill**（worker 全部跑 headless，web 有 headless 无）——非额度限制。修复：headless `pnpm add dsh-bill@0.13.1` + bundles 插到 failover 后。修复后记录实时落盘（17k 行持续增长），26 号归因链全通：campaign#1 窗口真实用量 42 万/500k 首次真触发 80% 自动爬坡（budget-extend #41 批准 → 1M）。

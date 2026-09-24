@@ -448,6 +448,51 @@ test('23 §3.1 memberSupplyState: channels/status 与 groups/status 两形态归
   assert.equal(b.weight, 2)
 })
 
+test('29 号 §B memberSupplyState/decideThrottle: 成员级熔断粒度（单模型额度池不拖垮整渠道）', () => {
+  const future = new Date(Date.now() + 3600000).toISOString()
+  const past = new Date(Date.now() - 3600000).toISOString()
+  // 成员级 quota 熔断 → 该成员 down，但同渠道兄弟成员不受影响
+  const flashLite = { channel: 'sensenova-secagent', model: 'sensenova-6.8-flash-lite', weight: 5, available: true, health: { state: 'closed' }, member_breakdown_class: 'quota_exhausted', member_breakdown_until: future }
+  const mainModel = { channel: 'sensenova-secagent', model: 'deepseek-flash', weight: 7, available: true, health: { state: 'closed' } }
+  const s1 = memberSupplyState(flashLite)
+  assert.equal(s1.down, true, '成员熔断中 → down')
+  assert.equal(s1.memberDown, true)
+  assert.equal(memberSupplyState(mainModel).down, false, '兄弟模型不受成员熔断影响')
+  // 过期的成员熔断 → 视为已恢复（Bellkeeper 探针 10min 兜底清除，dsh 侧先到先用）
+  const expired = { ...flashLite, member_breakdown_until: past }
+  assert.equal(memberSupplyState(expired).down, false, '过期的成员熔断不再视为 down')
+  // decideThrottle：仅 flash-lite 成员熔断、主力可用 → 全速（不再误读为渠道级灾难）
+  const r = decideThrottle([flashLite, mainModel])
+  assert.equal(r.supply_factor, 1.0)
+  // 主力成员级熔断 + 兜底可用 → 0.4
+  const mainMbr = { ...mainModel, member_breakdown_class: 'quota_exhausted', member_breakdown_until: future }
+  const r2 = decideThrottle([mainMbr, { channel: 'opencode-go-secagent', model: 'deepseek-v4.1-flash', weight: 2, available: true, health: { state: 'closed' } }])
+  assert.equal(r2.supply_factor, 0.4)
+  assert.ok(r2.detail.some((d) => String(d.verdict || '').startsWith('member_')), 'detail 区分成员级熔断')
+  // selectCampaignModel：主力成员熔断 → 自动顺延 fallback
+  const pick = selectCampaignModel({ kind: 'hypothesis', vuln_class: 'xss', members: [mainMbr, { channel: 'opencode-go-secagent', model: 'deepseek-v4.1-flash', weight: 2, available: true, health: { state: 'closed' } }], fallbacks: ['deepseek-v4.1-flash'] })
+  assert.equal(pick.model, 'deepseek-v4.1-flash', '成员级熔断的主力不入选，顺延到可用成员')
+})
+
+test('29 号 §C memberSupplyState: 真实额度窗口余量优先于本地桶（方案 C）', () => {
+  // OpenCode Go：本地桶 daily 打满 95%（保守 rpd 配置值），但官方 /v1/usage 窗口余量 80% → 不降速
+  const go = { channel: 'opencode-go-secagent', model: 'deepseek-v4.1-flash', weight: 3, available: true, health: { state: 'closed' },
+    daily_used: 19000, daily_limit: 20000,
+    quota_ratio_remaining: 0.8, quota_currency: 'window_ratio' }
+  const s = memberSupplyState(go)
+  assert.equal(s.quotaSource, 'upstream_window')
+  assert.ok(Math.abs(s.dailyRemainingRatio - 0.8) < 1e-9, '真实窗口余量覆盖桶口径')
+  // 反向：真实窗口只剩 10%（< 15% 预警线）→ 主力预警降速
+  const goLow = { ...go, weight: 4, quota_ratio_remaining: 0.1 }
+  const r = decideThrottle([goLow])
+  assert.equal(r.supply_factor, 0.4)
+  assert.ok(r.detail.some((d) => d.reason === 'main_daily_low'))
+  // 无 quota_currency 标记（旧版 Bellkeeper 或无 provider 渠道）→ 回退桶口径
+  const legacy = memberSupplyState({ channel: 'sensenova-secagent', weight: 7, available: true, health: { state: 'closed' }, daily_used: 19000, daily_limit: 20000, quota_ratio_remaining: 0.9 })
+  assert.equal(legacy.quotaSource, 'local_bucket')
+  assert.ok(legacy.dailyRemainingRatio < 0.06, '无 window_ratio 标记时 quota_ratio_remaining 不生效（防脏数据）')
+})
+
 test('23 §3.7 selectCampaignModel: 分档选模型（lite→flash-lite / heavy→主力 / std→主力 / 顺延 / weight 回滚）', () => {
   const members = [
     { channel: 'sensenova-secagent', model: 'sensenova-6.8-flash-lite', weight: 5, available: true, health: { state: 'closed' } },

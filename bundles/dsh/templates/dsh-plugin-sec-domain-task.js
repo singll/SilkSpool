@@ -1233,6 +1233,12 @@ function makeHandlers(opts) {
           return {
             channel: String(m.channel || ''), model: String(m.model || ''), weight: Number(m.weight) || 0,
             available: m.available !== false, health: (ch.health || m.health || {}),
+            // 29 号方案：透传成员级熔断状态（单模型额度池，Bellkeeper 2026-09-24 起暴露）
+            member_breakdown_class: m.member_breakdown_class || '',
+            member_breakdown_until: m.member_breakdown_until || '',
+            // 29 号方案（方案 C）：真实额度窗口余量（Bellkeeper balance provider 暴露）
+            quota_ratio_remaining: ch.quota_ratio_remaining,
+            quota_currency: ch.quota_currency || '',
             daily_used: ch.daily_used, daily_limit: ch.daily_limit,
             available_tokens: ch.available_tokens, max_tokens: ch.max_tokens,
           }
@@ -1241,7 +1247,7 @@ function makeHandlers(opts) {
         // 组不可见时的降级：仅按 channels/status + 统一额度面成员名（权重未知→按主力处理）
         for (const name of supplyEnv.members) {
           const ch = chByName.get(name)
-          if (ch) members.push({ channel: name, model: '', weight: supplyEnv.mainWeight, available: true, health: ch.health || {}, daily_used: ch.daily_used, daily_limit: ch.daily_limit, available_tokens: ch.available_tokens, max_tokens: ch.max_tokens })
+          if (ch) members.push({ channel: name, model: '', weight: supplyEnv.mainWeight, available: true, health: ch.health || {}, quota_ratio_remaining: ch.quota_ratio_remaining, quota_currency: ch.quota_currency || '', daily_used: ch.daily_used, daily_limit: ch.daily_limit, available_tokens: ch.available_tokens, max_tokens: ch.max_tokens })
         }
       }
       // 统一额度面成员过滤（仅保留配置的渠道；空则不裁）

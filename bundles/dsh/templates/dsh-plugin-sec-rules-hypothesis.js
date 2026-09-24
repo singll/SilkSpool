@@ -723,14 +723,30 @@ export function memberSupplyState(m = {}) {
   const available = m.available === undefined ? !open : !!m.available
   const dailyLimit = Number(m.daily_limit || 0)
   const dailyUsed = Number(m.daily_used || 0)
-  const dailyRemainingRatio = dailyLimit > 0 ? Math.max(0, (dailyLimit - dailyUsed) / dailyLimit) : 1
+  let dailyRemainingRatio = dailyLimit > 0 ? Math.max(0, (dailyLimit - dailyUsed) / dailyLimit) : 1
+  // 29 号方案（方案 C）：真实额度窗口余量优先（Bellkeeper balance provider，
+  // 如 OpenCode Go /v1/usage 的 rolling/weekly/monthly 最紧窗口剩余比例），
+  // 无数据时回退本地令牌桶口径——桶 rpd 是保守配置值，不代表真实套餐额度。
+  const quotaRatio = Number(m.quota_ratio_remaining)
+  const quotaSource = Number.isFinite(quotaRatio) && quotaRatio >= 0 && quotaRatio <= 1 &&
+    String(m.quota_currency || '') === 'window_ratio' ? 'upstream_window' : 'local_bucket'
+  if (quotaSource === 'upstream_window') dailyRemainingRatio = quotaRatio
+  // 成员级熔断（2026-09-24 29 号方案）：Bellkeeper groups/status 暴露
+  // member_breakdown_class/member_breakdown_until——单模型额度池（如 SenseNova
+  // flash-lite 专属池）耗尽只熔断该成员，同渠道兄弟模型照常轮换。
+  // 此前 dsh 只看渠道级 available/health，单模型熔断要么不可见要么被误读成渠道全灭。
+  const memberCls = String(m.member_breakdown_class || m.memberBreakdownClass || '').toLowerCase()
+  const memberUntil = Date.parse(m.member_breakdown_until || m.memberBreakdownUntil || '') || 0
+  const memberDown = memberCls !== '' && memberUntil > Date.now()
   return {
     name: String(m.channel || m.name || ''),
     model: String(m.model || ''),
     weight: Number(m.weight) || 0,
     available, open, quotaExhausted,
+    memberDown, memberClass: memberCls,
     dailyLimit, dailyUsed, dailyRemainingRatio,
-    down: !available || open || quotaExhausted,
+    quotaSource,
+    down: !available || open || quotaExhausted || memberDown,
   }
 }
 
@@ -755,7 +771,7 @@ export function decideThrottle(members = [], opts = {}) {
   if (!states.length) return { supply_factor: 0, bounded: false, detail: [{ reason: 'no_members' }] }
   const detail = states.map((s) => ({
     name: s.name, model: s.model, weight: s.weight, down: s.down,
-    verdict: s.down ? (s.quotaExhausted ? 'quota_exhausted' : (s.open ? 'open' : 'unavailable')) : 'up',
+    verdict: s.down ? (s.memberDown ? `member_${s.memberClass || 'breakdown'}` : (s.quotaExhausted ? 'quota_exhausted' : (s.open ? 'open' : 'unavailable'))) : 'up',
   }))
   if (!states.some((s) => !s.down)) return { supply_factor: 0, bounded: false, detail: [...detail, { reason: 'all_down' }] }
 

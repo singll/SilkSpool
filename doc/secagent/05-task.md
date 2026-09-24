@@ -1109,3 +1109,26 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **「无 token 使用记录」根因**：**headless profile 从未挂载 dsh-bill**（web profile 有、headless bundles 无）——worker 全部跑在 headless profile，LLM 调用从未被计费插件观测，records.jsonl 自 14:09 停更。这不是额度限制。修复：`pnpm add dsh-bill@0.13.1`（headless profile，与 web 同版锁）+ `dsh.profile.bundles` 插到 `dsh-model-failover` 之后（计费须包住 failover 链）。修复后 headless 流量实时落 records.jsonl，26 号补丁的 session 归因链路全通（游标追平、专项 spent_tokens 聚合 42 万/窗口真实触发 80% 水位自动爬坡）。
 - **存量复核误判 rejected 导致连败降级**：Reviewer `sig.rejected` 信号把「finding 判 false_positive/ignored」（存量复核的**合法分诊结论、债务消化正产出**）与「打法失败」混为一谈——#100558/#100559/#100560 三条合法复核判 rejected → 连败速率降级 campaign#1 L2→L1（升回后 25 分钟内再次降级）。修复：`campaignVerdict` 中 `sig.rejected` 不再压过覆盖角色（review_finding/crawl/param/asset_enum）的成功判 accepted。契约：「28 号补丁：存量复核判 false_positive 是合法分诊（accepted），不触发连败降级」。
 - **运维收口**：两专项经 campaign-autonomy 审批（#38/#39/#42）重升 **L2 有界自动**（自动降级机制不变——供给归零/连败速率/预算低仍会 L2→L1，升档仍走审批）；campaign#1 的 budget-extend（#41，+500k → 1M）批准——spent_tokens 归因工作后**首次真实** 80% 水位爬坡（此前全是预估误报）。
+
+### 7.14 2026-09-24 29 号方案回填（供给链体检：动态重置时长 + 成员级探针 + 真实额度观测 + 滚动窗口 + 池序调整）
+
+> 动机：「套餐额度还有很多（Go 月度窗剩 60%+、SenseNova 积分 33 万+）却触发降速/停派」。全面体检确认多层叠加：① OpenCode Go 5h 滚动窗 429 被一刀切 24h 熔断（成员级，无探针恢复）；② 渠道级连败熔断级联全模型；③ dsh 看不见成员级熔断（`member_breakdown_*` 未消费）；④ `main_daily_low` 用 Bellkeeper 保守 rpd 桶口径而非真实额度。
+
+**Bellkeeper（c52fc77 + 1ea0730 + 59b1aa3 + c584618）**：
+
+- **动态重置时长（A）**：429/403 `quota_exhausted` 解析上游 `"resets in N hours/minutes/days"` → 熔断时长动态化（+10% 安全余量）；月度窗维持 24h，无提示默认 5h（最短滚动窗）——Go 5h 窗打满不再 24h 空转。
+- **成员级恢复探针（A 延伸）**：`probeMemberQuotaExhausted`——成员级 quota 熔断到期后 10min 内 1-token 探针，成功即 `RecordMemberSuccess` 回池（此前只有渠道级探针，成员熔断只能等完整冷却）；探针撞非配额故障归渠道健康不延长成员熔断。探针间隔 `circuit_breaker.probe_interval_minutes` 可配（默认/下限 **10min**，原 30min 硬编码）。
+- **滚动额度窗口（窗口功能）**：`quota_window_seconds`（渠道级，DB `llm_channels.quota_window_seconds` 列 AutoMigrate）——rpd 计数从日历日重置改为滚动窗口（sensenova-secagent / opencode-go-secagent 配 18000=5h）；`TokenBucket` 事件环惰性过期，窗口打满等待时间=最老事件过期时点；`SetQuotaWindow` 在 Reload 时平滑迁移计数（日历↔滚动互转不丢已用量）；`channels/status` 增 `window_seconds`。
+- **真实额度观测（C）**：新增 `opencodego` balance provider（官方 `GET {base}/v1/usage`，rolling 5h/weekly/monthly 三窗口取最紧剩余比例，`currency=window_ratio`）；`channels/status` 增 `quota_ratio_remaining`/`quota_window_resets_at`/`quota_fetched_at`。SenseNova 无公开余额 API（实测 404），仍以熔断为真相源。
+- **池序调整（DB API + YAML 种子）**：`pool-secagent` 改为 SenseNova 免费优先（deepseek-flash w7 → glm-5.2 w6 → flash-lite w5 → v4-flash w4）→ **OpenCode Go v4.1-flash w3 → Go v4-flash w2 → deepseek-secagent v4-flash w1 付费托底**；`pool-secagent-heavy` 补 `deepseek-flash` w5 + DeepSeek 官方 w1；lite 组 Go 先于官方。
+
+**DSH（bundles/dsh/templates）**：
+
+- **成员级熔断消费（B）**：`fetchSupplySnapshot` 透传 `member_breakdown_class/until`；`memberSupplyState` 增 `memberDown` 维度——单模型额度池熔断只熔断该成员，兄弟模型照常；`decideThrottle` detail 区分 `member_*` verdict；`selectCampaignModel` 自动跳过熔断成员顺延。
+- **真实额度优先（C 侧）**：`quota_ratio_remaining`（`quota_currency=window_ratio` 防脏数据）覆盖桶口径的 `dailyRemainingRatio`——Go 本地桶打满 95% 但官方窗口余量充足时不再误降速；无 provider 数据回退桶口径（向后兼容）。
+
+**运维**：OpenCode Go key 轮换（旧 key 已失效 auth_failed；新 key `oc_sk_502d…` 直调冒烟 200）；`SEC_CAMPAIGN_POOL_MEMBERS`/`.env` 注释同步池序语义。
+
+**验收**：Bellkeeper 单测全绿（errors 8 例 + balance 2 例 + llmgateway 滚动窗/迁移）；dsh rules 契约 41/41（新增成员级熔断 5 断言 + 真实额度 3 断言）、task 契约 78/78；csai 部署重启 NRestarts=0，accept PASS=45 FAIL=0；线上 checkpoint 连续 `llm_restored(factor=1.0)`；三池冒烟 200（主力 deepseek-flash / lite flash-lite / heavy glm-5.2）；Go 渠道 `quota_ratio_remaining=0.6` 实时可见。
+
+**遗留**：① SenseNova 真实积分池仍无 API 可观测（控制台人工看）；② 渠道级连败熔断（5 连非配额错误）仍是渠道粒度——频次低暂不细化，复发再评估；③ Go 周/月窗口耗尽时的 24h+ 熔断仍靠「resets in N days→long」+ 10min 探针兜底恢复。
