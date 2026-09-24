@@ -262,6 +262,8 @@ const FULL_RPC_STATE = {
   taskRuns: { data: { rows: RUNS, total: 1 } },
   workspaces: { data: WORKSPACES },
   campaigns: { data: { rows: CAMPAIGNS, total: 1 } },
+  // 34 号补丁：预算闸配置（在线化）
+  budgetConfig: { data: { max_tasks: 550, max_tokens: 5000000, period_days: 7, source: 'db' } },
   // 筛选选项的稳定来源（19-ui-unify 补丁）：即使某 program 当前无任务也保留筛选项
   programs: { data: [
     { id: 'meituan' }, { id: 'bytedance' }, { id: 'autohome' }, { id: 'didi' }, { id: 'pdd' },
@@ -490,6 +492,39 @@ test('33 专项治理：draft 出激活+升档、reviewing 出审阅通过；点
   revBtn.props.onClick({ stopPropagation() {} })
   await new Promise((r) => setTimeout(r, 0))
   assert.ok(rpcCalls.some((c) => c.endpoint === 'campaignReviewPass' && c.payload.id === 9), '审阅必须调用 campaignReviewPass(id=9)')
+})
+
+// ── ⑥.6 34 号补丁：预算配置卡 + 调整提请 + 建专项 + 队列行阻塞/恢复 + 归档 ──
+test('34 预算闸在线化：配置卡渲染（DB 来源）+ 调整提请走 budgetConfigRequest', async () => {
+  const rpcCalls = []
+  const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const rpc = (endpoint, payload) => { rpcCalls.push({ endpoint, payload }); return Promise.resolve({}) }
+  const tree = mod.TaskCenter({ rpc })
+  const text = deepText(tree)
+  assert.match(text, /预算闸/, '预算配置卡渲染')
+  assert.match(text, /任务 ≤550/, '预算配置卡显示当前值')
+  assert.match(text, /在线配置/, 'DB 来源标记')
+  const adjBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '调整预算闸')[0]
+  assert.ok(adjBtn, '必须有「调整预算闸」按钮')
+})
+
+test('34 队列行：queued 出阻塞按钮、blocked 出恢复按钮（此前只有定时卡片有）', () => {
+  const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const tree = mod.TaskCenter({ rpc: () => Promise.resolve({}) })
+  const blockBtns = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '阻塞任务')
+  assert.ok(blockBtns.length >= 1, 'queued 队列行必须有「阻塞任务」按钮')
+})
+
+test('34 建专项：专项区块头出「+ 新建专项」按钮；归档按钮在非 archived 卡片出现', () => {
+  const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const tree = mod.TaskCenter({ rpc: () => Promise.resolve({}) })
+  const createBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '新建专项')[0]
+  assert.ok(createBtn, '专项区块必须有「新建专项」按钮（UI 建专项闭环）')
+  const archiveBtns = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '归档专项')
+  assert.ok(archiveBtns.length >= 1, '非 archived 专项卡片必须有「归档专项」按钮')
 })
 
 test('专项区块：队列行带专项归属 chip；campaigns 查询不可达 → 区块静默隐藏（降级链）', () => {

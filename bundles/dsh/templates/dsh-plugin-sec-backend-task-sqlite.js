@@ -130,6 +130,14 @@ CREATE TABLE IF NOT EXISTS campaign_checkpoints (
   created_at INTEGER
 )`
 
+// 34 号补丁：域级运行时配置 KV（预算闸等在线可调；env 仅作初始值）
+const DDL_SETTINGS = `
+CREATE TABLE IF NOT EXISTS task_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER
+)`
+
 const TASK_STATUS = ['queued', 'running', 'blocked', 'done', 'failed', 'cancelled']
 
 function ensureCol(db, table, col, ddl) {
@@ -154,6 +162,7 @@ function createRepo(db) {
   db.exec(CAMPAIGNS_DDL)
   db.exec(CAMPAIGN_DECISIONS_DDL)
   db.exec(CAMPAIGN_CHECKPOINTS_DDL)
+  db.exec(DDL_SETTINGS)
   // 平滑迁移：存量库补列（幂等，v4 已建过则跳过）
   for (const [col, ddl] of [
     ['schedule_kind', 'schedule_kind TEXT'],
@@ -317,6 +326,15 @@ function createRepo(db) {
       const n = db.prepare(`SELECT COUNT(*) AS n FROM campaigns WHERE ${where}`).get(...args).n
       if (!program_id) return n
       return repo.listCampaignsWhere({ status }, 500, 0).filter((c) => { try { return (JSON.parse(c.program_ids) || []).includes(String(program_id)) } catch { return false } }).length
+    },
+    // 34 号补丁：域级运行时配置 KV（预算闸在线可调；env 仅作初始值）
+    settingGet(key) {
+      const r = db.prepare('SELECT value FROM task_settings WHERE key = ?').get(String(key))
+      return r ? r.value : null
+    },
+    settingSet(key, value) {
+      db.prepare('INSERT INTO task_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at')
+        .run(String(key), String(value), repo.now())
     },
     // 窗口内专项用量：子任务 spent_tokens 和 + 创建数（双预算闸的 campaign 侧口径）
     campaignUsage(campaignId, sinceMs) {

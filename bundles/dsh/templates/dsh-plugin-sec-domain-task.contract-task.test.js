@@ -1931,3 +1931,38 @@ test('31 §自动爬坡: reviewing（budget_exhausted 停止）专项继续自�
   assert.equal(tk.ok, true, tk.error?.message)
   assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_extend_request'").get(cid), 'reviewing 也须自动提请预算延长（用户要能在审批面板看到）')
 })
+
+// ---------------------------------------------------------------------------
+// 34 号补丁（2026-09-24）：预算闸在线化（DB 优先/env 兜底）+ 治理断点补齐
+// ---------------------------------------------------------------------------
+
+test('34 budget_config：env 兜底 → DB 覆盖（无需重启在线生效）', async () => {
+  const { bus } = makeEnv()
+  const q1 = await bus.query('task', 'budget_config', {}, { actor: 'dashboard' })
+  assert.equal(q1.data.source, 'env', '未配置时 env 兜底')
+  assert.equal(q1.data.max_tasks, 500)
+  // effect 落库（模拟 approval 批准）
+  const r = await bus.dispatch('task', 'budget_config', { max_tasks: 550, max_tokens: 5000000, approval_id: 99 }, { actor: 'approval' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.after.max_tasks, 550)
+  const q2 = await bus.query('task', 'budget_config', {}, { actor: 'dashboard' })
+  assert.equal(q2.data.source, 'db', 'DB 配置优先')
+  assert.equal(q2.data.max_tasks, 550)
+  assert.equal(q2.data.max_tokens, 5000000)
+  assert.equal(q2.data.period_days, 7, '未覆盖项保持 env 值')
+})
+
+test('34 预算闸在线调整：DB max_tasks=2 时第三个任务创建被停派', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('task', 'budget_config', { max_tasks: 2, approval_id: 98 }, { actor: 'approval' })
+  const mk = (o) => bus.dispatch('task', 'create', { program_id: 'test-src', objective: o }, { actor: 'model' })
+  assert.equal((await mk('任务一')).ok, true)
+  assert.equal((await mk('任务二')).ok, true)
+  const third = await mk('任务三')
+  assert.equal(third.ok, false)
+  assert.equal(third.error.code, 'E_TASK_BUDGET_EXHAUSTED', 'DB 配置 2 上限须停派第三个任务')
+  assert.match(third.error.message, /配置来源=db/)
+  // dashboard 人工放行不受闸限制（既有不变量保持）
+  const manual = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '人工放行任务' }, { actor: 'dashboard' })
+  assert.equal(manual.ok, true, 'dashboard 建任务豁免预算闸')
+})

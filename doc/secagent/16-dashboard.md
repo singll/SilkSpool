@@ -661,3 +661,22 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 - **UI 治理按钮组**（专项卡片按状态渲染）：draft → `▶激活` + `⬆L1/L2`；paused → `▶恢复`；active → `⏸`；reviewing → `✔审阅`；archived 隐藏全部。全部走 `campaignAction` 统一封装（busy 门控 + 错误 alert + 成功后 reloadAll + 报告刷新）。
 - **契约**：ui-task +1（治理按钮按状态渲染 + 点击走对应 RPC），22/21 → 21/21；csai 部署 + 重启，accept PASS=45 FAIL=0。
 - **说明**：专项自治级别语义——L0 台账（只记录不派生）/ L1 建议（派生草稿待人放行）/ L2 有界自动（封顶，须 budget_tokens + 审批）；降级由系统自动（连败/供给/预算），升级始终走审批（30 号补丁起供给/连败/预算型自动回升除外）。
+
+## 2026-09-24 34 号补丁回填（任务功能权限断点补齐：预算闸在线配置 / 专项归档·改目标·新建 / 任务备注）
+
+> 动机：系统梳理「什么功能模型与 UI 都无法触发」。断点清单与修复：
+>
+> | 功能 | 此前状态 | 本补丁 |
+> |---|---|---|
+> | per-program 预算闸调整（max_tasks/max_tokens/period_days） | 只读 env（`SEC_TASK_BUDGET_*`），改须重启；Dashboard 无任何入口 | DB 在线配置（`task_settings` KV，DB 优先/env 兜底）+ 提请审批 `task-budget-config` kind + UI 预算卡 |
+> | 专项归档（archived） | 只有域命令 `campaign_archive`，RPC/UI 均未接线 | RPC `campaignArchive` + 专项卡片「⏏归档」 |
+> | 专项改 goal_spec（改目标） | 只有域命令 `campaign_goal_revise`，未接线 | RPC `campaignGoalRevise` |
+> | Dashboard 新建专项（种子任务场景） | `campaign_create` 只向 model 开放 | RPC `campaignCreate`（dashboard 提请走 campaign-autonomy 之外的直接创建，born=draft/L0 需激活）+ 专项区块头「+ 新建专项」 |
+> | 任务备注/阻塞/恢复操作补全 | 部分行内操作缺失 | `taskUpdateNote` RPC + 队列「阻塞/恢复」按钮 |
+
+- **后端**：`sec-backend-task-sqlite` 新增 `task_settings` KV 表（DDL + `settingGet/settingSet` repo 方法）。
+- **task 域**：`budgetConfigOf(repo)`（DB 优先/env 兜底，返回 source=db|env）；预算闸与 task_create 停派判定改用该函数（错误消息带「配置来源」）；命令 `task_budget_config`（actor=['approval']，approval 批准 effect 落库）+ 查询 `budget_config`（dashboard 可读）。
+- **approval 域**：新 kind `task-budget-config`（三参数正整数校验，period_days≤90；批准 effect → `task.budget_config`）。**踩坑记录**：effect 动词必须写短动词 `budget_config` 而非 manifest 全键 `task_budget_config`（dispatch 会拼 `task_` 前缀，findCommandDef 失配报 E_BUS_VERB_UNKNOWN）——与既有 `budget_extend`/`complete` 惯例一致。
+- **RPC**（`dashboard-rpc.js`）：`campaignArchive`、`campaignGoalRevise`、`campaignCreate`、`budgetConfig`、`budgetConfigRequest`（提请审批）、`taskUpdateNote`。
+- **UI**（`ui-task`）：QueueActions 加阻塞/恢复；专项卡片「⏏归档」；`BudgetConfigCard`/`BudgetConfigForm`（改动走审批流，批准即生效无需重启）；`CampaignCreateForm` + 专项区块头「+ 新建专项」。
+- **契约**：ui-task +3（24/24）；task 契约 +2（env 兜底→DB 覆盖、max_tasks=2 停派第三个）；approval 契约 +1（task-budget-config 全链）。csai 部署 + 重启，accept **PASS=45 FAIL=0**。

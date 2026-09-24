@@ -692,6 +692,59 @@ export async function handleDashboardRpc(endpoint, payload) {
       const r = await busDispatch('task', 'campaign_review_pass', { campaign_id: id, summary: String(p.summary || '看板人工审阅通过') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
       return { ok: true, ...(r.data || {}) }
     }
+    // 34 号补丁：专项归档/目标修订/建专项 + 预算闸配置在线化 + 任务备注（此前命令就绪但 RPC/UI 全断）
+    case 'campaignArchive': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignArchive 需要 id')
+      const r = await busDispatch('task', 'campaign_archive', { campaign_id: id }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
+    }
+    case 'campaignGoalRevise': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignGoalRevise 需要 id')
+      const goalSpec = p.goal_spec && typeof p.goal_spec === 'object' ? p.goal_spec : null
+      const policy = p.policy && typeof p.policy === 'object' ? p.policy : null
+      if (!goalSpec && !policy) throw new Error('campaignGoalRevise 需要 goal_spec 或 policy')
+      const r = await busDispatch('task', 'campaign_goal_revise', { campaign_id: id, ...(goalSpec ? { goal_spec: goalSpec } : {}), ...(policy ? { policy } : {}) }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
+    }
+    case 'campaignCreate': {
+      const name = String(p.name || '').trim()
+      const programIds = Array.isArray(p.program_ids) ? p.program_ids.map(String).filter(Boolean) : []
+      const objective = String(p.objective || '').trim()
+      if (!name || !programIds.length || !objective) throw new Error('campaignCreate 需要 name/program_ids/objective')
+      const r = await busDispatch('task', 'campaign_create', {
+        name, program_ids: programIds,
+        goal_spec: { objective, stop_conditions: Array.isArray(p.stop_conditions) && p.stop_conditions.length ? p.stop_conditions.map(String) : ['目标达成或人工归档'] },
+        ...(p.budget_tokens != null ? { budget_tokens: Number(p.budget_tokens) } : {}),
+        ...(Array.isArray(p.allowed_phases) && p.allowed_phases.length ? { policy: { allowed_phases: p.allowed_phases.map(String) } } : {}),
+      }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
+    }
+    case 'budgetConfig': {
+      const r = await busQuery('task', 'budget_config', {})
+      return r.data || r
+    }
+    case 'budgetConfigRequest': {
+      const patch = {}
+      for (const k of ['max_tasks', 'max_tokens', 'period_days']) if (p[k] != null) patch[k] = Number(p[k])
+      if (!Object.keys(patch).length) throw new Error('budgetConfigRequest 需要 max_tasks/max_tokens/period_days 至少一项')
+      const cur = await busQuery('task', 'budget_config', {})
+      const c = (cur && cur.data) || cur || {}
+      const r = await busDispatch('approval', 'request', {
+        kind: 'task-budget-config', subject: 'per-program 预算闸',
+        payload: patch,
+        evidence: `预算闸在线调整：当前 ${c.max_tasks}/${c.max_tokens}/${c.period_days}d（来源=${c.source || 'env'}）→ ${JSON.stringify(patch)}。批准后立即生效，无需重启。`,
+      }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, request_id: r.data?.request_id ?? null, ...(r.data || {}) }
+    }
+    case 'taskUpdateNote': {
+      const id = Number(p.id)
+      const note = String(p.note || '')
+      if (!id) throw new Error('taskUpdateNote 需要 id')
+      const r = await busDispatch('task', 'task_update_note', { task_id: id, note }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
+    }
     // 24 号方案 §3.0：专项运行报告三透传（纯读/纯透传，不改任何域命令语义）
     case 'campaignProgress': {
       const id = Number(p.id)

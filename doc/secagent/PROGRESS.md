@@ -17,6 +17,13 @@
 
 ## 二、最近进度结果
 
+### 2026-09-24 · 34 号补丁：任务功能权限断点补齐——预算闸在线配置 / 专项归档·改目标·新建 / 任务备注（ui-task 24/24、task/approval 契约通过，accept PASS=45）
+- **断点梳理**（模型与 UI 此前都无法触发）：per-program 预算闸调整只读 env 需重启；专项归档/改 goal_spec 域命令未接 RPC；Dashboard 无法新建专项（种子任务场景，如 Campaign #3 建种子）——现已全部补齐。
+- **预算闸在线化**：`task_settings` KV 表 + `budgetConfigOf`（DB 优先/env 兜底，source 标记）+ approval 新 kind `task-budget-config`（批准即落库生效，无需重启）+ UI 预算卡（提请走审批）。task_create 停派判定同步改用 DB 配置，错误消息带配置来源。
+- **RPC 六端点**：`campaignArchive`/`campaignGoalRevise`/`campaignCreate`/`budgetConfig`/`budgetConfigRequest`/`taskUpdateNote`；UI 对应加「⏏归档」「+ 新建专项」、队列阻塞/恢复按钮。
+- **踩坑**：approval effect 动词必须写短动词（`budget_config`）而非 manifest 全键（dispatch 拼前缀后 findCommandDef 失配）；测试 evidence 须 ≥10 字否则先撞 E_SCHEMA。
+- 文档回填 [16-dashboard §34](16-dashboard.md)。
+
 ### 2026-09-24 · 33 号补丁：专项治理按钮组——激活/暂停/恢复/审阅/升档全接线（ui-task 21/21，accept PASS=45）
 - **根因**：专项 born=draft/L0 是刻意设计（自治需审批背书），但 `campaign_activate/pause/resume/review_pass` 四个域命令本就支持 dashboard actor 却**从未接到看板 RPC**——新建专项永远卡 draft/L0（线上 #3 实证），用户找不到任何治理入口。
 - **修复**：RPC 补 `campaignActivate/Pause/Resume/ReviewPass` 四端点；`campaignAutonomyRequest` 支持 draft 提请（升档批准 = 草稿变正式运行通道）；专项卡片按状态出治理按钮组（draft→▶激活+⬆L1/L2、paused→▶恢复、active→⏸、reviewing→✔审阅）。

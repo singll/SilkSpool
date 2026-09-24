@@ -162,6 +162,28 @@ export const APPROVAL_KINDS = {
       return [{ domain: 'task', verb: 'budget_extend', payload: { task_id: Number(payload.task_id), budget_timeout_sec: budget, approval_id: requestId } }]
     },
   },
+  // 34 号补丁：per-program 预算闸配置在线调整（批准 → task_budget_config effect 落 task_settings，无需重启）
+  'task-budget-config': {
+    label: '任务预算闸配置',
+    request_actors: ['model', 'dashboard', 'human', 'system'],
+    validate: async (subject, args, payload) => {
+      const p = payload && typeof payload === 'object' ? payload : {}
+      const has = ['max_tasks', 'max_tokens', 'period_days'].filter((k) => p[k] != null)
+      if (!has.length) return { code: 'E_INVARIANT', message: 'payload 须含 max_tasks/max_tokens/period_days 至少一项', hint: '示例：{ max_tasks: 550 }' }
+      for (const k of has) {
+        const v = Number(p[k])
+        if (!Number.isInteger(v) || v < 1) return { code: 'E_INVARIANT', message: `${k}=${p[k]} 须为正整数`, hint: '预算闸参数均为正整数' }
+        if (k === 'period_days' && v > 90) return { code: 'E_INVARIANT', message: `period_days=${v} 超上限 90`, hint: '周期窗口 ≤90 天' }
+      }
+      return null
+    },
+    effects: (requestId, subject, args, payload) => {
+      const p = payload && typeof payload === 'object' ? payload : {}
+      const out = { approval_id: requestId }
+      for (const k of ['max_tasks', 'max_tokens', 'period_days']) if (p[k] != null) out[k] = Number(p[k])
+      return [{ domain: 'task', verb: 'budget_config', payload: out }]
+    },
+  },
   'knowledge-adopt': {
     label: '知识采纳',
     request_actors: ['model'],

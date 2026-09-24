@@ -115,6 +115,21 @@ const CAMPAIGN_LEVELS = ['H1', 'H2', 'H3']
 const BUDGET_PERIOD_MS = Number(process.env.SEC_TASK_BUDGET_PERIOD_DAYS || 7) * 86400000
 const BUDGET_MAX_TOKENS = Number(process.env.SEC_TASK_BUDGET_MAX_TOKENS || 2000000)
 const BUDGET_MAX_TASKS = Number(process.env.SEC_TASK_BUDGET_MAX_TASKS || 500)
+
+// 34 号补丁：per-program 预算闸在线化——DB（task_settings）优先，env 仅初始值。
+// 调整走 approval（task-budget-config kind）→ effect task_budget_config 落库，无需重启。
+const BUDGET_SETTING_KEYS = ['max_tasks', 'max_tokens', 'period_days']
+function budgetConfigOf(repo) {
+  const cfg = { max_tasks: BUDGET_MAX_TASKS, max_tokens: BUDGET_MAX_TOKENS, period_days: BUDGET_PERIOD_MS / 86400000, source: 'env' }
+  if (!repo || typeof repo.settingGet !== 'function') return cfg
+  let fromDb = false
+  for (const k of BUDGET_SETTING_KEYS) {
+    const v = repo.settingGet('budget_' + k)
+    if (v != null && Number(v) > 0) { cfg[k] = Number(v); fromDb = true }
+  }
+  if (fromDb) cfg.source = 'db'
+  return cfg
+}
 const MIN_INTERVAL_SECONDS = 300
 const OUTCOME_ENUM = ['done', 'failed', 'busy', 'crash']
 const SCHEDULER_TICK_MS = 60000
@@ -568,6 +583,19 @@ export const TASK_MANIFEST = {
       agent_note: '（approval 专用）campaign-budget-extend 批准 effect：budget_tokens 增量落账（审计可追）；不向模型注册。',
       deprecated: false,
     },
+    // 34 号补丁：per-program 预算闸配置在线调整（approval 批准 effect；DB 优先于 env，无需重启）
+    task_budget_config: {
+      actor: ['approval'],
+      schema: schema({ max_tasks: int({ minimum: 1 }), max_tokens: int({ minimum: 1 }), period_days: int({ minimum: 1, maximum: 90 }), approval_id: int() }, ['approval_id']),
+      idempotent: 'natural',
+      idempotent_natural: ['approval_id'],
+      events: [],
+      event_limit: 0,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '（approval 专用）task-budget-config 批准 effect：预算闸三参数落 task_settings（DB 优先于 env）；不向模型注册。',
+      deprecated: false,
+    },
     task_worker_register: {
       actor: ['reactor', 'scheduler'],
       schema: schema({
@@ -662,6 +690,12 @@ export const TASK_MANIFEST = {
       actor: ['model', 'dashboard', 'human', 'system', 'reactor', 'scheduler'],
       params: schema({ task_id: int() }, ['task_id']),
       agent_note: '取单个任务全列（调度/预算/模型覆盖/最近 run/证据链尾部）。',
+    },
+    // 34 号补丁：预算闸配置只读（DB 优先/env 兜底 + 来源标记）
+    budget_config: {
+      actor: ['model', 'dashboard', 'human', 'system'],
+      params: schema({}, []),
+      agent_note: 'per-program 周期预算闸配置（max_tasks/max_tokens/period_days + source=db|env）。',
     },
     task_next: {
       actor: ['model', 'dashboard'],
@@ -2120,12 +2154,14 @@ function makeHandlers(opts) {
       }
       // 21 号方案 §3-4：per-program 周期预算闸（超额停派；dashboard/approval 人工放行）
       if (ctx.actor !== 'dashboard' && ctx.actor !== 'approval' && repo.budgetUsage) {
-        const usage = repo.budgetUsage(programId, nowTs - BUDGET_PERIOD_MS)
-        if (usage.tasks_created >= BUDGET_MAX_TASKS) {
-          throwErr('E_TASK_BUDGET_EXHAUSTED', `program ${programId} 周期任务预算耗尽：${usage.tasks_created}/${BUDGET_MAX_TASKS} 任务/${Math.round(BUDGET_PERIOD_MS / 86400000)}d`, '预算闸停派（§3-4）：人工评估后由 dashboard 建任务放行，或提升 SEC_TASK_BUDGET_MAX_TASKS 上限', false)
+        // 34 号补丁：预算配置 DB 优先（在线可调，走 task-budget-config 审批）
+        const bc = budgetConfigOf(repo)
+        const usage = repo.budgetUsage(programId, nowTs - bc.period_days * 86400000)
+        if (usage.tasks_created >= bc.max_tasks) {
+          throwErr('E_TASK_BUDGET_EXHAUSTED', `program ${programId} 周期任务预算耗尽：${usage.tasks_created}/${bc.max_tasks} 任务/${bc.period_days}d（配置来源=${bc.source}）`, '预算闸停派（§3-4）：人工评估后由 dashboard 建任务放行，或经 task-budget-config 审批提升上限（在线生效）', false)
         }
-        if (usage.spent_tokens >= BUDGET_MAX_TOKENS) {
-          throwErr('E_TASK_BUDGET_EXHAUSTED', `program ${programId} 周期 token 预算耗尽：${usage.spent_tokens}/${BUDGET_MAX_TOKENS} tokens/${Math.round(BUDGET_PERIOD_MS / 86400000)}d`, '预算闸停派（§3-4）：人工评估后由 dashboard 建任务放行，或提升 SEC_TASK_BUDGET_MAX_TOKENS 上限', false)
+        if (usage.spent_tokens >= bc.max_tokens) {
+          throwErr('E_TASK_BUDGET_EXHAUSTED', `program ${programId} 周期 token 预算耗尽：${usage.spent_tokens}/${bc.max_tokens} tokens/${bc.period_days}d（配置来源=${bc.source}）`, '预算闸停派（§3-4）：人工评估后由 dashboard 建任务放行，或经 task-budget-config 审批提升上限（在线生效）', false)
         }
       }
       const id = repo.insertTask({
@@ -2677,6 +2713,17 @@ function makeHandlers(opts) {
       return { data: { campaign_id: c.id, budget_tokens: next } }
     },
 
+    // （approval 专用）34 号补丁：task-budget-config 批准 effect——预算闸三参数落 task_settings
+    task_budget_config: async (args, repo) => {
+      const before = budgetConfigOf(repo)
+      const patch = {}
+      for (const k of BUDGET_SETTING_KEYS) {
+        if (args[k] != null && Number(args[k]) > 0) { repo.settingSet('budget_' + k, String(Number(args[k]))); patch[k] = Number(args[k]) }
+      }
+      const after = budgetConfigOf(repo)
+      return { data: { before: { max_tasks: before.max_tasks, max_tokens: before.max_tokens, period_days: before.period_days }, after: { max_tasks: after.max_tasks, max_tokens: after.max_tokens, period_days: after.period_days }, approval_id: args.approval_id } }
+    },
+
     task_submission_backlog: async (args) => {
       if (!dispatchRef || !queryRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 query/dispatch 不可达', '确认 vuln 域已注册', true)
       const q = await queryRef('vuln', 'submission_queue', { limit: args.limit || 50 })
@@ -2790,6 +2837,11 @@ function makeHandlers(opts) {
       const t = repo.getTask(Number(args.task_id))
       if (!t) throwErr('E_NOT_FOUND', `task 不存在: ${args.task_id}`, '核对 task_list 里的 id')
       return t
+    },
+    // 34 号补丁：预算闸配置只读
+    budget_config: async (args, repo) => {
+      const bc = budgetConfigOf(repo)
+      return { max_tasks: bc.max_tasks, max_tokens: bc.max_tokens, period_days: bc.period_days, source: bc.source }
     },
     task_next: async (args, repo) => {
       const t = repo.nextTaskForProgram(args.program_id)

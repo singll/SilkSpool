@@ -432,6 +432,13 @@ window.__ModuleLoader__.load({
         t.status === 'queued'
           ? tip('立即执行一次', el('button', { ...iconBtn, disabled: !!props.busy, 'aria-label': '立即执行', onClick: function () { props.onRunNow(t.id) } }, uiCore.opIcon('play')))
           : null,
+        // 34 号补丁：队列行阻塞/恢复（命令+RPC 本就支持 dashboard，此前只有定时卡片有按钮）
+        (t.status === 'queued' || t.status === 'running')
+          ? tip('阻塞任务（置 blocked，调度器跳过；需人工介入）', el('button', { ...iconBtn, disabled: !!props.busy, 'aria-label': '阻塞任务', onClick: function () { if (props.onBlock) props.onBlock(t.id) } }, '⏸'))
+          : null,
+        t.status === 'blocked'
+          ? tip('恢复任务（blocked→queued 重新入队）', el('button', { ...iconBtn, disabled: !!props.busy, 'aria-label': '恢复任务', onClick: function () { if (props.onResume) props.onResume(t.id) } }, '▶'))
+          : null,
         ['queued', 'running', 'blocked'].indexOf(t.status) >= 0
           ? tip('取消任务（置为已取消，终态）', el('button', { ...iconBtn, className: 'silksec-icon-btn silksec-icon-btn-danger', disabled: !!props.busy, 'aria-label': '取消任务', onClick: function () { props.onCancel(t.id) } }, uiCore.opIcon('stop')))
           : null,
@@ -616,6 +623,11 @@ window.__ModuleLoader__.load({
                   ...iconBtn, disabled: !!props.busy, 'aria-label': '审阅通过',
                   onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onReviewPass) props.onReviewPass(c.id) },
                 }, '✔审阅')) : null,
+                // 34 号补丁：归档（非 archived 均可归档；终态，卡片从列表消失）
+                c.status !== 'archived' ? tip('归档专项（终态；子任务保留台账，不再派生）', el('button', {
+                  ...iconBtn, disabled: !!props.busy, 'aria-label': '归档专项',
+                  onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onArchive) props.onArchive(c.id) },
+                }, '⏏')) : null,
                 // 31 号补丁：提请升档（campaign-autonomy 审批；批准后 autonomy 落档，draft/paused 顺带激活）
                 (Number(c.autonomy) < 2 && c.status !== 'archived') ? tip(c.status === 'draft' ? '提请升档（campaign-autonomy 审批；批准后顺带激活，相当于草稿→正式运行）' : '提请升档 L2（campaign-autonomy 审批；批准后恢复有界自动派生）', el('button', {
                   ...iconBtn, disabled: !!props.busy, 'aria-label': '提请升档 L2',
@@ -807,6 +819,81 @@ window.__ModuleLoader__.load({
           el('button', { type: 'button', className: 'silksec-btn', onClick: props.onClose }, '收起')))
     }
 
+    // ── 34 号补丁：预算闸配置卡（在线化）+ 建专项表单（P2）─────────────────────
+    // 预算配置卡：只读当前值（max_tasks/max_tokens/period_days + 来源），调整走
+    // task-budget-config 审批（批准后 effect 落 task_settings，无需重启）。
+    function BudgetConfigCard(props) {
+      var bc = props.config
+      if (!bc) return null
+      return el('div', { style: { ...card, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+        pillNode({ title: 'per-program 周期预算闸（任务创建数/token 双闸取严）' }, '预算闸'),
+        el('span', { style: { color: T.label2, ...((F && F.xs) || {}) } },
+          '周期 ' + (bc.period_days || '—') + 'd · 任务 ≤' + (bc.max_tasks || '—') + ' · tokens ≤' + (bc.max_tokens || '—')),
+        pillNode({ title: 'db=在线调整已生效（task_settings）；env=初始值（改 .env 需重启）', style: { color: bc.source === 'db' ? T.success : T.label3 } }, bc.source === 'db' ? '在线配置' : 'env 初始值'),
+        el('span', { style: { marginLeft: 'auto' } },
+          tip('提请调整预算闸（task-budget-config 审批；批准后立即生效无需重启）', el('button', {
+            type: 'button', className: 'silksec-btn', disabled: !!props.busy, 'aria-label': '调整预算闸',
+            onClick: function () { if (props.onConfigRequest) props.onConfigRequest() },
+          }, '调整…'))))
+    }
+
+    // 预算闸调整表单（三参数可选填，至少一项；提请后去审批面板批准）
+    function BudgetConfigForm(props) {
+      var bc = props.config || {}
+      var mt = React.useState('')
+      var mk = React.useState('')
+      var pd = React.useState('')
+      function submit() {
+        var patch = {}
+        if (mt[0] !== '') patch.max_tasks = Number(mt[0])
+        if (mk[0] !== '') patch.max_tokens = Number(mk[0])
+        if (pd[0] !== '') patch.period_days = Number(pd[0])
+        if (!Object.keys(patch).length) return
+        if (props.onSubmit) props.onSubmit(patch)
+      }
+      var inputCls = 'silksec-input'
+      var inputStyle = { width: '100%', boxSizing: 'border-box' }
+      var row = { display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8, flex: '1 1 120px' }
+      var label = { color: T.label2, ...((F && F.xxsStrong) || {}) }
+      return el('div', { style: { ...card, borderColor: T.border3 } },
+        el('div', { style: { display: 'flex', gap: 10, flexWrap: 'wrap' } },
+          el('div', { style: row }, el('span', { style: label }, '任务上限（当前 ' + (bc.max_tasks || '—') + '）'), el('input', { className: inputCls, style: inputStyle, type: 'number', min: 1, placeholder: '留空不改', value: mt[0], onChange: function (e) { mt[1](e.target.value) } })),
+          el('div', { style: row }, el('span', { style: label }, 'token 上限（当前 ' + (bc.max_tokens || '—') + '）'), el('input', { className: inputCls, style: inputStyle, type: 'number', min: 1, placeholder: '留空不改', value: mk[0], onChange: function (e) { mk[1](e.target.value) } })),
+          el('div', { style: row }, el('span', { style: label }, '周期天数（当前 ' + (bc.period_days || '—') + '）'), el('input', { className: inputCls, style: inputStyle, type: 'number', min: 1, max: 90, placeholder: '留空不改', value: pd[0], onChange: function (e) { pd[1](e.target.value) } }))),
+        el('div', { style: { display: 'flex', gap: 8 } },
+          el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: !!props.busy, onClick: submit }, '提请调整（走审批）'),
+          el('button', { type: 'button', className: 'silksec-btn', onClick: props.onClose }, '收起')))
+    }
+
+    // 建专项表单（P2）：名称/工作区（可多选简化=逗号分隔单选）/目标/预算 → draft（L0），
+    // 创建后走 33 号的「激活 / 提请升档」通道——闭环完整。
+    function CampaignCreateForm(props) {
+      var programs = props.programs || []
+      var nm = React.useState('')
+      var pid = React.useState(programs.length ? programs[0].v : '')
+      var obj = React.useState('')
+      var budget = React.useState(2000000)
+      if (!programs.length) return el('div', { style: { ...card, color: T.label3, ...((F && F.xxs) || {}) } }, '暂无已授权工作区，先到「授权」区域登记并绑定。')
+      function submit() {
+        if (!nm[0].trim() || !pid[0] || !obj[0].trim()) return
+        props.onCreate({ name: nm[0].trim(), program_ids: [pid[0]], objective: obj[0].trim(), budget_tokens: Number(budget[0]) || 2000000 })
+        nm[1](''); obj[1]('')
+      }
+      var inputCls = 'silksec-input'
+      var inputStyle = { width: '100%', boxSizing: 'border-box' }
+      var row = { display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 8, flex: '1 1 140px' }
+      var label = { color: T.label2, ...((F && F.xxsStrong) || {}) }
+      return el('div', { style: { ...card, borderColor: T.border3 } },
+        el('div', { style: { display: 'flex', gap: 10, flexWrap: 'wrap' } },
+          el('div', { style: row }, el('span', { style: label }, '专项名称'), el('input', { className: inputCls, style: inputStyle, value: nm[0], onChange: function (e) { nm[1](e.target.value) }, placeholder: '如：候选验证清空·跨项目' })),
+          el('div', { style: row }, el('span', { style: label }, '工作区'), el('select', { className: inputCls, style: inputStyle, value: pid[0], onChange: function (e) { pid[1](e.target.value) } }, programs.map(function (o) { return el('option', { key: o.v, value: o.v }, o.l) }))),
+          el('div', { style: row }, el('span', { style: label }, '预算（tokens/7d）'), el('input', { className: inputCls, style: inputStyle, type: 'number', min: 10000, value: budget[0], onChange: function (e) { budget[1](e.target.value) } }))),
+        el('div', { style: row }, el('span', { style: label }, '目标（goal_spec.objective）'), el('textarea', { className: inputCls, style: { ...inputStyle, height: 56, padding: '8px 10px', resize: 'vertical' }, value: obj[0], onChange: function (e) { obj[1](e.target.value) }, placeholder: '专项要推进的目标；创建后为 draft/L0，走「激活/提请升档」上线' })),
+        el('div', { style: { display: 'flex', gap: 8 } },
+          el('button', { type: 'button', className: 'silksec-btn silksec-btn-confirm', disabled: !!props.busy, onClick: submit }, '创建专项（draft）'),
+          el('button', { type: 'button', className: 'silksec-btn', onClick: props.onClose }, '收起')))
+    }
+
     // ── 任务中心（右侧栏 tab 体 / 主面板降级视图 / Modal 三处共用） ────────────
     function TaskCenter(props) {
       ensureStyles()
@@ -839,6 +926,11 @@ window.__ModuleLoader__.load({
       var originFilter = of[0]; var setOriginFilter = of[1]
       var so = React.useState(false)
       var schedOpen = so[0]; var setSchedOpen = so[1]
+      // 34 号补丁：预算配置卡折叠态 + 调整表单态 + 建专项表单态
+      var bf = React.useState(false)
+      var budgetFormOpen = bf[0]; var setBudgetFormOpen = bf[1]
+      var cc = React.useState(false)
+      var campaignCreating = cc[0]; var setCampaignCreating = cc[1]
       var hf = React.useState('')
       var histFilter = hf[0]; var setHistFilter = hf[1]
       var ho = React.useState(false)
@@ -872,6 +964,9 @@ window.__ModuleLoader__.load({
       var wsState = useRpcCore(function () { return { endpoint: 'workspaces' } }, [], rpc || undefined)
       // 全量授权项目：筛选选项的数据源（不随 progFilter 变化，19-ui-unify 补丁）
       var progsState = useRpcCore(function () { return { endpoint: 'programs' } }, [], rpc || undefined)
+      // 34 号补丁：预算闸配置（DB 优先/env 兜底；查询不可达时卡片静默隐藏——降级链）
+      var bcState = useRpcCore(function () { return { endpoint: 'budgetConfig' } }, [], rpc || undefined)
+      var budgetConfig = bcState.data || null
 
       var scheduled = (schedState.data && schedState.data.rows) || []
       var queue = (tasksState.data && tasksState.data.rows) || []
@@ -980,6 +1075,32 @@ window.__ModuleLoader__.load({
       var onCampaignPause = campaignAction('campaignPause', '暂停专项')
       var onCampaignResume = campaignAction('campaignResume', '恢复专项')
       var onCampaignReviewPass = campaignAction('campaignReviewPass', '审阅通过')
+      var onCampaignArchive = campaignAction('campaignArchive', '归档专项')
+      // 34 号补丁：预算闸调整提请（task-budget-config 审批）+ 建专项（P2）
+      function onBudgetConfigSubmit(patch) {
+        if (busy) return
+        setBusy(true)
+        Promise.resolve(typeof rpc === 'function' ? rpc('budgetConfigRequest', patch) : Promise.reject(new Error('连接通道不可用')))
+          .then(function (res) {
+            try { if (window.alert) window.alert('已提请预算闸调整（request_id=' + ((res && res.request_id) || '—') + '），请到「审批」面板批准；批准后立即生效无需重启') } catch (e) {}
+            setBudgetFormOpen(false)
+            reloadAll()
+          })
+          .catch(function (e) { try { if (window.alert) window.alert('预算闸提请失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} })
+          .then(function () { setBusy(false) })
+      }
+      function onCampaignCreate(spec) {
+        if (busy) return
+        setBusy(true)
+        Promise.resolve(typeof rpc === 'function' ? rpc('campaignCreate', spec) : Promise.reject(new Error('连接通道不可用')))
+          .then(function (res) {
+            try { if (window.alert) window.alert('专项已创建（draft/L0，id=' + ((res && res.campaign_id) || '—') + '）；在卡片上点「▶激活」或「⬆L1/L2」上线') } catch (e) {}
+            setCampaignCreating(false)
+            reloadAll()
+          })
+          .catch(function (e) { try { if (window.alert) window.alert('建专项失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} })
+          .then(function () { setBusy(false) })
+      }
       // 运行报告：展开时三并发拉取（campaignGet/Progress/PendingDrafts）；失败各自降级不炸面
       function loadCampaignReport(cid) {
         if (typeof rpc !== 'function') return
@@ -1058,15 +1179,21 @@ window.__ModuleLoader__.load({
           filterRow,
           creating ? el(CreateForm, { programs: wsItems.filter(function (w) { return w.program }).map(function (w) { return { v: w.program.id, l: w.title + '（' + w.program.id + '）' } }), busy: busy, onCreate: onCreate, onClose: function () { setCreating(false) } }) : null,
 
+          // 34 号补丁：预算闸配置卡（在线化；不可达时静默隐藏）+ 调整表单
+          el(BudgetConfigCard, { config: budgetConfig, busy: busy, onConfigRequest: function () { setBudgetFormOpen(!budgetFormOpen) } }),
+          budgetFormOpen ? el(BudgetConfigForm, { config: budgetConfig, busy: busy, onSubmit: onBudgetConfigSubmit, onClose: function () { setBudgetFormOpen(false) } }) : null,
+
           // 区块零（22/24 号方案）：专项——常驻统筹实体；点击卡片展开运行报告，⌗ 按钮过滤队列
           campaigns.length
             ? el(React.Fragment, null,
-                sectionHeadNode({ title: '专项', count: campaigns.length, icon: queueIcon(14), subtitle: '常驻统筹实体：派生→下发→监督→验收闭环驱动下方子任务；点击卡片展开运行报告，⌗ 按专项过滤队列。' }),
+                sectionHeadNode({ title: '专项', count: campaigns.length, icon: queueIcon(14), subtitle: '常驻统筹实体：派生→下发→监督→验收闭环驱动下方子任务；点击卡片展开运行报告，⌗ 按专项过滤队列。',
+                  extra: tip('新建专项（draft/L0；创建后走「激活/提请升档」上线）', el('button', { type: 'button', className: 'silksec-btn', disabled: !!busy, 'aria-label': '新建专项', onClick: function () { setCampaignCreating(!campaignCreating) } }, campaignCreating ? '收起' : '+ 新建专项')) }),
+                campaignCreating ? el(CampaignCreateForm, { programs: wsItems.filter(function (w) { return w.program }).map(function (w) { return { v: w.program.id, l: w.title + '（' + w.program.id + '）' } }), busy: busy, onCreate: onCampaignCreate, onClose: function () { setCampaignCreating(false) } }) : null,
                 el(CampaignBlock, {
                   rows: campaigns, busy: busy, campaignFilter: campaignFilter,
                   reportOpen: reportOpen, report: reportData, reportTick: reportTick,
                   onCampaignFilter: setCampaignFilter, onTickNow: onCampaignTickNow, onAutonomyRequest: onCampaignAutonomyRequest,
-                  onActivate: onCampaignActivate, onPause: onCampaignPause, onResume: onCampaignResume, onReviewPass: onCampaignReviewPass,
+                  onActivate: onCampaignActivate, onPause: onCampaignPause, onResume: onCampaignResume, onReviewPass: onCampaignReviewPass, onArchive: onCampaignArchive,
                   onToggleReport: toggleCampaignReport, onDispatchDrafts: onDispatchDrafts, onJumpQueue: jumpQueue,
                 }))
             : null,

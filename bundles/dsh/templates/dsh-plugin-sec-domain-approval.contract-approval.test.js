@@ -508,6 +508,23 @@ test('31 campaign-budget-extend: reviewing（budget_exhausted 停止）专项豁
   assert.equal(bus._internal.db().prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(cid).budget_tokens, 2000)
 })
 
+test('34 task-budget-config: 校验非法参数 + 批准 effect 落 task_settings（在线生效）', async () => {
+  const { bus } = makeEnvWithTask()
+  // 空参数被拒
+  const empty = await bus.dispatch('approval', 'request', { kind: 'task-budget-config', subject: 'per-program 预算闸', evidence: '空参数测试：payload 无任一预算字段应被校验拒绝', payload: {} }, { actor: 'dashboard' })
+  assert.equal(empty.ok, false)
+  assert.equal(empty.error.code, 'E_INVARIANT')
+  // 合法提请 → 批准 → effect 落库
+  const r = await bus.dispatch('approval', 'request', { kind: 'task-budget-config', subject: 'per-program 预算闸', evidence: '任务上限 500 → 550（种子任务创建解锁）', payload: { max_tasks: 550 } }, { actor: 'dashboard' })
+  assert.equal(r.ok, true, r.error?.message)
+  const d = await bus.dispatch('approval', 'decide', { id: r.data.request_id, decision: 'approve', operator: 'op1' }, { actor: 'dashboard' })
+  assert.equal(d.ok, true, d.error?.message)
+  assert.equal(d.data.effect_state, 'applied')
+  const q = await bus.query('task', 'budget_config', {}, { actor: 'dashboard' })
+  assert.equal(q.data.max_tasks, 550, '批准后 max_tasks 落库生效')
+  assert.equal(q.data.source, 'db')
+})
+
 test('22 campaign-budget-extend: spent≥80% 才可延长，effect 增量落账', async () => {
   const { bus } = makeEnvWithTask()
   const c = await bus.dispatch('task', 'campaign_create', { name: 'camp-b', program_ids: ['example-src'], budget_tokens: 1000, goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
