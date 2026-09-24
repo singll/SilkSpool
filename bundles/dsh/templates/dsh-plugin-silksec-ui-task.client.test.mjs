@@ -251,6 +251,9 @@ const RUNS = [
 const WORKSPACES = { available: true, items: [{ id: 'ws1', title: '美团 SRC', program: { id: 'meituan' }, tasks: 3, assets: 10, findings: 2 }] }
 const CAMPAIGNS = [
   { id: 7, name: '美团SRC 持续挖掘', mode: 'single', status: 'active', autonomy: 1, program_ids: ['meituan'], budget_tokens: 2000000, spent_tokens: 350000, heartbeat_at: Date.now() - 3600000, decision_totals: { accepted: 3, rejected: 1, rework: 2, escalated: 0 }, objective: '覆盖+七类主粮', supply: { state: 'slow', factor: 0.4 } },
+  // 33 号补丁：治理按钮按状态渲染样例
+  { id: 8, name: '草稿专项样例', mode: 'single', status: 'draft', autonomy: 0, program_ids: ['bytedance'], budget_tokens: 2000000, spent_tokens: 0, decision_totals: { accepted: 0, rejected: 0, rework: 0, escalated: 0 }, objective: '草稿样例' },
+  { id: 9, name: '人审专项样例', mode: 'single', status: 'reviewing', autonomy: 1, program_ids: ['meituan'], budget_tokens: 2000000, spent_tokens: 100, decision_totals: { accepted: 0, rejected: 0, rework: 0, escalated: 0 }, objective: '人审样例' },
 ]
 
 const FULL_RPC_STATE = {
@@ -460,9 +463,33 @@ test('专项区块：卡片渲染（状态/自主级别/验收计数/预算/心�
   // 31 号补丁：L1 卡片必须有「提请升档 L2」按钮（自动降级后恢复的合规入口）
   const upBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '提请升档 L2')[0]
   assert.ok(upBtn, 'L1 专项卡片必须有「提请升档 L2」按钮')
+  // 33 号补丁：active 卡片必须有「暂停专项」按钮
+  const pauseBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '暂停专项')[0]
+  assert.ok(pauseBtn, 'active 专项卡片必须有「暂停专项」按钮')
   // 点击卡片触发专项过滤（回调把 campaign_id 传给 TaskCenter 状态；假 useState 不调 setter，仅验证回调存在且带正确 id）
   const card = collect(tree, (n) => n.props && n.props.className === 'silksec-row' && typeof n.props.onClick === 'function' && String(textOf(n)).includes('美团SRC 持续挖掘'))[0]
   assert.ok(card, '专项卡片必须可点击（过滤其派生任务）')
+})
+
+// ── ⑥.5 33 号补丁：治理按钮组按状态渲染 + 写操作走对应 RPC ─────────────────
+test('33 专项治理：draft 出激活+升档、reviewing 出审阅通过；点击走对应 RPC', async () => {
+  const rpcCalls = []
+  const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const rpc = (endpoint, payload) => { rpcCalls.push({ endpoint, payload }); return Promise.resolve({}) }
+  const tree = mod.TaskCenter({ rpc })
+  const text = deepText(tree)
+  assert.match(text, /草稿专项样例/, 'draft 样例卡片渲染')
+  const actBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '激活专项')[0]
+  assert.ok(actBtn, 'draft 卡片必须有「激活专项」按钮（此前无入口，新建专项永远卡 draft/L0）')
+  const revBtn = collect(tree, (n) => n.type === 'button' && n.props['aria-label'] === '审阅通过')[0]
+  assert.ok(revBtn, 'reviewing 卡片必须有「审阅通过」按钮')
+  actBtn.props.onClick({ stopPropagation() {} })
+  await new Promise((r) => setTimeout(r, 0))
+  assert.ok(rpcCalls.some((c) => c.endpoint === 'campaignActivate' && c.payload.id === 8), '激活必须调用 campaignActivate(id=8)')
+  revBtn.props.onClick({ stopPropagation() {} })
+  await new Promise((r) => setTimeout(r, 0))
+  assert.ok(rpcCalls.some((c) => c.endpoint === 'campaignReviewPass' && c.payload.id === 9), '审阅必须调用 campaignReviewPass(id=9)')
 })
 
 test('专项区块：队列行带专项归属 chip；campaigns 查询不可达 → 区块静默隐藏（降级链）', () => {

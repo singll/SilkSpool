@@ -598,12 +598,29 @@ window.__ModuleLoader__.load({
                   ...iconBtn, 'aria-label': '过滤队列',
                   onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onCampaignFilter) props.onCampaignFilter(filtered ? 0 : c.id) },
                 }, '⌗')),
-                // 31 号补丁：L1（自动降级后）一键提请升档 L2——走 campaign-autonomy 审批，
-                // 批准后 autonomy 落 2（draft/paused 顺带激活）；此前 UI 无入口，用户看不到提请通道。
-                (Number(c.autonomy) < 2 && c.status !== 'archived' && c.status !== 'draft') ? tip('提请升档 L2（campaign-autonomy 审批；批准后恢复有界自动派生）', el('button', {
+                // 33 号补丁：专项治理按钮组——按状态出激活/提请/暂停/恢复/审阅（此前只有 ⬆L2，
+                // 新建专项卡 draft/L0 无任何入口，用户找不到「从草稿变正式运行」的按钮）
+                c.status === 'draft' ? tip('激活专项（draft→active；L0/L1 直接激活，L2 需先经升档审批）', el('button', {
+                  ...iconBtn, disabled: !!props.busy, 'aria-label': '激活专项',
+                  onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onActivate) props.onActivate(c.id) },
+                }, '▶激活')) : null,
+                c.status === 'paused' ? tip('恢复专项（paused→active）', el('button', {
+                  ...iconBtn, disabled: !!props.busy, 'aria-label': '恢复专项',
+                  onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onResume) props.onResume(c.id) },
+                }, '▶恢复')) : null,
+                c.status === 'active' ? tip('暂停专项（active→paused；不动在跑子任务）', el('button', {
+                  ...iconBtn, disabled: !!props.busy, 'aria-label': '暂停专项',
+                  onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onPause) props.onPause(c.id) },
+                }, '⏸')) : null,
+                c.status === 'reviewing' ? tip('审阅通过（reviewing→active；决议摘要进检查点）', el('button', {
+                  ...iconBtn, disabled: !!props.busy, 'aria-label': '审阅通过',
+                  onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onReviewPass) props.onReviewPass(c.id) },
+                }, '✔审阅')) : null,
+                // 31 号补丁：提请升档（campaign-autonomy 审批；批准后 autonomy 落档，draft/paused 顺带激活）
+                (Number(c.autonomy) < 2 && c.status !== 'archived') ? tip(c.status === 'draft' ? '提请升档（campaign-autonomy 审批；批准后顺带激活，相当于草稿→正式运行）' : '提请升档 L2（campaign-autonomy 审批；批准后恢复有界自动派生）', el('button', {
                   ...iconBtn, disabled: !!props.busy, 'aria-label': '提请升档 L2',
                   onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); if (props.onAutonomyRequest) props.onAutonomyRequest(c.id) },
-                }, '⬆L2')) : null,
+                }, Number(c.autonomy) < 1 ? '⬆L1/L2' : '⬆L2')) : null,
                 tip('立即对该专项跑一次 tick 段（巡检→验收→规划→下发，不超有界）', el('button', {
                   ...iconBtn, disabled: !!props.busy, 'aria-label': '立即 tick',
                   onClick: function (ev) { if (ev && ev.stopPropagation) ev.stopPropagation(); props.onTickNow(c.id) },
@@ -948,6 +965,21 @@ window.__ModuleLoader__.load({
           .catch(function (e) { try { if (window.alert) window.alert('提请升档失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} })
           .then(function () { setBusy(false) })
       }
+      // 33 号补丁：专项治理动作（激活/暂停/恢复/审阅通过）——走同名 RPC，错误原样上抛
+      function campaignAction(endpoint, label) {
+        return function (cid) {
+          if (busy) return
+          setBusy(true)
+          Promise.resolve(typeof rpc === 'function' ? rpc(endpoint, { id: Number(cid) }) : Promise.reject(new Error('连接通道不可用')))
+            .then(function () { reloadAll(); if (reportOpen === Number(cid)) loadCampaignReport(Number(cid)) })
+            .catch(function (e) { try { if (window.alert) window.alert(label + '失败: ' + (e && e.message ? e.message : e)) } catch (e2) {} })
+            .then(function () { setBusy(false) })
+        }
+      }
+      var onCampaignActivate = campaignAction('campaignActivate', '激活专项')
+      var onCampaignPause = campaignAction('campaignPause', '暂停专项')
+      var onCampaignResume = campaignAction('campaignResume', '恢复专项')
+      var onCampaignReviewPass = campaignAction('campaignReviewPass', '审阅通过')
       // 运行报告：展开时三并发拉取（campaignGet/Progress/PendingDrafts）；失败各自降级不炸面
       function loadCampaignReport(cid) {
         if (typeof rpc !== 'function') return
@@ -1034,6 +1066,7 @@ window.__ModuleLoader__.load({
                   rows: campaigns, busy: busy, campaignFilter: campaignFilter,
                   reportOpen: reportOpen, report: reportData, reportTick: reportTick,
                   onCampaignFilter: setCampaignFilter, onTickNow: onCampaignTickNow, onAutonomyRequest: onCampaignAutonomyRequest,
+                  onActivate: onCampaignActivate, onPause: onCampaignPause, onResume: onCampaignResume, onReviewPass: onCampaignReviewPass,
                   onToggleReport: toggleCampaignReport, onDispatchDrafts: onDispatchDrafts, onJumpQueue: jumpQueue,
                 }))
             : null,

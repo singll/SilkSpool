@@ -17,6 +17,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-24 · 33 号补丁：专项治理按钮组——激活/暂停/恢复/审阅/升档全接线（ui-task 21/21，accept PASS=45）
+- **根因**：专项 born=draft/L0 是刻意设计（自治需审批背书），但 `campaign_activate/pause/resume/review_pass` 四个域命令本就支持 dashboard actor 却**从未接到看板 RPC**——新建专项永远卡 draft/L0（线上 #3 实证），用户找不到任何治理入口。
+- **修复**：RPC 补 `campaignActivate/Pause/Resume/ReviewPass` 四端点；`campaignAutonomyRequest` 支持 draft 提请（升档批准 = 草稿变正式运行通道）；专项卡片按状态出治理按钮组（draft→▶激活+⬆L1/L2、paused→▶恢复、active→⏸、reviewing→✔审阅）。
+- 契约 ui-task +1（按状态渲染 + 点击走对应 RPC）；csai 部署 accept PASS=45 FAIL=0。文档回填 [16-dashboard §33](16-dashboard.md)。
+
 ### 2026-09-24 · 32 号方案：任务界面整理（方案 A 状态泳道重排 + 会话专项区块）（ui-task 20/20、ui-session 18/18，accept PASS=45）
 - **任务中心五区块**：① 专项常驻最上 → ② **正在执行**（running+blocked 上移，不再淹没在 127 条存量 queued 里）→ ③ 队列（默认只显排队 + **来源筛选**：专项派生/其他 + 状态筛选）→ ④ 定时任务折叠（默认收起留徽标）→ ⑤ 历史近期/存量分界（>24h 的 391 条存量失败独立折叠）。零 RPC/DB 变更，纯客户端过滤。
 - **会话「安全产出」**：专项区块置顶**全局常驻**（不按会话过滤；本会话有派生任务打「本会话相关」徽标）；任务行带来源专项 chip——派生子任务（worker 执行无 session_id）在会话中从此可见。

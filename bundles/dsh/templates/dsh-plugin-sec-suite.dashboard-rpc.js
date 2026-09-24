@@ -655,14 +655,42 @@ export async function handleDashboardRpc(endpoint, payload) {
       const get = await busQuery('task', 'campaign_get', { id })
       const c = get && get.data ? get.data : null
       if (!c) throw new Error(`专项 #${id} 不存在`)
-      if (Number(c.autonomy) >= 2) return { ok: true, already: true, autonomy: Number(c.autonomy) }
-      if (['draft', 'archived'].includes(String(c.status))) throw new Error(`专项 #${id} 状态 ${c.status}，不支持升档提请（draft 走激活审批）`)
+      // 33 号补丁：draft 也可提请（升档审批批准 = 激活通道本身）；L2 已是最高档直接返回
+      const target = Number(p.autonomy) === 1 ? 1 : 2
+      if (Number(c.autonomy) >= target && target === 2) return { ok: true, already: true, autonomy: Number(c.autonomy) }
+      if (String(c.status) === 'archived') throw new Error(`专项 #${id} 已归档，不支持升档提请`)
       const r = await busDispatch('approval', 'request', {
         kind: 'campaign-autonomy', subject: c.name,
-        payload: { campaign_id: id, autonomy: 2 },
-        evidence: `专项 #${id}「${c.name}」当前 L1（可能因自动降级），人工提请升回 L2 有界自动（budget=${c.budget_tokens ?? '—'}）。`,
+        payload: { campaign_id: id, autonomy: target },
+        evidence: `专项 #${id}「${c.name}」当前 ${c.status}/L${c.autonomy}，人工提请升档至 L${target}${target === 2 ? ' 有界自动' : ' 建议模式'}（budget=${c.budget_tokens ?? '—'}；批准后 draft/paused 顺带激活）。`,
       }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
       return { ok: true, request_id: r.data?.request_id ?? null, ...(r.data || {}) }
+    }
+    // 33 号补丁：专项治理四端点补接线（域命令本就支持 dashboard actor，此前看板无入口——
+    // 新建专项永远卡 draft/L0，用户找不到「从草稿变正式运行」的按钮）
+    case 'campaignActivate': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignActivate 需要 id')
+      const r = await busDispatch('task', 'campaign_activate', { campaign_id: id }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
+    }
+    case 'campaignPause': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignPause 需要 id')
+      const r = await busDispatch('task', 'campaign_pause', { campaign_id: id, note: String(p.note || '看板人工暂停') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
+    }
+    case 'campaignResume': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignResume 需要 id')
+      const r = await busDispatch('task', 'campaign_resume', { campaign_id: id }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
+    }
+    case 'campaignReviewPass': {
+      const id = Number(p.id)
+      if (!id) throw new Error('campaignReviewPass 需要 id')
+      const r = await busDispatch('task', 'campaign_review_pass', { campaign_id: id, summary: String(p.summary || '看板人工审阅通过') }, { actor: 'dashboard', operator: p.operator ? String(p.operator) : null })
+      return { ok: true, ...(r.data || {}) }
     }
     // 24 号方案 §3.0：专项运行报告三透传（纯读/纯透传，不改任何域命令语义）
     case 'campaignProgress': {

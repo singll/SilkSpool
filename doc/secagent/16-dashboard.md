@@ -651,3 +651,13 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 **定时任务处置结论（未取消，仅折叠降级）**：#19/#37/#100007/#100008（vuln/vuln-deep 每日）已 blocked 且功能被专项替代——可取消但暂缓（blocked 已不调度，折叠后零干扰）；#16/#17（recon 每日）仍在喂 ledger 覆盖缺口数据，专项 Planner 依赖，**保留**；#24（每周知识复盘）独立职能，**保留**。
 
 **验收**：ui-task **20/20**（五区块布局 + 纯函数：默认视图/来源筛选/执行行集/历史分界）、ui-session **18/18**（专项区块全局常驻 + 徽标 + chip）；csai 部署 + 重启，accept PASS=45 FAIL=0。
+
+## 2026-09-24 33 号补丁回填（专项治理按钮组：激活/暂停/恢复/审阅/升档全接线）
+
+> 动机：用户反馈「专项创建后是 L0，前端找不到升级降级按钮，也没有从草稿变正式运行的按钮」。根因：**专项的创建与治理路径只在模型侧**（`campaign_create` born=draft/autonomy=0 是刻意设计——自治需审批背书，INV-C4），但看板 RPC 只接了 tick/报告/放行/升档提请，`campaign_activate/pause/resume/review_pass` 四个域命令**本就支持 dashboard actor 却从未接线**——新建专项永远卡 draft/L0（线上 #3「候选验证清空·跨项目」实证）。
+
+- **RPC 补四端点**（`dashboard-rpc.js`）：`campaignActivate`（draft/paused→active，全量校验授权+INV-C4）、`campaignPause`（active→paused）、`campaignResume`（paused→active）、`campaignReviewPass`（reviewing→active，决议摘要进检查点）。
+- **升档入口补全**：`campaignAutonomyRequest` 33 号补丁起支持 draft 状态提请（payload.autonomy 支持 1/2）——**「升档审批批准 = 从草稿变正式运行的通道」**（31 号 effect 已支持 draft/paused 顺带激活）。
+- **UI 治理按钮组**（专项卡片按状态渲染）：draft → `▶激活` + `⬆L1/L2`；paused → `▶恢复`；active → `⏸`；reviewing → `✔审阅`；archived 隐藏全部。全部走 `campaignAction` 统一封装（busy 门控 + 错误 alert + 成功后 reloadAll + 报告刷新）。
+- **契约**：ui-task +1（治理按钮按状态渲染 + 点击走对应 RPC），22/21 → 21/21；csai 部署 + 重启，accept PASS=45 FAIL=0。
+- **说明**：专项自治级别语义——L0 台账（只记录不派生）/ L1 建议（派生草稿待人放行）/ L2 有界自动（封顶，须 budget_tokens + 审批）；降级由系统自动（连败/供给/预算），升级始终走审批（30 号补丁起供给/连败/预算型自动回升除外）。
