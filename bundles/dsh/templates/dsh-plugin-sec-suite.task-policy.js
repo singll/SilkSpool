@@ -45,7 +45,7 @@ export function selectDueTasks(db, now, limit = 4) {
           ))
       ))
     ORDER BY t.priority ASC,t.next_run_at ASC,t.id ASC LIMIT :limit`)
-    .all({ now, limit: Math.min(Math.max(Number(limit) || 4, 1), 4) })
+    .all({ now, limit: Math.min(Math.max(Number(limit) || 4, 1), 32) })
 }
 
 export function validateDependency(getTask, task, parentId, delaySeconds = 0) {

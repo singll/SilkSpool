@@ -65,7 +65,9 @@ const VENV_DIR = '/opt/silkspool/dsh/venv'
 const OPT_DIR = '/opt/silkspool/dsh/opt'
 const DSH_BIN = process.env.SEC_DSH_BIN || '/opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/bin.js'
 const NODE_BIN = process.env.SEC_NODE_BIN || '/usr/local/node/bin/node'
-const MAX_WORKERS = 4
+// 36 号补丁：worker 并发上限 env 可调（默认 12）。LLM 池供给充足（SenseNova 5h 窗口 + Go 兜底），
+// 实测单机 8C/16G 为 IO/等待型负载，内存余量充足，12 并发安全。
+const MAX_WORKERS = Math.min(Math.max(Number(process.env.SEC_EXEC_MAX_WORKERS) || 12, 1), 32)
 // M3 本地文件读取边界：_file 目标清单与 Burp 导入仅允许 HOME/data/tmp 内的常规文件，
 // 阻断模型读取 /etc、其它用户目录、密钥文件（realpath 解析，拒绝符号链接逃逸）。
 const SAFE_FILE_ROOTS = [HOME_DIR, process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data', '/tmp']

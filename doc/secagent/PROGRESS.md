@@ -17,6 +17,12 @@
 
 ## 二、最近进度结果
 
+### 2026-09-25 · 36 号补丁：exec worker 并发提升 + 认领上限对齐（accept PASS=45）
+- **动机**：用户问能否加并发/任务量把 lite（SenseNova flash-lite 专属积分）用完。瓶颈在 `MAX_WORKERS` 硬编码 4。
+- **修复**：`SEC_EXEC_MAX_WORKERS`（默认 12，钳 1–32）、`SEC_SCHEDULER_CLAIM_LIMIT`（默认 12，钳 1–32）、`selectDueTasks` 上限 4→32、`task_claim` 契约 `event_limit` 4→32（否则 12 事件撞 `E_BUS_EVENT_TOO_LARGE` 静默空转）+ claim 失败诊断日志；生产 `.env` 双置 12。
+- **实测**：12 worker 并发，单 tick 稳定认领 12 条；Bellkeeper 近 600 条 LLM 日志中 501 条 `sensenova-6.8-flash-lite` 200（≈83.5%）——lite 积分已在被消化。8C/16G 下 load ≈22、swap 1.1G，为**本机实际上限**，不再上提（瓶颈在执行侧 CPU/内存）。三池当前为 `priority-health`（与 §7.19 best-weight 有漂移，但对「烧 lite」目标更有利，本轮不改）。
+- 文档回填 [05-task §7.20](05-task.md)。
+
 ### 2026-09-25 · 35 号补丁·二段：池策略 best-weight 加权分流（OpenCode Go 额度利用率修复）
 - **诊断**：Go 消耗 0 不是额度小（本地桶 120rpm/20000rpd 远超峰值 23rpm；429 全是上游真实限流），而是 `priority-health` 渠道 priority 硬排序——sensenova=1 健康时永不落 Go（priority=3）。
 - **修复**：三池切 `best-weight`，Go 成员提为最佳档 w8（DB API + YAML 双写对齐）；实测切换后 5 分钟 18 请求全落 Go（2M tokens），官方 rolling/周/月窗口余量 100%/66%/60%。

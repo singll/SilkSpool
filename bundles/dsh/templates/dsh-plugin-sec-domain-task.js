@@ -327,10 +327,11 @@ export const TASK_MANIFEST = {
       schema: schema({ now: int() }, ['now']),
       idempotent: 'none',
       events: ['task.claimed'],
-      event_limit: 4,
+      // 36 号补丁：与认领上限（默认 12，env 上限 32）对齐——旧值 4 在 36 号提额后触发事件风暴闸 E_BUS_EVENT_TOO_LARGE，认领整体失败静默空转
+      event_limit: 32,
       invariants: [],
       timeout_ms: 60000,
-      agent_note: '调度认领：原子抢占 ≤4 条到期任务（内部，不向模型注册）。',
+      agent_note: '调度认领：原子抢占到期任务（上限 SEC_SCHEDULER_CLAIM_LIMIT，默认 12；内部，不向模型注册）。',
       deprecated: false,
     },
     task_reap: {
@@ -2455,7 +2456,9 @@ function makeHandlers(opts) {
     },
 
     task_claim: async (args, repo) => {
-      const tasks = repo.claimDueTasks(Number(args.now), 4)
+      // 36 号补丁：每 tick 认领上限 env 可调（默认 12，与 exec worker 池匹配，防 MAX_WORKERS 忙导致回 queued 空转）
+      const limit = Math.min(Math.max(Number(process.env.SEC_SCHEDULER_CLAIM_LIMIT) || 12, 1), 32)
+      const tasks = repo.claimDueTasks(Number(args.now), limit)
       return {
         data: { claimed: tasks.map((t) => Number(t.id)), count: tasks.length },
         events: tasks.map((t) => ({ name: 'task.claimed', payload: { task_id: Number(t.id), program_id: t.program_id, phase: t.phase, goal: t.goal || '', priority: t.priority, claimed_at: Number(args.now), worker_slot: 1 } })),
@@ -3334,6 +3337,8 @@ export function startTaskScheduler(opts) {
     try {
       const r = await dispatch('task', 'claim', { now: Date.now() }, { actor: 'scheduler' })
       claimed = (_ok(r) && r.data && r.data.claimed) || []
+      // 36 号补丁诊断：claim 信封不可见时静默空转无从排查
+      if (!_ok(r)) log(`调度认领未成功: ${_errCode(r)} ${_errMsg(r)}`)
     } catch (e) { log(`调度认领失败: ${e?.message}`); return }
     if (!claimed.length) { await campaignTick(); await dailyVaultSync(); return }
     const tasks = []

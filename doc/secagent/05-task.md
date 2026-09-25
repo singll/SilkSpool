@@ -1203,3 +1203,23 @@ Task ─1:1─ Run/worker（exec 域，零改动）
   - DB API（PUT config/groups）生效 + **YAML 同步对齐**（35 号教训：YAML 仅首启种子，改池必须 DB API 为准，双写防漂移）。
 - **效果实测**：切换后 5 分钟 18 个请求全部落 Go（v4.1-flash，200，~2.8s/req，2M tokens），Go 官方 rolling 窗口余量 0% 消耗、周窗 34%、月窗 40%；SenseNova 瞬时限流期间的请求不再空转。
 - **附带发现**：① flash-lite 定价表缺行（`llm_model_pricing` 无 sensenova-6.8-flash-lite 记录，日志刷 SELECT rows:0——仅影响成本估算，待补）；② 12:58 曾出现 70s 全员超时（context deadline）——单请求长 prompt 撞上游排队，非路由问题；③ 56 个 running 僵尸任务（19:14–19:23 起无 worker 绑定）等 75 分钟回收宽限自然回收，非卡死。
+
+### 7.20 2026-09-25 36 号补丁回填（exec worker 并发提升 + 认领上限对齐）
+
+> 动机：用户问「能否增加一些并发或更多任务，把 lite 积分（SenseNova `sensenova-6.8-flash-lite` 256K 专属积分）用完」。排查确认 LLM 供给（§7.19）与调度链路已恢复，瓶颈在 exec worker 硬编码并发上限 4。
+
+**变更（`bundles/dsh/templates` 三文件 + `.env`）**：
+
+- **worker 并发 env 化**：`dsh-plugin-sec-domain-exec.js` 的 `MAX_WORKERS` 由硬编码 `4` 改为 `SEC_EXEC_MAX_WORKERS`（默认 12，钳制 1–32）。生产 `.env` 置 `SEC_EXEC_MAX_WORKERS=12`。
+- **调度认领上限 env 化**：`task_claim` 每 tick 认领上限由硬编码 4 改为 `SEC_SCHEDULER_CLAIM_LIMIT`（默认 12，钳制 1–32）；`selectDueTasks`（`dsh-plugin-sec-suite.task-policy.js`）上限 4→32 对齐。生产 `.env` 置 `SEC_SCHEDULER_CLAIM_LIMIT=12`。
+- **`task_claim` 事件风暴闸对齐**：契约 `event_limit` 4→32。认领上限提到 12 后单命令 `task.claimed` 事件数必然 >4，旧值会撞 `E_BUS_EVENT_TOO_LARGE` 使整批认领失败静默空转；同时补 `调度认领未成功: <code> <msg>` 诊断日志，避免信封不可见时无从排查。
+- **设计边界**：worker 与认领上限同源（`MAX_WORKERS`≈`CLAIM_LIMIT`），防「认领多、worker 少」导致任务被认领后因无空位回 queued 空转。
+
+**效果（csai 实测，2026-09-25）**：
+
+- 12 个 headless worker 并发（此前 4）；`task_claim` 单 tick 稳定认领 12 条（13:33–13:41 `event_outbox` 每分钟 12 条 `task.claimed`），13:42 起因到期任务池收敛为 1–4 条/分钟。
+- **lite 专属积分已在被消化**：Bellkeeper 近 600 条 LLM 日志中 **501 条 `sensenova-6.8-flash-lite` 200**（≈83.5%，429 仅 6 条）；lite 池（`pool-secagent-lite` 首成员 flash-lite）为当前主消耗，lite 任务 45 running / 444 queued 持续供给。
+- **资源边界结论**：csai 8C/16G，12 并发下 load ≈22、swap 已用 1.1G，为**本机实际安全上限**。瓶颈在执行侧 CPU/内存而非 LLM 供给，故不再上提 worker（提并发只加剧争抢，边际收益递减）；继续「用完 lite 积分」的杠杆在保持足量 lite 任务供给，而非堆并发。
+- **池策略漂移提示**：线上三池当前为 `priority-health`（Go 成员 w3 等旧权重，见 §7.18 配置），与 §7.19 记录的 `best-weight`（Go w8）不一致——Bellkeeper 重启后回落至 DB/YAML 的 priority-health 配置。就「消耗 lite 积分」目标而言 priority-health 的 sensenova 优先序恰好更有利（lite 任务落 flash-lite），故本轮不改池；但若后续要复现 §7.19 的 Go 优先分流，须经 DB API 重设并确认持久化。
+
+**契约与验收**：task 域契约 **87 pass / 0 fail**（setup 硬门槛实跑）；csai `bundle dsh setup` 组装后 `silksecagent` active、NRestarts=0、14 域注册，`sec-v5-accept.sh` **PASS=45 FAIL=0**。
