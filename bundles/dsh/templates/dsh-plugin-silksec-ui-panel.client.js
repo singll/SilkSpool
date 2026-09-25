@@ -230,7 +230,7 @@ window.__ModuleLoader__.load({
       ]
 
       return el('div', { style: { ...uiCore.styles.root, height: '100%' } },
-        el('div', { style: { ...uiCore.styles.header, minHeight: 40, marginBottom: 10, paddingBottom: 8, borderBottom: '1px solid ' + uiCore.T.border } },
+        el('div', { style: { ...uiCore.styles.header, minHeight: 40, marginBottom: 10, paddingBottom: 8, paddingRight: 44, borderBottom: '1px solid ' + uiCore.T.border } },
           el('div', { style: { minWidth: 0 } },
             el('div', { style: uiCore.styles.pageT }, '安全中心'),
             el('div', { style: uiCore.styles.pageSub, title: '写操作全部写入 audit.jsonl；行内跳链回来源会话（详情一律在会话里看）' }, '全局安全态势 · 漏洞 / 资产 / 接口 / 事实 / 知识 / 报告 / 审计')),

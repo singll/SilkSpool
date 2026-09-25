@@ -680,3 +680,10 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 - **RPC**（`dashboard-rpc.js`）：`campaignArchive`、`campaignGoalRevise`、`campaignCreate`、`budgetConfig`、`budgetConfigRequest`（提请审批）、`taskUpdateNote`。
 - **UI**（`ui-task`）：QueueActions 加阻塞/恢复；专项卡片「⏏归档」；`BudgetConfigCard`/`BudgetConfigForm`（改动走审批流，批准即生效无需重启）；`CampaignCreateForm` + 专项区块头「+ 新建专项」。
 - **契约**：ui-task +3（24/24）；task 契约 +2（env 兜底→DB 覆盖、max_tasks=2 停派第三个）；approval 契约 +1（task-budget-config 全链）。csai 部署 + 重启，accept **PASS=45 FAIL=0**。
+
+## 2026-09-25 36 号补丁·UI 修复（安全中心页头「刷新」与宿主「登出」重叠）
+
+> 现象：打开安全中心，右上角「刷新」图标与宿主全局「Sign out」按钮重叠。无头 DOM 实测两者同在 `x=1552`、`y` 区间 27–46 相交。根因：主面板页头右对齐操作组紧贴视口右缘，未给 DSH 宿主浮于主区右上角的 Sign out（占右缘约 48px）留位。
+
+- **修复**：`silksec-ui-panel` 页头在 `uiCore.styles.header` 基础上追加 `paddingRight: 44`，操作组左移让出宿主控件位——back `x` 1520→1476、refresh 1552→1508，Sign out 保持 1552，重叠消除（无头探测 `overlaps=[]`）。
+- **契约**：ui-panel +1（页头 `paddingRight` 预留宿主控件位），单测 **9/9** 全绿；csai `bundle dsh setup`（客户端 bundle 随请求热更，无需重启服务）后 `sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**。

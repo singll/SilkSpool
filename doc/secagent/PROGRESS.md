@@ -17,6 +17,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-25 · 36 号补丁·UI 修复：安全中心页头「刷新」与宿主「登出」重叠
+- **根因**：主面板页头右对齐操作组贴视口右缘，与 DSH 全局右上角 Sign out 同位（无头 DOM 实测 refresh 与 Sign out 同在 `x=1552`、y 相交）。
+- **修复**：`silksec-ui-panel` 页头追加 `paddingRight: 44` 预留宿主控件位；操作组左移 44px，重叠消除（探测 `overlaps=[]`）。
+- **验收**：ui-panel 单测 +1（9/9）；客户端 bundle 热更（无需重启），csai `sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**。文档回填 [16-dashboard](16-dashboard.md)。
+
 ### 2026-09-25 · 36 号补丁：exec worker 并发提升 + 认领上限对齐（accept PASS=45）
 - **动机**：用户问能否加并发/任务量把 lite（SenseNova flash-lite 专属积分）用完。瓶颈在 `MAX_WORKERS` 硬编码 4。
 - **修复**：`SEC_EXEC_MAX_WORKERS`（默认 12，钳 1–32）、`SEC_SCHEDULER_CLAIM_LIMIT`（默认 12，钳 1–32）、`selectDueTasks` 上限 4→32、`task_claim` 契约 `event_limit` 4→32（否则 12 事件撞 `E_BUS_EVENT_TOO_LARGE` 静默空转）+ claim 失败诊断日志；生产 `.env` 双置 12。

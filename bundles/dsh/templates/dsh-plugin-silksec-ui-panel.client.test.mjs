@@ -256,5 +256,7 @@ test('降级：layout 缺席时 DashboardPanel 仍可渲染，返回会话按钮
   assert.doesNotThrow(() => back[0].props.onClick())
   const refresh = collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-icon-btn' && n.props.title === '重新加载主面板数据')
   assert.equal(refresh.length, 1, '「刷新」图标按钮存在')
+  const header = collect(tree, (n) => n.type === 'div' && n.props && n.props.style && n.props.style.paddingRight === 44)
+  assert.equal(header.length, 1, '页头右侧预留宿主顶部控件位（防「刷新」与宿主「登出」重叠）')
   await Promise.resolve()
 })
