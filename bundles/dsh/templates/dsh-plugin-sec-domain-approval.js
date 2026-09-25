@@ -342,7 +342,9 @@ export const APPROVAL_MANIFEST = {
       deprecated: false,
     },
     approval_decide: {
-      actor: ['dashboard', 'human'],
+      // 35 号补丁：actor 加 'system'——专项 Supervisor 自动爬坡（campaign-budget-extend 提请后立即自动批准，
+      // operator=auto-campaign-budget 留痕；SEC_CAMPAIGN_BUDGET_AUTO_APPROVE=off 关闭）。model 仍不可用。
+      actor: ['dashboard', 'human', 'system'],
       schema: schema({
         id: int(),
         decision: en(['approve', 'reject']),

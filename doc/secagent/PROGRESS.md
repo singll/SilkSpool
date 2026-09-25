@@ -17,6 +17,13 @@
 
 ## 二、最近进度结果
 
+### 2026-09-25 · 35 号补丁：额度大提额 + 自动爬坡免人审 + 池治理修正（accept PASS=45）
+- **诊断昨晚停摆**：真凶是专项预算闸（#1 烧完 10M 转 reviewing 等审批 #49 空转 9.5h），非 LLM 额度；OpenCode Go 零消耗是 priority-health 硬排序设计（sensenova priority=1 健康时永不落 Go）；glm-5.2「不可用」系 27 号过时结论（今日实测 137 次 200）**保留**。
+- **提额**：campaign#1 200M / #2 100M / #3 50M；per-program 闸 budget_max_tokens 2B、max_tasks 5000（用户指示额度充足翻几倍无忧）。
+- **自动爬坡免人审**：Supervisor 提请 budget-extend 后 system 自动批准（operator=auto-campaign-budget，`SEC_CAMPAIGN_BUDGET_AUTO_APPROVE=off` 可关），消除人审延迟空转窗口。
+- **池治理**：34 号「YAML 移除 deepseek 官方」实未生效（SeedLLMProxyConfig 仅空库播种）——本轮走 DB API 真正移除（6/3/4 成员生效）；**规则：池序调整一律走 DB API，YAML 仅首启种子**。DSH `.env` POOL_MEMBERS 同步移除。
+- 三专项全部恢复 active/L2。文档回填 [05-task §7.18](05-task.md)。
+
 ### 2026-09-24 · 34 号补丁（运维）：DeepSeek 官方 API 移出 secagent 三池
 - 用户指示「当前托底的不是 deepseek 官方 API，先移出」：`pool-secagent`/`pool-secagent-lite`/`pool-secagent-heavy` 摘除 `deepseek-secagent` w1 成员（7→6 / 4→3 / 5→4），末位变为 OpenCode Go；渠道定义保留备加回；重启生效后实测 25 次请求全部走 SenseNova，官方命中 0。
 - 配置不在 git（keeper 线上 bellkeeper.yaml，已备份 .bak-20260924）；文档回填 [05-task §7.17](05-task.md)。注意：此后无付费托底，SenseNova 全员熔断时直接落 OpenCode Go，耗尽时靠供给归零自动降级兜底。

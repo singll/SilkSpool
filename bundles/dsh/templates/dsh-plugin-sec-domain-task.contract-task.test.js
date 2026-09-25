@@ -1557,17 +1557,25 @@ function registerApprovalStub(bus) {
           schema: { type: 'object', additionalProperties: false, properties: { kind: { type: 'string' }, subject: { type: 'string' }, evidence: { type: 'string' }, payload: { type: 'object' } }, required: ['kind', 'subject', 'evidence'] },
           idempotent: 'none', events: [], invariants: [], agent_note: '桩：审批提请',
         },
+        // 35 号补丁：自动爬坡需要 approval_decide（system actor 自动批准）
+        approval_decide: {
+          actor: ['dashboard', 'human', 'system'],
+          schema: { type: 'object', additionalProperties: false, properties: { id: { type: 'integer' }, decision: { type: 'string' }, note: { type: 'string' }, operator: { type: 'string' } }, required: ['id', 'decision'] },
+          idempotent: 'none', events: [], invariants: [], agent_note: '桩：审批裁决',
+        },
       },
       queries: {}, events: {}, subscribes: {}, backend: 'repository-v1',
     },
     handlers: {
       request: async (args) => { requests.push(args); return { data: { request_id: requests.length } } },
+      decide: async (args) => { stub.decisions.push(args); return { data: { request_id: args.id, status: args.decision === 'approve' ? 'approved' : 'rejected' } } },
       queries: {}, invariants: {}, subscribers: {},
     },
     backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
   }
+  stub.decisions = []
   const reg = bus.registry.register(stub)
-  return { reg, requests }
+  return { reg, requests, stub }
 }
 
 test('23 §3.6 parseCampaignSupplyEnv: 统一额度面解析 + 非法回落', () => {
@@ -1805,6 +1813,48 @@ test('23 §3.6: Supervisor 预算达 80% 自动提请 campaign-budget-extend', a
   const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
   assert.equal(tk.ok, true, tk.error?.message)
   assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_extend_request'").get(cid), '应自动提请预算延长并留痕')
+})
+
+test('35 号补丁: Supervisor 提请后自动批准（SEC_CAMPAIGN_BUDGET_AUTO_APPROVE 默认 on）', async () => {
+  const { bus } = makeEnv()
+  const appReg = registerApprovalStub(bus)
+  assert.equal(appReg.reg.ok, true, JSON.stringify(appReg.reg.error))
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'z.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '自动爬坡', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 100000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, spent_tokens, campaign_id) VALUES ('test-src', '用量', 5, '', 'done', ?, ?, 85000, ?)")
+    .run(Date.now(), Date.now(), cid)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(appReg.stub.decisions.length, 1, '提请后应立即自动批准一次')
+  assert.equal(appReg.stub.decisions[0].decision, 'approve')
+  assert.equal(appReg.stub.decisions[0].operator, 'auto-campaign-budget')
+  assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='milestone' AND summary LIKE '%自动批准%'").get(cid), '自动批准须留 milestone 审计')
+})
+
+test('35 号补丁: SEC_CAMPAIGN_BUDGET_AUTO_APPROVE=off 时只提请不批准', async () => {
+  process.env.SEC_CAMPAIGN_BUDGET_AUTO_APPROVE = 'off'
+  try {
+    const { bus } = makeEnv()
+    const appReg = registerApprovalStub(bus)
+    assert.equal(appReg.reg.ok, true)
+    assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'z.example.com', mark: 'not_crawled' }]).ok, true)
+    const c = await bus.dispatch('task', 'campaign_create', {
+      name: '手动爬坡', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 100000,
+      goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+    }, { actor: 'model' })
+    const cid = c.data.campaign_id
+    await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+    bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, spent_tokens, campaign_id) VALUES ('test-src', '用量', 5, '', 'done', ?, ?, 85000, ?)")
+      .run(Date.now(), Date.now(), cid)
+    const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+    assert.equal(tk.ok, true, tk.error?.message)
+    assert.equal(appReg.stub.decisions.length, 0, '关闭自动批准后须保留人工审批')
+  } finally { delete process.env.SEC_CAMPAIGN_BUDGET_AUTO_APPROVE }
 })
 
 // ---------------------------------------------------------------------------

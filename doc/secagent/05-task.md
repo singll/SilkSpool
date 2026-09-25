@@ -1172,3 +1172,22 @@ Task ─1:1─ Run/worker（exec 域，零改动）
   - `channels[].deepseek-secagent` **定义保留**（池外渠道不路由，备日后手动加回）；池 description 同步去掉「DeepSeek 官方托底」表述。
 - **生效路径**：`docker compose restart bellkeeper`（配置卷挂载，无需重建）。重启后实测：3 分钟内 secagent 流量 25 次全部命中 `sensenova-secagent`（200），`deepseek-secagent` 命中 **0**。
 - **当前优先级链（pool-secagent）**：SenseNova 免费优先 deepseek-flash w7 → glm-5.2 w6 → flash-lite w5 → ds-v4-flash w4 → **OpenCode Go v4.1-flash w3 → Go v4-flash w2（末位）**。注意：glm-5.2 当前已退出 SenseNova token 套餐（27 号根因 B），实际可用主力为 deepseek-flash / flash-lite / v4-flash；若 SenseNova 全员熔断将直接落到 OpenCode Go，无付费托底——额度耗尽时供给归零自动降级（23/30 号机制）兜底。
+
+### 7.18 2026-09-25 35 号补丁回填（额度大提额 + 自动爬坡免人审 + 池治理修正）
+
+> 动机：用户复盘 9-24 夜→9-25 晨：SenseNova 5h 窗口恢复后任务未恢复（额度空转 9.5h）、OpenCode Go 零消耗。系统排查结论与修复：
+
+**诊断（证据链）**：
+
+- **停摆真凶是专项预算闸而非 LLM 额度**：#1 提额后 4.5h 烧完 10M（flash-lite 存量复核，单请求 5–11 万 prompt tokens），00:24 达 80% 自动提请 budget-extend #49 → 00:34 budget_exhausted 转 reviewing 停派 → 09:51 人工批准才恢复。期间 SenseNova 已恢复（03:00 起请求 200），纯等人审空转。
+- **OpenCode Go 零消耗是路由设计使然**：`priority-health` 按渠道 priority 硬排序（sensenova=1 > go=3），只要 SenseNova 渠道健康，请求永远不落 Go；成员 429（rpm/tpm 瞬时限流）只在同渠道成员间顺延，不触发跨渠道流转。9-23 的 1862 次 Go 命中证明路径本身畅通。
+- **glm-5.2 误报澄清**：27 号补丁「glm-5.2 退出套餐」结论已过时——9-25 实测 137 次 200（仅 14 次 rpm 瞬时限流），套餐已恢复。**保留**在池（w6 第二顺位）。
+- **YAML↔DB 漂移根因**：`SeedLLMProxyConfig` 仅在渠道表为空时从 YAML 播种（`channelCount>0 → return nil`）。34 号只改 YAML + 重启 = **未生效**；本轮改走 DB API（PUT `/api/llm/config/groups`）真正移除 deepseek-secagent（pool-secagent 7→6、lite 4→3、heavy 5→4），`groups/status` 复核生效。**治理规则：池序/成员调整一律走 DB API，YAML 仅作首启种子参考。**
+
+**变更**：
+
+- **额度大提额（管理员直改 + milestone 审计）**：campaign#1 20M→**200M**、#2 10M→**100M**、#3 4M→**50M**；per-program 闸 `task_settings.budget_max_tokens` 200M→**2B**、`budget_max_tasks` 500→**5000**（Opencode Go 额度充足，用户指示翻几倍无忧）。
+- **自动爬坡免人审**：Supervisor 80% 水位提请 `campaign-budget-extend` 后立即以 `actor=system`、`operator=auto-campaign-budget` 自动批准（`SEC_CAMPAIGN_BUDGET_AUTO_APPROVE=off` 可关）；approval_decide actor 白名单加 `system`（model 仍不可自批）。爬坡风险有界：approval 校验保留「单次 ≤ 原预算×2 且非 reviewing 须 ≥80%」。消除「reviewing 等批准空转免费额度」窗口。
+- **DSH 供给成员清单同步**：`.env` `SEC_CAMPAIGN_POOL_MEMBERS` 移除 `deepseek-secagent`（hosts/csai/dsh/.env 真相源同步）。
+
+**契约**：task +2（自动批准默认 on / off 保留人工）、approval +1（system 可裁决、model 仍拒）。accept PASS=45 FAIL=0。三专项全部恢复 **active/L2**（提额后水位 <80% 自动 status_recovered）。

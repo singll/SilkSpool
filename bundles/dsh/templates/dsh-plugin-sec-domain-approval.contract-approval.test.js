@@ -575,3 +575,20 @@ test('22 B4: campaign kind 的 task 域不可达 → fail-closed（不放行）'
   assert.equal(r.ok, false)
   assert.equal(r.error.code, 'E_INTERNAL')
 })
+
+test('35 号补丁: system actor 可裁决 approval_decide（Supervisor 自动爬坡），model 仍拒绝', async () => {
+  const { bus } = makeEnvWithTask()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'camp-auto', program_ids: ['example-src'], budget_tokens: 1000, goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  bus._internal.db().prepare("UPDATE campaigns SET spent_tokens=900 WHERE id=?").run(c.data.campaign_id)
+  const r = await bus.dispatch('approval', 'request', { kind: 'campaign-budget-extend', subject: 'camp-auto', evidence: '80% 水位自动爬坡测试（模拟 Supervisor 提请）', payload: { add_tokens: 1000 } }, { actor: 'scheduler' })
+  assert.equal(r.ok, true, r.error?.message)
+  // model 仍不可裁决（自动批准只能走 system，模型不自批自）
+  const dm = await bus.dispatch('approval', 'decide', { id: r.data.request_id, decision: 'approve', operator: 'x' }, { actor: 'model' })
+  assert.equal(dm.ok, false)
+  assert.equal(dm.error.code, 'E_ACTOR_FORBIDDEN')
+  // system 自动批准 → effect 落账
+  const d = await bus.dispatch('approval', 'decide', { id: r.data.request_id, decision: 'approve', operator: 'auto-campaign-budget' }, { actor: 'system' })
+  assert.equal(d.ok, true, d.error?.message)
+  assert.equal(d.data.effect_state, 'applied')
+  assert.equal(bus._internal.db().prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(c.data.campaign_id).budget_tokens, 2000, '自动批准后预算须落账')
+})

@@ -1887,6 +1887,16 @@ function makeHandlers(opts) {
             if (r && r.ok) {
               const cp = writeCheckpoint(repo, c.id, 'budget_extend_request', `预算达 80% 水位，已自动提请 campaign-budget-extend（+${a.add} tokens）`, { add_tokens: a.add, spent: a.spent, request_id: r.data?.request_id ?? null })
               events.push(...cp.events)
+              // 35 号补丁：自动爬坡免人审——Supervisor 提请立即自动批准（SEC_CAMPAIGN_BUDGET_AUTO_APPROVE=off 可关）。
+              // 爬坡本身受 approval 校验约束（单次 ≤ 原预算×2 且非 reviewing 须 ≥80% 水位），风险有界；
+              // 取消人审延迟消除「reviewing 等批准空转免费额度」窗口（9-25 凌晨 9.5h 停摆实证）。
+              if (String(process.env.SEC_CAMPAIGN_BUDGET_AUTO_APPROVE || 'on') !== 'off' && r.data?.request_id) {
+                const d = await dispatchRef('approval', 'decide', { id: r.data.request_id, decision: 'approve', operator: 'auto-campaign-budget', note: 'Supervisor 自动爬坡（35 号补丁免人审）' }, { actor: 'system' })
+                if (d && d.ok) {
+                  const cp2 = writeCheckpoint(repo, c.id, 'milestone', `campaign-budget-extend 自动批准 #${r.data.request_id}：预算 +${a.add}（SEC_CAMPAIGN_BUDGET_AUTO_APPROVE）`, { approval_id: r.data.request_id, add_tokens: a.add })
+                  events.push(...cp2.events)
+                } else log(`专项 #${c.id} 预算延长自动批准失败（保留人工审批通道）: ${d?.error?.code} ${d?.error?.message}`)
+              }
             } else log(`专项 #${c.id} 预算延长提请未成功: ${r?.error?.code} ${r?.error?.message}`)
           } catch (e) { log(`专项 #${c.id} 预算延长提请失败: ${e?.message}`) }
         }
