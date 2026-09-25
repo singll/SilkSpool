@@ -1191,3 +1191,15 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **DSH 供给成员清单同步**：`.env` `SEC_CAMPAIGN_POOL_MEMBERS` 移除 `deepseek-secagent`（hosts/csai/dsh/.env 真相源同步）。
 
 **契约**：task +2（自动批准默认 on / off 保留人工）、approval +1（system 可裁决、model 仍拒）。accept PASS=45 FAIL=0。三专项全部恢复 **active/L2**（提额后水位 <80% 自动 status_recovered）。
+
+### 7.19 2026-09-25 35 号补丁·二段（池策略 best-weight 加权分流——OpenCode Go 额度利用率修复）
+
+> 用户当日复查：Opencode Go 套餐消耗仍为 0、全部走 SenseNova。排查确认**不是额度配置小**（SenseNova 本地桶 120rpm/20000rpd 远大于峰值 23rpm/591rph；429 全是**上游真实限流** rpm/rps/tpm exhausted），而是 `priority-health` 的**渠道 priority 硬排序**：sensenova=1 健康时请求永不落 Go（priority=3），成员 429 只在同渠道顺延。
+
+- **策略切换**：三池 `priority-health` → `best-weight`（确定性最高权重当选），Go 成员提为**最佳档 w8**：
+  - pool-secagent：Go v4.1/v4-flash **w8** → deepseek-flash w7 → glm-5.2 w6 → flash-lite w5 → ds-v4-flash w4
+  - pool-secagent-lite：Go v4-flash **w8** → flash-lite w6 → SenseNova v4-flash w4
+  - pool-secagent-heavy：Go v4.1-flash **w8** → glm-5.2 w6 → deepseek-flash w5 → v4-flash w4
+  - DB API（PUT config/groups）生效 + **YAML 同步对齐**（35 号教训：YAML 仅首启种子，改池必须 DB API 为准，双写防漂移）。
+- **效果实测**：切换后 5 分钟 18 个请求全部落 Go（v4.1-flash，200，~2.8s/req，2M tokens），Go 官方 rolling 窗口余量 0% 消耗、周窗 34%、月窗 40%；SenseNova 瞬时限流期间的请求不再空转。
+- **附带发现**：① flash-lite 定价表缺行（`llm_model_pricing` 无 sensenova-6.8-flash-lite 记录，日志刷 SELECT rows:0——仅影响成本估算，待补）；② 12:58 曾出现 70s 全员超时（context deadline）——单请求长 prompt 撞上游排队，非路由问题；③ 56 个 running 僵尸任务（19:14–19:23 起无 worker 绑定）等 75 分钟回收宽限自然回收，非卡死。

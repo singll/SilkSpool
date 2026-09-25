@@ -17,6 +17,12 @@
 
 ## 二、最近进度结果
 
+### 2026-09-25 · 35 号补丁·二段：池策略 best-weight 加权分流（OpenCode Go 额度利用率修复）
+- **诊断**：Go 消耗 0 不是额度小（本地桶 120rpm/20000rpd 远超峰值 23rpm；429 全是上游真实限流），而是 `priority-health` 渠道 priority 硬排序——sensenova=1 健康时永不落 Go（priority=3）。
+- **修复**：三池切 `best-weight`，Go 成员提为最佳档 w8（DB API + YAML 双写对齐）；实测切换后 5 分钟 18 请求全落 Go（2M tokens），官方 rolling/周/月窗口余量 100%/66%/60%。
+- 附带发现：flash-lite 定价表缺行（成本估算影响，待补）；56 个 running 僵尸任务在 75 分钟回收宽限内自然回收。
+- 文档回填 [05-task §7.19](05-task.md)。
+
 ### 2026-09-25 · 35 号补丁：额度大提额 + 自动爬坡免人审 + 池治理修正（accept PASS=45）
 - **诊断昨晚停摆**：真凶是专项预算闸（#1 烧完 10M 转 reviewing 等审批 #49 空转 9.5h），非 LLM 额度；OpenCode Go 零消耗是 priority-health 硬排序设计（sensenova priority=1 健康时永不落 Go）；glm-5.2「不可用」系 27 号过时结论（今日实测 137 次 200）**保留**。
 - **提额**：campaign#1 200M / #2 100M / #3 50M；per-program 闸 budget_max_tokens 2B、max_tasks 5000（用户指示额度充足翻几倍无忧）。
