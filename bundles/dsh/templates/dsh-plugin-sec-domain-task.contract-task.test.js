@@ -652,6 +652,31 @@ test('query: task_stats / task_next / task_runs', async () => {
   assert.equal(runs.total, 1)
 })
 
+test('query: scheduled 口径（36 号补丁）——exclude=非周期(NULL+once)、only=interval、定时区仅 interval', async () => {
+  const { bus } = makeEnv()
+  const now = Date.now()
+  await bus.dispatch('task', 'create', { program_id: 'test-src', objective: 'plain-task' }, { actor: 'model' })
+  await bus.dispatch('task', 'create', { program_id: 'test-src', objective: 'once-task', schedule: { kind: 'once', at: now + 3600000 } }, { actor: 'model' })
+  await bus.dispatch('task', 'create', { program_id: 'test-src', objective: 'interval-task', schedule: { kind: 'interval', every_seconds: 3600 } }, { actor: 'model' })
+
+  const exclude = await bus.query('task', 'list', { program_id: 'test-src', bucket: 'active', scheduled: 'exclude' }, { actor: 'dashboard' })
+  assert.deepEqual(exclude.rows.map((r) => r.objective).sort(), ['once-task', 'plain-task'], 'exclude 含普通+once，不含 interval')
+  const only = await bus.query('task', 'list', { program_id: 'test-src', scheduled: 'only' }, { actor: 'dashboard' })
+  assert.deepEqual(only.rows.map((r) => r.objective), ['interval-task'], 'only 仅 interval')
+  const sched = await bus.query('task', 'scheduled', {}, { actor: 'dashboard' })
+  assert.deepEqual(sched.rows.map((r) => r.objective), ['interval-task'], '定时卡片区仅 interval')
+})
+
+test('query: task_list dir 端到端（priority asc/desc）', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('task', 'create', { program_id: 'test-src', objective: 'p-low', priority: 1 }, { actor: 'model' })
+  await bus.dispatch('task', 'create', { program_id: 'test-src', objective: 'p-high', priority: 9 }, { actor: 'model' })
+  const asc = await bus.query('task', 'list', { program_id: 'test-src', sort: 'priority', dir: 'asc' }, { actor: 'dashboard' })
+  assert.equal(asc.rows[0].objective, 'p-low', 'dir=asc 低优先级号（更优先）在前')
+  const desc = await bus.query('task', 'list', { program_id: 'test-src', sort: 'priority', dir: 'desc' }, { actor: 'dashboard' })
+  assert.equal(desc.rows[0].objective, 'p-high', 'dir=desc 高优先级号在前')
+})
+
 // ---------------------------------------------------------------------------
 // 7. 别名
 // ---------------------------------------------------------------------------

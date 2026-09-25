@@ -687,3 +687,12 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 
 - **修复**：`silksec-ui-panel` 页头在 `uiCore.styles.header` 基础上追加 `paddingRight: 44`，操作组左移让出宿主控件位——back `x` 1520→1476、refresh 1552→1508，Sign out 保持 1552，重叠消除（无头探测 `overlaps=[]`）。
 - **契约**：ui-panel +1（页头 `paddingRight` 预留宿主控件位），单测 **9/9** 全绿；csai `bundle dsh setup`（客户端 bundle 随请求热更，无需重启服务）后 `sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**。
+
+## 2026-09-25 37 号补丁·任务视图口径修复（「正在执行」独立数据源 + 定时区仅 interval + dir 生效）
+
+> 现象：任务中心「正在执行」恒空，而安全中心 KPI「运行中/阻塞」有数。根因见 [05-task §7.21](05-task.md)：后端的执行任务（once）被 active 桶的 `scheduled=exclude`（旧实现 `schedule_kind IS NULL`）排除，又被 `task_scheduled` 误当周期任务。
+
+- **数据源**：dashboard-rpc 新增 `executingTasks`（running+blocked 独立查询，返回 `{rows,running,blocked,total}`）；「正在执行」不再从 ≤200 分页队列里切，避免运行任务被排队挤出。
+- **计数**：队列状态 chip 与「全部」改用服务端 `total`（此前用当前页 `rows.length`）。
+- **定时区**：`scheduledTasksAgg` 收紧为 `interval`，`once` 不再出现在「定时任务」卡片区。
+- **契约**：ui-task 单测 +1（正在执行独立源 + total 计数）；`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**。

@@ -434,6 +434,22 @@ test('五区块（32 号方案）：专项 → 正在执行 → 队列 → 定�
   assert.ok(collect(tree, (n) => n.type === 'button' && n.props.className === 'silksec-icon-btn').length >= 2)
 })
 
+test('36 号补丁：正在执行独立源 executingTasks（分页队列之外仍显示）+ 计数用服务端 total', () => {
+  const EXEC = { id: 777, program_id: 'meituan', phase: 'vuln', objective: '分页外运行任务', status: 'running', schedule_kind: 'once', session_id: 'sess-9' }
+  const uiCore = makeUiCore({ rpcState: {
+    ...FULL_RPC_STATE,
+    tasks: { data: { rows: QUEUE.filter((t) => t.status !== 'running'), total: 553 } },
+    executingTasks: { data: { rows: [EXEC], running: 63, blocked: 4, total: 67 } },
+  } })
+  const { mod } = loadBundle(uiCore, makePrimitives())
+  const tree = mod.TaskCenter({ rpc: () => Promise.resolve({}) })
+  const text = deepText(tree)
+  assert.match(text, /分页外运行任务/, '正在执行取自独立源，队列分页之外的 running 仍显示')
+  assert.match(text, /运行中 63/, '队列状态计数用服务端 total（运行中 63）')
+  assert.match(text, /阻塞 4/, '队列状态计数用服务端 total（阻塞 4）')
+  assert.match(text, /全部 553/, '「全部」用服务端 total（非当前页 200）')
+})
+
 test('primitives 缺席：四区块仍可渲染（Pill/StateDot/DisclosureRow 走 ui-core 兜底）', () => {
   const uiCore = makeUiCore({ rpcState: FULL_RPC_STATE })
   const { mod } = loadBundle(uiCore, null)

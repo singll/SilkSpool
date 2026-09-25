@@ -256,9 +256,10 @@ function createRepo(db) {
       const r = db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?${where}`).run(...args)
       return r.changes
     },
-    listTasksWhere(filters, limit, offset, sort) {
+    listTasksWhere(filters, limit, offset, sort, dir) {
       const { where, args } = taskWhere(filters)
-      const orderBy = sort === 'created_at' ? 'created_at ASC' : 'priority ASC, created_at ASC'
+      const d = dir === 'desc' ? 'DESC' : 'ASC'
+      const orderBy = sort === 'created_at' ? `created_at ${d}` : `priority ${d}, created_at ${d}`
       return db.prepare(`SELECT * FROM tasks WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`)
         .all(...args, Math.min(Number(limit) || 50, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
     },
@@ -472,7 +473,7 @@ function createRepo(db) {
            (SELECT r.ok FROM task_runs r WHERE r.task_id = t.id ORDER BY r.id DESC LIMIT 1) AS last_ok,
            (SELECT r.note FROM task_runs r WHERE r.task_id = t.id ORDER BY r.id DESC LIMIT 1) AS last_note
          FROM tasks t
-         WHERE t.schedule_kind IS NOT NULL AND t.status NOT IN ('done', 'failed', 'cancelled')
+         WHERE t.schedule_kind = 'interval' AND t.status NOT IN ('done', 'failed', 'cancelled')
          ORDER BY t.next_run_at ASC`
       ).all().map((r) => ({ ...r }))
     },
@@ -645,8 +646,10 @@ function taskWhere({ program_id = '', status = '', phase = '', q = '', bucket = 
   if (q) { where += ' AND objective LIKE ?'; args.push(`%${q}%`) }
   if (bucket === 'active') where += " AND status IN ('queued', 'running', 'blocked')"
   else if (bucket === 'history') where += " AND status IN ('done', 'failed', 'cancelled')"
-  if (scheduled === 'exclude') where += ' AND schedule_kind IS NULL'
-  else if (scheduled === 'only') where += ' AND schedule_kind IS NOT NULL'
+  // scheduled=exclude：非周期任务（普通 NULL + 一次性 once，属执行/队列语义）
+  // scheduled=only：周期任务（interval，属「定时任务」卡片区）
+  if (scheduled === 'exclude') where += " AND (schedule_kind IS NULL OR schedule_kind = 'once')"
+  else if (scheduled === 'only') where += " AND schedule_kind = 'interval'"
   return { where, args }
 }
 

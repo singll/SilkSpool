@@ -567,9 +567,29 @@ export async function handleDashboardRpc(endpoint, payload) {
         program_id: filters.programId, status: filters.status, phase: filters.phase, q: filters.q,
         bucket: filters.bucket, scheduled: filters.scheduled,
         ...(filters.campaignId ? { campaign_id: filters.campaignId } : {}),
+        ...(String(p.sort || '') ? { sort: String(p.sort) } : {}),
+        ...(String(p.dir || '') ? { dir: String(p.dir) } : {}),
         limit, offset,
       })
       return { rows: r.rows, total: r.total }
+    }
+    // 36 号补丁：正在执行独立数据源（running+blocked），与分页队列解耦，
+    // 避免运行中任务在 active 桶 200 行分页里被排队任务挤出而「消失」。
+    case 'executingTasks': {
+      const base = {
+        scheduled: 'exclude', limit: 200,
+        program_id: String(p.program_id || ''),
+        ...(Number(p.campaign_id) ? { campaign_id: Number(p.campaign_id) } : {}),
+      }
+      const [run, blk] = await Promise.all([
+        busQuery('task', 'list', { ...base, status: 'running' }),
+        busQuery('task', 'list', { ...base, status: 'blocked' }),
+      ])
+      return {
+        rows: [...(run.rows || []), ...(blk.rows || [])],
+        running: Number(run.total) || 0, blocked: Number(blk.total) || 0,
+        total: (Number(run.total) || 0) + (Number(blk.total) || 0),
+      }
     }
     // ---- P12：固定定时任务卡片区 + 执行历史 ----
     case 'scheduledTasks': {

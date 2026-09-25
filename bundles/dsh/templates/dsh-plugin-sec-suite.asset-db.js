@@ -900,9 +900,11 @@ export function taskUpdate({ id, status, note = '', blocked_reason = '', result 
   return { ok: true, id: Number(id), status }
 }
 
-export function taskList({ programId = '', status = '', phase = '', q = '', bucket = '', scheduled = '', limit = 50, offset = 0 }) {
+export function taskList({ programId = '', status = '', phase = '', q = '', bucket = '', scheduled = '', limit = 50, offset = 0, sort = '', dir = '' }) {
   const { where, args } = taskWhere({ programId, status, phase, q, bucket, scheduled })
-  const sql = `SELECT * FROM tasks WHERE ${where} ORDER BY priority ASC, created_at ASC LIMIT ? OFFSET ?`
+  const d = dir === 'desc' ? 'DESC' : 'ASC'
+  const orderBy = sort === 'created_at' ? `created_at ${d}` : `priority ${d}, created_at ${d}`
+  const sql = `SELECT * FROM tasks WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`
   return plain(getDb().prepare(sql).all(...args, Math.min(limit, 200), Math.max(0, offset)))
 }
 
@@ -928,8 +930,9 @@ function taskWhere({ programId = '', status = '', phase = '', q = '', bucket = '
   if (bucket === 'active') { where += " AND status IN ('queued', 'running', 'blocked')" }
   else if (bucket === 'history') { where += " AND status IN ('done', 'failed', 'cancelled')" }
   // P12：定时任务由看板「定时任务」卡片区独立展示；active 列表默认排除定时行，避免与卡片重复
-  if (scheduled === 'exclude') { where += ' AND schedule_kind IS NULL' }
-  else if (scheduled === 'only') { where += ' AND schedule_kind IS NOT NULL' }
+  // scheduled=exclude：非周期（普通 NULL + 一次性 once）；scheduled=only：周期 interval
+  if (scheduled === 'exclude') { where += " AND (schedule_kind IS NULL OR schedule_kind = 'once')" }
+  else if (scheduled === 'only') { where += " AND schedule_kind = 'interval'" }
   return { where, args }
 }
 

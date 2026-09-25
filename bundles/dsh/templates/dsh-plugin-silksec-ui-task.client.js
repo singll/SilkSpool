@@ -954,6 +954,12 @@ window.__ModuleLoader__.load({
         if (campaignFilter) payload.campaign_id = campaignFilter
         return { endpoint: 'tasks', payload: payload }
       }, [progFilter, campaignFilter], rpc || undefined)
+      // 36 号补丁：正在执行独立数据源（running+blocked 全量），与 ≤200 分页队列解耦
+      var execState = useRpcCore(function () {
+        var payload = { program_id: progFilter }
+        if (campaignFilter) payload.campaign_id = campaignFilter
+        return { endpoint: 'executingTasks', payload: payload }
+      }, [progFilter, campaignFilter], rpc || undefined)
       // 22 号方案 方案 A：专项区块数据源（含已归档外的全部状态；查询不可达时区块静默隐藏——降级链）
       var campState = useRpcCore(function () { return { endpoint: 'campaigns', payload: { limit: 50 } } }, [], rpc || undefined)
       var runsState = useRpcCore(function () {
@@ -977,12 +983,23 @@ window.__ModuleLoader__.load({
       var campaigns = ((campState.data && campState.data.rows) || []).filter(function (c) { return c.status !== 'archived' })
       var campaignNames = {}
       campaigns.forEach(function (c) { campaignNames[c.id] = c.name || ('#' + c.id) })
-      // 24 号方案 §3.1：状态计数/过滤（客户端，零额外 RPC）
+      // 24 号方案 §3.1 + 36 号补丁：状态计数取服务端 total（全量），筛选作用于当前页
       var statusCounts = queueStatusCounts(queue)
       var originCounts = queueOriginCounts(queue)
       var visibleQueue = filterQueueByOrigin(filterQueueByStatus(queue, statusFilter), originFilter)
       // 32 号方案：正在执行区块（running+blocked，上移为第二视觉焦点）
-      var activeExec = activeExecutionRows(queue)
+      // 36 号补丁：优先用独立 executingTasks（全量 + 服务端 total），分页队列仅作降级兜底
+      var execData = execState && execState.data
+      var activeExec = (execData && Array.isArray(execData.rows)) ? execData.rows : activeExecutionRows(queue)
+      var queueTotal = (tasksState.data && Number(tasksState.data.total)) || queue.length
+      if (execData) {
+        statusCounts = {
+          all: queueTotal,
+          running: Number(execData.running) || 0,
+          blocked: Number(execData.blocked) || 0,
+          queued: Math.max(0, queueTotal - (Number(execData.running) || 0) - (Number(execData.blocked) || 0)),
+        }
+      }
       var runsRecent = splitRunsRecency(runs)
       var visibleRuns = filterRuns(runsRecent.recent, histFilter)
       var visibleRunsOld = filterRuns(runsRecent.old, histFilter)
@@ -990,7 +1007,7 @@ window.__ModuleLoader__.load({
         return el('button', {
           type: 'button', className: 'silksec-chip', 'data-on': statusFilter === key ? 'true' : undefined,
           style: color ? { color: color } : undefined,
-          title: '按状态筛选队列（客户端过滤当前页 ≤200）',
+          title: '按状态筛选队列（计数为服务端全量；筛选作用于当前页）',
           onClick: function () { setStatusFilter(statusFilter === key ? '' : key) },
         }, label + ' ' + n)
       }

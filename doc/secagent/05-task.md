@@ -460,12 +460,12 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 
 | 查询 | 参数 | 返回 | 说明 |
 |---|---|---|---|
-| `task_list` | program_id / status / phase / goal / q（objective LIKE）/ bucket / scheduled / **campaign_id（22 号方案 A：按归属专项过滤，看板任务视图专项 chip/卡片联动用）** / limit / offset / sort（priority\|created_at，默认 priority asc,created_at asc）/ dir（**接受但后端忽略，恒 ASC**） | `{rows, total}` | 看板任务视图数据源；bucket=active 且未显式传 scheduled 时默认 `scheduled=exclude`（定时任务由独立卡片区展示，避免重复——v4.x P12 口径保留） |
+| `task_list` | program_id / status / phase / goal / q（objective LIKE）/ bucket / scheduled / **campaign_id（22 号方案 A：按归属专项过滤，看板任务视图专项 chip/卡片联动用）** / limit / offset / sort（priority\|created_at，默认 priority asc,created_at asc）/ dir（asc\|desc，默认 asc） | `{rows, total}` | 看板任务视图数据源。**36 号补丁口径**：`scheduled=exclude`＝非周期（`schedule_kind IS NULL OR 'once'`，属执行/队列）、`scheduled=only`＝周期（`interval`，属定时卡片区）；bucket=active 且未显式传 scheduled 时默认 `scheduled=exclude`。`dir` 已端到端生效（此前接受但被忽略）。 |
 | `task_get` | task_id | 单行或 `E_NOT_FOUND` | 全列（含调度/预算/模型覆盖/最近 run） |
 | `task_next` | program_id | 单个任务或 null | 编排器认领：最高优先级 queued 且 **parent gate** 放行（parent 须 done）的第一条 |
 | `task_stats` | program_id | `{total, by_phase_status[]}` | 聚合独立命名（宪法 §七.5） |
 | `task_runs` | task_id / program_id / limit / offset | `{rows, total}` | join tasks 带 objective/program/phase；order id DESC；**每任务只保留最近 200 行**（写入侧 LRU 剪枝） |
-| `task_scheduled` | —（无分页，固定清单） | rows | 固定定时任务卡片区：`schedule_kind IS NOT NULL AND status NOT IN (done,failed,cancelled)` + 聚合 run_count/fail_count/last_ok/last_note；order next_run_at ASC |
+| `task_scheduled` | —（无分页，固定清单） | rows | 固定定时任务卡片区（**36 号补丁：仅周期任务**）：`schedule_kind = 'interval' AND status NOT IN (done,failed,cancelled)` + 聚合 run_count/fail_count/last_ok/last_note；order next_run_at ASC |
 | `task_worker_list` | status（running/done/failed/killed）/ limit（默认 20 上限 200） | rows | 注册表总览（在飞/历史 worker） |
 | `task_worker_status` | run_id | 单行或 `E_NOT_FOUND` | 注册行 + 恢复 hint；尾部日志经 exec 域查询（grep_result/page_result）——**工具投影层可组合两域查询呈现 v4.x 的 tail 体验** |
 | `task_worker_recent` | dedupe_key / window_ms（默认 30min） | 单行或 null | **exec 域幂等预检专用**（跨域只读）：窗口内该 dedupe_key 最近一条（started_at 倒序） |
@@ -1223,3 +1223,19 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **池策略漂移提示**：线上三池当前为 `priority-health`（Go 成员 w3 等旧权重，见 §7.18 配置），与 §7.19 记录的 `best-weight`（Go w8）不一致——Bellkeeper 重启后回落至 DB/YAML 的 priority-health 配置。就「消耗 lite 积分」目标而言 priority-health 的 sensenova 优先序恰好更有利（lite 任务落 flash-lite），故本轮不改池；但若后续要复现 §7.19 的 Go 优先分流，须经 DB API 重设并确认持久化。
 
 **契约与验收**：task 域契约 **87 pass / 0 fail**（setup 硬门槛实跑）；csai `bundle dsh setup` 组装后 `silksecagent` active、NRestarts=0、14 域注册，`sec-v5-accept.sh` **PASS=45 FAIL=0**。
+
+### 7.21 2026-09-25 37 号补丁回填（任务执行视图口径修复 + 派生自动执行 + dir 生效）
+
+> 动机：用户报「进行中的任务不出现在正在执行的列表里」。排查为**调度语义与视图过滤错配**：scheduler 只认领 `schedule_kind IS NOT NULL`（once/interval），22 号方案起 Campaign 子任务以 `once` 入队；而 `bucket=active` 默认 `scheduled=exclude` 被实现为 `schedule_kind IS NULL`，把全部 `once`（含运行中）排除，导致「正在执行」恒空、队列「运行中」chip 恒 0，与 KPI（无 schedule 过滤的 running/blocked 计数）直接矛盾；同时 once 任务被 `scheduledTasksAgg`（`schedule_kind IS NOT NULL`）当成「定时任务」卡片，掺杂 63 张运行中卡。
+
+**变更（A→B→C→D）**：
+
+- **A 定时语义收敛为 interval-only**：`taskWhere` 的 `scheduled=exclude` → `(schedule_kind IS NULL OR schedule_kind='once')`（非周期＝执行/队列），`scheduled=only` → `schedule_kind='interval'`；`scheduledTasksAgg` → `schedule_kind='interval'`。后端 `sec-backend-task-sqlite` 与 `sec-suite/asset-db` 双份同步。memcore objective-lint（`scheduled='only'`）随之只扫周期任务，与注释口径一致。
+- **B 正在执行独立数据源**：dashboard-rpc 新增 `executingTasks`（内部 `task.list {scheduled:'exclude'}` 分两次取 running/blocked，返回 `{rows,running,blocked,total}`）；ui-task「正在执行」改用该源，与 ≤200 分页队列解耦，队列状态计数改用服务端 `total`（此前用当前页 `rows.length`，553 被截成 200）。
+- **C-1 派生草稿自动执行**：`task_derive_intent` 一律带 `schedule:{kind:'once',at:now+3s}`（此前仅 Campaign 分支带，非 Campaign「无主草稿」保持 NULL → 调度器永不认领，覆盖缺口派生堆积）。存量迁移：`UPDATE tasks SET schedule_kind='once', run_at=next_run_at=now WHERE status='queued' AND schedule_kind IS NULL`（csai 实测 **575 条**由死草稿转可执行，调度器按 12/tick 认领消化）。
+- **D `task_list.dir` 端到端**：schema→`task_list` handler→`listTasksWhere`/`asset-db.taskList` 全链支持 `asc|desc`（此前 schema 接受、后端忽略恒 ASC）。
+- **契约/单测**：task 契约 +2（scheduled 口径：exclude 含 NULL+once、only 仅 interval、`task_scheduled` 仅 interval；`dir` asc/desc）；ui-task 单测 +1（正在执行独立源 + 服务端 total 计数）。
+
+**实测（csai，2026-09-25）**：`executingTasks` → running 24 / blocked 0（正在执行不再空）；`task.list {bucket:active,scheduled:exclude}` → total 593、含 running 24 + queued（once 不再被排除）；`task_scheduled` → 仅 `interval` 7 条。检查前后错位数字：KPI running/blocked 63/4 ↔ 正在执行 0/0 → 修复后一致。
+
+**契约与验收**：task 域契约全绿（含新增 2 例）；`silksecagent` 重启 active；`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**。文档同步：05-task §1.7 查询口径、16-dashboard 任务视图。

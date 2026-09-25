@@ -2508,9 +2508,10 @@ function makeHandlers(opts) {
         ...(args.model_hint ? { model_hint: args.model_hint } : {}),
         // Path A：provider+model 成对透传，worker 经 model-patch 指定模型
         ...(args.provider && args.model ? { provider: String(args.provider), model: String(args.model) } : {}),
-        // 22 号方案：Campaign 子任务以 once 调度入队，才被调度器认领执行（调度器只认领 schedule_kind 非空）。
-        // 21 号「无主派生」草稿仍保持 NULL（queued 待人工/编排 run_now）；INV-C7 只禁 interval。
-        ...(args.campaign_id != null ? { schedule: { kind: 'once', at: Date.now() + 3000 } } : {}),
+        // 36 号补丁（方案 C-1）：派生任务一律 once 入队自动执行。此前非 Campaign 草稿
+        // schedule_kind=NULL，而调度器只认领非空 → 覆盖缺口派生的「无主草稿」永不执行、堆积。
+        // INV-C7 仅禁 interval，once 合规；任务级 model_hint/task_class 不变。
+        schedule: { kind: 'once', at: Date.now() + 3000 },
       }, { actor: 'reactor', cause: ctx?.cause })
       if (!r || !r.ok) throwErr(r?.error?.code || 'E_INTERNAL', r?.error?.message || '派生任务创建失败', r?.error?.hint || '', false)
       const taskId = r.data.task_id
@@ -2843,7 +2844,7 @@ function makeHandlers(opts) {
     task_list: async (args, repo) => {
       const filters = { program_id: args.program_id, status: args.status, phase: args.phase, goal: args.goal, q: args.q, bucket: args.bucket, scheduled: args.scheduled, campaign_id: args.campaign_id }
       const total = repo.countTasksWhere(filters)
-      const rows = repo.listTasksWhere(filters, args.limit, args.offset, args.sort)
+      const rows = repo.listTasksWhere(filters, args.limit, args.offset, args.sort, args.dir)
       return { rows, total }
     },
     task_get: async (args, repo) => {

@@ -17,6 +17,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-25 · 37 号补丁：任务执行视图口径修复（A→B→C-1→D）
+- **根因**：`scheduled=exclude` 旧实现 `schedule_kind IS NULL`，把调度器执行的 `once` 任务（含 running）全部排除 →「正在执行」恒空、与 KPI 矛盾；`once` 又被 `task_scheduled` 误当周期任务。审计报告见 [05-task §7.21](05-task.md)。
+- **A** 定时语义收敛 interval-only（exclude=非周期 NULL+once / only=interval；`scheduledTasksAgg` 仅 interval，双后端同步）；**B** 新增 `executingTasks` 独立数据源 + UI 计数改用服务端 total；**C-1** `derive_intent` 一律 once 自动执行 + 存量 575 条死草稿迁移；**D** `task_list.dir` 端到端生效。
+- **验收**：task 契约 +2、ui-task 单测 +1 全绿；csai 重启后实测 `executingTasks` running 24、`task_scheduled` 仅 interval 7；`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**。
+
 ### 2026-09-25 · 36 号补丁·UI 修复：安全中心页头「刷新」与宿主「登出」重叠
 - **根因**：主面板页头右对齐操作组贴视口右缘，与 DSH 全局右上角 Sign out 同位（无头 DOM 实测 refresh 与 Sign out 同在 `x=1552`、y 相交）。
 - **修复**：`silksec-ui-panel` 页头追加 `paddingRight: 44` 预留宿主控件位；操作组左移 44px，重叠消除（探测 `overlaps=[]`）。
