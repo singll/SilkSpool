@@ -5,7 +5,7 @@
 set -uo pipefail
 LOG=/opt/silkspool/dsh/data/pipeline/dsh-version-watch.log
 RADAR=/opt/silkspool/dsh/data/pipeline/dsh-ops/radar-queue.jsonl
-KNOWN="0.1.5-rc.2"
+KNOWN="${DSH_KNOWN_VERSION:-0.1.5-rc.2}"   # 部署版本兜底；P6 部署候选时由候选清单改写为目标版本。
 mkdir -p "$(dirname "$RADAR")"
 LATEST=$(curl -fsSL --connect-timeout 15 "https://registry.npmjs.org/@deepseek-ai/dsh" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['dist-tags']['latest'])" 2>/dev/null)
 NOW=$(date +%Y-%m-%dT%H:%M:%S)

@@ -86,6 +86,15 @@ class PersonaTests(unittest.TestCase):
         self.assertNotIn("prefix", persona.persona_row(rows)["config"])
         self.assertIn("{{cwd}}", persona.persona_parts(rows)["prefix"])
 
+    def test_future_version_layout_is_not_silently_treated_as_legacy(self):
+        # 0.1.7 的 preset 机制由 P3 替换；在机制落地前必须显式拒绝，不能落入旧 text 分支。
+        dsh = self.base / "app/node_modules/@deepseek-ai/dsh"
+        dsh.mkdir(parents=True)
+        (dsh / "package.json").write_text(json.dumps({"name": "@deepseek-ai/dsh", "version": "0.1.7-rc.2"}))
+        with self.assertRaises(Exception):
+            self.seed()
+        self.assertEqual(list(self.root.iterdir()), [])
+
     def test_bad_last_role_cannot_partially_replace_working_presets(self):
         self.install_standard()
         self.seed()

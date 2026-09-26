@@ -28,9 +28,17 @@ def module(name, filename):
 
 snapshot = module("snapshot", "dsh-upgrade-snapshot.py")
 freeze = module("freeze", "dsh-upgrade-freeze.py")
-VERSION = "0.1.5-rc.2"
-OLD_VERSION = "0.1.2-rc.1"
+# 源→目标对由环境变量传入（dsh-upgrade.sh 负责导出）；默认保持 0.1.5 链的历史组合。
+SUPPORTED_PAIRS = {("0.1.2-rc.1", "0.1.5-rc.2"), ("0.1.5-rc.2", "0.1.7-rc.2")}
+VERSION = os.environ.get("DSH_TARGET_VERSION", "0.1.5-rc.2")
+OLD_VERSION = os.environ.get("DSH_OLD_VERSION", "0.1.2-rc.1")
 ROLES = ("recon", "vuln-hunt", "biz-logic", "code-audit", "intranet", "review", "orchestrator")
+
+
+def require_supported_pair():
+    if (OLD_VERSION, VERSION) not in SUPPORTED_PAIRS:
+        raise RuntimeError(f"不支持的升级组合 {OLD_VERSION} → {VERSION}；拒绝继续")
+    return OLD_VERSION, VERSION
 
 
 def require(value, message):
@@ -83,9 +91,11 @@ def static_paths(candidate):
 def validate_versions(candidate):
     package = read_json(candidate / "app/node_modules/@deepseek-ai/dsh/package.json")
     require(package["version"] == VERSION and read_json(candidate / "app/package.json")["dependencies"]["@deepseek-ai/dsh"] == VERSION,
-            "候选 app 版本不是锁定 rc.2")
-    require('DSH_VERSION="' + VERSION + '"' in (candidate / "setup.sh").read_text(), "setup pin 不符")
-    require('KNOWN="' + VERSION + '"' in (candidate / "scripts/pipeline/dsh-version-watch.sh").read_text(), "版本观察脚本 pin 不符")
+            "候选 app 版本不是本次锁定的目标版本")
+    setup_text = (candidate / "setup.sh").read_text()
+    require(("DSH_TARGET_VERSION:-" + VERSION) in setup_text or ('DSH_VERSION="' + VERSION + '"') in setup_text, "setup pin 不符")
+    watch_text = (candidate / "scripts/pipeline/dsh-version-watch.sh").read_text()
+    require(("DSH_KNOWN_VERSION:-" + VERSION) in watch_text or ('KNOWN="' + VERSION + '"') in watch_text, "版本观察脚本 pin 不符")
     versions = {}
     for root in (candidate / "app", candidate / "data/profiles/web", candidate / "data/profiles/headless"):
         require((root / "pnpm-lock.yaml").is_file(), "安装树缺少依赖锁")
@@ -474,6 +484,7 @@ def main():
         operation.add_argument("--release-dir", required=True)
         operation.add_argument("--freeze-state")
     args = parser.parse_args()
+    require_supported_pair()
     require(os.geteuid() == 0, "通过 spool exec sudo -n 运行发布工具")
     os.umask(0o077)
     with open("/run/lock/silksecagent-upgrade.lock", "w") as lock:

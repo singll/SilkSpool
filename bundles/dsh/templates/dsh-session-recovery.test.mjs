@@ -9,11 +9,37 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { loadRecoveryRuntimes, recoverInterruptedOverlap, strictRestore } from './dsh-session-recovery.mjs'
 
+const targetVersion = process.env.DSH_TARGET_VERSION ?? '0.1.5-rc.2'
 const configured = process.env.DSH_RECOVERY_LEGACY_APP && process.env.DSH_RECOVERY_TARGET_APP
 const runtimes = configured
-  ? await loadRecoveryRuntimes(process.env.DSH_RECOVERY_LEGACY_APP, process.env.DSH_RECOVERY_TARGET_APP)
+  ? await loadRecoveryRuntimes(process.env.DSH_RECOVERY_LEGACY_APP, process.env.DSH_RECOVERY_TARGET_APP, targetVersion)
   : null
-const integration = { skip: !configured && '需要真实 DSH 0.1.2-rc.1 / 0.1.5-rc.2 安装树' }
+const integration = { skip: !configured && `需要真实 DSH 0.1.2-rc.1 / ${targetVersion} 安装树` }
+
+test('目标版本可参数化且必须与安装树一致（0.1.7 fixture）', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-recovery-version-'))
+  try {
+    const writeApp = async (app, version) => {
+      const dsh = path.join(app, 'node_modules/@deepseek-ai/dsh')
+      await fs.mkdir(dsh, { recursive: true })
+      await fs.writeFile(path.join(dsh, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version }))
+    }
+    const writeModule = async (app, name) => {
+      const dir = path.join(app, 'node_modules', name)
+      await fs.mkdir(dir, { recursive: true })
+      await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name, main: 'index.mjs' }))
+      await fs.writeFile(path.join(dir, 'index.mjs'), 'export const sessionFormatCatalog = { fixture: true }\nexport default {}\n')
+    }
+    const legacy = path.join(root, 'legacy'), target = path.join(root, 'target')
+    await writeApp(legacy, '0.1.2-rc.1')
+    await writeApp(target, '0.1.7-rc.2')
+    await writeModule(legacy, '@deepseek-ai/dsh-session')
+    await writeModule(target, '@deepseek-ai/dsh-session-format-catalog')
+    const loaded = await loadRecoveryRuntimes(legacy, target, '0.1.7-rc.2')
+    assert.ok(loaded.legacy && loaded.catalog && loaded.targetImport)
+    await assert.rejects(loadRecoveryRuntimes(legacy, target, '0.1.5-rc.2'), /要求 DSH 0.1.5-rc.2，实际 0.1.7-rc.2/)
+  } finally { await fs.rm(root, { recursive: true, force: true }) }
+})
 
 function fixture(twoCalls = false, packed = false) {
   const header = { type: 'session', version: 0, id: 'session-recovery-fixture', createdAt: 1, cwd: '/fixture', delegationDepth: 0 }

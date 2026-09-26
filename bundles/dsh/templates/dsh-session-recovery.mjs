@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
 
-export async function loadRecoveryRuntimes(legacyApp, targetApp) {
+export async function loadRecoveryRuntimes(legacyApp, targetApp, targetVersion = process.env.DSH_TARGET_VERSION ?? '0.1.5-rc.2') {
   async function runtime(app, version) {
     const packagePath = await fs.realpath(path.join(app, 'node_modules/@deepseek-ai/dsh/package.json'))
     const pkg = JSON.parse(await fs.readFile(packagePath, 'utf8'))
@@ -14,7 +14,7 @@ export async function loadRecoveryRuntimes(legacyApp, targetApp) {
     return (name) => import(pathToFileURL(require.resolve(name)))
   }
   const legacyImport = await runtime(legacyApp, '0.1.2-rc.1')
-  const targetImport = await runtime(targetApp, '0.1.5-rc.2')
+  const targetImport = await runtime(targetApp, targetVersion)
   const legacy = await legacyImport('@deepseek-ai/dsh-session')
   const { sessionFormatCatalog: catalog } = await targetImport('@deepseek-ai/dsh-session-format-catalog')
   return { legacy, catalog, targetImport }

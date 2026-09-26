@@ -9,7 +9,13 @@ set -euo pipefail
 BASE_DIR="{{BASE_DIR}}"
 APP_DIR="$BASE_DIR/app"
 DATA_DIR="$BASE_DIR/data"
-DSH_VERSION="0.1.5-rc.2"          # 升级必须走已封存候选 + 完整恢复点，setup 不跨版本安装。
+# 目标版本参数化：默认现役 0.1.5-rc.2（P6 切换部署时将默认改为 0.1.7-rc.2）；
+# 只接受已受控的升级组合，未知版本在触碰任何文件前拒绝。
+DSH_VERSION="${DSH_TARGET_VERSION:-0.1.5-rc.2}"
+case "$DSH_VERSION" in
+    0.1.5-rc.2|0.1.7-rc.2) ;;
+    *) echo "[setup][ERROR] 未知目标版本 $DSH_VERSION；只允许 0.1.5-rc.2 / 0.1.7-rc.2 的受控升级。" >&2; exit 1 ;;
+esac
 NODE_MAJOR=22
 
 log()  { echo "[setup] $*"; }

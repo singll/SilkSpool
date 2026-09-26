@@ -12,7 +12,7 @@
 - **最近一次全面检查**：[archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI；**四轮修复全部落地验收，结论已全部回填各模块，2026-09-22 归档**，见其 §十一）。
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
 - **已知遗留（非阻塞，待后续会话）**：sec-suite/asset-db/experience 内部少量 v4 读取函数（experience 仍被 dashboard-rpc/task 链路引用）；`18-migration` 的 DoD 仍须逐条核对。
-- **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链启动（P1 预检完成，目标 0.1.7-rc.2）**——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md) · [链状态](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)（25 号方案 §4.5 保留为批次总表）。
+- **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 P2 完成（U1a 版本解放与工具链修复，工具单测 root 全绿；目标 0.1.7-rc.2）**——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md) · [链状态](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)（25 号方案 §4.5 保留为批次总表）。
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
 - **领域语言**：[CONTEXT](../../bundles/dsh/CONTEXT.md)。
 

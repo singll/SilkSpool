@@ -10,6 +10,9 @@ import tempfile
 import urllib.parse
 import yaml
 
+SUPPORTED_VERSIONS = ("0.1.5-rc.2", "0.1.7-rc.2")
+TARGET_VERSION = os.environ.get("DSH_TARGET_VERSION", "")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -21,8 +24,11 @@ def main():
     if os.geteuid() != 0:
         raise RuntimeError("只读运行环境需通过 spool exec sudo -n 运行")
     candidate = Path(args.candidate).resolve(strict=True)
-    if json.loads((candidate / "app/node_modules/@deepseek-ai/dsh/package.json").read_text())["version"] != "0.1.5-rc.2":
-        raise RuntimeError("验收仅支持明确的 rc.2 候选")
+    version = json.loads((candidate / "app/node_modules/@deepseek-ai/dsh/package.json").read_text())["version"]
+    if version not in SUPPORTED_VERSIONS:
+        raise RuntimeError("出口验收仅支持明确的受控候选版本：" + version)
+    if TARGET_VERSION and TARGET_VERSION != version:
+        raise RuntimeError(f"候选版本 {version} 与 DSH_TARGET_VERSION={TARGET_VERSION} 不符")
     pid = subprocess.check_output(["systemctl", "show", "silksecagent.service", "-p", "MainPID", "--value"], text=True).strip()
     if not pid.isdigit() or int(pid) < 2:
         raise RuntimeError("生产服务不在运行，无法取得已授权路由配置")

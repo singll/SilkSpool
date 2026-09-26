@@ -35,10 +35,30 @@ class InstallerTests(unittest.TestCase):
         (self.base / "dsh-runtime-compat.py").write_text(
             'import os\nwith open(os.environ["DSH_INSTALL_TEST_TRACE"],"a") as out: out.write("compat\\n")\n')
 
-    def run_setup(self, version):
+    def run_setup(self, version, target=None):
         self.package.write_text(json.dumps({"version": version}))
         environment = {**os.environ, "PATH": str(self.commands) + ":/usr/local/bin:/usr/bin:/bin", "DSH_INSTALL_TEST_TRACE": str(self.trace)}
+        if target:
+            environment["DSH_TARGET_VERSION"] = target
         return subprocess.run(["bash", str(self.script)], env=environment, capture_output=True, text=True, timeout=30)
+
+    def test_unknown_target_version_is_rejected_before_any_mutation(self):
+        for target in ("0.1.6", "0.1.7-rc.3", "latest"):
+            self.package.write_text(json.dumps({"version": target}))
+            before = {str(p.relative_to(self.base)): hashlib.sha256(p.read_bytes()).hexdigest() for p in self.base.rglob("*") if p.is_file()}
+            result = self.run_setup(target, target=target)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("未知目标版本", result.stderr)
+            after = {str(p.relative_to(self.base)): hashlib.sha256(p.read_bytes()).hexdigest() for p in self.base.rglob("*") if p.is_file()}
+            self.assertEqual(before, after)
+            self.assertFalse(self.trace.exists())
+
+    @unittest.skipUnless(Path("/usr/local/node/bin/node").is_file(), "需要目标机实际 Node 路径")
+    def test_controlled_target_version_override_runs_existing_install(self):
+        result = self.run_setup("0.1.7-rc.2", target="0.1.7-rc.2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.base / "data/settings.yaml").read_text(), "fixture-model-route: retained\n")
+        self.assertEqual(self.trace.read_text().splitlines(), ["compat", "systemctl is-active --quiet silksecagent", "systemctl restart silksecagent"])
 
     def test_cross_version_guard_runs_before_any_mutation(self):
         for version in ("0.1.2-rc.1", "0.1.5-rc.1", "0.1.6"):

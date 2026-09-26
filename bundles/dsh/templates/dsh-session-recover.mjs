@@ -25,13 +25,14 @@ if (!args.source || !args.work || !args.target || !args.legacy || !args.ids.leng
 }
 const [source, work] = await Promise.all([fs.realpath(args.source), fs.realpath(args.work)])
 if (work === source || work.startsWith(source + path.sep)) throw new Error('输出目录不能位于 Session 来源内')
-const { legacy, catalog, targetImport } = await loadRecoveryRuntimes(args.legacy, args.target)
+const targetVersion = JSON.parse(await fs.readFile(path.join(await fs.realpath(args.target), 'node_modules/@deepseek-ai/dsh/package.json'), 'utf8')).version
+const { legacy, catalog, targetImport } = await loadRecoveryRuntimes(args.legacy, args.target, targetVersion)
 const { Context } = await targetImport('@deepseek-ai/cordis')
 const { default: Backend } = await targetImport('@deepseek-ai/dsh-session-persistence-jsonl')
 const runDir = await fs.mkdtemp(path.join(work, 'session-recovery-'))
 const digest = (value) => createHash('sha256').update(value).digest('hex')
 const eventDigest = (value) => digest(JSON.stringify(value))
-const report = { started_at: new Date().toISOString(), legacy_version: '0.1.2-rc.1', target_version: '0.1.5-rc.2',
+const report = { started_at: new Date().toISOString(), legacy_version: '0.1.2-rc.1', target_version: targetVersion,
   source, run_dir: runDir, scope: 'Session 分支副本恢复；不是生产修复或完整 U2 验收', sessions: [], ok: false }
 
 async function hashFile(filename) {

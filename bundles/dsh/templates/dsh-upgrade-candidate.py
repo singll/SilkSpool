@@ -5,12 +5,15 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import yaml
 
-VERSION = "0.1.5-rc.2"
-TEMPLATES = ["dsh-plugin-sec-suite.js", "dsh-plugin-sec-suite.scheduler.js", "dsh-plugin-sec-suite.host-compat.js",
+# 版本来自候选 app 自身（唯一锁）；DSH_TARGET_VERSION 若设置则必须一致。
+SUPPORTED_VERSIONS = ("0.1.5-rc.2", "0.1.7-rc.2")
+TARGET_VERSION = os.environ.get("DSH_TARGET_VERSION", "")
+TEMPLATES = ["dsh-plugin-sec-suite.js", "dsh-plugin-sec-suite.host-compat.js",
              "dsh-plugin-sec-suite.task-policy.js", "dsh-plugin-sec-suite.parse-proposal.js",
              "dsh-plugin-sec-suite.persona.py", "dsh-plugin-sec-suite.native-guard.js", "dsh-plugin-sec-suite.worker-runtime.js",
              "dsh-plugin-sec-suite.asset-db.js", "dsh-plugin-sec-suite.experience.js", "dsh-plugin-sec-backend-know-sqlite.js",
@@ -23,6 +26,16 @@ TEMPLATES += ["setup.sh", "headless-failover-setup.sh", "settings-mirror-patch.s
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def retarget(text, version, source_version=None):
+    """把候选内工具/观察脚本的版本默认值改写为目标版本，使候选静态产物锁一致。"""
+    text = re.sub(r"(DSH_TARGET_VERSION:-)[0-9A-Za-z.-]+", r"\g<1>" + version, text)
+    text = re.sub(r"(DSH_KNOWN_VERSION:-)[0-9A-Za-z.-]+", r"\g<1>" + version, text)
+    text = re.sub(r'(DSH_VERSION=")[0-9A-Za-z.-]+(")', r"\g<1>" + version + r"\g<2>", text)
+    if source_version:
+        text = re.sub(r"(DSH_SOURCE_VERSION:-)[0-9A-Za-z.-]+", r"\g<1>" + source_version, text)
+    return text
 
 
 def main():
@@ -44,12 +57,18 @@ def main():
     app = Path(args.app_dir).resolve(strict=True)
     installed = json.loads((app / "node_modules/@deepseek-ai/dsh/package.json").read_text())
     declared = json.loads((app / "package.json").read_text())["dependencies"]["@deepseek-ai/dsh"]
-    if installed["version"] != VERSION or declared != VERSION:
-        raise RuntimeError("候选 app 必须显式锁定 0.1.5-rc.2")
+    if installed["version"] != declared:
+        raise RuntimeError("候选 app 安装版本与 package.json 声明不一致")
+    version = installed["version"]
+    if version not in SUPPORTED_VERSIONS:
+        raise RuntimeError("候选 app 必须显式锁定受支持版本 0.1.5-rc.2 / 0.1.7-rc.2")
+    if TARGET_VERSION and TARGET_VERSION != version:
+        raise RuntimeError(f"候选 app 版本 {version} 与 DSH_TARGET_VERSION={TARGET_VERSION} 不符")
+    source_version = json.loads((source / "app/node_modules/@deepseek-ai/dsh/package.json").read_text())["version"]
     owner = source.stat()
     release = Path(tempfile.mkdtemp(prefix="dsh-candidate-", dir=Path(args.work_dir).resolve(strict=True)))
     os.chown(release, owner.st_uid, owner.st_gid)
-    report = {"target_version": VERSION, "source_snapshot": str(snapshot), "manifest_sha256": sha(manifest_file),
+    report = {"target_version": version, "source_version": source_version, "source_snapshot": str(snapshot), "manifest_sha256": sha(manifest_file),
               "candidate": str(release), "canonical_base": manifest["roots"]["dsh"]["source"], "profiles": {}, "ready_for_cutover": False}
 
     def mkdir(path):
@@ -125,11 +144,12 @@ def main():
         for pattern in ("dsh-upgrade-*", "dsh-session-*", "dsh-runtime-compat.py", "dsh-browser-*", "dsh-shared-browser-host.mjs"):
             names.update(p.name for p in templates.glob(pattern) if p.is_file())
         for name in sorted(names):
-            write(release / name, (templates / name).read_text().replace("{{BASE_DIR}}", report["canonical_base"]))
-        watcher = (templates / "data-seed/scripts/dsh-version-watch.sh").read_text()
+            text = retarget((templates / name).read_text(), version, source_version)
+            write(release / name, text.replace("{{BASE_DIR}}", report["canonical_base"]))
+        watcher = retarget((templates / "data-seed/scripts/dsh-version-watch.sh").read_text(), version)
         write(release / "scripts/pipeline/dsh-version-watch.sh", watcher)
         write(release / "data-seed/scripts/dsh-version-watch.sh", watcher)
-        for name, target in {"dsh-plugin-sec-suite.js": "index.js", "dsh-plugin-sec-suite.scheduler.js": "scheduler.js",
+        for name, target in {"dsh-plugin-sec-suite.js": "index.js",
                              "dsh-plugin-sec-suite.task-policy.js": "task-policy.js", "dsh-plugin-sec-suite.parse-proposal.js": "parse-proposal.js",
                              "dsh-plugin-sec-suite.host-compat.js": "host-compat.js", "dsh-plugin-sec-suite.native-guard.js": "native-guard.js",
                              "dsh-plugin-sec-suite.persona.py": "persona.py", "dsh-plugin-sec-suite.worker-runtime.js": "worker-runtime.js",

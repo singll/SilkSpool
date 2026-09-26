@@ -28,6 +28,17 @@ local_client = importlib.util.module_from_spec(client_spec)
 client_spec.loader.exec_module(local_client)
 MaintenanceClient = local_client.MaintenanceClient
 
+# scheduler.lock 现役唯一写入者（L6 起为 sec-domain-task 域插件；旧 sec-suite/scheduler.js 已删除）。
+# 模块路径与期望摘要均可在 config 中覆盖，以便新构建走「生成摘要 → 配置」路径后再冻结。
+DEFAULT_SCHEDULER_MODULE = "plugins/sec-domain-task/index.js"
+
+
+def scheduler_module(base, relative=None):
+    relative = Path(relative or DEFAULT_SCHEDULER_MODULE)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("非法调度器模块路径")
+    return Path(base) / relative
+
 
 def save(path, value):
     temporary = path.with_suffix(".tmp")
@@ -108,7 +119,7 @@ def pause_scheduler(config, state_dir, state):
     # 复用旧版 scheduler.lock 的单例协议；root 只读新 inode 使已经通过
     # holds 检查的旧 tick 也不能把心跳覆盖回来。最终 cgroup 检查处理该 tick。
     data = Path(config["idle_database"]).parent
-    module = data.parent / "plugins/sec-suite/scheduler.js"
+    module = scheduler_module(data.parent, config.get("scheduler_module"))
     expected = config.get("scheduler_sha256")
     if not expected or snapshot.sha256(module) != expected:
         raise RuntimeError("调度器代码不符合已验收的冻结协议摘要")
@@ -320,7 +331,15 @@ def main():
     freeze.add_argument("--hold", action="store_true")
     thaw = actions.add_parser("resume")
     thaw.add_argument("--state-dir", required=True)
+    digest = actions.add_parser("scheduler-digest")
+    digest.add_argument("--base-dir", required=True)
+    digest.add_argument("--module", default=DEFAULT_SCHEDULER_MODULE)
     args = parser.parse_args()
+    if args.action == "scheduler-digest":
+        # U2 配置生成路径：从部署根计算现役调度器摘要，不触碰运行态文件。
+        module = scheduler_module(Path(args.base_dir).resolve(strict=True), args.module)
+        print(json.dumps({"ok": True, "module": args.module, "path": str(module), "sha256": snapshot.sha256(module)}))
+        return
     if os.geteuid() != 0:
         raise RuntimeError("通过 spool exec 调用 sudo -n，以检查并冻结全部写者")
     os.umask(0o077)

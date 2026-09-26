@@ -12,6 +12,8 @@ BEGIN = "# silksec rc.2 RPC compatibility begin"
 END = "# silksec rc.2 RPC compatibility end"
 SETTINGS_SHA = "479002d654490d19cbc89ed4582198603eddf2a62e3d233bbd30748f1bc0d862"
 SETTINGS_PATCHED_SHA = "9341c012e6959dd089844f122eed9ff525fb2cfb1969f233870dae0734dd2548"
+# 0.1.7 运行产物与 0.1.5 不同，补丁锚点/摘要必须重写；P2 只做版本解放，显式失败不静默跳过。
+PENDING_017 = "0.1.7-rc.2 兼容补丁待 P4 按新运行产物重写（P2 仅完成版本解放）"
 
 
 def configure_local_feedback(base):
@@ -148,6 +150,8 @@ def patch_theme(base):
     # 幂等判定也反向还原并验证整文件摘要，不能只检查锚点存在。
     pristine = original.replace(new, old)
     version = json.loads((filename.parent.parent / "package.json").read_text())["version"]
+    if version == "0.1.7-rc.2":
+        raise RuntimeError("主题兼容补丁：" + PENDING_017)
     if version != "0.1.5-rc.2" or hashlib.sha256(pristine.encode()).hexdigest() != "be765095ffe627d870945c3367c8f98f5bdae2cda44568003e38e9bdb6c9a331":
         raise RuntimeError("主题兼容补丁版本/摘要未知")
     result = pristine.replace(old, new)
@@ -189,6 +193,8 @@ def patch_settings(base):
         version = json.loads((filename.parent.parent / "package.json").read_text())["version"]
         original = filename.read_text()
         digest = hashlib.sha256(original.encode()).hexdigest()
+        if version == "0.1.7-rc.2":
+            raise RuntimeError("settings 兼容补丁：" + PENDING_017)
         if version != "0.1.5-rc.2" or digest not in (SETTINGS_SHA, SETTINGS_PATCHED_SHA):
             raise RuntimeError("settings 补丁版本/摘要未知，拒绝继续：" + str(filename))
         result = original.replace('ctx.remote.$host.isLoopback ? "host" : "memory"', '"host"')
@@ -206,6 +212,8 @@ def configure(base):
     version = json.loads((base / "app/node_modules/@deepseek-ai/dsh/package.json").read_text())["version"]
     if version == "0.1.2-rc.1":
         return {"version": version, "changed": False, "required": False}
+    if version == "0.1.7-rc.2":
+        raise RuntimeError("RPC 兼容配置：" + PENDING_017)
     if version != "0.1.5-rc.2":
         raise RuntimeError("尚未验证此 DSH 版本的 RPC 兼容配置：" + version)
     patch = base / "data/profiles/web/cordis.patch.yml"

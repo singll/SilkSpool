@@ -124,7 +124,7 @@ def main():
             "sec-memcore": {"sweeper": False, "agentsMd": False, "vaultExport": False},
             "model-failover": {"enabled": False},
             "dsh-auth-gate": {"mode": "password", "cookieSecure": False, "usersFile": str(users)},
-            "web-app": {"openBrowser": False},
+            "web-runtime": {"openBrowser": False},
             "plugin-package-inventory-deepseek": {"enabled": False},
             "session-telemetry-otel": {"mode": "DISABLED"},
             "session-log-deepseek": {"enabled": False},
@@ -161,7 +161,19 @@ def main():
                 overrides["session-telemetry-otel"] = {"mode": "FEEDBACK_ONLY",
                     "exporter": {"url": "http://127.0.0.1:3098/v1/logs"}, "processor": {"scheduledDelayMillis": 100}}
         patch = OUT / "isolation.patch.yml"
-        patch.write_text(yaml.safe_dump([{"id": name, "config": config} for name, config in overrides.items() if name in rows["web"]]))
+        applied = [{"id": name, "config": config} for name, config in overrides.items() if name in rows["web"]]
+        # 覆盖必须真的落到受管行；web-runtime 是 REQUIRED 行，静默丢弃即验收失败。
+        require("web-runtime" in {row["id"] for row in applied}, "隔离配置缺少受管 web-runtime 覆盖")
+        patch.write_text(yaml.safe_dump(applied))
+        composed = subprocess.run([NODE, str(BIN), "--profile", "web", "--patch", str(patch), "--dump-config"],
+                                  cwd=BASE / "app", capture_output=True, text=True, timeout=60)
+        (OUT / "isolation-config.yml").write_text(composed.stdout)
+        (OUT / "isolation-config.stderr").write_text(composed.stderr)
+        require(composed.returncode == 0, "隔离覆盖与 web 组合失败；详见私有配置日志")
+        composed_rows = {row["id"]: row for row in flatten(yaml.load(composed.stdout, Loader=yaml.BaseLoader))}
+        require(composed_rows.get("web-runtime", {}).get("config", {}).get("openBrowser") == "false",
+                "隔离覆盖未生效：web-runtime.openBrowser 未落到目标行")
+        report["checks"].append({"check": "isolation-web-runtime-openBrowser", "ok": True})
         if feedback_test:
             final_config = subprocess.run([NODE, str(BIN), "--profile", "web", "--patch", str(patch), "--dump-config"],
                                           cwd=BASE / "app", capture_output=True, text=True, timeout=60)

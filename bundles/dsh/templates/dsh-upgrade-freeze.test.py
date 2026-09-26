@@ -26,7 +26,7 @@ class FreezeTest(unittest.TestCase):
         self.lock = source / "data/scheduler.lock"
         self.lock.write_text('{"pid":12345,"ts":1}')
         self.lock_before = self.lock.read_bytes()
-        module = source / "plugins/sec-suite/scheduler.js"
+        module = source / freeze.DEFAULT_SCHEDULER_MODULE
         module.parent.mkdir(parents=True)
         module.write_text("verified scheduler fixture")
         self.db = source / "data/domain.sqlite"
@@ -123,6 +123,24 @@ class FreezeTest(unittest.TestCase):
             self.run_capture(RuntimeError("must not reach backup"))
         self.assertEqual(self.lock.read_bytes(), self.lock_before)
         self.assertFalse(any(action[0] == "stop" for action in self.actions))
+
+    def test_scheduler_module_path_is_configurable(self):
+        alt = self.work / "dsh/plugins/alt-scheduler/index.js"
+        alt.parent.mkdir(parents=True)
+        alt.write_text("alternate scheduler fixture")
+        self.config["scheduler_module"] = "plugins/alt-scheduler/index.js"
+        self.config["scheduler_sha256"] = hashlib.sha256(alt.read_bytes()).hexdigest()
+        self.assertEqual(freeze.scheduler_module(self.work / "dsh", self.config["scheduler_module"]), alt)
+        self.assertEqual(freeze.scheduler_module(self.work / "dsh"), self.work / "dsh" / freeze.DEFAULT_SCHEDULER_MODULE)
+        state_dir = self.work / "alt-pause"
+        state_dir.mkdir()
+        with mock.patch.object(freeze, "save"), mock.patch.object(freeze.local_client, "atomic_bytes"):
+            freeze.pause_scheduler(self.config, state_dir, {})
+
+    def test_illegal_scheduler_module_path_is_refused(self):
+        for relative in ("/abs/scheduler.js", "../escape/scheduler.js"):
+            with self.assertRaisesRegex(ValueError, "非法调度器模块路径"):
+                freeze.scheduler_module(self.work / "dsh", relative)
 
     def test_failed_main_restart_keeps_external_writers_and_cron_paused(self):
         state_dir = self.work / "resume-failure"

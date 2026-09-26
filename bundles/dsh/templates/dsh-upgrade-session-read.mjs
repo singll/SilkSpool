@@ -11,6 +11,7 @@ if (!base) throw new Error('仅供隔离副本验收')
 await fs.access('/tmp/dsh-rehearsal/isolation.json')
 const require = createRequire(await fs.realpath(path.join(base, 'app/node_modules/@deepseek-ai/dsh/package.json')))
 const version = JSON.parse(await fs.readFile(require.resolve('@deepseek-ai/dsh/package.json'), 'utf8')).version
+const targetVersion = process.env.DSH_TARGET_VERSION ?? '0.1.5-rc.2'
 const { Context } = await import(require.resolve('@deepseek-ai/cordis'))
 const { default: Backend } = await import(require.resolve('@deepseek-ai/dsh-session-persistence-jsonl'))
 const sources = [path.join(base, 'data/sessions'), path.join(base, 'sessions')]
@@ -21,7 +22,7 @@ for (const root of sources) {
     if (version === '0.1.2-rc.1') {
       const { SessionStore } = await import(require.resolve('@deepseek-ai/dsh-session'))
       await ctx.plugin(SessionStore)
-    } else if (version !== '0.1.5-rc.2') throw new Error('未知 DSH 版本')
+    } else if (version !== targetVersion) throw new Error('未知 DSH 版本')
     await ctx.plugin(Backend, { root, compression: 'zstd' })
     for (const row of await ctx.sessionPersistence.list()) {
       const header = row.header ?? row

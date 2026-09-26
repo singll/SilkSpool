@@ -71,7 +71,8 @@ async function physicalHeader(filename) {
 const app = await fs.realpath(args.app)
 const dshPackage = await fs.realpath(path.join(app, 'node_modules/@deepseek-ai/dsh/package.json'))
 const dsh = JSON.parse(await fs.readFile(dshPackage, 'utf8'))
-assert.equal(dsh.version, '0.1.5-rc.2', '本演练锁定 DSH 0.1.5-rc.2')
+const targetVersion = process.env.DSH_TARGET_VERSION ?? '0.1.5-rc.2'
+assert.equal(dsh.version, targetVersion, `本演练锁定 DSH ${targetVersion}`)
 const requireDsh = createRequire(dshPackage)
 const { Context } = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/cordis')))
 const { default: JsonlPersistence } = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-session-persistence-jsonl')))

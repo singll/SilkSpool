@@ -201,5 +201,41 @@ class ReleaseTests(unittest.TestCase):
             release.rollback(self.root)
 
 
+    def test_supported_pairs_and_unknown_combinations(self):
+        self.assertEqual(release.require_supported_pair(), ("0.1.2-rc.1", "0.1.5-rc.2"))
+        with mock.patch.object(release, "VERSION", "0.1.7-rc.2"), mock.patch.object(release, "OLD_VERSION", "0.1.5-rc.2"):
+            self.assertEqual(release.require_supported_pair(), ("0.1.5-rc.2", "0.1.7-rc.2"))
+        for target, old in (("0.1.7-rc.2", "0.1.2-rc.1"), ("0.1.6", "0.1.5-rc.2"), ("0.1.7-rc.3", "0.1.5-rc.2")):
+            with mock.patch.object(release, "VERSION", target), mock.patch.object(release, "OLD_VERSION", old):
+                with self.assertRaisesRegex(RuntimeError, "不支持的升级组合"):
+                    release.require_supported_pair()
+
+    def test_validate_versions_rejects_stale_setup_pin(self):
+        candidate = self.root / "pin-candidate"
+        app = candidate / "app/node_modules/@deepseek-ai/dsh"
+        app.mkdir(parents=True)
+        (app / "package.json").write_text(json.dumps({"version": "0.1.7-rc.2"}))
+        (candidate / "app/package.json").write_text(json.dumps({"dependencies": {"@deepseek-ai/dsh": "0.1.7-rc.2"}}))
+        (candidate / "setup.sh").write_text('DSH_TARGET_VERSION:-0.1.5-rc.2\n')
+        (candidate / "scripts/pipeline").mkdir(parents=True)
+        (candidate / "scripts/pipeline/dsh-version-watch.sh").write_text('KNOWN="${DSH_KNOWN_VERSION:-0.1.7-rc.2}"\n')
+        with mock.patch.object(release, "VERSION", "0.1.7-rc.2"), mock.patch.object(release, "OLD_VERSION", "0.1.5-rc.2"):
+            with self.assertRaisesRegex(RuntimeError, "setup pin 不符"):
+                release.validate_versions(candidate)
+
+    def test_validate_versions_accepts_parameterized_pins(self):
+        candidate = self.root / "pin-candidate-2"
+        app = candidate / "app/node_modules/@deepseek-ai/dsh"
+        app.mkdir(parents=True)
+        (app / "package.json").write_text(json.dumps({"version": "0.1.7-rc.2"}))
+        (candidate / "app/package.json").write_text(json.dumps({"dependencies": {"@deepseek-ai/dsh": "0.1.7-rc.2"}}))
+        (candidate / "setup.sh").write_text('DSH_TARGET_VERSION:-0.1.7-rc.2\n')
+        (candidate / "scripts/pipeline").mkdir(parents=True)
+        (candidate / "scripts/pipeline/dsh-version-watch.sh").write_text('KNOWN="${DSH_KNOWN_VERSION:-0.1.7-rc.2}"\n')
+        with mock.patch.object(release, "VERSION", "0.1.7-rc.2"), mock.patch.object(release, "OLD_VERSION", "0.1.5-rc.2"):
+            with self.assertRaisesRegex(RuntimeError, "候选静态产物|安装树"):
+                release.validate_versions(candidate)
+
+
 if __name__ == "__main__":
     unittest.main()
