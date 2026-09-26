@@ -17,6 +17,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-26 · 审批超限根因修复（decide 事件有界化 + S5 写动词多目标拆分）
+- **根因**：`findWriteVerbHit` 的 URL 正则把逗号拼接的多目标清单当成单个 URL，命中写动词段后把数 KB 清单塞进 `tool-intrusive` 审批的 payload/evidence；`approval_decide`/`withdraw` 又把完整 payload 塞进 `approval.approved/rejected` 事件 → 信封超 8KB → approve/reject 均 `E_BUS_EVENT_TOO_LARGE`，遗留审批 #61 无法裁决。
+- **修复**：① exec `findWriteVerbHit` URL 字符集排除逗号 + 命中 URL 截断 512 字（根源）；② approval decide/withdraw 事件载荷经 `boundedEventPayload`(200)/`boundedEvidence`(4000) 有界化（防御，effect 同步执行不依赖事件载荷）。
+- **验收**：approval 契约 +1（超大 payload approve/reject 均成功）全绿；线上把误报审批 #61 驳回（httpx 被动爬取 `/order/list` 被误判写动词），`sec-v5-accept.sh` 后续复跑。文档回填 [09-approval](09-approval.md)、[10-exec](10-exec.md)。
+
 ### 2026-09-25 · 37 号补丁：任务执行视图口径修复（A→B→C-1→D）
 - **根因**：`scheduled=exclude` 旧实现 `schedule_kind IS NULL`，把调度器执行的 `once` 任务（含 running）全部排除 →「正在执行」恒空、与 KPI 矛盾；`once` 又被 `task_scheduled` 误当周期任务。审计报告见 [05-task §7.21](05-task.md)。
 - **A** 定时语义收敛 interval-only（exclude=非周期 NULL+once / only=interval；`scheduledTasksAgg` 仅 interval，双后端同步）；**B** 新增 `executingTasks` 独立数据源 + UI 计数改用服务端 total；**C-1** `derive_intent` 一律 once 自动执行 + 存量 575 条死草稿迁移；**D** `task_list.dir` 端到端生效。

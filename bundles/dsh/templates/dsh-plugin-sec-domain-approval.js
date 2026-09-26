@@ -60,6 +60,27 @@ function hostRoot(host) {
   return parts.slice(-2).join('.')
 }
 
+// 事件载荷有界化：decide/withdraw 事件会携带 payload/evidence；若 payload 含超大字符串
+// （如 S5 写动词守卫把逗号拼接的多目标清单塞进 url），事件信封会超过 EVENT_MAX_BYTES(8KB)
+// 被 E_BUS_EVENT_TOO_LARGE 拒绝，导致 approve/reject 整体失败、无法裁决。事件只用于通知
+// 订阅方（fact/ledger 只读 kind/subject/program_id/evidence），effect 在 decide 内同步执行，
+// 故事件侧深截断不丢语义。
+function boundedEventPayload(p, cap = 200) {
+  if (p == null || typeof p !== 'object') return p
+  const out = {}
+  for (const [k, v] of Object.entries(p)) {
+    if (typeof v === 'string') out[k] = v.length > cap ? v.slice(0, cap) + '…' : v
+    else if (Array.isArray(v)) out[k] = v.slice(0, 20).map((x) => boundedEventPayload(x, cap))
+    else if (v && typeof v === 'object') out[k] = boundedEventPayload(v, cap)
+    else out[k] = v
+  }
+  return out
+}
+function boundedEvidence(s, cap = 4000) {
+  const str = String(s == null ? '' : s)
+  return str.length > cap ? str.slice(0, cap) + '…' : str
+}
+
 // ---------------------------------------------------------------------------
 // kind 注册表（09 §2.2.2；v4 APPROVAL_KINDS 迁移，validate + effect 映射）
 // ---------------------------------------------------------------------------
@@ -615,7 +636,7 @@ function makeHandlers(opts) {
         repo.decideRequest(args.id, { status: 'rejected', decided_at: now, note: args.note || null })
         return {
           data: { request_id: args.id, kind: row.kind, subject: row.subject, status: 'rejected', operator },
-          events: [{ name: 'approval.rejected', payload: { request_id: args.id, kind: row.kind, subject: row.subject, program_name: row.program_name || null, payload, evidence: row.evidence, operator, note: args.note || null, withdrawn: false } }],
+          events: [{ name: 'approval.rejected', payload: { request_id: args.id, kind: row.kind, subject: row.subject, program_name: row.program_name || null, payload: boundedEventPayload(payload), evidence: boundedEvidence(row.evidence), operator, note: args.note || null, withdrawn: false } }],
           after: { request_id: args.id, status: 'rejected' },
           target: { request_id: args.id, decision: 'reject' },
         }
@@ -644,7 +665,7 @@ function makeHandlers(opts) {
           payload: {
             request_id: args.id, kind: row.kind, subject: row.subject,
             program_name: row.program_name || null, program_id: row.program_name || null,
-            payload, evidence: row.evidence, operator, note: args.note || null,
+            payload: boundedEventPayload(payload), evidence: boundedEvidence(row.evidence), operator, note: args.note || null,
           },
         }],
         after: { request_id: args.id, status, effect_state: effectState, effects: results.map((r) => r.status) },
@@ -659,7 +680,7 @@ function makeHandlers(opts) {
       repo.decideRequest(args.id, { status: 'rejected', decided_at: now, note })
       return {
         data: { request_id: args.id, status: 'rejected', withdrawn: true },
-        events: [{ name: 'approval.rejected', payload: { request_id: args.id, kind: row.kind, subject: row.subject, program_name: row.program_name || null, payload: row.payload, evidence: row.evidence, operator: null, note, withdrawn: true } }],
+        events: [{ name: 'approval.rejected', payload: { request_id: args.id, kind: row.kind, subject: row.subject, program_name: row.program_name || null, payload: boundedEventPayload(row.payload), evidence: boundedEvidence(row.evidence), operator: null, note, withdrawn: true } }],
         after: { request_id: args.id, status: 'rejected', withdrawn: true },
         target: { request_id: args.id },
       }

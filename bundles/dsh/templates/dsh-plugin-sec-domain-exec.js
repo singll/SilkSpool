@@ -427,14 +427,18 @@ function extractTargets(manifest, params) {
   return String(v).split(',').map((s) => s.trim()).filter(Boolean)
 }
 function findWriteVerbHit(renderedCmd) {
-  const urls = String(renderedCmd).match(/https?:\/\/[^\s"'<>|`]+/gi) || []
+  // 逗号是 cleanTargetValue 的合法多目标分隔符：从 URL 字符集排除逗号，避免把整段逗号拼接的
+  // 多目标清单当成单个 URL——否则 S5 审批的 payload.url 与 evidence 会被撑爆（超过事件信封 8KB
+  // 上限 → 审批无法批准/驳回）。
+  const urls = String(renderedCmd).match(/https?:\/\/[^\s"'<>|`,]+/gi) || []
   for (const u of urls) {
+    const capped = u.length > 512 ? u.slice(0, 512) : u
     const m = u.match(/^https?:\/\/[^/?#]+([^?#]*)/i)
     const pathSegs = m && m[1] ? m[1].split('/') : []
     for (const seg of pathSegs) {
       const clean = seg.toLowerCase().replace(/^[^a-z0-9]+/, '').replace(/(\.[a-z0-9]{1,5})?[^a-z0-9]*$/, '')
       if (!clean) continue
-      for (const tok of clean.split(/[-_]/)) if (WRITE_VERBS.has(tok)) return { verb: tok, url: u }
+      for (const tok of clean.split(/[-_]/)) if (WRITE_VERBS.has(tok)) return { verb: tok, url: capped }
     }
   }
   return null

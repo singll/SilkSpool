@@ -222,6 +222,26 @@ test('decide reject → approval.rejected', async () => {
   assert.equal(ev.payload.note, '判据不足')
 })
 
+test('decide 超大 payload 不超事件信封（回归：S5 写动词多目标清单撑爆 → 无法批准/驳回）', async () => {
+  const { bus } = makeEnv()
+  const bigList = Array.from({ length: 150 }, (_, i) => `https://t.example.com/user/${i}/order`).join(',')
+  const mk = (evidence) => bus.dispatch('approval', 'request', {
+    kind: 'tool-intrusive', subject: 'httpx:https://t.example.com/user/1',
+    evidence, payload: { tool: 'httpx', risk: 'passive', target: 'https://t.example.com/user/1', params: { target: 'https://t.example.com/user/1' }, program: 'example-src', guard: 'S5-write-verb', verb: 'order', url: bigList },
+  }, { actor: 'system', session_id: 'sess-big' })
+
+  const reqReject = await mk('只读工具 httpx 命令含写动词路径 ' + bigList)
+  assert.equal(reqReject.ok, true)
+  const reject = await bus.dispatch('approval', 'decide', { id: reqReject.data.request_id, decision: 'reject' }, { actor: 'dashboard', operator: 'singll' })
+  assert.equal(reject.ok, true, 'reject 不得因事件信封超限失败')
+
+  const reqApprove = await mk('只读工具 httpx 命令含写动词路径 ' + bigList + '（补充判据）')
+  assert.equal(reqApprove.ok, true)
+  const approve = await bus.dispatch('approval', 'decide', { id: reqApprove.data.request_id, decision: 'approve' }, { actor: 'dashboard', operator: 'singll' })
+  assert.equal(approve.ok, true, 'approve 不得因事件信封超限失败')
+  assert.equal(approve.data.status, 'approved')
+})
+
 // ---------------------------------------------------------------------------
 // 4. withdraw
 // ---------------------------------------------------------------------------

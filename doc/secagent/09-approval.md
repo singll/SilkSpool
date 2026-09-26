@@ -684,3 +684,9 @@ ApprovalRepo.listEffects(request_id) -> rows
 > 2026-09-22 评审修复：effect 动词 `campaign_autonomy_apply` / `campaign_budget_extend` 的 `idempotent_natural` 均纳入 `approval_id`（同专项再次批准/二次延长不被幂等窗吞；effect 重试仍幂等）；`validate` 遇 task 域查询不可达由放行改 `E_INTERNAL` 阻塞（fail-closed）。
 
 契约：approval 全绿（新增 2 例：campaign-autonomy 升档激活 / campaign-budget-extend 阈值与增量）。
+
+## 2026-09-26 补丁：decide/withdraw 事件载荷有界化（防超大 payload 撑爆事件信封）
+
+- 现象：`tool-intrusive` 审批的 payload/evidence 被 S5 写动词守卫塞入逗号拼接的多目标清单（数 KB），`approval.approved/rejected` 事件信封超过 `EVENT_MAX_BYTES`(8KB) → approve/reject 均抛 `E_BUS_EVENT_TOO_LARGE`，遗留审批无法批准/驳回。
+- 修复：decide/withdraw 事件载荷经 `boundedEventPayload`（对象深截断 200 字）+ `boundedEvidence`（4000 字）有界化；effect 在 decide 内同步 dispatch，不依赖事件载荷，语义无损（订阅方 fact/ledger 只读 kind/subject/program_id/evidence）。
+- 契约：approval +1（超大 payload 的 approve 与 reject 均成功）。

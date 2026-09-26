@@ -699,3 +699,8 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 ## 九、2026-09-17 学习专项 L3 实施回填（备案）
 
 - 本域未新增/变更命令与事件。L3 的受控 fixture runner 在 eval 域内自起 127.0.0.1 ephemeral 端口 HTTP fixture（不经 exec_run_cli、不占真实 QPS、不产生 run 落盘）；沙箱边界不变——`data/` 不挂载进 run_cli 沙箱（§2.2.4），被评 worker 无文件级通道读取 `data/eval/datasets|fixtures/` 隐藏答案（15-eval INV-6 的前提）。
+
+## 2026-09-26 补丁：findWriteVerbHit 逗号拆分（S5 写动词多目标清单）
+
+- 现象：httpx 等只读工具以逗号拼接多目标清单时，URL 正则把整段清单当成单个 URL，命中写动词段（如 `/order/list`）后把数 KB 清单塞进 `tool-intrusive` 审批 payload/evidence，导致审批事件超限、无法裁决。
+- 修复：URL 字符集排除逗号（多目标清单按单个 URL 拆分）+ 命中 URL 截断 512 字；根因是逗号拼接多目标合法，但被当成单个 URL。
