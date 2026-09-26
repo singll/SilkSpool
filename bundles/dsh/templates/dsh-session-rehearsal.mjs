@@ -77,6 +77,9 @@ const requireDsh = createRequire(dshPackage)
 const { Context } = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/cordis')))
 const { default: JsonlPersistence } = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-session-persistence-jsonl')))
 const { sessionFormatCatalog } = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-session-format-catalog')))
+// 目标读/发布代次来自上游目录本身（0.1.5→3，0.1.7→4），不在工具里另立映射。
+const currentVersion = sessionFormatCatalog.currentVersion
+assert.equal(currentVersion, targetVersion === '0.1.5-rc.2' ? 3 : 4, `目标 catalog 代次与 DSH ${targetVersion} 不符`)
 const sources = await Promise.all(args.sources.map((source) => fs.realpath(source)))
 assert.equal(new Set(sources).size, sources.length, 'Session 来源重复')
 // 要求显式创建工作目录，先校验位置再产生任何副本，避免错误参数写入生产来源。
@@ -91,11 +94,14 @@ const report = { started_at: new Date().toISOString(), dsh_version: dsh.version,
 const originals = []
 const recoveries = new Map()
 const recoveryApplied = new Set()
+// 0.1.7 目标不接受 V0 冲突恢复报告：恢复工具已在 V4 目标下 fail-closed，
+// 冻结点必须没有 V0-only 冲突会话（冲突会由目标迁移显式拒绝）；报告可整体省略。
 if (args.recovery) {
   const filename = await fs.realpath(args.recovery)
   const recovery = JSON.parse(await fs.readFile(filename, 'utf8'))
-  assert.ok(recovery.ok && recovery.target_version === dsh.version, '分支恢复报告未通过或版本不符')
-  assert.ok(Array.isArray(recovery.sessions) && recovery.sessions.length, '分支恢复报告为空')
+  assert.ok(recovery.ok && recovery.target_version === dsh.version, '分支恢复报告未通过或目标版本不符')
+  assert.ok(Array.isArray(recovery.sessions), '分支恢复报告结构不符')
+  if (currentVersion === 3) assert.ok(recovery.sessions.length, '分支恢复报告为空')
   const recoveryRoot = args.recoveryRoot ? await fs.realpath(args.recoveryRoot) : null
   for (const row of recovery.sessions) {
     assert.ok(row.ok && row.original_unchanged && row.raw_rows_preserved && row.strict_branches_validated
@@ -112,12 +118,15 @@ if (args.recovery) {
     for (const branch of Object.values(row.branches)) {
       assert.ok(branch.fresh_backend_read, '分支没有独立读回结果')
       assert.equal(await hashFile(branch.file), branch.stored_sha256, '分支旧代原件不符')
-      assert.equal(await hashFile(branch.published), branch.published_sha256, '分支 Session V3 产物不符')
+      assert.ok(new RegExp(`^session\\.v${currentVersion}\\.jsonl(?:\\.zstd)?$`).test(path.basename(branch.published)),
+        `分支发布产物不是规范 Session V${currentVersion} 文件`)
+      assert.equal(await hashFile(branch.published), branch.published_sha256, `分支 Session V${currentVersion} 产物不符`)
     }
     assert.ok(row.branches.continued && row.branches.interrupted, '必须保留实际执行和中断两条分支')
     recoveries.set(sourceFile, row)
   }
-  report.recovery = { report: filename, sha256: await hashFile(filename), supplied: recoveries.size, applied: 0 }
+  report.recovery = { report: filename, sha256: await hashFile(filename), supplied: recoveries.size, applied: 0,
+    published_version: currentVersion }
   if (recoveryRoot) report.recovery.relocated_source_root = recoveryRoot
 }
 
@@ -128,8 +137,12 @@ async function checkWriteOwnership() {
   let child, exited
   try {
     await ctx.plugin(JsonlPersistence, { root, compression: 'zstd' })
-    const created = await ctx.sessionPersistence.create({ version: 3, id, createdAt: Date.now(), isSeeded: false, delegationDepth: 0 })
-    try { await created.flush() } finally { await created.close() }
+    const created = await ctx.sessionPersistence.create({ version: currentVersion, id, createdAt: Date.now(), isSeeded: false, delegationDepth: 0 })
+    try {
+      assert.equal(created.header.version, currentVersion)
+      assert.equal(created.inheritedEventCount, 0, '非种子会话的继承前缀必须为 0')
+      await created.flush()
+    } finally { await created.close() }
     const code = `
       const { createRequire } = await import('node:module');
       const { pathToFileURL } = await import('node:url');
@@ -193,11 +206,12 @@ try {
         assert.equal(before, recovery.source_sha256, '源日志与恢复时原件不符，必须重新恢复')
         const branch = recovery.branches.continued
         const target = path.join(path.dirname(copied), path.basename(branch.published))
-        assert.ok(/^session\.v3\.jsonl(?:\.zstd)?$/.test(path.basename(target)), '恢复产物不是规范 Session V3 文件')
+        assert.ok(new RegExp(`^session\\.v${currentVersion}\\.jsonl(?:\\.zstd)?$`).test(path.basename(target)),
+          `恢复产物不是规范 Session V${currentVersion} 文件`)
         await fs.copyFile(branch.published, target, constants.COPYFILE_EXCL)
         assert.equal(await hashFile(target), branch.published_sha256)
         const publishedHeader = await physicalHeader(target)
-        assert.equal(publishedHeader.version, 3)
+        assert.equal(publishedHeader.version, currentVersion)
         assert.equal(publishedHeader.id, header.id)
         recoveryApplied.add(filename)
       }
@@ -227,24 +241,25 @@ try {
             try {
               header = reader.header
               events = (await reader.read()).events
-              assert.equal(header.version, 3)
+              assert.equal(header.version, currentVersion)
               for (const key of ['id', 'createdAt', 'cwd', 'parentSession', 'agentPreset']) {
                 if (Object.hasOwn(original, key)) assert.deepEqual(header[key], original[key], `保留 ${key}`)
               }
+              if (!header.isSeeded) assert.equal(reader.inheritedEventCount, 0, '非种子会话的继承前缀必须为 0')
             } finally { await reader.close() }
             const digest = hashValue(events)
             if (original.recovery) {
               assert.equal(digest, original.recovery.branches.continued.event_sha256, '恢复执行分支内容不符')
               result.recovered_branch = 'recorded-continuation'
             }
-            const writer = await sp.open(original.id, 'write') // 仅在新建副本中发布 Session V3。
+            const writer = await sp.open(original.id, 'write') // 仅在新建副本中发布当前目标代次。
             try { await writer.flush() } finally { await writer.close() }
             const reopened = await sp.open(original.id, 'read')
             try {
               assert.deepEqual(reopened.header, header)
               assert.equal(hashValue((await reopened.read()).events), digest, '发布后的事件内容与官方还原结果一致')
             } finally { await reopened.close() }
-            Object.assign(result, { ok: true, target_version: 3, events: events.length, event_sha256: digest,
+            Object.assign(result, { ok: true, target_version: currentVersion, events: events.length, event_sha256: digest,
               system_messages: events.filter((event) => event.type === 'system/message').length })
           } catch (error) {
             // 完整诊断仅保存在权限 0700 的演练目录；标准输出不包含会话正文。
@@ -257,7 +272,7 @@ try {
           await fs.writeFile(path.join(runDir, 'report.json'), JSON.stringify(report, null, 2) + '\n')
         }
       } finally { await ctx.fiber.dispose() }
-      // 新建 backend，排除同一实例的冷读 memo 命中，确认磁盘上的 Session V3 可读。
+      // 新建 backend，排除同一实例的冷读 memo 命中，确认磁盘上的当前目标代次可读。
       const fresh = new Context()
       try {
         await fresh.plugin(JsonlPersistence, { root: destination, compression })
@@ -265,7 +280,7 @@ try {
           try {
             const handle = await fresh.sessionPersistence.open(result.id, 'read')
             try {
-              assert.equal(handle.header.version, 3)
+              assert.equal(handle.header.version, currentVersion)
               assert.equal(hashValue((await handle.read()).events), result.event_sha256)
               result.fresh_backend_read = true
             } finally { await handle.close() }

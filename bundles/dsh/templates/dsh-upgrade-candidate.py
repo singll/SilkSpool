@@ -99,7 +99,10 @@ def main():
         copy(app, release / "app")
         copy(source / "plugins", release / "plugins")
         copy(source / "plugins.lock", release / "plugins.lock")
-        copy(source / "data/.agent-presets", release / "data/.agent-presets")
+        if version == "0.1.5-rc.2":
+            # 0.1.5 目录式 preset 仍随候选携带；0.1.7 起角色改由 web profile patch 行声明，
+            # 旧 data/.agent-presets 不进候选，由恢复点整树结转保留为只读备份。
+            copy(source / "data/.agent-presets", release / "data/.agent-presets")
         versions = {}
         for file in (release / "app/node_modules/.pnpm").glob("*/node_modules/@deepseek-ai/*/package.json"):
             package = json.loads(file.read_text())

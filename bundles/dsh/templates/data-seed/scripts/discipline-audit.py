@@ -131,23 +131,60 @@ def persona_module(base_dir):
     return module
 
 
+def installed_dsh_version(base_dir):
+    """已安装 DSH 版本；读不到返回 None（调用方回退目录布局）。"""
+    package = Path(base_dir) / "app/node_modules/@deepseek-ai/dsh/package.json"
+    try:
+        return json.loads(package.read_text())["version"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def uses_preset_rows(version):
+    """0.1.7 起角色声明在 web profile patch；旧版本用 .agent-presets 目录。"""
+    try:
+        parts = [int(part) for part in str(version).split("-")[0].split(".")[:3]]
+    except ValueError:
+        return False
+    return tuple(parts) >= (0, 1, 7)
+
+
 def collect_prompt_texts(data_dir, base_dir=None, errors=None, prompt_files=()):
     """收集 persona/skills/rules/调度模板/已捕获的最终 prompt；失败不能等价为空文本。"""
     base_dir = base_dir or os.path.dirname(os.path.abspath(data_dir))
     errors = errors if errors is not None else []
     items = []
     persona = persona_module(base_dir)
-    persona_files = sorted(glob.glob(os.path.join(data_dir, ".agent-presets", "*", "agent.cordis.yml")))
-    present = {Path(f).parent.name for f in persona_files}
-    for missing in sorted(persona.MANAGED_IDS - present):
-        errors.append({"file": f".agent-presets/{missing}/agent.cordis.yml", "error": "MissingManagedPersona"})
-    for f in persona_files:
+    preset_layout = uses_preset_rows(installed_dsh_version(base_dir))
+    present = set()
+    if preset_layout:
+        patch_file = os.path.join(data_dir, "profiles", "web", "cordis.patch.yml")
         try:
-            parts = persona.persona_parts(persona.read_yaml(f))
-            items.append((os.path.relpath(f, data_dir), parts["prefix"] + "\n" + parts["suffix"]))
+            managed = {pid: row for pid, row in persona.read_presets(Path(patch_file)).items()
+                       if pid in persona.MANAGED_IDS}
         except (OSError, ValueError, persona.yaml.YAMLError) as error:
-            errors.append({"file": os.path.relpath(f, data_dir), "error": type(error).__name__})
-            continue
+            managed = {}
+            errors.append({"file": os.path.relpath(patch_file, data_dir), "error": type(error).__name__})
+        present = set(managed)
+        for pid, row in managed.items():
+            try:
+                parts = persona.persona_parts(row["config"]["plugins"])
+                items.append((os.path.relpath(patch_file, data_dir) + "#" + pid, parts["prefix"] + "\n" + parts["suffix"]))
+            except (ValueError, persona.yaml.YAMLError) as error:
+                errors.append({"file": os.path.relpath(patch_file, data_dir) + "#" + pid, "error": type(error).__name__})
+    else:
+        persona_files = sorted(glob.glob(os.path.join(data_dir, ".agent-presets", "*", "agent.cordis.yml")))
+        present = {Path(f).parent.name for f in persona_files}
+        for f in persona_files:
+            try:
+                parts = persona.persona_parts(persona.read_yaml(f))
+                items.append((os.path.relpath(f, data_dir), parts["prefix"] + "\n" + parts["suffix"]))
+            except (OSError, ValueError, persona.yaml.YAMLError) as error:
+                errors.append({"file": os.path.relpath(f, data_dir), "error": type(error).__name__})
+                continue
+    for missing in sorted(persona.MANAGED_IDS - present):
+        errors.append({"file": "profiles/web/cordis.patch.yml#" + missing if preset_layout
+                       else f".agent-presets/{missing}/agent.cordis.yml", "error": "MissingManagedPersona"})
     for f in sorted(glob.glob(os.path.join(data_dir, "skills", "*", "SKILL.md"))):
         try:
             items.append((os.path.relpath(f, data_dir), open(f, encoding="utf-8").read()))

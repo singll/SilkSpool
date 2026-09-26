@@ -495,8 +495,8 @@ def main():
                     require(len(primary) == 1 and row and not row["running"], "角色未完成实际请求：" + preset)
                     assembled = "\n".join(m["content"] if isinstance(m.get("content"), str) else json.dumps(m.get("content"), ensure_ascii=False)
                                           for m in primary[0]["messages"] if m.get("role") in ("system", "developer"))
-                    parts = json.loads(subprocess.check_output(["python3", str(BASE / "plugins/sec-suite/persona.py"), "read",
-                        str(DATA / ".agent-presets" / preset / "agent.cordis.yml")], text=True))
+                    parts = json.loads(subprocess.check_output(["python3", str(BASE / "plugins/sec-suite/persona.py"), "read-preset",
+                        "--patch", str(DATA / "profiles/web/cordis.patch.yml"), "--preset", preset], text=True))
                     for part in (parts["prefix"], parts["suffix"]):
                         pattern = re.escape(part).replace(re.escape("{{model}}"), r".+?").replace(re.escape("{{cwd}}"), re.escape(str(cwd)))
                         require(not part or re.search(pattern, assembled, re.S), "最终 prompt 缺少角色/工作区文本：" + preset)

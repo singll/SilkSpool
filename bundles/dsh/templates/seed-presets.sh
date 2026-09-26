@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # SilkSecAgent Preset 种子（7 角色，幂等）
-# 机制：复制已安装的 standard preset 组合，替换 persona 行文本为安全角色人格
-# 用户根：$DSH_HOME/.agent-presets/<id>/{agent.cordis.yml, preset.yml}
+# 0.1.5 机制：复制已安装的 standard preset 组合，写 $DSH_HOME/.agent-presets/<id>/
+# 0.1.7 机制：写 $DSH_HOME/profiles/web/cordis.patch.yml 的受管区，
+#   以 @deepseek-ai/dsh-agent-preset 行内嵌「shipped standard plugins + 7 角色 persona + 工具行」；
+#   不再扫目录。旧 .agent-presets/ 由恢复点整树结转，保留只读备份。
 #
 # v4.5（2026-09-04）：
 #   - persona_version 机制：preset.yml 记录 persona 版本，不一致时重建 agent.cordis.yml
@@ -18,12 +20,15 @@
 #   （run_cli→exec_run_cli / spawn_worker→exec_spawn_worker / finding_add→vuln_register_signal /
 #    endpoint_query→endpoint_list / proxy_pool_*→proxy_* / 写黑板→fact_bb_publish 等，见 p19-tool-refs.py）；
 #   PERSONA_VERSION 4→5（persona 文本改动必须升版本号才会触发重建）
+# v6→v7（2026-09-26，P3）：preset 机制替换——0.1.5 目录布局继续用 persona_version=6 触发重建；
+#   0.1.7 bundle patch 布局用 preset_version=7（同一批角色文本，升号仅标记落点与机制变化）。
 set -euo pipefail
 
-# DSH 0.1.5：结构化 prefix/suffix；兼容旧 standard 的 text；全部验证后切换。
+# DSH 0.1.5：结构化 prefix/suffix；0.1.7：bundle patch preset 行；全部验证后发布。
 BASE_DIR="${SEC_BASE_DIR:-{{BASE_DIR}}}"
 DATA_DIR="${SEC_DATA_DIR:-${DSH_HOME:-$BASE_DIR/data}}"
-PERSONA_VERSION=6
+PERSONA_VERSION=6   # 0.1.5 .agent-presets 目录布局的 persona_version（语义不变）
+PRESET_VERSION=7    # 0.1.7 web profile patch 布局的 preset_version（persona_version 的新口径）
 export PATH="/usr/local/node/bin:$PATH"
 DEFINITIONS="$(mktemp)"
 trap 'rm -f "$DEFINITIONS"' EXIT
@@ -61,4 +66,4 @@ mkpreset orchestrator "编排器" "Program→Task→Run 脊柱调度：task_next
 
 python3 "$BASE_DIR/dsh-plugin-sec-suite.persona.py" seed \
     --base-dir "$BASE_DIR" --data-dir "$DATA_DIR" \
-    --definitions "$DEFINITIONS" --version "$PERSONA_VERSION"
+    --definitions "$DEFINITIONS" --version "$PERSONA_VERSION" --preset-version "$PRESET_VERSION"

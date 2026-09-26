@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// 在隔离恢复副本中实际读完全部会话；兼容旧版只读 backend 与 Session V3 读句柄。
+// 在隔离恢复副本中实际读完全部会话；兼容旧版只读 backend 与当前目标代次（0.1.5→V3 / 0.1.7→V4）读句柄。
+// 0.1.7 起 open(id,'read') 返回逻辑 V4：迁移在内存中完成，磁盘旧代日志保持原样。
 import fs from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
@@ -15,7 +16,7 @@ const targetVersion = process.env.DSH_TARGET_VERSION ?? '0.1.5-rc.2'
 const { Context } = await import(require.resolve('@deepseek-ai/cordis'))
 const { default: Backend } = await import(require.resolve('@deepseek-ai/dsh-session-persistence-jsonl'))
 const sources = [path.join(base, 'data/sessions'), path.join(base, 'sessions')]
-const report = { version, sessions: [], failures: [], ok: false }
+const report = { version, target_version: targetVersion, sessions: [], failures: [], ok: false }
 for (const root of sources) {
   const ctx = new Context()
   try {

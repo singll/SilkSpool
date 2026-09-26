@@ -81,23 +81,35 @@ def persona_parts(rows):
 
 def resolve_standard(base_dir):
     # 从实际安装入口解析，不在 .pnpm 中 glob（多个旧版本共存会选错）。
+    # 0.1.5：@deepseek-ai/dsh-agent-presets 的 presets/standard 目录；
+    # 0.1.7：@deepseek-ai/dsh-web-app 的 presets/standard.patch.yml（preset 行声明）。
     script = r"""
 const fs = require('node:fs'), path = require('node:path'), { createRequire } = require('node:module');
 const app = path.join(process.argv[1], 'app');
 const dsh = fs.realpathSync(path.join(app, 'node_modules/@deepseek-ai/dsh/package.json'));
 const fromDsh = createRequire(dsh), version = JSON.parse(fs.readFileSync(dsh)).version;
-let standard, source;
+let standard, source, layout;
 try {
   const pkg = fromDsh.resolve('@deepseek-ai/dsh-agent-presets/package.json');
   standard = path.join(path.dirname(pkg), 'presets/standard');
   source = '@deepseek-ai/dsh-agent-presets@' + JSON.parse(fs.readFileSync(pkg)).version;
+  layout = 'directory';
 } catch (e) {
-  if (e.code !== 'MODULE_NOT_FOUND' || !/^0\.1\.[0-4](?:\D|$)/.test(version)) throw e;
-  standard = path.join(path.dirname(dsh), 'config/agent-presets/standard');
-  source = '@deepseek-ai/dsh@' + version;
+  if (e.code !== 'MODULE_NOT_FOUND') throw e;
+  if (/^0\.1\.[0-4](?:\D|$)/.test(version)) {
+    standard = path.join(path.dirname(dsh), 'config/agent-presets/standard');
+    source = '@deepseek-ai/dsh@' + version;
+    layout = 'directory';
+  } else {
+    const web = fromDsh.resolve('@deepseek-ai/dsh-web-app/package.json');
+    standard = path.join(path.dirname(web), 'presets/standard.patch.yml');
+    source = '@deepseek-ai/dsh-web-app@' + JSON.parse(fs.readFileSync(web)).version;
+    layout = 'patch';
+  }
 }
-if (!fs.statSync(path.join(standard, 'agent.cordis.yml')).isFile()) throw Error('standard preset missing');
-process.stdout.write(JSON.stringify({standard, source, dsh_version: version}));
+if (layout === 'directory' && !fs.statSync(path.join(standard, 'agent.cordis.yml')).isFile()) throw Error('standard preset missing');
+if (layout === 'patch' && !fs.statSync(standard).isFile()) throw Error('standard preset patch missing');
+process.stdout.write(JSON.stringify({standard, source, layout, dsh_version: version}));
 """
     return json.loads(subprocess.check_output(["node", "-e", script, str(base_dir)], text=True, stderr=subprocess.PIPE, timeout=15))
 
@@ -110,6 +122,154 @@ TOOL_ROWS = [
     {"id": "sec-domain-bus-agent", "name": "@silksec/sec-domain-bus", "config": {"sidecars": False}},
 ]
 MANAGED_IDS = {"recon", "vuln-hunt", "biz-logic", "code-audit", "intranet", "review", "orchestrator"}
+MANAGED_ORDER = {"recon": 10, "vuln-hunt": 11, "biz-logic": 12, "code-audit": 13, "intranet": 14, "review": 15, "orchestrator": 16}
+PRESET_ROW_NAME = "@deepseek-ai/dsh-agent-preset"
+PRESET_BEGIN = "# silksec-managed-agent-presets BEGIN"
+PRESET_END = "# silksec-managed-agent-presets END"
+WEB_PATCH_RELATIVE = "profiles/web/cordis.patch.yml"
+DEFAULT_SUFFIX = "Your working directory is {{cwd}}."
+
+
+def preset_entries(value):
+    """展平 patch 列表：insert 条目按顺序展开，其余条目原样保留。"""
+    if not isinstance(value, list):
+        raise ValueError("cordis.patch.yml 必须是 patch 条目数组")
+    entries = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            raise ValueError("patch 条目必须是映射")
+        if "insert" in entry:
+            inserted = entry["insert"]
+            if not isinstance(inserted, list):
+                raise ValueError("insert 必须是行数组")
+            entries.extend(inserted)
+        else:
+            entries.append(entry)
+    return entries
+
+
+def read_presets(patch_file):
+    """读取一个 cordis patch 文件声明的全部 @deepseek-ai/dsh-agent-preset 行。"""
+    result = {}
+    for entry in preset_entries(read_yaml(patch_file)):
+        if not isinstance(entry, dict) or entry.get("name") != PRESET_ROW_NAME:
+            continue
+        config = entry.get("config")
+        preset = config.get("id") if isinstance(config, dict) else None
+        if not isinstance(preset, str) or not preset:
+            raise ValueError("preset 行缺少非空 config.id")
+        if preset in result:
+            raise ValueError(f"重复的 preset id: {preset}")
+        result[preset] = entry
+    return result
+
+
+def standard_definition(origin):
+    """返回 shipped standard 组合行与 persona 结构（0.1.5 目录 / 0.1.7 patch）。"""
+    if origin["layout"] == "directory":
+        return read_yaml(Path(origin["standard"]) / "agent.cordis.yml")
+    presets = read_presets(Path(origin["standard"]))
+    row = presets.get("standard")
+    if row is None:
+        raise ValueError("shipped standard.patch.yml 缺少 standard preset 行")
+    plugins = row["config"].get("plugins")
+    if not isinstance(plugins, list) or not plugins:
+        raise ValueError("shipped standard preset 缺少 plugins")
+    return plugins
+
+
+def build_preset_rows(rows, standard_parts, definitions):
+    """按标准组合生成 7 个 preset 行：persona 文本替换，工具行原样追加。"""
+    generated = []
+    for definition in definitions:
+        plugins = copy.deepcopy(rows)
+        config = persona_row(plugins)["config"]
+        prefix = definition["persona"]
+        suffix = standard_parts["suffix"] or DEFAULT_SUFFIX
+        if "{{cwd}}" not in suffix:
+            suffix += "\n" + DEFAULT_SUFFIX
+        config.pop("text", None)
+        config.update(prefix=prefix, suffix=suffix, complete=False, includeRuntimeContext=True)
+        plugins.extend(copy.deepcopy(TOOL_ROWS))
+        persona_parts(plugins)  # 全部角色通过结构验证后才发布。
+        generated.append({"id": "preset-silksec-" + definition["id"], "name": PRESET_ROW_NAME,
+                          "config": {"id": definition["id"], "name": definition["name"],
+                                     "description": definition["description"], "order": MANAGED_ORDER[definition["id"]],
+                                     "plugins": plugins}})
+    return generated
+
+
+def replace_managed_block(text, block):
+    """只替换标记区；标记缺失、重复或不完整时显式拒绝，其余内容原样保留。"""
+    begins, ends = text.count(PRESET_BEGIN), text.count(PRESET_END)
+    if begins != ends or begins > 1:
+        raise ValueError("web patch 的 preset 标记重复或不完整；拒绝猜测重写范围")
+    if begins == 0:
+        separator = "" if not text or text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+        return text + separator + block
+    begin, end = text.find(PRESET_BEGIN), text.find(PRESET_END)
+    if end < begin:
+        raise ValueError("web patch 的 preset 标记顺序错误")
+    tail = text[end + len(PRESET_END):]
+    tail = tail[1:] if tail.startswith("\n") else tail
+    return text[:begin] + block + tail
+
+
+def atomic_write_text(path, text):
+    """同目录临时文件 + fsync + os.replace；失败保留旧文件。"""
+    if path.is_symlink():
+        raise ValueError(f"拒绝写入软链: {path}")
+    meta = path.stat() if path.exists() else None
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if meta is not None:
+            os.chmod(temporary, meta.st_mode & 0o7777)
+            try:
+                os.chown(temporary, meta.st_uid, meta.st_gid)
+            except PermissionError:
+                pass
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _seed_patch_presets(base_dir, data_dir, definitions, preset_version):
+    if len(definitions) != 7 or {d["id"] for d in definitions} != MANAGED_IDS:
+        raise ValueError("受管角色必须恰好包含七个已知 ID")
+    origin = resolve_standard(base_dir)
+    if origin["layout"] != "patch":
+        raise ValueError("目标安装不是 0.1.7 preset 行布局")
+    rows = standard_definition(origin)
+    standard_parts = persona_parts(rows)
+    patch_file = Path(data_dir) / WEB_PATCH_RELATIVE
+    if not patch_file.parent.is_dir():
+        raise ValueError(f"缺少 web profile 目录: {patch_file.parent}")
+    before = patch_file.read_text(encoding="utf-8") if patch_file.exists() else \
+        "# SilkSecAgent web profile patch（由 seed-presets.sh 管理受管 preset 区）\n"
+    block = "\n".join([
+        PRESET_BEGIN,
+        f"# preset_version: {preset_version} (bundle patch 行机制；取代 persona_version=6 目录布局)",
+        dump_yaml([{"insert": build_preset_rows(rows, standard_parts, definitions)}]).rstrip("\n"),
+        PRESET_END, "",
+    ])
+    text = replace_managed_block(before, block)
+    changed = text != before
+    if changed:
+        atomic_write_text(patch_file, text)
+    managed = read_presets(patch_file)
+    present = {preset for preset in MANAGED_IDS if preset in managed}
+    if present != MANAGED_IDS:
+        raise ValueError("发布后的 web patch 未包含全部受管 preset")
+    return {"roles": 7, "changed_files": 1 if changed else 0, "preset_version": preset_version,
+            "layout": "patch", "standard_source": origin["source"], "file": str(patch_file), "backup": None}
 
 
 def exchange_directories(left, right):
@@ -123,14 +283,17 @@ def exchange_directories(left, right):
         raise OSError(error, os.strerror(error))
 
 
-def seed_presets(base_dir, data_dir, definitions, version):
+def seed_presets(base_dir, data_dir, definitions, version, preset_version=None):
     Path(data_dir).mkdir(parents=True, exist_ok=True)
+    layout = resolve_standard(base_dir)["layout"]
+    if layout == "patch":
+        return _seed_patch_presets(base_dir, data_dir, definitions, preset_version if preset_version is not None else version)
     with open(Path(data_dir) / ".agent-presets-seed.lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        return _seed_presets(base_dir, data_dir, definitions, version)
+        return _seed_directory_presets(base_dir, data_dir, definitions, version)
 
 
-def _seed_presets(base_dir, data_dir, definitions, version):
+def _seed_directory_presets(base_dir, data_dir, definitions, version):
     if len(definitions) != 7 or {d["id"] for d in definitions} != MANAGED_IDS:
         raise ValueError("受管角色必须恰好包含七个已知 ID")
     origin = resolve_standard(base_dir)
@@ -205,17 +368,27 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     read = commands.add_parser("read")
     read.add_argument("file")
+    read_preset = commands.add_parser("read-preset")
+    read_preset.add_argument("--patch", required=True)
+    read_preset.add_argument("--preset", required=True)
     seed = commands.add_parser("seed")
     seed.add_argument("--base-dir", required=True)
     seed.add_argument("--data-dir", required=True)
     seed.add_argument("--definitions", required=True)
     seed.add_argument("--version", required=True, type=int)
+    seed.add_argument("--preset-version", type=int)
     args = parser.parse_args()
     if args.command == "read":
         result = persona_parts(read_yaml(args.file))
+    elif args.command == "read-preset":
+        presets = read_presets(Path(args.patch))
+        row = presets.get(args.preset)
+        if row is None:
+            raise ValueError(f"未找到 preset: {args.preset}")
+        result = persona_parts(row["config"]["plugins"])
     else:
         definitions = [json.loads(line) for line in Path(args.definitions).read_text(encoding="utf-8").splitlines() if line.strip()]
-        result = seed_presets(Path(args.base_dir), Path(args.data_dir), definitions, args.version)
+        result = seed_presets(Path(args.base_dir), Path(args.data_dir), definitions, args.version, args.preset_version)
     print(json.dumps(result, ensure_ascii=False))
 
 

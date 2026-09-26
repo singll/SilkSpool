@@ -15,6 +15,9 @@ const runtimes = configured
   ? await loadRecoveryRuntimes(process.env.DSH_RECOVERY_LEGACY_APP, process.env.DSH_RECOVERY_TARGET_APP, targetVersion)
   : null
 const integration = { skip: !configured && `需要真实 DSH 0.1.2-rc.1 / ${targetVersion} 安装树` }
+// V0 冲突恢复只允许 V3 目标（0.1.5）；V4 目标必须由旧链预生成 V3，再走 V3→V4 迁移。
+const v3Only = { skip: !configured || (targetVersion !== '0.1.5-rc.2' && 'V0 恢复仅 0.1.5 目标可用；0.1.7 断言 fail-closed') }
+const configured017 = configured && targetVersion === '0.1.7-rc.2'
 
 test('目标版本可参数化且必须与安装树一致（0.1.7 fixture）', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-recovery-version-'))
@@ -87,7 +90,21 @@ function fixture(twoCalls = false, packed = false) {
   return { header, prefix, closers, marker, suffix, records: [header, ...prefix, ...closers, marker, ...suffix] }
 }
 
-test('真实官方迁移拒绝原冲突；恢复后保全实际执行与中断两条分支', integration, () => {
+test('V4 目标 catalog 下 V0 冲突恢复显式 fail-closed，不得静默用空子代集合重建', () => {
+  const v4 = { currentVersion: 4 }
+  assert.throws(() => strictRestore(v4, [{ type: 'session', version: 0 }]), /仅支持 V3 目标/)
+  assert.throws(() => recoverInterruptedOverlap([{ type: 'session', version: 0 }], null, v4), /仅支持 V3 目标/)
+})
+
+test('真实 0.1.7 目标树同样 fail-closed 且不修改输入', { skip: !configured017 && '需要真实 0.1.7 目标树' }, () => {
+  const f = fixture()
+  const before = JSON.stringify(f.records)
+  assert.throws(() => strictRestore(runtimes.catalog, f.records), /仅支持 V3 目标/)
+  assert.throws(() => recoverInterruptedOverlap(f.records, runtimes.legacy, runtimes.catalog), /仅支持 V3 目标/)
+  assert.equal(JSON.stringify(f.records), before, '拒绝路径不得改写输入')
+})
+
+test('真实官方迁移拒绝原冲突；恢复后保全实际执行与中断两条分支', { ...integration, ...v3Only }, () => {
   for (const twoCalls of [false, true]) {
     const f = fixture(twoCalls)
     const before = JSON.stringify(f.records)
@@ -106,13 +123,13 @@ test('真实官方迁移拒绝原冲突；恢复后保全实际执行与中断�
   }
 })
 
-test('拒绝把不同实际结果或被修改过的中断结果当作可删除补写', integration, () => {
+test('拒绝把不同实际结果或被修改过的中断结果当作可删除补写', { ...integration, ...v3Only }, () => {
   const f = fixture()
   f.records[f.prefix.length + 1].data.message.content[0].content[0].text = 'different recorded result'
   assert.throws(() => recoverInterruptedOverlap(f.records, runtimes.legacy, runtimes.catalog), /补写/)
 })
 
-test('拒绝错误调用引用及额外序号冲突', integration, () => {
+test('拒绝错误调用引用及额外序号冲突', { ...integration, ...v3Only }, () => {
   const f = fixture()
   f.suffix[0].data.message.source.callId = 'unrelated-call'
   assert.throws(() => recoverInterruptedOverlap(f.records, runtimes.legacy, runtimes.catalog), /调用|call|lifecycle/)
@@ -121,7 +138,7 @@ test('拒绝错误调用引用及额外序号冲突', integration, () => {
   assert.throws(() => recoverInterruptedOverlap(g.records, runtimes.legacy, runtimes.catalog), /序号/)
 })
 
-test('拒绝父子继承会话及有外部引用的中断消息', integration, () => {
+test('拒绝父子继承会话及有外部引用的中断消息', { ...integration, ...v3Only }, () => {
   const f = fixture()
   f.header.parentSession = 'parent'
   assert.throws(() => recoverInterruptedOverlap(f.records, runtimes.legacy, runtimes.catalog), /继承/)
@@ -130,7 +147,7 @@ test('拒绝父子继承会话及有外部引用的中断消息', integration, (
   assert.throws(() => recoverInterruptedOverlap(g.records, runtimes.legacy, runtimes.catalog), /引用/)
 })
 
-test('无冲突日志不走恢复，缺失 marker 或真实结果时拒绝', integration, () => {
+test('无冲突日志不走恢复，缺失 marker 或真实结果时拒绝', { ...integration, ...v3Only }, () => {
   const f = fixture()
   assert.throws(() => recoverInterruptedOverlap([f.header, ...f.prefix, ...f.suffix], runtimes.legacy, runtimes.catalog), /序号/)
   const g = fixture()
@@ -138,7 +155,7 @@ test('无冲突日志不走恢复，缺失 marker 或真实结果时拒绝', int
   assert.throws(() => recoverInterruptedOverlap(g.records, runtimes.legacy, runtimes.catalog), /marker/)
 })
 
-test('压缩分块、工具引用和原始序号保持不变', integration, () => {
+test('压缩分块、工具引用和原始序号保持不变', { ...integration, ...v3Only }, () => {
   const f = fixture(true, true)
   const r = recoverInterruptedOverlap(f.records, runtimes.legacy, runtimes.catalog)
   assert.deepEqual(r.continued, [f.header, ...f.prefix, ...f.suffix])
@@ -147,7 +164,7 @@ test('压缩分块、工具引用和原始序号保持不变', integration, () =
   assert.equal(r.audit.sequence_renumbered, false)
 })
 
-test('CLI 保存压缩原件和逐行分支，官方发布后独立读回，拒绝源目录内输出', integration, async () => {
+test('CLI 保存压缩原件和逐行分支，官方发布后独立读回，拒绝源目录内输出', { ...integration, ...v3Only }, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-recovery-test-'))
   try {
     const source = path.join(root, 'source'), work = path.join(root, 'work')

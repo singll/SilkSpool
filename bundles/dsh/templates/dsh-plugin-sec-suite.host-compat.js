@@ -57,12 +57,13 @@ export function matchWorkerSession(headers, { cwd, startedAt, finishedAt, report
 
 export const PHASE_PRESET = Object.freeze({ recon: 'recon', vuln: 'vuln-hunt', 'biz-logic': 'biz-logic', 'code-audit': 'code-audit', intranet: 'intranet', review: 'review' })
 
-export function createPersonaReader({ helper = fileURLToPath(new URL('./persona.py', import.meta.url)) } = {}) {
+export function createPersonaReader({ helper = fileURLToPath(new URL('./persona.py', import.meta.url)), patchFile = null } = {}) {
   const cache = new Map()
   return (dataDir, phase, cwd) => {
     const preset = PHASE_PRESET[String(phase || '')]
     if (!preset) return '' // 无角色的通用任务保持原语义。
-    const filename = path.join(dataDir, '.agent-presets', preset, 'agent.cordis.yml')
+    // 0.1.7：受管角色声明在 web profile patch 的 preset 行内（config.plugins 里的 persona 行）。
+    const filename = patchFile || path.join(dataDir, 'profiles/web/cordis.patch.yml')
     // 每次检查文件指纹；替换/修改后不复用旧人格，出错也不缓存空角色。
     const stat = fs.statSync(filename, { bigint: true })
     const signature = [stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':')
@@ -70,7 +71,7 @@ export function createPersonaReader({ helper = fileURLToPath(new URL('./persona.
     if (!entry || entry.signature !== signature) {
       let parts
       try {
-        parts = JSON.parse(execFileSync('python3', [helper, 'read', filename], {
+        parts = JSON.parse(execFileSync('python3', [helper, 'read-preset', '--patch', filename, '--preset', preset], {
           encoding: 'utf8', timeout: 5000, maxBuffer: 1024 * 1024,
           stdio: ['ignore', 'pipe', 'pipe'],
         }))

@@ -6,7 +6,6 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
-
 spec = importlib.util.spec_from_file_location("release", Path(__file__).with_name("dsh-upgrade-release.py"))
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
@@ -209,6 +208,36 @@ class ReleaseTests(unittest.TestCase):
             with mock.patch.object(release, "VERSION", target), mock.patch.object(release, "OLD_VERSION", old):
                 with self.assertRaisesRegex(RuntimeError, "不支持的升级组合"):
                     release.require_supported_pair()
+
+    def test_publish_generation_and_recovery_versions_are_target_aware(self):
+        self.assertEqual(release.target_publish_glob(), "session.v3.jsonl*")
+        self.assertEqual(release.accepted_recovery_versions(), {"0.1.5-rc.2"})
+        with mock.patch.object(release, "VERSION", "0.1.7-rc.2"), mock.patch.object(release, "OLD_VERSION", "0.1.5-rc.2"):
+            self.assertEqual(release.target_publish_glob(), "session.v4.jsonl*")
+            self.assertEqual(release.accepted_recovery_versions(), {"0.1.7-rc.2"})
+
+    def build_preset_candidate(self, drop=None):
+        persona = importlib.util.module_from_spec(importlib.util.spec_from_file_location(
+            "persona_release_test", Path(__file__).with_name("dsh-plugin-sec-suite.persona.py")))
+        persona.__spec__.loader.exec_module(persona)
+        candidate = self.root / ("preset-candidate-" + (drop or "full"))
+        patch_file = candidate / "data/profiles/web/cordis.patch.yml"
+        patch_file.parent.mkdir(parents=True, exist_ok=True)
+        rows = [{"insert": [{"id": "preset-silksec-" + role, "name": "@deepseek-ai/dsh-agent-preset",
+                             "config": {"id": role, "name": role, "description": "fixture", "order": index,
+                                        "plugins": [{"id": "persona", "name": "@deepseek-ai/dsh-persona",
+                                                     "config": {"prefix": "角色 " + role, "suffix": "cwd={{cwd}}",
+                                                                "complete": False, "includeRuntimeContext": True}}]}}]}
+                for index, role in enumerate(release.ROLES) if role != drop]
+        patch_file.write_text(persona.dump_yaml(rows))
+        return candidate
+
+    def test_managed_presets_are_validated_in_the_candidate(self):
+        candidate = self.build_preset_candidate()
+        with mock.patch.object(release, "VERSION", "0.1.7-rc.2"):
+            release.validate_managed_presets(candidate)
+            with self.assertRaisesRegex(RuntimeError, "缺少受管 preset 行"):
+                release.validate_managed_presets(self.build_preset_candidate(drop="review"))
 
     def test_validate_versions_rejects_stale_setup_pin(self):
         candidate = self.root / "pin-candidate"

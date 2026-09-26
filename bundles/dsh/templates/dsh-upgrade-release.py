@@ -41,6 +41,17 @@ def require_supported_pair():
     return OLD_VERSION, VERSION
 
 
+def target_publish_glob():
+    """发布产物文件名代次：0.1.5→V3；0.1.7→V4（上游 catalog 当前代次）。"""
+    return "session.v4.jsonl*" if VERSION == "0.1.7-rc.2" else "session.v3.jsonl*"
+
+
+def accepted_recovery_versions():
+    """可接受的 V0 冲突恢复报告目标版本。0.1.7 链不接受跨代报告：
+    V4 目标下恢复工具 fail-closed，冻结点必须没有 V0-only 冲突会话。"""
+    return {VERSION}
+
+
 def require(value, message):
     if not value:
         raise RuntimeError(message)
@@ -81,11 +92,33 @@ def item_manifest(path):
 
 def static_paths(candidate):
     paths = ["app", "plugins", "plugins.lock", "data/profiles/web", "data/profiles/headless"]
-    paths += ["data/.agent-presets/" + name for name in ROLES]
+    if VERSION == "0.1.5-rc.2":
+        paths += ["data/.agent-presets/" + name for name in ROLES]
     paths += [p.name for p in sorted(candidate.iterdir()) if p.is_file() and p.suffix in {".sh", ".py", ".js", ".mjs"}]
     paths += ["scripts/pipeline/dsh-version-watch.sh", "data-seed/scripts/dsh-version-watch.sh"]
     require(all((candidate / p).exists() and not (candidate / p).is_symlink() for p in paths), "候选静态产物不完整或根路径含软链")
     return paths
+
+
+def validate_managed_presets(candidate):
+    """受管 7 角色必须在候选里可解析：0.1.5 目录布局 / 0.1.7 web patch preset 行。"""
+    persona = module("persona", "dsh-plugin-sec-suite.persona.py")
+    if VERSION == "0.1.5-rc.2":
+        root = candidate / "data/.agent-presets"
+        require(all((root / role / "agent.cordis.yml").is_file() for role in ROLES), "0.1.5 候选缺少受管角色目录")
+        return
+    patch_file = candidate / "data/profiles/web/cordis.patch.yml"
+    require(patch_file.is_file(), "0.1.7 候选缺少 web profile patch（preset 落点）")
+    presets = persona.read_presets(patch_file)
+    missing = [role for role in ROLES if role not in presets]
+    require(not missing, "0.1.7 候选缺少受管 preset 行：" + ",".join(missing))
+    for role in ROLES:
+        row = presets[role]
+        require(row.get("name") == "@deepseek-ai/dsh-agent-preset", "preset 行插件名不符：" + role)
+        config = row.get("config") or {}
+        require(config.get("id") == role and isinstance(config.get("plugins"), list), "preset 行结构不符：" + role)
+        parts = persona.persona_parts(config["plugins"])
+        require(parts["format"] == "prefix-suffix" and parts["prefix"].strip(), "preset persona 文本无效：" + role)
 
 
 def validate_versions(candidate):
@@ -109,6 +142,7 @@ def validate_versions(candidate):
             require(name not in versions or versions[name] == version, "app/profile 存在不一致的核心版本：" + name)
             versions[name] = version
     for profile in ("web", "headless"):
+        # 0.1.5 目录式 preset 的用户自建包检查；0.1.7 起角色改由 bundle patch 行声明，不再扫目录。
         for filename in (candidate / "data/.agent-presets").glob("*/package.json"):
             package = read_json(filename)
             require(not any(value == "latest" for value in package.get("dependencies", {}).values()), "用户预设有 latest 依赖")
@@ -123,6 +157,7 @@ def validate_versions(candidate):
     for name, digest in browser["files"].items():
         require(snapshot.sha256(candidate / "data/profiles/web/node_modules/@silksec/dsh-browser" / name) == digest,
                 "浏览器实际安装与封装不符")
+    validate_managed_presets(candidate)
     return {"core_versions": versions, "browser_sha256": browser["sha256"],
             "locks": {rel: snapshot.sha256(candidate / rel / "pnpm-lock.yaml") for rel in ("app", "data/profiles/web", "data/profiles/headless")}}
 
@@ -172,7 +207,9 @@ def recovery_subdir(recovery_file, canonical_base):
 
 def recover_legacy(session_root, recovery_file):
     recovery = read_json(recovery_file)
-    require(recovery.get("ok") and recovery.get("target_version") == VERSION, "恢复分支报告未通过")
+    # 只接受同目标代次的 V0 冲突恢复报告；跨代（0.1.5 报告 → 0.1.7 目标）显式拒绝。
+    require(recovery.get("ok") and recovery.get("target_version") in accepted_recovery_versions(),
+            "恢复分支报告未通过或目标版本不受支持")
     applied = []
     for row in recovery["sessions"]:
         relative = Path(row["relative"])
@@ -202,8 +239,13 @@ def overlay(candidate, target, sealed):
         snapshot.copy_tree(source, destination)
 
 
-def prepare(snapshot_dir, candidate, work, recovery_file, restore_copy=None):
-    snapshot_dir, candidate, work, recovery_file = (Path(p).resolve(strict=True) for p in (snapshot_dir, candidate, work, recovery_file))
+def prepare(snapshot_dir, candidate, work, recovery_file=None, restore_copy=None):
+    snapshot_dir, candidate, work = (Path(p).resolve(strict=True) for p in (snapshot_dir, candidate, work))
+    recovery = Path(recovery_file).resolve(strict=True) if recovery_file else None
+    # 0.1.5 目标必须有 V0 冲突恢复报告；0.1.7 目标的冻结点必须没有 V0-only 冲突会话
+    # （恢复工具在 V4 目标下 fail-closed），报告可整体省略；未提供的冲突会由目标迁移显式拒绝。
+    if VERSION == "0.1.5-rc.2":
+        require(recovery, "0.1.5 目标必须提供 V0 冲突恢复报告")
     manifest = snapshot.verify(snapshot_dir)
     sealed = verify_seal(candidate, production=restore_copy is None)
     require(read_json(snapshot_dir / "trees/dsh/app/node_modules/@deepseek-ai/dsh/package.json")["version"] == OLD_VERSION, "恢复点旧版本不符")
@@ -221,7 +263,8 @@ def prepare(snapshot_dir, candidate, work, recovery_file, restore_copy=None):
     state = {"kind": "dsh-release", "schema": 1, "phase": "preparing", "release": str(release), "version": VERSION,
              "snapshot": str(snapshot_dir), "manifest_sha256": snapshot.sha256(snapshot_dir / "manifest.json"),
              "candidate": str(candidate), "seal_sha256": snapshot.sha256(candidate / "candidate-seal.json"),
-             "recovery_report": str(recovery_file), "recovery_sha256": snapshot.sha256(recovery_file),
+             "recovery_report": str(recovery) if recovery else None,
+             "recovery_sha256": snapshot.sha256(recovery) if recovery else None,
              "restore_copy": str(restored) if restored else None, "roots": {}, "started_at": snapshot.now()}
     freeze.save(release / "state.json", state)
     try:
@@ -242,33 +285,41 @@ def prepare(snapshot_dir, candidate, work, recovery_file, restore_copy=None):
             report = release / (side + "-index-repairs.json")
             freeze.save(report, repairs)
             state["index_repairs"][side] = {"report": str(report), "sha256": snapshot.sha256(report)}
-        session_relative = recovery_subdir(recovery_file, manifest["roots"]["dsh"]["source"])
-        state["legacy_recovery_root"] = str(session_relative)
-        state["legacy_recoveries"] = recover_legacy(release / "rollback/dsh" / session_relative, recovery_file)
         base = release / "next/dsh"
         command = ["/usr/local/node/bin/node", str(Path(__file__).with_name("dsh-session-rehearsal.mjs")),
-                   "--app-dir", str(base / "app"), "--work-dir", str(release),
-                   "--recovery-report", str(recovery_file), "--recovery-source-root", str(base / session_relative)]
-        source_relatives = [relative for relative in ("data/sessions", "sessions") if (base / relative).is_dir()]
-        for relative in source_relatives:
-            command.extend(["--source", str(base / relative)])
+                   "--app-dir", str(base / "app"), "--work-dir", str(release)]
+        if recovery:
+            session_relative = recovery_subdir(recovery, manifest["roots"]["dsh"]["source"])
+            state["legacy_recovery_root"] = str(session_relative)
+            state["legacy_recoveries"] = recover_legacy(release / "rollback/dsh" / session_relative, recovery)
+            command.extend(["--recovery-report", str(recovery), "--recovery-source-root", str(base / session_relative)])
+        for relative in ("data/sessions", "sessions"):
+            if (base / relative).is_dir():
+                command.extend(["--source", str(base / relative)])
         with (release / "migration.log").open("w") as log:
-            result = subprocess.run(command, stdout=log, stderr=log, timeout=1800)
+            # 全量 V3→V4 迁移耗时与上游 listArtifacts 的每会话全库扫描成平方关系
+            # （0.1.7 实测约 2s/会话，1500+ 会话需 1~2h）；预演留足窗口，生产切换窗口由 U2/U3 决策。
+            result = subprocess.run(command, stdout=log, stderr=log, timeout=14400)
         reports = list(release.glob("session-rehearsal-*/report.json"))
         require(result.returncode == 0 and len(reports) == 1, "正式迁移准备失败；查看私有 migration.log")
         migrated = read_json(reports[0])
         require(migrated.get("ok") and migrated["original_files_unchanged"] and migrated["failures"] == 0, "Session 全量迁移未通过")
+        expected_recovery = len(read_json(recovery)["sessions"]) if recovery else 0
+        require(migrated.get("recovery", {}).get("applied", 0) == expected_recovery, "恢复分支应用数量不符")
+        publish_glob = target_publish_glob()
+        source_relatives = [relative for relative in ("data/sessions", "sessions") if (base / relative).is_dir()]
         count = 0
         for source, relative in zip(migrated["sources"], source_relatives):
             destination = base / relative
-            for published in Path(source["destination"]).rglob("session.v3.jsonl*"):
+            require(Path(source["source"]).resolve() == destination.resolve(), "演练来源与发布目标不符")
+            for published in Path(source["destination"]).rglob(publish_glob):
                 target = destination / published.relative_to(source["destination"])
-                require(not target.exists(), "旧恢复点已有 Session V3，拒绝覆盖")
+                require(not target.exists(), f"旧恢复点已有目标代次日志，拒绝覆盖: {target.name}")
                 shutil.copy2(published, target)
                 meta = target.parent.stat()
                 os.chown(target, meta.st_uid, meta.st_gid)
                 count += 1
-        require(count == len(migrated["sessions"]), "Session V3 发布数量不符")
+        require(count == len(migrated["sessions"]), "Session 目标代次发布数量不符")
         state["migration"] = {"report": str(reports[0]), "sha256": snapshot.sha256(reports[0]), "sessions": count}
         hosts = [(name, release / "next" / name / "browser/shared-browser-host.mjs") for name in mutable
                  if name != "dsh" and (release / "next" / name / "browser/shared-browser-host.mjs").is_file()]
@@ -476,8 +527,9 @@ def main():
     seal_parser.add_argument("--candidate", required=True)
     seal_parser.add_argument("--acceptance")
     prepare_parser = actions.add_parser("prepare")
-    for name in ("snapshot", "candidate", "work-dir", "recovery-report"):
+    for name in ("snapshot", "candidate", "work-dir"):
         prepare_parser.add_argument("--" + name, required=True)
+    prepare_parser.add_argument("--recovery-report")
     prepare_parser.add_argument("--restore-copy")
     for name in ("switch", "rollback", "finalize", "preserve"):
         operation = actions.add_parser(name)

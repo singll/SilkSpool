@@ -51,13 +51,19 @@ test('同工作区并发 Session 拒绝猜最新；可信上报仍需校验工�
   assert.equal(matchWorkerSession(rows, { ...window, reportedId: 'parent-session' }).code, 'E_WORKER_SESSION_REPORTED_ID')
 })
 
+function presetPatch(config) {
+  // 0.1.7 布局：受管角色是 web profile patch 里的 @deepseek-ai/dsh-agent-preset 行。
+  const shifted = String(config).split('\n').map((line) => (line ? '          ' + line : line)).join('\n')
+  return `- insert:\n    - id: preset-silksec-recon\n      name: '@deepseek-ai/dsh-agent-preset'\n      config:\n        id: recon\n        plugins:\n          - id: persona\n            name: '@deepseek-ai/dsh-persona'\n            config:\n${shifted}\n`
+}
+
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'silksec-persona-test-'))
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
-  const filename = path.join(dir, '.agent-presets/recon/agent.cordis.yml')
+  const filename = path.join(dir, 'profiles/web/cordis.patch.yml')
   fs.mkdirSync(path.dirname(filename), { recursive: true })
   const reader = createPersonaReader({ helper: fileURLToPath(new URL('./dsh-plugin-sec-suite.persona.py', import.meta.url)) })
-  const write = (config) => fs.writeFileSync(filename, `- id: persona\n  name: '@deepseek-ai/dsh-persona'\n  config:\n${config}\n- id: platform\n  disabled: !!js process.exit(99)\n`)
+  const write = (config) => fs.writeFileSync(filename, presetPatch(config))
   return { dir, filename, reader, write }
 }
 
@@ -74,7 +80,7 @@ test('兼容旧 text；文件替换使缓存失效，删除/损坏不能沿用�
   f.write('    text: >-\n      旧角色 {{cwd}}')
   assert.equal(f.reader(f.dir, 'recon', '/a'), '旧角色 /a')
   const next = f.filename + '.next'
-  fs.writeFileSync(next, "- name: '@deepseek-ai/dsh-persona'\n  config: {prefix: 新角色, suffix: '{{cwd}}'}\n")
+  fs.writeFileSync(next, presetPatch("    prefix: 新角色\n    suffix: '{{cwd}}'"))
   fs.renameSync(next, f.filename)
   assert.equal(f.reader(f.dir, 'recon', '/b'), '新角色\n\n/b')
   f.write('    prefix: ""')

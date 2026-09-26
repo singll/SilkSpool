@@ -26,7 +26,12 @@ if (!args.source || !args.work || !args.target || !args.legacy || !args.ids.leng
 const [source, work] = await Promise.all([fs.realpath(args.source), fs.realpath(args.work)])
 if (work === source || work.startsWith(source + path.sep)) throw new Error('输出目录不能位于 Session 来源内')
 const targetVersion = JSON.parse(await fs.readFile(path.join(await fs.realpath(args.target), 'node_modules/@deepseek-ai/dsh/package.json'), 'utf8')).version
+// 发布代次只由目标 catalog 决定：0.1.5→V3；0.1.7 的 V4 恢复入口已 fail-closed。
+const targetFormatVersion = targetVersion === '0.1.5-rc.2' ? 3 : 4
 const { legacy, catalog, targetImport } = await loadRecoveryRuntimes(args.legacy, args.target, targetVersion)
+if (catalog.currentVersion !== targetFormatVersion) {
+  throw new Error(`目标 catalog 代次 v${catalog.currentVersion} 与 DSH ${targetVersion} 预期 v${targetFormatVersion} 不符，拒绝继续`)
+}
 const { Context } = await targetImport('@deepseek-ai/cordis')
 const { default: Backend } = await targetImport('@deepseek-ai/dsh-session-persistence-jsonl')
 const runDir = await fs.mkdtemp(path.join(work, 'session-recovery-'))
@@ -76,7 +81,7 @@ async function publishAndRead(root, id, compression, expected) {
     const reader = await fresh.sessionPersistence.open(id, 'read')
     try {
       const events = (await reader.read()).events
-      if (reader.header.version !== 3 || eventDigest(events) !== eventDigest(expected.events)
+      if (reader.header.version !== targetFormatVersion || eventDigest(events) !== eventDigest(expected.events)
         || eventDigest(reader.header) !== eventDigest(expected.header)) throw new Error('独立 backend 读回不一致')
       return { events: events.length, event_sha256: eventDigest(events), fresh_backend_read: true }
     } finally { await reader.close() }
@@ -125,7 +130,7 @@ try {
         result.branches[name] = { file: filename, raw_sha256: digest(branchBytes), stored_sha256: digest(stored),
           ...await publishAndRead(root, id, compressed ? 'zstd' : 'none', branch.artifact) }
         if (await hashFile(filename) !== digest(stored)) throw new Error('官方发布改变了分支内的旧代日志')
-        const published = path.join(path.dirname(filename), compressed ? 'session.v3.jsonl.zstd' : 'session.v3.jsonl')
+        const published = path.join(path.dirname(filename), compressed ? `session.v${targetFormatVersion}.jsonl.zstd` : `session.v${targetFormatVersion}.jsonl`)
         result.branches[name].published = published
         result.branches[name].published_sha256 = await hashFile(published)
       }

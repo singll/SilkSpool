@@ -20,13 +20,25 @@ export async function loadRecoveryRuntimes(legacyApp, targetApp, targetVersion =
   return { legacy, catalog, targetImport }
 }
 
+// Session V0 冲突恢复只在 V3 目标（0.1.5）可用：上游 v3→v4 边要求显式子代证据，
+// 独立恢复副本无法证明完整子代集合，静默用空集合会丢父会话 catalog facts。
+// 0.1.7 目标下必须先用 0.1.5 工具链修复并发布 Session V3，再由目标链执行 V3→V4 迁移。
+export function assertV0RecoveryTarget(catalog) {
+  if (catalog?.currentVersion !== 3) {
+    throw new Error(`Session V0 冲突恢复仅支持 V3 目标（0.1.5）；当前目标 catalog 为 v${catalog?.currentVersion}。`
+      + '请先在 0.1.5 工具链执行恢复并发布 Session V3，再由升级链把 V3 迁移到 V4；本工具拒绝在 V4 目标下静默重建。')
+  }
+}
+
 export function strictRestore(catalog, records) {
+  assertV0RecoveryTarget(catalog)
   const restore = catalog.createRestore(structuredClone(records[0]), { recovery: 'strict', validation: 'current' })
   for (const row of records.slice(1)) restore.decodeRow(structuredClone(row))
   return restore.finish()
 }
 
 export function recoverInterruptedOverlap(records, legacy, catalog) {
+  assertV0RecoveryTarget(catalog)
   const header = records[0]
   if (header?.type !== 'session' || header.version !== 0) throw new Error('恢复仅接受 Session V0')
   if (Object.hasOwn(header, 'parentSession') || Object.hasOwn(header, 'seedLength')) {
