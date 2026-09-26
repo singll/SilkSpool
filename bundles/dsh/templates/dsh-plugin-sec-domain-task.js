@@ -2497,8 +2497,21 @@ function makeHandlers(opts) {
       }
       // 预算闸与任务创建复用 task_create 全链（actor=reactor，预算闸对 reactor 生效）
       if (!dispatchRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 dispatch 不可达', '确认总线已挂载', true)
+      // 38 号补丁：专项优先级区间生效——policy.task_priority_range 决定派生任务优先级，
+      // 调度器按 priority ASC 认领 ⇒ SRC 专项 [1,3] 先跑、清理专项 [4,6] 后跑。
+      let priority = args.level === 'H1' ? 4 : 3
+      if (args.campaign_id != null) {
+        const camp = repo.getCampaign ? repo.getCampaign(Number(args.campaign_id)) : null
+        let range = null
+        try { range = camp && camp.policy ? JSON.parse(camp.policy).task_priority_range : null } catch { range = null }
+        if (Array.isArray(range) && range.length) {
+          const lo = Number(range[0]) || 0
+          const hi = Number(range[range.length - 1]) || 9
+          priority = args.level === 'H1' ? lo : Math.min(hi, lo + 1)
+        }
+      }
       const r = await dispatchRef('task', 'create', {
-        program_id: args.program_id, objective, priority: args.level === 'H1' ? 4 : 3, phase: 'vuln',
+        program_id: args.program_id, objective, priority, phase: 'vuln',
         budget_tokens: 150000,
         ...(args.campaign_id != null ? { campaign_id: args.campaign_id } : {}),
         ...(args.campaign_role ? { campaign_role: args.campaign_role } : {}),

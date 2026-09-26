@@ -17,6 +17,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-26 · 38 号补丁：额度枯竭治理（分专项优先级/速率 + 派生优先区间生效）
+- **背景**：SenseNova 5h 积分池 + OpenCode Go 周额度双双耗尽（24h raw prompt≈1.77B、峰值 271M/h、05–06 全 429）。排查：无全局速率闸、`task_priority_range` 是死配置（derive 恒用 H1?4:3）。
+- **落地**：Bellkeeper 渠道速率（sensenova rpm 60/rpd 8000、go rpm 30/rpd 4000，已 reload）；清理专项 #3 budget 100M→50M + derive_cap 8→4 + priority [4,6]，SRC #1/#2 priority [1,3]；`task_derive_intent` 读 `task_priority_range` 决定派生优先级（SRC 先跑、清理后跑）。
+- **额度构成**：代理 raw prompt 1.85B vs DSH input 70.6M（≈26×），差额为 cached 前缀重传（cacheRead 235M/24h，87% 命中、31× 折扣）。压缩单请求 prompt 体积（DSH-core 上下文压实）为下一杠杆。文档回填 [05-task §7.22](05-task.md)。
+
 ### 2026-09-26 · 审批超限根因修复（decide 事件有界化 + S5 写动词多目标拆分）
 - **根因**：`findWriteVerbHit` 的 URL 正则把逗号拼接的多目标清单当成单个 URL，命中写动词段后把数 KB 清单塞进 `tool-intrusive` 审批的 payload/evidence；`approval_decide`/`withdraw` 又把完整 payload 塞进 `approval.approved/rejected` 事件 → 信封超 8KB → approve/reject 均 `E_BUS_EVENT_TOO_LARGE`，遗留审批 #61 无法裁决。
 - **修复**：① exec `findWriteVerbHit` URL 字符集排除逗号 + 命中 URL 截断 512 字（根源）；② approval decide/withdraw 事件载荷经 `boundedEventPayload`(200)/`boundedEvidence`(4000) 有界化（防御，effect 同步执行不依赖事件载荷）。

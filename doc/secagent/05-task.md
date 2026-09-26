@@ -1239,3 +1239,12 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 **实测（csai，2026-09-25）**：`executingTasks` → running 24 / blocked 0（正在执行不再空）；`task.list {bucket:active,scheduled:exclude}` → total 593、含 running 24 + queued（once 不再被排除）；`task_scheduled` → 仅 `interval` 7 条。检查前后错位数字：KPI running/blocked 63/4 ↔ 正在执行 0/0 → 修复后一致。
 
 **契约与验收**：task 域契约全绿（含新增 2 例）；`silksecagent` 重启 active；`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**。文档同步：05-task §1.7 查询口径、16-dashboard 任务视图。
+
+### 7.22 2026-09-26 38 号补丁回填（额度枯竭治理：分专项优先级/速率 + 派生优先区间生效）
+
+> 动机：SenseNova 5h 积分池与 OpenCode Go 周额度双双耗尽（近 24h raw prompt ≈1.77B、峰值 271M/h、05:00–06:00 全 429）。复盘确认：① 无全局速率/总量闸，12 worker 满负载派生 lite 任务把额度 2–3 小时烧光；② `campaigns.policy.task_priority_range` 是**死配置**——`task_derive_intent` 恒用 `H1?4:3`，专项优先级区间从未生效，SRC 与清理任务同优先级竞争。
+
+- **渠道速率闸（Bellkeeper DB，已 reload）**：`sensenova-secagent` rpm 120→**60**、rpd 20000→**8000**；`opencode-go-secagent` rpm 120→**30**、rpd 20000→**4000**（Go 周窗耗尽后降为低速率兜底）。
+- **分专项额度/速率/优先级（campaigns DB）**：清理专项 #3「候选验证清空」`budget_tokens` 100M→**50M**、`derive_cap_per_tick` 8→**4**、`task_priority_range` [1,6]→**[4,6]**；SRC 专项 #1/#2 `task_priority_range`→**[1,3]**。
+- **优先级区间生效（代码）**：`task_derive_intent` 读 `campaign.policy.task_priority_range` 决定派生任务 priority（H1 取区间下界，其余取 lo+1，钳制到区间）——调度器按 `priority ASC` 认领 ⇒ SRC/资产先跑、清理后跑（多余额度才轮到）。
+- **额度构成澄清**：代理层 raw prompt 1.85B vs DSH 实耗 input 70.6M ≈ 26 倍，差额是 cached 前缀（cacheRead 235M/24h，87% 命中，31× 折扣）+ 代理把 cached 按面值计入。真正消耗 SenseNova/Go 额度的是**原始 token 量**（含 cached 重传），故压缩单请求 prompt 体积（DSH-core 上下文压实）是下一杠杆；本轮先靠「减请求数 + 限峰值速率 + 分专项优先级」降总量。
