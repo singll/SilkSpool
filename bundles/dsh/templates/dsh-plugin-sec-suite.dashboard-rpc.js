@@ -433,7 +433,12 @@ export async function handleDashboardRpc(endpoint, payload) {
     }
     case 'audit': {
       // v5：bus.audit_tail（总线审计尾读）接管（16-dashboard §1.7 #14），fail-closed
-      const r = await busQuery('bus', 'audit_tail', { n: Math.min(Number(p.limit) || 120, 300) })
+      // 42 号：透传 before_bytes 游标（单窗 1MB），返回 next_before 供视图「加载更早」。
+      const beforeBytes = Number(p.before_bytes)
+      const r = await busQuery('bus', 'audit_tail', {
+        n: Math.min(Number(p.limit) || 120, 300),
+        ...(Number.isFinite(beforeBytes) && beforeBytes > 0 ? { before_bytes: Math.floor(beforeBytes) } : {}),
+      })
       return {
         rows: (r.rows || []).map((x) => ({
           ts: x.ts,
@@ -441,6 +446,7 @@ export async function handleDashboardRpc(endpoint, payload) {
           decision: x.result || '—',
           detail: { domain: x.domain, actor: x.actor, operator: x.operator, session_id: x.session_id, kind: x.kind, before: x.before, after: x.after, target: x.target, error_code: x.error_code, backend: x.backend, legacy: x.legacy, alias: x.alias },
         })),
+        next_before: Number.isInteger(r.next_before) ? r.next_before : null,
       }
     }
     case 'assets': {

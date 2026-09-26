@@ -114,6 +114,8 @@ function createRepo(db) {
   ensureArchive(db, 'blackboard')
   db.exec('CREATE INDEX IF NOT EXISTS idx_facts_program ON facts(program_id)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_facts_lifecycle ON facts(mem_class, status, revalidate_by)')
+  // 42 号补丁（25 号方案 B2）：分类浏览/搜索排序索引。
+  db.exec('CREATE INDEX IF NOT EXISTS idx_facts_category_updated ON facts(category, updated_at DESC)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_facts_expiry ON facts(mem_class, expires_at)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_edges_src ON fact_edges(program_id, src_key)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_edges_dst ON fact_edges(program_id, dst_key)')

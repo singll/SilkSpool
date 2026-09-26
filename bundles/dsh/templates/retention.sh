@@ -64,7 +64,20 @@ if command -v sqlite3 >/dev/null 2>&1 && [ -f "$DB_FILE" ]; then
     fi
 fi
 
-# --- 6. 残留空库清理（历史遗留 0 字节占位文件；有内容则保留） ---
+# --- 6. 图快照保留（asset-graph 定期 VACUUM 快照，默认保留最新 7 份；42 号补丁数据治理） ---
+BACKUP_DIR="$DATA_DIR/backups"
+BACKUP_KEEP="${SEC_BACKUP_KEEP:-7}"
+if [ -d "$BACKUP_DIR" ]; then
+    snaps=()
+    while IFS= read -r line; do snaps+=("$line"); done < <(ls -1t "$BACKUP_DIR"/asset-graph.*.db 2>/dev/null || true)
+    if [ "${#snaps[@]}" -gt "$BACKUP_KEEP" ]; then
+        for f in "${snaps[@]:$BACKUP_KEEP}"; do
+            rm -f "$f" && log "backups 清理过期快照 $f"
+        done
+    fi
+fi
+
+# --- 7. 残留空库清理（历史遗留 0 字节占位文件；有内容则保留） ---
 for f in assets.db tasks.db sec-suite.db; do
     p="$DATA_DIR/$f"
     if [ -f "$p" ] && [ ! -s "$p" ]; then rm -f "$p" && log "清理 0 字节残留 $f"; fi

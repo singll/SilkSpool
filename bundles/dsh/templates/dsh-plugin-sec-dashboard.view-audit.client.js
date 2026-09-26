@@ -44,11 +44,36 @@ window.__ModuleLoader__.load({
       // B13：展开态以稳定行键（ts+tool+decision）为 key，轮询刷新后位置不漂移（原用数组下标）。
       var ex = React.useState({})
       var expanded = ex[0]; var setExpanded = ex[1]
+      // 42 号：审计尾窗 1MB + before_bytes 游标，「加载更早」把更早页追加渲染；
+      // 最新页由 30s 轮询刷新，渲染时按行键去重（避免两页边界重复行）。
+      var er = React.useState({ rows: [], cursor: null, loading: false, done: false })
+      var earlier = er[0]; var setEarlier = er[1]
       function rowKey(r) { return String(r.ts || '') + '|' + String(r.tool || '') + '|' + String(r.decision || '') }
+      function loadEarlier() {
+        if (earlier.loading) return
+        var cursor = earlier.cursor != null ? earlier.cursor : (state.data && state.data.next_before)
+        if (!cursor) { setEarlier({ ...earlier, done: true }); return }
+        setEarlier({ ...earlier, loading: true })
+        rpcCall('audit', { limit: 120, before_bytes: cursor }).then(function (res) {
+          var incoming = (res && res.rows) || []
+          setEarlier(function (prev) {
+            var seen = {}
+            var merged = prev.rows.slice()
+            for (var i = 0; i < merged.length; i++) seen[rowKey(merged[i])] = true
+            for (var j = 0; j < incoming.length; j++) if (!seen[rowKey(incoming[j])]) { merged.push(incoming[j]); seen[rowKey(incoming[j])] = true }
+            return { rows: merged, cursor: res && res.next_before != null ? res.next_before : null, loading: false, done: !(res && res.next_before) }
+          })
+        }).catch(function () { setEarlier(function (prev) { return { ...prev, loading: false } }) })
+      }
       if (state.error) return el('div', { style: uiCore.styles.errorLine }, '审计加载失败: ' + state.error)
       if (!state.data) return el(uiCore.SkeletonRows, null)
-      var rows = (state.data && state.data.rows) || []
-      if (!rows.length) return el(uiCore.EmptyState, { text: '暂无审计记录' })
+      var latest = (state.data && state.data.rows) || []
+      var latestKeys = {}
+      for (var li = 0; li < latest.length; li++) latestKeys[rowKey(latest[li])] = true
+      var tail = earlier.rows.filter(function (r) { return !latestKeys[rowKey(r)] })
+      var rows = latest.concat(tail)
+      var canMore = (earlier.cursor != null || (state.data && state.data.next_before != null)) && !earlier.done
+      if (!rows.length && !canMore) return el(uiCore.EmptyState, { text: '暂无审计记录' })
       function decColor(dec) {
         var s = String(dec || '')
         if (/reject|deny|拒绝|blocked|denied/i.test(s)) return uiCore.T.error
@@ -56,7 +81,7 @@ window.__ModuleLoader__.load({
         return uiCore.T.label2
       }
       return el('div', null,
-        el('div', { style: uiCore.styles.pageSub }, '📜 写操作与 scope 决策的全量审计（尾部 ≤300 条，新→旧）。合规单一真相源，看板只读；详情点击展开。'),
+        el('div', { style: uiCore.styles.pageSub }, '📜 写操作与 scope 决策的全量审计（单窗 1MB，新→旧；可加载更早）。合规单一真相源，看板只读；详情点击展开。'),
         el('div', { style: { overflowX: 'auto', minWidth: 0, marginTop: 10 } },
           el('table', { style: uiCore.styles.tableStyle },
             el('colgroup', null,
@@ -88,7 +113,12 @@ window.__ModuleLoader__.load({
                   onClick: function () { if (detail.length > 200) setExpanded({ ...expanded, [k]: !isOpen }) },
                 },
                   isOpen ? el('span', null, detail + ' ') : detail.slice(0, 200) + (detail.length > 200 ? '… ⤵' : '')))
-            })))))
+            })))),
+        canMore
+          ? el('div', { style: { display: 'flex', justifyContent: 'center', marginTop: 10 } },
+              el('button', { type: 'button', className: 'silksec-btn', disabled: earlier.loading, onClick: loadEarlier },
+                earlier.loading ? '加载中…' : '加载更早'))
+          : null)
     }
 
     // 域根：包 ui-core SilksecErrorBoundary（崩溃只炸该域 tab，经 bus.audit_tail 口径带 surface）；

@@ -1384,3 +1384,54 @@ test('M1: 并发同幂等键只执行一次，后者返回 replay 而非 E_CONFL
   assert.equal([a, b].filter((r) => r.ok).length, 2, JSON.stringify([a.error, b.error]))
   assert.equal([a, b].filter((r) => r.replay === true).length, 1, '恰好一个 replay')
 })
+
+// ---------------------------------------------------------------------------
+// 42 号补丁（25 号方案 B1）：保留窗口与审计游标
+// ---------------------------------------------------------------------------
+
+test('42 号补丁: bus_prune 按「7 天或 2 万行取大」裁剪 delivered，保留 pending，级联订阅', async () => {
+  const { dir, bus } = makeBus()
+  const now = Date.now()
+  const db = new DatabaseSync(path.join(dir, 'asset-graph.db'))
+  try {
+    const insOutbox = db.prepare(`INSERT INTO event_outbox (event_id, domain, name, payload, producer_ts, status, retry_count, created_at) VALUES (?, 'vuln', 'vuln.signal.registered', '{}', ?, ?, 0, ?)`)
+    const insSub = db.prepare(`INSERT INTO bus_subscription (event_id, subscriber, mode, status, attempt, consumed_at) VALUES (?, 'fixture', 'async', 'delivered', 0, ?)`)
+    db.exec('BEGIN')
+    for (let i = 0; i < 20000; i++) insOutbox.run(`recent-${i}`, now, 'delivered', now)
+    for (let i = 0; i < 10; i++) {
+      const id = `stale-${i}`
+      insOutbox.run(id, now - 8 * 86400000, 'delivered', now - 8 * 86400000)
+      insSub.run(id, now)
+    }
+    insOutbox.run('pending-old', now - 8 * 86400000, 'pending', now - 8 * 86400000)
+    insSub.run('recent-1', now)
+    db.exec('COMMIT')
+  } finally { db.close() }
+  const r = await bus.dispatch('bus', 'prune', { force: true }, { actor: 'system' })
+  assert.equal(r.ok, true, JSON.stringify(r.error))
+  assert.equal(r.data.outbox_pruned, 10, '仅超 7 天且不在最新 2 万行内的 delivered 被删')
+  assert.equal(r.data.subscriptions_pruned, 10, '被删事件的订阅行级联清理')
+  const db2 = new DatabaseSync(path.join(dir, 'asset-graph.db'))
+  try {
+    assert.equal(db2.prepare("SELECT COUNT(*) AS n FROM event_outbox WHERE event_id LIKE 'stale-%'").get().n, 0)
+    assert.equal(db2.prepare("SELECT COUNT(*) AS n FROM event_outbox WHERE event_id='pending-old'").get().n, 1, 'pending 不裁剪')
+    assert.equal(db2.prepare("SELECT COUNT(*) AS n FROM bus_subscription WHERE event_id='recent-1'").get().n, 1, '保留事件的订阅不误删')
+  } finally { db2.close() }
+  bus._internal.close()
+})
+
+test('42 号补丁: audit_tail before_bytes 游标可回翻更早窗口', async () => {
+  const { dir, bus } = makeBus()
+  const lines = []
+  for (let i = 0; i < 15000; i++) lines.push(JSON.stringify({ ts: 1700000000000 + i, kind: 'command', domain: 'vuln', cmd: `fixture_${i}`, actor: 'model', result: 'ok' }))
+  fs.writeFileSync(path.join(dir, 'audit.jsonl'), lines.join('\n') + '\n')
+  const first = await bus.query('bus', 'audit_tail', { n: 50 }, { actor: 'dashboard' })
+  assert.equal(first.ok, true)
+  assert.equal(first.rows.length, 50)
+  assert.ok(first.next_before > 0, '文件大于单窗时必须返回游标')
+  const second = await bus.query('bus', 'audit_tail', { n: 50, before_bytes: first.next_before }, { actor: 'dashboard' })
+  assert.equal(second.ok, true)
+  assert.equal(second.rows.length, 50)
+  assert.ok(second.rows[0].ts < first.rows[first.rows.length - 1].ts, '第二页应严格更早')
+  bus._internal.close()
+})

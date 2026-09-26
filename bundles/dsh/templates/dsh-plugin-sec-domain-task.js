@@ -52,7 +52,7 @@ const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIM
 const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding']
 // 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
 const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000
-// 40 号补丁：运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）后策略重开冷却（默认 1h），
+// 41 号补丁：运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）后策略重开冷却（默认 1h），
 // 否则 strategy_dedupe 停留 attempted+reopen_after=NULL，被 Planner 永久 skip（"already_attempted"）。
 const CAMPAIGN_RETRY_AFTER_FAIL_MS = Number(process.env.SEC_CAMPAIGN_RETRY_AFTER_FAIL_HOURS || 1) * 3600000
 // 23 号方案 §3.6：每 tick 派生上限默认 8（v2 调高：5→8）
@@ -170,7 +170,7 @@ export const TASK_MANIFEST = {
   service: 'secDomain.task',
   description: '任务/调度/执行史/worker 注册表——编排器派发的工作单元与调度循环的单一真相源，收尾权唯一归调度器/审批',
   owns: {
-    tables: ['tasks', 'task_runs', 'workers', 'strategy_dedupe'],
+    tables: ['tasks', 'task_runs', 'workers', 'strategy_dedupe', 'campaigns', 'campaign_decisions', 'campaign_checkpoints', 'task_settings'],
     files: ['data/scheduler.lock', 'data/events/task.jsonl'],
   },
   commands: {
@@ -394,7 +394,7 @@ export const TASK_MANIFEST = {
       event_limit: 1,
       invariants: ['intentSituation'],
       timeout_ms: 60000,
-      agent_note: '（内部通道，模型不可见）Intent 确定性派生器落任务草稿：H1 指纹保底/H2 污点路由/H3 语义假设（H3 必须引用卡片经局面编译，违规丢弃落审计）。strategy_key 幂等去重、连败 3 次黑名单；一律过预算闸，入队 queued 绝不自动执行。',
+      agent_note: '（内部通道，模型不可见）Intent 确定性派生器落任务草稿：H1 指纹保底/H2 污点路由/H3 语义假设（H3 必须引用卡片经局面编译，违规丢弃落审计）。strategy_key 幂等去重、连败 3 次黑名单；一律过预算闸，按 37 号口径以 once 自动入队执行（草稿态不落库）。',
       deprecated: false,
     },
     // ---- 22 号方案 §八：Campaign（专项）命令 ----
@@ -525,7 +525,7 @@ export const TASK_MANIFEST = {
       event_limit: 200,
       invariants: [],
       timeout_ms: 120000,
-      agent_note: '（内部，不向模型注册）tick 段：扫 active 专项逐条跑 Supervisor→Reviewer→Planner→Dispatcher。',
+      agent_note: '（内部，不向模型注册）tick 段：扫 active + reviewing 专项逐条跑 Supervisor→Reviewer→Planner→Dispatcher。',
       deprecated: false,
     },
     campaign_record_decision: {
@@ -724,7 +724,7 @@ export const TASK_MANIFEST = {
     task_scheduled: {
       actor: ['model', 'dashboard', 'human'],
       params: schema({}, []),
-      agent_note: '固定定时任务清单（卡片数据源）：未终态+带调度，附运行统计。',
+      agent_note: '固定定时任务清单（卡片数据源）：仅 interval 且未终态，附运行统计。',
     },
     task_worker_list: {
       actor: ['model', 'dashboard', 'human'],
@@ -1753,7 +1753,7 @@ function makeHandlers(opts) {
   }
 
   // 草稿字段白名单收敛（S2）：kind/level/role 限枚举、phase 限 allowed_phases、rationale 必填化。
-  // 优先级不由调用方决定——derive_intent 按 level 固定（H1=4 其余 3），模型无法绕过 Planner 排序。
+  // 优先级不由调用方决定——derive_intent 按 38 号口径用 task_priority_range 区间制（缺省 H1=4 其余 3），模型无法绕过 Planner 排序。
   function sanitizeDraft(d, c) {
     const policy = c.policy || {}
     const kind = CAMPAIGN_KINDS.includes(String(d.kind)) ? String(d.kind) : 'hypothesis'
@@ -2409,7 +2409,7 @@ function makeHandlers(opts) {
       if (spentTokens !== null) finishSets.spent_tokens = spentTokens
       repo.transitionTask(Number(args.task_id), finishSets)
       repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null, spent_tokens: spentTokens })
-      // 40 号补丁：运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）重开策略冷却，Planner 可重试；
+      // 41 号补丁：运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）重开策略冷却，Planner 可重试；
       // 否则 strategy_dedupe 停留 attempted+reopen_after=NULL，被 compileCampaignPlan 永久 skip。
       if (status === 'failed' && t.strategy_key && repo.reopenStrategy) {
         const bare = String(t.strategy_key)
@@ -2501,7 +2501,7 @@ function makeHandlers(opts) {
       // 22 号方案 §5.5：专项维度去重键（连败黑名单仍按裸 key 判定——打法属性非专项属性）
       const key = args.campaign_id ? `c${args.campaign_id}|${bare}` : bare
       // strategy_key 幂等去重：已测组合不重发；reopen_after 已过（rework 或运行级失败重开）则允许重试。
-      // 40 号补丁：旧实现只看 !blacklisted，忽略 reopen_after，导致重开机制失效——策略一旦 derived
+      // 41 号补丁：旧实现只看 !blacklisted，忽略 reopen_after，导致重开机制失效——策略一旦 derived
       // 永不再派（额度耗尽失败的 2985 策略被 Planner 永久 skip，额度恢复后无任务可跑）。
       const existing = repo.getStrategy ? repo.getStrategy(key) : null
       if (existing) {
@@ -2557,7 +2557,7 @@ function makeHandlers(opts) {
         ...(args.model_hint ? { model_hint: args.model_hint } : {}),
         // Path A：provider+model 成对透传，worker 经 model-patch 指定模型
         ...(args.provider && args.model ? { provider: String(args.provider), model: String(args.model) } : {}),
-        // 36 号补丁（方案 C-1）：派生任务一律 once 入队自动执行。此前非 Campaign 草稿
+        // 37 号补丁（方案 C-1）：派生任务一律 once 入队自动执行。此前非 Campaign 草稿
         // schedule_kind=NULL，而调度器只认领非空 → 覆盖缺口派生的「无主草稿」永不执行、堆积。
         // INV-C7 仅禁 interval，once 合规；任务级 model_hint/task_class 不变。
         schedule: { kind: 'once', at: Date.now() + 3000 },
@@ -2894,7 +2894,7 @@ function makeHandlers(opts) {
       const filters = { program_id: args.program_id, status: args.status, phase: args.phase, goal: args.goal, q: args.q, bucket: args.bucket, scheduled: args.scheduled, campaign_id: args.campaign_id }
       const total = repo.countTasksWhere(filters)
       const rows = repo.listTasksWhere(filters, args.limit, args.offset, args.sort, args.dir)
-      return { rows, total }
+      return { rows, total, meta: { paged: true } }
     },
     task_get: async (args, repo) => {
       const t = repo.getTask(Number(args.task_id))
@@ -2917,7 +2917,7 @@ function makeHandlers(opts) {
       const filters = { task_id: args.task_id || 0, program_id: args.program_id }
       const total = repo.countTaskRunsWhere(filters)
       const rows = repo.listTaskRunsWhere(filters, args.limit, args.offset)
-      return { rows, total }
+      return { rows, total, meta: { paged: true } }
     },
     task_scheduled: async (args, repo) => {
       return { rows: repo.scheduledTasksAgg() }
@@ -2981,7 +2981,7 @@ function makeHandlers(opts) {
           supply: supplyBadge(repo, c.id),
         }
       })
-      return { rows, total }
+      return { rows, total, meta: { paged: true } }
     },
     campaign_get: async (args, repo) => {
       const c = parseCampaign(repo.getCampaign(Number(args.id)))
@@ -3031,7 +3031,7 @@ function makeHandlers(opts) {
     campaign_decisions: async (args, repo) => {
       const rows = repo.listCampaignDecisions(Number(args.campaign_id), args.verdict || '', args.limit || 50, args.offset || 0)
       const total = repo.countCampaignDecisions(Number(args.campaign_id), args.verdict || '')
-      return { rows, total }
+      return { rows, total, meta: { paged: true } }
     },
   }
 
@@ -3390,7 +3390,7 @@ export function startTaskScheduler(opts) {
       // 36 号补丁诊断：claim 信封不可见时静默空转无从排查
       if (!_ok(r)) log(`调度认领未成功: ${_errCode(r)} ${_errMsg(r)}`)
     } catch (e) { log(`调度认领失败: ${e?.message}`); return }
-    if (!claimed.length) { await campaignTick(); await dailyVaultSync(); return }
+    if (!claimed.length) { await campaignTick(); await dailyVaultSync(); await dailyBusPrune(); return }
     const tasks = []
     for (const taskId of claimed) {
       try {
@@ -3513,6 +3513,7 @@ export function startTaskScheduler(opts) {
     })()))
     await campaignTick()
     await dailyVaultSync()
+    await dailyBusPrune()
   }
 
   // 22 号方案 §6.4：campaign tick 段（同一调度器单例持锁者；claim 之后顺带驱动）。
@@ -3541,6 +3542,20 @@ export function startTaskScheduler(opts) {
       const r = await dispatch('know', 'kb_vault_sync', {}, { actor: 'scheduler' })
       log(`vault 回流: ${JSON.stringify(r && r.data ? r.data : r)}`)
     } catch (e) { log(`vault 回流异常: ${e?.message}`) }
+  }
+
+  // 42 号补丁（25 号方案 B1）：保留窗口清理并入每日维护——bus_prune 此前从未被调度
+  // （idempotency 超上限 5.9 倍、outbox delivered 13 万行无清理），按「7 天或 2 万行取大」裁剪。
+  let lastPruneDay = ''
+  async function dailyBusPrune() {
+    const bj = new Date(Date.now() + _BEIJING_OFFSET_MS)
+    const day = bj.toISOString().slice(0, 10)
+    if (lastPruneDay === day || bj.getUTCHours() < 5) return
+    lastPruneDay = day
+    try {
+      const r = await dispatch('bus', 'prune', {}, { actor: 'system' })
+      log(`保留窗口清理: ${JSON.stringify(r && r.data ? r.data : r)}`)
+    } catch (e) { log(`保留窗口清理异常: ${e?.message}`) }
   }
 
   let tick = 0

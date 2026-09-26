@@ -205,6 +205,29 @@ export const ASSET_MANIFEST = {
       predicates: ['program', 'level', 'state'],
       agent_note: '检索资产图谱：host_like 模糊、type/program_id/level/level_in/accept/state 过滤。level=\'none\' 筛未分级资产（分级前的待办清单）。',
     },
+    asset_host_page: {
+      actor: ['model', 'dashboard', 'human', 'reactor', 'script'],
+      params: schema({
+        program_id: str({ default: '' }),
+        host_like: str({ default: '' }),
+        type: str({ default: '' }),
+        level: en([...['S', 'A', 'B', 'C', 'none'], ''], { default: '' }),
+        state: en([...['new', 'changed', 'stable', 'dead'], ''], { default: '' }),
+        limit: int({ minimum: 1, maximum: 2000 }),
+        offset: int({ minimum: 0 }),
+      }, []),
+      predicates: ['program'],
+      agent_note: '（覆盖账本用）资产紧凑分页：仅 host/root，单页 ≤2000，配合 offset 全量遍历（绕过 asset_list 500 上限）。',
+    },
+    asset_roots_agg: {
+      actor: ['model', 'dashboard', 'human', 'reactor'],
+      params: schema({
+        program_id: str({ default: '' }),
+        type: str({ default: '' }),
+      }, []),
+      predicates: ['program'],
+      agent_note: '（覆盖账本用）根域聚合：root/host_count/max_score/last_seen，单次返回全部根域（≪5000）。',
+    },
     asset_get: {
       actor: ['model', 'dashboard', 'human'],
       params: schema({
@@ -664,7 +687,18 @@ function makeHandlers(opts) {
       const filters = { host_like: args.host_like || '', type: args.type || '', program_id: args.program_id || '', level: args.level || '', level_in: args.level_in || '', accept: args.accept || '', state: args.state || '' }
       const rows = repo.listAssetsWhere(filters, { sort: args.sort || 'last_seen', dir: args.dir || 'desc' }, args.limit, args.offset)
       const total = repo.countAssetsWhere(filters)
-      return { rows, total }
+      return { rows, total, meta: { paged: true } }
+    },
+    asset_host_page: async (args, repo) => {
+      const filters = { host_like: args.host_like || '', type: args.type || '', program_id: args.program_id || '', level: args.level || '', state: args.state || '' }
+      const rows = repo.listAssetHostsPage(filters, args.limit, args.offset)
+      const total = repo.countAssetsWhere(filters)
+      return { rows, total, meta: { paged: true } }
+    },
+    asset_roots_agg: async (args, repo) => {
+      const filters = { program_id: args.program_id || '', type: args.type || '' }
+      // 全量聚合行集（根域 ≪5000），标记 paged 防总线按默认 limit=50 截断。
+      return { rows: repo.rootsAggregate(filters), meta: { paged: true } }
     },
     asset_get: async (args, repo) => {
       const host = normalizeHost(args.host)
@@ -698,10 +732,10 @@ function makeHandlers(opts) {
       const filters = { host: args.host || '', tech: args.tech || '', program_id: args.program_id || '' }
       const rows = repo.listFingerprintsWhere(filters, {}, args.limit, args.offset)
       const total = repo.countFingerprintsWhere(filters)
-      return { rows, total }
+      return { rows, total, meta: { paged: true } }
     },
     asset_deep_queue: async (args, repo) => {
-      return repo.deepQueue(args.program_id || '', args.limit, args.offset)
+      return { ...repo.deepQueue(args.program_id || '', args.limit, args.offset), meta: { paged: true } }
     },
   }
 

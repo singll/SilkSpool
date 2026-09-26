@@ -700,9 +700,10 @@ function makeHandlers(opts) {
       const excludeNotes = args.exclude_notes !== false
       const { where, args: wa } = combinedWhere(reader, { program_id: args.program_id || '', category: args.category || '', q: args.q || '', confidence: args.confidence || '', has_edges: !!args.has_edges, mem_class: args.mem_class || '', status: args.status || '', exclude_notes: excludeNotes }, now)
       const sort = args.sort || 'updated_at'
-      const rows = repo.listFactsWhere(where, wa, sort, 5000, 0).map((r) => ({ ...r, ...(r.status === 'cooling' ? { _cooling: true } : {}) }))
+      // 42 号补丁（25 号方案 B1）：分页落到 SQL（旧实现固定拉 5000 行再靠总线切片，offset 被丢弃）。
+      const rows = repo.listFactsWhere(where, wa, sort, args.limit, args.offset).map((r) => ({ ...r, ...(r.status === 'cooling' ? { _cooling: true } : {}) }))
       const total = repo.countFactsWhere(where, wa)
-      return { rows, total }
+      return { rows, total, meta: { paged: true } }
     },
     fact_get: async (args, repo) => {
       const row = repo.getFact(args.program_id, args.fact_key)

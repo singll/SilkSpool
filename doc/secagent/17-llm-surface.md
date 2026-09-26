@@ -312,7 +312,7 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 
 | 层 | v5 变化 |
 |---|---|
-| 模型路由 / 熔断 / failover / dsh-bill | **机制零改动 + 约束收紧**。Bellkeeper 默认路由 + 两级熔断照旧（`dsh-llm-routing-discipline.md` 仍有效）；但任务级 `provider/model` 必须过 **allowlist**（05-task INV-T13：默认 `bellkeeper`，其它 provider 显式白名单，应急直连走人工通道 + audit 高亮）——线上 dsh-bill 出现 opencode-go/Bellkeeper/SenseNova/DeepSeek 多来源（5,461 条历史），v5 不掩盖历史直连成本：provider 审计与 dsh-bill 成本归因写入 task 域（`spent_tokens` 回填，05-task INV-T14） |
+| 模型路由 / 熔断 / failover / dsh-bill | **机制零改动 + 约束收紧**。Bellkeeper 默认路由 + 两级熔断照旧（`dsh-llm-routing-discipline.md` 仍有效）；但任务级 `provider/model` 的 **allowlist 约束为设计预留、尚未实现**（05-task INV-T13：设计上默认 `bellkeeper`，其它 provider 须显式白名单，应急直连走人工通道 + audit 高亮；当前无 `E_TASK_PROVIDER_FORBIDDEN` 代码路径）——线上 dsh-bill 出现 opencode-go/Bellkeeper/SenseNova/DeepSeek 多来源（5,461 条历史），v5 不掩盖历史直连成本：provider 审计与 dsh-bill 成本归因写入 task 域（`spent_tokens` 回填，05-task INV-T14） |
 | DSH tools.register 契约 | 唯一交互通道。工具数量翻倍对该通道无压力（DSH 无工具数上限实测约束；上下文 token 见 §2.6） |
 | 工具失败的信封投递 | 投影层**返回**失败信封对象（不 throw）——模型读到 `{ok:false, error:{code,hint,retryable}}` 全文，renderJSON 渲染。与 v4.x `{ok:false,error}` 习惯一致，v5 增 hint/retryable 字段 |
 | spawn_worker 任务级模型覆盖（P18） | 不变：provider/model 参数经 --patch 注入 worker 子进程，与工具面正交 |

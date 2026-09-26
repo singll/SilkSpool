@@ -451,7 +451,7 @@ sec domain approval call approval_decide --actor human --operator singll \
 
 #### 2.2.2 kind 注册表（代码内声明式注册表，`APPROVAL_KINDS`）
 
-v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从域内代码对象迁入 `dsh-plugin-sec-domain-approval.js` 的 `APPROVAL_KINDS` 导出（**非 manifest `kinds` 段**）：每 kind 一个条目，字段 = `label` / `request_actors` / `validate`（规则）/ `effects`（**纯事件/命令映射**——approve 后 dispatch 什么命令）。**新增审批类型 = 注册表加条目，工具面/RPC/看板零改动**（v4.x 注册表的核心收益保留）。当前共 **8 kind**（§2.2.2 kind 1–8）。
+v4.x `APPROVAL_KINDS`（sec-suite.js L494-813）从域内代码对象迁入 `dsh-plugin-sec-domain-approval.js` 的 `APPROVAL_KINDS` 导出（**非 manifest `kinds` 段**）：每 kind 一个条目，字段 = `label` / `request_actors` / `validate`（规则）/ `effects`（**纯事件/命令映射**——approve 后 dispatch 什么命令）。**新增审批类型 = 注册表加条目，工具面/RPC/看板零改动**（v4.x 注册表的核心收益保留）。当前共 **11 kind**（§2.2.2 kind 1–8 + 22 号方案 `campaign-autonomy`/`campaign-budget-extend` + 34 号补丁 `task-budget-config`；后 3 类见文末回填小节）。
 
 **kind 1：`scope-wildcard`（整域授权·通配）** —— v4.5 整域通配口径
 
@@ -678,12 +678,32 @@ ApprovalRepo.listEffects(request_id) -> rows
 
 | kind | subject | request_actors | validate 判据 | approved effect |
 |---|---|---|---|---|
-| `campaign-autonomy` | campaign 名 | dashboard, system | autonomy ∈ 1\|2；专项存在且 draft/paused；升 L2 需 budget_tokens>0（INV-C4） | dispatch `task.campaign_autonomy_apply`（落 autonomy/approval_id 并激活） |
-| `campaign-budget-extend` | campaign 名 | model, scheduler, system | add_tokens 正整数；专项有预算基准；spent ≥ budget×0.8；add ≤ 原 budget×2 | dispatch `task.campaign_budget_extend`（budget_tokens 增量落账 + checkpoint） |
+| `campaign-autonomy` | campaign 名 | dashboard, system | autonomy ∈ 1\|2；专项存在且（draft/paused，或 **active/reviewing 且 autonomy<2**——31 号放宽，自动降级后恢复 L2 的合规通道）；升 L2 需 budget_tokens>0（INV-C4） | dispatch `task.campaign_autonomy_apply`（落 autonomy/approval_id；draft/paused 顺带激活，active/reviewing 只落 autonomy 不动 status，并发 `task.campaign.autonomy.changed`） |
+| `campaign-budget-extend` | campaign 名 | model, scheduler, system | add_tokens 正整数；专项有预算基准；spent ≥ budget×0.8（**reviewing 豁免**——31 号：预算型停止场景用量必然 ≥100%，台账与窗口口径不一致会误拒）；add ≤ 原 budget×2 | dispatch `task.campaign_budget_extend`（budget_tokens 增量落账 + checkpoint） |
 
 > 2026-09-22 评审修复：effect 动词 `campaign_autonomy_apply` / `campaign_budget_extend` 的 `idempotent_natural` 均纳入 `approval_id`（同专项再次批准/二次延长不被幂等窗吞；effect 重试仍幂等）；`validate` 遇 task 域查询不可达由放行改 `E_INTERNAL` 阻塞（fail-closed）。
 
 契约：approval 全绿（新增 2 例：campaign-autonomy 升档激活 / campaign-budget-extend 阈值与增量）。
+
+## 2026-09-24 34 号补丁回填（`task-budget-config` kind）
+
+> 动机：per-program 预算闸（`SEC_TASK_BUDGET_*`）此前只读 env，调整须重启且看板无入口。34 号补丁把预算闸改为 DB 在线配置——`task_settings` KV（DB 优先/env 兜底）经本 kind 审批后落库即时生效（05-task §6.3、16-dashboard 34 号小节）。
+
+**kind：`task-budget-config`（per-program 预算闸在线配置）**
+
+| 项 | 值 |
+|---|---|
+| label | 任务预算闸配置 |
+| request_actors | model / dashboard / human / system |
+| subject_rule | 自由文本（UI 固定 `per-program 预算闸`） |
+| payload_schema | `{ max_tasks?: integer ≥1, max_tokens?: integer ≥1, period_days?: integer 1–90 }`（至少一项） |
+| validate | ① payload 至少含一项；② 各参数为正整数，否则 `E_INVARIANT`；③ `period_days ≤90`（窗口上限） |
+| 事件映射（approve） | **decide effect** → **task 域** `budget_config`（落 `task_settings` KV：`budget_max_tasks`/`budget_max_tokens`/`budget_period_days`；`budgetConfigOf` 读取时 DB 优先/env 兜底并标 `source`，批准即生效无需重启） |
+| 事件映射（reject） | 无（维持现配置） |
+
+> **踩坑记录**：effect 动词必须写短动词 `budget_config` 而非 manifest 全键 `task_budget_config`（dispatch 会拼 `task_` 前缀，`findCommandDef` 失配报 `E_BUS_VERB_UNKNOWN`）——与既有 `budget_extend`/`complete` 惯例一致。
+
+契约：approval +1（task-budget-config 全链）；task 契约 +2（env 兜底→DB 覆盖、max_tasks=2 停派第三个）。
 
 ## 2026-09-26 补丁：decide/withdraw 事件载荷有界化（防超大 payload 撑爆事件信封）
 

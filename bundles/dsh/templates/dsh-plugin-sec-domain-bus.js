@@ -30,7 +30,13 @@ const BACKOFF_MS = [1000, 5000, 30000, 120000, 600000, 3600000, 21600000, 216000
 const LOCK_STALE_MS = 180000
 const PRUNE_COOLDOWN_MS = 6 * 3600000
 const IDEM_RETENTION_MS = 7 * 86400000
-const IDEM_MAX_ROWS = 10000
+// 42 号补丁（25 号方案 B1）：保留窗口 = 7 天或 2 万行取大——删除条件为「超 7 天 且 不在最新 N 行内」，
+// 7 天内超过 N 行时整窗保留，7 天不足 N 行时保留最新 N 行（idempotency / event_outbox delivered 同口径）。
+const IDEM_MAX_ROWS = 20000
+const OUTBOX_RETENTION_MS = 7 * 86400000
+const OUTBOX_MAX_ROWS = 20000
+// audit_tail 单次窗口（字节）：24 号补丁前为 256KB 尾读，仅能看约 630 行；加大到 1MB 并支持 before_bytes 游标翻页。
+const AUDIT_TAIL_WINDOW_BYTES = 1024 * 1024
 
 const DOMAIN_WHITELIST = new Set([
   'vuln', 'asset', 'endpoint', 'task', 'fact', 'know', 'scope', 'approval',
@@ -740,7 +746,7 @@ const BUS_MANIFEST = {
       idempotent: 'auto', idempotent_fields: ['force'],
       events: [], invariants: [],
       side_effects: { rows: true, files: true }, timeout_ms: 60000,
-      agent_note: '立即执行保留窗口清理：幂等表 LRU（7 天/10000 条）+ 事件文件轮转检查。距上次清理 <6h 且未 force 则跳过。',
+      agent_note: '立即执行保留窗口清理（42 号）：幂等表与 outbox delivered 行按「7 天或 2 万行取大」裁剪，subscription 级联清理，事件文件轮转检查。距上次清理 <6h 且未 force 则跳过。',
       deprecated: false,
     },
   },
@@ -757,9 +763,10 @@ const BUS_MANIFEST = {
         n: { type: 'integer', maximum: 500 }, domain: { type: 'string' }, cmd: { type: 'string' },
         actor: { type: 'string' }, session_id: { type: 'string' }, operator: { type: 'string' },
         since: { type: 'integer' }, until: { type: 'integer' }, offset: { type: 'integer', minimum: 0 },
+        before_bytes: { type: 'integer', minimum: 0 },
       }, additionalProperties: false },
       predicates: [],
-      agent_note: '统一审计尾读（过滤维度=宪法 §九），含 v4 legacy 行映射。',
+      agent_note: '统一审计尾读（过滤维度=宪法 §九），含 v4 legacy 行映射；42 号起单窗 1MB 并支持 before_bytes 字节游标翻更早（返回 next_before）。',
     },
     events_tail: {
       actor: ['dashboard', 'human', 'model'],
@@ -1441,7 +1448,10 @@ const now = () => clock()
     }
     if (res && Array.isArray(res.rows)) {
       const total = Number.isInteger(res.total) ? res.total : res.rows.length
-      return { ok: true, domain, query: name, rows: res.rows.slice(offset, offset + limit), total, limit, offset, ...(res.meta || {}) }
+      // 42 号补丁（25 号方案 B1）：处理器已自行分页（SQL LIMIT/OFFSET）时必须标记 meta.paged，
+      // 否则总线二次切片会让第 2 页恒空（实缺陷：asset_list offset=3 limit=3 曾返回 0 行）。
+      const paged = res.meta && res.meta.paged === true
+      return { ok: true, domain, query: name, rows: paged ? res.rows : res.rows.slice(offset, offset + limit), total, limit, offset, ...(res.meta || {}) }
     }
     return { ok: true, domain, query: name, data: res }
   }
@@ -1602,17 +1612,28 @@ const now = () => clock()
       const force = args.force === true
       const lastAt = metaGet('prune.last_at')
       if (!force && lastAt !== null && now() - Number(JSON.parse(lastAt)) < PRUNE_COOLDOWN_MS) {
-        return { data: { skipped: true, reason: '距上次清理 <6h（force 可跳过）', idempotency_pruned: 0, events_files_rotated: 0, audit_bytes: 0 } }
+        return { data: { skipped: true, reason: '距上次清理 <6h（force 可跳过）', idempotency_pruned: 0, outbox_pruned: 0, subscriptions_pruned: 0, events_files_rotated: 0, audit_bytes: 0 } }
       }
       let pruned = 0
       try {
+        // 7 天或 2 万行取大：仅删除「超 7 天 且 不在最新 2 万行内」的行。
         const cutoff = now() - IDEM_RETENTION_MS
-        const r1 = db.prepare(`DELETE FROM idempotency WHERE created_at < ?`).run(cutoff)
+        const r1 = db.prepare(`DELETE FROM idempotency WHERE created_at < ? AND idempotency_key NOT IN (
+          SELECT idempotency_key FROM idempotency ORDER BY created_at DESC LIMIT ?)`).run(cutoff, IDEM_MAX_ROWS)
         pruned += r1.changes
-        const r2 = db.prepare(`DELETE FROM idempotency WHERE idempotency_key IN (
-          SELECT idempotency_key FROM idempotency ORDER BY created_at DESC LIMIT -1 OFFSET ?)`).run(IDEM_MAX_ROWS)
-        pruned += r2.changes
       } catch (e) { log(`幂等清理失败: ${e?.message}`) }
+      let outboxPruned = 0
+      let subsPruned = 0
+      try {
+        // delivered 行同口径清理（pending/dead_letter 保留：前者待投递、后者待归因）。
+        const ocut = now() - OUTBOX_RETENTION_MS
+        const ro = db.prepare(`DELETE FROM event_outbox WHERE status='delivered' AND created_at < ? AND event_id NOT IN (
+          SELECT event_id FROM event_outbox WHERE status='delivered' ORDER BY created_at DESC LIMIT ?)`).run(ocut, OUTBOX_MAX_ROWS)
+        outboxPruned += ro.changes
+        // bus_subscription 级联：外键引用已删事件的订阅行（含历史孤儿）一并清理。
+        const rs = db.prepare(`DELETE FROM bus_subscription WHERE event_id NOT IN (SELECT event_id FROM event_outbox)`).run()
+        subsPruned += rs.changes
+      } catch (e) { log(`outbox/subscription 清理失败: ${e?.message}`) }
       let rotated = 0
       try {
         for (const f of fs.readdirSync(eventsDir).filter((x) => x.endsWith('.jsonl'))) {
@@ -1629,7 +1650,7 @@ const now = () => clock()
       let auditBytes = 0
       try { auditBytes = fs.statSync(auditFile).size } catch { /* noop */ }
       metaSet('prune.last_at', now())
-      return { data: { skipped: false, idempotency_pruned: pruned, events_files_rotated: rotated, audit_bytes: auditBytes } }
+      return { data: { skipped: false, idempotency_pruned: pruned, outbox_pruned: outboxPruned, subscriptions_pruned: subsPruned, events_files_rotated: rotated, audit_bytes: auditBytes } }
     },
     queries: {
       bus_status: async (args) => {
@@ -1650,13 +1671,16 @@ const now = () => clock()
             eventLines += fs.readFileSync(path.join(eventsDir, f), 'utf8').split('\n').filter(Boolean).length
           }
         } catch { /* noop */ }
-        let outbox = { pending: 0, dead_letter: 0, max_lag_ms: null, last_delivered_at: null }
+        let outbox = { pending: 0, dead_letter: 0, delivered: 0, oldest_delivered_at: null, max_lag_ms: null, last_delivered_at: null }
         try {
           const rows = plainAll(db.prepare(`SELECT status, COUNT(*) AS n FROM event_outbox GROUP BY status`).all())
           for (const r of rows) {
             if (r.status === 'pending') outbox.pending = r.n
             if (r.status === 'dead_letter') outbox.dead_letter = r.n
+            if (r.status === 'delivered') outbox.delivered = r.n
           }
+          const oldest = plain(db.prepare(`SELECT MIN(created_at) AS oc FROM event_outbox WHERE status='delivered'`).get())
+          outbox.oldest_delivered_at = oldest?.oc || null
           const lag = plain(db.prepare(`SELECT MAX(producer_ts) AS maxp FROM event_outbox WHERE status='pending'`).get())
           if (lag?.maxp) outbox.max_lag_ms = now() - lag.maxp
           const last = plain(db.prepare(`SELECT MAX(consumed_at) AS lc FROM bus_subscription`).get())
@@ -1716,15 +1740,21 @@ const now = () => clock()
       audit_tail: async (args) => {
         const n = Number.isInteger(args.n) ? Math.min(args.n, 500) : 50
         const offset = Number.isInteger(args.offset) ? Math.max(0, args.offset) : 0
+        // 42 号：before_bytes 为排他上界（缺省=文件尾）；单窗 1MB；返回 next_before 供「加载更早」翻页（null=已到文件头）。
+        const beforeBytes = Number.isInteger(args.before_bytes) && args.before_bytes > 0 ? args.before_bytes : null
         let raw = ''
+        let nextBefore = null
         try {
           const st = fs.statSync(auditFile)
-          const size = st.size
-          const buf = Buffer.alloc(Math.min(size, 256 * 1024))
-          const fd = fs.openSync(auditFile, 'r')
-          fs.readSync(fd, buf, 0, buf.length, Math.max(0, size - buf.length))
-          fs.closeSync(fd)
-          raw = buf.toString('utf8')
+          const end = beforeBytes !== null ? Math.min(beforeBytes, st.size) : st.size
+          const start = Math.max(0, end - AUDIT_TAIL_WINDOW_BYTES)
+          if (end > start) {
+            const buf = Buffer.alloc(end - start)
+            const fd = fs.openSync(auditFile, 'r')
+            try { fs.readSync(fd, buf, 0, buf.length, start) } finally { fs.closeSync(fd) }
+            raw = buf.toString('utf8')
+          }
+          nextBefore = start > 0 ? start : null
         } catch { raw = '' }
         let lines = raw.split('\n').filter(Boolean)
         if (lines[0] && !lines[0].startsWith('{')) lines = lines.slice(1)
@@ -1750,7 +1780,7 @@ const now = () => clock()
         })
         const total = filtered.length
         const rows = filtered.reverse().slice(offset, offset + n)
-        return { rows, total, limit: n, offset }
+        return { rows, total, limit: n, offset, meta: { next_before: nextBefore, window_bytes: AUDIT_TAIL_WINDOW_BYTES, paged: true } }
       },
       events_tail: async (args) => {
         const d = String(args.domain || '')
@@ -1765,7 +1795,7 @@ const now = () => clock()
         } catch { rows = [] }
         const filtered = args.name ? rows.filter((r) => r.name === args.name) : rows
         const total = filtered.length
-        return { rows: filtered.slice(offset, offset + n), total, limit: n, offset }
+        return { rows: filtered.slice(offset, offset + n), total, limit: n, offset, meta: { paged: true } }
       },
     },
     invariants: {},

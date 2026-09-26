@@ -454,7 +454,7 @@ function makeHandlers(opts) {
       const filters = { task_id: args.task_id, type: args.type || '', status: args.status || '', run_id: args.run_id || '' }
       const total = repo.countNodesWhere(filters)
       const rows = repo.listNodesWhere(filters, args.limit || 200, args.offset || 0)
-      return { rows, total }
+      return { rows, total, meta: { paged: true } }
     },
     fgs_next: async (args, repo) => {
       const candidates = repo.nextStepCandidates(Number(args.task_id), 50)

@@ -84,6 +84,8 @@ function createRepo(db, dataDir) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_auth ON endpoints(auth_required)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_auth_state ON endpoints(auth_state)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_should_auth ON endpoints(should_auth)`)
+  // 42 号补丁（25 号方案 B2）：默认排序索引。
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_last_seen ON endpoints(last_seen DESC)`)
 
   const pipelineDir = (program) => {
     const d = path.join(dataDir, 'pipeline', program)
@@ -105,6 +107,42 @@ function createRepo(db, dataDir) {
     const tmp = `${file}.tmp.${process.pid}.${Date.now()}`
     fs.writeFileSync(tmp, lines.length ? lines.join('\n') + '\n' : '')
     fs.renameSync(tmp, file)
+  }
+
+  // 42 号补丁（25 号方案 B1）：追加日志改 O_APPEND 分块写（≤3.5KB/次，Linux PIPE_BUF 内单写原子），
+  // 避免「整读 6MB param-seen → 拼接 → 整流重写」的 O(n) 写放大；重写（消费队列）仍走原子替换。
+  function appendLinesAtomic(file, lines) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    let chunk = []
+    let bytes = 0
+    const flush = () => {
+      if (!chunk.length) return
+      fs.appendFileSync(file, chunk.join('\n') + '\n')
+      chunk = []
+      bytes = 0
+    }
+    for (const raw of lines) {
+      const s = String(raw == null ? '' : raw).trim()
+      if (!s) continue
+      const b = Buffer.byteLength(s) + 1
+      if (bytes + b > 3500) flush()
+      chunk.push(s)
+      bytes += b
+    }
+    flush()
+  }
+
+  // 队列/已见行数按 mtime+size 缓存（旧实现每次 queue_status 整读两文件）。
+  const lineCountCache = new Map()
+  function countLinesCached(file) {
+    try {
+      const st = fs.statSync(file)
+      const hit = lineCountCache.get(file)
+      if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.n
+      const n = fs.readFileSync(file, 'utf8').split('\n').filter((s) => s.trim()).length
+      lineCountCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, n })
+      return n
+    } catch { return 0 }
   }
 
   function readMeta(program) {
@@ -237,6 +275,21 @@ function createRepo(db, dataDir) {
       return db.prepare(`SELECT COUNT(*) AS n FROM endpoints WHERE ${where}`).get(...args).n
     },
 
+    // 42 号补丁（25 号方案 B1）：覆盖账本紧凑分页/参数率聚合——绕开 endpoint_list 的 500 行上限。
+    listEndpointLitePage(filters, limit, offset) {
+      const { where, args } = buildEpWhere(filters)
+      const sql = `SELECT host, path, params, auth_state, last_seen FROM endpoints WHERE ${where} ORDER BY host, path LIMIT ? OFFSET ?`
+      return db.prepare(sql).all(...args, Math.min(Number(limit) || 2000, 2000), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
+    },
+
+    paramStats(filters) {
+      const { where, args } = buildEpWhere(filters)
+      const t = db.prepare(`SELECT COUNT(*) AS total,
+        SUM(CASE WHEN params IS NOT NULL AND params != 'null' AND params != '' THEN 1 ELSE 0 END) AS with_params
+        FROM endpoints WHERE ${where}`).get(...args)
+      return { total: t.total || 0, with_params: t.with_params || 0 }
+    },
+
     hostsAggregate(filters, limit, offset) {
       const conds = []
       const args = []
@@ -295,24 +348,24 @@ function createRepo(db, dataDir) {
     readSeen(program) { return readLines(seenPath(program)) },
 
     appendQueueAtomic(program, urls) {
-      const cur = readLines(queuePath(program))
-      const merged = [...cur, ...urls]
-      writeLinesAtomic(queuePath(program), merged)
+      // 42 号补丁：追加写不再整读整写（返回 appended；行数经 queue_stat 的 mtime 缓存查询）。
+      appendLinesAtomic(queuePath(program), urls)
+      lineCountCache.delete(queuePath(program))
       const meta = readMeta(program)
       meta.last_enqueued_at = Date.now()
       writeMeta(program, meta)
-      return { queue_lines: merged.length }
+      return { queue_lines: null, appended: urls.length }
     },
 
     appendSeenAtomic(program, urls) {
-      const cur = readLines(seenPath(program))
-      const merged = [...cur, ...urls]
-      writeLinesAtomic(seenPath(program), merged)
-      return { seen_lines: merged.length }
+      appendLinesAtomic(seenPath(program), urls)
+      lineCountCache.delete(seenPath(program))
+      return { seen_lines: null, appended: urls.length }
     },
 
     rewriteQueueAtomic(program, remainingUrls) {
       writeLinesAtomic(queuePath(program), remainingUrls)
+      lineCountCache.delete(queuePath(program))
       const meta = readMeta(program)
       meta.last_consumed_at = Date.now()
       writeMeta(program, meta)
@@ -321,8 +374,8 @@ function createRepo(db, dataDir) {
 
     queueStat(program) {
       return {
-        queue_lines: readLines(queuePath(program)).length,
-        seen_lines: readLines(seenPath(program)).length,
+        queue_lines: countLinesCached(queuePath(program)),
+        seen_lines: countLinesCached(seenPath(program)),
         ...readMeta(program),
       }
     },

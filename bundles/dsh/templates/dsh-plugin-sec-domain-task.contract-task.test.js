@@ -183,7 +183,7 @@ test('21 §3-1: derive_intent 落假设任务草稿（objective 含 oracle 纪�
   assert.equal(r3.error.code, 'E_ACTOR_FORBIDDEN')
 })
 
-test('40 号补丁：运行级失败重开策略——reopen_after 过后 derive_intent 可重试（非永久去重）', async () => {
+test('41 号补丁：运行级失败重开策略——reopen_after 过后 derive_intent 可重试（非永久去重）', async () => {
   const { bus } = makeEnv()
   const db = bus._internal.db()
   const args = { program_id: 'test-src', kind: 'hypothesis', host: 'a.example.com', path: '/u', vuln_class: 'idor', param: 'id', level: 'H2' }

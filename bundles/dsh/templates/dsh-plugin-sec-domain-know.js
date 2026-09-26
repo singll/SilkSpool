@@ -2499,14 +2499,14 @@ function makeHandlers(opts) {
     },
     // Q16（L1）：学习 episode 投影（同 where 构造器保证 rows/total 口径一致）
     know_episode_list: async (args, repo) => {
-      return repo.listEpisodes({ program_id: args.program_id || '', outcome: args.outcome || '', campaign_id: args.campaign_id || '', limit: args.limit ?? 50, offset: args.offset ?? 0 })
+      return { ...repo.listEpisodes({ program_id: args.program_id || '', outcome: args.outcome || '', campaign_id: args.campaign_id || '', limit: args.limit ?? 50, offset: args.offset ?? 0 }), meta: { paged: true } }
     },
     // Q17/Q18（L2）：候选知识版本投影
     know_revision_list: async (args, repo) => {
-      return repo.listRevisions({
+      return { ...repo.listRevisions({
         artifact_kind: args.artifact_kind || '', artifact_id: args.artifact_id || '', status: args.status || '',
         needs_revalidate: args.needs_revalidate ?? null, limit: args.limit ?? 50, offset: args.offset ?? 0,
-      })
+      }), meta: { paged: true } }
     },
     know_revision_get: async (args, repo) => {
       const r = repo.getRevision(args.revision_id)
@@ -2515,11 +2515,11 @@ function makeHandlers(opts) {
     },
     // Q19/Q20（L4）：发布账本与版本链投影
     know_release_list: async (args, repo) => {
-      return repo.listReleases({
+      return { ...repo.listReleases({
         artifact_kind: args.artifact_kind || '', artifact_id: args.artifact_id || '',
         scope_type: args.scope_type || '', scope_id: args.scope_id !== undefined ? args.scope_id : null,
         status: args.status || '', limit: args.limit ?? 50, offset: args.offset ?? 0,
-      })
+      }), meta: { paged: true } }
     },
     know_revision_history: async (args, repo) => {
       const revs = repo.listRevisions({ artifact_kind: args.artifact_kind, artifact_id: args.artifact_id, limit: 500 }).rows

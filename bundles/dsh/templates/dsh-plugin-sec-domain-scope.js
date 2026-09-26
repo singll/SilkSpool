@@ -704,7 +704,7 @@ function makeHandlers(opts) {
       else rows.sort((a, b) => String(a.id).localeCompare(String(b.id)))
       const offset = Number(args.offset) || 0
       const limit = Math.min(Number(args.limit) || 50, 500)
-      return { rows: rows.slice(offset, offset + limit).map((r) => ({ id: r.id, platform: r.platform, status: r.status, max_risk: r.max_risk, workspace_id: r.workspace_id || null, workspace_path: r.workspace_path || null, created_at: r.created_at, updated_at: r.updated_at })), total }
+      return { rows: rows.slice(offset, offset + limit).map((r) => ({ id: r.id, platform: r.platform, status: r.status, max_risk: r.max_risk, workspace_id: r.workspace_id || null, workspace_path: r.workspace_path || null, created_at: r.created_at, updated_at: r.updated_at })), total, meta: { paged: true } }
     },
     cred_query: async (args, repo) => {
       const rows = repo.listCredsWhere({ program_id: args.program_id || '', host: args.host || '', limit: args.limit || 50 })

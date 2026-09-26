@@ -182,7 +182,7 @@
 | # | 查询 | 语义 | 参数 | 返回 |
 |---|---|---|---|---|
 | Q1 | `eval_stats` | 活评测聚合（替代 v4 evalStats + 报告摘要；L3 起按 finding_id 取最新有效裁决**去重**，label_source 来源级别分列） | 无 | `{live: {total, unique_findings, duplicates_collapsed, by_type: {<vuln_type>: {confirmed, false_positive, fp_rate}}, by_label_source: {<label_source>: n}}, last_fp: {ts, model, accuracy_off/on, fp_rate_off/on, gain} \| null, last_contract: {ts, mode, pass, total, pass_rate, failures} \| null, last_range: {ts, detection_rate} \| null, last_candidate: {ts, verdict, trial_id, candidate, dataset:{id,visibility}, totals, visibility} \| null}` |
-| Q2 | `eval_cases` | 活评测集用例列表 | verdict(enum)/vuln_type(string)/visibility(enum dev\|hidden)/limit(50)/offset(0) | `{rows, total, limit, offset}`——rows 行=eval-live.jsonl 行；**42 号核对：处理器不自行分页**（hidden 可见域裁剪在处理器内完成，返回过滤后全量），由总线按 `offset/limit` 切片（offset 不丢失）——属分页协定下未标记 `meta.paged` 的合法路径 |
+| Q2 | `eval_cases` | 活评测集用例列表 | verdict(enum)/vuln_type(string)/visibility(enum dev\|hidden)/limit(50)/offset(0) | `{rows, total, limit, offset}`——rows 行=eval-live.jsonl 行；**42 号：hidden 可见域裁剪在处理器内完成后按 offset/limit 分页**（缺省 50、上限 500，标记 `meta.paged`，不再返回全量靠总线切片） |
 | Q3 | `eval_reports` | 评测报告文件列表 | kind(enum fp/contract/range/candidate)/limit(总线默认 50、schema 上限 100) | `{rows: [{kind, file, ts, visibility}], total}` |
 | Q4 | `eval_datasets` | 评测数据集列表（L3；分组键 program/tech_stack/case_family + 冻结 digest + 可见性） | visibility(enum dev\|hidden)/limit(50) | `{rows: [{dataset_id, kind, visibility, case_count, groups, frozen_at, dataset_digest}], total}`——**不返回用例内容与答案** |
 
@@ -436,4 +436,4 @@ export const repositoryV1 = {
 
 契约：eval 30/30 全绿（新增 1 例：三指标口径与胶囊门）。
 
-> 2026-09-26 42 号补丁核对：`eval_cases` 未改为处理器分页（代码核实）——hidden 可见域裁剪在处理器内完成，返回过滤后全量，由总线按 `offset/limit` 切片（offset 不丢失），属分页协定下未标记 `meta.paged` 的合法路径；eval 契约维持 30/30。若后续外置过滤进 SQL，须随分页协定补 `meta.paged` 与第 2 页回归。
+> 2026-09-26 42 号补丁：`eval_cases` 改为处理器内分页（hidden 可见域裁剪完成后 `rows.slice(offset, offset+limit)`，缺省 50、上限 500），返回 `meta.paged` 防总线二次切片；eval 契约维持 30/30。

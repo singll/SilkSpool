@@ -312,21 +312,20 @@ function createRepo(db) {
       return db.prepare(`UPDATE campaigns SET ${sets.join(', ')} WHERE id = ?${where}`).run(...args).changes
     },
     listCampaignsWhere({ status = '', program_id = '' } = {}, limit, offset) {
+      // 42 号补丁：program_id 过滤下沉 SQL（旧实现先 LIMIT 再 JS 过滤，第 2 页可能为空）。
       let where = '1=1'
       const args = []
       if (status) { where += ' AND status = ?'; args.push(String(status)) }
-      const rows = db.prepare(`SELECT * FROM campaigns WHERE ${where} ORDER BY last_tick_at IS NOT NULL, last_tick_at ASC, id ASC LIMIT ? OFFSET ?`)
+      if (program_id) { where += ' AND EXISTS (SELECT 1 FROM json_each(campaigns.program_ids) AS je WHERE je.value = ?)'; args.push(String(program_id)) }
+      return db.prepare(`SELECT * FROM campaigns WHERE ${where} ORDER BY last_tick_at IS NOT NULL, last_tick_at ASC, id ASC LIMIT ? OFFSET ?`)
         .all(...args, Math.min(Number(limit) || 50, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
-      if (!program_id) return rows
-      return rows.filter((c) => { try { return (JSON.parse(c.program_ids) || []).includes(String(program_id)) } catch { return false } })
     },
     countCampaignsWhere({ status = '', program_id = '' } = {}) {
       let where = '1=1'
       const args = []
       if (status) { where += ' AND status = ?'; args.push(String(status)) }
-      const n = db.prepare(`SELECT COUNT(*) AS n FROM campaigns WHERE ${where}`).get(...args).n
-      if (!program_id) return n
-      return repo.listCampaignsWhere({ status }, 500, 0).filter((c) => { try { return (JSON.parse(c.program_ids) || []).includes(String(program_id)) } catch { return false } }).length
+      if (program_id) { where += ' AND EXISTS (SELECT 1 FROM json_each(campaigns.program_ids) AS je WHERE je.value = ?)'; args.push(String(program_id)) }
+      return db.prepare(`SELECT COUNT(*) AS n FROM campaigns WHERE ${where}`).get(...args).n
     },
     // 34 号补丁：域级运行时配置 KV（预算闸在线可调；env 仅作初始值）
     settingGet(key) {
@@ -409,7 +408,7 @@ function createRepo(db) {
     },
     upsertStrategy(key, patch) {
       const now = repo.now()
-      // 40 号补丁：INSERT 也要落 last_task_id（旧实现硬编码 NULL，去重回显 task_id 恒 null）
+      // 41 号补丁：INSERT 也要落 last_task_id（旧实现硬编码 NULL，去重回显 task_id 恒 null）
       db.prepare(`INSERT INTO strategy_dedupe (strategy_key, program_id, first_seen, last_seen, fails, blacklisted, last_task_id, reopen_after)
         VALUES (?, ?, ?, ?, 0, 0, ?, NULL)
         ON CONFLICT (strategy_key) DO UPDATE SET last_seen = ?, last_task_id = COALESCE(?, last_task_id), reopen_after = NULL`)
@@ -467,15 +466,24 @@ function createRepo(db) {
       return null
     },
     scheduledTasksAgg() {
+      // 42 号补丁（25 号方案 B1）：4 个关联子查询改为一次 LEFT JOIN 聚合 + LIMIT 500（旧实现每行 4 次子查询、无上限）。
       return db.prepare(
         `SELECT t.*,
-           (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id) AS run_count,
-           (SELECT COUNT(*) FROM task_runs r WHERE r.task_id = t.id AND r.ok = 0) AS fail_count,
-           (SELECT r.ok FROM task_runs r WHERE r.task_id = t.id ORDER BY r.id DESC LIMIT 1) AS last_ok,
-           (SELECT r.note FROM task_runs r WHERE r.task_id = t.id ORDER BY r.id DESC LIMIT 1) AS last_note
+           COALESCE(agg.run_count, 0) AS run_count,
+           COALESCE(agg.fail_count, 0) AS fail_count,
+           last.ok AS last_ok,
+           last.note AS last_note
          FROM tasks t
+         LEFT JOIN (
+           SELECT task_id, COUNT(*) AS run_count, SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS fail_count
+           FROM task_runs GROUP BY task_id
+         ) agg ON agg.task_id = t.id
+         LEFT JOIN task_runs last ON last.id = (
+           SELECT r2.id FROM task_runs r2 WHERE r2.task_id = t.id ORDER BY r2.id DESC LIMIT 1
+         )
          WHERE t.schedule_kind = 'interval' AND t.status NOT IN ('done', 'failed', 'cancelled')
-         ORDER BY t.next_run_at ASC`
+         ORDER BY t.next_run_at ASC
+         LIMIT 500`
       ).all().map((r) => ({ ...r }))
     },
     scheduledProgress(task, at) { return scheduledProgress(db, task, at) },

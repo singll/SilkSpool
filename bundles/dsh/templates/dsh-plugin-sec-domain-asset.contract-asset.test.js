@@ -488,3 +488,19 @@ test('H3: program_id 未授权 → E_INVARIANT（scope 自查 fail-closed）', a
   assert.equal(r.ok, false)
   assert.equal(r.error.code, 'E_INVARIANT')
 })
+
+// ---- 42 号补丁（25 号方案 B1）：分页回归——处理器已分页时总线不得二次切片（第 2 页恒空缺陷） ----
+test('42 号补丁: asset_list 第 2 页非空（总线二次切片修复）', async () => {
+  const { bus } = makeEnv()
+  for (const h of ['p1.example.com', 'p2.example.com', 'p3.example.com']) {
+    const r = await bus.dispatch('asset', 'upsert', { host: h, type: 'web', program_id: 'test-src' }, { actor: 'model' })
+    assert.equal(r.ok, true)
+  }
+  const p1 = await bus.query('asset', 'list', { program_id: 'test-src', limit: 2, offset: 0 }, { actor: 'model' })
+  assert.equal(p1.ok, true)
+  assert.equal(p1.rows.length, 2)
+  const p2 = await bus.query('asset', 'list', { program_id: 'test-src', limit: 2, offset: 2 }, { actor: 'model' })
+  assert.equal(p2.ok, true)
+  assert.equal(p2.rows.length, 1, '第 2 页应有 1 行（offset 不得被二次切片吞掉）')
+  assert.equal(p2.total, 3)
+})

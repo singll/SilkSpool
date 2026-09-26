@@ -212,6 +212,24 @@ export const ENDPOINT_MANIFEST = {
       predicates: ['program', 'auth'],
       agent_note: '检索接口端点：host 精确 + path_like 模糊 + method/program/auth_required/auth_state/should_auth 过滤（*=\'none\' 筛未标注）。',
     },
+    endpoint_lite_page: {
+      actor: ['model', 'dashboard', 'human', 'reactor', 'script'],
+      params: schema({
+        program_id: str({ default: '' }),
+        auth_state: en([...AUTH_STATES, 'none', ''], { default: '' }),
+        should_auth: en([...SHOULD_AUTH, 'none', ''], { default: '' }),
+        limit: int({ minimum: 1, maximum: 2000 }),
+        offset: int({ minimum: 0 }),
+      }, []),
+      predicates: ['program', 'auth'],
+      agent_note: '（覆盖账本用）端点紧凑分页：host/path/params/auth_state，单页 ≤2000，配合 offset 全量遍历（绕过 endpoint_list 500 上限）。',
+    },
+    endpoint_param_stats: {
+      actor: ['model', 'dashboard', 'human', 'reactor'],
+      params: schema({ program_id: str({ default: '' }) }, []),
+      predicates: ['program'],
+      agent_note: '（覆盖账本用）端点参数率聚合：total/with_params（SQL 计数，不物化行）。',
+    },
     endpoint_auth_summary: {
       actor: ['model', 'dashboard', 'human', 'reactor'],
       params: schema({
@@ -681,13 +699,22 @@ function makeHandlers(opts) {
       const filters = { host: args.host || '', path_like: args.path_like || '', method: args.method || '', program_id: args.program_id || '', auth_required: args.auth_required || '', auth_state: args.auth_state || '', should_auth: args.should_auth || '' }
       const rows = repo.listEndpointsWhere(filters, { sort: args.sort || 'last_seen', dir: args.dir || 'desc' }, args.limit, args.offset)
       const total = repo.countEndpointsWhere(filters)
-      return { rows, total }
+      return { rows, total, meta: { paged: true } }
+    },
+    endpoint_lite_page: async (args, repo) => {
+      const filters = { program_id: args.program_id || '', auth_state: args.auth_state || '', should_auth: args.should_auth || '' }
+      const rows = repo.listEndpointLitePage(filters, args.limit, args.offset)
+      const total = repo.countEndpointsWhere(filters)
+      return { rows, total, meta: { paged: true } }
+    },
+    endpoint_param_stats: async (args, repo) => {
+      return repo.paramStats({ program_id: args.program_id || '' })
     },
     endpoint_auth_summary: async (args, repo) => {
       return repo.authStateSummary({ program_id: args.program_id || '', host: args.host || '' })
     },
     endpoint_hosts: async (args, repo) => {
-      return repo.hostsAggregate({ path_like: args.path_like || '', program_id: args.program_id || '' }, args.limit, args.offset)
+      return { ...repo.hostsAggregate({ path_like: args.path_like || '', program_id: args.program_id || '' }, args.limit, args.offset), meta: { paged: true } }
     },
     endpoint_matrix: async (args, repo) => {
       const rows = repo.matrixAggregate({ program_id: args.program_id || '', host: args.host || '' }, args.min_roles ?? 2)

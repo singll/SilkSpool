@@ -80,6 +80,9 @@ function createRepo(db) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_assets_level_score ON assets(level, score DESC)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_assets_state ON assets(state)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_fp_host ON fingerprints(host)`)
+  // 42 号补丁（25 号方案 B2）：列表默认排序与深翻页索引（旧实现 ORDER BY last_seen/score 全表排序）。
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_assets_last_seen ON assets(last_seen DESC)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_assets_score ON assets(score DESC)`)
 
   const repo = {
     invalidateOverview() { _ovCache = null },
@@ -109,12 +112,14 @@ function createRepo(db) {
 
     // 触活：刷 last_seen，source/program_id 就地补空不覆盖（评级列本动词不可写）
     touchAsset(host, type, source, program_id, ts) {
-      db.prepare(`
+      const r = db.prepare(`
         UPDATE assets SET last_seen = ?,
           source = CASE WHEN ? != '' THEN ? ELSE source END,
           program_id = CASE WHEN ? IS NOT NULL THEN ? ELSE program_id END
         WHERE host = ? AND type = ?
       `).run(ts, String(source || ''), String(source || ''), program_id ?? null, program_id ?? null, String(host), String(type || 'host'))
+      // 42 号补丁（25 号方案 B2）：触活也失效 overview 缓存（旧实现 last_seen 变了但缓存最多陈旧 25s）。
+      if (r.changes) _ovCache = null
       return { created: false, row: repo.getAsset(host, type) }
     },
 
@@ -149,6 +154,19 @@ function createRepo(db) {
       return db.prepare(`SELECT COUNT(*) AS n FROM assets WHERE ${where}`).get(...args).n
     },
 
+    // 42 号补丁（25 号方案 B1）：覆盖账本紧凑分页/根域聚合——绕开 asset_list 的 500 行上限。
+    listAssetHostsPage(filters, limit, offset) {
+      const { where, args } = buildAssetWhere(filters)
+      const sql = `SELECT host, root FROM assets WHERE ${where} ORDER BY host LIMIT ? OFFSET ?`
+      return db.prepare(sql).all(...args, Math.min(Number(limit) || 2000, 2000), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
+    },
+
+    rootsAggregate(filters) {
+      const { where, args } = buildAssetWhere(filters)
+      return db.prepare(`SELECT root, COUNT(*) AS host_count, MAX(score) AS max_score, MAX(last_seen) AS last_seen
+        FROM assets WHERE ${where} AND root IS NOT NULL AND root != '' GROUP BY root ORDER BY host_count DESC LIMIT 5000`).all(...args).map((r) => ({ ...r }))
+    },
+
     // 深挖队列（03-asset §1.4 固化查询）：level IN (S,A,B) + accept≠none + 非 dead，按 score 降序
     deepQueue(program_id, limit, offset) {
       const conds = ["level IN ('S','A','B')", "(accept IS NULL OR accept != 'none')", "(state IS NULL OR state != 'dead')"]
@@ -164,7 +182,8 @@ function createRepo(db) {
     },
 
     overviewAggregate() {
-      if (_ovCache && Date.now() - _ovCache.at < 25000) return _ovCache.data
+      // 42 号补丁：TTL 25s → 60s（旧值小于 UI 30s 轮询周期，缓存形同虚设）。
+      if (_ovCache && Date.now() - _ovCache.at < 60000) return _ovCache.data
       const hasTable = (t) => db.prepare("SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name=?").get(t) !== undefined
       const hasEp = hasTable('endpoints')
       const hasFin = hasTable('findings')

@@ -91,6 +91,8 @@ function createRepo(db) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_pool ON findings(noise, status)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_claim ON findings(claimed_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_external ON findings(external_id)`)
+  // 42 号补丁（25 号方案 B2）：默认 sort=created_at 索引。
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_created ON findings(created_at DESC)`)
 
   const stmts = {
     getFinding: db.prepare('SELECT * FROM findings WHERE id = ?'),
@@ -181,10 +183,19 @@ function createRepo(db) {
       `).run(String(claimer), nowMs, nowMs, Number(id), cutoff)
       return { ok: r.changes === 1, previous: before }
     },
-    listFindingsWhere(pred, order) {
+    listFindingsWhere(pred, order, limit, offset) {
       const { where, args } = buildWhere(pred)
-      const sql = `SELECT ${LIST_COLS} FROM findings WHERE ${where} ORDER BY ${orderClause(order)}`
-      return db.prepare(sql).all(...args).map((r) => ({ ...r }))
+      // 42 号补丁（25 号方案 B1）：SQL 层落 LIMIT/OFFSET——旧实现全量物化由总线事后切片。
+      const limitN = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Math.min(Number(limit), 500) : null
+      const offsetN = Math.max(0, Number(offset) || 0)
+      const tail = limitN !== null ? ' LIMIT ? OFFSET ?' : ''
+      const sql = `SELECT ${LIST_COLS} FROM findings WHERE ${where} ORDER BY ${orderClause(order)}${tail}`
+      const params = limitN !== null ? [...args, limitN, offsetN] : args
+      return db.prepare(sql).all(...params).map((r) => ({ ...r }))
+    },
+    countFindingsWhere(pred) {
+      const { where, args } = buildWhere(pred)
+      return db.prepare(`SELECT COUNT(*) AS n FROM findings WHERE ${where}`).get(...args).n
     },
     // 21 号方案 §4-5：eval 投影数据源（含 evidence 判定列——只服务 vuln_evidence_flags 查询，不进入列表视图）
     listFindingsWithEvidence({ program_id = '', limit = 5000 } = {}) {
@@ -193,7 +204,7 @@ function createRepo(db) {
       return db.prepare(`SELECT id, noise, severity, status, vuln_type, created_at, program_id, evidence FROM findings ${where} ORDER BY id ASC LIMIT ?`)
         .all(...args, Math.min(Number(limit) || 5000, 5000)).map((r) => ({ ...r }))
     },
-    listCandidatePool(pred, order) {
+    listCandidatePool(pred, order, limit, offset) {
       const { where, args } = buildWhere({ ...pred, visibility: 'candidate' })
       const cutoff = Date.now() - 3600 * 1000
       const claimFilters = {
@@ -206,8 +217,13 @@ function createRepo(db) {
       const claimFilter = Object.prototype.hasOwnProperty.call(claimFilters, pred.claim_state)
         ? claimFilters[pred.claim_state]
         : claimFilters.available
-      const sql = `SELECT ${POOL_COLS} FROM findings WHERE ${where}${claimFilter} ORDER BY ${orderClause(order)}`
-      const rows = db.prepare(sql).all(...args).map((r) => ({ ...r }))
+      // 42 号补丁：候选池行集也落 LIMIT/OFFSET（池摘要计数不受分页影响）。
+      const limitN = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Math.min(Number(limit), 500) : null
+      const offsetN = Math.max(0, Number(offset) || 0)
+      const tail = limitN !== null ? ' LIMIT ? OFFSET ?' : ''
+      const sql = `SELECT ${POOL_COLS} FROM findings WHERE ${where}${claimFilter} ORDER BY ${orderClause(order)}${tail}`
+      const params = limitN !== null ? [...args, limitN, offsetN] : args
+      const rows = db.prepare(sql).all(...params).map((r) => ({ ...r }))
       const count = (extra) => db.prepare(`SELECT COUNT(*) AS n FROM findings WHERE ${where}${extra}`).get(...args).n
       const claimed = count(` AND claimed_by IS NOT NULL AND claimed_at >= ${cutoff}`)
       const stale = count(` AND claimed_by IS NOT NULL AND claimed_at < ${cutoff}`)
@@ -216,7 +232,8 @@ function createRepo(db) {
       const bySeverity = {}
       for (const s of bySevRows) bySeverity[s.severity || 'info'] = s.n
       const pool = { pending, claimed, stale, by_severity: bySeverity }
-      return { rows, pool }
+      const matchTotal = db.prepare(`SELECT COUNT(*) AS n FROM findings WHERE ${where}${claimFilter}`).get(...args).n
+      return { rows, pool, total: matchTotal }
     },
     // 候选池 TTL 治理：noise=1 且 status='new' 且 created_at < cutoff 置 ignored 出池。
     expireCandidates(cutoffMs, limit) {

@@ -10,6 +10,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
+import * as readline from 'node:readline'
 
 export const name = '@silksec/sec-backend-exec-file'
 export const version = '1.0.0'
@@ -134,12 +135,13 @@ function createRepo(dataDir) {
       fs.appendFileSync(path.join(flowsDir, `xray-${date}.jsonl`), String(line) + '\n')
       return path.join(flowsDir, `xray-${date}.jsonl`)
     },
-    // 21 号方案 §1-3：读回流文件（流量分流输入）。date 缺省=全部文件；limit 行数上限。
+    // 21 号方案 §1-3：读回流文件（流量分流输入）。date 缺省=最近文件优先（42 号：旧实现升序取最旧文件，
+    // 不传 date 时永远看到最早的历史流量）；limit 行数上限。
     readFlows({ date = '', limit = 500 } = {}) {
       try {
         const files = date
           ? [path.join(flowsDir, `xray-${String(date).replace(/[^0-9-]/g, '')}.jsonl`)].filter((f) => fs.existsSync(f))
-          : fs.readdirSync(flowsDir).filter((f) => f.endsWith('.jsonl')).sort().map((f) => path.join(flowsDir, f))
+          : fs.readdirSync(flowsDir).filter((f) => f.endsWith('.jsonl')).sort().reverse().map((f) => path.join(flowsDir, f))
         const out = []
         for (const f of files) {
           for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
@@ -158,6 +160,36 @@ function createRepo(dataDir) {
     },
     readFile(absPath) {
       try { return fs.readFileSync(absPath, 'utf8') } catch { return null }
+    },
+    // 42 号补丁（25 号方案 B1）：流式按行窗口读取——旧实现整读 stdout.log（大 run 数百 MB 爆内存）。
+    // 返回 { lines, total_lines }；offset 以行为单位（0 基）。内存只保留窗口行。
+    async readFileWindow(absPath, offset = 0, limit = 50) {
+      const off = Math.max(0, Number(offset) || 0)
+      const lim = Math.max(1, Math.min(Number(limit) || 50, 200))
+      const lines = []
+      let total = 0
+      const rl = readline.createInterface({ input: fs.createReadStream(absPath, { encoding: 'utf8' }), crlfDelay: Infinity })
+      try {
+        for await (const line of rl) {
+          if (total >= off && lines.length < lim) lines.push(line)
+          total++
+        }
+      } finally { rl.close() }
+      return { lines, total_lines: total }
+    },
+    // 42 号补丁：按行流式读取并限字节（grep 用），避免整文件进内存。
+    async readLinesCapped(absPath, maxBytes = 8 * 1024 * 1024) {
+      const lines = []
+      let bytes = 0
+      const rl = readline.createInterface({ input: fs.createReadStream(absPath, { encoding: 'utf8' }), crlfDelay: Infinity })
+      try {
+        for await (const line of rl) {
+          bytes += Buffer.byteLength(line) + 1
+          if (bytes > maxBytes) break
+          lines.push(line)
+        }
+      } finally { rl.close() }
+      return lines
     },
     beijingDate,
   }

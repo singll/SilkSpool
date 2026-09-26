@@ -1401,12 +1401,18 @@ function makeHandlers(opts) {
       return row
     },
     vuln_list: async (args, repo) => {
-      const rows = repo.listFindingsWhere({ visibility: args.visibility || 'signal', host: args.host || '', severity: args.severity || '', status: args.status || '', program_id: args.program_id || '', q: args.q || '' }, { sort: args.sort || 'created_at', dir: args.dir || 'desc' })
-      return { rows, total: rows.length }
+      // 42 号补丁（25 号方案 B1）：limit/offset 落到 SQL（旧实现全量返回由总线切片），total 走独立 COUNT。
+      const pred = { visibility: args.visibility || 'signal', host: args.host || '', severity: args.severity || '', status: args.status || '', program_id: args.program_id || '', q: args.q || '' }
+      const lim = Number.isInteger(args.limit) ? args.limit : 50 // 42 号：保留总线旧默认上限 50，避免缺省全量返回
+      const rows = repo.listFindingsWhere(pred, { sort: args.sort || 'created_at', dir: args.dir || 'desc' }, lim, args.offset)
+      const total = repo.countFindingsWhere ? repo.countFindingsWhere(pred) : rows.length
+      return { rows, total, meta: { paged: true } }
     },
     vuln_candidates: async (args, repo) => {
-      const { rows, pool } = repo.listCandidatePool({ claim_state: args.claim_state || 'available', severity_min: args.severity_min || '', program_id: args.program_id || '', host: args.host || '' }, { sort: args.sort || 'severity', dir: args.dir || 'desc' })
-      return { rows, total: rows.length, meta: { pool } }
+      const pred = { claim_state: args.claim_state || 'available', severity_min: args.severity_min || '', program_id: args.program_id || '', host: args.host || '' }
+      const lim = Number.isInteger(args.limit) ? args.limit : 50
+      const { rows, pool, total } = repo.listCandidatePool(pred, { sort: args.sort || 'severity', dir: args.dir || 'desc' }, lim, args.offset)
+      return { rows, total: Number.isInteger(total) ? total : rows.length, meta: { pool, paged: true } }
     },
     vuln_stats: async (_args, repo) => {
       return repo.statsFindings()

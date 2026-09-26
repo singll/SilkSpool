@@ -373,6 +373,31 @@ function makeHandlers(opts) {
     } catch { return null }
   }
 
+  // 42 号补丁（25 号方案 B1）：覆盖账本全量分页——旧实现只看 asset/endpoint 前 500 行，
+  // 大 program（bytedance 6.9 万资产/5 千端点）四指标全部失真。统一分页遍历 + 硬上限 + truncated 标记。
+  const LEDGER_PAGE_SIZE = 2000
+  const LEDGER_MAX_ASSET_ROWS = 200000
+  const LEDGER_MAX_ENDPOINT_ROWS = 50000
+  const LEDGER_MAX_FINDING_ROWS = 20000
+  const LEDGER_MAX_GAPS_PER_DIM = 20000
+
+  // 分页遍历跨域查询（rows 形态）；不可达返回 { rows: null }，超过 maxRows 截断并标记。
+  async function queryPages(domain, name, baseArgs, maxRows, pageSize = LEDGER_PAGE_SIZE) {
+    const out = []
+    let offset = 0
+    let truncated = false
+    while (true) {
+      const r = await safeQuery(domain, name, { ...baseArgs, limit: pageSize, offset })
+      if (!r) return { rows: null, truncated: false }
+      const rows = r.rows || r.items || []
+      for (const row of rows) out.push(row)
+      if (rows.length < pageSize) break
+      offset += pageSize
+      if (out.length >= maxRows) { truncated = true; break }
+    }
+    return { rows: out, truncated }
+  }
+
   // 覆盖账本格点最新态：key = `${dim}|${key}` → 行
   function coverageLatest(repo, program) {
     const latest = new Map()
@@ -599,24 +624,24 @@ function makeHandlers(opts) {
     ledger_coverage_metrics: async (args, repo) => {
       const program = args.program
       const state = coverageLatest(repo, program)
-      // 资产面：web 资产主机清单（asset 域只读，缺失降级 unavailable）
-      const assets = await safeQuery('asset', 'list', { type: 'web', program_id: program, limit: 500 })
-      const hosts = assets ? [...new Set((assets.rows || []).map((r) => r.host).filter(Boolean))] : null
+      // 资产面：web 资产主机清单（42 号起分页全量遍历，绕开 asset_list 500 上限；asset 域不可达降级 unavailable）
+      const assetsPage = await queryPages('asset', 'host_page', { type: 'web', program_id: program }, LEDGER_MAX_ASSET_ROWS)
       const crawledHosts = new Set([...state.entries()].filter(([k, v]) => v.dim === 'crawl' && v.mark === 'crawled_ok').map(([k, v]) => v.key))
       let crawl = { available: false }
-      if (hosts) {
+      if (assetsPage.rows) {
+        const hosts = [...new Set(assetsPage.rows.map((r) => r.host).filter(Boolean))]
         const done = hosts.filter((h) => crawledHosts.has(h))
         crawl = { available: true, total_hosts: hosts.length, crawled_hosts: done.length,
-          ratio: hosts.length ? Number((done.length / hosts.length).toFixed(4)) : 1 }
+          ratio: hosts.length ? Number((done.length / hosts.length).toFixed(4)) : 1, truncated: assetsPage.truncated }
       }
-      // 参数面：endpoint 域带参率
-      const epList = await safeQuery('endpoint', 'list', { program_id: program, limit: 500 })
+      // 参数面：endpoint 域 SQL 聚合带参率（不物化行）
+      const pstats = await safeQuery('endpoint', 'param_stats', { program_id: program })
       let param = { available: false }
-      if (epList) {
-        const rows = epList.rows || []
-        const withParams = rows.filter((r) => { try { return r.params && r.params !== 'null' } catch { return false } })
-        param = { available: true, total_endpoints: rows.length, with_params: withParams.length,
-          ratio: rows.length ? Number((withParams.length / rows.length).toFixed(4)) : 1 }
+      if (pstats) {
+        const total = Number(pstats.total) || 0
+        const withParams = Number(pstats.with_params) || 0
+        param = { available: true, total_endpoints: total, with_params: withParams,
+          ratio: total ? Number((withParams / total).toFixed(4)) : 1 }
       }
       // 登录面：endpoint 域登录态分布 + 已登录态测试记账
       const authSummary = await safeQuery('endpoint', 'auth_summary', { program_id: program })
@@ -645,33 +670,36 @@ function makeHandlers(opts) {
       const limit = Math.min(Number(args.limit) || 100, 500)
       const state = coverageLatest(repo, program)
       const gaps = []
-      // 资产面缺口：web 资产中未爬取成功的 host
+      const truncatedDims = []
+      // 资产面缺口：web 资产中未爬取成功的 host（分页全量）
       if (!dimFilter || dimFilter === 'crawl') {
-        const assets = await safeQuery('asset', 'list', { type: 'web', program_id: program, limit: 500 })
-        if (assets) {
-          const hosts = [...new Set((assets.rows || []).map((r) => r.host).filter(Boolean))]
+        const page = await queryPages('asset', 'host_page', { type: 'web', program_id: program }, LEDGER_MAX_ASSET_ROWS)
+        if (page.rows) {
           const done = new Set([...state.values()].filter((v) => v.dim === 'crawl' && v.mark === 'crawled_ok').map((v) => v.key))
-          for (const h of hosts) {
-            if (!done.has(h)) gaps.push({ dim: 'crawl', key: h, strategy_key: `crawl|${h}`, priority: 50, reason: 'web 资产未爬取成功' })
+          const seen = new Set()
+          for (const r of page.rows) {
+            const h = r.host
+            if (!h || seen.has(h) || done.has(h)) continue
+            seen.add(h)
+            if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('crawl'); break }
+            gaps.push({ dim: 'crawl', key: h, strategy_key: `crawl|${h}`, priority: 50, reason: 'web 资产未爬取成功' })
           }
         }
       }
       // 25 号补丁：资产枚举面缺口——按根域聚合，最近 enum_fresh 记账超窗（默认 3 天）即重开。
       // 消费方=专项 Planner（kind=asset_enum）；闭环=任务收尾 ledger_coverage_mark(dim=asset, mark=enum_fresh)。
       if (!dimFilter || dimFilter === 'asset') {
-        // asset_list limit 上限 500（schema maximum）——根域聚合 500 行足够覆盖（同一根域大量 host 行）
-        const assets = await safeQuery('asset', 'list', { program_id: program, limit: 500 })
-        if (assets) {
-          const roots = new Set()
-          for (const r of (assets.rows || [])) {
-            const root = String(r.root || '').trim() || secondLevelDomain(r.host)
-            if (root) roots.add(root)
-          }
+        // 42 号：改走 asset_roots_agg（SQL GROUP BY，单次返回全部根域），不再依赖前 500 行采样。
+        const rootsAgg = await safeQuery('asset', 'roots_agg', { program_id: program })
+        if (rootsAgg) {
           const nowMs = Date.now()
-          for (const root of roots) {
+          for (const r of (rootsAgg.rows || [])) {
+            const root = String(r.root || '').trim()
+            if (!root) continue
             const st = state.get(`asset|${root}`)
             const freshMs = st && st.mark === 'enum_fresh' ? Date.parse(st.ts || '') : NaN
             if (!(Number.isFinite(freshMs) && nowMs - freshMs <= ASSET_ENUM_STALE_MS)) {
+              if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('asset'); break }
               gaps.push({ dim: 'asset', key: root, strategy_key: `asset|${root}`, mark: 'enum_stale', priority: 45, reason: `根域 ${root} 资产枚举超窗（>${Math.round(ASSET_ENUM_STALE_MS / 86400000)} 天未 enum_fresh 记账）` })
             }
           }
@@ -680,12 +708,13 @@ function makeHandlers(opts) {
       // 26 号补丁：存量复核面缺口——超龄未分诊 findings（默认 >48h），逐条出列；
       // 闭环靠事实（triage 后不再 new 即出列），strategy_dedupe 防同条重派。
       if (!dimFilter || dimFilter === 'review') {
-        const pend = await safeQuery('vuln', 'list', { visibility: 'all', status: 'new', program_id: program, limit: 500 })
-        if (pend) {
+        const page = await queryPages('vuln', 'list', { visibility: 'all', status: 'new', program_id: program }, LEDGER_MAX_FINDING_ROWS, 500)
+        if (page.rows) {
           const staleMs = Number(process.env.SEC_LEDGER_REVIEW_STALE_MS) > 0 ? Number(process.env.SEC_LEDGER_REVIEW_STALE_MS) : 48 * 3600000
           const nowMs = Date.now()
-          for (const r of (pend.rows || [])) {
+          for (const r of page.rows) {
             if (nowMs - Number(r.created_at || 0) <= staleMs) continue
+            if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('review'); break }
             const sevBonus = { critical: 5, high: 4, medium: 2, low: 1 }[String(r.severity || '').toLowerCase()] || 1
             gaps.push({
               dim: 'review', key: String(r.id), strategy_key: `review|${r.id}`, mark: 'pending_review',
@@ -695,43 +724,45 @@ function makeHandlers(opts) {
           }
         }
       }
-      // 参数面缺口：无 params 端点 + 需登录未测
-      const epList = (!dimFilter || dimFilter === 'param' || dimFilter === 'auth' || dimFilter === 'vulnclass')
-        ? await safeQuery('endpoint', 'list', { program_id: program, limit: 500 }) : null
-      if (epList) {
-        for (const r of (epList.rows || [])) {
-          const hasParams = (() => { try { return r.params && r.params !== 'null' } catch { return false } })()
+      // 参数面缺口：无 params 端点 + 需登录未测（分页全量；42 号前只看前 500 端点）
+      const needEpPage = !dimFilter || dimFilter === 'param' || dimFilter === 'auth' || dimFilter === 'vulnclass'
+      const epPage = needEpPage
+        ? await queryPages('endpoint', 'lite_page', { program_id: program }, LEDGER_MAX_ENDPOINT_ROWS) : null
+      if (epPage && epPage.rows) {
+        for (const r of epPage.rows) {
+          const hasParams = (() => { try { return r.params && r.params !== 'null' && r.params !== '' } catch { return false } })()
           if ((!dimFilter || dimFilter === 'param') && !hasParams) {
+            if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('param'); break }
             gaps.push({ dim: 'param', key: `${r.host}|${r.path}`, strategy_key: `param|${r.host}|${r.path}`, priority: 30, reason: '端点无参数（arjun/flows/JS 补全候选）' })
           }
           if ((!dimFilter || dimFilter === 'auth') && (r.auth_state === 'login_required' || r.auth_state === 'role_required')) {
             const tested = state.get(`auth|${r.host}|${r.path}`)
             if (!tested || tested.mark === 'untested') {
+              if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('auth'); break }
               gaps.push({ dim: 'auth', key: `${r.host}|${r.path}`, strategy_key: `auth|${r.host}|${r.path}`, priority: 40, reason: `登录态端点未做登录态测试（${r.auth_state}）` })
             }
           }
         }
         // 漏洞类面缺口：per host 七类主粮未测类
-        if (!dimFilter || dimFilter === 'vulnclass') {
-          const byHost = new Map()
-          for (const r of (epList.rows || [])) {
-            if (!byHost.has(r.host)) byHost.set(r.host, [])
-            byHost.get(r.host).push(r.path)
-          }
+        if ((!dimFilter || dimFilter === 'vulnclass') && !truncatedDims.includes('vulnclass')) {
+          const byHost = new Set()
+          for (const r of epPage.rows) if (r.host) byHost.add(r.host)
           const CLASS_PRIORITY = { idor: 10, sqli: 11, ssrf: 12, authz: 13, file: 14, xss: 15, info_disclosure: 20 }
-          for (const [host] of byHost) {
+          outer: for (const host of byHost) {
             for (const cls of SEVEN_CLASSES) {
               const key = `${host}|${cls}`
               const st = state.get(`vulnclass|${key}`)
               if (!st || st.mark === 'untested') {
+                if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('vulnclass'); break outer }
                 gaps.push({ dim: 'vulnclass', key, strategy_key: `vulnclass|${key}`, priority: CLASS_PRIORITY[cls] ?? 25, reason: `漏洞类 ${cls} 未测` })
               }
             }
           }
         }
+        if (epPage.truncated && !truncatedDims.length) truncatedDims.push('endpoint')
       }
       gaps.sort((a, b) => a.priority - b.priority || a.strategy_key.localeCompare(b.strategy_key))
-      return { program, gaps: gaps.slice(0, limit), total: gaps.length }
+      return { program, gaps: gaps.slice(0, limit), total: gaps.length, truncated: truncatedDims.length ? { dims: [...new Set(truncatedDims)] } : null }
     },
 
     ledger_login_blindspot: async (args, repo) => {
@@ -739,8 +770,8 @@ function makeHandlers(opts) {
       const summary = await safeQuery('endpoint', 'auth_summary', { program_id: program })
       const creds = await safeQuery('scope', 'cred_query', { program_id: program, limit: 500 })
       const credCount = creds ? (creds.rows || creds.items || []).length : null
-      const epList = await safeQuery('endpoint', 'list', { program_id: program, limit: 500 })
-      const rows = epList ? (epList.rows || []) : []
+      const epPage = await queryPages('endpoint', 'lite_page', { program_id: program }, LEDGER_MAX_ENDPOINT_ROWS)
+      const rows = epPage.rows || []
       const needLogin = rows.filter((r) => r.auth_state === 'login_required' || r.auth_state === 'role_required')
       const tested = rows.filter((r) => r.auth_state === 'public').length
       const highValue = needLogin.filter((r) => /admin|manage|pay|order|user|account|console/i.test(String(r.path || ''))).length
@@ -753,6 +784,7 @@ function makeHandlers(opts) {
         program, has_credentials: hasCreds, credential_count: credCount,
         endpoints_total: rows.length, public_covered: tested, need_login_untested: needLogin.length,
         high_value_untested: highValue, public_only_ratio: publicOnlyRatio,
+        truncated: epPage.rows ? epPage.truncated : null,
         summary: summaryText,
         action_item: hasCreds ? null : { kind: 'cred_add', program, hint: 'scope 域 cred_add 登记凭据引用（明文零入库）' },
         need_login_endpoints: needLogin.slice(0, 100).map((r) => ({ host: r.host, path: r.path, auth_state: r.auth_state })),

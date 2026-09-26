@@ -690,7 +690,7 @@ function makeHandlers(opts) {
   const queries = {
     approval_list: async (args, repo) => {
       const { rows, total } = repo.listRequestsWhere({ kind: args.kind || '', status: args.status || '', limit: args.limit, offset: args.offset })
-      return { rows: rows.map((r) => ({ id: r.id, kind: r.kind, subject: r.subject, program_name: r.program_name, payload: r.payload, evidence: r.evidence, status: r.status, requested_by: r.requested_by, created_at: r.created_at, decided_at: r.decided_at, note: r.note })), total }
+      return { rows: rows.map((r) => ({ id: r.id, kind: r.kind, subject: r.subject, program_name: r.program_name, payload: r.payload, evidence: r.evidence, status: r.status, requested_by: r.requested_by, created_at: r.created_at, decided_at: r.decided_at, note: r.note })), total, meta: { paged: true } }
     },
     approval_stats: async (args, repo) => {
       const sinceDays = Number(args.since_days ?? 30)

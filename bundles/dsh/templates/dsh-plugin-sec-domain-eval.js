@@ -704,7 +704,11 @@ function makeHandlers(opts) {
       if (verdict) rows = rows.filter((r) => r.verdict === verdict)
       if (vulnType) rows = rows.filter((r) => r.vuln_type === vulnType)
       rows.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))
-      return { rows, total: rows.length }
+      // 42 号补丁（25 号方案 B1）：过滤后分页（缺省 50 保留总线旧上限），标记 paged 防二次切片。
+      const total = rows.length
+      const limit = Math.min(Number.isInteger(args.limit) ? args.limit : 50, 500)
+      const offset = Math.max(0, Number(args.offset) || 0)
+      return { rows: rows.slice(offset, offset + limit), total, meta: { paged: true } }
     },
     eval_reports: async (args, repo, ctx) => {
       const kind = String(args.kind || '')

@@ -437,28 +437,43 @@ test('订阅：endpoint.registered/auth_classified/signal.confirmed → 覆盖�
 
 // 22 号方案回归：safeQuery 须归一「列表查询顶层 rows」与「标量 data」两形态，
 // 否则 coverage_metrics/gaps 对 asset/endpoint 数据全盲（Campaign L2 Planner 无输入）。
-test('coverage_gaps: 跨域 asset/endpoint 列表查询顶层 rows 被正确消费（回归）', async () => {
+test('coverage_gaps: 跨域 asset/endpoint 分页查询顶层 rows 被正确消费（回归 + 42 号全量口径）', async () => {
   const { bus } = makeEnv()
-  const stub = (domain, name, rows) => ({
+  const props = { program_id: { type: 'string' }, type: { type: 'string' }, auth_state: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' } }
+  // 一个域一次注册（registry 拒重复域），多查询合并到同一 stub。
+  const stubDomain = (domain, queryMap) => ({
     manifest: {
       domain, version: 1, service: `secDomain.${domain}`, description: `${domain} stub`,
       owns: { tables: [], files: [] }, commands: {},
-      queries: { [`${domain}_${name}`]: { actor: ['reactor', 'model', 'dashboard', 'human'], params: { type: 'object', additionalProperties: false, properties: { program_id: { type: 'string' }, type: { type: 'string' }, limit: { type: 'integer' } } }, agent_note: 'stub' } },
+      queries: Object.fromEntries(queryMap.map(([name, fn]) => [`${domain}_${name}`, {
+        actor: ['reactor', 'model', 'dashboard', 'human'],
+        params: { type: 'object', additionalProperties: false, properties: props },
+        agent_note: 'stub',
+        ...(fn.rows ? { __rows: true } : {}),
+      }])),
       events: {}, subscribes: {}, backend: 'repository-v1',
     },
-    handlers: { commands: {}, queries: { [`${name}`]: async () => ({ rows, total: rows.length }) }, invariants: {}, subscribers: {} },
+    handlers: { commands: {}, queries: Object.fromEntries(queryMap.map(([name, fn]) => [name, async () => fn])), invariants: {}, subscribers: {} },
     backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
   })
-  assert.equal(bus.registry.register(stub('asset', 'list', [{ host: 'a.example.com' }])).ok, true)
-  assert.equal(bus.registry.register(stub('endpoint', 'list', [{ host: 'a.example.com', path: '/x', params: null, auth_state: 'public' }])).ok, true)
+  assert.equal(bus.registry.register(stubDomain('asset', [['host_page', { rows: [{ host: 'a.example.com', root: 'example.com' }], total: 1 }]])).ok, true)
+  assert.equal(bus.registry.register(stubDomain('endpoint', [
+    ['lite_page', { rows: [{ host: 'a.example.com', path: '/x', params: null, auth_state: 'public' }], total: 1 }],
+    ['param_stats', { total: 2, with_params: 1 }],
+    ['auth_summary', { by_state: { login_required: 0, role_required: 0 }, marked_ratio: 0 }],
+  ])).ok, true)
   const m = await bus.query('ledger', 'coverage_metrics', { program: 'test-src' }, { actor: 'model' })
   assert.equal(m.ok, true, m.error?.message)
   assert.equal(m.data.crawl.available, true, 'crawl 面应可用（此前 safeQuery 读 r.data 恒 null）')
   assert.equal(m.data.crawl.total_hosts, 1)
+  assert.equal(m.data.param.available, true, '42 号：参数率走 SQL 聚合查询')
+  assert.equal(m.data.param.total_endpoints, 2)
+  assert.equal(m.data.param.with_params, 1)
   const g = await bus.query('ledger', 'coverage_gaps', { program: 'test-src' }, { actor: 'model' })
   assert.equal(g.ok, true, g.error?.message)
   assert.ok(g.data.total > 0, '应产出缺口（crawl/param/vulnclass）')
   assert.ok((g.data.gaps || []).some((x) => x.dim === 'crawl' && x.key === 'a.example.com'))
+  assert.ok((g.data.gaps || []).some((x) => x.dim === 'param' && x.key === 'a.example.com|/x'))
 })
 
 // 25 号补丁：资产收集入专项——asset 维缺口（根域枚举超窗）派生与 enum_fresh 闭环
@@ -468,12 +483,12 @@ test('coverage_gaps: asset 维——根域无 enum_fresh 记账出缺口，记�
     manifest: {
       domain: 'asset', version: 1, service: 'secDomain.asset', description: 'asset stub',
       owns: { tables: [], files: [] }, commands: {},
-      queries: { asset_list: { actor: ['reactor', 'model', 'dashboard', 'human'], params: { type: 'object', additionalProperties: false, properties: { program_id: { type: 'string' }, limit: { type: 'integer' } } }, agent_note: 'stub' } },
+      queries: { asset_roots_agg: { actor: ['reactor', 'model', 'dashboard', 'human'], params: { type: 'object', additionalProperties: false, properties: { program_id: { type: 'string' }, type: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' } } }, agent_note: 'stub' } },
       events: {}, subscribes: {}, backend: 'repository-v1',
     },
     handlers: {
       commands: {},
-      queries: { list: async () => ({ rows: [{ host: 'a.example.com', root: 'example.com', last_seen: Date.now() }, { host: 'b.example.com', root: 'example.com', last_seen: Date.now() }], total: 2 }) },
+      queries: { roots_agg: async () => ({ rows: [{ root: 'example.com', host_count: 2, max_score: 50, last_seen: Date.now() }], total: 1 }) },
     },
     invariants: {}, subscribers: {},
     backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
@@ -500,7 +515,7 @@ test('coverage_gaps: review 维——超龄未分诊 finding 出缺口，新鲜�
     manifest: {
       domain: 'vuln', version: 1, service: 'secDomain.vuln', description: 'vuln stub',
       owns: { tables: [], files: [] }, commands: {},
-      queries: { vuln_list: { actor: ['reactor', 'model', 'dashboard', 'human'], params: { type: 'object', additionalProperties: false, properties: { visibility: { type: 'string' }, status: { type: 'string' }, program_id: { type: 'string' }, limit: { type: 'integer' } } }, agent_note: 'stub' } },
+      queries: { vuln_list: { actor: ['reactor', 'model', 'dashboard', 'human'], params: { type: 'object', additionalProperties: false, properties: { visibility: { type: 'string' }, status: { type: 'string' }, program_id: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' } } }, agent_note: 'stub' } },
       events: {}, subscribes: {}, backend: 'repository-v1',
     },
     handlers: {

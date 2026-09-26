@@ -573,14 +573,14 @@ function makeHandlers(opts) {
 
       const { rows, total } = repo.listReportRows({
         program: programFilter, kind, q, date_from: dateFrom, date_to: dateTo, sort, dir,
-      })
+      }, Number.isInteger(args.limit) ? args.limit : 50, args.offset)
       const out = rows.map((r) => ({
         report_id: r.report_id, kind: r.kind, file: r.file, program: r.program || '', title: r.title || '',
         date: r.date, total: Number(r.total) || 0,
         by_severity: (() => { try { return JSON.parse(r.by_severity || '{}') } catch { return {} } })(),
         noise_filtered: Number(r.noise_filtered) || 0, actor: r.actor || '', generated_at: r.generated_at,
       }))
-      return { rows: out, total }
+      return { rows: out, total, meta: { paged: true } }
     },
     report_read: async (args, repo) => {
       const rel = String(args.file || '').trim()

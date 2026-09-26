@@ -75,7 +75,7 @@ function createRepo(db) {
     deleteReportRow(reportId) {
       return db.prepare('DELETE FROM reports WHERE report_id = ?').run(String(reportId)).changes
     },
-    listReportRows(where) {
+    listReportRows(where, limit, offset) {
       const conds = []
       const args = []
       if (where.program) { conds.push('(program = ? OR program IS NULL)'); args.push(String(where.program)) }
@@ -91,7 +91,12 @@ function createRepo(db) {
       const sort = SORT_COLS[where.sort] || 'generated_at'
       const dir = String(where.dir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC'
       const total = db.prepare(`SELECT COUNT(*) AS n FROM reports ${w}`).get(...args).n
-      const rows = plainAll(db.prepare(`SELECT * FROM reports ${w} ORDER BY ${sort} ${dir}`).all(...args))
+      // 42 号补丁（25 号方案 B1）：SQL 落 LIMIT/OFFSET，total 独立 COUNT（旧实现全量返回由总线切片）。
+      const limitN = Number.isInteger(Number(limit)) && Number(limit) > 0 ? Math.min(Number(limit), 500) : null
+      const offsetN = Math.max(0, Number(offset) || 0)
+      const tail = limitN !== null ? ' LIMIT ? OFFSET ?' : ''
+      const params = limitN !== null ? [...args, limitN, offsetN] : args
+      const rows = plainAll(db.prepare(`SELECT * FROM reports ${w} ORDER BY ${sort} ${dir}${tail}`).all(...params))
       return { rows, total }
     },
     allReportRows() {
