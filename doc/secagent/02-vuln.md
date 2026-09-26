@@ -415,7 +415,7 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 
 ### 1.4 查询（读投影）逐个详述
 
-统一分页信封 `{rows, total, limit, offset}`；limit 默认 50、上限 500；sort 白名单 + dir=asc|desc；**行数与 total 同一 where 构造器**（契约测试强制断言，v4.3 病根不复发）。
+统一分页信封 `{rows, total, limit, offset}`；limit 默认 50、上限 500；sort 白名单 + dir=asc|desc；**行数与 total 同一 where 构造器**（契约测试强制断言，v4.3 病根不复发）。**42 号：`vuln_list`/`vuln_candidates` 的 limit/offset 落到 SQL（缺省 50、后端封顶 500），total 走独立 COUNT / 池匹配计数，处理器返回 `meta.paged=true`（总线不再二次切片）**。
 
 | # | 查询 | 语义 | 可见域谓词默认值 |
 |---|---|---|---|
@@ -434,7 +434,7 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 | visibility | enum signal/candidate/all | 否 | signal | signal=noise 0；candidate=noise=1 AND status='new'（**候选池口径**）；all=全量（替代 v4 includeNoise/noise 双参数） |
 | host / severity / status / program_id | string | 否 | '' | 精确匹配（severity/status 枚举校验） |
 | q | string | 否 | '' | title/host/url LIKE |
-| limit / offset / sort / dir | — | 否 | 50 / 0 / created_at / desc | sort 白名单：created_at/id/status/severity（severity 语义排序 critical>high>medium>low>info，v4 CASE 表达式保留） |
+| limit / offset / sort / dir | — | 否 | 50 / 0 / created_at / desc | sort 白名单：created_at/id/status/severity（severity 语义排序 critical>high>medium>low>info，v4 CASE 表达式保留）；**42 号起 SQL 层 LIMIT/OFFSET（上限 500），total 独立 COUNT；`sort=created_at` 走 `idx_findings_created`** |
 
 返回 rows 列：id/title/severity/host/url/source/status/program_id/session_id/vuln_type/bounty/vendor_status/noise/claimed_by/created_at/confidence/fgs_node_id/discovery_step（不带 evidence 大字段——详情走 Q2，v4 纪律保留）。
 
@@ -447,7 +447,7 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 | claim_state | enum available/unclaimed/claimed/stale/all | 否 | available | available=unclaimed∪claimed_stale（认领超时）；stale 单看超时认领 |
 | severity_min | enum | 否 | '' | 阈值过滤（critical>high>medium>low>info） |
 | program_id / host | string | 否 | '' | — |
-| limit / offset / sort / dir | — | 否 | 50 / 0 / severity / desc | sort 白名单：severity/created_at/claimed_at |
+| limit / offset / sort / dir | — | 否 | 50 / 0 / severity / desc | sort 白名单：severity/created_at/claimed_at；**42 号起候选池行集也落 SQL LIMIT/OFFSET（池摘要计数不受分页影响）** |
 
 返回 `{rows, total, limit, offset, pool: {pending, claimed, stale, by_severity}}`——pool 是同 where 口径的池摘要（消化进度一眼可见）。
 
@@ -627,7 +627,7 @@ spool exec csai "node /opt/silkspool/dsh/app/node_modules/@deepseek-ai/dsh/lib/b
 | remote_synced_at | INTEGER | NULL | 最后同步成功时间 | Phase 4 |
 | sync_state | TEXT | NULL | 同步状态：pending/synced/failed（outbox） | Phase 4 |
 
-**索引**：既有 `idx_findings_host`、fingerprint UNIQUE；v5 新增 `idx_findings_pool (noise, status)`（候选队列与 KPI 主查询路径）、`idx_findings_claim (claimed_at)`（超时抢占扫描）。
+**索引**：既有 `idx_findings_host`、fingerprint UNIQUE；v5 新增 `idx_findings_pool (noise, status)`（候选队列与 KPI 主查询路径）、`idx_findings_claim (claimed_at)`（超时抢占扫描）；**42 号新增 `idx_findings_created (created_at DESC)`（默认列表排序主路径）**。
 
 **文件 owns**：`data/evidence/{finding_id}/`（证据包目录树；request.txt 由任务产出后经本域挂链校验，verify-log.md 只追加）；`data/events/vuln.jsonl`（总线写，本域声明）。报告/草稿文件归 report 域（方案 A）。
 
@@ -733,8 +733,10 @@ export const repositoryV1 = {
   mergeCandidate(id, fields, newFp)      // → {changed, before} —— promote 专用：补字段+换指纹+noise=0 原子合并
   appendEvidence(id, text)               // → {}（vuln_note）
   setClaim(id, claimer, nowMs)           // → {ok, previous}（含 TTL 抢占条件）
-  listFindingsWhere(pred, sort, limit, offset) // → {rows, total} —— pred 为域内谓词对象（visibility/claim_state/...），
-                                           //    rows 与 total 必须由同一 where 构造器生成（宪法 §七.3）
+  listFindingsWhere(pred, sort, limit, offset) // → rows —— pred 为域内谓词对象（visibility/claim_state/...），
+                                           //    rows 与 total 必须由同一 where 构造器生成（宪法 §七.3）；42 号起 limit/offset 落 SQL（≤500）
+  countFindingsWhere(pred)                 // → n（42 号：vuln_list 独立 COUNT 与列表同 where）
+  listCandidatePool(pred, sort, limit, offset) // → {rows, pool, total}（42 号：行集落 LIMIT/OFFSET，池摘要计数独立）
   statsFindings()                        // → §1.5 Q4 的聚合结构
   ensureCol(name, ddl)                   // → {}（幂等列演进）
 }
@@ -903,3 +905,9 @@ export const repositoryV1 = {
 ## 九、2026-09-17 学习专项 L3 实施回填（备案）
 
 - 本域未新增/变更命令与事件。L3 的候选对照评测（eval 域 `eval_run_candidate`）在受控 fixture 上双跑 baseline（C11 旧三档判定的执行器内置副本 `builtin:authz-legacy-3tier`）与候选卡约束规则；**评测不调用 C11**（避免 suspected 档自动落候选池污染真实信号面），不改 C11 现行判定行为。eligible≠发布——VC-AUTHZ-001 进使用面仍待 L4。
+
+## 十、2026-09-26 42 号补丁回填（vuln 列表分页落 SQL）
+
+- `vuln_list` / `vuln_candidates` 的 limit/offset 落到 SQL（旧实现全量物化由总线事后切片）：`vuln_list` 缺省 50、后端封顶 500，`total` 走独立 COUNT；`vuln_candidates` 行集同口径，`pool` 摘要计数不受分页影响（同 where 池匹配计数）。
+- 新增索引 `idx_findings_created (created_at DESC)`（默认 `sort=created_at` 排序主路径）。
+- 契约：vuln 70/70 全绿（61 + 9 http）；42 号未新增用例，ledger 侧消费方改为分页查询（见 [11-ledger](11-ledger.md)）。

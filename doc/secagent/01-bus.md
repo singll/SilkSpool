@@ -75,7 +75,7 @@ cordis 容器
 | 动词 | 一句话职责 | actor 白名单 | 幂等策略 |
 |---|---|---|---|
 | `bus_replay` | 按事件日志重放弱联动订阅者（灾备/调试） | human, system | 自动指纹 |
-| `bus_prune` | 立即执行保留窗口清理（幂等表 LRU + 事件轮转检查） | human, system | 自动指纹 |
+| `bus_prune` | 立即执行保留窗口清理（幂等表 + outbox delivered 按 7天/2万行取大裁剪，subscription 级联 + 事件轮转检查） | human, system | 自动指纹 |
 
 ### 1.3 命令逐个详述
 
@@ -98,21 +98,23 @@ cordis 容器
 | 项 | 值 |
 |---|---|
 | schema | `{ force?: boolean(默认 false；false 时若距离上次清理 <6h 则跳过并返回 skipped) }` |
-| 返回 data | `{ idempotency_pruned: N, events_files_rotated: M, audit_bytes: B }` |
-| 错误 | 无显式业务错误码（运维命令）：幂等清理/轮转/审计读异常各自 catch 后记日志降级，不抛错；存储整体不可用时由网关前置返回 `E_BACKEND_UNAVAILABLE` |
+| 返回 data | `{ skipped, idempotency_pruned: N, outbox_pruned: N, subscriptions_pruned: N, events_files_rotated: M, audit_bytes: B }`（42 号新增 outbox_pruned/subscriptions_pruned） |
+| 错误 | 无显式业务错误码（运维命令）：幂等/outbox/订阅/轮转/审计读异常各自 catch 后记日志降级，不抛错；存储整体不可用时由网关前置返回 `E_BACKEND_UNAVAILABLE` |
 | hint | 无需（运维命令） |
 | 幂等 | 自动指纹 |
 | actor | human, system |
-| RoE | 幂等表 LRU：保留最近 7 天 **或** 10,000 条（先到先清）；事件 jsonl 单文件 >50MB 轮转为 `.1`（只保一代）；audit.jsonl 轮转沿用 retention.sh 既有策略（50MB），本命令只检查不重复轮转 |
-| side_effects | rows: idempotency 删除；files: events 轮转 |
+| RoE | **42 号保留窗口（取大口径）**：删除条件 = 「超过 7 天 且 不在最新 2 万行内」——7 天内超过 2 万行时保留整个 7 天窗口，7 天不足 2 万行时保留最新 2 万行。① `idempotency`（`IDEM_RETENTION_MS=7d` / `IDEM_MAX_ROWS=20000`）；② `event_outbox` 仅 `status='delivered'`（`OUTBOX_RETENTION_MS=7d` / `OUTBOX_MAX_ROWS=20000`；`pending` 待投递、`dead_letter` 待归因，**均保留不清理**）；③ `bus_subscription` 级联——`event_id NOT IN (SELECT event_id FROM event_outbox)` 的订阅行（含历史孤儿）一并删除。事件 jsonl 单文件 >50MB 轮转为 `.1`（只保一代）；audit.jsonl 轮转沿用 retention.sh 既有策略（50MB），本命令只检查不重复轮转 |
+| side_effects | rows: idempotency / event_outbox / bus_subscription 删除；files: events 轮转 |
+
+> **42 号调度来源**：`bus_prune` 此前从未被调度（`bus_meta` 无 `prune.last_at`，实测 idempotency 5.9 万行超设计上限 5.9 倍、outbox delivered 13 万行无清理）。现由 task 域调度器每日维护分支接管——北京 05:00 后首个 tick（`dailyBusPrune()`，与 `dailyVaultSync` 同处）以 `actor=system` dispatch `bus.prune`（不带 force，6h 冷却由命令自身维护）；命令 actor 白名单本就含 system。详见 [05-task §2.3](05-task.md)。
 
 ### 1.4 查询（读投影）逐个详述
 
 | 查询 | 参数 | 返回 | actor | 说明 |
 |---|---|---|---|---|
 | `bus_status` | `{ domains?: string[] }` | 见下 | model, dashboard, human, script | 总线健康自检：各域注册状态/契约版本/后端/能力矩阵摘要 |
-| `audit_tail` | `{ n?(默认 50, 上限 500), domain?, cmd?, actor?, session_id?, operator?, since?, until?, offset?(默认 0) }` | `{ rows: [...], total, limit, offset }` | dashboard, human | 统一审计尾读（过滤维度=宪法 §九） |
-| `events_tail` | `{ domain(必填，单域), n?(默认 50, 上限 500), name?, offset?(默认 0) }` | `{ rows: [...], total, limit, offset }` | dashboard, human, model | 事件日志尾读（model 可见：事件是模型可观察的世界状态） |
+| `audit_tail` | `{ n?(默认 50, 上限 500), domain?, cmd?, actor?, session_id?, operator?, since?, until?, offset?(默认 0), before_bytes?(字节游标，排他上界) }` | `{ rows: [...], total, limit, offset, next_before, window_bytes, paged: true }` | dashboard, human | 统一审计尾读（过滤维度=宪法 §九）；**42 号：单窗 256KB→1MB（`AUDIT_TAIL_WINDOW_BYTES`）+ `before_bytes` 游标回翻；`next_before`=下一窗排他上界（null=已到文件头）；`window_bytes`=本窗字节数** |
+| `events_tail` | `{ domain(必填，单域), n?(默认 50, 上限 500), name?, offset?(默认 0) }` | `{ rows: [...], total, limit, offset, paged: true }` | dashboard, human, model | 事件日志尾读（model 可见：事件是模型可观察的世界状态）；42 号起返回 `meta.paged`（处理器自切片，总线不二次切片） |
 
 `bus_status` 返回结构（完整 schema）：
 
@@ -125,7 +127,7 @@ cordis 容器
     "idempotency": { "rows": 4210, "oldest_created_at": 1788400000000, "pruned_last_24h": 33 },
     "audit": { "writable": true, "bytes": 22000000 },
     "events": { "files": 12, "total_lines": 88214 },
-    "outbox": { "pending": 3, "dead_letter": 1, "max_lag_ms": 4120, "last_delivered_at": 1789000000000 },
+    "outbox": { "pending": 3, "dead_letter": 1, "delivered": 12840, "oldest_delivered_at": 1788300000000, "max_lag_ms": 4120, "last_delivered_at": 1789000000000 },
     "aliases": { "count": 0, "deprecated": [], "source": "data/bus.aliases.yaml" },
     "degraded": null
   },
@@ -304,7 +306,7 @@ CREATE TABLE IF NOT EXISTS bus_subscription (
 
 > `auto` 策略可选 `idempotent_ctx_fields`（如 `session_id`/`operator`）：把调用面身份折进键尾（`|session_id=...`），用于认领类动词（vuln claim/release）——不同会话认领同一对象键不碰撞，同会话重放仍命中 replay。身份来自网关 ctx（actor 注入同源），域实现不可伪造。
 
-保留窗口：7 天或 10,000 条 LRU（`bus_prune` / 每日系统任务执行）。命中同 key 同 args_hash → 返回首次信封 + `replay: true`；同 key 异 args_hash → `E_IDEMPOTENT_CONFLICT`（hint："幂等键 {key} 已绑定不同参数；若是新意图请换 key，若是重放请原样重发参数"）。
+保留窗口：**7 天或 2 万行取大**（42 号由 10,000 上调；`bus_prune` / 每日系统任务执行——删除条件 =「超 7 天 且 不在最新 2 万行内」）。命中同 key 同 args_hash → 返回首次信封 + `replay: true`；同 key 异 args_hash → `E_IDEMPOTENT_CONFLICT`（hint："幂等键 {key} 已绑定不同参数；若是新意图请换 key，若是重放请原样重发参数"）。
 
 **事件文件**：`data/events/{domain}.jsonl`，每行一个事件信封（宪法 §八.2）。轮转 50MB 保一代，保留 90 天（retention.sh 增段）。
 
@@ -472,6 +474,7 @@ dispatcher tick（web 宿主面，1s）:
 
 - **模式语义固定（宪法 §八.3，消除"同步但不回滚"的含混表达）**：`sync` = 订阅者与命令主体共用同一连接同一事务（SAVEPOINT 包裹），失败 → 命令整体回滚；`async` = 事件已随事务持久化进 outbox，订阅者在事务提交后由 dispatcher 独立派发，失败进 retry/dead-letter。**不存在"同步但不回滚"的中间态**。
 - **崩溃恢复**：命令事务提交即事件已在 outbox；宿主重启后 dispatcher 从 `pending` 续扫——async 订阅者不丢、不重（`bus_subscription` 唯一键保证幂等）；sync 订阅者随命令事务原子提交/回滚，无独立恢复问题。
+- **投递记录保留（42 号）**：`event_outbox` 仅 `delivered` 行参与保留窗口清理（7 天或 2 万行取大，见 §1.3 `bus_prune`）；`pending`/`dead_letter` 不被 `bus_prune` 触碰。`bus_subscription` 行在级联清理中被删除的条件是「其 `event_id` 已不在 outbox」——即 event 行被窗口清理后订阅记录随之回收，避免 6 万行级孤儿堆叠。
 - **强联动嵌套闸**：嵌套 dispatch 走 SAVEPOINT 而非新 BEGIN（嵌套深度上限 3，超过 `E_BUS_STRONG_LINK_NESTING`——订阅环：A 命令强联动订阅 B 事件、B 又强联动订阅 A 事件的环在注册时用 subscribes 图检测拒载，运行时深度闸兜底）。
 - **订阅声明注册**：域经 manifest `subscribes`；非域客户端（memcore）经 `bus.events.subscribe(pattern, handler, {mode, as})` 程序化注册——**未声明订阅的域收不到事件**（宪法 §八.6），程序化订阅同样登记进 `bus_status.subscribers`。
 - **事件留痕**：dispatcher 对每个事件投递完成后把信封追加 `data/events/{domain}.jsonl`（O_APPEND 单 write）——jsonl 是**观测与 `bus_replay` 的源**，不是投递机制本身；投递可靠性由 outbox 保证，jsonl 只做可回放审计。
@@ -691,6 +694,20 @@ dispatch_aliases: {}
 >
 > 2026-09-17 L3 备案：总线零变更。eval 域新增事件 `eval.candidate.started` 与 `eval.report.built`（kind=candidate）经既有 outbox/dispatcher 投递，know 域以 reactor 订阅消费（多订阅者键 `source::pattern` 机制覆盖）；新动词 eval_run_candidate / know_revision_assess 走常规 11 段管线（actor 白名单 + 幂等自然键 + audit）。
 
-> 2026-09-22 22 号方案：task 域新增 6 个 Campaign 事件入注册表——`task.campaign.created` / `task.campaign.status.changed` / `task.campaign.goal.changed` / `task.campaign.task.derived` / `task.campaign.reviewed` / `task.campaign.escalated`（均 payload object，redact 空）。总线零内核变更，事件经既有 outbox/dispatcher 投递。
+> 2026-09-22 22 号方案：task 域新增 Campaign 事件入注册表——`task.campaign.created` / `task.campaign.status.changed` / `task.campaign.goal.changed` / `task.campaign.task.derived` / `task.campaign.reviewed` / `task.campaign.escalated`（均 payload object，redact 空）；2026-09-24 31 号补丁补第 7 个 `task.campaign.autonomy.changed`（active/reviewing 升档只落 autonomy、不动 status 时发）。总线零内核变更，事件经既有 outbox/dispatcher 投递。
 >
 > 2026-09-22 总线修复（嵌套事务传播）：`runTxn` 嵌套分支补 `scope.inTxn = true`。此前嵌套作用域未标记 inTxn，导致三层嵌套（`campaign_dispatch`→`task_derive_intent`→`task_create`）的第二层被误判为顶层、去抢已被外层持有的同进程 `writeLock` 而自锁死。一层嵌套（既有强联动）行为不变。
+
+## 六、2026-09-26 42 号补丁回填（大数据治理 B1：保留窗口 + 审计游标 + 分页协定）
+
+> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0/S1。本地契约 bus 54/54 全绿（新增 2 例）；部署验收待执行。
+
+| 项 | 变更 |
+|---|---|
+| 保留窗口（§1.3 `bus_prune`） | 常量 `IDEM_RETENTION_MS`/`IDEM_MAX_ROWS=20000`/`OUTBOX_RETENTION_MS`/`OUTBOX_MAX_ROWS=20000`；删除条件「超 7 天 且 不在最新 2 万行内」（取大口径）。新增清理 `event_outbox`（仅 delivered）与 `bus_subscription` 级联；返回新增 `outbox_pruned`/`subscriptions_pruned`；`agent_note` 同步更新。`pending`/`dead_letter` 保留 |
+| 调度来源 | task 域调度器每日 05:00（北京）后首个 tick `dailyBusPrune()` 以 `actor=system` dispatch `bus.prune`（无 force，沿用 6h 冷却）——此前 `bus_prune` 从未被调度（见 [05-task §2.3](05-task.md)） |
+| `bus_status`（§1.4） | outbox 段新增 `delivered` 行数与 `oldest_delivered_at`（保留窗口健康度观测） |
+| `audit_tail`（§1.4） | 单窗 256KB→1MB（`AUDIT_TAIL_WINDOW_BYTES`）；新增 `before_bytes`（排他上界，缺省=文件尾）与返回 `next_before`（null=到文件头）、`window_bytes`；`meta.paged=true` |
+| 查询分页协定（§2.2.4 / [00-conventions §七.2](00-conventions.md)） | 处理器自行分页（SQL LIMIT/OFFSET）须标记 `meta: { paged: true }`，QueryGateway 不再二次切片（修复前实缺陷：`asset_list` limit=3 offset=3 返回 0 行）。`events_tail` 同步标记 |
+
+契约：bus +2（bus_prune 保留窗口裁剪 delivered/保留 pending/级联订阅；audit_tail `before_bytes` 游标回翻）。

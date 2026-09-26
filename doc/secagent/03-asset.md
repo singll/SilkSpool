@@ -323,7 +323,7 @@
 
 ### 1.4 查询逐个详述（读投影，纯读无副作用）
 
-统一分页信封 `{ rows, total, limit, offset }`；`limit` 默认 50、**上限 500**（宪法 §七.2；v4.x 上限 200 一并提升）；`sort` 白名单列 + `dir=asc|desc`；**行数 = total 断言进契约测试**（同一 where 构造器）。
+统一分页信封 `{ rows, total, limit, offset }`；`limit` 默认 50、**上限 500**（宪法 §七.2；v4.x 上限 200 一并提升）；`sort` 白名单列 + `dir=asc|desc`；**行数 = total 断言进契约测试**（同一 where 构造器）。**42 号分页协定**：`asset_list`/`fp_query`/`asset_host_page`/`asset_deep_queue`/`asset_roots_agg` 均自行分页并标记 `meta.paged=true`（总线不再二次切片——修复前 `asset_list limit=3 offset=3` 第 2 页恒空的实缺陷）。
 
 **可见域谓词**（本域适用项与默认值）：
 
@@ -359,11 +359,26 @@
 
 #### `asset_overview`（总览聚合）
 
-无参数。返回 `{ total, family_count, by_level, by_state, by_accept, by_type: [{type, n}], families: [≤300 族行 {root, kind: domain|subnet, host_count, endpoint_count, finding_count, max_score, top_level, last_seen}] }`。缓存 25s TTL + 写命令失效（§2.5）。
+无参数。返回 `{ total, family_count, by_level, by_state, by_accept, by_type: [{type, n}], families: [≤300 族行 {root, kind: domain|subnet, host_count, endpoint_count, finding_count, max_score, top_level, last_seen}] }`。**42 号：缓存 25s→60s TTL + 写命令失效（含 `touchAsset` 触活也失效——旧实现 last_seen 变更后缓存最多陈旧 25s）**（§2.5）。
 
 #### `fp_query`
 
 参数：`host`（精确）、`tech`（LIKE 模糊）、`program_id`、`limit`（默认 50 上限 500）、`offset`。返回行：`program_id, host, tech, version, source, last_seen`。**v5 修正**：v4 fpQuery 无 offset/total——补齐统一分页信封。
+
+#### `asset_host_page`（覆盖账本用紧凑分页，42 号新增）
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `program_id` / `host_like` / `type` | string | `''` | 谓词同 asset_list（type=web 供 ledger 爬取率分母） |
+| `level` | enum | `''` | `S/A/B/C/none` |
+| `state` | enum | `''` | `new/changed/stable/dead` |
+| `limit` / `offset` | int | 2000 / 0 | **单页 ≤2000**（绕开 asset_list 500 上限，供 ledger 全量遍历） |
+
+返回行仅 `host, root` 两列（投影最小化）；后端 `ORDER BY host`，`limit` 封顶 2000。actor 含 `reactor/script`（跨域只读消费）。
+
+#### `asset_roots_agg`（根域聚合，42 号新增）
+
+参数：`program_id` / `type`（均默认 `''`）。SQL `GROUP BY root`（`root` 非空）返回 `{root, host_count, max_score, last_seen}`，按 host_count 降序，单次 ≤5000 行（≪5000 场景即全量根域）；服务 ledger asset 维缺口与根域枚举，不再依赖 asset_list 前 500 行采样。actor 含 `reactor`。
 
 #### `asset_deep_queue`（深挖队列——资产准入纪律的查询化）
 
@@ -426,6 +441,8 @@
 | `fp_record` | 登记指纹（技术栈+版本，host+tech 去重）。指纹命中后用 exec_intel_hunt 检索 N-day 模板并可建候选任务。httpx 探活的 tech 数组会经 parser proposal 自动登记，无需手动。 |
 | `fp_record_bulk` | 批量登记指纹（≤500 行）。 |
 | `asset_list` | 检索资产图谱：host_like 模糊、type/program_id/level/level_in/accept/state 过滤。level='none' 筛未分级资产（分级前的待办清单）。 |
+| `asset_host_page` | （覆盖账本用）资产紧凑分页：仅 host/root，单页 ≤2000，配合 offset 全量遍历（绕过 asset_list 500 上限）。 |
+| `asset_roots_agg` | （覆盖账本用）根域聚合：root/host_count/max_score/last_seen，单次返回全部根域（≪5000）。 |
 | `asset_get` | 单主机钻取：多类型资产行 + 指纹 + 接口计数 + 漏洞分级统计 + 同族主机。 |
 | `asset_family` | 域名族/网段成员主机清单（root 从 asset_overview 族行取）。 |
 | `asset_overview` | 资产总览：评级/状态/收录分布 + 域名族聚合（缓存 25s）。 |
@@ -433,6 +450,8 @@
 | `asset_deep_queue` | 深挖队列（固化查询）：level∈{S,A,B} + accept≠none + 非 dead，按 score 降序。**主动扫描/派单取目标一律走本查询**——未分级与 C 级资产取不到，这是资产准入纪律的物理形态。 |
 
 > 注：本表 `agent_note` 文本现已与域 manifest 对齐。§1.6 早期版本为叙事摘要，曾与 manifest 有出入（如 `radar_read` / `intel_hunt` 工具名）；凡本表与 manifest 不一致处，一律以 manifest 为准。
+>
+> **42 号注记**：`asset_overview` 的 agent_note 文案仍写「缓存 25s」，为 manifest 历史文案；实际 TTL 已改为 60s（§2.5），manifest 文案待同步。
 
 ### 1.7 看板 RPC 投影（RpcProjector 自动生成，RPC 名 = `{domain}.{verb}` 点分）
 
@@ -545,6 +564,8 @@ async function onRunProposal(evt) {
 | `idx_assets_program (program_id)` | **v5 新增** | program 谓词（deep_queue 按项目派单） |
 | `idx_assets_level_score (level, score DESC)` | **v5 新增** | deep_queue 的 `level IN (S,A,B) ORDER BY score DESC` |
 | `idx_assets_state (state)` | **v5 新增** | state 谓词 / dead 排除 |
+| `idx_assets_last_seen (last_seen DESC)` | **42 号新增** | asset_list 默认排序（旧实现全表排序） |
+| `idx_assets_score (score DESC)` | **42 号新增** | asset_list `sort=score` 深翻页 |
 
 ### 2.2 状态机与不变量
 
@@ -588,8 +609,12 @@ updateAssetState(host, type, state, ts)
 /** 谓词原语：list 与 count 必须共享同一 where 构造器（契约测试断言） */
 listAssetsWhere(filters, order, limit, offset) → rows
 countAssetsWhere(filters) → n
+/** 42 号：覆盖账本紧凑分页（仅 host/root，limit 封顶 2000） */
+listAssetHostsPage(filters, limit, offset) → rows
 /** 聚合原语 */
 overviewAggregate() → { total, family_count, by_level, by_state, by_accept, by_type, families }
+/** 42 号：根域 SQL 聚合（root/host_count/max_score/last_seen，LIMIT 5000） */
+rootsAggregate(filters) → rows
 familyMembers(root, limit) → rows
 siblingsOfHost(host, root, limit) → rows
 /** 指纹 */
@@ -626,9 +651,9 @@ ensureCol(col, ddl)
 
 | 缓存 | 内容 | TTL | 失效 |
 |---|---|---|---|
-| `_ovCache` | asset_overview 全量聚合（v4 模式平移：25s TTL + 写命令即失效 `invalidateOverview()`） | 25s | 任一写命令成功 |
-| deep_queue | **不缓存**（派单低频、必须实时反映分级/状态变化） | — | — |
-| asset_get/family/list | 不缓存 | — | — |
+| `_ovCache` | asset_overview 全量聚合（**42 号：TTL 25s→60s**——旧值小于 UI 30s 轮询周期，缓存形同虚设；覆盖 v4 写命令失效 `invalidateOverview()`，**42 号起 `touchAsset` 触活也失效**） | 60s | 任一写命令成功（含 touchAsset 触活）/ 60s TTL |
+| deep_queue / host_page / roots_agg | **不缓存**（派单/账本低频、必须实时反映分级/状态变化） | — | — |
+| asset_get/family/list/fp_query | 不缓存 | — | — |
 
 ### 2.6 性能与容量
 
@@ -643,7 +668,7 @@ ensureCol(col, ddl)
 | fingerprints | 473 行（2026-09-19 实测） |
 | root 冗余列 | 已全量回填（NULL 0 行）（2026-09-06 基线） |
 
-**查询路径与代价**（9.7 万行实测口径，v4 验证过）：overview 族聚合纯 SQL 走 `root` 冗余列 + `idx_assets_root`，接口/漏洞计数 LEFT JOIN 预聚合子查询，数十 ms / 25s 缓存（看板 30s 轮询安全）；deep_queue 走新 `idx_assets_level_score`，命中行 ~5.1 万（S+A+B），LIMIT top-N 即停，<10ms；family/get 主键/索引直查 <5ms。
+**查询路径与代价**（9.7 万行实测口径，v4 验证过）：overview 族聚合纯 SQL 走 `root` 冗余列 + `idx_assets_root`，接口/漏洞计数 LEFT JOIN 预聚合子查询，数十 ms / **60s 缓存（42 号；看板 30s 轮询安全）**；deep_queue 走 `idx_assets_level_score`，命中行 ~5.1 万（S+A+B），LIMIT top-N 即停，<10ms；asset_list 默认排序走 42 号新增 `idx_assets_last_seen`/`idx_assets_score`；host_page 走 `ORDER BY host` 逐页取（单页 2000，ledger 全量遍历用）；family/get 主键/索引直查 <5ms。
 
 **预期增长**：recon 每日新增资产百级（子域枚举+探活），分级 proposal 每批 ≤2,000；年增长 ~3–5 万行，SQLite 单表百万行内无压力。**WAL 参数**沿用 v4（busy_timeout 5s / synchronous NORMAL / wal_autocheckpoint 1000）。**proposal 校验**：2,000 行 JSON 解析 + 逐行 P4-P9 在事务前完成，<100ms。
 
@@ -721,3 +746,12 @@ ensureCol(col, ddl)
 | 独立升级 | 包边界支持单域更新；须回归 asset、exec parser、vuln exec_intel_hunt 与 dashboard 查询。 |
 
 > 2026-09-22 22 号方案回填：`asset_list` actor 白名单补 `reactor`——ledger 域 `coverage_metrics`/`coverage_gaps` 经 `safeQuery(...,{actor:'reactor'})` 跨域只读资产面（Campaign L2 Planner 的覆盖缺口输入源）。只读，不扩写权。
+
+## 六、2026-09-26 42 号补丁回填（覆盖账本分页 + 索引 + 缓存）
+
+> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0/S1；本地契约 asset 32/32 全绿（新增 1 例「asset_list 第 2 页非空」）；部署验收待执行。
+
+- **新增查询**：`asset_host_page`（host/root 紧凑分页，单页 ≤2000，供 ledger 覆盖账本全量遍历绕开 asset_list 500 上限）、`asset_roots_agg`（SQL `GROUP BY root` 全量根域聚合，≤5000 行）。
+- **缓存**：`asset_overview` TTL 25s→60s，`touchAsset` 触活也失效缓存（§2.5）。
+- **索引**：新增 `idx_assets_last_seen(last_seen DESC)`、`idx_assets_score(score DESC)`（默认排序与深翻页主路径）。
+- **分页协定**：`asset_list`/`fp_query`/`asset_host_page`/`asset_deep_queue`/`asset_roots_agg` 均 `meta.paged=true`，总线不再二次切片（修复 `asset_list` 第 2 页恒空实缺陷）。

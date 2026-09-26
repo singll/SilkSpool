@@ -161,7 +161,7 @@ v4.x 中 `buildReport`（asset-db.js L1592-1664）与 `submissionDraft`（L1818-
 | `offset` | integer | 否 | 0 | |
 | `sort` | string | 否 | `generated_at` | 白名单 `['generated_at', 'program', 'total']`；`dir` ∈ asc/desc，默认 desc（generated_at）/asc（其余）|
 
-返回统一分页信封 `{ rows, total, limit, offset }`；row = 索引行投影：`{report_id, kind, file, program, title, date, total, by_severity, noise_filtered, actor, generated_at}`。**行数 = total 断言**（同一 where 构造器）。默认排除孤儿行（文件缺失的索引行——查询时惰性清理，见 §2.5）。
+返回统一分页信封 `{ rows, total, limit, offset }`；row = 索引行投影：`{report_id, kind, file, program, title, date, total, by_severity, noise_filtered, actor, generated_at}`。**行数 = total 断言**（同一 where 构造器）。默认排除孤儿行（文件缺失的索引行——查询时惰性清理，见 §2.5）。**42 号：limit/offset 落到 SQL（缺省 50、后端封顶 500），total 走独立 COUNT，处理器标记 `meta.paged=true`（旧实现全量返回由总线事后切片）。**
 
 #### 1.4.2 `report_read`（看板 Modal 查看器后端）
 
@@ -317,7 +317,7 @@ session_id: sess_...
 repository 接口（JSDoc，方法名=原语）：
 
 ```js
-listReportRows(where)        // 索引分页查询
+listReportRows(where, limit, offset)  // 索引分页查询（42 号：SQL LIMIT/OFFSET + 独立 COUNT，limit 封顶 500）
 insertReportRow(row)         // 索引插入（事务内）
 deleteReportRow(reportId)    // heal 用
 readReportFile(relPath)      // 受控读（前缀校验）
@@ -412,3 +412,5 @@ statReportFile(relPath)      // mtime/size/sha
 | 静默错误 | vuln 数据源失败是 fail-closed；noise stats 失败降级为 0，报告仍生成。 |
 | hook 判定 | 只读 vuln/scope，写本域文件/索引，无替代功能 hook。 |
 | 独立升级 | 支持单域替换；须与 vuln、scope、dashboard 联测。 |
+
+> 2026-09-26 42 号补丁回填：`report_list` limit/offset 落到 SQL（缺省 50、后端封顶 500），`total` 走独立 COUNT（旧实现全量返回由总线事后切片）；处理器标记 `meta.paged=true`。契约 report 12/12 全绿；部署验收待执行。

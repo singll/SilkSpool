@@ -252,14 +252,14 @@
 | mem_class / status | string | 否 | `''` | 生命周期维度筛选（review 视图用） |
 | exclude_notes | bool | 否 | **true** | **默认隐藏 note 类速记**（流水账治理；neg_check 显式查 note 不受影响） |
 | sort | string | 否 | `updated_at` | 白名单：updated_at / edge_count / category（置顶 pinned 恒在最前） |
-| limit / offset | int | 否 | 50 / 0 | limit 上限 500；**未实现**——handler 忽略本参数，硬编码 `limit=5000, offset=0` |
+| limit / offset | int | 否 | 50 / 0 | limit 上限 500；**42 号起分页落到 SQL**（`listFactsWhere` LIMIT/OFFSET）——旧实现 handler 忽略本参数、硬编码 `limit=5000, offset=0`，offset 被丢弃 |
 | reader | string | 否 | `task` | `task`=执行角色；`review`=复盘角色全量可见（含 timeline/archived） |
 
 **可见域谓词（reader=task，构造器默认值）**：排除 `status='archived'`、排除 `mem_class='timeline'`、排除已过期 ephemeral（`expires_at < now`）、exclude_notes 默认 true；cooling 行**打标可见**（`_cooling: true`，不隐藏——用到即复验）。
 
 **投影层补偿动作**（设计目标：不进查询事务，失败不影响结果）：① 返回行补发 `fact_record_signal(used)`；② 发现"已过期未归档"行补发 `fact_transition(to=archived, actor=system, reason='lazy: ephemeral 过期')`——v4 惰性即时归档的 v5 化（查询仍纯读，物理归档经命令，失败由 sweep 兜底）。**未实现**：现行 Q1 handler 只做可见域过滤 + 读投影，不补发任何命令（`fact_record_signal`/`fact_transition` 均未接线）。
 
-**返回**：`{ rows: [...不含 body 的索引行 + edge_count + _cooling], total }`（无 limit/offset）。
+**返回**：`{ rows: [...不含 body 的索引行 + edge_count + _cooling], total, meta: { paged: true } }`（42 号：`total` 走独立 `countFactsWhere` 同 where 计数，处理器自行分页，总线不再二次切片）。
 
 #### Q2 · fact_get
 
@@ -416,7 +416,7 @@ sec dispatch fact fact_correct --actor human --args '{"program_id":"p","fact_key
 | **uses** | INTEGER DEFAULT 0 | **v5 新增**（ensureCol）：C8 计数 | C8 |
 | **last_used_at** | INTEGER | **v5 新增**：最近使用 | C8 |
 
-索引：PRIMARY KEY(program_id, fact_key)、`idx_facts_program(program_id)`（沿用）；v5 新增 `idx_facts_lifecycle(mem_class, status, revalidate_by)` 与 `idx_facts_expiry(mem_class, expires_at)`（sweep 扫描走索引）。
+索引：PRIMARY KEY(program_id, fact_key)、`idx_facts_program(program_id)`（沿用）；v5 新增 `idx_facts_lifecycle(mem_class, status, revalidate_by)` 与 `idx_facts_expiry(mem_class, expires_at)`（sweep 扫描走索引）；**42 号新增 `idx_facts_category_updated(category, updated_at DESC)`（分类浏览/检索排序主路径）**。
 
 #### fact_edges 表
 
@@ -604,8 +604,8 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 
 | 缓存 | 位置 | 失效策略 |
 |---|---|---|
-| 幂等表 | 总线（LRU 7 天/万条） | 自动 |
-| fact 检索 | **无应用层缓存**（LIKE 直查；1e4 行内 <10ms，见 2.6） | — |
+| 幂等表 | 总线（LRU 7 天或 2 万行取大；42 号口径） | 自动 |
+| fact 检索 | **无应用层缓存**（LIKE 直查 + SQL 分页；1e4 行内 <10ms，见 2.6） | — |
 | Q4/Q5 聚合 | 看板客户端 30s 节流（不进域） | — |
 | 投影层补偿命令（Q1 的 signal/transition 补发） | 进程内待发队列 | **未实现**（Q1 handler 未接线补发）；设计目标：失败仅 audit 记录，不重试——sweep 兜底（过期行物理归档最迟延迟一个 sweep 周期 6h，可见性不受影响） |
 | FTS/向量索引 | **本域无**（facts 用 LIKE；FTS/向量在 know 域） | — |
@@ -710,3 +710,5 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 | 性能 | task.finished 对账最多串行处理 500 个 FGS fact 节点；当前规模可用，超过后应分批。 |
 | hook 判定 | v4 `persistFgsFacts` 已事件化到 fact 域，无直写。 |
 | 独立升级 | 支持单域替换；须与 fgs/task 联合回归。 |
+
+> 2026-09-26 42 号补丁回填（fact_search 分页落 SQL）：`fact_search` 的 limit/offset 落到 SQL（旧实现固定拉 5000 行、offset 被丢弃）；`total` 走独立 `countFactsWhere`（同 where）；处理器标记 `meta.paged=true`；新增 `idx_facts_category_updated(category, updated_at DESC)`。契约 fact 23/23 全绿；部署验收待执行。

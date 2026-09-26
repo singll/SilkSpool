@@ -226,7 +226,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 ### 1.4 查询逐个详述（纯读）
 
-统一分页信封 `{ rows, total, limit, offset }`（**只适用于返回 `rows` 的列表/聚合查询**：`endpoint_list` / `endpoint_hosts` / `endpoint_matrix`）；limit 默认 50 上限 500；**行数 = total 断言进契约测试**。`queue_status` / `endpoint_surface_scan` 不走该信封，各自返回自身的 `data` 结构（见下）。
+统一分页信封 `{ rows, total, limit, offset }`（**只适用于返回 `rows` 的列表/聚合查询**：`endpoint_list` / `endpoint_hosts` / `endpoint_matrix` / `endpoint_lite_page`）；limit 默认 50 上限 500（`endpoint_lite_page` 例外，单页 ≤2000）；**行数 = total 断言进契约测试**。`queue_status` / `endpoint_surface_scan` / `endpoint_param_stats` 不走该信封，各自返回自身的 `data` 结构（见下）。**42 号分页协定**：`endpoint_list`/`endpoint_lite_page`/`endpoint_hosts` 处理器自行分页并标记 `meta.paged=true`（总线不再二次切片）。
 
 **可见域谓词**：
 
@@ -250,6 +250,20 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 | `dir` / `limit` / `offset` | desc/50/0 | — |
 
 返回行：`host, method, path, status, source, program_id, params, auth_required, roles_seen, auth_state, should_auth, should_auth_source, last_seen`（v4 列表不带 params/auth 列——v5 补齐，供接口行内直读鉴权状态；21 号方案补登录态/语义列）。
+
+#### `endpoint_lite_page`（覆盖账本用紧凑分页，42 号新增）
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `program_id` | `''` | 谓词 |
+| `auth_state` / `should_auth` | `''` | 登录态/业务语义过滤 |
+| `limit` / `offset` | 2000 / 0 | **单页 ≤2000**（绕开 endpoint_list 500 上限，供 ledger 全量遍历） |
+
+返回行仅 `host, path, params, auth_state`；actor 含 `reactor/script`（跨域只读消费）。
+
+#### `endpoint_param_stats`（参数率聚合，42 号新增）
+
+参数：`program_id`（默认 `''`）。SQL 计数返回 `{total, with_params}`（不物化行）——ledger `coverage_metrics` 参数覆盖率的分母/分子来源，取代对端点列表的采样。
 
 #### `endpoint_auth_summary`（登录态分布聚合，21 号方案 §4.4/§5）
 
@@ -296,7 +310,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
   "total_queue_lines": 940 }
 ```
 
-`last_consumed_at: null` 即"从未消化"——v4 现状三项目全部如此，v5 上线后此字段成为参数面纪律的健康指标。
+`last_consumed_at: null` 即"从未消化"——v4 现状三项目全部如此，v5 上线后此字段成为参数面纪律的健康指标。**42 号：queue/seen 行数按 `mtime+size` 进程内缓存**（旧实现每次 `queue_status` 整读两个文件；param-seen 曾达 6MB 级）。
 
 #### `endpoint_surface_scan`（敏感参数/路径回扫，v4 toolSurfaceScan 收编）
 
@@ -426,7 +440,7 @@ sec cmd endpoint consume-queue --program bytedance --scanner dalfox --run-id run
 | 项 | 定义 |
 |---|---|
 | 形态 | 每行一条带参数的完整 URL，UTF-8 文本，按入队批内排序追加 |
-| 写入者 | endpoint_queue_surface（追加）/ endpoint_consume_queue（重写删行）——**均 tmp+rename 原子写** |
+| 写入者 | endpoint_queue_surface（追加）/ endpoint_consume_queue（重写删行）——消费删行仍 tmp+rename 原子写；**42 号起追加改 `O_APPEND` 分块写（`appendLinesAtomic`，≤3.5KB/次，Linux PIPE_BUF 内单写原子），不再「整读→拼接→整流重写」的 O(n) 写放大** |
 | 消费方 | dalfox `file <path>` / sqlmap `-m <path>`（只读，外部进程） |
 | 现状 | bytedance 0 行 / meituan-src 0 行 / dsh-ops 1 行（运行时实测——前两者已被 consume 消化清空） |
 
@@ -435,7 +449,7 @@ sec cmd endpoint consume-queue --program bytedance --scanner dalfox --run-id run
 | 项 | 定义 |
 |---|---|
 | 形态 | 同上；**只增不减**的全局 seen 集合（入队防重 + 消化后防重回） |
-| 写入者 | endpoint_queue_surface（追加） |
+| 写入者 | endpoint_queue_surface（追加）——**42 号起 `O_APPEND` 分块写（同 queue）**；行数经 `mtime+size` 缓存统计 |
 | 现状 | bytedance 913 行 / meituan-src 52 行 / dsh-ops 1 行（运行时实测）——**与 queue（0/0/1）不再相同**：seen 只增不减，queue 已被 consume 清空，是消化语义生效的直接证据 |
 
 **索引**：
@@ -446,6 +460,7 @@ sec cmd endpoint consume-queue --program bytedance --scanner dalfox --run-id run
 | `idx_endpoints_host` | 现有 | endpoint_hosts 分组 / matrix 聚合 |
 | `idx_endpoints_program (program_id)` | **v5 新增** | program 谓词（运行时 357 行；为 l2 持续增长预留） |
 | `idx_endpoints_auth (auth_required)` | **v5 新增** | auth 谓词 / matrix 的 auth 分布聚合 |
+| `idx_endpoints_last_seen (last_seen DESC)` | **42 号新增** | endpoint_list 默认排序（旧实现全表排序） |
 
 ### 2.2 状态机与不变量
 
@@ -479,7 +494,7 @@ manifest 实际声明的 invariants 键只有 6 个：`upsertMode` / `batchLimit
 | INV-4 | 批量上限：rows ≤500 / tsv ≤5,000（进 schema） | `upsertMode` + `batchLimit` | E_SCHEMA / E_ENDPOINT_BATCH_TOO_LARGE |
 | INV-5 | mark_auth 的目标端点必须已登记（先 upsert 后标注） | `endpointExists` | E_NOT_FOUND |
 | INV-6 | auth_required 从 unknown → yes/no 必带 evidence（**证据即参数**：鉴权判定是越权测试的准入结论） | `authEvidence` | E_EVIDENCE_REQUIRED |
-| INV-7 | 队列文件只经域命令变更（tmp+rename 原子写）；run_cli 沙箱对两个文件不可写（setup.sh owns×sandbox 交叉断言） | （安全基线，非运行时码） | （安全基线，非运行时码） |
+| INV-7 | 队列文件只经域命令变更（追加 = `O_APPEND` 分块写；消费删行 = tmp+rename 原子重写——42 号）；run_cli 沙箱对两个文件不可写（setup.sh owns×sandbox 交叉断言） | （安全基线，非运行时码） | （安全基线，非运行时码） |
 | INV-8 | queue_surface 的 source 文件必须存在 | `queueSourceExists` | E_NOT_FOUND |
 | INV-9 | consume_queue 的 run_id 证据目录 `results/<run_id>/` 必须存在 | `consumeEvidence` | E_EVIDENCE_REQUIRED |
 
@@ -504,11 +519,15 @@ listEndpointsWhere(filters, order, limit, offset) → rows      // 与 count 同
 countEndpointsWhere(filters) → n
 hostsAggregate(filters, limit, offset) → { rows, total }      // 按 host 分组
 matrixAggregate(filters, minRoles) → rows                     // 越权矩阵
+/** 42 号：覆盖账本紧凑分页（host/path/params/auth_state，单页 ≤2000）/ 参数率 SQL 聚合 */
+listEndpointLitePage(filters, limit, offset) → rows
+paramStats(filters) → { total, with_params }
 /** ---- 队列文件（file） ---- */
 readQueue(program) / readSeen(program) → string[]
-appendQueueAtomic(program, urls)                              // 读+合并+tmp+rename
+appendQueueAtomic(program, urls)                              // 42 号：O_APPEND 分块写（≤3.5KB/次）
 appendSeenAtomic(program, urls)
-rewriteQueueAtomic(program, remainingUrls)                    // 消化删行
+rewriteQueueAtomic(program, remainingUrls)                    // 消化删行（tmp+rename）
+countLinesCached(file) → n                                     // 42 号：行数按 mtime+size 缓存
 queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consumed_at }
 ```
 
@@ -528,7 +547,7 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 | 缓存 | 内容 | TTL | 失效 |
 |---|---|---|---|
 | `_hostsCache`（及任何 hosts 缓存） | **未实现**——后端无 `_hostsCache`，`invalidateHosts()` 是 noop（预留）；hosts 聚合每次实时查询 | — | — |
-| queue_status | **不缓存**（文件 stat 即时读，开销可忽略；消化红灯必须实时） | — | — |
+| queue_status 行数 | **42 号：queue/seen 行数按 `mtime+size` 缓存**（`countLinesCached`；文件变更即 miss 重读，未变更不再整读） | 随文件 mtime/size | 文件变更 |
 | matrix | 不缓存（biz-logic 低频调用） | — | — |
 
 ### 2.6 性能与容量
@@ -607,3 +626,12 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 | 独立升级 | 支持单域替换；须回归 endpoint、exec parser、vuln 越权提示与 ledger 联动。 |
 
 > 2026-09-22 22 号方案回填：`endpoint_list` actor 白名单补 `reactor`——ledger 域覆盖账本/缺口队列经 reactor 跨域只读端点面（登录态/参数/漏洞类缺口判定）。只读，不扩写权。
+
+## 六、2026-09-26 42 号补丁回填（账本分页 + param 追加写 + 索引）
+
+> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0/S1；本地契约 endpoint 33/33 全绿；部署验收待执行。
+
+- **新增查询**：`endpoint_lite_page`（host/path/params/auth_state 紧凑分页 ≤2000，供 ledger 全量遍历）、`endpoint_param_stats`（total/with_params SQL 聚合，不物化行）。
+- **文件写**：`param-queue.txt`/`param-seen.txt` 追加改 `O_APPEND` 分块写（`appendLinesAtomic`，≤3.5KB/次，PIPE_BUF 内单写原子），不再整读整写；消费删行仍 tmp+rename。`queue_stat` 行数按 `mtime+size` 缓存。
+- **索引**：新增 `idx_endpoints_last_seen(last_seen DESC)`。
+- **分页协定**：`endpoint_list`/`endpoint_lite_page`/`endpoint_hosts` 均 `meta.paged=true`，总线不再二次切片。

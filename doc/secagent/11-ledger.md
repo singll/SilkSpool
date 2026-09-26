@@ -263,22 +263,26 @@ know 域（07-know.md C16 消费通道）经本查询获取卡片使用信号，
 
 | 指标 | 口径 | 数据源 |
 |---|---|---|
-| `crawl` 爬取覆盖率 | 账本 crawled_ok host / web 资产 host 总数 | asset_list(type=web) + coverage-ledger |
-| `param` 参数覆盖率 | 带 params 端点 / 端点总数 | endpoint_list |
+| `crawl` 爬取覆盖率 | 账本 crawled_ok host / web 资产 host 总数 | **asset_host_page(type=web)** + coverage-ledger |
+| `param` 参数覆盖率 | 带 params 端点 / 端点总数 | **endpoint_param_stats（SQL 计数，不物化行）** |
 | `login` 登录覆盖率 | 已登录态测试端点 / 需登录端点总数 | endpoint_auth_summary + auth 面账本 |
 | `vulnclass` 漏洞类覆盖率 | 七类主粮已测类数 / 7 | vulnclass 面账本 |
 
+> **42 号：全量分页口径**——旧实现只看 asset/endpoint **前 500 行采样**，大 program（bytedance 6.9 万资产/5 千端点）四指标全部失真（crawl 分母 500/69605、meituan `need_login` 全量 4 在采样里为 0、param 率 24% vs 真实 35.7%）。改为 `queryPages` 分页遍历 + 硬上限 `LEDGER_MAX_ASSET_ROWS=200000` / `LEDGER_MAX_ENDPOINT_ROWS=50000`，`crawl.truncated` 标记是否触顶；参数率改 `endpoint_param_stats` SQL 聚合；根域枚举改 `asset_roots_agg`。
+
 #### 1.4.9 `ledger_coverage_gaps`（覆盖缺口队列，§4.3）
 
-**账本的输出不是报表，是队列**：未爬 host（crawl）/ 无参端点（param）/ 未测类（vulnclass，per host 七类）/ 登录态端点未测（auth）/ 根域枚举超窗（asset）五类格点，`strategy_key` 幂等去重，按高危类 × 资产面排序（idor 10 / sqli 11 / ssrf 12 / authz 13 / file 14 / xss 15 / info_disclosure 20 / param 30 / auth 40 / asset 45 / crawl 50）。Phase 3 Intent 派生器的输入。
+**账本的输出不是报表，是队列**：未爬 host（crawl）/ 无参端点（param）/ 未测类（vulnclass，per host 七类）/ 登录态端点未测（auth）/ 根域枚举超窗（asset）/ 超龄未分诊 finding（review，26 号）六类格点，`strategy_key` 幂等去重，按高危类 × 资产面排序（idor 10 / sqli 11 / ssrf 12 / authz 13 / file 14 / xss 15 / info_disclosure 20 / param 30 / review 35 / auth 40 / asset 45 / crawl 50）。Phase 3 Intent 派生器的输入。
 
 > 2026-09-23 25 号补丁（资产收集入专项）：新增 `asset` 维——按根域（assets.root 或二级域兜底）聚合，最近 `enum_fresh` 记账超窗（`SEC_LEDGER_ASSET_STALE_MS`，默认 3 天）即重开缺口（mark=enum_stale，priority 45）；消费方=专项 Planner（kind=asset_enum，见 05-task §7.8），闭环=子任务收尾 `ledger_coverage_mark(dim=asset, key=<根域>, mark=enum_fresh)`。mark 枚举 `enum_stale/enum_fresh` 已入 `coverStatusValid` 与 `COVER_DIM_ENUM`。契约：「coverage_gaps: asset 维——根域无 enum_fresh 记账出缺口，记账后闭环」。
 
 > 2026-09-23 26 号补丁（存量复核入专项）：新增 `review` 维——**只可派生不可 coverage_mark**（GAPS_DIM_ENUM 扩展，COVER_DIM_ENUM 不变）：status=new 且超龄（`SEC_LEDGER_REVIEW_STALE_MS`，默认 48h）的 finding 逐条出列（key=finding id，mark=pending_review，priority 35，value=严重度加权 critical5/high4/medium2/low1）；消费方=专项 Planner（kind=review_finding，见 05-task §7.11），闭环靠事实——triage 后 status 不再是 new 即自然出列，`strategy_dedupe` 防同条重派。配套：`vuln_list` 查询 actor 增补 reactor（Planner 分维拉取经 safeQuery 以 reactor 身份读）。契约：「coverage_gaps: review 维——超龄未分诊 finding 出缺口，新鲜不出列」。
 
+> **42 号：gaps 全量分页**——六维输入全部改分页遍历（crawl/asset 维 `asset_host_page` 上限 20 万行；param/auth/vulnclass 维 `endpoint_lite_page` 上限 5 万行；review 维 `vuln_list` 上限 2 万行；asset 根域 `asset_roots_agg` 单次聚合）；单维缺口格点上限 `LEDGER_MAX_GAPS_PER_DIM=20000`，触顶进 `truncated: {dims:[...]}` 输出（不再静默截断）。
+
 #### 1.4.10 `ledger_login_blindspot`（登录盲区摘要，§4.4）
 
-program 无可用凭据（scope cred_query 为空）时生成：「未登录状态已覆盖 X/Y 端点（仅公开面 Z%）；判定需登录的端点 N 个完全未测；其中高价值功能点 M 个（admin/pay/order/user…）→ 需要：登记登录凭据（cred_add）」。返回 `action_item: {kind:'cred_add'}` 人工行动项；未登录态下的覆盖必须标注「仅公开面」防虚假安全感。
+program 无可用凭据（scope cred_query 为空）时生成：「未登录状态已覆盖 X/Y 端点（仅公开面 Z%）；判定需登录的端点 N 个完全未测；其中高价值功能点 M 个（admin/pay/order/user…）→ 需要：登记登录凭据（cred_add）」。返回 `action_item: {kind:'cred_add'}` 人工行动项；未登录态下的覆盖必须标注「仅公开面」防虚假安全感。**42 号：端点面改 `endpoint_lite_page` 分页全量遍历（上限 5 万行），输出新增 `truncated` 标记**（旧实现采样导致「need_login 全量 4 个在采样里为 0」的失真）。
 
 #### 1.4.11 `ledger_rotation_status`（空转升圈只读，§3-3）
 
@@ -509,6 +513,7 @@ hasHandoff(program, date) → boolean
 | radar-queue | 常态 <20 行（drain 清空） | — | 无 |
 | handoff | 每项目每日 1 文件 + .prev | 365×2 文件/年/项目 | vault 归档链路既有节奏 |
 | coverage 聚合 | <100ms | 线性于行数 | P95>500ms 触发 2.4 |
+| 覆盖账本跨域分页（42 号） | 逐页 2000 行遍历；硬上限资产 20 万 / 端点 5 万 / findings 2 万 / 单维缺口 2 万 | 每 program 每次查询至多上限行数 | 触顶显式 `truncated`（不静默）；上限常量化 `LEDGER_MAX_*` |
 
 ---
 
@@ -597,3 +602,12 @@ hasHandoff(program, date) → boolean
 - 本域未新增/变更命令与事件。`ledger.card_usage.logged` 事件新增一名弱联动订阅者（know 域 `onCardUsageLogged` → `know_adoption_record`，采用事实进 know_adoptions）——本域写入路径/文件 owns/事件 payload 均不变；订阅失败只影响 know 侧投影（可重放补偿），不回压本域主链路。
 
 > 2026-09-22 22 号方案修复（覆盖缺口输入源）：`safeQuery` 此前只读 `r.data`，但列表类查询经总线在**信封顶层**返回 `rows/total`（非 data 包装），导致 `coverage_metrics`/`coverage_gaps`/`login_blindspot` 对 asset/endpoint 数据**全盲**（缺口恒空 → Campaign L2 Planner 无输入）。已归一两种形态（`Array.isArray(r.rows) ? r : r.data`），并补 reactor 只读 actor 白名单（asset_list/endpoint_list/cred_query）。回归：ledger 契约新增「跨域列表查询顶层 rows 被正确消费」例。
+
+## 八、2026-09-26 42 号补丁回填（覆盖账本全量分页 + truncated）
+
+> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0（最高优先）；本地契约 ledger 31/31 全绿（3 例适配新查询名与断言）；部署验收待执行。
+
+- **问题**：`coverage_metrics`/`coverage_gaps`/`login_blindspot` 基于 asset/endpoint 前 500 行采样——bytedance crawl 分母 500/69605、meituan `need_login` 全量 4 在采样里为 0、param 率 24% vs 真实 35.7%，指标失真。
+- **修复**：统一 `queryPages` 分页遍历（每页 2000）+ 硬上限；四指标改 SQL 聚合/全量口径。
+- **消费查询**：资产 `asset_host_page`（上限 20 万行）、端点 `endpoint_lite_page`（上限 5 万行）、findings `vuln_list`（上限 2 万行，review 维）、根域 `asset_roots_agg`（单次聚合）、参数率 `endpoint_param_stats`（SQL 计数）。
+- **常量与输出**：`LEDGER_MAX_ASSET_ROWS=200000` / `LEDGER_MAX_ENDPOINT_ROWS=50000` / `LEDGER_MAX_FINDING_ROWS=20000` / `LEDGER_MAX_GAPS_PER_DIM=20000`；输出新增 `truncated` 标记（metrics 按面、gaps 按维 `{dims:[...]}`、blindspot 布尔）。

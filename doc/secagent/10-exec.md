@@ -257,6 +257,8 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 
 `exec_plan_chain` 能力链主干（当前 manifest 图的实际形态）：`domains → subdomains → live_hosts → endpoints → findings`。
 
+> **42 号：不再整读文件**——`exec_page_result` 经新增后端 `readFileWindow`（逐行流式窗口，内存只保留窗口行，`total_lines` 边读边计）取代「整读 stdout.log 再 split」；`exec_grep_result` 经 `readLinesCapped`（逐文件流式、限 8MB/文件）取代整读每个文本产物。大 run（数百 MB stdout）不再爆内存。
+
 ### 1.5 事件
 
 #### 1.5.1 发布事件总表
@@ -535,6 +537,9 @@ writeCmd(runDir, text) / appendStdout 流式 / writeMeta(runDir, meta)
 writeProposal(runDir, proposal)
 readRunDirTree(runId) → 文件清单（grep 用）
 appendFlow(date, line) / appendImport(id, line)
+readFlows({date, limit}) → rows                 // 42 号：date 缺省=最近文件优先（旧实现升序取最旧）
+readFileWindow(absPath, offset, limit) → {lines, total_lines}  // 42 号：按行流式窗口（exec_page_result）
+readLinesCapped(absPath, maxBytes=8MB) → lines  // 42 号：限字节流式读（exec_grep_result）
 listRuns(filter) → 不提供（执行史浏览走总线 audit_tail）
 ```
 
@@ -563,7 +568,7 @@ exec 域**没有** sqlite/http 后端计划——owns 全是文件，域内无�
 | results/ | 30 天 retention；每日数十~数百 run，单 run 数 KB~数十 MB | 不变 |
 | events/exec.jsonl | run.completed ~1KB/条 × 每日数百 ≈ 数百 KB/日 | 留痕无轮转上限，年 ~200MB 可接受（后续按域轮转进总线议题） |
 | QPS 桶 | 进程级，零开销 | — |
-| grep 全 run 目录 | 单 run 文件数 <100，全扫 <50ms | — |
+| grep 全 run 目录 | 单 run 文件数 <100，全扫 <50ms；**42 号起单文件流式限 8MB**（旧整读大文件可爆内存） | 大 run 内存有界（窗口/字节帽） |
 
 ### 2.7 平台资产声明（exec 域周边的不动清单）
 
@@ -704,3 +709,11 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 
 - 现象：httpx 等只读工具以逗号拼接多目标清单时，URL 正则把整段清单当成单个 URL，命中写动词段（如 `/order/list`）后把数 KB 清单塞进 `tool-intrusive` 审批 payload/evidence，导致审批事件超限、无法裁决。
 - 修复：URL 字符集排除逗号（多目标清单按单个 URL 拆分）+ 命中 URL 截断 512 字；根因是逗号拼接多目标合法，但被当成单个 URL。
+
+## 十、2026-09-26 42 号补丁回填（exec 结果读取流式化）
+
+> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0；本地契约 exec 30/30 全绿；部署验收待执行。
+
+- **后端新增**：`readFileWindow`（按行流式窗口，内存有界）、`readLinesCapped`（grep 逐文件流式、限 8MB）。
+- **查询改造**：`exec_page_result` / `exec_grep_result` 不再整读文件（旧实现大 stdout 数百 MB 爆内存）。
+- **流向修正**：`readFlows` 无 `date` 时改「最近文件优先」（旧实现升序取最旧，缺省永远看到最早流量）——`exec_flow_triage` 随之取近期流量。

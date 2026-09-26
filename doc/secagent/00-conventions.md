@@ -186,7 +186,8 @@
    - **自动指纹 `auto`**：无自然键的命令（如 vuln_note），网关对 `(domain, verb, idempotent_fields 核心字段)` 取 sha1；
    - **仅显式 `explicit_only`**：仅调用方显式传 key 才落幂等表，不传则每次执行（exec_run_cli 类——同一命令行的重复执行是合法新意图）；
    - **无 `none`**：不落幂等表——域内天然幂等（读后清空如 ledger_radar_drain、状态合并类如 scope_grant）或长时非事务命令（exec_spawn_worker，其去重由命令内预检承担）。
-2. **保留窗口**：`idempotency` 表保留最近 7 天或 10,000 条（LRU 淘汰）；命中同 key 同参数 → 返回首次结果 + `replay: true`；同 key 不同参数 → `E_IDEMPOTENT_CONFLICT`。
+2. **保留窗口**：`idempotency` 表保留最近 7 天或 20,000 条（LRU 淘汰）；命中同 key 同参数 → 返回首次结果 + `replay: true`；同 key 不同参数 → `E_IDEMPOTENT_CONFLICT`。
+   - **42 号统一口径（取大）**：删除条件 = 「超过 7 天 且 不在最新 2 万行内」——7 天内超过 2 万行时保留整个 7 天窗口，7 天不足 2 万行时保留最新 2 万行。同口径适用于 `event_outbox`（仅 `status='delivered'`；`pending`/`dead_letter` 不动）与 `bus_subscription`（随 outbox 级联清理）。执行 = `bus_prune`，由 task 域调度器每日 05:00（北京）后首个 tick 以 `actor=system` 触发（见 [01-bus §1.3](01-bus.md)）。
 3. **实现位置**：网关统一实现，域不写幂等逻辑（v4.x spawn_worker dedupe_key、webhook 指纹去重的经验泛化）。
 
 ## 七、查询规范
@@ -194,6 +195,8 @@
 1. **纯读**：查询绝不产生行变更。原"搜索即记 uses"类副作用 → 拆为独立命令（如 `exp_record_usage`），由投影层在查询后补发（audit 可见、失败不影响查询结果）。
    - **条件豁免（2026-09-12 裁决，仅此一形态）**：查询路径的**缓存物化与惰性 heal**（如 `ledger_coverage_report(materialize=true)` 物化 coverage-latest.md、`report_list` 删除孤儿索引行、`know_coverage(refresh=true)` 重算缓存）允许保留，当且仅当四条同时满足：① 操作幂等（重放同果）；② 落统一 audit（`kind:"heal"` / `kind:"materialize"`）；③ 不改变查询返回的业务语义（只影响新鲜度/一致性，不造业务数据）；④ 域文档显式声明该例外。除此形态外的查询写副作用一律禁止。
 2. **统一分页信封**：`{ rows: [...], total: N, limit, offset }`；`limit` 默认 50、上限 500；`sort` 白名单列 + `dir=asc|desc`。
+   - **42 号分页协定（总线不二次切片）**：处理器若已自行分页（SQL LIMIT/OFFSET 等），必须在返回里标记 `meta: { paged: true }`；QueryGateway 对已标记的结果**不再二次切片**，未标记才按 `offset/limit` 对处理器返回的行做切片。网关把 `meta` 平铺进信封顶层（调用方在信封上看到 `paged: true`）。缺省 `limit=50`、封顶 500 不变——处理器收到的即总线钳制后的参数；未标记 `paged` 的处理器（如 eval_cases 的过滤后全量）继续由总线切片，offset 不丢。
+   - **受影响处理器（42 号已标记 `meta.paged`）**：asset_list / asset_host_page / asset_roots_agg / fp_query / asset_deep_queue；endpoint_list / endpoint_lite_page / endpoint_hosts；fact_search；know_episode_list / know_revision_list / know_release_list；approval_list；report_list；vuln_list / vuln_candidates；task_list / task_runs / campaign_list / campaign_decisions；fgs_list；program_list；audit_tail / events_tail。
 3. **可见域谓词与计数同口径**：每个列表查询与其对应 `total` 必须由同一个 where 构造器生成——这是 v4.3 修过的病（countFacts/factSearch、queryFindings 行数≠总数），**契约测试必须有"行数=total"断言**。
 4. **可见域谓词是查询参数**（archived / noise / lifecycle / program 归属，见 §十一），默认值在模块文档声明；谓词实现放查询层不放 SQL 散点。
 5. **聚合查询**（stats/overview/coverage）独立命名，不与列表查询混用参数。
@@ -296,7 +299,7 @@
 | 并发 | 两进程同时写（仅 sqlite）→ 一成一 E_CONFLICT 或串行化成功 |
 | 事件载荷 | payload 符合 schema、不含行全量 |
 
-每个查询：行数=total 断言、谓词默认值断言、分页边界。**测试不过的域不允许上线**（setup.sh 冒烟阶段跑契约测试）。
+每个查询：行数=total 断言、谓词默认值断言、分页边界；**已自行分页（`meta.paged`）的处理器须有「第 2 页非空」回归**（42 号总线二次切片缺陷的防线）。**测试不过的域不允许上线**（setup.sh 冒烟阶段跑契约测试）。
 
 ## 十四、安全基线
 

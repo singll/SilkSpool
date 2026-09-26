@@ -39,7 +39,7 @@
 
 | 通道 | 注册者 | 端点形态 | 消费方 | 纪律 |
 |---|---|---|---|---|
-| `/silksec-dashboard` | `dsh-plugin-sec-suite.js:995`（child fiber + `dashboardRpcRegistered` 幂等守卫，authority=loopback）| **56 个手写 case**（`dashboard-rpc.js`，v4 case 名保留为 UI 适配层）| 6 承载面包 + 7 域视图包（`connection.rpc.call('/silksec-dashboard', endpoint, payload)`）| 每个 case **fail-closed 走总线**（`busQuery`/`busDispatch`），无 v4 直写兜底；`assetDb` 仅剩 `taskChain` 宿主 helper（`stats` 于 19-ui-unify §4.4 改壳聚合查询） |
+| `/silksec-dashboard` | `dsh-plugin-sec-suite.js:995`（child fiber + `dashboardRpcRegistered` 幂等守卫，authority=loopback）| **75 个手写 case**（`dashboard-rpc.js`，v4 case 名保留为 UI 适配层）| 6 承载面包 + 7 域视图包（`connection.rpc.call('/silksec-dashboard', endpoint, payload)`）| 每个 case **fail-closed 走总线**（`busQuery`/`busDispatch`），无 v4 直写兜底；`assetDb` 仅剩 `taskChain` 宿主 helper（`stats` 于 19-ui-unify §4.4 改壳聚合查询） |
 | `/silksec-domain` | `dsh-plugin-sec-domain-bus.js:1833`（RpcProjector，authority=loopback）| `{domain}.{verb}` **点分全名**（从域 manifest 自动投影命令 + 查询）| 脚本 / 模型 / 人 / 外部自动化 | operator 从连接上下文注入；业务端点统一 fail-closed |
 
 > **与旧设计的差异（回填）**：原 16-dashboard 设计「UI 视图从第一天就调 `{domain}.{verb}`、`/silksec-dashboard` 的 case 代码删除」**未按此执行**。实际落地是：视图包继续调 `/silksec-dashboard` 的 v4 case 名，但 `dashboard-rpc.js` 把这些 case 整体改写为 **总线的瘦适配层**（UI-0，commit `e9dd1f1`；2026-09-18 的 63 处 `v4 兜底` 归零）。`{domain}.{verb}` 自动投影通道（`/silksec-domain`）服务非 UI 调用面。两通道并存、各司其职；`/silksec-dashboard` 端点是 **UI 专用适配层**，不是遗留待删代码。
@@ -53,7 +53,7 @@
 | UI 内核 | `@silksec/ui-core` | 双面插件（宿主 no-op index + client bundle）| theme token 引用表、`SilksecErrorBoundary`、`useRpc`/`usePagedQuery` hooks、共享组件（Toolbar/Pager/EmptyState/DocModal/SkeletonRows…）、`secUiBus` 客户端微事件、**视图注册表 `viewRegistry`**（provide 为 `secDashboardViews`）、`markSurfaceHealth` 打卡 |
 | 主面板 | `@silksec/ui-panel` | 双面插件 | `main` keyed 槽主面板 + `sidebar.panellist` 一级导航行 + `layout.selectPanel` 入口；消费 `viewRegistry` 按 order 装配 |
 | 审批套件 | `@silksec/ui-approval` | 双面插件 | `shell.overlay` 待办胶囊 + 快捷处理浮卡 + 审批右侧栏 page tab |
-| 任务套件 | `@silksec/ui-task` | 双面插件 | 任务右侧栏 page tab（四区块）+ 会话头「本会话任务」计数 |
+| 任务套件 | `@silksec/ui-task` | 双面插件 | 任务右侧栏 page tab（五区块：专项 / 正在执行 / 队列 / 定时折叠 / 历史）+ 会话头「本会话任务」计数 |
 | 授权设置 | `@silksec/ui-settings-scope` | 双面插件 | `settings.section`「授权范围」整节 |
 | 会话绑定 | `@silksec/ui-session` | 双面插件 | `conversation.view` 安全产出 + 会话头计数钮 + `assistant-actions` 登记/沉淀 |
 | 逐域视图 | `@silksec/sec-dashboard-view-{vuln,asset,endpoint,fact,know,report,audit}` | 双面插件（宿主 no-op + client）| 7 个独立 client bundle，单视图注册、单视图升级/回滚 |
@@ -114,7 +114,7 @@ export default {
 | 域 | 主表面 | 辅助/绑定面 | 理由 |
 |---|---|---|---|
 | **审批** approval | 右侧栏 page tab（kind=`silksec-approval`，single）| `shell.overlay` 待办胶囊（计数 + 点击弹快捷批准列表）；会话内审批卡（spike，未落地）| 最高频待办；批准常需对照来源会话证据，并排价值最大；通知是被动信号，属浮层 |
-| **任务** task | 右侧栏 page tab（kind=`silksec-task`，single）| 会话头 utilities「本会话任务」计数 | 边盯 worker 会话边 run_now/cancel 是真实工作流；四区块重排为栏宽自适应 |
+| **任务** task | 右侧栏 page tab（kind=`silksec-task`，single）| 会话头 utilities「本会话任务」计数 | 边盯 worker 会话边 run_now/cancel 是真实工作流；五区块重排为栏宽自适应 |
 | **漏洞** vuln | 主面板视图（候选工作队列需全宽）| `conversation.chat.assistant-actions`「登记候选漏洞」；行内跳链 | 宽表 + 批量操作 + 多维筛选 |
 | **资产** asset | 主面板视图（列表/域名族双模式）| — | 宽表 + 聚合视图 |
 | **接口** endpoint | 主面板视图（按主机分组）| — | 随资产 |
@@ -161,9 +161,9 @@ var d2 = slots.inject('sidebar.panellist', function () {
 
 **任务 tab（`@silksec/ui-task`，右侧栏 page type）**：
 
-- kind=`silksec-task`；栏内自上而下：**专项**（22 号方案 A 合并入任务视图——Campaign 常驻统筹实体卡片：状态/自主级别 L0–L2/验收计数 accepted/rejected/rework/escalated/预算条/心跳 + 「立即 tick」；点击卡片按 campaign_id 过滤一次性队列，`campaigns` 查询不可达时区块静默隐藏）→ **定时任务卡片**（`IconAlarmClockOutline` + `next_run_at` 相对时间）→ **一次性队列**（状态 `StateDot`；`campaign_id` 非空的行带「专项 <名称>」归属 chip，点击即按专项过滤，chip 可一键清除）→ **执行历史**（默认折叠 `DisclosureRow`）；工作区块在窄栏形态降级为顶部 program 筛选 `Pill` 组。
+- kind=`silksec-task`；栏内自上而下（32 号五区块）：**专项**（Campaign 常驻统筹实体卡片：状态/自主级别 L0–L2/验收计数/预算条/心跳 + 治理按钮组；点击卡片=展开运行报告抽屉——`campaignGet`+`campaignProgress`+`campaignPendingDrafts` 三并发，24 号；独立 ⌗ 按钮按 campaign_id 过滤队列；`campaigns` 查询不可达时区块静默隐藏）→ **正在执行**（running+blocked 独立数据源 `executingTasks`，37 号；空态显式提示）→ **队列**（默认只显示排队；状态 chip 全部/运行中/排队/阻塞 + 来源 chip 全部/专项派生/其他；`campaign_id` 非空行带「专项 <名称>」归属 chip）→ **定时任务**（默认折叠 `DisclosureRow`，只留数量徽标；展开为原卡片 `IconAlarmClockOutline` + `next_run_at` 相对时间）→ **执行历史**（近期 ≤24h / 存量 >24h 折叠，默认折叠）；工作区快块保持在底部，窄栏形态降级为顶部 program 筛选 `Pill` 组。
 - 写操作：`task.run_now/cancel/block/resume/schedule` RPC；行内操作图标 + title 纪律不变。
-- 专项写操作：`campaignTickNow` RPC（task.campaign_tick_now 域命令，actor=dashboard）；专项过滤走 `tasks` RPC 的 `campaign_id` 参数（透传 task 域 task_list）。
+- 专项/任务补丁写操作：`campaignTickNow`（22 号）、`campaignAutonomyRequest`（31 号）、`campaignActivate/Pause/Resume/ReviewPass`（33 号）、`campaignArchive/GoalRevise/Create` + `budgetConfig`/`budgetConfigRequest`/`taskUpdateNote`（34 号）、`executingTasks`（37 号，读）——逐项见文末各补丁小节；专项过滤走 `tasks` RPC 的 `campaign_id` 参数（透传 task 域 task_list）。
 - **供给徽章（23 号方案 §3.4）**：专项卡片状态行增「供给」三态徽章（正常绿 / 降速黄 / 停派红 / 观测异常黄；`unknown` 不渲染避免噪音），数据源 = `campaign_list` 行的 `supply` 字段（从最近供给 checkpoint 反推，不触网）；title 携带 factor 与 checkpoint 摘要，可追溯「为什么这小时没派生」。
 - 栏宽自适应：表格在 <480px 切换为卡片行。
 
@@ -223,10 +223,10 @@ var d2 = slots.inject('sidebar.panellist', function () {
 
 其余读操作走各域查询（`vuln.list`、`asset.list`…），`/silksec-dashboard` 的 case 是薄适配层，`/silksec-domain` 的 `{domain}.{verb}` 是自动投影（§1.7）。
 
-### 1.7 `/silksec-dashboard` 案例逐个去向（63 个，实测）
+### 1.7 `/silksec-dashboard` 案例逐个去向（75 个，实测）
 
-> 说明：本表是 `dashboard-rpc.js` 当前 **63 个手写 case** 的实测去向。原 16-dashboard 的「53 case」表统计于 v4 末期（少记 L6 的三个 learning 端点）；本表为 v6.0 重核口径。所有业务 case 均 fail-closed 到总线（无 v4 直写兜底）。
-> 表后 7 个 campaign 端点（22 号方案 4 个 + 24 号方案 3 个）见下方「专项 RPC」注。
+> 说明：本表是 `dashboard-rpc.js` 当前 **75 个手写 case** 的实测去向（表内 56 + 表外 19，2026-09-26 重核）。原 16-dashboard 的「53 case」表统计于 v4 末期（少记 L6 的三个 learning 端点）；本表为 v6.0 重核口径。所有业务 case 均 fail-closed 到总线（无 v4 直写兜底）。
+> 表后 19 个专项/任务补丁端点（22 号 4 + 24 号 3 + 31/33/34/37 号 12）见下方「专项 / 任务补丁 RPC」注。
 
 | # | case | 读/写 | 去向（总线命令/查询）| 类型 |
 |---|---|---|---|---|
@@ -287,9 +287,9 @@ var d2 = slots.inject('sidebar.panellist', function () {
 | 55 | `reports` | 读 | `report.list`（索引直出）| 域查询 |
 | 56 | `reportRead` | 读 | `report.read` | 域查询 |
 
-**去向统计**：域命令 20（含 learningRevokeRelease）+ 域查询 31 + 拆分映射 5（scopeSaveProgram / scopeDeleteProgram / taskSetStatus / findingUpdate / expExportable）+ 壳/平台 7（stats/ops/workspaces/sessions/memcore/learningOverview/learningTrace）= 56（拆分映射中 `scopeDeleteProgram` 同时读 `scope.list`）。`playbooks` 的旧口径（`exp_list{kind:'playbook'}`）已在 L4 收敛为 `exp_rank`。
+**去向统计**：表内 56 = 域命令 20（含 learningRevokeRelease）+ 域查询 31 + 拆分映射 5（scopeSaveProgram / scopeDeleteProgram / taskSetStatus / findingUpdate / expExportable）+ 壳/平台 7（stats/ops/workspaces/sessions/memcore/learningOverview/learningTrace）（拆分映射中 `scopeDeleteProgram` 同时读 `scope.list`）；加表外 19，实测合计 **75**。`playbooks` 的旧口径（`exp_list{kind:'playbook'}`）已在 L4 收敛为 `exp_rank`。
 
-**专项 RPC（表外 7 个，22/24 号方案）**：`campaigns`→`task.campaign_list`、`campaignGet`→`task.campaign_get`、`campaignDecisions`→`task.campaign_decisions`、`campaignTickNow`→`task.campaign_tick_now`（22 号）；`campaignProgress`→`task.campaign_progress`、`campaignPendingDrafts`→`task.campaign_pending_drafts`（24 号，纯读透传）、`campaignDispatch`→`task.campaign_dispatch`（24 号，actor=dashboard，过预算闸/供给闸）。
+**专项 / 任务补丁 RPC（表外 19 个，22/24/31/33/34/37 号）**：22 号——`campaigns`→`task.campaign_list`、`campaignGet`→`task.campaign_get`、`campaignDecisions`→`task.campaign_decisions`、`campaignTickNow`→`task.campaign_tick_now`；24 号——`campaignProgress`→`task.campaign_progress`、`campaignPendingDrafts`→`task.campaign_pending_drafts`（纯读透传）、`campaignDispatch`→`task.campaign_dispatch`（actor=dashboard，过预算闸/供给闸）；31 号——`campaignAutonomyRequest`→`approval.request(kind=campaign-autonomy)`（升档提请，31/33 号 UI 入口）；33 号——`campaignActivate`/`campaignPause`/`campaignResume`/`campaignReviewPass`→同域命令；34 号——`campaignArchive`/`campaignGoalRevise`/`campaignCreate`→同域命令、`budgetConfig`→`task.budget_config`（读）、`budgetConfigRequest`→`approval.request(kind=task-budget-config)`、`taskUpdateNote`→`task.task_update_note`；37 号——`executingTasks`→两次 `task.list`（`scheduled='exclude'`，running/blocked 独立数据源）。
 
 ### 1.8 事件
 
@@ -542,7 +542,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 
 | 维度 | 结论（2026-09-19 复核）|
 |---|---|
-| 逻辑/功能 | 6 承载面包 + 7 域视图包 + 8 主面板 tab 全部部署 csai；`/silksec-dashboard` 56 case fail-closed 到总线。|
+| 逻辑/功能 | 6 承载面包 + 7 域视图包 + 8 主面板 tab 全部部署 csai；`/silksec-dashboard` 75 case fail-closed 到总线。|
 | 文档漂移 | **已消除**：原 16/19 的「设计 vs 实施」双轨叙述合并为单一事实文档；「53 case/自动投影/case 删除」等不实口径按实测 56 case 修正；「兼容别名观察期」「-old 并排观察」「Modal 兜底」「待删旧单体」等过时表述全部更新为删旧后口径。|
 | hook/兼容层 | `dashboard-rpc.js` 的 63 处 `v4 兜底` 已清除（`e9dd1f1`）；`assetDb` 仅剩 `taskChain` 宿主 helper（`stats` 改壳聚合查询）；总线错误码/hint 经信封透传，不再静默降级。|
 | 静默错误 | 兜底 catch 不记录总线失败原因的问题已消除：总线错误码/hint 经 `busError` 透传。|
@@ -631,6 +631,13 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 - 部署 csai（`bundle dsh setup` + 重启 NRestarts=0）；`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**（72 → 80：新增 4 项静态门禁 `ui-task-campaign-report`/`ui-task-status-tabs`/`ui-know-governance-funnel`/`ui-know-learning-pipeline` + 4 项运行时读端点 `ui-rpc-read-task-campaigns`/`-campaign-progress`/`-campaign-pending`/`ui-rpc-read-know-learning`）。
 - W1（供给徽章恢复翻绿）/W2（Path A 接线 + 模型名归一）已由 commit 4a606b2 / 59da0cc 完成并回填 05-task §7.10.5；W5（Bellkeeper 侧）/W6（worker token 上报）为跨仓/worker 改造，不在本方案范围。
 
+## 2026-09-23 25 号补丁 UI 回填（任务弹框加宽）
+
+> 25 号补丁在资产收集入专项（05-task §7.8/§7.11）之外附带 UI 修复：任务中心 Modal 降级形态的宿主默认宽度 `fit-content` 过窄，长列表/行内操作被挤压。
+
+- **弹框加宽**：`@silksec/ui-task` 注入 `.silksec-task-dialog{width:min(1120px,94vw);max-width:94vw}`（覆盖宿主 Modal 默认窄宽），弹框体高度 70vh → **76vh**（`renderModal`，ui-task.client.js:205,1331-1335）。
+- **契约**：ui-task 单测 **20/20**；csai `bundle dsh setup` + `sec-v5-accept.sh` PASS=80 FAIL=0。
+
 ## 2026-09-24 32 号方案回填（任务界面整理：方案 A 状态泳道重排 + 会话专项区块）
 
 > 动机：定时任务（已不依赖，vuln 主线迁移专项后 7 条周期任务中 4 条 blocked 停用）占据仅次于专项的黄金位置；唯一活跃的 running 任务淹没在 127 条存量 queued 里；会话视图完全没有专项。方案 A（状态泳道重排，最小改动）落地，零 RPC/零 DB 变更（全部客户端过滤）。
@@ -696,3 +703,12 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 - **计数**：队列状态 chip 与「全部」改用服务端 `total`（此前用当前页 `rows.length`）。
 - **定时区**：`scheduledTasksAgg` 收紧为 `interval`，`once` 不再出现在「定时任务」卡片区。
 - **契约**：ui-task 单测 +1（正在执行独立源 + total 计数）；`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**。
+
+## 2026-09-26 42 号补丁回填（审计视图「加载更早」）
+
+> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0；根因：`audit_tail` 旧实现只读尾 256KB（≈630 行，当时 7,652 行 → 只能看 8%）。本地契约 bus 54/54 全绿；部署验收待执行。
+
+- **后端**：`bus.audit_tail` 单窗 1MB + `before_bytes` 字节游标（排他上界）；返回 `next_before`（null=已到文件头）/`window_bytes`。
+- **RPC**：`/silksec-dashboard` 的 `audit` case 透传 `before_bytes`（`n` 缺省 120、封顶 300），返回 `next_before`（`dashboard-rpc.js:434-451`）。
+- **视图**（`sec-dashboard-view-audit` 客户端）：新增「加载更早」按钮——以游标翻页把更早窗口**追加渲染**，按行键 `ts|tool|decision` 去重（最新页 30s 轮询与追加页边界不重复）；无 `next_before` 或游标为空时 `done` 收起按钮，请求失败保持原列表可重试。
+- **视图说明文案**：「单窗 1MB，新→旧；可加载更早」。
