@@ -1248,3 +1248,12 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **分专项额度/速率/优先级（campaigns DB）**：清理专项 #3「候选验证清空」`budget_tokens` 100M→**50M**、`derive_cap_per_tick` 8→**4**、`task_priority_range` [1,6]→**[4,6]**；SRC 专项 #1/#2 `task_priority_range`→**[1,3]**。
 - **优先级区间生效（代码）**：`task_derive_intent` 读 `campaign.policy.task_priority_range` 决定派生任务 priority（H1 取区间下界，其余取 lo+1，钳制到区间）——调度器按 `priority ASC` 认领 ⇒ SRC/资产先跑、清理后跑（多余额度才轮到）。
 - **额度构成澄清**：代理层 raw prompt 1.85B vs DSH 实耗 input 70.6M ≈ 26 倍，差额是 cached 前缀（cacheRead 235M/24h，87% 命中，31× 折扣）+ 代理把 cached 按面值计入。真正消耗 SenseNova/Go 额度的是**原始 token 量**（含 cached 重传），故压缩单请求 prompt 体积（DSH-core 上下文压实）是下一杠杆；本轮先靠「减请求数 + 限峰值速率 + 分专项优先级」降总量。
+
+### 7.23 2026-09-26 39 号补丁回填（额度治理第二轮：供给闸停派 + 自动爬坡豁免）
+
+> 复测 38 号后首轮 SenseNova 5h 额度回血：额度仍在 ~2h 内再次耗尽。归因两处「不符合设计」：
+
+- **调度器不感知供给 → 枯竭期 429 空转**：`task_claim` 无条件认领，额度耗尽后 12 worker 反复重试 LLM（实测每小时 1000+ 次 429 全错请求，纯浪费）。修复：`task_claim` 前置 `evaluateSupply()`，`supply_factor===0`（成员全部熔断/额度耗尽）时返回空认领并 `paused:'llm_supply_zero'`——停派等回血，不再空转。实测修复后 6 分钟 0 次 LLM 请求。
+- **自动爬坡覆盖人工额度上限**：清理专项 #3 预算被我手动 100M→50M，`campaign-budget-extend` 自动爬坡（`add=预算` 即翻倍）又把它翻回 100M。修复：`superviseCampaign` 读 `policy.auto_extend`（默认 true），`false` 时不自动提请预算延长——预算耗尽即 `stop_condition→reviewing`。#3 已置 `auto_extend:false` + 预算 50M。
+- **降级/恢复正常**：供给归零 L2→L1（`llm_throttled`+`autonomy_change`）、回血 L1→L2（`llm_restored`→`autonomy_recovered`）全链路 checkpoint 留痕，无振荡。
+- **遗留**：rpm/rpd 是请求速率，而 SenseNova 5h 是 token 计费——单请求 ~50K token（~40K cached 重传），故 60rpm 仍让 5h 窗在 ~2h 烧完。治本靠「压缩单请求 prompt」（DSH-core 上下文压实 / 轻任务精简工具面），本轮以供给闸停派兜底。

@@ -17,6 +17,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-26 · 39 号补丁：额度治理第二轮（供给闸停派 + 自动爬坡豁免）
+- **复测**：38 号后首轮 5h 额度回血仍在 ~2h 内再耗尽；根因①调度器不感知供给，枯竭期 429 空转（1000+/h）；②`campaign-budget-extend` 自动爬坡（add=预算即翻倍）覆盖人工预算上限（清理#3 50M→100M）。
+- **修复**：`task_claim` 前置 `evaluateSupply()`，`supply_factor===0` 停派（实测 6 分钟 0 请求）；`superviseCampaign` 读 `policy.auto_extend`（false 不自动爬坡），清理#3 置 `auto_extend:false`+预算 50M。降级/恢复（L2→L1→L2）全链正常。
+- **遗留**：rpm 是请求速率、SenseNova 5h 是 token 计费（单请求 ~50K token），治本靠压缩单请求 prompt。文档回填 [05-task §7.23](05-task.md)。
+
 ### 2026-09-26 · 38 号补丁：额度枯竭治理（分专项优先级/速率 + 派生优先区间生效）
 - **背景**：SenseNova 5h 积分池 + OpenCode Go 周额度双双耗尽（24h raw prompt≈1.77B、峰值 271M/h、05–06 全 429）。排查：无全局速率闸、`task_priority_range` 是死配置（derive 恒用 H1?4:3）。
 - **落地**：Bellkeeper 渠道速率（sensenova rpm 60/rpd 8000、go rpm 30/rpd 4000，已 reload）；清理专项 #3 budget 100M→50M + derive_cap 8→4 + priority [4,6]，SRC #1/#2 priority [1,3]；`task_derive_intent` 读 `task_priority_range` 决定派生优先级（SRC 先跑、清理后跑）。

@@ -1703,6 +1703,12 @@ function makeHandlers(opts) {
   }
 
   // Supervisor 巡检（纯规则）：空转 / 业务卡死 / 连败速率 → 处置动作列表
+  function autoExtendEnabled(c) {
+    let p = c && c.policy
+    if (typeof p === 'string') { try { p = JSON.parse(p) } catch { p = {} } }
+    return !(p && p.auto_extend === false)
+  }
+
   function superviseCampaign(c, repo) {
     const actions = []
     const now = Date.now()
@@ -1732,7 +1738,10 @@ function makeHandlers(opts) {
       if (c.status === 'active' && Number(usage.spent_tokens) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
       // 23 号方案 §3.6 步骤 1.5：达 80% 水位自动提请 campaign-budget-extend（平滑爬坡，零人工介入；
       // 提请幂等由 12h checkpoint 防抖 + approval 同 (kind,subject) pending 去重双保险）
+      // 38 号补丁：policy.auto_extend=false 的专项（如「候选验证清空」用多余额度）不自动爬坡——
+      // 预算耗尽即 stop_condition→reviewing，避免自动翻倍覆盖人工设置的额度上限。
       else if (Number(usage.spent_tokens) >= Number(c.budget_tokens) * 0.8
+        && autoExtendEnabled(c)
         && !hasRecentCheckpoint(repo, c.id, 'budget_extend_request', 12 * 3600000)) {
         actions.push({ kind: 'budget_extend', add: Number(c.budget_tokens), spent: Number(usage.spent_tokens) })
       }
@@ -2456,6 +2465,16 @@ function makeHandlers(opts) {
     },
 
     task_claim: async (args, repo) => {
+      // 38 号补丁：供给闸——LLM 额度耗尽（supply_factor=0）时暂停认领，避免 worker 空转 429
+      // 反复烧免费额度窗口（9-26 实测枯竭期每小时上千次 429 全错请求）。
+      if (supplyEnv.gate) {
+        try {
+          const s = await evaluateSupply()
+          if (s && s.enabled && Number(s.supply_factor) === 0) {
+            return { data: { claimed: [], count: 0, paused: 'llm_supply_zero' }, events: [], after: { count: 0 } }
+          }
+        } catch (e) { /* 供给探测失败不阻断认领 */ }
+      }
       // 36 号补丁：每 tick 认领上限 env 可调（默认 12，与 exec worker 池匹配，防 MAX_WORKERS 忙导致回 queued 空转）
       const limit = Math.min(Math.max(Number(process.env.SEC_SCHEDULER_CLAIM_LIMIT) || 12, 1), 32)
       const tasks = repo.claimDueTasks(Number(args.now), limit)
