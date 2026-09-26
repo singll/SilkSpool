@@ -75,7 +75,7 @@ cordis 容器
 | 动词 | 一句话职责 | actor 白名单 | 幂等策略 |
 |---|---|---|---|
 | `bus_replay` | 按事件日志重放弱联动订阅者（灾备/调试） | human, system | 自动指纹 |
-| `bus_prune` | 立即执行保留窗口清理（幂等表 + outbox delivered 按 7天/2万行取大裁剪，subscription 级联 + 事件轮转检查） | human, system | 自动指纹 |
+| `bus_prune` | 立即执行保留窗口清理（幂等表 + outbox delivered 按 7天/2万行取大裁剪，subscription 级联 + 事件轮转检查） | human, system | 无幂等（每次真实执行） |
 
 ### 1.3 命令逐个详述
 
@@ -101,7 +101,7 @@ cordis 容器
 | 返回 data | `{ skipped, idempotency_pruned: N, outbox_pruned: N, subscriptions_pruned: N, events_files_rotated: M, audit_bytes: B }`（42 号新增 outbox_pruned/subscriptions_pruned） |
 | 错误 | 无显式业务错误码（运维命令）：幂等/outbox/订阅/轮转/审计读异常各自 catch 后记日志降级，不抛错；存储整体不可用时由网关前置返回 `E_BACKEND_UNAVAILABLE` |
 | hint | 无需（运维命令） |
-| 幂等 | 自动指纹 |
+| 幂等 | 无（42 号：'auto' 会让同参调用在幂等保留期内 replay 空转，日调度永久不清理；清理天然幂等，故 `idempotent: none`） |
 | actor | human, system |
 | RoE | **42 号保留窗口（取大口径）**：删除条件 = 「超过 7 天 且 不在最新 2 万行内」——7 天内超过 2 万行时保留整个 7 天窗口，7 天不足 2 万行时保留最新 2 万行。① `idempotency`（`IDEM_RETENTION_MS=7d` / `IDEM_MAX_ROWS=20000`）；② `event_outbox` 仅 `status='delivered'`（`OUTBOX_RETENTION_MS=7d` / `OUTBOX_MAX_ROWS=20000`；`pending` 待投递、`dead_letter` 待归因，**均保留不清理**）；③ `bus_subscription` 级联——`event_id NOT IN (SELECT event_id FROM event_outbox)` 的订阅行（含历史孤儿）一并删除。事件 jsonl 单文件 >50MB 轮转为 `.1`（只保一代）；audit.jsonl 轮转沿用 retention.sh 既有策略（50MB），本命令只检查不重复轮转 |
 | side_effects | rows: idempotency / event_outbox / bus_subscription 删除；files: events 轮转 |

@@ -1417,6 +1417,11 @@ test('42 号补丁: bus_prune 按「7 天或 2 万行取大」裁剪 delivered�
     assert.equal(db2.prepare("SELECT COUNT(*) AS n FROM event_outbox WHERE event_id='pending-old'").get().n, 1, 'pending 不裁剪')
     assert.equal(db2.prepare("SELECT COUNT(*) AS n FROM bus_subscription WHERE event_id='recent-1'").get().n, 1, '保留事件的订阅不误删')
   } finally { db2.close() }
+  // idempotent=none：再次 force 必须真实执行（不得 replay 空转），且无更多可删。
+  const r2 = await bus.dispatch('bus', 'prune', { force: true }, { actor: 'system' })
+  assert.equal(r2.ok, true)
+  assert.notEqual(r2.replay, true, '保留窗口清理不得被幂等 replay 吞掉')
+  assert.equal(r2.data.outbox_pruned, 0)
   bus._internal.close()
 })
 

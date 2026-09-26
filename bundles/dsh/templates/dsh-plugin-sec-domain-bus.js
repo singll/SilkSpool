@@ -743,7 +743,9 @@ const BUS_MANIFEST = {
     bus_prune: {
       actor: ['human', 'system'],
       schema: { type: 'object', properties: { force: { type: 'boolean' } }, additionalProperties: false },
-      idempotent: 'auto', idempotent_fields: ['force'],
+      // 42 号补丁：'auto' 会让同参调用在幂等保留期内返回 replay 而不再清理（日调度会永久空转），
+      // 保留窗口清理本身天然幂等 → idempotent none。
+      idempotent: 'none',
       events: [], invariants: [],
       side_effects: { rows: true, files: true }, timeout_ms: 60000,
       agent_note: '立即执行保留窗口清理（42 号）：幂等表与 outbox delivered 行按「7 天或 2 万行取大」裁剪，subscription 级联清理，事件文件轮转检查。距上次清理 <6h 且未 force 则跳过。',
