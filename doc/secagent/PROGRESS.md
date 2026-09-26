@@ -17,6 +17,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-26 · 40 号补丁：重试消减（消除「多次尝试同一件事」的 token 浪费）
+- **定位**：近 24h 代理 12415 次 429（46% 请求）源于 DSH `retryPolicy.maxRetries=5` + `QUOTA` 可重试——额度耗尽后每请求重试 5 次空转；Bellkeeper 已把 quota-exhausted 判为不可重试，DSH 侧却仍重试。
+- **修复**：`settings.yaml` retryPolicy `maxRetries` 5→2、`retryableCodes` 移除 QUOTA（RATE_LIMIT 保留退避）。瞬时 429 仍退避，额度耗尽即快速失败，配合 §7.23 供给闸停派。
+- **口径**：目标「多少 token 完成多少任务量准确」，重试/重复即浪费；cached 前缀重传为 API 固有成本（31× 折扣）不视为浪费。文档回填 [05-task §7.24](05-task.md)。
+
 ### 2026-09-26 · 39 号补丁：额度治理第二轮（供给闸停派 + 自动爬坡豁免）
 - **复测**：38 号后首轮 5h 额度回血仍在 ~2h 内再耗尽；根因①调度器不感知供给，枯竭期 429 空转（1000+/h）；②`campaign-budget-extend` 自动爬坡（add=预算即翻倍）覆盖人工预算上限（清理#3 50M→100M）。
 - **修复**：`task_claim` 前置 `evaluateSupply()`，`supply_factor===0` 停派（实测 6 分钟 0 请求）；`superviseCampaign` 读 `policy.auto_extend`（false 不自动爬坡），清理#3 置 `auto_extend:false`+预算 50M。降级/恢复（L2→L1→L2）全链正常。

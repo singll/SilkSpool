@@ -1257,3 +1257,11 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **自动爬坡覆盖人工额度上限**：清理专项 #3 预算被我手动 100M→50M，`campaign-budget-extend` 自动爬坡（`add=预算` 即翻倍）又把它翻回 100M。修复：`superviseCampaign` 读 `policy.auto_extend`（默认 true），`false` 时不自动提请预算延长——预算耗尽即 `stop_condition→reviewing`。#3 已置 `auto_extend:false` + 预算 50M。
 - **降级/恢复正常**：供给归零 L2→L1（`llm_throttled`+`autonomy_change`）、回血 L1→L2（`llm_restored`→`autonomy_recovered`）全链路 checkpoint 留痕，无振荡。
 - **遗留**：rpm/rpd 是请求速率，而 SenseNova 5h 是 token 计费——单请求 ~50K token（~40K cached 重传），故 60rpm 仍让 5h 窗在 ~2h 烧完。治本靠「压缩单请求 prompt」（DSH-core 上下文压实 / 轻任务精简工具面），本轮以供给闸停派兜底。
+
+### 7.24 2026-09-26 40 号补丁回填（重试消减：消除「多次尝试同一件事」的 token 浪费）
+
+> 定位额度浪费主因：近 24h 代理日志 12415 次 429（占全部请求 46%）——DSH `retryPolicy.maxRetries=5` 且 `retryableCodes` 含 `QUOTA`，额度耗尽后每个请求重试 5 次（每分钟上千次 429 空转）。Bellkeeper 侧 `Classify` 已把「token plan entitlement exhausted / GoUsageLimitError / monthly usage」判为 `QuotaExhausted`（CanRetry:false、长熔断），DSH 侧却仍重试，属重复劳动。
+
+- **修复**：`settings.yaml` 的 `llm-pi-ai.providers.bellkeeper.retryPolicy` —— `maxRetries` 5→**2**，`retryableCodes` 移除 **QUOTA**（额度窗口耗尽确定性失败，重试无意义；RATE_LIMIT/rpm/rps 秒级恢复仍保留退避重试）。瞬时 429（rpm/rps）保留 2 次退避，额度耗尽即快速失败，配合 §7.23 供给闸停派，不再「烧空转」。
+- **口径**：用户确认目标不是「均匀跑满 5h」，而是「多少 token 完成多少任务量准确」——重试/重复即浪费，本补丁消除确定性失败的重试；cached 前缀重传是 API 固有成本（已 31× 折扣），不视为浪费。
+- **落地注意**：`setup.sh` 对 `settings.yaml` 仅「缺失才播种」，模板改后需手动同步 runtime `data/settings.yaml`（本次已直接补丁）。
