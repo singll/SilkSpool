@@ -52,6 +52,9 @@ const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIM
 const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding']
 // 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
 const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000
+// 40 号补丁：运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）后策略重开冷却（默认 1h），
+// 否则 strategy_dedupe 停留 attempted+reopen_after=NULL，被 Planner 永久 skip（"already_attempted"）。
+const CAMPAIGN_RETRY_AFTER_FAIL_MS = Number(process.env.SEC_CAMPAIGN_RETRY_AFTER_FAIL_HOURS || 1) * 3600000
 // 23 号方案 §3.6：每 tick 派生上限默认 8（v2 调高：5→8）
 const CAMPAIGN_DERIVE_CAP_PER_TICK = Number(process.env.SEC_CAMPAIGN_DERIVE_CAP_PER_TICK || 8)
 // 23 号方案 §3.6：新建专项默认窗口预算 2M/7d（autonomy<2；L2 仍须显式预算 INV-C4）
@@ -2406,6 +2409,13 @@ function makeHandlers(opts) {
       if (spentTokens !== null) finishSets.spent_tokens = spentTokens
       repo.transitionTask(Number(args.task_id), finishSets)
       repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null, spent_tokens: spentTokens })
+      // 40 号补丁：运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）重开策略冷却，Planner 可重试；
+      // 否则 strategy_dedupe 停留 attempted+reopen_after=NULL，被 compileCampaignPlan 永久 skip。
+      if (status === 'failed' && t.strategy_key && repo.reopenStrategy) {
+        const bare = String(t.strategy_key)
+        const key = t.campaign_id != null ? `c${t.campaign_id}|${bare}` : bare
+        try { repo.reopenStrategy(key, Date.now() + CAMPAIGN_RETRY_AFTER_FAIL_MS) } catch (e) { /* best-effort */ }
+      }
       return {
         data: { task_id: Number(args.task_id), status, next_run_at: nextRunAt, run_recorded: true, spent_tokens: spentTokens, budget_overrun: budgetOverrun, guard: { checked: guard.checked, missing: guard.missing } },
         events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, spent_tokens: spentTokens, budget_overrun: budgetOverrun, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, fgs_snapshot: fgsSnapshot, cause: 'run', campaign_id: t.campaign_id ?? null, campaign_role: t.campaign_role ?? null } }],
@@ -2490,10 +2500,17 @@ function makeHandlers(opts) {
       const bare = args.strategy_key || strategyKey({ host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '' })
       // 22 号方案 §5.5：专项维度去重键（连败黑名单仍按裸 key 判定——打法属性非专项属性）
       const key = args.campaign_id ? `c${args.campaign_id}|${bare}` : bare
-      // strategy_key 幂等去重：已测组合不重发
+      // strategy_key 幂等去重：已测组合不重发；reopen_after 已过（rework 或运行级失败重开）则允许重试。
+      // 40 号补丁：旧实现只看 !blacklisted，忽略 reopen_after，导致重开机制失效——策略一旦 derived
+      // 永不再派（额度耗尽失败的 2985 策略被 Planner 永久 skip，额度恢复后无任务可跑）。
       const existing = repo.getStrategy ? repo.getStrategy(key) : null
-      if (existing && !existing.blacklisted) {
-        return { data: { deduped: true, strategy_key: bare, task_id: existing.last_task_id ?? null }, events: [], after: { deduped: true } }
+      if (existing) {
+        const ra = existing.reopen_after == null ? null : Number(existing.reopen_after)
+        const retryable = ra != null && ra <= Date.now()
+        if (existing.blacklisted || !retryable) {
+          return { data: { deduped: true, strategy_key: bare, task_id: existing.last_task_id ?? null }, events: [], after: { deduped: true } }
+        }
+        // reopen_after 已过：重试同一打法（下方 upsertStrategy 会 reset reopen_after=NULL）
       }
       const extraLines = []
       if (args.level === 'H3' && args.h3) {

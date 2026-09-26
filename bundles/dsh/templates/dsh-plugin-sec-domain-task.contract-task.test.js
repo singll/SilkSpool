@@ -183,6 +183,33 @@ test('21 §3-1: derive_intent 落假设任务草稿（objective 含 oracle 纪�
   assert.equal(r3.error.code, 'E_ACTOR_FORBIDDEN')
 })
 
+test('40 号补丁：运行级失败重开策略——reopen_after 过后 derive_intent 可重试（非永久去重）', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const args = { program_id: 'test-src', kind: 'hypothesis', host: 'a.example.com', path: '/u', vuln_class: 'idor', param: 'id', level: 'H2' }
+  const r1 = await bus.dispatch('task', 'derive_intent', args, { actor: 'reactor' })
+  assert.equal(r1.ok, true, r1.error?.message)
+  const tid = r1.data.task_id
+  const key = db.prepare('SELECT strategy_key FROM strategy_dedupe WHERE program_id=?').get('test-src').strategy_key
+  assert.ok(key, '策略已落 strategy_dedupe')
+  // 未重开前：同组合 → deduped
+  const d1 = await bus.dispatch('task', 'derive_intent', args, { actor: 'reactor' })
+  assert.equal(d1.data.deduped, true)
+  // 运行级失败（额度耗尽/崩溃）→ 重开策略（reopen_after = now + 冷却）
+  await bus.dispatch('task', 'finish', { task_id: tid, run_id: 'r-fail', outcome: 'failed' }, { actor: 'scheduler' })
+  const row = db.prepare('SELECT reopen_after FROM strategy_dedupe WHERE strategy_key=?').get(key)
+  assert.ok(row && Number(row.reopen_after) > Date.now(), '运行失败后 reopen_after 已设（冷却中）')
+  // 冷却未过 → 仍 deduped
+  const d2 = await bus.dispatch('task', 'derive_intent', args, { actor: 'reactor' })
+  assert.equal(d2.data.deduped, true)
+  // 冷却已过 → 可重试（新建任务，非 deduped）
+  db.prepare('UPDATE strategy_dedupe SET reopen_after = 0 WHERE strategy_key=?').run(key)
+  const r2 = await bus.dispatch('task', 'derive_intent', args, { actor: 'reactor' })
+  assert.equal(r2.ok, true, r2.error?.message)
+  assert.equal(r2.data.deduped, false, 'reopen_after 过后应重试而非去重')
+  assert.ok(r2.data.task_id > 0 && r2.data.task_id !== tid, '重试生成新任务')
+})
+
 test('21 §3-2: derive_intent 局面编译——越出 scope 丢弃；连败 3 次黑名单丢弃', async () => {
   const { bus } = makeEnv()
   const out = await bus.dispatch('task', 'derive_intent', { program_id: 'test-src', kind: 'hypothesis', host: 'evil.other.com', vuln_class: 'sqli' }, { actor: 'reactor' })

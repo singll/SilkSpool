@@ -1265,3 +1265,18 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **修复**：`settings.yaml` 的 `llm-pi-ai.providers.bellkeeper.retryPolicy` —— `maxRetries` 5→**2**，`retryableCodes` 移除 **QUOTA**（额度窗口耗尽确定性失败，重试无意义；RATE_LIMIT/rpm/rps 秒级恢复仍保留退避重试）。瞬时 429（rpm/rps）保留 2 次退避，额度耗尽即快速失败，配合 §7.23 供给闸停派，不再「烧空转」。
 - **口径**：用户确认目标不是「均匀跑满 5h」，而是「多少 token 完成多少任务量准确」——重试/重复即浪费，本补丁消除确定性失败的重试；cached 前缀重传是 API 固有成本（已 31× 折扣），不视为浪费。
 - **落地注意**：`setup.sh` 对 `settings.yaml` 仅「缺失才播种」，模板改后需手动同步 runtime `data/settings.yaml`（本次已直接补丁）。
+
+### 7.25 2026-09-26 41 号补丁回填（恢复调度修复：策略去重尊重 reopen_after + 运行失败重开）
+
+> 现象：额度回血后 2h 零消耗、无进行中任务（专项已显示恢复 L2）。排查**非供给闸**（SenseNova 已健康）——真凶是策略去重的两个叠加 bug：
+
+- **`derive_intent` 去重忽略 `reopen_after`**：旧实现 `if (existing && !existing.blacklisted) return deduped`，导致「rework/失败重开」机制失效——策略一旦 derived 就永不再派。额度枯竭期 2140 次运行级失败留下 2985 个 `attempted + reopen_after=NULL` 策略，被 Planner `compileCampaignPlan` 永久 skip（`already_attempted`），回血后无活可干。
+- **`upsertStrategy` INSERT 硬编码 `last_task_id=NULL`**：去重回显 `task_id` 恒空。
+
+- **修复**：
+  1. `task_derive_intent` 去重改为 `blacklisted || !retryable`（`retryable = reopen_after!=null && reopen_after<=now`）——reopen_after 过后可重试。
+  2. `task_finish` 运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）时 `reopenStrategy(key, now + SEC_CAMPAIGN_RETRY_AFTER_FAIL_HOURS 默认 1h)`，让失败打法可重试。
+  3. `upsertStrategy` INSERT 正确落 `last_task_id`。
+  4. 存量迁移：2110 个「无 done 任务」的非黑名单策略 `reopen_after=0` 立即重开（875 个已完成跳过）。
+- **效果**：迁移后调度恢复——running 0→5+，派生 resume（SRC priority 2 / 清理 priority 5），SenseNova 消耗回升（19:38 起 409K/483K prompt tokens）。
+- **契约**：task +1（运行失败重开 → reopen_after 过后 derive_intent 可重试）。

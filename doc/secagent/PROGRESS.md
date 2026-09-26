@@ -17,6 +17,12 @@
 
 ## 二、最近进度结果
 
+### 2026-09-26 · 41 号补丁：恢复调度修复（策略去重尊重 reopen_after + 运行失败重开）
+- **现象**：额度回血后 2h 零消耗、无进行中任务（显示已恢复 L2）。非供给闸——SenseNova 已健康。
+- **根因**：`derive_intent` 去重只看 `!blacklisted`、忽略 `reopen_after`，重开机制失效；额度枯竭期 2140 次运行失败留下 2985 个 `attempted+reopen_after=NULL` 策略被 Planner 永久 skip。
+- **修复**：去重改 `blacklisted || !retryable(reopen_after 已过)`；`task_finish` 运行失败重开策略（默认 1h 冷却）；`upsertStrategy` 落 `last_task_id`；存量迁移 2110 个失败策略 `reopen_after=0`。
+- **效果**：调度恢复（running 0→5+，SRC priority 2 / 清理 priority 5，SenseNova 消耗回升）。文档回填 [05-task §7.25](05-task.md)。
+
 ### 2026-09-26 · 40 号补丁：重试消减（消除「多次尝试同一件事」的 token 浪费）
 - **定位**：近 24h 代理 12415 次 429（46% 请求）源于 DSH `retryPolicy.maxRetries=5` + `QUOTA` 可重试——额度耗尽后每请求重试 5 次空转；Bellkeeper 已把 quota-exhausted 判为不可重试，DSH 侧却仍重试。
 - **修复**：`settings.yaml` retryPolicy `maxRetries` 5→2、`retryableCodes` 移除 QUOTA（RATE_LIMIT 保留退避）。瞬时 429 仍退避，额度耗尽即快速失败，配合 §7.23 供给闸停派。

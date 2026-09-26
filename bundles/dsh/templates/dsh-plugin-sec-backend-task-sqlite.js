@@ -409,10 +409,11 @@ function createRepo(db) {
     },
     upsertStrategy(key, patch) {
       const now = repo.now()
+      // 40 号补丁：INSERT 也要落 last_task_id（旧实现硬编码 NULL，去重回显 task_id 恒 null）
       db.prepare(`INSERT INTO strategy_dedupe (strategy_key, program_id, first_seen, last_seen, fails, blacklisted, last_task_id, reopen_after)
-        VALUES (?, ?, ?, ?, 0, 0, NULL, NULL)
+        VALUES (?, ?, ?, ?, 0, 0, ?, NULL)
         ON CONFLICT (strategy_key) DO UPDATE SET last_seen = ?, last_task_id = COALESCE(?, last_task_id), reopen_after = NULL`)
-        .run(String(key), String(patch.program_id || ''), now, now, now, patch.last_task_id ?? null)
+        .run(String(key), String(patch.program_id || ''), now, now, patch.last_task_id ?? null, now, patch.last_task_id ?? null)
     },
     markStrategyOutcome(key, ok, taskId) {
       const now = repo.now()
