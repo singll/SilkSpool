@@ -195,7 +195,8 @@ def sandbox_smoke(expected_version):
         logfile = out / "maintenance-web.log"
         with logfile.open("w") as log:
             process = subprocess.Popen(command, cwd=base / "app", stdout=log, stderr=log)
-            deadline = time.monotonic() + 60
+            # 会话数增长时启动枚举变慢；就绪等待放宽（U2 实测 1600+ 会话约 25s）。
+            deadline = time.monotonic() + 180
             while True:
                 release.require(process.poll() is None, "维护 Web 启动进程退出；查看私有日志")
                 matches = re.findall(r"http://127\.0\.0\.1:3081/\?token=[^\s)\x1b]+", logfile.read_text())
@@ -268,7 +269,7 @@ def production_smoke(release_dir, freeze_state):
         installed = True
         freeze.systemctl("daemon-reload")
         freeze.systemctl("start", UNIT)
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 180
         while True:
             try:
                 client_module.current_launch_url(UNIT, 3081)

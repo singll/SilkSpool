@@ -67,6 +67,15 @@ def main():
         provider = settings["llm-pi-ai"]["providers"][selected["provider"]]
         provider["baseURL"] = "http://127.0.0.1:3099/v1"
         provider["apiKeyEnv"] = "DSH_UPGRADE_FIXTURE_KEY"
+    if report["version"] == "0.1.7-rc.2" and not report["original_settings"]:
+        # fixture 配置只替换模型行；保留一次性导入的 UI/语言/默认 preset 段，避免首启
+        # 免责声明弹窗因 ui-onboarding 丢失而反复出现、locale 回落。
+        imported = DATA / "settings.yaml.imported"
+        if imported.is_file():
+            original = yaml.safe_load(imported.read_text()) or {}
+            for key in ("ui-onboarding", "locale", "agent-presets"):
+                if key in original:
+                    settings[key] = original[key]
     if report["version"] == "0.1.7-rc.2":
         # 0.1.7 首启会把 settings.yaml 一次性导入 profile patch 后改名；预演副本必须先完成
         # 这一步，否则真实启动会把 fixture 路由重新导入覆盖。
@@ -180,10 +189,20 @@ def main():
                 overrides["session-telemetry-otel"] = {"mode": "FEEDBACK_ONLY",
                     "exporter": {"url": "http://127.0.0.1:3098/v1/logs"}, "processor": {"scheduledDelayMillis": 100}}
         patch = OUT / "isolation.patch.yml"
-        applied = [{"id": name, "config": config} for name, config in overrides.items() if name in rows["web"]]
+        # Cordis patch 替换整段 config：必须与部署态行配置合并，否则会丢 printUrl、
+        # trustedHosts(!!js 表达式)、billing/auth-gate 既有字段。用维护工具同款带标签
+        # 加载/导出器读回未打补丁的组合配置，保留未知标签。
+        maintenance_spec = importlib.util.spec_from_file_location("maintenance", Path(__file__).with_name("dsh-upgrade-maintenance.py"))
+        maintenance = importlib.util.module_from_spec(maintenance_spec)
+        maintenance_spec.loader.exec_module(maintenance)
+        deployed = {}
+        for row in maintenance.rows(yaml.load((OUT / "web-config.yml").read_text(), Loader=maintenance.ConfigLoader)):
+            deployed[row["id"]] = row.get("config") or {}
+        applied = [{"id": name, "config": {**deployed.get(name, {}), **config}}
+                   for name, config in overrides.items() if name in rows["web"]]
         # 覆盖必须真的落到受管行；web-runtime 是 REQUIRED 行，静默丢弃即验收失败。
         require("web-runtime" in {row["id"] for row in applied}, "隔离配置缺少受管 web-runtime 覆盖")
-        patch.write_text(yaml.safe_dump(applied))
+        patch.write_text(yaml.dump(applied, Dumper=maintenance.ConfigDumper, allow_unicode=True, sort_keys=False))
         composed = subprocess.run([NODE, str(BIN), "--profile", "web", "--patch", str(patch), "--dump-config"],
                                   cwd=BASE / "app", capture_output=True, text=True, timeout=60)
         (OUT / "isolation-config.yml").write_text(composed.stdout)
@@ -207,7 +226,10 @@ def main():
                                    cwd=BASE / "app", env={**os.environ, "DSH_UPGRADE_FIXTURE_KEY": "fixture-only",
                                                         "DSH_TELEMETRY_OTLP_URL": "http://127.0.0.1:3098/v1/logs"}, stdout=log, stderr=log)
             launch = None
-            for _ in range(60):
+            # 会话数增长时 libuv 逐目录枚举耗时上升（U2 实测 1600+ 会话约 25s），
+            # 启动就绪等待放宽到 180s，避免把慢启动误判为挂起。
+            deadline = time.monotonic() + 180
+            while time.monotonic() < deadline:
                 if web.poll() is not None:
                     raise RuntimeError("Web 启动进程已退出；详见私有 web.log")
                 match = re.search(r"http://127\.0\.0\.1:3081/\?token=[^\s)\x1b]+", log_path.read_text())
@@ -279,6 +301,20 @@ def main():
             status, _ = request("POST", "/silksec-domain/bus.status", "{}", "application/json", authenticated=False)
             require(status in (401, 403), "未登录请求未被拒绝")
             report["checks"].append({"check": "unauthenticated-rpc-refused", "ok": True})
+            def run_trace(session_id, label):
+                # 会话日志在 turn 收尾后才完全落盘；独立读回需重试直到助手消息可见，
+                # 避免把「刚结束但尚未 flush」误判为读回失败（0.1.7 实测标题/收尾异步）。
+                deadline = time.monotonic() + 60
+                while True:
+                    result = subprocess.run([NODE, str(Path(__file__).with_name("dsh-upgrade-session-trace.mjs")), session_id],
+                                            capture_output=True, text=True, timeout=30)
+                    (OUT / (label + ".log")).write_text(result.stdout + result.stderr)
+                    if result.returncode == 0:
+                        return json.loads((OUT / "session-trace.json").read_text())
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(label + " 独立读回失败")
+                    time.sleep(1)
+
             if feedback_test:
                 cwd = OUT / "local-feedback-fixture"
                 cwd.mkdir()
@@ -296,12 +332,7 @@ def main():
                         time.sleep(0.1)
                     raise RuntimeError("本地反馈 fixture 会话未结束")
 
-                def feedback_trace():
-                    result = subprocess.run([NODE, str(Path(__file__).with_name("dsh-upgrade-session-trace.mjs")), sid],
-                                            capture_output=True, text=True, timeout=30)
-                    (OUT / "feedback-trace.log").write_text(result.stdout + result.stderr)
-                    require(result.returncode == 0, "本地反馈 Session 独立读回失败")
-                    return json.loads((OUT / "session-trace.json").read_text())
+                feedback_trace = lambda: run_trace(sid, "feedback-trace")
 
                 prompt_feedback_fixture()
                 message_id = feedback_trace()["last_assistant_message_id"]
@@ -406,11 +437,7 @@ def main():
                 routes = [r["model"] for r in primary]
                 require("fixture-failing" in routes and "fixture" in routes, "实际模型请求未发生失败切换")
                 require(all(route == "fixture" for route in routes[routes.index("fixture"):]), "熔断后仍重返故障模型")
-                traced = subprocess.run([NODE, str(Path(__file__).with_name("dsh-upgrade-session-trace.mjs")), sid],
-                                        capture_output=True, text=True, timeout=30)
-                (OUT / "session-trace.log").write_text(traced.stdout + traced.stderr)
-                require(traced.returncode == 0, "失败切换 canonical Session 读回失败")
-                trace = json.loads((OUT / "session-trace.json").read_text())
+                trace = run_trace(sid, "session-trace")
                 require(any(row.get("model") == "fixture" for row in trace["assistant_routes"]) and trace["fixture_complete"],
                         "失败切换未按实际模型归因并保存最终回复")
                 report["failover"] = {"session_id": sid, "request_models": routes,
@@ -453,8 +480,11 @@ def main():
                         "worker 重试未恢复同一结果/会话或再次调用模型")
                 report["checks"].append({"check": "exec-worker-replay-no-respawn", "ok": True})
                 for case in ("child-fail", "child-slow"):
+                    # child-fail 走模型错误重试/退避（0.1.7 实测 >6s 才自然收尾），给足窗口
+                    # 以便断言「失败收尾」而非被外部超时杀掉；child-slow 仍用 6s 验证超时杀。
+                    case_timeout = 6 if case == "child-slow" else 45
                     failed = rpc("/silksec-domain", "exec.spawn_worker", {**worker_args,
-                        "task": f"[u2:{case}] Isolated failure fixture " + uuid.uuid4().hex, "timeout": 6})
+                        "task": f"[u2:{case}] Isolated failure fixture " + uuid.uuid4().hex, "timeout": case_timeout})
                     require(failed.get("ok") and failed.get("data", {}).get("ok") is False, "worker 失败被误报成功：" + case)
                     value = failed["data"]
                     stored = rpc("/silksec-domain", "task.worker_status", {"run_id": value["run_id"]})

@@ -33,6 +33,18 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def scan_core_versions(app):
+    """扫描候选 app 的核心包版本；循环变量限定在本函数内，禁止泄漏覆盖调用方的版本锁。"""
+    versions = {}
+    for file in (app / "node_modules/.pnpm").glob("*/node_modules/@deepseek-ai/*/package.json"):
+        package = json.loads(file.read_text())
+        name, pkg_version = package["name"], package["version"]
+        if name in versions and versions[name] != pkg_version:
+            raise RuntimeError("候选 app 含多份核心版本：" + name)
+        versions[name] = pkg_version
+    return versions
+
+
 def retarget(text, version, source_version=None):
     """把候选内工具/观察脚本的版本默认值改写为目标版本，使候选静态产物锁一致。"""
     text = re.sub(r"(DSH_TARGET_VERSION:-)[0-9A-Za-z.-]+", r"\g<1>" + version, text)
@@ -119,13 +131,7 @@ def main():
             # 0.1.5 目录式 preset 仍随候选携带；0.1.7 起角色改由 web profile patch 行声明，
             # 旧 data/.agent-presets 不进候选，由恢复点整树结转保留为只读备份。
             copy(source / "data/.agent-presets", release / "data/.agent-presets")
-        versions = {}
-        for file in (release / "app/node_modules/.pnpm").glob("*/node_modules/@deepseek-ai/*/package.json"):
-            package = json.loads(file.read_text())
-            name, version = package["name"], package["version"]
-            if name in versions and versions[name] != version:
-                raise RuntimeError("候选 app 含多份核心版本：" + name)
-            versions[name] = version
+        versions = scan_core_versions(release / "app")
         report["core_versions"] = versions
         for profile in ("web", "headless"):
             old = source / "data/profiles" / profile
@@ -190,7 +196,13 @@ def main():
         write(release / "plugins/sec-domain-bus/index.js", (release / "dsh-plugin-sec-domain-bus.js").read_text())
         for plugin in ("sec-domain-exec", "sec-domain-task", "sec-backend-task-sqlite", "sec-backend-know-sqlite", "sec-domain-fact", "sec-domain-asset", "sec-domain-endpoint", "sec-domain-vuln"):
             write(release / "plugins" / plugin / "index.js", (release / ("dsh-plugin-" + plugin + ".js")).read_text())
-        compat_env = {"DSH_SETTINGS_SOURCE": str(settings_source)} if settings_source is not None else {}
+        compat_env = {}
+        if settings_source is not None:
+            # 冻结点由 root 以 umask 077 保存，runtime-compat 以 owner 身份运行的子进程
+            # 无法直读 snapshot 内路径；把一次性迁移源复制进候选并交给 owner（逐字节一致）。
+            local_source = release / ".settings-source.yaml"
+            write(local_source, settings_source.read_text())
+            compat_env = {"DSH_SETTINGS_SOURCE": str(local_source)}
         run(["python3", str(release / "dsh-runtime-compat.py"), "--base-dir", str(release)], release, "runtime-compat.log", compat_env)
         pkgfile = release / "plugins/sec-suite/package.json"
         package = json.loads(pkgfile.read_text())

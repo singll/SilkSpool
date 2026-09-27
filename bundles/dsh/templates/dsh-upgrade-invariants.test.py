@@ -92,6 +92,16 @@ class InvariantTests(unittest.TestCase):
         rewritten = {**self.before, "files": {"dsh/data": {"data/settings.yaml.imported": {"kind": "file", "sha256": "changed", "size": 12}}}}
         self.assertFalse(invariants.compare(before, rewritten)["ok"])
 
+    def test_settings_root_level_rename_is_expected_only_with_identical_view(self):
+        entry = {".": {"kind": "file", "sha256": "same-bytes", "size": 12}}
+        before = {**self.before, "files": {"dsh/data/settings.yaml": entry}}
+        renamed = {**self.before, "files": {"dsh/data/settings.yaml.imported": entry}}
+        result = invariants.compare(before, renamed)
+        self.assertTrue(result["ok"], result)
+        self.assertIn("settings-legacy-import-rename", result["expected_changes"])
+        changed = {**self.before, "files": {"dsh/data/settings.yaml.imported": {".": {"kind": "file", "sha256": "changed", "size": 12}}}}
+        self.assertFalse(invariants.compare(before, changed)["ok"])
+
 
 class StartupInvariantTests(unittest.TestCase):
     def setUp(self):
@@ -118,6 +128,8 @@ class StartupInvariantTests(unittest.TestCase):
                 INSERT INTO exp_fts(exp_fts) VALUES ('rebuild');
             ''')
         self.append_registration(1)
+        (self.data / "audit.jsonl").write_text(json.dumps({"kind": "command", "domain": "task", "cmd": "reap",
+            "actor": "scheduler", "result": "ok"}) + "\n")
         self.before = self.capture()
 
     def append_registration(self, stamp, *, actor="system", log=True):
@@ -154,6 +166,35 @@ class StartupInvariantTests(unittest.TestCase):
         self.log.write_text(original.splitlines()[1] + "\n" + original.splitlines()[0] + "\n")
         self.assertFalse(self.comparison()["ok"])
         self.log.write_text(original + original.splitlines()[1] + "\n")
+        self.assertFalse(self.comparison()["ok"])
+
+    def test_multiple_registrations_per_domain_are_allowed_but_payload_change_is_not(self):
+        self.append_registration(2)
+        self.append_registration(3)
+        result = self.comparison()
+        self.assertTrue(result["ok"], result)
+        self.assertIn("startup-registration-outbox:2", result["expected_changes"])
+        self.assertIn("startup-registration-log-append:2", result["expected_changes"])
+        self.before = self.capture()
+        original = json.loads(self.log.read_text().splitlines()[-1])
+        event = {**original, "id": "evt-4", "ts": 4, "payload": {**original["payload"], "version": 2}}
+        with sqlite3.connect(self.database) as db:
+            db.execute("INSERT INTO event_outbox VALUES (?,?,?,?,?,'delivered',0,NULL,NULL,?)",
+                (event["id"], "bus", event["name"], json.dumps(event), event["ts"], event["ts"]))
+        with self.log.open("a") as output:
+            output.write(json.dumps(event) + "\n")
+        self.assertFalse(self.comparison()["ok"])
+
+    def test_startup_audit_append_is_limited_to_scheduler_reaps(self):
+        with (self.data / "audit.jsonl").open("a") as output:
+            output.write(json.dumps({"kind": "command", "domain": "task", "cmd": "worker_reap",
+                "actor": "scheduler", "result": "ok"}) + "\n")
+        result = self.comparison()
+        self.assertTrue(result["ok"], result)
+        self.assertIn("startup-audit-append:1", result["expected_changes"])
+        with (self.data / "audit.jsonl").open("a") as output:
+            output.write(json.dumps({"kind": "command", "domain": "task", "cmd": "reap",
+                "actor": "model", "result": "ok"}) + "\n")
         self.assertFalse(self.comparison()["ok"])
 
     def test_program_mirror_may_only_remove_known_source_quotes_and_refresh_time(self):

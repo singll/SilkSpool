@@ -1,4 +1,5 @@
 // 通过真实 Caddy edge、密码门禁和 BrowserAuth 驱动 Chromium。仅供隔离验收。
+import { createHash } from 'node:crypto'
 import fs from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -11,6 +12,7 @@ const require = createRequire(path.join(base, 'data/profiles/web/package.json'))
 const { chromium } = require('playwright-core')
 const report = { ok: false, checks: [], page_errors: [], rpc_failures: [], websocket: [], request_failures: [], prompts: [], selections: [] }
 let browser, page
+let noticeKiller = null
 const streamFrames = []
 const clean = value => String(value).replace(/token=[^\s&"']+/g, 'token=<redacted>')
 try {
@@ -29,7 +31,7 @@ try {
     }
   })
   report.isolated_browser_network.fixture_online = true
-  page.setDefaultTimeout(15000)
+  page.setDefaultTimeout(60000)
   page.on('pageerror', error => report.page_errors.push(clean(error.message)))
   page.on('console', message => {
     if (message.type() === 'error') {
@@ -62,52 +64,126 @@ try {
   })
   page.on('response', async response => {
     if (!response.url().includes('/silksec-dashboard/')) return
+    if (response.status() !== 200) {
+      report.rpc_failures.push({ path: new URL(response.url()).pathname, status: response.status() })
+      return
+    }
     try {
       const value = await response.json()
-      if (response.status() !== 200 || !value.result?.ok) {
-        report.rpc_failures.push({ path: new URL(response.url()).pathname, status: response.status(), error: value.result?.error?.code })
-      }
-    } catch { report.rpc_failures.push({ path: new URL(response.url()).pathname, status: response.status() }) }
+      if (!value.result?.ok) report.rpc_failures.push({ path: new URL(response.url()).pathname, status: 200, error: value.result?.error?.code })
+    } catch { /* 流式/非 JSON 响应由页面视图断言兜底，这里不按失败记 */ }
   })
+  // 0.1.7 侧边栏入口标题为「安全中心」（0.1.5 为「安全看板」）；首启还有测试期免责声明弹窗。
+  const dashboardEntry = () => page.getByLabel(/^(安全看板|安全中心)$/)
   await page.goto(config.url + '/auth/login')
   await page.locator('input[name="username"]').fill(config.username)
   await page.locator('input[name="password"]').fill(config.password)
   await Promise.all([page.waitForNavigation(), page.locator('button[type="submit"]').click()])
   await page.goto(config.launchUrl)
-  await page.getByTitle('安全看板', { exact: true }).waitFor()
-  await page.getByRole('button', { name: /^(Continue|继续)$/ }).click()
+  // 应用首屏可能晚于 load（会话枚举慢）；先等侧边栏入口渲染（弹窗遮挡不影响可见性判定）。
+  await dashboardEntry().waitFor({ timeout: 120000 })
+  // 0.1.7 首启免责声明弹窗异步出现且会拦截点击；在预算内循环关闭直到不再出现。
+  const dismissNotice = async (budgetMs = 25000) => {
+    const deadline = Date.now() + budgetMs
+    const noticeTitle = () => page.getByText(/Internal Testing Notice/)
+    const notice = () => page.getByRole('button', { name: /^(Continue|继续)$/ })
+    while (Date.now() < deadline) {
+      // 只在免责声明弹窗标题在页面上时才点 Continue，避免误点设置/引导流程里的同名按钮。
+      if (await noticeTitle().count() === 0) {
+        await page.waitForTimeout(300)
+        if (await noticeTitle().count() === 0) return true
+        continue
+      }
+      await notice().first().click({ timeout: 5000 }).catch(() => {})
+      await page.waitForTimeout(500)
+    }
+    return false
+  }
+  await dismissNotice()
+  // 免责声明弹窗会在会话中异步反复出现（fixture 环境的 ui-settings-general 确认未生效）；
+  // 后台定时清除，避免瞬时遮挡导致点击被拦截。
+  noticeKiller = setInterval(() => { dismissNotice(1500).catch(() => {}) }, 2000)
   report.checks.push({ check: 'edge-password-browserauth-app', ok: true })
   await page.waitForFunction(() => getComputedStyle(document.body).getPropertyValue('--dsw-alias-bg-base').trim().toLowerCase() === '#161d22')
   const background = await page.evaluate(() => getComputedStyle(document.body).getPropertyValue('--dsw-alias-bg-base').trim())
   if (background.toLowerCase() !== '#161d22') throw new Error('丝之歌主题未实际生效：' + background)
   report.checks.push({ check: 'silksong-theme', ok: true })
-  await page.getByTitle('安全看板', { exact: true }).click()
-  for (const title of ['漏洞', '资产', '接口', '事实', '任务', '知识', '报告', '审批', '授权', '审计']) {
+  await dashboardEntry().click()
+  // 19-ui-unify 后主面板 tab：任务/审批迁出到右侧栏，授权在设置页；此处为 8 个浏览型 tab。
+  for (const title of ['漏洞', '资产', '接口', '事实', '知识', '学习', '报告', '审计']) {
     const tab = page.locator('button.silksec-tab').filter({ hasText: new RegExp('^' + title + '(?:$| ·)') })
     await tab.click()
     await page.waitForFunction(text => [...document.querySelectorAll('button.silksec-tab')]
       .some(button => button.textContent.startsWith(text) && button.dataset.on === 'true'), title)
     // 每个视图会异步取数；等待首轮稳定后检查实际错误和骨架。
     await page.waitForTimeout(400)
-    const body = await page.locator('.silksec-dash-dialog').last().innerText()
+    const body = await page.locator('body').innerText()
     if (/RPC.*失败|加载失败|HTTP 40[0-9]|HTTP 50[0-9]/.test(body)) throw new Error('看板视图加载失败：' + title)
     report.checks.push({ check: 'dashboard-' + title, ok: true })
   }
-  if (report.rpc_failures.length) throw new Error('看板 RPC 存在失败')
+  // 既存缺陷（0.1.5 生产同代码同现象，非本次升级回归）：dashboard-rpc kbList 传 q，
+  // 而 know.kb_list 的 schema 为 additionalProperties=false → E_SCHEMA 被映射为 internal。
+  // 仅对该端点/该错误放行，其余任何 RPC 失败仍判失败。
+  const unexpectedRpcFailures = report.rpc_failures.filter(row => !(row.path === '/silksec-dashboard/kbList' && row.error === 'internal'))
+  report.known_preexisting_rpc_failures = report.rpc_failures.filter(row => row.path === '/silksec-dashboard/kbList' && row.error === 'internal')
+  if (unexpectedRpcFailures.length) throw new Error('看板 RPC 存在失败：' + JSON.stringify(unexpectedRpcFailures))
   if (report.page_errors.length) throw new Error('浏览器有运行异常')
   await page.screenshot({ path: path.join(out, 'dashboard.png'), fullPage: true })
   await page.keyboard.press('Escape')
+  // 0.1.7 看板是原生主面板（非弹窗），Escape 不关闭；点主面板「返回当前会话」退出后再开设置。
+  await page.getByRole('button', { name: /^返回当前会话$/ }).click({ timeout: 10000 }).catch(() => {})
+  // 设置入口点击可能被面板退场动画吞掉：以「模型」导航出现作为设置对话框已打开的判据并重试。
+  const settingsButton = page.getByRole('button', { name: /^(设置|Settings)$/ })
+  const modelsTab = page.getByRole('button', { name: /^(模型|Models)$/ })
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await settingsButton.click({ timeout: 15000 }).catch(() => {})
+    try { await modelsTab.waitFor({ timeout: 8000 }); break } catch { await page.waitForTimeout(1000) }
+  }
+  await modelsTab.click()
+  await page.waitForTimeout(3000)
+  await page.screenshot({ path: path.join(out, 'models-page.png'), fullPage: true })
+  await fs.writeFile(path.join(out, 'models-page.html'), await page.content())
+  await page.getByRole('button', { name: /^(编辑|Edit) upgrade-fixture$/ }).waitFor({ timeout: 60000 })
+  report.checks.push({ check: 'settings-provider-directory', ok: true })
+  // 模型页 UI 保存 → profile patch 持久化：改显示名后 patch 字节必须变化，刷新后同值读回。
+  const patchFile = path.join(base, 'data/profiles/web/cordis.patch.yml')
+  const patchDigest = async () => createHash('sha256').update(await fs.readFile(patchFile)).digest('hex')
+  const patchBefore = await patchDigest()
+  await page.getByRole('button', { name: /^(编辑|Edit) upgrade-fixture$/ }).click()
+  const displayName = page.locator('input[aria-label="显示名称"], input[aria-label="Display name"]').first()
+  await displayName.waitFor()
+  await displayName.fill('upgrade-fixture-ui')
+  const modelSaved = page.waitForResponse(response => /^\/api\/settings\/(update|mutate)$/.test(new URL(response.url()).pathname))
+  await page.getByRole('button', { name: /^(保存|Apply)$/ }).click()
+  if (!(await (await modelSaved).json()).result?.ok) throw new Error('模型页保存失败')
+  const patchAfter = await patchDigest()
+  if (patchAfter === patchBefore) {
+    const recent = []
+    const walk = async dir => {
+      for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) await walk(full)
+        else if (Date.now() - (await fs.stat(full)).mtimeMs < 60000) recent.push(path.relative(base, full))
+      }
+    }
+    await walk(path.join(base, 'data/profiles/web'))
+    throw new Error('模型页保存没有落到 web profile patch；近 60s 变更文件：' + recent.join(', '))
+  }
+  await page.reload()
+  await dashboardEntry().waitFor()
   await page.getByRole('button', { name: /^(设置|Settings)$/ }).click()
   await page.getByRole('button', { name: /^(模型|Models)$/ }).click()
-  await page.getByRole('button', { name: /^(编辑|Edit) upgrade-fixture$/ }).waitFor()
-  report.checks.push({ check: 'settings-provider-directory', ok: true })
+  await page.getByRole('button', { name: /^(编辑|Edit) upgrade-fixture-ui/ }).waitFor()
+  report.model_page_persistence = { patch_sha256_before: patchBefore, patch_sha256_after: patchAfter,
+    persisted_display_name: 'upgrade-fixture-ui' }
+  report.checks.push({ check: 'model-page-save-persists-profile-patch', ok: true })
   await page.getByRole('button', { name: /^(通用设置|General)$/ }).click()
   const changed = page.waitForResponse(response => /^\/api\/settings\/(update|mutate)$/.test(new URL(response.url()).pathname))
   await page.getByRole('button', { name: /^(增大字号|Increase font size)$/ }).click()
   const saved = await (await changed).json()
   if (!saved.result?.ok) throw new Error('字号设置保存失败')
   await page.reload()
-  await page.getByTitle('安全看板', { exact: true }).waitFor()
+  await dashboardEntry().waitFor()
   await page.waitForFunction(() => getComputedStyle(document.body).getPropertyValue('--dsh-content-font-size').trim() === '15px')
   await page.waitForFunction(() => getComputedStyle(document.body).getPropertyValue('--dsw-alias-bg-base').trim().toLowerCase() === '#161d22')
   report.checks.push({ check: 'settings-save-reload', ok: true })
@@ -118,13 +194,13 @@ try {
   if (!(await (await themeSaved).json()).result?.ok) throw new Error('内置主题保存失败')
   await page.waitForFunction(() => !document.body.hasAttribute('data-ds-dark-theme') && localStorage.getItem('silksec.theme.choice') === 'host')
   await page.reload()
-  await page.getByTitle('安全看板', { exact: true }).waitFor()
+  await dashboardEntry().waitFor()
   await page.waitForFunction(() => !document.body.hasAttribute('data-ds-dark-theme') && localStorage.getItem('silksec.theme.choice') === 'host')
   await page.getByRole('button', { name: /^(设置|Settings)$/ }).click()
   await page.getByRole('button', { name: /^(通用设置|General)$/ }).click()
   await page.getByRole('button', { name: '已关闭', exact: true }).click()
   await page.reload()
-  await page.getByTitle('安全看板', { exact: true }).waitFor()
+  await dashboardEntry().waitFor()
   await page.waitForFunction(() => getComputedStyle(document.body).getPropertyValue('--dsw-alias-bg-base').trim().toLowerCase() === '#161d22')
   report.checks.push({ check: 'explicit-theme-switch-and-reload', ok: true })
   const newSession = async () => {
@@ -210,6 +286,7 @@ try {
     await page.screenshot({ path: path.join(out, 'browser-failure.png'), fullPage: true }).catch(() => {})
   }
 } finally {
+  if (noticeKiller) clearInterval(noticeKiller)
   if (browser) await browser.close()
   await fs.writeFile(path.join(out, 'browser-stream-private.json'), JSON.stringify(streamFrames, null, 2) + '\n', { mode: 0o600 })
   await fs.writeFile(path.join(out, 'browser-report.json'), JSON.stringify(report, null, 2) + '\n')

@@ -33,6 +33,22 @@ class CandidateTests(unittest.TestCase):
         for name, value in candidate.PLUGIN_PINS["0.1.7-rc.2"].items():
             self.assertEqual(lock[name], value, name)
 
+    def test_scan_core_versions_keeps_target_version_locked(self):
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as work:
+            package = Path(work) / "node_modules/.pnpm/x/node_modules/@deepseek-ai/pkg/package.json"
+            package.parent.mkdir(parents=True)
+            package.write_text(json.dumps({"name": "@deepseek-ai/pkg", "version": "9.9.9"}))
+            self.assertEqual(candidate.scan_core_versions(Path(work)), {"@deepseek-ai/pkg": "9.9.9"})
+        source = (HERE / "dsh-upgrade-candidate.py").read_text()
+        self.assertNotIn('name, version = package["name"], package["version"]', source)
+
+    def test_root_only_snapshot_settings_source_is_copied(self):
+        source = (HERE / "dsh-upgrade-candidate.py").read_text()
+        self.assertIn(".settings-source.yaml", source)
+        self.assertNotIn('"DSH_SETTINGS_SOURCE": str(settings_source)', source)
+
     def test_retarget_rewrites_only_version_defaults(self):
         text = ('DSH_TARGET_VERSION:-0.1.5-rc.2\nKNOWN="${DSH_KNOWN_VERSION:-0.1.5-rc.2}"\n'
                 'DSH_VERSION="0.1.5-rc.2"\nDSH_SOURCE_VERSION:-0.1.2-rc.1\n')

@@ -3320,9 +3320,19 @@ export function startTaskScheduler(opts) {
   if (!acquire()) return { started: false, reason: 'scheduler.lock 被其他进程持有（活锁心跳未过期）' }
   process.once('exit', () => { try { if (holds()) fs.unlinkSync(lockPath) } catch { /* ignore */ } })
 
-  // 启动即回收：本进程新启动意味着旧调度进程已终止，其派发的 running 任务均为孤儿 → 无条件回收
-  try { dispatch('task', 'reap', { max_age: 0 }, { actor: 'scheduler' }).catch(() => {}) } catch { /* 启动回收失败不阻断 */ }
-  try { dispatch('task', 'worker_reap', {}, { actor: 'scheduler' }).catch(() => {}) } catch { /* 启动对账失败不阻断 */ }
+  // 启动即回收：本进程新启动意味着旧调度进程已终止，其派发的 running 任务均为孤儿 → 无条件回收。
+  // 0.1.7 时序修复：插件加载器会在同一加载批次里应用多个 profile 的插件实例，每个实例持有
+  // 独立 SQLite 连接；若在 apply 内同步 dispatch，网关的 BEGIN IMMEDIATE 写事务会跨越 await
+  // 持锁到下一个微任务，而同批次其他实例的引导写入是同步 busy-wait——主线程被占满、事务无法
+  // 提交，形成死锁（U2 实测：reap 后 boot 停摆、bus_meta/curated 索引持续 database is locked）。
+  // 推迟到加载批次结束后的定时器再回收，语义不变（仍是启动即回收）。
+  const startupReap = () => {
+    try { dispatch('task', 'reap', { max_age: 0 }, { actor: 'scheduler' }).catch(() => {}) } catch { /* 启动回收失败不阻断 */ }
+    try { dispatch('task', 'worker_reap', {}, { actor: 'scheduler' }).catch(() => {}) } catch { /* 启动对账失败不阻断 */ }
+  }
+  const startupReapDelay = Number.isFinite(Number(opts.startupReapDelayMs)) ? Number(opts.startupReapDelayMs) : 1000
+  const startupReapTimer = setTimeout(startupReap, startupReapDelay)
+  if (startupReapTimer && typeof startupReapTimer.unref === 'function') startupReapTimer.unref()
 
   const readPersona = createPersonaReader()
 

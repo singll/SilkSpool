@@ -14,6 +14,19 @@ import subprocess
 import tempfile
 
 
+def guest_environment(base):
+    """隔离验收环境：只透传版本对（release/maintenance/session 工具依赖），不泄漏宿主其他变量。"""
+    environment = {"PATH": "/usr/local/node/bin:/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
+                   "DSH_HOME": str(base / "data"), "SEC_BASE_DIR": str(base), "SEC_DATA_DIR": str(base / "data"),
+                   "SEC_SCOPE_FILE": str(base / "data/scope.yml"), "SEC_PROXY_POOL_DIR": str(base / "proxy-pool"),
+                   "SEC_DSH_BIN": str(base / "app/node_modules/@deepseek-ai/dsh/lib/bin.js"),
+                   "SEC_NODE_BIN": "/usr/local/node/bin/node", "CI": "true"}
+    for name in ("DSH_TARGET_VERSION", "DSH_OLD_VERSION"):
+        if os.environ.get(name):
+            environment[name] = os.environ[name]
+    return environment
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--restore-dir", required=True)
@@ -72,11 +85,7 @@ def main():
     bwrap.extend(["--ro-bind", str(run / "empty.env"), str(base / ".env"),
                   "--chdir", str(base / "app"), "--uid", str(identity.st_uid), "--gid", str(identity.st_gid),
                   "--cap-drop", "ALL", "--", *command])
-    environment = {"PATH": "/usr/local/node/bin:/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
-                   "DSH_HOME": str(base / "data"), "SEC_BASE_DIR": str(base), "SEC_DATA_DIR": str(base / "data"),
-                   "SEC_SCOPE_FILE": str(base / "data/scope.yml"), "SEC_PROXY_POOL_DIR": str(base / "proxy-pool"),
-                   "SEC_DSH_BIN": str(base / "app/node_modules/@deepseek-ai/dsh/lib/bin.js"),
-                   "SEC_NODE_BIN": "/usr/local/node/bin/node", "CI": "true"}
+    environment = guest_environment(base)
     isolation = {"restore_dir": str(restored), "manifest_sha256": report["manifest_sha256"], "mappings": mappings,
                  "uid": identity.st_uid, "network": "private-loopback-only", "host_filesystem": "read-only",
                  "production_env": "masked", "command": command}

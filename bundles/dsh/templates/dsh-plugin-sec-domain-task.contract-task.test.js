@@ -931,8 +931,10 @@ function schedulerFakeEnv(opts = {}) {
 }
 
 async function withScheduler(env, fn) {
-  const r = startTaskScheduler({ dataDir: env.dataDir, dispatch: env.dispatch, query: env.query, repo: env.repo, tickMs: 60 })
+  const r = startTaskScheduler({ dataDir: env.dataDir, dispatch: env.dispatch, query: env.query, repo: env.repo, tickMs: 60, startupReapDelayMs: 0 })
   assert.equal(r.started, true, `调度器应启动：${r.reason || ''}`)
+  // 启动回收改为延迟宏任务派发（0.1.7 插件加载批次死锁修复），测试等待其出队
+  await new Promise((resolve) => setTimeout(resolve, 5))
   try { await fn() } finally {
     clearInterval(globalThis.__silksecTaskScheduler)
     globalThis.__silksecTaskScheduler = null
@@ -1088,6 +1090,20 @@ test('L6: 学习目标节奏闸——goal 上限帽（无延长时）+ 工作区
   })
 })
 
+test('L6-fix: 启动回收不在 apply 同批次同步派发（0.1.7 插件加载批次死锁修复）', async () => {
+  const env = schedulerFakeEnv({})
+  const r = startTaskScheduler({ dataDir: env.dataDir, dispatch: env.dispatch, query: env.query, repo: env.repo, tickMs: 60000, startupReapDelayMs: 0 })
+  assert.equal(r.started, true, `调度器应启动：${r.reason || ''}`)
+  try {
+    assert.equal(env.calls.filter((c) => c.domain === 'task' && c.verb === 'reap').length, 0, '不得在 apply 内同步派发回收')
+    assert.ok(await waitFor(() => env.calls.some((c) => c.domain === 'task' && c.verb === 'reap' && c.args.max_age === 0), 3000), '延迟回收仍应派发')
+    assert.ok(env.calls.some((c) => c.domain === 'task' && c.verb === 'worker_reap'), '延迟 worker 对账仍应派发')
+  } finally {
+    clearInterval(globalThis.__silksecTaskScheduler)
+    globalThis.__silksecTaskScheduler = null
+  }
+})
+
 test('L6: 调度器锁——活持锁者拒绝抢锁，死锁可接管', async () => {
   const dir = tmpDir()
   const dataDir = path.join(dir, 'data')
@@ -1100,8 +1116,9 @@ test('L6: 调度器锁——活持锁者拒绝抢锁，死锁可接管', async (
   assert.match(r1.reason, /持有/)
   // 心跳过期 → 可抢
   fs.writeFileSync(path.join(dataDir, 'scheduler.lock'), JSON.stringify({ pid: process.ppid, ts: Date.now() - 200000 }))
-  const r2 = startTaskScheduler({ dataDir, dispatch: noop, query: noop })
+  const r2 = startTaskScheduler({ dataDir, dispatch: noop, query: noop, startupReapDelayMs: 0 })
   assert.equal(r2.started, true, '心跳过期可接管')
+  await new Promise((resolve) => setTimeout(resolve, 5))
   clearInterval(globalThis.__silksecTaskScheduler)
   globalThis.__silksecTaskScheduler = null
 })

@@ -12,11 +12,16 @@
 - **最近一次全面检查**：[archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI；**四轮修复全部落地验收，结论已全部回填各模块，2026-09-22 归档**，见其 §十一）。
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
 - **已知遗留（非阻塞，待后续会话）**：sec-suite/asset-db/experience 内部少量 v4 读取函数（experience 仍被 dashboard-rpc/task 链路引用）；`18-migration` 的 DoD 仍须逐条核对。
-- **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 P4 完成（U1c settings→Profile 落点 + 第三方插件升版/计费补丁重写 + 部署链先 dump-config 后重启；真 0.1.7 全链候选 prepared、组合校验全绿；目标 0.1.7-rc.2，下一步 P5 U2 隔离预演）**——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md) · [链状态](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)（25 号方案 §4.5 保留为批次总表）。
+- **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 P5 U2 隔离预演执行完成但 CHAIN BLOCKED**——隔离副本全链绿（真冻结点→候选封存→1600 会话 V4 迁移 failed=0→0.1.7 最小维护→invariants failures=0→worker/personas/feedback/browser-scope/契约 568/rpc 3/3→回滚→旧版读回 1600/1600；生产零影响），**阻塞于 `dsh-model-failover` 0.1.5 在 0.1.7 下钩子不触发（韧性降级，根因已定位）**，且浏览器 billing/模型页持久化实机断言未完成（工装未适配）；待用户按 [handoff-017/P6.md](archive/upgrades/handoff-017/P6.md) 决策恢复选项——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md) §12 · [链状态](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)。
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
 - **领域语言**：[CONTEXT](../../bundles/dsh/CONTEXT.md)。
 
 ## 二、最近进度结果
+
+### 2026-09-27 · DSH 0.1.7 升级链 P5：U2 隔离预演（完成；CHAIN BLOCKED）
+- **隔离闭环全绿**：真冻结点（窗口 23.2 分钟、RPO=0、生产零影响）→ 正式候选封存 `af8e8ae2…` → prepare 全量 **1600 会话 V3→V4 failed=0**（6431s，≈4.0s/会话）→ 四根切换 → 0.1.7 最小维护 15 域全绿 → **invariants failures=0**（8 项白名单含 `settings-legacy-import-rename`）→ runtime-smoke 核心 18 检查、worker-smoke 11/11、personas 7、feedback 本地化+外传对照、browser-scope 15 检查、契约 568/568、session-read **1646/1646** → 回滚 → 旧版 maintenance + 旧版读回 **1600/1600**。
+- **已修 0.1.7 阻断缺陷**：task 调度器启动回收 + 多 profile 插件实例同步 SQLite busy-wait 造成 **boot 死锁**（改为延迟 1s 回收；契约 91/91）；candidate 版本变量泄漏（候选工具 pin 被写 4.0.4）；root-only 冻结点 settings 源 EACCES；sandbox 吞版本对；invariants 真实布局白名单（多实例重复注册/顶层 settings 改名/audit 追加）。
+- **阻塞（CHAIN BLOCKED）**：`dsh-model-failover` 0.1.5 在 0.1.7 下模块/apply/注册均成功、事件确被派发，但插件回调从不执行（且预流失败不派发 `agent/request-error`）→ 自动模型回退失效（韧性降级）；浏览器 billing/模型页持久化实机断言未完成（0.1.7 UI 漂移工装未适配）。恢复选项（豁免 failover / 兼容后重跑 / 暂缓）见 [handoff-017/P6.md](archive/upgrades/handoff-017/P6.md)。证据：csai `…/20260926-017/p5-evidence/`（`evidence-index.txt`；record §12）。
 
 ### 2026-09-27 · DSH 0.1.7 升级链 P4：U1c settings + 第三方插件 + 部署链
 - **settings→Profile**：0.1.7 起 `settings.yaml` 不再热加载；模型/provider/默认模型/retryPolicy 与 `agent-presets.default=vuln-hunt` 显式写 web+headless `cordis.patch.yml` 受管区块；migrate-once（已存在行不覆盖 UI 编辑，`.imported` 不回填）；`--validate-composition` 用 `--dump-config` 逐字段断言（web 268/headless 125 行组合，默认 preset 注册校验）；0.1.5 函数体逐字保留。

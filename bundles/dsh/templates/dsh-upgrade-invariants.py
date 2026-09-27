@@ -222,10 +222,40 @@ def event_log_view(filename, baseline=None):
     return report
 
 
+def audit_log_view(filename, baseline=None):
+    """audit.jsonl 追加视图：只接受前缀逐字节保留、后缀每行均为完整 JSON。"""
+    report = {"bytes": filename.stat().st_size, "sha256": snapshot.sha256(filename)}
+    if baseline is None:
+        return report
+    prefix = hashlib.sha256()
+    remaining = baseline["bytes"]
+    with filename.open("rb") as stream:
+        while remaining:
+            chunk = stream.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            prefix.update(chunk)
+            remaining -= len(chunk)
+        appended_bytes = stream.read()
+    rows = []
+    valid = remaining == 0
+    if valid:
+        for line in appended_bytes.splitlines():
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                valid = False
+                break
+    report.update(prefix_sha256=prefix.hexdigest(), prefix_bytes=baseline["bytes"] - remaining, suffix_valid=valid, appended=rows)
+    return report
+
+
 def capture(root, source_manifest, baseline=None):
     root = Path(root).resolve(strict=True) if root is not None else None
     report = {"schema": SCHEMA, "captured_at": snapshot.now(), "source_manifest_sha256": snapshot.sha256(source_manifest), "files": {}, "databases": {},
-              "event_log": None,
+              "event_log": None, "audit_log": None,
               "mode": "isolated-copy" if root else "live-held"}
     manifest = json.loads(Path(source_manifest).read_text())
     if root is None:
@@ -241,6 +271,9 @@ def capture(root, source_manifest, baseline=None):
             log = directory / "data/events/bus.jsonl"
             if log.is_file():
                 report["event_log"] = event_log_view(log, baseline.get("event_log") if baseline else None)
+            audit = directory / "data/audit.jsonl"
+            if audit.is_file():
+                report["audit_log"] = audit_log_view(audit, baseline.get("audit_log") if baseline else None)
             paths = [directory / rel for rel in BUSINESS if (directory / rel).exists()]
             paths += [p for p in (directory / "data/storages").glob("*workspace*") if p.is_file()]
             for filename in paths:
@@ -267,11 +300,25 @@ def added_registrations(before, after):
     if any(row is None for row in added):
         return None
     catalog = before.get("registration_catalog", {})
-    if len(added) != len(catalog) or {row["domain"] for row in added} != set(catalog):
-        return None
-    if any(row["payload_sha256"] != catalog[row["domain"]]["payload_sha256"] or row["ts"] <= catalog[row["domain"]]["ts"] for row in added):
+    # 0.1.7 起同一启动会由多个插件实例重复注册各域（15 域 × N 个实例），不再要求
+    # 「每个域恰好一次」；只要求既有域的 canonical payload 不变、时间前进，且每个已见域至少再注册一次。
+    for row in added:
+        prior = catalog.get(row["domain"])
+        if prior is not None and (row["payload_sha256"] != prior["payload_sha256"] or row["ts"] <= prior["ts"]):
+            return None
+    if any(domain not in {row["domain"] for row in added} for domain in catalog):
         return None
     return {row["id"]: row for row in added}
+
+
+STARTUP_AUDIT_COMMANDS = {("task", "reap"), ("task", "worker_reap")}
+
+
+def startup_audit_rows(rows):
+    """启动回收期允许的审计追加：仅 scheduler 的 reap/worker_reap 命令记录。"""
+    return bool(rows) and all(isinstance(row, dict) and row.get("kind") == "command"
+        and row.get("actor") == "scheduler" and (row.get("domain"), row.get("cmd")) in STARTUP_AUDIT_COMMANDS
+        and row.get("result") in {"ok", "failed"} for row in rows)
 
 
 def normalize_settings_rename(entries):
@@ -316,7 +363,14 @@ def compare(before, after, candidate=None, *, same_freeze_point=True):
         failures.append("unsupported invariant schema; capture a current baseline")
     if same_freeze_point and (not before.get("source_manifest_sha256") or before["source_manifest_sha256"] != after.get("source_manifest_sha256")):
         failures.append("source freeze manifest differs")
-    if before["files"].keys() != after["files"].keys():
+    # 0.1.7 首启把 data/settings.yaml 一次性导入并改名 .imported：顶层文件视图键
+    # 从 dsh/data/settings.yaml 变为 dsh/data/settings.yaml.imported，是唯一允许的改名。
+    before_keys, after_keys = set(before["files"]), set(after["files"])
+    legacy_root, imported_root = "dsh/" + SETTINGS_LEGACY, "dsh/" + SETTINGS_IMPORTED
+    renamed_root = (legacy_root in before_keys and legacy_root not in after_keys
+                    and imported_root in after_keys and imported_root not in before_keys)
+    logical_before = (before_keys - {legacy_root}) | ({imported_root} if renamed_root else set())
+    if logical_before != after_keys:
         failures.append("evidence/workspace root set changed")
     browser_sha = snapshot.sha256(Path(candidate) / "dsh-shared-browser-host.mjs") if candidate else None
     registrations = {}
@@ -329,7 +383,18 @@ def compare(before, after, candidate=None, *, same_freeze_point=True):
         and log_after.get("prefix_bytes") == log_before["bytes"] and log_after.get("prefix_sha256") == log_before["sha256"]
         and len(log_after.get("appended", [])) == len(registrations)
         and {row["id"]: row for row in log_after.get("appended", [])} == registrations)
+    audit_before, audit_after = before.get("audit_log"), after.get("audit_log")
+    audit_matches = bool(audit_before and audit_after and audit_after.get("suffix_valid")
+        and audit_after.get("prefix_bytes") == audit_before["bytes"]
+        and audit_after.get("prefix_sha256") == audit_before["sha256"]
+        and startup_audit_rows(audit_after.get("appended")))
     for root, files in before["files"].items():
+        if renamed_root and root == legacy_root:
+            if files == after["files"].get(imported_root, {}):
+                expected.append("settings-legacy-import-rename")
+            else:
+                failures.append(root + ": settings import bytes changed")
+            continue
         current = after["files"].get(root, {})
         normalized_before, normalized_after = normalize_settings_rename(files), normalize_settings_rename(current)
         if normalized_before.keys() != normalized_after.keys():
@@ -345,6 +410,8 @@ def compare(before, after, candidate=None, *, same_freeze_point=True):
                 expected.append("managed-browser-host-update:" + root)
             elif root == "dsh/data/events" and name == "bus.jsonl" and log_matches:
                 expected.append("startup-registration-log-append:" + str(len(registrations)))
+            elif root == "dsh/data/audit.jsonl" and audit_matches:
+                expected.append("startup-audit-append:" + str(len(audit_after["appended"])))
             else:
                 failures.append(root + "/" + name + ": content/reference changed")
     if before["databases"].keys() != after["databases"].keys():

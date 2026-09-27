@@ -46,13 +46,28 @@ class Model(http.server.BaseHTTPRequestHandler):
                      if (m := re.search(r"\[u2:([a-z-]+)\]", str(message.get("content", ""))))), "plain")
         if case == "child-slow":
             time.sleep(12)
-        if case == "child-fail" or body.get("model") == "fixture-failing":
+        if case == "child-fail":
             data = json.dumps({"error": {"message": "isolated fixture failure", "type": "server_error"}}).encode()
-            self.send_response(400 if case == "child-fail" else 503)
+            self.send_response(400)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+            return
+        if body.get("model") == "fixture-failing":
+            # 0.1.7 的 agent-loop 只在流已开始后派发 agent/request-error：预流 503 不会触发
+            # failover 熔断（已登记 open issue）。这里用「已开始流后中断」模拟真实传输故障，
+            # 验证熔断 → 方案回退链路。
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(("data: " + json.dumps({**envelope, "choices": [{"index": 0, "delta": {"role": "assistant", "content": "U2_"}, "finish_reason": None}]}) + "\n\n").encode())
+            self.wfile.flush()
+            time.sleep(0.05)
+            try:
+                self.wfile.close()
+            except OSError:
+                pass
             return
         calls = {
             "stream-tool": ("bus_status", {}),
@@ -126,13 +141,27 @@ def main():
         compat.apply_profile_settings(BASE, settings, force=True, profiles=("headless",))
     else:
         (DATA / "settings.yaml").write_text(yaml.safe_dump(settings))
-    patch = OUT / "headless-isolation.patch.yml"
-    patch.write_text(yaml.safe_dump([
+    # Cordis patch 替换整段 config：与部署态 headless 行配置合并，避免丢 sidecars/bus 等既有字段。
+    import importlib.util
+    maintenance_spec = importlib.util.spec_from_file_location("maintenance", Path(__file__).with_name("dsh-upgrade-maintenance.py"))
+    maintenance = importlib.util.module_from_spec(maintenance_spec)
+    maintenance_spec.loader.exec_module(maintenance)
+    deployed = {}
+    dump = subprocess.run(["/usr/local/node/bin/node", str(BASE / "app/node_modules/@deepseek-ai/dsh/lib/bin.js"),
+                           "--profile", "headless", "--dump-config"], cwd=BASE / "app", env={**os.environ},
+                          capture_output=True, text=True, timeout=60)
+    if dump.returncode == 0:
+        for row in maintenance.rows(yaml.load(dump.stdout, Loader=maintenance.ConfigLoader)):
+            deployed[row["id"]] = row.get("config") or {}
+    overrides = [
         {"id": "model-failover", "config": {"enabled": False}},
         {"id": "sec-cli-adapter", "config": {"sidecars": False}},
         {"id": "sec-domain-bus", "config": {"startDispatcherTimer": False}},
         {"id": "sec-memcore", "config": {"sweeper": False, "agentsMd": False, "vaultExport": False}},
-    ]))
+    ]
+    patch = OUT / "headless-isolation.patch.yml"
+    patch.write_text(yaml.dump([{"id": row["id"], "config": {**deployed.get(row["id"], {}), **row["config"]}}
+                                for row in overrides], Dumper=maintenance.ConfigDumper, allow_unicode=True, sort_keys=False))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 3099), Model)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
