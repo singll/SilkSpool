@@ -67,13 +67,32 @@ def main():
         provider = settings["llm-pi-ai"]["providers"][selected["provider"]]
         provider["baseURL"] = "http://127.0.0.1:3099/v1"
         provider["apiKeyEnv"] = "DSH_UPGRADE_FIXTURE_KEY"
+    if report["version"] == "0.1.7-rc.2":
+        # 0.1.7 首启会把 settings.yaml 一次性导入 profile patch 后改名；预演副本必须先完成
+        # 这一步，否则真实启动会把 fixture 路由重新导入覆盖。
+        legacy = DATA / "settings.yaml"
+        if legacy.is_file():
+            legacy.rename(DATA / "settings.yaml.imported")
+
+    def write_fixture_settings(values):
+        """0.1.5 写 settings.yaml（热更新）；0.1.7 写双 profile patch 落点（settings 真相源）。"""
+        if report["version"] == "0.1.7-rc.2":
+            spec = importlib.util.spec_from_file_location("runtime_compat", BASE / "dsh-runtime-compat.py")
+            compat = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(compat)
+            compat.apply_profile_settings(BASE, values, force=True)
+        else:
+            (DATA / "settings.yaml").write_text(yaml.safe_dump(values))
     if not report["original_settings"]:
-        (DATA / "settings.yaml").write_text(yaml.safe_dump(settings))
+        write_fixture_settings(settings)
     else:
         isolation = json.loads((OUT / "isolation.json").read_text())
         original = (OUT / "original-settings.yaml").read_bytes()
         require(hashlib.sha256(original).hexdigest() == isolation["original_settings_sha256"], "原模型配置副本哈希不符")
-        (DATA / "settings.yaml").write_bytes(original)
+        if report["version"] == "0.1.7-rc.2":
+            write_fixture_settings(yaml.safe_load(original))
+        else:
+            (DATA / "settings.yaml").write_bytes(original)
     password = "isolated-upgrade-fixture-password"
     salt = bytes(range(16))
     key = hashlib.scrypt(password.encode(), salt=salt, n=65536, r=8, p=1, dklen=32, maxmem=128 * 1024 * 1024)

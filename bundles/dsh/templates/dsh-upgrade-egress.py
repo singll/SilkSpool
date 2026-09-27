@@ -12,6 +12,33 @@ import yaml
 
 SUPPORTED_VERSIONS = ("0.1.5-rc.2", "0.1.7-rc.2")
 TARGET_VERSION = os.environ.get("DSH_TARGET_VERSION", "")
+PRODUCTION_ROOT = Path("/opt/silkspool/dsh")
+
+
+def effective_production_settings():
+    """读取正在运行的生产服务的生效模型配置：0.1.5 在 settings.yaml；
+    0.1.7 起 settings.yaml 仅一次性导入，真相源是 web profile patch 的模型行。"""
+    version = json.loads((PRODUCTION_ROOT / "app/node_modules/@deepseek-ai/dsh/package.json").read_text())["version"]
+    if version == "0.1.7-rc.2":
+        patch = PRODUCTION_ROOT / "data/profiles/web/cordis.patch.yml"
+        rows = yaml.load(patch.read_text(), Loader=yaml.BaseLoader) or []
+        flat = {}
+        def visit(entries):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if isinstance(entry.get("id"), str):
+                    flat[entry["id"]] = entry
+                if isinstance(entry.get("insert"), list):
+                    visit(entry["insert"])
+        visit(rows)
+        if "llm-pi-ai" not in flat or "agent-default-model" not in flat:
+            raise RuntimeError("0.1.7 生产 profile patch 缺少模型落点行，拒绝退回解析 settings.yaml")
+        raw = patch.read_bytes()
+        return {"agent-default-model": flat["agent-default-model"]["config"],
+                "llm-pi-ai": flat["llm-pi-ai"]["config"]}, raw, "profile-patch"
+    raw = (PRODUCTION_ROOT / "data/settings.yaml").read_bytes()
+    return yaml.safe_load(raw), raw, "settings.yaml"
 
 
 def main():
@@ -32,9 +59,7 @@ def main():
     pid = subprocess.check_output(["systemctl", "show", "silksecagent.service", "-p", "MainPID", "--value"], text=True).strip()
     if not pid.isdigit() or int(pid) < 2:
         raise RuntimeError("生产服务不在运行，无法取得已授权路由配置")
-    production = Path("/opt/silkspool/dsh/data/settings.yaml")
-    raw = production.read_bytes()
-    settings = yaml.safe_load(raw)
+    settings, raw, settings_source = effective_production_settings()
     default = settings["agent-default-model"]
     provider = settings["llm-pi-ai"]["providers"][default["provider"]]
     environment = dict(item.decode().split("=", 1) for item in Path("/proc", pid, "environ").read_bytes().split(b"\0") if b"=" in item)
@@ -65,9 +90,11 @@ def main():
         log.chmod(0o600)
         raise RuntimeError("出口验收未完成，查看私有诊断：" + str(log))
     report = json.loads((directory / "report.json").read_text())
-    if production.read_bytes() != raw:
+    _, current_raw, _ = effective_production_settings()
+    if current_raw != raw:
         raise RuntimeError("出口验收期间生产模型配置发生变化，需重新核对")
     report["settings_sha256"] = hashlib.sha256(raw).hexdigest()
+    report["settings_source"] = settings_source
     (directory / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({"ok": report["ok"], "report": str(directory / "report.json"),
                       "checks": [{"name": row["name"], "ok": row["ok"]} for row in report["checks"]]}))

@@ -70,10 +70,11 @@ async function fixture(extraInject) {
   }
 }
 
-test('独立提供者重现 rc.2 未注入 webServer 的原始故障', async () => {
+test('独立提供者重现未注入 webServer 的原始故障（0.1.5/0.1.7 均需部署覆盖）', async () => {
   const f = await fixture([])
   try {
-    assert.deepEqual(f.failures, ['cannot get property "webServer" without inject'])
+    assert.ok(f.failures.length >= 1
+      && f.failures.every(message => message === 'cannot get property "webServer" without inject'))
     assert.equal(f.routes.has('/fixture'), false)
   } finally { await f.close() }
 })

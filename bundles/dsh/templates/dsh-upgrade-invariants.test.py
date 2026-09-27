@@ -82,6 +82,16 @@ class InvariantTests(unittest.TestCase):
             after = {**self.before, "files": {"dsh/data/results": files}}
             self.assertFalse(invariants.compare(before, after)["ok"])
 
+    def test_settings_legacy_import_rename_is_expected_only_with_identical_bytes(self):
+        entry = {"kind": "file", "sha256": "same-bytes", "size": 12}
+        before = {**self.before, "files": {"dsh/data": {"data/settings.yaml": entry}}}
+        renamed = {**self.before, "files": {"dsh/data": {"data/settings.yaml.imported": entry}}}
+        result = invariants.compare(before, renamed)
+        self.assertTrue(result["ok"], result)
+        self.assertIn("settings-legacy-import-rename", result["expected_changes"])
+        rewritten = {**self.before, "files": {"dsh/data": {"data/settings.yaml.imported": {"kind": "file", "sha256": "changed", "size": 12}}}}
+        self.assertFalse(invariants.compare(before, rewritten)["ok"])
+
 
 class StartupInvariantTests(unittest.TestCase):
     def setUp(self):

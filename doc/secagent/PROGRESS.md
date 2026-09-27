@@ -12,11 +12,18 @@
 - **最近一次全面检查**：[archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI；**四轮修复全部落地验收，结论已全部回填各模块，2026-09-22 归档**，见其 §十一）。
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
 - **已知遗留（非阻塞，待后续会话）**：sec-suite/asset-db/experience 内部少量 v4 读取函数（experience 仍被 dashboard-rpc/task 链路引用）；`18-migration` 的 DoD 仍须逐条核对。
-- **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 P3 完成（U1b Session V4 适配与 Agent Preset 机制替换；7 角色改 web patch preset 行；工具单测 root 全绿；目标 0.1.7-rc.2）**——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md) · [链状态](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)（25 号方案 §4.5 保留为批次总表）。
+- **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 P4 完成（U1c settings→Profile 落点 + 第三方插件升版/计费补丁重写 + 部署链先 dump-config 后重启；真 0.1.7 全链候选 prepared、组合校验全绿；目标 0.1.7-rc.2，下一步 P5 U2 隔离预演）**——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md) · [链状态](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)（25 号方案 §4.5 保留为批次总表）。
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
 - **领域语言**：[CONTEXT](../../bundles/dsh/CONTEXT.md)。
 
 ## 二、最近进度结果
+
+### 2026-09-27 · DSH 0.1.7 升级链 P4：U1c settings + 第三方插件 + 部署链
+- **settings→Profile**：0.1.7 起 `settings.yaml` 不再热加载；模型/provider/默认模型/retryPolicy 与 `agent-presets.default=vuln-hunt` 显式写 web+headless `cordis.patch.yml` 受管区块；migrate-once（已存在行不覆盖 UI 编辑，`.imported` 不回填）；`--validate-composition` 用 `--dump-config` 逐字段断言（web 268/headless 125 行组合，默认 preset 注册校验）；0.1.5 函数体逐字保留。
+- **第三方插件**：auth-gate 0.7.2→0.15.0、bill 0.13.1→0.18.1、failover 0.1.4→0.1.5（`plugins.lock` npm integrity + candidate/release 三方受控集合）；billing 客户端补丁收敛为 `data-silksec-turn-cost` 标记（0.18.1 原生支持 turnTail list），投影补丁沿用（0.18.1 projection.js 与 0.13.1 字节相同）；session-trace 改 `inheritedEventCount`，真实生产 V3 会话读回 billing_cache 三项全绿。
+- **部署链**：setup 先 `--validate-composition` 再重启（失败=部分激活 + 重试/回滚文案）；candidate 修相对 `link:` 解析、核心 overrides 重建、受控 pin；真 0.1.7 app + 生产 profile 只读快照全链到 `prepared`（offline-frozen 双 profile），rpc 契约 3/3。
+- **测试**：本地 11 组 Python + node；csai root（p4-tools）11 组 Python 全绿 + node host-compat 9/9、browser-scope 5/5、session-recovery 2 pass/8 skip；0.1.5 路径回归幂等。证据 `p4-evidence/`（root-tests `b49bff09…`、candidate-checks `3de11e59…`、p4-tools-sha256 `e4c6e1a2…`）。生产零影响（MainPID 635167/NRestarts=0）。
+- **下一步 P5**：真实冻结点 → 正式候选 → U2 沙箱全量预演（登录门/fallback/personas/browser/worker/全量 V4 迁移/最小维护/invariants=0/回滚读回），并显式决策冻结窗口方案。详见 [record §11](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)。
 
 ### 2026-09-26 · 42 号补丁：大数据治理 B1（25 号方案 S0+S1 核心）
 - **保留窗口落调度**：`bus_prune` 扩展——`idempotency` 与 `event_outbox`（仅 `delivered`）按「7 天或 2 万行取大」裁剪，`bus_subscription` 级联清理，返回新增 `outbox_pruned`/`subscriptions_pruned`；接入 task 调度器每日 05:00（北京）后首个 tick（`actor=system`，无 force，沿用 6h 冷却）——此前 `bus_prune` 从未被调度（实测 idempotency 5.9 万行超上限 5.9 倍、outbox delivered 13 万行零清理）。`bus_status` outbox 增 `delivered`/`oldest_delivered_at`。

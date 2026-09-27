@@ -13,6 +13,11 @@ import yaml
 # 版本来自候选 app 自身（唯一锁）；DSH_TARGET_VERSION 若设置则必须一致。
 SUPPORTED_VERSIONS = ("0.1.5-rc.2", "0.1.7-rc.2")
 TARGET_VERSION = os.environ.get("DSH_TARGET_VERSION", "")
+# 第三方插件受控版本集合：候选 profile 依赖按目标版本重写，plugins.lock 必须逐一相符。
+PLUGIN_PINS = {
+    "0.1.5-rc.2": {"dsh-auth-gate": "0.7.2", "dsh-model-failover": "0.1.4", "dsh-bill": "0.13.1"},
+    "0.1.7-rc.2": {"dsh-auth-gate": "0.15.0", "dsh-model-failover": "0.1.5", "dsh-bill": "0.18.1"},
+}
 TEMPLATES = ["dsh-plugin-sec-suite.js", "dsh-plugin-sec-suite.host-compat.js",
              "dsh-plugin-sec-suite.task-policy.js", "dsh-plugin-sec-suite.parse-proposal.js",
              "dsh-plugin-sec-suite.persona.py", "dsh-plugin-sec-suite.native-guard.js", "dsh-plugin-sec-suite.worker-runtime.js",
@@ -68,6 +73,17 @@ def main():
     owner = source.stat()
     release = Path(tempfile.mkdtemp(prefix="dsh-candidate-", dir=Path(args.work_dir).resolve(strict=True)))
     os.chown(release, owner.st_uid, owner.st_gid)
+    templates = Path(args.templates).resolve(strict=True)
+    pins = {}
+    for line in (templates / "plugins.lock").read_text().splitlines():
+        fields = line.split("|")
+        if len(fields) >= 4 and fields[0] in PLUGIN_PINS[version]:
+            pins[fields[0]] = fields[1]
+    if pins != PLUGIN_PINS[version]:
+        raise RuntimeError(f"plugins.lock 第三方 pin 不在受控集合：{pins} != {PLUGIN_PINS[version]}")
+    settings_source = source / "data/settings.yaml" if version == "0.1.7-rc.2" else None
+    if settings_source is not None and not settings_source.is_file():
+        raise RuntimeError("0.1.7 候选需要恢复点的 data/settings.yaml 作为 Profile 落点迁移源")
     report = {"target_version": version, "source_version": source_version, "source_snapshot": str(snapshot), "manifest_sha256": sha(manifest_file),
               "candidate": str(release), "canonical_base": manifest["roots"]["dsh"]["source"], "profiles": {}, "ready_for_cutover": False}
 
@@ -119,21 +135,35 @@ def main():
                 copy(old / name, target / name)
             package = json.loads((target / "package.json").read_text())
             for name, value in package.get("dependencies", {}).items():
+                if name in pins and not value.startswith(("file:", "link:", "workspace:")):
+                    package["dependencies"][name] = pins[name]
+                    continue
                 if value.startswith(("file:", "link:")):
-                    if name == "dsh-model-failover":
-                        package["dependencies"][name] = "0.1.4"
-                        continue
                     prefix, filename = value.split(":", 1)
                     location = Path(filename)
                     canonical = Path(report["canonical_base"])
-                    if not location.is_absolute() or not location.is_relative_to(canonical / "plugins"):
+                    if location.is_absolute():
+                        resolved = location
+                    else:
+                        # 相对链接按 profile 在 canonical 树中的相同深度解析（pnpm 落盘后会写成相对）。
+                        resolved = Path(os.path.normpath(canonical / old.relative_to(source) / location))
+                    if not resolved.is_relative_to(canonical / "plugins"):
                         raise RuntimeError("候选包含未分类本地依赖：" + name)
-                    destination = release / location.relative_to(canonical)
+                    destination = release / resolved.relative_to(canonical)
+                    if not destination.exists():
+                        raise RuntimeError("候选本地依赖在恢复点不存在：" + name)
                     package["dependencies"][name] = prefix + ":" + os.path.relpath(destination, target)
             write(target / "package.json", json.dumps(package, ensure_ascii=False, indent=2) + "\n")
             workspace = yaml.safe_load((target / "pnpm-workspace.yaml").read_text())
             workspace["autoInstallPeers"] = False
-            workspace["overrides"] = {**workspace.get("overrides", {}), **versions}
+            # 核心 overrides 全部按目标 app 的单一版本重建：残留的 0.1.5-only 包名
+            # （如 dsh-agent-presets/dsh-settings-file）不得把依赖图钉回旧代次。
+            overrides = {key: value for key, value in workspace.get("overrides", {}).items()
+                         if not key.startswith("@deepseek-ai/")}
+            workspace["overrides"] = {**overrides, **versions}
+            excluded = [item for item in workspace.get("minimumReleaseAgeExclude", [])
+                        if not any(item.startswith(name + "@") for name in pins)]
+            workspace["minimumReleaseAgeExclude"] = sorted(set(excluded) | {name + "@" + pins[name] for name in pins})
             write(target / "pnpm-workspace.yaml", yaml.safe_dump(workspace, sort_keys=True))
             command = ["pnpm", "install", "--prod", "--ignore-scripts", "--store-dir", str(release / ".pnpm-store")]
             run([*command, "--no-frozen-lockfile"], target, profile + "-install.log")
@@ -142,7 +172,6 @@ def main():
             if sha(target / "pnpm-lock.yaml") != digest:
                 raise RuntimeError("冻结安装改写了锁文件")
             report["profiles"][profile] = {"lock_sha256": digest, "offline_frozen_install": True}
-        templates = Path(args.templates).resolve(strict=True)
         names = set(TEMPLATES)
         for pattern in ("dsh-upgrade-*", "dsh-session-*", "dsh-runtime-compat.py", "dsh-browser-*", "dsh-shared-browser-host.mjs"):
             names.update(p.name for p in templates.glob(pattern) if p.is_file())
@@ -161,7 +190,8 @@ def main():
         write(release / "plugins/sec-domain-bus/index.js", (release / "dsh-plugin-sec-domain-bus.js").read_text())
         for plugin in ("sec-domain-exec", "sec-domain-task", "sec-backend-task-sqlite", "sec-backend-know-sqlite", "sec-domain-fact", "sec-domain-asset", "sec-domain-endpoint", "sec-domain-vuln"):
             write(release / "plugins" / plugin / "index.js", (release / ("dsh-plugin-" + plugin + ".js")).read_text())
-        run(["python3", str(release / "dsh-runtime-compat.py"), "--base-dir", str(release)], release, "runtime-compat.log")
+        compat_env = {"DSH_SETTINGS_SOURCE": str(settings_source)} if settings_source is not None else {}
+        run(["python3", str(release / "dsh-runtime-compat.py"), "--base-dir", str(release)], release, "runtime-compat.log", compat_env)
         pkgfile = release / "plugins/sec-suite/package.json"
         package = json.loads(pkgfile.read_text())
         package["files"] = sorted(set(package["files"]) | {"host-compat.js", "native-guard.js", "worker-runtime.js", "persona.py", "task-policy.js", "parse-proposal.js"})
@@ -170,7 +200,7 @@ def main():
             {"SEC_BASE_DIR": str(release), "SEC_DATA_DIR": str(release / "data"), "DSH_HOME": str(release / "data")})
         run(["python3", str(release / "dsh-browser-fork.py"), "--base-dir", str(release), "--templates", str(release), "--install"],
             release, "browser-build.log")
-        run(["python3", str(release / "dsh-runtime-compat.py"), "--base-dir", str(release)], release, "runtime-compat.log")
+        run(["python3", str(release / "dsh-runtime-compat.py"), "--base-dir", str(release)], release, "runtime-compat.log", compat_env)
         report["profiles"] = {name: {"lock_sha256": sha(release / "data/profiles" / name / "pnpm-lock.yaml"),
                                      "offline_frozen_install": True} for name in ("web", "headless")}
         report["app_lock_sha256"] = sha(release / "app/pnpm-lock.yaml")

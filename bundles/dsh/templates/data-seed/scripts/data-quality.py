@@ -15,28 +15,58 @@ import time
 DB_DEFAULT = "/opt/silkspool/dsh/data/asset-graph.db"
 PIPELINE_DEFAULT = "/opt/silkspool/dsh/data/pipeline"
 SETTINGS_DEFAULT = "/opt/silkspool/dsh/data/settings.yaml"
+PROFILE_PATCH_DEFAULT = "/opt/silkspool/dsh/data/profiles/web/cordis.patch.yml"
 
 
 def q(cur, sql, *args):
     return cur.execute(sql, args).fetchone()[0]
 
 
-def check_settings(path):
-    """P18 纪律：默认 LLM 路由必须经 Bellkeeper /api/llm/v1。"""
+def effective_config(settings_path, profile_patch):
+    """0.1.7 起生效配置在 web profile patch 的模型行；patch 无模型行时回退旧文件。
+    返回 (cfg, source)；两者都不可用返回 (None, reason)。"""
+    import yaml
     try:
-        import yaml
-        with open(path, encoding="utf-8") as fh:
-            cfg = yaml.safe_load(fh) or {}
+        with open(profile_patch, encoding="utf-8") as fh:
+            rows = yaml.load(fh, Loader=yaml.BaseLoader) or []
+        flat = {}
+        def visit(entries):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if isinstance(entry.get("id"), str):
+                    flat[entry["id"]] = entry
+                if isinstance(entry.get("insert"), list):
+                    visit(entry["insert"])
+        if isinstance(rows, list):
+            visit(rows)
+        if "llm-pi-ai" in flat and "agent-default-model" in flat:
+            return {"llm-pi-ai": flat["llm-pi-ai"]["config"],
+                    "agent-default-model": flat["agent-default-model"]["config"]}, profile_patch
+    except FileNotFoundError:
+        pass
     except Exception as e:
-        return "critical", f"无法解析 settings.yaml: {e}"
+        return None, f"profile patch 解析失败，拒绝退回旧文件: {e}"
+    try:
+        with open(settings_path, encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}, settings_path
+    except Exception as e:
+        return None, f"无法解析 {settings_path}: {e}"
+
+
+def check_settings(path, profile_patch=PROFILE_PATCH_DEFAULT):
+    """P18 纪律：默认 LLM 路由必须经 Bellkeeper /api/llm/v1。"""
+    cfg, source = effective_config(path, profile_patch)
+    if cfg is None:
+        return "critical", source
 
     default = cfg.get("agent-default-model", {})
     provider = default.get("provider")
     model = default.get("model")
     if provider != "bellkeeper":
-        return "critical", f"默认模型 provider 不是 bellkeeper: {provider}"
+        return "critical", f"默认模型 provider 不是 bellkeeper: {provider} ({source})"
     if model != "pool-secagent":
-        return "warn", f"默认模型不是 pool-secagent: {model}"
+        return "warn", f"默认模型不是 pool-secagent: {model} ({source})"
 
     providers = cfg.get("llm-pi-ai", {}).get("providers", {})
     bk = providers.get("bellkeeper")
@@ -45,7 +75,7 @@ def check_settings(path):
     base_url = bk.get("baseURL", "")
     if "/api/llm/v1" not in base_url:
         return "critical", f"bellkeeper baseURL 不是 /api/llm/v1: {base_url}"
-    return "ok", f"默认路由 bellkeeper/pool-secagent -> {base_url}"
+    return "ok", f"默认路由 bellkeeper/pool-secagent -> {base_url} ({source})"
 
 
 def main() -> int:
@@ -53,6 +83,7 @@ def main() -> int:
     ap.add_argument("--db", default=DB_DEFAULT)
     ap.add_argument("--pipeline-dir", default=PIPELINE_DEFAULT)
     ap.add_argument("--settings", default=SETTINGS_DEFAULT)
+    ap.add_argument("--profile-patch", default=PROFILE_PATCH_DEFAULT)
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -60,8 +91,8 @@ def main() -> int:
     cur = con.cursor()
     checks = []  # (name, level, detail)
 
-    # P18 纪律：默认 LLM 路由必须经 Bellkeeper
-    checks.append(("llm_default_route", *check_settings(args.settings)))
+    # P18 纪律：默认 LLM 路由必须经 Bellkeeper（patch 落点优先，旧 settings.yaml 兜底）
+    checks.append(("llm_default_route", *check_settings(args.settings, args.profile_patch)))
 
     total, ungraded = q(cur, "SELECT COUNT(*) FROM assets"), q(cur, "SELECT COUNT(*) FROM assets WHERE level IS NULL")
     pct = round(100 * ungraded / total, 1) if total else 0

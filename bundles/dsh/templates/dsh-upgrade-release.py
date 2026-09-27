@@ -32,6 +32,11 @@ freeze = module("freeze", "dsh-upgrade-freeze.py")
 SUPPORTED_PAIRS = {("0.1.2-rc.1", "0.1.5-rc.2"), ("0.1.5-rc.2", "0.1.7-rc.2")}
 VERSION = os.environ.get("DSH_TARGET_VERSION", "0.1.5-rc.2")
 OLD_VERSION = os.environ.get("DSH_OLD_VERSION", "0.1.2-rc.1")
+# 第三方插件受控版本集合（与 dsh-upgrade-candidate.py / plugins.lock 同步）。
+PLUGIN_PINS = {
+    "0.1.5-rc.2": {"dsh-auth-gate": "0.7.2", "dsh-bill": "0.13.1", "dsh-model-failover": "0.1.4"},
+    "0.1.7-rc.2": {"dsh-auth-gate": "0.15.0", "dsh-bill": "0.18.1", "dsh-model-failover": "0.1.5"},
+}
 ROLES = ("recon", "vuln-hunt", "biz-logic", "code-audit", "intranet", "review", "orchestrator")
 
 
@@ -141,13 +146,16 @@ def validate_versions(candidate):
             name, version = package["name"], package["version"]
             require(name not in versions or versions[name] == version, "app/profile 存在不一致的核心版本：" + name)
             versions[name] = version
+    pins = PLUGIN_PINS[VERSION]
     for profile in ("web", "headless"):
         # 0.1.5 目录式 preset 的用户自建包检查；0.1.7 起角色改由 bundle patch 行声明，不再扫目录。
         for filename in (candidate / "data/.agent-presets").glob("*/package.json"):
             package = read_json(filename)
             require(not any(value == "latest" for value in package.get("dependencies", {}).values()), "用户预设有 latest 依赖")
-        installed = candidate / "data/profiles" / profile / "node_modules/dsh-model-failover/package.json"
-        require(read_json(installed)["version"] == "0.1.4", "failover 安装版本不符")
+        names = ("dsh-bill", "dsh-model-failover") + (("dsh-auth-gate",) if profile == "web" else ())
+        for name in names:
+            installed = candidate / "data/profiles" / profile / "node_modules" / name / "package.json"
+            require(read_json(installed)["version"] == pins[name], f"{name} 安装版本不符")
     browser = read_json(candidate / "browser-fork-report.json")
     tarball = candidate / "plugins" / Path(browser["tarball"]).name
     require(browser["offline_frozen_install"] and snapshot.sha256(tarball) == browser["sha256"], "浏览器冻结锁/产物不符")

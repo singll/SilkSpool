@@ -23,6 +23,16 @@ class CandidateTests(unittest.TestCase):
     def test_supported_versions_include_source_and_target(self):
         self.assertEqual(set(candidate.SUPPORTED_VERSIONS), {"0.1.5-rc.2", "0.1.7-rc.2"})
 
+    def test_target_plugin_pins_match_repo_lock(self):
+        lock = {}
+        for line in (HERE / "plugins.lock").read_text().splitlines():
+            fields = line.split("|")
+            if len(fields) >= 4:
+                lock[fields[0]] = fields[1]
+        self.assertEqual(set(candidate.PLUGIN_PINS), set(candidate.SUPPORTED_VERSIONS))
+        for name, value in candidate.PLUGIN_PINS["0.1.7-rc.2"].items():
+            self.assertEqual(lock[name], value, name)
+
     def test_retarget_rewrites_only_version_defaults(self):
         text = ('DSH_TARGET_VERSION:-0.1.5-rc.2\nKNOWN="${DSH_KNOWN_VERSION:-0.1.5-rc.2}"\n'
                 'DSH_VERSION="0.1.5-rc.2"\nDSH_SOURCE_VERSION:-0.1.2-rc.1\n')

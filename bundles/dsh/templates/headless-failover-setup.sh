@@ -3,7 +3,8 @@
 # SilkSecAgent headless worker 模型熔断回退安装器（spool bundle dsh setup 调用，幂等）
 # 背景 2026-08-24：worker（headless profile）未挂 dsh-model-failover 时，
 # provider 一次瞬时 TRANSPORT 错误 = 定时任务硬失败（web 对话会自动切 deepseek，worker 不会）。
-# 本脚本确保 headless profile 装入固定 dsh-model-failover 0.1.4（由 pnpm 锁管理），
+# 本脚本确保 headless profile 装入受控版本 dsh-model-failover（0.1.5 链 0.1.4 /
+# 0.1.7 链 0.1.5，由 pnpm 锁管理），
 # 并写入 worker 侧 cordis.patch.yml（fallbacks=deepseek/deepseek-chat，六类错误熔断）。
 # 注意：headless cordis.patch.yml 同时由 spool sync（hosts/<host>/dsh/headless.cordis.patch.yml）管理；
 # 本脚本仅在文件缺失时写默认，不覆盖 sync 下发的版本。
@@ -15,6 +16,14 @@ DATA_DIR="${DSH_HOME:-$BASE_DIR/data}"
 WEB_PROFILE="$DATA_DIR/profiles/web"
 HEADLESS_PROFILE="$DATA_DIR/profiles/headless"
 FAILOVER_SRC="$WEB_PROFILE/node_modules/dsh-model-failover"
+
+# 受控版本集合：0.1.5 链 0.1.4 / 0.1.7 链 0.1.5；未知组合在触碰任何文件前拒绝。
+DSH_TARGET_VERSION="${DSH_TARGET_VERSION:-0.1.5-rc.2}"
+case "$DSH_TARGET_VERSION" in
+    0.1.5-rc.2) FAILOVER_VERSION=0.1.4 ;;
+    0.1.7-rc.2) FAILOVER_VERSION=0.1.5 ;;
+    *) echo "[headless-failover][ERROR] 未知目标版本 $DSH_TARGET_VERSION，拒绝安装。" >&2; exit 1 ;;
+esac
 
 log()  { echo "[headless-failover] $*"; }
 warn() { echo "[headless-failover][WARN] $*"; }
@@ -30,16 +39,17 @@ if [ ! -d "$FAILOVER_SRC" ]; then
 fi
 
 # -------------------- 1. package.json：依赖 + bundles 条目（node 幂等改写） --------------------
-/usr/local/node/bin/node - "$HEADLESS_PROFILE" <<'EOF'
+/usr/local/node/bin/node - "$HEADLESS_PROFILE" "$FAILOVER_VERSION" <<'EOF'
 const fs = require('fs')
 const path = require('path')
 const profileDir = process.argv[2]
+const wanted = process.argv[3]
 const pkgFile = path.join(profileDir, 'package.json')
 const pkg = JSON.parse(fs.readFileSync(pkgFile, 'utf8'))
 let changed = false
 pkg.dependencies = pkg.dependencies || {}
-if (pkg.dependencies['dsh-model-failover'] !== '0.1.4') {
-    pkg.dependencies['dsh-model-failover'] = '0.1.4'
+if (pkg.dependencies['dsh-model-failover'] !== wanted) {
+    pkg.dependencies['dsh-model-failover'] = wanted
     changed = true
 }
 const bundles = (((pkg.dsh || {}).profile || {}).bundles) || []
@@ -100,12 +110,12 @@ else
 fi
 
 # -------------------- 4. 验证两个 profile 的实际版本 --------------------
-python3 - "$WEB_PROFILE" "$HEADLESS_PROFILE" <<'PY'
+python3 - "$WEB_PROFILE" "$HEADLESS_PROFILE" "$FAILOVER_VERSION" <<'PY'
 import json, sys
 from pathlib import Path
-for profile in sys.argv[1:]:
+for profile in sys.argv[1:3]:
     package = Path(profile) / 'node_modules/dsh-model-failover/package.json'
-    if json.loads(package.read_text())['version'] != '0.1.4':
+    if json.loads(package.read_text())['version'] != sys.argv[3]:
         raise RuntimeError('failover 安装版本不符')
 PY
-log "完成。重启生效: spool restart <host> silksecagent"
+log "完成（failover $FAILOVER_VERSION）。重启生效: spool restart <host> silksecagent"

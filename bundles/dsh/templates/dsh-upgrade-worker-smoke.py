@@ -114,7 +114,18 @@ def main():
                  "baseURL": "http://127.0.0.1:3099/v1", "apiKeyEnv": "DSH_UPGRADE_FIXTURE_KEY",
                  "models": [{"id": "fixture", "reasoningEfforts": False}]}}},
                 "agent-default-model": {"provider": "upgrade-fixture", "model": "fixture"}}
-    (DATA / "settings.yaml").write_text(yaml.safe_dump(settings))
+    version = json.loads((BASE / "app/node_modules/@deepseek-ai/dsh/package.json").read_text())["version"]
+    if version == "0.1.7-rc.2":
+        legacy = DATA / "settings.yaml"
+        if legacy.is_file():
+            legacy.rename(DATA / "settings.yaml.imported")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("runtime_compat", BASE / "dsh-runtime-compat.py")
+        compat = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(compat)
+        compat.apply_profile_settings(BASE, settings, force=True, profiles=("headless",))
+    else:
+        (DATA / "settings.yaml").write_text(yaml.safe_dump(settings))
     patch = OUT / "headless-isolation.patch.yml"
     patch.write_text(yaml.safe_dump([
         {"id": "model-failover", "config": {"enabled": False}},

@@ -16,7 +16,7 @@ try {
   await ctx.plugin(Backend, { root: path.join(base, 'data/sessions'), compression: 'zstd' })
   const handle = await ctx.sessionPersistence.open(process.argv[2], 'read')
   let saved
-  try { saved = { header: handle.header, ...await handle.read() } } finally { await handle.close() }
+  try { saved = { header: handle.header, inheritedEventCount: handle.inheritedEventCount, ...await handle.read() } } finally { await handle.close() }
   const messages = saved.events.filter(row => row.type === 'assistant/message')
   const { default: Projections } = await import(require.resolve('@deepseek-ai/dsh-session-projection'))
   const { billTurnsProjection } = await import(pathToFileURL(path.join(base, 'data/profiles/web/node_modules/dsh-bill/lib/projection.js')).href)
@@ -28,7 +28,10 @@ try {
   }
   const first = await fresh(), second = await fresh()
   try {
-    const events = saved.events, header = saved.header, inherited = header.seedLength ?? 0
+    // 0.1.5 的继承前缀在 header.seedLength；0.1.7 起由持久化句柄的
+    // inheritedEventCount 带出（数值不进入事件日志），回退保留旧读法。
+    const events = saved.events, header = saved.header
+    const inherited = Number.isSafeInteger(saved.inheritedEventCount) ? saved.inheritedEventCount : (header.seedLength ?? 0)
     const split = Math.max(1, Math.floor(events.length / 2))
     const prefix = first.sessionProjections.restore({}, events.slice(0, split), 0, header, inherited)
     // 模拟实际缓存写盘、进程退出和新注册表用尾部恢复，不能共享内存引用。

@@ -16,6 +16,8 @@ case "$DSH_VERSION" in
     0.1.5-rc.2|0.1.7-rc.2) ;;
     *) echo "[setup][ERROR] 未知目标版本 $DSH_VERSION；只允许 0.1.5-rc.2 / 0.1.7-rc.2 的受控升级。" >&2; exit 1 ;;
 esac
+# 子安装器（headless-failover 等）按同一目标版本选择受控 pin。
+export DSH_TARGET_VERSION="$DSH_VERSION"
 NODE_MAJOR=22
 
 log()  { echo "[setup] $*"; }
@@ -161,8 +163,12 @@ ensure_data() {
         log "scope.yml 已存在，不覆盖"
     fi
     # 已有模型路由由设置服务维护；setup 只初始化缺失的配置。
+    # 0.1.7 首启会把 settings.yaml 改名 .imported（一次性导入 profile patch）；
+    # .imported 存在时不得再回填模板，否则每次 setup 都会制造一次重复导入。
     if [ -f "$DATA_DIR/settings.yaml" ]; then
         log "模型路由已存在，保留设置服务配置"
+    elif [ -f "$DATA_DIR/settings.yaml.imported" ]; then
+        log "模型路由已一次性导入（settings.yaml.imported），不回填模板"
     elif [ -f "$BASE_DIR/settings.yaml" ]; then
         cp "$BASE_DIR/settings.yaml" "$DATA_DIR/settings.yaml"
         chmod 600 "$DATA_DIR/settings.yaml"
@@ -176,7 +182,10 @@ ensure_data() {
 reconcile_service() {
     if systemctl is-active --quiet silksecagent 2>/dev/null; then
         log "服务运行中，重启以加载新安装"
-        $SUDO systemctl restart silksecagent
+        if ! $SUDO systemctl restart silksecagent; then
+            echo "[setup][ERROR] 服务重启失败（配置已就绪但未激活）；重试 spool restart <host> silksecagent，或按冻结恢复点回滚。" >&2
+            return 1
+        fi
         return
     fi
     # 接管场景：存在游离的手动 dsh 进程 → 终止，交由 systemd 接管
@@ -406,7 +415,12 @@ if [ -f "$BASE_DIR/theme-silksong-plugin-setup.sh" ]; then
 fi
 
 # 插件安装可能重新生成依赖；全部完成后按版本 + 整文件摘要重放兼容策略。
-python3 "$BASE_DIR/dsh-runtime-compat.py" --base-dir "$BASE_DIR"
+# 先落配置并 --dump-config 校验，再进入收尾重启；校验失败 = 部分激活，不重启。
+if ! python3 "$BASE_DIR/dsh-runtime-compat.py" --base-dir "$BASE_DIR" --validate-composition; then
+    echo "[setup][ERROR] 配置已写入但组合校验失败（部分激活）；服务未重启，旧进程仍在运行。" >&2
+    echo "[setup][ERROR] 重试：修复后重跑 spool bundle dsh setup <host>；回滚：spool bundle dsh up <host> 或按升级冻结点恢复。" >&2
+    exit 1
+fi
 
 # -------------------- 9. 情报刷新定时器（intel-feeder v1，每日） --------------------
 if [ -f "$BASE_DIR/intel-refresh.sh" ]; then

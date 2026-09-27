@@ -14,7 +14,10 @@ spec = importlib.util.spec_from_file_location("snapshot", Path(__file__).with_na
 snapshot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(snapshot)
 BUSINESS = ("data/results", "data/flows", "data/knowledge", "data/playbooks", "data/rules", "data/vulncards", "data/reports",
-            "data/scope.yml", "data/settings.yaml", "data/events", "data/audit.jsonl")
+            "data/scope.yml", "data/settings.yaml", "data/settings.yaml.imported", "data/events", "data/audit.jsonl")
+# 0.1.7 首启把 settings.yaml 一次性导入 profile patch 后改名 .imported（上游行为）。
+SETTINGS_LEGACY = "data/settings.yaml"
+SETTINGS_IMPORTED = "data/settings.yaml.imported"
 SCHEMA = 3
 DOMAINS = {"bus", "asset", "endpoint", "vuln", "task", "fact", "know", "scope", "approval", "exec", "ledger", "report", "proxy", "fgs", "eval"}
 FTS_SCHEMAS = {
@@ -271,6 +274,21 @@ def added_registrations(before, after):
     return {row["id"]: row for row in added}
 
 
+def normalize_settings_rename(entries):
+    """把 before 侧的 settings.yaml 视作 .imported 再比对：上游改名不改变字节。"""
+    normalized = dict(entries)
+    legacy, imported = normalized.get(SETTINGS_LEGACY), normalized.get(SETTINGS_IMPORTED)
+    if legacy is not None and imported is None:
+        normalized[SETTINGS_IMPORTED] = legacy
+        del normalized[SETTINGS_LEGACY]
+    return normalized
+
+
+def settings_import_pair(files, current):
+    before, after = files.get(SETTINGS_LEGACY), current.get(SETTINGS_IMPORTED)
+    return before is not None and after is not None and before.get("sha256") == after.get("sha256")
+
+
 def startup_table_equal(table, before, after):
     if table not in {"bus_meta", "programs"}:
         return False
@@ -313,13 +331,17 @@ def compare(before, after, candidate=None, *, same_freeze_point=True):
         and {row["id"]: row for row in log_after.get("appended", [])} == registrations)
     for root, files in before["files"].items():
         current = after["files"].get(root, {})
-        if files.keys() != current.keys():
+        normalized_before, normalized_after = normalize_settings_rename(files), normalize_settings_rename(current)
+        if normalized_before.keys() != normalized_after.keys():
             failures.append(root + ": file set changed")
-        for name, data in files.items():
-            if current.get(name) == data:
+        for name, data in normalized_before.items():
+            if name == SETTINGS_IMPORTED and settings_import_pair(files, current):
+                expected.append("settings-legacy-import-rename")
+                continue
+            if normalized_after.get(name) == data:
                 continue
             if browser_sha and name == "browser/shared-browser-host.mjs" and root.startswith("workspace-") \
-                    and current.get(name, {}).get("sha256") == browser_sha:
+                    and normalized_after.get(name, {}).get("sha256") == browser_sha:
                 expected.append("managed-browser-host-update:" + root)
             elif root == "dsh/data/events" and name == "bus.jsonl" and log_matches:
                 expected.append("startup-registration-log-append:" + str(len(registrations)))
