@@ -92,7 +92,9 @@ for profile in web headless; do
   fi
   missing=""
   for d in bus "${DOMAINS[@]}"; do
-    printf '%s' "$dc" | grep -q "sec-domain-$d" || missing="$missing sec-domain-$d"
+    # set -o pipefail 下 `printf … | grep -q` 会在 grep 提前退出时让 printf 收到 SIGPIPE(141)
+    # 并被误判为失败（0.1.7 组合树变大后必现）；这里用 bash 内建 glob 匹配，无子进程。
+    [[ "$dc" == *"sec-domain-$d"* ]] || missing="$missing sec-domain-$d"
   done
   if [ -z "$missing" ]; then
     check "dump-config $profile (bus+14域)" 0 "15 插件全在组合树"
@@ -130,7 +132,7 @@ for i in "${!UI_PKG_IDS[@]}"; do
   pkg="${UI_PKG_IDS[$i]}"; dir="${UI_PKG_DIRS[$i]}"
   if [ -z "$ui_dump" ]; then
     check "ui-loader $pkg" 1 "web dump-config 无输出"
-  elif ! printf '%s' "$ui_dump" | grep -qF "$pkg"; then
+  elif [[ "$ui_dump" != *"$pkg"* ]]; then
     check "ui-loader $pkg" 1 "组合树缺 loader entry"
   elif [ ! -s "$BASE_DIR/plugins/$dir/client.js" ]; then
     check "ui-loader $pkg" 1 "client bundle 缺失或为空"
