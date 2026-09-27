@@ -23,6 +23,18 @@ class MaintenanceTests(unittest.TestCase):
         self.assertTrue(all(row["config"]["retained"] == {"number": 7, "enabled": True} for row in patch))
         self.assertEqual(yaml.safe_dump(rows), source)
 
+    def test_task_scheduler_and_daily_maintenance_are_muted(self):
+        # P6b 回归：sec-domain-task.sidecars=false 必须进入维护补丁且为必选，缺失即 fail-closed。
+        self.assertEqual(maintenance.OVERRIDES["sec-domain-task"], {"sidecars": False})
+        self.assertIn("sec-domain-task", maintenance.REQUIRED)
+        rows = [{"id": name, "config": {}} for name in maintenance.OVERRIDES]
+        patch = maintenance.maintenance_patch(yaml.safe_dump(rows), maintenance.release.VERSION)
+        task = next(row for row in patch if row["id"] == "sec-domain-task")
+        self.assertEqual(task["config"], {"sidecars": False})
+        missing = [row for row in rows if row["id"] != "sec-domain-task"]
+        with self.assertRaises(RuntimeError):
+            maintenance.maintenance_patch(yaml.safe_dump(missing), maintenance.release.VERSION)
+
     def test_missing_or_ambiguous_writer_controls_fail_closed(self):
         rows = [{"id": name} for name in maintenance.REQUIRED]
         for broken in (rows[1:], rows + rows[:1]):

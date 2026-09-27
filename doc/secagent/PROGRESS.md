@@ -18,6 +18,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-27 · DSH 0.1.7 升级链 P6b：维护静音修复 + 冻结场景预演（**通过，重开 P6**）
+- **修复**：`dsh-upgrade-maintenance.py` 增加 `sec-domain-task: {sidecars: false}` 并纳入 REQUIRED——维护启动不再启动任务调度器（启动回收/claim/campaign tick/每日 know vault 回流/bus.prune 全静默），新增回归测试（7/7）；工具三点合并 SHA `e59cd56c…`，维护补丁 `88e082c1…`。
+- **决定性预演**：0.1.7 全状态副本（`dsh-restore-copy-h4oio09w`）在沙箱内以修复补丁启动，就绪后保持 **172s（≥2 个 60s tick）**：审计追加 **0**（对照 P6 实败 +6：reap/claim/campaign_tick/kb_vault_sync/bus.prune）、campaign/checkpoint/idempotency/bus_subscription/bus_meta/know **零变化**，唯一写入 22 条域注册（白名单）；`scheduler_disabled_log=true`（证据 `p6b-mute-rehearsal-report.json` `3ed1eede…`）。
+- **下一步**：重开 P6 生产切换（新冻结点→新候选→seal→prepare→switch→静音 maintenance→finalize→生产验收）；预期 `pre_resume_invariants failures=0`。首次 P6 实败与回滚见下条与 record §13。
+
 ### 2026-09-27 · DSH 0.1.7 升级链 P6：U3 生产切换（**finalize 门禁未过 → 按协议回滚，CHAIN BLOCKED；生产 0.1.5 全绿**）
 - **执行链（窗口 10:26:44Z–13:46:57Z，3h19m20s，业务 RPO=0）**：前置校验全绿（并 `rsync` 修复 spool 运行时副本 4 文件滞后）→ `--hold` 冻结点 `dsh-snapshot-ready-_jl66rgf`（manifest `5984892f…`，28m12s，1605 sessions/0 running）→ 终版候选 `gc4nl2qh` + U-A..I 验收 `5da2d74f…` + seal **`3928c930…`（ready_for_cutover=true）** → 生产 prepare **1h59m45s、1607 会话 V3→V4 failed=0**（report `fe67dad6…`）→ 四根 RENAME_EXCHANGE（app 读回 **0.1.7-rc.2**）→ 0.1.7 最小维护 ok（version=0.1.7-rc.2、15 域、1605/0 running、Web/Scope/未认证/身份清理全绿）→ **finalize `pre_resume_invariants` 失败（17 项白名单外差异，`caa68faa…`）** → rollback（`phase=rolled-back`、`new_state_preserved=true`）+ `freeze resume`（13:46:57Z）→ 0.1.5 读回（关键文件 SHA 与基线逐字节一致）+ **`sec-v5-accept.sh --ui-headless` PASS=80 FAIL=0**（13:51:14Z，`accept015b.stdout` `431fad0c…`）。
 - **失败根因**：生产维护启动（~1m50s）中，~3h 冻结积压的 overdue 后台任务就绪即跑——审计行 `task/reap`、`worker_reap`、`claim`、`campaign_tick`、`know/kb_vault_sync`、`bus/prune`（idempotency_pruned=232、outbox_pruned=774、subscriptions_pruned≈108）；bus.jsonl +22、audit.jsonl +6，bus_subscription/campaign*/event_outbox/idempotency 计数与哈希变化。P5 隔离预演同窗口未触发（时序），白名单 8 项不覆盖；**按「允许项之外必须停下回滚」执行**（硬停止②）。业务表行哈希全部未变、无用户数据丢失；0.1.7 新状态（含 1607 V4 会话）完整保全于 `dsh-release-r_7v_eur/rollback/`。

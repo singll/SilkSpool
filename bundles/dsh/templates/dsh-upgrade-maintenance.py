@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """在隔离副本或持有冻结点的生产切换窗口做最小启动验收，结束后保持写者停止。
 
-复用正常 web 启动参数，只临时关闭调度/dispatcher/memcore 后台写者。
+复用正常 web 启动参数，只临时关闭任务调度器（含启动回收、claim、campaign tick、每日 know vault
+回流与 bus.prune）、dispatcher、memcore 等后台写者。
 config 覆盖保留原字段；不修改 profile、模型设置或持久化业务配置。
 """
 import argparse
@@ -39,6 +40,10 @@ DOMAINS = {"bus", "scope", "approval", "asset", "endpoint", "vuln", "task", "fac
 OVERRIDES = {
     "sec-cli-adapter": {"sidecars": False},
     "sec-domain-bus": {"startDispatcherTimer": False},
+    # P6b（冻结窗口实败后修复）：sec-domain-task 的 sidecars=false 让调度器循环整体不启动——
+    # 启动回收（reap/worker_reap）、60s tick（claim/campaign tick）、每日 know.kb_vault_sync 与
+    # bus.prune 全部静默。P6 生产维护启动（>60s 窗口）曾因这些 overdue 维护写入触发白名单外差异。
+    "sec-domain-task": {"sidecars": False},
     "sec-memcore": {"sweeper": False, "agentsMd": False, "vaultExport": False},
     "model-failover": {"enableProbe": False},
     "web-runtime": {"openBrowser": False},
@@ -46,7 +51,7 @@ OVERRIDES = {
     "session-telemetry-otel": {"mode": "DISABLED"},
     "session-log-deepseek": {"enabled": False},
 }
-REQUIRED = {"sec-cli-adapter", "sec-domain-bus", "sec-memcore", "web-runtime"}
+REQUIRED = {"sec-cli-adapter", "sec-domain-bus", "sec-domain-task", "sec-memcore", "web-runtime"}
 
 
 class UnknownTag:
