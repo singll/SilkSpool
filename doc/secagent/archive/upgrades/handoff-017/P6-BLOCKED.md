@@ -56,7 +56,7 @@ gates:
   u3_prod_accept_after_rollback: pass
 open_issues:
   - P6 BLOCKED（硬停止②）：见上「恢复选项」；需用户决策后重开 P6
-last_commit: <本次提交>
+last_commit: 925e728
 ```
 
 ## 恒定段（角色/授权/红线，供重开会话原样携带）
