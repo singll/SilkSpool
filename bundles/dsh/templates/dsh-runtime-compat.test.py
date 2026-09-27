@@ -133,6 +133,27 @@ class RuntimeCompatTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "计费客户端兼容补丁版本/摘要未知"):
             compat.patch_billing_0181(self.base)
 
+    def test_model_failover_notice_is_logged_instead_of_appended(self):
+        append = compat.FAILOVER_APPEND
+        for profile in ("web", "headless"):
+            plugin = self.base / "data/profiles" / profile / "node_modules/dsh-model-failover/lib/index.js"
+            plugin.parent.mkdir(parents=True)
+            plugin.write_text("function notifySwitch(ctx, agent, from, to, enabled) {\n    if (!enabled)\n        return;\n" + append + "\n")
+        first = compat.patch_model_failover(self.base)
+        self.assertTrue(first["changed"])
+        self.assertEqual([row["changed"] for row in first["profiles"].values()], [True, True])
+        for profile in ("web", "headless"):
+            text = (self.base / "data/profiles" / profile / "node_modules/dsh-model-failover/lib/index.js").read_text()
+            self.assertNotIn("agent.session.append", text)
+            self.assertIn(compat.FAILOVER_NOTICE_MARKER, text)
+        second = compat.patch_model_failover(self.base)
+        self.assertFalse(second["changed"])
+        # 锚点缺失必须失败而不是静默跳过
+        broken = self.base / "data/profiles/web/node_modules/dsh-model-failover/lib/index.js"
+        broken.write_text("function notifySwitch() {}\n")
+        with self.assertRaisesRegex(RuntimeError, "通知锚点缺失"):
+            compat.patch_model_failover(self.base)
+
     def test_theme_patch_refuses_unknown_instance(self):
         theme = self.base / "app/node_modules/.pnpm/@deepseek-ai+dsh-client-ui-theme@0.1.7-rc.2/node_modules/@deepseek-ai/dsh-client-ui-theme/lib"
         theme.mkdir(parents=True)

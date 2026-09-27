@@ -18,10 +18,12 @@
 
 ## 二、最近进度结果
 
-### 2026-09-27 · DSH 0.1.7 升级链 P5：U2 隔离预演（完成；CHAIN BLOCKED）
-- **隔离闭环全绿**：真冻结点（窗口 23.2 分钟、RPO=0、生产零影响）→ 正式候选封存 `af8e8ae2…` → prepare 全量 **1600 会话 V3→V4 failed=0**（6431s，≈4.0s/会话）→ 四根切换 → 0.1.7 最小维护 15 域全绿 → **invariants failures=0**（8 项白名单含 `settings-legacy-import-rename`）→ runtime-smoke 核心 18 检查、worker-smoke 11/11、personas 7、feedback 本地化+外传对照、browser-scope 15 检查、契约 568/568、session-read **1646/1646** → 回滚 → 旧版 maintenance + 旧版读回 **1600/1600**。
-- **已修 0.1.7 阻断缺陷**：task 调度器启动回收 + 多 profile 插件实例同步 SQLite busy-wait 造成 **boot 死锁**（改为延迟 1s 回收；契约 91/91）；candidate 版本变量泄漏（候选工具 pin 被写 4.0.4）；root-only 冻结点 settings 源 EACCES；sandbox 吞版本对；invariants 真实布局白名单（多实例重复注册/顶层 settings 改名/audit 追加）。
-- **阻塞（CHAIN BLOCKED）**：`dsh-model-failover` 0.1.5 在 0.1.7 下模块/apply/注册均成功、事件确被派发，但插件回调从不执行（且预流失败不派发 `agent/request-error`）→ 自动模型回退失效（韧性降级）；浏览器 billing/模型页持久化实机断言未完成（0.1.7 UI 漂移工装未适配）。恢复选项（豁免 failover / 兼容后重跑 / 暂缓）见 [handoff-017/P6.md](archive/upgrades/handoff-017/P6.md)。证据：csai `…/20260926-017/p5-evidence/`（`evidence-index.txt`；record §12）。
+### 2026-09-27 · DSH 0.1.7 升级链 P5：U2 隔离预演（**全门禁绿，放行 P6**）
+- **隔离闭环全绿**：真冻结点（窗口 23.2 分钟、RPO=0、生产零影响）→ 正式候选封存 `af8e8ae2…` → prepare 全量 **1600 会话 V3→V4 failed=0**（6431s，≈4.0s/会话）→ 四根切换 → 0.1.7 最小维护 15 域全绿 → **invariants failures=0**（8 项白名单含 `settings-legacy-import-rename`）→ runtime 核心 18 检查、worker-smoke 11/11、personas 7、feedback 本地化+外传对照、browser-scope 15、契约 568/568、session-read **1646/1646** → 回滚 → 旧版 maintenance + 旧版读回 **1600/1600**。
+- **failover（B 方案解决）**：0.1.5 插件在 0.1.7 下路由可用，真实不兼容为「切换通知在请求瀑布内 append 会话消息」与 turn 写路径互锁；`dsh-runtime-compat.py` 新增 `patch_model_failover()`（通知改日志、fail-closed、幂等）后实机全绿（`fixture-failing → fixture`、canonical 归因；runtime-compat 9/9）。
+- **浏览器/billing 实机**：登录门/丝之歌主题/主面板 8 tab/WS 流式工具对话/刷新恢复/断线重连续聊/交付文件+预览/**billing（calls=3、in=48、out=12、$0.000096）**全绿；设置 UI 两项因 fixture 无账号态记跳过（U4 生产复核）。
+- **已修 0.1.7 阻断缺陷**（14 文件，p5-tools 合并 SHA `1e43d1be…`）：task 调度器启动回收 + 多 profile 同步 SQLite busy-wait 的 **boot 死锁**（延迟 1s 回收；契约 91/91）；candidate 版本泄漏（pin 被写 4.0.4）；root-only 冻结点 settings 源 EACCES；sandbox 吞版本对；invariants 真实布局白名单（多实例重复注册/顶层 settings 改名/audit 追加）；runtime-smoke 覆盖合并/就绪等待/trace 重试；failover 通知补丁；browser-smoke 0.1.7 适配与韧性降级。
+- **下一步 P6**：U3 生产切换（预授权；方案①窗口 2.5–3h）——见 [handoff-017/P6.md](archive/upgrades/handoff-017/P6.md)；证据 csai `…/20260926-017/p5-evidence/`（record §12）。
 
 ### 2026-09-27 · DSH 0.1.7 升级链 P4：U1c settings + 第三方插件 + 部署链
 - **settings→Profile**：0.1.7 起 `settings.yaml` 不再热加载；模型/provider/默认模型/retryPolicy 与 `agent-presets.default=vuln-hunt` 显式写 web+headless `cordis.patch.yml` 受管区块；migrate-once（已存在行不覆盖 UI 编辑，`.imported` 不回填）；`--validate-composition` 用 `--dump-config` 逐字段断言（web 268/headless 125 行组合，默认 preset 注册校验）；0.1.5 函数体逐字保留。

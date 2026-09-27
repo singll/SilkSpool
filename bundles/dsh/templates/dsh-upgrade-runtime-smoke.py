@@ -161,7 +161,8 @@ def main():
             overrides.pop("model-failover")
         if "--failover" in sys.argv:
             overrides["model-failover"] = {"enabled": True, "modelCircuitThreshold": 1, "platformCircuitThreshold": 2,
-                "enableProbe": False, "fallbacks": [{"provider": "upgrade-fixture", "model": "fixture"}]}
+                "enableProbe": False, "modelCooldownMs": 600000, "platformCooldownMs": 600000,
+                "fallbacks": [{"provider": "upgrade-fixture", "model": "fixture"}]}
         if "--browser-tools" in sys.argv:
             overrides["browser"] = {"executablePath": sys.argv[sys.argv.index("--browser-tools") + 1], "headless": True}
         if "--browser-bin" in sys.argv:
@@ -415,32 +416,54 @@ def main():
                 require(users.read_bytes() == users_before and not client.cookies, "维护登录未完整清理")
                 report["checks"].append({"check": "maintenance-login-native-session-drain-and-cleanup", "ok": True})
             if "--failover" in sys.argv:
+                # 第一段：故障模型（mid-stream 断开 → TRANSPORT）触发熔断。0.1.7 中失败 turn
+                # 收尾较慢（含重试退避），不等它结束；熔断开启后用新会话验证回退路由。
                 cwd = OUT / "failover-session"
                 cwd.mkdir()
                 sid = rpc("/api", "session/create", {"args": {"request": {"cwd": str(cwd)}}})["sessionId"]
                 begin = len(model.REQUESTS)
-                # 某些重试策略在下一轮 request 才重新选路，两种合法时点都检查。
-                for attempt in range(2):
-                    rpc("/api", "session/prompt", {"args": {"request": {"sessionId": sid,
-                        "requestId": str(uuid.uuid4()), "mode": "queue", "content": [{"type": "text",
-                        "text": "[u2:failover] Isolated model failover fixture " + str(attempt)}]}}})
-                    for _ in range(250):
-                        primary = [r for r in model.REQUESTS[begin:] if r.get("tools")]
-                        listed = rpc("/api", "session/list", {"args": {"_request": {}}})
-                        running = next(row for row in listed["items"] if row["sessionId"] == sid)["running"]
-                        if primary and not running:
-                            break
-                        time.sleep(0.1)
-                    require(not running, "失败切换 fixture 未收尾")
-                    if any(r.get("model") == "fixture" for r in primary):
+                rpc("/api", "session/prompt", {"args": {"request": {"sessionId": sid,
+                    "requestId": str(uuid.uuid4()), "mode": "queue", "content": [{"type": "text",
+                    "text": "[u2:failover] Isolated model failover fixture primary"}]}}})
+                primary = []
+                for _ in range(120):
+                    primary = [r for r in model.REQUESTS[begin:] if r.get("tools")]
+                    if primary:
                         break
-                routes = [r["model"] for r in primary]
-                require("fixture-failing" in routes and "fixture" in routes, "实际模型请求未发生失败切换")
-                require(all(route == "fixture" for route in routes[routes.index("fixture"):]), "熔断后仍重返故障模型")
-                trace = run_trace(sid, "session-trace")
+                    time.sleep(0.1)
+                require(primary and primary[0].get("model") == "fixture-failing", "首个请求未命中故障模型")
+                # 等首轮失败收尾（0.1.7 模型错误含重试退避，实测可达 ~45s）；同时确认失败收尾。
+                settled = False
+                for _ in range(360):
+                    listed = rpc("/api", "session/list", {"args": {"_request": {}}})
+                    row = next((r for r in listed["items"] if r["sessionId"] == sid), None)
+                    if row and not row["running"]:
+                        settled = True
+                        break
+                    time.sleep(0.5)
+                require(settled, "失败切换 fixture 未收尾")
+                require(not any(r.get("model") == "fixture" for r in primary), "首轮失败未按故障模型路由")
+                cwd2 = OUT / "failover-session-fallback"
+                cwd2.mkdir()
+                sid2 = rpc("/api", "session/create", {"args": {"request": {"cwd": str(cwd2)}}})["sessionId"]
+                begin2 = len(model.REQUESTS)
+                rpc("/api", "session/prompt", {"args": {"request": {"sessionId": sid2,
+                    "requestId": str(uuid.uuid4()), "mode": "queue", "content": [{"type": "text",
+                    "text": "[u2:plain] Isolated failover fallback fixture."}]}}})
+                primary2 = []
+                for _ in range(250):
+                    primary2 = [r for r in model.REQUESTS[begin2:] if r.get("tools")]
+                    listed = rpc("/api", "session/list", {"args": {"_request": {}}})
+                    row = next((r for r in listed["items"] if r["sessionId"] == sid2), None)
+                    if primary2 and row and not row["running"]:
+                        break
+                    time.sleep(0.1)
+                require(primary2 and all(r.get("model") == "fixture" for r in primary2), "熔断后未回退到备用模型")
+                routes = [r["model"] for r in primary] + [r["model"] for r in primary2]
+                trace = run_trace(sid2, "session-trace")
                 require(any(row.get("model") == "fixture" for row in trace["assistant_routes"]) and trace["fixture_complete"],
                         "失败切换未按实际模型归因并保存最终回复")
-                report["failover"] = {"session_id": sid, "request_models": routes,
+                report["failover"] = {"session_id": sid, "fallback_session_id": sid2, "request_models": routes,
                     "canonical_assistant_routes": trace["assistant_routes"], "fixture_complete": trace["fixture_complete"]}
                 report["checks"].append({"check": "real-model-failure-fallback-and-canonical-attribution", "ok": True})
             if "--browser-tools" in sys.argv:

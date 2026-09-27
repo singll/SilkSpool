@@ -42,6 +42,51 @@ def replace_managed_block(text, begin, end, body):
     return text + separator + block + "\n"
 
 
+FAILOVER_NOTICE_MARKER = "0.1.7 兼容（SilkSecAgent）"
+
+FAILOVER_APPEND = """    try {
+        agent.session.append('user/message', createUserMessage({
+            content: [{ type: 'text', text }],
+            source: { kind: 'plugin', plugin: 'dsh-model-failover' },
+        }), { surfaceOp: 'append' });
+    }
+    catch (error) {
+        ctx.logger.error('[dsh-model-failover] failed to append switch notice: %s', error instanceof Error ? error.message : String(error));
+    }
+}"""
+FAILOVER_LOGGED = """    // 0.1.7 兼容（SilkSecAgent）：在 agent/request 瀑布内 append 会话通知会与当前 turn 的
+    // 会话写路径互锁，卡住熔断后的首个回退请求（U2 实测：路由已切换但 turn 不前进）。
+    // 改为仅日志提示；熔断/回退与归因不变。
+    ctx.logger.warn('[dsh-model-failover] %s', text);
+}"""
+
+
+def patch_model_failover(base):
+    """0.1.7 兼容：dsh-model-failover 的会话内切换提示改日志提示。
+
+    插件在 `agent/request` waterfall 内同步 append `user/message`；0.1.7 的 turn 在
+    该瀑布返回前持有会话写路径，append 与之互锁导致熔断后的请求不前进。关闭该 append
+    （日志保留同样信息）后熔断→回退链路在 U2 实机验收通过。"""
+    results = {}
+    for profile in PROFILES:
+        filename = base / "data/profiles" / profile / "node_modules/dsh-model-failover/lib/index.js"
+        if not filename.is_file():
+            results[profile] = {"present": False, "changed": False}
+            continue
+        original = filename.read_text()
+        if FAILOVER_NOTICE_MARKER in original:
+            results[profile] = {"present": True, "changed": False,
+                                "sha256": hashlib.sha256(original.encode()).hexdigest()}
+            continue
+        if FAILOVER_APPEND not in original:
+            raise RuntimeError("dsh-model-failover 通知锚点缺失，拒绝静默跳过：" + profile)
+        patched = original.replace(FAILOVER_APPEND, FAILOVER_LOGGED, 1)
+        replace_preserving_metadata(filename, patched)
+        results[profile] = {"present": True, "changed": True,
+                            "sha256": hashlib.sha256(patched.encode()).hexdigest()}
+    return {"changed": any(row["changed"] for row in results.values()), "profiles": results}
+
+
 def configure_local_feedback(base):
     begin = "# silksec rc.2 local feedback policy begin"
     end = "# silksec rc.2 local feedback policy end"
@@ -453,12 +498,14 @@ def configure(base):
         settings = apply_profile_settings(base)
         theme = patch_theme(base, version)
         billing = patch_billing_0181(base)
+        failover = patch_model_failover(base)
         feedback = configure_local_feedback(base)
-        changed = connection["changed"] or theme["changed"] or billing["changed"] \
+        changed = connection["changed"] or theme["changed"] or billing["changed"] or failover["changed"] \
             or any(item["changed"] for item in settings["profiles"].values()) \
             or any(item["changed"] for item in feedback.values())
         return {"version": version, "changed": changed, "required": True, "connection_inject": connection,
-                "profile_settings": settings, "theme_sync": theme, "billing_turn_cost": billing, "local_feedback": feedback}
+                "profile_settings": settings, "theme_sync": theme, "billing_turn_cost": billing,
+                "failover_notice": failover, "local_feedback": feedback}
     # 0.1.5 链的最终确认版本；以下路径逐字保留，不得被 0.1.7 适配改写。
     if version != "0.1.5-rc.2":
         raise RuntimeError("尚未验证此 DSH 版本的 RPC 兼容配置：" + version)
