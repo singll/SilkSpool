@@ -366,7 +366,7 @@ export const TASK_MANIFEST = {
       actor: ['reactor', 'scheduler', 'system', 'human'],
       schema: schema({
         program_id: str({ minLength: 1 }),
-        kind: en(['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding']),
+        kind: en(['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding', 'verify_candidate']),
         host: str({ minLength: 1 }),
         path: str({ default: '' }),
         vuln_class: str({ default: '' }),
@@ -2025,9 +2025,9 @@ function makeHandlers(opts) {
   const invariants = {
     // 21 号方案 §3-2：Intent 局面硬约束编译（scope/连败黑名单/H3 违规丢弃落审计）
     intentSituation: async (args, repo) => {
-      // 26 号补丁：review_finding 的 host 槽载 finding id，不做主机归属校验——
+      // 26/43 号补丁：review_finding / verify_candidate 的 host 槽载 finding id，不做主机归属校验——
       // finding 已登记在 program 内即授权证据（program 级授权由 campaignSituationOk 前置把关）。
-      if (args.kind !== 'review_finding') {
+      if (args.kind !== 'review_finding' && args.kind !== 'verify_candidate') {
         // scope fail-closed：host 必须 ∈ program scope（复用 scope.yml 自查，与 asset/endpoint 同口径）
         const sc = scopeCheckResult(args.program_id, args.host)
         if (!sc.ok) return { code: sc.code, message: `Intent 派生越界：${sc.message}`, hint: '派生器绝不越出 scope（§3-2 局面编译）', retryable: false }
