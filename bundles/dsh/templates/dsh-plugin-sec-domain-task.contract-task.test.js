@@ -1709,10 +1709,11 @@ test('23 §3.1: 供给 0.4 降速——derive_cap 折算（3→2）', async () =
   ]
   const env = makeEnv({ supplyEnv: SUPPLY_ENV, supplyFetch: supplyFetchStub(members) })
   const { bus } = env
+  // 43 号补丁：覆盖类每 tick 封顶 1 条——供给折算用 3 条漏洞类缺口测算术（与覆盖策略解耦）
   assert.equal(registerLedgerStub(bus, [
-    { program: 'test-src', dim: 'crawl', key: 'a.example.com', mark: 'not_crawled' },
-    { program: 'test-src', dim: 'crawl', key: 'b.example.com', mark: 'not_crawled' },
-    { program: 'test-src', dim: 'crawl', key: 'c.example.com', mark: 'not_crawled' },
+    { program: 'test-src', dim: 'vulnclass', key: 'a.example.com|idor', mark: 'untested' },
+    { program: 'test-src', dim: 'vulnclass', key: 'b.example.com|sqli', mark: 'untested' },
+    { program: 'test-src', dim: 'vulnclass', key: 'c.example.com|ssrf', mark: 'untested' },
   ]).ok, true)
   const c = await bus.dispatch('task', 'campaign_create', {
     name: 'slow', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,

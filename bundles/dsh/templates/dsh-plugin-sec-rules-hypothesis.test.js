@@ -301,7 +301,7 @@ test('25 资产收集入专项：asset 维缺口 → asset_enum 草稿（lite �
   const only = compileCampaignPlan({ campaign: { program_ids: ['p1'] }, gaps: [{ program: 'p1', dim: 'asset', key: 'p1.com', mark: 'enum_stale' }] })
   const noMark = compileCampaignPlan({ campaign: { program_ids: ['p1'] }, gaps: [{ program: 'p1', dim: 'asset', key: 'p1.com' }] })
   assert.ok(only.drafts[0].score > noMark.drafts[0].score)
-  // 资产枚举前置提权（+3）：enum_stale 草稿（1+2+3=6）应压过 idor/sqli（5）进入 top-cap
+  // 43 号补丁：资产枚举降权（+3→+1.5）——紧预算下不再压过高危漏洞类
   const tight = compileCampaignPlan({
     campaign: { program_ids: ['p1'], policy: { derive_cap_per_tick: 2 } },
     gaps: [
@@ -310,7 +310,7 @@ test('25 资产收集入专项：asset 维缺口 → asset_enum 草稿（lite �
       { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|sqli', mark: 'untested' },
     ],
   })
-  assert.equal(tight.drafts[0].kind, 'asset_enum', '枚举陈旧草稿应凭前置提权进入 top-cap（不等多样性保底让位）')
+  assert.ok(tight.drafts.every((d) => d.kind === 'hypothesis'), '紧预算下漏洞类优先，覆盖类不再保底占位')
 })
 
 test('26 存量复核入专项：review 维缺口 → review_finding 草稿（lite 档、提权进 top-cap）', () => {
@@ -343,7 +343,7 @@ test('compileCampaignPlan: 固定快照可重放（两次输出全等）', () =>
   assert.deepEqual(compileCampaignPlan(input), compileCampaignPlan(input))
 })
 
-test('22 P2: compileCampaignPlan 维度多样性——保证至少 1 条覆盖类入选', () => {
+test('43 P0: 覆盖类封顶——每 tick 至多 1 条（算力归漏洞假设/候选验证）', () => {
   const plan = compileCampaignPlan({
     campaign: { program_ids: ['p1'], policy: { derive_cap_per_tick: 3 } },
     gaps: [
@@ -354,7 +354,37 @@ test('22 P2: compileCampaignPlan 维度多样性——保证至少 1 条覆盖�
     ],
   })
   assert.equal(plan.drafts.length, 3)
-  assert.ok(plan.drafts.some((d) => d.kind === 'crawl'), '须至少 1 条覆盖类入选')
+  assert.ok(plan.drafts.every((d) => d.kind === 'hypothesis'), '覆盖类不再保底占位')
+  // 覆盖类挤进 top-cap 时也只保留 1 条，腾出的额度给漏洞类
+  const capped = compileCampaignPlan({
+    campaign: { program_ids: ['p1'], policy: { derive_cap_per_tick: 3 } },
+    gaps: [
+      { program: 'p1', dim: 'crawl', key: 'b.p1.com', mark: 'not_crawled' },
+      { program: 'p1', dim: 'crawl', key: 'c.p1.com', mark: 'not_crawled' },
+      { program: 'p1', dim: 'vulnclass', key: 'a.p1.com|idor', mark: 'untested' },
+    ],
+  })
+  assert.equal(capped.drafts.filter((d) => d.kind === 'crawl').length, 1, '覆盖类封顶 1 条')
+  assert.ok(capped.drafts.some((d) => d.kind === 'hypothesis'), '腾出的额度给漏洞类')
+})
+
+test('43 P0: 候选验证草稿——verify 角色、类推断、severity 加成、finding 维度去重键', () => {
+  const plan = compileCampaignPlan({
+    campaign: { program_ids: ['p1'], policy: { derive_cap_per_tick: 3 } },
+    gaps: [],
+    candidates: [
+      { id: 501, host: 'a.p1.com', severity: 'high', title: '疑似越权(IDOR): GET https://a.p1.com/u/1' },
+      { id: 502, host: 'b.p1.com', severity: 'low', title: 'HTTP Missing Security Headers' },
+    ],
+  })
+  const verify = plan.drafts.find((d) => d.kind === 'verify_candidate')
+  assert.ok(verify, '候选验证必须进 top-cap')
+  assert.equal(verify.campaign_role, 'verify')
+  assert.equal(verify.host, '501', 'host 槽载 finding id')
+  assert.equal(verify.strategy_key, 'verify|501')
+  assert.equal(verify.vuln_class, 'idor')
+  assert.equal(verify.oracle, 'idor_diff')
+  assert.ok(verify.score > 5, '类优先级 5 + 积压 2.5 + high 加成')
 })
 
 test('22 P0-1: compileCampaignPlan 跳过已尝试策略（attempted 且未到 reopen_after）', () => {

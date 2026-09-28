@@ -18,6 +18,13 @@
 
 ## 二、最近进度结果
 
+### 2026-09-28 · 43 号补丁：发现/转化优先 + 噪声类别自学习抑制（线上生效）
+- **噪声类别学习与自动抑制**（vuln 域）：同来源同类别拒绝率≥80%且样本≥20 → 新候选**登记口直接 ignored**（`vuln.candidate.suppressed` 留审计）；来源日配额（默认 200）；白名单/阈值可配；新命令 `vuln_noise_stats`（只读口径）与 `vuln_candidates_sweep`（存量确定性处置，支持 dry_run，检测型模板正则）。
+- **三处学习断链修复**：登记落 `findings.task_id`；confirm/reject 事件带 `task_id`（`onStrategyOutcome` 按 task 反查策略——拒绝→连败→拉黑恢复生效）；`gatherPlanInputs.scores` 实查 `know.hit_matrix`（此前写死 `{}`；know 新增该查询）。
+- **规划与验证流水线**：覆盖类封顶 1 条/tick（asset/review 降权）；候选验证 +2.5+severity（role=verify、priority 最高、oracle 路由）并新增 verify 目标模板；`authz_diff` 登记改走 v5 域命令。
+- **param 缺口闭环**：幻影端点（4xx 非 401/403）不再补参；`params_enriched`/`no_params_confirmed` 30 天冷却；新增终态 mark；param_enrich 模板要求收尾记账。
+- **线上核验（11:06–11:12Z）**：8 插件定点部署 + 重启（MainPID→817393）；accept **PASS=80 FAIL=0**；`sweep` 实跑 **ignored=342，候选池 535→193**，同类拒绝率→1.0/suppressed=true（新噪声登记口自动抑制）；campaign 2 草稿出现 **`verify_candidate`**（score 9.5/priority 1）。测试：rules 42/42、vuln 67/67、task 91/91、ledger 31/31、endpoint 33/33。详见 [record §17](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)。
+
 ### 2026-09-28 · DSH 0.1.7 观察期热修复（设置页远端可用 + 安全中心图标）与数据面只读排查
 - **设置→模型报「加载提供商目录失败: settings are unavailable in this browser」**：0.1.7 客户端 `dsh-client-ui-settings` 按 `$host.isLoopback` 门控设置镜像——经 edge（非 loopback）访问时永不加载；0.1.5 链已在 `dsh-runtime-compat.patch_settings()` 打通远程设置，**0.1.7 适配遗漏**。修复：`patch_settings()` 版本化并接入 0.1.7 分支（摘要钉死 `2ac7f186…`→`1be776de…`，+2 回归测试 11/11）；生产定点应用 + 重启（MainPID 779535→811336）；经真实 edge 无头实检 `models_error_absent/provider_text_present/ok=true`，回归 accept PASS=80 FAIL=0。
 - **安全中心侧边栏无图标**（插件/费用统计均有 glyph）：恢复 `PanelIcon → uiCore.spoolIcon`（19-ui-unify 的纯文字口径是旧 UI）；实检 `sidebar-icon-present=true`。工具三点合并 SHA `f77f30b6…`；证据 `…/p7-evidence/`（原件备份 + 实检 JSON/截图）。

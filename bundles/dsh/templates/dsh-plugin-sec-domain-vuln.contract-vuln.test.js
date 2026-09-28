@@ -1304,3 +1304,114 @@ test('跨源去重: 相同 external_id 的候选登记为 dup', async () => {
   assert.equal(b.data.id, a.data.id)
   assert.equal(b.data.dedup_reason, 'external_id')
 })
+
+// ---------------------------------------------------------------------------
+// 43 号补丁（P0）：噪声类别学习与自动抑制 / 归因绑定 / 存量 sweep
+// ---------------------------------------------------------------------------
+
+function withEnv(pairs, fn) {
+  const saved = {}
+  for (const [k, v] of Object.entries(pairs)) { saved[k] = process.env[k]; process.env[k] = v }
+  return Promise.resolve(fn()).finally(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  })
+}
+
+test('43 P0: 噪声类别学习——同类拒绝率≥阈值后新候选直接落 ignored（留审计+事件）', async () => {
+  await withEnv({ SEC_VULN_NOISE_SUPPRESS_MIN: '3', SEC_VULN_NOISE_SUPPRESS_RATE: '0.6' }, async () => {
+    const { bus, dir } = makeEnv()
+    const ids = []
+    for (let i = 0; i < 3; i++) {
+      const r = await bus.dispatch('vuln', 'register_candidate', { title: 'Detect SSL Certificate Issuer', severity: 'info', host: `n${i}.example.com`, source: 'parser:nuclei' }, { actor: 'script' })
+      assert.equal(r.ok, true)
+      assert.notEqual(r.data.status, 'ignored', '阈值前正常入池')
+      ids.push(r.data.id)
+    }
+    for (const id of ids.slice(0, 2)) {
+      const rej = await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'false_positive', reason: '同类模板历史全为误报（43 号补丁夹具）' }, { actor: 'model' })
+      assert.equal(rej.ok, true)
+    }
+    const next = await bus.dispatch('vuln', 'register_candidate', { title: 'Detect SSL Certificate Issuer', severity: 'info', host: 'n9.example.com', source: 'parser:nuclei' }, { actor: 'script' })
+    assert.equal(next.ok, true)
+    assert.equal(next.data.suppressed, true, '同类拒绝率达标后新候选应被抑制')
+    assert.equal(next.data.suppress_reason, 'category_noise')
+    assert.equal(next.data.status, 'ignored')
+    const got = await bus.query('vuln', 'get', { id: next.data.id }, { actor: 'model' })
+    assert.equal(got.data.status, 'ignored')
+    assert.ok(String(got.data.evidence).includes('auto-suppressed'), '抑制原因留证据链')
+    assert.ok(readEvents(dir).some((e) => e.name === 'vuln.candidate.suppressed'), 'candidate.suppressed 事件留痕')
+  })
+})
+
+test('43 P0: 来源日配额——超出即落 ignored（reason=source_quota）', async () => {
+  await withEnv({ SEC_VULN_SOURCE_DAILY_QUOTA: '2' }, async () => {
+    const { bus } = makeEnv()
+    const a = await bus.dispatch('vuln', 'register_candidate', { title: '配额模板 A', severity: 'info', host: 'q1.example.com', source: 'webhook-quota' }, { actor: 'webhook' })
+    const b = await bus.dispatch('vuln', 'register_candidate', { title: '配额模板 B', severity: 'info', host: 'q2.example.com', source: 'webhook-quota' }, { actor: 'webhook' })
+    const c = await bus.dispatch('vuln', 'register_candidate', { title: '配额模板 C', severity: 'info', host: 'q3.example.com', source: 'webhook-quota' }, { actor: 'webhook' })
+    assert.equal(a.data.status, 'new')
+    assert.equal(b.data.status, 'new')
+    assert.equal(c.data.suppressed, true)
+    assert.equal(c.data.suppress_reason, 'source_quota')
+  })
+})
+
+test('43 P0: 白名单豁免抑制', async () => {
+  await withEnv({ SEC_VULN_NOISE_SUPPRESS_MIN: '1', SEC_VULN_NOISE_SUPPRESS_RATE: '0.5', SEC_VULN_NOISE_WHITELIST: 'parser:nuclei|Keep Me Template' }, async () => {
+    const { bus } = makeEnv()
+    const a = await bus.dispatch('vuln', 'register_candidate', { title: 'Keep Me Template', severity: 'info', host: 'w1.example.com', source: 'parser:nuclei' }, { actor: 'script' })
+    await bus.dispatch('vuln', 'reject', { finding_id: a.data.id, verdict: 'false_positive', reason: '白名单豁免夹具误报' }, { actor: 'model' })
+    const b = await bus.dispatch('vuln', 'register_candidate', { title: 'Keep Me Template', severity: 'info', host: 'w2.example.com', source: 'parser:nuclei' }, { actor: 'script' })
+    assert.equal(b.data.status, 'new', '白名单类别不被抑制')
+  })
+})
+
+test('43 P0: 候选登记绑定 task_id，拒绝事件携带 task_id（归因→连败拉黑闭环）', async () => {
+  const { bus, dir } = makeEnv()
+  const cand = await bus.dispatch('vuln', 'register_candidate', { title: '归因候选：IDOR 越权测试目标', severity: 'high', host: 't.example.com', source: 'authz_diff', task_id: 4242 }, { actor: 'script' })
+  assert.equal(cand.ok, true)
+  const got = await bus.query('vuln', 'get', { id: cand.data.id }, { actor: 'model' })
+  assert.equal(got.data.task_id, 4242, '候选行落 task_id')
+  const rej = await bus.dispatch('vuln', 'reject', { finding_id: cand.data.id, verdict: 'false_positive', reason: '差分证明服务端有归属校验（43 夹具）' }, { actor: 'model' })
+  assert.equal(rej.ok, true)
+  const rejected = readEvents(dir).find((e) => e.name === 'vuln.signal.rejected')
+  assert.equal(rejected.payload.task_id, 4242, '拒绝事件携带 task_id')
+  assert.equal(rejected.payload.source, 'authz_diff')
+})
+
+test('43 P0: 存量候选 sweep——检测型模板批量出池（dry_run 预演不落库）', async () => {
+  await withEnv({ SEC_VULN_NOISE_SUPPRESS_MIN: '2' }, async () => {
+    const { bus } = makeEnv()
+    const d1 = await bus.dispatch('vuln', 'register_candidate', { title: 'HTTP Missing Security Headers', severity: 'info', host: 's1.example.com', source: 'parser:nuclei' }, { actor: 'script' })
+    await bus.dispatch('vuln', 'register_candidate', { title: '疑似越权(IDOR): GET https://s2.example.com/u/1', severity: 'high', host: 's2.example.com', source: 'authz_diff' }, { actor: 'script' })
+    const dry = await bus.dispatch('vuln', 'candidates_sweep', { dry_run: true, limit: 100 }, { actor: 'dashboard' })
+    assert.equal(dry.ok, true)
+    assert.equal(dry.data.by_reason.detection_template, 1)
+    assert.equal(dry.data.ignored, 0)
+    const before = await bus.query('vuln', 'candidates', { claim_state: 'all' }, { actor: 'model' })
+    assert.equal(before.total, 2)
+    const run = await bus.dispatch('vuln', 'candidates_sweep', { limit: 100 }, { actor: 'dashboard' })
+    assert.equal(run.data.ignored, 1)
+    const after = await bus.query('vuln', 'candidates', { claim_state: 'all' }, { actor: 'model' })
+    assert.equal(after.total, 1)
+    const got = await bus.query('vuln', 'get', { id: d1.data.id }, { actor: 'model' })
+    assert.equal(got.data.status, 'ignored')
+  })
+})
+
+test('43 P0: noise_stats 暴露类别拒绝率与抑制口径', async () => {
+  const { bus } = makeEnv()
+  await bus.dispatch('vuln', 'register_candidate', { title: 'Stats Template', severity: 'info', host: 'x1.example.com', source: 'parser:nuclei' }, { actor: 'script' })
+  const c = await bus.dispatch('vuln', 'register_candidate', { title: 'Stats Template', severity: 'info', host: 'x2.example.com', source: 'parser:nuclei' }, { actor: 'script' })
+  await bus.dispatch('vuln', 'reject', { finding_id: c.data.id, verdict: 'false_positive', reason: '统计夹具误报判定（43 号）' }, { actor: 'model' })
+  const r = await bus.dispatch('vuln', 'noise_stats', { min_total: 1 }, { actor: 'dashboard' })
+  assert.equal(r.ok, true)
+  const cat = r.data.categories.find((x) => x.category === 'Stats Template')
+  assert.ok(cat, '应聚合出该类别')
+  assert.equal(cat.total, 2)
+  assert.equal(cat.false_positive, 1)
+  assert.ok(r.data.policy.suppress_min >= 1)
+})

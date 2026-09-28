@@ -278,7 +278,7 @@ function createRepo(db, dataDir) {
     // 42 号补丁（25 号方案 B1）：覆盖账本紧凑分页/参数率聚合——绕开 endpoint_list 的 500 行上限。
     listEndpointLitePage(filters, limit, offset) {
       const { where, args } = buildEpWhere(filters)
-      const sql = `SELECT host, path, params, auth_state, last_seen FROM endpoints WHERE ${where} ORDER BY host, path LIMIT ? OFFSET ?`
+      const sql = `SELECT host, path, params, auth_state, status, last_seen FROM endpoints WHERE ${where} ORDER BY host, path LIMIT ? OFFSET ?`
       return db.prepare(sql).all(...args, Math.min(Number(limit) || 2000, 2000), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
     },
 

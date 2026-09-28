@@ -41,6 +41,91 @@ const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 }
 const FINDING_STATUS = ['new', 'confirmed', 'false_positive', 'submitted', 'accepted', 'dup', 'ignored']
 const TERMINAL = ['accepted', 'false_positive', 'dup', 'ignored']
 
+// ---------------------------------------------------------------------------
+// 43 号补丁：噪声类别学习与自动抑制（P0）
+//   学习：按 source×category（nuclei=模板名；authz_diff=IDOR 前缀；其余=去 URL 标题）
+//         聚合历史判定，类别拒绝率 ≥阈值且样本足够 → 新候选直接落 ignored（不进候选池）。
+//   配额：每来源每日候选上限，超出同样落 ignored（reason=source_quota）。
+//   安全：fail-open（后端不支持统计时正常登记）；白名单可覆盖；抑制行仍入库留审计。
+// ---------------------------------------------------------------------------
+// 动态读取（每次判定）——阈值/配额可运行期调整，单测可注入。
+function noiseEnv() {
+  const env = process.env || {}
+  const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : d }
+  const rate = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 && n <= 1 ? n : d }
+  return {
+    suppressRate: rate(env.SEC_VULN_NOISE_SUPPRESS_RATE, 0.8),
+    suppressMin: num(env.SEC_VULN_NOISE_SUPPRESS_MIN, 20),
+    dailyQuota: num(env.SEC_VULN_SOURCE_DAILY_QUOTA, 200),
+    whitelist: String(env.SEC_VULN_NOISE_WHITELIST || '').split(',').map((x) => x.trim()).filter(Boolean),
+    detectionPatterns: String(env.SEC_VULN_DETECTION_NOISE_PATTERNS || '').split('\n').map((x) => x.trim()).filter(Boolean),
+  }
+}
+// 内置检测型模板噪声（info 级、纯指纹/配置类，历史几乎全为误报或不可提交）——仅用于 sweep 存量候选；
+// 新登记走"类别拒绝率"学习，不硬编码屏蔽（可被白名单豁免）。可用 env 追加正则。
+const DETECTION_NOISE_PATTERNS = [
+  /http missing security headers/i,
+  /ssl certificate issuer|ssl dns names|wildcard tls certificate|certificate mismatch|expired ssl|self-signed/i,
+  /weak cipher suites|deprecated tls|cbc weak|tls 1\.[01]|hsts/i,
+  /dns saas service detection|aaaa record|srv record|wildcard dns configuration|dns record/i,
+  /missing subresource integrity/i,
+  /openresty detection|server version|tech detect|wappalyzer|favicon|robots\.txt|sitemap/i,
+]
+
+/** 类别归一：同源同模板/同类型归为一类，供拒绝率学习与抑制判定。 */
+export function findingCategory(source, title) {
+  const s = String(source || '')
+  const t = String(title || '').replace(/\s+/g, ' ').trim()
+  if (/^(parser:)?nuclei/i.test(s)) return t.slice(0, 80)
+  if (s === 'authz_diff') return /越权|idor/i.test(t) ? 'authz_diff|IDOR' : 'authz_diff|' + t.slice(0, 40)
+  const stripped = t.replace(/https?:\/\/\S+/gi, '').replace(/[0-9a-f]{8,}/gi, '<id>').trim()
+  return (stripped || t).slice(0, 48)
+}
+
+/** 检测型模板噪声（sweep 存量用；新登记仅走拒绝率学习）。 */
+export function isDetectionNoise(source, title) {
+  if (!/nuclei/i.test(String(source || ''))) return false
+  const t = String(title || '')
+  if (noiseEnv().detectionPatterns.some((p) => { try { return new RegExp(p, 'i').test(t) } catch { return false } })) return true
+  return DETECTION_NOISE_PATTERNS.some((re) => re.test(t))
+}
+
+function noiseWhitelisted(source, category) {
+  const list = noiseEnv().whitelist
+  return list.includes(String(source)) || list.includes(`${source}|${category}`)
+}
+
+/** 类别拒绝率判定（fail-open）：返回 {suppress, reason?, sample, rejected, rate}。 */
+export function noiseCategoryDecision(repo, source, category, { ttlMs = 60000 } = {}) {
+  if (noiseWhitelisted(source, category)) return { suppress: false, reason: 'whitelisted', sample: 0, rejected: 0, rate: 0 }
+  if (typeof repo.sourceTitleStats !== 'function') return { suppress: false, reason: 'backend_unsupported', sample: 0, rejected: 0, rate: 0 }
+  let sample = 0; let rejected = 0
+  for (const row of repo.sourceTitleStats(source, { ttlMs })) {
+    if (findingCategory(source, row.title) !== category) continue
+    sample += Number(row.total) || 0
+    rejected += (Number(row.false_positive) || 0) + (Number(row.ignored) || 0) + (Number(row.dup) || 0)
+  }
+  const rate = sample > 0 ? rejected / sample : 0
+  const cfg = noiseEnv()
+  if (sample >= cfg.suppressMin && rate >= cfg.suppressRate) {
+    return { suppress: true, reason: 'category_noise', sample, rejected, rate: Number(rate.toFixed(4)) }
+  }
+  return { suppress: false, sample, rejected, rate: Number(rate.toFixed(4)) }
+}
+
+/** 来源日配额（北京时区自然日）：返回 {exceeded, used, quota}。 */
+export function noiseSourceQuota(repo, source) {
+  const quota = noiseEnv().dailyQuota
+  if (!(quota > 0)) return { exceeded: false, used: 0, quota: 0 }
+  if (typeof repo.countSourceSince !== 'function') return { exceeded: false, used: 0, quota }
+  const now = Date.now()
+  const bjDayStart = Math.floor((now + 8 * 3600000) / 86400000) * 86400000 - 8 * 3600000
+  const used = repo.countSourceSince(source, bjDayStart)
+  return { exceeded: used >= quota, used, quota }
+}
+
+export const noiseControlConfig = () => { const cfg = noiseEnv(); return { ...cfg, patterns: DETECTION_NOISE_PATTERNS.length + cfg.detectionPatterns.length } }
+
 const log = (msg) => { try { process.stderr.write(`[sec-domain-vuln] ${msg}\n`) } catch { /* noop */ } }
 
 const sha1 = (s) => crypto.createHash('sha1').update(String(s)).digest('hex')
@@ -110,6 +195,7 @@ export const VULN_MANIFEST = {
         fgs_node_id: int(),
         discovery_step: str(),
         external_id: str({ maxLength: 128, description: '上游系统稳定 id（跨源去重优先键）' }),
+        task_id: int({ description: '（可选）产生该发现的 task id——归因→连败拉黑/学习闭环' }),
       }, ['title', 'severity', 'host', 'evidence', 'reproduction_steps', 'impact']),
       idempotent: 'natural',
       idempotent_natural: ['host', 'title', 'url'],
@@ -131,10 +217,11 @@ export const VULN_MANIFEST = {
         source: str(),
         program_id: str(),
         external_id: str({ maxLength: 128, description: '上游系统稳定 id（跨源去重优先键）' }),
+        task_id: int({ description: '（可选）产生该候选的 task id——归因→学习闭环' }),
       }, ['title', 'severity', 'host', 'source']),
       idempotent: 'auto',
       idempotent_fields: ['title', 'host', 'url', 'source', 'external_id'],
-      events: ['vuln.candidate.registered'],
+      events: ['vuln.candidate.registered', 'vuln.candidate.suppressed'],
       event_limit: 1,
       invariants: [],
       timeout_ms: 60000,
@@ -251,6 +338,39 @@ export const VULN_MANIFEST = {
       invariants: [],
       timeout_ms: 60000,
       agent_note: '候选池 TTL 治理（system/dashboard）：noise=1 且 status=new 超 ttl_days 未消化的候选置 ignored 出池，防噪声候选无限堆积。',
+      deprecated: false,
+    },
+    // 43 号补丁（P0）：噪声类别学习数据面（只读）
+    vuln_noise_stats: {
+      actor: ['system', 'dashboard', 'human', 'model'],
+      schema: schema({
+        source: str({ default: '' }),
+        min_total: int({ minimum: 1, maximum: 100000, default: 5 }),
+        limit: int({ minimum: 1, maximum: 200, default: 50 }),
+      }, []),
+      idempotent: 'none',
+      events: [],
+      event_limit: 0,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '噪声类别学习数据面（只读）：按 source×category 聚合 total/confirmed/false_positive/ignored/dup 与拒绝率，并返回自动抑制阈值口径（rate/min）、白名单与来源日配额。用于复核"哪类问题一直全是噪声"。',
+      deprecated: false,
+    },
+    // 43 号补丁（P0/B3）：存量候选确定性批量处置（零 LLM）
+    vuln_candidates_sweep: {
+      actor: ['system', 'dashboard'],
+      schema: schema({
+        limit: int({ minimum: 1, maximum: 5000, default: 1000 }),
+        dry_run: bool(),
+        min_total: int({ minimum: 1, maximum: 100000, default: 20 }),
+        source: str({ default: '' }),
+      }, []),
+      idempotent: 'none',
+      events: ['vuln.candidate.suppressed'],
+      event_limit: 1,
+      invariants: [],
+      timeout_ms: 60000,
+      agent_note: '存量候选确定性处置（零 LLM）：对 noise=1 且 status=new 的候选按 ①类别拒绝率≥阈值（category_noise）或 ②检测型模板规则（detection_template）批量置 ignored 出池；dry_run=true 仅统计。抑制不等于删除：行保留、证据留审计，白名单可豁免。新的同类候选在登记口即被自动抑制，本命令用于清历史积压。',
       deprecated: false,
     },
     vuln_note: {
@@ -407,7 +527,8 @@ export const VULN_MANIFEST = {
       agent_note: '取单条 finding 全量详情（含 evidence 证据链全文）。',
     },
     vuln_candidates: {
-      actor: ['model', 'dashboard', 'human'],
+      // 43 号补丁：专项规划器（reactor）需要读候选池生成 verify 草稿
+      actor: ['model', 'dashboard', 'human', 'reactor', 'system'],
       params: schema({
         claim_state: en(['available', 'unclaimed', 'claimed', 'stale', 'all'], { default: 'available' }),
         severity_min: en([...SEVERITY, ''], { default: '' }),
@@ -471,6 +592,7 @@ export const VULN_MANIFEST = {
     'vuln.candidate.registered': { payload: { type: 'object' }, redact: [] },
     'vuln.candidate.promoted': { payload: { type: 'object' }, redact: [] },
     'vuln.candidate.expired': { payload: { type: 'object' }, redact: [] },
+    'vuln.candidate.suppressed': { payload: { type: 'object' }, redact: [] },
     'vuln.candidate.claimed': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.registered': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.confirmed': { payload: { type: 'object' }, redact: [] },
@@ -904,6 +1026,7 @@ function makeHandlers(opts) {
           before: { status: dup.status, noise: dup.noise }, after: { status: dup.status, noise: dup.noise },
         }
       }
+      const signalTaskId = args.task_id != null ? Number(args.task_id) : (ctx.task_id != null ? Number(ctx.task_id) : null)
       const cand = repo.getFindingByFingerprint(weak)
       if (cand && cand.noise === 1 && cand.status === 'new') {
         const merged = repo.mergeCandidate(cand.id, {
@@ -913,14 +1036,15 @@ function makeHandlers(opts) {
           impact: args.impact || null, recommendation: args.recommendation || null,
           confidence: args.confidence || 'tentative', fgs_node_id: args.fgs_node_id || null,
           discovery_step: args.discovery_step || null, session_id: ctx.session_id || null,
-          updated_at: now,
+          task_id: signalTaskId, updated_at: now,
         }, strong)
         if (merged.changed) {
           repo.markSyncPending?.(cand.id)
+          repo.invalidateSourceStats?.(args.source || 'agent')
           return {
             data: { id: cand.id, dup: false, upgraded: true, noise: false, status: merged.after?.status || 'new' },
             events: [
-              { name: 'vuln.signal.registered', payload: { finding_id: cand.id, fingerprint: strong, severity: args.severity, host, session_id: ctx.session_id || null, fgs_node_id: args.fgs_node_id || null } },
+              { name: 'vuln.signal.registered', payload: { finding_id: cand.id, fingerprint: strong, severity: args.severity, host, session_id: ctx.session_id || null, task_id: signalTaskId, fgs_node_id: args.fgs_node_id || null } },
               { name: 'vuln.candidate.promoted', payload: { finding_id: cand.id, from: { noise: 1, status: 'new' }, to: { noise: 0, status: 'new' }, cause_cmd: 'vuln_register_signal' } },
             ],
             before: { status: cand.status, noise: 1 }, after: { status: 'new', noise: 0 },
@@ -930,7 +1054,7 @@ function makeHandlers(opts) {
       const row = repo.insertFinding({
         fingerprint: strong, title, severity: args.severity, host, url,
         evidence: args.evidence || '', source: args.source || 'agent',
-        program_id: args.program_id || null, session_id: ctx.session_id || null,
+        program_id: args.program_id || null, session_id: ctx.session_id || null, task_id: signalTaskId,
         vuln_type: args.vuln_type || null, cwe: args.cwe || null, endpoint_ref: args.endpoint_ref || null,
         preconditions: args.preconditions || null, reproduction_steps: args.reproduction_steps || null,
         impact: args.impact || null, recommendation: args.recommendation || null,
@@ -939,9 +1063,10 @@ function makeHandlers(opts) {
         created_at: now, updated_at: now, external_id: extId || null,
       })
       repo.markSyncPending?.(row.id)
+      repo.invalidateSourceStats?.(args.source || 'agent')
       return {
         data: { id: row.id, dup: false, upgraded: false, noise: false, status: 'new' },
-        events: [{ name: 'vuln.signal.registered', payload: { finding_id: row.id, fingerprint: strong, severity: args.severity, host, session_id: ctx.session_id || null, fgs_node_id: args.fgs_node_id || null } }],
+        events: [{ name: 'vuln.signal.registered', payload: { finding_id: row.id, fingerprint: strong, severity: args.severity, host, session_id: ctx.session_id || null, task_id: signalTaskId, fgs_node_id: args.fgs_node_id || null } }],
         before: null, after: { id: row.id, status: 'new', noise: 0 },
       }
     },
@@ -973,23 +1098,40 @@ function makeHandlers(opts) {
           before: { status: dup.status, noise: dup.noise }, after: { status: dup.status, noise: dup.noise },
         }
       }
+      const source = String(args.source || 'webhook')
+      const category = findingCategory(source, title)
+      // 43 号补丁：类别拒绝率学习 + 来源日配额（fail-open、白名单可豁免、抑制行仍入库留审计）
+      const decision = noiseCategoryDecision(repo, source, category)
+      const quota = decision.suppress ? { exceeded: false, used: 0, quota: 0 } : noiseSourceQuota(repo, source)
+      const suppressed = decision.suppress || quota.exceeded
+      const suppressReason = decision.suppress ? 'category_noise' : (quota.exceeded ? 'source_quota' : null)
+      const note = suppressed
+        ? `${args.evidence || ''}\n[auto-suppressed ${iso16()} reason=${suppressReason} category=${category} rate=${decision.rate} sample=${decision.sample}${quota.exceeded ? ` used=${quota.used}/${quota.quota}` : ''}]`.trim()
+        : (args.evidence || '')
+      const taskId = args.task_id != null ? Number(args.task_id) : (ctx.task_id != null ? Number(ctx.task_id) : null)
       const row = repo.insertFinding({
         fingerprint: weak, title, severity: args.severity || 'info', host, url,
-        evidence: args.evidence || '', source: args.source || 'webhook',
+        evidence: note, source,
         program_id: args.program_id || null, session_id: ctx.session_id || null,
+        task_id: taskId,
         vuln_type: null, cwe: null, endpoint_ref: null, preconditions: null,
         reproduction_steps: null, impact: null, recommendation: null,
-        noise: 1, status: 'new', confidence: 'tentative',
+        noise: 1, status: suppressed ? 'ignored' : 'new', confidence: 'tentative',
         fgs_node_id: null, discovery_step: null,
         created_at: now, updated_at: now, external_id: extId || null,
       })
+      if (!suppressed) repo.invalidateSourceStats?.(source)
       return {
-        data: { id: row.id, dup: false, noise: true, status: 'new' },
-        events: [{
+        data: { id: row.id, dup: false, noise: true, status: suppressed ? 'ignored' : 'new', suppressed, suppress_reason: suppressReason, category },
+        events: suppressed ? [{
+          name: 'vuln.candidate.suppressed',
+          payload: { finding_id: row.id, source, category, reason: suppressReason, rate: decision.rate, sample: decision.sample,
+            quota: quota.exceeded ? { used: quota.used, quota: quota.quota } : null, title_head: title.slice(0, 60) },
+        }] : [{
           name: 'vuln.candidate.registered',
-          payload: { finding_id: row.id, fingerprint: weak, title_head: title.slice(0, 60), severity: args.severity || 'info', host, source: args.source || 'webhook', program_id: args.program_id || null },
+          payload: { finding_id: row.id, fingerprint: weak, title_head: title.slice(0, 60), severity: args.severity || 'info', host, source, program_id: args.program_id || null, task_id: taskId },
         }],
-        before: null, after: { id: row.id, status: 'new', noise: 1 },
+        before: null, after: { id: row.id, status: suppressed ? 'ignored' : 'new', noise: 1 },
       }
     },
 
@@ -1002,7 +1144,8 @@ function makeHandlers(opts) {
       if (args.note) repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} confirm: ${args.note}`)
       repo.markSyncPending?.(args.finding_id)
       const fromCandidate = row.noise === 1
-      const events = [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, from: { status: 'new', noise: row.noise }, evidence_ref: refPrefix(args.evidence), confidence: 'confirmed', fgs_node_id: row.fgs_node_id || null, vuln_type: row.vuln_type || null, host: row.host || null, program_id: row.program_id || null } }]
+      // 43 号补丁：事件携带 task/session/来源——归因→策略胜负回写与类别学习（此前无归因，连败拉黑形同虚设）
+      const events = [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, from: { status: 'new', noise: row.noise }, evidence_ref: refPrefix(args.evidence), confidence: 'confirmed', fgs_node_id: row.fgs_node_id || null, vuln_type: row.vuln_type || null, host: row.host || null, program_id: row.program_id || null, task_id: row.task_id ?? null, session_id: row.session_id ?? null, source: row.source ?? null, title: String(row.title || '').slice(0, 80) } }]
       if (fromCandidate) events.push({ name: 'vuln.candidate.promoted', payload: { finding_id: args.finding_id, from: { noise: 1, status: 'new' }, to: { noise: 0, status: 'confirmed' }, cause_cmd: 'vuln_confirm' } })
       return {
         data: { id: args.finding_id, status: 'confirmed', signal: true, promoted_from_candidate: fromCandidate },
@@ -1106,7 +1249,7 @@ function makeHandlers(opts) {
       if (row.noise === 0) repo.markSyncPending?.(args.finding_id)
       return {
         data: { id: args.finding_id, status: args.verdict, noise: row.noise === 1, rejected: true },
-        events: [{ name: 'vuln.signal.rejected', payload: { finding_id: args.finding_id, verdict: args.verdict, from: { status: row.status, noise: row.noise }, reason_head: String(args.reason || '').slice(0, 60), dup_of: args.dup_of || null, fgs_node_id: row.fgs_node_id || null } }],
+        events: [{ name: 'vuln.signal.rejected', payload: { finding_id: args.finding_id, verdict: args.verdict, from: { status: row.status, noise: row.noise }, reason_head: String(args.reason || '').slice(0, 60), dup_of: args.dup_of || null, fgs_node_id: row.fgs_node_id || null, task_id: row.task_id ?? null, session_id: row.session_id ?? null, source: row.source ?? null, title: String(row.title || '').slice(0, 80) } }],
         before: { status: row.status, noise: row.noise, confidence: row.confidence }, after: { status: args.verdict, noise: row.noise },
       }
     },
@@ -1153,6 +1296,81 @@ function makeHandlers(opts) {
       return {
         data: { expired, ttl_days: ttlDays, ids: ids.slice(0, 20) },
         events: expired ? [{ name: 'vuln.candidate.expired', payload: { count: expired, ids: ids.slice(0, 50), ttl_days: ttlDays } }] : [],
+      }
+    },
+
+    // 43 号补丁（P0）：噪声类别学习数据面（只读）
+    vuln_noise_stats: async (args, repo) => {
+      const cfg = noiseControlConfig()
+      const sourceFilter = String(args.source || '')
+      const minTotal = Math.max(1, Number(args.min_total) || 5)
+      const limit = Math.min(Number(args.limit) || 50, 200)
+      const raw = typeof repo.sourceTitleAll === 'function' ? repo.sourceTitleAll({ minTotal, limit: 5000, source: sourceFilter }) : []
+      const agg = new Map()
+      for (const row of raw) {
+        const source = String(row.source || '')
+        const category = findingCategory(source, row.title)
+        const key = `${source}|${category}`
+        const cur = agg.get(key) || { source, category, total: 0, new_count: 0, confirmed: 0, false_positive: 0, ignored: 0, dup: 0, submitted: 0, accepted: 0, noise_count: 0 }
+        for (const field of ['total', 'new_count', 'confirmed', 'false_positive', 'ignored', 'dup', 'submitted', 'accepted', 'noise_count']) cur[field] += Number(row[field]) || 0
+        agg.set(key, cur)
+      }
+      const categories = [...agg.values()].map((c) => {
+        const rejected = c.false_positive + c.ignored + c.dup
+        const rate = c.total > 0 ? rejected / c.total : 0
+        return { ...c, rejected, reject_rate: Number(rate.toFixed(4)),
+          suppressed: c.total >= cfg.suppressMin && rate >= cfg.suppressRate,
+          whitelisted: noiseWhitelisted(c.source, c.category) }
+      }).sort((a, b) => b.total - a.total || a.source.localeCompare(b.source)).slice(0, limit)
+      return { data: { categories, policy: { suppress_rate: cfg.suppressRate, suppress_min: cfg.suppressMin, daily_quota: cfg.dailyQuota, whitelist: cfg.whitelist, patterns: cfg.patterns } } }
+    },
+
+    // 43 号补丁（P0/B3）：存量候选确定性批量处置（零 LLM；抑制不删除，行留审计）
+    vuln_candidates_sweep: async (args, repo) => {
+      const limit = Math.min(Number(args.limit) || 1000, 5000)
+      const dryRun = args.dry_run === true
+      const minTotal = Math.max(1, Number(args.min_total) || noiseEnv().suppressMin)
+      const sourceFilter = String(args.source || '')
+      const now = Date.now()
+      const decisions = new Map()
+      const hits = { category_noise: [], detection_template: [] }
+      let scanned = 0
+      let offset = 0
+      while (scanned < limit) {
+        const page = typeof repo.listCandidatePool === 'function'
+          ? repo.listCandidatePool(sourceFilter ? { source: sourceFilter } : {}, { sort: 'created_at', dir: 'asc' }, Math.min(500, limit - scanned), offset)
+          : { rows: [] }
+        const rows = page.rows || []
+        if (!rows.length) break
+        for (const row of rows) {
+          scanned++
+          const source = String(row.source || '')
+          const title = String(row.title || '')
+          if (isDetectionNoise(source, title)) { hits.detection_template.push(row.id); continue }
+          const category = findingCategory(source, title)
+          const key = `${source}|${category}`
+          let decision = decisions.get(key)
+          if (!decision) {
+            decision = noiseCategoryDecision(repo, source, category, { ttlMs: 0 })
+            decisions.set(key, decision)
+          }
+          if (decision.suppress && decision.sample >= minTotal) hits.category_noise.push(row.id)
+        }
+        if (rows.length < 500) break
+        offset += rows.length
+      }
+      const all = [...hits.category_noise, ...hits.detection_template]
+      const applied = dryRun ? { ignored: 0, ids: [] } : (typeof repo.ignoreCandidateIds === 'function' ? repo.ignoreCandidateIds(all, now) : { ignored: 0, ids: [] })
+      if (!dryRun) repo.invalidateSourceStats?.(null)
+      const categoryDetail = [...decisions.entries()].map(([key, d]) => ({ category: key, sample: d.sample, rejected: d.rejected, rate: d.rate, suppress: !!d.suppress }))
+        .sort((a, b) => b.sample - a.sample).slice(0, 20)
+      return {
+        data: { dry_run: dryRun, scanned, matched: all.length, ignored: applied.ignored,
+          by_reason: { category_noise: hits.category_noise.length, detection_template: hits.detection_template.length },
+          sample_ids: all.slice(0, 20), categories: categoryDetail, policy_min_sample: minTotal },
+        events: (!dryRun && all.length) ? [{ name: 'vuln.candidate.suppressed', payload: {
+          count: applied.ignored, by_reason: { category_noise: hits.category_noise.length, detection_template: hits.detection_template.length },
+          sample_ids: all.slice(0, 50), cause_cmd: 'vuln_candidates_sweep' } }] : [],
       }
     },
 

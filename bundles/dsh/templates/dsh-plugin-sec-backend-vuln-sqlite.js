@@ -85,6 +85,8 @@ const SORT_COLS = {
 const _cache = new WeakMap()
 
 function createRepo(db) {
+  // 43 号补丁：source → title 聚合的 TTL 缓存（每连接一份）。
+  const sourceStatsCache = new Map()
   // ---- 表接管（现表不动；空库建全量 DDL）----
   db.exec(FINDINGS_DDL)
   for (const [col, ddl] of V5_COLS) ensureCol(db, col, ddl)
@@ -93,6 +95,9 @@ function createRepo(db) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_external ON findings(external_id)`)
   // 42 号补丁（25 号方案 B2）：默认 sort=created_at 索引。
   db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_created ON findings(created_at DESC)`)
+  // 43 号补丁：来源×类别噪声学习与来源日配额（按 source+title 聚合）。
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_source_title ON findings(source, title)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_source_created ON findings(source, created_at)`)
 
   const stmts = {
     getFinding: db.prepare('SELECT * FROM findings WHERE id = ?'),
@@ -118,12 +123,13 @@ function createRepo(db) {
     insertFinding(f) {
       const r = db.prepare(`
         INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, status, created_at,
-          program_id, session_id, vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact,
+          program_id, task_id, session_id, vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact,
           recommendation, noise, confidence, fgs_node_id, discovery_step, updated_at, external_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         f.fingerprint, f.title, f.severity, f.host, f.url, f.evidence || '', f.source || '', f.status || 'new', f.created_at,
-        f.program_id || null, f.session_id || null, f.vuln_type || null, f.cwe || null, f.endpoint_ref || null,
+        f.program_id || null, f.task_id != null ? Number(f.task_id) : null, f.session_id || null,
+        f.vuln_type || null, f.cwe || null, f.endpoint_ref || null,
         f.preconditions || null, f.reproduction_steps || null, f.impact || null, f.recommendation || null,
         f.noise === 1 ? 1 : 0, f.confidence || 'tentative', f.fgs_node_id || null, f.discovery_step || null,
         f.updated_at || f.created_at, f.external_id || null,
@@ -153,7 +159,7 @@ function createRepo(db) {
       const set = []
       const args = []
       for (const k of ['title', 'severity', 'host', 'url', 'evidence', 'source', 'vuln_type', 'cwe', 'endpoint_ref',
-        'preconditions', 'reproduction_steps', 'impact', 'recommendation', 'confidence', 'fgs_node_id', 'discovery_step', 'session_id', 'updated_at']) {
+        'preconditions', 'reproduction_steps', 'impact', 'recommendation', 'confidence', 'fgs_node_id', 'discovery_step', 'session_id', 'task_id', 'updated_at']) {
         if (fields[k] !== undefined) { set.push(`${k} = ?`); args.push(fields[k]) }
       }
       set.push('fingerprint = ?', 'noise = 0')
@@ -303,6 +309,70 @@ function createRepo(db) {
           last_synced_at: one("SELECT MAX(remote_synced_at) AS m FROM findings").m ?? null,
         },
       }
+    },
+    // 43 号补丁：来源×标题聚合（噪声类别学习数据面）。按 title 精确分组，类别归并在域层做；
+    // 带 60s TTL 缓存，避免每条候选登记都全量扫描（sweep/重建可传 ttlMs=0 强制新鲜）。
+    sourceTitleStats(source, { ttlMs = 60000 } = {}) {
+      const key = String(source || '')
+      const now = Date.now()
+      const cached = sourceStatsCache.get(key)
+      if (cached && now - cached.at < Number(ttlMs)) return cached.rows
+      const rows = db.prepare(`
+        SELECT title,
+          COUNT(*) AS total,
+          SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new_count,
+          SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
+          SUM(CASE WHEN status = 'false_positive' THEN 1 ELSE 0 END) AS false_positive,
+          SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored,
+          SUM(CASE WHEN status = 'dup' THEN 1 ELSE 0 END) AS dup,
+          SUM(CASE WHEN status = 'submitted' THEN 1 ELSE 0 END) AS submitted,
+          SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+          SUM(CASE WHEN noise = 1 THEN 1 ELSE 0 END) AS noise_count
+        FROM findings WHERE source = ? GROUP BY title LIMIT 5000
+      `).all(key).map((r) => ({ ...r }))
+      sourceStatsCache.set(key, { at: now, rows })
+      return rows
+    },
+    invalidateSourceStats(source) {
+      if (source == null) sourceStatsCache.clear()
+      else sourceStatsCache.delete(String(source))
+      return {}
+    },
+    // 全来源×标题聚合（噪声统计命令/sweep 用；不受 TTL 缓存影响）。
+    sourceTitleAll({ minTotal = 1, limit = 5000, source = '' } = {}) {
+      const conds = []
+      const args = []
+      if (source) { conds.push('source = ?'); args.push(String(source)) }
+      const where = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
+      const sql = `SELECT source, title,
+          COUNT(*) AS total,
+          SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new_count,
+          SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
+          SUM(CASE WHEN status = 'false_positive' THEN 1 ELSE 0 END) AS false_positive,
+          SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored,
+          SUM(CASE WHEN status = 'dup' THEN 1 ELSE 0 END) AS dup,
+          SUM(CASE WHEN status = 'submitted' THEN 1 ELSE 0 END) AS submitted,
+          SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+          SUM(CASE WHEN noise = 1 THEN 1 ELSE 0 END) AS noise_count
+        FROM findings ${where}
+        GROUP BY source, title HAVING COUNT(*) >= ? ORDER BY COUNT(*) DESC LIMIT ?`
+      return db.prepare(sql).all(...args, Math.max(1, Number(minTotal) || 1), Math.min(Number(limit) || 5000, 20000)).map((r) => ({ ...r }))
+    },
+    countSourceSince(source, sinceMs) {
+      return db.prepare('SELECT COUNT(*) AS n FROM findings WHERE source = ? AND created_at >= ?')
+        .get(String(source), Number(sinceMs)).n
+    },
+    // 候选批量出池（仅 noise=1 且 status='new'）；遵守候选状态机，不触碰信号面/已认领行。
+    ignoreCandidateIds(ids, now) {
+      const list = Array.isArray(ids) ? ids : []
+      if (!list.length) return { ignored: 0, ids: [] }
+      const upd = db.prepare("UPDATE findings SET status = 'ignored', claimed_by = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND noise = 1 AND status = 'new'")
+      const changed = []
+      for (const id of list) {
+        const r = upd.run(Number(now) || Date.now(), Number(id))
+        if (r.changes === 1) changed.push(Number(id))
+      }
+      return { ignored: changed.length, ids: changed }
     },
     ensureCol(col, ddl) {
       ensureCol(db, col, ddl)

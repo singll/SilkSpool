@@ -39,13 +39,17 @@ const COVER_DIM_ENUM = ['crawl', 'param', 'vulnclass', 'auth', 'asset']
 // 缺口队列额外维度（不可 coverage_mark，只派生）：review=存量 findings 超龄未分诊
 const GAPS_DIM_ENUM = [...COVER_DIM_ENUM, 'review']
 const CRAWL_STATUS = ['uncrawled', 'crawled_ok', 'crawl_failed']
-const PARAM_STATUS = ['no_params', 'params_enriched', 'queued', 'consumed']
+// 43 号补丁：no_params_confirmed=参数补全尝试后确认无参的终态（关闭 param 缺口，防止重派循环）
+const PARAM_STATUS = ['no_params', 'params_enriched', 'no_params_confirmed', 'queued', 'consumed']
 const VULNCLASS_STATUS = ['untested', 'verified', 'rejected', 'inconclusive', 'untestable']
 const AUTH_TEST_STATUS = ['untested', 'public', 'login_required', 'role_required', 'unknown']
 const ASSET_STATUS = ['enum_stale', 'enum_fresh']
 // 资产枚举新鲜度窗口：enum_fresh 记账超过该时长即重开缺口（默认 3 天，可 env 覆盖）
 const ASSET_ENUM_STALE_MS = Number(process.env.SEC_LEDGER_ASSET_STALE_MS) > 0
   ? Number(process.env.SEC_LEDGER_ASSET_STALE_MS) : 3 * 86400000
+// 43 号补丁：param 缺口终态冷却窗口（params_enriched / no_params_confirmed 记账后默认 30 天不重开）
+const PARAM_GAP_COOLDOWN_MS = Number(process.env.SEC_LEDGER_PARAM_COOLDOWN_MS) > 0
+  ? Number(process.env.SEC_LEDGER_PARAM_COOLDOWN_MS) : 30 * 86400000
 const RADAR_TYPE_ENUM = ['ct-new-subdomain', 'js-bundle-change', 'scope-approved', 'version-intel']
 const BANNED_REASON = new Set(['other', 'misc', ''])
 const RADAR_SOURCE = {
@@ -731,7 +735,15 @@ function makeHandlers(opts) {
       if (epPage && epPage.rows) {
         for (const r of epPage.rows) {
           const hasParams = (() => { try { return r.params && r.params !== 'null' && r.params !== '' } catch { return false } })()
-          if ((!dimFilter || dimFilter === 'param') && !hasParams) {
+          // 43 号补丁：① 幻影端点（404/410 等 4xx，401/403 除外）不做参数补全；
+          //           ② 已有终态记账（params_enriched / no_params_confirmed）在冷却窗口内不重开缺口。
+          const statusNum = Number(String(r.status == null ? '' : r.status).trim())
+          const phantom = Number.isFinite(statusNum) && statusNum >= 400 && statusNum !== 401 && statusNum !== 403
+          const pst = state.get(`param|${r.host}|${r.path}`)
+          const closedMark = pst && (pst.mark === 'params_enriched' || pst.mark === 'no_params_confirmed')
+          const closedAt = closedMark ? Date.parse(pst.ts || '') : NaN
+          const cooldown = Number.isFinite(closedAt) && (Date.now() - closedAt) < PARAM_GAP_COOLDOWN_MS
+          if ((!dimFilter || dimFilter === 'param') && !hasParams && !phantom && !cooldown) {
             if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('param'); break }
             gaps.push({ dim: 'param', key: `${r.host}|${r.path}`, strategy_key: `param|${r.host}|${r.path}`, priority: 30, reason: '端点无参数（arjun/flows/JS 补全候选）' })
           }

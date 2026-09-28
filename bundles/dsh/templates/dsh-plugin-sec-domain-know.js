@@ -790,6 +790,13 @@ export const KNOW_MANIFEST = {
       predicates: ['lifecycle'],
       agent_note: '经验卡列表（status/tags/source 筛选 + 分页；reader=review 可看 cooling/archived）。',
     },
+    // 43 号补丁：经验卡命中矩阵（学习→规划接线；此前 task 域 scores 恒为空表）
+    hit_matrix: {
+      actor: ['system', 'dashboard', 'human', 'model', 'reactor'],
+      params: schema({ min_sample: int({ minimum: 0, maximum: 100000, default: 0 }) }, []),
+      predicates: [],
+      agent_note: '蒸馏经验卡命中矩阵（stack×vuln_class → wins/fails）。键形 stack|generic|cls；供专项规划器提权/降权（消费方 fail-open）。',
+    },
     kb_search: {
       actor: ['model', 'dashboard', 'human'],
       params: schema({
@@ -2387,6 +2394,30 @@ function makeHandlers(opts) {
       const rows = repo.listExpWhere(where, wa, 'score DESC, last_validated_at DESC', 500, 0)
       const total = repo.countExpWhere(where, wa)
       return { rows, total }
+    },
+    // 43 号补丁：蒸馏卡 → 命中矩阵（stack×cls 胜负），供规划器按学习结果调整优先级。
+    hit_matrix: async (args, repo) => {
+      const minSample = Math.max(0, Number(args.min_sample) || 0)
+      const classes = ['idor', 'sqli', 'xss', 'ssrf', 'file', 'info_disclosure', 'authz']
+      const cards = repo.listExpWhere("kind = 'card'", [], 'score DESC', 500, 0)
+      const agg = new Map()
+      for (const card of cards) {
+        let tags = card.tags
+        if (typeof tags === 'string') { try { tags = JSON.parse(tags) } catch { tags = [] } }
+        if (!Array.isArray(tags)) continue
+        const parts = tags.filter((t) => typeof t === 'string')
+        const cls = parts.find((t) => classes.includes(t))
+        const stack = parts.find((t) => t !== 'distilled' && t !== 'episode' && !classes.includes(t))
+        if (!cls || !stack) continue
+        const key = `${stack}|generic|${cls}`
+        const cur = agg.get(key) || { key, stack, vuln_class: cls, wins: 0, fails: 0 }
+        cur.wins += Number(card.successes) || 0
+        cur.fails += Math.max(0, (Number(card.runs) || 0) - (Number(card.successes) || 0))
+        agg.set(key, cur)
+      }
+      const rows = [...agg.values()].map((r) => ({ ...r, sample: r.wins + r.fails }))
+        .filter((r) => r.sample >= minSample).sort((a, b) => b.sample - a.sample)
+      return { rows, total: rows.length }
     },
     kb_search: async (args, repo) => {
       const q = args.q || ''

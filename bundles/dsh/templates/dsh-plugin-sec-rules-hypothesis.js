@@ -586,6 +586,18 @@ export const CAMPAIGN_ORACLE = {
 
 function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
 
+/** 43 号补丁：候选标题 → 漏洞类（验证草稿的类优先级与 oracle 路由；未知回落最低档）。 */
+export function inferVulnClass(text = '') {
+  const t = String(text).toLowerCase()
+  if (/idor|越权/.test(t)) return 'idor'
+  if (/sqli|sql ?注入|sql injection/.test(t)) return 'sqli'
+  if (/ssrf/.test(t)) return 'ssrf'
+  if (/xss|跨站脚本/.test(t)) return 'xss'
+  if (/上传|文件读取|file|path traversal|目录穿越/.test(t)) return 'file'
+  if (/未授权|unauthz|authz|鉴权/.test(t)) return 'authz'
+  return 'info_disclosure'
+}
+
 export function compileCampaignPlan(input = {}) {
   const campaign = input.campaign || {}
   const policy = campaign.policy || {}
@@ -594,6 +606,13 @@ export function compileCampaignPlan(input = {}) {
   const range = Array.isArray(policy.task_priority_range) && policy.task_priority_range.length === 2
     ? [Number(policy.task_priority_range[0]), Number(policy.task_priority_range[1])] : [1, 6]
   const gaps = Array.isArray(input.gaps) ? input.gaps : []
+  // 43 号补丁：待验证候选 → verify 草稿（转化优先）。severity 折算加分，类由标题推断。
+  const candidateGaps = (Array.isArray(input.candidates) ? input.candidates : []).map((c) => ({
+    dim: 'candidate', kind: 'verify_candidate', key: String(c.id), host: String(c.id),
+    title: String(c.title || ''), vuln_class: inferVulnClass(String(c.title || '')),
+    value: ({ critical: 2.5, high: 2, medium: 1 }[String(c.severity || '').toLowerCase()] || 0.5),
+    reason: `候选 #${c.id} 待验证`,
+  }))
   const strategies = input.strategies || {}
   const scores = input.scores || {}
   const activeCount = Number(input.activeTaskCount) || 0
@@ -606,7 +625,7 @@ export function compileCampaignPlan(input = {}) {
   const defaultPhases = Array.isArray(policy.allowed_phases) && policy.allowed_phases.length ? policy.allowed_phases : ['vuln']
   const seen = new Set()
   const scored = []
-  for (const g of gaps) {
+  for (const g of [...candidateGaps, ...gaps]) {
     const rawKey = String(g.key || '')
     const dim = String(g.dim || '')
     const parts = rawKey.split('|')
@@ -618,15 +637,18 @@ export function compileCampaignPlan(input = {}) {
     // 对齐 11-ledger 缺口键形态：crawl=host；param/auth=host|path；vulnclass=host|class
     // 25 号补丁：asset=根域（枚举超窗）→ asset_enum 采集草稿
     // 26 号补丁：review=finding id（超龄未分诊）→ review_finding 复核草稿
-    if (!kind) kind = dim === 'crawl' ? 'crawl' : (dim === 'param' ? 'param_enrich' : (dim === 'asset' ? 'asset_enum' : (dim === 'review' ? 'review_finding' : 'hypothesis')))
-    // 26 号补丁：review 维 host 槽改载 finding id（真实主机在 objective 内经 vuln_get 还原；
+    // 43 号补丁：candidate=finding id（待验证候选）→ verify_candidate 验证草稿
+    if (!kind) kind = dim === 'crawl' ? 'crawl' : (dim === 'param' ? 'param_enrich' : (dim === 'asset' ? 'asset_enum' : (dim === 'review' ? 'review_finding' : (dim === 'candidate' ? 'verify_candidate' : 'hypothesis'))))
+    // 26/43 号补丁：review/candidate 维 host 槽改载 finding id（真实主机在 objective 内经 vuln_get 还原；
     // scope 复查按 program 级豁免——finding 已登记在 program 内即授权证据）
-    if (dim === 'review') host = rawKey
+    if (dim === 'review' || dim === 'candidate') host = rawKey
     if (!path && (dim === 'param' || dim === 'auth')) path = parts.slice(1).join('|')
     if (!vulnClass && dim === 'vulnclass') vulnClass = parts[1] || ''
+    if (dim === 'candidate' && !vulnClass) vulnClass = inferVulnClass(`${g.title || ''}`)
     if (kind === 'hypothesis' && !vulnClass) vulnClass = 'info_disclosure'
     const param = String(g.param || '')
-    const key = strategyKey({ host, path, param, vuln_class: vulnClass })
+    // 候选验证按 finding 维度去重（不能与 host|||cls 策略键混用）
+    const key = kind === 'verify_candidate' ? String(g.strategy_key || ('verify|' + host)) : strategyKey({ host, path, param, vuln_class: vulnClass })
     if (seen.has(key)) continue
     seen.add(key)
     const st = strategies[key] || strategies[String(g.strategy_key || '')] || {}
@@ -640,17 +662,20 @@ export function compileCampaignPlan(input = {}) {
     score += Number(g.value || g.asset_score || 0)
     const mark = String(g.mark || '')
     if (['not_crawled', 'uncrawled', 'failed', 'enum_stale'].includes(mark)) score += 2
-    // 25 号补丁：资产枚举是下游一切缺口的前置（枚举陈旧=资产面失真），
-    // 额外 +3 提权保证与 idor/sqli 同档竞争；闭环后（enum_fresh）缺口消失自然让位，不占长期额度。
-    if (kind === 'asset_enum') score += 3
-    // 26 号补丁：存量复核是历史债务清理（积压越久越该先消化），
-    // +3 提权保证不被漏洞类长期挤出；单条 triage 后缺口消失，一次性收尾。
-    if (kind === 'review_finding') score += 3
+    // 25 号补丁：资产枚举是下游一切缺口的前置（枚举陈旧=资产面失真）。
+    // 43 号补丁：重心回归发现/转化——资产/复核类降权（+3→+1.5/+1），不再与漏洞类同档挤压。
+    if (kind === 'asset_enum') score += 1.5
+    // 26 号补丁：存量复核是历史债务清理；43 号补丁降为 +1（有限提权，防长期霸榜）。
+    if (kind === 'review_finding') score += 1
+    // 43 号补丁：候选验证=发现转化瓶颈（535 条积压、verify 角色历史仅 2 条）——
+    // 类优先级 + 积压权重 + severity 加成，确保每 tick 优先派验证。
+    if (kind === 'verify_candidate') score += 2.5
     if (['no_params', 'missing', 'unenriched'].includes(mark)) score += 1.5
     if (Number(g.asset_tier) >= 3) score += 1
     score -= 0.8 * Number(st.fails || 0)
     const hitKey = hitMatrixKey({ stack: g.stack || 'generic', param_shape: g.param_shape || (param ? 'id' : 'none'), vuln_class: vulnClass })
-    const sc = scores[hitKey]
+    // 43 号补丁：学习矩阵逐级回退（精确 → 泛化 stack|generic|cls → 全局类），空表零影响。
+    const sc = scores[hitKey] || scores[`${g.stack || 'generic'}|generic|${vulnClass}`] || scores[`*|*|${vulnClass}`]
     if (sc && Number(sc.wins) > 0) score += 0.3 * Number(sc.wins)
     if (sc && Number(sc.fails) > 0) score -= 0.2 * Number(sc.fails)
     const phase = defaultPhases.includes(String(g.phase || '')) ? String(g.phase) : defaultPhases[0]
@@ -658,8 +683,9 @@ export function compileCampaignPlan(input = {}) {
     scored.push({
       program_id: programId, kind, host, path, param, vuln_class: vulnClass, level: 'H2',
       rationale: `专项规划：${mark || g.dim || 'gap'} 缺口，类优先级 ${CAMPAIGN_CLASS_PRIORITY[vulnClass] || 1}${st.fails ? `，连败 ${st.fails} 降权` : ''}`,
-      oracle: kind === 'hypothesis' ? (CAMPAIGN_ORACLE[vulnClass] || 'unauthz_diff') : '',
-      strategy_key: key, campaign_role: 'derived', priority: _clamp(Math.round(9 - score), range[0], range[1]),
+      oracle: (kind === 'hypothesis' || kind === 'verify_candidate') ? (CAMPAIGN_ORACLE[vulnClass] || 'unauthz_diff') : '',
+      strategy_key: key, campaign_role: kind === 'verify_candidate' ? 'verify' : 'derived',
+      priority: _clamp(Math.round(9 - score), range[0], range[1]),
       phase, goal: 'research', score,
       // 23 号方案 §3.7：任务分档标注（纯元数据，Path B 交 Bellkeeper 侧策略路由）
       task_class: classifyTaskClass({ kind, vuln_class: vulnClass, context_tokens: g.context_tokens }),
@@ -667,13 +693,15 @@ export function compileCampaignPlan(input = {}) {
   }
   scored.sort((a, b) => (b.score - a.score) || a.strategy_key.localeCompare(b.strategy_key))
   let drafts = scored.slice(0, cap)
-  // 维度多样性（22 号方案运行期）：cap≥2 且存在覆盖类（crawl/param_enrich）草稿时，保证至少 1 条入选，
-  // 否则漏洞类永远压过覆盖类 → 覆盖率长期不动。牺牲最低分位换取覆盖推进。
-  // 25/26 号补丁：asset_enum（资产枚举）/ review_finding（存量复核）同为覆盖类，计入多样性保底。
+  // 43 号补丁：覆盖类（crawl/param/asset/review）每 tick 最多 1 条——算力归漏洞假设与候选验证。
+  // （旧 22 号保底逻辑改为封顶：覆盖缺口仍有出口，但不再与漏洞类同档霸榜。）
   const isCoverageKind = (d) => d.kind === 'crawl' || d.kind === 'param_enrich' || d.kind === 'asset_enum' || d.kind === 'review_finding'
-  if (drafts.length >= 2 && !drafts.some(isCoverageKind)) {
-    const cov = scored.find((d) => isCoverageKind(d) && !drafts.includes(d))
-    if (cov) drafts = [...drafts.slice(0, cap - 1), cov]
+  const coverageInDrafts = drafts.filter(isCoverageKind)
+  if (coverageInDrafts.length > 1) {
+    const keep = coverageInDrafts[0]
+    const replacement = scored.find((d) => !isCoverageKind(d) && !drafts.includes(d))
+    drafts = drafts.filter((d) => d === keep || !isCoverageKind(d))
+    if (replacement && drafts.length < cap) drafts = [...drafts, replacement]
   }
   if (scored.length > cap) skipped.push({ reason: 'derive_cap', dropped: scored.length - cap, cap })
   return { drafts, skipped }

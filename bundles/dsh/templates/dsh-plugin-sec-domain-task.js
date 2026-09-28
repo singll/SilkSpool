@@ -49,7 +49,7 @@ const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 // 22 号方案：单条派生草稿的预算预估（tokens，环境变量可调；用于 campaign 窗口预算闸）
 // 23 号方案 §3.6：默认随统一额度面调为 30000（worker 未上报 token 前的保守估算）
 const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 30000)
-const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding']
+const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding', 'verify_candidate']
 // 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
 const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000
 // 41 号补丁：运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）后策略重开冷却（默认 1h），
@@ -1635,7 +1635,30 @@ function makeHandlers(opts) {
         strategies[bare] = cur
       }
     } catch { /* ignore */ }
+    // 43 号补丁：学习矩阵接线（此前 scores 恒为 {}，know_scores/经验卡胜负对规划器零影响）。
+    // 键形 stack|generic|cls；消费侧对精确键/泛化键/null 做逐级回退；任何异常 fail-open 空表。
     const scores = {}
+    try {
+      const hm = queryRef ? await queryRef('know', 'hit_matrix', {}, { actor: 'reactor' }) : null
+      const rows = hm ? ((hm.data && Array.isArray(hm.data.rows)) ? hm.data.rows : (Array.isArray(hm.rows) ? hm.rows : [])) : []
+      for (const row of rows) {
+        if (row && row.key) scores[String(row.key)] = { wins: Number(row.wins) || 0, fails: Number(row.fails) || 0 }
+      }
+    } catch { /* 知识域不可达 → 空矩阵（不阻断规划） */ }
+    // 43 号补丁：候选验证输入——待验证候选直接成为 verify 草稿（发现转化的第一瓶颈是验证吞吐）。
+    const candidates = []
+    try {
+      const r = queryRef ? await queryRef('vuln', 'candidates', { claim_state: 'available', limit: 30, sort: 'severity', dir: 'desc' }, { actor: 'reactor' }) : null
+      const rows = r ? ((r.data && Array.isArray(r.data.rows)) ? r.data.rows : (Array.isArray(r.rows) ? r.rows : [])) : []
+      for (const row of rows) {
+        const programId = String(row.program_id || '')
+        if (programId && !campaign.program_ids.includes(programId)) continue
+        let host = String(row.host || '')
+        if (!host && row.url) { try { host = new URL(String(row.url)).hostname } catch { host = '' } }
+        if (!host) continue
+        candidates.push({ id: Number(row.id), host, severity: String(row.severity || ''), title: String(row.title || '').slice(0, 80), program_id: programId || campaign.program_ids[0] || '' })
+      }
+    } catch { /* 候选池不可达 → 本轮不派验证草稿 */ }
     const activeTaskCount = repo.activeCampaignTaskCount(campaign.id)
     let budgetRemainingRatio = 1
     if (campaign.budget_tokens != null && Number(campaign.budget_tokens) > 0) {
@@ -1643,7 +1666,7 @@ function makeHandlers(opts) {
       const usage = repo.campaignUsage(campaign.id, Date.now() - windowMs)
       budgetRemainingRatio = Math.max(0, 1 - (usage.spent_tokens / Number(campaign.budget_tokens)))
     }
-    return { gaps, strategies, scores, activeTaskCount, budgetRemainingRatio }
+    return { gaps, strategies, scores, candidates, activeTaskCount, budgetRemainingRatio }
   }
 
   // 局面编译（program/host 授权复查），供 Dispatcher 下发前 fail-closed
@@ -1825,7 +1848,7 @@ function makeHandlers(opts) {
     for (const rawDraft of allowed) {
       const d = sanitizeDraft(rawDraft, c)
       const programId = String(d.program_id || c.program_ids[0] || '')
-      const sit = await campaignSituationOk(programId, d.host, { skipHostScope: d.kind === 'review_finding' })
+      const sit = await campaignSituationOk(programId, d.host, { skipHostScope: d.kind === 'review_finding' || d.kind === 'verify_candidate' })
       if (!sit.ok) { result.dropped.push({ strategy_key: d.strategy_key || null, code: sit.code, message: sit.message }); continue }
       // 23 号方案 §3.7：任务分档标注（Path B 纯元数据）；selector=dsh 时附 model_hint（Path A）
       let hint = null
@@ -2521,13 +2544,18 @@ function makeHandlers(opts) {
       if (args.kind === 'crawl') {
         objective = `[覆盖缺口] ${args.host} 未爬取——端点三件套（katana/gau/waybackurls）+ 登录态判定 endpoint_classify_auth；尊重 program QPS/risk；产物 endpoint_upsert 入库 + ledger_coverage_mark(dim=crawl) 记账。`
       } else if (args.kind === 'param_enrich') {
-        objective = `[覆盖缺口] ${args.host}${args.path || ''} 无参数——arjun 参数补全 + flows/JS 提取带参 URL → endpoint_queue_surface 修复喂料队列 + ledger_coverage_mark(dim=param) 记账。`
+        // 43 号补丁：收尾必须落终态记账（找到参数→params_enriched；确认无参→no_params_confirmed），
+        // 否则 param 缺口 30 分钟冷却后重开，造成"永远清不掉"的重派循环。
+        objective = `[覆盖缺口] ${args.host}${args.path || ''} 无参数——arjun 参数补全 + flows/JS 提取带参 URL → endpoint_queue_surface 修复喂料队列；收尾必须记账：找到参数 → ledger_coverage_mark(dim=param, key=${args.host}|${args.path || ''}, mark=params_enriched)；确认无参 → ledger_coverage_mark(dim=param, key=${args.host}|${args.path || ''}, mark=no_params_confirmed)（终态，30 天内不重开）。不得留空白缺口。`
       } else if (args.kind === 'asset_enum') {
         // 25 号补丁：资产收集入专项——根域枚举刷新闭环（枚举→探活→入库→enum_fresh 记账）
         objective = `[资产缺口] ${args.host} 根域枚举超窗——subfinder 子域枚举 + dnsx 解析去存 + httpx 探活分级（fofa_search 可作补充信源）；新存活主机 asset_upsert_bulk 入库（source=asset_enum，尊重 program QPS/risk，不越出 scope）；收尾 ledger_coverage_mark(dim=asset, key=${args.host}, mark=enum_fresh) 记账并写 handoff 摘要。`
       } else if (args.kind === 'review_finding') {
         // 26 号补丁：存量复核入专项——超龄未分诊 finding 逐条复核（复用验证铁律，一次性消化历史债务）
         objective = `[存量复核] finding #${args.host} 超龄未分诊——vuln_get 读取候选详情与既有证据；证据充分走复核校准（confirm 需机器 oracle 或 proof capsule，不可凭字段齐全确认）；复现可差分则补 exec_oracle_judge 验证；证据不足/误报则 vuln_reject 或标 false_positive 并写明 reason；全程不越出 scope，结论落 FGS + handoff 引用。`
+      } else if (args.kind === 'verify_candidate') {
+        // 43 号补丁：候选验证成为一等流水线（发现转化的第一瓶颈；此前 verify 角色任务仅个位数）
+        objective = `[候选验证] finding #${args.host}（${args.vuln_class || 'idor'} 候选）——vuln_claim 认领后优先走机器 oracle（exec_oracle_judge / 双会话差分重放 / proof capsule），通过才 vuln_confirm（evidence 必填，引用 capsule/run）；不成立或证据不足按纪律 vuln_reject(false_positive) 写明 reason，禁止无证据 confirm、禁止重复造轮子。全程不越出 scope，结论落 FGS + handoff。`
       } else {
         objective = hypothesisObjective({ level: args.level || 'H2', vulnClass: args.vuln_class || 'info_disclosure', host: args.host, path: args.path || '', param: args.param || '', oracle: args.oracle, rationale: args.rationale || '覆盖缺口驱动', programId: args.program_id, extraLines })
       }
@@ -2535,7 +2563,7 @@ function makeHandlers(opts) {
       if (!dispatchRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 dispatch 不可达', '确认总线已挂载', true)
       // 38 号补丁：专项优先级区间生效——policy.task_priority_range 决定派生任务优先级，
       // 调度器按 priority ASC 认领 ⇒ SRC 专项 [1,3] 先跑、清理专项 [4,6] 后跑。
-      let priority = args.level === 'H1' ? 4 : 3
+      let priority = args.kind === 'verify_candidate' ? 1 : (args.level === 'H1' ? 4 : 3)
       if (args.campaign_id != null) {
         const camp = repo.getCampaign ? repo.getCampaign(Number(args.campaign_id)) : null
         let range = null
@@ -2543,7 +2571,8 @@ function makeHandlers(opts) {
         if (Array.isArray(range) && range.length) {
           const lo = Number(range[0]) || 0
           const hi = Number(range[range.length - 1]) || 9
-          priority = args.level === 'H1' ? lo : Math.min(hi, lo + 1)
+          // 43 号补丁：候选验证拿区间最高档（转化优先），其余保持 H1=lo / 派生=lo+1
+          priority = args.kind === 'verify_candidate' ? lo : (args.level === 'H1' ? lo : Math.min(hi, lo + 1))
         }
       }
       const r = await dispatchRef('task', 'create', {
@@ -3203,13 +3232,20 @@ function makeHandlers(opts) {
     // 21 号方案 §6.3：verdict 回写命中矩阵——rejected 连败 +1（≥3 拉黑）；后续 verified 由 capsule 通道清零
     onStrategyOutcome: async (envelope) => {
       const p = envelope?.payload || {}
-      const key = String(p.strategy_key || '')
-      if (!key) return { ok: true, data: { skipped: true } }
+      // 43 号补丁：拒绝事件此前不带 strategy_key（findings 无该列）→ 连败拉黑形同虚设。
+      // 现由 finding 的 task_id 反查任务上的裸 strategy_key；仍缺则显式 skip（可观测）。
+      let key = String(p.strategy_key || '')
+      let resolvedBy = 'payload'
       try {
         const repo = backendRepoRef ? backendRepoRef() : null
+        if (!key && p.task_id && repo && typeof repo.getTask === 'function') {
+          const task = repo.getTask(Number(p.task_id))
+          if (task && task.strategy_key) { key = String(task.strategy_key); resolvedBy = 'task_id' }
+        }
+        if (!key) return { ok: true, data: { skipped: true, reason: 'no strategy key', finding_id: p.finding_id ?? null, task_id: p.task_id ?? null } }
         if (!repo || !repo.markStrategyOutcome) return { ok: true, data: { skipped: false, error: 'no repo' } }
         repo.markStrategyOutcome(key, false, null)
-        return { ok: true, data: { skipped: false } }
+        return { ok: true, data: { skipped: false, strategy_key: key, resolved_by: resolvedBy } }
       } catch (e) {
         log(`strategy 连败回写失败（best-effort）: ${e?.message}`)
         return { ok: true, data: { skipped: false, error: String(e?.message) } }
