@@ -76,9 +76,16 @@ window.__ModuleLoader__.load({
     }
 
     // ── 侧边栏一级导航行图标（owner props {size, active}） ─────────────────────
-    // 19-ui-unify 补丁：去掉安全中心前的丝轴图标，与会话/工作区条目同层级（纯文字行）。
-    function PanelIcon() {
-      return null
+    // 0.1.7 新 UI：侧边栏一级入口（插件/费用统计/…）均渲染 glyph；恢复丝轴图标对齐。
+    // （19-ui-unify 的「纯文字行」是旧 UI 口径；新 UI 会为每行预留 glyph 位，缺失即不齐。）
+    function PanelIcon(props) {
+      var p = props || {}
+      return el('span', {
+        style: {
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          color: p.active ? uiCore.T.brand : uiCore.T.label2,
+        },
+      }, uiCore.spoolIcon(p.size || 16))
     }
 
     // ── 打开审批/任务中心（右侧栏 page tab 优先；缺席则 secUiBus + 主面板降级视图） ──

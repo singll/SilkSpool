@@ -18,6 +18,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-28 · DSH 0.1.7 观察期热修复（设置页远端可用 + 安全中心图标）与数据面只读排查
+- **设置→模型报「加载提供商目录失败: settings are unavailable in this browser」**：0.1.7 客户端 `dsh-client-ui-settings` 按 `$host.isLoopback` 门控设置镜像——经 edge（非 loopback）访问时永不加载；0.1.5 链已在 `dsh-runtime-compat.patch_settings()` 打通远程设置，**0.1.7 适配遗漏**。修复：`patch_settings()` 版本化并接入 0.1.7 分支（摘要钉死 `2ac7f186…`→`1be776de…`，+2 回归测试 11/11）；生产定点应用 + 重启（MainPID 779535→811336）；经真实 edge 无头实检 `models_error_absent/provider_text_present/ok=true`，回归 accept PASS=80 FAIL=0。
+- **安全中心侧边栏无图标**（插件/费用统计均有 glyph）：恢复 `PanelIcon → uiCore.spoolIcon`（19-ui-unify 的纯文字口径是旧 UI）；实检 `sidebar-icon-present=true`。工具三点合并 SHA `f77f30b6…`；证据 `…/p7-evidence/`（原件备份 + 实检 JSON/截图）。
+- **只读排查（未改数据）**：漏洞 934 条中 92.8% 为 noise（nuclei info 为主）、非噪声 67/confirmed 44（最后 09-18）、**submitted/accepted=0**（9 份草稿未提交）；Campaign 3 预算 99.997% 耗尽，09-23..26 param-gap 循环（09-25 单日 2040 任务/2159 runs，2134 次「宿主重启/超时回收」失败）；episodes 4004 条 inconclusive（confirmed 7）；facts 3124 条 uses 102、kb 420 条 uses 281（写多读少）；队列近乎空（5 queued/4 blocked/0 running）。建议（未执行）：噪声采集端降级、param-gap 闭环语义修复、Campaign 3 预算处置、提交出口明确、知识复用复核。详见 record §16 · 证据 `p7-evidence/vuln-learning-knowledge-review.txt`。
+
 ### 2026-09-27 · DSH 0.1.7 升级链 P6b：U3 生产切换重试（**成功——生产 0.1.7-rc.2、invariants failures=0、accept PASS=80 FAIL=0、进入 +72h 观察期**）
 - **修复**：`dsh-upgrade-maintenance.py` 增加 `sec-domain-task: {sidecars: false}` 并纳入 REQUIRED——维护启动不再启动任务调度器（启动回收/claim/campaign tick/每日 know vault 回流/bus.prune 全静默），新增回归测试（7/7）；工具三点合并 SHA `e59cd56c…`，维护补丁 `88e082c1…`。
 - **决定性预演**：0.1.7 全状态副本在沙箱内以修复补丁启动、保持 **172s（≥2 个 60s tick）**：审计追加 **0**（对照 P6 实败 +6）、campaign/checkpoint/idempotency/bus_subscription/bus_meta/know **零变化**，唯一写入 22 条域注册（白名单）；`scheduler_disabled_log=true`（证据 `p6b-mute-rehearsal-report.json` `3ed1eede…`）。

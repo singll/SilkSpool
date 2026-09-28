@@ -12,6 +12,10 @@ BEGIN = "# silksec rc.2 RPC compatibility begin"
 END = "# silksec rc.2 RPC compatibility end"
 SETTINGS_SHA = "479002d654490d19cbc89ed4582198603eddf2a62e3d233bbd30748f1bc0d862"
 SETTINGS_PATCHED_SHA = "9341c012e6959dd089844f122eed9ff525fb2cfb1969f233870dae0734dd2548"
+# 0.1.7 的客户端 settings bundle 同样带 `$host.isLoopback ? "host" : "memory"` 门控；
+# 0.1.5 链在 runtime-compat 里已打通远程设置（edge 浏览器），0.1.7 适配时遗漏。
+SETTINGS_017_SHA = "2ac7f186165c5a8ec2cd90045cf74693e5d3518ec90cd429951360d79754aa94"
+SETTINGS_017_PATCHED_SHA = "1be776deb3d9707472770e23fc03c720bf78432ea602bbe93c95dafe03365e43"
 # 0.1.7 起 settings 不再由 settings.yaml 热更新：模型/provider/默认模型/preset 默认
 # 显式落到双 profile 的 cordis.patch.yml 受管区块，settings.yaml 只在首启被上游导入一次。
 PROFILE_BEGIN = "# silksec-managed-profile-settings BEGIN"
@@ -288,16 +292,23 @@ def patch_settings(base):
         version = json.loads((filename.parent.parent / "package.json").read_text())["version"]
         original = filename.read_text()
         digest = hashlib.sha256(original.encode()).hexdigest()
-        if version != "0.1.5-rc.2" or digest not in (SETTINGS_SHA, SETTINGS_PATCHED_SHA):
+        known = {"0.1.5-rc.2": (SETTINGS_SHA, SETTINGS_PATCHED_SHA),
+                 "0.1.7-rc.2": (SETTINGS_017_SHA, SETTINGS_017_PATCHED_SHA)}
+        if version not in known or digest not in known[version]:
             raise RuntimeError("settings 补丁版本/摘要未知，拒绝继续：" + str(filename))
+        patched_sha = known[version][1]
+        # 非 loopback（经 edge 访问的浏览器）也要启用设置镜像：上游按 isLoopback 把
+        # persistence 降为 memory 会让模型页报「settings are unavailable in this
+        # browser」；服务端 settings-controller 以 @Remote+脱敏支持远程调用。
         result = original.replace('ctx.remote.$host.isLoopback ? "host" : "memory"', '"host"')
-        if hashlib.sha256(result.encode()).hexdigest() != SETTINGS_PATCHED_SHA:
+        if hashlib.sha256(result.encode()).hexdigest() != patched_sha:
             raise RuntimeError("settings 补丁输出摘要不符")
-        prepared.append((filename, result, digest != SETTINGS_PATCHED_SHA))
+        prepared.append((filename, result, digest != patched_sha))
     for filename, result, changed in prepared:
         if changed:
             replace_preserving_metadata(filename, result)
-    return {"instances": len(prepared), "changed": sum(changed for _, _, changed in prepared), "sha256": SETTINGS_PATCHED_SHA}
+    return {"instances": len(prepared), "changed": sum(changed for _, _, changed in prepared),
+            "sha256": {version: known[version][1] for version in known}}
 
 
 def patch_row_ids(text, loader=JsSafeLoader):
@@ -496,16 +507,17 @@ def configure(base):
     if version == "0.1.7-rc.2":
         connection = patch_connection_inject(base)
         settings = apply_profile_settings(base)
+        settings_remote = patch_settings(base)
         theme = patch_theme(base, version)
         billing = patch_billing_0181(base)
         failover = patch_model_failover(base)
         feedback = configure_local_feedback(base)
-        changed = connection["changed"] or theme["changed"] or billing["changed"] or failover["changed"] \
+        changed = connection["changed"] or settings_remote["changed"] or theme["changed"] or billing["changed"] or failover["changed"] \
             or any(item["changed"] for item in settings["profiles"].values()) \
             or any(item["changed"] for item in feedback.values())
         return {"version": version, "changed": changed, "required": True, "connection_inject": connection,
-                "profile_settings": settings, "theme_sync": theme, "billing_turn_cost": billing,
-                "failover_notice": failover, "local_feedback": feedback}
+                "profile_settings": settings, "settings_remote": settings_remote, "theme_sync": theme,
+                "billing_turn_cost": billing, "failover_notice": failover, "local_feedback": feedback}
     # 0.1.5 链的最终确认版本；以下路径逐字保留，不得被 0.1.7 适配改写。
     if version != "0.1.5-rc.2":
         raise RuntimeError("尚未验证此 DSH 版本的 RPC 兼容配置：" + version)

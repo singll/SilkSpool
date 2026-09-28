@@ -162,6 +162,40 @@ class RuntimeCompatTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "主题兼容补丁版本/摘要未知"):
             compat.patch_theme(self.base, "0.1.7-rc.2")
 
+    def settings_client_fixture(self, version, content):
+        import hashlib
+        relative = ("app/node_modules/.pnpm/@deepseek-ai+dsh-client-ui-settings@%s"
+                    "/node_modules/@deepseek-ai/dsh-client-ui-settings/lib" % version)
+        lib = self.base / relative
+        lib.mkdir(parents=True, exist_ok=True)
+        (lib / "client.js").write_text(content)
+        (lib.parent / "package.json").write_text('{"name": "@deepseek-ai/dsh-client-ui-settings", "version": "%s"}' % version)
+        patched = content.replace('ctx.remote.$host.isLoopback ? "host" : "memory"', '"host"')
+        return hashlib.sha256(content.encode()).hexdigest(), hashlib.sha256(patched.encode()).hexdigest(), patched
+
+    def test_remote_settings_patch_covers_both_versions_and_is_idempotent(self):
+        import shutil
+        anchor = 'const persistence = ctx.remote.$host.isLoopback ? "host" : "memory";\n'
+        for version, sha_attr, patched_attr in (("0.1.5-rc.2", "SETTINGS_SHA", "SETTINGS_PATCHED_SHA"),
+                                                ("0.1.7-rc.2", "SETTINGS_017_SHA", "SETTINGS_017_PATCHED_SHA")):
+            with self.subTest(version=version):
+                shutil.rmtree(self.base / "app", ignore_errors=True)
+                digest, patched_digest, patched = self.settings_client_fixture(version, anchor)
+                with mock.patch.object(compat, sha_attr, digest), mock.patch.object(compat, patched_attr, patched_digest):
+                    result = compat.patch_settings(self.base)
+                    self.assertEqual(result["instances"], 1)
+                    self.assertEqual(result["changed"], 1)
+                    client = self.base / ("app/node_modules/.pnpm/@deepseek-ai+dsh-client-ui-settings@%s"
+                                          "/node_modules/@deepseek-ai/dsh-client-ui-settings/lib/client.js" % version)
+                    self.assertEqual(client.read_text(), patched)
+                    again = compat.patch_settings(self.base)
+                    self.assertEqual(again["changed"], 0)
+
+    def test_remote_settings_patch_refuses_unknown_digest(self):
+        self.settings_client_fixture("0.1.7-rc.2", "fixture without anchor\n")
+        with self.assertRaisesRegex(RuntimeError, "settings 补丁版本/摘要未知"):
+            compat.patch_settings(self.base)
+
 
 if __name__ == "__main__":
     unittest.main()
