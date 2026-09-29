@@ -8,15 +8,23 @@
 
 - **迁移计划真相源**：[18-migration](18-migration.md)（Phase 0–5）。
 - **Phase 状态**：**Phase 0–5 全部完成并关账**；当前无进行中的迁移/整改批次。
-- **运行基线**：DSH **0.1.7-rc.2**（2026-09-27 17:29:26Z U3 生产切换，P6b；进入 +72h 观察期至 2026-09-30T17:29:26Z）；csai `silksecagent` active、MainPID 779535、NRestarts=0、15 域注册、1607 会话已 V4 迁移；`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**（17:44:34Z）。旧基线 0.1.5-rc.2 履历见历史归档。
+- **运行基线**：DSH **0.1.7-rc.2**（2026-09-27 17:29:26Z U3 生产切换，P6b；进入 +72h 观察期至 2026-09-30T17:29:26Z；09-28 观察期热修复 + 43 号补丁后 MainPID **819672**、NRestarts=0）；csai `silksecagent` active、15 域注册、1641 会话（V4）；**P7 巡检 1（09-29）全绿**：journal err=0、prune×3、V4 读回 8/8、`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**、data-quality rc=0。旧基线 0.1.5-rc.2 履历见历史归档。
 - **最近一次全面检查**：[archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI；**四轮修复全部落地验收，结论已全部回填各模块，2026-09-22 归档**，见其 §十一）。
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
 - **已知遗留（非阻塞，待后续会话）**：sec-suite/asset-db/experience 内部少量 v4 读取函数（experience 仍被 dashboard-rpc/task 链路引用）；`18-migration` 的 DoD 仍须逐条核对。
-- **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 U3（P6b）已完成——生产 0.1.7-rc.2、finalize invariants failures=0、accept PASS=80 FAIL=0、+72h 观察期至 2026-09-30T17:29:26Z（待 P7/P8 巡检与关账）**。P6 首次失败（维护窗口 overdue scheduler/bus.prune 写入 17 项白名单外差异）已按协议回滚、修复（`sec-domain-task.sidecars=false` 维护静音 + 172s 双 tick 预演零写入）后重试成功；窗口 2h56m25s、业务 RPO=0。U4 复核项（模型页/设置 UI 保存→patch、预流失败熔断、kbList 既存缺陷）与 `preserve_after_resume` 对账见 [state open_issues](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录 §13–§15](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md) · [handoff P7](archive/upgrades/handoff-017/P7.md)。
+- **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 U3（P6b）已完成——生产 0.1.7-rc.2、finalize invariants failures=0、accept PASS=80 FAIL=0、+72h 观察期至 2026-09-30T17:29:26Z；P7 巡检 1（09-29）只读巡检验收通过，余 P8 巡检 2 + `preserve_after_resume` 对账 + 关账**。P6 首次失败（维护窗口 overdue scheduler/bus.prune 写入 17 项白名单外差异）已按协议回滚、修复（`sec-domain-task.sidecars=false` 维护静音 + 172s 双 tick 预演零写入）后重试成功；窗口 2h56m25s、业务 RPO=0。U4 复核项进展与遗留（设置保存写路径待人工复核、预流失败熔断缺口、kbList 既存缺陷、p7-tools 快照差）见 [state open_issues](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录 §13–§18](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md) · [handoff P8](archive/upgrades/handoff-017/P8.md)。
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
 - **领域语言**：[CONTEXT](../../bundles/dsh/CONTEXT.md)。
 
 ## 二、最近进度结果
+
+### 2026-09-29 · DSH 0.1.7 升级链 P7：U4a 巡检 1（只读观察期巡检，**全绿**）
+- **前置/服务**：release `phase=observing`、`observation_until=2026-09-30T17:29:26Z`、manifest `52040fa6…`/seal `fbc2f3ab…` 不变；6 单元 active、silksecagent **MainPID 819672/NRestarts=0**（与 43 号补丁后基线一致）；app/插件/客户端 11 项 SHA 全对（task `b75c604b…`、settings 客户端 `1be776de…` 等）；`settings.yaml.imported` 在、无 `settings.yaml`/维护 drop-in/孤儿。
+- **journal（切换以来）**：`-p err=0`、无异常自动重启（计划内 5 次）、15 域注册；保留窗口清理 3 次（21:00:48 / 09:48:23 / 21:00:31 UTC；idempotency 491/242/470、outbox 880/522/757）；vault 回流 `imported=3、errors=0`；E_SCHEMA/E_CONFLICT/deadlock=0。
+- **调度/总线/Session**：scheduler.lock pid=819672、ts 60s 步进；dispatcher 持锁；outbox **0 pending**（9 条 09-25/26 历史死信）；会话 **1605→1641**；最新 8 会话 V4 读回 **8/8、failures=0**；业务表 vs 发布基线 **DECREASES=[]**。
+- **验收**：`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**（09:46:33Z）；`data-quality.py --json` **rc=0**。
+- **U4 复核**：浏览器实机（真实 edge）模型页提供商目录/通用设置页全绿（回归热修复）；保存写路径未实测（观察期不改配置）；failover 预流 5xx 缺口锚点复核（上游）；kbList 缺陷复现（非回归）；p7-tools 快照差 11 文件登记。
+- **观察**：任务执行自 09-28 19:35Z 静默 ~14h（queued 5/blocked 4/running 0；高优候选清空 + recon 日片节奏 + C3 预算耗尽），campaign ticks 持锁正常，**非异常**。证据 csai `…/p7-evidence/u4a/`（`SHA256SUMS`）；详见 [record §18](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)。**下一步 P8**：+72h 巡检 2 + `preserve_after_resume` 对账 + 关账。
 
 ### 2026-09-28 · 43 号补丁：发现/转化优先 + 噪声类别自学习抑制（线上生效）
 - **噪声类别学习与自动抑制**（vuln 域）：同来源同类别拒绝率≥80%且样本≥20 → 新候选**登记口直接 ignored**（`vuln.candidate.suppressed` 留审计）；来源日配额（默认 200）；白名单/阈值可配；新命令 `vuln_noise_stats`（只读口径）与 `vuln_candidates_sweep`（存量确定性处置，支持 dry_run，检测型模板正则）。
