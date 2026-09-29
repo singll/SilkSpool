@@ -18,6 +18,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-29 · OpenCode Go 主力恢复（池策略运维：修复「套餐可用但零消耗」）
+- **现象**：用户报 OpenCode Go 套餐可用但请求不落 Go、额度零消耗。诊断：线上三池为 `priority-health`（Go 渠道 priority=3，SenseNova=1）——该策略按渠道 priority 硬排序，SenseNova 健康时永不落 Go（§7.18/§7.19 同一机制；09-25 20:43 曾回滚为 priority-health）。
+- **修复（DB API 为准 + YAML 种子双写，无重启）**：`PUT /api/llm/config/groups/{10,11,12}` 三池改 `best-weight` + Go 成员 **w8**（std/heavy：Go v4.1-flash w8；lite：Go v4-flash w8），其余 SenseNova 成员按 w7/w6/w5/w4 顺延；`config/bellkeeper.yaml` 同步。
+- **验证**：三池冒烟（std/heavy→`deepseek-v4.1-flash`、lite→`deepseek-v4-flash`）经 `/api/llm/logs` 全部命中 **`opencode-go-secagent` 200**；`go test config+llmgateway` 全绿；回滚点 `groups-before-20260929.json`（`b7b1b952…`）。详见 [05-task §7.27](05-task.md)。
+
 ### 2026-09-29 · DSH 0.1.7 升级链 P7：U4a 巡检 1（只读观察期巡检，**全绿**）
 - **前置/服务**：release `phase=observing`、`observation_until=2026-09-30T17:29:26Z`、manifest `52040fa6…`/seal `fbc2f3ab…` 不变；6 单元 active、silksecagent **MainPID 819672/NRestarts=0**（与 43 号补丁后基线一致）；app/插件/客户端 11 项 SHA 全对（task `b75c604b…`、settings 客户端 `1be776de…` 等）；`settings.yaml.imported` 在、无 `settings.yaml`/维护 drop-in/孤儿。
 - **journal（切换以来）**：`-p err=0`、无异常自动重启（计划内 5 次）、15 域注册；保留窗口清理 3 次（21:00:48 / 09:48:23 / 21:00:31 UTC；idempotency 491/242/470、outbox 880/522/757）；vault 回流 `imported=3、errors=0`；E_SCHEMA/E_CONFLICT/deadlock=0。

@@ -1319,3 +1319,36 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - **调度器每日分支新增 `dailyBusPrune()`**：北京 05:00 后首个 tick 以 `actor=system` dispatch `bus.prune`（与 `dailyVaultSync` 同处、同「每日一次」进程内守卫）——`bus_prune` 自上线以来从未被调度，实测 idempotency 5.9 万行（超设计上限 5.9 倍）、outbox delivered 13 万行零清理。
 - **`task_scheduled`/`scheduledTasksAgg`**：4 个关联子查询改一次 LEFT JOIN 聚合 + `LIMIT 500`（旧实现每行 4 次子查询且无上限）。
 - **`campaign_list`**：`program_id` 过滤下沉 SQL（`json_each`）——旧实现先 LIMIT 再 JS 过滤，program 过滤下第 2 页可能为空；返回 `meta.paged=true`。
+
+### 7.27 2026-09-29 OpenCode Go 主力恢复（池策略运维：修复「套餐可用但零消耗」）
+
+> 动机：用户报告 OpenCode Go 套餐已可用（官方窗口余量恢复）但请求不落 Go——「按照优先级应该用 Go 套餐」。本补丁为纯池策略运维（不改路由代码）。
+
+**诊断**：
+
+- 现象：三池（`pool-secagent`/`-lite`/`-heavy`）线上 DB 为 `priority-health`，Go 成员 w3/w2；`priority-health` 按**渠道 priority 硬排序**（sensenova=1 < deepseek=2 < opencode-go=3），SenseNova 渠道健康时请求永不落 Go——与 §7.18/§7.19 两次定位的同一机制一致。
+- 与 §7.19（35 号补丁·二段：best-weight + Go w8）不一致：09-25 20:43 线上曾被改回 `priority-health`（描述「Go 不做主力」）；本轮按用户新指示恢复 Go 主力。
+- keeper 运行时仓库（`/opt/silkspool/keeper/bellkeeper`）留有 35 号二段**未提交**的 YAML（best-weight/Go w8），与本轮目标一致；本轮把该状态落到 DB + 主仓库 + 运行时副本，并消除漂移。
+
+**修复（DB API 为准 + YAML 种子双写）**：
+
+- `PUT /api/llm/config/groups/{10,11,12}`（`X-API-Key`，服务端 reload 即时生效）：
+  - `pool-secagent`：`best-weight`；Go v4.1-flash **w8** + Go v4-flash **w8** → SenseNova deepseek-flash w7 → glm-5.2 w6 → flash-lite w5 → ds-v4-flash w4；
+  - `pool-secagent-lite`：`best-weight`；Go v4-flash **w8** → flash-lite w6 → SenseNova v4-flash w4；
+  - `pool-secagent-heavy`：`best-weight`；Go v4.1-flash **w8** → glm-5.2 w6 → deepseek-flash w5 → v4-flash w4。
+  - Go 成员置于成员列表首位（best-weight 平票确定性取先序）；描述同步写明「2026-09-29 用户指示恢复 Go 主力」。
+- YAML 种子同步：`config/bellkeeper.yaml` 三池改 `best-weight`/Go w8，并移除池内残留 `deepseek-secagent`（34 号已从 DB 摘除）；keeper 运行时副本已是同内容。
+- 回滚点：`/opt/silkspool/keeper/backups/llm-pools/groups-before-20260929.json`（`b7b1b952…`，PUT 前全量 groups）。
+
+**验证（2026-09-29T21:35–21:46+08）**：
+
+- `GET /api/llm/groups/status` 复核：三池 `best-weight`、Go w8、成员 `available=true`。
+- 冒烟：`pool-secagent`/`pool-secagent-heavy` → `deepseek-v4.1-flash`、`pool-secagent-lite` → `deepseek-v4-flash`；`GET /api/llm/logs` 全部命中 **`opencode-go-secagent` 200**（修复前同一请求落 SenseNova）。
+- 测试：`go test ./internal/config/... ./internal/llmgateway/...` 全绿；`go build ./...` 通过（YAML 种子解析校验）。
+- 生效路径：管理 API PUT（handler 内 `Reload()`）——**无需重启 Bellkeeper**。
+
+**影响与注意**：
+
+- DSH 供给哨兵 `SEC_CAMPAIGN_POOL_MEMBERS` 已含 `opencode-go-secagent`，权重变更由 60s 快照自动吸收；`SEC_CAMPAIGN_SUPPLY_MAIN_WEIGHT=4` 下 Go w8 计为主力，Go 官方窗口余量低于 `SEC_CAMPAIGN_SUPPLY_WARN_RATIO`(0.15) 时供给闸自动降速（设计行为）。
+- Go 限流/熔断/额度告急时按权重顺延 SenseNova 免费链（deepseek-flash → glm-5.2 → flash-lite → ds-v4-flash），不再有「免费链耗尽却不用 Go」的空转。
+- 遗留：keeper 运行时仓库仍有**未提交**的 36 号 classifier 改动（SenseNova `quota_exceeded_error` → 成员级 10m 熔断；`classifier.go(+test)`）——与本补丁正交，待单独提交/评估部署。
