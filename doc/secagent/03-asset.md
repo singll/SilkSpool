@@ -749,7 +749,7 @@ ensureCol(col, ddl)
 
 ## 六、2026-09-26 42 号补丁回填（覆盖账本分页 + 索引 + 缓存）
 
-> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0/S1；本地契约 asset 32/32 全绿（新增 1 例「asset_list 第 2 页非空」）；部署验收待执行。
+> 依据 [25 号方案](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md) §2.5 S0/S1；本地契约 asset 32/32 全绿（新增 1 例「asset_list 第 2 页非空」）；部署验收待执行。
 
 - **新增查询**：`asset_host_page`（host/root 紧凑分页，单页 ≤2000，供 ledger 覆盖账本全量遍历绕开 asset_list 500 上限）、`asset_roots_agg`（SQL `GROUP BY root` 全量根域聚合，≤5000 行）。
 - **缓存**：`asset_overview` TTL 25s→60s，`touchAsset` 触活也失效缓存（§2.5）。

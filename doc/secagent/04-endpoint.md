@@ -629,7 +629,7 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 
 ## 六、2026-09-26 42 号补丁回填（账本分页 + param 追加写 + 索引）
 
-> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0/S1；本地契约 endpoint 33/33 全绿；部署验收待执行。
+> 依据 [25 号方案](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md) §2.5 S0/S1；本地契约 endpoint 33/33 全绿；部署验收待执行。
 
 - **新增查询**：`endpoint_lite_page`（host/path/params/auth_state 紧凑分页 ≤2000，供 ledger 全量遍历）、`endpoint_param_stats`（total/with_params SQL 聚合，不物化行）。
 - **文件写**：`param-queue.txt`/`param-seen.txt` 追加改 `O_APPEND` 分块写（`appendLinesAtomic`，≤3.5KB/次，PIPE_BUF 内单写原子），不再整读整写；消费删行仍 tmp+rename。`queue_stat` 行数按 `mtime+size` 缓存。

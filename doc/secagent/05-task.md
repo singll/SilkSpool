@@ -1314,7 +1314,7 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 
 ### 7.26 2026-09-26 42 号补丁回填（大数据治理 B1：调度接入 bus_prune + 聚合改写）
 
-> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0/S1；本地契约 task 90/90 全绿；部署验收待执行。
+> 依据 [25 号方案](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md) §2.5 S0/S1；本地契约 task 90/90 全绿；部署验收待执行。
 
 - **调度器每日分支新增 `dailyBusPrune()`**：北京 05:00 后首个 tick 以 `actor=system` dispatch `bus.prune`（与 `dailyVaultSync` 同处、同「每日一次」进程内守卫）——`bus_prune` 自上线以来从未被调度，实测 idempotency 5.9 万行（超设计上限 5.9 倍）、outbox delivered 13 万行零清理。
 - **`task_scheduled`/`scheduledTasksAgg`**：4 个关联子查询改一次 LEFT JOIN 聚合 + `LIMIT 500`（旧实现每行 4 次子查询且无上限）。

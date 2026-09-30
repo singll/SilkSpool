@@ -4,7 +4,7 @@
 >
 > 证据：仓库 `682ea04`；通过 PATH 中的 `spool exec csai` 只读核查生产服务、SQLite、文件元数据与部署摘要；本地运行规则层合成输入复现。生产采样从 **06:04 UTC** 开始，本文分别注明不同批次口径。未启动目标探测、修改生产配置/预算/业务记录、重启服务或向 SRC 发送报告。
 >
-> 配套：[PROGRESS](PROGRESS.md) · [25 号容量与升级](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) · [26 号运行时升级](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)。本专项不改写旧升级 STATE，不代替原链关账。
+> 配套：[PROGRESS](PROGRESS.md) · [25 号容量与升级（已归档）](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md) · [26 号运行时升级](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)。本专项不改写旧升级 STATE，不代替原链关账。
 
 ## 1. 核心判断与有效产出的定义
 

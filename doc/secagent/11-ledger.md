@@ -605,7 +605,7 @@ hasHandoff(program, date) → boolean
 
 ## 八、2026-09-26 42 号补丁回填（覆盖账本全量分页 + truncated）
 
-> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0（最高优先）；本地契约 ledger 31/31 全绿（3 例适配新查询名与断言）；部署验收待执行。
+> 依据 [25 号方案](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md) §2.5 S0（最高优先）；本地契约 ledger 31/31 全绿（3 例适配新查询名与断言）；部署验收待执行。
 
 - **问题**：`coverage_metrics`/`coverage_gaps`/`login_blindspot` 基于 asset/endpoint 前 500 行采样——bytedance crawl 分母 500/69605、meituan `need_login` 全量 4 在采样里为 0、param 率 24% vs 真实 35.7%，指标失真。
 - **修复**：统一 `queryPages` 分页遍历（每页 2000）+ 硬上限；四指标改 SQL 聚合/全量口径。

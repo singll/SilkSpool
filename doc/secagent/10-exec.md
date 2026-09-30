@@ -712,7 +712,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 
 ## 十、2026-09-26 42 号补丁回填（exec 结果读取流式化）
 
-> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0；本地契约 exec 30/30 全绿；部署验收待执行。
+> 依据 [25 号方案](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md) §2.5 S0；本地契约 exec 30/30 全绿；部署验收待执行。
 
 - **后端新增**：`readFileWindow`（按行流式窗口，内存有界）、`readLinesCapped`（grep 逐文件流式、限 8MB）。
 - **查询改造**：`exec_page_result` / `exec_grep_result` 不再整读文件（旧实现大 stdout 数百 MB 爆内存）。

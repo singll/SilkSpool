@@ -706,7 +706,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 
 ## 2026-09-26 42 号补丁回填（审计视图「加载更早」）
 
-> 依据 [25 号方案](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md) §2.5 S0；根因：`audit_tail` 旧实现只读尾 256KB（≈630 行，当时 7,652 行 → 只能看 8%）。本地契约 bus 54/54 全绿；部署验收待执行。
+> 依据 [25 号方案](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md) §2.5 S0；根因：`audit_tail` 旧实现只读尾 256KB（≈630 行，当时 7,652 行 → 只能看 8%）。本地契约 bus 54/54 全绿；部署验收待执行。
 
 - **后端**：`bus.audit_tail` 单窗 1MB + `before_bytes` 字节游标（排他上界）；返回 `next_before`（null=已到文件头）/`window_bytes`。
 - **RPC**：`/silksec-dashboard` 的 `audit` case 透传 `before_bytes`（`n` 缺省 120、封顶 300），返回 `next_before`（`dashboard-rpc.js:434-451`）。
