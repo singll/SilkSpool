@@ -7,7 +7,7 @@
 ## 一、当前状态
 
 - **迁移计划真相源**：[18-migration](18-migration.md)（Phase 0–5）。
-- **SRC 产出专项审查**：[27 号全流程方案](27-business-quality-and-capacity-plan-2026-09-30.md)已完成代码与只读生产评估，**改造待实施**。覆盖资产、请求/身份、规划、执行、验证/证据、提交及自主学习；优先修目标/前置约束、可信判定、执行归因与预算，再以一条业务线验证知识和发现收益。12 个工作包与 15 组验收已列明。**0.1.7 升级链已关账（CHAIN END），移交的僵尸任务等问题已纳入方案；本轮审查不改变生产状态。**
+- **真实漏洞发现能力专项**：[27 号方案](27-business-quality-and-capacity-plan-2026-09-30.md)已按用户澄清重新审查，**改造待实施**。仅以真实漏洞数量、技术质量和发现效率评价，撤销提交/accepted/赏金门槛；重点为真实请求、假设路由、可靠执行、候选丢失/误抑制、技术判定和知识实效。保留 12 个工作包、15 组技术验收；0.1.7 已关账，移交缺陷继续纳入，未改变生产。
 - **DSH 0.2.0 研究与升级计划**：[26 号方案](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)已完成调研，**待实施**；建议从 0.1.7-rc.2 直接升 0.2.0-rc.2，U3 前须旧链 P8 关账——**已满足（P8 于 2026-09-30 关账）**。当前生产版本与旧升级链状态不因本计划改变。
 - **Phase 状态**：**Phase 0–5 全部完成并关账**；当前无进行中的迁移/整改批次。
 - **运行基线**：DSH **0.1.7-rc.2**（2026-09-27 17:29:26Z U3 生产切换，P6b；**2026-09-30 P8 关账（用户指令提前）**——U4b 只读巡检全绿 + 新冻结点 `c85f3b9f…` + `preserve_after_resume ok=true`；关账后 MainPID **922156**、NRestarts=0、6 单元 active、15 域、accept2b **PASS=80 FAIL=0**、journal err=0；会话 1767（V4））。P7 巡检 1（09-29）+ P8 巡检 2（09-30）均全绿；旧基线 0.1.5-rc.2 履历见历史归档。
@@ -20,13 +20,21 @@
 
 ## 二、最近进度结果
 
+### 2026-09-30 · 27 号方案重审：以真实漏洞发现能力评价（未实施）
+
+- 按用户澄清，重写指标、根因排序、逐项建议、学习反馈、实施包和验收。真实漏洞成立即可计技术成果；平台重复/忽略/零赏金不否定独立发现；撤下提交 SOP 和外部核单依赖，区分内部根因去重与平台重复。
+- 纠正前版推论：零提交不说明零漏洞；low/info标签和缺task_id不直接证明漏洞无效；noise=1占93.7%是候选分类，不是已验证误报率。生产数字继续使用前轮采样，并未本轮刷新。
+- 本轮重新核查代码，新增 5 组合成检查：H2前三项截断、参数值丢失、未注册Oracle，以及dup/ignored各自可在零技术误报时触发类别抑制；另定位同host同标题异URL观察被合并、H1函数未接task调用。保留原有执行/验证/学习断点，按直接影响重新排序。
+- 12 个工作包和 15 组验收改为技术链路：真实请求→具体假设→有效实验→技术漏洞→方法复用。增加外部状态变化不得改变技术计数/学习分的验收；不等待全套治理完成才开始小批发现。
+- 仅代码重审、本地合成复现及文档修改；未改生产、运行扫描或提交报告。改造待实施，未知的真实漏洞数量/漏报损失仍由技术证据决定。
+
 ### 2026-09-30 · DSH 0.1.7 升级链 P8（终步）：U4b 巡检 2 + `preserve_after_resume` 对账 + 关账（**CHAIN END**）
 - **只读巡检（+59.5h，05:04–05:08Z）**：6 单元 active、MainPID **889738**/NRestarts=0、app/插件/客户端 SHA 全对（task `5dccbc1c…`）；`settings.yaml.imported` 在、无 drop-in/孤儿；journal（切换以来）err=0、15 域、prune×5、vault errors=0、scheduler.lock 60s 步进、outbox 0 pending（9 历史死信不变）；会话 1641→**1767**、最新 8 会话 V4 读回 **8/8**、业务表 **DECREASES=[]**；accept **PASS=80 FAIL=0**、data-quality **rc=0**。
 - **新冻结点与对账（核心交付）**：任务引擎繁忙 → silkspool 活哨兵接替 `scheduler.lock`（仅暂停新认领）排空 + 06:18 一次计划内恢复重启（启动即回收清零）；06:26:28–07:02:46（**36m18s**）完成 capture（26m21s）+ preserve（9m19s）→ 新冻结点 `dsh-snapshot-ready-m7n_2p4h`（manifest **`c85f3b9f…`**）；**`preserve_after_resume ok=true`**（phase=reconciling、new_state_preserved=true、automatic_restore_allowed=false、changed_session_files=384）：会话目录 193→212（缺失 0）、V3 1605 保全、V4 1797、业务表 57/57、**DECREASES=[]**、key_missing 3 项全部归因（facts_archive 12/12、FGS 旧任务图 7、blackboard_archive 1）、settings 迁移态正确、**RPO=0**。
 - **关账**：用户指令提前执行（剩余约 10.4h，如实记录非自然期满）；恢复写者后 MainPID **922156**/NRestarts=0、调度器持锁、accept2b **PASS=80 FAIL=0**；release 最小登记（phase=reconciling）。证据 csai `…/p8-evidence/`（29 项 + `SHA256SUMS`）、工具 `p8-tools/` `e1c60b9f…`（p7-tools 快照差闭环）；详见 [record §19](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)。
 - **遗留（观察期后治理，移交 27 号方案）**：僵尸任务泄漏两路径（spawn busy 回 queued 静默失败 / task_finish session_id=null E_SCHEMA）、设置保存写路径人工复核、failover 预流缺口（上游）、kbList 缺陷、Campaign 3 预算 99.997%（待决策）、人工提交 SOP/SLA。
 
-### 2026-09-30 · 以有效 SRC 漏洞为目标的全流程审查（改造未实施）
+### 2026-09-30 · 前版 SRC 全流程审查（评价目标已由本轮纠正，改造未实施）
 
 - 将 [27 号方案](27-business-quality-and-capacity-plan-2026-09-30.md)扩展为资产到提交、执行稳定性、自主学习和知识使用的逐项审查；原版本偏重列表/容量/提交的优先级由本版调整，保留必要容量与升级衔接方案。
 - 06:04 UTC 起只读生产基线：101,787 资产、8,664 端点中 POST 仅 1；44 条 confirmed 全无 task_id，28 条为旧系统导入；38 份草稿、15 个提交任务 done 对应本地 submitted/accepted=0。4,888 个学习 episode 全缺知识版本/模型/成本关联，669/675 个 exp_card 类采用 ID 无法解析到经验卡；不是 P8 关账后的冻结快照。
