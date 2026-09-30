@@ -1982,6 +1982,63 @@ test('30 §自动回升: 连败型降级后窗口内有新 rejected → 不升�
   assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM campaign_checkpoints WHERE campaign_id=? AND kind='autonomy_recovered'").get(cid).n, 0)
 })
 
+test('30 §自动回升: 降级后窗口外的 rejected 不阻断回升（防永久锁 L1 回归）', async () => {
+  const { bus } = makeEnv()
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'r5.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '回升-窗口外', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  injectDemotion(bus, cid, { kind: 'autonomy_change', payload: { reason: 'derive_fail_rate' }, ageMs: 7200000 }) // 2h 前降级
+  bus._internal.db().prepare('UPDATE campaigns SET autonomy=1 WHERE id=?').run(cid)
+  // 降级后 1.5h（在降级之后，但在 1h 滚动窗口之外）的 rejected：
+  // 旧实现 `created_at >= dem.at` 会把它当作阻断条件，专项永久锁 L1。
+  bus._internal.db().prepare("INSERT INTO campaign_decisions (campaign_id, task_id, verdict, evidence, goal_delta, decided_by, created_at) VALUES (?, 99992, 'rejected', '[]', ?, 'reviewer', ?)")
+    .run(cid, JSON.stringify({ role: 'vuln' }), Date.now() - 5400000)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT autonomy FROM campaigns WHERE id=?').get(cid).autonomy, 2, '窗口外 rejected 不得永久阻断回升')
+})
+
+test('43 §自动回升: 窗口内的 verify rejected 不阻断回升（候选验证预期结论）', async () => {
+  const { bus } = makeEnv()
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'r6.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '回升-verify', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  injectDemotion(bus, cid, { kind: 'autonomy_change', payload: { reason: 'derive_fail_rate' }, ageMs: 3700000 }) // 61min 前降级
+  bus._internal.db().prepare('UPDATE campaigns SET autonomy=1 WHERE id=?').run(cid)
+  // 窗口内一条 verify 角色的 rejected（判定 false_positive 是预期产出）→ 不阻断回升
+  bus._internal.db().prepare("INSERT INTO campaign_decisions (campaign_id, task_id, verdict, evidence, goal_delta, decided_by, created_at) VALUES (?, 99993, 'rejected', '[]', ?, 'reviewer', ?)")
+    .run(cid, JSON.stringify({ role: 'verify', rejected: 1 }), Date.now() - 1800000)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT autonomy FROM campaigns WHERE id=?').get(cid).autonomy, 2, 'verify rejected 不得阻断回升')
+})
+
+test('43 §连败速率: 近 1h 仅 verify rejected（≥2）不触发 L2→L1 降级', async () => {
+  const { bus } = makeEnv()
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'r7.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '连败-verify', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const ins = bus._internal.db().prepare("INSERT INTO campaign_decisions (campaign_id, task_id, verdict, evidence, goal_delta, decided_by, created_at) VALUES (?, ?, 'rejected', '[]', ?, 'reviewer', ?)")
+  ins.run(cid, 99994, JSON.stringify({ role: 'verify', rejected: 1 }), Date.now() - 1200000)
+  ins.run(cid, 99995, JSON.stringify({ role: 'verify', rejected: 1 }), Date.now() - 600000)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT autonomy FROM campaigns WHERE id=?').get(cid).autonomy, 2, 'verify rejected 不计入连败速率')
+  assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM campaign_checkpoints WHERE campaign_id=? AND summary LIKE '%连败速率超阈值%'").get(cid).n, 0, '不得写连败降级 checkpoint')
+})
+
 test('30 §自动回升: 预算型 reviewing 用量回落 <80% → status_recovered 回 active（autonomy 保持 L1）', async () => {
   const { bus } = makeEnv()
   assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'r3.example.com', mark: 'not_crawled' }]).ok, true)

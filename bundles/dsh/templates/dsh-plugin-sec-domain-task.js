@@ -1373,6 +1373,11 @@ function makeHandlers(opts) {
   //   全部经 autonomy_recovered / status_recovered checkpoint 留痕，幂等防抖。
   // ------------------------------------------------------------------
 
+  // 43 号补丁回填：verify（候选验证）任务的 rejected 是预期分诊结论，不属连败。
+  function isVerifyRejection(d) {
+    return String(d?.campaign_role || parseJsonSafe(d?.goal_delta, {}).role || '') === 'verify'
+  }
+
   // budget_low 回升判据：窗口用量 < 80% 预算（与 budget_extend 80% 水位线对称）——
   // 20% 缓冲足够跑若干 tick 派生，振荡概率极低；用闸判据（用量+预估≤预算）会在
   // 91–100% 水位与降级死锁（永远升不回）。budget_tokens 未设则不可回升。
@@ -1445,8 +1450,13 @@ function makeHandlers(opts) {
       summary.escalated++
     } else if (dem.reason === 'derive_fail_rate') {
       if (now - dem.at < failWindowMs) return events
+      // 回升判据按「滚动窗口内无新 rejected」计算（含 verify 豁免）。旧实现用
+      // `d.created_at >= dem.at`（降级后出现过任何 rejected 就永不再升）——一条
+      // 降级后 5 分钟的 rejected 会把专项永久锁在 L1（2026-09-30 线上实锤：
+      // #1/#2 于 09-29 14:33Z 降级后 15:29Z 有一条 rejected，至 09-30 03:53Z 仍未回升）。
+      const cutoff = now - failWindowMs
       const decisions = repo.listCampaignDecisions(c.id, 'rejected', 50, 0)
-      if (decisions.some((d) => Number(d.created_at || 0) >= dem.at)) return events // 降级后仍有新 rejected
+      if (decisions.some((d) => Number(d.created_at || 0) >= cutoff && !isVerifyRejection(d))) return events
       repo.updateCampaign(c.id, { autonomy: 2 })
       const cp = writeCheckpoint(repo, c.id, 'autonomy_recovered', `连败窗口 ${Math.round(failWindowMs / 60000)} 分钟无新 rejected，L1 自动升回 L2`, { reason: dem.reason, window_minutes: Math.round(failWindowMs / 60000) })
       events.push(...cp.events)
@@ -1750,9 +1760,11 @@ function makeHandlers(opts) {
       }
     }
     // 连败速率：近 1h rejected 验收 ≥2 → 降级 L2→L1
+    // 43 号补丁回填：verify 角色的 rejected 是「候选验证」的预期产出（判定
+    // false_positive 即拒绝候选），不是专项工作失败，不得计入连败速率。
     const hourAgo = now - 3600000
     const decisions = repo.listCampaignDecisions(c.id, 'rejected', 50, 0)
-    if (decisions.filter((d) => Number(d.created_at || 0) >= hourAgo).length >= 2 && Number(c.autonomy) >= 2) {
+    if (decisions.filter((d) => Number(d.created_at || 0) >= hourAgo && !isVerifyRejection(d)).length >= 2 && Number(c.autonomy) >= 2) {
       actions.push({ kind: 'derive_fail_rate' })
     }
     // 停止条件（INV-C9）：预算耗尽 ⇒ 转 reviewing 待人审（不自动 archive）

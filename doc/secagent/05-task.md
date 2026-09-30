@@ -1352,3 +1352,29 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - DSH 供给哨兵 `SEC_CAMPAIGN_POOL_MEMBERS` 已含 `opencode-go-secagent`，权重变更由 60s 快照自动吸收；`SEC_CAMPAIGN_SUPPLY_MAIN_WEIGHT=4` 下 Go w8 计为主力，Go 官方窗口余量低于 `SEC_CAMPAIGN_SUPPLY_WARN_RATIO`(0.15) 时供给闸自动降速（设计行为）。
 - Go 限流/熔断/额度告急时按权重顺延 SenseNova 免费链（deepseek-flash → glm-5.2 → flash-lite → ds-v4-flash），不再有「免费链耗尽却不用 Go」的空转。
 - 遗留：keeper 运行时仓库仍有**未提交**的 36 号 classifier 改动（SenseNova `quota_exceeded_error` → 成员级 10m 熔断；`classifier.go(+test)`）——与本补丁正交，待单独提交/评估部署。
+
+### 7.28 2026-09-30 修复：OpenCode Go「再次未使用」——候选验证 rejected 计入连败 + 自动回升死锁
+
+> 用户报告：Go 套餐可用但系统不再使用（且 SenseNova 额度耗尽时未见切换）。排查结论：**路由正常，故障在任务调度静默**。
+
+**排查链（只读证据）**：
+
+1. **Bellkeeper 侧路由正常**：09-29 22:30–09-30 03:30（+08）`opencode-go-secagent` 200 共 823 次（std/heavy 均落 `deepseek-v4.1-flash`）；SenseNova 仅 13 次 429（`token plan entitlement exhausted`，组内兜底尝试后即顺延 Go），无 SenseNova 200。池策略（best-weight + Go w8）与 §7.27 一致、无漂移。
+2. **任务调度静默**：`campaign_checkpoints` 723/724（09-29T14:33:31Z）campaign #1/#2「连败速率超阈值，L2 自动降级为 L1」；其后 system 无任务运行（task_runs 最后 09-29T19:24Z），Go 自然零消耗。
+3. **降级触发器缺陷 A**：该小时 rejected 验收全部来自 **verify（候选验证）角色**（task 103164–103200，「判定 false_positive 拒绝候选」）——43 号补丁引入的**预期产出**被 `superviseCampaign` 的「近 1h rejected ≥2」计入连败。
+4. **回升死锁缺陷 B**：`autoRecover` 连败型判据为 `listCampaignDecisions(...).some(d => d.created_at >= dem.at)`（降级后出现过 rejected 即永不再升）；09-29T15:29Z 有一条 rejected（decision 2002）在降级之后 → #1/#2 被永久锁 L1（至 09-30 04:00Z 实锤 13h 未恢复）。
+
+**修复（`dsh-plugin-sec-domain-task.js`）**：
+
+- **A**：连败速率统计排除 verify 角色 rejected（新增 `isVerifyRejection`，按 `campaign_role` 或 `goal_delta.role` 判定）——候选验证判定拒绝不属专项失败。
+- **B**：`autoRecover` 连败型回升改滚动窗口判据——`now - failWindowMs` 内**无（非 verify）rejected** 即回升 L2；不再引用降级时刻。
+- **测试**：任务契约 **94/94**（+3 回归：窗口外 rejected 不阻断回升 / verify rejected 不阻断回升 / 仅 verify rejected 不触发降级）。
+
+**部署与验证（2026-09-30T04:00Z）**：
+
+- 定点部署 `plugins/sec-domain-task/index.js`（before `b75c604b…` → after **`5dccbc1c…`**，与仓库模板一致）；`spool restart csai silksecagent`：MainPID 819672 → **889738**、NRestarts=0、15 域。
+- 04:00:14Z：campaign #1/#2 自动 `autonomy_recovered`（checkpoint 725/726）→ **L2**；campaign tick 2 个专项有动作。
+- 04:03–04:04Z：任务 **running 6**（此前 0；queued 5→11）；Bellkeeper 日志 `opencode-go-secagent … pool-secagent-heavy→deepseek-v4.1-flash 200` 恢复流动。
+- 证据：csai `…/20260926-017/fix-20260930/`（SUMMARY.md `a3e82c3f…`、before/after 插件 SHA、SHA256SUMS）。
+
+**教训**：① 43 号补丁的 verify 产线把「高拒绝」变成常态，凡按 rejected 计失败率的监控都必须区分 verify 角色；② 自动恢复类判据一律用**滚动窗口**，禁止引用降级时刻（一次事后事件可永久锁死）。P7 巡检的「任务动能静默 ~14h、非异常」归因据此更正为**调度死锁缺陷（已修复）**。

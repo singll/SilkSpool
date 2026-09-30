@@ -18,6 +18,11 @@
 
 ## 二、最近进度结果
 
+### 2026-09-30 · 修复：OpenCode Go「再次未使用」——候选验证 rejected 计入连败 + 自动回升死锁
+- **现象**：Go 套餐可用但系统不再使用；SenseNova 额度耗尽未切换。排查确认 **Bellkeeper 路由正常**（09-29 夜 Go 200 ×823、SenseNova 仅 429 兜底），真因是 **campaign 调度静默**：#1/#2 于 09-29T14:33Z 因「连败速率超阈值」自动降 L1，而 rejected 全部来自 **verify 候选验证的预期拒绝**；且 `autoRecover` 用「降级后是否出现过 rejected」判定，09-29T15:29Z 一条 rejected 令其**永久锁死 L1**（13h 未恢复）。
+- **修复**：连败速率排除 verify 角色 rejected；回升判据改滚动窗口（`now - failWindowMs` 内无非 verify rejected）。任务契约 **94/94**（+3 回归）。
+- **部署验证**：定点部署 `sec-domain-task`（`b75c604b…`→`5dccbc1c…`）+ 重启（MainPID 819672→**889738**）；04:00Z #1/#2 自动回升 L2，任务 running 0→6，`opencode-go-secagent` 200 恢复流动。证据 `…/fix-20260930/`。详见 [05-task §7.28](05-task.md)。
+
 ### 2026-09-29 · OpenCode Go 主力恢复（池策略运维：修复「套餐可用但零消耗」）
 - **现象**：用户报 OpenCode Go 套餐可用但请求不落 Go、额度零消耗。诊断：线上三池为 `priority-health`（Go 渠道 priority=3，SenseNova=1）——该策略按渠道 priority 硬排序，SenseNova 健康时永不落 Go（§7.18/§7.19 同一机制；09-25 20:43 曾回滚为 priority-health）。
 - **修复（DB API 为准 + YAML 种子双写，无重启）**：`PUT /api/llm/config/groups/{10,11,12}` 三池改 `best-weight` + Go 成员 **w8**（std/heavy：Go v4.1-flash w8；lite：Go v4-flash w8），其余 SenseNova 成员按 w7/w6/w5/w4 顺延；`config/bellkeeper.yaml` 同步。
