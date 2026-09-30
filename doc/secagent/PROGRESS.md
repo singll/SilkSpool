@@ -7,18 +7,24 @@
 ## 一、当前状态
 
 - **迁移计划真相源**：[18-migration](18-migration.md)（Phase 0–5）。
-- **非版本任务规划**：[27 号业务与容量专项](27-business-quality-and-capacity-plan-2026-09-30.md)已完成评估，待实施。推荐 0.1.7 关账后优先处理知识列表、提交分诊/SOP、Campaign 3 决策和知识抽样；完整分页/轮询、FTS 扩展、按需虚拟化分批安排。当前关账操作由原升级链继续负责，本轮不改变生产状态。
-- **DSH 0.2.0 研究与升级计划**：[26 号方案](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)已完成调研，**待实施**；建议从 0.1.7-rc.2 直接升 0.2.0-rc.2，U3 前须旧链 P8 关账。当前生产版本与旧升级链状态不因本计划改变。
+- **非版本任务规划**：[27 号业务与容量专项](27-business-quality-and-capacity-plan-2026-09-30.md)已完成评估，待实施。推荐 0.1.7 关账后优先处理知识列表、提交分诊/SOP、Campaign 3 决策和知识抽样；完整分页/轮询、FTS 扩展、按需虚拟化分批安排。**升级链已于 2026-09-30 关账（CHAIN END），治理项移交 27 号方案。**
+- **DSH 0.2.0 研究与升级计划**：[26 号方案](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)已完成调研，**待实施**；建议从 0.1.7-rc.2 直接升 0.2.0-rc.2，U3 前须旧链 P8 关账——**已满足（P8 于 2026-09-30 关账）**。当前生产版本与旧升级链状态不因本计划改变。
 - **Phase 状态**：**Phase 0–5 全部完成并关账**；当前无进行中的迁移/整改批次。
-- **运行基线**：DSH **0.1.7-rc.2**（2026-09-27 17:29:26Z U3 生产切换，P6b；进入 +72h 观察期至 2026-09-30T17:29:26Z；09-28 观察期热修复 + 43 号补丁后 MainPID **819672**、NRestarts=0）；csai `silksecagent` active、15 域注册、1641 会话（V4）；**P7 巡检 1（09-29）全绿**：journal err=0、prune×3、V4 读回 8/8、`sec-v5-accept.sh --ui-headless` **PASS=80 FAIL=0**、data-quality rc=0。旧基线 0.1.5-rc.2 履历见历史归档。
+- **运行基线**：DSH **0.1.7-rc.2**（2026-09-27 17:29:26Z U3 生产切换，P6b；**2026-09-30 P8 关账（用户指令提前）**——U4b 只读巡检全绿 + 新冻结点 `c85f3b9f…` + `preserve_after_resume ok=true`；关账后 MainPID **922156**、NRestarts=0、6 单元 active、15 域、accept2b **PASS=80 FAIL=0**、journal err=0；会话 1767（V4））。P7 巡检 1（09-29）+ P8 巡检 2（09-30）均全绿；旧基线 0.1.5-rc.2 履历见历史归档。
 - **最近一次全面检查**：[archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI；**四轮修复全部落地验收，结论已全部回填各模块，2026-09-22 归档**，见其 §十一）。
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
 - **已知遗留（非阻塞，待后续会话）**：sec-suite/asset-db/experience 内部少量 v4 读取函数（experience 仍被 dashboard-rpc/task 链路引用）；`18-migration` 的 DoD 仍须逐条核对。
-- **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 U3（P6b）已完成——生产 0.1.7-rc.2、finalize invariants failures=0、accept PASS=80 FAIL=0、+72h 观察期至 2026-09-30T17:29:26Z；P7 巡检 1（09-29）只读巡检验收通过，余 P8 巡检 2 + `preserve_after_resume` 对账 + 关账**。P6 首次失败（维护窗口 overdue scheduler/bus.prune 写入 17 项白名单外差异）已按协议回滚、修复（`sec-domain-task.sidecars=false` 维护静音 + 172s 双 tick 预演零写入）后重试成功；窗口 2h56m25s、业务 RPO=0。U4 复核项进展与遗留（设置保存写路径待人工复核、预流失败熔断缺口、kbList 既存缺陷、p7-tools 快照差）见 [state open_issues](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录 §13–§18](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md) · [handoff P8](archive/upgrades/handoff-017/P8.md)。
+- **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 P1–P8 已全部完成并关账（CHAIN END，2026-09-30）**——生产 0.1.7-rc.2（U3 P6b 切换、finalize invariants failures=0、+72h 观察期 P7/P8 两次只读巡检全绿、U4b 新冻结点 + `preserve_after_resume ok=true`、用户指令提前关账；P6 首次失败已回滚+静音修复+预演后重试成功，窗口 2h56m25s、业务 RPO=0）。**遗留移交 27 号方案/观察期后治理**（僵尸泄漏两路径、设置保存写路径、failover 预流缺口、kbList、Campaign 3 预算、提交 SOP/SLA 等）见 [state open_issues](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录 §13–§19](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)。
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
 - **领域语言**：[CONTEXT](../../bundles/dsh/CONTEXT.md)。
 
 ## 二、最近进度结果
+
+### 2026-09-30 · DSH 0.1.7 升级链 P8（终步）：U4b 巡检 2 + `preserve_after_resume` 对账 + 关账（**CHAIN END**）
+- **只读巡检（+59.5h，05:04–05:08Z）**：6 单元 active、MainPID **889738**/NRestarts=0、app/插件/客户端 SHA 全对（task `5dccbc1c…`）；`settings.yaml.imported` 在、无 drop-in/孤儿；journal（切换以来）err=0、15 域、prune×5、vault errors=0、scheduler.lock 60s 步进、outbox 0 pending（9 历史死信不变）；会话 1641→**1767**、最新 8 会话 V4 读回 **8/8**、业务表 **DECREASES=[]**；accept **PASS=80 FAIL=0**、data-quality **rc=0**。
+- **新冻结点与对账（核心交付）**：任务引擎繁忙 → silkspool 活哨兵接替 `scheduler.lock`（仅暂停新认领）排空 + 06:18 一次计划内恢复重启（启动即回收清零）；06:26:28–07:02:46（**36m18s**）完成 capture（26m21s）+ preserve（9m19s）→ 新冻结点 `dsh-snapshot-ready-m7n_2p4h`（manifest **`c85f3b9f…`**）；**`preserve_after_resume ok=true`**（phase=reconciling、new_state_preserved=true、automatic_restore_allowed=false、changed_session_files=384）：会话目录 193→212（缺失 0）、V3 1605 保全、V4 1797、业务表 57/57、**DECREASES=[]**、key_missing 3 项全部归因（facts_archive 12/12、FGS 旧任务图 7、blackboard_archive 1）、settings 迁移态正确、**RPO=0**。
+- **关账**：用户指令提前执行（剩余约 10.4h，如实记录非自然期满）；恢复写者后 MainPID **922156**/NRestarts=0、调度器持锁、accept2b **PASS=80 FAIL=0**；release 最小登记（phase=reconciling）。证据 csai `…/p8-evidence/`（29 项 + `SHA256SUMS`）、工具 `p8-tools/` `e1c60b9f…`（p7-tools 快照差闭环）；详见 [record §19](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)。
+- **遗留（观察期后治理，移交 27 号方案）**：僵尸任务泄漏两路径（spawn busy 回 queued 静默失败 / task_finish session_id=null E_SCHEMA）、设置保存写路径人工复核、failover 预流缺口（上游）、kbList 缺陷、Campaign 3 预算 99.997%（待决策）、人工提交 SOP/SLA。
 
 ### 2026-09-30 · 非版本任务全面评估与独立规划（未实施）
 - 新建 [27 号专项](27-business-quality-and-capacity-plan-2026-09-30.md)，梳理 25 号容量方案及自学习/漏洞/预算已有设计的完整性，补齐提交 SOP、C3 决策树、知识质量抽样/对照实验、FTS 回填回退和虚拟化启动条件。
