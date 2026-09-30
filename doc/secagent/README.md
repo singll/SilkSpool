@@ -8,6 +8,8 @@
 | 要做什么 | 从这里开始 |
 |---|---|
 | 看当前进度 / 最近结果 | **[PROGRESS.md](PROGRESS.md)**（只含当前状态 + 最近结果 + 通用规则） |
+| 看 DSH 0.2.0 升级研究与计划（在办，待实施） | [26-dsh-0.2.0-upgrade-plan-2026-09-30.md](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)（rc.1/rc.2 全部 35 项对比、V4→V4 工具适配、插件/模型/设置影响、U0–U4、验收与回滚；未执行生产升级） |
+| 看 DSH 0.1.7 升级与容量治理（在办） | [25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md](25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md)；升级执行进度以 [STATE](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md) 为准 |
 | 了解架构与模块职责 | [00-conventions.md](00-conventions.md)（全局契约宪法）→ 对应模块 `00–18` |
 | 查术语 | [领域语言](../../bundles/dsh/CONTEXT.md) |
 | 追溯历史（历次进度/更新日志/已完成节点、旧架构、历次升级方案与完整记录、会话模板） | [archive/](archive/) · [archive/progress-history.md](archive/progress-history.md) · [archive/upgrades/](archive/upgrades/) |
@@ -24,6 +26,8 @@ doc/secagent/
   00-conventions.md … 18-migration.md   正式模块契约（常驻；每模块自维护，改动时同步 bump）
   PROGRESS.md                           当前进度（只含当前 + 最近结果 + 通用规则）
   README.md                             本页（入口 · 结构 · 治理规则）
+  25-dsh-0.1.7-upgrade-and-scale-2026-09-26.md  在办：升级与容量治理总体方案
+  26-dsh-0.2.0-upgrade-plan-2026-09-30.md       在办：0.2.0 研究与升级计划（待实施）
   archive/                              历史（只读）：
     19-ui-unify.md                      看板 UI 全局统一重构（已实施验收，结论已回填 16/主题）
     20-full-inspection-2026-09-19.md    全面检查报告（四轮修复全部落地验收，结论已回填各模块）
