@@ -2,9 +2,9 @@
 
 > 日期：2026-09-30；状态：**全流程审查完成，改造待实施**。本版替换原先偏重提交积压、知识列表和容量治理的评估结论；保留这些工作的必要部分，重新按漏洞产出价值排序。
 >
-> 证据：仓库 `682ea04`；通过 PATH 中的 `spool exec csai` 只读核查生产服务、SQLite、文件元数据与部署摘要；本地运行规则层合成输入复现。生产采样从 **06:04 UTC** 开始，本文分别注明不同批次口径。未启动目标探测、修改生产配置/预算/业务记录、重启服务或向 SRC 发送报告。
+> 证据：代码审查基线 `682ea04`，收尾时纳入 `5b112dc` 的 P8 移交记录；通过 PATH 中的 `spool exec csai` 只读核查生产服务、SQLite、文件元数据与部署摘要；本地运行规则层合成输入复现。生产采样从 **06:04 UTC** 开始，本文分别注明不同批次口径。未启动目标探测、修改生产配置/预算/业务记录、重启服务或向 SRC 发送报告。
 >
-> 配套：[PROGRESS](PROGRESS.md) · [25 号容量与升级（已归档）](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md) · [26 号运行时升级](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)。本专项不改写旧升级 STATE，不代替原链关账。
+> 配套：[PROGRESS](PROGRESS.md) · [25 号容量与升级（已归档）](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md) · [26 号运行时升级](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)。本专项不改写旧升级 STATE；收尾时原链已完成 P8 关账，本文纳入其移交问题。
 
 ## 1. 核心判断与有效产出的定义
 
@@ -79,7 +79,7 @@
 | 09-29 | 39 | 25 | 3,001,413 |
 | 09-30（采样时） | 139 | 109 | 8,555,485 |
 
-历史 `note='宿主重启/超时回收'` 有 2,207 行。**43 号修复后仍有 44 行**（按 started_at≥09-28 11:24 UTC），这些行均无法通过 run_id 关联 worker。近期样本 run_id 为空，运行约 76–84 分钟后被回收。主服务本次为 active、MainPID=889738、NRestarts=0，因此不能把该统一 note 全部解释为实际宿主重启；必须查 claim→spawn→登记→finish 的断点。
+历史 `note='宿主重启/超时回收'` 有 2,207 行。**43 号修复后仍有 44 行**（按 started_at≥09-28 11:24 UTC），这些行均无法通过 run_id 关联 worker。近期样本 run_id 为空，运行约 76–84 分钟后被回收。主服务首批采样为 active、MainPID=889738、NRestarts=0，因此不能把该统一 note 全部解释为实际宿主重启；必须查 claim→spawn→登记→finish 的断点。
 
 Campaign 按任务 objective 分类的已记录成本如下；这是任务累计口径，不宣称等于真实账单、当前滚动窗口或有效尝试成本。
 
@@ -158,14 +158,14 @@ C1/C2 的补参累计约 **1.205 亿 token**；只改模型路由不解决投入
 | 覆盖/尝试/FGS（ledger/fgs/fact） | 需要，但减少重复写 | 持久检查点、证据链接、负知识、恢复能力 | 一个 attempt 真相源派生多视图；记录未知，不伪造阴性或覆盖完成 |
 | 候选/机器验证（vuln/oracle） | 核心，优先修 | 候选与信号分层、反证、capsule、独立重放 | 真值来自执行证据与安全属性，来源/目标/版本强绑定 |
 | 报告/提交（report/task/vuln） | 必须 | 草稿、提交队列、remote_id/vendor 回流 | 材料合格与真实发送分开；平台回执是完成依据 |
-| 知识/学习（know/memcore/feedback） | 必須，先修闭环 | 四类知识分工、生命周期、评测审批发布 | 检索→采用→attempt→判定→版本收益可连接；按实际缺口补课 |
+| 知识/学习（know/memcore/feedback） | 必须，先修闭环 | 四类知识分工、生命周期、评测审批发布 | 检索→采用→attempt→判定→版本收益可连接；按实际缺口补课 |
 | 效果评测（eval） | 必须，需扩大真值面 | 独立 fixture、hidden 集、摘要锁定、配对实验 | 实际执行被评知识/策略；同时测漏报、误报、阻塞、成本和稳定性 |
 | 面板/列表（dashboard/UI） | 为运营服务 | 现有工作台与分页协议 | 显示堵点、证据和下一动作；完整可见性优先于视觉/虚拟化 |
 | 总线/存储/升级 | 必须，按实测优化 | SQLite WAL、多进程、outbox、备份恢复 | 关键事件不能无声丢；读错/截断要可见；不把全部能力押在 0.2.0 升级 |
 
 ## 5. 逐环节问题清单：发现主链
 
-优先级：**P0**=真值/目标/关键执行链不可信，修好前不扩大自动化；**P1**=直接提高有效业务面或发现能力；**P2**=提高周转/成本/稳定性；**P3**=有瓶颈证据再做。P0 是实施优先级，不表示本次已经修改或停掉生产。
+优先级：**P0**=真值/目标/关键执行链不可信，修好前不扩大自动化；**P1**=直接提高有效业务面或发现能力；**P2**=有测量依据后优化周转/成本/容量。P0 是实施优先级，不表示本次已经修改或停掉生产。
 
 源码缩写在 §14.1 给出；每项含当前依据、为何影响有效漏洞、修改位置和验收要求。下列是改造建议，不冒充已上线机制。
 
@@ -213,7 +213,7 @@ C1/C2 的补参累计约 **1.205 亿 token**；只改模型路由不解决投入
 | C07 P1 C | R 排序主要类常量+静态 bonus；L gap 很少带 stack/资产价值；sanitizeDraft 去掉 priority；derive_intent 又固定 phase='vuln'/budget=150000 | 保留已验证后的排序结果与 typed task.kind/phase/budget；资产价值/可行性/成本随输入。phase 与 persona/工具面一致。验收 recon/review 不被改成 vuln，优先级可解释且实际调度一致 |
 | C08 P1 C | 覆盖类每 tick≤1 是封顶，不是前置任务保底；大量 verify/host 假设可以挤饿爬取/身份建设 | 使用阶段配额与依赖优先，分配给“可解锁最多高价值实验”的前置任务；队列空转时输出明确 blocker，不只加 coverage 分 |
 | C09 P0 C | Reviewer 从 task.result/run.note 正则读 verdict/capsule；看到 capsule 字符串即可视 verified；coverage role 由 objective 文本判断 | Reviewer 只消费结构化执行判定、capsule 实体和实际覆盖 delta；读取目标/摘要/verdict/状态，不从摘要断言真值。成功负例也算有效完成，但不算漏洞 |
-| C10 P1 C | applyReviewOutcome 使用 c{id}|key，onStrategyOutcome 反查 task 后写裸 key；生产 findings.task_id 仍空；连败机制多入口 | 统一 outcome 应用器与完整键；一个 attempt verdict 只计一次；技术阴性不等于打法错误。验收同事件重放、Reviewer+finding 双事件不双扣；Campaign 键可正确更新 |
+| C10 P1 C | applyReviewOutcome 使用 `c{id}\|key`，onStrategyOutcome 反查 task 后写裸 key；生产 findings.task_id 仍空；连败机制多入口 | 统一 outcome 应用器与完整键；一个 attempt verdict 只计一次；技术阴性不等于打法错误。验收同事件重放、Reviewer+finding 双事件不双扣；Campaign 键可正确更新 |
 | C11 P0 C/R | Supervisor 只硬实现预算停止，heartbeat 会被各种 decision/派生刷新；“连续无 accepted”文本目标没有执行 | 分开 service heartbeat、last_valid_attempt、last_verified、last_submit_ready。结构化无进展/预算/错误率条件可触发 reviewing；显示触发值与下一动作，不能用持续失败证明业务活跃 |
 | C12 P1 C | H3 只检查引用字符串非空/文本长度等，未证明卡真实存在/已发布/适用；主 Campaign 也不直接跑完整 H1/H2/H3 组合 | 解析不可变知识引用、适用谓词和执行器能力；高成本语义假设只在有业务模型、可证伪实验时分配。H1版本命中、H2请求证据、H3业务关系分开测收益 |
 
@@ -221,7 +221,7 @@ C1/C2 的补参累计约 **1.205 亿 token**；只改模型路由不解决投入
 
 | ID/级别 | 依据与问题 | 修改建议与验收 |
 |---|---|---|
-| D01 P0 R/H | 43号后仍44条回收记录缺 run 关联；近期任务挂76–84分钟才失败 | 单独诊断 claim→exec.worker.spawned→worker_register→active_run_id→finish，每步记录持久关联与错误；先区分未启动/登记失败/真超时/回调丢失。禁止直接把旧回收行改成功；验收故障注入后无孤儿/重复计费 |
+| D01 P0 R/C/H | 首批采样43号后仍44条回收记录缺run关联、挂76–84分钟；后续P8记录确认busy收尾失败被吞及finish传session_id=null触发E_SCHEMA两条泄漏路径（§14.4） | 修busy回queued的失败日志/重试和可选session字段契约，再对claim→spawn→register→finish逐段持久关联；两条路径不能未经核对解释全部44行。禁止旧回收行改成功；故障注入后无孤儿/重复计费 |
 | D02 P0 C | reapStale 直接写任务/Run，不发 task.finished；晚到 finish 的 superseded 分支也没有正常费用/学习事件闭环 | 回收走与正常收尾同等的、幂等的终止事实；真实账单迟到可补结算，不能消失。run记录、费用、Reviewer、学习最终一致；晚到回调不覆盖新run |
 | D03 P1 C/H | scheduler 的 setInterval 可叠加长 tick，锁是 read/write 文件而非原子租约；并发与 activeWorkers 为进程内计数 | 分离短派单 tick 和长执行；全局领取/租约/槽位原子化，按 Program 和身份限并发；保留并行执行，不粗暴把全部 worker 串行。多进程/慢事件循环/重启测试 |
 | D04 P0 C | X.throttleQps 每次工具启动取一个令牌；nuclei自身默认50，多个worker与工具请求量不能由此得到全局上限 | 把工具参数、并发、目标/项目速率与共享请求预算联动；测试并发真实发包的总速率及429退避。不能以“工具调用≤50/s”宣称“目标请求≤50QPS” |
@@ -232,7 +232,7 @@ C1/C2 的补参累计约 **1.205 亿 token**；只改模型路由不解决投入
 | D09 P0 C | `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 默认on；Supervisor可自动翻倍；每次增量上限不能约束长期累计 | 为专项设置明确窗口/累计硬上限与无有效进展停止条件；扩容依据有效业务面/证据收益，不能只依据花到80%。本轮只建议，未改变既有预算授权或配置 |
 | D10 P1 C/H | 模型class区分存在，但供给健康不证明该模型在业务推理/验证上更好；失败类型常混网络/模型/工具 | 保留供给调速和09-30回升修复；按相同任务集评估正确率、有效结果成本、重试率。便宜模型处理解析/分诊，复杂模型处理有前置的业务假设；同一调查不要同时换运行时/模型/检索 |
 | D11 P1 C | knowledge/template/worker prompt多源；缺persona时按空角色继续；假设模板指引模型调用禁止model的 register_candidate | persona读取失败对需要角色的任务显式blocked；审计phase实际工具表，删除不可调用指令并给合法的信号登记路径。用真实工具schema跑提示词流程，不只验证文案存在 |
-| D12 P2 C/H | fact/ledger/FGS/handoff/知識回执要求交叉，许多收尾为人工文字；旧流程守卫仅interval且按Program近24h | 以attempt级结果事件自动生成多投影；只要求对结论有用的FGS节点，轻量采集不强制写整套总结。不能用别的任务今天写过台账来证明本任务完成 |
+| D12 P2 C/H | fact/ledger/FGS/handoff/知识回执要求交叉，许多收尾为人工文字；旧流程守卫仅interval且按Program近24h | 以attempt级结果事件自动生成多投影；只要求对结论有用的FGS节点，轻量采集不强制写整套总结。不能用别的任务今天写过台账来证明本任务完成 |
 
 ### 5.5 候选、反证、Oracle、证据与独立复现
 
@@ -537,7 +537,7 @@ C1/C2 的补参累计约 **1.205 亿 token**；只改模型路由不解决投入
 
 ### 13.3 与0.1.7关账及0.2.0升级协调
 
-本次仅更新审查方案，原0.1.7观察期/STATE及P8关账继续由原链负责。09-30本次观察MainPID=889738与09-29记录不同，已有供给恢复补丁解释；不据此擅改历史基线。不要把“服务可用/验收PASS”理解为本审查的问题已解决。
+本次仅更新审查方案。审查首批采样时MainPID=889738；收尾期间原链提交`5b112dc`，记录0.1.7已按用户指令提前P8关账（CHAIN END），关账后MainPID=922156。本次没有参与该链的重启/冻结/恢复，也不改写其STATE；§2数据保留原采样口径。P8移交的两条僵尸任务路径已纳入D01/WP03，关账不等于这些业务问题已修复。
 
 无需让所有业务改造等0.2.0，也不要把全部改造塞进0.2.0：目标/弱判定/关联等高优修复可按独立批次验收；如果候选包已封存，任何相关代码变更都要进入新manifest/SHA、重新验收和封存，或明确延期。运行时切换、模型切换、检索策略大改尽量分观察窗，保持可归因。
 
@@ -567,7 +567,7 @@ C1/C2 的补参累计约 **1.205 亿 token**；只改模型路由不解决投入
 | M 记忆维护 | [sec-memcore](../../bundles/dsh/templates/dsh-plugin-sec-memcore.js) | rewriteAgentsMd（353）、周期维护/列表返回封套；L16/L23 |
 | UI | [dashboard-rpc](../../bundles/dsh/templates/dsh-plugin-sec-suite.dashboard-rpc.js) · [ui-core](../../bundles/dsh/templates/dsh-plugin-silksec-ui-core.client.js) | kbList（899）、列表/轮询/缓存；F08/§12 |
 | 采集脚本 | [l2-collect](../../bundles/dsh/templates/data-seed/scripts/l2-collect.sh) · [grade-assets](../../bundles/dsh/templates/data-seed/scripts/grade-assets.py) · [js-watch](../../bundles/dsh/templates/data-seed/scripts/js-watch.py) | GET硬编码、JS/map筛选、评级与更新检测；A/B |
-| 工具/知识入口 | [seed-manifests](../../bundles/dsh/seed-manifests.sh) · [seed-presets](../../bundles/dsh/seed-presets.sh) · [kb-harvest](../../bundles/dsh/templates/data-seed/scripts/kb-harvest.py) | 工具清单只补缺失、提示词/参数、知识抓取；A09/D11/L13 |
+| 工具/知识入口 | [seed-manifests](../../bundles/dsh/templates/seed-manifests.sh) · [seed-presets](../../bundles/dsh/templates/seed-presets.sh) · [kb-harvest](../../bundles/dsh/templates/data-seed/scripts/kb-harvest.py) | 工具清单只补缺失、提示词/参数、知识抓取；A09/D11/L13 |
 | 工作规范 | [sec-knowledge](../../bundles/dsh/templates/data-seed/skills/sec-knowledge/SKILL.md) · [sec-verification](../../bundles/dsh/templates/data-seed/skills/sec-verification/SKILL.md) | 用于对照产品要求与实际守卫；不是本轮审查助手执行的skill |
 | 正式契约 | [02-vuln](02-vuln.md) · [05-task](05-task.md) · [07-know](07-know.md) · [11-ledger](11-ledger.md) · [12-report](12-report.md) · [15-eval](15-eval.md) | 后续实施须分别回填；本报告不把建议冒充现行契约 |
 
@@ -624,11 +624,13 @@ SELECT outcome, COUNT(*) AS n FROM learning_episodes GROUP BY outcome;
 
 ### 14.4 尚不能下结论的部分与实施前必做核查
 
+收尾时同步的[P8 record §19](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)及[STATE open_issues](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)属于后续运行证据：明确记录task dispatcher的busy分支`.catch(()=>{})`吞收尾失败，以及`task_finish session_id=null`的E_SCHEMA实例。其06:18恢复重启及07:02恢复后的运行状态由原链维护；不能把本次06:04基线混为关账后数据，也不能认为启动回收清零已经修复产生僵尸的代码路径。
+
 | 待核实问题 | 当前边界 | 下一步及负责工作包 |
 |---|---|---|
 | 44条confirmed的真实有效性、平台是否已有工单 | 未逐条登录目标独立复现，也未查外部平台 | WP06按§11全量分诊；不能推断44条全假或全可交 |
 | 35条未匹配标准目录的证据是否丢失 | 路径抽样保守，历史格式/迁移映射未穷尽 | WP06/F09追旧源和引用，再恢复演练 |
-| 近期44条无worker关联回收的精确原因 | 确认缺关联，统一note不能证明实际重启 | WP03诊断claim/spawn/register/finish，保留分步错误与故障注入证据 |
+| 近期44条无worker关联回收的逐条归因 | 首批仅确认缺关联；P8后续记录已定位busy收尾吞错和session_id=null E_SCHEMA，但未将全部44行逐条映射 | WP03先修两条已知路径，再对其余claim/spawn/register/finish留痕、归因与故障注入 |
 | 哪些目标账号真正可用 | DB只有无Program侦察key，其他受控文件/外部凭据未排除 | WP04由运营归集账号可用性、角色/对象与授权，不导出秘密 |
 | 代理/网络问题对不同任务的具体损失 | 407存量可见，稳定出口/请求级因果尚未实测 | WP03/04受控网络检查，之后小批授权业务基线 |
 | 旧脚本/知识直读入口的实际调用占比 | 存在多入口，表内uses/exposure不足以全覆盖 | WP07宿主采集+调用轨迹抽样，标明仍未测量的通路 |
