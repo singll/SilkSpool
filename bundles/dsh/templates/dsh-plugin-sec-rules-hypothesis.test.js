@@ -126,7 +126,7 @@ test('oracleInfoDisclosureDiff: 3 真阳 / 3 假阳', () => {
   assert.equal(oracleInfoDisclosureDiff({ test_body: 'phone 13812345678', control_body: 'phone 13812345678' }).verdict, 'rejected')
   assert.equal(oracleInfoDisclosureDiff({ test_body: '' }).verdict, 'inconclusive')
 })
-test('oracleSqliDiff / oracleSqliTime: 各 3 真阳 / 3 假阳', () => {
+test('oracleSqliDiff / oracleSqliTime: 内容差分与单次时延观测', () => {
   const base = 'x'.repeat(1000)
   assert.equal(oracleSqliDiff({ baseline_body: base, true_body: base, false_body: 'y' }).verdict, 'verified')
   assert.equal(oracleSqliDiff({ baseline_body: base, true_body: base, false_body: 'yy' }).verdict, 'verified')
@@ -134,27 +134,27 @@ test('oracleSqliDiff / oracleSqliTime: 各 3 真阳 / 3 假阳', () => {
   assert.equal(oracleSqliDiff({ baseline_body: base, true_body: base, false_body: base }).verdict, 'rejected')
   assert.equal(oracleSqliDiff({}).verdict, 'inconclusive')
   assert.equal(oracleSqliDiff({ baseline_body: base, true_body: 'zz', false_body: 'zz' }).verdict, 'inconclusive')
-  assert.equal(oracleSqliTime({ baseline_ms: 100, sleep_ms: 5200, requested_delay_ms: 5000 }).verdict, 'verified')
-  assert.equal(oracleSqliTime({ baseline_ms: 0, sleep_ms: 5000, requested_delay_ms: 5000 }).verdict, 'verified')
-  assert.equal(oracleSqliTime({ baseline_ms: 200, sleep_ms: 10000, requested_delay_ms: 8000 }).verdict, 'verified')
+  assert.equal(oracleSqliTime({ baseline_ms: 100, sleep_ms: 5200, requested_delay_ms: 5000 }).verdict, 'inconclusive')
+  assert.equal(oracleSqliTime({ baseline_ms: 0, sleep_ms: 5000, requested_delay_ms: 5000 }).verdict, 'inconclusive')
+  assert.equal(oracleSqliTime({ baseline_ms: 200, sleep_ms: 10000, requested_delay_ms: 8000 }).verdict, 'inconclusive')
   assert.equal(oracleSqliTime({ baseline_ms: 100, sleep_ms: 300 }).verdict, 'rejected')
   assert.equal(oracleSqliTime({ baseline_ms: 100, sleep_ms: 3000, requested_delay_ms: 5000 }).verdict, 'inconclusive')
   assert.equal(oracleSqliTime({ baseline_ms: 100, sleep_ms: 500 }).verdict, 'rejected')
 })
-test('oracleXssEcho: 3 真阳 / 3 假阳', () => {
-  assert.equal(oracleXssEcho({ marker: 'svx7a9c2', response_body: '<div>svx7a9c2</div>' }).verdict, 'verified')
+test('oracleXssEcho: 回显仅为线索，转义/无回显是本次观测阴性', () => {
+  assert.equal(oracleXssEcho({ marker: 'svx7a9c2', response_body: '<div>svx7a9c2</div>' }).verdict, 'inconclusive')
   assert.equal(oracleXssEcho({ marker: 'svx7a9c2', response_body: '<input value="svx7a9c2">' }).evidence.context, 'attribute')
   assert.equal(oracleXssEcho({ marker: 'svx7a9c2', response_body: '<script>var x="svx7a9c2"</script>' }).evidence.context, 'script')
   assert.equal(oracleXssEcho({ marker: 'sv<7a9c2', response_body: 'sv&lt;7a9c2' }).verdict, 'rejected')
   assert.equal(oracleXssEcho({ marker: 'svx7a9c2', response_body: '<div>nothing</div>' }).verdict, 'rejected')
   assert.equal(oracleXssEcho({ marker: 'abc', response_body: 'abc' }).verdict, 'inconclusive')
 })
-test('oracleSsrfOob: 3 真阳 / 3 假阳', () => {
+test('oracleSsrfOob: 命中观测与无回调未知', () => {
   assert.equal(oracleSsrfOob({ oob_token: 'tokabcd1234', interactions: [{ qname: 'tokabcd1234.oob.example' }] }).verdict, 'verified')
   assert.equal(oracleSsrfOob({ oob_token: 'tokabcd1234', interactions: [{ qname: 'x.tokabcd1234.dns' }] }).evidence.hits, 1)
   assert.equal(oracleSsrfOob({ oob_token: 'tokabcd1234', interactions: [{ qname: 'tokabcd1234.o' }, { qname: 'tokabcd1234.o2' }] }).evidence.hits, 2)
-  assert.equal(oracleSsrfOob({ oob_token: 'tokabcd1234', interactions: [] }).verdict, 'rejected')
-  assert.equal(oracleSsrfOob({ oob_token: 'tokabcd1234', interactions: [{ qname: 'other.oob' }] }).verdict, 'rejected')
+  assert.equal(oracleSsrfOob({ oob_token: 'tokabcd1234', interactions: [] }).verdict, 'inconclusive')
+  assert.equal(oracleSsrfOob({ oob_token: 'tokabcd1234', interactions: [{ qname: 'other.oob' }] }).verdict, 'inconclusive')
   assert.equal(oracleSsrfOob({ oob_token: 'short' }).verdict, 'inconclusive')
 })
 
@@ -546,4 +546,19 @@ test('23 §3.7 selectCampaignModel: 分档选模型（lite→flash-lite / heavy�
   assert.equal(selectCampaignModel({ kind: 'hypothesis', vuln_class: 'xss', members: membersNoMain, fallbacks: ['glm-5.2'] }).model, 'glm-5.2')
   // weight 策略回滚：空 model 交 Bellkeeper 权重链
   assert.equal(selectCampaignModel({ kind: 'crawl', members, strategy: 'weight' }).model, '')
+})
+
+test('27: 等长无关页面不能验证 SQLi；内容一致的正常基线仍可进入差分判定', () => {
+  const base = 'authenticated account data'
+  assert.equal(oracleSqliDiff({ baseline_body: base, true_body: 'x'.repeat(base.length), false_body: 'denied' }).verdict, 'inconclusive')
+  assert.equal(oracleSqliDiff({ baseline_body: '', true_body: '', false_body: 'denied' }).verdict, 'inconclusive')
+  assert.equal(oracleSqliDiff({ baseline_body: base, true_body: base, false_body: 'empty result' }).verdict, 'verified')
+  assert.equal(oracleSqliDiff({ baseline_body: base, true_body: base, false_body: base }).verdict, 'rejected')
+  assert.equal(oracleSqliDiff({ baseline_body: base, true_body: base, false_body: base.slice(0, -1) + 'x' }).verdict, 'rejected', '单字符动态变化不应变成注入证据')
+})
+
+test('27: 候选编译保留项目 B，不能派入首项目 A', () => {
+  const r = compileCampaignPlan({ campaign: { program_ids: ['A', 'B'] }, candidates: [{ id: 2, program_id: 'B', title: 'IDOR', host: 'b.example.com' }] })
+  assert.equal(r.drafts.length, 1)
+  assert.equal(r.drafts[0].program_id, 'B')
 })

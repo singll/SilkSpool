@@ -326,15 +326,18 @@ export function oracleInfoDisclosureDiff({ test_body = '', control_body = '' } =
 
 // 3) SQLi（布尔差分 / 时间差分）
 function bodyClose(a = '', b = '') {
-  const la = String(a).length
-  const lb = String(b).length
-  if (!la && !lb) return true
-  const ratio = Math.min(la, lb) / Math.max(la, lb, 1)
-  return ratio >= 0.9
+  // 比较实际字符而非长度；少量动态字符差异仍视为近似，避免一个字符变化就确认。
+  const left = String(a).trim()
+  const right = String(b).trim()
+  const length = Math.max(left.length, right.length)
+  if (!length) return true
+  let same = 0
+  for (let i = 0; i < Math.min(left.length, right.length); i++) if (left[i] === right[i]) same++
+  return same / length >= 0.9
 }
 
 export function oracleSqliDiff({ baseline_body = '', true_body = '', false_body = '' } = {}) {
-  if (!String(true_body) && !String(false_body)) return ok('inconclusive', '布尔对照响应为空')
+  if (![baseline_body, true_body, false_body].every((body) => String(body).trim())) return ok('inconclusive', '基线或布尔对照响应为空')
   const trueClose = bodyClose(baseline_body, true_body)
   const falseClose = bodyClose(baseline_body, false_body)
   if (trueClose && !falseClose) {
@@ -349,7 +352,7 @@ export function oracleSqliTime({ baseline_ms = 0, sleep_ms = 0, requested_delay_
   const b = Number(baseline_ms) || 0
   const s = Number(sleep_ms) || 0
   const margin = Math.max(1000, Number(requested_delay_ms) * 0.8)
-  if (s - b >= margin) return ok('verified', `时间差分成立：${s}ms - ${b}ms ≥ ${margin}ms（请求时延 ${requested_delay_ms}ms）`, { baseline_ms: b, sleep_ms: s })
+  if (s - b >= margin) return ok('inconclusive', `单次时间增量 ${s - b}ms ≥ ${margin}ms；需交错重复对照排除网络/服务抖动`, { baseline_ms: b, sleep_ms: s })
   if (s - b < 500) return ok('rejected', `时间差分不成立：增量 ${s - b}ms < 500ms`, { baseline_ms: b, sleep_ms: s })
   return ok('inconclusive', `增量 ${s - b}ms 介于 500~${margin}ms——网络抖动不可排除`, { baseline_ms: b, sleep_ms: s })
 }
@@ -366,7 +369,7 @@ export function oracleXssEcho({ marker = '', response_body = '' } = {}) {
     let context = 'html_body'
     if (/"[^"]*$/.test(before) || /'[^']*$/.test(before)) context = 'attribute'
     if (/<script[^>]*>[^<]*$/i.test(before)) context = 'script'
-    return ok('verified', `唯一标记 ${m} 原样回显（上下文 ${context}）——反射成立`, { marker: m, context, before, after })
+    return ok('inconclusive', `唯一标记 ${m} 原样回显（上下文 ${context}）；反射不证明脚本执行，需浏览器执行证据`, { marker: m, context, before, after })
   }
   const encoded = m.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
   if (body.includes(encoded)) return ok('rejected', `标记 ${m} 仅以 HTML 实体编码形式出现——输出已转义`, { marker: m })
@@ -379,7 +382,7 @@ export function oracleSsrfOob({ oob_token = '', interactions = [] } = {}) {
   if (!t || t.length < 8) return ok('inconclusive', 'oob_token 缺失或过短（<8）')
   const hits = (Array.isArray(interactions) ? interactions : []).filter((i) => String(i?.qname || i?.query || i?.token || '').includes(t))
   if (hits.length) return ok('verified', `OOB 交互记录命中唯一 token ${t}（${hits.length} 次）——SSRF 成立`, { oob_token: t, hits: hits.length })
-  return ok('rejected', `OOB 无 ${t} 交互记录`, { oob_token: t })
+  return ok('inconclusive', `OOB 无 ${t} 交互记录；接收端健康、等待窗口与请求是否执行尚未证明`, { oob_token: t })
 }
 
 export const ORACLES = {
@@ -609,6 +612,7 @@ export function compileCampaignPlan(input = {}) {
   // 43 号补丁：待验证候选 → verify 草稿（转化优先）。severity 折算加分，类由标题推断。
   const candidateGaps = (Array.isArray(input.candidates) ? input.candidates : []).map((c) => ({
     dim: 'candidate', kind: 'verify_candidate', key: String(c.id), host: String(c.id),
+    program_id: String(c.program_id || ''),
     title: String(c.title || ''), vuln_class: inferVulnClass(String(c.title || '')),
     value: ({ critical: 2.5, high: 2, medium: 1 }[String(c.severity || '').toLowerCase()] || 0.5),
     reason: `候选 #${c.id} 待验证`,

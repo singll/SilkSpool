@@ -38,7 +38,7 @@
 | C5 | `task_block` | HITL 暂停：非终态 → blocked（blocked_reason 必填） | model, dashboard, reactor | 自动指纹 | task.blocked | ✅ |
 | C6 | `task_resume` | 恢复：blocked → queued（节律不动） | model, dashboard | 自动指纹 | — | ✅ |
 | C7 | `task_cancel` | 取消：任意非终态 → cancelled | model, dashboard, reactor | 自动指纹 | task.cancelled | ✅ |
-| C8 | `task_finish` | **调度器专用收尾**：落执行史 + latest-only 续期 + 流程守卫前置不变量 | scheduler | 自然键（task_id+run_id） | task.finished | ❌ |
+| C8 | `task_finish` | **调度器专用收尾**：落执行史 + latest-only 续期 + 流程守卫前置不变量 | scheduler | 自然键（task_id+run_id+claim_started_at） | task.finished | ❌ |
 | C9 | `task_chain` | 能力图 BFS + 反向剪枝 → 落 parent 串联 once 链 | model, dashboard | auto（去重在 handler） | task.created ×N | ✅ |
 | C10 | `task_budget_extend` | task-budget-extend 审批落列（budget_timeout_sec ≤7200） | approval | 自然键（task_id） | — | ❌ |
 | C11 | `task_claim` | 调度认领：BEGIN IMMEDIATE 原子抢占到期任务（上限 `SEC_SCHEDULER_CLAIM_LIMIT`，默认 12、钳 1–32；36 号） | scheduler | none | task.claimed ×N | ❌ |
@@ -289,7 +289,8 @@
 | `run_id` | string | 条件 | `''` | **证据即参数**（铁律 4）：outcome=done/failed 时必填（exception 路径允许空）；网关**仅做非空校验**，不校验是否存在于 exec 域 results，否则 `E_EVIDENCE_REQUIRED` |
 | `outcome` | string | ✅ | — | 枚举 `done / failed / busy / crash`：busy=exec 并发满（回 queued 不落史）；crash=调度执行异常（视同 failed，run_id 可空） |
 | `note` | string | ❌ | `''` | 摘要 ≤500 字（v4.x：worker 尾部去噪后 3 行） |
-| `session_id` | string | ❌ | null | 会话反查回填值（findWorkerSessionId 结果） |
+| `session_id` | string | ❌ | 省略 | 会话反查回填值；未知时省略，显式 null 不合法 |
+| `claim_started_at` | integer | ❌ | 省略 | 本轮认领写入的 started_at；新调度器必传，防迟到回调改写新一轮；旧调用兼容 |
 | `truth` | object | ❌ | `{checked:false,rejected:false,reason:''}` | 由调度器取 `exec_spawn_worker` 返回值（`data.truth`，拒执标记扫描结果）透传；`truth.rejected=true` ⇒ outcome 强制翻转为 failed（**不经 worker 事件**——`exec.worker.finished` 无 truth 字段） |
 | `timed_out` | boolean | ❌ | false | 超时收尾标记；true 时 ok 强制为 false，并按超时策略参与续期快速重试（60s） |
 | `spent_tokens` | integer | ❌ | null | **成本归因（INV-T14，2026-09-22 落地）**：worker 上报该 run 的 token 用量（≥0）；非空时回填 `tasks.spent_tokens` 并入 `task.finished` payload；`budget_tokens` 非空且超支时 note 前缀 `[预算超支]`、payload 带 `budget_overrun:true`（超支是观测事实不置 failed） |
@@ -349,9 +350,13 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | `E_EVIDENCE_REQUIRED` | outcome=done/failed 且 run_id 缺失或不存在 | 「收尾必须携带真实 run_id（exec 域 results 引用）」 | false |
 | `E_NOT_FOUND` | 任务不存在 | — | false |
 
-**幂等**：自然键 `task:finish:{task_id}:{run_id}`——调度器重启重试同一 run 收尾时重放首次结果（`replay:true`），不重复落 task_runs。
+**幂等**：自然键 `task:finish:{task_id}|{run_id}|{claim_started_at}`——调度器重启重试同一 run 收尾时重放首次结果（`replay:true`），不重复落 task_runs。
 
 **事件**：`task.finished`（payload 见 §1.5——**fgs 域沉淀与 ledger handoff 的触发器**）。busy 路径不发事件（无状态变更）。
+
+**收尾交付（27 号首批，本地实现）**：scheduler 先把去除缺省 null 字段的原始收尾参数原子写入 `data/pending-task-finishes/<sha256(task_id,run_id,claim_started_at)>.json`，再调用总线。抛错和 `ok:false` 都检测；每轮至多 3 次提交、退避 100/200ms；显式不可重试错误停止本轮快重试并留日志。失败保留原 outcome/run，后续 tick 与启动回收前再次恢复；成功或 superseded 后移除记录。写盘失败明确日志并降为进程内重试，不能声称此时可跨重启恢复。目录权限 0700、文件 0600，进程重启可恢复；不承诺断电级 fsync 持久性。
+
+带 `claim_started_at` 的收尾若认领已变化或任务不在 running，只补原 run 的执行史（非空且尚未登记），不改当前任务；原开始时间及显式上报费用保留。旧 busy 不借用新 active_run_id；两轮 busy 不共享空 run 幂等键。迟到结果事件/费用投影、回收史与真实 run 全面归并仍属 D02 待办，不把现有回收记录改成成功。
 
 **side_effects**：`[rows_touched: tasks+1, task_runs+1, events: task.finished×1, files: none]`
 
@@ -1378,3 +1383,10 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - 证据：csai `…/20260926-017/fix-20260930/`（SUMMARY.md `a3e82c3f…`、before/after 插件 SHA、SHA256SUMS）。
 
 **教训**：① 43 号补丁的 verify 产线把「高拒绝」变成常态，凡按 rejected 计失败率的监控都必须区分 verify 角色；② 自动恢复类判据一律用**滚动窗口**，禁止引用降级时刻（一次事后事件可永久锁死）。P7 巡检的「任务动能静默 ~14h、非异常」归因据此更正为**调度死锁缺陷（已修复）**。
+
+### 7.29 2026-09-30 · 27 号首批（本地实现，未部署）
+
+- 收尾统一经过持久恢复器，包括 worker busy（抛错/失败信封）、学习节奏让位、完成和异常路径；修复无会话 `session_id:null` 触发 schema 失败。恢复只重交收尾，不重新派 worker，也不串行锁住整小时执行 tick。
+- Campaign 候选查询改为每项目过滤后 limit=30；候选编译保留原 `program_id`，无归属项留在原候选池待分诊。缺口第 201 项、项目内候选轮转、Dispatcher finding 所属复查及结构化目标约束仍待办。
+- 端点对象型 params 保留真实值用于 H2 路由；验证/存量复核/假设指令把 inconclusive 与 false_positive 分开。当前仅修指令，不代表全链状态、覆盖和学习消费已分离；H2 前三条截断仍存在。
+- 回归覆盖真实 bus/SQLite 下重试、回执丢失、恢复器重建、重复交付、连续 busy、迟到收尾隔离，以及事件参数值与候选项目传递。联合测试结果见 [27 号 §10.3](27-business-quality-and-capacity-plan-2026-09-30.md#103-首批实现与验证2026-09-30)。

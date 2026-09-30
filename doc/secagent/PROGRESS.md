@@ -15,10 +15,19 @@
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
 - **已知遗留（非阻塞，待后续会话）**：sec-suite/asset-db/experience 内部少量 v4 读取函数（experience 仍被 dashboard-rpc/task 链路引用）；`18-migration` 的 DoD 仍须逐条核对。
 - **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 P1–P8 已全部完成并关账（CHAIN END，2026-09-30）**——生产 0.1.7-rc.2（U3 P6b 切换、finalize invariants failures=0、+72h 观察期 P7/P8 两次只读巡检全绿、U4b 新冻结点 + `preserve_after_resume ok=true`、用户指令提前关账；P6 首次失败已回滚+静音修复+预演后重试成功，窗口 2h56m25s、业务 RPO=0）。**遗留移交 27 号方案/观察期后治理**（僵尸泄漏两路径、设置保存写路径、failover 预流缺口、kbList、Campaign 3 预算、提交 SOP/SLA 等）见 [state open_issues](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录 §13–§19](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)。
+- **27 号发现能力改造**：首批源码与契约完成本地验证（257/257），生产未部署；收尾恢复/候选保留/弱判据修复的完成范围和剩余缺口见 [27 号 §10.3](27-business-quality-and-capacity-plan-2026-09-30.md#103-首批实现与验证2026-09-30)。
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
 - **领域语言**：[CONTEXT](../../bundles/dsh/CONTEXT.md)。
 
 ## 二、最近进度结果
+
+### 2026-09-30 · 27 号首批实现：收尾恢复、观察保留与弱判据修复（本地，未部署）
+
+- scheduler 收尾增加持久恢复记录与失败重试，省略空 session；按认领轮次隔离 busy/迟到结果，保留旧 run 执行史；不重写历史回收结果。
+- 候选按项目查询并保留原归属；对象型参数保留值。候选/信号去重纳入 Program 与完整 URL，兼容旧指纹，追加观察与升级均保留证据；补齐 signal schema 的 program_id。
+- 抑制统计不再用 ignored/dup 充当技术误报；平台状态不会单独创造技术正样本。回显/单次延迟/无 OOB 回调保留未知，SQL 差分不以长度相近证明基线相同；验证指令将证据不足与技术反证分开。
+- **本地验证 257/257**：`sec-contract-test-local.sh task vuln hypothesis exec`，新增 15 个故障/兼容性回归。完成范围与剩余边界见 [27 号 §10.3](27-business-quality-and-capacity-plan-2026-09-30.md#103-首批实现与验证2026-09-30)，契约同步 02/05/10。
+- **生产未部署**；未运行目标探测、改预算或升级运行时。完整真实请求链、H2余项轮转、可信判定/capsule、覆盖与学习归因仍待实施，未将本地通过等同于发现能力提升。
 
 ### 2026-09-30 · 27 号方案重审：以真实漏洞发现能力评价（未实施）
 

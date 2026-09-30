@@ -788,13 +788,13 @@ test('幂等: 显式 idempotency_key 同 key 异参 → E_IDEMPOTENT_CONFLICT', 
   assert.equal(r2.error.code, 'E_IDEMPOTENT_CONFLICT')
 })
 
-test('幂等: 机器通道宽容 dup——同弱指纹异参不报错走 dup:true', async () => {
+test('27: 同 host/title 不同 URL 保留为独立候选观察', async () => {
   const { bus } = makeEnv()
   const a1 = await seedCandidate(bus)
   const a2 = await bus.dispatch('vuln', 'register_candidate', { title: 'a.example.com 被动审计候选：xray', severity: 'high', host: 'a.example.com', url: 'https://a.example.com/login?variant=2', source: 'xray-webhook' }, { actor: 'webhook' })
   assert.equal(a2.ok, true)
-  assert.equal(a2.data.dup, true)
-  assert.equal(a1.data.id, a2.data.id, '同 host+title 弱指纹不另起行')
+  assert.equal(a2.data.dup, false)
+  assert.notEqual(a1.data.id, a2.data.id, '不同 URL 在验证前不得合并')
 })
 
 // ---------------------------------------------------------------------------
@@ -1330,7 +1330,7 @@ test('43 P0: 噪声类别学习——同类拒绝率≥阈值后新候选直接�
       assert.notEqual(r.data.status, 'ignored', '阈值前正常入池')
       ids.push(r.data.id)
     }
-    for (const id of ids.slice(0, 2)) {
+    for (const id of ids) {
       const rej = await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'false_positive', reason: '同类模板历史全为误报（43 号补丁夹具）' }, { actor: 'model' })
       assert.equal(rej.ok, true)
     }
@@ -1414,4 +1414,99 @@ test('43 P0: noise_stats 暴露类别拒绝率与抑制口径', async () => {
   assert.equal(cat.total, 2)
   assert.equal(cat.false_positive, 1)
   assert.ok(r.data.policy.suppress_min >= 1)
+})
+
+test('27: 同 URL 的新观察追加证据，不同项目不合并（含幂等层）', async () => {
+  const { bus } = makeEnv()
+  const a = await seedCandidate(bus, { program_id: 'A', evidence: 'first observation' })
+  const b = await seedCandidate(bus, { program_id: 'B', evidence: 'first observation' })
+  assert.notEqual(a.data.id, b.data.id)
+  const extra = await seedCandidate(bus, { program_id: 'A', evidence: 'second observation' })
+  assert.equal(extra.data.id, a.data.id)
+  assert.equal(extra.data.dup, true)
+  const row = bus._internal.db().prepare('SELECT evidence FROM findings WHERE id=?').get(a.data.id)
+  assert.ok(row.evidence.includes('first observation'))
+  assert.ok(row.evidence.includes('second observation'))
+})
+
+test('27: 新旧候选均可精确升级；旧弱指纹不吞另一 URL', async () => {
+  for (const legacy of [false, true]) {
+    const { bus } = makeEnv()
+    const title = '测试漏洞信号：跨对象读取受限记录'
+    const a = await seedCandidate(bus, { title, program_id: 'p', url: 'https://a.example.com/a' })
+    if (legacy) {
+      const { createHash } = await import('node:crypto')
+      bus._internal.db().prepare('UPDATE findings SET fingerprint=? WHERE id=?').run(createHash('sha1').update(`a.example.com|${title}`).digest('hex'), a.data.id)
+    }
+    const other = await seedCandidate(bus, { title, program_id: 'p', url: 'https://a.example.com/b' })
+    assert.notEqual(other.data.id, a.data.id)
+    const exact = await seedCandidate(bus, { title, program_id: 'p', url: 'https://a.example.com/a', evidence: 'additional evidence' })
+    assert.equal(exact.data.id, a.data.id)
+    const promoted = await seedSignal(bus, { title, program_id: 'p', url: 'https://a.example.com/a' })
+    assert.equal(promoted.ok, true, promoted.error?.message)
+    assert.equal(promoted.data.id, a.data.id)
+    assert.equal(promoted.data.upgraded, true)
+    assert.ok(bus._internal.db().prepare('SELECT evidence FROM findings WHERE id=?').get(a.data.id).evidence.includes('additional evidence'))
+    const untouched = bus._internal.db().prepare('SELECT noise,status FROM findings WHERE id=?').get(other.data.id)
+    assert.deepEqual({ ...untouched }, { noise: 1, status: 'new' })
+    const repeated = await seedCandidate(bus, { title, program_id: 'p', url: 'https://a.example.com/a', evidence: 'after promotion' })
+    assert.equal(repeated.data.id, a.data.id)
+  }
+})
+
+test('27: 外部 ID 限项目去重，信号自然键也隔离项目', async () => {
+  const { bus } = makeEnv()
+  const a = await seedCandidate(bus, { program_id: 'A', external_id: 'same-import-id' })
+  const b = await seedCandidate(bus, { program_id: 'B', external_id: 'same-import-id' })
+  assert.notEqual(a.data.id, b.data.id)
+  const otherUrl = await seedCandidate(bus, { program_id: 'B', external_id: 'same-import-id', url: 'https://a.example.com/other' })
+  assert.notEqual(otherUrl.data.id, b.data.id, '外部 ID 也不得吞不同 URL')
+  assert.equal((await seedCandidate(bus, { program_id: 'B', external_id: 'same-import-id', evidence: 'new evidence' })).data.id, b.data.id)
+  const sa = await seedSignal(bus, { program_id: 'A' })
+  const sb = await seedSignal(bus, { program_id: 'B' })
+  assert.equal(sa.ok, true)
+  assert.equal(sb.ok, true, sb.error?.message)
+  assert.notEqual(sa.data.id, sb.data.id)
+})
+
+test('27: ignored/dup 不参与技术误报抑制，登记、统计、sweep 口径一致', async () => {
+  await withEnv({ SEC_VULN_NOISE_SUPPRESS_MIN: '2', SEC_VULN_NOISE_SUPPRESS_RATE: '0.8' }, async () => {
+    const { bus } = makeEnv()
+    const title = 'IDOR object observation'
+    for (let i = 0; i < 4; i++) {
+      const r = await seedCandidate(bus, { title, host: `n${i}.example.com`, source: 'authz_diff' })
+      bus._internal.db().prepare('UPDATE findings SET status=? WHERE id=?').run(i % 2 ? 'dup' : 'ignored', r.data.id)
+    }
+    const next = await seedCandidate(bus, { title, host: 'next.example.com', source: 'authz_diff' })
+    assert.equal(next.data.suppressed, false)
+    const stats = await bus.dispatch('vuln', 'noise_stats', { min_total: 1 }, { actor: 'dashboard' })
+    const c = stats.data.categories.find(x => x.source === 'authz_diff')
+    assert.equal(c.sample, 0)
+    assert.equal(c.rejected, 0)
+    assert.equal(c.reject_rate, 0)
+    assert.equal(c.suppressed, false)
+    const sweep = await bus.dispatch('vuln', 'candidates_sweep', { dry_run: true }, { actor: 'dashboard' })
+    assert.equal(sweep.data.by_reason.category_noise, 0)
+  })
+})
+
+test('27: 平台状态不创造技术正样本，已有技术确认变为 submitted/accepted/dup 不丢失真值', async () => {
+  const { bus } = makeEnv()
+  const ids = []
+  for (const [i, status] of ['confirmed', 'submitted', 'accepted', 'dup', 'accepted'].entries()) {
+    const r = await seedCandidate(bus, { title: 'Stats technical truth', host: `t${i}.example.com`, source: 'truth-fixture' })
+    bus._internal.db().prepare('UPDATE findings SET status=?,confidence=? WHERE id=?').run(status, i < 4 ? 'confirmed' : 'tentative', r.data.id)
+    ids.push(r.data.id)
+  }
+  const dup = await bus.dispatch('vuln', 'reject', { finding_id: ids[0], verdict: 'dup', dup_of: ids[1], reason: '重复观察保留原有技术确认，不作为方法失败' }, { actor: 'model' })
+  assert.equal(dup.ok, true, dup.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT confidence FROM findings WHERE id=?').get(ids[0]).confidence, 'confirmed')
+  const r = await seedCandidate(bus, { title: 'Stats technical truth', host: 'negative.example.com', source: 'truth-fixture' })
+  await bus.dispatch('vuln', 'reject', { finding_id: r.data.id, verdict: 'false_positive', reason: '本次实验有可靠反证，确认不是漏洞' }, { actor: 'model' })
+  const stats = await bus.dispatch('vuln', 'noise_stats', { min_total: 1 }, { actor: 'dashboard' })
+  const c = stats.data.categories.find(x => x.source === 'truth-fixture')
+  assert.equal(c.total, 6)
+  assert.equal(c.technical_confirmed, 4)
+  assert.equal(c.sample, 5)
+  assert.equal(c.reject_rate, 0.2)
 })

@@ -171,7 +171,7 @@ export const TASK_MANIFEST = {
   description: '任务/调度/执行史/worker 注册表——编排器派发的工作单元与调度循环的单一真相源，收尾权唯一归调度器/审批',
   owns: {
     tables: ['tasks', 'task_runs', 'workers', 'strategy_dedupe', 'campaigns', 'campaign_decisions', 'campaign_checkpoints', 'task_settings'],
-    files: ['data/scheduler.lock', 'data/events/task.jsonl'],
+    files: ['data/scheduler.lock', 'data/pending-task-finishes/', 'data/events/task.jsonl'],
   },
   commands: {
     task_create: {
@@ -279,6 +279,7 @@ export const TASK_MANIFEST = {
       schema: schema({
         task_id: int(),
         run_id: str({ default: '' }),
+        claim_started_at: int({ minimum: 0 }),
         outcome: en(OUTCOME_ENUM),
         note: str({ default: '' }),
         session_id: str(),
@@ -287,7 +288,7 @@ export const TASK_MANIFEST = {
         spent_tokens: int({ minimum: 0 }),
       }, ['task_id', 'outcome']),
       idempotent: 'natural',
-      idempotent_natural: ['task_id', 'run_id'],
+      idempotent_natural: ['task_id', 'run_id', 'claim_started_at'],
       events: ['task.finished'],
       event_limit: 1,
       invariants: ['finishEvidence'],
@@ -1145,7 +1146,7 @@ function makeHandlers(opts) {
       `验证纪律（不可跳过）：`,
       `1. 构造差分对照请求（攻击 vs 对照），响应特征（status/长度/正文特征/simhash/时延）落 results/<run_id>/；`,
       `2. 调 exec_oracle_judge（oracle=${oracle || '按类选择'}）做机器判定——模型无权宣布 verified；`,
-      `3. verdict=verified → vuln_oracle_capsule 落 proof capsule → vuln_register_candidate/vuln_confirm 引用 capsule:{id}；rejected/inconclusive → vuln_reject 或补证据重判。`,
+      `3. verdict=verified → vuln_oracle_capsule 落 proof capsule → vuln_register_candidate/vuln_confirm 引用 capsule:{id}；rejected 只有可靠反证才 vuln_reject(false_positive)；inconclusive → vuln_note 记录缺少的前置/证据并保留候选，补证据后重判。`,
       `program=${programId}；禁止越出 scope；证据不足显式 inconclusive 不猜。`,
       ...extraLines,
     ]
@@ -1160,7 +1161,7 @@ function makeHandlers(opts) {
         if (!raw || raw === 'null') return []
         const obj = typeof raw === 'string' ? JSON.parse(raw) : raw
         if (Array.isArray(obj)) return obj
-        if (obj && typeof obj === 'object') return Object.keys(obj).map((k) => ({ name: k, value: '' }))
+        if (obj && typeof obj === 'object') return Object.entries(obj).map(([name, value]) => ({ name, value: value == null ? '' : (typeof value === 'object' ? JSON.stringify(value) : String(value)) }))
         return []
       } catch { return [] }
     })()
@@ -1657,18 +1658,20 @@ function makeHandlers(opts) {
     } catch { /* 知识域不可达 → 空矩阵（不阻断规划） */ }
     // 43 号补丁：候选验证输入——待验证候选直接成为 verify 草稿（发现转化的第一瓶颈是验证吞吐）。
     const candidates = []
-    try {
-      const r = queryRef ? await queryRef('vuln', 'candidates', { claim_state: 'available', limit: 30, sort: 'severity', dir: 'desc' }, { actor: 'reactor' }) : null
-      const rows = r ? ((r.data && Array.isArray(r.data.rows)) ? r.data.rows : (Array.isArray(r.rows) ? r.rows : [])) : []
-      for (const row of rows) {
-        const programId = String(row.program_id || '')
-        if (programId && !campaign.program_ids.includes(programId)) continue
-        let host = String(row.host || '')
-        if (!host && row.url) { try { host = new URL(String(row.url)).hostname } catch { host = '' } }
-        if (!host) continue
-        candidates.push({ id: Number(row.id), host, severity: String(row.severity || ''), title: String(row.title || '').slice(0, 80), program_id: programId || campaign.program_ids[0] || '' })
-      }
-    } catch { /* 候选池不可达 → 本轮不派验证草稿 */ }
+    for (const programId of campaign.program_ids) {
+      try {
+        const r = queryRef ? await queryRef('vuln', 'candidates', { program_id: programId, claim_state: 'available', limit: 30, sort: 'severity', dir: 'desc' }, { actor: 'reactor' }) : null
+        const rows = r ? ((r.data && Array.isArray(r.data.rows)) ? r.data.rows : (Array.isArray(r.rows) ? r.rows : [])) : []
+        for (const row of rows) {
+          // 无归属候选不能猜成第一个项目；分页在项目过滤之后，避免其他项目占满窗口。
+          if (String(row.program_id || '') !== programId) continue
+          let host = String(row.host || '')
+          if (!host && row.url) { try { host = new URL(String(row.url)).hostname } catch { host = '' } }
+          if (!host) continue
+          candidates.push({ id: Number(row.id), host, severity: String(row.severity || ''), title: String(row.title || '').slice(0, 80), program_id: programId })
+        }
+      } catch { /* 单个项目候选池不可达不影响其余项目 */ }
+    }
     const activeTaskCount = repo.activeCampaignTaskCount(campaign.id)
     let budgetRemainingRatio = 1
     if (campaign.budget_tokens != null && Number(campaign.budget_tokens) > 0) {
@@ -2356,12 +2359,14 @@ function makeHandlers(opts) {
       const nowTs = Date.now()
       const t = repo.getTask(Number(args.task_id))
       if (!t) throwErr('E_NOT_FOUND', `task 不存在: ${args.task_id}`, '核对 task_list 里的 id')
-      const runId = args.run_id || t.active_run_id || ''
+      // 收尾重试只能作用于认领它的那一轮，空 run 的 busy 也必须隔离。
+      const claimChanged = args.claim_started_at != null && (Number(t.started_at) !== args.claim_started_at || t.status !== 'running')
+      const runId = args.run_id || (claimChanged ? '' : t.active_run_id) || ''
       const recorded = runId && repo.hasTaskRun(Number(args.task_id), runId)
-      if (recorded || TERMINAL.has(t.status) || t.status === 'blocked' || (t.active_run_id && runId !== t.active_run_id)) {
-        // 晚到回调不能改写取消/暂停/回收，也不能覆盖正在运行的另一轮。
-        if (runId && !recorded) repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok: args.outcome === 'done' && !args.timed_out, note: args.note || '', started_at: t.started_at, finished_at: nowTs, session_id: args.session_id ?? null })
-        return { data: { task_id: Number(args.task_id), superseded: true } }
+      if (claimChanged || recorded || TERMINAL.has(t.status) || t.status === 'blocked' || (t.active_run_id && runId !== t.active_run_id)) {
+        // 晚到结果仍保留原轮次执行史；空 run 的旧 busy 不得借用新 active_run_id。
+        if (runId && !recorded) repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok: args.outcome === 'done' && !args.timed_out && !args.truth?.rejected, note: args.note || '', started_at: args.claim_started_at ?? t.started_at, finished_at: nowTs, session_id: args.session_id ?? null, spent_tokens: args.spent_tokens ?? null })
+        return { data: { task_id: Number(args.task_id), superseded: true, ...(claimChanged ? { reason: 'claim_changed' } : {}) } }
       }
 
       // 真实性判定（truth.rejected ⇒ 强制 failed）
@@ -2564,10 +2569,10 @@ function makeHandlers(opts) {
         objective = `[资产缺口] ${args.host} 根域枚举超窗——subfinder 子域枚举 + dnsx 解析去存 + httpx 探活分级（fofa_search 可作补充信源）；新存活主机 asset_upsert_bulk 入库（source=asset_enum，尊重 program QPS/risk，不越出 scope）；收尾 ledger_coverage_mark(dim=asset, key=${args.host}, mark=enum_fresh) 记账并写 handoff 摘要。`
       } else if (args.kind === 'review_finding') {
         // 26 号补丁：存量复核入专项——超龄未分诊 finding 逐条复核（复用验证铁律，一次性消化历史债务）
-        objective = `[存量复核] finding #${args.host} 超龄未分诊——vuln_get 读取候选详情与既有证据；证据充分走复核校准（confirm 需机器 oracle 或 proof capsule，不可凭字段齐全确认）；复现可差分则补 exec_oracle_judge 验证；证据不足/误报则 vuln_reject 或标 false_positive 并写明 reason；全程不越出 scope，结论落 FGS + handoff 引用。`
+        objective = `[存量复核] finding #${args.host} 超龄未分诊——vuln_get 读取候选详情与既有证据；证据充分走复核校准（confirm 需机器 oracle 或 proof capsule，不可凭字段齐全确认）；复现可差分则补 exec_oracle_judge 验证；有可靠反证才 vuln_reject(false_positive)；证据不足则 vuln_note 记录 inconclusive 和待补证据，保留候选；全程不越出 scope，结论落 FGS + handoff 引用。`
       } else if (args.kind === 'verify_candidate') {
         // 43 号补丁：候选验证成为一等流水线（发现转化的第一瓶颈；此前 verify 角色任务仅个位数）
-        objective = `[候选验证] finding #${args.host}（${args.vuln_class || 'idor'} 候选）——vuln_claim 认领后优先走机器 oracle（exec_oracle_judge / 双会话差分重放 / proof capsule），通过才 vuln_confirm（evidence 必填，引用 capsule/run）；不成立或证据不足按纪律 vuln_reject(false_positive) 写明 reason，禁止无证据 confirm、禁止重复造轮子。全程不越出 scope，结论落 FGS + handoff。`
+        objective = `[候选验证] finding #${args.host}（${args.vuln_class || 'idor'} 候选）——vuln_claim 认领后优先走机器 oracle（exec_oracle_judge / 双会话差分重放 / proof capsule），通过才 vuln_confirm（evidence 必填，引用 capsule/run）；有可靠反证证明不成立才 vuln_reject(false_positive) 写明 reason；证据不足则 vuln_note 记录 inconclusive 和待补前置，保留候选，禁止无证据 confirm、禁止重复造轮子。全程不越出 scope，结论落 FGS + handoff。`
       } else {
         objective = hypothesisObjective({ level: args.level || 'H2', vulnClass: args.vuln_class || 'info_disclosure', host: args.host, path: args.path || '', param: args.param || '', oracle: args.oracle, rationale: args.rationale || '覆盖缺口驱动', programId: args.program_id, extraLines })
       }
@@ -3351,6 +3356,65 @@ function _ok(result) { return !!(result && result.ok) }
 function _errCode(result) { return result && result.error && result.error.code ? result.error.code : 'E_INTERNAL' }
 function _errMsg(result) { return (result && result.error && result.error.message) || '' }
 
+// 27 号首批：先保存收尾意图，再通过总线提交；失败留盘供 tick/重启恢复。
+// 该小型日志只弥补 worker 返回到 task.finish 的交付窗口，不替代 worker 注册表。
+export function createTaskFinisher({ dataDir, dispatch, retryDelayMs = 100 }) {
+  const dir = path.join(dataDir, 'pending-task-finishes')
+  const inFlight = new Map()
+  const memory = new Map()
+  function keyOf(args) { return crypto.createHash('sha256').update(JSON.stringify([args.task_id, args.run_id || '', args.claim_started_at ?? null])).digest('hex') }
+  async function deliver(key, args) {
+    if (inFlight.has(key)) return inFlight.get(key)
+    const delivery = (async () => {
+      let result
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try { result = await dispatch('task', 'finish', args, { actor: 'scheduler' }) }
+        catch (e) { result = { ok: false, error: { code: e?.code || 'E_INTERNAL', message: e?.message || String(e) } } }
+        if (_ok(result)) {
+          memory.delete(key)
+          try { fs.unlinkSync(path.join(dir, `${key}.json`)) } catch (e) { if (e.code !== 'ENOENT') log(`收尾日志清理失败 #${args.task_id}: ${e.message}`) }
+          return result
+        }
+        log(`任务 #${args.task_id} 收尾未成功 (${attempt + 1}/3): ${_errCode(result)} ${_errMsg(result)}`)
+        // 契约/权限等确定性拒绝留档排查，不用紧密重试制造额外负载。
+        if (result?.error?.retryable === false) break
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)))
+      }
+      log(`任务 #${args.task_id} 收尾待恢复，保留 ${key}.json；原 outcome=${args.outcome}`)
+      return result
+    })()
+    inFlight.set(key, delivery)
+    try { return await delivery } finally { inFlight.delete(key) }
+  }
+  async function finish(raw) {
+    const args = Object.fromEntries(Object.entries(raw).filter(([, value]) => value != null))
+    const key = keyOf(args)
+    memory.set(key, args)
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+      const file = path.join(dir, `${key}.json`)
+      fs.writeFileSync(`${file}.tmp`, JSON.stringify(args), { mode: 0o600 })
+      fs.renameSync(`${file}.tmp`, file)
+    } catch (e) { log(`任务 #${args.task_id} 收尾日志写入失败（仅内存重试）: ${e.message}`) }
+    return deliver(key, args)
+  }
+  async function flush() {
+    let files = []
+    try { files = fs.readdirSync(dir).filter((f) => /^[a-f0-9]{64}\.json$/.test(f)) }
+    catch (e) { if (e.code !== 'ENOENT') log(`收尾日志读取失败: ${e.message}`) }
+    for (const file of files) {
+      try {
+        const args = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'))
+        const key = file.slice(0, -5)
+        if (keyOf(args) !== key) throw new Error('收尾日志键不匹配')
+        if (!memory.has(key)) memory.set(key, args)
+      } catch (e) { log(`无效收尾日志 ${file}: ${e.message}`) }
+    }
+    for (const [key, args] of memory) await deliver(key, args)
+  }
+  return { finish, flush }
+}
+
 export function startTaskScheduler(opts) {
   const { dataDir, dispatch, query, getSessionPersistence, getWorkspaceRegistry } = opts
   const repo = opts.repo || null // backend 直传（scheduledProgress 续跑检测需要）；为 null 时按全新运行处理
@@ -3374,7 +3438,9 @@ export function startTaskScheduler(opts) {
   // 持锁到下一个微任务，而同批次其他实例的引导写入是同步 busy-wait——主线程被占满、事务无法
   // 提交，形成死锁（U2 实测：reap 后 boot 停摆、bus_meta/curated 索引持续 database is locked）。
   // 推迟到加载批次结束后的定时器再回收，语义不变（仍是启动即回收）。
-  const startupReap = () => {
+  const finisher = createTaskFinisher({ dataDir, dispatch })
+  const startupReap = async () => {
+    await finisher.flush()
     try { dispatch('task', 'reap', { max_age: 0 }, { actor: 'scheduler' }).catch(() => {}) } catch { /* 启动回收失败不阻断 */ }
     try { dispatch('task', 'worker_reap', {}, { actor: 'scheduler' }).catch(() => {}) } catch { /* 启动对账失败不阻断 */ }
   }
@@ -3441,9 +3507,11 @@ export function startTaskScheduler(opts) {
   }
 
   async function schedulerTick() {
+    await finisher.flush()
     let claimed = []
+    const claimStartedAt = Date.now()
     try {
-      const r = await dispatch('task', 'claim', { now: Date.now() }, { actor: 'scheduler' })
+      const r = await dispatch('task', 'claim', { now: claimStartedAt }, { actor: 'scheduler' })
       claimed = (_ok(r) && r.data && r.data.claimed) || []
       // 36 号补丁诊断：claim 信封不可见时静默空转无从排查
       if (!_ok(r)) log(`调度认领未成功: ${_errCode(r)} ${_errMsg(r)}`)
@@ -3459,7 +3527,7 @@ export function startTaskScheduler(opts) {
       } catch (e) {
         log(`调度取任务 #${taskId} 失败: ${e?.message}`)
         // 取数失败也要显式收尾（crash）——认领后静默跳过会把任务卡死在 running 直到回收宽限
-        try { await dispatch('task', 'finish', { task_id: taskId, run_id: '', outcome: 'crash', note: `调度取任务失败: ${e?.message || ''}`.slice(0, 300) }, { actor: 'scheduler' }) } catch { /* ignore */ }
+        await finisher.finish({ task_id: taskId, claim_started_at: claimStartedAt, run_id: '', outcome: 'crash', note: `调度取任务失败: ${e?.message || ''}`.slice(0, 300) })
       }
     }
     // 学习目标节奏闸：每 tick 至多 1 个 learn-daily/eval-batch/change-retest，其余回 queued
@@ -3471,7 +3539,7 @@ export function startTaskScheduler(opts) {
           learningTaken++
           if (learningTaken > 1) {
             log(`任务 #${task.id}（goal=${task.goal}）学习节奏闸：本 tick 已有学习任务，回 queued`)
-            await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'busy' }, { actor: 'scheduler' })
+            await finisher.finish({ task_id: task.id, claim_started_at: task.started_at, run_id: '', outcome: 'busy' })
             return
           }
         }
@@ -3510,7 +3578,7 @@ export function startTaskScheduler(opts) {
           // 其余抛错（域未注册/宿主故障等）非瞬态——抛给外层兜底记 crash，可见可查
           if (e && e.code === 'E_EXEC_WORKER_BUSY') {
             log(`任务 #${task.id} worker 并发已满，回 queued`)
-            await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'busy' }, { actor: 'scheduler' }).catch(() => {})
+            await finisher.finish({ task_id: task.id, claim_started_at: task.started_at, run_id: '', outcome: 'busy' })
             return
           }
           throw e
@@ -3518,7 +3586,7 @@ export function startTaskScheduler(opts) {
         if (!_ok(r)) {
           const code = _errCode(r)
           if (code === 'E_EXEC_WORKER_BUSY') {
-            await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'busy' }, { actor: 'scheduler' })
+            await finisher.finish({ task_id: task.id, claim_started_at: task.started_at, run_id: '', outcome: 'busy' })
             return
           }
           throw new Error(`spawn_worker ${code}: ${_errMsg(r)}`)
@@ -3527,7 +3595,7 @@ export function startTaskScheduler(opts) {
         // 幂等恢复路径命中在飞 worker：本 tick 让位（任务回 queued，在飞的那轮由宿主重启恢复路径负责）
         if (w.in_progress) {
           log(`任务 #${task.id} 同任务 worker 在飞（run ${w.run_id}），本 tick 让位`)
-          await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'busy' }, { actor: 'scheduler' })
+          await finisher.finish({ task_id: task.id, claim_started_at: task.started_at, run_id: '', outcome: 'busy' })
           return
         }
         const tailLines = String(w.tail || '').split('\n').filter((l) => l.trim() && !WORKER_NOISE_RE.test(l))
@@ -3559,14 +3627,14 @@ export function startTaskScheduler(opts) {
         const workerSessionId = w.session_id || await findWorkerSessionId(cwd, startedAt, null)
         const truth = w.truth && typeof w.truth === 'object' ? w.truth : { checked: false, rejected: false, reason: '' }
         const outcome = (w.ok && !timedOut && !w.cancelled) ? 'done' : 'failed'
-        const fin = await dispatch('task', 'finish', {
-          task_id: task.id, run_id: w.run_id || '', outcome, note,
-          session_id: workerSessionId ?? null, truth, timed_out: timedOut,
-        }, { actor: 'scheduler' })
+        const fin = await finisher.finish({
+          task_id: task.id, claim_started_at: task.started_at, run_id: w.run_id || '', outcome, note,
+          session_id: workerSessionId, truth, timed_out: timedOut,
+        })
         if (!_ok(fin)) log(`任务 #${task.id} task_finish 未成功: ${_errCode(fin)} ${_errMsg(fin)}`)
       } catch (e) {
         log(`调度任务 #${task.id} 执行异常: ${e?.stack || e?.message || String(e)}`)
-        try { await dispatch('task', 'finish', { task_id: task.id, run_id: '', outcome: 'crash', note: `调度执行异常: ${e?.message || ''}`.slice(0, 300) }, { actor: 'scheduler' }) } catch { /* ignore */ }
+        await finisher.finish({ task_id: task.id, claim_started_at: task.started_at, run_id: '', outcome: 'crash', note: `调度执行异常: ${e?.message || ''}`.slice(0, 300) })
       }
     })()))
     await campaignTick()

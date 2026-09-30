@@ -102,8 +102,8 @@ export function noiseCategoryDecision(repo, source, category, { ttlMs = 60000 } 
   let sample = 0; let rejected = 0
   for (const row of repo.sourceTitleStats(source, { ttlMs })) {
     if (findingCategory(source, row.title) !== category) continue
-    sample += Number(row.total) || 0
-    rejected += (Number(row.false_positive) || 0) + (Number(row.ignored) || 0) + (Number(row.dup) || 0)
+    sample += (Number(row.technical_confirmed) || 0) + (Number(row.false_positive) || 0)
+    rejected += Number(row.false_positive) || 0
   }
   const rate = sample > 0 ? rejected / sample : 0
   const cfg = noiseEnv()
@@ -183,6 +183,7 @@ export const VULN_MANIFEST = {
         host: str(),
         url: str({ default: '' }),
         evidence: str(),
+        program_id: str(),
         reproduction_steps: str(),
         impact: str(),
         source: str({ default: 'agent' }),
@@ -198,12 +199,12 @@ export const VULN_MANIFEST = {
         task_id: int({ description: '（可选）产生该发现的 task id——归因→连败拉黑/学习闭环' }),
       }, ['title', 'severity', 'host', 'evidence', 'reproduction_steps', 'impact']),
       idempotent: 'natural',
-      idempotent_natural: ['host', 'title', 'url'],
+      idempotent_natural: ['program_id', 'host', 'title', 'url'],
       events: ['vuln.signal.registered', 'vuln.candidate.promoted'],
       event_limit: 2,
       invariants: ['signalComplete'],
       timeout_ms: 60000,
-      agent_note: '登记一个完整验证过的漏洞发现（唯一能新建信号面行的动词）。五要素强制：规范标题（≥10 字符，禁止工具原始输出当标题）、复现步骤、具体化影响、证据引用（run_id/flow_id/burp_item/evidence 路径/oob）、host。severity 禁 info。同 host+title+url 指纹自动去重；命中待验证候选会就地补全升级（upgraded:true）。纪律：登记前完成对抗性自检（≥2 反证假设逐一排除）+ 高危双出口复现。',
+      agent_note: '登记一个完整验证过的漏洞发现（唯一能新建信号面行的动词）。五要素强制：规范标题（≥10 字符，禁止工具原始输出当标题）、复现步骤、具体化影响、证据引用（run_id/flow_id/burp_item/evidence 路径/oob）、host。severity 禁 info。同 program+host+title+url 指纹自动去重；命中待验证候选会就地补全升级（upgraded:true）。纪律：登记前完成对抗性自检（≥2 反证假设逐一排除）+ 高危双出口复现。',
       deprecated: false,
     },
     vuln_register_candidate: {
@@ -220,7 +221,7 @@ export const VULN_MANIFEST = {
         task_id: int({ description: '（可选）产生该候选的 task id——归因→学习闭环' }),
       }, ['title', 'severity', 'host', 'source']),
       idempotent: 'auto',
-      idempotent_fields: ['title', 'host', 'url', 'source', 'external_id'],
+      idempotent_fields: ['program_id', 'title', 'host', 'url', 'source', 'external_id', 'evidence'],
       events: ['vuln.candidate.registered', 'vuln.candidate.suppressed'],
       event_limit: 1,
       invariants: [],
@@ -353,7 +354,7 @@ export const VULN_MANIFEST = {
       event_limit: 0,
       invariants: [],
       timeout_ms: 60000,
-      agent_note: '噪声类别学习数据面（只读）：按 source×category 聚合 total/confirmed/false_positive/ignored/dup 与拒绝率，并返回自动抑制阈值口径（rate/min）、白名单与来源日配额。用于复核"哪类问题一直全是噪声"。',
+      agent_note: '噪声类别学习数据面（只读）：按 source×category 聚合 total/confirmed/false_positive/ignored/dup 与技术误报率（分母=技术已确认+false_positive；忽略/重复/待验证不作为反证），并返回自动抑制阈值口径（rate/min）、白名单与来源日配额。用于复核"哪类问题一直全是噪声"。',
       deprecated: false,
     },
     // 43 号补丁（P0/B3）：存量候选确定性批量处置（零 LLM）
@@ -638,6 +639,22 @@ function hostOf(urlStr) {
 
 function fpWeak(host, title) { return sha1(`${normalizeHost(host)}|${String(title).trim()}`) }
 function fpStrong(host, title, url) { return sha1(`${normalizeHost(host)}|${String(title).trim()}|${url || ''}`) }
+
+// 存储去重只消除同项目、同 URL 的重复观察，不在验证前猜测共同根因。
+function fpObservation(programId, host, title, url) {
+  return sha1(JSON.stringify(['observation-v2', String(programId || ''), normalizeHost(host), String(title).trim(), String(url || '')]))
+}
+function findObservation(repo, programId, host, title, url) {
+  for (const fp of [fpObservation(programId, host, title, url), fpStrong(host, title, url), fpWeak(host, title)]) {
+    const row = repo.getFindingByFingerprint(fp)
+    if (row && String(row.program_id || '') === String(programId || '') && String(row.url || '') === String(url || '')) return row
+  }
+  return null
+}
+function appendObservationEvidence(repo, row, evidence) {
+  const text = String(evidence || '').trim()
+  if (text && String(row.evidence || '').trim() !== text) repo.appendEvidence(row.id, `${isoPrefix(Date.now())} observation: ${text}`)
+}
 
 function refPrefix(evidence) {
   const m = String(evidence || '').trim().match(EVIDENCE_TOKEN_RE)
@@ -1001,13 +1018,12 @@ function makeHandlers(opts) {
       const host = normalizeHost(args.host)
       const title = String(args.title).trim()
       const url = String(args.url || '')
-      const weak = fpWeak(host, title)
-      const strong = fpStrong(host, title, url)
+      const strong = fpObservation(args.program_id, host, title, url)
       const now = Date.now()
-      // 跨源去重（external_id 优先）：上游系统稳定 id 相同即同一发现，防重复导入
+      // 同项目/host/URL 内 external_id 优先：标题变化不重复导入，其他入口保留。
       const extId = String(args.external_id || '').trim()
       if (extId) {
-        const byExt = repo.getFindingByExternalId?.(extId)
+        const byExt = repo.getFindingByExternalId?.(extId, args.program_id, host, url)
         if (byExt) {
           if (ctx.session_id && !byExt.session_id) repo.backfillSession(byExt.id, ctx.session_id)
           return {
@@ -1017,7 +1033,8 @@ function makeHandlers(opts) {
           }
         }
       }
-      const dup = repo.getFindingByFingerprint(strong)
+      const existing = findObservation(repo, args.program_id, host, title, url)
+      const dup = existing && !(existing.noise === 1 && existing.status === 'new') ? existing : null
       if (dup) {
         if (ctx.session_id) repo.backfillSession(dup.id, ctx.session_id)
         return {
@@ -1027,10 +1044,10 @@ function makeHandlers(opts) {
         }
       }
       const signalTaskId = args.task_id != null ? Number(args.task_id) : (ctx.task_id != null ? Number(ctx.task_id) : null)
-      const cand = repo.getFindingByFingerprint(weak)
+      const cand = existing
       if (cand && cand.noise === 1 && cand.status === 'new') {
         const merged = repo.mergeCandidate(cand.id, {
-          title, host, url, severity: args.severity, evidence: args.evidence, source: args.source || 'agent',
+          title, host, url, severity: args.severity, evidence: [cand.evidence, args.evidence].filter(Boolean).join('\n'), source: args.source || 'agent',
           vuln_type: args.vuln_type || null, cwe: args.cwe || null, endpoint_ref: args.endpoint_ref || null,
           preconditions: args.preconditions || null, reproduction_steps: args.reproduction_steps || null,
           impact: args.impact || null, recommendation: args.recommendation || null,
@@ -1040,6 +1057,7 @@ function makeHandlers(opts) {
         }, strong)
         if (merged.changed) {
           repo.markSyncPending?.(cand.id)
+          repo.invalidateSourceStats?.(cand.source)
           repo.invalidateSourceStats?.(args.source || 'agent')
           return {
             data: { id: cand.id, dup: false, upgraded: true, noise: false, status: merged.after?.status || 'new' },
@@ -1071,29 +1089,29 @@ function makeHandlers(opts) {
       }
     },
 
-    // C2：机器直灌候选（宽容 dup；弱指纹同 host+title 去重）
+    // C2：机器直灌候选（同项目/host/title/URL 去重，保留其他入口）
     vuln_register_candidate: async (args, repo, ctx) => {
       const host = normalizeHost(args.host)
       const title = String(args.title).trim()
       const url = String(args.url || '')
-      const weak = fpWeak(host, title)
+      const fingerprint = fpObservation(args.program_id, host, title, url)
       const now = Date.now()
       const extId = String(args.external_id || '').trim()
-      // 跨源去重：external_id 优先（上游稳定 id）
+      // 同项目/host/URL 内 external_id 优先（上游稳定 id）。
       if (extId) {
-        const byExt = repo.getFindingByExternalId?.(extId)
+        const byExt = repo.getFindingByExternalId?.(extId, args.program_id, host, url)
         if (byExt) {
+          appendObservationEvidence(repo, byExt, args.evidence)
           if (ctx.session_id && !byExt.session_id) repo.backfillSession(byExt.id, ctx.session_id)
           return { data: { id: byExt.id, dup: true, noise: byExt.noise === 1, status: byExt.status, dedup_reason: 'external_id' }, events: [], before: { status: byExt.status, noise: byExt.noise }, after: { status: byExt.status, noise: byExt.noise } }
         }
       }
-      const dup = repo.getFindingByFingerprint(weak)
+      const dup = findObservation(repo, args.program_id, host, title, url)
       if (dup) {
         if (ctx.session_id && !dup.session_id) repo.backfillSession(dup.id, ctx.session_id)
-        // 去重口径报告：title+host 相同但 url 不同 → same_title_diff_url，供调用方判断是否真重复
-        const sameUrl = String(dup.url || '') === url
+        appendObservationEvidence(repo, dup, args.evidence)
         return {
-          data: { id: dup.id, dup: true, noise: dup.noise === 1, status: dup.status, dedup_reason: sameUrl ? 'same_host_title_url' : 'same_host_title_diff_url' },
+          data: { id: dup.id, dup: true, noise: dup.noise === 1, status: dup.status, dedup_reason: 'same_program_host_title_url' },
           events: [],
           before: { status: dup.status, noise: dup.noise }, after: { status: dup.status, noise: dup.noise },
         }
@@ -1110,7 +1128,7 @@ function makeHandlers(opts) {
         : (args.evidence || '')
       const taskId = args.task_id != null ? Number(args.task_id) : (ctx.task_id != null ? Number(ctx.task_id) : null)
       const row = repo.insertFinding({
-        fingerprint: weak, title, severity: args.severity || 'info', host, url,
+        fingerprint, title, severity: args.severity || 'info', host, url,
         evidence: note, source,
         program_id: args.program_id || null, session_id: ctx.session_id || null,
         task_id: taskId,
@@ -1129,7 +1147,7 @@ function makeHandlers(opts) {
             quota: quota.exceeded ? { used: quota.used, quota: quota.quota } : null, title_head: title.slice(0, 60) },
         }] : [{
           name: 'vuln.candidate.registered',
-          payload: { finding_id: row.id, fingerprint: weak, title_head: title.slice(0, 60), severity: args.severity || 'info', host, source, program_id: args.program_id || null, task_id: taskId },
+          payload: { finding_id: row.id, fingerprint, title_head: title.slice(0, 60), severity: args.severity || 'info', host, source, program_id: args.program_id || null, task_id: taskId },
         }],
         before: null, after: { id: row.id, status: suppressed ? 'ignored' : 'new', noise: 1 },
       }
@@ -1242,7 +1260,8 @@ function makeHandlers(opts) {
         throwErr('E_STATE', `finding #${args.finding_id} 处于 ${row.status} 终态不可再流转`, '已终态不可再流转；如需翻案走人工通道（dashboard 侧 vuln_confirm 附 operator 审计）', false)
       }
       const set = { status: args.verdict, claimed_by: null, claimed_at: null, updated_at: Date.now() }
-      if (args.verdict !== 'ignored') set.confidence = args.verdict
+      // 重复/忽略是处理结果，不能撤销已有技术确认；反证才改变技术置信标记。
+      if (args.verdict === 'false_positive' || (args.verdict === 'dup' && row.confidence !== 'confirmed')) set.confidence = args.verdict
       const changed = repo.transitionFinding(args.finding_id, ['new', 'confirmed', 'submitted'], set)
       if (!changed.changed) throwErr('E_STATE', `finding #${args.finding_id} 状态 ${row.status} 不可 reject`, '已终态不可再流转', false)
       if (args.note) repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} reject(${args.verdict}): ${args.note}`)
@@ -1305,21 +1324,22 @@ function makeHandlers(opts) {
       const sourceFilter = String(args.source || '')
       const minTotal = Math.max(1, Number(args.min_total) || 5)
       const limit = Math.min(Number(args.limit) || 50, 200)
-      const raw = typeof repo.sourceTitleAll === 'function' ? repo.sourceTitleAll({ minTotal, limit: 5000, source: sourceFilter }) : []
+      const raw = typeof repo.sourceTitleAll === 'function' ? repo.sourceTitleAll({ minTotal: 1, limit: 5000, source: sourceFilter }) : []
       const agg = new Map()
       for (const row of raw) {
         const source = String(row.source || '')
         const category = findingCategory(source, row.title)
         const key = `${source}|${category}`
-        const cur = agg.get(key) || { source, category, total: 0, new_count: 0, confirmed: 0, false_positive: 0, ignored: 0, dup: 0, submitted: 0, accepted: 0, noise_count: 0 }
-        for (const field of ['total', 'new_count', 'confirmed', 'false_positive', 'ignored', 'dup', 'submitted', 'accepted', 'noise_count']) cur[field] += Number(row[field]) || 0
+        const cur = agg.get(key) || { source, category, total: 0, new_count: 0, confirmed: 0, technical_confirmed: 0, false_positive: 0, ignored: 0, dup: 0, submitted: 0, accepted: 0, noise_count: 0 }
+        for (const field of ['total', 'new_count', 'confirmed', 'technical_confirmed', 'false_positive', 'ignored', 'dup', 'submitted', 'accepted', 'noise_count']) cur[field] += Number(row[field]) || 0
         agg.set(key, cur)
       }
-      const categories = [...agg.values()].map((c) => {
-        const rejected = c.false_positive + c.ignored + c.dup
-        const rate = c.total > 0 ? rejected / c.total : 0
-        return { ...c, rejected, reject_rate: Number(rate.toFixed(4)),
-          suppressed: c.total >= cfg.suppressMin && rate >= cfg.suppressRate,
+      const categories = [...agg.values()].filter((c) => c.total >= minTotal).map((c) => {
+        const rejected = c.false_positive
+        const sample = c.technical_confirmed + rejected
+        const rate = sample > 0 ? rejected / sample : 0
+        return { ...c, sample, rejected, reject_rate: Number(rate.toFixed(4)),
+          suppressed: !noiseWhitelisted(c.source, c.category) && sample >= cfg.suppressMin && rate >= cfg.suppressRate,
           whitelisted: noiseWhitelisted(c.source, c.category) }
       }).sort((a, b) => b.total - a.total || a.source.localeCompare(b.source)).slice(0, limit)
       return { data: { categories, policy: { suppress_rate: cfg.suppressRate, suppress_min: cfg.suppressMin, daily_quota: cfg.dailyQuota, whitelist: cfg.whitelist, patterns: cfg.patterns } } }

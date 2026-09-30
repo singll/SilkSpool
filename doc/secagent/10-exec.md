@@ -253,7 +253,11 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 | `exec_page_result` | `run_id`*、`offset`（0 基，默认 0）、`limit`（默认 50 上限 200） | `{total_lines, offset, limit, lines}` | 仅 stdout.log 按行分页 |
 | `exec_plan_chain` | `have`: string[]、`want`* | `{have, want, chain[], available[]}` | 能力图 BFS：按 manifest `requires`/`produces` 迭代扩张（v4.x 算法原样）；凑不到 → `E_EXEC_CHAIN_UNREACHABLE` + available 清单（hint：调整 have/want 或检查 manifest） |
 | `exec_manifest_list` | `name?`（精确）、`stage?`、`risk?`、`domain?` | `{rows: [{name, stage, risk, target_param, requires, produces, parser, domain, sandbox, deprecated_store}], total}` | manifest 元数据枚举（v4 的"错误 message 附可用清单"升为一等查询；`domain` 字段见 2.1.1） |
-| `exec_oracle_judge` | `oracle`*（`unauthz_diff` / `idor_diff` / `info_disclosure_diff` / `sqli_diff` / `sqli_time` / `xss_echo` / `ssrf_oob`）、`input`*（对照特征对象） | `{oracle, verdict, rationale, evidence}` | **机器验证 oracle（21 号方案 §2-1）**：纯函数确定性判定（`sec-rules-hypothesis`），输入两次/多次请求的对照特征，输出 `verified / rejected / inconclusive`。模型只能提交对照特征，判定归代码——**模型无权宣布 verified**；verdict 经 `vuln_oracle_capsule` 落 proof capsule 后才是 `vuln_confirm` 的合法机器证据 |
+| `exec_oracle_judge` | `oracle`*（`unauthz_diff` / `idor_diff` / `info_disclosure_diff` / `sqli_diff` / `sqli_time` / `xss_echo` / `ssrf_oob`）、`input`*（对照特征对象） | `{oracle, verdict, rationale, evidence}` | **机器验证 oracle（21 号方案 §2-1）**：纯函数确定性判定（`sec-rules-hypothesis`），输入两次/多次请求的对照特征，输出 `verified / rejected / inconclusive`。当前函数只计算调用方特征，不能独立证明原始请求真实性；capsule 仍存在调用方自报 verdict 的缺口（27 号 E09/E10），不得把纯函数 verdict 自动等同于已技术核实漏洞 |
+
+**27 号首批判定收紧（本地实现，生产未部署）**：`xss_echo` 原样回显输出 inconclusive 并保留上下文；`sqli_diff` 比较实际正文（trim 后同位置字符相似度≥0.9，非长度比），等长不同内容或缺失基线输出 inconclusive；`sqli_time` 单次显著延迟输出 inconclusive；`ssrf_oob` 无回调输出 inconclusive。响应一致且布尔反向显著不同的 SQLi 差分路径仍可返回 verified，规则正向兼容用例保留；它仍需证明健康基线与数据库因果，不能单独当漏洞事实。
+
+本批是弱判据修复，**不是新建完整验证器**。浏览器执行、交错时延实验、OOB 健康与回调归因、公开数据排除、受信原始证据提取与 capsule 可信绑定仍待 WP02；当前仍有其它可误报的判定路径，不能宣称“自动确认已可信”。真实技术证据的核验不依赖投稿、平台认可或赏金。
 
 `exec_plan_chain` 能力链主干（当前 manifest 图的实际形态）：`domains → subdomains → live_hosts → endpoints → findings`。
 

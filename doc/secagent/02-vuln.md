@@ -28,7 +28,7 @@
 
 | # | 动词 | 一句话语义 | actor 白名单 | 发布事件 | 幂等键 |
 |---|---|---|---|---|---|
-| C1 | `vuln_register_signal` | 登记完整漏洞信号（五要素闸门为不变量；弱指纹命中候选自动 promote） | model, human | signal.registered（命中候选时另发 candidate.promoted） | 自然键=强指纹 |
+| C1 | `vuln_register_signal` | 登记完整漏洞信号（五要素闸门为不变量；精确观察命中候选自动 promote） | model, human | signal.registered（命中候选时另发 candidate.promoted） | 自然键=强指纹 |
 | C2 | `vuln_register_candidate` | 机器直灌唯一入口（候选池登记，模型禁用） | webhook, script, dashboard | candidate.registered | 自动指纹（title/host/url/source） |
 | C3 | `vuln_confirm` | 候选/信号 → confirmed 原子升级（status+confidence+noise 三联动，evidence 必填） | model, dashboard | signal.confirmed（自候选池另发 candidate.promoted） | 自动指纹（finding_id+evidence_ref） |
 | C4 | `vuln_reject` | 判定 false_positive / dup / ignored（候选出池 + FGS deprecated 走事件） | model, dashboard | signal.rejected | 自动指纹（finding_id+verdict+reason） |
@@ -59,6 +59,7 @@
 | severity | string(enum) | 是 | — | critical/high/medium/low/info；**info → E_INVARIANT（E_VULN_INFO_SEVERITY）**：info 级模板指纹/侦察副产物不进信号面（v4 噪声闸门语义保留并收紧为拒绝） |
 | host | string | 是 | — | 非空；网关归一化（去 scheme/端口/路径，小写）后入库 |
 | url | string | 否 | '' | 合法 URL 或空 |
+| program_id | string | 否 | 空 | 项目归属参与存储去重；不以首个项目补齐未知归属 |
 | evidence | string | 是 | — | 非空；须含证据引用（run_id / flow_id / burp_item / evidence/ 路径 / oob: 交互记录之一，正则 `run_\|flow:\|burp_item\|evidence/\|oob:`）；不满足 → E_EVIDENCE_REQUIRED |
 | reproduction_steps | string | 是 | — | trim 后非空（INV-4b） |
 | impact | string | 是 | — | trim 后非空（INV-4c） |
@@ -71,10 +72,11 @@
 
 **事务行为**（单事务 BEGIN IMMEDIATE）：
 
-1. 计算强指纹 `fpStrong = sha1("{host}|{title}|{url}")`、弱指纹 `fpWeak = sha1("{host}|{title}")`（**算法与 v4 完全一致，迁移零成本**）；
-2. `fpStrong` 命中已有行 → 幂等返回 `{id, dup: true}`（同参 replay / 异参 E_IDEMPOTENT_CONFLICT）；
-3. `fpWeak` 命中 noise=1 的候选行 → **自动 promote**：单 UPDATE 补齐字段、fingerprint 换强指纹、`noise=0`，返回 `{id, upgraded: true}`，发 `candidate.promoted`（cause_cmd=vuln_register_signal）；
-4. 否则 INSERT 新行：`noise=0, status='new', confidence=COALESCE(?, 'tentative')`，发 `signal.registered`。
+1. 新观察指纹为 `sha1(JSON.stringify(['observation-v2', program_id || '', normalized_host, trimmed_title, url || '']))`；候选与信号共用。自然幂等键包含 `program_id/host/title/url`。
+2. 同项目、host、URL 内优先匹配上游 `external_id`（标题可变化）；其余依次查新指纹、旧强指纹、旧弱指纹，旧行只有项目与完整 URL 一致才复用。不同 URL 或不同项目保留为不同观察，不能据此直接计为不同根因漏洞。
+3. 精确命中的 `noise=1,status=new` 候选可原位 promote：保留旧证据并追加本次证据、补齐字段、更新指纹、`noise=0`；返回 `{id, upgraded:true}`，发 `candidate.promoted` 与 `signal.registered`。已有完整信号返回 `{id, dup:true}`。当前 external_id 优先返回仍不执行候选 promote，需通过精确观察通道或 `confirm` 补证升级。
+4. 未命中则 INSERT `noise=0,status=new`，发 `signal.registered`。不批量改写历史指纹；signal 的 schema 已补齐原 handler 使用但接口曾漏声明的 `program_id`。
+
 
 **返回信封示例**：
 
@@ -111,7 +113,7 @@
 
 #### C2 · vuln_register_candidate（机器直灌唯一入口）
 
-**语义**：xray webhook、exec parser 提案、authz_diff suspected 启发式等**机器产出**的候选登记。模型禁用（E_ACTOR_FORBIDDEN——"机器直灌不冒充漏洞信号"从闸门 if 升级为接口不存在）。缺复现/影响的登记天然落候选池（noise=1, status='new'），后续经 `vuln_confirm` 或 `vuln_register_signal` 弱指纹命中升级。
+**语义**：xray webhook、exec parser 提案、authz_diff suspected 启发式等**机器产出**的候选登记。模型禁用（E_ACTOR_FORBIDDEN——"机器直灌不冒充漏洞信号"从闸门 if 升级为接口不存在）。缺复现/影响的登记天然落候选池（noise=1, status='new'），后续经 `vuln_confirm` 或 `vuln_register_signal` 精确观察命中升级。
 
 **参数表**：
 
@@ -127,7 +129,7 @@
 | session_id | string | 否 | null | 网关从调用面注入（不信任参数声明） |
 | idempotency_key | string | 否 | — | — |
 
-**事务行为**：弱指纹 `fpWeak = sha1("{host}|{title}")`；命中已有行 → **宽容返回** `{id, dup: true}`（不报错、不覆盖——机器通道不因指纹冲突丢数据，v4 语义保留）；未命中 → INSERT `noise=1, status='new', confidence='tentative'`，发 `candidate.registered`。
+**事务行为**：使用 C1 同款观察指纹和旧指纹兼容匹配；同项目/host/title/URL 命中返回 `{id,dup:true,dedup_reason:'same_program_host_title_url'}`，追加新的非空证据；不同项目或 URL 另存。`external_id` 同样受项目/host/URL 限制，不跨入口合并。未命中时先计算技术误报抑制/来源配额，再插入候选；受抑制行保留为 ignored（见下文口径），正常候选为 `noise=1,status=new,confidence=tentative`。同 URL 下 method/body/身份/对象尚未参与指纹，仍是 WP05 待办。
 
 **返回信封示例**：
 
@@ -150,7 +152,7 @@
 
 > dashboard（操作员）侧的「登记候选漏洞」入口**只产候选**（noise=1）——确权仍须走 `vuln_confirm`，不会经本命令进信号面。
 
-**幂等**：自动指纹（title/host/url/source 核心字段）；webhook 重复投递同 payload → replay:true；同指纹不同 payload → 不报错走 dup:true 宽容路径（与 C1 的严格路径刻意不同：**模型通道严格、机器通道宽容**）。
+**幂等**：自动指纹（program_id/title/host/url/source/external_id/evidence 核心字段）；webhook 重复投递同 payload → replay:true；同指纹不同 payload → 不报错走 dup:true 宽容路径（与 C1 的严格路径刻意不同：**模型通道严格、机器通道宽容**）。
 
 ---
 
@@ -221,7 +223,10 @@ WHERE id=? AND status='new'
 ```sql
 UPDATE findings SET
   status=?,                                  -- verdict
-  confidence=CASE ? WHEN 'ignored' THEN confidence ELSE ? END,  -- fp→false_positive, dup→dup, ignored 不变
+  confidence=CASE
+    WHEN :verdict='false_positive' THEN 'false_positive'
+    WHEN :verdict='dup' AND confidence!='confirmed' THEN 'dup'
+    ELSE confidence END,                       -- 重复/忽略不撤销已有技术确认
   claimed_by=NULL, claimed_at=NULL, updated_at=?
 WHERE id=? AND status IN ('new','confirmed','submitted')
 ```
@@ -911,3 +916,18 @@ export const repositoryV1 = {
 - `vuln_list` / `vuln_candidates` 的 limit/offset 落到 SQL（旧实现全量物化由总线事后切片）：`vuln_list` 缺省 50、后端封顶 500，`total` 走独立 COUNT；`vuln_candidates` 行集同口径，`pool` 摘要计数不受分页影响（同 where 池匹配计数）。
 - 新增索引 `idx_findings_created (created_at DESC)`（默认 `sort=created_at` 排序主路径）。
 - 契约：vuln 70/70 全绿（61 + 9 http）；42 号未新增用例，ledger 侧消费方改为分页查询（见 [11-ledger](11-ledger.md)）。
+
+## 十一、27 号首批：观察保留与技术误报统计（2026-09-30，本地实现）
+
+本批源代码契约如 C1/C2；生产尚未部署。`vuln_noise_stats`、新候选抑制与 `candidates_sweep` 共用技术样本口径：
+
+- `technical_confirmed` = `confidence=confirmed AND status!=false_positive` 的记录数，保存已有技术确认标记；其后转 submitted/accepted/dup/ignored 不因运营状态变化丢失该标记。单独设置 accepted 不会创造技术正样本。
+- `vuln_reject(dup)` 保留既有 confirmed 置信标记；未确认的候选仍按 dup 处理，false_positive 有反证时可撤销确认。
+- `sample = technical_confirmed + false_positive`；`rejected = false_positive`；`reject_rate = rejected / sample`。待验证、仅 ignored、仅 dup 不作为技术阴性或样本分母；最小样本阈值按 sample 判断。白名单同时作用于统计返回和实际抑制。
+- `noise_stats.min_total` 在类别合并后筛选，避免每个标题不足阈值导致整个类别消失。`total/new_count/ignored/dup/submitted/accepted` 保留为流程统计。
+
+这是修复标签污染，**不等于已经有可信独立样本**：当前 technical_confirmed 仍来自现有 confidence 标记；充分反证校验、样本根因去重、检测器版本分层、未知补证重开、TTL 与配额单独状态均待 WP02/05/06。不得将本统计称为真实漏洞数或真实误报率的最终核算。
+
+新增兼容性回归覆盖：异 URL/异项目保留、外部 ID 不跨入口合并、重复观察追加证据、旧弱指纹精确复用/升级且旧证据保留、ignored/dup 不触发技术抑制、已有技术确认不受平台状态变化影响。联合测试结果见 [27 号 §10.3](27-business-quality-and-capacity-plan-2026-09-30.md#103-首批实现与验证2026-09-30)。
+
+回退边界：数据库无批量迁移，但新行已使用 v2 指纹。上线后若回退旧代码，旧弱指纹逻辑不能识别所有新行，可能重新合并或重复登记；回退必须保留此兼容读取逻辑，不能仅覆盖旧插件后声称无行为差异。

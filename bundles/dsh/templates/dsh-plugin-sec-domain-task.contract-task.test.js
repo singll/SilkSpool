@@ -13,7 +13,7 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { createBus } from '../../sec-domain-bus/index.js'
-import { buildTaskDomain, startTaskScheduler, parseCampaignSupplyEnv } from '../index.js'
+import { buildTaskDomain, startTaskScheduler, createTaskFinisher, parseCampaignSupplyEnv } from '../index.js'
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'sec-domain-task-')) }
 
@@ -2142,4 +2142,134 @@ test('34 预算闸在线调整：DB max_tasks=2 时第三个任务创建被停�
   // dashboard 人工放行不受闸限制（既有不变量保持）
   const manual = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '人工放行任务' }, { actor: 'dashboard' })
   assert.equal(manual.ok, true, 'dashboard 建任务豁免预算闸')
+})
+
+// 27 号首批：真实总线/SQLite 验证收尾交付与轮次隔离。
+async function claimedFixture() {
+  const env = makeEnv()
+  const created = await env.bus.dispatch('task', 'create', { program_id: 'test-src', objective: '收尾恢复夹具', schedule: { kind: 'once', at: Date.now() + 1000 } }, { actor: 'model' })
+  assert.equal(created.ok, true, created.error?.message)
+  const now = Date.now() + 2000
+  const taskId = created.data.task_id
+  assert.deepEqual((await env.bus.dispatch('task', 'claim', { now }, { actor: 'scheduler' })).data.claimed, [taskId])
+  return { ...env, args: { task_id: taskId, claim_started_at: now, run_id: 'finish-recovery', outcome: 'done', session_id: null }, now }
+}
+
+test('27: 收尾同时重试抛错与失败信封，缺会话省略字段，最终只落一次执行史', async () => {
+  const { bus, dataDir, args } = await claimedFixture()
+  let calls = 0
+  const f = createTaskFinisher({ dataDir, retryDelayMs: 1, dispatch: async (d, v, a, ctx) => {
+    assert.equal(Object.hasOwn(a, 'session_id'), false, '缺会话不可传 null')
+    assert.equal(fs.readdirSync(path.join(dataDir, 'pending-task-finishes')).filter(x => x.endsWith('.json')).length, 1)
+    calls++
+    if (calls === 1) throw new Error('database is locked')
+    if (calls === 2) return { ok: false, error: { code: 'E_BUSY', retryable: true } }
+    return bus.dispatch(d, v, a, ctx)
+  } })
+  const r = await f.finish(args)
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(calls, 3)
+  assert.equal(fs.readdirSync(path.join(dataDir, 'pending-task-finishes')).length, 0)
+  assert.equal(bus._internal.db().prepare('SELECT status FROM tasks WHERE id=?').get(args.task_id).status, 'done')
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM task_runs').get().n, 1)
+})
+
+test('27: 重试耗尽保留原结果，重建 finisher 后恢复，响应丢失重放不会重复入账', async () => {
+  const { bus, dataDir, args, dir } = await claimedFixture()
+  const lostAck = createTaskFinisher({ dataDir, retryDelayMs: 1, dispatch: async (...input) => {
+    await bus.dispatch(...input) // 已提交但回执丢失
+    throw new Error('lost acknowledgment')
+  } })
+  assert.equal((await lostAck.finish(args)).ok, false)
+  const files = fs.readdirSync(path.join(dataDir, 'pending-task-finishes'))
+  assert.equal(files.length, 1)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'pending-task-finishes', files[0]))).outcome, 'done')
+  const recovered = createTaskFinisher({ dataDir, retryDelayMs: 1, dispatch: (...input) => bus.dispatch(...input) })
+  await recovered.flush()
+  await recovered.flush()
+  assert.equal(fs.readdirSync(path.join(dataDir, 'pending-task-finishes')).length, 0)
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM task_runs').get().n, 1)
+  assert.equal(readEvents(dir).filter(e => e.name === 'task.finished').length, 1)
+})
+
+test('27: 未送达收尾重启可恢复，旧认领收尾不会覆盖新 worker', async () => {
+  const { bus, dataDir, args, now } = await claimedFixture()
+  const failed = createTaskFinisher({ dataDir, retryDelayMs: 1, dispatch: async () => ({ ok: false, error: { code: 'E_BUSY', retryable: true } }) })
+  await failed.finish(args)
+  assert.equal(bus._internal.db().prepare('SELECT status FROM tasks').get().status, 'running')
+  const restored = createTaskFinisher({ dataDir, dispatch: (...input) => bus.dispatch(...input) })
+  await restored.flush()
+  assert.equal(bus._internal.db().prepare('SELECT status FROM tasks').get().status, 'done')
+  // 模拟新的认领，迟到的旧 busy 不得使在飞任务回 queued。
+  bus._internal.db().prepare("UPDATE tasks SET status='running',started_at=?,active_run_id='new-run' WHERE id=?").run(now + 1000, args.task_id)
+  const old = await restored.finish({ task_id: args.task_id, claim_started_at: now, run_id: '', outcome: 'busy' })
+  assert.equal(old.data.superseded, true)
+  const row = bus._internal.db().prepare('SELECT status,active_run_id FROM tasks').get()
+  assert.deepEqual({ ...row }, { status: 'running', active_run_id: 'new-run' })
+})
+
+test('27: busy 空 run 幂等键按认领分轮，连续两轮都能回 queued', async () => {
+  const { bus, dataDir, args, now } = await claimedFixture()
+  const f = createTaskFinisher({ dataDir, dispatch: (...input) => bus.dispatch(...input) })
+  for (const at of [now, now + 1000]) {
+    if (at !== now) assert.deepEqual((await bus.dispatch('task', 'claim', { now: at }, { actor: 'scheduler' })).data.claimed, [args.task_id])
+    const r = await f.finish({ task_id: args.task_id, claim_started_at: at, run_id: '', outcome: 'busy' })
+    assert.equal(r.ok, true, r.error?.message)
+    assert.equal(r.replay, false)
+    assert.equal(bus._internal.db().prepare('SELECT status FROM tasks').get().status, 'queued')
+  }
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM task_runs').get().n, 0)
+})
+
+test('27: scheduler 实际收尾参数省略无会话字段', async () => {
+  const env = schedulerFakeEnv({ spawnResult: { ok: true, run_id: 'no-session', session_id: null, exit_code: 0 } })
+  await withScheduler(env, async () => {
+    assert.ok(await waitFor(() => env.state.finished))
+    assert.equal(Object.hasOwn(env.state.finished, 'session_id'), false)
+    assert.equal(env.state.finished.claim_started_at, env.task.started_at)
+  })
+})
+
+test('27: 对象型参数保留值，resource=abc 经事件生成 XSS/SQLi 假设', async () => {
+  const env = makeEnv({ query: async (d, n, a, c) => d === 'endpoint'
+    ? { ok: true, rows: [{ host: 'a.example.com', path: '/data', params: '{"resource":"abc"}' }] }
+    : env.bus.query(d, n, a, c) })
+  const r = await env.domain.handlers.subscribers.onEndpointHypothesis({ payload: { program_id: 'test-src', host: 'a.example.com', path: '/data' } })
+  assert.equal(r.data.derived.length, 2, JSON.stringify(r))
+  assert.equal(r.data.dropped.length, 0)
+  const rows = env.bus._internal.db().prepare('SELECT objective FROM tasks').all()
+  assert.ok(rows.some(t => t.objective.includes('xss')))
+  assert.ok(rows.some(t => t.objective.includes('sqli')))
+})
+
+test('27: Campaign 候选按项目查询；无归属和外项目不会补到首项目', async () => {
+  const queries = []
+  const env = makeEnv({ query: async (d, n, a, c) => {
+    if (d !== 'vuln' || n !== 'candidates') return env.bus.query(d, n, a, c)
+    queries.push(a)
+    return { ok: true, rows: [
+      { id: 51, program_id: 'test-src', host: 'a.example.com', title: 'IDOR', severity: 'high' },
+      { id: 52, program_id: '', host: 'a.example.com', title: 'IDOR' },
+      { id: 53, program_id: 'other', host: 'a.example.com', title: 'IDOR' },
+    ] }
+  } })
+  const c = await env.bus.dispatch('task', 'campaign_create', { name: 'candidate-program', program_ids: ['test-src'], autonomy: 1, approval_id: 1, goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  await env.bus.dispatch('task', 'campaign_activate', { campaign_id: c.data.campaign_id }, { actor: 'dashboard' })
+  const r = await env.bus.query('task', 'campaign_pending_drafts', { id: c.data.campaign_id }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.ok(queries.length > 0)
+  assert.ok(queries.every(a => a.program_id === 'test-src'))
+  assert.deepEqual(r.data.drafts.map(d => [d.program_id, d.host]), [['test-src', '51']])
+})
+
+test('27: 迟到已完成 run 保留原开始时间与费用，不改写正在运行的下一轮', async () => {
+  const { bus, dataDir, args, now } = await claimedFixture()
+  bus._internal.db().prepare("UPDATE tasks SET started_at=?,active_run_id='next-worker' WHERE id=?").run(now + 1000, args.task_id)
+  const f = createTaskFinisher({ dataDir, dispatch: (...input) => bus.dispatch(...input) })
+  const r = await f.finish({ ...args, spent_tokens: 123 })
+  assert.equal(r.data.superseded, true)
+  const task = bus._internal.db().prepare('SELECT status,active_run_id FROM tasks').get()
+  assert.deepEqual({ ...task }, { status: 'running', active_run_id: 'next-worker' })
+  const run = bus._internal.db().prepare('SELECT started_at,spent_tokens,run_id FROM task_runs').get()
+  assert.deepEqual({ ...run }, { started_at: now, spent_tokens: 123, run_id: 'finish-recovery' })
 })

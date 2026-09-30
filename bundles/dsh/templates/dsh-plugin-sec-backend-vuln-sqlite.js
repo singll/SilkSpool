@@ -115,9 +115,9 @@ function createRepo(db) {
       const r = stmts.getByFp.get(String(fp))
       return r ? { ...r } : null
     },
-    getFindingByExternalId(externalId) {
+    getFindingByExternalId(externalId, programId = '', host = '', url = '') {
       if (!externalId) return null
-      const r = db.prepare('SELECT * FROM findings WHERE external_id = ? LIMIT 1').get(String(externalId))
+      const r = db.prepare("SELECT * FROM findings WHERE external_id = ? AND COALESCE(program_id, '') = ? AND host = ? AND COALESCE(url, '') = ? LIMIT 1").get(String(externalId), String(programId || ''), String(host), String(url))
       return r ? { ...r } : null
     },
     insertFinding(f) {
@@ -322,6 +322,7 @@ function createRepo(db) {
           COUNT(*) AS total,
           SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new_count,
           SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
+          SUM(CASE WHEN confidence = 'confirmed' AND status != 'false_positive' THEN 1 ELSE 0 END) AS technical_confirmed,
           SUM(CASE WHEN status = 'false_positive' THEN 1 ELSE 0 END) AS false_positive,
           SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored,
           SUM(CASE WHEN status = 'dup' THEN 1 ELSE 0 END) AS dup,
@@ -348,6 +349,7 @@ function createRepo(db) {
           COUNT(*) AS total,
           SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new_count,
           SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
+          SUM(CASE WHEN confidence = 'confirmed' AND status != 'false_positive' THEN 1 ELSE 0 END) AS technical_confirmed,
           SUM(CASE WHEN status = 'false_positive' THEN 1 ELSE 0 END) AS false_positive,
           SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored,
           SUM(CASE WHEN status = 'dup' THEN 1 ELSE 0 END) AS dup,
