@@ -103,3 +103,54 @@ test('WP03 failed registration never publishes model-start ACK', async t => {
   assert.equal(fs.existsSync(path.join(f.runDir, 'worker-ack.json')), false)
   assert.deepEqual(workerGroupMembers(result.pid), [])
 })
+
+test('WP03 default budget completes a two-step request with folded tool history', async () => {
+  const budget = createWorkerBudget(150000)
+  const tools = [{ name: 'fixture', description: 'x'.repeat(122000), parameters: { type: 'object' } }]
+  const options = { ...request('x'.repeat(30000)), tools, toolHistory: { tools: structuredClone(tools), updates: [] }, maxTokens: 2048 }
+  let calls = 0
+  const next = async function* () { calls++; yield { type: 'usage', usage: { inputTokens: 43836, outputTokens: 60 } } }
+  await drain(budget.stream(options, next))
+  await drain(budget.stream({ ...options, messages: request('x'.repeat(47000)).messages }, next))
+  assert.equal(calls, 2)
+  assert.equal(budget.state.charged, 87792)
+  assert.equal(budget.state.reserved, 0)
+})
+
+test('WP03 independent system prompt and historical tool additions remain budgeted', async () => {
+  let calls = 0
+  const next = () => { calls++; return [] }
+  const system = createWorkerBudget(5000)
+  await assert.rejects(drain(system.stream({ ...request(), system: 'x'.repeat(15000) }, next)), /BUDGET_EXHAUSTED/)
+  const history = createWorkerBudget(5000)
+  await assert.rejects(drain(history.stream({ ...request(), tools: [],
+    toolHistory: { tools: [], updates: [{ messageId: 'update-1', additions: [
+      { name: 'historical', description: 'x'.repeat(15000), parameters: {} },
+    ] }] },
+  }, next)), /BUDGET_EXHAUSTED/)
+  assert.equal(calls, 0)
+})
+
+test('WP03 cached input is charged once and prevents an unbudgeted next request', async () => {
+  const budget = createWorkerBudget(10000)
+  await drain(budget.stream(request(), async function* () {
+    yield { type: 'usage', usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 7800, cacheWriteTokens: 80, totalTokens: 8000 } }
+  }))
+  assert.equal(budget.state.charged, 8000)
+  await assert.rejects(drain(budget.stream(request(), () => [])), /BUDGET_EXHAUSTED/)
+})
+
+test('WP03 invalid cached usage retains reservation, diagnostics contain counts only and are bounded', async () => {
+  const budget = createWorkerBudget(100000)
+  await drain(budget.stream(request('PRIVATE-CONTENT'), async function* () {
+    yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: -1 } }
+  }))
+  assert.equal(budget.state.unknown, 1)
+  assert.ok(budget.state.reserved > 0)
+  for (let i = 0; i < 40; i++) await drain(budget.stream(request('PRIVATE-CONTENT'), async function* () {
+    yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+  }))
+  assert.equal(budget.state.recent_requests.length, 32)
+  assert.equal(JSON.stringify(budget.state).includes('PRIVATE-CONTENT'), false)
+  assert.equal(budget.state.recent_requests.at(-1).actual_input_tokens, 1)
+})

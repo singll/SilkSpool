@@ -511,6 +511,23 @@ def main():
                     report["checks"].append({"check": "worker-budget-first-request-no-provider-spend", "ok": True})
                     report["worker_budget"] = {"success": budget, "denied": denied["data"]["budget"],
                                               "denied_provider_requests": len(model.REQUESTS) - before}
+                    before = len(model.REQUESTS)
+                    default = rpc("/silksec-domain", "exec.spawn_worker", {**worker_args,
+                        "task": "[u2:stream-tool] Default budget two-step fixture " + uuid.uuid4().hex,
+                        "budget_tokens": 150000})
+                    value = default.get("data", {})
+                    counts = value.get("budget", {})
+                    primary = [r for r in model.REQUESTS[before:] if r.get("tools")]
+                    require(default.get("ok") and value.get("ok") and len(primary) == 2
+                            and counts.get("denied") == 0 and counts.get("unknown") == 0
+                            and counts.get("reserved") == 0 and counts.get("charged", 150001) <= 150000,
+                            "default budget failed tool call and final response")
+                    diagnostics = counts.get("recent_requests", [])
+                    require(diagnostics and all(r.get("status") == "settled"
+                            and r.get("actual_input_tokens") is not None for r in diagnostics),
+                            "default budget request diagnostics missing")
+                    report["worker_budget"]["default_two_step"] = counts
+                    report["checks"].append({"check": "worker-default-budget-tool-and-final-response", "ok": True})
                 requests_before = len(model.REQUESTS)
                 replay = rpc("/silksec-domain", "exec.spawn_worker", worker_args)
                 require(replay.get("ok") and replay["data"].get("recovered") and replay["data"]["run_id"] == worker["data"]["run_id"]

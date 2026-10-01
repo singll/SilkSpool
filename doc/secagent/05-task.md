@@ -1448,3 +1448,7 @@ hypothesis_queue新增 retry_count（默认0）。已关联任务失败或一次
 Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭空累计费用。未批量猜测旧费用归属。scheduler不抢占仍存活的持锁进程，单进程tick不重入；短获取锁异常残留会拒绝启动，尚不是带fencing的完整租约协议。恢复检查应保留预算、账单、观察表及原始账单。
 
 本地全域661项、后续task120项、worker10项通过；最终远端验收与上线状态见27号§15.4。
+
+### 7.34 2026-10-01 · WP03缓存费用补计（本地通过，待部署）
+
+原始dsh-bill记录的inputTokens/cacheReadTokens/cacheWriteTokens为互斥分项，task费用汇总改为input＋cacheRead＋cacheWrite＋output；不额外累加totalTokens。负数、非整数或溢出的计数拒绝入账。已有持久watch按原轮转机制补齐差额，保持账单身份、消费时间及任务技术结果不变。修正会抬升历史费用投影，预算数值不自动提高，不能以旧余额恢复Campaign；必须先确认补账进度及修正后的Program/Campaign余额。不是一次性全历史自动回填：没有watch/会话归属不明的旧记录仍待治理。

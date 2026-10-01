@@ -1119,11 +1119,13 @@ function makeHandlers(opts) {
             let r; try { r = JSON.parse(line) } catch { continue }
             if (!r.sessionId || !Number.isSafeInteger(r.inputTokens) || r.inputTokens < 0
                 || !Number.isSafeInteger(r.outputTokens) || r.outputTokens < 0
+                || r.cacheReadTokens != null && (!Number.isSafeInteger(r.cacheReadTokens) || r.cacheReadTokens < 0)
                 || r.cacheWriteTokens != null && (!Number.isSafeInteger(r.cacheWriteTokens) || r.cacheWriteTokens < 0)) continue
             // Exact duplicate serialized records are replay, not another request.
             if (seen.has(line)) continue
             seen.add(line)
-            const tokens = r.inputTokens + r.outputTokens + (r.cacheWriteTokens || 0)
+            const tokens = r.inputTokens + r.outputTokens + (r.cacheReadTokens || 0) + (r.cacheWriteTokens || 0)
+            if (!Number.isSafeInteger(tokens)) continue
             next.set(r.sessionId, (next.get(r.sessionId) || 0) + tokens)
             const identity = Number.isSafeInteger(r.time) ? [r.sessionId, r.time, r.seq ?? null, r.provider ?? '', r.model ?? '', r.purpose ?? 'agent'] : line
             const receipt = { key: crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex'), tokens,

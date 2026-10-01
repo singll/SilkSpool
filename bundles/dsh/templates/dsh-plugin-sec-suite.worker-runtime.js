@@ -8,11 +8,35 @@ import { listSessionHeaders, matchWorkerSession } from './host-compat.js'
 const RUN_ID = /^w[a-z0-9]+$/
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+// toolHistory is replay metadata, not another provider payload. Keep the union
+// of declarations as a conservative bound for both current-only and in-history
+// routes, including removed/deferred definitions, but count identical copies once.
+function estimateWorkerInput(options) {
+  const declarations = new Map()
+  const add = tool => {
+    const { deferLoading: _deferred, ...definition } = tool
+    const canonical = value => Array.isArray(value) ? value.map(canonical)
+      : value && typeof value === 'object'
+        ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value
+    declarations.set(JSON.stringify(canonical(definition)), definition)
+  }
+  for (const tool of options.tools || []) add(tool)
+  for (const tool of options.toolHistory?.tools || []) add(tool)
+  for (const update of options.toolHistory?.updates || []) for (const tool of update.additions || []) add(tool)
+  const tools = [...declarations.values()]
+  const bytes = value => Buffer.byteLength(JSON.stringify(value), 'utf8')
+  const payload = { system: options.system, messages: options.messages || [], tools }
+  return { estimated_input_tokens: Math.ceil(bytes(payload) / 2) + 2048,
+    system_bytes: bytes(options.system ?? ''), message_bytes: bytes(payload.messages),
+    tool_bytes: bytes(tools), tool_count: tools.length,
+    history_bytes: bytes(options.toolHistory || {}) }
+}
+
 // Request admission is deliberately an estimate, not a provider billing guarantee.
 // Charge all model calls in this process (including compaction/title/probes).
 export function createWorkerBudget(limit, persist = () => {}) {
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('E_WORKER_BUDGET_REQUIRED')
-  const state = { limit, charged: 0, reserved: 0, requests: 0, unknown: 0, denied: 0 }
+  const state = { limit, charged: 0, reserved: 0, requests: 0, unknown: 0, denied: 0, recent_requests: [] }
   const fail = code => { state.denied++; persist({ ...state, code }); throw new Error(code) }
   return {
     state,
@@ -20,9 +44,17 @@ export function createWorkerBudget(limit, persist = () => {}) {
       // Binary/file projections and unlimited outputs cannot be priced by this estimator.
       if ((options.messages || []).some(m => (m.content || []).some(b => ['image', 'file'].includes(b.type)))) fail('E_WORKER_BUDGET_MODALITY')
       if (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0) fail('E_WORKER_BUDGET_OUTPUT_CAP')
-      const input = Math.ceil(Buffer.byteLength(JSON.stringify({ messages: options.messages || [], tools: options.tools || [], toolHistory: options.toolHistory || [] }), 'utf8') / 2) + 2048
-      const reserved = input + options.maxTokens
-      if (state.charged + state.reserved + reserved > limit) fail('E_WORKER_BUDGET_EXHAUSTED')
+      const estimate = estimateWorkerInput(options)
+      const reserved = estimate.estimated_input_tokens + options.maxTokens
+      const diagnostic = { sequence: state.requests + state.denied + 1, ...estimate,
+        max_output_tokens: options.maxTokens, charged_before: state.charged,
+        reserved_before: state.reserved, status: 'reserved' }
+      state.recent_requests.push(diagnostic)
+      if (state.recent_requests.length > 32) state.recent_requests.shift()
+      if (state.charged + state.reserved + reserved > limit) {
+        diagnostic.status = 'denied'
+        fail('E_WORKER_BUDGET_EXHAUSTED')
+      }
       state.reserved += reserved
       state.requests++
       persist({ ...state })
@@ -33,12 +65,19 @@ export function createWorkerBudget(limit, persist = () => {}) {
           yield chunk
         }
       } finally {
-        const fields = ['inputTokens', 'outputTokens', 'cacheWriteTokens']
+        const fields = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']
         if (usage && fields.every(k => usage[k] == null || Number.isSafeInteger(usage[k]) && usage[k] >= 0)
-            && Number.isSafeInteger(usage.inputTokens) && Number.isSafeInteger(usage.outputTokens)) {
+            && Number.isSafeInteger(usage.inputTokens) && Number.isSafeInteger(usage.outputTokens)
+            && Number.isSafeInteger(fields.reduce((n, k) => n + (usage[k] || 0), 0))) {
           state.reserved -= reserved
           state.charged += fields.reduce((n, k) => n + (usage[k] || 0), 0)
-        } else state.unknown++ // keep the reservation; an interrupted call is not free.
+          Object.assign(diagnostic, { status: 'settled',
+            actual_input_tokens: usage.inputTokens + (usage.cacheReadTokens || 0) + (usage.cacheWriteTokens || 0),
+            actual_output_tokens: usage.outputTokens })
+        } else {
+          state.unknown++ // keep the reservation; an interrupted call is not free.
+          diagnostic.status = 'unknown'
+        }
         persist({ ...state })
       }
     },
@@ -62,7 +101,7 @@ export function installWorkerSessionReporter(ctx, dataDir) {
     const runDir = path.dirname(filename)
     const budget = createWorkerBudget(Number(process.env.SEC_WORKER_BUDGET_TOKENS), state => {
       const tmp = path.join(runDir, `worker-budget.json.tmp-${process.pid}`)
-      fs.writeFileSync(tmp, JSON.stringify({ ...state, run_id: runId, nonce, estimator: 'utf8-half-plus-2048-v1' }), { mode: 0o600 })
+      fs.writeFileSync(tmp, JSON.stringify({ ...state, run_id: runId, nonce, estimator: 'utf8-tool-union-plus-system-v2' }), { mode: 0o600 })
       fs.renameSync(tmp, path.join(runDir, 'worker-budget.json'))
     })
     ctx.on('agent/request', async (_payload, next) => {

@@ -782,3 +782,9 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 worker-runtime为所有本进程模型请求安装门禁，包括辅助模型调用。输入按完整messages/tools/toolHistory的UTF-8字节数/2＋2048估算，每请求先预留输入估算和maxTokens，agent/request将输出上限限制到2048。缺输出上限或未支持image/file计费时拒绝；响应usage到达后结算input+output+cacheWrite，cacheRead保持既有费用口径。无usage继续占用预留，实际超估算后拒绝下一请求；**输入为估算，并非供应商计费绝对硬上限**。嵌套exec worker暂拒绝，待共享预算协议完成后再开放。
 
 worker-budget.json记录计数且以run/nonce校验，原生write/edit不能改写ACK、预算回执及临时文件。预算拒绝不表示技术阴性；exec返回失败与budget统计，技术漏洞状态不改。缺hook回执保持未知。真实模型边界与生产验收结果见27号§15.4。
+
+### 2026-10-01 · WP03输入计量校准（本地通过，待部署）
+
+`utf8-tool-union-plus-system-v2`把toolHistory作为宿主重放元数据处理：当前、历史基线及历史additions中的相同工具定义只估算一次；不同定义和已移除/延迟工具仍保守纳入并集，兼容动态工具路由。独立`options.system`纳入估算；messages保留原文，工具能力、persona和授权规则未裁剪。每请求依旧按UTF-8字节/2＋2048、再加maxTokens预留，不将此经验估算称作供应商硬计费保证。
+
+DSH 0.1.7的inputTokens为未缓存输入，cacheReadTokens/cacheWriteTokens为互斥分项；门禁实耗修正为input＋cacheRead＋cacheWrite＋output，totalTokens仅为聚合值，不重复加。未知/非法usage继续占用预留。worker-budget.json最多保留32条请求计数：输入估算、system/messages/tools/history字节、工具数、输出上限、准入前费用/预留、settled/denied/unknown及实际输入/输出；不保存正文、参数、密钥。此节替代上一版重复计算toolHistory及排除cacheRead的口径，部署状态见27号§15.5。

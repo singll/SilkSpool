@@ -117,17 +117,17 @@ test('26 号补丁：worker 未上报时按 session_id 从 dsh-bill 归因 spent
   const id = c.data.task_id
   const r = await bus.dispatch('task', 'finish', { task_id: id, run_id: 'bill-1', outcome: 'done', session_id: sid }, { actor: 'scheduler' })
   assert.equal(r.ok, true, r.error?.message)
-  assert.equal(r.data.spent_tokens, 400 + 500 + 200, 'in+out 累加（cacheRead 不计实耗）')
+  assert.equal(r.data.spent_tokens, 400 + 500 + 200 + 99999 * 2, 'DSH 的 input/cacheRead/cacheWrite 分项互斥，缓存读取也占 token 预算')
   const row = bus._internal.db().prepare('SELECT spent_tokens FROM tasks WHERE id=?').get(id)
-  assert.equal(row.spent_tokens, 1100)
+  assert.equal(row.spent_tokens, 201098)
   const run = bus._internal.db().prepare('SELECT spent_tokens FROM task_runs WHERE task_id=?').get(id)
-  assert.equal(run.spent_tokens, 1100, 'task_runs 行同口径（验收汇聚可读）')
+  assert.equal(run.spent_tokens, 201098, 'task_runs 行同口径（验收汇聚可读）')
   // 增量续扫：追加账单后下一个 finish 看到全量
   fs.appendFileSync(billFile, rec(300) + '\n')
   const c2 = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '续扫测试' }, { actor: 'model' })
   const r2 = await bus.dispatch('task', 'finish', { task_id: c2.data.task_id, run_id: 'bill-2', outcome: 'done', session_id: sid }, { actor: 'scheduler' })
   assert.equal(r2.data.spent_tokens, null, '同一会话对应另一个 run 时总账归属不明，不能重复收费')
-  const settled = await bus.dispatch('task', 'record_run_cost', { task_id: id, run_id: 'bill-1', spent_tokens: 1500, session_id: sid, source: 'session_bill' }, { actor: 'scheduler' })
+  const settled = await bus.dispatch('task', 'record_run_cost', { task_id: id, run_id: 'bill-1', spent_tokens: 1500 + 99999 * 3, session_id: sid, source: 'session_bill' }, { actor: 'scheduler' })
   assert.equal(settled.error.code, 'E_TASK_COST_AMBIGUOUS')
   // 无账单记录的会话不回填（保持 null，不凭空造 0）
   const c3 = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '无账单测试' }, { actor: 'model' })
@@ -2548,7 +2548,8 @@ test('WP03 automatic late billing handles unicode, zero, same-size replacement a
   await bus.dispatch('task', 'finish', { task_id: id, run_id: 'late-bill', outcome: 'done', session_id: sid }, { actor: 'scheduler' })
   const folder = path.join(dataDir, 'dsh-bill'), file = path.join(folder, 'records.jsonl')
   fs.mkdirSync(folder)
-  const rec = tokens => JSON.stringify({ time: 1234, sessionId: sid, model: '中文模型', inputTokens: tokens, outputTokens: 0 }) + '\n'
+  const rec = (tokens, cached = 0) => JSON.stringify({ time: 1234, sessionId: sid, model: '中文模型', inputTokens: tokens,
+    outputTokens: 0, cacheReadTokens: cached, totalTokens: tokens + cached }) + '\n'
   fs.writeFileSync(file, rec(0))
   assert.equal((await bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })).data.results[0].spent_tokens, 0)
   const tmp = file + '.new'
@@ -2559,6 +2560,10 @@ test('WP03 automatic late billing handles unicode, zero, same-size replacement a
   assert.equal((await restart.bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })).data.results[0].delta_tokens, 0)
   const task = bus._internal.db().prepare('SELECT status,spent_tokens FROM tasks WHERE id=?').get(id)
   assert.deepEqual({ ...task }, { status: 'done', spent_tokens: 9 })
+  fs.writeFileSync(tmp, rec(9, 100)); fs.renameSync(tmp, file)
+  assert.equal((await restart.bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })).data.results[0].delta_tokens, 100)
+  assert.equal((await restart.bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })).data.results[0].delta_tokens, 0)
+  assert.equal(bus._internal.db().prepare('SELECT spent_tokens FROM tasks WHERE id=?').get(id).spent_tokens, 109)
 })
 
 test('WP03 no-bill completion retains expected cost until late bill arrives, even after history pruning', async () => {
