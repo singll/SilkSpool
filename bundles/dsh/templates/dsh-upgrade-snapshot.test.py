@@ -90,6 +90,28 @@ class RecoveryPointTest(unittest.TestCase):
         self.assertEqual(list(self.work.glob("dsh-snapshot-ready-*")), [])
         self.assertEqual(len(list(self.work.glob("dsh-snapshot-pending-*/failure.json"))), 1)
 
+    def test_readonly_probe_of_pending_wal_copy_is_rejected_with_diff(self):
+        database = self.source / "domain.sqlite"
+        with sqlite3.connect(database) as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("CREATE TABLE tasks(id INTEGER)")
+        db.close()
+        original_copy = snapshot.copy_tree
+
+        def probing_copy(source, target):
+            original_copy(source, target)
+            reader = sqlite3.connect((target / "domain.sqlite").as_uri() + "?mode=ro", uri=True)
+            reader.execute("SELECT * FROM tasks").fetchall()
+            reader.close()
+
+        with mock.patch.object(snapshot, "copy_tree", probing_copy):
+            with self.assertRaisesRegex(RuntimeError, "清单不一致"):
+                self.capture()
+        report = json.loads(next(self.work.glob("dsh-snapshot-pending-*/tree-diff.json")).read_text())
+        self.assertEqual(report["side"], "copy")
+        self.assertTrue(any(row["path"] == "domain.sqlite-shm" for row in report["differences"]))
+        self.assertFalse(list(self.work.glob("dsh-snapshot-ready-*")))
+
     def test_capture_cache_reuses_hash_but_detects_same_mtime_change(self):
         f = self.source / "cache-test.txt"
         f.write_text("before")

@@ -1,6 +1,6 @@
 # 18 · 备份、恢复与变更前维护
 
-> 版本：1.0（2026-10-01）｜常驻正式契约，后续备份/更新流程在本页维护。
+> 版本：1.1（2026-10-01）｜常驻正式契约，后续备份/更新流程在本页维护。
 > 原18号迁移路线图已改名为 [archive/migration-v4-to-v5.md](archive/migration-v4-to-v5.md)，仍保留在归档目录；历史迁移编号不代表本页章节。
 > 工程源：`bundles/dsh/templates/`；生产：csai `/opt/silkspool/dsh/`。远程操作一律使用 PATH 中的 `spool`。时间表同时列北京时间（Asia/Shanghai）与宿主UTC。
 
@@ -68,6 +68,8 @@ spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh prune'
 python3 bundles/dsh/templates/dsh-release-preflight.py --templates bundles/dsh/templates --database /path/to/backup-image.db
 ```
 
+**冻结点校验期间禁止打开待校验树中的SQLite**：`mode=ro`仍可能创建或更新WAL/SHM，并使目录/共享内存元数据变化。只监控state/failure文件；查询使用独立SQLite镜像或另建可丢弃副本。`immutable=1`只能用于已验证且不依赖WAL的静态镜像，不适用于在线库。复制清单失败时，`tree-diff.json`记录source/copy/source-final及前100条路径/差异字段，不输出文件正文；失败恢复点不得启动或发布。
+
 `drill`仅恢复暂存的SQLite与manifest，校验sha256/integrity_check，结束删除临时副本；不恢复整树、不启动应用。`restore-copy`调用restic `--verify`恢复完整文件树（目标下保留源绝对路径的目录层次），校验并归位DB副本；`restore-report.json`始终 `safe_to_start=false`。启动前必须隔离路径、凭据、网络，校对UID/权限及宿主依赖，做应用验证，不能直接覆盖在线WAL库。
 
 `preflight`输入包含模板字节、脚本自身、Node路径/版本、平台及相关环境；组装树也须字节匹配才复用契约结果。模板变动立即失效，`--force`强制重跑。指定DB时，每次仍在临时副本验证task/endpoint schema、原表行数及完整性；不是全部域迁移或应用启动验收。`silksec-ops.sh`还转发freeze/resume/restore-frozen/rehearse/release，具体参数使用各自 `--help`；原release状态机和冻结守卫不变。冻结期间自动停止并恢复已安装维护单元。
@@ -109,3 +111,5 @@ spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh archive-release --p
 - 旧 `20260913-rc2`归档快照 `1725625f…`：逻辑97.77GB、新增4.82GB，完整读回和静态复核后本地removed=true；最新 `20260926-017`保留。宿主使用率27%→16.8%，可用702→约796GiB。
 - 全域659/659、57表task/endpoint副本schema通过；预检130.21秒→缓存3.56秒。root冻结10项/发布恢复19项/快照6项、维护7项以及Go CLI/新增RPC检查通过。Go tools全包既有uptime测试失败曾用HEAD覆盖对照确认，未计为本批通过。
 - 本次prepare-change维护测试10/10通过，覆盖真实restic恢复、失败不发布回执、CLI锁冲突75。部署前旧入口快照`0fd330c0…`（40库120.53秒/恢复7.34秒）通过后上传新脚本；新入口实测change `20261001-backup-contract-18`、snapshot `d5758fa6735b1f948dd4bbaf038320d02f7d357d7953d1916fa1c1e393cfc892`，40库备份32.38秒/恢复6.77秒、总计约41秒，成功回执已落盘。主服务PID=922156/NRestarts=0，未发布27号业务增量；当前进度见[PROGRESS](PROGRESS.md)。
+
+- 2026-10-01 27号阶段发布：NAS新门禁`bdeedec6…`、重试`246f1e6a…`，完整冻结`777e3e6b…`及6根恢复应用预演通过；部署后snapshot`df226da14b56c7d0e9b633845b29aced5384bb23f58a2541f192c68cf2b4044c`，40库33.21秒/恢复6.51秒，覆盖新队列/费用账本和本次run。首次mode=ro查询副本干扰SHM导致冻结失败，原服务自动恢复，后续不查询pending树重做成功；快照差异诊断已部署，远端root快照7/冻结10/release19项通过。

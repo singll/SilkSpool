@@ -1,6 +1,6 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
-> 版本：v5.2 ｜ 状态：现行契约；27 号目标约束/请求假设队列已本地验证、未部署（§7.30）｜ 契约版本：task domain manifest v1
+> 版本：v5.2 ｜ 状态：现行契约；27 号目标/请求/费用增量已部署（§7.30–7.32）｜ 契约版本：task domain manifest v1
 > 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）、`know.release.revoked`（L6：撤回 → change-retest 重测需求任务入队，§2.3 变更触发节奏）、`vuln.signal.confirmed`（产出闭环：确认漏洞自动入队 `[提交] finding #id` 提交任务，同 finding 幂等去重）；`task_budget_extend` / `task_complete` 由 approval 域在 `approval_decide` 事务内**同步 dispatch**（actor=approval，幂等账本 `approval_effects`）执行——执行失败记 `approval_effects.failed`，**无独立 dispatcher 自动重试**，需人工 `approval_effects_retry` 补跑，不回滚 decide（09-approval §2.3；两域以此线为准）。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加、know 域学习 episode（L1）**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
@@ -1385,7 +1385,7 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 
 **教训**：① 43 号补丁的 verify 产线把「高拒绝」变成常态，凡按 rejected 计失败率的监控都必须区分 verify 角色；② 自动恢复类判据一律用**滚动窗口**，禁止引用降级时刻（一次事后事件可永久锁死）。P7 巡检的「任务动能静默 ~14h、非异常」归因据此更正为**调度死锁缺陷（已修复）**。
 
-### 7.29 2026-09-30 · 27 号首批（本地实现，未部署）
+### 7.29 2026-09-30 · 27 号首批（2026-10-01已部署）
 
 - 收尾统一经过持久恢复器，包括 worker busy（抛错/失败信封）、学习节奏让位、完成和异常路径；修复无会话 `session_id:null` 触发 schema 失败。恢复只重交收尾，不重新派 worker，也不串行锁住整小时执行 tick。
 - Campaign 候选查询改为每项目过滤后 limit=30；候选编译保留原 `program_id`，无归属项留在原候选池待分诊。缺口第 201 项、项目内候选轮转、Dispatcher finding 所属复查及结构化目标约束仍待办。
@@ -1393,7 +1393,7 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - 回归覆盖真实 bus/SQLite 下重试、回执丢失、恢复器重建、重复交付、连续 busy、迟到收尾隔离，以及事件参数值与候选项目传递。联合测试结果见 [27 号 §10.3](27-business-quality-and-capacity-plan-2026-09-30.md#103-首批实现与验证2026-09-30)。
 
 
-### 7.30 2026-09-30 · 27 号续接：目标约束、请求版本与持久假设队列（本地未部署）
+### 7.30 2026-09-30 · 27 号续接：目标约束、请求版本与持久假设队列（2026-10-01已部署）
 
 **目标契约。** `goal_spec.allowed_task_kinds` 为非空数组，可用 hypothesis/crawl/param_enrich/asset_enum/review_finding/verify_candidate/auth_prepare/explore；`source_pool=all|candidates`，后者仅允许候选验证/复核；`vuln_classes` 为现有规范类别数组；`targets.hosts` 为精确主机数组，`targets.finding_ids` 为正整数数组。提供的这些数组不得为空，非法枚举报 E_SCHEMA；缺省兼容旧非受限任务。约束同时作用于 Planner、显式 Dispatcher、derive_intent、带 campaign_id 的 task_create 和调度认领。受限任务缺 intent_spec 报 E_CAMPAIGN_GOAL；拒绝不会改变候选技术状态。
 
@@ -1419,7 +1419,7 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 
 2026-09-30 WP02续接同步任务提示：`exec_oracle_judge` 仅辅助分析；适用的 owner-only JSON IDOR 需绑定 finding/request 与双身份，由 `exec_verify_authz_read` 生成 decision_id，再封装可信 capsule。模型登记完整观察使用 `vuln_register_signal`，不再提示模型调用不可达的 `vuln_register_candidate`；旧 run 或调用方 verdict 不能确认。其它类型缺受控验证器时保留能力缺口与待补证据。此处只更新新生成任务的 objective，不批量改写既有排队任务。
 
-### 7.31 2026-10-01 · 27号续接：执行费用、认领隔离与失败队列重试（本地未部署）
+### 7.31 2026-10-01 · 27号续接：执行费用、认领隔离与失败队列重试（2026-10-01已部署）
 
 `task_record_run_cost` 为 scheduler/system 内部命令；必填 task_id、非空 run_id、非负安全整数 spent_tokens、source（worker_report/session_bill），可选 session_id、consumed_at（实际消费毫秒时间，不得在未来）。仅结算已登记执行或已有账本回执，不建立虚构执行。`task_run_costs` 查询允许 model/dashboard/scheduler/system，按 task_id 可选过滤，limit/offset 分页并返回准确 total。
 
@@ -1432,3 +1432,9 @@ scheduler→exec→`task_worker_register` 传递 claim_started_at。带 task_id 
 `task_reap` 每次最多实际回收4项，每项在同事务写失败运行史并发布一次 `task.finished`（cause=reaped、outcome=crash、spent_tokens=NULL、cost_state=unknown）。重复回收不重复发结束事件；仍跳过活worker与预算内执行。interval按原规则退避续跑；一次性失败任务可触发假设重开。
 
 hypothesis_queue新增 retry_count（默认0）。已关联任务失败或一次性回收后，清空队列task_id、保留旧任务/运行史、延迟 `SEC_CAMPAIGN_RETRY_AFTER_FAIL_HOURS`（默认1小时），最多自动重开2次，即初次加两次重试。第三次失败保留关联，last_error=execution_retry_limit_reached。derive_intent统一检查冷却与上限，返回 `E_HYPOTHESIS_COOLDOWN` / `E_HYPOTHESIS_RETRY_LIMIT`，其他Planner入口重开strategy也不能绕过同一队列键上限；迟到旧回调不能解除新任务关联。摘要查询含 retry_count；attempts仍是队列派发处理计数，不能当有效实验次数。新请求版本是新的假设；未入队的旧手工策略及成功结束但结论unknown的重开尚未统一。
+
+### 7.32 2026-10-01 · 27号阶段生产验收
+
+`2c40d3f`＋`38deb2b`累计业务模块已在DSH 0.1.7-rc.2部署，生产新增hypothesis_queue/task_run_costs；全域659/659、隔离worker14项、UI80/80通过。任务103394由真实scheduler认领，run `wmup66uom3f71`在50.795秒后done，worker/session/claim一致，独立账本一行49,626 token，pending-task-finishes=0。旧任务/执行史/worker业务行在静默启动前后保持一致；新增22条bus.domain.registered另计。
+
+**放量未通过**：任务声明20,000 token，实计49,626；首个输入43,869 token，当前budget_tokens是事后超支观测，尚无启动前预留/上下文额度校验，不能称为硬预算。三个Campaign通过正式pause命令暂停（预算原值保留），生产`SEC_SCHEDULER_CLAIM_LIMIT=1`、`SEC_EXEC_MAX_WORKERS=1`。下一阶段先补WP03预留/lease/ack与迟到账单，验证后分Program恢复；不要直接将本次done作为允许放量的证据。完整发布/恢复路径见[27号§15.3](27-business-quality-and-capacity-plan-2026-09-30.md#153-业务增量分阶段发布2026-10-01阶段验收完成)。

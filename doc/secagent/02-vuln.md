@@ -1,6 +1,6 @@
 # 02 · vuln 域设计（漏洞信号 / 候选队列 / 证据 / 提交）
 
-> 版本：v5.2（2026-09-30 本地续接） ｜ 状态：随实现更新（2026-09-19 复核；产出闭环 C13/Q7 + 候选 TTL 治理 + dedup 不变量 + remote_id）
+> 版本：v5.2（2026-10-01 部署验收） ｜ 状态：随实现更新（2026-09-19 复核；产出闭环 C13/Q7 + 候选 TTL 治理 + dedup 不变量 + remote_id）
 > 依赖：**遵守** [`00-conventions.md`](00-conventions.md)（全局契约宪法，冲突以它为准）；被总线 `@silksec/sec-domain-bus` 宿主挂载。
 > 订阅（本域消费）：`exec.run.completed`（parser proposal 机器直灌分流）。
 > 被订阅（本域发布）：`vuln.candidate.registered / vuln.candidate.promoted / vuln.candidate.claimed / vuln.signal.registered / vuln.signal.confirmed / vuln.signal.rejected / vuln.signal.submitted / vuln.evidence.attached`——消费方：eval 域（判定回流）、fgs 域（节点状态联动）、report 域（提交统计）、asset 域（总览缓存失效）。
@@ -901,7 +901,7 @@ export const repositoryV1 = {
 
 ## 十一、27 号首批：观察保留与技术误报统计（2026-09-30，本地实现）
 
-本批源代码契约如 C1/C2；生产尚未部署。`vuln_noise_stats`、新候选抑制与 `candidates_sweep` 共用技术样本口径：
+本批源代码契约如 C1/C2；2026-10-01已部署（27号§15.3）。`vuln_noise_stats`、新候选抑制与 `candidates_sweep` 共用技术样本口径：
 
 - `technical_confirmed` = `confidence=confirmed AND status!=false_positive` 的记录数，保存已有技术确认标记；其后转 submitted/accepted/dup/ignored 不因运营状态变化丢失该标记。单独设置 accepted 不会创造技术正样本。
 - `vuln_reject(dup)` 保留既有 confirmed 置信标记；未确认的候选仍按 dup 处理，false_positive 有反证时可撤销确认。
@@ -913,3 +913,8 @@ export const repositoryV1 = {
 新增兼容性回归覆盖：异 URL/异项目保留、外部 ID 不跨入口合并、重复观察追加证据、旧弱指纹精确复用/升级且旧证据保留、ignored/dup 不触发技术抑制、已有技术确认不受平台状态变化影响。联合测试结果见 [27 号 §10.3](27-business-quality-and-capacity-plan-2026-09-30.md#103-首批实现与验证2026-09-30)。
 
 回退边界：数据库无批量迁移，但新行已使用 v2 指纹。上线后若回退旧代码，旧弱指纹逻辑不能识别所有新行，可能重新合并或重复登记；回退必须保留此兼容读取逻辑，不能仅覆盖旧插件后声称无行为差异。
+
+
+### 2026-10-01 · 27号阶段上线验收
+
+2026-10-01已部署；生产静默冒烟、UI验收80/80及单任务运行通过；扩大执行受WP03预算预留门禁约束。固定DSH 0.1.7-rc.2，恢复点`777e3e6b…`；详细清单和证据见[27号§15.3](27-business-quality-and-capacity-plan-2026-09-30.md#153-业务增量分阶段发布2026-10-01阶段验收完成)。伪造decision/capsule拒绝E_EXEC_EVIDENCE_UNTRUSTED，未安装真实verification-profiles，读取验证返回E_EXEC_ORACLE_UNSUPPORTED；旧confirmed未批量重判，真实漏洞产出收益尚未测量。

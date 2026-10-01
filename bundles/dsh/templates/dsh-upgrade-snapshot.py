@@ -242,13 +242,27 @@ def capture(config, work, guard=assert_quiescent):
     manifest = {"manifest_schema": 1, "kind": "dsh-frozen-recovery-point", "started_at": now(),
                 "config": config, "quiescence_before": before_guard, "roots": {}, "sqlite": [], "complete": False}
     content_cache = {}
+    def check_tree(expected, actual, name, side):
+        if actual == expected:
+            return
+        differences = []
+        for relative in sorted(expected.keys() | actual.keys()):
+            old, new = expected.get(relative), actual.get(relative)
+            if old != new:
+                differences.append({"path": relative, "fields": sorted(
+                    key for key in (old or {}).keys() | (new or {}).keys()
+                    if (old or {}).get(key) != (new or {}).get(key))})
+        # Private diagnostic contains paths/field names only, never file contents.
+        write_json(pending / "tree-diff.json", {"root": name, "side": side,
+                   "count": len(differences), "differences": differences[:100]})
+        raise RuntimeError("恢复点复制前后清单不一致：" + name + " (" + side + ")")
     try:
         for row, source in zip(config["roots"], sources):
             before = tree_manifest(source, content_cache)
             target = pending / "trees" / row["name"]
             copy_tree(source, target)
-            if tree_manifest(source, content_cache) != before or tree_manifest(target, content_cache) != before:
-                raise RuntimeError("恢复点复制前后清单不一致：" + row["name"])
+            check_tree(before, tree_manifest(source, content_cache), row["name"], "source")
+            check_tree(before, tree_manifest(target, content_cache), row["name"], "copy")
             manifest["roots"][row["name"]] = {"source": str(source), "entries": before}
         for i, database in enumerate(config.get("sqlite", [])):
             source = pending / "trees" / database["root"] / database["path"]
@@ -258,8 +272,8 @@ def capture(config, work, guard=assert_quiescent):
             manifest["sqlite"].append({**database, "image": str(image.relative_to(pending)), **sqlite_image(source, image)})
         manifest["quiescence_after"] = guard(config)
         for row, source in zip(config["roots"], sources):
-            if tree_manifest(source, content_cache) != manifest["roots"][row["name"]]["entries"]:
-                raise RuntimeError("恢复点窗口中源发生变化：" + row["name"])
+            check_tree(manifest["roots"][row["name"]]["entries"],
+                       tree_manifest(source, content_cache), row["name"], "source-final")
         manifest.update(complete=True, finished_at=now())
         write_json(pending / "manifest.json", manifest)
         (pending / "manifest.sha256").write_text(sha256(pending / "manifest.json") + "\n")

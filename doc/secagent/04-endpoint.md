@@ -1,6 +1,6 @@
 # 04 · endpoint 域设计（接口面 / 参数队列——"打哪里、喂什么料"的唯一事实源）
 
-> 版本：v5.1 ｜ 状态：现行契约；2026-09-30 请求观测增量已本地验证、未部署 ｜ 契约版本：endpoint@1（repository-v1）
+> 版本：v5.1 ｜ 状态：现行契约；2026-10-01 请求观测增量已部署 ｜ 契约版本：endpoint@1（repository-v1）
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线）
 > owns（单写者）：`endpoints`、`endpoint_requests` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）
 > 不 owns：`assets`（asset 域）、`findings`（vuln 域）、`data/pipeline/{program}/` 下其余台账文件（ledger 域）
@@ -225,7 +225,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 **事件**：`endpoint.semantics_annotated`（from/to/source/applied/operator）。`endpoint.registered` 订阅（onEndpointRegistered）在端点入库时自动跑一次自动建议（弱联动 best-effort）。
 
-#### 1.3.7 `endpoint_observe_request` —— 不可变请求观测（27 号，本地未部署）
+#### 1.3.7 `endpoint_observe_request` —— 不可变请求观测（27 号，2026-10-01已部署）
 
 保存一次请求输入及来源；不会发包，也不会根据 HTTP 状态声明业务健康、public 或漏洞成立。actor=`model/script/dashboard`，timeout=60s。幂等在 handler 完成：每次重读引用文件摘要，完整观测摘要作为 `request_id`；内容相同返回原 ID、`created=false`，内容变化另存，不覆盖旧观测。
 
@@ -662,3 +662,8 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 - **文件写**：`param-queue.txt`/`param-seen.txt` 追加改 `O_APPEND` 分块写（`appendLinesAtomic`，≤3.5KB/次，PIPE_BUF 内单写原子），不再整读整写；消费删行仍 tmp+rename。`queue_stat` 行数按 `mtime+size` 缓存。
 - **索引**：新增 `idx_endpoints_last_seen(last_seen DESC)`。
 - **分页协定**：`endpoint_list`/`endpoint_lite_page`/`endpoint_hosts` 均 `meta.paged=true`，总线不再二次切片。
+
+
+### 2026-10-01 · 27号阶段上线验收
+
+2026-10-01已部署；生产静默冒烟、UI验收80/80及单任务运行通过；扩大执行受WP03预算预留门禁约束。固定DSH 0.1.7-rc.2，恢复点`777e3e6b…`；详细清单和证据见[27号§15.3](27-business-quality-and-capacity-plan-2026-09-30.md#153-业务增量分阶段发布2026-10-01阶段验收完成)。生产endpoint_requests已建表、查询可用；本批未导入真实业务请求，不将空队列算作业务覆盖。

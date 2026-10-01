@@ -1,6 +1,6 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
-> 版本：v5.1（2026-09-30 本地续接） ｜ 状态：定稿 ｜ 契约版本：`exec/1`
+> 版本：v5.1（2026-10-01 部署验收） ｜ 状态：定稿 ｜ 契约版本：`exec/1`
 > 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.worker.spawned/.finished`（task 域，强联动）；`exec.flow.appended`、`exec.import.completed`、`exec.evidence.published` 当前**无订阅方（设计预留）**——各域 manifest 未声明，待实现后回填
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
@@ -247,7 +247,7 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 **事件**：`exec.evidence.published`（payload `{run_id, program_id, files, bytes, digest}`）。
 **actor**：system（明确登记的宿主收尾通道；worker/模型产出的证据要可用，必须由宿主走此门）。
 
-#### 1.3.9 `exec_http_request` 与 `exec_verify_authz_read`（27号 WP02，本地未部署）
+#### 1.3.9 `exec_http_request` 与 `exec_verify_authz_read`（27号 WP02，2026-10-01已部署）
 
 `exec_http_request` 接受 `program_id/url`，可选 `method`（默认 GET）、`headers/body`、`proxy=default|direct`、`timeout_ms=100..30000`、`max_bytes=1..1048576`。actor 为 model/script/dashboard，幂等为 none；每次调用真实执行。非 GET/HEAD/OPTIONS 或写动词路径需要 intrusive 授权。
 
@@ -297,7 +297,7 @@ page/grep 结果读取拒绝文件/目录符号链接、硬链接与非常规文
 | `exec_authz_decision` | `decision_id`* | 已核验原始证据与当前契约的持久化判定 | 一小时有效窗；actor=model/script/dashboard/reactor |
 | `exec_oracle_judge` | `oracle`*（既有规则名）、`input`*（调用方特征） | `{oracle,verdict:inconclusive,advisory_only:true,suggested_verdict,rationale,evidence}` | 辅助分析，不是可信结论；不能生成自动确认 capsule。原始规则函数的建议也不能替代受控执行证据 |
 
-**27 号首批判定收紧（本地实现，生产未部署）**：`xss_echo` 原样回显输出 inconclusive 并保留上下文；`sqli_diff` 比较实际正文（trim 后同位置字符相似度≥0.9，非长度比），等长不同内容或缺失基线输出 inconclusive；`sqli_time` 单次显著延迟输出 inconclusive；`ssrf_oob` 无回调输出 inconclusive。响应一致且布尔反向显著不同的 SQLi 差分路径仍可返回 verified，规则正向兼容用例保留；它仍需证明健康基线与数据库因果，不能单独当漏洞事实。
+**27 号首批判定收紧（2026-10-01已部署）**：`xss_echo` 原样回显输出 inconclusive 并保留上下文；`sqli_diff` 比较实际正文（trim 后同位置字符相似度≥0.9，非长度比），等长不同内容或缺失基线输出 inconclusive；`sqli_time` 单次显著延迟输出 inconclusive；`ssrf_oob` 无回调输出 inconclusive。响应一致且布尔反向显著不同的 SQLi 差分路径仍可返回 verified，规则正向兼容用例保留；它仍需证明健康基线与数据库因果，不能单独当漏洞事实。
 
 这些旧纯函数仍只是辅助分析。2026-09-30 续接新增的可信路径限于§1.3.9 的 owner-only JSON 读取适配器，其余漏洞族缺受控验证器时不能自动确认。浏览器执行、交错时延、OOB 健康与回调归因等仍待实现。技术核验不依赖投稿、平台认可或赏金。
 
@@ -766,6 +766,11 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 - **查询改造**：`exec_page_result` / `exec_grep_result` 不再整读文件（旧实现大 stdout 数百 MB 爆内存）。
 - **流向修正**：`readFlows` 无 `date` 时改「最近文件优先」（旧实现升序取最旧，缺省永远看到最早流量）——`exec_flow_triage` 随之取近期流量。
 
-## 十一、2026-10-01 27号续接：worker认领标识（本地未部署）
+## 十一、2026-10-01 27号续接：worker认领标识（2026-10-01已部署）
 
 `exec_spawn_worker` 增加可选 claim_started_at（非负毫秒整数）。一旦传 task_id，仅 scheduler 可调用且必须传该标识，否则返回 `E_EXEC_CLAIM_REQUIRED`；无任务的原有worker入口保留。`exec.worker.spawned` 将 task_id/claim_started_at 传给task注册订阅，由task域原子校验当前认领并绑定run；旧认领或同认领的竞争worker不能覆盖active_run_id。注册失败沿现有onSpawn错误路径终止进程。此项仅补齐认领隔离，尚未实现全局worker lease/ack或并发槽位预留。
+
+
+### 2026-10-01 · 27号阶段上线验收
+
+2026-10-01已部署；生产静默冒烟、UI验收80/80及单任务运行通过；扩大执行受WP03预算预留门禁约束。固定DSH 0.1.7-rc.2，恢复点`777e3e6b…`；详细清单和证据见[27号§15.3](27-business-quality-and-capacity-plan-2026-09-30.md#153-业务增量分阶段发布2026-10-01阶段验收完成)。伪造decision/capsule拒绝E_EXEC_EVIDENCE_UNTRUSTED，未安装真实verification-profiles，读取验证返回E_EXEC_ORACLE_UNSUPPORTED；旧confirmed未批量重判，真实漏洞产出收益尚未测量。真实隔离worker成功/失败/超时/取消/重放验收14项通过；生产单worker完整收尾与会话归属通过。

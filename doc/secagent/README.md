@@ -8,7 +8,7 @@
 | 要做什么 | 从这里开始 |
 |---|---|
 | 看当前进度 / 最近结果 | **[PROGRESS.md](PROGRESS.md)**（只含当前状态 + 最近结果 + 通用规则） |
-| 看真实漏洞发现能力的全流程审查与改造方案（在办，目标/请求/可信读取、费用归因与失败重试已本地验证） | [27-business-quality-and-capacity-plan-2026-09-30.md](27-business-quality-and-capacity-plan-2026-09-30.md)（资产到技术验证、假设/候选漏报、执行稳定性、知识实效；以真实漏洞数量/质量/效率验收，提交与赏金退出能力评价） |
+| 看真实漏洞发现能力的全流程审查与改造方案（在办，首批已部署/小批运行，预算硬门禁前暂停放量） | [27-business-quality-and-capacity-plan-2026-09-30.md](27-business-quality-and-capacity-plan-2026-09-30.md)（资产到技术验证、假设/候选漏报、执行稳定性、知识实效；以真实漏洞数量/质量/效率验收，提交与赏金退出能力评价） |
 | 执行常规NAS备份、清理、恢复与发布预检 | [18 备份与维护](18-backup-and-maintenance.md)（命令、定时器、保留数、一致性边界） |
 | 看 DSH 0.2.0 升级研究与计划（在办，待实施） | [26-dsh-0.2.0-upgrade-plan-2026-09-30.md](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)（rc.1/rc.2 全部 35 项对比、V4→V4 工具适配、插件/模型/设置影响、U0–U4、验收与回滚；未执行生产升级） |
 | 看 DSH 0.1.7 升级与容量治理（已归档） | [archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md)；链路 [STATE](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md) · [record](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)（P1–P8 已关账 CHAIN END，2026-09-30） |
@@ -30,7 +30,7 @@ doc/secagent/
   PROGRESS.md                           当前进度（只含当前 + 最近结果 + 通用规则）
   README.md                             本页（入口 · 结构 · 治理规则）
   26-dsh-0.2.0-upgrade-plan-2026-09-30.md       在办：0.2.0 研究与升级计划（待实施）
-  27-business-quality-and-capacity-plan-2026-09-30.md  在办：真实漏洞发现能力改造（全域659项本地契约通过，未部署）
+  27-business-quality-and-capacity-plan-2026-09-30.md  在办：真实漏洞发现能力改造（首批已部署；659契约/80生产验收通过，放量待WP03预算门禁）
   archive/                              历史（只读）：
     migration-v4-to-v5.md                     v4→v5迁移历史（Phase 0–5已完成）
     19-ui-unify.md                      看板 UI 全局统一重构（已实施验收，结论已回填 16/主题）
