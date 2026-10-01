@@ -73,7 +73,12 @@ class MaintenanceTest(unittest.TestCase):
         with sqlite3.connect(workspace/'notes.sqlite') as db:
             db.execute('CREATE TABLE notes(body)')
             db.execute("INSERT INTO notes VALUES ('keep')")
-        self.manager=m.Maintenance({**self.manager.cfg,'extra_roots':[str(workspace)]})
+        runtime=workspace/'browser-runtime';runtime.mkdir()
+        locked=sqlite3.connect(runtime/'cache.db')
+        self.addCleanup(locked.close)
+        locked.execute('CREATE TABLE cache(value)');locked.commit()
+        locked.execute('BEGIN EXCLUSIVE')
+        self.manager=m.Maintenance({**self.manager.cfg,'extra_roots':[str(workspace)],'exclude_paths':[str(runtime)]})
         with patch.object(self.manager,'mounted'):
             self.db.chmod(0o640)
             self.manager.restic(['init'])
@@ -89,6 +94,7 @@ class MaintenanceTest(unittest.TestCase):
             self.assertFalse(restored['safe_to_start'])
             self.assertEqual((target/str(self.db).lstrip('/')).stat().st_mode & 0o777,0o640)
             self.assertEqual((target/str(workspace).lstrip('/')/'proof.txt').read_text(),'workspace evidence')
+            self.assertFalse((target/str(runtime).lstrip('/')).exists())
             with sqlite3.connect(target/str(workspace).lstrip('/')/'notes.sqlite') as db:
                 self.assertEqual(db.execute('SELECT body FROM notes').fetchone()[0],'keep')
             with sqlite3.connect(target/str(self.db).lstrip('/')) as c:

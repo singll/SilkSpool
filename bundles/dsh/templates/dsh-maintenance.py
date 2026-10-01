@@ -50,6 +50,12 @@ class Maintenance:
             if any(root==other or root in other.parents or other in root.parents for other in self.roots.values()):
                 raise ValueError('backup roots overlap')
             self.roots['extra-'+str(index)]=root
+        self.exclude_paths=[]
+        for value in cfg.get('exclude_paths',[]):
+            path=Path(value).resolve()
+            if not any(root in path.parents for root in self.roots.values()):
+                raise ValueError('exclusion must be below a backup root')
+            self.exclude_paths.append(path)
         self.repo=cfg['repository']
         self.sftp=self.repo.startswith('sftp:')
         if self.sftp:
@@ -117,6 +123,8 @@ class Maintenance:
         return report
 
     def excluded(self, path, root=None):
+        if any(path==excluded or excluded in path.parents for excluded in self.exclude_paths):
+            return True
         rel=path.relative_to(root or self.base)
         return any(x in {'.cache','.pnpm-store','__pycache__'} for x in rel.parts) or str(rel).startswith(('data/backups/','backups/')) or str(rel) in ('data/backups','backups')
 
@@ -145,7 +153,7 @@ class Maintenance:
                 tmp.unlink(missing_ok=True)
                 deadline=time.monotonic()+120
                 def progress(*_):
-                    if time.monotonic()>deadline: raise TimeoutError('SQLite backup busy >120s')
+                    if time.monotonic()>deadline: raise TimeoutError('SQLite backup exceeded 120s: '+str(p))
                 with contextlib.closing(sqlite3.connect(p.as_uri()+'?mode=ro',uri=True,timeout=3)) as src:
                     with contextlib.closing(sqlite3.connect(tmp)) as dst:
                         src.backup(dst,pages=1024,progress=progress,sleep=0.02)
@@ -169,6 +177,8 @@ class Maintenance:
         dbs=self.database_images()
         batch='batch-'+uuid.uuid4().hex
         args=['backup','--json','--host',self.host,'--tag','routine-pending','--tag',batch,'--exclude-caches']
+        for path in self.exclude_paths:
+            args+=['--exclude',str(path)]
         for root in self.roots.values():
             for rel in ('data/backups','backups','.cache','.pnpm-store'):
                 args+=['--exclude',str(root/rel)]
