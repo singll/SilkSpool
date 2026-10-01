@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 const UNGOVERNED_NETWORK_TOOLS = new Set(['bash', 'web_fetch'])
 const FILE_WRITERS = new Set(['write', 'edit'])
-const RUN_CONTROL_FILES = new Set(['meta.json', 'model-patch.yml', 'worker-session.json', 'worker.log', 'cmd.txt', 'proposal.json', 'stdout.log', 'stderr.log'])
+const RUN_CONTROL_FILES = new Set(['meta.json', 'model-patch.yml', 'worker-session.json', 'worker-ack.json', 'worker-budget.json', 'worker.log', 'cmd.txt', 'proposal.json', 'stdout.log', 'stderr.log'])
 
 function inside(child, parent) {
   const relative = path.relative(parent, child)
@@ -61,7 +61,8 @@ export function workspaceWriteRefusal({ cwd, filename, baseDir, dataDir }) {
     if (inside(target, protectedRoot)) {
       const runRelative = path.relative(resultsRoot, workspace)
       const ownRun = /^w[a-z0-9]+$/.test(runRelative)
-      if (!ownRun || !inside(target, workspace) || RUN_CONTROL_FILES.has(path.relative(workspace, target))) {
+      const relative = path.relative(workspace, target)
+      if (!ownRun || !inside(target, workspace) || RUN_CONTROL_FILES.has(relative) || relative.startsWith('worker-budget.json.tmp-')) {
         return 'E_SCOPE_FILE_WRITE: 平台配置、域数据和执行控制文件禁止原生改写；请使用对应域动词。'
       }
     }

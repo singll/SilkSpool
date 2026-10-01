@@ -841,3 +841,28 @@ D2/D3结果（北京时间14:44–14:48）：主服务正常恢复，PID=975839/
 生产verification-profiles为空，可信HTTP/确认接口已上线但真实项目读取验证受接口契约/双身份前置限制；本次只证明受控样例与运行链路，不宣称新增真实漏洞或完成全部WP。WP04真实请求采集、WP02逐族契约、WP06旧证据及WP07–12继续按§15分批推进。
 
 部署后恢复保障：finalize新NAS snapshot `df226da14b56c7d0e9b633845b29aced5384bb23f58a2541f192c68cf2b4044c`，40库33.21秒/恢复6.51秒通过；17项关键证据摘要落于本批根SHA256SUMS。最终生产phase=`deployed-trial-accepted-expansion-held`，PID=975839/NRestarts=0；下一轮从WP03预算门禁继续，不重新部署本批。
+
+### 15.4 WP03预算增量部署（2026-10-01，默认预算放量门槛仍未通过）
+
+本批change `20261001-wp03-budget`，基线`7d7e6c8`，固定DSH0.1.7-rc.2。已部署task/backend-task/exec/worker-runtime/native-guard及对应契约/运行验收脚本。新增task_budget_reservations、task_bill_items、task_cost_watch；机制详见05号§7.33、10号WP03节。本批没有升级0.2.0、修改旧升级STATE、续Campaign预算或恢复外部目标探索。
+
+- 准入/执行：同事务预留Program/Campaign预算，worker登记匹配claim与预留、全局注册槽位检查，父进程登记提交后发ACK；模型请求在llm/stream检查输入估算及输出上限，异常未知保留预留。嵌套worker暂拒绝。仍存活的scheduler不因心跳过期被抢占，tick不重入；获取锁残留恢复与完整fencing租约仍待办。
+- 费用：持久对账观察入口与逐账单消费时间，中文/文件原子重写可读；每tick轮转4项，迟到增长幂等补差，不改任务技术结果。Campaign投影来自执行账本，不再累加Reviewer声明；历史未知时间不在预算窗口滚动时自动消失。默认历史待对账入口较多，轮转完成需要时间；同session多run歧义不猜归属。
+- 验证：远端全域**662/662**，现有**60表**schema预演通过；本地task120/120、worker10/10、控制文件写保护4项；完整旧/新应用隔离预演通过（15域、1,846历史session、3工作区、1,597列表会话），真实隔离worker**15项**通过、12次本地模型请求。1000预算用例模型请求0，正常用例2次/40token；生产UI**80/80**。
+- 恢复：首次NAS snapshot `7e937747be5beed9a76ddf96376136b34c2a6d216b27c6754a20a2afac531bc2`（40库34.98秒、恢复6.97秒）；完整冻结manifest `9c7457fea3f83ce29541b8b5f21608fc16392b064168caf94c91d564c90a9068`。首轮停写08:57:53Z、恢复09:53:41Z，约55分49秒，含恢复/schema/应用与worker预演。部署后NAS `a82eff647ad81da9ea1418ed5b0141cae92b43b321f131d8d6a88613c3bc6d71`（40库191.49秒、恢复6.88秒）。最终三表owns声明修正另行冻结/验证，最终检查点在本节后补。
+
+生产只读任务事实：
+
+| task / 声明预算 | 结果 | 费用与边界 |
+|---|---|---|
+| 103395 / 20,000 | failed，业务首请求被拒绝 | 随后标题调用1次，报告0token；独立账本0、预留settled。不能写成生产全部模型请求为0 |
+| 103396 / 150,000 | failed，第二个业务请求被估算准入拒绝 | 44,986token（业务43,896＋标题1,090），2次请求，预留settled；默认预算仍不能完成一次完整只读场景 |
+| 103397 / 300,000（仅本次对照） | done，run `wmupd4w7v2c62` | 49,217token，3次请求，无拒绝/未知/在飞预留，独立账本1行；并未修改默认任务或Campaign预算 |
+
+**本批证明请求门禁和收尾结算已运行，未证明供应商计费绝对硬上限。** 输入估算为UTF-8字节/2＋2048，工具/历史上下文开销较大，默认150k在已消费44,986后会保守拒绝下一请求。300k对照只隔离执行链故障，不能用提高预算代替上下文优化。Campaign1/2/3继续paused、并发1；预算200M/200M/50M不变，C3已用49,998,667。下一批先缩减实际工具/人格/历史输入，采集模型请求估算与真实输入对比，完成默认预算闭环及供应商计费边界后单Program恢复。真实verification-profiles仍为空，未宣称新增漏洞。
+
+失败记录：冻结CLI最初误用freeze子命令，退出2后改用capture，未产生错误冻结点；旧版隔离和生产静音冒烟各一次bus.status 10秒超时，均保留失败报告、重跑通过；第一组worker6秒超时早于会话创建，改为15秒后归属/超时/取消完整通过。没有把失败样例计入通过数。远端证据目录 `/opt/silkspool/dsh-upgrades/20261001-wp03-budget/` 保存manifest、freeze/restore、schema、rehearsal、canary和cutover-state及SHA256SUMS。
+
+最终声明修正验收：task owns补齐三张新增表，本地task120/120通过；第二冻结点manifest `145a4c2fd409e45ee0f59d8e804b2a4062044eb525f583822756beb4ff5134e0`，完整恢复副本`dsh-restore-copy-co2vmv_o`、隔离应用`dsh-sandbox-xbatcu0r`通过后安装。首次独立调用遗漏DSH版本环境变量被CLI拒绝；补齐后一次RPC超时，重跑通过，均在安装前。最终线上task摘要`5a8a39027d16ac2887b3ddb8373133eced7812ce7365439e64ddc2c07188161d`、PID989756/NRestarts0。保留manifest.json原清单，manifest-final.json为最终字节；cutover-state记录最终声明恢复点。WP03整体及放量未关账，本次部署闭环完成。
+
+最终服务恢复10:44:04Z（北京时间18:44:04），第二次停写窗口约35分37秒；最终UI80/80、六服务active、journal err=0、running task/worker/在飞预留/pending-finish均0，所有最终清单摘要一致。首次恢复后UI检查尚未取得本次BrowserAuth启动凭据，重跑80/80通过，失败日志保留。两个窗口合计约91分26秒，后续应优化完整快照校验及应用启动等待以缩短维护窗口，不放宽恢复校验。

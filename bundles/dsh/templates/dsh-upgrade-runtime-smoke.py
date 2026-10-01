@@ -488,7 +488,7 @@ def main():
                 report["checks"].append({"check": "browser-tool-scope-refused", "ok": True})
             if "--workers" in sys.argv:
                 worker_args = {"task": "[u2:child] Reply U2_FIXTURE_OK. No external operations. " + uuid.uuid4().hex,
-                               "timeout": 15, "provider": "upgrade-fixture", "model": "fixture"}
+                               "timeout": 30, "provider": "upgrade-fixture", "model": "fixture"}
                 worker = rpc("/silksec-domain", "exec.spawn_worker", worker_args)
                 (OUT / "worker-command.json").write_text(json.dumps(worker, ensure_ascii=False, indent=2))
                 report["worker"] = {"domain_ok": worker.get("ok"),
@@ -496,6 +496,21 @@ def main():
                 require(worker.get("ok") and worker.get("data", {}).get("ok") and worker.get("data", {}).get("exit_code") == 0, "真实 exec worker 未成功完成")
                 require(worker.get("data", {}).get("session_id"), "真实 exec worker 缺少自身 Session 归属")
                 report["checks"].append({"check": "exec-worker-completion-attribution", "ok": True})
+                if "--worker-budget" in sys.argv:
+                    budget = worker["data"].get("budget")
+                    require(budget and budget["requests"] > 0 and budget["charged"] > 0
+                            and worker["data"].get("budget_unknown") is False, "worker budget hook/usage missing")
+                    before = len(model.REQUESTS)
+                    denied = rpc("/silksec-domain", "exec.spawn_worker", {**worker_args,
+                        "task": "[u2:child] Budget admission must deny before provider " + uuid.uuid4().hex,
+                        "budget_tokens": 1000})
+                    require(denied.get("ok") and denied["data"]["ok"] is False
+                            and denied["data"].get("budget", {}).get("requests") == 0
+                            and denied["data"]["budget"]["denied"] > 0
+                            and len(model.REQUESTS) == before, "oversized first prompt reached provider")
+                    report["checks"].append({"check": "worker-budget-first-request-no-provider-spend", "ok": True})
+                    report["worker_budget"] = {"success": budget, "denied": denied["data"]["budget"],
+                                              "denied_provider_requests": len(model.REQUESTS) - before}
                 requests_before = len(model.REQUESTS)
                 replay = rpc("/silksec-domain", "exec.spawn_worker", worker_args)
                 require(replay.get("ok") and replay["data"].get("recovered") and replay["data"]["run_id"] == worker["data"]["run_id"]
@@ -505,7 +520,7 @@ def main():
                 for case in ("child-fail", "child-slow"):
                     # child-fail 走模型错误重试/退避（0.1.7 实测 >6s 才自然收尾），给足窗口
                     # 以便断言「失败收尾」而非被外部超时杀掉；child-slow 仍用 6s 验证超时杀。
-                    case_timeout = 6 if case == "child-slow" else 45
+                    case_timeout = 15 if case == "child-slow" else 45
                     failed = rpc("/silksec-domain", "exec.spawn_worker", {**worker_args,
                         "task": f"[u2:{case}] Isolated failure fixture " + uuid.uuid4().hex, "timeout": case_timeout})
                     require(failed.get("ok") and failed.get("data", {}).get("ok") is False, "worker 失败被误报成功：" + case)

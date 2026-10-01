@@ -170,7 +170,7 @@ export const TASK_MANIFEST = {
   service: 'secDomain.task',
   description: '任务/调度/执行史/worker 注册表——编排器派发的工作单元与调度循环的单一真相源，收尾权唯一归调度器/审批',
   owns: {
-    tables: ['tasks', 'task_runs', 'task_run_costs', 'workers', 'strategy_dedupe', 'hypothesis_queue', 'campaigns', 'campaign_decisions', 'campaign_checkpoints', 'task_settings'],
+    tables: ['tasks', 'task_runs', 'task_run_costs', 'task_bill_items', 'task_budget_reservations', 'task_cost_watch', 'workers', 'strategy_dedupe', 'hypothesis_queue', 'campaigns', 'campaign_decisions', 'campaign_checkpoints', 'task_settings'],
     files: ['data/scheduler.lock', 'data/pending-task-finishes/', 'data/events/task.jsonl'],
   },
   commands: {
@@ -299,6 +299,8 @@ export const TASK_MANIFEST = {
         truth: { type: 'object' },
         timed_out: { type: 'boolean' },
         spent_tokens: int({ minimum: 0 }),
+        budget_unknown: { type: 'boolean' },
+        budget_charged: int({ minimum: 0 }),
       }, ['task_id', 'outcome']),
       idempotent: 'natural',
       idempotent_natural: ['task_id', 'run_id', 'claim_started_at'],
@@ -315,6 +317,11 @@ export const TASK_MANIFEST = {
         consumed_at: int({ minimum: 0 }), session_id: str(), source: en(['worker_report', 'session_bill']) }, ['task_id', 'run_id', 'spent_tokens', 'source']),
       idempotent: 'none', events: ['task.cost.settled'], event_limit: 1, invariants: [], timeout_ms: 60000,
       agent_note: '独立结算已知 run 的累计 token 账单。重复不重复扣费，增长只记差额；迟到费用不改任务状态/技术结论。实际消费时间未知时留空，不伪造消费窗口。旧已计费历史需独立对账。',
+    },
+    task_reconcile_costs: {
+      actor: ['scheduler', 'system'], schema: schema({}, []), idempotent: 'none',
+      events: ['task.cost.settled'], event_limit: 4, invariants: [], timeout_ms: 60000,
+      agent_note: '轮转检查真实 session 账单，增长只记差额；无账单保持未知，不改变任务技术结果。',
     },
     task_chain: {
       actor: ['model', 'dashboard'],
@@ -632,6 +639,7 @@ export const TASK_MANIFEST = {
         dedupe_key: str(),
         task_id: int(),
         claim_started_at: int({ minimum: 0 }),
+        budget_tokens: int({ minimum: 1 }),
         task: str(),
         cwd: str(),
         pid: int(),
@@ -1094,77 +1102,40 @@ function makeHandlers(opts) {
     throw Object.assign(new Error(message), { code, hint, retryable })
   }
 
-  // 26 号补丁：dsh-bill 成本归因——records.jsonl 按字节偏移增量解析，
-  // 累计 per-session tokens（in+out+cacheWrite；cacheRead 为缓存命中不计实耗）。
-  // 游标落盘 data/dsh-bill-sum.json，重启零成本续扫；文件截断/重建自动归零重扫。
+  // Billing writers may atomically rewrite/rotate records.jsonl. Rebuild on a
+  // changed file identity, never persist byte offsets measured as JS characters.
   const billSum = (() => {
-    const billFile = path.join(dataDir, 'dsh-bill', 'records.jsonl')
-    const cursorFile = path.join(dataDir, 'dsh-bill-sum.json')
-    const state = { offset: 0, sessions: new Map(), dirty: false }
-    try {
-      const cur = JSON.parse(fs.readFileSync(cursorFile, 'utf8'))
-      state.offset = Number(cur.offset) || 0
-      for (const [k, v] of Object.entries(cur.sessions || {})) state.sessions.set(k, Number(v) || 0)
-    } catch { /* 首次/损坏按全新 */ }
-    let lastSave = 0
-    function scan() {
-      let st
-      try { st = fs.statSync(billFile) } catch { return }
-      if (state.offset > st.size) { state.offset = 0; state.sessions.clear() } // 截断/轮换 → 重扫
-      if (state.offset === st.size) return
-      let buf
+    const filename = path.join(dataDir, 'dsh-bill', 'records.jsonl')
+    let signature = '', sessions = new Map(), receipts = new Map()
+    return { tokensForSession(sessionId) {
+      if (!sessionId) return null
       try {
-        const fd = fs.openSync(billFile, 'r')
-        buf = Buffer.alloc(st.size - state.offset)
-        fs.readSync(fd, buf, 0, buf.length, state.offset)
-        fs.closeSync(fd)
-      } catch { return }
-      let consumed = 0
-      const text = buf.toString('utf8')
-      let idx = 0
-      while (true) {
-        const nl = text.indexOf('\n', idx)
-        if (nl < 0) break // 半行留给下次（写方按行追加）
-        const line = text.slice(idx, nl)
-        consumed = nl + 1
-        idx = nl + 1
-        if (!line.trim()) continue
-        try {
-          const r = JSON.parse(line)
-          const sid = r && r.sessionId
-          if (sid) {
-            const tok = (Number(r.inputTokens) || 0) + (Number(r.outputTokens) || 0) + (Number(r.cacheWriteTokens) || 0)
-            state.sessions.set(sid, (state.sessions.get(sid) || 0) + tok)
+        const st = fs.statSync(filename)
+        const key = `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`
+        if (key !== signature) {
+          const text = fs.readFileSync(filename, 'utf8'), next = new Map(), items = new Map(), seen = new Set()
+          for (const line of text.slice(0, text.lastIndexOf('\n') + 1).split('\n')) {
+            if (!line.trim()) continue
+            let r; try { r = JSON.parse(line) } catch { continue }
+            if (!r.sessionId || !Number.isSafeInteger(r.inputTokens) || r.inputTokens < 0
+                || !Number.isSafeInteger(r.outputTokens) || r.outputTokens < 0
+                || r.cacheWriteTokens != null && (!Number.isSafeInteger(r.cacheWriteTokens) || r.cacheWriteTokens < 0)) continue
+            // Exact duplicate serialized records are replay, not another request.
+            if (seen.has(line)) continue
+            seen.add(line)
+            const tokens = r.inputTokens + r.outputTokens + (r.cacheWriteTokens || 0)
+            next.set(r.sessionId, (next.get(r.sessionId) || 0) + tokens)
+            const identity = Number.isSafeInteger(r.time) ? [r.sessionId, r.time, r.seq ?? null, r.provider ?? '', r.model ?? '', r.purpose ?? 'agent'] : line
+            const receipt = { key: crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex'), tokens,
+              time: Number.isSafeInteger(r.time) && r.time >= 0 && r.time <= Date.now() ? r.time : null }
+            if (!items.has(r.sessionId)) items.set(r.sessionId, [])
+            items.get(r.sessionId).push(receipt)
           }
-        } catch { /* 坏行跳过 */ }
-      }
-      state.offset += consumed
-      state.dirty = true
-      // 会话 map 防膨胀：超 5000 条只留最大的 3000
-      if (state.sessions.size > 5000) {
-        const keep = [...state.sessions.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3000)
-        state.sessions.clear()
-        for (const [k, v] of keep) state.sessions.set(k, v)
-      }
-      if (state.dirty && Date.now() - lastSave > 5000) {
-        lastSave = Date.now()
-        state.dirty = false
-        try {
-          const tmp = `${cursorFile}.tmp-${process.pid}`
-          fs.writeFileSync(tmp, JSON.stringify({ offset: state.offset, sessions: Object.fromEntries(state.sessions) }))
-          fs.renameSync(tmp, cursorFile)
-        } catch { /* 落盘失败下次重扫 */ }
-      }
-    }
-    return {
-      // 会话总实耗 tokens；无记录返回 null（调用方保持 spent_tokens 不回填）
-      tokensForSession(sessionId) {
-        if (!sessionId) return null
-        try { scan() } catch { /* best-effort */ }
-        const v = state.sessions.get(String(sessionId))
-        return Number.isFinite(v) && v > 0 ? v : null
-      },
-    }
+          sessions = next; receipts = items; signature = key
+        }
+        return sessions.get(String(sessionId)) ?? null
+      } catch { return null }
+    }, itemsForSession(sessionId) { this.tokensForSession(sessionId); return receipts.get(String(sessionId)) || [] } }
   })()
 
   // ------------------------------------------------------------------
@@ -1829,12 +1800,11 @@ function makeHandlers(opts) {
   // 验收落账（证据铁律 + spent_tokens 汇聚 + heartbeat 推进）；一任务一验收由 UNIQUE 兜底。
   // 纯 DB 落账——事件发布由 campaign_record_decision 命令（订阅路径）或 tick 汇总负责。
   function recordDecision(repo, { campaign_id, task_id, verdict, evidence, goal_delta, decided_by }) {
-    const c = repo.getCampaign(campaign_id)
     const id = repo.insertCampaignDecision({ campaign_id, task_id, verdict, evidence, goal_delta, decided_by: decided_by || 'reviewer' })
     if (id == null) return { duplicate: true }
     const delta = (goal_delta && typeof goal_delta === 'object') ? goal_delta : parseJsonSafe(goal_delta, {})
     const patch = { heartbeat_at: Date.now() }
-    if (Number(delta.spent_tokens) > 0) patch.spent_tokens = Number(c?.spent_tokens || 0) + Number(delta.spent_tokens)
+    patch.spent_tokens = repo.campaignUsage(campaign_id, 0).spent_tokens
     repo.updateCampaign(campaign_id, patch)
     return { id, delta, verdict, task_id: Number(task_id), campaign_id: Number(campaign_id), evidence, decided_by: decided_by || 'reviewer' }
   }
@@ -2379,12 +2349,14 @@ function makeHandlers(opts) {
   function settleCost(args, repo) {
     const task = repo.getTask(args.task_id), previous = repo.getRunCost(args.task_id, args.run_id)
     const run = repo.getTaskRun(args.task_id, args.run_id)
-    if (!task || !run && !previous) throwErr('E_NOT_FOUND', '费用只能关联已登记的 task/run', '先确认执行关联，不能仅凭账单创建虚构执行')
+    const watch = repo.getCostWatch(args.task_id, args.run_id)
+    if (!task || !run && !previous && !watch) throwErr('E_NOT_FOUND', '费用只能关联已登记的 task/run', '先确认执行关联，不能仅凭账单创建虚构执行')
     if (!Number.isSafeInteger(args.spent_tokens) || args.spent_tokens < 0) throwErr('E_SCHEMA', '费用须为非负安全整数', null)
     if (args.consumed_at != null && (!Number.isSafeInteger(args.consumed_at) || args.consumed_at > Date.now())) throwErr('E_SCHEMA', '实际消费时间无效', null)
-    if (!previous && run.spent_tokens != null) throwErr('E_TASK_COST_LEGACY_UNATTRIBUTED', '旧执行已有费用但无独立账本，不能猜测是否已计入任务累计', '保留原值，先完成历史账单对账')
+    if (!previous && run?.spent_tokens != null) throwErr('E_TASK_COST_LEGACY_UNATTRIBUTED', '旧执行已有费用但无独立账本，不能猜测是否已计入任务累计', '保留原值，先完成历史账单对账')
     if (previous && (args.spent_tokens < previous.spent_tokens || previous.consumed_at != null && args.consumed_at != null && previous.consumed_at !== args.consumed_at)) throwErr('E_TASK_COST_CONFLICT', '累计费用不能降低或改写已知消费时间', '冲正需要独立审计流程，勿重放覆盖')
-    const session = args.session_id || run?.session_id || previous?.session_id || null
+    const session = args.session_id || run?.session_id || previous?.session_id || watch?.session_id || null
+    if (watch?.session_id && session !== watch.session_id) throwErr('E_TASK_COST_CONFLICT', '账单会话与持久执行归属不一致', null)
     if (args.session_id && (run?.session_id && args.session_id !== run.session_id || previous?.session_id && args.session_id !== previous.session_id)) throwErr('E_TASK_COST_CONFLICT', '账单会话与执行记录不一致', null)
     if (args.source === 'session_bill' && (!session || repo.sessionUsedByOtherRun(session, args.task_id, args.run_id))) throwErr('E_TASK_COST_AMBIGUOUS', '会话总账无法唯一归属到此 run', '需要逐执行账单；不能把同一会话累计重复计入多个 run')
     const result = repo.settleRunCost({ ...args, session_id: session, recorded_at: Date.now() })
@@ -2396,6 +2368,30 @@ function makeHandlers(opts) {
   }
   const commands = {
     task_record_run_cost: async (args, repo) => settleCost(args, repo),
+    task_reconcile_costs: async (_args, repo) => {
+      const after = Number(repo.settingGet('bill_reconcile_after')) || 0
+      const rows = repo.costReconcileCandidates(after, 4), events = [], results = []
+      for (const row of rows) {
+        let tokens = billSum.tokensForSession(row.session_id)
+        if (tokens == null) continue
+        if (repo.sessionUsedByOtherRun(row.session_id, row.task_id, row.run_id)) {
+          results.push({ task_id: row.task_id, code: 'E_TASK_COST_AMBIGUOUS' }); continue
+        }
+        tokens = repo.importBillItems(row.task_id, row.run_id, billSum.itemsForSession(row.session_id))
+        const previous = repo.getRunCost(row.task_id, row.run_id)
+        if (previous && tokens < previous.spent_tokens) continue
+        try {
+          const r = settleCost({ task_id: row.task_id, run_id: row.run_id, session_id: row.session_id,
+            spent_tokens: tokens, source: 'session_bill' }, repo)
+          events.push(...r.events); results.push(r.data)
+        } catch (error) {
+          if (!['E_TASK_COST_AMBIGUOUS', 'E_TASK_COST_LEGACY_UNATTRIBUTED', 'E_TASK_COST_CONFLICT'].includes(error.code)) throw error
+          results.push({ task_id: row.task_id, run_id: row.run_id, code: error.code })
+        }
+      }
+      repo.settingSet('bill_reconcile_after', rows.length === 4 ? rows.at(-1).id : 0)
+      return { data: { checked: rows.length, results }, events }
+    },
     task_hypotheses_enqueue: async (args, repo) => {
       let row
       if (args.request_id) {
@@ -2625,6 +2621,8 @@ function makeHandlers(opts) {
         if (runId && !recorded) repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok: args.outcome === 'done' && !args.timed_out && !args.truth?.rejected, note: args.note || '', started_at: args.claim_started_at ?? t.started_at, finished_at: nowTs, session_id: args.session_id ?? null, spent_tokens: null })
         const cost = runId && args.spent_tokens != null && (!recorded || repo.getRunCost(t.id, runId) || repo.getTaskRun(t.id, runId)?.spent_tokens == null)
           ? settleCost({ task_id: t.id, run_id: runId, spent_tokens: args.spent_tokens, session_id: args.session_id, source: 'worker_report' }, repo) : null
+        if (args.claim_started_at != null) repo.closeBudgetReservation(t.id, args.claim_started_at,
+          args.budget_unknown === false ? args.budget_charged : null, cost?.data.spent_tokens ?? null)
         return { data: { task_id: Number(args.task_id), superseded: true, ...(cost ? { cost: cost.data } : {}), ...(claimChanged ? { reason: 'claim_changed' } : {}) }, events: cost?.events || [] }
       }
 
@@ -2681,6 +2679,7 @@ function makeHandlers(opts) {
 
       // busy：并发满，回 queued 不落史
       if (args.outcome === 'busy') {
+        repo.finishBudgetReservation(t.id, args.claim_started_at ?? t.started_at, 'released')
         repo.transitionTask(Number(args.task_id), { status: 'queued' }, 'running')
         return { data: { task_id: Number(args.task_id), status: 'queued', run_recorded: false } }
       }
@@ -2708,6 +2707,8 @@ function makeHandlers(opts) {
       }
       repo.transitionTask(Number(args.task_id), finishSets)
       repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null, spent_tokens: null })
+      repo.closeBudgetReservation(t.id, args.claim_started_at ?? t.started_at,
+        args.budget_unknown === false ? args.budget_charged : null, spentTokens)
       const cost = runId && spentTokens !== null ? settleCost({ task_id: t.id, run_id: runId, spent_tokens: spentTokens, session_id: args.session_id, source: costSource }, repo) : null
       // 41 号补丁：运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）重开策略冷却，Planner 可重试；
       // 否则 strategy_dedupe 停留 attempted+reopen_after=NULL，被 compileCampaignPlan 永久 skip。
@@ -2783,7 +2784,8 @@ function makeHandlers(opts) {
       }
       // 36 号补丁：每 tick 认领上限 env 可调（默认 12，与 exec worker 池匹配，防 MAX_WORKERS 忙导致回 queued 空转）
       const limit = Math.min(Math.max(Number(process.env.SEC_SCHEDULER_CLAIM_LIMIT) || 12, 1), 32)
-      const claimed = repo.claimDueTasks(Number(args.now), limit)
+      const free = Math.max(0, Math.min(limit, Number(process.env.SEC_EXEC_MAX_WORKERS) || 12) - repo.budgetSlotCount())
+      const claimed = free ? repo.claimDueTasks(Number(args.now), free) : []
       const tasks = [], blocked = []
       for (const t of claimed) {
         const intent = { ...parseJsonSafe(t.intent_spec, {}), program_id: t.program_id }
@@ -2799,7 +2801,13 @@ function makeHandlers(opts) {
           const reason = `${checked.code}: ${checked.message}`
           repo.transitionTask(t.id, { status: 'blocked', blocked_reason: reason, started_at: null }, 'running')
           blocked.push({ task_id: t.id, reason })
-        } else tasks.push(t)
+        } else {
+          const reason = repo.reserveTaskBudget(t, Number(args.now), budgetConfigOf(repo).max_tokens)
+          if (reason) {
+            repo.transitionTask(t.id, { status: 'blocked', blocked_reason: reason, started_at: null }, 'running')
+            blocked.push({ task_id: t.id, reason })
+          } else tasks.push(t)
+        }
       }
       return {
         data: { claimed: tasks.map((t) => Number(t.id)), count: tasks.length, blocked },
@@ -3152,6 +3160,7 @@ function makeHandlers(opts) {
       const pidAliveFn = args.pid_alive ? (pid) => { try { process.kill(pid, 0); return true } catch { return false } } : undefined
       const { reaped, skipped_alive, runs } = repo.reapStale(Number(args.max_age), pidAliveFn, nowTs)
       const events = runs.map(({ task: t, run_id, status, next_run_at }) => {
+        repo.finishBudgetReservation(t.id, t.started_at, run_id ? 'unknown' : 'released')
         if (status === 'failed') reopenFailedTask(t, repo)
         return { name: 'task.finished', payload: { task_id: t.id, program_id: t.program_id, run_id,
           ok: false, outcome: 'crash', cause: 'reaped', note: '宿主重启/超时回收',
@@ -3167,9 +3176,21 @@ function makeHandlers(opts) {
       // L6：scheduler 派单绑定——tasks.active_run_id=run_id（task_reap 的活 worker 跳过依据，
       // 防回收后双重派单）。仅当任务确在 running（认领态）才绑，晚到事件不改写已收尾任务。
       if (args.task_id) {
+        // Older explicit registration clients remain compatible; new scheduler
+        // reservations must match the same claim before the model start ACK.
+        const reservation = repo.getBudgetReservation(args.task_id, args.claim_started_at)
+        if (args.budget_tokens != null && (!reservation || reservation.tokens !== args.budget_tokens)) {
+          throwErr('E_TASK_BUDGET_RESERVATION', 'worker 缺少匹配的预算预留', null)
+        }
+        if (reservation && !repo.bindBudgetReservation(args.task_id, args.claim_started_at, args.run_id)) {
+          throwErr('E_TASK_BUDGET_RESERVATION', '预算预留与当前 worker 不匹配', null)
+        }
         if (args.claim_started_at == null || !repo.bindClaimedWorker(args.task_id, args.claim_started_at, args.run_id)) {
           throwErr('E_TASK_CLAIM_SUPERSEDED', 'worker 不属于当前认领，或该认领已有其他 worker', '停止此次 spawn；旧事件不得覆盖当前 active_run_id')
         }
+      }
+      if (repo.runningWorkerCount() >= Math.max(1, Number(process.env.SEC_EXEC_MAX_WORKERS) || 12)) {
+        throwErr('E_EXEC_WORKER_BUSY', '全局 worker 槽位已满', null, true)
       }
       repo.upsertWorker(args)
       return { data: { run_id: args.run_id, registered: true } }
@@ -3476,7 +3497,7 @@ function makeHandlers(opts) {
       // 当作 string/integer 传入（dashboard 发起的 worker 通常没有来源 Session）。
       const args = Object.fromEntries(Object.entries({
         run_id: p.run_id, dedupe_key: p.dedupe_key, task: p.task, cwd: p.cwd, task_id: p.task_id, claim_started_at: p.claim_started_at,
-        pid: p.pid, timeout_sec: p.timeout_sec, session_id: p.origin_session_id || p.session_id, run_dir: p.run_dir,
+        pid: p.pid, timeout_sec: p.timeout_sec, session_id: p.origin_session_id || p.session_id, run_dir: p.run_dir, budget_tokens: p.budget_tokens,
       }).filter(([, value]) => value != null))
       return dispatchRef('task', 'worker_register', args, { actor: 'reactor' })
     },
@@ -3709,11 +3730,17 @@ export function startTaskScheduler(opts) {
   if (globalThis.__silksecTaskScheduler) return { started: false, reason: '已启动' }
   const lockPath = path.join(dataDir, 'scheduler.lock')
   const acquire = () => {
+    const gate = `${lockPath}.acquire`
+    try { fs.mkdirSync(gate) } catch { return false }
     try {
-      const cur = JSON.parse(fs.readFileSync(lockPath, 'utf8'))
-      if (cur && cur.pid && cur.pid !== process.pid && pidAlive(cur.pid) && (Date.now() - (cur.ts || 0) < 180000)) return false
-    } catch { /* 无锁文件 → 可抢 */ }
-    try { fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() })); return true } catch { return false }
+      try {
+        const cur = JSON.parse(fs.readFileSync(lockPath, 'utf8'))
+        if (cur?.pid && cur.pid !== process.pid && pidAlive(cur.pid)) return false
+      } catch (error) { if (error.code !== 'ENOENT') return false }
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }))
+      return true
+    } catch { return false }
+    finally { fs.rmdirSync(gate) }
   }
   const holds = () => { try { return JSON.parse(fs.readFileSync(lockPath, 'utf8')).pid === process.pid } catch { return false } }
   if (!acquire()) return { started: false, reason: 'scheduler.lock 被其他进程持有（活锁心跳未过期）' }
@@ -3795,6 +3822,8 @@ export function startTaskScheduler(opts) {
 
   async function schedulerTick() {
     await finisher.flush()
+    const billing = await dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })
+    if (!_ok(billing)) { log(`账单对账失败，暂停本轮认领: ${_errCode(billing)}`); return }
     try {
       const r = await dispatch('task', 'hypotheses_dispatch', { limit: 3 }, { actor: 'scheduler' })
       if (!_ok(r)) log(`假设队列派发失败: ${_errCode(r)} ${_errMsg(r)}`)
@@ -3859,7 +3888,7 @@ export function startTaskScheduler(opts) {
         const prompt = buildScheduledPrompt(task, role, { ...progress, timeoutSec, startedAt })
         // 派 worker：cwd=工作区（v4 等价——会话反查/工作区归组依赖 header.cwd 一致）；
         // force 跳过 dedupe 恢复窗（周期任务重跑是必然，dedupe 的 done 窗口恢复会把"已收尾再启动"的周期吞掉）
-        const spawnArgs = { task: prompt, timeout: timeoutSec, force: true, provider: task.provider || undefined, model: task.model || undefined, phase: task.phase || '', task_id: task.id, claim_started_at: task.started_at }
+        const spawnArgs = { task: prompt, timeout: timeoutSec, force: true, provider: task.provider || undefined, model: task.model || undefined, phase: task.phase || '', task_id: task.id, claim_started_at: task.started_at, budget_tokens: task.budget_tokens ?? 150000 }
         if (cwd) spawnArgs.cwd = cwd
         let r
         try {
@@ -3921,6 +3950,9 @@ export function startTaskScheduler(opts) {
         const fin = await finisher.finish({
           task_id: task.id, claim_started_at: task.started_at, run_id: w.run_id || '', outcome, note,
           session_id: workerSessionId, truth, timed_out: timedOut,
+          budget_unknown: w.budget_unknown !== false,
+          ...(w.budget ? { budget_charged: w.budget.charged } : {}),
+          ...(w.budget?.requests === 0 ? { spent_tokens: 0 } : {}),
         })
         if (!_ok(fin)) log(`任务 #${task.id} task_finish 未成功: ${_errCode(fin)} ${_errMsg(fin)}`)
       } catch (e) {
@@ -3975,9 +4007,12 @@ export function startTaskScheduler(opts) {
     } catch (e) { log(`保留窗口清理异常: ${e?.message}`) }
   }
 
-  let tick = 0
+  let tick = 0, ticking = false
   globalThis.__silksecTaskScheduler = setInterval(async () => {
+    if (ticking) return
     if (!holds() && !acquire()) return
+    ticking = true
+    try {
     try { fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() })) } catch { /* ignore */ }
     tick++
     if (tick % 10 === 0) {
@@ -3986,6 +4021,7 @@ export function startTaskScheduler(opts) {
       try { await reconcileWorkspaceSessions() } catch (e) { log(`工作区会话归组失败: ${e?.message}`) }
     }
     try { await schedulerTick() } catch (e) { log(`调度 tick 异常: ${e?.stack || e?.message}`) }
+    } finally { ticking = false }
   }, tickMs)
   globalThis.__silksecTaskScheduler.unref?.()
   return { started: true }
@@ -4003,6 +4039,7 @@ export function buildTaskDomain(opts = {}) {
   const backend = {
     capabilities: baseBackend.capabilities || {},
     factory(db) { const r = baseBackend.factory(db); state.repo = r; return r },
+    scheduledProgress(task, at) { return state.repo?.scheduledProgress(task, at) || { attempts: 0, resume: false, resume_run_id: null } },
   }
   return {
     manifest: TASK_MANIFEST,

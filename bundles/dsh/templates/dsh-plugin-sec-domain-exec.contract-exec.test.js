@@ -336,7 +336,7 @@ test('L6: spawn_worker cwd 仅 scheduler 可用 + 目录校验 + spawned 事件�
   assert.equal(bad.ok, false)
   assert.equal(bad.error.code, 'E_EXEC_CWD_INVALID')
   // scheduler 传合法目录 + task_id → 放行，spawned 事件带 task_id 与 cwd（任务域强联动记账依据）
-  const ok = await bus.dispatch('exec', 'spawn_worker', { task: '调度派单', timeout: 5, cwd: ws, task_id: 4242, claim_started_at: 1234 }, { actor: 'scheduler' })
+  const ok = await bus.dispatch('exec', 'spawn_worker', { task: '调度派单', timeout: 5, cwd: ws, task_id: 4242, claim_started_at: 1234, budget_tokens: 20000 }, { actor: 'scheduler' })
   assert.equal(ok.ok, true, ok.error?.message)
   const spawned = readEvents(dir).find((e) => e.name === 'exec.worker.spawned')
   assert.equal(spawned.payload.task_id, 4242)

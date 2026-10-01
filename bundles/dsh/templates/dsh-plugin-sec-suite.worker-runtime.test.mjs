@@ -5,7 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const { executeWorkerProcess, verifyWorkerSession, workerGroupMembers } = await import(pathToFileURL(
+const { executeWorkerProcess, verifyWorkerSession, workerGroupMembers, createWorkerBudget } = await import(pathToFileURL(
   process.env.WORKER_RUNTIME_MODULE || path.join(import.meta.dirname, 'dsh-plugin-sec-suite.worker-runtime.js')))
 
 function fixture(t) {
@@ -58,4 +58,48 @@ test('Session 报告必须同时匹配启动身份与官方 header', async t => 
     fs.writeFileSync(filename, JSON.stringify({ ...report, ...patch }))
     assert.equal((await verifyWorkerSession(options)).id, null)
   }
+})
+
+const drain = async stream => { for await (const _ of stream) {} }
+const request = (text = 'hello') => ({ maxTokens: 100, messages: [{ role: 'user', content: [{ type: 'text', text }] }] })
+test('WP03 first oversized context is rejected before provider invocation', async () => {
+  const budget = createWorkerBudget(20000)
+  let called = 0
+  await assert.rejects(drain(budget.stream(request('上下文'.repeat(15000)), () => { called++; return [] })), /BUDGET_EXHAUSTED/)
+  assert.equal(called, 0)
+  assert.equal(budget.state.charged, 0)
+})
+test('WP03 overlapping requests reserve atomically; missing usage retains reservation', async () => {
+  const budget = createWorkerBudget(4000)
+  let release
+  const wait = new Promise(r => { release = r })
+  const running = drain(budget.stream(request(), async function* () { await wait }))
+  await assert.rejects(drain(budget.stream(request(), () => [])), /BUDGET_EXHAUSTED/)
+  release(); await running
+  assert.equal(budget.state.unknown, 1)
+  assert.ok(budget.state.reserved > 2000)
+  await assert.rejects(drain(budget.stream(request(), () => [])), /BUDGET_EXHAUSTED/)
+})
+test('WP03 zero is known, usage delta settles, provider overrun prevents next request', async () => {
+  const budget = createWorkerBudget(4000)
+  const response = tokens => async function* () { yield { type: 'usage', usage: { inputTokens: tokens, outputTokens: 0 } } }
+  await drain(budget.stream(request(), response(0)))
+  assert.equal(budget.state.reserved, 0)
+  assert.equal(budget.state.unknown, 0)
+  await drain(budget.stream(request(), response(4500)))
+  assert.equal(budget.state.charged, 4500) // estimates cannot guarantee provider input pricing.
+  await assert.rejects(drain(budget.stream(request(), response(0))), /BUDGET_EXHAUSTED/)
+})
+test('WP03 unsupported modality and missing output cap cannot reach provider', async () => {
+  const budget = createWorkerBudget(10000)
+  await assert.rejects(drain(budget.stream({ messages: [], maxTokens: undefined }, () => [])), /OUTPUT_CAP/)
+  await assert.rejects(drain(budget.stream({ ...request(), messages: [{ content: [{ type: 'image' }] }] }, () => [])), /MODALITY/)
+})
+test('WP03 failed registration never publishes model-start ACK', async t => {
+  const f = fixture(t)
+  const result = await executeWorkerProcess({ ...f, args: ['-e', 'setInterval(()=>{},1000)'],
+    onSpawn: async () => { throw new Error('registration failed') }, graceMs: 25 })
+  assert.match(result.error, /registration failed/)
+  assert.equal(fs.existsSync(path.join(f.runDir, 'worker-ack.json')), false)
+  assert.deepEqual(workerGroupMembers(result.pid), [])
 })

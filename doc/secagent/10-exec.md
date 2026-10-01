@@ -774,3 +774,11 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 ### 2026-10-01 · 27号阶段上线验收
 
 2026-10-01已部署；生产静默冒烟、UI验收80/80及单任务运行通过；扩大执行受WP03预算预留门禁约束。固定DSH 0.1.7-rc.2，恢复点`777e3e6b…`；详细清单和证据见[27号§15.3](27-business-quality-and-capacity-plan-2026-09-30.md#153-业务增量分阶段发布2026-10-01阶段验收完成)。伪造decision/capsule拒绝E_EXEC_EVIDENCE_UNTRUSTED，未安装真实verification-profiles，读取验证返回E_EXEC_ORACLE_UNSUPPORTED；旧confirmed未批量重判，真实漏洞产出收益尚未测量。真实隔离worker成功/失败/超时/取消/重放验收14项通过；生产单worker完整收尾与会话归属通过。
+
+### 2026-10-01 · WP03请求预算门禁（已部署，分阶段验收完成）
+
+调度任务的exec_spawn_worker必须携带budget_tokens，且与当前claim的持久预留匹配。worker进程启动后，父进程等待worker.spawned强联动注册提交再写nonce/PID绑定的worker-ack.json；首个llm/stream等待该ACK。登记失败则终止进程，无ACK不得发送模型请求。全局workers表在注册事务中检查槽位，进程内计数继续保留。
+
+worker-runtime为所有本进程模型请求安装门禁，包括辅助模型调用。输入按完整messages/tools/toolHistory的UTF-8字节数/2＋2048估算，每请求先预留输入估算和maxTokens，agent/request将输出上限限制到2048。缺输出上限或未支持image/file计费时拒绝；响应usage到达后结算input+output+cacheWrite，cacheRead保持既有费用口径。无usage继续占用预留，实际超估算后拒绝下一请求；**输入为估算，并非供应商计费绝对硬上限**。嵌套exec worker暂拒绝，待共享预算协议完成后再开放。
+
+worker-budget.json记录计数且以run/nonce校验，原生write/edit不能改写ACK、预算回执及临时文件。预算拒绝不表示技术阴性；exec返回失败与budget统计，技术漏洞状态不改。缺hook回执保持未知。真实模型边界与生产验收结果见27号§15.4。

@@ -171,7 +171,25 @@ function createRepo(db) {
     session_id TEXT, source TEXT NOT NULL, consumed_at INTEGER, recorded_at INTEGER NOT NULL,
     PRIMARY KEY(task_id, run_id)
   )`)
+  db.exec(`CREATE TABLE IF NOT EXISTS task_bill_items (
+    receipt_key TEXT PRIMARY KEY, task_id INTEGER NOT NULL, run_id TEXT NOT NULL,
+    tokens INTEGER NOT NULL, consumed_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_bill_window ON task_bill_items(task_id,consumed_at);
+  CREATE TABLE IF NOT EXISTS task_cost_watch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, run_id TEXT NOT NULL,
+    session_id TEXT NOT NULL, UNIQUE(task_id,run_id)
+  );
+  INSERT OR IGNORE INTO task_cost_watch(task_id,run_id,session_id)
+    SELECT task_id,run_id,session_id FROM task_run_costs WHERE session_id IS NOT NULL;
+  `)
   db.exec(WORKERS_DDL)
+  db.exec(`CREATE TABLE IF NOT EXISTS task_budget_reservations (
+    task_id INTEGER NOT NULL, claim_started_at INTEGER NOT NULL, tokens INTEGER NOT NULL,
+    run_id TEXT, state TEXT NOT NULL DEFAULT 'reserved', created_at INTEGER NOT NULL,
+    PRIMARY KEY(task_id,claim_started_at)
+  )`)
+  ensureCol(db, 'task_budget_reservations', 'expected_tokens', 'expected_tokens INTEGER')
   db.exec(STRATEGY_DDL)
   ensureCol(db, 'strategy_dedupe', 'reopen_after', 'reopen_after INTEGER')
   db.exec(CAMPAIGNS_DDL)
@@ -205,6 +223,7 @@ function createRepo(db) {
   ]) ensureCol(db, 'tasks', col, ddl)
   ensureCol(db, 'task_runs', 'session_id', 'session_id TEXT')
   ensureCol(db, 'task_runs', 'spent_tokens', 'spent_tokens INTEGER')
+  db.exec("INSERT OR IGNORE INTO task_cost_watch(task_id,run_id,session_id) SELECT task_id,run_id,session_id FROM task_runs WHERE session_id IS NOT NULL AND run_id<>'' AND spent_tokens IS NULL")
   // workers.session_id 保持历史来源会话语义；新列只保存经核实的子会话。
   ensureCol(db, 'workers', 'worker_session_id', 'worker_session_id TEXT')
   ensureCol(db, 'workers', 'task_id', 'task_id INTEGER')
@@ -513,6 +532,71 @@ function createRepo(db) {
       const marks = claimed.map(() => '?').join(',')
       return db.prepare(`SELECT * FROM tasks WHERE id IN (${marks})`).all(...claimed).map((r) => ({ ...r }))
     },
+    reserveTaskBudget(task, nowTs, programLimit) {
+      const tokens = task.budget_tokens ?? 150000
+      if (!Number.isSafeInteger(tokens) || tokens <= 0) return 'E_TASK_BUDGET_REQUIRED'
+      const reserved = (column, value) => Number(db.prepare(`SELECT COALESCE(SUM(MAX(0,r.tokens-COALESCE(c.spent_tokens,0))),0) n
+        FROM task_budget_reservations r JOIN tasks t ON t.id=r.task_id
+        LEFT JOIN task_run_costs c ON c.task_id=r.task_id AND c.run_id=r.run_id
+        WHERE t.${column}=? AND r.state IN ('reserved','unknown')`).get(value).n)
+      // Legacy consumption has no reliable consumption timestamp. Keep it in the
+      // admission total, rather than silently erasing it as a window rolls.
+      const spent = (column, value, since) => Number(db.prepare(`SELECT
+        COALESCE((SELECT SUM(spent_tokens) FROM tasks WHERE ${column}=?),0) -
+        COALESCE((SELECT SUM(b.tokens) FROM task_bill_items b JOIN tasks t ON t.id=b.task_id
+          WHERE t.${column}=? AND b.consumed_at<?),0) n`).get(value, value, since).n)
+      const periodDays = Number(repo.settingGet('budget_period_days')) || 7
+      if (spent('program_id', task.program_id, nowTs - periodDays * 86400000) + reserved('program_id', task.program_id) + tokens > programLimit) return 'E_TASK_BUDGET_EXHAUSTED'
+      if (task.campaign_id != null) {
+        const c = repo.getCampaign(task.campaign_id)
+        if (!c || c.status !== 'active') return 'E_CAMPAIGN_STATE'
+        if (c.budget_tokens == null || spent('campaign_id', c.id, nowTs - c.budget_window_days * 86400000) + reserved('campaign_id', c.id) + tokens > c.budget_tokens) return 'E_CAMPAIGN_BUDGET_LOW'
+      }
+      db.prepare('INSERT INTO task_budget_reservations(task_id,claim_started_at,tokens,created_at) VALUES(?,?,?,?)')
+        .run(task.id, nowTs, tokens, nowTs)
+      return null
+    },
+    getBudgetReservation(taskId, claim) {
+      return db.prepare('SELECT * FROM task_budget_reservations WHERE task_id=? AND claim_started_at=?').get(taskId, claim) || null
+    },
+    finishBudgetReservation(taskId, claim, state) {
+      db.prepare("UPDATE task_budget_reservations SET state=? WHERE task_id=? AND claim_started_at=? AND state IN ('reserved','unknown')")
+        .run(state, taskId, claim)
+    },
+    closeBudgetReservation(taskId, claim, expected, billed) {
+      const state = expected != null && billed != null && billed >= expected ? 'settled' : 'unknown'
+      db.prepare(`UPDATE task_budget_reservations SET state=?,expected_tokens=?,tokens=COALESCE(?,tokens)
+        WHERE task_id=? AND claim_started_at=? AND state IN ('reserved','unknown')`)
+        .run(state, expected, expected, taskId, claim)
+    },
+    runningWorkerCount() {
+      return Number(db.prepare("SELECT COUNT(*) n FROM workers WHERE status='running'").get().n)
+    },
+    bindBudgetReservation(taskId, claim, runId) {
+      const r = repo.getBudgetReservation(taskId, claim)
+      if (!r || r.state !== 'reserved' || r.run_id && r.run_id !== runId) return false
+      db.prepare('UPDATE task_budget_reservations SET run_id=? WHERE task_id=? AND claim_started_at=?').run(runId, taskId, claim)
+      return true
+    },
+    budgetSlotCount() {
+      return Number(db.prepare("SELECT COUNT(*) n FROM task_budget_reservations WHERE state='reserved'").get().n)
+    },
+    costReconcileCandidates(afterId, limit) {
+      return db.prepare(`SELECT r.task_id,r.run_id,r.session_id,r.id FROM task_cost_watch r
+        LEFT JOIN task_run_costs c ON c.task_id=r.task_id AND c.run_id=r.run_id
+        WHERE r.id>? AND (c.task_id IS NULL OR c.source='session_bill')
+        ORDER BY r.id LIMIT ?`).all(afterId, limit).map(r => ({ ...r }))
+    },
+    importBillItems(taskId, runId, items) {
+      const insert = db.prepare(`INSERT INTO task_bill_items(receipt_key,task_id,run_id,tokens,consumed_at) VALUES(?,?,?,?,?)
+        ON CONFLICT(receipt_key) DO UPDATE SET tokens=MAX(task_bill_items.tokens,excluded.tokens)
+        WHERE task_bill_items.task_id=excluded.task_id AND task_bill_items.run_id=excluded.run_id`)
+      for (const item of items) insert.run(item.key, taskId, runId, item.tokens, item.time)
+      return Number(db.prepare('SELECT COALESCE(SUM(tokens),0) n FROM task_bill_items WHERE task_id=? AND run_id=?').get(taskId, runId).n)
+    },
+    getCostWatch(taskId, runId) {
+      return db.prepare('SELECT session_id FROM task_cost_watch WHERE task_id=? AND run_id=?').get(taskId, runId) || null
+    },
     nextTaskForProgram(programId) {
       const rows = db.prepare('SELECT * FROM tasks WHERE program_id = ? AND status = ? ORDER BY priority ASC, created_at ASC')
         .all(String(programId), 'queued').map((r) => ({ ...r }))
@@ -597,6 +681,12 @@ function createRepo(db) {
         .run(task_id, run_id, spent_tokens, session_id ?? null, source, consumed_at ?? null, recorded_at)
       db.prepare('UPDATE task_runs SET spent_tokens=? WHERE task_id=? AND run_id=?').run(spent_tokens, task_id, run_id)
       if (delta) db.prepare('UPDATE tasks SET spent_tokens=COALESCE(spent_tokens,0)+? WHERE id=?').run(delta, task_id)
+      db.prepare(`UPDATE task_budget_reservations SET state='settled'
+        WHERE task_id=? AND run_id=? AND state='unknown' AND expected_tokens IS NOT NULL AND expected_tokens<=?`)
+        .run(task_id, run_id, spent_tokens)
+      const task = repo.getTask(task_id)
+      if (task?.campaign_id != null) db.prepare(`UPDATE campaigns SET spent_tokens=
+        (SELECT COALESCE(SUM(spent_tokens),0) FROM tasks WHERE campaign_id=?) WHERE id=?`).run(task.campaign_id, task.campaign_id)
       return { delta, first: !previous }
     },
     listRunCosts({ task_id, limit = 50, offset = 0 }) {
@@ -613,6 +703,8 @@ function createRepo(db) {
       const duration = (started && finished) ? finished - started : null
       const r = db.prepare('INSERT INTO task_runs (task_id, run_id, ok, note, started_at, finished_at, duration_ms, session_id, spent_tokens) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(Number(row.task_id), String(row.run_id || ''), row.ok ? 1 : 0, String(row.note || '').slice(0, 500), started, finished, duration, row.session_id ?? null, row.spent_tokens ?? null)
+      if (row.run_id && row.session_id) db.prepare('INSERT OR IGNORE INTO task_cost_watch(task_id,run_id,session_id) VALUES(?,?,?)')
+        .run(row.task_id, row.run_id, row.session_id)
       repo.pruneTaskRuns(Number(row.task_id), 200)
       return Number(r.lastInsertRowid)
     },

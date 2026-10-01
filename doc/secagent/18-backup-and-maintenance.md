@@ -113,3 +113,5 @@ spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh archive-release --p
 - 本次prepare-change维护测试10/10通过，覆盖真实restic恢复、失败不发布回执、CLI锁冲突75。部署前旧入口快照`0fd330c0…`（40库120.53秒/恢复7.34秒）通过后上传新脚本；新入口实测change `20261001-backup-contract-18`、snapshot `d5758fa6735b1f948dd4bbaf038320d02f7d357d7953d1916fa1c1e393cfc892`，40库备份32.38秒/恢复6.77秒、总计约41秒，成功回执已落盘。主服务PID=922156/NRestarts=0，未发布27号业务增量；当前进度见[PROGRESS](PROGRESS.md)。
 
 - 2026-10-01 27号阶段发布：NAS新门禁`bdeedec6…`、重试`246f1e6a…`，完整冻结`777e3e6b…`及6根恢复应用预演通过；部署后snapshot`df226da14b56c7d0e9b633845b29aced5384bb23f58a2541f192c68cf2b4044c`，40库33.21秒/恢复6.51秒，覆盖新队列/费用账本和本次run。首次mode=ro查询副本干扰SHM导致冻结失败，原服务自动恢复，后续不查询pending树重做成功；快照差异诊断已部署，远端root快照7/冻结10/release19项通过。
+
+- 2026-10-01 WP03发布恢复验证：变更前NAS `7e937747…`、部署后NAS `a82eff64…`（40库191.49秒、恢复6.88秒）；完整冻结`9c7457fe…`，最终三表归属声明修正另建`145a4c2f…`并完整恢复/隔离应用验证后恢复服务。两轮冻结校验及应用预演耗时较长，具体失败/重试与运行事实见27号§15.4；未改备份覆盖/排除范围。

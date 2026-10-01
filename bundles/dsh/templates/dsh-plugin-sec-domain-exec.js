@@ -151,6 +151,7 @@ export const EXEC_MANIFEST = {
         cwd: str({ description: 'worker 工作目录（仅调度器派单可传；须为已存在的目录，realpath 后校验）' }),
         task_id: int({ minimum: 1, description: '宿主任务号（仅调度器派单携带，透传 exec.worker.spawned）' }),
         claim_started_at: int({ minimum: 0 }),
+        budget_tokens: int({ minimum: 1 }),
       }, ['task']),
       idempotent: 'none',
       events: ['exec.worker.spawned', 'exec.worker.finished'],
@@ -1159,6 +1160,8 @@ function makeHandlers(opts) {
 
     exec_spawn_worker: async (args, repo, ctx) => {
       if (args.task_id != null && (ctx.actor !== 'scheduler' || args.claim_started_at == null)) throwErr('E_EXEC_CLAIM_REQUIRED', '绑定任务的 worker 仅允许调度器携带当前认领标识派生', null)
+      if (process.env.SEC_WORKER_RUN_ID) throwErr('E_EXEC_WORKER_BUDGET', 'worker 内嵌派生尚不支持共享预算，保存后续任务交调度器', null)
+      if (args.task_id != null && !args.budget_tokens) throwErr('E_EXEC_WORKER_BUDGET', '调度任务必须携带执行预算', null)
       const task = String(args.task || '').trim()
       if (!task) throwErr('E_SCHEMA', 'task 不能为空', '目标/范围/产出要求必须写全')
       const dedupeKey = args.force === true ? null : crypto.createHash('sha1').update(task + '\0').digest('hex')
@@ -1207,6 +1210,7 @@ function makeHandlers(opts) {
       dshArgs.push(fullTask)
       const env = { ...process.env, DSH_HOME: dataDir, PATH: '/usr/local/node/bin:' + (process.env.PATH || '') }
       env.SEC_WORKER_DEADLINE_MS = String(Date.now() + timeoutMs)
+      env.SEC_WORKER_BUDGET_TOKENS = String(args.budget_tokens || 150000)
       if (args.phase) env.SEC_WORKER_PHASE = String(args.phase)
 
       activeWorkers++
@@ -1221,11 +1225,14 @@ function makeHandlers(opts) {
             timeout_sec: Math.round(timeoutMs / 1000), pid, origin_session_id: originSessionId,
             task_id: Number.isInteger(args.task_id) ? args.task_id : null,
             claim_started_at: args.claim_started_at ?? null,
+            budget_tokens: args.task_id != null ? args.budget_tokens : null,
           } }),
         })
       } finally { activeWorkers-- }
-      const successful = result.code === 0 && !result.error && !result.cancelled && !result.timed_out
+      const successful = result.code === 0 && !result.error && !result.cancelled && !result.timed_out && !result.budget?.denied
         && (!opts.getSessionPersistence || !!result.session_id)
+      const budget = result.budget
+      const budgetUnknown = !budget || budget.unknown > 0 || budget.reserved > 0
       const meta = { run_id: runId, tool: 'spawn_worker', task: fullTask, cwd: workCwd, started_at: new Date(started).toISOString(),
         duration_ms: Date.now() - started, exit_code: result.code ?? null, session_id: result.session_id, origin_session_id: originSessionId,
         signal: result.signal, error: result.error || null, cancelled: result.cancelled, timed_out: result.timed_out, session_diagnostic: result.session_diagnostic }
@@ -1248,7 +1255,8 @@ function makeHandlers(opts) {
       return {
         data: { ok: successful, run_id: runId, exit_code: result.code ?? null, duration_ms: meta.duration_ms, log_lines: lines.length,
           tail: lines.slice(-20).join('\n'), truth, session_id: result.session_id, origin_session_id: originSessionId,
-          cancelled: result.cancelled, timed_out: result.timed_out, session_diagnostic: result.session_diagnostic },
+          cancelled: result.cancelled, timed_out: result.timed_out, session_diagnostic: result.session_diagnostic,
+          budget_unknown: budgetUnknown, budget: budget && { limit: budget.limit, charged: budget.charged, requests: budget.requests, denied: budget.denied, unknown: budget.unknown } },
         events,
         after: { run_id: runId, status: finalStatus },
       }

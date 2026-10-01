@@ -1438,3 +1438,13 @@ hypothesis_queue新增 retry_count（默认0）。已关联任务失败或一次
 `2c40d3f`＋`38deb2b`累计业务模块已在DSH 0.1.7-rc.2部署，生产新增hypothesis_queue/task_run_costs；全域659/659、隔离worker14项、UI80/80通过。任务103394由真实scheduler认领，run `wmup66uom3f71`在50.795秒后done，worker/session/claim一致，独立账本一行49,626 token，pending-task-finishes=0。旧任务/执行史/worker业务行在静默启动前后保持一致；新增22条bus.domain.registered另计。
 
 **放量未通过**：任务声明20,000 token，实计49,626；首个输入43,869 token，当前budget_tokens是事后超支观测，尚无启动前预留/上下文额度校验，不能称为硬预算。三个Campaign通过正式pause命令暂停（预算原值保留），生产`SEC_SCHEDULER_CLAIM_LIMIT=1`、`SEC_EXEC_MAX_WORKERS=1`。下一阶段先补WP03预留/lease/ack与迟到账单，验证后分Program恢复；不要直接将本次done作为允许放量的证据。完整发布/恢复路径见[27号§15.3](27-business-quality-and-capacity-plan-2026-09-30.md#153-业务增量分阶段发布2026-10-01阶段验收完成)。
+
+### 7.33 2026-10-01 · WP03预算与迟到账单（已部署，分阶段验收完成）
+
+调度认领在总线事务中写入 `task_budget_reservations(task_id,claim_started_at)`，按Program/Campaign已记录费用及在飞预留检查余额。未声明单次预算时使用150,000；不足则blocked并保留原因。运行已观测但账单尚未到达时保留expected_tokens；异常中断且费用未知时保留全部未结预留，不假装免费。busy释放本轮预留；晚到收尾只能更新原认领。全局认领槽位与worker注册数分别受并发配置约束。
+
+`task_reconcile_costs`是scheduler/system内部命令，每tick轮转4个持久`task_cost_watch`入口。`task_bill_items`记录账单身份、非负费用和真实消费时间；运行史裁剪不会删除待对账关联，重复/增长账单只结算差额，跨run共用session拒绝归属。账单文件按inode/size/mtime/ctime重读，支持原子重写及中文；0与无账单区分。已知消费时间参与执行准入窗口；时间未知的历史累计保守留在预算内。现有Planner创建时间窗口和learning投影尚未统一，WP03未全部关闭。
+
+Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭空累计费用。未批量猜测旧费用归属。scheduler不抢占仍存活的持锁进程，单进程tick不重入；短获取锁异常残留会拒绝启动，尚不是带fencing的完整租约协议。恢复检查应保留预算、账单、观察表及原始账单。
+
+本地全域661项、后续task120项、worker10项通过；最终远端验收与上线状态见27号§15.4。

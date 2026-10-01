@@ -1120,10 +1120,12 @@ test('L6: 调度器锁——活持锁者拒绝抢锁，死锁可接管', async (
   const r1 = startTaskScheduler({ dataDir, dispatch: noop, query: noop })
   assert.equal(r1.started, false, '活锁持有者未过期 → 拒抢')
   assert.match(r1.reason, /持有/)
-  // 心跳过期 → 可抢
+  // 活进程即使心跳过期也不可抢，避免长任务双调度
   fs.writeFileSync(path.join(dataDir, 'scheduler.lock'), JSON.stringify({ pid: process.ppid, ts: Date.now() - 200000 }))
   const r2 = startTaskScheduler({ dataDir, dispatch: noop, query: noop, startupReapDelayMs: 0 })
-  assert.equal(r2.started, true, '心跳过期可接管')
+  assert.equal(r2.started, false, '活进程不能因心跳过期丢锁')
+  fs.writeFileSync(path.join(dataDir, 'scheduler.lock'), JSON.stringify({ pid: 2147483647, ts: 0 }))
+  assert.equal(startTaskScheduler({ dataDir, dispatch: noop, query: noop, startupReapDelayMs: 0 }).started, true)
   await new Promise((resolve) => setTimeout(resolve, 5))
   clearInterval(globalThis.__silksecTaskScheduler)
   globalThis.__silksecTaskScheduler = null
@@ -1344,7 +1346,7 @@ test('22 C26/INV-C3/C8: campaign_record_decision 证据铁律 + 一任务一验�
   const dup = await bus.dispatch('task', 'campaign_record_decision', { campaign_id: cid, task_id: tid, verdict: 'rejected', evidence: 'run:r2' }, { actor: 'reactor' })
   assert.equal(dup.error.code, 'E_CAMPAIGN_REVIEWED')
   const camp = bus._internal.db().prepare('SELECT spent_tokens, heartbeat_at FROM campaigns WHERE id=?').get(cid)
-  assert.equal(camp.spent_tokens, 500)
+  assert.equal(camp.spent_tokens, 0, "Reviewer 声明不能凭空计费")
   assert.ok(camp.heartbeat_at > 0)
   const n = bus._internal.db().prepare('SELECT COUNT(*) c FROM campaign_decisions WHERE task_id=?').get(tid).c
   assert.equal(n, 1)
@@ -2514,6 +2516,76 @@ test('WP03 cumulative run costs, late settlement, zero versus unknown, and resta
   const list = await again.bus.query('task', 'run_costs', { task_id: id, limit: 2 }, { actor: 'model' })
   assert.equal(list.total, 4)
   assert.equal(list.rows.length, 2)
+})
+
+test('WP03 claims reserve concurrent budgets, busy releases and restart retains reservations', async () => {
+  const { bus, dir } = makeEnv(), db = bus._internal.db()
+  await bus.query('task', 'budget_config', {}, { actor: 'system' })
+  db.prepare("INSERT INTO task_settings(key,value) VALUES('budget_max_tokens','100000')").run()
+  const ids = []
+  for (let i = 0; i < 2; i++) {
+    const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: `预留${i}`, budget_tokens: 60000 }, { actor: 'dashboard' })
+    ids.push(c.data.task_id)
+    await bus.dispatch('task', 'run_now', { task_id: c.data.task_id }, { actor: 'dashboard' })
+  }
+  const now = Date.now() + 1000
+  const claimed = await bus.dispatch('task', 'claim', { now }, { actor: 'scheduler' })
+  assert.equal(claimed.ok, true, claimed.error?.message)
+  assert.equal(claimed.data.claimed.length, 1)
+  assert.equal(claimed.data.blocked[0].reason, 'E_TASK_BUDGET_EXHAUSTED')
+  const restarted = makeEnv({ dir })
+  assert.equal(restarted.bus._internal.db().prepare("SELECT COUNT(*) n FROM task_budget_reservations WHERE state='reserved'").get().n, 1)
+  const id = claimed.data.claimed[0]
+  const finish = await restarted.bus.dispatch('task', 'finish', { task_id: id, claim_started_at: now, outcome: 'busy' }, { actor: 'scheduler' })
+  assert.equal(finish.ok, true, finish.error?.message)
+  assert.equal(db.prepare('SELECT state FROM task_budget_reservations WHERE task_id=?').get(id).state, 'released')
+})
+
+test('WP03 automatic late billing handles unicode, zero, same-size replacement and repeated polling', async () => {
+  const { bus, dataDir, dir } = makeEnv()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '迟到账单' }, { actor: 'model' })
+  const id = c.data.task_id, sid = 'session-late-bill'
+  await bus.dispatch('task', 'finish', { task_id: id, run_id: 'late-bill', outcome: 'done', session_id: sid }, { actor: 'scheduler' })
+  const folder = path.join(dataDir, 'dsh-bill'), file = path.join(folder, 'records.jsonl')
+  fs.mkdirSync(folder)
+  const rec = tokens => JSON.stringify({ time: 1234, sessionId: sid, model: '中文模型', inputTokens: tokens, outputTokens: 0 }) + '\n'
+  fs.writeFileSync(file, rec(0))
+  assert.equal((await bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })).data.results[0].spent_tokens, 0)
+  const tmp = file + '.new'
+  fs.writeFileSync(tmp, rec(9)); fs.renameSync(tmp, file)
+  const second = await bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })
+  assert.equal(second.data.results[0].delta_tokens, 9)
+  const restart = makeEnv({ dir })
+  assert.equal((await restart.bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })).data.results[0].delta_tokens, 0)
+  const task = bus._internal.db().prepare('SELECT status,spent_tokens FROM tasks WHERE id=?').get(id)
+  assert.deepEqual({ ...task }, { status: 'done', spent_tokens: 9 })
+})
+
+test('WP03 no-bill completion retains expected cost until late bill arrives, even after history pruning', async () => {
+  const { bus, dataDir } = makeEnv(), db = bus._internal.db()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '迟到预留结算', budget_tokens: 20000 }, { actor: 'dashboard' })
+  const id = c.data.task_id, now = Date.now() + 1, sid = 'session-reserved'
+  await bus.dispatch('task', 'run_now', { task_id: id }, { actor: 'dashboard' })
+  const claim = await bus.dispatch('task', 'claim', { now: now + 1000 }, { actor: 'scheduler' })
+  assert.deepEqual(claim.data.claimed, [id])
+  const register = await bus.dispatch('task', 'worker_register', { task_id: id, claim_started_at: now + 1000,
+    run_id: 'reserved-run', budget_tokens: 20000 }, { actor: 'scheduler' })
+  assert.equal(register.ok, true, register.error?.message)
+  const finish = await bus.dispatch('task', 'finish', { task_id: id, claim_started_at: now + 1000,
+    run_id: 'reserved-run', outcome: 'done', session_id: sid, budget_unknown: false, budget_charged: 100 }, { actor: 'scheduler' })
+  assert.equal(finish.ok, true, finish.error?.message)
+  assert.deepEqual({ ...db.prepare('SELECT state,tokens,expected_tokens FROM task_budget_reservations').get() },
+    { state: 'unknown', tokens: 100, expected_tokens: 100 })
+  db.prepare('DELETE FROM task_runs WHERE task_id=?').run(id)
+  fs.mkdirSync(path.join(dataDir, 'dsh-bill'))
+  fs.writeFileSync(path.join(dataDir, 'dsh-bill/records.jsonl'), JSON.stringify({ time: Date.now() - 1000,
+    sessionId: sid, inputTokens: 80, outputTokens: 20 }) + '\n')
+  const paid = await bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })
+  assert.equal(paid.ok, true, paid.error?.message)
+  assert.equal(paid.data.results[0].delta_tokens, 100)
+  assert.equal(db.prepare('SELECT state FROM task_budget_reservations').get().state, 'settled')
+  assert.equal(db.prepare('SELECT tokens FROM task_bill_items').get().tokens, 100)
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id=?').get(id).status, 'done')
 })
 
 test('WP03 cost failure rolls back receipt and aggregate; pruning history does not permit recharging', async () => {

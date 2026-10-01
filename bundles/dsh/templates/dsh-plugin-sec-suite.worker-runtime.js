@@ -8,6 +8,43 @@ import { listSessionHeaders, matchWorkerSession } from './host-compat.js'
 const RUN_ID = /^w[a-z0-9]+$/
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+// Request admission is deliberately an estimate, not a provider billing guarantee.
+// Charge all model calls in this process (including compaction/title/probes).
+export function createWorkerBudget(limit, persist = () => {}) {
+  if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('E_WORKER_BUDGET_REQUIRED')
+  const state = { limit, charged: 0, reserved: 0, requests: 0, unknown: 0, denied: 0 }
+  const fail = code => { state.denied++; persist({ ...state, code }); throw new Error(code) }
+  return {
+    state,
+    async *stream(options, next) {
+      // Binary/file projections and unlimited outputs cannot be priced by this estimator.
+      if ((options.messages || []).some(m => (m.content || []).some(b => ['image', 'file'].includes(b.type)))) fail('E_WORKER_BUDGET_MODALITY')
+      if (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0) fail('E_WORKER_BUDGET_OUTPUT_CAP')
+      const input = Math.ceil(Buffer.byteLength(JSON.stringify({ messages: options.messages || [], tools: options.tools || [], toolHistory: options.toolHistory || [] }), 'utf8') / 2) + 2048
+      const reserved = input + options.maxTokens
+      if (state.charged + state.reserved + reserved > limit) fail('E_WORKER_BUDGET_EXHAUSTED')
+      state.reserved += reserved
+      state.requests++
+      persist({ ...state })
+      let usage = null
+      try {
+        for await (const chunk of next()) {
+          if (chunk?.type === 'usage') usage = chunk.usage
+          yield chunk
+        }
+      } finally {
+        const fields = ['inputTokens', 'outputTokens', 'cacheWriteTokens']
+        if (usage && fields.every(k => usage[k] == null || Number.isSafeInteger(usage[k]) && usage[k] >= 0)
+            && Number.isSafeInteger(usage.inputTokens) && Number.isSafeInteger(usage.outputTokens)) {
+          state.reserved -= reserved
+          state.charged += fields.reduce((n, k) => n + (usage[k] || 0), 0)
+        } else state.unknown++ // keep the reservation; an interrupted call is not free.
+        persist({ ...state })
+      }
+    },
+  }
+}
+
 // 由宿主下发的随机 nonce 把报告绑定到一次启动；模型无权改写控制文件。
 // Session ID 还须由父进程用官方 persistence 的 header 独立核实。
 export function installWorkerSessionReporter(ctx, dataDir) {
@@ -17,7 +54,33 @@ export function installWorkerSessionReporter(ctx, dataDir) {
   if (!RUN_ID.test(runId || '') || !/^[a-f0-9]{48}$/.test(nonce || '')) {
     throw new Error('E_WORKER_LAUNCH: 无效的 worker 启动身份')
   }
+  const installed = Symbol.for('silksec.worker-runtime.installed')
+  if (globalThis[installed] === runId) return
+  globalThis[installed] = runId
   const filename = path.join(dataDir, 'results', runId, 'worker-session.json')
+  if (process.env.SEC_WORKER_BUDGET_TOKENS) {
+    const runDir = path.dirname(filename)
+    const budget = createWorkerBudget(Number(process.env.SEC_WORKER_BUDGET_TOKENS), state => {
+      const tmp = path.join(runDir, `worker-budget.json.tmp-${process.pid}`)
+      fs.writeFileSync(tmp, JSON.stringify({ ...state, run_id: runId, nonce, estimator: 'utf8-half-plus-2048-v1' }), { mode: 0o600 })
+      fs.renameSync(tmp, path.join(runDir, 'worker-budget.json'))
+    })
+    ctx.on('agent/request', async (_payload, next) => {
+      const config = await next()
+      return { ...config, maxTokens: Math.min(config.maxTokens || 2048, 2048, budget.state.limit) }
+    }, { global: true, prepend: true })
+    ctx.on('llm/stream', (options, next) => (async function* () {
+      const deadline = Date.now() + 15000
+      while (true) {
+        let ack
+        try { ack = JSON.parse(fs.readFileSync(path.join(runDir, 'worker-ack.json'), 'utf8')) } catch {}
+        if (ack?.nonce === nonce && ack?.pid === process.pid && ack?.run_id === runId) break
+        if (Date.now() >= deadline) throw new Error('E_WORKER_START_ACK_TIMEOUT')
+        await delay(25)
+      }
+      yield* budget.stream(options, next)
+    })(), { global: true, prepend: true })
+  }
   let reported = false
   ctx.on('agent/created', ({ agent }) => {
     if (reported || agent?.session?.header?.cwd !== process.cwd()) return
@@ -93,7 +156,11 @@ export async function executeWorkerProcess({ node, args, env, cwd, runDir, runId
       signal?.addEventListener('abort', abort, { once: true })
       if (signal?.aborted) abort()
       killer = setTimeout(() => { timedOut = true; stop() }, timeoutMs)
-      try { if (child.pid && onSpawn) await onSpawn({ pid: child.pid, startedAt }) }
+      try {
+        if (child.pid && onSpawn) await onSpawn({ pid: child.pid, startedAt })
+        if (child.pid) fs.writeFileSync(path.join(runDir, 'worker-ack.json'),
+          JSON.stringify({ run_id: runId, nonce, pid: child.pid }), { flag: 'wx', mode: 0o600 })
+      }
       catch (error) { spawnError = error.message; stop() }
       result = await closed
       // 正常主进程退出也不能留下继承了进程组的后台写者。
@@ -115,6 +182,15 @@ export async function executeWorkerProcess({ node, args, env, cwd, runDir, runId
   const session = persistence && child?.pid
     ? await verifyWorkerSession({ runDir, runId, nonce, pid: child.pid, cwd, startedAt, finishedAt, persistence })
     : { id: null, code: 'E_WORKER_SESSION_PERSISTENCE' }
-  return { ...result, ...(spawnError ? { error: spawnError } : {}), pid: child?.pid || null,
+  let budget = null
+  try {
+    const report = JSON.parse(fs.readFileSync(path.join(runDir, 'worker-budget.json'), 'utf8'))
+    if (report.run_id === runId && report.nonce === nonce && report.limit === Number(env.SEC_WORKER_BUDGET_TOKENS)
+        && ['charged', 'reserved', 'requests', 'denied', 'unknown'].every(k => Number.isSafeInteger(report[k]) && report[k] >= 0)) {
+      const { nonce: _nonce, ...counts } = report
+      budget = counts
+    }
+  } catch {}
+  return { ...result, ...(spawnError ? { error: spawnError } : {}), pid: child?.pid || null, budget,
     timed_out: timedOut, cancelled, startedAt, finishedAt, session_id: session.id, session_diagnostic: session.code || null }
 }
