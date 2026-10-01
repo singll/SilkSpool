@@ -61,7 +61,7 @@ const EP_ROW_SCHEMA = schema({
   path: str(),
   method: en(METHODS, { default: 'GET' }),
   status: str({ default: '' }),
-  params: { type: 'object' },
+  params: { type: ['object', 'array'] },
   source: str({ default: '' }),
   program_id: str(),
 }, [])
@@ -72,10 +72,27 @@ export const ENDPOINT_MANIFEST = {
   service: 'secDomain.endpoint',
   description: '接口面/参数队列（打哪里、喂什么料——越权矩阵与参数喂料的唯一事实源）',
   owns: {
-    tables: ['endpoints'],
+    tables: ['endpoints', 'endpoint_requests'],
     files: ['data/pipeline/*/param-queue.txt', 'data/pipeline/*/param-seen.txt', 'data/events/endpoint.jsonl'],
   },
   commands: {
+    endpoint_observe_request: {
+      actor: ['model', 'script', 'dashboard'],
+      schema: schema({
+        program_id: str({ minLength: 1 }), url: str({ minLength: 1 }), method: en(METHODS),
+        content_type: str(), body_ref: str({ minLength: 1 }), headers_ref: str({ minLength: 1 }),
+        credential_ref: str({ minLength: 1 }), subject_ref: str({ minLength: 1 }),
+        object_refs: { type: 'array', items: str({ minLength: 1 }), maxItems: 100 }, action: str(),
+        parameters: { type: 'array', maxItems: 500, items: schema({ name: str({ minLength: 1 }), in: en(['query', 'path', 'header', 'cookie', 'form', 'json', 'multipart']), value: {}, value_ref: str({ minLength: 1 }) }, ['name', 'in']) },
+        evidence_path: str({ minLength: 1 }), run_id: str({ minLength: 1 }), task_id: int({ minimum: 1 }), session_id: str({ minLength: 1 }),
+        response_status: int({ minimum: 100, maximum: 599 }),
+      }, ['program_id', 'url', 'method', 'parameters', 'evidence_path', 'run_id']),
+      // 文件摘要须每次读取；在 handler 按完整观测摘要幂等，避免总线只按路径重放旧内容。
+      idempotent: 'none', events: ['endpoint.request.observed'], event_limit: 1,
+      invariants: [], timeout_ms: 60000,
+      agent_note: '保存可追溯请求观测（不执行请求）：保留完整 URL/method、参数值与位置、正文/请求头证据引用及身份/对象引用。证据和 body/headers_ref 必须在 results/ 或 evidence/ 内；凭据使用 credential_ref。200 仅表示已观测，不声明业务健康或无须登录。完整摘要幂等，身份/输入变化保存独立版本。',
+      deprecated: false,
+    },
     endpoint_upsert: {
       actor: ['model', 'script', 'dashboard'],
       schema: schema({
@@ -85,7 +102,7 @@ export const ENDPOINT_MANIFEST = {
       }, []),
       idempotent: 'auto',
       idempotent_fields: ['rows', 'tsv_path', 'program_id'],
-      events: ['endpoint.registered'],
+      events: ['endpoint.registered', 'endpoint.changed'],
       event_limit: 5000,
       invariants: ['upsertMode', 'batchLimit'],
       timeout_ms: 120000,
@@ -194,6 +211,16 @@ export const ENDPOINT_MANIFEST = {
     },
   },
   queries: {
+    endpoint_request_get: {
+      actor: ['model', 'script', 'dashboard', 'human', 'reactor'],
+      params: schema({ request_id: str({ minLength: 1 }) }, ['request_id']), predicates: [],
+      agent_note: '读取一份不可变请求观测（含参数、身份引用、证据摘要）；不返回引用文件正文。',
+    },
+    endpoint_requests: {
+      actor: ['model', 'script', 'dashboard', 'human', 'reactor'],
+      params: schema({ program_id: str(), host: str(), limit: int({ minimum: 1, maximum: 500 }), offset: int({ minimum: 0 }) }, []), predicates: ['program', 'host'],
+      agent_note: '分页查询请求观测摘要和准确 total；完整内容按 request_id 单独读取。shape_id 用于统计请求形状，request_id 用于绑定实验版本。',
+    },
     endpoint_list: {
       actor: ['model', 'dashboard', 'human', 'reactor'],
       params: schema({
@@ -278,6 +305,8 @@ export const ENDPOINT_MANIFEST = {
   },
   events: {
     'endpoint.registered': { payload: { type: 'object' }, redact: [] },
+    'endpoint.changed': { payload: { type: 'object' }, redact: [] },
+    'endpoint.request.observed': { payload: { type: 'object' }, redact: [] },
     'endpoint.queue.enqueued': { payload: { type: 'object' }, redact: [] },
     'endpoint.queue.consumed': { payload: { type: 'object' }, redact: [] },
     'endpoint.auth_marked': { payload: { type: 'object' }, redact: [] },
@@ -287,6 +316,7 @@ export const ENDPOINT_MANIFEST = {
   subscribes: {
     'exec.run.completed': { handler: 'onRunProposal', mode: 'async', as: 'reactor' },
     'endpoint.registered': { handler: 'onEndpointRegistered', mode: 'async', as: 'reactor' },
+    'endpoint.changed': { handler: 'onEndpointRegistered', mode: 'async', as: 'reactor' },
   },
   backend: 'repository-v1',
 }
@@ -335,10 +365,10 @@ function loadScopePrograms(dataDir) {
   const f = path.join(dataDir, 'scope.yml')
   let mtimeMs = null
   try { mtimeMs = fs.statSync(f).mtimeMs } catch { mtimeMs = null }
-  if (_scopeCache && _scopeCache.mtimeMs === mtimeMs) return _scopeCache.programs
+  if (_scopeCache && _scopeCache.file === f && _scopeCache.mtimeMs === mtimeMs) return _scopeCache.programs
   let programs = []
   try { programs = parseScopePrograms(fs.readFileSync(f, 'utf8')) } catch { programs = [] }
-  _scopeCache = { mtimeMs, programs }
+  _scopeCache = { file: f, mtimeMs, programs }
   return programs
 }
 
@@ -357,6 +387,7 @@ function parseScopePrograms(text) {
       continue
     }
     if (!cur) continue
+    if (/^expires_at:\s*(.+)$/.test(t)) { cur.expires_at = t.replace(/^expires_at:\s*/, '').trim().replace(/^["']|["']$/g, ''); key = ''; continue }
     if (/^(scope|exclude):\s*$/.test(t)) { key = t.slice(0, t.length - 1); continue }
     const itemM = t.match(/^-\s*["']?([^"']+?)["']?\s*$/)
     if (itemM && (key === 'scope' || key === 'exclude')) { cur[key].push(itemM[1].trim()); continue }
@@ -379,7 +410,13 @@ function scopeCheckResult(programId, host, dataDir) {
   if (!programId) return { ok: true }
   const programs = loadScopePrograms(dataDir)
   const prog = programs.find((p) => p.name === programId)
-  if (!prog) { log(`scope 自查：program ${programId} 未找到，fail-open（scope 域查询上线前过渡）`); return { ok: true } }
+  if (!prog) return { ok: false, code: 'E_INVARIANT', message: `项目 ${programId} 授权不可读取`, retryable: false }
+  if (prog.expires_at) {
+    const raw = prog.expires_at
+    const n = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw)
+    const at = /^\d+$/.test(raw) && n < 1e12 ? n * 1000 : n
+    if (!Number.isFinite(at) || at <= Date.now()) return { ok: false, code: 'E_INVARIANT', message: `项目 ${programId} 授权已过期或日期无效`, retryable: false }
+  }
   if (hostInPatterns(host, prog.exclude || [])) return { ok: false, code: 'E_INVARIANT', message: `接口 ${host} 命中项目 ${programId} 排除清单`, hint: '该域在项目排除清单内，需单独授权', retryable: false }
   if (!hostInPatterns(host, prog.scope || [])) return { ok: false, code: 'E_INVARIANT', message: `接口 ${host} 不在项目 ${programId} 授权范围内`, hint: '域外参考请不带 program_id，或先经审批扩 scope', retryable: false }
   return { ok: true }
@@ -392,6 +429,40 @@ function scopeCheckResult(programId, host, dataDir) {
 function makeHandlers(opts) {
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const dispatchRef = opts.dispatch
+
+  function stableJson(value) {
+    if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+    if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(',')}}`
+    return JSON.stringify(value)
+  }
+  function evidenceDigest(ref) {
+    const absolute = path.resolve(dataDir, ref)
+    const roots = ['results', 'evidence'].map(dir => path.resolve(dataDir, dir))
+    const inside = p => roots.some(root => p.startsWith(root + path.sep))
+    if (!inside(absolute)) throwErr('E_EVIDENCE_REQUIRED', '请求证据引用须位于 results/ 或 evidence/ 内', null, false)
+    try {
+      const real = fs.realpathSync(absolute)
+      if (!inside(real)) throw new Error('引用越界')
+      const stat = fs.statSync(real)
+      if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('证据须为不超过 1 MiB 的普通文件')
+      return crypto.createHash('sha256').update(fs.readFileSync(real)).digest('hex')
+    } catch (e) { throwErr('E_EVIDENCE_REQUIRED', `请求证据不可用：${e.message}`, null, false) }
+  }
+
+  function tsvParams(raw, url) {
+    if (raw.trim().startsWith('{') || raw.trim().startsWith('[')) {
+      try { const parsed = JSON.parse(raw); if (parsed && typeof parsed === 'object') return parsed } catch { /* legacy names below */ }
+    }
+    const values = new Map()
+    try {
+      for (const [name, value] of new URL(url).searchParams) {
+        if (!values.has(name)) values.set(name, value)
+        else values.set(name, [values.get(name)].flat().concat(value))
+      }
+    } catch { /* URL validation happens at upsert */ }
+    for (const name of raw.split(',').map(v => v.trim()).filter(Boolean)) if (!values.has(name)) values.set(name, null)
+    return values.size ? Object.fromEntries(values) : null
+  }
 
   function throwErr(code, message, hint, retryable = false) {
     throw Object.assign(new Error(message), { code, hint, retryable })
@@ -477,7 +548,12 @@ function makeHandlers(opts) {
     const existing = repo.getEndpoint(row.host, row.method, row.path)
     if (existing) {
       repo.touchEndpoint(row.host, row.method, row.path, { status: row.status, params: row.params, program_id: row.program_id }, Date.now())
-      return { ok: true, created: false, host: row.host, method: row.method.toUpperCase(), path: row.path }
+      let previousParams = null
+      try { previousParams = JSON.parse(existing.params || 'null') } catch { /* preserve malformed legacy input until replaced */ }
+      const changed = (row.params != null && stableJson(row.params) !== stableJson(previousParams))
+        || (row.program_id != null && row.program_id !== existing.program_id)
+      return { ok: true, created: false, host: row.host, method: row.method.toUpperCase(), path: row.path,
+        event: changed ? { name: 'endpoint.changed', payload: { host: row.host, method: row.method.toUpperCase(), path: row.path, program_id: row.program_id ?? existing.program_id, source: row.source || '' } } : null }
     }
     const r = repo.insertEndpoint(row)
     return {
@@ -487,6 +563,31 @@ function makeHandlers(opts) {
   }
 
   const commands = {
+    endpoint_observe_request: async (args, repo, ctx) => {
+      let url
+      try { url = new URL(args.url) } catch { throwErr('E_SCHEMA', '请求 URL 无效', null, false) }
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throwErr('E_SCHEMA', '请求 URL 仅支持不含用户凭据的 HTTP(S)', null, false)
+      const host = normalizeHost(url.hostname)
+      const programs = loadScopePrograms(dataDir)
+      if (!programs.some(p => p.name === args.program_id)) throwErr('E_INVARIANT', '请求观测的项目授权不可读取', null, false)
+      const scope = scopeCheckResult(args.program_id, host, dataDir)
+      if (!scope.ok) throwErr(scope.code, scope.message, scope.hint, false)
+      const spec = { ...args, host, path: url.pathname + url.search, evidence_sha256: evidenceDigest(args.evidence_path) }
+      if (args.body_ref) spec.body_sha256 = evidenceDigest(args.body_ref)
+      if (args.headers_ref) spec.headers_sha256 = evidenceDigest(args.headers_ref)
+      if (!spec.task_id && ctx?.task_id) spec.task_id = ctx.task_id
+      if (!spec.session_id && ctx?.session_id) spec.session_id = ctx.session_id
+      spec.transport_state = args.response_status === 407 ? 'proxy_error' : args.response_status >= 500 ? 'server_error' : args.response_status === 401 ? 'auth_challenge' : args.response_status === 403 ? 'access_denied' : args.response_status ? 'observed' : 'unknown'
+      const shape = { program_id: args.program_id, origin: url.origin, method: args.method, path: url.pathname,
+        content_type: args.content_type || '', query: [...new Set(url.searchParams.keys())].sort(),
+        parameters: args.parameters.map(p => ({ name: p.name, in: p.in, type: p.value === null ? 'null' : Array.isArray(p.value) ? 'array' : typeof p.value })).sort((a, b) => stableJson(a).localeCompare(stableJson(b))) }
+      spec.shape_id = sha256(stableJson(shape))
+      spec.request_id = sha256(stableJson(spec))
+      const created = repo.recordRequest(spec)
+      return { data: { request_id: spec.request_id, shape_id: spec.shape_id, created },
+        events: created ? [{ name: 'endpoint.request.observed', payload: { request_id: spec.request_id, shape_id: spec.shape_id, program_id: spec.program_id, host, method: spec.method, path: spec.path, transport_state: spec.transport_state } }] : [],
+        after: { request_id: spec.request_id, created } }
+    },
     endpoint_upsert: async (args, repo) => {
       const program_id = args.program_id ?? null
       const results = []
@@ -515,14 +616,14 @@ function makeHandlers(opts) {
           const paramsRaw = cols[2] || ''
           const source = cols[4] || ''
           // auth_required（cols[3]）读入即弃（登记不带鉴权语义，INV-1）
-          let params = null
-          if (paramsRaw) { try { params = { _raw: paramsRaw } } catch { params = null } }
+          const params = tsvParams(paramsRaw, url)
           const row = { url, method, params, source }
           const r = upsertRow(repo, row, program_id, dataDir)
           if (r.skipped === 'static') { skippedStatic++; continue }
           if (r.skipped === 'invalid') { skippedInvalid++; continue }
           if (!r.ok) { results.push({ host: r.host, method: r.method, path: r.path, created: false, ok: false, error: r.error }); continue }
-          if (r.created) { created++; if (r.event) events.push(r.event) } else touched++
+          if (r.created) created++; else touched++
+          if (r.event) events.push(r.event)
           results.push({ host: r.host, method: r.method, path: r.path, created: r.created, ok: true })
         }
       } else {
@@ -531,7 +632,8 @@ function makeHandlers(opts) {
           if (r.skipped === 'static') { skippedStatic++; continue }
           if (r.skipped === 'invalid') { skippedInvalid++; continue }
           if (!r.ok) { results.push({ host: r.host, method: r.method, path: r.path, created: false, ok: false, error: r.error }); continue }
-          if (r.created) { created++; if (r.event) events.push(r.event) } else touched++
+          if (r.created) created++; else touched++
+          if (r.event) events.push(r.event)
           results.push({ host: r.host, method: r.method, path: r.path, created: r.created, ok: true })
         }
       }
@@ -695,6 +797,17 @@ function makeHandlers(opts) {
   const SENSITIVE_KEYWORDS = ['token', 'key', 'secret', 'password', 'passwd', 'pwd', 'access_key', 'cookie', 'authorization', 'apikey', 'api_key', 'jwt', 'session', 'auth']
 
   const queries = {
+    endpoint_request_get: async (args, repo) => {
+      const row = repo.getRequest(args.request_id)
+      if (!row) throwErr('E_NOT_FOUND', '请求观测不存在', null, false)
+      try {
+        row.evidence_state = evidenceDigest(row.evidence_path) === row.evidence_sha256
+          && (!row.body_ref || evidenceDigest(row.body_ref) === row.body_sha256)
+          && (!row.headers_ref || evidenceDigest(row.headers_ref) === row.headers_sha256) ? 'intact' : 'changed'
+      } catch { row.evidence_state = 'unavailable' }
+      return row
+    },
+    endpoint_requests: async (args, repo) => ({ ...repo.listRequests(args), meta: { paged: true } }),
     endpoint_list: async (args, repo) => {
       const filters = { host: args.host || '', path_like: args.path_like || '', method: args.method || '', program_id: args.program_id || '', auth_required: args.auth_required || '', auth_state: args.auth_state || '', should_auth: args.should_auth || '' }
       const rows = repo.listEndpointsWhere(filters, { sort: args.sort || 'last_seen', dir: args.dir || 'desc' }, args.limit, args.offset)

@@ -19,3 +19,5 @@
 | [升级目录（已迁出）](upgrades/README.md) | 0.1.1-rc.2 报告、0.1.2 规划、0.1.2-rc.1 实录及新升级方案 |
 | [模型路由纪律](dsh-llm-routing-discipline.md) | 历史应急切换规程 |
 | [XFF 研究](XFF-SECURITY-RESEARCH.md) | 独立安全研究报告 |
+
+- [18 · v4→v5迁移路线图](18-migration.md)：Phase 0–5已完成，2026-10-01归档；现行常驻契约为00–17。

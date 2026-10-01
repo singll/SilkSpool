@@ -8,7 +8,7 @@
 
 | 用户任务 | 先读 | 进度写在哪里 |
 |---|---|---|
-| 继续 v5 领域迁移 | [PROGRESS](../PROGRESS.md) → [18-migration](../18-migration.md) → 对应域 | PROGRESS 对应节点 |
+| 继续 v5 领域迁移 | [PROGRESS](../PROGRESS.md) → [18-migration](18-migration.md) → 对应域 | PROGRESS 对应节点 |
 | 升级 DSH 底座 | [升级目录](upgrades/README.md) → 当次 record → plan | 当次升级 record；完成后更新时间线和当前版本入口 |
 | 自学习/漏洞探测优化 | [自学习专项](upgrades/2026-09-12-self-learning-design.md) → 受影响域契约 | 对应 L 工作包的执行记录；正式改契约后再实施 |
 | 检查、审查、方案或整理文档 | [文档入口](../README.md) → 用户指定文档 → 最新运行/源码证据 | 标明检查日期、范围和未验证项；不勾选开发/部署节点 |

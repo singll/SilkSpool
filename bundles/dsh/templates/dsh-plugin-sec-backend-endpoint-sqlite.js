@@ -78,6 +78,12 @@ const _cache = new WeakMap()
 
 function createRepo(db, dataDir) {
   db.exec(ENDPOINTS_DDL)
+  db.exec(`CREATE TABLE IF NOT EXISTS endpoint_requests (
+    request_id TEXT PRIMARY KEY, shape_id TEXT NOT NULL, program_id TEXT NOT NULL,
+    host TEXT NOT NULL, method TEXT NOT NULL, path TEXT NOT NULL,
+    transport_state TEXT NOT NULL, spec TEXT NOT NULL, created_at INTEGER NOT NULL
+  )`)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_endpoint_requests_program ON endpoint_requests(program_id, created_at, request_id)')
   for (const [col, ddl] of V5_COLS) ensureCol(db, 'endpoints', col, ddl)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_host ON endpoints(host)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_endpoints_program ON endpoints(program_id)`)
@@ -156,6 +162,24 @@ function createRepo(db, dataDir) {
 
   const repo = {
     // ---- 表原语 ----
+    recordRequest(row) {
+      const r = db.prepare(`INSERT INTO endpoint_requests (request_id,shape_id,program_id,host,method,path,transport_state,spec,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(request_id) DO NOTHING`).run(row.request_id, row.shape_id, row.program_id, row.host, row.method, row.path, row.transport_state, JSON.stringify(row), Date.now())
+      return r.changes === 1
+    },
+    getRequest(id) {
+      const row = db.prepare('SELECT spec FROM endpoint_requests WHERE request_id=?').get(id)
+      return row ? JSON.parse(row.spec) : null
+    },
+    listRequests({ program_id = '', host = '', limit = 50, offset = 0 }) {
+      const where = [], args = []
+      if (program_id) { where.push('program_id=?'); args.push(program_id) }
+      if (host) { where.push('host=?'); args.push(host) }
+      const pred = where.length ? `WHERE ${where.join(' AND ')}` : ''
+      const total = db.prepare(`SELECT COUNT(*) n FROM endpoint_requests ${pred}`).get(...args).n
+      const rows = db.prepare(`SELECT request_id,shape_id,program_id,host,method,path,transport_state,created_at FROM endpoint_requests ${pred} ORDER BY created_at,request_id LIMIT ? OFFSET ?`).all(...args, limit, offset).map(r => ({ ...r }))
+      return { rows, total }
+    },
     getEndpoint(host, method, path) {
       const r = db.prepare('SELECT * FROM endpoints WHERE host = ? AND method = ? AND path = ?').get(String(host), String(method).toUpperCase(), String(path))
       return r ? { ...r } : null

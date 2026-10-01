@@ -562,3 +562,13 @@ test('27: 候选编译保留项目 B，不能派入首项目 A', () => {
   assert.equal(r.drafts.length, 1)
   assert.equal(r.drafts[0].program_id, 'B')
 })
+
+test('27 全量 WP01: 编译器限定候选池和类别，不能被高分无关缺口挤占', () => {
+  const p = compileCampaignPlan({ campaign: { program_ids: ['p1'], goal_spec: { allowed_task_kinds: ['verify_candidate'], source_pool: 'candidates', vuln_classes: ['xss'] } },
+    candidates: [{ id: 1, program_id: 'p1', host: 'a.p1.com', title: 'XSS' }, { id: 2, program_id: 'p1', host: 'b.p1.com', title: 'IDOR' }],
+    gaps: [{ program: 'p1', dim: 'vulnclass', key: 'a.p1.com|sqli', value: 100 }, { program: 'p1', dim: 'crawl', key: 'b.p1.com', value: 100 }],
+  })
+  assert.deepEqual(p.drafts.map(d => [d.kind, d.host, d.vuln_class]), [['verify_candidate', '1', 'xss']])
+  assert.ok(p.skipped.some(s => s.reason === 'task_kind_outside_goal'))
+  assert.ok(p.skipped.some(s => s.reason === 'vuln_class_outside_goal'))
+})

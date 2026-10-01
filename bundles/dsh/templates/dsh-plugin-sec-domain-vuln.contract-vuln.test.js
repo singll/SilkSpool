@@ -15,6 +15,7 @@ import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildVulnDomain, VULN_MANIFEST } from '../index.js'
+import { buildExecDomain } from '../../sec-domain-exec/index.js'
 
 // ---------------------------------------------------------------------------
 // 测试装配（临时目录 + 临时库；vuln 域注册进独立总线实例）
@@ -48,7 +49,9 @@ function makeEnv(opts = {}) {
     startDispatcherTimer: false,
     ...opts,
   })
-  const domain = buildVulnDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) })
+  const domain = buildVulnDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d,v,a,c) => bus.query(d,v,a,c) })
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'defaults:\n  allow_risk: [passive, active, intrusive]\nprograms:\n  - name: test-src\n    scope:\n      - 127.0.0.1\n')
+  bus.registry.register(buildExecDomain({ dataDir, egressProxy: '' }))
   const reg = bus.registry.register(domain)
   assert.equal(reg.ok, true, `vuln 域应注册成功：${reg.error?.message || ''}`)
   return { dir, dataDir, bus, domain }
@@ -92,7 +95,7 @@ test('authz_diff 接受 JSON 字符串 headers，改变 body 可重试且格式�
   })
   t.after(() => closeServer(srv))
   const { bus } = makeEnv()
-  const args = { url: `http://127.0.0.1:${serverPort(srv)}/fixture`, method: 'POST',
+  const args = { program_id: 'test-src', url: `http://127.0.0.1:${serverPort(srv)}/fixture`, method: 'POST',
     headers_low: '{"X-Role":"low"}', headers_high: '{"X-Role":"high"}', body: 'first' }
   const first = await bus.dispatch('vuln', 'authz_diff', args, { actor: 'model' })
   assert.equal(first.ok, true, first.error?.message)
@@ -147,145 +150,35 @@ async function seedCandidate(bus, extra = {}) {
 // 21 号方案 §2-1/§2-2：proof capsule + oracle 证据门
 // ---------------------------------------------------------------------------
 
-test('oracle_capsule: 登记 → 落盘 digest 自洽 + 事件；capsule:{id} confirm 全链路（verified）', async () => {
-  const { dir, dataDir, bus } = makeEnv()
-  const sig = await seedSignal(bus)
-  assert.equal(sig.ok, true)
-  const cap = await bus.dispatch('vuln', 'oracle_capsule', {
-    oracle: 'sqli_diff', verdict: 'verified',
-    target: { host: 'a.example.com', url: 'https://a.example.com/admin?id=1', param: 'id', vuln_class: 'sqli' },
-    request_pair: { control: { status: 200, len: 1024 }, test: { status: 200, len: 12 } },
-    rule_input: { baseline_body: 'x', true_body: 'x', false_body: 'y' },
-    result: { rationale: '布尔差分成立' },
-    replay: { cmd: 'curl -s "$URL?id=1%20AND%201=1" -o /tmp/t; curl -s "$URL?id=1%20AND%201=2" -o /tmp/f; diff -q /tmp/t /tmp/f' },
-    env: { proxy: 'mubeng', ts: 1 },
-    finding_id: sig.data.id,
-  }, { actor: 'model' })
-  assert.equal(cap.ok, true)
-  const cid = cap.data.capsule_id
-  assert.match(cid, /^[a-f0-9]{16}$/)
-  // 落盘 digest 自洽
-  const raw = JSON.parse(fs.readFileSync(path.join(dataDir, 'evidence', 'oracle-capsules', `${cid}.json`), 'utf8'))
-  assert.equal(raw.capsule_id, cid)
-  assert.equal(raw.verdict, 'verified')
-  assert.ok(raw.digest)
-  assert.ok(raw.replay.cmd.includes('curl'))
-  // 事件
-  const names = bus._internal.db().prepare('SELECT payload FROM event_outbox').all().map((o) => JSON.parse(o.payload).name)
-  assert.ok(names.includes('vuln.oracle.capsuled'))
-  // capsule:{id} 作为 confirm 证据引用全链路通过
-  const confirm = await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: `capsule:${cid}` }, { actor: 'model' })
-  assert.equal(confirm.ok, true, confirm.error?.message)
-  assert.equal(confirm.data.status, 'confirmed')
-  const audit = readAudit(dir)
-  assert.ok(audit.find((a) => a.domain === 'vuln' && a.cmd === 'oracle_capsule'))
-})
+const independentReview = { basis: '独立复核了请求、响应、正常与反例对照，确认所述安全属性被违反', reproduction_steps: '根据证据中的完整请求执行正常及反例对照，重复观察结果', impact: '证据已证明具体受保护对象遭到未经授权的访问' }
+function reviewedConfirm(bus, args, ctx = {}) {
+  return bus.dispatch('vuln', 'confirm', { ...args, review: independentReview }, { ...ctx, actor: 'dashboard', operator: ctx.operator || 'fixture-reviewer' })
+}
 
-test('oracle_capsule 门：rejected/inconclusive 不得 confirm（E_VULN_ORACLE_NOT_VERIFIED）', async () => {
-  const { bus } = makeEnv()
-  const sig = await seedSignal(bus)
-  const cap = await bus.dispatch('vuln', 'oracle_capsule', {
-    oracle: 'sqli_diff', verdict: 'rejected', target: { host: 'a.example.com' },
-  }, { actor: 'model' })
-  assert.equal(cap.ok, true)
-  const c = await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: `capsule:${cap.data.capsule_id}` }, { actor: 'model' })
-  assert.equal(c.ok, false)
-  assert.equal(c.error.code, 'E_VULN_ORACLE_NOT_VERIFIED')
-})
-
-test('oracle_capsule 门：目标 host 与 finding 不一致被拒（E_VULN_ORACLE_TARGET_MISMATCH）', async () => {
-  const { bus } = makeEnv()
-  const sig = await seedSignal(bus)
-  const cap = await bus.dispatch('vuln', 'oracle_capsule', {
-    oracle: 'idor_diff', verdict: 'verified', target: { host: 'b.example.com' },
-  }, { actor: 'model' })
-  const c = await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: `capsule:${cap.data.capsule_id}` }, { actor: 'model' })
-  assert.equal(c.ok, false)
-  assert.equal(c.error.code, 'E_VULN_ORACLE_TARGET_MISMATCH')
-})
-
-test('oracle_capsule 门：伪造/不存在的 capsule id → E_EVIDENCE_REQUIRED', async () => {
-  const { bus } = makeEnv()
-  const sig = await seedSignal(bus)
-  const c = await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: 'capsule:deadbeefdeadbeef' }, { actor: 'model' })
-  assert.equal(c.ok, false)
-  assert.equal(c.error.code, 'E_EVIDENCE_REQUIRED')
-})
-
-// ---------------------------------------------------------------------------
-// 21 号方案 §4-4：capsule 重放 + 打法固化为 worker 脚本草稿
-// ---------------------------------------------------------------------------
-
-test('capsule_replay: 重放证据比对 match + harden 产脚本草稿；mismatch 不固化', async () => {
-  const dir = tmpDir()
-  const dataDir = path.join(dir, 'data')
-  fs.mkdirSync(dataDir, { recursive: true })
-  const bus = createBus({
-    dataDir,
-    dbFile: path.join(dir, 'asset-graph.db'),
-    aliasesFile: path.join(dir, 'bus.aliases.yaml'),
-    auditFile: path.join(dir, 'audit.jsonl'),
-    eventsDir: path.join(dir, 'events'),
-    sidecars: false,
-    startDispatcherTimer: false,
-  })
-  // mock exec 域：run_cli 回 run_id；grep_result 按内容决定是否命中 marker
-  const dispatch = async (d, v, a) => {
-    if (d === 'exec' && v === 'run_cli') return { ok: true, data: { run_id: 'rreplaymock01' } }
-    if (d === 'vuln' && v === 'oracle_capsule') return bus.dispatch('vuln', 'oracle_capsule', a, { actor: 'model' })
-    return { ok: false, error: { code: 'E_MOCK', message: `unmocked ${d}.${v}` } }
-  }
-  const query = async (d, n, a) => {
-    if (d === 'exec' && n === 'grep_result') {
-      const hit = String(a.pattern || '').includes('svx7c2')
-      return { ok: true, data: { lines: hit ? ['stdout.log:3: <script>svx7c2</script>'] : [] } }
-    }
-    return { ok: false, error: { code: 'E_MOCK', message: 'unmocked' } }
-  }
-  const domain = buildVulnDomain({ dataDir, dispatch, query })
-  const reg = bus.registry.register(domain)
-  assert.equal(reg.ok, true, reg.error?.message)
-  const cap = await bus.dispatch('vuln', 'oracle_capsule', {
-    oracle: 'xss_echo', verdict: 'verified',
-    target: { host: 'a.example.com', vuln_class: 'xss', program_id: 'test-src' },
-    rule_input: { marker: 'svx7c2', response_body: '<script>svx7c2</script>' },
-    replay: { tool: 'curl-replay', params: { url: 'https://a.example.com/x?q=svx7c2' } },
-  }, { actor: 'model' })
-  assert.equal(cap.ok, true)
-  const cid = cap.data.capsule_id
-  // match + harden → 脚本草稿（判定归代码）
-  const rep = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: cid, harden: true }, { actor: 'script' })
-  assert.equal(rep.ok, true, rep.error?.message)
-  assert.equal(rep.data.verdict, 'match')
-  assert.equal(rep.data.replay_run_id, 'rreplaymock01')
-  assert.ok(rep.data.hardened_draft)
-  const draft = JSON.parse(fs.readFileSync(path.join(dataDir, rep.data.hardened_draft), 'utf8'))
-  assert.equal(draft.judge, 'oracle_rejudge')
-  assert.equal(draft.status, 'draft') // 草案不具备执行能力；注册 manifest 需人工审批
-  assert.ok(draft.expect_evidence.includes('svx7c2'))
-  const names = bus._internal.db().prepare('SELECT payload FROM event_outbox').all().map((o) => JSON.parse(o.payload).name)
-  assert.ok(names.includes('vuln.capsule.replayed'))
-  // mismatch：marker 换值后 grep 不命中
-  const cap2 = await bus.dispatch('vuln', 'oracle_capsule', {
-    oracle: 'xss_echo', verdict: 'verified', target: { host: 'a.example.com' },
-    rule_input: { marker: 'nomatch9999', response_body: 'x' },
-    replay: { tool: 'curl-replay', params: {} },
-  }, { actor: 'model' })
-  const rep2 = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: cap2.data.capsule_id }, { actor: 'dashboard', operator: 'op1' })
-  assert.equal(rep2.ok, true)
-  assert.equal(rep2.data.verdict, 'mismatch')
-  assert.equal(rep2.data.hardened_draft, null)
-  // 门禁：model 不可见；不存在 capsule；无 replay.tool
-  const forbidden = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: cid }, { actor: 'model' })
-  assert.equal(forbidden.ok, false)
-  assert.equal(forbidden.error.code, 'E_ACTOR_FORBIDDEN')
-  const missing = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: 'deadbeefdeadbeef' }, { actor: 'script' })
-  assert.equal(missing.ok, false)
-  assert.equal(missing.error.code, 'E_NOT_FOUND')
-  const cap3 = await bus.dispatch('vuln', 'oracle_capsule', { oracle: 'xss_echo', verdict: 'verified', target: { host: 'a.example.com' } }, { actor: 'model' })
-  const noReplay = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: cap3.data.capsule_id }, { actor: 'script' })
-  assert.equal(noReplay.ok, false)
-  assert.equal(noReplay.error.code, 'E_SCHEMA')
+test('WP02 legacy evidence requires explicit independent review, and model cannot claim review', async () => {
+  const { bus, dataDir } = makeEnv()
+  const signal = await seedSignal(bus)
+  const forgedConfidence = await seedSignal(bus, { title: '调用方试图绕过确认门禁自行声明技术置信', confidence: 'confirmed' })
+  assert.equal(forgedConfidence.ok, false)
+  assert.equal(forgedConfidence.error.code, 'E_SCHEMA')
+  const args = { finding_id: signal.data.id, evidence: 'run_test_20260906_000000' }
+  assert.equal((await bus.dispatch('vuln', 'confirm', args, { actor: 'model' })).error.code, 'E_VULN_REVIEW_REQUIRED')
+  assert.equal((await bus.dispatch('vuln', 'confirm', { ...args, review: independentReview }, { actor: 'model', operator: 'pretend' })).error.code, 'E_VULN_REVIEW_REQUIRED')
+  assert.equal((await bus.dispatch('vuln', 'confirm', { ...args, review: independentReview }, { actor: 'dashboard' })).error.code, 'E_VULN_REVIEW_REQUIRED')
+  const legacy = { capsule_version: 1, verdict: 'verified', target: { host: 'a.example.com' }, replay: { tool: 'arbitrary-command' } }
+  const digest = crypto.createHash('sha256').update(JSON.stringify(legacy)).digest('hex')
+  const capsuleId = digest.slice(0, 16)
+  fs.mkdirSync(path.join(dataDir, 'evidence', 'oracle-capsules'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'evidence', 'oracle-capsules', capsuleId + '.json'), JSON.stringify({ ...legacy, digest, capsule_id: capsuleId }))
+  assert.equal((await bus.dispatch('vuln', 'confirm', { ...args, evidence: `capsule:${capsuleId}` }, { actor: 'model' })).error.code, 'E_VULN_REVIEW_REQUIRED')
+  const replay = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: capsuleId, harden: true }, { actor: 'script' })
+  assert.equal(replay.data.verdict, 'blocked')
+  assert.equal(replay.data.hardened_draft, null)
+  const accepted = await reviewedConfirm(bus, args)
+  assert.equal(accepted.ok, true, accepted.error?.message)
+  const row = bus._internal.db().prepare('SELECT * FROM findings WHERE id=?').get(signal.data.id)
+  assert.match(row.evidence, /fixture-reviewer/)
+  assert.equal(row.reproduction_steps, independentReview.reproduction_steps)
 })
 
 // ---------------------------------------------------------------------------
@@ -353,7 +246,7 @@ test('happy path C3: confirm 候选 → 三联动原子升级（status+confidenc
   const { dir, bus } = makeEnv()
   const cand = await seedCandidate(bus)
   const id = cand.data.id
-  const r = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000', note: '三包对照齐全，重放 3 次稳定' }, { actor: 'model', session_id: 'sess_1' })
+  const r = await reviewedConfirm(bus, { finding_id: id, evidence: 'run_test_20260906_000000', note: '三包对照齐全，重放 3 次稳定' }, { actor: 'model', session_id: 'sess_1' })
   assert.equal(r.ok, true)
   assert.equal(r.data.status, 'confirmed')
   assert.equal(r.data.signal, true)
@@ -387,7 +280,7 @@ test('happy path C4: reject 候选 → false_positive（noise 保持 1 但退出
 test('happy path C5: submit confirmed→submitted→accepted（vendor 回流两段合法流转）', async () => {
   const { bus } = makeEnv()
   const sig = await seedSignal(bus)
-  await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
+  await reviewedConfirm(bus, { finding_id: sig.data.id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
   const s1 = await bus.dispatch('vuln', 'submit', { finding_id: sig.data.id, platform: '测试SRC', submission_url: 'https://src.example/ticket/1' }, { actor: 'model' })
   assert.equal(s1.ok, true)
   assert.equal(s1.data.status, 'submitted')
@@ -436,7 +329,7 @@ test('happy path C7/C8: claim 认领候选 + release 释放', async () => {
 
 test('happy path C9: verify_replay 机械复核（request.txt 重放 + sha256 比对 + verify-log 追加）', async () => {
   const { dataDir, bus } = makeEnv()
-  const sig = await seedSignal(bus)
+  const sig = await seedSignal(bus, { host: '127.0.0.1', program_id: 'test-src' })
   const id = sig.data.id
   const body = JSON.stringify({ hello: 'world', n: 42 })
   const srv = await startServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end(body) })
@@ -467,7 +360,7 @@ test('happy path C10: attach_fgs 关联 FGS 节点（后写胜）', async () => 
   assert.equal(row.fgs_node_id, 12)
 })
 
-test('happy path C11: authz_diff 双权重放 suspected → 自动落 C2 候选（actor=script）', async () => {
+test('happy path C11: authz_diff 双权重放仅保留观察，相似响应不自动登记候选', async () => {
   const { bus } = makeEnv()
   const data = JSON.stringify({ account_id: 1001, name: 'admin', phone: '13800000000' })
   const srv = await startServer((req, res) => {
@@ -478,19 +371,17 @@ test('happy path C11: authz_diff 双权重放 suspected → 自动落 C2 候选�
   const port = serverPort(srv)
   const url = `http://127.0.0.1:${port}/api/user`
   const r = await bus.dispatch('vuln', 'authz_diff', {
-    url,
+    program_id: 'test-src', url,
     method: 'GET',
     headers_low: `X-Role: low`,
     headers_high: `X-Role: high`,
   }, { actor: 'model', session_id: 'sess_authz' })
   await closeServer(srv)
   assert.equal(r.ok, true)
-  assert.equal(r.data.verdict, 'suspected')
-  assert.ok(r.data.candidate_id, 'suspected 应自动落候选')
-  const row = bus._internal.db().prepare('SELECT * FROM findings WHERE id=?').get(r.data.candidate_id)
-  assert.equal(row.noise, 1)
-  assert.equal(row.source, 'authz_diff')
-  assert.equal(row.severity, 'high')
+  assert.equal(r.data.verdict, 'inconclusive')
+  assert.equal(r.data.observation_only, true)
+  assert.equal(r.data.candidate_id, undefined)
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) AS n FROM findings').get().n, 0)
 })
 
 test('happy path Q1-Q6: 查询全绿（分页信封 / 统计 / 候选队列 / 资产视图 / 查重）', async () => {
@@ -594,7 +485,7 @@ test('vuln_evidence_put 受管写入证据包，verify_replay 闭环可复核', 
   const srv = await startServer((req, res) => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('poc-response-body') })
   t.after(() => closeServer(srv))
   const { bus, dataDir } = makeEnv()
-  const cand = await seedCandidate(bus)
+  const cand = await seedCandidate(bus, { host: '127.0.0.1', program_id: 'test-src' })
   const id = cand.data.id
   const reqText = `GET http://127.0.0.1:${serverPort(srv)}/poc HTTP/1.1\r\nHost: 127.0.0.1:${serverPort(srv)}\r\n\r\n`
   const put = await bus.dispatch('vuln', 'evidence_put', { finding_id: id, request_text: reqText, note: '本地 POC' }, { actor: 'model' })
@@ -654,12 +545,12 @@ test('不变量 INV-7: 认领互斥——他人活跃认领时 model confirm/rej
   assert.equal(c1.error.retryable, true)
   const c2 = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model', session_id: 'sess_b' })
   assert.equal(c2.ok, false)
-  assert.equal(c2.error.code, 'E_VULN_CLAIMED')
+  assert.equal(c2.error.code, 'E_VULN_REVIEW_REQUIRED')
   const c3 = await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'false_positive', reason: 'x'.repeat(10) }, { actor: 'model', session_id: 'sess_b' })
   assert.equal(c3.ok, false)
   assert.equal(c3.error.code, 'E_VULN_CLAIMED')
   // dashboard 豁免（人工终审可越）
-  const c4 = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'dashboard', operator: 'operator_1' })
+  const c4 = await reviewedConfirm(bus, { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'dashboard', operator: 'operator_1' })
   assert.equal(c4.ok, true)
 })
 
@@ -680,8 +571,8 @@ test('状态机拒绝: confirm 已 confirmed 行 / reject 已 accepted 行 / sub
   const { bus } = makeEnv()
   const sig = await seedSignal(bus)
   const id = sig.data.id
-  await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
-  const c1 = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260907_000000' }, { actor: 'model' })
+  await reviewedConfirm(bus, { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
+  const c1 = await reviewedConfirm(bus, { finding_id: id, evidence: 'run_test_20260907_000000' }, { actor: 'model' })
   assert.equal(c1.ok, false)
   assert.equal(c1.error.code, 'E_STATE')
   await bus.dispatch('vuln', 'submit', { finding_id: id }, { actor: 'model' })
@@ -704,7 +595,7 @@ test('状态机拒绝: 终态再流转全集（accepted/fp/dup/ignored × confir
       const args = cmd === 'confirm' ? { finding_id: sig.data.id, evidence: 'run_test_20260906_000000' }
         : cmd === 'reject' ? { finding_id: sig.data.id, verdict: 'ignored', reason: 'y'.repeat(10) }
           : { finding_id: sig.data.id }
-      const r = await bus.dispatch('vuln', cmd, args, { actor: 'model' })
+      const r = await (cmd === 'confirm' ? reviewedConfirm(bus, args) : bus.dispatch('vuln', cmd, args, { actor: 'model' }))
       assert.equal(r.ok, false, `${cmd} on ${verdict} 应被拒`)
       assert.equal(r.error.code, 'E_STATE')
     }
@@ -756,15 +647,15 @@ test('幂等: register_signal natural 键重放（同 host+title+url → replay�
   assert.equal(a3.error.code, 'E_IDEMPOTENT_CONFLICT')
 })
 
-test('幂等: confirm/note/reject/claim/submit 同 key 同参 → replay:true 同结果', async () => {
+test('confirm 重新验证不缓存；note/claim/submit 保持幂等重放', async () => {
   const { bus } = makeEnv()
   const cand = await seedCandidate(bus)
   const id = cand.data.id
-  const c1 = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
-  const c2 = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
-  assert.equal(c2.ok, true)
-  assert.equal(c2.replay, true)
-  assert.deepEqual(JSON.parse(JSON.stringify(c1.data)), JSON.parse(JSON.stringify(c2.data)))
+  const c1 = await reviewedConfirm(bus, { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
+  const c2 = await reviewedConfirm(bus, { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
+  assert.equal(c1.ok, true)
+  assert.equal(c2.ok, false)
+  assert.equal(c2.error.code, 'E_STATE')
   const n1 = await bus.dispatch('vuln', 'note', { finding_id: id, note: '复验记录一致' }, { actor: 'model' })
   const n2 = await bus.dispatch('vuln', 'note', { finding_id: id, note: '复验记录一致' }, { actor: 'model' })
   assert.equal(n2.replay, true)
@@ -872,7 +763,7 @@ const dataDir = ${JSON.stringify(dataDir)}
 const dir = ${JSON.stringify(dir)}
 const bus = createBus({ dataDir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
 bus.registry.register(buildVulnDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) }))
-const env = await bus.dispatch('vuln', 'confirm', { finding_id: ${id}, evidence: ${JSON.stringify(evidence)} }, { actor: 'model' })
+const env = await bus.dispatch('vuln', 'confirm', { finding_id: ${id}, evidence: ${JSON.stringify(evidence)}, review: ${JSON.stringify(independentReview)} }, { actor: 'dashboard', operator: 'fixture-reviewer' })
 process.stdout.write(JSON.stringify({ ok: env.ok, code: env.error ? env.error.code : null }))
 bus._internal.close()
 `
@@ -899,7 +790,7 @@ test('事件载荷: signal.confirmed payload 含 from/evidence_ref/fgs_node_id�
   const sig = await seedSignal(bus)
   const id = sig.data.id
   await bus.dispatch('vuln', 'attach_fgs', { finding_id: id, fgs_node_id: 7 }, { actor: 'reactor' })
-  const r = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000 + 完整复现脚本与响应报文', note: '确认' }, { actor: 'model' })
+  const r = await reviewedConfirm(bus, { finding_id: id, evidence: 'run_test_20260906_000000 + 完整复现脚本与响应报文', note: '确认' }, { actor: 'model' })
   assert.equal(r.ok, true)
   const out = bus._internal.db().prepare('SELECT payload FROM event_outbox WHERE event_id=?').get(r.event_ids[0])
   const envelope = JSON.parse(out.payload)
@@ -991,7 +882,7 @@ test('核心回归: confirm 候选后 candidate.pending −1 ∧ signal.total +1
   assert.equal(before.data.signal.total, 0)
   const cand = await bus.query('vuln', 'candidates', { claim_state: 'all' }, { actor: 'model' })
   const id = cand.rows[0].id
-  const r = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
+  const r = await reviewedConfirm(bus, { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
   assert.equal(r.ok, true)
   const after = await bus.query('vuln', 'stats', {}, { actor: 'model' })
   assert.equal(after.data.candidate.pending, 0, '确认后候选计数 −1（根治 2026-09-06 僵君缺陷）')
@@ -1107,7 +998,7 @@ test('别名: finding_update confirmed 缺 evidence → E_EVIDENCE_REQUIRED；ac
   assert.equal(noEv.ok, false)
   assert.equal(noEv.error.code, 'E_EVIDENCE_REQUIRED', 'confirm 别名缺 evidence 收紧')
   assert.ok(noEv.error.hint)
-  const withEv = await bus.dispatch('', 'finding_update', { finding_id: id, status: 'confirmed', evidence: 'run_test_20260906_000000' }, { actor: 'dashboard' })
+  const withEv = await bus.dispatch('', 'finding_update', { finding_id: id, status: 'confirmed', evidence: 'run_test_20260906_000000', review: independentReview }, { actor: 'dashboard', operator: 'fixture-reviewer' })
   assert.equal(withEv.ok, true)
   assert.equal(withEv.data.status, 'confirmed')
   const sub = await bus.dispatch('', 'finding_update', { finding_id: id, status: 'submitted' }, { actor: 'dashboard' })
@@ -1257,7 +1148,7 @@ test('M10: dedup_check 既无 host 也无 vuln_type → E_SCHEMA', async () => {
 test('产出闭环: submission_queue 列 confirmed 未提交 → submit 回写 remote_id 后出队', async () => {
   const { bus } = makeEnv()
   const sig = await seedSignal(bus)
-  await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
+  await reviewedConfirm(bus, { finding_id: sig.data.id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
   const q1 = await bus.query('vuln', 'submission_queue', {}, { actor: 'model' })
   assert.equal(q1.ok, true)
   assert.equal(q1.total, 1)
@@ -1273,7 +1164,7 @@ test('产出闭环: submission_queue 列 confirmed 未提交 → submit 回写 r
 test('产出闭环: vuln_stats 暴露 confirmed_unsubmitted', async () => {
   const { bus } = makeEnv()
   const sig = await seedSignal(bus)
-  await bus.dispatch('vuln', 'confirm', { finding_id: sig.data.id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
+  await reviewedConfirm(bus, { finding_id: sig.data.id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
   const s = await bus.query('vuln', 'stats', {}, { actor: 'model' })
   assert.equal(s.ok, true)
   assert.equal(s.data.signal.confirmed_unsubmitted, 1)

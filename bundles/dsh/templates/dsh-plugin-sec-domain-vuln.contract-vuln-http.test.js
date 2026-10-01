@@ -157,7 +157,7 @@ test('http-remote 混布：confirm 候选 → 信号面 → 推远端（create�
   const { bus, domain } = makeHttpEnv(remote)
   const c = await seedCandidate(bus)
   const id = c.data.id
-  const cf = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model' })
+  const cf = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000', review: { basis: '独立复核请求、响应及正常反例对照后确认安全属性受到破坏', reproduction_steps: '按证据中的完整请求执行正反对照并重复复现', impact: '未经授权读取受保护对象，影响已由证据确认' } }, { actor: 'dashboard', operator: 'fixture-reviewer' })
   assert.equal(cf.ok, true)
   assert.equal(cf.data.promoted_from_candidate, true)
   let sync = await domain.backend.syncPending()

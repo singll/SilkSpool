@@ -23,7 +23,6 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import * as http from 'node:http'
-import * as https from 'node:https'
 import { fileURLToPath } from 'node:url'
 import { readParseProposal } from '../sec-suite/parse-proposal.js'
 import { enforceSeverityCap } from '../sec-rules-hypothesis/index.js'
@@ -33,7 +32,6 @@ export const version = '1.0.0'
 
 const DEFAULT_DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const CLAIM_TTL_DEFAULT_SEC = 3600
-const REPLAY_TIMEOUT_MS = 20000
 // exec 产出 r/w + 时间戳 + 随机尾缀；兼容历史 run_* 及 nuclei 的 run_id: 前缀。
 const EVIDENCE_TOKEN_RE = /^(?:(?:run_id:)?(?:run_[A-Za-z0-9_-]+|[rw][a-z0-9]{12,})(?=\s|$)|flow:[^\s]+|burp_item[: ][^\s]+|evidence\/\d+\/?|oob:[^\s]+|capsule:[a-f0-9]{16})/
 const LOW_INFO_TITLE_RE = /^[a-z0-9_-]+: ?\w+$/
@@ -161,7 +159,6 @@ const int = (opts = {}) => ({ type: 'integer', ...opts })
 const bool = () => ({ type: 'boolean' })
 
 const SEVERITY = ['critical', 'high', 'medium', 'low', 'info']
-const CONFIDENCE = ['tentative', 'confirmed', 'false_positive', 'dup']
 const VERDICT = ['false_positive', 'dup', 'ignored']
 const VENDOR_STATUS = ['submitted', 'pending', 'accepted', 'rejected', 'duplicate', 'not_rewarded', '']
 
@@ -192,7 +189,7 @@ export const VULN_MANIFEST = {
         endpoint_ref: str(),
         preconditions: str(),
         recommendation: str(),
-        confidence: en(CONFIDENCE, { default: 'tentative' }),
+        confidence: en(['tentative'], { default: 'tentative' }),
         fgs_node_id: int(),
         discovery_step: str(),
         external_id: str({ maxLength: 128, description: '上游系统稳定 id（跨源去重优先键）' }),
@@ -235,16 +232,16 @@ export const VULN_MANIFEST = {
         finding_id: int(),
         evidence: str({ default: '' }),
         note: str({ default: '' }),
+        review: schema({ basis: str({ minLength: 20 }), reproduction_steps: str({ minLength: 10 }), impact: str({ minLength: 10 }) }, ['basis', 'reproduction_steps', 'impact']),
       }, ['finding_id']),
-      idempotent: 'auto',
-      idempotent_fields: ['finding_id', 'evidence'],
+      idempotent: 'none',
       events: ['vuln.signal.confirmed', 'vuln.candidate.promoted'],
       event_limit: 2,
       // 证据闸门先于 finding 存在性：缺证据 → 确定性 E_EVIDENCE_REQUIRED（引导性 hint，
       // 不因 finding 不存在而变 E_NOT_FOUND），使 eval 契约用例 EC-02「无证据确认」可确定性断言。
       invariants: ['evidenceExists', 'findingExists', 'oracleCapsuleGate'],
       timeout_ms: 60000,
-      agent_note: '把待验证候选/信号确认为 confirmed（status+confidence+noise 原子三联动，候选同时出池进信号面）。evidence 必填且真实存在（run_id 目录 / evidence/{id} 包 / flow / oob / capsule:{id}）。确认前自查：verify.must_pass 全过、falsification 逐项排除、verify_replay 机械复核通过。候选被他人认领时会被告知换下一条。',
+      agent_note: '确认必须引用受控执行生成的 capsule，重新核验 Program/finding/URL/类型、请求版本、身份、执行签封及一小时时效。旧证据待独立审校；dashboard 可带 operator 和 review（依据、复现步骤、影响）人工确认。',
       deprecated: false,
     },
     vuln_reject: {
@@ -267,29 +264,13 @@ export const VULN_MANIFEST = {
     },
     vuln_oracle_capsule: {
       actor: ['model', 'script', 'dashboard'],
-      schema: schema({
-        oracle: str({ minLength: 1 }),
-        verdict: en(['verified', 'rejected', 'inconclusive']),
-        target: {
-          type: 'object',
-          properties: { host: str({ minLength: 1 }), url: str({ default: '' }), param: str({ default: '' }), vuln_class: str({ default: '' }), program_id: str({ default: '' }) },
-          required: ['host'],
-          additionalProperties: false,
-        },
-        request_pair: { type: 'object' },
-        rule_input: { type: 'object' },
-        result: { type: 'object' },
-        replay: { type: 'object' },
-        env: { type: 'object' },
-        finding_id: int(),
-      }, ['oracle', 'verdict', 'target']),
-      idempotent: 'auto',
-      idempotent_fields: ['oracle', 'verdict', 'target', 'request_pair', 'rule_input', 'result', 'replay', 'env', 'finding_id'],
+      schema: schema({ decision_id: str({ pattern: '^r[a-z0-9]+$' }) }, ['decision_id']),
+      idempotent: 'none',
       events: ['vuln.oracle.capsuled'],
       event_limit: 1,
       invariants: [],
       timeout_ms: 60000,
-      agent_note: '登记 proof capsule（§2-2）：oracle verdict + 请求对 + 判定输入 + 环境指纹落盘 evidence/oracle-capsules/{id}.json（原子写，digest 自洽，自带重放命令）。capsule:{id} 是 vuln_confirm 的机器验证证据引用。',
+      agent_note: '仅封装 exec_verify_authz_read 返回的 decision_id；不接受调用方 verdict/target。判定和原始执行证据重新核验后写入 capsule v2。',
       deprecated: false,
     },
     // 21 号方案 §4-4 打法固化三层通道（第一层：capsule 重放 → 脚本草稿）
@@ -304,7 +285,7 @@ export const VULN_MANIFEST = {
       event_limit: 1,
       invariants: [],
       timeout_ms: 300000,
-      agent_note: '打法固化第一层（§4-4）：读 proof capsule 自带重放命令，经 exec_run_cli 守卫链重放（scope/QPS 全过），重放输出与原 oracle 再判定比对（match/mismatch）。match 且 harden=true 时产 worker 脚本草稿到 evidence/hardened-drafts/（判定归代码）；脚本→tools.d manifest 的唯一通道是人工审批注册，系统永不自注册工具。',
+      agent_note: '旧的关键词复现通道已关闭。缺新鲜双身份凭据时返回 blocked；按宿主契约重新执行 exec_verify_authz_read，不执行 capsule 内调用方命令，也不生成固化草稿。',
       deprecated: false,
     },
     vuln_submit: {
@@ -443,13 +424,12 @@ export const VULN_MANIFEST = {
         proxy: str({ default: '' }),
         expect_hash: str({ default: '' }),
       }, ['finding_id']),
-      idempotent: 'auto',
-      idempotent_fields: ['finding_id', 'expect_hash'],
+      idempotent: 'none',
       events: [],
       event_limit: 0,
       invariants: ['findingExists'],
       timeout_ms: 120000,
-      agent_note: '机械复核（LLM 不给自己当法官）。重放 evidence/{id}/request.txt，响应体 sha256 与 expect_hash 比对，结果追加 verify-log.md。CONFIRMED 纪律自查要求本复核通过。',
+      agent_note: '经 exec 受控入口重放 evidence/{id}/request.txt，要求 finding 的 Program/host 绑定。返回新 run_id 与响应 hash 对比；PASS 只表示响应一致，不表示漏洞成立。出口仅 default/direct；确认另走可信判定。',
       deprecated: false,
     },
     vuln_attach_fgs: {
@@ -470,19 +450,19 @@ export const VULN_MANIFEST = {
     vuln_authz_diff: {
       actor: ['model'],
       schema: schema({
+        program_id: str({ minLength: 1 }),
         url: str({ minLength: 1 }),
         method: str({ default: 'GET' }),
         headers_low: { oneOf: [str(), { type: 'object' }] },
         headers_high: { oneOf: [str(), { type: 'object' }] },
         body: str(),
-      }, ['url', 'headers_low', 'headers_high']),
-      idempotent: 'auto',
-      idempotent_fields: ['url', 'method', 'headers_low', 'headers_high', 'body'],
+      }, ['program_id', 'url', 'headers_low', 'headers_high']),
+      idempotent: 'none',
       events: [],
       event_limit: 0,
       invariants: [],
       timeout_ms: 120000,
-      agent_note: '双权凭证重放对比（越权/IDOR 探测 harness）：同一 URL 以低权与高权凭证各请求一次，机器比对状态码与响应相似度给出 unlikely/review/suspected 三档判定。suspected（低权 200 且响应与高权高度相似）会自动登记为待验证候选——你要继续取证数据归属并走常规验证流。目标必须经授权白名单。',
+      agent_note: '双权 HTTP 观察：必须提供 program_id，经 exec 统一守卫与固定出口执行，返回执行证据 run_id 和 inconclusive。相似响应不自动登记候选；可信 IDOR 验证使用 exec_verify_authz_read。',
       deprecated: false,
     },
     // C12（L1 学习专项，2026-09-16）：从可信 exec 证据清单挂载证据到 finding（设计 §3.3.3）
@@ -674,7 +654,9 @@ function writeCapsule(dataDir, body) {
   const dir = capsuleDirOf(dataDir)
   fs.mkdirSync(dir, { recursive: true })
   const payload = {
-    capsule_version: 1,
+    capsule_version: 2,
+    decision_id: body.decision_id,
+    decision_digest: body.decision_digest,
     created_at: new Date().toISOString(),
     oracle: body.oracle,
     verdict: body.verdict,
@@ -704,7 +686,7 @@ function readCapsule(dataDir, id) {
     const c = JSON.parse(fs.readFileSync(file, 'utf8'))
     if (c.capsule_id !== id) return null
     const { digest, capsule_id, ...body } = c
-    if (digest !== crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex')) return null
+    if (digest !== crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex') || digest.slice(0, 16) !== id) return null
     return c
   } catch { return null }
 }
@@ -796,90 +778,6 @@ function parseRequestText(raw) {
   return { method: m[1], target: m[2], headers, body: rest.join('\n\n') }
 }
 
-function replayHttp({ method, url, headers, body, timeoutMs = REPLAY_TIMEOUT_MS, redirectCount = 0 }) {
-  return new Promise((resolve, reject) => {
-    const hdrs = { ...headers }
-    delete hdrs['content-length']
-    delete hdrs['connection']
-    delete hdrs['content-length']
-    delete hdrs['accept-encoding']
-    hdrs['accept-encoding'] = 'identity'
-    if (body !== undefined && body !== null && !hdrs['content-type']) hdrs['content-type'] = 'text/plain'
-    const mod = url.startsWith('https:') ? https : http
-    let req
-    try {
-      const u = new URL(url)
-      const pathq = u.pathname + u.search
-      req = mod.request({
-        host: u.hostname,
-        port: u.port ? Number(u.port) : (u.protocol === 'https:' ? 443 : 80),
-        path: pathq,
-        method,
-        headers: hdrs,
-        timeout: timeoutMs,
-      }, (res) => {
-        const chunks = []
-        res.on('data', (c) => chunks.push(c))
-        res.on('end', () => {
-          const status = res.statusCode
-          const bodyBuf = Buffer.concat(chunks)
-          if ([301, 302, 303, 307, 308].includes(status) && res.headers.location && redirectCount < 5) {
-            let next = res.headers.location
-            try { next = new URL(next, url).href } catch { /* keep raw */ }
-            replayHttp({ method, url: next, headers, body, timeoutMs, redirectCount: redirectCount + 1 })
-              .then(resolve).catch(reject)
-            return
-          }
-          resolve({ status, body: bodyBuf.toString('utf8'), headers: res.headers })
-        })
-        res.on('error', reject)
-      })
-    } catch (e) { return reject(e) }
-    req.on('timeout', () => req.destroy(Object.assign(new Error('replay timeout'), { code: 'ETIMEDOUT' })))
-    req.on('error', reject)
-    if (body) req.write(body)
-    req.end()
-  })
-}
-
-function resolveProxy(arg) {
-  if (arg === 'direct') return null
-  if (arg && arg !== '') return String(arg)
-  const env = process.env.SEC_EGRESS_PROXY
-  return env && env !== '' ? String(env) : null
-}
-
-// 经 http 正向代理重放（v4 httpReplay 同款：mubeng 网关 http 绝对 URI 转发）
-function proxyReplayHttp({ method, url, proxy, headers, body, timeoutMs = REPLAY_TIMEOUT_MS }) {
-  return new Promise((resolve, reject) => {
-    const hdrs = { ...headers }
-    delete hdrs['content-length']
-    delete hdrs['connection']
-    hdrs['accept-encoding'] = 'identity'
-    let req
-    try {
-      const pu = new URL(proxy)
-      req = http.request({
-        host: pu.hostname,
-        port: pu.port ? Number(pu.port) : 80,
-        path: url,
-        method,
-        headers: hdrs,
-        timeout: timeoutMs,
-      }, (res) => {
-        const chunks = []
-        res.on('data', (c) => chunks.push(c))
-        res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8'), headers: res.headers }))
-        res.on('error', reject)
-      })
-    } catch (e) { return reject(e) }
-    req.on('timeout', () => req.destroy(Object.assign(new Error('proxy replay timeout'), { code: 'ETIMEDOUT' })))
-    req.on('error', reject)
-    if (body) req.write(body)
-    req.end()
-  })
-}
-
 // ---------------------------------------------------------------------------
 // handlers（每个命令一个实现；错误抛 {code, hint, retryable?} 由网关转信封）
 // ---------------------------------------------------------------------------
@@ -894,6 +792,14 @@ function makeHandlers(opts) {
   const ttlSec = opts.claim_ttl_sec || CLAIM_TTL_DEFAULT_SEC
   const dispatchRef = opts.dispatch
   const queryRef = opts.query
+
+  async function controlledHttp(args, ctx = {}) {
+    const r = await dispatchRef?.('exec', 'http_request', args, { actor: 'script', session_id: ctx.session_id || null, signal: ctx.signal })
+    if (!r?.ok) throwErr(r?.error?.code || 'E_BACKEND_UNAVAILABLE', r?.error?.message || '受控 HTTP 执行域不可用', r?.error?.hint, r?.error?.retryable)
+    const q = await queryRef?.('exec', 'http_result', { run_id: r.data.run_id }, { actor: 'script' })
+    if (!q?.ok) throwErr(q?.error?.code || 'E_BACKEND_UNAVAILABLE', q?.error?.message || 'HTTP 执行证据不可读', null)
+    return q.data
+  }
 
   function throwErr(code, message, hint, retryable = false) {
     throw Object.assign(new Error(message), { code, hint, retryable })
@@ -929,23 +835,27 @@ function makeHandlers(opts) {
       }
       return null
     },
-    // 21 号方案 §2-1/§2-2：capsule:{id} 引用的机器验证证据门——
-    // capsule 必须 digest 自洽、verdict=verified（rejected/inconclusive 不得 confirm）、
-    // 且目标 host 与 finding 一致（防张冠李戴）。模型无权宣布 verified——判定只能来自 oracle。
-    oracleCapsuleGate: async (args, repo) => {
-      const token = refPrefix(args.evidence)
-      if (!token || !token.startsWith('capsule:')) return null
-      const capsule = readCapsule(dataDir, token.slice('capsule:'.length))
-      if (!capsule) {
-        return { code: 'E_EVIDENCE_REQUIRED', message: `proof capsule 不存在或 digest 不符: ${token}`, hint: '先 vuln_oracle_capsule 登记 oracle 判定结果（verdict 必须来自 exec_oracle_judge 输出）', retryable: false }
-      }
-      if (capsule.verdict !== 'verified') {
-        return { code: 'E_VULN_ORACLE_NOT_VERIFIED', message: `proof capsule verdict=${capsule.verdict}（非 verified）不可确认`, hint: 'oracle 判定 rejected/inconclusive 的假设不得 confirm——补充差分证据重判，或 vuln_reject 结案', retryable: false }
-      }
+    oracleCapsuleGate: async (args, repo, ctx) => {
       const row = repo.getFinding(args.finding_id)
-      if (row && capsule.target?.host && normalizeHost(capsule.target.host) !== normalizeHost(row.host || '')) {
-        return { code: 'E_VULN_ORACLE_TARGET_MISMATCH', message: `capsule 目标 ${capsule.target.host} 与 finding #${args.finding_id} 的 host ${row.host} 不一致`, hint: '机器验证证据必须针对同一目标——核对 capsule 的 target.host', retryable: false }
+      if (args.review) {
+        if (ctx.actor !== 'dashboard' || !String(ctx.operator || '').trim()) return { code: 'E_VULN_REVIEW_REQUIRED', message: '人工独立审校必须由有 operator 的 dashboard 通道提交', retryable: false }
+        return null
       }
+      const token = refPrefix(args.evidence)
+      if (!token?.startsWith('capsule:')) return { code: 'E_VULN_REVIEW_REQUIRED', message: '旧证据仅证明观察存在，待独立审校；自动确认须引用可信判定 capsule', hint: '执行受控验证；或 dashboard 提交 operator 与 review（审校依据、复现步骤、影响）。历史 finding 不自动改判', retryable: false }
+      const capsule = readCapsule(dataDir, token.slice(8))
+      if (!capsule || capsule.capsule_version !== 2 || !capsule.decision_id) return { code: 'E_VULN_REVIEW_REQUIRED', message: '旧版/损坏 capsule 无可信执行判定，待重新验证', retryable: false }
+      const r = await queryRef?.('exec', 'authz_decision', { decision_id: capsule.decision_id }, { actor: 'script' })
+      if (!r?.ok || crypto.createHash('sha256').update(JSON.stringify(r.data)).digest('hex') !== capsule.decision_digest) return { code: 'E_VULN_EVIDENCE_TAMPERED', message: '判定或执行证据失效，不能确认', hint: r?.error?.message || 'exec 判定服务不可用', retryable: false }
+      const d = r.data
+      if (d.verdict !== 'verified' || capsule.verdict !== d.verdict) return { code: 'E_VULN_ORACLE_NOT_VERIFIED', message: '可信判定非 verified', retryable: false }
+      if (d.finding_id !== row.id || capsule.finding_id !== row.id || d.program_id !== row.program_id || d.target.url !== row.url
+        || normalizeHost(d.target.host) !== normalizeHost(row.host) || d.target.vuln_class !== row.vuln_type
+        || JSON.stringify(capsule.target) !== JSON.stringify(d.target)
+        || capsule.oracle !== d.oracle || JSON.stringify(capsule.rule_input) !== JSON.stringify({ request_id: d.request_id, identities: d.identities, objects: d.objects })
+        || JSON.stringify(capsule.env) !== JSON.stringify({ profile_digest: d.profile_digest, proxy_digest: d.proxy_digest, oracle_version: d.oracle_version })
+        || JSON.stringify(capsule.result) !== JSON.stringify({ rationale: d.rationale, run_ids: d.run_ids })) return { code: 'E_VULN_ORACLE_TARGET_MISMATCH', message: '判定与 finding 的项目、目标、类型或请求关联不一致', retryable: false }
+      if (!String(row.reproduction_steps || '').trim() || !String(row.impact || '').trim()) return { code: 'E_VULN_INCOMPLETE', message: '确认需要可复现步骤和具体影响', retryable: false }
       return null
     },
     // L1（INV-10）：vuln_evidence_attach 的证据必须是 exec 已发布清单——清单存在、digest 自洽、
@@ -1157,13 +1067,15 @@ function makeHandlers(opts) {
     vuln_confirm: async (args, repo, ctx) => {
       await confirmClaimed(args, repo, ctx)
       const row = repo.getFinding(args.finding_id)
+      if (args.review) repo.updateFields(args.finding_id, { reproduction_steps: args.review.reproduction_steps, impact: args.review.impact })
       const changed = repo.transitionFinding(args.finding_id, 'new', { status: 'confirmed', confidence: 'confirmed', noise: 0, claimed_by: null, claimed_at: null, updated_at: Date.now() })
       if (!changed.changed) throwErr('E_STATE', `finding #${args.finding_id} 状态非 new 或已终态`, 'finding 已处于终态/已确认，不可再次流转。补证据用 vuln_note；提交用 vuln_submit', false)
+      repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} confirmation evidence: ${args.evidence}${args.review ? `; reviewed by ${ctx.operator}: ${args.review.basis}` : ''}`)
       if (args.note) repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} confirm: ${args.note}`)
       repo.markSyncPending?.(args.finding_id)
       const fromCandidate = row.noise === 1
       // 43 号补丁：事件携带 task/session/来源——归因→策略胜负回写与类别学习（此前无归因，连败拉黑形同虚设）
-      const events = [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, from: { status: 'new', noise: row.noise }, evidence_ref: refPrefix(args.evidence), confidence: 'confirmed', fgs_node_id: row.fgs_node_id || null, vuln_type: row.vuln_type || null, host: row.host || null, program_id: row.program_id || null, task_id: row.task_id ?? null, session_id: row.session_id ?? null, source: row.source ?? null, title: String(row.title || '').slice(0, 80) } }]
+      const events = [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, from: { status: 'new', noise: row.noise }, evidence_ref: refPrefix(args.evidence), verification_basis: args.review ? 'independent_review' : 'controlled_oracle', operator: args.review ? ctx.operator : null, confidence: 'confirmed', fgs_node_id: row.fgs_node_id || null, vuln_type: row.vuln_type || null, host: row.host || null, program_id: row.program_id || null, task_id: row.task_id ?? null, session_id: row.session_id ?? null, source: row.source ?? null, title: String(row.title || '').slice(0, 80) } }]
       if (fromCandidate) events.push({ name: 'vuln.candidate.promoted', payload: { finding_id: args.finding_id, from: { noise: 1, status: 'new' }, to: { noise: 0, status: 'confirmed' }, cause_cmd: 'vuln_confirm' } })
       return {
         data: { id: args.finding_id, status: 'confirmed', signal: true, promoted_from_candidate: fromCandidate },
@@ -1172,84 +1084,23 @@ function makeHandlers(opts) {
       }
     },
 
-    // 21 号方案 §2-2：proof capsule 落盘（请求对 + 判定规则 + 结果 + 环境指纹，可重放）
+    // Capsule only wraps a persisted execution-owned decision; caller verdicts are rejected by schema.
     vuln_oracle_capsule: async (args, repo, ctx) => {
-      const w = writeCapsule(dataDir, {
-        oracle: String(args.oracle),
-        verdict: args.verdict,
-        target: args.target,
-        request_pair: args.request_pair || null,
-        rule_input: args.rule_input || null,
-        result: args.result || null,
-        replay: args.replay || null,
-        env: args.env || null,
-        finding_id: args.finding_id ?? null,
-      })
-      return {
-        data: { capsule_id: w.id, evidence_ref: `capsule:${w.id}`, file: w.file, verdict: args.verdict },
-        events: [{ name: 'vuln.oracle.capsuled', payload: { capsule_id: w.id, oracle: String(args.oracle), verdict: args.verdict, host: args.target?.host || null, vuln_class: args.target?.vuln_class || null, program_id: args.target?.program_id || null, finding_id: args.finding_id ?? null, session_id: ctx.session_id || null } }],
-        after: { capsule_id: w.id, verdict: args.verdict },
-      }
+      const r = await queryRef?.('exec', 'authz_decision', { decision_id: args.decision_id }, { actor: 'script' })
+      if (!r?.ok) throwErr(r?.error?.code || 'E_BACKEND_UNAVAILABLE', r?.error?.message || '可信判定服务不可用', '先执行 exec_verify_authz_read')
+      const d = r.data
+      const w = writeCapsule(dataDir, { ...d, decision_digest: crypto.createHash('sha256').update(JSON.stringify(d)).digest('hex'),
+        rule_input: { request_id: d.request_id, identities: d.identities, objects: d.objects },
+        result: { rationale: d.rationale, run_ids: d.run_ids }, env: { profile_digest: d.profile_digest, proxy_digest: d.proxy_digest, oracle_version: d.oracle_version } })
+      return { data: { capsule_id: w.id, evidence_ref: `capsule:${w.id}`, file: w.file, verdict: d.verdict },
+        events: [{ name: 'vuln.oracle.capsuled', payload: { capsule_id: w.id, decision_id: d.decision_id, verdict: d.verdict, finding_id: d.finding_id, program_id: d.program_id } }] }
     },
-
-    // 21 号方案 §4-4 第一层：capsule 重放 + 打法固化为 worker 脚本草稿（判定归代码）
-    vuln_capsule_replay: async (args, repo, ctx) => {
+    vuln_capsule_replay: async (args) => {
       const capsule = readCapsule(dataDir, args.capsule_id)
-      if (!capsule) throwErr('E_NOT_FOUND', `proof capsule 不存在或 digest 不符: ${args.capsule_id}`, '核对 capsule_id（vuln_oracle_capsule 返回）')
-      const replay = capsule.replay || {}
-      const tool = String(replay.tool || '')
-      if (!tool) throwErr('E_SCHEMA', 'capsule 无自带重放命令（replay.tool 缺失）', '登记 capsule 时附 replay:{tool, params}——可重放是打法固化前提')
-      if (!dispatchRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 dispatch 不可达', '确认 exec 域已注册', true)
-      // 重放走 exec_run_cli 守卫链（scope fail-closed / QPS / 沙箱全过，无旁路）
-      const r = await dispatchRef('exec', 'run_cli', { tool, params: { ...(replay.params || {}), program_id: capsule.target?.program_id || '' } }, { actor: 'script', cause: ctx?.cause })
-      if (!r || !r.ok) throwErr(r?.error?.code || 'E_INTERNAL', `重放执行失败: ${r?.error?.message || '未知'}`, r?.error?.hint || '', false)
-      const runId = r.data.run_id
-      // 证据比对：原 capsule 判定证据关键词（marker/oob_token/敏感模式命中）须在重放输出中复现
-      const expect = []
-      const ri = capsule.rule_input || {}
-      const rs = capsule.result || {}
-      for (const cand of [ri.marker, ri.oob_token, rs.marker, rs.oob_token, ...(Array.isArray(rs.hits) ? rs.hits : [])].map((x) => String(x || '').trim())) {
-        if (cand && cand.length >= 4 && !expect.includes(cand)) expect.push(cand)
-      }
-      let matched = 0
-      const missing = []
-      if (expect.length && queryRef) {
-        for (const pat of expect) {
-          try {
-            const g = await queryRef('exec', 'grep_result', { run_id: runId, pattern: pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), max: 5 }, { actor: 'script' })
-            const lines = g && g.ok && g.data ? g.data.lines || [] : []
-            if (lines.length) matched++
-            else missing.push(pat.slice(0, 60))
-          } catch { missing.push(pat.slice(0, 60)) }
-        }
-      } else if (!expect.length) {
-        matched = -1 // 无确定性证据可比——判定 inconclusive，不猜
-      }
-      const verdict = matched === -1 ? 'inconclusive' : (missing.length === 0 && matched > 0 ? 'match' : 'mismatch')
-      // match + harden → 打法固化第二层：worker 脚本草稿（判定归代码；注册 manifest 需人工审批，唯一工具扩张通道）
-      let draftFile = null
-      if (verdict === 'match' && args.harden === true) {
-        const dir = path.join(dataDir, 'evidence', 'hardened-drafts')
-        fs.mkdirSync(dir, { recursive: true })
-        draftFile = path.join(dir, `${args.capsule_id}.json`)
-        const draft = {
-          draft_version: 1, capsule_id: args.capsule_id, oracle: capsule.oracle, vuln_class: capsule.target?.vuln_class || '',
-          replay: { tool, params: replay.params || {} },
-          expect_evidence: expect,
-          judge: 'oracle_rejudge', // 判定归代码：worker 只收集，oracle 判定
-          status: 'draft', note: '人工评审后经审批注册 tools.d manifest（唯一工具扩张通道）；本草案不具备执行能力',
-          created_at: new Date().toISOString(),
-        }
-        const tmp = `${draftFile}.tmp.${process.pid}.${Date.now()}`
-        fs.writeFileSync(tmp, JSON.stringify(draft, null, 2) + '\n')
-        fs.renameSync(tmp, draftFile)
-        draftFile = path.join('evidence', 'hardened-drafts', `${args.capsule_id}.json`)
-      }
-      return {
-        data: { capsule_id: args.capsule_id, replay_run_id: runId, verdict, expected: expect.length, matched: Math.max(0, matched), missing, hardened_draft: draftFile, next: draftFile ? '人工评审草案 → 审批注册 manifest' : null },
-        events: [{ name: 'vuln.capsule.replayed', payload: { capsule_id: args.capsule_id, replay_run_id: runId, verdict, matched: Math.max(0, matched), expected: expect.length, hardened_draft: draftFile, program_id: capsule.target?.program_id || null, host: capsule.target?.host || null } }],
-        after: { capsule_id: args.capsule_id, verdict },
-      }
+      if (!capsule) throwErr('E_NOT_FOUND', 'capsule 不存在或损坏', null)
+      // Credentials are deliberately absent from capsules. A fresh authenticated run is
+      // required; matching strings in arbitrary tool output never proves reproduction.
+      return { data: { capsule_id: args.capsule_id, verdict: 'blocked', reason: '需要新鲜双身份凭据，重新运行 exec_verify_authz_read；旧 capsule 不执行调用方 replay 命令', hardened_draft: null }, events: [] }
     },
 
     // C4：false_positive / dup / ignored（noise 不动——候选出池靠口径）
@@ -1474,7 +1325,7 @@ function makeHandlers(opts) {
     },
 
     // C9：CONFIRMED 机械复核（重放 request.txt + sha256 + verify-log 追加，不改行）
-    vuln_verify_replay: async (args, repo) => {
+    vuln_verify_replay: async (args, repo, ctx) => {
       const row = repo.getFinding(args.finding_id)
       if (!row) throwErr('E_NOT_FOUND', `finding #${args.finding_id} 不存在`, '先 vuln_get 核实 id', false)
       const dir = path.join(dataDir, 'evidence', String(args.finding_id))
@@ -1497,18 +1348,20 @@ function makeHandlers(opts) {
         if (!hostHdr) throwErr('E_VULN_REPLAY_FAILED', 'request.txt 缺 Host 头', '重新产出证据包（须含 Host 头）', true)
         url = `https://${hostHdr}${url.startsWith('/') ? url : '/' + url}`
       }
-      const proxy = resolveProxy(args.proxy)
+      const proxy = args.proxy === 'direct' ? 'direct' : 'default'
+      if (args.proxy && !['direct', 'default'].includes(args.proxy)) throwErr('E_SCHEMA', '重放出口仅允许 default/direct；固定代理由执行域配置', null)
+      if (!row.program_id || normalizeHost(hostOf(url)) !== normalizeHost(row.host)) throwErr('E_EXEC_SCOPE_DENIED', '重放需要 finding 的 Program 与真实 host 绑定', null)
       try {
-        const resp = proxy
-          ? await proxyReplayHttp({ method: parsed.method, url, proxy, headers: parsed.headers, body: parsed.body })
-          : await replayHttp({ method: parsed.method, url, headers: parsed.headers, body: parsed.body })
+        const run = await controlledHttp({ program_id: row.program_id, method: parsed.method, url, headers: parsed.headers, body: parsed.body, proxy }, ctx)
+        const resp = run.response
+        if (resp.state !== 'observed') throwErr('E_VULN_REPLAY_FAILED', `HTTP 重放未完成: ${resp.state}`, null)
         const hash = crypto.createHash('sha256').update(resp.body, 'utf8').digest('hex')
         let verdict = 'REPLAYED'
         if (args.expect_hash) verdict = hash === args.expect_hash ? 'PASS' : 'FAIL(hash 不一致)'
         fs.mkdirSync(dir, { recursive: true })
         fs.appendFileSync(path.join(dir, 'verify-log.md'), `| ${isoPrefix(Date.now())} | ${proxy || 'direct'} | ${resp.status} | sha256:${hash.slice(0, 16)}… | ${verdict} |\n`)
         return {
-          data: { id: args.finding_id, status: resp.status, sha256: hash, verdict, proxy: proxy || 'direct' },
+          data: { id: args.finding_id, run_id: run.run_id, status: resp.status, sha256: hash, verdict, proxy },
           events: [],
           target: `evidence/${args.finding_id}/request.txt`,
           before: null, after: null,
@@ -1592,42 +1445,18 @@ function makeHandlers(opts) {
         return base
       }
       const fire = async (headers) => {
-        const started = Date.now()
-        const res = await replayHttp({ method, url, headers, body, timeoutMs: 30000 })
-        return { status: res.status, length: Buffer.byteLength(res.body, 'utf8'), ms: Date.now() - started, body: res.body.slice(0, 2000) }
+        const run = await controlledHttp({ program_id: args.program_id, method, url, headers, body, timeout_ms: 30000 }, ctx)
+        const res = run.response
+        return { run_id: run.run_id, state: res.state, status: res.status, length: Buffer.byteLength(res.body, 'utf8'), ms: run.elapsed_ms, body: res.body.slice(0, 2000) }
       }
       let low; let high
       const headersLow = mk(args.headers_low), headersHigh = mk(args.headers_high)
       try { low = await fire(headersLow) } catch (e) { throwErr('E_VULN_REPLAY_FAILED', `低权请求失败: ${e?.message}`, '网络波动可重试', true) }
       try { high = await fire(headersHigh) } catch (e) { throwErr('E_VULN_REPLAY_FAILED', `高权请求失败: ${e?.message}`, '网络波动可重试', true) }
-      const jsonKeys = (b) => { try { return Object.keys(JSON.parse(b)).sort() } catch { return null } }
-      const lowKeys = jsonKeys(low.body); const highKeys = jsonKeys(high.body)
-      const keysOverlap = lowKeys && highKeys && lowKeys.length
-        ? lowKeys.filter((k) => highKeys.includes(k)).length / Math.max(highKeys.length, 1) : 0
-      const lenRatio = high.length ? low.length / high.length : 0
-      let verdict = 'unlikely'
-      let why = ''
-      if (low.status === 401 || low.status === 403) { verdict = 'unlikely'; why = '低权请求被拒（401/403），鉴权正常' }
-      else if (low.status !== high.status) { verdict = 'review'; why = `状态码不一致 low=${low.status} high=${high.status}，需人工看响应` }
-      else if (low.status === 200 && (keysOverlap > 0.5 || (lenRatio > 0.5 && lenRatio < 2))) {
-        verdict = 'suspected'
-        why = `低权 200 且响应与高权高度相似（键重合 ${(keysOverlap * 100).toFixed(0)}%，长度比 ${lenRatio.toFixed(2)}）——疑似越权，人工核实数据归属`
-      } else { why = `同状态但响应差异大（键重合 ${(keysOverlap * 100).toFixed(0)}%，长度比 ${lenRatio.toFixed(2)}）` }
-      const data = {
-        verdict, why,
-        low: { status: low.status, length: low.length, ms: low.ms },
-        high: { status: high.status, length: high.length, ms: high.ms },
-        low_body_head: low.body.slice(0, 300), high_body_head: high.body.slice(0, 300),
-      }
-      if (verdict === 'suspected' && dispatchRef && typeof dispatchRef === 'function') {
-        const r = await dispatchRef('vuln', 'register_candidate', {
-          title: `疑似越权(IDOR): ${method} ${url}`,
-          severity: 'high', host: hostOf(url), url,
-          source: 'authz_diff',
-          evidence: `low=${low.status}/${low.length}B high=${high.status}/${high.length}B keysOverlap=${(keysOverlap * 100).toFixed(0)}%`,
-        }, { actor: 'script', identity: `authz_diff:${ctx.session_id || 'unknown'}`, session_id: ctx.session_id || null })
-        if (r.ok && r.data?.id) data.candidate_id = r.data.id
-      }
+      const data = { verdict: 'inconclusive', observation_only: true,
+        why: '双响应相似度不能证明身份、私有对象归属或权限违反；使用受控验证器补齐对照',
+        low: { run_id: low.run_id, state: low.state, status: low.status, length: low.length, ms: low.ms },
+        high: { run_id: high.run_id, state: high.state, status: high.status, length: high.length, ms: high.ms } }
       return { data, events: [], target: url, before: null, after: null }
     },
   }
@@ -1776,7 +1605,7 @@ export function buildVulnDomain(opts = {}) {
 export const vulnFingerprint = { fpWeak, fpStrong, normalizeHost, hostOf }
 export const vulnUtils = {
   sha1, iso16, isoPrefix, refPrefix, EVIDENCE_TOKEN_RE, SEV_RANK, FINDING_STATUS, TERMINAL,
-  parseRequestText, replayHttp, resolveProxy,
+  parseRequestText,
 }
 
 // ---------------------------------------------------------------------------

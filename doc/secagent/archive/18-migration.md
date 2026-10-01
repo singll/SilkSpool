@@ -1,9 +1,10 @@
 # 18 · 迁移路线图（Phase 0-5 · 部署 · 回滚 · 数据修复）
 
-> 版本：v5.1 ｜ 状态：定稿（**Phase 0–5 全部完成；5.2 兼容别名已于 2026-09-19 删除**）｜ 前置：全部 00-17 模块文档定稿（用户评审通过）后方可启动对应 Phase 的代码动工
+> 版本：v5.1 ｜ 状态：已完成归档（2026-10-01归档；**Phase 0–5 全部完成；5.2 兼容别名已于 2026-09-19 删除**）｜ 前置：全部 00-17 模块文档定稿（用户评审通过）后方可启动对应 Phase 的代码动工
+> 本文仅保留历史迁移过程与验收依据，不再约束当前批次。现行契约见00–17，发布节奏见[27号方案](../27-business-quality-and-capacity-plan-2026-09-30.md)§15。
 > 本文是 v4.x 单体 → v5 领域插件化的**唯一**迁移计划。原则：**文档先行、每阶段独立可回滚、热修不等重构、重构期间每日链路（03:00/04:00 任务）中断不超过一个调度周期。**
-> **完成态提示**：Phase 0–4 已全部上线（逐节点见 [进度历史归档](archive/progress-history.md)）；Phase 5 的 prompt 改写、别名删除、挂载矩阵、评测、悬空引用断言全部完成；Phase 5.6（单写者复评）结论为维持多进程 + SQLite WAL。迁移期使用的兼容别名层已清空（`bus.aliases.yaml` 空表，`cf77b79`），下文提及别名的步骤均为历史轨迹。
-> 进度见 [PROGRESS](PROGRESS.md)。DSH 底座升级另见 [upgrades](archive/upgrades/README.md)，不按本页已完成的 Phase 重新迁移；生产调度窗口以实测活跃任务为准，03:00/04:00 是原迁移基线。
+> **完成态提示**：Phase 0–4 已全部上线（逐节点见 [进度历史归档](../archive/progress-history.md)）；Phase 5 的 prompt 改写、别名删除、挂载矩阵、评测、悬空引用断言全部完成；Phase 5.6（单写者复评）结论为维持多进程 + SQLite WAL。迁移期使用的兼容别名层已清空（`bus.aliases.yaml` 空表，`cf77b79`），下文提及别名的步骤均为历史轨迹。
+> 进度见 [PROGRESS](../PROGRESS.md)。DSH 底座升级另见 [upgrades](../archive/upgrades/README.md)，不按本页已完成的 Phase 重新迁移；生产调度窗口以实测活跃任务为准，03:00/04:00 是原迁移基线。
 
 ---
 
@@ -126,7 +127,7 @@
 
 - 仓库 `bundles/dsh/` 改模板 → `rsync -a bundles/dsh/ /opt/SilkSpool/bundles/dsh/` → `spool bundle dsh setup csai`（模板按相对路径推送 + 各域 setup 脚本组装 + 契约测试 + reconcile_service 收尾重启）。
 - 域插件组装：沿用 sec-*-plugin-setup.sh 模式（复制模板进 plugins/<name>/ + package.json + `dsh plugin add` + dump-config 冒烟）。
-- 升级与回滚手册统一在 [upgrades](archive/upgrades/README.md)；[0.1.1-rc.2 报告](archive/upgrades/dsh-upgrade-0.1.1-rc.2-report.md)仅是历史经验。DSH Session V3 会话迁移按 [0.1.5-rc.2 方案](archive/upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md)恢复整套产物与状态，不能仅回退依赖版本。
+- 升级与回滚手册统一在 [upgrades](../archive/upgrades/README.md)；[0.1.1-rc.2 报告](../archive/upgrades/dsh-upgrade-0.1.1-rc.2-report.md)仅是历史经验。DSH Session V3 会话迁移按 [0.1.5-rc.2 方案](../archive/upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md)恢复整套产物与状态，不能仅回退依赖版本。
 - **红线不变**：一切远程操作走 PATH 中 `spool`；n8n 等有状态服务与本迁移无关不受影响。
 
 ### 9.2 systemd 单元全景（13 个，csai 实查 2026-09-06）
@@ -193,7 +194,7 @@
 
 以下一次性产物已完成历史使命，2026-09-19 旧版清理中**删除**：`backfill-program.js`（历史数据回填）、`migrate-blackboard-to-facts.js` / `migrate-scheduled-tasks.js` / `migrate-schedule-anchor.js`（v4 中期迁移）、`p-v5-0-fix-noise.js` / `p-v5-1-migrate-vuln.js` / `p-v5-2-pilot-accept.js`（Phase 1 一次性迁移与试点验收）、`import-cyberstrikeai.py`（一次性导入）、`dsh-version-watch.sh.bak-*`（备份残留）。保留：`echo-test.yaml`（测试 manifest 契约测试桩，§9.3 之外的唯一例外——它留在 tools.d 但 domain=none）、`p-v5-1-migrate-eval.js`（`sec-eval-domain-plugin-setup.sh` 每次 setup 幂等执行，非一次性）。
 
-同批清理删除的旧实现：`dsh-plugin-sec-suite.scheduler.js`（v4 调度循环，回滚仅需恢复 task 域调度器——现为唯一持锁者）、看板旧单体 `@silksec/sec-dashboard`（16-dashboard D3，见 [16-dashboard §5.3](16-dashboard.md)）。
+同批清理删除的旧实现：`dsh-plugin-sec-suite.scheduler.js`（v4 调度循环，回滚仅需恢复 task 域调度器——现为唯一持锁者）、看板旧单体 `@silksec/sec-dashboard`（16-dashboard D3，见 [16-dashboard §5.3](../16-dashboard.md)）。
 
 ## 十、完成定义（DoD）
 

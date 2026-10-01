@@ -560,7 +560,7 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 | [01-bus.md](01-bus.md) | `/silksec-domain` RpcProjector、命令网关、事件、幂等、别名机制（当前空表）的真相源 |
 | 02–15 各域文档 | 看板消费的查询/命令/事件契约；UI 只做投影消费，不改域语义 |
 | [17-llm-surface.md](17-llm-surface.md) | 模型工具面（与看板正交：看板零工具投影）|
-| [18-migration.md](18-migration.md) | Phase 0–5 总线迁移；本文 §5.3 的 UI 拆分是总线之后的呈现层收尾 |
+| [18-migration.md](archive/18-migration.md) | Phase 0–5 总线迁移；本文 §5.3 的 UI 拆分是总线之后的呈现层收尾 |
 | [`ui-surface-deps.yaml`](../../bundles/dsh/doc/ui-surface-deps.yaml) | DSH 官方挂点机器可读清单（升级复验）|
 | [`silksong-theme-design.md`](../../bundles/dsh/doc/silksong-theme-design.md) | 主题令牌全表与 v4.2 增补 |
 

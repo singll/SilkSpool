@@ -57,6 +57,76 @@ function readAudit(dir) {
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
 
+test('27 WP04: JSON 请求观测保留 method/body/参数位置/身份，重复回放幂等、身份变化独立保存', async () => {
+  const { bus, dataDir } = makeEnv()
+  const evidence = 'results/run_test_20260910_000000/request.json'
+  const body = 'results/run_test_20260910_000000/body.json'
+  fs.writeFileSync(path.join(dataDir, evidence), '{"method":"POST"}')
+  fs.writeFileSync(path.join(dataDir, body), '{"resource":"abc"}')
+  const request = { program_id: 'test-src', url: 'https://api.example.com:8443/orders', method: 'POST', content_type: 'application/json',
+    body_ref: body, credential_ref: 'account-a', subject_ref: 'user-a', object_refs: ['order-a'], action: 'create_order',
+    parameters: [{ name: 'resource', in: 'json', value: 'abc' }], evidence_path: evidence, run_id: 'run_test_20260910_000000', response_status: 200 }
+  const first = await bus.dispatch('endpoint', 'observe_request', request, { actor: 'script' })
+  assert.equal(first.ok, true, first.error?.message)
+  const replay = await bus.dispatch('endpoint', 'observe_request', request, { actor: 'script' })
+  assert.equal(replay.ok, true, replay.error?.message)
+  assert.equal(replay.data.request_id, first.data.request_id)
+  const second = await bus.dispatch('endpoint', 'observe_request', { ...request, credential_ref: 'account-b', subject_ref: 'user-b' }, { actor: 'script' })
+  assert.equal(second.ok, true, second.error?.message)
+  assert.notEqual(second.data.request_id, first.data.request_id)
+  assert.equal(second.data.shape_id, first.data.shape_id, '身份变化不虚增请求形状')
+  const stored = await bus.query('endpoint', 'request_get', { request_id: first.data.request_id }, { actor: 'reactor' })
+  assert.equal(stored.data.method, 'POST')
+  assert.equal(stored.data.url, request.url)
+  assert.equal(stored.data.body_ref, body)
+  assert.match(stored.data.body_sha256, /^[a-f0-9]{64}$/)
+  assert.deepEqual(stored.data.parameters, request.parameters)
+  assert.equal(stored.data.transport_state, 'observed', 'HTTP 200 本身不证明业务健康或无需身份')
+  const list = await bus.query('endpoint', 'requests', { program_id: 'test-src', limit: 1, offset: 1 }, { actor: 'human' })
+  assert.equal(list.total, 2)
+  assert.equal(list.rows.length, 1)
+  assert.equal(list.rows[0].parameters, undefined, '列表只回摘要，不批量暴露请求值')
+  fs.writeFileSync(path.join(dataDir, body), '{"resource":"changed"}')
+  const tampered = await bus.query('endpoint', 'request_get', { request_id: first.data.request_id }, { actor: 'reactor' })
+  assert.equal(tampered.data.evidence_state, 'changed')
+  const newVersion = await bus.dispatch('endpoint', 'observe_request', request, { actor: 'script' })
+  assert.notEqual(newVersion.data.request_id, first.data.request_id, '同路径内容变化必须重新计算摘要')
+})
+
+test('27 WP04: 故障/空参数不伪造健康前置，引用越界与未知项目拒绝', async () => {
+  const { bus, dataDir, dir } = makeEnv()
+  const evidence = 'results/run_test_20260910_000000/request.json'
+  fs.writeFileSync(path.join(dataDir, evidence), '{}')
+  const req = { program_id: 'test-src', url: 'https://api.example.com/orders', method: 'GET', parameters: [], evidence_path: evidence, run_id: 'run_test_20260910_000000', response_status: 407 }
+  const r = await bus.dispatch('endpoint', 'observe_request', req, { actor: 'script' })
+  assert.equal(r.ok, true, r.error?.message)
+  const stored = await bus.query('endpoint', 'request_get', { request_id: r.data.request_id }, { actor: 'reactor' })
+  assert.equal(stored.data.transport_state, 'proxy_error')
+  assert.deepEqual(stored.data.parameters, [])
+  assert.equal(stored.data.credential_ref, undefined)
+  fs.writeFileSync(path.join(dir, 'outside'), 'private')
+  fs.symlinkSync(path.join(dir, 'outside'), path.join(dataDir, 'results/run_test_20260910_000000/link'))
+  for (const patch of [{ program_id: 'missing' }, { body_ref: '../outside' }, { body_ref: 'results/run_test_20260910_000000/link' }, { url: 'file:///etc/passwd' }]) {
+    const bad = await bus.dispatch('endpoint', 'observe_request', { ...req, ...patch }, { actor: 'script' })
+    assert.equal(bad.ok, false, JSON.stringify(patch))
+  }
+})
+
+test('27 WP04: TSV 参数名恢复 URL 实值，补参触发变更事件', async () => {
+  const { bus, dataDir } = makeEnv()
+  const file = path.join(dataDir, 'results/run_test_20260910_000000/endpoints.tsv')
+  fs.writeFileSync(file, 'url\tmethod\tparams\tauth_required\tsource\tcollected_at\nhttps://api.example.com/items?resource=abc&id=11\tPOST\tresource,id\tunknown\tkatana\t2026-09-30\n')
+  const r = await bus.dispatch('endpoint', 'upsert', { tsv_path: file, program_id: 'test-src' }, { actor: 'script' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ep = bus._internal.db().prepare('SELECT * FROM endpoints').get()
+  assert.equal(ep.method, 'POST')
+  assert.deepEqual(JSON.parse(ep.params), { resource: 'abc', id: '11' })
+  const touched = await bus.dispatch('endpoint', 'upsert', { program_id: 'test-src', rows: [{ host: ep.host, method: 'POST', path: ep.path, params: { ...JSON.parse(ep.params), callback: 'https://example.com' } }] }, { actor: 'script' })
+  assert.equal(touched.ok, true, touched.error?.message)
+  const outbox = bus._internal.db().prepare("SELECT payload FROM event_outbox WHERE name='endpoint.changed'").all()
+  assert.equal(outbox.length, 1)
+})
+
 test('真实 httpx parser 提案的 endpoints 数组与空 program 能入库', async () => {
   const { bus, domain } = makeEnv()
   const r = await domain.handlers.subscribers.onRunProposal({ payload: {

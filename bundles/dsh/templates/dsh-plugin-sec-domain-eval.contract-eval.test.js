@@ -322,7 +322,7 @@ test('端到端: vuln_confirm 事件经 dispatcher 回流成 eval-live 行', asy
   const db = env.bus._internal.db()
   const id = Number(db.prepare(`INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, status, created_at, noise, confidence)
     VALUES ('fp-evt-1', '测试候选标题足够长', 'high', 'a.com', 'https://a.com/x', '', 'agent', 'new', ?, 1, 'tentative')`).run(Date.now()).lastInsertRowid)
-  const r = await env.bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_evt' }, { actor: 'model' })
+  const r = await env.bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_evt', review: { basis: '独立核验请求及正常反例对照，确认该样例所述安全属性受到违反', reproduction_steps: '根据样例证据执行正常请求和反例请求并重复核验', impact: '未经授权读取受保护业务对象，影响已由证据确认' } }, { actor: 'dashboard', operator: 'fixture-reviewer' })
   assert.equal(r.ok, true, r.error?.message || '')
   // 处理 outbox（async 订阅）
   await env.bus._internal.dispatcherTick()

@@ -19,7 +19,7 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { nextScheduledRun, validateDependency, MAX_WORKER_TIMEOUT_SEC } from '../sec-suite/task-policy.js'
-import { h1Hypotheses, taintRoute, strategyKey, compileSituation, detectInjectionPatterns, compileCampaignPlan, classifyTaskClass, decideThrottle, selectCampaignModel } from '../sec-rules-hypothesis/index.js'
+import { h1Hypotheses, taintRoute, strategyKey, compileSituation, detectInjectionPatterns, compileCampaignPlan, campaignDraftViolation, validateCampaignGoal, evaluateCampaignExit, DISCOVERY_TASK_KINDS, inferVulnClass, ORACLES, classifyTaskClass, decideThrottle, selectCampaignModel } from '../sec-rules-hypothesis/index.js'
 // L6 调度器切换：persona/定时任务 prompt/会话反查与 v4 完全同源（复用 sec-suite 版本受控实现，防双份漂移）
 import { listSessionHeaders, matchWorkerSession, createPersonaReader, buildScheduledPrompt } from '../sec-suite/host-compat.js'
 
@@ -49,7 +49,7 @@ const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 // 22 号方案：单条派生草稿的预算预估（tokens，环境变量可调；用于 campaign 窗口预算闸）
 // 23 号方案 §3.6：默认随统一额度面调为 30000（worker 未上报 token 前的保守估算）
 const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 30000)
-const CAMPAIGN_KINDS = ['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding', 'verify_candidate']
+const CAMPAIGN_KINDS = DISCOVERY_TASK_KINDS
 // 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
 const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000
 // 41 号补丁：运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）后策略重开冷却（默认 1h），
@@ -170,10 +170,22 @@ export const TASK_MANIFEST = {
   service: 'secDomain.task',
   description: '任务/调度/执行史/worker 注册表——编排器派发的工作单元与调度循环的单一真相源，收尾权唯一归调度器/审批',
   owns: {
-    tables: ['tasks', 'task_runs', 'workers', 'strategy_dedupe', 'campaigns', 'campaign_decisions', 'campaign_checkpoints', 'task_settings'],
+    tables: ['tasks', 'task_runs', 'task_run_costs', 'workers', 'strategy_dedupe', 'hypothesis_queue', 'campaigns', 'campaign_decisions', 'campaign_checkpoints', 'task_settings'],
     files: ['data/scheduler.lock', 'data/pending-task-finishes/', 'data/events/task.jsonl'],
   },
   commands: {
+    task_hypotheses_enqueue: {
+      actor: ['reactor', 'scheduler', 'system'],
+      schema: schema({ program_id: str({ minLength: 1 }), host: str({ minLength: 1 }), path: str({ minLength: 1 }), method: str(), request_id: str({ minLength: 1 }) }, ['program_id', 'host', 'path']),
+      idempotent: 'none', events: [], invariants: [], timeout_ms: 60000,
+      agent_note: '（内部）读取请求观测或端点的当前版本，将全部假设持久入队；版本化策略键幂等，批次限额不删除余项。', deprecated: false,
+    },
+    task_hypotheses_dispatch: {
+      actor: ['reactor', 'scheduler', 'system'],
+      schema: schema({ program_id: str(), limit: int({ minimum: 1, maximum: 3 }) }, []),
+      idempotent: 'none', events: [], invariants: [], timeout_ms: 60000,
+      agent_note: '（内部）每批最多三条假设转为任务；任务创建与队列确认同事务，能力/授权/预算失败保留待办并延后。', deprecated: false,
+    },
     task_create: {
       actor: ['model', 'dashboard', 'script', 'approval', 'system', 'reactor'],
       schema: schema({
@@ -185,6 +197,7 @@ export const TASK_MANIFEST = {
         parent_id: int(),
         budget_tokens: int({ minimum: 0 }),
         assignee: str({ default: '' }),
+        intent_spec: { type: 'object' },
         schedule: scheduleSchema(),
         provider: str(),
         model: str(),
@@ -196,7 +209,7 @@ export const TASK_MANIFEST = {
         model_hint: str({ description: '（内部）23 号方案 Path A：派生负载带模型提示（selector=dsh 时由 task 域自主选模型）' }),
       }, ['objective']),
       idempotent: 'auto',
-      idempotent_fields: ['program_id', 'objective', 'phase', 'goal', 'priority', 'parent_id', 'budget_tokens', 'assignee', 'schedule', 'provider', 'model', 'reasoning_effort', 'campaign_id', 'campaign_role', 'strategy_key'],
+      idempotent_fields: ['program_id', 'objective', 'phase', 'goal', 'priority', 'parent_id', 'budget_tokens', 'assignee', 'schedule', 'provider', 'model', 'reasoning_effort', 'campaign_id', 'campaign_role', 'strategy_key', 'intent_spec'],
       events: ['task.created'],
       event_limit: 1,
       invariants: ['scheduleValid', 'intrusiveInterval', 'campaignTaskValid'],
@@ -289,12 +302,19 @@ export const TASK_MANIFEST = {
       }, ['task_id', 'outcome']),
       idempotent: 'natural',
       idempotent_natural: ['task_id', 'run_id', 'claim_started_at'],
-      events: ['task.finished'],
-      event_limit: 1,
+      events: ['task.finished', 'task.cost.settled'],
+      event_limit: 2,
       invariants: ['finishEvidence'],
       timeout_ms: 60000,
       agent_note: '调度器专用收尾：真实性判定 + 流程守卫 + 落执行史 + interval 续期 + 成本归因（spent_tokens 回填，超 budget_tokens 记 [预算超支]）。',
       deprecated: false,
+    },
+    task_record_run_cost: {
+      actor: ['scheduler', 'system'],
+      schema: schema({ task_id: int({ minimum: 1 }), run_id: str({ minLength: 1 }), spent_tokens: int({ minimum: 0 }),
+        consumed_at: int({ minimum: 0 }), session_id: str(), source: en(['worker_report', 'session_bill']) }, ['task_id', 'run_id', 'spent_tokens', 'source']),
+      idempotent: 'none', events: ['task.cost.settled'], event_limit: 1, invariants: [], timeout_ms: 60000,
+      agent_note: '独立结算已知 run 的累计 token 账单。重复不重复扣费，增长只记差额；迟到费用不改任务状态/技术结论。实际消费时间未知时留空，不伪造消费窗口。旧已计费历史需独立对账。',
     },
     task_chain: {
       actor: ['model', 'dashboard'],
@@ -330,7 +350,7 @@ export const TASK_MANIFEST = {
       actor: ['scheduler'],
       schema: schema({ now: int() }, ['now']),
       idempotent: 'none',
-      events: ['task.claimed'],
+      events: ['task.claimed', 'task.blocked'],
       // 36 号补丁：与认领上限（默认 12，env 上限 32）对齐——旧值 4 在 36 号提额后触发事件风暴闸 E_BUS_EVENT_TOO_LARGE，认领整体失败静默空转
       event_limit: 32,
       invariants: [],
@@ -367,8 +387,12 @@ export const TASK_MANIFEST = {
       actor: ['reactor', 'scheduler', 'system', 'human'],
       schema: schema({
         program_id: str({ minLength: 1 }),
-        kind: en(['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding', 'verify_candidate']),
+        kind: en(DISCOVERY_TASK_KINDS),
         host: str({ minLength: 1 }),
+        finding_id: int({ minimum: 1 }),
+        request_id: str({ minLength: 1 }),
+        method: str(),
+        param_location: str(),
         path: str({ default: '' }),
         vuln_class: str({ default: '' }),
         param: str({ default: '' }),
@@ -607,6 +631,7 @@ export const TASK_MANIFEST = {
         run_id: str({ minLength: 1 }),
         dedupe_key: str(),
         task_id: int(),
+        claim_started_at: int({ minimum: 0 }),
         task: str(),
         cwd: str(),
         pid: int(),
@@ -673,6 +698,16 @@ export const TASK_MANIFEST = {
     },
   },
   queries: {
+    task_run_costs: {
+      actor: ['model', 'dashboard', 'scheduler', 'system'],
+      params: schema({ task_id: int({ minimum: 1 }), limit: int({ minimum: 1, maximum: 500 }), offset: int({ minimum: 0 }) }, []),
+      agent_note: '独立 run 费用账本；仅已结算记录，缺记录不代表零费用。consumed_at=null 表示实际消费时间未知。',
+    },
+    task_hypotheses: {
+      actor: ['model', 'dashboard', 'human', 'reactor', 'scheduler'],
+      params: schema({ program_id: str(), limit: int({ minimum: 1, maximum: 500 }), offset: int({ minimum: 0 }) }, []),
+      agent_note: '分页列出假设待办及已派 task_id、重试时刻、阻塞原因；已派发不等于实验完成。',
+    },
     task_list: {
       actor: ['model', 'dashboard', 'human', 'system'],
       params: schema({
@@ -789,6 +824,7 @@ export const TASK_MANIFEST = {
     },
   },
   events: {
+    'task.cost.settled': { payload: { type: 'object' }, redact: [] },
     'task.created': { payload: { type: 'object' }, redact: [] },
     'task.intent.derived': { payload: { type: 'object' }, redact: [] },
     'task.claimed': { payload: { type: 'object' }, redact: [] },
@@ -817,6 +853,8 @@ export const TASK_MANIFEST = {
     'vuln.signal.confirmed': { handler: 'onVulnConfirmed', mode: 'async', as: 'reactor' },
     // 21 号方案 §3-1：Intent 确定性派生器——新端点入库即推导 H2 假设任务草稿（事件驱动有界推进）
     'endpoint.registered': { handler: 'onEndpointHypothesis', mode: 'async', as: 'reactor' },
+    'endpoint.changed': { handler: 'onEndpointHypothesis', mode: 'async', as: 'reactor' },
+    'endpoint.request.observed': { handler: 'onEndpointHypothesis', mode: 'async', as: 'reactor' },
     // 21 号方案 §6.2/§6.4-B4：连败回写 strategy 黑名单（oracle rejected → fails+1；verified → 清零）
     'vuln.signal.rejected': { handler: 'onStrategyOutcome', mode: 'async', as: 'reactor' },
     // 21 号方案 §3-1：消费覆盖缺口队列——未爬/无参数格点自动派 crawl/param_enrich 任务草稿（预算闸）
@@ -1018,6 +1056,7 @@ function makeHandlers(opts) {
       const nameM = t.match(/^-\s+name:\s*["']?([^"']+?)["']?\s*$/)
       if (nameM) { cur = { name: nameM[1].trim(), scope: [], exclude: [] }; programs.push(cur); key = ''; continue }
       if (!cur) continue
+      if (/^expires_at:\s*(.+)$/.test(t)) { cur.expires_at = t.replace(/^expires_at:\s*/, '').trim().replace(/^["']|["']$/g, ''); key = ''; continue }
       if (/^(scope|exclude):\s*$/.test(t)) { key = t.slice(0, t.length - 1); continue }
       const itemM = t.match(/^-\s*["']?([^"']+?)["']?\s*$/)
       if (itemM && (key === 'scope' || key === 'exclude')) { cur[key].push(itemM[1].trim()); continue }
@@ -1035,12 +1074,20 @@ function makeHandlers(opts) {
     return false
   }
   function scopeCheckResult(programId, host) {
-    if (!programId) return { ok: true }
+    if (!programId) return { ok: false, code: 'E_INVARIANT', message: '缺少授权项目' }
     const prog = loadScopePrograms().find((p) => p.name === programId)
-    if (!prog) { log(`scope 自查：program ${programId} 未找到，fail-open（scope 域查询上线前过渡）`); return { ok: true } }
+    if (!prog) return { ok: false, code: 'E_INVARIANT', message: `项目 ${programId} 授权不可读取` }
+    if (scopeExpired(prog)) return { ok: false, code: 'E_INVARIANT', message: `项目 ${programId} 授权已过期或日期无效` }
     if (hostInPatterns(host, prog.exclude || [])) return { ok: false, code: 'E_INVARIANT', message: `${host} 命中项目 ${programId} 排除清单` }
     if (!hostInPatterns(host, prog.scope || [])) return { ok: false, code: 'E_INVARIANT', message: `${host} 不在项目 ${programId} 授权范围内` }
     return { ok: true }
+  }
+  function scopeExpired(program) {
+    if (!program.expires_at) return false
+    const raw = program.expires_at
+    const n = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw)
+    const at = /^\d+$/.test(raw) && n < 1e12 ? n * 1000 : n
+    return !Number.isFinite(at) || at <= Date.now()
   }
 
   function throwErr(code, message, hint, retryable = false) {
@@ -1145,8 +1192,8 @@ function makeHandlers(opts) {
       `路由依据：${rationale}`,
       `验证纪律（不可跳过）：`,
       `1. 构造差分对照请求（攻击 vs 对照），响应特征（status/长度/正文特征/simhash/时延）落 results/<run_id>/；`,
-      `2. 调 exec_oracle_judge（oracle=${oracle || '按类选择'}）做机器判定——模型无权宣布 verified；`,
-      `3. verdict=verified → vuln_oracle_capsule 落 proof capsule → vuln_register_candidate/vuln_confirm 引用 capsule:{id}；rejected 只有可靠反证才 vuln_reject(false_positive)；inconclusive → vuln_note 记录缺少的前置/证据并保留候选，补证据后重判。`,
+      `2. exec_oracle_judge（oracle=${oracle || '按类选择'}）仅作辅助分析，不能生成可信结论。owner-only JSON 读取型 IDOR 在宿主契约可用时调用 exec_verify_authz_read，绑定 finding_id/request_id 与双身份；其它类型缺验证器时记录能力缺口；`,
+      `3. 有完整观察但尚无 finding 时使用模型可用的 vuln_register_signal 保存步骤/影响/证据。受控验证返回 decision_id 后调用 vuln_oracle_capsule({decision_id})；只有可信 verified capsule 才能 vuln_confirm。rejected 须有可靠反证才 vuln_reject(false_positive)；inconclusive/unsupported 记 vuln_note 保留观察与缺证，不得自填 verdict 或用旧 run 绕过确认。`,
       `program=${programId}；禁止越出 scope；证据不足显式 inconclusive 不猜。`,
       ...extraLines,
     ]
@@ -1172,10 +1219,18 @@ function makeHandlers(opts) {
       params,
     })
     const out = []
-    for (const h of route.slice(0, 3)) { // 单端点最多派生 3 条（有界推进）
-      const key = strategyKey({ host, path: p || endpointRow?.path || '', param: h.param || '', vuln_class: h.vuln_class })
+    const method = endpointRow?.method || 'GET'
+    const requestVersion = endpointRow?.request_id || crypto.createHash('sha256').update(JSON.stringify([method, params, endpointRow?.auth_state, endpointRow?.should_auth, endpointRow?.roles_seen])).digest('hex')
+    // 按类别轮转入持久队列，首批 ID 参数不能永久占住其它安全属性。
+    const groups = new Map()
+    for (const h of route) { if (!groups.has(h.vuln_class)) groups.set(h.vuln_class, []); groups.get(h.vuln_class).push(h) }
+    const ordered = []
+    while ([...groups.values()].some(g => g.length)) for (const group of groups.values()) if (group.length) ordered.push(group.shift())
+    for (const h of ordered) {
+      const key = 'request|' + crypto.createHash('sha256').update(JSON.stringify([programId, host, p, method, requestVersion, h.param_location || '', h.param || '', h.vuln_class, 'h2-v2'])).digest('hex')
       out.push({
         program_id: programId, kind: 'hypothesis', host, path: p || endpointRow?.path || '',
+        method, ...(endpointRow?.request_id ? { request_id: endpointRow.request_id } : {}), param_location: h.param_location || '',
         vuln_class: h.vuln_class, param: h.param || '', level: h.level,
         rationale: h.rationale, oracle: h.oracle, strategy_key: key,
       })
@@ -1219,7 +1274,7 @@ function makeHandlers(opts) {
         if (map.size) return map
       } catch { /* fall through */ }
     }
-    for (const p of loadScopePrograms()) map.set(String(p.name), { expired: false })
+    for (const p of loadScopePrograms()) map.set(String(p.name), { expired: scopeExpired(p) })
     return map
   }
   async function checkCampaignPrograms(programIds) {
@@ -1412,6 +1467,7 @@ function makeHandlers(opts) {
       if (r.kind === 'stop_condition') {
         const p = parseJsonSafe(r.payload, {})
         if (String(p.reason || '') === 'budget_exhausted') return { kind: 'budget', reason: 'budget_exhausted', at: Number(r.created_at) || 0 }
+        return null // 目标条件停派不得沿用更早的预算/供给降级自动恢复。
       }
     }
     return null
@@ -1586,8 +1642,8 @@ function makeHandlers(opts) {
     const delta = { accepted: verdict === 'accepted' ? 1 : 0, rejected: verdict === 'rejected' ? 1 : 0, rework: verdict === 'rework' ? 1 : 0, role: task.campaign_role || 'derived' }
     if (verdict === 'accepted' && (sig.capsuleRef || sig.verified)) delta.confirmed = 1
     // 26 号补丁：run 行无 spent_tokens 列时回退任务行（task_finish 已按 dsh-bill 归因回填）
-    const runSpent = run && Number.isFinite(Number(run.spent_tokens)) ? Number(run.spent_tokens) : null
-    const taskSpent = task && Number.isFinite(Number(task.spent_tokens)) ? Number(task.spent_tokens) : null
+    const runSpent = run && run.spent_tokens != null && Number.isFinite(Number(run.spent_tokens)) ? Number(run.spent_tokens) : null
+    const taskSpent = !run && task && task.spent_tokens != null && Number.isFinite(Number(task.spent_tokens)) ? Number(task.spent_tokens) : null
     if (runSpent !== null || taskSpent !== null) delta.spent_tokens = runSpent !== null ? runSpent : taskSpent
     return delta
   }
@@ -1608,6 +1664,13 @@ function makeHandlers(opts) {
   // L1/L2 规划输入采集（缺口/连败/经验卡命中/活跃与预算）——跨域只读，不可达即降级空快照
   async function gatherPlanInputs(campaign, repo) {
     const gaps = []
+    for (const program of campaign.program_ids) {
+      for (const pending of repo.pendingHypotheses(program, 200, Date.now())) {
+        const d = JSON.parse(pending.draft)
+        if (d.oracle && !ORACLES[d.oracle]) continue
+        gaps.push({ ...d, program, dim: 'request', key: d.strategy_key, value: 2 })
+      }
+    }
     if (queryRef) {
       const seenGap = new Set()
       for (const program of campaign.program_ids) {
@@ -1668,7 +1731,7 @@ function makeHandlers(opts) {
           let host = String(row.host || '')
           if (!host && row.url) { try { host = new URL(String(row.url)).hostname } catch { host = '' } }
           if (!host) continue
-          candidates.push({ id: Number(row.id), host, severity: String(row.severity || ''), title: String(row.title || '').slice(0, 80), program_id: programId })
+          candidates.push({ id: Number(row.id), host, severity: String(row.severity || ''), title: String(row.title || ''), vuln_type: row.vuln_type || '', program_id: programId })
         }
       } catch { /* 单个项目候选池不可达不影响其余项目 */ }
     }
@@ -1683,17 +1746,60 @@ function makeHandlers(opts) {
   }
 
   // 局面编译（program/host 授权复查），供 Dispatcher 下发前 fail-closed
-  async function campaignSituationOk(programId, host, { skipHostScope = false } = {}) {
+  async function campaignSituationOk(programId, host) {
     const map = await scopeProgramMap()
     const hit = map.get(String(programId))
     if (!hit) return { ok: false, code: 'E_CAMPAIGN_PROGRAM_UNRESOLVED', message: `program ${programId} 未授权`, hint: '绑定 program 必须存在于 scope 镜像且未过期（INV-C1）' }
     if (hit.expired) return { ok: false, code: 'E_CAMPAIGN_PROGRAM_UNRESOLVED', message: `program ${programId} 授权已过期`, hint: '续期授权后重试（fail-closed）' }
-    // 26 号补丁：review_finding 的 host 槽载 finding id 而非主机名，跳过主机归属校验——
-    // finding 已登记在 program 内即授权证据；program 级授权/过期校验（上方）不豁免。
-    if (skipHostScope) return { ok: true }
+    if (!String(host || '').trim()) return { ok: false, code: 'E_INVARIANT', message: '缺少可核对授权的真实主机' }
+    // scope 列表不能替代主机模式；镜像尚未同步时不沿用旧 scopeCheckResult 的 fail-open。
+    if (!loadScopePrograms().some(p => p.name === programId)) return { ok: false, code: 'E_CAMPAIGN_PROGRAM_UNRESOLVED', message: '项目主机授权范围不可读取' }
     const sc = scopeCheckResult(programId, host)
     if (!sc.ok) return { ok: false, code: sc.code, message: `派生越界：${sc.message}`, hint: '派生绝不越出 scope' }
     return { ok: true }
+  }
+
+  async function validateFindingIntent(d) {
+    if (!['review_finding', 'verify_candidate'].includes(d.kind)) return validateRequestIntent(d)
+    const id = Number(d.finding_id ?? d.host)
+    if (!Number.isInteger(id) || id < 1) return { ok: false, code: 'E_SCHEMA', message: '候选任务需要 finding_id' }
+    let r
+    try { r = await queryRef('vuln', 'get', { id }, { actor: 'reactor' }) } catch { /* unavailable */ }
+    const finding = r?.ok ? r.data : null
+    if (!finding) return { ok: false, code: 'E_NOT_FOUND', message: `finding #${id} 不可读取` }
+    if (String(finding.program_id || '') !== String(d.program_id || '')) return { ok: false, code: 'E_INVARIANT', message: `finding #${id} 与派发项目不一致或缺归属` }
+    let host = String(finding.host || '')
+    if (!host && finding.url) { try { host = new URL(finding.url).hostname } catch { /* invalid */ } }
+    const scope = await campaignSituationOk(d.program_id, host)
+    if (!scope.ok) return scope
+    // host 槽兼容旧 finding ID 输入，所有落库结果统一保存真实主机和独立 finding_id。
+    return { ok: true, draft: { ...d, finding_id: id, host, target_host: host, vuln_class: finding.vuln_type || inferVulnClass(finding.title) } }
+  }
+
+  async function validateRequestIntent(d) {
+    if (!d.request_id) return { ok: true, draft: d }
+    let r
+    try { r = await queryRef?.('endpoint', 'request_get', { request_id: d.request_id }, { actor: 'reactor' }) } catch { /* unavailable */ }
+    const request = r?.ok ? r.data : null
+    if (!request) return { ok: false, code: 'E_NOT_FOUND', message: '请求观测不可读取' }
+    if (request.evidence_state !== 'intact') return { ok: false, code: 'E_EVIDENCE_REQUIRED', message: `请求证据状态：${request.evidence_state || 'unknown'}` }
+    if (request.program_id !== d.program_id || request.host !== d.host || request.path !== d.path || (d.method && request.method !== d.method)) return { ok: false, code: 'E_INVARIANT', message: '请求观测与派生目标不一致' }
+    if (['proxy_error', 'server_error', 'auth_challenge', 'access_denied'].includes(request.transport_state)) return { ok: false, code: 'E_REQUEST_PRECONDITION', message: `请求前置未成立：${request.transport_state}` }
+    return { ok: true, draft: { ...d, method: request.method } }
+  }
+
+  async function validateCampaignIntent(c, intent) {
+    if (!c.program_ids.includes(String(intent.program_id || ''))) return { ok: false, code: 'E_INVARIANT', message: '任务项目不在专项绑定范围' }
+    const checked = await validateFindingIntent(intent)
+    if (!checked.ok) return checked
+    const violation = campaignDraftViolation(c, checked.draft)
+    if (violation) return { ok: false, code: 'E_CAMPAIGN_GOAL', message: violation }
+    if (checked.draft.kind) {
+      // 非 finding 任务不能用调用方自报的 target_host 覆盖实际 host。
+      const scope = await campaignSituationOk(intent.program_id, checked.draft.host)
+      if (!scope.ok) return scope
+    }
+    return checked
   }
 
   // campaign 窗口预算闸（显式路径）：不变量阶段执行——写入在事务外提交，命令被拒也保留审计。
@@ -1748,6 +1854,42 @@ function makeHandlers(opts) {
     return !(p && p.auto_extend === false)
   }
 
+  async function campaignExitMetrics(c, repo) {
+    const metrics = { elapsed_ms: Math.max(0, Date.now() - Number(c.created_at)), spent_tokens: repo.campaignUsage(c.id, 0).spent_tokens }
+    if (!c.goal_spec.exit_predicates?.some(p => p.metric === 'candidate_pending')) return metrics
+    // 使用完整待验证池（含已认领），不能用 Planner 的 available/top-N 推断空池。
+    // 查询失败、分页不完整或超过本轮读取上限都保留 unknown。
+    let pending = 0
+    for (const program_id of c.program_ids) {
+      let complete = false
+      const seen = new Set()
+      for (let offset = 0; offset < 5000; offset += 500) {
+        let r
+        try { r = await queryRef?.('vuln', 'candidates', { program_id, claim_state: 'all', limit: 500, offset, sort: 'created_at', dir: 'asc' }, { actor: 'reactor' }) } catch { return metrics }
+        const rows = r?.rows || r?.data?.rows
+        const total = r?.total ?? r?.data?.total
+        if (!r?.ok || !Array.isArray(rows) || !Number.isSafeInteger(total) || total < 0) return metrics
+        for (const f of rows) {
+          if (seen.has(f.id) || String(f.program_id || '') !== program_id) return metrics
+          seen.add(f.id)
+          let host = String(f.host || '')
+          if (!host && f.url) { try { host = new URL(f.url).hostname } catch { /* unknown below */ } }
+          if (c.goal_spec.targets?.hosts && !host) return metrics
+          const goal = c.goal_spec
+          if (goal.targets?.hosts && !goal.targets.hosts.includes(host)) continue
+          if (goal.targets?.finding_ids && !goal.targets.finding_ids.includes(Number(f.id))) continue
+          if (goal.vuln_classes && !goal.vuln_classes.includes(f.vuln_type || inferVulnClass(f.title))) continue
+          pending++
+        }
+        if (seen.size === total) { complete = true; break }
+        if (rows.length !== 500 || seen.size > total) return metrics
+      }
+      if (!complete) return metrics
+    }
+    metrics.candidate_pending = pending
+    return metrics
+  }
+
   function superviseCampaign(c, repo) {
     const actions = []
     const now = Date.now()
@@ -1773,7 +1915,9 @@ function makeHandlers(opts) {
     // 停止条件（INV-C9）：预算耗尽 ⇒ 转 reviewing 待人审（不自动 archive）
     // 31 号补丁：reviewing 也跑预算段——budget_exhausted 转 reviewing 后必须能继续
     // 自动提请预算延长（否则获批前无提请通道，用户在看板看不到任何 pending）。
-    if ((c.status === 'active' || c.status === 'reviewing') && c.budget_tokens != null && Number(c.budget_tokens) > 0) {
+    const lastStop = c.status === 'reviewing' ? repo.listCheckpoints(c.id, 50).find(r => r.kind === 'stop_condition') : null
+    const goalStopped = lastStop && parseJsonSafe(lastStop.payload, {}).reason === 'exit_predicate'
+    if (!goalStopped && (c.status === 'active' || c.status === 'reviewing') && c.budget_tokens != null && Number(c.budget_tokens) > 0) {
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
       if (c.status === 'active' && Number(usage.spent_tokens) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
@@ -1802,7 +1946,8 @@ function makeHandlers(opts) {
     const taskClass = ['lite', 'std', 'heavy'].includes(String(d.task_class))
       ? String(d.task_class) : classifyTaskClass({ kind, vuln_class: d.vuln_class || '' })
     return {
-      program_id: d.program_id, kind, host: d.host, path: d.path || '', param: d.param || '',
+      program_id: d.program_id, kind, host: d.host, finding_id: d.finding_id, path: d.path || '', param: d.param || '',
+      request_id: d.request_id, method: d.method || '', param_location: d.param_location || '',
       vuln_class: d.vuln_class || '', level, rationale: String(d.rationale || '合规派生（Dispatcher 收敛）').slice(0, 400),
       oracle: d.oracle || '', strategy_key: d.strategy_key || '', campaign_role: role, phase, goal: 'research',
       task_class: taskClass,
@@ -1861,9 +2006,15 @@ function makeHandlers(opts) {
     }
     if (!dispatchRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 dispatch 不可达', '确认总线已挂载', true)
     for (const rawDraft of allowed) {
-      const d = sanitizeDraft(rawDraft, c)
+      let d = sanitizeDraft(rawDraft, c)
       const programId = String(d.program_id || c.program_ids[0] || '')
-      const sit = await campaignSituationOk(programId, d.host, { skipHostScope: d.kind === 'review_finding' || d.kind === 'verify_candidate' })
+      d.program_id = programId
+      const findingCheck = await validateCampaignIntent(c, d)
+      if (!findingCheck.ok) { result.dropped.push({ code: findingCheck.code, message: findingCheck.message }); continue }
+      d = findingCheck.draft
+      const violation = campaignDraftViolation(c, d)
+      if (violation) { result.dropped.push({ code: 'E_CAMPAIGN_GOAL', reason: violation }); continue }
+      const sit = await campaignSituationOk(programId, d.target_host || d.host)
       if (!sit.ok) { result.dropped.push({ strategy_key: d.strategy_key || null, code: sit.code, message: sit.message }); continue }
       // 23 号方案 §3.7：任务分档标注（Path B 纯元数据）；selector=dsh 时附 model_hint（Path A）
       let hint = null
@@ -1877,6 +2028,8 @@ function makeHandlers(opts) {
       const pathModel = supplyEnv.classGroups[d.task_class] || (hint && hint.model) || ''
       const args = {
         program_id: programId, kind: d.kind, host: d.host, path: d.path, param: d.param,
+        ...(d.finding_id != null ? { finding_id: d.finding_id } : {}),
+        ...(d.request_id ? { request_id: d.request_id } : {}), method: d.method, param_location: d.param_location,
         vuln_class: d.vuln_class, level: d.level, rationale: d.rationale,
         oracle: d.oracle, strategy_key: d.strategy_key,
         campaign_id: c.id, campaign_role: d.campaign_role, task_class: d.task_class,
@@ -1904,15 +2057,23 @@ function makeHandlers(opts) {
 
   // 单专项 tick：巡检 → 验收 → 规划 → 下发（每步有界；异常隔离到本 campaign）
   async function runCampaignTick(campaignRaw, repo, { emit = true } = {}) {
-    const c = parseCampaign(campaignRaw)
+    let c = parseCampaign(campaignRaw)
     const summary = { campaign_id: c.id, reviewed: 0, derived: 0, deduped: 0, dropped: 0, escalated: 0, paused: false, autonomous: false, skipped: [] }
     const events = []
     // 1) Supervisor
     try {
-      const actions = superviseCampaign(c, repo)
+      let actions = superviseCampaign(c, repo)
+      if (c.status === 'active' && c.goal_spec.exit_predicates?.length) {
+        const exits = evaluateCampaignExit(c.goal_spec, await campaignExitMetrics(c, repo))
+        if (exits.unavailable.length) summary.skipped.push({ step: 'supervisor', reason: 'exit_metric_unavailable', metrics: exits.unavailable })
+        if (exits.matched.length) {
+          actions = actions.filter(a => a.kind !== 'budget_extend' && a.kind !== 'stop_condition')
+          actions.push({ kind: 'stop_condition', reason: 'exit_predicate', predicates: exits.matched })
+        }
+      }
       for (const a of actions) {
         if (a.kind === 'idle') {
-          const cp = writeCheckpoint(repo, c.id, 'escalation', '专项空转：目标不可达或能量耗尽（>48h 无 accepted 验收且无新派生）', {})
+          const cp = writeCheckpoint(repo, c.id, 'escalation', '专项活动心跳超过48小时未推进，需检查执行与信息增量', {})
           events.push(...cp.events); summary.escalated++
         } else if (a.kind === 'stuck') {
           try { await dispatchRef('task', 'block', { task_id: a.task_id, blocked_reason: `Supervisor：业务卡死（连续 3 轮 ok=0 同类：${String(a.note || '').slice(0, 80)}）` }, { actor: 'reactor' }) } catch (e) { log(`campaign#${c.id} 卡死处置失败: ${e?.message}`) }
@@ -1924,7 +2085,8 @@ function makeHandlers(opts) {
           events.push(...cp.events)
         } else if (a.kind === 'stop_condition') {
           repo.updateCampaign(c.id, { status: 'reviewing' }, 'active')
-          const cp = writeCheckpoint(repo, c.id, 'stop_condition', `停止条件命中（${a.reason}），转 reviewing 待人审（不自动 archive）`, { reason: a.reason || 'unknown' })
+          const cp = writeCheckpoint(repo, c.id, 'stop_condition', `停止条件命中（${a.reason}），转 reviewing 待人审（不自动 archive）`, { reason: a.reason || 'unknown', predicates: a.predicates || [] })
+          events.push({ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: 'active', to: 'reviewing', cause: a.reason } })
           events.push(...cp.events); summary.escalated++
         } else if (a.kind === 'budget_extend') {
           // 23 号方案 §3.6：Supervisor 自动提请预算延长（request_actors 含 scheduler，tick 路径合规）
@@ -1953,6 +2115,7 @@ function makeHandlers(opts) {
         }
       }
     } catch (e) { summary.skipped.push({ step: 'supervisor', error: String(e?.message || e) }) }
+    c = parseCampaign(repo.getCampaign(c.id))
     // 2) Reviewer（补验事件重放/重启遗漏）
     try {
       const pending = repo.unreviewedCampaignTasks(c.id, 20)
@@ -1996,6 +2159,7 @@ function makeHandlers(opts) {
     try {
       events.push(...autoRecover(repo, c, supply, summary))
     } catch (e) { summary.skipped.push({ step: 'auto_recover', error: String(e?.message || e) }) }
+    c = parseCampaign(repo.getCampaign(c.id))
     // 3) Planner + Dispatcher（autonomy≥1 且 active）
     if (c.status === 'active' && Number(c.autonomy) >= 1) {
       try {
@@ -2040,11 +2204,18 @@ function makeHandlers(opts) {
   const invariants = {
     // 21 号方案 §3-2：Intent 局面硬约束编译（scope/连败黑名单/H3 违规丢弃落审计）
     intentSituation: async (args, repo) => {
-      // 26/43 号补丁：review_finding / verify_candidate 的 host 槽载 finding id，不做主机归属校验——
-      // finding 已登记在 program 内即授权证据（program 级授权由 campaignSituationOk 前置把关）。
+      if (args.oracle && !Object.hasOwn(ORACLES, args.oracle)) return { code: 'E_ORACLE_UNAVAILABLE', message: `判定器未注册：${args.oracle}`, retryable: false }
+      const checked = await validateFindingIntent(args)
+      if (!checked.ok) return { code: checked.code, message: checked.message, retryable: false }
+      if (args.campaign_id != null) {
+        const campaign = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
+        if (!campaign || campaign.status !== 'active') return { code: 'E_CAMPAIGN_STATE', message: '专项未激活，不能派生任务', retryable: false }
+        const valid = await validateCampaignIntent(campaign, checked.draft)
+        if (!valid.ok) return { code: valid.code, message: valid.message, retryable: false }
+      }
+      // finding 路径已查询真实归属与主机；其余意图同样要求当前授权范围可读。
       if (args.kind !== 'review_finding' && args.kind !== 'verify_candidate') {
-        // scope fail-closed：host 必须 ∈ program scope（复用 scope.yml 自查，与 asset/endpoint 同口径）
-        const sc = scopeCheckResult(args.program_id, args.host)
+        const sc = await campaignSituationOk(args.program_id, args.host)
         if (!sc.ok) return { code: sc.code, message: `Intent 派生越界：${sc.message}`, hint: '派生器绝不越出 scope（§3-2 局面编译）', retryable: false }
       }
       // 连败黑名单：strategy_key 已拉黑 → 丢弃落审计（E_STATE 由调用方记录）
@@ -2106,15 +2277,19 @@ function makeHandlers(opts) {
       return null
     },
     // 22 号方案 不变量：campaign 子任务归属合法（存在/未归档/program 在绑定内/禁 interval）
-    campaignTaskValid: async (args, repo) => {
+    campaignTaskValid: async (args, repo, ctx) => {
       if (args.campaign_id == null) return null
       const c = parseCampaign(repo.getCampaign(Number(args.campaign_id)))
       if (!c) return { code: 'E_CAMPAIGN_STATE', message: `专项不存在: ${args.campaign_id}`, hint: '核对 campaign_list 里的 id', retryable: false }
       if (c.status === 'archived') return { code: 'E_CAMPAIGN_STATE', message: `专项 #${c.id} 已归档，不可挂子任务`, hint: '归档专项只读；新建专项承接', retryable: false }
-      if (args.program_id && !c.program_ids.includes(String(args.program_id))) {
+      const programId = resolveProgram(args, ctx, repo)
+      if (!c.program_ids.includes(programId)) {
         return { code: 'E_INVARIANT', message: `program ${args.program_id} 不在专项 #${c.id} 绑定范围（${c.program_ids.join(', ')}）`, hint: '只可派生到已绑定 program', retryable: false }
       }
       if (String(args.schedule?.kind || '') === 'interval') return { code: 'E_CAMPAIGN_INTERVAL_FORBIDDEN', message: 'campaign 子任务禁止 interval', hint: '节奏权唯一归 Campaign tick（INV-C7）', retryable: false }
+      const intent = { ...(args.intent_spec || {}), program_id: programId }
+      const checked = await validateCampaignIntent(c, intent)
+      if (!checked.ok) return { code: checked.code, message: checked.message, retryable: false }
       return null
     },
     // campaign_create 门禁：mode/program_ids/stop_conditions/autonomy L2（INV-C4）/name 唯一
@@ -2124,6 +2299,8 @@ function makeHandlers(opts) {
       if (!programIds.length) return { code: 'E_SCHEMA', message: 'program_ids 至少 1 个', hint: '绑定已授权 program（scope_list 可查）', retryable: false }
       if (mode === 'cross' && programIds.length < 2) return { code: 'E_INVARIANT', message: 'cross 模式须绑定 ≥2 个 program', hint: '单一 SRC 深挖用 single', retryable: false }
       const gs = args.goal_spec && typeof args.goal_spec === 'object' ? args.goal_spec : {}
+      const goalError = validateCampaignGoal(gs)
+      if (goalError) return { code: 'E_SCHEMA', message: goalError, retryable: false }
       const stop = Array.isArray(gs.stop_conditions) ? gs.stop_conditions.map((x) => String(x).trim()).filter(Boolean) : []
       if (!stop.length) return { code: 'E_INVARIANT', message: 'goal_spec.stop_conditions 非空（铁律：任何专项必须有退出条件）', hint: '给出量化/事件化退出条件，如「confirmed ≥ 3」或「预算耗尽」', retryable: false }
       const autonomy = Number(args.autonomy) || 0
@@ -2146,6 +2323,8 @@ function makeHandlers(opts) {
       if (!c) return { code: 'E_CAMPAIGN_STATE', message: `专项不存在: ${args.campaign_id}`, hint: '核对 campaign_list 里的 id', retryable: false }
       if (c.status === 'archived') return { code: 'E_CAMPAIGN_STATE', message: '归档专项只读', hint: '新建专项承接', retryable: false }
       if (args.goal_spec && typeof args.goal_spec === 'object') {
+        const goalError = validateCampaignGoal({ ...parseCampaign(c).goal_spec, ...args.goal_spec })
+        if (goalError) return { code: 'E_SCHEMA', message: goalError, retryable: false }
         const stop = Array.isArray(args.goal_spec.stop_conditions) ? args.goal_spec.stop_conditions.map((x) => String(x).trim()).filter(Boolean) : null
         if (stop && !stop.length) return { code: 'E_INVARIANT', message: 'goal_spec.stop_conditions 不得清空', hint: '退出条件是可更新但不可删除的铁律', retryable: false }
       }
@@ -2163,6 +2342,8 @@ function makeHandlers(opts) {
       for (const d of drafts) {
         const pid = String(d.program_id || c.program_ids[0] || '')
         if (!pid || !c.program_ids.includes(pid)) return { code: 'E_INVARIANT', message: `草稿 program ${pid || '(空)'} 不在专项绑定范围`, hint: '只可派生到已绑定 program', retryable: false }
+        const checked = await validateCampaignIntent(c, { ...d, program_id: pid })
+        if (!checked.ok) return { code: checked.code, message: checked.message, retryable: false }
         if (!String(d.host || '').trim()) return { code: 'E_SCHEMA', message: '草稿缺 host', hint: '每条草稿须含 host', retryable: false }
       }
       // 双预算闸之 campaign 侧（显式路径）：不变量阶段写入 checkpoint/降级并拒绝
@@ -2186,11 +2367,85 @@ function makeHandlers(opts) {
     },
   }
 
+  function reopenFailedTask(task, repo) {
+    const after = Date.now() + CAMPAIGN_RETRY_AFTER_FAIL_MS
+    const retry = repo.retryFailedHypothesis(task.id, after)
+    if (task.strategy_key && !retry.limited) {
+      const key = task.campaign_id != null ? `c${task.campaign_id}|${task.strategy_key}` : String(task.strategy_key)
+      repo.reopenStrategy(key, after)
+    }
+    return retry
+  }
+  function settleCost(args, repo) {
+    const task = repo.getTask(args.task_id), previous = repo.getRunCost(args.task_id, args.run_id)
+    const run = repo.getTaskRun(args.task_id, args.run_id)
+    if (!task || !run && !previous) throwErr('E_NOT_FOUND', '费用只能关联已登记的 task/run', '先确认执行关联，不能仅凭账单创建虚构执行')
+    if (!Number.isSafeInteger(args.spent_tokens) || args.spent_tokens < 0) throwErr('E_SCHEMA', '费用须为非负安全整数', null)
+    if (args.consumed_at != null && (!Number.isSafeInteger(args.consumed_at) || args.consumed_at > Date.now())) throwErr('E_SCHEMA', '实际消费时间无效', null)
+    if (!previous && run.spent_tokens != null) throwErr('E_TASK_COST_LEGACY_UNATTRIBUTED', '旧执行已有费用但无独立账本，不能猜测是否已计入任务累计', '保留原值，先完成历史账单对账')
+    if (previous && (args.spent_tokens < previous.spent_tokens || previous.consumed_at != null && args.consumed_at != null && previous.consumed_at !== args.consumed_at)) throwErr('E_TASK_COST_CONFLICT', '累计费用不能降低或改写已知消费时间', '冲正需要独立审计流程，勿重放覆盖')
+    const session = args.session_id || run?.session_id || previous?.session_id || null
+    if (args.session_id && (run?.session_id && args.session_id !== run.session_id || previous?.session_id && args.session_id !== previous.session_id)) throwErr('E_TASK_COST_CONFLICT', '账单会话与执行记录不一致', null)
+    if (args.source === 'session_bill' && (!session || repo.sessionUsedByOtherRun(session, args.task_id, args.run_id))) throwErr('E_TASK_COST_AMBIGUOUS', '会话总账无法唯一归属到此 run', '需要逐执行账单；不能把同一会话累计重复计入多个 run')
+    const result = repo.settleRunCost({ ...args, session_id: session, recorded_at: Date.now() })
+    const data = { task_id: args.task_id, run_id: args.run_id, spent_tokens: args.spent_tokens, delta_tokens: result.delta,
+      cost_state: 'recorded', consumed_at: previous?.consumed_at ?? args.consumed_at ?? null,
+      total_spent_tokens: repo.getTask(args.task_id).spent_tokens }
+    return { data, events: result.first || result.delta || previous?.consumed_at == null && args.consumed_at != null
+      ? [{ name: 'task.cost.settled', payload: { ...data, program_id: task.program_id, campaign_id: task.campaign_id ?? null, source: args.source } }] : [] }
+  }
   const commands = {
+    task_record_run_cost: async (args, repo) => settleCost(args, repo),
+    task_hypotheses_enqueue: async (args, repo) => {
+      let row
+      if (args.request_id) {
+        const r = await queryRef?.('endpoint', 'request_get', { request_id: args.request_id }, { actor: 'reactor' })
+        if (!r?.ok || !r.data) throwErr(r?.error?.code || 'E_NOT_FOUND', '请求观测不可读取', null, true)
+        if (r.data.program_id !== args.program_id || r.data.host !== args.host || r.data.path !== args.path) throwErr('E_INVARIANT', '请求事件的项目/端点与观测不一致', null, false)
+        row = { ...r.data, params: r.data.parameters }
+      } else {
+        const r = await queryRef?.('endpoint', 'list', { program_id: args.program_id, host: args.host, method: args.method || 'GET', path_like: args.path, limit: 500 }, { actor: 'reactor' })
+        if (!r?.ok) throwErr(r?.error?.code || 'E_BACKEND_UNAVAILABLE', '端点查询失败，保留事件重试', null, true)
+        row = (r.rows || r.data?.rows || []).find(ep => ep.host === args.host && ep.path === args.path && (!ep.method || ep.method === (args.method || 'GET')))
+        if (!row) throwErr('E_NOT_FOUND', '请求事件对应的端点不存在', null, true)
+      }
+      const drafts = await deriveHypothesis({ programId: args.program_id, host: args.host, path: args.path, endpointRow: row })
+      const added = repo.enqueueHypotheses(drafts)
+      return { data: { added, total: drafts.length }, after: { added } }
+    },
+
+    task_hypotheses_dispatch: async (args, repo, ctx) => {
+      const derived = [], dropped = []
+      const campaigns = repo.listCampaignsWhere({}, 500, 0).map(parseCampaign).filter(c => c.status !== 'archived')
+      const supply = await evaluateSupply()
+      if (supply.enabled && supply.supply_factor === 0) return { data: { derived, dropped, paused: 'llm_supply_zero' } }
+      const governedPrograms = [...new Set(campaigns.flatMap(c => c.program_ids))]
+      for (const q of repo.pendingHypotheses(args.program_id || '', args.limit || 3, Date.now(), governedPrograms)) {
+        const draft = JSON.parse(q.draft)
+        // 有专项的项目由该专项 Planner 统一预算和目标；事件消费不能另开无归属任务绕过它。
+        let r
+        try { r = await dispatchRef('task', 'derive_intent', draft, { actor: 'reactor', cause: ctx?.cause }) }
+        catch (e) { r = { ok: false, error: { code: e.code || 'E_INTERNAL', message: e.message } } }
+        if (r?.ok && r.data?.task_id) {
+          repo.acknowledgeHypothesis(q.id, r.data.task_id)
+          derived.push({ strategy_key: draft.strategy_key, task_id: r.data.task_id, deduped: !!r.data.deduped })
+        } else {
+          const error = `${r?.error?.code || 'E_INTERNAL'}: ${r?.error?.message || '任务未落库'}`
+          repo.deferHypothesis(q.id, error, Date.now() + 3600000)
+          dropped.push({ strategy_key: draft.strategy_key, code: r?.error?.code || 'E_INTERNAL', message: error })
+        }
+      }
+      return { data: { derived, dropped }, after: { derived: derived.length, deferred: dropped.length } }
+    },
     task_create: async (args, repo, ctx) => {
       const nowTs = Date.now()
       const programId = resolveProgram(args, ctx, repo)
       if (!programId) throwErr('E_TASK_PROGRAM_UNRESOLVED', 'program_id 缺失且会话不在已绑定工作区', '传 program_id（见 program_list），或在绑定工作区的会话里调用')
+      if (args.intent_spec) {
+        const checked = await validateFindingIntent({ ...args.intent_spec, program_id: programId })
+        if (!checked.ok) throwErr(checked.code, checked.message, '核对结构化任务目标')
+        args = { ...args, intent_spec: checked.draft }
+      }
       if (args.provider && !args.model) throwErr('E_SCHEMA', 'provider+model 须成对出现', '模型覆盖须 provider+model 成对', false)
       if (!args.provider && args.model) throwErr('E_SCHEMA', 'provider+model 须成对出现', '模型覆盖须 provider+model 成对', false)
       const sched = normalizeSchedule(args.schedule, nowTs, { phase: args.phase || '' })
@@ -2248,6 +2503,7 @@ function makeHandlers(opts) {
         strategy_key: args.strategy_key ?? null,
         task_class: args.task_class ?? null,
         model_hint: args.model_hint ?? null,
+        intent_spec: args.intent_spec ? JSON.stringify(args.intent_spec) : null,
       })
       const payload = {
         task_id: id, program_id: programId, phase: args.phase || '', objective_head: String(args.objective || '').slice(0, 80),
@@ -2362,11 +2618,14 @@ function makeHandlers(opts) {
       // 收尾重试只能作用于认领它的那一轮，空 run 的 busy 也必须隔离。
       const claimChanged = args.claim_started_at != null && (Number(t.started_at) !== args.claim_started_at || t.status !== 'running')
       const runId = args.run_id || (claimChanged ? '' : t.active_run_id) || ''
+      if (!runId && args.spent_tokens != null) throwErr('E_TASK_COST_UNATTRIBUTED', '有账单但无执行 run_id，不能静默丢失费用或伪造执行', '先恢复真实执行关联，再提交费用')
       const recorded = runId && repo.hasTaskRun(Number(args.task_id), runId)
       if (claimChanged || recorded || TERMINAL.has(t.status) || t.status === 'blocked' || (t.active_run_id && runId !== t.active_run_id)) {
         // 晚到结果仍保留原轮次执行史；空 run 的旧 busy 不得借用新 active_run_id。
-        if (runId && !recorded) repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok: args.outcome === 'done' && !args.timed_out && !args.truth?.rejected, note: args.note || '', started_at: args.claim_started_at ?? t.started_at, finished_at: nowTs, session_id: args.session_id ?? null, spent_tokens: args.spent_tokens ?? null })
-        return { data: { task_id: Number(args.task_id), superseded: true, ...(claimChanged ? { reason: 'claim_changed' } : {}) } }
+        if (runId && !recorded) repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok: args.outcome === 'done' && !args.timed_out && !args.truth?.rejected, note: args.note || '', started_at: args.claim_started_at ?? t.started_at, finished_at: nowTs, session_id: args.session_id ?? null, spent_tokens: null })
+        const cost = runId && args.spent_tokens != null && (!recorded || repo.getRunCost(t.id, runId) || repo.getTaskRun(t.id, runId)?.spent_tokens == null)
+          ? settleCost({ task_id: t.id, run_id: runId, spent_tokens: args.spent_tokens, session_id: args.session_id, source: 'worker_report' }, repo) : null
+        return { data: { task_id: Number(args.task_id), superseded: true, ...(cost ? { cost: cost.data } : {}), ...(claimChanged ? { reason: 'claim_changed' } : {}) }, events: cost?.events || [] }
       }
 
       // 真实性判定（truth.rejected ⇒ 强制 failed）
@@ -2407,11 +2666,12 @@ function makeHandlers(opts) {
       // 21 号方案 §0-8（INV-T14 落地）：成本归因——worker 上报 token 回填 spent_tokens；
       // 超 budget_tokens 记 [预算超支]（不影响 ok——超支是观测事实不是失败）。
       let spentTokens = Number.isInteger(args.spent_tokens) && args.spent_tokens >= 0 ? args.spent_tokens : null
+      let costSource = 'worker_report'
       // 26 号补丁：worker 未上报时按 session_id 从 dsh-bill records.jsonl 归因（专项预算闸的真实口径）
       if (spentTokens === null) {
-        const sid = args.session_id ?? t.session_id
-        const billTok = billSum.tokensForSession(sid)
-        if (billTok !== null) spentTokens = billTok
+        const sid = args.session_id
+        const billTok = repo.sessionUsedByOtherRun(sid, t.id, runId) ? null : billSum.tokensForSession(sid)
+        if (billTok !== null) { spentTokens = billTok; costSource = 'session_bill' }
       }
       let budgetOverrun = false
       if (spentTokens !== null && t.budget_tokens !== null && t.budget_tokens !== undefined && spentTokens > Number(t.budget_tokens)) {
@@ -2446,19 +2706,15 @@ function makeHandlers(opts) {
         active_run_id: null,
         finished_at: (status === 'done' || status === 'failed') ? finished : t.finished_at,
       }
-      if (spentTokens !== null) finishSets.spent_tokens = spentTokens
       repo.transitionTask(Number(args.task_id), finishSets)
-      repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null, spent_tokens: spentTokens })
+      repo.insertTaskRun({ task_id: Number(args.task_id), run_id: runId, ok, note, started_at: t.started_at, finished_at: finished, session_id: args.session_id ?? null, spent_tokens: null })
+      const cost = runId && spentTokens !== null ? settleCost({ task_id: t.id, run_id: runId, spent_tokens: spentTokens, session_id: args.session_id, source: costSource }, repo) : null
       // 41 号补丁：运行级失败（额度耗尽/崩溃/超时，未达验收 verdict）重开策略冷却，Planner 可重试；
       // 否则 strategy_dedupe 停留 attempted+reopen_after=NULL，被 compileCampaignPlan 永久 skip。
-      if (status === 'failed' && t.strategy_key && repo.reopenStrategy) {
-        const bare = String(t.strategy_key)
-        const key = t.campaign_id != null ? `c${t.campaign_id}|${bare}` : bare
-        try { repo.reopenStrategy(key, Date.now() + CAMPAIGN_RETRY_AFTER_FAIL_MS) } catch (e) { /* best-effort */ }
-      }
+      if (status === 'failed') reopenFailedTask(t, repo)
       return {
         data: { task_id: Number(args.task_id), status, next_run_at: nextRunAt, run_recorded: true, spent_tokens: spentTokens, budget_overrun: budgetOverrun, guard: { checked: guard.checked, missing: guard.missing } },
-        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, spent_tokens: spentTokens, budget_overrun: budgetOverrun, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, fgs_snapshot: fgsSnapshot, cause: 'run', campaign_id: t.campaign_id ?? null, campaign_role: t.campaign_role ?? null } }],
+        events: [{ name: 'task.finished', payload: { task_id: Number(args.task_id), program_id: t.program_id, run_id: runId, ok, outcome: args.outcome, schedule_kind: t.schedule_kind, next_run_at: nextRunAt, session_id: args.session_id ?? null, spent_tokens: spentTokens, budget_overrun: budgetOverrun, note: String(note || '').slice(0, 300), guard: { checked: guard.checked, missing: guard.missing }, truth, fgs_snapshot: fgsSnapshot, cause: 'run', campaign_id: t.campaign_id ?? null, campaign_role: t.campaign_role ?? null } }, ...(cost?.events || [])],
         after: { task_id: Number(args.task_id), status, ok },
       }
     },
@@ -2527,32 +2783,59 @@ function makeHandlers(opts) {
       }
       // 36 号补丁：每 tick 认领上限 env 可调（默认 12，与 exec worker 池匹配，防 MAX_WORKERS 忙导致回 queued 空转）
       const limit = Math.min(Math.max(Number(process.env.SEC_SCHEDULER_CLAIM_LIMIT) || 12, 1), 32)
-      const tasks = repo.claimDueTasks(Number(args.now), limit)
+      const claimed = repo.claimDueTasks(Number(args.now), limit)
+      const tasks = [], blocked = []
+      for (const t of claimed) {
+        const intent = { ...parseJsonSafe(t.intent_spec, {}), program_id: t.program_id }
+        let checked = { ok: true }
+        if (t.campaign_id != null) {
+          const c = parseCampaign(repo.getCampaign(t.campaign_id))
+          checked = !c || c.status !== 'active' ? { ok: false, code: 'E_CAMPAIGN_STATE', message: '专项当前不可执行' } : await validateCampaignIntent(c, intent)
+        } else if (intent.kind) {
+          checked = await validateFindingIntent(intent)
+          if (checked.ok) checked = await campaignSituationOk(t.program_id, checked.draft.host)
+        }
+        if (!checked.ok) {
+          const reason = `${checked.code}: ${checked.message}`
+          repo.transitionTask(t.id, { status: 'blocked', blocked_reason: reason, started_at: null }, 'running')
+          blocked.push({ task_id: t.id, reason })
+        } else tasks.push(t)
+      }
       return {
-        data: { claimed: tasks.map((t) => Number(t.id)), count: tasks.length },
-        events: tasks.map((t) => ({ name: 'task.claimed', payload: { task_id: Number(t.id), program_id: t.program_id, phase: t.phase, goal: t.goal || '', priority: t.priority, claimed_at: Number(args.now), worker_slot: 1 } })),
+        data: { claimed: tasks.map((t) => Number(t.id)), count: tasks.length, blocked },
+        events: tasks.map((t) => ({ name: 'task.claimed', payload: { task_id: Number(t.id), program_id: t.program_id, phase: t.phase, goal: t.goal || '', priority: t.priority, claimed_at: Number(args.now), worker_slot: 1 } })).concat(blocked.map(b => ({ name: 'task.blocked', payload: { task_id: b.task_id, blocked_reason: b.reason } }))),
         after: { count: tasks.length },
       }
     },
 
     // 21 号方案 §3-1：Intent 派生落任务草稿（strategy 去重 + 预算闸 + 绝不自动执行）
     task_derive_intent: async (args, repo, ctx) => {
-      const bare = args.strategy_key || strategyKey({ host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '' })
+      const checked = await validateFindingIntent(args)
+      if (!checked.ok) throwErr(checked.code, checked.message, '核对 finding 归属和真实主机')
+      args = checked.draft
+      const bare = args.strategy_key || (args.finding_id ? `${args.kind === 'verify_candidate' ? 'verify' : 'review'}|${args.finding_id}`
+        : `${['auth_prepare', 'explore'].includes(args.kind) ? args.kind + '|' : ''}${strategyKey({ host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '' })}`)
       // 22 号方案 §5.5：专项维度去重键（连败黑名单仍按裸 key 判定——打法属性非专项属性）
       const key = args.campaign_id ? `c${args.campaign_id}|${bare}` : bare
       // strategy_key 幂等去重：已测组合不重发；reopen_after 已过（rework 或运行级失败重开）则允许重试。
       // 41 号补丁：旧实现只看 !blacklisted，忽略 reopen_after，导致重开机制失效——策略一旦 derived
       // 永不再派（额度耗尽失败的 2985 策略被 Planner 永久 skip，额度恢复后无任务可跑）。
+      const queued = repo.getHypothesisByKey(bare)
+      if (queued?.last_error === 'execution_retry_limit_reached') throwErr('E_HYPOTHESIS_RETRY_LIMIT', '此假设已耗尽自动执行重试次数', '保留历史，补齐前置或使用新的请求观测后再评估')
+      if (queued?.task_id == null && queued?.retry_count > 0 && queued.available_at > Date.now()) throwErr('E_HYPOTHESIS_COOLDOWN', '失败假设仍在冷却期', '冷却后由队列重新派发', true)
       const existing = repo.getStrategy ? repo.getStrategy(key) : null
       if (existing) {
         const ra = existing.reopen_after == null ? null : Number(existing.reopen_after)
         const retryable = ra != null && ra <= Date.now()
         if (existing.blacklisted || !retryable) {
+          if (existing.last_task_id) repo.acknowledgeHypothesisKey(bare, existing.last_task_id)
           return { data: { deduped: true, strategy_key: bare, task_id: existing.last_task_id ?? null }, events: [], after: { deduped: true } }
         }
         // reopen_after 已过：重试同一打法（下方 upsertStrategy 会 reset reopen_after=NULL）
       }
       const extraLines = []
+      if (args.method) extraLines.push(`请求方法：${args.method}；参数位置：${args.param_location || '待核实'}。不得把正文参数改成 URL 参数。`)
+      if (args.request_id) extraLines.push(`请求观测：endpoint_request_get(request_id=${args.request_id})；先核验正文/请求头摘要与身份引用，建立正常业务基线，再做对照实验。`)
       if (args.level === 'H3' && args.h3) {
         extraLines.push(`H3 语义假设：${args.h3.hypothesis}`)
         extraLines.push(`引用卡片：${(args.h3.card_refs || []).join(', ')}（卡片置信度已吃 wins/fails 校准）`)
@@ -2567,12 +2850,16 @@ function makeHandlers(opts) {
       } else if (args.kind === 'asset_enum') {
         // 25 号补丁：资产收集入专项——根域枚举刷新闭环（枚举→探活→入库→enum_fresh 记账）
         objective = `[资产缺口] ${args.host} 根域枚举超窗——subfinder 子域枚举 + dnsx 解析去存 + httpx 探活分级（fofa_search 可作补充信源）；新存活主机 asset_upsert_bulk 入库（source=asset_enum，尊重 program QPS/risk，不越出 scope）；收尾 ledger_coverage_mark(dim=asset, key=${args.host}, mark=enum_fresh) 记账并写 handoff 摘要。`
+      } else if (args.kind === 'auth_prepare') {
+        objective = `[身份前置] ${args.host}${args.path || ''}：核对项目内测试账号、角色、会话有效性与自有对象；用正常业务请求验证身份，记录可用引用和缺少的前置。没有身份时明确 blocked_auth，不写漏洞阴性；不创建第三方账号或修改非测试对象。`
+      } else if (args.kind === 'explore') {
+        objective = `[有界探索] ${args.host}${args.path || ''}：采集真实请求方法、输入位置、业务动作与健康基线，保存来源证据及身份/对象引用；未知不等于无漏洞，产出供后续具体假设使用。`
       } else if (args.kind === 'review_finding') {
         // 26 号补丁：存量复核入专项——超龄未分诊 finding 逐条复核（复用验证铁律，一次性消化历史债务）
-        objective = `[存量复核] finding #${args.host} 超龄未分诊——vuln_get 读取候选详情与既有证据；证据充分走复核校准（confirm 需机器 oracle 或 proof capsule，不可凭字段齐全确认）；复现可差分则补 exec_oracle_judge 验证；有可靠反证才 vuln_reject(false_positive)；证据不足则 vuln_note 记录 inconclusive 和待补证据，保留候选；全程不越出 scope，结论落 FGS + handoff 引用。`
+        objective = `[存量复核] finding #${args.finding_id} 超龄未分诊——vuln_get 读取候选详情与既有证据；旧证据须重新执行受控验证或独立人工审校；exec_oracle_judge 仅辅助分析。适用的 owner-only IDOR 用 exec_verify_authz_read 生成 decision_id，再封装 capsule 复核确认；有可靠反证才 vuln_reject(false_positive)；证据不足则 vuln_note 记录 inconclusive 和待补证据，保留候选；全程不越出 scope，结论落 FGS + handoff 引用。`
       } else if (args.kind === 'verify_candidate') {
         // 43 号补丁：候选验证成为一等流水线（发现转化的第一瓶颈；此前 verify 角色任务仅个位数）
-        objective = `[候选验证] finding #${args.host}（${args.vuln_class || 'idor'} 候选）——vuln_claim 认领后优先走机器 oracle（exec_oracle_judge / 双会话差分重放 / proof capsule），通过才 vuln_confirm（evidence 必填，引用 capsule/run）；有可靠反证证明不成立才 vuln_reject(false_positive) 写明 reason；证据不足则 vuln_note 记录 inconclusive 和待补前置，保留候选，禁止无证据 confirm、禁止重复造轮子。全程不越出 scope，结论落 FGS + handoff。`
+        objective = `[候选验证] finding #${args.finding_id}（${args.vuln_class || 'idor'} 候选）——vuln_claim 认领后检查适用的受控验证器（owner-only JSON IDOR 使用 exec_verify_authz_read），绑定双身份、finding_id/request_id 与宿主契约；decision_id 封装可信 capsule 后才 vuln_confirm，旧 run 与辅助 oracle 输出不能确认；有可靠反证证明不成立才 vuln_reject(false_positive) 写明 reason；证据不足则 vuln_note 记录 inconclusive 和待补前置，保留候选，禁止无证据 confirm、禁止重复造轮子。全程不越出 scope，结论落 FGS + handoff。`
       } else {
         objective = hypothesisObjective({ level: args.level || 'H2', vulnClass: args.vuln_class || 'info_disclosure', host: args.host, path: args.path || '', param: args.param || '', oracle: args.oracle, rationale: args.rationale || '覆盖缺口驱动', programId: args.program_id, extraLines })
       }
@@ -2593,7 +2880,10 @@ function makeHandlers(opts) {
         }
       }
       const r = await dispatchRef('task', 'create', {
-        program_id: args.program_id, objective, priority, phase: 'vuln',
+        program_id: args.program_id, objective, priority, phase: ['crawl', 'param_enrich', 'asset_enum', 'auth_prepare', 'explore'].includes(args.kind) ? 'recon' : 'vuln',
+        intent_spec: { kind: args.kind, host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '', program_id: args.program_id,
+          ...(args.request_id ? { request_id: args.request_id } : {}), method: args.method || '', param_location: args.param_location || '',
+          ...(args.finding_id ? { finding_id: args.finding_id } : {}) },
         budget_tokens: 150000,
         ...(args.campaign_id != null ? { campaign_id: args.campaign_id } : {}),
         ...(args.campaign_role ? { campaign_role: args.campaign_role } : {}),
@@ -2611,6 +2901,7 @@ function makeHandlers(opts) {
       if (!r || !r.ok) throwErr(r?.error?.code || 'E_INTERNAL', r?.error?.message || '派生任务创建失败', r?.error?.hint || '', false)
       const taskId = r.data.task_id
       if (repo.upsertStrategy) repo.upsertStrategy(key, { program_id: args.program_id, last_task_id: taskId })
+      repo.acknowledgeHypothesisKey(bare, taskId)
       return {
         data: { deduped: false, strategy_key: bare, task_id: taskId, kind: args.kind, level: args.level || 'H2' },
         events: [{ name: 'task.intent.derived', payload: { strategy_key: bare, task_id: taskId, program_id: args.program_id, kind: args.kind, level: args.level || 'H2', vuln_class: args.vuln_class || null, host: args.host, path: args.path || '', param: args.param || '', campaign_id: args.campaign_id ?? null, campaign_role: args.campaign_role ?? null, cause: ctx?.cause ? 'event' : 'manual' } }],
@@ -2859,18 +3150,28 @@ function makeHandlers(opts) {
     task_reap: async (args, repo) => {
       const nowTs = Date.now()
       const pidAliveFn = args.pid_alive ? (pid) => { try { process.kill(pid, 0); return true } catch { return false } } : undefined
-      const { reaped, skipped_alive } = repo.reapStale(Number(args.max_age), pidAliveFn, nowTs)
-      return { data: { reaped, skipped_alive }, events: [] }
+      const { reaped, skipped_alive, runs } = repo.reapStale(Number(args.max_age), pidAliveFn, nowTs)
+      const events = runs.map(({ task: t, run_id, status, next_run_at }) => {
+        if (status === 'failed') reopenFailedTask(t, repo)
+        return { name: 'task.finished', payload: { task_id: t.id, program_id: t.program_id, run_id,
+          ok: false, outcome: 'crash', cause: 'reaped', note: '宿主重启/超时回收',
+          claim_started_at: t.started_at, schedule_kind: t.schedule_kind, next_run_at,
+          session_id: null, spent_tokens: null, cost_state: 'unknown',
+          truth: { checked: false, rejected: false }, fgs_snapshot: null,
+          campaign_id: t.campaign_id ?? null, campaign_role: t.campaign_role ?? null } }
+      })
+      return { data: { reaped, skipped_alive }, events }
     },
 
     task_worker_register: async (args, repo) => {
-      repo.upsertWorker(args)
       // L6：scheduler 派单绑定——tasks.active_run_id=run_id（task_reap 的活 worker 跳过依据，
       // 防回收后双重派单）。仅当任务确在 running（认领态）才绑，晚到事件不改写已收尾任务。
       if (args.task_id) {
-        const t = repo.getTask(Number(args.task_id))
-        if (t && t.status === 'running') repo.transitionTask(Number(args.task_id), { active_run_id: String(args.run_id) }, 'running')
+        if (args.claim_started_at == null || !repo.bindClaimedWorker(args.task_id, args.claim_started_at, args.run_id)) {
+          throwErr('E_TASK_CLAIM_SUPERSEDED', 'worker 不属于当前认领，或该认领已有其他 worker', '停止此次 spawn；旧事件不得覆盖当前 active_run_id')
+        }
       }
+      repo.upsertWorker(args)
       return { data: { run_id: args.run_id, registered: true } }
     },
 
@@ -2936,6 +3237,8 @@ function makeHandlers(opts) {
   }
 
   const queries = {
+    task_run_costs: async (args, repo) => repo.listRunCosts(args),
+    task_hypotheses: async (args, repo) => repo.listHypotheses(args),
     task_list: async (args, repo) => {
       const filters = { program_id: args.program_id, status: args.status, phase: args.phase, goal: args.goal, q: args.q, bucket: args.bucket, scheduled: args.scheduled, campaign_id: args.campaign_id }
       const total = repo.countTasksWhere(filters)
@@ -3172,7 +3475,7 @@ function makeHandlers(opts) {
       // 事件用 null 表示未知；命令 schema 的可选字段应省略，不能把 null
       // 当作 string/integer 传入（dashboard 发起的 worker 通常没有来源 Session）。
       const args = Object.fromEntries(Object.entries({
-        run_id: p.run_id, dedupe_key: p.dedupe_key, task: p.task, cwd: p.cwd, task_id: p.task_id,
+        run_id: p.run_id, dedupe_key: p.dedupe_key, task: p.task, cwd: p.cwd, task_id: p.task_id, claim_started_at: p.claim_started_at,
         pid: p.pid, timeout_sec: p.timeout_sec, session_id: p.origin_session_id || p.session_id, run_dir: p.run_dir,
       }).filter(([, value]) => value != null))
       return dispatchRef('task', 'worker_register', args, { actor: 'reactor' })
@@ -3188,8 +3491,7 @@ function makeHandlers(opts) {
       }, { actor: 'reactor' })
     },
 
-    // 21 号方案 §3-1/§6.2：新端点入库 → 污点路由推导 H2 假设任务草稿（有界：单端点 ≤3 条）
-    // 弱联动 best-effort：派生失败不阻断端点入库；派生丢弃（黑名单/预算/越界）落返回供审计。
+    // 请求/端点变更先保存完整队列，再有界派单；入队失败交还 outbox 重试。
     onEndpointHypothesis: async (envelope) => {
       if (!dispatchRef) return { ok: true, data: { skipped: true } }
       const p = envelope?.payload || {}
@@ -3197,26 +3499,11 @@ function makeHandlers(opts) {
       const host = String(p.host || '')
       const epPath = String(p.path || '')
       if (!programId || !host || !epPath) return { ok: true, data: { skipped: true } }
-      // 取端点行（参数/auth_state/should_auth 是路由输入）
-      let row = null
       try {
-        const q = await queryRef('endpoint', 'list', { host, path_like: epPath, limit: 5 }, { actor: 'reactor' })
-        const rows = (q && (q.rows || q.data?.rows)) || []
-        row = rows.find((r) => r.host === host && r.path === epPath) || null
-      } catch { row = null }
-      const drafts = await deriveHypothesis({ programId, host, path: epPath, endpointRow: row })
-      const derived = []
-      const dropped = []
-      for (const d of drafts) {
-        try {
-          const r = await dispatchRef('task', 'derive_intent', d, { actor: 'reactor', cause: envelope })
-          if (r && r.ok) derived.push({ strategy_key: r.data.strategy_key, task_id: r.data.task_id, deduped: !!r.data.deduped })
-          else dropped.push({ strategy_key: d.strategy_key, code: r?.error?.code || 'E_INTERNAL', message: String(r?.error?.message || '').slice(0, 120) })
-        } catch (e) {
-          dropped.push({ strategy_key: d.strategy_key, code: e?.code || 'E_INTERNAL', message: String(e?.message || e).slice(0, 120) })
-        }
-      }
-      return { ok: true, data: { skipped: false, derived, dropped } }
+        const enqueued = await dispatchRef('task', 'hypotheses_enqueue', { program_id: programId, host, path: epPath, method: p.method || 'GET', ...(p.request_id ? { request_id: p.request_id } : {}) }, { actor: 'reactor', cause: envelope })
+        if (!enqueued?.ok) return enqueued
+        return await dispatchRef('task', 'hypotheses_dispatch', { program_id: programId, limit: 3 }, { actor: 'reactor', cause: envelope })
+      } catch (e) { return { ok: false, error: { code: e.code || 'E_INTERNAL', message: e.message, retryable: true } } }
     },
 
     // 21 号方案 §3-1：覆盖缺口队列消费——未爬 host / 无参数端点自动派 crawl/param_enrich 草稿
@@ -3508,6 +3795,10 @@ export function startTaskScheduler(opts) {
 
   async function schedulerTick() {
     await finisher.flush()
+    try {
+      const r = await dispatch('task', 'hypotheses_dispatch', { limit: 3 }, { actor: 'scheduler' })
+      if (!_ok(r)) log(`假设队列派发失败: ${_errCode(r)} ${_errMsg(r)}`)
+    } catch (e) { log(`假设队列派发异常: ${e.message}`) }
     let claimed = []
     const claimStartedAt = Date.now()
     try {
@@ -3568,7 +3859,7 @@ export function startTaskScheduler(opts) {
         const prompt = buildScheduledPrompt(task, role, { ...progress, timeoutSec, startedAt })
         // 派 worker：cwd=工作区（v4 等价——会话反查/工作区归组依赖 header.cwd 一致）；
         // force 跳过 dedupe 恢复窗（周期任务重跑是必然，dedupe 的 done 窗口恢复会把"已收尾再启动"的周期吞掉）
-        const spawnArgs = { task: prompt, timeout: timeoutSec, force: true, provider: task.provider || undefined, model: task.model || undefined, phase: task.phase || '', task_id: task.id }
+        const spawnArgs = { task: prompt, timeout: timeoutSec, force: true, provider: task.provider || undefined, model: task.model || undefined, phase: task.phase || '', task_id: task.id, claim_started_at: task.started_at }
         if (cwd) spawnArgs.cwd = cwd
         let r
         try {

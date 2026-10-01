@@ -172,6 +172,7 @@ export function taintRoute(endpoint = {}) {
   }
 
   for (const p of params) {
+    const start = out.length
     const name = String(p?.name || '')
     if (!name) continue
     const value = p?.value === undefined || p?.value === null ? '' : String(p.value)
@@ -204,12 +205,13 @@ export function taintRoute(endpoint = {}) {
         oracle: 'sqli_diff', rationale: `可注入参数 ${name}——SQLi 布尔/时间差分`,
         strategy_hint: `sqli|${name}` })
     }
+    for (let i = start; i < out.length; i++) out[i].param_location = p.in || p.location || ''
   }
   // priority 升序去重（同 class+param 只留最高优）
   const seen = new Set()
   return out
     .sort((a, b) => a.priority - b.priority)
-    .filter((h) => { const k = `${h.vuln_class}|${h.param || ''}`; if (seen.has(k)) return false; seen.add(k); return true })
+    .filter((h) => { const k = `${h.vuln_class}|${h.param_location || ''}|${h.param || ''}`; if (seen.has(k)) return false; seen.add(k); return true })
 }
 
 // H1 保底：栈指纹 → 确定性假设规则（零 token，任何存活资产必有产出）
@@ -601,6 +603,60 @@ export function inferVulnClass(text = '') {
   return 'info_disclosure'
 }
 
+// 27: 同一规则用于 Planner、Dispatcher 和任务创建，避免自由文本目标漂移。
+export const DISCOVERY_TASK_KINDS = ['hypothesis', 'crawl', 'param_enrich', 'asset_enum', 'review_finding', 'verify_candidate', 'auth_prepare', 'explore']
+// 仅开放已有可靠来源的指标；技术产出/有效实验/进展时钟待对应事实链落地后开放。
+export const TECHNICAL_EXIT_METRICS = ['candidate_pending', 'spent_tokens', 'elapsed_ms']
+export function validateCampaignGoal(goal = {}) {
+  if (!goal || typeof goal !== 'object' || Array.isArray(goal)) return 'goal_spec 必须是对象'
+  for (const [field, allowed] of [['allowed_task_kinds', DISCOVERY_TASK_KINDS], ['vuln_classes', Object.keys(CAMPAIGN_CLASS_PRIORITY)]]) {
+    if (goal[field] == null) continue
+    if (!Array.isArray(goal[field]) || !goal[field].length || goal[field].some(v => !allowed.includes(v))) return `${field} 必须是非空的已知值数组`
+  }
+  if (goal.source_pool != null && !['all', 'candidates'].includes(goal.source_pool)) return 'source_pool 仅支持 all/candidates'
+  if (goal.exit_predicates != null) {
+    if (!Array.isArray(goal.exit_predicates)) return 'exit_predicates 必须是数组'
+    for (const p of goal.exit_predicates) {
+      if (!p || !TECHNICAL_EXIT_METRICS.includes(p.metric) || !['gte', 'eq', 'lte'].includes(p.op) || !Number.isFinite(p.value) || p.value < 0) return '退出条件只能使用技术/执行/成本指标和非负数值'
+      if (p.metric === 'spent_tokens' && p.op !== 'gte') return 'spent_tokens 仅支持 gte（已记录费用是下界，不能以缺账证明低消费）'
+      if (p.metric === 'candidate_pending' && goal.source_pool !== 'candidates') return 'candidate_pending 退出条件要求 source_pool=candidates'
+    }
+  }
+  if (goal.targets != null && (typeof goal.targets !== 'object' || Array.isArray(goal.targets))) return 'targets 必须是对象'
+  for (const field of ['hosts', 'finding_ids']) {
+    const values = goal.targets?.[field]
+    if (values != null && (!Array.isArray(values) || !values.length || values.some(v => field === 'hosts' ? typeof v !== 'string' || !v.trim() : !Number.isSafeInteger(v) || v < 1))) return `targets.${field} 必须是非空有效值数组`
+  }
+  return null
+}
+export function campaignDraftViolation(campaign = {}, draft = {}) {
+  const goal = campaign.goal_spec || {}
+  const kind = String(draft.kind || '')
+  if (validateCampaignGoal(goal)) return 'invalid_goal_spec'
+  if (draft.program_id && Array.isArray(campaign.program_ids) && !campaign.program_ids.includes(draft.program_id)) return 'program_outside_goal'
+  if (kind && !DISCOVERY_TASK_KINDS.includes(kind)) return 'unknown_task_kind'
+  if (!kind && (goal.allowed_task_kinds || goal.source_pool === 'candidates' || goal.vuln_classes || goal.targets?.hosts?.length || goal.targets?.finding_ids?.length)) return 'intent_required'
+  if (goal.allowed_task_kinds && !goal.allowed_task_kinds.includes(kind)) return 'task_kind_outside_goal'
+  if (goal.source_pool === 'candidates' && !['verify_candidate', 'review_finding'].includes(kind)) return 'source_pool_outside_goal'
+  if (goal.vuln_classes && ['hypothesis', 'verify_candidate', 'review_finding'].includes(kind) && !goal.vuln_classes.includes(draft.vuln_class)) return 'vuln_class_outside_goal'
+  if (Array.isArray(goal.targets?.finding_ids) && goal.targets.finding_ids.length && !goal.targets.finding_ids.includes(Number(draft.finding_id || draft.host))) return 'finding_outside_goal'
+  // 候选的 host 槽仍兼容旧 finding ID；真实主机由派发端查询后放 target_host。
+  const host = ['verify_candidate', 'review_finding'].includes(kind) ? draft.target_host : draft.host
+  if (kind && !['verify_candidate', 'review_finding'].includes(kind) && !String(host || '').trim()) return 'host_required'
+  if (host && goal.targets?.hosts?.length && !goal.targets.hosts.includes(host)) return 'host_outside_goal'
+  return null
+}
+
+export function evaluateCampaignExit(goal = {}, metrics = {}) {
+  const matched = [], unavailable = []
+  for (const p of goal.exit_predicates || []) {
+    const value = metrics[p.metric]
+    if (!TECHNICAL_EXIT_METRICS.includes(p.metric) || !Number.isFinite(value)) { unavailable.push(p.metric); continue }
+    if ((p.op === 'gte' && value >= p.value) || (p.op === 'lte' && value <= p.value) || (p.op === 'eq' && value === p.value)) matched.push({ ...p, actual: value })
+  }
+  return { matched, unavailable: [...new Set(unavailable)] }
+}
+
 export function compileCampaignPlan(input = {}) {
   const campaign = input.campaign || {}
   const policy = campaign.policy || {}
@@ -612,8 +668,8 @@ export function compileCampaignPlan(input = {}) {
   // 43 号补丁：待验证候选 → verify 草稿（转化优先）。severity 折算加分，类由标题推断。
   const candidateGaps = (Array.isArray(input.candidates) ? input.candidates : []).map((c) => ({
     dim: 'candidate', kind: 'verify_candidate', key: String(c.id), host: String(c.id),
-    program_id: String(c.program_id || ''),
-    title: String(c.title || ''), vuln_class: inferVulnClass(String(c.title || '')),
+    program_id: String(c.program_id || ''), target_host: String(c.host || ''), finding_id: Number(c.id),
+    title: String(c.title || ''), vuln_class: c.vuln_type || inferVulnClass(String(c.title || '')),
     value: ({ critical: 2.5, high: 2, medium: 1 }[String(c.severity || '').toLowerCase()] || 0.5),
     reason: `候选 #${c.id} 待验证`,
   }))
@@ -651,8 +707,10 @@ export function compileCampaignPlan(input = {}) {
     if (dim === 'candidate' && !vulnClass) vulnClass = inferVulnClass(`${g.title || ''}`)
     if (kind === 'hypothesis' && !vulnClass) vulnClass = 'info_disclosure'
     const param = String(g.param || '')
+    const violation = campaignDraftViolation(campaign, { kind, host, target_host: g.target_host, finding_id: g.finding_id, vuln_class: vulnClass, program_id: g.program || g.program_id })
+    if (violation) { skipped.push({ key: rawKey, reason: violation }); continue }
     // 候选验证按 finding 维度去重（不能与 host|||cls 策略键混用）
-    const key = kind === 'verify_candidate' ? String(g.strategy_key || ('verify|' + host)) : strategyKey({ host, path, param, vuln_class: vulnClass })
+    const key = String(g.strategy_key || (kind === 'verify_candidate' ? 'verify|' + host : strategyKey({ host, path, param, vuln_class: vulnClass })))
     if (seen.has(key)) continue
     seen.add(key)
     const st = strategies[key] || strategies[String(g.strategy_key || '')] || {}
@@ -686,8 +744,10 @@ export function compileCampaignPlan(input = {}) {
     const programId = String(g.program || g.program_id || defaultProgram)
     scored.push({
       program_id: programId, kind, host, path, param, vuln_class: vulnClass, level: 'H2',
+      ...(g.request_id ? { request_id: g.request_id } : {}), method: g.method || '', param_location: g.param_location || '',
+      ...(['verify_candidate', 'review_finding'].includes(kind) ? { finding_id: Number(g.finding_id || rawKey), target_host: g.target_host || '' } : {}),
       rationale: `专项规划：${mark || g.dim || 'gap'} 缺口，类优先级 ${CAMPAIGN_CLASS_PRIORITY[vulnClass] || 1}${st.fails ? `，连败 ${st.fails} 降权` : ''}`,
-      oracle: (kind === 'hypothesis' || kind === 'verify_candidate') ? (CAMPAIGN_ORACLE[vulnClass] || 'unauthz_diff') : '',
+      oracle: (kind === 'hypothesis' || kind === 'verify_candidate') ? (g.oracle || CAMPAIGN_ORACLE[vulnClass] || 'unauthz_diff') : '',
       strategy_key: key, campaign_role: kind === 'verify_candidate' ? 'verify' : 'derived',
       priority: _clamp(Math.round(9 - score), range[0], range[1]),
       phase, goal: 'research', score,

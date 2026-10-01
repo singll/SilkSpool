@@ -154,8 +154,23 @@ function ensureCol(db, table, col, ddl) {
 }
 
 function createRepo(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS hypothesis_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, strategy_key TEXT NOT NULL UNIQUE,
+    program_id TEXT NOT NULL, draft TEXT NOT NULL, task_id INTEGER,
+    created_at INTEGER NOT NULL, available_at INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT, attempts INTEGER NOT NULL DEFAULT 0
+  )`)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_hypothesis_queue_due ON hypothesis_queue(task_id, available_at, id)')
+  ensureCol(db, 'hypothesis_queue', 'retry_count', 'retry_count INTEGER NOT NULL DEFAULT 0')
   db.exec(TASKS_DDL)
   db.exec(TASK_RUNS_DDL)
+  // Independent of the bounded task_runs history: retries and late invoices must not
+  // disappear when execution history is pruned, or be applied twice after restart.
+  db.exec(`CREATE TABLE IF NOT EXISTS task_run_costs (
+    task_id INTEGER NOT NULL, run_id TEXT NOT NULL, spent_tokens INTEGER NOT NULL,
+    session_id TEXT, source TEXT NOT NULL, consumed_at INTEGER, recorded_at INTEGER NOT NULL,
+    PRIMARY KEY(task_id, run_id)
+  )`)
   db.exec(WORKERS_DDL)
   db.exec(STRATEGY_DDL)
   ensureCol(db, 'strategy_dedupe', 'reopen_after', 'reopen_after INTEGER')
@@ -176,6 +191,7 @@ function createRepo(db) {
     ['reasoning_effort', 'reasoning_effort TEXT'],
     ['budget_timeout_sec', 'budget_timeout_sec INTEGER'],
     ['active_run_id', 'active_run_id TEXT'],
+    ['intent_spec', 'intent_spec TEXT'],
     ['after_delay_seconds', 'after_delay_seconds INTEGER NOT NULL DEFAULT 0'],
     // L6（学习专项 §10）：任务目标类型（research 默认 / learn-daily / eval-batch / change-retest）
     ['goal', 'goal TEXT'],
@@ -191,6 +207,8 @@ function createRepo(db) {
   ensureCol(db, 'task_runs', 'spent_tokens', 'spent_tokens INTEGER')
   // workers.session_id 保持历史来源会话语义；新列只保存经核实的子会话。
   ensureCol(db, 'workers', 'worker_session_id', 'worker_session_id TEXT')
+  ensureCol(db, 'workers', 'task_id', 'task_id INTEGER')
+  ensureCol(db, 'workers', 'claim_started_at', 'claim_started_at INTEGER')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(program_id, status, priority)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(schedule_kind, next_run_at)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_campaign ON tasks(campaign_id, status)')
@@ -202,6 +220,47 @@ function createRepo(db) {
   db.exec('CREATE INDEX IF NOT EXISTS idx_workers_key ON workers(dedupe_key, started_at)')
 
   const repo = {
+    enqueueHypotheses(drafts) {
+      const insert = db.prepare('INSERT INTO hypothesis_queue(strategy_key,program_id,draft,created_at) VALUES(?,?,?,?) ON CONFLICT(strategy_key) DO NOTHING')
+      let added = 0
+      for (const d of drafts) added += insert.run(d.strategy_key, d.program_id, JSON.stringify(d), Date.now()).changes
+      return added
+    },
+    pendingHypotheses(program, limit, now, excludedPrograms = []) {
+      const excluded = excludedPrograms.length ? `AND program_id NOT IN (${excludedPrograms.map(() => '?').join(',')})` : ''
+      return db.prepare(`SELECT * FROM hypothesis_queue WHERE task_id IS NULL AND available_at<=? ${program ? 'AND program_id=?' : ''} ${excluded} ORDER BY id LIMIT ?`)
+        .all(now, ...(program ? [program] : []), ...excludedPrograms, limit).map(r => ({ ...r }))
+    },
+    acknowledgeHypothesis(id, taskId) {
+      db.prepare('UPDATE hypothesis_queue SET task_id=?,last_error=NULL,attempts=attempts+1 WHERE id=? AND task_id IS NULL').run(taskId, id)
+    },
+    acknowledgeHypothesisKey(key, taskId) {
+      db.prepare('UPDATE hypothesis_queue SET task_id=?,last_error=NULL WHERE strategy_key=? AND task_id IS NULL').run(taskId, key)
+    },
+    deferHypothesis(id, error, after) {
+      db.prepare('UPDATE hypothesis_queue SET last_error=?,available_at=?,attempts=attempts+1 WHERE id=? AND task_id IS NULL').run(error, after, id)
+    },
+    getHypothesisByKey(key) {
+      return db.prepare('SELECT * FROM hypothesis_queue WHERE strategy_key=?').get(key) || null
+    },
+    retryFailedHypothesis(taskId, after) {
+      const q = db.prepare('SELECT id,retry_count FROM hypothesis_queue WHERE task_id=?').get(taskId)
+      if (!q) return { reopened: false, limited: false }
+      if (q.retry_count >= 2) {
+        db.prepare("UPDATE hypothesis_queue SET last_error='execution_retry_limit_reached' WHERE id=? AND task_id=?").run(q.id, taskId)
+        return { reopened: false, limited: true }
+      }
+      const r = db.prepare("UPDATE hypothesis_queue SET task_id=NULL,available_at=?,last_error='execution_failed',retry_count=retry_count+1 WHERE id=? AND task_id=?")
+        .run(after, q.id, taskId)
+      return { reopened: r.changes === 1, limited: false }
+    },
+    listHypotheses({ program_id = '', limit = 50, offset = 0 }) {
+      const where = program_id ? 'WHERE program_id=?' : ''
+      const args = program_id ? [program_id] : []
+      const total = db.prepare(`SELECT COUNT(*) n FROM hypothesis_queue ${where}`).get(...args).n
+      const rows = db.prepare(`SELECT id,strategy_key,program_id,task_id,created_at,available_at,last_error,attempts,retry_count FROM hypothesis_queue ${where} ORDER BY id LIMIT ? OFFSET ?`).all(...args, limit, offset).map(r => ({ ...r }))
+      return { rows, total, meta: { paged: true } }
+    },
     now() { return Date.now() },
 
     // ---- programs（scope 域 owns，只读反查）----
@@ -219,8 +278,8 @@ function createRepo(db) {
         INSERT INTO tasks (program_id, parent_id, phase, objective, priority, assignee, budget_tokens,
           session_id, schedule_kind, run_at, every_seconds, next_run_at, status, created_at, updated_at,
           provider, model, reasoning_effort, after_delay_seconds, goal, campaign_id, campaign_role, strategy_key,
-          task_class, model_hint)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          task_class, model_hint, intent_spec)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         String(row.program_id), row.parent_id ?? null, row.phase === undefined || row.phase === null ? null : String(row.phase),
         String(row.objective), row.priority ?? 5, row.assignee ? String(row.assignee) : '', row.budget_tokens ?? null,
@@ -232,6 +291,7 @@ function createRepo(db) {
         row.strategy_key ? String(row.strategy_key) : null,
         row.task_class ? String(row.task_class) : null,
         row.model_hint ? String(row.model_hint) : null,
+        row.intent_spec || null,
       )
       return Number(r.lastInsertRowid)
     },
@@ -497,7 +557,9 @@ function createRepo(db) {
       const alive = pidAliveFn || (() => false)
       let reaped = 0
       let skipped = 0
+      const runs = []
       for (const t of stale) {
+        if (reaped >= 4) break // domain publishes one terminal fact per recovered run, event_limit=4
         if (withinTaskBudget(t, nowTs, maxAgeMs) || taskWorkerAlive(db, t, alive)) { skipped++; continue }
         const status = t.schedule_kind === 'interval' ? 'queued' : 'failed'
         const nextRunAt = status === 'queued' ? nextScheduledRun(t, nowTs, false, scheduledProgress(db, t, t.started_at).attempts) : null
@@ -507,12 +569,41 @@ function createRepo(db) {
         if (r.changes === 1) {
           reaped++
           repo.insertTaskRun({ task_id: t.id, run_id: runId, ok: false, note: '宿主重启/超时回收', started_at: t.started_at, finished_at: nowTs, session_id: null })
+          runs.push({ task: t, run_id: runId, status, next_run_at: nextRunAt })
         }
       }
-      return { reaped, skipped_alive: skipped }
+      return { reaped, skipped_alive: skipped, runs }
     },
 
     // ---- task_runs ----
+    getRunCost(taskId, runId) {
+      return db.prepare('SELECT * FROM task_run_costs WHERE task_id=? AND run_id=?').get(Number(taskId), runId) || null
+    },
+    getTaskRun(taskId, runId) {
+      return db.prepare('SELECT * FROM task_runs WHERE task_id=? AND run_id=? ORDER BY id DESC LIMIT 1').get(Number(taskId), runId) || null
+    },
+    sessionUsedByOtherRun(sessionId, taskId, runId) {
+      if (!sessionId) return false
+      return !!db.prepare('SELECT 1 FROM task_runs WHERE session_id=? AND NOT (task_id=? AND run_id=?) LIMIT 1').get(String(sessionId), Number(taskId), runId)
+        || !!db.prepare('SELECT 1 FROM task_run_costs WHERE session_id=? AND NOT (task_id=? AND run_id=?) LIMIT 1').get(String(sessionId), Number(taskId), runId)
+    },
+    settleRunCost({ task_id, run_id, spent_tokens, session_id, source, consumed_at, recorded_at }) {
+      const previous = repo.getRunCost(task_id, run_id)
+      const delta = spent_tokens - (previous?.spent_tokens || 0)
+      db.prepare(`INSERT INTO task_run_costs(task_id,run_id,spent_tokens,session_id,source,consumed_at,recorded_at)
+        VALUES(?,?,?,?,?,?,?) ON CONFLICT(task_id,run_id) DO UPDATE SET
+        spent_tokens=excluded.spent_tokens, session_id=COALESCE(task_run_costs.session_id,excluded.session_id),
+        source=excluded.source, consumed_at=COALESCE(task_run_costs.consumed_at,excluded.consumed_at),recorded_at=excluded.recorded_at`)
+        .run(task_id, run_id, spent_tokens, session_id ?? null, source, consumed_at ?? null, recorded_at)
+      db.prepare('UPDATE task_runs SET spent_tokens=? WHERE task_id=? AND run_id=?').run(spent_tokens, task_id, run_id)
+      if (delta) db.prepare('UPDATE tasks SET spent_tokens=COALESCE(spent_tokens,0)+? WHERE id=?').run(delta, task_id)
+      return { delta, first: !previous }
+    },
+    listRunCosts({ task_id, limit = 50, offset = 0 }) {
+      const where = task_id == null ? '' : ' WHERE task_id=?', args = task_id == null ? [] : [task_id]
+      return { rows: db.prepare(`SELECT * FROM task_run_costs${where} ORDER BY recorded_at DESC,task_id,run_id LIMIT ? OFFSET ?`).all(...args, limit, offset).map(r => ({ ...r })),
+        total: db.prepare(`SELECT COUNT(*) n FROM task_run_costs${where}`).get(...args).n, meta: { paged: true } }
+    },
     hasTaskRun(taskId, runId) {
       return !!db.prepare('SELECT 1 FROM task_runs WHERE task_id=? AND run_id=?').get(Number(taskId), runId)
     },
@@ -574,7 +665,12 @@ function createRepo(db) {
         ON CONFLICT (run_id) DO UPDATE SET pid = excluded.pid, status = 'running'
       `).run(String(row.run_id), row.dedupe_key ?? null, String(row.task || '').slice(0, 2000), row.cwd ?? null,
         row.pid ?? null, repo.now(), row.timeout_sec ?? null, row.session_id ?? null, row.run_dir ?? null)
+      db.prepare('UPDATE workers SET task_id=?,claim_started_at=? WHERE run_id=?').run(row.task_id ?? null, row.claim_started_at ?? null, String(row.run_id))
       return { changed: true }
+    },
+    bindClaimedWorker(taskId, claimStartedAt, runId) {
+      return db.prepare("UPDATE tasks SET active_run_id=? WHERE id=? AND status='running' AND started_at=? AND (active_run_id IS NULL OR active_run_id=?)")
+        .run(runId, taskId, claimStartedAt, runId).changes
     },
     finishWorker(runId, patch, expectRunning) {
       const sets = []

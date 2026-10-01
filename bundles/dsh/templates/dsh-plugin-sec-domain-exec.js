@@ -15,6 +15,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import * as dns from 'node:dns'
+import * as http from 'node:http'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { ORACLES, ORACLE_VERDICTS, routeFlowsSignal, visionTriageRubric, detectInjectionPatterns, fenceUntrusted } from '../sec-rules-hypothesis/index.js'
@@ -95,10 +96,31 @@ export const EXEC_MANIFEST = {
   description: '工具执行/沙箱/限速/worker 派生/parser 提案——一切 CLI/worker 执行的唯一入口，执行产物与领域数据之间只隔一层事件',
   owns: {
     tables: [],
-    files: ['data/tools.d/', 'data/results/', 'data/flows/', 'data/imports/', 'data/events/exec.jsonl'],
+    files: ['data/tools.d/', 'data/results/', 'data/flows/', 'data/imports/', 'data/events/exec.jsonl', 'data/.http-executor-key'],
   },
   backend_transactional: false,
   commands: {
+    exec_http_request: {
+      actor: ['model', 'script', 'dashboard'],
+      schema: schema({
+        program_id: str({ minLength: 1 }), url: str({ minLength: 1 }),
+        method: en(['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'], { default: 'GET' }),
+        headers: { type: 'object' }, body: str({ maxLength: 65536 }),
+        proxy: en(['default', 'direct']), timeout_ms: int({ minimum: 100, maximum: 30000 }),
+        max_bytes: int({ minimum: 1, maximum: 1048576 }),
+      }, ['program_id', 'url']),
+      idempotent: 'none', events: ['exec.http.completed'], event_limit: 1, invariants: [], timeout_ms: 35000,
+      agent_note: '受控 HTTP 请求：绑定 Program，逐跳检查 scope/风险/QPS，固定出口和解析地址，限制时间/响应量。响应由执行域签封落盘；run_id 可用 http_result 读取。POST/PUT/PATCH/DELETE 需要 intrusive 授权。',
+    },
+    exec_verify_authz_read: {
+      actor: ['model', 'script', 'dashboard'],
+      schema: schema({ program_id: str({ minLength: 1 }), finding_id: int({ minimum: 1 }), request_id: str({ minLength: 1 }),
+        own_id: str({ minLength: 1, maxLength: 200 }), other_id: str({ minLength: 1, maxLength: 200 }),
+        headers_a: { type: 'object' }, headers_b: { type: 'object' },
+      }, ['program_id', 'finding_id', 'request_id', 'own_id', 'other_id', 'headers_a', 'headers_b']),
+      idempotent: 'none', events: ['exec.oracle.decided'], event_limit: 1, invariants: [], timeout_ms: 330000,
+      agent_note: '按宿主 verification-profiles/<Program>.json 的 owner-only JSON 读取契约验证 IDOR。执行双身份、自有/他人私有对象、匿名/无效凭据及重复对照；仅服务端证据可产生 verified。返回持久化 decision_id，供 vuln_oracle_capsule 封装。',
+    },
     exec_run_cli: {
       actor: ['model', 'dashboard', 'script', 'human'],
       schema: schema({
@@ -128,6 +150,7 @@ export const EXEC_MANIFEST = {
         // cwd 仅 actor=scheduler 可用（防任意目录逃逸），task_id 进 worker.spawned 事件供 task 域记账。
         cwd: str({ description: 'worker 工作目录（仅调度器派单可传；须为已存在的目录，realpath 后校验）' }),
         task_id: int({ minimum: 1, description: '宿主任务号（仅调度器派单携带，透传 exec.worker.spawned）' }),
+        claim_started_at: int({ minimum: 0 }),
       }, ['task']),
       idempotent: 'none',
       events: ['exec.worker.spawned', 'exec.worker.finished'],
@@ -274,10 +297,22 @@ export const EXEC_MANIFEST = {
         oracle: str({ minLength: 1 }),
         input: { type: 'object' },
       }, ['oracle', 'input']),
-      agent_note: '机器验证 oracle（§2-1 纯函数）：unauthz/idor/info_disclosure/sqli/sqli_time/xss/ssrf 七判定器。输入对照特征输出 verdict——模型无权宣布 verified。',
+      agent_note: '调用方特征的辅助分析，非可信技术结论。返回 advisory_only=true、verdict=inconclusive；自动确认须由受控验证命令生成持久化 decision_id。',
+    },
+    exec_http_result: {
+      actor: ['model', 'script', 'dashboard', 'reactor'],
+      params: schema({ run_id: str({ pattern: '^r[a-z0-9]+$' }) }, ['run_id']),
+      agent_note: '核验执行域签封和文件哈希后读取 HTTP 响应；不返回请求凭据。',
+    },
+    exec_authz_decision: {
+      actor: ['model', 'script', 'dashboard', 'reactor'],
+      params: schema({ decision_id: str({ pattern: '^r[a-z0-9]+$' }) }, ['decision_id']),
+      agent_note: '读取可信 IDOR 判定；重新核验签封、原始执行证据、请求版本和宿主验证契约。',
     },
   },
   events: {
+    'exec.http.completed': { payload: { type: 'object' }, redact: [] },
+    'exec.oracle.decided': { payload: { type: 'object' }, redact: [] },
     'exec.run.started': { payload: { type: 'object' }, redact: [] },
     'exec.run.failed': { payload: { type: 'object' }, redact: [] },
     'exec.run.completed': { payload: { type: 'object' }, redact: [] },
@@ -529,6 +564,61 @@ function runParser(manifest, toolName, runId, text, programId) {
 // handlers
 // ---------------------------------------------------------------------------
 
+const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex')
+
+// Curl receives configuration on stdin, never credentials in argv. Redirects are handled
+// by the caller so scope, address pinning and identity policy run before EVERY request.
+function httpHop({ url, method, headers, body, proxy, address, timeoutMs, maxBytes, signal }) {
+  const u = new URL(url)
+  const quoted = (v) => '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r/g, '\\r').replace(/\n/g, '\\n') + '"'
+  const config = ['silent', 'show-error', 'include', 'suppress-connect-headers', 'globoff', 'http1.1',
+    'proto = "=http,https"', `url = ${quoted(url)}`, `request = ${quoted(method)}`,
+    `proxy = ${quoted(proxy || '')}`, 'noproxy = ""', `max-time = ${Math.max(0.001, timeoutMs / 1000)}`,
+    `max-filesize = ${maxBytes}`, `connect-to = ${quoted(`${u.hostname}:${u.port || (u.protocol === 'https:' ? 443 : 80)}:${address}:${u.port || (u.protocol === 'https:' ? 443 : 80)}`)}`]
+  if (proxy) config.push('proxytunnel')
+  if (method === 'HEAD') config.push('head')
+  for (const [k, v] of Object.entries(headers)) config.push(`header = ${quoted(`${k}: ${v}`)}`)
+  if (body) config.push(`data-raw = ${quoted(body)}`)
+  return new Promise((resolve) => {
+    const child = spawn('curl', ['--disable', '--config', '-'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    let chunks = [], size = 0, stderr = '', limit = false, timedOut = false, aborted = false
+    const abort = () => { aborted = true; child.kill('SIGKILL') }
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, timeoutMs)
+    child.stdout.on('data', c => { size += c.length; if (size > maxBytes + 65536) { limit = true; child.kill('SIGKILL') } else chunks.push(c) })
+    child.stderr.on('data', c => { stderr = (stderr + c.toString()).slice(0, 4096) })
+    child.stdin.on('error', () => {})
+    child.on('error', () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); resolve({ state: 'executor_unavailable', status: null, body: '', headers: {} }) })
+    child.on('close', code => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      let raw = Buffer.concat(chunks), status = null, responseHeaders = {}, headerBytes = 0
+      while (raw.length) {
+        const end = raw.indexOf('\r\n\r\n')
+        if (end < 0) break
+        headerBytes += end + 4
+        if (headerBytes > 65536) { limit = true; break }
+        const lines = raw.subarray(0, end).toString().split('\r\n')
+        const match = lines.shift().match(/^HTTP\/\S+ (\d{3})/)
+        if (!match) break
+        status = Number(match[1]); responseHeaders = {}
+        for (const line of lines) { const i = line.indexOf(':'); if (i > 0) responseHeaders[line.slice(0, i).toLowerCase()] = line.slice(i + 1).trim() }
+        raw = raw.subarray(end + 4)
+        if (status >= 200) break
+      }
+      const state = aborted ? 'aborted' : limit || raw.length > maxBytes || code === 63 ? 'response_limit'
+        : timedOut || code === 28 ? 'timeout'
+        : status === 407 || /407/.test(stderr) && proxy ? 'proxy_error'
+        : code !== 0 || !status ? 'transport_error'
+        : status >= 500 ? 'server_error' : status === 429 ? 'rate_limited' : 'observed'
+      // A partial/failed response is never passed to an Oracle as application evidence.
+      resolve({ state, status, body: state === 'observed' ? raw.toString('utf8') : '', headers: responseHeaders })
+    })
+    child.stdin.end(config.join('\n') + '\n')
+  })
+}
+
 function makeHandlers(opts) {
   const dispatchRef = opts.dispatch
   const queryRef = opts.query
@@ -541,6 +631,130 @@ function makeHandlers(opts) {
 
   function throwErr(code, message, hint, retryable = false) { throw Object.assign(new Error(message), { code, hint, retryable }) }
   function pidAlive(pid) { try { process.kill(pid, 0); return true } catch { return false } }
+
+  // Host-owned signing key is outside results/evidence and never exposed by queries.
+  // Hash consistency alone cannot distinguish a caller-written artifact from execution.
+  function signingKey() {
+    const file = path.join(dataDir, '.http-executor-key')
+    try { fs.writeFileSync(file, crypto.randomBytes(32), { flag: 'wx', mode: 0o600 }) } catch (e) { if (e.code !== 'EEXIST') throw e }
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    try { const key = fs.readFileSync(fd); if (key.length !== 32) throw new Error('invalid executor key'); return key } finally { fs.closeSync(fd) }
+  }
+  function seal(runDir, name, record) {
+    const content = { ...record, signature: crypto.createHmac('sha256', signingKey()).update(JSON.stringify(record)).digest('hex') }
+    const raw = JSON.stringify(content)
+    fs.writeFileSync(path.join(runDir, name), raw, { mode: 0o600, flag: 'wx' })
+    const manifest = { run_id: record.run_id, program_id: record.program_id, publisher: 'controlled-http-v1', files: [{ path: name, sha256: sha256(raw), bytes: Buffer.byteLength(raw) }] }
+    fs.writeFileSync(path.join(runDir, 'evidence-manifest.json'), JSON.stringify({ ...manifest, digest: sha256(JSON.stringify(manifest)) }), { mode: 0o600, flag: 'wx' })
+    return record
+  }
+  function readSealed(runId, name) {
+    if (!/^r[a-z0-9]+$/.test(runId)) throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '无效 run_id', null)
+    try {
+      const file = path.join(dataDir, 'results', runId, name)
+      const root = fs.realpathSync(path.join(dataDir, 'results')) + path.sep
+      if (!fs.realpathSync(file).startsWith(root)) throw new Error('path escape')
+      const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      let content, raw
+      try { const st = fs.fstatSync(fd); if (!st.isFile() || st.size > 2 * 1048576 || st.nlink !== 1) throw new Error('unsafe evidence'); raw = fs.readFileSync(fd, 'utf8'); content = JSON.parse(raw) } finally { fs.closeSync(fd) }
+      const { signature, ...record } = content
+      const expected = crypto.createHmac('sha256', signingKey()).update(JSON.stringify(record)).digest('hex')
+      if (signature !== expected || record.run_id !== runId) throw new Error('signature mismatch')
+      const manifestFile = path.join(dataDir, 'results', runId, 'evidence-manifest.json')
+      const manifestFd = fs.openSync(manifestFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      let manifest
+      try { if (fs.fstatSync(manifestFd).size > 16384) throw new Error('manifest limit'); manifest = JSON.parse(fs.readFileSync(manifestFd, 'utf8')) } finally { fs.closeSync(manifestFd) }
+      const { digest, ...manifestBody } = manifest
+      if (digest !== sha256(JSON.stringify(manifestBody)) || manifest.run_id !== runId || manifest.program_id !== record.program_id
+        || manifest.files?.length !== 1 || manifest.files[0].path !== name || manifest.files[0].sha256 !== sha256(raw)) throw new Error('manifest mismatch')
+      return record
+    } catch { throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '执行证据缺失、损坏或签封不符', '重新执行取证；调用方文件或自洽摘要不能替代执行记录') }
+  }
+  function canonicalHeaders(input = {}) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throwErr('E_SCHEMA', 'headers 必须是对象', null)
+    const out = {}
+    if (Object.keys(input).length > 100) throwErr('E_SCHEMA', 'headers 数量超过上限', null)
+    for (const [name, value] of Object.entries(input).sort(([a], [b]) => a.localeCompare(b))) {
+      try { if (typeof value !== 'string' || value.length > 8192) throw new Error(); http.validateHeaderName(name); http.validateHeaderValue(name, value) } catch { throwErr('E_SCHEMA', 'headers 名称或值无效', null) }
+      const key = name.toLowerCase()
+      if (Object.hasOwn(out, key)) throwErr('E_SCHEMA', 'headers 包含重复名称', null)
+      if (['host', 'content-length', 'connection', 'proxy-authorization', 'proxy-connection', 'transfer-encoding', 'accept-encoding'].includes(key)) continue
+      out[key] = value
+    }
+    out['accept-encoding'] = 'identity'
+    return out
+  }
+  function selectProxy(mode) {
+    const value = mode === 'direct' ? '' : (opts.egressProxy ?? process.env.SEC_EGRESS_PROXY ?? 'http://127.0.0.1:8899')
+    if (value) { let u; try { u = new URL(value) } catch {} if (!u || !['http:', 'https:'].includes(u.protocol)) throwErr('E_SCHEMA', '出口代理须为 HTTP(S) URL', null) }
+    return value
+  }
+  async function guardedAddress(url, programId, method, deadline = Date.now() + 10000) {
+    let u
+    try { u = new URL(url) } catch { throwErr('E_SCHEMA', 'url 无效', null) }
+    if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password || u.hash) throwErr('E_SCHEMA', '仅接受无 userinfo/fragment 的 HTTP(S) URL', null)
+    const scope = loadScope(), p = scope.programs.find(p => p.name === programId)
+    if (!p || p.expires_at && (expiryMs(p.expires_at) === null || expiryMs(p.expires_at) < Date.now()) || !p.scope.some(e => entryMatches(e, u.hostname))) throwErr('E_EXEC_SCOPE_DENIED', '目标不在指定 Program 的有效授权范围', null)
+    if (scope.programs.some(p => p.exclude.some(e => entryMatches(e, u.hostname)))) throwErr('E_EXEC_SCOPE_DENIED', '目标命中排除清单', null)
+    const risk = checkRisk(['GET', 'HEAD', 'OPTIONS'].includes(method) && !findWriteVerbHit(url) ? 'active' : 'intrusive', p, 'http-request')
+    if (!risk.allow) throwErr('E_EXEC_RISK_FORBIDDEN', risk.reason, null)
+    // This adapter supports IPv4 only; reject unsupported resolution, never silently use a
+    // second OS/proxy DNS lookup. All returned addresses must pass the same Program guard.
+    let addresses
+    try { addresses = ipToInt(u.hostname) !== null ? [u.hostname] : await withinDeadline(dns.promises.resolve4(u.hostname), deadline) } catch { throwErr('E_EXEC_DNS_UNAVAILABLE', '目标 IPv4 解析失败', null, true) }
+    if (!addresses.length) throwErr('E_EXEC_DNS_UNAVAILABLE', '目标无可用 IPv4 地址', null, true)
+    for (const ip of addresses) {
+      const n = ipToInt(ip), first = n >>> 24
+      if (n === null || ((ipInReserved(n) || first >= 224 || first === 0 || ip === '255.255.255.255') && !programAllowsIp(p, ip))) throwErr('E_EXEC_RESERVED_IP', '解析地址未获指定 Program 显式授权', null)
+      if (scope.programs.some(p => p.exclude.some(e => entryMatches(e, ip)))) throwErr('E_EXEC_SCOPE_DENIED', '解析地址命中排除清单', null)
+    }
+    return addresses[0]
+  }
+  async function executeHttp(args, repo, ctx, selectedProxy = selectProxy(args.proxy)) {
+    if (ctx.signal?.aborted) throwErr('E_EXEC_ABORTED', '请求已取消', null)
+    const method = String(args.method || 'GET').toUpperCase()
+    let headers = canonicalHeaders(args.headers), body = args.body || '', url = String(args.url), currentMethod = method
+    if (Buffer.byteLength(body) > 65536) throwErr('E_SCHEMA', '请求 body 超过 64 KiB', null)
+    const started = Date.now(), deadline = started + (args.timeout_ms || 10000), maxBytes = args.max_bytes || 1048576
+    // Validate initial target before creating an execution record; subsequent guards are
+    // captured as blocked evidence because a previous hop may already have run.
+    await guardedAddress(url, args.program_id, method, deadline)
+    const { runId, runDir } = repo.createRunDir('r'), hops = []
+    let response = { state: 'blocked', status: null, body: '', headers: {} }
+    for (let hop = 0; hop <= 3; hop++) {
+      try {
+        const address = await guardedAddress(url, args.program_id, currentMethod, deadline)
+        await throttleQps(deadline)
+        const remaining = deadline - Date.now()
+        if (remaining <= 0) { response = { state: 'timeout', status: null, body: '', headers: {} }; break }
+        response = await httpHop({ url, method: currentMethod, headers, body, proxy: selectedProxy, address, timeoutMs: remaining, maxBytes, signal: ctx.signal })
+        hops.push({ url, method: currentMethod, address, status: response.status, state: response.state, identity_digest: sha256(JSON.stringify(headers)) })
+        if (response.state !== 'observed' || ![301, 302, 303, 307, 308].includes(response.status) || !response.headers.location) break
+        if (hop === 3) { response = { ...response, state: 'redirect_limit', body: '' }; break }
+        const next = new URL(response.headers.location, url)
+        if (next.origin !== new URL(url).origin) {
+          if (body) { response = { ...response, state: 'cross_origin_body_blocked', body: '' }; break }
+          // Unknown custom headers can also carry credentials. Retain only neutral headers.
+          headers = Object.fromEntries(Object.entries(headers).filter(([k]) => ['accept', 'accept-encoding', 'user-agent'].includes(k)))
+        }
+        if (response.status === 303 && currentMethod !== 'HEAD' || [301, 302].includes(response.status) && currentMethod === 'POST') {
+          currentMethod = 'GET'; body = ''; delete headers['content-type']
+        }
+        url = next.href
+      } catch (e) { response = { state: 'blocked', status: null, body: '', headers: {}, error_code: e.code || 'E_EXEC_HTTP_FAILED' }; break }
+    }
+    // No cookie jar; each call starts with exactly its own supplied identity.
+    const record = seal(runDir, 'http-record.json', { version: 1, run_id: runId, program_id: args.program_id, created_at: started,
+      request: { url: args.url, method, body_digest: sha256(args.body || ''), identity_digest: sha256(JSON.stringify(canonicalHeaders(args.headers))) },
+      proxy_digest: sha256(selectedProxy), session_id: ctx.session_id || null, elapsed_ms: Date.now() - started, hops, response })
+    repo.writeMeta(runDir, { run_id: runId, program_id: args.program_id, tool: 'http-request', status: response.state, created_at: started })
+    return record
+  }
+
+  async function withinDeadline(promise, deadline) {
+    let timer
+    try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('HTTP deadline')), Math.max(1, deadline - Date.now())) })]) } finally { clearTimeout(timer) }
+  }
 
   function loadScope() {
     try { return parseScopeYaml(fs.readFileSync(scopeFile, 'utf8')) } catch { return { programs: [], defaults: {} } }
@@ -647,8 +861,8 @@ function makeHandlers(opts) {
     qpsBucket.tokens = 0
     return waitMs
   }
-  async function throttleQps() {
-    for (;;) { const w = acquireQpsToken(); if (w <= 0) break; await new Promise((r) => setTimeout(r, w)) }
+  async function throttleQps(deadline = Infinity) {
+    for (;;) { const w = acquireQpsToken(); if (w <= 0) break; if (Date.now() + w > deadline) throwErr('E_EXEC_HTTP_TIMEOUT', 'QPS 等待超过请求期限', null); await new Promise((r) => setTimeout(r, w)) }
   }
   function bwrapAvailable() { try { return fs.existsSync(BWRAP_BIN) } catch { return false } }
   // M6：沙箱凭据隔离。不再整目录读写挂载 $HOME（会暴露 .ssh/id_ed25519、.config/fofa.conf
@@ -705,7 +919,96 @@ function makeHandlers(opts) {
     },
   }
 
+  function readAuthzProfile(programId) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(programId)) throwErr('E_EXEC_ORACLE_UNSUPPORTED', 'Program 无可用验证契约', null)
+    let raw, profile
+    try {
+      const file = path.join(dataDir, 'verification-profiles', `${programId}.json`)
+      const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      try { if (fs.fstatSync(fd).size > 16384) throw new Error(); raw = fs.readFileSync(fd, 'utf8'); profile = JSON.parse(raw) } finally { fs.closeSync(fd) }
+    } catch { throwErr('E_EXEC_ORACLE_UNSUPPORTED', '宿主未安装有效的 owner-only JSON 读取契约', '先核实接口语义并配置 verification-profiles；不从模型布尔值推断访问规则') }
+    if (profile.version !== 1 || profile.policy !== 'owner-only' || !/^https?:\/\//.test(profile.origin || '')
+      || new URL(profile.origin).origin !== profile.origin || !/^\/[A-Za-z0-9_/-]+$/.test(profile.identity_path || '')
+      || !/^\/[A-Za-z0-9_/-]+\{id\}$/.test(profile.object_path || '')
+      || !['identity_field', 'id_field', 'owner_field', 'visibility_field'].every(k => /^[A-Za-z0-9_]+$/.test(profile[k] || ''))
+      || typeof profile.private_value !== 'string' || !profile.private_value) throwErr('E_EXEC_ORACLE_UNSUPPORTED', '验证契约不符合受支持的 owner-only JSON v1 结构', null)
+    return { profile, digest: sha256(raw) }
+  }
+  async function requestObservation(requestId) {
+    const r = await queryRef?.('endpoint', 'request_get', { request_id: requestId }, { actor: 'script' })
+    if (!r?.ok || r.data?.evidence_state !== 'intact') throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '请求版本不存在或原始证据已变化', '重新采集请求 observation 后再执行')
+    return r.data
+  }
+  async function readDecision(decisionId) {
+    const record = readSealed(decisionId, 'authz-decision.json')
+    if (record.oracle !== 'idor_owner_read_v1' || record.oracle_version !== 1 || Date.now() - record.created_at > 3600000 || record.created_at > Date.now()) throwErr('E_EXEC_DECISION_STALE', '判定版本不支持或超过一小时确认窗口', '重新执行验证')
+    if (readAuthzProfile(record.program_id).digest !== record.profile_digest) throwErr('E_EXEC_DECISION_STALE', '宿主验证契约已变化', '按新契约重新执行')
+    const observation = await requestObservation(record.request_id)
+    if (observation.program_id !== record.program_id || observation.url !== record.target.url || observation.method !== record.target.method) throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '判定与请求观测不匹配', null)
+    for (const runId of record.run_ids) {
+      const run = readSealed(runId, 'http-record.json')
+      if (run.program_id !== record.program_id || run.proxy_digest !== record.proxy_digest) throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '执行链不匹配', null)
+    }
+    await guardedAddress(record.target.url, record.program_id, 'GET')
+    return record
+  }
   const commands = {
+    exec_http_request: async (args, repo, ctx) => {
+      const r = await executeHttp(args, repo, ctx)
+      const data = { run_id: r.run_id, state: r.response.state, status: r.response.status, elapsed_ms: r.elapsed_ms, hops: r.hops.length }
+      return { data, events: [{ name: 'exec.http.completed', payload: { ...data, program_id: args.program_id } }] }
+    },
+    exec_verify_authz_read: async (args, repo, ctx) => {
+      const { profile: p, digest } = readAuthzProfile(args.program_id)
+      const observation = await requestObservation(args.request_id)
+      const targetUrl = p.origin + p.object_path.replace('{id}', encodeURIComponent(args.other_id))
+      const ownUrl = p.origin + p.object_path.replace('{id}', encodeURIComponent(args.own_id))
+      if (observation.program_id !== args.program_id || observation.url !== targetUrl || observation.method !== 'GET' || args.own_id === args.other_id) throwErr('E_SCHEMA', '请求版本必须绑定同 Program 的他人对象 GET，且两个对象 ID 不同', null)
+      const headersA = canonicalHeaders(args.headers_a), headersB = canonicalHeaders(args.headers_b)
+      if (JSON.stringify(headersA) === JSON.stringify(headersB)) throwErr('E_SCHEMA', '验证需要两组不同凭据', null)
+      const finding = await queryRef?.('vuln', 'get', { id: args.finding_id }, { actor: 'system' })
+      if (!finding?.ok || finding.data.program_id !== args.program_id || finding.data.url !== targetUrl || finding.data.vuln_type !== 'idor') throwErr('E_SCHEMA', 'finding 的 Program/URL/idor 类型必须与验证目标一致', null)
+      const proxy = selectProxy(), runs = [], responses = {}
+      const requests = [
+        ['identity_a', p.origin + p.identity_path, headersA], ['identity_b', p.origin + p.identity_path, headersB],
+        ['invalid_identity', p.origin + p.identity_path, { authorization: `Bearer invalid-${crypto.randomBytes(16).toString('hex')}` }],
+        ['own_a', ownUrl, headersA], ['own_b', targetUrl, headersB], ['anonymous', targetUrl, {}],
+        ['cross', targetUrl, headersA], ['owner_repeat', targetUrl, headersB], ['cross_repeat', targetUrl, headersA],
+        ['identity_a_repeat', p.origin + p.identity_path, headersA],
+      ]
+      let verdict = 'inconclusive', rationale = '对照未完成'
+      for (const [name, url, headers] of requests) {
+        try {
+          const r = await executeHttp({ program_id: args.program_id, url, headers }, repo, ctx, proxy)
+          runs.push(r.run_id); responses[name] = r
+          if (r.response.state !== 'observed' || r.hops.length !== 1) { rationale = `${name}: ${r.response.state}，重定向/故障不能作为权限证据`; break }
+        } catch (e) { rationale = `${name}: ${e.code || 'E_EXEC_HTTP_FAILED'}`; break }
+      }
+      if (Object.keys(responses).length === requests.length && Object.values(responses).every(r => r.response.state === 'observed' && r.hops.length === 1)) {
+        const json = name => { const r = responses[name].response; if (r.status !== 200 || !/application\/(?:[\w.+-]*\+)?json\b/i.test(r.headers['content-type'] || '')) return null; try { const b = JSON.parse(r.body); return b && !Array.isArray(b) && typeof b === 'object' ? b : null } catch { return null } }
+        const a = json('identity_a'), b = json('identity_b'), aAgain = json('identity_a_repeat')
+        const ownA = json('own_a'), ownB = json('own_b'), ownerAgain = json('owner_repeat'), cross = json('cross'), crossAgain = json('cross_repeat')
+        const id = (o, field) => o && Object.hasOwn(o, field) && ['string', 'number'].includes(typeof o[field]) ? String(o[field]) : null
+        const aid = id(a, p.identity_field), bid = id(b, p.identity_field)
+        const denied = name => [401, 403].includes(responses[name].response.status)
+        const privateObject = (o, objectId, ownerId) => id(o, p.id_field) === objectId && id(o, p.owner_field) === ownerId && o?.[p.visibility_field] === p.private_value
+        const controls = aid && bid && aid !== bid && id(aAgain, p.identity_field) === aid && denied('invalid_identity') && denied('anonymous')
+          && privateObject(ownA, args.own_id, aid) && privateObject(ownB, args.other_id, bid) && privateObject(ownerAgain, args.other_id, bid)
+        if (!controls) rationale = '身份/私有对象归属/匿名或无效凭据对照不满足；不推断漏洞或反证'
+        else if (privateObject(cross, args.other_id, bid) && privateObject(crossAgain, args.other_id, bid)) { verdict = 'verified'; rationale = '双身份和私有归属对照成立；A 重复读到 owner-only 契约禁止的 B 私有对象' }
+        else if (denied('cross') && denied('cross_repeat')) { verdict = 'rejected'; rationale = '正常身份、自有对象及私有归属对照成立；交叉读取重复被拒绝' }
+        else rationale = '交叉响应不稳定或不满足完整对象谓词'
+      }
+      const { runId, runDir } = repo.createRunDir('r')
+      const record = seal(runDir, 'authz-decision.json', { run_id: runId, decision_id: runId, created_at: Date.now(),
+        oracle: 'idor_owner_read_v1', oracle_version: 1, verdict, rationale, program_id: args.program_id, finding_id: args.finding_id,
+        request_id: args.request_id, task_id: observation.task_id || null, target: { host: new URL(targetUrl).hostname, url: targetUrl, method: 'GET', vuln_class: 'idor', program_id: args.program_id },
+        profile_digest: digest, proxy_digest: sha256(proxy), run_ids: runs,
+        identities: { a: sha256(JSON.stringify(headersA)), b: sha256(JSON.stringify(headersB)) },
+        objects: { own: args.own_id, other: args.other_id } })
+      repo.writeMeta(runDir, { run_id: runId, program_id: args.program_id, tool: record.oracle, created_at: record.created_at })
+      return { data: record, events: [{ name: 'exec.oracle.decided', payload: { decision_id: runId, verdict, oracle: record.oracle, program_id: args.program_id, finding_id: args.finding_id } }] }
+    },
     exec_run_cli: async (args, repo, ctx) => {
       const toolName = String(args.tool || '')
       const params = { ...(args.params || {}) }
@@ -855,6 +1158,7 @@ function makeHandlers(opts) {
     },
 
     exec_spawn_worker: async (args, repo, ctx) => {
+      if (args.task_id != null && (ctx.actor !== 'scheduler' || args.claim_started_at == null)) throwErr('E_EXEC_CLAIM_REQUIRED', '绑定任务的 worker 仅允许调度器携带当前认领标识派生', null)
       const task = String(args.task || '').trim()
       if (!task) throwErr('E_SCHEMA', 'task 不能为空', '目标/范围/产出要求必须写全')
       const dedupeKey = args.force === true ? null : crypto.createHash('sha1').update(task + '\0').digest('hex')
@@ -916,6 +1220,7 @@ function makeHandlers(opts) {
             run_id: runId, dedupe_key: dedupeKey, task: fullTask, cwd: workCwd, run_dir: runDir,
             timeout_sec: Math.round(timeoutMs / 1000), pid, origin_session_id: originSessionId,
             task_id: Number.isInteger(args.task_id) ? args.task_id : null,
+            claim_started_at: args.claim_started_at ?? null,
           } }),
         })
       } finally { activeWorkers-- }
@@ -1289,13 +1594,16 @@ function makeHandlers(opts) {
       return { rows, total: rows.length }
     },
     // 21 号方案 §2-1：oracle 纯函数判定（零 IO；模型只能提交对照特征，判定归代码）
+    exec_http_result: async (args) => readSealed(args.run_id, 'http-record.json'),
+    exec_authz_decision: async (args) => readDecision(args.decision_id),
     exec_oracle_judge: async (args) => {
       const fn = ORACLES[String(args.oracle)]
       if (!fn) {
         throw Object.assign(new Error(`未知 oracle: ${args.oracle}`), { code: 'E_SCHEMA', hint: `可用: ${Object.keys(ORACLES).join(', ')}`, retryable: false })
       }
       const out = fn(args.input && typeof args.input === 'object' ? args.input : {})
-      return { oracle: String(args.oracle), verdict: out.verdict, rationale: out.rationale, evidence: out.evidence || {}, verdicts: ORACLE_VERDICTS }
+      return { oracle: String(args.oracle), verdict: 'inconclusive', advisory_only: true, suggested_verdict: out.verdict,
+        rationale: '调用方特征未经执行证据核验：' + out.rationale, evidence: out.evidence || {}, verdicts: ORACLE_VERDICTS }
     },
   }
 

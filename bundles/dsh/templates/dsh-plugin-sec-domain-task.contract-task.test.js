@@ -14,11 +14,12 @@ import * as crypto from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildTaskDomain, startTaskScheduler, createTaskFinisher, parseCampaignSupplyEnv } from '../index.js'
+import { buildEndpointDomain } from '../../sec-domain-endpoint/index.js'
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'sec-domain-task-')) }
 
 function makeEnv(opts = {}) {
-  const dir = tmpDir()
+  const dir = opts.dir || tmpDir()
   const dataDir = path.join(dir, 'data')
   fs.mkdirSync(dataDir, { recursive: true })
   fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: "test-src"\n    scope:\n      - "*.example.com"\n')
@@ -39,7 +40,9 @@ function makeEnv(opts = {}) {
   const domain = buildTaskDomain({
     dataDir,
     dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c),
-    query: opts.query || ((d, n, a, c) => bus.query(d, n, a, c)),
+    query: opts.query || ((d, n, a, c) => d === 'vuln' && n === 'get' && opts.findings
+      ? Promise.resolve({ ok: true, data: opts.findings.find(f => f.id === a.id) || null })
+      : bus.query(d, n, a, c)),
     ...(opts.supplyEnv ? { supplyEnv: opts.supplyEnv } : {}),
     ...(opts.supplyFetch ? { supplyFetch: opts.supplyFetch } : {}),
   })
@@ -123,7 +126,9 @@ test('26 号补丁：worker 未上报时按 session_id 从 dsh-bill 归因 spent
   fs.appendFileSync(billFile, rec(300) + '\n')
   const c2 = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '续扫测试' }, { actor: 'model' })
   const r2 = await bus.dispatch('task', 'finish', { task_id: c2.data.task_id, run_id: 'bill-2', outcome: 'done', session_id: sid }, { actor: 'scheduler' })
-  assert.equal(r2.data.spent_tokens, 1100 + 400, '游标续扫不重计不遗漏')
+  assert.equal(r2.data.spent_tokens, null, '同一会话对应另一个 run 时总账归属不明，不能重复收费')
+  const settled = await bus.dispatch('task', 'record_run_cost', { task_id: id, run_id: 'bill-1', spent_tokens: 1500, session_id: sid, source: 'session_bill' }, { actor: 'scheduler' })
+  assert.equal(settled.error.code, 'E_TASK_COST_AMBIGUOUS')
   // 无账单记录的会话不回填（保持 null，不凭空造 0）
   const c3 = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '无账单测试' }, { actor: 'model' })
   const r3 = await bus.dispatch('task', 'finish', { task_id: c3.data.task_id, run_id: 'bill-3', outcome: 'done', session_id: 'session-nonexist' }, { actor: 'scheduler' })
@@ -223,8 +228,8 @@ test('21 §3-2: derive_intent 局面编译——越出 scope 丢弃；连败 3 �
   assert.equal(bl.error.code, 'E_TASK_STRATEGY_BLACKLISTED')
 })
 
-test('26 号补丁：review_finding 派生豁免主机归属校验（finding id 进 host 槽，program 内登记即授权证据）', async () => {
-  const { bus } = makeEnv()
+test('27: review_finding 派生核对真实 finding 项目和主机授权', async () => {
+  const { bus } = makeEnv({ findings: [{ id: 501, program_id: 'test-src', host: 'a.example.com', title: 'IDOR' }] })
   // host='501' 不是主机名、不在 scope.yml——hypothesis 必被局面编译拦截，review_finding 放行
   const blocked = await bus.dispatch('task', 'derive_intent', { program_id: 'test-src', kind: 'hypothesis', host: '501', vuln_class: 'idor' }, { actor: 'reactor' })
   assert.equal(blocked.ok, false)
@@ -252,13 +257,13 @@ test('21 §3-2/§6.1: H3 语义假设局面编译——缺卡片引用/过短/�
   assert.ok(row.objective.includes('EXP-IDOR-001'))
 })
 
-test('21 §3-1: endpoint.registered 订阅 → 污点路由派生（有参端点产 H2，无参不产）', async () => {
+test('27 WP05: endpoint 查询失败保留事件重试，不伪装无参数已处理', async () => {
   const { bus, domain } = makeEnv()
   // 有数值参数 → IDOR + XSS + SQLi（≤3 条）
   const r1 = await domain.handlers.subscribers.onEndpointHypothesis({ payload: { program_id: 'test-src', host: 'a.example.com', path: '/user/detail?id=1' } })
-  assert.equal(r1.ok, true)
-  // endpoint 域未注册时查询降级 null → 无路由输入 → 不派生（防幻觉第一道闸）
-  assert.equal(r1.data.derived.length, 0)
+  assert.equal(r1.ok, false)
+  assert.equal(r1.error.retryable, true)
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM tasks').get().n, 0)
 })
 
 test('21 §3-1: 覆盖缺口队列消费——未爬格点派 crawl 草稿（已测/非缺口态跳过）', async () => {
@@ -882,7 +887,8 @@ test('L6: worker_register 带 task_id → tasks.active_run_id 绑定（reap 活 
   const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '绑定测试' }, { actor: 'model' })
   const id = c.data.task_id
   bus._internal.db().prepare("UPDATE tasks SET status='running', started_at=? WHERE id=?").run(Date.now(), id)
-  const reg = await bus.dispatch('task', 'worker_register', { run_id: 'wbind001', task_id: id, pid: process.pid, task: 'x', cwd: '/tmp' }, { actor: 'reactor' })
+  const claim = bus._internal.db().prepare('SELECT started_at FROM tasks WHERE id=?').get(id).started_at
+  const reg = await bus.dispatch('task', 'worker_register', { run_id: 'wbind001', task_id: id, claim_started_at: claim, pid: process.pid, task: 'x', cwd: '/tmp' }, { actor: 'reactor' })
   assert.equal(reg.ok, true, reg.error?.message)
   const row = bus._internal.db().prepare('SELECT active_run_id FROM tasks WHERE id=?').get(id)
   assert.equal(row.active_run_id, 'wbind001', 'active_run_id 应绑定到 worker run')
@@ -1389,7 +1395,7 @@ test('22 B2: Reviewer 判据——无 verdict 无覆盖推进的 hypothesis → 
 })
 
 test('28 号补丁：存量复核判 false_positive 是合法分诊（accepted），不触发连败降级', async () => {
-  const { bus, domain } = makeEnv()
+  const { bus, domain } = makeEnv({ findings: [{ id: 501, program_id: 'test-src', host: 'a.example.com', title: 'IDOR' }] })
   const c = await bus.dispatch('task', 'campaign_create', { name: 'rv-fp', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
   const cid = c.data.campaign_id
   await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
@@ -2272,4 +2278,338 @@ test('27: 迟到已完成 run 保留原开始时间与费用，不改写正在�
   assert.deepEqual({ ...task }, { status: 'running', active_run_id: 'next-worker' })
   const run = bus._internal.db().prepare('SELECT started_at,spent_tokens,run_id FROM task_runs').get()
   assert.deepEqual({ ...run }, { started_at: now, spent_tokens: 123, run_id: 'finish-recovery' })
+})
+
+test('27 全量 WP01: 目标限制在显式派发、直接派生和直接建任务三入口生效', async () => {
+  const { bus } = makeEnv({ findings: [
+    { id: 501, program_id: 'test-src', host: 'a.example.com', title: 'XSS' },
+    { id: 502, program_id: 'other', host: 'a.example.com', title: 'XSS' },
+    { id: 503, program_id: 'test-src', host: 'b.example.com', title: 'XSS' },
+  ] })
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'strict-candidate-goal', program_ids: ['test-src'], goal_spec: {
+    stop_conditions: ['candidate pool exhausted'], allowed_task_kinds: ['verify_candidate'], source_pool: 'candidates', vuln_classes: ['xss'], targets: { hosts: ['a.example.com'] },
+  } }, { actor: 'model' })
+  assert.equal(c.ok, true, c.error?.message)
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  for (const kind of ['crawl', 'param_enrich', 'hypothesis', 'asset_enum']) {
+    const r = await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind, host: 'a.example.com', vuln_class: 'xss' }] }, { actor: 'model' })
+    assert.equal(r.error?.code, 'E_CAMPAIGN_GOAL')
+  }
+  const naked = await bus.dispatch('task', 'create', { campaign_id: cid, program_id: 'test-src', objective: '绕过派生器' }, { actor: 'model' })
+  assert.equal(naked.error?.code, 'E_CAMPAIGN_GOAL')
+  const direct = await bus.dispatch('task', 'derive_intent', { campaign_id: cid, program_id: 'test-src', kind: 'hypothesis', host: 'a.example.com', vuln_class: 'sqli' }, { actor: 'reactor' })
+  assert.equal(direct.error?.code, 'E_CAMPAIGN_GOAL')
+  for (const finding of [502, 503, 504]) {
+    const r = await bus.dispatch('task', 'derive_intent', { campaign_id: cid, program_id: 'test-src', kind: 'verify_candidate', host: String(finding), vuln_class: 'xss' }, { actor: 'reactor' })
+    assert.equal(r.ok, false, `不得派发未归属/越目标/不存在候选 ${finding}`)
+  }
+  const good = await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'verify_candidate', host: '501', vuln_class: 'xss' }] }, { actor: 'model' })
+  assert.equal(good.ok, true, good.error?.message)
+  assert.equal(good.data.derived, 1, JSON.stringify(good))
+  const t = bus._internal.db().prepare('SELECT intent_spec FROM tasks WHERE campaign_id=?').get(cid)
+  assert.equal(JSON.parse(t.intent_spec).kind, 'verify_candidate')
+})
+
+test('27 全量 WP01: 外部结果不是可执行退出指标，目标字段拼错应报错', async () => {
+  const { bus } = makeEnv()
+  for (const patch of [{ allowed_task_kinds: ['typo'] }, { vuln_classes: ['random_name'] }, { exit_predicates: [{ metric: 'bounty', op: 'gte', value: 1 }] }]) {
+    const r = await bus.dispatch('task', 'campaign_create', { name: 'bad-goal', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'], ...patch } }, { actor: 'model' })
+    assert.equal(r.error?.code, 'E_SCHEMA')
+  }
+})
+
+test('27 WP01: 退出条件在同一 tick 停派；候选查询失败不当空池，已认领仍算待验证', async () => {
+  for (const pool of ['empty', 'claimed', 'unavailable']) {
+    const { bus } = makeEnv({ query: async (d, n, a) => {
+      if (d === 'vuln' && n === 'candidates') {
+        if (pool === 'unavailable') return { ok: false, error: { code: 'E_INTERNAL' } }
+        assert.equal(a.claim_state, 'all')
+        return { ok: true, rows: pool === 'claimed' ? [{ id: 501, program_id: 'test-src', host: 'a.example.com', title: 'XSS', claimed_by: 'worker' }] : [], total: pool === 'claimed' ? 1 : 0 }
+      }
+      return { ok: false, error: { code: 'E_NOT_FOUND' } }
+    } })
+    const c = await bus.dispatch('task', 'campaign_create', { name: `exit-${pool}`, program_ids: ['test-src'],
+      goal_spec: { stop_conditions: ['候选清空'], source_pool: 'candidates', exit_predicates: [{ metric: 'candidate_pending', op: 'eq', value: 0 }] },
+    }, { actor: 'model' })
+    const cid = c.data.campaign_id
+    await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+    const tick = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+    assert.equal(tick.ok, true, tick.error?.message)
+    assert.equal(bus._internal.db().prepare('SELECT status FROM campaigns WHERE id=?').get(cid).status, pool === 'empty' ? 'reviewing' : 'active')
+    assert.equal(tick.data.summaries[0].derived, 0)
+    if (pool === 'unavailable') assert.ok(tick.data.summaries[0].skipped.some(s => s.reason === 'exit_metric_unavailable'))
+  }
+})
+
+test('27 WP01: elapsed_ms 退出生效后不会使用旧 L2 快照派新任务', async () => {
+  const { bus } = makeEnv()
+  registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'new.example.com' }])
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'deadline', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['到期'], exit_predicates: [{ metric: 'elapsed_ms', op: 'gte', value: 0 }] },
+  }, { actor: 'model' })
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: c.data.campaign_id }, { actor: 'dashboard' })
+  const r = await bus.dispatch('task', 'campaign_tick', { campaign_id: c.data.campaign_id }, { actor: 'scheduler' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.summaries[0].derived, 0)
+  assert.equal(bus._internal.db().prepare('SELECT status FROM campaigns WHERE id=?').get(c.data.campaign_id).status, 'reviewing')
+})
+
+test('27 WP01: 认领复查 finding 归属漂移，不执行已排队的错误项目任务', async () => {
+  const findings = [{ id: 501, program_id: 'test-src', host: 'a.example.com', title: 'XSS' }]
+  const { bus } = makeEnv({ findings })
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'claim-drift', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'], source_pool: 'candidates' } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const r = await bus.dispatch('task', 'derive_intent', { campaign_id: cid, program_id: 'test-src', kind: 'verify_candidate', host: '501' }, { actor: 'reactor' })
+  assert.equal(r.ok, true, r.error?.message)
+  findings[0].program_id = 'other'
+  const claim = await bus.dispatch('task', 'claim', { now: Date.now() + 5000 }, { actor: 'scheduler' })
+  assert.equal(claim.ok, true, claim.error?.message)
+  assert.equal(claim.data.count, 0)
+  const row = bus._internal.db().prepare('SELECT status,blocked_reason FROM tasks WHERE id=?').get(r.data.task_id)
+  assert.equal(row.status, 'blocked')
+  assert.match(row.blocked_reason, /E_INVARIANT/)
+})
+
+test('27 WP04/05: 请求观测到完整假设队列，限三条可轮转、重放不重复、版本和位置隔离', async () => {
+  const { bus, domain, dataDir } = makeEnv()
+  bus.registry.register(buildEndpointDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) }))
+  fs.mkdirSync(path.join(dataDir, 'results', 'request-fixture'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'results', 'request-fixture', 'request.json'), '{}')
+  const req = { program_id: 'test-src', url: 'https://a.example.com/orders', method: 'POST', content_type: 'application/json',
+    parameters: [{ name: 'id', in: 'query', value: 11 }, { name: 'id', in: 'json', value: 22 }, { name: 'pid', in: 'json', value: 33 }, { name: 'callback', in: 'json', value: 'https://example.com' }],
+    subject_ref: 'user-a', evidence_path: 'results/request-fixture/request.json', run_id: 'request-fixture', response_status: 200 }
+  const r = await bus.dispatch('endpoint', 'observe_request', req, { actor: 'script' })
+  assert.equal(r.ok, true, r.error?.message)
+  const payload = { request_id: r.data.request_id, program_id: 'test-src', host: 'a.example.com', method: 'POST', path: '/orders' }
+  const first = await domain.handlers.subscribers.onEndpointHypothesis({ payload })
+  assert.equal(first.ok, true, JSON.stringify(first))
+  assert.equal(first.data.derived.length, 3)
+  const db = bus._internal.db()
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM hypothesis_queue').get().n, 12)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM hypothesis_queue WHERE task_id IS NULL').get().n, 9)
+  for (let i = 0; i < 3; i++) {
+    const next = await bus.dispatch('task', 'hypotheses_dispatch', { limit: 3 }, { actor: 'scheduler' })
+    assert.equal(next.ok, true, next.error?.message)
+    assert.equal(next.data.derived.length, 3)
+  }
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM hypothesis_queue WHERE task_id IS NULL').get().n, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM tasks').get().n, 12)
+  const tasks = db.prepare('SELECT intent_spec,objective FROM tasks').all()
+  assert.ok(tasks.every(t => JSON.parse(t.intent_spec).request_id === r.data.request_id && JSON.parse(t.intent_spec).method === 'POST'))
+  assert.ok(tasks.some(t => t.objective.includes('ssrf')))
+  assert.ok(tasks.some(t => JSON.parse(t.intent_spec).param_location === 'query'))
+  assert.ok(tasks.some(t => JSON.parse(t.intent_spec).param_location === 'json'))
+  const replay = await domain.handlers.subscribers.onEndpointHypothesis({ payload })
+  assert.equal(replay.ok, true, JSON.stringify(replay))
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM tasks').get().n, 12)
+  const changed = await bus.dispatch('endpoint', 'observe_request', { ...req, subject_ref: 'user-b' }, { actor: 'script' })
+  await domain.handlers.subscribers.onEndpointHypothesis({ payload: { ...payload, request_id: changed.data.request_id } })
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM hypothesis_queue').get().n, 24)
+})
+
+test('27 WP05: 不可用 oracle 与代理故障留待办，不派失效实验', async () => {
+  const { bus, domain, dataDir } = makeEnv()
+  bus.registry.register(buildEndpointDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) }))
+  fs.mkdirSync(path.join(dataDir, 'results', 'fixture'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'results', 'fixture', 'evidence.json'), '{}')
+  for (const [status, param] of [[200, 'file'], [407, 'id']]) {
+    const r = await bus.dispatch('endpoint', 'observe_request', { program_id: 'test-src', url: 'https://a.example.com/test', method: 'GET', parameters: [{ name: param, in: 'query' }], evidence_path: 'results/fixture/evidence.json', run_id: 'fixture', response_status: status }, { actor: 'script' })
+    const result = await domain.handlers.subscribers.onEndpointHypothesis({ payload: { request_id: r.data.request_id, program_id: 'test-src', host: 'a.example.com', path: '/test' } })
+    assert.equal(result.ok, true, JSON.stringify(result))
+  }
+  const db = bus._internal.db()
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM tasks').get().n, 0)
+  const pending = db.prepare('SELECT task_id,last_error FROM hypothesis_queue').all()
+  assert.equal(pending.length, 2)
+  assert.ok(pending.every(q => q.task_id === null && q.last_error))
+})
+
+test('27 WP05: 队列确认失败回滚任务创建，重建 bus 后可继续派发且不重建已派任务', async () => {
+  const env = makeEnv()
+  env.bus.registry.register(buildEndpointDomain({ dataDir: env.dataDir, dispatch: (d, v, a, c) => env.bus.dispatch(d, v, a, c) }))
+  await env.bus.dispatch('endpoint', 'upsert', { program_id: 'test-src', rows: [{ host: 'a.example.com', path: '/items', params: { id: null } }] }, { actor: 'script' })
+  const enqueued = await env.bus.dispatch('task', 'hypotheses_enqueue', { program_id: 'test-src', host: 'a.example.com', path: '/items' }, { actor: 'reactor' })
+  assert.equal(enqueued.ok, true, enqueued.error?.message)
+  const db = env.bus._internal.db()
+  db.exec("CREATE TRIGGER fail_hypothesis_ack BEFORE UPDATE OF task_id ON hypothesis_queue WHEN NEW.task_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'ack failure'); END")
+  const failed = await env.bus.dispatch('task', 'hypotheses_dispatch', {}, { actor: 'scheduler' })
+  assert.equal(failed.ok, true, failed.error?.message)
+  assert.equal(failed.data.derived.length, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM tasks').get().n, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM hypothesis_queue WHERE task_id IS NULL').get().n, 1)
+  db.exec('DROP TRIGGER fail_hypothesis_ack')
+  db.exec('UPDATE hypothesis_queue SET available_at=0')
+  const resumed = makeEnv({ dir: env.dir })
+  const result = await resumed.bus.dispatch('task', 'hypotheses_dispatch', {}, { actor: 'scheduler' })
+  assert.equal(result.data.derived.length, 1, JSON.stringify(result))
+  await resumed.bus.dispatch('task', 'hypotheses_dispatch', {}, { actor: 'scheduler' })
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM tasks').get().n, 1)
+})
+
+test('27 WP01/05: 专项接管请求队列并应用类别限制，事件不能绕过专项派单', async () => {
+  const { bus, domain, dataDir } = makeEnv()
+  bus.registry.register(buildEndpointDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) }))
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'request-goal', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'], allowed_task_kinds: ['hypothesis'], vuln_classes: ['xss'] } }, { actor: 'model' })
+  assert.equal(c.ok, true, c.error?.message)
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: c.data.campaign_id }, { actor: 'dashboard' })
+  await bus.dispatch('endpoint', 'upsert', { program_id: 'test-src', rows: [{ host: 'a.example.com', method: 'POST', path: '/items', params: [{ name: 'q', in: 'json', value: 'abc' }] }] }, { actor: 'script' })
+  const event = await domain.handlers.subscribers.onEndpointHypothesis({ payload: { program_id: 'test-src', host: 'a.example.com', method: 'POST', path: '/items' } })
+  assert.equal(event.ok, true, JSON.stringify(event))
+  assert.equal(event.data.derived.length, 0)
+  const tick = await bus.dispatch('task', 'campaign_tick', { campaign_id: c.data.campaign_id }, { actor: 'scheduler' })
+  assert.equal(tick.ok, true, tick.error?.message)
+  const tasks = bus._internal.db().prepare('SELECT campaign_id,intent_spec FROM tasks').all()
+  assert.equal(tasks.length, 1, JSON.stringify(tick))
+  assert.equal(tasks[0].campaign_id, c.data.campaign_id)
+  assert.equal(JSON.parse(tasks[0].intent_spec).vuln_class, 'xss')
+  assert.equal(JSON.parse(tasks[0].intent_spec).method, 'POST')
+  assert.equal(JSON.parse(tasks[0].intent_spec).param_location, 'json')
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM hypothesis_queue WHERE task_id IS NULL').get().n, 1)
+})
+
+test('27 WP01: 授权查询降级时仍拒绝过期的 scope 文件', async () => {
+  const { bus, dataDir } = makeEnv()
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: "test-src"\n    expires_at: "2020-01-01"\n    scope:\n      - "*.example.com"\n')
+  const r = await bus.dispatch('task', 'derive_intent', { program_id: 'test-src', kind: 'explore', host: 'a.example.com' }, { actor: 'reactor' })
+  assert.equal(r.ok, false)
+})
+
+
+test('WP03 cumulative run costs, late settlement, zero versus unknown, and restart dedupe', async () => {
+  const { bus, dir } = makeEnv()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '费用累计与迟到结算' }, { actor: 'model' })
+  const id = c.data.task_id, db = bus._internal.db()
+  for (const [run, tokens] of [['cost-a', 50], ['cost-b', 70], ['cost-unknown', null], ['cost-zero', 0]]) {
+    db.prepare("UPDATE tasks SET status='running',active_run_id=?,started_at=? WHERE id=?").run(run, Date.now(), id)
+    const r = await bus.dispatch('task', 'finish', { task_id: id, run_id: run, outcome: 'done', ...(tokens == null ? {} : { spent_tokens: tokens }) }, { actor: 'scheduler' })
+    assert.equal(r.ok, true, r.error?.message)
+  }
+  assert.equal(db.prepare('SELECT spent_tokens FROM tasks WHERE id=?').get(id).spent_tokens, 120)
+  const unknown = db.prepare("SELECT spent_tokens FROM task_runs WHERE run_id='cost-unknown'").get()
+  assert.equal(unknown.spent_tokens, null)
+  const zero = db.prepare("SELECT spent_tokens FROM task_run_costs WHERE run_id='cost-zero'").get()
+  assert.equal(zero.spent_tokens, 0)
+  db.prepare("UPDATE tasks SET status='running',active_run_id='new-active',started_at=? WHERE id=?").run(Date.now(), id)
+  const args = { task_id: id, run_id: 'cost-a', spent_tokens: 80, source: 'worker_report', consumed_at: Date.now() - 1000 }
+  const paid = await bus.dispatch('task', 'record_run_cost', args, { actor: 'scheduler' })
+  assert.equal(paid.data.delta_tokens, 30)
+  assert.equal(paid.data.total_spent_tokens, 150)
+  const row = db.prepare('SELECT status,active_run_id FROM tasks WHERE id=?').get(id)
+  assert.deepEqual({ ...row }, { status: 'running', active_run_id: 'new-active' })
+  const again = makeEnv({ dir })
+  const repeated = await again.bus.dispatch('task', 'record_run_cost', args, { actor: 'system' })
+  assert.equal(repeated.data.delta_tokens, 0)
+  assert.equal(repeated.data.total_spent_tokens, 150)
+  assert.equal(repeated.event_ids.length, 0)
+  const lower = await again.bus.dispatch('task', 'record_run_cost', { ...args, spent_tokens: 79 }, { actor: 'system' })
+  assert.equal(lower.error.code, 'E_TASK_COST_CONFLICT')
+  const missing = await again.bus.dispatch('task', 'record_run_cost', { ...args, run_id: 'not-an-execution' }, { actor: 'system' })
+  assert.equal(missing.error.code, 'E_NOT_FOUND')
+  const paidUnknown = await again.bus.dispatch('task', 'record_run_cost', { task_id: id, run_id: 'cost-unknown', spent_tokens: 20, source: 'worker_report' }, { actor: 'system' })
+  assert.equal(paidUnknown.data.total_spent_tokens, 170)
+  assert.equal(paidUnknown.data.consumed_at, null)
+  const list = await again.bus.query('task', 'run_costs', { task_id: id, limit: 2 }, { actor: 'model' })
+  assert.equal(list.total, 4)
+  assert.equal(list.rows.length, 2)
+})
+
+test('WP03 cost failure rolls back receipt and aggregate; pruning history does not permit recharging', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '费用原子事务回归' }, { actor: 'model' })
+  const id = c.data.task_id, db = bus._internal.db()
+  await bus.dispatch('task', 'finish', { task_id: id, run_id: 'cost-atomic', outcome: 'failed' }, { actor: 'scheduler' })
+  db.exec("CREATE TRIGGER fail_cost_total BEFORE UPDATE OF spent_tokens ON tasks BEGIN SELECT RAISE(ABORT, 'injected aggregate failure'); END")
+  const args = { task_id: id, run_id: 'cost-atomic', spent_tokens: 25, source: 'worker_report' }
+  assert.equal((await bus.dispatch('task', 'record_run_cost', args, { actor: 'scheduler' })).ok, false)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM task_run_costs').get().n, 0)
+  assert.equal(db.prepare('SELECT spent_tokens FROM task_runs').get().spent_tokens, null)
+  db.exec('DROP TRIGGER fail_cost_total')
+  assert.equal((await bus.dispatch('task', 'record_run_cost', args, { actor: 'scheduler' })).data.delta_tokens, 25)
+  db.prepare('DELETE FROM task_runs WHERE task_id=?').run(id)
+  const repeated = await bus.dispatch('task', 'record_run_cost', args, { actor: 'scheduler' })
+  assert.equal(repeated.data.delta_tokens, 0)
+  assert.equal(repeated.data.total_spent_tokens, 25)
+})
+
+test('WP03 stale worker registration cannot bind or overwrite a newer claim', async () => {
+  const { bus, domain } = makeEnv()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '认领与worker注册栅栏' }, { actor: 'model' })
+  const id = c.data.task_id, db = bus._internal.db(), now = Date.now()
+  db.prepare("UPDATE tasks SET status='running',started_at=? WHERE id=?").run(now, id)
+  const spawn = (run, claim) => domain.handlers.subscribers.onWorkerSpawned({ payload: { run_id: run, task_id: id, claim_started_at: claim, pid: process.pid } })
+  assert.equal((await spawn('old-worker', now - 1)).error.code, 'E_TASK_CLAIM_SUPERSEDED')
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM workers').get().n, 0)
+  assert.equal((await spawn('current-worker', now)).ok, true)
+  assert.equal((await spawn('competing-worker', now)).error.code, 'E_TASK_CLAIM_SUPERSEDED')
+  assert.equal(db.prepare('SELECT active_run_id FROM tasks WHERE id=?').get(id).active_run_id, 'current-worker')
+  const worker = db.prepare("SELECT task_id,claim_started_at FROM workers WHERE run_id='current-worker'").get()
+  assert.deepEqual({ ...worker }, { task_id: id, claim_started_at: now })
+})
+
+test('27 WP05: failed hypotheses cool down, preserve attempts and stop after two retries across dispatch routes', async () => {
+  const { bus, dataDir } = makeEnv()
+  bus.registry.register(buildEndpointDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) }))
+  await bus.dispatch('endpoint', 'upsert', { program_id: 'test-src', rows: [{ host: 'a.example.com', path: '/retry-items', params: { id: null } }] }, { actor: 'script' })
+  const queued = await bus.dispatch('task', 'hypotheses_enqueue', { program_id: 'test-src', host: 'a.example.com', path: '/retry-items' }, { actor: 'reactor' })
+  assert.equal(queued.ok, true, queued.error?.message)
+  const db = bus._internal.db(), ids = []
+  const draft = JSON.parse(db.prepare('SELECT draft FROM hypothesis_queue').get().draft)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    db.exec('UPDATE hypothesis_queue SET available_at=0; UPDATE strategy_dedupe SET reopen_after=0')
+    const dispatched = await bus.dispatch('task', 'hypotheses_dispatch', {}, { actor: 'scheduler' })
+    assert.equal(dispatched.data.derived.length, 1, JSON.stringify(dispatched))
+    const id = dispatched.data.derived[0].task_id
+    assert.ok(!ids.includes(id), 'each retry creates a separate task')
+    ids.push(id)
+    db.prepare("UPDATE tasks SET status='running',started_at=?,active_run_id=? WHERE id=?").run(Date.now()-1000, `retry-${attempt}`, id)
+    if (attempt) {
+      const stale = await bus.dispatch('task', 'finish', { task_id: ids[0], run_id: 'late-old', outcome: 'crash' }, { actor: 'scheduler' })
+      assert.equal(stale.data.superseded, true)
+      assert.equal(db.prepare('SELECT task_id FROM hypothesis_queue').get().task_id, id)
+    }
+    const finish = await bus.dispatch('task', 'finish', { task_id: id, run_id: `retry-${attempt}`, outcome: 'crash' }, { actor: 'scheduler' })
+    assert.equal(finish.ok, true, finish.error?.message)
+    const q = db.prepare('SELECT * FROM hypothesis_queue').get()
+    assert.equal(q.retry_count, Math.min(attempt+1, 2))
+    const direct = await bus.dispatch('task', 'derive_intent', draft, { actor: 'reactor' })
+    assert.equal(direct.ok, false)
+    assert.equal(direct.error.code, attempt < 2 ? 'E_HYPOTHESIS_COOLDOWN' : 'E_HYPOTHESIS_RETRY_LIMIT')
+    assert.equal((await bus.dispatch('task', 'hypotheses_dispatch', {}, { actor: 'scheduler' })).data.derived.length, 0)
+    assert.equal(q.task_id, attempt < 2 ? null : id)
+  }
+  db.exec('UPDATE strategy_dedupe SET reopen_after=0')
+  const capped = await bus.dispatch('task', 'derive_intent', draft, { actor: 'reactor' })
+  assert.equal(capped.error.code, 'E_HYPOTHESIS_RETRY_LIMIT')
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM tasks WHERE status='failed'").get().n, 3)
+  assert.equal(db.prepare('SELECT last_error FROM hypothesis_queue').get().last_error, 'execution_retry_limit_reached')
+})
+
+test('27 WP03: reaper emits bounded terminal facts once; late bills preserve crash history', async () => {
+  const { bus, dir } = makeEnv(), db = bus._internal.db(), ids = []
+  for (let i = 0; i < 6; i++) {
+    const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: `reap-batch-${i}` }, { actor: 'model' })
+    assert.equal(c.ok, true, c.error?.message)
+    ids.push(c.data.task_id)
+    db.prepare("UPDATE tasks SET status='running',started_at=?,active_run_id=? WHERE id=?").run(Date.now()-9000000, `reap-${i}`, c.data.task_id)
+  }
+  for (const count of [4, 2, 0]) {
+    const r = await bus.dispatch('task', 'reap', { max_age: 0 }, { actor: 'scheduler' })
+    assert.equal(r.ok, true, r.error?.message)
+    assert.equal(r.data.reaped, count)
+  }
+  const events = readEvents(dir).filter(e => e.name === 'task.finished' && e.payload.cause === 'reaped')
+  assert.equal(events.length, 6)
+  assert.ok(events.every(e => e.payload.spent_tokens === null && e.payload.cost_state === 'unknown'))
+  const bill = { task_id: ids[0], run_id: 'reap-0', spent_tokens: 31, source: 'session_bill', session_id: 'reap-session' }
+  for (let i = 0; i < 2; i++) {
+    const settled = await bus.dispatch('task', 'record_run_cost', bill, { actor: 'scheduler' })
+    assert.equal(settled.ok, true, settled.error?.message)
+  }
+  assert.equal(db.prepare('SELECT spent_tokens FROM tasks WHERE id=?').get(ids[0]).spent_tokens, 31)
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id=?').get(ids[0]).status, 'failed')
+  assert.equal(db.prepare('SELECT ok FROM task_runs WHERE task_id=?').get(ids[0]).ok, 0)
+  assert.equal(readEvents(dir).filter(e => e.name === 'task.cost.settled').length, 1)
 })

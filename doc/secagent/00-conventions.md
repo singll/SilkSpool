@@ -73,7 +73,7 @@
 | 事件 jsonl 文件 | `data/events/{domain}.jsonl` | |
 | 幂等键前缀 | `{domain}:{verb}:{自然键}` | `vuln:confirm:fpr:<fingerprint>` |
 | 表名 | 复数名词（沿用 v4.x，**不改名不迁库**） | `findings` `assets` |
-| 模块文档文件 | `doc/secagent/{NN}-{domain}.md`（扁平，00–18） | `doc/secagent/02-vuln.md` |
+| 模块文档文件 | `doc/secagent/{NN}-{domain}.md`（扁平，00–17；18迁移已归档） | `doc/secagent/02-vuln.md` |
 
 *授权域的唯一注册名是 `scope`（见 `08-scope.md`）；"authz"仅是叙述性别名（指 scope+credentials 的职责集合），**不可**作为域名/服务名/包名注册或引用（实现已统一为 `secDomain.scope` / `@silksec/sec-domain-scope`）。
 

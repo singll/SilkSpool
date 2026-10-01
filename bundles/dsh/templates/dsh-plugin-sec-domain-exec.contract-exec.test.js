@@ -10,6 +10,9 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import * as http from 'node:http'
+import * as net from 'node:net'
+import * as crypto from 'node:crypto'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildKnowDomain } from '../../sec-domain-know/index.js'
 import { buildAssetDomain } from '../../sec-domain-asset/index.js'
@@ -48,7 +51,7 @@ function makeEnv(opts = {}) {
     startDispatcherTimer: false,
     dispatcherStartDelayMs: 0,
   })
-  const domain = buildExecDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, n, a, c) => bus.query(d, n, a, c) })
+  const domain = buildExecDomain({ dataDir, egressProxy: opts.egressProxy, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, n, a, c) => bus.query(d, n, a, c) })
   const reg = bus.registry.register(domain)
   assert.equal(reg.ok, true, `exec 域应注册成功：${reg.error?.message || ''}`)
   return { dir, dataDir, bus }
@@ -77,7 +80,8 @@ test('真实 exec run_id 可用于漏洞证据，裸 ID 与解析器 run_id: 前
     }, { actor: 'model' })
     assert.equal(signal.ok, true, signal.error?.message)
     const confirm = await bus.dispatch('vuln', 'confirm', { finding_id: signal.data.id, evidence }, { actor: 'model' })
-    assert.equal(confirm.ok, true, confirm.error?.message)
+    assert.equal(confirm.ok, false)
+    assert.equal(confirm.error.code, 'E_VULN_REVIEW_REQUIRED')
   }
   const missing = await bus.dispatch('vuln', 'confirm', { finding_id: 99999, evidence: 'run_id:rmissing000000' }, { actor: 'model' })
   assert.equal(missing.error.code, 'E_EVIDENCE_REQUIRED')
@@ -332,10 +336,11 @@ test('L6: spawn_worker cwd 仅 scheduler 可用 + 目录校验 + spawned 事件�
   assert.equal(bad.ok, false)
   assert.equal(bad.error.code, 'E_EXEC_CWD_INVALID')
   // scheduler 传合法目录 + task_id → 放行，spawned 事件带 task_id 与 cwd（任务域强联动记账依据）
-  const ok = await bus.dispatch('exec', 'spawn_worker', { task: '调度派单', timeout: 5, cwd: ws, task_id: 4242 }, { actor: 'scheduler' })
+  const ok = await bus.dispatch('exec', 'spawn_worker', { task: '调度派单', timeout: 5, cwd: ws, task_id: 4242, claim_started_at: 1234 }, { actor: 'scheduler' })
   assert.equal(ok.ok, true, ok.error?.message)
   const spawned = readEvents(dir).find((e) => e.name === 'exec.worker.spawned')
   assert.equal(spawned.payload.task_id, 4242)
+  assert.equal(spawned.payload.claim_started_at, 1234)
   assert.equal(spawned.payload.cwd, fs.realpathSync(ws), '工作区路径 realpath 后透传')
 })
 
@@ -509,9 +514,10 @@ test('oracle_judge: 七判定器可路由 + verdict 输出；未知 oracle 拒�
   assert.equal(v.data.verdict, 'inconclusive')
   assert.ok(v.data.rationale.includes('单次时间'))
   const r = await bus.query('exec', 'oracle_judge', { oracle: 'xss_echo', input: { marker: 'svx7a9c2', response_body: '<p>no</p>' } }, { actor: 'model' })
-  assert.equal(r.data.verdict, 'rejected')
+  assert.equal(r.data.verdict, 'inconclusive')
+  assert.equal(r.data.advisory_only, true)
   const u = await bus.query('exec', 'oracle_judge', { oracle: 'unauthz_diff', input: { control: { status: 200, has_business_data: true } } }, { actor: 'script' })
-  assert.equal(u.data.verdict, 'verified')
+  assert.equal(u.data.verdict, 'inconclusive')
   const bad = await bus.query('exec', 'oracle_judge', { oracle: 'nope', input: {} }, { actor: 'model' })
   assert.equal(bad.ok, false)
   assert.equal(bad.error.code, 'E_SCHEMA')
@@ -568,4 +574,235 @@ test('§1-5: grep/page 结果附不可信围栏纪律 + 注入特征提示', asy
   const p = await bus.query('exec', 'page_result', { run_id: run.data.run_id }, { actor: 'model' })
   assert.equal(p.data.untrusted, true)
   assert.ok(p.data.injection_patterns_detected.length >= 1)
+})
+
+// WP02: real local HTTP, bus, SQLite and execution-owned evidence; no target probing.
+async function authzFixture(t, mode = 'vulnerable') {
+  const seen = []
+  const server = http.createServer((req, res) => {
+    seen.push({ path: req.url, authorization: req.headers.authorization })
+    const subject = ({ 'Bearer a': 'a', 'Bearer b': 'b' })[req.headers.authorization]
+    res.setHeader('content-type', 'application/json')
+    if (mode === 'proxy_error') { res.writeHead(407); res.end('{}'); return }
+    if (req.url === '/me') {
+      if (!subject || mode === 'invalid_auth') { res.writeHead(401); res.end('{}') }
+      else res.end(JSON.stringify({ id: subject }))
+      return
+    }
+    const id = req.url.split('/').pop(), owner = id === '1' ? 'a' : 'b'
+    if (!subject && mode !== 'public' || mode === 'patched' && subject !== owner) { res.writeHead(403); res.end('{}'); return }
+    res.end(JSON.stringify({ id, owner_id: owner, visibility: mode === 'public' ? 'public' : 'private', data: 'fixture private record' }))
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => server.close(resolve)))
+  const origin = `http://127.0.0.1:${server.address().port}`
+  const { dataDir, dir, bus } = makeEnv({ egressProxy: '' })
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: "test-src"\n    scope:\n      - "127.0.0.1"\n')
+  assert.equal(bus.registry.register(buildEndpointDomain({ dataDir })).ok, true)
+  assert.equal(bus.registry.register(buildVulnDomain({ dataDir, dispatch: (d,v,a,c) => bus.dispatch(d,v,a,c), query: (d,v,a,c) => bus.query(d,v,a,c) })).ok, true)
+  fs.mkdirSync(path.join(dataDir, 'verification-profiles'), { recursive: true })
+  const profileFile = path.join(dataDir, 'verification-profiles', 'test-src.json')
+  fs.writeFileSync(profileFile, JSON.stringify({ version: 1, policy: 'owner-only', origin, identity_path: '/me', object_path: '/objects/{id}', identity_field: 'id', id_field: 'id', owner_field: 'owner_id', visibility_field: 'visibility', private_value: 'private' }))
+  fs.mkdirSync(path.join(dataDir, 'results', 'rfixture'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'results', 'rfixture', 'request.txt'), 'GET /objects/2 HTTP/1.1')
+  const obs = await bus.dispatch('endpoint', 'observe_request', { program_id: 'test-src', url: origin + '/objects/2', method: 'GET', parameters: [], evidence_path: 'results/rfixture/request.txt', run_id: 'rfixture' }, { actor: 'script' })
+  assert.equal(obs.ok, true, obs.error?.message)
+  const finding = await bus.dispatch('vuln', 'register_signal', { title: '测试双身份访问私有对象的读取权限', severity: 'high', host: '127.0.0.1', url: origin + '/objects/2', program_id: 'test-src', vuln_type: 'idor', evidence: 'run_fixture_20260930_000000', reproduction_steps: '使用账号 A 请求账号 B 的私有对象，复核对象归属', impact: '违反 owner-only 读取策略，暴露他人的私有对象' }, { actor: 'model' })
+  assert.equal(finding.ok, true, finding.error?.message)
+  const args = { program_id: 'test-src', finding_id: finding.data.id, request_id: obs.data.request_id, own_id: '1', other_id: '2', headers_a: { Authorization: 'Bearer a' }, headers_b: { Authorization: 'Bearer b' } }
+  return { bus, dataDir, dir, origin, seen, args, profileFile }
+}
+
+for (const [mode, verdict] of [['vulnerable', 'verified'], ['patched', 'rejected'], ['public', 'inconclusive'], ['invalid_auth', 'inconclusive'], ['proxy_error', 'inconclusive']]) {
+  test(`WP02 controlled IDOR ${mode}: execute → decision → capsule → confirm`, async t => {
+    const { bus, dataDir, args, seen, dir } = await authzFixture(t, mode)
+    const decision = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
+    assert.equal(decision.ok, true, decision.error?.message)
+    assert.equal(decision.data.verdict, verdict, decision.data.rationale)
+    assert.equal(seen.length, mode === 'proxy_error' ? 1 : 10)
+    const cap = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: decision.data.decision_id }, { actor: 'model' })
+    assert.equal(cap.ok, true, cap.error?.message)
+    const confirmed = await bus.dispatch('vuln', 'confirm', { finding_id: args.finding_id, evidence: cap.data.evidence_ref }, { actor: 'model' })
+    assert.equal(confirmed.ok, verdict === 'verified', confirmed.error?.message)
+    if (verdict !== 'verified') assert.equal(confirmed.error.code, 'E_VULN_ORACLE_NOT_VERIFIED')
+    const row = bus._internal.db().prepare('SELECT status,confidence FROM findings WHERE id=?').get(args.finding_id)
+    assert.equal(row.status, verdict === 'verified' ? 'confirmed' : 'new')
+    const allEvents = fs.readFileSync(path.join(dir, 'events', 'exec.jsonl'), 'utf8')
+    assert.equal(allEvents.includes('Bearer a'), false)
+    const raw = fs.readFileSync(path.join(dataDir, 'results', decision.data.run_ids[0], 'http-record.json'), 'utf8')
+    assert.equal(raw.includes('Bearer a'), false)
+  })
+}
+
+test('WP02 rejects forged verdicts, borrowed decisions and changed execution/request/profile evidence', async t => {
+  const { bus, dataDir, args, profileFile } = await authzFixture(t)
+  const forged = await bus.dispatch('vuln', 'oracle_capsule', { oracle: 'idor_diff', verdict: 'verified', target: { host: '127.0.0.1' } }, { actor: 'model' })
+  assert.equal(forged.ok, false)
+  const advisory = await bus.query('exec', 'oracle_judge', { oracle: 'idor_diff', input: { cross: { status: 200, has_other_data: true } } }, { actor: 'model' })
+  assert.equal(advisory.data.verdict, 'inconclusive')
+  assert.equal(advisory.data.advisory_only, true)
+  const decision = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
+  assert.equal(decision.ok, true, decision.error?.message)
+  const cap = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: decision.data.decision_id }, { actor: 'model' })
+  assert.equal(cap.ok, true, cap.error?.message)
+  const confirm = () => bus.dispatch('vuln', 'confirm', { finding_id: args.finding_id, evidence: cap.data.evidence_ref }, { actor: 'model' })
+  const db = bus._internal.db()
+  for (const [field, value] of [['program_id', 'other'], ['url', 'http://127.0.0.1/other'], ['vuln_type', 'sqli'], ['host', 'other.example']]) {
+    const original = db.prepare(`SELECT ${field} AS v FROM findings WHERE id=?`).get(args.finding_id).v
+    db.prepare(`UPDATE findings SET ${field}=? WHERE id=?`).run(value, args.finding_id)
+    assert.equal((await confirm()).error.code, 'E_VULN_ORACLE_TARGET_MISMATCH')
+    db.prepare(`UPDATE findings SET ${field}=? WHERE id=?`).run(original, args.finding_id)
+  }
+  const requestFile = path.join(dataDir, 'results', 'rfixture', 'request.txt')
+  const requestRaw = fs.readFileSync(requestFile)
+  fs.writeFileSync(requestFile, 'changed request')
+  assert.equal((await confirm()).ok, false)
+  fs.writeFileSync(requestFile, requestRaw)
+  const originalProfile = fs.readFileSync(profileFile)
+  fs.writeFileSync(profileFile, originalProfile.toString() + ' ')
+  assert.equal((await confirm()).ok, false)
+  fs.writeFileSync(profileFile, originalProfile)
+  const evidenceFile = path.join(dataDir, 'results', decision.data.run_ids[0], 'http-record.json')
+  const evidence = JSON.parse(fs.readFileSync(evidenceFile))
+  evidence.response.body = '{"id":"forged"}'
+  fs.writeFileSync(evidenceFile, JSON.stringify(evidence))
+  assert.equal((await confirm()).ok, false)
+  assert.equal(db.prepare('SELECT status FROM findings WHERE id=?').get(args.finding_id).status, 'new')
+  const replay = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: cap.data.capsule_id, harden: true }, { actor: 'script' })
+  assert.equal(replay.data.verdict, 'blocked')
+  assert.equal(replay.data.hardened_draft, null)
+})
+
+test('WP02 HTTP redirect guards, cross-origin identity stripping, byte/time limits and signed results', async t => {
+  const { bus, dataDir } = await authzFixture(t)
+  const seen = []
+  const sink = http.createServer((req, res) => { seen.push(req.headers); res.end('done') })
+  await new Promise(resolve => sink.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => sink.close(resolve)))
+  const server = http.createServer((req, res) => {
+    if (req.url === '/redirect') { res.writeHead(302, { location: `http://127.0.0.1:${sink.address().port}/sink` }); res.end() }
+    else if (req.url === '/escape') { res.writeHead(302, { location: 'http://127.0.0.2:1234/blocked' }); res.end() }
+    else if (req.url === '/large') res.end('x'.repeat(5000))
+    else if (req.url === '/slow') { /* wait for curl deadline */ }
+    else res.end('ok')
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)) })
+  const request = async (pathname, extra = {}) => {
+    const r = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url: `http://127.0.0.1:${server.address().port}${pathname}`, ...extra }, { actor: 'model' })
+    assert.equal(r.ok, true, r.error?.message)
+    const q = await bus.query('exec', 'http_result', { run_id: r.data.run_id }, { actor: 'model' })
+    assert.equal(q.ok, true, q.error?.message)
+    return q.data
+  }
+  const redirect = await request('/redirect', { headers: { Authorization: 'secret', Cookie: 'session=a', 'X-API-Key': 'private' } })
+  assert.equal(redirect.response.body, 'done')
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].authorization, undefined)
+  assert.equal(seen[0].cookie, undefined)
+  assert.equal(seen[0]['x-api-key'], undefined)
+  const escape = await request('/escape')
+  assert.equal(escape.response.state, 'blocked')
+  assert.equal(escape.hops.length, 1)
+  assert.equal((await request('/large', { max_bytes: 100 })).response.state, 'response_limit')
+  assert.equal((await request('/slow', { timeout_ms: 100 })).response.state, 'timeout')
+  const controller = new AbortController()
+  const pending = bus.dispatch('exec', 'http_request', { program_id: 'test-src', url: `http://127.0.0.1:${server.address().port}/slow` }, { actor: 'model', signal: controller.signal })
+  setTimeout(() => controller.abort(), 100)
+  const aborted = await pending
+  assert.equal(aborted.data.state, 'aborted')
+  const wrongProgram = await bus.dispatch('exec', 'http_request', { program_id: 'wrong', url: `http://127.0.0.1:${server.address().port}/` }, { actor: 'model' })
+  assert.equal(wrongProgram.error.code, 'E_EXEC_SCOPE_DENIED')
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: "test-src"\n    expires_at: "2000-01-01"\n    scope:\n      - "127.0.0.1"\n')
+  const expired = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url: `http://127.0.0.1:${server.address().port}/` }, { actor: 'model' })
+  assert.equal(expired.error.code, 'E_EXEC_SCOPE_DENIED')
+})
+
+test('WP02 fixed proxy tunnels every hop, refuses 407 without direct fallback, and passes literal bodies', async t => {
+  const sockets = new Set(), targets = [], bodies = []
+  const target = http.createServer((req, res) => {
+    let body = ''; req.on('data', chunk => { body += chunk })
+    req.on('end', () => {
+      bodies.push(body)
+      if (req.url === '/first') res.writeHead(303, { location: '/last' })
+      res.end(req.url)
+    })
+  })
+  await new Promise(resolve => target.listen(0, '127.0.0.1', resolve))
+  let rejectProxy = false
+  const proxy = http.createServer()
+  proxy.on('connect', (req, client, head) => {
+    targets.push(req.url); sockets.add(client); client.on('error', () => {})
+    if (rejectProxy) { client.end('HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n'); return }
+    const [host, port] = req.url.split(':')
+    const upstream = net.connect(Number(port), host, () => {
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+      if (head.length) upstream.write(head)
+      client.pipe(upstream); upstream.pipe(client)
+    })
+    sockets.add(upstream); upstream.on('error', () => client.destroy())
+    client.on('close', () => upstream.destroy())
+  })
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve))
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy()
+    await Promise.all([new Promise(r => target.close(r)), new Promise(r => proxy.close(r))])
+  })
+  const { bus, dataDir } = makeEnv({ egressProxy: `http://127.0.0.1:${proxy.address().port}` })
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'defaults:\n  allow_risk: [passive, active, intrusive]\nprograms:\n  - name: test-src\n    scope:\n      - 127.0.0.1\n')
+  const url = `http://127.0.0.1:${target.address().port}/first`
+  const r = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url, method: 'POST', body: '@/must-not-read-local-files' }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.state, 'observed')
+  assert.equal(r.data.hops, 2)
+  assert.deepEqual(bodies, ['@/must-not-read-local-files', ''])
+  assert.deepEqual(targets, [`127.0.0.1:${target.address().port}`, `127.0.0.1:${target.address().port}`])
+  const evidence = await bus.query('exec', 'http_result', { run_id: r.data.run_id }, { actor: 'model' })
+  assert.deepEqual(evidence.data.hops.map(h => h.method), ['POST', 'GET'])
+  rejectProxy = true
+  const failed = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url }, { actor: 'model' })
+  assert.equal(failed.data.state, 'proxy_error')
+  assert.equal(bodies.length, 2, 'proxy failure must not retry directly')
+})
+
+test('WP02 persisted decisions survive bus reconstruction and cannot be borrowed by another finding', async t => {
+  const { bus, dataDir, dir, args } = await authzFixture(t)
+  const decision = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
+  assert.equal(decision.data.verdict, 'verified')
+  const next = createBus({ dataDir, dbFile: path.join(dir, 'asset-graph.db'), sidecars: false, startDispatcherTimer: false })
+  t.after(() => next._internal.close())
+  const options = { dataDir, egressProxy: '', dispatch: (d,v,a,c) => next.dispatch(d,v,a,c), query: (d,v,a,c) => next.query(d,v,a,c) }
+  next.registry.register(buildExecDomain(options)); next.registry.register(buildEndpointDomain(options)); next.registry.register(buildVulnDomain(options))
+  const cap = await next.dispatch('vuln', 'oracle_capsule', { decision_id: decision.data.decision_id }, { actor: 'model' })
+  assert.equal(cap.ok, true, cap.error?.message)
+  const original = (await next.query('vuln', 'get', { id: args.finding_id }, { actor: 'model' })).data
+  const another = await next.dispatch('vuln', 'register_signal', { title: original.title + ' 第二条', severity: 'high', host: original.host, url: original.url, program_id: original.program_id, vuln_type: 'idor', evidence: original.evidence, reproduction_steps: original.reproduction_steps, impact: original.impact }, { actor: 'model' })
+  assert.equal(another.ok, true, another.error?.message)
+  const borrowed = await next.dispatch('vuln', 'confirm', { finding_id: another.data.id, evidence: cap.data.evidence_ref }, { actor: 'model' })
+  assert.equal(borrowed.error.code, 'E_VULN_ORACLE_TARGET_MISMATCH')
+  const confirmed = await next.dispatch('vuln', 'confirm', { finding_id: args.finding_id, evidence: cap.data.evidence_ref }, { actor: 'model' })
+  assert.equal(confirmed.ok, true, confirmed.error?.message)
+})
+
+test('WP02 result page/grep cannot follow output symlinks or hardlinks into host-owned files', async () => {
+  const { bus, dataDir } = makeEnv()
+  const secret = path.join(dataDir, '.http-executor-key')
+  fs.writeFileSync(secret, 'fixture-secret-outside-results', { mode: 0o600 })
+  const runDir = path.join(dataDir, 'results', 'runsafe')
+  fs.mkdirSync(runDir, { recursive: true })
+  const stdout = path.join(runDir, 'stdout.log')
+  for (const link of [fs.symlinkSync, fs.linkSync]) {
+    link(secret, stdout)
+    const page = await bus.query('exec', 'page_result', { run_id: 'runsafe' }, { actor: 'model' })
+    assert.equal(page.ok, false)
+    const grep = await bus.query('exec', 'grep_result', { run_id: 'runsafe', pattern: 'fixture-secret' }, { actor: 'model' })
+    assert.equal(grep.ok, true)
+    assert.equal(grep.data.matched, 0)
+    fs.unlinkSync(stdout)
+  }
+  fs.symlinkSync(dataDir, path.join(runDir, 'nested'))
+  const nested = await bus.query('exec', 'grep_result', { run_id: 'runsafe', pattern: 'fixture-secret' }, { actor: 'model' })
+  assert.equal(nested.data.matched, 0)
+  fs.symlinkSync(dataDir, path.join(dataDir, 'results', 'rlinked'))
+  assert.equal((await bus.query('exec', 'page_result', { run_id: 'rlinked' }, { actor: 'model' })).ok, false)
 })

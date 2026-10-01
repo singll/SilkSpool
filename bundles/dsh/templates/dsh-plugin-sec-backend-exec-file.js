@@ -101,6 +101,27 @@ function createRepo(dataDir) {
     return { runId, runDir }
   }
 
+  // Worker output is untrusted. In particular, a link in results must not expose
+  // host-owned credentials or the controlled executor's signing key through page/grep.
+  function openResult(absPath) {
+    const root = fs.realpathSync(resultsDir) + path.sep
+    const rel = path.relative(path.resolve(resultsDir), path.resolve(absPath))
+    if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('result path escape')
+    let current = resultsDir
+    for (const part of rel.split(path.sep).slice(0, -1)) {
+      current = path.join(current, part)
+      if (!fs.lstatSync(current).isDirectory()) throw new Error('unsafe result directory')
+    }
+    const fd = fs.openSync(absPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
+    try {
+      const st = fs.fstatSync(fd)
+      // Inspect the opened descriptor as well, so a parent-directory rename race cannot
+      // turn the earlier path check into access outside results (Linux runtime).
+      if (!st.isFile() || st.nlink !== 1 || !fs.realpathSync(`/proc/self/fd/${fd}`).startsWith(root)) throw new Error('unsafe result file')
+      return fd
+    } catch (e) { fs.closeSync(fd); throw e }
+  }
+
   const repo = {
     listManifests,
     loadManifest,
@@ -112,7 +133,7 @@ function createRepo(dataDir) {
     writeWorkerLog(runDir, chunk) { fs.appendFileSync(path.join(runDir, 'worker.log'), chunk); },
     readRunDirTree(runId) {
       const dir = /^(r|w)[a-z0-9]+$/.test(String(runId)) ? path.join(resultsDir, String(runId)) : null
-      if (!dir || !fs.existsSync(dir)) return []
+      if (!dir || !fs.existsSync(dir) || !fs.lstatSync(dir).isDirectory()) return []
       const files = []
       const walk = (d) => {
         let entries = []
@@ -120,7 +141,7 @@ function createRepo(dataDir) {
         for (const e of entries) {
           const p = path.join(d, e.name)
           if (e.isDirectory()) walk(p)
-          else if (!BINARY_EXT_RE.test(e.name)) files.push(p)
+          else if (e.isFile() && !BINARY_EXT_RE.test(e.name)) files.push(p)
         }
       }
       walk(dir)
@@ -128,7 +149,7 @@ function createRepo(dataDir) {
     },
     runDirOf(runId) {
       const dir = /^(r|w)[a-z0-9]+$/.test(String(runId)) ? path.join(resultsDir, String(runId)) : null
-      return (dir && fs.existsSync(dir)) ? dir : null
+      return (dir && fs.existsSync(dir) && fs.lstatSync(dir).isDirectory()) ? dir : null
     },
     appendFlow(date, line) {
       fs.mkdirSync(flowsDir, { recursive: true })
@@ -159,7 +180,8 @@ function createRepo(dataDir) {
       return path.join(importsDir, `${id}.jsonl`)
     },
     readFile(absPath) {
-      try { return fs.readFileSync(absPath, 'utf8') } catch { return null }
+      let fd
+      try { fd = openResult(absPath); return fs.readFileSync(fd, 'utf8') } catch { return null } finally { if (fd !== undefined) fs.closeSync(fd) }
     },
     // 42 号补丁（25 号方案 B1）：流式按行窗口读取——旧实现整读 stdout.log（大 run 数百 MB 爆内存）。
     // 返回 { lines, total_lines }；offset 以行为单位（0 基）。内存只保留窗口行。
@@ -168,27 +190,29 @@ function createRepo(dataDir) {
       const lim = Math.max(1, Math.min(Number(limit) || 50, 200))
       const lines = []
       let total = 0
-      const rl = readline.createInterface({ input: fs.createReadStream(absPath, { encoding: 'utf8' }), crlfDelay: Infinity })
+      const input = fs.createReadStream(absPath, { fd: openResult(absPath), encoding: 'utf8', autoClose: true })
+      const rl = readline.createInterface({ input, crlfDelay: Infinity })
       try {
         for await (const line of rl) {
           if (total >= off && lines.length < lim) lines.push(line)
           total++
         }
-      } finally { rl.close() }
+      } finally { rl.close(); input.destroy() }
       return { lines, total_lines: total }
     },
     // 42 号补丁：按行流式读取并限字节（grep 用），避免整文件进内存。
     async readLinesCapped(absPath, maxBytes = 8 * 1024 * 1024) {
       const lines = []
       let bytes = 0
-      const rl = readline.createInterface({ input: fs.createReadStream(absPath, { encoding: 'utf8' }), crlfDelay: Infinity })
+      const input = fs.createReadStream(absPath, { fd: openResult(absPath), encoding: 'utf8', autoClose: true })
+      const rl = readline.createInterface({ input, crlfDelay: Infinity })
       try {
         for await (const line of rl) {
           bytes += Buffer.byteLength(line) + 1
           if (bytes > maxBytes) break
           lines.push(line)
         }
-      } finally { rl.close() }
+      } finally { rl.close(); input.destroy() }
       return lines
     },
     beijingDate,

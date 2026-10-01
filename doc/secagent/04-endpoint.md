@@ -1,8 +1,8 @@
 # 04 · endpoint 域设计（接口面 / 参数队列——"打哪里、喂什么料"的唯一事实源）
 
-> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：endpoint@1（repository-v1）
+> 版本：v5.1 ｜ 状态：现行契约；2026-09-30 请求观测增量已本地验证、未部署 ｜ 契约版本：endpoint@1（repository-v1）
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线）
-> owns（单写者）：`endpoints` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）
+> owns（单写者）：`endpoints`、`endpoint_requests` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）
 > 不 owns：`assets`（asset 域）、`findings`（vuln 域）、`data/pipeline/{program}/` 下其余台账文件（ledger 域）
 > 订阅：`exec.run.completed`（l2-collect / katana parser proposal 回灌）；被订阅：vuln（endpoint.registered/auth_marked → 越权与注入队列候选）、ledger（endpoint.registered → 接口台账联动）、dashboard（接口视图）
 
@@ -34,7 +34,8 @@
 
 | 动词 | 语义（状态机入口） | actor 白名单 | 幂等键（manifest `idempotent` / `idempotent_fields`） | 事件 |
 |---|---|---|---|---|
-| `endpoint_upsert` | 登记接口（单行或 TSV 批量入库——l2-collect 产出消费口） | model, script, dashboard | `auto`：`(rows, tsv_path, program_id)` | endpoint.registered（仅新行） |
+| `endpoint_upsert` | 登记接口（单行或 TSV 批量入库——l2-collect 产出消费口） | model, script, dashboard | `auto`：`(rows, tsv_path, program_id)` | endpoint.registered（新行）、endpoint.changed（参数/归属变化） |
+| `endpoint_observe_request` | 保存一份带证据的不可变请求观测，不执行请求 | model, script, dashboard | handler 对完整内容及引用文件摘要去重；总线 `none`，每次重读文件摘要 | endpoint.request.observed（仅新观测） |
 | `endpoint_queue_surface` | 参数面入队：从 TSV/文本提取带参数 URL，全局去重（seen 域内）追加 param-queue | model, script | `auto`：`(program, source)`（**无文件 sha256**） | endpoint.queue.enqueued |
 | `endpoint_consume_queue` | 队列消费：dalfox/sqlmap 取料后标记消化（出队；seen 保留防重回） | model, script | `natural`：`(program, run_id)` | endpoint.queue.consumed |
 | `endpoint_mark_auth` | 鉴权标注：auth_required / roles_seen（越权矩阵唯一数据源） | model, script, dashboard | `auto`：`(host, method, path, auth_required, roles_seen, evidence)` | endpoint.auth_marked |
@@ -66,7 +67,7 @@
 | `url` 或 `host`+`path` | string | 二选一 | url 模式域内拆解 host/path（path = pathname+search）；host 模式 path 必须以 `/` 开头；host 归一化同 asset 域 |
 | `method` | string | ❌ | `GET`；大写化；白名单 `GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS`（越枚举 E_SCHEMA——l2 采集无自定义动词） |
 | `status` | string | ❌ | `''`；HTTP 状态码字符串；空不覆盖 |
-| `params` | object | ❌ | `null`；参数清单 JSON（`{"id": "", "redirect": ""}` 形态，或 l2 的逗号串 `{"_raw": "mode,modelId"}`——域内存对象，展示层拼接）；整包覆盖 |
+| `params` | object / array | ❌ | 参数对象或 `{name,in,value}` 数组，整包覆盖；TSV JSON 原样解析，旧逗号参数名从 URL 查询串恢复值，只有名字无值者记 null。新写入不再产生 `_raw` 包装；历史数据不批量改写 |
 | `source` | string | ❌ | `''` | `tool:run_id` / `manual` |
 | `program_id` | string | ❌ | `null` | 行级覆盖 |
 
@@ -224,7 +225,29 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 **事件**：`endpoint.semantics_annotated`（from/to/source/applied/operator）。`endpoint.registered` 订阅（onEndpointRegistered）在端点入库时自动跑一次自动建议（弱联动 best-effort）。
 
+#### 1.3.7 `endpoint_observe_request` —— 不可变请求观测（27 号，本地未部署）
+
+保存一次请求输入及来源；不会发包，也不会根据 HTTP 状态声明业务健康、public 或漏洞成立。actor=`model/script/dashboard`，timeout=60s。幂等在 handler 完成：每次重读引用文件摘要，完整观测摘要作为 `request_id`；内容相同返回原 ID、`created=false`，内容变化另存，不覆盖旧观测。
+
+| 参数 | 类型 / 必填 | 语义 |
+|---|---|---|
+| `program_id`、`url`、`method` | string / 必填 | 项目必须存在于当前 scope 文件且未过期；URL 为 HTTP(S)、不能内嵌用户名密码，保留协议/端口/query；method 为已有七种枚举 |
+| `parameters` | array / 必填，可空，≤500 | 每项必含 `name` 与 `in`；位置为 query/path/header/cookie/form/json/multipart；`value` 可保留 JSON 原值，或使用 `value_ref` 引用；不会凭空补值 |
+| `evidence_path`、`run_id` | string / 必填 | 来源证据及执行引用。文件须在 dataDir 的 results/ 或 evidence/ 内，解析真实路径阻止 symlink 越界；仅普通文件且每份≤1MiB，保存 SHA256 |
+| `body_ref`、`headers_ref` | string / 可选 | 正文和请求头的受控文件引用，采用同样边界及摘要校验；查询不展开文件内容 |
+| `content_type`、`action` | string / 可选 | 请求媒体类型与业务动作 |
+| `credential_ref`、`subject_ref` | 非空 string / 可选 | 凭据版本/主体引用，不在此登记凭据秘密；身份变更形成独立观测 |
+| `object_refs` | string[] / 可选，≤100 | 自有测试对象引用 |
+| `task_id`、`session_id` | 正整数 / 非空 string，可选 | 来源关联；缺省时采用宿主上下文已有值，不伪造未知关联 |
+| `response_status` | integer 100–599 / 可选 | 407→proxy_error、5xx→server_error、401→auth_challenge、403→access_denied，其余已知状态→observed，未提供→unknown |
+
+返回 `{request_id,shape_id,created}`。`shape_id` 使用 Program、origin、method、路径、content-type、查询参数名及参数位置/类型；不因参数值或主体变化增加形状数。它不是漏洞根因键，也不表示业务动作已完整建模。
+
+错误：schema 不符为 `E_SCHEMA`，缺/过期授权或主机越界为 `E_INVARIANT`，证据缺失/越界/超限为 `E_EVIDENCE_REQUIRED`。旧 `endpoint_upsert` 保留目录用途，**不会自动获得正文/身份观测，也不会把旧 URL 记录伪装成可重放业务请求**。
+
 ### 1.4 查询逐个详述（纯读）
+
+`endpoint_request_get({request_id})`：actor=`model/script/dashboard/human/reactor`；返回完整观测元数据与原始摘要，现场校验得到 `evidence_state=intact/changed/unavailable`；文件变更或丢失不删除历史记录。`endpoint_requests({program_id?,host?,limit?,offset?})`：相同 actor；limit 默认50、上限500，offset默认0；返回准确 total 与摘要行，`meta.paged=true` 防总线重复切片。摘要不含 parameters、正文、身份引用；明细按 ID 获取。缺 ID 为 `E_NOT_FOUND`。
 
 统一分页信封 `{ rows, total, limit, offset }`（**只适用于返回 `rows` 的列表/聚合查询**：`endpoint_list` / `endpoint_hosts` / `endpoint_matrix` / `endpoint_lite_page`）；limit 默认 50 上限 500（`endpoint_lite_page` 例外，单页 ≤2000）；**行数 = total 断言进契约测试**。`queue_status` / `endpoint_surface_scan` / `endpoint_param_stats` 不走该信封，各自返回自身的 `data` 结构（见下）。**42 号分页协定**：`endpoint_list`/`endpoint_lite_page`/`endpoint_hosts` 处理器自行分页并标记 `meta.paged=true`（总线不再二次切片）。
 
@@ -317,6 +340,8 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 参数：`program`（必填）/ `q`（可选，敏感关键词，默认内置词表：`token/key/secret/password/passwd/pwd/access_key/cookie/authorization` 等）。纯读：扫描 `endpoints` 表（路径/参数）与 `param-queue.txt` 中命中敏感关键词的 URL/参数，返回 `{program, total, hits: [{url, keyword, source}]}`——**hits 形状是 `{url, keyword, source}`**（`source` ∈ `endpoints` / `endpoints.params` / `param-queue`），不是 `host/method/path/param/keyword`；且 `endpoints` 侧**只取 `program_id` 过滤后按 `last_seen` 排序的前 500 行**（500 为硬编码上限，超出部分不扫）。**脱敏检查用途**——发现敏感参数面是越权/未授权访问的排查线索，不回写、不改数据。归本域（操作对象是接口面/参数数据，与 endpoint_queue_surface 同族；v4 在 sec-pipeline，11-ledger §3.1 #9 记录归属裁决）。
 
 ### 1.5 事件
+
+27 号增量：`endpoint.changed` 在既有端点的参数内容或 Program 归属改变时发出，载荷与 registered 相同；参数不变的 touch 不发。`endpoint.request.observed` 只在新的不可变观测落库时发出，载荷为 request_id/shape_id/program_id/host/method/path/transport_state，不批量携带参数值与凭据。task 域异步消费两者及 registered，先持久入假设队列；查询/入队失败可经 outbox 重试。
 
 #### `endpoint.registered`
 
@@ -414,6 +439,8 @@ sec cmd endpoint consume-queue --program bytedance --scanner dalfox --run-id run
 ## 二、内部实现（Internal）
 
 ### 2.1 数据模型（逐列，owner = endpoint 域）
+
+27 号新增 `endpoint_requests`：`request_id TEXT PRIMARY KEY`、`shape_id/program_id/host/method/path/transport_state/spec TEXT NOT NULL`、`created_at INTEGER NOT NULL`；spec 是完整观测 JSON，写入后不可覆盖。索引 `(program_id,created_at,request_id)` 支持分页。`recordRequest/getRequest/listRequests` 是本域 repository 原语；保存及事件进入总线同一 SQLite 事务。新增表可幂等建表，无旧表改名或历史回填。
 
 **`endpoints` 表**（PK `(host, method, path)`；v4 仅 114 行——TSV 断层，**运行时实测 357 行 / 212 主机**，§3.3 的 TSV 回填未执行，见 §3.3）：
 

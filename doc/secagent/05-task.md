@@ -1,6 +1,6 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
-> 版本：v5.1 ｜ 状态：定稿（L6 调度器切换已实施，2026-09-17）｜ 契约版本：task domain manifest v1
+> 版本：v5.2 ｜ 状态：现行契约；27 号目标约束/请求假设队列已本地验证、未部署（§7.30）｜ 契约版本：task domain manifest v1
 > 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）、`know.release.revoked`（L6：撤回 → change-retest 重测需求任务入队，§2.3 变更触发节奏）、`vuln.signal.confirmed`（产出闭环：确认漏洞自动入队 `[提交] finding #id` 提交任务，同 finding 幂等去重）；`task_budget_extend` / `task_complete` 由 approval 域在 `approval_decide` 事务内**同步 dispatch**（actor=approval，幂等账本 `approval_effects`）执行——执行失败记 `approval_effects.failed`，**无独立 dispatcher 自动重试**，需人工 `approval_effects_retry` 补跑，不回滚 decide（09-approval §2.3；两域以此线为准）。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加、know 域学习 episode（L1）**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
@@ -17,7 +17,7 @@
 | cordis 服务名 | `secDomain.task`（`ctx.provide('secDomain.task')`） |
 | 插件包名 | `@silksec/sec-domain-task` |
 | 后端插件包名 | `@silksec/sec-backend-task-sqlite` |
-| owns（单写者声明） | 表：`tasks`、`task_runs`、`workers`、`strategy_dedupe`、`campaigns`、`campaign_decisions`、`campaign_checkpoints`、`task_settings`；文件：`data/scheduler.lock`（调度器单例锁，本域独占读写）。**注意：`data/pipeline/{program}/` 下产物文件归 ledger 域 owns，本域只读（守卫校验经 ledger 域查询）** |
+| owns（单写者声明） | 表：`tasks`、`task_runs`、`workers`、`strategy_dedupe`、`hypothesis_queue`、`campaigns`、`campaign_decisions`、`campaign_checkpoints`、`task_settings`；文件：`data/scheduler.lock`（调度器单例锁，本域独占读写）。**注意：`data/pipeline/{program}/` 下产物文件归 ledger 域 owns，本域只读（守卫校验经 ledger 域查询）** |
 | 事件日志 | `data/events/task.jsonl` |
 
 **profile 挂载矩阵**：
@@ -41,7 +41,7 @@
 | C8 | `task_finish` | **调度器专用收尾**：落执行史 + latest-only 续期 + 流程守卫前置不变量 | scheduler | 自然键（task_id+run_id+claim_started_at） | task.finished | ❌ |
 | C9 | `task_chain` | 能力图 BFS + 反向剪枝 → 落 parent 串联 once 链 | model, dashboard | auto（去重在 handler） | task.created ×N | ✅ |
 | C10 | `task_budget_extend` | task-budget-extend 审批落列（budget_timeout_sec ≤7200） | approval | 自然键（task_id） | — | ❌ |
-| C11 | `task_claim` | 调度认领：BEGIN IMMEDIATE 原子抢占到期任务（上限 `SEC_SCHEDULER_CLAIM_LIMIT`，默认 12、钳 1–32；36 号） | scheduler | none | task.claimed ×N | ❌ |
+| C11 | `task_claim` | 调度认领：BEGIN IMMEDIATE 抢占到期任务并复查结构化目标、授权与请求证据；不通过者转 blocked（上限默认12，钳1–32） | scheduler | none | task.claimed / task.blocked，总量≤32 | ❌ |
 | C12 | `task_reap` | 僵尸回收：宽限=超时+15min，活 worker 跳过 | scheduler | none | —（manifest 声明 task.finished ×N，但 handler 返回 events:[]，实际**不发**） | ❌ |
 | C13 | `task_worker_register` | worker 注册表登记（exec.worker.spawned 订阅执行） | reactor, scheduler | 自然键（run_id） | — | ❌ |
 | C14 | `task_worker_finish` | worker 注册表收尾（exec.worker.finished 订阅执行） | reactor, scheduler | 自然键（run_id） | — | ❌ |
@@ -74,6 +74,7 @@
 | `phase` | string | ❌ | `''` | 建议枚举 recon/vuln/biz-logic/code-audit/intranet/review（不硬校验，PHASE_PRESET 未命中则不注入人格） |
 | `goal` | string | ❌ | `''`（=research） | L6（学习专项 §10）任务目标类型枚举：`research`（授权研究，默认）/ `learn-daily`（日常整理：补索引/复验到期来源/整偏，只产候选）/ `eval-batch`（周期评测批：候选对照/误报复盘/晋升审阅）/ `change-retest`（变更触发重测：撤回/失效驱动，`know.release.revoked` 订阅自动生成）。goal 进 `task.created`/`task.claimed` 载荷与 task_list 过滤；调度器对 learn-daily/eval-batch/change-retest 限流（每 tick ≤1）并按 goal 上限帽收紧无延长批准的预算（1800/3600/3600s） |
 | `priority` | integer | ❌ | `5` | 0 最高；0–9 |
+| `intent_spec` | object | 受限 Campaign 必填 | 无 | 持久保存 kind/host/path/param/vuln_class/program_id 及可选 finding_id/request_id/method/param_location；进入创建幂等指纹。finding/request 在创建与认领时按实体复查，详见§7.30 |
 | `parent_id` | integer | ❌ | null | 须存在且非本任务自身；父任务终态后子任务才可被认领（链式放行） |
 | `budget_tokens` | integer | ❌ | null | ≥0 |
 | `assignee` | string | ❌ | `''` | 自由文本 |
@@ -951,7 +952,7 @@ reapWorkers(readMeta, pidAliveFn, nowTs) → {reaped}   // C15 对账原语
 
 | 事件 | handler | 语义 |
 |---|---|---|
-| `endpoint.registered` | `onEndpointHypothesis` | 新端点入库 → 污点路由派生 H2 草稿（有界：单端点 ≤3 条；endpoint 查询不可达→无路由输入→不派生，防幻觉第一道闸） |
+| `endpoint.registered` / `endpoint.changed` / `endpoint.request.observed` | `onEndpointHypothesis` | 读取端点/请求的实际版本 → 全部 H2 假设持久入队 → 每批≤3条派发；查询/入队失败返回可重试错误，不确认成无参数。见§7.30 |
 | `ledger.coverage.marked` | `onCoverageMarked` | 覆盖缺口队列消费：crawl=not_crawled/failed → crawl 草稿；param=no_params → param_enrich 草稿；非缺口态跳过 |
 | `vuln.signal.rejected` | `onStrategyOutcome` | 连败回写 strategy 黑名单 |
 
@@ -1038,7 +1039,7 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - L1/L3 的 `know_scores` 近似命中矩阵「按 campaign/program 分组投影」未实施（Planner 的 `scores` 快照当前为空——不影响确定性派生）。
 - Planner 的 LLM「探索性草稿」通道未实施（设计标注可选）。
 - 看板专项视图为只读 + 立即 tick；L1 待放行队列的一键 `campaign_dispatch` 放行 UI 未接（命令面已就绪）。
-- **N1**：`sanitizeDraft` 计算的 phase/goal 在下游被丢弃——`dispatchDrafts` 不传 phase，`task_derive_intent` 内部 `task_create` 硬编码 `phase:'vuln'` 且不带 goal，故 `policy.allowed_phases` 实际失效（Planner 的 phase 为死代码）。仅影响任务分类标签，不影响安全闸。
+- **N1**：`sanitizeDraft` 计算的 phase/goal 在下游被丢弃——`dispatchDrafts` 不传 phase，`task_derive_intent` 内部 `task_create` 硬编码 `phase:'vuln'` 且不带 goal，故 `policy.allowed_phases` 实际失效（Planner 的 phase 为死代码）。27 号增量已按 kind 将 crawl/param_enrich/asset_enum/auth_prepare/explore 落 recon，其余落 vuln；任意 policy.allowed_phases/priority 的完整传播仍待后续，不能再称为仅标签问题（phase 决定 persona/工具面）。
 - **N2**：`submit` 角色的验收判据未实装——`campaignVerdict` 对 submit/learn/retest 仍是 `done && ok → accepted`，设计 §7.6「vuln_submit 回写 remote_id 才 accepted / 超期 escalation」未落地。当前 submit 类任务由既有产出闭环订阅直接创建（不经 Campaign 派生），触发面很小，但文档与代码口径需后续收敛。
 - **N3**：Reviewer 证据可拼接性——`/finding\s*#?\s*(\d+)/` 从自由文本提取 finding id 后 `vuln_get` 复核，worker 写错编号时 `capsule:` 证据可能张冠李戴（`vuln_get` 查的是真实状态，风险有限）。建议 Phase C 改为 evidence 强制带结构化 `finding_id` 字段，废弃文本解析。
 
@@ -1390,3 +1391,44 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - Campaign 候选查询改为每项目过滤后 limit=30；候选编译保留原 `program_id`，无归属项留在原候选池待分诊。缺口第 201 项、项目内候选轮转、Dispatcher finding 所属复查及结构化目标约束仍待办。
 - 端点对象型 params 保留真实值用于 H2 路由；验证/存量复核/假设指令把 inconclusive 与 false_positive 分开。当前仅修指令，不代表全链状态、覆盖和学习消费已分离；H2 前三条截断仍存在。
 - 回归覆盖真实 bus/SQLite 下重试、回执丢失、恢复器重建、重复交付、连续 busy、迟到收尾隔离，以及事件参数值与候选项目传递。联合测试结果见 [27 号 §10.3](27-business-quality-and-capacity-plan-2026-09-30.md#103-首批实现与验证2026-09-30)。
+
+
+### 7.30 2026-09-30 · 27 号续接：目标约束、请求版本与持久假设队列（本地未部署）
+
+**目标契约。** `goal_spec.allowed_task_kinds` 为非空数组，可用 hypothesis/crawl/param_enrich/asset_enum/review_finding/verify_candidate/auth_prepare/explore；`source_pool=all|candidates`，后者仅允许候选验证/复核；`vuln_classes` 为现有规范类别数组；`targets.hosts` 为精确主机数组，`targets.finding_ids` 为正整数数组。提供的这些数组不得为空，非法枚举报 E_SCHEMA；缺省兼容旧非受限任务。约束同时作用于 Planner、显式 Dispatcher、derive_intent、带 campaign_id 的 task_create 和调度认领。受限任务缺 intent_spec 报 E_CAMPAIGN_GOAL；拒绝不会改变候选技术状态。
+
+`review_finding/verify_candidate` 使用独立 `finding_id`，兼容输入旧 host 槽中的 ID；落库前必须通过 vuln_get 读取实际 Program、host/URL 与类别，缺归属/错误项目不猜补，真实 host 必须在有效 scope。**§7.11 历史记录中的主机 scope 豁免已撤销。** `request_id` 必须解析为同 Program/host/path/method 的请求观测；证据需 intact，proxy_error/server_error/auth_challenge/access_denied 阻止派验证任务。`task_claim` 对排队期间归属/授权/证据变化再查一次，失败转 blocked、记原因并发 task.blocked，不发 task.claimed；恢复使用既有 task_resume。scope 域不可达时文件回退仍检查有效期，缺项目/日期无效均拒绝。
+
+**退出契约。** `exit_predicates=[{metric,op,value}]` 按 OR 求值，value 为有限非负数。candidate_pending 仅限 source_pool=candidates，使用含已认领的全部待验证池，按目标/类别过滤；每项目最多读取5000条，分页不完整或查询失败为 unavailable，不能当0。spent_tokens 是本专项已记录任务费用的累计下界，仅支持 gte；elapsed_ms 自 Campaign 创建时计时。后两者不依赖平台结果；禁止 bounty/accepted 等运营指标。candidate_pending/elapsed_ms 可用 gte/eq/lte。匹配后同 tick 转 reviewing、写 matched/actual checkpoint、停止规划；不沿用旧预算 checkpoint 自动恢复或延长预算。原 stop_conditions 文本仅作说明，不解析成真值。真实漏洞数、有效实验数和进展时钟未接入退出指标。
+
+**请求与假设接口。**
+
+| 接口 | actor / 参数 | 行为与返回 |
+|---|---|---|
+| task_hypotheses_enqueue | reactor/scheduler/system；必填 program_id/host/path，可选 method（默认GET）、request_id | 读取不可变请求或按项目/方法查询端点；入库全部适用 H2 路由，返回 added/total。引用错误 E_INVARIANT；源不可读返回可重试错误 |
+| task_hypotheses_dispatch | reactor/scheduler/system；可选 program_id、limit（默认3，上限3） | 在同一网关事务中创建任务并确认队列；返回 derived/dropped。无可用 Oracle、前置/授权/预算失败记录 last_error、延后一小时。不是漏洞 verdict，也不标有效尝试 |
+| task_hypotheses | model/dashboard/human/reactor/scheduler；可选 program_id、limit（默认50，上限500）、offset（默认0） | 分页摘要含 task_id、available_at、attempts、last_error，准确 total，meta.paged=true |
+
+两条内部命令总线 idempotent=none，由持久队列唯一键和同事务派发保证幂等；模型不能调用写入口。每次 scheduler tick 认领任务前补消费队列，重启不丢待办。有未归档 Campaign 的 Program 交给 Campaign Planner 消费，事件不另建无专项任务绕过 L0/L1/暂停/目标/预算；Planner 获取待派请求并保留 request_id/method/param_location/oracle 到任务。原始端点更新也触发入队，查询 method 不再混读 GET/POST。
+
+`hypothesis_queue` 由 task 域 owns：id（自增主键）、strategy_key（唯一）、program_id、draft（JSON）、task_id（尚未派发为NULL）、created_at、available_at、last_error、attempts；索引 `(task_id,available_at,id)`。任务创建与 task_id 确认同一 SQLite 事务，确认失败会回滚新任务；**这里的确认仅表示任务已落库，不是 worker 执行完成的 lease/ack**。tasks 增 intent_spec TEXT（JSON），原表无改名。
+
+新请求策略键包含 Program、host/path/method、request_id（或旧端点参数/鉴权版本摘要）、参数位置、参数名、漏洞类别与 h2-v2 规则版本。query/body 同名参数不会合并，身份或正文证据变化可产生新观测和新假设；按类别交错入队，限额只限制本批。旧手工 host×class 策略键兼容保留，不宣称全系统条件去重已统一。显式非空 oracle 在 derive_intent 处必须注册，否则 E_ORACLE_UNAVAILABLE；注册存在不证明判据可信。
+
+**验收与限制。** 五模块304/304、全域648/648（临时库/本地合成请求）；覆盖12条假设分四批派完、同名异位置、主体变化、故障前置、引用篡改、事务回滚后重建 bus 恢复、专项目标接管与过期授权。尚无真实目标/生产证据。第201个旧ledger gap/第31个候选、公平配额、H1主链接线、worker lease/ack、失败及unknown的attempt级重开、完整费用预留仍待实现。正式部署必须同时发布 task/backend-task/endpoint/backend-endpoint/rules；恢复保留新增表，不能靠旧代码读取不到新队列冒充恢复成功。
+
+2026-09-30 WP02续接同步任务提示：`exec_oracle_judge` 仅辅助分析；适用的 owner-only JSON IDOR 需绑定 finding/request 与双身份，由 `exec_verify_authz_read` 生成 decision_id，再封装可信 capsule。模型登记完整观察使用 `vuln_register_signal`，不再提示模型调用不可达的 `vuln_register_candidate`；旧 run 或调用方 verdict 不能确认。其它类型缺受控验证器时保留能力缺口与待补证据。此处只更新新生成任务的 objective，不批量改写既有排队任务。
+
+### 7.31 2026-10-01 · 27号续接：执行费用、认领隔离与失败队列重试（本地未部署）
+
+`task_record_run_cost` 为 scheduler/system 内部命令；必填 task_id、非空 run_id、非负安全整数 spent_tokens、source（worker_report/session_bill），可选 session_id、consumed_at（实际消费毫秒时间，不得在未来）。仅结算已登记执行或已有账本回执，不建立虚构执行。`task_run_costs` 查询允许 model/dashboard/scheduler/system，按 task_id 可选过滤，limit/offset 分页并返回准确 total。
+
+新增 `task_run_costs` 表：主键 `(task_id,run_id)`，保存累计 spent_tokens、session_id、source、consumed_at、recorded_at。它独立于每任务保留200行的 task_runs：清理运行史后，重复账单仍不会重复扣费。首次费用或新增差额在同一事务更新回执、运行费用和任务累计，发布 `task.cost.settled`；重复总额不再发事件，后补已知消费时间除外。NULL表示未知，显式0表示已知零；不同运行费用相加，不再覆盖任务累计。降低累计、改写已知消费时间、会话冲突、跨run共用会话总账均拒绝。历史运行已有费用但没有独立回执时拒绝推测补账，须另行审计。
+
+`task_finish` 仍保留原有自然幂等；迟到账单使用独立命令补录。迟到费用不能改写任务状态、当前 active_run_id 或技术结论。自动会话账单回退仅使用本次参数中的 session_id，不能借用上轮会话；共用会话无法唯一归属时保持未知。消费时间未知不得用结束时间替代。尚未接入迟到账单自动轮询、预算预留和按实际消费时间的窗口，Campaign验收/learning费用投影重算也未完成。
+
+scheduler→exec→`task_worker_register` 传递 claim_started_at。带 task_id 的注册必须以 `status=running AND started_at=claim_started_at AND (active_run_id IS NULL OR active_run_id=run_id)` 成功绑定后才写 workers；旧认领和竞争worker报 `E_TASK_CLAIM_SUPERSEDED`，事务不留下注册行。workers新增 task_id、claim_started_at。此机制隔离旧认领，不等于已完成全局租约、并发槽位或启动ack协议。
+
+`task_reap` 每次最多实际回收4项，每项在同事务写失败运行史并发布一次 `task.finished`（cause=reaped、outcome=crash、spent_tokens=NULL、cost_state=unknown）。重复回收不重复发结束事件；仍跳过活worker与预算内执行。interval按原规则退避续跑；一次性失败任务可触发假设重开。
+
+hypothesis_queue新增 retry_count（默认0）。已关联任务失败或一次性回收后，清空队列task_id、保留旧任务/运行史、延迟 `SEC_CAMPAIGN_RETRY_AFTER_FAIL_HOURS`（默认1小时），最多自动重开2次，即初次加两次重试。第三次失败保留关联，last_error=execution_retry_limit_reached。derive_intent统一检查冷却与上限，返回 `E_HYPOTHESIS_COOLDOWN` / `E_HYPOTHESIS_RETRY_LIMIT`，其他Planner入口重开strategy也不能绕过同一队列键上限；迟到旧回调不能解除新任务关联。摘要查询含 retry_count；attempts仍是队列派发处理计数，不能当有效实验次数。新请求版本是新的假设；未入队的旧手工策略及成功结束但结论unknown的重开尚未统一。

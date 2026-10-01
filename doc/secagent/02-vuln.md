@@ -1,6 +1,6 @@
 # 02 · vuln 域设计（漏洞信号 / 候选队列 / 证据 / 提交）
 
-> 版本：v5.1 ｜ 状态：随实现更新（2026-09-19 复核；产出闭环 C13/Q7 + 候选 TTL 治理 + dedup 不变量 + remote_id）
+> 版本：v5.2（2026-09-30 本地续接） ｜ 状态：随实现更新（2026-09-19 复核；产出闭环 C13/Q7 + 候选 TTL 治理 + dedup 不变量 + remote_id）
 > 依赖：**遵守** [`00-conventions.md`](00-conventions.md)（全局契约宪法，冲突以它为准）；被总线 `@silksec/sec-domain-bus` 宿主挂载。
 > 订阅（本域消费）：`exec.run.completed`（parser proposal 机器直灌分流）。
 > 被订阅（本域发布）：`vuln.candidate.registered / vuln.candidate.promoted / vuln.candidate.claimed / vuln.signal.registered / vuln.signal.confirmed / vuln.signal.rejected / vuln.signal.submitted / vuln.evidence.attached`——消费方：eval 域（判定回流）、fgs 域（节点状态联动）、report 域（提交统计）、asset 域（总览缓存失效）。
@@ -30,17 +30,17 @@
 |---|---|---|---|---|---|
 | C1 | `vuln_register_signal` | 登记完整漏洞信号（五要素闸门为不变量；精确观察命中候选自动 promote） | model, human | signal.registered（命中候选时另发 candidate.promoted） | 自然键=强指纹 |
 | C2 | `vuln_register_candidate` | 机器直灌唯一入口（候选池登记，模型禁用） | webhook, script, dashboard | candidate.registered | 自动指纹（title/host/url/source） |
-| C3 | `vuln_confirm` | 候选/信号 → confirmed 原子升级（status+confidence+noise 三联动，evidence 必填） | model, dashboard | signal.confirmed（自候选池另发 candidate.promoted） | 自动指纹（finding_id+evidence_ref） |
+| C3 | `vuln_confirm` | 候选/信号 → confirmed 原子升级（status+confidence+noise 三联动，evidence 必填） | model, dashboard | signal.confirmed（自候选池另发 candidate.promoted） | none（每次重验） |
 | C4 | `vuln_reject` | 判定 false_positive / dup / ignored（候选出池 + FGS deprecated 走事件） | model, dashboard | signal.rejected | 自动指纹（finding_id+verdict+reason） |
 | C5 | `vuln_submit` | confirmed → submitted（运营列回流；vendor_status=accepted 时 submitted → accepted）；可回写 `remote_id` 平台工单号 | model, dashboard | signal.submitted | 自动指纹（finding_id+bounty+vendor_status+platform+remote_id） |
 | C6 | `vuln_note` | 证据链追加（不改状态，任意状态可用） | model, dashboard | 无（防事件风暴） | 自动指纹（finding_id+note） |
 | C6b | `vuln_evidence_put` | 证据包受管写入（把机械复核用 `request.txt` 写入 `evidence/{id}/`） | model | 无 | 自动指纹（finding_id+request_text） |
 | C7 | `vuln_claim` | 认领候选（防多 worker 重复验证，TTL 软锁） | model, dashboard | candidate.claimed | 自动指纹（finding_id+认领者） |
 | C8 | `vuln_release` | 释放认领 | model, dashboard | 无（认领状态经 vuln_candidates 查询可见） | 自动指纹（finding_id；ctx: session_id/operator） |
-| C9 | `vuln_verify_replay` | CONFIRMED 机械复核（重放 request.txt + sha256 比对 + verify-log 追加；"LLM 不给自己当法官"） | model, script | 无（防事件风暴） | 自动指纹（finding_id+expect_hash） |
+| C9 | `vuln_verify_replay` | 受控 HTTP 重放与响应 hash 对比（不等同于漏洞成立） | model, script | 无（防事件风暴） | none（每次真实重放） |
 | C10 | `vuln_attach_fgs` | 关联 FGS finding 节点到行（fgs 域事件订阅回写通道） | model, reactor | 无 | 自动指纹（finding_id+fgs_node_id） |
-| C11 | `vuln_authz_diff` | 双权凭证重放对比 harness（低权/高权各发一次，三档判定；suspected 机器落候选） | model | 无（suspected 时经 C2 发 candidate.registered） | 自动指纹（url+method+headers_low+headers_high+body） |
-| C12 | `vuln_evidence_attach` | 从已发布 exec 证据清单挂载证据到 finding（复制进 `evidence/{finding_id}/{run_id}/`，哈希关联） | model, dashboard, reactor | `vuln.evidence.attached` | 自动指纹（finding_id+evidence_ref） |
+| C11 | `vuln_authz_diff` | 受控双权 HTTP 观察（inconclusive，不自动落候选） | model | 无 | none（每次真实执行） |
+| C12 | `vuln_evidence_attach` | 从已发布 exec 证据清单挂载证据到 finding（复制进 `evidence/{finding_id}/{run_id}/`，哈希关联） | model, dashboard, reactor | `vuln.evidence.attached` | none（每次重验） |
 | C13 | `vuln_expire_candidates` | 候选池 TTL 治理：noise=1 且 status=new 超期未消化候选置 ignored 出池 | system, dashboard | `vuln.candidate.expired` | none（治理通道，幂等由到期集合界定） |
 
 > 说明：宪法 §三 actor 表无 `parser` 类型——exec 域 parser 提案与 authz_diff 机器判定统一以 **actor=script** 注入，身份细分（`identity: "parser:nuclei:{run_id}"` / `"authz_diff:{session_id}"`）进审计，不新增 actor 枚举。
@@ -65,7 +65,7 @@
 | impact | string | 是 | — | trim 后非空（INV-4c） |
 | source | string | 否 | 'agent' | 登记来源标识 |
 | vuln_type / cwe / endpoint_ref / preconditions / recommendation | string | 否 | null | 补全提交模板列 |
-| confidence | string(enum) | 否 | 'tentative' | tentative/confirmed/false_positive/dup |
+| confidence | string(enum) | 否 | 'tentative' | 仅 tentative；确认须经过可信验证或独立审校 |
 | fgs_node_id | integer | 否 | null | 调用方显式传入（v4 自动创建逻辑改为 fgs 域订阅 signal.registered，见 §二.3） |
 | discovery_step | string | 否 | null | 发现步骤快照（P17 语义保留） |
 | idempotency_key | string | 否 | — | 显式幂等键（推荐） |
@@ -98,11 +98,16 @@
 | E_VULN_INFO_SEVERITY | severity=info | "info 级侦察副产物不进信号面。如确有安全价值，按 rules/src/severity-rating.md 重新定级（信息泄露默认低危）后以 low+具体影响登记" | false |
 | E_VULN_SEVERITY_CAPPED | severity × vuln_type 硬降级（21 号方案 §0-6，signalComplete 不变量）：信息泄露/中间件暴露类 ≤ low；XSS/CSRF/CORS/开放跳转等未证明执行类 ≤ medium（`sec-rules-hypothesis.enforceSeverityCap`） | "按评级规则降为 cap 再登记，或在影响与证据中证明进一步利用后走人工裁定" | false |
 | E_VULN_ORACLE_NOT_VERIFIED | 21 号方案 §2-1：`vuln_confirm` 引用 `capsule:{id}` 时 capsule verdict 非 verified（oracleCapsuleGate 不变量）——**oracle 输出是 confirm 的唯一合法机器证据，模型无权宣布 verified** | "oracle 判定 rejected/inconclusive 的假设不得 confirm——补充差分证据重判，或 vuln_reject 结案" | false |
-| E_VULN_ORACLE_TARGET_MISMATCH | capsule 目标 host 与 finding host 不一致（防张冠李戴） | "机器验证证据必须针对同一目标——核对 capsule 的 target.host" | false |
+| E_VULN_ORACLE_TARGET_MISMATCH | capsule/可信判定与 finding 的项目、完整目标、类型、身份或请求版本不一致 | "机器验证证据必须针对同一目标——核对 capsule 的 target.host" | false |
 
 #### `vuln_oracle_capsule`（proof capsule 登记，21 号方案 §2-2）
 
-**语义**：把一次机器验证的证据包（oracle verdict + 请求对 `request_pair` + 判定规则输入 `rule_input` + 结果 `result` + 重放命令 `replay` + 环境指纹 `env`）落盘 `data/evidence/oracle-capsules/{capsule_id}.json`（tmp+rename 原子写，body+digest 自洽防篡改）。actor：model/script/dashboard。返回 `evidence_ref: capsule:{id}`——该引用是 `vuln_confirm` 的机器验证证据形态（oracleCapsuleGate 不变量：digest 自洽 + verdict=verified + host 一致，三者缺一即拒）。事件 `vuln.oracle.capsuled`（记分 reactor 的 wins/fails 数据源）。verdict 必须由 `exec_oracle_judge`（10-exec §1.4）输出——oracle 是纯函数，模型只能提交对照特征，判定归代码。
+**当前契约**：actor 为 model/script/dashboard；唯一输入是 `decision_id`（由 `exec_verify_authz_read` 返回）。不再接收调用方 `verdict/target/rule_input/replay`。重新查询 exec 的可信判定后封装 capsule v2，包含判定摘要、完整目标、请求版本/身份/对象、执行 run 引用及规则/契约/出口版本。返回 `capsule:{id}`，发布 `vuln.oracle.capsuled` 摘要事件。none 幂等，读取时重新核验，不缓存旧成功。
+
+`vuln_confirm` 重新核验 exec 签封、清单、请求原证据与一小时时效，并严格绑定 finding_id、Program、host、完整 URL、GET 方法、类型、身份/对象和规则版本。只有 trusted verified 才能自动确认，行内复现步骤和影响也必需。旧版 capsule、裸 run/flow/oob/证据目录只代表历史观察，返回 `E_VULN_REVIEW_REQUIRED`，不自动改写历史 finding 的技术状态。`exec_oracle_judge` 仅为 advisory，不能提供这里所需的结论。
+
+`vuln_capsule_replay` 不再执行旧包携带的工具命令并 grep 关键词。凭据不写入 capsule，缺新鲜双身份凭据时明确返回 `blocked`，不产固化草稿。当前须重新调用受控验证命令生成新判定；凭据刷新和自动属性复现仍待实现。
+
 | E_EVIDENCE_REQUIRED | evidence 缺失或无证据引用 | "证据必须是 run_id/flow_id/burp_item/evidence 路径/oob 交互记录引用，无证据不结论（sec-verification 铁律）" | false |
 | E_IDEMPOTENT_CONFLICT | 同强指纹异参重放 | "该发现已登记（同 host+title+url）。补充信息用 vuln_note；字段勘误用 vuln_note 附勘误说明" | false |
 | E_SCHEMA / E_ACTOR_FORBIDDEN | 见宪法 | — | false |
@@ -113,7 +118,7 @@
 
 #### C2 · vuln_register_candidate（机器直灌唯一入口）
 
-**语义**：xray webhook、exec parser 提案、authz_diff suspected 启发式等**机器产出**的候选登记。模型禁用（E_ACTOR_FORBIDDEN——"机器直灌不冒充漏洞信号"从闸门 if 升级为接口不存在）。缺复现/影响的登记天然落候选池（noise=1, status='new'），后续经 `vuln_confirm` 或 `vuln_register_signal` 精确观察命中升级。
+**语义**：xray webhook、exec parser 提案等**机器产出**的候选登记。模型禁用（E_ACTOR_FORBIDDEN——"机器直灌不冒充漏洞信号"从闸门 if 升级为接口不存在）。缺复现/影响的登记天然落候选池（noise=1, status='new'），后续经 `vuln_confirm` 或 `vuln_register_signal` 精确观察命中升级。
 
 **参数表**：
 
@@ -158,6 +163,8 @@
 
 #### C3 · vuln_confirm（候选 → 信号原子升级）
 
+2026-09-30：`register_signal.confidence` 只接受 tentative；自动确认和独立人工审校统一经过本命令，不能从登记入口旁路。
+
 **语义**：v4 缺陷的根治动词。v4 `updateFinding` 只改 status/confidence/FGS/eval 回流、**从不触碰 noise 列**——确认后的候选变成 `status=confirmed AND noise=1` 僵君（2026-09-06 实测 31 条）。v5 把 `status='confirmed' + confidence='confirmed' + noise=0 + 认领清空` 收进**同一条 UPDATE 语句**（单事务原子），并必然发事件。
 
 **参数表**：
@@ -165,9 +172,10 @@
 | 参数 | 类型 | 必填 | 默认 | 校验规则 |
 |---|---|---|---|---|
 | finding_id | integer | 是 | — | 行存在（E_NOT_FOUND） |
-| evidence | string | 是 | — | 证据引用且**真实存在**（INV-2，网关校验：`run_<id>` → `results/<run_id>/meta.json` 存在；`evidence/<finding_id>/` 目录存在；`flow:` 前缀 → 对应 flows 文件存在；`oob:` 前缀 → interactsh 交互记录存在且归属当前任务）。缺 → E_EVIDENCE_REQUIRED |
-| note | string | 否 | '' | 确认说明（追加进证据链） |
-| idempotency_key | string | 否 | — | — |
+| evidence | string | 是 | — | 自动确认用可信 `capsule:{id}`；缺失/不存在为 E_EVIDENCE_REQUIRED，旧证据无可信判定为 E_VULN_REVIEW_REQUIRED |
+| note | string | 否 | '' | 确认说明，追加证据链 |
+| review | object | 人工审校必需 | — | 仅 dashboard 且 context.operator 非空；含 basis（≥20字符）、reproduction_steps/impact（各≥10字符）。人工独立审校依据与操作员写入证据链，复现和影响更新到 finding |
+
 
 **事务行为**：
 
@@ -179,7 +187,7 @@ UPDATE findings SET
 WHERE id=? AND status='new'
 ```
 
-随后若 note 非空追加证据链；提交成功发 `signal.confirmed`（恒发）+ `candidate.promoted`（当且仅当原行 noise=1——manifest `event_limit: 2`）。
+随后追加确认引用、人工审校依据（如有）及 note；提交成功发 `signal.confirmed`（恒发）+ `candidate.promoted`（当且仅当原行 noise=1——manifest `event_limit: 2`）。
 
 **返回信封示例**：
 
@@ -202,7 +210,7 @@ WHERE id=? AND status='new'
 | E_VULN_CLAIMED | 候选被其他会话活跃认领（且 actor=model） | "该候选正被会话 {claimed_by} 验证（认领于 X 分钟前）。请挑 vuln_candidates 中下一条 available 候选" | true |
 | E_NOT_FOUND | — | — | false |
 
-**actor**：model, dashboard。dashboard（人工终审通道）**跳过认领校验**（认领是 worker 协作软锁，人工兜底可越——审计高亮 operator）。**幂等**：自动指纹（finding_id+evidence）。
+**actor**：model, dashboard。dashboard（人工终审通道）**跳过认领校验**（认领是 worker 协作软锁，人工兜底可越——审计高亮 operator）。**幂等**：none，每次重新核验证据。
 
 ---
 
@@ -343,12 +351,12 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 | 参数 | 类型 | 必填 | 默认 | 校验 |
 |---|---|---|---|---|
 | finding_id | integer | 是 | — | 行存在。evidence 目录由域内拼接为 `data/evidence/{finding_id}/`——**调用方不传任意路径**（v4 的任意 `evidence_dir` 参数收窄为 finding_id 派生，消除路径穿越面） |
-| proxy | string | 否 | egress 默认出口 | `direct`（直连）或 proxy 域引用 |
+| proxy | string | 否 | egress 默认出口 | 仅 `default`（固定执行域出口）或 `direct`（显式直连） |
 | expect_hash | string | 否 | '' | 期望响应体 sha256；不传 verdict=REPLAYED，传则 PASS / FAIL(hash 不一致) |
 
-**行为**：读 `data/evidence/{finding_id}/request.txt` → 解析首行 method/path + headers（须含 Host）+ body → 经 proxy（或 direct）重放 → 响应体 sha256 → 与 expect_hash 比对 → **追加** `verify-log.md` 一行（`| 北京ISO时间 | 出口 | status | sha256 前 16 位 | verdict |`）。返回 `{status, sha256, verdict}`。**不改 findings 行**——复核结论经证据引用链被 `vuln_confirm` 的自查引用（机械判定本身不自动改状态，确认仍是一次显式命令）。
+**行为**：读 `data/evidence/{finding_id}/request.txt` → 解析首行 method/path + headers（须含 Host）+ body → 核对 finding Program/host → 经 exec_http_request 固定 proxy（或 direct）逐跳受控重放 → 响应体 sha256 → 与 expect_hash 比对 → **追加** `verify-log.md` 一行（`| 北京ISO时间 | 出口 | status | sha256 前 16 位 | verdict |`）。返回 `{run_id,status,sha256,verdict,proxy}`；PASS 只表示响应 hash 一致，不能代替漏洞判定。**不改 findings 行**——复核结论经证据引用链被 `vuln_confirm` 的自查引用（机械判定本身不自动改状态，确认仍是一次显式命令）。
 
-**错误码**：E_NOT_FOUND（finding 或 request.txt 不存在，hint："先在任务内产出证据包（request.txt 落 evidence/{id}/）再复核"）；`E_EVIDENCE_LEGACY_UNAVAILABLE`（finding 为 legacy-inline 证据，无 request/response，hint："历史 finding 无机械复核能力，先取证产出新证据包"）；`E_VULN_REPLAY_FAILED`（网络/首行解析失败，retryable=true，hint："网络波动可重试；首行无法解析说明 request.txt 非标准 HTTP 报文，重新产出证据包"）。**幂等**：自动指纹（finding_id+expect_hash）。**actor**：model, script（run_cli 侧治理脚本）。
+**错误码**：E_NOT_FOUND（finding 或 request.txt 不存在，hint："先在任务内产出证据包（request.txt 落 evidence/{id}/）再复核"）；`E_EVIDENCE_LEGACY_UNAVAILABLE`（finding 为 legacy-inline 证据，无 request/response，hint："历史 finding 无机械复核能力，先取证产出新证据包"）；`E_VULN_REPLAY_FAILED`（网络/首行解析失败，retryable=true，hint："网络波动可重试；首行无法解析说明 request.txt 非标准 HTTP 报文，重新产出证据包"）。**幂等**：none（每次真实重放）。**actor**：model, script（run_cli 侧治理脚本）。
 
 ---
 
@@ -362,37 +370,11 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 
 #### C11 · vuln_authz_diff（双权凭证重放越权对比 harness）
 
-**语义**：v4 sec-suite.js `authz_diff` 工具（L1529-1594）的域化形态——越权（IDOR/biz-logic）探测的双会话重放 harness：同一请求分别以低权/高权凭证各发一次，diff 响应后给出三档机器判定。**判定与候选登记是漏洞域语义**（exec 域只保留 hostOf 借用），biz-logic 角色 persona 的核心依赖工具。机器 heuristic 判定不冒充模型登记：suspected 档由域内以 actor=script 自动落 C2 候选，review/unlikely 档只返回判定供模型决策。
+**语义**：相同 URL 分别执行低权/高权请求，仅保存观察。输入必需 `program_id/url/headers_low/headers_high`；可选 method（默认 GET）、body。headers 接受对象、JSON 对象字符串或逐行 Header: Value；格式错误在发请求前拒绝。
 
-**参数表**：
+两次请求均走 `exec_http_request` 的 Program/逐跳目标/风险/QPS/固定出口守卫，响应签封由 exec 保存。返回 `{verdict:inconclusive,observation_only:true,why,low:{run_id,state,status,length,ms},high:{...}}`。相似响应、401/403、错误页均不能证明对象归属或安全属性，因此不再使用 suspected/unlikely，也不自动登记候选。完整响应按各 run_id 读取。
 
-| 参数 | 类型 | 必填 | 默认 | 校验 |
-|---|---|---|---|---|
-| url | string | 是 | — | 非空；经 scope-guard 硬校验（G0），未命中 → E_ACTOR_FORBIDDEN（audit 记 deny） |
-| method | string | 否 | `GET` | HTTP 方法大写 |
-| headers_low | string\|object | 是 | — | 低权凭证头（字符串 `"Cookie: a=1\nX-Role: low"` 或对象） |
-| headers_high | string\|object | 是 | — | 高权凭证头（同上格式） |
-| body | string | 否 | — | 请求体（重放载荷） |
-
-**行为**（v4 三档判定保留；重放改用 v5 `replayHttp`）：自动跟随最多 5 次重定向（非 `redirect: manual`）+ 30s 超时各发一次 → 比对 status / body 长度比 / JSON 键重合度 → 三档判定：
-
-| verdict | 判据 | 含义 |
-|---|---|---|
-| `unlikely` | 低权 401/403 | 鉴权正常 |
-| `review` | 状态码不一致（low≠high） | 需人工看响应 |
-| `suspected` | 低权 200 且响应与高权高度相似（键重合 >50% 或长度比 0.5-2） | 疑似越权 |
-
-suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，identity=`authz_diff:{session_id}`，source='authz_diff'，title=`疑似越权(IDOR): {method} {url}`，severity=high，evidence=`low={s}/{len}B high={s}/{len}B keysOverlap=..%`）——机器直灌语义，落候选池（noise=1）等模型/人工复核，不直接进信号面。
-
-**返回 data**：`{verdict, why, low:{status,length,ms}, high:{status,length,ms}, low_body_head(≤300字), high_body_head(≤300字), candidate_id?}`（candidate_id 仅 suspected 档携带）。
-
-**错误码**：E_ACTOR_FORBIDDEN（scope-guard 拒绝）；`E_VULN_REPLAY_FAILED`（低权/高权请求网络失败，retryable=true）。
-
-**幂等**：自动指纹（url+method+headers_low+headers_high+body）。**actor**：model。**事件**：无（判定返回模型；候选落库经 C2 发 candidate.registered）。**模型可见**：✅。
-
-**agent_note（模型面工具描述全文）**：
-
-> 双权凭证重放对比（越权/IDOR 探测 harness）：同一 URL 以低权与高权凭证各请求一次，机器比对状态码与响应相似度给出 unlikely/review/suspected 三档判定。suspected（低权 200 且响应与高权高度相似）会自动登记为待验证候选——你要继续取证数据归属并走常规验证流；review 档请人工看两个 body_head 自行判断。目标必须经授权白名单。凭证从 cred_query 取（勿在会话里裸贴 token）。
+actor=model，幂等 none，无事件。适用的 owner-only JSON IDOR 需另用 [exec §1.3.9](10-exec.md) 的受控验证；其它安全属性缺适配器时记录能力缺口，不退回相似度确认。
 
 #### C12 · vuln_evidence_attach（证据挂载，L1 2026-09-16 上线）
 
@@ -414,7 +396,7 @@ suspected 档域内自动 `dispatch vuln_register_candidate`（actor=script，id
 4. **Program 归属**：finding.program_id 与清单 program_id 双方均已知且不同 → E_VULN_PROGRAM_MISMATCH（跨项目证据挂载拒绝）。
 
 **行为**：逐文件复制进 `evidence/{finding_id}/{run_id}/`（tmp+rename 原子，副本哈希二次核验）→ 证据链追加 `[ts] evidence attached: run_id:<run>（N 个文件 / B 字节 / digest 头16）` → 发 `vuln.evidence.attached`。
-**幂等**：自动指纹（finding_id+evidence_ref），重放 replay:true。
+**幂等**：none（每次重验），重放 replay:true。
 **actor**：model, dashboard, reactor。**事件**：`vuln.evidence.attached {finding_id, evidence_ref, files, bytes, digest}`。
 **模型可见**：✅（描述即上表语义）。
 
@@ -901,8 +883,8 @@ export const repositoryV1 = {
 
 ## 八、2026-09-22 21 号方案 Phase 4 回填（打法固化 + 指标数据源）
 
-- **`vuln_capsule_replay`**（actor=script/dashboard/human/reactor，幂等 none，事件 `vuln.capsule.replayed`）：打法固化三层通道第一层（21 号方案 §4-4）。读 proof capsule 自带重放命令（`replay.tool/params`），经 `exec_run_cli` 守卫链重放（scope/QPS/沙箱全过，无旁路），重放输出经 `exec_grep_result` 与原 capsule 证据关键词（marker/oob_token/hits）比对 → `match/mismatch/inconclusive`（无确定性锚点显式 inconclusive 不猜）。match 且 `harden=true` → 产 worker 脚本草稿 `evidence/hardened-drafts/{capsule_id}.json`（`judge=oracle_rejudge`，判定归代码；**草案不具备执行能力，注册 tools.d manifest 唯一通道=人工审批**）。
-- **`vuln_evidence_flags`** 查询（actor=script/dashboard/system）：eval 三指标的数据源——逐 finding 轻量标志位（noise/severity/vuln_type/created_at/has_capsule），不回传证据全文；oracle-verified 判定口径在此单一事实。后端补 `listFindingsWithEvidence`（不进入列表视图）。
+- **历史实现已于2026-09-30替换**：`vuln_capsule_replay` 原先执行工具并比对 marker 的语义不构成安全属性复现，现返回 blocked 等待新鲜身份前置；不执行旧 replay 命令、不产固化草稿。当前契约见§1.3 capsule。
+- **`vuln_evidence_flags`** 查询（actor=script/dashboard/system）：eval 三指标的数据源——逐 finding 轻量标志位（noise/severity/vuln_type/created_at/has_capsule），不回传证据全文；has_capsule 仅表示存在引用，不证明可信判定；存量指标重算仍属于27号后续工作。后端补 `listFindingsWithEvidence`（不进入列表视图）。
 - `vuln_list` actor 白名单补 `script`（跨域只读消费）。
 
 契约：vuln 61/61 全绿（新增 1 例：重放 match 固化/mismatch 不固化/actor 闸/无 replay.tool 拒）。

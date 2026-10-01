@@ -12,7 +12,7 @@
 | 本次任务 | 阅读路径 |
 |---|---|
 | 快速了解系统 | [文档总入口](../README.md) → 本页分层图 → [全局契约](../00-conventions.md) |
-| 继续迁移实施 | [PROGRESS](../PROGRESS.md) → [迁移路线](../18-migration.md) → 对应域；用 [会话模板](SESSION-PROMPT.md) 确认范围 |
+| 继续迁移实施 | [PROGRESS](../PROGRESS.md) → [迁移路线](18-migration.md) → 对应域；用 [会话模板](SESSION-PROMPT.md) 确认范围 |
 | 检查当前缺陷 | 对应域文末的 2026-09-12 深度审查 + [本次 csai 预检](upgrades/2026-09-12-dsh-0.1.5-rc.2-record.md)；[9 月 11 日总线审查](REVIEW-bus-atomization.md) 是历史基线 |
 | 升级 DSH | [升级时间线](upgrades/README.md) → [0.1.5-rc.2 方案](upgrades/2026-09-12-dsh-0.1.5-rc.2-plan.md) |
 | 优化自学习与漏洞探测 | [自学习专项](upgrades/2026-09-12-self-learning-design.md) → know / ledger / exec / eval 等相关域契约 |
@@ -87,7 +87,7 @@ v4.x 的"模块"只是文件切分：findings 的闸门逻辑散落在 `addFindi
 | 15 | [eval](../15-eval.md) | 活评测集/假阳性消融 | data/eval/ | 定稿 |
 | 16 | [dashboard](../16-dashboard.md) | 看板壳 + 域视图插件化 + RPC 投影消费 | client 资源 | 定稿 |
 | 17 | [llm-surface](../17-llm-surface.md) | LLM 工具面/挂载矩阵/prompt 体系对接 | — | 定稿 |
-| 18 | [migration](../18-migration.md) | 迁移路线 Phase 0-5/回滚/数据修复 | — | 定稿 |
+| 18 | [migration](18-migration.md) | 迁移路线 Phase 0-5/回滚/数据修复 | — | 定稿 |
 | 19 | [ui-surface](../19-ui-surface.md) | 看板 UI 原生面集成：表面分散 + 原子化隔离 + 会话深度绑定 | client 资源 | 定稿 |
 
 **依赖关系速览**：bus 是所有域的宿主；vuln/asset/endpoint/fact/know 相互只通过事件联动；scope 是 exec 的前置（守卫链）；approval 只发事件不直写任何域；ledger 订阅 exec 产物；task 调 exec 派生 worker；memcore 订阅全部域的 lifecycle 事件。

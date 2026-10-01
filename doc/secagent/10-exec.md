@@ -1,6 +1,6 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
-> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：`exec/1`
+> 版本：v5.1（2026-09-30 本地续接） ｜ 状态：定稿 ｜ 契约版本：`exec/1`
 > 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.worker.spawned/.finished`（task 域，强联动）；`exec.flow.appended`、`exec.import.completed`、`exec.evidence.published` 当前**无订阅方（设计预留）**——各域 manifest 未声明，待实现后回填
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
@@ -31,6 +31,8 @@
 
 | 动词 | 一句话语义 | actor 白名单 | 幂等策略 | 事件 |
 |---|---|---|---|---|
+| `exec_http_request` | 逐跳受控 HTTP，签封原始执行证据（§1.3.9） | model, script, dashboard | none | `exec.http.completed` |
+| `exec_verify_authz_read` | owner-only JSON 私有对象读取验证（§1.3.9） | model, script, dashboard | none | `exec.oracle.decided` |
 | `exec_run_cli` | 经守卫链运行一个已登记 CLI 工具，全量落盘，回 ≤20 行摘要 | model, dashboard, script, human | `explicit_only`（见 1.3.1 说明） | `exec.run.started`、`exec.run.failed`、`exec.run.completed` |
 | `exec_spawn_worker` | 派生隔离无头 worker 执行自包含任务（RoE 契约注入） | model, dashboard, scheduler | 网关 `none`（命令层 worker 注册表按 `sha1(task)` 自然键去重，见 1.3.2） | `exec.worker.spawned`、`exec.worker.finished` |
 | `exec_burp_import` | Burp XML 导入 → 结构化 JSONL 落盘 + proposal 事件 | model, human | 自然键 `file`（参数原值，非内容哈希） | `exec.import.completed` |
@@ -245,6 +247,44 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 **事件**：`exec.evidence.published`（payload `{run_id, program_id, files, bytes, digest}`）。
 **actor**：system（明确登记的宿主收尾通道；worker/模型产出的证据要可用，必须由宿主走此门）。
 
+#### 1.3.9 `exec_http_request` 与 `exec_verify_authz_read`（27号 WP02，本地未部署）
+
+`exec_http_request` 接受 `program_id/url`，可选 `method`（默认 GET）、`headers/body`、`proxy=default|direct`、`timeout_ms=100..30000`、`max_bytes=1..1048576`。actor 为 model/script/dashboard，幂等为 none；每次调用真实执行。非 GET/HEAD/OPTIONS 或写动词路径需要 intrusive 授权。
+
+- 逐跳验证**指定 Program** 的 scope、全局 exclude、授权期限和风险；DNS 失败/IPv6 不支持时拒绝。IPv4 解析结果逐个校验，选定地址通过 curl `connect-to` 固定，代理不再另行解析目标。私网/保留地址要求项目显式授权。
+- 同一次调用固定出口，默认 `SEC_EGRESS_PROXY` 或 `http://127.0.0.1:8899`，不因失败改为直连。HTTP(S) 代理使用 CONNECT；代理须支持此能力。`direct` 是显式选项。
+- 每跳申请同进程 QPS 令牌；最多 4 个请求（3 次重定向）。整次调用默认 10 秒，最长 30 秒（含解析、节流、传输）；body 最多 64 KiB，响应体最多 1 MiB，有效响应头上限为 64 KiB。301/302 的 POST 和 303 按规则转 GET；跨 origin 不转发凭据或未知自定义头，带 body 的跨 origin 跳转直接阻断。无共享 cookie jar；取消信号会终止当前请求并停止后续实验请求。
+- curl 配置通过 stdin 传递，不把凭据放入进程 argv；请求 body 以字面内容发送，`@路径` 不读取本地文件。签封记录只保存身份摘要，不保存请求凭据；响应可能含敏感业务数据，证据文件权限为 0600。
+- `results/<run_id>/http-record.json` 保存请求摘要、每跳目标/固定地址、响应和传输状态；执行域生成 HMAC-SHA256 签封及 `evidence-manifest.json`。密钥 `data/.http-executor-key` 归 exec 独占，在 results/evidence 之外。仅靠调用方文件或重新计算 SHA 不能伪造执行来源。
+- 返回 `{run_id,state,status,elapsed_ms,hops}` 并发 `exec.http.completed`，事件不带凭据/响应全文。`exec_http_result({run_id})` 每次验证签封、清单与文件摘要后读取完整响应。407、5xx、429、超时、超限、越界等独立于应用响应观察；故障的部分正文不交给 Oracle。
+
+`exec_verify_authz_read` 是首个受控验证适配器，**只支持宿主明确配置的 owner-only JSON 私有对象读取语义**。不是通用 IDOR/角色/租户/写操作验证器。输入必需 `program_id/finding_id/request_id/own_id/other_id/headers_a/headers_b`；actor 同上，none 幂等。finding 必须同项目、同完整 URL、`vuln_type=idor`；不可变请求必须 GET 且原始证据完整。
+
+宿主在 `data/verification-profiles/<Program>.json` 安装经过接口语义核实的契约；没有模型可写的配置命令，未配置返回 `E_EXEC_ORACLE_UNSUPPORTED`。Program 文件名支持字母、数字、下划线和连字符。以下仅是结构示例，不是生产授权：
+
+```json
+{
+  "version": 1,
+  "policy": "owner-only",
+  "origin": "https://authorized.example",
+  "identity_path": "/me",
+  "object_path": "/objects/{id}",
+  "identity_field": "id",
+  "id_field": "id",
+  "owner_field": "owner_id",
+  "visibility_field": "visibility",
+  "private_value": "private"
+}
+```
+
+字段选择器目前只支持 JSON 顶层字段；对象路径为固定前缀加 `{id}`，身份路径为固定路径。A/B 身份、无效凭据身份、A 自有对象、B 自有对象、匿名访问 B、A 访问 B、重复 B 正对照、重复 A 交叉访问、末尾 A 身份复检共 **10 个请求**，共享固定出口并逐次走同一守卫。故障或重定向提前停止。正常身份必须不同且稳定，两对象必须不同、私有且归属对应；匿名/无效凭据须 401/403。前置成立后，A 重复读到 B 私有对象才 verified；重复被拒才 rejected；其余 inconclusive。缺证、公开对象、失效身份与基础设施故障均不判技术反证。
+
+判定 `idor_owner_read_v1` 保存到 `results/<decision_id>/authz-decision.json`，含规则版本、宿主契约摘要、Program/finding/request、身份摘要、对象、全部执行 run 引用与原始 task 关联（无关联保持 null）。`exec_authz_decision({decision_id})` 重新校验签封、每份执行清单、请求版本、当前契约与目标授权；**一小时后或配置变化即须重验**。返回判定供 `vuln_oracle_capsule({decision_id})` 封装，事件 `exec.oracle.decided` 只含摘要。
+
+page/grep 结果读取拒绝文件/目录符号链接、硬链接与非常规文件，打开后检查真实句柄仍在 results 内，避免未受信 worker 产物暴露宿主密钥；Linux `/proc/self/fd` 是这层检查的运行依赖。
+
+签封保证执行来源与完整性，不代替对宿主接口契约的语义审核。密钥/契约变更、证据保留/恢复需要一起考虑；当前仅有本地回归，不自动安装任何生产契约。新 HTTP 路径不等于已统一所有 CLI/browser 流量；全进程共享限速、真实站点适配、TLS/各代理兼容、自动刷新凭据与重放仍需验收。
+
 ### 1.4 查询（读投影）逐个详述
 
 | 查询 | 参数 | 返回 | 说明 |
@@ -253,11 +293,13 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 | `exec_page_result` | `run_id`*、`offset`（0 基，默认 0）、`limit`（默认 50 上限 200） | `{total_lines, offset, limit, lines}` | 仅 stdout.log 按行分页 |
 | `exec_plan_chain` | `have`: string[]、`want`* | `{have, want, chain[], available[]}` | 能力图 BFS：按 manifest `requires`/`produces` 迭代扩张（v4.x 算法原样）；凑不到 → `E_EXEC_CHAIN_UNREACHABLE` + available 清单（hint：调整 have/want 或检查 manifest） |
 | `exec_manifest_list` | `name?`（精确）、`stage?`、`risk?`、`domain?` | `{rows: [{name, stage, risk, target_param, requires, produces, parser, domain, sandbox, deprecated_store}], total}` | manifest 元数据枚举（v4 的"错误 message 附可用清单"升为一等查询；`domain` 字段见 2.1.1） |
-| `exec_oracle_judge` | `oracle`*（`unauthz_diff` / `idor_diff` / `info_disclosure_diff` / `sqli_diff` / `sqli_time` / `xss_echo` / `ssrf_oob`）、`input`*（对照特征对象） | `{oracle, verdict, rationale, evidence}` | **机器验证 oracle（21 号方案 §2-1）**：纯函数确定性判定（`sec-rules-hypothesis`），输入两次/多次请求的对照特征，输出 `verified / rejected / inconclusive`。当前函数只计算调用方特征，不能独立证明原始请求真实性；capsule 仍存在调用方自报 verdict 的缺口（27 号 E09/E10），不得把纯函数 verdict 自动等同于已技术核实漏洞 |
+| `exec_http_result` | `run_id`* | 已核验签封/清单的请求摘要、逐跳记录与响应 | 不返回请求凭据；actor=model/script/dashboard/reactor |
+| `exec_authz_decision` | `decision_id`* | 已核验原始证据与当前契约的持久化判定 | 一小时有效窗；actor=model/script/dashboard/reactor |
+| `exec_oracle_judge` | `oracle`*（既有规则名）、`input`*（调用方特征） | `{oracle,verdict:inconclusive,advisory_only:true,suggested_verdict,rationale,evidence}` | 辅助分析，不是可信结论；不能生成自动确认 capsule。原始规则函数的建议也不能替代受控执行证据 |
 
 **27 号首批判定收紧（本地实现，生产未部署）**：`xss_echo` 原样回显输出 inconclusive 并保留上下文；`sqli_diff` 比较实际正文（trim 后同位置字符相似度≥0.9，非长度比），等长不同内容或缺失基线输出 inconclusive；`sqli_time` 单次显著延迟输出 inconclusive；`ssrf_oob` 无回调输出 inconclusive。响应一致且布尔反向显著不同的 SQLi 差分路径仍可返回 verified，规则正向兼容用例保留；它仍需证明健康基线与数据库因果，不能单独当漏洞事实。
 
-本批是弱判据修复，**不是新建完整验证器**。浏览器执行、交错时延实验、OOB 健康与回调归因、公开数据排除、受信原始证据提取与 capsule 可信绑定仍待 WP02；当前仍有其它可误报的判定路径，不能宣称“自动确认已可信”。真实技术证据的核验不依赖投稿、平台认可或赏金。
+这些旧纯函数仍只是辅助分析。2026-09-30 续接新增的可信路径限于§1.3.9 的 owner-only JSON 读取适配器，其余漏洞族缺受控验证器时不能自动确认。浏览器执行、交错时延、OOB 健康与回调归因等仍待实现。技术核验不依赖投稿、平台认可或赏金。
 
 `exec_plan_chain` 能力链主干（当前 manifest 图的实际形态）：`domains → subdomains → live_hosts → endpoints → findings`。
 
@@ -269,6 +311,8 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 
 | 事件 | 触发 | payload 顶层字段 | 联动 |
 |---|---|---|---|
+| `exec.http.completed` | HTTP 执行签封落盘后 | `run_id,program_id,state,status,elapsed_ms,hops` | 弱（观察事件） |
+| `exec.oracle.decided` | 受控验证判定签封落盘后 | `decision_id,verdict,oracle,program_id,finding_id` | 弱（判定事件，学习归因接线待后续） |
 | `exec.run.started` | run_cli 通过守卫链、spawn 前 | `run_id, tool, stage, risk, targets(≤10), program_id` | 弱 |
 | `exec.run.failed` | run 落盘且 exit_code≠0、program 已解析（后处理 ②）| `run_id, tool, host, exit_code, error, program_id` | 弱（fact 域订阅写负知识）|
 | `exec.run.completed` | run 落盘 + 后处理 ①② 之后 | 见 1.5.2 | 弱（asset/endpoint/vuln 订阅入库；可重放） |
@@ -721,3 +765,7 @@ prompt 引用同步：persona/objective/skills/technique-index 中工具引用�
 - **后端新增**：`readFileWindow`（按行流式窗口，内存有界）、`readLinesCapped`（grep 逐文件流式、限 8MB）。
 - **查询改造**：`exec_page_result` / `exec_grep_result` 不再整读文件（旧实现大 stdout 数百 MB 爆内存）。
 - **流向修正**：`readFlows` 无 `date` 时改「最近文件优先」（旧实现升序取最旧，缺省永远看到最早流量）——`exec_flow_triage` 随之取近期流量。
+
+## 十一、2026-10-01 27号续接：worker认领标识（本地未部署）
+
+`exec_spawn_worker` 增加可选 claim_started_at（非负毫秒整数）。一旦传 task_id，仅 scheduler 可调用且必须传该标识，否则返回 `E_EXEC_CLAIM_REQUIRED`；无任务的原有worker入口保留。`exec.worker.spawned` 将 task_id/claim_started_at 传给task注册订阅，由task域原子校验当前认领并绑定run；旧认领或同认领的竞争worker不能覆盖active_run_id。注册失败沿现有onSpawn错误路径终止进程。此项仅补齐认领隔离，尚未实现全局worker lease/ack或并发槽位预留。
