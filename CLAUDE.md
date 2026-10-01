@@ -52,6 +52,16 @@ spool version                             # 验证
 
 > 完整部署与升级说明见 [doc/DEPLOYMENT.md](doc/DEPLOYMENT.md)。
 
+## SilkSecAgent 变更前备份（每次会话必须遵守）
+
+备份机制和操作顺序以 [18号备份与维护](doc/secagent/18-backup-and-maintenance.md) 为唯一正式手册；旧迁移历史在 `doc/secagent/archive/migration-v4-to-v5.md`。
+
+- 更新生产代码/插件/配置/依赖、迁移修复数据库、重建服务、非例行清理前，先核对备份覆盖与排除范围，再执行 `spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh prepare-change --change <本次变更ID>'`，只有退出0并核对本次回执才能继续。
+- 备份必须早于远端模板上传、`spool bundle dsh setup`、`spool sync push`及其它首次生产写入。使用 `&&` 串接或显式检查返回码；锁冲突75不是成功，不得用 `;` 或 `|| true`继续发布。不能把历史回执、定时器success或仅status健康当作本次已备份。
+- 每次新变更重新备份；同批连续步骤可复用本次回执，范围/排除项变化或中断后恢复先重验。新工作区、宿主systemd/Node/密钥等范围外资源须补恢复方案；在线逐库备份不能替代新冻结点及应用隔离预演。服务重建仍遵守既有审批规则。
+- 本地代码/文档编辑与只读巡检不用远程备份；既定常规维护按18号保留策略运行。失败窗口的应急恢复按已验证恢复方案执行，不递归要求NAS备份。
+- 底层spool/setup尚无全局自动备份钩子，执行者须主动使用上述门禁；缺失或失败先修复备份，不直接继续正常变更。
+
 ## 自动提交规则
 
 当你完成一次**完整的修改任务**后，且本次消息产生了至少一个**未被 `.gitignore` 忽略**的文件变更时，必须自动执行 git commit + push。

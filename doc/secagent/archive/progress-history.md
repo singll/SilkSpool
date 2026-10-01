@@ -76,7 +76,7 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 
 ## 一、总览（归档时点 2026-09-19）
 
-- **迁移计划真相源**：[18-migration](18-migration.md)（Phase 0–5）
+- **迁移计划真相源**：[18-migration](migration-v4-to-v5.md)（Phase 0–5）
 - **全局契约宪法**：[00-conventions](../00-conventions.md)
 - **文档状态**：00-18 全量定稿（2026-09-06，commit `2e593e9`）
 - **领域语言**：[CONTEXT](../../../bundles/dsh/CONTEXT.md)
@@ -632,3 +632,17 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 
 - 18迁移路线图归档，00–17保留为常驻契约；历史引用同步修正。旧最近结果迁入进度历史，当前不再列迁移DoD待办。
 - 用户已同意闭环分批提交、发布验收后分批部署；27号§15为当前发布检查点。当前累计增量659项测试通过，发布模板清单含关联域；阶段提交推送后继续备份与恢复预演、小批运行验收。PATH spool只读采样确认服务active、DSH=0.1.7-rc.2、无运行中task/worker（queued=6），尚未发布。
+
+### 2026-10-01 · 常驻NAS备份、维护入口与发布加速（维护已部署，27号业务增量未部署）
+
+- 续接原会话：TrueNAS独立数据集配额256GiB，SFTP专用账号、加密去重restic；NFS因csai宿主禁止挂载已撤销。密钥在管理机keys目录托管，未入库。
+- 首份成功备份覆盖5.42GB/39库85.48秒、恢复6.86秒；最终完整范围定时备份（含3工作区）5.65GB/40库306.41秒、新增121MB，快照`a7c87eab…`；NAS读回40库摘要/完整性验证19.56秒。失败的root证书读取不会记作成功；定时服务用受限资源root执行。常规备份各库分别一致，不能替代发布冻结点。
+- 每6小时备份（留8份）、每周校验/恢复预演/prune、每日安全清理、每15分钟健康检查，6个timer均已启用；旧backup/retention timer已停用。旧本地图快照留2份，已清理1,855,012,864字节；results/flows/evidence/sessions不按目录年龄清除。
+- 常规备份增加 `extra_roots`，覆盖现有三个外置项目工作区及其中SQLite；新统一入口 `silksec-ops.sh` 覆盖status/backup/drill/cleanup/restore-copy/preflight及原freeze/release命令。恢复到新目录并保留数据库权限；NAS超时输出健康失败；冻结自动暂停并恢复维护单元；测试临时目录随运行结束回收。
+- 验证：维护7项、快照6项、root冻结10项、root发布恢复19项均通过；Go CLI及新增NAS RPC边界通过，构建/语法/diff通过。Go tools全包既有uptime测试失败已用HEAD覆盖对照复现，不计为本批通过。
+- 旧发布目录 `20260913-rc2` 已归档、完整读回校验并删除（快照`1725625f…`，逻辑97.77GB、新增4.82GB，removed=true）；最新 `20260926-017` 保留。磁盘由27%降至17%，可用702→796GiB。全域659/659通过，57表的task/endpoint隔离迁移行数不变、完整性ok；预检含schema首次130.21秒、命中缓存3.56秒（约36.6倍；schema每次仍重验；前轮95.50→3.58秒）。
+- 生产服务active、MainPID=922156、NRestarts=0；磁盘使用约17%、可用约796GiB，NAS正常，6个维护timer有效。未重启主服务，未升级0.2.0、未发布27号业务增量。
+- 维护代码与文档阶段提交 `27b592d` 已推送 origin/main。
+- 契约与命令见[18号备份与维护](../18-backup-and-maintenance.md)。容量告警目前落systemd/journal，外部通知尚未接；证据持续增长仍需引用感知归档/扩容，不能宣称磁盘永不耗尽。
+
+常规备份运行边界补充（2026-10-01）：外置工作区内 Chromium `.shared-browser-profile` 的32KiB性能统计库被浏览器独占锁定，导致一次补跑120秒超时（失败未淘汰旧备份）。宿主配置以 `exclude_paths` 显式排除该可重建运行目录，源仍原位保留；浏览器登录态不在常规备份恢复范围，完整冻结点沿用原覆盖清单。真实仓库测试持有排除库的 EXCLUSIVE 锁，验证业务SQLite及项目文件仍可备份恢复、运行目录不进入快照。

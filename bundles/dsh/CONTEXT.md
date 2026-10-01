@@ -1,7 +1,7 @@
 # SilkSecAgent 领域语言 / Domain Language
 
 > SilkSecAgent（DSH + pi）授权范围内漏洞发现平台的统一术语表。
-> 当代码、文档或对话使用这些词时，含义以此为准。设计契约见 [文档入口](../../doc/secagent/README.md)（模块 00–17），进度与更新见 [PROGRESS](../../doc/secagent/PROGRESS.md)，历史与升级记录见 [archive](../../doc/secagent/archive/)。
+> 当代码、文档或对话使用这些词时，含义以此为准。设计契约见 [文档入口](../../doc/secagent/README.md)（模块 00–18），进度与更新见 [PROGRESS](../../doc/secagent/PROGRESS.md)，历史与升级记录见 [archive](../../doc/secagent/archive/)。
 > 本文部分示例保留历史工具名；具体命令、状态机与 actor 以 [全局契约](../../doc/secagent/00-conventions.md)及对应域文档为准。历史系统解剖仅用于回溯，不作为当前操作手册。
 
 ## 核心实体
@@ -76,3 +76,6 @@ _Avoid_: 皮肤、配色方案（同义不改）；勿做看板专属局部主�
 **Frozen Recovery Point（冻结恢复点）**：排空并冻结全部业务/维护写者后生成、带完整校验清单的发布恢复点，沿用既有 freeze/release 状态机。不能用常规快照替代切换门禁。
 
 **Restore Drill（恢复预演）**：从备份读回隔离副本并校验；SQLite drill、schema preflight、应用沙箱启动验收是不同覆盖范围，必须分别记录。
+
+
+**Prepare Change（变更前准备）**：首次生产写入前，在同一维护锁内完成一份新NAS备份和该快照的SQLite恢复校验，成功才生成带change ID的回执。它是运维流程门槛，不等于跨库冻结或业务发布验收。正式步骤见 [18号](../../doc/secagent/18-backup-and-maintenance.md)。

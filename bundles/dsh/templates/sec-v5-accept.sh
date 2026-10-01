@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# SilkSecAgent v5 部署验收（18-migration.md §五 Phase 3「部署验收命令集」契约化）
+# SilkSecAgent v5 部署验收（archive/migration-v4-to-v5.md §五 Phase 3「部署验收命令集」契约化）
 # 职责（只读，幂等，可反复重跑；不做任何数据变更）：
 #   R0 基础健康：
 #     1) 6 个 systemd 单元 active（silksecagent/edge/xray/shared-browser/proxy-rotator/ct-watch）

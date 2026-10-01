@@ -73,7 +73,7 @@
 | 事件 jsonl 文件 | `data/events/{domain}.jsonl` | |
 | 幂等键前缀 | `{domain}:{verb}:{自然键}` | `vuln:confirm:fpr:<fingerprint>` |
 | 表名 | 复数名词（沿用 v4.x，**不改名不迁库**） | `findings` `assets` |
-| 模块文档文件 | `doc/secagent/{NN}-{domain}.md`（扁平，00–17；18迁移已归档） | `doc/secagent/02-vuln.md` |
+| 模块文档文件 | `doc/secagent/{NN}-{domain}.md`（扁平，00–18；18为备份与维护，旧迁移文档已改名归档） | `doc/secagent/02-vuln.md` |
 
 *授权域的唯一注册名是 `scope`（见 `08-scope.md`）；"authz"仅是叙述性别名（指 scope+credentials 的职责集合），**不可**作为域名/服务名/包名注册或引用（实现已统一为 `secDomain.scope` / `@silksec/sec-domain-scope`）。
 
@@ -310,7 +310,7 @@
 5. **脱敏规则**：事件 payload 与 audit 的 before/after 快照经域声明的 `redact` 字段清单过滤（如 params 脱敏、cookie 剥离）；导出类命令过授权域脱敏硬门（scope.yml 域名命中拒绝——v4.x vault 导出桥规则保留）。
 6. **fail-open 仅限治理旁路**：memcore 类治理订阅失败不阻断业务（既有公理）；**领域主链路一律 fail-closed**。
 7. **审计不可绕过**：唯一写入口 = 唯一审计点；任何"跳过审计"的捷径都是缺陷。主链路写命令 audit 落盘失败 → 命令回滚（fail-closed，§九）。
-8. **依赖供应链纪律（plugins.lock）**：所有 cordis 插件依赖（含 @silksec fork tarball）在 `plugins.lock` 钉版本 + sha512 integrity 锁定；任何插件/依赖变更必须**先装锁后安装**（lock 文件进 bundle 模板随 git 受控）——`npm install` 不得在未核对 integrity 下解析新版本。升级流程：改 lock（diff 评审）→ 安装 → 契约测试 + dump-config 冒烟（01 §2.7）→ 提交。manifest 或依赖扫描（`npm audit`/sema 等价物）发现高危时处置走 `BLOCKED` 台账（ledger 域）记录并阻塞对应插件升级，不静默忽略；`@silksec/dsh-browser` fork tarball 同样受 integrity 锁定（patch 文件 diff 是唯一合法变更通道，18-migration §9.3）。
+8. **依赖供应链纪律（plugins.lock）**：所有 cordis 插件依赖（含 @silksec fork tarball）在 `plugins.lock` 钉版本 + sha512 integrity 锁定；任何插件/依赖变更必须**先装锁后安装**（lock 文件进 bundle 模板随 git 受控）——`npm install` 不得在未核对 integrity 下解析新版本。升级流程：改 lock（diff 评审）→ 安装 → 契约测试 + dump-config 冒烟（01 §2.7）→ 提交。manifest 或依赖扫描（`npm audit`/sema 等价物）发现高危时处置走 `BLOCKED` 台账（ledger 域）记录并阻塞对应插件升级，不静默忽略；`@silksec/dsh-browser` fork tarball 同样受 integrity 锁定（patch 文件 diff 是唯一合法变更通道，归档 migration-v4-to-v5 §9.3）。
 
 ## 十五、版本化与废弃流程
 
@@ -331,3 +331,8 @@
 | 主要风险 | ~~v4 dashboard 63 处兜底~~（2026-09-18 UI-0 清除，业务端点 fail-closed）、~~v4 scheduler 持锁替代 v5 调度器~~（2026-09-19 删除 `sec-suite.scheduler.js`，派单唯一持锁者为 task 域内建调度器）、vuln evidence 工作区/服务端路径缝错位、~~task 守卫查询异常静默降级~~（L0 已改守卫异常显式失败，`task.js` INV-T6）、know 索引清理失败无日志、approval 决策指标未实现。 |
 
 **单域升级纪律**：更新 bus 必须全量 14 域契约回归；更新任一业务域至少回归本域 + 直接消费方（bus_status 悬空订阅为 0 + 受影响域契约 + `sec-v5-accept.sh`）。在单域安装命令落地前，不得宣称“可独立部署”，只能说“包边界具备独立升级条件”。
+
+
+## 十七、生产变更前备份
+
+凡涉及 SilkSecAgent 生产代码/插件/配置/依赖更新、数据库修复迁移、服务重建或非例行清理，必须先按 [18号 §2](18-backup-and-maintenance.md#2-每次变更前的固定流程)完成范围核对、新NAS备份与该快照的SQLite恢复校验，记录change ID、snapshot ID及结果，再进行首次生产写入。远端模板上传也属于写入，必须在 `spool bundle dsh setup` / sync push / 手工上传**之前**备份；不得在setup末尾补做。非零退出码（含75锁冲突）停止该次变更，定时器显示success不构成门禁通过。版本/跨库/证据切换另须新冻结点及隔离应用验收；应急恢复沿用恢复流程，不能用“先备份”阻止已冻结失败窗口的必要恢复。文档、本地开发、只读巡检不产生远端写入，无需反复远程备份。此为运维流程约束，未宣称所有底层spool命令已有自动拦截。

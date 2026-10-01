@@ -32,7 +32,7 @@
 | 注入方 | DSH 平台层（AGENTS.md / 会话系统 prompt 组装时随文件注入）——**非本域注入**：AUTHORITY.md 是"人对模型说的话"，属 prompt 资产不属域数据；本域只声明其存在与语义 |
 | 刷新 | 静态声明随 bundle 版本部署（内容是"操作员身份与授权原则"，不随 scope 条目变化——**不含任何具体授权条目**，条目永远只在 scope.yml） |
 | 与 scope.yml 的关系 | **声明 vs 真相**：AUTHORITY.md 帮模型理解"为什么这些目标是合法的"；scope.yml 决定"哪些目标实际可打"。两者冲突时**机器判定胜**（G4 守卫照拒）——AUTHORITY.md 无扩权效力，写"全互联网已授权"也不会放行任何目标 |
-| 所有权 | 文件本体不进本域 owns（域 owns 是数据单写者律，它是 prompt 资产）；变更走 bundle 模板 + git 评审（18-migration §9.5） |
+| 所有权 | 文件本体不进本域 owns（域 owns 是数据单写者律，它是 prompt 资产）；变更走 bundle 模板 + git 评审（归档 migration-v4-to-v5 §9.5） |
 
 **挂载矩阵**（profile × actor 白名单 → 实际工具集；模型不可用的动词根本不向模型注册，宪法 §三.2）：
 

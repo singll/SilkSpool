@@ -66,6 +66,36 @@ class MaintenanceTest(unittest.TestCase):
             self.manager.archive_release(old,True)
         self.assertTrue(old.exists());self.assertTrue(latest.exists())
 
+    def test_prepare_change_failure_cannot_publish_or_reuse_receipt(self):
+        receipt=self.manager.state/'last-prepare-change.json'
+        for phase in ('backup','drill'):
+            receipt.write_text('{"change":"previous"}')
+            with patch.object(self.manager,'backup',side_effect=RuntimeError('backup failed') if phase=='backup' else None,
+                              return_value={'snapshot_id':'a'*64}), \
+                 patch.object(self.manager,'drill',side_effect=RuntimeError('drill failed')) as drill:
+                with self.assertRaisesRegex(RuntimeError,phase+' failed'):
+                    self.manager.prepare_change('test-change')
+                if phase=='backup':drill.assert_not_called()
+            self.assertFalse(receipt.exists())
+
+    def test_prepare_change_rejects_missing_change_before_backup(self):
+        with patch.object(self.manager,'backup') as backup:
+            for change in (None,'','../escape','a'*121):
+                with self.assertRaises(ValueError):self.manager.prepare_change(change)
+            backup.assert_not_called()
+
+    def test_prepare_change_cli_lock_conflict_is_not_success(self):
+        config=self.root/'config.json'
+        config.write_text(json.dumps(self.manager.cfg))
+        with self.manager.lock():
+            result=subprocess.run(['bash',str(Path(__file__).with_name('silksec-ops.sh')),
+                                   'prepare-change','--change','locked','--config',str(config)],
+                                  env={**os.environ,'DSH_BASE_DIR':str(Path(__file__).resolve().parent)},
+                                  capture_output=True,text=True)
+        self.assertEqual(result.returncode,75,result.stderr)
+        self.assertIn('skipped',json.loads(result.stdout))
+        self.assertFalse((self.manager.state/'last-prepare-change.json').exists())
+
     @unittest.skipUnless(shutil.which('restic'),'real restic binary required')
     def test_real_repository_dedup_restore_and_retention(self):
         workspace=self.root/'workspace';workspace.mkdir()
@@ -83,7 +113,13 @@ class MaintenanceTest(unittest.TestCase):
             self.db.chmod(0o640)
             self.manager.restic(['init'])
             first=self.manager.backup();self.manager.drill()
-            second=self.manager.backup();third=self.manager.backup()
+            second=self.manager.backup()
+            with self.manager.lock():
+                prepared=self.manager.prepare_change('test-workspace-update')
+            third=prepared['backup']
+            self.assertEqual(prepared['drill']['snapshot_id'],third['snapshot_id'])
+            self.assertEqual(json.loads((self.manager.state/'last-prepare-change.json').read_text()),prepared)
+            self.assertFalse(prepared['production_changed'])
             snapshots=json.loads(self.manager.restic(['snapshots','--json']))
             self.assertEqual(len(snapshots),2)
             self.assertLess(second['data_added'], first['data_added'])

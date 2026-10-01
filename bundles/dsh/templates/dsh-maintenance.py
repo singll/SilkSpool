@@ -224,6 +224,25 @@ class Maintenance:
             save(self.state/'last-drill.json',report)
             return report
 
+    def prepare_change(self, change):
+        if not change or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._-]{0,119}',change):
+            raise ValueError('--change requires a 1..120 character change ID (letters/digits/._-)')
+        # Only this invocation's completed backup AND drill can produce a receipt.
+        receipt=self.state/'last-prepare-change.json'
+        receipt.unlink(missing_ok=True)
+        started=time.time()
+        backup=self.backup()
+        drill=self.drill(backup['snapshot_id'])
+        report={'change':change,'snapshot_id':backup['snapshot_id'],
+                'started_at':started,'finished_at':time.time(),
+                'backup':backup,'drill':drill,
+                'roots':[str(root) for root in self.roots.values()],
+                'exclude_paths':[str(path) for path in self.exclude_paths],
+                'scope':'online backup + SQLite restore verification; cutover still requires held freeze',
+                'production_changed':False}
+        save(receipt,report)
+        return report
+
     def restore_copy(self, sid, target):
         if not sid or not re.fullmatch('[a-f0-9]{8,64}',sid): raise ValueError('explicit snapshot ID required')
         target=Path(target)
@@ -348,8 +367,9 @@ class Maintenance:
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config',default='/etc/silksec-maintenance.json')
-    p.add_argument('action',choices=['status','init','backup','check','prune','drill','cleanup','archive-release','restore-copy'])
+    p.add_argument('action',choices=['status','init','backup','check','prune','drill','cleanup','archive-release','restore-copy','prepare-change'])
     p.add_argument('--target');p.add_argument('--path');p.add_argument('--snapshot');p.add_argument('--apply',action='store_true')
+    p.add_argument('--change',help='change ID for prepare-change')
     a=p.parse_args()
     os.umask(0o077)
     m=Maintenance(json.loads(Path(a.config).read_text()))
@@ -359,6 +379,7 @@ def main():
         elif a.action=='init': result={'output':m.restic(['init'])}
         elif a.action=='backup':result=m.backup()
         elif a.action=='drill':result=m.drill(a.snapshot)
+        elif a.action=='prepare-change':result=m.prepare_change(a.change)
         elif a.action=='restore-copy':
             if not a.target:raise ValueError('--target required')
             result=m.restore_copy(a.snapshot,a.target)

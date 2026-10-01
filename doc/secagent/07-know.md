@@ -930,7 +930,7 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 | 项 | 机制 |
 |---|---|
 | 加载方式 | `SEC_EMBEDDINGS` 环境变量指向本地模型目录（`file://`），进程启动时以 `@huggingface/transformers` 动态加载 onnx 量化（q8）权重——**无网络依赖、无 HF 在线下载**（离线环境约束） |
-| 模型缓存 | `HF_HOME` 指向预下载缓存目录（~120MB）；由 `embeddings-setup.sh` 预热（部署链内执行，失败=部署报告中止项，18-migration §9.3） |
+| 模型缓存 | `HF_HOME` 指向预下载缓存目录（~120MB）；由 `embeddings-setup.sh` 预热（部署链内执行，失败=部署报告中止项，归档 migration-v4-to-v5 §9.3） |
 | 实例化 | 进程内单例（§2.5 缓存表）；首次调用懒加载，加载后常驻 |
 | **降级语义** | **预热/加载失败 → 永久降级为 FTS-only**（本进程生命周期内不再重试加载）：C1-C13 仍可执行（embedding 比对跳过，按 content_hash 精确去重），融合检索退化为纯 FTS + 关键词；`know_health` 上报 `embeddings: degraded` 告警。**禁止半可用态**——不做"部分请求有向量"的混合态（检索质量不可预测，不如显式降级可观测） |
 | 重启恢复 | 降级只影响当前进程；修复 HF_HOME/权重后重启进程即恢复（setup.sh 冒烟含嵌入模块探活） |
@@ -1014,7 +1014,7 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 | `knowledge_health` | `know_health` | **历史留档**：别名，别名层已移除 |
 | RPC expCards/kbList/rulesList/playbooks/knowledgeCoverage | know.** 点分名 | **历史留档**：看板客户端当时同步改写；实际点分 RPC 未落地，仍用 v4 case 名（1.7） |
 
-观察期原为一个调度周期（7 天，audit 零使用验收）；prompt 引用已按 p14-1 模式脚本化改写，并由 discipline-audit.py 悬空引用断言（宪法 §十五.4）复核。**当时 `exp_validate` 折叠与 `card_usage_log` 改名涉及 exec/scheduler 侧调用方**，改写清单在 18-migration.md 汇总。
+观察期原为一个调度周期（7 天，audit 零使用验收）；prompt 引用已按 p14-1 模式脚本化改写，并由 discipline-audit.py 悬空引用断言（宪法 §十五.4）复核。**当时 `exp_validate` 折叠与 `card_usage_log` 改名涉及 exec/scheduler 侧调用方**，改写清单在 migration-v4-to-v5.md 汇总。
 
 ### 3.3 数据迁移脚本要点
 

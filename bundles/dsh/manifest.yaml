@@ -416,7 +416,7 @@ templates:
   - eval-contract-run.js
   # --- 自学习专项 L3 候选配对评测 runner（设计 §7，契约 15-eval.md C5）---
   - eval-candidate-run.js
-  # --- v5 Phase 3 部署验收（18-migration §五：R0 基础健康 + R4 owns 唯一性，契约化）---
+  # --- v5 Phase 3 部署验收（归档 migration-v4-to-v5 §五：R0 基础健康 + R4 owns 唯一性，契约化）---
   - sec-v5-accept.sh
   # --- 看板 UI 原生面运行时冒烟（16-dashboard §2.6；sec-v5-accept.sh --ui-headless 经既有 headless 通道调用）---
   - dsh-ui-surface-smoke.mjs

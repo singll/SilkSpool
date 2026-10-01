@@ -661,7 +661,7 @@ dispatch_aliases: {}
 | 项 | 策略 |
 |---|---|
 | audit.jsonl v4/v5 并存 | **同文件追加，不回改旧记录**。判别：v5 记录含 `kind` 字段（command/guard/subscriber_failed/query_human）且含 `idempotency_key`；v4 记录含 `tool`/`decision` 字段。`audit_tail` 双格式解析（v4 行映射为 `{kind:'legacy-v4', domain:'-', cmd: tool, result: decision}` 渲染），看板审计视图过渡期两色显示 |
-| audit v4→v5 backfill | **不做全量转换**（旧记录语义不完整，强转制造假数据）；仅 18-migration 在 Phase 1 做**僵尸数据修复**（31 条 confirmed+noise=1 → noise=0 等）时，把修复动作本身作为 v5 命令落新格式审计。v4 记录随 50MB 轮转自然消退 |
+| audit v4→v5 backfill | **不做全量转换**（旧记录语义不完整，强转制造假数据）；仅 归档 migration-v4-to-v5 在 Phase 1 做**僵尸数据修复**（31 条 confirmed+noise=1 → noise=0 等）时，把修复动作本身作为 v5 命令落新格式审计。v4 记录随 50MB 轮转自然消退 |
 | idempotency 表 | 空表启动，无需迁移；`exec_spawn_worker` 的去重语义由 **exec 域命令内预检**承担（`idempotent: 'none'` + dedupe_key=sha1(task) 查询 `task_worker_recent` 30 分钟窗：running→in_progress / done·failed→回读真实结果 / killed→重跑），历史 dedupe 不回填 |
 | bus_meta | 启动时写入 `seen.{domain}.version` 初值（首次注册时记录）；`replay.watermark` 置 0 |
 | events/*.jsonl | 空目录启动；存量 radar-queue.jsonl / flows/ 不迁（它们是 exec/proxy/ledger 域的 3.3 主题） |
@@ -713,34 +713,6 @@ dispatch_aliases: {}
 契约：bus +2（bus_prune 保留窗口裁剪 delivered/保留 pending/级联订阅；audit_tail `before_bytes` 游标回翻）。
 
 
-## 运维维护入口（2026-10-01）
+## 运维维护入口
 
-`silksec-ops.sh` 固化维护与发布命令；脚本属于 bundle，常规维护可单独安装，不调用应用 setup、不重启主服务。`/etc/silksec-maintenance.json` 为宿主配置（不入库），`/var/lib/silksec-maintenance` 为互斥锁、单份 SQLite 暂存与检查回执。
-
-- **常规备份**：每6小时运行 restic，通过专用 SFTP 账号写入 TrueNAS 独立数据集；仓库加密、块级去重，每个快照均可独立恢复。仅成功完成并加 `routine` 标签的版本参与保留，默认最近8份；失败不会淘汰最后成功副本。每周 prune 回收无引用块，数据集配额256GiB。密码与SSH私钥另在管理机受控 keys 目录托管。
-- **一致性边界**：覆盖DSH主目录及配置 `extra_roots` 指定的项目工作区，扫描 data/工作区下 SQLite 文件头（包括非 `.db` 后缀），用在线 backup API 生成副本并 quick_check，备份各根目录的原始非DB文件与副本/清单，排除在线DB及其WAL/SHM。这是各库分别一致的在线备份，**不是跨库/文件同一时点的发布恢复点**；切换仍用 freeze。
-- **恢复**：每周 drill 从NAS读回 SQLite、校验摘要及 integrity_check，不启动服务；`restore-copy --snapshot ID --target 新绝对路径` 才恢复完整文件树并覆盖DB副本，目标不得在生产/维护目录内，保留数据库权限/属主；回执始终 `safe_to_start=false`。迁往新宿主须重建 UID/服务配置、配置路径与网络隔离。
-- **清理**：每天05:30（UTC）保留2份经过 quick_check 的旧本地图快照；audit/events 活动日志超过50MiB轮转、各留3份。不会按年龄删除 results/flows/evidence/sessions，不清理数据库业务记录。旧升级目录须显式 archive-release：完整备份并读回仓库校验成功，再复核未变化/无进程引用/无挂载/无未解除冻结后，才允许 `--apply` 删除；最新目录固定保留，NAS保留最近3个发布归档快照。
-- **容量与并发**：每15分钟检查磁盘、NAS、备份新鲜度；80%告警，90%或可用空间低于20GiB为严重，常规备份停止新增暂存；超过24小时无成功备份为过期。异常以非零退出码和 systemd journal 暴露（尚未接入外部通知）；互斥冲突退出75表示跳过，下次周期重试。定时服务限制 CPU 50%、内存1GiB、低IO优先级及2小时超时。证据长期增长仍需引用感知归档或扩容，容量检查不等于无限容量保证。
-- **发布加速**：preflight 对模板字节、Node路径/版本、平台和相关环境生成指纹，全域契约成功才保存凭证；组装树字节也匹配才复用。`--database` 每次在临时副本运行 task/endpoint schema 演进、核对已有表行数及完整性，绝不原位迁移；不是全应用启动验收。freeze 内单次复用含 inode/size/mtime/ctime 的内容哈希，并将已安装维护单元自动纳入停止/恢复清单。恢复和正式发布仍使用原 release 状态机、固定DSH版本。
-
-常用操作（远程只走 PATH spool；需要 root 读取证书及验证进程）：
-
-```bash
-spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh status'
-spool exec csai 'sudo systemctl start silksec-maintenance-backup.service'
-spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh drill'
-spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh cleanup' # 仅列计划
-python3 bundles/dsh/templates/dsh-release-preflight.py --templates bundles/dsh/templates --database /path/to/backup-image.db
-```
-
-完整恢复命令需明确 snapshot/新目标；freeze、resume、restore-frozen、rehearse、release 经同一入口转发，保留各自必需参数（`子命令 --help`）。维护模板先 rsync 到管理机 `/opt/SilkSpool/bundles/dsh/`，仅上传受控维护清单后执行 `silksec-maintenance-setup.sh`；应用模块正式发布才执行固定版本的 bundle setup。旧 `silksec-backup.sh` / `retention.sh` / `silksec-restore.sh` 为兼容转发，restore 不再支持直接覆盖生产库。
-
-
-维护批实测（2026-10-01）：常规成功备份5.42GB/39库85.48秒（此前失败上传的数据块可复用，不能视为全空仓库首传基准）；SQLite恢复6.86秒。全域659/659通过；57张原表的task/endpoint schema副本演进行数不变、完整性ok；同输入预检含schema最终模板从95.50秒降至3.58秒（约26.7倍；较高负载轮次381.57→33.01秒，机器负载影响绝对耗时）。本地维护7项/快照6项，以及csai root临时夹具冻结10项/发布恢复19项/快照6项通过，不在生产目录运行测试。Go CLI及新增RPC测试通过；tools全包既有uptime测试失败用HEAD覆盖对照复现，未计为本批通过。
-
-旧发布归档验收：`20260913-rc2` 已完整备份、全仓库读回校验及静态复核后删除，snapshot `1725625ff7a8c30d6ac61eb04f2b322d500b3386ff643b6712f1fd920f472c4c`、`removed=true`；逻辑97.77GB、新增4.82GB。宿主磁盘使用27%→17%，可用702→796GiB，最新 `20260926-017` 仍在。此为首次历史清债，不能用来代表日常增量备份耗时。
-
-常规备份运行边界补充（2026-10-01）：外置工作区内 Chromium `.shared-browser-profile` 的32KiB性能统计库被浏览器独占锁定，导致一次补跑120秒超时（失败未淘汰旧备份）。宿主配置以 `exclude_paths` 显式排除该可重建运行目录，源仍原位保留；浏览器登录态不在常规备份恢复范围，完整冻结点沿用原覆盖清单。真实仓库测试持有排除库的 EXCLUSIVE 锁，验证业务SQLite及项目文件仍可备份恢复、运行目录不进入快照。
-
-最终完整范围运行验收：3个外置工作区纳入后，定时服务成功备份5,646,539,344字节/40库，耗时306.41秒，新增121,176,510字节；快照`a7c87eab70311b1bf8c33f9b10757e3665c53fc4cee47204254b59a6b750255f`的40库NAS恢复校验19.56秒通过。最终补丁全域659/659、57表schema通过；含schema预检130.21秒→缓存3.56秒。健康检查disk=ok（16.8%）、nas_ready=true、backup_stale=false，主服务PID=922156/NRestarts=0。
+备份、恢复、容量清理、发布预检与变更前备份流程统一维护于 [18-backup-and-maintenance.md](18-backup-and-maintenance.md)。本域保留 audit/event 的写入与内置轮转契约；不在01号重复维护宿主运维步骤。

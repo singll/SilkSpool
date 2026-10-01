@@ -548,7 +548,7 @@ v4 中 memcore 直写 facts/blackboard 的全部 SQL（validateWrite 分支、tr
 | 7 | sweep：archive 表 90d 硬删 | 网关命令 `fact_purge_archive`（C10，system/human actor）——memcore 周期脚本经系统通道调本命令，repository 原语 `purgeArchives(before)`，替代 v4 的唯一裸 DELETE |
 | 8 | `recordSignal`（facts 无评分，实际仅 exp/kb 用） | C8 fact_record_signal（uses 计数，v5 新增） |
 | 9 | `guardBlackboardSnapshots`（快照键事后转写 facts + 归档原键） | **删除**——INV-F7 前置拒绝（事后转写守卫归零） |
-| 10 | `migrateStock`（存量 mem_class 回填） | 数据迁移脚本（18-migration.md，actor=system 启动窗口） |
+| 10 | `migrateStock`（存量 mem_class 回填） | 数据迁移脚本（migration-v4-to-v5.md，actor=system 启动窗口） |
 | 11 | `migrateBlackboardSnapshots`（26+15 条 bb/ 前缀迁移） | 已在 v4.6 完成；v5 仅保留幂等校验（迁移脚本断言 `bb/%` 行存在即可） |
 | 12 | `rewriteAgentsMd` 读 blackboard [env-issue] | know 域订阅 `fact.bb.published`（跨域读改事件驱动，见 07-know.md §2.3） |
 | 13 | `knowledgeHealth` 的 facts/blackboard/fgs 计数 | know_health 查询经本域 Q4/Q5 投影（跨域只读） |

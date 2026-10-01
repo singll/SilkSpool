@@ -1,7 +1,7 @@
 // ==============================================================================
 // @silksec/sec-backend-vuln-http — vuln 域 http-remote 后端（repository-v1，Phase 4）
 //
-// 契约：doc/secagent/02-vuln.md §2.4（后端适配器）+ 18-migration.md §六（http-remote 试点）
+// 契约：doc/secagent/02-vuln.md §2.4（后端适配器）+ archive/migration-v4-to-v5.md §六（http-remote 试点）
 //
 // 职责：对接外部漏洞管理系统（REST）。混布模式（默认，推荐）= 本地 sqlite overlay
 // 承接候选池 + 信号面经 outbox 异步同步远端；纯模式 = 候选池三动词能力矩阵
@@ -31,7 +31,7 @@ export const repositoryV1 = 'repository-v1'
 
 const log = (msg) => { try { process.stderr.write(`[sec-backend-vuln-http] ${msg}\n`) } catch { /* noop */ } }
 
-// 指数退避（30s/2m/10m/1h/6h/24h）+ 8 次封顶（18-migration §六 4.2 / 02-vuln §2.4）
+// 指数退避（30s/2m/10m/1h/6h/24h）+ 8 次封顶（归档 migration-v4-to-v5 §六 4.2 / 02-vuln §2.4）
 const BACKOFF_MS = [30_000, 120_000, 600_000, 3_600_000, 21_600_000, 86_400_000]
 const MAX_ATTEMPTS = 8
 const DEFAULT_SYNC_INTERVAL_MS = 30_000

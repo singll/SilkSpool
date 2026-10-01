@@ -9,11 +9,11 @@
 |---|---|
 | 看当前进度 / 最近结果 | **[PROGRESS.md](PROGRESS.md)**（只含当前状态 + 最近结果 + 通用规则） |
 | 看真实漏洞发现能力的全流程审查与改造方案（在办，目标/请求/可信读取、费用归因与失败重试已本地验证） | [27-business-quality-and-capacity-plan-2026-09-30.md](27-business-quality-and-capacity-plan-2026-09-30.md)（资产到技术验证、假设/候选漏报、执行稳定性、知识实效；以真实漏洞数量/质量/效率验收，提交与赏金退出能力评价） |
-| 执行常规NAS备份、清理、恢复与发布预检 | [01-bus 运维维护入口](01-bus.md#运维维护入口2026-10-01)（命令、定时器、保留数、一致性边界） |
+| 执行常规NAS备份、清理、恢复与发布预检 | [18 备份与维护](18-backup-and-maintenance.md)（命令、定时器、保留数、一致性边界） |
 | 看 DSH 0.2.0 升级研究与计划（在办，待实施） | [26-dsh-0.2.0-upgrade-plan-2026-09-30.md](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)（rc.1/rc.2 全部 35 项对比、V4→V4 工具适配、插件/模型/设置影响、U0–U4、验收与回滚；未执行生产升级） |
 | 看 DSH 0.1.7 升级与容量治理（已归档） | [archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md)；链路 [STATE](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md) · [record](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)（P1–P8 已关账 CHAIN END，2026-09-30） |
-| 查已完成的v4→v5迁移 | [archive/18-migration.md](archive/18-migration.md)（历史路线图与验收，不作为当前待办） |
-| 了解架构与模块职责 | [00-conventions.md](00-conventions.md)（全局契约宪法）→ 对应模块 `00–17` |
+| 查已完成的v4→v5迁移 | [archive/migration-v4-to-v5.md](archive/migration-v4-to-v5.md)（历史路线图与验收，不作为当前待办） |
+| 了解架构与模块职责 | [00-conventions.md](00-conventions.md)（全局契约宪法）→ 对应模块 `00–18` |
 | 查术语 | [领域语言](../../bundles/dsh/CONTEXT.md) |
 | 追溯历史（历次进度/更新日志/已完成节点、旧架构、历次升级方案与完整记录、会话模板） | [archive/](archive/) · [archive/progress-history.md](archive/progress-history.md) · [archive/upgrades/](archive/upgrades/) |
 | 看最近一次全面检查（已闭环归档） | [archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/漏洞产出/执行历史/UI；四轮修复全部落地，结论已回填 00/02/05/08/09/10/11/15/16/17） |
@@ -26,13 +26,13 @@
 
 ```
 doc/secagent/
-  00-conventions.md … 17-llm-surface.md   正式模块契约（常驻；每模块自维护，改动时同步 bump）
+  00-conventions.md … 18-backup-and-maintenance.md   正式模块契约（常驻；每模块自维护，改动时同步 bump）
   PROGRESS.md                           当前进度（只含当前 + 最近结果 + 通用规则）
   README.md                             本页（入口 · 结构 · 治理规则）
   26-dsh-0.2.0-upgrade-plan-2026-09-30.md       在办：0.2.0 研究与升级计划（待实施）
   27-business-quality-and-capacity-plan-2026-09-30.md  在办：真实漏洞发现能力改造（全域659项本地契约通过，未部署）
   archive/                              历史（只读）：
-    18-migration.md                     v4→v5迁移历史（Phase 0–5已完成）
+    migration-v4-to-v5.md                     v4→v5迁移历史（Phase 0–5已完成）
     19-ui-unify.md                      看板 UI 全局统一重构（已实施验收，结论已回填 16/主题）
     20-full-inspection-2026-09-19.md    全面检查报告（四轮修复全部落地验收，结论已回填各模块）
     21-benchmark-strikeagent-flash-2026-09-21.md  SRC 漏洞发现体系重构（Phase 0–4 已实施验收，结论已回填各模块）
@@ -44,14 +44,14 @@ doc/secagent/
     v5-README.md, REVIEW-*, SESSION-PROMPT.md, INDEX.md, …
 ```
 
-模块索引：00 契约宪法 · 01 总线 · 02 漏洞 · 03 资产 · 04 接口 · 05 任务 · 06 事实 · 07 知识 · 08 授权 · 09 审批 · 10 执行 · 11 台账 · 12 报告 · 13 代理 · 14 FGS · 15 评测 · 16 看板与 UI 原生面 · 17 LLM 工具面。18迁移路线图已归档，不再列为常驻契约。
+模块索引：00 契约宪法 · 01 总线 · 02 漏洞 · 03 资产 · 04 接口 · 05 任务 · 06 事实 · 07 知识 · 08 授权 · 09 审批 · 10 执行 · 11 台账 · 12 报告 · 13 代理 · 14 FGS · 15 评测 · 16 看板与 UI 原生面 · 17 LLM 工具面 · 18 备份、恢复与变更前维护。旧18号迁移路线图改名 migration-v4-to-v5.md，仍在归档目录。
 （原 19-ui-surface 已并入 16；[archive/19-ui-unify.md](archive/19-ui-unify.md) 为已完成的 UI 视觉/交互统一专项，非常驻模块契约，只读。）
 
 ## 文档治理规则
 
 ### A. 目录整洁：正式文档 vs 临时文档
 
-1. **根目录只放正式常驻文档**：`doc/secagent/` 根下只允许 `00–17` 正式模块契约、`PROGRESS.md`、`README.md`，以及**明确在办**的专项文档；已完成者一律移入 `archive/`（如 [archive/19-ui-unify.md](archive/19-ui-unify.md)）。
+1. **根目录只放正式常驻文档**：`doc/secagent/` 根下只允许 `00–18` 正式模块契约、`PROGRESS.md`、`README.md`，以及**明确在办**的专项文档；已完成者一律移入 `archive/`（如 [archive/19-ui-unify.md](archive/19-ui-unify.md)）。
 2. **README 是唯一权威索引**：只有登记在本 README「文档结构 / 模块索引」中的文档，才算**最新正式文档**；未登记者不得被当作现行真相源引用。
 3. **临时文档完成后必须归档**：任何专项设计 / 审查 / 复盘 / 会话模板等临时文档，一旦完成（结论已回填、实施已验收、或被正式文档取代），**必须移入 `archive/`（只读）并从 README 正式索引移除或标注「已归档」**；根目录不得长期滞留已完成的临时文档。
 

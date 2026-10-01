@@ -720,7 +720,7 @@ ensureCol(col, ddl)
 1. **不迁库不改表名**：sqlite-local 直接接管 `assets`/`fingerprints` 现表（宪法 §六 取舍）。
 2. **ensureCol 增列**（幂等，启动时）：`assets.changed_at INTEGER` / `assets.graded_at INTEGER`——存量行留 NULL（首次流转/重评时填）。`root` 已全量回填，无需处理。
 3. **无僵尸数据修复**：asset 域不存在 vuln 域式的状态-可见性断裂病（grade-assets.py 直写是**通道**问题不是数据问题）；17,575 行未分级（2026-09-19 实测）是合法状态（域外/待分诊），不回填。
-4. **基线快照**：切换前 freeze 一致性恢复点先行；常规备份已改为 TrueNAS restic + SQLite backup API（01-bus 运维维护入口），不能替代冻结门禁。迁移脚本 dry-run 模式 + 幂等可重跑。
+4. **基线快照**：切换前 freeze 一致性恢复点先行；常规备份已改为 TrueNAS restic + SQLite backup API（18-backup-and-maintenance），不能替代冻结门禁。迁移脚本 dry-run 模式 + 幂等可重跑。
 5. **验收**：契约测试矩阵（宪法 §十三：happy path / schema 拒绝 / 不变量反例 / 状态机反例 / actor 拒绝 / 幂等重放 / 并发 / 事件载荷）三后端跑同一套（http/file 按 §2.4 能力矩阵跳过 unsupported 并断言 fail-closed）后才允许切流；`asset_deep_queue` 的 total 与手工 SQL 对账一次。
 
 ---

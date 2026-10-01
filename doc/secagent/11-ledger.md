@@ -129,7 +129,7 @@
 | `scope-approved` | `domain`, `source`（=approval） |
 | `version-intel` | `component`, `from`, `to` |
 
-> `version-intel` 语义边界：指**目标组件指纹版本**（JS bundle / 响应头 / favicon 识别出的组件升版，驱动 N-day 派单）。它与 `scripts/pipeline/dsh-version-watch.sh`（监控**上游 DSH 平台自身版本**、产 pipeline/dsh-version-watch.log、不进雷达队列）语义不同源不同表——后者是运维观测通道，v5 保持独立不合并（18-migration §9.4）。
+> `version-intel` 语义边界：指**目标组件指纹版本**（JS bundle / 响应头 / favicon 识别出的组件升版，驱动 N-day 派单）。它与 `scripts/pipeline/dsh-version-watch.sh`（监控**上游 DSH 平台自身版本**、产 pipeline/dsh-version-watch.log、不进雷达队列）语义不同源不同表——后者是运维观测通道，v5 保持独立不合并（归档 migration-v4-to-v5 §9.4）。
 
 写入：JSONL 追加 `radar-queue.jsonl`（记录结构见 2.1.3）。事件：`ledger.radar.pushed`。幂等：自动指纹 `sha1(program,type,payload 核心键)`。
 **接入方迁移**：v4 的 ct-watch-all.sh / js-watch.py **直接写文件**——v5 改调总线 CLI `sec ledger radar-push --program X --type ct-new-subdomain --payload '{"domain":"a.x.com"}'`（actor=script 由 CLI 环境注入）。**注**：`radar-inbox.jsonl` 收割兼容为设计预留、**现网未实现**（后端无 inbox 路径处理）；旧脚本直接写文件的内容不会被域自动收割，需人工经 CLI 重灌（开放问题 O-2 已记录）。v4 index.js `enqueueScopeSeed` 的 radar 直写 → approval 域订阅 `approval.approved` 后**调本命令**（actor=approval，弱联动 best-effort，入队失败不影响批准结果——v4 双通道语义保留）。

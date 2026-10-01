@@ -625,13 +625,13 @@ exec 域的运行依赖一批**平台层边缘资产**——它们不属于任�
 | 平台资产 | 实况 | 与 exec 域的耦合点 |
 |---|---|---|
 | `silksec-shared-browser.service` | 常驻 Chromium（CDP **:9222**），持久化 profile=登录态，人机共用 | **浏览器共驾底座**：模型经 `@silksec/dsh-browser` 工具操作的就是这个实例；登录态观测回填 endpoint 域（04-endpoint C1） |
-| `@silksec/dsh-browser` fork | 上游 DSH 浏览器插件 fork（tarball + `dsh-browser-upstream.index.js` / `browser-manager.js` patch）；patch 注入 `SEC_FLOW_PROXY` 出口代理 | 模型工具面成员之一（投影规则同 17-llm-surface；fork 维护见 18-migration §九） |
+| `@silksec/dsh-browser` fork | 上游 DSH 浏览器插件 fork（tarball + `dsh-browser-upstream.index.js` / `browser-manager.js` patch）；patch 注入 `SEC_FLOW_PROXY` 出口代理 | 模型工具面成员之一（投影规则同 17-llm-surface；fork 维护见 归档 migration-v4-to-v5 §九） |
 | 浏览器出口代理（`SEC_FLOW_PROXY` → xray :7777） | 浏览器全部流量经 xray 被动扫描（:7777 入口）→ webhook :7788 → 本域 `exec_flow_append` 落 flows/ | **7777 入口是 flows 数据的另一半来源**（§1.3.7 只写了 7788 落点）——浏览器会话产生的被动扫描发现同样进 flow 管道 |
-| `silksecagent-edge` :9223 浏览器入口 | edge-Caddyfile：basicauth + browser.html 落地页 + DevTools 前端自托管反代 | 人机共用浏览器的 LAN 访问入口（探活进 01-bus §2.7 冒烟）；Web UI 主入口 :3080 的 Host/Origin 改写详见 18-migration §九 |
+| `silksecagent-edge` :9223 浏览器入口 | edge-Caddyfile：basicauth + browser.html 落地页 + DevTools 前端自托管反代 | 人机共用浏览器的 LAN 访问入口（探活进 01-bus §2.7 冒烟）；Web UI 主入口 :3080 的 Host/Origin 改写详见 归档 migration-v4-to-v5 §九 |
 | `oob/interactsh-server` | 已部署未启用（占位 `OOB_DOMAIN_TBD`，阻塞=公网 NS 委派） | OOB 带外验证通道（盲 SSRF/盲 RCE 回连证据）。证据形态 `oob:` 前缀与轮询归属见 02-vuln §四.7；启用前工具面须能感知"OOB 不可用"并降级 |
 | `silksec-intel.timer` | 每日 nuclei 模板更新（intel-refresh.sh → `~/nuclei-templates` → `data/intel/intel.jsonl` 追加一行版本记录） | **域外单写者声明**：intel.jsonl 由 systemd timer 写入（不经总线、无事件）——它不在本域 owns 内，`exec_intel_hunt` 是其**消费方**（模板库检索）；版本追溯经文件读取而非事件回放，01-bus §2.7 的 data/events 统一口径对它豁免 |
 
-**不动清单的边界**：上表资产出问题时（浏览器崩/OOB 启用/intel.jsonl 格式变化）的处置走 18-migration §九部署通道与运维手册，不改域契约；域文档只在耦合点语义变化时同步本表。
+**不动清单的边界**：上表资产出问题时（浏览器崩/OOB 启用/intel.jsonl 格式变化）的处置先走[18号](18-backup-and-maintenance.md)变更前备份流程，平台资产历史部署细节见归档 migration-v4-to-v5 §九，不改域契约；域文档只在耦合点语义变化时同步本表。
 
 ---
 
