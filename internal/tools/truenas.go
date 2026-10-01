@@ -48,13 +48,13 @@ type TrueNASJob struct {
 
 // TrueNASSystemInfo TrueNAS 系统信息
 type TrueNASSystemInfo struct {
-	Version  string   `json:"version"`
-	Hostname string   `json:"hostname"`
-	Uptime   any      `json:"uptime"` // 版本差异：有的返回秒数(int)，有的返回字符串("147 days, 16:47:51")
-	Model    string   `json:"model"`
-	Serial   string   `json:"serial"`
-	MemTotal int64    `json:"mem_total"`
-	MemFree  int64    `json:"mem_free"`
+	Version  string    `json:"version"`
+	Hostname string    `json:"hostname"`
+	Uptime   any       `json:"uptime"` // 版本差异：有的返回秒数(int)，有的返回字符串("147 days, 16:47:51")
+	Model    string    `json:"model"`
+	Serial   string    `json:"serial"`
+	MemTotal int64     `json:"mem_total"`
+	MemFree  int64     `json:"mem_free"`
 	LoadAvg  []float64 `json:"loadavg"`
 }
 
@@ -487,4 +487,41 @@ func formatUptime(u any) string {
 	default:
 		return fmt.Sprintf("%v", u)
 	}
+}
+
+// ValidateMaintenanceRPC limits automation to explicit storage provisioning methods; no shell or dataset deletion.
+func ValidateMaintenanceRPC(method string, params json.RawMessage) error {
+	allowed := map[string]bool{"pool.dataset.query": true, "pool.dataset.create": true,
+		"sharing.nfs.query": true, "sharing.nfs.create": true, "sharing.nfs.delete": true, "service.query": true,
+		"user.create":   true,
+		"service.start": true, "service.update": true, "filesystem.setperm": true, "core.get_jobs": true}
+	if !allowed[method] {
+		return fmt.Errorf("unsupported maintenance method: %s", method)
+	}
+	var args []json.RawMessage
+	if len(params) == 0 || params[0] != '[' || json.Unmarshal(params, &args) != nil {
+		return fmt.Errorf("RPC params must be a JSON array")
+	}
+	return nil
+}
+
+func (m *TrueNASManager) CmdMaintenanceRPC(method string, params json.RawMessage) error {
+	if err := ValidateMaintenanceRPC(method, params); err != nil {
+		return err
+	}
+	result, err := m.client.Call(method, params)
+	if err != nil {
+		return err
+	}
+	if method == "user.create" {
+		var user map[string]interface{}
+		if err := json.Unmarshal(result, &user); err != nil {
+			return err
+		}
+		public, _ := json.Marshal(map[string]interface{}{"id": user["id"], "uid": user["uid"], "username": user["username"]})
+		fmt.Println(string(public))
+	} else {
+		fmt.Println(string(result))
+	}
+	return nil
 }

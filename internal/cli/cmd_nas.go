@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -19,6 +20,7 @@ func (a *App) addNASCmd(root *cobra.Command) {
   pool list         列出存储池
   dataset list      列出数据集
   snapshot list     列出快照
+  rpc METHOD JSON   存储维护API白名单（数据集/备份账号/NFS/服务，不含数据集删除）
 
 示例:
   ./spool nas info
@@ -34,6 +36,14 @@ func (a *App) runNAS(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if args[0] == "rpc" {
+		if len(args) != 3 {
+			return fmt.Errorf("usage: spool nas rpc METHOD JSON_ARRAY")
+		}
+		if err := tools.ValidateMaintenanceRPC(args[1], json.RawMessage(args[2])); err != nil {
+			return err
+		}
+	}
 	manager, err := tools.NewTrueNASManager(a.BaseDir)
 	if err != nil {
 		return fmt.Errorf("failed to connect to TrueNAS: %w", err)
@@ -41,6 +51,8 @@ func (a *App) runNAS(cmd *cobra.Command, args []string) error {
 	defer manager.Close()
 
 	switch args[0] {
+	case "rpc":
+		return manager.CmdMaintenanceRPC(args[1], json.RawMessage(args[2]))
 	case "info":
 		return manager.CmdInfo()
 	case "pool":

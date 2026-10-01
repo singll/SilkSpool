@@ -42,6 +42,9 @@ class FreezeTest(unittest.TestCase):
         self.actions = []
         self.freezer = "running"
         self.on_freeze = lambda: None
+        self.maintenance = mock.patch.object(freeze.snapshot, "maintenance_units", return_value=[])
+        self.maintenance.start()
+        self.addCleanup(self.maintenance.stop)
 
     def systemctl(self, *args):
         if args[0] == "show":
@@ -90,6 +93,17 @@ class FreezeTest(unittest.TestCase):
         self.assertEqual(self.states["silksec-backup.service"], "inactive")
         self.assertTrue(list(self.work.glob("dsh-freeze-*/state.json")))
         self.assertEqual(self.lock.read_bytes(), self.lock_before)
+
+    def test_installed_maintenance_writers_are_paused_and_restored(self):
+        units = ["silksec-maintenance-cleanup.timer", "silksec-maintenance-cleanup.service"]
+        self.states.update({units[0]: "active", units[1]: "inactive"})
+        with mock.patch.object(freeze.snapshot, "maintenance_units", return_value=units):
+            with self.assertRaisesRegex(RuntimeError, "disk full"):
+                self.run_capture(RuntimeError("disk full"))
+        stopped = [unit for action, *targets in self.actions if action == "stop" for unit in targets]
+        self.assertTrue(all(unit in stopped for unit in units))
+        self.assertEqual(self.states[units[0]], "active")
+        self.assertEqual(self.states[units[1]], "inactive")
 
     def test_active_worker_refuses_before_any_mutation(self):
         with sqlite3.connect(self.db) as db:

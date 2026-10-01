@@ -527,3 +527,8 @@ fi
 # -------------------- 10. 服务重启（收尾，加载全部新代码/单元） --------------------
 reconcile_service
 log "setup 完成"
+
+# Maintenance is independently deployable; preserve an existing operator configuration.
+if [ -s /etc/silksec-maintenance.json ] && [ -f "$BASE_DIR/silksec-maintenance-setup.sh" ]; then
+    $SUDO env DSH_BASE_DIR="$BASE_DIR" bash "$BASE_DIR/silksec-maintenance-setup.sh"
+fi

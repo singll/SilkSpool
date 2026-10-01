@@ -1,7 +1,7 @@
 # SilkSecAgent 领域语言 / Domain Language
 
 > SilkSecAgent（DSH + pi）授权范围内漏洞发现平台的统一术语表。
-> 当代码、文档或对话使用这些词时，含义以此为准。设计契约见 [文档入口](../../doc/secagent/README.md)（模块 00–19），进度与更新见 [PROGRESS](../../doc/secagent/PROGRESS.md)，历史与升级记录见 [archive](../../doc/secagent/archive/)。
+> 当代码、文档或对话使用这些词时，含义以此为准。设计契约见 [文档入口](../../doc/secagent/README.md)（模块 00–17），进度与更新见 [PROGRESS](../../doc/secagent/PROGRESS.md)，历史与升级记录见 [archive](../../doc/secagent/archive/)。
 > 本文部分示例保留历史工具名；具体命令、状态机与 actor 以 [全局契约](../../doc/secagent/00-conventions.md)及对应域文档为准。历史系统解剖仅用于回溯，不作为当前操作手册。
 
 ## 核心实体
@@ -67,3 +67,12 @@ _Avoid_: 为每类审批另建专用表/专用流程。
 **丝之歌主题（Silksong Theme）**：
 平台的全局 UI 主题（单套深色），视觉叙事取自游戏《空洞骑士：丝之歌》——Pharloom 的墨青夜色为底、Hornet 绯红为唯一行动色、丝线金为强调/警示、苔绿为安全/成功。作用于整站（会话面 + 全局面），不是某个面板的局部皮肤。
 _Avoid_: 皮肤、配色方案（同义不改）；勿做看板专属局部主题造成内外割裂。
+
+
+## 备份与发布术语
+
+**Routine Snapshot（常规快照）**：TrueNAS restic 仓库中一个可独立恢复的加密、去重版本，在线 SQLite 各库分别一致；不代表全局同一时点。默认保留8份。
+
+**Frozen Recovery Point（冻结恢复点）**：排空并冻结全部业务/维护写者后生成、带完整校验清单的发布恢复点，沿用既有 freeze/release 状态机。不能用常规快照替代切换门禁。
+
+**Restore Drill（恢复预演）**：从备份读回隔离副本并校验；SQLite drill、schema preflight、应用沙箱启动验收是不同覆盖范围，必须分别记录。

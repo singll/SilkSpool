@@ -9,6 +9,7 @@
 |---|---|
 | 看当前进度 / 最近结果 | **[PROGRESS.md](PROGRESS.md)**（只含当前状态 + 最近结果 + 通用规则） |
 | 看真实漏洞发现能力的全流程审查与改造方案（在办，目标/请求/可信读取、费用归因与失败重试已本地验证） | [27-business-quality-and-capacity-plan-2026-09-30.md](27-business-quality-and-capacity-plan-2026-09-30.md)（资产到技术验证、假设/候选漏报、执行稳定性、知识实效；以真实漏洞数量/质量/效率验收，提交与赏金退出能力评价） |
+| 执行常规NAS备份、清理、恢复与发布预检 | [01-bus 运维维护入口](01-bus.md#运维维护入口2026-10-01)（命令、定时器、保留数、一致性边界） |
 | 看 DSH 0.2.0 升级研究与计划（在办，待实施） | [26-dsh-0.2.0-upgrade-plan-2026-09-30.md](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)（rc.1/rc.2 全部 35 项对比、V4→V4 工具适配、插件/模型/设置影响、U0–U4、验收与回滚；未执行生产升级） |
 | 看 DSH 0.1.7 升级与容量治理（已归档） | [archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md](archive/upgrades/2026-09-26-dsh-0.1.7-upgrade-and-scale.md)；链路 [STATE](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md) · [record](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)（P1–P8 已关账 CHAIN END，2026-09-30） |
 | 查已完成的v4→v5迁移 | [archive/18-migration.md](archive/18-migration.md)（历史路线图与验收，不作为当前待办） |

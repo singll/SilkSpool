@@ -90,6 +90,22 @@ class RecoveryPointTest(unittest.TestCase):
         self.assertEqual(list(self.work.glob("dsh-snapshot-ready-*")), [])
         self.assertEqual(len(list(self.work.glob("dsh-snapshot-pending-*/failure.json"))), 1)
 
+    def test_capture_cache_reuses_hash_but_detects_same_mtime_change(self):
+        f = self.source / "cache-test.txt"
+        f.write_text("before")
+        cache = {}
+        with mock.patch.object(snapshot, "sha256", wraps=snapshot.sha256) as hashed:
+            first = snapshot.tree_manifest(self.source, cache)
+            calls = hashed.call_count
+            self.assertEqual(snapshot.tree_manifest(self.source, cache), first)
+            self.assertEqual(hashed.call_count, calls)
+            stamp = f.stat().st_mtime_ns
+            f.write_text("after!")
+            import os
+            os.utime(f, ns=(stamp, stamp))
+            self.assertNotEqual(snapshot.tree_manifest(self.source, cache), first)
+            self.assertGreater(hashed.call_count, calls)
+
     def test_refuses_sqlite_manifest_omission(self):
         db = sqlite3.connect(self.source / "domain.sqlite")
         db.execute("CREATE TABLE tasks (id INTEGER)")

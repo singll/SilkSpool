@@ -44,10 +44,11 @@ def write_json(filename, value):
         os.fsync(stream.fileno())
 
 
-def tree_manifest(root):
+def tree_manifest(root, content_cache=None):
     """不跟随软链，验证字节、属主、权限、时间、xattrs 和树内硬链关系。"""
     root = Path(root)
-    entries, links, content_cache = {}, {}, {}
+    entries, links = {}, {}
+    content_cache = {} if content_cache is None else content_cache
 
     def visit(filename):
         before = filename.lstat()
@@ -158,13 +159,21 @@ def no_related_processes(roots, proc_root=Path("/proc")):
         raise RuntimeError("仍有相关进程，拒绝冻结点快照；PID=" + ",".join(map(str, sorted(related))))
 
 
+def maintenance_units():
+    """Installed maintenance writers/timers participate in every future freeze."""
+    return [f"silksec-maintenance-{name}.{kind}"
+            for name in ("backup", "check", "prune", "drill", "cleanup", "health")
+            for kind in ("service", "timer")
+            if Path(f"/etc/systemd/system/silksec-maintenance-{name}.{kind}").is_file()]
+
+
 def assert_quiescent(config):
     if os.geteuid() != 0:
         raise RuntimeError("capture 需要 root 检查所有写者；请通过 spool exec 调用 sudo -n")
     if not config.get("quiet_units") or "silksecagent.service" not in config["quiet_units"]:
         raise ValueError("必须明确列出完整写者单元，且包含 silksecagent.service")
     states = {}
-    for unit in config["quiet_units"]:
+    for unit in dict.fromkeys([*config["quiet_units"], *maintenance_units()]):
         if not re.fullmatch(r"[a-zA-Z0-9@_.-]+\.(service|timer)", unit):
             raise ValueError("systemd 单元名非法")
         result = subprocess.run(["systemctl", "show", unit, "-p", "LoadState", "-p", "ActiveState", "-p", "MainPID"],
@@ -232,12 +241,13 @@ def capture(config, work, guard=assert_quiescent):
     (pending / "sqlite").mkdir()
     manifest = {"manifest_schema": 1, "kind": "dsh-frozen-recovery-point", "started_at": now(),
                 "config": config, "quiescence_before": before_guard, "roots": {}, "sqlite": [], "complete": False}
+    content_cache = {}
     try:
         for row, source in zip(config["roots"], sources):
-            before = tree_manifest(source)
+            before = tree_manifest(source, content_cache)
             target = pending / "trees" / row["name"]
             copy_tree(source, target)
-            if tree_manifest(source) != before or tree_manifest(target) != before:
+            if tree_manifest(source, content_cache) != before or tree_manifest(target, content_cache) != before:
                 raise RuntimeError("恢复点复制前后清单不一致：" + row["name"])
             manifest["roots"][row["name"]] = {"source": str(source), "entries": before}
         for i, database in enumerate(config.get("sqlite", [])):
@@ -248,7 +258,7 @@ def capture(config, work, guard=assert_quiescent):
             manifest["sqlite"].append({**database, "image": str(image.relative_to(pending)), **sqlite_image(source, image)})
         manifest["quiescence_after"] = guard(config)
         for row, source in zip(config["roots"], sources):
-            if tree_manifest(source) != manifest["roots"][row["name"]]["entries"]:
+            if tree_manifest(source, content_cache) != manifest["roots"][row["name"]]["entries"]:
                 raise RuntimeError("恢复点窗口中源发生变化：" + row["name"])
         manifest.update(complete=True, finished_at=now())
         write_json(pending / "manifest.json", manifest)

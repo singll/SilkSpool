@@ -103,7 +103,7 @@ cordis 容器
 | hint | 无需（运维命令） |
 | 幂等 | 无（42 号：'auto' 会让同参调用在幂等保留期内 replay 空转，日调度永久不清理；清理天然幂等，故 `idempotent: none`） |
 | actor | human, system |
-| RoE | **42 号保留窗口（取大口径）**：删除条件 = 「超过 7 天 且 不在最新 2 万行内」——7 天内超过 2 万行时保留整个 7 天窗口，7 天不足 2 万行时保留最新 2 万行。① `idempotency`（`IDEM_RETENTION_MS=7d` / `IDEM_MAX_ROWS=20000`）；② `event_outbox` 仅 `status='delivered'`（`OUTBOX_RETENTION_MS=7d` / `OUTBOX_MAX_ROWS=20000`；`pending` 待投递、`dead_letter` 待归因，**均保留不清理**）；③ `bus_subscription` 级联——`event_id NOT IN (SELECT event_id FROM event_outbox)` 的订阅行（含历史孤儿）一并删除。事件 jsonl 单文件 >50MB 轮转为 `.1`（只保一代）；audit.jsonl 轮转沿用 retention.sh 既有策略（50MB），本命令只检查不重复轮转 |
+| RoE | **42 号保留窗口（取大口径）**：删除条件 = 「超过 7 天 且 不在最新 2 万行内」——7 天内超过 2 万行时保留整个 7 天窗口，7 天不足 2 万行时保留最新 2 万行。① `idempotency`（`IDEM_RETENTION_MS=7d` / `IDEM_MAX_ROWS=20000`）；② `event_outbox` 仅 `status='delivered'`（`OUTBOX_RETENTION_MS=7d` / `OUTBOX_MAX_ROWS=20000`；`pending` 待投递、`dead_letter` 待归因，**均保留不清理**）；③ `bus_subscription` 级联——`event_id NOT IN (SELECT event_id FROM event_outbox)` 的订阅行（含历史孤儿）一并删除。事件 jsonl 单文件 >50MB 轮转为 `.1`（只保一代）；audit.jsonl 轮转由 maintenance cleanup 执行（50MB、保留3份），本命令只检查不重复轮转 |
 | side_effects | rows: idempotency / event_outbox / bus_subscription 删除；files: events 轮转 |
 
 > **42 号调度来源**：`bus_prune` 此前从未被调度（`bus_meta` 无 `prune.last_at`，实测 idempotency 5.9 万行超设计上限 5.9 倍、outbox delivered 13 万行无清理）。现由 task 域调度器每日维护分支接管——北京 05:00 后首个 tick（`dailyBusPrune()`，与 `dailyVaultSync` 同处）以 `actor=system` dispatch `bus.prune`（不带 force，6h 冷却由命令自身维护）；命令 actor 白名单本就含 system。详见 [05-task §2.3](05-task.md)。
@@ -308,7 +308,7 @@ CREATE TABLE IF NOT EXISTS bus_subscription (
 
 保留窗口：**7 天或 2 万行取大**（42 号由 10,000 上调；`bus_prune` / 每日系统任务执行——删除条件 =「超 7 天 且 不在最新 2 万行内」）。命中同 key 同 args_hash → 返回首次信封 + `replay: true`；同 key 异 args_hash → `E_IDEMPOTENT_CONFLICT`（hint："幂等键 {key} 已绑定不同参数；若是新意图请换 key，若是重放请原样重发参数"）。
 
-**事件文件**：`data/events/{domain}.jsonl`，每行一个事件信封（宪法 §八.2）。轮转 50MB 保一代，保留 90 天（retention.sh 增段）。
+**事件文件**：`data/events/{domain}.jsonl`，每行一个事件信封（宪法 §八.2）。bus 内置轮转 50MB 保一代 `.1`；维护任务额外处理超过50MB的活动 JSONL 为 `.bak`（保留3份），不再按目录年龄删除流量/结果。
 
 **统一 audit**：`data/audit.jsonl`，**v5 记录与 v4.x 记录同文件并存**（判别规则与迁移见 §3.3）。
 
@@ -711,3 +711,30 @@ dispatch_aliases: {}
 | 查询分页协定（§2.2.4 / [00-conventions §七.2](00-conventions.md)） | 处理器自行分页（SQL LIMIT/OFFSET）须标记 `meta: { paged: true }`，QueryGateway 不再二次切片（修复前实缺陷：`asset_list` limit=3 offset=3 返回 0 行）。`events_tail` 同步标记 |
 
 契约：bus +2（bus_prune 保留窗口裁剪 delivered/保留 pending/级联订阅；audit_tail `before_bytes` 游标回翻）。
+
+
+## 运维维护入口（2026-10-01）
+
+`silksec-ops.sh` 固化维护与发布命令；脚本属于 bundle，常规维护可单独安装，不调用应用 setup、不重启主服务。`/etc/silksec-maintenance.json` 为宿主配置（不入库），`/var/lib/silksec-maintenance` 为互斥锁、单份 SQLite 暂存与检查回执。
+
+- **常规备份**：每6小时运行 restic，通过专用 SFTP 账号写入 TrueNAS 独立数据集；仓库加密、块级去重，每个快照均可独立恢复。仅成功完成并加 `routine` 标签的版本参与保留，默认最近8份；失败不会淘汰最后成功副本。每周 prune 回收无引用块，数据集配额256GiB。密码与SSH私钥另在管理机受控 keys 目录托管。
+- **一致性边界**：覆盖DSH主目录及配置 `extra_roots` 指定的项目工作区，扫描 data/工作区下 SQLite 文件头（包括非 `.db` 后缀），用在线 backup API 生成副本并 quick_check，备份各根目录的原始非DB文件与副本/清单，排除在线DB及其WAL/SHM。这是各库分别一致的在线备份，**不是跨库/文件同一时点的发布恢复点**；切换仍用 freeze。
+- **恢复**：每周 drill 从NAS读回 SQLite、校验摘要及 integrity_check，不启动服务；`restore-copy --snapshot ID --target 新绝对路径` 才恢复完整文件树并覆盖DB副本，目标不得在生产/维护目录内，保留数据库权限/属主；回执始终 `safe_to_start=false`。迁往新宿主须重建 UID/服务配置、配置路径与网络隔离。
+- **清理**：每天05:30（UTC）保留2份经过 quick_check 的旧本地图快照；audit/events 活动日志超过50MiB轮转、各留3份。不会按年龄删除 results/flows/evidence/sessions，不清理数据库业务记录。旧升级目录须显式 archive-release：完整备份并读回仓库校验成功，再复核未变化/无进程引用/无挂载/无未解除冻结后，才允许 `--apply` 删除；最新目录固定保留，NAS保留最近3个发布归档快照。
+- **容量与并发**：每15分钟检查磁盘、NAS、备份新鲜度；80%告警，90%或可用空间低于20GiB为严重，常规备份停止新增暂存；超过24小时无成功备份为过期。异常以非零退出码和 systemd journal 暴露（尚未接入外部通知）；互斥冲突退出75表示跳过，下次周期重试。定时服务限制 CPU 50%、内存1GiB、低IO优先级及2小时超时。证据长期增长仍需引用感知归档或扩容，容量检查不等于无限容量保证。
+- **发布加速**：preflight 对模板字节、Node路径/版本、平台和相关环境生成指纹，全域契约成功才保存凭证；组装树字节也匹配才复用。`--database` 每次在临时副本运行 task/endpoint schema 演进、核对已有表行数及完整性，绝不原位迁移；不是全应用启动验收。freeze 内单次复用含 inode/size/mtime/ctime 的内容哈希，并将已安装维护单元自动纳入停止/恢复清单。恢复和正式发布仍使用原 release 状态机、固定DSH版本。
+
+常用操作（远程只走 PATH spool；需要 root 读取证书及验证进程）：
+
+```bash
+spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh status'
+spool exec csai 'sudo systemctl start silksec-maintenance-backup.service'
+spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh drill'
+spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh cleanup' # 仅列计划
+python3 bundles/dsh/templates/dsh-release-preflight.py --templates bundles/dsh/templates --database /path/to/backup-image.db
+```
+
+完整恢复命令需明确 snapshot/新目标；freeze、resume、restore-frozen、rehearse、release 经同一入口转发，保留各自必需参数（`子命令 --help`）。维护模板先 rsync 到管理机 `/opt/SilkSpool/bundles/dsh/`，仅上传受控维护清单后执行 `silksec-maintenance-setup.sh`；应用模块正式发布才执行固定版本的 bundle setup。旧 `silksec-backup.sh` / `retention.sh` / `silksec-restore.sh` 为兼容转发，restore 不再支持直接覆盖生产库。
+
+
+维护批实测（2026-10-01）：常规成功备份5.42GB/39库85.48秒（此前失败上传的数据块可复用，不能视为全空仓库首传基准）；SQLite恢复6.86秒。全域659/659通过；57张原表的task/endpoint schema副本演进行数不变、完整性ok；同输入预检含schema最终模板从95.50秒降至3.58秒（约26.7倍；较高负载轮次381.57→33.01秒，机器负载影响绝对耗时）。本地维护7项/快照6项，以及csai root临时夹具冻结10项/发布恢复19项/快照6项通过，不在生产目录运行测试。Go CLI及新增RPC测试通过；tools全包既有uptime测试失败用HEAD覆盖对照复现，未计为本批通过。

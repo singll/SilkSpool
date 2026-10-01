@@ -270,3 +270,19 @@ func TestRPCResponseWithError(t *testing.T) {
 		t.Errorf("Error.Message = %q, want %q", parsed.Error.Message, "test error")
 	}
 }
+
+func TestMaintenanceRPCBoundary(t *testing.T) {
+	for _, method := range []string{"pool.dataset.delete", "system.shutdown", "user.query", "core.bulk"} {
+		if ValidateMaintenanceRPC(method, json.RawMessage(`[]`)) == nil {
+			t.Fatalf("accepted %s", method)
+		}
+	}
+	for _, p := range []string{`null`, `{}`, `[`, `[] trailing`} {
+		if ValidateMaintenanceRPC("pool.dataset.create", json.RawMessage(p)) == nil {
+			t.Fatalf("accepted %s", p)
+		}
+	}
+	if err := ValidateMaintenanceRPC("pool.dataset.create", json.RawMessage(`[{"name":"NAS/backup"}]`)); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -30,5 +30,5 @@
 | Remote Executor | A helper that wraps SSH operations for common remote tasks: Docker installation, compose detection, log rotation, network creation, file upload. |
 | SSH Client Pool | A global connection pool (`SSHClientPool`) that reuses SSH connections across commands. Initialized in CLI `PersistentPreRunE`. |
 | N8N Client | API client for n8n workflow automation. Supports both direct HTTP and remote SSH-tunneled requests (when n8n API is on localhost). |
-| TrueNAS Client | WebSocket JSON-RPC client for TrueNAS management. Supports system info, pool/dataset/snapshot queries, and job polling. |
+| TrueNAS Client | WebSocket JSON-RPC client for TrueNAS management. Supports system info, pool/dataset/snapshot queries, job polling, and an explicit storage-maintenance RPC allowlist (dataset provisioning, dedicated backup users, NFS entries, service configuration; no dataset deletion or shell execution). |
 | Env File | Per-host `.env` file at `hosts/<alias>/.env`. Stores secrets (API keys, passwords). Gitignored. Loaded by `LoadEnvFile()`. |

@@ -252,6 +252,8 @@ def resume(state_dir):
 
 
 def capture(config, work, hold=False):
+    config = {**config, "quiet_units": list(dict.fromkeys([
+        *config.get("quiet_units", []), *snapshot.maintenance_units()]))}
     work = Path(work).resolve(strict=True)
     roots = snapshot.validate_config(config, work)
     if "silksecagent.service" not in config.get("quiet_units", []):

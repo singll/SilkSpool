@@ -84,5 +84,6 @@ fi
 [ "${#tests[@]}" -gt 0 ] || { echo "未找到测试文件"; exit 1; }
 
 fixture_home="$(mktemp -d /tmp/sec-contract-home-XXXXXX)"
+trap 'rm -rf -- "$fixture_home"' EXIT
 cd "$OUT"
 SEC_DATA_DIR="$fixture_home" DSH_HOME="$fixture_home" "$NODE" --test --test-concurrency=1 "${tests[@]}"
