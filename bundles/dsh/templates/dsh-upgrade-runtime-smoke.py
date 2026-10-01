@@ -516,7 +516,8 @@ def main():
                         "task": "[u2:stream-tool] Default budget two-step fixture " + uuid.uuid4().hex,
                         "budget_tokens": 150000})
                     value = default.get("data", {})
-                    counts = value.get("budget", {})
+                    counts = json.loads((DATA / "results" / value["run_id"] / "worker-budget.json").read_text())
+                    counts.pop("nonce", None)
                     primary = [r for r in model.REQUESTS[before:] if r.get("tools")]
                     require(default.get("ok") and value.get("ok") and len(primary) == 2
                             and counts.get("denied") == 0 and counts.get("unknown") == 0
