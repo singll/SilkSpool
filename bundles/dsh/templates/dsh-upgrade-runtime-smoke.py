@@ -543,6 +543,11 @@ def main():
                         "task": f"[u2:{case}] Isolated failure fixture " + uuid.uuid4().hex, "timeout": case_timeout})
                     require(failed.get("ok") and failed.get("data", {}).get("ok") is False, "worker 失败被误报成功：" + case)
                     value = failed["data"]
+                    if "--worker-budget" in sys.argv and case == "child-fail":
+                        require(value.get("budget_unknown") is True
+                                and value.get("budget", {}).get("unknown", 0) > 0,
+                                "failed provider usage was treated as final billing")
+                        report["checks"].append({"check": "worker-error-usage-keeps-unknown-budget", "ok": True})
                     stored = rpc("/silksec-domain", "task.worker_status", {"run_id": value["run_id"]})
                     require(stored.get("ok") and stored["data"]["status"] == ("killed" if case == "child-slow" else "failed"), "worker 失败未收尾")
                     if case == "child-slow":

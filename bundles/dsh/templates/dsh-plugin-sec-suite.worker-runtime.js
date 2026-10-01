@@ -59,21 +59,38 @@ export function createWorkerBudget(limit, persist = () => {}) {
       state.requests++
       persist({ ...state })
       let usage = null
+      let failed = false
+      let completed = false
       try {
         for await (const chunk of next()) {
           if (chunk?.type === 'usage') usage = chunk.usage
+          if (chunk?.type === 'finish' && !['stop', 'tool-calls', 'max-tokens'].includes(chunk.reason?.kind)) {
+            failed = true
+          }
           yield chunk
         }
+        completed = true
+      } catch (error) {
+        failed = true
+        throw error
       } finally {
         const fields = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']
         if (usage && fields.every(k => usage[k] == null || Number.isSafeInteger(usage[k]) && usage[k] >= 0)
             && Number.isSafeInteger(usage.inputTokens) && Number.isSafeInteger(usage.outputTokens)
             && Number.isSafeInteger(fields.reduce((n, k) => n + (usage[k] || 0), 0))) {
-          state.reserved -= reserved
           state.charged += fields.reduce((n, k) => n + (usage[k] || 0), 0)
-          Object.assign(diagnostic, { status: 'settled',
+          Object.assign(diagnostic, {
             actual_input_tokens: usage.inputTokens + (usage.cacheReadTokens || 0) + (usage.cacheWriteTokens || 0),
             actual_output_tokens: usage.outputTokens })
+          // pi-ai emits usage even for errors (often initialized zeros).
+          // Partial usage is a known lower bound, not proof of final billing.
+          if (failed || !completed) {
+            state.unknown++
+            diagnostic.status = 'unknown'
+          } else {
+            state.reserved -= reserved
+            diagnostic.status = 'settled'
+          }
         } else {
           state.unknown++ // keep the reservation; an interrupted call is not free.
           diagnostic.status = 'unknown'

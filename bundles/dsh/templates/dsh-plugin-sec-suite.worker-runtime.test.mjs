@@ -95,6 +95,40 @@ test('WP03 unsupported modality and missing output cap cannot reach provider', a
   await assert.rejects(drain(budget.stream({ messages: [], maxTokens: undefined }, () => [])), /OUTPUT_CAP/)
   await assert.rejects(drain(budget.stream({ ...request(), messages: [{ content: [{ type: 'image' }] }] }, () => [])), /MODALITY/)
 })
+test('WP03 adapter error zero usage and aborted partial usage retain unknown reservation', async () => {
+  for (const kind of ['error', 'aborted']) {
+    const budget = createWorkerBudget(4000)
+    await drain(budget.stream(request(), async function* () {
+      yield { type: 'usage', usage: { inputTokens: kind === 'error' ? 0 : 50, outputTokens: 0 } }
+      yield { type: 'finish', reason: { kind, failure: { code: 'TRANSPORT' } } }
+    }))
+    assert.equal(budget.state.unknown, 1)
+    assert.ok(budget.state.reserved > 2000)
+    assert.equal(budget.state.charged, kind === 'error' ? 0 : 50)
+    await assert.rejects(drain(budget.stream(request(), () => [])), /BUDGET_EXHAUSTED/)
+  }
+})
+test('WP03 thrown stream after usage does not make partial billing final', async () => {
+  const budget = createWorkerBudget(4000)
+  await assert.rejects(drain(budget.stream(request(), async function* () {
+    yield { type: 'usage', usage: { inputTokens: 50, outputTokens: 10 } }
+    throw new Error('transport interrupted')
+  })), /transport interrupted/)
+  assert.equal(budget.state.unknown, 1)
+  assert.equal(budget.state.charged, 60)
+  assert.ok(budget.state.reserved > 2000)
+})
+test('WP03 consumer cancellation after usage retains the unfinished reservation', async () => {
+  const budget = createWorkerBudget(4000)
+  const stream = budget.stream(request(), async function* () {
+    yield { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })
+  await stream.next()
+  await stream.return()
+  assert.equal(budget.state.unknown, 1)
+  assert.ok(budget.state.reserved > 2000)
+})
 test('WP03 failed registration never publishes model-start ACK', async t => {
   const f = fixture(t)
   const result = await executeWorkerProcess({ ...f, args: ['-e', 'setInterval(()=>{},1000)'],

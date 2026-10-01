@@ -2593,6 +2593,30 @@ test('WP03 no-bill completion retains expected cost until late bill arrives, eve
   assert.equal(db.prepare('SELECT status FROM tasks WHERE id=?').get(id).status, 'done')
 })
 
+test('WP03 failed zero usage remains unknown after zero and partial late bills', async () => {
+  const { bus, dataDir } = makeEnv(), db = bus._internal.db()
+  const created = await bus.dispatch('task', 'create',
+    { program_id: 'test-src', objective: '错误零usage不释放未知预留', budget_tokens: 20000 }, { actor: 'dashboard' })
+  const id = created.data.task_id, now = Date.now() + 1000, sid = 'session-failed-zero'
+  await bus.dispatch('task', 'run_now', { task_id: id }, { actor: 'dashboard' })
+  assert.deepEqual((await bus.dispatch('task', 'claim', { now }, { actor: 'scheduler' })).data.claimed, [id])
+  assert.equal((await bus.dispatch('task', 'worker_register',
+    { task_id: id, claim_started_at: now, run_id: 'failed-zero', budget_tokens: 20000 }, { actor: 'scheduler' })).ok, true)
+  fs.mkdirSync(path.join(dataDir, 'dsh-bill'))
+  const file = path.join(dataDir, 'dsh-bill/records.jsonl'), time = Date.now() - 1000
+  fs.writeFileSync(file, JSON.stringify({ time, sessionId: sid, inputTokens: 0, outputTokens: 0 }) + '\n')
+  assert.equal((await bus.dispatch('task', 'finish', { task_id: id, claim_started_at: now,
+    run_id: 'failed-zero', outcome: 'failed', session_id: sid, budget_unknown: true, budget_charged: 0 },
+  { actor: 'scheduler' })).ok, true)
+  for (const tokens of [0, 100]) {
+    fs.writeFileSync(file, JSON.stringify({ time, sessionId: sid, inputTokens: tokens, outputTokens: 0 }) + '\n')
+    assert.equal((await bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })).ok, true)
+    assert.deepEqual({ ...db.prepare('SELECT state,tokens,expected_tokens FROM task_budget_reservations').get() },
+      { state: 'unknown', tokens: 20000, expected_tokens: null })
+    assert.equal(db.prepare('SELECT status FROM tasks WHERE id=?').get(id).status, 'failed')
+  }
+})
+
 test('WP03 cost failure rolls back receipt and aggregate; pruning history does not permit recharging', async () => {
   const { bus } = makeEnv()
   const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '费用原子事务回归' }, { actor: 'model' })

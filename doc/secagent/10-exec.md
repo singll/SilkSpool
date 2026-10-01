@@ -790,3 +790,7 @@ worker-budget.json记录计数且以run/nonce校验，原生write/edit不能改�
 DSH 0.1.7的inputTokens为未缓存输入，cacheReadTokens/cacheWriteTokens为互斥分项；门禁实耗修正为input＋cacheRead＋cacheWrite＋output，totalTokens仅为聚合值，不重复加。未知/非法usage继续占用预留。worker-budget.json最多保留32条请求计数：输入估算、system/messages/tools/history字节、工具数、输出上限、准入前费用/预留、settled/denied/unknown及实际输入/输出；不保存正文、参数、密钥。此节替代上一版重复计算toolHistory及排除cacheRead的口径，部署状态见27号§15.5。
 
 上线验证：隔离worker16项通过（15次fixture模型请求），新增默认150k工具/最终回复用例从受控预算文件读取详细计数，移除nonce后记录。生产任务103399仅一次bus_status、随后WP03_OK，含模型回退共4次调用（2次报告0），有效账单91,527；输入估算78,459/86,980对实际43,745/47,638，所有请求settled，无拒绝/未知/残留预留。UI80/80、服务恢复，供应商硬计费保证及更长真实任务仍未验收；详见27号§15.5。
+
+### 2026-10-02 · 失败usage结算边界（本地修复，待部署）
+
+错误或取消终止的usage可能是初始化零或部分值，不能作为最终计费证明。worker遇finish.error/aborted、流异常或消费者提前结束时，保留本请求预留并标unknown；合法usage记入charged作为已知下界，未知预留仍保守完整保留。仅完整正常流可释放预留。此修复使回退请求同样受前次未知预留约束，可能在额度不足时提前拒绝；不能用重试成功清掉未知费用。worker17项通过，实际隔离与发布见27号§15.6。

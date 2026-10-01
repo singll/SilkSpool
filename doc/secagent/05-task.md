@@ -1454,3 +1454,7 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 原始dsh-bill记录的inputTokens/cacheReadTokens/cacheWriteTokens为互斥分项，task费用汇总改为input＋cacheRead＋cacheWrite＋output；不额外累加totalTokens。负数、非整数或溢出的计数拒绝入账。已有持久watch按原轮转机制补齐差额，保持账单身份、消费时间及任务技术结果不变。修正会抬升历史费用投影，预算数值不自动提高，不能以旧余额恢复Campaign；必须先确认补账进度及修正后的Program/Campaign余额。不是一次性全历史自动回填：没有watch/会话归属不明的旧记录仍待治理。
 
 本批生产验收：默认150k任务103399完成一次bus_status及最终回复，原始账单与worker/run汇总同为91,527（含44,160缓存读取）；预留settled、无在飞预留/待恢复收尾。20k任务103398业务首请求拒绝，标题调用报告0。全域662/662、worker16项、UI80/80。逐账单轮转370项尚未走完，本批两任务的明细待轮到，不能把run汇总一致视为历史补账完成；C3采样50,427,824已超50M。Campaign全部暂停、并发1，继续入口与证据见27号§15.5。
+
+### 7.35 2026-10-02 · 未知费用不得因部分账单解锁（本地回归）
+
+任务收尾budget_unknown=true保留原额度、expected_tokens=null、state=unknown；普通零账单及迟到部分账单只补已知费用，不自动释放未知预留。新增从claim/register/finish至reconcile的回归，task121/121；无需改表或后端实现。生产历史watch核对及失败usage运行修复见27号§15.6，尚未部署该修复。
