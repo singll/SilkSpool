@@ -15,7 +15,7 @@
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
 - **已知遗留（非阻塞，待后续会话）**：sec-suite/asset-db/experience 内部少量 v4 读取函数（experience 仍被 dashboard-rpc/task 链路引用）；后续治理纳入27号对应工作包，不重开已关账迁移。
 - **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 P1–P8 已全部完成并关账（CHAIN END，2026-09-30）**——生产 0.1.7-rc.2（U3 P6b 切换、finalize invariants failures=0、+72h 观察期 P7/P8 两次只读巡检全绿、U4b 新冻结点 + `preserve_after_resume ok=true`、用户指令提前关账；P6 首次失败已回滚+静音修复+预演后重试成功，窗口 2h56m25s、业务 RPO=0）。**遗留移交 27 号方案/观察期后治理**（僵尸泄漏两路径、设置保存写路径、failover 预流缺口、kbList、Campaign 3 预算、提交 SOP/SLA 等）见 [state open_issues](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录 §13–§19](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)。
-- **27 号发现能力改造**：目标/请求/完整H2队列与可信读取验证基础上，新增费用账本、worker认领隔离、回收事件和有界失败重试；全域659/659，生产未部署。范围与剩余缺口见 [27号§10.4–10.6](27-business-quality-and-capacity-plan-2026-09-30.md)。全方案未关账；采用闭环分批提交与发布验收后分批部署，当前增量待阶段审查提交。
+- **27 号发现能力改造**：目标/请求/完整H2队列与可信读取验证基础上，新增费用账本、worker认领隔离、回收事件和有界失败重试；全域659/659，生产未部署。范围与剩余缺口见 [27号§10.4–10.6](27-business-quality-and-capacity-plan-2026-09-30.md)。全方案未关账；采用闭环分批提交与发布验收后分批部署，当前增量已阶段提交并推送：`38deb2b`。
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
 - **领域语言**：[CONTEXT](../../bundles/dsh/CONTEXT.md)。
 
@@ -29,7 +29,7 @@
 - WP03费用按task/run独立记账并累加，迟到补账/重复去重/事务回滚/运行史裁剪后去重已验证；NULL与零区分，共用session总账拒绝重复归因。worker注册原子匹配认领；回收每批最多4项并逐项发布一次结束事实。
 - WP05入队假设失败后默认冷却1小时，最多自动重试2次；其他派单入口不能绕过冷却与上限，旧回调不解除新任务关联。保留每轮任务、运行史与上限原因。
 - **验证：task/exec 157/157，全域659/659，fail=0**。使用临时bus/SQLite、本地HTTP和CONNECT代理；node语法及diff空白检查通过。正式契约05/10及27号§10.6已更新；日志 `/tmp/secagent-27-wp03-all-contracts.log`。未远程操作、部署或安装真实项目验证契约，真实检出/学习收益未知。
-- 下一步：WP03全局lease/ack、迟到账单轮询、预算窗口/预留及费用投影重算；WP05 unknown/旧手工策略重开及旧分页；WP02还需真实接口适配、凭据刷新、属性重放及其它漏洞族。全方案未完成不再阻止阶段提交；当前基线2c40d3f，审查后记录阶段commit，再进入备份、恢复预演与小批部署。不可回退到弱确认来处理能力缺口。
+- 下一步：WP03全局lease/ack、迟到账单轮询、预算窗口/预留及费用投影重算；WP05 unknown/旧手工策略重开及旧分页；WP02还需真实接口适配、凭据刷新、属性重放及其它漏洞族。全方案未完成不再阻止阶段提交；阶段提交`38deb2b`已推送，下一发布门槛为备份、恢复预演与小批部署。不可回退到弱确认来处理能力缺口。
 
 ### 2026-10-01 · 文档治理与发布节奏
 
@@ -56,3 +56,5 @@
 - 禁止 `git add -f`；doc/hosts/config.ini/keys 相关敏感文件不入库
 - 有状态服务（n8n/Memos/Bellkeeper 等）重建需用户批准；n8n 重启只能用 `docker stop sp-n8n && docker start sp-n8n`
 - bundle 模板改动后：先 `rsync -a bundles/dsh/ /opt/SilkSpool/bundles/dsh/` 再 `spool bundle dsh setup csai`（spool 读的是 /opt/SilkSpool/bundles/ 运行时副本）
+
+发布检查点（2026-10-01）：代码与文档阶段提交 `38deb2b` 已推送 origin/main；生产尚未切换。后续从27号§15.1第2步继续，先完成一致性备份、隔离副本迁移与恢复验证，再小批发布。
