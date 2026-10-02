@@ -800,7 +800,7 @@ DSH 0.1.7的inputTokens为未缓存输入，cacheReadTokens/cacheWriteTokens为�
 2026-10-02证据续核：现役dsh-bill0.18.1的`recordCall`只保存session/time/seq/provider/model/purpose/usage，不保存供应商请求ID或finish原因；`observe`的finally有usage即记录。V4 `assistant/message`及`assistant/attempt`的stream能追溯终止原因，错误attempt可能仅有stream usage；标题事件没有完整费用。独立审计工具据此恢复已知用量下界，不把该结果当成供应商最终收据，不修改worker预算报告或解除unknown。现役源码`lib/index.js` SHA256=`47e19e91312c0b4b38a17a9d2cf4d9401d9d84dc7e365676e35063bd2095a580`，工具契约见05号§7.34、生产核对见27号§15.7。
 
 
-### 2026-10-02 · WP03逐请求终止证据（本地实现，生产部署待验收）
+### 2026-10-02 · WP03逐请求终止证据（已部署及生产验收完成）
 
 worker新增受控`results/<run_id>/worker-requests.jsonl`，schema_version=1，逐事件追加并fsync，不随最近32条预算诊断裁剪。每次llm/stream准入分配独立随机request_id，记录run/PID/launch摘要、请求序号、session/provider/model、时间及估算；请求发送前落admitted，预算不足记denied。usage和finish在透传前落盘，finally记录terminal（正常耗尽/adapter错误/异常/消费者取消）。SIGKILL留下未终止的admitted及已收到usage，不能据此推断免费或已完成。记录不保存提示词、回复、工具参数、请求头、失败消息或replay签名；原生write/edit和截图共用守卫禁止改写该文件。
 
@@ -809,3 +809,6 @@ worker新增受控`results/<run_id>/worker-requests.jsonl`，schema_version=1，
 全部事件`final_cost_proven=false`。usage只记录合法input/output/cacheRead/cacheWrite，不叠加totalTokens；有终止和responseId仍不等于供应商最终结算。该文件不触发补账、不释放旧unknown、不改预算额度；现行完整正常流按usage结算预算的行为保留，错误/取消仍保留未知预留。证据写入失败使本进程后续准入失败；末尾记录失败时当前预留保持未知。文件0600、首次排他创建、禁止软链；属于既有DSH results备份范围，恢复需保留它与预算/会话关联。
 
 本地worker24/24（新增7项，含强杀留痕、40请求完整保留、失败回退、取消、写盘失败及文件保护）、exec40/40通过。实际适配器验收新增正常响应标识/费用一致、错误分支无最终证明两项；生产部署与完整运行验收见27号§15.9。
+
+
+上线结果：本批新冻结恢复副本worker19/19、15次fixture请求通过；真实adapter正常响应标识、失败unknown保留均通过。生产103401三请求12事件/3响应ID，总92,741 token（含缓存读取43,776）与原始账单/worker/run账本一致；只调用一次bus_status，随后WP03_OK。生产UI80/80、六服务active，恢复点与失败报告见27号§15.9。此验收不证明内部HTTP重试费用或错误请求最终结算，Campaign仍暂停。

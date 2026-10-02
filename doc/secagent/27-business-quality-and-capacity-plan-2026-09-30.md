@@ -967,7 +967,7 @@ python3 bundles/dsh/templates/dsh-cost-audit.py --host csai \
 部署后NAS `34bb4b0a9f19dc1aabf24c88de6b0e5f10be7f3cd7b28f386d0d107e3b3d8d86`，40库备份211.34秒/同快照恢复6.56秒通过；覆盖新增证据表、费用账本和业务副本。46项关键发布文件SHA256SUMS已封存，本地源码与5项安装清单摘要一致。最终phase=`deployed-history-lower-bound-reconciled-expansion-held`；本批部署/补账闭环完成，WP03及全方案未关账。
 
 
-### 15.9 WP03逐请求终止证据（2026-10-02，本地实现，发布待验收）
+### 15.9 WP03逐请求终止证据（2026-10-02，已部署及生产验收完成）
 
 续接473485f，在现役适配器源码核查后补未来请求证据。DSH0.1.7正常finish有pi-ai replay v2 responseId，错误finish不带replay；dsh-bill及现有最近32条预算诊断不足以保全逐请求终止事实。新增受保护、0600、逐事件fsync的worker-requests.jsonl，记录唯一adapter调用ID、run/session/route、准入估算、usage、当前响应标识及终止原因；不保存正文/密钥/错误消息。强杀前已落事件保留，证据写盘失败阻止后续准入，错误或取消预留不释放。
 
@@ -979,3 +979,18 @@ python3 bundles/dsh/templates/dsh-cost-audit.py --host csai \
 发布准备：阶段源码321cc00已推送；本批NAS42ab0f22f6bb709a013574e9e9c24a02dfd9a73571eb440086534b26b1f0fec5，40库备份36.28秒/同快照恢复6.81秒，prepare-change退出0。5项候选已上传专属发布目录并核对摘要，尚未冻结/安装生产。旧可丢弃恢复副本实验发现fixture按共享列表长度生成responseId在业务/标题并发时重复；worker已正确保全ID、归属与usage，验收唯一性断言拒绝。fixture改为锁内分配序号，原报告和原manifest保留，重跑中；旧副本实验不替代本批新冻结恢复。证据根/opt/silkspool/dsh-upgrades/20261002-wp03-request-evidence/。
 
 fixture编号锁修正后，本地最终字节全域665/665、63表副本预检重跑通过。第一次远端预检665项完成但期间fixture字节变化，门禁拒绝签发回执，已启动最终字节重跑。第二次隔离实验在默认两步RPC等待超时（7次fixture请求），失败报告dsh-sandbox-9ka2no5b；不是运行验收通过。待远端预检结束后串行重试，生产未停写。
+
+串行旧副本实验19项/15次fixture请求全部通过；默认两步3请求12事件/3响应ID，失败2请求8事件/无响应ID并保留unknown。最终远端665/665通过。北京时间20:27:55本批已停写，state=dsh-freeze-m1paqte4，正在生成本批完整冻结恢复点；候选未安装。
+
+北京时间20:43:52新冻结完成，manifest69b4899d793b9b65c04e7d3bf5c4f2f7dbed188100fc86783b4a50c2fefb324c、snapshot=dsh-snapshot-ready-rdn4_qs_。完整复制与独立校验约15分57秒；已启动独立restore-copy及顺序应用/worker预演，候选未安装。驱动遇失败即停，失败后须核查恢复点再继续。
+
+
+发布验收：新冻结六根完整恢复到dsh-restore-copy-9auu9cno；最终远端665/665、当前64表副本schema通过，无新增表。旧版应用首次RPC超时保留报告，复用已验证副本串行重试通过；旧/新版均15域、1858历史session、3工作区/1603列表会话。新恢复副本worker19项/15次fixture请求通过，默认两步3请求/12事件/3响应ID，失败2请求/8事件/无响应ID且unknown保留。5项清单10次写入（7个唯一路径）摘要一致；生产静默冒烟及核心业务投影核对通过，64表仅FTS派生索引、programs、bus_meta、注册事件变化。
+
+北京时间21:07:20恢复，停写39分25秒（含15分57秒冻结复制校验及一次旧版RPC重试）。PID1065354/NRestarts0、六服务active、UI80/80、journal err=0；六维护timer与proxy-refresh.timer均active。源码321cc00＋fixture并发编号修正6ad801b已推送；原始和最终manifest、失败报告保留。
+
+生产只读任务103401/run wmuqzcm1jfe82，默认150k：会话核对仅一次bus_status后回复WP03_OK；3次bellkeeper/pool-secagent请求（含标题），总92,741 token，缓存读取43,776。原始3条账单、worker charged、独立run账本一致，预留settled、requests3/unknown0/denied0/reserved0。新请求文件12事件/3准入/3终止/3不同responseId，run/session匹配，SHA256=78f0ee06e7283e46dabcf2c03b862b75f1584d78a369680bf9649dc90d3c055c；所有事件仍final_cost_proven=false。未注入生产故障，错误/取消证据来自本批实际适配器隔离验收；逐账单task_bill_items采样尚为0，持久watch后续轮转，不声称已逐条入表。
+
+最终C1/C2/C3账面176,585,747/573,019,056/91,204,791，预算200M/200M/50M不变，均paused，并发1；13项预留全部settled、running task/worker/pending-finish均0。本批未来请求证据链已闭环，WP03及全方案仍在办。**下一步**：在适配器或可信供应商来源补错误请求标识、内部HTTP重试事实及最终结算证明，再设计严格匹配的unknown释放；目前不可凭responseId/正常usage或重试成功完成该证明。历史49项旧累计冲突、10歧义/2越界等继续未知；WP04真实请求与WP02逐族前置可独立推进，不恢复外部探索或提高预算。
+
+部署后NAS9dec3a2253472bc56f2162dfc8ee8c16f3f17633fe6feed9c59dd7b30b017d11，40库备份199.13秒/同快照恢复6.90秒通过，覆盖新增请求证据与canary账本；覆盖/排除范围未变。58项关键发布文件SHA256SUMS已封存，最终phase=deployed-request-evidence-accepted-expansion-held。本批闭环完成，WP03及全方案未关账。

@@ -121,3 +121,5 @@ spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh archive-release --p
 - 2026-10-02失败usage修复：变更前NAS71348e25…，40库268.63秒/恢复6.83秒；冻结ef897819…六根恢复及63表、新旧应用预演通过。北京时间00:20:27–01:03:06停写42分39秒，失败与重试记录见27号§15.6。部署后NAS `136ff53f61ee8a5073334520191f0b23a7edc1610ca0b4e1280826067eedb1eb`，40库备份207.10秒/恢复6.75秒通过；六个维护timer与proxy-refresh.timer均active。27项关键证据SHA256SUMS已保存，本批phase=deployed-failed-usage-guard-accepted-expansion-held。覆盖/排除范围不变。
 
 - 2026-10-02历史用量补账：变更前NAS `d7122308…`，40库36.07秒/恢复7.18秒；冻结`7bf493ae…`六根完整恢复、63旧表及新证据表、旧/新应用和worker17项通过。北京时间18:30:25–19:31:53停写约61分29秒；沙箱目录权限和两次RPC超时失败均保留。生产补账247项/重放增量0后恢复服务，UI80/80；部署后NAS `34bb4b0a9f19dc1aabf24c88de6b0e5f10be7f3cd7b28f386d0d107e3b3d8d86`，40库211.34秒/同快照恢复6.56秒通过，覆盖新证据与账本。46项发布证据摘要封存，六维护timer和proxy-refresh.timer恢复，覆盖/排除范围未变；详见27号§15.8。
+
+- 2026-10-02逐请求终止证据：变更前NAS42ab0f22…（40库36.28秒/恢复6.81秒）；新冻结69b4899d…六根完整恢复，64表无新增，新旧应用与worker19项通过。北京时间20:27:55–21:07:20停写39分25秒，含旧版应用RPC超时后重试；生产静默冒烟、UI80/80及只读canary103401通过。部署后NAS `9dec3a2253472bc56f2162dfc8ee8c16f3f17633fe6feed9c59dd7b30b017d11`，40库备份199.13秒/同快照恢复6.90秒通过。新增results/worker-requests.jsonl在既有覆盖内，排除项未变；58项发布证据封存，六维护timer及刷新timer active，详见27号§15.9。
