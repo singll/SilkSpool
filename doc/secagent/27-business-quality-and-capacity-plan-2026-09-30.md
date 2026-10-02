@@ -965,3 +965,12 @@ python3 bundles/dsh/templates/dsh-cost-audit.py --host csai \
 下一步：49项旧累计冲突、10项会话歧义、2项时间越界以及watch之外缺session执行继续保留未知；已补247项仅为已知下界，标题/失败请求及供应商最终结算仍不完整。专用证据表不会释放unknown；原始账单轮转保持可补迟到增长。后续优先补未来请求的可验证请求标识/终止事实和可信最终结算来源，同时可推进WP04/WP02独立前置，不把清洗完全部历史作为发现的通用门槛。
 
 部署后NAS `34bb4b0a9f19dc1aabf24c88de6b0e5f10be7f3cd7b28f386d0d107e3b3d8d86`，40库备份211.34秒/同快照恢复6.56秒通过；覆盖新增证据表、费用账本和业务副本。46项关键发布文件SHA256SUMS已封存，本地源码与5项安装清单摘要一致。最终phase=`deployed-history-lower-bound-reconciled-expansion-held`；本批部署/补账闭环完成，WP03及全方案未关账。
+
+
+### 15.9 WP03逐请求终止证据（2026-10-02，本地实现，发布待验收）
+
+续接473485f，在现役适配器源码核查后补未来请求证据。DSH0.1.7正常finish有pi-ai replay v2 responseId，错误finish不带replay；dsh-bill及现有最近32条预算诊断不足以保全逐请求终止事实。新增受保护、0600、逐事件fsync的worker-requests.jsonl，记录唯一adapter调用ID、run/session/route、准入估算、usage、当前响应标识及终止原因；不保存正文/密钥/错误消息。强杀前已落事件保留，证据写盘失败阻止后续准入，错误或取消预留不释放。
+
+这是未来请求的适配器证据链，**不是供应商最终费用协议**。全部事件final_cost_proven=false；不能把本地随机ID当供应商ID，不能把单个adapter调用当内部HTTP重试总数，错误分支缺供应商标识仍记null。现役运行时未透传的信息需后续在适配器/供应商可信来源补齐，不能伪造。旧账、历史unknown、Campaign预算和技术结果不变；不把本批当放量通过。
+
+本地worker24/24、exec40/40通过；全域665/665、63表副本schema预检通过。新增真实隔离worker验收覆盖正常responseId与费用核对、错误请求仍无最终证明。发布change=20261002-wp03-request-evidence，固定DSH0.1.7-rc.2；仅worker运行时、原生文件守卫、测试与运行验收脚本，数据库schema不变。恢复仍遵守18号本次NAS门禁→新冻结六根完整恢复→新旧应用和worker预演→安装/静默冒烟→恢复服务；生产暂未写入。

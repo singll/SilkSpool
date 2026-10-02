@@ -40,7 +40,7 @@ class Model(http.server.BaseHTTPRequestHandler):
         if self.headers.get("Authorization") != "Bearer fixture-only":
             self.send_error(401)
             return
-        envelope = {"id": "chatcmpl-u2-fixture", "object": "chat.completion.chunk", "created": 1,
+        envelope = {"id": f"chatcmpl-u2-fixture-{len(REQUESTS)}", "object": "chat.completion.chunk", "created": 1,
                     "model": body["model"]}
         case = next((m[1] for message in body.get("messages", [])
                      if (m := re.search(r"\[u2:([a-z-]+)\]", str(message.get("content", ""))))), "plain")

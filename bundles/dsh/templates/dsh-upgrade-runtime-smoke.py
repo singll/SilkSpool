@@ -34,6 +34,36 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def request_evidence(run_id, budget, *, success=False, failed=False):
+    """Validate actual adapter output, keeping only counts in the public report."""
+    filename = DATA / "results" / run_id / "worker-requests.jsonl"
+    events = [json.loads(line) for line in filename.read_text().splitlines()]
+    require(events and [e["event_sequence"] for e in events] == list(range(1, len(events) + 1)),
+            "worker request journal sequence incomplete")
+    require(all(e["run_id"] == run_id and e["final_cost_proven"] is False for e in events),
+            "worker request evidence ownership/finality incorrect")
+    require(filename.stat().st_mode & 0o777 == 0o600, "worker request evidence permissions")
+    admitted = {e["request_id"] for e in events if e["event"] == "admitted"}
+    terminals = [e for e in events if e["event"] == "terminal"]
+    require(len(admitted) == budget["requests"], "worker journal missing admitted requests")
+    require(all(e["request_id"] in admitted for e in terminals), "terminal has no admission")
+    if success:
+        require(len(terminals) == len(admitted) and all(e["completed"] and not e["failed"]
+                and str(e["provider_response_id"]).startswith("chatcmpl-u2-fixture-")
+                and e["finish_kind"] in ("stop", "tool-calls", "max-tokens") for e in terminals),
+                "actual pi-ai response identity/terminal evidence missing")
+        require(len({e["provider_response_id"] for e in terminals}) == len(terminals),
+                "fixture provider response identities are not unique")
+        require(sum(sum(e["usage"].values()) for e in terminals) == budget["charged"],
+                "request evidence differs from worker charged usage")
+    if failed:
+        require(any(e["failed"] and e["provider_response_id"] is None for e in terminals),
+                "failed adapter response incorrectly gained a provider ID/final settlement")
+    return {"events": len(events), "admitted": len(admitted), "terminals": len(terminals),
+            "response_ids": sum(e.get("provider_response_id") is not None for e in terminals),
+            "sha256": hashlib.sha256(filename.read_bytes()).hexdigest()}
+
+
 def flatten(value):
     if isinstance(value, list):
         for row in value:
@@ -529,6 +559,8 @@ def main():
                             "default budget request diagnostics missing")
                     report["worker_budget"]["default_two_step"] = counts
                     report["checks"].append({"check": "worker-default-budget-tool-and-final-response", "ok": True})
+                    report["worker_request_evidence"] = request_evidence(value["run_id"], counts, success=True)
+                    report["checks"].append({"check": "worker-request-evidence-real-adapter-response-ids", "ok": True})
                 requests_before = len(model.REQUESTS)
                 replay = rpc("/silksec-domain", "exec.spawn_worker", worker_args)
                 require(replay.get("ok") and replay["data"].get("recovered") and replay["data"]["run_id"] == worker["data"]["run_id"]
@@ -548,6 +580,8 @@ def main():
                                 and value.get("budget", {}).get("unknown", 0) > 0,
                                 "failed provider usage was treated as final billing")
                         report["checks"].append({"check": "worker-error-usage-keeps-unknown-budget", "ok": True})
+                        report["worker_error_evidence"] = request_evidence(value["run_id"], value["budget"], failed=True)
+                        report["checks"].append({"check": "worker-request-error-evidence-remains-nonfinal", "ok": True})
                     stored = rpc("/silksec-domain", "task.worker_status", {"run_id": value["run_id"]})
                     require(stored.get("ok") and stored["data"]["status"] == ("killed" if case == "child-slow" else "failed"), "worker 失败未收尾")
                     if case == "child-slow":

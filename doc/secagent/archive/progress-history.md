@@ -704,3 +704,13 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - 确认dsh-bill默认只保留20,000条明细，rollup不保留session归属；记录也缺供应商请求ID及finish原因。315项还含53次标题无usage、79次失败/不完整请求、3次缺/非法usage；全部`final_cost_proven=false`。全体3,626个run中2,257缺session、2,571缺费用，未由本工具自动修复。
 - Campaign1/2/3继续paused，账面111,486,173/146,935,913/90,571,011，额度不变、并发1；12项预留settled，当前running任务/worker/pending-finish均0。既有定时任务在上一批后新增6次执行，Campaign暂停不等于全部定时任务停止。
 - 证据：管理机`out/secagent-audits/20261002-wp03-history/`；最终报告SHA256 903eefcf…，详见[27号§15.7](27-business-quality-and-capacity-plan-2026-09-30.md#157-wp03历史费用证据审计2026-10-02独立工具已完成生产只读验收)。下一步315项下界与旧累计去重核对、保原账的补账流程及未来请求最终结算标识；不重新重复缺账轮转检查，不解除unknown或恢复外部探索。WP03及全方案未关账。
+
+
+### 2026-10-02 · WP03历史用量补账部署验收完成
+
+- 新增system治理命令`task_record_cost_evidence`、追加证据表及冻结窗口执行器。315项审计证据核对后：247项满足无未归属旧累计并在生产补账，19项已有账本覆盖，49项任务16/17/24旧累计冲突保留。生产新增已知usage下界1,290,916,472 token，247项整批重放增量0；不是供应商最终费用，不解除unknown。
+- 验证：task123/123、全域665/665、审计10/10；生产数据库独立副本整批补账/重放通过。新冻结六根恢复、63旧表schema及唯一新增表task_cost_evidence、旧/新版应用、worker17项/15次fixture请求、生产静默冒烟与UI80/80通过。补账前后60表/非费用字段投影相同，12项预算预留不变。
+- 当前DSH0.1.7-rc.2，PID1056912/NRestarts0、六服务active、journal err=0，无running任务/worker/pending-finish。北京时间19:31:53恢复，停写约61分29秒；目录权限与旧版/worker RPC超时失败报告保留。
+- C1/C2/C3账面176,585,747/573,019,056/91,204,791；C2/C3超额。预算200M/200M/50M不变，全部paused、并发1，未恢复外部探索。本批没有生产模型canary，执行链沿用实际隔离worker验收。
+- 恢复保障：变更前NASd7122308…；冻结7bf493ae…；部署后NAS34bb4b0a…，40库211.34秒/同快照恢复6.56秒通过。六维护timer与proxy-refresh.timer恢复；46项发布证据封存，源码与5项生产安装清单一致。
+- 下一步：49项旧累计冲突、10项会话歧义、2项时间越界和watch之外无session历史仍未知；未来请求标识/终止事实及供应商最终费用证明仍待补。WP04真实请求与WP02接口前置可独立推进。详情见[27号§15.8](27-business-quality-and-capacity-plan-2026-09-30.md#158-wp03历史用量补账2026-10-02已部署及生产补账验收完成)，本批闭环完成，WP03及全方案未关账。

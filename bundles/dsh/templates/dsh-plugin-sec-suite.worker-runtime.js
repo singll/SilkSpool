@@ -7,6 +7,33 @@ import { listSessionHeaders, matchWorkerSession } from './host-compat.js'
 
 const RUN_ID = /^w[a-z0-9]+$/
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
+const evidenceLabel = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9_.:/@+-]{0,255}$/.test(value) ? value : null
+const usageFields = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']
+function countedUsage(usage) {
+  if (!usage || !usageFields.every(k => usage[k] == null || Number.isSafeInteger(usage[k]) && usage[k] >= 0)
+      || !Number.isSafeInteger(usage.inputTokens) || !Number.isSafeInteger(usage.outputTokens)) return null
+  const counts = Object.fromEntries(usageFields.map(k => [k, usage[k] || 0]))
+  return Number.isSafeInteger(Object.values(counts).reduce((a, b) => a + b, 0)) ? counts : null
+}
+
+// Append before sending a request and before forwarding usage/finish. A killed
+// process leaves an admitted request without a terminal event, never a free call.
+// This is adapter evidence, not a provider invoice or a count of HTTP retries.
+export function createWorkerRequestJournal(runDir, { run_id, nonce, pid }) {
+  const filename = path.join(runDir, 'worker-requests.jsonl')
+  let sequence = 0
+  const identity = { run_id, pid, launch_sha256: crypto.createHash('sha256').update(nonce).digest('hex') }
+  return event => {
+    const flags = fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW
+      | (sequence === 0 ? fs.constants.O_CREAT | fs.constants.O_EXCL : fs.constants.O_APPEND)
+    const fd = fs.openSync(filename, flags, 0o600)
+    try {
+      fs.writeFileSync(fd, JSON.stringify({ ...event, ...identity, schema_version: 1, event_sequence: sequence + 1 }) + '\n')
+      fs.fsyncSync(fd)
+      sequence++
+    } finally { fs.closeSync(fd) }
+  }
+}
 
 // toolHistory is replay metadata, not another provider payload. Keep the union
 // of declarations as a conservative bound for both current-only and in-history
@@ -34,54 +61,95 @@ function estimateWorkerInput(options) {
 
 // Request admission is deliberately an estimate, not a provider billing guarantee.
 // Charge all model calls in this process (including compaction/title/probes).
-export function createWorkerBudget(limit, persist = () => {}) {
+export function createWorkerBudget(limit, persist = () => {}, record = () => {}) {
   if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error('E_WORKER_BUDGET_REQUIRED')
   const state = { limit, charged: 0, reserved: 0, requests: 0, unknown: 0, denied: 0, recent_requests: [] }
   const fail = code => { state.denied++; persist({ ...state, code }); throw new Error(code) }
+  const evidence = event => {
+    try { record({ ...event, recorded_at: Date.now(), final_cost_proven: false }) }
+    catch {
+      state.evidence_error = 'E_WORKER_REQUEST_EVIDENCE_WRITE'
+      throw new Error(state.evidence_error)
+    }
+  }
   return {
     state,
     async *stream(options, next) {
+      if (state.evidence_error) fail(state.evidence_error)
       // Binary/file projections and unlimited outputs cannot be priced by this estimator.
       if ((options.messages || []).some(m => (m.content || []).some(b => ['image', 'file'].includes(b.type)))) fail('E_WORKER_BUDGET_MODALITY')
       if (!Number.isSafeInteger(options.maxTokens) || options.maxTokens <= 0) fail('E_WORKER_BUDGET_OUTPUT_CAP')
       const estimate = estimateWorkerInput(options)
       const reserved = estimate.estimated_input_tokens + options.maxTokens
-      const diagnostic = { sequence: state.requests + state.denied + 1, ...estimate,
+      const request_id = crypto.randomUUID()
+      const diagnostic = { request_id, sequence: state.requests + state.denied + 1, ...estimate,
         max_output_tokens: options.maxTokens, charged_before: state.charged,
         reserved_before: state.reserved, status: 'reserved' }
+      const identity = { request_id, request_sequence: diagnostic.sequence,
+        provider: evidenceLabel(options.provider), model: evidenceLabel(options.model),
+        session_id: evidenceLabel(options.sessionId) }
       state.recent_requests.push(diagnostic)
       if (state.recent_requests.length > 32) state.recent_requests.shift()
       if (state.charged + state.reserved + reserved > limit) {
         diagnostic.status = 'denied'
+        evidence({ ...identity, event: 'denied', code: 'E_WORKER_BUDGET_EXHAUSTED', reserved_tokens: reserved })
         fail('E_WORKER_BUDGET_EXHAUSTED')
       }
+      evidence({ ...identity, event: 'admitted', reserved_tokens: reserved, ...estimate,
+        max_output_tokens: options.maxTokens })
       state.reserved += reserved
       state.requests++
       persist({ ...state })
       let usage = null
       let failed = false
       let completed = false
+      let termination = 'consumer_cancelled'
+      let finishKind = null
+      let responseId = null
+      let finishCount = 0
       try {
         for await (const chunk of next()) {
-          if (chunk?.type === 'usage') usage = chunk.usage
-          if (chunk?.type === 'finish' && !['stop', 'tool-calls', 'max-tokens'].includes(chunk.reason?.kind)) {
-            failed = true
+          if (chunk?.type === 'usage') {
+            usage = chunk.usage
+            evidence({ ...identity, event: 'usage', usage: countedUsage(usage) })
+          }
+          if (chunk?.type === 'finish') {
+            finishCount++
+            finishKind = evidenceLabel(chunk.reason?.kind)
+            if (!['stop', 'tool-calls', 'max-tokens'].includes(finishKind)) failed = true
+            const replay = chunk.replayState?.response
+            // Read only the current adapter's terminal envelope, never history
+            // or a caller-supplied request/response ID in options.
+            responseId = replay?.kind === 'pi-ai' && replay.version === 2
+              && replay.provider === options.provider && replay.model === options.model
+              ? evidenceLabel(replay.responseId) : null
+            evidence({ ...identity, event: 'finish', finish_kind: finishKind,
+              failure_code: evidenceLabel(chunk.reason?.failure?.code),
+              provider_response_id: responseId,
+              response_id_source: responseId ? 'pi-ai-replay-v2' : null })
           }
           yield chunk
         }
         completed = true
+        termination = failed ? 'adapter_error' : 'stream_exhausted'
       } catch (error) {
         failed = true
+        termination = 'stream_threw'
         throw error
       } finally {
-        const fields = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens']
-        if (usage && fields.every(k => usage[k] == null || Number.isSafeInteger(usage[k]) && usage[k] >= 0)
-            && Number.isSafeInteger(usage.inputTokens) && Number.isSafeInteger(usage.outputTokens)
-            && Number.isSafeInteger(fields.reduce((n, k) => n + (usage[k] || 0), 0))) {
-          state.charged += fields.reduce((n, k) => n + (usage[k] || 0), 0)
+        const counts = countedUsage(usage)
+        // Persist the terminal fact before allowing the reservation to settle.
+        // An evidence I/O failure poisons further admission in this process.
+        try {
+          evidence({ ...identity, event: 'terminal', termination, completed, failed,
+            finish_kind: finishKind, finish_count: finishCount, provider_response_id: responseId,
+            usage: counts, usage_state: counts ? 'reported' : 'unknown' })
+        } catch { failed = true }
+        if (counts) {
+          state.charged += Object.values(counts).reduce((a, b) => a + b, 0)
           Object.assign(diagnostic, {
-            actual_input_tokens: usage.inputTokens + (usage.cacheReadTokens || 0) + (usage.cacheWriteTokens || 0),
-            actual_output_tokens: usage.outputTokens })
+            actual_input_tokens: counts.inputTokens + counts.cacheReadTokens + counts.cacheWriteTokens,
+            actual_output_tokens: counts.outputTokens })
           // pi-ai emits usage even for errors (often initialized zeros).
           // Partial usage is a known lower bound, not proof of final billing.
           if (failed || !completed) {
@@ -96,6 +164,7 @@ export function createWorkerBudget(limit, persist = () => {}) {
           diagnostic.status = 'unknown'
         }
         persist({ ...state })
+        if (state.evidence_error) throw new Error(state.evidence_error)
       }
     },
   }
@@ -116,11 +185,12 @@ export function installWorkerSessionReporter(ctx, dataDir) {
   const filename = path.join(dataDir, 'results', runId, 'worker-session.json')
   if (process.env.SEC_WORKER_BUDGET_TOKENS) {
     const runDir = path.dirname(filename)
+    const journal = createWorkerRequestJournal(runDir, { run_id: runId, nonce, pid: process.pid })
     const budget = createWorkerBudget(Number(process.env.SEC_WORKER_BUDGET_TOKENS), state => {
       const tmp = path.join(runDir, `worker-budget.json.tmp-${process.pid}`)
       fs.writeFileSync(tmp, JSON.stringify({ ...state, run_id: runId, nonce, estimator: 'utf8-tool-union-plus-system-v2' }), { mode: 0o600 })
       fs.renameSync(tmp, path.join(runDir, 'worker-budget.json'))
-    })
+    }, journal)
     ctx.on('agent/request', async (_payload, next) => {
       const config = await next()
       return { ...config, maxTokens: Math.min(config.maxTokens || 2048, 2048, budget.state.limit) }
