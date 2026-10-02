@@ -175,29 +175,33 @@ export function taintRoute(endpoint = {}) {
     const start = out.length
     const name = String(p?.name || '')
     if (!name) continue
+    // HAR JSON fields use JSON Pointer to keep nested/array positions distinct.
+    // Match the leaf property while retaining the full pointer in every draft.
+    const routeName = p?.in === 'json' && name.startsWith('/')
+      ? name.split('/').at(-1).replaceAll('~1', '/').replaceAll('~0', '~') : name
     const value = p?.value === undefined || p?.value === null ? '' : String(p.value)
-    const numericId = ID_PARAM_RE.test(name) || (/^\d{2,19}$/.test(value))
+    const numericId = ID_PARAM_RE.test(routeName) || (/^\d{2,19}$/.test(value))
     if (numericId) {
       out.push({ level: 'H2', vuln_class: 'idor', param: name, priority: 1,
         oracle: 'idor_diff', rationale: `数值/ID 形态参数 ${name}——越权（IDOR）双身份差分`,
         strategy_hint: `idor|${name}` })
     }
-    if (URL_PARAM_RE.test(name) && !REDIRECT_PARAM_RE.test(name) && !FILE_PARAM_RE.test(name)) {
+    if (URL_PARAM_RE.test(routeName) && !REDIRECT_PARAM_RE.test(routeName) && !FILE_PARAM_RE.test(routeName)) {
       out.push({ level: 'H2', vuln_class: 'ssrf', param: name, priority: 2,
         oracle: 'ssrf_oob', rationale: `URL 形态参数 ${name}——SSRF（OOB 唯一判定）`,
         strategy_hint: `ssrf|${name}` })
     }
-    if (FILE_PARAM_RE.test(name)) {
+    if (FILE_PARAM_RE.test(routeName)) {
       out.push({ level: 'H2', vuln_class: 'file', param: name, priority: 2,
         oracle: 'file_probe', rationale: `文件形态参数 ${name}——上传/读取/包含探测`,
         strategy_hint: `file|${name}` })
     }
-    if (REDIRECT_PARAM_RE.test(name)) {
+    if (REDIRECT_PARAM_RE.test(routeName)) {
       out.push({ level: 'H2', vuln_class: 'open_redirect', param: name, priority: 3,
         oracle: 'redirect_probe', rationale: `跳转形态参数 ${name}——开放跳转`,
         strategy_hint: `open_redirect|${name}` })
     }
-    if (value || SEARCH_PARAM_RE.test(name)) {
+    if (value || SEARCH_PARAM_RE.test(routeName)) {
       out.push({ level: 'H2', vuln_class: 'xss', param: name, priority: 3,
         oracle: 'xss_echo', rationale: `可回显参数 ${name}——XSS 标记回显+上下文判定`,
         strategy_hint: `xss|${name}` })

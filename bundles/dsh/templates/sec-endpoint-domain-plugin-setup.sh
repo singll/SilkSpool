@@ -26,6 +26,7 @@ die()  { echo "[sec-endpoint-domain-plugin][ERROR] $*" >&2; exit 1; }
 assemble() {
     mkdir -p "$PLUGIN_DIR/test"
     cp "$BASE_DIR/dsh-plugin-sec-domain-endpoint.js" "$PLUGIN_DIR/index.js"
+    cp "$BASE_DIR/dsh-plugin-sec-domain-endpoint.har.js" "$PLUGIN_DIR/har.js"
     cp "$BASE_DIR/dsh-plugin-sec-domain-endpoint.patch.yml" "$PLUGIN_DIR/cordis.patch.yml"
     cp "$BASE_DIR/dsh-plugin-sec-domain-endpoint.contract-endpoint.test.js" "$PLUGIN_DIR/test/contract-endpoint.test.js"
     cat > "$PLUGIN_DIR/package.json" <<'EOF'
@@ -36,7 +37,7 @@ assemble() {
   "type": "module",
   "main": "./index.js",
   "exports": { ".": "./index.js", "./package.json": "./package.json" },
-  "files": ["index.js", "cordis.patch.yml", "test/contract-endpoint.test.js"],
+  "files": ["index.js", "har.js", "cordis.patch.yml", "test/contract-endpoint.test.js"],
   "license": "MIT",
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
 }

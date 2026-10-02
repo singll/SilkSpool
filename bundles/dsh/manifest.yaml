@@ -319,6 +319,7 @@ templates:
   - sec-asset-domain-plugin-setup.sh
   # --- v5 endpoint 域插件（Phase 2 首域：接口面/参数队列，契约 04-endpoint.md）---
   - dsh-plugin-sec-domain-endpoint.js
+  - dsh-plugin-sec-domain-endpoint.har.js
   - dsh-plugin-sec-domain-endpoint.patch.yml
   - dsh-plugin-sec-domain-endpoint.contract-endpoint.test.js
   - dsh-plugin-sec-backend-endpoint-sqlite.js

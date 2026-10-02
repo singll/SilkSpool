@@ -26,6 +26,7 @@ import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { readParseProposal } from '../sec-suite/parse-proposal.js'
 import { classifyAuthState, businessSemanticsSuggest } from '../sec-rules-hypothesis/index.js'
+import { parseHar, harObservation } from './har.js'
 
 export const name = 'sec-domain-endpoint'
 export const version = '1.0.0'
@@ -73,9 +74,26 @@ export const ENDPOINT_MANIFEST = {
   description: '接口面/参数队列（打哪里、喂什么料——越权矩阵与参数喂料的唯一事实源）',
   owns: {
     tables: ['endpoints', 'endpoint_requests'],
-    files: ['data/pipeline/*/param-queue.txt', 'data/pipeline/*/param-seen.txt', 'data/events/endpoint.jsonl'],
+    files: ['data/pipeline/*/param-queue.txt', 'data/pipeline/*/param-seen.txt', 'data/events/endpoint.jsonl', 'data/evidence/requests/**'],
   },
   commands: {
+    endpoint_import_har: {
+      actor: ['script', 'dashboard'],
+      schema: schema({
+        program_id: str({ minLength: 1 }), har_path: str({ minLength: 1 }),
+        source_sha256: str({ pattern: '^[a-f0-9]{64}$' }), run_id: str({ minLength: 1 }),
+        mode: en(['preview', 'import']), offset: int({ minimum: 0 }), limit: int({ minimum: 1, maximum: 100 }),
+        bindings: { type: 'array', maxItems: 500, items: schema({
+          entry_index: int({ minimum: 0 }), credential_ref: str({ minLength: 1 }), subject_ref: str({ minLength: 1 }),
+          object_refs: { type: 'array', items: str({ minLength: 1 }), maxItems: 100 }, action: str(),
+          task_id: int({ minimum: 1 }), session_id: str({ minLength: 1 }),
+        }, ['entry_index']) },
+      }, ['program_id', 'har_path', 'source_sha256', 'run_id', 'mode']),
+      idempotent: 'none', events: ['endpoint.request.observed'], event_limit: 100,
+      invariants: [], timeout_ms: 60000,
+      agent_note: '被动导入 HAR 1.2（≤64MiB），不执行请求。先 preview 再按相同 source_sha256 分页 import，每页≤100条。逐项报告拒绝/新增/重放及 next_offset；原始条目与正文存受控证据。身份/对象必须显式按 entry_index 绑定；不会从 Cookie 猜身份或将200判成健康。',
+      deprecated: false,
+    },
     endpoint_observe_request: {
       actor: ['model', 'script', 'dashboard'],
       schema: schema({
@@ -86,6 +104,11 @@ export const ENDPOINT_MANIFEST = {
         parameters: { type: 'array', maxItems: 500, items: schema({ name: str({ minLength: 1 }), in: en(['query', 'path', 'header', 'cookie', 'form', 'json', 'multipart']), value: {}, value_ref: str({ minLength: 1 }) }, ['name', 'in']) },
         evidence_path: str({ minLength: 1 }), run_id: str({ minLength: 1 }), task_id: int({ minimum: 1 }), session_id: str({ minLength: 1 }),
         response_status: int({ minimum: 100, maximum: 599 }),
+        capture: schema({
+          format: en(['har-1.2']), source_sha256: str({ pattern: '^[a-f0-9]{64}$' }), entry_index: int({ minimum: 0 }),
+          started_at: str(), body_state: en(['captured', 'parameters_only']),
+          artifacts: { type: 'array', maxItems: 8, items: schema({ path: str({ minLength: 1 }), sha256: str({ pattern: '^[a-f0-9]{64}$' }) }, ['path', 'sha256']) },
+        }, ['format', 'source_sha256', 'entry_index', 'artifacts']),
       }, ['program_id', 'url', 'method', 'parameters', 'evidence_path', 'run_id']),
       // 文件摘要须每次读取；在 handler 按完整观测摘要幂等，避免总线只按路径重放旧内容。
       idempotent: 'none', events: ['endpoint.request.observed'], event_limit: 1,
@@ -435,7 +458,7 @@ function makeHandlers(opts) {
     if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(',')}}`
     return JSON.stringify(value)
   }
-  function evidenceDigest(ref) {
+  function readEvidence(ref, maxBytes = 1024 * 1024) {
     const absolute = path.resolve(dataDir, ref)
     const roots = ['results', 'evidence'].map(dir => path.resolve(dataDir, dir))
     const inside = p => roots.some(root => p.startsWith(root + path.sep))
@@ -444,9 +467,41 @@ function makeHandlers(opts) {
       const real = fs.realpathSync(absolute)
       if (!inside(real)) throw new Error('引用越界')
       const stat = fs.statSync(real)
-      if (!stat.isFile() || stat.size > 1024 * 1024) throw new Error('证据须为不超过 1 MiB 的普通文件')
-      return crypto.createHash('sha256').update(fs.readFileSync(real)).digest('hex')
+      if (!stat.isFile() || stat.size > maxBytes) throw new Error('证据文件类型或大小超限')
+      const bytes = fs.readFileSync(real)
+      if (bytes.length > maxBytes) throw new Error('证据文件大小超限')
+      return bytes
     } catch (e) { throwErr('E_EVIDENCE_REQUIRED', `请求证据不可用：${e.message}`, null, false) }
+  }
+  const evidenceDigest = ref => crypto.createHash('sha256').update(readEvidence(ref)).digest('hex')
+
+  function preserveHarArtifact(ref, bytes) {
+    if (!/^evidence\/requests\/[a-f0-9]{64}\/\d+\/[a-z.]+$/.test(ref)) throwErr('E_HAR_ARTIFACT_PATH', '无效的流量证据路径', null, false)
+    let directory = fs.realpathSync(dataDir)
+    for (const part of ref.split('/').slice(0, -1)) {
+      directory = path.join(directory, part)
+      try { fs.mkdirSync(directory, { mode: 0o700 }) } catch (e) { if (e.code !== 'EEXIST') throw e }
+      const stat = fs.lstatSync(directory)
+      if (!stat.isDirectory() || stat.isSymbolicLink()) throwErr('E_HAR_ARTIFACT_PATH', '流量证据目录不可使用软链', null, false)
+    }
+    const file = path.join(directory, path.basename(ref))
+    let fd
+    try {
+      fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600)
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e
+      const stat = fs.lstatSync(file)
+      if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) || !fs.readFileSync(file).equals(bytes)) {
+        throwErr('E_HAR_ARTIFACT_CONFLICT', '已保存的流量证据发生变化或权限不安全；保留现场，不覆盖', null, false)
+      }
+      return
+    }
+    try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+    // Persist the directory entries before SQLite can commit their references.
+    for (let dir = directory; dir !== fs.realpathSync(dataDir); dir = path.dirname(dir)) {
+      const directoryFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY)
+      try { fs.fsyncSync(directoryFd) } finally { fs.closeSync(directoryFd) }
+    }
   }
 
   function tsvParams(raw, url) {
@@ -563,6 +618,51 @@ function makeHandlers(opts) {
   }
 
   const commands = {
+    endpoint_import_har: async (args, repo, ctx) => {
+      if (!/^[a-f0-9]{64}$/.test(args.source_sha256) || (args.bindings?.length || 0) > 500) throwErr('E_SCHEMA', '来源摘要或身份绑定数量无效', null, false)
+      const source = parseHar(readEvidence(args.har_path, 64 * 1024 * 1024))
+      if (source.sha256 !== args.source_sha256) throwErr('E_HAR_SOURCE_CHANGED', 'HAR 摘要与本批来源不一致', null, false)
+      const offset = args.offset ?? 0, end = Math.min(source.entries.length, offset + (args.limit ?? 50))
+      if (offset > source.entries.length) throwErr('E_SCHEMA', 'offset 超过原始条目数', null, false)
+      const bindings = new Map()
+      for (const binding of args.bindings || []) {
+        if (!Number.isSafeInteger(binding.entry_index) || binding.entry_index < 0 || binding.entry_index >= source.entries.length
+            || bindings.has(binding.entry_index) || (binding.object_refs?.length || 0) > 100) throwErr('E_SCHEMA', '身份绑定索引重复、越界或对象数量超限', null, false)
+        bindings.set(binding.entry_index, binding)
+      }
+      const data = { source_sha256: source.sha256, mode: args.mode, total_entries: source.entries.length,
+        offset, selected: end - offset, ready: 0, created: 0, replayed: 0, rejected: 0,
+        next_offset: end < source.entries.length ? end : null, rows: [] }
+      const events = []
+      for (let index = offset; index < end; index++) {
+        let prepared
+        try {
+          prepared = harObservation(source.entries[index], { sourceSha256: source.sha256, index,
+            programId: args.program_id, runId: args.run_id, binding: bindings.get(index) })
+          const scope = scopeCheckResult(args.program_id, normalizeHost(new URL(prepared.observation.url).hostname), dataDir)
+          if (!scope.ok) throw Object.assign(new Error(scope.code), { code: scope.code })
+        } catch (error) {
+          // Do not echo captured URLs, headers, body values, or parser messages.
+          data.rejected++
+          data.rows.push({ entry_index: index, outcome: 'rejected', code: error.code || 'E_HAR_ENTRY' })
+          continue
+        }
+        data.ready++
+        if (args.mode === 'preview') {
+          data.rows.push({ entry_index: index, outcome: 'ready' })
+          continue
+        }
+        for (const [ref, bytes] of prepared.files) preserveHarArtifact(ref, bytes)
+        const result = await commands.endpoint_observe_request(prepared.observation, repo, ctx)
+        events.push(...result.events)
+        data[result.data.created ? 'created' : 'replayed']++
+        data.rows.push({ entry_index: index, outcome: result.data.created ? 'created' : 'replayed',
+          request_id: result.data.request_id, shape_id: result.data.shape_id })
+      }
+      data.partial = data.rejected > 0
+      return { data, events, after: { source_sha256: source.sha256, offset, selected: data.selected,
+        mode: args.mode, created: data.created, replayed: data.replayed, rejected: data.rejected } }
+    },
     endpoint_observe_request: async (args, repo, ctx) => {
       let url
       try { url = new URL(args.url) } catch { throwErr('E_SCHEMA', '请求 URL 无效', null, false) }
@@ -575,6 +675,9 @@ function makeHandlers(opts) {
       const spec = { ...args, host, path: url.pathname + url.search, evidence_sha256: evidenceDigest(args.evidence_path) }
       if (args.body_ref) spec.body_sha256 = evidenceDigest(args.body_ref)
       if (args.headers_ref) spec.headers_sha256 = evidenceDigest(args.headers_ref)
+      for (const artifact of args.capture?.artifacts || []) {
+        if (evidenceDigest(artifact.path) !== artifact.sha256) throwErr('E_EVIDENCE_REQUIRED', '流量提取证据摘要不一致', null, false)
+      }
       if (!spec.task_id && ctx?.task_id) spec.task_id = ctx.task_id
       if (!spec.session_id && ctx?.session_id) spec.session_id = ctx.session_id
       spec.transport_state = args.response_status === 407 ? 'proxy_error' : args.response_status >= 500 ? 'server_error' : args.response_status === 401 ? 'auth_challenge' : args.response_status === 403 ? 'access_denied' : args.response_status ? 'observed' : 'unknown'
@@ -803,7 +906,8 @@ function makeHandlers(opts) {
       try {
         row.evidence_state = evidenceDigest(row.evidence_path) === row.evidence_sha256
           && (!row.body_ref || evidenceDigest(row.body_ref) === row.body_sha256)
-          && (!row.headers_ref || evidenceDigest(row.headers_ref) === row.headers_sha256) ? 'intact' : 'changed'
+          && (!row.headers_ref || evidenceDigest(row.headers_ref) === row.headers_sha256)
+          && (row.capture?.artifacts || []).every(a => evidenceDigest(a.path) === a.sha256) ? 'intact' : 'changed'
       } catch { row.evidence_state = 'unavailable' }
       return row
     },

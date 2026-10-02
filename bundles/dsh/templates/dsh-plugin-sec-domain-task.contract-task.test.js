@@ -2411,6 +2411,38 @@ test('27 WP04/05: 请求观测到完整假设队列，限三条可轮转、重�
   assert.equal(db.prepare('SELECT COUNT(*) n FROM hypothesis_queue').get().n, 24)
 })
 
+test('27 WP04 HAR: 原生流量到持久假设，嵌套属性位置保留、暂停Campaign不派任务', async () => {
+  const { bus, domain, dataDir } = makeEnv()
+  bus.registry.register(buildEndpointDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) }))
+  const campaign = await bus.dispatch('task', 'campaign_create', { name: 'har-paused', program_ids: ['test-src'],
+    goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  assert.equal(campaign.ok, true, campaign.error?.message)
+  await bus.dispatch('task', 'campaign_pause', { campaign_id: campaign.data.campaign_id }, { actor: 'dashboard' })
+  fs.mkdirSync(path.join(dataDir, 'results/har-fixture'), { recursive: true })
+  const bytes = JSON.stringify({ log: { version: '1.2', entries: [{
+    request: { url: 'https://a.example.com/orders', method: 'POST', headers: [],
+      postData: { mimeType: 'application/json', text: '{"order":{"id":"own-a","callback":"https://example.com"}}' } },
+    response: { status: 200 },
+  }] } })
+  fs.writeFileSync(path.join(dataDir, 'results/har-fixture/input.har'), bytes)
+  const args = { program_id: 'test-src', har_path: 'results/har-fixture/input.har',
+    source_sha256: crypto.createHash('sha256').update(bytes).digest('hex'), run_id: 'har-fixture', mode: 'import' }
+  const imported = await bus.dispatch('endpoint', 'import_har', args, { actor: 'script' })
+  assert.equal(imported.ok, true, imported.error?.message)
+  const db = bus._internal.db()
+  const event = db.prepare("SELECT payload FROM event_outbox WHERE name='endpoint.request.observed'").get()
+  const envelope = JSON.parse(event.payload)
+  const result = await domain.handlers.subscribers.onEndpointHypothesis(envelope)
+  assert.equal(result.ok, true, result.error?.message)
+  const drafts = db.prepare('SELECT draft FROM hypothesis_queue').all().map(row => JSON.parse(row.draft))
+  assert.ok(drafts.some(d => d.vuln_class === 'idor' && d.param === '/order/id'))
+  assert.ok(drafts.some(d => d.vuln_class === 'ssrf' && d.param === '/order/callback'))
+  assert.ok(drafts.every(d => d.method === 'POST' && d.param_location === 'json' && d.request_id === imported.data.rows[0].request_id))
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM tasks').get().n, 0)
+  await domain.handlers.subscribers.onEndpointHypothesis(envelope)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM hypothesis_queue').get().n, drafts.length)
+})
+
 test('27 WP05: 不可用 oracle 与代理故障留待办，不派失效实验', async () => {
   const { bus, domain, dataDir } = makeEnv()
   bus.registry.register(buildEndpointDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) }))

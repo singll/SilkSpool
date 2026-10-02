@@ -24,7 +24,7 @@ TEMPLATES = ["dsh-plugin-sec-suite.js", "dsh-plugin-sec-suite.host-compat.js",
              "dsh-plugin-sec-suite.asset-db.js", "dsh-plugin-sec-suite.experience.js", "dsh-plugin-sec-backend-know-sqlite.js",
              "dsh-plugin-sec-domain-bus.js", "dsh-plugin-sec-domain-exec.js",
              "dsh-plugin-sec-domain-task.js", "dsh-plugin-sec-backend-task-sqlite.js", "dsh-runtime-compat.py",
-             "dsh-plugin-sec-domain-fact.js", "dsh-plugin-sec-domain-asset.js", "dsh-plugin-sec-domain-endpoint.js", "dsh-plugin-sec-domain-vuln.js",
+             "dsh-plugin-sec-domain-fact.js", "dsh-plugin-sec-domain-asset.js", "dsh-plugin-sec-domain-endpoint.js", "dsh-plugin-sec-domain-endpoint.har.js", "dsh-plugin-sec-domain-vuln.js",
              "seed-presets.sh", "sec-suite-plugin-setup.sh"]
 TEMPLATES += ["setup.sh", "headless-failover-setup.sh", "settings-mirror-patch.sh", "sec-browser-plugin-setup.sh", "plugins.lock"]
 
@@ -194,6 +194,7 @@ def main():
                              "dsh-plugin-sec-suite.asset-db.js": "asset-db.js", "dsh-plugin-sec-suite.experience.js": "experience.js"}.items():
             write(release / "plugins/sec-suite" / target, (release / name).read_text())
         write(release / "plugins/sec-domain-bus/index.js", (release / "dsh-plugin-sec-domain-bus.js").read_text())
+        write(release / "plugins/sec-domain-endpoint/har.js", (release / "dsh-plugin-sec-domain-endpoint.har.js").read_text())
         for plugin in ("sec-domain-exec", "sec-domain-task", "sec-backend-task-sqlite", "sec-backend-know-sqlite", "sec-domain-fact", "sec-domain-asset", "sec-domain-endpoint", "sec-domain-vuln"):
             write(release / "plugins" / plugin / "index.js", (release / ("dsh-plugin-" + plugin + ".js")).read_text())
         compat_env = {}

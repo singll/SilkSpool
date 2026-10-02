@@ -1,8 +1,8 @@
 # 04 · endpoint 域设计（接口面 / 参数队列——"打哪里、喂什么料"的唯一事实源）
 
-> 版本：v5.1 ｜ 状态：现行契约；2026-10-01 请求观测增量已部署 ｜ 契约版本：endpoint@1（repository-v1）
+> 版本：v5.2 ｜ 状态：2026-10-01 请求观测已部署；2026-10-02 HAR导入本地验收通过、待发布 ｜ 契约版本：endpoint@1（repository-v1）
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线）
-> owns（单写者）：`endpoints`、`endpoint_requests` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）
+> owns（单写者）：`endpoints`、`endpoint_requests` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）+ `data/evidence/requests/**`（HAR提取证据）
 > 不 owns：`assets`（asset 域）、`findings`（vuln 域）、`data/pipeline/{program}/` 下其余台账文件（ledger 域）
 > 订阅：`exec.run.completed`（l2-collect / katana parser proposal 回灌）；被订阅：vuln（endpoint.registered/auth_marked → 越权与注入队列候选）、ledger（endpoint.registered → 接口台账联动）、dashboard（接口视图）
 
@@ -36,6 +36,7 @@
 |---|---|---|---|---|
 | `endpoint_upsert` | 登记接口（单行或 TSV 批量入库——l2-collect 产出消费口） | model, script, dashboard | `auto`：`(rows, tsv_path, program_id)` | endpoint.registered（新行）、endpoint.changed（参数/归属变化） |
 | `endpoint_observe_request` | 保存一份带证据的不可变请求观测，不执行请求 | model, script, dashboard | handler 对完整内容及引用文件摘要去重；总线 `none`，每次重读文件摘要 | endpoint.request.observed（仅新观测） |
+| `endpoint_import_har` | 被动、分页导入 HAR 1.2；支持 preview | script, dashboard | 总线 `none`；来源摘要固定，观测内容去重 | endpoint.request.observed（每批≤100） |
 | `endpoint_queue_surface` | 参数面入队：从 TSV/文本提取带参数 URL，全局去重（seen 域内）追加 param-queue | model, script | `auto`：`(program, source)`（**无文件 sha256**） | endpoint.queue.enqueued |
 | `endpoint_consume_queue` | 队列消费：dalfox/sqlmap 取料后标记消化（出队；seen 保留防重回） | model, script | `natural`：`(program, run_id)` | endpoint.queue.consumed |
 | `endpoint_mark_auth` | 鉴权标注：auth_required / roles_seen（越权矩阵唯一数据源） | model, script, dashboard | `auto`：`(host, method, path, auth_required, roles_seen, evidence)` | endpoint.auth_marked |
@@ -244,6 +245,25 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 返回 `{request_id,shape_id,created}`。`shape_id` 使用 Program、origin、method、路径、content-type、查询参数名及参数位置/类型；不因参数值或主体变化增加形状数。它不是漏洞根因键，也不表示业务动作已完整建模。
 
 错误：schema 不符为 `E_SCHEMA`，缺/过期授权或主机越界为 `E_INVARIANT`，证据缺失/越界/超限为 `E_EVIDENCE_REQUIRED`。旧 `endpoint_upsert` 保留目录用途，**不会自动获得正文/身份观测，也不会把旧 URL 记录伪装成可重放业务请求**。
+
+#### 1.3.8 `endpoint_import_har` —— 原始流量导入（2026-10-02，本地验收通过、待发布）
+
+输入 `program_id`、`har_path`、`source_sha256`、`run_id`、`mode=preview/import`；HAR 必须位于 dataDir 的 results/ 或 evidence/ 内，真实路径不可越界，仅普通文件、≤64MiB、HAR 1.2。每次核对原文件 SHA256；分页 `offset=0`、`limit=50`，上限100，返回 `total_entries/selected/ready/created/replayed/rejected/partial/next_offset` 和逐项结果。`preview` 不写请求或提取文件，但仍经命令审计；建议先预览再以同一来源摘要逐页导入。
+
+`bindings` 按原始 `entry_index` 显式提供 `credential_ref/subject_ref/object_refs/action/task_id/session_id`，最多500项，重复或越界索引拒绝。不从 Cookie 猜身份，不凭200判健康。每条独立校验方法、URL、当前项目授权及排除范围、正文/媒体类型与查询串；非法条目只返回错误码，后页仍可达。敏感查询参数名（token/password/cookie等）暂拒绝导入，防完整URL进入现有公开投影；原文件保留。
+
+原始条目（含响应）、请求头、正文及表单提取物存 `evidence/requests/<source_sha256>/<index>/`，文件0600、新目录0700；拒绝软链、权限不安全或内容不符的既有文件，绝不覆盖冲突证据。文件及目录落盘后才写观测；数据库/事件批内失败整体回滚，已落证据保留供同内容续接。来源文件本身不移动或改写。每份提取物≤1MiB，`capture.artifacts` 保存所有提取物摘要，`request_get` 联合校验完整性。
+
+保留七种HTTP方法、协议/端口、重复查询/表单参数和JSON原值；嵌套JSON以JSON Pointer记录位置，H2按叶属性名路由、草稿保留完整位置。请求头/Cookie及敏感正文值只出引用；原始秘密留在受控文件中。multipart仅有params时标记 `body_state=parameters_only`，不伪造可重放正文；不支持的编码/缺失正文显式拒绝。
+
+调用例（先把授权流量保存在受控输入目录；摘要须由实际文件计算）：
+
+```bash
+node scripts/pipeline/sec-bus-cli.mjs dispatch endpoint.import_har --actor script \
+  --args '{"program_id":"PROGRAM","har_path":"results/RUN/capture.har","source_sha256":"实际64位SHA256","run_id":"RUN","mode":"preview","limit":50}'
+```
+
+本批定向210/210、全域671/671、候选检查7/7通过，覆盖导入→观测→持久H2队列、幂等、暂停专项不派任务、故障回滚与证据保护。**尚无真实项目20–50份健康模板验收，未接入浏览器自动采集、账号归集或健康基线判定。**
 
 ### 1.4 查询逐个详述（纯读）
 

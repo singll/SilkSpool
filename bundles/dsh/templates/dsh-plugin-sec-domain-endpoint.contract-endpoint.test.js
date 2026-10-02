@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildEndpointDomain, ENDPOINT_MANIFEST } from '../index.js'
@@ -56,6 +57,146 @@ function readAudit(dir) {
   if (!fs.existsSync(f)) return []
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
+
+function harEntry(method = 'POST', url = 'https://api.example.com/orders?tag=a&tag=b') {
+  return { startedDateTime: '2026-10-02T12:00:00Z',
+    request: { method, url, headers: [{ name: 'Authorization', value: 'Bearer PRIVATE-TOKEN' }],
+      cookies: [{ name: 'session', value: 'PRIVATE-COOKIE' }],
+      ...(method === 'POST' ? { postData: { mimeType: 'application/json',
+        text: '{"order":{"id":"self-object","resource":"abc"},"password":"PRIVATE-PASSWORD"}' } } : {}) },
+    response: { status: 200, content: { text: 'PRIVATE-RESPONSE' } } }
+}
+function saveHar(dataDir, entries) {
+  const har_path = 'results/run_test_20260910_000000/capture.har'
+  const bytes = Buffer.from(JSON.stringify({ log: { version: '1.2', entries } }))
+  fs.writeFileSync(path.join(dataDir, har_path), bytes)
+  return { program_id: 'test-src', har_path, source_sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    run_id: 'run_test_20260910_000000', mode: 'import' }
+}
+
+test('27 WP04 HAR: preview 不入库，分页和重放守恒，POST/GET 与嵌套参数/显式身份保真', async () => {
+  const { bus, dataDir, dir } = makeEnv()
+  const args = saveHar(dataDir, [harEntry(), harEntry('GET')])
+  args.bindings = [{ entry_index: 0, credential_ref: 'account-a', subject_ref: 'user-a', object_refs: ['order-a'], task_id: 12, session_id: 'session-a' }]
+  const preview = await bus.dispatch('endpoint', 'import_har', { ...args, mode: 'preview' }, { actor: 'script' })
+  assert.equal(preview.ok, true, preview.error?.message)
+  assert.equal(preview.data.ready, 2)
+  assert.equal(fs.existsSync(path.join(dataDir, 'evidence/requests')), false)
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM endpoint_requests').get().n, 0)
+  const first = await bus.dispatch('endpoint', 'import_har', { ...args, limit: 1 }, { actor: 'script' })
+  assert.equal(first.ok, true, first.error?.message)
+  assert.equal(first.data.created, 1)
+  assert.equal(first.data.next_offset, 1)
+  const second = await bus.dispatch('endpoint', 'import_har', { ...args, offset: 1 }, { actor: 'script' })
+  assert.equal(second.data.created, 1)
+  assert.equal(second.data.next_offset, null)
+  const replay = await bus.dispatch('endpoint', 'import_har', args, { actor: 'script' })
+  assert.equal(replay.data.created, 0)
+  assert.equal(replay.data.replayed, 2)
+  const get = await bus.query('endpoint', 'request_get', { request_id: first.data.rows[0].request_id }, { actor: 'reactor' })
+  const spec = get.data
+  assert.equal(spec.method, 'POST')
+  assert.equal(spec.transport_state, 'observed')
+  assert.equal(spec.auth_state, undefined)
+  assert.equal(spec.credential_ref, 'account-a')
+  assert.deepEqual(spec.object_refs, ['order-a'])
+  assert.equal(spec.task_id, 12)
+  assert.equal(spec.session_id, 'session-a')
+  assert.equal(spec.evidence_state, 'intact')
+  assert.deepEqual(spec.parameters.filter(p => p.in === 'query').map(p => p.value), ['a', 'b'])
+  assert.equal(spec.parameters.find(p => p.name === '/order/id').value, 'self-object')
+  assert.ok(spec.parameters.find(p => p.name === '/password').value_ref)
+  assert.equal(spec.parameters.find(p => p.name === '/password').value, undefined)
+  assert.equal(/PRIVATE/.test(JSON.stringify(spec)), false)
+  assert.equal(/PRIVATE/.test(JSON.stringify(first)), false)
+  assert.equal(/PRIVATE/.test(JSON.stringify(readAudit(dir))), false)
+  assert.ok(fs.readFileSync(path.join(dataDir, spec.evidence_path), 'utf8').includes('PRIVATE-RESPONSE'))
+  assert.equal(fs.statSync(path.join(dataDir, spec.body_ref)).mode & 0o777, 0o600)
+  const changedIdentity = await bus.dispatch('endpoint', 'import_har', { ...args, limit: 1,
+    bindings: [{ entry_index: 0, subject_ref: 'user-b' }] }, { actor: 'dashboard' })
+  assert.equal(changedIdentity.data.created, 1)
+  assert.equal(changedIdentity.data.rows[0].shape_id, first.data.rows[0].shape_id)
+  const anonymous = await bus.query('endpoint', 'request_get', { request_id: second.data.rows[0].request_id }, { actor: 'reactor' })
+  assert.equal(anonymous.data.subject_ref, undefined, 'Cookie 不能推断测试主体')
+})
+
+test('27 WP04 HAR: scope/畸形/敏感URL 逐项拒绝，后页可达，来源摘要和 actor 不能绕过', async () => {
+  const { bus, dataDir } = makeEnv()
+  const entries = [harEntry('GET', 'https://blocked.example.com/'), harEntry('GET', 'https://api.example.com/?token=PRIVATE-URL'),
+    harEntry('TRACE'), harEntry(), harEntry('GET')]
+  entries[3].request.postData.text = '{broken'
+  const args = saveHar(dataDir, entries)
+  const first = await bus.dispatch('endpoint', 'import_har', { ...args, limit: 4 }, { actor: 'script' })
+  assert.equal(first.ok, true, first.error?.message)
+  assert.equal(first.data.rejected, 4)
+  assert.equal(first.data.next_offset, 4)
+  assert.equal(first.data.created, 0)
+  assert.equal(first.data.partial, true)
+  assert.equal(/PRIVATE/.test(JSON.stringify(first)), false)
+  const next = await bus.dispatch('endpoint', 'import_har', { ...args, offset: 4 }, { actor: 'script' })
+  assert.equal(next.data.created, 1)
+  const denied = await bus.dispatch('endpoint', 'import_har', args, { actor: 'model' })
+  assert.equal(denied.error.code, 'E_ACTOR_FORBIDDEN')
+  fs.appendFileSync(path.join(dataDir, args.har_path), ' ')
+  const changed = await bus.dispatch('endpoint', 'import_har', args, { actor: 'script' })
+  assert.equal(changed.error.code, 'E_HAR_SOURCE_CHANGED')
+  const external = await bus.dispatch('endpoint', 'import_har', { ...args, har_path: '/etc/passwd' }, { actor: 'script' })
+  assert.equal(external.error.code, 'E_EVIDENCE_REQUIRED')
+})
+
+test('27 WP04 HAR: form/multipart 保留重复项及缺原始正文事实，提取物变动使观测失效', async () => {
+  const { bus, dataDir } = makeEnv()
+  const form = harEntry(), multipart = harEntry()
+  form.request.postData = { mimeType: 'application/x-www-form-urlencoded', text: 'id=11&id=22&csrf=PRIVATE-CSRF' }
+  multipart.request.postData = { mimeType: 'multipart/form-data', params: [{ name: 'file', fileName: 'input.txt' }, { name: 'note', value: 'test' }] }
+  const args = saveHar(dataDir, [form, multipart])
+  const result = await bus.dispatch('endpoint', 'import_har', args, { actor: 'script' })
+  assert.equal(result.ok, true, result.error?.message)
+  assert.equal(result.data.created, 2)
+  const get = id => bus.query('endpoint', 'request_get', { request_id: id }, { actor: 'reactor' })
+  const a = (await get(result.data.rows[0].request_id)).data
+  const b = (await get(result.data.rows[1].request_id)).data
+  assert.deepEqual(a.parameters.filter(p => p.name === 'id').map(p => p.value), ['11', '22'])
+  assert.equal(b.capture.body_state, 'parameters_only')
+  assert.equal(b.body_ref, undefined)
+  assert.ok(b.parameters.find(p => p.name === 'file').value_ref)
+  assert.equal(/PRIVATE/.test(JSON.stringify(a)), false)
+  const artifact = a.capture.artifacts.find(p => p.path.endsWith('form.json'))
+  fs.writeFileSync(path.join(dataDir, artifact.path), '[]')
+  assert.equal((await get(a.request_id)).data.evidence_state, 'changed')
+  const retry = await bus.dispatch('endpoint', 'import_har', args, { actor: 'script' })
+  assert.equal(retry.ok, false)
+  assert.equal(retry.error.code, 'E_HAR_ARTIFACT_CONFLICT')
+  assert.equal(fs.readFileSync(path.join(dataDir, artifact.path), 'utf8'), '[]')
+})
+
+test('27 WP04 HAR: 批内写失败回滚观测/事件，已保存证据不覆盖且可幂等续接', async () => {
+  const { bus, dataDir } = makeEnv()
+  const args = saveHar(dataDir, [harEntry(), harEntry('GET')])
+  await bus.query('endpoint', 'requests', {}, { actor: 'human' })
+  const db = bus._internal.db()
+  db.exec("CREATE TRIGGER har_fail BEFORE INSERT ON endpoint_requests WHEN NEW.method='GET' BEGIN SELECT RAISE(ABORT, 'fixture'); END")
+  const failed = await bus.dispatch('endpoint', 'import_har', args, { actor: 'script' })
+  assert.equal(failed.ok, false)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM endpoint_requests').get().n, 0)
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM event_outbox WHERE name='endpoint.request.observed'").get().n, 0)
+  assert.ok(fs.existsSync(path.join(dataDir, `evidence/requests/${args.source_sha256}/0/entry.json`)))
+  db.exec('DROP TRIGGER har_fail')
+  const retry = await bus.dispatch('endpoint', 'import_har', args, { actor: 'script' })
+  assert.equal(retry.data.created, 2)
+})
+
+test('27 WP04 HAR: 提取路径软链拒绝，不覆盖外部文件', async () => {
+  const { bus, dataDir, dir } = makeEnv()
+  const args = saveHar(dataDir, [harEntry()])
+  fs.mkdirSync(path.join(dataDir, 'evidence'))
+  const outside = path.join(dir, 'outside')
+  fs.mkdirSync(outside)
+  fs.symlinkSync(outside, path.join(dataDir, 'evidence/requests'))
+  const result = await bus.dispatch('endpoint', 'import_har', args, { actor: 'script' })
+  assert.equal(result.error.code, 'E_HAR_ARTIFACT_PATH')
+  assert.deepEqual(fs.readdirSync(outside), [])
+})
 
 test('27 WP04: JSON 请求观测保留 method/body/参数位置/身份，重复回放幂等、身份变化独立保存', async () => {
   const { bus, dataDir } = makeEnv()
