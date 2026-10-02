@@ -1,6 +1,6 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
-> 版本：v5.1（2026-10-01 部署验收） ｜ 状态：定稿 ｜ 契约版本：`exec/1`
+> 版本：v5.2（2026-10-02 费用证据边界核对） ｜ 状态：现行契约 ｜ 契约版本：`exec/1`
 > 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.worker.spawned/.finished`（task 域，强联动）；`exec.flow.appended`、`exec.import.completed`、`exec.evidence.published` 当前**无订阅方（设计预留）**——各域 manifest 未声明，待实现后回填
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
@@ -796,3 +796,5 @@ DSH 0.1.7的inputTokens为未缓存输入，cacheReadTokens/cacheWriteTokens为�
 错误或取消终止的usage可能是初始化零或部分值，不能作为最终计费证明。worker遇finish.error/aborted、流异常或消费者提前结束时，保留本请求预留并标unknown；合法usage记入charged作为已知下界，未知预留仍保守完整保留。仅完整正常流可释放预留。此修复使回退请求同样受前次未知预留约束，可能在额度不足时提前拒绝；不能用重试成功清掉未知费用。worker17项通过，实际隔离与发布见27号§15.6。
 
 `3fd0738`已上线；新冻结恢复副本worker17项通过，真实适配器error分支保持unknown。生产默认150k任务103400正常完成、3次请求92,945 token，无unknown/denied/reserved；生产UI80/80，详情27号§15.6。错误/取消后的未知预留尚无供应商最终费用证明接口，不能自动按零释放；生产正常样例不代表供应商绝对硬计费保证。
+
+2026-10-02证据续核：现役dsh-bill0.18.1的`recordCall`只保存session/time/seq/provider/model/purpose/usage，不保存供应商请求ID或finish原因；`observe`的finally有usage即记录。V4 `assistant/message`及`assistant/attempt`的stream能追溯终止原因，错误attempt可能仅有stream usage；标题事件没有完整费用。独立审计工具据此恢复已知用量下界，不把该结果当成供应商最终收据，不修改worker预算报告或解除unknown。现役源码`lib/index.js` SHA256=`47e19e91312c0b4b38a17a9d2cf4d9401d9d84dc7e365676e35063bd2095a580`，工具契约见05号§7.34、生产核对见27号§15.7。

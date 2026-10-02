@@ -1,6 +1,6 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
-> 版本：v5.2 ｜ 状态：现行契约；27 号目标/请求/费用增量已部署（§7.30–7.32）｜ 契约版本：task domain manifest v1
+> 版本：v5.3（2026-10-02） ｜ 状态：现行契约；业务及预算增量已部署，新增独立只读费用审计（§7.34）｜ 契约版本：task domain manifest v1
 > 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）、`know.release.revoked`（L6：撤回 → change-retest 重测需求任务入队，§2.3 变更触发节奏）、`vuln.signal.confirmed`（产出闭环：确认漏洞自动入队 `[提交] finding #id` 提交任务，同 finding 幂等去重）；`task_budget_extend` / `task_complete` 由 approval 域在 `approval_decide` 事务内**同步 dispatch**（actor=approval，幂等账本 `approval_effects`）执行——执行失败记 `approval_effects.failed`，**无独立 dispatcher 自动重试**，需人工 `approval_effects_retry` 补跑，不回滚 decide（09-approval §2.3；两域以此线为准）。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加、know 域学习 episode（L1）**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
@@ -1460,3 +1460,13 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 任务收尾budget_unknown=true保留原额度、expected_tokens=null、state=unknown；普通零账单及迟到部分账单只补已知费用，不自动释放未知预留。新增从claim/register/finish至reconcile的回归，task121/121；无需改表或后端实现。生产历史watch核对及失败usage运行修复见27号§15.6，该修复已按27号§15.6上线。
 
 生产任务103400正常收尾92,945，预留settled；本批结束无未知/在飞预留。错误usage保留未知在实际隔离worker中验证，未来出现unknown时普通迟到账单不得据部分值清除。C3最终采样75,639,747超过50M，保持paused；历史缺账和供应商最终计费证明仍未闭环。
+
+### 7.34 2026-10-02 · 历史费用证据审计（独立只读工具，已在生产读取验收）
+
+`bundles/dsh/templates/dsh-cost-audit.py` 对单份SQLite内存镜像、当前账单、rollup和V4会话进行审计。支持 `--host csai`，内部经PATH `spool exec`在内存执行脚本，不上传文件、不调用模型、不写领域数据。明细报告按持久`task_cost_watch`列出原始账单/独立账本/逐账单的差异，以及可归属的会话usage下界；非watch执行只计覆盖缺口。
+
+归属必须同时满足：run唯一、watch/run/账本/worker中不存在跨执行会话冲突，V4 header ID/创建时间匹配，所有计费事件在执行窗口内，已知cwd一致。缺执行史、重复会话文件、序号冲突或越界均不猜测。只读取当前V4，不累加V3/旧镜像；按seq去重重复事件，message及其stream usage只计一次，含cacheRead/cacheWrite。失败attempt的合法usage计为已知下界，错误/缺usage/标题调用另列缺口，`final_cost_proven`始终为false。
+
+现役dsh-bill0.18.1默认环形明细上限20,000，淘汰记录汇入无session/run归属的rollup；`llm/stream` finally仅按usage记录，不持久化供应商请求ID或finish终止原因。因此缺当前明细不等于从未收费，rollup也不能唯一分配给Task。原始文件比较包含落盘fileSkip前缀；审计不把rollup再加到当前明细、不把会话下界直接补扣到旧累计，不释放unknown预留。
+
+9/9合成测试通过，覆盖正常/失败/零/缺usage、缓存、重复/冲突、裁剪后歧义、时间与cwd、压缩损坏、rollup及全输入字节不变。2026-10-02北京时间17:33生产CLI验收：watch377，34同额、327缺当前账单、16既有账本高于当前文件；缺账中315项可归属usage下界1,521,244,959，10项归属冲突、2项时间越界排除。全体3,626个run中2,257缺session、2,571缺费用。详情、证据和后续限制见27号§15.7；未迁库、未修改生产结算机制。

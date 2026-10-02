@@ -909,3 +909,35 @@ worker17/17、task121/121通过；全域663/663通过（一次在补运行验收
 最终费用采样C1/C2/C3为111,486,173/140,099,322/75,639,747；迟到缓存补计仍使投影增长。Campaign继续paused、并发1、额度不变，6项预留全部settled，无running任务/worker/pending-finish。未来错误请求可产生unknown预留，这些未知只能在有最终费用证明后释放，当前尚无供应商最终结算协议；326项无当前账单的历史缺口也未消失。下一步仍为供应商最终计费证明、历史费用可归属性和受控单Program门槛，不能以本批成功任务恢复外部探索。
 
 部署后NAS `136ff53f61ee8a5073334520191f0b23a7edc1610ca0b4e1280826067eedb1eb`，40库备份207.10秒/恢复6.75秒通过；六个维护timer与proxy-refresh.timer均active。27项关键证据SHA256SUMS已保存，本批phase=deployed-failed-usage-guard-accepted-expansion-held。
+
+### 15.7 WP03历史费用证据审计（2026-10-02，独立工具已完成生产只读验收）
+
+本批在`85f9a6d`后续接，交付`dsh-cost-audit.py`与9项合成测试，契约回填05号§7.34及10号。工具以单份SQLite内存镜像核对持久watch与run/worker/账本/逐账单，读取当前原始账单、rollup和当前V4会话，输出费用计数及证据摘要，不输出提示词/回复/工具参数。通过`--host csai`经PATH spool在内存运行，不上传、不安装生产插件、不写库或触发模型；本批为本地代码＋只读巡检，按18号无需prepare-change或冻结。
+
+北京时间17:26、17:31与17:33三次采样，数据库关联投影、Campaign与下界结果一致；带rollup审计14.72秒，最终CLI也通过。9/9合成测试包含输入文件字节不变、归属冲突、裁剪run、零/缺/错误usage、缓存计量、重复事件、压缩损坏和汇总不可归属；没有把此工具测试计入663领域契约或重新宣称UI验收。
+
+| 本轮证据 | 结果与解释 |
+|---|---|
+| 待对账范围 | watch377；34项原始账单与run账本同额、327项缺当前账单、16项既有账本高于当前文件。保留已记费用，不自动冲减 |
+| 缺账会话恢复 | 327项均有当前V4文件；315项通过唯一run/session/cwd/时间校验，10项跨run归属歧义、2项请求时间越界，排除后者 |
+| 已知usage下界 | 315项合计1,521,244,959 token：无Campaign1,014,032,458；C1 65,099,574；C2 429,801,112；C3 12,311,815。含cacheRead/cacheWrite；不是新增欠费，不能直接加到既有累计 |
+| 未证明费用 | 上述315项含53次标题请求无最终usage、79次失败/不完整请求、3次缺/非法usage（类别可重叠）。全部保持`final_cost_proven=false` |
+| 全体执行覆盖 | task_runs3,626，其中2,257缺session、2,571缺费用；这些集合与watch不是互斥分类，本工具未重建watch之外的执行 |
+| 原始账单边界 | 7,609,137字节，5条完全重复、19条缺session；收据身份未发现不同金额冲突。较旧采样变化不能全部归因于本批，工具未写数据 |
+| rollup | 110,091次淘汰汇总，未缓存输入517,593,920、缓存读取11,639,513,088、输出108,971,379，fileSkip390；无session归属，不能分摊到run或与会话下界相加 |
+
+**最终费用证明的实际边界已核实**：现役dsh-bill0.18.1默认环形明细上限20,000，淘汰时保留全局汇总但失去session/run维度。`recordCall`没有供应商请求ID/finish终止原因，`observe` finally遇usage即写；不能用该记录证明错误请求已结清。V4会话保存部分usage与终止事件，足以恢复已知下界，不能补出未持久化的标题费用或供应商最终结算。此结论不是“历史费用为零”，也不是“所有缺账均由淘汰造成”。
+
+当前C1/C2/C3账面111,486,173/146,935,913/90,571,011，预算200M/200M/50M不变，全部paused、并发1。PID1009736/NRestarts0、六服务active，本轮journal err=0、running任务/worker/pending-finish均0，12项预留全部settled。上一批后既有调度新增6项任务16/17执行，本轮未触发；不能把“Campaign暂停”描述为全部定时任务停止。任务103394–103400原始账单与独立账本均同额。
+
+证据保存在管理机`out/secagent-audits/20261002-wp03-history/`（gitignored，未强加）：最终`production-audit-cli.json` SHA256=`903eefcfc1765f098a6180b7dc75528ff8be7f55653f6570fdec57f27103c822`；工具SHA256=`03dc38d3fda47fb19a8a0589113878a490ca9acf85ef469f0e7cd090a32ac1c6`；manifest记录三次报告摘要。可复跑：
+
+```bash
+python3 bundles/dsh/templates/dsh-cost-audit.py --host csai \
+  --database /opt/silkspool/dsh/data/asset-graph.db \
+  --bills /opt/silkspool/dsh/data/dsh-bill/records.jsonl \
+  --sessions /opt/silkspool/dsh/data/sessions \
+  --rollup /opt/silkspool/dsh/data/dsh-bill/rollup.json
+```
+
+**本批审计工具与生产核对已闭环，WP03及全方案仍在办。** 后续不再把轮转结束当成历史可归属：先按本报告315项证据与tasks旧累计做逐run去重/重叠核对，设计保原账的补账流程；10歧义/2越界及无session执行继续明确保留未知。未来请求须保存可验证的供应商请求标识/终止状态，只有取得匹配最终费用的证明才能解除unknown；当前数据源无法凭空补出该证明。Campaign继续暂停，单Program恢复门槛尚未满足；WP04真实请求、WP02逐族接口前置等独立工作不以清空所有历史缺口作为通用前置。
