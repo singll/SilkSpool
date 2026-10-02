@@ -974,3 +974,8 @@ python3 bundles/dsh/templates/dsh-cost-audit.py --host csai \
 这是未来请求的适配器证据链，**不是供应商最终费用协议**。全部事件final_cost_proven=false；不能把本地随机ID当供应商ID，不能把单个adapter调用当内部HTTP重试总数，错误分支缺供应商标识仍记null。现役运行时未透传的信息需后续在适配器/供应商可信来源补齐，不能伪造。旧账、历史unknown、Campaign预算和技术结果不变；不把本批当放量通过。
 
 本地worker24/24、exec40/40通过；全域665/665、63表副本schema预检通过。新增真实隔离worker验收覆盖正常responseId与费用核对、错误请求仍无最终证明。发布change=20261002-wp03-request-evidence，固定DSH0.1.7-rc.2；仅worker运行时、原生文件守卫、测试与运行验收脚本，数据库schema不变。恢复仍遵守18号本次NAS门禁→新冻结六根完整恢复→新旧应用和worker预演→安装/静默冒烟→恢复服务；生产暂未写入。
+
+
+发布准备：阶段源码321cc00已推送；本批NAS42ab0f22f6bb709a013574e9e9c24a02dfd9a73571eb440086534b26b1f0fec5，40库备份36.28秒/同快照恢复6.81秒，prepare-change退出0。5项候选已上传专属发布目录并核对摘要，尚未冻结/安装生产。旧可丢弃恢复副本实验发现fixture按共享列表长度生成responseId在业务/标题并发时重复；worker已正确保全ID、归属与usage，验收唯一性断言拒绝。fixture改为锁内分配序号，原报告和原manifest保留，重跑中；旧副本实验不替代本批新冻结恢复。证据根/opt/silkspool/dsh-upgrades/20261002-wp03-request-evidence/。
+
+fixture编号锁修正后，本地最终字节全域665/665、63表副本预检重跑通过。第一次远端预检665项完成但期间fixture字节变化，门禁拒绝签发回执，已启动最终字节重跑。第二次隔离实验在默认两步RPC等待超时（7次fixture请求），失败报告dsh-sandbox-9ka2no5b；不是运行验收通过。待远端预检结束后串行重试，生产未停写。

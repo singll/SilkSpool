@@ -14,6 +14,7 @@ BASE = Path(os.environ["SEC_BASE_DIR"])
 DATA = Path(os.environ["DSH_HOME"])
 OUT = Path("/tmp/dsh-rehearsal")
 REQUESTS = []
+REQUEST_LOCK = threading.Lock()
 DIRECT_GETS = []
 PREVIEW_NAME = "u2-preview.md"
 
@@ -35,12 +36,14 @@ class Model(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        REQUESTS.append(body)
-        (OUT / f"model-request-{len(REQUESTS):03d}.json").write_text(json.dumps(body, ensure_ascii=False, indent=2))
+        with REQUEST_LOCK:
+            REQUESTS.append(body)
+            request_number = len(REQUESTS)
+        (OUT / f"model-request-{request_number:03d}.json").write_text(json.dumps(body, ensure_ascii=False, indent=2))
         if self.headers.get("Authorization") != "Bearer fixture-only":
             self.send_error(401)
             return
-        envelope = {"id": f"chatcmpl-u2-fixture-{len(REQUESTS)}", "object": "chat.completion.chunk", "created": 1,
+        envelope = {"id": f"chatcmpl-u2-fixture-{request_number}", "object": "chat.completion.chunk", "created": 1,
                     "model": body["model"]}
         case = next((m[1] for message in body.get("messages", [])
                      if (m := re.search(r"\[u2:([a-z-]+)\]", str(message.get("content", ""))))), "plain")
