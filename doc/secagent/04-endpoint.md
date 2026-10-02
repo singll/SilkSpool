@@ -1,6 +1,6 @@
 # 04 · endpoint 域设计（接口面 / 参数队列——"打哪里、喂什么料"的唯一事实源）
 
-> 版本：v5.2 ｜ 状态：2026-10-01 请求观测已部署；2026-10-02 HAR导入本地验收通过、待发布 ｜ 契约版本：endpoint@1（repository-v1）
+> 版本：v5.2 ｜ 状态：2026-10-01 请求观测已部署；2026-10-02 HAR导入已部署验收 ｜ 契约版本：endpoint@1（repository-v1）
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线）
 > owns（单写者）：`endpoints`、`endpoint_requests` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）+ `data/evidence/requests/**`（HAR提取证据）
 > 不 owns：`assets`（asset 域）、`findings`（vuln 域）、`data/pipeline/{program}/` 下其余台账文件（ledger 域）
@@ -246,7 +246,7 @@ fresh = sort(U − S)（排序保证幂等与可 diff）
 
 错误：schema 不符为 `E_SCHEMA`，缺/过期授权或主机越界为 `E_INVARIANT`，证据缺失/越界/超限为 `E_EVIDENCE_REQUIRED`。旧 `endpoint_upsert` 保留目录用途，**不会自动获得正文/身份观测，也不会把旧 URL 记录伪装成可重放业务请求**。
 
-#### 1.3.8 `endpoint_import_har` —— 原始流量导入（2026-10-02，本地验收通过、待发布）
+#### 1.3.8 `endpoint_import_har` —— 原始流量导入（2026-10-02，已部署验收）
 
 输入 `program_id`、`har_path`、`source_sha256`、`run_id`、`mode=preview/import`；HAR 必须位于 dataDir 的 results/ 或 evidence/ 内，真实路径不可越界，仅普通文件、≤64MiB、HAR 1.2。每次核对原文件 SHA256；分页 `offset=0`、`limit=50`，上限100，返回 `total_entries/selected/ready/created/replayed/rejected/partial/next_offset` 和逐项结果。`preview` 不写请求或提取文件，但仍经命令审计；建议先预览再以同一来源摘要逐页导入。
 
@@ -687,3 +687,8 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 ### 2026-10-01 · 27号阶段上线验收
 
 2026-10-01已部署；生产静默冒烟、UI验收80/80及单任务运行通过；扩大执行受WP03预算预留门禁约束。固定DSH 0.1.7-rc.2，恢复点`777e3e6b…`；详细清单和证据见[27号§15.3](27-business-quality-and-capacity-plan-2026-09-30.md#153-业务增量分阶段发布2026-10-01阶段验收完成)。生产endpoint_requests已建表、查询可用；本批未导入真实业务请求，不将空队列算作业务覆盖。
+
+
+### 2026-10-02 · WP04 HAR导入上线验收
+
+源码`21b4428`固定DSH0.1.7-rc.2上线；本地/远端全域671/671、六根恢复与64表预检、新旧应用、隔离endpoint/task165/165、worker19项、生产静默冒烟及UI80/80通过。生产RPC空HAR预览不新增请求，摘要变动返回E_HAR_SOURCE_CHANGED；请求观测仍0，未导入合成业务请求。冻结`4691cef5…`，停写36分56秒；首次冻结撞代理刷新、旧版RPC超时、UI端口未就绪及RPC超时的失败均保留。真实健康模板/账号归集/业务基线仍待办；发布恢复证据见27号§15.10。

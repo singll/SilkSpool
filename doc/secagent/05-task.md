@@ -1415,6 +1415,8 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 
 新请求策略键包含 Program、host/path/method、request_id（或旧端点参数/鉴权版本摘要）、参数位置、参数名、漏洞类别与 h2-v2 规则版本。query/body 同名参数不会合并，身份或正文证据变化可产生新观测和新假设；按类别交错入队，限额只限制本批。旧手工 host×class 策略键兼容保留，不宣称全系统条件去重已统一。显式非空 oracle 在 derive_intent 处必须注册，否则 E_ORACLE_UNAVAILABLE；注册存在不证明判据可信。
 
+2026-10-02 WP04 HAR增量（已部署，全域671/671、隔离endpoint/task165/165、生产UI80/80通过）：JSON参数名称可为JSON Pointer（如 `/order/id`），H2按叶属性识别ID/URL等形态，草稿及策略键保留完整参数位置。HAR→请求观测→持久假设链路已用受控样例验证，重复事件不增队列，暂停Campaign不派任务；不把HAR响应200解释为业务健康或可用身份。导入契约见[04号§1.3.8](04-endpoint.md#138-endpoint_import_har--原始流量导入2026-10-02已部署验收)。
+
 **验收与限制。** 五模块304/304、全域648/648（临时库/本地合成请求）；覆盖12条假设分四批派完、同名异位置、主体变化、故障前置、引用篡改、事务回滚后重建 bus 恢复、专项目标接管与过期授权。尚无真实目标/生产证据。第201个旧ledger gap/第31个候选、公平配额、H1主链接线、worker lease/ack、失败及unknown的attempt级重开、完整费用预留仍待实现。正式部署必须同时发布 task/backend-task/endpoint/backend-endpoint/rules；恢复保留新增表，不能靠旧代码读取不到新队列冒充恢复成功。
 
 2026-09-30 WP02续接同步任务提示：`exec_oracle_judge` 仅辅助分析；适用的 owner-only JSON IDOR 需绑定 finding/request 与双身份，由 `exec_verify_authz_read` 生成 decision_id，再封装可信 capsule。模型登记完整观察使用 `vuln_register_signal`，不再提示模型调用不可达的 `vuln_register_candidate`；旧 run 或调用方 verdict 不能确认。其它类型缺受控验证器时保留能力缺口与待补证据。此处只更新新生成任务的 objective，不批量改写既有排队任务。
