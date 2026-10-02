@@ -197,6 +197,63 @@ def rollup_evidence(filename):
             "meaning": "Aggregate of evicted records; cannot allocate to a task/run or prove final cost."}
 
 
+def reconciliation_plan(results, tasks, runs, costs):
+    """Propose only deltas with no unexplained legacy balance; never mutate."""
+    cost_index = {(r["task_id"], r["run_id"]): r for r in costs}
+    tasks_index = {r["id"]: r for r in tasks}
+    totals, legacy = collections.Counter(), collections.Counter()
+    for row in costs:
+        if not integer(row["spent_tokens"]):
+            raise ValueError("invalid_ledger_tokens")
+        totals[row["task_id"]] += row["spent_tokens"]
+    for row in runs:
+        if row["spent_tokens"] is not None and not integer(row["spent_tokens"]):
+            raise ValueError("invalid_run_tokens")
+        if row["spent_tokens"] and (row["task_id"], row["run_id"]) not in cost_index:
+            legacy[row["task_id"]] += 1
+    task_rows, decisions, proposed_totals = {}, [], {}
+    for row in results:
+        if row["bill_status"] != "missing" or row["session_status"] != "attributable_lower_bound":
+            continue
+        task_id, run_id = row["task_id"], row["run_id"]
+        task = tasks_index.get(task_id)
+        current = task.get("spent_tokens") if task else None
+        baseline = task_rows.setdefault(task_id, {
+            "task_id": task_id, "task_tokens": current, "ledger_tokens": totals[task_id],
+            "legacy_balance_tokens": current - totals[task_id] if integer(current) else None,
+            "legacy_positive_runs": legacy[task_id], "candidate_runs": 0})
+        baseline["candidate_runs"] += 1
+        previous = cost_index.get((task_id, run_id))
+        before = previous["spent_tokens"] if previous else 0
+        lower = row["session"]["recorded_tokens_lower_bound"]
+        delta = max(0, lower - before)
+        reason = ("invalid_task_total" if not integer(current)
+                  else "task_running" if task.get("status") == "running"
+                  else "legacy_balance_unattributed" if current != totals[task_id] or legacy[task_id]
+                  else "covered_by_ledger" if delta == 0
+                  else "eligible_lower_bound")
+        decision = {"task_id": task_id, "run_id": run_id, "reason": reason,
+                    "lower_bound_tokens": lower, "previous_tokens": before, "delta_tokens": delta}
+        if reason == "eligible_lower_bound":
+            expected = proposed_totals.get(task_id, current)
+            if not integer(expected + delta):
+                decision["reason"] = "task_tokens_overflow"
+            else:
+                evidence = {k: row[k] for k in ("task_id", "run_id", "session_id", "session_sha256", "session")}
+                decision["command"] = {
+                    "task_id": task_id, "run_id": run_id, "session_id": row["session_id"],
+                    "session_sha256": row["session_sha256"],
+                    "evidence_sha256": digest(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()),
+                    "lower_bound_tokens": lower, "expected_task_tokens": expected}
+                proposed_totals[task_id] = expected + delta
+        decisions.append(decision)
+    eligible = [r for r in decisions if r["reason"] == "eligible_lower_bound"]
+    return {"applied": False, "final_cost_proven": False,
+            "counts": dict(collections.Counter(r["reason"] for r in decisions)),
+            "eligible_delta_tokens": sum(r["delta_tokens"] for r in eligible),
+            "tasks": list(task_rows.values()), "decisions": decisions}
+
+
 def audit(database, bill_file, sessions_root, rollup_file=None):
     now = int(time.time() * 1000)
     # One consistent database image; all joins and aggregates read the image.
@@ -216,7 +273,7 @@ def audit(database, bill_file, sessions_root, rollup_file=None):
         items = rows("SELECT task_id,run_id,SUM(tokens) tokens,COUNT(*) n FROM task_bill_items GROUP BY task_id,run_id")
         workers = rows("SELECT run_id,task_id,worker_session_id,cwd FROM workers")
         campaigns = rows("SELECT id,status,budget_tokens,spent_tokens FROM campaigns ORDER BY id")
-        tasks = rows("SELECT id,campaign_id FROM tasks")
+        tasks = rows("SELECT id,campaign_id,spent_tokens,status FROM tasks")
         reservations = rows("SELECT state,COUNT(*) n,SUM(tokens) tokens FROM task_budget_reservations GROUP BY state")
     finally:
         image.close()
@@ -286,11 +343,12 @@ def audit(database, bill_file, sessions_root, rollup_file=None):
         missing_unresolved.update(row["session"]["unresolved"])
     snapshot = {"watch": watch, "runs": runs, "costs": costs, "items": items,
                 "workers": workers, "tasks": tasks, "campaigns": campaigns, "reservations": reservations}
-    return {"schema_version": 1, "sampled_at": now, "read_only": True,
+    return {"schema_version": 2, "sampled_at": now, "read_only": True,
             "database_projection_sha256": digest(json.dumps(snapshot, sort_keys=True).encode()),
             "scope": "persistent_cost_watch", "final_cost_proven": False,
             "bill_source": bill_report, "rollup_source": rollup_report,
             "campaigns": campaigns, "reservations": reservations,
+            "reconciliation": reconciliation_plan(results, tasks, runs, costs),
             "summary": {"watch": len(results),
                         "bill_status": dict(collections.Counter(r["bill_status"] for r in results)),
                         "session_status": dict(collections.Counter(r["session_status"] for r in results)),

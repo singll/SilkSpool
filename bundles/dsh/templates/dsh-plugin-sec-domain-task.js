@@ -170,7 +170,7 @@ export const TASK_MANIFEST = {
   service: 'secDomain.task',
   description: '任务/调度/执行史/worker 注册表——编排器派发的工作单元与调度循环的单一真相源，收尾权唯一归调度器/审批',
   owns: {
-    tables: ['tasks', 'task_runs', 'task_run_costs', 'task_bill_items', 'task_budget_reservations', 'task_cost_watch', 'workers', 'strategy_dedupe', 'hypothesis_queue', 'campaigns', 'campaign_decisions', 'campaign_checkpoints', 'task_settings'],
+    tables: ['tasks', 'task_runs', 'task_run_costs', 'task_cost_evidence', 'task_bill_items', 'task_budget_reservations', 'task_cost_watch', 'workers', 'strategy_dedupe', 'hypothesis_queue', 'campaigns', 'campaign_decisions', 'campaign_checkpoints', 'task_settings'],
     files: ['data/scheduler.lock', 'data/pending-task-finishes/', 'data/events/task.jsonl'],
   },
   commands: {
@@ -322,6 +322,15 @@ export const TASK_MANIFEST = {
       actor: ['scheduler', 'system'], schema: schema({}, []), idempotent: 'none',
       events: ['task.cost.settled'], event_limit: 4, invariants: [], timeout_ms: 60000,
       agent_note: '轮转检查真实 session 账单，增长只记差额；无账单保持未知，不改变任务技术结果。',
+    },
+    task_record_cost_evidence: {
+      actor: ['system'],
+      schema: schema({ task_id: int({ minimum: 1 }), run_id: str({ minLength: 1 }), session_id: str({ minLength: 1 }),
+        session_sha256: str({ pattern: '^[a-f0-9]{64}$' }), evidence_sha256: str({ pattern: '^[a-f0-9]{64}$' }),
+        lower_bound_tokens: int({ minimum: 0 }), expected_task_tokens: int({ minimum: 0 }) },
+      ['task_id', 'run_id', 'session_id', 'session_sha256', 'evidence_sha256', 'lower_bound_tokens', 'expected_task_tokens']),
+      idempotent: 'none', events: ['task.cost.evidence.recorded'], event_limit: 1, invariants: [], timeout_ms: 60000,
+      agent_note: '受控治理入口：经会话审计的历史用量下界，CAS核对无未归属旧累计后仅补差额；保留证据摘要和原账，不解除未知预留，不代表供应商最终费用。',
     },
     task_chain: {
       actor: ['model', 'dashboard'],
@@ -832,6 +841,7 @@ export const TASK_MANIFEST = {
     },
   },
   events: {
+    'task.cost.evidence.recorded': { payload: { type: 'object' }, redact: [] },
     'task.cost.settled': { payload: { type: 'object' }, redact: [] },
     'task.created': { payload: { type: 'object' }, redact: [] },
     'task.intent.derived': { payload: { type: 'object' }, redact: [] },
@@ -2369,6 +2379,50 @@ function makeHandlers(opts) {
       ? [{ name: 'task.cost.settled', payload: { ...data, program_id: task.program_id, campaign_id: task.campaign_id ?? null, source: args.source } }] : [] }
   }
   const commands = {
+    task_record_cost_evidence: async (args, repo) => {
+      if (!Number.isSafeInteger(args.lower_bound_tokens) || !Number.isSafeInteger(args.expected_task_tokens)) {
+        throwErr('E_SCHEMA', '费用须为非负安全整数', null)
+      }
+      const receipt = repo.getCostEvidence(args.task_id, args.run_id, args.evidence_sha256)
+      if (receipt) {
+        if (receipt.session_id !== args.session_id || receipt.session_sha256 !== args.session_sha256
+            || receipt.lower_bound_tokens !== args.lower_bound_tokens) {
+          throwErr('E_TASK_COST_CONFLICT', '同一证据摘要的会话或用量发生变化', '重新核对原始会话证据')
+        }
+        return { data: { task_id: args.task_id, run_id: args.run_id, delta_tokens: 0,
+          replayed: true, final_cost_proven: false }, events: [] }
+      }
+      const task = repo.getTask(args.task_id), run = repo.getTaskRun(args.task_id, args.run_id)
+      const watch = repo.getCostWatch(args.task_id, args.run_id), previous = repo.getRunCost(args.task_id, args.run_id)
+      if (!task || !watch || !run && !previous) throwErr('E_NOT_FOUND', '历史费用缺持久执行归属', null)
+      if (task.status === 'running') throwErr('E_TASK_COST_CONFLICT', '运行中的任务暂不补历史费用', '排空后重新采样')
+      if (watch.session_id !== args.session_id || run && run.session_id !== args.session_id
+          || previous && previous.session_id !== args.session_id) {
+        throwErr('E_TASK_COST_CONFLICT', '会话证据与执行归属不一致', null)
+      }
+      if (repo.sessionUsedByOtherRun(args.session_id, args.task_id, args.run_id)) {
+        throwErr('E_TASK_COST_AMBIGUOUS', '同会话关联多个run，不能归属费用', null)
+      }
+      const baseline = repo.costEvidenceBaseline(args.task_id)
+      if (!Number.isSafeInteger(task.spent_tokens) || task.spent_tokens !== baseline.ledger_tokens
+          || baseline.legacy_positive_runs > 0) {
+        throwErr('E_TASK_COST_LEGACY_UNATTRIBUTED', '任务旧累计或执行费用未与独立账本对齐', '保留原账，先核对历史重叠')
+      }
+      if (task.spent_tokens !== args.expected_task_tokens || previous && run?.spent_tokens != null && run.spent_tokens !== previous.spent_tokens) {
+        throwErr('E_TASK_COST_CONFLICT', '费用基线已变化', '重新读取并计算差额')
+      }
+      const before = previous?.spent_tokens ?? 0, delta = Math.max(0, args.lower_bound_tokens - before)
+      if (!Number.isSafeInteger(task.spent_tokens + delta)) throwErr('E_SCHEMA', '累计费用超出安全整数范围', null)
+      if (!previous || delta) repo.settleRunCost({ task_id: args.task_id, run_id: args.run_id,
+        session_id: args.session_id, spent_tokens: before + delta, source: 'session_evidence',
+        recorded_at: Date.now(), releaseReservation: false })
+      repo.insertCostEvidence({ ...args, previous_tokens: before, delta_tokens: delta, recorded_at: Date.now() })
+      const data = { task_id: args.task_id, run_id: args.run_id, delta_tokens: delta,
+        spent_tokens: before + delta, evidence_sha256: args.evidence_sha256,
+        cost_state: 'lower_bound', final_cost_proven: false, replayed: false }
+      return { data, events: [{ name: 'task.cost.evidence.recorded', payload: {
+        ...data, program_id: task.program_id, campaign_id: task.campaign_id ?? null } }] }
+    },
     task_record_run_cost: async (args, repo) => settleCost(args, repo),
     task_reconcile_costs: async (_args, repo) => {
       const after = Number(repo.settingGet('bill_reconcile_after')) || 0

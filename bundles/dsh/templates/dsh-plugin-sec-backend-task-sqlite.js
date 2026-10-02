@@ -171,6 +171,12 @@ function createRepo(db) {
     session_id TEXT, source TEXT NOT NULL, consumed_at INTEGER, recorded_at INTEGER NOT NULL,
     PRIMARY KEY(task_id, run_id)
   )`)
+  db.exec(`CREATE TABLE IF NOT EXISTS task_cost_evidence (
+    task_id INTEGER NOT NULL, run_id TEXT NOT NULL, evidence_sha256 TEXT NOT NULL,
+    session_id TEXT NOT NULL, session_sha256 TEXT NOT NULL, lower_bound_tokens INTEGER NOT NULL,
+    previous_tokens INTEGER NOT NULL, delta_tokens INTEGER NOT NULL, recorded_at INTEGER NOT NULL,
+    PRIMARY KEY(task_id,run_id,evidence_sha256)
+  )`)
   db.exec(`CREATE TABLE IF NOT EXISTS task_bill_items (
     receipt_key TEXT PRIMARY KEY, task_id INTEGER NOT NULL, run_id TEXT NOT NULL,
     tokens INTEGER NOT NULL, consumed_at INTEGER
@@ -584,7 +590,7 @@ function createRepo(db) {
     costReconcileCandidates(afterId, limit) {
       return db.prepare(`SELECT r.task_id,r.run_id,r.session_id,r.id FROM task_cost_watch r
         LEFT JOIN task_run_costs c ON c.task_id=r.task_id AND c.run_id=r.run_id
-        WHERE r.id>? AND (c.task_id IS NULL OR c.source='session_bill')
+        WHERE r.id>? AND (c.task_id IS NULL OR c.source IN ('session_bill','session_evidence'))
         ORDER BY r.id LIMIT ?`).all(afterId, limit).map(r => ({ ...r }))
     },
     importBillItems(taskId, runId, items) {
@@ -663,6 +669,23 @@ function createRepo(db) {
     getRunCost(taskId, runId) {
       return db.prepare('SELECT * FROM task_run_costs WHERE task_id=? AND run_id=?').get(Number(taskId), runId) || null
     },
+    getCostEvidence(taskId, runId, sha) {
+      return db.prepare('SELECT * FROM task_cost_evidence WHERE task_id=? AND run_id=? AND evidence_sha256=?')
+        .get(taskId, runId, sha) || null
+    },
+    costEvidenceBaseline(taskId) {
+      const ledger = Number(db.prepare('SELECT COALESCE(SUM(spent_tokens),0) n FROM task_run_costs WHERE task_id=?').get(taskId).n)
+      const legacy = Number(db.prepare(`SELECT COUNT(*) n FROM task_runs r
+        LEFT JOIN task_run_costs c ON c.task_id=r.task_id AND c.run_id=r.run_id
+        WHERE r.task_id=? AND r.spent_tokens>0 AND c.task_id IS NULL`).get(taskId).n)
+      return { ledger_tokens: ledger, legacy_positive_runs: legacy }
+    },
+    insertCostEvidence(row) {
+      db.prepare(`INSERT INTO task_cost_evidence(task_id,run_id,evidence_sha256,session_id,session_sha256,
+        lower_bound_tokens,previous_tokens,delta_tokens,recorded_at) VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(row.task_id, row.run_id, row.evidence_sha256, row.session_id, row.session_sha256,
+          row.lower_bound_tokens, row.previous_tokens, row.delta_tokens, row.recorded_at)
+    },
     getTaskRun(taskId, runId) {
       return db.prepare('SELECT * FROM task_runs WHERE task_id=? AND run_id=? ORDER BY id DESC LIMIT 1').get(Number(taskId), runId) || null
     },
@@ -670,8 +693,10 @@ function createRepo(db) {
       if (!sessionId) return false
       return !!db.prepare('SELECT 1 FROM task_runs WHERE session_id=? AND NOT (task_id=? AND run_id=?) LIMIT 1').get(String(sessionId), Number(taskId), runId)
         || !!db.prepare('SELECT 1 FROM task_run_costs WHERE session_id=? AND NOT (task_id=? AND run_id=?) LIMIT 1').get(String(sessionId), Number(taskId), runId)
+        || !!db.prepare('SELECT 1 FROM task_cost_watch WHERE session_id=? AND NOT (task_id=? AND run_id=?) LIMIT 1').get(String(sessionId), Number(taskId), runId)
+        || !!db.prepare('SELECT 1 FROM workers WHERE worker_session_id=? AND task_id IS NOT NULL AND NOT (task_id=? AND run_id=?) LIMIT 1').get(String(sessionId), Number(taskId), runId)
     },
-    settleRunCost({ task_id, run_id, spent_tokens, session_id, source, consumed_at, recorded_at }) {
+    settleRunCost({ task_id, run_id, spent_tokens, session_id, source, consumed_at, recorded_at, releaseReservation = true }) {
       const previous = repo.getRunCost(task_id, run_id)
       const delta = spent_tokens - (previous?.spent_tokens || 0)
       db.prepare(`INSERT INTO task_run_costs(task_id,run_id,spent_tokens,session_id,source,consumed_at,recorded_at)
@@ -681,7 +706,7 @@ function createRepo(db) {
         .run(task_id, run_id, spent_tokens, session_id ?? null, source, consumed_at ?? null, recorded_at)
       db.prepare('UPDATE task_runs SET spent_tokens=? WHERE task_id=? AND run_id=?').run(spent_tokens, task_id, run_id)
       if (delta) db.prepare('UPDATE tasks SET spent_tokens=COALESCE(spent_tokens,0)+? WHERE id=?').run(delta, task_id)
-      db.prepare(`UPDATE task_budget_reservations SET state='settled'
+      if (releaseReservation) db.prepare(`UPDATE task_budget_reservations SET state='settled'
         WHERE task_id=? AND run_id=? AND state='unknown' AND expected_tokens IS NOT NULL AND expected_tokens<=?`)
         .run(task_id, run_id, spent_tokens)
       const task = repo.getTask(task_id)

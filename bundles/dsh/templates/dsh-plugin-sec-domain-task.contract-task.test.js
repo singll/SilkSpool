@@ -2617,6 +2617,71 @@ test('WP03 failed zero usage remains unknown after zero and partial late bills',
   }
 })
 
+test('WP03 historical evidence records only delta, never releases unknown, and survives restart/replay/late bills', async () => {
+  const { bus, dataDir, dir } = makeEnv(), db = bus._internal.db()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '历史证据补账' }, { actor: 'system' })
+  const id = c.data.task_id, sid = 'session-history'
+  await bus.dispatch('task', 'finish', { task_id: id, run_id: 'history', session_id: sid, outcome: 'failed' }, { actor: 'scheduler' })
+  db.prepare("INSERT INTO task_budget_reservations(task_id,claim_started_at,tokens,run_id,state,created_at,expected_tokens) VALUES(?,1,100,'history','unknown',1,50)").run(id)
+  const args = { task_id: id, run_id: 'history', session_id: sid, session_sha256: 'a'.repeat(64),
+    evidence_sha256: 'b'.repeat(64), lower_bound_tokens: 80, expected_task_tokens: 0 }
+  for (const actor of ['model', 'scheduler', 'dashboard', 'script']) {
+    assert.equal((await bus.dispatch('task', 'record_cost_evidence', args, { actor })).error.code, 'E_ACTOR_FORBIDDEN')
+  }
+  const first = await bus.dispatch('task', 'record_cost_evidence', args, { actor: 'system' })
+  assert.equal(first.ok, true, first.error?.message)
+  assert.equal(first.data.delta_tokens, 80)
+  assert.equal(first.data.final_cost_proven, false)
+  assert.equal(db.prepare('SELECT state FROM task_budget_reservations').get().state, 'unknown')
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id=?').get(id).status, 'failed')
+  assert.equal(db.prepare('SELECT source FROM task_run_costs').get().source, 'session_evidence')
+  db.prepare('DELETE FROM task_runs WHERE task_id=?').run(id)
+  const again = makeEnv({ dir })
+  const replay = await again.bus.dispatch('task', 'record_cost_evidence', args, { actor: 'system' })
+  assert.equal(replay.data.delta_tokens, 0)
+  assert.equal(replay.data.replayed, true)
+  const conflict = await again.bus.dispatch('task', 'record_cost_evidence', { ...args, lower_bound_tokens: 90 }, { actor: 'system' })
+  assert.equal(conflict.error.code, 'E_TASK_COST_CONFLICT')
+  const growth = await again.bus.dispatch('task', 'record_cost_evidence', { ...args,
+    evidence_sha256: 'c'.repeat(64), lower_bound_tokens: 90, expected_task_tokens: 80 }, { actor: 'system' })
+  assert.equal(growth.data.delta_tokens, 10)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM task_cost_evidence').get().n, 2)
+  fs.mkdirSync(path.join(dataDir, 'dsh-bill'))
+  const bill = path.join(dataDir, 'dsh-bill/records.jsonl')
+  fs.writeFileSync(bill, JSON.stringify({ sessionId: sid, time: Date.now(), inputTokens: 20, outputTokens: 0 }) + '\n')
+  assert.equal((await again.bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })).ok, true)
+  assert.equal(db.prepare('SELECT spent_tokens FROM tasks WHERE id=?').get(id).spent_tokens, 90)
+  assert.equal(db.prepare('SELECT state FROM task_budget_reservations').get().state, 'unknown')
+  fs.writeFileSync(bill, JSON.stringify({ sessionId: sid, time: Date.now(), inputTokens: 120, outputTokens: 0 }) + '\n')
+  const late = await again.bus.dispatch('task', 'reconcile_costs', {}, { actor: 'scheduler' })
+  assert.equal(late.ok, true, late.error?.message)
+  assert.equal(db.prepare('SELECT spent_tokens FROM tasks WHERE id=?').get(id).spent_tokens >= 120, true)
+})
+
+test('WP03 historical evidence refuses legacy balances, stale totals and pruned session ambiguity; failures roll back', async () => {
+  const { bus } = makeEnv(), db = bus._internal.db()
+  const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '历史账目门禁' }, { actor: 'system' })
+  const id = c.data.task_id
+  await bus.dispatch('task', 'finish', { task_id: id, run_id: 'guarded', session_id: 'session-guarded', outcome: 'failed' }, { actor: 'scheduler' })
+  const args = { task_id: id, run_id: 'guarded', session_id: 'session-guarded', session_sha256: '1'.repeat(64),
+    evidence_sha256: '2'.repeat(64), lower_bound_tokens: 100, expected_task_tokens: 0 }
+  db.prepare('UPDATE tasks SET spent_tokens=10 WHERE id=?').run(id)
+  assert.equal((await bus.dispatch('task', 'record_cost_evidence', args, { actor: 'system' })).error.code, 'E_TASK_COST_LEGACY_UNATTRIBUTED')
+  db.prepare('UPDATE tasks SET spent_tokens=0 WHERE id=?').run(id)
+  db.prepare('UPDATE task_runs SET spent_tokens=10 WHERE task_id=?').run(id)
+  assert.equal((await bus.dispatch('task', 'record_cost_evidence', args, { actor: 'system' })).error.code, 'E_TASK_COST_LEGACY_UNATTRIBUTED')
+  db.prepare('UPDATE task_runs SET spent_tokens=NULL WHERE task_id=?').run(id)
+  assert.equal((await bus.dispatch('task', 'record_cost_evidence', { ...args, expected_task_tokens: 1 }, { actor: 'system' })).error.code, 'E_TASK_COST_CONFLICT')
+  db.prepare("INSERT INTO task_cost_watch(task_id,run_id,session_id) VALUES(?,'pruned','session-guarded')").run(id)
+  assert.equal((await bus.dispatch('task', 'record_cost_evidence', args, { actor: 'system' })).error.code, 'E_TASK_COST_AMBIGUOUS')
+  db.prepare("DELETE FROM task_cost_watch WHERE run_id='pruned'").run()
+  db.exec("CREATE TRIGGER fail_evidence BEFORE INSERT ON task_cost_evidence BEGIN SELECT RAISE(ABORT,'injected evidence failure'); END")
+  assert.equal((await bus.dispatch('task', 'record_cost_evidence', args, { actor: 'system' })).ok, false)
+  assert.equal(db.prepare('SELECT spent_tokens FROM tasks WHERE id=?').get(id).spent_tokens, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM task_run_costs').get().n, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM task_cost_evidence').get().n, 0)
+})
+
 test('WP03 cost failure rolls back receipt and aggregate; pruning history does not permit recharging', async () => {
   const { bus } = makeEnv()
   const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '费用原子事务回归' }, { actor: 'model' })

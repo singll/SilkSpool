@@ -93,6 +93,29 @@ class SessionEvidenceTests(unittest.TestCase):
 
 
 class FullAuditTests(unittest.TestCase):
+    def test_reconciliation_distinguishes_legacy_covered_and_sequential_deltas(self):
+        def candidate(task, run, amount):
+            return {"task_id": task, "run_id": run, "session_id": "session-" + run,
+                    "session_sha256": "a" * 64, "bill_status": "missing",
+                    "session_status": "attributable_lower_bound",
+                    "session": {"recorded_tokens_lower_bound": amount}}
+        tasks = [{"id": 1, "spent_tokens": 10, "status": "done"},
+                 {"id": 2, "spent_tokens": 20, "status": "done"},
+                 {"id": 3, "spent_tokens": 0, "status": "done"},
+                 {"id": 4, "spent_tokens": 0, "status": "running"}]
+        costs = [{"task_id": 1, "run_id": "a", "spent_tokens": 10}]
+        rows = [candidate(1, "a", 9), candidate(1, "b", 30), candidate(1, "c", 40),
+                candidate(2, "d", 30), candidate(3, "e", 50), candidate(4, "f", 60)]
+        runs = [{"task_id": 3, "run_id": "old", "spent_tokens": 10}]
+        plan = audit.reconciliation_plan(rows, tasks, runs, costs)
+        self.assertEqual(plan["counts"], {"covered_by_ledger": 1, "eligible_lower_bound": 2,
+                                         "legacy_balance_unattributed": 2, "task_running": 1})
+        self.assertEqual(plan["eligible_delta_tokens"], 70)
+        self.assertEqual(plan["decisions"][1]["command"]["expected_task_tokens"], 10)
+        self.assertEqual(plan["decisions"][2]["command"]["expected_task_tokens"], 40)
+        self.assertFalse(plan["applied"])
+        self.assertFalse(plan["final_cost_proven"])
+
     def test_complete_read_only_audit_rejects_ambiguous_and_pruned_ownership(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -106,7 +129,7 @@ class FullAuditTests(unittest.TestCase):
                 CREATE TABLE task_bill_items(task_id INTEGER,run_id TEXT,tokens INTEGER);
                 CREATE TABLE workers(run_id TEXT,task_id INTEGER,worker_session_id TEXT,cwd TEXT);
                 CREATE TABLE campaigns(id INTEGER,status TEXT,budget_tokens INTEGER,spent_tokens INTEGER);
-                CREATE TABLE tasks(id INTEGER,campaign_id INTEGER);
+                CREATE TABLE tasks(id INTEGER,campaign_id INTEGER,spent_tokens INTEGER,status TEXT);
                 CREATE TABLE task_budget_reservations(state TEXT,tokens INTEGER);
                 INSERT INTO campaigns VALUES(1,'paused',10000,12);
                 INSERT INTO task_budget_reservations VALUES('unknown',100);
@@ -114,7 +137,7 @@ class FullAuditTests(unittest.TestCase):
             for n in range(1, 8):
                 sid = f"session-{n}" if n != 4 else "session-3"
                 db.execute("INSERT INTO task_cost_watch VALUES(?,?,?,?)", (n, n, f"run-{n}", sid))
-                db.execute("INSERT INTO tasks VALUES(?,1)", (n,))
+                db.execute("INSERT INTO tasks VALUES(?,1,0,'done')", (n,))
                 # A pruned run remains in watch; it must still cause ambiguous ownership.
                 if n != 4:
                     db.execute("INSERT INTO task_runs VALUES(?,?,?,?,?,NULL)", (n, f"run-{n}", sid, 100, 200))
@@ -131,6 +154,7 @@ class FullAuditTests(unittest.TestCase):
             duplicate.write_bytes((sessions / "cwd-7/session-7/session.v4.jsonl.zstd").read_bytes())
             db.execute("INSERT INTO task_run_costs VALUES(2,'run-2','session-2',12)")
             db.execute("INSERT INTO task_bill_items VALUES(2,'run-2',12)")
+            db.execute("UPDATE tasks SET spent_tokens=12 WHERE id=2")
             db.execute("INSERT INTO workers VALUES('run-5',99,'session-5','/workspace')")
             db.commit()
             db.close()
@@ -151,6 +175,7 @@ class FullAuditTests(unittest.TestCase):
             self.assertEqual(result["rows"][5]["session_status"], "session_missing_or_duplicated")
             self.assertEqual(result["rows"][6]["session_status"], "session_missing_or_duplicated")
             self.assertEqual(result["reservations"], [{"state": "unknown", "n": 1, "tokens": 100}])
+            self.assertEqual(result["reconciliation"]["eligible_delta_tokens"], 12)
             self.assertNotIn("PRIVATE_", json.dumps(result))
             self.assertNotIn("title", json.dumps(result["rows"][0]["session"]["request_evidence"]))
             self.assertFalse(result["final_cost_proven"])

@@ -695,3 +695,12 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - 生产PID1009736/NRestarts0、六服务active、journal err=0，无running任务/worker/未知或在飞预留/pending-finish。北京时间01:03:06恢复，停写42分39秒；首次冻结RPC超时、刷新冲突、旧版应用超时及canary目标幂等命中均记录并保留失败报告。
 - 部署后备份：NAS136ff53f…，40库207.10秒/恢复6.75秒通过；维护timer全部恢复，27项关键证据已封存。
 - 继续暂停放量：C1/C2/C3采样111,486,173/140,099,322/75,639,747，C3超50M；额度不变、并发1。历史watch370项中326项无当前账单，不能宣称历史费用完整；供应商最终结算证明及unknown解锁协议仍缺，真实接口verification-profiles仍为空。详情见[27号§15.6](27-business-quality-and-capacity-plan-2026-09-30.md#156-wp03失败usage与历史账单核对2026-10-02已部署验收)。
+
+
+### 2026-10-02 · WP03历史费用证据审计完成
+
+- 新增独立只读`dsh-cost-audit.py`，经PATH spool在内存读取生产；9/9合成测试通过，三次生产核对投影一致，最终CLI验收通过。未上传/部署生产代码、未写库、未触发模型；服务PID1009736/NRestarts0、六服务active、当前journal err=0。
+- watch377：34项原始账单同额、327缺当前账单、16项保留账本高于当前文件。缺账中315项通过run/session/cwd/时间校验，记录用量下界1,521,244,959 token；10项归属歧义、2项时间越界排除。下界与旧累计可能重叠，不能直接补扣或作为最终供应商费用。
+- 确认dsh-bill默认只保留20,000条明细，rollup不保留session归属；记录也缺供应商请求ID及finish原因。315项还含53次标题无usage、79次失败/不完整请求、3次缺/非法usage；全部`final_cost_proven=false`。全体3,626个run中2,257缺session、2,571缺费用，未由本工具自动修复。
+- Campaign1/2/3继续paused，账面111,486,173/146,935,913/90,571,011，额度不变、并发1；12项预留settled，当前running任务/worker/pending-finish均0。既有定时任务在上一批后新增6次执行，Campaign暂停不等于全部定时任务停止。
+- 证据：管理机`out/secagent-audits/20261002-wp03-history/`；最终报告SHA256 903eefcf…，详见[27号§15.7](27-business-quality-and-capacity-plan-2026-09-30.md#157-wp03历史费用证据审计2026-10-02独立工具已完成生产只读验收)。下一步315项下界与旧累计去重核对、保原账的补账流程及未来请求最终结算标识；不重新重复缺账轮转检查，不解除unknown或恢复外部探索。WP03及全方案未关账。

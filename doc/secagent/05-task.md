@@ -1,6 +1,6 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
-> 版本：v5.3（2026-10-02） ｜ 状态：现行契约；业务及预算增量已部署，新增独立只读费用审计（§7.34）｜ 契约版本：task domain manifest v1
+> 版本：v5.4（2026-10-02） ｜ 状态：现行契约；业务及预算增量已部署，新增独立只读费用审计（§7.34）｜ 契约版本：task domain manifest v1
 > 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）、`know.release.revoked`（L6：撤回 → change-retest 重测需求任务入队，§2.3 变更触发节奏）、`vuln.signal.confirmed`（产出闭环：确认漏洞自动入队 `[提交] finding #id` 提交任务，同 finding 幂等去重）；`task_budget_extend` / `task_complete` 由 approval 域在 `approval_decide` 事务内**同步 dispatch**（actor=approval，幂等账本 `approval_effects`）执行——执行失败记 `approval_effects.failed`，**无独立 dispatcher 自动重试**，需人工 `approval_effects_retry` 补跑，不回滚 decide（09-approval §2.3；两域以此线为准）。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加、know 域学习 episode（L1）**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
@@ -1470,3 +1470,15 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 现役dsh-bill0.18.1默认环形明细上限20,000，淘汰记录汇入无session/run归属的rollup；`llm/stream` finally仅按usage记录，不持久化供应商请求ID或finish终止原因。因此缺当前明细不等于从未收费，rollup也不能唯一分配给Task。原始文件比较包含落盘fileSkip前缀；审计不把rollup再加到当前明细、不把会话下界直接补扣到旧累计，不释放unknown预留。
 
 9/9合成测试通过，覆盖正常/失败/零/缺usage、缓存、重复/冲突、裁剪后歧义、时间与cwd、压缩损坏、rollup及全输入字节不变。2026-10-02北京时间17:33生产CLI验收：watch377，34同额、327缺当前账单、16既有账本高于当前文件；缺账中315项可归属usage下界1,521,244,959，10项归属冲突、2项时间越界排除。全体3,626个run中2,257缺session、2,571缺费用。详情、证据和后续限制见27号§15.7；未迁库、未修改生产结算机制。
+
+### 7.35 2026-10-02 · 历史用量证据补账（已部署及生产验收，见27号§15.8）
+
+新增`task_record_cost_evidence`，仅actor=system，供`dsh-cost-reconcile.mjs`在隔离预演或完整冻结窗口进行治理，不暴露为模型/看板工具。参数必须包含task/run/session、会话文件SHA256、证据投影SHA256、非负安全整数下界与expected_task_tokens。摘要是可信治理通道的审计锚，非供应商签名；执行器在首个领域写入前核对整批文件摘要与审计投影。生产执行器要求root、本批未恢复的冻结state、覆盖当前base的manifest和全部写者停止。
+
+同一事务校验run/watch/账本/worker唯一归属，task不在running，无未归属旧累计（tasks.spent_tokens必须等于独立run账本和，且不存在仅旧task_runs记录的正费用），expected_task_tokens做CAS。新增`task_cost_evidence`追加证据摘要、会话摘要、下界、原值、增量与时间；同证据重放增量0、内容冲突拒绝。run累计取max，任务/Campaign仅加差额；原始bill_items不伪造，未知消费时间不猜填，预算预留完全不动，技术状态/额度不变。事件`task.cost.evidence.recorded`明确`cost_state=lower_bound, final_cost_proven=false`，不冒用已知最终费用语义。审计或证据写失败回滚整个命令；批次中断保留已完成项，原清单可幂等续跑。
+
+`session_evidence`来源继续参加迟到账单轮转，原始账单低于下界不冲减，高于下界只补差额。会话歧义检查补齐持久watch及worker关联，避免task_runs裁剪后重新误归属。原始`session_bill`/`worker_report`命令契约保持不变，新增表纳入task owns；兼容schema演进，不改变manifest主版本。
+
+审计schema2新增补账建议和每任务旧累计核对：315项中247可补、19已覆盖、49旧累计冲突；247项独立副本完整执行/重放通过，首次增量1,290,916,472、第二次0；业务非费用字段和预留不变。task123/123、全域665/665、63表schema与审计10/10通过；生产实际补账完成前不得将预演值写作当前账面。
+
+生产验收：247项正式补账/重放通过，增量1,290,916,472/0，证据表247行；60表及非费用字段投影一致，全部预算预留不变。新旧隔离应用、worker17项、生产UI80/80通过。C2/C3账面超额并维持paused；详细恢复/失败经历与当前事实见27号§15.8。
