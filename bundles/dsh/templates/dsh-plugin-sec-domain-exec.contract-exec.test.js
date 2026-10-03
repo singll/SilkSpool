@@ -577,16 +577,23 @@ test('§1-5: grep/page 结果附不可信围栏纪律 + 注入特征提示', asy
 })
 
 // WP02: real local HTTP, bus, SQLite and execution-owned evidence; no target probing.
-async function authzFixture(t, mode = 'vulnerable') {
+async function authzFixture(t, mode = 'vulnerable', options = {}) {
   const seen = []
   const server = http.createServer((req, res) => {
     seen.push({ path: req.url, authorization: req.headers.authorization })
     const subject = ({ 'Bearer a': 'a', 'Bearer b': 'b' })[req.headers.authorization]
     res.setHeader('content-type', 'application/json')
+    if (options.onRequest?.(req, res, seen.length)) return
     if (mode === 'proxy_error') { res.writeHead(407); res.end('{}'); return }
+    if (mode === 'rate_limited') { res.writeHead(429); res.end('{}'); return }
+    if (mode === 'server_error') { res.writeHead(502); res.end('{}'); return }
+    if (mode === 'not_found') { res.writeHead(404); res.end('{}'); return }
+    if (mode === 'method_not_allowed') { res.writeHead(405); res.end('{}'); return }
+    if (mode === 'login_redirect') { res.writeHead(302, { location: '/login' }); res.end(); return }
+    if (mode === 'login_html') { res.setHeader('content-type', 'text/html'); res.end('<form>Login</form>'); return }
     if (req.url === '/me') {
       if (!subject || mode === 'invalid_auth') { res.writeHead(401); res.end('{}') }
-      else res.end(JSON.stringify({ id: subject }))
+      else res.end(JSON.stringify({ id: mode === 'same_identity' ? 'a' : subject }))
       return
     }
     const id = req.url.split('/').pop(), owner = id === '1' ? 'a' : 'b'
@@ -607,10 +614,13 @@ async function authzFixture(t, mode = 'vulnerable') {
   fs.writeFileSync(path.join(dataDir, 'results', 'rfixture', 'request.txt'), 'GET /objects/2 HTTP/1.1')
   const obs = await bus.dispatch('endpoint', 'observe_request', { program_id: 'test-src', url: origin + '/objects/2', method: 'GET', parameters: [], evidence_path: 'results/rfixture/request.txt', run_id: 'rfixture' }, { actor: 'script' })
   assert.equal(obs.ok, true, obs.error?.message)
-  const finding = await bus.dispatch('vuln', 'register_signal', { title: '测试双身份访问私有对象的读取权限', severity: 'high', host: '127.0.0.1', url: origin + '/objects/2', program_id: 'test-src', vuln_type: 'idor', evidence: 'run_fixture_20260930_000000', reproduction_steps: '使用账号 A 请求账号 B 的私有对象，复核对象归属', impact: '违反 owner-only 读取策略，暴露他人的私有对象' }, { actor: 'model' })
-  assert.equal(finding.ok, true, finding.error?.message)
-  const args = { program_id: 'test-src', finding_id: finding.data.id, request_id: obs.data.request_id, own_id: '1', other_id: '2', headers_a: { Authorization: 'Bearer a' }, headers_b: { Authorization: 'Bearer b' } }
-  return { bus, dataDir, dir, origin, seen, args, profileFile }
+  let finding
+  if (options.finding !== false) {
+    finding = await bus.dispatch('vuln', 'register_signal', { title: '测试双身份访问私有对象的读取权限', severity: 'high', host: '127.0.0.1', url: origin + '/objects/2', program_id: 'test-src', vuln_type: 'idor', evidence: 'run_fixture_20260930_000000', reproduction_steps: '使用账号 A 请求账号 B 的私有对象，复核对象归属', impact: '违反 owner-only 读取策略，暴露他人的私有对象' }, { actor: 'model' })
+    assert.equal(finding.ok, true, finding.error?.message)
+  }
+  const args = { program_id: 'test-src', ...(finding ? { finding_id: finding.data.id } : {}), request_id: obs.data.request_id, own_id: '1', other_id: '2', headers_a: { Authorization: 'Bearer a' }, headers_b: { Authorization: 'Bearer b' } }
+  return { bus, dataDir, dir, origin, seen, args, profileFile, setMode: value => { mode = value } }
 }
 
 for (const [mode, verdict] of [['vulnerable', 'verified'], ['patched', 'rejected'], ['public', 'inconclusive'], ['invalid_auth', 'inconclusive'], ['proxy_error', 'inconclusive']]) {
@@ -619,7 +629,7 @@ for (const [mode, verdict] of [['vulnerable', 'verified'], ['patched', 'rejected
     const decision = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
     assert.equal(decision.ok, true, decision.error?.message)
     assert.equal(decision.data.verdict, verdict, decision.data.rationale)
-    assert.equal(seen.length, mode === 'proxy_error' ? 1 : 10)
+    assert.equal(seen.length, ({ proxy_error: 1, invalid_auth: 1, public: 4 })[mode] ?? 10)
     const cap = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: decision.data.decision_id }, { actor: 'model' })
     assert.equal(cap.ok, true, cap.error?.message)
     const confirmed = await bus.dispatch('vuln', 'confirm', { finding_id: args.finding_id, evidence: cap.data.evidence_ref }, { actor: 'model' })
@@ -633,6 +643,120 @@ for (const [mode, verdict] of [['vulnerable', 'verified'], ['patched', 'rejected
     assert.equal(raw.includes('Bearer a'), false)
   })
 }
+
+for (const [mode, state, health, requests] of [
+  ['vulnerable', 'ready', 'business_ok', 8], ['patched', 'ready', 'business_ok', 8],
+  ['invalid_auth', 'blocked_auth', 'auth_blocked', 1], ['same_identity', 'blocked_auth', 'same_identity', 2],
+  ['public', 'inconclusive', 'contract_mismatch', 4], ['login_html', 'inconclusive', 'contract_mismatch', 1],
+  ['login_redirect', 'inconclusive', 'redirected', 1], ['proxy_error', 'infra_error', 'proxy_error', 1],
+  ['rate_limited', 'infra_error', 'rate_limited', 1], ['server_error', 'infra_error', 'server_error', 1],
+  ['not_found', 'inconclusive', 'not_found', 1], ['method_not_allowed', 'inconclusive', 'method_not_allowed', 1],
+]) {
+  test(`WP02 preflight ${mode}: no finding, bounded controls, no cross read`, async t => {
+    const { bus, dataDir, dir, args, seen } = await authzFixture(t, mode, { finding: false })
+    const result = await bus.dispatch('exec', 'preflight_authz_read', args, { actor: 'model' })
+    assert.equal(result.ok, true, result.error?.message)
+    assert.equal(result.data.state, state, result.data.reason)
+    assert.equal(result.data.checks.at(-1).health, health)
+    assert.equal(result.data.cross_read_performed, false)
+    assert.equal(result.data.verdict, undefined)
+    assert.equal(result.data.run_ids.length, requests)
+    assert.equal(seen.length, requests)
+    assert.equal(seen.some(r => r.path === '/objects/2' && r.authorization === 'Bearer a'), false)
+    const db = bus._internal.db()
+    const hasFindings = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='findings'").get()
+    assert.equal(hasFindings ? db.prepare('SELECT COUNT(*) n FROM findings').get().n : 0, 0)
+    const read = await bus.query('exec', 'authz_preflight', { preflight_id: result.data.preflight_id }, { actor: 'script' })
+    assert.equal(read.ok, true, read.error?.message)
+    assert.equal(read.data.state, state)
+    assert.equal(seen.length, requests, 'reading receipt does not replay requests')
+    const cap = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: result.data.preflight_id }, { actor: 'model' })
+    assert.equal(cap.error?.code, 'E_EXEC_EVIDENCE_UNTRUSTED', 'preflight cannot confirm a vulnerability')
+    const stored = fs.readFileSync(path.join(dataDir, 'results', result.data.preflight_id, 'authz-preflight.json'), 'utf8')
+    assert.equal(stored.includes('Bearer a'), false)
+    assert.equal(fs.readFileSync(path.join(dir, 'events', 'exec.jsonl'), 'utf8').includes('Bearer a'), false)
+  })
+}
+
+test('WP02 preflight does not turn failures into permanent rejection and formal verification rechecks auth', async t => {
+  const { bus, args, seen, setMode } = await authzFixture(t, 'server_error')
+  const { finding_id, ...preflightArgs } = args
+  const failed = await bus.dispatch('exec', 'preflight_authz_read', preflightArgs, { actor: 'script' })
+  assert.equal(failed.data.state, 'infra_error')
+  setMode('patched')
+  const ready = await bus.dispatch('exec', 'preflight_authz_read', preflightArgs, { actor: 'script' })
+  assert.equal(ready.data.state, 'ready')
+  assert.notEqual(ready.data.preflight_id, failed.data.preflight_id)
+  setMode('invalid_auth')
+  const before = seen.length
+  const decision = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
+  assert.equal(decision.data.verdict, 'inconclusive')
+  assert.equal(decision.data.prerequisite_state, 'blocked_auth')
+  assert.equal(seen.length - before, 1)
+  assert.equal(bus._internal.db().prepare('SELECT status FROM findings WHERE id=?').get(finding_id).status, 'new')
+})
+
+test('WP02 preflight receipts survive bus reconstruction but reject changed evidence/profile/request/scope', async t => {
+  const { bus, args, dataDir, dir, profileFile, seen } = await authzFixture(t, 'patched', { finding: false })
+  const result = await bus.dispatch('exec', 'preflight_authz_read', args, { actor: 'script' })
+  const read = () => bus.query('exec', 'authz_preflight', { preflight_id: result.data.preflight_id }, { actor: 'script' })
+  const files = [
+    [profileFile, 'E_EXEC_DECISION_STALE'],
+    [path.join(dataDir, 'results', 'rfixture', 'request.txt'), 'E_EXEC_EVIDENCE_UNTRUSTED'],
+    [path.join(dataDir, 'results', result.data.run_ids[0], 'http-record.json'), 'E_EXEC_EVIDENCE_UNTRUSTED'],
+    [path.join(dataDir, 'results', result.data.preflight_id, 'authz-preflight.json'), 'E_EXEC_EVIDENCE_UNTRUSTED'],
+  ]
+  for (const [file, code] of files) {
+    const original = fs.readFileSync(file)
+    fs.writeFileSync(file, file === profileFile ? original.toString() + ' ' : 'changed')
+    assert.equal((await read()).error?.code, code)
+    fs.writeFileSync(file, original)
+  }
+  const rebuilt = createBus({ dataDir, dbFile: path.join(dir, 'asset-graph.db'), sidecars: false, startDispatcherTimer: false })
+  assert.equal(rebuilt.registry.register(buildEndpointDomain({ dataDir })).ok, true)
+  assert.equal(rebuilt.registry.register(buildExecDomain({ dataDir, query: (d,v,a,c) => rebuilt.query(d,v,a,c) })).ok, true)
+  const restored = await rebuilt.query('exec', 'authz_preflight', { preflight_id: result.data.preflight_id }, { actor: 'script' })
+  assert.equal(restored.ok, true, restored.error?.message)
+  assert.equal(restored.data.state, 'ready')
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs: []')
+  assert.equal((await read()).error?.code, 'E_EXEC_SCOPE_DENIED')
+  assert.equal(seen.length, 8)
+})
+
+test('WP02 preflight rejects invalid inputs without HTTP and stops on scope withdrawal/cancellation', async t => {
+  const { bus, args, dataDir, seen, profileFile } = await authzFixture(t, 'patched', { finding: false })
+  for (const change of [{ program_id: 'other' }, { own_id: args.other_id }, { request_id: 'missing' }, { headers_b: args.headers_a }]) {
+    const r = await bus.dispatch('exec', 'preflight_authz_read', { ...args, ...change }, { actor: 'model' })
+    assert.equal(r.ok, false)
+  }
+  assert.equal(seen.length, 0)
+  const controller = new AbortController(); controller.abort()
+  const r = await bus.dispatch('exec', 'preflight_authz_read', args, { actor: 'model', signal: controller.signal })
+  assert.equal(r.data.state, 'infra_error')
+  assert.equal(r.data.checks[0].health, 'aborted')
+  assert.equal(seen.length, 0)
+  fs.unlinkSync(profileFile)
+  assert.equal((await bus.dispatch('exec', 'preflight_authz_read', args, { actor: 'model' })).error?.code, 'E_EXEC_ORACLE_UNSUPPORTED')
+  assert.equal(seen.length, 0)
+})
+
+test('WP02 preflight stops after live scope withdrawal and rejects context changes at final control', async t => {
+  for (const mutation of ['scope', 'profile', 'request']) {
+    let env
+    env = await authzFixture(t, 'patched', { finding: false, onRequest: (_req, _res, n) => {
+      if (n === (mutation === 'scope' ? 1 : 8)) {
+        if (mutation === 'scope') fs.writeFileSync(path.join(env.dataDir, 'scope.yml'), 'programs: []')
+        if (mutation === 'profile') fs.appendFileSync(env.profileFile, ' ')
+        if (mutation === 'request') fs.appendFileSync(path.join(env.dataDir, 'results', 'rfixture', 'request.txt'), ' changed')
+      }
+      return false
+    } })
+    const result = await env.bus.dispatch('exec', 'preflight_authz_read', env.args, { actor: 'script' })
+    assert.equal(result.ok, true, result.error?.message)
+    assert.equal(result.data.state, mutation === 'scope' ? 'blocked_policy' : 'inconclusive')
+    assert.equal(env.seen.length, mutation === 'scope' ? 1 : 8)
+  }
+})
 
 test('WP02 rejects forged verdicts, borrowed decisions and changed execution/request/profile evidence', async t => {
   const { bus, dataDir, args, profileFile } = await authzFixture(t)

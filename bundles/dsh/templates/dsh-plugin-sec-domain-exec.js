@@ -119,7 +119,16 @@ export const EXEC_MANIFEST = {
         headers_a: { type: 'object' }, headers_b: { type: 'object' },
       }, ['program_id', 'finding_id', 'request_id', 'own_id', 'other_id', 'headers_a', 'headers_b']),
       idempotent: 'none', events: ['exec.oracle.decided'], event_limit: 1, invariants: [], timeout_ms: 330000,
-      agent_note: '按宿主 verification-profiles/<Program>.json 的 owner-only JSON 读取契约验证 IDOR。执行双身份、自有/他人私有对象、匿名/无效凭据及重复对照；仅服务端证据可产生 verified。返回持久化 decision_id，供 vuln_oracle_capsule 封装。',
+      agent_note: '按宿主 verification-profiles/<Program>.json 的 owner-only JSON 读取契约验证 IDOR。逐项检查双身份、私有对象及对照，前置失败立即停止；仅服务端证据可产生 verified。返回持久化 decision_id，供 vuln_oracle_capsule 封装。',
+    },
+    exec_preflight_authz_read: {
+      actor: ['model', 'script', 'dashboard'],
+      schema: schema({ program_id: str({ minLength: 1 }), request_id: str({ minLength: 1 }),
+        own_id: str({ minLength: 1, maxLength: 200 }), other_id: str({ minLength: 1, maxLength: 200 }),
+        headers_a: { type: 'object' }, headers_b: { type: 'object' },
+      }, ['program_id', 'request_id', 'own_id', 'other_id', 'headers_a', 'headers_b']),
+      idempotent: 'none', events: ['exec.authz.preflighted'], event_limit: 1, invariants: [], timeout_ms: 270000,
+      agent_note: 'owner-only JSON 读取实验前置检查，无须先建 finding。最多8个受控GET：双身份、各自对象、无效身份/匿名及重复正对照；不做A读取B。返回签封preflight_id、健康/认证/前置状态；ready仅表示可实验，不是漏洞或执行授权，正式验证仍重测前置。',
     },
     exec_run_cli: {
       actor: ['model', 'dashboard', 'script', 'human'],
@@ -310,10 +319,16 @@ export const EXEC_MANIFEST = {
       params: schema({ decision_id: str({ pattern: '^r[a-z0-9]+$' }) }, ['decision_id']),
       agent_note: '读取可信 IDOR 判定；重新核验签封、原始执行证据、请求版本和宿主验证契约。',
     },
+    exec_authz_preflight: {
+      actor: ['model', 'script', 'dashboard', 'reactor'],
+      params: schema({ preflight_id: str({ pattern: '^r[a-z0-9]+$' }) }, ['preflight_id']),
+      agent_note: '读取签封的读取实验前置结果，重验HTTP证据/请求版本/宿主契约/授权；一小时后失效。结果不提供漏洞verdict，不能用于capsule确认。',
+    },
   },
   events: {
     'exec.http.completed': { payload: { type: 'object' }, redact: [] },
     'exec.oracle.decided': { payload: { type: 'object' }, redact: [] },
+    'exec.authz.preflighted': { payload: { type: 'object' }, redact: [] },
     'exec.run.started': { payload: { type: 'object' }, redact: [] },
     'exec.run.failed': { payload: { type: 'object' }, redact: [] },
     'exec.run.completed': { payload: { type: 'object' }, redact: [] },
@@ -711,7 +726,7 @@ function makeHandlers(opts) {
     }
     return addresses[0]
   }
-  async function executeHttp(args, repo, ctx, selectedProxy = selectProxy(args.proxy)) {
+  async function executeHttp(args, repo, ctx, selectedProxy = selectProxy(args.proxy), followRedirects = true) {
     if (ctx.signal?.aborted) throwErr('E_EXEC_ABORTED', '请求已取消', null)
     const method = String(args.method || 'GET').toUpperCase()
     let headers = canonicalHeaders(args.headers), body = args.body || '', url = String(args.url), currentMethod = method
@@ -730,7 +745,7 @@ function makeHandlers(opts) {
         if (remaining <= 0) { response = { state: 'timeout', status: null, body: '', headers: {} }; break }
         response = await httpHop({ url, method: currentMethod, headers, body, proxy: selectedProxy, address, timeoutMs: remaining, maxBytes, signal: ctx.signal })
         hops.push({ url, method: currentMethod, address, status: response.status, state: response.state, identity_digest: sha256(JSON.stringify(headers)) })
-        if (response.state !== 'observed' || ![301, 302, 303, 307, 308].includes(response.status) || !response.headers.location) break
+        if (!followRedirects || response.state !== 'observed' || ![301, 302, 303, 307, 308].includes(response.status) || !response.headers.location) break
         if (hop === 3) { response = { ...response, state: 'redirect_limit', body: '' }; break }
         const next = new URL(response.headers.location, url)
         if (next.origin !== new URL(url).origin) {
@@ -940,6 +955,114 @@ function makeHandlers(opts) {
     if (!r?.ok || r.data?.evidence_state !== 'intact') throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '请求版本不存在或原始证据已变化', '重新采集请求 observation 后再执行')
     return r.data
   }
+  async function authzInputs(args) {
+    const { profile: p, digest } = readAuthzProfile(args.program_id)
+    const observation = await requestObservation(args.request_id)
+    const targetUrl = p.origin + p.object_path.replace('{id}', encodeURIComponent(args.other_id))
+    const ownUrl = p.origin + p.object_path.replace('{id}', encodeURIComponent(args.own_id))
+    if (observation.program_id !== args.program_id || observation.url !== targetUrl || observation.method !== 'GET' || args.own_id === args.other_id) throwErr('E_SCHEMA', '请求版本必须绑定同 Program 的他人对象 GET，且两个对象 ID 不同', null)
+    const headersA = canonicalHeaders(args.headers_a), headersB = canonicalHeaders(args.headers_b)
+    if (JSON.stringify(headersA) === JSON.stringify(headersB)) throwErr('E_SCHEMA', '验证需要两组不同凭据', null)
+    return { p, digest, observation, targetUrl, ownUrl, headersA, headersB }
+  }
+  function authzJson(run) {
+    const r = run?.response
+    if (r?.state !== 'observed' || r.status !== 200 || !/application\/(?:[\w.+-]*\+)?json\b/i.test(r.headers['content-type'] || '')) return null
+    try { const b = JSON.parse(r.body); return b && !Array.isArray(b) && typeof b === 'object' ? b : null } catch { return null }
+  }
+  function authzId(o, field) {
+    return o && Object.hasOwn(o, field) && ['string', 'number'].includes(typeof o[field]) && String(o[field]).length ? String(o[field]) : null
+  }
+  function authzPrivate(o, objectId, ownerId, p) {
+    return ownerId !== null && authzId(o, p.id_field) === objectId && authzId(o, p.owner_field) === ownerId && o?.[p.visibility_field] === p.private_value
+  }
+  // A health observation is specific to this request and identity. It never changes the
+  // route's auth_state, marks the whole host clean, or treats an HTTP 200 as business success.
+  function authzCheck(name, responses, input, args) {
+    const r = responses[name], status = r.response.status, body = authzJson(r), p = input.p
+    const result = (state, health, reason) => ({ state, health, reason })
+    if (r.response.state !== 'observed') {
+      const policy = ['E_EXEC_SCOPE_DENIED', 'E_EXEC_RISK_FORBIDDEN', 'E_EXEC_RESERVED_IP'].includes(r.response.error_code)
+      return result(policy ? 'blocked_policy' : 'infra_error', r.response.state, '请求未获得完整业务响应')
+    }
+    if (r.hops.length !== 1 || status >= 300 && status < 400) return result('inconclusive', 'redirected', '重定向不能证明身份或对象，需核实登录及接口入口')
+    if (status === 404 || status === 410) return result('inconclusive', 'not_found', '当前请求未找到资源；不永久关闭路由')
+    if (status === 405) return result('inconclusive', 'method_not_allowed', '方法与当前入口不匹配')
+    const denied = [401, 403].includes(status)
+    if (['invalid_identity', 'anonymous'].includes(name)) {
+      return denied ? result('ready', 'expected_denial', '负对照按预期被拒绝')
+        : result('inconclusive', 'contract_mismatch', '匿名或无效身份未明确被拒绝，不能推断私有访问规则')
+    }
+    if (['cross', 'cross_repeat'].includes(name)) return result('ready', denied ? 'access_denied' : body ? 'json_observed' : 'contract_mismatch', '交叉结果由完整对照判定')
+    if (denied) return result('blocked_auth', 'auth_blocked', '正常身份或自有对象访问被拒绝；需补身份/对象前置')
+    if (name.startsWith('identity_')) {
+      const id = authzId(body, p.identity_field)
+      if (!id) return result('inconclusive', 'contract_mismatch', '响应缺少契约身份字段，200不代表有效会话')
+      const aid = authzId(authzJson(responses.identity_a), p.identity_field)
+      if (name === 'identity_b' && id === aid) return result('blocked_auth', 'same_identity', '两组凭据实际对应同一主体')
+      if (name === 'identity_a_repeat' && id !== aid) return result('blocked_auth', 'identity_changed', '实验期间主体发生变化')
+      return result('ready', 'business_ok', '身份字段符合契约')
+    }
+    const own = name === 'own_a', ownerId = authzId(authzJson(responses[own ? 'identity_a' : 'identity_b']), p.identity_field)
+    if (!authzPrivate(body, own ? args.own_id : args.other_id, ownerId, p)) {
+      return result('inconclusive', 'contract_mismatch', '自有对象标识、归属或私有属性不满足契约')
+    }
+    return result('ready', 'business_ok', '自有私有对象及归属符合契约')
+  }
+  async function runAuthzChecks(args, input, repo, ctx, crossRead) {
+    const { p, targetUrl, ownUrl, headersA, headersB } = input
+    const proxy = selectProxy(), runs = [], responses = {}, checks = []
+    const requests = [
+      ['identity_a', p.origin + p.identity_path, headersA], ['identity_b', p.origin + p.identity_path, headersB],
+      ['invalid_identity', p.origin + p.identity_path, { authorization: `Bearer invalid-${crypto.randomBytes(16).toString('hex')}` }],
+      ['own_a', ownUrl, headersA], ['own_b', targetUrl, headersB], ['anonymous', targetUrl, {}],
+      ...(crossRead ? [['cross', targetUrl, headersA]] : []),
+      ['owner_repeat', targetUrl, headersB],
+      ...(crossRead ? [['cross_repeat', targetUrl, headersA]] : []),
+      ['identity_a_repeat', p.origin + p.identity_path, headersA],
+    ]
+    let state = 'ready', reason = '双身份、私有对象及正负对照满足当前读取契约'
+    for (const [name, url, headers] of requests) {
+      let check
+      try {
+        // A redirect is an observation, never another request in a fixed-object experiment.
+        const r = await executeHttp({ program_id: args.program_id, url, headers }, repo, ctx, proxy, false)
+        runs.push(r.run_id); responses[name] = r
+        check = { name, run_id: r.run_id, status: r.response.status, ...authzCheck(name, responses, input, args) }
+      } catch (e) {
+        check = { name, run_id: null, status: null, state: ['E_EXEC_SCOPE_DENIED', 'E_EXEC_RISK_FORBIDDEN', 'E_EXEC_RESERVED_IP'].includes(e.code) ? 'blocked_policy' : 'infra_error',
+          health: e.code === 'E_EXEC_ABORTED' ? 'aborted' : 'unmeasured', reason: e.code || 'E_EXEC_HTTP_FAILED' }
+      }
+      checks.push(check)
+      if (check.state !== 'ready') { state = check.state; reason = `${name}: ${check.reason}`; break }
+    }
+    // Context may change during HTTP I/O; a successful start is not a successful finish.
+    if (state === 'ready') {
+      try {
+        await requestObservation(args.request_id)
+        if (readAuthzProfile(args.program_id).digest !== input.digest) throwErr('E_EXEC_DECISION_STALE', '验证契约已变化', null)
+        await guardedAddress(targetUrl, args.program_id, 'GET')
+        if (ctx.signal?.aborted) throwErr('E_EXEC_ABORTED', '请求已取消', null)
+      } catch (e) {
+        state = e.code === 'E_EXEC_SCOPE_DENIED' || e.code === 'E_EXEC_RISK_FORBIDDEN' ? 'blocked_policy' : 'inconclusive'
+        reason = e.code || 'E_EXEC_CONTEXT_CHANGED'
+      }
+    }
+    return { state, reason, runs, responses, checks, proxy_digest: sha256(proxy) }
+  }
+  async function readPreflight(preflightId) {
+    const record = readSealed(preflightId, 'authz-preflight.json')
+    if (record.kind !== 'authz-read-preflight' || record.version !== 1 || Date.now() - record.created_at > 3600000 || record.created_at > Date.now()
+      || readAuthzProfile(record.program_id).digest !== record.profile_digest) throwErr('E_EXEC_DECISION_STALE', '前置结果或验证契约已过期', '重新检查前置')
+    const observation = await requestObservation(record.request_id)
+    if (observation.program_id !== record.program_id || observation.url !== record.target.url || observation.method !== 'GET') throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '前置与请求观测不匹配', null)
+    for (const runId of record.run_ids) {
+      const run = readSealed(runId, 'http-record.json')
+      if (run.program_id !== record.program_id || run.proxy_digest !== record.proxy_digest) throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '前置执行链不匹配', null)
+    }
+    await guardedAddress(record.target.url, record.program_id, 'GET')
+    return record
+  }
   async function readDecision(decisionId) {
     const record = readSealed(decisionId, 'authz-decision.json')
     if (record.oracle !== 'idor_owner_read_v1' || record.oracle_version !== 1 || Date.now() - record.created_at > 3600000 || record.created_at > Date.now()) throwErr('E_EXEC_DECISION_STALE', '判定版本不支持或超过一小时确认窗口', '重新执行验证')
@@ -960,32 +1083,14 @@ function makeHandlers(opts) {
       return { data, events: [{ name: 'exec.http.completed', payload: { ...data, program_id: args.program_id } }] }
     },
     exec_verify_authz_read: async (args, repo, ctx) => {
-      const { profile: p, digest } = readAuthzProfile(args.program_id)
-      const observation = await requestObservation(args.request_id)
-      const targetUrl = p.origin + p.object_path.replace('{id}', encodeURIComponent(args.other_id))
-      const ownUrl = p.origin + p.object_path.replace('{id}', encodeURIComponent(args.own_id))
-      if (observation.program_id !== args.program_id || observation.url !== targetUrl || observation.method !== 'GET' || args.own_id === args.other_id) throwErr('E_SCHEMA', '请求版本必须绑定同 Program 的他人对象 GET，且两个对象 ID 不同', null)
-      const headersA = canonicalHeaders(args.headers_a), headersB = canonicalHeaders(args.headers_b)
-      if (JSON.stringify(headersA) === JSON.stringify(headersB)) throwErr('E_SCHEMA', '验证需要两组不同凭据', null)
+      const input = await authzInputs(args)
+      const { p, digest, observation, targetUrl, headersA, headersB } = input
       const finding = await queryRef?.('vuln', 'get', { id: args.finding_id }, { actor: 'system' })
       if (!finding?.ok || finding.data.program_id !== args.program_id || finding.data.url !== targetUrl || finding.data.vuln_type !== 'idor') throwErr('E_SCHEMA', 'finding 的 Program/URL/idor 类型必须与验证目标一致', null)
-      const proxy = selectProxy(), runs = [], responses = {}
-      const requests = [
-        ['identity_a', p.origin + p.identity_path, headersA], ['identity_b', p.origin + p.identity_path, headersB],
-        ['invalid_identity', p.origin + p.identity_path, { authorization: `Bearer invalid-${crypto.randomBytes(16).toString('hex')}` }],
-        ['own_a', ownUrl, headersA], ['own_b', targetUrl, headersB], ['anonymous', targetUrl, {}],
-        ['cross', targetUrl, headersA], ['owner_repeat', targetUrl, headersB], ['cross_repeat', targetUrl, headersA],
-        ['identity_a_repeat', p.origin + p.identity_path, headersA],
-      ]
-      let verdict = 'inconclusive', rationale = '对照未完成'
-      for (const [name, url, headers] of requests) {
-        try {
-          const r = await executeHttp({ program_id: args.program_id, url, headers }, repo, ctx, proxy)
-          runs.push(r.run_id); responses[name] = r
-          if (r.response.state !== 'observed' || r.hops.length !== 1) { rationale = `${name}: ${r.response.state}，重定向/故障不能作为权限证据`; break }
-        } catch (e) { rationale = `${name}: ${e.code || 'E_EXEC_HTTP_FAILED'}`; break }
-      }
-      if (Object.keys(responses).length === requests.length && Object.values(responses).every(r => r.response.state === 'observed' && r.hops.length === 1)) {
+      const batch = await runAuthzChecks(args, input, repo, ctx, true)
+      const { runs, responses } = batch
+      let verdict = 'inconclusive', rationale = batch.reason
+      if (batch.state === 'ready') {
         const json = name => { const r = responses[name].response; if (r.status !== 200 || !/application\/(?:[\w.+-]*\+)?json\b/i.test(r.headers['content-type'] || '')) return null; try { const b = JSON.parse(r.body); return b && !Array.isArray(b) && typeof b === 'object' ? b : null } catch { return null } }
         const a = json('identity_a'), b = json('identity_b'), aAgain = json('identity_a_repeat')
         const ownA = json('own_a'), ownB = json('own_b'), ownerAgain = json('owner_repeat'), cross = json('cross'), crossAgain = json('cross_repeat')
@@ -1004,11 +1109,26 @@ function makeHandlers(opts) {
       const record = seal(runDir, 'authz-decision.json', { run_id: runId, decision_id: runId, created_at: Date.now(),
         oracle: 'idor_owner_read_v1', oracle_version: 1, verdict, rationale, program_id: args.program_id, finding_id: args.finding_id,
         request_id: args.request_id, task_id: observation.task_id || null, target: { host: new URL(targetUrl).hostname, url: targetUrl, method: 'GET', vuln_class: 'idor', program_id: args.program_id },
-        profile_digest: digest, proxy_digest: sha256(proxy), run_ids: runs,
+        profile_digest: digest, proxy_digest: batch.proxy_digest, run_ids: runs, prerequisite_state: batch.state, checks: batch.checks,
         identities: { a: sha256(JSON.stringify(headersA)), b: sha256(JSON.stringify(headersB)) },
         objects: { own: args.own_id, other: args.other_id } })
       repo.writeMeta(runDir, { run_id: runId, program_id: args.program_id, tool: record.oracle, created_at: record.created_at })
       return { data: record, events: [{ name: 'exec.oracle.decided', payload: { decision_id: runId, verdict, oracle: record.oracle, program_id: args.program_id, finding_id: args.finding_id } }] }
+    },
+    exec_preflight_authz_read: async (args, repo, ctx) => {
+      const input = await authzInputs(args)
+      const batch = await runAuthzChecks(args, input, repo, ctx, false)
+      const { runId, runDir } = repo.createRunDir('r')
+      const record = seal(runDir, 'authz-preflight.json', {
+        kind: 'authz-read-preflight', version: 1, run_id: runId, preflight_id: runId, created_at: Date.now(),
+        program_id: args.program_id, request_id: args.request_id, task_id: input.observation.task_id || null,
+        target: { url: input.targetUrl, method: 'GET' }, profile_digest: input.digest, proxy_digest: batch.proxy_digest,
+        identities: { a: sha256(JSON.stringify(input.headersA)), b: sha256(JSON.stringify(input.headersB)) },
+        objects: { own: args.own_id, other: args.other_id }, state: batch.state, reason: batch.reason,
+        checks: batch.checks, run_ids: batch.runs, max_requests: 8, cross_read_performed: false,
+      })
+      repo.writeMeta(runDir, { run_id: runId, program_id: args.program_id, tool: 'authz-read-preflight', created_at: record.created_at })
+      return { data: record, events: [{ name: 'exec.authz.preflighted', payload: { preflight_id: runId, request_id: args.request_id, program_id: args.program_id, state: record.state, requests: batch.runs.length } }] }
     },
     exec_run_cli: async (args, repo, ctx) => {
       const toolName = String(args.tool || '')
@@ -1603,6 +1723,7 @@ function makeHandlers(opts) {
     },
     // 21 号方案 §2-1：oracle 纯函数判定（零 IO；模型只能提交对照特征，判定归代码）
     exec_http_result: async (args) => readSealed(args.run_id, 'http-record.json'),
+    exec_authz_preflight: async (args) => readPreflight(args.preflight_id),
     exec_authz_decision: async (args) => readDecision(args.decision_id),
     exec_oracle_judge: async (args) => {
       const fn = ORACLES[String(args.oracle)]

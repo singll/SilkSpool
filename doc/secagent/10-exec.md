@@ -1,6 +1,6 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
-> 版本：v5.2（2026-10-03 浏览器采集来源边界） ｜ 状态：现行契约 ｜ 契约版本：`exec/1`
+> 版本：v5.3（2026-10-03 读取前置检查本地实现，待部署） ｜ 状态：现行契约，待部署增量显式标注 ｜ 契约版本：`exec/1`
 > 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.worker.spawned/.finished`（task 域，强联动）；`exec.flow.appended`、`exec.import.completed`、`exec.evidence.published` 当前**无订阅方（设计预留）**——各域 manifest 未声明，待实现后回填
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
@@ -284,6 +284,18 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 page/grep 结果读取拒绝文件/目录符号链接、硬链接与非常规文件，打开后检查真实句柄仍在 results 内，避免未受信 worker 产物暴露宿主密钥；Linux `/proc/self/fd` 是这层检查的运行依赖。
 
 签封保证执行来源与完整性，不代替对宿主接口契约的语义审核。密钥/契约变更、证据保留/恢复需要一起考虑；当前仅有本地回归，不自动安装任何生产契约。新 HTTP 路径不等于已统一所有 CLI/browser 流量；全进程共享限速、真实站点适配、TLS/各代理兼容、自动刷新凭据与重放仍需验收。
+
+#### 1.3.10 `exec_preflight_authz_read`（27号 WP02，本地实现，待部署）
+
+复用§1.3.9的宿主 owner-only JSON 契约、不可变 GET 请求、双身份与自有对象输入，但不要求 `finding_id`。actor 为 model/script/dashboard，幂等 none，每次调用重新测量。参数为 `program_id/request_id/own_id/other_id/headers_a/headers_b`；无契约、请求证据变化、项目/URL/方法不匹配、对象相同或凭据相同均拒绝。
+
+最多8次GET：A/B身份、无效身份、A/B各自私有对象、匿名读取B对象、B对象重复读取、A身份复检。不执行A读取B对象；固定出口，每次请求复核Scope/风险/QPS，不跟随重定向。逐项失败立即停止，最后复核请求原件、契约和授权。200仅在JSON身份/对象字段符合契约时记业务健康。
+
+返回 `preflight_id/state/reason/checks/run_ids/max_requests/cross_read_performed`；state 为 `ready/blocked_auth/blocked_policy/infra_error/inconclusive`。401/403正常身份失败、同主体、登录页/跳转、404/405、407/429/5xx、对象契约不符、取消及上下文变化分别保留原因。负对照的401/403是预期拒绝。结果只适用于当前请求和身份，不永久关闭路由，不写Finding状态，不计有效漏洞实验。
+
+回执签封于 `results/<preflight_id>/authz-preflight.json`，沿用执行域密钥及0600证据权限；仅保存凭据摘要。事件 `exec.authz.preflighted` 只含项目、请求、回执、状态、请求数。查询 `exec_authz_preflight({preflight_id})`（model/script/dashboard/human）复验签封、HTTP证据、请求原件、宿主契约和授权，一小时失效；查询不重放HTTP。前置回执没有verdict，不能用于漏洞capsule确认，也不构成执行授权。
+
+本增量同时使正式 `exec_verify_authz_read` 复用逐项前置检查，最多10次请求，不跟随跳转；前置失败即停且仅产生inconclusive，附 `prerequisite_state/checks`。正式验证不复用旧ready代替重新测量。适用范围仍限明确配置的owner-only顶层JSON读取，不表示其他漏洞族或真实项目已覆盖。
 
 ### 1.4 查询（读投影）逐个详述
 
