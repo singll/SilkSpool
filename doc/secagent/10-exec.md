@@ -1,6 +1,6 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
-> 版本：v5.3（2026-10-03 读取前置检查本地实现，待部署） ｜ 状态：现行契约，待部署增量显式标注 ｜ 契约版本：`exec/1`
+> 版本：v5.3（2026-10-03 读取前置检查已部署验收） ｜ 状态：现行契约 ｜ 契约版本：`exec/1`
 > 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.worker.spawned/.finished`（task 域，强联动）；`exec.flow.appended`、`exec.import.completed`、`exec.evidence.published` 当前**无订阅方（设计预留）**——各域 manifest 未声明，待实现后回填
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
@@ -277,7 +277,7 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 }
 ```
 
-字段选择器目前只支持 JSON 顶层字段；对象路径为固定前缀加 `{id}`，身份路径为固定路径。A/B 身份、无效凭据身份、A 自有对象、B 自有对象、匿名访问 B、A 访问 B、重复 B 正对照、重复 A 交叉访问、末尾 A 身份复检共 **10 个请求**，共享固定出口并逐次走同一守卫。故障或重定向提前停止。正常身份必须不同且稳定，两对象必须不同、私有且归属对应；匿名/无效凭据须 401/403。前置成立后，A 重复读到 B 私有对象才 verified；重复被拒才 rejected；其余 inconclusive。缺证、公开对象、失效身份与基础设施故障均不判技术反证。
+字段选择器目前只支持 JSON 顶层字段；对象路径为固定前缀加 `{id}`，身份路径为固定路径。A/B 身份、无效凭据身份、A 自有对象、B 自有对象、匿名访问 B、A 访问 B、重复 B 正对照、重复 A 交叉访问、末尾 A 身份复检共 **10 个请求**，共享固定出口并逐次走同一守卫。逐项前置失败或重定向提前停止，不跟随跳转。正常身份必须不同且稳定，两对象必须不同、私有且归属对应；匿名/无效凭据须 401/403。前置成立后，A 重复读到 B 私有对象才 verified；重复被拒才 rejected；其余 inconclusive。缺证、公开对象、失效身份与基础设施故障均不判技术反证。
 
 判定 `idor_owner_read_v1` 保存到 `results/<decision_id>/authz-decision.json`，含规则版本、宿主契约摘要、Program/finding/request、身份摘要、对象、全部执行 run 引用与原始 task 关联（无关联保持 null）。`exec_authz_decision({decision_id})` 重新校验签封、每份执行清单、请求版本、当前契约与目标授权；**一小时后或配置变化即须重验**。返回判定供 `vuln_oracle_capsule({decision_id})` 封装，事件 `exec.oracle.decided` 只含摘要。
 
@@ -285,7 +285,7 @@ page/grep 结果读取拒绝文件/目录符号链接、硬链接与非常规文
 
 签封保证执行来源与完整性，不代替对宿主接口契约的语义审核。密钥/契约变更、证据保留/恢复需要一起考虑；当前仅有本地回归，不自动安装任何生产契约。新 HTTP 路径不等于已统一所有 CLI/browser 流量；全进程共享限速、真实站点适配、TLS/各代理兼容、自动刷新凭据与重放仍需验收。
 
-#### 1.3.10 `exec_preflight_authz_read`（27号 WP02，本地实现，待部署）
+#### 1.3.10 `exec_preflight_authz_read`（27号 WP02，2026-10-03已部署验收）
 
 复用§1.3.9的宿主 owner-only JSON 契约、不可变 GET 请求、双身份与自有对象输入，但不要求 `finding_id`。actor 为 model/script/dashboard，幂等 none，每次调用重新测量。参数为 `program_id/request_id/own_id/other_id/headers_a/headers_b`；无契约、请求证据变化、项目/URL/方法不匹配、对象相同或凭据相同均拒绝。
 
@@ -826,3 +826,5 @@ worker新增受控`results/<run_id>/worker-requests.jsonl`，schema_version=1，
 
 
 上线结果：本批新冻结恢复副本worker19/19、15次fixture请求通过；真实adapter正常响应标识、失败unknown保留均通过。生产103401三请求12事件/3响应ID，总92,741 token（含缓存读取43,776）与原始账单/worker/run账本一致；只调用一次bus_status，随后WP03_OK。生产UI80/80、六服务active，恢复点与失败报告见27号§15.9。此验收不证明内部HTTP重试费用或错误请求最终结算，Campaign仍暂停。
+
+2026-10-03 WP02前置增量（源码`6bd68c0`，已部署）：本地/远端全域688/688、最终本地exec56/56、六根恢复/64表、新旧应用、隔离exec/endpoint/vuln166/166、worker19项、生产静默拒绝路径与UI重跑80/80通过。前置查询已注册，生产缺契约仍返回E_EXEC_ORACLE_UNSUPPORTED；未安装真实项目profile、未发真实业务请求。回执/密钥覆盖既有备份根，部署后40库恢复校验通过，详情见27号§15.12；适用范围不扩展到其他漏洞族，Campaign仍暂停。

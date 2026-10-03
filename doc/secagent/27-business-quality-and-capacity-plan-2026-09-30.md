@@ -1035,7 +1035,7 @@ fixture编号锁修正后，本地最终字节全域665/665、63表副本预检�
 
 部署后NAS `b05227e632536b11a04ebcc1753ebdac8363eeee7e1ade663ad6e9d576c7640b`，40库备份185.70秒/同快照恢复6.91秒；覆盖/排除不变。96项证据SHA256SUMS封存于csai `dsh-upgrades/20261003-wp04-browser-capture/delivery-evidence/`，管理机副本 `out/secagent-audits/20261003-wp04-browser-capture/`；phase=`deployed-browser-capture-accepted-real-pilot-pending`。本批发布闭环完成；后续仍需确定已授权试点项目/业务入口、可用测试身份和自有对象，采集20–50份真实健康模板，再接WP02健康基线/逐族验证契约。供应商最终费用证明及历史歧义未闭环，不恢复外部探索或提高预算。
 
-### 15.12 WP02读取实验前置检查（2026-10-03，本地验证完成，待部署）
+### 15.12 WP02读取实验前置检查（2026-10-03，已部署验收）
 
 接续上一会话未提交的exec及契约测试。新增exec_preflight_authz_read，无须先建Finding，复用宿主owner-only JSON契约、不可变请求、双身份/自有对象；最多8个GET，不执行A读取B、不跟随跳转。逐项检查身份、对象标识/归属/私有属性、无效身份/匿名负对照与重复正对照，前置失败立即停止；ready不代表漏洞、有效交叉实验或执行授权。正式读取验证复用检查，最多10次请求，前置失败只记inconclusive。
 
@@ -1044,3 +1044,15 @@ fixture编号锁修正后，本地最终字节全域665/665、63表副本预检�
 验证：恢复上一轮日志发现12项失败均为无Finding测试查询尚未初始化的findings表；修正断言后exec56/56通过。全域688/688通过；随后仅增强恢复测试，使重建总线使用同一持久库并走公开authz_preflight查询，最终exec56/56通过，生产代码未再改变。覆盖有/无漏洞样例、无Finding、无交叉请求、凭据不泄漏、伪造/篡改拒绝、故障恢复重测、Scope撤回与末尾契约/原件变化。git diff --check通过；日志/tmp/secagent-wp02-preflight-all.log、/tmp/secagent-wp02-preflight-final-exec.log。
 
 发布候选仅exec插件及测试，无表迁移、无生产profile安装、无预算调整。结果文件与执行域密钥沿用现有备份根；正式发布仍须18号本次prepare-change、新冻结点、恢复副本新旧应用与定向验证、静默生产冒烟及恢复验收。当前未上传或切换生产；运行态沿用§15.11，不把本地688项写成生产通过。真实项目/入口、测试身份/自有对象与供应商最终费用证明仍待补，Campaign不恢复，WP02/WP04及全方案未关账。
+
+发布准备进展：源码`6bd68c0`已推送origin/main。change=`20261003-wp02-authz-preflight`，目标仍DSH0.1.7-rc.2；本次prepare-change退出0，NAS `2b3570b24695f47f773a3ee3ee35db195cd6aab30b136d3457d73300e07d0be7`，40库备份38.68秒/同快照恢复6.62秒。四常规根与浏览器登录态排除未变。发布包位于csai `dsh-upgrades/20261003-wp02-authz-preflight/`，远端全域预检进行中，尚未冻结或切换。发布前PID1097006/NRestarts0、Campaign三项暂停、task/worker运行0、19预留settled、请求观测0、未安装verification-profiles。管理机证据在`out/secagent-audits/20261003-wp02-authz-preflight/`。
+
+远端最终字节全域688/688通过。北京时间2026-10-03 19:12:54（UTC11:12:54）进入停写，新冻结state_dir=`/opt/silkspool/dsh-upgrades/20261003-wp02-authz-preflight/dsh-freeze-_mo0awe3`，完整树校验进行中；此时尚未安装生产插件。临时暂停的proxy-refresh.timer须随本批resume恢复。
+
+完整冻结通过，manifest=`9e229e517c5e26ed122f319f07272aea318d4fcb08ead28b6f677ca0029d994e`。六根恢复校验已启动，待旧/新应用、exec/endpoint/vuln与worker隔离验收；生产安装尚未执行。后续驱动`complete-release.py`逐项强制门禁，失败保留停写状态供处理；发布状态与日志见同一change目录。
+
+上线验收：源码6bd68c0，清单2项/实际4文件摘要吻合；六根恢复通过、64表无新增，预检缓存5.98秒。新旧应用15域、1865原生session、3工作区/1609列表会话；隔离exec/endpoint/vuln166/166、worker19项通过。首次旧版预演因发布目录0700阻止服务账号穿越而未启动，保留失败后仅将发布根改0711，私有证据与恢复树内权限未改；原门禁重跑通过。生产新authz_preflight查询、不可信回执与缺契约拒绝均通过；未发真实业务请求。
+
+北京时间19:12:54–19:49:46（UTC11:12:54–11:49:46）停写36分52秒，已恢复且无恢复错误；PID1112833/NRestarts0，六服务和七timer active、journal err0。UI首轮连接拒绝（PASS45/FAIL1）保留，确认3081监听后重跑原门禁80/80通过，未修改超时或断言。campaigns/tasks/workers/预留/endpoint_requests切换前后摘要相同，running task/worker及pending-finish均0，19预留settled，worker/claim上限均1；C1/C2/C3账面及额度保持本次发布前数值，全部paused。部署后NAS备份/恢复校验进行中。
+
+部署后恢复保障完成：NAS `bd1bd0daa2b6a0cf7bf2ea4b2a537986f40cc8ea4538d54e46ac648ddd0f303f`，40库备份249.01秒/同快照恢复6.48秒，覆盖与排除范围未变。64项发布证据及SHA256SUMS封存于csai `dsh-upgrades/20261003-wp02-authz-preflight/delivery-evidence/`，管理机同名审计目录已拉取并逐项验摘要。phase=`deployed-authz-preflight-accepted-real-pilot-pending`。本批发布闭环完成；真实入口/测试身份/自有对象、20–50份健康请求模板及其他漏洞族契约仍待办，供应商最终费用边界与历史未知未闭环；Campaign保持暂停，WP02/WP04及全方案未关账。
