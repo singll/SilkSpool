@@ -265,6 +265,23 @@ node scripts/pipeline/sec-bus-cli.mjs dispatch endpoint.import_har --actor scrip
 
 本批定向210/210、全域671/671、候选检查7/7通过，覆盖导入→观测→持久H2队列、幂等、暂停专项不派任务、故障回滚与证据保护。**尚无真实项目20–50份健康模板验收，未接入浏览器自动采集、账号归集或健康基线判定。**
 
+#### 1.3.9 浏览器被动采集入口（2026-10-03，本地完成、待发布）
+
+`dsh-browser-capture.mjs` 是运维脚本，不新增模型工具或后台常驻服务。附着既有本机CDP，核验当前浏览器Scope代理的启动参数/代码摘要/授权文件归属；仅选择一个已打开且origin匹配的页面，多页面歧义拒绝。必须提供当前有效的 `program`、精确 `origin` 和新的 `run-id`，每个请求按同项目授权与排除规则检查；每秒复核授权和浏览器守卫。不会打开页面、导航、提交表单、重放请求、读取凭据库或自动导入。
+
+```bash
+# 先在已授权项目的受管浏览器页面完成正常操作准备，再监听其后产生的请求。
+node /opt/silkspool/dsh/dsh-browser-capture.mjs \
+  --program PROGRAM --origin https://business.example --run-id RUN \
+  --seconds 120 --limit 100 --max-bytes 16777216
+```
+
+输出位于 `data/results/RUN/browser-capture/`：逐条fsync的 `entries.jsonl`、结束时HAR 1.2 `capture.har` 和含来源SHA256的 `receipt.json`。目录0700、文件0600，不覆盖旧run、不跟随结果路径软链。默认120秒/100请求/16MiB，硬上限300秒/500请求/32MiB；单条768KiB，在途正文/头也预留字节额度。SIGINT/SIGTERM、页面关闭、断连、授权撤回、读写故障及达到上限均有明确收尾；强杀可能留下末行不完整的journal，不会伪造成功HAR或回执。
+
+保留真实method、URL、重复query、请求头和UTF-8正文；不读取响应正文、不从Cookie推断身份。非UTF-8/超限/不可读输入显式计入omitted，不能默默截断；二进制和multipart文件内容目前不作为完整可导入请求支持。`finished/failed/inflight`分别标记，失败/未完成请求保留原件、`partial=true`，导入器对这些条目返回 `E_HAR_CAPTURE_INCOMPLETE`，防止其进入可派发队列。正常完成也仅是传输事实，`business_health=unknown`。
+
+受控Chromium实测已通过JSON中文正文、重复表单参数、GET、Cookie原件与查询脱敏、无重放、断开采集不关闭共享页面、多页面拒绝、未受管浏览器拒绝、Scope撤回自动停止。采集核心8项、原Scope5项通过；全域672/672通过。**真实项目入口/账号、20–50份健康请求和业务正对照仍待准备；不得以测试夹具计业务覆盖。**
+
 ### 1.4 查询逐个详述（纯读）
 
 `endpoint_request_get({request_id})`：actor=`model/script/dashboard/human/reactor`；返回完整观测元数据与原始摘要，现场校验得到 `evidence_state=intact/changed/unavailable`；文件变更或丢失不删除历史记录。`endpoint_requests({program_id?,host?,limit?,offset?})`：相同 actor；limit 默认50、上限500，offset默认0；返回准确 total 与摘要行，`meta.paged=true` 防总线重复切片。摘要不含 parameters、正文、身份引用；明细按 ID 获取。缺 ID 为 `E_NOT_FOUND`。

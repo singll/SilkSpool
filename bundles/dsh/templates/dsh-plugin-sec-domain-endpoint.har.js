@@ -16,6 +16,9 @@ export function parseHar(bytes) {
 }
 
 export function harObservation(entry, { sourceSha256, index, programId, runId, binding = {} }) {
+  const captured = entry?._silksec_capture
+  if (captured !== undefined && (captured?.version !== 1 || captured.terminal !== 'finished'
+      || captured.request_complete !== true)) reject('E_HAR_CAPTURE_INCOMPLETE')
   const request = entry?.request
   if (!request || !METHODS.has(request.method)) reject('E_HAR_METHOD')
   let url

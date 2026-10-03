@@ -453,6 +453,9 @@ templates:
   - dsh-browser-fork.browser-manager.js
   - dsh-browser-scope.js
   - dsh-browser-scope.test.mjs
+  - dsh-browser-capture.mjs
+  - dsh-browser-capture.test.mjs
+  - dsh-browser-capture.browser.test.mjs
   - dsh-shared-browser-host.mjs
   # --- headless worker 模型熔断回退（2026-08-24 线上修复固化，幂等）---
   - headless-failover-setup.sh

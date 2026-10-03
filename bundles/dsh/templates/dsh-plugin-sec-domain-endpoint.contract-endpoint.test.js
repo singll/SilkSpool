@@ -198,6 +198,20 @@ test('27 WP04 HAR: 提取路径软链拒绝，不覆盖外部文件', async () =
   assert.deepEqual(fs.readdirSync(outside), [])
 })
 
+test('27 WP04 浏览器采集: 失败/未完成条目不成为可派发请求，完整条目可入库', async () => {
+  const { bus, dataDir } = makeEnv()
+  const entries = ['failed', 'inflight', 'finished'].map(terminal => ({
+    ...harEntry(), _silksec_capture: { version: 1, terminal, request_complete: true, response_body: 'not_collected' },
+  }))
+  const result = await bus.dispatch('endpoint', 'import_har', saveHar(dataDir, entries), { actor: 'script' })
+  assert.equal(result.ok, true, result.error?.message)
+  assert.equal(result.data.created, 1)
+  assert.equal(result.data.rejected, 2)
+  assert.deepEqual(result.data.rows.slice(0, 2).map(r => r.code), ['E_HAR_CAPTURE_INCOMPLETE', 'E_HAR_CAPTURE_INCOMPLETE'])
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM endpoint_requests').get().n, 1)
+  assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM event_outbox WHERE name='endpoint.request.observed'").get().n, 1)
+})
+
 test('27 WP04: JSON 请求观测保留 method/body/参数位置/身份，重复回放幂等、身份变化独立保存', async () => {
   const { bus, dataDir } = makeEnv()
   const evidence = 'results/run_test_20260910_000000/request.json'

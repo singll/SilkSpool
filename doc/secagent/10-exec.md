@@ -633,6 +633,8 @@ exec 域的运行依赖一批**平台层边缘资产**——它们不属于任�
 
 **不动清单的边界**：上表资产出问题时（浏览器崩/OOB 启用/intel.jsonl 格式变化）的处置先走[18号](18-backup-and-maintenance.md)变更前备份流程，平台资产历史部署细节见归档 migration-v4-to-v5 §九，不改域契约；域文档只在耦合点语义变化时同步本表。
 
+2026-10-03 WP04来源核查：现有flows共284,796条，284,795条web_statistic、1条仅plugin/target/title的web_vuln，均不含完整请求；xray webhook文件不能等同请求捕获。新增独立 `dsh-browser-capture.mjs`（本地完成、待发布）附着受管CDP、只监听单个同源页面、限时限量写受控HAR，不导航、不重放、不改变浏览器fork或服务。完整契约及限制见04号§1.3.9；采集文件不是exec可信HTTP验证回执，不产生漏洞判定。
+
 ---
 
 ## 三、迁移与兼容
