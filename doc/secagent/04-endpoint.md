@@ -1,6 +1,6 @@
 # 04 · endpoint 域设计（接口面 / 参数队列——"打哪里、喂什么料"的唯一事实源）
 
-> 版本：v5.2 ｜ 状态：2026-10-01 请求观测已部署；2026-10-02 HAR导入已部署验收 ｜ 契约版本：endpoint@1（repository-v1）
+> 版本：v5.2 ｜ 状态：请求观测、HAR导入及2026-10-03浏览器被动采集已部署验收 ｜ 契约版本：endpoint@1（repository-v1）
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线）
 > owns（单写者）：`endpoints`、`endpoint_requests` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）+ `data/evidence/requests/**`（HAR提取证据）
 > 不 owns：`assets`（asset 域）、`findings`（vuln 域）、`data/pipeline/{program}/` 下其余台账文件（ledger 域）
@@ -265,7 +265,7 @@ node scripts/pipeline/sec-bus-cli.mjs dispatch endpoint.import_har --actor scrip
 
 本批定向210/210、全域671/671、候选检查7/7通过，覆盖导入→观测→持久H2队列、幂等、暂停专项不派任务、故障回滚与证据保护。**尚无真实项目20–50份健康模板验收，未接入浏览器自动采集、账号归集或健康基线判定。**
 
-#### 1.3.9 浏览器被动采集入口（2026-10-03，本地完成、待发布）
+#### 1.3.9 浏览器被动采集入口（2026-10-03，已部署验收）
 
 `dsh-browser-capture.mjs` 是运维脚本，不新增模型工具或后台常驻服务。附着既有本机CDP，核验当前浏览器Scope代理的启动参数/代码摘要/授权文件归属；仅选择一个已打开且origin匹配的页面，多页面歧义拒绝。必须提供当前有效的 `program`、精确 `origin` 和新的 `run-id`，每个请求按同项目授权与排除规则检查；每秒复核授权和浏览器守卫。不会打开页面、导航、提交表单、重放请求、读取凭据库或自动导入。
 
@@ -281,6 +281,8 @@ node /opt/silkspool/dsh/dsh-browser-capture.mjs \
 保留真实method、URL、重复query、请求头和UTF-8正文；不读取响应正文、不从Cookie推断身份。非UTF-8/超限/不可读输入显式计入omitted，不能默默截断；二进制和multipart文件内容目前不作为完整可导入请求支持。`finished/failed/inflight`分别标记，失败/未完成请求保留原件、`partial=true`，导入器对这些条目返回 `E_HAR_CAPTURE_INCOMPLETE`，防止其进入可派发队列。正常完成也仅是传输事实，`business_health=unknown`。
 
 受控Chromium实测已通过JSON中文正文、重复表单参数、GET、Cookie原件与查询脱敏、无重放、断开采集不关闭共享页面、多页面拒绝、未受管浏览器拒绝、Scope撤回自动停止。采集核心8项、原Scope5项通过；全域672/672通过。**真实项目入口/账号、20–50份健康请求和业务正对照仍待准备；不得以测试夹具计业务覆盖。**
+
+源码`e5452cc`已部署至DSH0.1.7-rc.2；恢复副本内真实Chromium＋核心9项、endpoint/task166项通过，生产空HAR预览及错误摘要拒绝通过，UI80/80。生产请求观测仍0，未自动采集共享页面。集成测试夹具须避免继承宿主`SEC_DATA_DIR`（隔离命令使用`env -u SEC_DATA_DIR`），否则代理与采集器解析到不同Scope文件并正确拒绝；该测试环境失败记录已保留。发布恢复及完整证据见27号§15.11。
 
 ### 1.4 查询逐个详述（纯读）
 

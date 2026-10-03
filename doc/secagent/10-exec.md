@@ -1,6 +1,6 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
-> 版本：v5.2（2026-10-02 费用证据边界核对） ｜ 状态：现行契约 ｜ 契约版本：`exec/1`
+> 版本：v5.2（2026-10-03 浏览器采集来源边界） ｜ 状态：现行契约 ｜ 契约版本：`exec/1`
 > 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.worker.spawned/.finished`（task 域，强联动）；`exec.flow.appended`、`exec.import.completed`、`exec.evidence.published` 当前**无订阅方（设计预留）**——各域 manifest 未声明，待实现后回填
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
@@ -633,7 +633,7 @@ exec 域的运行依赖一批**平台层边缘资产**——它们不属于任�
 
 **不动清单的边界**：上表资产出问题时（浏览器崩/OOB 启用/intel.jsonl 格式变化）的处置先走[18号](18-backup-and-maintenance.md)变更前备份流程，平台资产历史部署细节见归档 migration-v4-to-v5 §九，不改域契约；域文档只在耦合点语义变化时同步本表。
 
-2026-10-03 WP04来源核查：现有flows共284,796条，284,795条web_statistic、1条仅plugin/target/title的web_vuln，均不含完整请求；xray webhook文件不能等同请求捕获。新增独立 `dsh-browser-capture.mjs`（本地完成、待发布）附着受管CDP、只监听单个同源页面、限时限量写受控HAR，不导航、不重放、不改变浏览器fork或服务。完整契约及限制见04号§1.3.9；采集文件不是exec可信HTTP验证回执，不产生漏洞判定。
+2026-10-03 WP04来源核查：现有flows共284,796条，284,795条web_statistic、1条仅plugin/target/title的web_vuln，均不含完整请求；xray webhook文件不能等同请求捕获。新增独立 `dsh-browser-capture.mjs`（源码`e5452cc`，已部署验收）附着受管CDP、只监听单个同源页面、限时限量写受控HAR，不导航、不重放、不改变浏览器fork或服务。隔离真实Chromium与采集核心9项、worker19项、生产UI80/80通过；断开采集保留共享浏览器，Scope撤回自动停止。完整契约及限制见04号§1.3.9；采集文件不是exec可信HTTP验证回执，不产生漏洞判定。真实试点尚未开始，Campaign仍暂停。
 
 ---
 

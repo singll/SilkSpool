@@ -1015,12 +1015,22 @@ fixture编号锁修正后，本地最终字节全域665/665、63表副本预检�
 部署后恢复保障：NAS `e01e75ca4147bc02b525056f555b5d0e0137df29e4b5690e6ce3a15b48f7a0f8`，40库备份216.34秒/同快照恢复6.90秒，覆盖/排除范围不变。55项关键证据SHA256SUMS封存于csai `dsh-upgrades/20261002-wp04-har-import/`，管理机副本 `out/secagent-audits/20261002-wp04-har-import/`；phase=`deployed-har-import-accepted-real-capture-pending`。本批发布闭环完成；接下来准备一条业务线真实捕获与显式身份/自有对象，再补WP02健康基线和适用验证契约，不凭导入能力恢复外部探索。
 
 
-### 15.11 WP04浏览器被动请求采集（2026-10-03，本地完成、待发布）
+### 15.11 WP04浏览器被动请求采集（2026-10-03，已部署验收）
 
 只读核查现有数据：业务根和三个工作区仅见发布空HAR；flows 284,796条中284,795为web_statistic，1条web_vuln只有plugin/target/title，无完整请求。credentials仅1条无Program的侦察API key；verification-profiles未安装。该检查不读取或输出凭据秘密，不证明其它未纳管位置完全没有可用账号。已向用户询问试点项目/业务入口及账号可用性，待回复；不擅自挑共享页面采集。
 
 新增独立dsh-browser-capture.mjs，附着现有受管CDP，锁定已打开的单页面/精确origin/Program；每秒复核Scope与守卫。默认120秒/100请求/16MiB，硬上限300秒/500请求/32MiB，包含在途输入预留；私有journal逐项fsync，结束产出HAR及摘要回执。仅观察，不导航、不重放、不解析凭据库或自动导入，不收响应正文。强杀保留journal、未知/失败/超限显式计量；导入器拒绝failed/inflight原件，避免当作完整请求派发。
 
-验证：采集核心8项、既有Scope5项；真实Chromium151/Playwright1.62.1实际CDP→HAR→导入适配器闭环，覆盖JSON中文正文/重复form/GET、秘密不入回执、多页面及未受管浏览器拒绝、Scope撤回停止、断开后共享页面存活、无重放。全域672/672通过；首轮预检因验证期间补在途字节预留检测模板变化而失效，最终字节重跑通过。生产仍为上一批PID1073682/NRestarts0；本批尚未写生产。
+验证：采集核心8项、既有Scope5项；真实Chromium151/Playwright1.62.1实际CDP→HAR→导入适配器闭环，覆盖JSON中文正文/重复form/GET、秘密不入回执、多页面及未受管浏览器拒绝、Scope撤回停止、断开后共享页面存活、无重放。本地及远端全域672/672通过；首轮预检因验证期间补在途字节预留检测模板变化而失效，最终字节重跑通过。
 
-发布范围：change 20261003-wp04-browser-capture，固定DSH0.1.7-rc.2；新增独立脚本/测试与endpoint HAR完整性守卫，无表迁移，无浏览器fork/依赖/服务配置变更。恢复点/备份覆盖既有results和证据根；登录态排除不变。下一步本次prepare-change、冻结、恢复副本及新旧应用/真实浏览器验证、静默生产门禁、恢复和备份收尾。真实入口/身份仍待定，未开始真实采集，不声称WP04完成。
+发布范围：change 20261003-wp04-browser-capture，固定DSH0.1.7-rc.2；新增独立脚本/测试与endpoint HAR完整性守卫，无表迁移，无浏览器fork/依赖/服务配置变更。恢复点/备份覆盖既有results和证据根；登录态排除不变。本次prepare-change、冻结、恢复副本及新旧应用/真实浏览器验证、静默生产门禁、恢复和备份收尾均已完成。真实入口/身份仍待定，未开始真实采集，不声称WP04完成。
+
+发布门禁：源码`e5452cc`已推送并部署，清单5项/实际7文件摘要全部吻合；本次NAS `5f14f1190daaa83715eb561d5fb1149bb21eb198f11b77539f5ad0bf7b6f472d`，40库备份40.41秒/同快照恢复7.08秒，覆盖/排除范围不变。远端最终字节全域672/672通过。记录并停止正在执行的代理刷新及timer后，北京时间2026-10-03 11:09:30进入停写；冻结manifest `aa07b266a7f27ea974d65ef9f3db86c95a365afe406cf358bd6de6c13bb7ba4a`，六根完整恢复和64表预检通过，缓存预检7.36秒。
+
+恢复副本验收：新旧应用均为15域、1865原生session、3工作区/1609列表会话；endpoint/task166/166、真实Chromium＋采集核心9/9、worker19项通过。旧版应用两次10秒RPC超时后，以仅记录无查询参数路径/耗时的诊断包装重跑原门禁通过，慢查询实测3.95–5.48秒，未证明最初超时根因。浏览器首次因隔离环境继承SEC_DATA_DIR、夹具代理与采集器Scope归属不一致而拒绝；测试命令清除该变量后通过，未改生产代码/守卫。worker首次RPC超时，增加只记录异常位置的包装后原门禁通过；没有放宽超时或跳过断言。所有失败报告保留，fixture仅在无外网隔离副本运行。
+
+生产静默冒烟：空HAR preview成功、created=0，错误摘要返回E_HAR_SOURCE_CHANGED，不可信证据/伪造capsule和缺验证契约拒绝仍生效；生产请求观测保持0。64表无新增，变化仅kb_fts_data/idx、programs、bus_meta、event_outbox等启动维护项；campaigns/tasks/workers/task_budget_reservations/endpoint_requests切换前后摘要相同。
+
+北京时间11:09:30–12:03:48（UTC03:09:30–04:03:48）停写54分19秒，恢复无错误；PID1097006/NRestarts0，六服务active、七timer active，生产UI首轮80/80，journal err0。备份后复核running task/worker/pending-finish均0，19项预留全部settled；并发与认领上限实测均1。C1/C2/C3账面176,585,747/583,573,616/110,075,205，预算200M/200M/50M不变，均paused；这些累计及预留已在本次切换前存在，不能沿用上一批13项预留或旧费用数字。
+
+部署后NAS `b05227e632536b11a04ebcc1753ebdac8363eeee7e1ade663ad6e9d576c7640b`，40库备份185.70秒/同快照恢复6.91秒；覆盖/排除不变。96项证据SHA256SUMS封存于csai `dsh-upgrades/20261003-wp04-browser-capture/delivery-evidence/`，管理机副本 `out/secagent-audits/20261003-wp04-browser-capture/`；phase=`deployed-browser-capture-accepted-real-pilot-pending`。本批发布闭环完成；后续仍需确定已授权试点项目/业务入口、可用测试身份和自有对象，采集20–50份真实健康模板，再接WP02健康基线/逐族验证契约。供应商最终费用证明及历史歧义未闭环，不恢复外部探索或提高预算。
