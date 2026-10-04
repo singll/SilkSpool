@@ -1100,3 +1100,16 @@ WP06复核集合改为status=confirmed OR confidence=confirmed，共47条：44�
 本批推进到历史事实的材料支持程度：#6 historical_sensitive_read_supported；#361/#366/#390 historical_internal_debug_disclosure_supported；#7/#22仍待发出请求的来源/身份关联。不是生产自动确认，不计当前新增独立漏洞，不把历史低危材料作废，也不将缺请求直接判false_positive。
 
 下一步优先从历史run/命令补#7/#22身份关联，继续24条未定位原件；根因复核后再形成独立成果计数。美团/字节授权内S级试点、Campaign暂停和费用门槛不变，WP06/全方案未关账。
+
+
+### 15.16 WP06压缩会话请求来源关联（2026-10-04，只读完成）
+
+普通文件9878项定向搜索只找到3处后续引用；进一步解压读取3742份压缩会话，95.46秒、解压错误0，命中202行（含迁移版本重复及后续引用，不计实验数）。远端无rg，改用Python文件读取及zstd只读解压，未安装依赖或写远端。
+
+#7/#22找到原始会话session-3b7739be-a2e6-454a-ab92-b8c9fcef9548：#22调用seq184/结果185，#7调用199/结果200，按callId严格关联。显式anon JWT均与保存bundle一致，结果HTTP200且正文与保存文件逐字匹配。更新为historical_read_with_anon_command_provenance_supported；JWT未验签、curl隐式配置未保存，不能冒充完整网络抓包或当前复验。读结果不支持CRUD/RCE/管理员会话主张。
+
+找回9月25日#7校准报告：当时已指出CRUD/RCE缺证及#7/#20同实例。#20后续会话明确复用#7正文，补记关联证据，不把共享证据计两次独立发现；旧报告合并方向相反，不据此自动指定canonical/改dup。
+
+同时核对#6/#7/#8/#15/#20/#22数据库主机均不匹配当前scope；前端域在scope不授权其全部后端。只做离线历史复核，未调用旧命令/凭据或发目标请求；当前授权边界不抹掉历史证据。
+
+审计目录新增request-linked-events-private.json、request-provenance-checks.json及request-provenance-review.md等，47条队列更新，27项SHA256封存。下一步沿压缩会话继续未定位材料及业务私有性/根因核算；本批未完成47条全量结论。美团/字节授权内S级试点、预算门槛及Campaign暂停保持，WP06和全方案未关账。
