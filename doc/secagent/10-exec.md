@@ -1,6 +1,6 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
-> 版本：v5.3（2026-10-03 读取前置检查已部署验收） ｜ 状态：现行契约 ｜ 契约版本：`exec/1`
+> 版本：v5.4（2026-10-04 增补逐请求审计边界；读取前置已部署） ｜ 状态：现行契约 ｜ 契约版本：`exec/1`
 > 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.worker.spawned/.finished`（task 域，强联动）；`exec.flow.appended`、`exec.import.completed`、`exec.evidence.published` 当前**无订阅方（设计预留）**——各域 manifest 未声明，待实现后回填
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
@@ -828,3 +828,11 @@ worker新增受控`results/<run_id>/worker-requests.jsonl`，schema_version=1，
 上线结果：本批新冻结恢复副本worker19/19、15次fixture请求通过；真实adapter正常响应标识、失败unknown保留均通过。生产103401三请求12事件/3响应ID，总92,741 token（含缓存读取43,776）与原始账单/worker/run账本一致；只调用一次bus_status，随后WP03_OK。生产UI80/80、六服务active，恢复点与失败报告见27号§15.9。此验收不证明内部HTTP重试费用或错误请求最终结算，Campaign仍暂停。
 
 2026-10-03 WP02前置增量（源码`6bd68c0`，已部署）：本地/远端全域688/688、最终本地exec56/56、六根恢复/64表、新旧应用、隔离exec/endpoint/vuln166/166、worker19项、生产静默拒绝路径与UI重跑80/80通过。前置查询已注册，生产缺契约仍返回E_EXEC_ORACLE_UNSUPPORTED；未安装真实项目profile、未发真实业务请求。回执/密钥覆盖既有备份根，部署后40库恢复校验通过，详情见27号§15.12；适用范围不扩展到其他漏洞族，Campaign仍暂停。
+
+### 2026-10-04 · WP03审计消费与上游结算边界
+
+新增独立`dsh-request-cost-audit.py`消费既有逐请求文件，契约见05号§7.36；本批不修改worker、适配器或线上预算行为。15项合成检查及16个生产worker只读检查通过，正常适配器终止/usage/responseId与账本一致仍不证明供应商最终结算。
+
+Bellkeeper运行容器处于running，宿主checkout为`59b1aa3`，核对模型/网关/handler/repository四文件与管理机一致；该checkout核查不是运行二进制逐字节来源证明。生产PostgreSQL的`llm_proxy_logs`实际16列仅有caller/model/status/retry_count/usage/费用等，无逐请求关联ID、上游response ID或终止状态。对应checkout的日志队列满时丢记录；金额由本地价格表计算，流结束按已观察usage写日志，不能充当供应商最终账单。24小时聚合331行、5条HTTP失败或传输失败、159条零usage是日志口径，类别可重叠、零usage不等于免费，也不能与某个worker按时间强行匹配。
+
+待实现的结算接入必须保留：DSH本地request_id→网关请求→每次上游尝试的明确关联、发送前持久记录、成功/失败/取消终止事实、上游真实标识、可信最终用量来源及更正版本。未知释放须验证全部尝试覆盖且最终收据严格绑定，以追加幂等记录处理；日志落盘失败不能签发完整证明。现有responseId/时间相近/重试成功/本地价格推算均不足。此段为后续接口要求，当前没有新增网关回执接口或unknown释放命令。

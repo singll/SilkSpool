@@ -1,6 +1,6 @@
 # 05 · task 域设计（任务 / 调度 / 执行史 / worker 注册表）
 
-> 版本：v5.4（2026-10-02） ｜ 状态：现行契约；业务及预算增量已部署，新增独立只读费用审计（§7.34）｜ 契约版本：task domain manifest v1
+> 版本：v5.5（2026-10-04） ｜ 状态：现行契约；业务及预算增量已部署，独立只读费用审计见§7.34/7.36｜ 契约版本：task domain manifest v1
 > 依赖：订阅 `scope.granted`（审批入队种子任务）、`exec.worker.spawned` / `exec.worker.finished`（worker 注册表记账，强联动）、`know.release.revoked`（L6：撤回 → change-retest 重测需求任务入队，§2.3 变更触发节奏）、`vuln.signal.confirmed`（产出闭环：确认漏洞自动入队 `[提交] finding #id` 提交任务，同 finding 幂等去重）；`task_budget_extend` / `task_complete` 由 approval 域在 `approval_decide` 事务内**同步 dispatch**（actor=approval，幂等账本 `approval_effects`）执行——执行失败记 `approval_effects.failed`，**无独立 dispatcher 自动重试**，需人工 `approval_effects_retry` 补跑，不回滚 decide（09-approval §2.3；两域以此线为准）。
 > 被订阅：`task.created`（看板/memcore）、`task.claimed`（看板）、`task.finished`（**fgs 域沉淀触发、fact 域 FGS 转正、ledger 域 handoff 追加、know 域学习 episode（L1）**）、`task.blocked` / `task.cancelled`（看板/memcore）
 > 最高约定：[`00-conventions.md`](00-conventions.md)。本文与宪法冲突时以宪法为准。
@@ -1484,3 +1484,13 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 审计schema2新增补账建议和每任务旧累计核对：315项中247可补、19已覆盖、49旧累计冲突；247项独立副本完整执行/重放通过，首次增量1,290,916,472、第二次0；业务非费用字段和预留不变。task123/123、全域665/665、63表schema与审计10/10通过；生产实际补账完成前不得将预演值写作当前账面。
 
 生产验收：247项正式补账/重放通过，增量1,290,916,472/0，证据表247行；60表及非费用字段投影一致，全部预算预留不变。新旧隔离应用、worker17项、生产UI80/80通过。C2/C3账面超额并维持paused；详细恢复/失败经历与当前事实见27号§15.8。
+
+### 7.36 2026-10-04 · 逐请求费用证据审计（独立工具，生产只读验收通过）
+
+`dsh-request-cost-audit.py`按带时区的`--since`选择worker启动窗口，默认最多100项（上限10000）；输出总数及截断标记，不把未选项计为已检查。`--host`通过PATH中的spool在远端内存运行，无安装/上传/模型调用/数据库写入。SQLite使用单只读事务；三份控制文件逐项稳定读取，再复读比较整组字节；它们与数据库不是跨源冻结快照。
+
+关联`worker-requests.jsonl`、`worker-session.json`、`worker-budget.json`与worker注册、run费用账本及预算预留；核对run/PID/nonce摘要/cwd/session/时间、事件和请求顺序、逐请求身份、usage/finish/terminal投影。跨workers/task_runs/task_run_costs/task_cost_watch核对session唯一归属，包括窗口外记录。输出不含nonce、正文、凭据或原始供应商响应ID，后者仅以摘要参与重复检查。
+
+分别报告`adapter_evidence_complete`、运行时预算计数一致性、账本相等/高于下界/低于已观察值及预留状态。完整正常零usage与缺usage分开；失败/取消/缺终止保留已观察下界，末尾半行保留完整前缀并标缺口。无finish但运行时已settled也标证据不完整，不能用预算状态替代协议终止。所有报告固定`final_cost_proven=false`、`unknown_release_allowed=false`；退出0仅表示审计完成，不授权放量或释放预留。原账高于下界不自动冲减。
+
+15项合成测试通过，覆盖并发、缓存、正常/失败零usage、取消/强杀前缀、重复标识、绑定冲突、窗口外歧义、伪造结算、缺文件、软链/权限、查询截断和全部输入字节不变。北京时间2026-10-04 20:24:17最终采样（窗口自10-02 21:07:20）：16个worker全部可审计，147事件/33准入/15拒绝，已观察1,378,063 token与16份run账本分别同额、预留均settled；worker为1 done/15 failed。15次拒绝对应独立任务16/17/24，Campaign暂停不等于全部定时任务停止。本工具不计入688领域契约，也不代表重新执行生产UI验收。
