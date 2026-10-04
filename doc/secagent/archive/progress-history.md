@@ -758,3 +758,11 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - 北京时间19:12:54–19:49:46停写36分52秒，恢复无错误。PID1112833/NRestarts0、六服务/七timer active、journal err0；running task/worker/pending-finish均0，19预留settled，业务表摘要未变，worker/claim上限均1。
 - 变更前NAS2b3570b2…（40库38.68秒/恢复6.62秒）、冻结9e229e51…、部署后NASbd1bd0da…（40库249.01秒/恢复6.48秒）；覆盖/排除不变，64项证据已封存并拉回验摘要。
 - 三个Campaign暂停、费用及额度保持发布前值；未安装真实项目契约或发真实业务请求。下一步需明确试点项目/入口、测试身份与自有对象，采集20–50份健康模板；供应商最终费用证明与历史未知仍待办，WP02/WP04及全方案未关账，见[27号§15.12](27-business-quality-and-capacity-plan-2026-09-30.md#1512-wp02读取实验前置检查2026-10-03已部署验收)。
+
+
+### 2026-10-04 · 试点范围确定，完成只读选点与存量复核队列
+
+- 用户确定美团SRC、字节SRC授权范围内S级资产；后续不再重复询问项目选择，测试身份/自有对象仍待补。
+- 生产只读核对：美团48条S级资产行/40个主机，字节419条/384个主机，均匹配现有scope；113条无Program的S级资产排除。根路径历史200分别18/22个唯一主机，尚不能视为健康请求。
+- 复核集合采用status或confidence任一confirmed，共47条（44条status confirmed及3条new/confidence confirmed）；28条旧导入，均缺task_id。保存私有原件、逐项待复核清单及摘要，不修改技术结论。
+- 证据位于out/secagent-audits/20261004-wp06-evidence-review/；本批只读，无生产写入、无目标请求、无代码发布。Campaign继续暂停；下一步核验所选业务入口、身份/对象与47条旧证据，见[27号§15.13](27-business-quality-and-capacity-plan-2026-09-30.md#1513-wp04试点范围确定与wp06复核清单2026-10-04只读准备)。
