@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 
 
-def select_route(pool_dir):
+def select_route(pool_dir, *, expected_proxy_sha256=None):
     root = Path(pool_dir)
     raw = {name: (root / name).read_bytes() for name in ('pool.json', 'live.txt', 'blocklist.txt')}
     live = set(raw['live.txt'].decode().splitlines())
@@ -37,10 +37,17 @@ def select_route(pool_dir):
             continue
     if not choices:
         raise ValueError('no eligible anonymous HTTP CONNECT route')
-    # Bind once. Pool changes must reject continuation, never select a replacement.
+    eligible_routes = len(set(url for _, url in choices))
+    # Revalidate the original route, even if a different route is now faster.
+    # Source digests remain observations, not a lease or an egress guarantee.
+    if expected_proxy_sha256 is not None:
+        choices = [(latency, url) for latency, url in choices
+                   if hashlib.sha256(url.encode()).hexdigest() == expected_proxy_sha256]
+        if not choices:
+            raise ValueError('bound route is no longer eligible; replacement forbidden')
     chosen = min(choices)[1]
     return {'proxy': chosen, 'proxy_sha256': hashlib.sha256(chosen.encode()).hexdigest(),
             'source_sha256': {k: hashlib.sha256(v).hexdigest() for k, v in raw.items()},
-            'eligible_routes': len(set(url for _, url in choices)),
+            'eligible_routes': eligible_routes,
             'fixed_route_only': True, 'exit_ip_proven': False,
             'tls_transparency_proven': False, 'retries': 0}

@@ -484,3 +484,10 @@ systemctlIsActive(unit) / systemctlStartNoBlock(unit)   // 系统调用封装
 `dsh-pilot-proxy.py`的`select_route(pool_dir)`只读pool.json/live.txt/blocklist.txt，从未禁用的存活匿名HTTP代理选择一条公网IPv4路线；拒绝凭据、未知等级、无效地址/端口/延迟。返回proxy与源摘要，调用方负责私有保存proxy及批次绑定，不直接向用户打印路线。函数不发网络请求、不写池或sticky、不持有跨调用租约；重复调用可能随池变化选出不同路线，多步实验须另行校验绑定而不能反复调用当作固定出口。
 
 固定路线不代表固定公网出口IP、TLS透明性或业务健康，回执显式保留`exit_ip_proven=false`/`tls_transparency_proven=false`。4项本地测试通过。27号§15.21一次猫眼复验仍为curl60，原因未取得完整TLS诊断，不能宣称替代8899已成功；本批未改生产代理配置。
+
+
+### 原路线精确续接（2026-10-05，本地工具，未安装生产）
+
+`select_route(pool_dir, expected_proxy_sha256=...)`在当前合格集合中精确匹配原路线摘要，不因延迟排序变化切换代理；旧路线缺失、被blocklist禁用或资格失效均拒绝，禁止自动fallback。返回当前三份源摘要，源变化须重新执行批次Scope/资产/路线前检；该参数不是跨调用租约，也不证明出口IP或TLS透明。6项测试通过，含排序变化保持绑定和资格失效拒绝替换。
+
+本次按旧摘要成功找到原路线，执行一次保留域名SNI/验证、固定目标IPv4的TLS-only诊断，15秒超时，无证书或错误正文；未发送业务GET、未轮换。上批curl60具体原因仍未知。完整记录见27号§15.22；可用透明出口尚待验收。
