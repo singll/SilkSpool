@@ -1,6 +1,6 @@
 # 13 · proxy 域设计（免费代理池：采集提案落池、轮换网关消费、会话保持）
 
-> 版本：v5.1（2026-10-04补现役TLS/固定出口边界） ｜ 状态：现行契约 ｜ 契约版本：1
+> 版本：v5.2（2026-10-04补单代理试点选择器及失败边界） ｜ 状态：现行契约 ｜ 契约版本：1
 > 依赖：**订阅**：无（不订阅任何事件）；**被订阅**：`proxy.pool.refreshed` / `proxy.bad.reported` / `proxy.sticky.bound`（当前零强联动订阅者——mubeng 热加载不依赖事件，见 §2.3 论证）；**被引用**：exec 域（env_proxy 8899 注入——**设计原计划注入前引用 `proxy_stats` 做健康观测，实测未实现**：exec 仅按 `env_proxy` 注 `http_proxy/https_proxy`，不查 proxy 域，见 §2.3）、16-dashboard（网关健康展示——**未接入**，见 §1.7）。
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）。
 
@@ -477,3 +477,10 @@ systemctlIsActive(unit) / systemctlStartNoBlock(unit)   // 系统调用封装
 | 性能 | 代理池文件规模小，读全量可接受。**勘误（B5 核验）**：sticky 绑定**非**进程内缓存——`sticky.json` 是持久文件（`readSticky`/`writeStickyAtomic`，tmp+rename），重启后不丢；原"sticky map 进程内缓存无持久化，重启后重建"表述有误，与 §2.1/§2.5「sticky.json 是数据不是缓存」矛盾。 |
 | hook 判定 | 无跨域直写；exec 经 `exec_report_bad_proxy` 调本域 `proxy_report_bad`（v4 直连已删）。 |
 | 独立升级 | 支持单域替换；须回归 exec 的代理注入与 report_bad。 |
+
+
+### 只读单代理试点选择器（2026-10-04，本地工具，未安装生产）
+
+`dsh-pilot-proxy.py`的`select_route(pool_dir)`只读pool.json/live.txt/blocklist.txt，从未禁用的存活匿名HTTP代理选择一条公网IPv4路线；拒绝凭据、未知等级、无效地址/端口/延迟。返回proxy与源摘要，调用方负责私有保存proxy及批次绑定，不直接向用户打印路线。函数不发网络请求、不写池或sticky、不持有跨调用租约；重复调用可能随池变化选出不同路线，多步实验须另行校验绑定而不能反复调用当作固定出口。
+
+固定路线不代表固定公网出口IP、TLS透明性或业务健康，回执显式保留`exit_ip_proven=false`/`tls_transparency_proven=false`。4项本地测试通过。27号§15.21一次猫眼复验仍为curl60，原因未取得完整TLS诊断，不能宣称替代8899已成功；本批未改生产代理配置。
