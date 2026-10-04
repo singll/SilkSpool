@@ -1056,3 +1056,16 @@ fixture编号锁修正后，本地最终字节全域665/665、63表副本预检�
 北京时间19:12:54–19:49:46（UTC11:12:54–11:49:46）停写36分52秒，已恢复且无恢复错误；PID1112833/NRestarts0，六服务和七timer active、journal err0。UI首轮连接拒绝（PASS45/FAIL1）保留，确认3081监听后重跑原门禁80/80通过，未修改超时或断言。campaigns/tasks/workers/预留/endpoint_requests切换前后摘要相同，running task/worker及pending-finish均0，19预留settled，worker/claim上限均1；C1/C2/C3账面及额度保持本次发布前数值，全部paused。部署后NAS备份/恢复校验进行中。
 
 部署后恢复保障完成：NAS `bd1bd0daa2b6a0cf7bf2ea4b2a537986f40cc8ea4538d54e46ac648ddd0f303f`，40库备份249.01秒/同快照恢复6.48秒，覆盖与排除范围未变。64项发布证据及SHA256SUMS封存于csai `dsh-upgrades/20261003-wp02-authz-preflight/delivery-evidence/`，管理机同名审计目录已拉取并逐项验摘要。phase=`deployed-authz-preflight-accepted-real-pilot-pending`。本批发布闭环完成；真实入口/测试身份/自有对象、20–50份健康请求模板及其他漏洞族契约仍待办，供应商最终费用边界与历史未知未闭环；Campaign保持暂停，WP02/WP04及全方案未关账。
+
+
+### 15.13 WP04试点范围确定与WP06复核清单（2026-10-04，只读准备）
+
+用户本次明确试点为**美团SRC、字节SRC授权范围内S级资产**；无需再次询问项目选择。登录身份、自有对象和具体业务契约尚未提供，不能从资产评级推断具备实验前置。保持Campaign暂停和原预算门槛。
+
+通过spool只读事务采样生产资产、端点及Finding，读取现行scope.yml并本地匹配；未上传脚本、修改生产或发目标请求。美团48条S级资产行对应40个主机，字节419条对应384个主机；全部匹配各自现有scope且不命中exclude。另113条无Program的S级资产不纳入试点。此处为现有scope模式核对，执行时仍须走领域scope/risk检查。
+
+美团117条关联端点覆盖40个主机，字节805条覆盖131个主机；2xx分别30/129条，根路径历史200分别18/22个唯一主机。资产重复行会放大JOIN端点计数，不能当作独立请求数；401/404/407及幻影路径200均不能证明健康业务。初选可从learn.maoyan.com、code.coze.cn、work.trae.cn等已有根路径200的入口核验真实业务，尚未确定其当前可用性或生成20–50份健康模板。
+
+WP06复核集合改为status=confirmed OR confidence=confirmed，共47条：44条status=confirmed中17条confidence=confirmed、27条tentative；另3条status=new/confidence=confirmed（438、439、945）。其中28条旧导入，47条均缺task_id。已保留全字段私有原件并生成逐项pending_original_evidence_review队列；未作技术确认/反证，未把元数据缺失判为漏洞不存在。旧证据路径已完成文字提取，文件存在性、旧迁移映射及原始请求/响应语义仍待核验。
+
+证据：管理机out/secagent-audits/20261004-wp06-evidence-review/，私有目录0700、原始材料0600，SHA256SUMS封存7项输入/派生文件。仅准备与盘点，无代码发布，不触发生产变更备份。下一步在已定两项目S级范围内核验一条业务线入口及身份/对象；同步继续47条原始证据追溯。供应商最终费用证明仍缺，WP02/04/06及全方案未关账。

@@ -749,3 +749,12 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - 修复无Finding测试误查不存在findings表的夹具断言。全域688/688通过；随后仅补强恢复测试，最终exec56/56通过，生产代码字节未变；git diff --check通过。日志在 /tmp/secagent-wp02-preflight-all.log 与 /tmp/secagent-wp02-preflight-final-exec.log。
 - 契约见10号§1.3.10，批次见27号§15.12。本批仅本地实现/验证，尚未部署，未运行真实目标请求。生产沿用§15.11基线，Campaign继续暂停。
 - 后续发布须按18号完成本次prepare-change、冻结/恢复与隔离验收；真实试点仍缺已授权项目/入口、测试身份和自有对象，费用最终边界仍未闭环。
+
+
+### 2026-10-03 · WP02读取前置检查部署验收完成
+
+- 源码`6bd68c0`已推送并部署，DSH仍0.1.7-rc.2；无需Finding的读取前置入口最多8次GET，无A读取B；逐项失败即停，签封回执不能用于漏洞确认。正式验证复用前置检查，失败仅记inconclusive。
+- 本地/远端全域688/688、最终本地exec56/56、六根恢复/64表、新旧应用、隔离exec/endpoint/vuln166/166、worker19项、生产静默冒烟、UI重跑80/80通过。首轮隔离目录穿越权限和UI连接拒绝均保留失败报告，修正目录/确认监听后原门禁通过。
+- 北京时间19:12:54–19:49:46停写36分52秒，恢复无错误。PID1112833/NRestarts0、六服务/七timer active、journal err0；running task/worker/pending-finish均0，19预留settled，业务表摘要未变，worker/claim上限均1。
+- 变更前NAS2b3570b2…（40库38.68秒/恢复6.62秒）、冻结9e229e51…、部署后NASbd1bd0da…（40库249.01秒/恢复6.48秒）；覆盖/排除不变，64项证据已封存并拉回验摘要。
+- 三个Campaign暂停、费用及额度保持发布前值；未安装真实项目契约或发真实业务请求。下一步需明确试点项目/入口、测试身份与自有对象，采集20–50份健康模板；供应商最终费用证明与历史未知仍待办，WP02/WP04及全方案未关账，见[27号§15.12](27-business-quality-and-capacity-plan-2026-09-30.md#1512-wp02读取实验前置检查2026-10-03已部署验收)。
