@@ -1,6 +1,6 @@
 # 13 · proxy 域设计（免费代理池：采集提案落池、轮换网关消费、会话保持）
 
-> 版本：v5.0 ｜ 状态：定稿 ｜ 契约版本：1
+> 版本：v5.1（2026-10-04补现役TLS/固定出口边界） ｜ 状态：现行契约 ｜ 契约版本：1
 > 依赖：**订阅**：无（不订阅任何事件）；**被订阅**：`proxy.pool.refreshed` / `proxy.bad.reported` / `proxy.sticky.bound`（当前零强联动订阅者——mubeng 热加载不依赖事件，见 §2.3 论证）；**被引用**：exec 域（env_proxy 8899 注入——**设计原计划注入前引用 `proxy_stats` 做健康观测，实测未实现**：exec 仅按 `env_proxy` 注 `http_proxy/https_proxy`，不查 proxy 域，见 §2.3）、16-dashboard（网关健康展示——**未接入**，见 §1.7）。
 > 上位文档：[`00-conventions.md`](00-conventions.md)（冲突以它为准）。
 
@@ -361,6 +361,12 @@ mubeng (silksec-proxy-rotator.service, -w watch live.txt)  # 热加载消费方
 4. verify_replay（CONFIRMED 机械复核）默认走 8899 的 v4 行为保留——v5 归 **vuln 域 `vuln_verify_replay`**（原 sec-pipeline 旧工具已删，见 02-vuln）。
 
 **跨域读**：无（本域不读其他域）。被读：exec 域按 manifest `env_proxy:true` 注入 8899（不查本域查询）；proxy_stats 暂无看板消费者。
+
+**2026-10-04运行边界核验（27号§15.20）：** 现役mubeng v0.23.0二进制SHA256为`90ca4f0ee9b0069cd6634392cc43d816886bb17e371e54f9a6b749689f05dbfc`，build info含goproxy v1.7.2；systemd实参含`-r 1 -m random --rotate-on-error --remove-on-error`。`rotator_status=active`只说明进程运行，固定8899地址不保证固定下游IP，也不保证没有内部重试/跳转。
+
+三个授权S级入口的有界请求均在TLS名称校验失败；系统时钟同步、现有GoProxy CA有效且受信任。用同摘要二进制和仅回环、拒绝转发的模拟上游复现：CONNECT指定IP且TLS校验原域名时退出60、模拟上游调用0；IP及域名对照均通过TLS并到达模拟上游。三份生产stderr摘要与本地名称不匹配错误按目标替换后的全文摘要一致。不能靠重装同一CA解决名称不匹配，也不能将该故障登记为目标封禁/失效代理或技术阴性。
+
+exec受控读取需要透明CONNECT保留固定IP及原域名TLS；本地透明隧道的正反对照通过，生产修复仍待实施。原轮换池可用性及run_cli行为不据此宣称已全面验收。后续按18号完成变更准备和发布验证后才切换出口，本批未改池、CA、服务或配置。
 
 ### 2.4 后端适配器
 

@@ -1,6 +1,6 @@
 # 10 · exec 域设计（工具执行 / 沙箱 / QPS / worker 派生 / parser 提案）
 
-> 版本：v5.4（2026-10-04 增补逐请求审计边界；读取前置已部署） ｜ 状态：现行契约 ｜ 契约版本：`exec/1`
+> 版本：v5.5（2026-10-04 核实固定IPv4与现役MITM代理不兼容；读取前置已部署） ｜ 状态：现行契约 ｜ 契约版本：`exec/1`
 > 依赖：**订阅：无**（manifest `subscribes` 为空）——QPS/风险上限/侵入白名单在每次执行守卫时经 `loadScope()` 实时读 scope.yml 对齐，tool-intrusive 白名单放行后重试自然通过，均不依赖事件订阅；被订阅：`exec.run.completed`（asset/endpoint/vuln 域消费 parse proposal；know 域消费记 learning episode）、`exec.worker.spawned/.finished`（task 域，强联动）；`exec.flow.appended`、`exec.import.completed`、`exec.evidence.published` 当前**无订阅方（设计预留）**——各域 manifest 未声明，待实现后回填
 > 上级契约：[`00-conventions.md`](00-conventions.md)（本文与其冲突时以宪法为准）
 > 一句话职责：一切 CLI/worker 执行的唯一入口——守卫链（S1-S5）/沙箱/限速/全量落盘/parser 结构化提案，**执行产物与领域数据之间只隔一层事件**。
@@ -252,11 +252,15 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 `exec_http_request` 接受 `program_id/url`，可选 `method`（默认 GET）、`headers/body`、`proxy=default|direct`、`timeout_ms=100..30000`、`max_bytes=1..1048576`。actor 为 model/script/dashboard，幂等为 none；每次调用真实执行。非 GET/HEAD/OPTIONS 或写动词路径需要 intrusive 授权。
 
 - 逐跳验证**指定 Program** 的 scope、全局 exclude、授权期限和风险；DNS 失败/IPv6 不支持时拒绝。IPv4 解析结果逐个校验，选定地址通过 curl `connect-to` 固定，代理不再另行解析目标。私网/保留地址要求项目显式授权。
-- 同一次调用固定出口，默认 `SEC_EGRESS_PROXY` 或 `http://127.0.0.1:8899`，不因失败改为直连。HTTP(S) 代理使用 CONNECT；代理须支持此能力。`direct` 是显式选项。
+- 同一次调用固定**代理地址**，默认 `SEC_EGRESS_PROXY` 或 `http://127.0.0.1:8899`，不因失败改为直连。HTTP(S) 代理使用 CONNECT；代理须支持此能力。`direct` 是显式选项。固定轮换网关地址不证明下游出口IP固定。
 - 每跳申请同进程 QPS 令牌；最多 4 个请求（3 次重定向）。整次调用默认 10 秒，最长 30 秒（含解析、节流、传输）；body 最多 64 KiB，响应体最多 1 MiB，有效响应头上限为 64 KiB。301/302 的 POST 和 303 按规则转 GET；跨 origin 不转发凭据或未知自定义头，带 body 的跨 origin 跳转直接阻断。无共享 cookie jar；取消信号会终止当前请求并停止后续实验请求。
 - curl 配置通过 stdin 传递，不把凭据放入进程 argv；请求 body 以字面内容发送，`@路径` 不读取本地文件。签封记录只保存身份摘要，不保存请求凭据；响应可能含敏感业务数据，证据文件权限为 0600。
 - `results/<run_id>/http-record.json` 保存请求摘要、每跳目标/固定地址、响应和传输状态；执行域生成 HMAC-SHA256 签封及 `evidence-manifest.json`。密钥 `data/.http-executor-key` 归 exec 独占，在 results/evidence 之外。仅靠调用方文件或重新计算 SHA 不能伪造执行来源。
 - 返回 `{run_id,state,status,elapsed_ms,hops}` 并发 `exec.http.completed`，事件不带凭据/响应全文。`exec_http_result({run_id})` 每次验证签封、清单与文件摘要后读取完整响应。407、5xx、429、超时、超限、越界等独立于应用响应观察；故障的部分正文不交给 Oracle。
+
+**2026-10-04生产兼容性限制（27号§15.20）：** 当前8899为mubeng v0.23.0/goproxy v1.7.2的MITM网关。三个已授权S级入口各一次独立有界观察均在TLS阶段退出60、无HTTP响应；与现行`httpHop`相同的`connect-to`固定IPv4方式使CONNECT目标为IP，网关证书不匹配原业务域名。生产同摘要二进制本地复现及三份错误全文的摘要匹配支持此归因；不是目标登录/WAF或技术阴性。现役exec仍归类`transport_error`，本批未部署修复或调用其签封接口。
+
+本地透明CONNECT对照证明固定IP、原域名SNI和证书校验可同时成立，错误域名仍拒绝；仅证明修复方向，不代表生产出口已兼容。修复需使用可核验的透明隧道，并验证下游固定出口、无隐式重试/跳转及逐跳计量。不得以关闭TLS校验、恢复代理侧DNS或直连兜底掩盖问题。上述4请求上限是executor客户端跳数，现役网关内部重试/跳转未纳入该计量。独立观察证据保存在管理机私有目录，不作为exec签封结果或健康请求模板。
 
 `exec_verify_authz_read` 是首个受控验证适配器，**只支持宿主明确配置的 owner-only JSON 私有对象读取语义**。不是通用 IDOR/角色/租户/写操作验证器。输入必需 `program_id/finding_id/request_id/own_id/other_id/headers_a/headers_b`；actor 同上，none 幂等。finding 必须同项目、同完整 URL、`vuln_type=idor`；不可变请求必须 GET 且原始证据完整。
 
