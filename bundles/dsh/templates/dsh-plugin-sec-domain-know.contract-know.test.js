@@ -1370,6 +1370,12 @@ test('L4: 灰度失败可恢复——revoke 当前 release 恢复上一 publishe
   const m = await bus.dispatch('know', 'release_revoke', { release_id: p1.data.release_id, reason: '模型撤回尝试理由超过十字符' }, { actor: 'model' })
   assert.equal(m.ok, false)
   assert.equal(m.error.code, 'E_ACTOR_FORBIDDEN')
+  // v2已明确撤回；随后撤回恢复的v1，不能在两版之间循环复活。
+  const last = await bus.dispatch('know', 'release_revoke', { release_id: p1.data.release_id, reason: '上一版本也确认不适用，撤回整个发布' }, { actor: 'dashboard' })
+  assert.equal(last.ok, true, last.error?.message)
+  assert.equal(last.data.rolled_back_to, null)
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM know_releases WHERE artifact_id=? AND status='active'").get('VC-AUTHZ-G40').n, 0)
+  assert.equal(db.prepare('SELECT status FROM know_releases WHERE release_id=?').get(p2.data.release_id).status, 'revoked')
 })
 
 test('L4: 采用面只认 published revision——eligible 采纳拒；published 采纳过（哈希不符拒）', async () => {

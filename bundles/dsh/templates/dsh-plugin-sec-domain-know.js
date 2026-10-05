@@ -2106,7 +2106,7 @@ function makeHandlers(opts) {
       }
       const now = Date.now()
       repo.setReleaseStatus(rel.release_id, 'revoked', { revoked_at: now, revoke_reason: String(args.reason).slice(0, 300) })
-      // 回退：同 (artifact, scope) 最近一条被取代/撤销的 release 恢复为 active（恢复上一 published 版本）
+      // 回退：同 (artifact, scope) 最近一条被取代的 release 恢复为 active（明确撤回的版本不恢复）（恢复上一 published 版本）
       const prev = repo.previousRelease(rel.artifact_kind, rel.artifact_id, rel.scope_type, rel.scope_id, rel.release_id)
       let restored = null
       if (prev) {

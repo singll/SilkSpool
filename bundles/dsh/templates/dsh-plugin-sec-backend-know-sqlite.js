@@ -119,7 +119,7 @@ function createRepo(db) {
 
   // L4（2026-09-17 学习专项 §6.2/§6.3）：know_releases 发布账本（受控晋升/有限灰度/回退）。
   // 发布为新 release 行，不原地改旧版本；同 (artifact, scope) 任一时刻至多一条 active（部分唯一索引强约束）。
-  // 回退 = 撤销当前 release（status→revoked）+ 恢复最近一条同 scope 的 revoked/superseded release 为 active。
+  // 回退 = 撤销当前 release（status→revoked）+ 恢复最近一条同 scope 的 superseded release（明确revoked不自动恢复） 为 active。
   db.exec(`CREATE TABLE IF NOT EXISTS know_releases (
     release_id TEXT PRIMARY KEY,
     artifact_kind TEXT NOT NULL,
@@ -596,10 +596,10 @@ function createRepo(db) {
       return db.prepare('UPDATE know_releases SET status=?, revoked_at=?, revoke_reason=? WHERE release_id=?')
         .run(String(status), fields.revoked_at ?? null, fields.revoke_reason ?? null, String(releaseId)).changes
     },
-    // 回退目标：同 (artifact, scope) 最近一条被取代/撤销的非 active release（排除当前这条）
+    // 回退目标：同 (artifact, scope) 最近一条被取代的 superseded release（排除当前这条）
     previousRelease(artifactKind, artifactId, scopeType, scopeId, excludeReleaseId) {
       return db.prepare(`SELECT * FROM know_releases
-        WHERE artifact_kind=? AND artifact_id=? AND scope_type=? AND scope_id=? AND status != 'active' AND release_id != ?
+        WHERE artifact_kind=? AND artifact_id=? AND scope_type=? AND scope_id=? AND status = 'superseded' AND release_id != ?
         ORDER BY created_at DESC, release_id DESC LIMIT 1`)
         .get(String(artifactKind), String(artifactId), String(scopeType), String(scopeId ?? ''), String(excludeReleaseId)) || null
     },

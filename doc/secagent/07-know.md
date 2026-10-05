@@ -734,7 +734,7 @@ sec query know know_health --actor script
 
 #### know_releases 表（L4，2026-09-17；owner=know，幂等建表）
 
-发布账本（设计 §6.2/§6.3 的 L4 落地）。列：`release_id PK / artifact_kind / artifact_id / revision_id / content_digest / scope_type（program/family/global）/ scope_id（global 为空串）/ auth_ref（批准引用，effect 通道 = approval:{request_id}）/ status（active/superseded/revoked）/ reason / created_by_actor / created_at / revoked_at / revoke_reason`。约束：**部分唯一索引 `UNIQUE(artifact_kind, artifact_id, scope_type, scope_id) WHERE status='active'`**——同 artifact 同范围任一时刻至多一条生效发布（发布=新行 + 旧行置 superseded，不原地改旧版本）；索引 `idx_release_artifact(artifact_kind, artifact_id, created_at)`、`idx_release_revision(revision_id)`。回退 = 撤销当前 release + 恢复最近一条同 scope 的非 active release 为 active（C27）；行只追加不删除，撤回历史全留痕。
+发布账本（设计 §6.2/§6.3 的 L4 落地）。列：`release_id PK / artifact_kind / artifact_id / revision_id / content_digest / scope_type（program/family/global）/ scope_id（global 为空串）/ auth_ref（批准引用，effect 通道 = approval:{request_id}）/ status（active/superseded/revoked）/ reason / created_by_actor / created_at / revoked_at / revoke_reason`。约束：**部分唯一索引 `UNIQUE(artifact_kind, artifact_id, scope_type, scope_id) WHERE status='active'`**——同 artifact 同范围任一时刻至多一条生效发布（发布=新行 + 旧行置 superseded，不原地改旧版本）；索引 `idx_release_artifact(artifact_kind, artifact_id, created_at)`、`idx_release_revision(revision_id)`。回退 = 撤销当前 release + 恢复最近一条同 scope 的 superseded release 为 active（明确revoked的发布不得自动恢复）（C27）；行只追加不删除，撤回历史全留痕。
 
 #### L5 检索与计分投影表（2026-09-17；owner=know，幂等建表；设计 §3.1「检索/反馈投影」落地）
 
