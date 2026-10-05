@@ -1475,6 +1475,10 @@ change=20261006-health-adoption-release，源4cae2d4，9文件18落点，DSH保�
 
 b0d4939安装到同次发布保留的独立恢复副本，仅替换memcore。完整基础检查两次TimeoutError挡住健康对照，均保留报告；首次临时包装脚本未传播report.ok=false退出码，读取报告时发现并修正，未计通过。随后缩为健康RPC原生调用，专用隔离应用回执ok=true，know.health与dashboard.memcore打法链total32/cooling0一致，active28/deprecated4；经验全表44、文献432。此证据验证启动缓存修复，不替代完整发布门禁；生产仍回退版，完整基础超时需继续诊断。回退后额外验证18落点原摘要、数据库quick_check、Campaign暂停/运行任务0全部通过；临时dropin不存在。证据在受限同名发布目录focused-*及rollback-verify.stdout。
 
+### 15.66 修复版完整隔离应用与RPC耗时（2026-10-06，北京时间）
+
+同一独立恢复副本，恢复完整check_runtime并加入仅隔离客户端RPC耗时记录，应用与健康对照全部通过：bus.status532.59ms、dashboard.stats1144.39ms、workspaces89.52ms、三个工作区sessions5843.84/7.12/5.84ms、scope.check5.24ms、know.health192.34ms、memcore385.73ms。支持会话共享读取和健康刷新实际接通；单次通过不能解释此前间歇冷启动超时，更不能宣称已修复。生产仍为回退版，待新备份/冻结及重发；证据受限发布目录stats-runtime及stats-*，诊断脚本只在隔离副本。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
