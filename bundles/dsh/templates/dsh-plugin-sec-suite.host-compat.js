@@ -37,6 +37,30 @@ export async function listSessionHeaders(persistence) {
   return normalizeSessionList(await persistence.list())
 }
 
+// 仅用于看板元数据展示；worker/排空/归属判定必须直接 listSessionHeaders。
+// 快照从读取完成起最多保留2秒，新registry ID缺失时立即重读。
+export function createDashboardSessionReader({ now = Date.now, ttlMs = 2000 } = {}) {
+  const states = new WeakMap()
+  return async (persistence, requiredIds = []) => {
+    if (!persistence || typeof persistence.list !== 'function') return listSessionHeaders(persistence)
+    let state = states.get(persistence)
+    if (!state) { state = { value: null, at: 0, pending: null }; states.set(persistence, state) }
+    const ids = state.value && new Set(state.value.headers.map(h => h.id))
+    const age = now() - state.at
+    if (!state.pending && (!state.value || age < 0 || age >= ttlMs || requiredIds.some(id => !ids.has(String(id))))) {
+      state.value = null
+      state.pending = listSessionHeaders(persistence).then(value => {
+        state.value = value
+        state.at = now()
+        return value
+      }).finally(() => { state.pending = null })
+    }
+    const value = state.pending ? await state.pending : state.value
+    // 各消费者独享投影，不能污染后续工作区/并发请求。
+    return { headers: value.headers.map(h => ({ ...h })), diagnostics: value.diagnostics.map(d => ({ ...d })) }
+  }
+}
+
 // 时间窗仅作后备；同一工作区并行产出多个 Session 时拒绝猜测“最新一条”。
 // reportedId 必须是 worker 自身上报的 ID，不能把 originSessionId 当成 worker ID。
 export function matchWorkerSession(headers, { cwd, startedAt, finishedAt, reportedId = null }) {

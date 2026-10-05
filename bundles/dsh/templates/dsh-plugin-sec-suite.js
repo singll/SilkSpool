@@ -21,7 +21,7 @@ import * as path from 'node:path'
 import * as assetDb from './asset-db.js'
 import * as exp from './experience.js'
 import { startXrayWebhook } from './webhook.js'
-import { listSessionHeaders } from './host-compat.js'
+import { createDashboardSessionReader } from './host-compat.js'
 import { installWorkerSessionReporter } from './worker-runtime.js'
 import { installNativeToolGuard } from './native-guard.js'
 import { initDashboardRpc, handleDashboardRpc } from './dashboard-rpc.js'
@@ -755,6 +755,8 @@ function workspacesList() {
   return { available: true, items }
 }
 
+const readDashboardSessionHeaders = createDashboardSessionReader()
+
 // 工作区的会话清单（跳链用）：registry sessionIds + sessionPersistence 头部投影
 async function sessionsList(workspaceId) {
   if (!workspaceRegistryRef) return { available: false, items: [] }
@@ -764,7 +766,7 @@ async function sessionsList(workspaceId) {
   const diagnostics = []
   if (sessionPersistenceRef) {
     try {
-      const result = await listSessionHeaders(sessionPersistenceRef)
+      const result = await readDashboardSessionHeaders(sessionPersistenceRef, ws.sessionIds)
       diagnostics.push(...result.diagnostics)
       for (const h of result.headers) headers[h.id] = h
     } catch (e) { diagnostics.push({ code: 'E_SESSION_LIST', message: e.message }) }

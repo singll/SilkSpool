@@ -6,7 +6,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { normalizeSessionList, listSessionHeaders, matchWorkerSession, createPersonaReader, buildScheduledPrompt } from './dsh-plugin-sec-suite.host-compat.js'
+import { normalizeSessionList, listSessionHeaders, createDashboardSessionReader, matchWorkerSession, createPersonaReader, buildScheduledPrompt } from './dsh-plugin-sec-suite.host-compat.js'
 
 const header = { id: 'session-a', cwd: '/fixture/a', createdAt: 1000 }
 const window = { cwd: '/fixture/a', startedAt: 1000, finishedAt: 2000 }
@@ -110,4 +110,46 @@ test('调度最终 prompt 包含角色/任务/知识检索，线索、信号与�
   assert.match(prompt, /仅有线索时写 fact\/FGS.*vuln_register_signal.*信号.*vuln_confirm/)
   assert.doesNotMatch(prompt, /finding_add/)
   assert.match(prompt, /fact_search.*exp_search.*kb_search/)
+})
+
+// 看板跨工作区复用读取；worker 继续直接 listSessionHeaders。
+test('看板并发与连续工作区查询共享快照，过期/新会话/更换宿主重新读取', async () => {
+  let now = 0, calls = 0, release
+  let rows = [{ header }]
+  const persistence = { list: async () => { calls++; if (calls === 1) await new Promise(r => { release = r }); return rows } }
+  const read = createDashboardSessionReader({ now: () => now, ttlMs: 2000 })
+  const a = read(persistence, ['session-a'])
+  const b = read(persistence, ['session-a'])
+  await Promise.resolve()
+  release()
+  const [first, second] = await Promise.all([a, b])
+  assert.equal(calls, 1)
+  first.headers[0].cwd = '/mutated'
+  assert.equal(second.headers[0].cwd, header.cwd)
+  await read(persistence, ['session-a'])
+  assert.equal(calls, 1)
+  rows = [{ header }, { header: { ...header, id: 'new-session' } }]
+  assert.equal((await read(persistence, ['new-session'])).headers.length, 2)
+  assert.equal(calls, 2)
+  now = 2000
+  await read(persistence, ['session-a'])
+  assert.equal(calls, 3)
+  const replacement = { list: async () => [{ header: { ...header, id: 'replacement' } }] }
+  assert.equal((await read(replacement, ['replacement'])).headers[0].id, 'replacement')
+  await listSessionHeaders(persistence)
+  await listSessionHeaders(persistence)
+  assert.equal(calls, 5, 'worker直接读取不缓存')
+})
+
+test('看板读取失败不缓存拒绝或返回过期数据，恢复后可重试', async () => {
+  let fail = false, calls = 0, now = 0
+  const persistence = { list: async () => { calls++; if (fail) throw new Error('storage failed'); return [{ header }] } }
+  const read = createDashboardSessionReader({ now: () => now, ttlMs: 2000 })
+  await read(persistence)
+  now = 2000; fail = true
+  await assert.rejects(read(persistence), /storage failed/)
+  await assert.rejects(read(persistence), /storage failed/)
+  fail = false
+  assert.deepEqual((await read(persistence)).headers, [header])
+  assert.equal(calls, 4)
 })
