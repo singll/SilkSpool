@@ -1180,3 +1180,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-05版本采用增量（本地待发布）：revision采用须提供发布scope，且该scope的activeRelease必须恰为所采用revision；缺scope、已撤回或被取代均拒绝。scope进入幂等键，避免跨项目复用回执。返回及know.adopted事件保留release_id/content_digest/scope；采用行revision_id解析不可变版本、card_version保存该内容摘要、Program作用域写program_id。这里校验发布作用域，不等于已经完成请求级适用性或可信attempt归因。
 
 2026-10-05 L06采用投影增量（本地待发布）：共用recordAdoption在落账后重算单对象投影，覆盖人工exp/kb/revision及reactor事件回流。仅采用更新adoptions，不增加技术正例/可靠阴性/收益分；重复事件可修复缺失投影而不重复计数。
+
+2026-10-05 L06 episode重放增量（本地待发布）：命中数据库source/biz去重时，从既有episode原件重算其卡片投影；不从冲突重放载荷取卡片/费用，不新增episode或事件。仍在总线幂等缓存内的请求不会运行handler，缺失投影可通过scores_rebuild修复。

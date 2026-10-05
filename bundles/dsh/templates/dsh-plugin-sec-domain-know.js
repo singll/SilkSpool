@@ -1962,8 +1962,10 @@ function makeHandlers(opts) {
       }
       const r = repo.insertEpisode(row)
       if (!r.created) {
-        // 重复回放/业务归因命中：零重复记功，不发事件
-        return { data: { episode_id: r.episode_id, recorded: false, duplicate: r.duplicate } }
+        // 仅从已存原件恢复派生投影，不能采用重放请求里冲突的卡片/费用字段。
+        const original = r.episode_id ? repo.getEpisode(r.episode_id) : null
+        const rebuilt = original?.card_id ? rebuildArtifactScore(repo, inferKindOf(original.card_id), String(original.card_id)) : null
+        return { data: { episode_id: r.episode_id, recorded: false, duplicate: r.duplicate, score_rebuilt: !!rebuilt } }
       }
       // L5（§8.1）：episode 落账后重算所涉卡片计分投影（从不可变事实重放，不改历史行）
       if (row.card_id) rebuildArtifactScore(repo, inferKindOf(row.card_id), String(row.card_id))

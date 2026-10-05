@@ -2141,3 +2141,23 @@ test('L03: revision采用绑定当前作用域发布，跨scope不能命中旧�
   assert.equal(revoked.ok, false)
   assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM know_adoptions').get().n, 1)
 })
+
+
+test('L06: episode表级重放用原记录恢复投影，不采信冲突载荷卡片', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const args = { ...EP_ARGS, card_id: 'VC-REPLAY-ORIGINAL', request_count: 2 }
+  const first = await bus.dispatch('know', 'episode_record', args, { actor: 'reactor' })
+  assert.equal(first.ok, true)
+  db.prepare('DELETE FROM know_scores').run()
+  db.prepare('DELETE FROM idempotency').run()
+  const replay = await bus.dispatch('know', 'episode_record', { ...args, card_id: 'VC-REPLAY-WRONG', request_count: 99 }, { actor: 'reactor' })
+  assert.equal(replay.ok, true)
+  assert.equal(replay.data.recorded, false)
+  assert.equal(replay.data.score_rebuilt, true)
+  const projection = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get('VC-REPLAY-ORIGINAL')
+  assert.equal(projection.inconclusives, 1)
+  assert.equal(projection.cost_requests, 2)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM know_scores WHERE artifact_id=?').get('VC-REPLAY-WRONG').n, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n, 1)
+})

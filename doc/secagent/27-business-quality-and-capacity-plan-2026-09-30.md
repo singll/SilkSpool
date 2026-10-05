@@ -1425,6 +1425,10 @@ previousRelease旧查询选择所有非active发布：撤回v2恢复v1后，再�
 
 人工know_adopt调用共用recordAdoption却不重算，只有reactor命令会重算，导致真实采用落账而投影缺失。回归在exp/kb/revision三条人工路径复现。现重算移入共用写入函数，事件回流复用，不重复重算；幂等事件重放仍可恢复投影。know92/92通过，验证采用数立即为1、重放保持1、技术正例/clean/score仍0。历史事件/采用原件不改，证据wp07-adopt。代码未部署；L06的episode更新/水位及WP07可信版本化attempt归因仍待完成。
 
+### 15.54 L06 episode表级重放恢复投影（2026-10-05，本地完成，待发布）
+
+episode重复路径原先直接返回，不能修复已有事实的缺失投影。现source/biz去重命中后读取原episode，再重算其对象；重放请求的冲突card_id/费用不参与归因。新增回归删除派生投影及幂等缓存，重放时将card_id改为另一卡、request_count从2改99；修正后原卡inconclusive1/request2恢复，另一卡无投影、episode仍1条。know93/93通过；红绿日志受限wp07-adopt。总线幂等缓存命中不执行handler，其修复仍可用scores_rebuild；跨知识类型ID、可信attempt和修正supersedes语义尚待补齐，未部署、不关WP07。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
