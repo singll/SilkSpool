@@ -2223,3 +2223,19 @@ test('L23: 健康聚合SQL故障不能伪装为成功的空库，恢复schema后
   assert.equal(recovered.ok, true)
   assert.equal(recovered.data.kb.total, 0)
 })
+
+
+test('L23: 30天未使用只计存在足够久且有可判断使用时间的经验', async () => {
+  const { bus } = makeEnv()
+  await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  const db = bus._internal.db(), now = Date.now(), day = 86400000
+  const rows = [
+    [now-day, 0, null], [now-2*day, 0, null], [now-40*day, 0, null],
+    [now-50*day, 2, now-day], [now-50*day, 2, now-40*day],
+    [now-50*day, 2, null],
+  ]
+  for (const [created, uses, last] of rows) db.prepare('INSERT INTO exp_cards(scenario,takeaway,created_at,last_validated_at,uses,last_used_at) VALUES(?,?,?,?,?,?)').run('health age fixture','takeaway',created,created,uses,last)
+  const h = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.equal(h.ok, true)
+  assert.equal(h.data.exp.zero_use_30d, 2)
+})
