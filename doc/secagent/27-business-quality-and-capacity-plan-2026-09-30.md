@@ -1323,6 +1323,14 @@ change `20261005-know-release`备份新快照`c5e65dad5a9b3ac807b0d5d7d89e68b9a0
 
 北京时间21:21:56解除冻结，resume_errors为空，临时systemd覆盖已删除，原代理刷新补启动。主服务active、PID1222799/NRestarts0，DSH仍0.1.7-rc.2。WP07来源隔离/漏洞卡版本读取与WP10文献查询本批已部署，不等于WP07/WP10整体关账；可信attempt/其它生命周期/技术统计和持续业务试点仍待推进。证据见受限20261005-know-release目录。
 
+### 15.36 三条匿名请求生产导入与重放验收（2026-10-05）
+
+change `20261005-anonymous-har-import`新备份/同快照恢复通过，NAS `65e1622a0243c01959ab83e9d287ca718f411827745f780f4151974b9d139d0e`。使用§15.31从原始curl证据转换的HAR，保留来源说明、完整显式请求头及摘要，不冒充浏览器捕获。
+
+首次误以3080为应用原生入口，维护认证无法取得该端口当前启动BrowserAuth凭据，preview/import均未执行；临时用户已恢复。只读核实systemd ExecStart为127.0.0.1:3081、3080为Caddy边缘后，使用既有3081受控认证重入，未改认证策略。production preview ready3/rejected0；import created3；相同来源再导入created0/replayed3；三个request_get均evidence_state=intact，按Program/host查询total3。全程目标请求0、模型调用0。
+
+三份观测对应langs/platforms/landing_info三种路径，其中两份有业务内容，一份只有业务状态；同路径代理复验不另增模板。200只落transport observed，不自动变public/健康/技术正例。20–50份模板、业务关系和适用实验尚需继续。证据`out/secagent-audits/20261005-anonymous-har-import/`保留成功/失败来源、预览/导入/重放和证据引用。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
@@ -1332,7 +1340,7 @@ change `20261005-know-release`备份新快照`c5e65dad5a9b3ac807b0d5d7d89e68b9a0
 | WP01 | 目标/Program/派发/认领硬约束已部署 | 候选30/ledger200轮转与业务进展停止，C3按真实复核剩余量处置，D09自动续费上限复核 |
 | WP02 | 受控HTTP、owner-only读取、可信capsule/confirm、身份前检 | 真实适用实验；其余Oracle弱信号/故障正负样例、属性重放，禁止自报替代技术真值 |
 | WP03 | claim/run/ACK、busy补偿、在飞预留、请求usage和估算 | 完整fencing/多进程恢复、共享请求预算/429退避、D07进程清理、F06死信/投影；最终账单及历史精确洗账不再必需 |
-| WP04 | HAR/被动捕获已部署，2份匿名业务内容原件 | 独立代理工具上线与HTTP接线，20–50份不同业务请求模板，method/body/参数/对象归集，B09参数队列执行确认 |
+| WP04 | HAR/被动捕获已部署，3份匿名请求生产导入、2份含业务内容 | 独立代理单次真实GET已通过；HTTP接线，20–50份不同业务请求模板，method/body/参数/对象归集，B09参数队列执行确认 |
 | WP05 | 全量H2持久队列/事务派发/有限失败重试 | H1接线、H3业务关系、unknown/条件重开、旧分页饥饿、独立观察/根因去重、TTL/配额与技术标签分离 |
 | WP06 | 47项复核队列和多批原件追溯 | 剩余技术/根因复核、独立技术状态投影、来源计数与可恢复证据引用；旧源缺失列有证据的未知，不伪判无洞 |
 | WP07 | 版本/采用/episode框架，已找回误用confirmed反馈样例 | 移除vendor真值污染，可信attempt去重评分、真artifact引用、撤回/重算、统一版本/作用域与hit_matrix |
