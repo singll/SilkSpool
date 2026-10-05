@@ -167,13 +167,13 @@ window.__ModuleLoader__.load({
           khRows)
       }
       // ── 覆盖缺口卡（攻面 × rules/VC 卡交叉表，借鉴 Claude-Red MINDMAP：空行即缺口）──
-      // 数据来自 knowledgeCoverage RPC（服务端缓存 data/knowledge-coverage.json，缺失时现场 python3 生成）；
+      // 数据来自 knowledgeCoverage RPC（只读服务端缓存；尚未接入现场重算）；
       // 结构/空态完全复用知识体检卡模式；缺口 = 无规则先验且无 VC 卡的攻面。
       var cov = props.covState ? props.covState.data : null
       var covData = null
       var covStaleNote = null
       if (cov && cov.ok !== false) covData = cov
-      else if (cov && cov.stale) { covData = cov.stale; covStaleNote = '现场生成失败，展示旧数据：' + (cov.error || '') }
+      else if (cov && cov.stale) { covData = cov.stale; covStaleNote = '未刷新，展示历史数据：' + (cov.error || '') }
       var covOpenFs = React.useState(false)
       var covOpen = covOpenFs[0]; var setCovOpen = covOpenFs[1]
       var covBusyFs = React.useState(false)
@@ -181,7 +181,7 @@ window.__ModuleLoader__.load({
       function refreshCoverage() {
         if (covBusy) return
         setCovBusy(true)
-        callRpc('knowledgeCoverage', { refresh: true }).then(function () {
+        callRpc('knowledgeCoverage', { refresh: false }).then(function () {
           return props.covState.reload()
         }).catch(function (e) {
           alert('覆盖数据刷新失败: ' + (e && e.message ? e.message : e))
@@ -196,7 +196,7 @@ window.__ModuleLoader__.load({
           props.covState && props.covState.loading
             ? el(SkeletonRows, { rows: 2 })
             : el('div', { style: { ...F.xxs, color: T.label2 } },
-                '暂无覆盖数据' + (covErr ? '（' + covErr + '）' : '') + '——在主机运行 knowledge-coverage.py 生成（scripts/pipeline/knowledge-coverage.py --out data/knowledge-coverage.json），或点击右侧「刷新」由看板现场生成。'))
+                '暂无覆盖数据' + (covErr ? '（' + covErr + '）' : '') + '。覆盖重算尚未接入。'))
       } else {
         var covTax = covData.taxonomy || []
         var covGaps = covTax.filter(function (t) { return !(t.covered_by_rules || []).length && !(t.covered_by_cards || []).length })
@@ -207,7 +207,7 @@ window.__ModuleLoader__.load({
         coverageCard = el('div', { style: { ...card, marginTop: 10, padding: '8px 12px' }, title: '攻面分类表（secagent 手法族 15 + 常见 Web 攻面 21）对照 rules/ 与 vulncards/VC-*.yaml 的交叉表；空行 = 无任何先验覆盖' },
           el('div', { style: { ...F.s, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
             el('span', null, '🧭 覆盖缺口（' + covCovered.length + '/' + covTax.length + ' 攻面有规则覆盖' + (covS.coverage_pct !== undefined ? ' · ' + covS.coverage_pct + '%' : '') + '）'),
-            el('button', { type: 'button', className: 'silksec-btn', style: { height: 22, fontSize: 12 }, disabled: covBusy, title: '现场调 python3 跑 knowledge-coverage.py 重新生成（结果缓存 7 天）', onClick: refreshCoverage }, covBusy ? '生成中…' : '刷新'),
+            el('button', { type: 'button', className: 'silksec-btn', style: { height: 22, fontSize: 12 }, disabled: covBusy, title: '重新读取已有覆盖数据，不执行重算', onClick: refreshCoverage }, covBusy ? '读取中…' : '重新读取'),
             el('span', { style: { ...F.xxs, color: T.label3 } }, '生成于 ' + String(covData.generated_at || '').slice(0, 16).replace('T', ' ') + (covData.cached ? ' · 缓存' : ''))),
           covWarn ? el('div', { style: { ...F.xxs, color: T.warn, marginTop: 2 } }, '⚠ ' + covWarn) : null,
           covData.vulncards_note ? el('div', { style: { ...F.xxs, color: T.warn, marginTop: 2 } }, '⚠ ' + covData.vulncards_note) : null,

@@ -474,7 +474,7 @@
 
 #### Q14 · know_health（知识体检，v4 knowledgeHealth 的域化）
 
-无参。跨子仓聚合（各子仓查询经总线只读 dispatch，本域不直读他域表；exp/kb 自有，fact 经 fact_overview/fact_stats）：
+无参。聚合本域已有存储统计；尚未接入的数据源使用 null，并在 unavailable 列出字段路径，不能以0或空对象冒充测量结果。当前 facts 未接入，exp.tainted、vulncards.usage_30d、rules.last_seed 未测。此修正为2026-10-05本地增量，待发布：
 
 ```json
 {
@@ -482,7 +482,8 @@
   "kb":  { "total", "curated", "overdue_revalidate", "tainted", "fetch_failed" },
   "rules": { "total", "last_seed" },
   "vulncards": { "total", "active", "draft", "usage_30d" },
-  "facts": { ... 投影自 fact 域 Q4 },
+  "facts": null,
+  "unavailable": ["exp.tainted", "vulncards.usage_30d", "facts", "rules.last_seed"],
   "harvest": { ... 投影自 Q13 },
   "warnings": ["3 张卡 30 天零使用", "kb 复验逾期 12 篇", ...]
 }
@@ -490,7 +491,7 @@
 
 #### Q15 · know_coverage（知识覆盖缺口，v4 knowledgeCoverage 的域化查询）
 
-无参。返回覆盖矩阵（漏洞卡 × 攻面 TAXONOMY 映射缺口 + 规程库覆盖统计），供看板「覆盖缺口交叉表」。**实现口径**：读缓存文件 `data/knowledge-coverage.json`（7 天新鲜直读，过期由纯计算脚本重算产物——生成是脚本产缓存文件，本查询只读，无写动词；`refresh: true` 强制重算）。返回：`{ generated_at, cards_total, taxonomy_total, uncovered: [{attack_surface, missing_cards}], coverage: [{card_id, attack_surface, covered}] }`。
+参数 `refresh`。当前只读取 `data/knowledge-coverage.json`，不执行生成脚本，也没有已实现的7天自动刷新。普通读取返回现有缓存，保留原生成时间；缓存缺失/不可读返回 `ok:false, available:false, reason:coverage_missing`，时间/数量/矩阵为null。请求refresh时明确 `reason:refresh_not_executed`；若有缓存放入stale保留历史参考，不伪造新生成时间或零覆盖。总线查询本身仍ok:true，业务数据可用性在data内表达。2026-10-05本地修正待发布，自动重算仍是待办。
 
 #### Q16 · know_episode_list（L1）：参数 program_id / outcome / 分页；返回 learning_episodes 行（来源事件/归属/六类结果/证据与 FGS 快照引用，按 created_at 倒序）。复盘「学到了什么、依据是什么」的只读投影。
 

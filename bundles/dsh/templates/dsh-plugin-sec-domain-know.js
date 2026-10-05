@@ -2558,12 +2558,13 @@ function makeHandlers(opts) {
       if ((agg.kb.overdue_revalidate || 0) > 0) warnings.push(`kb 复验逾期 ${agg.kb.overdue_revalidate} 篇`)
       if ((agg.kb.fetch_failed || 0) > 0) warnings.push(`kb 抓取失败 ${agg.kb.fetch_failed} 篇（fetch_failures>0，需复验）`)
       return {
-        exp: { total: agg.exp.total, active: agg.exp.total - (agg.exp.cooling + agg.exp.deprecated), deprecated: agg.exp.deprecated, avg_score: agg.exp.avg_score, zero_use_30d: agg.exp.zero_use_30d, tainted: 0, exportable: agg.exp.exportable, cooling: agg.exp.cooling },
+        exp: { total: agg.exp.total, active: agg.exp.total - (agg.exp.cooling + agg.exp.deprecated), deprecated: agg.exp.deprecated, avg_score: agg.exp.avg_score, zero_use_30d: agg.exp.zero_use_30d, tainted: null, exportable: agg.exp.exportable, cooling: agg.exp.cooling },
         kb: { total: agg.kb.total, curated: agg.kb.curated, overdue_revalidate: agg.kb.overdue_revalidate, tainted: agg.kb.tainted, fetch_failed: agg.kb.fetch_failed || 0 },
         rules: { total: rules, last_seed: null },
-        vulncards: { total: vc.length, active: vc.filter((c) => c.status === 'active').length, draft: vc.filter((c) => c.status === 'draft').length, usage_30d: 0 },
+        vulncards: { total: vc.length, active: vc.filter((c) => c.status === 'active').length, draft: vc.filter((c) => c.status === 'draft').length, usage_30d: null },
         releases: (() => { const r = repo.listReleases({ status: 'active', limit: 500 }); return { active: r.total } })(),
-        facts: {},
+        facts: null,
+        unavailable: ['exp.tainted', 'vulncards.usage_30d', 'facts', 'rules.last_seed'],
         harvest,
         warnings,
       }
@@ -2571,7 +2572,7 @@ function makeHandlers(opts) {
     know_coverage: async (args, repo) => {
       const cached = repo.coverageRead()
       if (cached && !args.refresh) return cached
-      return { generated_at: Date.now(), cards_total: 0, taxonomy_total: 25, uncovered: [], coverage: [], note: 'knowledge-coverage.py 未生成缓存；refresh 需纯计算脚本' }
+      return { ok: false, available: false, reason: args.refresh ? 'refresh_not_executed' : 'coverage_missing', generated_at: null, cards_total: null, taxonomy_total: null, uncovered: null, coverage: null, ...(cached ? { stale: cached } : {}), error: args.refresh ? '本查询未执行覆盖重算，已有数据仅作历史参考' : '覆盖数据尚未生成或无法读取' }
     },
     // Q16（L1）：学习 episode 投影（同 where 构造器保证 rows/total 口径一致）
     know_episode_list: async (args, repo) => {

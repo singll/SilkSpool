@@ -2020,3 +2020,27 @@ test('22 L2: know_episode_record 带 campaign_id 落账 + episode_list campaign_
   const none = await bus.query('know', 'episode_list', { campaign_id: '999' }, { actor: 'dashboard' })
   assert.equal(none.rows.length, 0)
 })
+
+
+test('L23: 缺测健康指标不伪装零，覆盖缺失与刷新未执行保留未知', async () => {
+  const { bus, dataDir } = makeEnv()
+  const health = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.equal(health.data.vulncards.usage_30d, null)
+  assert.equal(health.data.exp.tainted, null)
+  assert.equal(health.data.facts, null)
+  assert.ok(health.data.unavailable.includes('vulncards.usage_30d'))
+  const missing = await bus.query('know', 'coverage', {}, { actor: 'dashboard' })
+  assert.equal(missing.ok, true, '查询成功与数据不可用分离')
+  assert.equal(missing.data.ok, false)
+  assert.equal(missing.data.cards_total, null)
+  assert.equal(missing.data.generated_at, null)
+  const cached = { generated_at: 123, cards_total: 5, taxonomy: [{ id: 'authz' }] }
+  fs.writeFileSync(path.join(dataDir, 'knowledge-coverage.json'), JSON.stringify(cached))
+  const current = await bus.query('know', 'coverage', {}, { actor: 'dashboard' })
+  assert.deepEqual(current.data, cached)
+  const refresh = await bus.query('know', 'coverage', { refresh: true }, { actor: 'dashboard' })
+  assert.equal(refresh.data.ok, false)
+  assert.equal(refresh.data.reason, 'refresh_not_executed')
+  assert.deepEqual(refresh.data.stale, cached)
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dataDir, 'knowledge-coverage.json'))), cached)
+})
