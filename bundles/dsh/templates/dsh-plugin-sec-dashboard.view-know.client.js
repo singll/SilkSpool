@@ -317,7 +317,7 @@ window.__ModuleLoader__.load({
     function KbSection(props) {
       var all = props.rows || []
       var counts = props.counts || {}
-      // 客户端过滤（kbList 全量 ≤200 行）：q 标题/路径子串 + kind curated/external
+      // 客户端过滤（kbList 已汇集各页）：q 标题/路径子串 + kind curated/external
       var q = (props.q || '').toLowerCase()
       var rows = all.filter(function (r) {
         if (props.kind === 'curated' && !r.curated) return false

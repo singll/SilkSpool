@@ -1145,3 +1145,16 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 - **L6 撤回联动**：`know.release.revoked` 既有 change-retest 入队保留；task 域 handler 另对命中撤回 scope 的活跃专项写 checkpoint 留痕（Planner 每 tick 现算无缓存，被撤回卡片在 H3 草稿中的引用自然失效）。
 
 **未实施（Phase C 待办）**：L1/L3 的 `know_scores` 近似命中矩阵「按 program/campaign 分组投影」——计分管线未动，Planner 的 scores 快照暂为空。
+
+
+## 十六、2026-10-05 技术来源、版本读取与文献分页（本地验收，待发布）
+
+本节覆盖历史“平台终极裁判”说法。`vuln.signal.submitted`保留兼容消费，但不生成技术episode；重算排除历史submitted/vendor原因/vendor-confirmed来源，原记录保留。model-proposed或缺来源的confirmed/valid_clean只进入未知计数。machine等来源标签仍不能独自证明技术成立；可信attempt绑定、去重和纠正链仍待完成。采用落账及幂等重放均重算投影，不重复累计。
+
+`vc_get/vc_list/retrieval_explain`共用漏洞卡版本解析：完整读取release分页，同ID选择适用的Program优先、family其次、global兜底；family缺上下文拒绝。进入release管理的ID不再回退旧YAML，撤回/跨Scope不能借旧文件回流。任务读取要求active和匹配surface；dashboard/human审查可见不适用项但标记executable=false，模型不能用reader=review绕过。历史文件附内容摘要。自由文本失效条件、角色/对象前置和其它知识类型的统一解析尚需深化，不能把本批称为全部适用性验证。
+
+`kb_list`接受q（标题/路径字面子串）、kind=curated/external、category/status以及limit/offset；筛选在SQL分页之前执行，按curated/uses/imported_at/id稳定排序，meta.paged防总线二次切片。看板kbList汇集各页；external包含所有非curated且非archived文献，返回全局counts，空的中间页显式失败。并发写入下仍属实时列表，非冻结快照。
+
+验收：漏洞卡解析版本跨域691/691通过；新增文献分页后know82/82、看板RPC6/6通过，含501项跨页完整性、筛选前置、字面百分号和中间页失败。应用未部署，生产评分未重算。证据见受限out/secagent-audits/20261005-wp07-truth-dns/。
+
+补充验收：vc_get接受q用于失效条件上下文；最终全域692/692、RPC6/6、知识视图10/10通过，仍待应用发布。

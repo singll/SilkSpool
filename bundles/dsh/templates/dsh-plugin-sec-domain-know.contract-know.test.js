@@ -324,6 +324,30 @@ test('L0-K1: kb_import 写入 category 列，kb_list 按 category 过滤', async
   assert.ok(l.ok && l.rows.some((x) => x.id === r.data.doc_id && x.category === 'xss'))
 })
 
+test('WP10: kb_list 501 项完整分页，筛选先于分页且总线不重复切片', async () => {
+  const { bus } = makeEnv()
+  await bus.query('know', 'kb_list', {}, { actor: 'dashboard' })
+  const db = bus._internal.db()
+  const insert = db.prepare('INSERT INTO kb_docs (title,file,source_url,status,imported_at) VALUES (?,?,?,?,?)')
+  db.exec('BEGIN')
+  try {
+    for (let i = 0; i < 503; i++) insert.run(`entry ${i}`, `/tmp/doc-${i}`, `https://example.com/${i}`, i === 502 ? 'archived' : i === 501 ? 'curated' : 'active', 123)
+    db.exec('COMMIT')
+  } catch (error) { db.exec('ROLLBACK'); throw error }
+  const first = await bus.query('know', 'kb_list', { kind: 'external', limit: 500 }, { actor: 'dashboard' })
+  const last = await bus.query('know', 'kb_list', { kind: 'external', limit: 500, offset: 500 }, { actor: 'dashboard' })
+  assert.equal(first.ok, true)
+  assert.equal(first.total, 501)
+  assert.equal(first.rows.length, 500)
+  assert.equal(last.rows.length, 1)
+  assert.equal(new Set([...first.rows, ...last.rows].map(r => r.id)).size, 501)
+  const filtered = await bus.query('know', 'kb_list', { q: 'entry 0', kind: 'external', limit: 1 }, { actor: 'dashboard' })
+  assert.equal(filtered.total, 1)
+  assert.equal(filtered.rows[0].title, 'entry 0')
+  const literal = await bus.query('know', 'kb_list', { q: '%' }, { actor: 'dashboard' })
+  assert.equal(literal.total, 0)
+})
+
 test('L0-K2: kb_revalidate(changed) 内容闭环——正文/哈希/版本/FTS 更新，tainted 重扫', async () => {
   const { bus } = makeEnv()
   const r = await bus.dispatch('know', 'kb_import', {
@@ -1235,6 +1259,71 @@ test('L4: 使用面发布投影——published revision 进 vc_list/vc_get；eli
   assert.equal(list.rows.some((r) => r.id === 'VC-AUTHZ-G60'), false, '撤回后退出使用面')
 })
 
+test('WP07: direct get, list and retrieval select the same revision over legacy YAML and never revive it on revoke', async () => {
+  const { bus } = makeEnv()
+  const id = 'VC-999'
+  const stored = await bus.dispatch('know', 'vc_save', { id, title: '旧文件方法', attack_surface: 'api',
+    severity: 'medium', steps: '旧步骤', detection: '旧条件' }, { actor: 'dashboard' })
+  assert.equal(stored.ok, true, stored.error?.message)
+  const activated = await bus.dispatch('know', 'vc_activate', { id, reason: '本地样例激活旧卡供版本测试' }, { actor: 'dashboard' })
+  assert.equal(activated.ok, true)
+  const context = { program_id: 'example-src', surface: 'api' }
+  const legacy = await bus.query('know', 'vc_get', { id, ...context }, { actor: 'model' })
+  assert.equal(legacy.ok, true, legacy.error?.message)
+  assert.match(legacy.data.content_digest, /^[a-f0-9]{64}$/)
+  const eligible = await eligibleOne(bus, id, 'evalrun_resolve001')
+  const published = await publish(bus, { revision_id: eligible.revision_id,
+    content_digest: eligible.content_digest, auth_ref: 'approval:resolve', scope_type: 'program', scope_id: 'example-src' })
+  assert.equal(published.ok, true, published.error?.message)
+  const get = await bus.query('know', 'vc_get', { id, ...context }, { actor: 'model' })
+  const list = await bus.query('know', 'vc_list', context, { actor: 'model' })
+  const explain = await bus.query('know', 'retrieval_explain', { ...context, artifact_kind: 'vulncard' }, { actor: 'model' })
+  assert.equal(get.data.published_revision, eligible.revision_id)
+  assert.equal(list.rows.find(row => row.id === id).published_revision, eligible.revision_id)
+  assert.equal(explain.data.selected.find(row => row.artifact_id === id).revision_id, eligible.revision_id)
+  assert.equal(explain.data.selected.filter(row => row.artifact_id === id).length, 1)
+  for (const args of [{}, { program_id: 'other-src', surface: 'api' }, { program_id: 'example-src' }]) {
+    const rejected = await bus.query('know', 'vc_get', { id, ...args, reader: 'review' }, { actor: 'model' })
+    assert.equal(rejected.ok, false, 'model cannot select the review bypass')
+    const filtered = await bus.query('know', 'vc_list', args, { actor: 'model' })
+    assert.ok(!filtered.rows.some(row => row.id === id))
+  }
+  const review = await bus.query('know', 'vc_get', { id }, { actor: 'dashboard' })
+  assert.equal(review.ok, true)
+  assert.equal(review.data.executable, false, 'review visibility does not authorize execution')
+  const revoked = await bus.dispatch('know', 'release_revoke', { release_id: published.data.release_id,
+    reason: '测试撤回后旧文件不得绕过发布作用域' }, { actor: 'dashboard' })
+  assert.equal(revoked.ok, true)
+  const after = await bus.query('know', 'vc_get', { id, ...context }, { actor: 'model' })
+  assert.equal(after.ok, false)
+  const afterList = await bus.query('know', 'vc_list', context, { actor: 'model' })
+  const afterExplain = await bus.query('know', 'retrieval_explain', { ...context, artifact_kind: 'vulncard' }, { actor: 'model' })
+  assert.ok(!afterList.rows.some(row => row.id === id))
+  assert.ok(!afterExplain.data.selected.some(row => row.artifact_id === id))
+})
+
+test('WP07: direct reads enforce family and negative-condition context', async () => {
+  const { bus } = makeEnv()
+  const id = 'VC-AUTHZ-FAMILY'
+  const eligible = await eligibleOne(bus, id, 'evalrun_family001')
+  const result = await publish(bus, { revision_id: eligible.revision_id,
+    content_digest: eligible.content_digest, auth_ref: 'approval:family', scope_type: 'family', scope_id: 'authz' })
+  assert.equal(result.ok, true)
+  for (const family of ['', 'sqli']) {
+    const denied = await bus.query('know', 'vc_get', { id, surface: 'api', family }, { actor: 'model' })
+    assert.equal(denied.ok, false)
+  }
+  const allowed = await bus.query('know', 'vc_get', { id, family: 'authz', surface: 'api' }, { actor: 'model' })
+  assert.equal(allowed.ok, true, allowed.error?.message)
+  const blocked = await bus.query('know', 'retrieval_explain', { family: 'authz', surface: 'api',
+    q: 'role_change', artifact_kind: 'vulncard' }, { actor: 'model' })
+  assert.ok(!blocked.data.selected.some(row => row.artifact_id === id))
+  assert.equal(blocked.data.excluded.find(row => row.artifact_id === id)?.reason, 'invalidated_negative')
+  const directBlocked = await bus.query('know', 'vc_get', { id, family: 'authz', surface: 'api', q: 'role_change' }, { actor: 'model' })
+  assert.equal(directBlocked.ok, false)
+  assert.equal(directBlocked.error.code, 'E_NOT_FOUND')
+})
+
 // ---------------------------------------------------------------------------
 // L5（学习专项 §8/§9，2026-09-17）：分层检索 / 曝光-采用-结果拆分 /
 // 覆盖补建登记 / 反馈编辑撤回重算 / know_scores 可重放重建
@@ -1269,18 +1358,19 @@ test('L5: know_retrieval_explain 分层——published revision 入召回；跨 
   assert.equal(r.data.coverage.gap, false)
 })
 
-test('L5: family 灰度作用域——不与 bus surface 比对；显式 family 上下文不符才排除；适用性由卡面谓词裁决', async () => {
+test('WP07: family release requires explicit matching family before applicability checks', async () => {
   const { bus } = makeEnv()
   const ok = await eligibleOne(bus, 'VC-AUTHZ-R30', 'evalrun_l5_r300001')
   // 家族灰度发布（surface=api 的卡发到 family/authz 家族）
   const p = await publish(bus, { revision_id: ok.revision_id, content_digest: ok.content_digest, auth_ref: 'approval:l5-r30', scope_type: 'family', scope_id: 'authz' })
   assert.equal(p.ok, true, p.error?.message)
-  // ① 不带 family：家族灰度对同 Program 调用方可见，适用性由卡面 surface 谓词裁决
+  // ① 不带 family：缺少灰度上下文，不能进入执行召回
   let r = await bus.query('know', 'retrieval_explain', { program_id: 'example-src', surface: 'api', artifact_kind: 'vulncard' }, { actor: 'model' })
   assert.equal(r.ok, true, r.error?.message)
-  assert.ok(r.data.selected.some((s) => s.artifact_id === 'VC-AUTHZ-R30'), '家族灰度+卡面谓词匹配 → 入召回')
+  assert.ok(!r.data.selected.some((s) => s.artifact_id === 'VC-AUTHZ-R30'))
+  assert.equal(r.data.excluded.find((e) => e.artifact_id === 'VC-AUTHZ-R30')?.reason, 'scoped_release_no_family')
   // ② 卡面谓词不匹配（surface=web）→ 阶段3 排除（family 灰度不豁免适用谓词）
-  r = await bus.query('know', 'retrieval_explain', { program_id: 'example-src', surface: 'web', artifact_kind: 'vulncard' }, { actor: 'model' })
+  r = await bus.query('know', 'retrieval_explain', { program_id: 'example-src', family: 'authz', surface: 'web', artifact_kind: 'vulncard' }, { actor: 'model' })
   assert.ok(!r.data.selected.some((s) => s.artifact_id === 'VC-AUTHZ-R30'), '卡面谓词不匹配 → 不进召回')
   assert.equal(r.data.excluded.find((e) => e.artifact_id === 'VC-AUTHZ-R30')?.reason, 'surface_mismatch')
   // ③ 显式 family 上下文不符 → 作用域排除
@@ -1299,14 +1389,14 @@ test('L5: 撤回后旧版本退出召回；恢复上一版本重入召回（旧�
   const b = await eligibleOne(bus, 'VC-AUTHZ-R10', 'evalrun_l5_r100002')
   const p2 = await publish(bus, { revision_id: b.revision_id, content_digest: b.content_digest, auth_ref: 'approval:l5-r10b', scope_type: 'program', scope_id: 'example-src' })
   assert.equal(p2.ok, true, p2.error?.message)
-  let r = await bus.query('know', 'retrieval_explain', { program_id: 'example-src', artifact_kind: 'vulncard' }, { actor: 'model' })
+  let r = await bus.query('know', 'retrieval_explain', { program_id: 'example-src', surface: 'api', artifact_kind: 'vulncard' }, { actor: 'model' })
   let hits = r.data.selected.filter((s) => s.artifact_id === 'VC-AUTHZ-R10')
   assert.equal(hits.length, 1)
   assert.equal(hits[0].revision_id, b.revision_id, '当前版本入召回，旧版本不误召回')
   // 撤回 v2 → 恢复 v1
   const rv = await bus.dispatch('know', 'release_revoke', { release_id: p2.data.release_id, reason: '撤回回退理由超过十个字符' }, { actor: 'dashboard' })
   assert.equal(rv.ok, true)
-  r = await bus.query('know', 'retrieval_explain', { program_id: 'example-src', artifact_kind: 'vulncard' }, { actor: 'model' })
+  r = await bus.query('know', 'retrieval_explain', { program_id: 'example-src', surface: 'api', artifact_kind: 'vulncard' }, { actor: 'model' })
   hits = r.data.selected.filter((s) => s.artifact_id === 'VC-AUTHZ-R10')
   assert.equal(hits.length, 1)
   assert.equal(hits[0].revision_id, a.revision_id, '撤回后恢复上一 published 版本入召回')
@@ -1369,6 +1459,8 @@ test('L5: 采用事实两条通道——know_adopt(revision) 落账 + ledger.car
   db.prepare('DELETE FROM idempotency').run()
   await bus.dispatch('bus', 'replay', { since: now - 1000, limit: 1000 }, { actor: 'system' })
   assert.equal(db.prepare('SELECT COUNT(*) c FROM know_adoptions WHERE artifact_id=?').get('VC-AUTHZ-A01').c, 2)
+  assert.equal(db.prepare('SELECT adoptions FROM know_scores WHERE artifact_id=?').get('VC-AUTHZ-A01').adoptions, 2,
+    '采用与重复回放都刷新投影，计数不加倍')
 })
 
 test('L5: 计分可重算——episode/曝光/采用/反馈重放重建；撤回负反馈撤销派生分数；模型自评不计已验证正例', async () => {
@@ -1387,7 +1479,8 @@ test('L5: 计分可重算——episode/曝光/采用/反馈重放重建；撤回
   // episode 落账已触发单卡重算；核口径
   let sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get('77')
   assert.ok(sc, 'episode 落账触发计分投影')
-  assert.equal(sc.verified_positives, 2, '模型自评不计已验证正例（ep3 model-proposed 单列）')
+  assert.equal(sc.verified_positives, 1, '模型自评不计已验证正例')
+  assert.equal(sc.inconclusives, 1, '自评保留为未验证经历')
   assert.equal(sc.valid_cleans, 1)
   // 负反馈 → 重算降权；撤回 → 重算撤销派生分数
   const fb1 = await bus.dispatch('know', 'feedback_ingest', { feedback_id: 'sess_s1:m1', revision: 1, session_id: 'sess_s1', message_id: 'm1', rating: 'negative', note: '方法误导' }, { actor: 'system', session_id: 'sess_s1' })
@@ -1410,7 +1503,7 @@ test('L5: 计分可重算——episode/曝光/采用/反馈重放重建；撤回
   const afterCounts = ['learning_episodes', 'know_exposures', 'know_feedback'].map((t) => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c)
   assert.deepEqual(afterCounts, beforeCounts, '重算不改历史行')
   sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get('77')
-  assert.equal(sc.verified_positives, 2, '重放重建结果一致')
+  assert.equal(sc.verified_positives, 1, '重放重建结果一致')
   assert.equal(sc.exposures, 2)
   assert.equal(sc.adoptions, 1)
   // 回归：仅有反馈（无曝光/采用/episode）的卡也在全量重建覆盖内——撤回后投影行须被撤销
@@ -1681,31 +1774,52 @@ test('21 §4-1: onVulnVerdict 合流——oracle capsule confirmed 自动蒸馏�
   assert.equal(r2.data.recorded, true, 'episode 照常落账')
 })
 
-test('21 §4-2: onVendorVerdict——SRC 平台裁决事件化（accepted=终极正例/驳回=负例 episode）', async () => {
+test('WP07: platform labels never create technical episodes or change method scores', async () => {
   const { bus, domain } = makeEnv()
-  const accepted = await domain.handlers.subscribers.onVendorVerdict({
-    id: 'evt_vendor_1', name: 'vuln.signal.submitted', actor: 'dashboard', ts: Date.now(),
-    payload: { finding_id: 90, vendor_status: 'accepted', bounty: 5000, platform: 'hackerone' },
-  })
-  assert.equal(accepted.ok, true)
-  const ep1 = bus._internal.db().prepare("SELECT * FROM learning_episodes WHERE source_event_id='evt_vendor_1'").get()
-  assert.equal(ep1.outcome, 'confirmed')
-  assert.equal(ep1.reason_code, 'vendor_accepted')
-  assert.equal(ep1.source_credibility, 'machine', '平台裁决非模型自评')
-  const rejected = await domain.handlers.subscribers.onVendorVerdict({
-    id: 'evt_vendor_2', name: 'vuln.signal.submitted', actor: 'dashboard', ts: Date.now(),
-    payload: { finding_id: 91, vendor_status: 'duplicate' },
-  })
-  assert.equal(rejected.ok, true)
-  const ep2 = bus._internal.db().prepare("SELECT * FROM learning_episodes WHERE source_event_id='evt_vendor_2'").get()
-  assert.equal(ep2.outcome, 'inconclusive')
-  assert.equal(ep2.reason_code, 'vendor_duplicate')
-  // 非裁决态跳过
-  const skip = await domain.handlers.subscribers.onVendorVerdict({
-    id: 'evt_vendor_3', name: 'vuln.signal.submitted', actor: 'dashboard', ts: Date.now(),
-    payload: { finding_id: 92, vendor_status: '' },
-  })
-  assert.equal(skip.data.skipped, true)
+  const db = bus._internal.db()
+  // Repository tables are created lazily on the first real domain query.
+  await bus.query('know', 'episode_list', {}, { actor: 'system' })
+  const before = db.prepare('SELECT COUNT(*) AS n FROM learning_episodes').get().n
+  for (const vendor_status of ['accepted', 'rejected', 'duplicate', 'ignored', 'wontfix', '']) {
+    const result = await domain.handlers.subscribers.onVendorVerdict({
+      id: `vendor-${vendor_status}`, name: 'vuln.signal.submitted', actor: 'dashboard', ts: Date.now(),
+      payload: { finding_id: 90, vendor_status, bounty: 5000, platform: 'fixture' },
+    })
+    assert.equal(result.ok, true)
+    assert.equal(result.data.skipped, true)
+    assert.equal(result.data.reason, 'operational_feedback_not_technical_evidence')
+  }
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM learning_episodes').get().n, before)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM know_scores').get().n, 0)
+})
+
+test('WP07: rebuilding excludes historical vendor feedback without deleting original episodes', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  await bus.dispatch('know', 'exposure_record', { q: 'q', artifact_kind: 'exp_card', artifact_id: '77', selected: true }, { actor: 'system' })
+  const snapshot = () => {
+    const row = db.prepare("SELECT * FROM know_scores WHERE artifact_id='77'").get()
+    const { build_tag, rebuilt_at, ...counts } = row
+    return counts
+  }
+  const before = snapshot()
+  const histories = [
+    { source_event_name: 'vuln.signal.submitted', reason_code: 'vendor_accepted', source_credibility: 'machine' },
+    { source_event_name: 'other', reason_code: 'vendor_duplicate', source_credibility: 'machine' },
+    { source_event_name: 'other', reason_code: 'feedback', source_credibility: 'vendor-confirmed' },
+  ]
+  for (const [i, row] of histories.entries()) {
+    const result = await bus.dispatch('know', 'episode_record', { ...EP_ARGS, ...row,
+      source_event_id: `legacy-vendor-${i}`, exec_run_id: `rvendorfixture000${i}`,
+      card_id: '77', card_version: '1', outcome: 'confirmed', request_count: 10, token_count: 500,
+    }, { actor: 'reactor' })
+    assert.equal(result.ok, true, result.error?.message)
+  }
+  assert.deepEqual(snapshot(), before)
+  const rebuild = await bus.dispatch('know', 'scores_rebuild', {}, { actor: 'system' })
+  assert.equal(rebuild.ok, true, rebuild.error?.message)
+  assert.deepEqual(snapshot(), before)
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM learning_episodes WHERE card_id='77'").get().n, 3)
 })
 
 test('21 §4-3: onCoverageGap——覆盖缺口态 → know_gaps（已测格点不产生缺口）', async () => {

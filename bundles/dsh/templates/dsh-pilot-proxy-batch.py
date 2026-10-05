@@ -146,6 +146,10 @@ def run_batch(*, directory, lease, target, preflight, validate_route,
         checked = preflight()
         if checked["scope_sha256"] != lease["scope_sha256"] or checked["target"] != list(target):
             raise ValueError("scope or target changed; no continuation")
+        snapshot = checked.get("dns_snapshot")
+        if snapshot and (snapshot["expires_at_ms"] <= time.time() * 1000
+                         or lease["expires_at"] * 1000 > snapshot["expires_at_ms"]):
+            raise ValueError("batch lease exceeds DNS lifetime")
         current = validate_route()
         if current["proxy"] != route["proxy"] or current["source_sha256"] != route["source_sha256"]:
             raise ValueError("bound route changed; no replacement")
@@ -235,7 +239,7 @@ def main():
     parser.add_argument("--lease", required=True)
     parser.add_argument("--directory", required=True)
     parser.add_argument("--hostname", required=True)
-    parser.add_argument("--target-ip", required=True)
+    parser.add_argument("--target-ip", default="auto")
     parser.add_argument("--pool-dir", default="/opt/silkspool/dsh/proxy-pool")
     parser.add_argument("--base", default="/opt/silkspool/dsh")
     parser.add_argument("--node", default="/usr/local/node/bin/node")
@@ -248,11 +252,16 @@ def main():
         raise ValueError("pilot Program is outside the selected projects")
     target = (args.target_ip, 443)
 
+    dns_snapshot = None
+
     def preflight():
+        arguments = [args.node, str(Path(__file__).with_name("dsh-pilot-preflight.mjs")),
+                     args.base, lease["program"], args.hostname, args.target_ip,
+                     lease["scope_sha256"]]
+        if dns_snapshot is not None:
+            arguments.append(json.dumps(dns_snapshot, separators=(",", ":")))
         completed = subprocess.run(
-            [args.node, str(Path(__file__).with_name("dsh-pilot-preflight.mjs")),
-             args.base, lease["program"], args.hostname, args.target_ip,
-             lease["scope_sha256"]],
+            arguments,
             check=True, capture_output=True, timeout=7)
         return json.loads(completed.stdout)
 
@@ -261,6 +270,12 @@ def main():
             lease, args.pool_dir, now=time.time(),
             **{key: lease[key] for key in ("program", "batch", "identity", "scope_sha256")})
 
+    initial = preflight()
+    dns_snapshot = initial["dns_snapshot"]
+    args.target_ip = initial["target"][0]
+    target = (args.target_ip, 443)
+    # Tighten only; original route eligibility and scope are still rechecked.
+    lease["expires_at"] = min(lease["expires_at"], dns_snapshot["expires_at_ms"] / 1000)
     result = run_batch(directory=args.directory, lease=lease, target=target,
                        preflight=preflight, validate_route=validate_route,
                        max_connections=args.max_connections)

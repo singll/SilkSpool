@@ -898,8 +898,19 @@ export async function handleDashboardRpc(endpoint, payload) {
     // kbList：kb_docs 检索面全量分页（curated 与 external 混排，curated 排前）；kbRead 读单篇正文。
     case 'kbList': {
       // v5：know.kb_list 接管（07-know §1.7），fail-closed
-      const r = await busQuery('know', 'kb_list', { q: String(p.q || ''), status: String(p.kind === 'curated' ? 'curated' : (p.kind === 'external' ? 'active' : '')), limit: 200 })
-      return { rows: r.rows, counts: r.counts || { curated: 0, external: 0, tainted: 0, zero_use: 0 } }
+      const args = { q: String(p.q || ''), limit: 500 }
+      if (['curated', 'external'].includes(p.kind)) args.kind = p.kind
+      const rows = []
+      let counts
+      for (let offset = 0; ; offset += 500) {
+        const r = await busQuery('know', 'kb_list', { ...args, offset })
+        if (!Array.isArray(r.rows) || !Number.isInteger(r.total) || r.total < 0) throw new Error('kb_list 返回无效分页')
+        rows.push(...r.rows)
+        counts = r.counts || counts
+        if (offset + r.rows.length >= r.total) break
+        if (!r.rows.length) throw new Error('kb_list 分页不完整，请重试')
+      }
+      return { rows, total: rows.length, counts: counts || { curated: 0, external: 0, tainted: 0, zero_use: 0 } }
     }
     case 'kbRead': {
       const id = Number(p.id || 0)

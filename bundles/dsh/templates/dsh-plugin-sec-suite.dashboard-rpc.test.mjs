@@ -123,6 +123,23 @@ function errBus() {
   }
 }
 
+test('kbList 汇集超过 500 项，保留 external 类型与统计，空的中间页显式失败', async () => {
+  const calls = []
+  depsWith({ query: async (domain, verb, args) => {
+    calls.push({ domain, verb, args })
+    return { ok: true, total: 501, rows: Array.from({ length: args.offset ? 1 : 500 }, (_, i) => ({ id: args.offset + i })),
+      counts: { external: 501, curated: 0 } }
+  } })
+  const result = await handleDashboardRpc('kbList', { q: 'x', kind: 'external' })
+  assert.equal(result.rows.length, 501)
+  assert.equal(result.rows[500].id, 500)
+  assert.equal(result.counts.external, 501)
+  assert.deepEqual(calls.map(c => c.args.offset), [0, 500])
+  assert.ok(calls.every(c => c.domain === 'know' && c.verb === 'kb_list' && c.args.kind === 'external' && c.args.q === 'x' && !('status' in c.args)))
+  depsWith({ query: async () => ({ ok: true, rows: [], total: 501 }) })
+  await assert.rejects(() => handleDashboardRpc('kbList', {}), /分页不完整/)
+})
+
 test('总线缺席：全部业务端点 fail-closed 显式报错，不触碰 assetDb', async () => {
   const { leaked } = depsWith(null)
   for (const [endpoint, payload] of BUSINESS_CALLS) {

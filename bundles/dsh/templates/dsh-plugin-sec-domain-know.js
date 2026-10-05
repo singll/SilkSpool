@@ -811,7 +811,8 @@ export const KNOW_MANIFEST = {
     },
     kb_list: {
       actor: ['model', 'dashboard', 'human', 'system'],
-      params: schema({ category: str({ default: '' }), status: str({ default: '' }), limit: int({ minimum: 1, maximum: 500 }), offset: int({ minimum: 0 }) }, []),
+      params: schema({ q: str({ default: '' }), category: str({ default: '' }), status: str({ default: '' }),
+        kind: en(['curated', 'external']), limit: int({ minimum: 1, maximum: 500 }), offset: int({ minimum: 0 }) }, []),
       predicates: ['lifecycle'],
       agent_note: '文献列表（curated first + counts）。',
     },
@@ -835,13 +836,16 @@ export const KNOW_MANIFEST = {
     },
     vc_get: {
       actor: ['model', 'dashboard', 'human'],
-      params: schema({ id: str({ minLength: 1 }) }, ['id']),
+      params: schema({ id: str({ minLength: 1 }), q: str(), program_id: str(), family: str(), surface: str(),
+        reader: en(['task', 'review']) }, ['id']),
       predicates: [],
       agent_note: '漏洞卡全文（含版本链摘要）。',
     },
     vc_list: {
       actor: ['model', 'dashboard', 'human'],
-      params: schema({ status: str({ default: '' }), severity: str({ default: '' }), q: str({ default: '' }), limit: int({ minimum: 1, maximum: 500 }), offset: int({ minimum: 0 }) }, []),
+      params: schema({ status: str({ default: '' }), severity: str({ default: '' }), q: str({ default: '' }),
+        program_id: str(), family: str(), surface: str(), reader: en(['task', 'review']),
+        limit: int({ minimum: 1, maximum: 500 }), offset: int({ minimum: 0 }) }, []),
       predicates: [],
       agent_note: '漏洞卡 registry 视图（active 优先）。',
     },
@@ -1006,7 +1010,7 @@ export const KNOW_MANIFEST = {
     // 同域同 pattern 只能有一个订阅者，蒸馏/记分职责并入 onVulnVerdict（4-1/4-2）
     'vuln.signal.confirmed': { handler: 'onVulnVerdict', mode: 'async', as: 'reactor' },
     'vuln.signal.rejected': { handler: 'onVulnVerdict', mode: 'async', as: 'reactor' },
-    // 4-2 记分双裁判之「SRC 平台裁决」：accepted/驳回回流 episode（终极裁判）
+    // Compatibility consumer acknowledges operational events without technical learning.
     'vuln.signal.submitted': { handler: 'onVendorVerdict', mode: 'async', as: 'reactor' },
     // 4-3 缺口 reactor：覆盖账本副产品 → know_gaps（未测类/未覆盖格点）
     'ledger.coverage.marked': { handler: 'onCoverageGap', mode: 'async', as: 'reactor' },
@@ -1138,12 +1142,15 @@ function makeHandlers(opts) {
   // ---- L5（设计 §8.1）：计分重放——从不可变事实（曝光/采用/episode/有效反馈）重建单卡投影。
   // 三条计数分离：曝光（know_exposures）/ 采用（know_adoptions）/ 有效结果（learning_episodes 关联）。
   // 来源级别分离：model-proposed 自评不计已验证正例（单列 self_reported）；
-  // 有效结果只认 machine/independently-verified/human-reviewed/vendor-confirmed；
+  // 运营反馈不进入技术分；自评与缺来源的正/负技术判断保持未验证经历。
   // infra_error 不扣方法分；inapplicable 单列（适用性选择信号）；小样本保守平滑（sample/(sample+2)）。
   function rebuildArtifactScore(repo, artifactKind, artifactId) {
     const exp = repo.exposureCount(artifactKind, artifactId)
     const adoptions = repo.adoptionCount(artifactKind, artifactId)
-    const eps = repo.episodeAggByCard().filter((r) => String(r.card_id) === String(artifactId))
+    const eps = repo.episodeAggByCard().filter((r) => String(r.card_id) === String(artifactId)
+      && r.source_event_name !== 'vuln.signal.submitted'
+      && !String(r.reason_code || '').startsWith('vendor_')
+      && r.source_credibility !== 'vendor-confirmed')
     const fbRows = repo.effectiveFeedback().filter((f) => {
       if (!f.attribution_json) return false
       try { const a = JSON.parse(f.attribution_json); return a.artifact_kind === artifactKind && String(a.artifact_id) === String(artifactId) } catch { return false }
@@ -1153,8 +1160,9 @@ function makeHandlers(opts) {
     for (const r of eps) {
       costReq += r.requests || 0; costTok += r.tokens || 0; costMs += r.ms || 0
       const n = r.n || 0
-      if (r.outcome === 'confirmed') c.confirmed += n
-      else if (r.outcome === 'valid_clean') c.valid_clean += n
+      const reviewed = ['machine', 'independently-verified', 'human-reviewed'].includes(r.source_credibility)
+      if (r.outcome === 'confirmed' && reviewed) c.confirmed += n
+      else if (r.outcome === 'valid_clean' && reviewed) c.valid_clean += n
       else if (r.outcome === 'inapplicable') c.inapplicable += n
       else if (r.outcome === 'blocked_auth') c.blocked += n
       else if (r.outcome === 'infra_error') c.infra_error += n
@@ -2148,8 +2156,11 @@ function makeHandlers(opts) {
         program_id: args.program_id || null, actor: (ctx && ctx.actor) || null,
         outcome: args.outcome || null, note: args.note || null,
       })
-      if (!r.created) return { data: { recorded: false, duplicate: r.duplicate } }
-      return { data: { recorded: true, adoption_id: r.adoption_id }, events: [], after: null }
+      // Rebuild on replay as well: a prior crash may have persisted adoption
+      // before its projection. Counts come from facts and cannot double.
+      const rebuilt = rebuildArtifactScore(repo, args.artifact_kind, String(args.artifact_id))
+      if (!r.created) return { data: { recorded: false, duplicate: r.duplicate, score_rebuilt: !!rebuilt } }
+      return { data: { recorded: true, adoption_id: r.adoption_id, score_rebuilt: !!rebuilt }, events: [], after: null }
     },
 
     // C29（L5）：原生反馈桥落账。feedback id + revision 幂等（主键强约束）；编辑=更高 revision 覆盖
@@ -2444,10 +2455,16 @@ function makeHandlers(opts) {
       const wa = []
       if (args.category) { conds.push('category = ?'); wa.push(String(args.category)) }
       if (args.status) { conds.push('status = ?'); wa.push(String(args.status)) }
+      if (args.kind === 'curated') conds.push("status = 'curated'")
+      if (args.kind === 'external') conds.push("status != 'curated'")
+      if (args.q) {
+        conds.push("(instr(lower(title), lower(?)) > 0 OR instr(lower(file), lower(?)) > 0)")
+        wa.push(String(args.q), String(args.q))
+      }
       const where = conds.join(' AND ')
-      const rows = repo.listKbWhere(where, wa, 500, 0)
+      const rows = repo.listKbWhere(where, wa, args.limit || 50, args.offset || 0)
       const total = repo.countKbWhere(where, wa)
-      return { rows, total, meta: { counts: repo.kbCounts() } }
+      return { rows, total, meta: { counts: repo.kbCounts(), paged: true } }
     },
     kb_read: async (args, repo) => {
       const doc = repo.getKbDoc(args.doc_id)
@@ -2469,29 +2486,30 @@ function makeHandlers(opts) {
       if (!r) throwErr('E_NOT_FOUND', `先验文件不存在: ${args.path}`, null, false)
       return r
     },
-    vc_get: async (args, repo) => {
-      const r = repo.vcRead(args.id)
-      // L4 发布投影：data/vulncards/ 无该 artifact 的 YAML 文件时，回退到已发布 revision
-      //（candidate/eligible 不进使用面——只有存在 active release 的 published revision 才可读）
-      if (r) return r
-      const proj = releaseProjection(repo, 'vulncard', String(args.id).toUpperCase())
-      if (!proj) throwErr('E_NOT_FOUND', `卡 ${args.id} 不存在（无 YAML 文件且无已发布 revision）`, '候选≠发布——先 know_revision_publish（审批+灰度）', false)
-      return proj.card
-    },
-    vc_list: async (args, repo) => {
-      let rows = repo.vcList()
-      // L4 发布投影：已发布 revision 且不在文件面的 artifact 以虚拟行并入（eligible/candidate 不进使用面）
-      const published = repo.listRevisions({ artifact_kind: 'vulncard', status: 'published', limit: 500 }).rows
-      for (const rev of published) {
-        if (rows.some((r) => String(r.id).toUpperCase() === String(rev.artifact_id).toUpperCase())) continue
-        if (!repo.countActiveReleasesForRevision(rev.revision_id)) continue
-        const c = JSON.parse(rev.content_json)
-        rows.push({
-          id: rev.artifact_id, name: c.title || c.name || rev.artifact_id, status: 'active',
-          version: rev.revision_id, severity: c.severity || '', attack_surface: c.surface || c.attack_surface || '',
-          file: `revision:${rev.revision_id}`, published_revision: rev.revision_id, content_digest: rev.content_digest,
-        })
+    vc_get: async (args, repo, ctx) => {
+      const id = String(args.id).toUpperCase()
+      const { pool } = vulncardViews(repo, { ...args, artifact_id: id }, ctx)
+      const selected = pool.find(it => String(it.artifact_id).toUpperCase() === id)
+      if (!selected) throwErr('E_NOT_FOUND', `卡 ${id} 无适用的当前可用版本`, '提供匹配的 Program/family/surface；历史审查使用 revision_history', false)
+      if (selected.origin === 'release') {
+        return { id, file: `revision:${selected.revision_id}`, version: selected.revision_id,
+          status: 'active', published_revision: selected.revision_id, content_digest: selected.content_digest,
+          content: JSON.stringify(selected.content), parsed: selected.content,
+          executable: selected.executable, scope: { type: selected.release.scope_type, id: selected.release.scope_id } }
       }
+      return { ...repo.vcRead(id), status: selected.legacy.status,
+        content_digest: selected.content_digest, executable: selected.executable }
+    },
+    vc_list: async (args, repo, ctx) => {
+      const { pool } = vulncardViews(repo, args, ctx)
+      let rows = pool.map(it => it.origin === 'legacy_file'
+        ? { ...it.legacy, content_digest: it.content_digest, executable: it.executable }
+        : { id: it.artifact_id, name: it.content.title || it.content.name || it.artifact_id,
+          status: 'active', version: it.revision_id, severity: it.content.severity || '',
+          attack_surface: it.content.appliesTo?.surface || it.content.surface || '',
+          file: `revision:${it.revision_id}`, published_revision: it.revision_id,
+          content_digest: it.content_digest, executable: it.executable,
+          scope: { type: it.release.scope_type, id: it.release.scope_id } })
       if (args.status) rows = rows.filter((r) => r.status === args.status)
       if (args.severity) rows = rows.filter((r) => String(r.severity).includes(args.severity))
       if (args.q) rows = rows.filter((r) => r.name.includes(args.q) || r.id.includes(args.q))
@@ -2585,16 +2603,9 @@ function makeHandlers(opts) {
       let pool = []
       if (!kindFilter || kindFilter === 'vulncard') {
         // 已发布 revision（只取当前仍有 active release 的——superseded/revoked 已退使用面）
-        const activeRels = repo.listReleases({ artifact_kind: 'vulncard', status: 'active', limit: 500 }).rows
-        for (const rel of activeRels) {
-          const rev = repo.getRevision(rel.revision_id)
-          if (!rev) continue
-          pool.push({ origin: 'release', artifact_kind: 'vulncard', artifact_id: rev.artifact_id, revision_id: rev.revision_id, revision_status: rev.status, content: JSON.parse(rev.content_json), release: rel })
-        }
-        // legacy 文件面卡（vc_list 现行视图——YAML 卡无 Program 绑定，全 Program 可见）
-        for (const v of repo.vcList()) {
-          pool.push({ origin: 'legacy_file', artifact_kind: 'vulncard', artifact_id: v.id, legacy: v })
-        }
+        const resolved = vulncardViews(repo, { ...args, reader: 'task' }, ctx)
+        pool.push(...resolved.pool)
+        excluded.push(...resolved.excluded)
       }
       if (!kindFilter || kindFilter === 'exp_card') {
         const hits = q ? repo.ftsSearchExp(q, 100) : new Map(repo.listExpWhere('1=1', [], 'score DESC', 50, 0).map((c) => [c.id, c.score || 0]))
@@ -2622,9 +2633,8 @@ function makeHandlers(opts) {
           excluded.push({ artifact_id: it.artifact_id, stage: 'scope', reason: 'cross_program', scope: `${rel.scope_type}:${rel.scope_id}` }); return false
         }
         if (rel.scope_type === 'family') {
-          // family=灰度家族（如 fixture 家族/漏洞族）。召回适用性由卡面谓词（阶段3）裁决——
-          // 不与 bus surface 比对；仅当调用方显式给出 family 上下文且不符时排除。
-          if (family && rel.scope_id !== family) { excluded.push({ artifact_id: it.artifact_id, stage: 'scope', reason: 'family_mismatch', scope: `${rel.scope_type}:${rel.scope_id}` }); return false }
+          if (!family) { excluded.push({ artifact_id: it.artifact_id, stage: 'scope', reason: 'scoped_release_no_family' }); return false }
+          if (rel.scope_id !== family) { excluded.push({ artifact_id: it.artifact_id, stage: 'scope', reason: 'family_mismatch', scope: `${rel.scope_type}:${rel.scope_id}` }); return false }
           return true
         }
         return true // global
@@ -2796,14 +2806,73 @@ function makeHandlers(opts) {
     },
   }
 
-  // L4 发布投影（vulncard 使用面）：取同 artifact 的 active release（global 兜底）→ published revision 内容。
-  // 只有 published+active release 才进使用面；eligible/candidate/rejected 一律不可见。
-  function releaseProjection(repo, artifactKind, artifactId) {
-    const rel = repo.listReleases({ artifact_kind: artifactKind, artifact_id: artifactId, status: 'active', limit: 1 }).rows[0] || null
-    if (!rel) return null
-    const rev = repo.getRevision(rel.revision_id)
-    if (!rev || rev.status !== 'published') return null
-    return { release: rel, revision: rev, card: { id: artifactId, file: `revision:${rev.revision_id}`, version: rev.revision_id, status: 'active', published_revision: rev.revision_id, content_digest: rev.content_digest, content: rev.content_json, parsed: JSON.parse(rev.content_json) } }
+  // One resolver for get/list/explain. Once an ID enters release management,
+  // its old YAML cannot silently reappear after revocation or scope rejection.
+  function vulncardViews(repo, args = {}, ctx = {}) {
+    const review = ['dashboard', 'human'].includes(ctx?.actor) && args.reader !== 'task'
+    const program = String(args.program_id || ''), family = String(args.family || '')
+    const surface = String(args.surface || ''), q = String(args.q || '')
+    const all = []
+    for (let offset = 0; ; offset += 500) {
+      const page = repo.listReleases({ artifact_kind: 'vulncard',
+        artifact_id: args.artifact_id || '', limit: 500, offset })
+      all.push(...page.rows)
+      if (offset + page.rows.length >= page.total) break
+      if (!page.rows.length) throwErr('E_BACKEND_UNAVAILABLE', '发布分页不完整', null, true)
+    }
+    const managed = new Set(all.map(row => String(row.artifact_id).toUpperCase()))
+    const chosen = new Map(), excluded = []
+    for (const rel of all.filter(row => row.status === 'active')) {
+      const rev = repo.getRevision(rel.revision_id)
+      const id = String(rel.artifact_id).toUpperCase()
+      const reject = (stage, reason) => { excluded.push({ artifact_id: id, stage, reason }) }
+      if (!rev || rev.status !== 'published') { reject('lifecycle', 'revision_not_published'); continue }
+      let scopeReason = null
+      if (rel.scope_type === 'program' && rel.scope_id !== program) scopeReason = program ? 'cross_program' : 'scoped_release_no_program'
+      else if (rel.scope_type === 'family' && rel.scope_id !== family) scopeReason = family ? 'family_mismatch' : 'scoped_release_no_family'
+      else if (!['program', 'family', 'global'].includes(rel.scope_type)) scopeReason = 'unknown_release_scope'
+      if (scopeReason && !review) { reject('scope', scopeReason); continue }
+      const content = JSON.parse(rev.content_json)
+      // The same surface/negative-condition rules apply to direct reads.
+      const applies = content.appliesTo || {}
+      let applicabilityReason = null
+      if (applies.surface && !surface) applicabilityReason = 'surface_context_missing'
+      else if (applies.surface && String(applies.surface) !== surface) applicabilityReason = 'surface_mismatch'
+      for (const condition of Array.isArray(applies.invalidatedBy) ? applies.invalidatedBy : []) {
+        const tag = String(condition).split('（')[0].trim()
+        if (tag && q.includes(tag)) applicabilityReason = 'invalidated_negative'
+      }
+      if (applicabilityReason && !review) { reject('applicability', applicabilityReason); continue }
+      const priority = scopeReason ? 0 : ({ program: 3, family: 2, global: 1 }[rel.scope_type])
+      // Repository order is newest first; ties retain the newest matching release.
+      if (chosen.has(id) && chosen.get(id).priority >= priority) continue
+      chosen.set(id, { origin: 'release', artifact_kind: 'vulncard', artifact_id: id,
+        revision_id: rev.revision_id, revision_status: rev.status, content,
+        content_digest: rev.content_digest, release: rel, priority,
+        executable: !scopeReason && !applicabilityReason })
+    }
+    const pool = [...chosen.values()]
+    for (const legacy of repo.vcList()) {
+      const id = String(legacy.id).toUpperCase()
+      if (args.artifact_id && id !== args.artifact_id) continue
+      if (managed.has(id)) {
+        excluded.push({ artifact_id: id, stage: 'version', reason: 'legacy_managed_by_release' })
+        continue
+      }
+      const lifecycle = legacy.status !== 'active'
+      const missing = legacy.attack_surface && !surface
+      const mismatch = surface && legacy.attack_surface && legacy.attack_surface !== surface
+      if (!review && (lifecycle || missing || mismatch)) {
+        excluded.push({ artifact_id: id, stage: lifecycle ? 'lifecycle' : 'applicability',
+          reason: lifecycle ? String(legacy.status) : missing ? 'surface_context_missing' : 'surface_mismatch' })
+        continue
+      }
+      const original = repo.vcRead(id)
+      if (!original) continue
+      pool.push({ origin: 'legacy_file', artifact_kind: 'vulncard', artifact_id: id,
+        legacy, content_digest: sha256hex(original.content), executable: !lifecycle && !missing && !mismatch })
+    }
+    return { pool, excluded }
   }
 
   // L1：从 evidence_ref 提取 run token（兼容 run_id: 前缀 / run_ 历史形态）
@@ -2932,25 +3001,10 @@ function makeHandlers(opts) {
 
     // ---- 21 号方案 §四/§七：Feedback Core（蒸馏已合流 onVulnVerdict；记分/缺口如下）----
 
-    // 4-2 记分 reactor 双裁判之「SRC 平台裁决」：accepted=终极正例回流 episode（置信度上调依据）；
-    // vendor 驳回另记 negative。事件化使裁决可审计、可重放（不依赖模型自觉）。
-    onVendorVerdict: async (envelope) => {
-      const p = envelope?.payload || {}
-      if (!p.finding_id || !p.vendor_status) return { ok: true, data: { skipped: true } }
-      const accepted = p.vendor_status === 'accepted'
-      const rejected = ['rejected', 'duplicate', 'ignored', 'n/a', 'wontfix'].includes(String(p.vendor_status))
-      if (!accepted && !rejected) return { ok: true, data: { skipped: true, reason: `vendor_status=${p.vendor_status} 非裁决态` } }
-      return recordEpisode({
-        source_event_id: envelope.id,
-        source_event_name: 'vuln.signal.submitted',
-        consumer_version: 'vendor-verdict-v1',
-        outcome: accepted ? 'confirmed' : 'inconclusive',
-        reason_code: accepted ? 'vendor_accepted' : `vendor_${p.vendor_status}`,
-        attempt_id: `finding:${p.finding_id}`,
-        source_credibility: 'machine', // 平台裁决=终极裁判，非模型自评
-        observed_at: envelope.ts,
-        context: { finding_id: p.finding_id, vendor_status: p.vendor_status, bounty: p.bounty ?? null, platform: p.platform || null },
-      }, envelope)
+    // Consume the existing event for compatibility; the operational history
+    // stays in vuln/bus. Neither acceptance nor rejection is technical evidence.
+    onVendorVerdict: async () => {
+      return { ok: true, data: { skipped: true, reason: 'operational_feedback_not_technical_evidence' } }
     },
 
     // 4-3 缺口 reactor：覆盖账本副产品 → know_gaps（未测类/未爬格点/参数缺口）

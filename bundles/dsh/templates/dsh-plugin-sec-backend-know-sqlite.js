@@ -411,7 +411,7 @@ function createRepo(db) {
     deleteKbFts(doc_id) { db.prepare('DELETE FROM kb_fts WHERE rowid = ?').run(Number(doc_id)) },
     replaceKbEmbedding(doc_id, vec) { db.prepare('INSERT OR REPLACE INTO kb_embeddings (doc_id, vec) VALUES (?, ?)').run(Number(doc_id), JSON.stringify(vec)) },
     listKbWhere(whereSql, args, limit, offset) {
-      const sql = `SELECT id, title, file, source_url, tainted, imported_at, status, status_at, uses, revalidate_by, last_validated_at, mem_class, category, fetch_failures, body_revision FROM kb_docs WHERE ${whereSql} ORDER BY (status = 'curated') DESC, uses DESC, imported_at DESC LIMIT ? OFFSET ?`
+      const sql = `SELECT id, title, file, source_url, tainted, imported_at, status, status_at, uses, revalidate_by, last_validated_at, mem_class, category, fetch_failures, body_revision FROM kb_docs WHERE ${whereSql} ORDER BY (status = 'curated') DESC, uses DESC, imported_at DESC, id DESC LIMIT ? OFFSET ?`
       return db.prepare(sql).all(...args, Math.min(Number(limit) || 50, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r, curated: r.status === 'curated' ? 1 : 0 }))
     },
     countKbWhere(whereSql, args) { return db.prepare(`SELECT COUNT(*) AS n FROM kb_docs WHERE ${whereSql}`).get(...args).n },
@@ -760,13 +760,15 @@ function createRepo(db) {
       return { rows, total }
     },
     episodeAggByCard() {
-      // 有效结果按卡片聚合（card_id 缺记行单列——无法归因不计分；模型自评行另有来源级别标签，
-      // 本聚合不含来源过滤，来源过滤在域命令层做）
-      return db.prepare(`SELECT card_id, card_version, outcome, COUNT(*) AS n,
+      // Preserve provenance through aggregation so policy can exclude vendor
+      // feedback and self-reports without deleting historical episode rows.
+      return db.prepare(`SELECT card_id, card_version, outcome, source_credibility,
+          source_event_name, reason_code, COUNT(*) AS n,
           COALESCE(SUM(request_count), 0) AS requests, COALESCE(SUM(token_count), 0) AS tokens,
           COALESCE(SUM(duration_ms), 0) AS ms
         FROM learning_episodes WHERE card_id IS NOT NULL AND card_id != ''
-        GROUP BY card_id, card_version, outcome`).all()
+        GROUP BY card_id, card_version, outcome, source_credibility,
+          source_event_name, reason_code`).all()
     },
     exposureAggByArtifact() {
       return db.prepare(`SELECT artifact_kind, artifact_id, COUNT(*) AS n, SUM(selected) AS sel FROM know_exposures GROUP BY artifact_kind, artifact_id`).all()
