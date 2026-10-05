@@ -330,15 +330,15 @@ function createRepo(db) {
     countExpWhere(whereSql, args) {
       return db.prepare(`SELECT COUNT(*) AS n FROM exp_cards WHERE ${whereSql}`).get(...args).n
     },
-    ftsSearchExp(query, limit) {
+    ftsSearchExp(query, limit = -1) {
       const out = new Map()
       const terms = String(query).split(/\s+/).filter(Boolean)
       try {
-        const rows = db.prepare('SELECT rowid FROM exp_fts WHERE exp_fts MATCH ? LIMIT ?').all(terms.map((t) => `"${t.replace(/"/g, '')}"`).join(' OR '), limit * 2)
+        const rows = db.prepare('SELECT rowid FROM exp_fts WHERE exp_fts MATCH ? LIMIT ?').all(terms.map((t) => `"${t.replace(/"/g, '')}"`).join(' OR '), limit < 0 ? -1 : limit * 2)
         for (const r of rows) out.set(r.rowid, 2)
       } catch { /* MATCH 语法问题走 LIKE */ }
       const likeRows = db.prepare('SELECT rowid FROM exp_fts WHERE scenario LIKE ? OR takeaway LIKE ? OR chain LIKE ? LIMIT ?')
-        .all(`%${String(query)}%`, `%${String(query)}%`, `%${String(query)}%`, limit * 2)
+        .all(`%${String(query)}%`, `%${String(query)}%`, `%${String(query)}%`, limit < 0 ? -1 : limit * 2)
       for (const r of likeRows) out.set(r.rowid, (out.get(r.rowid) || 0) + 1)
       return out
     },

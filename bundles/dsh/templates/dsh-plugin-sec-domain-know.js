@@ -2360,8 +2360,7 @@ function makeHandlers(opts) {
   const queries = {
     exp_search: async (args, repo) => {
       const q = args.q || ''
-      const limit = 50
-      const hits = q ? repo.ftsSearchExp(q, limit * 2) : new Map()
+      const hits = q ? repo.ftsSearchExp(q) : new Map()
       let vecScore = new Map()
       const m = await embeddings()
       if (m && q) {
@@ -2372,21 +2371,32 @@ function makeHandlers(opts) {
         } catch { vecScore = new Map() }
       }
       let rows = [...hits.entries()].map(([id, score]) => { const c = repo.getExpCard(id); return c ? { ...c, _score: score } : null }).filter(Boolean)
-      if (!q) rows = repo.listExpWhere('1=1', [], 'score DESC', limit, 0).map((c) => ({ ...c, _score: c.score || 0 }))
+      if (!q) {
+        rows = []
+        for (let offset = 0; ; offset += 500) {
+          const page = repo.listExpWhere("status NOT IN ('archived', 'deprecated')", [], 'id ASC', 500, offset)
+          rows.push(...page.map(c => ({ ...c, _score: c.score || 0 })))
+          if (page.length < 500) break
+        }
+      }
       const items = rows
         .filter((c) => !['archived', 'deprecated'].includes(c.status))
+        .filter(c => !args.status || c.status === args.status)
+        .filter(c => !args.confidence || c.confidence === args.confidence)
+        .filter(c => !args.tags?.length || args.tags.every(tag => JSON.parse(c.tags || '[]').includes(tag)))
         .map((c) => {
           let rank = (c._score || 0) * 10 + (vecScore.get(c.id) || 0) * 20 + (SRC_RANK[c.source] || 0) * 3 + (CONF_RANK[c.confidence] || 0) + (c.score || 0) * 2
           if (c.status === 'candidate') rank *= 0.5
           if (c.status === 'cooling') rank *= 0.7
-          const item = { id: c.id, scenario: c.scenario, takeaway: c.takeaway, source: c.source, confidence: c.confidence, status: c.status || 'active', score: c.score || 0, tags: c.tags ? JSON.parse(c.tags) : [], _rank: rank }
+          const item = { id: c.id, scenario: c.scenario, takeaway: c.takeaway, source: c.source, confidence: c.confidence, status: c.status || 'active', score: c.score || 0, tags: c.tags ? JSON.parse(c.tags) : [], _rank: rank,
+            _updated: c.last_validated_at || c.created_at || 0, _uses: c.uses || 0 }
           if (c.status === 'cooling') item._cooling = true
           if (c.status === 'candidate') item._candidate = true
           return item
         })
-        .sort((x, y) => y._rank - x._rank)
-        .slice(0, Math.min(limit, 500))
-        .map(({ _rank, ...rest }) => rest)
+        .sort((x, y) => (args.sort === 'updated_at' ? y._updated - x._updated
+          : args.sort === 'uses' ? y._uses - x._uses : y._rank - x._rank) || y.id - x.id)
+        .map(({ _rank, _updated, _uses, ...rest }) => rest)
       return { rows: items, total: items.length }
     },
     exp_get: async (args, repo, ctx) => {
@@ -2611,7 +2621,14 @@ function makeHandlers(opts) {
         excluded.push(...resolved.excluded)
       }
       if (!kindFilter || kindFilter === 'exp_card') {
-        const hits = q ? repo.ftsSearchExp(q, 100) : new Map(repo.listExpWhere('1=1', [], 'score DESC', 50, 0).map((c) => [c.id, c.score || 0]))
+        const hits = q ? repo.ftsSearchExp(q) : new Map()
+        if (!q) {
+          for (let offset = 0; ; offset += 500) {
+            const page = repo.listExpWhere('1=1', [], 'id ASC', 500, offset)
+            for (const c of page) hits.set(c.id, c.score || 0)
+            if (page.length < 500) break
+          }
+        }
         for (const [id] of hits) {
           const c = repo.getExpCard(id)
           if (c) pool.push({ origin: 'exp', artifact_kind: 'exp_card', artifact_id: String(c.id), card: c })
@@ -2726,6 +2743,7 @@ function makeHandlers(opts) {
       return {
         q, program_id: programId || null, family: family || null, surface: surface || null,
         stages, selected, excluded: excluded.slice(0, 100),
+        excluded_total: excluded.length, excluded_truncated: excluded.length > 100,
         coverage,
         meta: { cost_ms: Date.now() - started, pool: stages.pool, caller_actor: (ctx && ctx.actor) || 'model' },
       }

@@ -174,6 +174,39 @@ test('WP08: exp_list 第501项可读，废弃playbook退出排名', async () => 
   assert.ok(!rank.data.playbooks.some(row => row.id === pbId))
 })
 
+test('WP08: 搜索不被前200条废弃命中挤空，筛选排序后再分页', async () => {
+  const { bus } = makeEnv()
+  await bus.query('know', 'exp_list', {}, { actor: 'model' })
+  const db = bus._internal.db()
+  const insert = db.prepare("INSERT INTO exp_cards (scenario,takeaway,status,kind,created_at,last_validated_at,score,tags,uses,confidence) VALUES (?,? ,?,'card',123,123,?,?,?,?)")
+  db.exec('BEGIN')
+  try {
+    for (let i = 0; i < 205; i++) insert.run(`crowdedneedle ${i}`, 'text', 'deprecated', 100, '[]', 0, 'medium')
+    for (let i = 0; i < 3; i++) insert.run(`crowdedneedle live${i}`, 'text', 'active', i, '["authz"]', 3 - i, 'high')
+    db.prepare("INSERT INTO exp_fts(exp_fts) VALUES ('rebuild')").run()
+    db.exec('COMMIT')
+  } catch (error) { db.exec('ROLLBACK'); throw error }
+  const search = await bus.query('know', 'exp_search', {
+    q: 'crowdedneedle', tags: ['authz'], confidence: 'high', sort: 'uses', offset: 1, limit: 1,
+  }, { actor: 'model' })
+  assert.equal(search.ok, true, search.error?.message)
+  assert.equal(search.total, 3)
+  assert.equal(search.rows[0].scenario, 'crowdedneedle live1')
+  const absent = await bus.query('know', 'exp_search', { q: 'crowdedneedle', tags: ['ssrf'] }, { actor: 'model' })
+  assert.equal(absent.total, 0)
+  const browse = await bus.query('know', 'exp_search', { limit: 1 }, { actor: 'model' })
+  assert.equal(browse.total, 3)
+  assert.equal(browse.rows[0].scenario, 'crowdedneedle live2')
+  const explained = await bus.query('know', 'retrieval_explain', {
+    q: 'crowdedneedle', artifact_kind: 'exp_card',
+  }, { actor: 'model' })
+  assert.equal(explained.ok, true)
+  assert.equal(explained.data.selected.length, 3)
+  assert.equal(explained.data.excluded_total, 205)
+  assert.equal(explained.data.excluded_truncated, true)
+  assert.equal(explained.data.excluded.filter(row => row.reason === 'deprecated').length, 100)
+})
+
 test('happy path: pb_save / pb_outcome（playbook 卡 runs/successes + rank）', async () => {
   const { bus } = makeEnv()
   const s = await bus.dispatch('know', 'pb_save', { name: 'dalfox-xss', steps: ['探测反射点', 'payload 注入'], trigger: ['xss', 'dalfox'] }, { actor: 'dashboard' })
