@@ -1137,7 +1137,9 @@ function makeHandlers(opts) {
       actor: opts.actor || null, outcome: opts.outcome || null, note: opts.note ? String(opts.note).slice(0, 200) : null,
       created_at: now,
     })
-    return { ...r, adoption_id: adoptionId }
+    // 所有采用入口同步更新投影；重复事件也可修复先前缺失的投影。
+    const rebuilt = rebuildArtifactScore(repo, String(opts.artifact_kind), String(opts.artifact_id))
+    return { ...r, adoption_id: adoptionId, score_rebuilt: !!rebuilt }
   }
 
   // ---- L5（设计 §8.1）：计分重放——从不可变事实（曝光/采用/episode/有效反馈）重建单卡投影。
@@ -2174,11 +2176,8 @@ function makeHandlers(opts) {
         program_id: args.program_id || null, actor: (ctx && ctx.actor) || null,
         outcome: args.outcome || null, note: args.note || null,
       })
-      // Rebuild on replay as well: a prior crash may have persisted adoption
-      // before its projection. Counts come from facts and cannot double.
-      const rebuilt = rebuildArtifactScore(repo, args.artifact_kind, String(args.artifact_id))
-      if (!r.created) return { data: { recorded: false, duplicate: r.duplicate, score_rebuilt: !!rebuilt } }
-      return { data: { recorded: true, adoption_id: r.adoption_id, score_rebuilt: !!rebuilt }, events: [], after: null }
+      if (!r.created) return { data: { recorded: false, duplicate: r.duplicate, score_rebuilt: r.score_rebuilt } }
+      return { data: { recorded: true, adoption_id: r.adoption_id, score_rebuilt: r.score_rebuilt }, events: [], after: null }
     },
 
     // C29（L5）：原生反馈桥落账。feedback id + revision 幂等（主键强约束）；编辑=更高 revision 覆盖

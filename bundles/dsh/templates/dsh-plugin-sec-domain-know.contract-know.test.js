@@ -2100,6 +2100,15 @@ test('L03: 人工采用要求真实且仍可使用的经验或文献，拒绝不
   for (const [target, payload, table, id] of [['exp', { id: exp.data.id }, 'exp_cards', exp.data.id], ['kb', { doc_id: kb.data.doc_id }, 'kb_docs', kb.data.doc_id]]) {
     const adopted = await bus.dispatch('know', 'adopt', { target, payload, evidence: '现役对象采用证据充分且可追溯' }, { actor: 'dashboard' })
     assert.equal(adopted.ok, true, adopted.error?.message)
+    const kind = target === 'exp' ? 'exp_card' : 'kb_doc'
+    const score = db.prepare('SELECT * FROM know_scores WHERE artifact_kind=? AND artifact_id=?').get(kind, String(id))
+    assert.equal(score?.adoptions, 1, '人工采用立即更新采用计数')
+    assert.equal(score.verified_positives, 0)
+    assert.equal(score.valid_cleans, 0)
+    assert.equal(score.score, 0, '仅采用不增加技术收益')
+    const replay = await bus.dispatch('know', 'adopt', { target, payload, evidence: '现役对象采用证据充分且可追溯' }, { actor: 'dashboard' })
+    assert.equal(replay.ok, true)
+    assert.equal(db.prepare('SELECT adoptions FROM know_scores WHERE artifact_kind=? AND artifact_id=?').get(kind, String(id)).adoptions, 1)
     db.prepare('UPDATE '+table+' SET status=? WHERE id=?').run('deprecated', id)
     const retired = await bus.dispatch('know', 'adopt', { target, payload, evidence: '已废弃对象再次采用的新证据说明' }, { actor: 'dashboard' })
     assert.equal(retired.ok, false)
@@ -2119,6 +2128,9 @@ test('L03: revision采用绑定当前作用域发布，跨scope不能命中旧�
   assert.equal(good.ok, true, good.error?.message)
   assert.equal(good.data.release_id, pub.release_id)
   assert.equal(good.data.content_digest, pub.content_digest)
+  const projection = bus._internal.db().prepare('SELECT * FROM know_scores WHERE artifact_kind=? AND artifact_id=?').get('vulncard', 'VC-AUTHZ-SCOPE01')
+  assert.equal(projection?.adoptions, 1)
+  assert.equal(projection.score, 0)
   const wrong = await bus.dispatch('know', 'adopt', { ...args, scope: { type: 'program', id: 'other-src' } }, { actor: 'dashboard' })
   assert.equal(wrong.ok, false)
   // 同一revision仍在另一scope发布；撤回本scope不能由published状态绕过。
