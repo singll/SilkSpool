@@ -2445,7 +2445,7 @@ function makeHandlers(opts) {
     },
     kb_search: async (args, repo) => {
       const q = args.q || ''
-      const hits = q ? repo.ftsSearchKb(q, 20) : new Map()
+      const hits = q ? repo.ftsSearchKb(q) : new Map()
       let semantic = new Map()
       const m = await embeddings()
       if (m && q) {
@@ -2454,17 +2454,20 @@ function makeHandlers(opts) {
           for (const r of repo.allKbEmbeddings()) { const s = m.cosine(qv, JSON.parse(r.vec)); if (s >= 0.55) { semantic.set(r.doc_id, s); if (!hits.has(r.doc_id)) hits.set(r.doc_id, 0) } }
         } catch { semantic = new Map() }
       }
+      const documents = repo.getKbDocs([...hits.keys()])
       const items = [...hits.entries()].map(([id]) => {
-        const doc = repo.getKbDoc(id)
-        if (!doc || doc.status === 'archived') return null
+        const doc = documents.get(id)
+        if (!doc || ['archived', 'deprecated'].includes(doc.status)) return null
+        if (args.category && doc.category !== args.category) return null
         const out = { doc_id: doc.id, title: doc.title, url: doc.source_url, category: doc.category || '', status: doc.status, curated: doc.status === 'curated' ? 1 : 0, tainted: !!doc.tainted, revalidate_by: doc.revalidate_by, body_revision: doc.body_revision || 1 }
         if (semantic.has(doc.id)) out.semantic = Math.round(semantic.get(doc.id) * 100) / 100
         return out
       }).filter(Boolean).sort((x, y) => (y.curated ? 1 : 0) - (x.curated ? 1 : 0))
       return { rows: items, total: items.length }
     },
-    kb_list: async (args, repo) => {
+    kb_list: async (args, repo, ctx) => {
       const conds = ["status != 'archived'"]
+      if (!['dashboard', 'human', 'system'].includes(ctx?.actor)) conds.push("status != 'deprecated'")
       const wa = []
       if (args.category) { conds.push('category = ?'); wa.push(String(args.category)) }
       if (args.status) { conds.push('status = ?'); wa.push(String(args.status)) }
@@ -2479,9 +2482,11 @@ function makeHandlers(opts) {
       const total = repo.countKbWhere(where, wa)
       return { rows, total, meta: { counts: repo.kbCounts(), paged: true } }
     },
-    kb_read: async (args, repo) => {
+    kb_read: async (args, repo, ctx) => {
       const doc = repo.getKbDoc(args.doc_id)
-      if (!doc) throwErr('E_NOT_FOUND', `文献 #${args.doc_id} 不存在`, null, false)
+      if (!doc || (!['dashboard', 'human'].includes(ctx?.actor) && ['archived', 'deprecated'].includes(doc.status))) {
+        throwErr('E_NOT_FOUND', `文献 #${args.doc_id} 不存在或已退出任务使用面`, null, false)
+      }
       let content = ''
       try {
         const st = fs.statSync(doc.file)
@@ -2635,9 +2640,10 @@ function makeHandlers(opts) {
         }
       }
       if (!kindFilter || kindFilter === 'kb_doc') {
-        const hits = q ? repo.ftsSearchKb(q, 50) : new Map()
+        const hits = q ? repo.ftsSearchKb(q) : new Map()
+        const documents = repo.getKbDocs([...hits.keys()])
         for (const [id] of hits) {
-          const d = repo.getKbDoc(id)
+          const d = documents.get(id)
           if (d) pool.push({ origin: 'kb', artifact_kind: 'kb_doc', artifact_id: String(d.id), doc: d })
         }
       }
@@ -2677,7 +2683,7 @@ function makeHandlers(opts) {
           return true
         }
         if (it.origin === 'kb') {
-          if (it.doc.status === 'archived') { excluded.push({ artifact_id: it.artifact_id, stage: 'lifecycle', reason: 'archived' }); return false }
+          if (['archived', 'deprecated'].includes(it.doc.status)) { excluded.push({ artifact_id: it.artifact_id, stage: 'lifecycle', reason: it.doc.status }); return false }
           return true
         }
         return true
@@ -2712,7 +2718,6 @@ function makeHandlers(opts) {
       // ---- 阶段4 排序：来源等级（revision 发布=300 / legacy active=200 / exp=100+score / kb=80）+ 新鲜度（7 天内 +20）。
       // 计分投影随行展示作证据链，不参与 rank（raw uses 不入排序循环，§8.2 第 2 条）。
       const scored = pool.map((it) => {
-        const sc = repo.getScore(it.artifact_kind, it.artifact_id) || null
         let rank = 0
         if (it.origin === 'release') rank = 300
         else if (it.origin === 'legacy_file') rank = 200
@@ -2720,12 +2725,13 @@ function makeHandlers(opts) {
         else if (it.origin === 'kb') rank = 80
         const refTs = it.origin === 'release' ? it.release.created_at : (it.card ? it.card.last_validated_at : (it.doc ? it.doc.imported_at : 0))
         if (refTs && Date.now() - refTs < 7 * DAY) rank += 20
-        return { ...it, _rank: rank, score: sc }
+        return { ...it, _rank: rank }
       }).sort((x, y) => y._rank - x._rank)
       stages.ranked = scored.length
 
       const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 50)
       const selected = scored.slice(0, limit).map((it) => {
+        const score = repo.getScore(it.artifact_kind, it.artifact_id)
         const out = {
           artifact_kind: it.artifact_kind, artifact_id: it.artifact_id, origin: it.origin,
           rank_score: Math.round(it._rank * 100) / 100,
@@ -2736,7 +2742,7 @@ function makeHandlers(opts) {
         if (it.legacy) out.title = it.legacy.title || it.legacy.name || null
         if (it.card) { out.scenario = String(it.card.scenario).slice(0, 120); out.confidence = it.card.confidence }
         if (it.doc) { out.title = it.doc.title; out.category = it.doc.category || null; out.curated = it.doc.status === 'curated' }
-        if (it.score) out.evidence = { exposures: it.score.exposures, adoptions: it.score.adoptions, verified_positives: it.score.verified_positives, valid_cleans: it.score.valid_cleans, score: it.score.score, sample_size: it.score.sample_size }
+        if (score) out.evidence = { exposures: score.exposures, adoptions: score.adoptions, verified_positives: score.verified_positives, valid_cleans: score.valid_cleans, score: score.score, sample_size: score.sample_size }
         return out
       })
       const coverage = { gap: selected.length === 0, hits: selected.length, note: selected.length === 0 ? 'miss——用 know_gap_record 登记缺口，补建走 know_revision_propose 候选通道' : (selected.length < 3 ? 'low_coverage' : 'ok') }

@@ -415,13 +415,21 @@ function createRepo(db) {
       return db.prepare(sql).all(...args, Math.min(Number(limit) || 50, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r, curated: r.status === 'curated' ? 1 : 0 }))
     },
     countKbWhere(whereSql, args) { return db.prepare(`SELECT COUNT(*) AS n FROM kb_docs WHERE ${whereSql}`).get(...args).n },
-    ftsSearchKb(query, limit) {
+    getKbDocs(ids) {
+      const rows = []
+      for (let offset = 0; offset < ids.length; offset += 400) {
+        const batch = ids.slice(offset, offset + 400)
+        rows.push(...db.prepare(`SELECT * FROM kb_docs WHERE id IN (${batch.map(() => '?').join(',')})`).all(...batch))
+      }
+      return new Map(rows.map(row => [row.id, { ...row }]))
+    },
+    ftsSearchKb(query, limit = -1) {
       const out = new Map()
       try {
-        const rows = db.prepare('SELECT rowid FROM kb_fts WHERE kb_fts MATCH ? LIMIT ?').all(String(query).split(/\s+/).map((t) => `"${t.replace(/"/g, '')}"`).join(' OR '), limit * 2)
+        const rows = db.prepare('SELECT rowid FROM kb_fts WHERE kb_fts MATCH ? LIMIT ?').all(String(query).split(/\s+/).map((t) => `"${t.replace(/"/g, '')}"`).join(' OR '), limit < 0 ? -1 : limit * 2)
         for (const r of rows) out.set(r.rowid, 2)
       } catch { /* noop */ }
-      const like = db.prepare('SELECT rowid FROM kb_fts WHERE title LIKE ? OR body LIKE ? LIMIT ?').all(`%${String(query)}%`, `%${String(query)}%`, limit * 2)
+      const like = db.prepare('SELECT rowid FROM kb_fts WHERE title LIKE ? OR body LIKE ? LIMIT ?').all(`%${String(query)}%`, `%${String(query)}%`, limit < 0 ? -1 : limit * 2)
       for (const r of like) out.set(r.rowid, (out.get(r.rowid) || 0) + 1)
       return out
     },

@@ -398,6 +398,38 @@ test('L0-K1: kb_import 写入 category 列，kb_list 按 category 过滤', async
   assert.ok(l.ok && l.rows.some((x) => x.id === r.data.doc_id && x.category === 'xss'))
 })
 
+test('WP08: 文献后页有效命中不被废弃记录挤掉，模型读取废弃正文失败', async () => {
+  const { bus, dataDir } = makeEnv()
+  await bus.query('know', 'kb_list', {}, { actor: 'dashboard' })
+  const db = bus._internal.db()
+  const file = path.join(dataDir, 'knowledge', 'fixture.md')
+  fs.writeFileSync(file, 'controlled fixture body')
+  const insert = db.prepare('INSERT INTO kb_docs(title,file,status,imported_at,category) VALUES (?,?,?,?,?)')
+  const index = db.prepare('INSERT INTO kb_fts(rowid,title,body) VALUES (?,?,?)')
+  db.exec('BEGIN')
+  try {
+    for (let i = 0; i < 103; i++) {
+      const title = `kbneedle ${i}`
+      const id = insert.run(title, file, i < 101 ? 'deprecated' : 'active', 123, i === 102 ? 'xss' : 'authz').lastInsertRowid
+      index.run(id, title, 'kbneedle body')
+    }
+    db.exec('COMMIT')
+  } catch (error) { db.exec('ROLLBACK'); throw error }
+  const search = await bus.query('know', 'kb_search', { q: 'kbneedle', category: 'xss', limit: 1 }, { actor: 'model' })
+  assert.equal(search.ok, true)
+  assert.equal(search.total, 1)
+  assert.equal(search.rows[0].title, 'kbneedle 102')
+  const list = await bus.query('know', 'kb_list', {}, { actor: 'model' })
+  assert.equal(list.total, 2)
+  const denied = await bus.query('know', 'kb_read', { doc_id: 1 }, { actor: 'model' })
+  assert.equal(denied.error.code, 'E_NOT_FOUND')
+  const review = await bus.query('know', 'kb_read', { doc_id: 1 }, { actor: 'dashboard' })
+  assert.equal(review.ok, true)
+  const explain = await bus.query('know', 'retrieval_explain', { q: 'kbneedle', artifact_kind: 'kb_doc' }, { actor: 'model' })
+  assert.equal(explain.data.selected.length, 2)
+  assert.equal(explain.data.excluded_total, 101)
+})
+
 test('WP10: kb_list 501 项完整分页，筛选先于分页且总线不重复切片', async () => {
   const { bus } = makeEnv()
   await bus.query('know', 'kb_list', {}, { actor: 'dashboard' })
