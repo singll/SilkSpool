@@ -1186,3 +1186,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-05 L03类型隔离增量（本地待发布）：rebuildArtifactScore匹配episode时同时核对知识类型和ID，采用与曝光本已按双键计数。防止同号kb_doc继承exp_card经历/成本；历史episode尚无显式artifact_kind，仍沿既有VC-/doc:/pb:/数字解析规则，不等于旧来源或版本已经可信。
 
 2026-10-05 memcore健康展示增量（本地待发布）：事实/知识来源失败不映射为0，也不沿用旧成功健康投影。未采集指标null，视图显示“未知”；真实空库/完整状态分布中的零仍保留0。指标采集与发布验收仍另行推进。
+
+2026-10-05文献健康实测字段（本地待发布）：kb.zero_use为COALESCE(uses,0)=0的记录数，zero_use_ratio=zero_use/total，空库比例null；这是已记录使用次数的口径，不保证历史采集完整。cooling按状态计数；expiring_30d仅active且revalidate_by位于查询时刻至未来30天（含边界），与overdue_revalidate分开。memcore透传计数/比例，非法比例保留未知。

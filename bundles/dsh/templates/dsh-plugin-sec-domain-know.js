@@ -2586,7 +2586,7 @@ function makeHandlers(opts) {
       if ((agg.kb.fetch_failed || 0) > 0) warnings.push(`kb 抓取失败 ${agg.kb.fetch_failed} 篇（fetch_failures>0，需复验）`)
       return {
         exp: { total: agg.exp.total, active: agg.exp.total - (agg.exp.cooling + agg.exp.deprecated), deprecated: agg.exp.deprecated, avg_score: agg.exp.avg_score, zero_use_30d: agg.exp.zero_use_30d, tainted: null, exportable: agg.exp.exportable, cooling: agg.exp.cooling },
-        kb: { total: agg.kb.total, curated: agg.kb.curated, overdue_revalidate: agg.kb.overdue_revalidate, tainted: agg.kb.tainted, fetch_failed: agg.kb.fetch_failed || 0 },
+        kb: { total: agg.kb.total, zero_use: agg.kb.zero_use, zero_use_ratio: agg.kb.total > 0 ? agg.kb.zero_use / agg.kb.total : null, cooling: agg.kb.cooling, expiring_30d: agg.kb.expiring_30d, curated: agg.kb.curated, overdue_revalidate: agg.kb.overdue_revalidate, tainted: agg.kb.tainted, fetch_failed: agg.kb.fetch_failed || 0 },
         rules: { total: rules, last_seed: null },
         vulncards: { total: vc.length, active: vc.filter((c) => c.status === 'active').length, draft: vc.filter((c) => c.status === 'draft').length, usage_30d: null },
         releases: (() => { const r = repo.listReleases({ status: 'active', limit: 500 }); return { active: r.total } })(),

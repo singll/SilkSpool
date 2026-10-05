@@ -18,3 +18,11 @@ test('health preserves observed zero, missing metrics and source failure indepen
   assert.equal(result.knowledgeHealth.exp_cards.total, 3)
   assert.equal(projectKnowledgeStatus(null, {ok:true,data:{fgs_persisted:0}}, null).knowledgeHealth.fgs.persisted_facts, 0)
 })
+
+test('document health forwards measured counts and valid ratios without coercing unknown', () => {
+  const result = projectKnowledgeStatus(null, null, {ok:true,data:{kb:{total:5,zero_use:3,zero_use_ratio:0.6,cooling:1,expiring_30d:1}}})
+  assert.deepEqual(result.knowledgeHealth.kb_docs, {total:5,zero_use:3,zero_use_ratio:0.6,cooling:1,expiring_30d:1})
+  for (const value of [null, '0', NaN, Infinity, -1, 2]) {
+    assert.equal(projectKnowledgeStatus(null,null,{ok:true,data:{kb:{zero_use_ratio:value}}}).knowledgeHealth.kb_docs.zero_use_ratio,null)
+  }
+})

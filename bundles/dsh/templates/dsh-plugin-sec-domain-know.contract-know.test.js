@@ -2187,3 +2187,25 @@ test('L03: 同号文献采用不得继承经验episode与成本，重算仍按�
     assert.equal((await bus.dispatch('know', 'scores_rebuild', {}, { actor: 'system' })).ok, true)
   }
 })
+
+
+test('L23: 文献健康透出真实零使用冷却与未来30天到期，空库比例未知', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const empty = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.equal(empty.data.kb.zero_use, 0)
+  assert.equal(empty.data.kb.zero_use_ratio, null)
+  const now = Date.now(), day = 86400000
+  const rows = [[0, 'active', now + day], [1, 'active', now + 31 * day], [0, 'cooling', now + day], [2, 'active', now - day], [0, 'curated', null]]
+  for (const [uses, status, due] of rows) {
+    db.prepare('INSERT INTO kb_docs(title,file,imported_at,uses,status,revalidate_by) VALUES(?,?,?,?,?,?)').run('health fixture', '/fixture.md', now, uses, status, due)
+  }
+  const h = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.equal(h.ok, true)
+  assert.equal(h.data.kb.total, 5)
+  assert.equal(h.data.kb.zero_use, 3)
+  assert.equal(h.data.kb.zero_use_ratio, 0.6)
+  assert.equal(h.data.kb.cooling, 1)
+  assert.equal(h.data.kb.expiring_30d, 1)
+  assert.equal(h.data.kb.overdue_revalidate, 1)
+})
