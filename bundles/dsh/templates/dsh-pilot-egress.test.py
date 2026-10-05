@@ -8,6 +8,21 @@ spec.loader.exec_module(egress)
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_bound_upstream_has_no_direct_fallback(self):
+        cfg = egress.build_config(["8.8.8.8"], 18899,
+                                  upstream_proxy="http://1.1.1.1:8080")
+        self.assertEqual(cfg["proxies"][0]["server"], "1.1.1.1")
+        self.assertEqual(cfg["proxy-groups"], [])
+        self.assertTrue(cfg["rules"][0].endswith(",pilot-bound-upstream"))
+        self.assertNotIn("DIRECT", str(cfg))
+
+    def test_rejects_untrusted_upstream_shape(self):
+        for url in ["http://127.0.0.1:80", "http://name.test:80",
+                    "http://user:pass@1.1.1.1:80", "https://1.1.1.1:80",
+                    "http://1.1.1.1:80/path", "http://1.1.1.1"]:
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                egress.build_config(["8.8.8.8"], 18899, upstream_proxy=url)
+
     def test_exact_public_targets_only(self):
         cfg = egress.build_config(["8.8.8.8", "1.1.1.1", "8.8.8.8"], 18899)
         self.assertEqual(len(cfg["rules"]), 3)
