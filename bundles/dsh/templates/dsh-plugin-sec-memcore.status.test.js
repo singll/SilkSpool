@@ -26,3 +26,11 @@ test('document health forwards measured counts and valid ratios without coercing
     assert.equal(projectKnowledgeStatus(null,null,{ok:true,data:{kb:{zero_use_ratio:value}}}).knowledgeHealth.kb_docs.zero_use_ratio,null)
   }
 })
+
+
+test('candidate count is forwarded only when observed', () => {
+  const value = projectKnowledgeStatus(null,null,{ok:true,data:{exp:{candidate:2,active:1}}})
+  assert.equal(value.tables.exp_cards.candidate,2)
+  assert.equal(value.knowledgeHealth.exp_cards.candidate,2)
+  assert.equal(projectKnowledgeStatus(null,null,null).tables.exp_cards.candidate,null)
+})

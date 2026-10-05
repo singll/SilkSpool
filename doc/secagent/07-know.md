@@ -1192,3 +1192,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-05健康聚合失败语义（本地待发布）：expAggregates不再吞掉SQL异常返回空对象，数据库/schema故障由总线报告查询失败；消费者按缺源显示未知。正常COUNT=0仍是已知空库。
 
 2026-10-05经验zero_use_30d口径修正（本地待发布）：created_at距今至少30天，且last_used_at距今至少30天，或last_used_at为空且uses=0。新卡不计入；uses>0但缺最后使用时间不猜测其闲置时间。该数基于已记录使用元数据，不证明采集完整。
+
+2026-10-05经验状态统计（本地待发布）：active/candidate均按status精确计数；禁止total减cooling/deprecated推算active，避免归档/未知状态混入现役。candidate由know_health透传memcore，缺源仍未知。

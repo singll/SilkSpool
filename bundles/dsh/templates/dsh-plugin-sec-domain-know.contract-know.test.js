@@ -2239,3 +2239,20 @@ test('L23: 30天未使用只计存在足够久且有可判断使用时间的经�
   assert.equal(h.ok, true)
   assert.equal(h.data.exp.zero_use_30d, 2)
 })
+
+
+test('L23: 经验现役与候选按实际状态计数，未知状态不推算为active', async () => {
+  const { bus } = makeEnv()
+  await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  const db = bus._internal.db()
+  for (const status of ['active','candidate','cooling','deprecated','archived','legacy_unknown']) {
+    db.prepare('INSERT INTO exp_cards(scenario,takeaway,created_at,last_validated_at,status) VALUES(?,?,?,?,?)').run('status fixture','takeaway',1,1,status)
+  }
+  const h = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.equal(h.ok, true)
+  assert.equal(h.data.exp.total, 6)
+  assert.equal(h.data.exp.active, 1)
+  assert.equal(h.data.exp.candidate, 1)
+  assert.equal(h.data.exp.cooling, 1)
+  assert.equal(h.data.exp.deprecated, 1)
+})
