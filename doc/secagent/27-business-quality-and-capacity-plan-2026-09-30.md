@@ -1365,6 +1365,18 @@ change `20261005-know-lifecycle-release`，源68d9e90，3源文件/6落点，DSH
 
 备份后上传发布包，生产Node完整契约预检进行中，尚未冻结/切换。另用在线backup API创建独立数据库副本，真实know backend迁移通过：432文献/0文献归档/44经验/3经验归档原字段逐项保持一致、tags补列及integrity通过。该检查不修改生产库，不能当作已经部署。工作与证据位于受限20261005-know-lifecycle-release目录，后续接预检结果、新冻结与隔离应用验收。
 
+### 15.43 WP08完整预检通过，冻结恢复点生成中（2026-10-05）
+
+生产Node完整契约698/698通过（275.34秒），64表副本schema/integrity通过；文档提交241caab已推送。新冻结前复核现役task调度器摘要与配置一致，proxy-refresh.service已inactive；北京时间22:42:33停写，1880会话/running0，写者及维护timer状态保存于本批dsh-freeze-c689cjms。完整恢复点生成及完整校验已通过，manifest SHA256 `af03195d2e391e6e7615f8ed4ec5e1bc187c9cf75c4d6dc6175a50de01493737`，正在生成隔离恢复副本。尚未安装本批代码，不能视作发布完成。生产冒烟脚本补充经验不存在标签筛选应返回0、文献列表tags字段、两张文献表tags列及integrity检查，仍保持原10秒RPC时限。
+
+### 15.44 WP08生命周期与标签合批发布完成（2026-10-05）
+
+新冻结点完整恢复副本通过，旧版首次启动TimeoutError，原10秒门槛复验通过；诊断脚本首次上传因转义错误在执行前失败，未改副本。新版启动通过，64表原字段比较仅kb_fts_data/kb_fts_idx/programs/bus_meta/event_outbox变化，文献/经验原字段不变。隔离know88/88及worker19项通过，15次模型请求仅回环模拟。
+
+生产6落点安装成功，首次冒烟明确在dashboard.stats的10秒请求超时；失败回执保留，未放宽门槛，第二次通过。kb_list总432、offset500返回0，vc_list19、exp_list44、dashboard.kbList432；不存在经验标签筛选0项，文献tags字段、kb_docs及归档tags列和integrity均通过。WP11已再次复现冷启动统计超时，根因尚未确定。
+
+北京时间22:42:33–23:37:21停写约54分48秒后恢复，resume_errors为空。最终6服务/7timer active，主PID1230168/NRestarts0、journal error0，临时覆盖删除、6落点摘要一致、quick_check正常。Campaign1/2/3仍paused，spent176585747/600964767/158046194，预算未变；请求观测仍3，running task/worker均0。DSH保持0.1.7-rc.2。§15.37–15.41增量已部署，WP08及全案仍未全部验收；后续继续统计热点、可信学习与匿名业务纵切。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
