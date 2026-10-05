@@ -1166,3 +1166,5 @@ exp/kb 两子仓的向量检索（exp_embeddings / kb_embeddings，384 维）依
 WP08搜索后续（本地，待发布）：exp_search及retrieval_explain经验候选不再先限前50/200条；生命周期/标签/可信度筛选和rank/uses/updated_at排序先于分页，总数反映全部匹配项。解释输出仍保留100条排除原因展示上限，新增excluded_total/excluded_truncated。205条废弃记录在前、3条有效记录在后的夹具验证可用方法不被挤掉；know85/85通过。完整候选读取的容量边界待WP11测量，不宣称无限规模低延迟。
 
 WP08文献读取后续（本地待发布）：kb_search/retrieval_explain文献候选先完整读取再过滤，category筛选生效；deprecated/archived不进入任务搜索或正文读取，人工审查保留。批量400项读取文献，解释仅为最终入选项查询评分（评分不参与排序），避免每命中多次查库。86项契约通过。
+
+WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路径保存到kb_docs.tags，新增列默认[]，去重保持顺序；归档表由ensureArchive补同名列。kb_search按全部标签匹配并返回tags，kb_list返回存储标签。exp_list标签条件在SQL分页前执行，异常历史JSON不匹配；标签只按显式来源保存，不从正文猜测。跨域697/697通过，最终列表字段补充后know87/87通过。

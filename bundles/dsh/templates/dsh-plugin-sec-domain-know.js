@@ -1099,7 +1099,7 @@ function makeHandlers(opts) {
   const SRC_RANK = { 'human-verified': 3, '实战': 2, external: 1 }
 
   // kb 导入核心（kb_import 与 know_kb_vault_sync 共用；事件由调用方汇总，去重返回 E_DUPLICATE 供计数）
-  async function kbImportCore(repo, { title, url, body, source, category, curated }) {
+  async function kbImportCore(repo, { title, url, body, source, category, curated, tags }) {
     const dup = repo.findKbByUrl(url)
     if (dup) return { ok: false, code: 'E_DUPLICATE', doc_id: dup.id }
     const tainted = scanInjection(body)
@@ -1113,7 +1113,7 @@ function makeHandlers(opts) {
     const r = repo.insertKbDoc({
       title: String(title), file, source_url: String(url), tainted, bodyExcerpt: String(body).slice(0, 100000),
       mem_class: 'durable', status: curated ? 'curated' : 'active', revalidate_by, justification: source || 'web',
-      category: cat, content_hash: sha1(body),
+      category: cat, content_hash: sha1(body), tags,
     })
     embeddings().then(async (em) => {
       if (!em) return
@@ -1626,7 +1626,7 @@ function makeHandlers(opts) {
       // L6：导入核心抽出共用（know_kb_vault_sync 批量回流复用同一入库路径——taint 扫描/分类/复验期一致）
       const r = await kbImportCore(repo, {
         title: args.title, url: args.url, body: args.body,
-        source: args.source, category: args.category, curated: args.source === 'rules-curated',
+        source: args.source, category: args.category, curated: args.source === 'rules-curated', tags: args.tags,
       })
       if (!r.ok) throwErr(r.code, `url 已存在（doc_id=${r.doc_id}）`, '同 URL 已导入；如需刷新用 kb_revalidate', false)
       return {
@@ -2412,6 +2412,10 @@ function makeHandlers(opts) {
       const wa = []
       if (args.status) { conds.push('status = ?'); wa.push(String(args.status)) }
       if (args.source) { conds.push('source = ?'); wa.push(String(args.source)) }
+      for (const tag of args.tags || []) {
+        conds.push("EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(exp_cards.tags) THEN exp_cards.tags ELSE '[]' END) WHERE value = ?)")
+        wa.push(tag)
+      }
       const review = args.reader === 'review' && ['dashboard', 'human', 'system'].includes(ctx?.actor)
       if (!review) conds.push("status NOT IN ('archived', 'deprecated')")
       const where = conds.length ? conds.join(' AND ') : '1=1'
@@ -2459,7 +2463,12 @@ function makeHandlers(opts) {
         const doc = documents.get(id)
         if (!doc || ['archived', 'deprecated'].includes(doc.status)) return null
         if (args.category && doc.category !== args.category) return null
+        let tags
+        try { tags = JSON.parse(doc.tags || '[]') } catch { tags = [] }
+        if (!Array.isArray(tags)) tags = []
+        if (args.tags?.length && !args.tags.every(tag => tags.includes(tag))) return null
         const out = { doc_id: doc.id, title: doc.title, url: doc.source_url, category: doc.category || '', status: doc.status, curated: doc.status === 'curated' ? 1 : 0, tainted: !!doc.tainted, revalidate_by: doc.revalidate_by, body_revision: doc.body_revision || 1 }
+        out.tags = tags
         if (semantic.has(doc.id)) out.semantic = Math.round(semantic.get(doc.id) * 100) / 100
         return out
       }).filter(Boolean).sort((x, y) => (y.curated ? 1 : 0) - (x.curated ? 1 : 0))

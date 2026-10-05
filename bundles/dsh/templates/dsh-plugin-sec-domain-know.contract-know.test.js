@@ -398,6 +398,30 @@ test('L0-K1: kb_import 写入 category 列，kb_list 按 category 过滤', async
   assert.ok(l.ok && l.rows.some((x) => x.id === r.data.doc_id && x.category === 'xss'))
 })
 
+test('WP08: 文献导入标签持久保存、搜索全部标签匹配，经验列表先过滤标签再分页', async () => {
+  const { bus } = makeEnv()
+  const imported = await bus.dispatch('know', 'kb_import', {
+    title: 'tagneedle document', url: 'https://example.com/tagged', body: 'tagneedle controlled body',
+    tags: ['authz', 'json', 'authz'],
+  }, { actor: 'dashboard' })
+  assert.equal(imported.ok, true)
+  const db = bus._internal.db()
+  assert.deepEqual(JSON.parse(db.prepare('SELECT tags FROM kb_docs WHERE id=?').get(imported.data.doc_id).tags), ['authz', 'json'])
+  const hit = await bus.query('know', 'kb_search', { q: 'tagneedle', tags: ['authz', 'json'] }, { actor: 'model' })
+  assert.equal(hit.total, 1)
+  assert.deepEqual(hit.rows[0].tags, ['authz', 'json'])
+  const miss = await bus.query('know', 'kb_search', { q: 'tagneedle', tags: ['authz', 'ssrf'] }, { actor: 'model' })
+  assert.equal(miss.total, 0)
+  const exp = await bus.dispatch('know', 'exp_store', {
+    scenario: SCEN, takeaway: TAKE, justification: JUST, tags: ['authz', 'json'],
+  }, { actor: 'dashboard' })
+  assert.equal(exp.ok, true)
+  const list = await bus.query('know', 'exp_list', { tags: ['json'], limit: 1 }, { actor: 'model' })
+  assert.equal(list.total, 1)
+  const absent = await bus.query('know', 'exp_list', { tags: ['ssrf'] }, { actor: 'model' })
+  assert.equal(absent.total, 0)
+})
+
 test('WP08: 文献后页有效命中不被废弃记录挤掉，模型读取废弃正文失败', async () => {
   const { bus, dataDir } = makeEnv()
   await bus.query('know', 'kb_list', {}, { actor: 'dashboard' })
