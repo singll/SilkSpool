@@ -1653,13 +1653,14 @@ function makeHandlers(opts) {
         // 去 campaign 维度前缀（derive_intent 以 c{id}|{bare} 落键），归一为裸键供 Planner 判定
         const bare = String(s.strategy_key || '').replace(/^c\d+\|/, '')
         if (!bare) continue
-        const cur = strategies[bare] || { fails: 0, blacklisted: false, attempted: true, reopen_after: null }
+        const programStrategies = strategies[String(s.program_id)] ||= {}
+        const cur = programStrategies[bare] || { fails: 0, blacklisted: false, attempted: true, reopen_after: null }
         cur.fails = Math.max(cur.fails, Number(s.fails) || 0)
         cur.blacklisted = cur.blacklisted || !!s.blacklisted
         cur.attempted = true
         const ra = s.reopen_after == null ? null : Number(s.reopen_after)
         if (ra != null) cur.reopen_after = cur.reopen_after == null ? ra : Math.min(cur.reopen_after, ra)
-        strategies[bare] = cur
+        programStrategies[bare] = cur
       }
     } catch { /* ignore */ }
     const gaps = []
@@ -1695,7 +1696,7 @@ function makeHandlers(opts) {
               }
               // Stop once this dimension supplies a full runnable batch; only page
               // through exhausted/inapplicable prefixes, not the whole inventory.
-              const runnable = compileCampaignPlan({ campaign, gaps: rows.map(row => ({ ...row, program: row.program || row.program_id || program })), strategies })
+              const runnable = compileCampaignPlan({ campaign, gaps: rows.map(row => ({ ...row, program: row.program || row.program_id || program })), strategies, strategies_by_program: true })
               const cap = Math.max(1, Number(campaign.policy?.derive_cap_per_tick) || 5)
               if (runnable.drafts.length >= cap) break
               const total = r?.data?.total ?? r?.total
@@ -1738,7 +1739,7 @@ function makeHandlers(opts) {
             candidates.push(candidate)
             programCandidates.push(candidate)
           }
-          const runnable = compileCampaignPlan({ campaign, candidates: programCandidates, strategies, scores })
+          const runnable = compileCampaignPlan({ campaign, candidates: programCandidates, strategies, strategies_by_program: true, scores })
           const cap = Math.max(1, Number(campaign.policy?.derive_cap_per_tick) || 5)
           const total = r?.data?.total ?? r?.total
           if (runnable.drafts.length >= cap || !fresh || rows.length < 30 || (Number.isSafeInteger(total) && offset + rows.length >= total)) break
@@ -1752,7 +1753,7 @@ function makeHandlers(opts) {
       const usage = repo.campaignUsage(campaign.id, Date.now() - windowMs)
       budgetRemainingRatio = Math.max(0, 1 - (usage.spent_tokens / Number(campaign.budget_tokens)))
     }
-    return { gaps, strategies, scores, candidates, activeTaskCount, budgetRemainingRatio }
+    return { gaps, strategies, strategies_by_program: true, scores, candidates, activeTaskCount, budgetRemainingRatio }
   }
 
   // 局面编译（program/host 授权复查），供 Dispatcher 下发前 fail-closed

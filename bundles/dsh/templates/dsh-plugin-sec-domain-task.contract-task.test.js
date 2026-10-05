@@ -2856,3 +2856,19 @@ test('27 C04: 候选前30项已尝试时补页，第31项保留项目和真实�
   assert.equal(draft.target_host,'a.example.com')
   assert.ok(calls.some(a=>a.offset===30 && a.claim_state==='available'))
 })
+
+
+test('27 C05: 同主机策略按Program隔离，另一项目尝试不抑制且两项目可同时出列', async () => {
+  const {bus,dataDir}=secondProgramEnv()
+  fs.writeFileSync(path.join(dataDir,'scope.yml'),'programs:\n  - name: test-src\n    scope: ["*.example.com"]\n  - name: test-src-2\n    scope: ["*.example.com"]\n')
+  registerLedgerStub(bus,['test-src','test-src-2'].map(program=>({program,dim:'vulnclass',key:'a.example.com|sqli',strategy_key:'vulnclass|a.example.com|sqli'})))
+  const c=await bus.dispatch('task','campaign_create',{name:'program-isolation',program_ids:['test-src','test-src-2'],autonomy:1,goal_spec:{stop_conditions:['done']}},{actor:'model'})
+  assert.equal(c.ok,true,JSON.stringify(c.error))
+  const args={id:c.data.campaign_id}
+  let result=await bus.query('task','campaign_pending_drafts',args,{actor:'model'})
+  assert.equal(result.ok,true,JSON.stringify(result.error))
+  assert.deepEqual(result.data.drafts.map(d=>d.program_id).sort(),['test-src','test-src-2'])
+  bus._internal.db().prepare('INSERT INTO strategy_dedupe(strategy_key,program_id,first_seen,last_seen,fails,blacklisted) VALUES(?,?,?,?,0,0)').run('vulnclass|a.example.com|sqli','test-src',1,1)
+  result=await bus.query('task','campaign_pending_drafts',args,{actor:'model'})
+  assert.deepEqual(result.data.drafts.map(d=>d.program_id),['test-src-2'])
+})

@@ -715,9 +715,12 @@ export function compileCampaignPlan(input = {}) {
     if (violation) { skipped.push({ key: rawKey, reason: violation }); continue }
     // 候选验证按 finding 维度去重（不能与 host|||cls 策略键混用）
     const key = String(g.strategy_key || (kind === 'verify_candidate' ? 'verify|' + host : strategyKey({ host, path, param, vuln_class: vulnClass })))
-    if (seen.has(key)) continue
-    seen.add(key)
-    const st = strategies[key] || strategies[String(g.strategy_key || '')] || {}
+    const programId = String(g.program || g.program_id || defaultProgram)
+    const identity = JSON.stringify([programId, key])
+    if (seen.has(identity)) continue
+    seen.add(identity)
+    const programStrategies = input.strategies_by_program ? (strategies[programId] || {}) : strategies
+    const st = programStrategies[key] || programStrategies[String(g.strategy_key || '')] || {}
     if (st.blacklisted) { skipped.push({ strategy_key: key, reason: 'blacklisted' }); continue }
     // 已尝试且未到重开时间 → 跳过（Planner 前进到下一批缺口，避免同一 top-N 永久占位空转）
     const nowTs = Number(input.now) || Date.now()
@@ -745,7 +748,6 @@ export function compileCampaignPlan(input = {}) {
     if (sc && Number(sc.wins) > 0) score += 0.3 * Number(sc.wins)
     if (sc && Number(sc.fails) > 0) score -= 0.2 * Number(sc.fails)
     const phase = defaultPhases.includes(String(g.phase || '')) ? String(g.phase) : defaultPhases[0]
-    const programId = String(g.program || g.program_id || defaultProgram)
     scored.push({
       program_id: programId, kind, host, path, param, vuln_class: vulnClass, level: 'H2',
       ...(g.request_id ? { request_id: g.request_id } : {}), method: g.method || '', param_location: g.param_location || '',
