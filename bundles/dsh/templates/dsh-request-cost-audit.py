@@ -169,6 +169,7 @@ def journal_report(content, session, budget, worker):
 
     summaries, response_ids = [], collections.Counter()
     charged = reserved = unknown = admitted = denied = observed_tokens = 0
+    estimated_tokens = estimated_requests = 0
     for request_id, request in requests.items():
         admission, terminal = request["admission"], request["terminal"]
         if admission["event"] == "denied":
@@ -184,6 +185,12 @@ def journal_report(content, session, budget, worker):
         # Preserve the runtime's accounting separately from stricter evidence
         # completeness; a usage event followed by EOF alone is not a normal finish.
         runtime_settled = bool(terminal and counts is not None and terminal["completed"] and not terminal["failed"])
+        # Planning estimate approved by the user on 2026-10-05. For incomplete
+        # calls replace (not add to) the usage lower bound with the larger of
+        # observed usage and admission estimate. This is not a supplier ceiling.
+        estimate = amount if runtime_settled else max(amount, admission["reserved_tokens"])
+        estimated_tokens += estimate
+        estimated_requests += not runtime_settled
         if not runtime_settled:
             reserved += admission["reserved_tokens"]
             unknown += bool(terminal)
@@ -207,6 +214,8 @@ def journal_report(content, session, budget, worker):
             "request_id": request_id, "provider": admission["provider"], "model": admission["model"],
             "state": "adapter_incomplete" if reasons else "adapter_complete",
             "runtime_budget_settled": runtime_settled, "observed_tokens_lower_bound": amount,
+            "planning_estimated_tokens": estimate,
+            "planning_estimate_basis": "reported_usage" if runtime_settled else "max_observed_or_admission",
             "provider_response_id_sha256": response_hash, "evidence_gaps": reasons,
             "final_cost_proven": False, "unknown_release_allowed": False,
         })
@@ -227,6 +236,9 @@ def journal_report(content, session, budget, worker):
     return {
         "journal_sha256": digest(content), "events": len(lines), "admitted": admitted, "denied": denied,
         "observed_tokens_lower_bound": observed_tokens, "terminal_charged_tokens": charged,
+        "planning_estimated_tokens": estimated_tokens,
+        "planning_estimated_requests": estimated_requests,
+        "supplier_receipt_required_for_planning": False,
         "expected_budget_counters": expected, "budget_counter_mismatches": mismatches,
         "evidence_gaps": gaps, "adapter_evidence_complete": not gaps,
         "final_cost_proven": False, "unknown_release_allowed": False,
@@ -314,6 +326,9 @@ def audit(database, results, since_ms, limit):
         "adapter_complete_runs": sum(r.get("adapter_evidence_complete", False) for r in reports),
         "ledger_equal_runs": sum(r.get("ledger_comparison") == "equal" for r in reports),
         "observed_tokens_lower_bound": sum(r.get("observed_tokens_lower_bound", 0) for r in reports),
+        "planning_estimated_tokens_audited_runs": sum(r.get("planning_estimated_tokens", 0) for r in reports),
+        "planning_unavailable_runs": sum(r["status"] != "audited" for r in reports),
+        "supplier_receipt_required_for_planning": False,
         "final_cost_proven": False, "unknown_release_allowed": False, "campaigns": campaigns, "rows": reports,
         "limitations": [
             "The database and files are separate read-only sampling points, not a frozen snapshot.",
@@ -322,6 +337,8 @@ def audit(database, results, since_ms, limit):
             "Missing journals, failed and incomplete calls remain unresolved; they are not zero-cost calls.",
             "Ledger amounts above the observed lower bound are retained, never automatically reduced.",
             "Results cover the selected workers only, not independent interactive model calls.",
+            "Planning estimates use reported usage or max(observed usage, admission estimate) for incomplete calls.",
+            "Estimates are not supplier bills or strict upper bounds; unavailable runs remain outside the estimated subtotal.",
         ],
     }
 

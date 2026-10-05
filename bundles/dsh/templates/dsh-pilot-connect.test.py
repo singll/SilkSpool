@@ -3,6 +3,7 @@ from pathlib import Path
 import socket
 import threading
 import unittest
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location("connect", Path(__file__).with_name("dsh-pilot-connect.py"))
 relay = importlib.util.module_from_spec(spec)
@@ -121,6 +122,40 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(result["client_to_upstream_bytes"], 0)
         self.assertIn("byte limit", result["error"])
+
+    def test_partial_write_failure_preserves_transferred_byte_count(self):
+        client = Mock()
+        remote = Mock()
+        request = b"CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n"
+        response = b"HTTP/1.1 200 OK\r\n\r\n"
+        client.recv.side_effect = [bytes([b]) for b in request] + [b"opaque"]
+        remote.recv.side_effect = [bytes([b]) for b in response]
+        remote.send.side_effect = [2, BrokenPipeError("peer disconnected")]
+        events = []
+        with patch.object(relay.socket, "socket", return_value=remote), \
+                patch.object(relay.select, "select", return_value=([client], [], [])):
+            result = relay.relay(client, upstream=("127.0.0.1", 8888),
+                                 target=("127.0.0.1", 443), audit=events.append)
+        self.assertEqual(result["client_to_upstream_bytes"], 2)
+        self.assertEqual(result["error_kind"], "BrokenPipeError")
+        self.assertEqual(events[-1]["client_to_upstream_bytes"], 2)
+        self.assertEqual(remote.send.call_count, 2)
+        self.assertEqual(bytes(remote.send.call_args_list[1].args[0]), b"aque")
+        remote.close.assert_called_once()
+        client.close.assert_called_once()
+
+    def test_short_upstream_status_never_opens_tunnel(self):
+        client, remote = Mock(), Mock()
+        client.recv.side_effect = [bytes([b]) for b in
+                                  b"CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n"]
+        remote.recv.side_effect = [bytes([b]) for b in b"HTTP/1.1 0200 OK\r\n\r\n"]
+        events = []
+        with patch.object(relay.socket, "socket", return_value=remote):
+            result = relay.relay(client, upstream=("127.0.0.1", 8888),
+                                 target=("127.0.0.1", 443), audit=events.append)
+        self.assertEqual(result["error"], "invalid upstream response")
+        self.assertNotIn("tunnel_ready", [e["event"] for e in events])
+        self.assertIn(b"502", client.sendall.call_args.args[0])
 
 
 if __name__ == "__main__":

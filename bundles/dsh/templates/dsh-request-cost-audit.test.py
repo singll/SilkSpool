@@ -64,6 +64,25 @@ class JournalTests(unittest.TestCase):
         self.assertNotIn(NONCE, text)
         self.assertNotIn("response-test", text)
 
+    def test_planning_estimate_uses_usage_without_awaiting_supplier_receipt(self):
+        rows, budget = trace()
+        report = self.report(rows, budget)
+        self.assertEqual(report["planning_estimated_tokens"], 47)
+        self.assertEqual(report["planning_estimated_requests"], 0)
+        self.assertFalse(report["supplier_receipt_required_for_planning"])
+        self.assertFalse(report["final_cost_proven"])
+
+    def test_failed_estimate_replaces_lower_bound_without_double_counting(self):
+        rows, budget = trace(reason="error", failed=True)
+        report = self.report(rows, budget)
+        self.assertEqual(report["observed_tokens_lower_bound"], 47)
+        self.assertEqual(report["planning_estimated_tokens"], 150)
+        self.assertEqual(report["planning_estimated_requests"], 1)
+        rows, budget = trace(reason="error", failed=True, amount=200)
+        report = self.report(rows, budget)
+        self.assertEqual(report["planning_estimated_tokens"], 235)
+        self.assertFalse(report["unknown_release_allowed"])
+
     def test_failed_zero_usage_is_not_free_or_settled(self):
         rows, budget = trace(reason="error", failed=True, response=None)
         for row in rows:

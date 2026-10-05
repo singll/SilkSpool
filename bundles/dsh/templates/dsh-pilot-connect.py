@@ -14,12 +14,14 @@ import time
 import uuid
 
 
-def relay(client, *, upstream, target, audit, timeout=15, max_bytes=1048576):
+def relay(client, *, upstream, target, audit, timeout=15, max_bytes=1048576,
+          authorize=None):
     for address, port in (upstream, target):
         ipaddress.IPv4Address(address)
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("invalid port")
-    if isinstance(timeout, bool) or not math.isfinite(timeout) or not 0 < timeout <= 30:
+    if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout) or not 0 < timeout <= 30):
         raise ValueError("invalid deadline")
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or not 1 <= max_bytes <= 16777216:
         raise ValueError("invalid byte limit")
@@ -60,6 +62,10 @@ def relay(client, *, upstream, target, audit, timeout=15, max_bytes=1048576):
         if any(line.lower().startswith((b"content-length:", b"transfer-encoding:"))
                for line in lines[1:] if line):
             raise ValueError("CONNECT body not allowed")
+        # The batch runner checks local credentials, current scope and its
+        # original route here, after the client header and before any dialing.
+        if authorize is not None:
+            authorize(request)
         record["phase"] = "upstream_tcp"
         audit({**record, "event": "attempt_intent", "upstream": upstream, "target": target})
         remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -72,7 +78,8 @@ def relay(client, *, upstream, target, audit, timeout=15, max_bytes=1048576):
         remote.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode())
         response = header(remote)
         status = response.split(b"\r\n", 1)[0].split()
-        if len(status) < 2 or status[0] not in (b"HTTP/1.0", b"HTTP/1.1") or not status[1].isdigit():
+        if (len(status) < 2 or status[0] not in (b"HTTP/1.0", b"HTTP/1.1")
+                or len(status[1]) != 3 or not status[1].isdigit()):
             raise ValueError("invalid upstream response")
         record["upstream_status"] = int(status[1])
         if not 200 <= record["upstream_status"] < 300:
@@ -102,10 +109,17 @@ def relay(client, *, upstream, target, audit, timeout=15, max_bytes=1048576):
                     continue
                 if used + len(data) > max_bytes:
                     raise ValueError("tunnel byte limit")
-                destination.settimeout(remaining())
-                destination.sendall(data)
                 key = "client_to_upstream_bytes" if source is client else "upstream_to_client_bytes"
-                record[key] += len(data)
+                # sendall hides partial writes on failure. Count each accepted
+                # write so disconnects/timeouts cannot erase observed traffic.
+                pending = memoryview(data)
+                while pending:
+                    destination.settimeout(remaining())
+                    written = destination.send(pending)
+                    if written == 0:
+                        raise ConnectionError("tunnel write returned zero")
+                    record[key] += written
+                    pending = pending[written:]
         record["phase"] = "complete"
     except Exception as exc:
         record["error_kind"] = type(exc).__name__

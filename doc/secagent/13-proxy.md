@@ -515,3 +515,10 @@ systemctlIsActive(unit) / systemctlStartNoBlock(unit)   // 系统调用封装
 ### 单次CONNECT核心（2026-10-05，未部署）
 
 `dsh-pilot-connect.py`提供精确目标、固定上游、零重试/直连的转发函数，TLS不解密；头/时间/双向字节有界，审计intent成功才拨号。5项socket与2项TLS场景通过，502仅一次CONNECT。调用方仍须集成Scope/租约、受限监听和持久审计；不证明上游内部无重试、不将字节计为请求数。详见27号§15.26。
+
+
+### 单次批次执行器（2026-10-05，本地已验证、未部署）
+
+`dsh-pilot-proxy-batch.py`复用selector/lease/connect，加`dsh-pilot-preflight.mjs`调用现役Scope规范与只读S级Web归属。首次/CONNECT后重验Scope摘要、DNS固定公网IPv4与原池快照；变化停止。仅回环随机监听，私有0600令牌本地认证、不上送；0700新批次目录、排他文件、逐条fsync/前项摘要审计，intent失败零拨号，终态落盘失败不报成功，不重用原批次目录。
+
+当前每批严格**一次连接**，工具拒绝多连接；隧道不能看业务403/429，上层HTTP须另保存响应并决定继续/停止。它不证明出口IP恒定、远端代理内部请求数或无内部重试，不能把字节当HTTP次数。41项代理Python、4项现役Scope前检、2项认证TLS场景通过；部署/生产验收另记，不接默认8899、不改池文件/Scope/额度。CLI只允许美团/字节Program与匿名身份。
