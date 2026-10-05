@@ -712,3 +712,8 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 - **RPC**：`/silksec-dashboard` 的 `audit` case 透传 `before_bytes`（`n` 缺省 120、封顶 300），返回 `next_before`（`dashboard-rpc.js:434-451`）。
 - **视图**（`sec-dashboard-view-audit` 客户端）：新增「加载更早」按钮——以游标翻页把更早窗口**追加渲染**，按行键 `ts|tool|decision` 去重（最新页 30s 轮询与追加页边界不重复）；无 `next_before` 或游标为空时 `done` 收起按钮，请求失败保持原列表可重试。
 - **视图说明文案**：「单窗 1MB，新→旧；可加载更早」。
+
+
+## 2026-10-05 文献列表分页修复
+
+kbList已接合法q/kind契约，汇集各页并保留counts；external为非curated且非archived，空的中间页显式失败。SQL端筛选先于分页并标记meta.paged，id作为稳定排序末键。本地501项跨页、RPC6项和知识视图10项通过；冻结/隔离预演后已部署，生产实际RPC完整返回432项。初次冷启动stats超过10秒，保持门槛复验通过；性能根因另列WP11，不隐去失败记录。见27号§15.35。
