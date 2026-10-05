@@ -136,20 +136,23 @@ def run_batch(*, directory, lease, target, preflight, validate_route,
     context = {k: lease[k] for k in ("program", "batch", "identity", "scope_sha256")}
     context.update(proxy_sha256=route["proxy_sha256"], target=target)
     consumed = 0
+    dns_expires_at = None
 
     def record(event):
         audit({**event, "context": context})
 
     def check():
+        nonlocal dns_expires_at
         if time.monotonic() >= deadline or time.time() >= lease["expires_at"]:
             raise ValueError("batch lease expired")
         checked = preflight()
         if checked["scope_sha256"] != lease["scope_sha256"] or checked["target"] != list(target):
             raise ValueError("scope or target changed; no continuation")
         snapshot = checked.get("dns_snapshot")
-        if snapshot and (snapshot["expires_at_ms"] <= time.time() * 1000
-                         or lease["expires_at"] * 1000 > snapshot["expires_at_ms"]):
-            raise ValueError("batch lease exceeds DNS lifetime")
+        if snapshot:
+            dns_expires_at = snapshot["expires_at_ms"] / 1000
+            if dns_expires_at <= time.time():
+                raise ValueError("DNS binding expired")
         current = validate_route()
         if current["proxy"] != route["proxy"] or current["source_sha256"] != route["source_sha256"]:
             raise ValueError("bound route changed; no replacement")
@@ -163,6 +166,15 @@ def run_batch(*, directory, lease, target, preflight, validate_route,
         if len(values) != 1 or not hmac.compare_digest(values[0], b"Bearer " + token.encode()):
             raise ValueError("local proxy authentication failed")
         check()
+
+    def before_connect():
+        # TTL limits admission of a new connection, not the lifetime of an
+        # already pinned tunnel. Recheck after durable intent and before the
+        # upstream CONNECT send; neither operation may use an expired answer.
+        if time.monotonic() >= deadline or time.time() >= lease["expires_at"]:
+            raise ValueError("batch lease expired")
+        if dns_expires_at is not None and time.time() >= dns_expires_at:
+            raise ValueError("DNS binding expired before connect")
 
     try:
         write_private(directory / "lease.json", lease)
@@ -198,7 +210,8 @@ def run_batch(*, directory, lease, target, preflight, validate_route,
                     raise TimeoutError("batch deadline")
                 result = relay_core.relay(client, upstream=upstream, target=target,
                                           audit=record, timeout=duration,
-                                          max_bytes=max_bytes, authorize=authorize)
+                                          max_bytes=max_bytes, authorize=authorize,
+                                          before_connect=before_connect)
             finally:
                 client.close()
             if "error_kind" in result:
@@ -274,8 +287,8 @@ def main():
     dns_snapshot = initial["dns_snapshot"]
     args.target_ip = initial["target"][0]
     target = (args.target_ip, 443)
-    # Tighten only; original route eligibility and scope are still rechecked.
-    lease["expires_at"] = min(lease["expires_at"], dns_snapshot["expires_at_ms"] / 1000)
+    # DNS TTL governs dialing; the original lease and relay timeout still cap
+    # the admitted fixed connection. No later DNS lookup or route replacement.
     result = run_batch(directory=args.directory, lease=lease, target=target,
                        preflight=preflight, validate_route=validate_route,
                        max_connections=args.max_connections)

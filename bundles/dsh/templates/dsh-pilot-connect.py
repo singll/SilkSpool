@@ -15,7 +15,7 @@ import uuid
 
 
 def relay(client, *, upstream, target, audit, timeout=15, max_bytes=1048576,
-          authorize=None):
+          authorize=None, before_connect=None):
     for address, port in (upstream, target):
         ipaddress.IPv4Address(address)
         if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
@@ -68,11 +68,15 @@ def relay(client, *, upstream, target, audit, timeout=15, max_bytes=1048576,
             authorize(request)
         record["phase"] = "upstream_tcp"
         audit({**record, "event": "attempt_intent", "upstream": upstream, "target": target})
+        if before_connect is not None:
+            before_connect()
         remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         remote.settimeout(remaining())
         record["upstream_tcp_attempts"] = 1
         remote.connect(upstream)
         record["phase"] = "upstream_connect"
+        if before_connect is not None:
+            before_connect()
         remote.settimeout(remaining())
         record["upstream_connect_requests"] = 1
         remote.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode())

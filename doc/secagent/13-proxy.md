@@ -528,3 +528,5 @@ systemctlIsActive(unit) / systemctlStartNoBlock(unit)   // 系统调用封装
 2026-10-05 本地增量：前检用单次DNS TTL快照，target-ip可省略或为auto，由同一答案选址并保留快照；后续重验不重查DNS，租约缩短至最短TTL（最多300秒）。Scope/精确S级Web资产/原路线继续每次检查，快照仅为可信调用方进程内状态，不能接受模型自报。7项策略和9项批次测试通过，待新批次安装与真实canary。
 
 上述DNS版本已安装至pilot-tools/20261005-dns-ttl（change 20261005-pilot-dns-ttl；NAS ce1bf59d…；31项远端回环及恢复通过）。一次真实canary通过双前检，但1秒DNS TTL耗尽导致CONNECT超时，零业务响应；尚未证明出口可用。生命周期边界待修，见27号§15.31。
+
+后续本地修正（待安装）：DNS TTL仅限制新连接准入，持久intent后拨号前和发送上游CONNECT前均检查；已准入固定连接遵守原租约和relay总时限，不因DNS TTL到期提前断开。11项batch/7项connect通过，含审计耗时过期零拨号负例，见27号§15.32。

@@ -19,7 +19,8 @@ spec.loader.exec_module(batch)
 
 class BatchTests(unittest.TestCase):
     def exercise(self, *, rejected=False, bad_auth=False, changed_scope=False,
-                 changed_route=False, audit_failure=False):
+                 changed_route=False, audit_failure=False, short_dns=False,
+                 expire_during_intent=False):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / "run"
             upstream = socket.socket()
@@ -38,9 +39,12 @@ class BatchTests(unittest.TestCase):
 
             def preflight():
                 calls["preflight"] += 1
-                return {"scope_sha256": ("2" * 64 if changed_scope and
+                result = {"scope_sha256": ("2" * 64 if changed_scope and
                         calls["preflight"] > 1 else "1" * 64),
                         "target": ["127.0.0.1", 443]}
+                if short_dns:
+                    result["dns_snapshot"] = {"expires_at_ms": time.time() * 1000 + 200}
+                return result
 
             def validate_route():
                 calls["route"] += 1
@@ -70,6 +74,8 @@ class BatchTests(unittest.TestCase):
                         if rejected:
                             client.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
                         else:
+                            if short_dns:
+                                time.sleep(.3)
                             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                             data = client.recv(100)
                             client.sendall(data)
@@ -139,12 +145,16 @@ class BatchTests(unittest.TestCase):
 
             def fail_intent(writer, event):
                 if event["event"] == "attempt_intent":
+                    if expire_during_intent:
+                        original(writer, event)
+                        time.sleep(.25)
+                        return
                     writer.failed = True
                     raise OSError("disk unavailable")
                 return original(writer, event)
 
             server.start()
-            with patch.object(batch.Audit, "__call__", fail_intent if audit_failure else original):
+            with patch.object(batch.Audit, "__call__", fail_intent if audit_failure or expire_during_intent else original):
                 run()
             for thread in clients + [server]:
                 thread.join(3)
@@ -162,6 +172,7 @@ class BatchTests(unittest.TestCase):
                 self.assertEqual(record["seq"], i)
                 self.assertEqual(record["previous_sha256"], previous)
                 previous = hashlib.sha256(line).hexdigest()
+            self.assertTrue(connections, f"listener was never opened: {outcomes[0]}")
             self.assertNotIn(connections[0]["proxy_authorization"].encode(), audit_bytes)
             self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
             for name in ("audit.jsonl", "lease.json", "connection.json"):
@@ -190,6 +201,21 @@ class BatchTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(len(requests), 1)
         self.assertEqual(events[-1]["event"], "batch_stopped")
+
+    def test_dns_expiry_after_connect_admission_does_not_shorten_existing_tunnel(self):
+        result, requests, events, _ = self.exercise(short_dns=True)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(events[-1]["event"], "batch_completed")
+
+    def test_dns_expiry_during_durable_intent_never_dials(self):
+        result, requests, events, _ = self.exercise(short_dns=True, expire_during_intent=True)
+        self.assertFalse(result["ok"])
+        self.assertEqual(requests, [])
+        terminal = next(row for row in events if row["event"] == "finished")
+        self.assertEqual(terminal["upstream_tcp_attempts"], 0)
+        self.assertEqual(terminal["upstream_connect_requests"], 0)
+        self.assertIn("DNS binding expired", terminal["error"])
 
     def test_bad_local_credentials_never_dial(self):
         result, requests, _, _ = self.exercise(bad_auth=True)
