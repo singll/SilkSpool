@@ -530,3 +530,5 @@ systemctlIsActive(unit) / systemctlStartNoBlock(unit)   // 系统调用封装
 上述DNS版本已安装至pilot-tools/20261005-dns-ttl（change 20261005-pilot-dns-ttl；NAS ce1bf59d…；31项远端回环及恢复通过）。一次真实canary通过双前检，但1秒DNS TTL耗尽导致CONNECT超时，零业务响应；尚未证明出口可用。生命周期边界待修，见27号§15.31。
 
 后续本地修正（待安装）：DNS TTL仅限制新连接准入，持久intent后拨号前和发送上游CONNECT前均检查；已准入固定连接遵守原租约和relay总时限，不因DNS TTL到期提前断开。11项batch/7项connect通过，含审计耗时过期零拨号负例，见27号§15.32。
+
+2026-10-05 admission版本8900cfc已安装（pilot-tools/20261005-dns-admission；NAS f9a27121…；33项远端回环/恢复通过）。单次扣子platforms GET经固定代理/TLS校验返回HTTP200/code0及6个平台，一次上游CONNECT，无重试。仅证明这次业务通路可用，不证明长期稳定或真实出口IP；详见27号§15.33。
