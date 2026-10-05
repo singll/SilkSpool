@@ -1857,6 +1857,15 @@ function makeHandlers(opts) {
           before: null, after: { revision_id: rev.revision_id, status: 'published' },
         }
       }
+      if (target === 'exp' || target === 'kb') {
+        const id = target === 'exp' ? payload.id : payload.doc_id
+        if (!Number.isSafeInteger(id) || id < 1) throwErr('E_SCHEMA', '采用需要有效的知识对象整数ID', '动作名称不属于知识对象；先查询实际卡片或文献', false)
+        const artifact = target === 'exp' ? repo.getExpCard(id) : repo.getKbDoc(id)
+        if (!artifact) throwErr('E_NOT_FOUND', '采用对象不存在', '先查询实际卡片或文献', false)
+        if (['deprecated', 'archived'].includes(artifact.status)) throwErr('E_STATE', '采用对象已退出使用面', '选择仍适用的现役知识对象', false)
+        const expectedKind = target === 'exp' ? 'exp_card' : 'kb_doc'
+        if (args.artifact_kind && args.artifact_kind !== expectedKind) throwErr('E_INVARIANT', '采用对象类型不符', null, false)
+      }
       if (target === 'exp') {
         if (payload.id != null) recordAdoption(repo, { artifact_kind: 'exp_card', artifact_id: String(payload.id), source_cmd: 'know_adopt:exp', actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
         return { data: { target, adopted_id: payload.id ?? null, source_cmd: 'exp_promote' }, events: [{ name: 'know.adopted', payload: { target, adopted_id: payload.id ?? null, source_cmd: 'exp_promote', evidence: args.evidence } }], before: null, after: null }

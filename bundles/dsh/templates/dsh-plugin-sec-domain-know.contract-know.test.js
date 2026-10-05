@@ -2063,3 +2063,29 @@ test('L23: 知识健康经事实域读取真实聚合，缺域保持未知、空
   assert.deepEqual(h.data.facts, direct.data)
   assert.equal(h.data.facts.total, 1)
 })
+
+
+test('L03: 人工采用要求真实且仍可使用的经验或文献，拒绝不产生采用事实', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  for (const target of ['exp', 'kb']) {
+    const key = target === 'exp' ? 'id' : 'doc_id'
+    for (const payload of [{}, { [key]: 'run_arjun' }, { [key]: 999999 }, { [key]: -1 }]) {
+      const r = await bus.dispatch('know', 'adopt', { target, payload, evidence: '这是一条人工采用证据说明' }, { actor: 'dashboard' })
+      assert.equal(r.ok, false, JSON.stringify(payload))
+    }
+  }
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM know_adoptions').get().n, 0)
+  const exp = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
+  const kb = await bus.dispatch('know', 'kb_import', { title: '采用文献', url: 'https://example.com/adoption', body: '这是一段可用于真实文献采用回归的技术说明，明确记录方法以及适用条件。' }, { actor: 'model' })
+  assert.equal(exp.ok, true); assert.equal(kb.ok, true)
+  for (const [target, payload, table, id] of [['exp', { id: exp.data.id }, 'exp_cards', exp.data.id], ['kb', { doc_id: kb.data.doc_id }, 'kb_docs', kb.data.doc_id]]) {
+    const adopted = await bus.dispatch('know', 'adopt', { target, payload, evidence: '现役对象采用证据充分且可追溯' }, { actor: 'dashboard' })
+    assert.equal(adopted.ok, true, adopted.error?.message)
+    db.prepare('UPDATE '+table+' SET status=? WHERE id=?').run('deprecated', id)
+    const retired = await bus.dispatch('know', 'adopt', { target, payload, evidence: '已废弃对象再次采用的新证据说明' }, { actor: 'dashboard' })
+    assert.equal(retired.ok, false)
+    assert.equal(retired.error.code, 'E_STATE')
+  }
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM know_adoptions').get().n, 2)
+})
