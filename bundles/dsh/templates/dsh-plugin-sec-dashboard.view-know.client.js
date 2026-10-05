@@ -152,11 +152,11 @@ window.__ModuleLoader__.load({
         if (kh.kb_docs) khRows.push(el('div', { key: 'kb', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
           '知识库 kb_docs：' + metric(kh.kb_docs.total) + ' 篇（零使用 ' + metric(kh.kb_docs.zero_use) + ' = ' + (kh.kb_docs.zero_use_ratio == null ? '未知' : Math.round(kh.kb_docs.zero_use_ratio * 100) + '%') + '，cooling ' + metric(kh.kb_docs.cooling) + '，30天内到期 ' + metric(kh.kb_docs.expiring_30d) + '）'))
         if (kh.exp_cards) khRows.push(el('div', { key: 'ec', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
-          '经验卡 exp_cards：' + metric(kh.exp_cards.total) + ' 张（零使用 ' + metric(kh.exp_cards.zero_use) + '，candidate ' + metric(kh.exp_cards.candidate) + '，cooling ' + metric(kh.exp_cards.cooling) + '）'))
+          '经验表 exp_cards（含打法链）：' + metric(kh.exp_cards.total) + ' 张（零使用 ' + metric(kh.exp_cards.zero_use) + '，candidate ' + metric(kh.exp_cards.candidate) + '，cooling ' + metric(kh.exp_cards.cooling) + '）'))
         if (kh.facts) khRows.push(el('div', { key: 'fa', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
           '事实 facts：' + metric(kh.facts.total) + ' 条（cooling ' + metric(kh.facts.cooling) + '，复验逾期 ' + metric(kh.facts.revalidate_overdue) + '）'))
         if (kh.playbooks) khRows.push(el('div', { key: 'pb', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
-          '打法链 playbooks：' + metric(kh.playbooks.total) + ' 条（cooling ' + metric(kh.playbooks.cooling) + '）'))
+          '其中打法链（kind=playbook）：' + metric(kh.playbooks.total) + ' 条（cooling ' + metric(kh.playbooks.cooling) + '）'))
         if (kh.fgs) khRows.push(el('div', { key: 'fg', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
           'FGS 图：' + metric(kh.fgs.nodes) + ' 节点（已沉淀 facts ' + metric(kh.fgs.persisted_facts) + ' 条，任务 done 自动跨任务转正）'))
         var warnBits = []

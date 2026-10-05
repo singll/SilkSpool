@@ -40,3 +40,14 @@ test('fact revalidation forwards observed count and keeps absent source unknown'
   for (const n of [0,3]) assert.equal(projectKnowledgeStatus({ok:true,data:{total:4,revalidate_overdue:n}},null,null).knowledgeHealth.facts.revalidate_overdue,n)
   assert.equal(projectKnowledgeStatus({ok:false},null,null).knowledgeHealth.facts.revalidate_overdue,null)
 })
+
+
+test('playbook inventory forwards the measured subset, with unavailable distinct from zero', () => {
+  for (const total of [0,6]) {
+    const result = projectKnowledgeStatus(null,null,{ok:true,data:{exp:{total:12},playbooks:{total,cooling:0}}})
+    assert.deepEqual(result.tables.playbooks,{total,cooling:0})
+    assert.deepEqual(result.knowledgeHealth.playbooks,{total,cooling:0})
+    assert.equal(result.tables.exp_cards.total,12)
+  }
+  assert.deepEqual(projectKnowledgeStatus(null,null,{ok:false}).knowledgeHealth.playbooks,{total:null,cooling:null})
+})

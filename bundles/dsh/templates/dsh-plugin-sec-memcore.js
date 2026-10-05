@@ -411,7 +411,7 @@ export function projectKnowledgeStatus(fsStats, ov, kh) {
   const fact = fsStats?.ok ? fsStats.data : null
   const overview = ov?.ok ? ov.data : null
   const health = kh?.ok ? kh.data : null
-  const e = health?.exp || {}, k = health?.kb || {}
+  const e = health?.exp || {}, k = health?.kb || {}, pb = health?.playbooks || {}
   const byStatus = {}
   for (const row of fact?.by_status || []) byStatus[row.status] = count(row.n)
   const cooling = fact && Array.isArray(fact.by_status) ? (byStatus.cooling ?? 0) : null
@@ -420,13 +420,13 @@ export function projectKnowledgeStatus(fsStats, ov, kh) {
     facts: { ...byStatus, total: count(fact?.total) },
     exp_cards: { total: count(e.total), active: count(e.active), cooling: count(e.cooling), candidate: count(e.candidate), deprecated: count(e.deprecated) },
     kb_docs: { total: count(k.total), curated: count(k.curated), cooling: count(k.cooling) },
-    playbooks: { total: null, cooling: null },
+    playbooks: { total: count(pb.total), cooling: count(pb.cooling) },
   }
   return { tables, knowledgeHealth: {
     kb_docs: { total: count(k.total), zero_use: count(k.zero_use), cooling: count(k.cooling), expiring_30d: count(k.expiring_30d), zero_use_ratio: typeof k.zero_use_ratio === 'number' && Number.isFinite(k.zero_use_ratio) && k.zero_use_ratio >= 0 && k.zero_use_ratio <= 1 ? k.zero_use_ratio : null },
     exp_cards: { total: count(e.total), zero_use: count(e.zero_use_30d), candidate: count(e.candidate), cooling: count(e.cooling) },
     facts: { total: count(fact?.total), cooling, revalidate_overdue: count(fact?.revalidate_overdue) },
-    playbooks: { total: null, cooling: null },
+    playbooks: { total: count(pb.total), cooling: count(pb.cooling) },
     fgs: { nodes: null, persisted_facts: count(overview?.fgs_persisted) },
   } }
 }

@@ -2256,3 +2256,20 @@ test('L23: 经验现役与候选按实际状态计数，未知状态不推算为
   assert.equal(h.data.exp.cooling, 1)
   assert.equal(h.data.exp.deprecated, 1)
 })
+
+
+test('L23: 打法链统计仅取现役存储的playbook子集，生命周期不混算', async () => {
+  const { bus } = makeEnv()
+  const empty = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.deepEqual(empty.data.playbooks, {total:0,active:0,candidate:0,cooling:0,deprecated:0,archived:0})
+  const db = bus._internal.db()
+  for (const kind of ['playbook','experience']) {
+    for (const status of ['active','candidate','cooling','deprecated','archived','legacy_unknown']) {
+      db.prepare('INSERT INTO exp_cards(scenario,takeaway,created_at,last_validated_at,kind,status) VALUES(?,?,?,?,?,?)').run('kind fixture','takeaway',1,1,kind,status)
+    }
+  }
+  const h = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.equal(h.ok,true)
+  assert.equal(h.data.exp.total,12)
+  assert.deepEqual(h.data.playbooks,{total:6,active:1,candidate:1,cooling:1,deprecated:1,archived:1})
+})

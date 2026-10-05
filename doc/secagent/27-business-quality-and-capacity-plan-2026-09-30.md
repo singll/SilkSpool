@@ -1457,6 +1457,10 @@ know_health.active原用总数减cooling/deprecated，candidate/archived/未知�
 
 fact_stats新增durable/active且revalidate_by已过期的真实计数，memcore→知识视图透传，缺源未知。与现有memcore治理条件一致，cooling/ephemeral/未来/无期限不混入；5条正式upsert后设定时效夹具验证总5/逾期1，空库0。fact24/24、汇总视图15项通过，受限wp11-l23保存红绿日志，06事实契约更新。未部署生产，其余L23/全案任务继续。
 
+### 15.62 L23打法链真实库存与生命周期统计（2026-10-06，北京时间，本地完成，待发布）
+
+打法链按现役存储exp_cards.kind=playbook聚合，新增total/active/candidate/cooling/deprecated/archived，空库返回真实0；total是该表内全部状态库存，不含exp_cards_archive，未知状态只计total。know_health→memcore→知识视图接通total/cooling；界面注明打法链属于经验表子集，原exp.total全表口径保留。两种kind×六种状态真实SQLite夹具及空库回归，旧实现字段缺失失败；修正完整跨域710/710、汇总与视图16/16通过。缺源仍未知。证据受限wp11-l23/playbook-*；尚未生产部署，正在准备健康/采用/会话增量合批发布，其余全案继续。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
