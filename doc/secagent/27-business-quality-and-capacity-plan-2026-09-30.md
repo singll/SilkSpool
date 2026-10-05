@@ -1461,6 +1461,16 @@ fact_stats新增durable/active且revalidate_by已过期的真实计数，memcore
 
 打法链按现役存储exp_cards.kind=playbook聚合，新增total/active/candidate/cooling/deprecated/archived，空库返回真实0；total是该表内全部状态库存，不含exp_cards_archive，未知状态只计total。know_health→memcore→知识视图接通total/cooling；界面注明打法链属于经验表子集，原exp.total全表口径保留。两种kind×六种状态真实SQLite夹具及空库回归，旧实现字段缺失失败；修正完整跨域710/710、汇总与视图16/16通过。缺源仍未知。证据受限wp11-l23/playbook-*；尚未生产部署，正在准备健康/采用/会话增量合批发布，其余全案继续。
 
+### 15.63 健康/采用/会话合批发布验收失败并完整回退（2026-10-06，北京时间）
+
+change=20261006-health-adoption-release，源4cae2d4，9文件18落点，DSH保持0.1.7-rc.2。新NAS快照e6e3c1f26e776c9a8f6a4225279788f14a541a0b81bed62455b7be4ce23ae4ad，40库备份141.57秒/同snapshot恢复9秒。首次冻结因代理刷新activating在暂停写者前拒绝，记录状态并停止刷新后，新冻结9874fa6244b2f9286eef40f2f79dd0b209d06e01d88899d465e1023b1bc88740通过，独立恢复64表完整性及原版本重验/新版应用/know契约/worker19项通过。15次模型请求仅隔离回环。
+
+生产首次冒烟dashboard.stats超时，未解决既有冷启动问题；第二次基础验收通过，新增脚本错读health的data封套失败；修正脚本后know.health与SQLite一致，但memcore子集计数不一致，不能放行。立即按完整原始恢复树回退、保留失败新版，02:37:05恢复写者，freeze 01:44:07至02:37:05约52分58秒，resume_errors=[]。六服务/七timer均active、主PID1239581/NRestarts0，代理刷新另行重触发。生产仍为§15.44版本，§15.46–62增量均未成功上线。受限20261006-health-adoption-release保存回执及三次失败，不能把本次记为发布成功。
+
+### 15.64 L23状态读取恢复启动期缺域（2026-10-06，北京时间，本地修复待实际RPC复验）
+
+针对§15.63增加真实memcore.apply入口回归：注入总线时领域未知→随后领域就绪→再读status。旧status只返回首次缓存，仍total=null；改状态读取先执行只读refreshStatus，不依赖6小时治理sweep，领域再次失败时转未知、不沿用旧值。运行入口及视图17项通过，完整跨域710/710通过（该完整组不包含另跑的memcore/视图测试）。本地复现支持启动时序原因；仍须在保留隔离应用重跑实际RPC验证，再新备份/冻结重发，不以本地绿测替代线上结论。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

@@ -51,3 +51,32 @@ test('playbook inventory forwards the measured subset, with unavailable distinct
   }
   assert.deepEqual(projectKnowledgeStatus(null,null,{ok:false}).knowledgeHealth.playbooks,{total:null,cooling:null})
 })
+
+
+test('runtime status recovers after domains register and refreshes without lifecycle writes', async () => {
+  const { apply } = await import('./dsh-plugin-sec-memcore.js?runtime-status')
+  let ready = false, service, writes = 0, reads = 0
+  const bus = {
+    async query(domain, name, args, context) {
+      reads++
+      assert.equal(context.actor, 'system')
+      if (!ready) return {ok:false,error:{code:'E_BUS_DOMAIN_UNKNOWN'}}
+      if (domain === 'know') return {ok:true,data:{exp:{total:12},playbooks:{total:6,cooling:1}}}
+      return {ok:true,data:name === 'stats' ? {total:0,by_status:[]} : {blackboard:{active:0}}}
+    },
+    async dispatch() { writes++; throw new Error('status must not dispatch') },
+  }
+  apply({provide(name, api) { service = api }, inject(names, callback) { callback({secDomainBus:bus}) }}, {sweeper:false})
+  await new Promise(resolve => setImmediate(resolve))
+  const unavailable = await service.status()
+  assert.equal(unavailable.knowledgeHealth.playbooks.total,null)
+  ready = true
+  const recovered = await service.status()
+  assert.deepEqual(recovered.knowledgeHealth.playbooks,{total:6,cooling:1})
+  ready = false
+  const failed = await service.status()
+  assert.equal(failed.knowledgeHealth.playbooks.total,null)
+  assert.equal(recovered.knowledgeHealth.playbooks.total,6)
+  assert.equal(writes,0)
+  assert.ok(reads >= 9)
+})

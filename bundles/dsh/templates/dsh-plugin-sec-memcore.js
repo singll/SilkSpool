@@ -431,7 +431,10 @@ export function projectKnowledgeStatus(fsStats, ov, kh) {
   } }
 }
 
-function status() {
+// Dashboard requests must retry after startup registration failures. Reading status
+// performs only queries; it must never rely on the lifecycle sweeper to get fresh data.
+async function status() {
+  await refreshStatus()
   return cachedStatus
 }
 
