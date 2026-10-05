@@ -347,7 +347,8 @@ function createRepo(db) {
       return db.prepare('SELECT card_id, vec FROM exp_embeddings').all().map((r) => ({ ...r }))
     },
     expAggregates() {
-      const one = (sql, ...p) => { try { return db.prepare(sql).get(...p) || {} } catch { return {} } }
+      // SQL failure is unavailable data, never an observed empty inventory.
+      const one = (sql, ...p) => db.prepare(sql).get(...p)
       const ec = one("SELECT COUNT(*) n, SUM(CASE WHEN COALESCE(uses,0)=0 THEN 1 ELSE 0 END) zero_use, SUM(CASE WHEN status='cooling' THEN 1 ELSE 0 END) cooling, SUM(CASE WHEN status='deprecated' THEN 1 ELSE 0 END) deprecated, SUM(CASE WHEN exportable=1 THEN 1 ELSE 0 END) exportable FROM exp_cards")
       const healthNow = Date.now()
       const kb = one("SELECT COUNT(*) n, SUM(CASE WHEN COALESCE(uses,0)=0 THEN 1 ELSE 0 END) zero_use, SUM(CASE WHEN status='cooling' THEN 1 ELSE 0 END) cooling, SUM(CASE WHEN status='curated' THEN 1 ELSE 0 END) curated, SUM(CASE WHEN tainted=1 THEN 1 ELSE 0 END) tainted, SUM(CASE WHEN status='active' AND revalidate_by IS NOT NULL AND revalidate_by < ? THEN 1 ELSE 0 END) overdue, SUM(CASE WHEN status='active' AND revalidate_by >= ? AND revalidate_by <= ? THEN 1 ELSE 0 END) expiring_30d, SUM(CASE WHEN COALESCE(fetch_failures,0)>0 THEN 1 ELSE 0 END) fetch_failed FROM kb_docs", healthNow, healthNow, healthNow + 30 * 86400000)

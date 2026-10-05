@@ -2209,3 +2209,17 @@ test('L23: 文献健康透出真实零使用冷却与未来30天到期，空库�
   assert.equal(h.data.kb.expiring_30d, 1)
   assert.equal(h.data.kb.overdue_revalidate, 1)
 })
+
+
+test('L23: 健康聚合SQL故障不能伪装为成功的空库，恢复schema后可重读', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  assert.equal((await bus.query('know', 'health', {}, { actor: 'dashboard' })).ok, true)
+  db.exec('ALTER TABLE kb_docs RENAME COLUMN uses TO unavailable_uses')
+  const failed = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.equal(failed.ok, false, '查询失败必须显式暴露，不能把文献全部报零')
+  db.exec('ALTER TABLE kb_docs RENAME COLUMN unavailable_uses TO uses')
+  const recovered = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.equal(recovered.ok, true)
+  assert.equal(recovered.data.kb.total, 0)
+})
