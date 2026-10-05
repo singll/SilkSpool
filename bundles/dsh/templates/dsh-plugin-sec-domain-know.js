@@ -1090,6 +1090,7 @@ const PRIVATE_IP_RE = /\b(?:10\.\d{1,3}\.\d{1,3}(?:\.\d{1,3})?|192\.168\.\d{1,3}
 function makeHandlers(opts) {
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const dispatchRef = opts.dispatch
+  const queryRef = opts.query
 
   function throwErr(code, message, hint, retryable = false) {
     throw Object.assign(new Error(message), { code, hint, retryable })
@@ -2553,6 +2554,13 @@ function makeHandlers(opts) {
       const rules = repo.rulesList('').rows.length
       const vc = repo.vcList()
       const harvest = repo.harvestStatus()
+      let facts = null
+      if (queryRef) {
+        try {
+          const result = await queryRef('fact', 'stats', {}, { actor: 'system' })
+          if (result?.ok && Number.isSafeInteger(result.data?.total) && result.data.total >= 0) facts = result.data
+        } catch { /* 缺域/读取失败是未知，不能替换为零。 */ }
+      }
       const warnings = []
       if ((agg.exp.zero_use_30d || 0) >= 3) warnings.push(`${agg.exp.zero_use_30d} 张卡 30 天零使用`)
       if ((agg.kb.overdue_revalidate || 0) > 0) warnings.push(`kb 复验逾期 ${agg.kb.overdue_revalidate} 篇`)
@@ -2563,8 +2571,8 @@ function makeHandlers(opts) {
         rules: { total: rules, last_seed: null },
         vulncards: { total: vc.length, active: vc.filter((c) => c.status === 'active').length, draft: vc.filter((c) => c.status === 'draft').length, usage_30d: null },
         releases: (() => { const r = repo.listReleases({ status: 'active', limit: 500 }); return { active: r.total } })(),
-        facts: null,
-        unavailable: ['exp.tainted', 'vulncards.usage_30d', 'facts', 'rules.last_seed'],
+        facts,
+        unavailable: ['exp.tainted', 'vulncards.usage_30d', 'rules.last_seed', ...(facts === null ? ['facts'] : [])],
         harvest,
         warnings,
       }
@@ -3154,7 +3162,7 @@ export function apply(ctx, config = {}) {
   try {
     ctx.inject(['secDomainBus'], (child) => {
       const bus = child.secDomainBus
-      const domain = buildKnowDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) })
+      const domain = buildKnowDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, v, a, c) => bus.query(d, v, a, c) })
       const res = bus.registry.register(domain)
       if (res.ok) log(`know 域注册成功（registered=${res.registered}）`)
       else log(`know 域注册被拒：${res.error?.code} ${res.error?.message}`)

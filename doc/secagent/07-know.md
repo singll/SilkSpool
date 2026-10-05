@@ -474,7 +474,7 @@
 
 #### Q14 · know_health（知识体检，v4 knowledgeHealth 的域化）
 
-无参。聚合本域已有存储统计；尚未接入的数据源使用 null，并在 unavailable 列出字段路径，不能以0或空对象冒充测量结果。当前 facts 未接入，exp.tainted、vulncards.usage_30d、rules.last_seed 未测。此修正为2026-10-05本地增量，待发布：
+无参。聚合本域已有存储统计；尚未接入的数据源使用 null，并在 unavailable 列出字段路径，不能以0或空对象冒充测量结果。facts通过fact.stats领域查询投影真实聚合；缺域、失败或无效total返回null，空库返回total=0。exp.tainted、vulncards.usage_30d、rules.last_seed未测。此修正为2026-10-05本地增量，待发布：
 
 ```json
 {
@@ -482,8 +482,8 @@
   "kb":  { "total", "curated", "overdue_revalidate", "tainted", "fetch_failed" },
   "rules": { "total", "last_seed" },
   "vulncards": { "total", "active", "draft", "usage_30d" },
-  "facts": null,
-  "unavailable": ["exp.tainted", "vulncards.usage_30d", "facts", "rules.last_seed"],
+  "facts": { ... fact.stats 聚合，失败时null },
+  "unavailable": ["exp.tainted", "vulncards.usage_30d", "rules.last_seed", ... facts不可用时加入"facts"],
   "harvest": { ... 投影自 Q13 },
   "warnings": ["3 张卡 30 天零使用", "kb 复验逾期 12 篇", ...]
 }

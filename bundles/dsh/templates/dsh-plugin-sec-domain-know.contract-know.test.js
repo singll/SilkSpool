@@ -12,6 +12,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildKnowDomain, KNOW_MANIFEST } from '../index.js'
+import { buildFactDomain } from '../../sec-domain-fact/index.js'
 import { DatabaseSync } from 'node:sqlite'
 import { createKnowSqliteBackend } from '../../sec-backend-know-sqlite/index.js'
 
@@ -37,7 +38,7 @@ function makeEnv(aliasesYaml = '') {
     sidecars: false,
     startDispatcherTimer: false,
   })
-  const domain = buildKnowDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) })
+  const domain = buildKnowDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, v, a, c) => bus.query(d, v, a, c) })
   const reg = bus.registry.register(domain)
   assert.equal(reg.ok, true, `know 域应注册成功：${reg.error?.message || ''}`)
   return { dir, dataDir, bus, domain }
@@ -2043,4 +2044,22 @@ test('L23: 缺测健康指标不伪装零，覆盖缺失与刷新未执行保留
   assert.equal(refresh.data.reason, 'refresh_not_executed')
   assert.deepEqual(refresh.data.stale, cached)
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dataDir, 'knowledge-coverage.json'))), cached)
+})
+
+
+test('L23: 知识健康经事实域读取真实聚合，缺域保持未知、空库为已知零', async () => {
+  const { bus, dataDir } = makeEnv()
+  let h = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.equal(h.data.facts, null)
+  const fact = buildFactDomain({ dataDir, dispatch: (d,v,a,c) => bus.dispatch(d,v,a,c) })
+  assert.equal(bus.registry.register(fact).ok, true)
+  h = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.equal(h.data.facts.total, 0)
+  assert.equal(h.data.unavailable.includes('facts'), false)
+  const created = await bus.dispatch('fact', 'upsert', { program_id: 'test-src', fact_key: 'host/health', summary: 'fact health fixture' }, { actor: 'model' })
+  assert.equal(created.ok, true)
+  const direct = await bus.query('fact', 'stats', {}, { actor: 'dashboard' })
+  h = await bus.query('know', 'health', {}, { actor: 'dashboard' })
+  assert.deepEqual(h.data.facts, direct.data)
+  assert.equal(h.data.facts.total, 1)
 })
