@@ -580,7 +580,7 @@ export const KNOW_MANIFEST = {
       agent_note: '（审批效果/人工专用，模型物理不可调）把 eligible revision 发布进使用面：有限灰度（scope_type=program/family + scope_id）先于全局生效（global 须先有同 artifact 灰度在跑）。批准绑定内容哈希——内容变化即批准失效，须重新评测+重批。',
       deprecated: false,
     },
-    // C27（L4，设计 §6.2/§6.3）：发布撤回与回退。撤销当前 active release；同 scope 存在上一版本
+    // C27（L4，设计 §6.2/§6.3）：发布撤回与回退。撤销active或superseded release；仅撤active时同 scope 存在上一版本
     // 时恢复其为 active（灰度失败可恢复到上一 published 版本——在飞任务保留已绑定版本，不在本动词范围）。
     know_release_revoke: {
       actor: ['dashboard', 'human'],
@@ -595,7 +595,7 @@ export const KNOW_MANIFEST = {
       event_limit: 1,
       invariants: [],
       timeout_ms: 60000,
-      agent_note: '撤回发布并回退：release 置 revoked，恢复同 scope 上一版本为 active（灰度失败可恢复）。紧急边界问题取消在飞任务属 task 域，不在本动词范围。',
+      agent_note: '撤回active或superseded发布并保留历史；仅撤回active时恢复同scope的superseded版本，明确revoked不恢复。紧急边界问题取消在飞任务属 task 域，不在本动词范围。',
       deprecated: false,
     },
     // C28（L5，设计 §8.1）：曝光回执——检索命中→实际展示的宿主回执。
@@ -2101,13 +2101,13 @@ function makeHandlers(opts) {
     know_release_revoke: async (args, repo, ctx) => {
       const rel = repo.getRelease(args.release_id)
       if (!rel) throwErr('E_NOT_FOUND', `release ${args.release_id} 不存在`, '先 know_release_list 定位', false)
-      if (rel.status !== 'active') {
+      if (rel.status === 'revoked') {
         return { data: { release_id: rel.release_id, revoked: false, skipped: rel.status, status: rel.status } }
       }
       const now = Date.now()
       repo.setReleaseStatus(rel.release_id, 'revoked', { revoked_at: now, revoke_reason: String(args.reason).slice(0, 300) })
       // 回退：同 (artifact, scope) 最近一条被取代的 release 恢复为 active（明确撤回的版本不恢复）（恢复上一 published 版本）
-      const prev = repo.previousRelease(rel.artifact_kind, rel.artifact_id, rel.scope_type, rel.scope_id, rel.release_id)
+      const prev = rel.status === 'active' ? repo.previousRelease(rel.artifact_kind, rel.artifact_id, rel.scope_type, rel.scope_id, rel.release_id) : null
       let restored = null
       if (prev) {
         repo.setReleaseStatus(prev.release_id, 'active')

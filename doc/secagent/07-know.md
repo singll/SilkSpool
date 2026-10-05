@@ -400,7 +400,7 @@
 
 #### C27 · know_release_revoke（发布撤回与回退，L4 2026-09-17 上线）
 
-**语义**：撤回发布并回退——release 置 `revoked`（记 revoked_at + 理由），同 (artifact, scope) 恢复最近一条被取代/撤销的 release 为 active（**灰度失败可恢复到上一 published 版本**）；恢复的 revision 置回 published，被撤 revision 无任何 active 使用面时置 retired。历史 episode 不回写；在飞任务保留已绑定版本（紧急边界问题取消在飞任务属 task 域，不在本动词范围）。
+**语义**：撤回发布并回退——release 置 `revoked`（记 revoked_at + 理由），仅原状态为active时，在同 (artifact, scope) 恢复最近一条superseded release为active；原状态为superseded时只撤回该历史发布，不触发版本切换。明确revoked不参与自动恢复（**灰度失败可恢复到上一 published 版本**）；恢复的 revision 置回 published，被撤 revision 无任何 active 使用面时置 retired。历史 episode 不回写；在飞任务保留已绑定版本（紧急边界问题取消在飞任务属 task 域，不在本动词范围）。
 
 **参数表**：release_id（必填）/ reason（必填 ≥10 字）/ correction_event_ref（可选，关联纠错事件）。
 **actor**：dashboard, human。**幂等**：自然键 `release_id+reason`；已撤销的 release 重复撤回 = no-op（零事件零副作用）。

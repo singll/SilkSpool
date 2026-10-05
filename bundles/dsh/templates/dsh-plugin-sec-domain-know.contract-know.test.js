@@ -1333,6 +1333,18 @@ test('L4: 发布不原地改旧版本——新版发布 supersede 旧 release，
   assert.equal(rev1.status, 'retired', '旧版本无 active 使用面 → retired')
   assert.equal(rev1.content_digest, v1.content_digest, '旧版本内容行原样保留')
   assert.equal(db.prepare('SELECT COUNT(*) c FROM knowledge_revisions WHERE artifact_id=?').get('VC-AUTHZ-G30').c, 2, '新旧两版本行并存（不原地覆盖）')
+  // 旧版被取代后发现不适用，明确撤回必须生效，但不能改变当前新版。
+  const revokeOld = await bus.dispatch('know', 'release_revoke', { release_id: p1.data.release_id, reason: '旧版已知不适用，禁止未来自动回退' }, { actor: 'human' })
+  assert.equal(revokeOld.ok, true, revokeOld.error?.message)
+  assert.equal(revokeOld.data.revoked, true)
+  assert.equal(revokeOld.data.rolled_back_to, null)
+  assert.equal(db.prepare('SELECT status FROM know_releases WHERE release_id=?').get(p1.data.release_id).status, 'revoked')
+  assert.equal(db.prepare('SELECT status FROM know_releases WHERE release_id=?').get(p2.data.release_id).status, 'active')
+  const revokeNew = await bus.dispatch('know', 'release_revoke', { release_id: p2.data.release_id, reason: '新版也停止使用，不得恢复已撤旧版' }, { actor: 'human' })
+  assert.equal(revokeNew.ok, true, revokeNew.error?.message)
+  assert.equal(revokeNew.data.rolled_back_to, null)
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM know_releases WHERE artifact_id=? AND status='active'").get('VC-AUTHZ-G30').n, 0)
+
 })
 
 test('L4: 灰度失败可恢复——revoke 当前 release 恢复上一 published 版本；重复撤回幂等 no-op', async () => {
