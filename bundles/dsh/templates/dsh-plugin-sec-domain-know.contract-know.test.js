@@ -12,6 +12,8 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildKnowDomain, KNOW_MANIFEST } from '../index.js'
+import { DatabaseSync } from 'node:sqlite'
+import { createKnowSqliteBackend } from '../../sec-backend-know-sqlite/index.js'
 
 process.env.SEC_EMBEDDINGS = '/nonexistent/silksec/embeddings/index.js'
 
@@ -46,6 +48,38 @@ const SCEN = '这是一个超过二十个字符的场景描述，用于经验卡
 const TAKE = '这是一个超过十五个字符的核心结论内容'
 const SCEN2 = '这是另一个超过二十个字符的场景描述，语义不重叠'
 const TAKE2 = '这是另一个超过十五个字符的核心结论内容'
+
+test('WP08: 旧文献库标签迁移保留原字段与归档，重开幂等且新标签归档完整', () => {
+  const dir = tmpDir()
+  const filename = path.join(dir, 'legacy.db')
+  let db = new DatabaseSync(filename)
+  db.exec(`CREATE TABLE kb_docs (id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+    file TEXT NOT NULL, source_url TEXT, tainted INTEGER DEFAULT 0, imported_at INTEGER NOT NULL);
+    INSERT INTO kb_docs VALUES (7,'legacy','/tmp/legacy','https://example.com/old',0,123);
+    CREATE TABLE kb_docs_archive (id INTEGER, title TEXT, file TEXT, source_url TEXT,
+      tainted INTEGER, imported_at INTEGER, archived_at INTEGER, archive_reason TEXT);
+    INSERT INTO kb_docs_archive VALUES (2,'old archive','/tmp/archive',NULL,0,12,34,'historic');`)
+  const original = db.prepare('SELECT * FROM kb_docs').get()
+  const archived = db.prepare('SELECT * FROM kb_docs_archive').get()
+  let repo = createKnowSqliteBackend().factory(db)
+  assert.equal(repo.getKbDoc(7).tags, '[]')
+  for (const [key, value] of Object.entries(original)) assert.equal(repo.getKbDoc(7)[key], value)
+  for (const [key, value] of Object.entries(archived)) assert.equal(db.prepare('SELECT * FROM kb_docs_archive WHERE id=2').get()[key], value)
+  assert.ok(db.prepare('PRAGMA table_info(kb_docs_archive)').all().some(row => row.name === 'tags'))
+  db.close()
+  db = new DatabaseSync(filename)
+  repo = createKnowSqliteBackend().factory(db)
+  assert.equal(repo.getKbDoc(7).tags, '[]')
+  repo.updateKbDoc(7, { tags: '["authz","json"]' })
+  assert.equal(repo.archiveKb(7, 'retired fixture', 456).changed, true)
+  assert.equal(repo.getKbDoc(7), null)
+  const result = db.prepare('SELECT * FROM kb_docs_archive WHERE id=7').get()
+  assert.equal(result.tags, '["authz","json"]')
+  assert.equal(result.archive_reason, 'retired fixture')
+  assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok')
+  db.close()
+  fs.rmSync(dir, { recursive: true, force: true })
+})
 
 // ---------------------------------------------------------------------------
 // 1. happy path：exp

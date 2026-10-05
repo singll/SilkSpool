@@ -694,7 +694,7 @@ sec query know know_health --actor script
 
 #### kb_docs 表（文献索引——正文在文件系统）
 
-> **现状 schema 映射（禁止无必要重命名）**：`kb_docs` 基表实列为 `id / title / file / source_url / tainted / imported_at`，其余生命周期/分类列经 `ensureCol` 幂等补齐（见下表）；正文文件在 `data/knowledge/`（**不是**早期草稿的 `data/kb/`）。逻辑 `doc_id` = 现表 `id`（INTEGER，**不是** TEXT 内容哈希列），逻辑 `body_path` = 现表 `file`。表**无** `confidence` / `tags` / `source` / `doc_id_hash` / `updated_at` 列；复验抖动种子在代码中由 `docIdHash(title)` 计算（不落库）。
+> **现状 schema 映射（禁止无必要重命名）**：`kb_docs` 基表实列为 `id / title / file / source_url / tainted / imported_at`，其余生命周期/分类列经 `ensureCol` 幂等补齐（见下表）；正文文件在 `data/knowledge/`（**不是**早期草稿的 `data/kb/`）。逻辑 `doc_id` = 现表 `id`（INTEGER，**不是** TEXT 内容哈希列），逻辑 `body_path` = 现表 `file`。表**无** `confidence` / `source` / `doc_id_hash` / `updated_at` 列；2026-10-05待发布增量新增 `tags TEXT DEFAULT '[]'`（显式导入标签，旧行不推断）；复验抖动种子在代码中由 `docIdHash(title)` 计算（不落库）。
 
 | 列 | 类型 | 语义 |
 |---|---|---|
@@ -706,6 +706,7 @@ sec query know know_health --actor script
 | imported_at | INTEGER NOT NULL | 入库时间（基表列） |
 | status | TEXT DEFAULT 'active' | active / curated / cooling / archived / expired（ensureCol 补） |
 | category | TEXT | 自动分类（ensureCol 补） |
+| tags | TEXT DEFAULT '[]' | 显式导入标签JSON数组，去重；2026-10-05增量待发布，同步补齐归档表 |
 | revalidate_by / last_validated_at | INTEGER | 复验期 / 最近确认（ensureCol 补） |
 | mem_class / scope / status_at / justification | TEXT/INTEGER | 生命周期列（ensureCol 补） |
 | fetch_failures | INTEGER DEFAULT 0 | 重抓连续失败计数（ensureCol 补） |
@@ -1168,3 +1169,5 @@ WP08搜索后续（本地，待发布）：exp_search及retrieval_explain经验�
 WP08文献读取后续（本地待发布）：kb_search/retrieval_explain文献候选先完整读取再过滤，category筛选生效；deprecated/archived不进入任务搜索或正文读取，人工审查保留。批量400项读取文献，解释仅为最终入选项查询评分（评分不参与排序），避免每命中多次查库。86项契约通过。
 
 WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路径保存到kb_docs.tags，新增列默认[]，去重保持顺序；归档表由ensureArchive补同名列。kb_search按全部标签匹配并返回tags，kb_list返回存储标签。exp_list标签条件在SQL分页前执行，异常历史JSON不匹配；标签只按显式来源保存，不从正文猜测。跨域697/697通过，最终列表字段补充后know87/87通过。
+
+迁移验收补充：基表与旧归档无tags列的SQLite夹具经真实backend迁移，原字段逐项不变；关闭重开幂等，新标签归档完整、integrity_check=ok。know88/88通过，仍待生产副本验收。
