@@ -2374,7 +2374,7 @@ function makeHandlers(opts) {
       let rows = [...hits.entries()].map(([id, score]) => { const c = repo.getExpCard(id); return c ? { ...c, _score: score } : null }).filter(Boolean)
       if (!q) rows = repo.listExpWhere('1=1', [], 'score DESC', limit, 0).map((c) => ({ ...c, _score: c.score || 0 }))
       const items = rows
-        .filter((c) => c.status !== 'archived')
+        .filter((c) => !['archived', 'deprecated'].includes(c.status))
         .map((c) => {
           let rank = (c._score || 0) * 10 + (vecScore.get(c.id) || 0) * 20 + (SRC_RANK[c.source] || 0) * 3 + (CONF_RANK[c.confidence] || 0) + (c.score || 0) * 2
           if (c.status === 'candidate') rank *= 0.5
@@ -2389,22 +2389,25 @@ function makeHandlers(opts) {
         .map(({ _rank, ...rest }) => rest)
       return { rows: items, total: items.length }
     },
-    exp_get: async (args, repo) => {
+    exp_get: async (args, repo, ctx) => {
       const r = repo.getExpCard(args.id)
-      if (!r) throwErr('E_NOT_FOUND', `卡 #${args.id} 不存在`, null, false)
+      if (!r || (!['dashboard', 'human'].includes(ctx?.actor) && ['archived', 'deprecated'].includes(r.status))) {
+        throwErr('E_NOT_FOUND', `卡 #${args.id} 不存在或已退出任务使用面`, null, false)
+      }
       return { id: r.id, scenario: r.scenario, takeaway: r.takeaway, chain: r.chain || '', evidence: JSON.parse(r.evidence || '[]'), source: r.source, confidence: r.confidence, status: r.status || 'active', score: r.score || 0, uses: r.uses || 0, adopted: r.adopted || 0, exportable: r.exportable || 0, kind: r.kind || 'card', tags: r.tags ? JSON.parse(r.tags) : [] }
     },
     exp_rank: async (_args, repo) => ({ top: repo.expRankTop(5), playbooks: repo.pbRankTop() }),
-    exp_list: async (args, repo) => {
+    exp_list: async (args, repo, ctx) => {
       const conds = []
       const wa = []
       if (args.status) { conds.push('status = ?'); wa.push(String(args.status)) }
       if (args.source) { conds.push('source = ?'); wa.push(String(args.source)) }
-      if (args.reader === 'review') { /* 全量 */ } else { conds.push("status != 'archived'") }
+      const review = args.reader === 'review' && ['dashboard', 'human', 'system'].includes(ctx?.actor)
+      if (!review) conds.push("status NOT IN ('archived', 'deprecated')")
       const where = conds.length ? conds.join(' AND ') : '1=1'
-      const rows = repo.listExpWhere(where, wa, 'score DESC, last_validated_at DESC', 500, 0)
+      const rows = repo.listExpWhere(where, wa, 'score DESC, last_validated_at DESC, id DESC', args.limit || 50, args.offset || 0)
       const total = repo.countExpWhere(where, wa)
-      return { rows, total }
+      return { rows, total, meta: { paged: true } }
     },
     // 43 号补丁：蒸馏卡 → 命中矩阵（stack×cls 胜负），供规划器按学习结果调整优先级。
     hit_matrix: async (args, repo) => {

@@ -1331,6 +1331,14 @@ change `20261005-anonymous-har-import`新备份/同快照恢复通过，NAS `65e
 
 三份观测对应langs/platforms/landing_info三种路径，其中两份有业务内容，一份只有业务状态；同路径代理复验不另增模板。200只落transport observed，不自动变public/健康/技术正例。20–50份模板、业务关系和适用实验尚需继续。证据`out/secagent-audits/20261005-anonymous-har-import/`保留成功/失败来源、预览/导入/重放和证据引用。
 
+### 15.37 WP08生命周期读取修复与公开产品参数请求（2026-10-05）
+
+WP08本地修正：exp_search/exp_get/exp_list不再向任务返回archived/deprecated；模型传reader=review不能绕过，dashboard/human保留审查读取。exp_list按SQL limit/offset及id稳定排序，meta.paged防二次切片；废弃playbook退出排名。新增废弃卡多入口/伪装审查者、501项分页和废弃playbook负例，know84/84通过。测试夹具先后缺必填时间及误取pb_save未返回的id，原失败日志保留并修正；不把夹具错误当产品缺陷。该增量尚未发布，exp_search过滤前限量/标签排序和其它知识类型生命周期仍待进一步统一。
+
+依据首页公开products[0]与前端PublicGetProductDetail的实际GET参数定义，执行一次code.coze.cn详情请求，product_id=7416353271499096116/entity_type=21。Scope/精确Web S级/公网固定地址重验通过，15秒/256KiB上限，无重试/跳转/模型调用；HTTP200/code0，返回产品元信息、配置、is_owner=false、can_duplicate=true。首次data URL模块绝对导入失败发生在请求前，改file URL后实际curl仅一次。公开可复制产品配置不自动算泄露或越权，技术结论仍未知。
+
+取得第4种业务请求样本（含两个query参数），该详情样本尚未导入，生产仍为前三份观测；20–50模板未完成。证据分别为受限wp08-lifecycle和anonymous-product目录，后续继续实际业务功能、适用实验及来源归因。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

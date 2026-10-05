@@ -133,6 +133,47 @@ test('happy path: exp_update 全量替换 + exp_deprecate 弃置', async () => {
   assert.equal(row.status, 'deprecated')
 })
 
+test('WP08: deprecated 经验退出任务读取/搜索/列表，模型不能伪装审查者', async () => {
+  const { bus } = makeEnv()
+  const stored = await bus.dispatch('know', 'exp_store', {
+    scenario: SCEN, takeaway: TAKE, justification: JUST,
+  }, { actor: 'dashboard' })
+  await bus.dispatch('know', 'exp_deprecate', { id: stored.data.id, reason: JUST }, { actor: 'dashboard' })
+  for (const verb of ['exp_search', 'exp_list']) {
+    const r = await bus.query('know', verb, {}, { actor: 'model' })
+    assert.equal(r.ok, true)
+    assert.ok(!r.rows.some(row => row.id === stored.data.id))
+  }
+  const get = await bus.query('know', 'exp_get', { id: stored.data.id }, { actor: 'model' })
+  assert.equal(get.ok, false)
+  const bypass = await bus.query('know', 'exp_list', { reader: 'review' }, { actor: 'model' })
+  assert.ok(!bypass.rows.some(row => row.id === stored.data.id))
+  const review = await bus.query('know', 'exp_list', { reader: 'review' }, { actor: 'dashboard' })
+  assert.ok(review.rows.some(row => row.id === stored.data.id))
+})
+
+test('WP08: exp_list 第501项可读，废弃playbook退出排名', async () => {
+  const { bus } = makeEnv()
+  await bus.query('know', 'exp_list', {}, { actor: 'model' })
+  const db = bus._internal.db()
+  const insert = db.prepare("INSERT INTO exp_cards (scenario,takeaway,status,kind,mem_class,score,created_at,last_validated_at) VALUES (?,?,'active','card','permanent',0,123,123)")
+  db.exec('BEGIN')
+  try {
+    for (let i = 0; i < 501; i++) insert.run(`scenario ${i}`, 'test')
+    db.exec('COMMIT')
+  } catch (error) { db.exec('ROLLBACK'); throw error }
+  const page = await bus.query('know', 'exp_list', { offset: 500, limit: 1 }, { actor: 'model' })
+  assert.equal(page.ok, true)
+  assert.equal(page.total, 501)
+  assert.equal(page.rows.length, 1)
+  const pb = await bus.dispatch('know', 'pb_save', { name: 'old-method', steps: ['read'], trigger: ['test'] }, { actor: 'dashboard' })
+  assert.equal(pb.ok, true)
+  const pbId = db.prepare("SELECT id FROM exp_cards WHERE scenario='old-method' AND kind='playbook'").get().id
+  db.prepare("UPDATE exp_cards SET status='deprecated' WHERE id=?").run(pbId)
+  const rank = await bus.query('know', 'exp_rank', {}, { actor: 'model' })
+  assert.ok(!rank.data.playbooks.some(row => row.id === pbId))
+})
+
 test('happy path: pb_save / pb_outcome（playbook 卡 runs/successes + rank）', async () => {
   const { bus } = makeEnv()
   const s = await bus.dispatch('know', 'pb_save', { name: 'dalfox-xss', steps: ['探测反射点', 'payload 注入'], trigger: ['xss', 'dalfox'] }, { actor: 'dashboard' })

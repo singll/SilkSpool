@@ -356,7 +356,7 @@ function createRepo(db) {
       return db.prepare("SELECT id, scenario, takeaway, score, adopted, status FROM exp_cards WHERE kind != 'playbook' AND mem_class = 'permanent' AND status = 'active' ORDER BY score DESC LIMIT ?").all(limit).map((r) => ({ ...r }))
     },
     pbRankTop() {
-      const rows = db.prepare("SELECT id, scenario, takeaway, chain, runs, successes, last_validated_at FROM exp_cards WHERE kind = 'playbook'").all().map((p) => {
+      const rows = db.prepare("SELECT id, scenario, takeaway, chain, runs, successes, last_validated_at FROM exp_cards WHERE kind = 'playbook' AND status NOT IN ('archived', 'deprecated')").all().map((p) => {
         const rate = p.runs ? p.successes / p.runs : 0
         const ageDays = p.last_validated_at ? (Date.now() - p.last_validated_at) / 86400000 : 999
         const decay = Math.max(0.3, 1 - ageDays * 0.02)
