@@ -139,25 +139,26 @@ window.__ModuleLoader__.load({
       if (mem && mem.loaded && mem.tables) {
         memChips = el('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', margin: '8px 0' } },
           Object.keys(mem.tables).map(function (t) {
-            var parts = Object.keys(mem.tables[t]).map(function (s) { return s + ':' + mem.tables[t][s] }).join(' ')
+            var parts = Object.keys(mem.tables[t]).map(function (s) { return s + ':' + metric(mem.tables[t][s]) }).join(' ')
             return el('span', { key: t, style: pill, title: 'memcore 治理状态分布' }, t + ' ' + parts)
           }))
       }
+      function metric(value) { return typeof value === 'number' && Number.isFinite(value) ? String(value) : '未知' }
       // v4.5 知识体检：各存储点使用分布/零使用占比/到期预警（死库存与塌方风险一眼可见）
       var kh = mem && mem.knowledgeHealth ? mem.knowledgeHealth : null
       var healthCard = null
       if (kh) {
         var khRows = []
         if (kh.kb_docs) khRows.push(el('div', { key: 'kb', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
-          '知识库 kb_docs：' + kh.kb_docs.total + ' 篇（零使用 ' + kh.kb_docs.zero_use + ' = ' + Math.round(kh.kb_docs.zero_use_ratio * 100) + '%，cooling ' + kh.kb_docs.cooling + '，30天内到期 ' + kh.kb_docs.expiring_30d + '）'))
+          '知识库 kb_docs：' + metric(kh.kb_docs.total) + ' 篇（零使用 ' + metric(kh.kb_docs.zero_use) + ' = ' + (kh.kb_docs.zero_use_ratio == null ? '未知' : Math.round(kh.kb_docs.zero_use_ratio * 100) + '%') + '，cooling ' + metric(kh.kb_docs.cooling) + '，30天内到期 ' + metric(kh.kb_docs.expiring_30d) + '）'))
         if (kh.exp_cards) khRows.push(el('div', { key: 'ec', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
-          '经验卡 exp_cards：' + kh.exp_cards.total + ' 张（零使用 ' + kh.exp_cards.zero_use + '，candidate ' + kh.exp_cards.candidate + '，cooling ' + kh.exp_cards.cooling + '）'))
+          '经验卡 exp_cards：' + metric(kh.exp_cards.total) + ' 张（零使用 ' + metric(kh.exp_cards.zero_use) + '，candidate ' + metric(kh.exp_cards.candidate) + '，cooling ' + metric(kh.exp_cards.cooling) + '）'))
         if (kh.facts) khRows.push(el('div', { key: 'fa', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
-          '事实 facts：' + kh.facts.total + ' 条（cooling ' + kh.facts.cooling + '，复验逾期 ' + kh.facts.revalidate_overdue + '）'))
+          '事实 facts：' + metric(kh.facts.total) + ' 条（cooling ' + metric(kh.facts.cooling) + '，复验逾期 ' + metric(kh.facts.revalidate_overdue) + '）'))
         if (kh.playbooks) khRows.push(el('div', { key: 'pb', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
-          '打法链 playbooks：' + kh.playbooks.total + ' 条（cooling ' + kh.playbooks.cooling + '）'))
+          '打法链 playbooks：' + metric(kh.playbooks.total) + ' 条（cooling ' + metric(kh.playbooks.cooling) + '）'))
         if (kh.fgs) khRows.push(el('div', { key: 'fg', style: { ...F.xxs, color: T.label2, marginTop: 3 } },
-          'FGS 图：' + kh.fgs.nodes + ' 节点（已沉淀 facts ' + kh.fgs.persisted_facts + ' 条，任务 done 自动跨任务转正）'))
+          'FGS 图：' + metric(kh.fgs.nodes) + ' 节点（已沉淀 facts ' + metric(kh.fgs.persisted_facts) + ' 条，任务 done 自动跨任务转正）'))
         var warnBits = []
         if (kh.kb_docs && kh.kb_docs.zero_use_ratio >= 0.8) warnBits.push('kb 零使用率 ≥80%——消费端未接通')
         if (kh.kb_docs && kh.kb_docs.expiring_30d > 50) warnBits.push(kh.kb_docs.expiring_30d + ' 篇 kb 30天内集中到期——塌方风险')

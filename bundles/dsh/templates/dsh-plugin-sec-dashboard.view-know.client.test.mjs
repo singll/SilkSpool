@@ -367,3 +367,21 @@ test('primitives/Modal 缺席：apply 与两个域根渲染均不抛', () => {
   assert.doesNotThrow(() => mod.KnowledgeRoot({ rpc: () => Promise.resolve({}) }))
   assert.doesNotThrow(() => mod.LearningRoot({ rpc: () => Promise.resolve({}) }))
 })
+
+test('L23: 健康缺测显示未知，真实零保留且未知比例不显示0%', () => {
+  const { mod } = loadBundle(makeUiCore())
+  const empty = { data: { rows: [] }, reload() {} }
+  const tree = mod.KnowledgeView({
+    cardsState: empty, pbsState: empty, rulesState: empty, kbState: empty,
+    factOvState: { data: null }, covState: { data: null },
+    memState: { data: { loaded: true, tables: { facts: { total: 0 } }, knowledgeHealth: {
+      facts: { total: 0, cooling: 0, revalidate_overdue: null },
+      kb_docs: { total: 4, zero_use: null, zero_use_ratio: null, cooling: null, expiring_30d: null },
+    } } }, busy: false, callRpc: () => Promise.resolve({}),
+  })
+  const text = deepText(tree)
+  assert.match(text, /事实 facts：0 条/)
+  assert.match(text, /复验逾期 未知/)
+  assert.match(text, /零使用 未知 = 未知/)
+  assert.doesNotMatch(text, /0%|null|undefined/)
+})

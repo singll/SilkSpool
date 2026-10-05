@@ -399,34 +399,36 @@ let cachedStatus = { loaded: false, tables: {}, lastEvent: null, knowledgeHealth
 
 async function refreshStatus() {
   if (!busRef) return
-  const tables = { blackboard: {}, facts: {}, exp_cards: {}, playbooks: {}, kb_docs: {} }
   const fsStats = await query('fact', 'stats', {}, 'system')
-  if (fsStats && fsStats.ok && fsStats.data) {
-    const byStatus = {}
-    for (const s of (fsStats.data.by_status || [])) byStatus[s.status] = s.n
-    tables.facts = byStatus
-    tables.facts.total = fsStats.data.total
-  }
   const ov = await query('fact', 'overview', {}, 'system')
-  if (ov && ov.ok && ov.data) {
-    tables.blackboard = { active: ov.data.blackboard ? ov.data.blackboard.active : 0, env_issue: ov.data.blackboard ? ov.data.blackboard.env_issues : 0 }
-  }
   const kh = await query('know', 'health', {}, 'system')
-  if (kh && kh.ok && kh.data) {
-    const e = kh.data.exp || {}
-    const k = kh.data.kb || {}
-    tables.exp_cards = { total: e.total || 0, active: e.active || 0, cooling: e.cooling || 0, candidate: 0, deprecated: e.deprecated || 0 }
-    tables.kb_docs = { total: k.total || 0, curated: k.curated || 0, cooling: 0 }
-    tables.playbooks = { total: 0, cooling: 0 }
-    cachedStatus.knowledgeHealth = {
-      kb_docs: { total: k.total || 0, zero_use: 0, cooling: 0, expiring_30d: 0, zero_use_ratio: 0 },
-      exp_cards: { total: e.total || 0, zero_use: e.zero_use_30d || 0, candidate: 0, cooling: e.cooling || 0 },
-      facts: { total: fsStats && fsStats.ok ? fsStats.data.total : 0, cooling: tables.facts.cooling || 0, revalidate_overdue: 0 },
-      playbooks: { total: 0, cooling: 0 },
-      fgs: { nodes: 0, persisted_facts: ov && ov.ok && ov.data ? (ov.data.fgs_persisted || 0) : 0 },
-    }
+  cachedStatus = { loaded: true, ...projectKnowledgeStatus(fsStats, ov, kh), lastEvent: cachedStatus.lastEvent }
+}
+
+// Missing sources stay unknown; every refresh replaces the previous projection.
+export function projectKnowledgeStatus(fsStats, ov, kh) {
+  const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null
+  const fact = fsStats?.ok ? fsStats.data : null
+  const overview = ov?.ok ? ov.data : null
+  const health = kh?.ok ? kh.data : null
+  const e = health?.exp || {}, k = health?.kb || {}
+  const byStatus = {}
+  for (const row of fact?.by_status || []) byStatus[row.status] = count(row.n)
+  const cooling = fact && Array.isArray(fact.by_status) ? (byStatus.cooling ?? 0) : null
+  const tables = {
+    blackboard: { active: count(overview?.blackboard?.active), env_issue: count(overview?.blackboard?.env_issues) },
+    facts: { ...byStatus, total: count(fact?.total) },
+    exp_cards: { total: count(e.total), active: count(e.active), cooling: count(e.cooling), candidate: null, deprecated: count(e.deprecated) },
+    kb_docs: { total: count(k.total), curated: count(k.curated), cooling: null },
+    playbooks: { total: null, cooling: null },
   }
-  cachedStatus = { loaded: true, tables, lastEvent: cachedStatus.lastEvent, knowledgeHealth: cachedStatus.knowledgeHealth }
+  return { tables, knowledgeHealth: {
+    kb_docs: { total: count(k.total), zero_use: null, cooling: null, expiring_30d: null, zero_use_ratio: null },
+    exp_cards: { total: count(e.total), zero_use: count(e.zero_use_30d), candidate: null, cooling: count(e.cooling) },
+    facts: { total: count(fact?.total), cooling, revalidate_overdue: null },
+    playbooks: { total: null, cooling: null },
+    fgs: { nodes: null, persisted_facts: count(overview?.fgs_persisted) },
+  } }
 }
 
 function status() {
