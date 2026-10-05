@@ -1604,7 +1604,7 @@ test('L5: 采用事实两条通道——know_adopt(revision) 落账 + ledger.car
   const pub = await publishedOne(bus, 'VC-AUTHZ-A01', 'example-src')
   const adopt = await bus.dispatch('know', 'adopt', {
     target: 'exp', payload: { id: 1 }, evidence: '审批采纳证据超过十个字符',
-    artifact_kind: 'vulncard', revision_id: pub.revision_id,
+    artifact_kind: 'vulncard', revision_id: pub.revision_id, scope: { type: 'program', id: 'example-src' },
   }, { actor: 'approval' })
   assert.equal(adopt.ok, true, adopt.error?.message)
   assert.equal(db.prepare('SELECT COUNT(*) c FROM know_adoptions WHERE artifact_id=?').get('VC-AUTHZ-A01').c, 1)
@@ -2088,4 +2088,26 @@ test('L03: 人工采用要求真实且仍可使用的经验或文献，拒绝不
     assert.equal(retired.error.code, 'E_STATE')
   }
   assert.equal(db.prepare('SELECT COUNT(*) n FROM know_adoptions').get().n, 2)
+})
+
+
+test('L03: revision采用绑定当前作用域发布，跨scope不能命中旧幂等回执', async () => {
+  const { bus } = makeEnv()
+  const pub = await publishedOne(bus, 'VC-AUTHZ-SCOPE01', 'example-src')
+  const args = { target: 'exp', payload: {}, evidence: '采用发布版本的真实证据说明', revision_id: pub.revision_id, artifact_kind: 'vulncard' }
+  const missing = await bus.dispatch('know', 'adopt', args, { actor: 'dashboard' })
+  assert.equal(missing.ok, false)
+  const good = await bus.dispatch('know', 'adopt', { ...args, scope: { type: 'program', id: 'example-src' } }, { actor: 'dashboard' })
+  assert.equal(good.ok, true, good.error?.message)
+  assert.equal(good.data.release_id, pub.release_id)
+  assert.equal(good.data.content_digest, pub.content_digest)
+  const wrong = await bus.dispatch('know', 'adopt', { ...args, scope: { type: 'program', id: 'other-src' } }, { actor: 'dashboard' })
+  assert.equal(wrong.ok, false)
+  // 同一revision仍在另一scope发布；撤回本scope不能由published状态绕过。
+  const second = await publish(bus, { revision_id: pub.revision_id, content_digest: pub.content_digest, auth_ref: 'approval:second-scope', scope_type: 'program', scope_id: 'other-src' })
+  assert.equal(second.ok, true)
+  assert.equal((await bus.dispatch('know', 'release_revoke', { release_id: pub.release_id, reason: '撤回该项目发布并保持另一项目正常' }, { actor: 'human' })).ok, true)
+  const revoked = await bus.dispatch('know', 'adopt', { ...args, evidence: '撤回后发起的另一条采用证据说明', scope: { type: 'program', id: 'example-src' } }, { actor: 'dashboard' })
+  assert.equal(revoked.ok, false)
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM know_adoptions').get().n, 1)
 })

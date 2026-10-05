@@ -429,7 +429,7 @@ export const KNOW_MANIFEST = {
         scope: { type: 'object' },
       }, ['target', 'payload', 'evidence']),
       idempotent: 'auto',
-      idempotent_fields: ['target', 'payload', 'evidence', 'artifact_kind', 'revision_id', 'eval_report_ref'],
+      idempotent_fields: ['target', 'payload', 'evidence', 'artifact_kind', 'revision_id', 'eval_report_ref', 'scope'],
       events: ['know.adopted'],
       event_limit: 1,
       invariants: ['adoptRulesActor'],
@@ -1845,15 +1845,23 @@ function makeHandlers(opts) {
         if (rev.status !== 'published') {
           throwErr('E_INVARIANT', `采用面只认 published revision（当前 ${rev.status}）`, 'eligible 不是发布——先经 know_revision_publish（审批+灰度）发布再采纳', false)
         }
+        const scope = args.scope
+        if (!scope || !RELEASE_SCOPE_TYPES.includes(scope.type) || (scope.type !== 'global' && (typeof scope.id !== 'string' || !scope.id.trim()))) {
+          throwErr('E_SCHEMA', '版本采用必须明确发布作用域', '提供scope.type和相应scope.id', false)
+        }
+        if (scope.type === 'global' && scope.id && scope.id !== '') throwErr('E_SCHEMA', '全局发布不接受scope.id', null, false)
+        const release = repo.activeRelease(rev.artifact_kind, rev.artifact_id, scope.type, scope.type === 'global' ? '' : scope.id)
+        if (!release || release.revision_id !== rev.revision_id) throwErr('E_STATE', '该版本不是指定作用域当前生效的发布', '读取当前发布版本，撤回或被取代的版本不能新采用', false)
         // L5（§8.1）：采用事实落账（采用≠曝光≠有效结果——三条计数分离）
         recordAdoption(repo, {
           artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, revision_id: rev.revision_id,
+          card_version: rev.content_digest, program_id: scope.type === 'program' ? scope.id : null,
           source_cmd: 'know_adopt', actor: (ctx && ctx.actor) || null, outcome: 'adopted',
           note: String(args.evidence).slice(0, 200),
         })
         return {
-          data: { target, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, status: 'published', adopted: true, source_cmd: 'know_revision_publish' },
-          events: [{ name: 'know.adopted', payload: { target, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, eval_report_ref: args.eval_report_ref || rev.eval_report_ref || null, evidence: args.evidence } }],
+          data: { target, release_id: release.release_id, content_digest: rev.content_digest, scope, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, status: 'published', adopted: true, source_cmd: 'know_revision_publish' },
+          events: [{ name: 'know.adopted', payload: { target, release_id: release.release_id, content_digest: rev.content_digest, scope, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, eval_report_ref: args.eval_report_ref || rev.eval_report_ref || null, evidence: args.evidence } }],
           before: null, after: { revision_id: rev.revision_id, status: 'published' },
         }
       }

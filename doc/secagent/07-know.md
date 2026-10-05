@@ -1176,3 +1176,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 生产状态更新（2026-10-05）：上述§十六及WP08后续增量均已分批部署；最新698项全域预检、88项隔离知识契约、19项worker与生产标签/完整分页RPC通过。两文献表tags迁移已完成，原字段保留，完整恢复与写者恢复通过。首次stats超时及原门槛复验事实详见27号§15.44；本节历史“待发布”描述为当时状态，WP08整体仍待剩余验收。
 
 2026-10-05采用入口增量（本地，待发布）：know_adopt不带revision且target为exp/kb时，payload.id/doc_id必须是正安全整数且能解析现存对象；deprecated/archived或artifact_kind不符拒绝。动作标签/缺ID不能返回采用成功。已有revision分支、ledger采用回流、不可变版本归因仍需按27号WP07继续验收。
+
+2026-10-05版本采用增量（本地待发布）：revision采用须提供发布scope，且该scope的activeRelease必须恰为所采用revision；缺scope、已撤回或被取代均拒绝。scope进入幂等键，避免跨项目复用回执。返回及know.adopted事件保留release_id/content_digest/scope；采用行revision_id解析不可变版本、card_version保存该内容摘要、Program作用域写program_id。这里校验发布作用域，不等于已经完成请求级适用性或可信attempt归因。

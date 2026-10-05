@@ -1407,6 +1407,12 @@ know域宿主组装注入总线query，know_health通过fact.stats读取实际�
 
 本批只关闭人工入口的伪对象成功路径；ledger事件回流仍待真实artifact验证，revision采用仍待发布作用域/撤回/版本归因，旧669条失配采用与可信attempt评分不因此获认可，WP07整体未完成。
 
+### 15.50 L03版本采用发布作用域与幂等（2026-10-05，本地完成，待发布）
+
+revision采用旧分支只看published，漏检当前release与scope，幂等键也遗漏scope。现要求明确合法scope，并核该scope当前activeRelease的revision一致；采用回执/事件带release_id、content_digest、scope，采用记录保存revision、摘要及Program归属。scope纳入幂等键，跨项目不复用已有成功。历史重放回执仍表示历史成功，不作为新采用。
+
+真实总线回归覆盖缺scope、正确scope、同参数跨scope、同revision在另一项目仍published而本项目撤回后的新采用拒绝；采用行数不被拒绝请求增加。know92/92、全域702/702通过，证据受限wp07-adopt目录。该变化未生产部署；请求级适用性、ledger回流、历史引用修复、可信attempt去重评分仍待完成，WP07不关账。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
