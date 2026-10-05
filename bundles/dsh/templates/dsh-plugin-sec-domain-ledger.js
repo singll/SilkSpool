@@ -300,6 +300,7 @@ export const LEDGER_MANIFEST = {
         program: str({ minLength: 1 }),
         dim: en([...GAPS_DIM_ENUM, ''], { default: '' }),
         limit: int({ minimum: 1, maximum: 500, default: 100 }),
+        offset: int({ minimum: 0, default: 0 }),
       }, ['program']),
       agent_note: '覆盖缺口队列（§4.3）：未爬/无参/未测类/登录盲区格点清单，strategy_key 去重排序——Intent 派生器输入。',
     },
@@ -774,7 +775,7 @@ function makeHandlers(opts) {
         if (epPage.truncated && !truncatedDims.length) truncatedDims.push('endpoint')
       }
       gaps.sort((a, b) => a.priority - b.priority || a.strategy_key.localeCompare(b.strategy_key))
-      return { program, gaps: gaps.slice(0, limit), total: gaps.length, truncated: truncatedDims.length ? { dims: [...new Set(truncatedDims)] } : null }
+      return { program, gaps: gaps.slice(Number(args.offset) || 0, (Number(args.offset) || 0) + limit), total: gaps.length, truncated: truncatedDims.length ? { dims: [...new Set(truncatedDims)] } : null }
     },
 
     ledger_login_blindspot: async (args, repo) => {

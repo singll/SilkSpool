@@ -1181,7 +1181,7 @@ function registerLedgerStub(bus, gaps) {
       queries: {
         ledger_coverage_gaps: {
           actor: ['reactor', 'scheduler', 'model', 'dashboard', 'human'],
-          params: { type: 'object', additionalProperties: false, required: ['program'], properties: { program: { type: 'string' }, dim: { type: 'string' }, limit: { type: 'integer' } } },
+          params: { type: 'object', additionalProperties: false, required: ['program'], properties: { program: { type: 'string' }, dim: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' } } },
           agent_note: '桩：覆盖缺口队列',
         },
       },
@@ -2810,4 +2810,26 @@ test('27 WP03: reaper emits bounded terminal facts once; late bills preserve cra
   assert.equal(db.prepare('SELECT status FROM tasks WHERE id=?').get(ids[0]).status, 'failed')
   assert.equal(db.prepare('SELECT ok FROM task_runs WHERE task_id=?').get(ids[0]).ok, 0)
   assert.equal(readEvents(dir).filter(e => e.name === 'task.cost.settled').length, 1)
+})
+
+
+test('27 C04: 前200个已尝试缺口不阻断第201项进入专项计划', async () => {
+  const calls = []
+  const rows = Array.from({length:201},(_,i)=>({program:'test-src',dim:'crawl',key:`h${String(i).padStart(3,'0')}.example.com`,strategy_key:`crawl|h${String(i).padStart(3,'0')}.example.com`}))
+  const { bus } = makeEnv({query:async (d,n,a)=> {
+    if (d==='ledger' && n==='coverage_gaps') {
+      calls.push(a)
+      const selected=a.dim==='crawl'?rows:[]
+      return {ok:true,data:{gaps:selected.slice(a.offset||0,(a.offset||0)+a.limit),total:selected.length}}
+    }
+    return {ok:true,rows:[],total:0}
+  }})
+  const c=await bus.dispatch('task','campaign_create',{name:'pagination',program_ids:['test-src'],autonomy:1,budget_tokens:1000000,goal_spec:{stop_conditions:['done']}},{actor:'model'})
+  assert.equal(c.ok,true,JSON.stringify(c.error))
+  const db=bus._internal.db()
+  for (const row of rows.slice(0,200)) db.prepare('INSERT INTO strategy_dedupe(strategy_key,program_id,first_seen,last_seen,fails,blacklisted) VALUES(?,?,?,?,0,0)').run(row.strategy_key,'test-src',1,1)
+  const result=await bus.query('task','campaign_pending_drafts',{id:c.data.campaign_id},{actor:'model'})
+  assert.equal(result.ok,true,JSON.stringify(result.error))
+  assert.ok(result.data.drafts.some(d=>d.strategy_key===rows[200].strategy_key))
+  assert.ok(calls.some(a=>a.dim==='crawl' && a.offset===200))
 })

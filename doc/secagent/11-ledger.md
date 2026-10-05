@@ -280,6 +280,8 @@ know 域（07-know.md C16 消费通道）经本查询获取卡片使用信号，
 
 > **42 号：gaps 全量分页**——六维输入全部改分页遍历（crawl/asset 维 `asset_host_page` 上限 20 万行；param/auth/vulnclass 维 `endpoint_lite_page` 上限 5 万行；review 维 `vuln_list` 上限 2 万行；asset 根域 `asset_roots_agg` 单次聚合）；单维缺口格点上限 `LEDGER_MAX_GAPS_PER_DIM=20000`，触顶进 `truncated: {dims:[...]}` 输出（不再静默截断）。
 
+2026-10-06（本地待发布）：coverage_gaps增加offset（默认0），在稳定排序后分页，total仍为当前有界缺口集合大小，原truncated保留。task规划按每页200补页，跳过已尝试/不适用前缀，直到某维取得足够本批可运行草稿或耗尽该维2万窗口；不把分页当作已突破原输入/缺口截断。跨查询动态变化仍不提供快照一致性。
+
 #### 1.4.10 `ledger_login_blindspot`（登录盲区摘要，§4.4）
 
 program 无可用凭据（scope cred_query 为空）时生成：「未登录状态已覆盖 X/Y 端点（仅公开面 Z%）；判定需登录的端点 N 个完全未测；其中高价值功能点 M 个（admin/pay/order/user…）→ 需要：登记登录凭据（cred_add）」。返回 `action_item: {kind:'cred_add'}` 人工行动项；未登录态下的覆盖必须标注「仅公开面」防虚假安全感。**42 号：端点面改 `endpoint_lite_page` 分页全量遍历（上限 5 万行），输出新增 `truncated` 标记**（旧实现采样导致「need_login 全量 4 个在采样里为 0」的失真）。

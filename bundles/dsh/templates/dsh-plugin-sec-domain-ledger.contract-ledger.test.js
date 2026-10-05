@@ -472,6 +472,13 @@ test('coverage_gaps: 跨域 asset/endpoint 分页查询顶层 rows 被正确消�
   const g = await bus.query('ledger', 'coverage_gaps', { program: 'test-src' }, { actor: 'model' })
   assert.equal(g.ok, true, g.error?.message)
   assert.ok(g.data.total > 0, '应产出缺口（crawl/param/vulnclass）')
+  const page = await bus.query('ledger','coverage_gaps',{program:'test-src',limit:2,offset:2},{actor:'model'})
+  assert.equal(page.ok,true,JSON.stringify(page.error))
+  assert.deepEqual(page.data.gaps,g.data.gaps.slice(2,4))
+  assert.equal(page.data.total,g.data.total)
+  const exhausted = await bus.query('ledger','coverage_gaps',{program:'test-src',limit:2,offset:g.data.total},{actor:'model'})
+  assert.deepEqual(exhausted.data.gaps,[])
+
   assert.ok((g.data.gaps || []).some((x) => x.dim === 'crawl' && x.key === 'a.example.com'))
   assert.ok((g.data.gaps || []).some((x) => x.dim === 'param' && x.key === 'a.example.com|/x'))
 })

@@ -1646,36 +1646,6 @@ function makeHandlers(opts) {
 
   // L1/L2 规划输入采集（缺口/连败/经验卡命中/活跃与预算）——跨域只读，不可达即降级空快照
   async function gatherPlanInputs(campaign, repo) {
-    const gaps = []
-    for (const program of campaign.program_ids) {
-      for (const pending of repo.pendingHypotheses(program, 200, Date.now())) {
-        const d = JSON.parse(pending.draft)
-        if (d.oracle && !ORACLES[d.oracle]) continue
-        gaps.push({ ...d, program, dim: 'request', key: d.strategy_key, value: 2 })
-      }
-    }
-    if (queryRef) {
-      const seenGap = new Set()
-      for (const program of campaign.program_ids) {
-        // 分维度拉取：ledger_coverage_gaps 按优先级截断，crawl（低优先级）会被 vulnclass 挤出 limit，
-        // 导致 Planner 永远拿不到覆盖类缺口（覆盖率不动）。逐维查询 + 去重合并。
-        // 25 号补丁：asset 维（根域枚举超窗）并入专项缺口消费
-        for (const dim of ['crawl', 'param', 'vulnclass', 'asset', 'review']) {
-          try {
-            const r = await queryRef('ledger', 'coverage_gaps', { program, dim, limit: 200 }, { actor: 'reactor' })
-            const rows = (r && r.data && Array.isArray(r.data.gaps)) ? r.data.gaps
-              : ((r && r.data && Array.isArray(r.data.rows)) ? r.data.rows : ((r && Array.isArray(r.rows)) ? r.rows : []))
-            for (const row of rows) {
-              const pid = row.program || row.program_id || program
-              const k = `${pid}|${row.dim}|${row.key}`
-              if (seenGap.has(k)) continue
-              seenGap.add(k)
-              gaps.push({ ...row, program: pid })
-            }
-          } catch { /* 降级：该 program/dim 无缺口 */ }
-        }
-      }
-    }
     const strategies = {}
     try {
       const rows = repo.listStrategies ? repo.listStrategies(campaign.program_ids) : []
@@ -1692,6 +1662,49 @@ function makeHandlers(opts) {
         strategies[bare] = cur
       }
     } catch { /* ignore */ }
+    const gaps = []
+    for (const program of campaign.program_ids) {
+      for (const pending of repo.pendingHypotheses(program, 200, Date.now())) {
+        const d = JSON.parse(pending.draft)
+        if (d.oracle && !ORACLES[d.oracle]) continue
+        gaps.push({ ...d, program, dim: 'request', key: d.strategy_key, value: 2 })
+      }
+    }
+    if (queryRef) {
+      const seenGap = new Set()
+      for (const program of campaign.program_ids) {
+        // 分维度拉取：ledger_coverage_gaps 按优先级截断，crawl（低优先级）会被 vulnclass 挤出 limit，
+        // 导致 Planner 永远拿不到覆盖类缺口（覆盖率不动）。逐维查询 + 去重合并。
+        // 25 号补丁：asset 维（根域枚举超窗）并入专项缺口消费
+        for (const dim of ['crawl', 'param', 'vulnclass', 'asset', 'review']) {
+          try {
+            // Page the bounded ledger window past attempted or inapplicable
+            // strategies. Otherwise an exhausted first page hides every later gap.
+            for (let offset = 0; offset < 20000; offset += 200) {
+              const r = await queryRef('ledger', 'coverage_gaps', { program, dim, limit: 200, offset }, { actor: 'reactor' })
+              const rows = (r && r.data && Array.isArray(r.data.gaps)) ? r.data.gaps
+                : ((r && r.data && Array.isArray(r.data.rows)) ? r.data.rows : ((r && Array.isArray(r.rows)) ? r.rows : []))
+              let added = 0
+              for (const row of rows) {
+                const pid = row.program || row.program_id || program
+                const k = `${pid}|${row.dim}|${row.key}`
+                if (seenGap.has(k)) continue
+                seenGap.add(k)
+                gaps.push({ ...row, program: pid })
+                added++
+              }
+              // Stop once this dimension supplies a full runnable batch; only page
+              // through exhausted/inapplicable prefixes, not the whole inventory.
+              const runnable = compileCampaignPlan({ campaign, gaps: rows.map(row => ({ ...row, program: row.program || row.program_id || program })), strategies })
+              const cap = Math.max(1, Number(campaign.policy?.derive_cap_per_tick) || 5)
+              if (runnable.drafts.length >= cap) break
+              const total = r?.data?.total ?? r?.total
+              if (!added || rows.length < 200 || (Number.isSafeInteger(total) && offset + rows.length >= total)) break
+            }
+          } catch { /* 降级：该 program/dim 无缺口 */ }
+        }
+      }
+    }
     // 43 号补丁：学习矩阵接线（此前 scores 恒为 {}，know_scores/经验卡胜负对规划器零影响）。
     // 键形 stack|generic|cls；消费侧对精确键/泛化键/null 做逐级回退；任何异常 fail-open 空表。
     const scores = {}
