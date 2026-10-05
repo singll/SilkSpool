@@ -1719,15 +1719,29 @@ function makeHandlers(opts) {
     const candidates = []
     for (const programId of campaign.program_ids) {
       try {
-        const r = queryRef ? await queryRef('vuln', 'candidates', { program_id: programId, claim_state: 'available', limit: 30, sort: 'severity', dir: 'desc' }, { actor: 'reactor' }) : null
-        const rows = r ? ((r.data && Array.isArray(r.data.rows)) ? r.data.rows : (Array.isArray(r.rows) ? r.rows : [])) : []
-        for (const row of rows) {
-          // 无归属候选不能猜成第一个项目；分页在项目过滤之后，避免其他项目占满窗口。
-          if (String(row.program_id || '') !== programId) continue
-          let host = String(row.host || '')
-          if (!host && row.url) { try { host = new URL(String(row.url)).hostname } catch { host = '' } }
-          if (!host) continue
-          candidates.push({ id: Number(row.id), host, severity: String(row.severity || ''), title: String(row.title || ''), vuln_type: row.vuln_type || '', program_id: programId })
+        const seenCandidates = new Set()
+        const programCandidates = []
+        for (let offset = 0; ; offset += 30) {
+          const r = queryRef ? await queryRef('vuln', 'candidates', { program_id: programId, claim_state: 'available', limit: 30, offset, sort: 'severity', dir: 'desc' }, { actor: 'reactor' }) : null
+          const rows = r ? ((r.data && Array.isArray(r.data.rows)) ? r.data.rows : (Array.isArray(r.rows) ? r.rows : [])) : []
+          let fresh = 0
+          for (const row of rows) {
+            if (seenCandidates.has(row.id)) continue
+            seenCandidates.add(row.id)
+            fresh++
+            // Project filtering precedes pagination; never infer missing ownership.
+            if (String(row.program_id || '') !== programId) continue
+            let host = String(row.host || '')
+            if (!host && row.url) { try { host = new URL(String(row.url)).hostname } catch { host = '' } }
+            if (!host) continue
+            const candidate = { id: Number(row.id), host, severity: String(row.severity || ''), title: String(row.title || ''), vuln_type: row.vuln_type || '', program_id: programId }
+            candidates.push(candidate)
+            programCandidates.push(candidate)
+          }
+          const runnable = compileCampaignPlan({ campaign, candidates: programCandidates, strategies, scores })
+          const cap = Math.max(1, Number(campaign.policy?.derive_cap_per_tick) || 5)
+          const total = r?.data?.total ?? r?.total
+          if (runnable.drafts.length >= cap || !fresh || rows.length < 30 || (Number.isSafeInteger(total) && offset + rows.length >= total)) break
         }
       } catch { /* 单个项目候选池不可达不影响其余项目 */ }
     }

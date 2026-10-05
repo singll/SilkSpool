@@ -2833,3 +2833,26 @@ test('27 C04: 前200个已尝试缺口不阻断第201项进入专项计划', asy
   assert.ok(result.data.drafts.some(d=>d.strategy_key===rows[200].strategy_key))
   assert.ok(calls.some(a=>a.dim==='crawl' && a.offset===200))
 })
+
+
+test('27 C04: 候选前30项已尝试时补页，第31项保留项目和真实主机', async () => {
+  const calls=[]
+  const rows=Array.from({length:31},(_,i)=>({id:i+1,program_id:'test-src',host:'a.example.com',severity:'high',title:'IDOR',vuln_type:'idor'}))
+  const {bus}=makeEnv({query:async(d,n,a)=>{
+    if(d==='vuln' && n==='candidates') {
+      calls.push(a)
+      return {ok:true,rows:rows.slice(a.offset||0,(a.offset||0)+a.limit),total:rows.length}
+    }
+    return {ok:true,rows:[],total:0}
+  }})
+  const c=await bus.dispatch('task','campaign_create',{name:'candidate-pages',program_ids:['test-src'],autonomy:1,goal_spec:{stop_conditions:['done']}},{actor:'model'})
+  assert.equal(c.ok,true,JSON.stringify(c.error))
+  for(const row of rows.slice(0,30)) bus._internal.db().prepare('INSERT INTO strategy_dedupe(strategy_key,program_id,first_seen,last_seen,fails,blacklisted) VALUES(?,?,?,?,0,0)').run('verify|'+row.id,'test-src',1,1)
+  const result=await bus.query('task','campaign_pending_drafts',{id:c.data.campaign_id},{actor:'model'})
+  assert.equal(result.ok,true,JSON.stringify(result.error))
+  const draft=result.data.drafts.find(d=>d.finding_id===31)
+  assert.ok(draft)
+  assert.equal(draft.program_id,'test-src')
+  assert.equal(draft.target_host,'a.example.com')
+  assert.ok(calls.some(a=>a.offset===30 && a.claim_state==='available'))
+})
