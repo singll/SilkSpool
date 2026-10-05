@@ -1182,3 +1182,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-05 L06采用投影增量（本地待发布）：共用recordAdoption在落账后重算单对象投影，覆盖人工exp/kb/revision及reactor事件回流。仅采用更新adoptions，不增加技术正例/可靠阴性/收益分；重复事件可修复缺失投影而不重复计数。
 
 2026-10-05 L06 episode重放增量（本地待发布）：命中数据库source/biz去重时，从既有episode原件重算其卡片投影；不从冲突重放载荷取卡片/费用，不新增episode或事件。仍在总线幂等缓存内的请求不会运行handler，缺失投影可通过scores_rebuild修复。
+
+2026-10-05 L03类型隔离增量（本地待发布）：rebuildArtifactScore匹配episode时同时核对知识类型和ID，采用与曝光本已按双键计数。防止同号kb_doc继承exp_card经历/成本；历史episode尚无显式artifact_kind，仍沿既有VC-/doc:/pb:/数字解析规则，不等于旧来源或版本已经可信。

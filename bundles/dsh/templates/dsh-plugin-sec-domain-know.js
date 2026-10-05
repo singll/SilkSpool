@@ -1151,6 +1151,7 @@ function makeHandlers(opts) {
     const exp = repo.exposureCount(artifactKind, artifactId)
     const adoptions = repo.adoptionCount(artifactKind, artifactId)
     const eps = repo.episodeAggByCard().filter((r) => String(r.card_id) === String(artifactId)
+      && (r.card_kind || inferKindOf(r.card_id)) === artifactKind
       && r.source_event_name !== 'vuln.signal.submitted'
       && !String(r.reason_code || '').startsWith('vendor_')
       && r.source_credibility !== 'vendor-confirmed')

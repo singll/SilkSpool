@@ -1429,6 +1429,10 @@ previousRelease旧查询选择所有非active发布：撤回v2恢复v1后，再�
 
 episode重复路径原先直接返回，不能修复已有事实的缺失投影。现source/biz去重命中后读取原episode，再重算其对象；重放请求的冲突card_id/费用不参与归因。新增回归删除派生投影及幂等缓存，重放时将card_id改为另一卡、request_count从2改99；修正后原卡inconclusive1/request2恢复，另一卡无投影、episode仍1条。know93/93通过；红绿日志受限wp07-adopt。总线幂等缓存命中不执行handler，其修复仍可用scores_rebuild；跨知识类型ID、可信attempt和修正supersedes语义尚待补齐，未部署、不关WP07。
 
+### 15.55 L03评分类型隔离（2026-10-05，本地完成，待发布）
+
+评分按artifact_kind/id存储，但episode筛选只比card_id，导致同号文献采用后继承经验的episode和费用。真实两表自增同ID回归复现；修正为类型与ID同时匹配。文献自身采用1但episode/request/token为0，经验inconclusive1/request7/token19，全量scores_rebuild后仍一致。know94/94、全域704/704通过；证据wp07-adopt。旧episode没有显式artifact_kind仍沿既有ID前缀推断，doc:/pb:规范化及真实引用/版本/可信attempt仍待补，不能用该隔离修复宣称已完成真实归因。未部署生产。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

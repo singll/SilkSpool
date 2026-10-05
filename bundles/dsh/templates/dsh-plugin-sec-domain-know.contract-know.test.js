@@ -2161,3 +2161,29 @@ test('L06: episode表级重放用原记录恢复投影，不采信冲突载荷�
   assert.equal(db.prepare('SELECT COUNT(*) n FROM know_scores WHERE artifact_id=?').get('VC-REPLAY-WRONG').n, 0)
   assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n, 1)
 })
+
+
+test('L03: 同号文献采用不得继承经验episode与成本，重算仍按类型隔离', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const exp = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
+  const kb = await bus.dispatch('know', 'kb_import', { title: '同号隔离文献', url: 'https://example.com/type-isolation', body: '这是一段用于验证知识类型归因隔离的技术文献正文，包含完整的适用条件说明。' }, { actor: 'model' })
+  assert.equal(exp.ok, true); assert.equal(kb.ok, true)
+  assert.equal(exp.data.id, kb.data.doc_id, '真实两表自增ID重合')
+  const ep = await bus.dispatch('know', 'episode_record', { ...EP_ARGS, card_id: String(exp.data.id), request_count: 7, token_count: 19 }, { actor: 'reactor' })
+  assert.equal(ep.ok, true)
+  const adopted = await bus.dispatch('know', 'adopt', { target: 'kb', payload: { doc_id: kb.data.doc_id }, evidence: '同号文献采用证据充分且独立于经验' }, { actor: 'dashboard' })
+  assert.equal(adopted.ok, true)
+  for (let i = 0; i < 2; i++) {
+    const doc = db.prepare('SELECT * FROM know_scores WHERE artifact_kind=? AND artifact_id=?').get('kb_doc', String(kb.data.doc_id))
+    const card = db.prepare('SELECT * FROM know_scores WHERE artifact_kind=? AND artifact_id=?').get('exp_card', String(exp.data.id))
+    assert.equal(doc.adoptions, 1)
+    assert.equal(doc.inconclusives, 0)
+    assert.equal(doc.cost_requests, 0)
+    assert.equal(doc.cost_tokens, 0)
+    assert.equal(card.inconclusives, 1)
+    assert.equal(card.cost_requests, 7)
+    assert.equal(card.cost_tokens, 19)
+    assert.equal((await bus.dispatch('know', 'scores_rebuild', {}, { actor: 'system' })).ok, true)
+  }
+})
