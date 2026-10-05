@@ -34,3 +34,9 @@ test('candidate count is forwarded only when observed', () => {
   assert.equal(value.knowledgeHealth.exp_cards.candidate,2)
   assert.equal(projectKnowledgeStatus(null,null,null).tables.exp_cards.candidate,null)
 })
+
+
+test('fact revalidation forwards observed count and keeps absent source unknown', () => {
+  for (const n of [0,3]) assert.equal(projectKnowledgeStatus({ok:true,data:{total:4,revalidate_overdue:n}},null,null).knowledgeHealth.facts.revalidate_overdue,n)
+  assert.equal(projectKnowledgeStatus({ok:false},null,null).knowledgeHealth.facts.revalidate_overdue,null)
+})

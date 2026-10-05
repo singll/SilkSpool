@@ -320,3 +320,20 @@ test('alias: blackboard_set → fact_bb_publish（static 别名直通）', async
   const audit = readAudit(dir)
   assert.ok(audit.find((a) => a.kind === 'deprecated_use' && a.alias === 'blackboard_set'))
 })
+
+
+test('L23: 事实复验逾期只计durable active且已过期的记录', async () => {
+  const { bus } = makeEnv()
+  const empty = await bus.query('fact','stats',{}, {actor:'dashboard'})
+  assert.equal(empty.data.revalidate_overdue,0)
+  const db=bus._internal.db(), now=Date.now()
+  const rows=[['durable','active',now-10000],['durable','cooling',now-10000],['ephemeral','active',now-10000],['durable','active',now+10000],['durable','active',null]]
+  for (let i=0;i<rows.length;i++) {
+    const r=await bus.dispatch('fact','upsert',{program_id:'p',fact_key:'host/health-'+i,summary:'health fixture'}, {actor:'model'})
+    assert.equal(r.ok,true)
+    db.prepare('UPDATE facts SET mem_class=?,status=?,revalidate_by=? WHERE program_id=? AND fact_key=?').run(...rows[i],'p','host/health-'+i)
+  }
+  const stats=await bus.query('fact','stats',{}, {actor:'dashboard'})
+  assert.equal(stats.data.total,5)
+  assert.equal(stats.data.revalidate_overdue,1)
+})

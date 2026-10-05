@@ -237,6 +237,7 @@ function createRepo(db) {
         total: db.prepare('SELECT COUNT(*) AS n FROM facts').get().n,
         by_category: byCategory, by_confidence: byConfidence, by_mem_class: byMemClass, by_status: byStatus,
         pinned, edges, with_edges: withEdges,
+        revalidate_overdue: db.prepare("SELECT COUNT(*) AS n FROM facts WHERE mem_class='durable' AND status='active' AND revalidate_by IS NOT NULL AND revalidate_by < ?").get(Date.now()).n,
       }
     },
 

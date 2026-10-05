@@ -712,3 +712,5 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 | 独立升级 | 支持单域替换；须与 fgs/task 联合回归。 |
 
 > 2026-09-26 42 号补丁回填（fact_search 分页落 SQL）：`fact_search` 的 limit/offset 落到 SQL（旧实现固定拉 5000 行、offset 被丢弃）；`total` 走独立 `countFactsWhere`（同 where）；处理器标记 `meta.paged=true`；新增 `idx_facts_category_updated(category, updated_at DESC)`。契约 fact 23/23 全绿；部署验收待执行。
+
+2026-10-05健康统计增量（本地待发布）：fact_stats增加revalidate_overdue，按mem_class=durable、status=active、revalidate_by非空且小于查询时刻计数，和现有治理到期条件一致。memcore透传该真实计数，缺源仍null；cooling数量另列，不与待治理逾期重复。

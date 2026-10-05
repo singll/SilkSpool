@@ -425,7 +425,7 @@ export function projectKnowledgeStatus(fsStats, ov, kh) {
   return { tables, knowledgeHealth: {
     kb_docs: { total: count(k.total), zero_use: count(k.zero_use), cooling: count(k.cooling), expiring_30d: count(k.expiring_30d), zero_use_ratio: typeof k.zero_use_ratio === 'number' && Number.isFinite(k.zero_use_ratio) && k.zero_use_ratio >= 0 && k.zero_use_ratio <= 1 ? k.zero_use_ratio : null },
     exp_cards: { total: count(e.total), zero_use: count(e.zero_use_30d), candidate: count(e.candidate), cooling: count(e.cooling) },
-    facts: { total: count(fact?.total), cooling, revalidate_overdue: null },
+    facts: { total: count(fact?.total), cooling, revalidate_overdue: count(fact?.revalidate_overdue) },
     playbooks: { total: null, cooling: null },
     fgs: { nodes: null, persisted_facts: count(overview?.fgs_persisted) },
   } }

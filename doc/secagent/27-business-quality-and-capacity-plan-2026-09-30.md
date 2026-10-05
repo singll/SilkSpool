@@ -1453,6 +1453,10 @@ zero_use_30d原SQL仅判断uses=0，未检查时间，可能把新卡当长期�
 
 know_health.active原用总数减cooling/deprecated，candidate/archived/未知状态误算现役。改SQL按active/candidate精确计数，candidate透传memcore。真实6种状态夹具验证总6/active1/candidate1/cooling1/deprecated1，未知旧状态不推算现役；know98/98、汇总视图14项、完整跨域708/708通过，受限wp11-l23保存证据。07契约同步，未生产部署，完整方案仍继续。
 
+### 15.61 L23事实复验逾期统计接线（2026-10-05，本地完成，待发布）
+
+fact_stats新增durable/active且revalidate_by已过期的真实计数，memcore→知识视图透传，缺源未知。与现有memcore治理条件一致，cooling/ephemeral/未来/无期限不混入；5条正式upsert后设定时效夹具验证总5/逾期1，空库0。fact24/24、汇总视图15项通过，受限wp11-l23保存红绿日志，06事实契约更新。未部署生产，其余L23/全案任务继续。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
