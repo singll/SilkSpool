@@ -1233,3 +1233,14 @@ B新增本地批次路线租约原语，绑定Program/batch/identity/Scope摘要
 独立出口配置生成器增加固定匿名HTTP上游模式：仅公网数字IP、无凭据，不建fallback/轮换组，精确目标规则只走绑定上游。配置4项与现役Mihomo语法通过。**真实回环失败夹具发现发布阻塞：一次curl在上游持续502时产生10次CONNECT调用，客户端最终超时；直连目标连接0。** 因此不能以固定配置或无DIRECT兜底宣称无内部重试，候选不部署。下一步须选用可控制并计量尝试的执行层或找到经验证的禁重试机制，再进行B生产验收。
 
 证据目录`out/secagent-audits/20261005-wp04-ab/`私有封存含前检、三条HTTP原件、回环重试计数及19项测试日志。本批无生产写入，无需prepare-change；Campaign暂停策略不变。A下一步从扣子/Trae选择真实匿名交互，先审核页面依赖域名Scope与S级要求再有界浏览器采集，不自动跟随页面外链。B继续解决内部重试和执行器接入，长期代理池仍需健康观测、会话固定与目标退避；不以轮换规避限流/封禁。WP04、费用最终边界及全方案未关账。
+
+
+### 15.26 B单次CONNECT核心与A依赖边界（2026-10-05，未部署）
+
+B新增`dsh-pilot-connect.py`单客户端转发函数：精确目标CONNECT、固定数字IPv4上游一次连接，不解密TLS、不解析域名、不重试或直连，不透传客户端代理凭据。默认15秒总截止时间、16KiB头上限、双向总字节上限，支持半关闭。审计intent失败不拨号，终态记录尝试与转发字节；调用方仍须提供Scope/租约、受限监听和持久审计sink，当前未接生产。上游内部尝试unknown，字节数不是HTTP请求计数。
+
+5项socket回归通过：502一次、错误目标零连接、审计失败零连接、透明转发/半关闭、超限拒绝；真实TLS两场景通过：正确域名302不跟随、错误域名curl60且目标HTTP不增加，每场景一次CONNECT。首次TLS暴露对端关闭后的shutdown ENOTCONN误报，已仅忽略ENOTCONN/EPIPE并重跑；报告封存曾先于线程终态，现等待线程结束并验证两条终态后封存。证据`out/secagent-audits/20261005-wp04-single-connect/`。代码`fe2d334`先推送，文档随后补齐。
+
+A只读分析两个首页及现役Scope/资产：Trae主JS/CSS域名越Scope；扣子主CDN在Scope内但C级，另有越界安全SDK。两页均JS壳，无直接确认的匿名交互。现役browser guard仅全局Scope/active，不强制本批Program/S级；capture只筛同origin录入，不能代替依赖拦截。因此本批未启动浏览器、未扩大Scope或提级，下一步筛选S级同源匿名API/SSR入口，扣子保留精确资源策略评估。证据`out/secagent-audits/20261005-wp04-anonymous-dependencies/`。
+
+本批目标请求0、模板新增0、生产写入0，无prepare-change；A/B方向与Campaign暂停策略不变。B下一步集成租约、持久审计与受限监听后部署验收，不将本地核心称作可用生产网关。WP04/费用最终证明及全方案未关账。

@@ -510,3 +510,8 @@ systemctlIsActive(unit) / systemctlStartNoBlock(unit)   // 系统调用封装
 `dsh-pilot-proxy-lease.py`提供最多900秒Program/批次/身份/Scope绑定，原路线及池快照每次重验；只返回数据，不持久化、不提供跨进程容量租约。403/429暂停目标，407/TLS/网络错误独立分类，无自动重试/替换或永久拉黑。9项测试通过。
 
 `dsh-pilot-egress.py --upstream-proxy`支持固定公网IPv4匿名HTTP节点，规则无DIRECT兜底、无轮换组；凭据/域名/非HTTP拒绝，4项配置测试通过。现役Mihomo回环实测一次客户端调用在上游502时产生10次CONNECT，**内部重试仍在，禁止将该候选上线为有界执行入口**。不因配置固定就宣布出口计量完成；详见27号§15.25。长期池化方向已确定，直连仅本批对照。
+
+
+### 单次CONNECT核心（2026-10-05，未部署）
+
+`dsh-pilot-connect.py`提供精确目标、固定上游、零重试/直连的转发函数，TLS不解密；头/时间/双向字节有界，审计intent成功才拨号。5项socket与2项TLS场景通过，502仅一次CONNECT。调用方仍须集成Scope/租约、受限监听和持久审计；不证明上游内部无重试、不将字节计为请求数。详见27号§15.26。
