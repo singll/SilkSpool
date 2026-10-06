@@ -166,6 +166,8 @@ function createRepo(db) {
   )`)
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_adoption_event ON know_adoptions(source_event_id) WHERE source_event_id IS NOT NULL`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_adoption_artifact ON know_adoptions(artifact_kind, artifact_id, created_at)`)
+  // These are source references, not proof of a bound task/attempt or allocated cost.
+  for (const col of ['source_run_id', 'session_id', 'asset']) ensureCol(db, 'know_adoptions', col, `${col} TEXT`)
   // know_feedback：原生反馈桥落账（DSH canonical Session 反馈 → 本地事实行；feedback id + revision 幂等；
   // 编辑=新 revision 行覆盖有效投影，撤回=tombstone 行撤销派生分数；模型自评不从此表进已验证正例）。
   db.exec(`CREATE TABLE IF NOT EXISTS know_feedback (
@@ -681,11 +683,13 @@ function createRepo(db) {
       try {
         db.prepare(`INSERT INTO know_adoptions (
             adoption_id, artifact_kind, artifact_id, revision_id, card_version,
-            source_event_id, source_cmd, program_id, actor, outcome, note, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            source_event_id, source_cmd, program_id, actor, outcome, note, created_at,
+            source_run_id, session_id, asset
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .run(row.adoption_id, row.artifact_kind, row.artifact_id, row.revision_id ?? null,
             row.card_version ?? null, row.source_event_id ?? null, row.source_cmd ?? null,
-            row.program_id ?? null, row.actor ?? null, row.outcome ?? null, row.note ?? null, row.created_at)
+            row.program_id ?? null, row.actor ?? null, row.outcome ?? null, row.note ?? null, row.created_at,
+            row.source_run_id ?? null, row.session_id ?? null, row.asset ?? null)
         return { created: true }
       } catch (e) {
         if (/UNIQUE/i.test(String(e?.message))) return { created: false, duplicate: 'source' }
@@ -695,6 +699,9 @@ function createRepo(db) {
     adoptionCount(artifactKind, artifactId) {
       return db.prepare('SELECT COUNT(*) AS c FROM know_adoptions WHERE artifact_kind=? AND artifact_id=?')
         .get(String(artifactKind), String(artifactId)).c
+    },
+    adoptionBySource(eventId) {
+      return db.prepare('SELECT * FROM know_adoptions WHERE source_event_id=?').get(String(eventId)) || null
     },
     adoptionArtifacts() {
       return db.prepare('SELECT DISTINCT artifact_kind, artifact_id FROM know_adoptions').all()

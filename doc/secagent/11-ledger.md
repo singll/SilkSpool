@@ -615,3 +615,5 @@ hasHandoff(program, date) → boolean
 - **常量与输出**：`LEDGER_MAX_ASSET_ROWS=200000` / `LEDGER_MAX_ENDPOINT_ROWS=50000` / `LEDGER_MAX_FINDING_ROWS=20000` / `LEDGER_MAX_GAPS_PER_DIM=20000`；输出新增 `truncated` 标记（metrics 按面、gaps 按维 `{dims:[...]}`、blindspot 布尔）。
 
 2026-10-06 coverage_gaps.offset与专项补页已合批部署，真实ledger分页及task总线回归纳入发布验收；排序后切页、total不变。2万窗口之外和并发增删快照一致性未在本批宣称完成，见27号§15.67/§15.73。
+
+2026-10-06 L03增量（本地待发布）：log_card_usage保留可选artifact_kind，事件携带原run_id和asset，供know校验真实版本并追溯来源；文件记录仍保留无法归因的历史使用，自报使用不等于技术结果。

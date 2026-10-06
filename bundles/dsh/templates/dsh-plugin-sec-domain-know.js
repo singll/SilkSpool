@@ -633,10 +633,12 @@ export const KNOW_MANIFEST = {
         artifact_kind: en(REVISION_ARTIFACT_KINDS),
         artifact_id: str({ minLength: 1, maxLength: 128 }),
         revision_id: str({ maxLength: 64 }),
-        card_version: str({ maxLength: 64 }),
+        card_version: str({ maxLength: 80 }),
         source_event_id: str({ maxLength: 128 }),
         source_cmd: str({ maxLength: 64 }),
         program_id: str({ maxLength: 128 }),
+        source_run_id: str({ maxLength: 128 }),
+        asset: str({ maxLength: 2048 }),
         outcome: str({ maxLength: 32 }),
         note: str({ maxLength: 200 }),
       }, ['artifact_kind', 'artifact_id']),
@@ -1140,6 +1142,7 @@ function makeHandlers(opts) {
       revision_id: opts.revision_id || null, card_version: opts.card_version != null ? String(opts.card_version) : null,
       source_event_id: key, source_cmd: opts.source_cmd || null, program_id: opts.program_id || null,
       actor: opts.actor || null, outcome: opts.outcome || null, note: opts.note ? String(opts.note).slice(0, 200) : null,
+      source_run_id: opts.source_run_id || null, session_id: opts.session_id || null, asset: opts.asset || null,
       created_at: now,
     })
     // 所有采用入口同步更新投影；重复事件也可修复先前缺失的投影。
@@ -2220,12 +2223,47 @@ function makeHandlers(opts) {
 
     // C28b（L5）：采用事实落账（reactor 专用；source_event_id 幂等）。
     know_adoption_record: async (args, repo, ctx) => {
+      // Raw ledger history stays available even when it cannot identify a real
+      // knowledge version. Such a claim is not an adoption or a method result.
+      if (args.source_event_id && repo.adoptionBySource(args.source_event_id)) {
+        const stored = repo.adoptionBySource(args.source_event_id)
+        rebuildArtifactScore(repo, stored.artifact_kind, stored.artifact_id)
+        return { data: { recorded: false, duplicate: 'source' } }
+      }
+      const skip = reason => ({ data: { recorded: false, skipped: true, reason } })
+      if (!['applied', 'deviated', 'adopted'].includes(args.outcome)) return skip('not_adopted')
+      const version = String(args.revision_id || args.card_version || '')
+      const revision = version.startsWith('rev_') ? repo.getRevision(version)
+        : /^sha256:[0-9a-f]{64}$/.test(version)
+          ? repo.getRevisionByArtifactDigest(args.artifact_kind, args.artifact_id, version) : null
+      let revisionId = null, digest = null
+      if (revision) {
+        if (revision.artifact_kind !== args.artifact_kind || revision.artifact_id !== args.artifact_id) return skip('artifact_mismatch')
+        if (revision.status !== 'published' || revision.needs_revalidate
+          || (revision.source_kind === 'episode' && repo.getEpisodeCorrection(revision.source_ref))) return skip('version_unavailable')
+        const programRelease = args.program_id ? repo.activeRelease(args.artifact_kind, args.artifact_id, 'program', args.program_id) : null
+        const release = programRelease || repo.activeRelease(args.artifact_kind, args.artifact_id, 'global', '')
+        if (!release || release.revision_id !== revision.revision_id || release.content_digest !== revision.content_digest) return skip('release_scope_mismatch')
+        revisionId = revision.revision_id
+        digest = revision.content_digest
+      } else if (args.source_cmd === 'ledger.card_usage.logged' || version.startsWith('rev_')) {
+        return skip('immutable_version_unresolved')
+      } else {
+        // Direct internal adoption of legacy assets must still resolve a real object.
+        const numericId = Number(args.artifact_id)
+        const legacy = Number.isSafeInteger(numericId) && numericId > 0
+          ? args.artifact_kind === 'exp_card' ? repo.getExpCard(numericId)
+            : args.artifact_kind === 'kb_doc' ? repo.getKbDoc(numericId) : null
+          : null
+        if (!legacy || ['archived', 'deprecated'].includes(legacy.status)) return skip('artifact_unresolved')
+      }
       const r = recordAdoption(repo, {
         artifact_kind: args.artifact_kind, artifact_id: args.artifact_id,
-        revision_id: args.revision_id || null, card_version: args.card_version ?? null,
+        revision_id: revisionId, card_version: digest,
         source_event_id: args.source_event_id || null, source_cmd: args.source_cmd || null,
         program_id: args.program_id || null, actor: (ctx && ctx.actor) || null,
         outcome: args.outcome || null, note: args.note || null,
+        source_run_id: args.source_run_id || null, session_id: ctx?.session_id || null, asset: args.asset || null,
       })
       if (!r.created) return { data: { recorded: false, duplicate: r.duplicate, score_rebuilt: r.score_rebuilt } }
       return { data: { recorded: true, adoption_id: r.adoption_id, score_rebuilt: r.score_rebuilt }, events: [], after: null }
@@ -3253,7 +3291,7 @@ function makeHandlers(opts) {
       const p = envelope?.payload || {}
       if (!p.card_id) return { ok: true, data: { skipped: true, reason: '载荷缺 card_id' } }
       if (!dispatchRef) return { ok: false, error: { code: 'E_BACKEND_UNAVAILABLE', message: 'no dispatch ref' } }
-      const kind = inferKindOf(p.card_id)
+      const kind = p.artifact_kind || inferKindOf(p.card_id)
       // 域内命令落采用事实（reactor 通道；source_event_id 幂等——事件重复投递零重复）
       let r
       try {
@@ -3262,6 +3300,7 @@ function makeHandlers(opts) {
           card_version: p.card_version != null ? String(p.card_version) : undefined,
           source_event_id: envelope.id, source_cmd: 'ledger.card_usage.logged',
           program_id: p.program || undefined, outcome: p.outcome || undefined,
+          source_run_id: p.run_id || undefined, asset: p.asset || undefined,
           note: p.deviation ? String(p.deviation).slice(0, 200) : undefined,
         }, { actor: 'reactor', session_id: envelope.session_id || null, cause: envelope })
       } catch (e) {

@@ -1605,6 +1605,14 @@ eval固定首次入池cohort，候选晋升后分母不变、直接信号不混�
 
 读取解析器排除来源待复验或已更正的版本；人工审查仍能读待复验版本但executable=false。新提案不能引用已更正episode；常规release_revoke回退跳过待复验、流程不合格或摘要不一致旧版。102/102初回归通过，真实SQLite撤回拒写验证整次更正原子回滚。追加红例发现know_adopt旧成功缓存可绕过来源失效；现每次先校验来源/发布，采用事实按稳定业务键去重。最终全域740/740通过（62.40秒）。证据source-correction-{red,green}.log、source-adoption-{red,green-fixed}.log及source-correction-final-preflight/。本批只处理know经历更正的来源依赖；vuln技术反证事件到经历更正接线、生产旧弱来源回填及所有知识读取适配器仍待继续，不据此关闭WP07。
 
+### 15.86 L03真实版本采用与ledger来源引用（2026-10-06，本地验收待发布）
+
+真实红例：ledger使用事件的run_arjun被推断为exp_card并落采用；只有字符串版本的跨项目卡也可记采用。现使用回流须解析现役published revision、artifact_kind/id、内容digest和Program/global发布；无版本、工具名、对象不存在、跨域、失效版本以及blocked/na均不记采用。原ledger使用经历保留；旧模糊版本暂不可归因，不猜写当前版本。直接内部legacy采用也须真实对象存在且可用；原始采用重放按source_event_id去重并从已存事实重建投影。
+
+另已复现ledger文件有run_id但事件丢失，现事件保留run/asset及可选artifact_kind；know_adoptions幂等补source_run_id/session_id/asset三列，session取事件信封。字段只是来源引用，不冒充已校验的task/attempt或费用归属。合法采用写入真实revision_id及完整sha256摘要（字段上限80，保留sha256:前缀）。旧测试中假卡改为正式exp_store创建；跨Program样例改为匹配发布范围。原假卡样例不再作为成功基准。
+
+证据attribution-red.log、attribution-ledger-red.log、attribution-final-preflight/；真实ledger→总线→know拒写恢复135/135通过，固定最终源码全域742/742通过（138.90秒），三列旧schema迁移保留旧行、未知字段null及完整性通过。初741测试虽通过，预检因期间新增测试文件拒签，保留失败记录，不据此宣称最终门禁通过。当前不处理family缺上下文、旧文件基线版本化、模型计划实际采用与多卡成本分摊；L03整体尚未完成，生产未部署本批。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

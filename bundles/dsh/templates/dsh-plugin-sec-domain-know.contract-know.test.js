@@ -12,6 +12,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildKnowDomain, KNOW_MANIFEST } from '../index.js'
+import { buildLedgerDomain } from '../../sec-domain-ledger/index.js'
 import { buildFactDomain } from '../../sec-domain-fact/index.js'
 import { DatabaseSync } from 'node:sqlite'
 import { createKnowSqliteBackend } from '../../sec-backend-know-sqlite/index.js'
@@ -1632,7 +1633,7 @@ test('L5: 采用事实两条通道——know_adopt(revision) 落账 + ledger.car
   const now = Date.now()
   fs.appendFileSync(path.join(eventsDir, 'ledger.jsonl'), JSON.stringify({
     id: 'evt_l5_cu_001', domain: 'ledger', name: 'ledger.card_usage.logged', ts: now, actor: 'model', session_id: 'sess_cu',
-    payload: { program: 'test-src', card_id: 'VC-AUTHZ-A01', card_version: pub.revision_id, outcome: 'applied' },
+    payload: { program: 'example-src', card_id: 'VC-AUTHZ-A01', card_version: pub.revision_id, outcome: 'applied' },
   }) + '\n')
   const rp = await bus.dispatch('bus', 'replay', { since: now - 1000, limit: 1000 }, { actor: 'system' })
   assert.equal(rp.ok, true, rp.error?.message)
@@ -1646,21 +1647,103 @@ test('L5: 采用事实两条通道——know_adopt(revision) 落账 + ledger.car
     '采用与重复回放都刷新投影，计数不加倍')
 })
 
+test('L03: ledger use cannot attribute tools, absent cards, wrong versions or foreign releases as knowledge', async () => {
+  const { bus, domain } = makeEnv()
+  const pub = await publishedOne(bus, 'VC-ATTRIBUTION-REAL', 'example-src')
+  const db = bus._internal.db()
+  const base = { program: 'example-src', card_id: 'VC-ATTRIBUTION-REAL', card_version: pub.revision_id, outcome: 'applied' }
+  const invalid = [
+    { card_id: 'run_arjun' }, { card_id: '999999' }, { card_id: 'VC-NOT-EXIST' },
+    { card_version: 'rev_missing' }, { card_version: '1' }, { program: 'foreign-src' },
+    { outcome: 'blocked' }, { outcome: 'na' }, { artifact_kind: 'exp_card' },
+  ]
+  for (const [i, payload] of invalid.entries()) {
+    const result = await domain.handlers.subscribers.onCardUsageLogged({
+      id: `invalid-usage-${i}`, name: 'ledger.card_usage.logged', actor: 'model', ts: Date.now(),
+      payload: { ...base, ...payload },
+    })
+    assert.equal(result.ok, true, JSON.stringify(result.error))
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM know_adoptions').get().n, 0, JSON.stringify(payload))
+  }
+  const valid = { id: 'valid-usage', name: 'ledger.card_usage.logged', actor: 'model', session_id: 'usage-session', ts: Date.now(),
+    payload: { ...base, run_id: 'actual-source-run', asset: 'api.example.com/object' } }
+  const result = await domain.handlers.subscribers.onCardUsageLogged(valid)
+  assert.equal(result.ok, true, JSON.stringify(result.error))
+  const row = db.prepare('SELECT * FROM know_adoptions').get()
+  assert.equal(row.artifact_kind, 'vulncard')
+  assert.equal(row.artifact_id, base.card_id)
+  assert.equal(row.revision_id, pub.revision_id)
+  assert.equal(row.card_version, pub.content_digest)
+  assert.equal(row.program_id, 'example-src')
+  assert.equal(row.source_run_id, 'actual-source-run')
+  assert.equal(row.session_id, 'usage-session')
+  assert.equal(row.asset, 'api.example.com/object')
+  db.prepare('DELETE FROM idempotency').run()
+  await domain.handlers.subscribers.onCardUsageLogged(valid)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM know_adoptions').get().n, 1)
+  const digestUse = await domain.handlers.subscribers.onCardUsageLogged({ ...valid, id: 'digest-usage',
+    payload: { ...valid.payload, card_version: pub.content_digest } })
+  assert.equal(digestUse.ok, true, JSON.stringify(digestUse.error))
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM know_adoptions').get().n, 2)
+  assert.equal(db.prepare("SELECT card_version FROM know_adoptions WHERE source_event_id='digest-usage'").get().card_version, pub.content_digest)
+})
+
+test('L03: real ledger events preserve invalid history and retry attributed writes without duplicating usage files', async () => {
+  const { bus, dataDir } = makeEnv()
+  assert.equal(bus.registry.register(buildLedgerDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) })).ok, true)
+  const pub = await publishedOne(bus, 'VC-LEDGER-REAL', 'test-src')
+  const db = bus._internal.db()
+  db.exec("CREATE TRIGGER fail_adoption BEFORE INSERT ON know_adoptions BEGIN SELECT RAISE(ABORT, 'adoption disk failure'); END")
+  for (const card_id of ['run_arjun', 'VC-LEDGER-REAL']) {
+    const result = await bus.dispatch('ledger', 'log_card_usage', {
+      program: 'test-src', card_id, card_version: pub.revision_id, asset: 'a.example.com',
+      outcome: 'applied', run_id: 'source-run-123',
+    }, { actor: 'model', session_id: 'ledger-source-session' })
+    assert.equal(result.ok, true, result.error?.message)
+  }
+  await bus._internal.dispatcherTick()
+  const uses = () => db.prepare("SELECT * FROM event_outbox WHERE name='ledger.card_usage.logged'").all()
+  const valid = () => uses().find(row => JSON.parse(row.payload).payload.card_id === 'VC-LEDGER-REAL')
+  const invalid = uses().find(row => JSON.parse(row.payload).payload.card_id === 'run_arjun')
+  assert.equal(invalid.status, 'delivered', 'unattributed raw use stays recorded but cannot affect scores')
+  assert.equal(valid().status, 'pending')
+  assert.match(valid().last_error, /adoption disk failure/)
+  const usageFile = fs.readdirSync(path.join(dataDir, 'pipeline', 'test-src')).find(name => name.startsWith('card_usage-'))
+  const original = fs.readFileSync(path.join(dataDir, 'pipeline', 'test-src', usageFile), 'utf8')
+  assert.equal(original.trim().split('\n').length, 2)
+  db.exec('DROP TRIGGER fail_adoption')
+  db.prepare('UPDATE event_outbox SET next_retry_at=0 WHERE event_id=?').run(valid().event_id)
+  await bus._internal.dispatcherTick()
+  assert.equal(valid().status, 'delivered')
+  const rows = db.prepare('SELECT * FROM know_adoptions').all()
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].revision_id, pub.revision_id)
+  assert.equal(rows[0].card_version, pub.content_digest)
+  assert.equal(rows[0].source_run_id, 'source-run-123')
+  assert.equal(rows[0].session_id, 'ledger-source-session')
+  assert.equal(fs.readFileSync(path.join(dataDir, 'pipeline', 'test-src', usageFile), 'utf8'), original)
+})
+
 test('L5: 计分可重算——episode/曝光/采用/反馈重放重建；撤回负反馈撤销派生分数；模型自评不计已验证正例', async () => {
   const { bus } = makeEnv()
   const db = bus._internal.db()
+  await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })
+  // A real legacy card backs this score fixture.
+  const stored = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
+  assert.equal(stored.ok, true, stored.error?.message)
+  const cardId = String(stored.data.id)
   // 曝光 2 条 + 采用 1 条
-  await bus.dispatch('know', 'exposure_record', { q: 'q1', artifact_kind: 'exp_card', artifact_id: '77', selected: true }, { actor: 'system', session_id: 'sess_s1' })
+  await bus.dispatch('know', 'exposure_record', { q: 'q1', artifact_kind: 'exp_card', artifact_id: cardId, selected: true }, { actor: 'system', session_id: 'sess_s1' })
   db.prepare('DELETE FROM idempotency').run()
-  await bus.dispatch('know', 'exposure_record', { q: 'q2', artifact_kind: 'exp_card', artifact_id: '77', selected: true }, { actor: 'system', session_id: 'sess_s1' })
-  await bus.dispatch('know', 'adoption_record', { artifact_kind: 'exp_card', artifact_id: '77', source_cmd: 'know_adopt', outcome: 'adopted' }, { actor: 'reactor' })
+  await bus.dispatch('know', 'exposure_record', { q: 'q2', artifact_kind: 'exp_card', artifact_id: cardId, selected: true }, { actor: 'system', session_id: 'sess_s1' })
+  await bus.dispatch('know', 'adoption_record', { artifact_kind: 'exp_card', artifact_id: cardId, source_cmd: 'know_adopt', outcome: 'adopted' }, { actor: 'reactor' })
   // 有效结果：独立核验 confirmed + valid_clean；模型自评 confirmed（model-proposed）单列
-  const ep1 = { ...EP_ARGS, source_event_id: 'evt_l5_s1', outcome: 'confirmed', source_credibility: 'independently-verified', card_id: '77', card_version: '1', exec_run_id: 'rl5s1test00000001' }
-  const ep2 = { ...EP_ARGS, source_event_id: 'evt_l5_s2', outcome: 'valid_clean', card_id: '77', card_version: '1', exec_run_id: 'rl5s2test00000001' }
-  const ep3 = { ...EP_ARGS, source_event_id: 'evt_l5_s3', outcome: 'confirmed', source_credibility: 'model-proposed', card_id: '77', card_version: '1', exec_run_id: 'rl5s3test00000001' }
+  const ep1 = { ...EP_ARGS, source_event_id: 'evt_l5_s1', outcome: 'confirmed', source_credibility: 'independently-verified', card_id: cardId, card_version: '1', exec_run_id: 'rl5s1test00000001' }
+  const ep2 = { ...EP_ARGS, source_event_id: 'evt_l5_s2', outcome: 'valid_clean', card_id: cardId, card_version: '1', exec_run_id: 'rl5s2test00000001' }
+  const ep3 = { ...EP_ARGS, source_event_id: 'evt_l5_s3', outcome: 'confirmed', source_credibility: 'model-proposed', card_id: cardId, card_version: '1', exec_run_id: 'rl5s3test00000001' }
   for (const ep of [ep1, ep2, ep3]) { const r = await bus.dispatch('know', 'episode_record', ep, { actor: 'reactor' }); assert.equal(r.ok, true, r.error?.message) }
   // episode 落账已触发单卡重算；核口径
-  let sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get('77')
+  let sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get(cardId)
   assert.ok(sc, 'episode 落账触发计分投影')
   assert.equal(sc.verified_positives, 1, '模型自评不计已验证正例')
   assert.equal(sc.inconclusives, 1, '自评保留为未验证经历')
@@ -1669,14 +1752,14 @@ test('L5: 计分可重算——episode/曝光/采用/反馈重放重建；撤回
   const fb1 = await bus.dispatch('know', 'feedback_ingest', { feedback_id: 'sess_s1:m1', revision: 1, session_id: 'sess_s1', message_id: 'm1', rating: 'negative', note: '方法误导' }, { actor: 'system', session_id: 'sess_s1' })
   assert.equal(fb1.ok, true, fb1.error?.message)
   assert.equal(fb1.data.recorded, true)
-  assert.equal(fb1.data.attribution.artifact_id, '77', '归因本会话最近曝光')
-  sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get('77')
+  assert.equal(fb1.data.attribution.artifact_id, cardId, '归因本会话最近曝光')
+  sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get(cardId)
   assert.equal(sc.feedback_neg, 1)
   const scoreWithNeg = sc.score
   // 撤回（tombstone）→ 重算撤销
   const fb2 = await bus.dispatch('know', 'feedback_ingest', { feedback_id: 'sess_s1:m1', revision: 2, session_id: 'sess_s1', message_id: 'm1', tombstone: true }, { actor: 'system', session_id: 'sess_s1' })
   assert.equal(fb2.ok, true)
-  sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get('77')
+  sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get(cardId)
   assert.equal(sc.feedback_neg, 0, '撤回撤销派生分数')
   assert.ok(sc.score > scoreWithNeg, '撤回后分数回升')
   // 全量重放重建幂等（不改历史行：episode/exposure/feedback 行数不变）
@@ -1685,7 +1768,7 @@ test('L5: 计分可重算——episode/曝光/采用/反馈重放重建；撤回
   assert.equal(rb.ok, true, rb.error?.message)
   const afterCounts = ['learning_episodes', 'know_exposures', 'know_feedback'].map((t) => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c)
   assert.deepEqual(afterCounts, beforeCounts, '重算不改历史行')
-  sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get('77')
+  sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get(cardId)
   assert.equal(sc.verified_positives, 1, '重放重建结果一致')
   assert.equal(sc.exposures, 2)
   assert.equal(sc.adoptions, 1)
@@ -1853,7 +1936,7 @@ test('L6: know_learning_trace 证据对照——episode→证据→revision→�
   // 候选 → 评测 → 发布（批准锚定 auth_ref）
   const pub = await publishedOne(bus, 'VC-AUTHZ-T01', 'example-src')
   // 采用 + 反馈
-  await bus.dispatch('know', 'adoption_record', { artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-T01', revision_id: pub.revision_id, source_cmd: 'know_adopt', outcome: 'adopted' }, { actor: 'reactor' })
+  await bus.dispatch('know', 'adoption_record', { artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-T01', revision_id: pub.revision_id, program_id: 'example-src', source_cmd: 'know_adopt', outcome: 'adopted' }, { actor: 'reactor' })
   await bus.dispatch('know', 'exposure_record', { q: 'q', artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-T01', selected: true }, { actor: 'system', session_id: 'sess_t01' })
   const fb = await bus.dispatch('know', 'feedback_ingest', { feedback_id: 'sess_t01:m1', revision: 1, session_id: 'sess_t01', message_id: 'm1', rating: 'positive', artifact_ref: { artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-T01' } }, { actor: 'system', session_id: 'sess_t01' })
   assert.equal(fb.ok, true)

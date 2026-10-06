@@ -139,6 +139,7 @@ export const LEDGER_MANIFEST = {
         program: str({ minLength: 1 }),
         card_id: str({ minLength: 1 }),
         card_version: strOrNum(),
+        artifact_kind: en(['vulncard', 'exp_card', 'kb_doc', 'playbook']),
         asset: str({ minLength: 1 }),
         outcome: en(OUTCOME_ENUM),
         deviation: str(),
@@ -147,7 +148,7 @@ export const LEDGER_MANIFEST = {
         run_id: str(),
       }, ['program', 'card_id', 'card_version', 'asset', 'outcome']),
       idempotent: 'auto',
-      idempotent_fields: ['program', 'card_id', 'card_version', 'asset', 'outcome', 'deviation', 'suggest', 'result', 'run_id'],
+      idempotent_fields: ['program', 'card_id', 'card_version', 'artifact_kind', 'asset', 'outcome', 'deviation', 'suggest', 'result', 'run_id'],
       events: ['ledger.card_usage.logged'],
       event_limit: 1,
       invariants: ['cardDeviationRequired'],
@@ -500,10 +501,13 @@ function makeHandlers(opts) {
     ledger_log_card_usage: async (args, repo) => {
       const runId = args.run_id || makeRunId('cu')
       const rec = { card_id: args.card_id, card_version: args.card_version, asset: args.asset, outcome: args.outcome, result: args.result || '', ts: repo.nowIso(), run_id: runId }
+      if (args.artifact_kind) rec.artifact_kind = args.artifact_kind
       if (args.deviation) rec.deviation = args.deviation
       if (args.suggest) rec.suggest = args.suggest
       const r = repo.appendCardUsage(args.program, rec)
-      const payload = { program: args.program, card_id: args.card_id, card_version: args.card_version, outcome: args.outcome }
+      const payload = { program: args.program, card_id: args.card_id, card_version: args.card_version,
+        outcome: args.outcome, run_id: runId, asset: args.asset }
+      if (args.artifact_kind) payload.artifact_kind = args.artifact_kind
       if (args.deviation) payload.deviation = args.deviation
       return {
         data: { file: r.file, card_id: args.card_id, outcome: args.outcome },

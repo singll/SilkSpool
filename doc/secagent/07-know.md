@@ -1219,3 +1219,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-06来源更正增量（本地，待发布）：episode_record(supersedes)将更正、新来源失效标志、依赖发布撤回及计分重算放在同事务。旧原件不改；active/superseded依赖发布记录source_corrected:event_id且不自动恢复其它版本。vc_get/list/explain任务读取排除needs_revalidate及已更正来源，人工审查待复验版本标不可执行；人工回退亦排除待复验/摘要不匹配旧版。底层拒写使整次更正回滚，重试复用原episode业务键。
 
 同批采用门禁：know_adopt禁用总线成功缓存，先校验当前来源/生命周期/作用域，再用采用参数的稳定业务键去重事实；重放不重复采用或发事件，失效后相同参数亦拒绝。最终740/740全域通过。
+
+2026-10-06 L03增量（本地待发布）：ledger.card_usage.logged只有真实published revision及匹配Program/global使用范围才落采用，绑定revision_id和sha256内容摘要；未知版本/工具名/不存在对象及blocked/na保留原ledger经历，不计采用。know_adoptions补source_run_id/session_id/asset；来源引用不等于task/attempt或费用归属。

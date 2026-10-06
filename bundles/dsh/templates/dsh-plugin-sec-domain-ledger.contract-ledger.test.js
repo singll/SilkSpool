@@ -88,6 +88,10 @@ test('happy path: log_card_usage applied + card_usage.logged', async () => {
   assert.equal(r.data.outcome, 'applied')
   const files = fs.readdirSync(path.join(dataDir, 'pipeline', 'test-src')).filter((f) => f.startsWith('card_usage-'))
   assert.equal(files.length, 1)
+  const event = readEvents(dir).find(e => e.name === 'ledger.card_usage.logged')
+  const record = JSON.parse(fs.readFileSync(path.join(dataDir, 'pipeline', 'test-src', files[0]), 'utf8').trim())
+  assert.equal(event.payload.run_id, record.run_id, 'execution association must survive event delivery')
+  assert.equal(event.payload.asset, record.asset)
   assert.ok(readEvents(dir).find((e) => e.name === 'ledger.card_usage.logged'))
 })
 
