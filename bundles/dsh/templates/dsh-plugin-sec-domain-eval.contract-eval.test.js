@@ -139,7 +139,7 @@ test('eval_case_append: 幂等重放（同 finding_id+verdict → replay）+ 异
   const r2 = await env.bus.dispatch('eval', 'case_append', args, { actor: 'system' })
   assert.equal(r1.ok, true)
   assert.equal(r2.ok, true)
-  assert.equal(r2.replay, true)
+  assert.equal(r2.data.replay, true)
   assert.equal(r2.data.line, r1.data.line)
   assert.equal(readLive(env.evalDir).length, 1)
   const r3 = await env.bus.dispatch('eval', 'case_append', { ...args, host: 'b.com' }, { actor: 'system' })
@@ -275,12 +275,13 @@ test('订阅: vuln.signal.confirmed → eval.case.append（经 vuln_get 取详�
   const domain2 = buildEvalDomain({
     dataDir: env.dataDir, evalDir: env.evalDir,
     query: async (d, n, a) => {
+      if (d === 'vuln' && n === 'technical_verdict') return { ok: true, data: { finding_id: 341, program_id: null, verdict: 'confirmed', basis: 'independent_review' } }
       if (d === 'vuln' && n === 'get') return { ok: true, data: { id: a.id, host: 'a.com', url: 'https://a.com', title: 't', vuln_type: 'sqli' } }
       return { ok: false, error: { code: 'E_BUS_DOMAIN_UNKNOWN' } }
     },
     dispatch: async (d, v, a) => { appended = { d, v, a }; return { ok: true, data: { finding_id: a.finding_id } } },
   })
-  const res = await domain2.handlers.subscribers.onSignalVerdict({ name: 'vuln.signal.confirmed', payload: { finding_id: 341 } })
+  const res = await domain2.handlers.subscribers.onSignalVerdict({ name: 'vuln.signal.confirmed', payload: { finding_id: 341, technical_verdict_id: 1 } })
   assert.equal(res.ok, true)
   assert.equal(appended.v, 'case_append')
   assert.equal(appended.a.verdict, 'confirmed')
@@ -302,7 +303,8 @@ test('订阅: vuln.signal.rejected 仅 false_positive 回流（dup/ignored 跳�
   assert.equal(appended, null)
   const fp = await domain2.handlers.subscribers.onSignalVerdict({ name: 'vuln.signal.rejected', payload: { finding_id: 343, verdict: 'false_positive' } })
   assert.equal(fp.ok, true)
-  assert.equal(appended.a.verdict, 'false_positive')
+  assert.equal(fp.data.reason, 'unverified_legacy_label')
+  assert.equal(appended, null)
 })
 
 // ---------------------------------------------------------------------------
@@ -328,6 +330,88 @@ test('端到端: vuln_confirm 事件经 dispatcher 回流成 eval-live 行', asy
   await env.bus._internal.dispatcherTick()
   const live = readLive(env.evalDir)
   assert.ok(live.some((l) => l.finding_id === id && l.verdict === 'confirmed'), '应回流一行 confirmed 判定')
+  assert.equal(live.length, 1)
+  // A fresh technical event must remain pending while its evidence reader fails.
+  const receipt = db.prepare('SELECT id,evidence_json FROM vuln_technical_verdicts WHERE finding_id=?').get(id)
+  const event = { id: 'technical-receipt-retry', domain: 'vuln', name: 'vuln.signal.confirmed', actor: 'dashboard',
+    ts: Date.now(), payload: { finding_id: id, technical_verdict_id: receipt.id, program_id: null } }
+  db.prepare('UPDATE vuln_technical_verdicts SET evidence_json=? WHERE id=?').run('{}', receipt.id)
+  env.bus.events.publish(event)
+  await env.bus._internal.dispatcherTick()
+  assert.equal(db.prepare('SELECT status FROM event_outbox WHERE event_id=?').get(event.id).status, 'pending')
+  assert.equal(readLive(env.evalDir).length, 1)
+  db.prepare('UPDATE vuln_technical_verdicts SET evidence_json=? WHERE id=?').run(receipt.evidence_json, receipt.id)
+  db.prepare('UPDATE event_outbox SET next_retry_at=0 WHERE event_id=?').run(event.id)
+  await env.bus._internal.dispatcherTick()
+  assert.equal(db.prepare('SELECT status FROM event_outbox WHERE event_id=?').get(event.id).status, 'delivered')
+  assert.equal(readLive(env.evalDir).length, 1, 'recovery must not duplicate evaluation label')
+  db.prepare('DELETE FROM idempotency').run()
+  const replay = await env.bus.dispatch('bus', 'replay', { since: 0, limit: 100 }, { actor: 'system' })
+  assert.equal(replay.ok, true, replay.error?.message)
+  assert.deepEqual(replay.data.results.filter(row => row.ok === false), [])
+  assert.equal(readLive(env.evalDir).length, 1, 'durable receipt identity survives expired bus cache')
+  assert.equal(readLive(env.evalDir)[0].technical_verdict_id, receipt.id)
+  // A later independent review is a distinct judgment, even with the same label.
+  db.prepare("UPDATE findings SET status='new',confidence='tentative' WHERE id=?").run(id)
+  db.prepare('DELETE FROM idempotency').run()
+  const reviewedAgain = await env.bus.dispatch('vuln', 'confirm', {
+    finding_id: id, evidence: 'run_test_evt',
+    review: { basis: '第二次独立核验请求及正常反例对照，确认当前安全属性仍受到违反',
+      reproduction_steps: '在新的审校中重新执行正常请求和反例请求', impact: '再次确认未经授权读取受保护业务对象' },
+  }, { actor: 'dashboard', operator: 'fixture-reviewer-2' })
+  assert.equal(reviewedAgain.ok, true, reviewedAgain.error?.message)
+  await env.bus._internal.dispatcherTick()
+  assert.equal(readLive(env.evalDir).length, 2, 'distinct formal reviews are not collapsed by finding and verdict')
+  assert.notEqual(readLive(env.evalDir)[0].technical_verdict_id, readLive(env.evalDir)[1].technical_verdict_id)
+  const originalText = fs.readFileSync(path.join(env.evalDir, 'eval-live.jsonl'), 'utf8')
+  db.prepare("UPDATE findings SET title='后续补充的标题不改变历史正式审校身份' WHERE id=?").run(id)
+  // Reconstruct the bus and domain repositories; no in-memory/cache identity remains.
+  env.bus._internal.close()
+  const resumed = createBus({ dataDir: env.dataDir, dbFile: path.join(env.dir, 'asset-graph.db'),
+    aliasesFile: path.join(env.dir, 'bus.aliases.yaml'), auditFile: path.join(env.dir, 'audit.jsonl'),
+    eventsDir: path.join(env.dir, 'events'), sidecars: false, startDispatcherTimer: false })
+  const resumedOpts = { dataDir: env.dataDir,
+    dispatch: (...a) => resumed.dispatch(...a), query: (...a) => resumed.query(...a) }
+  assert.equal(resumed.registry.register(buildVulnDomain(resumedOpts)).ok, true)
+  assert.equal(resumed.registry.register(buildEvalDomain(resumedOpts)).ok, true)
+  const resumedDb = resumed._internal.db()
+  resumedDb.prepare('DELETE FROM idempotency').run()
+  const replayAfterRestart = await resumed.dispatch('bus', 'replay', { since: 0, limit: 100 }, { actor: 'system' })
+  assert.equal(replayAfterRestart.ok, true, replayAfterRestart.error?.message)
+  assert.deepEqual(replayAfterRestart.data.results.filter(row => row.ok === false), [])
+  assert.equal(fs.readFileSync(path.join(env.evalDir, 'eval-live.jsonl'), 'utf8'), originalText)
+  // Unreadable/corrupt prior rows must hold delivery pending, never erase dedupe history.
+  fs.appendFileSync(path.join(env.evalDir, 'eval-live.jsonl'), '{broken\n')
+  const storageEvent = { ...event, id: 'technical-file-retry' }
+  resumed.events.publish(storageEvent)
+  await resumed._internal.dispatcherTick()
+  assert.equal(resumedDb.prepare('SELECT status FROM event_outbox WHERE event_id=?').get(storageEvent.id).status, 'pending')
+  fs.writeFileSync(path.join(env.evalDir, 'eval-live.jsonl'), originalText)
+  resumedDb.prepare('UPDATE event_outbox SET next_retry_at=0 WHERE event_id=?').run(storageEvent.id)
+  await resumed._internal.dispatcherTick()
+  assert.equal(resumedDb.prepare('SELECT status FROM event_outbox WHERE event_id=?').get(storageEvent.id).status, 'delivered')
+  assert.equal(fs.readFileSync(path.join(env.evalDir, 'eval-live.jsonl'), 'utf8'), originalText)
+  resumed._internal.close()
+})
+
+test('27 E13/L05: unreviewed rejection and legacy confirmation cannot create evaluation truth', async () => {
+  const env = makeEnv()
+  const opts = { dataDir: env.dataDir, dispatch: (...a) => env.bus.dispatch(...a), query: (...a) => env.bus.query(...a) }
+  assert.equal(env.bus.registry.register(buildVulnDomain(opts)).ok, true)
+  const candidate = await env.bus.dispatch('vuln', 'register_candidate', {
+    title: '未独立验证的技术候选样例', host: 'a.example.com', url: 'https://a.example.com/api',
+    source: 'fixture', program_id: 'test-src', severity: 'low',
+  }, { actor: 'webhook' })
+  assert.equal(candidate.ok, true, candidate.error?.message)
+  const rejected = await env.bus.dispatch('vuln', 'reject', { finding_id: candidate.data.id,
+    verdict: 'false_positive', reason: '仅有模型文字说明，缺少受控执行或独立技术反证' }, { actor: 'model' })
+  assert.equal(rejected.ok, true)
+  await env.bus._internal.dispatcherTick()
+  assert.equal(readLive(env.evalDir).length, 0, 'reason-only rejection is not a technical training label')
+  env.bus.events.publish({ id: 'legacy-unverified-confirmation', domain: 'vuln', name: 'vuln.signal.confirmed',
+    actor: 'dashboard', ts: Date.now(), payload: { finding_id: candidate.data.id, program_id: 'test-src' } })
+  await env.bus._internal.dispatcherTick()
+  assert.equal(readLive(env.evalDir).length, 0, 'actor is not evidence of technical confirmation')
 })
 
 test('总线集成: bus_status eval registered:true + 命令/查询计数 + 模型不可见三写动词', async () => {

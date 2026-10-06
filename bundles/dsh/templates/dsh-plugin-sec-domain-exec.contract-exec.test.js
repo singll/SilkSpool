@@ -14,6 +14,7 @@ import * as http from 'node:http'
 import * as net from 'node:net'
 import * as crypto from 'node:crypto'
 import { createBus } from '../../sec-domain-bus/index.js'
+import { buildEvalDomain } from '../../sec-domain-eval/index.js'
 import { buildKnowDomain } from '../../sec-domain-know/index.js'
 import { buildAssetDomain } from '../../sec-domain-asset/index.js'
 import { buildEndpointDomain } from '../../sec-domain-endpoint/index.js'
@@ -777,6 +778,7 @@ for (const [mode, outcome] of [['vulnerable', 'confirmed'], ['patched', 'valid_c
     assert.equal(bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a),
       query: (...a) => bus.query(...a) })).ok, true)
     assert.equal((await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })).ok, true)
+    assert.equal(bus.registry.register(buildEvalDomain({ dataDir, query: (...a) => bus.query(...a), dispatch: (...a) => bus.dispatch(...a) })).ok, true)
     const run = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model', session_id: 'oracle-learning' })
     assert.equal(run.ok, true, run.error?.message)
     const requestCount = seen.length
@@ -828,6 +830,10 @@ for (const [mode, outcome] of [['vulnerable', 'confirmed'], ['patched', 'valid_c
     assert.deepEqual(replay.data.results.filter(row => row.ok === false), [])
     assert.equal(episodes().length, 1)
     assert.equal(seen.length, requestCount)
+    const liveFile = path.join(dataDir, 'eval', 'eval-live.jsonl')
+    const labels = fs.existsSync(liveFile) ? fs.readFileSync(liveFile, 'utf8').trim().split('\n').map(JSON.parse) : []
+    assert.equal(labels.length, mode === 'vulnerable' ? 1 : 0)
+    if (labels.length) assert.equal(labels[0].verdict, 'confirmed')
   })
 }
 

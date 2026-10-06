@@ -119,10 +119,14 @@ export const EVAL_MANIFEST = {
         source: en(SOURCES),
         label_source: en(LABEL_SOURCES),
         visibility: en(VISIBILITIES),
+        technical_verdict_id: int({ minimum: 1 }),
+        evidence_digest: str({ pattern: '^[a-f0-9]{64}$' }),
+        program_id: str({ maxLength: 128 }),
         ts: int(),
       }, ['finding_id', 'verdict']),
-      idempotent: 'natural',
-      idempotent_natural: ['finding_id', 'verdict'],
+      // Persistent receipt identity lives with eval-live; a cached gateway result
+      // cannot detect damaged files or tolerate later enrichment of finding metadata.
+      idempotent: 'none',
       events: ['eval.case.appended'],
       event_limit: 1,
       invariants: [],
@@ -437,15 +441,17 @@ function makeHandlers(opts) {
         source: args.source || 'live',
         ...(args.label_source ? { label_source: args.label_source } : {}),
         ...(args.visibility ? { visibility: args.visibility } : {}),
+        ...(args.technical_verdict_id ? { technical_verdict_id: args.technical_verdict_id,
+          evidence_digest: args.evidence_digest, program_id: args.program_id || null } : {}),
         ts: args.ts || Date.now(),
       }
       const r = repo.appendCase(rec)
       clearStatsCache()
       return {
-        data: { finding_id: rec.finding_id, verdict: rec.verdict, line: r.line, source: rec.source },
+        data: { finding_id: rec.finding_id, verdict: rec.verdict, line: r.line, source: rec.source, replay: r.replay },
         events: [{
           name: 'eval.case.appended',
-          payload: { finding_id: rec.finding_id, verdict: rec.verdict, vuln_type: rec.vuln_type || null, ts: rec.ts },
+          payload: { finding_id: rec.finding_id, verdict: rec.verdict, vuln_type: rec.vuln_type || null, ts: r.ts },
         }],
         target: { finding_id: rec.finding_id },
       }
@@ -825,24 +831,44 @@ function makeHandlers(opts) {
       if (!isConfirmed && p.verdict !== 'false_positive') {
         return { ok: true, data: { skipped: true, reason: 'dup/ignored 不进误报统计' } }
       }
-      if (!queryRef) return { ok: true, data: { skipped: true, reason: 'no query ref' } }
-      let f = null
+      if (!p.technical_verdict_id) return { ok: true, data: { skipped: true, reason: 'unverified_legacy_label' } }
+      if (!queryRef || !dispatchRef) return { ok: false, error: { code: 'E_BACKEND_UNAVAILABLE', message: 'technical evidence consumer unavailable' } }
       try {
-        const r = await queryRef('vuln', 'get', { id: findingId }, { actor: 'reactor' })
-        if (r && r.ok && r.data) f = r.data
-      } catch (e) { log(`vuln_get 跨域读失败（弱联动）: ${e?.message}`) }
-      if (!f) return { ok: true, data: { skipped: true, reason: 'finding 不可达' } }
-      if (!dispatchRef) return { ok: true, data: { skipped: true, reason: 'no dispatch ref' } }
-      try {
+        const receipt = await queryRef('vuln', 'technical_verdict', { id: p.technical_verdict_id }, { actor: 'reactor' })
+        if (!receipt?.ok) return { ok: false, error: receipt?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
+        const verdict = isConfirmed ? 'confirmed' : 'false_positive'
+        const truth = receipt.data
+        if (truth.finding_id !== findingId || truth.verdict !== verdict || truth.program_id !== (p.program_id || null)) {
+          return { ok: false, error: { code: 'E_INVARIANT', message: 'technical receipt does not match verdict event' } }
+        }
+        if (!['controlled_oracle', 'independent_review'].includes(truth.basis)) {
+          return { ok: true, data: { skipped: true, reason: 'unverified_rejection_basis' } }
+        }
+        if (truth.basis === 'controlled_oracle') {
+          const evidence = await queryRef('exec', 'authz_evidence', { decision_id: truth.decision_id }, { actor: 'reactor' })
+          if (!evidence?.ok) return { ok: false, error: evidence?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
+          if (evidence.data.finding_id !== findingId || evidence.data.program_id !== truth.program_id
+            || evidence.data.verdict !== (isConfirmed ? 'verified' : 'rejected')) {
+            return { ok: false, error: { code: 'E_INVARIANT', message: 'signed decision does not support evaluation label' } }
+          }
+        }
+        const finding = await queryRef('vuln', 'get', { id: findingId }, { actor: 'reactor' })
+        if (!finding?.ok) return { ok: false, error: finding?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
+        const f = finding.data
         const r = await dispatchRef('eval', 'case_append', {
           finding_id: findingId,
-          verdict: isConfirmed ? 'confirmed' : 'false_positive',
+          verdict,
+          technical_verdict_id: p.technical_verdict_id,
+          evidence_digest: truth.evidence_digest,
+          ...(truth.program_id ? { program_id: truth.program_id } : {}),
+          label_source: truth.basis === 'controlled_oracle' ? 'independently-verified' : 'human-reviewed',
+          ts: truth.created_at,
           host: f.host || '', url: f.url || '', title: f.title || '', vuln_type: f.vuln_type || '',
         }, { actor: 'system', cause: envelope })
-        return { ok: !!r.ok, data: { skipped: false, finding_id: findingId } }
+        return r?.ok ? { ok: true, data: { skipped: false, finding_id: findingId } }
+          : { ok: false, error: r?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
       } catch (e) {
-        log(`eval 判定回流失败（best-effort）: ${e?.message}`)
-        return { ok: true, data: { skipped: false, error: String(e?.message) } }
+        return { ok: false, error: { code: e?.code || 'E_INTERNAL', message: String(e?.message || e) } }
       }
     },
   }

@@ -30,13 +30,13 @@
 
 | # | 动词 | 一句话语义 | actor 白名单 | 发布事件 | 幂等键 |
 |---|---|---|---|---|---|
-| C1 | `eval_case_append` | 活评测集追加一条判定回流（订阅通道；模型禁用） | system, script, human | eval.case.appended | 自然键（finding_id+verdict）|
+| C1 | `eval_case_append` | 活评测集追加一条判定回流（订阅通道；模型禁用） | system, script, human | eval.case.appended | 文件持久键（technical_verdict_id；旧补录为finding_id+verdict）|
 | C2 | `eval_run_fp` | 触发假阳性消融评测（12 用例双条件，异步执行） | dashboard, human, script | eval.report.built（收尾经 C4 发布）| manifest `none`；命令体指纹（cases+conditions+model）+ 10 分钟窗口 → replay |
 | C3 | `eval_run_contract` | 触发契约合规评测（模型越权用例：网关直断言 + LLM 诱导层 Mode B，L3 起真实受测会话） | dashboard, human, script | eval.report.built（收尾经 C4 发布）| manifest `none`；命令体指纹（cases+llm_probe+model）+ 10 分钟窗口 → replay |
 | C4 | `eval_run_finish` | 异步执行器唯一收尾通道（内部；模型/看板不可见） | system | eval.report.built | 自然键（run_id）|
 | C5 | `eval_run_candidate` | 候选知识版本对照评测（L3：受控 fixture 家族 + baseline 配对报告 + 冻结数据集） | dashboard, human, script | eval.candidate.started（触发时）+ eval.report.built（kind=candidate，收尾经 C4） | 自然键（trial_id）|
 
-> 幂等列=manifest `idempotent` + 命令体语义：C1/C4/C5 为网关 `natural` 键（C1 仅 `finding_id+verdict`，**无日期窗口**；同 finding 同 verdict 重放 → replay，翻案改 verdict 产生新行）；C2/C3 manifest 为 `none`（网关不落幂等表），但**命令体自建指纹 + 10 分钟窗口**判重后返回 `replay:true`（`REPLAY_WINDOW_MS=10min`）。
+> 幂等列=manifest `idempotent` + 命令体语义：C4/C5 为网关 `natural` 键；C1 manifest 为 `none`，由文件后端按正式回执持久去重（无日期窗口，重建总线不丢失）；C2/C3 manifest 为 `none`（网关不落幂等表），但**命令体自建指纹 + 10 分钟窗口**判重后返回 `replay:true`（`REPLAY_WINDOW_MS=10min`）。
 
 ### 1.3 命令逐个详述
 
@@ -54,7 +54,8 @@
 | source | string | 否 | 'live' | 'live'（订阅回流）/ 'manual'（人工补录） |
 | label_source | string(enum) | 否 | — | L3 来源级别标签：model-proposed / independently-verified / human-reviewed / vendor-confirmed（设计 §7.2 真值来源可追溯；模型触发的 confirmed 只是标签候选，不自动成为基准答案） |
 | visibility | string(enum) | 否 | 'dev' | dev / hidden——hidden 行对 actor=model 的 Q2 不可见（§1.4 可见域谓词；隐藏验收集防泄漏） |
-| ts | integer | 否 | now | UTC epoch ms（缺省网关注入） |
+| technical_verdict_id / evidence_digest / program_id | integer / string / string | 否 | — | 订阅器写入已核验的正式回执ID、64位摘要和Program；不同正式审校保留为新行 |
+| ts | integer | 否 | now | UTC epoch ms；订阅回流固定为正式判定时间，不使用回放时间 |
 
 **行为**：O_APPEND 追加一行 JSON 到 `data/eval/eval-live.jsonl`（单行 ≤4KB；title 截断 120 字）。发 `eval.case.appended`。
 
@@ -63,9 +64,9 @@
 ```json
 {
   "ok": true, "domain": "eval", "cmd": "case_append",
-  "data": { "finding_id": 341, "verdict": "confirmed", "line": 157 },
+  "data": { "finding_id": 341, "verdict": "confirmed", "line": 157, "replay": false },
   "event_ids": ["evt_01J..."],
-  "idempotency_key": "eval:case_append:341:confirmed:1789012345678",
+  "idempotency_key": null,
   "replay": false
 }
 ```
@@ -76,9 +77,9 @@
 |---|---|---|---|
 | E_ACTOR_FORBIDDEN | actor=model / dashboard | "评测集只收 vuln 判定事件回流与人工补录，模型不可写（防自评污染）" | false |
 | E_SCHEMA | verdict 非枚举 / 缺 finding_id | — | false |
-| E_CONFLICT | 同一 (finding_id, verdict) 已存在且异参 | — | false |
+| E_IDEMPOTENT_CONFLICT | 同一持久判定键已绑定不同技术内容 | — | false |
 
-**幂等**：manifest `natural`（`idempotent_natural:['finding_id','verdict']`）→ 网关键 `eval:case_append:{finding_id}|{verdict}`（**不含日期窗口**）。同一 finding 同一 verdict 的事件重放（bus replay）→ replay，不重复追加；翻案（verdict 变更）→ 新键新行（聚合按 finding_id 取最新裁决，见 Q1）。**agent_note**：见 §1.6（模型不可见，描述供审计/文档）。
+**幂等**：manifest `none`；文件后端在同步追加前读取既有行，以 `technical_verdict_id` 去重并校验finding/verdict/digest/Program。不使用总线短期成功缓存；正式回执相同但Finding展示字段后续补充，仍返回原行的 `data.replay=true`；不同回执即使同finding同verdict也保留。无回执的既有人工补录按finding_id+verdict去重，异参拒绝。文件不可读或损坏则失败重试，不按空文件继续追加；成功追加后fsync。回放可以补发追加事件，但不增加评测行。聚合按正式判定时间取最新，旧事件晚重放不覆盖较新判定。
 
 #### C2 · eval_run_fp（假阳性消融评测）
 
@@ -442,3 +443,5 @@ export const repositoryV1 = {
 > 2026-09-26 42 号补丁：`eval_cases` 改为处理器内分页（hidden 可见域裁剪完成后 `rows.slice(offset, offset+limit)`，缺省 50、上限 500），返回 `meta.paged` 防总线二次切片；eval 契约维持 30/30。
 
 2026-10-06发布回填：cb3134f学习/评测/正式技术指标/索引合批已按新冻结、隔离应用、生产RPC及UI80验收部署，详见27号§15.82。L01/D07后续增量72c8233/94d8c9d尚未部署；不改写历史验收。
+
+2026-10-06 E13/L05回流门禁（本地待发布）：onSignalVerdict要求正式technical_verdict_id、摘要及关联匹配，controlled_oracle再读签封执行原件；旧事件和仅rejection理由不作技术标签。独立审校可回流，读/写失败返回错误进入总线重试，恢复不得重复标签。历史eval-live及反证写入口尚待治理。

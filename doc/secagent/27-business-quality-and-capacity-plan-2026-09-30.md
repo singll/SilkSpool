@@ -1619,6 +1619,14 @@ eval固定首次入池cohort，候选晋升后分母不变、直接信号不混�
 
 故障回归：任务INSERT被SQLite触发器拒绝时，更正事件保持pending、已失效方法继续不可读；恢复后只创建一条queued待办。完成该待办并清空幂等缓存，晚回放仍不重复建单。另发现旧查重以reactor调用task.list被权限拒绝但未检查结果，现以system查询并显式处理失败，查重包含历史任务。know104项通过，最终全域742/742通过（97.82秒）。证据withdraw-notice-{red,fixed-green}.log及withdraw-notice-preflight/；前两次green因该权限问题失败已保留。未部署，WP07及全方案仍未关账。
 
+### 15.88 E13/L05评测回流的技术真值门禁（2026-10-06，本地验收待发布）
+
+真实vuln→bus→eval红例：model只凭reason文字提交false_positive后，eval-live出现技术训练标签；旧confirmed事件亦仅凭actor/标签可入账。eval消费者现在要求technical_verdict_id，经vuln.technical_verdict核验摘要、finding/Program/判定关联，只接受controlled_oracle或independent_review依据；机器结论再次核验exec.authz_evidence原件。无回执旧标签及仅rejection依据跳过，不能升级为可靠阴性。
+
+真实独立审校仍可回流；修改回执JSON导致事件pending、恢复原件后继续且不重复标签。读取/写入失败不再吞掉成成功，交给总线重试。eval37项通过；补签封Oracle全链路后首次全域743项中742通过、1失败：清空总线幂等缓存并重放导致重复标签。现按正式回执ID持久去重，保存摘要/Program/判定时间，不同正式审校保留；总线重建和Finding补充不重复，坏文件保持pending、恢复后消费。联合109/109与最终eval37/37通过，最终固定源码全域743/743通过（86.87秒）。证据eval-truth-red-fixed.log（初red缺severity仅夹具错误，不作业务复现）、eval-truth-final-green.log、eval-durable-{red,green,final-green}.log及eval-truth-final-preflight/；原eval-truth-preflight失败保留。
+
+本批仅修消费者，不宣称反证写入口已完善：vuln.reject仍允许理由文本直接改false_positive及写basis=rejection回执，noise统计仍用旧status/confidence；可信反证门禁、技术更正连接、历史eval-live治理和窗口指标继续待办。无生产变更。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
