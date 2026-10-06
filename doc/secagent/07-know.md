@@ -1215,3 +1215,7 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-06 L01/L02增量（本地，待发布）：exec.oracle.decided通过exec.authz_evidence读取签封判定，decision ID即attempt身份；可信verified/rejected映射confirmed/valid_clean，异常按前置状态归类。Program/request/task/原始执行session及成本来自受控原件；不从model actor否定真实执行判定，也不自填卡/模型费用。带正式回执的Finding确认读取vuln.technical_verdict并归同decision，乱序/重放不重复技术样本。旧confirmed事件兼容路径仍待后续来源治理，反证撤回与版本收益仍未完全接通。
 
 2026-10-06 L05/L17/L18增量（本地，待发布；取代§13.1旧蒸馏入口）：蒸馏由know.episode.recorded独立消费，内部distill_verdict必填episode_id，每次重读exec.authz_evidence原件并校验归属/当前经历未更正，禁用命令成功缓存绕过证据重验。旧无正式回执confirmed只记inconclusive+claimed_outcome。只有完整签封idor_owner_read_v1阳性或可靠阴性可提取方法，包含前置、步骤、反证、止损和失效条件；无可迁移增量跳过。同方法正文内容去重，来源/证据另存revision.source_snapshot，不带真实目标进共享卡。候选写入失败仅子事件重试，不重跑实验；仍受评测和发布治理。其它方法、旧记录迁移及已发布来源撤回尚待验收。
+
+2026-10-06来源更正增量（本地，待发布）：episode_record(supersedes)将更正、新来源失效标志、依赖发布撤回及计分重算放在同事务。旧原件不改；active/superseded依赖发布记录source_corrected:event_id且不自动恢复其它版本。vc_get/list/explain任务读取排除needs_revalidate及已更正来源，人工审查待复验版本标不可执行；人工回退亦排除待复验/摘要不匹配旧版。底层拒写使整次更正回滚，重试复用原episode业务键。
+
+同批采用门禁：know_adopt禁用总线成功缓存，先校验当前来源/生命周期/作用域，再用采用参数的稳定业务键去重事实；重放不重复采用或发事件，失效后相同参数亦拒绝。最终740/740全域通过。

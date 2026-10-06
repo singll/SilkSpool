@@ -1599,6 +1599,12 @@ eval固定首次入池cohort，候选晋升后分母不变、直接信号不混�
 
 证据：out/secagent-audits/session-20261006/distill-{red,green,method-red,method-green}.log及distill-preflight/。初联合216/216、全域738/738通过；追加总线重建恢复72/72通过。待继续：其它方法与失败修正提炼、旧弱真值迁移、来源反证影响已发布版本的撤回与重算、完整归因及收益验收；不能因此关闭L05/L17或WP07整体。生产仍为cb3134f，当前增量未部署。
 
+### 15.85 L05/L09来源更正撤出依赖版本（2026-10-06，本地验收待发布）
+
+两条真实红例：episode更正后依赖revision未标记来源失效；已有needs_revalidate的published卡仍能经vc_get执行。更正落账现于同一事务标记来源revision、撤回该来源的active/superseded release、重算受影响artifact，并在episode事件及release原因中记录更正来源；历史episode/source_snapshot/content保持不变。保守撤出全部依赖该来源的发布，不自动恢复可能同样依赖失效事实的旧版。
+
+读取解析器排除来源待复验或已更正的版本；人工审查仍能读待复验版本但executable=false。新提案不能引用已更正episode；常规release_revoke回退跳过待复验、流程不合格或摘要不一致旧版。102/102初回归通过，真实SQLite撤回拒写验证整次更正原子回滚。追加红例发现know_adopt旧成功缓存可绕过来源失效；现每次先校验来源/发布，采用事实按稳定业务键去重。最终全域740/740通过（62.40秒）。证据source-correction-{red,green}.log、source-adoption-{red,green-fixed}.log及source-correction-final-preflight/。本批只处理know经历更正的来源依赖；vuln技术反证事件到经历更正接线、生产旧弱来源回填及所有知识读取适配器仍待继续，不据此关闭WP07。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

@@ -2180,6 +2180,86 @@ test('L06: episode更正替代当前投影，保留原件且拒绝跨归属与�
 })
 
 
+test('L05/L09: source correction withdraws dependent releases and retains immutable evidence and content', async () => {
+  const { bus } = makeEnv()
+  const original = { ...EP_ARGS, source_event_id: 'source-original', outcome: 'confirmed', card_id: 'VC-SOURCE-CORRECT',
+    source_credibility: 'independently-verified' }
+  const ep = await bus.dispatch('know', 'episode_record', original, { actor: 'reactor' })
+  assert.equal(ep.ok, true)
+  const proposal = await propose(bus, { artifact_id: 'VC-SOURCE-CORRECT', source_kind: 'episode', source_ref: ep.data.episode_id })
+  assert.equal(proposal.ok, true, proposal.error?.message)
+  const { revision_id, content_digest } = proposal.data
+  for (const phase of ['begin', 'finish']) {
+    const assessed = await assess(bus, { revision_id, phase, eval_run_id: 'source-correction-eval', candidate_digest: content_digest,
+      ...(phase === 'finish' ? { verdict: 'eligible', report_ref: 'fixture-eval.json' } : {}) })
+    assert.equal(assessed.ok, true, assessed.error?.message)
+  }
+  const pub = await publish(bus, { revision_id, content_digest, auth_ref: 'approval:source-correction' })
+  assert.equal(pub.ok, true, pub.error?.message)
+  const args = { id: 'VC-SOURCE-CORRECT', program_id: 'example-src', surface: 'api' }
+  assert.equal((await bus.query('know', 'vc_get', args, { actor: 'model' })).ok, true)
+  const db = bus._internal.db()
+  const before = db.prepare('SELECT * FROM knowledge_revisions WHERE revision_id=?').get(revision_id)
+  const correction = { ...original, source_event_id: 'source-corrected', supersedes: ep.data.episode_id,
+    outcome: 'inconclusive', reason_code: 'counterevidence_invalidates_control' }
+  db.exec("CREATE TRIGGER fail_withdraw BEFORE UPDATE OF status ON know_releases WHEN NEW.status='revoked' BEGIN SELECT RAISE(ABORT, 'withdraw unavailable'); END")
+  const failed = await bus.dispatch('know', 'episode_record', correction, { actor: 'reactor' })
+  assert.equal(failed.ok, false)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n, 1, 'correction rolls back with failed withdrawal')
+  assert.equal(db.prepare('SELECT needs_revalidate FROM knowledge_revisions WHERE revision_id=?').get(revision_id).needs_revalidate, 0)
+  assert.equal(db.prepare('SELECT status FROM know_releases WHERE release_id=?').get(pub.data.release_id).status, 'active')
+  db.exec('DROP TRIGGER fail_withdraw')
+  const next = await bus.dispatch('know', 'episode_record', correction, { actor: 'reactor' })
+  assert.equal(next.ok, true, next.error?.message)
+  const after = db.prepare('SELECT * FROM knowledge_revisions WHERE revision_id=?').get(revision_id)
+  assert.equal(after.needs_revalidate, 1)
+  assert.equal(after.content_json, before.content_json)
+  assert.equal(after.source_snapshot, before.source_snapshot)
+  assert.equal(db.prepare('SELECT outcome FROM learning_episodes WHERE episode_id=?').get(ep.data.episode_id).outcome, 'confirmed')
+  const release = db.prepare('SELECT * FROM know_releases WHERE release_id=?').get(pub.data.release_id)
+  assert.equal(release.status, 'revoked')
+  assert.match(release.revoke_reason, /source-corrected/)
+  assert.equal((await bus.query('know', 'vc_get', args, { actor: 'model' })).ok, false)
+  const explanation = await bus.query('know', 'retrieval_explain', { program_id: 'example-src', surface: 'api', artifact_kind: 'vulncard' }, { actor: 'model' })
+  assert.equal(explanation.data.selected.some(row => row.artifact_id === args.id), false)
+  const staleProposal = await propose(bus, { artifact_id: 'VC-SOURCE-STALE', source_kind: 'episode', source_ref: ep.data.episode_id })
+  assert.equal(staleProposal.ok, false)
+  db.prepare('DELETE FROM idempotency').run()
+  assert.equal((await bus.dispatch('know', 'episode_record', correction, { actor: 'reactor' })).data.recorded, false)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n, 2)
+  assert.equal(db.prepare('SELECT verified_positives FROM know_scores WHERE artifact_id=?').get(args.id).verified_positives, 0)
+})
+
+test('L09: stale published source is reviewable but cannot execute or return through rollback', async () => {
+  const { bus } = makeEnv()
+  const old = await publishedOne(bus, 'VC-STALE-ROLLBACK')
+  const db = bus._internal.db()
+  const adoption = { target: 'exp', payload: {}, evidence: '当前发布版本的真实采用回执说明',
+    revision_id: old.revision_id, artifact_kind: 'vulncard', scope: { type: 'program', id: 'example-src' } }
+  assert.equal((await bus.dispatch('know', 'adopt', adoption, { actor: 'human' })).ok, true)
+  db.prepare('UPDATE knowledge_revisions SET needs_revalidate=1 WHERE revision_id=?').run(old.revision_id)
+  assert.equal((await bus.dispatch('know', 'adopt', adoption, { actor: 'human' })).ok, false,
+    'cached adoption must recheck current source eligibility')
+  const args = { id: 'VC-STALE-ROLLBACK', program_id: 'example-src', surface: 'api' }
+  assert.equal((await bus.query('know', 'vc_get', args, { actor: 'model' })).ok, false)
+  const review = await bus.query('know', 'vc_get', args, { actor: 'dashboard' })
+  assert.equal(review.ok, true)
+  assert.equal(review.data.executable, false)
+  const v2 = await propose(bus, { artifact_id: args.id, parent_revision_id: old.revision_id,
+    content: { ...VC_CONTENT, id: args.id, version: 2, hypothesis: '第二版本独立来源的读取假设' } })
+  assert.equal(v2.ok, true, v2.error?.message)
+  for (const phase of ['begin', 'finish']) await assess(bus, { revision_id: v2.data.revision_id, phase,
+    eval_run_id: 'rollback-source-eval', candidate_digest: v2.data.content_digest,
+    ...(phase === 'finish' ? { verdict: 'eligible', report_ref: 'fixture.json' } : {}) })
+  const current = await publish(bus, { revision_id: v2.data.revision_id, content_digest: v2.data.content_digest, auth_ref: 'approval:source-v2' })
+  assert.equal(current.ok, true, current.error?.message)
+  const revoked = await bus.dispatch('know', 'release_revoke', { release_id: current.data.release_id,
+    reason: '撤回当前版本，旧来源已失效不能恢复' }, { actor: 'human' })
+  assert.equal(revoked.ok, true, revoked.error?.message)
+  assert.equal(revoked.data.rolled_back_to, null)
+  assert.equal((await bus.query('know', 'vc_get', args, { actor: 'model' })).ok, false)
+})
+
 test('L03: 同号文献采用不得继承经验episode与成本，重算仍按类型隔离', async () => {
   const { bus } = makeEnv()
   const db = bus._internal.db()

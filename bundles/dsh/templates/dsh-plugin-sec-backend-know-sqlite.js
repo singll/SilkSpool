@@ -566,6 +566,20 @@ function createRepo(db) {
       return db.prepare('UPDATE knowledge_revisions SET needs_revalidate=1 WHERE source_kind=? AND source_ref=?')
         .run(String(sourceKind), String(sourceRef)).changes
     },
+    revisionsBySource(sourceKind, sourceRef) {
+      return db.prepare('SELECT * FROM knowledge_revisions WHERE source_kind=? AND source_ref=?')
+        .all(String(sourceKind), String(sourceRef))
+    },
+    withdrawSourceReleases(sourceKind, sourceRef, eventRef, now) {
+      const rows = db.prepare(`SELECT l.* FROM know_releases l JOIN knowledge_revisions r ON r.revision_id=l.revision_id
+        WHERE r.source_kind=? AND r.source_ref=? AND l.status IN ('active','superseded')`)
+        .all(String(sourceKind), String(sourceRef))
+      db.prepare(`UPDATE know_releases SET status='revoked', revoked_at=?, revoke_reason=?
+        WHERE status IN ('active','superseded') AND revision_id IN
+          (SELECT revision_id FROM knowledge_revisions WHERE source_kind=? AND source_ref=?)`)
+        .run(now, `source_corrected:${eventRef}`, String(sourceKind), String(sourceRef))
+      return rows
+    },
     // L3（C25 know_revision_assess）：流程列更新——只允许 status/eval_report_ref，内容列只插不改的根基不动
     updateRevisionFlow(revisionId, fields) {
       return db.prepare('UPDATE knowledge_revisions SET status=?, eval_report_ref=? WHERE revision_id=?')
@@ -607,9 +621,11 @@ function createRepo(db) {
     },
     // 回退目标：同 (artifact, scope) 最近一条被取代的 superseded release（排除当前这条）
     previousRelease(artifactKind, artifactId, scopeType, scopeId, excludeReleaseId) {
-      return db.prepare(`SELECT * FROM know_releases
-        WHERE artifact_kind=? AND artifact_id=? AND scope_type=? AND scope_id=? AND status = 'superseded' AND release_id != ?
-        ORDER BY created_at DESC, release_id DESC LIMIT 1`)
+      return db.prepare(`SELECT l.* FROM know_releases l JOIN knowledge_revisions r ON r.revision_id=l.revision_id
+        WHERE l.artifact_kind=? AND l.artifact_id=? AND l.scope_type=? AND l.scope_id=?
+          AND l.status='superseded' AND l.release_id != ? AND r.needs_revalidate=0
+          AND r.status IN ('published','retired') AND l.content_digest=r.content_digest
+        ORDER BY l.created_at DESC, l.release_id DESC LIMIT 1`)
         .get(String(artifactKind), String(artifactId), String(scopeType), String(scopeId ?? ''), String(excludeReleaseId)) || null
     },
     listReleases({ artifact_kind = '', artifact_id = '', scope_type = '', scope_id = null, status = '', limit = 50, offset = 0 } = {}) {

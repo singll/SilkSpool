@@ -428,8 +428,9 @@ export const KNOW_MANIFEST = {
         eval_report_ref: str(),
         scope: { type: 'object' },
       }, ['target', 'payload', 'evidence']),
-      idempotent: 'auto',
-      idempotent_fields: ['target', 'payload', 'evidence', 'artifact_kind', 'revision_id', 'eval_report_ref', 'scope'],
+      // Eligibility changes after revocation. Deduplicate the adoption fact
+      // only after checking the current source/release on every invocation.
+      idempotent: 'none',
       events: ['know.adopted'],
       event_limit: 1,
       invariants: ['adoptRulesActor'],
@@ -1461,6 +1462,7 @@ function makeHandlers(opts) {
       }
       if (args.source_kind === 'episode') {
         if (!repo.getEpisode(args.source_ref)) return { code: 'E_NOT_FOUND', message: `来源 episode ${args.source_ref} 不存在`, hint: 'source_kind=episode 时 source_ref 填 episode_id；先 know_episode_list 定位', retryable: false }
+        if (repo.getEpisodeCorrection(args.source_ref)) return { code: 'E_INVARIANT', message: '来源 episode 已被更正', hint: '读取最新更正记录后重新提案', retryable: false }
         return null
       }
       // seed：版本受控模板（部署通道）；来源即模板相对路径，禁路径穿越形态
@@ -1837,6 +1839,7 @@ function makeHandlers(opts) {
     know_adopt: async (args, repo, ctx) => {
       const target = args.target
       const payload = args.payload || {}
+      const adoptionKey = `adopt:${sha1(canonicalStringify(args))}`
       // L4（设计 §6.2 knowledge-adopt 扩展）：采用面只认 published revision——
       // revision_id 存在时 revision 必须已 published（eligible 不可进使用面）；
       // 批准绑定哈希：自带 content_digest（payload.content_digest）与 revision 内容不符即失效重批。
@@ -1852,6 +1855,9 @@ function makeHandlers(opts) {
         if (rev.status !== 'published') {
           throwErr('E_INVARIANT', `采用面只认 published revision（当前 ${rev.status}）`, 'eligible 不是发布——先经 know_revision_publish（审批+灰度）发布再采纳', false)
         }
+        if (rev.needs_revalidate || (rev.source_kind === 'episode' && repo.getEpisodeCorrection(rev.source_ref))) {
+          throwErr('E_INVARIANT', '采用来源已失效或待复验', '复验来源后重新评测发布', false)
+        }
         const scope = args.scope
         if (!scope || !RELEASE_SCOPE_TYPES.includes(scope.type) || (scope.type !== 'global' && (typeof scope.id !== 'string' || !scope.id.trim()))) {
           throwErr('E_SCHEMA', '版本采用必须明确发布作用域', '提供scope.type和相应scope.id', false)
@@ -1860,15 +1866,16 @@ function makeHandlers(opts) {
         const release = repo.activeRelease(rev.artifact_kind, rev.artifact_id, scope.type, scope.type === 'global' ? '' : scope.id)
         if (!release || release.revision_id !== rev.revision_id) throwErr('E_STATE', '该版本不是指定作用域当前生效的发布', '读取当前发布版本，撤回或被取代的版本不能新采用', false)
         // L5（§8.1）：采用事实落账（采用≠曝光≠有效结果——三条计数分离）
-        recordAdoption(repo, {
+        const adopted = recordAdoption(repo, {
           artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, revision_id: rev.revision_id,
           card_version: rev.content_digest, program_id: scope.type === 'program' ? scope.id : null,
           source_cmd: 'know_adopt', actor: (ctx && ctx.actor) || null, outcome: 'adopted',
+          source_event_id: adoptionKey,
           note: String(args.evidence).slice(0, 200),
         })
         return {
           data: { target, release_id: release.release_id, content_digest: rev.content_digest, scope, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, status: 'published', adopted: true, source_cmd: 'know_revision_publish' },
-          events: [{ name: 'know.adopted', payload: { target, release_id: release.release_id, content_digest: rev.content_digest, scope, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, eval_report_ref: args.eval_report_ref || rev.eval_report_ref || null, evidence: args.evidence } }],
+          events: adopted.created ? [{ name: 'know.adopted', payload: { target, release_id: release.release_id, content_digest: rev.content_digest, scope, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, eval_report_ref: args.eval_report_ref || rev.eval_report_ref || null, evidence: args.evidence } }] : [],
           before: null, after: { revision_id: rev.revision_id, status: 'published' },
         }
       }
@@ -1882,17 +1889,17 @@ function makeHandlers(opts) {
         if (args.artifact_kind && args.artifact_kind !== expectedKind) throwErr('E_INVARIANT', '采用对象类型不符', null, false)
       }
       if (target === 'exp') {
-        if (payload.id != null) recordAdoption(repo, { artifact_kind: 'exp_card', artifact_id: String(payload.id), source_cmd: 'know_adopt:exp', actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
-        return { data: { target, adopted_id: payload.id ?? null, source_cmd: 'exp_promote' }, events: [{ name: 'know.adopted', payload: { target, adopted_id: payload.id ?? null, source_cmd: 'exp_promote', evidence: args.evidence } }], before: null, after: null }
+        const adopted = recordAdoption(repo, { artifact_kind: 'exp_card', artifact_id: String(payload.id), source_cmd: 'know_adopt:exp', source_event_id: adoptionKey, actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
+        return { data: { target, adopted_id: payload.id, source_cmd: 'exp_promote' }, events: adopted.created ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.id, source_cmd: 'exp_promote', evidence: args.evidence } }] : [], before: null, after: null }
       }
       if (target === 'kb') {
-        if (payload.doc_id != null) recordAdoption(repo, { artifact_kind: 'kb_doc', artifact_id: String(payload.doc_id), source_cmd: 'know_adopt:kb', actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
-        return { data: { target, adopted_id: payload.doc_id ?? null, source_cmd: 'kb_import' }, events: [{ name: 'know.adopted', payload: { target, adopted_id: payload.doc_id ?? null, source_cmd: 'kb_import', evidence: args.evidence } }], before: null, after: null }
+        const adopted = recordAdoption(repo, { artifact_kind: 'kb_doc', artifact_id: String(payload.doc_id), source_cmd: 'know_adopt:kb', source_event_id: adoptionKey, actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
+        return { data: { target, adopted_id: payload.doc_id, source_cmd: 'kb_import' }, events: adopted.created ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.doc_id, source_cmd: 'kb_import', evidence: args.evidence } }] : [], before: null, after: null }
       }
       if (target === 'rules') {
         if (!payload.path || !payload.content) throwErr('E_SCHEMA', 'rules 采纳需 payload.path + payload.content', null, false)
         const r = repo.ruleSeed(payload.path, payload.content)
-        return { data: { target, adopted_id: payload.path, source_cmd: 'rule_seed' }, events: [{ name: 'know.adopted', payload: { target, adopted_id: payload.path, source_cmd: 'rule_seed', evidence: args.evidence } }], before: null, after: null }
+        return { data: { target, adopted_id: payload.path, source_cmd: 'rule_seed' }, events: r.changed ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.path, source_cmd: 'rule_seed', evidence: args.evidence } }] : [], before: null, after: null }
       }
       throwErr('E_SCHEMA', 'target 非法', 'target ∈ {exp, kb, rules}', false)
     },
@@ -1982,6 +1989,20 @@ function makeHandlers(opts) {
         }
       }
       const r = repo.insertEpisode(row)
+      // Source/evaluation invalidation is atomic with the correction itself.
+      // Replays can repair projections from stored facts but cannot change their attribution.
+      const effective = r.created ? row : (r.episode_id ? repo.getEpisode(r.episode_id) : null)
+      let withdrawn = []
+      if (effective?.supersedes) {
+        repo.markRevisionsNeedRevalidate('episode', effective.supersedes)
+        withdrawn = repo.withdrawSourceReleases('episode', effective.supersedes, effective.source_event_id, effective.created_at)
+        for (const revision of repo.revisionsBySource('episode', effective.supersedes)) {
+          if (revision.status === 'published' && repo.countActiveReleasesForRevision(revision.revision_id) === 0) {
+            repo.updateRevisionFlow(revision.revision_id, { status: 'retired', eval_report_ref: revision.eval_report_ref })
+          }
+          rebuildArtifactScore(repo, revision.artifact_kind, revision.artifact_id)
+        }
+      }
       if (!r.created) {
         // 仅从已存原件恢复派生投影，不能采用重放请求里冲突的卡片/费用字段。
         const original = r.episode_id ? repo.getEpisode(r.episode_id) : null
@@ -1995,8 +2016,8 @@ function makeHandlers(opts) {
       // L5（§8.1）：episode 落账后重算所涉卡片计分投影（从不可变事实重放，不改历史行）
       if (row.card_id) rebuildArtifactScore(repo, inferKindOf(row.card_id), String(row.card_id))
       return {
-        data: { episode_id: episodeId, recorded: true, outcome: args.outcome },
-        events: [{ name: 'know.episode.recorded', payload: { episode_id: episodeId, source_event_id: row.source_event_id, source_event_name: row.source_event_name, outcome: args.outcome, program_id: row.program_id, exec_run_id: row.exec_run_id } }],
+        data: { episode_id: episodeId, recorded: true, outcome: args.outcome, withdrawn_releases: withdrawn.length },
+        events: [{ name: 'know.episode.recorded', payload: { episode_id: episodeId, source_event_id: row.source_event_id, source_event_name: row.source_event_name, outcome: args.outcome, program_id: row.program_id, exec_run_id: row.exec_run_id, supersedes: row.supersedes, withdrawn_releases: withdrawn.map(r => r.release_id) } }],
         after: { episode_id: episodeId, outcome: args.outcome },
       }
     },
@@ -2922,6 +2943,9 @@ function makeHandlers(opts) {
       const id = String(rel.artifact_id).toUpperCase()
       const reject = (stage, reason) => { excluded.push({ artifact_id: id, stage, reason }) }
       if (!rev || rev.status !== 'published') { reject('lifecycle', 'revision_not_published'); continue }
+      const staleSource = !!rev.needs_revalidate
+        || (rev.source_kind === 'episode' && !!repo.getEpisodeCorrection(rev.source_ref))
+      if (staleSource && !review) { reject('source', 'source_needs_revalidation'); continue }
       let scopeReason = null
       if (rel.scope_type === 'program' && rel.scope_id !== program) scopeReason = program ? 'cross_program' : 'scoped_release_no_program'
       else if (rel.scope_type === 'family' && rel.scope_id !== family) scopeReason = family ? 'family_mismatch' : 'scoped_release_no_family'
@@ -2944,7 +2968,7 @@ function makeHandlers(opts) {
       chosen.set(id, { origin: 'release', artifact_kind: 'vulncard', artifact_id: id,
         revision_id: rev.revision_id, revision_status: rev.status, content,
         content_digest: rev.content_digest, release: rel, priority,
-        executable: !scopeReason && !applicabilityReason })
+        executable: !staleSource && !scopeReason && !applicabilityReason })
     }
     const pool = [...chosen.values()]
     for (const legacy of repo.vcList()) {
