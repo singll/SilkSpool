@@ -1006,6 +1006,8 @@ export const KNOW_MANIFEST = {
     'fact.archived': { handler: 'onFactArchived', mode: 'async', as: 'reactor' },
     // L1（设计 §3）：执行学习记录——消费执行/判定/收尾事件，宿主注入归属落 episode
     'exec.run.completed': { handler: 'onExecRunCompleted', mode: 'async', as: 'reactor' },
+    'exec.run.failed': { handler: 'onExecRunCompleted', mode: 'async', as: 'reactor' },
+    'exec.http.completed': { handler: 'onHttpCompleted', mode: 'async', as: 'reactor' },
     // 21 号方案 §七 Feedback Core 合流：总线按 (event_id, source::pattern) 去重——
     // 同域同 pattern 只能有一个订阅者，蒸馏/记分职责并入 onVulnVerdict（4-1/4-2）
     'vuln.signal.confirmed': { handler: 'onVulnVerdict', mode: 'async', as: 'reactor' },
@@ -3018,7 +3020,7 @@ function makeHandlers(opts) {
     // ---- L1（设计 §3）：执行学习记录订阅。归属全部取自事件信封/payload（可信生产者），
     // 失败返回 ok:false 进入总线可见重试/死信链；重复投递由 know_episode_record 双去重吸收。----
 
-    // exec.run.completed → run 级 episode：exit≠0/错误=infra_error；exit 0 无判定=inconclusive
+    // CLI 终态 → run 级 episode：失败=infra_error；exit 0 无判定=inconclusive
     //（一次 run 可能按 proposal kind 发多条 run.completed——biz_key 去重保证一轮只记一集）
     onExecRunCompleted: async (envelope) => {
       const p = envelope?.payload || {}
@@ -3028,7 +3030,7 @@ function makeHandlers(opts) {
       const reason = exitCode === 0 ? 'run_ok_no_verdict' : (p.error ? 'run_error' : `exit_${exitCode ?? 'null'}`)
       return recordEpisode({
         source_event_id: envelope.id,
-        source_event_name: 'exec.run.completed',
+        source_event_name: envelope.name,
         consumer_version: EPISODE_CONSUMER_VERSION,
         outcome,
         reason_code: reason,
@@ -3038,6 +3040,30 @@ function makeHandlers(opts) {
         evidence_refs: [p.parse_proposal && p.parse_proposal.proposal_file ? p.parse_proposal.proposal_file : `results/${p.run_id}/`],
         observed_at: envelope.ts,
         context: { tool: p.tool || null, stage: p.stage || null, risk: p.risk || null, sandboxed: p.sandboxed ?? null },
+      }, envelope)
+    },
+
+    // Transport completion supplies execution history, never a security verdict.
+    onHttpCompleted: async (envelope) => {
+      const p = envelope?.payload || {}
+      if (!/^r[a-z0-9]+$/.test(p.run_id || '')) return { ok: true, data: { skipped: true } }
+      const observed = p.state === 'observed'
+      const infra = ['timeout', 'transport_error', 'proxy_error', 'response_limit', 'aborted'].includes(p.state)
+        || p.status === 407 || p.status === 429 || p.status >= 500
+      const outcome = infra ? 'infra_error' : observed && [401, 403].includes(p.status) ? 'blocked_auth' : 'inconclusive'
+      return recordEpisode({
+        source_event_id: envelope.id,
+        source_event_name: 'exec.http.completed',
+        consumer_version: EPISODE_CONSUMER_VERSION,
+        outcome,
+        reason_code: observed ? `http_${p.status}_no_verdict` : `http_${p.state || 'unknown'}`,
+        program_id: p.program_id || undefined,
+        exec_run_id: p.run_id,
+        duration_ms: p.elapsed_ms ?? undefined,
+        request_count: Number.isInteger(p.hops) ? p.hops : undefined,
+        evidence_refs: [`results/${p.run_id}/http-record.json`, `results/${p.run_id}/evidence-manifest.json`],
+        observed_at: envelope.ts,
+        context: { state: p.state || null, status: p.status ?? null, request_count_basis: 'attempted_http_hops' },
       }, envelope)
     },
 

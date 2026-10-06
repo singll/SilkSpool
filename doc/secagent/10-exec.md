@@ -332,10 +332,10 @@ page/grep 结果读取拒绝文件/目录符号链接、硬链接与非常规文
 
 | 事件 | 触发 | payload 顶层字段 | 联动 |
 |---|---|---|---|
-| `exec.http.completed` | HTTP 执行签封落盘后 | `run_id,program_id,state,status,elapsed_ms,hops` | 弱（观察事件） |
+| `exec.http.completed` | HTTP 执行签封落盘后 | `run_id,program_id,state,status,elapsed_ms,hops` | 弱（观察事件；2026-10-06本地增量由know记经历，待发布） |
 | `exec.oracle.decided` | 受控验证判定签封落盘后 | `decision_id,verdict,oracle,program_id,finding_id` | 弱（判定事件，学习归因接线待后续） |
 | `exec.run.started` | run_cli 通过守卫链、spawn 前 | `run_id, tool, stage, risk, targets(≤10), program_id` | 弱 |
-| `exec.run.failed` | run 落盘且 exit_code≠0、program 已解析（后处理 ②）| `run_id, tool, host, exit_code, error, program_id` | 弱（fact 域订阅写负知识）|
+| `exec.run.failed` | run 落盘且 exit_code≠0；2026-10-06本地增量移除Program必填条件，待发布 | `run_id, tool, host, exit_code, error, program_id` | 弱（fact记故障；本地增量know记infra_error）|
 | `exec.run.completed` | run 落盘 + 后处理 ①② 之后 | 见 1.5.2 | 弱（asset/endpoint/vuln 订阅入库；可重放） |
 | `exec.worker.spawned` | worker 注册表登记成功 | `run_id, dedupe_key, cwd, timeout_sec, pid, origin_session_id` | **强（sync）**——task 域注册行丢失=dedupe 失效=重复 spawn |
 | `exec.worker.finished` | worker 收尾（done/failed/killed） | `run_id, status, exit_code, duration_ms` | **强（sync）**——终态是 dedupe 真相的一部分；孤儿兜底由 task 域 reap 对账 |
@@ -854,3 +854,5 @@ Bellkeeper运行容器处于running，宿主checkout为`59b1aa3`，核对模型/
 独立pilot批次工具已本地完成原路线租约、现役Scope/S级前检、私有认证和fsync审计，尚未接入常驻exec或默认8899。每批一次连接，TLS不解密，HTTP响应/请求计数和429停止由上层受控HTTP负责；本地TLS通过不等于生产入口可用。业务测试仍限两项目S级，必要Scope内静态依赖按精确资源允许，不能扩大为任意非S API。详见13号及27号§15.28。
 
 2026-10-06受控匿名HTTP接线已按27号§15.76发布：固定d626520，exec58/完整716、隔离应用及worker19、生产静默冒烟通过；bridge安装于pilot-tools/20261006-http。真实目标签封和学习投影仍待验收，单次lease与DNS绑定边界见§15.71。
+
+2026-10-06 L01执行终态增量（本地验收，待发布）：成功CLI在无parser、空stdout或零解析结果时仍发exec.run.completed；已有分kind提案保持兼容。失败CLI即使无Program也保留exec.run.failed。know消费两种终态，成功仅inconclusive、失败infra_error；HTTP终态单独消费并引用签封原件。未发生执行的准入拒绝不创建虚构run。161项exec/know回归包括写失败重试且不重跑CLI；不等于所有attempt判定和私有试点总线已经接通。

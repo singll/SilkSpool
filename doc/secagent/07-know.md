@@ -1205,3 +1205,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-06 §15.46–70合批已部署：版本采用/撤回/评分类型隔离、健康计数与缺测语义、memcore权限指引上线。生产know.health与SQLite及memcore一致；历史采用真实性、可信attempt收益及未测指标仍待补。发布证据见27号§15.73。
 
 2026-10-06 WP11兼容experience启动规则索引改为实际内容一致零写入、变化同SAVEPOINT原子刷新；缺失FTS可修补，来源不可读保留索引。同恢复副本CPU索引20.33秒→约140ms，完整应用验证通过；未生产部署。无需新增业务表，详见27号§15.78。
+
+2026-10-06 L01终态学习增量（本地验收，待发布）：新增exec.run.failed及exec.http.completed订阅。CLI成功为inconclusive，失败为infra_error；HTTP完整响应仍无技术结论，401/403记blocked_auth，407/429/5xx及传输/超时/截断/取消记infra_error，其余未判定状态保持inconclusive。HTTP证据指向http-record.json与evidence-manifest.json，hops仅为执行器尝试跳数，不是目标已接收请求数。真实CLI/HTTP→dispatcher→SQLite共161项回归通过；episode写失败保留事件待重试，恢复后不重跑执行、不重复落账。尚未接入规范attempt最终判定及私有批次总线，不把执行经历当方法收益。

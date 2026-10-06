@@ -69,6 +69,52 @@ function readEvents(dir) {
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
 
+test('27 L01: no-parser, empty-parser and failed CLI reach learning exactly once after replay', async () => {
+  const { dataDir, bus } = makeEnv()
+  assert.equal(bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a) })).ok, true)
+  const initial = await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })
+  assert.equal(initial.ok, true, initial.error?.message)
+  const successful = await bus.dispatch('exec', 'run_cli', { tool: 'echo-test', params: { msg: 'no parser output' } }, { actor: 'model' })
+  const failed = await bus.dispatch('exec', 'run_cli', { tool: 'httpx', params: { fixture: path.join(dataDir, 'missing') } }, { actor: 'model' })
+  fs.writeFileSync(path.join(dataDir, 'empty'), '')
+  const empty = await bus.dispatch('exec', 'run_cli', { tool: 'httpx', params: { fixture: path.join(dataDir, 'empty') } }, { actor: 'model' })
+  assert.equal(successful.ok, true)
+  assert.equal(failed.ok, true)
+  assert.equal(empty.ok, true)
+  await bus._internal.dispatcherTick()
+  const episodes = () => bus._internal.db().prepare('SELECT exec_run_id,outcome FROM learning_episodes').all()
+  assert.equal(episodes().length, 3, 'no-parser runs and unassigned failures cannot disappear from learning history')
+  assert.equal(episodes().find(r => r.exec_run_id === successful.data.run_id)?.outcome, 'inconclusive')
+  assert.equal(episodes().find(r => r.exec_run_id === failed.data.run_id)?.outcome, 'infra_error')
+  assert.equal(episodes().find(r => r.exec_run_id === empty.data.run_id)?.outcome, 'inconclusive')
+  bus._internal.db().prepare('DELETE FROM idempotency').run()
+  const replay = await bus.dispatch('bus', 'replay', { since: 0, limit: 100 }, { actor: 'system' })
+  assert.equal(replay.ok, true, replay.error?.message)
+  assert.deepEqual(replay.data.results.filter(row => row.ok === false), [])
+  assert.equal(episodes().length, 3)
+})
+
+test('27 L01: failed learning writes retry the event without re-executing the CLI', async () => {
+  const { bus, dataDir } = makeEnv()
+  assert.equal(bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a) })).ok, true)
+  assert.equal((await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })).ok, true)
+  const db = bus._internal.db()
+  db.exec("CREATE TRIGGER refuse_episode BEFORE INSERT ON learning_episodes BEGIN SELECT RAISE(ABORT,'fixture unavailable'); END")
+  const run = await bus.dispatch('exec', 'run_cli', { tool: 'echo-test', params: { msg: 'durable event' } }, { actor: 'model' })
+  assert.equal(run.ok, true, run.error?.message)
+  await bus._internal.dispatcherTick()
+  const state = () => db.prepare("SELECT status,retry_count FROM event_outbox WHERE name='exec.run.completed'").get()
+  assert.equal(state().status, 'pending')
+  assert.equal(state().retry_count, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n, 0)
+  db.exec('DROP TRIGGER refuse_episode')
+  db.prepare("UPDATE event_outbox SET next_retry_at=0 WHERE name='exec.run.completed'").run()
+  await bus._internal.dispatcherTick()
+  assert.equal(state().status, 'delivered')
+  assert.equal(db.prepare('SELECT exec_run_id FROM learning_episodes').get().exec_run_id, run.data.run_id)
+  assert.equal(fs.readdirSync(path.join(dataDir, 'results')).length, 1)
+})
+
 test('真实 exec run_id 可用于漏洞证据，裸 ID 与解析器 run_id: 前缀均验证落盘', async () => {
   const { dataDir, bus } = makeEnv()
   assert.equal(bus.registry.register(buildVulnDomain({ dataDir })).ok, true)
@@ -623,6 +669,31 @@ async function authzFixture(t, mode = 'vulnerable', options = {}) {
   const args = { program_id: 'test-src', ...(finding ? { finding_id: finding.data.id } : {}), request_id: obs.data.request_id, own_id: '1', other_id: '2', headers_a: { Authorization: 'Bearer a' }, headers_b: { Authorization: 'Bearer b' } }
   return { bus, dataDir, dir, origin, seen, args, profileFile, setMode: value => { mode = value } }
 }
+
+test('27 L01: HTTP observations and failures reach learning without asserting technical outcomes', async t => {
+  const { bus, dataDir, origin, setMode } = await authzFixture(t, 'public')
+  assert.equal(bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a) })).ok, true)
+  assert.equal((await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })).ok, true)
+  const runs = []
+  for (const [mode, outcome] of [['public', 'inconclusive'], ['invalid_auth', 'blocked_auth'],
+    ['proxy_error', 'infra_error'], ['rate_limited', 'infra_error'], ['server_error', 'infra_error']]) {
+    setMode(mode)
+    const run = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url: origin + '/objects/1' }, { actor: 'model' })
+    assert.equal(run.ok, true, run.error?.message)
+    runs.push({ id: run.data.run_id, outcome })
+  }
+  await bus._internal.dispatcherTick()
+  const episodes = () => bus._internal.db().prepare('SELECT * FROM learning_episodes').all()
+  assert.equal(episodes().length, runs.length)
+  for (const run of runs) {
+    const episode = episodes().find(row => row.exec_run_id === run.id)
+    assert.equal(episode.outcome, run.outcome)
+    assert.equal(episode.source_event_name, 'exec.http.completed')
+    for (const ref of JSON.parse(episode.evidence_refs)) assert.equal(fs.existsSync(path.join(dataDir, ref)), true)
+  }
+  await bus._internal.dispatcherTick()
+  assert.equal(episodes().length, runs.length)
+})
 
 for (const [mode, verdict] of [['vulnerable', 'verified'], ['patched', 'rejected'], ['public', 'inconclusive'], ['invalid_auth', 'inconclusive'], ['proxy_error', 'inconclusive']]) {
   test(`WP02 controlled IDOR ${mode}: execute → decision → capsule → confirm`, async t => {

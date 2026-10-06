@@ -1292,7 +1292,7 @@ function makeHandlers(opts) {
 
       // 单次 CLI 的退出码不是打法链效果，不能伪造 tool:name 的 pb_outcome 回执。
 
-      if (programId && result.code !== 0) {
+      if (result.code !== 0) {
         const why = result.error ? `启动失败: ${result.error}` : result.signal ? `超时/被杀 ${result.signal}` : `exit ${result.code}`
         events.push({ name: 'exec.run.failed', payload: { run_id: runId, tool: toolName, host: targets[0] || 'unknown', exit_code: result.code ?? null, error: result.error || null, program_id: programId, cause: why, duration_ms: meta.duration_ms } })
       }
@@ -1314,6 +1314,14 @@ function makeHandlers(opts) {
         }
       }
 
+      // A completed process is an execution fact even without parser findings.
+      // Existing kind-specific proposals remain available to their consumers.
+      if (result.code === 0 && !events.some(event => event.name === 'exec.run.completed')) {
+        events.push({ name: 'exec.run.completed', payload: {
+          run_id: runId, tool: toolName, stage: meta.stage, risk: meta.risk,
+          exit_code: 0, duration_ms: meta.duration_ms, sandboxed: !!sandbox, program_id: programId,
+        } })
+      }
       compactProposalEvents(events, proposal)
       const lines = stdoutText.split('\n')
       const head = lines.slice(0, 20).join('\n')
