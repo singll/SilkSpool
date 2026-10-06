@@ -1209,3 +1209,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-06 L01终态学习增量（本地验收，待发布）：新增exec.run.failed及exec.http.completed订阅。CLI成功为inconclusive，失败为infra_error；HTTP完整响应仍无技术结论，401/403记blocked_auth，407/429/5xx及传输/超时/截断/取消记infra_error，其余未判定状态保持inconclusive。HTTP证据指向http-record.json与evidence-manifest.json，hops仅为执行器尝试跳数，不是目标已接收请求数。真实CLI/HTTP→dispatcher→SQLite共161项回归通过；episode写失败保留事件待重试，恢复后不重跑执行、不重复落账。尚未接入规范attempt最终判定及私有批次总线，不把执行经历当方法收益。
 
 2026-10-06 D07伴随增量（本地验收，待发布）：exec.run.failed优先于exit_code判断经历，失败事件即使exit0也为infra_error；避免收到取消/超时后主动退出0的工具被误记正常执行。
+
+2026-10-06发布回填：cb3134f学习/评测/正式技术指标/索引合批已按新冻结、隔离应用、生产RPC及UI80验收部署，详见27号§15.82。L01/D07后续增量72c8233/94d8c9d尚未部署；不改写历史验收。

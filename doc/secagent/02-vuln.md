@@ -924,3 +924,5 @@ export const repositoryV1 = {
 新登记记录在findings保存`discovery_origin=candidate|direct_signal`，候选保存`candidate_entered_at`，晋升/提交/忽略不改首次来源。旧行NULL表示未知，不用当前noise猜测历史入池。`vuln_technical_verdicts`是本域拥有的追加回执表：id/finding_id/verdict/basis/evidence_ref/evidence_digest/evidence_json/operator/created_at。confirm仅在原证据门通过后与状态变更同事务写confirmed，区分controlled_oracle与independent_review；保存当时capsule/审校正文及引用摘要。false_positive追加反证回执；dup/ignored/vendor反馈不撤销技术确认。写回执失败回滚confirm，重复终态确认不能多写。
 
 `vuln_evidence_flags`支持limit（实际上限500）/offset、独立total与meta.paged，返回首次来源及最新回执id/verdict/basis/time。`has_capsule`仅是文本引用，不能判技术确认。回执表示当时经过确认门，查询不触发目标请求或把旧证据时效当作当前重新复现；历史回填/证据损坏重审仍待后续。eval通过本查询聚合，不跨域读表。
+
+2026-10-06发布回填：cb3134f学习/评测/正式技术指标/索引合批已按新冻结、隔离应用、生产RPC及UI80验收部署，详见27号§15.82。L01/D07后续增量72c8233/94d8c9d尚未部署；不改写历史验收。
