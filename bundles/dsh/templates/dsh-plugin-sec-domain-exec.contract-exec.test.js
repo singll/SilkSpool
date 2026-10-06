@@ -69,6 +69,60 @@ function readEvents(dir) {
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
 
+test('27 D07: CLI parent completion reaps background writers before returning', async t => {
+  const { bus, dataDir } = makeEnv()
+  const pidFile = path.join(dataDir, 'background.pid')
+  const marker = path.join(dataDir, 'background-writes')
+  const fixture = path.join(dataDir, 'background-parent.cjs')
+  fs.writeFileSync(fixture, `const {spawn}=require('node:child_process'); const fs=require('node:fs');
+    const child=spawn(process.execPath,['-e',${JSON.stringify(`setInterval(()=>require('node:fs').appendFileSync(${JSON.stringify(marker)},'x'),20)`)}],{stdio:'ignore'});
+    fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid)); child.unref(); console.log('parent complete');`)
+  t.after(() => { if (fs.existsSync(pidFile)) { try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL') } catch {} } })
+  writeManifest(dataDir, 'background-test', `name: background-test\nbinary: ${process.execPath}\nrisk: passive\ntimeout: 2\nargs_template: "${fixture}"\n`)
+  const run = await bus.dispatch('exec', 'run_cli', { tool: 'background-test', params: {} }, { actor: 'model' })
+  assert.equal(run.ok, true, run.error?.message)
+  assert.equal(run.data.exit_code, 0)
+  const size = () => fs.existsSync(marker) ? fs.statSync(marker).size : 0
+  const before = size()
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(size(), before, 'no descendant may continue writing after CLI completion')
+  assert.match(run.data.summary, /parent complete/)
+})
+
+for (const mode of ['timeout', 'cancel']) test(`27 D07: CLI ${mode} kills TERM-resistant descendants and retains both output tails`, async t => {
+  const { bus, dataDir } = makeEnv()
+  const fixture = path.join(dataDir, 'resistant-parent.cjs')
+  const marker = path.join(dataDir, 'resistant-writes')
+  const pidFile = path.join(dataDir, 'resistant.pid')
+  const ready = path.join(dataDir, 'ready')
+  const controller = new AbortController()
+  const childScript = `process.on('SIGTERM',()=>{});setInterval(()=>require('node:fs').appendFileSync(${JSON.stringify(marker)},'x'),20)`
+  fs.writeFileSync(fixture, `const {spawn}=require('node:child_process');const fs=require('node:fs');
+    process.on('SIGTERM',()=>{});const child=spawn(process.execPath,['-e',${JSON.stringify(childScript)}],{stdio:'inherit'});
+    fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));process.stdout.write('STDOUT_END');process.stderr.write('STDERR_END');
+    fs.writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`)
+  t.after(() => { if (fs.existsSync(pidFile)) { try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL') } catch {} } })
+  writeManifest(dataDir, 'resistant-test', `name: resistant-test\nbinary: ${process.execPath}\nrisk: passive\ntimeout: ${mode === 'timeout' ? 0.5 : 5}\nargs_template: "${fixture}"\n`)
+  const pending = bus.dispatch('exec', 'run_cli', { tool: 'resistant-test', params: {} }, { actor: 'model', signal: controller.signal })
+  if (mode === 'cancel') {
+    const deadline = Date.now() + 4000
+    while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(fs.existsSync(ready), true)
+    controller.abort()
+  }
+  const run = await pending
+  assert.equal(run.ok, true, run.error?.message)
+  assert.notEqual(run.data.exit_code, 0)
+  assert.equal(run.data.cancelled, mode === 'cancel')
+  assert.equal(run.data.timed_out, mode === 'timeout')
+  assert.match(run.data.summary, /STDOUT_END/)
+  assert.match(run.data.stderr_tail, /STDERR_END/)
+  const size = () => fs.existsSync(marker) ? fs.statSync(marker).size : 0
+  const before = size()
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(size(), before)
+})
+
 test('27 L01: no-parser, empty-parser and failed CLI reach learning exactly once after replay', async () => {
   const { dataDir, bus } = makeEnv()
   assert.equal(bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a) })).ok, true)

@@ -3026,8 +3026,9 @@ function makeHandlers(opts) {
       const p = envelope?.payload || {}
       if (!p.run_id) return { ok: true, data: { skipped: true } }
       const exitCode = p.exit_code ?? null
-      const outcome = exitCode === 0 ? 'inconclusive' : 'infra_error'
-      const reason = exitCode === 0 ? 'run_ok_no_verdict' : (p.error ? 'run_error' : `exit_${exitCode ?? 'null'}`)
+      const successful = envelope.name !== 'exec.run.failed' && exitCode === 0 && !p.error
+      const outcome = successful ? 'inconclusive' : 'infra_error'
+      const reason = successful ? 'run_ok_no_verdict' : (p.error ? 'run_error' : `exit_${exitCode ?? 'null'}`)
       return recordEpisode({
         source_event_id: envelope.id,
         source_event_name: envelope.name,

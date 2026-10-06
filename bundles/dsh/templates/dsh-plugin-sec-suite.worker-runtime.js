@@ -252,14 +252,13 @@ export function workerGroupMembers(pgid) {
   return members
 }
 
-export async function executeWorkerProcess({ node, args, env, cwd, runDir, runId, timeoutMs,
-  signal, onSpawn, persistence, graceMs = 1000 }) {
-  if (!RUN_ID.test(runId) || !Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('E_WORKER_LAUNCH: 启动参数无效')
+// Shared lifecycle for CLI and headless workers. A parent exit is not group completion.
+export async function executeManagedProcess({ command, args, env, cwd, stdio, timeoutMs,
+  signal, onSpawn, graceMs = 1000 }) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('E_PROCESS_TIMEOUT')
   const startedAt = Date.now()
-  const nonce = crypto.randomBytes(24).toString('hex')
   let child, killer, escalation, spawnError
   let timedOut = false, cancelled = !!signal?.aborted
-  const fd = fs.openSync(path.join(runDir, 'worker.log'), 'wx', 0o600)
   const killGroup = sig => {
     if (child?.pid > 1) { try { process.kill(-child.pid, sig) } catch (error) { if (error.code !== 'ESRCH') throw error } }
   }
@@ -271,10 +270,7 @@ export async function executeWorkerProcess({ node, args, env, cwd, runDir, runId
   let result = { code: null, signal: null }
   try {
     if (!cancelled) {
-      // 直接写同一个文件描述符，避免 stdout/stderr 的两个 pipe 先后 end 丢日志。
-      // stdin 明确关闭；普通子进程不会因等待输入阻止收尾。
-      child = spawn(node, args, { cwd, detached: true, stdio: ['ignore', fd, fd],
-        env: { ...env, SEC_WORKER_RUN_ID: runId, SEC_WORKER_LAUNCH_NONCE: nonce } })
+      child = spawn(command, args, { cwd, detached: true, stdio, env })
       const closed = new Promise(resolve => {
         child.once('error', error => { spawnError = error.message })
         child.once('close', (code, childSignal) => resolve({ code, signal: childSignal }))
@@ -282,14 +278,9 @@ export async function executeWorkerProcess({ node, args, env, cwd, runDir, runId
       signal?.addEventListener('abort', abort, { once: true })
       if (signal?.aborted) abort()
       killer = setTimeout(() => { timedOut = true; stop() }, timeoutMs)
-      try {
-        if (child.pid && onSpawn) await onSpawn({ pid: child.pid, startedAt })
-        if (child.pid) fs.writeFileSync(path.join(runDir, 'worker-ack.json'),
-          JSON.stringify({ run_id: runId, nonce, pid: child.pid }), { flag: 'wx', mode: 0o600 })
-      }
+      try { if (child.pid && onSpawn) await onSpawn({ pid: child.pid, startedAt }) }
       catch (error) { spawnError = error.message; stop() }
       result = await closed
-      // 正常主进程退出也不能留下继承了进程组的后台写者。
       if (workerGroupMembers(child.pid).length) {
         stop()
         const deadline = Date.now() + graceMs + 2000
@@ -301,12 +292,33 @@ export async function executeWorkerProcess({ node, args, env, cwd, runDir, runId
     clearTimeout(killer)
     clearTimeout(escalation)
     signal?.removeEventListener('abort', abort)
+  }
+  return { ...result, ...(spawnError ? { error: spawnError } : {}), pid: child?.pid || null,
+    timed_out: timedOut, cancelled, startedAt, finishedAt: Date.now() }
+}
+
+export async function executeWorkerProcess({ node, args, env, cwd, runDir, runId, timeoutMs,
+  signal, onSpawn, persistence, graceMs = 1000 }) {
+  if (!RUN_ID.test(runId) || !Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('E_WORKER_LAUNCH: 启动参数无效')
+  const nonce = crypto.randomBytes(24).toString('hex')
+  const fd = fs.openSync(path.join(runDir, 'worker.log'), 'wx', 0o600)
+  let result
+  try {
+    result = await executeManagedProcess({ command: node, args, cwd, timeoutMs, signal, graceMs,
+      stdio: ['ignore', fd, fd], env: { ...env, SEC_WORKER_RUN_ID: runId, SEC_WORKER_LAUNCH_NONCE: nonce },
+      onSpawn: async info => {
+        if (onSpawn) await onSpawn(info)
+        fs.writeFileSync(path.join(runDir, 'worker-ack.json'),
+          JSON.stringify({ run_id: runId, nonce, pid: info.pid }), { flag: 'wx', mode: 0o600 })
+      } })
+  } finally {
     fs.fsyncSync(fd)
     fs.closeSync(fd)
   }
+  const { startedAt } = result
   const finishedAt = Date.now()
-  const session = persistence && child?.pid
-    ? await verifyWorkerSession({ runDir, runId, nonce, pid: child.pid, cwd, startedAt, finishedAt, persistence })
+  const session = persistence && result.pid
+    ? await verifyWorkerSession({ runDir, runId, nonce, pid: result.pid, cwd, startedAt, finishedAt, persistence })
     : { id: null, code: 'E_WORKER_SESSION_PERSISTENCE' }
   let budget = null
   try {
@@ -317,6 +329,5 @@ export async function executeWorkerProcess({ node, args, env, cwd, runDir, runId
       budget = counts
     }
   } catch {}
-  return { ...result, ...(spawnError ? { error: spawnError } : {}), pid: child?.pid || null, budget,
-    timed_out: timedOut, cancelled, startedAt, finishedAt, session_id: session.id, session_diagnostic: session.code || null }
+  return { ...result, budget, startedAt, finishedAt, session_id: session.id, session_diagnostic: session.code || null }
 }

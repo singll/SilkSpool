@@ -19,7 +19,7 @@ import * as http from 'node:http'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { ORACLES, ORACLE_VERDICTS, routeFlowsSignal, visionTriageRubric, detectInjectionPatterns, fenceUntrusted } from '../sec-rules-hypothesis/index.js'
-import { executeWorkerProcess } from '../sec-suite/worker-runtime.js'
+import { executeWorkerProcess, executeManagedProcess } from '../sec-suite/worker-runtime.js'
 import { compactProposalEvents } from '../sec-suite/parse-proposal.js'
 
 export const name = 'sec-domain-exec'
@@ -1267,40 +1267,38 @@ function makeHandlers(opts) {
       const spawnCmd = sandbox ? sandbox.cmd : binary
       const spawnArgs = sandbox ? sandbox.args : argv
       const events = [{ name: 'exec.run.started', payload: { run_id: runId, tool: toolName, stage: manifest.stage || null, risk: manifest.risk || 'passive', targets: targets.slice(0, 10), program_id: programId } }]
-      const result = await new Promise((resolve) => {
-        let child
-        try { child = spawn(spawnCmd, spawnArgs, { env, cwd: runDir, stdio: ['ignore', 'pipe', 'pipe'] }) } catch (e) { resolve({ error: `启动失败: ${e.message}`, code: null }); return }
-        const out = fs.createWriteStream(path.join(runDir, 'stdout.log'))
-        child.stdout.pipe(out)
-        const errBuf = []
-        child.stderr.on('data', (d) => { errBuf.push(d); if (Buffer.concat(errBuf).length > 65536) errBuf.splice(0, errBuf.length - 1) })
-        const killer = setTimeout(() => { child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 5000).unref() }, timeoutMs)
-        let settled = false
-        let childDone = false
-        let streamDone = false
-        const finalize = (payload) => { if (settled) return; settled = true; clearTimeout(killer); resolve({ ...payload, stderr: Buffer.concat(errBuf).toString('utf8') }) }
-        out.on('finish', () => { streamDone = true; if (childDone) finalize({ code: childExitCode, signal: childSignal }) })
-        let childExitCode = null
-        let childSignal = null
-        child.on('error', (e) => { childDone = true; finalize({ error: String(e.message), code: null }) })
-        child.on('close', (code, signal) => { childExitCode = code; childSignal = signal; childDone = true; if (streamDone) finalize({ code, signal }) })
-      })
-      const meta = { run_id: runId, tool: toolName, argv: [binary, ...argv], params, started_at: new Date(started).toISOString(), duration_ms: Date.now() - started, exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null, risk: manifest.risk || 'passive', stage: manifest.stage || null, sandboxed: !!sandbox, session_id: sessionId, program_id: programId }
+      // Direct file descriptors finish after the entire process group is reaped.
+      const stdoutFd = fs.openSync(path.join(runDir, 'stdout.log'), 'wx', 0o600)
+      let stderrFd, result
+      try {
+        stderrFd = fs.openSync(path.join(runDir, 'stderr.log'), 'wx', 0o600)
+        result = await executeManagedProcess({ command: spawnCmd, args: spawnArgs, env, cwd: runDir,
+          stdio: ['ignore', stdoutFd, stderrFd], timeoutMs, signal: ctx.signal, graceMs: 1000 })
+      } finally {
+        try { try { fs.fsyncSync(stdoutFd) } finally { fs.closeSync(stdoutFd) } }
+        finally { if (stderrFd != null) { try { fs.fsyncSync(stderrFd) } finally { fs.closeSync(stderrFd) } } }
+      }
+      const tailFd = fs.openSync(path.join(runDir, 'stderr.log'), 'r')
+      try {
+        const size = fs.fstatSync(tailFd).size, buffer = Buffer.alloc(Math.min(size, 65536))
+        fs.readSync(tailFd, buffer, 0, buffer.length, Math.max(0, size - buffer.length))
+        result.stderr = buffer.toString('utf8')
+      } finally { fs.closeSync(tailFd) }
+      const meta = { run_id: runId, tool: toolName, argv: [binary, ...argv], params, started_at: new Date(started).toISOString(), duration_ms: Date.now() - started, exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null, cancelled: result.cancelled, timed_out: result.timed_out, risk: manifest.risk || 'passive', stage: manifest.stage || null, sandboxed: !!sandbox, session_id: sessionId, program_id: programId }
       repo.writeCmd(runDir, (sandbox ? '[sandbox] ' : '') + [binary, ...argv].join(' ') + '\n')
       repo.writeMeta(runDir, meta)
-      fs.writeFileSync(path.join(runDir, 'stderr.log'), result.stderr || '')
 
       // 单次 CLI 的退出码不是打法链效果，不能伪造 tool:name 的 pb_outcome 回执。
 
-      if (result.code !== 0) {
-        const why = result.error ? `启动失败: ${result.error}` : result.signal ? `超时/被杀 ${result.signal}` : `exit ${result.code}`
-        events.push({ name: 'exec.run.failed', payload: { run_id: runId, tool: toolName, host: targets[0] || 'unknown', exit_code: result.code ?? null, error: result.error || null, program_id: programId, cause: why, duration_ms: meta.duration_ms } })
+      if (result.code !== 0 || result.error || result.cancelled || result.timed_out) {
+        const why = result.error ? `执行失败: ${result.error}` : result.cancelled ? 'cancelled' : result.timed_out ? 'timeout' : result.signal ? `被杀 ${result.signal}` : `exit ${result.code}`
+        events.push({ name: 'exec.run.failed', payload: { run_id: runId, tool: toolName, host: targets[0] || 'unknown', exit_code: result.code ?? null, error: result.error || null, cancelled: result.cancelled, timed_out: result.timed_out, program_id: programId, cause: why, duration_ms: meta.duration_ms } })
       }
 
       let stdoutText = ''
       try { stdoutText = repo.readFile(path.join(runDir, 'stdout.log')) || '' } catch { /* 无输出 */ }
       // parser proposal（store 语义废止：只写 proposal.json + 事件，不落库）
-      const proposal = (manifest.parser && result.code === 0 && stdoutText) ? runParser(manifest, toolName, runId, stdoutText, programId) : null
+      const proposal = (manifest.parser && result.code === 0 && !result.error && !result.cancelled && !result.timed_out && stdoutText) ? runParser(manifest, toolName, runId, stdoutText, programId) : null
       if (proposal) repo.writeProposal(runDir, proposal)
       if (proposal) {
         if (proposal.counts.assets > 0 || proposal.counts.fingerprints > 0) {
@@ -1316,7 +1314,7 @@ function makeHandlers(opts) {
 
       // A completed process is an execution fact even without parser findings.
       // Existing kind-specific proposals remain available to their consumers.
-      if (result.code === 0 && !events.some(event => event.name === 'exec.run.completed')) {
+      if (result.code === 0 && !result.error && !result.cancelled && !result.timed_out && !events.some(event => event.name === 'exec.run.completed')) {
         events.push({ name: 'exec.run.completed', payload: {
           run_id: runId, tool: toolName, stage: meta.stage, risk: meta.risk,
           exit_code: 0, duration_ms: meta.duration_ms, sandboxed: !!sandbox, program_id: programId,
@@ -1327,9 +1325,10 @@ function makeHandlers(opts) {
       const head = lines.slice(0, 20).join('\n')
       const data = {
         run_id: runId, exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null,
+        cancelled: result.cancelled, timed_out: result.timed_out,
         duration_ms: meta.duration_ms, total_lines: lines.length, summary: head, sandboxed: !!sandbox, program_id: programId,
         parse_counts: proposal ? proposal.counts : null,
-        ...(result.code !== 0 ? { stderr_tail: String(result.stderr || '').slice(-2000) } : {}),
+        ...(result.code !== 0 || result.error || result.cancelled || result.timed_out ? { stderr_tail: String(result.stderr || '').slice(-2000) } : {}),
       }
       if (lines.length > 20) data.hint = `输出共 ${lines.length} 行，仅显示前 20 行；用 exec_grep_result/exec_page_result 按需取`
       return { data, events, after: { run_id: runId, exit_code: result.code ?? null } }

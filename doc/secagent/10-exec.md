@@ -856,3 +856,5 @@ Bellkeeper运行容器处于running，宿主checkout为`59b1aa3`，核对模型/
 2026-10-06受控匿名HTTP接线已按27号§15.76发布：固定d626520，exec58/完整716、隔离应用及worker19、生产静默冒烟通过；bridge安装于pilot-tools/20261006-http。真实目标签封和学习投影仍待验收，单次lease与DNS绑定边界见§15.71。
 
 2026-10-06 L01执行终态增量（本地验收，待发布）：成功CLI在无parser、空stdout或零解析结果时仍发exec.run.completed；已有分kind提案保持兼容。失败CLI即使无Program也保留exec.run.failed。know消费两种终态，成功仅inconclusive、失败infra_error；HTTP终态单独消费并引用签封原件。未发生执行的准入拒绝不创建虚构run。161项exec/know回归包括写失败重试且不重跑CLI；不等于所有attempt判定和私有试点总线已经接通。
+
+2026-10-06 D07增量（本地验收，待发布）：CLI与headless共用executeManagedProcess；detached进程组在父退出/超时/取消后TERM→1秒KILL，完成后校验无非僵尸组内成员。CLI双输出直接落文件，fsync/close后解析，返回及meta增加cancelled/timed_out；受取消/超时或残留错误影响的exit0仍走failed。未改变请求Scope或预算，主动脱离进程组的进程需外部隔离边界。164项exec/know、24项worker及730项跨域验证通过。
