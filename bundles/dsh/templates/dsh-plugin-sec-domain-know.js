@@ -704,15 +704,15 @@ export const KNOW_MANIFEST = {
         path: str({ default: '' }),
         evidence_ref: str({ default: '' }),
         source_event_id: str({ default: '' }),
-        episode_id: str({ default: '' }),
-      }, ['finding_id', 'vuln_type']),
-      idempotent: 'auto',
-      idempotent_fields: ['finding_id', 'vuln_type'],
+        episode_id: str({ minLength: 1 }),
+      }, ['episode_id']),
+      // Recheck current evidence on every call; revision content deduplicates proposals.
+      idempotent: 'none',
       events: ['know.distill.proposed'],
       event_limit: 1,
       invariants: [],
       timeout_ms: 60000,
-      agent_note: '（reactor 专用，模型不可见）蒸馏 reactor 落点（§4-1）：oracle-verified 判定 → 去特化经验卡候选（栈×参数形态×漏洞类聚合，剥离目标细节成战术骨架）→ know_revision_propose(source_kind=episode)。不蒸失败局/无 verdict 的 episode；候选≠发布，走 L2–L4 治理链。',
+      agent_note: '（reactor 专用）以 episode_id 读取签封阳性/可靠阴性原件，提取受控方法的前置、步骤、反证及停止条件；缺可迁移方法则跳过。来源留在 revision 快照，候选内容不含目标细节；候选仍须评测与审批。',
       deprecated: false,
     },
     // C31（L5，设计 §8.1）：计分重算。从不可变事实（曝光/采用/episode/有效反馈）重放重建 know_scores 投影；
@@ -1009,8 +1009,9 @@ export const KNOW_MANIFEST = {
     'exec.run.failed': { handler: 'onExecRunCompleted', mode: 'async', as: 'reactor' },
     'exec.http.completed': { handler: 'onHttpCompleted', mode: 'async', as: 'reactor' },
     'exec.oracle.decided': { handler: 'onOracleDecided', mode: 'async', as: 'reactor' },
+    'know.episode.recorded': { handler: 'onEpisodeRecorded', mode: 'async', as: 'reactor' },
     // 21 号方案 §七 Feedback Core 合流：总线按 (event_id, source::pattern) 去重——
-    // 同域同 pattern 只能有一个订阅者，蒸馏/记分职责并入 onVulnVerdict（4-1/4-2）
+    // 同域同 pattern 只能有一个订阅者；判定落账后由 episode 事件独立触发蒸馏
     'vuln.signal.confirmed': { handler: 'onVulnVerdict', mode: 'async', as: 'reactor' },
     'vuln.signal.rejected': { handler: 'onVulnVerdict', mode: 'async', as: 'reactor' },
     // Compatibility consumer acknowledges operational events without technical learning.
@@ -2021,7 +2022,10 @@ function makeHandlers(opts) {
         snapshot = { doc_id: doc.id, title: doc.title, body_revision: doc.body_revision || 1, content_hash: doc.content_hash || null, url: doc.source_url || null }
       } else if (args.source_kind === 'episode') {
         const ep = repo.getEpisode(args.source_ref)
-        snapshot = { episode_id: ep.episode_id, outcome: ep.outcome, reason_code: ep.reason_code, program_id: ep.program_id, exec_run_id: ep.exec_run_id }
+        snapshot = { episode_id: ep.episode_id, outcome: ep.outcome, reason_code: ep.reason_code,
+          program_id: ep.program_id, exec_run_id: ep.exec_run_id, attempt_id: ep.attempt_id,
+          source_event_id: ep.source_event_id, source_credibility: ep.source_credibility,
+          evidence_refs: JSON.parse(ep.evidence_refs || '[]') }
       } else {
         snapshot = { seed: args.source_ref }
       }
@@ -2272,47 +2276,50 @@ function makeHandlers(opts) {
       }
     },
 
-    // 21 号方案 §4-1：蒸馏 reactor 落点——episode/verdict → 去特化经验卡候选 → L2 治理链
-    // 不蒸失败局（rejected/inconclusive）、不蒸无 vuln_type 的 episode；候选≠发布。
+    // Signed positive/clean episodes supply concrete methods; candidates still require evaluation.
     know_distill_verdict: async (args, repo, ctx) => {
       if (!dispatchRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 dispatch 不可达', '确认 know 域已注册', true)
+      const episodeId = String(args.episode_id || '')
+      const episode = repo.getEpisode(episodeId)
+      if (!episode || !['confirmed', 'valid_clean'].includes(episode.outcome) || episode.source_event_name !== 'exec.oracle.decided'
+        || episode.source_credibility !== 'machine' || repo.getEpisodeCorrection(episodeId)) {
+        throwErr('E_INVARIANT', '蒸馏须引用尚未更正的签封技术阳性或可靠阴性经历', '先读取正式 Oracle 原件并落账，旧确认标签不足以证明技术结果', false)
+      }
+      const result = await queryRef?.('exec', 'authz_evidence', { decision_id: episode.exec_run_id }, { actor: 'reactor' })
+      if (!result?.ok) throwErr(result?.error?.code || 'E_BACKEND_UNAVAILABLE', result?.error?.message || '签封原件不可读', null, true)
+      const decision = result.data
+      if (decision.verdict !== (episode.outcome === 'confirmed' ? 'verified' : 'rejected')
+        || (args.finding_id != null && decision.finding_id !== args.finding_id)
+        || (args.program_id && decision.program_id !== args.program_id) || decision.program_id !== episode.program_id
+        || episode.attempt_id !== `decision:${decision.decision_id}`
+        || (args.vuln_type && decision.target?.vuln_class !== args.vuln_type)) {
+        throwErr('E_INVARIANT', '蒸馏来源与签封判定的结果、归属或类型不一致', null, false)
+      }
+      const evidenceRef = `results/${decision.decision_id}/authz-decision.json`
+      if (!JSON.parse(episode.evidence_refs || '[]').includes(evidenceRef)) {
+        throwErr('E_INVARIANT', 'episode 缺签封判定原件引用', null, false)
+      }
       const candidate = distillEpisode({
-        outcome: 'confirmed',
-        context: {
-          vuln_type: args.vuln_type, host: args.host || '', param: args.param || '',
-          param_shape: args.param_shape || '', stack: args.stack || '', path: args.path || '',
-        },
-        evidence_refs: args.evidence_ref ? [args.evidence_ref] : [],
+        outcome: episode.outcome,
+        decision,
       })
-      if (!candidate) throwErr('E_INVARIANT', '该判定不可蒸馏（非正例/缺 vuln_type）', '不蒸失败局、不蒸无 verdict 的 episode（§4-1）')
+      if (!candidate) return { data: { distilled: false, skipped: 'no_transferable_method' } }
       const content = {
-        scenario: candidate.scenario, takeaway: candidate.takeaway, kind: 'card',
-        tags: candidate.tags, aggregate_key: candidate.aggregate_key,
+        ...candidate,
         confidence: 'low', // 蒸馏候选初始低置信——由真实反馈（wins/fails）校准
-        evidence: candidate.evidence,
-        source_finding_id: Number(args.finding_id),
-        source_event_id: args.source_event_id || '',
       }
-      // 聚合键幂等：同 栈×参数形态×漏洞类 蒸馏收敛到同一 artifact_id（升版走 revision 链）
+      // 同受控方法/结论收敛到同一 artifact，内容级去重不复制目标详情。
       const artifactId = `distill-${sha1(candidate.aggregate_key).slice(0, 12)}`
-      // L2 来源锚定：source_kind=episode 要求 source_ref=episode_id（revisionSourceTrusted fail-closed）
-      let episodeId = String(args.episode_id || '')
-      if (!episodeId && typeof repo.listEpisodes === 'function') {
-        const eps = repo.listEpisodes({ limit: 50 }) || {}
-        const hit = (eps.rows || []).find((e) => e.attempt_id === `finding:${args.finding_id}` && e.outcome === 'confirmed')
-        if (hit) episodeId = hit.episode_id
-      }
-      if (!episodeId) throwErr('E_INVARIANT', '蒸馏缺 episode 锚点（episode_id 不可解析）', '先经 vuln.signal.confirmed 事件链落 episode 再蒸馏；手工调用须显式传 episode_id')
       // L2 治理边界：提案 actor 用 script（蒸馏产物=机器候选，与种子同权；reactor 不在提案白名单）
       const r = await dispatchRef('know', 'revision_propose', {
         artifact_kind: 'exp_card', artifact_id: artifactId, content,
         source_kind: 'episode', source_ref: episodeId,
-        change_note: `蒸馏候选：${candidate.aggregate_key}（finding #${args.finding_id} oracle-verified 去特化，episode ${episodeId}）`,
+        change_note: `蒸馏候选：${candidate.aggregate_key}（签封 ${episode.outcome}，episode ${episodeId}）`,
       }, { actor: 'script', cause: ctx?.cause })
       if (!r || !r.ok) throwErr(r?.error?.code || 'E_INTERNAL', r?.error?.message || 'revision_propose 失败', r?.error?.hint || '', false)
       return {
         data: { distilled: true, artifact_id: artifactId, revision_id: r.data.revision_id ?? null, aggregate_key: candidate.aggregate_key },
-        events: [{ name: 'know.distill.proposed', payload: { artifact_id: artifactId, revision_id: r.data.revision_id ?? null, aggregate_key: candidate.aggregate_key, finding_id: Number(args.finding_id), vuln_type: String(args.vuln_type) } }],
+        events: r.data.recorded === false ? [] : [{ name: 'know.distill.proposed', payload: { artifact_id: artifactId, revision_id: r.data.revision_id ?? null, aggregate_key: candidate.aggregate_key, finding_id: decision.finding_id, vuln_type: decision.target.vuln_class } }],
         after: { artifact_id: artifactId },
       }
     },
@@ -2986,6 +2993,16 @@ function makeHandlers(opts) {
   const subscribers = {
     onFactBbPublished: async (envelope) => ({ ok: true, data: { skipped: true } }),
     onFactArchived: async (envelope) => ({ ok: true, data: { skipped: true } }),
+    // The episode and its child event commit together. Distillation has its own
+    // durable retry/dead-letter record; it never re-executes the experiment.
+    onEpisodeRecorded: async (envelope) => {
+      const p = envelope?.payload || {}
+      if (p.source_event_name !== 'exec.oracle.decided' || !['confirmed', 'valid_clean'].includes(p.outcome)) {
+        return { ok: true, data: { skipped: true } }
+      }
+      if (!dispatchRef) return { ok: false, error: { code: 'E_BACKEND_UNAVAILABLE', message: 'no dispatch ref' } }
+      return dispatchRef('know', 'distill_verdict', { episode_id: p.episode_id }, { actor: 'reactor', cause: envelope })
+    },
 
     // ---- L3（设计 §6.3/§7.3）：候选评测流转订阅。输入只取事件信封/payload（可信生产者=eval 域），
     // digest 锚定校验在 C25 命令体内 fail-closed；失败返回 ok:false 进总线可见重试/死信链。----
@@ -3115,6 +3132,10 @@ function makeHandlers(opts) {
         if (technicalReceipt.finding_id !== p.finding_id || technicalReceipt.verdict !== 'confirmed'
           || technicalReceipt.program_id !== p.program_id) return { ok: false, error: { code: 'E_EXEC_EVIDENCE_UNTRUSTED', message: 'technical receipt association mismatch' } }
       }
+      if (name === 'vuln.signal.confirmed' && !technicalReceipt) {
+        outcome = 'inconclusive'
+        reason = 'legacy_unverified_confirmation'
+      }
       const ep = technicalReceipt?.basis === 'controlled_oracle' && technicalReceipt.decision_id
         ? await subscribers.onOracleDecided({ ...envelope, payload: { decision_id: technicalReceipt.decision_id,
           program_id: technicalReceipt.program_id, finding_id: technicalReceipt.finding_id } })
@@ -3122,32 +3143,19 @@ function makeHandlers(opts) {
         source_event_id: envelope.id,
         source_event_name: name,
         consumer_version: EPISODE_CONSUMER_VERSION,
+        program_id: p.program_id || undefined,
         outcome,
         reason_code: reason,
         exec_run_id: runId || undefined,
         attempt_id: `finding:${p.finding_id}`,
         evidence_refs: p.evidence_ref ? [String(p.evidence_ref).slice(0, 300)] : undefined,
-        source_credibility: technicalReceipt?.basis === 'independent_review' ? 'human-reviewed'
-          : envelope.actor === 'model' ? 'model-proposed' : 'machine',
+        source_credibility: technicalReceipt?.basis === 'independent_review' ? 'human-reviewed' : 'model-proposed',
         observed_at: envelope.ts,
-        context: { finding_id: p.finding_id, verdict: p.verdict || null, vuln_type: p.vuln_type || null },
+        context: { finding_id: p.finding_id, verdict: p.verdict || null, vuln_type: p.vuln_type || null,
+          claimed_outcome: name === 'vuln.signal.confirmed' ? 'confirmed' : null,
+          technical_verdict_id: technicalReceipt?.id || null },
       }, envelope)
       if (!ep.ok) return ep
-      // 21 号方案 §4-1 蒸馏 reactor（合流）：oracle-verified 判定（evidence=capsule:{id}）→
-      // 去特化经验卡候选进 L2 治理链。人工确认无 oracle 证据不蒸馏（B3 幻觉保底）；
-      // 蒸馏失败不吞 episode 已落账事实，显式 partial 进重试链。
-      if (name === 'vuln.signal.confirmed' && p.vuln_type && String(p.evidence_ref || '').startsWith('capsule:') && dispatchRef) {
-        const r = await dispatchRef('know', 'distill_verdict', {
-          finding_id: Number(p.finding_id), vuln_type: String(p.vuln_type),
-          host: p.host || '', program_id: p.program_id || '',
-          evidence_ref: String(p.evidence_ref || ''), source_event_id: envelope.id || '',
-          episode_id: ep.data?.episode_id || '',
-        }, { actor: 'reactor', cause: envelope })
-        if (!r || !r.ok) {
-          return { ok: true, data: { partial: true, episode: ep.data, distill_error: r?.error?.code || 'E_INTERNAL' } }
-        }
-        return { ok: true, data: { episode: ep.data, distilled: r.data } }
-      }
       return ep
     },
 

@@ -1213,3 +1213,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-06发布回填：cb3134f学习/评测/正式技术指标/索引合批已按新冻结、隔离应用、生产RPC及UI80验收部署，详见27号§15.82。L01/D07后续增量72c8233/94d8c9d尚未部署；不改写历史验收。
 
 2026-10-06 L01/L02增量（本地，待发布）：exec.oracle.decided通过exec.authz_evidence读取签封判定，decision ID即attempt身份；可信verified/rejected映射confirmed/valid_clean，异常按前置状态归类。Program/request/task/原始执行session及成本来自受控原件；不从model actor否定真实执行判定，也不自填卡/模型费用。带正式回执的Finding确认读取vuln.technical_verdict并归同decision，乱序/重放不重复技术样本。旧confirmed事件兼容路径仍待后续来源治理，反证撤回与版本收益仍未完全接通。
+
+2026-10-06 L05/L17/L18增量（本地，待发布；取代§13.1旧蒸馏入口）：蒸馏由know.episode.recorded独立消费，内部distill_verdict必填episode_id，每次重读exec.authz_evidence原件并校验归属/当前经历未更正，禁用命令成功缓存绕过证据重验。旧无正式回执confirmed只记inconclusive+claimed_outcome。只有完整签封idor_owner_read_v1阳性或可靠阴性可提取方法，包含前置、步骤、反证、止损和失效条件；无可迁移增量跳过。同方法正文内容去重，来源/证据另存revision.source_snapshot，不带真实目标进共享卡。候选写入失败仅子事件重试，不重跑实验；仍受评测和发布治理。其它方法、旧记录迁移及已发布来源撤回尚待验收。

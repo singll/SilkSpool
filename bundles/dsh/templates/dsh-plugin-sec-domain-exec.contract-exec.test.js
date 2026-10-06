@@ -793,6 +793,7 @@ for (const [mode, outcome] of [['vulnerable', 'confirmed'], ['patched', 'valid_c
       bus._internal.db().prepare("UPDATE event_outbox SET next_retry_at=0 WHERE name='exec.oracle.decided'").run()
       await bus._internal.dispatcherTick()
     }
+    await bus._internal.dispatcherTick()
     const episodes = () => bus._internal.db().prepare("SELECT * FROM learning_episodes WHERE source_event_name='exec.oracle.decided'").all()
     assert.equal(episodes().length, 1)
     const episode = episodes()[0]
@@ -806,6 +807,20 @@ for (const [mode, outcome] of [['vulnerable', 'confirmed'], ['patched', 'valid_c
     assert.equal(episode.token_count, null, 'unmeasured model cost stays unknown')
     if (mode === 'vulnerable') assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM learning_episodes WHERE outcome='confirmed'").get().n, 1,
       'oracle decision and subsequent finding confirmation are one technical attempt')
+    if (['vulnerable', 'patched'].includes(mode)) {
+      const revisions = bus._internal.db().prepare("SELECT * FROM knowledge_revisions WHERE artifact_id LIKE 'distill-%'").all()
+      assert.equal(revisions.length, 1, 'signed positive or clean creates a governed method candidate')
+      assert.equal(revisions[0].source_ref, episode.episode_id)
+      assert.equal(revisions[0].status, 'candidate')
+      assert.equal(JSON.parse(revisions[0].source_snapshot).outcome, outcome)
+      const method = JSON.parse(revisions[0].content_json)
+      assert.ok(method.steps.length >= 4, 'concrete tested actions')
+      assert.ok(method.counterevidence.length >= 2, 'false-positive controls')
+      assert.ok(method.stop_conditions.length >= 2, 'bounded execution')
+      assert.equal(method.method_source.oracle, 'idor_owner_read_v1')
+      assert.equal(method.method_source.outcome, outcome)
+      assert.equal(JSON.stringify(method).includes('127.0.0.1'), false)
+    }
     for (const ref of JSON.parse(episode.evidence_refs)) assert.equal(fs.existsSync(path.join(dataDir, ref)), true)
     bus._internal.db().prepare('DELETE FROM idempotency').run()
     const replay = await bus.dispatch('bus', 'replay', { since: 0, limit: 100 }, { actor: 'system' })
@@ -815,6 +830,87 @@ for (const [mode, outcome] of [['vulnerable', 'confirmed'], ['patched', 'valid_c
     assert.equal(seen.length, requestCount)
   })
 }
+
+test('27 L18: distillation failure has an independent retry; recovery neither reruns HTTP nor duplicates episodes', async t => {
+  const fixture = await authzFixture(t, 'vulnerable')
+  const { dataDir, args, seen, dir } = fixture
+  let bus = fixture.bus
+  bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) }))
+  await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })
+  let db = bus._internal.db()
+  db.exec("CREATE TRIGGER fail_distill BEFORE INSERT ON knowledge_revisions BEGIN SELECT RAISE(ABORT, 'distillation disk failure'); END")
+  const run = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
+  assert.equal(run.ok, true, run.error?.message)
+  const requestCount = seen.length
+  await bus._internal.dispatcherTick()
+  await bus._internal.dispatcherTick()
+  const episode = db.prepare("SELECT * FROM learning_episodes WHERE source_event_name='exec.oracle.decided'").get()
+  assert.equal(episode.outcome, 'confirmed')
+  assert.equal(db.prepare("SELECT status FROM event_outbox WHERE name='exec.oracle.decided'").get().status, 'delivered')
+  const child = () => db.prepare("SELECT * FROM event_outbox WHERE name='know.episode.recorded'").all()
+    .find(row => JSON.parse(row.payload).payload.episode_id === episode.episode_id)
+  assert.equal(child().status, 'pending', 'only the episode downstream step retries')
+  assert.match(child().last_error, /distillation disk failure/)
+  const episodesBefore = db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n
+  bus._internal.close()
+  bus = createBus({ dataDir, dbFile: path.join(dir, 'asset-graph.db'),
+    aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'),
+    eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
+  const opts = { dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) }
+  assert.equal(bus.registry.register(buildExecDomain(opts)).ok, true)
+  assert.equal(bus.registry.register(buildKnowDomain(opts)).ok, true)
+  db = bus._internal.db()
+  assert.equal(child().status, 'pending', 'retry survives bus reconstruction')
+  db.exec('DROP TRIGGER fail_distill')
+  db.prepare('UPDATE event_outbox SET next_retry_at=0 WHERE event_id=?').run(child().event_id)
+  await bus._internal.dispatcherTick()
+  assert.equal(child().status, 'delivered')
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM knowledge_revisions WHERE artifact_id LIKE 'distill-%'").get().n, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n, episodesBefore)
+  assert.equal(seen.length, requestCount)
+  db.prepare('DELETE FROM idempotency').run()
+  const replay = await bus.dispatch('bus', 'replay', { since: 0, limit: 100 }, { actor: 'system' })
+  assert.deepEqual(replay.data.results.filter(row => row.ok === false), [])
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM knowledge_revisions WHERE artifact_id LIKE 'distill-%'").get().n, 1)
+  assert.equal(seen.length, requestCount)
+})
+
+test('27 L05: distillation revalidates original bytes and rejects borrowed or corrected episode truth', async t => {
+  const { bus, dataDir, args, seen } = await authzFixture(t, 'vulnerable')
+  bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) }))
+  await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })
+  const run = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
+  assert.equal(run.ok, true, run.error?.message)
+  await bus._internal.dispatcherTick()
+  await bus._internal.dispatcherTick()
+  const db = bus._internal.db()
+  const episode = db.prepare("SELECT * FROM learning_episodes WHERE source_event_name='exec.oracle.decided'").get()
+  const input = { episode_id: episode.episode_id }
+  const count = seen.length
+  assert.equal((await bus.dispatch('know', 'distill_verdict', input, { actor: 'reactor' })).ok, true)
+  for (const extra of [{ finding_id: args.finding_id + 1 }, { program_id: 'foreign' }, { vuln_type: 'sqli' }]) {
+    const bad = await bus.dispatch('know', 'distill_verdict', { ...input, ...extra }, { actor: 'reactor' })
+    assert.equal(bad.ok, false)
+    assert.equal(bad.error.code, 'E_INVARIANT')
+  }
+  const file = path.join(dataDir, 'results', run.data.run_ids[0], 'http-record.json')
+  const original = fs.readFileSync(file)
+  fs.writeFileSync(file, '{}')
+  assert.equal((await bus.dispatch('know', 'distill_verdict', input, { actor: 'reactor' })).ok, false,
+    'even a previously successful call must recheck original evidence')
+  fs.writeFileSync(file, original)
+  assert.equal((await bus.dispatch('know', 'distill_verdict', input, { actor: 'reactor' })).ok, true)
+  const corrected = await bus.dispatch('know', 'episode_record', {
+    source_event_id: 'counterevidence', source_event_name: 'technical.correction', consumer_version: 'episode-v1',
+    supersedes: episode.episode_id, outcome: 'inconclusive', program_id: episode.program_id,
+    task_id: episode.task_id ?? undefined, exec_run_id: episode.exec_run_id, attempt_id: episode.attempt_id,
+    reason_code: 'new_counterevidence', evidence_refs: ['review:fixture'],
+  }, { actor: 'reactor' })
+  assert.equal(corrected.ok, true, corrected.error?.message)
+  assert.equal((await bus.dispatch('know', 'distill_verdict', input, { actor: 'reactor' })).ok, false)
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM knowledge_revisions WHERE artifact_id LIKE 'distill-%'").get().n, 1)
+  assert.equal(seen.length, count)
+})
 
 test('27 L01: historical oracle learning checks immutable bytes without reopening expired confirmation', async t => {
   const { bus, dataDir, args, seen, profileFile } = await authzFixture(t, 'patched')

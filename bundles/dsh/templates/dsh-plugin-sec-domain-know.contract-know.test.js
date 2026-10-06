@@ -678,7 +678,7 @@ test('L1: 订阅链路——exec.run.completed / vuln 判定 / task.finished 事
   assert.equal(byEvent.evt_sub_run1.reason_code, 'run_ok_no_verdict')
   assert.equal(byEvent.evt_sub_run1.session_id, 'sess_run', '宿主注入 session 归属')
   assert.equal(byEvent.evt_sub_run2.outcome, 'infra_error')
-  assert.equal(byEvent.evt_sub_conf.outcome, 'confirmed')
+  assert.equal(byEvent.evt_sub_conf.outcome, 'inconclusive')
   assert.equal(byEvent.evt_sub_conf.source_credibility, 'model-proposed')
   assert.equal(byEvent.evt_sub_conf.attempt_id, 'finding:41')
   assert.equal(byEvent.evt_sub_conf.exec_run_id, 'rsubrunl1test01', 'evidence_ref 解析 run 归属')
@@ -1894,67 +1894,42 @@ test('L6: know_learning_trace 证据对照——episode→证据→revision→�
 // 21 号方案 §七 Feedback Core：蒸馏 reactor / 记分双裁判 / 缺口 reactor
 // ---------------------------------------------------------------------------
 
-test('21 §4-1: know_distill_verdict——去特化经验卡候选进 L2 治理链（不蒸无类型/失败局）', async () => {
+test('27 L05: distillation refuses unverified, negative and unrelated episode anchors', async () => {
   const { bus } = makeEnv()
-  // 先落 episode 锚点（蒸馏要求 episode_id 可解析——L2 来源 fail-closed）
-  const ep = await bus.dispatch('know', 'episode_record', {
-    source_event_id: 'evt_x1', source_event_name: 'vuln.signal.confirmed', consumer_version: 'episode-v1',
-    outcome: 'confirmed', reason_code: 'vuln_confirm', attempt_id: 'finding:41',
-  }, { actor: 'reactor' })
-  assert.equal(ep.ok, true)
-  const episodeId = ep.data.episode_id
-  const r = await bus.dispatch('know', 'distill_verdict', {
-    finding_id: 41, vuln_type: 'IDOR 越权访问', host: 'api.target.com', program_id: 'test-src',
-    evidence_ref: 'capsule:abc123def4567890', source_event_id: 'evt_x1', episode_id: episodeId,
-  }, { actor: 'reactor' })
-  assert.equal(r.ok, true, r.error?.message)
-  assert.equal(r.data.distilled, true)
-  assert.ok(r.data.artifact_id.startsWith('distill-'))
-  // 候选落 knowledge_revisions（candidate≠发布，走评测+审批链）
-  const rev = bus._internal.db().prepare("SELECT * FROM knowledge_revisions WHERE artifact_id=?").get(r.data.artifact_id)
-  assert.ok(rev, 'revision 候选已落账')
-  assert.equal(rev.status, 'candidate')
-  assert.equal(rev.source_kind, 'episode')
-  assert.equal(rev.source_ref, episodeId, '来源锚定 episode_id')
-  const content = JSON.parse(rev.content_json)
-  assert.ok(!JSON.stringify(content).includes('target.com'), '去特化：目标细节剥离')
-  assert.equal(content.confidence, 'low', '蒸馏候选初始低置信，由真实反馈校准')
-  // 事件
-  const names = bus._internal.db().prepare('SELECT payload FROM event_outbox').all().map((o) => JSON.parse(o.payload).name)
-  assert.ok(names.includes('know.distill.proposed'))
-  // actor 闸：model 不可见内部蒸馏通道
+  for (const [i, outcome] of ['inconclusive', 'valid_clean', 'infra_error', 'confirmed'].entries()) {
+    const ep = await bus.dispatch('know', 'episode_record', {
+      source_event_id: `unverified-${i}`, source_event_name: 'vuln.signal.confirmed', consumer_version: 'episode-v1',
+      outcome, attempt_id: `finding:${41 + i}`, source_credibility: 'machine',
+    }, { actor: 'reactor' })
+    assert.equal(ep.ok, true)
+    const result = await bus.dispatch('know', 'distill_verdict', {
+      finding_id: 41 + i, vuln_type: 'IDOR', program_id: 'test-src',
+      evidence_ref: 'capsule:abc123def4567890', episode_id: ep.data.episode_id,
+    }, { actor: 'reactor' })
+    assert.equal(result.ok, false, `${outcome} without signed evidence must not become a positive method`)
+  }
   const forbidden = await bus.dispatch('know', 'distill_verdict', { finding_id: 1, vuln_type: 'x' }, { actor: 'model' })
-  assert.equal(forbidden.ok, false)
   assert.equal(forbidden.error.code, 'E_ACTOR_FORBIDDEN')
-  // 聚合幂等：同 finding+vuln_type 重放不重复提案
-  const r2 = await bus.dispatch('know', 'distill_verdict', {
-    finding_id: 41, vuln_type: 'IDOR 越权访问', host: 'api.target.com', program_id: 'test-src',
-    evidence_ref: 'capsule:abc123def4567890', source_event_id: 'evt_x1', episode_id: episodeId,
-  }, { actor: 'reactor' })
-  assert.equal(r2.ok, true)
-  const revCount = bus._internal.db().prepare("SELECT COUNT(*) AS n FROM knowledge_revisions WHERE artifact_id=?").get(r.data.artifact_id).n
-  assert.equal(revCount, 1, '重放不重复提案')
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM knowledge_revisions').get().n, 0)
 })
 
-test('21 §4-1: onVulnVerdict 合流——oracle capsule confirmed 自动蒸馏；非 capsule 证据不蒸馏', async () => {
-  const { dir, bus, domain } = makeEnv()
-  // capsule 证据的 confirmed → episode + 蒸馏候选
-  const r = await domain.handlers.subscribers.onVulnVerdict({
-    id: 'evt_distill_1', name: 'vuln.signal.confirmed', actor: 'model', ts: Date.now(),
-    payload: { finding_id: 77, vuln_type: 'SSRF', host: 'a.example.com', program_id: 'test-src', evidence_ref: 'capsule:0123456789abcdef' },
-  })
-  assert.equal(r.ok, true, JSON.stringify(r.error))
-  assert.ok(r.data.distilled, 'capsule 证据触发蒸馏')
-  const rev = bus._internal.db().prepare("SELECT artifact_id, source_ref FROM knowledge_revisions WHERE artifact_id LIKE 'distill-%'").get()
-  assert.ok(rev, `蒸馏候选已入治理链（distill=${JSON.stringify(r.data.distilled)}）`)
-  // 非 capsule（人工确认）→ 只落 episode 不蒸馏（B3 幻觉保底）
-  const r2 = await domain.handlers.subscribers.onVulnVerdict({
-    id: 'evt_distill_2', name: 'vuln.signal.confirmed', actor: 'model', ts: Date.now(),
-    payload: { finding_id: 78, vuln_type: 'XSS', host: 'a.example.com', evidence_ref: 'run_manual01' },
-  })
-  assert.equal(r2.ok, true)
-  assert.equal(r2.data.distilled, undefined)
-  assert.equal(r2.data.recorded, true, 'episode 照常落账')
+test('27 L05: legacy capsule strings retain unverified history for every actor without creating candidates', async () => {
+  const { bus, domain } = makeEnv()
+  for (const [i, actor] of ['model', 'reactor', 'dashboard', 'human'].entries()) {
+    const result = await domain.handlers.subscribers.onVulnVerdict({
+      id: `legacy-capsule-${i}`, name: 'vuln.signal.confirmed', actor, ts: Date.now(),
+      payload: { finding_id: 77 + i, vuln_type: 'SSRF', host: 'a.example.com', program_id: 'test-src',
+        evidence_ref: 'capsule:0123456789abcdef' },
+    })
+    assert.equal(result.ok, true, JSON.stringify(result.error))
+    assert.equal(result.data.distilled, undefined)
+    const ep = bus._internal.db().prepare('SELECT * FROM learning_episodes WHERE source_event_id=?').get(`legacy-capsule-${i}`)
+    assert.equal(ep.outcome, 'inconclusive', actor)
+    assert.equal(ep.reason_code, 'legacy_unverified_confirmation')
+    assert.equal(ep.program_id, 'test-src')
+    assert.equal(JSON.parse(ep.context_json).claimed_outcome, 'confirmed')
+  }
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM knowledge_revisions').get().n, 0)
 })
 
 test('WP07: platform labels never create technical episodes or change method scores', async () => {

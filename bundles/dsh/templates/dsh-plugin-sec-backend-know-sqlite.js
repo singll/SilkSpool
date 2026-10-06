@@ -496,6 +496,11 @@ function createRepo(db) {
       const r = db.prepare('SELECT * FROM learning_episodes WHERE episode_id=?').get(String(episodeId))
       return r ? { ...r } : null
     },
+    getEpisodeCorrection(episodeId) {
+      const r = db.prepare("SELECT * FROM learning_episodes WHERE supersedes=? AND biz_key=?")
+        .get(String(episodeId), `correction:${episodeId}`)
+      return r ? { ...r } : null
+    },
     listEpisodes({ program_id = '', outcome = '', campaign_id = '', limit = 50, offset = 0 } = {}) {
       const where = []
       const vals = []

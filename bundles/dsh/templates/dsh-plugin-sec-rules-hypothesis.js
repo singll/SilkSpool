@@ -541,35 +541,39 @@ export function decontextualize(text) {
   return t.trim()
 }
 
-// episode: {outcome, reason_code, context:{vuln_type, host, param, path, stack}, evidence_refs[]}
-// 输出 null=不蒸（失败局/无类型/证据不足）；否则产出去特化候选 {scenario, takeaway, tags, aggregate_key}
+// Pure extraction only; the caller must verify the decision seal and HTTP originals.
+// Missing controls/unknown oracle mean no transferable method, never a generic success claim.
 export function distillEpisode(ep = {}) {
-  if (ep.outcome !== 'confirmed') return null // 只蒸真实正例（含平台 accepted 事件化）
-  const ctx = ep.context || {}
-  const vulnType = String(ctx.vuln_type || '').trim()
-  if (!vulnType) return null
-  const cls = (() => {
-    const t = vulnType.toLowerCase()
-    if (/idor|bola|越权|unauthorized|authz|access/.test(t)) return 'idor'
-    if (/sqli|sql|injection|注入/.test(t)) return 'sqli'
-    if (/xss|跨站/.test(t)) return 'xss'
-    if (/ssrf/.test(t)) return 'ssrf'
-    if (/upload|文件|file|path_traversal/.test(t)) return 'file'
-    if (/info|泄露|disclosure|debug|actuator/.test(t)) return 'info_disclosure'
-    return 'info_disclosure'
-  })()
-  const stack = String(ctx.stack || 'generic').toLowerCase()
-  const paramShape = String(ctx.param_shape || (ctx.param ? 'id' : 'none'))
-  const scenario = decontextualize(`${stack} 栈 {endpoint} 的 ${paramShape} 形态参数触发 ${vulnType}`).slice(0, 200)
-  const takeaway = decontextualize(`对 ${stack} 目标按 ${paramShape} 参数形态路由 ${cls} 假设，oracle 差分判定后 capsule 固化`).slice(0, 400)
-  const evidence = Array.isArray(ep.evidence_refs) ? ep.evidence_refs.slice(0, 3).map((e) => String(e).slice(0, 120)) : []
+  const d = ep.decision
+  const outcome = ep.outcome
+  if (!['confirmed', 'valid_clean'].includes(outcome) || !d
+    || d.oracle !== 'idor_owner_read_v1' || d.oracle_version !== 1
+    || d.target?.vuln_class !== 'idor' || d.prerequisite_state !== 'ready'
+    || d.verdict !== (outcome === 'confirmed' ? 'verified' : 'rejected')) return null
+  const required = ['identity_a', 'identity_b', 'invalid_identity', 'own_a', 'own_b',
+    'anonymous', 'cross', 'owner_repeat', 'cross_repeat', 'identity_a_repeat']
+  if (!required.every(name => d.checks?.some(check => check.name === name && check.state === 'ready' && check.run_id))) return null
+  const positive = outcome === 'confirmed'
   return {
-    scenario, takeaway,
-    kind: 'card',
-    tags: ['distilled', cls, stack],
-    aggregate_key: `${stack}|${paramShape}|${cls}`, // 栈×参数形态×漏洞类聚合键
-    source_kind: 'episode',
-    evidence,
+    scenario: '具有明确 owner-only 读取契约的 JSON 对象接口；两个自有身份分别拥有私有测试对象。',
+    takeaway: positive
+      ? '身份、私有归属与拒绝对照成立后，A 重复读到 B 的完整私有对象，才支持该读取关系存在越权。'
+      : '身份与私有归属对照成立后，A 两次读取 B 对象均被拒绝，仅排除本次接口、角色与对象关系的越权假设。',
+    kind: 'card', tags: ['distilled', 'idor', positive ? 'verification' : 'counterevidence'],
+    aggregate_key: `idor_owner_read_v1|${outcome}`,
+    prerequisites: ['两个不同且有效的自有身份', '双方自有私有测试对象及 owner-only 读取契约', '健康且稳定的 JSON 基线'],
+    steps: [
+      '分别读取身份接口，确认 A/B 不同；无效凭据必须被拒绝。',
+      '双方读取自己的对象，校验对象标识、owner 与 private 属性；匿名访问须被拒绝。',
+      '仅替换为 A 的身份读取 B 对象，重复一次；保持对象和请求形状一致。',
+      'B 再读自己的对象、A 再读身份接口，排除控制组失效和身份漂移。',
+    ],
+    verdict: positive ? '两次交叉读取均满足 B 的完整私有对象谓词。' : '两次交叉读取均返回明确的 401/403 拒绝。',
+    counterevidence: ['对象公开/共享、身份相同或 owner 不匹配使实验不适用。', '登录页、空对象、WAF、代理错误和不稳定响应均不能证明阳性或 clean。'],
+    stop_conditions: ['任何身份、私有性或健康对照失败立即停止，归入阻塞或未知。', '每轮最多十个禁止跳转的 HTTP 请求；预算、授权或接口契约变化立即停止。'],
+    invalidation: ['接口版本、身份角色、对象归属/可见性或授权规则变化后重新建立基线。'],
+    expected_evidence: ['身份与归属对照、两次交叉读取及结束对照的签封原件；不得将敏感原文复制到共享卡片。'],
+    method_source: { oracle: d.oracle, oracle_version: d.oracle_version, outcome, control_names: required },
   }
 }
 

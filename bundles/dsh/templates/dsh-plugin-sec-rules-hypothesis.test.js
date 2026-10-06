@@ -217,21 +217,24 @@ test('decontextualize: 剥离目标细节成战术骨架', () => {
   assert.ok(!t.includes('20260922001'))
 })
 
-test('distillEpisode: 只蒸 confirmed 正例，产出聚合键', () => {
-  // 失败局/无 verdict 不蒸
-  assert.equal(distillEpisode({ outcome: 'inconclusive' }), null)
-  assert.equal(distillEpisode({ outcome: 'confirmed', context: {} }), null)
-  // confirmed + vuln_type → 去特化候选
-  const d = distillEpisode({
-    outcome: 'confirmed',
-    context: { vuln_type: 'IDOR 越权访问', host: 'api.target.com', param: 'id', stack: 'spring' },
-    evidence_refs: ['capsule:abc123', 'run:ev_1'],
-  })
-  assert.ok(d)
-  assert.equal(d.aggregate_key, 'spring|id|idor')
-  assert.ok(d.tags.includes('distilled'))
-  assert.ok(!d.scenario.includes('target.com')) // 去特化
-  assert.equal(d.source_kind, 'episode')
+test('distillEpisode: complete signed-method controls produce bounded positive/clean methods; generic labels produce none', () => {
+  assert.equal(distillEpisode({ outcome: 'confirmed', context: { vuln_type: 'idor' } }), null)
+  const decision = { oracle: 'idor_owner_read_v1', oracle_version: 1, target: { vuln_class: 'idor', host: 'api.target.com' },
+    prerequisite_state: 'ready', verdict: 'verified',
+    checks: ['identity_a', 'identity_b', 'invalid_identity', 'own_a', 'own_b', 'anonymous', 'cross', 'owner_repeat', 'cross_repeat', 'identity_a_repeat']
+      .map(name => ({ name, state: 'ready', run_id: `run-${name}` })) }
+  const positive = distillEpisode({ outcome: 'confirmed', decision })
+  assert.ok(positive)
+  assert.equal(positive.aggregate_key, 'idor_owner_read_v1|confirmed')
+  assert.equal(JSON.stringify(positive).includes('target.com'), false)
+  assert.equal(distillEpisode({ outcome: 'confirmed', decision: { ...decision, checks: decision.checks.slice(1) } }), null)
+  assert.equal(distillEpisode({ outcome: 'confirmed', decision: { ...decision, oracle_version: 99 } }), null)
+  assert.equal(distillEpisode({ outcome: 'infra_error', decision }), null)
+  assert.equal(distillEpisode({ outcome: 'valid_clean', decision }), null)
+  const negative = distillEpisode({ outcome: 'valid_clean', decision: { ...decision, verdict: 'rejected' } })
+  assert.ok(negative)
+  assert.match(negative.takeaway, /仅排除本次/)
+  assert.notEqual(positive.aggregate_key, negative.aggregate_key)
 })
 
 // ---------- 22 §7.3 Campaign 规划器决策编译（确定性可重放） ----------

@@ -1589,6 +1589,16 @@ eval固定首次入池cohort，候选晋升后分母不变、直接信号不混�
 
 新增正式技术回执只读摘要vuln.technical_verdict，核验保存证据hash。Oracle判定与后续Finding确认按同decision去重；红例2条confirmed→1条。反向投递暴露原会话丢失，已改从签封HTTP原件恢复归属而非首到事件。初三域248项通过，最终乱序/会话修复全域736/736通过。仍未完成历史真值全面重算、反证到方法撤回、artifact版本归因与私有试点总线接入，不据本增量关WP07。
 
+### 15.84 L05/L17/L18签封蒸馏、可靠阴性与独立重试（2026-10-06，本地验收待发布）
+
+真实红例：inconclusive经历可被硬编码为confirmed蒸成候选；无回执的capsule字符串可生成卡；旧confirmed事件按actor变可信。现蒸馏必须读取未更正的exec.oracle.decided经历及完整签封HTTP原件，逐次校验结果、finding、Program和类型；原件改写、跨对象借用及旧弱确认均拒绝。旧事件仍保留为inconclusive及claimed_outcome，actor不再创造技术阳性；本批未改写生产旧经历。
+
+蒸馏改由know.episode.recorded独立异步消费，episode与子事件同事务落账，下游失败进入现有总线pending/dead-letter及审计。SQLite触发器真实拒写后，原Oracle事件已delivered、子事件pending；恢复写入后补齐唯一候选，重放不重复HTTP/episode/候选。此前总线已识别partial，不能照抄原始审计断言它仍静默丢弃；本次进一步分离消费步骤。
+
+当前仅提取已有签封idor_owner_read_v1的完整对照方法：两个有效自有身份、私有归属、匿名/无效凭据反证、重复交叉读取、末尾身份/owner对照、十请求上限及停止/失效条件。confirmed和valid_clean生成不同方法，阴性仅排除具体接口/角色/对象关系。缺控件、未知Oracle、故障或仅漏洞类名不建通用成功卡；目标细节/原件引用留在revision来源快照，不复制进共享方法正文。同方法内容收敛到同候选，仍需独立评测及发布授权。
+
+证据：out/secagent-audits/session-20261006/distill-{red,green,method-red,method-green}.log及distill-preflight/。初联合216/216、全域738/738通过；追加总线重建恢复72/72通过。待继续：其它方法与失败修正提炼、旧弱真值迁移、来源反证影响已发布版本的撤回与重算、完整归因及收益验收；不能因此关闭L05/L17或WP07整体。生产仍为cb3134f，当前增量未部署。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
