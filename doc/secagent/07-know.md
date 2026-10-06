@@ -1203,3 +1203,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-06 L16记忆指引（北京时间，本地待发布）：memcore受管区块的知识入口按现役manifest中model权限及deprecated过滤；候选方法走know_revision_propose、事实复验走fact_record_validation、文献导入须title/url/body。fact_bb_read现行总线封套为data数组（真实集成验证），reader=task排除过期/归档/时间轴；读取失败显示未知。refreshAgentsMd返回Promise<boolean>，调用者可等待写入或失败；非受管内容及无变化幂等保留。契约新测试纳入完整组装714项，独立状态6项通过。
 
 2026-10-06 §15.46–70合批已部署：版本采用/撤回/评分类型隔离、健康计数与缺测语义、memcore权限指引上线。生产know.health与SQLite及memcore一致；历史采用真实性、可信attempt收益及未测指标仍待补。发布证据见27号§15.73。
+
+2026-10-06 WP11兼容experience启动规则索引改为实际内容一致零写入、变化同SAVEPOINT原子刷新；缺失FTS可修补，来源不可读保留索引。同恢复副本CPU索引20.33秒→约140ms，完整应用验证通过；未生产部署。无需新增业务表，详见27号§15.78。

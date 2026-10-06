@@ -566,11 +566,11 @@ const RULES_ROOT = path.join(DATA_DIR, 'rules')
 let curatedIndexed = false
 export function kbIndexCuratedRules() {
   const d = db()
-  let added = 0; let refreshed = 0; let removed = 0
+  let added = 0; let refreshed = 0; let removed = 0; let unchanged = 0
   const seen = new Set()
   const walk = (dir) => {
-    let entries
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    // An unreadable/missing source tree is not evidence that every rule was deleted.
+    const entries = fs.readdirSync(dir, { withFileTypes: true })
     for (const e of entries) {
       if (e.name.startsWith('.') || e.name.endsWith('.bak')) continue
       const full = path.join(dir, e.name)
@@ -578,13 +578,19 @@ export function kbIndexCuratedRules() {
       if (!e.name.endsWith('.md')) continue
       const rel = path.relative(RULES_ROOT, full)
       const cat = rel.split(path.sep)[0]
-      let body = ''
-      try { body = fs.readFileSync(full, 'utf8') } catch { continue }
+      const body = fs.readFileSync(full, 'utf8')
       if (!body.trim()) continue
       const title = `curated: ${cat}/${e.name.replace(/\.md$/, '')}`
       seen.add(full)
-      const row = d.prepare('SELECT id FROM kb_docs WHERE file = ?').get(full)
+      const row = d.prepare('SELECT id, title FROM kb_docs WHERE file = ?').get(full)
       if (row) {
+        const indexed = d.prepare('SELECT title, body FROM kb_fts WHERE rowid = ?').get(row.id)
+        // Compare actual indexed content, so a missing or stale FTS row is repaired.
+        // A normal restart must not perform hundreds of autocommitted DELETE/INSERTs.
+        if (row.title === title && indexed?.title === title && indexed.body === body.slice(0, 100000)) {
+          unchanged++
+          continue
+        }
         // FTS5 虚表不支持 UPSERT：先删后插（幂等刷新）
         d.prepare('DELETE FROM kb_fts WHERE rowid = ?').run(row.id)
         d.prepare('INSERT INTO kb_fts (rowid, title, body) VALUES (?, ?, ?)')
@@ -600,17 +606,25 @@ export function kbIndexCuratedRules() {
       }
     }
   }
-  walk(RULES_ROOT)
-  // rules 文件已删除的索引行同步清掉（防悬空命中）
-  for (const r of d.prepare("SELECT id, file FROM kb_docs WHERE status = 'curated'").all()) {
-    if (!seen.has(r.file) || !fs.existsSync(r.file)) {
-      d.prepare('DELETE FROM kb_docs WHERE id = ?').run(r.id)
-      d.prepare('DELETE FROM kb_fts WHERE rowid = ?').run(r.id)
-      removed++
+  // One atomic refresh also avoids leaving half-updated FTS after a write failure.
+  d.exec('SAVEPOINT curated_rule_index')
+  try {
+    walk(RULES_ROOT)
+    // rules 文件已删除的索引行同步清掉（防悬空命中）
+    for (const r of d.prepare("SELECT id, file FROM kb_docs WHERE status = 'curated'").all()) {
+      if (!seen.has(r.file) || !fs.existsSync(r.file)) {
+        d.prepare('DELETE FROM kb_docs WHERE id = ?').run(r.id)
+        d.prepare('DELETE FROM kb_fts WHERE rowid = ?').run(r.id)
+        removed++
+      }
     }
+    d.exec('RELEASE curated_rule_index')
+  } catch (error) {
+    d.exec('ROLLBACK TO curated_rule_index; RELEASE curated_rule_index')
+    throw error
   }
   curatedIndexed = true
-  return { ok: true, added, refreshed, removed, total: seen.size }
+  return { ok: true, added, refreshed, removed, unchanged, total: seen.size }
 }
 
 // -------------------- vault 回流（Bellkeeper 融合方向②：vault → sec） --------------------
