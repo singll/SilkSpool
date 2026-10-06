@@ -226,6 +226,10 @@ function createRepo(db) {
         ${where} ORDER BY f.id ASC LIMIT ? OFFSET ?`)
         .all(...args, Math.min(Number(limit) || 500, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
     },
+    getTechnicalVerdict(id) {
+      const row = db.prepare('SELECT * FROM vuln_technical_verdicts WHERE id=?').get(id)
+      return row ? { ...row } : null
+    },
     recordTechnicalVerdict({ finding_id, verdict, basis, evidence_ref = null, evidence_digest = null, evidence_json, operator = null, created_at }) {
       const r = db.prepare(`INSERT INTO vuln_technical_verdicts
         (finding_id,verdict,basis,evidence_ref,evidence_digest,evidence_json,operator,created_at) VALUES (?,?,?,?,?,?,?,?)`)

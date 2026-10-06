@@ -770,6 +770,85 @@ for (const [mode, verdict] of [['vulnerable', 'verified'], ['patched', 'rejected
   })
 }
 
+for (const [mode, outcome] of [['vulnerable', 'confirmed'], ['patched', 'valid_clean'], ['public', 'inconclusive'],
+  ['invalid_auth', 'blocked_auth'], ['proxy_error', 'infra_error']]) {
+  test(`27 L01/L02: signed oracle ${mode} records one attributable attempt without replaying HTTP`, async t => {
+    const { bus, dataDir, args, seen } = await authzFixture(t, mode)
+    assert.equal(bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a),
+      query: (...a) => bus.query(...a) })).ok, true)
+    assert.equal((await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })).ok, true)
+    const run = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model', session_id: 'oracle-learning' })
+    assert.equal(run.ok, true, run.error?.message)
+    const requestCount = seen.length
+    if (mode === 'vulnerable') {
+      const capsule = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: run.data.decision_id }, { actor: 'model' })
+      assert.equal(capsule.ok, true, capsule.error?.message)
+      const confirmed = await bus.dispatch('vuln', 'confirm', { finding_id: args.finding_id, evidence: capsule.data.evidence_ref }, { actor: 'model' })
+      assert.equal(confirmed.ok, true, confirmed.error?.message)
+      // Deliver the finding confirmation first; the later oracle event must merge.
+      bus._internal.db().prepare("UPDATE event_outbox SET next_retry_at=? WHERE name='exec.oracle.decided'").run(Date.now() + 60000)
+    }
+    await bus._internal.dispatcherTick()
+    if (mode === 'vulnerable') {
+      bus._internal.db().prepare("UPDATE event_outbox SET next_retry_at=0 WHERE name='exec.oracle.decided'").run()
+      await bus._internal.dispatcherTick()
+    }
+    const episodes = () => bus._internal.db().prepare("SELECT * FROM learning_episodes WHERE source_event_name='exec.oracle.decided'").all()
+    assert.equal(episodes().length, 1)
+    const episode = episodes()[0]
+    assert.equal(episode.outcome, outcome)
+    assert.equal(episode.program_id, 'test-src')
+    assert.equal(episode.session_id, 'oracle-learning')
+    assert.equal(episode.attempt_id, `decision:${run.data.decision_id}`)
+    assert.equal(episode.request_count, requestCount)
+    assert.equal(episode.source_credibility, 'machine')
+    assert.equal(episode.card_id, null, 'no invented knowledge attribution')
+    assert.equal(episode.token_count, null, 'unmeasured model cost stays unknown')
+    if (mode === 'vulnerable') assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM learning_episodes WHERE outcome='confirmed'").get().n, 1,
+      'oracle decision and subsequent finding confirmation are one technical attempt')
+    for (const ref of JSON.parse(episode.evidence_refs)) assert.equal(fs.existsSync(path.join(dataDir, ref)), true)
+    bus._internal.db().prepare('DELETE FROM idempotency').run()
+    const replay = await bus.dispatch('bus', 'replay', { since: 0, limit: 100 }, { actor: 'system' })
+    assert.equal(replay.ok, true, replay.error?.message)
+    assert.deepEqual(replay.data.results.filter(row => row.ok === false), [])
+    assert.equal(episodes().length, 1)
+    assert.equal(seen.length, requestCount)
+  })
+}
+
+test('27 L01: historical oracle learning checks immutable bytes without reopening expired confirmation', async t => {
+  const { bus, dataDir, args, seen, profileFile } = await authzFixture(t, 'patched')
+  assert.equal(bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a),
+    query: (...a) => bus.query(...a) })).ok, true)
+  assert.equal((await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })).ok, true)
+  const run = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
+  assert.equal(run.ok, true, run.error?.message)
+  const requestCount = seen.length
+  const now = Date.now()
+  t.mock.method(Date, 'now', () => now + 7200000)
+  fs.unlinkSync(profileFile)
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs: []\n')
+  const historical = await bus.query('exec', 'authz_evidence', { decision_id: run.data.decision_id }, { actor: 'reactor' })
+  assert.equal(historical.ok, true, historical.error?.message)
+  assert.equal(historical.data.historical_only, true)
+  const current = await bus.query('exec', 'authz_decision', { decision_id: run.data.decision_id }, { actor: 'reactor' })
+  assert.equal(current.error.code, 'E_EXEC_DECISION_STALE')
+  const file = path.join(dataDir, 'results', run.data.run_ids[0], 'http-record.json')
+  const original = fs.readFileSync(file)
+  const corrupted = JSON.parse(original)
+  corrupted.response.status = 599
+  fs.writeFileSync(file, JSON.stringify(corrupted))
+  await bus._internal.dispatcherTick()
+  const db = bus._internal.db()
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM learning_episodes WHERE source_event_name='exec.oracle.decided'").get().n, 0)
+  assert.equal(db.prepare("SELECT status FROM event_outbox WHERE name='exec.oracle.decided'").get().status, 'pending')
+  fs.writeFileSync(file, original)
+  db.prepare("UPDATE event_outbox SET next_retry_at=0 WHERE name='exec.oracle.decided'").run()
+  await bus._internal.dispatcherTick()
+  assert.equal(db.prepare("SELECT outcome FROM learning_episodes WHERE source_event_name='exec.oracle.decided'").get().outcome, 'valid_clean')
+  assert.equal(seen.length, requestCount)
+})
+
 for (const [mode, state, health, requests] of [
   ['vulnerable', 'ready', 'business_ok', 8], ['patched', 'ready', 'business_ok', 8],
   ['invalid_auth', 'blocked_auth', 'auth_blocked', 1], ['same_identity', 'blocked_auth', 'same_identity', 2],

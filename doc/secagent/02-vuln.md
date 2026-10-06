@@ -926,3 +926,5 @@ export const repositoryV1 = {
 `vuln_evidence_flags`支持limit（实际上限500）/offset、独立total与meta.paged，返回首次来源及最新回执id/verdict/basis/time。`has_capsule`仅是文本引用，不能判技术确认。回执表示当时经过确认门，查询不触发目标请求或把旧证据时效当作当前重新复现；历史回填/证据损坏重审仍待后续。eval通过本查询聚合，不跨域读表。
 
 2026-10-06发布回填：cb3134f学习/评测/正式技术指标/索引合批已按新冻结、隔离应用、生产RPC及UI80验收部署，详见27号§15.82。L01/D07后续增量72c8233/94d8c9d尚未部署；不改写历史验收。
+
+2026-10-06 L01/L02增量（本地，待发布）：新增technical_verdict查询（reactor/script/dashboard；id），从正式回执读取finding、来源、证据摘要与capsule的decision_id，重新核验保存evidence_json摘要，不返回私有正文、不发目标请求。供学习链把Oracle判定与Finding确认归到同attempt；本查询不重新证明当前可重现性或替代confirm门禁。

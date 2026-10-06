@@ -1211,3 +1211,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-06 D07伴随增量（本地验收，待发布）：exec.run.failed优先于exit_code判断经历，失败事件即使exit0也为infra_error；避免收到取消/超时后主动退出0的工具被误记正常执行。
 
 2026-10-06发布回填：cb3134f学习/评测/正式技术指标/索引合批已按新冻结、隔离应用、生产RPC及UI80验收部署，详见27号§15.82。L01/D07后续增量72c8233/94d8c9d尚未部署；不改写历史验收。
+
+2026-10-06 L01/L02增量（本地，待发布）：exec.oracle.decided通过exec.authz_evidence读取签封判定，decision ID即attempt身份；可信verified/rejected映射confirmed/valid_clean，异常按前置状态归类。Program/request/task/原始执行session及成本来自受控原件；不从model actor否定真实执行判定，也不自填卡/模型费用。带正式回执的Finding确认读取vuln.technical_verdict并归同decision，乱序/重放不重复技术样本。旧confirmed事件兼容路径仍待后续来源治理，反证撤回与版本收益仍未完全接通。

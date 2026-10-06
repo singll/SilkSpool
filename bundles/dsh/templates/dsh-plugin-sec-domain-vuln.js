@@ -484,6 +484,11 @@ export const VULN_MANIFEST = {
     },
   },
   queries: {
+    vuln_technical_verdict: {
+      actor: ['reactor', 'script', 'dashboard'],
+      params: schema({ id: int() }, ['id']),
+      agent_note: '读取正式技术回执的关联与来源摘要，核验保存证据摘要；不重新请求目标。',
+    },
     vuln_list: {
       actor: ['model', 'dashboard', 'human', 'script', 'reactor'],
       params: schema({
@@ -1483,6 +1488,16 @@ function makeHandlers(opts) {
       const row = repo.getFinding(args.id)
       if (!row) throwErr('E_NOT_FOUND', `finding #${args.id} 不存在`, '先 vuln_list 核实 id', false)
       return row
+    },
+    vuln_technical_verdict: async (args, repo) => {
+      const row = repo.getTechnicalVerdict(args.id)
+      if (!row) throwErr('E_NOT_FOUND', '技术回执不存在', null)
+      if (row.evidence_digest !== crypto.createHash('sha256').update(row.evidence_json).digest('hex')) throwErr('E_VULN_EVIDENCE_TAMPERED', '技术回执证据摘要不符', null)
+      const evidence = JSON.parse(row.evidence_json)
+      const finding = repo.getFinding(row.finding_id)
+      return { id: row.id, finding_id: row.finding_id, program_id: finding?.program_id || null,
+        verdict: row.verdict, basis: row.basis, created_at: row.created_at,
+        evidence_digest: row.evidence_digest, decision_id: evidence.capsule?.decision_id || null }
     },
     vuln_list: async (args, repo) => {
       // 42 号补丁（25 号方案 B1）：limit/offset 落到 SQL（旧实现全量返回由总线切片），total 走独立 COUNT。

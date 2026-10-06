@@ -319,6 +319,11 @@ export const EXEC_MANIFEST = {
       params: schema({ decision_id: str({ pattern: '^r[a-z0-9]+$' }) }, ['decision_id']),
       agent_note: '读取可信 IDOR 判定；重新核验签封、原始执行证据、请求版本和宿主验证契约。',
     },
+    exec_authz_evidence: {
+      actor: ['reactor', 'script', 'dashboard'],
+      params: schema({ decision_id: str({ pattern: '^r[a-z0-9]+$' }) }, ['decision_id']),
+      agent_note: '核验历史签封判定与HTTP原件，供学习回放；不请求目标、不证明当前授权或满足确认时效。',
+    },
     exec_authz_preflight: {
       actor: ['model', 'script', 'dashboard', 'reactor'],
       params: schema({ preflight_id: str({ pattern: '^r[a-z0-9]+$' }) }, ['preflight_id']),
@@ -1112,16 +1117,27 @@ function makeHandlers(opts) {
     await guardedAddress(record.target.url, record.program_id, 'GET')
     return record
   }
-  async function readDecision(decisionId) {
+  function readDecisionEvidence(decisionId) {
     const record = readSealed(decisionId, 'authz-decision.json')
-    if (record.oracle !== 'idor_owner_read_v1' || record.oracle_version !== 1 || Date.now() - record.created_at > 3600000 || record.created_at > Date.now()) throwErr('E_EXEC_DECISION_STALE', '判定版本不支持或超过一小时确认窗口', '重新执行验证')
-    if (readAuthzProfile(record.program_id).digest !== record.profile_digest) throwErr('E_EXEC_DECISION_STALE', '宿主验证契约已变化', '按新契约重新执行')
-    const observation = await requestObservation(record.request_id)
-    if (observation.program_id !== record.program_id || observation.url !== record.target.url || observation.method !== record.target.method) throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '判定与请求观测不匹配', null)
+    if (record.oracle !== 'idor_owner_read_v1' || record.oracle_version !== 1 || !Array.isArray(record.run_ids)) throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '判定版本或执行清单不支持', null)
+    let requests = 0, duration = 0
+    const sessions = new Set()
     for (const runId of record.run_ids) {
       const run = readSealed(runId, 'http-record.json')
       if (run.program_id !== record.program_id || run.proxy_digest !== record.proxy_digest) throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '执行链不匹配', null)
+      requests += run.hops.length
+      duration += run.elapsed_ms
+      sessions.add(run.session_id || null)
     }
+    return { ...record, execution_cost: { attempted_http_hops: requests, elapsed_ms: duration },
+      execution_session_id: sessions.size === 1 ? [...sessions][0] : null, historical_only: true }
+  }
+  async function readDecision(decisionId) {
+    const { execution_cost, execution_session_id, historical_only, ...record } = readDecisionEvidence(decisionId)
+    if (Date.now() - record.created_at > 3600000 || record.created_at > Date.now()) throwErr('E_EXEC_DECISION_STALE', '判定版本不支持或超过一小时确认窗口', '重新执行验证')
+    if (readAuthzProfile(record.program_id).digest !== record.profile_digest) throwErr('E_EXEC_DECISION_STALE', '宿主验证契约已变化', '按新契约重新执行')
+    const observation = await requestObservation(record.request_id)
+    if (observation.program_id !== record.program_id || observation.url !== record.target.url || observation.method !== record.target.method) throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '判定与请求观测不匹配', null)
     await guardedAddress(record.target.url, record.program_id, 'GET')
     return record
   }
@@ -1781,6 +1797,7 @@ function makeHandlers(opts) {
     exec_http_result: async (args) => readSealed(args.run_id, 'http-record.json'),
     exec_authz_preflight: async (args) => readPreflight(args.preflight_id),
     exec_authz_decision: async (args) => readDecision(args.decision_id),
+    exec_authz_evidence: async (args) => readDecisionEvidence(args.decision_id),
     exec_oracle_judge: async (args) => {
       const fn = ORACLES[String(args.oracle)]
       if (!fn) {
