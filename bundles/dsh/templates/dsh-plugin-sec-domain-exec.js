@@ -584,7 +584,7 @@ const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex'
 
 // Curl receives configuration on stdin, never credentials in argv. Redirects are handled
 // by the caller so scope, address pinning and identity policy run before EVERY request.
-function httpHop({ url, method, headers, body, proxy, address, timeoutMs, maxBytes, signal }) {
+function httpHop({ url, method, headers, body, proxy, proxyAuthorization, address, timeoutMs, maxBytes, signal }) {
   const u = new URL(url)
   const quoted = (v) => '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r/g, '\\r').replace(/\n/g, '\\n') + '"'
   const config = ['silent', 'show-error', 'include', 'suppress-connect-headers', 'globoff', 'http1.1',
@@ -592,6 +592,7 @@ function httpHop({ url, method, headers, body, proxy, address, timeoutMs, maxByt
     `proxy = ${quoted(proxy || '')}`, 'noproxy = ""', `max-time = ${Math.max(0.001, timeoutMs / 1000)}`,
     `max-filesize = ${maxBytes}`, `connect-to = ${quoted(`${u.hostname}:${u.port || (u.protocol === 'https:' ? 443 : 80)}:${address}:${u.port || (u.protocol === 'https:' ? 443 : 80)}`)}`]
   if (proxy) config.push('proxytunnel')
+  if (proxy && proxyAuthorization) config.push(`proxy-header = ${quoted(`Proxy-Authorization: ${proxyAuthorization}`)}`)
   if (method === 'HEAD') config.push('head')
   for (const [k, v] of Object.entries(headers)) config.push(`header = ${quoted(`${k}: ${v}`)}`)
   if (body) config.push(`data-raw = ${quoted(body)}`)
@@ -642,6 +643,10 @@ function makeHandlers(opts) {
   const scopeFile = opts.scopeFile || path.join(dataDir, 'scope.yml')
   const egressProxy = process.env.SEC_EGRESS_PROXY || 'http://127.0.0.1:8899'
   let activeWorkers = 0
+  // A host-provided pilot binding represents one admitted anonymous connection.
+  // It is deliberately absent from the model command schema.
+  const httpEgressBinding = opts.httpEgressBinding ? structuredClone(opts.httpEgressBinding) : null
+  let httpBindingConsumed = false
   const qpsBucket = { tokens: Infinity, cap: 50, last: 0 }
   let currentTool = null
 
@@ -705,7 +710,25 @@ function makeHandlers(opts) {
     if (value) { let u; try { u = new URL(value) } catch {} if (!u || !['http:', 'https:'].includes(u.protocol)) throwErr('E_SCHEMA', '出口代理须为 HTTP(S) URL', null) }
     return value
   }
-  async function guardedAddress(url, programId, method, deadline = Date.now() + 10000) {
+  function boundHttpAddress(u, programId) {
+    const binding = httpEgressBinding, snapshot = binding.dns_snapshot, now = Date.now()
+    const port = Number(u.port || (u.protocol === 'https:' ? 443 : 80))
+    const digest = sha256(fs.readFileSync(scopeFile))
+    if (binding.program !== programId || binding.hostname !== u.hostname || binding.scope_sha256 !== digest
+      || !Array.isArray(binding.target) || binding.target.length !== 2 || binding.target[1] !== port
+      || !snapshot || snapshot.version !== 1 || snapshot.program !== programId || snapshot.hostname !== u.hostname
+      || snapshot.scope_sha256 !== digest || !Number.isSafeInteger(snapshot.resolved_at_ms)
+      || !Number.isSafeInteger(snapshot.expires_at_ms) || snapshot.resolved_at_ms > now || snapshot.expires_at_ms <= now
+      || snapshot.expires_at_ms - snapshot.resolved_at_ms > 300000
+      || !Array.isArray(snapshot.records) || !snapshot.records.length
+      || snapshot.records.some(row => ipToInt(row?.address) === null || !Number.isInteger(row.ttl) || row.ttl <= 0)
+      || snapshot.expires_at_ms > snapshot.resolved_at_ms + Math.min(...snapshot.records.map(row => row.ttl)) * 1000
+      || !snapshot.records.some(row => row.address === binding.target[0])) {
+      throwErr('E_EXEC_EGRESS_BINDING', '宿主 HTTP 出口绑定失效或与请求不符', null)
+    }
+    return { address: binding.target[0], addresses: snapshot.records.map(row => row.address) }
+  }
+  async function guardedAddress(url, programId, method, deadline = Date.now() + 10000, bound = false) {
     let u
     try { u = new URL(url) } catch { throwErr('E_SCHEMA', 'url 无效', null) }
     if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password || u.hash) throwErr('E_SCHEMA', '仅接受无 userinfo/fragment 的 HTTP(S) URL', null)
@@ -716,34 +739,57 @@ function makeHandlers(opts) {
     if (!risk.allow) throwErr('E_EXEC_RISK_FORBIDDEN', risk.reason, null)
     // This adapter supports IPv4 only; reject unsupported resolution, never silently use a
     // second OS/proxy DNS lookup. All returned addresses must pass the same Program guard.
-    let addresses
-    try { addresses = ipToInt(u.hostname) !== null ? [u.hostname] : await withinDeadline(dns.promises.resolve4(u.hostname), deadline) } catch { throwErr('E_EXEC_DNS_UNAVAILABLE', '目标 IPv4 解析失败', null, true) }
+    let addresses, selected
+    if (bound) ({ addresses, address: selected } = boundHttpAddress(u, programId))
+    else {
+      try { addresses = ipToInt(u.hostname) !== null ? [u.hostname] : await withinDeadline(dns.promises.resolve4(u.hostname), deadline) } catch { throwErr('E_EXEC_DNS_UNAVAILABLE', '目标 IPv4 解析失败', null, true) }
+    }
     if (!addresses.length) throwErr('E_EXEC_DNS_UNAVAILABLE', '目标无可用 IPv4 地址', null, true)
     for (const ip of addresses) {
       const n = ipToInt(ip), first = n >>> 24
       if (n === null || ((ipInReserved(n) || first >= 224 || first === 0 || ip === '255.255.255.255') && !programAllowsIp(p, ip))) throwErr('E_EXEC_RESERVED_IP', '解析地址未获指定 Program 显式授权', null)
       if (scope.programs.some(p => p.exclude.some(e => entryMatches(e, ip)))) throwErr('E_EXEC_SCOPE_DENIED', '解析地址命中排除清单', null)
     }
-    return addresses[0]
+    return selected || addresses[0]
   }
   async function executeHttp(args, repo, ctx, selectedProxy = selectProxy(args.proxy), followRedirects = true) {
     if (ctx.signal?.aborted) throwErr('E_EXEC_ABORTED', '请求已取消', null)
     const method = String(args.method || 'GET').toUpperCase()
     let headers = canonicalHeaders(args.headers), body = args.body || '', url = String(args.url), currentMethod = method
     if (Buffer.byteLength(body) > 65536) throwErr('E_SCHEMA', '请求 body 超过 64 KiB', null)
+    // Trusted host configuration only; never accept proxy credentials in model arguments.
+    const proxyAuthorization = selectedProxy ? opts.egressProxyAuthorization : undefined
+    if (proxyAuthorization !== undefined) {
+      try {
+        if (typeof proxyAuthorization !== 'string' || !proxyAuthorization || proxyAuthorization.length > 8192) throw new Error()
+        http.validateHeaderValue('Proxy-Authorization', proxyAuthorization)
+      } catch { throwErr('E_SCHEMA', '宿主代理认证配置无效', null) }
+    }
+    const bound = Boolean(httpEgressBinding)
+    if (bound) {
+      if (httpBindingConsumed || !selectedProxy || args.proxy === 'direct'
+        || selectedProxy !== selectProxy('default') || !['GET', 'HEAD', 'OPTIONS'].includes(method) || body
+        || Object.keys(args.headers || {}).some(key => !['accept', 'accept-language', 'accept-encoding', 'user-agent'].includes(key.toLowerCase()))) {
+        throwErr('E_EXEC_EGRESS_BINDING', '单次匿名 HTTP 绑定已消费或请求不符合约束', null)
+      }
+      // Reserve synchronously, so concurrent commands cannot share a single lease.
+      httpBindingConsumed = true
+      followRedirects = false
+    }
     const started = Date.now(), deadline = started + (args.timeout_ms || 10000), maxBytes = args.max_bytes || 1048576
     // Validate initial target before creating an execution record; subsequent guards are
     // captured as blocked evidence because a previous hop may already have run.
-    await guardedAddress(url, args.program_id, method, deadline)
+    await guardedAddress(url, args.program_id, method, deadline, bound)
     const { runId, runDir } = repo.createRunDir('r'), hops = []
     let response = { state: 'blocked', status: null, body: '', headers: {} }
     for (let hop = 0; hop <= 3; hop++) {
       try {
-        const address = await guardedAddress(url, args.program_id, currentMethod, deadline)
+        const address = await guardedAddress(url, args.program_id, currentMethod, deadline, bound)
         await throttleQps(deadline)
+        if (bound) await guardedAddress(url, args.program_id, currentMethod, deadline, true)
         const remaining = deadline - Date.now()
         if (remaining <= 0) { response = { state: 'timeout', status: null, body: '', headers: {} }; break }
-        response = await httpHop({ url, method: currentMethod, headers, body, proxy: selectedProxy, address, timeoutMs: remaining, maxBytes, signal: ctx.signal })
+        response = await httpHop({ url, method: currentMethod, headers, body, proxy: selectedProxy, proxyAuthorization, address, timeoutMs: remaining, maxBytes, signal: ctx.signal })
         hops.push({ url, method: currentMethod, address, status: response.status, state: response.state, identity_digest: sha256(JSON.stringify(headers)) })
         if (!followRedirects || response.state !== 'observed' || ![301, 302, 303, 307, 308].includes(response.status) || !response.headers.location) break
         if (hop === 3) { response = { ...response, state: 'redirect_limit', body: '' }; break }
@@ -762,7 +808,10 @@ function makeHandlers(opts) {
     // No cookie jar; each call starts with exactly its own supplied identity.
     const record = seal(runDir, 'http-record.json', { version: 1, run_id: runId, program_id: args.program_id, created_at: started,
       request: { url: args.url, method, body_digest: sha256(args.body || ''), identity_digest: sha256(JSON.stringify(canonicalHeaders(args.headers))) },
-      proxy_digest: sha256(selectedProxy), session_id: ctx.session_id || null, elapsed_ms: Date.now() - started, hops, response })
+      proxy_digest: sha256(selectedProxy),
+      ...(bound ? { egress_binding: { program: httpEgressBinding.program, hostname: httpEgressBinding.hostname,
+        target: httpEgressBinding.target, scope_sha256: httpEgressBinding.scope_sha256, dns_snapshot: httpEgressBinding.dns_snapshot } } : {}),
+      session_id: ctx.session_id || null, elapsed_ms: Date.now() - started, hops, response })
     repo.writeMeta(runDir, { run_id: runId, program_id: args.program_id, tool: 'http-request', status: response.state, created_at: started })
     return record
   }

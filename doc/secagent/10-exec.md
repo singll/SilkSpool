@@ -249,6 +249,11 @@ xray webhook 接收器（exec 域宿主面 HTTP 面，:7788 上游）收到原�
 
 #### 1.3.9 `exec_http_request` 与 `exec_verify_authz_read`（27号 WP02，2026-10-01已部署）
 
+**2026-10-06 WP04本地增量（尚未部署）：** 宿主组装可传 `egressProxyAuthorization`，仅通过 curl stdin 的 `proxy-header` 发到 CONNECT 代理；不进入模型 schema、业务 headers、argv 或签封记录。可选 `httpEgressBinding` 绑定 Program、hostname、端口、scope SHA256 与有TTL的DNS答案；逐项校验及QPS等待后再检查有效期，同一实例只消费一次，禁止 direct、身份头、body、重定向和重复调用。绑定不替代指定Program的Scope/风险/地址守卫。未绑定的现役HTTP行为保留。
+
+独立 `dsh-pilot-proxy-batch.py --url HTTPS_URL` 经 `dsh-pilot-http.mjs` 调已安装exec域，固定一次匿名GET；CLI仍先验现役Scope、S级资产、租约与选定出口。批次私有总线仅持久化该请求的审计/事件，HTTP签封证据仍在现役data/results；未将此独立事件投递当作生产学习投影完成。200只表示已观测，429为rate_limited；都不自动产生技术判定。代理内部尝试次数仍未知。真实本地TLS/CONNECT/总线集成覆盖200与429，各一次连接/请求及签封产物；生产接线验收待发布后执行。
+
+
 `exec_http_request` 接受 `program_id/url`，可选 `method`（默认 GET）、`headers/body`、`proxy=default|direct`、`timeout_ms=100..30000`、`max_bytes=1..1048576`。actor 为 model/script/dashboard，幂等为 none；每次调用真实执行。非 GET/HEAD/OPTIONS 或写动词路径需要 intrusive 授权。
 
 - 逐跳验证**指定 Program** 的 scope、全局 exclude、授权期限和风险；DNS 失败/IPv6 不支持时拒绝。IPv4 解析结果逐个校验，选定地址通过 curl `connect-to` 固定，代理不再另行解析目标。私网/保留地址要求项目显式授权。

@@ -613,3 +613,5 @@ hasHandoff(program, date) → boolean
 - **修复**：统一 `queryPages` 分页遍历（每页 2000）+ 硬上限；四指标改 SQL 聚合/全量口径。
 - **消费查询**：资产 `asset_host_page`（上限 20 万行）、端点 `endpoint_lite_page`（上限 5 万行）、findings `vuln_list`（上限 2 万行，review 维）、根域 `asset_roots_agg`（单次聚合）、参数率 `endpoint_param_stats`（SQL 计数）。
 - **常量与输出**：`LEDGER_MAX_ASSET_ROWS=200000` / `LEDGER_MAX_ENDPOINT_ROWS=50000` / `LEDGER_MAX_FINDING_ROWS=20000` / `LEDGER_MAX_GAPS_PER_DIM=20000`；输出新增 `truncated` 标记（metrics 按面、gaps 按维 `{dims:[...]}`、blindspot 布尔）。
+
+2026-10-06 coverage_gaps.offset与专项补页已合批部署，真实ledger分页及task总线回归纳入发布验收；排序后切页、total不变。2万窗口之外和并发增删快照一致性未在本批宣称完成，见27号§15.67/§15.73。

@@ -51,7 +51,8 @@ function makeEnv(opts = {}) {
     startDispatcherTimer: false,
     dispatcherStartDelayMs: 0,
   })
-  const domain = buildExecDomain({ dataDir, egressProxy: opts.egressProxy, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, n, a, c) => bus.query(d, n, a, c) })
+  const domain = buildExecDomain({ dataDir, egressProxy: opts.egressProxy, egressProxyAuthorization: opts.egressProxyAuthorization,
+    httpEgressBinding: opts.httpEgressBinding, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, n, a, c) => bus.query(d, n, a, c) })
   const reg = bus.registry.register(domain)
   assert.equal(reg.ok, true, `exec 域应注册成功：${reg.error?.message || ''}`)
   return { dir, dataDir, bus }
@@ -929,4 +930,99 @@ test('WP02 result page/grep cannot follow output symlinks or hardlinks into host
   assert.equal(nested.data.matched, 0)
   fs.symlinkSync(dataDir, path.join(dataDir, 'results', 'rlinked'))
   assert.equal((await bus.query('exec', 'page_result', { run_id: 'rlinked' }, { actor: 'model' })).ok, false)
+})
+
+
+test('27 WP04 authenticated fixed proxy sends its bearer only in CONNECT headers', async t => {
+  const sockets = new Set(), originHeaders = [], proxyHeaders = []
+  const secret = 'Bearer local-pilot-fixture'
+  const target = http.createServer((req, res) => { originHeaders.push(req.headers); res.end('business-fixture') })
+  await new Promise(resolve => target.listen(0, '127.0.0.1', resolve))
+  const proxy = http.createServer()
+  proxy.on('connect', (req, client, head) => {
+    proxyHeaders.push(req.headers); sockets.add(client); client.on('error', () => {})
+    if (req.headers['proxy-authorization'] !== secret) {
+      client.end('HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n'); return
+    }
+    const upstream = net.connect(target.address().port, '127.0.0.1', () => {
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+      if (head.length) upstream.write(head)
+      client.pipe(upstream); upstream.pipe(client)
+    })
+    sockets.add(upstream); upstream.on('error', () => client.destroy()); client.on('close', () => upstream.destroy())
+  })
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve))
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy()
+    await Promise.all([new Promise(r => target.close(r)), new Promise(r => proxy.close(r))])
+  })
+  const { bus, dataDir } = makeEnv({ egressProxy: `http://127.0.0.1:${proxy.address().port}`, egressProxyAuthorization: secret })
+  t.after(() => bus._internal.close())
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'defaults:\n  allow_risk: [passive, active]\nprograms:\n  - name: test-src\n    scope:\n      - 127.0.0.1\n')
+  const url = `http://127.0.0.1:${target.address().port}/read`
+  const result = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url }, { actor: 'model' })
+  assert.equal(result.ok, true, result.error?.message)
+  assert.equal(result.data.state, 'observed')
+  assert.equal(proxyHeaders.length, 1)
+  assert.equal(proxyHeaders[0]['proxy-authorization'], secret)
+  assert.equal(originHeaders.length, 1)
+  assert.equal(originHeaders[0]['proxy-authorization'], undefined)
+  const record = await bus.query('exec', 'http_result', { run_id: result.data.run_id }, { actor: 'model' })
+  assert.equal(record.data.response.body, 'business-fixture')
+  assert.doesNotMatch(JSON.stringify(record), /local-pilot-fixture/)
+  const injected = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url,
+    headers: { 'Proxy-Authorization': 'Bearer model-injection' } }, { actor: 'model' })
+  assert.equal(injected.ok, true)
+  assert.equal(injected.data.state, 'observed')
+  assert.equal(proxyHeaders.length, 2)
+  assert.equal(proxyHeaders[1]['proxy-authorization'], secret)
+  assert.equal(originHeaders[1]['proxy-authorization'], undefined)
+})
+
+test('27 WP04 host-bound anonymous HTTP uses the admitted DNS answer once without redirects', async t => {
+  const connections = []
+  const proxy = http.createServer()
+  proxy.on('connect', (req, socket) => {
+    connections.push(req.url)
+    socket.on('error', () => {})
+    socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+    socket.once('data', () => socket.end('HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'))
+  })
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => proxy.close(resolve)))
+  const scope = 'defaults:\n  allow_risk: [passive, active]\nprograms:\n  - name: test-src\n    scope:\n      - admitted.invalid\n'
+  const binding = () => ({
+    program: 'test-src', hostname: 'admitted.invalid', target: ['93.184.216.34', 80],
+    scope_sha256: crypto.createHash('sha256').update(scope).digest('hex'),
+    dns_snapshot: { version: 1, program: 'test-src', hostname: 'admitted.invalid',
+      scope_sha256: crypto.createHash('sha256').update(scope).digest('hex'),
+      records: [{ address: '93.184.216.34', ttl: 60 }],
+      resolved_at_ms: Date.now(), expires_at_ms: Date.now() + 59000 },
+  })
+  const environment = (bound = binding()) => {
+    const env = makeEnv({ egressProxy: `http://127.0.0.1:${proxy.address().port}`, httpEgressBinding: bound })
+    fs.writeFileSync(path.join(env.dataDir, 'scope.yml'), scope)
+    t.after(() => env.bus._internal.close())
+    return env
+  }
+  const request = (env, args = {}) => env.bus.dispatch('exec', 'http_request',
+    { program_id: 'test-src', url: 'http://admitted.invalid/read', ...args }, { actor: 'model' })
+  const env = environment()
+  const result = await request(env)
+  assert.equal(result.ok, true, result.error?.message)
+  assert.equal(result.data.status, 302)
+  assert.equal(result.data.hops, 1)
+  assert.deepEqual(connections, ['93.184.216.34:80'])
+  const record = await env.bus.query('exec', 'http_result', { run_id: result.data.run_id }, { actor: 'model' })
+  assert.equal(record.data.egress_binding.target[0], '93.184.216.34')
+  assert.equal((await request(env)).ok, false, 'a consumed single-connection binding must not send again')
+  assert.equal((await request(environment(), { proxy: 'direct' })).ok, false)
+  assert.equal((await request(environment(), { headers: { Cookie: 'session=secret' } })).ok, false)
+  assert.equal((await request(environment(), { url: 'http://other.invalid/read' })).ok, false)
+  const expired = binding(); expired.dns_snapshot.expires_at_ms = Date.now() - 1
+  assert.equal((await request(environment(expired))).ok, false)
+  const changed = environment()
+  fs.appendFileSync(path.join(changed.dataDir, 'scope.yml'), '\n# changed\n')
+  assert.equal((await request(changed)).ok, false)
+  assert.equal(connections.length, 1, 'failed bindings must cause no CONNECT or fallback')
 })

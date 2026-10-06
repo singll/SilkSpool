@@ -18,6 +18,7 @@ import secrets
 import socket
 import stat
 import subprocess
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -247,6 +248,62 @@ def read_lease(path):
             os.close(fd)
 
 
+def run_http_batch(*, directory, lease, target, preflight, validate_route,
+                   base, url, node="/usr/local/node/bin/node"):
+    """One anonymous GET via the installed exec domain, preserving its signed evidence."""
+    parsed = urlsplit(url)
+    if (parsed.scheme != "https" or parsed.username or parsed.password
+            or parsed.fragment or parsed.port not in (None, 443)
+            or lease["identity"] != "anonymous"):
+        raise ValueError("anonymous HTTPS request required")
+    binding = preflight()
+    if (binding.get("hostname") != parsed.hostname
+            or binding.get("program") != lease["program"]
+            or binding.get("target") != list(target)):
+        raise ValueError("HTTP request does not match admitted target")
+    threads, responses = [], []
+
+    def execute(connection):
+        try:
+            context = {"base": str(base), "directory": str(directory), "url": url,
+                       "binding": binding, "connection": connection}
+            completed = subprocess.run(
+                [node, str(Path(__file__).with_name("dsh-pilot-http.mjs"))],
+                input=json.dumps(context), text=True, capture_output=True, timeout=18)
+            response = json.loads(completed.stdout)
+            if completed.returncode or response.get("ok") is not True:
+                response = {"ok": False, "error_code": response.get("error_code", "bridge_failed")}
+            responses.append(response)
+        except Exception as exc:
+            responses.append({"ok": False, "error_kind": type(exc).__name__})
+
+    def ready(connection):
+        # The relay must accept while the real executor makes its CONNECT request.
+        thread = threading.Thread(target=execute, args=(connection,))
+        threads.append(thread)
+        thread.start()
+
+    try:
+        relay = run_batch(directory=directory, lease=lease, target=target,
+                          preflight=preflight, validate_route=validate_route,
+                          timeout=15, max_bytes=524288, on_ready=ready)
+    except Exception as exc:
+        if not threads:
+            # No owned listener was created. In particular, never add a report to
+            # an existing batch that run_batch refused to resume.
+            raise
+        relay = {"ok": False, "error_kind": type(exc).__name__}
+    for thread in threads:
+        thread.join()
+    response = responses[0] if len(responses) == 1 else {"ok": False, "error_kind": "missing_result"}
+    report = {"ok": bool(relay.get("ok") and response.get("ok")
+                         and response.get("state") == "observed"),
+              "relay": relay, "http": response, "requests_limit": 1,
+              "redirects": 0, "retries": 0, "provider_internal_attempts": "unknown"}
+    write_private(Path(directory) / "http-result.json", report)
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lease", required=True)
@@ -257,6 +314,7 @@ def main():
     parser.add_argument("--base", default="/opt/silkspool/dsh")
     parser.add_argument("--node", default="/usr/local/node/bin/node")
     parser.add_argument("--max-connections", type=int, choices=[1], default=1)
+    parser.add_argument("--url", help="One anonymous HTTPS GET through the installed exec domain")
     args = parser.parse_args()
     lease = read_lease(args.lease)
     if lease["identity"] != "anonymous":
@@ -289,9 +347,14 @@ def main():
     target = (args.target_ip, 443)
     # DNS TTL governs dialing; the original lease and relay timeout still cap
     # the admitted fixed connection. No later DNS lookup or route replacement.
-    result = run_batch(directory=args.directory, lease=lease, target=target,
-                       preflight=preflight, validate_route=validate_route,
-                       max_connections=args.max_connections)
+    if args.url:
+        result = run_http_batch(directory=args.directory, lease=lease, target=target,
+                                preflight=preflight, validate_route=validate_route,
+                                base=args.base, url=args.url, node=args.node)
+    else:
+        result = run_batch(directory=args.directory, lease=lease, target=target,
+                           preflight=preflight, validate_route=validate_route,
+                           max_connections=args.max_connections)
     print(json.dumps(result))
     return 0 if result["ok"] else 1
 
