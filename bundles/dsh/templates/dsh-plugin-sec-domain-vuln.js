@@ -168,7 +168,7 @@ export const VULN_MANIFEST = {
   service: 'secDomain.vuln',
   description: '漏洞信号 / 候选队列 / 证据链 / 提交与运营回流（v5 试点域，候选池状态机根治域）',
   owns: {
-    tables: ['findings'],
+    tables: ['findings', 'vuln_technical_verdicts'],
     files: ['data/evidence/', 'data/evidence/hardened-drafts/', 'data/events/vuln.jsonl'],
   },
   commands: {
@@ -529,15 +529,16 @@ export const VULN_MANIFEST = {
       predicates: [],
       agent_note: '漏洞计数总览：信号面（by severity/status）与候选面（pending/claimed）分开计数。候选口径=待消化（noise=1 且 status=new）。',
     },
-    // 21 号方案 §4-5：eval 三指标的数据源（has_capsule 标志位，不回传证据全文）
+    // 技术回执与首次来源投影；capsule 文本仅为引用存在标志。
     vuln_evidence_flags: {
       actor: ['script', 'dashboard', 'system'],
       params: schema({
         program_id: str({ default: '' }),
         limit: int({ minimum: 1, maximum: 5000 }),
+        offset: int({ minimum: 0 }),
       }, []),
       predicates: [],
-      agent_note: '（eval 投影数据源）逐 finding 轻量标志位：noise/severity/vuln_type/created_at/has_capsule。不回传证据全文；oracle-verified 判定口径在此单一事实。',
+      agent_note: '（eval 投影数据源）逐 finding 首次来源/入池时间与最新正式技术回执，完整分页。不回传证据全文；has_capsule 只表示文本引用，不能作为 verified。',
     },
     vuln_by_asset: {
       actor: ['model', 'dashboard', 'human'],
@@ -1072,10 +1073,18 @@ function makeHandlers(opts) {
       if (!changed.changed) throwErr('E_STATE', `finding #${args.finding_id} 状态非 new 或已终态`, 'finding 已处于终态/已确认，不可再次流转。补证据用 vuln_note；提交用 vuln_submit', false)
       repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} confirmation evidence: ${args.evidence}${args.review ? `; reviewed by ${ctx.operator}: ${args.review.basis}` : ''}`)
       if (args.note) repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} confirm: ${args.note}`)
+      const technicalEvidence = JSON.stringify({ evidence: args.evidence, review: args.review || null,
+        capsule: args.review ? null : readCapsule(dataDir, refPrefix(args.evidence).slice(8)) })
+      const technicalVerdictId = repo.recordTechnicalVerdict({
+        finding_id: row.id, verdict: 'confirmed', basis: args.review ? 'independent_review' : 'controlled_oracle',
+        evidence_ref: refPrefix(args.evidence),
+        evidence_digest: crypto.createHash('sha256').update(technicalEvidence).digest('hex'), evidence_json: technicalEvidence,
+        operator: args.review ? ctx.operator : null, created_at: Date.now(),
+      })
       repo.markSyncPending?.(args.finding_id)
       const fromCandidate = row.noise === 1
       // 43 号补丁：事件携带 task/session/来源——归因→策略胜负回写与类别学习（此前无归因，连败拉黑形同虚设）
-      const events = [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, from: { status: 'new', noise: row.noise }, evidence_ref: refPrefix(args.evidence), verification_basis: args.review ? 'independent_review' : 'controlled_oracle', operator: args.review ? ctx.operator : null, confidence: 'confirmed', fgs_node_id: row.fgs_node_id || null, vuln_type: row.vuln_type || null, host: row.host || null, program_id: row.program_id || null, task_id: row.task_id ?? null, session_id: row.session_id ?? null, source: row.source ?? null, title: String(row.title || '').slice(0, 80) } }]
+      const events = [{ name: 'vuln.signal.confirmed', payload: { finding_id: args.finding_id, technical_verdict_id: technicalVerdictId, from: { status: 'new', noise: row.noise }, evidence_ref: refPrefix(args.evidence), verification_basis: args.review ? 'independent_review' : 'controlled_oracle', operator: args.review ? ctx.operator : null, confidence: 'confirmed', fgs_node_id: row.fgs_node_id || null, vuln_type: row.vuln_type || null, host: row.host || null, program_id: row.program_id || null, task_id: row.task_id ?? null, session_id: row.session_id ?? null, source: row.source ?? null, title: String(row.title || '').slice(0, 80) } }]
       if (fromCandidate) events.push({ name: 'vuln.candidate.promoted', payload: { finding_id: args.finding_id, from: { noise: 1, status: 'new' }, to: { noise: 0, status: 'confirmed' }, cause_cmd: 'vuln_confirm' } })
       return {
         data: { id: args.finding_id, status: 'confirmed', signal: true, promoted_from_candidate: fromCandidate },
@@ -1115,6 +1124,14 @@ function makeHandlers(opts) {
       if (args.verdict === 'false_positive' || (args.verdict === 'dup' && row.confidence !== 'confirmed')) set.confidence = args.verdict
       const changed = repo.transitionFinding(args.finding_id, ['new', 'confirmed', 'submitted'], set)
       if (!changed.changed) throwErr('E_STATE', `finding #${args.finding_id} 状态 ${row.status} 不可 reject`, '已终态不可再流转', false)
+      if (args.verdict === 'false_positive') {
+        const evidence = JSON.stringify({ reason: args.reason, note: args.note || null })
+        repo.recordTechnicalVerdict({
+          finding_id: row.id, verdict: 'false_positive', basis: 'rejection',
+          evidence_ref: null, evidence_digest: crypto.createHash('sha256').update(evidence).digest('hex'),
+          evidence_json: evidence, operator: ctx.operator || null, created_at: Date.now(),
+        })
+      }
       if (args.note) repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} reject(${args.verdict}): ${args.note}`)
       if (row.noise === 0) repo.markSyncPending?.(args.finding_id)
       return {
@@ -1486,13 +1503,17 @@ function makeHandlers(opts) {
     },
     // 21 号方案 §4-5：eval 三指标数据源——只回标志位不回证据全文
     vuln_evidence_flags: async (args, repo) => {
-      const rows = repo.listFindingsWithEvidence ? repo.listFindingsWithEvidence({ program_id: args.program_id || '', limit: args.limit || 5000 }) : []
+      const rows = repo.listFindingsWithEvidence({ program_id: args.program_id || '', limit: args.limit || 500, offset: args.offset || 0 })
       const flags = rows.map((r) => ({
         id: r.id, noise: r.noise, severity: r.severity || 'info', status: r.status,
         vuln_type: r.vuln_type || '', created_at: r.created_at, program_id: r.program_id || null,
         has_capsule: /(^|\s|,|;)capsule:[a-f0-9]{16}/.test(String(r.evidence || '')),
+        discovery_origin: r.discovery_origin || 'unknown', candidate_entered_at: r.candidate_entered_at ?? null,
+        technical_verdict_id: r.technical_verdict_id ?? null,
+        technical_verdict: r.technical_verdict || 'unknown', verification_basis: r.verification_basis || null,
+        verified_at: r.verified_at ?? null,
       }))
-      return { rows: flags, total: flags.length }
+      return { rows: flags, total: repo.countFindingsWhere({ visibility: 'all', program_id: args.program_id || '' }), meta: { paged: true } }
     },
     vuln_by_asset: async (args, repo) => {
       const host = normalizeHost(args.host)

@@ -23,6 +23,7 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import * as http from 'node:http'
 import { fileURLToPath } from 'node:url'
+import { VULN_CLASSES } from '../sec-rules-hypothesis/index.js'
 
 export const name = 'sec-domain-eval'
 export const version = '1.0.0'
@@ -764,24 +765,53 @@ function makeHandlers(opts) {
       if (!queryRef) throwErr('E_BACKEND_UNAVAILABLE', '总线 query 不可达', '确认 vuln 域已注册', true)
       const days = Math.min(Math.max(Number(args.days) || 90, 1), 365)
       const since = Date.now() - days * 86400000
-      const r = await queryRef('vuln', 'evidence_flags', { program_id: args.program_id || '', limit: 5000 }, { actor: 'script' })
-      const rows = (r && r.ok && (r.rows || r.data?.rows)) || []
+      const rows = []
+      let expectedTotal = null
+      for (;;) {
+        const r = await queryRef('vuln', 'evidence_flags', { program_id: args.program_id || '', limit: 500, offset: rows.length }, { actor: 'script' })
+        if (!r?.ok) throwErr(r?.error?.code || 'E_BACKEND_UNAVAILABLE', '技术来源查询失败，指标不能当零',
+          r?.error?.message || '检查 vuln 域', true)
+        if (!Array.isArray(r.rows) || !Number.isSafeInteger(r.total) || r.total < 0
+          || (expectedTotal !== null && expectedTotal !== r.total)) {
+          throwErr('E_DISCOVERY_INCOMPLETE', '技术来源分页发生变化或缺少总量', '重新读取完整快照', true)
+        }
+        expectedTotal = r.total
+        rows.push(...r.rows)
+        if (rows.length === expectedTotal) break
+        if (!r.rows.length || rows.length > expectedTotal || rows.length >= 100000) {
+          throwErr('E_DISCOVERY_INCOMPLETE', '技术来源分页未完整读取', '检查总量或改用有界聚合查询', true)
+        }
+      }
+      if (new Set(rows.map(r => r.id)).size !== rows.length) {
+        throwErr('E_DISCOVERY_INCOMPLETE', '技术来源分页重复', '重新读取完整快照', true)
+      }
       const win = rows.filter((f) => Number(f.created_at || 0) >= since)
-      const candidates = win.filter((f) => f.noise === 1)
+      const candidates = rows.filter(f => f.discovery_origin === 'candidate' && Number(f.candidate_entered_at || 0) >= since)
       const signals = win.filter((f) => f.noise === 0)
-      const verified = signals.filter((f) => f.has_capsule === true)
+      const isVerified = f => Number.isSafeInteger(f.technical_verdict_id) && f.technical_verdict === 'confirmed'
+        && ['controlled_oracle', 'independent_review'].includes(f.verification_basis)
+      const verified = win.filter(isVerified)
+      const converted = candidates.filter(isVerified)
       const hiMed = verified.filter((f) => ['high', 'medium', 'critical'].includes(String(f.severity || '')))
-      // 新漏洞类型：窗口内首次出现的 vuln_type（此前 365 天内无更早记录）
-      const earlierTypes = new Set(rows.filter((f) => Number(f.created_at || 0) < since).map((f) => String(f.vuln_type || '').trim()).filter(Boolean))
-      const newTypes = [...new Set(win.map((f) => String(f.vuln_type || '').trim()).filter((t) => t && !earlierTypes.has(t)))].sort()
+      const canonicalType = f => VULN_CLASSES.includes(f.vuln_type) ? f.vuln_type : null
+      const earlierTypes = new Set(rows.filter(f => Number(f.created_at || 0) < since && isVerified(f)).map(canonicalType).filter(Boolean))
+      const newTypes = [...new Set(verified.map(canonicalType).filter(t => t && !earlierTypes.has(t)))].sort()
       return {
         window_days: days, program_id: args.program_id || null,
         candidates_total: candidates.length, signals_total: signals.length,
-        oracle_verified: verified.length,
-        candidate_to_verified_rate: candidates.length ? +(verified.length / candidates.length).toFixed(4) : null,
+        direct_signals_total: win.filter(f => f.discovery_origin === 'direct_signal').length,
+        unknown_origin_total: win.filter(f => !['candidate', 'direct_signal'].includes(f.discovery_origin)).length,
+        technical_unknown_total: win.filter(f => f.technical_verdict === 'unknown').length,
+        technical_verified: verified.length,
+        oracle_verified: verified.filter(f => f.verification_basis === 'controlled_oracle').length,
+        independently_reviewed: verified.filter(f => f.verification_basis === 'independent_review').length,
+        candidate_verified: converted.length,
+        candidate_to_verified_rate: candidates.length ? +(converted.length / candidates.length).toFixed(4) : null,
         verified_hi_med_ratio: verified.length ? +(hiMed.length / verified.length).toFixed(4) : null,
         new_vuln_types: newTypes, new_vuln_type_count: newTypes.length,
-        note: 'oracle-verified=evidence 含 capsule:{id} 的信号（模型无权宣布 verified）；转化率分母为候选池出池前基数',
+        coverage: { rows_read: rows.length, complete: true, cohort: 'first-candidate-entry',
+          technical_basis: 'latest-formal-verdict-receipt', legacy_backfilled: false },
+        note: '首次候选入池构成固定分母；直接信号单列。正式确认回执表示确认时通过证据门，独立审校与受控Oracle分列；不代表本次重新复现。历史缺回执为未知，capsule文本及平台状态不作技术真值。',
       }
     },
   }

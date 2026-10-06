@@ -1541,6 +1541,14 @@ change=20261006-quality-retry-release，固定源4e69b20，16文件31落点，DS
 
 已安装pilot-tools/20261006-http匿名单次桥接：租约/现役Scope/S级/DNS TTL绑定后经生产exec签封，代理认证仅CONNECT，禁止重试/跳转/身份头。单条platforms真实canary在上游CONNECT响应头完成前EOF（1次TCP/CONNECT，转发字节0），run rmuw78ntvf54a签封为transport_error，exec.http_result实际RPC核验签名/manifest成功。零重试/跳转/模型调用，未收到目标业务响应，不能计健康模板/可靠阴性；首次读回脚本误取顶层state失败，修正读取response.state后通过，不追加目标请求。免费池刷新仍在运行，异步请求稳定代理引用；批次私有事件未接学习投影，不宣称全链路闭环。
 
+### 15.77 L22发现指标固定cohort与正式技术回执（2026-10-06，本地未部署）
+
+真实总线红例复现任意capsule文本被算verified、候选晋升后分母1→0。findings新增首次来源和候选入池时间；仅新登记落事实，旧行未知不猜回填。confirm通过原证据门后与状态同事务追加vuln_technical_verdicts，区分controlled_oracle/independent_review并保存原证据/审校；false_positive追加撤销回执，平台状态/dup/ignored不改变技术确认。回执写失败可回滚确认，历史原件不改。
+
+eval固定首次入池cohort，候选晋升后分母不变、直接信号不混入分子；capsule文本不增技术计数，类别限VULN_CLASSES，历史无来源/回执单列unknown。实际507行后页完整，缺域返回错误而非零。候选→晋升→独立审校→vendor duplicate→反证的指标变化以及回执失败注入均通过；eval/vuln共114项，最终完整跨域724/724通过。证据`out/secagent-audits/20261006-l22-discovery-metrics/`，02/15契约同步。
+
+尚未部署。此为新事实计量基础，不是47条历史技术结论已复核或所有attempt归因完成；查询不重新发目标请求，回执表示确认时通过门禁，当前独立重现率仍需另测。历史未知可能影响新类型的解释，不能宣称全历史新发现或统计显著收益。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

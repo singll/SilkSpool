@@ -1036,7 +1036,7 @@ test('L6: 孤儿回收经 run_finish 事件流——停摆 candidate run 回收 
 // 21 号方案 §4-5：eval 收缩三指标（发现机器效果投影）
 // ---------------------------------------------------------------------------
 
-test('eval_discovery_metrics: 候选→verified 转化率 / 高危占比 / 新漏洞类型', async () => {
+test('27 L22: capsule text is an observation, not a technical verdict or a recoverable cohort', async () => {
   const env = makeEnv()
   const vuln = buildVulnDomain({ dataDir: env.dataDir, dispatch: (d, v, a, c) => env.bus.dispatch(d, v, a, c), query: (d, n, a, c) => env.bus.query(d, n, a, c) })
   assert.equal(env.bus.registry.register(vuln).ok, true)
@@ -1053,10 +1053,97 @@ test('eval_discovery_metrics: 候选→verified 转化率 / 高危占比 / 新�
   ins.run('fp_v3', '人工确认无 capsule', 'high', 'run_manual_x', 'sqli', 0, now - 4000, now - 4000) // 非 oracle 不计 verified
   const r = await env.bus.query('eval', 'discovery_metrics', { days: 90 }, { actor: 'dashboard' })
   assert.equal(r.ok, true, r.error?.message)
-  assert.equal(r.data.candidates_total, 2)
-  assert.equal(r.data.oracle_verified, 2, '只有 capsule 证据计 verified（模型无权宣布 verified）')
-  assert.equal(r.data.candidate_to_verified_rate, 1, '2 候选 2 capsule 信号（出池进信号口径）')
-  assert.equal(r.data.verified_hi_med_ratio, 0.5)
-  assert.ok(r.data.new_vuln_types.includes('idor'), '窗口内新类型 idor')
-  assert.ok(!r.data.new_vuln_types.includes('sqli'), 'sqli 窗口外已有，不算新类型')
+  assert.equal(r.data.oracle_verified, 0, 'arbitrary capsule strings cannot prove validation')
+  assert.equal(r.data.candidate_to_verified_rate, null, 'legacy pool transitions cannot be reconstructed from current noise')
+  assert.equal(r.data.verified_hi_med_ratio, null)
+  assert.deepEqual(r.data.new_vuln_types, [])
+  assert.equal(r.data.unknown_origin_total, 5)
+})
+
+test('27 L22: fixed candidate cohort survives promotion and vendor feedback, direct signals stay separate', async () => {
+  const env = makeEnv()
+  const vuln = buildVulnDomain({ dataDir: env.dataDir, dispatch: (...a) => env.bus.dispatch(...a), query: (...a) => env.bus.query(...a) })
+  assert.equal(env.bus.registry.register(vuln).ok, true)
+  fs.mkdirSync(path.join(env.dataDir, 'results', 'run_metric_evidence'), { recursive: true })
+  fs.writeFileSync(path.join(env.dataDir, 'results', 'run_metric_evidence', 'meta.json'), '{}')
+  const candidateArgs = { title: '授权边界候选观察保留固定入池身份', severity: 'medium',
+    host: 'a.example.com', url: 'https://a.example.com/private', source: 'fixture', program_id: 'test-src' }
+  const candidate = await env.bus.dispatch('vuln', 'register_candidate', candidateArgs, { actor: 'script' })
+  assert.equal(candidate.ok, true, candidate.error?.message)
+  const metrics = async () => {
+    const r = await env.bus.query('eval', 'discovery_metrics', { days: 90 }, { actor: 'dashboard' })
+    assert.equal(r.ok, true, r.error?.message)
+    return r.data
+  }
+  assert.equal((await metrics()).candidates_total, 1)
+  const signal = { ...candidateArgs, evidence: 'run_metric_evidence', vuln_type: 'idor',
+    reproduction_steps: '使用已授权双身份重复读取测试对象并核对正常与反例响应', impact: '未授权身份能够读取受保护的测试对象内容' }
+  const promoted = await env.bus.dispatch('vuln', 'register_signal', signal, { actor: 'model' })
+  assert.equal(promoted.ok, true, promoted.error?.message)
+  assert.equal(promoted.data.id, candidate.data.id)
+  assert.equal((await metrics()).candidates_total, 1, 'promotion does not erase original denominator')
+  const review = { basis: '独立核验请求和响应以及正常与反例对照，确认安全属性被违反',
+    reproduction_steps: signal.reproduction_steps, impact: signal.impact }
+  const confirm = await env.bus.dispatch('vuln', 'confirm', {
+    finding_id: candidate.data.id, evidence: 'run_metric_evidence', review,
+  }, { actor: 'dashboard', operator: 'metric-reviewer' })
+  assert.equal(confirm.ok, true, confirm.error?.message)
+  const checked = await metrics()
+  assert.equal(checked.technical_verified, 1)
+  assert.equal(checked.oracle_verified, 0, 'independent human review is explicit, not relabeled oracle')
+  assert.equal(checked.candidate_to_verified_rate, 1)
+  assert.equal(checked.verified_hi_med_ratio, 1)
+  assert.deepEqual(checked.new_vuln_types, ['idor'])
+  const submitted = await env.bus.dispatch('vuln', 'submit', { finding_id: candidate.data.id, vendor_status: 'duplicate' }, { actor: 'dashboard' })
+  assert.equal(submitted.ok, true, submitted.error?.message)
+  for (const key of ['technical_verified', 'oracle_verified', 'candidates_total', 'candidate_to_verified_rate', 'new_vuln_type_count']) {
+    assert.equal((await metrics())[key], checked[key], key)
+  }
+  const direct = await env.bus.dispatch('vuln', 'register_signal', {
+    ...signal, title: '直接登记的第二条完整技术信号观察', url: 'https://a.example.com/other', vuln_type: 'invented-type',
+  }, { actor: 'model' })
+  assert.equal(direct.ok, true, direct.error?.message)
+  assert.equal((await metrics()).candidates_total, 1)
+  assert.equal((await metrics()).direct_signals_total, 1)
+  assert.deepEqual((await metrics()).new_vuln_types, ['idor'])
+  const confirmDirect = await env.bus.dispatch('vuln', 'confirm', {
+    finding_id: direct.data.id, evidence: 'run_metric_evidence', review,
+  }, { actor: 'dashboard', operator: 'metric-reviewer' })
+  assert.equal(confirmDirect.ok, true, confirmDirect.error?.message)
+  assert.equal((await metrics()).technical_verified, 2)
+  assert.equal((await metrics()).candidate_to_verified_rate, 1, 'direct confirmations cannot inflate cohort numerator')
+  assert.deepEqual((await metrics()).new_vuln_types, ['idor'], 'confirmed arbitrary type cannot create taxonomy novelty')
+  const rejected = await env.bus.dispatch('vuln', 'reject', {
+    finding_id: candidate.data.id, verdict: 'false_positive', reason: '独立反证已证明原判定不成立，需要撤销技术阳性',
+  }, { actor: 'dashboard' })
+  assert.equal(rejected.ok, true, rejected.error?.message)
+  assert.equal((await metrics()).technical_verified, 1)
+  assert.equal((await metrics()).candidates_total, 1)
+  assert.equal((await metrics()).candidate_to_verified_rate, 0)
+})
+
+test('27 L22: discovery metrics read later pages, and source failure stays an error', async () => {
+  const env = makeEnv()
+  const absent = await env.bus.query('eval', 'discovery_metrics', {}, { actor: 'dashboard' })
+  assert.equal(absent.ok, false, 'missing vuln domain must not become zero metrics')
+  const vuln = buildVulnDomain({ dataDir: env.dataDir, dispatch: (...a) => env.bus.dispatch(...a), query: (...a) => env.bus.query(...a) })
+  assert.equal(env.bus.registry.register(vuln).ok, true)
+  await env.bus.query('vuln', 'list', {}, { actor: 'dashboard' })
+  const db = env.bus._internal.db(), now = Date.now()
+  const insert = db.prepare(`INSERT INTO findings
+    (fingerprint,title,noise,program_id,created_at,candidate_entered_at,discovery_origin)
+    VALUES (?, '历史固定来源快照夹具', 1, 'test-src', ?, ?, 'candidate')`)
+  db.exec('BEGIN')
+  try {
+    for (let i = 0; i < 507; i++) insert.run(`page-${i}`, now, now)
+    db.exec('COMMIT')
+  } catch (e) { db.exec('ROLLBACK'); throw e }
+  const q = await env.bus.query('eval', 'discovery_metrics', {}, { actor: 'dashboard' })
+  assert.equal(q.ok, true, q.error?.message)
+  assert.equal(q.data.candidates_total, 507)
+  assert.equal(q.data.coverage.rows_read, 507)
+  assert.equal(q.data.candidate_to_verified_rate, 0)
+  const last = await env.bus.query('vuln', 'evidence_flags', { offset: 500, limit: 500 }, { actor: 'script' })
+  assert.equal(last.total, 507)
+  assert.equal(last.rows.length, 7)
 })

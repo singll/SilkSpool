@@ -67,6 +67,8 @@ const V5_COLS = [
   ['sync_state', 'sync_state TEXT'],
   // 跨源去重：上游（cyberstrikeai/vuln-pipeline/外部系统）提供的稳定外部 id
   ['external_id', 'external_id TEXT'],
+  ['discovery_origin', 'discovery_origin TEXT'],
+  ['candidate_entered_at', 'candidate_entered_at INTEGER'],
 ]
 
 const LIST_COLS = `id, title, severity, host, url, source, status, program_id, session_id,
@@ -98,6 +100,12 @@ function createRepo(db) {
   // 43 号补丁：来源×类别噪声学习与来源日配额（按 source+title 聚合）。
   db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_source_title ON findings(source, title)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_findings_source_created ON findings(source, created_at)`)
+  db.exec(`CREATE TABLE IF NOT EXISTS vuln_technical_verdicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, finding_id INTEGER NOT NULL,
+    verdict TEXT NOT NULL, basis TEXT NOT NULL, evidence_ref TEXT,
+    evidence_digest TEXT, evidence_json TEXT NOT NULL, operator TEXT, created_at INTEGER NOT NULL
+  )`)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_vuln_verdict_finding ON vuln_technical_verdicts(finding_id, id DESC)')
 
   const stmts = {
     getFinding: db.prepare('SELECT * FROM findings WHERE id = ?'),
@@ -124,8 +132,9 @@ function createRepo(db) {
       const r = db.prepare(`
         INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, status, created_at,
           program_id, task_id, session_id, vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact,
-          recommendation, noise, confidence, fgs_node_id, discovery_step, updated_at, external_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          recommendation, noise, confidence, fgs_node_id, discovery_step, updated_at, external_id,
+          discovery_origin, candidate_entered_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         f.fingerprint, f.title, f.severity, f.host, f.url, f.evidence || '', f.source || '', f.status || 'new', f.created_at,
         f.program_id || null, f.task_id != null ? Number(f.task_id) : null, f.session_id || null,
@@ -133,6 +142,7 @@ function createRepo(db) {
         f.preconditions || null, f.reproduction_steps || null, f.impact || null, f.recommendation || null,
         f.noise === 1 ? 1 : 0, f.confidence || 'tentative', f.fgs_node_id || null, f.discovery_step || null,
         f.updated_at || f.created_at, f.external_id || null,
+        f.noise === 1 ? 'candidate' : 'direct_signal', f.noise === 1 ? f.created_at : null,
       )
       return { id: Number(r.lastInsertRowid) }
     },
@@ -204,11 +214,23 @@ function createRepo(db) {
       return db.prepare(`SELECT COUNT(*) AS n FROM findings WHERE ${where}`).get(...args).n
     },
     // 21 号方案 §4-5：eval 投影数据源（含 evidence 判定列——只服务 vuln_evidence_flags 查询，不进入列表视图）
-    listFindingsWithEvidence({ program_id = '', limit = 5000 } = {}) {
-      const where = program_id ? 'WHERE program_id = ?' : ''
+    listFindingsWithEvidence({ program_id = '', limit = 500, offset = 0 } = {}) {
+      const where = program_id ? 'WHERE f.program_id = ?' : ''
       const args = program_id ? [String(program_id)] : []
-      return db.prepare(`SELECT id, noise, severity, status, vuln_type, created_at, program_id, evidence FROM findings ${where} ORDER BY id ASC LIMIT ?`)
-        .all(...args, Math.min(Number(limit) || 5000, 5000)).map((r) => ({ ...r }))
+      return db.prepare(`SELECT f.id, f.noise, f.severity, f.status, f.vuln_type, f.created_at,
+        f.program_id, f.evidence, f.discovery_origin, f.candidate_entered_at,
+        v.id AS technical_verdict_id, v.verdict AS technical_verdict, v.basis AS verification_basis,
+        v.created_at AS verified_at
+        FROM findings f LEFT JOIN vuln_technical_verdicts v
+          ON v.id = (SELECT MAX(id) FROM vuln_technical_verdicts WHERE finding_id=f.id)
+        ${where} ORDER BY f.id ASC LIMIT ? OFFSET ?`)
+        .all(...args, Math.min(Number(limit) || 500, 500), Math.max(0, Number(offset) || 0)).map((r) => ({ ...r }))
+    },
+    recordTechnicalVerdict({ finding_id, verdict, basis, evidence_ref = null, evidence_digest = null, evidence_json, operator = null, created_at }) {
+      const r = db.prepare(`INSERT INTO vuln_technical_verdicts
+        (finding_id,verdict,basis,evidence_ref,evidence_digest,evidence_json,operator,created_at) VALUES (?,?,?,?,?,?,?,?)`)
+        .run(finding_id, verdict, basis, evidence_ref, evidence_digest, evidence_json, operator, created_at)
+      return Number(r.lastInsertRowid)
     },
     listCandidatePool(pred, order, limit, offset) {
       const { where, args } = buildWhere({ ...pred, visibility: 'candidate' })

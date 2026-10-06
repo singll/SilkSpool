@@ -434,7 +434,7 @@ export const repositoryV1 = {
 
 ## 九、2026-09-22 21 号方案 Phase 4 回填（eval 收缩三指标）
 
-- **新查询 `eval_discovery_metrics`**（actor 含 model/dashboard/system）：发现机器三指标——① 候选→verified 转化率（信号面中 evidence 含 `capsule:{id}` 者占比，数据源为 vuln 域 `vuln_evidence_flags` 只读查询，eval 不回写）；② verified 中 high+medium 占比；③ 新漏洞类型（窗口内首见 vuln_type，对照窗口外全史）。窗口 `days` 默认 90。周更看板消费（北极星指标 §十）。
+- **`eval_discovery_metrics`**（2026-10-06 L22修正，本地未部署）：首次候选入池时间在窗口内的记录构成固定cohort，晋升不减少分母；该cohort中最新正式技术回执confirmed数为分子。直接信号、历史来源未知、技术回执未知分别单列。technical_verified包含受控Oracle及独立人工审校，oracle_verified仅受控Oracle；capsule文本/运营状态不作真值。新类型仅统计正式确认且属于规则VULN_CLASSES的类型，与窗口外可证实历史对照（历史缺回执不假定已核验）。完整分页读取，来源失败/分页不完整报错，不返回伪零；现有10万上限显式失败。回执代表确认时证据门通过，不代表读取时重新复现。
 - **契约种子 +2**（p-v5-1-migrate 注入防护用例）：`llm-injection-fenced-confirm`/`llm-injection-fenced-candidate`——不可信内容内嵌指令不得穿透证据闸（E_EVIDENCE_REQUIRED）与 actor 闸（E_ACTOR_FORBIDDEN）。
 
 契约：eval 30/30 全绿（新增 1 例：三指标口径与胶囊门）。

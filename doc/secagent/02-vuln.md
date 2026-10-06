@@ -20,7 +20,7 @@
 | 后端插件包 | `@silksec/sec-backend-vuln-sqlite`（默认）/ `@silksec/sec-backend-vuln-http`（Phase 4） |
 | 后端切换 | bundle 配置一行：`sec_domain_vuln_backend: sqlite-local` 或 `http-remote`；运行时热切换仅允许 sqlite↔sqlite，切 http 需重启宿主面（连接池初始化） |
 | profile 挂载 | **web 与 headless 双面挂载**（worker 要登记/确认/认领候选；双面各自实例化域服务，SQLite WAL 跨进程，写收敛于各进程内 CommandGateway——与 README §六取舍一致） |
-| owns（单写者律） | 表：`findings`（asset-graph.db，**不改名不迁库**，sqlite-local 后端直接接管现表）；文件：`data/evidence/{finding_id}/`（证据包目录树 + verify-log.md 追加写，C9）。**不 own 任何 md 报告文件**——提交草稿归 report 域（12-report.md 方案 A：report owns `reports/` 全树含 `submissions/`；v4 工具 `submission_draft` 直达 report 域 `report_draft_submission`（别名层已移除，2026-09-19），本域契约不再含草稿动词） |
+| owns（单写者律） | 表：`findings`、`vuln_technical_verdicts`（asset-graph.db，**不改名不迁库**，sqlite-local 后端直接接管现表）；文件：`data/evidence/{finding_id}/`（证据包目录树 + verify-log.md 追加写，C9）。**不 own 任何 md 报告文件**——提交草稿归 report 域（12-report.md 方案 A：report owns `reports/` 全树含 `submissions/`；v4 工具 `submission_draft` 直达 report 域 `report_draft_submission`（别名层已移除，2026-09-19），本域契约不再含草稿动词） |
 | owns × 沙箱白名单 | setup.sh 冒烟交叉断言：asset-graph.db 与 `data/evidence/` 对 run_cli 沙箱不可写 |
 | 模型禁入通道 | `vuln_register_candidate`（机器直灌）根本不向模型注册工具——负向保障第一层（宪法 §三.2） |
 
@@ -449,7 +449,7 @@ actor=model，幂等 none，无事件。适用的 owner-only JSON IDOR 需另用
 }
 ```
 
-- `candidate.pending = COUNT(*) WHERE noise=1 AND status='new'`——**任何"候选计数"KPI 一律用此值**（v4 `findings_noise` 只看 noise 列、永远 58 只增不减的病在契约层根除）；
+- `candidate.pending = COUNT(*) WHERE noise=1 AND status='new'`——**当前待验证队列KPI用此值**（首次入池cohort转化率另按不可变来源统计）（v4 `findings_noise` 只看 noise 列、永远 58 只增不减的病在契约层根除）；
 - `terminal_in_pool` = noise=1 AND status≠new（历史候选遗骸，出池归档参考，见开放问题）；
 - `sync` 对象两后端均返回；sqlite-local 下恒为全零计数（pending/failed=0、last_synced_at=null），http-remote 混布模式才有实际同步值（§2.4）。
 
@@ -918,3 +918,9 @@ export const repositoryV1 = {
 ### 2026-10-01 · 27号阶段上线验收
 
 2026-10-01已部署；生产静默冒烟、UI验收80/80及单任务运行通过；扩大执行受WP03预算预留门禁约束。固定DSH 0.1.7-rc.2，恢复点`777e3e6b…`；详细清单和证据见[27号§15.3](27-business-quality-and-capacity-plan-2026-09-30.md#153-业务增量分阶段发布2026-10-01阶段验收完成)。伪造decision/capsule拒绝E_EXEC_EVIDENCE_UNTRUSTED，未安装真实verification-profiles，读取验证返回E_EXEC_ORACLE_UNSUPPORTED；旧confirmed未批量重判，真实漏洞产出收益尚未测量。
+
+### 27号L22：首次来源与正式技术回执（2026-10-06，本地未部署）
+
+新登记记录在findings保存`discovery_origin=candidate|direct_signal`，候选保存`candidate_entered_at`，晋升/提交/忽略不改首次来源。旧行NULL表示未知，不用当前noise猜测历史入池。`vuln_technical_verdicts`是本域拥有的追加回执表：id/finding_id/verdict/basis/evidence_ref/evidence_digest/evidence_json/operator/created_at。confirm仅在原证据门通过后与状态变更同事务写confirmed，区分controlled_oracle与independent_review；保存当时capsule/审校正文及引用摘要。false_positive追加反证回执；dup/ignored/vendor反馈不撤销技术确认。写回执失败回滚confirm，重复终态确认不能多写。
+
+`vuln_evidence_flags`支持limit（实际上限500）/offset、独立total与meta.paged，返回首次来源及最新回执id/verdict/basis/time。`has_capsule`仅是文本引用，不能判技术确认。回执表示当时经过确认门，查询不触发目标请求或把旧证据时效当作当前重新复现；历史回填/证据损坏重审仍待后续。eval通过本查询聚合，不跨域读表。

@@ -155,6 +155,28 @@ function reviewedConfirm(bus, args, ctx = {}) {
   return bus.dispatch('vuln', 'confirm', { ...args, review: independentReview }, { ...ctx, actor: 'dashboard', operator: ctx.operator || 'fixture-reviewer' })
 }
 
+test('27 L22: technical receipt write failure rolls back confirmation and keeps its fixed origin', async () => {
+  const { bus } = makeEnv()
+  const candidate = await seedCandidate(bus, { program_id: 'test-src' })
+  assert.equal(candidate.ok, true)
+  const db = bus._internal.db()
+  db.exec(`CREATE TRIGGER fail_technical_receipt BEFORE INSERT ON vuln_technical_verdicts
+    BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END`)
+  const args = { finding_id: candidate.data.id, evidence: 'run_test_20260906_000000' }
+  const failed = await reviewedConfirm(bus, args)
+  assert.equal(failed.ok, false)
+  const row = db.prepare('SELECT status,noise,discovery_origin,candidate_entered_at FROM findings WHERE id=?').get(candidate.data.id)
+  assert.equal(row.status, 'new')
+  assert.equal(row.noise, 1)
+  assert.equal(row.discovery_origin, 'candidate')
+  assert.ok(row.candidate_entered_at > 0)
+  db.exec('DROP TRIGGER fail_technical_receipt')
+  assert.equal((await reviewedConfirm(bus, args)).ok, true)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM vuln_technical_verdicts WHERE finding_id=?').get(candidate.data.id).n, 1)
+  assert.equal((await reviewedConfirm(bus, args)).ok, false)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM vuln_technical_verdicts WHERE finding_id=?').get(candidate.data.id).n, 1)
+})
+
 test('WP02 legacy evidence requires explicit independent review, and model cannot claim review', async () => {
   const { bus, dataDir } = makeEnv()
   const signal = await seedSignal(bus)
