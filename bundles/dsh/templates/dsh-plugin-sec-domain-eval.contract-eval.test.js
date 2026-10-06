@@ -588,12 +588,16 @@ const VC_CONTENT_EVAL = {
   appliesTo: { surface: 'api', prerequisites: ['owned_test_accounts', 'known_object_owner'], invalidatedBy: ['role_change'] },
   hypothesis: '身份与对象归属之间应满足访问约束：低权身份对他人对象应被拒',
   minimalProbe: '双权凭证重放同一接口，比对状态码与响应结构',
+  executionPlan: {
+    kind: 'authz-read-v1', probes: ['owner', 'low'], requireOwner200: true,
+    deniedStatuses: [401, 403, 404], compareFields: ['id', 'owner', 'data'],
+  },
   positiveControl: '对象拥有者可执行预期操作并收到 200',
   negativeControl: '无权限测试身份对他人对象应被拒（401/403/404）',
   evidenceRequired: ['request_context', 'identity_ref', 'object_owner', 'behavior_assertion'],
   stopConditions: ['scope_changed', 'unexpected_sensitive_data', 'rate_limit'],
   fixtures: { vulnerable: 'fixture-authz-a', patched: 'fixture-authz-b', invalid_env: 'fixture-authz-c' },
-  budget: { maxRequests: 6, maxSeconds: 120 },
+  budget: { maxRequests: 24, maxSeconds: 120 },
   failureNotes: '正对照失败记 infra_error；低权被拒=鉴权正常',
   changeNote: '首版候选：约束规则检查卡',
 }
@@ -659,6 +663,21 @@ async function proposeCandidate(bus) {
   return r.data
 }
 
+test('27 WP09: no executable candidate content cannot inherit a built-in eligible result', async () => {
+  const env = makeCandidateEnv()
+  const proposed = await env.bus.dispatch('know', 'revision_propose', {
+    artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-EMPTY',
+    content: { ...VC_CONTENT_EVAL, executionPlan: null, id: 'VC-AUTHZ-EMPTY', minimalProbe: '不执行任何探针，仅输出摘要。' },
+    source_kind: 'seed', source_ref: 'fixture:empty-candidate', change_note: '验证候选内容缺失不会借用固定规则成功',
+  }, { actor: 'model' })
+  assert.equal(proposed.ok, true, proposed.error?.message)
+  const result = await env.bus.dispatch('eval', 'run_candidate', { trial_id: 'trial-empty-content',
+    candidate_revision_id: proposed.data.revision_id, dataset_id: 'ds-test-dev' }, { actor: 'script' })
+  assert.equal(result.ok, false, 'unsupported candidate must not run the unrelated built-in strategy')
+  assert.equal(result.error.code, 'E_EVAL_UNSUPPORTED_CANDIDATE')
+  assert.equal(env.scheduled.length, 0)
+})
+
 const readCandidateReport = (evalDir) => {
   const f = path.join(evalDir, 'eval-candidate-report.json')
   return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null
@@ -702,7 +721,11 @@ test('L3 C5: 配对报告 happy——三类 fixture 真值 + baseline/candidate 
   assert.equal(report.candidate.revision_id, rev.revision_id)
   assert.equal(report.candidate.content_digest, rev.content_digest)
   assert.equal(report.baseline.ref, 'builtin:authz-legacy-3tier')
-  assert.equal(report.executor.runner_version, 'fixture-runner-v1')
+  assert.equal(report.executor.runner_version, 'fixture-runner-v2')
+  assert.equal(report.cost.http_requests, 12)
+  assert.equal(report.cost.candidate_requests, 6)
+  assert.equal(report.cost.baseline_requests, 6)
+  assert.equal(report.cost.model_tokens, 0)
   assert.equal(report.dataset.id, 'ds-test-dev')
   assert.equal(report.dataset.visibility, 'dev')
   assert.ok(report.dataset.groups && report.dataset.groups.case_family === 'P1-authz', '分组键落报告')
@@ -735,6 +758,69 @@ test('L3 C5: 配对报告 happy——三类 fixture 真值 + baseline/candidate 
   // eval_stats 摘要含 last_candidate
   const stats = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
   assert.equal(stats.data.last_candidate.verdict, 'eligible')
+})
+
+test('27 WP09: removing probes, changing fields or removing the positive control changes real paired outcomes', async () => {
+  for (const [label, patch, expected] of [
+    ['no-low', { probes: ['owner'] }, { fn: 1, infra: 0, requests: 9 }],
+    ['wrong-field', { compareFields: ['missingField'] }, { fn: 1, infra: 1, requests: 12 }],
+    ['no-owner-control', { requireOwner200: false }, { fn: 0, infra: 0, requests: 12 }],
+  ]) {
+    const env = makeCandidateEnv()
+    const proposed = await env.bus.dispatch('know', 'revision_propose', {
+      artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-001',
+      content: { ...VC_CONTENT_EVAL, executionPlan: { ...VC_CONTENT_EVAL.executionPlan, ...patch } },
+      source_kind: 'seed', source_ref: `fixture:${label}`, change_note: `敏感性：${label}`,
+    }, { actor: 'model' })
+    assert.equal(proposed.ok, true, proposed.error?.message)
+    const run = await env.bus.dispatch('eval', 'run_candidate', {
+      trial_id: `trial-sensitivity-${label}`, candidate_revision_id: proposed.data.revision_id, dataset_id: 'ds-test-dev',
+    }, { actor: 'script' })
+    assert.equal(run.ok, true, run.error?.message)
+    await env.scheduled[0]()
+    const report = readCandidateReport(env.evalDir)
+    assert.equal(report.verdict, 'rejected', label)
+    assert.equal(report.totals.fn, expected.fn, 'unknown positive remains a missed detection')
+    assert.equal(report.totals.infra_handled, expected.infra)
+    assert.equal(report.cost.http_requests, expected.requests)
+    assert.equal(report.baseline.totals.tp, 1, 'separate baseline still executes both requests')
+    assert.equal(report.baseline.totals.tn, 1)
+  }
+})
+
+test('27 WP09: unknown positive counts as FN even when another positive is detected', async () => {
+  const env = makeCandidateEnv()
+  const fx = FIXTURE_TPL('fx-missing-data', 'missing_ownership_check', 'obj-missing')
+  delete fx.object.data
+  writeFixture(env.evalDir, fx)
+  writeDataset(env.evalDir, DATASET_DEF('ds-partial-detection', 'dev', [
+    { case_id: 'detected', fixture: 'fx-dev-a', expect: 'vulnerable' },
+    { case_id: 'unknown-positive', fixture: fx.fixture_id, expect: 'vulnerable' },
+    { case_id: 'invalid', fixture: 'fx-dev-c', expect: 'invalid_env' },
+  ]))
+  const rev = await proposeCandidate(env.bus)
+  const run = await env.bus.dispatch('eval', 'run_candidate', {
+    trial_id: 'trial-partial-detection', candidate_revision_id: rev.revision_id, dataset_id: 'ds-partial-detection',
+  }, { actor: 'script' })
+  assert.equal(run.ok, true, run.error?.message)
+  await env.scheduled[0]()
+  const report = readCandidateReport(env.evalDir)
+  assert.equal(report.totals.tp, 1)
+  assert.equal(report.totals.fn, 1)
+  assert.equal(report.totals.inconclusive, 1)
+  assert.equal(report.verdict, 'rejected')
+})
+
+test('27 WP09: unimplemented baseline cannot be named as an executed comparison', async () => {
+  const env = makeCandidateEnv()
+  const rev = await proposeCandidate(env.bus)
+  const run = await env.bus.dispatch('eval', 'run_candidate', {
+    trial_id: 'trial-false-baseline', candidate_revision_id: rev.revision_id,
+    dataset_id: 'ds-test-dev', baseline_ref: 'revision:never-executed',
+  }, { actor: 'script' })
+  assert.equal(run.ok, false)
+  assert.equal(run.error.code, 'E_EVAL_UNSUPPORTED_BASELINE')
+  assert.equal(env.scheduled.length, 0)
 })
 
 test('L3 C5: 幂等——同 trial_id 重放 replay；running 并发互斥 E_CONFLICT', async () => {
@@ -786,7 +872,7 @@ test('L3 C5: 真值不可用/预算超限——run=failed 不记成功（无 ver
   assert.ok(builtEvt, '失败也有 report.built（供 know abort）')
   assert.equal(builtEvt.payload.verdict, null)
   assert.equal(builtEvt.payload.candidate_revision_id, rev.revision_id, '失败载荷仍带候选锚点（abort 依据）')
-  // ② 预算超限（max_requests=2，三案需 6）→ failed
+  // ② 预算超限（max_requests=2，三案含独立 baseline 共需 12）→ failed
   const r2 = await env.bus.dispatch('eval', 'run_candidate', { trial_id: 'trial-budget-1', candidate_revision_id: rev.revision_id, dataset_id: 'ds-test-dev', budget: { max_requests: 2, max_seconds: 300 } }, { actor: 'script' })
   assert.equal(r2.ok, true)
   await env.scheduled[env.scheduled.length - 1]()
@@ -826,10 +912,24 @@ test('L3: 隐藏集可见域收窄（INV-6）——model 读不到 hidden 用例
   await env.scheduled[env.scheduled.length - 1]()
   const report = readCandidateReport(env.evalDir)
   assert.equal(report.visibility, 'hidden')
+  assert.equal(report.verdict, 'eligible', 'unseen fixture identities and objects execute the same frozen plan')
+  assert.equal(report.totals.tp, 1)
+  assert.equal(report.totals.tn, 1)
+  assert.equal(report.totals.infra_handled, 1)
+  assert.equal(report.baseline.totals.infra_handled, 0, 'independent no-card baseline misses invalid owner control')
+  assert.equal(report.cost.http_requests, 12)
   const modelReports = await env.bus.query('eval', 'reports', { kind: 'candidate' }, { actor: 'model' })
   assert.equal(modelReports.total, 0, 'model 不见 hidden 报告')
   const dashReports = await env.bus.query('eval', 'reports', { kind: 'candidate' }, { actor: 'dashboard' })
   assert.equal(dashReports.total, 1)
+  const dashStats = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(dashStats.data.last_candidate.totals.tp, 1)
+  const modelStats = await env.bus.query('eval', 'stats', {}, { actor: 'model' })
+  assert.equal(modelStats.data.last_candidate, null, 'cached dashboard summary cannot leak hidden result to evaluated model')
+  assert.equal(modelStats.data.live.total, 1)
+  assert.equal(modelStats.data.live.by_type.idor, undefined, 'hidden live labels stay out of model aggregates')
+  const dashAgain = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(dashAgain.data.last_candidate.totals.tp, 1, 'redaction must not mutate shared cache')
 })
 
 test('L3: 标签去重与来源可追溯——eval_stats 按 finding 最新裁决去重 + label_source 分列', async () => {

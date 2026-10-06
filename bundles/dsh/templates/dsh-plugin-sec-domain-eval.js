@@ -41,7 +41,29 @@ const REPORT_KINDS = ['fp', 'contract', 'range', 'candidate']
 // L3（设计 §7.2）：真值来源级别标签 + 可见域（dev/hidden 隐藏集）
 const LABEL_SOURCES = ['model-proposed', 'independently-verified', 'human-reviewed', 'vendor-confirmed']
 const VISIBILITIES = ['dev', 'hidden']
-const RUNNER_VERSION = 'fixture-runner-v1'
+const RUNNER_VERSION = 'fixture-runner-v2'
+
+function throwErr(code, message, hint, retryable = false) {
+  throw Object.assign(new Error(message), { code, hint, retryable })
+}
+
+// Deliberately bounded interpreter, not JavaScript supplied by the candidate.
+// Dataset truth and fixture implementation are never passed to this program.
+function candidateProgram(content) {
+  const p = content?.executionPlan
+  if (!p || p.kind !== 'authz-read-v1' || !Array.isArray(p.probes)
+    || Object.keys(p).some(k => !['kind', 'probes', 'requireOwner200', 'deniedStatuses', 'compareFields'].includes(k))
+    || p.probes.length > 2 || p.probes.some(x => !['owner', 'low'].includes(x))
+    || new Set(p.probes).size !== p.probes.length || typeof p.requireOwner200 !== 'boolean'
+    || !Array.isArray(p.deniedStatuses) || p.deniedStatuses.length > 3
+    || p.deniedStatuses.some(x => ![401, 403, 404].includes(x))
+    || !Array.isArray(p.compareFields) || !p.compareFields.length || p.compareFields.length > 8
+    || p.compareFields.some(x => typeof x !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(x))) {
+    throwErr('E_EVAL_UNSUPPORTED_CANDIDATE', '候选缺少受支持的可执行 executionPlan',
+      '当前仅支持 authz-read-v1 结构化只读计划；正文不由此执行器解释，不能借用固定策略评为通过', false)
+  }
+  return structuredClone(p)
+}
 const DEFAULT_MODEL = 'pool-secagent'
 const REPLAY_WINDOW_MS = 10 * 60 * 1000
 
@@ -348,13 +370,9 @@ function makeHandlers(opts) {
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const schedule = opts.schedule || ((fn) => { const t = setTimeout(fn, 0); t.unref?.(); return t })
   const executor = opts.executor || makeDefaultExecutor({ ...opts, dataDir })
-  const statsCache = { at: 0, value: null }
+  const statsCache = new Map()
 
-  function throwErr(code, message, hint, retryable = false) {
-    throw Object.assign(new Error(message), { code, hint, retryable })
-  }
-
-  function clearStatsCache() { statsCache.at = 0; statsCache.value = null }
+  function clearStatsCache() { statsCache.clear() }
 
   function selectCases(repo, kind, requested) {
     const seed = repo.readSeed(kind)
@@ -516,6 +534,11 @@ function makeHandlers(opts) {
       if (!['candidate', 'evaluating'].includes(revision.status)) {
         throwErr('E_INVARIANT', `revision 状态 ${revision.status} 不可评（仅 candidate/evaluating 可进入评测）`, 'eligible/rejected 的内容变化请提新 revision（know_revision_propose）', false)
       }
+      candidateProgram(revision.content)
+      if (args.baseline_ref && args.baseline_ref !== 'builtin:authz-legacy-3tier') {
+        throwErr('E_EVAL_UNSUPPORTED_BASELINE', 'baseline_ref 尚无对应执行器',
+          '当前仅支持 builtin:authz-legacy-3tier 独立无候选对照，不能用未执行版本的名字代替', false)
+      }
       // 数据集存在 + 冻结校验（INV-8：重算 cases canonical digest 与文件内冻结值一致）
       const ds = repo.readDataset(args.dataset_id)
       if (!ds) throwErr('E_NOT_FOUND', `数据集 ${args.dataset_id} 不存在`, '数据集清单见 eval_datasets；种子经迁移脚本写入', false)
@@ -611,10 +634,10 @@ function makeHandlers(opts) {
     },
   }
 
-  function aggregateLive(repo) {
+  function aggregateLive(repo, hideHidden = false) {
     // L3（设计 §7.2）：计数以每个 finding 最新有效裁决去重（翻案产生新行，聚合取最新）；
     // label_source 来源级别分列——模型触发的 confirmed 只是标签候选，来源可追溯。
-    const raw = repo.readLive()
+    const raw = repo.readLive().filter(r => !hideHidden || r?.visibility !== 'hidden')
     const latestByFinding = new Map()
     for (const r of raw) {
       if (r == null || r.finding_id == null) continue
@@ -680,17 +703,19 @@ function makeHandlers(opts) {
   }
 
   const queries = {
-    eval_stats: async (_args, repo) => {
-      if (statsCache.value && (Date.now() - statsCache.at) < 60000) return statsCache.value
+    eval_stats: async (_args, repo, ctx) => {
+      const hideHidden = ctx?.actor === 'model'
+      const cached = statsCache.get(hideHidden)
+      if (cached && (Date.now() - cached.at) < 60000) return cached.value
+      const candidate = summaryCandidate(repo)
       const value = {
-        live: aggregateLive(repo),
+        live: aggregateLive(repo, hideHidden),
         last_fp: summaryFp(repo),
         last_contract: summaryContract(repo),
         last_range: summaryRange(repo),
-        last_candidate: summaryCandidate(repo),
+        last_candidate: hideHidden && candidate?.visibility === 'hidden' ? null : candidate,
       }
-      statsCache.at = Date.now()
-      statsCache.value = value
+      statsCache.set(hideHidden, { at: Date.now(), value })
       return value
     },
     eval_cases: async (args, repo, ctx) => {
@@ -1046,8 +1071,8 @@ function makeDefaultExecutor(opts) {
 
   // ---- L3：受控 fixture runner（候选对照评测；设计 §7.1 漏洞探测 + §7.2 真值与防泄漏）----
   // fixture = 127.0.0.1 ephemeral 端口的受控 HTTP 服务（双测试身份 + 对象归属表 + variant 行为）。
-  // 真值只由 runner 读 /_fixture/state 状态断言产生（INV-7）——探针只打卡片 minimalProbe 路径，
-  // 被评逻辑/模型绝无真值通道；探针未到达（访问日志缺任一侧）或 variant 矛盾即 E_EVAL_TRUTH_UNAVAILABLE。
+  // 真值只由 runner 读 /_fixture/state 状态断言产生（INV-7）。
+  // 有界 executionPlan 只接收自身探针响应，不接收 fixture 真值或对象答案。
 
   async function startFixtureServer(fx) {
     const accessLog = []
@@ -1116,34 +1141,42 @@ function makeDefaultExecutor(opts) {
     return { verdict: 'unlikely', why: `同状态但响应差异大（键重合 ${(keysOverlap * 100).toFixed(0)}%）` }
   }
 
-  // candidate：候选卡约束规则（authz-constraint-v1；VC-AUTHZ-001 的 failureNotes 语义机器化）——
-  // 正对照失败=infra_error（不计检出也不计阴性）；负对照成立=clean；低权 200 且含归属对象数据=violation；其余 inconclusive。
-  function candidateVerdictAuthz(low, high, fx) {
-    if (high.status !== 200) return 'infra_error'
-    if (low.status === 401 || low.status === 403 || low.status === 404) return 'clean'
-    if (low.status === 200 && (low.body.includes(String(fx.object.id)) || low.body.includes(String(fx.object.data)))) return 'violation'
+  // 候选计划决定实际请求、正对照要求、拒绝码与比较字段；自然语言正文不参与解释。
+  function candidateVerdictAuthz(observations, program) {
+    const high = observations.owner, low = observations.low
+    if (!high || !low) return 'inconclusive'
+    if (program.requireOwner200 && high.status !== 200) return 'infra_error'
+    if (program.deniedStatuses.includes(low.status)) return 'clean'
+    if (low.status !== 200 || high.status !== 200) return 'inconclusive'
+    let lowJson, highJson
+    try { lowJson = JSON.parse(low.body); highJson = JSON.parse(high.body) } catch { return 'inconclusive' }
+    if (!lowJson || !highJson || Array.isArray(lowJson) || Array.isArray(highJson)) return 'inconclusive'
+    if (program.compareFields.every(field => Object.hasOwn(lowJson, field) && Object.hasOwn(highJson, field)
+      && ['string', 'number'].includes(typeof highJson[field]) && String(highJson[field]).length > 0
+      && lowJson[field] === highJson[field])) return 'violation'
     return 'inconclusive'
   }
 
   function scoreCandidate(rows) {
     const t = { tp: 0, fp: 0, fn: 0, tn: 0, infra_error: 0, inconclusive: 0, infra_cases: 0, infra_handled: 0 }
     for (const r of rows) {
+      const v = r.candidate.verdict
+      if (v === 'infra_error') t.infra_error++
+      if (v === 'inconclusive') t.inconclusive++
       if (r.truth === 'invalid_env') {
         t.infra_cases++
-        if (r.candidate.verdict === 'infra_error') t.infra_handled++
+        if (v === 'infra_error') t.infra_handled++
         continue
       }
-      const v = r.candidate.verdict
-      if (v === 'infra_error') { t.infra_error++; continue }
-      if (v === 'inconclusive') { t.inconclusive++; continue }
       if (r.truth === 'vulnerable') { if (v === 'violation') t.tp++; else t.fn++ }
-      else if (r.truth === 'patched') { if (v === 'violation') t.fp++; else t.tn++ }
+      else if (r.truth === 'patched') { if (v === 'violation') t.fp++; else if (v === 'clean') t.tn++ }
     }
     return t
   }
 
   async function runCandidate({ runId, spec, revision, dataset, repo }) {
     const startedAll = Date.now()
+    const program = candidateProgram(revision.content)
     const budget = spec.budget
     let requests = 0
     const caseRows = []
@@ -1153,16 +1186,20 @@ function makeDefaultExecutor(opts) {
       }
       const fx = repo.readFixture(c.fixture)
       if (!fx) throw Object.assign(new Error(`fixture ${c.fixture} 缺失`), { code: 'E_EVAL_TRUTH_UNAVAILABLE' })
-      if (requests + 2 > budget.max_requests) {
+      if (requests + program.probes.length + 2 > budget.max_requests) {
         throw new Error(`预算超限（max_requests=${budget.max_requests}）——中断不记成功`)
       }
       const srv = await startFixtureServer(fx)
       const t0 = Date.now()
       try {
-        const low = await probeRequest(srv.port, fx.path, fx.tokens.low)
-        requests++
-        const high = await probeRequest(srv.port, fx.path, fx.tokens.owner)
-        requests++
+        const observations = {}
+        for (const identity of program.probes) {
+          observations[identity] = await probeRequest(srv.port, fx.path, fx.tokens[identity])
+          requests++
+        }
+        // Separate no-card baseline requests, same immutable fixture input.
+        const low = await probeRequest(srv.port, fx.path, fx.tokens.low); requests++
+        const high = await probeRequest(srv.port, fx.path, fx.tokens.owner); requests++
         // 真值：只由 runner 读受控 fixture 状态断言（INV-7）
         const state = await fixtureState(srv.port)
         if (!state || state.variant !== fx.variant || !state.truth) {
@@ -1177,14 +1214,16 @@ function makeDefaultExecutor(opts) {
           throw Object.assign(new Error(`数据集标注 expect=${c.expect} 与 fixture 真值 ${truth} 矛盾（case ${c.case_id}）——数据集/fixture 须修复后重冻结`), { code: 'E_EVAL_TRUTH_UNAVAILABLE' })
         }
         const baseline = baselineVerdictAuthz(low, high)
-        const candidate = candidateVerdictAuthz(low, high, fx)
+        const candidate = candidateVerdictAuthz(observations, program)
         caseRows.push({
           case_id: c.case_id, fixture_id: fx.fixture_id, truth, expect: c.expect || truth, reached: true,
-          positive_control: high.status === 200 ? 'pass' : 'fail',
-          negative_control: low.status === 401 || low.status === 403 || low.status === 404 ? 'holds' : 'violated',
+          positive_control: !observations.owner ? 'not_run' : observations.owner.status === 200 ? 'pass' : 'fail',
+          negative_control: !observations.low ? 'not_run'
+            : program.deniedStatuses.includes(observations.low.status) ? 'holds' : 'violated',
           baseline: { verdict: baseline.verdict, why: baseline.why },
           candidate: { verdict: candidate },
-          requests: 2, duration_ms: Date.now() - t0,
+          requests: program.probes.length + 2, candidate_requests: program.probes.length,
+          baseline_requests: 2, duration_ms: Date.now() - t0,
         })
       } finally {
         await srv.close().catch(() => {})
@@ -1200,11 +1239,17 @@ function makeDefaultExecutor(opts) {
       && (!th.require_infra_handling || (totals.infra_cases > 0 && totals.infra_handled === totals.infra_cases))
     const report = {
       ts: new Date().toISOString(), eval: 'candidate-paired', run_id: runId, trial_id: spec.trial_id,
-      candidate: { revision_id: revision.revision_id, content_digest: revision.content_digest },
-      baseline: { ref: spec.baseline_ref },
+      candidate: { revision_id: revision.revision_id, content_digest: revision.content_digest,
+        program_digest: `sha256:${sha256hex(canonicalize(program))}`, execution_plan: program },
+      baseline: { ref: spec.baseline_ref, role: 'no-candidate-ablation',
+        totals: scoreCandidate(caseRows.map(r => ({ ...r, candidate: {
+          verdict: r.baseline.verdict === 'suspected' ? 'violation' : r.baseline.verdict === 'unlikely' ? 'clean' : 'inconclusive',
+        } }))) },
       dataset: { id: dataset.dataset_id, digest: spec.dataset_digest, visibility: dataset.visibility || 'dev', groups: dataset.groups || null },
       executor: { runner_version: RUNNER_VERSION, model: spec.model, prompt_version: spec.prompt_version, tool_version: spec.tool_version },
-      budget, thresholds: th, cases: caseRows, totals,
+      budget, cost: { http_requests: requests, candidate_requests: caseRows.reduce((n, r) => n + r.candidate_requests, 0),
+        baseline_requests: caseRows.length * 2, oracle_state_reads: caseRows.length, model_tokens: 0 },
+      thresholds: th, cases: caseRows, totals,
       verdict: eligible ? 'eligible' : 'rejected',
       visibility: dataset.visibility || 'dev',
     }
