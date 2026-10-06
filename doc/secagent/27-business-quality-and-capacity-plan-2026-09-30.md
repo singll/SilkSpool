@@ -1491,6 +1491,14 @@ ledger.coverage_gaps增加offset，排序后切页、total不变、原截断信�
 
 gatherPlanInputs保留策略记录的program_id，以项目分组传给正式编译器和分页可运行性判定；草稿去重身份改为Program+strategy_key，避免共享主机/同策略的另一个项目被去重或继承attempted/blacklisted。真实task总线回归：两授权项目同主机SQLi各自出列，A已有尝试后仅剩B；旧实现失败、修正通过，完整跨域713/713通过。初版crawl夹具同时触发每批一个覆盖任务上限，改非覆盖假设后取得隔离变量红例，未改既有覆盖配额。证据受限wp01-pagination/program-*。直接编译器调用的旧裸strategies参数保留兼容；现役task入口明确使用项目分组。未部署，同项目跨Campaign尝试合并/请求身份版本键仍待后续验收。
 
+### 15.70 WP08 L16记忆指引与现役权限（2026-10-06，北京时间，本地完成待发布）
+
+恢复上一会话后完成L16：memcore按已注册manifest的model actor及deprecated状态选择知识入口，撤掉exp_store/pb_save/不存在的exp_validate与自动晋升叙述；候选方法引导know_revision_propose，事实复验引导fact_record_validation，文献导入说明title/url/body。黑板使用reader=task过滤过期/归档/时间轴，查询失败显示未知；刷新返回可等待的Promise，保留非受管文本和无变化幂等。
+
+真实bus+fact+know+memcore运行入口证明：**当前fact_bb_read返回data数组，§5 L16历史“应改rows”推断不成立**，保留现行封套。初始夹具的rows假设与close调用错误已修正；有效旧实现红例为候选入口缺失，修正后验证现役故障出现、过期/归档消失、manifest移除model权限后指引移除。fact25/25，独立memcore状态6/6，完整跨域714/714通过，preflight production_changed=false。证据out/secagent-audits/20261006-wp08-memory-guidance。
+
+用户再次决定继续匿名业务线，测试身份/自有对象稍后补；登录态、跨身份、业务状态实验仍待材料，不阻塞匿名推进。只读生产核实主服务silksecagent.service active、PID1239581/NRestarts0，仍为§15.44回退版本。§15.46–70尚未生产部署，全案未关账。下一步在新prepare-change/冻结/隔离应用通过后合批发布，随后继续HTTP代理接线与匿名业务闭环。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

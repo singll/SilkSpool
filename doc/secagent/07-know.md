@@ -1196,3 +1196,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-05经验状态统计（本地待发布）：active/candidate均按status精确计数；禁止total减cooling/deprecated推算active，避免归档/未知状态混入现役。candidate由know_health透传memcore，缺源仍未知。
 
 2026-10-06打法链健康口径（北京时间，本地待发布）：health.playbooks统计exp_cards中kind=playbook的库存，total包含该表全部状态、不包含exp_cards_archive；active/candidate/cooling/deprecated/archived按精确状态计数，未知状态只计total。该库存属于exp.total子集，不能相加。memcore透传total/cooling，空库0，查询失败未知。
+
+2026-10-06 L16记忆指引（北京时间，本地待发布）：memcore受管区块的知识入口按现役manifest中model权限及deprecated过滤；候选方法走know_revision_propose、事实复验走fact_record_validation、文献导入须title/url/body。fact_bb_read现行总线封套为data数组（真实集成验证），reader=task排除过期/归档/时间轴；读取失败显示未知。refreshAgentsMd返回Promise<boolean>，调用者可等待写入或失败；非受管内容及无变化幂等保留。契约新测试纳入完整组装714项，独立状态6项通过。

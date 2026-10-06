@@ -39,6 +39,8 @@ done
 
 # endpoint passive capture adapter is a sibling runtime module.
 cp "$HERE/dsh-plugin-sec-domain-endpoint.har.js" "$OUT/plugins/sec-domain-endpoint/har.js"
+mkdir -p "$OUT/plugins/sec-memcore"
+cp "$HERE/dsh-plugin-sec-memcore.js" "$OUT/plugins/sec-memcore/index.js"
 
 # 后端插件
 for f in "$HERE"/dsh-plugin-sec-backend-*.js; do
