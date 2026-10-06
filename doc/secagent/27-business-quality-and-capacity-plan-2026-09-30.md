@@ -1613,6 +1613,12 @@ eval固定首次入池cohort，候选晋升后分母不变、直接信号不混�
 
 证据attribution-red.log、attribution-ledger-red.log、attribution-final-preflight/；真实ledger→总线→know拒写恢复135/135通过，固定最终源码全域742/742通过（138.90秒），三列旧schema迁移保留旧行、未知字段null及完整性通过。初741测试虽通过，预检因期间新增测试文件拒签，保留失败记录，不据此宣称最终门禁通过。当前不处理family缺上下文、旧文件基线版本化、模型计划实际采用与多卡成本分摊；L03整体尚未完成，生产未部署本批。
 
+### 15.87 L06来源撤回到待复核任务通知（2026-10-06，本地验收待发布）
+
+真实双域红例：来源更正已撤回release，但task仅订阅know.release.revoked，未形成复核待办。新增know.release_get内部只读查询，task消费know.episode.recorded的withdrawn_releases，逐项核对真实revoked记录与source_corrected:event_id后生成原有change-retest任务。待办不带schedule、不自动执行、不恢复暂停任务；仅通知需复核的版本/范围，不推断历史发现一定错误。
+
+故障回归：任务INSERT被SQLite触发器拒绝时，更正事件保持pending、已失效方法继续不可读；恢复后只创建一条queued待办。完成该待办并清空幂等缓存，晚回放仍不重复建单。另发现旧查重以reactor调用task.list被权限拒绝但未检查结果，现以system查询并显式处理失败，查重包含历史任务。know104项通过，最终全域742/742通过（97.82秒）。证据withdraw-notice-{red,fixed-green}.log及withdraw-notice-preflight/；前两次green因该权限问题失败已保留。未部署，WP07及全方案仍未关账。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

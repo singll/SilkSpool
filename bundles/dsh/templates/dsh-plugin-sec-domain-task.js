@@ -867,6 +867,7 @@ export const TASK_MANIFEST = {
     // 已暂停任务不自行恢复；重测任务入队（queued 无调度，不自动起 worker）——由人/编排决定何时 task_run_now。
     // 22 号方案 §9.2：同事件兼做 Campaign 侧「引用作废」（被撤回卡片曾进 H3 派生草稿 → checkpoint）。
     'know.release.revoked': { handler: 'onReleaseRevoked', mode: 'async', as: 'reactor' },
+    'know.episode.recorded': { handler: 'onLearningCorrected', mode: 'async', as: 'reactor' },
     // 产出闭环：漏洞确认后自动入队「提交」任务（同 finding 幂等去重，见 onVulnConfirmed）
     'vuln.signal.confirmed': { handler: 'onVulnConfirmed', mode: 'async', as: 'reactor' },
     // 21 号方案 §3-1：Intent 确定性派生器——新端点入库即推导 H2 假设任务草稿（事件驱动有界推进）
@@ -3490,18 +3491,39 @@ function makeHandlers(opts) {
   }
 
   const subscribers = {
+    onLearningCorrected: async (envelope) => {
+      const p = envelope?.payload || {}
+      if (!p.supersedes || !Array.isArray(p.withdrawn_releases) || !p.withdrawn_releases.length) {
+        return { ok: true, data: { skipped: true } }
+      }
+      if (!queryRef) return { ok: false, error: { code: 'E_BACKEND_UNAVAILABLE', message: 'release reader unavailable' } }
+      for (const release_id of p.withdrawn_releases) {
+        const result = await queryRef('know', 'release_get', { release_id }, { actor: 'reactor' })
+        if (!result?.ok) return { ok: false, error: result?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
+        const release = result.data
+        if (release.status !== 'revoked' || release.revoke_reason !== `source_corrected:${p.source_event_id}`) {
+          return { ok: false, error: { code: 'E_INVARIANT', message: 'source correction does not match release withdrawal' } }
+        }
+        const notice = await subscribers.onReleaseRevoked({ ...envelope, payload: {
+          ...release, reason: release.revoke_reason, correction_event_ref: p.source_event_id,
+        } })
+        if (!notice?.ok) return notice
+      }
+      return { ok: true, data: { notified: p.withdrawn_releases.length } }
+    },
     // L6（设计 §10 变更触发节奏）：卡片撤回 → 生成有预算的重测需求（goal=change-retest）。
     // 入队不自动起 worker（无 schedule 不被调度循环认领）——由人/编排决定 task_run_now；
-    // 已暂停（blocked）任务不因此自行恢复。去重：同 release 已有活动重测任务则跳过（事件重放零重复）。
+    // 已暂停（blocked）任务不因此自行恢复。去重覆盖同 release 历史任务，晚回放不重新建单。
     onReleaseRevoked: async (envelope) => {
       if (!dispatchRef) return { ok: true, data: { skipped: true } }
       const p = envelope?.payload || {}
       if (!p.release_id) return { ok: true, data: { skipped: true, reason: '载荷缺 release_id' } }
       const marker = `[change-retest ${p.release_id}]`
       try {
-        const dup = await queryRef('task', 'list', { q: marker, bucket: 'active', limit: 10 }, { actor: 'reactor' })
+        const dup = await queryRef('task', 'list', { q: marker, limit: 10 }, { actor: 'system' })
+        if (!dup?.ok) return { ok: false, error: dup?.error || { code: 'E_BACKEND_UNAVAILABLE', message: 'retest lookup unavailable' } }
         // 总线 rows 类查询平铺返回 {rows,total}（非 data 包装）
-        if (dup && (dup.total || 0) > 0) return { ok: true, data: { skipped: true, reason: '已有活动重测任务', task_id: dup.rows[0]?.id } }
+        if (dup && (dup.total || 0) > 0) return { ok: true, data: { skipped: true, reason: '已有重测记录', task_id: dup.rows[0]?.id } }
         // program 灰度按 Program 归属；family/global 撤回的重测需求入 '_global' 桶（跨项目事项，不伪造项目归属）
         const programId = p.scope_type === 'program' && p.scope_id ? String(p.scope_id) : '_global'
         const objective = `${marker} 已发布知识卡 ${p.artifact_kind}/${p.artifact_id}（revision ${p.revision_id}，范围 ${p.scope_type}/${p.scope_id || '全局'}）被撤回（原因：${String(p.reason || '未给出').slice(0, 120)}）。`

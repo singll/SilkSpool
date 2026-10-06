@@ -12,6 +12,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildKnowDomain, KNOW_MANIFEST } from '../index.js'
+import { buildTaskDomain } from '../../sec-domain-task/index.js'
 import { buildLedgerDomain } from '../../sec-domain-ledger/index.js'
 import { buildFactDomain } from '../../sec-domain-fact/index.js'
 import { DatabaseSync } from 'node:sqlite'
@@ -2264,7 +2265,7 @@ test('L06: episode更正替代当前投影，保留原件且拒绝跨归属与�
 
 
 test('L05/L09: source correction withdraws dependent releases and retains immutable evidence and content', async () => {
-  const { bus } = makeEnv()
+  const { bus, dataDir } = makeEnv()
   const original = { ...EP_ARGS, source_event_id: 'source-original', outcome: 'confirmed', card_id: 'VC-SOURCE-CORRECT',
     source_credibility: 'independently-verified' }
   const ep = await bus.dispatch('know', 'episode_record', original, { actor: 'reactor' })
@@ -2282,6 +2283,7 @@ test('L05/L09: source correction withdraws dependent releases and retains immuta
   const args = { id: 'VC-SOURCE-CORRECT', program_id: 'example-src', surface: 'api' }
   assert.equal((await bus.query('know', 'vc_get', args, { actor: 'model' })).ok, true)
   const db = bus._internal.db()
+  assert.equal(bus.registry.register(buildTaskDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) })).ok, true)
   const before = db.prepare('SELECT * FROM knowledge_revisions WHERE revision_id=?').get(revision_id)
   const correction = { ...original, source_event_id: 'source-corrected', supersedes: ep.data.episode_id,
     outcome: 'inconclusive', reason_code: 'counterevidence_invalidates_control' }
@@ -2310,6 +2312,32 @@ test('L05/L09: source correction withdraws dependent releases and retains immuta
   db.prepare('DELETE FROM idempotency').run()
   assert.equal((await bus.dispatch('know', 'episode_record', correction, { actor: 'reactor' })).data.recorded, false)
   assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n, 2)
+  await bus.query('task', 'list', {}, { actor: 'dashboard' })
+  db.exec("CREATE TRIGGER fail_retest BEFORE INSERT ON tasks BEGIN SELECT RAISE(ABORT, 'retest queue unavailable'); END")
+  await bus._internal.dispatcherTick()
+  const pending = () => db.prepare("SELECT * FROM event_outbox WHERE name='know.episode.recorded'").all()
+    .find(row => JSON.parse(row.payload).payload.episode_id === next.data.episode_id)
+  assert.equal(pending().status, 'pending')
+  assert.match(pending().last_error, /retest queue unavailable/)
+  assert.equal((await bus.query('know', 'vc_get', args, { actor: 'model' })).ok, false, 'failed notification cannot reactivate method')
+  db.exec('DROP TRIGGER fail_retest')
+  db.prepare('UPDATE event_outbox SET next_retry_at=0 WHERE event_id=?').run(pending().event_id)
+  await bus._internal.dispatcherTick()
+  await bus._internal.dispatcherTick()
+  const retests = await bus.query('task', 'list', { q: `[change-retest ${pub.data.release_id}]`, bucket: 'active' }, { actor: 'dashboard' })
+  assert.equal(retests.total, 1, 'source-driven revocation must notify downstream review')
+  assert.equal(retests.rows[0].status, 'queued')
+  assert.ok(!retests.rows[0].schedule_kind)
+  assert.equal(retests.rows[0].program_id, 'example-src')
+  assert.equal(pending().status, 'delivered')
+  const originalObjective = retests.rows[0].objective
+  db.prepare("UPDATE tasks SET status='done' WHERE id=?").run(retests.rows[0].id)
+  db.prepare('DELETE FROM idempotency').run()
+  const replay = await bus.dispatch('bus', 'replay', { since: 0, limit: 1000 }, { actor: 'system' })
+  assert.deepEqual(replay.data.results.filter(row => row.ok === false), [])
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM tasks WHERE objective=?').get(originalObjective).n, 1,
+    'completed retest is not recreated by late replay')
+
   assert.equal(db.prepare('SELECT verified_positives FROM know_scores WHERE artifact_id=?').get(args.id).verified_positives, 0)
 })
 

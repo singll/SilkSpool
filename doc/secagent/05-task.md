@@ -1501,3 +1501,5 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 用户明确费用无需精确；供应商最终结算及全历史精确洗账不再阻塞试点/扩展/27号关账。只读请求审计新增planning_estimated_tokens：正常已结算请求取usage，不完整请求取max(已观察usage,准入估算)，无源run列planning_unavailable_runs。估算不叠加重复下界、不改账本/预算、不冒充供应商硬上界，final_cost_proven仍false。原有unknown不在本工具释放；如占满新任务需另做有审计的估算结算。17项回归、22个生产run只读验收通过，见27号§15.27。
 
 2026-10-06 C04/C05缺口/候选补页与Program策略隔离已合批部署：恢复副本相关域282项、生产完整RPC/worker19项验收通过，按固定4e69b20清单发布。动态分页一致性、同项目跨Campaign与请求版本键等剩余边界见27号§15.67–69/§15.73。
+
+2026-10-06来源撤回复核（本地待发布）：消费know.episode.recorded中的来源更正撤回清单，经know.release_get核对真实撤回记录后走change-retest。任务仅queued且无schedule；失败由总线重试。release查重包括历史已完成任务，task.list查询使用允许的system角色且不忽略失败，防晚回放重复建单。

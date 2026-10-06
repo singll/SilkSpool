@@ -1221,3 +1221,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 同批采用门禁：know_adopt禁用总线成功缓存，先校验当前来源/生命周期/作用域，再用采用参数的稳定业务键去重事实；重放不重复采用或发事件，失效后相同参数亦拒绝。最终740/740全域通过。
 
 2026-10-06 L03增量（本地待发布）：ledger.card_usage.logged只有真实published revision及匹配Program/global使用范围才落采用，绑定revision_id和sha256内容摘要；未知版本/工具名/不存在对象及blocked/na保留原ledger经历，不计采用。know_adoptions补source_run_id/session_id/asset；来源引用不等于task/attempt或费用归属。
+
+2026-10-06来源撤回通知（本地待发布）：release_get供reactor/system读取真实发布账本。来源更正事件携带withdrawn_releases与source_event_id；任务域需核对撤回原因后创建待复核任务，通知失败不撤销已生效的来源失效门禁。

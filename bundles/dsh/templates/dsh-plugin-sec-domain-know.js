@@ -910,6 +910,12 @@ export const KNOW_MANIFEST = {
       agent_note: '读单条候选知识版本全文（content JSON/来源快照/状态链）。',
     },
     // Q19/Q20（L4）：发布账本与版本链只读投影（灰度范围/生效版本/撤回历史可审计）
+    know_release_get: {
+      actor: ['reactor', 'system', 'dashboard', 'human'],
+      params: schema({ release_id: str({ minLength: 1 }) }, ['release_id']),
+      predicates: [],
+      agent_note: '按ID读取实际发布/撤回记录，供来源更正通知核对；不改变发布状态。',
+    },
     know_release_list: {
       actor: ['model', 'dashboard', 'human', 'system'],
       params: schema({
@@ -2708,6 +2714,11 @@ function makeHandlers(opts) {
       return { ...r, content: JSON.parse(r.content_json), source_snapshot: r.source_snapshot ? JSON.parse(r.source_snapshot) : null, applies_predicates: r.applies_predicates ? JSON.parse(r.applies_predicates) : null }
     },
     // Q19/Q20（L4）：发布账本与版本链投影
+    know_release_get: async (args, repo) => {
+      const release = repo.getRelease(args.release_id)
+      if (!release) throwErr('E_NOT_FOUND', '发布记录不存在', null, false)
+      return release
+    },
     know_release_list: async (args, repo) => {
       return { ...repo.listReleases({
         artifact_kind: args.artifact_kind || '', artifact_id: args.artifact_id || '',
