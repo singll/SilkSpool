@@ -779,7 +779,15 @@ function createRepo(db) {
           source_event_name, reason_code, COUNT(*) AS n,
           COALESCE(SUM(request_count), 0) AS requests, COALESCE(SUM(token_count), 0) AS tokens,
           COALESCE(SUM(duration_ms), 0) AS ms
-        FROM learning_episodes WHERE card_id IS NOT NULL AND card_id != ''
+        FROM learning_episodes e WHERE card_id IS NOT NULL AND card_id != ''
+          AND NOT EXISTS (
+            SELECT 1 FROM learning_episodes replacement WHERE replacement.supersedes = e.episode_id
+              AND replacement.biz_key = 'correction:' || e.episode_id
+              AND replacement.program_id IS e.program_id AND replacement.task_id IS e.task_id
+              AND replacement.exec_run_id IS e.exec_run_id AND replacement.attempt_id IS e.attempt_id
+              AND replacement.card_id IS e.card_id AND replacement.card_version IS e.card_version
+              AND replacement.campaign_id IS e.campaign_id
+          )
         GROUP BY card_id, card_version, outcome, source_credibility,
           source_event_name, reason_code`).all()
     },

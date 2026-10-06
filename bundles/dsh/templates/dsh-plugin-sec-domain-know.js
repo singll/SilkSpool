@@ -1927,7 +1927,16 @@ function makeHandlers(opts) {
     // 不依赖总线 7 天幂等缓存）+ biz_key 业务归因部分唯一索引。命中即 duplicate 返回，不发事件不记功。
     know_episode_record: async (args, repo, ctx) => {
       const episodeId = `ep_${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}`
-      const bizKey = args.exec_run_id
+      const superseded = args.supersedes ? repo.getEpisode(args.supersedes) : null
+      if (args.supersedes) {
+        if (!superseded) throwErr('E_NOT_FOUND', '被更正的 episode 不存在', null, false)
+        for (const field of ['program_id', 'task_id', 'exec_run_id', 'attempt_id', 'card_id', 'card_version', 'campaign_id']) {
+          if (String(args[field] ?? '') !== String(superseded[field] ?? '')) {
+            throwErr('E_SCHEMA', 'episode 更正不能改变归属：' + field, null, false)
+          }
+        }
+      }
+      const bizKey = args.supersedes ? `correction:${args.supersedes}` : args.exec_run_id
         ? [args.program_id || '', args.source_event_name, args.exec_run_id, args.attempt_id || '', args.card_version || ''].join('|')
         : null
       const row = {
@@ -1961,10 +1970,21 @@ function makeHandlers(opts) {
         observed_at: args.observed_at ?? Date.now(),
         created_at: Date.now(),
       }
+      // Preserve the stored representation as well as identity (legacy rows may
+      // distinguish NULL from ""). The projection matches these fields exactly.
+      if (superseded) {
+        for (const field of ['program_id', 'task_id', 'exec_run_id', 'attempt_id', 'card_id', 'card_version', 'campaign_id']) {
+          row[field] = superseded[field]
+        }
+      }
       const r = repo.insertEpisode(row)
       if (!r.created) {
         // 仅从已存原件恢复派生投影，不能采用重放请求里冲突的卡片/费用字段。
         const original = r.episode_id ? repo.getEpisode(r.episode_id) : null
+        if (args.supersedes && (original?.source_event_id !== row.source_event_id
+          || original?.consumer_version !== row.consumer_version)) {
+          throwErr('E_STATE', 'episode 已有更正；请基于最新记录继续更正', null, false)
+        }
         const rebuilt = original?.card_id ? rebuildArtifactScore(repo, inferKindOf(original.card_id), String(original.card_id)) : null
         return { data: { episode_id: r.episode_id, recorded: false, duplicate: r.duplicate, score_rebuilt: !!rebuilt } }
       }

@@ -326,6 +326,9 @@
 
 **不覆写与双去重**：同一 episode 不覆写——总线自然键 `(source_event_id, consumer_version)` 同键异参 = E_IDEMPOTENT_CONFLICT；修正走 `supersedes` 新记录。重复记功防护双层：总线幂等表 + 表级 `UNIQUE(source_event_id, consumer_version)`（**保留期 = 表本身，不依赖总线 7 天幂等缓存**，七天后再回放也不重复记功）+ 部分唯一索引 `biz_key = program|source_event_name|exec_run_id|attempt|card_version`（业务归因去重：同 run 按 proposal kind 多发的 run.completed 只记一集）。命中去重 → `{recorded:false, duplicate:'source'|'biz'}`，**不发事件不记功**。
 
+2026-10-06本地更正链增量（待部署）：`supersedes`要求前件存在，Program/task/run/attempt/card/version/Campaign不变；采用独立`biz_key=correction:<前件episode_id>`，同一前件只可有一个更正，重复同源回放仍幂等，分叉须基于最新记录重发。原件不改；评分按合法同归属更正链的尾记录计算，费用字段表示该episode修正后的累计值，不是对前件额外增量。列表继续保留历史。此更正机制不证明输入结果的技术可信度，也未完成跨来源attempt去重、版本收益或旧归属修复。
+
+
 **事件**：`know.episode.recorded {episode_id, source_event_id, source_event_name, outcome, program_id, exec_run_id}`。
 
 #### C24 · know_revision_propose（候选知识版本提案，L2 2026-09-17 上线）

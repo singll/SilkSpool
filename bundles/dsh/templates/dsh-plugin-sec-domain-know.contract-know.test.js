@@ -2162,6 +2162,48 @@ test('L06: episode表级重放用原记录恢复投影，不采信冲突载荷�
   assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n, 1)
 })
 
+test('L06: episode更正替代当前投影，保留原件且拒绝跨归属与分叉', async () => {
+  const { bus } = makeEnv()
+  const db = bus._internal.db()
+  const args = { ...EP_ARGS, card_id: 'VC-CORRECTION', attempt_id: 'attempt-correction', request_count: 2 }
+  const first = await bus.dispatch('know', 'episode_record', args, { actor: 'reactor' })
+  assert.equal(first.ok, true)
+  const correction = { ...args, source_event_id: 'correction-event', supersedes: first.data.episode_id,
+    outcome: 'blocked_auth', request_count: 3, reason_code: 'identity_unavailable' }
+  const next = await bus.dispatch('know', 'episode_record', correction, { actor: 'reactor' })
+  assert.equal(next.ok, true, next.error?.message)
+  assert.equal(next.data.recorded, true, 'correction is a new immutable record')
+  const score = () => db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get(args.card_id)
+  assert.equal(score().inconclusives, 0)
+  assert.equal(score().blocked, 1)
+  assert.equal(score().sample_size, 1)
+  assert.equal(score().cost_requests, 3)
+  assert.equal(db.prepare('SELECT outcome FROM learning_episodes WHERE episode_id=?').get(first.data.episode_id).outcome, 'inconclusive')
+  db.prepare('DELETE FROM idempotency').run()
+  assert.equal((await bus.dispatch('know', 'episode_record', correction, { actor: 'reactor' })).data.recorded, false)
+  const fork = await bus.dispatch('know', 'episode_record', { ...correction, source_event_id: 'fork-event' }, { actor: 'reactor' })
+  assert.equal(fork.ok, false)
+  const foreign = await bus.dispatch('know', 'episode_record', { ...correction, supersedes: next.data.episode_id,
+    source_event_id: 'foreign-event', program_id: 'other-program' }, { actor: 'reactor' })
+  assert.equal(foreign.ok, false)
+  const missing = await bus.dispatch('know', 'episode_record', { ...correction, source_event_id: 'missing-event',
+    supersedes: 'ep_missing' }, { actor: 'reactor' })
+  assert.equal(missing.ok, false)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n, 2)
+  assert.equal((await bus.dispatch('know', 'scores_rebuild', {}, { actor: 'system' })).ok, true)
+  assert.equal(score().blocked, 1)
+  assert.equal(score().cost_requests, 3)
+  const final = await bus.dispatch('know', 'episode_record', { ...correction,
+    source_event_id: 'correction-chain', supersedes: next.data.episode_id,
+    outcome: 'inapplicable', request_count: 4 }, { actor: 'reactor' })
+  assert.equal(final.ok, true, final.error?.message)
+  assert.equal(score().blocked, 0)
+  assert.equal(score().inapplicables, 1)
+  assert.equal(score().sample_size, 1)
+  assert.equal(score().cost_requests, 4)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes').get().n, 3)
+})
+
 
 test('L03: 同号文献采用不得继承经验episode与成本，重算仍按类型隔离', async () => {
   const { bus } = makeEnv()
