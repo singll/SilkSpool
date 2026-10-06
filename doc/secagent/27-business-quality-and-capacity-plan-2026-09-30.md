@@ -1533,6 +1533,14 @@ change=20261006-quality-retry-release，固定源4e69b20，16文件31落点，DS
 
 本增量不代表WP09整包完成：未见样例仍是同一authz家族，公开功能/动态响应/代理/OOB故障、自然语言/模型执行、真实授权知识收益与完整统计报告继续待办。旧候选不自动迁移或重写，必须新revision补计划再评。HTTP正在发布的固定d626520包不含本增量。
 
+### 15.76 受控匿名HTTP生产发布（2026-10-06，北京时间）
+
+固定源码d626520、DSH0.1.7-rc.2，12文件24落点。本批NAS305eb67e451ad64d30a8b0d58e61b7430ed281c3cf6322197e099c8cac700941（40库32.57秒/恢复7.44秒）与新冻结8dc976ed972ba54030f524db29b0dcf9109218f46d05108d10d0c85bc97b68f6完整恢复通过；远端716项、64表、新旧隔离应用、exec58项及worker19项通过，才切换生产。WP07更正链f708bbb和WP09结构化评测6411b48均不在本包中。
+
+北京时间11:47:14–12:44:00停写56分46秒，首次生产dashboard.stats超时、失败诊断保留，原门禁第二次通过；间歇冷启动超时未修复。恢复主PID1263799/NRestarts0，六服务七timer active，24摘要/quick_check通过，无运行task/worker、恢复错误或恢复后err日志。Campaign1/2/3保持暂停/原预算。关键17份回执已取回验摘要：`out/secagent-audits/20261006-http-exec-release/remote-receipts/`。UI80/80及发布后NAS7ae594827d35a38b0827c7bd2f98c2a4dee57531964c5f4cc1b7313c21f8edb2（40库123.78秒/同快照恢复6.90秒）通过。
+
+已安装pilot-tools/20261006-http匿名单次桥接：租约/现役Scope/S级/DNS TTL绑定后经生产exec签封，代理认证仅CONNECT，禁止重试/跳转/身份头。单条platforms真实canary在上游CONNECT响应头完成前EOF（1次TCP/CONNECT，转发字节0），run rmuw78ntvf54a签封为transport_error，exec.http_result实际RPC核验签名/manifest成功。零重试/跳转/模型调用，未收到目标业务响应，不能计健康模板/可靠阴性；首次读回脚本误取顶层state失败，修正读取response.state后通过，不追加目标请求。免费池刷新仍在运行，异步请求稳定代理引用；批次私有事件未接学习投影，不宣称全链路闭环。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
