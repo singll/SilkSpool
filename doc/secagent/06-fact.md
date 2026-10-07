@@ -716,3 +716,5 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 2026-10-05健康统计增量（本地待发布）：fact_stats增加revalidate_overdue，按mem_class=durable、status=active、revalidate_by非空且小于查询时刻计数，和现有治理到期条件一致。memcore透传该真实计数，缺源仍null；cooling数量另列，不与待治理逾期重复。
 
 2026-10-06事实复验逾期计数及记忆指引读取已随§15.73合批部署；真实生产know.health与memcore通过，缺源保留未知。fact_bb_read保持data数组封套，task reader过滤过期/归档；详见27号§15.61/§15.70。
+
+2026-10-07 WP11（本地待发布）：facts增加confidence覆盖索引，置信度facet避免扫描正文大行及临时分组排序；计数/Program口径未改。真实隔离原SQL2.69秒，查询计划回归与后续发布见27号§15.92。

@@ -211,7 +211,7 @@ var d2 = slots.inject('sidebar.panellist', function () {
 
 | case | 数据接口（聚合来源）| 消费位置 |
 |---|---|---|
-| `stats` | 壳聚合**各域查询**：`approval.stats` + `vuln.stats` + `task.list` + `ledger.discipline_stats` + `asset.overview`/`endpoint.list`/`fact.stats` → 六待办卡 + 库存副条（19-ui-unify §4.4；`assetDb.stats` 直查已删；2026-09-19 增「待提交 SRC」= `vuln.stats.signal.confirmed_unsubmitted`）| 顶部 KPI 六卡 + 库存副条 |
+| `stats` | 壳聚合**各域查询**：`approval.stats` + `vuln.stats` + `task.list` + `ledger.discipline_stats` + `asset.inventory`/`endpoint.list`/`fact.stats` → 六待办卡 + 库存副条（19-ui-unify §4.4；`assetDb.stats` 直查已删；2026-09-19 增「待提交 SRC」= `vuln.stats.signal.confirmed_unsubmitted`）| 顶部 KPI 六卡 + 库存副条 |
 | `ops` | `ledger.discipline_stats` + `know.health` + `task.stats`/`task.scheduled` + `vuln.stats` + `asset.overview` → 五指标 + alerts + healthy | 红条横幅 + ops 卡片 |
 | `memcore` | `deps.exp.memStatus()`（memcore 治理旁路观测：loaded/策略摘要）| memcore 缺席横幅（fail-open 提示）|
 | `sessions` | DSH 平台会话清单（按 workspace 过滤）| 任务视图会话跳链（`ctx.sessions.open`）|
@@ -230,7 +230,7 @@ var d2 = slots.inject('sidebar.panellist', function () {
 
 | # | case | 读/写 | 去向（总线命令/查询）| 类型 |
 |---|---|---|---|---|
-| 1 | `stats` | 读 | 壳聚合各域查询（approval.stats/vuln.stats/task.list/ledger.discipline_stats/asset.overview/endpoint.list/fact.stats）| 壳自有 |
+| 1 | `stats` | 读 | 壳聚合各域查询（approval.stats/vuln.stats/task.list/ledger.discipline_stats/asset.inventory/endpoint.list/fact.stats）| 壳自有 |
 | 2 | `ops` | 读 | 壳聚合（ledger/know/task/vuln/asset 查询）| 壳自有 |
 | 3 | `workspaces` | 读 | DSH 平台工作区清单 | 平台面 |
 | 4 | `sessions` | 读 | DSH 平台会话清单 | 平台面 |
@@ -717,3 +717,5 @@ operator 注入的**安全边界**：auth-gate 用户身份在服务端从 RPC �
 ## 2026-10-05 文献列表分页修复
 
 kbList已接合法q/kind契约，汇集各页并保留counts；external为非curated且非archived，空的中间页显式失败。SQL端筛选先于分页并标记meta.paged，id作为稳定排序末键。本地501项跨页、RPC6项和知识视图10项通过；冻结/隔离预演后已部署，生产实际RPC完整返回432项。初次冷启动stats超过10秒，保持门槛复验通过；性能根因另列WP11，不隐去失败记录。见27号§15.35。
+
+2026-10-07 WP11（本地待发布）：stats库存副条改取asset.inventory，返回数量/类型口径保持，避免为顶部计数展开全量域名族及接口/漏洞关联。真实隔离修改前stats首轮9.70秒、热后约19毫秒；耗时与发布结果见27号§15.92。

@@ -357,6 +357,10 @@
 
 参数：`root`（必填，如 `example.com` 或 `1.2.3.0/24`）。返回 `{ root, hosts: [≤200 行，按 score desc, last_seen desc] }`。root 由 `asset_overview` 的族行展开传入（域内 root 冗余列直查）。
 
+#### `asset_inventory`（库存计数，2026-10-07本地待发布）
+
+无参数，仅dashboard/human/system可读，返回 `{total, by_type:[{type,n}]}`。total沿用host/type资产行口径，类型分布通过type覆盖索引读取；不查询接口/漏洞或构造域名族。该查询每次读取当前库，无60秒总览缓存，供安全中心stats库存副条使用；完整资产视图仍调用asset_overview。
+
 #### `asset_overview`（总览聚合）
 
 无参数。返回 `{ total, family_count, by_level, by_state, by_accept, by_type: [{type, n}], families: [≤300 族行 {root, kind: domain|subnet, host_count, endpoint_count, finding_count, max_score, top_level, last_seen}] }`。**42 号：缓存 25s→60s TTL + 写命令失效（含 `touchAsset` 触活也失效——旧实现 last_seen 变更后缓存最多陈旧 25s）**（§2.5）。

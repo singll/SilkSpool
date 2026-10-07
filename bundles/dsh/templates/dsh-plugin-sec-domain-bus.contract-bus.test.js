@@ -1206,6 +1206,20 @@ test('bus_status: 展示 vuln 注册 + bus 自注册 + 未注册域 registered:f
   assert.equal(asset.registered, false)
 })
 
+test('27 WP11: oldest delivered lookup uses a covering index and preserves status filtering', async t => {
+  const { bus } = makeBus()
+  t.after(() => bus._internal.close())
+  const db = bus._internal.db()
+  const insert = db.prepare("INSERT INTO event_outbox(event_id,domain,name,payload,producer_ts,status,created_at) VALUES(?,'vuln','vuln.fixture','{}',1,?,?)")
+  insert.run('old-pending', 'pending', 1)
+  insert.run('delivered-2', 'delivered', 20)
+  insert.run('delivered-1', 'delivered', 10)
+  const status = await bus.query('bus', 'status', {}, { actor: 'dashboard' })
+  assert.equal(status.data.bus.outbox.oldest_delivered_at, 10)
+  const plan = db.prepare("EXPLAIN QUERY PLAN SELECT MIN(created_at) AS oc FROM event_outbox WHERE status='delivered'").all()
+  assert.match(plan.map(r => r.detail).join('\n'), /COVERING INDEX .*status.*created/i)
+})
+
 test('27 WP11: event history counting yields to requests and preserves append/rotation counts', async t => {
   const { dir, bus } = makeBus()
   t.after(() => bus._internal.close())

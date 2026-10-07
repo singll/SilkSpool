@@ -226,10 +226,10 @@ export async function handleDashboardRpc(endpoint, payload) {
         const d = r.data || {}
         out.discipline = { alerts: Array.isArray(d.alerts) ? d.alerts : [], healthy: !!d.healthy }
       } catch (e) { out.discipline = null; failed('ledger') }
-      // 库存副条（asset.overview + endpoint.list + fact.stats；工作区由 UI 侧平台数据补）
+      // 库存副条只取资产计数，完整族聚合留给资产视图。
       try {
         const [ov, ep, ft] = await Promise.all([
-          busQuery('asset', 'overview', {}),
+          busQuery('asset', 'inventory', {}),
           busQuery('endpoint', 'list', { limit: 1 }),
           busQuery('fact', 'stats', {}),
         ])

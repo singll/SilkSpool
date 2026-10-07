@@ -876,6 +876,7 @@ const now = () => clock()
         next_retry_at INTEGER, last_error TEXT, created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_outbox_status ON event_outbox(status, next_retry_at);
+      CREATE INDEX IF NOT EXISTS idx_outbox_status_created ON event_outbox(status, created_at);
       CREATE TABLE IF NOT EXISTS bus_subscription (
         event_id TEXT NOT NULL, subscriber TEXT NOT NULL, mode TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'delivered', attempt INTEGER NOT NULL DEFAULT 0,

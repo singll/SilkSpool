@@ -249,6 +249,12 @@ export const ASSET_MANIFEST = {
       predicates: [],
       agent_note: '资产总览：评级/状态/收录分布 + 域名族聚合（缓存 25s）。',
     },
+    asset_inventory: {
+      actor: ['dashboard', 'human', 'system'],
+      params: schema({}, []),
+      predicates: [],
+      agent_note: '资产库存计数与类型分布；按host/type资产行计数，不展开域名族和接口/漏洞关联。',
+    },
     fp_query: {
       actor: ['model', 'dashboard', 'human'],
       params: schema({
@@ -728,6 +734,7 @@ function makeHandlers(opts) {
     asset_overview: async (_args, repo) => {
       return repo.overviewAggregate()
     },
+    asset_inventory: async (_args, repo) => repo.inventoryCounts(),
     fp_query: async (args, repo) => {
       const filters = { host: args.host || '', tech: args.tech || '', program_id: args.program_id || '' }
       const rows = repo.listFingerprintsWhere(filters, {}, args.limit, args.offset)

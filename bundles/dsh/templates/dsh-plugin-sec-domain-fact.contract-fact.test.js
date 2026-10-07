@@ -351,3 +351,19 @@ test('27 WP11: edge facet counts incoming/outgoing once and keeps identical keys
   assert.equal(stats.data.total, 5)
   assert.equal(stats.data.with_edges, 3, 'middle and self-edge endpoints count once, foreign key names do not match')
 })
+
+test('27 WP11: confidence facet uses a covering index without reading large fact bodies', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  for (const [i, confidence] of ['confirmed', 'confirmed', 'tentative'].entries()) {
+    assert.equal((await bus.dispatch('fact', 'upsert', {
+      program_id: 'p', fact_key: `host/confidence-${i}`, summary: 'facet fixture', confidence,
+      body: 'long evidence '.repeat(250),
+    }, { actor: 'model' })).ok, true)
+  }
+  const stats = await bus.query('fact', 'stats', {}, { actor: 'dashboard' })
+  assert.deepEqual(Object.fromEntries(stats.data.by_confidence.map(r => [r.confidence, r.n])), { confirmed: 2, tentative: 1 })
+  const plan = bus._internal.db().prepare('EXPLAIN QUERY PLAN SELECT confidence, COUNT(*) AS n FROM facts GROUP BY confidence').all()
+  assert.match(plan.map(r => r.detail).join('\n'), /COVERING INDEX .*confidence/i)
+  assert.ok(plan.every(r => !/TEMP B-TREE/.test(r.detail)))
+})

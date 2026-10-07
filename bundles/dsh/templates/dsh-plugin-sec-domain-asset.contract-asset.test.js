@@ -379,6 +379,27 @@ test('query: asset_list / asset_overview / deep_queue 口径', async () => {
   assert.equal(ov.data.by_level.A, 1)
 })
 
+test('27 WP11: inventory counts match overview without reading family evidence tables', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  for (const [host, type] of [['a.example.com', 'web'], ['a.example.com', 'domain'], ['b.example.com', 'web']]) {
+    assert.equal((await bus.dispatch('asset', 'upsert', { host, type }, { actor: 'model' })).ok, true)
+  }
+  const db = bus._internal.db()
+  const overview = await bus.query('asset', 'overview', {}, { actor: 'dashboard' })
+  const prepare = db.prepare.bind(db)
+  db.prepare = sql => {
+    assert.doesNotMatch(sql, /\b(?:endpoints|findings)\b|GROUP BY (?:a\.)?root/i, 'inventory must not expand families')
+    return prepare(sql)
+  }
+  const result = await bus.query('asset', 'inventory', {}, { actor: 'dashboard' })
+  assert.equal(result.ok, true, result.error?.message)
+  assert.deepEqual(result.data, { total: overview.data.total, by_type: overview.data.by_type })
+  assert.equal(result.data.total, 3, 'host/type rows retain the existing inventory meaning')
+  assert.equal((await bus.dispatch('asset', 'upsert', { host: 'c.example.com', type: 'web' }, { actor: 'model' })).ok, true)
+  assert.equal((await bus.query('asset', 'inventory', {}, { actor: 'dashboard' })).data.total, 4)
+})
+
 test('query: asset_get 单主机钻取（多类型 + 指纹 + 跨域计数 + 同族）', async () => {
   const { bus } = makeEnv()
   await bus.dispatch('asset', 'upsert', { host: 'api.example.com', type: 'web' }, { actor: 'model' })

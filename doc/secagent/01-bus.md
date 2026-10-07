@@ -718,3 +718,5 @@ dispatch_aliases: {}
 备份、恢复、容量清理、发布预检与变更前备份流程统一维护于 [18-backup-and-maintenance.md](18-backup-and-maintenance.md)。本域保留 audit/event 的写入与内置轮转契约；不在01号重复维护宿主运维步骤。
 
 - 2026-10-06 WP11：bus.status事件历史行数使用64KiB异步分块读取，同批最多四个文件；按inode/size/mtime/ctime复用稳定文件计数，追加/轮转重新计数，避免同步整文件读取阻塞RPC。统计口径仍为当前.jsonl非空行，不含轮转.1。
+
+2026-10-07 WP11（本地待发布）：event_outbox增加(status,created_at)覆盖索引，bus.status最早delivered时间通过索引端点查询，保留status过滤；原冷启动隔离该SQL耗时4.01秒，查询计划回归与发布记录见27号§15.92。

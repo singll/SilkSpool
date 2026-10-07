@@ -1639,6 +1639,22 @@ eval固定首次入池cohort，候选晋升后分母不变、直接信号不混�
 
 证据位于out/secagent-audits/20261006-learning-truth-release/：rpc-red.log、diagnostic-profile-summary.json、sql-node-profile.json、fixed-rpc-timing.jsonl。三域207/207通过；新增事实边计数语义回归通过26/26，最终固定源码全域745/745通过（92.86秒）。诊断仅作用隔离副本，生产保持回退后的cb3134f；后续须新冻结点及完整发布验收。
 
+### 15.91 查询优化累计发布未通过生产门禁并完整回退（2026-10-07）
+
+固定dcba5bf累计21项42落点，本地及远端745/745通过；新NAS73d60e3b…（41库38.71秒/同快照恢复6.77秒）、冻结44d3d50d…六根完整恢复/65表通过。旧版隔离首轮超时、原门禁重跑通过；新版隔离、八域520/520、真实worker19项均通过。原业务表保持、采用三列和任务索引存在、Scope摘要一致，旧outbox无改写或删除。
+
+生产安装后stats RPC仍超过10秒，发布被拒绝，未放宽门禁。保留失败报告与新树后，完整复制校验原恢复点并交换回cb3134f；北京时间17:38:56–18:37:08冻结约58分11秒，resume_errors=[]。六服务七timer active，PID1323625/NRestarts0，无running task/worker，数据库quick_check通过。Campaign1/2/3仍暂停，预算200M/200M/50M及费用176585747/608920233/187260869与本次发布前基线一致；该费用基线不同于前一日，不能据此宣称跨日不变。
+
+证据在out/secagent-audits/20261007-learning-truth-release/。dcba5bf及累计学习真值增量仍未成功部署；继续隔离诊断stats各子查询、启动竞争与生产条件差异，§15.90性能改善不能视为生产发布通过。
+
+### 15.92 WP11冷启动统计剩余热点（2026-10-07，本地/隔离验收中）
+
+回退后新NAS4ec6cb9b…（41库187.36秒/同快照恢复7.60秒）通过。原累计包在同一恢复副本做SQL/CPU/事件循环采样：首轮bus.status6.85秒、stats9.70秒，后两轮约19毫秒；本轮勉强通过，不视为生产超时消除。SQL计时定位最早delivered时间4.01秒、facts置信度facet2.69秒、资产族聚合2.87秒。机器无显式CPU限额，采样期间存在磁盘等待；慢点不能仅解释为JavaScript计算。
+
+新增outbox(status,created_at)与facts(confidence)覆盖索引；安全中心stats改经asset.inventory仅取现有host/type行计数及类型分布，增加assets(type)索引，不再为库存计数构造完整域名族。完整overview契约保持。三项域回归及Dashboard调用回归先失败后通过；fact首版夹具超4000字符被schema拒绝，缩短后真实失败为SCAN facts/临时分组树，该夹具失败不当作性能复现。
+
+本地资产/总线/事实及Dashboard联合122/122、最终固定源码跨域748/748（109.27秒）通过。修复后隔离三轮bus.status407/13/13毫秒、stats197/24/26毫秒；仅对隔离DB执行fsync及POSIX_FADV_DONTNEED缓存释放提示后再启动，三轮bus.status761/13/25毫秒、stats265/25/24毫秒，原10秒门禁均通过。该提示不保证清除所有层级缓存，且启动构建新索引会预读数据；不声称已控制宿主全部I/O条件。sessions仍约4.7–5.2秒但通过，生产发布仍待验收。证据out/secagent-audits/20261007-learning-truth-release/diagnostic-*、stats-hotspots-*、stats-fact-red-fixed.log。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

@@ -83,6 +83,7 @@ function createRepo(db) {
   // 42 号补丁（25 号方案 B2）：列表默认排序与深翻页索引（旧实现 ORDER BY last_seen/score 全表排序）。
   db.exec(`CREATE INDEX IF NOT EXISTS idx_assets_last_seen ON assets(last_seen DESC)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_assets_score ON assets(score DESC)`)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(type)')
 
   const repo = {
     invalidateOverview() { _ovCache = null },
@@ -179,6 +180,13 @@ function createRepo(db) {
         .all(...args, limitN, offsetN).map((r) => ({ ...r }))
       const total = db.prepare(`SELECT COUNT(*) AS n FROM assets WHERE ${where}`).get(...args).n
       return { rows, total }
+    },
+
+    inventoryCounts() {
+      return {
+        total: db.prepare('SELECT COUNT(*) AS n FROM assets').get().n,
+        by_type: db.prepare('SELECT type, COUNT(*) AS n FROM assets WHERE type IS NOT NULL GROUP BY type ORDER BY n DESC').all().map(r => ({ ...r })),
+      }
     },
 
     overviewAggregate() {

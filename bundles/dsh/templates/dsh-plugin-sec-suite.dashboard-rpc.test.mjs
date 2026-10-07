@@ -232,3 +232,19 @@ test('stats：经各域查询聚合，单域失败 → null + degraded，不整�
     assert.ok(domains.has(d), `stats 应经 ${d} 域查询聚合`)
   }
 })
+
+test('27 WP11: stats requests inventory without expanding asset families', async () => {
+  const bus = okBus()
+  const query = bus.query
+  bus.query = async (domain, verb, args, ctx) => {
+    if (domain === 'asset') {
+      assert.equal(verb, 'inventory', 'dashboard counters must not fetch the full family overview')
+      return { ok: true, data: { total: 17, by_type: [{ type: 'web', n: 17 }] } }
+    }
+    return query(domain, verb, args, ctx)
+  }
+  depsWith(bus)
+  const result = await handleDashboardRpc('stats', {})
+  assert.equal(result.inventory?.assets, 17)
+  assert.deepEqual(result.assets_by_type, [{ type: 'web', n: 17 }])
+})
