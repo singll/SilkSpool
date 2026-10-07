@@ -55,6 +55,7 @@
 | label_source | string(enum) | 否 | — | L3 来源级别标签：model-proposed / independently-verified / human-reviewed / vendor-confirmed（设计 §7.2 真值来源可追溯；模型触发的 confirmed 只是标签候选，不自动成为基准答案） |
 | visibility | string(enum) | 否 | 'dev' | dev / hidden——hidden 行对 actor=model 的 Q2 不可见（§1.4 可见域谓词；隐藏验收集防泄漏） |
 | technical_verdict_id / evidence_digest / program_id | integer / string / string | 否 | — | 订阅器写入已核验的正式回执ID、64位摘要和Program；不同正式审校保留为新行 |
+| corrects_verdict_id | integer | 否 | — | 显式更正旧阳性回执，必须与正式独立反证回执绑定；不是新实验的默认行为 |
 | ts | integer | 否 | now | UTC epoch ms；订阅回流固定为正式判定时间，不使用回放时间 |
 
 **行为**：O_APPEND 追加一行 JSON 到 `data/eval/eval-live.jsonl`（单行 ≤4KB；title 截断 120 字）。发 `eval.case.appended`。
@@ -79,7 +80,7 @@
 | E_SCHEMA | verdict 非枚举 / 缺 finding_id | — | false |
 | E_IDEMPOTENT_CONFLICT | 同一持久判定键已绑定不同技术内容 | — | false |
 
-**幂等**：manifest `none`；文件后端在同步追加前读取既有行，以 `technical_verdict_id` 去重并校验finding/verdict/digest/Program。不使用总线短期成功缓存；正式回执相同但Finding展示字段后续补充，仍返回原行的 `data.replay=true`；不同回执即使同finding同verdict也保留。无回执的既有人工补录按finding_id+verdict去重，异参拒绝。文件不可读或损坏则失败重试，不按空文件继续追加；成功追加后fsync。回放可以补发追加事件，但不增加评测行。聚合按正式判定时间取最新，旧事件晚重放不覆盖较新判定。
+**幂等**：manifest `none`；文件后端在同步追加前读取既有行，以 `technical_verdict_id` 去重并校验finding/verdict/digest/Program。不使用总线短期成功缓存；正式回执相同但Finding展示字段后续补充，仍返回原行的 `data.replay=true`；不同回执即使同finding同verdict也保留。无回执的既有人工补录按finding_id+verdict去重，异参拒绝。文件不可读或损坏则失败重试，不按空文件继续追加；成功追加后fsync。回放可以补发追加事件，但不增加评测行。聚合按正式判定时间取最新；同时间戳用正式回执ID排序，旧事件晚重放不覆盖较新判定。显式corrects_verdict_id与持久回执同键绑定，脚本不能伪造更正关系；被更正旧行保留原件，在有效投影标superseded并排除。
 
 #### C2 · eval_run_fp（假阳性消融评测）
 
@@ -183,7 +184,7 @@
 | # | 查询 | 语义 | 参数 | 返回 |
 |---|---|---|---|---|
 | Q1 | `eval_stats` | 活评测聚合（替代 v4 evalStats + 报告摘要；L3 起按 finding_id 取最新有效裁决**去重**，label_source 来源级别分列） | 无 | `{live: {total, unique_findings, duplicates_collapsed, by_type: {<vuln_type>: {confirmed, false_positive, fp_rate}}, by_label_source: {<label_source>: n}}, last_fp: {ts, model, accuracy_off/on, fp_rate_off/on, gain} \| null, last_contract: {ts, mode, pass, total, pass_rate, failures} \| null, last_range: {ts, detection_rate} \| null, last_candidate: {ts, verdict, trial_id, candidate, dataset:{id,visibility}, totals, visibility} \| null}` |
-| Q2 | `eval_cases` | 活评测集用例列表 | verdict(enum)/vuln_type(string)/visibility(enum dev\|hidden)/limit(50)/offset(0) | `{rows, total, limit, offset}`——rows 行=eval-live.jsonl 行；**42 号：hidden 可见域裁剪在处理器内完成后按 offset/limit 分页**（缺省 50、上限 500，标记 `meta.paged`，不再返回全量靠总线切片） |
+| Q2 | `eval_cases` | 活评测集用例列表 | verdict(enum)/vuln_type(string)/visibility(enum dev\|hidden)/include_superseded(false)/limit(50)/offset(0) | `{rows, total, limit, offset}`——默认返回未被显式更正的eval-live行；include_superseded=true审计历史并标superseded；**42 号：hidden 可见域裁剪在处理器内完成后按 offset/limit 分页**（缺省 50、上限 500，标记 `meta.paged`，不再返回全量靠总线切片） |
 | Q3 | `eval_reports` | 评测报告文件列表 | kind(enum fp/contract/range/candidate)/limit(总线默认 50、schema 上限 100) | `{rows: [{kind, file, ts, visibility}], total}` |
 | Q4 | `eval_datasets` | 评测数据集列表（L3；分组键 program/tech_stack/case_family + 冻结 digest + 可见性） | visibility(enum dev\|hidden)/limit(50) | `{rows: [{dataset_id, kind, visibility, case_count, groups, frozen_at, dataset_digest}], total}`——**不返回用例内容与答案** |
 
@@ -447,3 +448,5 @@ export const repositoryV1 = {
 2026-10-06 E13/L05回流门禁（本地待发布）：onSignalVerdict要求正式technical_verdict_id、摘要及关联匹配，controlled_oracle再读签封执行原件；旧事件和仅rejection理由不作技术标签。独立审校可回流，读/写失败返回错误进入总线重试，恢复不得重复标签。历史eval-live及反证写入口尚待治理。
 
 2026-10-07发布回填：评测回流正式技术回执门禁、Oracle原件复验、按technical_verdict_id持久去重及fsync已上线；旧rejection/无回执标签不入可信样本。技术反证写入口与历史eval-live治理仍待办。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。
+
+2026-10-07 E13/L05评测更正（本地760/760通过，未发布）：明确更正随正式反证回执追加corrects_verdict_id，原JSONL字节不变。stats排除被更正标签并新增superseded_total，同时间戳用回执ID处理乱序；cases默认有效集，显式include_superseded查看历史。无更正关联的新实验保留全部历史样本。hidden过滤先于更正投影，不通过可见行泄漏隐藏更正；旧无回执污染与训练集导出重建仍待后续治理。

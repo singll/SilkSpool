@@ -120,6 +120,7 @@ export const EVAL_MANIFEST = {
         label_source: en(LABEL_SOURCES),
         visibility: en(VISIBILITIES),
         technical_verdict_id: int({ minimum: 1 }),
+        corrects_verdict_id: int({ minimum: 1 }),
         evidence_digest: str({ pattern: '^[a-f0-9]{64}$' }),
         program_id: str({ maxLength: 128 }),
         ts: int(),
@@ -222,6 +223,7 @@ export const EVAL_MANIFEST = {
         verdict: en(['', ...VERDICTS]),
         vuln_type: str({ maxLength: 64 }),
         visibility: en(['', ...VISIBILITIES]),
+        include_superseded: bool({ default: false }),
         limit: int({ minimum: 1, maximum: 500 }),
         offset: int({ minimum: 0 }),
       }, []),
@@ -431,6 +433,16 @@ function makeHandlers(opts) {
 
   const commands = {
     eval_case_append: async (args, repo) => {
+      if (args.corrects_verdict_id) {
+        const receipt = await queryRef?.('vuln', 'technical_verdict', { id: args.technical_verdict_id }, { actor: 'reactor' })
+        if (!receipt?.ok) throwErr(receipt?.error?.code || 'E_BACKEND_UNAVAILABLE', receipt?.error?.message || '更正回执不可读', null)
+        if (args.verdict !== 'false_positive' || receipt.data.basis !== 'independent_review'
+          || receipt.data.verdict !== args.verdict || receipt.data.finding_id !== args.finding_id
+          || receipt.data.program_id !== (args.program_id || null) || receipt.data.evidence_digest !== args.evidence_digest
+          || receipt.data.corrects_verdict_id !== args.corrects_verdict_id) {
+          throwErr('E_INVARIANT', '更正标签必须绑定正式独立反证回执', null)
+        }
+      }
       const rec = {
         finding_id: Number(args.finding_id),
         host: String(args.host || ''),
@@ -443,6 +455,7 @@ function makeHandlers(opts) {
         ...(args.visibility ? { visibility: args.visibility } : {}),
         ...(args.technical_verdict_id ? { technical_verdict_id: args.technical_verdict_id,
           evidence_digest: args.evidence_digest, program_id: args.program_id || null } : {}),
+        ...(args.corrects_verdict_id ? { corrects_verdict_id: args.corrects_verdict_id } : {}),
         ts: args.ts || Date.now(),
       }
       const r = repo.appendCase(rec)
@@ -641,16 +654,27 @@ function makeHandlers(opts) {
     },
   }
 
+  function visibleLive(repo, hideHidden = false) {
+    const rows = repo.readLive().filter(r => !hideHidden || r?.visibility !== 'hidden')
+    const corrections = new Set(rows.filter(r => r.corrects_verdict_id && r.technical_verdict_id)
+      .map(r => `${r.program_id || ''}|${r.finding_id}|${r.corrects_verdict_id}`))
+    return rows.map(r => ({ ...r, superseded: !!r.technical_verdict_id
+      && corrections.has(`${r.program_id || ''}|${r.finding_id}|${r.technical_verdict_id}`) }))
+  }
+
   function aggregateLive(repo, hideHidden = false) {
     // L3（设计 §7.2）：计数以每个 finding 最新有效裁决去重（翻案产生新行，聚合取最新）；
     // label_source 来源级别分列——模型触发的 confirmed 只是标签候选，来源可追溯。
-    const raw = repo.readLive().filter(r => !hideHidden || r?.visibility !== 'hidden')
+    const raw = visibleLive(repo, hideHidden)
+    const effective = raw.filter(r => !r.superseded)
     const latestByFinding = new Map()
-    for (const r of raw) {
+    for (const r of effective) {
       if (r == null || r.finding_id == null) continue
-      const key = String(r.finding_id)
+      const key = `${r.program_id || ''}|${r.finding_id}`
       const prev = latestByFinding.get(key)
-      if (!prev || Number(r.ts || 0) >= Number(prev.ts || 0)) latestByFinding.set(key, r)
+      if (!prev || Number(r.ts || 0) > Number(prev.ts || 0)
+        || (Number(r.ts || 0) === Number(prev.ts || 0)
+          && Number(r.technical_verdict_id || 0) >= Number(prev.technical_verdict_id || 0))) latestByFinding.set(key, r)
     }
     const byType = {}
     const byLabel = {}
@@ -667,7 +691,7 @@ function makeHandlers(opts) {
       const n = s.confirmed + s.false_positive
       s.fp_rate = n ? Math.round((s.false_positive / n) * 100) / 100 : 0
     }
-    return { total: raw.length, unique_findings: latestByFinding.size, duplicates_collapsed: raw.length - latestByFinding.size, by_type: byType, by_label_source: byLabel }
+    return { total: raw.length, superseded_total: raw.length - effective.length, unique_findings: latestByFinding.size, duplicates_collapsed: raw.length - latestByFinding.size, by_type: byType, by_label_source: byLabel }
   }
 
   function summaryFp(repo) {
@@ -729,7 +753,8 @@ function makeHandlers(opts) {
       const verdict = String(args.verdict || '')
       const vulnType = String(args.vuln_type || '')
       const vis = String(args.visibility || '')
-      let rows = repo.readLive()
+      let rows = visibleLive(repo, ctx?.actor === 'model')
+      if (!args.include_superseded) rows = rows.filter(r => !r.superseded)
       // INV-6（L3 防泄漏）：隐藏集行对 actor=model 不可见（谓词过滤，非报错——不暴露存在性差异以外的信息）
       if ((ctx && ctx.actor) === 'model') rows = rows.filter((r) => (r.visibility || 'dev') !== 'hidden')
       if (vis) rows = rows.filter((r) => (r.visibility || 'dev') === vis)
@@ -844,6 +869,13 @@ function makeHandlers(opts) {
         if (!['controlled_oracle', 'independent_review'].includes(truth.basis)) {
           return { ok: true, data: { skipped: true, reason: 'unverified_rejection_basis' } }
         }
+        if (truth.corrects_verdict_id) {
+          const previous = await queryRef('vuln', 'technical_verdict', { id: truth.corrects_verdict_id }, { actor: 'reactor' })
+          if (!previous?.ok) return { ok: false, error: previous?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
+          if (truth.basis !== 'independent_review' || verdict !== 'false_positive'
+            || previous.data.finding_id !== findingId || previous.data.program_id !== truth.program_id
+            || previous.data.verdict !== 'confirmed') return { ok: false, error: { code: 'E_INVARIANT', message: 'invalid evaluation correction target' } }
+        }
         if (truth.basis === 'controlled_oracle') {
           const evidence = await queryRef('exec', 'authz_evidence', { decision_id: truth.decision_id }, { actor: 'reactor' })
           if (!evidence?.ok) return { ok: false, error: evidence?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
@@ -859,6 +891,7 @@ function makeHandlers(opts) {
           finding_id: findingId,
           verdict,
           technical_verdict_id: p.technical_verdict_id,
+          ...(truth.corrects_verdict_id ? { corrects_verdict_id: truth.corrects_verdict_id } : {}),
           evidence_digest: truth.evidence_digest,
           ...(truth.program_id ? { program_id: truth.program_id } : {}),
           label_source: truth.basis === 'controlled_oracle' ? 'independently-verified' : 'human-reviewed',

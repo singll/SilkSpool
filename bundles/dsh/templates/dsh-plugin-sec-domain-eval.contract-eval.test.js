@@ -423,6 +423,76 @@ test('27 E13/L05: unreviewed rejection and legacy confirmation cannot create eva
   assert.equal(readLive(env.evalDir).length, 0, 'actor is not evidence of technical confirmation')
 })
 
+test('27 E13/L05: equal-time correction precedes a late positive event while preserving immutable evaluation history', async t => {
+  const env = makeEnv()
+  t.after(() => env.bus._internal.close())
+  const { bus, dataDir } = env
+  bus.registry.register(buildVulnDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) }))
+  fs.mkdirSync(path.join(dataDir, 'results', 'run_eval_correction'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'results', 'run_eval_correction', 'meta.json'), '{}')
+  const candidate = await bus.dispatch('vuln', 'register_candidate', {
+    title: '同一时点独立更正的授权对象观察', host: 'a.example.com', source: 'fixture', program_id: 'test-src', severity: 'low',
+  }, { actor: 'script' })
+  const now = Date.now()
+  t.mock.method(Date, 'now', () => now)
+  const positive = await bus.dispatch('vuln', 'confirm', { finding_id: candidate.data.id, evidence: 'run_eval_correction',
+    review: { basis: '独立核对原始请求与响应及正常反例，初次认为授权属性被违反',
+      reproduction_steps: '重复使用正常身份和反例身份读取对象',
+      impact: '初次观察认为未授权用户可以读取私有对象' },
+  }, { actor: 'dashboard', operator: 'first-reviewer' })
+  assert.equal(positive.ok, true, positive.error?.message)
+  const db = bus._internal.db()
+  const old = db.prepare('SELECT * FROM vuln_technical_verdicts').get()
+  const corrected = await bus.dispatch('vuln', 'reject', { finding_id: candidate.data.id, verdict: 'false_positive',
+    reason: '原策略记录证明读取者当时已获授权，原阳性判定不成立', evidence: 'run_eval_correction', corrects_verdict_id: old.id,
+    review: { basis: '独立核对实验时点的授权记录，原判定所假设的owner-only条件不成立',
+      expected_behavior: '具有共享授权的读取者可以访问对象',
+      observed_behavior: '读取者按当时已授予的共享权限访问对象',
+      controls: '核对原始时点策略和共享记录，并与后续修复区分，正常身份对照成功' },
+  }, { actor: 'dashboard', operator: 'second-reviewer' })
+  assert.equal(corrected.ok, true, corrected.error?.message)
+  db.prepare("UPDATE event_outbox SET next_retry_at=? WHERE name='vuln.signal.confirmed'").run(now + 60000)
+  await bus._internal.dispatcherTick()
+  db.prepare("UPDATE event_outbox SET next_retry_at=0 WHERE name='vuln.signal.confirmed'").run()
+  await bus._internal.dispatcherTick()
+  const history = readLive(env.evalDir)
+  assert.equal(history.length, 2, 'both immutable receipts remain in the ledger')
+  const stats = await bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(stats.data.live.by_type.unknown.confirmed, 0, 'late old receipt cannot override an equal-time correction')
+  assert.equal(stats.data.live.by_type.unknown.false_positive, 1)
+  const effective = await bus.query('eval', 'cases', {}, { actor: 'dashboard' })
+  assert.equal(effective.total, 1, 'explicitly corrected labels are excluded from the effective set')
+  assert.equal(effective.rows[0].corrects_verdict_id, old.id)
+  const all = await bus.query('eval', 'cases', { include_superseded: true }, { actor: 'dashboard' })
+  assert.equal(all.total, 2)
+  assert.equal(all.rows.find(row => row.technical_verdict_id === old.id).superseded, true)
+  const correction = history.find(row => row.corrects_verdict_id)
+  const forged = await bus.dispatch('eval', 'case_append', { ...correction, corrects_verdict_id: old.id + 100,
+    title: 'forged correction target' }, { actor: 'script' })
+  assert.equal(forged.error?.code, 'E_INVARIANT', 'script cannot invent a correction edge')
+  assert.deepEqual(readLive(env.evalDir), history)
+  db.prepare('DELETE FROM idempotency').run()
+  const replay = await bus.dispatch('bus', 'replay', { since: 0, limit: 100 }, { actor: 'system' })
+  assert.deepEqual(replay.data.results.filter(row => row.ok === false), [])
+  assert.deepEqual(readLive(env.evalDir), history)
+})
+
+test('27 E13/L05: equal-time separate experiments use receipt order and keep both labels available', async () => {
+  const env = makeEnv()
+  const now = Date.now()
+  for (const [id, verdict] of [[12, 'false_positive'], [11, 'confirmed']]) {
+    const result = await env.bus.dispatch('eval', 'case_append', { finding_id: 1, verdict,
+      technical_verdict_id: id, evidence_digest: 'a'.repeat(64), program_id: 'test-src', ts: now,
+    }, { actor: 'system' })
+    assert.equal(result.ok, true, result.error?.message)
+  }
+  const stats = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(stats.data.live.by_type.unknown.confirmed, 0)
+  assert.equal(stats.data.live.by_type.unknown.false_positive, 1)
+  assert.equal(stats.data.live.superseded_total, 0, 'new experiment alone does not refute earlier history')
+  assert.equal((await env.bus.query('eval', 'cases', {}, { actor: 'dashboard' })).total, 2)
+  env.bus._internal.close()
+})
 test('总线集成: bus_status eval registered:true + 命令/查询计数 + 模型不可见三写动词', async () => {
   const env = makeEnv()
   const st = await env.bus.query('bus', 'status', {}, { actor: 'dashboard' })

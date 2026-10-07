@@ -97,7 +97,7 @@ function createRepo(opts) {
         : !row.technical_verdict_id && row.finding_id === rec.finding_id && row.verdict === rec.verdict)
       if (previous) {
         const fields = rec.technical_verdict_id
-          ? ['finding_id', 'verdict', 'evidence_digest', 'program_id']
+          ? ['finding_id', 'verdict', 'evidence_digest', 'program_id', 'corrects_verdict_id']
           : ['finding_id', 'verdict', 'host', 'url', 'title', 'vuln_type', 'source', 'label_source', 'visibility']
         if (fields.some(key => (previous[key] ?? null) !== (rec[key] ?? null))) {
           const error = new Error('持久评测判定键已绑定不同内容')
