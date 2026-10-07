@@ -759,3 +759,5 @@ ensureCol(col, ddl)
 - **缓存**：`asset_overview` TTL 25s→60s，`touchAsset` 触活也失效缓存（§2.5）。
 - **索引**：新增 `idx_assets_last_seen(last_seen DESC)`、`idx_assets_score(score DESC)`（默认排序与深翻页主路径）。
 - **分页协定**：`asset_list`/`fp_query`/`asset_host_page`/`asset_deep_queue`/`asset_roots_agg` 均 `meta.paged=true`，总线不再二次切片（修复 `asset_list` 第 2 页恒空实缺陷）。
+
+2026-10-07发布回填：asset.inventory及type覆盖索引已上线，生产库存101803行/5种类型与SQLite及Dashboard一致，无degraded；完整overview继续保留。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。

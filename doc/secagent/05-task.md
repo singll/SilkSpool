@@ -1503,3 +1503,5 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 2026-10-06 C04/C05缺口/候选补页与Program策略隔离已合批部署：恢复副本相关域282项、生产完整RPC/worker19项验收通过，按固定4e69b20清单发布。动态分页一致性、同项目跨Campaign与请求版本键等剩余边界见27号§15.67–69/§15.73。
 
 2026-10-06来源撤回复核（本地待发布）：消费know.episode.recorded中的来源更正撤回清单，经know.release_get核对真实撤回记录后走change-retest。任务仅queued且无schedule；失败由总线重试。release查重包括历史已完成任务，task.list查询使用允许的system角色且不忽略失败，防晚回放重复建单。
+
+2026-10-07发布回填：来源更正撤回的change-retest待办通知、全局status/priority/created_at索引已上线，任务不自动调度；Campaign1/2/3继续暂停、预算不变。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。

@@ -890,3 +890,10 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - L01终态学习72c8233（727项跨域）、D07进程组清理94d8c9d（730项跨域+24 worker）已提交推送，尚未部署。真实回归覆盖无parser/空结果/无Program失败、HTTP状态、写失败重试不重跑CLI、正常父退出/超时/取消后无组内后代写者。
 - WP06 #607/#646共21原件复核，支持公开客户端内容及源码映射读取，安全影响仍待证；待原件复核25→23。现有原库搜索无新线索，已异步询问稳定代理和旧原库路径；身份稍后补，匿名业务继续，Campaign暂停及预算不变。
 - 当前交接：`out/secagent-audits/session-20261006/PROGRESS.md`及动态`HANDOFF.md`；98项验收索引仅作导航，不自动关项。
+
+### 2026-10-07 · 累计发布回退与冷启动统计修复
+
+- 累计dcba5bf 21项42落点在新NAS/冻结恢复/隔离八域520项及worker19项通过后安装，但生产stats仍10秒超时。按原恢复点完整回退cb3134f，18:37:08恢复；PID1323625/NRestarts0，六服务七timer active，无恢复错误，无running task/worker。Campaign继续暂停，预算费用与本次基线一致；见27号§15.91。
+- 隔离实测首轮bus6.85秒、stats9.70秒，最早delivered时间、事实置信度facet和资产族聚合为剩余热点。新增覆盖索引，stats经asset.inventory只取库存数量/类型。联合122/122、跨域748/748通过；修改后两组三轮原门禁通过，首轮stats197/265毫秒。缓存释放提示范围及测量边界见27号§15.92。
+- 累计学习真值/版本采用/来源撤回及本次查询修复仍待成功发布，不能记已上线。生产仍cb3134f；WP06尚23条待原件复核，技术反证入口及第27号其他验收继续待办，全案未关账。
+- 私有交接：out/secagent-audits/session-20261006/PROGRESS.md、HANDOFF.md；本次证据20261007-learning-truth-release/，后续发布使用独立20261007-stats-truth-release/。

@@ -720,3 +720,5 @@ dispatch_aliases: {}
 - 2026-10-06 WP11：bus.status事件历史行数使用64KiB异步分块读取，同批最多四个文件；按inode/size/mtime/ctime复用稳定文件计数，追加/轮转重新计数，避免同步整文件读取阻塞RPC。统计口径仍为当前.jsonl非空行，不含轮转.1。
 
 2026-10-07 WP11（本地待发布）：event_outbox增加(status,created_at)覆盖索引，bus.status最早delivered时间通过索引端点查询，保留status过滤；原冷启动隔离该SQL耗时4.01秒，查询计划回归与发布记录见27号§15.92。
+
+2026-10-07发布回填：bus历史异步计数及outbox(status,created_at)索引已上线，原门禁第二轮bus.status257毫秒；首轮生产stats超时仍保留，未宣称冷启动问题根治。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。

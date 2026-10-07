@@ -1223,3 +1223,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-06 L03增量（本地待发布）：ledger.card_usage.logged只有真实published revision及匹配Program/global使用范围才落采用，绑定revision_id和sha256内容摘要；未知版本/工具名/不存在对象及blocked/na保留原ledger经历，不计采用。know_adoptions补source_run_id/session_id/asset；来源引用不等于task/attempt或费用归属。
 
 2026-10-06来源撤回通知（本地待发布）：release_get供reactor/system读取真实发布账本。来源更正事件携带withdrawn_releases与source_event_id；任务域需核对撤回原因后创建待复核任务，通知失败不撤销已生效的来源失效门禁。
+
+2026-10-07发布回填：CLI/HTTP终态、签封Oracle学习/同decision归并、来源核验蒸馏、来源更正撤发布与采用失效、真实版本ledger采用及撤回复核通知已上线。新增采用来源三列，旧记录保持。缺方法/未知判定不制造知识收益；反证入口、历史污染及真实计划成本归因仍待办。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。

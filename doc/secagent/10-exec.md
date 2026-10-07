@@ -860,3 +860,5 @@ Bellkeeper运行容器处于running，宿主checkout为`59b1aa3`，核对模型/
 2026-10-06 D07增量（本地验收，待发布）：CLI与headless共用executeManagedProcess；detached进程组在父退出/超时/取消后TERM→1秒KILL，完成后校验无非僵尸组内成员。CLI双输出直接落文件，fsync/close后解析，返回及meta增加cancelled/timed_out；受取消/超时或残留错误影响的exit0仍走failed。未改变请求Scope或预算，主动脱离进程组的进程需外部隔离边界。164项exec/know、24项worker及730项跨域验证通过。
 
 2026-10-06 L01/L02增量（本地，待发布）：新增authz_evidence查询（reactor/script/dashboard），只核验历史判定签封及其全部HTTP原件，返回historical_only、从原件汇总的尝试跳数/耗时及一致会话引用。它不请求目标、不要求现役profile/Scope，不可用于放宽authz_decision一小时确认门禁；原判定返回结构与capsule摘要保持兼容。
+
+2026-10-07发布回填：CLI/HTTP终态事件、进程组收尾及authz_evidence历史签封读取已上线；九域555项/真实worker19项与生产RPC通过。历史读取不重开当前确认时效，不放宽Scope；主动setsid逃逸仍需外部隔离边界。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。

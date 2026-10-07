@@ -617,3 +617,5 @@ hasHandoff(program, date) → boolean
 2026-10-06 coverage_gaps.offset与专项补页已合批部署，真实ledger分页及task总线回归纳入发布验收；排序后切页、total不变。2万窗口之外和并发增删快照一致性未在本批宣称完成，见27号§15.67/§15.73。
 
 2026-10-06 L03增量（本地待发布）：log_card_usage保留可选artifact_kind，事件携带原run_id和asset，供know校验真实版本并追溯来源；文件记录仍保留无法归因的历史使用，自报使用不等于技术结果。
+
+2026-10-07发布回填：card_usage事件保留run/asset/artifact_kind，know消费者只对合法现役版本记录采用已上线；工具名、缺版本和blocked/na保留原经历而不计采用。来源引用不冒充已完成task/attempt和成本归属。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。

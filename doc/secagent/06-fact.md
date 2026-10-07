@@ -718,3 +718,5 @@ getBb(key) / upsertBb(row) / listBbRecent(limit) / setBbStatus(key, status, at) 
 2026-10-06事实复验逾期计数及记忆指引读取已随§15.73合批部署；真实生产know.health与memcore通过，缺源保留未知。fact_bb_read保持data数组封套，task reader过滤过期/归档；详见27号§15.61/§15.70。
 
 2026-10-07 WP11（本地待发布）：facts增加confidence覆盖索引，置信度facet避免扫描正文大行及临时分组排序；计数/Program口径未改。真实隔离原SQL2.69秒，查询计划回归与后续发布见27号§15.92。
+
+2026-10-07发布回填：双EXISTS关系计数及confidence覆盖索引已上线，查询计划与语义回归通过；原始facts置信度仅为既有事实字段，不等同独立技术真值。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。
