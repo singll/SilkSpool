@@ -764,6 +764,20 @@ for (const [mode, verdict] of [['vulnerable', 'verified'], ['patched', 'rejected
     if (verdict !== 'verified') assert.equal(confirmed.error.code, 'E_VULN_ORACLE_NOT_VERIFIED')
     const row = bus._internal.db().prepare('SELECT status,confidence FROM findings WHERE id=?').get(args.finding_id)
     assert.equal(row.status, verdict === 'verified' ? 'confirmed' : 'new')
+    if (mode !== 'vulnerable') {
+      const rejected = await bus.dispatch('vuln', 'reject', {
+        finding_id: args.finding_id, verdict: 'false_positive', reason: '使用签封实验的完整身份及私有对象对照判断反证',
+        evidence: cap.data.evidence_ref,
+      }, { actor: 'model' })
+      assert.equal(rejected.ok, mode === 'patched', rejected.error?.message)
+      if (mode !== 'patched') assert.equal(rejected.error.code, 'E_VULN_ORACLE_NOT_REJECTED')
+      else {
+        const receipt = bus._internal.db().prepare('SELECT * FROM vuln_technical_verdicts WHERE finding_id=?').get(args.finding_id)
+        assert.equal(receipt.basis, 'controlled_oracle')
+        assert.equal(receipt.verdict, 'false_positive')
+      }
+      assert.equal(seen.length, ({ proxy_error: 1, invalid_auth: 1, public: 4 })[mode] ?? 10, 'rejection only checks evidence; no HTTP replay')
+    }
     const allEvents = fs.readFileSync(path.join(dir, 'events', 'exec.jsonl'), 'utf8')
     assert.equal(allEvents.includes('Bearer a'), false)
     const raw = fs.readFileSync(path.join(dataDir, 'results', decision.data.run_ids[0], 'http-record.json'), 'utf8')
@@ -782,16 +796,19 @@ for (const [mode, outcome] of [['vulnerable', 'confirmed'], ['patched', 'valid_c
     const run = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model', session_id: 'oracle-learning' })
     assert.equal(run.ok, true, run.error?.message)
     const requestCount = seen.length
-    if (mode === 'vulnerable') {
+    if (['vulnerable', 'patched'].includes(mode)) {
       const capsule = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: run.data.decision_id }, { actor: 'model' })
       assert.equal(capsule.ok, true, capsule.error?.message)
-      const confirmed = await bus.dispatch('vuln', 'confirm', { finding_id: args.finding_id, evidence: capsule.data.evidence_ref }, { actor: 'model' })
-      assert.equal(confirmed.ok, true, confirmed.error?.message)
-      // Deliver the finding confirmation first; the later oracle event must merge.
+      const concluded = await bus.dispatch('vuln', mode === 'patched' ? 'reject' : 'confirm', {
+        finding_id: args.finding_id, evidence: capsule.data.evidence_ref,
+        ...(mode === 'patched' ? { verdict: 'false_positive', reason: '签封身份和私有归属对照证明服务端正确拒绝越权读取' } : {}),
+      }, { actor: 'model' })
+      assert.equal(concluded.ok, true, concluded.error?.message)
+      // Deliver the finding verdict first; the later oracle event must merge.
       bus._internal.db().prepare("UPDATE event_outbox SET next_retry_at=? WHERE name='exec.oracle.decided'").run(Date.now() + 60000)
     }
     await bus._internal.dispatcherTick()
-    if (mode === 'vulnerable') {
+    if (['vulnerable', 'patched'].includes(mode)) {
       bus._internal.db().prepare("UPDATE event_outbox SET next_retry_at=0 WHERE name='exec.oracle.decided'").run()
       await bus._internal.dispatcherTick()
     }
@@ -807,8 +824,9 @@ for (const [mode, outcome] of [['vulnerable', 'confirmed'], ['patched', 'valid_c
     assert.equal(episode.source_credibility, 'machine')
     assert.equal(episode.card_id, null, 'no invented knowledge attribution')
     assert.equal(episode.token_count, null, 'unmeasured model cost stays unknown')
-    if (mode === 'vulnerable') assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM learning_episodes WHERE outcome='confirmed'").get().n, 1,
-      'oracle decision and subsequent finding confirmation are one technical attempt')
+    if (['vulnerable', 'patched'].includes(mode)) assert.equal(
+      bus._internal.db().prepare('SELECT COUNT(*) n FROM learning_episodes WHERE outcome=?').get(outcome).n, 1,
+      'oracle decision and subsequent finding verdict are one technical attempt')
     if (['vulnerable', 'patched'].includes(mode)) {
       const revisions = bus._internal.db().prepare("SELECT * FROM knowledge_revisions WHERE artifact_id LIKE 'distill-%'").all()
       assert.equal(revisions.length, 1, 'signed positive or clean creates a governed method candidate')
@@ -832,10 +850,52 @@ for (const [mode, outcome] of [['vulnerable', 'confirmed'], ['patched', 'valid_c
     assert.equal(seen.length, requestCount)
     const liveFile = path.join(dataDir, 'eval', 'eval-live.jsonl')
     const labels = fs.existsSync(liveFile) ? fs.readFileSync(liveFile, 'utf8').trim().split('\n').map(JSON.parse) : []
-    assert.equal(labels.length, mode === 'vulnerable' ? 1 : 0)
-    if (labels.length) assert.equal(labels[0].verdict, 'confirmed')
+    assert.equal(labels.length, ['vulnerable', 'patched'].includes(mode) ? 1 : 0)
+    if (labels.length) assert.equal(labels[0].verdict, mode === 'patched' ? 'false_positive' : 'confirmed')
   })
 }
+
+test('27 E13: signed rejection rechecks target, bytes and freshness before an atomic transition', async t => {
+  const { bus, dataDir, args, seen } = await authzFixture(t, 'patched')
+  t.after(() => bus._internal.close())
+  const decision = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
+  assert.equal(decision.ok, true, decision.error?.message)
+  const capsule = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: decision.data.decision_id }, { actor: 'model' })
+  assert.equal(capsule.ok, true, capsule.error?.message)
+  const input = { finding_id: args.finding_id, verdict: 'false_positive',
+    reason: '完整身份与归属对照中服务端始终拒绝非归属身份读取', evidence: capsule.data.evidence_ref }
+  const db = bus._internal.db()
+  const original = { ...db.prepare('SELECT program_id,url,vuln_type FROM findings WHERE id=?').get(args.finding_id) }
+  const requestCount = seen.length
+  for (const [column, value] of [['program_id', 'other-src'], ['url', original.url + '?other=1'], ['vuln_type', 'sqli']]) {
+    db.prepare(`UPDATE findings SET ${column}=? WHERE id=?`).run(value, args.finding_id)
+    const result = await bus.dispatch('vuln', 'reject', input, { actor: 'model' })
+    assert.equal(result.error?.code, 'E_VULN_ORACLE_TARGET_MISMATCH')
+    db.prepare(`UPDATE findings SET ${column}=? WHERE id=?`).run(original[column], args.finding_id)
+  }
+  const file = path.join(dataDir, 'results', decision.data.run_ids[0], 'http-record.json')
+  const bytes = fs.readFileSync(file)
+  fs.writeFileSync(file, '{}')
+  assert.equal((await bus.dispatch('vuln', 'reject', input, { actor: 'model' })).error?.code, 'E_VULN_EVIDENCE_TAMPERED')
+  fs.writeFileSync(file, bytes)
+  const now = Date.now()
+  t.mock.method(Date, 'now', () => now + 7200000)
+  assert.equal((await bus.dispatch('vuln', 'reject', input, { actor: 'model' })).error?.code, 'E_VULN_EVIDENCE_TAMPERED')
+  t.mock.restoreAll()
+  db.exec("CREATE TRIGGER deny_rejection BEFORE INSERT ON vuln_technical_verdicts BEGIN SELECT RAISE(ABORT,'receipt write failure'); END")
+  assert.equal((await bus.dispatch('vuln', 'reject', input, { actor: 'model', session_id: 'owner' })).ok, false)
+  assert.deepEqual({ ...db.prepare('SELECT status,claimed_by FROM findings WHERE id=?').get(args.finding_id) },
+    { status: 'new', claimed_by: null })
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM event_outbox WHERE name='vuln.signal.rejected'").get().n, 0)
+  db.exec('DROP TRIGGER deny_rejection')
+  assert.equal((await bus.dispatch('vuln', 'reject', input, { actor: 'model', session_id: 'owner' })).ok, true)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM vuln_technical_verdicts').get().n, 1)
+  fs.writeFileSync(file, '{}')
+  assert.equal((await bus.dispatch('vuln', 'reject', input, { actor: 'model', session_id: 'owner' })).error?.code, 'E_VULN_EVIDENCE_TAMPERED',
+    'a previous success never bypasses evidence revalidation')
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM vuln_technical_verdicts').get().n, 1)
+  assert.equal(seen.length, requestCount, 'all rejections only read existing execution evidence')
+})
 
 test('27 L18: distillation failure has an independent retry; recovery neither reruns HTTP nor duplicates episodes', async t => {
   const fixture = await authzFixture(t, 'vulnerable')

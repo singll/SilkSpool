@@ -209,6 +209,24 @@ test('壳聚合端点（stats/workspaces/sessions/memcore）不经总线门禁�
   assert.deepEqual(leaked, [], '壳聚合端点不应触发业务 assetDb 泄漏')
 })
 
+test('27 E13: findingUpdate preserves independent review and evidence for technical verdicts', async () => {
+  const bus = okBus()
+  depsWith(bus)
+  for (const status of ['confirmed', 'false_positive']) {
+    const review = status === 'confirmed'
+      ? { basis: 'independent positive review', reproduction_steps: 'repeat controlled requests', impact: 'unauthorized object read' }
+      : { basis: 'independent negative review', expected_behavior: 'only owner reads', observed_behavior: 'other identity denied',
+        controls: 'valid identities and successful owner control' }
+    await handleDashboardRpc('findingUpdate', { id: 7, status, evidence: 'run_review', review,
+      operator: 'reviewer', note: 'Independent review of the original observation' })
+    const call = bus.calls.at(-1)
+    assert.equal(call.verb, status === 'confirmed' ? 'confirm' : 'reject')
+    assert.equal(call.args.evidence, 'run_review')
+    assert.deepEqual(call.args.review, review)
+    assert.equal(call.ctx.operator, 'reviewer')
+  }
+})
+
 test('stats：经各域查询聚合，单域失败 → null + degraded，不整体失败', async () => {
   // 总线缺席：全部来源失败 → 五指标 null + degraded 覆盖，并返回对象（不抛）
   const { leaked } = depsWith(null)

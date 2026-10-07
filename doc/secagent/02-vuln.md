@@ -31,7 +31,7 @@
 | C1 | `vuln_register_signal` | 登记完整漏洞信号（五要素闸门为不变量；精确观察命中候选自动 promote） | model, human | signal.registered（命中候选时另发 candidate.promoted） | 自然键=强指纹 |
 | C2 | `vuln_register_candidate` | 机器直灌唯一入口（候选池登记，模型禁用） | webhook, script, dashboard | candidate.registered | 自动指纹（title/host/url/source） |
 | C3 | `vuln_confirm` | 候选/信号 → confirmed 原子升级（status+confidence+noise 三联动，evidence 必填） | model, dashboard | signal.confirmed（自候选池另发 candidate.promoted） | none（每次重验） |
-| C4 | `vuln_reject` | 判定 false_positive / dup / ignored（候选出池 + FGS deprecated 走事件） | model, dashboard | signal.rejected | 自动指纹（finding_id+verdict+reason） |
+| C4 | `vuln_reject` | false_positive 须签封反证或独立审校；dup / ignored 为处理状态 | model, dashboard | signal.rejected | 每次重验；终态不重复落账 |
 | C5 | `vuln_submit` | confirmed → submitted（运营列回流；vendor_status=accepted 时 submitted → accepted）；可回写 `remote_id` 平台工单号 | model, dashboard | signal.submitted | 自动指纹（finding_id+bounty+vendor_status+platform+remote_id） |
 | C6 | `vuln_note` | 证据链追加（不改状态，任意状态可用） | model, dashboard | 无（防事件风暴） | 自动指纹（finding_id+note） |
 | C6b | `vuln_evidence_put` | 证据包受管写入（把机械复核用 `request.txt` 写入 `evidence/{id}/`） | model | 无 | 自动指纹（finding_id+request_text） |
@@ -225,8 +225,12 @@ WHERE id=? AND status='new'
 | reason | string | 是 | — | trim ≥10 字（与 v4 审批 evidence 同口径——判定必须有可追溯依据） |
 | dup_of | integer | 否 | null | **verdict=dup 时必填**（INV-9，指向被重复的 finding id；不存在 → E_NOT_FOUND） |
 | note | string | 否 | '' | — |
+| evidence | string | false_positive 时必填 | '' | 真实存在的引用；机器反证须受控执行生成的 rejected capsule |
+| review | object | 人工反证时必填 | — | basis≥20、expected_behavior≥10、observed_behavior≥10、controls≥20；仅 dashboard 且 operator 非空 |
 
-**事务行为**（单 UPDATE）：
+`false_positive` 先核验证据存在性；机器路径复用可信判定校验，要求同 Finding/Program/URL/host/类型、原件摘要、请求/身份/策略关联与一小时时效，且 verdict=`rejected`。公开响应、身份失败、代理故障或仅缺证文字不能否定假设；用 `vuln_note` 保存缺证与重开条件。人工审校是操作员明确签署的独立判断，不把其理由当机器 Oracle。
+
+**事务行为**（状态 UPDATE、技术回执、证据追加及事件同事务）：
 
 ```sql
 UPDATE findings SET
@@ -240,17 +244,22 @@ WHERE id=? AND status IN ('new','confirmed','submitted')
 ```
 
 noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` 保证其退出候选计数（**候选池 KPI 口径 = `noise=1 AND status='new'`，宪法 §十一全局定义**）。发 `signal.rejected`。
+技术反证回执保存 basis=`controlled_oracle`/`independent_review`、完整 capsule 或审校内容与摘要。回执拒写整次回滚；dup/ignored 不创建技术回执。事件关联 technical_verdict_id、program_id、evidence_ref 与 verification_basis，消费方继续核验正式回执，旧 reason-only 回执不升级为训练真值。
 
 **错误码**：
 
 | code | 触发 | hint | retryable |
 |---|---|---|---|
 | E_SCHEMA | verdict 非枚举 / reason<10 字 | "verdict 只能是 false_positive/dup/ignored；reason 必须 ≥10 字（判定依据可追溯）" | false |
+| E_EVIDENCE_REQUIRED | false_positive 无真实存在的证据引用 | 保存缺证说明，补齐证据后重判 | false |
+| E_VULN_REVIEW_REQUIRED | 弱证据或人工审校无 dashboard/operator | 受控执行签封，或由操作员独立审校 | false |
+| E_VULN_ORACLE_NOT_REJECTED | 签封结果非 rejected | 未知/阻塞不判误报 | false |
+| E_VULN_EVIDENCE_TAMPERED / E_VULN_ORACLE_TARGET_MISMATCH | 原件/时效失效或对象关联不符 | 重新核验对应对象 | false |
 | E_VULN_DUP_TARGET_REQUIRED | verdict=dup 缺 dup_of | "dup 判定必须指回被重复的 finding（dup_of）。可先用 vuln_dedup_check 检索同目标同类型历史" | false |
 | E_STATE | 行处于 accepted / false_positive / dup / ignored 终态 | "已终态不可再流转；如需翻案（如 false_positive→confirmed）走人工通道：dashboard 侧 vuln_confirm 附 operator 审计" | false |
 | E_VULN_CLAIMED | 同 C3（model 受认领约束） | 同 C3 | true |
 
-**actor**：model, dashboard。**幂等**：自动指纹（finding_id+verdict+reason）。
+**actor**：model, dashboard。**幂等**：不复用成功缓存，每次先核验证据；终态重复请求返回 E_STATE（证据失效可先被门禁拒绝），不重复写回执或事件。
 
 ---
 
@@ -468,7 +477,7 @@ actor=model，幂等 none，无事件。适用的 owner-only JSON IDOR 需另用
 | `vuln.candidate.claimed` | C7 | `{finding_id:int, claimed_by:string, claimed_at:int(epoch ms), ttl_sec:int}` |
 | `vuln.signal.registered` | C1 | `{finding_id:int, fingerprint:string, severity:enum, host:string, session_id:string\|null, fgs_node_id:int\|null}` |
 | `vuln.signal.confirmed` | C3 | `{finding_id:int, from:{status:'new',noise:int}, evidence_ref:string, confidence:'confirmed', fgs_node_id:int\|null, vuln_type:string\|null}` |
-| `vuln.signal.rejected` | C4 | `{finding_id:int, verdict:enum, from:{status:string,noise:int}, reason_head:string(≤60字), dup_of:int\|null, fgs_node_id:int\|null}` |
+| `vuln.signal.rejected` | C4 | `{finding_id:int, verdict:enum, technical_verdict_id:int\|null, program_id:string\|null, evidence_ref?:string, verification_basis?:string, from:{status:string,noise:int}, reason_head:string(≤60字), dup_of:int\|null, fgs_node_id:int\|null}` |
 | `vuln.signal.submitted` | C5 | `{finding_id:int, from:{status:string}, to:{status:string}, bounty:number\|null, vendor_status:string, platform:string}` |
 | `vuln.evidence.attached` | C12 | `{finding_id:int, evidence_ref:string, files:int, bytes:int, digest:string}` |
 
@@ -501,7 +510,7 @@ ToolProjector 从 manifest 自动 `ctx.tools.register`：工具名=动词/查询
 | `vuln_register_signal` | 是 | "登记一个**完整验证过**的漏洞发现（唯一能新建信号面行的动词）。五要素强制：规范标题（≥10 字符，『<组件/业务语境> <漏洞类型与后果>（关键特征）』，禁止工具原始输出当标题）、复现步骤、具体化影响、证据引用（run_id/flow_id/burp_item/evidence 路径/oob）、host。severity 禁 info（信息类按 severity-rating 规则以 low+具体影响重评）。同 host+title+url 指纹自动去重；命中待验证候选会就地补全升级（upgraded:true）。纪律：登记前必须完成对抗性自检（≥2 反证假设逐一排除）+ 高危双出口复现；CONFIRMED 还须 verify_replay 机械复核。" |
 | `vuln_register_candidate` | **否**（机器通道） | （不向模型注册——webhook/script/dashboard 专用） |
 | `vuln_confirm` | 是 | "把待验证候选/信号确认为 confirmed（status+confidence+noise 原子三联动，候选同时出池进信号面）。evidence 必填且必须真实存在（run_id 的 results 目录 / evidence/{id}/ 证据包 / flow 文件 / oob 交互记录）。确认前自查：verify.must_pass 全过、falsification 逐项排除、verify_replay 机械复核通过；高危走独立 worker 复验（双路一致才确认）。候选被他人认领时会被告知换下一条。" |
-| `vuln_reject` | 是 | "判定 false_positive / dup / ignored。reason ≥10 字可追溯；dup 必须指回被重复的 finding（dup_of，可先用 vuln_dedup_check 查）。被拒候选自动出池；关联 FGS 节点自动 deprecated。误报判定会回流活评测集用于校准同类判定。" |
+| `vuln_reject` | 是 | "false_positive 必须有签封 rejected capsule，或 dashboard/operator 独立反证审校及证据引用。缺证/阻塞保留未知。reason ≥10；dup 必须 dup_of，ignored 仅处理状态。正式技术回执经消费方核验后回流评测。" |
 | `vuln_submit` | 是 | "确认后的运营流转：confirmed → submitted（平台提交后）；vendor 反馈（accepted/bounty/vendor_status）在 submitted 态再次调用回流运营列。提交前先 report_draft_submission（report 域）出草稿人工审校。" |
 | `vuln_note` | 是 | "向 finding 追加证据链条目（不改状态，任意状态可用）。用于补充观察、勘误说明、复验记录。带时间戳前缀追加。" |
 | `vuln_evidence_put` | 是 | "把机械复核所需的原始 HTTP 请求写入证据包 evidence/{finding_id}/request.txt（受管写入，原生 write 无法写域数据目录）。request_text 须为完整 HTTP 报文（首行 METHOD target + Host 头）。写后用 vuln_verify_replay 复核。覆盖式写入，重复同内容幂等。" |
@@ -928,3 +937,5 @@ export const repositoryV1 = {
 2026-10-06发布回填：cb3134f学习/评测/正式技术指标/索引合批已按新冻结、隔离应用、生产RPC及UI80验收部署，详见27号§15.82。L01/D07后续增量72c8233/94d8c9d尚未部署；不改写历史验收。
 
 2026-10-06 L01/L02增量（本地，待发布）：新增technical_verdict查询（reactor/script/dashboard；id），从正式回执读取finding、来源、证据摘要与capsule的decision_id，重新核验保存evidence_json摘要，不返回私有正文、不发目标请求。供学习链把Oracle判定与Finding确认归到同attempt；本查询不重新证明当前可重现性或替代confirm门禁。
+
+2026-10-07 E13增量（本地待发布）：C4技术反证证据门禁、原子回执与事件关联已实现；安全中心findingUpdate透传confirm/reject的evidence/review，独立审校仍由领域验证operator/schema。旧UI快捷打标未提供审校表单，证据不足时继续明确拒绝，不能把无证据按钮当独立审校。

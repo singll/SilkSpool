@@ -155,6 +155,59 @@ function reviewedConfirm(bus, args, ctx = {}) {
   return bus.dispatch('vuln', 'confirm', { ...args, review: independentReview }, { ...ctx, actor: 'dashboard', operator: ctx.operator || 'fixture-reviewer' })
 }
 
+const independentRejection = {
+  basis: '独立复核目标、原始请求响应和反例，原观察不能支持所声称的安全属性违反',
+  expected_behavior: '私有对象只应对已授权身份开放',
+  observed_behavior: '未授权读取被拒绝且正常身份仍能读取',
+  controls: '已确认有效身份与对象归属、正常对照成功，并重复执行相同请求验证反证',
+}
+function reviewedReject(bus, args, ctx = {}) {
+  return bus.dispatch('vuln', 'reject', { ...args, evidence: args.evidence || 'run_test_20260906_000000',
+    review: independentRejection }, { ...ctx, actor: 'dashboard', operator: ctx.operator || 'fixture-reviewer' })
+}
+
+test('27 E13: reason-only rejection cannot close a candidate or create technical truth', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const candidate = await seedCandidate(bus, { program_id: 'test-src' })
+  const r = await bus.dispatch('vuln', 'reject', {
+    finding_id: candidate.data.id, verdict: 'false_positive', reason: '目前缺少身份与原始响应，尚不能确认该漏洞',
+  }, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_EVIDENCE_REQUIRED')
+  const db = bus._internal.db()
+  assert.equal(db.prepare('SELECT status FROM findings WHERE id=?').get(candidate.data.id).status, 'new')
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM vuln_technical_verdicts').get().n, 0)
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM event_outbox WHERE name='vuln.signal.rejected'").get().n, 0)
+})
+
+test('27 E13: independent counterevidence requires operator and persists an atomic receipt', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const candidate = await seedCandidate(bus, { program_id: 'test-src' })
+  const args = { finding_id: candidate.data.id, verdict: 'false_positive', reason: '原始观察已被完整身份对照和服务端拒绝响应反驳',
+    evidence: 'run_test_20260906_000000', review: independentRejection }
+  for (const ctx of [{ actor: 'model', operator: 'pretend' }, { actor: 'dashboard' }]) {
+    const r = await bus.dispatch('vuln', 'reject', args, ctx)
+    assert.equal(r.error?.code, 'E_VULN_REVIEW_REQUIRED')
+  }
+  const db = bus._internal.db()
+  db.exec("CREATE TRIGGER deny_counterevidence BEFORE INSERT ON vuln_technical_verdicts BEGIN SELECT RAISE(ABORT,'receipt blocked'); END")
+  assert.equal((await reviewedReject(bus, args)).ok, false)
+  assert.equal(db.prepare('SELECT status FROM findings WHERE id=?').get(candidate.data.id).status, 'new')
+  db.exec('DROP TRIGGER deny_counterevidence')
+  const result = await reviewedReject(bus, args)
+  assert.equal(result.ok, true, result.error?.message)
+  const receipt = db.prepare('SELECT * FROM vuln_technical_verdicts WHERE finding_id=?').get(candidate.data.id)
+  assert.equal(receipt.basis, 'independent_review')
+  assert.equal(receipt.operator, 'fixture-reviewer')
+  const event = JSON.parse(db.prepare('SELECT payload FROM event_outbox WHERE event_id=?').get(result.event_ids[0]).payload)
+  assert.equal(event.payload.technical_verdict_id, receipt.id)
+  assert.equal(event.payload.program_id, 'test-src')
+  assert.equal(event.payload.evidence_ref, args.evidence)
+  assert.equal(JSON.parse(receipt.evidence_json).review.controls, independentRejection.controls)
+})
+
 test('27 L22: technical receipt write failure rolls back confirmation and keeps its fixed origin', async () => {
   const { bus } = makeEnv()
   const candidate = await seedCandidate(bus, { program_id: 'test-src' })
@@ -289,7 +342,7 @@ test('happy path C3: confirm 候选 → 三联动原子升级（status+confidenc
 test('happy path C4: reject 候选 → false_positive（noise 保持 1 但退出候选口径）', async () => {
   const { bus } = makeEnv()
   const cand = await seedCandidate(bus)
-  const r = await bus.dispatch('vuln', 'reject', { finding_id: cand.data.id, verdict: 'false_positive', reason: '重放后响应为统一 404 页，判定为模板指纹误报', dup_of: null }, { actor: 'model' })
+  const r = await reviewedReject(bus, { finding_id: cand.data.id, verdict: 'false_positive', reason: '完整正常与反例对照证明原模板观察不成立', dup_of: null })
   assert.equal(r.ok, true)
   assert.equal(r.data.status, 'false_positive')
   assert.equal(r.data.noise, true)
@@ -521,7 +574,7 @@ test('vuln_evidence_put 受管写入证据包，verify_replay 闭环可复核', 
   const replay = await bus.dispatch('vuln', 'verify_replay', { finding_id: id }, { actor: 'model' })
   assert.equal(replay.ok, true, replay.error?.message)
   assert.equal(replay.data.sha256, crypto.createHash('sha256').update('poc-response-body', 'utf8').digest('hex'))
-  await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'false_positive', reason: '本地 fixture 结束' }, { actor: 'model' })
+  assert.equal((await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'ignored', reason: '本地 fixture 结束' }, { actor: 'model' })).ok, true)
   const terminal = await bus.dispatch('vuln', 'evidence_put', { finding_id: id, request_text: `GET http://127.0.0.1:${serverPort(srv)}/poc2 HTTP/1.1\r\nHost: 127.0.0.1:${serverPort(srv)}\r\n\r\n` }, { actor: 'model' })
   assert.equal(terminal.error.code, 'E_STATE')
 })
@@ -568,7 +621,7 @@ test('不变量 INV-7: 认领互斥——他人活跃认领时 model confirm/rej
   const c2 = await bus.dispatch('vuln', 'confirm', { finding_id: id, evidence: 'run_test_20260906_000000' }, { actor: 'model', session_id: 'sess_b' })
   assert.equal(c2.ok, false)
   assert.equal(c2.error.code, 'E_VULN_REVIEW_REQUIRED')
-  const c3 = await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'false_positive', reason: 'x'.repeat(10) }, { actor: 'model', session_id: 'sess_b' })
+  const c3 = await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'ignored', reason: 'x'.repeat(10) }, { actor: 'model', session_id: 'sess_b' })
   assert.equal(c3.ok, false)
   assert.equal(c3.error.code, 'E_VULN_CLAIMED')
   // dashboard 豁免（人工终审可越）
@@ -599,7 +652,7 @@ test('状态机拒绝: confirm 已 confirmed 行 / reject 已 accepted 行 / sub
   assert.equal(c1.error.code, 'E_STATE')
   await bus.dispatch('vuln', 'submit', { finding_id: id }, { actor: 'model' })
   await bus.dispatch('vuln', 'submit', { finding_id: id, vendor_status: 'accepted' }, { actor: 'model' })
-  const c2 = await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'false_positive', reason: 'x'.repeat(10) }, { actor: 'model' })
+  const c2 = await reviewedReject(bus, { finding_id: id, verdict: 'false_positive', reason: 'x'.repeat(10) })
   assert.equal(c2.ok, false)
   assert.equal(c2.error.code, 'E_STATE')
   const sig2 = await seedSignal(bus, { title: '另一个完整测试信号一二三四', host: 'b.example.com' })
@@ -612,7 +665,10 @@ test('状态机拒绝: 终态再流转全集（accepted/fp/dup/ignored × confir
   const { bus } = makeEnv()
   for (const verdict of ['false_positive', 'dup', 'ignored']) {
     const sig = await seedSignal(bus, { title: `终态测试信号${verdict}一二三四五六`, host: `t-${verdict}.example.com` })
-    await bus.dispatch('vuln', 'reject', { finding_id: sig.data.id, verdict, reason: 'x'.repeat(10), ...(verdict === 'dup' ? { dup_of: sig.data.id } : {}) }, { actor: 'model' })
+    const terminalArgs = { finding_id: sig.data.id, verdict, reason: 'x'.repeat(10), ...(verdict === 'dup' ? { dup_of: sig.data.id } : {}) }
+    const terminal = verdict === 'false_positive' ? await reviewedReject(bus, terminalArgs)
+      : await bus.dispatch('vuln', 'reject', terminalArgs, { actor: 'model' })
+    assert.equal(terminal.ok, true, terminal.error?.message)
     for (const cmd of ['confirm', 'reject', 'submit']) {
       const args = cmd === 'confirm' ? { finding_id: sig.data.id, evidence: 'run_test_20260906_000000' }
         : cmd === 'reject' ? { finding_id: sig.data.id, verdict: 'ignored', reason: 'y'.repeat(10) }
@@ -1244,7 +1300,7 @@ test('43 P0: 噪声类别学习——同类拒绝率≥阈值后新候选直接�
       ids.push(r.data.id)
     }
     for (const id of ids) {
-      const rej = await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'false_positive', reason: '同类模板历史全为误报（43 号补丁夹具）' }, { actor: 'model' })
+      const rej = await reviewedReject(bus, { finding_id: id, verdict: 'false_positive', reason: '完整独立对照反驳此条模板观察（43 号补丁夹具）' })
       assert.equal(rej.ok, true)
     }
     const next = await bus.dispatch('vuln', 'register_candidate', { title: 'Detect SSL Certificate Issuer', severity: 'info', host: 'n9.example.com', source: 'parser:nuclei' }, { actor: 'script' })
@@ -1276,7 +1332,7 @@ test('43 P0: 白名单豁免抑制', async () => {
   await withEnv({ SEC_VULN_NOISE_SUPPRESS_MIN: '1', SEC_VULN_NOISE_SUPPRESS_RATE: '0.5', SEC_VULN_NOISE_WHITELIST: 'parser:nuclei|Keep Me Template' }, async () => {
     const { bus } = makeEnv()
     const a = await bus.dispatch('vuln', 'register_candidate', { title: 'Keep Me Template', severity: 'info', host: 'w1.example.com', source: 'parser:nuclei' }, { actor: 'script' })
-    await bus.dispatch('vuln', 'reject', { finding_id: a.data.id, verdict: 'false_positive', reason: '白名单豁免夹具误报' }, { actor: 'model' })
+    assert.equal((await reviewedReject(bus, { finding_id: a.data.id, verdict: 'false_positive', reason: '白名单豁免夹具独立对照证明误报' })).ok, true)
     const b = await bus.dispatch('vuln', 'register_candidate', { title: 'Keep Me Template', severity: 'info', host: 'w2.example.com', source: 'parser:nuclei' }, { actor: 'script' })
     assert.equal(b.data.status, 'new', '白名单类别不被抑制')
   })
@@ -1288,7 +1344,7 @@ test('43 P0: 候选登记绑定 task_id，拒绝事件携带 task_id（归因→
   assert.equal(cand.ok, true)
   const got = await bus.query('vuln', 'get', { id: cand.data.id }, { actor: 'model' })
   assert.equal(got.data.task_id, 4242, '候选行落 task_id')
-  const rej = await bus.dispatch('vuln', 'reject', { finding_id: cand.data.id, verdict: 'false_positive', reason: '差分证明服务端有归属校验（43 夹具）' }, { actor: 'model' })
+  const rej = await reviewedReject(bus, { finding_id: cand.data.id, verdict: 'false_positive', reason: '差分证明服务端有归属校验（43 夹具）' })
   assert.equal(rej.ok, true)
   const rejected = readEvents(dir).find((e) => e.name === 'vuln.signal.rejected')
   assert.equal(rejected.payload.task_id, 4242, '拒绝事件携带 task_id')
@@ -1319,7 +1375,7 @@ test('43 P0: noise_stats 暴露类别拒绝率与抑制口径', async () => {
   const { bus } = makeEnv()
   await bus.dispatch('vuln', 'register_candidate', { title: 'Stats Template', severity: 'info', host: 'x1.example.com', source: 'parser:nuclei' }, { actor: 'script' })
   const c = await bus.dispatch('vuln', 'register_candidate', { title: 'Stats Template', severity: 'info', host: 'x2.example.com', source: 'parser:nuclei' }, { actor: 'script' })
-  await bus.dispatch('vuln', 'reject', { finding_id: c.data.id, verdict: 'false_positive', reason: '统计夹具误报判定（43 号）' }, { actor: 'model' })
+  assert.equal((await reviewedReject(bus, { finding_id: c.data.id, verdict: 'false_positive', reason: '统计夹具误报判定（43 号）' })).ok, true)
   const r = await bus.dispatch('vuln', 'noise_stats', { min_total: 1 }, { actor: 'dashboard' })
   assert.equal(r.ok, true)
   const cat = r.data.categories.find((x) => x.category === 'Stats Template')
@@ -1415,7 +1471,7 @@ test('27: 平台状态不创造技术正样本，已有技术确认变为 submit
   assert.equal(dup.ok, true, dup.error?.message)
   assert.equal(bus._internal.db().prepare('SELECT confidence FROM findings WHERE id=?').get(ids[0]).confidence, 'confirmed')
   const r = await seedCandidate(bus, { title: 'Stats technical truth', host: 'negative.example.com', source: 'truth-fixture' })
-  await bus.dispatch('vuln', 'reject', { finding_id: r.data.id, verdict: 'false_positive', reason: '本次实验有可靠反证，确认不是漏洞' }, { actor: 'model' })
+  assert.equal((await reviewedReject(bus, { finding_id: r.data.id, verdict: 'false_positive', reason: '本次实验有可靠反证，确认不是漏洞' })).ok, true)
   const stats = await bus.dispatch('vuln', 'noise_stats', { min_total: 1 }, { actor: 'dashboard' })
   const c = stats.data.categories.find(x => x.source === 'truth-fixture')
   assert.equal(c.total, 6)

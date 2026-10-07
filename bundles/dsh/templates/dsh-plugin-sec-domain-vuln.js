@@ -252,14 +252,18 @@ export const VULN_MANIFEST = {
         reason: str({ minLength: 10 }),
         dup_of: { type: ['integer', 'null'] },
         note: str({ default: '' }),
+        evidence: str({ default: '' }),
+        review: schema({
+          basis: str({ minLength: 20 }), expected_behavior: str({ minLength: 10 }),
+          observed_behavior: str({ minLength: 10 }), controls: str({ minLength: 20 }),
+        }, ['basis', 'expected_behavior', 'observed_behavior', 'controls']),
       }, ['finding_id', 'verdict', 'reason']),
-      idempotent: 'auto',
-      idempotent_fields: ['finding_id', 'verdict', 'reason'],
+      idempotent: 'none',
       events: ['vuln.signal.rejected'],
       event_limit: 1,
-      invariants: ['findingExists', 'dupTargetValid'],
+      invariants: ['findingExists', 'dupTargetValid', 'rejectionEvidenceGate'],
       timeout_ms: 60000,
-      agent_note: '判定 false_positive / dup / ignored。reason ≥10 字可追溯；dup 必须指回被重复的 finding（dup_of，可先用 vuln_dedup_check 查）。被拒候选自动出池；关联 FGS 节点自动 deprecated。误报判定会回流活评测集用于校准同类判定。',
+      agent_note: 'false_positive须引用受控执行的rejected capsule，重新核验原件/目标/时效；或dashboard带operator、evidence及review反证审校（依据、预期/实际行为、有效对照）。缺证据/身份阻塞/基础设施失败不得否定，使用vuln_note保留缺证与重开条件。dup须dup_of，ignored仅为处理状态；reason≥10字，重复终态请求不重复判定。',
       deprecated: false,
     },
     vuln_oracle_capsule: {
@@ -843,6 +847,7 @@ function makeHandlers(opts) {
     },
     oracleCapsuleGate: async (args, repo, ctx) => {
       const row = repo.getFinding(args.finding_id)
+      const rejecting = args.verdict === 'false_positive'
       if (args.review) {
         if (ctx.actor !== 'dashboard' || !String(ctx.operator || '').trim()) return { code: 'E_VULN_REVIEW_REQUIRED', message: '人工独立审校必须由有 operator 的 dashboard 通道提交', retryable: false }
         return null
@@ -854,15 +859,23 @@ function makeHandlers(opts) {
       const r = await queryRef?.('exec', 'authz_decision', { decision_id: capsule.decision_id }, { actor: 'script' })
       if (!r?.ok || crypto.createHash('sha256').update(JSON.stringify(r.data)).digest('hex') !== capsule.decision_digest) return { code: 'E_VULN_EVIDENCE_TAMPERED', message: '判定或执行证据失效，不能确认', hint: r?.error?.message || 'exec 判定服务不可用', retryable: false }
       const d = r.data
-      if (d.verdict !== 'verified' || capsule.verdict !== d.verdict) return { code: 'E_VULN_ORACLE_NOT_VERIFIED', message: '可信判定非 verified', retryable: false }
+      const expectedVerdict = rejecting ? 'rejected' : 'verified'
+      if (d.verdict !== expectedVerdict || capsule.verdict !== d.verdict) return {
+        code: rejecting ? 'E_VULN_ORACLE_NOT_REJECTED' : 'E_VULN_ORACLE_NOT_VERIFIED',
+        message: `可信判定非 ${expectedVerdict}，不能作本次技术结论`, retryable: false,
+      }
       if (d.finding_id !== row.id || capsule.finding_id !== row.id || d.program_id !== row.program_id || d.target.url !== row.url
         || normalizeHost(d.target.host) !== normalizeHost(row.host) || d.target.vuln_class !== row.vuln_type
         || JSON.stringify(capsule.target) !== JSON.stringify(d.target)
         || capsule.oracle !== d.oracle || JSON.stringify(capsule.rule_input) !== JSON.stringify({ request_id: d.request_id, identities: d.identities, objects: d.objects })
         || JSON.stringify(capsule.env) !== JSON.stringify({ profile_digest: d.profile_digest, proxy_digest: d.proxy_digest, oracle_version: d.oracle_version })
         || JSON.stringify(capsule.result) !== JSON.stringify({ rationale: d.rationale, run_ids: d.run_ids })) return { code: 'E_VULN_ORACLE_TARGET_MISMATCH', message: '判定与 finding 的项目、目标、类型或请求关联不一致', retryable: false }
-      if (!String(row.reproduction_steps || '').trim() || !String(row.impact || '').trim()) return { code: 'E_VULN_INCOMPLETE', message: '确认需要可复现步骤和具体影响', retryable: false }
+      if (!rejecting && (!String(row.reproduction_steps || '').trim() || !String(row.impact || '').trim())) return { code: 'E_VULN_INCOMPLETE', message: '确认需要可复现步骤和具体影响', retryable: false }
       return null
+    },
+    rejectionEvidenceGate: async (args, repo, ctx) => {
+      if (args.verdict !== 'false_positive') return null
+      return await invariants.evidenceExists(args, repo, ctx) || await invariants.oracleCapsuleGate(args, repo, ctx)
     },
     // L1（INV-10）：vuln_evidence_attach 的证据必须是 exec 已发布清单——清单存在、digest 自洽、
     // 逐文件 sha256 与 results/<run_id>/ 实况一致；且 Program 归属不跨项目（双方均有归属时须一致）。
@@ -1129,19 +1142,26 @@ function makeHandlers(opts) {
       if (args.verdict === 'false_positive' || (args.verdict === 'dup' && row.confidence !== 'confirmed')) set.confidence = args.verdict
       const changed = repo.transitionFinding(args.finding_id, ['new', 'confirmed', 'submitted'], set)
       if (!changed.changed) throwErr('E_STATE', `finding #${args.finding_id} 状态 ${row.status} 不可 reject`, '已终态不可再流转', false)
+      let technicalVerdictId = null
       if (args.verdict === 'false_positive') {
-        const evidence = JSON.stringify({ reason: args.reason, note: args.note || null })
-        repo.recordTechnicalVerdict({
-          finding_id: row.id, verdict: 'false_positive', basis: 'rejection',
-          evidence_ref: null, evidence_digest: crypto.createHash('sha256').update(evidence).digest('hex'),
+        const evidence = JSON.stringify({ reason: args.reason, note: args.note || null, evidence: args.evidence,
+          review: args.review || null, capsule: args.review ? null : readCapsule(dataDir, refPrefix(args.evidence).slice(8)) })
+        technicalVerdictId = repo.recordTechnicalVerdict({
+          finding_id: row.id, verdict: 'false_positive', basis: args.review ? 'independent_review' : 'controlled_oracle',
+          evidence_ref: refPrefix(args.evidence), evidence_digest: crypto.createHash('sha256').update(evidence).digest('hex'),
           evidence_json: evidence, operator: ctx.operator || null, created_at: Date.now(),
         })
       }
+      repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} reject(${args.verdict}): ${args.reason}${args.evidence ? `; evidence: ${args.evidence}` : ''}${args.review ? `; reviewed by ${ctx.operator}: ${args.review.basis}` : ''}`)
       if (args.note) repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} reject(${args.verdict}): ${args.note}`)
       if (row.noise === 0) repo.markSyncPending?.(args.finding_id)
       return {
         data: { id: args.finding_id, status: args.verdict, noise: row.noise === 1, rejected: true },
-        events: [{ name: 'vuln.signal.rejected', payload: { finding_id: args.finding_id, verdict: args.verdict, from: { status: row.status, noise: row.noise }, reason_head: String(args.reason || '').slice(0, 60), dup_of: args.dup_of || null, fgs_node_id: row.fgs_node_id || null, task_id: row.task_id ?? null, session_id: row.session_id ?? null, source: row.source ?? null, title: String(row.title || '').slice(0, 80) } }],
+        events: [{ name: 'vuln.signal.rejected', payload: { finding_id: args.finding_id, verdict: args.verdict,
+          technical_verdict_id: technicalVerdictId, program_id: row.program_id || null,
+          ...(technicalVerdictId ? { evidence_ref: refPrefix(args.evidence),
+            verification_basis: args.review ? 'independent_review' : 'controlled_oracle' } : {}),
+          from: { status: row.status, noise: row.noise }, reason_head: String(args.reason || '').slice(0, 60), dup_of: args.dup_of || null, fgs_node_id: row.fgs_node_id || null, task_id: row.task_id ?? null, session_id: row.session_id ?? null, source: row.source ?? null, title: String(row.title || '').slice(0, 80) } }],
         before: { status: row.status, noise: row.noise, confidence: row.confidence }, after: { status: args.verdict, noise: row.noise },
       }
     },

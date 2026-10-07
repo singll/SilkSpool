@@ -806,11 +806,13 @@ export async function handleDashboardRpc(endpoint, payload) {
       // new 是回退，语义动词层无此流转 → 拒绝。
       const ctxBase = { actor: 'dashboard', operator: p.operator ? String(p.operator) : null, session_id: null }
       const note = String(p.note || '')
+      const technicalEvidence = { evidence: String(p.evidence || ''), ...(p.review !== undefined ? { review: p.review } : {}) }
       let r
       if (status === 'confirmed') {
-        r = await busDispatch('vuln', 'confirm', { finding_id: id, evidence: String(p.evidence || ''), note }, ctxBase)
+        r = await busDispatch('vuln', 'confirm', { finding_id: id, ...technicalEvidence, note }, ctxBase)
       } else if (status === 'false_positive' || status === 'ignored' || status === 'dup') {
-        r = await busDispatch('vuln', 'reject', { finding_id: id, verdict: status, reason: note, dup_of: p.dup_of ?? null }, ctxBase)
+        r = await busDispatch('vuln', 'reject', { finding_id: id, verdict: status, reason: note, dup_of: p.dup_of ?? null,
+          ...(status === 'false_positive' ? technicalEvidence : {}) }, ctxBase)
       } else if (status === 'submitted') {
         r = await busDispatch('vuln', 'submit', { finding_id: id, note, vendor_status: String(p.vendor_status || ''), bounty: p.bounty ?? null }, ctxBase)
       } else if (status === 'accepted') {

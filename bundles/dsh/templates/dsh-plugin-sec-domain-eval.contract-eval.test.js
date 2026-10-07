@@ -405,7 +405,16 @@ test('27 E13/L05: unreviewed rejection and legacy confirmation cannot create eva
   assert.equal(candidate.ok, true, candidate.error?.message)
   const rejected = await env.bus.dispatch('vuln', 'reject', { finding_id: candidate.data.id,
     verdict: 'false_positive', reason: '仅有模型文字说明，缺少受控执行或独立技术反证' }, { actor: 'model' })
-  assert.equal(rejected.ok, true)
+  assert.equal(rejected.ok, false)
+  assert.equal(rejected.error.code, 'E_EVIDENCE_REQUIRED')
+  // Historical reason-only receipts/events remain untrusted after the write gate is tightened.
+  const evidence = JSON.stringify({ reason: '仅有模型文字说明，缺少受控执行或独立技术反证' })
+  const receipt = env.bus._internal.db().prepare(`INSERT INTO vuln_technical_verdicts
+    (finding_id,verdict,basis,evidence_json,evidence_digest,created_at) VALUES (?,'false_positive','rejection',?,?,?)`)
+    .run(candidate.data.id, evidence, crypto.createHash('sha256').update(evidence).digest('hex'), Date.now())
+  env.bus.events.publish({ id: 'legacy-unreviewed-rejection', domain: 'vuln', name: 'vuln.signal.rejected',
+    actor: 'model', ts: Date.now(), payload: { finding_id: candidate.data.id, program_id: 'test-src',
+      verdict: 'false_positive', technical_verdict_id: Number(receipt.lastInsertRowid) } })
   await env.bus._internal.dispatcherTick()
   assert.equal(readLive(env.evalDir).length, 0, 'reason-only rejection is not a technical training label')
   env.bus.events.publish({ id: 'legacy-unverified-confirmation', domain: 'vuln', name: 'vuln.signal.confirmed',
@@ -1199,7 +1208,12 @@ test('27 L22: fixed candidate cohort survives promotion and vendor feedback, dir
   assert.deepEqual((await metrics()).new_vuln_types, ['idor'], 'confirmed arbitrary type cannot create taxonomy novelty')
   const rejected = await env.bus.dispatch('vuln', 'reject', {
     finding_id: candidate.data.id, verdict: 'false_positive', reason: '独立反证已证明原判定不成立，需要撤销技术阳性',
-  }, { actor: 'dashboard' })
+    evidence: 'run_metric_evidence',
+    review: { basis: '独立核验原始请求与响应，正常和反例对照反驳了原技术阳性',
+      expected_behavior: '私有对象仅对授权的归属身份可见',
+      observed_behavior: '正常身份读取成功而越权身份被拒绝',
+      controls: '双身份仍有效且对象归属明确，多次正常与反例对照结果稳定一致' },
+  }, { actor: 'dashboard', operator: 'metric-reviewer' })
   assert.equal(rejected.ok, true, rejected.error?.message)
   assert.equal((await metrics()).technical_verified, 1)
   assert.equal((await metrics()).candidates_total, 1)

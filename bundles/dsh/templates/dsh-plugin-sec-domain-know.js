@@ -3198,11 +3198,11 @@ function makeHandlers(opts) {
       if (name === 'vuln.signal.confirmed') { outcome = 'confirmed'; reason = 'vuln_confirm' }
       else { reason = `vuln_reject_${p.verdict || 'unknown'}` }
       let technicalReceipt = null
-      if (name === 'vuln.signal.confirmed' && p.technical_verdict_id) {
+      if ((name === 'vuln.signal.confirmed' || p.verdict === 'false_positive') && p.technical_verdict_id) {
         const receipt = await queryRef?.('vuln', 'technical_verdict', { id: p.technical_verdict_id }, { actor: 'reactor' })
         if (!receipt?.ok) return { ok: false, error: receipt?.error || { code: 'E_BACKEND_UNAVAILABLE', message: 'technical receipt unavailable' } }
         technicalReceipt = receipt.data
-        if (technicalReceipt.finding_id !== p.finding_id || technicalReceipt.verdict !== 'confirmed'
+        if (technicalReceipt.finding_id !== p.finding_id || technicalReceipt.verdict !== (name === 'vuln.signal.confirmed' ? 'confirmed' : 'false_positive')
           || technicalReceipt.program_id !== p.program_id) return { ok: false, error: { code: 'E_EXEC_EVIDENCE_UNTRUSTED', message: 'technical receipt association mismatch' } }
       }
       if (name === 'vuln.signal.confirmed' && !technicalReceipt) {

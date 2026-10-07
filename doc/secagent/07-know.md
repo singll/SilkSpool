@@ -1225,3 +1225,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-06来源撤回通知（本地待发布）：release_get供reactor/system读取真实发布账本。来源更正事件携带withdrawn_releases与source_event_id；任务域需核对撤回原因后创建待复核任务，通知失败不撤销已生效的来源失效门禁。
 
 2026-10-07发布回填：CLI/HTTP终态、签封Oracle学习/同decision归并、来源核验蒸馏、来源更正撤发布与采用失效、真实版本ledger采用及撤回复核通知已上线。新增采用来源三列，旧记录保持。缺方法/未知判定不制造知识收益；反证入口、历史污染及真实计划成本归因仍待办。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。
+
+2026-10-07 E13反证入口增量（本地751/751通过，未发布）：vuln.signal.rejected 的 false_positive 与确认同样读取正式技术回执，核对Finding/Program/判定；controlled_oracle归并到同decision的Oracle经历，乱序和清缓存重放不多建valid_clean。人工反证仍为inconclusive/human-reviewed，不能冒充完整机器阴性；反证更正旧阳性经历及来源撤回接线尚待后续实现。
