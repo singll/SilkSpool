@@ -910,14 +910,14 @@ export const repositoryV1 = {
 
 ## 十一、27 号首批：观察保留与技术误报统计（2026-09-30，本地实现）
 
-本批源代码契约如 C1/C2；2026-10-01已部署（27号§15.3）。`vuln_noise_stats`、新候选抑制与 `candidates_sweep` 共用技术样本口径：
+观察保留增量2026-10-01已部署（27号§15.3）；以下噪声统计口径于2026-10-07进一步收紧（本地754/754通过，待发布）。`vuln_noise_stats`、新候选抑制与 `candidates_sweep` 共用正式回执样本口径：
 
-- `technical_confirmed` = `confidence=confirmed AND status!=false_positive` 的记录数，保存已有技术确认标记；其后转 submitted/accepted/dup/ignored 不因运营状态变化丢失该标记。单独设置 accepted 不会创造技术正样本。
+- `technical_confirmed` / `technical_false_positive` 只取每条Finding最新正式回执，核验保存证据摘要、依据和审校/签封结构；不按当前status/confidence推断。转submitted/accepted/dup/ignored保留正式技术结论。最新回执损坏或仅旧rejection依据计未知，不回退到旧阳性。
 - `vuln_reject(dup)` 保留既有 confirmed 置信标记；未确认的候选仍按 dup 处理，false_positive 有反证时可撤销确认。
-- `sample = technical_confirmed + false_positive`；`rejected = false_positive`；`reject_rate = rejected / sample`。待验证、仅 ignored、仅 dup 不作为技术阴性或样本分母；最小样本阈值按 sample 判断。白名单同时作用于统计返回和实际抑制。
-- `noise_stats.min_total` 在类别合并后筛选，避免每个标题不足阈值导致整个类别消失。`total/new_count/ignored/dup/submitted/accepted` 保留为流程统计。
+- `sample = technical_confirmed + technical_false_positive`；`rejected = technical_false_positive`；`technical_unknown = total - sample`；`reject_rate = rejected / sample`。待验证、仅 ignored、仅 dup 不作为技术阴性或样本分母；最小样本阈值按 sample 判断。白名单同时作用于统计返回和实际抑制。
+- `noise_stats.min_total` 在类别合并后筛选，避免每个标题不足阈值导致整个类别消失。`total/new_count/confirmed/false_positive/ignored/dup/submitted/accepted` 保留为流程统计；false_positive处理行数可能大于技术反证样本数。缓存用data_version/total_changes检测跨连接及本地变更，事务内不复用或保存，避免回滚后残留未提交结果。
 
-这是修复标签污染，**不等于已经有可信独立样本**：当前 technical_confirmed 仍来自现有 confidence 标记；充分反证校验、样本根因去重、检测器版本分层、未知补证重开、TTL 与配额单独状态均待 WP02/05/06。不得将本统计称为真实漏洞数或真实误报率的最终核算。
+此投影校验正式判定时保存的证据快照；查询时不重跑HTTP，也不逐文件重验当前外部原件。后续原件失效/技术更正、独立样本根因去重、检测器版本与适用条件分层、探索抽样、未知补证重开、TTL与配额单独状态仍待WP02/05/06。不得把Finding级样本数当作独立实验数或E14全项完成。
 
 新增兼容性回归覆盖：异 URL/异项目保留、外部 ID 不跨入口合并、重复观察追加证据、旧弱指纹精确复用/升级且旧证据保留、ignored/dup 不触发技术抑制、已有技术确认不受平台状态变化影响。联合测试结果见 [27 号 §10.3](27-business-quality-and-capacity-plan-2026-09-30.md#103-首批实现与验证2026-09-30)。
 

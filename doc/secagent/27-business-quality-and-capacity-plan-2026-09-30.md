@@ -1675,6 +1675,14 @@ eval固定首次入池cohort，候选晋升后分母不变、直接信号不混�
 
 初全域751/751通过（128秒）；收尾又复现安全中心findingUpdate丢弃review（反证还丢evidence），已转发显式审校参数并由领域门禁校验，RPC8/8通过，最终固定源码全域751/751通过（127.03秒，fingerprint71523dfec5042c60a4d0d67350bd69f9314792368eae6b7add78eb1742593d59）。证据out/secagent-audits/session-20261006/e13-*。本批未发布，生产仍557ffd8正常未冻结。noise仍按旧状态/confidence统计；候选无vuln_type而IDOR执行要求类型、反证更正旧阳性episode/来源撤回、历史真值治理及版本/条件分层抑制继续待办，不据此关闭E13/E14或WP07。
 
+### 15.95 E14噪声统计排除旧弱标签（2026-10-07，本地验收通过，待发布）
+
+真实红例：三个旧false_positive处理行（其中一个仅basis=rejection理由回执）及一个旧confidence=confirmed行，仍可使新候选自动ignored。现sourceTitleStats/sourceTitleAll读取每条Finding最新正式回执，检查保存证据摘要、签封/审校结构与依据；旧弱标签、最新损坏回执计未知，不回退旧阳性。新增technical_false_positive/technical_unknown，误报率分母改为正式阳性+正式反证；原false_positive保留处理行数。登记、noise_stats、sweep共用该口径。
+
+初vuln73/73通过。另真实复现事务内统计缓存在ROLLBACK后仍残留，现事务内不复用/保存统计缓存；data_version与total_changes检测其它连接及本地修复。补同连接回滚、跨连接原件快照修复、Oracle五场景统计对照，联合156/156与最终固定源码全域754/754通过（87.88秒，fingerprint77ee0e9468f63b10c02f2f38071dbcdc03526077b902f1692c2b0b679a494236）。证据session-20261006/e14-*。
+
+只验证正式回执内保存的快照，不在聚合查询逐文件重验外部HTTP原件或重发请求。Finding级计数仍未按独立实验/根因去重、检测器版本/适用条件分层；TTL/改版重开、探索抽样与反证更正传播仍待后续，不能关闭E14/WP05。生产仍557ffd8；E13入口6aaca8f已推送但未部署，本批也未发布。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

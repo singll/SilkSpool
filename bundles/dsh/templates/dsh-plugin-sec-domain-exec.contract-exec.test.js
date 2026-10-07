@@ -827,6 +827,12 @@ for (const [mode, outcome] of [['vulnerable', 'confirmed'], ['patched', 'valid_c
     if (['vulnerable', 'patched'].includes(mode)) assert.equal(
       bus._internal.db().prepare('SELECT COUNT(*) n FROM learning_episodes WHERE outcome=?').get(outcome).n, 1,
       'oracle decision and subsequent finding verdict are one technical attempt')
+    const noiseStats = await bus.dispatch('vuln', 'noise_stats', { min_total: 1 }, { actor: 'dashboard' })
+    assert.equal(noiseStats.ok, true, noiseStats.error?.message)
+    const category = noiseStats.data.categories.find(row => row.source === 'agent')
+    assert.equal(category.technical_confirmed, mode === 'vulnerable' ? 1 : 0)
+    assert.equal(category.technical_false_positive, mode === 'patched' ? 1 : 0)
+    assert.equal(category.technical_unknown, ['vulnerable', 'patched'].includes(mode) ? 0 : 1)
     if (['vulnerable', 'patched'].includes(mode)) {
       const revisions = bus._internal.db().prepare("SELECT * FROM knowledge_revisions WHERE artifact_id LIKE 'distill-%'").all()
       assert.equal(revisions.length, 1, 'signed positive or clean creates a governed method candidate')

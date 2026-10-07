@@ -13,6 +13,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import * as crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 export const name = '@silksec/sec-backend-vuln-sqlite'
@@ -86,6 +87,34 @@ const SORT_COLS = {
 
 const _cache = new WeakMap()
 
+// The latest receipt is a historical technical decision, independent of handling
+// status. Weak legacy reasons and damaged snapshots contribute no technical label.
+function receiptVerdict(verdict, basis, json, digest, operator, findingId) {
+  if (!['confirmed', 'false_positive'].includes(verdict) || !json || !digest) return null
+  if (crypto.createHash('sha256').update(json).digest('hex') !== digest) return null
+  try {
+    const evidence = JSON.parse(json)
+    if (!evidence.evidence) return null
+    if (basis === 'independent_review') {
+      if (!String(operator || '').trim()) return null
+      const fields = verdict === 'confirmed'
+        ? { basis: 20, reproduction_steps: 10, impact: 10 }
+        : { basis: 20, expected_behavior: 10, observed_behavior: 10, controls: 20 }
+      return Object.entries(fields).every(([key, min]) => typeof evidence.review?.[key] === 'string'
+        && evidence.review[key].length >= min) ? verdict : null
+    }
+    const capsule = evidence.capsule
+    if (basis !== 'controlled_oracle' || capsule?.capsule_version !== 2 || !capsule.decision_id
+      || capsule.finding_id !== Number(findingId) || !/^[a-f0-9]{64}$/.test(capsule.decision_digest || '')
+      || capsule.verdict !== (verdict === 'confirmed' ? 'verified' : 'rejected')) return null
+    return verdict
+  } catch { return null }
+}
+
+const RECEIPT_VERDICT_SQL = 'vuln_receipt_verdict(v.verdict,v.basis,v.evidence_json,v.evidence_digest,v.operator,f.id)'
+const LATEST_RECEIPT_JOIN = `LEFT JOIN vuln_technical_verdicts v
+  ON v.id=(SELECT id FROM vuln_technical_verdicts WHERE finding_id=f.id ORDER BY id DESC LIMIT 1)`
+
 function createRepo(db) {
   // 43 号补丁：source → title 聚合的 TTL 缓存（每连接一份）。
   const sourceStatsCache = new Map()
@@ -106,6 +135,7 @@ function createRepo(db) {
     evidence_digest TEXT, evidence_json TEXT NOT NULL, operator TEXT, created_at INTEGER NOT NULL
   )`)
   db.exec('CREATE INDEX IF NOT EXISTS idx_vuln_verdict_finding ON vuln_technical_verdicts(finding_id, id DESC)')
+  db.function('vuln_receipt_verdict', { deterministic: true }, receiptVerdict)
 
   const stmts = {
     getFinding: db.prepare('SELECT * FROM findings WHERE id = ?'),
@@ -341,23 +371,30 @@ function createRepo(db) {
     sourceTitleStats(source, { ttlMs = 60000 } = {}) {
       const key = String(source || '')
       const now = Date.now()
+      // data_version detects other connections; total_changes detects local writes.
+      // Both conservatively invalidate cached projections, including receipt repairs.
+      const revision = `${db.prepare('PRAGMA data_version').get().data_version}:${db.prepare('SELECT total_changes() AS n').get().n}`
+      const cacheable = db.isTransaction === false
       const cached = sourceStatsCache.get(key)
-      if (cached && now - cached.at < Number(ttlMs)) return cached.rows
+      if (cacheable && cached && cached.revision === revision && now - cached.at < Number(ttlMs)) return cached.rows
       const rows = db.prepare(`
         SELECT title,
           COUNT(*) AS total,
           SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new_count,
           SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
-          SUM(CASE WHEN confidence = 'confirmed' AND status != 'false_positive' THEN 1 ELSE 0 END) AS technical_confirmed,
+          SUM(CASE WHEN ${RECEIPT_VERDICT_SQL} = 'confirmed' THEN 1 ELSE 0 END) AS technical_confirmed,
+          SUM(CASE WHEN ${RECEIPT_VERDICT_SQL} = 'false_positive' THEN 1 ELSE 0 END) AS technical_false_positive,
           SUM(CASE WHEN status = 'false_positive' THEN 1 ELSE 0 END) AS false_positive,
           SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored,
           SUM(CASE WHEN status = 'dup' THEN 1 ELSE 0 END) AS dup,
           SUM(CASE WHEN status = 'submitted' THEN 1 ELSE 0 END) AS submitted,
           SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS accepted,
           SUM(CASE WHEN noise = 1 THEN 1 ELSE 0 END) AS noise_count
-        FROM findings WHERE source = ? GROUP BY title LIMIT 5000
+        FROM findings f ${LATEST_RECEIPT_JOIN} WHERE source = ? GROUP BY title LIMIT 5000
       `).all(key).map((r) => ({ ...r }))
-      sourceStatsCache.set(key, { at: now, rows })
+      // A transaction may roll back without changing total_changes again.
+      if (cacheable) sourceStatsCache.set(key, { at: now, revision, rows })
+      else sourceStatsCache.delete(key)
       return rows
     },
     invalidateSourceStats(source) {
@@ -375,14 +412,15 @@ function createRepo(db) {
           COUNT(*) AS total,
           SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new_count,
           SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed,
-          SUM(CASE WHEN confidence = 'confirmed' AND status != 'false_positive' THEN 1 ELSE 0 END) AS technical_confirmed,
+          SUM(CASE WHEN ${RECEIPT_VERDICT_SQL} = 'confirmed' THEN 1 ELSE 0 END) AS technical_confirmed,
+          SUM(CASE WHEN ${RECEIPT_VERDICT_SQL} = 'false_positive' THEN 1 ELSE 0 END) AS technical_false_positive,
           SUM(CASE WHEN status = 'false_positive' THEN 1 ELSE 0 END) AS false_positive,
           SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored,
           SUM(CASE WHEN status = 'dup' THEN 1 ELSE 0 END) AS dup,
           SUM(CASE WHEN status = 'submitted' THEN 1 ELSE 0 END) AS submitted,
           SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) AS accepted,
           SUM(CASE WHEN noise = 1 THEN 1 ELSE 0 END) AS noise_count
-        FROM findings ${where}
+        FROM findings f ${LATEST_RECEIPT_JOIN} ${where}
         GROUP BY source, title HAVING COUNT(*) >= ? ORDER BY COUNT(*) DESC LIMIT ?`
       return db.prepare(sql).all(...args, Math.max(1, Number(minTotal) || 1), Math.min(Number(limit) || 5000, 20000)).map((r) => ({ ...r }))
     },

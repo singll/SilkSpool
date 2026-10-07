@@ -100,8 +100,8 @@ export function noiseCategoryDecision(repo, source, category, { ttlMs = 60000 } 
   let sample = 0; let rejected = 0
   for (const row of repo.sourceTitleStats(source, { ttlMs })) {
     if (findingCategory(source, row.title) !== category) continue
-    sample += (Number(row.technical_confirmed) || 0) + (Number(row.false_positive) || 0)
-    rejected += Number(row.false_positive) || 0
+    sample += (Number(row.technical_confirmed) || 0) + (Number(row.technical_false_positive) || 0)
+    rejected += Number(row.technical_false_positive) || 0
   }
   const rate = sample > 0 ? rejected / sample : 0
   const cfg = noiseEnv()
@@ -339,7 +339,7 @@ export const VULN_MANIFEST = {
       event_limit: 0,
       invariants: [],
       timeout_ms: 60000,
-      agent_note: '噪声类别学习数据面（只读）：按 source×category 聚合 total/confirmed/false_positive/ignored/dup 与技术误报率（分母=技术已确认+false_positive；忽略/重复/待验证不作为反证），并返回自动抑制阈值口径（rate/min）、白名单与来源日配额。用于复核"哪类问题一直全是噪声"。',
+      agent_note: '噪声类别学习数据面（只读）：按 source×category 聚合处理状态及正式回执技术计数。误报率分母=technical_confirmed+technical_false_positive；旧弱标签、损坏回执、忽略/重复/待验证不作为反证。返回抑制阈值、白名单与来源日配额。',
       deprecated: false,
     },
     // 43 号补丁（P0/B3）：存量候选确定性批量处置（零 LLM）
@@ -1223,15 +1223,15 @@ function makeHandlers(opts) {
         const source = String(row.source || '')
         const category = findingCategory(source, row.title)
         const key = `${source}|${category}`
-        const cur = agg.get(key) || { source, category, total: 0, new_count: 0, confirmed: 0, technical_confirmed: 0, false_positive: 0, ignored: 0, dup: 0, submitted: 0, accepted: 0, noise_count: 0 }
-        for (const field of ['total', 'new_count', 'confirmed', 'technical_confirmed', 'false_positive', 'ignored', 'dup', 'submitted', 'accepted', 'noise_count']) cur[field] += Number(row[field]) || 0
+        const cur = agg.get(key) || { source, category, total: 0, new_count: 0, confirmed: 0, technical_confirmed: 0, technical_false_positive: 0, false_positive: 0, ignored: 0, dup: 0, submitted: 0, accepted: 0, noise_count: 0 }
+        for (const field of ['total', 'new_count', 'confirmed', 'technical_confirmed', 'technical_false_positive', 'false_positive', 'ignored', 'dup', 'submitted', 'accepted', 'noise_count']) cur[field] += Number(row[field]) || 0
         agg.set(key, cur)
       }
       const categories = [...agg.values()].filter((c) => c.total >= minTotal).map((c) => {
-        const rejected = c.false_positive
+        const rejected = c.technical_false_positive
         const sample = c.technical_confirmed + rejected
         const rate = sample > 0 ? rejected / sample : 0
-        return { ...c, sample, rejected, reject_rate: Number(rate.toFixed(4)),
+        return { ...c, sample, rejected, technical_unknown: c.total - sample, reject_rate: Number(rate.toFixed(4)),
           suppressed: !noiseWhitelisted(c.source, c.category) && sample >= cfg.suppressMin && rate >= cfg.suppressRate,
           whitelisted: noiseWhitelisted(c.source, c.category) }
       }).sort((a, b) => b.total - a.total || a.source.localeCompare(b.source)).slice(0, limit)

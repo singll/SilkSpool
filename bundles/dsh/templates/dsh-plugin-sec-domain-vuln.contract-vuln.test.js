@@ -12,10 +12,12 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import * as http from 'node:http'
 import * as crypto from 'node:crypto'
+import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildVulnDomain, VULN_MANIFEST } from '../index.js'
 import { buildExecDomain } from '../../sec-domain-exec/index.js'
+import { createVulnSqliteBackend } from '../../sec-backend-vuln-sqlite/index.js'
 
 // ---------------------------------------------------------------------------
 // 测试装配（临时目录 + 临时库；vuln 域注册进独立总线实例）
@@ -1464,7 +1466,8 @@ test('27: 平台状态不创造技术正样本，已有技术确认变为 submit
   const ids = []
   for (const [i, status] of ['confirmed', 'submitted', 'accepted', 'dup', 'accepted'].entries()) {
     const r = await seedCandidate(bus, { title: 'Stats technical truth', host: `t${i}.example.com`, source: 'truth-fixture' })
-    bus._internal.db().prepare('UPDATE findings SET status=?,confidence=? WHERE id=?').run(status, i < 4 ? 'confirmed' : 'tentative', r.data.id)
+    if (i < 4) assert.equal((await reviewedConfirm(bus, { finding_id: r.data.id, evidence: 'run_test_20260906_000000' })).ok, true)
+    bus._internal.db().prepare('UPDATE findings SET status=? WHERE id=?').run(status, r.data.id)
     ids.push(r.data.id)
   }
   const dup = await bus.dispatch('vuln', 'reject', { finding_id: ids[0], verdict: 'dup', dup_of: ids[1], reason: '重复观察保留原有技术确认，不作为方法失败' }, { actor: 'model' })
@@ -1478,4 +1481,81 @@ test('27: 平台状态不创造技术正样本，已有技术确认变为 submit
   assert.equal(c.technical_confirmed, 4)
   assert.equal(c.sample, 5)
   assert.equal(c.reject_rate, 0.2)
+})
+
+test('27 E14: legacy status and reason-only receipts cannot suppress new candidates or inflate technical samples', async () => {
+  await withEnv({ SEC_VULN_NOISE_SUPPRESS_MIN: '2', SEC_VULN_NOISE_SUPPRESS_RATE: '0.8' }, async () => {
+    const { bus } = makeEnv()
+    const db = bus._internal.db()
+    for (let i = 0; i < 4; i++) {
+      const candidate = await seedCandidate(bus, { title: 'Legacy authz observation', source: 'legacy-truth',
+        host: `legacy-${i}.example.com` })
+      db.prepare('UPDATE findings SET status=?,confidence=? WHERE id=?')
+        .run(i === 3 ? 'accepted' : 'false_positive', i === 3 ? 'confirmed' : 'false_positive', candidate.data.id)
+      if (i === 2) {
+        const evidence = JSON.stringify({ reason: '旧模型认为未发现漏洞但没有独立技术对照' })
+        db.prepare(`INSERT INTO vuln_technical_verdicts
+          (finding_id,verdict,basis,evidence_json,evidence_digest,created_at) VALUES (?,'false_positive','rejection',?,?,?)`)
+          .run(candidate.data.id, evidence, crypto.createHash('sha256').update(evidence).digest('hex'), Date.now())
+      }
+    }
+    const next = await seedCandidate(bus, { title: 'Legacy authz observation', source: 'legacy-truth', host: 'next.example.com' })
+    assert.equal(next.data.suppressed, false, 'old negative labels cannot suppress a new observation')
+    const stats = await bus.dispatch('vuln', 'noise_stats', { min_total: 1 }, { actor: 'dashboard' })
+    const category = stats.data.categories.find(row => row.source === 'legacy-truth')
+    assert.equal(category.false_positive, 3, 'historical handling counts remain visible')
+    assert.equal(category.technical_confirmed, 0)
+    assert.equal(category.technical_false_positive, 0)
+    assert.equal(category.sample, 0)
+    const sweep = await bus.dispatch('vuln', 'candidates_sweep', { dry_run: true }, { actor: 'dashboard' })
+    assert.equal(sweep.data.by_reason.category_noise, 0)
+    bus._internal.close()
+  })
+})
+
+test('27 E14: latest technical receipt replaces prior truth and damaged receipts never fall back to older positives', async () => {
+  const { bus } = makeEnv()
+  const candidate = await seedCandidate(bus, { title: 'Receipt integrity observation', source: 'receipt-truth' })
+  const id = candidate.data.id
+  assert.equal((await reviewedConfirm(bus, { finding_id: id, evidence: 'run_test_20260906_000000' })).ok, true)
+  const stats = async () => {
+    const result = await bus.dispatch('vuln', 'noise_stats', { min_total: 1 }, { actor: 'dashboard' })
+    assert.equal(result.ok, true, result.error?.message)
+    return result.data.categories.find(row => row.source === 'receipt-truth')
+  }
+  assert.equal((await stats()).technical_confirmed, 1)
+  assert.equal((await reviewedReject(bus, { finding_id: id, verdict: 'false_positive', reason: '新的独立对照反驳先前的对象归属解释' })).ok, true)
+  assert.equal((await stats()).technical_confirmed, 0)
+  assert.equal((await stats()).technical_false_positive, 1)
+  const db = bus._internal.db()
+  const receipt = db.prepare('SELECT * FROM vuln_technical_verdicts ORDER BY id DESC LIMIT 1').get()
+  db.prepare('UPDATE vuln_technical_verdicts SET evidence_json=? WHERE id=?').run('{}', receipt.id)
+  assert.equal((await stats()).sample, 0, 'damaged current truth is unknown, not an old positive')
+  db.prepare('UPDATE vuln_technical_verdicts SET evidence_json=? WHERE id=?').run(receipt.evidence_json, receipt.id)
+  assert.equal((await stats()).technical_false_positive, 1)
+  bus._internal.close()
+})
+
+test('27 E14: source cache observes local rollback and another connection repairing technical evidence', async () => {
+  const { bus, dir } = makeEnv()
+  const candidate = await seedCandidate(bus, { title: 'Cached truth observation', source: 'cache-truth' })
+  assert.equal((await reviewedReject(bus, { finding_id: candidate.data.id, verdict: 'false_positive',
+    reason: '原始观察经独立复核及完整有效对照确认为误报' })).ok, true)
+  const db = bus._internal.db()
+  const repo = createVulnSqliteBackend().factory(db)
+  const stats = () => repo.sourceTitleStats('cache-truth', { ttlMs: 60000 })[0]
+  assert.equal(stats().technical_false_positive, 1)
+  const receipt = db.prepare('SELECT * FROM vuln_technical_verdicts').get()
+  db.exec('BEGIN')
+  db.prepare("UPDATE vuln_technical_verdicts SET evidence_json='{}' WHERE id=?").run(receipt.id)
+  assert.equal(stats().technical_false_positive, 0)
+  db.exec('ROLLBACK')
+  assert.equal(stats().technical_false_positive, 1, 'rollback cannot leave an uncommitted cached verdict')
+  const other = new DatabaseSync(path.join(dir, 'asset-graph.db'))
+  try {
+    other.prepare("UPDATE vuln_technical_verdicts SET evidence_json='{}' WHERE id=?").run(receipt.id)
+    assert.equal(stats().technical_false_positive, 0, 'other connection invalidates the live cache')
+    other.prepare('UPDATE vuln_technical_verdicts SET evidence_json=? WHERE id=?').run(receipt.evidence_json, receipt.id)
+    assert.equal(stats().technical_false_positive, 1)
+  } finally { other.close(); bus._internal.close() }
 })
