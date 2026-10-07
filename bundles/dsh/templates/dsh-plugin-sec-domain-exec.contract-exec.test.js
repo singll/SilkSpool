@@ -903,6 +903,147 @@ test('27 E13: signed rejection rechecks target, bytes and freshness before an at
   assert.equal(seen.length, requestCount, 'all rejections only read existing execution evidence')
 })
 
+test('27 E13/L05: explicit independent counterevidence corrects the old attempt and invalidates its method source', async t => {
+  const { bus, dataDir, args, seen } = await authzFixture(t, 'vulnerable')
+  t.after(() => bus._internal.close())
+  bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) }))
+  await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })
+  const run = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model', session_id: 'original-attempt' })
+  assert.equal(run.ok, true, run.error?.message)
+  const capsule = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: run.data.decision_id }, { actor: 'model' })
+  assert.equal((await bus.dispatch('vuln', 'confirm', { finding_id: args.finding_id,
+    evidence: capsule.data.evidence_ref }, { actor: 'model' })).ok, true)
+  await bus._internal.dispatcherTick()
+  await bus._internal.dispatcherTick()
+  const db = bus._internal.db()
+  const original = { ...db.prepare("SELECT * FROM learning_episodes WHERE source_event_name='exec.oracle.decided'").get() }
+  const revision = { ...db.prepare('SELECT * FROM knowledge_revisions WHERE source_ref=?').get(original.episode_id) }
+  assert.ok(revision.revision_id)
+  for (const phase of ['begin', 'finish']) {
+    const assessed = await bus.dispatch('know', 'revision_assess', { revision_id: revision.revision_id, phase,
+      eval_run_id: 'correction-fixture-eval', candidate_digest: revision.content_digest,
+      ...(phase === 'finish' ? { verdict: 'eligible', report_ref: 'fixture-eval.json' } : {}),
+    }, { actor: 'reactor' })
+    assert.equal(assessed.ok, true, assessed.error?.message)
+  }
+  const published = await bus.dispatch('know', 'revision_publish', { revision_id: revision.revision_id,
+    content_digest: revision.content_digest, auth_ref: 'approval:correction-fixture', scope_type: 'program',
+    scope_id: 'test-src', reason: '本地受控夹具发布以验证来源更正完整撤回' }, { actor: 'approval' })
+  assert.equal(published.ok, true, published.error?.message)
+  const positive = db.prepare('SELECT * FROM vuln_technical_verdicts WHERE finding_id=?').get(args.finding_id)
+  const count = seen.length
+  const rejected = await bus.dispatch('vuln', 'reject', { finding_id: args.finding_id, verdict: 'false_positive',
+    reason: '独立复核发现原授权策略前提错误，该对象当时已授权给读取者',
+    evidence: capsule.data.evidence_ref, corrects_verdict_id: positive.id,
+    review: { basis: '核对原始策略记录与对象共享历史，证明原owner-only假设在实验当时不成立',
+      expected_behavior: '该对象对当时已有共享授权的读取者可见',
+      observed_behavior: '读取者按既有共享授权访问该对象内容',
+      controls: '独立核对实验时点授权策略及共享记录，区分当时授权与后来修复' },
+  }, { actor: 'dashboard', operator: 'independent-reviewer' })
+  assert.equal(rejected.ok, true, rejected.error?.message)
+  db.exec("CREATE TRIGGER correction_withdraw_failure BEFORE UPDATE OF status ON know_releases WHEN NEW.status='revoked' BEGIN SELECT RAISE(ABORT,'withdraw blocked'); END")
+  await bus._internal.dispatcherTick()
+  assert.equal(db.prepare("SELECT status FROM event_outbox WHERE event_id=?").get(rejected.event_ids[0]).status, 'pending')
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes WHERE supersedes=?').get(original.episode_id).n, 0)
+  assert.equal(db.prepare('SELECT status FROM know_releases WHERE release_id=?').get(published.data.release_id).status, 'active')
+  assert.equal(db.prepare('SELECT needs_revalidate FROM knowledge_revisions WHERE revision_id=?').get(revision.revision_id).needs_revalidate, 0)
+  db.exec('DROP TRIGGER correction_withdraw_failure')
+  db.prepare('UPDATE event_outbox SET next_retry_at=0 WHERE event_id=?').run(rejected.event_ids[0])
+  await bus._internal.dispatcherTick()
+  await bus._internal.dispatcherTick()
+  const correction = db.prepare('SELECT * FROM learning_episodes WHERE supersedes=?').get(original.episode_id)
+  assert.ok(correction, `explicit refutation must correct the old attempt: ${JSON.stringify(
+    db.prepare("SELECT name,status,last_error FROM event_outbox WHERE name='vuln.signal.rejected'").all())}`)
+  assert.equal(correction.outcome, 'inconclusive', 'invalid prior controls are not a clean negative experiment')
+  assert.equal(correction.session_id, original.session_id)
+  assert.equal(correction.request_count, original.request_count, 'actual execution cost remains attributable')
+  assert.equal(db.prepare('SELECT needs_revalidate FROM knowledge_revisions WHERE revision_id=?').get(revision.revision_id).needs_revalidate, 1)
+  assert.equal(db.prepare('SELECT status FROM know_releases WHERE release_id=?').get(published.data.release_id).status, 'revoked')
+  assert.deepEqual({ ...db.prepare('SELECT * FROM learning_episodes WHERE episode_id=?').get(original.episode_id) }, original)
+  assert.equal(db.prepare('SELECT content_json FROM knowledge_revisions WHERE revision_id=?').get(revision.revision_id).content_json, revision.content_json)
+  db.prepare('DELETE FROM idempotency').run()
+  const replay = await bus.dispatch('bus', 'replay', { since: 0, limit: 100 }, { actor: 'system' })
+  assert.deepEqual(replay.data.results.filter(row => row.ok === false), [])
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes WHERE supersedes=?').get(original.episode_id).n, 1)
+  assert.equal(seen.length, count)
+})
+
+test('27 E13/L05: a later patched target preserves the historical positive attempt without explicit correction', async t => {
+  const { bus, dataDir, args, setMode, seen } = await authzFixture(t, 'vulnerable')
+  t.after(() => bus._internal.close())
+  bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) }))
+  await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })
+  const positive = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
+  const capsule = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: positive.data.decision_id }, { actor: 'model' })
+  assert.equal((await bus.dispatch('vuln', 'confirm', { finding_id: args.finding_id,
+    evidence: capsule.data.evidence_ref }, { actor: 'model' })).ok, true)
+  await bus._internal.dispatcherTick()
+  await bus._internal.dispatcherTick()
+  setMode('patched')
+  const negative = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model' })
+  assert.equal(negative.data.verdict, 'rejected')
+  const negativeCapsule = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: negative.data.decision_id }, { actor: 'model' })
+  assert.equal((await bus.dispatch('vuln', 'reject', { finding_id: args.finding_id, verdict: 'false_positive',
+    reason: '目标现已修复，新的有效对照证明本轮无法越权读取',
+    evidence: negativeCapsule.data.evidence_ref }, { actor: 'model' })).ok, true)
+  await bus._internal.dispatcherTick()
+  await bus._internal.dispatcherTick()
+  const db = bus._internal.db()
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM learning_episodes WHERE source_event_name='exec.oracle.decided' AND outcome='confirmed'").get().n, 1)
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM learning_episodes WHERE source_event_name='exec.oracle.decided' AND outcome='valid_clean'").get().n, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes WHERE supersedes IS NOT NULL').get().n, 0)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM knowledge_revisions WHERE needs_revalidate=1').get().n, 0)
+  assert.equal(seen.length, 20)
+})
+
+test('27 E13/L05: correction waits for a delayed original episode and survives bus reconstruction', async t => {
+  const fixture = await authzFixture(t, 'vulnerable')
+  const { dataDir, dir, args, seen } = fixture
+  let bus = fixture.bus
+  t.after(() => bus._internal.close())
+  const register = () => {
+    const opts = { dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) }
+    bus.registry.register(buildKnowDomain(opts))
+    return opts
+  }
+  register()
+  await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })
+  const run = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model', session_id: 'original-session' })
+  const capsule = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: run.data.decision_id }, { actor: 'model' })
+  assert.equal((await bus.dispatch('vuln', 'confirm', { finding_id: args.finding_id,
+    evidence: capsule.data.evidence_ref }, { actor: 'model' })).ok, true)
+  let db = bus._internal.db()
+  const positive = db.prepare('SELECT * FROM vuln_technical_verdicts').get()
+  const rejected = await bus.dispatch('vuln', 'reject', { finding_id: args.finding_id, verdict: 'false_positive',
+    evidence: capsule.data.evidence_ref, corrects_verdict_id: positive.id,
+    reason: '独立原始授权记录证明原策略假设错误，明确更正旧判定',
+    review: { basis: '独立原始授权记录与实验时点共享状态证明owner-only前提错误',
+      expected_behavior: '已获共享授权的非归属身份可以读取',
+      observed_behavior: '原实验读取者当时已经具备共享授权',
+      controls: '复核实验时点策略、原始共享记录与正常身份，未把后来修复混为历史错误' },
+  }, { actor: 'dashboard', operator: 'independent-reviewer' })
+  assert.equal(rejected.ok, true, rejected.error?.message)
+  db.prepare("UPDATE event_outbox SET next_retry_at=? WHERE name IN ('exec.oracle.decided','vuln.signal.confirmed')").run(Date.now() + 60000)
+  await bus._internal.dispatcherTick()
+  assert.equal(db.prepare('SELECT status FROM event_outbox WHERE event_id=?').get(rejected.event_ids[0]).status, 'pending')
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes WHERE supersedes IS NOT NULL').get().n, 0)
+  bus._internal.close()
+  bus = createBus({ dataDir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'),
+    auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false })
+  const opts = register()
+  bus.registry.register(buildExecDomain(opts))
+  bus.registry.register(buildVulnDomain(opts))
+  db = bus._internal.db()
+  db.prepare("UPDATE event_outbox SET next_retry_at=0 WHERE status='pending'").run()
+  await bus._internal.dispatcherTick()
+  await bus._internal.dispatcherTick()
+  assert.equal(db.prepare('SELECT status FROM event_outbox WHERE event_id=?').get(rejected.event_ids[0]).status, 'delivered')
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes WHERE supersedes IS NOT NULL').get().n, 1)
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM knowledge_revisions WHERE artifact_id LIKE 'distill-%'").get().n, 0,
+    'a corrected source is never distilled by a delayed child event')
+  assert.equal(seen.length, 10)
+})
+
 test('27 L18: distillation failure has an independent retry; recovery neither reruns HTTP nor duplicates episodes', async t => {
   const fixture = await authzFixture(t, 'vulnerable')
   const { dataDir, args, seen, dir } = fixture

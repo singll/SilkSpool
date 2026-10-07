@@ -260,6 +260,10 @@ function createRepo(db) {
       const row = db.prepare('SELECT * FROM vuln_technical_verdicts WHERE id=?').get(id)
       return row ? { ...row } : null
     },
+    getLatestTechnicalVerdict(findingId) {
+      const row = db.prepare('SELECT * FROM vuln_technical_verdicts WHERE finding_id=? ORDER BY id DESC LIMIT 1').get(findingId)
+      return row ? { ...row } : null
+    },
     recordTechnicalVerdict({ finding_id, verdict, basis, evidence_ref = null, evidence_digest = null, evidence_json, operator = null, created_at }) {
       const r = db.prepare(`INSERT INTO vuln_technical_verdicts
         (finding_id,verdict,basis,evidence_ref,evidence_digest,evidence_json,operator,created_at) VALUES (?,?,?,?,?,?,?,?)`)

@@ -227,8 +227,9 @@ WHERE id=? AND status='new'
 | note | string | 否 | '' | — |
 | evidence | string | false_positive 时必填 | '' | 真实存在的引用；机器反证须受控执行生成的 rejected capsule |
 | review | object | 人工反证时必填 | — | basis≥20、expected_behavior≥10、observed_behavior≥10、controls≥20；仅 dashboard 且 operator 非空 |
+| corrects_verdict_id | integer | 否 | — | 明确证伪旧判定时引用同Finding最新完整正式阳性回执；须独立审校，不能由自动阴性推断 |
 
-`false_positive` 先核验证据存在性；机器路径复用可信判定校验，要求同 Finding/Program/URL/host/类型、原件摘要、请求/身份/策略关联与一小时时效，且 verdict=`rejected`。公开响应、身份失败、代理故障或仅缺证文字不能否定假设；用 `vuln_note` 保存缺证与重开条件。人工审校是操作员明确签署的独立判断，不把其理由当机器 Oracle。
+`false_positive` 先核验证据存在性；机器路径复用可信判定校验，要求同 Finding/Program/URL/host/类型、原件摘要、请求/身份/策略关联与一小时时效，且 verdict=`rejected`。公开响应、身份失败、代理故障或仅缺证文字不能否定假设；用 `vuln_note` 保存缺证与重开条件。人工审校是操作员明确签署的独立判断，不把其理由当机器 Oracle。可选corrects_verdict_id明确表示原判定在当时即错误；仅目标后来修复或新实验阴性不填。既有终态限制保持，更正已accepted等终态仍待独立治理入口。
 
 **事务行为**（状态 UPDATE、技术回执、证据追加及事件同事务）：
 
@@ -254,6 +255,7 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 | E_EVIDENCE_REQUIRED | false_positive 无真实存在的证据引用 | 保存缺证说明，补齐证据后重判 | false |
 | E_VULN_REVIEW_REQUIRED | 弱证据或人工审校无 dashboard/operator | 受控执行签封，或由操作员独立审校 | false |
 | E_VULN_ORACLE_NOT_REJECTED | 签封结果非 rejected | 未知/阻塞不判误报 | false |
+| E_VULN_CORRECTION_TARGET | 更正回执不存在、跨Finding、非最新阳性或摘要损坏 | 引用对应完整正式阳性回执 | false |
 | E_VULN_EVIDENCE_TAMPERED / E_VULN_ORACLE_TARGET_MISMATCH | 原件/时效失效或对象关联不符 | 重新核验对应对象 | false |
 | E_VULN_DUP_TARGET_REQUIRED | verdict=dup 缺 dup_of | "dup 判定必须指回被重复的 finding（dup_of）。可先用 vuln_dedup_check 检索同目标同类型历史" | false |
 | E_STATE | 行处于 accepted / false_positive / dup / ignored 终态 | "已终态不可再流转；如需翻案（如 false_positive→confirmed）走人工通道：dashboard 侧 vuln_confirm 附 operator 审计" | false |

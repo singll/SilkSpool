@@ -253,6 +253,7 @@ export const VULN_MANIFEST = {
         dup_of: { type: ['integer', 'null'] },
         note: str({ default: '' }),
         evidence: str({ default: '' }),
+        corrects_verdict_id: int({ minimum: 1 }),
         review: schema({
           basis: str({ minLength: 20 }), expected_behavior: str({ minLength: 10 }),
           observed_behavior: str({ minLength: 10 }), controls: str({ minLength: 20 }),
@@ -874,6 +875,18 @@ function makeHandlers(opts) {
       return null
     },
     rejectionEvidenceGate: async (args, repo, ctx) => {
+      if (args.corrects_verdict_id) {
+        if (args.verdict !== 'false_positive' || !args.review || ctx.actor !== 'dashboard' || !String(ctx.operator || '').trim()) {
+          return { code: 'E_VULN_REVIEW_REQUIRED', message: '更正旧技术判定须操作员独立反证审校', retryable: false }
+        }
+        const previous = repo.getTechnicalVerdict(args.corrects_verdict_id)
+        const latest = repo.getLatestTechnicalVerdict(args.finding_id)
+        if (!previous || previous.finding_id !== args.finding_id || previous.verdict !== 'confirmed'
+          || latest?.id !== previous.id || !['controlled_oracle', 'independent_review'].includes(previous.basis)
+          || previous.evidence_digest !== crypto.createHash('sha256').update(previous.evidence_json).digest('hex')) {
+          return { code: 'E_VULN_CORRECTION_TARGET', message: '更正必须引用同Finding最新且完整的正式阳性回执', retryable: false }
+        }
+      }
       if (args.verdict !== 'false_positive') return null
       return await invariants.evidenceExists(args, repo, ctx) || await invariants.oracleCapsuleGate(args, repo, ctx)
     },
@@ -1145,6 +1158,7 @@ function makeHandlers(opts) {
       let technicalVerdictId = null
       if (args.verdict === 'false_positive') {
         const evidence = JSON.stringify({ reason: args.reason, note: args.note || null, evidence: args.evidence,
+          corrects_verdict_id: args.corrects_verdict_id || null,
           review: args.review || null, capsule: args.review ? null : readCapsule(dataDir, refPrefix(args.evidence).slice(8)) })
         technicalVerdictId = repo.recordTechnicalVerdict({
           finding_id: row.id, verdict: 'false_positive', basis: args.review ? 'independent_review' : 'controlled_oracle',
@@ -1160,7 +1174,8 @@ function makeHandlers(opts) {
         events: [{ name: 'vuln.signal.rejected', payload: { finding_id: args.finding_id, verdict: args.verdict,
           technical_verdict_id: technicalVerdictId, program_id: row.program_id || null,
           ...(technicalVerdictId ? { evidence_ref: refPrefix(args.evidence),
-            verification_basis: args.review ? 'independent_review' : 'controlled_oracle' } : {}),
+            verification_basis: args.review ? 'independent_review' : 'controlled_oracle',
+            corrects_verdict_id: args.corrects_verdict_id || null } : {}),
           from: { status: row.status, noise: row.noise }, reason_head: String(args.reason || '').slice(0, 60), dup_of: args.dup_of || null, fgs_node_id: row.fgs_node_id || null, task_id: row.task_id ?? null, session_id: row.session_id ?? null, source: row.source ?? null, title: String(row.title || '').slice(0, 80) } }],
         before: { status: row.status, noise: row.noise, confidence: row.confidence }, after: { status: args.verdict, noise: row.noise },
       }
@@ -1517,7 +1532,8 @@ function makeHandlers(opts) {
       const finding = repo.getFinding(row.finding_id)
       return { id: row.id, finding_id: row.finding_id, program_id: finding?.program_id || null,
         verdict: row.verdict, basis: row.basis, created_at: row.created_at,
-        evidence_digest: row.evidence_digest, decision_id: evidence.capsule?.decision_id || null }
+        evidence_digest: row.evidence_digest, decision_id: evidence.capsule?.decision_id || null,
+        evidence_ref: row.evidence_ref, corrects_verdict_id: evidence.corrects_verdict_id || null }
     },
     vuln_list: async (args, repo) => {
       // 42 号补丁（25 号方案 B1）：limit/offset 落到 SQL（旧实现全量返回由总线切片），total 走独立 COUNT。

@@ -503,6 +503,18 @@ function createRepo(db) {
         .get(String(episodeId), `correction:${episodeId}`)
       return r ? { ...r } : null
     },
+    episodesForTechnicalVerdict({ finding_id, program_id, verdict_id, decision_id }) {
+      // Oracle events and finding events can arrive in either order. Match the
+      // immutable decision identity or the explicit receipt stored in context.
+      return db.prepare(`SELECT * FROM learning_episodes
+        WHERE program_id IS ? AND outcome='confirmed' AND supersedes IS NULL
+          AND json_extract(CASE WHEN json_valid(context_json) THEN context_json ELSE '{}' END,'$.finding_id') = ?
+          AND ((? IS NOT NULL AND source_event_name='exec.oracle.decided' AND exec_run_id=?)
+            OR json_extract(CASE WHEN json_valid(context_json) THEN context_json ELSE '{}' END,'$.technical_verdict_id')=?)
+        ORDER BY created_at, episode_id`)
+        .all(program_id ?? null, finding_id, decision_id ?? null, decision_id ?? null, verdict_id)
+        .map(row => ({ ...row }))
+    },
     listEpisodes({ program_id = '', outcome = '', campaign_id = '', limit = 50, offset = 0 } = {}) {
       const where = []
       const vals = []

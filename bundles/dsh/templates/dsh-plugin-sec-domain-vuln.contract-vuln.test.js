@@ -210,6 +210,30 @@ test('27 E13: independent counterevidence requires operator and persists an atom
   assert.equal(JSON.parse(receipt.evidence_json).review.controls, independentRejection.controls)
 })
 
+test('27 E13/L05: correction targets the current intact positive receipt of this finding and needs independent review', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const candidate = await seedCandidate(bus)
+  const foreign = await seedCandidate(bus, { url: 'https://a.example.com/foreign' })
+  for (const row of [candidate, foreign]) assert.equal((await reviewedConfirm(bus, {
+    finding_id: row.data.id, evidence: 'run_test_20260906_000000',
+  })).ok, true)
+  const db = bus._internal.db()
+  const receipt = db.prepare('SELECT * FROM vuln_technical_verdicts WHERE finding_id=?').get(candidate.data.id)
+  const other = db.prepare('SELECT * FROM vuln_technical_verdicts WHERE finding_id=?').get(foreign.data.id)
+  const input = { finding_id: candidate.data.id, verdict: 'false_positive', reason: '独立反证证明原授权策略假设在实验当时不成立' }
+  for (const corrects_verdict_id of [other.id, 999999]) {
+    assert.equal((await reviewedReject(bus, { ...input, corrects_verdict_id })).error?.code, 'E_VULN_CORRECTION_TARGET')
+  }
+  assert.equal((await bus.dispatch('vuln', 'reject', { ...input, corrects_verdict_id: receipt.id,
+    evidence: 'run_test_20260906_000000' }, { actor: 'model' })).error?.code, 'E_VULN_REVIEW_REQUIRED')
+  db.prepare("UPDATE vuln_technical_verdicts SET evidence_json='{}' WHERE id=?").run(receipt.id)
+  assert.equal((await reviewedReject(bus, { ...input, corrects_verdict_id: receipt.id })).error?.code, 'E_VULN_CORRECTION_TARGET')
+  db.prepare('UPDATE vuln_technical_verdicts SET evidence_json=? WHERE id=?').run(receipt.evidence_json, receipt.id)
+  assert.equal((await reviewedReject(bus, { ...input, corrects_verdict_id: receipt.id })).ok, true)
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM vuln_technical_verdicts WHERE finding_id=?').get(candidate.data.id).n, 2)
+})
+
 test('27 L22: technical receipt write failure rolls back confirmation and keeps its fixed origin', async () => {
   const { bus } = makeEnv()
   const candidate = await seedCandidate(bus, { program_id: 'test-src' })

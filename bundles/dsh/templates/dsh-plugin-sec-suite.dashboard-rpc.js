@@ -812,7 +812,8 @@ export async function handleDashboardRpc(endpoint, payload) {
         r = await busDispatch('vuln', 'confirm', { finding_id: id, ...technicalEvidence, note }, ctxBase)
       } else if (status === 'false_positive' || status === 'ignored' || status === 'dup') {
         r = await busDispatch('vuln', 'reject', { finding_id: id, verdict: status, reason: note, dup_of: p.dup_of ?? null,
-          ...(status === 'false_positive' ? technicalEvidence : {}) }, ctxBase)
+          ...(status === 'false_positive' ? { ...technicalEvidence,
+            ...(p.corrects_verdict_id !== undefined ? { corrects_verdict_id: p.corrects_verdict_id } : {}) } : {}) }, ctxBase)
       } else if (status === 'submitted') {
         r = await busDispatch('vuln', 'submit', { finding_id: id, note, vendor_status: String(p.vendor_status || ''), bounty: p.bounty ?? null }, ctxBase)
       } else if (status === 'accepted') {

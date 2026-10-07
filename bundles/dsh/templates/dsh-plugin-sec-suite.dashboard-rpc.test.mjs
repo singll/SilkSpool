@@ -218,12 +218,14 @@ test('27 E13: findingUpdate preserves independent review and evidence for techni
       : { basis: 'independent negative review', expected_behavior: 'only owner reads', observed_behavior: 'other identity denied',
         controls: 'valid identities and successful owner control' }
     await handleDashboardRpc('findingUpdate', { id: 7, status, evidence: 'run_review', review,
+      ...(status === 'false_positive' ? { corrects_verdict_id: 3 } : {}),
       operator: 'reviewer', note: 'Independent review of the original observation' })
     const call = bus.calls.at(-1)
     assert.equal(call.verb, status === 'confirmed' ? 'confirm' : 'reject')
     assert.equal(call.args.evidence, 'run_review')
     assert.deepEqual(call.args.review, review)
     assert.equal(call.ctx.operator, 'reviewer')
+    if (status === 'false_positive') assert.equal(call.args.corrects_verdict_id, 3)
   }
 })
 

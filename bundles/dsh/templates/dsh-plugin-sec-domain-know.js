@@ -889,6 +889,19 @@ export const KNOW_MANIFEST = {
       predicates: [],
       agent_note: '执行学习记录投影：来源事件/归属/六类结果/证据与 FGS 快照引用（按时间倒序）。campaign_id 过滤专项归因（22 号方案 §11.2-L2）。',
     },
+    know_technical_episodes: {
+      actor: ['reactor'],
+      params: schema({ finding_id: int(), program_id: str(), verdict_id: int(),
+        decision_id: str() }, ['finding_id', 'verdict_id']),
+      predicates: [],
+      agent_note: '内部更正接线：按正式回执或签封decision定位原阳性经历。',
+    },
+    know_episode_state: {
+      actor: ['reactor'],
+      params: schema({ episode_id: str() }, ['episode_id']),
+      predicates: [],
+      agent_note: '内部事件重放：读取经历及已落账的更正。',
+    },
     // Q17/Q18（L2）：候选知识版本只读投影（候选池里有什么、来源是什么、是否待复验）
     know_revision_list: {
       actor: ['model', 'dashboard', 'human', 'system'],
@@ -2701,6 +2714,12 @@ function makeHandlers(opts) {
     know_episode_list: async (args, repo) => {
       return { ...repo.listEpisodes({ program_id: args.program_id || '', outcome: args.outcome || '', campaign_id: args.campaign_id || '', limit: args.limit ?? 50, offset: args.offset ?? 0 }), meta: { paged: true } }
     },
+    know_technical_episodes: async (args, repo) => ({ episodes: repo.episodesForTechnicalVerdict(args) }),
+    know_episode_state: async (args, repo) => {
+      const episode = repo.getEpisode(args.episode_id)
+      if (!episode) throwErr('E_NOT_FOUND', '经历不存在', null, false)
+      return { episode, correction: repo.getEpisodeCorrection(args.episode_id) }
+    },
     // Q17/Q18（L2）：候选知识版本投影
     know_revision_list: async (args, repo) => {
       return { ...repo.listRevisions({
@@ -3074,6 +3093,9 @@ function makeHandlers(opts) {
         return { ok: true, data: { skipped: true } }
       }
       if (!dispatchRef) return { ok: false, error: { code: 'E_BACKEND_UNAVAILABLE', message: 'no dispatch ref' } }
+      const state = await queryRef?.('know', 'episode_state', { episode_id: p.episode_id }, { actor: 'reactor' })
+      if (!state?.ok) return { ok: false, error: state?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
+      if (state.data.correction) return { ok: true, data: { skipped: true, reason: 'source_already_corrected' } }
       return dispatchRef('know', 'distill_verdict', { episode_id: p.episode_id }, { actor: 'reactor', cause: envelope })
     },
 
@@ -3204,6 +3226,42 @@ function makeHandlers(opts) {
         technicalReceipt = receipt.data
         if (technicalReceipt.finding_id !== p.finding_id || technicalReceipt.verdict !== (name === 'vuln.signal.confirmed' ? 'confirmed' : 'false_positive')
           || technicalReceipt.program_id !== p.program_id) return { ok: false, error: { code: 'E_EXEC_EVIDENCE_UNTRUSTED', message: 'technical receipt association mismatch' } }
+      }
+      if (technicalReceipt?.corrects_verdict_id) {
+        if (technicalReceipt.basis !== 'independent_review' || technicalReceipt.verdict !== 'false_positive') {
+          return { ok: false, error: { code: 'E_INVARIANT', message: 'technical correction requires independent counterevidence' } }
+        }
+        const previous = await queryRef('vuln', 'technical_verdict', { id: technicalReceipt.corrects_verdict_id }, { actor: 'reactor' })
+        if (!previous?.ok) return { ok: false, error: previous?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
+        if (previous.data.finding_id !== technicalReceipt.finding_id || previous.data.program_id !== technicalReceipt.program_id
+          || previous.data.verdict !== 'confirmed') return { ok: false, error: { code: 'E_INVARIANT', message: 'correction target mismatch' } }
+        const originals = await queryRef('know', 'technical_episodes', {
+          finding_id: technicalReceipt.finding_id, verdict_id: previous.data.id,
+          ...(technicalReceipt.program_id ? { program_id: technicalReceipt.program_id } : {}),
+          ...(previous.data.decision_id ? { decision_id: previous.data.decision_id } : {}),
+        }, { actor: 'reactor' })
+        if (!originals?.ok) return { ok: false, error: originals?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
+        if (!originals.data.episodes.length) return { ok: false, error: {
+          code: 'E_BUSY', message: '原技术经历尚未到达，保留更正事件待重试', retryable: true,
+        } }
+        for (const original of originals.data.episodes) {
+          const attribution = {}
+          for (const key of ['program_id', 'task_id', 'exec_run_id', 'attempt_id', 'card_id', 'card_version',
+            'campaign_id', 'model_id', 'request_count', 'token_count', 'duration_ms', 'observed_at',
+            'fgs_snapshot_hash', 'fgs_snapshot_summary', 'fgs_snapshot_path']) {
+            if (original[key] != null) attribution[key] = original[key]
+          }
+          const result = await recordEpisode({
+            ...attribution, source_event_id: `technical-correction:${technicalReceipt.id}:${original.episode_id}`,
+            source_event_name: 'vuln.technical.corrected', consumer_version: EPISODE_CONSUMER_VERSION,
+            supersedes: original.episode_id, outcome: 'inconclusive', reason_code: 'independent_counterevidence',
+            source_credibility: 'human-reviewed',
+            evidence_refs: [...new Set([...safeParseArr(original.evidence_refs), technicalReceipt.evidence_ref].filter(Boolean))],
+            context: { finding_id: technicalReceipt.finding_id, technical_verdict_id: technicalReceipt.id,
+              corrects_verdict_id: previous.data.id, original_outcome: original.outcome },
+          }, { ...envelope, session_id: original.session_id })
+          if (!result.ok) return result
+        }
       }
       if (name === 'vuln.signal.confirmed' && !technicalReceipt) {
         outcome = 'inconclusive'
