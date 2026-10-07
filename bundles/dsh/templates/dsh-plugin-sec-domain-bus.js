@@ -799,6 +799,38 @@ export function createBus(opts = {}) {
   const aliasesFile = opts.aliasesFile || path.join(dataDir, 'bus.aliases.yaml')
   const auditFile = opts.auditFile || path.join(dataDir, 'audit.jsonl')
   const eventsDir = opts.eventsDir || path.join(dataDir, 'events')
+  const eventLineCounts = new Map()
+  async function eventFileLines(filename) {
+    const handle = await fs.promises.open(filename, 'r')
+    try {
+      const stat = await handle.stat()
+      const key = [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':')
+      if (eventLineCounts.get(filename)?.key === key) return eventLineCounts.get(filename).lines
+      // Count bounded chunks asynchronously: status must not synchronously read and
+      // split the entire event history on the same thread serving HTTP.
+      const buffer = Buffer.alloc(64 * 1024)
+      let offset = 0; let lines = 0; let inLine = false
+      while (offset < stat.size) {
+        const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, stat.size - offset), offset)
+        if (!bytesRead) break
+        let start = 0
+        while (start < bytesRead) {
+          const newline = buffer.indexOf(10, start)
+          if (newline < 0 || newline >= bytesRead) { inLine = true; break }
+          if (inLine || newline > start) lines++
+          inLine = false
+          start = newline + 1
+        }
+        offset += bytesRead
+      }
+      if (inLine) lines++
+      const after = await handle.stat()
+      if (offset === stat.size && [after.dev, after.ino, after.size, after.mtimeMs, after.ctimeMs].join(':') === key) {
+        eventLineCounts.set(filename, { key, lines })
+      }
+      return lines
+    } finally { await handle.close() }
+  }
   const agentsMd = opts.agentsMd || path.join(dataDir, 'AGENTS.md')
   const profile = opts.profile || null
   const workerPhase = opts.phase || process.env.SEC_WORKER_PHASE || ''
@@ -1668,9 +1700,13 @@ const now = () => clock()
         let eventFiles = 0
         let eventLines = 0
         try {
-          for (const f of fs.readdirSync(eventsDir).filter((x) => x.endsWith('.jsonl'))) {
-            eventFiles++
-            eventLines += fs.readFileSync(path.join(eventsDir, f), 'utf8').split('\n').filter(Boolean).length
+          const files = (await fs.promises.readdir(eventsDir)).filter(x => x.endsWith('.jsonl'))
+          eventFiles = files.length
+          const current = new Set(files.map(f => path.join(eventsDir, f)))
+          for (const filename of eventLineCounts.keys()) if (!current.has(filename)) eventLineCounts.delete(filename)
+          for (let offset = 0; offset < files.length; offset += 4) {
+            const counts = await Promise.all(files.slice(offset, offset + 4).map(f => eventFileLines(path.join(eventsDir, f))))
+            eventLines += counts.reduce((sum, n) => sum + n, 0)
           }
         } catch { /* noop */ }
         let outbox = { pending: 0, dead_letter: 0, delivered: 0, oldest_delivered_at: null, max_lag_ms: null, last_delivered_at: null }

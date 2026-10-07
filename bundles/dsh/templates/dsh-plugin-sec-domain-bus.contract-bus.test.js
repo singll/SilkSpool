@@ -1206,6 +1206,28 @@ test('bus_status: 展示 vuln 注册 + bus 自注册 + 未注册域 registered:f
   assert.equal(asset.registered, false)
 })
 
+test('27 WP11: event history counting yields to requests and preserves append/rotation counts', async t => {
+  const { dir, bus } = makeBus()
+  t.after(() => bus._internal.close())
+  const events = path.join(dir, 'events')
+  fs.mkdirSync(events, { recursive: true })
+  const file = path.join(events, 'history.jsonl')
+  fs.writeFileSync(file, ('x'.repeat(1024) + '\n').repeat(2048) + '\nlast')
+  const expected = () => fs.readdirSync(events).filter(f => f.endsWith('.jsonl'))
+    .reduce((n, f) => n + fs.readFileSync(path.join(events, f), 'utf8').split('\n').filter(Boolean).length, 0)
+  let yielded = false
+  setImmediate(() => { yielded = true })
+  const first = await bus.query('bus', 'status', {}, { actor: 'dashboard' })
+  assert.equal(first.ok, true)
+  assert.equal(yielded, true, 'history I/O must not monopolize the web event loop')
+  assert.equal(first.data.bus.events.total_lines, expected())
+  fs.appendFileSync(file, '-continued\nnew\n')
+  assert.equal((await bus.query('bus', 'status', {}, { actor: 'dashboard' })).data.bus.events.total_lines, expected())
+  fs.renameSync(file, file + '.1')
+  fs.writeFileSync(file, 'replacement\n\n')
+  assert.equal((await bus.query('bus', 'status', {}, { actor: 'dashboard' })).data.bus.events.total_lines, expected())
+})
+
 // ---------------------------------------------------------------------------
 // 18. audit_tail / events_tail
 // ---------------------------------------------------------------------------

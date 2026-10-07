@@ -232,7 +232,8 @@ function createRepo(db) {
       const pinned = db.prepare('SELECT COUNT(*) AS n FROM facts WHERE pinned = 1').get().n
       const edges = db.prepare('SELECT COUNT(*) AS n FROM fact_edges').get().n
       const withEdges = db.prepare(`SELECT COUNT(*) AS n FROM facts f WHERE EXISTS (
-        SELECT 1 FROM fact_edges e WHERE e.program_id = f.program_id AND (e.src_key = f.fact_key OR e.dst_key = f.fact_key))`).get().n
+        SELECT 1 FROM fact_edges e WHERE e.program_id = f.program_id AND e.src_key = f.fact_key)
+        OR EXISTS (SELECT 1 FROM fact_edges e WHERE e.program_id = f.program_id AND e.dst_key = f.fact_key)`).get().n
       return {
         total: db.prepare('SELECT COUNT(*) AS n FROM facts').get().n,
         by_category: byCategory, by_confidence: byConfidence, by_mem_class: byMemClass, by_status: byStatus,

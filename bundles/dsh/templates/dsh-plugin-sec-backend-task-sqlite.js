@@ -235,6 +235,7 @@ function createRepo(db) {
   ensureCol(db, 'workers', 'task_id', 'task_id INTEGER')
   ensureCol(db, 'workers', 'claim_started_at', 'claim_started_at INTEGER')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_queue ON tasks(program_id, status, priority)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_status_priority_created ON tasks(status, priority, created_at)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(schedule_kind, next_run_at)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_campaign ON tasks(campaign_id, status)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status, last_tick_at)')

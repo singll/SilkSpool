@@ -337,3 +337,17 @@ test('L23: 事实复验逾期只计durable active且已过期的记录', async (
   assert.equal(stats.data.total,5)
   assert.equal(stats.data.revalidate_overdue,1)
 })
+
+test('27 WP11: edge facet counts incoming/outgoing once and keeps identical keys in other Programs separate', async () => {
+  const { bus } = makeEnv()
+  for (const [program_id, fact_key] of [['p','host/a'],['p','host/b'],['p','host/c'],['p','host/d'],['q','host/a']]) {
+    const r = await bus.dispatch('fact', 'upsert', { program_id, fact_key, summary: 'edge-count fixture' }, { actor: 'model' })
+    assert.equal(r.ok, true, r.error?.message)
+  }
+  const db = bus._internal.db()
+  db.prepare("INSERT INTO fact_edges(program_id,src_key,dst_key,edge_type) VALUES ('p','host/a','host/b','related'),('p','host/b','host/c','related'),('p','host/b','host/b','self')").run()
+  const stats = await bus.query('fact', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(stats.ok, true, stats.error?.message)
+  assert.equal(stats.data.total, 5)
+  assert.equal(stats.data.with_edges, 3, 'middle and self-edge endpoints count once, foreign key names do not match')
+})
