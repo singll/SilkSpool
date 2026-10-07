@@ -941,3 +941,5 @@ export const repositoryV1 = {
 2026-10-06 L01/L02增量（本地，待发布）：新增technical_verdict查询（reactor/script/dashboard；id），从正式回执读取finding、来源、证据摘要与capsule的decision_id，重新核验保存evidence_json摘要，不返回私有正文、不发目标请求。供学习链把Oracle判定与Finding确认归到同attempt；本查询不重新证明当前可重现性或替代confirm门禁。
 
 2026-10-07 E13增量（本地待发布）：C4技术反证证据门禁、原子回执与事件关联已实现；安全中心findingUpdate透传confirm/reject的evidence/review，独立审校仍由领域验证operator/schema。旧UI快捷打标未提供审校表单，证据不足时继续明确拒绝，不能把无证据按钮当独立审校。
+
+2026-10-07反证累计发布回填：E13正式反证入口、evidence/review/corrects_verdict_id透传及E14正式回执噪声口径已随2ee0d19上线；本地/远端760项、九域567项、生产162类旧无回执样本为0及UI80通过。显式旧阳性更正接线已部署；独立实验/版本条件分层、候选类型、终态翻案和审校表单仍未完成。完整发布恢复见27号§15.98，上述对应“待发布”以本次状态为准。

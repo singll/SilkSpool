@@ -897,3 +897,11 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - 隔离实测首轮bus6.85秒、stats9.70秒，最早delivered时间、事实置信度facet和资产族聚合为剩余热点。新增覆盖索引，stats经asset.inventory只取库存数量/类型。联合122/122、跨域748/748通过；修改后两组三轮原门禁通过，首轮stats197/265毫秒。缓存释放提示范围及测量边界见27号§15.92。
 - 累计学习真值/版本采用/来源撤回及本次查询修复仍待成功发布，不能记已上线。生产仍cb3134f；WP06尚23条待原件复核，技术反证入口及第27号其他验收继续待办，全案未关账。
 - 私有交接：out/secagent-audits/session-20261006/PROGRESS.md、HANDOFF.md；本次证据20261007-learning-truth-release/，后续发布使用独立20261007-stats-truth-release/。
+
+### 2026-10-07 · 学习真值与统计优化累计发布完成
+
+- 固定557ffd8累计25项50落点已部署；包含执行终态学习/进程组清理、Oracle签封学习及蒸馏、来源更正撤回及复核通知、真实知识版本采用、评测正式回执持久去重和查询优化。本地/远端748项、九域555项及真实worker19项通过，见27号§15.93。
+- 新NASed55b0c2…、冻结fccb9d32…完整恢复/65表、新旧应用均通过。北京时间19:11:41–20:05:43停写54分02秒，PID1330666/NRestarts0，六服务七timer恢复、resume_errors=[]、journal err0，无running task/worker；50摘要/DB/Scope/请求数及暂停预算均通过。
+- 生产首轮stats仍超10秒，失败保留；第二轮加临时采样后原门禁通过，bus257毫秒/stats127毫秒，正常启动不加载采样。不把通过重跑当作已根治冷启动；WP11保留该缺口。资产库存101803与SQLite一致、kbList433项、UI80/80通过。
+- 发布后NAS736e9c22…41库147.68秒/同快照恢复6.84秒通过，覆盖排除未变；21份回执下载验摘要。C2曾增加3118622已核对为旧任务102620的session_bill补账，发布前后新基线一致，Campaign暂停/原预算保持。
+- 全案未关账：WP06仍23条待原件复核，vuln.reject弱反证门禁、历史真值治理、真实业务模板/Oracle实验及知识收益闭环继续推进。交接out/secagent-audits/session-20261006/PROGRESS.md、HANDOFF.md；发布证据20261007-stats-truth-release/。

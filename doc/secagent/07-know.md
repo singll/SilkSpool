@@ -1229,3 +1229,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-07 E13反证入口增量（本地751/751通过，未发布）：vuln.signal.rejected 的 false_positive 与确认同样读取正式技术回执，核对Finding/Program/判定；controlled_oracle归并到同decision的Oracle经历，乱序和清缓存重放不多建valid_clean。人工反证仍为inconclusive/human-reviewed，不能冒充完整机器阴性；反证更正旧阳性经历及来源撤回接线尚待后续实现。
 
 2026-10-07 E13/L05显式技术更正（本地758/758通过，未发布）：独立反证回执的corrects_verdict_id绑定被证伪的正式阳性；内部technical_episodes按receipt/decision与Finding/Program定位原经历，追加inconclusive更正，保留原session/run/attempt/卡版本与实际请求/时长/费用归属。原episode/source_snapshot/content不覆写；复用来源失效与撤回发布同事务，失败原事件pending重试。原经历晚到时等待，重建后重试；已更正的episode子事件重放跳过蒸馏。新签封阴性无显式更正仅新增valid_clean，不撤销历史阳性。旧eval-live训练行更正、已终态Finding翻案及历史污染治理尚未完成。
+
+2026-10-07反证累计发布回填：2ee0d19已上线签封阴性同decision归并、独立审校显式更正旧阳性经历并撤回依赖发布的链路；原件与费用归属保留，乱序、拒写恢复及重放契约通过，详见27号§15.98。评测显式更正投影同批上线；历史无回执污染、终态翻案、完整计划采用/费用与收益验收仍待办，对应“未发布”以本节为准。
