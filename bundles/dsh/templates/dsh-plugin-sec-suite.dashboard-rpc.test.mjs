@@ -229,6 +229,18 @@ test('27 E13: findingUpdate preserves independent review and evidence for techni
   }
 })
 
+test('27 candidate confirmation forwards reproduction and impact without creating an independent review', async () => {
+  const bus = okBus()
+  depsWith(bus)
+  await handleDashboardRpc('findingUpdate', { id: 7, status: 'confirmed', evidence: 'capsule:0123456789abcdef',
+    reproduction_steps: 'repeat the controlled owner-only experiment', impact: 'another identity reads a private object' })
+  const call = bus.calls.at(-1)
+  assert.equal(call.verb, 'confirm')
+  assert.equal(call.args.reproduction_steps, 'repeat the controlled owner-only experiment')
+  assert.equal(call.args.impact, 'another identity reads a private object')
+  assert.equal(call.args.review, undefined)
+})
+
 test('stats：经各域查询聚合，单域失败 → null + degraded，不整体失败', async () => {
   // 总线缺席：全部来源失败 → 五指标 null + degraded 覆盖，并返回对象（不抛）
   const { leaked } = depsWith(null)

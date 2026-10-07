@@ -809,7 +809,9 @@ export async function handleDashboardRpc(endpoint, payload) {
       const technicalEvidence = { evidence: String(p.evidence || ''), ...(p.review !== undefined ? { review: p.review } : {}) }
       let r
       if (status === 'confirmed') {
-        r = await busDispatch('vuln', 'confirm', { finding_id: id, ...technicalEvidence, note }, ctxBase)
+        r = await busDispatch('vuln', 'confirm', { finding_id: id, ...technicalEvidence, note,
+          ...(p.reproduction_steps !== undefined ? { reproduction_steps: p.reproduction_steps } : {}),
+          ...(p.impact !== undefined ? { impact: p.impact } : {}) }, ctxBase)
       } else if (status === 'false_positive' || status === 'ignored' || status === 'dup') {
         r = await busDispatch('vuln', 'reject', { finding_id: id, verdict: status, reason: note, dup_of: p.dup_of ?? null,
           ...(status === 'false_positive' ? { ...technicalEvidence,

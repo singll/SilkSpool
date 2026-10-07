@@ -214,11 +214,12 @@ export const VULN_MANIFEST = {
         evidence: str({ default: '' }),
         source: str(),
         program_id: str(),
+        vuln_type: str({ minLength: 1, maxLength: 80, description: '待验证的漏洞类型；仅路由元数据，不表示技术确认' }),
         external_id: str({ maxLength: 128, description: '上游系统稳定 id（跨源去重优先键）' }),
         task_id: int({ description: '（可选）产生该候选的 task id——归因→学习闭环' }),
       }, ['title', 'severity', 'host', 'source']),
       idempotent: 'auto',
-      idempotent_fields: ['program_id', 'title', 'host', 'url', 'source', 'external_id', 'evidence'],
+      idempotent_fields: ['program_id', 'title', 'host', 'url', 'source', 'external_id', 'evidence', 'vuln_type'],
       events: ['vuln.candidate.registered', 'vuln.candidate.suppressed'],
       event_limit: 1,
       invariants: [],
@@ -232,6 +233,8 @@ export const VULN_MANIFEST = {
         finding_id: int(),
         evidence: str({ default: '' }),
         note: str({ default: '' }),
+        reproduction_steps: str({ minLength: 10 }),
+        impact: str({ minLength: 10 }),
         review: schema({ basis: str({ minLength: 20 }), reproduction_steps: str({ minLength: 10 }), impact: str({ minLength: 10 }) }, ['basis', 'reproduction_steps', 'impact']),
       }, ['finding_id']),
       idempotent: 'none',
@@ -871,7 +874,7 @@ function makeHandlers(opts) {
         || capsule.oracle !== d.oracle || JSON.stringify(capsule.rule_input) !== JSON.stringify({ request_id: d.request_id, identities: d.identities, objects: d.objects })
         || JSON.stringify(capsule.env) !== JSON.stringify({ profile_digest: d.profile_digest, proxy_digest: d.proxy_digest, oracle_version: d.oracle_version })
         || JSON.stringify(capsule.result) !== JSON.stringify({ rationale: d.rationale, run_ids: d.run_ids })) return { code: 'E_VULN_ORACLE_TARGET_MISMATCH', message: '判定与 finding 的项目、目标、类型或请求关联不一致', retryable: false }
-      if (!rejecting && (!String(row.reproduction_steps || '').trim() || !String(row.impact || '').trim())) return { code: 'E_VULN_INCOMPLETE', message: '确认需要可复现步骤和具体影响', retryable: false }
+      if (!rejecting && (!String(args.reproduction_steps || row.reproduction_steps || '').trim() || !String(args.impact || row.impact || '').trim())) return { code: 'E_VULN_INCOMPLETE', message: '确认需要可复现步骤和具体影响', retryable: false }
       return null
     },
     rejectionEvidenceGate: async (args, repo, ctx) => {
@@ -1074,7 +1077,7 @@ function makeHandlers(opts) {
         evidence: note, source,
         program_id: args.program_id || null, session_id: ctx.session_id || null,
         task_id: taskId,
-        vuln_type: null, cwe: null, endpoint_ref: null, preconditions: null,
+        vuln_type: args.vuln_type || null, cwe: null, endpoint_ref: null, preconditions: null,
         reproduction_steps: null, impact: null, recommendation: null,
         noise: 1, status: suppressed ? 'ignored' : 'new', confidence: 'tentative',
         fgs_node_id: null, discovery_step: null,
@@ -1100,6 +1103,12 @@ function makeHandlers(opts) {
       await confirmClaimed(args, repo, ctx)
       const row = repo.getFinding(args.finding_id)
       if (args.review) repo.updateFields(args.finding_id, { reproduction_steps: args.review.reproduction_steps, impact: args.review.impact })
+      else if (args.reproduction_steps !== undefined || args.impact !== undefined) {
+        repo.updateFields(args.finding_id, {
+          reproduction_steps: args.reproduction_steps ?? row.reproduction_steps,
+          impact: args.impact ?? row.impact,
+        })
+      }
       const changed = repo.transitionFinding(args.finding_id, 'new', { status: 'confirmed', confidence: 'confirmed', noise: 0, claimed_by: null, claimed_at: null, updated_at: Date.now() })
       if (!changed.changed) throwErr('E_STATE', `finding #${args.finding_id} 状态非 new 或已终态`, 'finding 已处于终态/已确认，不可再次流转。补证据用 vuln_note；提交用 vuln_submit', false)
       repo.appendEvidence(args.finding_id, `${isoPrefix(Date.now())} confirmation evidence: ${args.evidence}${args.review ? `; reviewed by ${ctx.operator}: ${args.review.basis}` : ''}`)

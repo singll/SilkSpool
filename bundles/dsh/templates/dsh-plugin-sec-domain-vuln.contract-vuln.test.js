@@ -343,6 +343,27 @@ test('happy path C2: register_candidate 机器直灌候选（noise=1）+ candida
   assert.equal(env.payload.source, 'xray-webhook')
 })
 
+test('27 candidate type is tentative metadata; duplicate input never rewrites an existing classification', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const typed = await seedCandidate(bus, { vuln_type: 'idor', external_id: 'typed-candidate' })
+  assert.equal(typed.ok, true, typed.error?.message)
+  const get = () => bus._internal.db().prepare('SELECT * FROM findings WHERE id=?').get(typed.data.id)
+  assert.equal(get().vuln_type, 'idor')
+  assert.equal(get().confidence, 'tentative')
+  const changed = await seedCandidate(bus, { vuln_type: 'sqli', external_id: 'typed-candidate', evidence: 'new observation only' })
+  assert.equal(changed.ok, true, changed.error?.message)
+  assert.equal(changed.data.id, typed.data.id)
+  assert.equal(get().vuln_type, 'idor')
+  assert.ok(get().evidence.includes('new observation only'))
+  const legacy = await seedCandidate(bus, { url: 'https://a.example.com/untyped' })
+  assert.equal(legacy.ok, true)
+  assert.equal(bus._internal.db().prepare('SELECT vuln_type FROM findings WHERE id=?').get(legacy.data.id).vuln_type, null)
+  const unsupported = await seedCandidate(bus, { url: 'https://a.example.com/custom', vuln_type: 'custom-detector' })
+  assert.equal(unsupported.ok, true, unsupported.error?.message)
+  assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM vuln_technical_verdicts').get().n, 0)
+})
+
 test('happy path C3: confirm 候选 → 三联动原子升级（status+confidence+noise）+ 双事件 + audit', async () => {
   const { dir, bus } = makeEnv()
   const cand = await seedCandidate(bus)

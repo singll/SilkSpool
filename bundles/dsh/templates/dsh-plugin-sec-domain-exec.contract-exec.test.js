@@ -718,11 +718,82 @@ async function authzFixture(t, mode = 'vulnerable', options = {}) {
   assert.equal(obs.ok, true, obs.error?.message)
   let finding
   if (options.finding !== false) {
-    finding = await bus.dispatch('vuln', 'register_signal', { title: '测试双身份访问私有对象的读取权限', severity: 'high', host: '127.0.0.1', url: origin + '/objects/2', program_id: 'test-src', vuln_type: 'idor', evidence: 'run_fixture_20260930_000000', reproduction_steps: '使用账号 A 请求账号 B 的私有对象，复核对象归属', impact: '违反 owner-only 读取策略，暴露他人的私有对象' }, { actor: 'model' })
+    const observation = { title: '测试双身份访问私有对象的读取权限', severity: 'high', host: '127.0.0.1',
+      url: origin + '/objects/2', program_id: 'test-src', vuln_type: 'idor', evidence: 'run_fixture_20260930_000000' }
+    finding = options.candidate
+      ? await bus.dispatch('vuln', 'register_candidate', { ...observation, source: 'authz-fixture' }, { actor: 'script' })
+      : await bus.dispatch('vuln', 'register_signal', { ...observation, reproduction_steps: '使用账号 A 请求账号 B 的私有对象，复核对象归属', impact: '违反 owner-only 读取策略，暴露他人的私有对象' }, { actor: 'model' })
     assert.equal(finding.ok, true, finding.error?.message)
   }
   const args = { program_id: 'test-src', ...(finding ? { finding_id: finding.data.id } : {}), request_id: obs.data.request_id, own_id: '1', other_id: '2', headers_a: { Authorization: 'Bearer a' }, headers_b: { Authorization: 'Bearer b' } }
   return { bus, dataDir, dir, origin, seen, args, profileFile, setMode: value => { mode = value } }
+}
+
+for (const mode of ['vulnerable', 'patched', 'public']) {
+  test(`27 E13 candidate ${mode}: typed observation → claim → controlled decision preserves evidence and ownership`, async t => {
+    const { bus, args, seen } = await authzFixture(t, mode, { candidate: true })
+    t.after(() => bus._internal.close())
+    const db = bus._internal.db()
+    const get = () => db.prepare('SELECT * FROM findings WHERE id=?').get(args.finding_id)
+    assert.equal(get().vuln_type, 'idor')
+    assert.equal(get().noise, 1)
+    assert.equal(get().status, 'new')
+    assert.equal(get().confidence, 'tentative')
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM vuln_technical_verdicts').get().n, 0)
+    const owner = { actor: 'model', session_id: 'candidate-owner' }
+    const claim = await bus.dispatch('vuln', 'claim', { finding_id: args.finding_id }, owner)
+    assert.equal(claim.ok, true, claim.error?.message)
+    const decision = await bus.dispatch('exec', 'verify_authz_read', args, owner)
+    assert.equal(decision.ok, true, decision.error?.message)
+    assert.equal(decision.data.verdict, { vulnerable: 'verified', patched: 'rejected', public: 'inconclusive' }[mode])
+    const count = seen.length
+    const cap = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: decision.data.decision_id }, owner)
+    assert.equal(cap.ok, true, cap.error?.message)
+    if (mode !== 'vulnerable') {
+      const invented = await bus.dispatch('vuln', 'confirm', { finding_id: args.finding_id, evidence: cap.data.evidence_ref,
+        reproduction_steps: '声称重复请求即可证明越权，不能替代可信实验对照', impact: '声称存在跨身份私有数据泄露，不能替代真实验证' }, owner)
+      assert.equal(invented.error?.code, 'E_VULN_ORACLE_NOT_VERIFIED')
+      assert.equal(get().reproduction_steps, null)
+      assert.equal(get().impact, null)
+    }
+    const action = mode === 'vulnerable' ? 'confirm' : 'reject'
+    const conclusion = { finding_id: args.finding_id, evidence: cap.data.evidence_ref,
+      ...(action === 'reject' ? { verdict: 'false_positive', reason: '真实身份和对象归属对照核验是否拒绝交叉读取' }
+        : { reproduction_steps: '双身份与归属对照后账号A重复读取账号B私有对象', impact: '违反owner-only策略，账号B的私有记录被账号A读取' }) }
+    if (mode === 'vulnerable') {
+      const incomplete = await bus.dispatch('vuln', 'confirm', { finding_id: args.finding_id, evidence: cap.data.evidence_ref }, owner)
+      assert.equal(incomplete.error?.code, 'E_VULN_INCOMPLETE')
+      assert.equal(get().reproduction_steps, null)
+    }
+    if (mode !== 'public') {
+      const foreign = await bus.dispatch('vuln', action, conclusion, { actor: 'model', session_id: 'different-worker' })
+      assert.equal(foreign.error?.code, 'E_VULN_CLAIMED')
+      assert.equal(get().status, 'new')
+      assert.equal(get().reproduction_steps, null)
+      assert.equal(db.prepare('SELECT COUNT(*) n FROM vuln_technical_verdicts').get().n, 0)
+    }
+    if (mode === 'vulnerable') {
+      db.exec("CREATE TRIGGER deny_candidate_confirmation BEFORE INSERT ON vuln_technical_verdicts BEGIN SELECT RAISE(ABORT,'receipt unavailable'); END")
+      assert.equal((await bus.dispatch('vuln', action, conclusion, owner)).ok, false)
+      assert.equal(get().reproduction_steps, null)
+      assert.equal(get().impact, null)
+      assert.equal(get().status, 'new')
+      assert.equal(get().claimed_by, 'candidate-owner')
+      db.exec('DROP TRIGGER deny_candidate_confirmation')
+    }
+    const result = await bus.dispatch('vuln', action, conclusion, owner)
+    assert.equal(result.ok, mode !== 'public', result.error?.message)
+    assert.equal(seen.length, count, 'claim and final verdict do not replay HTTP')
+    assert.equal(get().status, { vulnerable: 'confirmed', patched: 'false_positive', public: 'new' }[mode])
+    assert.equal(get().noise, mode === 'vulnerable' ? 0 : 1)
+    assert.equal(get().claimed_by, mode === 'public' ? 'candidate-owner' : null)
+    assert.equal(db.prepare('SELECT COUNT(*) n FROM vuln_technical_verdicts').get().n, mode === 'public' ? 0 : 1)
+    if (mode === 'vulnerable') {
+      assert.equal(get().reproduction_steps, conclusion.reproduction_steps)
+      assert.equal(get().impact, conclusion.impact)
+    }
+    if (mode === 'public') assert.equal(result.error?.code, 'E_VULN_ORACLE_NOT_REJECTED')
+  })
 }
 
 test('27 L01: HTTP observations and failures reach learning without asserting technical outcomes', async t => {

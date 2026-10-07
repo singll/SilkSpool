@@ -130,6 +130,7 @@
 | url | string | 否 | '' | — |
 | evidence | string | 否 | '' | 机器证据指针（如 `flow:flows/xray-2026-09-06.jsonl`） |
 | source | string | 是 | — | 机器来源标识（xray-webhook / authz_diff / parser:nuclei / parser:afrog …），必填以便追溯 |
+| vuln_type | string | 否 | null | 1–80字符；待验证类型元数据，受控IDOR使用精确idor；类型本身不构成技术结论 |
 | program_id | string | 否 | null | — |
 | session_id | string | 否 | null | 网关从调用面注入（不信任参数声明） |
 | idempotency_key | string | 否 | — | — |
@@ -943,3 +944,5 @@ export const repositoryV1 = {
 2026-10-07 E13增量（本地待发布）：C4技术反证证据门禁、原子回执与事件关联已实现；安全中心findingUpdate透传confirm/reject的evidence/review，独立审校仍由领域验证operator/schema。旧UI快捷打标未提供审校表单，证据不足时继续明确拒绝，不能把无证据按钮当独立审校。
 
 2026-10-07反证累计发布回填：E13正式反证入口、evidence/review/corrects_verdict_id透传及E14正式回执噪声口径已随2ee0d19上线；本地/远端760项、九域567项、生产162类旧无回执样本为0及UI80通过。显式旧阳性更正接线已部署；独立实验/版本条件分层、候选类型、终态翻案和审校表单仍未完成。完整发布恢复见27号§15.98，上述对应“待发布”以本次状态为准。
+
+2026-10-07候选验证接线（本地764/764及RPC9/9通过，尚未部署）：C2可保存显式vuln_type，不填保持null；重复观察只追加证据，不修改旧类型。C3可同时补reproduction_steps/impact（各至少10字符），经完整Oracle证据门及当前认领者核验后，与确认和正式回执同事务落账；缺材料仍拒绝，填写材料不能替代有效capsule。独立review优先使用其审校材料。安全中心findingUpdate透传这两个可选字段；候选旧类型补齐、自动解析器提取和已终态翻案不属本批。
