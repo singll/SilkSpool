@@ -1190,19 +1190,21 @@ function makeHandlers(opts) {
       if (!row.exec_run_id || row.attempt_id !== `decision:${row.exec_run_id}`
         || !refs.includes(`results/${row.exec_run_id}/authz-decision.json`)) return false
       const d = await read('exec', 'authz_evidence', { decision_id: row.exec_run_id })
-      return !!d && d.decision_id === row.exec_run_id && d.program_id === row.program_id
+      const trusted = !!d && d.decision_id === row.exec_run_id && d.program_id === row.program_id
         && d.finding_id === context.finding_id && d.verdict === (row.outcome === 'confirmed' ? 'verified' : 'rejected')
         && (d.task_id ?? null) === (row.task_id ?? null)
+      return trusted ? { key: `decision:${d.program_id}:${d.decision_id}`, outcome: row.outcome } : false
     }
     if (!['vuln.signal.confirmed', 'vuln.signal.rejected'].includes(row.source_event_name)
       || !Number.isInteger(context.technical_verdict_id) || context.technical_verdict_id < 1
       || row.attempt_id !== `verdict:${context.technical_verdict_id}`) return false
     const data = await read('vuln', 'technical_receipts', { ids: [context.technical_verdict_id] })
     const r = data?.receipts?.[0]
-    return r?.trusted === true && r.id === context.technical_verdict_id
+    const trusted = r?.trusted === true && r.id === context.technical_verdict_id
       && r.basis === 'independent_review' && r.finding_id === context.finding_id
       && r.program_id === row.program_id && refs.includes(r.evidence_ref)
       && r.verdict === (row.outcome === 'confirmed' ? 'confirmed' : 'false_positive')
+    return trusted ? { key: `review:${r.program_id}:${r.evidence_ref}`, outcome: row.outcome } : false
   }
 
   async function rebuildArtifactScore(repo, artifactKind, artifactId, persist = true) {
@@ -1219,21 +1221,29 @@ function makeHandlers(opts) {
     })
     const c = { confirmed: 0, valid_clean: 0, inconclusive: 0, inapplicable: 0, blocked: 0, infra_error: 0 }
     let costReq = 0, costTok = 0, costMs = 0
+    const technical = new Map()
     for (const r of eps) {
       costReq += r.requests || 0; costTok += r.tokens || 0; costMs += r.ms || 0
       const n = r.n || 0
       const reviewed = await episodeTechnicalTruth(r)
-      if (r.outcome === 'confirmed' && reviewed) c.confirmed += n
-      else if (r.outcome === 'valid_clean' && reviewed) c.valid_clean += n
+      if (reviewed) {
+        const prior = technical.get(reviewed.key)
+        technical.set(reviewed.key, prior && prior !== reviewed.outcome ? 'conflicting' : reviewed.outcome)
+      }
       else if (r.outcome === 'inapplicable') c.inapplicable += n
       else if (r.outcome === 'blocked_auth') c.blocked += n
       else if (r.outcome === 'infra_error') c.infra_error += n
       else c.inconclusive += n
     }
+    for (const outcome of technical.values()) {
+      if (outcome === 'confirmed') c.confirmed++
+      else if (outcome === 'valid_clean') c.valid_clean++
+      else c.inconclusive++
+    }
     const fbPos = fbRows.filter((f) => f.rating === 'positive').length
     const fbNeg = fbRows.filter((f) => f.rating === 'negative').length
     const fbPending = 0 // 有效集里已排除 tombstone；待整理（无归因）不进本卡计数
-    const sample = eps.reduce((s, r) => s + (r.n || 0), 0)
+    const sample = Object.values(c).reduce((sum, n) => sum + n, 0)
     const smooth = sample === 0 ? 1 : sample / (sample + 2)
     const raw = c.confirmed * 3 + c.valid_clean * 2 + fbPos * 1.5 - fbNeg * 3
     const score = Math.round(raw * smooth * 100) / 100

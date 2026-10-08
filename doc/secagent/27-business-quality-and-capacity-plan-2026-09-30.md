@@ -1833,6 +1833,12 @@ CLI与受控HTTP在执行前、执行中每250毫秒及返回前重验当前work
 
 同副本单独加pinned后stats140/22/21毫秒，两项修复后134/22/19毫秒，均原10秒门禁通过且degraded=[]。缓存释放仅使用隔离DB的fsync+POSIX_FADV_DONTNEED提示；旧版重复测量也曾161毫秒通过，不能声称所有缓存层受控或全部间歇超时根治。16份诊断记录已拉回验摘要，原失败保留；临时探针仅留私有诊断目录，正式生产回归仍待新批验证。证据out/secagent-audits/20261008-truth-attribution-release/diagnostics及stats-final-preflight。
 
+### 15.117 WP07同证据跨版本重复计分修复（2026-10-08，本地完成，未部署）
+
+复现同一独立技术回执仅改变card_version便能产生两条有效学习行，verified_positives由1膨胀为2。重算时先核验正式来源，再按Program+Oracle decision或Program+独立审校原引用合并技术样本；相同引用的冲突判断只计未知，不选有利结果。历史episode行与费用总额保留，不把去重计数称为独立业务实验的完整证明。
+
+回归验证两版本同回执技术样本1、历史token费用800+300均保留、原件损坏降未知与只读查询不落分保持。know/exec192项及最终全域785/785（184.65秒，fingerprint34808a6695f6e28ef6f32309f8ec983340358b61bcefa5703c03651e159e0af2）通过。仍是artifact级过渡分，真实版本采用/独立attempt归因/跨卡费用分配未因此完成；本项不在正在冻结发布的56bca28包。证据session-20261006/learning-dedup-red.log、learning-dedup-green.log及learning-dedup-preflight。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

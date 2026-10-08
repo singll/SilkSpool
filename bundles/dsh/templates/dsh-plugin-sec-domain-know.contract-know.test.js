@@ -2119,6 +2119,18 @@ test('27 WP07: historical score rereads formal truth, keeps costs and never serv
   const raw = { ...db.prepare('SELECT * FROM learning_episodes WHERE episode_id=?').get(ep.data.episode_id) }
   const receipt = { ...db.prepare('SELECT * FROM vuln_technical_verdicts WHERE id=?').get(receiptId) }
   assert.equal(db.prepare("SELECT verified_positives FROM know_scores WHERE artifact_id='77'").get().verified_positives, 1)
+  const duplicate = await bus.dispatch('know', 'episode_record', { ...EP_ARGS, source_event_id: 'formal-history-other-version',
+    source_event_name: 'vuln.signal.confirmed', outcome: 'confirmed', source_credibility: 'human-reviewed',
+    program_id: 'test-src', card_id: '77', card_version: 'different-version', exec_run_id: runId, attempt_id: `verdict:${receiptId}`,
+    evidence_refs: [runId], request_count: 2, token_count: 300,
+    context: { finding_id: candidate.data.id, technical_verdict_id: receiptId } }, { actor: 'reactor' })
+  assert.equal(duplicate.ok, true, duplicate.error?.message)
+  const duplicateScore = await bus.query('know', 'learning_trace', { artifact_kind: 'exp_card', artifact_id: '77' }, { actor: 'dashboard' })
+  assert.equal(duplicateScore.data.chain.score.verified_positives, 1, 'a second card version does not create another technical experiment')
+  assert.equal(duplicateScore.data.chain.score.sample_size, 1)
+  assert.equal(duplicateScore.data.chain.score.cost_tokens, 1100, 'historical cost facts remain visible')
+  // Keep the remainder focused on damaged-source handling for a single episode.
+  db.prepare('DELETE FROM learning_episodes WHERE episode_id=?').run(duplicate.data.episode_id)
   db.prepare("UPDATE vuln_technical_verdicts SET evidence_json='{}' WHERE id=?").run(receiptId)
   const status = await bus.query('know', 'learning_status', {}, { actor: 'dashboard' })
   assert.equal(status.ok, true, status.error?.message)

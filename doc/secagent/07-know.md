@@ -1239,3 +1239,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-08旧经验评分适配器及完整学习视图（本地777项/21项UI-RPC通过，未部署）：exp_search/get/list/rank、retrieval_explain与health平均分读取重验后的学习投影；旧score保留为legacy_score，原始uses/adopted/反馈不进入默认方法排序，显式sort=uses仍为历史浏览。打法链缺少可归因独立实验时success_rate=null，旧runs/successes保留且界面标历史。learning_status从事实及历史投影枚举全部artifact，覆盖未建投影与500条之后记录；只读不补写，全量rebuild清掉无事实孤儿投影。此为artifact级过渡投影，尚未声明完整版本/条件/方法归因；共享知识适用解析及hit_matrix继续治理。
 
 2026-10-08发布状态：固定1cce966累计包生产stats超过10秒，已完整回退dfd3b11，不能将本地终态审校/Reviewer/历史评测/解析归属及后续增量标记为上线。六服务七timer与原预算/Scope保持，回退后新NAS4145419c…（41库55.71秒/恢复6.55秒）、UI80/80通过；详情见27号§15.115。
+
+2026-10-08技术计分引用去重（本地785项通过，未部署）：核验正式来源后，同Program/Oracle decision或同独立审校原引用的跨版本episode只计一次；冲突引用降未知，费用与历史行保留。此为artifact级过渡计分，不证明不同引用即独立实验，版本采用/费用完整归因仍待完成，详见27号§15.117。
