@@ -54,7 +54,8 @@ function makeEnv(opts = {}) {
     dispatcherStartDelayMs: 0,
   })
   const domain = buildExecDomain({ dataDir, egressProxy: opts.egressProxy, egressProxyAuthorization: opts.egressProxyAuthorization,
-    httpEgressBinding: opts.httpEgressBinding, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, n, a, c) => bus.query(d, n, a, c) })
+    httpEgressBinding: opts.httpEgressBinding, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c),
+    query: (...args) => opts.query ? opts.query(bus, ...args) : bus.query(...args) })
   const reg = bus.registry.register(domain)
   assert.equal(reg.ok, true, `exec 域应注册成功：${reg.error?.message || ''}`)
   return { dir, dataDir, bus }
@@ -157,6 +158,88 @@ test('27 D07: CLI parent completion reaps background writers before returning', 
   await new Promise(resolve => setTimeout(resolve, 150))
   assert.equal(size(), before, 'no descendant may continue writing after CLI completion')
   assert.match(run.data.summary, /parent complete/)
+})
+
+for (const mode of ['reclaimed', 'query_hung']) test(`27 E13: running worker CLI stops on ${mode} without a completed proposal`, async t => {
+  let hang = false
+  const { bus, dataDir } = makeEnv({ query: (b, ...args) => hang ? new Promise(() => {}) : b.query(...args) })
+  t.after(() => bus._internal.close())
+  const previous = process.env.SEC_WORKER_RUN_ID
+  t.after(() => { if (previous === undefined) delete process.env.SEC_WORKER_RUN_ID; else process.env.SEC_WORKER_RUN_ID = previous })
+  bus.registry.register(buildTaskDomain({ dataDir }))
+  await bus.query('task', 'active_by_session', { session_id: 'child' }, { actor: 'system' })
+  const db = bus._internal.db(), started = Date.now()
+  db.prepare("INSERT INTO tasks(id,program_id,objective,status,started_at,active_run_id) VALUES(91,'test-src','fencing','running',?,'wfence')").run(started)
+  db.prepare("INSERT INTO workers(run_id,task_id,status,claim_started_at,worker_session_id) VALUES('wfence',91,'running',?,'child')").run(started)
+  process.env.SEC_WORKER_RUN_ID = 'wfence'
+  const marker = path.join(dataDir, 'writes'), script = path.join(dataDir, 'writer.cjs')
+  fs.writeFileSync(script, `setInterval(()=>require('node:fs').appendFileSync(${JSON.stringify(marker)},'x'),20)`)
+  writeManifest(dataDir, 'writer', `name: writer\nbinary: ${process.execPath}\nrisk: passive\ntimeout: 8\nargs_template: "${script}"\n`)
+  const pending = bus.dispatch('exec', 'run_cli', { tool: 'writer', params: {} }, { actor: 'model', session_id: 'child' })
+  const deadline = Date.now() + 4000
+  while (!fs.existsSync(marker) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(fs.existsSync(marker), true, 'CLI must be executing before claim revocation')
+  if (mode === 'query_hung') hang = true
+  else db.prepare("UPDATE tasks SET active_run_id='replacement' WHERE id=91").run()
+  const revokedAt = Date.now()
+  const result = await pending
+  assert.equal(result.ok, true, result.error?.message)
+  assert.equal(result.data.cancelled, true)
+  assert.equal(result.data.error, 'E_EXEC_CLAIM_REQUIRED')
+  assert.ok(Date.now() - revokedAt < 5000, 'hung claim lookup is bounded before CLI timeout')
+  const size = fs.statSync(marker).size
+  await new Promise(resolve => setTimeout(resolve, 150))
+  assert.equal(fs.statSync(marker).size, size, 'revoked worker cannot continue writing')
+  const events = readEvents(path.dirname(dataDir))
+  assert.equal(events.some(e => e.name === 'exec.run.completed'), false)
+  assert.equal(result.data.parse_counts, null)
+})
+
+test('27 E13: worker HTTP rechecks its claim during a response and blocks stale and cross-Program calls', async t => {
+  const { bus, dataDir } = makeEnv({ egressProxy: '' })
+  t.after(() => bus._internal.close())
+  const previous = process.env.SEC_WORKER_RUN_ID
+  t.after(() => { if (previous === undefined) delete process.env.SEC_WORKER_RUN_ID; else process.env.SEC_WORKER_RUN_ID = previous })
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: test-src\n    scope:\n      - "127.0.0.1"\n  - name: other\n    scope:\n      - b.example.com\n')
+  bus.registry.register(buildTaskDomain({ dataDir }))
+  await bus.query('task', 'active_by_session', { session_id: 'child' }, { actor: 'system' })
+  const db = bus._internal.db(), started = Date.now()
+  db.prepare("INSERT INTO tasks(id,program_id,objective,status,started_at,active_run_id) VALUES(91,'test-src','HTTP fencing','running',?,'whttp')").run(started)
+  db.prepare("INSERT INTO workers(run_id,task_id,status,claim_started_at,worker_session_id) VALUES('whttp',91,'running',?,'child')").run(started)
+  process.env.SEC_WORKER_RUN_ID = 'whttp'
+  let seen = 0
+  const server = http.createServer((req, res) => {
+    seen++
+    if (req.url === '/ok') { res.end('owned'); return }
+    db.prepare("UPDATE tasks SET active_run_id='replacement' WHERE id=91").run()
+    res.writeHead(302, { location: '/must-not-follow' })
+    res.write('partial business body')
+    // Leave the stream open so the guard must cancel the in-flight socket.
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)) })
+  const request = pathname => bus.dispatch('exec', 'http_request',
+    { program_id: 'test-src', url: `http://127.0.0.1:${server.address().port}${pathname}`, timeout_ms: 5000 }, { actor: 'model', session_id: 'child' })
+  const initial = await request('/ok')
+  assert.equal(initial.ok, true, initial.error?.message)
+  const owned = await bus.query('exec', 'http_result', { run_id: initial.data.run_id }, { actor: 'model' })
+  assert.equal(owned.data.task_id, 91)
+  assert.equal(owned.data.worker_run_id, 'whttp')
+  const wrongHttp = await bus.dispatch('exec', 'http_request',
+    { program_id: 'other', url: 'http://b.example.com/' }, { actor: 'model', session_id: 'child' })
+  assert.equal(wrongHttp.error?.code, 'E_EXEC_CLAIM_REQUIRED')
+  writeManifest(dataDir, 'cross-program', 'name: cross-program\nbinary: /bin/echo\nrisk: passive\ntarget_param: target\nargs_template: "{{target}}"\n')
+  const wrongCli = await bus.dispatch('exec', 'run_cli',
+    { tool: 'cross-program', params: { target: 'b.example.com' } }, { actor: 'model', session_id: 'child' })
+  assert.equal(wrongCli.error?.code, 'E_EXEC_CLAIM_REQUIRED')
+  const aborted = await request('/slow')
+  assert.equal(aborted.data.state, 'aborted')
+  const record = await bus.query('exec', 'http_result', { run_id: aborted.data.run_id }, { actor: 'model' })
+  assert.equal(record.data.response.body, '')
+  assert.equal(record.data.response.error, 'E_EXEC_CLAIM_REQUIRED')
+  assert.equal(record.data.hops.length, 1)
+  assert.equal((await request('/ok')).error?.code, 'E_EXEC_CLAIM_REQUIRED')
+  assert.equal(seen, 2, 'no redirect or new request from the revoked worker')
 })
 
 for (const mode of ['timeout', 'cancel']) test(`27 D07: CLI ${mode} kills TERM-resistant descendants and retains both output tails`, async t => {

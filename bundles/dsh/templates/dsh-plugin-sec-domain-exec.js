@@ -648,6 +648,53 @@ function httpHop({ url, method, headers, body, proxy, proxyAuthorization, addres
 function makeHandlers(opts) {
   const dispatchRef = opts.dispatch
   const queryRef = opts.query
+  async function currentWorkerClaim(ctx, workerRunId = process.env.SEC_WORKER_RUN_ID) {
+    if (!workerRunId) return null
+    let result
+    try {
+      result = ctx.session_id && await withinDeadline(Promise.resolve().then(() => queryRef?.('task', 'active_by_session',
+        { session_id: ctx.session_id, worker_run_id: workerRunId }, { actor: 'system' })), Date.now() + 1000)
+    } catch {
+      throwErr('E_EXEC_CLAIM_REQUIRED', 'worker 当前认领查询失败或超时', null)
+    }
+    if (!result?.ok || !result.data) throwErr('E_EXEC_CLAIM_REQUIRED', 'worker 当前执行归属不可核验或认领已失效', null)
+    return result.data
+  }
+  async function guardedWorkerExecution(ctx, expected, action) {
+    const workerRunId = process.env.SEC_WORKER_RUN_ID
+    if (!workerRunId) return action(ctx.signal)
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    ctx.signal?.addEventListener('abort', abort, { once: true })
+    if (ctx.signal?.aborted) abort()
+    let stopped = false, busy = false, failure = null
+    const check = async () => {
+      const current = await currentWorkerClaim(ctx, workerRunId)
+      if (JSON.stringify([current.run_id, current.task_id, current.started_at, current.program_id]) !== JSON.stringify([expected?.run_id, expected?.task_id, expected?.started_at, expected?.program_id])) {
+        throwErr('E_EXEC_CLAIM_REQUIRED', 'worker 执行期间认领已变化', null)
+      }
+    }
+    let timer
+    try {
+      await check()
+      timer = setInterval(async () => {
+        if (stopped || busy) return
+        busy = true
+        try { await check() } catch (error) {
+          if (!stopped) { failure = error; controller.abort() }
+        } finally { busy = false }
+      }, 250)
+      timer.unref?.()
+      const result = await action(controller.signal)
+      try { await check() } catch (error) { failure = error }
+      if (failure) return { ...result, state: 'aborted', body: '', cancelled: true, error: failure.code || 'E_EXEC_CLAIM_REQUIRED' }
+      return result
+    } finally {
+      stopped = true
+      clearInterval(timer)
+      ctx.signal?.removeEventListener('abort', abort)
+    }
+  }
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const scopeFile = opts.scopeFile || path.join(dataDir, 'scope.yml')
   const egressProxy = process.env.SEC_EGRESS_PROXY || 'http://127.0.0.1:8899'
@@ -763,6 +810,8 @@ function makeHandlers(opts) {
   }
   async function executeHttp(args, repo, ctx, selectedProxy = selectProxy(args.proxy), followRedirects = true) {
     if (ctx.signal?.aborted) throwErr('E_EXEC_ABORTED', '请求已取消', null)
+    const workerClaim = await currentWorkerClaim(ctx)
+    if (workerClaim?.program_id && workerClaim.program_id !== args.program_id) throwErr('E_EXEC_CLAIM_REQUIRED', 'HTTP Program 与当前任务认领不符', null)
     const method = String(args.method || 'GET').toUpperCase()
     let headers = canonicalHeaders(args.headers), body = args.body || '', url = String(args.url), currentMethod = method
     if (Buffer.byteLength(body) > 65536) throwErr('E_SCHEMA', '请求 body 超过 64 KiB', null)
@@ -798,7 +847,8 @@ function makeHandlers(opts) {
         if (bound) await guardedAddress(url, args.program_id, currentMethod, deadline, true)
         const remaining = deadline - Date.now()
         if (remaining <= 0) { response = { state: 'timeout', status: null, body: '', headers: {} }; break }
-        response = await httpHop({ url, method: currentMethod, headers, body, proxy: selectedProxy, proxyAuthorization, address, timeoutMs: remaining, maxBytes, signal: ctx.signal })
+        response = await guardedWorkerExecution(ctx, workerClaim, signal => httpHop({
+          url, method: currentMethod, headers, body, proxy: selectedProxy, proxyAuthorization, address, timeoutMs: remaining, maxBytes, signal }))
         hops.push({ url, method: currentMethod, address, status: response.status, state: response.state, identity_digest: sha256(JSON.stringify(headers)) })
         if (!followRedirects || response.state !== 'observed' || ![301, 302, 303, 307, 308].includes(response.status) || !response.headers.location) break
         if (hop === 3) { response = { ...response, state: 'redirect_limit', body: '' }; break }
@@ -820,7 +870,8 @@ function makeHandlers(opts) {
       proxy_digest: sha256(selectedProxy),
       ...(bound ? { egress_binding: { program: httpEgressBinding.program, hostname: httpEgressBinding.hostname,
         target: httpEgressBinding.target, scope_sha256: httpEgressBinding.scope_sha256, dns_snapshot: httpEgressBinding.dns_snapshot } } : {}),
-      session_id: ctx.session_id || null, elapsed_ms: Date.now() - started, hops, response })
+      session_id: ctx.session_id || null, task_id: workerClaim?.task_id ?? null,
+      worker_run_id: workerClaim?.run_id ?? null, elapsed_ms: Date.now() - started, hops, response })
     repo.writeMeta(runDir, { run_id: runId, program_id: args.program_id, tool: 'http-request', status: response.state, created_at: started })
     return record
   }
@@ -1214,10 +1265,9 @@ function makeHandlers(opts) {
       currentTool = toolName
       const sessionId = ctx.session_id || null
       const workerRunId = process.env.SEC_WORKER_RUN_ID || null
-      const taskContext = sessionId && queryRef ? await queryRef('task', 'active_by_session',
-        { session_id: sessionId, ...(workerRunId ? { worker_run_id: workerRunId } : {}) }, { actor: 'system' }) : null
-      const activeTask = taskContext?.ok ? taskContext.data : null
-      if (workerRunId && (!taskContext?.ok || !activeTask)) throwErr('E_EXEC_CLAIM_REQUIRED', 'worker 当前执行归属不可核验或认领已失效', null)
+      const taskContext = !workerRunId && sessionId && queryRef ? await queryRef('task', 'active_by_session',
+        { session_id: sessionId }, { actor: 'system' }) : null
+      const activeTask = workerRunId ? await currentWorkerClaim(ctx, workerRunId) : taskContext?.ok ? taskContext.data : null
 
       const guardAudit = []
       // G0-G9 守卫链（fail-closed，逐条）
@@ -1237,6 +1287,7 @@ function makeHandlers(opts) {
         guardAudit.push({ target: t, decision: chk.allow ? 'allow' : 'deny', reason: chk.reason })
         if (!chk.allow) throwErr('E_EXEC_SCOPE_DENIED', `scope-guard 拒绝: ${chk.reason}`, '目标不在任何授权项目（fail-closed）。候选资产走 approval_request 提请 scope-domain/scope-wildcard')
         targetChecks.push({ target: t, chk })
+        if (workerRunId && activeTask?.program_id && chk.program !== activeTask.program_id) throwErr('E_EXEC_CLAIM_REQUIRED', 'CLI目标Program与当前任务认领不符', null)
         if (programId === null && chk.program) programId = chk.program
       }
       const firstChk = targetChecks.length ? targetChecks[0].chk : { programCfg: null }
@@ -1297,8 +1348,9 @@ function makeHandlers(opts) {
       let stderrFd, result
       try {
         stderrFd = fs.openSync(path.join(runDir, 'stderr.log'), 'wx', 0o600)
-        result = await executeManagedProcess({ command: spawnCmd, args: spawnArgs, env, cwd: runDir,
-          stdio: ['ignore', stdoutFd, stderrFd], timeoutMs, signal: ctx.signal, graceMs: 1000 })
+        result = await guardedWorkerExecution(ctx, activeTask, signal => executeManagedProcess({
+          command: spawnCmd, args: spawnArgs, env, cwd: runDir,
+          stdio: ['ignore', stdoutFd, stderrFd], timeoutMs, signal, graceMs: 1000 }))
       } finally {
         try { try { fs.fsyncSync(stdoutFd) } finally { fs.closeSync(stdoutFd) } }
         finally { if (stderrFd != null) { try { fs.fsyncSync(stderrFd) } finally { fs.closeSync(stderrFd) } } }
@@ -1309,7 +1361,7 @@ function makeHandlers(opts) {
         fs.readSync(tailFd, buffer, 0, buffer.length, Math.max(0, size - buffer.length))
         result.stderr = buffer.toString('utf8')
       } finally { fs.closeSync(tailFd) }
-      const meta = { run_id: runId, tool: toolName, argv: [binary, ...argv], params, started_at: new Date(started).toISOString(), duration_ms: Date.now() - started, exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null, cancelled: result.cancelled, timed_out: result.timed_out, risk: manifest.risk || 'passive', stage: manifest.stage || null, sandboxed: !!sandbox, session_id: sessionId, program_id: programId, task_id: activeTask?.task_id ?? null }
+      const meta = { run_id: runId, tool: toolName, argv: [binary, ...argv], params, started_at: new Date(started).toISOString(), duration_ms: Date.now() - started, exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null, cancelled: result.cancelled, timed_out: result.timed_out, risk: manifest.risk || 'passive', stage: manifest.stage || null, sandboxed: !!sandbox, session_id: sessionId, program_id: programId, task_id: activeTask?.task_id ?? null, worker_run_id: workerRunId }
       repo.writeCmd(runDir, (sandbox ? '[sandbox] ' : '') + [binary, ...argv].join(' ') + '\n')
       repo.writeMeta(runDir, meta)
 

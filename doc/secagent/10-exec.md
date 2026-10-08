@@ -866,3 +866,5 @@ Bellkeeper运行容器处于running，宿主checkout为`59b1aa3`，核对模型/
 2026-10-08解析器候选归属（本地待发布）：nuclei从明确tags映射路由类型，未知或多类冲突保持null，不用传输type或标题猜真值。各Finding按输出目标重新匹配Scope的Program，只有同Program才关联当前任务；范围外输出可作未归属候选，不据此授权后续请求。CLI在spawn前通过task.active_by_session核验宿主SEC_WORKER_RUN_ID的当前认领，旧worker拒绝；手工无任务worker保持可用。meta/proposal/事件保留任务和会话，事件压缩与重放保持归属。其它执行入口与执行中认领撤销仍待完整fencing。
 
 2026-10-08解析观察保留（本地779项通过，未部署）：nuclei JSONL不再按tech-detect/http-trace/http-methods等模板名正则跳过记录；结构可用观察均进入proposal及候选链，仍为tentative。原始stdout保留，类型只按明确tag提示，未知不猜。候选队列治理与技术判定由vuln领域负责，不把解析器静默丢弃当降噪。真实本地CLI→proposal→总线→候选及重放联合171项、最终全域779项通过。
+
+2026-10-08执行期认领（本地783项通过，未部署）：CLI及受控HTTP开始、运行期每250毫秒、返回前重验宿主worker认领，比较run/task/认领时间/Program；查询一秒超时或失效取消子进程组/HTTP。CLI不产成功解析提案，HTTP清空正文且不继续跳转，meta/签封记录保留worker/task。任务Program与目标不符预先拒绝，手工无任务worker沿用已有运行状态核验。依赖Node事件循环，不承诺阻塞时硬实时撤销；其它执行入口与完整多进程fencing未据此关账。详见27号§15.114。

@@ -56,19 +56,8 @@ function noiseEnv() {
     suppressMin: num(env.SEC_VULN_NOISE_SUPPRESS_MIN, 20),
     dailyQuota: num(env.SEC_VULN_SOURCE_DAILY_QUOTA, 200),
     whitelist: String(env.SEC_VULN_NOISE_WHITELIST || '').split(',').map((x) => x.trim()).filter(Boolean),
-    detectionPatterns: String(env.SEC_VULN_DETECTION_NOISE_PATTERNS || '').split('\n').map((x) => x.trim()).filter(Boolean),
   }
 }
-// 内置检测型模板噪声（info 级、纯指纹/配置类，历史几乎全为误报或不可提交）——仅用于 sweep 存量候选；
-// 新登记走"类别拒绝率"学习，不硬编码屏蔽（可被白名单豁免）。可用 env 追加正则。
-const DETECTION_NOISE_PATTERNS = [
-  /http missing security headers/i,
-  /ssl certificate issuer|ssl dns names|wildcard tls certificate|certificate mismatch|expired ssl|self-signed/i,
-  /weak cipher suites|deprecated tls|cbc weak|tls 1\.[01]|hsts/i,
-  /dns saas service detection|aaaa record|srv record|wildcard dns configuration|dns record/i,
-  /missing subresource integrity/i,
-  /openresty detection|server version|tech detect|wappalyzer|favicon|robots\.txt|sitemap/i,
-]
 
 /** 类别归一：同源同模板/同类型归为一类，供拒绝率学习与抑制判定。 */
 export function findingCategory(source, title) {
@@ -78,14 +67,6 @@ export function findingCategory(source, title) {
   if (s === 'authz_diff') return /越权|idor/i.test(t) ? 'authz_diff|IDOR' : 'authz_diff|' + t.slice(0, 40)
   const stripped = t.replace(/https?:\/\/\S+/gi, '').replace(/[0-9a-f]{8,}/gi, '<id>').trim()
   return (stripped || t).slice(0, 48)
-}
-
-/** 检测型模板噪声（sweep 存量用；新登记仅走拒绝率学习）。 */
-export function isDetectionNoise(source, title) {
-  if (!/nuclei/i.test(String(source || ''))) return false
-  const t = String(title || '')
-  if (noiseEnv().detectionPatterns.some((p) => { try { return new RegExp(p, 'i').test(t) } catch { return false } })) return true
-  return DETECTION_NOISE_PATTERNS.some((re) => re.test(t))
 }
 
 function noiseWhitelisted(source, category) {
@@ -137,7 +118,8 @@ export function noiseSourceQuota(repo, source) {
   return { exceeded: used >= quota, used, quota }
 }
 
-export const noiseControlConfig = () => { const cfg = noiseEnv(); return { ...cfg, patterns: DETECTION_NOISE_PATTERNS.length + cfg.detectionPatterns.length } }
+// Keep the old display count for compatibility; names and regexes are no longer policy evidence.
+export const noiseControlConfig = () => ({ ...noiseEnv(), patterns: 0 })
 
 const log = (msg) => { try { process.stderr.write(`[sec-domain-vuln] ${msg}\n`) } catch { /* noop */ } }
 
@@ -1359,7 +1341,6 @@ function makeHandlers(opts) {
           const source = String(row.source || '')
           const title = String(row.title || '')
           if (noiseWhitelisted(source, findingCategory(source, title)) || explorationSample(row.program_id, row.host, title, row.url)) continue
-          if (isDetectionNoise(source, title)) { hits.detection_template.push(row.id); continue }
           const category = findingCategory(source, title)
           const key = JSON.stringify([source, category, row.program_id, row.detector_version, row.applicability_key])
           let decision = decisions.get(key)

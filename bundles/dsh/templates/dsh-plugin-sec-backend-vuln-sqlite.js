@@ -534,6 +534,7 @@ function buildWhere(pred = {}) {
   if (pred.host) { conds.push('host = ?'); args.push(String(pred.host)) }
   if (pred.severity) { conds.push('severity = ?'); args.push(String(pred.severity)) }
   if (pred.status) { conds.push('status = ?'); args.push(String(pred.status)) }
+  if (pred.source) { conds.push('source = ?'); args.push(String(pred.source)) }
   if (pred.program_id) { conds.push('program_id = ?'); args.push(String(pred.program_id)) }
   if (pred.q) { conds.push('(title LIKE ? OR host LIKE ? OR url LIKE ?)'); args.push(`%${pred.q}%`, `%${pred.q}%`, `%${pred.q}%`) }
   if (pred.severity_min && SEV_RANK[pred.severity_min] !== undefined) {

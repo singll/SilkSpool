@@ -1534,24 +1534,38 @@ test('43 P0: 候选登记绑定 task_id，拒绝事件携带 task_id（归因→
   assert.equal(rejected.payload.source, 'authz_diff')
 })
 
-test('43 P0: 存量候选 sweep——检测型模板批量出池（dry_run 预演不落库）', async () => {
+test('27 E14: sweep preserves observations whose only suppression basis is a template title', async () => {
   await withEnv({ SEC_VULN_NOISE_SUPPRESS_MIN: '2' }, async () => {
     const { bus } = makeEnv()
     const d1 = await bus.dispatch('vuln', 'register_candidate', { title: 'HTTP Missing Security Headers', severity: 'info', host: 's1.example.com', source: 'parser:nuclei' }, { actor: 'script' })
     await bus.dispatch('vuln', 'register_candidate', { title: '疑似越权(IDOR): GET https://s2.example.com/u/1', severity: 'high', host: 's2.example.com', source: 'authz_diff' }, { actor: 'script' })
     const dry = await bus.dispatch('vuln', 'candidates_sweep', { dry_run: true, limit: 100 }, { actor: 'dashboard' })
     assert.equal(dry.ok, true)
-    assert.equal(dry.data.by_reason.detection_template, 1)
+    assert.equal(dry.data.by_reason.detection_template, 0)
     assert.equal(dry.data.ignored, 0)
     const before = await bus.query('vuln', 'candidates', { claim_state: 'all' }, { actor: 'model' })
     assert.equal(before.total, 2)
     const run = await bus.dispatch('vuln', 'candidates_sweep', { limit: 100 }, { actor: 'dashboard' })
-    assert.equal(run.data.ignored, 1)
+    assert.equal(run.data.ignored, 0)
     const after = await bus.query('vuln', 'candidates', { claim_state: 'all' }, { actor: 'model' })
-    assert.equal(after.total, 1)
+    assert.equal(after.total, 2)
     const got = await bus.query('vuln', 'get', { id: d1.data.id }, { actor: 'model' })
-    assert.equal(got.data.status, 'ignored')
+    assert.equal(got.data.status, 'new')
   })
+})
+
+test('27 E14: sweep source restriction applies before paging and never consumes another source budget', async () => {
+  const { bus } = makeEnv()
+  for (let i = 0; i < 3; i++) {
+    const r = await seedCandidate(bus, { title: 'Other source observation', host: `other${i}.example.com`, source: 'authz_diff' })
+    assert.equal(r.ok, true, r.error?.message)
+  }
+  const wanted = await seedCandidate(bus, { title: 'HTTP Missing Security Headers', host: 'wanted.example.com', source: 'parser:nuclei' })
+  assert.equal(wanted.ok, true, wanted.error?.message)
+  const sweep = await bus.dispatch('vuln', 'candidates_sweep', { source: 'parser:nuclei', dry_run: true, limit: 2 }, { actor: 'dashboard' })
+  assert.equal(sweep.ok, true, sweep.error?.message)
+  assert.equal(sweep.data.scanned, 1, 'only the selected source contributes to the scan limit')
+  assert.equal(sweep.data.matched, 0, 'template name is not technical counterevidence')
 })
 
 test('43 P0: noise_stats 暴露类别拒绝率与抑制口径', async () => {
