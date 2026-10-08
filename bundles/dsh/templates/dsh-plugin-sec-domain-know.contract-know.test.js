@@ -15,6 +15,7 @@ import { buildKnowDomain, KNOW_MANIFEST } from '../index.js'
 import { buildTaskDomain } from '../../sec-domain-task/index.js'
 import { buildLedgerDomain } from '../../sec-domain-ledger/index.js'
 import { buildFactDomain } from '../../sec-domain-fact/index.js'
+import { buildVulnDomain } from '../../sec-domain-vuln/index.js'
 import { DatabaseSync } from 'node:sqlite'
 import { createKnowSqliteBackend } from '../../sec-backend-know-sqlite/index.js'
 
@@ -1746,9 +1747,9 @@ test('L5: 计分可重算——episode/曝光/采用/反馈重放重建；撤回
   // episode 落账已触发单卡重算；核口径
   let sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get(cardId)
   assert.ok(sc, 'episode 落账触发计分投影')
-  assert.equal(sc.verified_positives, 1, '模型自评不计已验证正例')
-  assert.equal(sc.inconclusives, 1, '自评保留为未验证经历')
-  assert.equal(sc.valid_cleans, 1)
+  assert.equal(sc.verified_positives, 0, '旧来源标签不能替代正式技术回执')
+  assert.equal(sc.inconclusives, 3, '三条无正式回执经历均保持未知')
+  assert.equal(sc.valid_cleans, 0)
   // 负反馈 → 重算降权；撤回 → 重算撤销派生分数
   const fb1 = await bus.dispatch('know', 'feedback_ingest', { feedback_id: 'sess_s1:m1', revision: 1, session_id: 'sess_s1', message_id: 'm1', rating: 'negative', note: '方法误导' }, { actor: 'system', session_id: 'sess_s1' })
   assert.equal(fb1.ok, true, fb1.error?.message)
@@ -1770,7 +1771,7 @@ test('L5: 计分可重算——episode/曝光/采用/反馈重放重建；撤回
   const afterCounts = ['learning_episodes', 'know_exposures', 'know_feedback'].map((t) => db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c)
   assert.deepEqual(afterCounts, beforeCounts, '重算不改历史行')
   sc = db.prepare('SELECT * FROM know_scores WHERE artifact_id=?').get(cardId)
-  assert.equal(sc.verified_positives, 1, '重放重建结果一致')
+  assert.equal(sc.verified_positives, 0, '重放重建不能把旧标签变为真值')
   assert.equal(sc.exposures, 2)
   assert.equal(sc.adoptions, 1)
   // 回归：仅有反馈（无曝光/采用/episode）的卡也在全量重建覆盖内——撤回后投影行须被撤销
@@ -1911,7 +1912,8 @@ test('L6: know_learning_status 逐域视图——按 family/surface/前置分层
   assert.ok(st.data.domains, 'Q22 必须带逐域分组')
   const fam = st.data.domains.by_family.find((g) => g.key === 'P1-authz')
   assert.ok(fam, '按 family 分层（P1-authz）')
-  assert.equal(fam.verified_positives, 1)
+  assert.equal(fam.verified_positives, 0)
+  assert.equal(fam.inconclusives, 1)
   assert.equal(fam.exposures, 1)
   assert.equal(fam.sample_size, 1)
   assert.ok(fam.confidence.startsWith('low'), '小样本信心档 low（保守口径可见）')
@@ -2033,6 +2035,55 @@ test('WP07: platform labels never create technical episodes or change method sco
   }
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM learning_episodes').get().n, before)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM know_scores').get().n, 0)
+})
+
+test('27 WP07: historical score rereads formal truth, keeps costs and never serves a stale positive', async t => {
+  const { bus, dataDir } = makeEnv()
+  t.after(() => bus._internal.close())
+  bus.registry.register(buildVulnDomain({ dataDir }))
+  const runId = 'run_learning_truth_fixture'
+  fs.mkdirSync(path.join(dataDir, 'results', runId), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'results', runId, 'meta.json'), '{}')
+  const candidate = await bus.dispatch('vuln', 'register_candidate', { title: '学习历史技术回执测试候选', host: 'a.example.com',
+    severity: 'medium', source: 'fixture', program_id: 'test-src' }, { actor: 'dashboard' })
+  const confirmed = await bus.dispatch('vuln', 'confirm', { finding_id: candidate.data.id, evidence: runId,
+    review: { basis: '独立审查原始请求、响应及正常反例对照，确认对象授权边界被违反',
+      reproduction_steps: '按原始请求和有效身份对照重复验证对象读取', impact: '未授权访问具有明确保护预期的业务对象字段' } },
+    { actor: 'dashboard', operator: 'fixture-reviewer' })
+  assert.equal(confirmed.ok, true, confirmed.error?.message)
+  const receiptId = confirmed.data.technical_verdict_id
+  const ep = await bus.dispatch('know', 'episode_record', { ...EP_ARGS, source_event_id: 'formal-history',
+    source_event_name: 'vuln.signal.confirmed', outcome: 'confirmed', source_credibility: 'human-reviewed',
+    program_id: 'test-src', card_id: '77', exec_run_id: runId, attempt_id: `verdict:${receiptId}`,
+    evidence_refs: [runId], request_count: 4, token_count: 800,
+    context: { finding_id: candidate.data.id, technical_verdict_id: receiptId } }, { actor: 'reactor' })
+  assert.equal(ep.ok, true, ep.error?.message)
+  const db = bus._internal.db()
+  const raw = { ...db.prepare('SELECT * FROM learning_episodes WHERE episode_id=?').get(ep.data.episode_id) }
+  const receipt = { ...db.prepare('SELECT * FROM vuln_technical_verdicts WHERE id=?').get(receiptId) }
+  assert.equal(db.prepare("SELECT verified_positives FROM know_scores WHERE artifact_id='77'").get().verified_positives, 1)
+  db.prepare("UPDATE vuln_technical_verdicts SET evidence_json='{}' WHERE id=?").run(receiptId)
+  const status = await bus.query('know', 'learning_status', {}, { actor: 'dashboard' })
+  assert.equal(status.ok, true, status.error?.message)
+  assert.equal(status.data.scores.find(r => r.artifact_id === '77').verified_positives, 0)
+  assert.equal(status.data.scores.find(r => r.artifact_id === '77').inconclusives, 1)
+  assert.equal(status.data.scores.find(r => r.artifact_id === '77').cost_tokens, 800)
+  assert.equal(db.prepare("SELECT verified_positives FROM know_scores WHERE artifact_id='77'").get().verified_positives, 1, 'query is read-only')
+  assert.equal((await bus.dispatch('know', 'scores_rebuild', {}, { actor: 'system' })).ok, true)
+  assert.equal(db.prepare("SELECT verified_positives FROM know_scores WHERE artifact_id='77'").get().verified_positives, 0)
+  assert.deepEqual({ ...db.prepare('SELECT * FROM learning_episodes WHERE episode_id=?').get(ep.data.episode_id) }, raw)
+  db.prepare('UPDATE vuln_technical_verdicts SET evidence_json=? WHERE id=?').run(receipt.evidence_json, receiptId)
+  const restored = await bus.query('know', 'learning_trace', { artifact_kind: 'exp_card', artifact_id: '77' }, { actor: 'dashboard' })
+  assert.equal(restored.ok, true, restored.error?.message)
+  assert.equal(restored.data.chain.score.verified_positives, 1)
+  db.prepare("UPDATE learning_episodes SET context_json='null' WHERE episode_id=?").run(ep.data.episode_id)
+  const malformed = await bus.query('know', 'learning_trace', { artifact_kind: 'exp_card', artifact_id: '77' }, { actor: 'dashboard' })
+  assert.equal(malformed.ok, true, malformed.error?.message)
+  assert.equal(malformed.data.chain.score.verified_positives, 0)
+  assert.equal(malformed.data.chain.score.cost_tokens, 800)
+  db.prepare('UPDATE learning_episodes SET context_json=? WHERE episode_id=?').run(raw.context_json, ep.data.episode_id)
+  const broken = buildKnowDomain({ dataDir, query: async () => ({ ok: false, error: { code: 'E_BUSY', message: 'receipt unavailable' } }) })
+  await assert.rejects(() => broken.handlers.queries.know_learning_status({}, createKnowSqliteBackend().factory(db)), /receipt unavailable/)
 })
 
 test('WP07: rebuilding excludes historical vendor feedback without deleting original episodes', async () => {

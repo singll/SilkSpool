@@ -1151,7 +1151,7 @@ function makeHandlers(opts) {
   }
 
   // ---- L5（设计 §8.1）：采用事实落账（know_adopt / ledger.card_usage 回流共用）----
-  function recordAdoption(repo, opts) {
+  async function recordAdoption(repo, opts) {
     const now = Date.now()
     const key = opts.source_event_id || null
     const adoptionId = `ado_${sha1(`${opts.artifact_kind}|${opts.artifact_id}|${opts.revision_id || ''}|${opts.source_cmd || ''}|${key || ''}|${now}`).slice(0, 16)}`
@@ -1165,7 +1165,7 @@ function makeHandlers(opts) {
       created_at: now,
     })
     // 所有采用入口同步更新投影；重复事件也可修复先前缺失的投影。
-    const rebuilt = rebuildArtifactScore(repo, String(opts.artifact_kind), String(opts.artifact_id))
+    const rebuilt = await rebuildArtifactScore(repo, String(opts.artifact_kind), String(opts.artifact_id))
     return { ...r, adoption_id: adoptionId, score_rebuilt: !!rebuilt }
   }
 
@@ -1174,10 +1174,41 @@ function makeHandlers(opts) {
   // 来源级别分离：model-proposed 自评不计已验证正例（单列 self_reported）；
   // 运营反馈不进入技术分；自评与缺来源的正/负技术判断保持未验证经历。
   // infra_error 不扣方法分；inapplicable 单列（适用性选择信号）；小样本保守平滑（sample/(sample+2)）。
-  function rebuildArtifactScore(repo, artifactKind, artifactId) {
+  async function episodeTechnicalTruth(row) {
+    if (!['confirmed', 'valid_clean'].includes(row.outcome)) return false
+    let context, refs
+    try { context = JSON.parse(row.context_json || '{}'); refs = JSON.parse(row.evidence_refs || '[]') } catch { return false }
+    if (!context || typeof context !== 'object' || Array.isArray(context) || !Array.isArray(refs)) return false
+    const read = async (domain, verb, args) => {
+      const r = await queryRef?.(domain, verb, args, { actor: 'reactor' })
+      if (r?.ok) return r.data
+      const code = r?.error?.code || 'E_BACKEND_UNAVAILABLE'
+      if (['E_NOT_FOUND', 'E_EXEC_EVIDENCE_UNTRUSTED', 'E_VULN_EVIDENCE_TAMPERED'].includes(code)) return null
+      throwErr(code, r?.error?.message || '学习技术来源无法读取', null, true)
+    }
+    if (row.source_event_name === 'exec.oracle.decided') {
+      if (!row.exec_run_id || row.attempt_id !== `decision:${row.exec_run_id}`
+        || !refs.includes(`results/${row.exec_run_id}/authz-decision.json`)) return false
+      const d = await read('exec', 'authz_evidence', { decision_id: row.exec_run_id })
+      return !!d && d.decision_id === row.exec_run_id && d.program_id === row.program_id
+        && d.finding_id === context.finding_id && d.verdict === (row.outcome === 'confirmed' ? 'verified' : 'rejected')
+        && (d.task_id ?? null) === (row.task_id ?? null)
+    }
+    if (!['vuln.signal.confirmed', 'vuln.signal.rejected'].includes(row.source_event_name)
+      || !Number.isInteger(context.technical_verdict_id) || context.technical_verdict_id < 1
+      || row.attempt_id !== `verdict:${context.technical_verdict_id}`) return false
+    const data = await read('vuln', 'technical_receipts', { ids: [context.technical_verdict_id] })
+    const r = data?.receipts?.[0]
+    return r?.trusted === true && r.id === context.technical_verdict_id
+      && r.basis === 'independent_review' && r.finding_id === context.finding_id
+      && r.program_id === row.program_id && refs.includes(r.evidence_ref)
+      && r.verdict === (row.outcome === 'confirmed' ? 'confirmed' : 'false_positive')
+  }
+
+  async function rebuildArtifactScore(repo, artifactKind, artifactId, persist = true) {
     const exp = repo.exposureCount(artifactKind, artifactId)
     const adoptions = repo.adoptionCount(artifactKind, artifactId)
-    const eps = repo.episodeAggByCard().filter((r) => String(r.card_id) === String(artifactId)
+    const eps = repo.episodeAggByCard(String(artifactId)).filter((r) => String(r.card_id) === String(artifactId)
       && (r.card_kind || inferKindOf(r.card_id)) === artifactKind
       && r.source_event_name !== 'vuln.signal.submitted'
       && !String(r.reason_code || '').startsWith('vendor_')
@@ -1191,7 +1222,7 @@ function makeHandlers(opts) {
     for (const r of eps) {
       costReq += r.requests || 0; costTok += r.tokens || 0; costMs += r.ms || 0
       const n = r.n || 0
-      const reviewed = ['machine', 'independently-verified', 'human-reviewed'].includes(r.source_credibility)
+      const reviewed = await episodeTechnicalTruth(r)
       if (r.outcome === 'confirmed' && reviewed) c.confirmed += n
       else if (r.outcome === 'valid_clean' && reviewed) c.valid_clean += n
       else if (r.outcome === 'inapplicable') c.inapplicable += n
@@ -1207,7 +1238,7 @@ function makeHandlers(opts) {
     const raw = c.confirmed * 3 + c.valid_clean * 2 + fbPos * 1.5 - fbNeg * 3
     const score = Math.round(raw * smooth * 100) / 100
     const hasFacts = (exp.c || 0) > 0 || adoptions > 0 || eps.length > 0 || fbRows.length > 0
-    if (!hasFacts) { repo.deleteScore(artifactKind, artifactId); return null }
+    if (!hasFacts) { if (persist) repo.deleteScore(artifactKind, artifactId); return null }
     const row = {
       artifact_kind: artifactKind, artifact_id: String(artifactId),
       exposures: exp.c || 0, adoptions,
@@ -1218,7 +1249,7 @@ function makeHandlers(opts) {
       cost_requests: costReq, cost_tokens: costTok, cost_ms: costMs,
       score, sample_size: sample, build_tag: `rebuild:${Date.now().toString(36)}`, rebuilt_at: Date.now(),
     }
-    repo.upsertScore(row)
+    if (persist) repo.upsertScore(row)
     return row
   }
 
@@ -1287,7 +1318,7 @@ function makeHandlers(opts) {
   function safeParseArr(s) { try { const v = JSON.parse(s); return Array.isArray(v) ? v : [] } catch { return [] } }
 
   // 全量重建（治理对账）：枚举曝光/采用/episode 归集出现过的 artifact 逐卡重放
-  function rebuildAllScores(repo) {
+  async function rebuildAllScores(repo) {
     const keys = new Set()
     for (const r of repo.exposureAggByArtifact()) keys.add(`${r.artifact_kind}|${r.artifact_id}`)
     for (const r of repo.adoptionArtifacts()) keys.add(`${r.artifact_kind}|${r.artifact_id}`)
@@ -1296,7 +1327,7 @@ function makeHandlers(opts) {
     let n = 0
     for (const k of keys) {
       const [kind, id] = k.split('|')
-      if (rebuildArtifactScore(repo, kind, id)) n++
+      if (await rebuildArtifactScore(repo, kind, id)) n++
     }
     return n
   }
@@ -1888,7 +1919,7 @@ function makeHandlers(opts) {
         const release = repo.activeRelease(rev.artifact_kind, rev.artifact_id, scope.type, scope.type === 'global' ? '' : scope.id)
         if (!release || release.revision_id !== rev.revision_id) throwErr('E_STATE', '该版本不是指定作用域当前生效的发布', '读取当前发布版本，撤回或被取代的版本不能新采用', false)
         // L5（§8.1）：采用事实落账（采用≠曝光≠有效结果——三条计数分离）
-        const adopted = recordAdoption(repo, {
+        const adopted = await recordAdoption(repo, {
           artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, revision_id: rev.revision_id,
           card_version: rev.content_digest, program_id: scope.type === 'program' ? scope.id : null,
           source_cmd: 'know_adopt', actor: (ctx && ctx.actor) || null, outcome: 'adopted',
@@ -1911,11 +1942,11 @@ function makeHandlers(opts) {
         if (args.artifact_kind && args.artifact_kind !== expectedKind) throwErr('E_INVARIANT', '采用对象类型不符', null, false)
       }
       if (target === 'exp') {
-        const adopted = recordAdoption(repo, { artifact_kind: 'exp_card', artifact_id: String(payload.id), source_cmd: 'know_adopt:exp', source_event_id: adoptionKey, actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
+        const adopted = await recordAdoption(repo, { artifact_kind: 'exp_card', artifact_id: String(payload.id), source_cmd: 'know_adopt:exp', source_event_id: adoptionKey, actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
         return { data: { target, adopted_id: payload.id, source_cmd: 'exp_promote' }, events: adopted.created ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.id, source_cmd: 'exp_promote', evidence: args.evidence } }] : [], before: null, after: null }
       }
       if (target === 'kb') {
-        const adopted = recordAdoption(repo, { artifact_kind: 'kb_doc', artifact_id: String(payload.doc_id), source_cmd: 'know_adopt:kb', source_event_id: adoptionKey, actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
+        const adopted = await recordAdoption(repo, { artifact_kind: 'kb_doc', artifact_id: String(payload.doc_id), source_cmd: 'know_adopt:kb', source_event_id: adoptionKey, actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
         return { data: { target, adopted_id: payload.doc_id, source_cmd: 'kb_import' }, events: adopted.created ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.doc_id, source_cmd: 'kb_import', evidence: args.evidence } }] : [], before: null, after: null }
       }
       if (target === 'rules') {
@@ -2022,7 +2053,7 @@ function makeHandlers(opts) {
           if (revision.status === 'published' && repo.countActiveReleasesForRevision(revision.revision_id) === 0) {
             repo.updateRevisionFlow(revision.revision_id, { status: 'retired', eval_report_ref: revision.eval_report_ref })
           }
-          rebuildArtifactScore(repo, revision.artifact_kind, revision.artifact_id)
+          await rebuildArtifactScore(repo, revision.artifact_kind, revision.artifact_id)
         }
       }
       if (!r.created) {
@@ -2032,11 +2063,11 @@ function makeHandlers(opts) {
           || original?.consumer_version !== row.consumer_version)) {
           throwErr('E_STATE', 'episode 已有更正；请基于最新记录继续更正', null, false)
         }
-        const rebuilt = original?.card_id ? rebuildArtifactScore(repo, inferKindOf(original.card_id), String(original.card_id)) : null
+        const rebuilt = original?.card_id ? await rebuildArtifactScore(repo, inferKindOf(original.card_id), String(original.card_id)) : null
         return { data: { episode_id: r.episode_id, recorded: false, duplicate: r.duplicate, score_rebuilt: !!rebuilt } }
       }
       // L5（§8.1）：episode 落账后重算所涉卡片计分投影（从不可变事实重放，不改历史行）
-      if (row.card_id) rebuildArtifactScore(repo, inferKindOf(row.card_id), String(row.card_id))
+      if (row.card_id) await rebuildArtifactScore(repo, inferKindOf(row.card_id), String(row.card_id))
       return {
         data: { episode_id: episodeId, recorded: true, outcome: args.outcome, withdrawn_releases: withdrawn.length },
         events: [{ name: 'know.episode.recorded', payload: { episode_id: episodeId, source_event_id: row.source_event_id, source_event_name: row.source_event_name, outcome: args.outcome, program_id: row.program_id, exec_run_id: row.exec_run_id, supersedes: row.supersedes, withdrawn_releases: withdrawn.map(r => r.release_id) } }],
@@ -2159,7 +2190,7 @@ function makeHandlers(opts) {
       })
       if (rev.status === 'eligible') repo.updateRevisionFlow(rev.revision_id, { status: 'published', eval_report_ref: rev.eval_report_ref })
       // L5（§8.1）：发布即重算该 artifact 计分投影（使用面变化随行更新）
-      rebuildArtifactScore(repo, rev.artifact_kind, rev.artifact_id)
+      await rebuildArtifactScore(repo, rev.artifact_kind, rev.artifact_id)
       return {
         data: {
           release_id: releaseId, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id,
@@ -2196,7 +2227,7 @@ function makeHandlers(opts) {
         if (rev && rev.status === 'published') repo.updateRevisionFlow(rel.revision_id, { status: 'retired', eval_report_ref: rev.eval_report_ref })
       }
       // L5（§8.1）：撤回即重算——撤回版本与回退版本的使用面均变化（计分重放，不改历史行）
-      rebuildArtifactScore(repo, rel.artifact_kind, rel.artifact_id)
+      await rebuildArtifactScore(repo, rel.artifact_kind, rel.artifact_id)
       return {
         data: {
           release_id: rel.release_id, revoked: true, revision_id: rel.revision_id,
@@ -2232,7 +2263,7 @@ function makeHandlers(opts) {
       }
       // L6：曝光落账同步触发单卡计分重算（Q22 逐域视图/学习面板的曝光计数须新鲜；
       // 单卡重算=聚合查询，量级小；不改历史行，幂等安全）
-      rebuildArtifactScore(repo, args.artifact_kind, String(args.artifact_id))
+      await rebuildArtifactScore(repo, args.artifact_kind, String(args.artifact_id))
       return {
         data: { exposure_id: exposureId, recorded: true, bucket },
         events: [{ name: 'know.exposure.recorded', payload: { exposure_id: exposureId, artifact_kind: args.artifact_kind, artifact_id: String(args.artifact_id), selected: args.selected !== false, program_id: programId || null } }],
@@ -2246,7 +2277,7 @@ function makeHandlers(opts) {
       // knowledge version. Such a claim is not an adoption or a method result.
       if (args.source_event_id && repo.adoptionBySource(args.source_event_id)) {
         const stored = repo.adoptionBySource(args.source_event_id)
-        rebuildArtifactScore(repo, stored.artifact_kind, stored.artifact_id)
+        await rebuildArtifactScore(repo, stored.artifact_kind, stored.artifact_id)
         return { data: { recorded: false, duplicate: 'source' } }
       }
       const skip = reason => ({ data: { recorded: false, skipped: true, reason } })
@@ -2276,7 +2307,7 @@ function makeHandlers(opts) {
           : null
         if (!legacy || ['archived', 'deprecated'].includes(legacy.status)) return skip('artifact_unresolved')
       }
-      const r = recordAdoption(repo, {
+      const r = await recordAdoption(repo, {
         artifact_kind: args.artifact_kind, artifact_id: args.artifact_id,
         revision_id: revisionId, card_version: digest,
         source_event_id: args.source_event_id || null, source_cmd: args.source_cmd || null,
@@ -2327,7 +2358,7 @@ function makeHandlers(opts) {
       // 落账后自动重算相关计分（可重算=从不可变事实重放；不改历史行）
       let rebuilt = null
       if (attribution) {
-        rebuilt = rebuildArtifactScore(repo, attribution.artifact_kind, attribution.artifact_id)
+        rebuilt = await rebuildArtifactScore(repo, attribution.artifact_kind, attribution.artifact_id)
       }
       return {
         data: { feedback_id: fbId, revision, recorded: true, tombstone, rating, attribution, score_rebuilt: !!rebuilt },
@@ -2406,14 +2437,14 @@ function makeHandlers(opts) {
     know_scores_rebuild: async (args, repo) => {
       const now = Date.now()
       if (args.artifact_ref && typeof args.artifact_ref === 'object' && args.artifact_ref.artifact_kind && args.artifact_ref.artifact_id) {
-        const one = rebuildArtifactScore(repo, String(args.artifact_ref.artifact_kind), String(args.artifact_ref.artifact_id))
+        const one = await rebuildArtifactScore(repo, String(args.artifact_ref.artifact_kind), String(args.artifact_ref.artifact_id))
         return {
           data: { rebuilt: one ? 1 : 0, scope: 'single', artifact: one ? { kind: one.artifact_kind, id: one.artifact_id } : null, score: one ? one.score : null },
           events: [{ name: 'know.scores.rebuilt', payload: { rebuilt: one ? 1 : 0, scope: 'single', artifact_kind: String(args.artifact_ref.artifact_kind), artifact_id: String(args.artifact_ref.artifact_id), ts: now } }],
           after: { rebuilt: one ? 1 : 0 },
         }
       }
-      const n = rebuildAllScores(repo)
+      const n = await rebuildAllScores(repo)
       return {
         data: { rebuilt: n, scope: 'all' },
         events: [{ name: 'know.scores.rebuilt', payload: { rebuilt: n, scope: 'all', ts: now } }],
@@ -2887,8 +2918,8 @@ function makeHandlers(opts) {
       stages.ranked = scored.length
 
       const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 50)
-      const selected = scored.slice(0, limit).map((it) => {
-        const score = repo.getScore(it.artifact_kind, it.artifact_id)
+      const selected = await Promise.all(scored.slice(0, limit).map(async (it) => {
+        const score = await rebuildArtifactScore(repo, it.artifact_kind, it.artifact_id, false)
         const out = {
           artifact_kind: it.artifact_kind, artifact_id: it.artifact_id, origin: it.origin,
           rank_score: Math.round(it._rank * 100) / 100,
@@ -2901,7 +2932,7 @@ function makeHandlers(opts) {
         if (it.doc) { out.title = it.doc.title; out.category = it.doc.category || null; out.curated = it.doc.status === 'curated' }
         if (score) out.evidence = { exposures: score.exposures, adoptions: score.adoptions, verified_positives: score.verified_positives, valid_cleans: score.valid_cleans, score: score.score, sample_size: score.sample_size }
         return out
-      })
+      }))
       const coverage = { gap: selected.length === 0, hits: selected.length, note: selected.length === 0 ? 'miss——用 know_gap_record 登记缺口，补建走 know_revision_propose 候选通道' : (selected.length < 3 ? 'low_coverage' : 'ok') }
       return {
         q, program_id: programId || null, family: family || null, surface: surface || null,
@@ -2916,7 +2947,8 @@ function makeHandlers(opts) {
     // 模型自评单列（self_reported 不进 verified_positives）；成本（请求/token/耗时）随卡聚合。
     know_learning_status: async (args, repo) => {
       const kindFilter = args.artifact_kind || ''
-      const scores = repo.listScores({ artifact_kind: kindFilter, limit: 500 }).rows
+      const storedScores = repo.listScores({ artifact_kind: kindFilter, limit: 500 }).rows
+      const scores = (await Promise.all(storedScores.map(s => rebuildArtifactScore(repo, s.artifact_kind, s.artifact_id, false)))).filter(Boolean)
       const fbCount = repo.feedbackCount()
       const gaps = repo.listGaps({ limit: 50 }).rows
       const activeReleases = repo.listReleases({ status: 'active', limit: 500 }).rows
@@ -2953,7 +2985,7 @@ function makeHandlers(opts) {
       const exposures = repo.listExposures({ artifact_kind: artifactKind, artifact_id: artifactId, limit: 20 })
       const adoptions = repo.listAdoptions({ artifact_kind: artifactKind, artifact_id: artifactId, limit: 20 })
       const feedback = repo.listFeedbackForArtifact(artifactKind, artifactId, 20)
-      const score = repo.getScore(artifactKind, artifactId)
+      const score = await rebuildArtifactScore(repo, artifactKind, artifactId, false)
       const trimEpisode = (e) => ({
         episode_id: e.episode_id, outcome: e.outcome, reason_code: e.reason_code,
         program_id: e.program_id, task_id: e.task_id, exec_run_id: e.exec_run_id, session_id: e.session_id,

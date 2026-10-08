@@ -1578,6 +1578,7 @@ function makeHandlers(opts) {
         const evidence = JSON.parse(row.evidence_json)
         return { id, trusted: true, finding_id: row.finding_id, program_id: repo.getFinding(row.finding_id)?.program_id || null,
           verdict: row.verdict, basis: row.basis, evidence_digest: row.evidence_digest, created_at: row.created_at,
+          evidence_ref: row.evidence_ref,
           corrects_verdict_id: evidence.corrects_verdict_id || null }
       }),
     }),

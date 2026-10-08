@@ -1233,3 +1233,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-07反证累计发布回填：2ee0d19已上线签封阴性同decision归并、独立审校显式更正旧阳性经历并撤回依赖发布的链路；原件与费用归属保留，乱序、拒写恢复及重放契约通过，详见27号§15.98。评测显式更正投影同批上线；历史无回执污染、终态翻案、完整计划采用/费用与收益验收仍待办，对应“未发布”以本节为准。
 
 2026-10-08独立重新审校增量（本地待发布）：正式false_positive也可被独立阳性审校明确更正。消费者按同Finding相反正式回执，定位原阴性/审校经历，追加inconclusive supersedes，保留原归属、费用和原件，撤出依赖发布并重算；新审校按verdict ID独立记账，避免共用run引用合并不同回执。消费失败仍pending，恢复后幂等处理，不重发HTTP。
+
+2026-10-08历史学习技术分治理（本地待发布）：评分重建和learning_status/learning_trace/retrieval_explain的证据投影重新读取正式技术来源，不接受历史machine/human-reviewed等标签代替证据。Oracle经历须关联decision/attempt、Program/Finding/task及签封原件；独立审校须关联同verdict回执和原证据引用。缺失/损坏/归属不符为未知，存储查询失败显式报错；只读查询不写know_scores，原episode与成本保留，scores_rebuild可持久重建。当前仍按artifact汇总，独立attempt去重、版本与适用条件隔离、学习状态完整分页及旧exp适配器排序尚未完成，不把此批记为全部历史真值治理。

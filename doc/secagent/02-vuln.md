@@ -962,3 +962,5 @@ export const repositoryV1 = {
 2026-10-08历史回执批量读取（本地待发布）：vuln_technical_receipts({ids})最多500个，返回每ID的trusted、来源关联、摘要、时间及显式更正目标；逐个损坏/弱回执为trusted=false，查询不可用则整体报错。用于历史评测投影，不访问目标，不将数据库旧status/confidence升级为真值。
 
 2026-10-08解析器归属接线（本地待发布）：onParserProposal保留单条proposal的vuln_type/Program/任务归属；显式null不回退为整批首项目。旧事件缺单条字段时兼容其事件归属，会话兼容envelope。类型仅作验证路由，未知/冲突保持null；不升级技术状态，不改已有候选分类。
+
+2026-10-08学习来源核验（本地待发布）：technical_receipts返回已核验回执的evidence_ref，供历史学习经历校验原始证据关联；不返回私有证据正文，不改变既有回执或Finding状态。
