@@ -503,6 +503,11 @@ export const VULN_MANIFEST = {
     },
   },
   queries: {
+    vuln_technical_receipts: {
+      actor: ['reactor', 'script', 'dashboard'],
+      params: schema({ ids: { type: 'array', items: int({ minimum: 1 }), minItems: 1, maxItems: 500 } }, ['ids']),
+      agent_note: '批量核验历史正式技术回执，损坏或旧弱回执返回trusted=false，不产生技术标签。',
+    },
     vuln_technical_verdict: {
       actor: ['reactor', 'script', 'dashboard'],
       params: schema({ id: int() }, ['id']),
@@ -1566,6 +1571,16 @@ function makeHandlers(opts) {
   }
 
   const queries = {
+    vuln_technical_receipts: async (args, repo) => ({
+      receipts: [...new Set(args.ids)].map(id => {
+        const row = repo.getTechnicalVerdict(id)
+        if (!row || !repo.technicalReceiptTrusted?.(row)) return { id, trusted: false, reason: row ? 'untrusted_receipt' : 'receipt_missing' }
+        const evidence = JSON.parse(row.evidence_json)
+        return { id, trusted: true, finding_id: row.finding_id, program_id: repo.getFinding(row.finding_id)?.program_id || null,
+          verdict: row.verdict, basis: row.basis, evidence_digest: row.evidence_digest, created_at: row.created_at,
+          corrects_verdict_id: evidence.corrects_verdict_id || null }
+      }),
+    }),
     vuln_get: async (args, repo) => {
       const row = repo.getFinding(args.id)
       if (!row) throwErr('E_NOT_FOUND', `finding #${args.id} 不存在`, '先 vuln_list 核实 id', false)

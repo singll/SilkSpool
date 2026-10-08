@@ -454,3 +454,5 @@ export const repositoryV1 = {
 2026-10-07评测更正发布回填：2ee0d19已部署corrects_verdict_id持久关联、同毫秒乱序处理、有效cases与include_superseded历史投影；本地/远端760项、隔离九域567项及UI80通过。生产历史/有效各469，无正式技术回执，因此本轮库存检查不证明真实更正收益；旧污染与导出重建仍待办。详见27号§15.98，对应“未发布”以本次状态为准。
 
 2026-10-08重新审校增量（本地待发布）：显式corrects_verdict_id支持confirmed与false_positive双向更正，均要求独立审校正式回执及同Finding相反旧回执。原始JSONL不删除，superseded投影及最新有效判定统计处理双向翻案；条件后来变化不自动更正历史。
+
+2026-10-08历史活评测治理（本地待发布）：eval_stats/eval_cases保留原verdict及JSONL，新增technical_verdict/technical_basis/truth_reason。批量查询vuln.technical_receipts校验完整旧回执、摘要、Finding/Program及更正关联；无回执、损坏/不匹配归unknown，不回退旧阳性。by_type的confirmed/false_positive仅计可信技术标签，新增unknown；technical_samples/technical_unknown独立计数，零有效分母fp_rate=null。by_label_source仍表示历史声明来源，不能当可信样本。查询不复用旧60秒缓存；文件或回执变化即时反映，回执服务失败显式错误。eval-live损坏JSON/行结构返回E_EVAL_HISTORY_CORRUPT，不静默吞行或伪装空数据。冻结数据集与既有报告的来源修订仍待治理。

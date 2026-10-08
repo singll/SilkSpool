@@ -271,6 +271,9 @@ function createRepo(db) {
         basis: verdict ? row.basis : null, verified_at: verdict ? row.created_at : null,
         reason: verdict ? null : row ? 'untrusted_receipt' : 'no_technical_receipt' }
     },
+    technicalReceiptTrusted(row) {
+      return !!row && receiptVerdict(row.verdict, row.basis, row.evidence_json, row.evidence_digest, row.operator, row.finding_id) === row.verdict
+    },
     recordTechnicalVerdict({ finding_id, verdict, basis, evidence_ref = null, evidence_digest = null, evidence_json, operator = null, created_at }) {
       const r = db.prepare(`INSERT INTO vuln_technical_verdicts
         (finding_id,verdict,basis,evidence_ref,evidence_digest,evidence_json,operator,created_at) VALUES (?,?,?,?,?,?,?,?)`)

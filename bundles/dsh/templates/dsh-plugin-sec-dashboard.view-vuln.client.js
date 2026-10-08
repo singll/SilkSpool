@@ -51,7 +51,8 @@ window.__ModuleLoader__.load({
       var fpTitle = ''
       if (evalData && evalData.by_type) {
         fpTitle = Object.keys(evalData.by_type).map(function (t) {
-          var s = evalData.by_type[t]; return t + '：确认 ' + s.confirmed + ' / 误报 ' + s.false_positive + '（误报率 ' + Math.round((s.fp_rate || 0) * 100) + '%）'
+          var s = evalData.by_type[t]; return t + '：确认 ' + s.confirmed + ' / 反证 ' + s.false_positive
+            + ' / 未知 ' + (s.unknown || 0) + '（误报率 ' + (s.fp_rate == null ? '未知' : Math.round(s.fp_rate * 100) + '%') + '）'
         }).join('\n')
       }
       return el('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '2px 0 8px' } },
@@ -65,7 +66,7 @@ window.__ModuleLoader__.load({
           onClick: function () { props.query && props.query.setFilter('noise', '1') },
         }, '待验证候选 ' + noiseN) : null,
         (evalData && evalData.total)
-          ? el('span', { style: { marginLeft: 'auto', color: uiCore.T.label3, ...uiCore.F.xxxs, cursor: fpTitle ? 'help' : 'default' }, title: fpTitle }, '评测回流 ' + evalData.total + ' 条判定')
+          ? el('span', { style: { marginLeft: 'auto', color: uiCore.T.label3, ...uiCore.F.xxxs, cursor: fpTitle ? 'help' : 'default' }, title: fpTitle }, '评测记录 ' + evalData.total + ' · 技术样本 ' + (evalData.technical_samples || 0) + ' · 未知 ' + (evalData.technical_unknown || 0))
           : null)
     }
 

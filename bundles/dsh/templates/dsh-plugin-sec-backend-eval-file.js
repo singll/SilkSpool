@@ -84,7 +84,22 @@ function createRepo(opts) {
     beijingDate,
 
     // ---- eval-live.jsonl（追加只增不改，INV-2）----
-    readLive() { return readJsonlLines(LIVE) },
+    readLive() {
+      let text
+      try { text = fs.readFileSync(LIVE, 'utf8') } catch (error) {
+        if (error.code === 'ENOENT') return []
+        throw error
+      }
+      return text.split('\n').filter(line => line.trim()).map((line, index) => {
+        try {
+          const row = JSON.parse(line)
+          if (!row || Array.isArray(row) || typeof row !== 'object' || !Number.isInteger(row.finding_id)) throw new Error('invalid row')
+          return row
+        } catch {
+          throw Object.assign(new Error(`评测历史第${index + 1}条记录损坏，不能作为空数据继续`), { code: 'E_EVAL_HISTORY_CORRUPT' })
+        }
+      })
+    },
     appendCase(rec) {
       fs.mkdirSync(evalDir, { recursive: true })
       // The gateway cache expires. Re-read durable rows synchronously with the append

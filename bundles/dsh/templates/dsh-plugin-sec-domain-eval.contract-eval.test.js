@@ -230,12 +230,64 @@ test('eval_stats: live 聚合（total/by_type/fp_rate）+ 报告摘要为空', a
   const r = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
   assert.equal(r.ok, true)
   assert.equal(r.data.live.total, 4)
-  assert.equal(r.data.live.by_type.sqli.confirmed, 2)
-  assert.equal(r.data.live.by_type.sqli.false_positive, 1)
-  assert.equal(r.data.live.by_type.sqli.fp_rate, 0.33)
-  assert.equal(r.data.live.by_type.xss.confirmed, 1)
+  assert.equal(r.data.live.by_type.sqli.confirmed, 0)
+  assert.equal(r.data.live.by_type.sqli.false_positive, 0)
+  assert.equal(r.data.live.by_type.sqli.unknown, 3)
+  assert.equal(r.data.live.by_type.sqli.fp_rate, null)
+  assert.equal(r.data.live.by_type.xss.confirmed, 0)
+  assert.equal(r.data.live.technical_unknown, 4)
   assert.equal(r.data.last_fp, null)
   assert.equal(r.data.last_contract, null)
+})
+
+test('27 history: receipt corruption, out-of-band label edits and query failure never reuse stale truth', async t => {
+  const env = makeEnv()
+  t.after(() => env.bus._internal.close())
+  env.bus.registry.register(buildVulnDomain({ dataDir: env.dataDir }))
+  fs.mkdirSync(path.join(env.dataDir, 'results/run_history_fixture'), { recursive: true })
+  fs.writeFileSync(path.join(env.dataDir, 'results/run_history_fixture/meta.json'), '{}')
+  const candidate = await env.bus.dispatch('vuln', 'register_candidate', { title: '历史真值投影原件审校测试候选',
+    host: 'a.example.com', severity: 'medium', source: 'history-fixture' }, { actor: 'dashboard' })
+  const confirmed = await env.bus.dispatch('vuln', 'confirm', { finding_id: candidate.data.id, evidence: 'run_history_fixture',
+    review: { basis: '独立核验目标原始报文及完整正常反例对照，确认保护属性受到违反',
+      reproduction_steps: '使用证据中的请求与身份关联复现受保护数据读取',
+      impact: '非所有者未经授权读取明确保护的业务对象字段' } }, { actor: 'dashboard', operator: 'reviewer' })
+  assert.equal(confirmed.ok, true, confirmed.error?.message)
+  await env.bus._internal.dispatcherTick()
+  const db = env.bus._internal.db()
+  const receipt = { ...db.prepare('SELECT * FROM vuln_technical_verdicts WHERE finding_id=?').get(candidate.data.id) }
+  const file = path.join(env.evalDir, 'eval-live.jsonl')
+  const original = fs.readFileSync(file, 'utf8')
+  let stats = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(stats.data.live.technical_samples, 1)
+  db.prepare("UPDATE vuln_technical_verdicts SET evidence_json='{}' WHERE id=?").run(receipt.id)
+  stats = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(stats.data.live.technical_samples, 0)
+  assert.equal(stats.data.live.technical_unknown, 1)
+  assert.equal(stats.data.live.by_type.unknown.fp_rate, null)
+  assert.equal(fs.readFileSync(file, 'utf8'), original)
+  db.prepare('UPDATE vuln_technical_verdicts SET evidence_json=? WHERE id=?').run(receipt.evidence_json, receipt.id)
+  stats = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(stats.data.live.technical_samples, 1)
+  const forged = { ...JSON.parse(original.trim()), verdict: 'false_positive', evidence_digest: 'b'.repeat(64),
+    ts: receipt.created_at + 1, source: 'legacy-file' }
+  fs.appendFileSync(file, JSON.stringify(forged)+'\n')
+  stats = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(stats.data.live.technical_samples, 0, 'latest unsupported label stays unknown, never falls back to an older positive')
+  assert.equal(stats.data.live.technical_unknown, 1)
+  const untrusted = await env.bus.query('eval', 'cases', {}, { actor: 'dashboard' })
+  assert.equal(untrusted.rows[0].technical_verdict, 'unknown')
+  const broken = buildEvalDomain({ dataDir: env.dataDir, evalDir: env.evalDir,
+    query: async () => ({ ok: false, error: { code: 'E_BUSY', message: 'temporary unavailable' } }) })
+  const repo = broken.backend.factory()
+  await assert.rejects(() => broken.handlers.queries.eval_stats({}, repo, { actor: 'dashboard' }), /temporary unavailable/)
+  const preserved = fs.readFileSync(file, 'utf8')
+  fs.appendFileSync(file, '{broken\n')
+  const corrupt = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(corrupt.ok, false)
+  assert.equal(corrupt.error.code, 'E_EVAL_HISTORY_CORRUPT')
+  fs.writeFileSync(file, preserved)
+  assert.equal((await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })).data.live.technical_unknown, 1)
 })
 
 test('eval_cases: verdict 过滤 + 行数=total + 默认全量', async () => {
@@ -477,18 +529,23 @@ test('27 E13/L05: equal-time correction precedes a late positive event while pre
   assert.deepEqual(readLive(env.evalDir), history)
 })
 
-test('27 E13/L05: equal-time separate experiments use receipt order and keep both labels available', async () => {
+test('27 E13/L05: invented receipt IDs retain history as unknown instead of technical samples', async () => {
   const env = makeEnv()
+  env.bus.registry.register(buildVulnDomain({ dataDir: env.dataDir }))
+  await env.bus.query('vuln', 'list', {}, { actor: 'dashboard' })
   const now = Date.now()
   for (const [id, verdict] of [[12, 'false_positive'], [11, 'confirmed']]) {
     const result = await env.bus.dispatch('eval', 'case_append', { finding_id: 1, verdict,
       technical_verdict_id: id, evidence_digest: 'a'.repeat(64), program_id: 'test-src', ts: now,
     }, { actor: 'system' })
-    assert.equal(result.ok, true, result.error?.message)
+    assert.equal(result.error?.code, 'E_INVARIANT', 'new writes cannot reserve an invented receipt identity')
+    fs.appendFileSync(path.join(env.evalDir, 'eval-live.jsonl'), JSON.stringify({ finding_id: 1, verdict,
+      technical_verdict_id: id, evidence_digest: 'a'.repeat(64), program_id: 'test-src', ts: now })+'\n')
   }
   const stats = await env.bus.query('eval', 'stats', {}, { actor: 'dashboard' })
   assert.equal(stats.data.live.by_type.unknown.confirmed, 0)
-  assert.equal(stats.data.live.by_type.unknown.false_positive, 1)
+  assert.equal(stats.data.live.by_type.unknown.false_positive, 0)
+  assert.equal(stats.data.live.technical_unknown, 1)
   assert.equal(stats.data.live.superseded_total, 0, 'new experiment alone does not refute earlier history')
   assert.equal((await env.bus.query('eval', 'cases', {}, { actor: 'dashboard' })).total, 2)
   env.bus._internal.close()
@@ -1106,7 +1163,9 @@ test('L3: 标签去重与来源可追溯——eval_stats 按 finding 最新裁�
   assert.equal(stats.data.live.unique_findings, 2, '按 finding 最新裁决去重')
   assert.equal(stats.data.live.duplicates_collapsed, 1)
   assert.equal(stats.data.live.by_type.idor.confirmed, 0, '翻案后 idor 不再计 confirmed')
-  assert.equal(stats.data.live.by_type.idor.false_positive, 1)
+  assert.equal(stats.data.live.by_type.idor.false_positive, 0)
+  assert.equal(stats.data.live.technical_unknown, 2)
+  assert.equal(stats.data.live.technical_samples, 0)
   assert.equal(stats.data.live.by_label_source['human-reviewed'], 1)
   assert.equal(stats.data.live.by_label_source['vendor-confirmed'], 1)
   assert.equal(stats.data.live.by_label_source['model-proposed'] || 0, 0, '被翻案的旧标签不计入最新口径')

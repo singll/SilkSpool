@@ -377,9 +377,7 @@ function makeHandlers(opts) {
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const schedule = opts.schedule || ((fn) => { const t = setTimeout(fn, 0); t.unref?.(); return t })
   const executor = opts.executor || makeDefaultExecutor({ ...opts, dataDir })
-  const statsCache = new Map()
 
-  function clearStatsCache() { statsCache.clear() }
 
   function selectCases(repo, kind, requested) {
     const seed = repo.readSeed(kind)
@@ -433,6 +431,16 @@ function makeHandlers(opts) {
 
   const commands = {
     eval_case_append: async (args, repo) => {
+      if (args.technical_verdict_id) {
+        const result = await queryRef?.('vuln', 'technical_receipts', { ids: [args.technical_verdict_id] }, { actor: 'reactor' })
+        if (!result?.ok) throwErr(result?.error?.code || 'E_BACKEND_UNAVAILABLE', result?.error?.message || '技术回执不可读', null, true)
+        const receipt = result.data.receipts[0]
+        if (!receipt?.trusted || receipt.finding_id !== args.finding_id || receipt.program_id !== (args.program_id || null)
+          || receipt.verdict !== args.verdict || receipt.evidence_digest !== args.evidence_digest
+          || (receipt.corrects_verdict_id || null) !== (args.corrects_verdict_id || null)) {
+          throwErr('E_INVARIANT', '评测标签必须绑定完整正式技术回执，不能自填编号或关联', null)
+        }
+      }
       if (args.corrects_verdict_id) {
         const receipt = await queryRef?.('vuln', 'technical_verdict', { id: args.technical_verdict_id }, { actor: 'reactor' })
         if (!receipt?.ok) throwErr(receipt?.error?.code || 'E_BACKEND_UNAVAILABLE', receipt?.error?.message || '更正回执不可读', null)
@@ -459,7 +467,6 @@ function makeHandlers(opts) {
         ts: args.ts || Date.now(),
       }
       const r = repo.appendCase(rec)
-      clearStatsCache()
       return {
         data: { finding_id: rec.finding_id, verdict: rec.verdict, line: r.line, source: rec.source, replay: r.replay },
         events: [{
@@ -654,18 +661,34 @@ function makeHandlers(opts) {
     },
   }
 
-  function visibleLive(repo, hideHidden = false) {
+  async function visibleLive(repo, hideHidden = false) {
     const rows = repo.readLive().filter(r => !hideHidden || r?.visibility !== 'hidden')
-    const corrections = new Set(rows.filter(r => r.corrects_verdict_id && r.technical_verdict_id)
+    const ids = [...new Set(rows.map(r => r.technical_verdict_id).filter(id => Number.isInteger(id) && id > 0))]
+    const receipts = new Map()
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const result = await queryRef?.('vuln', 'technical_receipts', { ids: ids.slice(offset, offset + 500) }, { actor: 'reactor' })
+      if (!result?.ok) throwErr(result?.error?.code || 'E_BACKEND_UNAVAILABLE', result?.error?.message || '历史技术回执查询不可用', null, true)
+      for (const receipt of result.data.receipts) receipts.set(receipt.id, receipt)
+    }
+    const projected = rows.map(r => {
+      const receipt = receipts.get(r.technical_verdict_id)
+      const trusted = receipt?.trusted === true && receipt.finding_id === r.finding_id && receipt.program_id === (r.program_id || null)
+        && receipt.evidence_digest === r.evidence_digest && receipt.verdict === r.verdict
+        && (receipt.corrects_verdict_id || null) === (r.corrects_verdict_id || null)
+      return { ...r, technical_verdict: trusted ? r.verdict : 'unknown',
+        technical_basis: trusted ? receipt.basis : null,
+        truth_reason: trusted ? null : r.technical_verdict_id ? 'untrusted_receipt_or_association' : 'legacy_label_without_receipt' }
+    })
+    const corrections = new Set(projected.filter(r => r.technical_verdict !== 'unknown' && r.corrects_verdict_id && r.technical_verdict_id)
       .map(r => `${r.program_id || ''}|${r.finding_id}|${r.corrects_verdict_id}`))
-    return rows.map(r => ({ ...r, superseded: !!r.technical_verdict_id
+    return projected.map(r => ({ ...r, superseded: !!r.technical_verdict_id
       && corrections.has(`${r.program_id || ''}|${r.finding_id}|${r.technical_verdict_id}`) }))
   }
 
-  function aggregateLive(repo, hideHidden = false) {
+  async function aggregateLive(repo, hideHidden = false) {
     // L3（设计 §7.2）：计数以每个 finding 最新有效裁决去重（翻案产生新行，聚合取最新）；
     // label_source 来源级别分列——模型触发的 confirmed 只是标签候选，来源可追溯。
-    const raw = visibleLive(repo, hideHidden)
+    const raw = await visibleLive(repo, hideHidden)
     const effective = raw.filter(r => !r.superseded)
     const latestByFinding = new Map()
     for (const r of effective) {
@@ -680,18 +703,22 @@ function makeHandlers(opts) {
     const byLabel = {}
     for (const r of latestByFinding.values()) {
       const t = r.vuln_type || 'unknown'
-      if (!byType[t]) byType[t] = { confirmed: 0, false_positive: 0 }
-      if (r.verdict === 'confirmed') byType[t].confirmed++
-      else if (r.verdict === 'false_positive') byType[t].false_positive++
+      if (!byType[t]) byType[t] = { confirmed: 0, false_positive: 0, unknown: 0 }
+      if (r.technical_verdict === 'confirmed') byType[t].confirmed++
+      else if (r.technical_verdict === 'false_positive') byType[t].false_positive++
+      else byType[t].unknown++
       const ls = r.label_source || null
       if (ls) byLabel[ls] = (byLabel[ls] || 0) + 1
     }
     for (const t of Object.keys(byType)) {
       const s = byType[t]
       const n = s.confirmed + s.false_positive
-      s.fp_rate = n ? Math.round((s.false_positive / n) * 100) / 100 : 0
+      s.fp_rate = n ? Math.round((s.false_positive / n) * 100) / 100 : null
     }
-    return { total: raw.length, superseded_total: raw.length - effective.length, unique_findings: latestByFinding.size, duplicates_collapsed: raw.length - latestByFinding.size, by_type: byType, by_label_source: byLabel }
+    return { total: raw.length, superseded_total: raw.length - effective.length, unique_findings: latestByFinding.size,
+      technical_samples: Object.values(byType).reduce((sum, row) => sum + row.confirmed + row.false_positive, 0),
+      technical_unknown: Object.values(byType).reduce((sum, row) => sum + row.unknown, 0),
+      duplicates_collapsed: raw.length - latestByFinding.size, by_type: byType, by_label_source: byLabel }
   }
 
   function summaryFp(repo) {
@@ -736,24 +763,21 @@ function makeHandlers(opts) {
   const queries = {
     eval_stats: async (_args, repo, ctx) => {
       const hideHidden = ctx?.actor === 'model'
-      const cached = statsCache.get(hideHidden)
-      if (cached && (Date.now() - cached.at) < 60000) return cached.value
       const candidate = summaryCandidate(repo)
       const value = {
-        live: aggregateLive(repo, hideHidden),
+        live: await aggregateLive(repo, hideHidden),
         last_fp: summaryFp(repo),
         last_contract: summaryContract(repo),
         last_range: summaryRange(repo),
         last_candidate: hideHidden && candidate?.visibility === 'hidden' ? null : candidate,
       }
-      statsCache.set(hideHidden, { at: Date.now(), value })
       return value
     },
     eval_cases: async (args, repo, ctx) => {
       const verdict = String(args.verdict || '')
       const vulnType = String(args.vuln_type || '')
       const vis = String(args.visibility || '')
-      let rows = visibleLive(repo, ctx?.actor === 'model')
+      let rows = await visibleLive(repo, ctx?.actor === 'model')
       if (!args.include_superseded) rows = rows.filter(r => !r.superseded)
       // INV-6（L3 防泄漏）：隐藏集行对 actor=model 不可见（谓词过滤，非报错——不暴露存在性差异以外的信息）
       if ((ctx && ctx.actor) === 'model') rows = rows.filter((r) => (r.visibility || 'dev') !== 'hidden')
