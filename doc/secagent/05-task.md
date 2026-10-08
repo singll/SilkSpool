@@ -1509,3 +1509,5 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 2026-10-08 Reviewer真值与失败分离（本地待发布）：任务result/run.note仅提取Finding引用，verdict文本或capsule字符串不授予技术成功。读取vuln_get独立technical_state及正式回执，要求同Program、Finding归本任务或其intent指定、回执在任务开始/结束窗口内；controlled_oracle另核exec.authz_evidence。可靠阴性完成实验但不增加confirmed。读取故障保留待重试，不退化采用自报。忽略/重复/假阳处理事件不再给host策略累计连败；任务失败采用冷却重开，不据处理状态拉黑技术家族。旧strategy_dedupe的历史失败/黑名单尚需有证据的投影治理，不自动清库。
 
 2026-10-08执行归属查询（本地待发布）：active_by_session可带内部worker_run_id，核验workers运行态、task.active_run_id及相同认领时间，已有worker_session_id必须匹配；无task的当前worker明确返回unassigned，不伪造任务。无worker运行号时，仅接受当前认领、未结束且唯一的task_runs关联，旧会话历史或歧义均返回null。此为CLI入口认领校验，不代表长请求期间或其它执行入口的完整fencing已经完成。
+
+2026-10-08发布状态：固定1cce966累计包生产stats超过10秒，已完整回退dfd3b11，不能将本地终态审校/Reviewer/历史评测/解析归属及后续增量标记为上线。六服务七timer与原预算/Scope保持，回退后新NAS4145419c…（41库55.71秒/恢复6.55秒）、UI80/80通过；详情见27号§15.115。

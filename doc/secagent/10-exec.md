@@ -868,3 +868,5 @@ Bellkeeper运行容器处于running，宿主checkout为`59b1aa3`，核对模型/
 2026-10-08解析观察保留（本地779项通过，未部署）：nuclei JSONL不再按tech-detect/http-trace/http-methods等模板名正则跳过记录；结构可用观察均进入proposal及候选链，仍为tentative。原始stdout保留，类型只按明确tag提示，未知不猜。候选队列治理与技术判定由vuln领域负责，不把解析器静默丢弃当降噪。真实本地CLI→proposal→总线→候选及重放联合171项、最终全域779项通过。
 
 2026-10-08执行期认领（本地783项通过，未部署）：CLI及受控HTTP开始、运行期每250毫秒、返回前重验宿主worker认领，比较run/task/认领时间/Program；查询一秒超时或失效取消子进程组/HTTP。CLI不产成功解析提案，HTTP清空正文且不继续跳转，meta/签封记录保留worker/task。任务Program与目标不符预先拒绝，手工无任务worker沿用已有运行状态核验。依赖Node事件循环，不承诺阻塞时硬实时撤销；其它执行入口与完整多进程fencing未据此关账。详见27号§15.114。
+
+2026-10-08发布状态：固定1cce966累计包生产stats超过10秒，已完整回退dfd3b11，不能将本地终态审校/Reviewer/历史评测/解析归属及后续增量标记为上线。六服务七timer与原预算/Scope保持，回退后新NAS4145419c…（41库55.71秒/恢复6.55秒）、UI80/80通过；详情见27号§15.115。

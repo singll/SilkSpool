@@ -151,3 +151,5 @@ spool exec csai 'sudo bash /opt/silkspool/dsh/silksec-ops.sh archive-release --p
 - 2026-10-08启动日志读取改进（本地待发布）：current_launch_url按systemd ExecMainStartTimestamp限定journal时间，仍核验当前PID/InvocationID并读后复核。journalctl的15秒超时转为可重试的未就绪错误，仅允许已有启动总窗口内继续，不使用部分凭据；RPC10秒不变。真实首次故障、交错测量及6+7项回归见27号§15.108，未证明全部间歇超时根治。
 
 - 2026-10-08终态审校ea57fdb发布失败已完整回退：新NAS45314f3c…、冻结8ebb60c4…完整恢复/65表、新旧应用、九域574项及worker19项通过；生产journalctl15秒超时拒绝发布。北京时间18:43:39–19:46:42冻结63分02秒后原dfd3b11与六服务七timer恢复，resume_errors=[]，20原版摘要/业务不变量通过。回退后NAS e72e4ad6e34490eea953676291f8097295ef643fa58808338a4b488c630feee5（41库417.46秒/同快照恢复7.01秒）、UI原门禁重跑80/80通过，首轮UI超时保留；23份回执封存，范围排除不变。详见27号§15.108。
+
+2026-10-08发布状态：固定1cce966累计包生产stats超过10秒，已完整回退dfd3b11，不能将本地终态审校/Reviewer/历史评测/解析归属及后续增量标记为上线。六服务七timer与原预算/Scope保持，回退后新NAS4145419c…（41库55.71秒/恢复6.55秒）、UI80/80通过；详情见27号§15.115。
