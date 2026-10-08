@@ -796,7 +796,7 @@ export const TASK_MANIFEST = {
     },
     task_active_by_session: {
       actor: ['system', 'scheduler', 'dashboard', 'reactor'],
-      params: schema({ session_id: str({ minLength: 1 }), max_age_ms: int() }, ['session_id']),
+      params: schema({ session_id: str({ minLength: 1 }), max_age_ms: int(), worker_run_id: str({ minLength: 1 }) }, ['session_id']),
       agent_note: '会话→运行中任务反查（内部）。',
     },
     task_drift: {
@@ -3405,7 +3405,7 @@ function makeHandlers(opts) {
       return row || null
     },
     task_active_by_session: async (args, repo) => {
-      const row = repo.activeTaskBySession(args.session_id, args.max_age_ms || 6 * 3600 * 1000)
+      const row = repo.activeTaskBySession(args.session_id, args.max_age_ms || 6 * 3600 * 1000, args.worker_run_id)
       return row || null
     },
     task_drift: async (args, repo) => {

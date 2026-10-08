@@ -546,7 +546,15 @@ function parseJsonlNuclei(text, ctx) {
     if (!host) continue
     const rec = { title: info.name || o['template-id'] || 'nuclei finding', severity: normSev(info.severity), host, url: matched, template_id: o['template-id'] || '', evidence: `run_id:${ctx.runId} template:${o['template-id'] || ''}` }
     if (!passesRuleLayer('nuclei', rec)) continue
-    findings.push({ title: rec.title, severity: rec.severity, host: rec.host, url: rec.url, evidence: rec.evidence })
+    // A tag is a routing hint, never proof of a vulnerability. Do not turn
+    // transport type ("http") or an unknown/ambiguous template into a class.
+    const aliases = { idor: 'idor', sqli: 'sqli', 'sql-injection': 'sqli', ssrf: 'ssrf',
+      xss: 'xss', lfi: 'file', 'path-traversal': 'file', 'file-read': 'file',
+      'unauth-access': 'authz', 'auth-bypass': 'authz', 'info-disclosure': 'info_disclosure' }
+    const tags = Array.isArray(info.tags) ? info.tags : String(info.tags || '').split(',')
+    const classes = [...new Set(tags.map(tag => aliases[String(tag).trim().toLowerCase()]).filter(Boolean))]
+    findings.push({ title: rec.title, severity: rec.severity, host: rec.host, url: rec.url, evidence: rec.evidence,
+      ...(classes.length === 1 ? { vuln_type: classes[0] } : {}) })
   }
   return { assets: [], endpoints: [], findings, fingerprints: [] }
 }
@@ -1209,6 +1217,11 @@ function makeHandlers(opts) {
       const { runId, runDir } = repo.createRunDir('r')
       currentTool = toolName
       const sessionId = ctx.session_id || null
+      const workerRunId = process.env.SEC_WORKER_RUN_ID || null
+      const taskContext = sessionId && queryRef ? await queryRef('task', 'active_by_session',
+        { session_id: sessionId, ...(workerRunId ? { worker_run_id: workerRunId } : {}) }, { actor: 'system' }) : null
+      const activeTask = taskContext?.ok ? taskContext.data : null
+      if (workerRunId && (!taskContext?.ok || !activeTask)) throwErr('E_EXEC_CLAIM_REQUIRED', 'worker 当前执行归属不可核验或认领已失效', null)
 
       const guardAudit = []
       // G0-G9 守卫链（fail-closed，逐条）
@@ -1300,7 +1313,7 @@ function makeHandlers(opts) {
         fs.readSync(tailFd, buffer, 0, buffer.length, Math.max(0, size - buffer.length))
         result.stderr = buffer.toString('utf8')
       } finally { fs.closeSync(tailFd) }
-      const meta = { run_id: runId, tool: toolName, argv: [binary, ...argv], params, started_at: new Date(started).toISOString(), duration_ms: Date.now() - started, exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null, cancelled: result.cancelled, timed_out: result.timed_out, risk: manifest.risk || 'passive', stage: manifest.stage || null, sandboxed: !!sandbox, session_id: sessionId, program_id: programId }
+      const meta = { run_id: runId, tool: toolName, argv: [binary, ...argv], params, started_at: new Date(started).toISOString(), duration_ms: Date.now() - started, exit_code: result.code ?? null, signal: result.signal || null, error: result.error || null, cancelled: result.cancelled, timed_out: result.timed_out, risk: manifest.risk || 'passive', stage: manifest.stage || null, sandboxed: !!sandbox, session_id: sessionId, program_id: programId, task_id: activeTask?.task_id ?? null }
       repo.writeCmd(runDir, (sandbox ? '[sandbox] ' : '') + [binary, ...argv].join(' ') + '\n')
       repo.writeMeta(runDir, meta)
 
@@ -1315,6 +1328,15 @@ function makeHandlers(opts) {
       try { stdoutText = repo.readFile(path.join(runDir, 'stdout.log')) || '' } catch { /* 无输出 */ }
       // parser proposal（store 语义废止：只写 proposal.json + 事件，不落库）
       const proposal = (manifest.parser && result.code === 0 && !result.error && !result.cancelled && !result.timed_out && stdoutText) ? runParser(manifest, toolName, runId, stdoutText, programId) : null
+      if (proposal) {
+        proposal.session_id = sessionId
+        proposal.task_id = activeTask?.task_id ?? null
+        for (const finding of proposal.findings) {
+          const attribution = checkTarget(finding.url || finding.host)
+          finding.program_id = attribution.allow ? attribution.program || null : null
+          finding.task_id = finding.program_id && finding.program_id === activeTask?.program_id ? activeTask.task_id : null
+        }
+      }
       if (proposal) repo.writeProposal(runDir, proposal)
       if (proposal) {
         if (proposal.counts.assets > 0 || proposal.counts.fingerprints > 0) {
@@ -1335,6 +1357,10 @@ function makeHandlers(opts) {
           run_id: runId, tool: toolName, stage: meta.stage, risk: meta.risk,
           exit_code: 0, duration_ms: meta.duration_ms, sandboxed: !!sandbox, program_id: programId,
         } })
+      }
+      for (const event of events) {
+        event.payload.session_id = sessionId
+        event.payload.task_id = activeTask?.task_id ?? null
       }
       compactProposalEvents(events, proposal)
       const lines = stdoutText.split('\n')

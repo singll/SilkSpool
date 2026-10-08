@@ -1682,6 +1682,8 @@ function makeHandlers(opts) {
       const failures = []
       for (const f of list) {
         const title = String(f.title || `${f.host || ''} 被动审计候选：${tool}`)
+        const programId = Object.hasOwn(f, 'program_id') ? f.program_id : payload.program_id
+        const taskId = Object.hasOwn(f, 'task_id') ? f.task_id : payload.task_id
         try {
           const r = await dispatchRef('vuln', 'register_candidate', {
             title,
@@ -1690,8 +1692,11 @@ function makeHandlers(opts) {
             url: String(f.url || ''),
             evidence: f.evidence || (runId ? `run_id:${runId}` : ''),
             source: `parser:${tool}`,
+            ...(typeof f.vuln_type === 'string' && f.vuln_type.trim() ? { vuln_type: f.vuln_type.trim() } : {}),
+            ...(programId ? { program_id: String(programId) } : {}),
+            ...(Number.isInteger(taskId) && taskId > 0 ? { task_id: taskId } : {}),
             ...(f.external_id ? { external_id: String(f.external_id) } : {}),
-          }, { actor: 'script', identity: `parser:${tool}:${runId}`, session_id: payload.session_id || null })
+          }, { actor: 'script', identity: `parser:${tool}:${runId}`, session_id: payload.session_id || envelope.session_id || null })
           if (r.ok) registered++
           else if (r.error && r.error.retryable) { retryableFailed++; failures.push({ title, code: r.error.code, retryable: true }) }
           else { dropped++; failures.push({ title, code: r.error && r.error.code, message: r.error && r.error.message, retryable: false }) }

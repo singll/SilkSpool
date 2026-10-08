@@ -862,3 +862,5 @@ Bellkeeper运行容器处于running，宿主checkout为`59b1aa3`，核对模型/
 2026-10-06 L01/L02增量（本地，待发布）：新增authz_evidence查询（reactor/script/dashboard），只核验历史判定签封及其全部HTTP原件，返回historical_only、从原件汇总的尝试跳数/耗时及一致会话引用。它不请求目标、不要求现役profile/Scope，不可用于放宽authz_decision一小时确认门禁；原判定返回结构与capsule摘要保持兼容。
 
 2026-10-07发布回填：CLI/HTTP终态事件、进程组收尾及authz_evidence历史签封读取已上线；九域555项/真实worker19项与生产RPC通过。历史读取不重开当前确认时效，不放宽Scope；主动setsid逃逸仍需外部隔离边界。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。
+
+2026-10-08解析器候选归属（本地待发布）：nuclei从明确tags映射路由类型，未知或多类冲突保持null，不用传输type或标题猜真值。各Finding按输出目标重新匹配Scope的Program，只有同Program才关联当前任务；范围外输出可作未归属候选，不据此授权后续请求。CLI在spawn前通过task.active_by_session核验宿主SEC_WORKER_RUN_ID的当前认领，旧worker拒绝；手工无任务worker保持可用。meta/proposal/事件保留任务和会话，事件压缩与重放保持归属。其它执行入口与执行中认领撤销仍待完整fencing。

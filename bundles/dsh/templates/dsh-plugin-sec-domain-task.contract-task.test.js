@@ -78,6 +78,31 @@ function readEvents(dir) {
   return out
 }
 
+test('27 E13: CLI task attribution excludes stale claims, reused sessions and ambiguous active runs', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const current = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '解析器运行归属' }, { actor: 'model' })
+  assert.equal(current.ok, true, current.error?.message)
+  const db = bus._internal.db(), id = current.data.task_id, started = Date.now()
+  db.prepare("UPDATE tasks SET status='running',started_at=?,active_run_id='wcurrent' WHERE id=?").run(started, id)
+  db.prepare("INSERT INTO workers(run_id,task_id,status,claim_started_at,worker_session_id) VALUES('wcurrent',?,'running',?,'child')").run(id, started)
+  const query = extra => bus.query('task', 'active_by_session', { session_id: 'child', ...extra }, { actor: 'system' })
+  assert.equal((await query({ worker_run_id: 'wcurrent' })).data.task_id, id)
+  db.prepare("INSERT INTO workers(run_id,status,started_at) VALUES('wmanual','running',?)").run(started)
+  assert.equal((await query({ worker_run_id: 'wmanual' })).data.unassigned, true)
+  assert.equal((await query({ worker_run_id: 'wcurrent', session_id: 'other-child' })).data, null)
+  db.prepare('UPDATE tasks SET started_at=? WHERE id=?').run(started + 1, id)
+  assert.equal((await query({ worker_run_id: 'wcurrent' })).data, null, 'old worker cannot bind a newer claim')
+  db.prepare("INSERT INTO task_runs(task_id,run_id,started_at,session_id) VALUES(?,'wold',?,'child')").run(id, started)
+  assert.equal((await query({})).data, null, 'same session on prior history is not current execution')
+  db.prepare("INSERT INTO task_runs(task_id,run_id,started_at,session_id) VALUES(?,'wcurrent',?,'child')").run(id, started + 1)
+  assert.equal((await query({})).data.task_id, id)
+  db.prepare("INSERT INTO tasks(program_id,objective,status,started_at,active_run_id) VALUES('test-src','ambiguous','running',?,'wsecond')").run(started)
+  const second = db.prepare("SELECT id FROM tasks WHERE active_run_id='wsecond'").get().id
+  db.prepare("INSERT INTO task_runs(task_id,run_id,started_at,session_id) VALUES(?,'wsecond',?,'child')").run(second, started)
+  assert.equal((await query({})).data, null)
+})
+
 // ---------------------------------------------------------------------------
 // L0（2026-09-16 学习专项 K6）：task 流程守卫异常显式失败——ledger 查询抛错
 // 不得被当成"无缺失"静默放行

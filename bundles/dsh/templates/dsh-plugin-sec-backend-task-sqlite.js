@@ -763,16 +763,31 @@ function createRepo(db) {
       const total = db.prepare('SELECT COUNT(*) AS n FROM tasks WHERE program_id = ?').get(String(programId)).n
       return { program_id: programId, total, by_phase_status: rows }
     },
-    activeTaskBySession(session_id, maxAgeMs) {
+    activeTaskBySession(session_id, maxAgeMs, workerRunId = null) {
       if (!session_id) return null
       const cutoff = repo.now() - maxAgeMs
-      const r = db.prepare(`
+      if (workerRunId) {
+        const unassigned = db.prepare(`SELECT run_id FROM workers WHERE run_id=? AND task_id IS NULL
+          AND status='running' AND started_at>=? AND (worker_session_id IS NULL OR worker_session_id=?)`)
+          .get(String(workerRunId), cutoff, String(session_id))
+        if (unassigned) return { run_id: unassigned.run_id, task_id: null, program_id: null, unassigned: true }
+        const worker = db.prepare(`
+          SELECT t.id AS task_id,t.program_id,t.phase,t.objective,w.run_id,w.claim_started_at AS started_at
+          FROM workers w JOIN tasks t ON t.id=w.task_id
+          WHERE w.run_id=? AND w.status='running' AND t.status='running'
+            AND t.active_run_id=w.run_id AND t.started_at=w.claim_started_at AND t.started_at>=?
+            AND (w.worker_session_id IS NULL OR w.worker_session_id=?)
+        `).get(String(workerRunId), cutoff, String(session_id))
+        return worker ? { ...worker } : null
+      }
+      const rows = db.prepare(`
         SELECT t.id AS task_id, t.program_id, t.phase, t.objective, r.run_id, r.started_at
         FROM task_runs r JOIN tasks t ON t.id = r.task_id
         WHERE r.session_id = ? AND t.status = 'running' AND r.started_at >= ?
-        ORDER BY r.id DESC LIMIT 1
-      `).get(String(session_id), cutoff)
-      return r ? { ...r } : null
+          AND r.run_id=t.active_run_id AND r.started_at=t.started_at AND r.finished_at IS NULL
+        LIMIT 2
+      `).all(String(session_id), cutoff)
+      return rows.length === 1 ? { ...rows[0] } : null
     },
 
     // ---- workers ----

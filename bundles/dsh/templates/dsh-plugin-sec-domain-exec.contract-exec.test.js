@@ -19,6 +19,7 @@ import { buildKnowDomain } from '../../sec-domain-know/index.js'
 import { buildAssetDomain } from '../../sec-domain-asset/index.js'
 import { buildEndpointDomain } from '../../sec-domain-endpoint/index.js'
 import { buildVulnDomain } from '../../sec-domain-vuln/index.js'
+import { buildTaskDomain } from '../../sec-domain-task/index.js'
 
 process.env.SEC_NODE_BIN = '/bin/echo'
 process.env.SEC_DSH_BIN = '/bin/echo'
@@ -69,6 +70,73 @@ function readEvents(dir) {
   if (!fs.existsSync(f)) return []
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
+
+test('27 E13: native nuclei proposals retain per-target Program, task and unambiguous routing type after replay', async t => {
+  const { bus, dataDir } = makeEnv()
+  t.after(() => bus._internal.close())
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: alpha\n    scope:\n      - a.example.com\n  - name: beta\n    scope:\n      - b.example.com\n')
+  bus.registry.register(buildVulnDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a) }))
+  bus.registry.register(buildTaskDomain({ dataDir }))
+  await bus.query('task', 'active_by_session', { session_id: 'parser-session' }, { actor: 'system' })
+  const db = bus._internal.db(), started = Date.now()
+  db.prepare("INSERT INTO tasks(id,program_id,objective,status,started_at,active_run_id) VALUES(91,'alpha','parser task','running',?,'wparser')").run(started)
+  db.prepare("INSERT INTO task_runs(task_id,run_id,started_at,session_id) VALUES(91,'wparser',?,'parser-session')").run(started)
+  writeManifest(dataDir, 'nuclei', 'name: nuclei\nbinary: /bin/cat\nrisk: passive\ntimeout: 30\nargs_template: "{{fixture}}"\nparser: jsonl_nuclei\n')
+  const fixture = path.join(dataDir, 'nuclei.jsonl')
+  const observations = [
+    ['a.example.com', ['idor'], 'alpha', 'idor'],
+    ['b.example.com', 'sqli,cve', 'beta', 'sqli'],
+    ['outside.invalid', ['unknown'], null, null],
+    ['a.example.com', ['xss', 'ssrf'], 'alpha', null],
+  ]
+  fs.writeFileSync(fixture, observations.map(([host, tags], i) => JSON.stringify({
+    'template-id': 'business-check-' + i, type: 'http', host: 'https://' + host,
+    'matched-at': 'https://' + host + '/object/' + i, info: { name: 'Business object check ' + i, severity: 'medium', tags },
+  })).join('\n'))
+  const run = await bus.dispatch('exec', 'run_cli', { tool: 'nuclei', params: { fixture } },
+    { actor: 'model', task_id: 91, session_id: 'parser-session' })
+  assert.equal(run.ok, true, run.error?.message)
+  assert.equal(run.data.parse_counts.findings, 4)
+  await bus._internal.dispatcherTick()
+  const rows = () => bus._internal.db().prepare('SELECT * FROM findings ORDER BY id').all()
+  assert.equal(rows().length, 4)
+  for (let i = 0; i < observations.length; i++) {
+    const row = rows()[i]
+    assert.equal(row.program_id, observations[i][2])
+    assert.equal(row.vuln_type, observations[i][3])
+    assert.equal(row.task_id, observations[i][2] === 'alpha' ? 91 : null)
+    assert.equal(row.session_id, 'parser-session')
+    assert.equal(row.status, 'new')
+    assert.equal(row.noise, 1)
+  }
+  const replay = await bus.dispatch('bus', 'replay', { since: 0, limit: 100 }, { actor: 'system' })
+  assert.equal(replay.ok, true, replay.error?.message)
+  assert.equal(rows().length, 4)
+})
+
+test('27 E13: worker CLI checks the live claim before spawning, while unassigned workers remain usable', async t => {
+  const { bus, dataDir } = makeEnv()
+  t.after(() => bus._internal.close())
+  const previous = process.env.SEC_WORKER_RUN_ID
+  t.after(() => { if (previous === undefined) delete process.env.SEC_WORKER_RUN_ID; else process.env.SEC_WORKER_RUN_ID = previous })
+  bus.registry.register(buildTaskDomain({ dataDir }))
+  await bus.query('task', 'active_by_session', { session_id: 'child' }, { actor: 'system' })
+  const db = bus._internal.db(), started = Date.now()
+  db.prepare("INSERT INTO tasks(id,program_id,objective,status,started_at,active_run_id) VALUES(91,'test-src','CLI claim','running',?,'wclaim')").run(started)
+  db.prepare("INSERT INTO workers(run_id,task_id,status,claim_started_at,worker_session_id) VALUES('wclaim',91,'running',?,'child')").run(started)
+  process.env.SEC_WORKER_RUN_ID = 'wclaim'
+  const run = () => bus.dispatch('exec', 'run_cli', { tool: 'echo-test', params: { msg: 'claimed' } }, { actor: 'model', session_id: 'child' })
+  const first = await run()
+  assert.equal(first.ok, true, first.error?.message)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'results', first.data.run_id, 'meta.json'))).task_id, 91)
+  db.prepare("UPDATE tasks SET active_run_id='wnew',started_at=? WHERE id=91").run(started + 1)
+  assert.equal((await run()).error?.code, 'E_EXEC_CLAIM_REQUIRED')
+  const metadata = fs.readdirSync(path.join(dataDir, 'results')).filter(id => fs.existsSync(path.join(dataDir, 'results', id, 'meta.json')))
+  assert.equal(metadata.length, 1, 'stale worker never spawns another CLI')
+  db.prepare("INSERT INTO workers(run_id,status,started_at) VALUES('wmanual','running',?)").run(started)
+  process.env.SEC_WORKER_RUN_ID = 'wmanual'
+  assert.equal((await run()).ok, true)
+})
 
 test('27 D07: CLI parent completion reaps background writers before returning', async t => {
   const { bus, dataDir } = makeEnv()
