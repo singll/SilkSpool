@@ -141,11 +141,24 @@ function createRepo(opts) {
     readReportFile(kind) {
       return readJSON(REPORT_FILES[kind], null)
     },
-    writeReport(kind, content) {
+    writeReport(kind, content, runId = null) {
       const target = REPORT_FILES[kind]
+      let immutableFile = null
+      if (runId) {
+        if (!/^[a-z0-9][a-z0-9_-]{0,127}$/.test(runId) || !target) throw new Error('Invalid report run identity')
+        fs.mkdirSync(REPORTS_HIST, { recursive: true })
+        immutableFile = `reports/${kind}-report-${runId}.json`
+        const immutablePath = path.join(evalDir, immutableFile)
+        try {
+          const fd = fs.openSync(immutablePath, 'wx', 0o600)
+          try { fs.writeFileSync(fd, content); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+        } catch (error) {
+          if (error.code !== 'EEXIST' || fs.readFileSync(immutablePath, 'utf8') !== content) throw error
+        }
+      }
       // INV-3：覆盖前把上一份归档进 reports/（名带 ts 快照）
       const prev = readJSON(target, null)
-      if (prev && prev.ts) {
+      if (prev && prev.ts && !(prev.run_id && fs.existsSync(path.join(REPORTS_HIST, `${kind}-report-${prev.run_id}.json`)))) {
         fs.mkdirSync(REPORTS_HIST, { recursive: true })
         const stamp = String(prev.ts).replace(/[^0-9]/g, '')
         const archived = path.join(REPORTS_HIST, `${kind}-report-${stamp}.json`)
@@ -154,13 +167,15 @@ function createRepo(opts) {
         }
       }
       writeFileAtomic(target, content)
-      return { file: path.basename(target) }
+      return { file: immutableFile || path.basename(target) }
     },
     listReports(kind) {
       const rows = []
       const main = REPORT_FILES[kind]
       const mainObj = readJSON(main, null)
-      if (mainObj) rows.push({ kind, file: path.basename(main), ts: mainObj.ts || null, visibility: mainObj.visibility || 'dev' })
+      const pinnedMain = mainObj?.run_id && /^[a-z0-9][a-z0-9_-]{0,127}$/.test(mainObj.run_id)
+        && fs.existsSync(path.join(REPORTS_HIST, `${kind}-report-${mainObj.run_id}.json`))
+      if (mainObj && !pinnedMain) rows.push({ kind, file: path.basename(main), ts: mainObj.ts || null, visibility: mainObj.visibility || 'dev' })
       // 历史快照（reports/{kind}-report-{ts}.json）
       let hist = []
       try { hist = fs.readdirSync(REPORTS_HIST).filter((f) => f.startsWith(`${kind}-report-`) && f.endsWith('.json')) } catch { hist = [] }

@@ -1811,6 +1811,9 @@ function makeHandlers(opts) {
     if (request.evidence_state !== 'intact') return { ok: false, code: 'E_EVIDENCE_REQUIRED', message: `请求证据状态：${request.evidence_state || 'unknown'}` }
     if (request.program_id !== d.program_id || request.host !== d.host || request.path !== d.path || (d.method && request.method !== d.method)) return { ok: false, code: 'E_INVARIANT', message: '请求观测与派生目标不一致' }
     if (['proxy_error', 'server_error', 'auth_challenge', 'access_denied'].includes(request.transport_state)) return { ok: false, code: 'E_REQUEST_PRECONDITION', message: `请求前置未成立：${request.transport_state}` }
+    if (['auth_required', 'environment_blocked', 'business_error', 'transport_error', 'evidence_unavailable'].includes(request.business_state)) {
+      return { ok: false, code: 'E_REQUEST_PRECONDITION', message: `业务响应前置未成立：${request.business_state}` }
+    }
     return { ok: true, draft: { ...d, method: request.method } }
   }
 
@@ -2497,6 +2500,10 @@ function makeHandlers(opts) {
         const r = await queryRef?.('endpoint', 'request_get', { request_id: args.request_id }, { actor: 'reactor' })
         if (!r?.ok || !r.data) throwErr(r?.error?.code || 'E_NOT_FOUND', '请求观测不可读取', null, true)
         if (r.data.program_id !== args.program_id || r.data.host !== args.host || r.data.path !== args.path) throwErr('E_INVARIANT', '请求事件的项目/端点与观测不一致', null, false)
+        if (['auth_required', 'environment_blocked', 'business_error', 'transport_error', 'evidence_unavailable'].includes(r.data.business_state)) {
+          return { data: { added: 0, total: 0, deferred: r.data.business_state, request_id: args.request_id },
+            after: { added: 0, deferred: r.data.business_state } }
+        }
         row = { ...r.data, params: r.data.parameters }
       } else {
         const r = await queryRef?.('endpoint', 'list', { program_id: args.program_id, host: args.host, method: args.method || 'GET', path_like: args.path, limit: 500 }, { actor: 'reactor' })

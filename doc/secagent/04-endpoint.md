@@ -1,8 +1,8 @@
 # 04 · endpoint 域设计（接口面 / 参数队列——"打哪里、喂什么料"的唯一事实源）
 
-> 版本：v5.2 ｜ 状态：请求观测、HAR导入及2026-10-03浏览器被动采集已部署验收 ｜ 契约版本：endpoint@1（repository-v1）
+> 版本：v5.3 ｜ 状态：请求观测、HAR/被动采集及2026-10-09业务响应前置已部署验收 ｜ 契约版本：endpoint@1（repository-v1）
 > 依赖：[`00-conventions.md`](00-conventions.md)（宪法，冲突以它为准）、[`01-bus.md`](01-bus.md)（总线）
-> owns（单写者）：`endpoints`、`endpoint_requests` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）+ `data/evidence/requests/**`（HAR提取证据）
+> owns（单写者）：`endpoints`、`endpoint_requests` 表 + `data/pipeline/{program}/param-queue.txt`、`param-seen.txt`（从 sec-pipeline 收编的参数队列文件）+ `data/evidence/requests/**`（HAR提取证据）+ `data/request-response-profiles.json`（宿主响应契约）
 > 不 owns：`assets`（asset 域）、`findings`（vuln 域）、`data/pipeline/{program}/` 下其余台账文件（ledger 域）
 > 订阅：`exec.run.completed`（l2-collect / katana parser proposal 回灌）；被订阅：vuln（endpoint.registered/auth_marked → 越权与注入队列候选）、ledger（endpoint.registered → 接口台账联动）、dashboard（接口视图）
 
@@ -716,3 +716,11 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 ### 2026-10-05 匿名真实输入准备
 
 用户允许读取Scope内必要静态依赖，业务测试仍限美团/字节S级。扣子按精确资源取得12份必需JS，离线回放阻断其它流量；从源码确认同源无参GET的langs/platforms/landing_info，三次真实请求均200/code0，后两项有结构化业务数据。当前是3份受限原始请求/响应，2份健康业务内容输入，尚未生产导入；非浏览器交易捕获、不计漏洞、不满足20–50份模板。原件与失败路径见27号§15.28；正式入库须保留来源并走现有请求观测/HAR入口。
+
+### 2026-10-09 请求业务响应契约（已生产验收）
+
+`request_get`在原证据完整性检查后读取宿主`data/request-response-profiles.json`，格式`{version:1,profiles:[{program_id,origin,path_prefix,code_field,success_codes,auth_codes,environment_codes}]}`。配置非符号链接、≤64KiB、禁止组/他人写；Program/精确origin/斜杠结尾路径前缀唯一匹配，歧义/坏配置/响应码分类重叠报E_REQUEST_RESPONSE_PROFILE。仅对同Program/URL/method/status、单跳observed的exec签封HTTP原件判定；禁止调用方自报业务成功。
+
+新增business_state、business_basis、response_profile_digest及可选business_code。状态success/auth_required/environment_blocked/business_error/transport_error/evidence_unavailable/unknown；缺配置或不支持格式保持unknown，不按任意code字段猜测。配置变化每次读取生效。success不保证正文非空、不证明凭证或漏洞。task用已知失败作为实验前置止损；原始观察仍保留。
+
+生产正式HTTP链新增15种/累计18种，新增8业务成功中4种含实质非空业务内容；4登录失败、2环境限制、1参数错误，15原件RPC重读匹配。endpoint/task176项通过，含篡改、错关联、契约变化及旧草稿派发；详见27号§15.121–122。独立代理前检与显式direct路径分别记录，未重试设备限制。

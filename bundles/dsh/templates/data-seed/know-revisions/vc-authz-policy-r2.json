@@ -1,0 +1,54 @@
+{
+  "_comment": "受控 HTTP 评测候选，仅适用于 fixture-lab 的独立访问策略接口。候选不自动发布，不把此实验协议当作真实站点通用 API。",
+  "artifact_kind": "vulncard",
+  "artifact_id": "VC-AUTHZ-POLICY-002",
+  "source_kind": "seed",
+  "source_ref": "data-seed/know-revisions/vc-authz-policy-r2.json",
+  "change_note": "增加独立访问策略读取，区分私有对象越权、公开资源、显式共享和前置故障",
+  "applies_predicates": {
+    "program_id": "fixture-lab",
+    "surface": "api",
+    "card_family": "P1-authz",
+    "response_contract": "fixture-access-policy-v1"
+  },
+  "content": {
+    "id": "VC-AUTHZ-POLICY-002",
+    "version": 2,
+    "parentVersion": null,
+    "title": "受控对象访问策略与实际响应一致性",
+    "extends": "vuln_authz_diff",
+    "appliesTo": {
+      "surface": "api",
+      "program": "fixture-lab",
+      "prerequisites": [
+        "成对受控身份与已知测试对象",
+        "拥有者可读取独立访问策略，明确同一对象是否允许低权身份访问",
+        "fixture-access-policy-v1 协议"
+      ],
+      "invalidatedBy": ["身份失效", "访问策略变更", "响应契约变更"]
+    },
+    "hypothesis": "只有独立策略禁止低权访问、拥有者正对照成立且低权获得同一对象数据，才能形成越权判定。",
+    "minimalProbe": "分别读取拥有者响应、低权响应与拥有者可见的访问策略；每例三次候选请求。",
+    "executionPlan": {
+      "kind": "authz-read-v2",
+      "probes": ["owner", "low", "policy"],
+      "requireOwner200": true,
+      "deniedStatuses": [401, 403, 404],
+      "compareFields": ["id", "owner", "data"]
+    },
+    "positiveControl": "拥有者得到预期对象，策略引用同一对象及低权主体。",
+    "negativeControl": "仅当策略禁止低权访问时期待拒绝；公开资源及显式共享不适用此负对照。",
+    "evidenceRequired": ["request_context", "identity_ref", "object_owner", "independent_access_policy", "behavior_assertion"],
+    "stopConditions": ["scope_changed", "test_identity_invalid", "policy_unavailable", "gateway_failure"],
+    "fixtures": {
+      "vulnerable": "missing_ownership_check",
+      "patched": ["enforced", "public_resource", "explicit_share"],
+      "invalid_env": ["owner_token_invalid", "gateway_error", "missing_policy"]
+    },
+    "budget": { "maxRequests": 24, "maxSeconds": 30 },
+    "failureNotes": "正对照或策略读取失败记环境异常；缺少策略探针记未知。不得从相同响应推定私有性，也不得将受控评测结果计作真实站点漏洞。",
+    "changeNote": "以真实执行的独立策略请求取代隐含的他人对象必然私有假设。",
+    "applicabilityConfidence": "high",
+    "evalRef": null
+  }
+}

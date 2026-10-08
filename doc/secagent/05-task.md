@@ -1519,3 +1519,9 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 Program创建门禁、专项派发、规划剩余额度、预算停止及自动恢复按已记费用与未结预留合计判断，认领保持同事务预留。修复旧任务本期消费漏算导致reviewing错误恢复active；不提高既有预算、不恢复已暂停专项。自动续费累计上限/有效业务进展仍属于D09待办，本次未完成；费用接受估算，不要求追补供应商最终账单。
 
 两项回归先失败再通过，task域133项和全域787/787通过（147.25秒，fingerprint `a04ff0237280ae487d89ee1c2657de7f46020c5ba232b1c083bc712e96fe15fd`）。首版辅助函数重名导致整域失败的日志保留，修正后最终全域通过。本项不在固定56bca28发布包中，见27号§15.118。
+
+### 2026-10-09 业务错误请求止损与消费窗口上线
+
+`hypotheses_enqueue`通过endpoint.request_get读取当前签封响应分类，auth_required/environment_blocked/business_error/transport_error/evidence_unavailable返回added=0及deferred，不生成可执行假设。`validateRequestIntent`在派发、结构化创建和认领重查中拒绝这些状态（E_REQUEST_PRECONDITION），故存量草稿不能绕过；unknown仍允许有界探索。错误观察不变成技术阴性，也不删除请求证据。
+
+真实HTTP/签封/入库/旧队列派发及篡改边界联合176项通过。生产15原件分类准确，33条已确认业务失败且未分配task的草稿按可重建授权留完整回执后清理，队列68→35；剩余队列未被声明全部可测。原Campaign暂停及200M/200M/50M保持。7e00291消费窗口与在飞预算统一已合批上线；D09默认自动扩额缺累计上限仍未完成，不据本批恢复Campaign。详见27号§15.121–124。

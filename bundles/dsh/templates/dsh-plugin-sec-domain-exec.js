@@ -106,6 +106,7 @@ export const EXEC_MANIFEST = {
         method: en(['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'], { default: 'GET' }),
         headers: { type: 'object' }, body: str({ maxLength: 65536 }),
         proxy: en(['default', 'direct']), timeout_ms: int({ minimum: 100, maximum: 30000 }),
+        follow_redirects: { type: 'boolean', default: true },
         max_bytes: int({ minimum: 1, maximum: 1048576 }),
       }, ['program_id', 'url']),
       idempotent: 'none', events: ['exec.http.completed'], event_limit: 1, invariants: [], timeout_ms: 35000,
@@ -1198,7 +1199,7 @@ function makeHandlers(opts) {
   }
   const commands = {
     exec_http_request: async (args, repo, ctx) => {
-      const r = await executeHttp(args, repo, ctx)
+      const r = await executeHttp(args, repo, ctx, selectProxy(args.proxy), args.follow_redirects !== false)
       const data = { run_id: r.run_id, state: r.response.state, status: r.response.status, elapsed_ms: r.elapsed_ms, hops: r.hops.length }
       return { data, events: [{ name: 'exec.http.completed', payload: { ...data, program_id: args.program_id } }] }
     },

@@ -11,11 +11,13 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as crypto from 'node:crypto'
+import * as http from 'node:http'
 import { DatabaseSync } from 'node:sqlite'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildTaskDomain, startTaskScheduler, createTaskFinisher, parseCampaignSupplyEnv } from '../index.js'
 import { buildEndpointDomain } from '../../sec-domain-endpoint/index.js'
 import { buildVulnDomain } from '../../sec-domain-vuln/index.js'
+import { buildExecDomain } from '../../sec-domain-exec/index.js'
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'sec-domain-task-')) }
 
@@ -2554,6 +2556,107 @@ test('27 WP05: 不可用 oracle 与代理故障留待办，不派失效实验', 
   const pending = db.prepare('SELECT task_id,last_error FROM hypothesis_queue').all()
   assert.equal(pending.length, 2)
   assert.ok(pending.every(q => q.task_id === null && q.last_error))
+})
+
+test('27 WP04: signed HTTP 200 business errors cannot enqueue or dispatch executable hypotheses', async t => {
+  const { bus, dataDir } = makeEnv()
+  t.after(() => bus._internal.close())
+  let body = { code: 700012006, message: '登录认证失败' }
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(body))
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => server.close(resolve)))
+  const origin = `http://127.0.0.1:${server.address().port}`
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'defaults:\n  allow_risk: [active]\nprograms:\n  - name: "test-src"\n    scope:\n      - "127.0.0.1"\n    rules:\n      max_risk: active\n')
+  const profileFile = path.join(dataDir, 'request-response-profiles.json')
+  const profiles = {
+    version: 1, profiles: [{ program_id: 'test-src', origin, path_prefix: '/api/',
+      code_field: 'code', success_codes: [0], auth_codes: [700012006], environment_codes: [700012014] }],
+  }
+  const saveProfiles = value => fs.writeFileSync(profileFile, JSON.stringify(value), { mode: 0o600 })
+  saveProfiles(profiles)
+  const query = (...args) => bus.query(...args)
+  assert.equal(bus.registry.register(buildExecDomain({ dataDir, egressProxy: '', query })).ok, true)
+  assert.equal(bus.registry.register(buildEndpointDomain({ dataDir, query })).ok, true)
+  assert.equal((await bus.query('task', 'hypotheses', {}, { actor: 'reactor' })).ok, true)
+  const observed = []
+  for (const [code, expected] of [[700012006, 'auth_required'], [700012014, 'environment_blocked'], [99, 'business_error'], [0, 'success']]) {
+    body = { code, message: code === 0 ? '' : '错误', data: code === 0 ? { items: [1] } : undefined }
+    const url = `${origin}/api/items?id=7&sample=${code}`
+    const httpRun = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url, proxy: 'direct' }, { actor: 'script' })
+    assert.equal(httpRun.ok, true, httpRun.error?.message)
+    const observation = await bus.dispatch('endpoint', 'observe_request', { program_id: 'test-src', url, method: 'GET',
+      parameters: [{ name: 'id', in: 'query', value: '7' }], response_status: 200,
+      evidence_path: `results/${httpRun.data.run_id}/http-record.json`, run_id: httpRun.data.run_id }, { actor: 'script' })
+    assert.equal(observation.ok, true, observation.error?.message)
+    const read = await bus.query('endpoint', 'request_get', { request_id: observation.data.request_id }, { actor: 'reactor' })
+    assert.equal(read.ok, true, JSON.stringify(read.error))
+    assert.equal(read.data.business_state, expected)
+    observed.push(read.data)
+    const before = bus._internal.db().prepare('SELECT COUNT(*) n FROM hypothesis_queue').get().n
+    const enqueued = await bus.dispatch('task', 'hypotheses_enqueue', { program_id: 'test-src', host: '127.0.0.1',
+      path: new URL(url).pathname + new URL(url).search, request_id: observation.data.request_id }, { actor: 'reactor' })
+    assert.equal(enqueued.ok, true, enqueued.error?.message)
+    if (code) {
+      assert.equal(enqueued.data.added, 0)
+      assert.equal(enqueued.data.deferred, expected)
+      assert.equal(bus._internal.db().prepare('SELECT COUNT(*) n FROM hypothesis_queue').get().n, before)
+      const forced = await bus.dispatch('task', 'derive_intent', { program_id: 'test-src', kind: 'hypothesis',
+        host: '127.0.0.1', path: new URL(url).pathname + new URL(url).search, request_id: observation.data.request_id,
+        method: 'GET', param: 'id', vuln_class: 'idor', level: 'H2', rationale: '检查请求的对象权限边界', oracle: 'idor_diff' }, { actor: 'reactor' })
+      assert.equal(forced.ok, false)
+      assert.equal(forced.error.code, 'E_REQUEST_PRECONDITION')
+    } else assert.ok(enqueued.data.added > 0)
+  }
+  const errorRow = observed[0]
+  const readError = () => bus.query('endpoint', 'request_get', { request_id: errorRow.request_id }, { actor: 'reactor' })
+  for (const changed of [{ ...profiles.profiles[0], program_id: 'other' },
+    { ...profiles.profiles[0], origin: 'http://other.example.com' },
+    { ...profiles.profiles[0], path_prefix: '/other/' }]) {
+    saveProfiles({ version: 1, profiles: [changed] })
+    assert.equal((await readError()).data.business_state, 'unknown', 'contracts cannot leak across scope')
+  }
+  fs.unlinkSync(profileFile)
+  assert.equal((await readError()).data.business_basis, 'no_response_contract')
+  // Reproduce a queue populated before the response contract existed.
+  const legacy = await bus.dispatch('task', 'hypotheses_enqueue', {
+    program_id: errorRow.program_id, host: errorRow.host, path: errorRow.path, request_id: errorRow.request_id,
+  }, { actor: 'reactor' })
+  assert.ok(legacy.data.added > 0)
+  const db = bus._internal.db()
+  db.prepare("UPDATE hypothesis_queue SET available_at=? WHERE json_extract(draft,'$.request_id') != ?")
+    .run(Date.now() + 86400000, errorRow.request_id)
+  saveProfiles(profiles)
+  const dispatched = await bus.dispatch('task', 'hypotheses_dispatch', { limit: 3 }, { actor: 'reactor' })
+  assert.equal(dispatched.ok, true, JSON.stringify(dispatched.error))
+  assert.equal(dispatched.data.derived.length, 0)
+  assert.ok(dispatched.data.dropped.length > 0)
+  assert.ok(dispatched.data.dropped.every(d => d.code === 'E_REQUEST_PRECONDITION'))
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM tasks').get().n, 0)
+  assert.equal((await readError()).data.business_state, 'auth_required', 'updated contract rechecks existing evidence')
+  saveProfiles({ version: 1, profiles: [...profiles.profiles, ...profiles.profiles] })
+  assert.equal((await readError()).error.code, 'E_REQUEST_RESPONSE_PROFILE')
+  saveProfiles({ version: 1, profiles: [null] })
+  assert.equal((await readError()).error.code, 'E_REQUEST_RESPONSE_PROFILE')
+  saveProfiles({ version: 1, profiles: [{ ...profiles.profiles[0], success_codes: [0, 700012006] }] })
+  assert.equal((await readError()).error.code, 'E_REQUEST_RESPONSE_PROFILE')
+  saveProfiles(profiles)
+  db.prepare("UPDATE endpoint_requests SET spec=json_set(spec,'$.url',?) WHERE request_id=?")
+    .run(`${origin}/api/other`, errorRow.request_id)
+  assert.equal((await readError()).data.business_state, 'evidence_unavailable')
+  db.prepare("UPDATE endpoint_requests SET spec=json_set(spec,'$.url',?) WHERE request_id=?")
+    .run(errorRow.url, errorRow.request_id)
+  const evidenceFile = path.join(dataDir, errorRow.evidence_path)
+  const original = fs.readFileSync(evidenceFile)
+  const tampered = JSON.parse(original)
+  tampered.response.body = JSON.stringify({ code: 0, data: { items: [1] } })
+  fs.writeFileSync(evidenceFile, JSON.stringify(tampered))
+  assert.equal((await readError()).data.business_state, 'evidence_unavailable')
+  // Even refreshing the observation digest cannot forge the execution signature.
+  db.prepare("UPDATE endpoint_requests SET spec=json_set(spec,'$.evidence_sha256',?) WHERE request_id=?")
+    .run(crypto.createHash('sha256').update(fs.readFileSync(evidenceFile)).digest('hex'), errorRow.request_id)
+  assert.equal((await readError()).data.business_state, 'evidence_unavailable')
 })
 
 test('27 WP05: 队列确认失败回滚任务创建，重建 bus 后可继续派发且不重建已派任务', async () => {

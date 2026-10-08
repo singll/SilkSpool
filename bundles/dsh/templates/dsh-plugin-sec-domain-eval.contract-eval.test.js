@@ -941,7 +941,7 @@ test('L3 C5: 配对报告 happy——三类 fixture 真值 + baseline/candidate 
   assert.equal(report.candidate.revision_id, rev.revision_id)
   assert.equal(report.candidate.content_digest, rev.content_digest)
   assert.equal(report.baseline.ref, 'builtin:authz-legacy-3tier')
-  assert.equal(report.executor.runner_version, 'fixture-runner-v2')
+  assert.equal(report.executor.runner_version, 'fixture-runner-v3')
   assert.equal(report.cost.http_requests, 12)
   assert.equal(report.cost.candidate_requests, 6)
   assert.equal(report.cost.baseline_requests, 6)
@@ -1029,6 +1029,90 @@ test('27 WP09: unknown positive counts as FN even when another positive is detec
   assert.equal(report.totals.fn, 1)
   assert.equal(report.totals.inconclusive, 1)
   assert.equal(report.verdict, 'rejected')
+})
+
+test('27 WP09: held-out public access and gateway faults distinguish policy-aware candidates from no-card and removed-policy controls', async t => {
+  const env = makeCandidateEnv()
+  t.after(() => env.bus._internal.close())
+  const cases = [
+    ['missing_ownership_check', 'vulnerable'], ['enforced', 'patched'],
+    ['public_resource', 'patched'], ['explicit_share', 'patched'],
+    ['owner_token_invalid', 'invalid_env'], ['gateway_error', 'invalid_env'],
+    ['missing_policy', 'invalid_env'],
+  ].map(([variant, expect], i) => {
+    const id = `fx-policy-holdout-${i}`
+    writeFixture(env.evalDir, FIXTURE_TPL(id, variant, `object-${crypto.randomBytes(8).toString('hex')}`))
+    return { case_id: `case-${i}`, fixture: id, expect }
+  })
+  // Each run respects the unchanged 24-request ceiling, including baseline traffic.
+  writeDataset(env.evalDir, DATASET_DEF('ds-policy-holdout-a', 'hidden', cases.slice(0, 4), {
+    thresholds: { min_tp: 1, max_fp: 0, max_fn: 0 },
+  }))
+  writeDataset(env.evalDir, DATASET_DEF('ds-policy-holdout-b', 'hidden', cases.slice(4), {
+    thresholds: { min_tp: 0, max_fp: 0, max_fn: 0, require_infra_handling: true },
+  }))
+  const reports = {}
+  for (const [label, executionPlan] of [
+    ['policy', { ...VC_CONTENT_EVAL.executionPlan, kind: 'authz-read-v2', probes: ['owner', 'low', 'policy'] }],
+    ['removed-policy', { ...VC_CONTENT_EVAL.executionPlan, kind: 'authz-read-v2' }],
+    ['legacy', VC_CONTENT_EVAL.executionPlan],
+  ]) {
+    const proposed = await env.bus.dispatch('know', 'revision_propose', {
+      artifact_kind: 'vulncard', artifact_id: 'VC-AUTHZ-001',
+      content: { ...VC_CONTENT_EVAL, executionPlan, budget: { maxRequests: 24, maxSeconds: 30 } },
+      source_kind: 'seed', source_ref: `fixture:policy-${label}`, change_note: `策略前置对照：${label}`,
+    }, { actor: 'model' })
+    assert.equal(proposed.ok, true, proposed.error?.message)
+    const paired = []
+    for (const group of ['a', 'b']) {
+      const run = await env.bus.dispatch('eval', 'run_candidate', {
+        trial_id: `trial-policy-${label}-${group}`, candidate_revision_id: proposed.data.revision_id,
+        dataset_id: `ds-policy-holdout-${group}`, budget: { max_requests: 24, max_seconds: 30 },
+      }, { actor: 'script' })
+      assert.equal(run.ok, true, run.error?.message)
+      await env.scheduled.at(-1)()
+      const report = readCandidateReport(env.evalDir)
+      assert.ok(report, JSON.stringify(readRunRec(env.evalDir, run.data.run_id)))
+      assert.equal(report.trial_id, `trial-policy-${label}-${group}`)
+      const receipt = readRunRec(env.evalDir, run.data.run_id)
+      assert.match(receipt.report_file, /^reports\/candidate-report-evalrun_[a-z0-9]+\.json$/)
+      assert.ok(report.cost.http_requests <= 24)
+      paired.push({ ...report, stored_file: receipt.report_file })
+    }
+    for (const saved of paired) {
+      assert.equal(JSON.parse(fs.readFileSync(path.join(env.evalDir, saved.stored_file))).run_id, saved.run_id,
+        'later reports must not replace an earlier revision evidence reference')
+      const built = readEvalEvents(env.bus).find(e => e.name === 'eval.report.built' && e.payload.run_id === saved.run_id)
+      assert.equal(built.payload.file, saved.stored_file)
+    }
+    const sum = (left, right) => Object.fromEntries(Object.keys(left).map(k => [k, left[k] + right[k]]))
+    reports[label] = { ...paired[0],
+      verdict: paired.every(r => r.verdict === 'eligible') ? 'eligible' : 'rejected',
+      totals: sum(paired[0].totals, paired[1].totals),
+      cost: sum(paired[0].cost, paired[1].cost),
+      baseline: { totals: sum(paired[0].baseline.totals, paired[1].baseline.totals) },
+      cases: paired.flatMap(r => r.cases),
+    }
+  }
+  const policy = reports.policy
+  assert.equal(policy.verdict, 'eligible')
+  assert.equal(policy.totals.tp, 1)
+  assert.equal(policy.totals.tn, 3)
+  assert.equal(policy.totals.fp, 0)
+  assert.equal(policy.totals.infra_handled, 3)
+  assert.equal(policy.cost.candidate_requests, 21)
+  assert.equal(policy.cost.baseline_requests, 14)
+  assert.equal(policy.cost.model_tokens, 0)
+  assert.equal(policy.baseline.totals.fp, 2, 'public and explicitly shared resources are false positives under the legacy comparison')
+  assert.equal(reports.legacy.totals.fp, 2)
+  assert.equal(reports.legacy.verdict, 'rejected')
+  assert.equal(reports['removed-policy'].totals.fn, 1)
+  assert.equal(reports['removed-policy'].verdict, 'rejected')
+  assert.equal(reports['removed-policy'].cost.candidate_requests, 14)
+  assert.equal(policy.cases[2].negative_control, 'not_applicable')
+  assert.equal(policy.cases[3].negative_control, 'not_applicable')
+  assert.equal(policy.dataset.digest, reports.legacy.dataset.digest)
+  assert.notEqual(policy.candidate.program_digest, reports['removed-policy'].candidate.program_digest)
 })
 
 test('27 WP09: unimplemented baseline cannot be named as an executed comparison', async () => {

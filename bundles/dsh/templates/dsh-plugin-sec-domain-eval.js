@@ -42,7 +42,7 @@ const REPORT_KINDS = ['fp', 'contract', 'range', 'candidate']
 // L3（设计 §7.2）：真值来源级别标签 + 可见域（dev/hidden 隐藏集）
 const LABEL_SOURCES = ['model-proposed', 'independently-verified', 'human-reviewed', 'vendor-confirmed']
 const VISIBILITIES = ['dev', 'hidden']
-const RUNNER_VERSION = 'fixture-runner-v2'
+const RUNNER_VERSION = 'fixture-runner-v3'
 
 function throwErr(code, message, hint, retryable = false) {
   throw Object.assign(new Error(message), { code, hint, retryable })
@@ -52,16 +52,17 @@ function throwErr(code, message, hint, retryable = false) {
 // Dataset truth and fixture implementation are never passed to this program.
 function candidateProgram(content) {
   const p = content?.executionPlan
-  if (!p || p.kind !== 'authz-read-v1' || !Array.isArray(p.probes)
+  if (!p || !['authz-read-v1', 'authz-read-v2'].includes(p.kind) || !Array.isArray(p.probes)
     || Object.keys(p).some(k => !['kind', 'probes', 'requireOwner200', 'deniedStatuses', 'compareFields'].includes(k))
-    || p.probes.length > 2 || p.probes.some(x => !['owner', 'low'].includes(x))
+    || p.probes.length > (p.kind === 'authz-read-v2' ? 3 : 2)
+    || p.probes.some(x => !(p.kind === 'authz-read-v2' ? ['owner', 'low', 'policy'] : ['owner', 'low']).includes(x))
     || new Set(p.probes).size !== p.probes.length || typeof p.requireOwner200 !== 'boolean'
     || !Array.isArray(p.deniedStatuses) || p.deniedStatuses.length > 3
     || p.deniedStatuses.some(x => ![401, 403, 404].includes(x))
     || !Array.isArray(p.compareFields) || !p.compareFields.length || p.compareFields.length > 8
     || p.compareFields.some(x => typeof x !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(x))) {
     throwErr('E_EVAL_UNSUPPORTED_CANDIDATE', '候选缺少受支持的可执行 executionPlan',
-      '当前仅支持 authz-read-v1 结构化只读计划；正文不由此执行器解释，不能借用固定策略评为通过', false)
+      '当前支持 authz-read-v1/v2 结构化只读计划；v2 须读取独立访问策略，正文不由执行器解释', false)
   }
   return structuredClone(p)
 }
@@ -633,7 +634,7 @@ function makeHandlers(opts) {
       }
       let reportFile = args.report_file || null
       if (args.report && typeof args.report === 'object') {
-        const w = repo.writeReport(run.kind, JSON.stringify(args.report, null, 1) + '\n')
+        const w = repo.writeReport(run.kind, JSON.stringify(args.report, null, 1) + '\n', args.run_id)
         reportFile = w.file
       }
       repo.finishRun(args.run_id, {
@@ -1189,7 +1190,9 @@ function makeDefaultExecutor(opts) {
 
   async function startFixtureServer(fx) {
     const accessLog = []
-    const truthOf = (variant) => (variant === 'missing_ownership_check' ? 'vulnerable' : variant === 'enforced' ? 'patched' : variant === 'owner_token_invalid' ? 'invalid_env' : null)
+    const truthOf = variant => variant === 'missing_ownership_check' ? 'vulnerable'
+      : ['enforced', 'public_resource', 'explicit_share'].includes(variant) ? 'patched'
+      : ['owner_token_invalid', 'gateway_error', 'missing_policy'].includes(variant) ? 'invalid_env' : null
     const server = http.createServer((req, res) => {
       const u = new URL(req.url || '/', 'http://127.0.0.1')
       const json = (code, obj) => { const body = JSON.stringify(obj); res.writeHead(code, { 'content-type': 'application/json' }); res.end(body) }
@@ -1198,6 +1201,15 @@ function makeDefaultExecutor(opts) {
       if (u.pathname === '/_fixture/state') {
         return json(200, { fixture_id: fx.fixture_id, variant: fx.variant, truth: truthOf(fx.variant), access_log: accessLog })
       }
+      // A normal owner-readable access-policy API, separate from oracle truth.
+      if (u.pathname === '/api/access-policy') {
+        accessLog.push({ identity: identity || 'anonymous', operation: 'policy', at: Date.now() })
+        if (identity !== 'owner' || fx.variant === 'owner_token_invalid') return json(401, { error: 'unauthorized' })
+        if (fx.variant === 'gateway_error') return json(503, { error: 'unavailable' })
+        if (fx.variant === 'missing_policy') return json(404, { error: 'not_found' })
+        return json(200, { object_id: fx.object.id, subject: 'low',
+          allowed: ['public_resource', 'explicit_share'].includes(fx.variant) })
+      }
       if (u.pathname !== fx.path) return json(404, { error: 'not_found' })
       accessLog.push({ identity: identity || 'anonymous', at: Date.now() })
       if (!identity) return json(401, { error: 'unauthorized' })
@@ -1205,6 +1217,8 @@ function makeDefaultExecutor(opts) {
       if (fx.variant === 'missing_ownership_check') return json(200, objBody) // 缺对象归属校验：低权也拿到归属数据
       if (fx.variant === 'enforced') return identity === 'owner' ? json(200, objBody) : json(403, { error: 'forbidden' })
       if (fx.variant === 'owner_token_invalid') return identity === 'owner' ? json(401, { error: 'token_expired' }) : json(403, { error: 'forbidden' })
+      if (['public_resource', 'explicit_share', 'missing_policy'].includes(fx.variant)) return json(200, objBody)
+      if (fx.variant === 'gateway_error') return json(503, { error: 'unavailable' })
       return json(500, { error: 'unknown_variant' })
     })
     await new Promise((resolve, reject) => {
@@ -1259,6 +1273,16 @@ function makeDefaultExecutor(opts) {
     const high = observations.owner, low = observations.low
     if (!high || !low) return 'inconclusive'
     if (program.requireOwner200 && high.status !== 200) return 'infra_error'
+    let policy
+    if (program.kind === 'authz-read-v2') {
+      if (!observations.policy) return 'inconclusive'
+      if (observations.policy.status !== 200) return 'infra_error'
+      try { policy = JSON.parse(observations.policy.body) } catch { return 'infra_error' }
+      let owner
+      try { owner = JSON.parse(high.body) } catch { return 'infra_error' }
+      if (!policy || !owner || typeof policy.allowed !== 'boolean' || policy.subject !== 'low'
+        || !Object.hasOwn(owner, 'id') || policy.object_id !== owner.id) return 'infra_error'
+    }
     if (program.deniedStatuses.includes(low.status)) return 'clean'
     if (low.status !== 200 || high.status !== 200) return 'inconclusive'
     let lowJson, highJson
@@ -1266,7 +1290,7 @@ function makeDefaultExecutor(opts) {
     if (!lowJson || !highJson || Array.isArray(lowJson) || Array.isArray(highJson)) return 'inconclusive'
     if (program.compareFields.every(field => Object.hasOwn(lowJson, field) && Object.hasOwn(highJson, field)
       && ['string', 'number'].includes(typeof highJson[field]) && String(highJson[field]).length > 0
-      && lowJson[field] === highJson[field])) return 'violation'
+      && lowJson[field] === highJson[field])) return policy?.allowed ? 'clean' : 'violation'
     return 'inconclusive'
   }
 
@@ -1307,7 +1331,8 @@ function makeDefaultExecutor(opts) {
       try {
         const observations = {}
         for (const identity of program.probes) {
-          observations[identity] = await probeRequest(srv.port, fx.path, fx.tokens[identity])
+          observations[identity] = await probeRequest(srv.port,
+            identity === 'policy' ? '/api/access-policy' : fx.path, fx.tokens[identity === 'policy' ? 'owner' : identity])
           requests++
         }
         // Separate no-card baseline requests, same immutable fixture input.
@@ -1331,7 +1356,8 @@ function makeDefaultExecutor(opts) {
         caseRows.push({
           case_id: c.case_id, fixture_id: fx.fixture_id, truth, expect: c.expect || truth, reached: true,
           positive_control: !observations.owner ? 'not_run' : observations.owner.status === 200 ? 'pass' : 'fail',
-          negative_control: !observations.low ? 'not_run'
+          negative_control: program.kind === 'authz-read-v2' && candidate === 'clean' && observations.low?.status === 200
+            ? 'not_applicable' : !observations.low ? 'not_run'
             : program.deniedStatuses.includes(observations.low.status) ? 'holds' : 'violated',
           baseline: { verdict: baseline.verdict, why: baseline.why },
           candidate: { verdict: candidate },

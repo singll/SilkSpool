@@ -73,9 +73,9 @@ _Avoid_: 皮肤、配色方案（同义不改）；勿做看板专属局部主�
 
 **Routine Snapshot（常规快照）**：TrueNAS restic 仓库中一个可独立恢复的加密、去重版本，在线 SQLite 各库分别一致；不代表全局同一时点。默认保留8份。
 
-**Frozen Recovery Point（冻结恢复点）**：排空并冻结全部业务/维护写者后生成、带完整校验清单的发布恢复点，沿用既有 freeze/release 状态机。不能用常规快照替代切换门禁。
+**Frozen Recovery Point（冻结恢复点）**：排空并冻结全部业务/维护写者后生成、带完整校验清单的发布恢复点，沿用既有 freeze/release 状态机。仅用于18号§2规定的高风险变更；普通同版本修复不强制生成。
 
 **Restore Drill（恢复预演）**：从备份读回隔离副本并校验；SQLite drill、schema preflight、应用沙箱启动验收是不同覆盖范围，必须分别记录。
 
 
-**Prepare Change（变更前准备）**：首次生产写入前，在同一维护锁内完成一份新NAS备份和该快照的SQLite恢复校验，成功才生成带change ID的回执。它是运维流程门槛，不等于跨库冻结或业务发布验收。正式步骤见 [18号](../../doc/secagent/18-backup-and-maintenance.md)。
+**Prepare Change（变更前准备）**：首次生产写入前，在同一维护锁内完成一份新NAS备份和该快照的SQLite恢复校验，成功才生成带change ID的回执。按2026-10-08用户授权，仅在18号§2适用场景选用；普通修复不要求每批执行。回执不等于跨库冻结或业务发布验收。正式步骤见 [18号](../../doc/secagent/18-backup-and-maintenance.md)。

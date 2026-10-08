@@ -74,7 +74,7 @@ export const ENDPOINT_MANIFEST = {
   description: '接口面/参数队列（打哪里、喂什么料——越权矩阵与参数喂料的唯一事实源）',
   owns: {
     tables: ['endpoints', 'endpoint_requests'],
-    files: ['data/pipeline/*/param-queue.txt', 'data/pipeline/*/param-seen.txt', 'data/events/endpoint.jsonl', 'data/evidence/requests/**'],
+    files: ['data/pipeline/*/param-queue.txt', 'data/pipeline/*/param-seen.txt', 'data/events/endpoint.jsonl', 'data/evidence/requests/**', 'data/request-response-profiles.json'],
   },
   commands: {
     endpoint_import_har: {
@@ -452,6 +452,69 @@ function scopeCheckResult(programId, host, dataDir) {
 function makeHandlers(opts) {
   const dataDir = opts.dataDir || DEFAULT_DATA_DIR
   const dispatchRef = opts.dispatch
+  const queryRef = opts.query
+
+  async function requestBusinessState(row) {
+    const file = path.join(dataDir, 'request-response-profiles.json')
+    let document
+    try {
+      const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      try {
+        const stat = fs.fstatSync(fd)
+        if (!stat.isFile() || stat.size > 65536 || (stat.mode & 0o022)) throw new Error('unsafe profile')
+        document = JSON.parse(fs.readFileSync(fd, 'utf8'))
+      } finally { fs.closeSync(fd) }
+    } catch (e) {
+      if (e.code === 'ENOENT') return { business_state: 'unknown', business_basis: 'no_response_contract' }
+      throwErr('E_REQUEST_RESPONSE_PROFILE', '请求响应契约不可读取或格式不安全', null, false)
+    }
+    if (document?.version !== 1 || !Array.isArray(document.profiles) || document.profiles.length > 100
+      || document.profiles.some(p => !p || typeof p !== 'object' || Array.isArray(p))) {
+      throwErr('E_REQUEST_RESPONSE_PROFILE', '请求响应契约格式无效', null, false)
+    }
+    const url = new URL(row.url)
+    const matches = document.profiles.filter(p => p.program_id === row.program_id && p.origin === url.origin
+      && typeof p.path_prefix === 'string' && p.path_prefix.startsWith('/') && p.path_prefix.endsWith('/')
+      && url.pathname.startsWith(p.path_prefix))
+    if (!matches.length) return { business_state: 'unknown', business_basis: 'no_response_contract' }
+    if (matches.length !== 1) throwErr('E_REQUEST_RESPONSE_PROFILE', '请求响应契约匹配歧义', null, false)
+    const profile = matches[0]
+    if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(profile.code_field || '')
+      || !Array.isArray(profile.success_codes) || !profile.success_codes.length
+      || ['success_codes', 'auth_codes', 'environment_codes'].some(k => profile[k] !== undefined
+        && (!Array.isArray(profile[k]) || profile[k].some(x => !['string', 'number'].includes(typeof x))))) {
+      throwErr('E_REQUEST_RESPONSE_PROFILE', '请求响应码契约无效', null, false)
+    }
+    const codes = ['success_codes', 'auth_codes', 'environment_codes'].flatMap(k => profile[k] || [])
+    if (new Set(codes).size !== codes.length) throwErr('E_REQUEST_RESPONSE_PROFILE', '请求响应码分类重叠', null, false)
+    const profileDigest = crypto.createHash('sha256').update(JSON.stringify(profile)).digest('hex')
+    const result = business_state => ({ business_state, business_basis: 'sealed_http_response', response_profile_digest: profileDigest })
+    if (row.evidence_state !== 'intact') return result('evidence_unavailable')
+    if (!/^r[a-z0-9]+$/.test(row.run_id || '')
+      || row.evidence_path !== `results/${row.run_id}/http-record.json`) return { ...result('unknown'), business_basis: 'unsupported_evidence_format' }
+    const sealed = await queryRef?.('exec', 'http_result', { run_id: row.run_id }, { actor: 'reactor' })
+    if (!sealed?.ok || !sealed.data) return result('evidence_unavailable')
+    const record = sealed.data
+    if (record.program_id !== row.program_id || record.request?.url !== row.url || record.request?.method !== row.method
+      || record.response?.status !== row.response_status) return result('evidence_unavailable')
+    if (record.response.state !== 'observed' || record.hops?.length !== 1) return result('transport_error')
+    if (!/application\/(?:[\w.+-]*\+)?json\b/i.test(record.response.headers?.['content-type'] || '')) {
+      return { ...result('unknown'), business_basis: 'non_json_response' }
+    }
+    let body
+    try { body = JSON.parse(record.response.body) } catch {
+      return { ...result('unknown'), business_basis: 'invalid_json_response' }
+    }
+    if (!body || typeof body !== 'object' || !Object.hasOwn(body, profile.code_field)) {
+      return { ...result('unknown'), business_basis: 'response_code_missing' }
+    }
+    const code = body[profile.code_field]
+    if (!['string', 'number'].includes(typeof code)) return result('unknown')
+    const state = profile.success_codes.includes(code) ? 'success'
+      : (profile.auth_codes || []).includes(code) ? 'auth_required'
+      : (profile.environment_codes || []).includes(code) ? 'environment_blocked' : 'business_error'
+    return { ...result(state), business_code: code }
+  }
 
   function stableJson(value) {
     if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
@@ -909,7 +972,7 @@ function makeHandlers(opts) {
           && (!row.headers_ref || evidenceDigest(row.headers_ref) === row.headers_sha256)
           && (row.capture?.artifacts || []).every(a => evidenceDigest(a.path) === a.sha256) ? 'intact' : 'changed'
       } catch { row.evidence_state = 'unavailable' }
-      return row
+      return { ...row, ...await requestBusinessState(row) }
     },
     endpoint_requests: async (args, repo) => ({ ...repo.listRequests(args), meta: { paged: true } }),
     endpoint_list: async (args, repo) => {
@@ -1053,7 +1116,8 @@ export function apply(ctx, config = {}) {
   try {
     ctx.inject(['secDomainBus'], (child) => {
       const bus = child.secDomainBus
-      const domain = buildEndpointDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) })
+      const domain = buildEndpointDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c),
+        query: (d, n, a, c) => bus.query(d, n, a, c) })
       const res = bus.registry.register(domain)
       if (res.ok) log(`endpoint 域注册成功（registered=${res.registered}）`)
       else log(`endpoint 域注册被拒：${res.error?.code} ${res.error?.message}`)

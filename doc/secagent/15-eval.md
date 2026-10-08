@@ -456,3 +456,11 @@ export const repositoryV1 = {
 2026-10-08重新审校增量（本地待发布）：显式corrects_verdict_id支持confirmed与false_positive双向更正，均要求独立审校正式回执及同Finding相反旧回执。原始JSONL不删除，superseded投影及最新有效判定统计处理双向翻案；条件后来变化不自动更正历史。
 
 2026-10-08历史活评测治理（本地待发布）：eval_stats/eval_cases保留原verdict及JSONL，新增technical_verdict/technical_basis/truth_reason。批量查询vuln.technical_receipts校验完整旧回执、摘要、Finding/Program及更正关联；无回执、损坏/不匹配归unknown，不回退旧阳性。by_type的confirmed/false_positive仅计可信技术标签，新增unknown；technical_samples/technical_unknown独立计数，零有效分母fp_rate=null。by_label_source仍表示历史声明来源，不能当可信样本。查询不复用旧60秒缓存；文件或回执变化即时反映，回执服务失败显式错误。eval-live损坏JSON/行结构返回E_EVAL_HISTORY_CORRUPT，不静默吞行或伪装空数据。冻结数据集与既有报告的来源修订仍待治理。
+
+### 2026-10-09 WP09 策略前置、公开资源对照与固定报告（已生产验收）
+
+现役`fixture-runner-v3`保留v1并支持`authz-read-v2`，probes可含owner/low/policy。候选实际读取独立访问策略，校验策略主体为low、object_id等于拥有者正对照id；策略允许访问且内容一致为clean，禁止访问且同对象内容一致才violation。缺探针为inconclusive，策略不可读/坏格式/错对象或拥有者故障为infra_error。公开与显式共享场景不适用“低权必拒”负对照。比较器不接收隐藏variant/truth，oracle真值另请求读取并单计成本。
+
+七类新对象受控样例：私有缺授权、正确拒绝、公开、显式共享、失效身份、网关故障、无策略。生产分4+3两组保持每run≤24实验请求；v2 TP1/FP0/FN0/TN3、环境异常3/3；删除策略探针FN1/未知5，旧v1及无卡基线均误报公开/共享2次。六run共91次实验HTTP+21次真值读取、模型token0，异步知识状态2 eligible/4 rejected；版本未发布。版本受控候选`data-seed/know-revisions/vc-authz-policy-r2.json`仅适用fixture-lab。固定协议的新对象holdout不能证明其它行为/技术栈/漏洞族的泛化或真实发现收益。
+
+`run_finish`现在先写`reports/<kind>-report-<run_id>.json`独立文件，再更新最新报告摘要；同run同正文允许重试，不同正文拒绝覆盖，事件/run/knowledge revision引用固定路径。列表省略最新别名的重复记录，hidden可见性保持。生产发现的本批六条最新报告引用按原件/digest精确修复，新增一次正常事件链验证固定引用与原六报告不变（20实验请求+4真值读取）。相关41项通过，含旧引用被后续覆盖的红例；详见27号§15.123–124。其它历史引用尚未自动迁移。
