@@ -280,3 +280,26 @@ test('ReportModal 在 DocModal 缺席时返回 null（不抛）', () => {
   const { mod } = loadBundle(uiCore)
   assert.doesNotThrow(() => mod.VulnView({ rpc: () => Promise.resolve({}), stats: {}, workspaces: { items: [] }, navigate: { select() {}, consume() {} } }))
 })
+
+test('审校表单提交完整材料、状态快照及显式旧判定更正，缺证不会发送', () => {
+  const { mod } = loadBundle(makeUiCore())
+  const finding = { id: 7, status: 'false_positive', technical_state: { verdict: 'false_positive', latest_verdict_id: 8 } }
+  const values = { operator: 'reviewer', evidence: 'run_original_123', reason: '重新核验原始请求与响应，发现旧审校使用错误身份对照',
+    basis: '独立核对当时对象授权与正常控制请求，确认原始技术反证不成立',
+    reproduction_steps: '按保存报文中的完整请求复现受保护对象读取',
+    impact: '非所有者可以读取明确属于另一身份的受保护字段', corrects: true }
+  const payload = mod.reviewPayload(finding, 'confirmed', values)
+  assert.equal(payload.corrects_verdict_id, 8)
+  assert.equal(payload.reassessment.previous_status, 'false_positive')
+  assert.equal(payload.reassessment.previous_verdict_id, 8)
+  assert.equal(payload.review.impact, values.impact)
+  assert.equal(payload.operator, 'reviewer')
+  assert.throws(() => mod.reviewPayload(finding, 'confirmed', { ...values, evidence: '' }), /审校材料/)
+  assert.throws(() => mod.reviewPayload(finding, 'confirmed', { ...values, operator: '' }), /审校材料/)
+  const observation = mod.reviewPayload(finding, 'confirmed', { ...values, corrects: false })
+  assert.equal(observation.corrects_verdict_id, undefined, 'changed conditions are not automatically historic correction')
+  assert.throws(() => mod.reviewPayload({ ...finding, technical_state: { verdict: 'unknown', latest_verdict_id: null } }, 'confirmed', values), /最新/)
+  const rendered = mod.ReviewForm({ state: { id: 7, status: 'confirmed', finding }, busy: false, onSubmit() {}, onClose() {} })
+  const fields = collect(rendered, n => n.type === 'input' || n.type === 'textarea')
+  assert.deepEqual(fields.map(n => n.props.name).sort(), ['basis', 'corrects', 'evidence', 'impact', 'operator', 'reason', 'reproduction_steps'].sort())
+})

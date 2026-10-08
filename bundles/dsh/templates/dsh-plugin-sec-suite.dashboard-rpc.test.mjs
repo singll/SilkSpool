@@ -140,6 +140,21 @@ test('kbList 汇集超过 500 项，保留 external 类型与统计，空的中�
   await assert.rejects(() => handleDashboardRpc('kbList', {}), /分页不完整/)
 })
 
+test('findingUpdate retains terminal review snapshot and explicit correction in both directions', async () => {
+  const bus = okBus()
+  depsWith(bus)
+  const reassessment = { previous_status: 'false_positive', previous_verdict_id: 42, reason: 'independent original evidence review' }
+  for (const status of ['confirmed', 'false_positive']) {
+    await handleDashboardRpc('findingUpdate', { id: 1, status, evidence: 'run_original', operator: 'reviewer',
+      review: { basis: 'original evidence' }, reassessment, corrects_verdict_id: 42, note: 'review reason' })
+    const call = bus.calls.at(-1)
+    assert.equal(call.verb, status === 'confirmed' ? 'confirm' : 'reject')
+    assert.deepEqual(call.args.reassessment, reassessment)
+    assert.equal(call.args.corrects_verdict_id, 42)
+    assert.equal(call.ctx.operator, 'reviewer')
+  }
+})
+
 test('总线缺席：全部业务端点 fail-closed 显式报错，不触碰 assetDb', async () => {
   const { leaked } = depsWith(null)
   for (const [endpoint, payload] of BUSINESS_CALLS) {

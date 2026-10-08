@@ -507,7 +507,7 @@ function createRepo(db) {
       // Oracle events and finding events can arrive in either order. Match the
       // immutable decision identity or the explicit receipt stored in context.
       return db.prepare(`SELECT * FROM learning_episodes
-        WHERE program_id IS ? AND outcome='confirmed' AND supersedes IS NULL
+        WHERE program_id IS ? AND supersedes IS NULL
           AND json_extract(CASE WHEN json_valid(context_json) THEN context_json ELSE '{}' END,'$.finding_id') = ?
           AND ((? IS NOT NULL AND source_event_name='exec.oracle.decided' AND exec_run_id=?)
             OR json_extract(CASE WHEN json_valid(context_json) THEN context_json ELSE '{}' END,'$.technical_verdict_id')=?)

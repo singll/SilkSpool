@@ -168,6 +168,62 @@ function reviewedReject(bus, args, ctx = {}) {
     review: independentRejection }, { ...ctx, actor: 'dashboard', operator: ctx.operator || 'fixture-reviewer' })
 }
 
+test('27 E13: terminal reassessment is explicit, stale guarded, append-only and atomic', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const candidate = await seedCandidate(bus, { program_id: 'test-src' })
+  const id = candidate.data.id
+  assert.equal((await reviewedReject(bus, { finding_id: id, verdict: 'false_positive', reason: '旧独立审校记录需要重新检查授权边界' })).ok, true)
+  const db = bus._internal.db()
+  const previous = { ...db.prepare('SELECT * FROM vuln_technical_verdicts WHERE finding_id=?').get(id) }
+  const args = { finding_id: id, evidence: 'run_test_20260907_000000', corrects_verdict_id: previous.id,
+    reassessment: { previous_status: 'false_positive', previous_verdict_id: previous.id,
+      reason: '独立重新核对原请求与授权策略，发现原反证使用了错误身份' }, review: independentReview }
+  assert.equal((await bus.dispatch('vuln', 'confirm', args, { actor: 'model', operator: 'pretend' })).error?.code, 'E_VULN_REVIEW_REQUIRED')
+  assert.equal((await bus.dispatch('vuln', 'confirm', args, { actor: 'dashboard' })).error?.code, 'E_VULN_REVIEW_REQUIRED')
+  assert.equal((await reviewedConfirm(bus, { ...args, reassessment: { ...args.reassessment, previous_verdict_id: null } })).error?.code, 'E_VULN_REVIEW_STALE')
+  db.exec("CREATE TRIGGER deny_reassessment BEFORE INSERT ON vuln_technical_verdicts BEGIN SELECT RAISE(ABORT,'receipt blocked'); END")
+  assert.equal((await reviewedConfirm(bus, args)).ok, false)
+  assert.equal(db.prepare('SELECT status FROM findings WHERE id=?').get(id).status, 'false_positive')
+  db.exec('DROP TRIGGER deny_reassessment')
+  const confirmed = await reviewedConfirm(bus, args)
+  assert.equal(confirmed.ok, true, confirmed.error?.message)
+  assert.equal(confirmed.data.status, 'confirmed')
+  assert.deepEqual({ ...db.prepare('SELECT * FROM vuln_technical_verdicts WHERE id=?').get(previous.id) }, previous)
+  const detail = await bus.query('vuln', 'get', { id }, { actor: 'dashboard' })
+  assert.equal(detail.data.technical_state.verdict, 'confirmed')
+  assert.equal(detail.data.technical_state.latest_verdict_id, confirmed.data.technical_verdict_id)
+  assert.equal((await reviewedConfirm(bus, args)).error?.code, 'E_VULN_REVIEW_STALE')
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM vuln_technical_verdicts WHERE finding_id=?').get(id).n, 2)
+})
+
+test('27 E13: technical review preserves accepted handling and separates unknown legacy labels', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const candidate = await seedCandidate(bus, { program_id: 'test-src' })
+  const id = candidate.data.id
+  const db = bus._internal.db()
+  db.prepare("UPDATE findings SET status='accepted', vendor_status='accepted', bounty=100, confidence='confirmed' WHERE id=?").run(id)
+  let detail = await bus.query('vuln', 'get', { id }, { actor: 'dashboard' })
+  assert.equal(detail.data.technical_state.verdict, 'unknown')
+  const reassessment = { previous_status: 'accepted', previous_verdict_id: null,
+    reason: '根据保存的原始网络报文进行独立审校，旧平台状态不提供技术真值' }
+  const rejected = await reviewedReject(bus, { finding_id: id, verdict: 'false_positive',
+    reason: '原始观察被当时的有效授权及正常对照反驳', reassessment })
+  assert.equal(rejected.ok, true, rejected.error?.message)
+  detail = await bus.query('vuln', 'get', { id }, { actor: 'dashboard' })
+  assert.equal(detail.data.status, 'accepted')
+  assert.equal(detail.data.vendor_status, 'accepted')
+  assert.equal(detail.data.bounty, 100)
+  assert.equal(detail.data.technical_state.verdict, 'false_positive')
+  assert.equal(detail.data.confidence, 'false_positive')
+  const malformed = await bus.dispatch('vuln', 'reject', { finding_id: id, verdict: 'ignored',
+    reason: '处理退出不能冒充独立技术审校', review: independentRejection,
+    reassessment: { ...reassessment, previous_verdict_id: rejected.data.technical_verdict_id } },
+  { actor: 'dashboard', operator: 'reviewer' })
+  assert.equal(malformed.error?.code, 'E_VULN_REVIEW_REQUIRED')
+})
+
 test('27 E13: reason-only rejection cannot close a candidate or create technical truth', async t => {
   const { bus } = makeEnv()
   t.after(() => bus._internal.close())

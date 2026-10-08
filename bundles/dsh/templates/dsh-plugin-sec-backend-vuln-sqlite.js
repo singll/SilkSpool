@@ -264,6 +264,13 @@ function createRepo(db) {
       const row = db.prepare('SELECT * FROM vuln_technical_verdicts WHERE finding_id=? ORDER BY id DESC LIMIT 1').get(findingId)
       return row ? { ...row } : null
     },
+    technicalState(findingId) {
+      const row = repo.getLatestTechnicalVerdict(findingId)
+      const verdict = row && receiptVerdict(row.verdict, row.basis, row.evidence_json, row.evidence_digest, row.operator, findingId)
+      return { verdict: verdict || 'unknown', latest_verdict_id: row?.id ?? null,
+        basis: verdict ? row.basis : null, verified_at: verdict ? row.created_at : null,
+        reason: verdict ? null : row ? 'untrusted_receipt' : 'no_technical_receipt' }
+    },
     recordTechnicalVerdict({ finding_id, verdict, basis, evidence_ref = null, evidence_digest = null, evidence_json, operator = null, created_at }) {
       const r = db.prepare(`INSERT INTO vuln_technical_verdicts
         (finding_id,verdict,basis,evidence_ref,evidence_digest,evidence_json,operator,created_at) VALUES (?,?,?,?,?,?,?,?)`)

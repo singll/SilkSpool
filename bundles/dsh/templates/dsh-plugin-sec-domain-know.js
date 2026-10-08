@@ -894,7 +894,7 @@ export const KNOW_MANIFEST = {
       params: schema({ finding_id: int(), program_id: str(), verdict_id: int(),
         decision_id: str() }, ['finding_id', 'verdict_id']),
       predicates: [],
-      agent_note: '内部更正接线：按正式回执或签封decision定位原阳性经历。',
+      agent_note: '内部更正接线：按正式回执或签封decision定位原技术经历，含阳性、可靠阴性及独立审校。',
     },
     know_episode_state: {
       actor: ['reactor'],
@@ -3228,13 +3228,13 @@ function makeHandlers(opts) {
           || technicalReceipt.program_id !== p.program_id) return { ok: false, error: { code: 'E_EXEC_EVIDENCE_UNTRUSTED', message: 'technical receipt association mismatch' } }
       }
       if (technicalReceipt?.corrects_verdict_id) {
-        if (technicalReceipt.basis !== 'independent_review' || technicalReceipt.verdict !== 'false_positive') {
+        if (technicalReceipt.basis !== 'independent_review' || !['confirmed', 'false_positive'].includes(technicalReceipt.verdict)) {
           return { ok: false, error: { code: 'E_INVARIANT', message: 'technical correction requires independent counterevidence' } }
         }
         const previous = await queryRef('vuln', 'technical_verdict', { id: technicalReceipt.corrects_verdict_id }, { actor: 'reactor' })
         if (!previous?.ok) return { ok: false, error: previous?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
         if (previous.data.finding_id !== technicalReceipt.finding_id || previous.data.program_id !== technicalReceipt.program_id
-          || previous.data.verdict !== 'confirmed') return { ok: false, error: { code: 'E_INVARIANT', message: 'correction target mismatch' } }
+          || previous.data.verdict !== (technicalReceipt.verdict === 'confirmed' ? 'false_positive' : 'confirmed')) return { ok: false, error: { code: 'E_INVARIANT', message: 'correction target mismatch' } }
         const originals = await queryRef('know', 'technical_episodes', {
           finding_id: technicalReceipt.finding_id, verdict_id: previous.data.id,
           ...(technicalReceipt.program_id ? { program_id: technicalReceipt.program_id } : {}),
@@ -3278,7 +3278,7 @@ function makeHandlers(opts) {
         outcome,
         reason_code: reason,
         exec_run_id: runId || undefined,
-        attempt_id: `finding:${p.finding_id}`,
+        attempt_id: technicalReceipt ? `verdict:${technicalReceipt.id}` : `finding:${p.finding_id}`,
         evidence_refs: p.evidence_ref ? [String(p.evidence_ref).slice(0, 300)] : undefined,
         source_credibility: technicalReceipt?.basis === 'independent_review' ? 'human-reviewed' : 'model-proposed',
         observed_at: envelope.ts,

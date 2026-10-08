@@ -806,7 +806,9 @@ export async function handleDashboardRpc(endpoint, payload) {
       // new 是回退，语义动词层无此流转 → 拒绝。
       const ctxBase = { actor: 'dashboard', operator: p.operator ? String(p.operator) : null, session_id: null }
       const note = String(p.note || '')
-      const technicalEvidence = { evidence: String(p.evidence || ''), ...(p.review !== undefined ? { review: p.review } : {}) }
+      const technicalEvidence = { evidence: String(p.evidence || ''), ...(p.review !== undefined ? { review: p.review } : {}),
+        ...(p.reassessment !== undefined ? { reassessment: p.reassessment } : {}),
+        ...(p.corrects_verdict_id !== undefined ? { corrects_verdict_id: p.corrects_verdict_id } : {}) }
       let r
       if (status === 'confirmed') {
         r = await busDispatch('vuln', 'confirm', { finding_id: id, ...technicalEvidence, note,

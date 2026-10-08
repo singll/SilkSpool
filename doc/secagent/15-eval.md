@@ -452,3 +452,5 @@ export const repositoryV1 = {
 2026-10-07 E13/L05评测更正（本地760/760通过，未发布）：明确更正随正式反证回执追加corrects_verdict_id，原JSONL字节不变。stats排除被更正标签并新增superseded_total，同时间戳用回执ID处理乱序；cases默认有效集，显式include_superseded查看历史。无更正关联的新实验保留全部历史样本。hidden过滤先于更正投影，不通过可见行泄漏隐藏更正；旧无回执污染与训练集导出重建仍待后续治理。
 
 2026-10-07评测更正发布回填：2ee0d19已部署corrects_verdict_id持久关联、同毫秒乱序处理、有效cases与include_superseded历史投影；本地/远端760项、隔离九域567项及UI80通过。生产历史/有效各469，无正式技术回执，因此本轮库存检查不证明真实更正收益；旧污染与导出重建仍待办。详见27号§15.98，对应“未发布”以本次状态为准。
+
+2026-10-08重新审校增量（本地待发布）：显式corrects_verdict_id支持confirmed与false_positive双向更正，均要求独立审校正式回执及同Finding相反旧回执。原始JSONL不删除，superseded投影及最新有效判定统计处理双向翻案；条件后来变化不自动更正历史。

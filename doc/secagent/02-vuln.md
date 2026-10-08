@@ -188,7 +188,7 @@ UPDATE findings SET
 WHERE id=? AND status='new'
 ```
 
-随后追加确认引用、人工审校依据（如有）及 note；提交成功发 `signal.confirmed`（恒发）+ `candidate.promoted`（当且仅当原行 noise=1——manifest `event_limit: 2`）。
+随后追加确认引用、人工审校依据（如有）及 note；提交成功发 `signal.confirmed`（恒发）+ `candidate.promoted`（当且仅当原行 noise=1 且 status=new——manifest `event_limit: 2`）。
 
 **返回信封示例**：
 
@@ -230,7 +230,7 @@ WHERE id=? AND status='new'
 | review | object | 人工反证时必填 | — | basis≥20、expected_behavior≥10、observed_behavior≥10、controls≥20；仅 dashboard 且 operator 非空 |
 | corrects_verdict_id | integer | 否 | — | 明确证伪旧判定时引用同Finding最新完整正式阳性回执；须独立审校，不能由自动阴性推断 |
 
-`false_positive` 先核验证据存在性；机器路径复用可信判定校验，要求同 Finding/Program/URL/host/类型、原件摘要、请求/身份/策略关联与一小时时效，且 verdict=`rejected`。公开响应、身份失败、代理故障或仅缺证文字不能否定假设；用 `vuln_note` 保存缺证与重开条件。人工审校是操作员明确签署的独立判断，不把其理由当机器 Oracle。可选corrects_verdict_id明确表示原判定在当时即错误；仅目标后来修复或新实验阴性不填。既有终态限制保持，更正已accepted等终态仍待独立治理入口。
+`false_positive` 先核验证据存在性；机器路径复用可信判定校验，要求同 Finding/Program/URL/host/类型、原件摘要、请求/身份/策略关联与一小时时效，且 verdict=`rejected`。公开响应、身份失败、代理故障或仅缺证文字不能否定假设；用 `vuln_note` 保存缺证与重开条件。人工审校是操作员明确签署的独立判断，不把其理由当机器 Oracle。可选corrects_verdict_id明确表示原判定在当时即错误；仅目标后来修复或新实验阴性不填。终态重新审校使用下述 `reassessment`；缺此参数仍按既有终态守卫拒绝。
 
 **事务行为**（状态 UPDATE、技术回执、证据追加及事件同事务）：
 
@@ -265,6 +265,16 @@ noise 列不动：候选行（noise=1）保持 noise=1，但 `status≠'new'` �
 **actor**：model, dashboard。**幂等**：不复用成功缓存，每次先核验证据；终态重复请求返回 E_STATE（证据失效可先被门禁拒绝），不重复写回执或事件。
 
 ---
+
+#### 独立重新审校（2026-10-08，本地待发布）
+
+C3/C4 接受 `reassessment={previous_status, previous_verdict_id, reason}`：状态取当前处理状态；回执取最新正式回执ID，无回执显式null；原因≥20字符。必须由dashboard提供operator、存在的evidence及完整review；机器不能借此绕过终态。命令在事务内再次比较状态与最新回执，变化返回`E_VULN_REVIEW_STALE`，原请求重放不新增回执。无reassessment的原状态机保持。
+
+C3可重新确认false_positive/dup/ignored/confirmed等记录；submitted/accepted保留运营状态，其余置confirmed，技术confidence=confirmed、noise=0。C4仅false_positive可重新审校，保留submitted/accepted/dup/ignored处理状态，另记技术false_positive；平台字段、赏金与旧回执不改写。确认和反证返回technical_verdict_id，旧状态、旧回执及审校原因均存入新证据快照。
+
+`corrects_verdict_id`双向引用同Finding最新完整的相反正式技术回执，表示原判定在当时即错误；旧弱标签无可引用技术回执，不能伪造关联。仅后来修复或条件变化不填此项。新旧回执保留，明确更正使对应原阳性或可靠阴性经历追加inconclusive supersedes，撤出依赖方法并重算；新审校独立落账。评测原JSONL保留，以显式更正投影有效标签。
+
+`vuln_get`返回`technical_state`（verdict、latest_verdict_id、basis、verified_at、reason）。只有通过完整回执检查才为confirmed/false_positive，旧status/confidence或损坏回执均为unknown；该查询不访问目标。安全中心详情和审校表单使用此字段，操作人、原始证据、依据与各类技术材料必填，显式选择是否证伪旧判定。发布验收另记录，不把本地实现当生产能力。
 
 #### C5 · vuln_submit（提交与运营回流）
 

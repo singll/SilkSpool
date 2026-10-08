@@ -1231,3 +1231,5 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-07 E13/L05显式技术更正（本地758/758通过，未发布）：独立反证回执的corrects_verdict_id绑定被证伪的正式阳性；内部technical_episodes按receipt/decision与Finding/Program定位原经历，追加inconclusive更正，保留原session/run/attempt/卡版本与实际请求/时长/费用归属。原episode/source_snapshot/content不覆写；复用来源失效与撤回发布同事务，失败原事件pending重试。原经历晚到时等待，重建后重试；已更正的episode子事件重放跳过蒸馏。新签封阴性无显式更正仅新增valid_clean，不撤销历史阳性。旧eval-live训练行更正、已终态Finding翻案及历史污染治理尚未完成。
 
 2026-10-07反证累计发布回填：2ee0d19已上线签封阴性同decision归并、独立审校显式更正旧阳性经历并撤回依赖发布的链路；原件与费用归属保留，乱序、拒写恢复及重放契约通过，详见27号§15.98。评测显式更正投影同批上线；历史无回执污染、终态翻案、完整计划采用/费用与收益验收仍待办，对应“未发布”以本节为准。
+
+2026-10-08独立重新审校增量（本地待发布）：正式false_positive也可被独立阳性审校明确更正。消费者按同Finding相反正式回执，定位原阴性/审校经历，追加inconclusive supersedes，保留原归属、费用和原件，撤出依赖发布并重算；新审校按verdict ID独立记账，避免共用run引用合并不同回执。消费失败仍pending，恢复后幂等处理，不重发HTTP。

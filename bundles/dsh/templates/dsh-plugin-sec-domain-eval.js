@@ -436,7 +436,7 @@ function makeHandlers(opts) {
       if (args.corrects_verdict_id) {
         const receipt = await queryRef?.('vuln', 'technical_verdict', { id: args.technical_verdict_id }, { actor: 'reactor' })
         if (!receipt?.ok) throwErr(receipt?.error?.code || 'E_BACKEND_UNAVAILABLE', receipt?.error?.message || '更正回执不可读', null)
-        if (args.verdict !== 'false_positive' || receipt.data.basis !== 'independent_review'
+        if (!['confirmed', 'false_positive'].includes(args.verdict) || receipt.data.basis !== 'independent_review'
           || receipt.data.verdict !== args.verdict || receipt.data.finding_id !== args.finding_id
           || receipt.data.program_id !== (args.program_id || null) || receipt.data.evidence_digest !== args.evidence_digest
           || receipt.data.corrects_verdict_id !== args.corrects_verdict_id) {
@@ -872,9 +872,9 @@ function makeHandlers(opts) {
         if (truth.corrects_verdict_id) {
           const previous = await queryRef('vuln', 'technical_verdict', { id: truth.corrects_verdict_id }, { actor: 'reactor' })
           if (!previous?.ok) return { ok: false, error: previous?.error || { code: 'E_BACKEND_UNAVAILABLE' } }
-          if (truth.basis !== 'independent_review' || verdict !== 'false_positive'
+          if (truth.basis !== 'independent_review'
             || previous.data.finding_id !== findingId || previous.data.program_id !== truth.program_id
-            || previous.data.verdict !== 'confirmed') return { ok: false, error: { code: 'E_INVARIANT', message: 'invalid evaluation correction target' } }
+            || previous.data.verdict !== (verdict === 'confirmed' ? 'false_positive' : 'confirmed')) return { ok: false, error: { code: 'E_INVARIANT', message: 'invalid evaluation correction target' } }
         }
         if (truth.basis === 'controlled_oracle') {
           const evidence = await queryRef('exec', 'authz_evidence', { decision_id: truth.decision_id }, { actor: 'reactor' })

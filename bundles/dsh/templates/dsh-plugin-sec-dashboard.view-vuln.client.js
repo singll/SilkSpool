@@ -81,7 +81,7 @@ window.__ModuleLoader__.load({
           .then(function (res) { if (alive) setD({ loading: false, data: res, error: null }) })
           .catch(function (e) { if (alive) setD({ loading: false, data: null, error: e && e.message ? e.message : String(e) }) })
         return function () { alive = false }
-      }, [r.id])
+      }, [r.id, r.updated_at])
       var inner
       if (d.loading) inner = el(uiCore.SkeletonRows, { rows: 3 })
       else if (d.error || !d.data) inner = el('div', { style: { ...uiCore.styles.errorLine, padding: 0 } }, '详情加载失败: ' + (d.error || '无数据'))
@@ -102,6 +102,8 @@ window.__ModuleLoader__.load({
             el('span', { style: { marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 } },
               el('span', { style: { color: uiCore.T.label3, ...uiCore.F.xxxs } }, '来源会话'), el(uiCore.SessionLink, { id: f.session_id }))),
           field('目标', f.url || f.host, true),
+          field('技术判定', { confirmed: '已确认', false_positive: '有充分反证', unknown: '未知，待独立复核' }[(f.technical_state || {}).verdict || 'unknown']),
+          field('技术回执', (f.technical_state || {}).latest_verdict_id ? '#' + f.technical_state.latest_verdict_id : '无正式技术回执'),
           field('证据', f.evidence, true),
           field('复现步骤', f.reproduction_steps, true),
           field('前提条件', f.preconditions),
@@ -132,10 +134,8 @@ window.__ModuleLoader__.load({
       }
       function lifecycleActions(r) {
         var a = []
-        if (['new', 'confirmed'].indexOf(r.status) >= 0) {
-          a.push(lcBtn('确认为真实漏洞', function () { props.onTag(r.id, 'confirmed') }, 'silksec-btn-confirm'))
-          a.push(lcBtn('误报', function () { props.onTag(r.id, 'false_positive') }, 'silksec-btn-danger'))
-        }
+        a.push(lcBtn('审校确认', function () { props.onTag(r.id, 'confirmed') }, 'silksec-btn-confirm'))
+        a.push(lcBtn('审校反证', function () { props.onTag(r.id, 'false_positive') }, 'silksec-btn-danger'))
         if (r.status === 'confirmed') a.push(lcBtn('标记已提交 SRC', function () { props.onTag(r.id, 'submitted') }))
         if (r.status === 'submitted') {
           a.push(lcBtn('已接收 + 记录赏金', function () { props.onAccept(r.id) }, 'silksec-btn-confirm'))
@@ -214,6 +214,72 @@ window.__ModuleLoader__.load({
       })
     }
 
+    function reviewPayload(finding, status, values) {
+      var required = { operator: 1, evidence: 1, reason: 20, basis: 20 }
+      var positive = status === 'confirmed'
+      Object.assign(required, positive ? { reproduction_steps: 10, impact: 10 }
+        : { expected_behavior: 10, observed_behavior: 10, controls: 20 })
+      var labels = { operator: '审校人', evidence: '原始证据引用', reason: '本次审校原因', basis: '独立核验依据',
+        reproduction_steps: '复现步骤', impact: '具体安全影响', expected_behavior: '预期行为', observed_behavior: '实际观察', controls: '有效对照' }
+      Object.keys(required).forEach(function (key) {
+        if (typeof values[key] !== 'string' || values[key].trim().length < required[key]) throw new Error('请完整填写审校材料：' + labels[key])
+      })
+      var technical = finding.technical_state
+      if (!technical || !Object.prototype.hasOwnProperty.call(technical, 'latest_verdict_id')) throw new Error('缺少技术回执快照，请重新加载详情')
+      var review = { basis: values.basis.trim() }
+      ;(positive ? ['reproduction_steps', 'impact'] : ['expected_behavior', 'observed_behavior', 'controls']).forEach(function (key) { review[key] = values[key].trim() })
+      var payload = { id: finding.id, status: status, operator: values.operator.trim(), evidence: values.evidence.trim(),
+        note: values.reason.trim(), review: review,
+        reassessment: { previous_status: finding.status, previous_verdict_id: technical.latest_verdict_id,
+          reason: values.reason.trim() } }
+      if (values.corrects) {
+        if (!technical.latest_verdict_id || technical.verdict !== (positive ? 'false_positive' : 'confirmed')) throw new Error('更正须引用最新的相反技术判定')
+        payload.corrects_verdict_id = technical.latest_verdict_id
+      }
+      return payload
+    }
+
+    function ReviewForm(props) {
+      var state = props.state
+      var f = state.finding
+      var positive = state.status === 'confirmed'
+      function field(key, label, minimum, initial) {
+        return el('label', { key: key, style: { display: 'block', marginBottom: 10 } },
+          el('span', null, label),
+          el(key === 'operator' ? 'input' : 'textarea', { name: key, required: true, minLength: minimum,
+            defaultValue: initial || '', rows: key === 'evidence' ? 2 : 3,
+            disabled: !!props.busy, style: { display: 'block', width: '100%', boxSizing: 'border-box',
+              background: uiCore.T.layer1, color: uiCore.T.label, border: '1px solid ' + uiCore.T.border2, padding: 8 } }))
+      }
+      return el('section', { role: 'dialog', 'aria-label': '独立技术审校', style: { ...uiCore.styles.card, padding: 16, marginBottom: 12 } },
+        el('h3', null, '独立技术审校 #' + state.id + ' · ' + (positive ? '确认' : '反证')),
+        state.error ? el('p', { role: 'alert', style: { color: uiCore.T.error } }, state.error) : null,
+        !f ? el('p', null, '正在读取当前记录与技术回执…') : el('form', { onSubmit: function (event) {
+          event.preventDefault()
+          var inputs = event.currentTarget.elements
+          var values = {}
+          ;['operator', 'evidence', 'reason', 'basis', 'reproduction_steps', 'impact', 'expected_behavior', 'observed_behavior', 'controls']
+            .forEach(function (key) { values[key] = inputs.namedItem(key) ? inputs.namedItem(key).value : '' })
+          values.corrects = !!(inputs.namedItem('corrects') && inputs.namedItem('corrects').checked)
+          props.onSubmit(values)
+        } },
+        el('p', null, f.title + ' · ' + (f.url || f.host || '')),
+        el('p', null, '处理状态：' + (uiCore.STATUS_LABEL[f.status] || f.status) + '；技术判定：'
+          + ({ confirmed: '已确认', false_positive: '有充分反证', unknown: '未知' }[(f.technical_state || {}).verdict || 'unknown'])
+          + '。请先核对原始证据，再签署独立判断。'),
+        field('operator', '审校人', 1),
+        field('evidence', '原始证据引用', 1),
+        field('reason', '本次审校原因', 20),
+        field('basis', '独立核验依据', 20),
+        positive ? [field('reproduction_steps', '复现步骤', 10, f.reproduction_steps), field('impact', '具体安全影响', 10, f.impact)]
+          : [field('expected_behavior', '预期行为与保护边界', 10), field('observed_behavior', '实际观察', 10), field('controls', '有效身份、对象与正常对照', 20)],
+        f.technical_state && f.technical_state.verdict === (positive ? 'false_positive' : 'confirmed')
+          ? el('label', { style: { display: 'block', marginBottom: 12 } }, el('input', { type: 'checkbox', name: 'corrects', disabled: !!props.busy }),
+            ' 原技术判定在当时即错误，明确更正回执 #' + f.technical_state.latest_verdict_id + '（仅后来修复或条件变化不选）') : null,
+        el('button', { type: 'submit', className: 'silksec-btn', disabled: !!props.busy }, '签署并保存审校')),
+        el('button', { type: 'button', className: 'silksec-btn', disabled: !!props.busy, onClick: props.onClose }, '关闭'))
+    }
+
     function VulnView(props) {
       var api = props || {}
       var rpcCall = (typeof api.rpc === 'function') ? api.rpc : ownRpc
@@ -221,6 +287,9 @@ window.__ModuleLoader__.load({
       var statsData = api.stats || {}
       var busyState = React.useState(false)
       var isBusy = busyState[0]; var setBusy = busyState[1]
+      var reviewState = React.useState(null)
+      var review = reviewState[0]; var setReview = reviewState[1]
+      var reviewRequest = React.useRef(0)
       var useRpcCore = uiCore.useRpc
       var usePagedCore = uiCore.usePagedQuery
 
@@ -253,7 +322,38 @@ window.__ModuleLoader__.load({
           })
         }
       }
-      function onTag(fid, status) { withBusy(function () { return rpcCall('findingUpdate', { id: fid, status: status }) })() }
+      function onTag(fid, status) {
+        if (status === 'confirmed' || status === 'false_positive') {
+          var request = ++reviewRequest.current
+          setReview({ id: fid, status: status, finding: null, error: null })
+          rpcCall('findingGet', { id: fid }).then(function (f) {
+            if (request === reviewRequest.current) setReview({ id: fid, status: status, finding: f, error: null })
+          }).catch(function (e) {
+            if (request === reviewRequest.current) setReview({ id: fid, status: status, finding: null, error: e.message })
+          })
+          return
+        }
+        var note = ''
+        try { note = window.prompt('请填写处理原因（至少10字）:', '') } catch (e) { return }
+        if (note === null) return
+        var payload = { id: fid, status: status, note: note }
+        if (status === 'dup') {
+          try { payload.dup_of = Number(window.prompt('重复的原记录编号:', '')) } catch (e) { return }
+        }
+        withBusy(function () { return rpcCall('findingUpdate', payload) })()
+      }
+      function submitReview(values) {
+        if (isBusy || !review || !review.finding) return
+        var payload
+        try { payload = reviewPayload(review.finding, review.status, values) }
+        catch (e) { setReview(Object.assign({}, review, { error: e.message })); return }
+        setBusy(true)
+        rpcCall('findingUpdate', payload).then(function () {
+          setReview(null); findingsQ.reload(); evalState.reload()
+          if (typeof api.reloadShared === 'function') api.reloadShared()
+        }).catch(function (e) { setReview(Object.assign({}, review, { error: e.message + '；记录若已变化，请关闭后重新审校。' })) })
+          .finally(function () { setBusy(false) })
+      }
       function onAccept(fid) {
         var b = null
         try { b = window.prompt('厂商已接收。记录赏金金额（数字，可留空）:', '') } catch (e) { return }
@@ -286,6 +386,8 @@ window.__ModuleLoader__.load({
       var progOpts = wsItems.filter(function (w) { return w.program }).map(function (w) { return { v: w.program.id, l: w.title + '（' + w.program.id + '）' } })
 
       return el(React.Fragment, null,
+        review ? el(ReviewForm, { state: review, busy: isBusy, onSubmit: submitReview,
+          onClose: function () { reviewRequest.current++; setReview(null) } }) : null,
         el(uiCore.Toolbar, {
           query: findingsQ, placeholder: '搜索标题 / 主机 / URL…',
           filters: [
@@ -344,6 +446,8 @@ window.__ModuleLoader__.load({
     exports.DomainRoot = DomainRoot
     exports.VulnView = VulnView
     exports.FindingsView = FindingsView
+    exports.ReviewForm = ReviewForm
+    exports.reviewPayload = reviewPayload
     return module.exports
   },
 })

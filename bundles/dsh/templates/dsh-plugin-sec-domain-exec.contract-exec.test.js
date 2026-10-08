@@ -1039,6 +1039,56 @@ test('27 E13/L05: explicit independent counterevidence corrects the old attempt 
   assert.equal(seen.length, count)
 })
 
+test('27 E13: reopening a false positive corrects its negative learning and evaluation without repeating HTTP', async t => {
+  const { bus, dataDir, args, seen } = await authzFixture(t, 'patched')
+  t.after(() => bus._internal.close())
+  bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) }))
+  bus.registry.register(buildEvalDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a), query: (...a) => bus.query(...a) }))
+  await bus.query('know', 'episode_list', {}, { actor: 'dashboard' })
+  const run = await bus.dispatch('exec', 'verify_authz_read', args, { actor: 'model', session_id: 'negative-attempt' })
+  assert.equal(run.ok, true, run.error?.message)
+  const capsule = await bus.dispatch('vuln', 'oracle_capsule', { decision_id: run.data.decision_id }, { actor: 'model' })
+  const rejected = await bus.dispatch('vuln', 'reject', { finding_id: args.finding_id, verdict: 'false_positive',
+    reason: '可靠身份与正常对照下未授权身份被拒绝访问', evidence: capsule.data.evidence_ref }, { actor: 'model' })
+  assert.equal(rejected.ok, true, rejected.error?.message)
+  await bus._internal.dispatcherTick()
+  await bus._internal.dispatcherTick()
+  const db = bus._internal.db()
+  const original = { ...db.prepare("SELECT * FROM learning_episodes WHERE source_event_name='exec.oracle.decided'").get() }
+  assert.equal(original.outcome, 'valid_clean')
+  const previous = db.prepare('SELECT * FROM vuln_technical_verdicts WHERE finding_id=?').get(args.finding_id)
+  const input = { finding_id: args.finding_id, evidence: capsule.data.evidence_ref, corrects_verdict_id: previous.id,
+    reassessment: { previous_status: 'false_positive', previous_verdict_id: previous.id,
+      reason: '独立复核原始数据发现身份前提被错误解释，需要更正历史反证' },
+    review: { basis: '独立核验原实验时点策略和另一条原始读取报文，确认此前归属解释错误',
+      reproduction_steps: '使用已保存的目标请求及受控身份关联重建原实验步骤',
+      impact: '原始证据证明非所有者能够读取受保护的对象字段' } }
+  const requestCount = seen.length
+  const confirmed = await bus.dispatch('vuln', 'confirm', input, { actor: 'dashboard', operator: 'independent-reviewer' })
+  assert.equal(confirmed.ok, true, confirmed.error?.message)
+  db.exec("CREATE TRIGGER deny_negative_correction BEFORE INSERT ON learning_episodes WHEN NEW.supersedes IS NOT NULL BEGIN SELECT RAISE(ABORT,'correction blocked'); END")
+  await bus._internal.dispatcherTick()
+  assert.equal(db.prepare('SELECT status FROM event_outbox WHERE event_id=?').get(confirmed.event_ids[0]).status, 'pending')
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM learning_episodes WHERE supersedes=?').get(original.episode_id).n, 0)
+  db.exec('DROP TRIGGER deny_negative_correction')
+  db.prepare('UPDATE event_outbox SET next_retry_at=0 WHERE event_id=?').run(confirmed.event_ids[0])
+  await bus._internal.dispatcherTick()
+  await bus._internal.dispatcherTick()
+  assert.equal(db.prepare('SELECT status FROM event_outbox WHERE event_id=?').get(confirmed.event_ids[0]).status, 'delivered')
+  const correction = db.prepare('SELECT * FROM learning_episodes WHERE supersedes=?').get(original.episode_id)
+  assert.equal(correction.outcome, 'inconclusive')
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM learning_episodes WHERE source_event_name='vuln.signal.confirmed' AND outcome='confirmed'").get().n, 1)
+  assert.equal(correction.request_count, original.request_count)
+  assert.equal(correction.session_id, original.session_id)
+  const evaluation = await bus.query('eval', 'stats', {}, { actor: 'dashboard' })
+  assert.equal(evaluation.ok, true, evaluation.error?.message)
+  assert.equal(evaluation.data.live.unique_findings, 1)
+  assert.equal(evaluation.data.live.superseded_total, 1)
+  assert.equal(Object.values(evaluation.data.live.by_type).reduce((sum, item) => sum + item.confirmed, 0), 1)
+  assert.equal((await bus.dispatch('vuln', 'confirm', input, { actor: 'dashboard', operator: 'independent-reviewer' })).error?.code, 'E_VULN_REVIEW_STALE')
+  assert.equal(seen.length, requestCount)
+})
+
 test('27 E13/L05: a later patched target preserves the historical positive attempt without explicit correction', async t => {
   const { bus, dataDir, args, setMode, seen } = await authzFixture(t, 'vulnerable')
   t.after(() => bus._internal.close())
