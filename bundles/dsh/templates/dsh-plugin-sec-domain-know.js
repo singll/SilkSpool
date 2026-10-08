@@ -1317,19 +1317,48 @@ function makeHandlers(opts) {
 
   function safeParseArr(s) { try { const v = JSON.parse(s); return Array.isArray(v) ? v : [] } catch { return [] } }
 
-  // 全量重建（治理对账）：枚举曝光/采用/episode 归集出现过的 artifact 逐卡重放
-  async function rebuildAllScores(repo) {
+  function scoreArtifactKeys(repo) {
     const keys = new Set()
     for (const r of repo.exposureAggByArtifact()) keys.add(`${r.artifact_kind}|${r.artifact_id}`)
     for (const r of repo.adoptionArtifacts()) keys.add(`${r.artifact_kind}|${r.artifact_id}`)
     for (const r of repo.episodeAggByCard()) keys.add(`${r.card_kind || inferKindOf(r.card_id)}|${r.card_id}`)
     for (const r of repo.feedbackArtifacts()) keys.add(`${r.artifact_kind}|${r.artifact_id}`)
+    // Include orphaned projections so rebuilding can remove stale rows.
+    for (let offset = 0; ; offset += 500) {
+      const page = repo.listScores({ limit: 500, offset }).rows
+      for (const r of page) keys.add(`${r.artifact_kind}|${r.artifact_id}`)
+      if (page.length < 500) break
+    }
+    return keys
+  }
+
+  // 全量重建（治理对账）：枚举事实和旧投影，不受前500项或已建投影限制。
+  async function rebuildAllScores(repo) {
+    const keys = scoreArtifactKeys(repo)
     let n = 0
     for (const k of keys) {
       const [kind, id] = k.split('|')
       if (await rebuildArtifactScore(repo, kind, id)) n++
     }
     return n
+  }
+
+  function allExpRows(repo, where = '1=1', args = []) {
+    const rows = []
+    for (let offset = 0; ; offset += 500) {
+      const page = repo.listExpWhere(where, args, 'id ASC', 500, offset)
+      rows.push(...page)
+      if (page.length < 500) return rows
+    }
+  }
+
+  async function currentExpScore(repo, card) {
+    const learning = await rebuildArtifactScore(repo, 'exp_card', String(card.id), false)
+    return { ...card, legacy_score: card.score ?? null, score: learning?.score || 0,
+      score_basis: 'revalidated_learning_facts',
+      learning: learning ? { verified_positives: learning.verified_positives, valid_cleans: learning.valid_cleans,
+        inconclusives: learning.inconclusives, sample_size: learning.sample_size,
+        cost_requests: learning.cost_requests, cost_tokens: learning.cost_tokens } : null }
   }
 
   // episode 的 card_id → artifact_kind 推断（VC-*/VC-AUTHZ-* → vulncard；数字 → exp_card；doc:* → kb_doc）
@@ -2534,20 +2563,23 @@ function makeHandlers(opts) {
         rows = []
         for (let offset = 0; ; offset += 500) {
           const page = repo.listExpWhere("status NOT IN ('archived', 'deprecated')", [], 'id ASC', 500, offset)
-          rows.push(...page.map(c => ({ ...c, _score: c.score || 0 })))
+          rows.push(...page.map(c => ({ ...c, _score: 0 })))
           if (page.length < 500) break
         }
       }
-      const items = rows
+      const eligible = rows
         .filter((c) => !['archived', 'deprecated'].includes(c.status))
         .filter(c => !args.status || c.status === args.status)
         .filter(c => !args.confidence || c.confidence === args.confidence)
         .filter(c => !args.tags?.length || args.tags.every(tag => JSON.parse(c.tags || '[]').includes(tag)))
+      const projected = []
+      for (const c of eligible) projected.push(await currentExpScore(repo, c))
+      const items = projected
         .map((c) => {
           let rank = (c._score || 0) * 10 + (vecScore.get(c.id) || 0) * 20 + (SRC_RANK[c.source] || 0) * 3 + (CONF_RANK[c.confidence] || 0) + (c.score || 0) * 2
           if (c.status === 'candidate') rank *= 0.5
           if (c.status === 'cooling') rank *= 0.7
-          const item = { id: c.id, scenario: c.scenario, takeaway: c.takeaway, source: c.source, confidence: c.confidence, status: c.status || 'active', score: c.score || 0, tags: c.tags ? JSON.parse(c.tags) : [], _rank: rank,
+          const item = { id: c.id, scenario: c.scenario, takeaway: c.takeaway, source: c.source, confidence: c.confidence, status: c.status || 'active', score: c.score, legacy_score: c.legacy_score, score_basis: c.score_basis, learning: c.learning, tags: c.tags ? JSON.parse(c.tags) : [], _rank: rank,
             _updated: c.last_validated_at || c.created_at || 0, _uses: c.uses || 0 }
           if (c.status === 'cooling') item._cooling = true
           if (c.status === 'candidate') item._candidate = true
@@ -2563,9 +2595,21 @@ function makeHandlers(opts) {
       if (!r || (!['dashboard', 'human'].includes(ctx?.actor) && ['archived', 'deprecated'].includes(r.status))) {
         throwErr('E_NOT_FOUND', `卡 #${args.id} 不存在或已退出任务使用面`, null, false)
       }
-      return { id: r.id, scenario: r.scenario, takeaway: r.takeaway, chain: r.chain || '', evidence: JSON.parse(r.evidence || '[]'), source: r.source, confidence: r.confidence, status: r.status || 'active', score: r.score || 0, uses: r.uses || 0, adopted: r.adopted || 0, exportable: r.exportable || 0, kind: r.kind || 'card', tags: r.tags ? JSON.parse(r.tags) : [] }
+      const current = await currentExpScore(repo, r)
+      return { id: r.id, scenario: r.scenario, takeaway: r.takeaway, chain: r.chain || '', evidence: JSON.parse(r.evidence || '[]'), source: r.source, confidence: r.confidence, status: r.status || 'active', score: current.score, legacy_score: current.legacy_score, score_basis: current.score_basis, learning: current.learning, uses: r.uses || 0, adopted: r.adopted || 0, exportable: r.exportable || 0, kind: r.kind || 'card', tags: r.tags ? JSON.parse(r.tags) : [] }
     },
-    exp_rank: async (_args, repo) => ({ top: repo.expRankTop(5), playbooks: repo.pbRankTop() }),
+    exp_rank: async (_args, repo) => {
+      const cards = allExpRows(repo, "(kind != 'playbook' AND mem_class = 'permanent' AND status = 'active') OR (kind = 'playbook' AND status NOT IN ('archived', 'deprecated'))")
+      const projected = []
+      for (const c of cards) projected.push(await currentExpScore(repo, c))
+      projected.sort((a, b) => b.score - a.score || b.id - a.id)
+      return { top: projected.filter(c => c.kind !== 'playbook').slice(0, 5),
+        playbooks: projected.filter(c => c.kind === 'playbook').map(c => ({
+          ...c, name: c.scenario, chain: safeParseArr(repo.getExpCard(c.id)?.chain),
+          // Legacy runs/successes lack attempt truth and cannot define a success rate.
+          legacy_runs: c.runs, legacy_successes: c.successes, success_rate: null,
+        })) }
+    },
     exp_list: async (args, repo, ctx) => {
       const conds = []
       const wa = []
@@ -2578,8 +2622,11 @@ function makeHandlers(opts) {
       const review = args.reader === 'review' && ['dashboard', 'human', 'system'].includes(ctx?.actor)
       if (!review) conds.push("status NOT IN ('archived', 'deprecated')")
       const where = conds.length ? conds.join(' AND ') : '1=1'
-      const rows = repo.listExpWhere(where, wa, 'score DESC, last_validated_at DESC, id DESC', args.limit || 50, args.offset || 0)
-      const total = repo.countExpWhere(where, wa)
+      const projected = []
+      for (const c of allExpRows(repo, where, wa)) projected.push(await currentExpScore(repo, c))
+      projected.sort((a, b) => b.score - a.score || (b.last_validated_at || 0) - (a.last_validated_at || 0) || b.id - a.id)
+      const rows = projected.slice(args.offset || 0, (args.offset || 0) + (args.limit || 50))
+      const total = projected.length
       return { rows, total, meta: { paged: true } }
     },
     // 43 号补丁：蒸馏卡 → 命中矩阵（stack×cls 胜负），供规划器按学习结果调整优先级。
@@ -2709,6 +2756,9 @@ function makeHandlers(opts) {
     harvest_status: async (_args, repo) => repo.harvestStatus(),
     know_health: async (_args, repo) => {
       const agg = repo.expAggregates()
+      const cards = allExpRows(repo)
+      let scoreSum = 0
+      for (const card of cards) scoreSum += (await currentExpScore(repo, card)).score
       const rules = repo.rulesList('').rows.length
       const vc = repo.vcList()
       const harvest = repo.harvestStatus()
@@ -2724,7 +2774,10 @@ function makeHandlers(opts) {
       if ((agg.kb.overdue_revalidate || 0) > 0) warnings.push(`kb 复验逾期 ${agg.kb.overdue_revalidate} 篇`)
       if ((agg.kb.fetch_failed || 0) > 0) warnings.push(`kb 抓取失败 ${agg.kb.fetch_failed} 篇（fetch_failures>0，需复验）`)
       return {
-        exp: { total: agg.exp.total, active: agg.exp.active, candidate: agg.exp.candidate, deprecated: agg.exp.deprecated, avg_score: agg.exp.avg_score, zero_use_30d: agg.exp.zero_use_30d, tainted: null, exportable: agg.exp.exportable, cooling: agg.exp.cooling },
+        exp: { total: agg.exp.total, active: agg.exp.active, candidate: agg.exp.candidate, deprecated: agg.exp.deprecated,
+          avg_score: cards.length ? Math.round(scoreSum / cards.length * 100) / 100 : null,
+          legacy_avg_score: agg.exp.avg_score, score_basis: 'revalidated_learning_facts',
+          zero_use_30d: agg.exp.zero_use_30d, tainted: null, exportable: agg.exp.exportable, cooling: agg.exp.cooling },
         kb: { total: agg.kb.total, zero_use: agg.kb.zero_use, zero_use_ratio: agg.kb.total > 0 ? agg.kb.zero_use / agg.kb.total : null, cooling: agg.kb.cooling, expiring_30d: agg.kb.expiring_30d, curated: agg.kb.curated, overdue_revalidate: agg.kb.overdue_revalidate, tainted: agg.kb.tainted, fetch_failed: agg.kb.fetch_failed || 0 },
         playbooks: agg.playbooks,
         rules: { total: rules, last_seed: null },
@@ -2903,18 +2956,20 @@ function makeHandlers(opts) {
       })
       stages.applicability = pool.length
 
-      // ---- 阶段4 排序：来源等级（revision 发布=300 / legacy active=200 / exp=100+score / kb=80）+ 新鲜度（7 天内 +20）。
-      // 计分投影随行展示作证据链，不参与 rank（raw uses 不入排序循环，§8.2 第 2 条）。
-      const scored = pool.map((it) => {
+      // ---- 阶段4 排序：来源先验与新鲜度；exp 仅使用重验后的学习分。
+      // 历史 uses/adopted/score 不参与默认排序。
+      const scored = []
+      for (const it of pool) {
         let rank = 0
         if (it.origin === 'release') rank = 300
         else if (it.origin === 'legacy_file') rank = 200
-        else if (it.origin === 'exp') rank = 100 + (it.card.score || 0)
+        else if (it.origin === 'exp') rank = 100 + (await currentExpScore(repo, it.card)).score
         else if (it.origin === 'kb') rank = 80
         const refTs = it.origin === 'release' ? it.release.created_at : (it.card ? it.card.last_validated_at : (it.doc ? it.doc.imported_at : 0))
         if (refTs && Date.now() - refTs < 7 * DAY) rank += 20
-        return { ...it, _rank: rank }
-      }).sort((x, y) => y._rank - x._rank)
+        scored.push({ ...it, _rank: rank })
+      }
+      scored.sort((x, y) => y._rank - x._rank || String(x.artifact_id).localeCompare(String(y.artifact_id)))
       stages.ranked = scored.length
 
       const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 50)
@@ -2947,11 +3002,17 @@ function makeHandlers(opts) {
     // 模型自评单列（self_reported 不进 verified_positives）；成本（请求/token/耗时）随卡聚合。
     know_learning_status: async (args, repo) => {
       const kindFilter = args.artifact_kind || ''
-      const storedScores = repo.listScores({ artifact_kind: kindFilter, limit: 500 }).rows
-      const scores = (await Promise.all(storedScores.map(s => rebuildArtifactScore(repo, s.artifact_kind, s.artifact_id, false)))).filter(Boolean)
+      const scores = []
+      for (const key of scoreArtifactKeys(repo)) {
+        const [kind, id] = key.split('|')
+        if (kindFilter && kind !== kindFilter) continue
+        const score = await rebuildArtifactScore(repo, kind, id, false)
+        if (score) scores.push(score)
+      }
+      scores.sort((a, b) => b.score - a.score || a.artifact_kind.localeCompare(b.artifact_kind) || a.artifact_id.localeCompare(b.artifact_id))
       const fbCount = repo.feedbackCount()
       const gaps = repo.listGaps({ limit: 50 }).rows
-      const activeReleases = repo.listReleases({ status: 'active', limit: 500 }).rows
+      const releasesActive = repo.listReleases({ status: 'active', limit: 1 }).total
       return {
         scores,
         // L6（设计 §10 逐域视图）：按 漏洞类型族/技术栈面/身份前置 分层聚合效果与成本。
@@ -2960,7 +3021,8 @@ function makeHandlers(opts) {
         domains: groupScoresByDomain(repo, scores),
         feedback: { total: fbCount, bridge: 'dsh-message-feedback（web profile 已挂载；headless 无 UI 反馈面）', note: '人工有用/错误与漏洞真值分开——有用=体验/方法价值，成立与否仍需独立证据' },
         gaps,
-        releases_active: activeReleases.length,
+        releases_active: releasesActive,
+        coverage: { complete: true, artifacts: scores.length, basis: 'revalidated_learning_facts' },
         note: '三条计数分离：曝光（know_exposures）/ 采用（know_adoptions）/ 有效结果（learning_episodes 关联推导，model-proposed 自评单列）。计分可重放重建（know_scores_rebuild）。',
       }
     },
