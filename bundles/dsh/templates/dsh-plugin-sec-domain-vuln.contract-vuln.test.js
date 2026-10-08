@@ -1356,12 +1356,45 @@ test('数据治理: expire_candidates 将超期候选出池', async () => {
   const { bus } = makeEnv()
   const cand = await seedCandidate(bus)
   assert.equal(cand.data.noise, true)
-  bus._internal.db().prepare('UPDATE findings SET created_at = ? WHERE id = ?').run(Date.now() - 30 * 86400000, cand.data.id)
+  bus._internal.db().prepare('UPDATE findings SET created_at = ?, updated_at = ? WHERE id = ?').run(Date.now() - 30 * 86400000, Date.now() - 30 * 86400000, cand.data.id)
   const r = await bus.dispatch('vuln', 'expire_candidates', { ttl_days: 14 }, { actor: 'system' })
   assert.equal(r.ok, true)
   assert.equal(r.data.expired, 1)
   const row = bus._internal.db().prepare('SELECT status FROM findings WHERE id=?').get(cand.data.id)
   assert.equal(row.status, 'ignored')
+})
+
+test('27 E17: automatic holds reopen at expiry or changed conditions, preserving technical and manual decisions', async t => {
+  await withEnv({ SEC_VULN_SOURCE_DAILY_QUOTA: '1' }, async () => {
+    const { bus } = makeEnv()
+    t.after(() => bus._internal.close())
+    await seedCandidate(bus, { host: 'first.example.com' })
+    const args = { host: 'held.example.com', detector_version: 'v1', applicability_key: 'GET:anonymous' }
+    const held = await seedCandidate(bus, args)
+    assert.equal(held.data.suppressed, true)
+    const db = bus._internal.db()
+    const row = () => db.prepare('SELECT * FROM findings WHERE id=?').get(held.data.id)
+    assert.equal(row().queue_hold_reason, 'source_quota')
+    assert.ok(row().queue_hold_until > Date.now())
+    assert.equal((await bus.query('vuln', 'get', { id: held.data.id }, { actor: 'dashboard' })).data.technical_state.verdict, 'unknown')
+    const changed = await seedCandidate(bus, { ...args, detector_version: 'v2', evidence: 'new detector observation' })
+    assert.equal(changed.data.id, held.data.id)
+    assert.equal(changed.data.reopened, true)
+    assert.equal(row().status, 'new')
+    assert.ok(row().evidence.includes('"detector_version":"v1"'))
+    assert.ok(row().evidence.includes('new detector observation'))
+    const other = await seedCandidate(bus, { host: 'later.example.com' })
+    db.prepare('UPDATE findings SET queue_hold_until=? WHERE id=?').run(Date.now() - 1, other.data.id)
+    const manual = await seedCandidate(bus, { host: 'manual.example.com' })
+    db.prepare("UPDATE findings SET queue_hold_reason=NULL,queue_hold_until=? WHERE id=?").run(Date.now() - 1, manual.data.id)
+    const tick = await bus.dispatch('vuln', 'expire_candidates', {}, { actor: 'system' })
+    assert.equal(tick.ok, true, tick.error?.message)
+    assert.equal(tick.data.reopened, 1)
+    assert.equal(db.prepare('SELECT status FROM findings WHERE id=?').get(other.data.id).status, 'new')
+    assert.equal(db.prepare('SELECT status FROM findings WHERE id=?').get(manual.data.id).status, 'ignored')
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM vuln_technical_verdicts').get().n, 0)
+    assert.equal((await bus.dispatch('vuln', 'expire_candidates', {}, { actor: 'system' })).data.reopened, 0)
+  })
 })
 
 // ---- 跨源去重：external_id 相同 → dup，不重复建行 ----
@@ -1449,6 +1482,19 @@ test('27 E14: suppression separates Program/version/conditions and deduplicates 
     const changed = await seedCandidate(bus, { ...context, detector_version: 'v2', title: 'Versioned Template', source: 'parser:nuclei', host: 'changed.example.com' })
     assert.equal(changed.data.suppressed, false)
     assert.equal(bus._internal.db().prepare('SELECT detector_version FROM findings WHERE id=?').get(changed.data.id).detector_version, 'v2')
+    let explorationHost
+    for (let i = 0; i < 1000; i++) {
+      const host = `explore${i}.example.com`
+      const fp = crypto.createHash('sha1').update(JSON.stringify(['observation-v2', 'test-src', host, 'Versioned Template', 'https://a.example.com/login'])).digest('hex')
+      if (parseInt(fp.slice(0, 8), 16) % 10 === 0) { explorationHost = host; break }
+    }
+    assert.ok(explorationHost)
+    const explored = await seedCandidate(bus, { ...context, title: 'Versioned Template', source: 'parser:nuclei', host: explorationHost })
+    assert.equal(explored.data.exploration, true)
+    assert.equal(explored.data.status, 'new')
+    const swept = await bus.dispatch('vuln', 'candidates_sweep', { min_total: 3 }, { actor: 'dashboard' })
+    assert.equal(swept.ok, true, swept.error?.message)
+    assert.equal(bus._internal.db().prepare('SELECT status FROM findings WHERE id=?').get(explored.data.id).status, 'new', 'sweep preserves exploration sample')
   })
 })
 

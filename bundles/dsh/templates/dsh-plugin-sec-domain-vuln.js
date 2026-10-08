@@ -93,6 +93,10 @@ function noiseWhitelisted(source, category) {
   return list.includes(String(source)) || list.includes(`${source}|${category}`)
 }
 
+function explorationSample(program, host, title, url) {
+  return parseInt(fpObservation(program, host, title, url).slice(0, 8), 16) % 10 === 0
+}
+
 /** Suppression requires same Program, detector version and applicability; raw finding counts are not independent trials. */
 export function noiseCategoryDecision(repo, source, category, { program_id, detector_version, applicability_key, now = Date.now() } = {}) {
   if (noiseWhitelisted(source, category)) return { suppress: false, reason: 'whitelisted', sample: 0, rejected: 0, rate: 0 }
@@ -233,7 +237,7 @@ export const VULN_MANIFEST = {
       }, ['title', 'severity', 'host', 'source']),
       idempotent: 'auto',
       idempotent_fields: ['program_id', 'title', 'host', 'url', 'source', 'external_id', 'evidence', 'vuln_type', 'detector_version', 'applicability_key'],
-      events: ['vuln.candidate.registered', 'vuln.candidate.suppressed'],
+      events: ['vuln.candidate.registered', 'vuln.candidate.suppressed', 'vuln.candidate.reopened'],
       event_limit: 1,
       invariants: [],
       timeout_ms: 60000,
@@ -347,11 +351,11 @@ export const VULN_MANIFEST = {
         limit: int({ minimum: 1, maximum: 5000, default: 500 }),
       }, []),
       idempotent: 'none',
-      events: ['vuln.candidate.expired'],
-      event_limit: 1,
+      events: ['vuln.candidate.expired', 'vuln.candidate.reopened'],
+      event_limit: 2,
       invariants: [],
       timeout_ms: 60000,
-      agent_note: '候选池 TTL 治理（system/dashboard）：noise=1 且 status=new 超 ttl_days 未消化的候选置 ignored 出池，防噪声候选无限堆积。',
+      agent_note: '候选队列维护：先恢复已到期的自动延后项；未更新超ttl_days且无活跃认领/技术回执的候选延后一天。只改处理队列，不创建技术结论；人工及旧无原因ignored不自动重开。',
       deprecated: false,
     },
     // 43 号补丁（P0）：噪声类别学习数据面（只读）
@@ -616,6 +620,7 @@ export const VULN_MANIFEST = {
     'vuln.candidate.registered': { payload: { type: 'object' }, redact: [] },
     'vuln.candidate.promoted': { payload: { type: 'object' }, redact: [] },
     'vuln.candidate.expired': { payload: { type: 'object' }, redact: [] },
+    'vuln.candidate.reopened': { payload: { type: 'object' }, redact: [] },
     'vuln.candidate.suppressed': { payload: { type: 'object' }, redact: [] },
     'vuln.candidate.claimed': { payload: { type: 'object' }, redact: [] },
     'vuln.signal.registered': { payload: { type: 'object' }, redact: [] },
@@ -1090,29 +1095,39 @@ function makeHandlers(opts) {
       const fingerprint = fpObservation(args.program_id, host, title, url)
       const now = Date.now()
       const extId = String(args.external_id || '').trim()
+      const reopen = row => {
+        const reopened = repo.reopenChangedHold?.(row.id, args.detector_version, args.applicability_key, now) || false
+        return { reopened, status: reopened ? 'new' : row.status,
+          events: reopened ? [{ name: 'vuln.candidate.reopened', payload: { finding_id: row.id,
+            program_id: row.program_id, reason: 'observation_conditions_changed' } }] : [] }
+      }
       // 同项目/host/URL 内 external_id 优先（上游稳定 id）。
       if (extId) {
         const byExt = repo.getFindingByExternalId?.(extId, args.program_id, host, url)
         if (byExt) {
+          const changed = reopen(byExt)
           appendObservationEvidence(repo, byExt, args.evidence)
           if (ctx.session_id && !byExt.session_id) repo.backfillSession(byExt.id, ctx.session_id)
-          return { data: { id: byExt.id, dup: true, noise: byExt.noise === 1, status: byExt.status, dedup_reason: 'external_id' }, events: [], before: { status: byExt.status, noise: byExt.noise }, after: { status: byExt.status, noise: byExt.noise } }
+          return { data: { id: byExt.id, dup: true, reopened: changed.reopened, noise: byExt.noise === 1, status: changed.status, dedup_reason: 'external_id' }, events: changed.events, before: { status: byExt.status, noise: byExt.noise }, after: { status: changed.status, noise: byExt.noise } }
         }
       }
       const dup = findObservation(repo, args.program_id, host, title, url)
       if (dup) {
+        const changed = reopen(dup)
         if (ctx.session_id && !dup.session_id) repo.backfillSession(dup.id, ctx.session_id)
         appendObservationEvidence(repo, dup, args.evidence)
         return {
-          data: { id: dup.id, dup: true, noise: dup.noise === 1, status: dup.status, dedup_reason: 'same_program_host_title_url' },
-          events: [],
-          before: { status: dup.status, noise: dup.noise }, after: { status: dup.status, noise: dup.noise },
+          data: { id: dup.id, dup: true, reopened: changed.reopened, noise: dup.noise === 1, status: changed.status, dedup_reason: 'same_program_host_title_url' },
+          events: changed.events,
+          before: { status: dup.status, noise: dup.noise }, after: { status: changed.status, noise: dup.noise },
         }
       }
       const source = String(args.source || 'webhook')
       const category = findingCategory(source, title)
       // 43 号补丁：类别拒绝率学习 + 来源日配额（fail-open、白名单可豁免、抑制行仍入库留审计）
       const decision = noiseCategoryDecision(repo, source, category, args)
+      const exploration = decision.suppress && explorationSample(args.program_id, host, title, url)
+      if (exploration) decision.suppress = false
       const quota = decision.suppress ? { exceeded: false, used: 0, quota: 0 } : noiseSourceQuota(repo, source)
       const suppressed = decision.suppress || quota.exceeded
       const suppressReason = decision.suppress ? 'category_noise' : (quota.exceeded ? 'source_quota' : null)
@@ -1126,6 +1141,7 @@ function makeHandlers(opts) {
         program_id: args.program_id || null, session_id: ctx.session_id || null,
         task_id: taskId,
         detector_version: args.detector_version || null, applicability_key: args.applicability_key || null,
+        queue_hold_reason: suppressReason, queue_hold_until: suppressed ? now + 86400000 : null,
         vuln_type: args.vuln_type || null, cwe: null, endpoint_ref: null, preconditions: null,
         reproduction_steps: null, impact: null, recommendation: null,
         noise: 1, status: suppressed ? 'ignored' : 'new', confidence: 'tentative',
@@ -1134,14 +1150,14 @@ function makeHandlers(opts) {
       })
       if (!suppressed) repo.invalidateSourceStats?.(source)
       return {
-        data: { id: row.id, dup: false, noise: true, status: suppressed ? 'ignored' : 'new', suppressed, suppress_reason: suppressReason, category },
+        data: { id: row.id, dup: false, noise: true, status: suppressed ? 'ignored' : 'new', suppressed, suppress_reason: suppressReason, category, exploration },
         events: suppressed ? [{
           name: 'vuln.candidate.suppressed',
           payload: { finding_id: row.id, source, category, reason: suppressReason, rate: decision.rate, sample: decision.sample,
             quota: quota.exceeded ? { used: quota.used, quota: quota.quota } : null, title_head: title.slice(0, 60) },
         }] : [{
           name: 'vuln.candidate.registered',
-          payload: { finding_id: row.id, fingerprint, title_head: title.slice(0, 60), severity: args.severity || 'info', host, source, program_id: args.program_id || null, task_id: taskId },
+          payload: { finding_id: row.id, fingerprint, title_head: title.slice(0, 60), severity: args.severity || 'info', host, source, program_id: args.program_id || null, task_id: taskId, exploration },
         }],
         before: null, after: { id: row.id, status: suppressed ? 'ignored' : 'new', noise: 1 },
       }
@@ -1215,7 +1231,7 @@ function makeHandlers(opts) {
         throwErr('E_STATE', `finding #${args.finding_id} 处于 ${row.status} 终态不可再流转`, '已终态不可再流转；如需翻案走人工通道（dashboard 侧 vuln_confirm 附 operator 审计）', false)
       }
       const status = args.reassessment && ['submitted', 'accepted', 'dup', 'ignored'].includes(row.status) ? row.status : args.verdict
-      const set = { status, claimed_by: null, claimed_at: null, updated_at: Date.now() }
+      const set = { status, claimed_by: null, claimed_at: null, updated_at: Date.now(), queue_hold_reason: null, queue_hold_until: null }
       // 重复/忽略是处理结果，不能撤销已有技术确认；反证才改变技术置信标记。
       if (args.verdict === 'false_positive' || (args.verdict === 'dup' && row.confidence !== 'confirmed')) set.confidence = args.verdict
       const changed = repo.transitionFinding(args.finding_id, args.reassessment ? row.status : ['new', 'confirmed', 'submitted'], set)
@@ -1285,10 +1301,12 @@ function makeHandlers(opts) {
       if (typeof repo.expireCandidates !== 'function') throwErr('E_BACKEND_UNAVAILABLE', '当前后端不支持候选 TTL 治理（需 sqlite-local）', '切回 sqlite-local 后端', true)
       const ttlDays = Number(args.ttl_days) || 14
       const cutoff = Date.now() - ttlDays * 86400000
+      const reopened = repo.reopenHeldCandidates?.(Date.now(), args.limit || 500) || []
       const { expired, ids } = repo.expireCandidates(cutoff, args.limit || 500)
       return {
-        data: { expired, ttl_days: ttlDays, ids: ids.slice(0, 20) },
-        events: expired ? [{ name: 'vuln.candidate.expired', payload: { count: expired, ids: ids.slice(0, 50), ttl_days: ttlDays } }] : [],
+        data: { expired, reopened: reopened.length, ttl_days: ttlDays, ids: ids.slice(0, 20) },
+        events: [...(expired ? [{ name: 'vuln.candidate.expired', payload: { count: expired, ids: ids.slice(0, 50), ttl_days: ttlDays } }] : []),
+          ...(reopened.length ? [{ name: 'vuln.candidate.reopened', payload: { count: reopened.length, ids: reopened.slice(0, 50), reason: 'queue_hold_elapsed' } }] : [])],
       }
     },
 
@@ -1340,6 +1358,7 @@ function makeHandlers(opts) {
           scanned++
           const source = String(row.source || '')
           const title = String(row.title || '')
+          if (noiseWhitelisted(source, findingCategory(source, title)) || explorationSample(row.program_id, row.host, title, row.url)) continue
           if (isDetectionNoise(source, title)) { hits.detection_template.push(row.id); continue }
           const category = findingCategory(source, title)
           const key = JSON.stringify([source, category, row.program_id, row.detector_version, row.applicability_key])
@@ -1354,7 +1373,14 @@ function makeHandlers(opts) {
         offset += rows.length
       }
       const all = [...hits.category_noise, ...hits.detection_template]
-      const applied = dryRun ? { ignored: 0, ids: [] } : (typeof repo.ignoreCandidateIds === 'function' ? repo.ignoreCandidateIds(all, now) : { ignored: 0, ids: [] })
+      const applied = { ignored: 0, ids: [] }
+      if (!dryRun && typeof repo.ignoreCandidateIds === 'function') {
+        for (const [reason, ids] of Object.entries(hits)) {
+          const result = repo.ignoreCandidateIds(ids, now, reason)
+          applied.ignored += result.ignored
+          applied.ids.push(...result.ids)
+        }
+      }
       if (!dryRun) repo.invalidateSourceStats?.(null)
       const categoryDetail = [...decisions.entries()].map(([key, d]) => ({ category: key, sample: d.sample, rejected: d.rejected, rate: d.rate, suppress: !!d.suppress }))
         .sort((a, b) => b.sample - a.sample).slice(0, 20)

@@ -966,3 +966,5 @@ export const repositoryV1 = {
 2026-10-08学习来源核验（本地待发布）：technical_receipts返回已核验回执的evidence_ref，供历史学习经历校验原始证据关联；不返回私有证据正文，不改变既有回执或Finding状态。
 
 2026-10-08抑制条件隔离（本地778项通过，未部署）：candidate可携带detector_version与applicability_key，两列保存观察时条件，旧数据保持NULL。自动类别抑制只读取同Program/source/category/version/条件、30天内最新可信技术回执；同Oracle decision或同独立审校证据引用只计一次，冲突引用不入分母。缺条件保留候选，不再用跨条件大类统计抑制。noise_stats仍报告库存技术计数，suppressed=false并标unstratified_inventory_not_policy，不代表实际分层策略。解析器条件摘要接线、独立实验身份的完整证明、探索抽样、旧抑制记录到期/条件重开仍待完成；静态检测模板sweep与日配额仍是旧处理机制，不据此宣布E14/E17关账。
+
+2026-10-08自动队列延后与重开（本地779项通过，未部署）：自动类别/来源配额/sweep/候选TTL仍使用ignored作为兼容处理状态，但新增queue_hold_reason/until明确其非技术含义，默认24小时；维护先恢复到期自动项再检查TTL，原人工ignored和无原因历史状态不猜测重开。相同观察有明确新版本/条件时原ID重开，保留旧条件/原因及新观察证据；有正式技术回执不自动重开。TTL以最后更新衡量，活跃认领和已有技术回执排除。类别抑制按稳定观察指纹留10%探索桶，sweep保持同桶；来源配额仍约束实际资源。此桶为确定性抽样，不承诺每十条必留一条；自动重开仅恢复可排队，不自动发HTTP、不解除Campaign暂停。

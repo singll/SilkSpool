@@ -72,6 +72,8 @@ const V5_COLS = [
   ['candidate_entered_at', 'candidate_entered_at INTEGER'],
   ['detector_version', 'detector_version TEXT'],
   ['applicability_key', 'applicability_key TEXT'],
+  ['queue_hold_reason', 'queue_hold_reason TEXT'],
+  ['queue_hold_until', 'queue_hold_until INTEGER'],
 ]
 
 const LIST_COLS = `id, title, severity, host, url, source, status, program_id, session_id,
@@ -165,8 +167,8 @@ function createRepo(db) {
         INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, status, created_at,
           program_id, task_id, session_id, vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact,
           recommendation, noise, confidence, fgs_node_id, discovery_step, updated_at, external_id,
-          discovery_origin, candidate_entered_at, detector_version, applicability_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          discovery_origin, candidate_entered_at, detector_version, applicability_key, queue_hold_reason, queue_hold_until)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         f.fingerprint, f.title, f.severity, f.host, f.url, f.evidence || '', f.source || '', f.status || 'new', f.created_at,
         f.program_id || null, f.task_id != null ? Number(f.task_id) : null, f.session_id || null,
@@ -176,6 +178,7 @@ function createRepo(db) {
         f.updated_at || f.created_at, f.external_id || null,
         f.noise === 1 ? 'candidate' : 'direct_signal', f.noise === 1 ? f.created_at : null,
         f.detector_version || null, f.applicability_key || null,
+        f.queue_hold_reason || null, f.queue_hold_until || null,
       )
       return { id: Number(r.lastInsertRowid) }
     },
@@ -314,14 +317,42 @@ function createRepo(db) {
       const matchTotal = db.prepare(`SELECT COUNT(*) AS n FROM findings WHERE ${where}${claimFilter}`).get(...args).n
       return { rows, pool, total: matchTotal }
     },
-    // 候选池 TTL 治理：noise=1 且 status='new' 且 created_at < cutoff 置 ignored 出池。
+    // Only explicit automatic holds can reopen; manual/legacy terminal rows are never guessed.
+    reopenHeldCandidates(now, limit = 500) {
+      const rows = db.prepare(`SELECT id FROM findings
+        WHERE noise=1 AND status='ignored' AND queue_hold_reason IS NOT NULL AND queue_hold_until<=?
+          AND NOT EXISTS (SELECT 1 FROM vuln_technical_verdicts WHERE finding_id=findings.id)
+        ORDER BY queue_hold_until,id LIMIT ?`).all(now, limit)
+      for (const row of rows) {
+        const held = repo.getFinding(row.id)
+        repo.appendEvidence(row.id, `[queue reopened ${new Date(now).toISOString()}] ${JSON.stringify({ reason: held.queue_hold_reason, until: held.queue_hold_until })}`)
+        repo.updateFields(row.id, { status: 'new', queue_hold_reason: null, queue_hold_until: null, updated_at: now })
+      }
+      return rows.map(row => row.id)
+    },
+    reopenChangedHold(id, detectorVersion, applicabilityKey, now) {
+      const row = repo.getFinding(id)
+      if (!row || row.noise !== 1 || row.status !== 'ignored' || !row.queue_hold_reason || repo.getLatestTechnicalVerdict(id)) return false
+      if (!detectorVersion || !applicabilityKey || (row.detector_version === detectorVersion && row.applicability_key === applicabilityKey)) return false
+      repo.appendEvidence(id, `[queue reopened ${new Date(now).toISOString()}] ${JSON.stringify({
+        reason: row.queue_hold_reason, detector_version: row.detector_version, applicability_key: row.applicability_key,
+        new_detector_version: detectorVersion, new_applicability_key: applicabilityKey,
+      })}`)
+      repo.updateFields(id, { status: 'new', detector_version: detectorVersion, applicability_key: applicabilityKey,
+        queue_hold_reason: null, queue_hold_until: null, updated_at: now })
+      return true
+    },
+    // Expiry only defers scheduling. Active claims and reviewed technical records are preserved.
     expireCandidates(cutoffMs, limit) {
       const lim = Math.min(Number(limit) || 500, 5000)
-      const rows = db.prepare("SELECT id FROM findings WHERE noise = 1 AND status = 'new' AND created_at < ? ORDER BY created_at ASC LIMIT ?").all(Number(cutoffMs), lim)
+      const rows = db.prepare(`SELECT id FROM findings WHERE noise = 1 AND status = 'new'
+        AND COALESCE(updated_at,created_at) < ? AND (claimed_at IS NULL OR claimed_at < ?)
+        AND NOT EXISTS (SELECT 1 FROM vuln_technical_verdicts WHERE finding_id=findings.id)
+        ORDER BY COALESCE(updated_at,created_at),id LIMIT ?`).all(Number(cutoffMs), Date.now() - 3600000, lim)
       if (!rows.length) return { expired: 0, ids: [] }
       const now = Date.now()
-      const upd = db.prepare('UPDATE findings SET status = ?, updated_at = ? WHERE id = ?')
-      for (const r of rows) upd.run('ignored', now, r.id)
+      const upd = db.prepare("UPDATE findings SET status = 'ignored', queue_hold_reason='candidate_ttl', queue_hold_until=?, updated_at=? WHERE id=?")
+      for (const r of rows) upd.run(now + 86400000, now, r.id)
       return { expired: rows.length, ids: rows.map((r) => r.id) }
     },
     // 产出闭环（02-vuln §2.5）：已确认但未提交 SRC 的漏洞队列。
@@ -456,14 +487,19 @@ function createRepo(db) {
         .get(String(source), Number(sinceMs)).n
     },
     // 候选批量出池（仅 noise=1 且 status='new'）；遵守候选状态机，不触碰信号面/已认领行。
-    ignoreCandidateIds(ids, now) {
+    ignoreCandidateIds(ids, now, reason = 'category_noise') {
       const list = Array.isArray(ids) ? ids : []
       if (!list.length) return { ignored: 0, ids: [] }
-      const upd = db.prepare("UPDATE findings SET status = 'ignored', claimed_by = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND noise = 1 AND status = 'new'")
+      const upd = db.prepare(`UPDATE findings SET status = 'ignored', claimed_by = NULL, claimed_at = NULL,
+        queue_hold_reason=?, queue_hold_until=?, updated_at = ? WHERE id = ? AND noise = 1 AND status = 'new'
+        AND (claimed_at IS NULL OR claimed_at < ?)`)
       const changed = []
       for (const id of list) {
-        const r = upd.run(Number(now) || Date.now(), Number(id))
-        if (r.changes === 1) changed.push(Number(id))
+        const r = upd.run(reason, now + 86400000, now, Number(id), now - 3600000)
+        if (r.changes === 1) {
+          repo.appendEvidence(id, `[queue held ${new Date(now).toISOString()}] ${JSON.stringify({ reason, until: now + 86400000 })}`)
+          changed.push(Number(id))
+        }
       }
       return { ignored: changed.length, ids: changed }
     },
