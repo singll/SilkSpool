@@ -83,19 +83,31 @@ def current_launch_url(unit, port):
         raise ValueError("非法服务名")
 
     def identity():
-        result = subprocess.run(["systemctl", "show", unit, "-p", "MainPID", "-p", "InvocationID"],
+        result = subprocess.run(["systemctl", "show", unit, "-p", "MainPID", "-p", "InvocationID",
+                                 "-p", "ExecMainStartTimestamp", "--timestamp=unix"],
                                 capture_output=True, text=True, check=True, timeout=15)
         values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
         if int(values.get("MainPID", "0")) < 2 or not re.fullmatch(r"[a-f0-9]{32}", values.get("InvocationID", "")):
             raise RuntimeError("维护认证要求当前服务处于运行状态")
+        if not re.fullmatch(r"@[1-9][0-9]*(?:\.[0-9]+)?", values.get("ExecMainStartTimestamp", "")):
+            raise RuntimeError("无法核验当前服务启动时间，拒绝无界历史日志扫描")
         return values
 
     before = identity()
     # 原日志及启动 token 仅在内存中筛选，不写输出或报告。
     # journalctl --grep 在无匹配时返回 1（正常轮询场景），不视为子进程失败。
-    result = subprocess.run(["journalctl", "-u", unit, "_SYSTEMD_INVOCATION_ID=" + before["InvocationID"],
-                             "--no-pager", "-o", "json", "--grep", r"http://127\.0\.0\.1:" + str(port) + r"/\?token=", "-n", "12"],
-                            capture_output=True, text=True, check=False, timeout=15)
+    # Invocation match alone may scan every retained journal file on a no-match
+    # startup poll. Seek to this launch first; PID + invocation remain mandatory.
+    since = int(before["ExecMainStartTimestamp"][1:].split(".")[0]) - 1
+    try:
+        result = subprocess.run(["journalctl", "-u", unit, "_SYSTEMD_INVOCATION_ID=" + before["InvocationID"],
+                                 "--since", "@" + str(since),
+                                 "--no-pager", "-o", "json", "--grep", r"http://127\.0\.0\.1:" + str(port) + r"/\?token=", "-n", "12"],
+                                capture_output=True, text=True, check=False, timeout=15)
+    except subprocess.TimeoutExpired as error:
+        # The caller's existing readiness deadline bounds retries. Partial stdout
+        # can contain an unverified token and must never become fallback evidence.
+        raise RuntimeError("当前启动日志读取超时，凭据尚未核验") from error
     if identity() != before:
         raise RuntimeError("读取维护凭据期间服务已重启，拒绝使用过期凭据")
     return journal_launch_url([json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")],
