@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS approval_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_approval_pending ON approval_requests(kind, subject, status);
+CREATE INDEX IF NOT EXISTS idx_approval_stats ON approval_requests(created_at, kind, status, substr(note,1,5));
 `
 // M9：effect 执行结果独立列（不改 status 的 CHECK 约束，SQLite 无法 ALTER CHECK）：
 // effect_state ∈ applied | failed | pending。failed 时可经 approval_effects_retry 补跑，
@@ -122,7 +123,7 @@ function createRepo(db) {
       return { rows: plainAll(rows).map(parseRequest), total }
     },
     statsSince(sinceTs) {
-      const rows = plainAll(db.prepare('SELECT * FROM approval_requests WHERE created_at >= ?').all(sinceTs)).map(parseRequest)
+      const rows = plainAll(db.prepare('SELECT kind,status,created_at,substr(note,1,5) AS note FROM approval_requests WHERE created_at >= ?').all(sinceTs))
       const byKind = {}
       for (const r of rows) {
         const b = byKind[r.kind] || (byKind[r.kind] = { kind: r.kind, pending: 0, approved: 0, rejected: 0, withdrawn: 0 })

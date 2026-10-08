@@ -118,6 +118,7 @@ function createRepo(db) {
   db.exec('CREATE INDEX IF NOT EXISTS idx_facts_category_updated ON facts(category, updated_at DESC)')
   // 冷启动 facet 不读取携带正文的大行，也不建立临时排序树。
   db.exec('CREATE INDEX IF NOT EXISTS idx_facts_confidence ON facts(confidence)')
+  db.exec('CREATE INDEX IF NOT EXISTS idx_facts_pinned ON facts(pinned)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_facts_expiry ON facts(mem_class, expires_at)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_edges_src ON fact_edges(program_id, src_key)')
   db.exec('CREATE INDEX IF NOT EXISTS idx_edges_dst ON fact_edges(program_id, dst_key)')

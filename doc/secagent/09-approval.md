@@ -710,3 +710,5 @@ ApprovalRepo.listEffects(request_id) -> rows
 - 现象：`tool-intrusive` 审批的 payload/evidence 被 S5 写动词守卫塞入逗号拼接的多目标清单（数 KB），`approval.approved/rejected` 事件信封超过 `EVENT_MAX_BYTES`(8KB) → approve/reject 均抛 `E_BUS_EVENT_TOO_LARGE`，遗留审批无法批准/驳回。
 - 修复：decide/withdraw 事件载荷经 `boundedEventPayload`（对象深截断 200 字）+ `boundedEvidence`（4000 字）有界化；effect 在 decide 内同步 dispatch，不依赖事件载荷，语义无损（订阅方 fact/ledger 只读 kind/subject/program_id/evidence）。
 - 契约：approval +1（超大 payload 的 approve 与 reject 均成功）。
+
+2026-10-08冷启动统计优化（本地785项通过，未部署）：审批统计只选kind/status/created_at和note前五字符，索引覆盖时间范围及撤回分类，避免SELECT *加载证据和payload。30天窗口、撤回类别、最老pending年龄不变。隔离复现和性能边界见27号§15.116。

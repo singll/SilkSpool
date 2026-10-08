@@ -367,3 +367,22 @@ test('27 WP11: confidence facet uses a covering index without reading large fact
   assert.match(plan.map(r => r.detail).join('\n'), /COVERING INDEX .*confidence/i)
   assert.ok(plan.every(r => !/TEMP B-TREE/.test(r.detail)))
 })
+
+test('27 WP11: pinned count reads a covering index and updates after pin changes', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  for (let i = 0; i < 4; i++) {
+    const r = await bus.dispatch('fact', 'upsert', {
+      program_id: 'p', fact_key: `host/pin-${i}`, summary: 'pinned count fixture',
+      body: 'large fact body '.repeat(240), pinned: i < 2 ? 1 : 0,
+    }, { actor: 'model' })
+    assert.equal(r.ok, true, r.error?.message)
+  }
+  const count = async () => (await bus.query('fact', 'stats', {}, { actor: 'dashboard' })).data.pinned
+  assert.equal(await count(), 2)
+  const db = bus._internal.db()
+  db.prepare("UPDATE facts SET pinned=0 WHERE fact_key='host/pin-0'").run()
+  assert.equal(await count(), 1)
+  const plan = db.prepare('EXPLAIN QUERY PLAN SELECT COUNT(*) AS n FROM facts WHERE pinned = 1').all()
+  assert.match(plan.map(r => r.detail).join('\n'), /SEARCH facts USING COVERING INDEX .*pinned/i)
+})

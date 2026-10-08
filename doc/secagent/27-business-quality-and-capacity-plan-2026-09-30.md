@@ -1825,6 +1825,14 @@ CLI与受控HTTP在执行前、执行中每250毫秒及返回前重验当前work
 
 回退后prepare首轮碰到恢复后定时备份持锁（75），未放行；待原维护完成后新prepare通过并逐字核对last-prepare。NAS4145419ce40c48e04df6d3dce21b3191456b9b9697542bc933d6fbf1dea5a225，41库55.71秒/同快照恢复6.55秒，覆盖排除不变；随后UI首轮80/80。17份失败/回退回执已下载验SHA256，证据out/secagent-audits/20261008-truth-attribution-release/。后续在独立恢复副本加入域查询/SQL/文件/事件循环采样，生产不加载临时探针。本地§15.109–114仍未部署；第27号全案未关账。
 
+### 15.116 WP11冷启动剩余扫描的实测与修复（2026-10-08，本地/隔离完成，未部署）
+
+在§15.115的独立恢复副本复现首轮bus.status3287毫秒、stats10010毫秒超时，热后26/26毫秒。域查询/SQL/文件/事件循环同步采样定位：facts WHERE pinned=1计数扫描4727毫秒、approval SELECT * 1168毫秒；ledger→know.health→fact.stats串行链约5962毫秒，事件循环约9949毫秒阻塞。探针只在隔离副本，不输出正文/查询参数，不进入生产模板。
+
+为facts(pinned)增加覆盖索引；审批统计仅选kind/status/created_at及note前五字符（撤回前缀），增加created_at/kind/status/短前缀表达式索引，保留30天窗口、按类别计数与最老pending年龄。回归分别复现SCAN facts和SELECT *加载正文；置顶夹具首版boolean违反integer schema已修复，不将夹具错误算作产品复现。fact28/28、合并approval/fact57/57、UI/RPC17/17通过；最终固定源码全域785/785，182.01秒，fingerprint 3d2a572b98f6afb4f9117a4209e1027903b6b18151e31664ce7f34f0ed3d41e1。
+
+同副本单独加pinned后stats140/22/21毫秒，两项修复后134/22/19毫秒，均原10秒门禁通过且degraded=[]。缓存释放仅使用隔离DB的fsync+POSIX_FADV_DONTNEED提示；旧版重复测量也曾161毫秒通过，不能声称所有缓存层受控或全部间歇超时根治。16份诊断记录已拉回验摘要，原失败保留；临时探针仅留私有诊断目录，正式生产回归仍待新批验证。证据out/secagent-audits/20261008-truth-attribution-release/diagnostics及stats-final-preflight。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。

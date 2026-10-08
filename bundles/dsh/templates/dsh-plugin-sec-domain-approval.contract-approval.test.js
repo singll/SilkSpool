@@ -77,6 +77,36 @@ const WILDCARD_ARGS = {
   evidence: 'ICP 备案主体为 XX 科技有限公司，与 SRC 规则页主体一致，收购公告已公示。',
 }
 
+test('27 WP11: approval stats aggregate bounded fields while preserving age and withdrawal semantics', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  await bus.query('approval', 'stats', {}, { actor: 'dashboard' })
+  const db = bus._internal.db(), now = Date.now(), day = 86400000
+  const insert = db.prepare(`INSERT INTO approval_requests(kind,subject,evidence,payload,status,note,created_at)
+    VALUES(?,?,?,?,?,?,?)`)
+  for (const [kind, status, note, age] of [
+    ['scope-domain', 'pending', '', 2], ['scope-domain', 'approved', '', 1],
+    ['scope-domain', 'rejected', '[已撤回] user', 1], ['scope-domain', 'rejected', 'denied', 1],
+    ['scope-wildcard', 'pending', '', 1], ['scope-domain', 'pending', '', 40],
+  ]) insert.run(kind, 'fixture', 'large evidence '.repeat(1000), JSON.stringify({ body: 'x'.repeat(10000) }), status, note, now - age * day)
+  const queries = [], original = db.prepare
+  db.prepare = function(sql) { if (/^\s*SELECT.*approval_requests/is.test(sql)) queries.push(sql); return original.call(this, sql) }
+  let result
+  try { result = await bus.query('approval', 'stats', { since_days: 30 }, { actor: 'dashboard' }) }
+  finally { db.prepare = original }
+  assert.equal(result.ok, true, result.error?.message)
+  assert.equal(result.data.pending_total, 2)
+  assert.equal(result.data.pending_oldest_days, 2)
+  assert.deepEqual(result.data.by_kind.find(r => r.kind === 'scope-domain'),
+    { kind: 'scope-domain', pending: 1, approved: 1, rejected: 1, withdrawn: 1 })
+  assert.ok(queries.length > 0)
+  assert.ok(queries.every(sql => !/SELECT\s+\*/i.test(sql)), 'statistics must not materialize evidence and payload bodies')
+  for (const sql of queries) {
+    const plan = db.prepare('EXPLAIN QUERY PLAN ' + sql).all(now - 30 * day)
+    assert.match(plan.map(r => r.detail).join('\n'), /SEARCH approval_requests USING (?:COVERING )?INDEX .*stats/i)
+  }
+})
+
 // ---------------------------------------------------------------------------
 // 1. request happy path + pending 去重
 // ---------------------------------------------------------------------------
