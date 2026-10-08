@@ -1511,3 +1511,11 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 2026-10-08执行归属查询（本地待发布）：active_by_session可带内部worker_run_id，核验workers运行态、task.active_run_id及相同认领时间，已有worker_session_id必须匹配；无task的当前worker明确返回unassigned，不伪造任务。无worker运行号时，仅接受当前认领、未结束且唯一的task_runs关联，旧会话历史或歧义均返回null。此为CLI入口认领校验，不代表长请求期间或其它执行入口的完整fencing已经完成。
 
 2026-10-08发布状态：固定1cce966累计包生产stats超过10秒，已完整回退dfd3b11，不能将本地终态审校/Reviewer/历史评测/解析归属及后续增量标记为上线。六服务七timer与原预算/Scope保持，回退后新NAS4145419c…（41库55.71秒/恢复6.55秒）、UI80/80通过；详情见27号§15.115。
+
+### 7.41 2026-10-08 · Program/Campaign消费窗口统一（本地完成，待部署）
+
+`budgetUsage`、`campaignUsage`和认领准入共用消费计算：任务累计费用减去有真实消费时间且已在窗口外的账单金额，逐任务计算后求和；没有消费时间的历史费用继续保留，不能因任务创建时间过窗而消失。`tasks_created`仍单独按创建时间统计。查询增加`reserved_tokens`（reserved/unknown预留减同run已记费用）、`committed_tokens`（已记费用＋未结预留）、`unplaced_tokens`（无法归窗费用）和`lifetime_spent_tokens`。
+
+Program创建门禁、专项派发、规划剩余额度、预算停止及自动恢复按已记费用与未结预留合计判断，认领保持同事务预留。修复旧任务本期消费漏算导致reviewing错误恢复active；不提高既有预算、不恢复已暂停专项。自动续费累计上限/有效业务进展仍属于D09待办，本次未完成；费用接受估算，不要求追补供应商最终账单。
+
+两项回归先失败再通过，task域133项和全域787/787通过（147.25秒，fingerprint `a04ff0237280ae487d89ee1c2657de7f46020c5ba232b1c083bc712e96fe15fd`）。首版辅助函数重名导致整域失败的日志保留，修正后最终全域通过。本项不在固定56bca28发布包中，见27号§15.118。

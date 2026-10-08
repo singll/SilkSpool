@@ -1425,7 +1425,7 @@ function makeHandlers(opts) {
     if (c.budget_tokens == null || Number(c.budget_tokens) <= 0) return false
     const windowMs = (Number(c.budget_window_days) || 7) * 86400000
     const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
-    return { low: Number(usage.spent_tokens) < Number(c.budget_tokens) * 0.8, usage }
+    return { low: Number(usage.committed_tokens) < Number(c.budget_tokens) * 0.8, usage }
   }
 
   // 最近一次降级事件：{ reason, at }；降级后的 llm_restored 视为恢复起点。
@@ -1470,9 +1470,9 @@ function makeHandlers(opts) {
       if (c.status !== 'reviewing' || c.budget_tokens == null || Number(c.budget_tokens) <= 0) return events
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, now - windowMs)
-      if (Number(usage.spent_tokens) < Number(c.budget_tokens) * 0.8) {
+      if (Number(usage.committed_tokens) < Number(c.budget_tokens) * 0.8) {
         repo.updateCampaign(c.id, { status: 'active' }, 'reviewing')
-        const cp = writeCheckpoint(repo, c.id, 'status_recovered', `预算水位回落（${usage.spent_tokens}/${c.budget_tokens} < 80%），自动恢复 active（autonomy 保持 L1，升 L2 走审批）`, { spent_tokens: Number(usage.spent_tokens), budget_tokens: Number(c.budget_tokens) })
+        const cp = writeCheckpoint(repo, c.id, 'status_recovered', `预算水位回落（已用及在飞 ${usage.committed_tokens}/${c.budget_tokens} < 80%），自动恢复 active（autonomy 保持 L1，升 L2 走审批）`, { ...usage, budget_tokens: Number(c.budget_tokens) })
         events.push(...cp.events)
         events.push({ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: 'reviewing', to: 'active', cause: 'budget_recovered' } })
         summary.escalated++
@@ -1506,7 +1506,7 @@ function makeHandlers(opts) {
       const b = budgetUsageLow(c, repo)
       if (!b.low) return events // 水位仍 ≥80%，继续 L1 观察
       repo.updateCampaign(c.id, { autonomy: 2 })
-      const cp = writeCheckpoint(repo, c.id, 'autonomy_recovered', `预算水位回落（已用 ${b.usage.spent_tokens}/${c.budget_tokens} < 80%），L1 自动升回 L2`, { reason: dem.reason, spent_tokens: Number(b.usage.spent_tokens), budget_tokens: Number(c.budget_tokens) })
+      const cp = writeCheckpoint(repo, c.id, 'autonomy_recovered', `预算水位回落（已用及在飞 ${b.usage.committed_tokens}/${c.budget_tokens} < 80%），L1 自动升回 L2`, { reason: dem.reason, ...b.usage, budget_tokens: Number(c.budget_tokens) })
       events.push(...cp.events)
       summary.escalated++
     }
@@ -1766,7 +1766,7 @@ function makeHandlers(opts) {
     if (campaign.budget_tokens != null && Number(campaign.budget_tokens) > 0) {
       const windowMs = (Number(campaign.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(campaign.id, Date.now() - windowMs)
-      budgetRemainingRatio = Math.max(0, 1 - (usage.spent_tokens / Number(campaign.budget_tokens)))
+      budgetRemainingRatio = Math.max(0, 1 - (usage.committed_tokens / Number(campaign.budget_tokens)))
     }
     return { gaps, strategies, strategies_by_program: true, scores, candidates, activeTaskCount, budgetRemainingRatio }
   }
@@ -1835,15 +1835,15 @@ function makeHandlers(opts) {
     const windowMs = (Number(c.budget_window_days) || 7) * 86400000
     const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
     const estimate = Number(draftCount || 0) * CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT
-    if (Number(usage.spent_tokens) + estimate <= Number(c.budget_tokens)) return { blocked: false, usage }
-  repo.insertCheckpoint({ campaign_id: c.id, kind: 'budget_low', summary: `专项预算触顶：窗口已用 ${usage.spent_tokens}/${c.budget_tokens} tokens（本单预估 ${estimate}），停派`, payload: usage })
+    if (Number(usage.committed_tokens) + estimate <= Number(c.budget_tokens)) return { blocked: false, usage }
+  repo.insertCheckpoint({ campaign_id: c.id, kind: 'budget_low', summary: `专项预算触顶：窗口已用及在飞 ${usage.committed_tokens}/${c.budget_tokens} tokens（本单预估 ${estimate}），停派`, payload: usage })
   // 30 号补丁：budget_low 降级补 autonomy_change 留痕（reason=budget_low），
   // 水位回落 <80% 后由 autoRecover 自动升回 L2——否则与回升机制振荡。
   if (Number(c.autonomy) >= 2) {
     repo.updateCampaign(c.id, { autonomy: 1 })
     repo.insertCheckpoint({ campaign_id: c.id, kind: 'autonomy_change', summary: '专项预算将触顶，L2 自动降级为 L1（水位回落 <80% 后自动升回 L2）', payload: { reason: 'budget_low' } })
   }
-    return { blocked: true, code: 'E_CAMPAIGN_BUDGET_LOW', message: `专项 #${c.id} 窗口预算不足（已用 ${usage.spent_tokens}/${c.budget_tokens}）` }
+    return { blocked: true, code: 'E_CAMPAIGN_BUDGET_LOW', message: `专项 #${c.id} 窗口预算不足（已用及在飞 ${usage.committed_tokens}/${c.budget_tokens}）` }
   }
 
   function hasRecentCheckpoint(repo, campaignId, kind, withinMs) {
@@ -1945,7 +1945,7 @@ function makeHandlers(opts) {
     if (!goalStopped && (c.status === 'active' || c.status === 'reviewing') && c.budget_tokens != null && Number(c.budget_tokens) > 0) {
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
-      if (c.status === 'active' && Number(usage.spent_tokens) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
+      if (c.status === 'active' && Number(usage.committed_tokens) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
       // 23 号方案 §3.6 步骤 1.5：达 80% 水位自动提请 campaign-budget-extend（平滑爬坡，零人工介入；
       // 提请幂等由 12h checkpoint 防抖 + approval 同 (kind,subject) pending 去重双保险）
       // 38 号补丁：policy.auto_extend=false 的专项（如「候选验证清空」用多余额度）不自动爬坡——
@@ -2016,15 +2016,15 @@ function makeHandlers(opts) {
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
       const estimate = allowed.length * CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT
-      if (Number(usage.spent_tokens) + estimate > Number(c.budget_tokens)) {
-        writeCheckpoint(repo, c.id, 'budget_low', `专项预算将触顶：窗口已用 ${usage.spent_tokens}/${c.budget_tokens} tokens，本 tick 停派`, { usage })
+      if (Number(usage.committed_tokens) + estimate > Number(c.budget_tokens)) {
+        writeCheckpoint(repo, c.id, 'budget_low', `专项预算将触顶：窗口已用及在飞 ${usage.committed_tokens}/${c.budget_tokens} tokens，本 tick 停派`, { usage })
         // 30 号补丁：budget_low 降级补 autonomy_change 留痕（reason=budget_low），
         // 水位回落 <80% 后由 autoRecover 自动升回 L2——否则与回升机制振荡。
         if (Number(c.autonomy) >= 2) {
           repo.updateCampaign(c.id, { autonomy: 1 })
           writeCheckpoint(repo, c.id, 'autonomy_change', '专项预算将触顶，L2 自动降级为 L1（水位回落 <80% 后自动升回 L2）', { reason: 'budget_low' })
         }
-        if (explicit) throwErr('E_CAMPAIGN_BUDGET_LOW', `专项 #${c.id} 窗口预算不足（已用 ${usage.spent_tokens}/${c.budget_tokens}）`, '等待窗口滚动或 campaign-budget-extend 审批后重试', false)
+        if (explicit) throwErr('E_CAMPAIGN_BUDGET_LOW', `专项 #${c.id} 窗口预算不足（已用及在飞 ${usage.committed_tokens}/${c.budget_tokens}）`, '等待窗口滚动或 campaign-budget-extend 审批后重试', false)
         result.dropped.push({ reason: 'budget_low' })
         return result
       }
@@ -2571,8 +2571,8 @@ function makeHandlers(opts) {
         if (usage.tasks_created >= bc.max_tasks) {
           throwErr('E_TASK_BUDGET_EXHAUSTED', `program ${programId} 周期任务预算耗尽：${usage.tasks_created}/${bc.max_tasks} 任务/${bc.period_days}d（配置来源=${bc.source}）`, '预算闸停派（§3-4）：人工评估后由 dashboard 建任务放行，或经 task-budget-config 审批提升上限（在线生效）', false)
         }
-        if (usage.spent_tokens >= bc.max_tokens) {
-          throwErr('E_TASK_BUDGET_EXHAUSTED', `program ${programId} 周期 token 预算耗尽：${usage.spent_tokens}/${bc.max_tokens} tokens/${bc.period_days}d（配置来源=${bc.source}）`, '预算闸停派（§3-4）：人工评估后由 dashboard 建任务放行，或经 task-budget-config 审批提升上限（在线生效）', false)
+        if (usage.committed_tokens >= bc.max_tokens) {
+          throwErr('E_TASK_BUDGET_EXHAUSTED', `program ${programId} 周期 token 已用及在飞预算耗尽：${usage.committed_tokens}/${bc.max_tokens} tokens/${bc.period_days}d（配置来源=${bc.source}）`, '预算闸停派（§3-4）：人工评估后由 dashboard 建任务放行，或经 task-budget-config 审批提升上限（在线生效）', false)
         }
       }
       const id = repo.insertTask({

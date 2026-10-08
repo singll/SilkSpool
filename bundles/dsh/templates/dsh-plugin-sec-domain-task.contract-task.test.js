@@ -2608,6 +2608,58 @@ test('27 WP01: 授权查询降级时仍拒绝过期的 scope 文件', async () =
 })
 
 
+test('27 D08: campaign window follows consumption receipts and retains unplaced costs and in-flight remainder', async t => {
+  const { bus } = makeEnv(), db = bus._internal.db()
+  t.after(() => bus._internal.close())
+  const made = await bus.dispatch('task', 'campaign_create', {
+    name: '消费窗口', program_ids: ['test-src'], budget_tokens: 1000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { auto_extend: false },
+  }, { actor: 'model' })
+  assert.equal(made.ok, true, made.error?.message)
+  const cid = made.data.campaign_id, now = Date.now(), old = now - 9 * 86400000
+  const addTask = (created, spent) => Number(db.prepare(`INSERT INTO tasks
+    (program_id,objective,status,created_at,spent_tokens,campaign_id) VALUES ('test-src','费用窗口','done',?,?,?)`)
+    .run(created, spent, cid).lastInsertRowid)
+  const recentConsumption = addTask(old, 60)
+  const unplaced = addTask(old, 40)
+  const expiredConsumption = addTask(now, 80)
+  db.prepare("INSERT INTO task_bill_items VALUES('recent',?,'recent',60,?)").run(recentConsumption, now)
+  db.prepare("INSERT INTO task_bill_items VALUES('expired',?,'expired',80,?)").run(expiredConsumption, old)
+  db.prepare("INSERT INTO task_run_costs VALUES(?,'recent',60,NULL,'worker_report',?,?)").run(recentConsumption, now, now)
+  db.prepare(`INSERT INTO task_budget_reservations
+    (task_id,claim_started_at,tokens,run_id,state,created_at) VALUES (?,1,90,'recent','unknown',?)`).run(recentConsumption, now)
+  db.prepare(`INSERT INTO task_budget_reservations
+    (task_id,claim_started_at,tokens,run_id,state,created_at) VALUES (?,2,999,'released','released',?)`).run(unplaced, now)
+  const result = await bus.query('task', 'campaign_get', { id: cid }, { actor: 'dashboard' })
+  assert.equal(result.ok, true, result.error?.message)
+  const usage = result.data.window_usage
+  assert.equal(usage.spent_tokens, 100, 'task creation time cannot shift actual consumption or erase unknown timing')
+  assert.equal(usage.tasks_created, 1)
+  assert.equal(usage.reserved_tokens, 30, 'only the unbilled remainder stays reserved')
+  assert.equal(usage.committed_tokens, 130)
+  assert.equal(usage.unplaced_tokens, 40)
+  assert.equal(usage.lifetime_spent_tokens, 180)
+})
+
+test('27 D08: rolling past task creation cannot reactivate a campaign with recent or unplaced spending', async t => {
+  const { bus } = makeEnv(), db = bus._internal.db()
+  t.after(() => bus._internal.close())
+  const made = await bus.dispatch('task', 'campaign_create', {
+    name: '不误回升', program_ids: ['test-src'], budget_tokens: 1000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { auto_extend: false },
+  }, { actor: 'model' })
+  const cid = made.data.campaign_id, now = Date.now()
+  db.prepare("UPDATE campaigns SET status='reviewing',autonomy=1 WHERE id=?").run(cid)
+  injectDemotion(bus, cid, { kind: 'stop_condition', payload: { reason: 'budget_exhausted' }, ageMs: 3600000 })
+  const id = Number(db.prepare(`INSERT INTO tasks (program_id,objective,status,created_at,spent_tokens,campaign_id)
+    VALUES ('test-src','旧任务当期消费','done',?,900000,?)`).run(now - 9 * 86400000, cid).lastInsertRowid)
+  db.prepare("INSERT INTO task_bill_items VALUES('current-window',?,'old-task',850000,?)").run(id, now)
+  const tick = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tick.ok, true, tick.error?.message)
+  assert.equal(db.prepare('SELECT status FROM campaigns WHERE id=?').get(cid).status, 'reviewing')
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM campaign_checkpoints WHERE campaign_id=? AND kind='status_recovered'").get(cid).n, 0)
+})
+
 test('WP03 cumulative run costs, late settlement, zero versus unknown, and restart dedupe', async () => {
   const { bus, dir } = makeEnv()
   const c = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '费用累计与迟到结算' }, { actor: 'model' })

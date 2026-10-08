@@ -354,12 +354,12 @@ function createRepo(db) {
       return db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE ${where}`).get(...args).n
     },
 
-    // 21 号方案 §3-4：per-program 周期预算用量（tasks.spent_tokens 周期和 + 创建数）
+    // Program and Campaign use the same consumption/reservation accounting.
     budgetUsage(programId, sinceMs) {
       const since = Number(sinceMs) || 0
-      const r = db.prepare(`SELECT COUNT(*) AS tasks_created, COALESCE(SUM(COALESCE(spent_tokens, 0)), 0) AS spent_tokens FROM tasks WHERE program_id = ? AND created_at >= ?`)
+      const r = db.prepare('SELECT COUNT(*) AS tasks_created FROM tasks WHERE program_id = ? AND created_at >= ?')
         .get(String(programId), since)
-      return { tasks_created: Number(r?.tasks_created) || 0, spent_tokens: Number(r?.spent_tokens) || 0 }
+      return { tasks_created: Number(r.tasks_created), ...repo.consumptionUsage('program_id', String(programId), since) }
     },
 
     // ---- campaigns（22 号方案 §5，task 域 owns） ----
@@ -422,12 +422,35 @@ function createRepo(db) {
       db.prepare('INSERT INTO task_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at')
         .run(String(key), String(value), repo.now())
     },
-    // 窗口内专项用量：子任务 spent_tokens 和 + 创建数（双预算闸的 campaign 侧口径）
+    // Task creation is an activity count, not a consumption timestamp. Only
+    // dated receipt amounts can leave a window; unplaced legacy costs remain.
+    consumptionUsage(column, value, sinceMs) {
+      if (!['program_id', 'campaign_id'].includes(column)) throw new Error('unsupported budget dimension')
+      const since = Number(sinceMs) || 0
+      const r = db.prepare(`SELECT
+        COALESCE(SUM(t.spent_tokens),0) lifetime_spent_tokens,
+        COALESCE(SUM(MAX(0,COALESCE(t.spent_tokens,0)-COALESCE(b.expired,0))),0) spent_tokens,
+        COALESCE(SUM(MAX(0,COALESCE(t.spent_tokens,0)-COALESCE(b.placed,0))),0) unplaced_tokens
+        FROM tasks t LEFT JOIN (
+          SELECT b.task_id,
+            SUM(CASE WHEN b.consumed_at < ? THEN b.tokens ELSE 0 END) expired,
+            SUM(CASE WHEN b.consumed_at IS NOT NULL THEN b.tokens ELSE 0 END) placed
+          FROM task_bill_items b JOIN tasks owner ON owner.id=b.task_id
+          WHERE owner.${column}=? GROUP BY b.task_id
+        ) b ON b.task_id=t.id WHERE t.${column}=?`).get(since, value, value)
+      const reserved = db.prepare(`SELECT COALESCE(SUM(MAX(0,r.tokens-COALESCE(c.spent_tokens,0))),0) n
+        FROM task_budget_reservations r JOIN tasks t ON t.id=r.task_id
+        LEFT JOIN task_run_costs c ON c.task_id=r.task_id AND c.run_id=r.run_id
+        WHERE t.${column}=? AND r.state IN ('reserved','unknown')`).get(value)
+      const spent_tokens = Number(r.spent_tokens), reserved_tokens = Number(reserved.n)
+      return { spent_tokens, reserved_tokens, committed_tokens: spent_tokens + reserved_tokens,
+        unplaced_tokens: Number(r.unplaced_tokens), lifetime_spent_tokens: Number(r.lifetime_spent_tokens) }
+    },
     campaignUsage(campaignId, sinceMs) {
       const since = Number(sinceMs) || 0
-      const r = db.prepare(`SELECT COUNT(*) AS tasks_created, COALESCE(SUM(COALESCE(spent_tokens, 0)), 0) AS spent_tokens FROM tasks WHERE campaign_id = ? AND created_at >= ?`)
+      const r = db.prepare('SELECT COUNT(*) AS tasks_created FROM tasks WHERE campaign_id = ? AND created_at >= ?')
         .get(Number(campaignId), since)
-      return { tasks_created: Number(r?.tasks_created) || 0, spent_tokens: Number(r?.spent_tokens) || 0 }
+      return { tasks_created: Number(r.tasks_created), ...repo.consumptionUsage('campaign_id', Number(campaignId), since) }
     },
     activeCampaignTaskCount(campaignId) {
       return Number(db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE campaign_id = ? AND status IN ('queued','running')").get(Number(campaignId)).n) || 0
@@ -542,22 +565,12 @@ function createRepo(db) {
     reserveTaskBudget(task, nowTs, programLimit) {
       const tokens = task.budget_tokens ?? 150000
       if (!Number.isSafeInteger(tokens) || tokens <= 0) return 'E_TASK_BUDGET_REQUIRED'
-      const reserved = (column, value) => Number(db.prepare(`SELECT COALESCE(SUM(MAX(0,r.tokens-COALESCE(c.spent_tokens,0))),0) n
-        FROM task_budget_reservations r JOIN tasks t ON t.id=r.task_id
-        LEFT JOIN task_run_costs c ON c.task_id=r.task_id AND c.run_id=r.run_id
-        WHERE t.${column}=? AND r.state IN ('reserved','unknown')`).get(value).n)
-      // Legacy consumption has no reliable consumption timestamp. Keep it in the
-      // admission total, rather than silently erasing it as a window rolls.
-      const spent = (column, value, since) => Number(db.prepare(`SELECT
-        COALESCE((SELECT SUM(spent_tokens) FROM tasks WHERE ${column}=?),0) -
-        COALESCE((SELECT SUM(b.tokens) FROM task_bill_items b JOIN tasks t ON t.id=b.task_id
-          WHERE t.${column}=? AND b.consumed_at<?),0) n`).get(value, value, since).n)
       const periodDays = Number(repo.settingGet('budget_period_days')) || 7
-      if (spent('program_id', task.program_id, nowTs - periodDays * 86400000) + reserved('program_id', task.program_id) + tokens > programLimit) return 'E_TASK_BUDGET_EXHAUSTED'
+      if (repo.consumptionUsage('program_id', task.program_id, nowTs - periodDays * 86400000).committed_tokens + tokens > programLimit) return 'E_TASK_BUDGET_EXHAUSTED'
       if (task.campaign_id != null) {
         const c = repo.getCampaign(task.campaign_id)
         if (!c || c.status !== 'active') return 'E_CAMPAIGN_STATE'
-        if (c.budget_tokens == null || spent('campaign_id', c.id, nowTs - c.budget_window_days * 86400000) + reserved('campaign_id', c.id) + tokens > c.budget_tokens) return 'E_CAMPAIGN_BUDGET_LOW'
+        if (c.budget_tokens == null || repo.campaignUsage(c.id, nowTs - c.budget_window_days * 86400000).committed_tokens + tokens > c.budget_tokens) return 'E_CAMPAIGN_BUDGET_LOW'
       }
       db.prepare('INSERT INTO task_budget_reservations(task_id,claim_started_at,tokens,created_at) VALUES(?,?,?,?)')
         .run(task.id, nowTs, tokens, nowTs)

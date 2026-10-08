@@ -1839,6 +1839,12 @@ CLI与受控HTTP在执行前、执行中每250毫秒及返回前重验当前work
 
 回归验证两版本同回执技术样本1、历史token费用800+300均保留、原件损坏降未知与只读查询不落分保持。know/exec192项及最终全域785/785（184.65秒，fingerprint34808a6695f6e28ef6f32309f8ec983340358b61bcefa5703c03651e159e0af2）通过。仍是artifact级过渡分，真实版本采用/独立attempt归因/跨卡费用分配未因此完成；本项不在正在冻结发布的56bca28包。证据session-20261006/learning-dedup-red.log、learning-dedup-green.log及learning-dedup-preflight。
 
+### 15.118 D08消费窗口与在飞预算统一（2026-10-08，本地完成，未部署）
+
+真实调用路径回归复现两处错误：旧任务的本期消费被排除、新任务的过窗消费仍计入（应100而旧查询80）；reviewing专项有本期85万和未归窗5万费用，却因任务创建于9天前自动恢复active。Program/Campaign创建、派发、Supervisor、自动恢复和认领现共用消费与未结预留口径；只有真实消费时间过窗的账单金额可扣除，未归窗旧费用保留，不修改原始费用、预留状态或额度。
+
+查询显式区分spent/reserved/committed/unplaced/lifetime，预留只计同run未结差额，released不计。两项回归先红后绿，task133项及全域787/787（147.25秒，fingerprint a04ff0237280ae487d89ee1c2657de7f46020c5ba232b1c083bc712e96fe15fd）通过；首版辅助函数重名导致整域失败已修正，失败日志未覆盖。本项与§15.117均不在正在发布的56bca28固定包；D09累计续费上限/有效进展停止、独立业务费用归因仍未完成。证据session-20261006/campaign-window-{red,green,fixed}.log及campaign-window-preflight。
+
 ## 16. 当前剩余验收入口（2026-10-05，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩。
