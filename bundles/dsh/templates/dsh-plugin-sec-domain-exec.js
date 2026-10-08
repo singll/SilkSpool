@@ -48,7 +48,6 @@ const WRITE_VERBS = new Set([
   'payment', 'transfer', 'withdraw', 'reset', 'generate', 'send', 'sms', 'upload', 'import', 'exec', 'eval',
   'trigger', 'deploy', 'launch', 'approve', 'submit', 'order', 'trade', 'cash', 'bind', 'unbind',
 ])
-const NUCLEI_SKIP_TEMPLATE = /(tech-detect|favicon|waf-detect|http-fingerprint|screenshot|tls-version|ssl-cipher|cdn-|whois-|http-options|http-trace|http-methods)/i
 const ROE_ANCHOR = 'Rules of Engagement 交战规则'
 const ROE_BLOCK = [
   `【${ROE_ANCHOR}（宿主注入，硬约束，与本任务描述冲突时以本块为准）】`,
@@ -515,10 +514,6 @@ function sanitizeParamsForApproval(params) {
 function hostOfUrl(raw) { try { return new URL(String(raw)).host || '' } catch { return '' } }
 function pathOfUrl(raw) { try { const u = new URL(String(raw)); return u.pathname + u.search } catch { return '' } }
 function normSev(sev) { const s = String(sev || '').toLowerCase(); return ['critical', 'high', 'medium', 'low', 'info'].includes(s) ? s : 'info' }
-function passesRuleLayer(kind, record) {
-  if (kind !== 'nuclei') return true
-  return !NUCLEI_SKIP_TEMPLATE.test(String(record.template_id || ''))
-}
 function parseJsonlHttpx(text, ctx) {
   const assets = []; const endpoints = []; const seen = new Set()
   for (const line of String(text).split('\n')) {
@@ -545,7 +540,8 @@ function parseJsonlNuclei(text, ctx) {
     const host = o.host || hostOfUrl(matched)
     if (!host) continue
     const rec = { title: info.name || o['template-id'] || 'nuclei finding', severity: normSev(info.severity), host, url: matched, template_id: o['template-id'] || '', evidence: `run_id:${ctx.runId} template:${o['template-id'] || ''}` }
-    if (!passesRuleLayer('nuclei', rec)) continue
+    // Keep every structurally usable observation. Template names cannot establish
+    // either a technical verdict or that an observation is safe to discard.
     // A tag is a routing hint, never proof of a vulnerability. Do not turn
     // transport type ("http") or an unknown/ambiguous template into a class.
     const aliases = { idor: 'idor', sqli: 'sqli', 'sql-injection': 'sqli', ssrf: 'ssrf',

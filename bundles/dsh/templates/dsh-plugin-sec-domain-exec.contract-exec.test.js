@@ -88,18 +88,19 @@ test('27 E13: native nuclei proposals retain per-target Program, task and unambi
     ['b.example.com', 'sqli,cve', 'beta', 'sqli'],
     ['outside.invalid', ['unknown'], null, null],
     ['a.example.com', ['xss', 'ssrf'], 'alpha', null],
+    ['b.example.com', ['misc'], 'beta', null],
   ]
   fs.writeFileSync(fixture, observations.map(([host, tags], i) => JSON.stringify({
-    'template-id': 'business-check-' + i, type: 'http', host: 'https://' + host,
+    'template-id': i === 4 ? 'http-trace' : 'business-check-' + i, type: 'http', host: 'https://' + host,
     'matched-at': 'https://' + host + '/object/' + i, info: { name: 'Business object check ' + i, severity: 'medium', tags },
   })).join('\n'))
   const run = await bus.dispatch('exec', 'run_cli', { tool: 'nuclei', params: { fixture } },
     { actor: 'model', task_id: 91, session_id: 'parser-session' })
   assert.equal(run.ok, true, run.error?.message)
-  assert.equal(run.data.parse_counts.findings, 4)
+  assert.equal(run.data.parse_counts.findings, 5)
   await bus._internal.dispatcherTick()
   const rows = () => bus._internal.db().prepare('SELECT * FROM findings ORDER BY id').all()
-  assert.equal(rows().length, 4)
+  assert.equal(rows().length, 5)
   for (let i = 0; i < observations.length; i++) {
     const row = rows()[i]
     assert.equal(row.program_id, observations[i][2])
@@ -111,7 +112,7 @@ test('27 E13: native nuclei proposals retain per-target Program, task and unambi
   }
   const replay = await bus.dispatch('bus', 'replay', { since: 0, limit: 100 }, { actor: 'system' })
   assert.equal(replay.ok, true, replay.error?.message)
-  assert.equal(rows().length, 4)
+  assert.equal(rows().length, 5)
 })
 
 test('27 E13: worker CLI checks the live claim before spawning, while unassigned workers remain usable', async t => {
