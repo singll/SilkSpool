@@ -1549,30 +1549,44 @@ function makeHandlers(opts) {
     return events
   }
 
-  // Reviewer 验收信号采集（22 号方案 §7.6：确定性优先）——机器 oracle 判定 / capsule 证据 /
-  // finding 复核（vuln 域只读）三源。全部来自 task.result / run.note / vuln_get，不猜。
+  // Result text supplies references only. Technical truth comes from an intact
+  // current receipt, owned by this task or a freshly reviewed assigned finding.
   async function gatherReviewSignals(task, run) {
-    const sig = { verified: false, rejected: false, capsuleRef: null, findingRef: null }
-    // 只扫「实际产出」（result/run note），不扫 objective 模板文本——模板含示例 verdict 字样会误判
+    const sig = { verified: false, rejected: false, capsuleRef: null, findingRef: null, receiptRef: null }
     const text = `${task.result || ''} ${(run && run.note) || ''}`
-    const cap = text.match(/capsule:([A-Za-z0-9_-]+)/i)
-    if (cap) sig.capsuleRef = cap[1]
-    const fid = text.match(/finding\s*#?\s*(\d+)/i)
-    if (fid) sig.findingRef = Number(fid[1])
-    if (/verdict\s*[:=]\s*(verified|confirmed|accepted)/i.test(text)) sig.verified = true
-    if (/verdict\s*[:=]\s*(rejected|false_positive)/i.test(text)) sig.rejected = true
-    // vuln 域复核：finding 引用 → 是否挂 proof capsule / 已判假阳（vuln_get actor 含 reactor）
-    if (sig.findingRef && queryRef) {
-      try {
-        const g = await queryRef('vuln', 'get', { id: sig.findingRef }, { actor: 'reactor' })
-        const f = (g && g.ok && g.data) ? g.data : null
-        if (f) {
-          const ev = String(f.evidence || '')
-          const m = ev.match(/capsule:([A-Za-z0-9_-]+)/i)
-          if (m) { sig.verified = true; if (!sig.capsuleRef) sig.capsuleRef = m[1] }
-          if (f.status === 'false_positive' || f.status === 'ignored') sig.rejected = true
-        }
-      } catch { /* vuln 域不可达：退化为文本信号（不阻断验收） */ }
+    const intent = parseJsonSafe(task.intent_spec, {})
+    const ids = [...new Set([Number(intent.finding_id), ...[...text.matchAll(/finding\s*#?\s*(\d+)/gi)].map(m => Number(m[1]))]
+      .filter(id => Number.isInteger(id) && id > 0))]
+    if (ids.length > 20) throwErr('E_INVARIANT', '验收引用超过20项，请拆分任务以逐项验证', null, false)
+    for (const id of ids) {
+      if (!queryRef) throwErr('E_BACKEND_UNAVAILABLE', '技术回执查询不可用', null, true)
+      const g = await queryRef('vuln', 'get', { id }, { actor: 'reactor' })
+      if (!g?.ok) {
+        if (g?.error?.code === 'E_NOT_FOUND') continue
+        throwErr(g?.error?.code || 'E_BACKEND_UNAVAILABLE', g?.error?.message || '技术记录不可读', null, true)
+      }
+      const f = g.data
+      const state = f?.technical_state
+      if (!f || f.program_id !== task.program_id || !['confirmed', 'false_positive'].includes(state?.verdict) || !state.latest_verdict_id) continue
+      const receipt = await queryRef('vuln', 'technical_verdict', { id: state.latest_verdict_id }, { actor: 'reactor' })
+      if (!receipt?.ok) throwErr(receipt?.error?.code || 'E_BACKEND_UNAVAILABLE', receipt?.error?.message || '技术回执不可读', null, true)
+      const r = receipt.data
+      const owned = Number(f.task_id) === Number(task.id) || Number(intent.finding_id) === id
+      if (!owned || r.finding_id !== id || r.program_id !== task.program_id || r.verdict !== state.verdict
+        || !['controlled_oracle', 'independent_review'].includes(r.basis)
+        || r.created_at < Number(task.started_at || task.created_at)
+        || (run?.finished_at && r.created_at > run.finished_at)) continue
+      if (r.basis === 'controlled_oracle') {
+        const evidence = await queryRef('exec', 'authz_evidence', { decision_id: r.decision_id }, { actor: 'reactor' })
+        if (!evidence?.ok) throwErr(evidence?.error?.code || 'E_BACKEND_UNAVAILABLE', evidence?.error?.message || '签封执行证据不可读', null, true)
+        if (evidence.data.finding_id !== id || evidence.data.program_id !== task.program_id
+          || evidence.data.verdict !== (r.verdict === 'confirmed' ? 'verified' : 'rejected')) continue
+      }
+      if (r.verdict === 'confirmed') sig.verified = true
+      else sig.rejected = true
+      if (!sig.receiptRef || r.verdict === 'confirmed') {
+        sig.receiptRef = r.id; sig.findingRef = id
+      }
     }
     return sig
   }
@@ -1599,8 +1613,8 @@ function makeHandlers(opts) {
       if (role === 'submit' || role === 'learn' || role === 'retest') return 'accepted'
       // 28 号补丁：存量复核（review_finding）把 finding 判 false_positive/ignored 是**合法分诊结论**
       // （消化历史债务的正产出），不是打法失败——sig.rejected 不得压过覆盖推进判 accepted。
-      if (sig.rejected && !isCoverageRole(task, role)) return 'rejected'
-      if (sig.verified || sig.capsuleRef) return 'accepted'
+      // A reliable negative completes an experiment; it is not a method failure.
+      if (sig.verified || sig.rejected) return 'accepted'
       if (isCoverageRole(task, role)) return 'accepted' // crawl/param 成功 = 覆盖格点推进
       return 'rework'                                   // 无 verdict 亦无覆盖推进
     }
@@ -1616,15 +1630,15 @@ function makeHandlers(opts) {
 
   // 验收证据：capsule 优先（证据铁律最强），其次 oracle 判定，再次 run/task 引用
   function reviewEvidence(task, run, sig, verdict) {
-    if (verdict === 'accepted' && sig.capsuleRef) return `capsule:${sig.capsuleRef}`
-    if (verdict === 'accepted' && sig.verified) return 'oracle:judge'
+    if (verdict === 'accepted' && sig.receiptRef) return `finding:${sig.findingRef}:technical_verdict:${sig.receiptRef}`
     if (run && run.run_id) return `run:${run.run_id}`
     return `task:${task.id}`
   }
 
   function makeGoalDelta(task, verdict, run, sig = {}) {
     const delta = { accepted: verdict === 'accepted' ? 1 : 0, rejected: verdict === 'rejected' ? 1 : 0, rework: verdict === 'rework' ? 1 : 0, role: task.campaign_role || 'derived' }
-    if (verdict === 'accepted' && (sig.capsuleRef || sig.verified)) delta.confirmed = 1
+    if (verdict === 'accepted' && sig.verified) delta.confirmed = 1
+    if (verdict === 'accepted' && sig.rejected) delta.valid_clean = 1
     // 26 号补丁：run 行无 spent_tokens 列时回退任务行（task_finish 已按 dsh-bill 归因回填）
     const runSpent = run && run.spent_tokens != null && Number.isFinite(Number(run.spent_tokens)) ? Number(run.spent_tokens) : null
     const taskSpent = !run && task && task.spent_tokens != null && Number.isFinite(Number(task.spent_tokens)) ? Number(task.spent_tokens) : null
@@ -1641,7 +1655,7 @@ function makeHandlers(opts) {
     const key = task.campaign_id != null ? `c${task.campaign_id}|${bare}` : bare
     try {
       if (verdict === 'rework' && repo.reopenStrategy) repo.reopenStrategy(key, Date.now() + CAMPAIGN_REWORK_REOPEN_MS)
-      else if (verdict === 'rejected' && repo.markStrategyOutcome) repo.markStrategyOutcome(key, false, task.id)
+      else if (verdict === 'rejected' && repo.reopenStrategy) repo.reopenStrategy(key, Date.now() + CAMPAIGN_REWORK_REOPEN_MS)
     } catch (e) { log(`验收策略回写失败 ${key}: ${e?.message}`) }
   }
 
@@ -3663,24 +3677,10 @@ function makeHandlers(opts) {
     // 21 号方案 §6.3：verdict 回写命中矩阵——rejected 连败 +1（≥3 拉黑）；后续 verified 由 capsule 通道清零
     onStrategyOutcome: async (envelope) => {
       const p = envelope?.payload || {}
-      // 43 号补丁：拒绝事件此前不带 strategy_key（findings 无该列）→ 连败拉黑形同虚设。
-      // 现由 finding 的 task_id 反查任务上的裸 strategy_key；仍缺则显式 skip（可观测）。
-      let key = String(p.strategy_key || '')
-      let resolvedBy = 'payload'
-      try {
-        const repo = backendRepoRef ? backendRepoRef() : null
-        if (!key && p.task_id && repo && typeof repo.getTask === 'function') {
-          const task = repo.getTask(Number(p.task_id))
-          if (task && task.strategy_key) { key = String(task.strategy_key); resolvedBy = 'task_id' }
-        }
-        if (!key) return { ok: true, data: { skipped: true, reason: 'no strategy key', finding_id: p.finding_id ?? null, task_id: p.task_id ?? null } }
-        if (!repo || !repo.markStrategyOutcome) return { ok: true, data: { skipped: false, error: 'no repo' } }
-        repo.markStrategyOutcome(key, false, null)
-        return { ok: true, data: { skipped: false, strategy_key: key, resolved_by: resolvedBy } }
-      } catch (e) {
-        log(`strategy 连败回写失败（best-effort）: ${e?.message}`)
-        return { ok: true, data: { skipped: false, error: String(e?.message) } }
-      }
+      // Handling events lack detector/request/identity versions. Even an intact
+      // negative closes its own experiment, never a host-wide strategy family.
+      return { ok: true, data: { skipped: true, reason: 'finding_verdict_is_not_strategy_failure',
+        finding_id: p.finding_id ?? null, task_id: p.task_id ?? null } }
     },
 
     // 22 号方案 §7.6/§9.2：Reviewer——campaign 子任务收尾即验收（强联动，进 outbox 重试链）

@@ -15,6 +15,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildTaskDomain, startTaskScheduler, createTaskFinisher, parseCampaignSupplyEnv } from '../index.js'
 import { buildEndpointDomain } from '../../sec-domain-endpoint/index.js'
+import { buildVulnDomain } from '../../sec-domain-vuln/index.js'
 
 function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'sec-domain-task-')) }
 
@@ -1352,7 +1353,7 @@ test('22 C26/INV-C3/C8: campaign_record_decision 证据铁律 + 一任务一验�
   assert.equal(n, 1)
 })
 
-test('22 Reviewer 订阅: task.finished → 自动验收落账 + spent_tokens 汇聚（oracle verdict）', async () => {
+test('27 Reviewer: self-reported oracle verdict cannot create technical success or lose actual costs', async () => {
   const { bus, domain } = makeEnv()
   const c = await bus.dispatch('task', 'campaign_create', { name: 'rv', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
   const cid = c.data.campaign_id
@@ -1365,16 +1366,86 @@ test('22 Reviewer 订阅: task.finished → 自动验收落账 + spent_tokens �
   assert.equal(fin.ok, true)
   const res = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: tid, campaign_id: cid, spent_tokens: 700, ok: true } })
   assert.equal(res.ok, true, JSON.stringify(res.error))
-  assert.equal(res.data.verdict, 'accepted')
+  assert.equal(res.data.verdict, 'rework')
   const dec = bus._internal.db().prepare('SELECT * FROM campaign_decisions WHERE task_id=?').get(tid)
-  assert.equal(dec.verdict, 'accepted')
-  assert.ok(String(dec.evidence).startsWith('oracle:'), `oracle 证据，实际 ${dec.evidence}`)
+  assert.equal(dec.verdict, 'rework')
+  assert.equal(JSON.parse(dec.goal_delta).confirmed, undefined)
+  assert.ok(String(dec.evidence).startsWith('run:'), `真实执行引用，实际 ${dec.evidence}`)
   const camp = bus._internal.db().prepare('SELECT spent_tokens FROM campaigns WHERE id=?').get(cid)
   assert.equal(camp.spent_tokens, 700)
   // 重放不重复验收
   const replay = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: tid, campaign_id: cid, spent_tokens: 700 } })
   assert.equal(replay.ok, true)
   assert.equal(replay.data.skipped, true)
+})
+
+test('27: ignored, duplicate, unverified and repeated negative events cannot blacklist a strategy', async t => {
+  const { bus, domain } = makeEnv()
+  t.after(() => bus._internal.close())
+  const task = await bus.dispatch('task', 'derive_intent', { kind: 'hypothesis', program_id: 'test-src',
+    host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }, { actor: 'reactor' })
+  assert.equal(task.ok, true, task.error?.message)
+  const db = bus._internal.db()
+  const before = { ...db.prepare('SELECT * FROM strategy_dedupe').get() }
+  for (const verdict of ['ignored', 'dup', 'false_positive', 'false_positive']) {
+    const result = await domain.handlers.subscribers.onStrategyOutcome({ id: 'same-event',
+      payload: { verdict, task_id: task.data.task_id, strategy_key: before.strategy_key, finding_id: 1 } })
+    assert.equal(result.ok, true)
+  }
+  const after = { ...db.prepare('SELECT * FROM strategy_dedupe').get() }
+  assert.equal(after.fails, before.fails)
+  assert.equal(after.blacklisted, 0)
+  assert.equal(after.last_task_id, before.last_task_id)
+})
+
+for (const verdict of ['confirmed', 'false_positive']) test(`27 Reviewer: current owned ${verdict} receipt completes experiment; unrelated and old receipts do not`, async t => {
+  const { bus, dataDir, domain } = makeEnv()
+  t.after(() => bus._internal.close())
+  bus.registry.register(buildVulnDomain({ dataDir, query: (...args) => bus.query(...args), dispatch: (...args) => bus.dispatch(...args) }))
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'receipt-review-'+verdict,
+    program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const db = bus._internal.db()
+  fs.mkdirSync(path.join(dataDir, 'results/run_review_fixture'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'results/run_review_fixture/meta.json'), '{}')
+  for (const scenario of ['owned', 'other_task', 'old_receipt', 'weak_label']) {
+    const dispatch = await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{
+      kind: 'hypothesis', host: `${scenario}.example.com`, vuln_class: 'idor', strategy_key: `${scenario}.example.com|||idor`,
+    }] }, { actor: 'model' })
+    assert.equal(dispatch.ok, true, dispatch.error?.message)
+    const task = db.prepare('SELECT * FROM tasks WHERE campaign_id=? ORDER BY id DESC LIMIT 1').get(cid)
+    const candidate = await bus.dispatch('vuln', 'register_candidate', { program_id: 'test-src',
+      host: `${scenario}.example.com`, url: `https://${scenario}.example.com/object`, title: '任务关联独立审校测试候选记录',
+      source: 'review-fixture', severity: 'medium', task_id: scenario === 'other_task' ? task.id + 1000 : task.id, vuln_type: 'idor' }, { actor: 'dashboard' })
+    assert.equal(candidate.ok, true, candidate.error?.message)
+    const id = candidate.data.id
+    if (scenario !== 'weak_label') {
+      const result = await bus.dispatch('vuln', verdict === 'confirmed' ? 'confirm' : 'reject', {
+        finding_id: id, evidence: 'run_review_fixture',
+        ...(verdict === 'confirmed' ? { review: { basis: '独立核验完整请求、响应、身份与对象归属，发现安全边界违反',
+          reproduction_steps: '按证据中保存的请求和授权身份复现读取',
+          impact: '未经授权身份读取另一所有者的受保护数据' } }
+          : { verdict, reason: '有效身份和正常对照下未授权请求被稳定拒绝',
+            review: { basis: '独立复核原始证据及身份、对象授权，正常对照成功而非所有者被拒绝',
+              expected_behavior: '只有授权所有者可以读取此对象',
+              observed_behavior: '非所有者读取被拒绝且对照成功',
+              controls: '已核对合法身份、对象归属、正常对照与重复请求的成功和拒绝响应' } }),
+      }, { actor: 'dashboard', operator: 'fixture-reviewer' })
+      assert.equal(result.ok, true, result.error?.message)
+      if (scenario === 'old_receipt') db.prepare('UPDATE vuln_technical_verdicts SET created_at=? WHERE finding_id=?').run(task.created_at - 1, id)
+    } else db.prepare("UPDATE findings SET status='accepted',confidence='confirmed',evidence='capsule:0000000000000000' WHERE id=?").run(id)
+    await bus.dispatch('task', 'finish', { task_id: task.id, run_id: 'review-'+scenario, outcome: 'done',
+      note: `finding #${id} verdict=verified capsule:0000000000000000` }, { actor: 'scheduler' })
+    const reviewed = await domain.handlers.subscribers.onCampaignTaskFinished({ payload: { task_id: task.id, campaign_id: cid } })
+    assert.equal(reviewed.ok, true, reviewed.error?.message)
+    assert.equal(reviewed.data.verdict, scenario === 'owned' ? 'accepted' : 'rework')
+    const decision = db.prepare('SELECT * FROM campaign_decisions WHERE task_id=?').get(task.id)
+    const delta = JSON.parse(decision.goal_delta)
+    assert.equal(delta.confirmed || 0, scenario === 'owned' && verdict === 'confirmed' ? 1 : 0)
+    assert.equal(delta.valid_clean || 0, scenario === 'owned' && verdict === 'false_positive' ? 1 : 0)
+    if (scenario === 'owned') assert.match(decision.evidence, /technical_verdict:\d+/)
+  }
 })
 
 test('22 B2: Reviewer 判据——无 verdict 无覆盖推进的 hypothesis → rework；覆盖角色成功 → accepted', async () => {

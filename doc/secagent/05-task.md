@@ -1505,3 +1505,5 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 2026-10-06来源撤回复核（本地待发布）：消费know.episode.recorded中的来源更正撤回清单，经know.release_get核对真实撤回记录后走change-retest。任务仅queued且无schedule；失败由总线重试。release查重包括历史已完成任务，task.list查询使用允许的system角色且不忽略失败，防晚回放重复建单。
 
 2026-10-07发布回填：来源更正撤回的change-retest待办通知、全局status/priority/created_at索引已上线，任务不自动调度；Campaign1/2/3继续暂停、预算不变。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。
+
+2026-10-08 Reviewer真值与失败分离（本地待发布）：任务result/run.note仅提取Finding引用，verdict文本或capsule字符串不授予技术成功。读取vuln_get独立technical_state及正式回执，要求同Program、Finding归本任务或其intent指定、回执在任务开始/结束窗口内；controlled_oracle另核exec.authz_evidence。可靠阴性完成实验但不增加confirmed。读取故障保留待重试，不退化采用自报。忽略/重复/假阳处理事件不再给host策略累计连败；任务失败采用冷却重开，不据处理状态拉黑技术家族。旧strategy_dedupe的历史失败/黑名单尚需有证据的投影治理，不自动清库。
