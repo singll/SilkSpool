@@ -70,12 +70,14 @@ const V5_COLS = [
   ['external_id', 'external_id TEXT'],
   ['discovery_origin', 'discovery_origin TEXT'],
   ['candidate_entered_at', 'candidate_entered_at INTEGER'],
+  ['detector_version', 'detector_version TEXT'],
+  ['applicability_key', 'applicability_key TEXT'],
 ]
 
 const LIST_COLS = `id, title, severity, host, url, source, status, program_id, session_id,
   vuln_type, bounty, vendor_status, noise, claimed_by, created_at, confidence, fgs_node_id, discovery_step`
 
-const POOL_COLS = `${LIST_COLS}, claimed_at, updated_at`
+const POOL_COLS = `${LIST_COLS}, claimed_at, updated_at, detector_version, applicability_key`
 
 const SORT_COLS = {
   created_at: 'created_at',
@@ -163,8 +165,8 @@ function createRepo(db) {
         INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, status, created_at,
           program_id, task_id, session_id, vuln_type, cwe, endpoint_ref, preconditions, reproduction_steps, impact,
           recommendation, noise, confidence, fgs_node_id, discovery_step, updated_at, external_id,
-          discovery_origin, candidate_entered_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          discovery_origin, candidate_entered_at, detector_version, applicability_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         f.fingerprint, f.title, f.severity, f.host, f.url, f.evidence || '', f.source || '', f.status || 'new', f.created_at,
         f.program_id || null, f.task_id != null ? Number(f.task_id) : null, f.session_id || null,
@@ -173,6 +175,7 @@ function createRepo(db) {
         f.noise === 1 ? 1 : 0, f.confidence || 'tentative', f.fgs_node_id || null, f.discovery_step || null,
         f.updated_at || f.created_at, f.external_id || null,
         f.noise === 1 ? 'candidate' : 'direct_signal', f.noise === 1 ? f.created_at : null,
+        f.detector_version || null, f.applicability_key || null,
       )
       return { id: Number(r.lastInsertRowid) }
     },
@@ -381,6 +384,16 @@ function createRepo(db) {
       }
     },
     // 43 号补丁：来源×标题聚合（噪声类别学习数据面）。按 title 精确分组，类别归并在域层做；
+    suppressionReceipts({ source, program_id, detector_version, applicability_key, since }) {
+      return db.prepare(`SELECT f.id, f.title, f.url, f.host, v.id AS verdict_id,
+        v.verdict, v.basis, v.evidence_ref, v.evidence_json, v.evidence_digest,
+        v.operator, v.finding_id, v.created_at
+        FROM findings f ${LATEST_RECEIPT_JOIN}
+        WHERE f.source=? AND f.program_id=? AND f.detector_version=? AND f.applicability_key=?
+          AND v.created_at>=? ORDER BY v.id DESC`)
+        .all(source, program_id, detector_version, applicability_key, since)
+        .filter(row => repo.technicalReceiptTrusted(row))
+    },
     // 带 60s TTL 缓存，避免每条候选登记都全量扫描（sweep/重建可传 ttlMs=0 强制新鲜）。
     sourceTitleStats(source, { ttlMs = 60000 } = {}) {
       const key = String(source || '')

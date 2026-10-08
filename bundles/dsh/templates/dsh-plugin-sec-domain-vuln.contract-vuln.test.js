@@ -15,7 +15,7 @@ import * as crypto from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
 import { createBus } from '../../sec-domain-bus/index.js'
-import { buildVulnDomain, VULN_MANIFEST } from '../index.js'
+import { buildVulnDomain, VULN_MANIFEST, noiseCategoryDecision } from '../index.js'
 import { buildExecDomain } from '../../sec-domain-exec/index.js'
 import { createVulnSqliteBackend } from '../../sec-backend-vuln-sqlite/index.js'
 
@@ -1392,7 +1392,7 @@ function withEnv(pairs, fn) {
   })
 }
 
-test('43 P0: 噪声类别学习——同类拒绝率≥阈值后新候选直接落 ignored（留审计+事件）', async () => {
+test('27 E14: unversioned category totals cannot suppress a new observation', async () => {
   await withEnv({ SEC_VULN_NOISE_SUPPRESS_MIN: '3', SEC_VULN_NOISE_SUPPRESS_RATE: '0.6' }, async () => {
     const { bus, dir } = makeEnv()
     const ids = []
@@ -1408,13 +1408,47 @@ test('43 P0: 噪声类别学习——同类拒绝率≥阈值后新候选直接�
     }
     const next = await bus.dispatch('vuln', 'register_candidate', { title: 'Detect SSL Certificate Issuer', severity: 'info', host: 'n9.example.com', source: 'parser:nuclei' }, { actor: 'script' })
     assert.equal(next.ok, true)
-    assert.equal(next.data.suppressed, true, '同类拒绝率达标后新候选应被抑制')
-    assert.equal(next.data.suppress_reason, 'category_noise')
-    assert.equal(next.data.status, 'ignored')
+    assert.equal(next.data.suppressed, false, '缺版本/条件不能跨大类抑制')
+    assert.equal(next.data.suppress_reason, null)
+    assert.equal(next.data.status, 'new')
     const got = await bus.query('vuln', 'get', { id: next.data.id }, { actor: 'model' })
-    assert.equal(got.data.status, 'ignored')
-    assert.ok(String(got.data.evidence).includes('auto-suppressed'), '抑制原因留证据链')
-    assert.ok(readEvents(dir).some((e) => e.name === 'vuln.candidate.suppressed'), 'candidate.suppressed 事件留痕')
+    assert.equal(got.data.status, 'new')
+    assert.ok(readEvents(dir).some((e) => e.name === 'vuln.candidate.registered'))
+  })
+})
+
+test('27 E14: suppression separates Program/version/conditions and deduplicates evidence with a bounded history', async t => {
+  await withEnv({ SEC_VULN_NOISE_SUPPRESS_MIN: '3', SEC_VULN_NOISE_SUPPRESS_RATE: '0.8' }, async () => {
+    const { bus, dataDir } = makeEnv()
+    t.after(() => bus._internal.close())
+    const context = { program_id: 'test-src', detector_version: 'template-sha256-v1', applicability_key: 'GET:private-object:authenticated' }
+    const ids = []
+    for (let i = 0; i < 4; i++) {
+      const cand = await seedCandidate(bus, { ...context, title: 'Versioned Template', source: 'parser:nuclei', host: `v${i}.example.com`, url: `https://v${i}.example.com/item` })
+      assert.equal(cand.ok, true, cand.error?.message)
+      ids.push(cand.data.id)
+    }
+    for (let i = 0; i < ids.length; i++) {
+      const ref = `run_independent_${Math.min(i, 2)}`
+      fs.mkdirSync(path.join(dataDir, 'results', ref), { recursive: true })
+      fs.writeFileSync(path.join(dataDir, 'results', ref, 'meta.json'), JSON.stringify({ fixture: Math.min(i, 2) }))
+      const rejected = await reviewedReject(bus, { finding_id: ids[i], verdict: 'false_positive', evidence: ref, reason: '独立正常和异常对照证明本次观察的技术主张不成立' })
+      assert.equal(rejected.ok, true, rejected.error?.message)
+    }
+    const repo = createVulnSqliteBackend().factory(bus._internal.db())
+    const decide = extra => noiseCategoryDecision(repo, 'parser:nuclei', 'Versioned Template', { ...context, ...extra })
+    assert.equal(decide().sample, 3, 'same original reference counts once')
+    assert.equal(decide().suppress, true)
+    assert.equal(decide({ detector_version: 'template-sha256-v2' }).sample, 0)
+    assert.equal(decide({ applicability_key: 'POST:private-object:authenticated' }).suppress, false)
+    assert.equal(decide({ program_id: 'other-src' }).suppress, false)
+    assert.equal(decide({ now: Date.now() + 31 * 86400000 }).suppress, false)
+    const same = await seedCandidate(bus, { ...context, title: 'Versioned Template', source: 'parser:nuclei', host: 'next.example.com' })
+    assert.equal(same.ok, true, same.error?.message)
+    assert.equal(same.data.suppress_reason, 'category_noise')
+    const changed = await seedCandidate(bus, { ...context, detector_version: 'v2', title: 'Versioned Template', source: 'parser:nuclei', host: 'changed.example.com' })
+    assert.equal(changed.data.suppressed, false)
+    assert.equal(bus._internal.db().prepare('SELECT detector_version FROM findings WHERE id=?').get(changed.data.id).detector_version, 'v2')
   })
 })
 

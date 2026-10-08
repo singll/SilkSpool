@@ -93,22 +93,33 @@ function noiseWhitelisted(source, category) {
   return list.includes(String(source)) || list.includes(`${source}|${category}`)
 }
 
-/** 类别拒绝率判定（fail-open）：返回 {suppress, reason?, sample, rejected, rate}。 */
-export function noiseCategoryDecision(repo, source, category, { ttlMs = 60000 } = {}) {
+/** Suppression requires same Program, detector version and applicability; raw finding counts are not independent trials. */
+export function noiseCategoryDecision(repo, source, category, { program_id, detector_version, applicability_key, now = Date.now() } = {}) {
   if (noiseWhitelisted(source, category)) return { suppress: false, reason: 'whitelisted', sample: 0, rejected: 0, rate: 0 }
-  if (typeof repo.sourceTitleStats !== 'function') return { suppress: false, reason: 'backend_unsupported', sample: 0, rejected: 0, rate: 0 }
+  if (!program_id || !detector_version || !applicability_key) return { suppress: false, reason: 'suppression_context_missing', sample: 0, rejected: 0, rate: null }
+  if (typeof repo.suppressionReceipts !== 'function') return { suppress: false, reason: 'backend_unsupported', sample: 0, rejected: 0, rate: null }
   let sample = 0; let rejected = 0
-  for (const row of repo.sourceTitleStats(source, { ttlMs })) {
+  const independent = new Map()
+  for (const row of repo.suppressionReceipts({ source, program_id, detector_version, applicability_key, since: now - 30 * 86400000 })) {
     if (findingCategory(source, row.title) !== category) continue
-    sample += (Number(row.technical_confirmed) || 0) + (Number(row.technical_false_positive) || 0)
-    rejected += Number(row.technical_false_positive) || 0
+    if (row.created_at > now) continue
+    const evidence = JSON.parse(row.evidence_json)
+    const key = row.basis === 'controlled_oracle' ? `decision:${evidence.capsule?.decision_id || ''}` : `evidence:${row.evidence_ref || ''}`
+    if (key.endsWith(':')) continue
+    if (!independent.has(key)) independent.set(key, row.verdict)
+    else if (independent.get(key) !== row.verdict) independent.set(key, 'conflicting')
   }
-  const rate = sample > 0 ? rejected / sample : 0
+  for (const verdict of independent.values()) {
+    if (verdict === 'conflicting') continue
+    sample++
+    if (verdict === 'false_positive') rejected++
+  }
+  const rate = sample > 0 ? rejected / sample : null
   const cfg = noiseEnv()
   if (sample >= cfg.suppressMin && rate >= cfg.suppressRate) {
     return { suppress: true, reason: 'category_noise', sample, rejected, rate: Number(rate.toFixed(4)) }
   }
-  return { suppress: false, sample, rejected, rate: Number(rate.toFixed(4)) }
+  return { suppress: false, sample, rejected, rate: rate == null ? null : Number(rate.toFixed(4)) }
 }
 
 /** 来源日配额（北京时区自然日）：返回 {exceeded, used, quota}。 */
@@ -215,11 +226,13 @@ export const VULN_MANIFEST = {
         source: str(),
         program_id: str(),
         vuln_type: str({ minLength: 1, maxLength: 80, description: '待验证的漏洞类型；仅路由元数据，不表示技术确认' }),
+        detector_version: str({ minLength: 1, maxLength: 128 }),
+        applicability_key: str({ minLength: 1, maxLength: 256 }),
         external_id: str({ maxLength: 128, description: '上游系统稳定 id（跨源去重优先键）' }),
         task_id: int({ description: '（可选）产生该候选的 task id——归因→学习闭环' }),
       }, ['title', 'severity', 'host', 'source']),
       idempotent: 'auto',
-      idempotent_fields: ['program_id', 'title', 'host', 'url', 'source', 'external_id', 'evidence', 'vuln_type'],
+      idempotent_fields: ['program_id', 'title', 'host', 'url', 'source', 'external_id', 'evidence', 'vuln_type', 'detector_version', 'applicability_key'],
       events: ['vuln.candidate.registered', 'vuln.candidate.suppressed'],
       event_limit: 1,
       invariants: [],
@@ -1099,7 +1112,7 @@ function makeHandlers(opts) {
       const source = String(args.source || 'webhook')
       const category = findingCategory(source, title)
       // 43 号补丁：类别拒绝率学习 + 来源日配额（fail-open、白名单可豁免、抑制行仍入库留审计）
-      const decision = noiseCategoryDecision(repo, source, category)
+      const decision = noiseCategoryDecision(repo, source, category, args)
       const quota = decision.suppress ? { exceeded: false, used: 0, quota: 0 } : noiseSourceQuota(repo, source)
       const suppressed = decision.suppress || quota.exceeded
       const suppressReason = decision.suppress ? 'category_noise' : (quota.exceeded ? 'source_quota' : null)
@@ -1112,6 +1125,7 @@ function makeHandlers(opts) {
         evidence: note, source,
         program_id: args.program_id || null, session_id: ctx.session_id || null,
         task_id: taskId,
+        detector_version: args.detector_version || null, applicability_key: args.applicability_key || null,
         vuln_type: args.vuln_type || null, cwe: null, endpoint_ref: null, preconditions: null,
         reproduction_steps: null, impact: null, recommendation: null,
         noise: 1, status: suppressed ? 'ignored' : 'new', confidence: 'tentative',
@@ -1299,7 +1313,7 @@ function makeHandlers(opts) {
         const sample = c.technical_confirmed + rejected
         const rate = sample > 0 ? rejected / sample : 0
         return { ...c, sample, rejected, technical_unknown: c.total - sample, reject_rate: Number(rate.toFixed(4)),
-          suppressed: !noiseWhitelisted(c.source, c.category) && sample >= cfg.suppressMin && rate >= cfg.suppressRate,
+          suppressed: false, suppression_reason: 'unstratified_inventory_not_policy',
           whitelisted: noiseWhitelisted(c.source, c.category) }
       }).sort((a, b) => b.total - a.total || a.source.localeCompare(b.source)).slice(0, limit)
       return { data: { categories, policy: { suppress_rate: cfg.suppressRate, suppress_min: cfg.suppressMin, daily_quota: cfg.dailyQuota, whitelist: cfg.whitelist, patterns: cfg.patterns } } }
@@ -1328,10 +1342,10 @@ function makeHandlers(opts) {
           const title = String(row.title || '')
           if (isDetectionNoise(source, title)) { hits.detection_template.push(row.id); continue }
           const category = findingCategory(source, title)
-          const key = `${source}|${category}`
+          const key = JSON.stringify([source, category, row.program_id, row.detector_version, row.applicability_key])
           let decision = decisions.get(key)
           if (!decision) {
-            decision = noiseCategoryDecision(repo, source, category, { ttlMs: 0 })
+            decision = noiseCategoryDecision(repo, source, category, row)
             decisions.set(key, decision)
           }
           if (decision.suppress && decision.sample >= minTotal) hits.category_noise.push(row.id)
