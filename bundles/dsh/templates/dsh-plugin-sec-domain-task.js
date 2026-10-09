@@ -2572,9 +2572,27 @@ function makeHandlers(opts) {
         row = (r.rows || r.data?.rows || []).find(ep => ep.host === args.host && ep.path === args.path && (!ep.method || ep.method === (args.method || 'GET')))
         if (!row) throwErr('E_NOT_FOUND', '请求事件对应的端点不存在', null, true)
       }
-      const drafts = await deriveHypothesis({ programId: args.program_id, host: args.host, path: args.path, endpointRow: row })
+      const h2 = await deriveHypothesis({ programId: args.program_id, host: args.host, path: args.path, endpointRow: row })
+      // C14：指纹→H1 路径探测假设接线（此前 h1Hypotheses 有定义/测试但 task 域从未调用）。
+      // 依据宿主指纹 tech 生成路径型 info_disclosure 假设；无指纹时至少产出通用敏感路径探测。
+      // strategy_key 以 host|path|class 稳定，跨端点/重复事件幂等去重。
+      let h1 = []
+      try {
+        const fp = await queryRef?.('asset', 'fp_query', { host: args.host, limit: 100 }, { actor: 'reactor' })
+        // 仅指纹域可用且查询成功才接 H1；查询失败/域缺失时不凭空产出通用探测。
+        if (fp && fp.ok !== false) {
+          const tech = (fp.rows || fp.data?.rows || []).map((r) => String(r.tech || '')).filter(Boolean)
+          h1 = h1Hypotheses({ tech }).flatMap((rule) => (rule.probe_paths || []).map((pp) => ({
+            program_id: args.program_id, kind: 'hypothesis', host: args.host, path: pp, method: 'GET',
+            vuln_class: rule.vuln_class, level: rule.level || 'H1',
+            rationale: rule.rationale, oracle: rule.oracle,
+            strategy_key: `h1|${args.host}|${pp}|${rule.vuln_class}|h1-v1`,
+          })))
+        }
+      } catch { /* 指纹不可用：不加 H1，不阻断 H2 */ }
+      const drafts = [...h2, ...h1]
       const added = repo.enqueueHypotheses(drafts)
-      return { data: { added, total: drafts.length }, after: { added } }
+      return { data: { added, total: drafts.length, h2: h2.length, h1: h1.length }, after: { added } }
     },
 
     task_hypotheses_dispatch: async (args, repo, ctx) => {

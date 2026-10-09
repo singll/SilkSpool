@@ -2837,6 +2837,34 @@ test('27 WP04: signed HTTP 200 business errors cannot enqueue or dispatch execut
   assert.equal((await readError()).data.business_state, 'evidence_unavailable')
 })
 
+test('27 WP05 C14: 指纹→H1 路径探测假设入队（h1Hypotheses 实际接线）', async () => {
+  const env = makeEnv()
+  env.bus.registry.register(buildEndpointDomain({ dataDir: env.dataDir, dispatch: (d, v, a, c) => env.bus.dispatch(d, v, a, c), query: (d, n, a, c) => env.bus.query(d, n, a, c) }))
+  await env.bus.dispatch('endpoint', 'upsert', { program_id: 'test-src', rows: [{ host: 'h1.example.com', path: '/', params: { id: null } }] }, { actor: 'script' })
+  const assetStub = {
+    manifest: { domain: 'asset', version: 1, service: 'secDomain.asset', description: '契约桩：asset.fp_query',
+      owns: { tables: [], files: [] },
+      commands: {}, queries: { fp_query: { actor: ['model', 'reactor', 'dashboard', 'script', 'system', 'human'], params: { type: 'object', additionalProperties: false, properties: { host: { type: 'string' }, tech: { type: 'string' }, program_id: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' } } }, agent_note: '桩' } },
+      events: {}, subscribes: {}, backend: 'repository-v1' },
+    handlers: { commands: {}, queries: { fp_query: async () => ({ rows: [{ tech: 'spring' }], total: 1, meta: { paged: true } }) }, invariants: {}, subscribers: {} },
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  }
+  const reg = env.bus.registry.register(assetStub)
+  assert.equal(reg.ok, true, 'asset 桩应注册成功: ' + JSON.stringify(reg.error))
+  const enq = await env.bus.dispatch('task', 'hypotheses_enqueue', { program_id: 'test-src', host: 'h1.example.com', path: '/' }, { actor: 'reactor' })
+  assert.equal(enq.ok, true, enq.error?.message)
+  assert.ok(Number(enq.data.h1) >= 6, `应产出 spring(5)+通用路径，实得 ${enq.data.h1}`)
+  const db = env.bus._internal.db()
+  const drafts = db.prepare('SELECT draft FROM hypothesis_queue').all().map((r) => JSON.parse(r.draft))
+  const h1 = drafts.filter((d) => String(d.strategy_key || '').startsWith('h1|'))
+  assert.ok(h1.some((d) => d.path === '/.env'), '含通用 .env 探测')
+  assert.ok(h1.some((d) => d.path === '/actuator/env'), '含 spring actuator 探测')
+  // 稳定 strategy_key 幂等：重复 enqueue 不新增 H1
+  await env.bus.dispatch('task', 'hypotheses_enqueue', { program_id: 'test-src', host: 'h1.example.com', path: '/' }, { actor: 'reactor' })
+  const h1b = db.prepare('SELECT draft FROM hypothesis_queue').all().map((r) => JSON.parse(r.draft)).filter((d) => String(d.strategy_key || '').startsWith('h1|'))
+  assert.equal(h1b.length, h1.length, 'H1 strategy_key 幂等')
+})
+
 test('27 WP05: 队列确认失败回滚任务创建，重建 bus 后可继续派发且不重建已派任务', async () => {
   const env = makeEnv()
   env.bus.registry.register(buildEndpointDomain({ dataDir: env.dataDir, dispatch: (d, v, a, c) => env.bus.dispatch(d, v, a, c) }))

@@ -256,7 +256,7 @@ export const ASSET_MANIFEST = {
       agent_note: '资产库存计数与类型分布；按host/type资产行计数，不展开域名族和接口/漏洞关联。',
     },
     fp_query: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'reactor'],
       params: schema({
         host: str({ default: '' }),
         tech: str({ default: '' }),
