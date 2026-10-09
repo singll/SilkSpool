@@ -50,6 +50,7 @@ for name, port in entries:
     lines += [
         f"handle_path /p/{name}/* {{",
         "    handle / {",
+        "        header Cache-Control \"no-store\"",
         "        root * /opt/silkspool/dsh/edge-static",
         "        rewrite / /browser.html",
         "        file_server",

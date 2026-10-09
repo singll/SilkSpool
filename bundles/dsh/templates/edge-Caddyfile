@@ -23,6 +23,7 @@ http://:9223 {
     }
     # 统一管理页（/ → browser.html；/p/<name>/ → 该 profile 视图，同样由 browser.html 渲染）
     handle / {
+        header Cache-Control "no-store"
         root * /opt/silkspool/dsh/edge-static
         rewrite / /browser.html
         file_server
