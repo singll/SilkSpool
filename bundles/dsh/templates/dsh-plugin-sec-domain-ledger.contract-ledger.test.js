@@ -487,6 +487,33 @@ test('coverage_gaps: 跨域 asset/endpoint 分页查询顶层 rows 被正确消�
   assert.ok((g.data.gaps || []).some((x) => x.dim === 'param' && x.key === 'a.example.com|/x'))
 })
 
+test('27 WP05 C06: vulnclass 仅可靠判定(verified/rejected)才关闭；inconclusive 需重开', async () => {
+  const { bus } = makeEnv()
+  const props = { program_id: { type: 'string' }, type: { type: 'string' }, auth_state: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' } }
+  const stub = (domain, queryMap) => ({
+    manifest: { domain, version: 1, service: `secDomain.${domain}`, description: 'stub', owns: { tables: [], files: [] }, commands: {},
+      queries: Object.fromEntries(queryMap.map(([n, f]) => [`${domain}_${n}`, { actor: ['reactor', 'model', 'dashboard', 'human'], params: { type: 'object', additionalProperties: false, properties: props }, agent_note: 'stub', ...(f.rows ? { __rows: true } : {}) }])),
+      events: {}, subscribes: {}, backend: 'repository-v1' },
+    handlers: { commands: {}, queries: Object.fromEntries(queryMap.map(([n, f]) => [n, async () => f])), invariants: {}, subscribers: {} },
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  })
+  assert.equal(bus.registry.register(stub('endpoint', [['lite_page', { rows: [{ host: 'c.example.com', path: '/x', params: null, auth_state: 'public' }], total: 1 }]])).ok, true)
+  await bus.dispatch('ledger', 'coverage_mark', { program: 'test-src', dim: 'vulnclass', key: 'c.example.com|idor', mark: 'inconclusive' }, { actor: 'script' })
+  let g = await bus.query('ledger', 'coverage_gaps', { program: 'test-src', dim: 'vulnclass' }, { actor: 'model' })
+  const idorGap = (g.data.gaps || []).find((x) => x.key === 'c.example.com|idor')
+  assert.ok(idorGap, 'inconclusive 的 idor 应重开缺口，不得被当已测关闭')
+  assert.match(idorGap.reason, /结论不明确/)
+  const m = await bus.query('ledger', 'coverage_metrics', { program: 'test-src' }, { actor: 'model' })
+  assert.ok(!m.data.vulnclass.tested_classes.includes('idor'), 'inconclusive 不算已测类')
+  assert.ok(m.data.vulnclass.indeterminate_classes.includes('idor'), 'inconclusive 单列结论不明确')
+  // 可靠判定后关闭
+  await bus.dispatch('ledger', 'coverage_mark', { program: 'test-src', dim: 'vulnclass', key: 'c.example.com|idor', mark: 'verified' }, { actor: 'script' })
+  g = await bus.query('ledger', 'coverage_gaps', { program: 'test-src', dim: 'vulnclass' }, { actor: 'model' })
+  assert.ok(!(g.data.gaps || []).some((x) => x.key === 'c.example.com|idor'), 'verified 可靠判定后不应重开')
+  const m2 = await bus.query('ledger', 'coverage_metrics', { program: 'test-src' }, { actor: 'model' })
+  assert.ok(m2.data.vulnclass.tested_classes.includes('idor'), 'verified 计入已测类')
+})
+
 // 25 号补丁：资产收集入专项——asset 维缺口（根域枚举超窗）派生与 enum_fresh 闭环
 test('coverage_gaps: asset 维——根域无 enum_fresh 记账出缺口，记账后闭环', async () => {
   const { bus } = makeEnv()

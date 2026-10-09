@@ -50,6 +50,11 @@ const ASSET_ENUM_STALE_MS = Number(process.env.SEC_LEDGER_ASSET_STALE_MS) > 0
 // 43 号补丁：param 缺口终态冷却窗口（params_enriched / no_params_confirmed 记账后默认 30 天不重开）
 const PARAM_GAP_COOLDOWN_MS = Number(process.env.SEC_LEDGER_PARAM_COOLDOWN_MS) > 0
   ? Number(process.env.SEC_LEDGER_PARAM_COOLDOWN_MS) : 30 * 86400000
+// 27 WP05/C06：vulnclass 判定超期重开窗口（verified/rejected 记账后默认 30 天重开，规则/版本变化后可复测）
+const VULNCLASS_REOPEN_MS = Number(process.env.SEC_LEDGER_VULNCLASS_REOPEN_MS) > 0
+  ? Number(process.env.SEC_LEDGER_VULNCLASS_REOPEN_MS) : 30 * 86400000
+// 27 WP05/C06：仅可靠判定算「已测类」；inconclusive/unknown/blocked 属结论不明确，不得当已测关闭。
+const VULNCLASS_DETERMINATE = new Set(['verified', 'rejected'])
 const RADAR_TYPE_ENUM = ['ct-new-subdomain', 'js-bundle-change', 'scope-approved', 'version-intel']
 const BANNED_REASON = new Set(['other', 'misc', ''])
 const RADAR_SOURCE = {
@@ -661,15 +666,19 @@ function makeHandlers(opts) {
         login = { available: true, need_login_endpoints: needLogin, tested_logged_in: testedLoggedIn,
           ratio: needLogin ? Number((testedLoggedIn / needLogin).toFixed(4)) : 1, marked_ratio: authSummary.marked_ratio }
       }
-      // 漏洞类面：七类主粮已测类数（per program）
+      // 漏洞类面（WP05/C06）：只有可靠判定（verified/rejected）算「已测类」；
+      // inconclusive/unknown/blocked 单列为「结论不明确」，不得当已测关闭该 host×class。
       const testedClasses = new Set()
+      const indeterminateClasses = new Set()
       for (const v of state.values()) {
-        if (v.dim === 'vulnclass' && (v.mark === 'verified' || v.mark === 'rejected' || v.mark === 'inconclusive')) {
-          const cls = String(v.key).split('|').pop()
-          if (cls) testedClasses.add(cls)
-        }
+        if (v.dim !== 'vulnclass') continue
+        const cls = String(v.key).split('|').pop()
+        if (!cls) continue
+        if (VULNCLASS_DETERMINATE.has(v.mark)) testedClasses.add(cls)
+        else if (v.mark && v.mark !== 'untested') indeterminateClasses.add(cls)
       }
-      const vulnclass = { tested_classes: [...testedClasses].sort(), total_classes: 7, ratio: Number((testedClasses.size / 7).toFixed(4)) }
+      const vulnclass = { tested_classes: [...testedClasses].sort(), indeterminate_classes: [...indeterminateClasses].sort(),
+        total_classes: 7, ratio: Number((testedClasses.size / 7).toFixed(4)) }
       return { program, crawl, param, login, vulnclass }
     },
 
@@ -769,9 +778,17 @@ function makeHandlers(opts) {
             for (const cls of SEVEN_CLASSES) {
               const key = `${host}|${cls}`
               const st = state.get(`vulnclass|${key}`)
-              if (!st || st.mark === 'untested') {
+              // WP05/C06：未测 / 结论不明确（inconclusive/unknown/blocked）/ 判定超期 → 重开缺口。
+              // 只有可靠判定（verified/rejected）在窗口内才关闭该 host×class，避免 unknown 永久关。
+              const closedAt = st ? Date.parse(st.ts || '') : NaN
+              const determinate = st && VULNCLASS_DETERMINATE.has(st.mark)
+              const expired = determinate && Number.isFinite(closedAt) && (Date.now() - closedAt) > VULNCLASS_REOPEN_MS
+              if (!st || st.mark === 'untested' || (st.mark && !determinate) || expired) {
                 if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('vulnclass'); break outer }
-                gaps.push({ dim: 'vulnclass', key, strategy_key: `vulnclass|${key}`, priority: CLASS_PRIORITY[cls] ?? 25, reason: `漏洞类 ${cls} 未测` })
+                const reason = (!st || st.mark === 'untested') ? `漏洞类 ${cls} 未测`
+                  : expired ? `漏洞类 ${cls} 判定超期重开（>${Math.round(VULNCLASS_REOPEN_MS / 86400000)} 天）`
+                    : `漏洞类 ${cls} 结论不明确（${st.mark}）需重开`
+                gaps.push({ dim: 'vulnclass', key, strategy_key: `vulnclass|${key}`, priority: CLASS_PRIORITY[cls] ?? 25, reason })
               }
             }
           }
