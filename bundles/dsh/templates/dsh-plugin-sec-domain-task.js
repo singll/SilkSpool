@@ -45,6 +45,9 @@ const CAMPAIGN_STATUS = ['draft', 'active', 'paused', 'reviewing', 'archived']
 const CAMPAIGN_MODES = ['single', 'cross']
 const CAMPAIGN_VERDICTS = ['accepted', 'rework', 'rejected', 'escalated']
 const CAMPAIGN_MILESTONE_IDLE_MS = Number(process.env.SEC_CAMPAIGN_IDLE_HOURS || 48) * 3600000
+// 27 WP01/C11：无有效进展停止窗口。按真实进展信号（accepted 验收/里程碑）而非 heartbeat
+// 计算——heartbeat 被各种 decision 刷新会掩盖「长期无进展」。默认 120h，可用 policy.progress_window_ms 覆盖。
+const CAMPAIGN_NO_PROGRESS_MS = Number(process.env.SEC_CAMPAIGN_NO_PROGRESS_HOURS || 120) * 3600000
 const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 // 22 号方案：单条派生草稿的预算预估（tokens，环境变量可调；用于 campaign 窗口预算闸）
 // 23 号方案 §3.6：默认随统一额度面调为 30000（worker 未上报 token 前的保守估算）
@@ -1951,6 +1954,19 @@ function makeHandlers(opts) {
     return metrics
   }
 
+  // 27 WP01/C11：真实进展时间——最近一次「accepted 验收」或「milestone 检查点」。
+  // 不用 heartbeat_at（它被任何 decision 刷新，会掩盖长期无进展）。
+  function lastProgressAt(repo, c) {
+    let t = Number(c.created_at) || 0
+    try {
+      for (const d of repo.listCampaignDecisions(c.id, 'accepted', 50, 0)) t = Math.max(t, Number(d.created_at) || 0)
+      for (const cp of repo.listCheckpoints(c.id, 50)) {
+        if (cp.kind === 'milestone') t = Math.max(t, Number(cp.created_at) || 0)
+      }
+    } catch { /* 查询失败按创建时间 */ }
+    return t
+  }
+
   function superviseCampaign(c, repo) {
     const actions = []
     const now = Date.now()
@@ -1996,6 +2012,18 @@ function makeHandlers(opts) {
         && !hasRecentCheckpoint(repo, c.id, 'budget_extend_request', 12 * 3600000)) {
         actions.push({ kind: 'budget_extend', add: Number(c.budget_tokens), spent: consumed,
           lifetime: Number(usage.lifetime_spent_tokens), reserved: Number(usage.reserved_tokens) })
+      }
+    }
+    // 27 WP01/C11：无有效进展停止。active 且在 progress_window 内没有任何 accepted 验收/里程碑
+    // （即便 heartbeat 被 rejected/rework 刷新）→ 转 reviewing 待人审（换方向或停止）。
+    // 只依据真实技术进展，不引入外部 accepted/赏金等反馈；须已有实验尝试（countCampaignDecisions>0）。
+    const budgetStopped = actions.some((a) => a.kind === 'stop_condition' && a.reason === 'budget_exhausted')
+    if (c.status === 'active' && !goalStopped && !budgetStopped) {
+      const limitMs = Number(c.policy?.progress_window_ms) > 0 ? Number(c.policy.progress_window_ms) : CAMPAIGN_NO_PROGRESS_MS
+      const stalledMs = Math.max(0, now - lastProgressAt(repo, c))
+      if (limitMs > 0 && stalledMs > limitMs && repo.countCampaignDecisions(c.id) > 0
+        && !hasRecentCheckpoint(repo, c.id, 'stop_condition', Math.min(limitMs, 12 * 3600000))) {
+        actions.push({ kind: 'stop_condition', reason: 'no_progress', stalled_ms: stalledMs, progress_window_ms: limitMs })
       }
     }
     return actions
@@ -2152,7 +2180,7 @@ function makeHandlers(opts) {
           events.push(...cp.events)
         } else if (a.kind === 'stop_condition') {
           repo.updateCampaign(c.id, { status: 'reviewing' }, 'active')
-          const cp = writeCheckpoint(repo, c.id, 'stop_condition', `停止条件命中（${a.reason}），转 reviewing 待人审（不自动 archive）`, { reason: a.reason || 'unknown', predicates: a.predicates || [] })
+          const cp = writeCheckpoint(repo, c.id, 'stop_condition', `停止条件命中（${a.reason}），转 reviewing 待人审（不自动 archive）`, { reason: a.reason || 'unknown', predicates: a.predicates || [], ...(a.stalled_ms != null ? { stalled_ms: a.stalled_ms, progress_window_ms: a.progress_window_ms } : {}) })
           events.push({ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: 'active', to: 'reviewing', cause: a.reason } })
           events.push(...cp.events); summary.escalated++
         } else if (a.kind === 'budget_extend') {

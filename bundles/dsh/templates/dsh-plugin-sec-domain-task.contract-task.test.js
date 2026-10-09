@@ -2152,6 +2152,44 @@ test('27 D09: campaign_budget_extend enforces safe-integer and ≤2x increment b
   assert.equal(overflow.error?.code, 'E_INVARIANT', '超出安全整数须拒')
 })
 
+test('27 WP01 C11: 心跳被 rejected 刷新但无真实进展，窗口后停为 reviewing', async () => {
+  const { bus } = makeEnv()
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'np.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '无进展停', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1, progress_window_ms: 1000 },
+  }, { actor: 'model' })
+  assert.equal(c.ok, true, c.error?.message)
+  const cid = c.data.campaign_id, db = bus._internal.db()
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  db.prepare('UPDATE campaigns SET created_at=? WHERE id=?').run(Date.now() - 10000, cid)
+  const tid = db.prepare("INSERT INTO tasks(program_id,objective,status,created_at,updated_at,campaign_id) VALUES('test-src','np','done',?,?,?)").run(Date.now(), Date.now(), cid).lastInsertRowid
+  db.prepare("INSERT INTO campaign_decisions(campaign_id,task_id,verdict,evidence,goal_delta,decided_by,created_at) VALUES(?,?,'rejected','e','{}','reviewer',?)").run(cid, tid, Date.now())
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(db.prepare('SELECT status FROM campaigns WHERE id=?').get(cid).status, 'reviewing', '无真实进展须转 reviewing 待人审')
+  const cp = db.prepare("SELECT payload FROM campaign_checkpoints WHERE campaign_id=? AND kind='stop_condition' ORDER BY id DESC LIMIT 1").get(cid)
+  assert.equal(JSON.parse(cp.payload).reason, 'no_progress')
+})
+
+test('27 WP01 C11: 有 accepted 验收即视为进展，不触发无进展停止', async () => {
+  const { bus } = makeEnv()
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'np2.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '有进展', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 5000000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1, progress_window_ms: 1000 },
+  }, { actor: 'model' })
+  assert.equal(c.ok, true, c.error?.message)
+  const cid = c.data.campaign_id, db = bus._internal.db()
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  db.prepare('UPDATE campaigns SET created_at=? WHERE id=?').run(Date.now() - 10000, cid)
+  const tid = db.prepare("INSERT INTO tasks(program_id,objective,status,created_at,updated_at,campaign_id) VALUES('test-src','ok','done',?,?,?)").run(Date.now(), Date.now(), cid).lastInsertRowid
+  db.prepare("INSERT INTO campaign_decisions(campaign_id,task_id,verdict,evidence,goal_delta,decided_by,created_at) VALUES(?,?,'accepted','e','{}','reviewer',?)").run(cid, tid, Date.now())
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.notEqual(db.prepare('SELECT status FROM campaigns WHERE id=?').get(cid).status, 'reviewing', '有 accepted 进展不得停止')
+})
+
 test('35 号补丁: SEC_CAMPAIGN_BUDGET_AUTO_APPROVE=off 时只提请不批准', async () => {
   process.env.SEC_CAMPAIGN_BUDGET_AUTO_APPROVE = 'off'
   try {
