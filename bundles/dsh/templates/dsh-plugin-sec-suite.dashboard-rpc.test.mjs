@@ -266,6 +266,7 @@ test('stats：经各域查询聚合，单域失败 → null + degraded，不整�
   assert.equal(out.discipline, null)
   assert.equal(out.inventory, null)
   assert.equal(out.scope, null)
+  assert.equal(out.findings_noise, null, 'WP10：vuln 来源失败时噪声候选以 null(未知)呈现，不得显示 0')
   assert.deepEqual(out.degraded.sort(), ['approval', 'asset', 'ledger', 'scope', 'task', 'vuln'])
   assert.deepEqual(leaked, [], 'stats 不得直查 assetDb')
 

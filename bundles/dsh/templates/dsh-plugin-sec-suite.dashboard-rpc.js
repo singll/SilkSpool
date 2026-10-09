@@ -203,7 +203,8 @@ export async function handleDashboardRpc(endpoint, payload) {
         out.findings_by_status = Object.keys(st).map((k) => ({ status: k, n: Number(st[k]) || 0 }))
         out.findings_noise = out.vuln.candidate
       } catch (e) {
-        out.vuln = null; out.findings_by_severity = []; out.findings_by_status = []; out.findings_noise = 0
+        // WP10/F08：来源失败时 unknown 以 null 表示（不显示 0），与其它指标 degraded 一致。
+        out.vuln = null; out.findings_by_severity = []; out.findings_by_status = []; out.findings_noise = null
         failed('vuln')
       }
       // 任务（task.list 全局 status 过滤；task.stats 需 program_id，全局口径用 list total）
