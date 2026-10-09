@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "comment": "隔离共享浏览器 profile 注册表（primary 隐式存在于 9222/profile .shared-browser-profile，不在此列）。用 sec-browser-profiles.sh add/list/remove 维护。",
+  "profiles": []
+}

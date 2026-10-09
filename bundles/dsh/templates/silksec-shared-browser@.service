@@ -1,0 +1,19 @@
+[Unit]
+Description=SilkSecAgent 隔离共享浏览器 profile %i（独立持久 profile + CDP，人机共用登录态）
+After=network-online.target silksecagent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=silkspool
+Environment=HOME=/home/silkspool
+Environment=PATH=/usr/local/node/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/silkspool/日常/browser
+ExecStart=/bin/bash /home/silkspool/日常/browser/shared-browser-launch.sh %i
+Restart=always
+RestartSec=5
+# profile 目录=登录态凭据，权限收紧
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

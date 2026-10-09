@@ -40,7 +40,7 @@
 - `base` 是DSH主目录；`extra_roots` 指定外置工作区，当前包括 `/home/silkspool/美团SRC`、`字节SRC`、`日常`。各根目录不得重叠。新工作区必须同步加入配置。
 - 主目录 `data` 与工作区按SQLite文件头识别数据库，包括非 `.db` 后缀。在线backup API生成暂存副本，quick_check通过后纳入快照；原库及其WAL/SHM/journal排除，恢复时用副本覆盖。副本记录原数据库权限和UID/GID，root恢复时归位。
 - 排除旧本地 `data/backups`/`backups`、配置的缓存路径；数据库探测跳过node_modules及软链。软链不跟随，外部目标须另列根目录；应用安装树不能存可变业务库。
-- `exclude_paths` 当前显式排除 `日常/browser/.shared-browser-profile`：Chromium性能库持续独占锁，曾导致120秒备份失败。目录源文件保留，**常规备份不含浏览器登录态**；若变更依赖登录态恢复，使用覆盖它的新冻结点。
+- `exclude_paths` 当前显式排除 `日常/browser/.shared-browser-profile` 与 `日常/browser/.profiles`（隔离 profile 根）：Chromium性能库持续独占锁，曾导致120秒备份失败。目录源文件保留，**常规备份不含浏览器登录态**；若变更依赖登录态恢复，使用覆盖它的新冻结点。
 - `/etc`的systemd配置、`/usr/local/node`、管理机配置/私钥不在上述常规根目录内；涉及这些资源的变更须单独备份或纳入冻结清单。仓库密码、SFTP私钥、固定known_hosts和维护配置在管理机 `/opt/SilkSpool/keys/secagent-backup/` 托管，权限0700/0600，不入git、不输出密钥。配置或密钥变化须同步托管副本。
 
 | 配置项 | 当前约定 |
@@ -88,6 +88,8 @@ python3 bundles/dsh/templates/dsh-release-preflight.py --templates bundles/dsh/t
 | health | 每15分钟 | 每15分钟 | 健康与备份过期检查 |
 
 timer采用Persistent与最多120秒随机延迟。服务为root（读证书所需），UMask0077，CPUQuota50%、MemoryMax1GiB、Nice15、idle IO、2小时超时、PrivateTmp和NoNewPrivileges。原silksec-backup/retention timer停用。只有初始化空仓库时运行`init`，不得每次setup初始化仓库。
+
+**隔离共享浏览器 profile（2026-10-09，可自主增删）**：primary 浏览器（CDP 9222、profile `.shared-browser-profile`）由 `silksec-shared-browser.service` 承载、入口 `browser.silksecagent.singll.net/`；额外隔离 profile 由模板单元 `silksec-shared-browser@<name>.service` 承载（复用同一 `shared-browser-host.mjs`，独立 `SEC_BROWSER_PROFILE` + `CDP_PORT`），入口 `/p/<name>/`，Cookie/Storage 与 primary 及其他 profile 完全隔离，可同时登录不同账号。维护用 `sudo bash /opt/silkspool/dsh/sec-browser-profiles.sh {list|add <name> [--port N]|remove <name>|render|apply}`；注册表 `data/browser-profiles.json`（644，仅名字/端口/目录，无秘密），Caddy 片段 `edge-browser-profiles.caddy`（由 `edge-Caddyfile` import，`<name>` 路由 `handle_path /p/<name>/*`）。新增 profile 须同步存在于 `exclude_paths`（当前以 `.profiles` 根整体排除）。profile 目录=登录态凭据，权限 700；`remove` 保留目录，不自动删登录态。
 
 - 全部写维护操作共用非阻塞flock；锁冲突退出75。定时服务将75记作跳过成功，下周期再试；**变更前门禁不得把75当成功**。status不占锁。
 - 备份先打pending标签，成功后才标routine并发布last-backup。备份失败不淘汰最后成功副本；routine保留8份、pending最多1份，forget只删索引引用，prune才回收无引用数据块。

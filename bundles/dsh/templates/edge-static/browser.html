@@ -16,8 +16,9 @@
 </style>
 </head>
 <body>
-<h1>SilkSec 共享浏览器 <span class="tag">人机共用登录态</span><span class="tag">CDP 9222</span></h1>
-<p class="muted">agent 与你共用同一浏览器实例与同一份 Cookie。登录完目标站点，agent 侧即刻可用。</p>
+<h1>SilkSec 共享浏览器 <span class="tag" id="profile">…</span><span class="tag">人机共用登录态</span></h1>
+<p class="muted" id="note">agent 与你共用同一浏览器实例与同一份 Cookie。登录完目标站点，agent 侧即刻可用。</p>
+<p class="muted">每个隔离 profile 的 Cookie/Storage 相互独立：<code>/</code>（primary）与 <code>/p/&lt;name&gt;/</code> 可同时登录不同账号、互不影响。</p>
 
 <h2>新开标签页</h2>
 <div class="card">
@@ -35,13 +36,18 @@
 
 <script>
 const REV = '@782af9cb30a53f54487e5d2e44738645a8ec457c';
-// 前端与 WS 全部同源（本服务反代 appspot 前端资源）：basicauth 凭据随域走，WS 不再跨域 401
+// 路径感知：/ → primary，/p/<name>/ → 隔离 profile；BASE 为去掉结尾斜杠的前缀。
+const BASE = location.pathname.replace(/\/$/, '');
+const seg = BASE.split('/').filter(Boolean);
+const PROFILE = (seg[0] === 'p' && seg[1]) ? seg[1] : 'primary';
+document.getElementById('profile').textContent = 'profile: ' + PROFILE;
+if (PROFILE !== 'primary') document.getElementById('note').textContent = '隔离 profile「' + PROFILE + '」：与 primary 登录态完全隔离，可同时登录另一个账号。';
 function inspectUrl(id){
   const proto = location.protocol === 'https:' ? 'wss=' : 'ws=';
-  return location.origin + '/serve_rev/' + REV + '/inspector.html?' + proto + location.host + '/devtools/page/' + id;
+  return location.origin + '/serve_rev/' + REV + '/inspector.html?' + proto + location.host + BASE + '/devtools/page/' + id;
 }
 async function load(){
-  const r = await fetch('/json', {headers:{'Accept':'application/json'}});
+  const r = await fetch(BASE + '/json', {headers:{'Accept':'application/json'}});
   const tabs = await r.json();
   const el = document.getElementById('list');
   const pages = tabs.filter(t=>t.type==='page');
@@ -55,12 +61,12 @@ async function load(){
 async function openTab(){
   const u = document.getElementById('url').value.trim();
   if(!u) return;
-  await fetch('/json/new?' + encodeURIComponent(u), {method:'PUT'}).catch(()=>{});
+  await fetch(BASE + '/json/new?' + encodeURIComponent(u), {method:'PUT'}).catch(()=>{});
   document.getElementById('url').value = '';
   setTimeout(load, 1200);
 }
 async function closeTab(id){
-  await fetch('/json/close/' + id).catch(()=>{});
+  await fetch(BASE + '/json/close/' + id).catch(()=>{});
   setTimeout(load, 600);
 }
 load(); setInterval(load, 5000);

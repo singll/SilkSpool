@@ -1001,3 +1001,9 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - 工作区POST和3个含trade段的GET被正式风险守卫拒绝，共4次、目标请求0；未改Scope或换执行器绕过。读型POST/路径风险契约及HAR业务健康投影是后续接线项。通知错误GET404、ID类型差异和只读统计列名错误均保留，恢复复用已签封基线。
 - 响应契约仅新增两个明确API命名空间，保留原文件可回退，热加载后2份签封基线success/intact，HAR5份intact/business_state=unknown。复用既有验收，无代码部署/服务重启/重复NAS恢复。74份原件下载验SHA256，证据out/secagent-audits/20261009-authenticated-pilot/，另存学习回执；详见27号§15.125及04/10号。
 - 主服务/edge/共享浏览器active、NRestarts0；原页面恢复首页且仍登录，任务running0。Campaign仍paused/原200M、200M、50M，实测spent为188.83M、621.38M、210.28M，后两项超额，继续暂停。Scope不变，全案未关账。
+
+### 2026-10-09 · WP01 D09 累计硬上限/预算审批人工化（已归档）
+
+- 专项预算改为**累计硬上限**：所有预算判定统一 `max(窗口已记+未结预留, 全周期已记+未结预留)`，窗口滚动不返还额度；派发、规划、停止、自动恢复、激活/升档口径一致。
+- 评审修复：缺额任务延后回 queued 并循环扫描（不饿死队尾）；停止/提请/恢复/展示统一累计口径；延后发 `task.deferred`/`data.deferred`（不再错发 `task.blocked`）；预算判定从后端移入 task 域；`approval_decide` actor 收紧为 `{dashboard,human}`。
+- task/approval 171、全域 806/806；两次同版本快速发布（`20261009-d09-budget-cap` 1.36s、`20261009-d09-review-fix` 3.13s）。D09 未整项完成（无有效进展停止条件、扩容依据业务收益待办）；契约版本治理缺口见 27 号 §17。

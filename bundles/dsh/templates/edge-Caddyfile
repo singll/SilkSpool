@@ -13,6 +13,8 @@ http://:9223 {
     basicauth {
         silksec $2b$14$ZeShsNfhSloJFL5ZqJ5RuOVCMxHS8cPv4wSKEYSHmCSCCJpc4DQD6
     }
+    # 隔离 profile 路由（由 sec-browser-profiles.sh 生成，import 片段；空文件=无隔离 profile）
+    import /opt/silkspool/dsh/edge-browser-profiles.caddy
     handle / {
         root * /opt/silkspool/dsh/edge-static
         rewrite / /browser.html
