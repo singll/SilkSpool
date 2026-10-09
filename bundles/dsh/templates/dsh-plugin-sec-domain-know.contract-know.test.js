@@ -101,6 +101,28 @@ test('happy path: exp_store 新卡（active + permanent）+ know.exp.stored', as
   assert.equal(row.kind, 'card')
 })
 
+test('WP07 L08: hit_matrix 取版本化 attempt 投影(know_scores)而非 exp_cards.runs/successes', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('know', 'exp_store', {
+    scenario: '命中矩阵投影来源测试场景需要足够长的描述文本', takeaway: '核心结论需要足够长的描述文本内容',
+    justification: '足够长的理由说明文本内容', tags: ['nginx', 'sqli'],
+  }, { actor: 'dashboard' })
+  assert.equal(c.ok, true, c.error?.message)
+  const id = String(c.data.id), db = bus._internal.db()
+  // 旧计数置为高值，验证 hit_matrix 不再读它
+  db.prepare('UPDATE exp_cards SET runs=99, successes=99 WHERE id=?').run(id)
+  db.prepare(`INSERT INTO know_scores(artifact_kind,artifact_id,verified_positives,valid_cleans,sample_size,score,rebuilt_at)
+    VALUES('exp_card',?,3,1,4,5.0,?)`).run(id, Date.now())
+  const r = await bus.query('know', 'hit_matrix', { min_sample: 1 }, { actor: 'dashboard' })
+  assert.equal(r.ok, true, r.error?.message)
+  const rows = r.rows || (r.data && r.data.rows) || []
+  const row = rows.find((x) => x.stack === 'nginx' && x.vuln_class === 'sqli')
+  assert.ok(row, ' 应有 nginx|sqli 行')
+  assert.equal(row.wins, 3)
+  assert.equal(row.fails, 1)
+  assert.equal(row.sample, 4)
+})
+
 test('happy path: exp_store 同 scenario 合并（merged=true）', async () => {
   const { bus } = makeEnv()
   const r1 = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })

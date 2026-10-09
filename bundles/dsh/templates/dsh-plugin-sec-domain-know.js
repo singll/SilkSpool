@@ -2651,9 +2651,14 @@ function makeHandlers(opts) {
     hit_matrix: async (args, repo) => {
       const minSample = Math.max(0, Number(args.min_sample) || 0)
       const classes = ['idor', 'sqli', 'xss', 'ssrf', 'file', 'info_disclosure', 'authz']
-      const cards = repo.listExpWhere("kind = 'card'", [], 'score DESC', 500, 0)
+      // WP07/L08：胜负取自版本化 attempt 结果投影（know_scores），不再用 exp_cards.runs/successes
+      // 旧累计计数（后者的非零胜负来源长期为 0，且把 vendor/自报混入）。
+      const scores = repo.listScores({ artifact_kind: 'exp_card', limit: 500, offset: 0 }).rows || []
+      const cards = new Map(repo.listExpWhere("kind = 'card'", [], 'score DESC', 500, 0).map((c) => [String(c.id), c]))
       const agg = new Map()
-      for (const card of cards) {
+      for (const sc of scores) {
+        const card = cards.get(String(sc.artifact_id))
+        if (!card) continue
         let tags = card.tags
         if (typeof tags === 'string') { try { tags = JSON.parse(tags) } catch { tags = [] } }
         if (!Array.isArray(tags)) continue
@@ -2663,8 +2668,8 @@ function makeHandlers(opts) {
         if (!cls || !stack) continue
         const key = `${stack}|generic|${cls}`
         const cur = agg.get(key) || { key, stack, vuln_class: cls, wins: 0, fails: 0 }
-        cur.wins += Number(card.successes) || 0
-        cur.fails += Math.max(0, (Number(card.runs) || 0) - (Number(card.successes) || 0))
+        cur.wins += Number(sc.verified_positives) || 0
+        cur.fails += Number(sc.valid_cleans) || 0
         agg.set(key, cur)
       }
       const rows = [...agg.values()].map((r) => ({ ...r, sample: r.wins + r.fails }))
