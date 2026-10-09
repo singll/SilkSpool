@@ -2010,6 +2010,16 @@ change `20261009-egress-containment`已关闭全部插件并设http.passive_mode
 
 验证：task 143/143、全域 **813/813**；新增用例覆盖 spring 指纹产出 actuator 探测 + 通用 `.env`、无指纹域时不加 H1、重复 enqueue 幂等。H3 业务关系、unknown/条件重开等仍待办。
 
+### 15.131 WP05 C06 vulnclass unknown/inconclusive 条件重开（2026-10-09）
+
+**缺口**：ledger 的 vulnclass gap 原逻辑为「`!st || mark==='untested'` 才出缺口」——任何 mark（含 `inconclusive`/unknown/blocked）都会把 host×class 永久当「已测」关闭，未知结论不复测。
+
+**修复**（`ae6ee6c`）：
+- `coverage_gaps`：vulnclass 缺口在 **未测 / 结论不明确（inconclusive/unknown/blocked）/ 判定超期** 时重开；仅 `verified`/`rejected`（可靠判定）在窗口内才关闭。新增窗口 `VULNCLASS_REOPEN_MS`（默认 30 天，`SEC_LEDGER_VULNCLASS_REOPEN_MS` 覆盖），规则/版本变化后可复测。
+- `coverage_metrics`：`tested_classes` 只计可靠判定（verified/rejected），`inconclusive` 等单列 `indeterminate_classes`，不再算「已测」。
+
+验证：ledger 32/32、全域 **814/814**；用例覆盖 inconclusive→重开且不计已测、verified→关闭且计入已测。H3、旧分页饥饿、根因去重、TTL/配额分离仍待办。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
@@ -2022,7 +2032,7 @@ change `20261009-egress-containment`已关闭全部插件并设http.passive_mode
 | WP02 | 受控HTTP、可信 capsule/confirm；**E03–E07 非越权弱判据已加固**（E07 公开邮箱排除/公开端点降级；E05 多轮时间盲注；E06 OOB 健康+窗口，§15.129） | **越权/IDOR 读取链（双账号）经 §15.128 决定不做**（保留代码不验收，E02 移出）；其余非越权 Oracle 故障正负样例、属性重放继续；禁止自报替代技术真值 |
 | WP03 | claim/run/ACK、busy补偿、在飞预留、请求usage和估算 | 完整fencing/多进程恢复、共享请求预算/429退避、D07进程清理、F06死信/投影；最终账单及历史精确洗账不再必需 |
 | WP04 | HAR/被动捕获、正式HTTP接线、18种匿名请求及单账号5种新接口、响应前置已上线 | **双账号/登录态对照经 §15.128 决定不做**；聚焦匿名/单账号：更多适用业务模板（不用失败/空列表凑数）、method/body/对象归集、读型POST风险契约、HAR健康判定、B09参数队列执行确认 |
-| WP05 | 全量H2持久队列/事务派发/有限失败重试；**H1 指纹→路径探测假设已接线**（§15.130，`h1Hypotheses` 不再空挂） | H3 业务关系、unknown/条件重开、旧分页饥饿、独立观察/根因去重、TTL/配额与技术标签分离 |
+| WP05 | 全量H2持久队列/事务派发/有限失败重试；**H1 指纹→路径探测假设已接线**（§15.130）；**vulnclass unknown/inconclusive 条件重开**（§15.131，仅 verified/rejected 才关闭） | H3 业务关系、旧分页饥饿、独立观察/根因去重、TTL/配额与技术标签分离 |
 | WP06 | 47项复核队列和多批原件追溯 | 独立技术状态投影、来源计数及新证据引用；旧原件剩18项转历史未知、无新线索不重查，不计训练/技术产出，不伪判无洞 |
 | WP07 | 版本/采用/episode框架；vendor 去污、可信 attempt 去重、真 artifact 引用、撤回/重算、版本/作用域统一已在前批（§15.73–117）落地；**hit_matrix 已改读版本化 attempt 投影 `know_scores`**（§15.129） | 独立样本/真实收益归因仍待；不得据 artifact 级过渡分宣称真实收益 |
 | WP08 | 既有fact/exp/kb/rules检索 | 统一适用召回、元数据/生命周期、具体可执行方法、真实gap闭环及memcore入口契约 |
