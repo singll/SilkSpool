@@ -95,6 +95,8 @@ timer采用Persistent与最多120秒随机延迟。服务为root（读证书所�
 
 **DevTools 交互前端**：`inspect` 入口用**浏览器自带的 `/devtools/inspector.html`**（经 `/p/<name>/devtools/*` 反代到该 profile 的 CDP），不再依赖 `chrome-devtools-frontend.appspot.com`（该域在本网出口被 DNS 解析为 fake-IP、直连与代理均不可达，曾致 inspector 502）。
 
+**反自动化指纹**：`shared-browser-host.mjs` 启动时设置普通 Windows Chrome UA、`--disable-blink-features=AutomationControlled`、`ignoreDefaultArgs:['--enable-automation']`，并对每个页面注入 init 脚本伪装 `navigator.webdriver=undefined`、`platform=Win32`、`languages=zh-CN`、非空 `plugins/mimeTypes`、`window.chrome`、`userAgentData` 及 WebGL vendor/renderer（Intel/ANGLE）。否则 headless-shell 的 `HeadlessChrome` UA、`webdriver=true`、`plugins=0`、SwiftShader WebGL 会被字节风控判为自动化（passport `send_code` 返回 `error_code=7 系统繁忙`）。可用 `SEC_BROWSER_HEADFUL=1` 切换带屏（配合 Xvfb）。
+
 - 全部写维护操作共用非阻塞flock；锁冲突退出75。定时服务将75记作跳过成功，下周期再试；**变更前门禁不得把75当成功**。status不占锁。
 - 备份先打pending标签，成功后才标routine并发布last-backup。备份失败不淘汰最后成功副本；routine保留8份、pending最多1份，forget只删索引引用，prune才回收无引用数据块。
 - cleanup：旧本地图快照留2份，先quick_check保留副本；audit/events活动JSONL超过50MiB轮转，`.bak`各留3份（bus内置`.1`轮转独立）。不按年龄删除results/flows/evidence/sessions、不删业务表。默认只列计划，`--apply`才删除；例行timer已带apply。
