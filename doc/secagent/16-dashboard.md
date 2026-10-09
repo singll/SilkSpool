@@ -13,6 +13,8 @@
 
 ## 〇、定位与要解决的问题
 
+**2026-10-09 登录浏览器入口（已上线，DSH 0.1.7-rc.2）**：`@silksec/ui-panel` 在 `shell.overlay`（list/root）注册常驻右上角“登录浏览器”链接，点击在新标签页打开 `https://browser.silksecagent.singll.net/`。使用 `target=_blank` 和 `rel=noopener noreferrer`，不传递 WebUI token，继续使用共享浏览器独立认证；零会话时同样可用。主面板顶部留白44px，避免与刷新/返回按钮重叠。桌面1440px、移动390px、实际点击新标签页和无opener验证通过；目标站点登录仍由用户在共享浏览器中完成。证据：`out/secagent-audits/20261009-login-browser-ui/`。
+
 看板（Dashboard）= 全局面的正式名称，是跨会话持久的平台状态 UI，按 **DSH 原生信息架构**分散承载，不再是一个「Modal 装十一 tab」的单体。
 
 设计目标一句话：**让每个域的 UI 出现在 DSH 信息架构中它本来该在的位置，走与官方界面相同的路径；每个挂载点独立存活，一个挂掉不影响其他；DSH 升级时按清单定点复验，默认零改动。**

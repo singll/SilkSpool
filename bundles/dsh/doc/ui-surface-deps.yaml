@@ -201,6 +201,7 @@ surfaces:
     slots:
       - main                          # keyed 槽（root；保留键 conversation）→ DashboardPanel。**用 options.key**（P1 实测：keyed 只认 key，list 才认 id）
       - sidebar.panellist             # list 槽（owner props {size, active}）→ PanelIcon（用 options.id）
+      - shell.overlay                 # list/root → 右上角登录浏览器链接（新标签页；独立认证）
     services_consume:
       - layout.selectPanel            # ctx.layout.selectPanel(id) / selectPanel(null)
       - layout.beginNavigation        # ctx.layout.beginNavigation() → AbortSignal（防连点竞态）
@@ -229,6 +230,8 @@ surfaces:
       - "开放问题 §九 #1：P1 未做 URL hash 直达。selectPanel 为 DSH 原生内存态（刷新回会话，
          官方默认）；自管 hash 属自绘层，未采用。"
       - "开放问题 §九 #4：零会话时主面板（root scope）照常可达；右侧栏 tab 属 P2 范畴。"
+      - "2026-10-09：右上角常驻「登录浏览器」，target=_blank、rel=noopener noreferrer；
+         HTTPS 共享浏览器入口沿用独立认证，按钮不携带凭据；0.1.7-rc.2 shell.overlay 已核验。"
       - "19-ui-unify（2026-09-19）：改名「安全中心」；页头返回/刷新改 26×26 图标钮（opIcon back/refresh）；
          主面板 tab = 漏洞/资产/接口/事实/知识/学习/报告/审计（全部直接显示，无二级导航）；
          KPI 改五卡（待审批/待处理漏洞/待验证候选/运行中·阻塞任务/纪律告警）+ 库存副条，全部可点击跳链。"

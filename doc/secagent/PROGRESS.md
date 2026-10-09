@@ -26,12 +26,12 @@
 
 ## 二、最近进度结果
 
-### 2026-10-09 · WebUI入口中断已修复并完成域名浏览器验收
+### 2026-10-09 · WebUI右上角登录浏览器快捷入口已上线
 
-- 用户反馈网页不可访问。实测主服务PID1397770/NRestarts0、内部3081返回401，但edge inactive/dead、3080连接拒绝。journal证实北京时间00:26:10主服务stop连带停止edge，00:26:11仅主服务start；旧配置edge单向Requires主服务，主服务无Wants拉回入口。此前“主服务正常”不能代表WebUI可用。
-- 先启动edge恢复访问，再为主服务增加Wants=silksecagent-edge.service并daemon-reload；修正edge描述的旧上游端口。生产主服务未重启，PID保持；6相关服务active，edge PID1411121/NRestarts0，域名与LAN3080未登录均返回正常401。
-- UI冒烟新增--browser-url，将本机维护认证与浏览器实际访问入口分开；sec-v5-accept默认浏览器经过3080。生产以https://silksecagent.singll.net真实浏览器验收35/35，13包/界面全部ok，数据查询通过，page/console errors=0；临时账号已恢复并注销。
-- 新增真实systemd用户管理器隔离回归：旧配置主服务start后edge仍inactive的红例，修复后首次启动、stop/start、restart及edge单停后的主服务restart全通过；没有为测试重启生产。4文件固定摘要及文件级回退位于csai /opt/silkspool/dsh-upgrades/20261009-webui-edge-fix；本地out/secagent-audits/20261009-webui-edge-fix保留发布及最终状态记录、验收摘要。管理机bundle已同步；应用版本/业务预算未变，27号全案继续。
+- 右上角常驻“登录浏览器”，点击新标签页打开现有HTTPS共享浏览器，保留独立认证，不传WebUI token；零会话也可用。安全中心顶部增加留白，真实检查确认不遮挡刷新/返回按钮。
+- 经 https://silksecagent.singll.net 实际浏览器验收：1440px桌面和390px移动窗口可见；真实点击新标签页、原页保持、opener隔离及主面板控件不重叠通过，页面异常0。自动化拦截目标页正文以避开原生Basic Auth弹窗；真实目标另行GET返回401，认证保持。临时维护用户已还原并注销。
+- 单前端模块两落点已安装，源码回退保存在 /opt/silkspool/dsh-upgrades/20261009-login-browser-ui/previous。首次stop等待30秒超时后确认服务已停止，随后完成安装并启动；不冒称本批秒级切换。主服务PID1412257，edge/共享浏览器/xray均active；移动布局微调直接刷新生效，无第二次重启。
+- 相关面板8项回归通过；另有1项既有PanelIcon“无图标”断言失败，已用修改前HEAD复现，非本次回归，未改其行为。node语法与diff检查通过；生产截图及验收回执在out/secagent-audits/20261009-login-browser-ui/。本批仅完成浏览器快捷入口；27号全案仍未关账。
 
 ## 三、维护规则（通用，必须遵守）
 

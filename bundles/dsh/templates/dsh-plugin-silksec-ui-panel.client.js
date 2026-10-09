@@ -101,6 +101,27 @@ window.__ModuleLoader__.load({
       return 'none'
     }
 
+    // 全局登录入口：共享浏览器已有独立认证，新标签页沿用其登录流程。
+    function LoginBrowserShortcut() {
+      return el('a', {
+        href: 'https://browser.silksecagent.singll.net/',
+        target: '_blank',
+        rel: 'noopener noreferrer',
+        className: 'silksec-btn',
+        title: '在新标签页打开共享浏览器，登录目标网站',
+        'aria-label': '登录浏览器（新标签页）',
+        'data-silksec-surface': 'login-browser-shortcut',
+        style: {
+          position: 'fixed', top: 8, right: 52, zIndex: 60,
+          pointerEvents: 'auto', textDecoration: 'none',
+        },
+      },
+      el('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, 'aria-hidden': true },
+        el('rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }),
+        el('path', { d: 'M3 9h18M7 6.5h.01M10 6.5h.01' })),
+      '登录浏览器')
+    }
+
     // ── 主面板（main keyed 槽 occupant；通用渲染器，不感知任何域） ─────────────
     // 19-ui-unify §2.4/2.5/3.2：自有 chrome（40px 页头 + 图标钮）+ 频次分层 tab
     // （一线 4 视图 + 「更多」二级导航）；KPI 改「今日待办 + 风险暴露」五卡 + 库存副条。
@@ -236,7 +257,7 @@ window.__ModuleLoader__.load({
         { label: '工作区', value: wsCount, tab: 'tasks' },
       ]
 
-      return el('div', { style: { ...uiCore.styles.root, height: '100%' } },
+      return el('div', { style: { ...uiCore.styles.root, height: '100%', paddingTop: 44 } },
         el('div', { style: { ...uiCore.styles.header, minHeight: 40, marginBottom: 10, paddingBottom: 8, paddingRight: 44, borderBottom: '1px solid ' + uiCore.T.border } },
           el('div', { style: { minWidth: 0 } },
             el('div', { style: uiCore.styles.pageT }, '安全中心'),
@@ -305,6 +326,9 @@ window.__ModuleLoader__.load({
         disposers.push(slots.inject('sidebar.panellist', function () {
           return slots.register({ name: 'sidebar.panellist', id: 'silksec-dashboard', order: 30, label: '安全中心' }, PanelIcon)
         }))
+        disposers.push(slots.inject('shell.overlay', function () {
+          return slots.register({ name: 'shell.overlay', id: 'silksec-login-browser', order: 30 }, LoginBrowserShortcut)
+        }))
         return function () {
           disposers.forEach(function (d) { try { if (typeof d === 'function') d() } catch (e) {} })
         }
@@ -318,6 +342,7 @@ window.__ModuleLoader__.load({
     // 稳定导出面（供单测 / 降级探测）
     exports.DashboardPanel = DashboardPanel
     exports.PanelIcon = PanelIcon
+    exports.LoginBrowserShortcut = LoginBrowserShortcut
     exports.navigateToPanel = navigateToPanel
 
     return module.exports

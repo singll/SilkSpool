@@ -977,3 +977,12 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - eval新增authz-read-v2独立策略探针：受控7类新对象样例中，新方法TP1/FP0/FN0/TN3、环境异常3/3，旧法及无卡基线误报公开/共享资源2次；删策略读取后FN1、未知5，评测拒绝。生产六次配对共91次实验HTTP、另21次真值读取、模型token0，自动知识流转2 eligible/4 rejected；不计真实站点漏洞，不宣称跨漏洞族学习收益。
 - 实测发现评测版本都指向可覆盖最新报告，已修为每run独立文件并用红例锁定。六条本批旧引用按精确原件修复；一次新生产运行验证固定报告、异步知识引用与旧证据保持（20次实验HTTP+4次真值读取），版本eligible但未发布。
 - 相关exec85、endpoint/task176、eval41项通过，复用不受影响测试；17份生产回执已拉回验SHA256。证据out/secagent-audits/20261009-business-closure/，详见27号§15.121–124。Campaign全paused、预算200M/200M/50M不变；真实适用实验和完整WP09/全案未关账。
+
+## 二、最近进度结果
+
+### 2026-10-09 · WebUI入口中断已修复并完成域名浏览器验收
+
+- 用户反馈网页不可访问。实测主服务PID1397770/NRestarts0、内部3081返回401，但edge inactive/dead、3080连接拒绝。journal证实北京时间00:26:10主服务stop连带停止edge，00:26:11仅主服务start；旧配置edge单向Requires主服务，主服务无Wants拉回入口。此前“主服务正常”不能代表WebUI可用。
+- 先启动edge恢复访问，再为主服务增加Wants=silksecagent-edge.service并daemon-reload；修正edge描述的旧上游端口。生产主服务未重启，PID保持；6相关服务active，edge PID1411121/NRestarts0，域名与LAN3080未登录均返回正常401。
+- UI冒烟新增--browser-url，将本机维护认证与浏览器实际访问入口分开；sec-v5-accept默认浏览器经过3080。生产以https://silksecagent.singll.net真实浏览器验收35/35，13包/界面全部ok，数据查询通过，page/console errors=0；临时账号已恢复并注销。
+- 新增真实systemd用户管理器隔离回归：旧配置主服务start后edge仍inactive的红例，修复后首次启动、stop/start、restart及edge单停后的主服务restart全通过；没有为测试重启生产。4文件固定摘要及文件级回退位于csai /opt/silkspool/dsh-upgrades/20261009-webui-edge-fix；本地out/secagent-audits/20261009-webui-edge-fix保留发布及最终状态记录、验收摘要。管理机bundle已同步；应用版本/业务预算未变，27号全案继续。
