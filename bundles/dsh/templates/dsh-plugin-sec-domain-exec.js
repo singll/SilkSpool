@@ -96,10 +96,19 @@ export const EXEC_MANIFEST = {
   owns: {
     tables: [],
     files: ['data/tools.d/', 'data/results/', 'data/flows/', 'data/imports/', 'data/events/exec.jsonl', 'data/.http-executor-key',
-      'data/http-read-permits.json', 'data/.http-read-permit-uses/'],
+      'data/http-read-permits.json', 'data/.http-read-permit-uses/', 'data/single-account-profiles/'],
   },
   backend_transactional: false,
   commands: {
+    exec_review_anonymous_denial: {
+      actor: ['script', 'dashboard'],
+      schema: schema({ program_id: str({ pattern: '^[a-z0-9-]+$' }), profile_id: str({ minLength: 1 }),
+        baseline_run: str({ pattern: '^r[a-z0-9]+$' }), anonymous_run: str({ pattern: '^r[a-z0-9]+$' }),
+        repeat_run: str({ pattern: '^r[a-z0-9]+$' }),
+      }, ['program_id', 'profile_id', 'baseline_run', 'anonymous_run', 'repeat_run']),
+      idempotent: 'none', events: ['exec.anonymous.reviewed'], event_limit: 1, invariants: [], timeout_ms: 10000,
+      agent_note: '复用三份已签封GET（本人→匿名→本人），按宿主精确接口协议核验匿名明确拒绝及主体稳定，不发请求。只可产可靠阴性/未知/故障，不能产verified，不验证跨账号隔离。',
+    },
     exec_http_request: {
       actor: ['model', 'script', 'dashboard'],
       schema: schema({
@@ -260,6 +269,11 @@ export const EXEC_MANIFEST = {
     },
   },
   queries: {
+    exec_anonymous_evidence: {
+      actor: ['reactor', 'script', 'dashboard'],
+      params: schema({ decision_id: str({ pattern: '^r[a-z0-9]+$' }) }, ['decision_id']),
+      agent_note: '重验单账号匿名拒绝判定及三份HTTP签封；历史事实，不请求目标或证明当前状态。',
+    },
     exec_grep_result: {
       actor: ['model', 'dashboard', 'human', 'script'],
       params: schema({
@@ -332,6 +346,7 @@ export const EXEC_MANIFEST = {
     },
   },
   events: {
+    'exec.anonymous.reviewed': { payload: { type: 'object' }, redact: [] },
     'exec.http.completed': { payload: { type: 'object' }, redact: [] },
     'exec.oracle.decided': { payload: { type: 'object' }, redact: [] },
     'exec.authz.preflighted': { payload: { type: 'object' }, redact: [] },
@@ -951,7 +966,8 @@ function makeHandlers(opts) {
     }
     // No cookie jar; each call starts with exactly its own supplied identity.
     const record = seal(runDir, 'http-record.json', { version: 1, run_id: runId, program_id: args.program_id, created_at: started,
-      request: { url: args.url, method, body_digest: sha256(args.body || ''), identity_digest: sha256(JSON.stringify(canonicalHeaders(args.headers))) },
+      request: { url: args.url, method, body_digest: sha256(args.body || ''), identity_digest: sha256(JSON.stringify(canonicalHeaders(args.headers))),
+        header_names: Object.keys(canonicalHeaders(args.headers)) },
       ...(permitUse ? { read_permit: permitUse } : {}),
       proxy_digest: sha256(selectedProxy),
       ...(bound ? { egress_binding: { program: httpEgressBinding.program, hostname: httpEgressBinding.hostname,
@@ -1282,7 +1298,115 @@ function makeHandlers(opts) {
     await guardedAddress(record.target.url, record.program_id, 'GET')
     return record
   }
+  function singleAccountProfile(programId, profileId) {
+    let fd, raw
+    try {
+      const file = path.join(dataDir, 'single-account-profiles', programId + '.json')
+      if (fs.realpathSync(file) !== file) throw new Error()
+      fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      const st = fs.fstatSync(fd)
+      if (!st.isFile() || st.size > 65536 || st.mode & 0o022 || st.nlink !== 1
+        || ![0, process.getuid?.()].includes(st.uid)) throw new Error()
+      raw = fs.readFileSync(fd, 'utf8')
+    } catch { throwErr('E_EXEC_ORACLE_UNSUPPORTED', '单账号接口契约不可读取', null) }
+    finally { if (fd !== undefined) fs.closeSync(fd) }
+    let doc, p
+    try {
+      doc = JSON.parse(raw)
+      if (doc.version !== 1 || !Array.isArray(doc.profiles) || doc.profiles.length > 50
+        || new Set(doc.profiles.map(x => x.id)).size !== doc.profiles.length) throw new Error()
+      p = doc.profiles.find(x => x.id === profileId)
+      if (!p || p.method !== 'GET' || !/^https?:\/\//.test(p.url) || new URL(p.url).href !== p.url
+        || new URL(p.url).username || new URL(p.url).password || new URL(p.url).hash
+        || !['code_field', 'data_field'].every(k => /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(p[k] || ''))
+        || !['number', 'string'].includes(typeof p.success_code)
+        || !Array.isArray(p.auth_codes) || !p.auth_codes.length || p.auth_codes.length > 16
+        || p.auth_codes.some(x => !['number', 'string'].includes(typeof x) || x === p.success_code)
+        || !Array.isArray(p.subject_path) || !p.subject_path.length || p.subject_path.length > 5
+        || p.subject_path.some(x => !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(x) || ['constructor', 'prototype', '__proto__'].includes(x))
+        || typeof p.rationale !== 'string' || p.rationale.length < 20) throw new Error()
+    } catch { throwErr('E_EXEC_ORACLE_UNSUPPORTED', '单账号接口契约不符合受支持的明确拒绝协议', null) }
+    return { profile: p, digest: sha256(raw) }
+  }
+  function anonymousReview(args, p) {
+    const runs = [args.baseline_run, args.anonymous_run, args.repeat_run]
+    if (new Set(runs).size !== 3) throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '三段对照须独立执行', null)
+    const records = runs.map(id => readSealed(id, 'http-record.json'))
+    const [a, n, z] = records
+    if (records.some(r => r.program_id !== args.program_id || r.request.url !== p.url || r.request.method !== 'GET'
+      || r.request.body_digest !== sha256('') || r.proxy_digest !== a.proxy_digest)
+      || a.created_at > n.created_at || n.created_at > z.created_at || z.created_at - a.created_at > 3600000
+      || a.request.identity_digest !== z.request.identity_digest || a.request.identity_digest === n.request.identity_digest
+      || (a.task_id ?? null) !== (z.task_id ?? null)) {
+      throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '对照的请求、时间、出口或身份绑定不一致', null)
+    }
+    // The executor records request header names for proof that the negative control
+    // carries no identity-bearing header, rather than merely a different credential.
+    if (!Array.isArray(n.request.header_names) || n.request.header_names.some(k =>
+      !['accept', 'accept-language', 'accept-encoding', 'user-agent', 'content-type', 'agw-js-conv', 'x-requested-with'].includes(k))) {
+      throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '匿名对照没有可核验的无凭据请求头记录', null)
+    }
+    let outcome = 'inconclusive', reason = 'preconditions_not_proven'
+    const json = r => {
+      if (r.response.state !== 'observed' || r.hops.length !== 1 || r.response.status !== 200
+        || !/application\/(?:[\w.+-]*\+)?json\b/i.test(r.response.headers['content-type'] || '')) return null
+      try { return JSON.parse(r.response.body) } catch { return null }
+    }
+    const bodies = records.map(json), [ab, nb, zb] = bodies
+    const subject = body => p.subject_path.reduce((v, k) => v && Object.hasOwn(v, k) ? v[k] : undefined, body)
+    const s = subject(ab), end = subject(zb)
+    const stable = ab?.[p.code_field] === p.success_code && zb?.[p.code_field] === p.success_code
+      && ['string', 'number'].includes(typeof s) && String(s).length > 0 && String(s) === String(end)
+    if (records.some(r => r.response.state !== 'observed' || r.response.status === 407 || r.response.status === 429 || r.response.status >= 500)) {
+      outcome = 'infra_error'; reason = 'transport_or_environment_failure'
+    } else if (stable && (
+      // A 401/403 response can itself contain the protected body. Explicit transport
+      // denial is clean only when its payload is empty or an understood empty envelope.
+      [401, 403].includes(n.response.status) && (() => {
+        if (!n.response.body.trim()) return true
+        try {
+          const denial = JSON.parse(n.response.body)
+          return denial && p.auth_codes.includes(denial[p.code_field])
+            && (denial[p.data_field] === null || denial[p.data_field] === undefined) && subject(denial) === undefined
+        } catch { return false }
+      })()
+      || nb && p.auth_codes.includes(nb[p.code_field]) && (nb[p.data_field] === null || nb[p.data_field] === undefined))) {
+      outcome = 'valid_clean'; reason = 'anonymous_denied_owner_stable'
+    }
+    return { outcome, reason, subject_digest: stable ? sha256(String(s)) : null,
+      run_ids: runs, execution_cost: { attempted_http_hops: records.reduce((sum, r) => sum + r.hops.length, 0),
+        elapsed_ms: records.reduce((sum, r) => sum + r.elapsed_ms, 0) },
+      task_id: a.task_id ?? null, execution_session_id: a.session_id || null }
+  }
+  function readAnonymousEvidence(decisionId) {
+    const d = readSealed(decisionId, 'anonymous-decision.json')
+    if (d.kind !== 'anonymous-denial-v1') throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '判定类型不匹配', null)
+    const evaluated = anonymousReview(d.inputs, d.profile)
+    if (evaluated.outcome !== d.outcome || evaluated.subject_digest !== d.subject_digest
+      || JSON.stringify(evaluated.execution_cost) !== JSON.stringify(d.execution_cost)) throwErr('E_EXEC_EVIDENCE_UNTRUSTED', '判定与执行原件不一致', null)
+    return { ...d, historical_only: true }
+  }
   const commands = {
+    exec_review_anonymous_denial: async (args, repo) => {
+      const { profile, digest } = singleAccountProfile(args.program_id, args.profile_id)
+      const evaluated = anonymousReview(args, profile)
+      // Stable ID for this exact method and three runs. Repeated command/event delivery
+      // must not manufacture additional learning attempts.
+      const decisionId = 'r' + sha256(JSON.stringify({ program_id: args.program_id, profile_id: args.profile_id,
+        baseline_run: args.baseline_run, anonymous_run: args.anonymous_run, repeat_run: args.repeat_run,
+        profile_digest: digest })).slice(0, 40)
+      const dir = path.join(dataDir, 'results', decisionId)
+      let created = false
+      try { fs.mkdirSync(dir, { mode: 0o700 }); created = true }
+      catch (e) { if (e.code !== 'EEXIST') throw e }
+      if (created) seal(dir, 'anonymous-decision.json', { run_id: decisionId, decision_id: decisionId,
+        program_id: args.program_id, kind: 'anonymous-denial-v1', created_at: Date.now(), inputs: args,
+        profile, profile_digest: digest, ...evaluated })
+      const record = readAnonymousEvidence(decisionId)
+      return { data: { decision_id: decisionId, outcome: record.outcome, reason: record.reason },
+        events: [{ name: 'exec.anonymous.reviewed', payload: { decision_id: decisionId, program_id: args.program_id } }],
+        after: { decision_id: decisionId, outcome: record.outcome } }
+    },
     exec_http_request: async (args, repo, ctx) => {
       const r = await executeHttp(args, repo, ctx, selectProxy(args.proxy), args.follow_redirects !== false)
       const data = { run_id: r.run_id, state: r.response.state, status: r.response.status, elapsed_ms: r.elapsed_ms, hops: r.hops.length }
@@ -1958,6 +2082,7 @@ function makeHandlers(opts) {
     exec_authz_preflight: async (args) => readPreflight(args.preflight_id),
     exec_authz_decision: async (args) => readDecision(args.decision_id),
     exec_authz_evidence: async (args) => readDecisionEvidence(args.decision_id),
+    exec_anonymous_evidence: async (args) => readAnonymousEvidence(args.decision_id),
     exec_oracle_judge: async (args) => {
       const fn = ORACLES[String(args.oracle)]
       if (!fn) {

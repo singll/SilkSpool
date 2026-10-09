@@ -1030,6 +1030,7 @@ export const KNOW_MANIFEST = {
     'exec.run.completed': { handler: 'onExecRunCompleted', mode: 'async', as: 'reactor' },
     'exec.run.failed': { handler: 'onExecRunCompleted', mode: 'async', as: 'reactor' },
     'exec.http.completed': { handler: 'onHttpCompleted', mode: 'async', as: 'reactor' },
+    'exec.anonymous.reviewed': { handler: 'onAnonymousReviewed', mode: 'async', as: 'reactor' },
     'exec.oracle.decided': { handler: 'onOracleDecided', mode: 'async', as: 'reactor' },
     'know.episode.recorded': { handler: 'onEpisodeRecorded', mode: 'async', as: 'reactor' },
     // 21 号方案 §七 Feedback Core 合流：总线按 (event_id, source::pattern) 去重——
@@ -1185,6 +1186,13 @@ function makeHandlers(opts) {
       const code = r?.error?.code || 'E_BACKEND_UNAVAILABLE'
       if (['E_NOT_FOUND', 'E_EXEC_EVIDENCE_UNTRUSTED', 'E_VULN_EVIDENCE_TAMPERED'].includes(code)) return null
       throwErr(code, r?.error?.message || '学习技术来源无法读取', null, true)
+    }
+    if (row.source_event_name === 'exec.anonymous.reviewed') {
+      if (row.outcome !== 'valid_clean' || !row.exec_run_id || row.attempt_id !== `anonymous:${row.exec_run_id}`
+        || !refs.includes(`results/${row.exec_run_id}/anonymous-decision.json`)) return false
+      const d = await read('exec', 'anonymous_evidence', { decision_id: row.exec_run_id })
+      return d?.outcome === 'valid_clean' && d.program_id === row.program_id && d.decision_id === row.exec_run_id
+        ? { key: `anonymous:${d.program_id}:${d.decision_id}`, outcome: 'valid_clean' } : false
     }
     if (row.source_event_name === 'exec.oracle.decided') {
       if (!row.exec_run_id || row.attempt_id !== `decision:${row.exec_run_id}`
@@ -3285,6 +3293,27 @@ function makeHandlers(opts) {
       }, envelope)
     },
 
+    onAnonymousReviewed: async (envelope) => {
+      const p = envelope?.payload || {}
+      const result = await queryRef?.('exec', 'anonymous_evidence', { decision_id: p.decision_id }, { actor: 'reactor' })
+      if (!result?.ok) return { ok: false, error: result?.error || { code: 'E_EXEC_EVIDENCE_UNTRUSTED' } }
+      const d = result.data
+      if (d.decision_id !== p.decision_id || d.program_id !== p.program_id) {
+        return { ok: false, error: { code: 'E_EXEC_EVIDENCE_UNTRUSTED', message: 'single-account decision association mismatch' } }
+      }
+      return recordEpisode({
+        source_event_id: envelope.id, source_event_name: 'exec.anonymous.reviewed',
+        consumer_version: EPISODE_CONSUMER_VERSION, source_credibility: 'machine',
+        program_id: d.program_id, task_id: d.task_id ?? undefined,
+        exec_run_id: d.decision_id, attempt_id: `anonymous:${d.decision_id}`,
+        outcome: d.outcome, reason_code: d.reason,
+        evidence_refs: [`results/${d.decision_id}/anonymous-decision.json`, `results/${d.decision_id}/evidence-manifest.json`],
+        request_count: d.execution_cost.attempted_http_hops, duration_ms: d.execution_cost.elapsed_ms,
+        observed_at: d.created_at,
+        context: { method: 'anonymous-denial-v1', profile_id: d.inputs.profile_id, profile_digest: d.profile_digest,
+          historical_only: true, run_ids: d.run_ids, cost_basis: 'signed_attempted_http_hops' },
+      }, { ...envelope, session_id: d.execution_session_id })
+    },
     onOracleDecided: async (envelope) => {
       const p = envelope?.payload || {}
       if (!p.decision_id) return { ok: true, data: { skipped: true } }

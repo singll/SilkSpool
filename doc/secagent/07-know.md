@@ -1241,3 +1241,7 @@ WP08标签契约接线（本地待发布）：kb_import.tags经共用导入路�
 2026-10-08发布状态：固定1cce966累计包生产stats超过10秒，已完整回退dfd3b11，不能将本地终态审校/Reviewer/历史评测/解析归属及后续增量标记为上线。六服务七timer与原预算/Scope保持，回退后新NAS4145419c…（41库55.71秒/恢复6.55秒）、UI80/80通过；详情见27号§15.115。
 
 2026-10-08技术计分引用去重（本地785项通过，未部署）：核验正式来源后，同Program/Oracle decision或同独立审校原引用的跨版本episode只计一次；冲突引用降未知，费用与历史行保留。此为artifact级过渡计分，不证明不同引用即独立实验，版本采用/费用完整归因仍待完成，详见27号§15.117。
+
+### 2026-10-09 单账号匿名拒绝学习接线（本地，待发布）
+
+know订阅exec.anonymous.reviewed，先调exec.anonymous_evidence验证判定与全部HTTP原件，再记录attempt_id=anonymous:<decision_id>；业务去重吸收重复命令/重放。只有明确匿名拒绝且本人前后稳定可为valid_clean，公开/空数据/身份变化保留inconclusive，环境故障infra_error；不存在自动confirmed路径。评分技术真值重读签封，原件改写失效。当前不虚构artifact/version，未建立卡采用关联的单账号记录不算方法收益；原始HTTP事件不是另一次实验。生产状态待27号后续回填。

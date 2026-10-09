@@ -949,6 +949,64 @@ for (const mode of ['vulnerable', 'patched', 'public']) {
   })
 }
 
+for (const mode of ['denied', 'public', 'identity_changed', 'empty', 'rate_limited', 'denied_with_data', 'credentialed_control']) {
+  test(`WP02 single-account signed denial review ${mode}: actual responses → decision → learning`, async t => {
+    const { bus, dataDir } = makeEnv()
+    t.after(() => bus._internal.close())
+    fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: test-src\n    scope:\n      - 127.0.0.1\n')
+    bus.registry.register(buildKnowDomain({ dataDir, query: (...a) => bus.query(...a), dispatch: (...a) => bus.dispatch(...a) }))
+    let calls = 0
+    const server = http.createServer((req, res) => {
+      calls++
+      const owner = req.headers.authorization === 'Bearer owner'
+      res.setHeader('content-type', 'application/json')
+      if (!owner && mode === 'rate_limited') { res.statusCode = 429; res.end('{}'); return }
+      if (!owner && mode === 'denied_with_data') { res.statusCode = 403; res.end(JSON.stringify({ code: 700012006, data: { user_id: 'owned-user' } })); return }
+      const body = owner ? { code: 0, data: mode === 'empty' ? {} : { user_id: calls === 3 && mode === 'identity_changed' ? 'other' : 'owned-user' } }
+        : mode === 'public' ? { code: 0, data: { user_id: 'owned-user' } } : { code: 700012006, data: null }
+      res.end(JSON.stringify(body))
+    })
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    t.after(() => new Promise(resolve => server.close(resolve)))
+    const url = `http://127.0.0.1:${server.address().port}/profile`
+    const root = path.join(dataDir, 'single-account-profiles')
+    fs.mkdirSync(root)
+    fs.writeFileSync(path.join(root, 'test-src.json'), JSON.stringify({ version: 1, profiles: [{
+      id: 'profile-login', url, method: 'GET', code_field: 'code', success_code: 0, auth_codes: [700012006],
+      data_field: 'data', subject_path: ['data', 'user_id'], rationale: 'Own authenticated identity endpoint; explicit login rejection is the tested property.',
+    }] }), { mode: 0o600 })
+    const runs = []
+    for (const headers of [{ authorization: 'Bearer owner' }, mode === 'credentialed_control' ? { cookie: 'session=not-anonymous' } : {}, { authorization: 'Bearer owner' }]) {
+      const r = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url, headers, proxy: 'direct' }, { actor: 'script' })
+      assert.equal(r.ok, true, r.error?.message); runs.push(r.data.run_id)
+    }
+    const args = { program_id: 'test-src', profile_id: 'profile-login', baseline_run: runs[0], anonymous_run: runs[1], repeat_run: runs[2] }
+    const reviewed = await bus.dispatch('exec', 'review_anonymous_denial', args, { actor: 'script' })
+    if (mode === 'credentialed_control') {
+      assert.equal(reviewed.error?.code, 'E_EXEC_EVIDENCE_UNTRUSTED')
+      assert.equal(calls, 3)
+      return
+    }
+    assert.equal(reviewed.ok, true, reviewed.error?.message)
+    assert.equal(reviewed.data.outcome, mode === 'denied' ? 'valid_clean' : mode === 'rate_limited' ? 'infra_error' : 'inconclusive')
+    assert.equal(calls, 3, 'review reuses signed evidence and sends no target traffic')
+    const read = await bus.query('exec', 'anonymous_evidence', { decision_id: reviewed.data.decision_id }, { actor: 'script' })
+    assert.equal(read.ok, true, read.error?.message)
+    assert.equal(read.data.execution_cost.attempted_http_hops, 3)
+    await bus._internal.dispatcherTick()
+    const episodes = bus._internal.db().prepare("SELECT * FROM learning_episodes WHERE source_event_name='exec.anonymous.reviewed'").all()
+    assert.equal(episodes.length, 1)
+    assert.equal(episodes[0].outcome, reviewed.data.outcome)
+    const again = await bus.dispatch('exec', 'review_anonymous_denial', args, { actor: 'script' })
+    assert.equal(again.data.decision_id, reviewed.data.decision_id)
+    await bus._internal.dispatcherTick()
+    assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM learning_episodes WHERE source_event_name='exec.anonymous.reviewed'").get().n, 1)
+    assert.equal((await bus.dispatch('exec', 'review_anonymous_denial', { ...args, anonymous_run: runs[0] }, { actor: 'script' })).error?.code, 'E_EXEC_EVIDENCE_UNTRUSTED')
+    fs.appendFileSync(path.join(dataDir, 'results', runs[1], 'http-record.json'), 'tampered')
+    assert.equal((await bus.query('exec', 'anonymous_evidence', { decision_id: reviewed.data.decision_id }, { actor: 'script' })).error?.code, 'E_EXEC_EVIDENCE_UNTRUSTED')
+  })
+}
+
 test('27 L01: HTTP observations and failures reach learning without asserting technical outcomes', async t => {
   const { bus, dataDir, origin, setMode } = await authzFixture(t, 'public')
   assert.equal(bus.registry.register(buildKnowDomain({ dataDir, dispatch: (...a) => bus.dispatch(...a) })).ok, true)
