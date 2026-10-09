@@ -1,7 +1,7 @@
 [Unit]
-Description=SilkSecAgent xray passive scan (流量总线 v1：监听 7777，webhook → 127.0.0.1:7788)
-After=network-online.target silksecagent.service
-Wants=network-online.target
+Description=SilkSecAgent browser forwarding via proxy pool (7777 -> 8899; scan plugins disabled)
+After=network-online.target silksecagent.service silksec-proxy-rotator.service
+Wants=network-online.target silksec-proxy-rotator.service
 
 [Service]
 Type=simple
@@ -9,7 +9,11 @@ User=root
 WorkingDirectory={{BASE_DIR}}/xray
 # xray 只从可执行文件旁读主配置：把生成的默认配置安装到 /usr/local/bin/xray.yaml
 ExecStartPre=/bin/sh -c '[ -f /usr/local/bin/xray.yaml ] || cp {{BASE_DIR}}/xray/xray.yaml /usr/local/bin/xray.yaml'
-ExecStart=/usr/local/bin/xray webscan --listen 127.0.0.1:7777 --webhook-output http://127.0.0.1:7788/xray --json-output {{BASE_DIR}}/data/flows/xray-passive.json
+# 明确指定 webscan 配置；module.xray.yaml 的 Client.proxy 不控制此命令。
+# 每次启动禁用全部扫描插件；普通浏览器访问不能自动派生额外探测。
+ExecStartPre=/usr/bin/python3 {{BASE_DIR}}/dsh-xray-forward-config.py --source {{BASE_DIR}}/xray/config.yaml --output {{BASE_DIR}}/xray/browser-forward.yaml
+# 保留 webhook 落盘通道；固定 --json-output 会因旧文件存在导致重启循环。
+ExecStart=/usr/local/bin/xray --config {{BASE_DIR}}/xray/browser-forward.yaml webscan --listen 127.0.0.1:7777 --webhook-output http://127.0.0.1:7788/xray
 Restart=always
 RestartSec=10
 LimitNOFILE=65535

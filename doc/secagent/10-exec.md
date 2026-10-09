@@ -647,7 +647,7 @@ exec 域的运行依赖一批**平台层边缘资产**——它们不属于任�
 |---|---|---|
 | `silksec-shared-browser.service` | 常驻 Chromium（CDP **:9222**），持久化 profile=登录态，人机共用 | **浏览器共驾底座**：模型经 `@silksec/dsh-browser` 工具操作的就是这个实例；登录态观测回填 endpoint 域（04-endpoint C1） |
 | `@silksec/dsh-browser` fork | 上游 DSH 浏览器插件 fork（tarball + `dsh-browser-upstream.index.js` / `browser-manager.js` patch）；patch 注入 `SEC_FLOW_PROXY` 出口代理 | 模型工具面成员之一（投影规则同 17-llm-surface；fork 维护见 归档 migration-v4-to-v5 §九） |
-| 浏览器出口代理（`SEC_FLOW_PROXY` → xray :7777） | 浏览器全部流量经 xray 被动扫描（:7777 入口）→ webhook :7788 → 本域 `exec_flow_append` 落 flows/ | **7777 入口是 flows 数据的另一半来源**（§1.3.7 只写了 7788 落点）——浏览器会话产生的被动扫描发现同样进 flow 管道 |
+| 浏览器出口代理（Scope → `SEC_FLOW_PROXY` → xray :7777 → 8899池） | 2026-10-09改为纯转发：全部扫描插件关闭且`http.passive_mode=true`；webhook :7788 → 本域`exec_flow_append`保留统计 | 普通浏览不自动衍生扫描；统计不是HTTP原始请求或漏洞证据。免费池仍会轮换/重试，不能据此证明固定出口或逐跳预算 |
 | `silksecagent-edge` :9223 浏览器入口 | edge-Caddyfile：basicauth + browser.html 落地页 + DevTools 前端自托管反代 | 人机共用浏览器的 LAN 访问入口（探活进 01-bus §2.7 冒烟）；Web UI 主入口 :3080 的 Host/Origin 改写详见 归档 migration-v4-to-v5 §九 |
 | `oob/interactsh-server` | 已部署未启用（占位 `OOB_DOMAIN_TBD`，阻塞=公网 NS 委派） | OOB 带外验证通道（盲 SSRF/盲 RCE 回连证据）。证据形态 `oob:` 前缀与轮询归属见 02-vuln §四.7；启用前工具面须能感知"OOB 不可用"并降级 |
 | `silksec-intel.timer` | 每日 nuclei 模板更新（intel-refresh.sh → `~/nuclei-templates` → `data/intel/intel.jsonl` 追加一行版本记录） | **域外单写者声明**：intel.jsonl 由 systemd timer 写入（不经总线、无事件）——它不在本域 owns 内，`exec_intel_hunt` 是其**消费方**（模板库检索）；版本追溯经文件读取而非事件回放，01-bus §2.7 的 data/events 统一口径对它豁免 |
@@ -659,6 +659,10 @@ UA/Client Hints/platform/plugins/mimeTypes/WebGL使用浏览器原生实现，�
 `20261009-browser-load-fix`验收：关闭后备份两profile；primary/socend沿用原目录，恢复扣子正文323/3053字，primary“新建项目”可见且仍登录；截图、画面推流、鼠标输入、两DevTools入口HTTP200通过。默认模式/原生API/按钮/Canvas/截图/Scope拒绝/持久Cookie重启及页面重载集成通过。旧`20261009-browser-native-release`失败事实保留：其网页兼容未通过，primary额外5条内存Cookie未保留；本次没有重置profile或清Cookie。旧源码、profile和新回执在受限release目录，不向git写入账号数据；不宣称平台风控放行保证。
 
 **浏览器域名入口验收（2026-10-09）**：旧`/serve_rev/*`返回`302 /`与`Cache-Control: no-store`，用户从管理页获取当前`/p/<name>/devtools/inspector.html`链接，避免保留已撤外部前端或失效target。profile/json与管理列表请求失败显示原因并按5/8秒周期恢复。`20261009-browser-edge-fix`通过真实HTTPS域名临时Basic账号验证首页、两profile inspect资源/WebSocket、旧路径跳转及模拟502恢复；临时账号已移除，未认证仍401。本地CDP/端口200不足以替代此链路验收。
+
+**2026-10-09出口事故与修正**：现役xray1.9.11的`webscan`实际读取工作目录`config.yaml`，不受`module.xray.yaml Client.proxy`控制。扫描/mitm代理空值、多插件开启，今日实例累计74,898次扫描HTTP、153个扫描URL；这独立于Campaign暂停和正式executor38次direct记录，不能宣称全部实际流量已受任务预算约束。修复为`dsh-xray-forward-config.py`每次启动派生`browser-forward.yaml`：插件全关闭、`http.passive_mode=true`、http.proxy与mitm.upstream_proxy均为8899；原CA/限制/配置原件保留，不回退直连。仅关插件的真实反例仍产生/index.php探测，passive_mode修复后无额外请求。去除固定json-output以防已存在文件导致重启失败，webhook通道仍由exec域唯一写入；当前旧统计末值未刷新，新增零计数以journal为准。生成失败拒绝启动，不加载扫描默认配置。
+
+配置3项、真实xray转发/故障禁止直连集成1项通过；生产7777→8899 HTTPS回显成功（显式信任现役CA），新journal扫描计数0（旧webhook统计未刷新）。免费轮换池页面验收仍有CDN CORS/超时，固定可信会话出口未实现；不能把出口恢复等同验证码恢复或IP解封。证据`dsh-upgrades/20261009-egress-containment/`，上线首次固定输出文件冲突及修正保留。人机profile与Scope保持，未重启浏览器。
 
 **不动清单的边界**：上表资产出问题时（浏览器崩/OOB 启用/intel.jsonl 格式变化）的处置先走[18号](18-backup-and-maintenance.md)变更前备份流程，平台资产历史部署细节见归档 migration-v4-to-v5 §九，不改域契约；域文档只在耦合点语义变化时同步本表。
 

@@ -10,7 +10,7 @@
 - **真实漏洞发现能力专项**：[27 号方案](27-business-quality-and-capacity-plan-2026-09-30.md)已按用户澄清重新审查，**累计业务及WP03输入计量修复已部署，默认150k只读闭环通过，暂不扩大**。仅以真实漏洞数量、技术质量和发现效率评价，撤销提交/accepted/赏金门槛；重点为真实请求、假设路由、可靠执行、候选丢失/误抑制、技术判定和知识实效。保留 12 个工作包、15 组技术验收；0.1.7 升级链已关账，移交缺陷继续纳入；本轮仅发布业务增量。
 - **DSH 0.2.0 研究与升级计划**：[26 号方案](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)已完成调研，**待实施**；建议从 0.1.7-rc.2 直接升 0.2.0-rc.2，U3 前须旧链 P8 关账——**已满足（P8 于 2026-09-30 关账）**。当前生产版本与旧升级链状态不因本计划改变。
 - **Phase 状态**：**Phase 0–5 全部完成并关账**；迁移链已结束；发现能力整改由27号专项继续推进。
-- **当前运行**：D09评审修复已发布，DSH0.1.7-rc.2；共享浏览器primary（9222）/socend（9224）已修复上批网页挂起，默认恢复headless-shell，PID2282367/2282571，active/NRestarts0。扣子正文、截图、CDP推流/输入与DevTools入口均通过，primary仍登录；入口 `/p/primary/`、`/p/socend/`。Campaign原暂停/预算未作变更。
+- **当前运行**：D09评审修复已发布，DSH0.1.7-rc.2；共享浏览器primary（9222）/socend（9224）已修复上批网页挂起，默认恢复headless-shell，PID2282367/2282571，active/NRestarts0。扣子正文、截图、CDP推流/输入与DevTools入口均通过，primary仍登录；入口 `/p/primary/`、`/p/socend/`。现已关闭xray隐式扫描并接回8899池；免费池网页稳定性未通过（见§二）。Campaign原暂停/预算未作变更。
 - **旧升级关账基线**：DSH **0.1.7-rc.2**（2026-09-27 17:29:26Z U3 生产切换，P6b；**2026-09-30 P8 关账（用户指令提前）**——U4b 只读巡检全绿 + 新冻结点 `c85f3b9f…` + `preserve_after_resume ok=true`；关账后 MainPID **922156**、NRestarts=0、6 单元 active、15 域、accept2b **PASS=80 FAIL=0**、journal err=0；会话 1767（V4））。P7 巡检 1（09-29）+ P8 巡检 2（09-30）均全绿；旧基线 0.1.5-rc.2 履历见历史归档。
 - **最近一次全面检查**：[archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI；**四轮修复全部落地验收，结论已全部回填各模块，2026-09-22 归档**，见其 §十一）。
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
@@ -26,11 +26,14 @@
 
 ## 二、最近进度结果
 
-### 2026-10-09 · 浏览器域名入口与旧inspect链接修复（已部署）
+### 2026-10-09 · 直连流量审计、停止隐式扫描并恢复代理池转发（已部署，池稳定性未通过）
 
-- 用户报browser域名502；网关90分钟日志显示旧`/serve_rev/@.../inspector.html`曾502，最近另有上批停机导致的profile/json失败，当前管理/列表/新DevTools资源200。未获得用户完整URL，不能断言本次报错一定来自旧链接；为旧路径补`302 → /`并禁缓存，回管理页取得重启后的现役target链接。
-- 管理页/profile列表增加非200及JSON错误展示、定时恢复；不再把502作为JSON解析异常后无提示。仅两文件热更新及Caddy reload，未重启浏览器、未改Cookie/Scope/账号。
-- change `20261009-browser-edge-fix`：使用随机临时Basic账号经真实`https://browser.silksecagent.singll.net`完成登录首页200、旧链接302、primary/socend inspect资源0失败且各自WebSocket连接、模拟502后自动恢复。临时账号每轮finally移除、原认证保持，未认证仍401。Caddy2.6重定向首版参数解析不符已修正为显式匹配器，标题断言允许DevTools带站点后缀。源码/管理模板/生产落点一致，旧文件与5项验收回执封存上述release。
+- 验证码故障已与入口502区分：用户确认inspect可打开；真实Firefox/Chromium均可显示远程页面。人工点击send_code返回HTTP200/error_code7“系统繁忙”，本机浏览器同样失败；未证明IP封禁，不重试短信或绕过限制。
+- 发现平台层xray异常：今日00:02启动的实例累计`num_sent_http_requests=74898`、扫描URL153；日志processing中code.coze.cn85、www.coze.cn9，其余含字节/美团依赖。累计扫描计数不能逐条归因到验证码或某个主机。正式执行器今日38次direct HTTP，三个Campaign仍paused、运行task/worker均0，不能据此忽略域外扫描。
+- 根因：webscan实际加载`xray/config.yaml`（扫描/转发代理均空、parallel30/max_qps500、多扫描插件开启），原先改过的`module.xray.yaml Client.proxy=8899`没有控制此命令。22:42:39停止xray遏制新增探测。受管浏览器Scope只能约束交给xray的原始连接，不能证明其衍生请求仍经过Scope/任务预算；旧“全部受控”结论需收窄。
+- change `20261009-egress-containment`：新增启动配置生成器，明确`--config browser-forward.yaml`、所有插件disabled、`http.passive_mode=true`、扫描/转发两代理均8899，不回退直连。隔离反例证明仅关插件仍会额外GET /index.php；passive_mode后一次输入仅一次转发，上游关闭返回502且受控目标直连计数0。3项配置测试+1项真实xray集成通过。原始配置/统计受限封存，不清账号/Cookie/Scope，不改域owns或池文件。
+- 修复重启缺陷：固定`--json-output xray-passive.json`遇旧文件会退出，首轮生产触发重启循环，随后移除重复文件输出，原件保留，保留webhook→exec通道（旧统计末值未刷新，新增零计数以journal为准）；最终服务恢复。配置/回执位于上述release。未把首次失败记成成功。
+- 代理池本来一直active；现已接上浏览器`Scope→7777→8899`。独立HTTPS出口回显与直接出口不同，7777使用现役CA验证通过，新journal扫描计数0（旧webhook统计未刷新）。免费随机池实际页面验收出现CDN CORS失败/导航超时，不能宣称登录可用、稳定会话或IP解封；固定可信出口仍待配置，不通过换IP重试受限验证码。仅恢复出口链和停止额外扫描，不恢复自动业务放量。
 
 ## 三、维护规则（通用，必须遵守）
 

@@ -532,3 +532,9 @@ systemctlIsActive(unit) / systemctlStartNoBlock(unit)   // 系统调用封装
 后续本地修正（待安装）：DNS TTL仅限制新连接准入，持久intent后拨号前和发送上游CONNECT前均检查；已准入固定连接遵守原租约和relay总时限，不因DNS TTL到期提前断开。11项batch/7项connect通过，含审计耗时过期零拨号负例，见27号§15.32。
 
 2026-10-05 admission版本8900cfc已安装（pilot-tools/20261005-dns-admission；NAS f9a27121…；33项远端回环/恢复通过）。单次扣子platforms GET经固定代理/TLS校验返回HTTP200/code0及6个平台，一次上游CONNECT，无重试。仅证明这次业务通路可用，不证明长期稳定或真实出口IP；详见27号§15.33。
+
+### 2026-10-09 浏览器出口接回与实际边界
+
+代理池/8899服务和定时刷新一直存在；先前浏览器经7777 xray的webscan配置未接池，module.xray.yaml中Client.proxy不影响该命令。平台修复现在将扫描/转发出口明确指定8899，并关闭全部xray插件、启用http.passive_mode，不向proxy域五文件直写，不扩展Scope。详见10号§2.7与PROGRESS本批记录。
+
+生产HTTPS回显证明两跳链可用且观测出口与direct不同，不证明任意目标健康。免费随机池实际页面仍出现CDN资源错误与导航超时；本批不修改原-r1/rotate-on-error语义，不声称会话固定或内部尝试可计量。验证码error_code7以及本机同样失败不能证明IP封禁；不得将换出口当作受限目标重试机制。后续登录会话需要固定可信出口，受控测试仍须保持目标预算和退避。

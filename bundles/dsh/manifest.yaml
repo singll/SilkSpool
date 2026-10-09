@@ -78,8 +78,9 @@ templates:
   - silksec-proxy-refresh.service
   # --- 共享浏览器常驻（CDP 9222 持久登录态，LAN 经 edge :9223 basicauth）---
   - silksec-shared-browser.service
-  # --- xray 被动扫描（流量总线 v1）---
+  # --- xray 浏览器纯转发（禁衍生扫描，出口8899）---
   - silksec-xray.service
+  - dsh-xray-forward-config.py
   # --- 代理池 dsh 原生插件（替代 MCP 模式）---
   - dsh-plugin-proxy-pool.js
   - dsh-plugin-proxy-pool.patch.yml
