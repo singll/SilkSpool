@@ -1425,7 +1425,8 @@ function makeHandlers(opts) {
     if (c.budget_tokens == null || Number(c.budget_tokens) <= 0) return false
     const windowMs = (Number(c.budget_window_days) || 7) * 86400000
     const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
-    return { low: Number(usage.committed_tokens) < Number(c.budget_tokens) * 0.8, usage }
+    return { low: Number(usage.committed_tokens) < Number(c.budget_tokens) * 0.8
+      && Number(usage.lifetime_spent_tokens) + Number(usage.reserved_tokens) < Number(c.budget_tokens), usage }
   }
 
   // 最近一次降级事件：{ reason, at }；降级后的 llm_restored 视为恢复起点。
@@ -1470,7 +1471,8 @@ function makeHandlers(opts) {
       if (c.status !== 'reviewing' || c.budget_tokens == null || Number(c.budget_tokens) <= 0) return events
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, now - windowMs)
-      if (Number(usage.committed_tokens) < Number(c.budget_tokens) * 0.8) {
+      if (Number(usage.committed_tokens) < Number(c.budget_tokens) * 0.8
+        && Number(usage.lifetime_spent_tokens) + Number(usage.reserved_tokens) < Number(c.budget_tokens)) {
         repo.updateCampaign(c.id, { status: 'active' }, 'reviewing')
         const cp = writeCheckpoint(repo, c.id, 'status_recovered', `预算水位回落（已用及在飞 ${usage.committed_tokens}/${c.budget_tokens} < 80%），自动恢复 active（autonomy 保持 L1，升 L2 走审批）`, { ...usage, budget_tokens: Number(c.budget_tokens) })
         events.push(...cp.events)
@@ -1766,7 +1768,8 @@ function makeHandlers(opts) {
     if (campaign.budget_tokens != null && Number(campaign.budget_tokens) > 0) {
       const windowMs = (Number(campaign.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(campaign.id, Date.now() - windowMs)
-      budgetRemainingRatio = Math.max(0, 1 - (usage.committed_tokens / Number(campaign.budget_tokens)))
+      budgetRemainingRatio = Math.max(0, 1 - (Math.max(usage.committed_tokens,
+        usage.lifetime_spent_tokens + usage.reserved_tokens) / Number(campaign.budget_tokens)))
     }
     return { gaps, strategies, strategies_by_program: true, scores, candidates, activeTaskCount, budgetRemainingRatio }
   }
@@ -1838,7 +1841,7 @@ function makeHandlers(opts) {
     const windowMs = (Number(c.budget_window_days) || 7) * 86400000
     const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
     const estimate = Number(draftCount || 0) * CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT
-    if (Number(usage.committed_tokens) + estimate <= Number(c.budget_tokens)) return { blocked: false, usage }
+    if (Math.max(Number(usage.committed_tokens), Number(usage.lifetime_spent_tokens) + Number(usage.reserved_tokens)) + estimate <= Number(c.budget_tokens)) return { blocked: false, usage }
   repo.insertCheckpoint({ campaign_id: c.id, kind: 'budget_low', summary: `专项预算触顶：窗口已用及在飞 ${usage.committed_tokens}/${c.budget_tokens} tokens（本单预估 ${estimate}），停派`, payload: usage })
   // 30 号补丁：budget_low 降级补 autonomy_change 留痕（reason=budget_low），
   // 水位回落 <80% 后由 autoRecover 自动升回 L2——否则与回升机制振荡。
@@ -1846,7 +1849,7 @@ function makeHandlers(opts) {
     repo.updateCampaign(c.id, { autonomy: 1 })
     repo.insertCheckpoint({ campaign_id: c.id, kind: 'autonomy_change', summary: '专项预算将触顶，L2 自动降级为 L1（水位回落 <80% 后自动升回 L2）', payload: { reason: 'budget_low' } })
   }
-    return { blocked: true, code: 'E_CAMPAIGN_BUDGET_LOW', message: `专项 #${c.id} 窗口预算不足（已用及在飞 ${usage.committed_tokens}/${c.budget_tokens}）` }
+    return { blocked: true, code: 'E_CAMPAIGN_BUDGET_LOW', message: `专项 #${c.id} 窗口或累计预算不足（窗口 ${usage.committed_tokens}，累计及在飞 ${usage.lifetime_spent_tokens + usage.reserved_tokens}/${c.budget_tokens}）` }
   }
 
   function hasRecentCheckpoint(repo, campaignId, kind, withinMs) {
@@ -1948,7 +1951,8 @@ function makeHandlers(opts) {
     if (!goalStopped && (c.status === 'active' || c.status === 'reviewing') && c.budget_tokens != null && Number(c.budget_tokens) > 0) {
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
-      if (c.status === 'active' && Number(usage.committed_tokens) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
+      if (c.status === 'active' && Math.max(Number(usage.committed_tokens),
+        Number(usage.lifetime_spent_tokens) + Number(usage.reserved_tokens)) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
       // 23 号方案 §3.6 步骤 1.5：达 80% 水位自动提请 campaign-budget-extend（平滑爬坡，零人工介入；
       // 提请幂等由 12h checkpoint 防抖 + approval 同 (kind,subject) pending 去重双保险）
       // 38 号补丁：policy.auto_extend=false 的专项（如「候选验证清空」用多余额度）不自动爬坡——
@@ -2019,7 +2023,7 @@ function makeHandlers(opts) {
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
       const estimate = allowed.length * CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT
-      if (Number(usage.committed_tokens) + estimate > Number(c.budget_tokens)) {
+      if (Math.max(Number(usage.committed_tokens), Number(usage.lifetime_spent_tokens) + Number(usage.reserved_tokens)) + estimate > Number(c.budget_tokens)) {
         writeCheckpoint(repo, c.id, 'budget_low', `专项预算将触顶：窗口已用及在飞 ${usage.committed_tokens}/${c.budget_tokens} tokens，本 tick 停派`, { usage })
         // 30 号补丁：budget_low 降级补 autonomy_change 留痕（reason=budget_low），
         // 水位回落 <80% 后由 autoRecover 自动升回 L2——否则与回升机制振荡。
@@ -2027,7 +2031,7 @@ function makeHandlers(opts) {
           repo.updateCampaign(c.id, { autonomy: 1 })
           writeCheckpoint(repo, c.id, 'autonomy_change', '专项预算将触顶，L2 自动降级为 L1（水位回落 <80% 后自动升回 L2）', { reason: 'budget_low' })
         }
-        if (explicit) throwErr('E_CAMPAIGN_BUDGET_LOW', `专项 #${c.id} 窗口预算不足（已用及在飞 ${usage.committed_tokens}/${c.budget_tokens}）`, '等待窗口滚动或 campaign-budget-extend 审批后重试', false)
+        if (explicit) throwErr('E_CAMPAIGN_BUDGET_LOW', `专项 #${c.id} 窗口或累计预算不足`, '累计额度耗尽须获新的明确预算授权，窗口滚动不返还累计额度', false)
         result.dropped.push({ reason: 'budget_low' })
         return result
       }
@@ -2128,16 +2132,8 @@ function makeHandlers(opts) {
             if (r && r.ok) {
               const cp = writeCheckpoint(repo, c.id, 'budget_extend_request', `预算达 80% 水位，已自动提请 campaign-budget-extend（+${a.add} tokens）`, { add_tokens: a.add, spent: a.spent, request_id: r.data?.request_id ?? null })
               events.push(...cp.events)
-              // 35 号补丁：自动爬坡免人审——Supervisor 提请立即自动批准（SEC_CAMPAIGN_BUDGET_AUTO_APPROVE=off 可关）。
-              // 爬坡本身受 approval 校验约束（单次 ≤ 原预算×2 且非 reviewing 须 ≥80% 水位），风险有界；
-              // 取消人审延迟消除「reviewing 等批准空转免费额度」窗口（9-25 凌晨 9.5h 停摆实证）。
-              if (String(process.env.SEC_CAMPAIGN_BUDGET_AUTO_APPROVE || 'on') !== 'off' && r.data?.request_id) {
-                const d = await dispatchRef('approval', 'decide', { id: r.data.request_id, decision: 'approve', operator: 'auto-campaign-budget', note: 'Supervisor 自动爬坡（35 号补丁免人审）' }, { actor: 'system' })
-                if (d && d.ok) {
-                  const cp2 = writeCheckpoint(repo, c.id, 'milestone', `campaign-budget-extend 自动批准 #${r.data.request_id}：预算 +${a.add}（SEC_CAMPAIGN_BUDGET_AUTO_APPROVE）`, { approval_id: r.data.request_id, add_tokens: a.add })
-                  events.push(...cp2.events)
-                } else log(`专项 #${c.id} 预算延长自动批准失败（保留人工审批通道）: ${d?.error?.code} ${d?.error?.message}`)
-              }
+              // D09: a budget request is not authorization to spend more. The old
+              // AUTO_APPROVE env no longer lets the supervisor approve its own request.
             } else log(`专项 #${c.id} 预算延长提请未成功: ${r?.error?.code} ${r?.error?.message}`)
           } catch (e) { log(`专项 #${c.id} 预算延长提请失败: ${e?.message}`) }
         }
@@ -2910,7 +2906,14 @@ function makeHandlers(opts) {
         } else {
           const reason = repo.reserveTaskBudget(t, Number(args.now), budgetConfigOf(repo).max_tokens)
           if (reason) {
-            repo.transitionTask(t.id, { status: 'blocked', blocked_reason: reason, started_at: null }, 'running')
+            // D09：专项累计/在飞额度暂时不足属可恢复条件（在飞预留结算或窗口消费到期后即可放行），
+            // 不应把子任务永久 blocked；退回 queued 让后续 tick 在额度释放后重新认领。
+            // 每-program 硬预算耗尽仍需人工配置放行，保持 blocked。
+            if (reason === 'E_CAMPAIGN_BUDGET_LOW') {
+              repo.transitionTask(t.id, { status: 'queued', started_at: null }, 'running')
+            } else {
+              repo.transitionTask(t.id, { status: 'blocked', blocked_reason: reason, started_at: null }, 'running')
+            }
             blocked.push({ task_id: t.id, reason })
           } else tasks.push(t)
         }
@@ -3056,6 +3059,10 @@ function makeHandlers(opts) {
       const missing = await checkCampaignPrograms(c.program_ids)
       if (missing.length) throwErr('E_CAMPAIGN_PROGRAM_UNRESOLVED', `绑定 program 未授权：${missing.map((m) => `${m.program_id}(${m.reason})`).join(', ')}`, '先在 scope 中登记并确保未过期（INV-C1）')
       if (Number(c.autonomy) >= 2 && (!(Number(c.budget_tokens) > 0) || !c.approval_id)) throwErr('E_CAMPAIGN_AUTONOMY_GATE', 'autonomy=2 缺 budget_tokens 或 approval_id（INV-C4）', '补齐后激活')
+      if (c.budget_tokens != null) {
+        const usage = repo.campaignUsage(c.id, 0)
+        if (usage.committed_tokens >= Number(c.budget_tokens)) throwErr('E_CAMPAIGN_BUDGET_LOW', '专项累计及在飞消费已达批准额度，不能激活', null)
+      }
       const from = c.status
       repo.updateCampaign(c.id, { status: 'active' }, from)
       return {
@@ -3208,6 +3215,9 @@ function makeHandlers(opts) {
       if (Number(args.autonomy) >= 2 && (!(Number(c.budget_tokens) > 0) || !args.approval_id)) throwErr('E_CAMPAIGN_AUTONOMY_GATE', 'autonomy=2 缺 budget_tokens（INV-C4）', '先补齐预算')
       const from = c.status
       const activate = ['draft', 'paused'].includes(c.status)
+      if (activate && c.budget_tokens != null && repo.campaignUsage(c.id, 0).committed_tokens >= Number(c.budget_tokens)) {
+        throwErr('E_CAMPAIGN_BUDGET_LOW', '专项累计及在飞消费已达批准额度，升档不能激活', null)
+      }
       repo.updateCampaign(c.id, { autonomy: Number(args.autonomy), approval_id: args.approval_id, ...(activate ? { status: 'active' } : {}) }, from)
       return {
         data: { campaign_id: c.id, status: activate ? 'active' : c.status, autonomy: Number(args.autonomy), from },
@@ -3222,6 +3232,9 @@ function makeHandlers(opts) {
       const c = repo.findCampaignByName(String(args.name))
       if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.name}`, '核对 campaign_list')
       const next = Number(c.budget_tokens || 0) + Number(args.add_tokens)
+      if (!Number.isSafeInteger(next) || !Number.isSafeInteger(args.add_tokens) || args.add_tokens > Number(c.budget_tokens) * 2) {
+        throwErr('E_INVARIANT', '预算增量须为安全整数且不超过当前额度两倍', null)
+      }
       repo.updateCampaign(c.id, { budget_tokens: next })
       writeCheckpoint(repo, c.id, 'milestone', `campaign-budget-extend 批准 #${args.approval_id}：预算 +${args.add_tokens} → ${next}`, { approval_id: args.approval_id })
       return { data: { campaign_id: c.id, budget_tokens: next } }

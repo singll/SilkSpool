@@ -38,6 +38,7 @@ NON_TOOL_TOKENS = {
     "proxy_pass", "proxy_cache", "proxy_host",  # Nginx 反向代理指令（rules/techniques 内）
     "exp_card", "exp_cards",                    # know 域 artifact_kind 枚举值 / 存储子仓表名
     "approval_hint",                            # 失败信封字段（needs_approval/approval_hint）
+    "asset_enum",                               # task kind / objective source=asset_enum 标签，非 asset 域工具
 }
 
 # 常见字段后缀（`{域前缀}_{字段}` 形，非动词）：run_id / task_id / evidence_path / vuln_type 等

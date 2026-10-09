@@ -1525,3 +1525,13 @@ Program创建门禁、专项派发、规划剩余额度、预算停止及自动�
 `hypotheses_enqueue`通过endpoint.request_get读取当前签封响应分类，auth_required/environment_blocked/business_error/transport_error/evidence_unavailable返回added=0及deferred，不生成可执行假设。`validateRequestIntent`在派发、结构化创建和认领重查中拒绝这些状态（E_REQUEST_PRECONDITION），故存量草稿不能绕过；unknown仍允许有界探索。错误观察不变成技术阴性，也不删除请求证据。
 
 真实HTTP/签封/入库/旧队列派发及篡改边界联合176项通过。生产15原件分类准确，33条已确认业务失败且未分配task的草稿按可重建授权留完整回执后清理，队列68→35；剩余队列未被声明全部可测。原Campaign暂停及200M/200M/50M保持。7e00291消费窗口与在飞预算统一已合批上线；D09默认自动扩额缺累计上限仍未完成，不据本批恢复Campaign。详见27号§15.121–124。
+
+### 7.42 2026-10-09 · D09 专项累计预算硬上限与预算批准人工化（本地完成，待部署）
+
+专项预算从「窗口滚动可重复用」改为**累计硬上限**：统一消费口径 = `max(窗口已记费用+未结预留, 全周期已记费用+未结预留)`，即窗口滚动不返还累计额度。认领准入（`reserveTaskBudget`）、派发预算检查、规划剩余额度、预算停止与自动恢复、`campaign_activate`/`campaign_autonomy_apply` 全部改用该口径（`campaignUsage` 新增 `lifetime_spent_tokens`）。累计及在飞已达批准额度的专项不能激活/升档，窗口过期也不会被自动恢复复活。
+
+`campaign-budget-extend` 等预算类审批不再允许 `system` 自动批准：`decideValid` 要求 `human`/`dashboard` actor，移除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 自动批准路径（Supervisor 仍可在 80% 水位提请，但须人工放行）。`campaign-budget-extend` effect 增加安全整数与「≤ 原预算×2」校验。
+
+专项额度**暂时**不足（在飞预留未结或窗口消费到期）时，认领**延后回 queued** 而非永久 `blocked`，待额度释放后由后续 tick 重新认领；每-program 硬预算耗尽与专项停用仍保持 `blocked`。
+
+task/approval 167 项、全域 802/802 通过；见 27 号 §15.127。本项不在固定 56bca28 发布包中，未部署生产。

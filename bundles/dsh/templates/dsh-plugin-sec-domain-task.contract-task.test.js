@@ -1991,7 +1991,7 @@ test('23 §3.6: Supervisor 预算达 80% 自动提请 campaign-budget-extend', a
   assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_extend_request'").get(cid), '应自动提请预算延长并留痕')
 })
 
-test('35 号补丁: Supervisor 提请后自动批准（SEC_CAMPAIGN_BUDGET_AUTO_APPROVE 默认 on）', async () => {
+test('27 D09: Supervisor cannot approve its own budget increase, including the old default', async () => {
   const { bus } = makeEnv()
   const appReg = registerApprovalStub(bus)
   assert.equal(appReg.reg.ok, true, JSON.stringify(appReg.reg.error))
@@ -2006,10 +2006,77 @@ test('35 号补丁: Supervisor 提请后自动批准（SEC_CAMPAIGN_BUDGET_AUTO_
     .run(Date.now(), Date.now(), cid)
   const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
   assert.equal(tk.ok, true, tk.error?.message)
-  assert.equal(appReg.stub.decisions.length, 1, '提请后应立即自动批准一次')
-  assert.equal(appReg.stub.decisions[0].decision, 'approve')
-  assert.equal(appReg.stub.decisions[0].operator, 'auto-campaign-budget')
-  assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='milestone' AND summary LIKE '%自动批准%'").get(cid), '自动批准须留 milestone 审计')
+  assert.equal(appReg.stub.decisions.length, 0, 'a supervisor suggestion cannot authorize its own spending')
+  assert.equal(bus._internal.db().prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(cid).budget_tokens, 100000)
+})
+
+test('27 D09: expired-window spend still consumes the approved lifetime limit and prevents reactivation', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '累计上限', program_ids: ['test-src'], autonomy: 1, budget_tokens: 100000,
+    goal_spec: { stop_conditions: ['done'] },
+  }, { actor: 'model' })
+  assert.equal(c.ok, true, c.error?.message)
+  const cid = c.data.campaign_id
+  const db = bus._internal.db(), old = Date.now() - 10 * 86400000
+  const task = db.prepare("INSERT INTO tasks(program_id,objective,status,created_at,updated_at,spent_tokens,campaign_id) VALUES('test-src','old spend','done',?,?,100000,?)").run(old, old, cid).lastInsertRowid
+  db.prepare("INSERT INTO task_bill_items(receipt_key,task_id,run_id,tokens,consumed_at) VALUES('expired-limit',?,'oldrun',100000,?)").run(task, old)
+  const activation = await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  assert.equal(activation.error?.code, 'E_CAMPAIGN_BUDGET_LOW')
+  db.prepare("UPDATE campaigns SET status='active' WHERE id=?").run(cid)
+  const tick = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tick.ok, true, tick.error?.message)
+  assert.equal(db.prepare('SELECT status FROM campaigns WHERE id=?').get(cid).status, 'reviewing')
+  const next = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(next.ok, true)
+  assert.equal(db.prepare('SELECT status FROM campaigns WHERE id=?').get(cid).status, 'reviewing', 'window expiry must not revive exhausted lifetime budget')
+})
+
+test('27 D09: autonomy approval cannot reactivate an exhausted campaign', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '升档累计上限', program_ids: ['test-src'], budget_tokens: 100000,
+    goal_spec: { stop_conditions: ['done'] },
+  }, { actor: 'model' })
+  assert.equal(c.ok, true, c.error?.message)
+  const db = bus._internal.db(), cid = c.data.campaign_id, old = Date.now() - 10 * 86400000
+  db.prepare("UPDATE campaigns SET status='paused' WHERE id=?").run(cid)
+  const task = db.prepare("INSERT INTO tasks(program_id,objective,status,created_at,updated_at,spent_tokens,campaign_id) VALUES('test-src','old spend','done',?,?,100000,?)").run(old, old, cid).lastInsertRowid
+  db.prepare("INSERT INTO task_bill_items(receipt_key,task_id,run_id,tokens,consumed_at) VALUES('old-autonomy',?,'oldrun',100000,?)").run(task, old)
+  const approval = await bus.dispatch('task', 'campaign_autonomy_apply',
+    { name: '升档累计上限', autonomy: 2, approval_id: 1 }, { actor: 'approval' })
+  assert.equal(approval.error?.code, 'E_CAMPAIGN_BUDGET_LOW')
+  assert.equal(db.prepare('SELECT status FROM campaigns WHERE id=?').get(cid).status, 'paused')
+})
+
+test('27 D09: campaign claim includes expired spend and unbilled reservations', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '认领累计上限', program_ids: ['test-src'], budget_tokens: 200000,
+    goal_spec: { stop_conditions: ['done'] },
+  }, { actor: 'model' })
+  assert.equal(c.ok, true, c.error?.message)
+  const cid = c.data.campaign_id, db = bus._internal.db(), now = Date.now(), old = now - 10 * 86400000
+  assert.equal((await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })).ok, true)
+  const task = db.prepare("INSERT INTO tasks(program_id,objective,status,created_at,updated_at,spent_tokens,campaign_id) VALUES('test-src','old spend','done',?,?,190000,?)").run(old, old, cid).lastInsertRowid
+  db.prepare("INSERT INTO task_bill_items(receipt_key,task_id,run_id,tokens,consumed_at) VALUES('old-claim',?,'oldrun',190000,?)").run(task, old)
+  const next = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: 'claim boundary', campaign_id: cid, budget_tokens: 10000 }, { actor: 'dashboard' })
+  assert.equal(next.ok, true, next.error?.message)
+  const id = next.data.task_id
+  await bus.dispatch('task', 'run_now', { task_id: id }, { actor: 'dashboard' })
+  db.prepare("INSERT INTO task_budget_reservations(task_id,claim_started_at,tokens,created_at,state) VALUES(?,?,1,?,'unknown')").run(task, old, old)
+  const claimTime = Date.now() + 1000
+  const blocked = await bus.dispatch('task', 'claim', { now: claimTime }, { actor: 'scheduler' })
+  assert.equal(blocked.ok, true, blocked.error?.message)
+  assert.deepEqual(blocked.data.claimed, [])
+  assert.equal(blocked.data.blocked[0]?.reason, 'E_CAMPAIGN_BUDGET_LOW')
+  assert.equal(db.prepare('SELECT status FROM tasks WHERE id=?').get(id).status, 'queued', '专项额度暂时不足须延后而非永久 blocked')
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM task_budget_reservations WHERE task_id=?").get(id).n, 0)
+  db.prepare("UPDATE task_budget_reservations SET state='settled' WHERE task_id=?").run(task)
+  assert.deepEqual((await bus.dispatch('task', 'claim', { now: claimTime + 1 }, { actor: 'scheduler' })).data.claimed, [id])
 })
 
 test('35 号补丁: SEC_CAMPAIGN_BUDGET_AUTO_APPROVE=off 时只提请不批准', async () => {

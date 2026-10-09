@@ -570,7 +570,9 @@ function createRepo(db) {
       if (task.campaign_id != null) {
         const c = repo.getCampaign(task.campaign_id)
         if (!c || c.status !== 'active') return 'E_CAMPAIGN_STATE'
-        if (c.budget_tokens == null || repo.campaignUsage(c.id, nowTs - c.budget_window_days * 86400000).committed_tokens + tokens > c.budget_tokens) return 'E_CAMPAIGN_BUDGET_LOW'
+        const usage = repo.campaignUsage(c.id, nowTs - c.budget_window_days * 86400000)
+        if (c.budget_tokens == null || Math.max(usage.committed_tokens,
+          usage.lifetime_spent_tokens + usage.reserved_tokens) + tokens > c.budget_tokens) return 'E_CAMPAIGN_BUDGET_LOW'
       }
       db.prepare('INSERT INTO task_budget_reservations(task_id,claim_started_at,tokens,created_at) VALUES(?,?,?,?)')
         .run(task.id, nowTs, tokens, nowTs)

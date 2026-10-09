@@ -1945,13 +1945,21 @@ fixture-runner-v3新增有界authz-read-v2，候选必须实际请求owner/low�
 
 首次生产配置root:600导致服务进程不可读，请求在准入前失败；修正为业务进程所有后执行，未修改权限校验。证据`out/secagent-audits/20261009-read-permits/`保存失败、263项验收、固定包、安装与RPC/浏览器日志；生产原件`data/results/readpermit-pilot-20261009/`。此批完成具体只读请求正式接线，不代表所有业务POST已授权或WP04达20–50份健康模板。后续单账号结构化判定本地开发中，未据此宣称上线。
 
+### 15.127 D09 专项累计预算硬上限与预算批准人工化（2026-10-09，本地完成，未部署）
+
+补完 WP01 的最后一项确定性缺口 D09（此前各批均记录「自动续费累计上限仍未完成」）。专项预算由「窗口滚动可重复用」改为**累计硬上限**：所有预算判定改用统一口径 `max(窗口已记费用+未结预留, 全周期已记费用+未结预留)`，窗口滚动不再返还累计额度。覆盖认领准入 `reserveTaskBudget`、专项派发预算检查、规划剩余额度、预算停止条件、`autoRecover` 自动恢复、`campaign_activate` 与 `campaign_autonomy_apply`；`campaignUsage` 已有 `lifetime_spent_tokens` 供消费，不再新增平行账本。
+
+预算类审批（`campaign-budget-extend`/`task-budget-extend`/`task-budget-config`）的 `approve` 现要求 actor ∈ {human, dashboard}，移除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 默认自动批准；Supervisor 仍按 80% 水位自动**提请**，但扩额须人放行。effect 增加安全整数与「≤ 原预算×2」校验。专项额度**暂时**不足（在飞预留未结、窗口消费到期）时认领延后回 queue 而非永久 blocked，额度释放后自动重新认领；每-program 硬预算耗尽与专项停用仍 blocked，避免「条件变化后无法恢复」。
+
+验证：task/approval 137/167、全域 **802/802**、fail=0；新增红例覆盖窗口过期不复活累计额度、认领计入过期消费与未结预留、系统 actor 不得自批预算。本批只改 `domain-task`/`backend-task-sqlite`/`domain-approval` 及契约测试，未部署。原子域合规复核另见本节后附的 §17。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
 
 | 包 | 已具备基础 | 尚需完成的验收 |
 |---|---|---|
-| WP01 | 目标/Program/派发/认领、候选30及ledger200补页已有回归 | 业务进展停止，完整候选轮转/C3按真实剩余量处置，D09自动续费累计上限；现实现仍可默认自动扩额，不得恢复无界运行 |
+| WP01 | 目标/Program/派发/认领、候选30及ledger200补页、**D09累计硬上限与预算审批人工化回归**（§15.127，本地未部署） | 业务进展停止信号、完整候选轮转、C3按真实剩余量处置；D09 须随下一批发布并验收，勿在未部署前恢复无界运行 |
 | WP02 | 受控HTTP、owner-only读取、可信capsule/confirm、身份前检及单账号2组匿名边界阴性 | 更多真实适用实验及单账号判定自动接线；其余Oracle弱信号/故障正负样例、属性重放，禁止自报替代技术真值 |
 | WP03 | claim/run/ACK、busy补偿、在飞预留、请求usage和估算 | 完整fencing/多进程恢复、共享请求预算/429退避、D07进程清理、F06死信/投影；最终账单及历史精确洗账不再必需 |
 | WP04 | HAR/被动捕获、正式HTTP接线、18种匿名请求及单账号5种新接口、响应前置已上线 | 20–50份不同且适用的业务模板（不能用失败/空列表凑数），method/body/身份/对象归集、读型POST风险契约及HAR健康判定，B09参数队列执行确认 |
@@ -1963,3 +1971,36 @@ fixture-runner-v3新增有界authz-read-v2，候选必须实际请求owner/low�
 | WP10 | UI/总线查询及历史冒烟 | kbList schema/完整分页、真实技术统计/unknown显示，实际RPC验证 |
 | WP11 | 已有索引/FTS基础 | 测量阻碍发现的查询热点；有瓶颈才优化，无瓶颈以实测记录退出，禁止无依据虚拟化 |
 | WP12 | 本地链路与生产只读验收 | 授权试点从请求→假设→有效实验→技术结论→知识收益完整对账、持续观察、发布/恢复及正式契约逐项回填 |
+
+## 17. 原子域合规复核（2026-10-09，只读）
+
+对 27 号已实施/在办的代码面（本地模板 + 生产 csai）做一次系统核查，判据以 [00-conventions](00-conventions.md) 为准；结论按证据可复核，不冒充全量证明。
+
+| 维度 | 检查方法 | 结果 |
+|---|---|---|
+| 跨域 import | 扫描 `dsh-plugin-sec-domain-*` 的非测试 import | 仅 `domain-endpoint → ./har.js`（同域被动采集同伴模块，测试组装随附），无跨域直连；跨域仍只经 QueryGateway/DispatchGateway |
+| owns × 沙箱交叉断言 | 生产 `sec-owns-sandbox-check.mjs`（SEC_BASE_DIR=/opt/silkspool/dsh） | `violations: 0`（域 owned 数据对 bwrap 可写白名单不可写） |
+| 命令/查询契约矩阵 | 本地全域契约 `sec-contract-test-local.sh` | 802/802 fail=0；actor 白名单、schema 严格、状态机、幂等重放、分页 `meta.paged` 均有断言 |
+| 新增表归属 | 检索 doc-27 新表在两域的声明与 `owns` | `endpoint_requests`/`hypothesis_queue`/`task_run_costs`/`task_cost_evidence`/`task_budget_reservations`/`task_bill_items`/`task_cost_watch`/`vuln_technical_verdicts`/`know_adoptions` 均在属主域 manifest/后端；随 asset-graph.db 纳入 41 库备份 |
+| 悬空工具引用 | 生产 `discipline-audit.py`（/tmp 只读副本） | prompt 资产 0 悬空、旧别名引用 0、prompt 读取 0 错误；仅 task objective 中 49 处 `asset_enum` 被误报——该 token 是 task kind/`source=asset_enum` 标签而非工具，已加入 `NON_TOOL_TOKENS` 豁免（本地已修，未部署） |
+| 查询纯读 | 复核 doc-27 新增读面（`exec.http_result`/`endpoint.request_get`/`vuln.technical_verdict` 等） | 未发现主链写副作用；已知例外仍是已声明的 `know_coverage(refresh)`/`ledger_coverage_report(materialize)` 治理物化 |
+| 时间口径 | 存储/展示口径 | 新增表时间列沿用 UTC epoch 毫秒；北京时间仅用于展示/文档 |
+
+未覆盖：后端三实现全矩阵逐命令能力声明、跨进程 fencing、以及全部历史 batch 的逐行注释核对；这些仍以各自契约测试与运行验收为准，不由本表代替。
+
+## 18. 备份与恢复核查（2026-10-09，只读 + 恢复预演）
+
+生产 csai 维护链（`silksec-ops.sh`/`dsh-maintenance.py`）核查：
+
+| 项 | 观测 | 判断 |
+|---|---|---|
+| 最近备份 | snapshot `3b05dfb9…`，本地 2026-10-09 06:18–06:19 UTC（北京 14:18），88.52 秒，41 库，新增 101MB | 正常（计划 00/06/12/18:17 UTC + ≤120s 抖动） |
+| 备份新鲜度 | `backup_stale=false`，磁盘 67%（<80% 告警线） | 正常 |
+| 调度 | 6 个维护 timer 均 active；backup 每 6h、check/drill/prune 周日、cleanup 每日、health 每 15min | 正常 |
+| 恢复演练 | 手动 `drill` 于 2026-10-09 对 `3b05dfb9…`：41 库 SQLite 恢复+哈希+integrity，7.14 秒 | 通过 |
+| 保留 | routine 快照恰好 8 份（=keep_last）；release-archive 1 份（策略保留 ≤3）；NAS 可达 | 符合保留策略 |
+| 待清理异常 | 发现 1 份 **`routine-pending` 快照 `a1251905…`（2026-10-05 14:31 UTC）**，为一次未完成即中断的备份遗留；按 `keep-last 1` 不会被后续成功备份清掉 | **已 `restic forget a1251905…`（仅移除索引引用，数据块待周日 prune 回收）**；清理后仓库为 8 routine + 1 release-archive、0 pending |
+| 覆盖/排除 | routine 覆盖 /opt/silkspool/dsh + 3 工作区 + maintenance/current；排除 .cache/.pnpm-cache/data/backups 与浏览器登录态 | 与 18 号契约一致 |
+| 本地清理 | `cleanup` 干跑：无待轮转/待删；本地图快照保持 2 份；dsh-upgrades 有 32 个日期目录（archive-release 为人工触发，非自动清理） | 无异常增长；<80% 容量 |
+
+> 结论：备份/恢复功能正常，保留数量与时间符合契约；唯一待处理项是 10-05 遗留的 pending 快照。人工 routine 快照（prepare-change）与计划快照共用 `routine` 标签并计入 keep_last=8，因此频繁变更会缩短计划快照的实际保留窗口——是否将 prepare-change 单独打标属 18 号策略取舍，本表仅记录现象。

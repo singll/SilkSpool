@@ -363,8 +363,8 @@ export const APPROVAL_MANIFEST = {
       deprecated: false,
     },
     approval_decide: {
-      // 35 号补丁：actor 加 'system'——专项 Supervisor 自动爬坡（campaign-budget-extend 提请后立即自动批准，
-      // operator=auto-campaign-budget 留痕；SEC_CAMPAIGN_BUDGET_AUTO_APPROVE=off 关闭）。model 仍不可用。
+      // System decisions remain available for other workflows; spending increases
+      // require a human/dashboard actor in decideValid.
       actor: ['dashboard', 'human', 'system'],
       schema: schema({
         id: int(),
@@ -552,6 +552,10 @@ function makeHandlers(opts) {
       const row = repo.getRequest(args.id)
       if (!row) return { code: 'E_NOT_FOUND', message: `请求不存在: ${args.id}`, hint: '核对 request_id（approval_list 可查）', retryable: false }
       if (row.status !== 'pending') return { code: 'E_STATE', message: `请求 #${args.id} 已终态（${row.status}）`, hint: '勿重复决策', retryable: false }
+      if (args.decision === 'approve' && ['campaign-budget-extend', 'task-budget-extend', 'task-budget-config'].includes(row.kind)
+        && !['human', 'dashboard'].includes(ctx.actor)) {
+        return { code: 'E_APPROVAL_BUDGET_HUMAN_REQUIRED', message: '预算扩展须由人明确批准，系统提请不能自行扩额', retryable: false }
+      }
       return null
     },
     withdrawValid: async (args, repo, ctx) => {

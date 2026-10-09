@@ -712,3 +712,5 @@ ApprovalRepo.listEffects(request_id) -> rows
 - 契约：approval +1（超大 payload 的 approve 与 reject 均成功）。
 
 2026-10-08冷启动统计优化（本地785项通过，未部署）：审批统计只选kind/status/created_at和note前五字符，索引覆盖时间范围及撤回分类，避免SELECT *加载证据和payload。30天窗口、撤回类别、最老pending年龄不变。隔离复现和性能边界见27号§15.116。
+
+2026-10-09 D09 预算审批人工化（本地完成，待部署）：`campaign-budget-extend` / `task-budget-extend` / `task-budget-config` 三类预算审批的 `decide(approve)` 要求 actor ∈ {human, dashboard}；`system`（含旧 Supervisor 自动批准路径）提请方不能自行批准自己的扩额，返回 `E_APPROVAL_BUDGET_HUMAN_REQUIRED`。`system` actor 仍可用于其它 kind 的裁决。移除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 隐含语义，approval 契约相应更新；见 27 号 §15.127。

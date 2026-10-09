@@ -993,3 +993,11 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - 经 https://silksecagent.singll.net 实际浏览器验收：1440px桌面和390px移动窗口可见；真实点击新标签页、原页保持、opener隔离及主面板控件不重叠通过，页面异常0。自动化拦截目标页正文以避开原生Basic Auth弹窗；真实目标另行GET返回401，认证保持。临时维护用户已还原并注销。
 - 单前端模块两落点已安装，源码回退保存在 /opt/silkspool/dsh-upgrades/20261009-login-browser-ui/previous。首次stop等待30秒超时后确认服务已停止，随后完成安装并启动；不冒称本批秒级切换。主服务PID1412257，edge/共享浏览器/xray均active；移动布局微调直接刷新生效，无第二次重启。
 - 相关面板8项回归通过；另有1项既有PanelIcon“无图标”断言失败，已用修改前HEAD复现，非本次回归，未改其行为。node语法与diff检查通过；生产截图及验收回执在out/secagent-audits/20261009-login-browser-ui/。本批仅完成浏览器快捷入口；27号全案仍未关账。
+
+### 2026-10-09 · 单账号真实采集与两组匿名访问对照已验收（已归档）
+
+- 共享浏览器守卫与个人资料接口确认登录；个人空间owner与账号一致。新增5种接口：5条浏览器请求及2条签封基线导入，观测18→25，实质业务模板保守计3种。完整请求/JSON/身份/自有对象引用与响应映射私有留存，不把重复观测或pass标志凑模板数。
+- 正式执行器6次HTTP完成个人资料、账号归属两组“本人→匿名→本人”对照：匿名均code700012006且无data，重复本人资料一致，2组valid_clean、0新增漏洞。双账号暂缓，无goal、无模型调用。原6条HTTP学习事件仍inconclusive，审校结论未冒充自动Oracle/知识收益。
+- 工作区POST和3个含trade段的GET被正式风险守卫拒绝，共4次、目标请求0；未改Scope或换执行器绕过。读型POST/路径风险契约及HAR业务健康投影是后续接线项。通知错误GET404、ID类型差异和只读统计列名错误均保留，恢复复用已签封基线。
+- 响应契约仅新增两个明确API命名空间，保留原文件可回退，热加载后2份签封基线success/intact，HAR5份intact/business_state=unknown。复用既有验收，无代码部署/服务重启/重复NAS恢复。74份原件下载验SHA256，证据out/secagent-audits/20261009-authenticated-pilot/，另存学习回执；详见27号§15.125及04/10号。
+- 主服务/edge/共享浏览器active、NRestarts0；原页面恢复首页且仍登录，任务running0。Campaign仍paused/原200M、200M、50M，实测spent为188.83M、621.38M、210.28M，后两项超额，继续暂停。Scope不变，全案未关账。
