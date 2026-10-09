@@ -13,6 +13,12 @@ http://:9223 {
     basicauth {
         silksec $2b$14$ZeShsNfhSloJFL5ZqJ5RuOVCMxHS8cPv4wSKEYSHmCSCCJpc4DQD6
     }
+    # 旧 DevTools 标签页依赖已撤下的外部前端；返回管理页获取当前 target 链接。
+    # 浏览器重启后旧 target ID 也会失效，不把它继续转发给新实例。
+    handle /serve_rev/* {
+        header Cache-Control "no-store"
+        redir * / 302
+    }
     # 隔离 profile 路由（primary + 各隔离 profile，统一 /p/<name>/；由 sec-browser-profiles.sh 生成）
     import /opt/silkspool/dsh/edge-browser-profiles.caddy
     # profile 管理 API（同域统一界面的“新增 profile”后端；回环 9230）

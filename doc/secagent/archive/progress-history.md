@@ -1023,3 +1023,9 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - change `20261009-browser-native-release`：primary/socend 顺序切换，2.88/3.58秒；PID1443583/1443762，active/NRestarts0。新增 profile 继承相同宿主配置。systemd KillMode=mixed 由宿主先关闭 Chromium、刷新 profile，再结束 Xvfb。
 - 完整浏览器集成通过（原生API/iframe/Scope拒绝/持久Cookie重启），Scope单测5/5，unit语法通过。关闭后备份两 profile；primary 34条、socend 3条持久Cookie逐值完整保留。primary 重启前内存39条，关闭后落盘34条，额外5条未保留，不能宣称所有会话完整恢复；启动后为新空白页。源文件与profile回退位于上述release私有目录。
 - 实际扣子首页冒烟未通过：两profile导航后正文读取及页面CDP响应超时；不据此归因平台风控。关闭本批测试页、保留空白页后CDP/原生属性恢复正常，未清Cookie；页面访问新增Cookie使最终数量36/5。尚未证明目标页面兼容或登录放行，不能声明优化已解决风控。
+
+### 2026-10-09 · 修复共享浏览器切换有界面模式后的网页挂起（已部署）
+
+- 上批默认完整有界面Chromium使现有primary/socend profile在扣子页面出现正文为空、页面脚本/CDP/截图超时；服务active不能证明网页可用。全新profile可打开，禁GPU不能修复旧profile；同profile/代理/站点仅切回headless-shell后恢复。因此恢复默认headless，`SEC_BROWSER_HEADFUL=1`仅显式选择；保留原生Linux/浏览器API、中文/上海时区、Scope与隔离，不恢复Windows指纹伪造。底层有界面兼容根因未继续归因为GPU或风控。
+- change `20261009-browser-load-fix`：保留旧源码和停写后24MiB profile备份。primary PID2282367、socend PID2282571均active/NRestarts0；内存约486/268MB。primary仍登录，扣子正文323字且“新建项目”可见；socend首页3053字。两边截图、CDP画面推流、鼠标输入、DevTools入口HTTP200通过；页面保留打开供人继续操作。
+- 回归增加默认headless、页面按钮/Canvas/截图、持久Cookie重启与重载页面检查；旧实现因错误默认headed失败，新实现完整集成通过。实际同profile网页复现亦已消失，不以空白页/服务存活替代验收。源码、管理机模板、生产两落点同步；失败/对照/成功回执留在上述release及临时诊断目录。Campaign/预算/Scope不变。

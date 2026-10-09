@@ -26,11 +26,11 @@
 
 ## 二、最近进度结果
 
-### 2026-10-09 · 修复共享浏览器切换有界面模式后的网页挂起（已部署）
+### 2026-10-09 · 浏览器域名入口与旧inspect链接修复（已部署）
 
-- 上批默认完整有界面Chromium使现有primary/socend profile在扣子页面出现正文为空、页面脚本/CDP/截图超时；服务active不能证明网页可用。全新profile可打开，禁GPU不能修复旧profile；同profile/代理/站点仅切回headless-shell后恢复。因此恢复默认headless，`SEC_BROWSER_HEADFUL=1`仅显式选择；保留原生Linux/浏览器API、中文/上海时区、Scope与隔离，不恢复Windows指纹伪造。底层有界面兼容根因未继续归因为GPU或风控。
-- change `20261009-browser-load-fix`：保留旧源码和停写后24MiB profile备份。primary PID2282367、socend PID2282571均active/NRestarts0；内存约486/268MB。primary仍登录，扣子正文323字且“新建项目”可见；socend首页3053字。两边截图、CDP画面推流、鼠标输入、DevTools入口HTTP200通过；页面保留打开供人继续操作。
-- 回归增加默认headless、页面按钮/Canvas/截图、持久Cookie重启与重载页面检查；旧实现因错误默认headed失败，新实现完整集成通过。实际同profile网页复现亦已消失，不以空白页/服务存活替代验收。源码、管理机模板、生产两落点同步；失败/对照/成功回执留在上述release及临时诊断目录。Campaign/预算/Scope不变。
+- 用户报browser域名502；网关90分钟日志显示旧`/serve_rev/@.../inspector.html`曾502，最近另有上批停机导致的profile/json失败，当前管理/列表/新DevTools资源200。未获得用户完整URL，不能断言本次报错一定来自旧链接；为旧路径补`302 → /`并禁缓存，回管理页取得重启后的现役target链接。
+- 管理页/profile列表增加非200及JSON错误展示、定时恢复；不再把502作为JSON解析异常后无提示。仅两文件热更新及Caddy reload，未重启浏览器、未改Cookie/Scope/账号。
+- change `20261009-browser-edge-fix`：使用随机临时Basic账号经真实`https://browser.silksecagent.singll.net`完成登录首页200、旧链接302、primary/socend inspect资源0失败且各自WebSocket连接、模拟502后自动恢复。临时账号每轮finally移除、原认证保持，未认证仍401。Caddy2.6重定向首版参数解析不符已修正为显式匹配器，标题断言允许DevTools带站点后缀。源码/管理模板/生产落点一致，旧文件与5项验收回执封存上述release。
 
 ## 三、维护规则（通用，必须遵守）
 

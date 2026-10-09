@@ -658,6 +658,8 @@ UA/Client Hints/platform/plugins/mimeTypes/WebGL使用浏览器原生实现，�
 
 `20261009-browser-load-fix`验收：关闭后备份两profile；primary/socend沿用原目录，恢复扣子正文323/3053字，primary“新建项目”可见且仍登录；截图、画面推流、鼠标输入、两DevTools入口HTTP200通过。默认模式/原生API/按钮/Canvas/截图/Scope拒绝/持久Cookie重启及页面重载集成通过。旧`20261009-browser-native-release`失败事实保留：其网页兼容未通过，primary额外5条内存Cookie未保留；本次没有重置profile或清Cookie。旧源码、profile和新回执在受限release目录，不向git写入账号数据；不宣称平台风控放行保证。
 
+**浏览器域名入口验收（2026-10-09）**：旧`/serve_rev/*`返回`302 /`与`Cache-Control: no-store`，用户从管理页获取当前`/p/<name>/devtools/inspector.html`链接，避免保留已撤外部前端或失效target。profile/json与管理列表请求失败显示原因并按5/8秒周期恢复。`20261009-browser-edge-fix`通过真实HTTPS域名临时Basic账号验证首页、两profile inspect资源/WebSocket、旧路径跳转及模拟502恢复；临时账号已移除，未认证仍401。本地CDP/端口200不足以替代此链路验收。
+
 **不动清单的边界**：上表资产出问题时（浏览器崩/OOB 启用/intel.jsonl 格式变化）的处置先走[18号](18-backup-and-maintenance.md)变更前备份流程，平台资产历史部署细节见归档 migration-v4-to-v5 §九，不改域契约；域文档只在耦合点语义变化时同步本表。
 
 2026-10-03 WP04来源核查：现有flows共284,796条，284,795条web_statistic、1条仅plugin/target/title的web_vuln，均不含完整请求；xray webhook文件不能等同请求捕获。新增独立 `dsh-browser-capture.mjs`（源码`e5452cc`，已部署验收）附着受管CDP、只监听单个同源页面、限时限量写受控HAR，不导航、不重放、不改变浏览器fork或服务。隔离真实Chromium与采集核心9项、worker19项、生产UI80/80通过；断开采集保留共享浏览器，Scope撤回自动停止。完整契约及限制见04号§1.3.9；采集文件不是exec可信HTTP验证回执，不产生漏洞判定。真实试点尚未开始，Campaign仍暂停。

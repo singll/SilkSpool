@@ -70,15 +70,21 @@ async function j(method, url, body){
 
 /* ---- profile 视图 ---- */
 async function loadTabs(){
-  const r = await fetch(BASE + '/json', {headers:{'Accept':'application/json'}});
-  const tabs = await r.json();
   const el = document.getElementById('list');
+  try {
+  const r = await fetch(BASE + '/json', {headers:{'Accept':'application/json'}, cache:'no-store'});
+  if(!r.ok) throw new Error('HTTP '+r.status);
+  const tabs = await r.json();
+  if(!Array.isArray(tabs)) throw new Error('标签页列表格式错误');
   const pages = tabs.filter(t=>t.type==='page');
   if(!pages.length){ el.innerHTML = '<div class="card muted">无标签页</div>'; return; }
   el.innerHTML = pages.map(t=>
     '<div class="card"><b>'+esc(t.title||'(无标题)')+'</b> <button class="close" onclick="closeTab(\''+t.id+'\')">关闭</button><br>'+
     '<span class="muted">'+esc(t.url)+'</span><br>'+
     '<a href="'+inspectUrl(t.id)+'" target="_blank">inspect（可交互）</a></div>').join('');
+  } catch(e) {
+    el.innerHTML = '<div class="card err">浏览器暂时不可用（'+esc(e.message)+'），5秒后自动重试。</div>';
+  }
 }
 async function openTab(){
   const u = document.getElementById('url').value.trim(); if(!u) return;
@@ -91,6 +97,7 @@ async function closeTab(id){ await fetch(BASE + '/json/close/'+id).catch(()=>{})
 function color(name){ let h=0; for(const c of name) h=(h*31+c.charCodeAt(0))%360; return 'hsl('+h+',60%,55%)'; }
 function esc(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 async function loadProfiles(){
+  try {
   const d = await j('GET','/_pool/profiles');
   const el = document.getElementById('plist');
   el.innerHTML = d.profiles.map(p=>
@@ -99,6 +106,9 @@ async function loadProfiles(){
     '<span><a href="'+p.path+'" target="_blank">打开</a>'+
     (p.primary?'':'<button class="del" onclick="removeProfile(\''+esc(p.name)+'\')">删除</button>')+'</span></div>'
   ).join('') || '<div class="card muted">暂无 profile</div>';
+  } catch(e) {
+    document.getElementById('plist').innerHTML = '<div class="card err">列表暂时不可用（'+esc(e.message)+'），8秒后自动重试。</div>';
+  }
 }
 async function addProfile(){
   const name = document.getElementById('newname').value.trim().toLowerCase();
