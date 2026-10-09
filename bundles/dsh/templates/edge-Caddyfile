@@ -13,8 +13,15 @@ http://:9223 {
     basicauth {
         silksec $2b$14$ZeShsNfhSloJFL5ZqJ5RuOVCMxHS8cPv4wSKEYSHmCSCCJpc4DQD6
     }
-    # 隔离 profile 路由（由 sec-browser-profiles.sh 生成，import 片段；空文件=无隔离 profile）
+    # 隔离 profile 路由（primary + 各隔离 profile，统一 /p/<name>/；由 sec-browser-profiles.sh 生成）
     import /opt/silkspool/dsh/edge-browser-profiles.caddy
+    # profile 管理 API（同域统一界面的“新增 profile”后端；回环 9230）
+    handle_path /_pool/* {
+        reverse_proxy 127.0.0.1:9230 {
+            header_up Host 192.168.7.107:9223
+        }
+    }
+    # 统一管理页（/ → browser.html；/p/<name>/ → 该 profile 视图，同样由 browser.html 渲染）
     handle / {
         root * /opt/silkspool/dsh/edge-static
         rewrite / /browser.html
@@ -24,11 +31,6 @@ http://:9223 {
     handle /serve_rev/* {
         reverse_proxy https://chrome-devtools-frontend.appspot.com {
             header_up Host chrome-devtools-frontend.appspot.com
-        }
-    }
-    handle {
-        reverse_proxy 127.0.0.1:9222 {
-            header_up Host 192.168.7.107:9223
         }
     }
 }

@@ -1,0 +1,3 @@
+# 允许 silkspool（共享浏览器 profile 管理 API 服务）免密执行固定的 profile 运维脚本。
+# 脚本自身对 profile 名做 [a-z0-9_-]{1,32} 白名单校验，只支持 list/add/remove/render/apply。
+silkspool ALL=(root) NOPASSWD: /opt/silkspool/dsh/sec-browser-profiles.sh

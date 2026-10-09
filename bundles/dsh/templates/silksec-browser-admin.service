@@ -1,0 +1,18 @@
+[Unit]
+Description=SilkSecAgent 共享浏览器 profile 管理 API（回环 9230；同域统一界面“新增 profile”后端）
+After=network-online.target silksecagent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=silkspool
+Environment=HOME=/home/silkspool
+Environment=PATH=/usr/local/node/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/opt/silkspool/dsh
+ExecStart=/usr/local/node/bin/node /opt/silkspool/dsh/dsh-browser-admin.mjs
+Restart=always
+RestartSec=3
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

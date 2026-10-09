@@ -4,72 +4,127 @@
 <meta charset="utf-8">
 <title>SilkSec 共享浏览器</title>
 <style>
-  body{font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f1115;color:#e6e6e6;max-width:960px;margin:40px auto;padding:0 16px}
-  h1{font-size:20px} h2{font-size:14px;color:#9aa0a6;margin-top:28px}
+  body{font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f1115;color:#e6e6e6;max-width:1000px;margin:36px auto;padding:0 16px}
+  h1{font-size:20px} h2{font-size:14px;color:#9aa0a6;margin-top:24px}
   .card{background:#171a21;border:1px solid #2a2f3a;border-radius:8px;padding:12px 14px;margin:8px 0}
   a{color:#7aa2f7;text-decoration:none} a:hover{text-decoration:underline}
   .muted{color:#6b7280;font-size:12px;word-break:break-all}
-  input{background:#0f1115;border:1px solid #2a2f3a;color:#e6e6e6;border-radius:6px;padding:8px 10px;width:70%}
+  input{background:#0f1115;border:1px solid #2a2f3a;color:#e6e6e6;border-radius:6px;padding:8px 10px;width:44%}
   button{background:#7aa2f7;border:none;color:#0f1115;border-radius:6px;padding:8px 14px;cursor:pointer;font-weight:600}
   button.close{background:#3a2f2f;color:#f77a7a;font-weight:400;padding:2px 10px;font-size:12px}
+  button.del{background:#3a2f2f;color:#f77a7a;font-weight:400;padding:4px 10px;font-size:12px;margin-left:8px}
   .tag{display:inline-block;background:#2a2f3a;border-radius:4px;padding:1px 6px;font-size:11px;margin-right:6px}
+  .pcard{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .pname{font-weight:700}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:8px;vertical-align:middle}
+  .err{color:#f77a7a}
 </style>
 </head>
 <body>
-<h1>SilkSec 共享浏览器 <span class="tag" id="profile">…</span><span class="tag">人机共用登录态</span></h1>
-<p class="muted" id="note">agent 与你共用同一浏览器实例与同一份 Cookie。登录完目标站点，agent 侧即刻可用。</p>
-<p class="muted">每个隔离 profile 的 Cookie/Storage 相互独立：<code>/</code>（primary）与 <code>/p/&lt;name&gt;/</code> 可同时登录不同账号、互不影响。</p>
+<h1>SilkSec 共享浏览器 <span class="tag">同域多 profile 隔离</span></h1>
 
-<h2>新开标签页</h2>
-<div class="card">
-  <input id="url" placeholder="https://目标地址（仅授权目标）">
-  <button onclick="openTab()">打开</button>
+<!-- ===== 管理页（/）===== -->
+<div id="home" style="display:none">
+  <p class="muted">每个 profile 是独立的浏览器实例与 Cookie/Storage；点“打开”在同域新标签页进入对应 profile，可同时登录不同账号、互不影响。</p>
+  <h2>profile 列表</h2>
+  <div id="plist">加载中…</div>
+  <h2>新增 profile</h2>
+  <div class="card">
+    <input id="newname" placeholder="profile 名（小写字母/数字，如 alice、acct2）">
+    <button onclick="addProfile()">新增并打开</button>
+    <span id="adderr" class="muted err"></span>
+  </div>
 </div>
 
-<h2>当前标签页</h2>
-<div id="list">加载中…</div>
-
-<h2>说明</h2>
-<div class="card muted">
-  DevTools 前端与 WebSocket 已全部同源化（本站反代前端资源）：任何入口都不会再有跨域鉴权/混合内容问题。
+<!-- ===== profile 视图（/p/<name>/）===== -->
+<div id="view" style="display:none">
+  <p class="muted" id="viewnote"></p>
+  <h2>新开标签页</h2>
+  <div class="card">
+    <input id="url" placeholder="https://目标地址（仅授权目标）">
+    <button onclick="openTab()">打开</button>
+  </div>
+  <h2>当前标签页</h2>
+  <div id="list">加载中…</div>
+  <h2>说明</h2>
+  <div class="card muted">DevTools 前端与 WebSocket 已同源反代，任何入口都不会再有跨域鉴权/混合内容问题。</div>
 </div>
 
 <script>
 const REV = '@782af9cb30a53f54487e5d2e44738645a8ec457c';
-// 路径感知：/ → primary，/p/<name>/ → 隔离 profile；BASE 为去掉结尾斜杠的前缀。
 const BASE = location.pathname.replace(/\/$/, '');
 const seg = BASE.split('/').filter(Boolean);
-const PROFILE = (seg[0] === 'p' && seg[1]) ? seg[1] : 'primary';
-document.getElementById('profile').textContent = 'profile: ' + PROFILE;
-if (PROFILE !== 'primary') document.getElementById('note').textContent = '隔离 profile「' + PROFILE + '」：与 primary 登录态完全隔离，可同时登录另一个账号。';
+const PROFILE = (seg[0] === 'p' && seg[1]) ? seg[1] : null;   // null = 管理页
+
 function inspectUrl(id){
   const proto = location.protocol === 'https:' ? 'wss=' : 'ws=';
   return location.origin + '/serve_rev/' + REV + '/inspector.html?' + proto + location.host + BASE + '/devtools/page/' + id;
 }
-async function load(){
+async function j(method, url, body){
+  const r = await fetch(url, {method, headers: body?{'Content-Type':'application/json'}:{}, body: body?JSON.stringify(body):undefined});
+  let d = {}; try { d = await r.json(); } catch {}
+  if(!r.ok) throw new Error(d.error || ('HTTP '+r.status));
+  return d;
+}
+
+/* ---- profile 视图 ---- */
+async function loadTabs(){
   const r = await fetch(BASE + '/json', {headers:{'Accept':'application/json'}});
   const tabs = await r.json();
   const el = document.getElementById('list');
   const pages = tabs.filter(t=>t.type==='page');
   if(!pages.length){ el.innerHTML = '<div class="card muted">无标签页</div>'; return; }
   el.innerHTML = pages.map(t=>
-    '<div class="card"><b>' + (t.title||'(无标题)') + '</b> <button class="close" onclick="closeTab(\'' + t.id + '\')">关闭</button><br>' +
-    '<span class="muted">' + t.url + '</span><br>' +
-    '<a href="' + inspectUrl(t.id) + '" target="_blank">inspect（可交互）</a></div>'
-  ).join('');
+    '<div class="card"><b>'+esc(t.title||'(无标题)')+'</b> <button class="close" onclick="closeTab(\''+t.id+'\')">关闭</button><br>'+
+    '<span class="muted">'+esc(t.url)+'</span><br>'+
+    '<a href="'+inspectUrl(t.id)+'" target="_blank">inspect（可交互）</a></div>').join('');
 }
 async function openTab(){
-  const u = document.getElementById('url').value.trim();
-  if(!u) return;
+  const u = document.getElementById('url').value.trim(); if(!u) return;
   await fetch(BASE + '/json/new?' + encodeURIComponent(u), {method:'PUT'}).catch(()=>{});
-  document.getElementById('url').value = '';
-  setTimeout(load, 1200);
+  document.getElementById('url').value=''; setTimeout(loadTabs,1200);
 }
-async function closeTab(id){
-  await fetch(BASE + '/json/close/' + id).catch(()=>{});
-  setTimeout(load, 600);
+async function closeTab(id){ await fetch(BASE + '/json/close/'+id).catch(()=>{}); setTimeout(loadTabs,600); }
+
+/* ---- 管理页 ---- */
+function color(name){ let h=0; for(const c of name) h=(h*31+c.charCodeAt(0))%360; return 'hsl('+h+',60%,55%)'; }
+function esc(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function loadProfiles(){
+  const d = await j('GET','/_pool/profiles');
+  const el = document.getElementById('plist');
+  el.innerHTML = d.profiles.map(p=>
+    '<div class="card pcard"><span><span class="dot" style="background:'+color(p.name)+'"></span><span class="pname">'+esc(p.name)+'</span>'+
+    ' <span class="muted">'+(p.primary?'（primary）':'port '+p.port)+'</span></span>'+
+    '<span><a href="'+p.path+'" target="_blank">打开</a>'+
+    (p.primary?'':'<button class="del" onclick="removeProfile(\''+esc(p.name)+'\')">删除</button>')+'</span></div>'
+  ).join('') || '<div class="card muted">暂无 profile</div>';
 }
-load(); setInterval(load, 5000);
+async function addProfile(){
+  const name = document.getElementById('newname').value.trim().toLowerCase();
+  const err = document.getElementById('adderr'); err.textContent='';
+  if(!/^[a-z0-9_-]{1,32}$/.test(name)){ err.textContent='名字仅允许小写字母/数字/_/-'; return; }
+  try {
+    const d = await j('POST','/_pool/profiles',{name});
+    window.open(d.path, '_blank');
+    document.getElementById('newname').value=''; loadProfiles();
+  } catch(e){ err.textContent='新增失败: '+e.message; }
+}
+async function removeProfile(name){
+  if(!confirm('删除 profile「'+name+'」？登录态目录会保留（不自动删）。')) return;
+  try { await j('DELETE','/_pool/profiles/'+encodeURIComponent(name)); loadProfiles(); }
+  catch(e){ alert('删除失败: '+e.message); }
+}
+
+/* ---- 路由 ---- */
+if(PROFILE){
+  document.getElementById('view').style.display='block';
+  document.getElementById('viewnote').textContent='隔离 profile「'+PROFILE+'」：与其它 profile 登录态完全隔离'+(PROFILE==='primary'?'（primary）':'');
+  document.title='SilkSec 共享浏览器 · '+PROFILE;
+  loadTabs(); setInterval(loadTabs, 5000);
+} else {
+  document.getElementById('home').style.display='block';
+  loadProfiles(); setInterval(loadProfiles, 8000);
+}
 </script>
 </body>
 </html>
