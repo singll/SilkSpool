@@ -39,7 +39,9 @@ window.__ModuleLoader__.load({
       var bySev = props.bySeverity || []
       var byStatus = props.byStatus || []
       var evalData = props.evalData
-      var noiseN = props.noiseCount || 0
+      // WP10：来源失败时 findings_noise=null → 显示「未知」，不得当 0 隐藏。
+      var noiseUnknown = props.noiseCount === null || props.noiseCount === undefined
+      var noiseN = noiseUnknown ? 0 : (Number(props.noiseCount) || 0)
       var map = {}; bySev.forEach(function (s) { map[s.severity] = s.n })
       var pending = 0; byStatus.forEach(function (s) { if (s.status === 'new') pending = s.n })
       var order = ['critical', 'high', 'medium', 'low', 'info']
@@ -47,7 +49,7 @@ window.__ModuleLoader__.load({
         var c = uiCore.SEV_COLOR[k]
         return el('span', { key: k, style: { ...uiCore.styles.pill, color: c, borderColor: 'color-mix(in srgb, ' + c + ' 40%, transparent)' } }, uiCore.SEV_LABEL[k] + ' ' + map[k])
       })
-      if (!chips.length && !pending && !noiseN) return null
+      if (!chips.length && !pending && !noiseN && !noiseUnknown) return null
       var fpTitle = ''
       if (evalData && evalData.by_type) {
         fpTitle = Object.keys(evalData.by_type).map(function (t) {
@@ -58,13 +60,13 @@ window.__ModuleLoader__.load({
       return el('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', margin: '2px 0 8px' } },
         chips,
         pending ? el('span', { style: { ...uiCore.styles.pill, color: uiCore.T.brand, borderColor: 'color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent)' }, title: '状态为「新发现」的未处理漏洞' }, '待处理 ' + pending) : null,
-        noiseN ? el('button', {
+        (noiseN || noiseUnknown) ? el('button', {
           type: 'button', className: 'silksec-chip',
           'data-on': (props.query && props.query.filters && props.query.filters.noise === '1') ? 'true' : undefined,
           style: { color: uiCore.T.warn, borderColor: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent)' },
           title: '机器直灌 / 缺复现步骤与影响的待验证候选（默认不进漏洞信号面），点击筛出复核',
           onClick: function () { props.query && props.query.setFilter('noise', '1') },
-        }, '待验证候选 ' + noiseN) : null,
+        }, '待验证候选 ' + (noiseUnknown ? '未知' : noiseN)) : null,
         (evalData && evalData.total)
           ? el('span', { style: { marginLeft: 'auto', color: uiCore.T.label3, ...uiCore.F.xxxs, cursor: fpTitle ? 'help' : 'default' }, title: fpTitle }, '评测记录 ' + evalData.total + ' · 技术样本 ' + (evalData.technical_samples || 0) + ' · 未知 ' + (evalData.technical_unknown || 0))
           : null)
