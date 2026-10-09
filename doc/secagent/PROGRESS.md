@@ -32,7 +32,8 @@
 - 机制：额外 profile 由模板单元 `silksec-shared-browser@<name>.service` 承载（同一 host，独立 `SEC_BROWSER_PROFILE`+`CDP_PORT`）；“新增/删除”后端 `silksec-browser-admin.service`（回环 9230，silkspool + 单条 sudo 免密执行固定脚本）→ `/_pool/*`；Caddy 片段 `edge-browser-profiles.caddy` 为 primary+各 profile 生成 `handle_path /p/<name>/*`。注册表 `data/browser-profiles.json`。
 - 验证：`caddy validate` 通过；一次性实例实测 `/`(管理页)、`/p/primary/`、`/p/b/`、`/p/b/json`(9224)、`/p/primary/json`(9222)、`/_pool/profiles` 全部正常；API 与 CLI 的 add/remove 全生命周期通过（临时 `c`/`d` 已加已删、目录清理）；primary（PID 1395048/9222）未重启、登录态不受影响；六个常驻服务 active；`exclude_paths` 增 `.profiles`，maintenance status 正常。详见 18 号 §3/§5。
 - **登录依赖放行（2026-10-09）**：用第二 profile 登录 Coze 时"发送验证码"报错，实测为 Scope 出口守卫拦断字节自家风控/静态依赖域（`rc-verifycenter` 等）：`*.yhgfb-cn-static.com`、`*.bytescm.com`、`*.bytetos.com`、`*.ibytedapm.com`（`ERR_TUNNEL_CONNECTION_FAILED`）。经用户批准，以正式命令 `scope.grant(program=bytedance)` 追加这 4 个窄域（含自动配对裸域，scope_size 35），仅作登录所需被动静态加载；守卫每次请求读 scope.yml、无需重启即生效。实测重载登录页 0 失败请求、0 4xx。管理机副本已 `spool sync pull csai` 回收。
-- 下一步：你在 `/p/b/`（或点新增按钮建的新 profile）登录第二个账号；随后 A/B 读取实验可分别指向对应 CDP 端口。
+- **DevTools 交互入口改为浏览器自带前端（2026-10-09）**：inspect 走本 profile 的 `/p/<name>/devtools/inspector.html`（Chromium 内置、相对资源、经 profile 反代到 CDP），不再经 `chrome-devtools-frontend.appspot.com`——该域在本网出口 DNS 被解析为 fake-IP（198.18.x）、直连与 xray 均不可达，导致 inspector 502、无法交互。已实测经 profile 路由加载 title=DevTools、UI 渲染、WS 连接正常；`edge-Caddyfile` 移除 `/serve_rev/*` appspot 反代。
+- 下一步：你在 `/p/<name>/` 登录第二个账号；随后 A/B 读取实验可分别指向对应 CDP 端口。
 
 ## 三、维护规则（通用，必须遵守）
 

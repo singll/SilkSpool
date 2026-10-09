@@ -27,10 +27,6 @@ http://:9223 {
         rewrite / /browser.html
         file_server
     }
-    # DevTools 前端自托管反代（同源：WS 鉴权随页面域走；顺带解决 appspot 可达性）
-    handle /serve_rev/* {
-        reverse_proxy https://chrome-devtools-frontend.appspot.com {
-            header_up Host chrome-devtools-frontend.appspot.com
-        }
-    }
+    # DevTools 前端由各 profile 自带的 /devtools/（Chromium 内置）经 /p/<name>/devtools/* 反代，
+    # 不再依赖 chrome-devtools-frontend.appspot.com（该域在本网出口不可达）。
 }

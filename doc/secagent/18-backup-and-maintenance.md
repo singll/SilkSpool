@@ -93,6 +93,8 @@ timer采用Persistent与最多120秒随机延迟。服务为root（读证书所�
 
 “新增/删除 profile”后端为 `silksec-browser-admin.service`（`dsh-browser-admin.mjs`，回环 9230，User=silkspool）：`GET/POST /profiles`、`DELETE /profiles/<name>`，经 `edge-Caddyfile` 反代到 `/_pool/*`。它以 `sudo -n`（`/etc/sudoers.d/silksec-browser-profiles` 单条免密）执行固定运维脚本 `sec-browser-profiles.sh {list|add <name> [--port N]|remove <name>|render|apply}`（profile 名 `[a-z0-9_-]{1,32}` 白名单，无 shell 注入面）。注册表 `data/browser-profiles.json`（644，仅名字/端口/目录，无秘密）；Caddy 片段 `edge-browser-profiles.caddy`（由 `edge-Caddyfile` import，为 primary 与各 profile 生成 `handle_path /p/<name>/*`）。新增 profile 须同步存在于 `exclude_paths`（当前以 `.profiles` 根整体排除）。profile 目录=登录态凭据，权限 700；`remove` 保留目录，不自动删登录态。
 
+**DevTools 交互前端**：`inspect` 入口用**浏览器自带的 `/devtools/inspector.html`**（经 `/p/<name>/devtools/*` 反代到该 profile 的 CDP），不再依赖 `chrome-devtools-frontend.appspot.com`（该域在本网出口被 DNS 解析为 fake-IP、直连与代理均不可达，曾致 inspector 502）。
+
 - 全部写维护操作共用非阻塞flock；锁冲突退出75。定时服务将75记作跳过成功，下周期再试；**变更前门禁不得把75当成功**。status不占锁。
 - 备份先打pending标签，成功后才标routine并发布last-backup。备份失败不淘汰最后成功副本；routine保留8份、pending最多1份，forget只删索引引用，prune才回收无引用数据块。
 - cleanup：旧本地图快照留2份，先quick_check保留副本；audit/events活动JSONL超过50MiB轮转，`.bak`各留3份（bus内置`.1`轮转独立）。不按年龄删除results/flows/evidence/sessions、不删业务表。默认只列计划，`--apply`才删除；例行timer已带apply。

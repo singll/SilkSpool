@@ -47,18 +47,19 @@
   <h2>当前标签页</h2>
   <div id="list">加载中…</div>
   <h2>说明</h2>
-  <div class="card muted">DevTools 前端与 WebSocket 已同源反代，任何入口都不会再有跨域鉴权/混合内容问题。</div>
+  <div class="card muted">DevTools 前端由浏览器自带的 <code>/devtools/</code> 提供并经本 profile 反代，同源、不依赖外网前端。</div>
 </div>
 
 <script>
-const REV = '@782af9cb30a53f54487e5d2e44738645a8ec457c';
 const BASE = location.pathname.replace(/\/$/, '');
 const seg = BASE.split('/').filter(Boolean);
 const PROFILE = (seg[0] === 'p' && seg[1]) ? seg[1] : null;   // null = 管理页
 
+// DevTools 前端由 Chromium 自带（/devtools/inspector.html，相对资源），经本 profile 的
+// /p/<name>/devtools/* 反代到该 CDP 端口——不再依赖 chrome-devtools-frontend.appspot.com。
 function inspectUrl(id){
   const proto = location.protocol === 'https:' ? 'wss=' : 'ws=';
-  return location.origin + '/serve_rev/' + REV + '/inspector.html?' + proto + location.host + BASE + '/devtools/page/' + id;
+  return location.origin + BASE + '/devtools/inspector.html?' + proto + location.host + BASE + '/devtools/page/' + id;
 }
 async function j(method, url, body){
   const r = await fetch(url, {method, headers: body?{'Content-Type':'application/json'}:{}, body: body?JSON.stringify(body):undefined});
