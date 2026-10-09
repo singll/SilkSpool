@@ -17,6 +17,7 @@
 - **已知遗留（非阻塞，待后续会话）**：sec-suite/asset-db/experience 内部少量 v4 读取函数（experience 仍被 dashboard-rpc/task 链路引用）；后续治理纳入27号对应工作包，不重开已关账迁移。
 - **在办批次**：25 号方案 B1 大数据治理（42 号补丁）**已部署验收**；B2 部分完成（索引/聚合缓存/批量投影；FTS 缓期）；**B3 升级链 P1–P8 已全部完成并关账（CHAIN END，2026-09-30）**——生产 0.1.7-rc.2（U3 P6b 切换、finalize invariants failures=0、+72h 观察期 P7/P8 两次只读巡检全绿、U4b 新冻结点 + `preserve_after_resume ok=true`、用户指令提前关账；P6 首次失败已回滚+静音修复+预演后重试成功，窗口 2h56m25s、业务 RPO=0）。**遗留移交 27 号方案/观察期后治理**（僵尸泄漏两路径、设置保存写路径、failover 预流缺口、kbList、Campaign 3 预算、提交 SOP/SLA 等）见 [state open_issues](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-state.md)——详见[升级方案](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-plan.md) · [执行记录 §13–§19](archive/upgrades/2026-09-26-dsh-0.1.7-rc.2-record.md)。
 - **27 号发现能力改造**：目标/请求/完整H2队列、可信读取、费用账本、worker认领隔离、回收事件和有界失败重试已部署；全域659/659、生产UI80/80、单任务收尾通过。范围与剩余缺口见 [27号§10.4–10.6](27-business-quality-and-capacity-plan-2026-09-30.md)。全方案未关账；采用闭环分批提交与发布验收后分批部署，业务增量提交`38deb2b`已上线；预算超限触发暂停放量，详见§二。
+- **本轮合批上线（2026-10-09）**：change `20261009-nonbrowser-batch` 部署 WP02/WP01/WP05/WP07/WP10 修复（7 模块 15 落点，停写→启动 3.41s，全域 814/814）；Campaign 全 paused，不含浏览器/代理。详见 27 号 §15.132。
 - **当前接续**：WP04/WP02已核实扣子单账号登录，25条请求观测含18种匿名与5种新登录接口（7条新增观测）；2组匿名访问边界可靠阴性。双账号暂缓；继续有效模板、读型POST/路径风险契约、HAR健康投影与单账号技术判定→知识归因。Campaign原额度/暂停未改，试点独立有界执行。
 - **WP06/WP07待续**：旧原件剩18项转历史未知清单，无新原库/导出线索不再重复检索，不进入技术训练/收益计数；已找回材料保留，未知不判无洞。主线转新实验的可靠判定、版本/attempt归因与学习对照，见27号§15.119。
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
@@ -26,14 +27,11 @@
 
 ## 二、最近进度结果
 
-### 2026-10-09 · 直连流量审计、停止隐式扫描并恢复代理池转发（已部署，池稳定性未通过）
+### 2026-10-09 · 非越权合批部署（已上线）
 
-- 验证码故障已与入口502区分：用户确认inspect可打开；真实Firefox/Chromium均可显示远程页面。人工点击send_code返回HTTP200/error_code7“系统繁忙”，本机浏览器同样失败；未证明IP封禁，不重试短信或绕过限制。
-- 发现平台层xray异常：今日00:02启动的实例累计`num_sent_http_requests=74898`、扫描URL153；日志processing中code.coze.cn85、www.coze.cn9，其余含字节/美团依赖。累计扫描计数不能逐条归因到验证码或某个主机。正式执行器今日38次direct HTTP，三个Campaign仍paused、运行task/worker均0，不能据此忽略域外扫描。
-- 根因：webscan实际加载`xray/config.yaml`（扫描/转发代理均空、parallel30/max_qps500、多扫描插件开启），原先改过的`module.xray.yaml Client.proxy=8899`没有控制此命令。22:42:39停止xray遏制新增探测。受管浏览器Scope只能约束交给xray的原始连接，不能证明其衍生请求仍经过Scope/任务预算；旧“全部受控”结论需收窄。
-- change `20261009-egress-containment`：新增启动配置生成器，明确`--config browser-forward.yaml`、所有插件disabled、`http.passive_mode=true`、扫描/转发两代理均8899，不回退直连。隔离反例证明仅关插件仍会额外GET /index.php；passive_mode后一次输入仅一次转发，上游关闭返回502且受控目标直连计数0。3项配置测试+1项真实xray集成通过。原始配置/统计受限封存，不清账号/Cookie/Scope，不改域owns或池文件。
-- 修复重启缺陷：固定`--json-output xray-passive.json`遇旧文件会退出，首轮生产触发重启循环，随后移除重复文件输出，原件保留，保留webhook→exec通道（旧统计末值未刷新，新增零计数以journal为准）；最终服务恢复。配置/回执位于上述release。未把首次失败记成成功。
-- 代理池本来一直active；现已接上浏览器`Scope→7777→8899`。独立HTTPS出口回显与直接出口不同，7777使用现役CA验证通过，新journal扫描计数0（旧webhook统计未刷新）。免费随机池实际页面验收出现CDN CORS失败/导航超时，不能宣称登录可用、稳定会话或IP解封；固定可信出口仍待配置，不通过换IP重试受限验证码。仅恢复出口链和停止额外扫描，不恢复自动业务放量。
+- 按 §15.128（不做越权/双账号）后推进其余工作包并**合批上线** change `20261009-nonbrowser-batch`（源基线 `f008376`，DSH 0.1.7-rc.2）：WP02 非越权 Oracle 加固（E07 公开邮箱排除 / E05 多轮时间盲注 / E06 OOB 健康+窗口）、WP01 无进展停止（按真实进展非 heartbeat）、WP05 H1 指纹接线 + C06 vulnclass 仅 verified/rejected 才关闭、WP07 hit_matrix 改读 `know_scores`、WP10 stats unknown=null、`asset.fp_query` actor 补 reactor。
+- 快速发布 7 模块 15 文件（源模板 + 已安装插件；view-vuln client 双落点），停写→启动 **3.41 秒**；15 落点摘要一致、六服务 active/NRestarts0/journal err0、无 running task/worker。生效核验：`ledger.coverage_metrics.vulnclass.indeterminate_classes` 已返回、`know.hit_matrix` 可查。Campaign 全 paused（放量须人工批预算），未做发布后 NAS 恢复；不含浏览器/代理（另一会话）。
+- 仍待：WP02 属性重放、WP03 fencing/请求预算/F06、WP05 H3/根因去重/分页饥饿、WP07 独立样本/真实收益、WP10 其余视图 unknown。详见 27 号 §15.128–132/§16。
 
 ## 三、维护规则（通用，必须遵守）
 

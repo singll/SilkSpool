@@ -2020,6 +2020,16 @@ change `20261009-egress-containment`已关闭全部插件并设http.passive_mode
 
 验证：ledger 32/32、全域 **814/814**；用例覆盖 inconclusive→重开且不计已测、verified→关闭且计入已测。H3、旧分页饥饿、根因去重、TTL/配额分离仍待办。
 
+### 15.132 非越权合批部署（2026-10-09，已上线）
+
+change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`。按 §15.119 快速发布（未整树冻结/NAS 重跑；不含浏览器/代理，由另一会话处理）：
+
+- **合批内容**：WP02 非越权 Oracle 加固（rules）、WP01 无进展停止 + WP05 H1 指纹接线（task）、WP05 C06 vulnclass 条件重开（ledger）、WP07 hit_matrix（know）、WP10 stats unknown（dashboard-rpc + view-vuln client）、`asset.fp_query` actor 补 reactor（asset）。
+- **落点**：7 模块 15 文件（源模板 + 已安装插件；client 更新 `plugins/sec-dashboard-view-vuln/client.js` 与 `data/profiles/web/node_modules/@silksec/sec-dashboard-view-vuln/client.js` 两份）。安装前断言 DSH 版本、全部 15 个旧文件摘要、无 running task/worker、Campaign 全 paused；旧源码入 `dsh-upgrades/20261009-nonbrowser-batch/previous/`。
+- **结果**：停写→启动 **3.41 秒**；15 落点安装摘要全部一致；六服务 active、NRestarts0、journal err0；`bus.status` 490ms(冷)/`dashboard.stats` 20ms/`workspaces` 11ms、无 running task/worker。
+- **生效核验**：`ledger.coverage_metrics.vulnclass` 返回新字段 `indeterminate_classes`；`know.hit_matrix` 可查（0 行，暂无 `know_scores` 源）；RPC 正常。
+- **边界**：Campaign 仍全 paused（放量须人工批预算）；未做发布后 NAS 恢复；不宣称真实漏洞产出或学习收益。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。

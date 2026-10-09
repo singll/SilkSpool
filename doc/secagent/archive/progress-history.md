@@ -1035,3 +1035,12 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - 用户报browser域名502；网关90分钟日志显示旧`/serve_rev/@.../inspector.html`曾502，最近另有上批停机导致的profile/json失败，当前管理/列表/新DevTools资源200。未获得用户完整URL，不能断言本次报错一定来自旧链接；为旧路径补`302 → /`并禁缓存，回管理页取得重启后的现役target链接。
 - 管理页/profile列表增加非200及JSON错误展示、定时恢复；不再把502作为JSON解析异常后无提示。仅两文件热更新及Caddy reload，未重启浏览器、未改Cookie/Scope/账号。
 - change `20261009-browser-edge-fix`：使用随机临时Basic账号经真实`https://browser.silksecagent.singll.net`完成登录首页200、旧链接302、primary/socend inspect资源0失败且各自WebSocket连接、模拟502后自动恢复。临时账号每轮finally移除、原认证保持，未认证仍401。Caddy2.6重定向首版参数解析不符已修正为显式匹配器，标题断言允许DevTools带站点后缀。源码/管理模板/生产落点一致，旧文件与5项验收回执封存上述release。
+
+### 2026-10-09 · 直连流量审计、停止隐式扫描并恢复代理池转发（已部署，池稳定性未通过）
+
+- 验证码故障已与入口502区分：用户确认inspect可打开；真实Firefox/Chromium均可显示远程页面。人工点击send_code返回HTTP200/error_code7“系统繁忙”，本机浏览器同样失败；未证明IP封禁，不重试短信或绕过限制。
+- 发现平台层xray异常：今日00:02启动的实例累计`num_sent_http_requests=74898`、扫描URL153；日志processing中code.coze.cn85、www.coze.cn9，其余含字节/美团依赖。累计扫描计数不能逐条归因到验证码或某个主机。正式执行器今日38次direct HTTP，三个Campaign仍paused、运行task/worker均0，不能据此忽略域外扫描。
+- 根因：webscan实际加载`xray/config.yaml`（扫描/转发代理均空、parallel30/max_qps500、多扫描插件开启），原先改过的`module.xray.yaml Client.proxy=8899`没有控制此命令。22:42:39停止xray遏制新增探测。受管浏览器Scope只能约束交给xray的原始连接，不能证明其衍生请求仍经过Scope/任务预算；旧“全部受控”结论需收窄。
+- change `20261009-egress-containment`：新增启动配置生成器，明确`--config browser-forward.yaml`、所有插件disabled、`http.passive_mode=true`、扫描/转发两代理均8899，不回退直连。隔离反例证明仅关插件仍会额外GET /index.php；passive_mode后一次输入仅一次转发，上游关闭返回502且受控目标直连计数0。3项配置测试+1项真实xray集成通过。原始配置/统计受限封存，不清账号/Cookie/Scope，不改域owns或池文件。
+- 修复重启缺陷：固定`--json-output xray-passive.json`遇旧文件会退出，首轮生产触发重启循环，随后移除重复文件输出，原件保留，保留webhook→exec通道（旧统计末值未刷新，新增零计数以journal为准）；最终服务恢复。配置/回执位于上述release。未把首次失败记成成功。
+- 代理池本来一直active；现已接上浏览器`Scope→7777→8899`。独立HTTPS出口回显与直接出口不同，7777使用现役CA验证通过，新journal扫描计数0（旧webhook统计未刷新）。免费随机池实际页面验收出现CDN CORS失败/导航超时，不能宣称登录可用、稳定会话或IP解封；固定可信出口仍待配置，不通过换IP重试受限验证码。仅恢复出口链和停止额外扫描，不恢复自动业务放量。
