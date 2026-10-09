@@ -28,6 +28,7 @@ templates:
   - settings.yaml
   - silksecagent.service
   - silksecagent-edge.service
+  - silksecagent-services.test.py
   - edge-Caddyfile
   - edge-static/browser.html
   # --- 显式版本升级：经 spool exec 分阶段冻结、准备、验收和切换 ---

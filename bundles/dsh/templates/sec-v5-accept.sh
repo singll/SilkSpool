@@ -219,7 +219,7 @@ marker_check "ui-know-learning-pipeline" "$ui_know_bundle" "learningPipeline" "�
 if [ "$UI_HEADLESS" = "1" ]; then
   ui_out=""; ui_rc=0
   if [ -f "$BASE_DIR/dsh-ui-surface-smoke.py" ]; then
-    ui_out="$(python3 "$BASE_DIR/dsh-ui-surface-smoke.py" 2>&1)" || ui_rc=$?
+    ui_out="$(python3 "$BASE_DIR/dsh-ui-surface-smoke.py" --browser-url http://127.0.0.1:3080 2>&1)" || ui_rc=$?
   else
     ui_rc=1; ui_out="UI_CHECK|1|ui-headless-harness|缺少 dsh-ui-surface-smoke.py"
   fi

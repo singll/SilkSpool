@@ -1,5 +1,5 @@
 [Unit]
-Description=SilkSecAgent LAN edge (caddy 192.168.7.107:3080 -> 127.0.0.1:3080, Host 改写绕开 DSH loopback 特权栅栏)
+Description=SilkSecAgent LAN edge (caddy :3080 -> 127.0.0.1:3081, shared browser :9223)
 After=silksecagent.service
 Requires=silksecagent.service
 

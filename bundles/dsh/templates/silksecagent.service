@@ -1,7 +1,8 @@
 [Unit]
 Description=SilkSecAgent - DSH based AI Security Platform (Web UI :3080)
 After=network-online.target
-Wants=network-online.target
+# Requires= on the edge stops it with this service; pull it back in on start.
+Wants=network-online.target silksecagent-edge.service
 
 [Service]
 Type=simple

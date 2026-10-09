@@ -44,6 +44,12 @@
 
 > **与旧设计的差异（回填）**：原 16-dashboard 设计「UI 视图从第一天就调 `{domain}.{verb}`、`/silksec-dashboard` 的 case 代码删除」**未按此执行**。实际落地是：视图包继续调 `/silksec-dashboard` 的 v4 case 名，但 `dashboard-rpc.js` 把这些 case 整体改写为 **总线的瘦适配层**（UI-0，commit `e9dd1f1`；2026-09-18 的 63 处 `v4 兜底` 归零）。`{domain}.{verb}` 自动投影通道（`/silksec-domain`）服务非 UI 调用面。两通道并存、各司其职；`/silksec-dashboard` 端点是 **UI 专用适配层**，不是遗留待删代码。
 
+### 1.0 WebUI访问链路与运行验收（2026-10-09修复）
+
+用户入口`https://silksecagent.singll.net` → 网关Caddy → csai `:3080`（silksecagent-edge）→ 本机`127.0.0.1:3081`（silksecagent）。edge同时承载共享浏览器`:9223`。主服务的`Wants=silksecagent-edge.service`保证启动/重启拉起入口，edge保留`Requires`及`After=silksecagent.service`。只检查主PID或3081不能宣称WebUI正常；未登录401是认证响应，还需认证后的真实浏览器验证。
+
+`dsh-ui-surface-smoke.py --browser-url https://silksecagent.singll.net`经真实域名渲染；维护认证保持默认本机3081，Cookie仅临时交给指定入口，结束还原账号并注销。`sec-v5-accept.sh`的UI无头阶段默认经过3080。2026-10-09生产域名验收35/35，13界面健康、RPC读取成功、无页面/控制台错误。systemd隔离回归覆盖首次启动、stop/start、restart和edge独立停止后的主服务restart；生产未为验收重启。
+
 ### 1.1 服务标识与挂载
 
 **核心架构转变：UI 也「一切皆插件」**——旧单体被拆成 **承载面包**（平台能力）+ **各域视图包**（业务视图）。

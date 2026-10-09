@@ -8,7 +8,7 @@
 #       → 退出时正式 logout。
 # 只读业务数据（写抽样经浏览器路由 stub 不落库）；成功/失败经子脚本 UI_CHECK 行回传。
 #
-# 用法：python3 dsh-ui-surface-smoke.py [--base DIR] [--url URL] [--unit UNIT] [--node NODE] [--mjs MJS]
+# 用法：python3 dsh-ui-surface-smoke.py [--base DIR] [--url 本机认证URL] [--browser-url 访问入口] [--unit UNIT] [--node NODE] [--mjs MJS]
 # 退出码：0 = 全绿且 users.yaml 已还原、已登出；1 = 有失败项。
 # ==============================================================================
 import argparse
@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from pathlib import Path
 
 
@@ -32,11 +33,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="/opt/silkspool/dsh")
     parser.add_argument("--url", default="http://127.0.0.1:3081")
+    parser.add_argument("--browser-url", help="浏览器实际访问的入口；本机维护认证仍使用 --url")
     parser.add_argument("--unit", default="silksecagent.service")
     parser.add_argument("--node", default="/usr/local/node/bin/node")
     parser.add_argument("--mjs", default=None)
     parser.add_argument("--client", default=None)
     args = parser.parse_args()
+    browser_url = args.browser_url or args.url
+    parsed_browser = urllib.parse.urlsplit(browser_url)
+    if (parsed_browser.scheme not in {"http", "https"} or not parsed_browser.hostname
+            or parsed_browser.username or parsed_browser.password
+            or parsed_browser.path not in {"", "/"} or parsed_browser.query or parsed_browser.fragment):
+        parser.error("--browser-url 必须为 HTTP(S) 根地址")
+    browser_url = browser_url.rstrip("/")
 
     base = Path(args.base)
     client_path = Path(args.client) if args.client else base / "dsh-upgrade-local-client.py"
@@ -56,11 +65,11 @@ def main():
     client = None
     try:
         with client_mod.MaintenanceClient(str(base / "data"), str(work), url=args.url, unit=args.unit) as client:
-            cookies = [{"name": k, "value": v, "url": args.url} for k, v in client.cookies.items()]
+            cookies = [{"name": k, "value": v, "url": browser_url} for k, v in client.cookies.items()]
             cookies_file.write_text(json.dumps(cookies))
             os.chmod(cookies_file, 0o600)
             env = dict(os.environ)
-            env["SEC_UI_BASE"] = args.url
+            env["SEC_UI_BASE"] = browser_url
             proc = subprocess.run(
                 [args.node, str(mjs), str(cookies_file)],
                 capture_output=True, text=True, timeout=300, env=env,
