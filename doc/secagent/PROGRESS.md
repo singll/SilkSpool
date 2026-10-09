@@ -10,7 +10,7 @@
 - **真实漏洞发现能力专项**：[27 号方案](27-business-quality-and-capacity-plan-2026-09-30.md)已按用户澄清重新审查，**累计业务及WP03输入计量修复已部署，默认150k只读闭环通过，暂不扩大**。仅以真实漏洞数量、技术质量和发现效率评价，撤销提交/accepted/赏金门槛；重点为真实请求、假设路由、可靠执行、候选丢失/误抑制、技术判定和知识实效。保留 12 个工作包、15 组技术验收；0.1.7 升级链已关账，移交缺陷继续纳入；本轮仅发布业务增量。
 - **DSH 0.2.0 研究与升级计划**：[26 号方案](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)已完成调研，**待实施**；建议从 0.1.7-rc.2 直接升 0.2.0-rc.2，U3 前须旧链 P8 关账——**已满足（P8 于 2026-09-30 关账）**。当前生产版本与旧升级链状态不因本计划改变。
 - **Phase 状态**：**Phase 0–5 全部完成并关账**；迁移链已结束；发现能力整改由27号专项继续推进。
-- **当前运行**：738e6db请求/评测基线与00b0eb6浏览器快捷入口运行；2026-10-09单账号批次收尾主PID1412257、edge1412258、共享浏览器1395048，均active/NRestarts0，DSH0.1.7-rc.2。响应契约本批热加载无重启，浏览器仍登录。Campaign暂停/原预算不变；旧冷启动问题不宣称根治。
+- **当前运行**：D09（累计预算硬上限 + 预算审批人工化，`6f019d0`，change `20261009-d09-budget-cap`）已同版本快速发布；主PID1431922、edge1431923、共享浏览器1395048，均active/NRestarts0，DSH0.1.7-rc.2。冒烟 bus.status12ms/stats20ms、`campaign_get` 含 `lifetime_spent_tokens`、无运行任务/worker、quick_check ok。启动就绪约38秒，旧冷启动未宣称根治。Campaign全paused/原预算不变。
 - **旧升级关账基线**：DSH **0.1.7-rc.2**（2026-09-27 17:29:26Z U3 生产切换，P6b；**2026-09-30 P8 关账（用户指令提前）**——U4b 只读巡检全绿 + 新冻结点 `c85f3b9f…` + `preserve_after_resume ok=true`；关账后 MainPID **922156**、NRestarts=0、6 单元 active、15 域、accept2b **PASS=80 FAIL=0**、journal err=0；会话 1767（V4））。P7 巡检 1（09-29）+ P8 巡检 2（09-30）均全绿；旧基线 0.1.5-rc.2 履历见历史归档。
 - **最近一次全面检查**：[archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI；**四轮修复全部落地验收，结论已全部回填各模块，2026-09-22 归档**，见其 §十一）。
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
@@ -22,14 +22,14 @@
 - **文档漂移排查**：B1–B5 全部闭环（2026-09-19）；详见历史归档。
 - **领域语言**：[CONTEXT](../../bundles/dsh/CONTEXT.md)。
 - **本批发布**：WP07平台来源隔离/统一漏洞卡版本（最终跨域692项通过）；WP10文献完整分页（know82项、RPC6项通过）；DNS同答案选址和TTL绑定（7+9项通过）。应用已完成冻结/隔离/生产RPC验收并恢复（PID1222799，kbList432项）；DNS工具已安装、31项远端测试/恢复通过，后续admission版33项远端测试/恢复及一次真实GET通过（HTTP200/code0、6个平台），见27号§15.30–15.33。
-- **当前优先（2026-10-09）**：按用户明确授权加速，现有业务数据/代码可舍弃或重建；普通修复取消整树恢复和重复演练，测试按影响范围/合批执行。优先真实请求→有效实验→可信判定→知识效果；894ce9f学习去重与7e00291预算窗口已部署，本批业务响应质量及公开资源评测已完成生产对照。**WP01 D09（专项累计预算硬上限 + 预算审批人工化）本地完成待部署**，并完成原子域合规与备份/恢复核查（见§二、27号§15.127/§17/§18）。全案未关账。
+- **当前优先（2026-10-09）**：按用户明确授权加速，现有业务数据/代码可舍弃或重建；普通修复取消整树恢复和重复演练，测试按影响范围/合批执行。优先真实请求→有效实验→可信判定→知识效果；894ce9f学习去重与7e00291预算窗口已部署，本批业务响应质量及公开资源评测已完成生产对照。**WP01 D09（专项累计预算硬上限 + 预算审批人工化）已同版本快速发布并冒烟通过**，并完成原子域合规与备份/恢复核查（见§二、27号§15.127/§17/§18）。全案未关账。
 
 ## 二、最近进度结果
 
-### 2026-10-09 · WP01 D09 专项累计预算硬上限与预算审批人工化（本地完成，待部署）
+### 2026-10-09 · WP01 D09 专项累计预算硬上限与预算审批人工化（已部署）
 
 - 专项预算改为**累计硬上限**：所有预算判定统一用 `max(窗口已记费用+未结预留, 全周期已记费用+未结预留)`，窗口滚动不再返还额度；认领准入、派发检查、规划剩余额度、预算停止、自动恢复、`campaign_activate`/`campaign_autonomy_apply` 口径一致。额度**暂时**不足时认领延后回 queued（非永久 blocked），额度释放后自动重新认领。
-- 预算类审批（campaign-budget-extend/task-budget-extend/task-budget-config）`approve` 现要求 human/dashboard，移除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 自动批准；Supervisor 仍可 80% 水位提请，但扩额须人放行。task/approval 137/167、全域 802/802 fail=0；只改 task/approval 及契约测试，未部署。
+- 预算类审批（campaign-budget-extend/task-budget-extend/task-budget-config）`approve` 现要求 human/dashboard，移除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 自动批准；Supervisor 仍可 80% 水位提请，但扩额须人放行。task/approval 167、全域 802/802 fail=0。**已同版本快速发布**（change `20261009-d09-budget-cap`，3模块6落点，停写→启动1.36秒，旧源码可回退）：六服务active/NRestarts0、bus.status12ms/stats20ms、`campaign_get` 含 `lifetime_spent_tokens`、Campaign全paused、无运行任务/worker、quick_check ok。
 - **原子域合规复核**（只读）：跨域 import 0（仅 endpoint→同域被动采集 companion `har.js`）；生产 `owns×沙箱` 交叉断言 violations=0；doc-27 新增表均属主域并随 asset-graph.db 纳入 41 库备份；`discipline-audit` 仅 task objective 的 `asset_enum`（task kind/source 标签）误报 49 处，已加豁免（本地未部署），prompt 资产悬空 0、旧别名 0。详见 27 号 §17。
 - **备份/恢复核查**（只读 + drill）：最近备份 `3b05dfb9…`（2026-10-09 06:19 UTC，88.5s/41 库），手动 drill 41 库 SQLite 恢复 7.14s 通过，`backup_stale=false`、磁盘 67%、routine 恰好 8 份、release-archive 1 份；6 个维护 timer 均 active。清理 10-05 遗留 `routine-pending` 快照 `a1251905…`（一次中断备份残留，已 forget，数据块待周日 prune）。详见 27 号 §18。
 

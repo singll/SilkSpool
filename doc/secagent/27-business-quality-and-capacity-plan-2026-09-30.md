@@ -1945,13 +1945,15 @@ fixture-runner-v3新增有界authz-read-v2，候选必须实际请求owner/low�
 
 首次生产配置root:600导致服务进程不可读，请求在准入前失败；修正为业务进程所有后执行，未修改权限校验。证据`out/secagent-audits/20261009-read-permits/`保存失败、263项验收、固定包、安装与RPC/浏览器日志；生产原件`data/results/readpermit-pilot-20261009/`。此批完成具体只读请求正式接线，不代表所有业务POST已授权或WP04达20–50份健康模板。后续单账号结构化判定本地开发中，未据此宣称上线。
 
-### 15.127 D09 专项累计预算硬上限与预算批准人工化（2026-10-09，本地完成，未部署）
+### 15.127 D09 专项累计预算硬上限与预算批准人工化（2026-10-09，已部署）
 
 补完 WP01 的最后一项确定性缺口 D09（此前各批均记录「自动续费累计上限仍未完成」）。专项预算由「窗口滚动可重复用」改为**累计硬上限**：所有预算判定改用统一口径 `max(窗口已记费用+未结预留, 全周期已记费用+未结预留)`，窗口滚动不再返还累计额度。覆盖认领准入 `reserveTaskBudget`、专项派发预算检查、规划剩余额度、预算停止条件、`autoRecover` 自动恢复、`campaign_activate` 与 `campaign_autonomy_apply`；`campaignUsage` 已有 `lifetime_spent_tokens` 供消费，不再新增平行账本。
 
 预算类审批（`campaign-budget-extend`/`task-budget-extend`/`task-budget-config`）的 `approve` 现要求 actor ∈ {human, dashboard}，移除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 默认自动批准；Supervisor 仍按 80% 水位自动**提请**，但扩额须人放行。effect 增加安全整数与「≤ 原预算×2」校验。专项额度**暂时**不足（在飞预留未结、窗口消费到期）时认领延后回 queue 而非永久 blocked，额度释放后自动重新认领；每-program 硬预算耗尽与专项停用仍 blocked，避免「条件变化后无法恢复」。
 
-验证：task/approval 137/167、全域 **802/802**、fail=0；新增红例覆盖窗口过期不复活累计额度、认领计入过期消费与未结预留、系统 actor 不得自批预算。本批只改 `domain-task`/`backend-task-sqlite`/`domain-approval` 及契约测试，未部署。原子域合规复核另见本节后附的 §17。
+验证：task/approval 167、全域 **802/802**、fail=0；新增红例覆盖窗口过期不复活累计额度、认领计入过期消费与未结预留、系统 actor 不得自批预算。
+
+**发布与运行验收**：change `20261009-d09-budget-cap`，固定源 `6f019d0`，DSH 0.1.7-rc.2。按 §15.119 快速发布：只改 `domain-task`/`backend-task-sqlite`/`domain-approval` 三模块各「源模板+已安装插件」共 6 落点，保留旧源码于 `dsh-upgrades/20261009-d09-budget-cap/previous/`；安装前断言 DSH 版本、全部旧文件摘要、无 running task/worker、Campaign 全 paused。停写到启动 1.36 秒。生产冒烟：silksecagent/edge/shared-browser active、NRestarts0、journal err0；`bus.status` 12.4ms、`dashboard.stats` 19.7ms、`scope.check` 1.9ms、`know.health` 77.3ms；`task.campaign_get` 返回 `window_usage.lifetime_spent_tokens`；Campaign 1/2/3 仍 paused（账面 188.83M/621.38M/210.28M），无运行任务/worker、quick_check ok。启动就绪约 38 秒（10:29:33 active → 10:30:11 监听），期间在开浏览器轮询触发 13 次 502，属既有冷启动现象，不归因本批，也不宣称冷启动已修。原子域合规复核另见 §17。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
@@ -1959,7 +1961,7 @@ fixture-runner-v3新增有界authz-read-v2，候选必须实际请求owner/low�
 
 | 包 | 已具备基础 | 尚需完成的验收 |
 |---|---|---|
-| WP01 | 目标/Program/派发/认领、候选30及ledger200补页、**D09累计硬上限与预算审批人工化回归**（§15.127，本地未部署） | 业务进展停止信号、完整候选轮转、C3按真实剩余量处置；D09 须随下一批发布并验收，勿在未部署前恢复无界运行 |
+| WP01 | 目标/Program/派发/认领、候选30及ledger200补页、**D09累计硬上限与预算审批人工化已上线**（§15.127，change `20261009-d09-budget-cap`） | 业务进展停止信号、完整候选轮转、C3按真实剩余量处置；C2/C3 已超累计额度，恢复须经人批新额度，勿恢复无界运行 |
 | WP02 | 受控HTTP、owner-only读取、可信capsule/confirm、身份前检及单账号2组匿名边界阴性 | 更多真实适用实验及单账号判定自动接线；其余Oracle弱信号/故障正负样例、属性重放，禁止自报替代技术真值 |
 | WP03 | claim/run/ACK、busy补偿、在飞预留、请求usage和估算 | 完整fencing/多进程恢复、共享请求预算/429退避、D07进程清理、F06死信/投影；最终账单及历史精确洗账不再必需 |
 | WP04 | HAR/被动捕获、正式HTTP接线、18种匿名请求及单账号5种新接口、响应前置已上线 | 20–50份不同且适用的业务模板（不能用失败/空列表凑数），method/body/身份/对象归集、读型POST风险契约及HAR健康判定，B09参数队列执行确认 |
