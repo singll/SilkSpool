@@ -652,9 +652,11 @@ exec 域的运行依赖一批**平台层边缘资产**——它们不属于任�
 | `oob/interactsh-server` | 已部署未启用（占位 `OOB_DOMAIN_TBD`，阻塞=公网 NS 委派） | OOB 带外验证通道（盲 SSRF/盲 RCE 回连证据）。证据形态 `oob:` 前缀与轮询归属见 02-vuln §四.7；启用前工具面须能感知"OOB 不可用"并降级 |
 | `silksec-intel.timer` | 每日 nuclei 模板更新（intel-refresh.sh → `~/nuclei-templates` → `data/intel/intel.jsonl` 追加一行版本记录） | **域外单写者声明**：intel.jsonl 由 systemd timer 写入（不经总线、无事件）——它不在本域 owns 内，`exec_intel_hunt` 是其**消费方**（模板库检索）；版本追溯经文件读取而非事件回放，01-bus §2.7 的 data/events 统一口径对它豁免 |
 
-**共享浏览器原生运行配置（2026-10-09）**：`dsh-shared-browser-host.mjs` 默认完整有界面 Chromium；服务器无 DISPLAY 时启动独立 Xvfb（需系统已安装，自动分配显示号，禁TCP监听），profile/CDP/Scope出口与 xray 下一跳保持。UA/Client Hints/platform/plugins/mimeTypes/WebGL 使用浏览器原生实现，不覆写 webdriver；默认中文、Asia/Shanghai、1440×1000窗口。`SEC_BROWSER_LOCALE`/`SEC_BROWSER_TIMEZONE`可显式配置，`SEC_BROWSER_HEADFUL=0`仅为隔离验收保留，旧`SEC_BROWSER_UA`不再应用。硬编码 Windows 指纹与数组冒充插件会破坏浏览器API一致性，已移除。现役 xray 证书兼容参数仍保留，未改出口或扩大Scope。
+**共享浏览器现行运行配置（2026-10-09修正）**：`dsh-shared-browser-host.mjs`默认headless-shell，人工通过CDP/DevTools使用同一浏览器；无需桌面或Xvfb。`SEC_BROWSER_HEADFUL=1`才显式启用完整有界面Chromium，无DISPLAY时独立Xvfb自动分配显示号并禁TCP监听。上批默认headed在已有primary/socend profile中造成网页/CDP挂起，禁GPU无效；同profile切回headless恢复。全新profile的headed测试不能代表历史profile升级兼容，不再将headed作为“正常浏览器”前提。
 
-systemd两类共享浏览器单元使用`KillMode=mixed`/30秒关闭期限，宿主先关闭Chromium再结束Xvfb，退出前刷新持久profile。重启保存持久Cookie/Storage不等于完整恢复内存会话或标签页；`--restore-last-session`为尽力恢复，首次从旧headless-shell切换仍出现空白页。发布回执`20261009-browser-native-release`：原生API/子frame/Scope拒绝/重启Cookie集成通过，Scope5/5，primary/socend34/3条落盘Cookie值全部保留；primary额外5条内存Cookie未留存，不能声称登录状态均已验证。旧源码与闭合profile私有备份保留，不向git写入Cookie或HAR。 实际扣子首页导航后正文/页面CDP响应超时，目标站兼容验收未通过；关闭测试页后空白页CDP恢复，未清Cookie。不得以原生属性测试通过宣称目标风控放行。
+UA/Client Hints/platform/plugins/mimeTypes/WebGL使用浏览器原生实现，不覆写webdriver或伪造Windows；默认中文、Asia/Shanghai、1440×1000窗口。`SEC_BROWSER_LOCALE`/`SEC_BROWSER_TIMEZONE`可配置，旧`SEC_BROWSER_UA`不再应用。Scope全局代理、xray下一跳、现役证书兼容参数及profile隔离保持。两类systemd单元`KillMode=mixed`/30秒期限先让宿主关闭Chromium；挂起时仍可能超时强杀，不能宣称全部内存Cookie必然持久化。`--restore-last-session`仅尽力恢复，不能保证标签页。
+
+`20261009-browser-load-fix`验收：关闭后备份两profile；primary/socend沿用原目录，恢复扣子正文323/3053字，primary“新建项目”可见且仍登录；截图、画面推流、鼠标输入、两DevTools入口HTTP200通过。默认模式/原生API/按钮/Canvas/截图/Scope拒绝/持久Cookie重启及页面重载集成通过。旧`20261009-browser-native-release`失败事实保留：其网页兼容未通过，primary额外5条内存Cookie未保留；本次没有重置profile或清Cookie。旧源码、profile和新回执在受限release目录，不向git写入账号数据；不宣称平台风控放行保证。
 
 **不动清单的边界**：上表资产出问题时（浏览器崩/OOB 启用/intel.jsonl 格式变化）的处置先走[18号](18-backup-and-maintenance.md)变更前备份流程，平台资产历史部署细节见归档 migration-v4-to-v5 §九，不改域契约；域文档只在耦合点语义变化时同步本表。
 

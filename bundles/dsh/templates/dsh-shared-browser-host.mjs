@@ -15,10 +15,10 @@ const proxy = await createScopeProxy({ policy })
 const profile = process.env.SEC_BROWSER_PROFILE || '/home/silkspool/日常/browser/.shared-browser-profile'
 const port = Number(process.env.CDP_PORT || 9222)
 fs.mkdirSync(profile, { recursive: true, mode: 0o700 })
-// 使用完整 Chromium 的原生平台、UA/Client Hints、插件与图形 API。
-// 无桌面服务器用独立 Xvfb（自动分配 display），各 profile 不争用显示号。
-// 显式 SEC_BROWSER_HEADFUL=0 仅用于需要 headless 的隔离验收。
-const HEADFUL = process.env.SEC_BROWSER_HEADFUL !== '0'
+// 保留 Chromium 原生平台、UA/Client Hints、插件与图形 API。
+// 默认使用已验证兼容现有持久 profile 的 headless-shell；远程界面仍经 CDP 操作。
+// 有界面 Chromium 在现有 profile 上出现页面/CDP 挂起，仅显式选择时启用 Xvfb。
+const HEADFUL = process.env.SEC_BROWSER_HEADFUL === '1'
 const locale = process.env.SEC_BROWSER_LOCALE || 'zh-CN'
 let display, context, closing = false
 async function shutdown() {

@@ -1016,3 +1016,10 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - **登录依赖放行（2026-10-09）**：用第二 profile 登录 Coze 时"发送验证码"报错，实测为 Scope 出口守卫拦断字节自家风控/静态依赖域（`rc-verifycenter` 等）：`*.yhgfb-cn-static.com`、`*.bytescm.com`、`*.bytetos.com`、`*.ibytedapm.com`（`ERR_TUNNEL_CONNECTION_FAILED`）。经用户批准，以正式命令 `scope.grant(program=bytedance)` 追加这 4 个窄域（含自动配对裸域，scope_size 35），仅作登录所需被动静态加载；守卫每次请求读 scope.yml、无需重启即生效。实测重载登录页 0 失败请求、0 4xx。管理机副本已 `spool sync pull csai` 回收。
 - **DevTools 交互入口改为浏览器自带前端（2026-10-09）**：inspect 走本 profile 的 `/p/<name>/devtools/inspector.html`（Chromium 内置、相对资源、经 profile 反代到 CDP），不再经 `chrome-devtools-frontend.appspot.com`——该域在本网出口 DNS 被解析为 fake-IP（198.18.x）、直连与 xray 均不可达，导致 inspector 502、无法交互。已实测经 profile 路由加载 title=DevTools、UI 渲染、WS 连接正常；`edge-Caddyfile` 移除 `/serve_rev/*` appspot 反代。
 - 下一步：你在 `/p/<name>/` 登录第二个账号；随后 A/B 读取实验可分别指向对应 CDP 端口。
+
+### 2026-10-09 · 共享浏览器恢复原生 Chromium 属性（已部署）
+
+- 删除固定 Windows UA、navigator/插件数组/WebGL/Client Hints 伪造及 AutomationControlled 覆盖；完整 Chromium + 独立 Xvfb，原生 Linux 平台/版本/API，中文和 Asia/Shanghai。保留 Scope 全局代理、自动化可观测性及各 profile 隔离，不声明规避平台风控。
+- change `20261009-browser-native-release`：primary/socend 顺序切换，2.88/3.58秒；PID1443583/1443762，active/NRestarts0。新增 profile 继承相同宿主配置。systemd KillMode=mixed 由宿主先关闭 Chromium、刷新 profile，再结束 Xvfb。
+- 完整浏览器集成通过（原生API/iframe/Scope拒绝/持久Cookie重启），Scope单测5/5，unit语法通过。关闭后备份两 profile；primary 34条、socend 3条持久Cookie逐值完整保留。primary 重启前内存39条，关闭后落盘34条，额外5条未保留，不能宣称所有会话完整恢复；启动后为新空白页。源文件与profile回退位于上述release私有目录。
+- 实际扣子首页冒烟未通过：两profile导航后正文读取及页面CDP响应超时；不据此归因平台风控。关闭本批测试页、保留空白页后CDP/原生属性恢复正常，未清Cookie；页面访问新增Cookie使最终数量36/5。尚未证明目标页面兼容或登录放行，不能声明优化已解决风控。
