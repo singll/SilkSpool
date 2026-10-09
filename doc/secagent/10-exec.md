@@ -876,3 +876,9 @@ Bellkeeper运行容器处于running，宿主checkout为`59b1aa3`，核对模型/
 `exec_http_request.follow_redirects`为boolean，默认true；false时记录原始3xx单跳响应，不访问Location。真实HTTP回归验证目的地未命中，exec85/85通过并上线。以显式direct、false、8秒/256KiB、无凭证/重试，经现役Scope/S级/DNS前检完成15种匿名GET，标准签封原件进入endpoint，业务分类按04号契约；HTTP200不等于正常业务。环境限制响应保留后未重试或绕过。
 
 正式主服务采集/业务响应验收见27号§15.121–122。eval v3受控本机夹具与外部目标执行分别计数：本批六次配对91次实验HTTP+21次真值读取，报告引用修复后新增20+4；模型token0，无真实目标漏洞产出声明。fixture独立策略API仅用于受控评测，不是exec通用目标接口。
+
+### 2026-10-09 单账号真实访问边界验收
+
+复用现役exec及85项回归，以自有浏览器身份执行个人资料、账号归属两组“本人基线→移除身份→本人重复”，6次正式HTTP均签封。HTTP200/code0的本人资料/归属保持一致，匿名均HTTP200/code700012006且无data，审校结论2组valid_clean/新增漏洞0；范围仅匿名访问，不覆盖跨账号越权。每次现役Scope/S级/DNS前检，direct、不跳转、8秒/256KiB、1秒间隔，模型调用0；审校重读签封原件不产生目标请求。
+
+生产限制明确：所有POST，以及路径段包含trade的GET仍走intrusive风险，space/list及三个订阅/余额GET合计4次E_EXEC_RISK_FORBIDDEN、未建run/未发目标HTTP。未改Scope、放开intrusive或拒绝后换执行器重试。浏览器先前POST成功不等于正式执行器支持读型POST，需后续有明确业务只读契约的风险准入。两组阴性只保存审校证据；六个HTTP原始学习事件依旧inconclusive/http_200_no_verdict（request_count1/token_count=null），未写入虚构Oracle判定或方法收益。完整原件、身份/对象关系及失败恢复见27号§15.125。

@@ -724,3 +724,9 @@ queueStat(program) → { queue_lines, seen_lines, last_enqueued_at, last_consume
 新增business_state、business_basis、response_profile_digest及可选business_code。状态success/auth_required/environment_blocked/business_error/transport_error/evidence_unavailable/unknown；缺配置或不支持格式保持unknown，不按任意code字段猜测。配置变化每次读取生效。success不保证正文非空、不证明凭证或漏洞。task用已知失败作为实验前置止损；原始观察仍保留。
 
 生产正式HTTP链新增15种/累计18种，新增8业务成功中4种含实质非空业务内容；4登录失败、2环境限制、1参数错误，15原件RPC重读匹配。endpoint/task176项通过，含篡改、错关联、契约变化及旧草稿派发；详见27号§15.121–122。独立代理前检与显式direct路径分别记录，未重试设备限制。
+
+### 2026-10-09 单账号浏览器请求与精确响应契约验收
+
+扣子5条完成且code0的浏览器fetch按原HAR摘要/索引筛选后preview→import，另2条exec签封基线导入，生产观测18→25。覆盖5种新method+path，实质模板3种；身份显式绑定subject_ref，个人空间owner与profile一致且绑定object_refs。HAR原件保留method/body/headers，响应正文另存私有映射；来源不是UI点击流程。失败/在途/通知404不计健康输入，同接口不同采集来源不重复计模板。
+
+宿主request-response-profiles.json热增加bytedance/https://code.coze.cn的`/api/passport/v1/user/`、`/api/permission_api/enterprise/`契约，success=[0]、auth=[700012006]、environment=[]；只覆盖实际已观察协议的命名空间，原product契约保留。配置原字节及最终摘要随27号§15.125封存，未改schema/代码/服务。两份exec请求正式重读success/intact，五份HAR为intact/unknown：旁存真实响应不满足当前sealed_http_response协议，不能将审校code0冒充机器健康投影。复用已有176项契约回归，不重跑无变化全域验收。读型POST准入及HAR健康分类仍未接通。
