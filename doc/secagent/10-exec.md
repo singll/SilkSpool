@@ -652,6 +652,10 @@ exec 域的运行依赖一批**平台层边缘资产**——它们不属于任�
 | `oob/interactsh-server` | 已部署未启用（占位 `OOB_DOMAIN_TBD`，阻塞=公网 NS 委派） | OOB 带外验证通道（盲 SSRF/盲 RCE 回连证据）。证据形态 `oob:` 前缀与轮询归属见 02-vuln §四.7；启用前工具面须能感知"OOB 不可用"并降级 |
 | `silksec-intel.timer` | 每日 nuclei 模板更新（intel-refresh.sh → `~/nuclei-templates` → `data/intel/intel.jsonl` 追加一行版本记录） | **域外单写者声明**：intel.jsonl 由 systemd timer 写入（不经总线、无事件）——它不在本域 owns 内，`exec_intel_hunt` 是其**消费方**（模板库检索）；版本追溯经文件读取而非事件回放，01-bus §2.7 的 data/events 统一口径对它豁免 |
 
+**共享浏览器原生运行配置（2026-10-09）**：`dsh-shared-browser-host.mjs` 默认完整有界面 Chromium；服务器无 DISPLAY 时启动独立 Xvfb（需系统已安装，自动分配显示号，禁TCP监听），profile/CDP/Scope出口与 xray 下一跳保持。UA/Client Hints/platform/plugins/mimeTypes/WebGL 使用浏览器原生实现，不覆写 webdriver；默认中文、Asia/Shanghai、1440×1000窗口。`SEC_BROWSER_LOCALE`/`SEC_BROWSER_TIMEZONE`可显式配置，`SEC_BROWSER_HEADFUL=0`仅为隔离验收保留，旧`SEC_BROWSER_UA`不再应用。硬编码 Windows 指纹与数组冒充插件会破坏浏览器API一致性，已移除。现役 xray 证书兼容参数仍保留，未改出口或扩大Scope。
+
+systemd两类共享浏览器单元使用`KillMode=mixed`/30秒关闭期限，宿主先关闭Chromium再结束Xvfb，退出前刷新持久profile。重启保存持久Cookie/Storage不等于完整恢复内存会话或标签页；`--restore-last-session`为尽力恢复，首次从旧headless-shell切换仍出现空白页。发布回执`20261009-browser-native-release`：原生API/子frame/Scope拒绝/重启Cookie集成通过，Scope5/5，primary/socend34/3条落盘Cookie值全部保留；primary额外5条内存Cookie未留存，不能声称登录状态均已验证。旧源码与闭合profile私有备份保留，不向git写入Cookie或HAR。 实际扣子首页导航后正文/页面CDP响应超时，目标站兼容验收未通过；关闭测试页后空白页CDP恢复，未清Cookie。不得以原生属性测试通过宣称目标风控放行。
+
 **不动清单的边界**：上表资产出问题时（浏览器崩/OOB 启用/intel.jsonl 格式变化）的处置先走[18号](18-backup-and-maintenance.md)变更前备份流程，平台资产历史部署细节见归档 migration-v4-to-v5 §九，不改域契约；域文档只在耦合点语义变化时同步本表。
 
 2026-10-03 WP04来源核查：现有flows共284,796条，284,795条web_statistic、1条仅plugin/target/title的web_vuln，均不含完整请求；xray webhook文件不能等同请求捕获。新增独立 `dsh-browser-capture.mjs`（源码`e5452cc`，已部署验收）附着受管CDP、只监听单个同源页面、限时限量写受控HAR，不导航、不重放、不改变浏览器fork或服务。隔离真实Chromium与采集核心9项、worker19项、生产UI80/80通过；断开采集保留共享浏览器，Scope撤回自动停止。完整契约及限制见04号§1.3.9；采集文件不是exec可信HTTP验证回执，不产生漏洞判定。真实试点尚未开始，Campaign仍暂停。

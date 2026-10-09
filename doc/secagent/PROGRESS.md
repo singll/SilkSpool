@@ -10,7 +10,7 @@
 - **真实漏洞发现能力专项**：[27 号方案](27-business-quality-and-capacity-plan-2026-09-30.md)已按用户澄清重新审查，**累计业务及WP03输入计量修复已部署，默认150k只读闭环通过，暂不扩大**。仅以真实漏洞数量、技术质量和发现效率评价，撤销提交/accepted/赏金门槛；重点为真实请求、假设路由、可靠执行、候选丢失/误抑制、技术判定和知识实效。保留 12 个工作包、15 组技术验收；0.1.7 升级链已关账，移交缺陷继续纳入；本轮仅发布业务增量。
 - **DSH 0.2.0 研究与升级计划**：[26 号方案](26-dsh-0.2.0-upgrade-plan-2026-09-30.md)已完成调研，**待实施**；建议从 0.1.7-rc.2 直接升 0.2.0-rc.2，U3 前须旧链 P8 关账——**已满足（P8 于 2026-09-30 关账）**。当前生产版本与旧升级链状态不因本计划改变。
 - **Phase 状态**：**Phase 0–5 全部完成并关账**；迁移链已结束；发现能力整改由27号专项继续推进。
-- **当前运行**：D09 累计硬上限/预算审批人工化已同版本快速发布并按评审修复（change `20261009-d09-review-fix`）；主PID1434267、edge1434268、共享浏览器1395048，均active/NRestarts0，DSH0.1.7-rc.2。**共享浏览器新增隔离 profile `b`（CDP 9224，入口 `/p/b/`）**，primary 不变（`/`）；`silksec-shared-browser@b.service` active。冒烟 bus.status278.9ms(冷)/stats25.2ms、`campaign_get` 含 `lifetime_spent_tokens`、无运行任务/worker、quick_check ok。启动就绪约38秒，旧冷启动未宣称根治。Campaign全paused/原预算不变。
+- **当前运行**：D09评审修复已发布，DSH0.1.7-rc.2；本批仅更新共享浏览器宿主。primary（9222）与注册表中的socend（9224）已切为完整Chromium，PID1443583/1443762，active/NRestarts0；同域入口 `/p/primary/`、`/p/socend/`。Campaign原暂停/预算未作变更。
 - **旧升级关账基线**：DSH **0.1.7-rc.2**（2026-09-27 17:29:26Z U3 生产切换，P6b；**2026-09-30 P8 关账（用户指令提前）**——U4b 只读巡检全绿 + 新冻结点 `c85f3b9f…` + `preserve_after_resume ok=true`；关账后 MainPID **922156**、NRestarts=0、6 单元 active、15 域、accept2b **PASS=80 FAIL=0**、journal err=0；会话 1767（V4））。P7 巡检 1（09-29）+ P8 巡检 2（09-30）均全绿；旧基线 0.1.5-rc.2 履历见历史归档。
 - **最近一次全面检查**：[archive/20-full-inspection-2026-09-19.md](archive/20-full-inspection-2026-09-19.md)（文档/代码/流程/运行态/UI；**四轮修复全部落地验收，结论已全部回填各模块，2026-09-22 归档**，见其 §十一）。
 - **专项归档**：[archive/19-ui-unify.md](archive/19-ui-unify.md)（看板 UI 全局统一重构：**U1–U4 + 走查补丁已实施，csai 验收 PASS=72 FAIL=0**，结论已回填 16-dashboard/主题 §11.8·§11.9/CONTEXT；已归档只读）；[archive/23-llm-supply-throttle-2026-09-23.md](archive/23-llm-supply-throttle-2026-09-23.md)（LLM 供给联动调速 + 任务级选模型，已实施部署验收）；[archive/24-ops-audit-ui-flow-2026-09-23.md](archive/24-ops-audit-ui-flow-2026-09-23.md)（任务/知识/学习工作流可视化，已实施部署验收 accept PASS=80）。
@@ -26,14 +26,12 @@
 
 ## 二、最近进度结果
 
-### 2026-10-09 · 共享浏览器统一界面 + 多 profile 隔离（同域、可点按钮新增）
+### 2026-10-09 · 共享浏览器恢复原生 Chromium 属性（已部署）
 
-- 原共享浏览器是**单 Chromium + 单持久 profile（9222）**，登录第二个账号会覆盖第一个。现做成**一个统一界面**：`browser.silksecagent.singll.net/` 是管理页（列出 primary + 各隔离 profile，带“新增 profile”按钮），点“打开/新增”即在**同域**新标签页进入 `/p/<name>/` 的隔离视图，页头带 profile 名与独立配色圆点；各 profile Cookie/Storage 完全隔离，可同时登录不同账号。
-- 机制：额外 profile 由模板单元 `silksec-shared-browser@<name>.service` 承载（同一 host，独立 `SEC_BROWSER_PROFILE`+`CDP_PORT`）；“新增/删除”后端 `silksec-browser-admin.service`（回环 9230，silkspool + 单条 sudo 免密执行固定脚本）→ `/_pool/*`；Caddy 片段 `edge-browser-profiles.caddy` 为 primary+各 profile 生成 `handle_path /p/<name>/*`。注册表 `data/browser-profiles.json`。
-- 验证：`caddy validate` 通过；一次性实例实测 `/`(管理页)、`/p/primary/`、`/p/b/`、`/p/b/json`(9224)、`/p/primary/json`(9222)、`/_pool/profiles` 全部正常；API 与 CLI 的 add/remove 全生命周期通过（临时 `c`/`d` 已加已删、目录清理）；primary（PID 1395048/9222）未重启、登录态不受影响；六个常驻服务 active；`exclude_paths` 增 `.profiles`，maintenance status 正常。详见 18 号 §3/§5。
-- **登录依赖放行（2026-10-09）**：用第二 profile 登录 Coze 时"发送验证码"报错，实测为 Scope 出口守卫拦断字节自家风控/静态依赖域（`rc-verifycenter` 等）：`*.yhgfb-cn-static.com`、`*.bytescm.com`、`*.bytetos.com`、`*.ibytedapm.com`（`ERR_TUNNEL_CONNECTION_FAILED`）。经用户批准，以正式命令 `scope.grant(program=bytedance)` 追加这 4 个窄域（含自动配对裸域，scope_size 35），仅作登录所需被动静态加载；守卫每次请求读 scope.yml、无需重启即生效。实测重载登录页 0 失败请求、0 4xx。管理机副本已 `spool sync pull csai` 回收。
-- **DevTools 交互入口改为浏览器自带前端（2026-10-09）**：inspect 走本 profile 的 `/p/<name>/devtools/inspector.html`（Chromium 内置、相对资源、经 profile 反代到 CDP），不再经 `chrome-devtools-frontend.appspot.com`——该域在本网出口 DNS 被解析为 fake-IP（198.18.x）、直连与 xray 均不可达，导致 inspector 502、无法交互。已实测经 profile 路由加载 title=DevTools、UI 渲染、WS 连接正常；`edge-Caddyfile` 移除 `/serve_rev/*` appspot 反代。
-- 下一步：你在 `/p/<name>/` 登录第二个账号；随后 A/B 读取实验可分别指向对应 CDP 端口。
+- 删除固定 Windows UA、navigator/插件数组/WebGL/Client Hints 伪造及 AutomationControlled 覆盖；完整 Chromium + 独立 Xvfb，原生 Linux 平台/版本/API，中文和 Asia/Shanghai。保留 Scope 全局代理、自动化可观测性及各 profile 隔离，不声明规避平台风控。
+- change `20261009-browser-native-release`：primary/socend 顺序切换，2.88/3.58秒；PID1443583/1443762，active/NRestarts0。新增 profile 继承相同宿主配置。systemd KillMode=mixed 由宿主先关闭 Chromium、刷新 profile，再结束 Xvfb。
+- 完整浏览器集成通过（原生API/iframe/Scope拒绝/持久Cookie重启），Scope单测5/5，unit语法通过。关闭后备份两 profile；primary 34条、socend 3条持久Cookie逐值完整保留。primary 重启前内存39条，关闭后落盘34条，额外5条未保留，不能宣称所有会话完整恢复；启动后为新空白页。源文件与profile回退位于上述release私有目录。
+- 实际扣子首页冒烟未通过：两profile导航后正文读取及页面CDP响应超时；不据此归因平台风控。关闭本批测试页、保留空白页后CDP/原生属性恢复正常，未清Cookie；页面访问新增Cookie使最终数量36/5。尚未证明目标页面兼容或登录放行，不能声明优化已解决风控。
 
 ## 三、维护规则（通用，必须遵守）
 

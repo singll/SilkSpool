@@ -1007,3 +1007,12 @@ SilkSpool 仓库 /home/ubuntu/SilkSpool 的「doc/secagent 文档漂移排查」
 - 专项预算改为**累计硬上限**：所有预算判定统一 `max(窗口已记+未结预留, 全周期已记+未结预留)`，窗口滚动不返还额度；派发、规划、停止、自动恢复、激活/升档口径一致。
 - 评审修复：缺额任务延后回 queued 并循环扫描（不饿死队尾）；停止/提请/恢复/展示统一累计口径；延后发 `task.deferred`/`data.deferred`（不再错发 `task.blocked`）；预算判定从后端移入 task 域；`approval_decide` actor 收紧为 `{dashboard,human}`。
 - task/approval 171、全域 806/806；两次同版本快速发布（`20261009-d09-budget-cap` 1.36s、`20261009-d09-review-fix` 3.13s）。D09 未整项完成（无有效进展停止条件、扩容依据业务收益待办）；契约版本治理缺口见 27 号 §17。
+
+### 2026-10-09 · 共享浏览器统一界面 + 多 profile 隔离（同域、可点按钮新增）
+
+- 原共享浏览器是**单 Chromium + 单持久 profile（9222）**，登录第二个账号会覆盖第一个。现做成**一个统一界面**：`browser.silksecagent.singll.net/` 是管理页（列出 primary + 各隔离 profile，带“新增 profile”按钮），点“打开/新增”即在**同域**新标签页进入 `/p/<name>/` 的隔离视图，页头带 profile 名与独立配色圆点；各 profile Cookie/Storage 完全隔离，可同时登录不同账号。
+- 机制：额外 profile 由模板单元 `silksec-shared-browser@<name>.service` 承载（同一 host，独立 `SEC_BROWSER_PROFILE`+`CDP_PORT`）；“新增/删除”后端 `silksec-browser-admin.service`（回环 9230，silkspool + 单条 sudo 免密执行固定脚本）→ `/_pool/*`；Caddy 片段 `edge-browser-profiles.caddy` 为 primary+各 profile 生成 `handle_path /p/<name>/*`。注册表 `data/browser-profiles.json`。
+- 验证：`caddy validate` 通过；一次性实例实测 `/`(管理页)、`/p/primary/`、`/p/b/`、`/p/b/json`(9224)、`/p/primary/json`(9222)、`/_pool/profiles` 全部正常；API 与 CLI 的 add/remove 全生命周期通过（临时 `c`/`d` 已加已删、目录清理）；primary（PID 1395048/9222）未重启、登录态不受影响；六个常驻服务 active；`exclude_paths` 增 `.profiles`，maintenance status 正常。详见 18 号 §3/§5。
+- **登录依赖放行（2026-10-09）**：用第二 profile 登录 Coze 时"发送验证码"报错，实测为 Scope 出口守卫拦断字节自家风控/静态依赖域（`rc-verifycenter` 等）：`*.yhgfb-cn-static.com`、`*.bytescm.com`、`*.bytetos.com`、`*.ibytedapm.com`（`ERR_TUNNEL_CONNECTION_FAILED`）。经用户批准，以正式命令 `scope.grant(program=bytedance)` 追加这 4 个窄域（含自动配对裸域，scope_size 35），仅作登录所需被动静态加载；守卫每次请求读 scope.yml、无需重启即生效。实测重载登录页 0 失败请求、0 4xx。管理机副本已 `spool sync pull csai` 回收。
+- **DevTools 交互入口改为浏览器自带前端（2026-10-09）**：inspect 走本 profile 的 `/p/<name>/devtools/inspector.html`（Chromium 内置、相对资源、经 profile 反代到 CDP），不再经 `chrome-devtools-frontend.appspot.com`——该域在本网出口 DNS 被解析为 fake-IP（198.18.x）、直连与 xray 均不可达，导致 inspector 502、无法交互。已实测经 profile 路由加载 title=DevTools、UI 渲染、WS 连接正常；`edge-Caddyfile` 移除 `/serve_rev/*` appspot 反代。
+- 下一步：你在 `/p/<name>/` 登录第二个账号；随后 A/B 读取实验可分别指向对应 CDP 端口。

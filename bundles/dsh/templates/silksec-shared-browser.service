@@ -13,6 +13,9 @@ WorkingDirectory=/home/silkspool/日常/browser
 ExecStart=/usr/local/node/bin/node /home/silkspool/日常/browser/shared-browser-host.mjs
 Restart=always
 RestartSec=5
+# 主进程先关闭 Chromium 并刷新 profile，再退出独立 Xvfb。
+KillMode=mixed
+TimeoutStopSec=30
 # profile 目录=登录态凭据，权限收紧
 UMask=0077
 
