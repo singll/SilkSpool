@@ -95,7 +95,8 @@ export const EXEC_MANIFEST = {
   description: '工具执行/沙箱/限速/worker 派生/parser 提案——一切 CLI/worker 执行的唯一入口，执行产物与领域数据之间只隔一层事件',
   owns: {
     tables: [],
-    files: ['data/tools.d/', 'data/results/', 'data/flows/', 'data/imports/', 'data/events/exec.jsonl', 'data/.http-executor-key'],
+    files: ['data/tools.d/', 'data/results/', 'data/flows/', 'data/imports/', 'data/events/exec.jsonl', 'data/.http-executor-key',
+      'data/http-read-permits.json', 'data/.http-read-permit-uses/'],
   },
   backend_transactional: false,
   commands: {
@@ -110,7 +111,7 @@ export const EXEC_MANIFEST = {
         max_bytes: int({ minimum: 1, maximum: 1048576 }),
       }, ['program_id', 'url']),
       idempotent: 'none', events: ['exec.http.completed'], event_limit: 1, invariants: [], timeout_ms: 35000,
-      agent_note: '受控 HTTP 请求：绑定 Program，逐跳检查 scope/风险/QPS，固定出口和解析地址，限制时间/响应量。响应由执行域签封落盘；run_id 可用 http_result 读取。POST/PUT/PATCH/DELETE 需要 intrusive 授权。',
+      agent_note: '受控 HTTP 请求：绑定 Program，逐跳检查 scope/风险/QPS，固定出口和解析地址，限制时间/响应量。响应由执行域签封落盘。POST或写动词路径默认需要intrusive；宿主可对已审校的精确只读GET/POST安装短期有限次许可，不接受调用方自报只读。',
     },
     exec_verify_authz_read: {
       actor: ['model', 'script', 'dashboard'],
@@ -767,6 +768,80 @@ function makeHandlers(opts) {
     if (value) { let u; try { u = new URL(value) } catch {} if (!u || !['http:', 'https:'].includes(u.protocol)) throwErr('E_SCHEMA', '出口代理须为 HTTP(S) URL', null) }
     return value
   }
+  // Reviewed operation semantics are host configuration, not caller-controlled flags.
+  // A permit binds all request bytes (including identity), review evidence, time and uses.
+  function readPermit(args, method) {
+    if (!['GET', 'POST'].includes(method)) return null
+    const file = path.join(dataDir, 'http-read-permits.json')
+    let fd
+    try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW) }
+    catch (error) {
+      if (error.code === 'ENOENT') return null
+      throwErr('E_EXEC_READ_PERMIT_INVALID', '只读操作许可文件不可读取', null)
+    }
+    let doc
+    try {
+      const st = fs.fstatSync(fd)
+      if (!st.isFile() || st.size > 65536 || st.nlink !== 1 || st.mode & 0o022
+        || ![0, process.getuid?.()].includes(st.uid)) throw new Error()
+      doc = JSON.parse(fs.readFileSync(fd, 'utf8'))
+    } catch { throwErr('E_EXEC_READ_PERMIT_INVALID', '只读操作许可文件格式或权限无效', null) }
+    finally { fs.closeSync(fd) }
+    const invalid = () => throwErr('E_EXEC_READ_PERMIT_INVALID', '只读操作许可无效、歧义、过期或审校证据已变化', null)
+    if (doc.version !== 1 || !Array.isArray(doc.permits) || doc.permits.length > 100) invalid()
+    const ids = new Set(), digests = new Set()
+    for (const p of doc.permits) {
+      if (!p || !/^[a-zA-Z0-9_-]{1,64}$/.test(p.id || '') || typeof p.program_id !== 'string' || !p.program_id
+        || !/^[a-f0-9]{64}$/.test(p.request_digest || '') || ids.has(p.id) || digests.has(p.request_digest)
+        || !Number.isSafeInteger(p.issued_at) || !Number.isSafeInteger(p.expires_at)
+        || p.expires_at <= p.issued_at || p.expires_at - p.issued_at > 86400000
+        || !Number.isInteger(p.max_uses) || p.max_uses < 1 || p.max_uses > 24
+        || typeof p.rationale !== 'string' || p.rationale.length < 20 || p.rationale.length > 2000
+        || !Array.isArray(p.evidence) || !p.evidence.length || p.evidence.length > 4) invalid()
+      ids.add(p.id); digests.add(p.request_digest)
+    }
+    const digest = sha256(JSON.stringify({ program_id: args.program_id, url: args.url, method,
+      body: args.body || '', headers: canonicalHeaders(args.headers) }))
+    const p = doc.permits.find(p => p.program_id === args.program_id && p.request_digest === digest)
+    if (!p) return null
+    if (p.issued_at > Date.now() || p.expires_at <= Date.now()) invalid()
+    for (const ref of p.evidence) {
+      if (!ref || !/^(results|evidence)\/[^\\]+$/.test(ref.path || '') || ref.path.split('/').includes('..')
+        || !/^[a-f0-9]{64}$/.test(ref.sha256 || '')) invalid()
+      const absolute = path.resolve(dataDir, ref.path)
+      let proof
+      try {
+        if (fs.realpathSync(absolute) !== absolute) throw new Error()
+        proof = fs.openSync(absolute, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+        const st = fs.fstatSync(proof)
+        if (!st.isFile() || st.size > 1048576 || st.nlink !== 1 || st.mode & 0o022) throw new Error()
+        if (sha256(fs.readFileSync(proof)) !== ref.sha256) throw new Error()
+      } catch { invalid() } finally { if (proof !== undefined) fs.closeSync(proof) }
+    }
+    return { ...p, permit_digest: sha256(JSON.stringify(p)) }
+  }
+  function reserveReadPermit(p) {
+    const root = path.join(dataDir, '.http-read-permit-uses')
+    try { fs.mkdirSync(root, { mode: 0o700 }) } catch (e) { if (e.code !== 'EEXIST') throw e }
+    const stat = fs.lstatSync(root)
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mode & 0o022
+      || ![0, process.getuid?.()].includes(stat.uid)) throwErr('E_EXEC_READ_PERMIT_INVALID', '只读许可计数目录不安全', null)
+    // Exclusive files survive process crashes and arbitrate concurrent workers. Failed
+    // requests consume their slot; replay or editing the permit cannot refund an ID.
+    for (let use = 1; use <= p.max_uses; use++) {
+      let fd
+      try {
+        fd = fs.openSync(path.join(root, `${p.id}-${use}.json`),
+          fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600)
+      } catch (e) { if (e.code === 'EEXIST') continue; throw e }
+      try { fs.writeFileSync(fd, JSON.stringify({ id: p.id, permit_digest: p.permit_digest, use, at: Date.now() })); fs.fsyncSync(fd) }
+      finally { fs.closeSync(fd) }
+      const directory = fs.openSync(root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY)
+      try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+      return { id: p.id, permit_digest: p.permit_digest, use, max_uses: p.max_uses, expires_at: p.expires_at }
+    }
+    throwErr('E_EXEC_READ_PERMIT_EXHAUSTED', '本只读操作许可次数已耗尽', null)
+  }
   function boundHttpAddress(u, programId) {
     const binding = httpEgressBinding, snapshot = binding.dns_snapshot, now = Date.now()
     const port = Number(u.port || (u.protocol === 'https:' ? 443 : 80))
@@ -785,14 +860,14 @@ function makeHandlers(opts) {
     }
     return { address: binding.target[0], addresses: snapshot.records.map(row => row.address) }
   }
-  async function guardedAddress(url, programId, method, deadline = Date.now() + 10000, bound = false) {
+  async function guardedAddress(url, programId, method, deadline = Date.now() + 10000, bound = false, reviewedRead = false) {
     let u
     try { u = new URL(url) } catch { throwErr('E_SCHEMA', 'url 无效', null) }
     if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password || u.hash) throwErr('E_SCHEMA', '仅接受无 userinfo/fragment 的 HTTP(S) URL', null)
     const scope = loadScope(), p = scope.programs.find(p => p.name === programId)
     if (!p || p.expires_at && (expiryMs(p.expires_at) === null || expiryMs(p.expires_at) < Date.now()) || !p.scope.some(e => entryMatches(e, u.hostname))) throwErr('E_EXEC_SCOPE_DENIED', '目标不在指定 Program 的有效授权范围', null)
     if (scope.programs.some(p => p.exclude.some(e => entryMatches(e, u.hostname)))) throwErr('E_EXEC_SCOPE_DENIED', '目标命中排除清单', null)
-    const risk = checkRisk(['GET', 'HEAD', 'OPTIONS'].includes(method) && !findWriteVerbHit(url) ? 'active' : 'intrusive', p, 'http-request')
+    const risk = checkRisk(reviewedRead || ['GET', 'HEAD', 'OPTIONS'].includes(method) && !findWriteVerbHit(url) ? 'active' : 'intrusive', p, 'http-request')
     if (!risk.allow) throwErr('E_EXEC_RISK_FORBIDDEN', risk.reason, null)
     // This adapter supports IPv4 only; reject unsupported resolution, never silently use a
     // second OS/proxy DNS lookup. All returned addresses must pass the same Program guard.
@@ -816,6 +891,13 @@ function makeHandlers(opts) {
     const method = String(args.method || 'GET').toUpperCase()
     let headers = canonicalHeaders(args.headers), body = args.body || '', url = String(args.url), currentMethod = method
     if (Buffer.byteLength(body) > 65536) throwErr('E_SCHEMA', '请求 body 超过 64 KiB', null)
+    const permit = readPermit(args, method)
+    const recheckPermit = () => {
+      if (!permit) return
+      const current = readPermit(args, method)
+      if (!current || current.permit_digest !== permit.permit_digest) throwErr('E_EXEC_READ_PERMIT_INVALID', '执行前只读操作许可已变更或撤销', null)
+    }
+    if (permit) followRedirects = false
     // Trusted host configuration only; never accept proxy credentials in model arguments.
     const proxyAuthorization = selectedProxy ? opts.egressProxyAuthorization : undefined
     if (proxyAuthorization !== undefined) {
@@ -838,13 +920,15 @@ function makeHandlers(opts) {
     const started = Date.now(), deadline = started + (args.timeout_ms || 10000), maxBytes = args.max_bytes || 1048576
     // Validate initial target before creating an execution record; subsequent guards are
     // captured as blocked evidence because a previous hop may already have run.
-    await guardedAddress(url, args.program_id, method, deadline, bound)
+    await guardedAddress(url, args.program_id, method, deadline, bound, Boolean(permit))
+    const permitUse = permit ? (recheckPermit(), reserveReadPermit(permit)) : null
     const { runId, runDir } = repo.createRunDir('r'), hops = []
     let response = { state: 'blocked', status: null, body: '', headers: {} }
     for (let hop = 0; hop <= 3; hop++) {
       try {
-        const address = await guardedAddress(url, args.program_id, currentMethod, deadline, bound)
+        const address = await guardedAddress(url, args.program_id, currentMethod, deadline, bound, Boolean(permit))
         await throttleQps(deadline)
+        recheckPermit()
         if (bound) await guardedAddress(url, args.program_id, currentMethod, deadline, true)
         const remaining = deadline - Date.now()
         if (remaining <= 0) { response = { state: 'timeout', status: null, body: '', headers: {} }; break }
@@ -868,6 +952,7 @@ function makeHandlers(opts) {
     // No cookie jar; each call starts with exactly its own supplied identity.
     const record = seal(runDir, 'http-record.json', { version: 1, run_id: runId, program_id: args.program_id, created_at: started,
       request: { url: args.url, method, body_digest: sha256(args.body || ''), identity_digest: sha256(JSON.stringify(canonicalHeaders(args.headers))) },
+      ...(permitUse ? { read_permit: permitUse } : {}),
       proxy_digest: sha256(selectedProxy),
       ...(bound ? { egress_binding: { program: httpEgressBinding.program, hostname: httpEgressBinding.hostname,
         target: httpEgressBinding.target, scope_sha256: httpEgressBinding.scope_sha256, dns_snapshot: httpEgressBinding.dns_snapshot } } : {}),

@@ -882,3 +882,11 @@ Bellkeeper运行容器处于running，宿主checkout为`59b1aa3`，核对模型/
 复用现役exec及85项回归，以自有浏览器身份执行个人资料、账号归属两组“本人基线→移除身份→本人重复”，6次正式HTTP均签封。HTTP200/code0的本人资料/归属保持一致，匿名均HTTP200/code700012006且无data，审校结论2组valid_clean/新增漏洞0；范围仅匿名访问，不覆盖跨账号越权。每次现役Scope/S级/DNS前检，direct、不跳转、8秒/256KiB、1秒间隔，模型调用0；审校重读签封原件不产生目标请求。
 
 生产限制明确：所有POST，以及路径段包含trade的GET仍走intrusive风险，space/list及三个订阅/余额GET合计4次E_EXEC_RISK_FORBIDDEN、未建run/未发目标HTTP。未改Scope、放开intrusive或拒绝后换执行器重试。浏览器先前POST成功不等于正式执行器支持读型POST，需后续有明确业务只读契约的风险准入。两组阴性只保存审校证据；六个HTTP原始学习事件依旧inconclusive/http_200_no_verdict（request_count1/token_count=null），未写入虚构Oracle判定或方法收益。完整原件、身份/对象关系及失败恢复见27号§15.125。
+
+### 2026-10-09 精确只读请求许可（本地实现，待生产验收）
+
+正式HTTP默认风险语义不变。宿主可安装`data/http-read-permits.json`（version1/permits），针对已核实业务只读语义的GET或POST设置精确许可；调用方schema没有read-only开关，PUT/PATCH/DELETE不适用。每条含id、program_id、request_digest、issued_at/expires_at（最长24小时）、max_uses（1–24）、rationale及1–4条results/evidence原件引用和SHA256。请求摘要为JSON序列化的`{program_id,url,method,body,headers}`，headers采用执行器同一规范化函数（按原键localeCompare排序后小写、移除传输控制头、accept-encoding=identity）；敏感字段仅参与摘要，不写许可明文。
+
+命中许可时以active检查现役Program/期限/排除/风险/DNS，不能越过Scope；强制不跟随任何重定向。目标、参数、正文、身份或自定义头变化均失配；初次DNS/风险通过后，以`.http-read-permit-uses/<id>-<use>.json`独占创建+fsync占用次数，多进程共享且重启不返还，失败执行也消费次数。QPS等待后再次读取许可和审校证据，变更/撤销/过期停止请求。签封HTTP保留许可摘要和消费序号；此机制不证明HTTP结果有效或存在漏洞。
+
+许可文件/计数目录须宿主所有且无组/其他写权限，拒绝链接/超限/重复ID或摘要；审校证据拒绝路径逃逸、链接、改写及超1MiB。旧配置未安装则默认规则保持。主插件新增两个owned路径，安装前保留旧插件；无表迁移。已补精确匹配/重定向/撤销Scope/额度耗尽/独立进程争抢/不安全配置与证据回归，生产及试点状态以后续27号记录为准。

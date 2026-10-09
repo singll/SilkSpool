@@ -13,6 +13,7 @@ import * as path from 'node:path'
 import * as http from 'node:http'
 import * as net from 'node:net'
 import * as crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { createBus } from '../../sec-domain-bus/index.js'
 import { buildEvalDomain } from '../../sec-domain-eval/index.js'
 import { buildKnowDomain } from '../../sec-domain-know/index.js'
@@ -1582,6 +1583,110 @@ test('WP02 rejects forged verdicts, borrowed decisions and changed execution/req
   const replay = await bus.dispatch('vuln', 'capsule_replay', { capsule_id: cap.data.capsule_id, harden: true }, { actor: 'script' })
   assert.equal(replay.data.verdict, 'blocked')
   assert.equal(replay.data.hardened_draft, null)
+})
+
+test('WP04 reviewed read permits admit only the exact bounded request, never redirects or scope changes', async t => {
+  const { bus, dataDir } = makeEnv({ egressProxy: '' })
+  t.after(() => bus._internal.close())
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'defaults:\n  allow_risk: [passive, active]\nprograms:\n  - name: test-src\n    scope:\n      - 127.0.0.1\n')
+  const seen = []
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', chunk => { body += chunk })
+    req.on('end', () => {
+      seen.push({ url: req.url, method: req.method, body })
+      res.writeHead(302, { location: '/unreviewed' }); res.end()
+    })
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => server.close(resolve)))
+  const url = `http://127.0.0.1:${server.address().port}/api/trade/detail`
+  const args = { program_id: 'test-src', url, method: 'POST', body: '{"space_id":"owned"}',
+    headers: { 'content-type': 'application/json' }, proxy: 'direct' }
+  const call = extra => bus.dispatch('exec', 'http_request', { ...args, ...extra }, { actor: 'script' })
+  assert.equal((await call()).error?.code, 'E_EXEC_RISK_FORBIDDEN')
+  const sha = x => crypto.createHash('sha256').update(x).digest('hex')
+  const evidence = 'reviewed first-party SDK: this exact operation reads the owned workspace'
+  fs.mkdirSync(path.join(dataDir, 'evidence'), { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'evidence/read-review.txt'), evidence, { mode: 0o600 })
+  const requestDigest = sha(JSON.stringify({ program_id: args.program_id, url, method: args.method,
+    body: args.body, headers: { 'content-type': 'application/json', 'accept-encoding': 'identity' } }))
+  const permit = { id: 'owned-workspace-read', program_id: args.program_id, request_digest: requestDigest,
+    issued_at: Date.now(), expires_at: Date.now() + 60000, max_uses: 2,
+    rationale: 'Reviewed SDK and owned workspace evidence establish a read-only operation.',
+    evidence: [{ path: 'evidence/read-review.txt', sha256: sha(evidence) }] }
+  const file = path.join(dataDir, 'http-read-permits.json')
+  const put = value => fs.writeFileSync(file, JSON.stringify({ version: 1, permits: value }), { mode: 0o600 })
+  put([permit])
+  for (const extra of [{ body: '{"space_id":"other"}' }, { url: url + '?write=1' },
+    { headers: { 'content-type': 'application/json', 'x-http-method-override': 'DELETE' } }, { method: 'DELETE' }]) {
+    assert.equal((await call(extra)).error?.code, 'E_EXEC_RISK_FORBIDDEN')
+  }
+  const first = await call()
+  assert.equal(first.ok, true, first.error?.message)
+  const record = await bus.query('exec', 'http_result', { run_id: first.data.run_id }, { actor: 'script' })
+  assert.equal(record.data.response.status, 302)
+  assert.equal(record.data.read_permit.id, permit.id)
+  assert.equal(record.data.read_permit.use, 1)
+  assert.equal(record.data.hops.length, 1)
+  assert.equal(seen.length, 1, 'a reviewed read must never follow even a same-origin redirect')
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: test-src\n    scope:\n      - other.example.com\n')
+  assert.equal((await call()).error?.code, 'E_EXEC_SCOPE_DENIED')
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: test-src\n    scope:\n      - 127.0.0.1\n')
+  const concurrent = await Promise.all([call(), call()])
+  assert.equal(concurrent.filter(x => x.ok).length, 1, 'the last use is consumed atomically')
+  assert.equal(concurrent.find(x => !x.ok).error.code, 'E_EXEC_READ_PERMIT_EXHAUSTED')
+  assert.equal(seen.length, 2)
+  const child = () => new Promise((resolve, reject) => {
+    const source = `
+      import {createBus} from ${JSON.stringify(new URL('../../sec-domain-bus/index.js', import.meta.url).href)};
+      import {buildExecDomain} from ${JSON.stringify(new URL('../index.js', import.meta.url).href)};
+      const b=createBus({dataDir:${JSON.stringify(dataDir)},dbFile:${JSON.stringify(path.join(dataDir, 'child.db'))},
+        sidecars:false,startDispatcherTimer:false});
+      b.registry.register(buildExecDomain({dataDir:${JSON.stringify(dataDir)}}));
+      const r=await b.dispatch('exec','http_request',${JSON.stringify(args)},{actor:'script'});
+      console.log(JSON.stringify({ok:r.ok,code:r.error?.code}));b._internal.close();`
+    const p = spawn(process.execPath, ['--input-type=module', '-e', source])
+    let out = '', err = ''
+    p.stdout.on('data', x => { out += x }); p.stderr.on('data', x => { err += x })
+    p.on('error', reject)
+    p.on('exit', code => { try { if (code) throw Error(err); resolve(JSON.parse(out.trim())) } catch (e) { reject(e) } })
+  })
+  assert.equal((await child()).code, 'E_EXEC_READ_PERMIT_EXHAUSTED', 'another process cannot reset spent permits')
+  put([{ ...permit, id: 'concurrent-processes', max_uses: 1 }])
+  const processes = await Promise.all([child(), child()])
+  assert.equal(processes.filter(x => x.ok).length, 1)
+  assert.equal(processes.find(x => !x.ok).code, 'E_EXEC_READ_PERMIT_EXHAUSTED')
+  assert.equal(seen.length, 3)
+})
+
+test('WP04 read permits reject unsafe, ambiguous, expired or changed review evidence', async t => {
+  const { bus, dataDir } = makeEnv()
+  t.after(() => bus._internal.close())
+  const args = { program_id: 'test-src', url: 'https://a.example.com/trade/read', method: 'POST', body: '{}' }
+  const sha = x => crypto.createHash('sha256').update(x).digest('hex')
+  const digest = sha(JSON.stringify({ program_id: args.program_id, url: args.url, method: 'POST',
+    body: '{}', headers: { 'accept-encoding': 'identity' } }))
+  fs.mkdirSync(path.join(dataDir, 'evidence'), { recursive: true })
+  const proof = path.join(dataDir, 'evidence/review.txt')
+  fs.writeFileSync(proof, 'review', { mode: 0o600 })
+  const permit = { id: 'review-1', program_id: 'test-src', request_digest: digest,
+    issued_at: Date.now() - 1000, expires_at: Date.now() + 60000, max_uses: 1,
+    rationale: 'SDK contract and owner response reviewed.', evidence: [{ path: 'evidence/review.txt', sha256: sha('review') }] }
+  const file = path.join(dataDir, 'http-read-permits.json')
+  const put = permits => fs.writeFileSync(file, JSON.stringify({ version: 1, permits }), { mode: 0o600 })
+  const call = () => bus.dispatch('exec', 'http_request', args, { actor: 'script' })
+  for (const permits of [[{ ...permit, expires_at: Date.now() - 1 }], [permit, permit],
+    [{ ...permit, max_uses: 1000 }], [{ ...permit, evidence: [] }]]) {
+    put(permits)
+    assert.equal((await call()).error?.code, 'E_EXEC_READ_PERMIT_INVALID')
+  }
+  put([permit]); fs.chmodSync(file, 0o666)
+  assert.equal((await call()).error?.code, 'E_EXEC_READ_PERMIT_INVALID')
+  fs.chmodSync(file, 0o600); fs.writeFileSync(proof, 'changed')
+  assert.equal((await call()).error?.code, 'E_EXEC_READ_PERMIT_INVALID')
+  fs.unlinkSync(file); fs.symlinkSync(proof, file)
+  assert.equal((await call()).error?.code, 'E_EXEC_READ_PERMIT_INVALID')
 })
 
 test('WP02 HTTP redirect guards, cross-origin identity stripping, byte/time limits and signed results', async t => {
