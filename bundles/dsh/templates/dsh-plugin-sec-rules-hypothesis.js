@@ -314,20 +314,32 @@ export const SENSITIVE_PATTERNS = [
   { name: 'env_leak', re: /^[A-Z_]+(?:KEY|SECRET|PASSWORD|TOKEN)=.+/m },
 ]
 
-export function oracleInfoDisclosureDiff({ test_body = '', control_body = '' } = {}) {
+// 公开联系方式邮箱（客服/营销/系统角色）——出现在响应里不构成信息泄露，须排除。
+const PUBLIC_EMAIL_RE = /^(support|noreply|no-?reply|contact|info|admin|administrator|sales|service|help|helpdesk|webmaster|postmaster|abuse|marketing|press|privacy|legal|feedback|hello|hr|jobs|careers|billing|cs|it)@/i
+const EMAIL_RE = /\b[\w.+-]+@[\w-]+\.[\w.]+\b/g
+
+export function oracleInfoDisclosureDiff({ test_body = '', control_body = '', endpoint_public = false } = {}) {
   const t = String(test_body || '')
   const c = String(control_body || '')
   if (!t) return ok('inconclusive', '测试响应为空')
   const hits = []
   for (const p of SENSITIVE_PATTERNS) {
-    if (p.re.test(t) && !p.re.test(c)) hits.push(p.name)
+    if (!p.re.test(t) || p.re.test(c)) continue
+    // 命中邮箱模式时，剔除公开联系方式邮箱；仅剩私有邮箱才算泄露。
+    if (p.name === 'email') {
+      const nonPublic = (t.match(EMAIL_RE) || []).filter((e) => !PUBLIC_EMAIL_RE.test(e))
+      if (!nonPublic.length) continue
+    }
+    hits.push(p.name)
   }
-  if (hits.length >= 1) {
+  if (hits.length) {
+    // 端点已被标记为公开内容（如营销页/公开文档）时，命中敏感模式先作观察，须核实保护预期。
+    if (endpoint_public) return ok('inconclusive', `命中敏感模式 [${hits.join(', ')}] 但端点标记为公开内容——需核实保护预期与实际影响`, { patterns: hits })
     return ok('verified', `测试响应命中敏感模式 [${hits.join(', ')}] 且对照未命中——信息泄露成立`, { patterns: hits })
   }
   const inBoth = SENSITIVE_PATTERNS.filter((p) => p.re.test(t) && p.re.test(c)).map((p) => p.name)
   if (inBoth.length) return ok('rejected', `敏感模式 [${inBoth.join(', ')}] 对照同样命中——非本次暴露引入`, { patterns: inBoth })
-  return ok('rejected', '未命中任何敏感模式', {})
+  return ok('rejected', '未命中任何敏感模式（公开联系方式不计泄露）', {})
 }
 
 // 3) SQLi（布尔差分 / 时间差分）
@@ -354,11 +366,32 @@ export function oracleSqliDiff({ baseline_body = '', true_body = '', false_body 
   return ok('inconclusive', '差分特征不足', {})
 }
 
-export function oracleSqliTime({ baseline_ms = 0, sleep_ms = 0, requested_delay_ms = 5000 } = {}) {
+function median(xs) {
+  const a = [...xs].sort((x, y) => x - y)
+  const n = a.length
+  return n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2
+}
+
+// SQLi 时间盲注：单次不可信；优先用 ≥3 轮交错重复测量（延时组/基线组/非延时对照），
+// 仅在延时组整体高于基线组且非延时对照仍接近基线时才 verified。
+export function oracleSqliTime({ baseline_ms = 0, sleep_ms = 0, requested_delay_ms = 5000,
+  baseline_samples = [], sleep_samples = [], control_samples = [] } = {}) {
+  const margin = Math.max(1000, Number(requested_delay_ms) * 0.8)
+  const nums = (arr) => (Array.isArray(arr) ? arr : []).map(Number).filter(Number.isFinite)
+  const bs = nums(baseline_samples), ss = nums(sleep_samples), cs = nums(control_samples)
+  if (bs.length >= 3 && ss.length >= 3) {
+    const bMed = median(bs), sMed = median(ss), bMax = Math.max(...bs), sMin = Math.min(...ss)
+    const delta = sMed - bMed
+    const controlOk = cs.length < 3 || Math.abs(median(cs) - bMed) < margin
+    if (delta >= margin && sMin > bMax && controlOk) {
+      return ok('verified', `跨 ${ss.length} 次交错测量：延时组(中位 ${sMed}ms/最小 ${sMin}ms) 整体高于基线组(中位 ${bMed}ms/最大 ${bMax}ms)，差 ${delta}ms≥${margin}，非延时对照一致——时间盲注成立`, { baseline_median: bMed, sleep_median: sMed, delta, rounds: ss.length })
+    }
+    if (delta < 500) return ok('rejected', `时间差分不成立：中位增量 ${delta}ms < 500ms`, { delta })
+    return ok('inconclusive', `多轮时间差分不稳定（中位增量 ${delta}ms）——网络/服务抖动不可排除`, { delta })
+  }
   const b = Number(baseline_ms) || 0
   const s = Number(sleep_ms) || 0
-  const margin = Math.max(1000, Number(requested_delay_ms) * 0.8)
-  if (s - b >= margin) return ok('inconclusive', `单次时间增量 ${s - b}ms ≥ ${margin}ms；需交错重复对照排除网络/服务抖动`, { baseline_ms: b, sleep_ms: s })
+  if (s - b >= margin) return ok('inconclusive', `单次时间增量 ${s - b}ms ≥ ${margin}ms；需≥3轮交错重复对照排除网络/服务抖动`, { baseline_ms: b, sleep_ms: s })
   if (s - b < 500) return ok('rejected', `时间差分不成立：增量 ${s - b}ms < 500ms`, { baseline_ms: b, sleep_ms: s })
   return ok('inconclusive', `增量 ${s - b}ms 介于 500~${margin}ms——网络抖动不可排除`, { baseline_ms: b, sleep_ms: s })
 }
@@ -382,13 +415,21 @@ export function oracleXssEcho({ marker = '', response_body = '' } = {}) {
   return ok('rejected', `标记 ${m} 未回显`, { marker: m })
 }
 
-// 5) SSRF（OOB 唯一判定）：唯一 token 出现在带外交互记录即 verified
-export function oracleSsrfOob({ oob_token = '', interactions = [] } = {}) {
+// 5) SSRF（OOB 唯一判定）：唯一 token 出现在带外交互记录即 verified；
+// 但接收端不健康或命中不在等待窗口内时不可判阳性/阴性。
+export function oracleSsrfOob({ oob_token = '', interactions = [], service_healthy = null, window_ms = null, now = null } = {}) {
   const t = String(oob_token || '')
   if (!t || t.length < 8) return ok('inconclusive', 'oob_token 缺失或过短（<8）')
+  if (service_healthy === false) return ok('inconclusive', 'OOB 接收端不健康——既不能判阴性，也不宜凭命中判阳性', { oob_token: t })
   const hits = (Array.isArray(interactions) ? interactions : []).filter((i) => String(i?.qname || i?.query || i?.token || '').includes(t))
-  if (hits.length) return ok('verified', `OOB 交互记录命中唯一 token ${t}（${hits.length} 次）——SSRF 成立`, { oob_token: t, hits: hits.length })
-  return ok('inconclusive', `OOB 无 ${t} 交互记录；接收端健康、等待窗口与请求是否执行尚未证明`, { oob_token: t })
+  if (hits.length) {
+    if (now != null && window_ms != null) {
+      const fresh = hits.filter((h) => h.ts == null || Number(h.ts) >= Number(now) - Number(window_ms))
+      if (!fresh.length) return ok('inconclusive', 'OOB 命中的交互不在本次等待窗口内——请求与回调关联不足', { oob_token: t, hits: hits.length })
+    }
+    return ok('verified', `OOB 交互记录命中唯一 token ${t}（${hits.length} 次）——SSRF 成立`, { oob_token: t, hits: hits.length })
+  }
+  return ok('inconclusive', `OOB 无 ${t} 交互记录；接收端健康、等待窗口与请求是否执行尚未证明`, { oob_token: t, service_healthy })
 }
 
 export const ORACLES = {
