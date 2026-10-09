@@ -1945,23 +1945,40 @@ fixture-runner-v3新增有界authz-read-v2，候选必须实际请求owner/low�
 
 首次生产配置root:600导致服务进程不可读，请求在准入前失败；修正为业务进程所有后执行，未修改权限校验。证据`out/secagent-audits/20261009-read-permits/`保存失败、263项验收、固定包、安装与RPC/浏览器日志；生产原件`data/results/readpermit-pilot-20261009/`。此批完成具体只读请求正式接线，不代表所有业务POST已授权或WP04达20–50份健康模板。后续单账号结构化判定本地开发中，未据此宣称上线。
 
-### 15.127 D09 专项累计预算硬上限与预算批准人工化（2026-10-09，已部署）
+### 15.127 D09 累计预算硬上限、预算审批人工化与缺额任务延后（2026-10-09，已部署；评审修复后）
 
-补完 WP01 的最后一项确定性缺口 D09（此前各批均记录「自动续费累计上限仍未完成」）。专项预算由「窗口滚动可重复用」改为**累计硬上限**：所有预算判定改用统一口径 `max(窗口已记费用+未结预留, 全周期已记费用+未结预留)`，窗口滚动不再返还累计额度。覆盖认领准入 `reserveTaskBudget`、专项派发预算检查、规划剩余额度、预算停止条件、`autoRecover` 自动恢复、`campaign_activate` 与 `campaign_autonomy_apply`；`campaignUsage` 已有 `lifetime_spent_tokens` 供消费，不再新增平行账本。
+补完 WP01 的确定性缺口 D09 的两个子项——**累计预算硬上限**与**预算审批人工化**（其余 D09 要求见文末"未完成"）。专项预算由「窗口滚动可重复用」改为**累计硬上限**：所有预算判定统一 `max(窗口已记费用+未结预留, 全周期已记费用+未结预留)`，窗口滚动不返还累计额度，覆盖专项派发检查、规划剩余额度、预算停止、`autoRecover`、`campaign_activate`、`campaign_autonomy_apply`。
 
-预算类审批（`campaign-budget-extend`/`task-budget-extend`/`task-budget-config`）的 `approve` 现要求 actor ∈ {human, dashboard}，移除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 默认自动批准；Supervisor 仍按 80% 水位自动**提请**，但扩额须人放行。effect 增加安全整数与「≤ 原预算×2」校验。专项额度**暂时**不足（在飞预留未结、窗口消费到期）时认领延后回 queue 而非永久 blocked，额度释放后自动重新认领；每-program 硬预算耗尽与专项停用仍 blocked，避免「条件变化后无法恢复」。
+**预算判定归位**：认领时的预算判定从 SQLite 后端移入 task 域（`claimBudgetDeficit`），后端只保留消费查询原语（`consumptionUsage`/`campaignUsage`）与原子预留原语（`insertBudgetReservation`）；命令经网关 `BEGIN IMMEDIATE` 单事务，"读消费→判定→预留"同事务，无跨进程竞态。符合 00 号 §12.1「repository 不含业务校验」。
 
-验证：task/approval 167、全域 **802/802**、fail=0；新增红例覆盖窗口过期不复活累计额度、认领计入过期消费与未结预留、系统 actor 不得自批预算。
+评审（对 `6f019d0`）发现并修复的两个运行问题：
 
-**发布与运行验收**：change `20261009-d09-budget-cap`，固定源 `6f019d0`，DSH 0.1.7-rc.2。按 §15.119 快速发布：只改 `domain-task`/`backend-task-sqlite`/`domain-approval` 三模块各「源模板+已安装插件」共 6 落点，保留旧源码于 `dsh-upgrades/20261009-d09-budget-cap/previous/`；安装前断言 DSH 版本、全部旧文件摘要、无 running task/worker、Campaign 全 paused。停写到启动 1.36 秒。生产冒烟：silksecagent/edge/shared-browser active、NRestarts0、journal err0；`bus.status` 12.4ms、`dashboard.stats` 19.7ms、`scope.check` 1.9ms、`know.health` 77.3ms；`task.campaign_get` 返回 `window_usage.lifetime_spent_tokens`；Campaign 1/2/3 仍 paused（账面 188.83M/621.38M/210.28M），无运行任务/worker、quick_check ok。启动就绪约 38 秒（10:29:33 active → 10:30:11 监听），期间在开浏览器轮询触发 13 次 502，属既有冷启动现象，不归因本批，也不宣称冷启动已修。原子域合规复核另见 §17。
+1. **缺额任务饿死后续可运行任务**：原实现先按优先级取固定数量再判预算；缺额任务退回 queued 无延后，下一轮又被选中（并发=1 时，队首一个缺额任务即可挡住后面全部任务）。现认领改为**循环扫描**：缺额任务写 `next_run_at` 延后（在飞预留暂占延后 60s，累计已耗不足延后 300s）并继续找可运行任务；被延后的任务下一 tick 不再选中，跨 tick 收敛且不空转。
+2. **停止与提请口径不一致**：停止条件已用累计口径，但自动扩额提请仍按**窗口** `spent_tokens` 达 80%——"全部消费在窗口外"时停止命中却无提请，看板拿不到 pending，"等待批准即可恢复"不成立。现停止/提请/恢复/展示统一为累计口径：tick1 active→reviewing（stop），tick2 生成 `campaign-budget-extend` 人工提请。
+
+**事件/状态一致性**：延后回队的任务现在是 `queued`（带 `next_run_at`）并发 `task.deferred`（含 `reason`/`retry_at`），不再错发 `task.blocked`；返回值新增 `data.deferred`，`task_claim.events` 增列 `task.deferred`、`event_limit` 提至 64。
+
+**审批契约一致**：`approval_decide` actor 收紧为 `{dashboard, human}`——移除 35 号补丁遗留的 `system`，与 09 号 §1.3.2「model/system/scheduler/approval 一律不可裁决」一致；task 域删除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 自动批准路径。扩额 effect 保留安全整数与「≤ 原预算×2」校验；提请证据/回执补记累计已用、在飞预留、拟批总额与批准后剩余，避免把"获批"直接等同"可恢复"（如 C2 单次最多 200M→400M，仍低于累计约 621M）。
+
+**验证**：task/approval **171**、全域 **806/806**、fail=0；新增红例覆盖：缺额不饿死后续任务、延后带重试时间且发 `task.deferred`（status=queued、无 blocked 事件）、窗口外累计耗尽仍生成人工提请、`task-budget-extend`/`task-budget-config` 的 system 裁决拒绝、安全整数与两倍增量边界。
+
+**发布与运行验收**：两次快速发布，均固定 DSH 0.1.7-rc.2，只改 `domain-task`/`backend-task-sqlite`/`domain-approval` 三模块各「源模板+已安装插件」，安装前断言版本、全部旧文件摘要、无 running task/worker、Campaign 全 paused，旧源码入各自 change 目录 `previous/`。
+- 初始 change `20261009-d09-budget-cap`（`6f019d0`）：停写到启动 1.36 秒。
+- 评审修复 change `20261009-d09-review-fix`：停写到启动 3.13 秒；首次尝试因 `systemctl stop` 超 90s（应用优雅停止未在 systemd `TimeoutStopSec` 内完成，属既有间歇现象，非本批）在替换前退出，**文件未改**、服务已立即恢复；改用 `--no-block` + 轮询停稳后重装成功。
+- 生产冒烟（评审修复版）：task/backend-task/approval 安装摘要与仓库一致；六服务 active、NRestarts0、journal err0；`bus.status` 278.9ms（冷）、`dashboard.stats` 25.2ms、`scope.check` 2.6ms、`know.health` 76.6ms；`task.campaign_get` 返回 `window_usage.lifetime_spent_tokens`；Campaign 1/2/3 仍 paused（账面 188.83M/621.38M/210.28M）、无运行任务/worker、quick_check ok。
+- 说明：操作耗时（1.36/3.13 秒）只是"停止→启动"时长，另有约 38 秒启动就绪窗口及开浏览器轮询 502，均属既有冷启动现象，不归因本批、不宣称根治。
+
+**未完成（不并入本次完成声明）**：D09 原要求另含「无有效进展停止条件」与「扩容依据业务面/证据收益而非仅消费达 80%」——本次仍按水位提请，业务进展停止信号未实现，留待后续验收。契约版本：本批语义变化（窗口→累计、审批收紧）按 00 号 §15.1 本应 bump，但总线 R6 以 `MANIFEST_SCHEMA_VERSION=1` 为硬上限且拒绝版本回退（会阻断本批文件级回退），故本次不改版本、改在契约显式标注语义变更，并把「域契约版本与总线 manifest schema 版本解耦」列为治理缺口（见 §17）。原子域合规复核另见 §17。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
 
+**为什么 27 号整体尚未完成**：本文是以真实漏洞发现能力为目标的**全流程改造方案**，不是单一批次任务；§16 表内 WP01–WP12 是仍需逐项达标的**剩余验收入口**，§15 只是按时间记录已落地的增量。已完成的是其中的确定性工程缺口（执行/费用/判定/知识框架等大量子项），**未完成的是需要真实业务输入、外部接口契约或长观察窗的部分**——尤其：WP02 其余 Oracle 的真实接口契约与属性重放、WP04 的 20–50 份真实健康业务模板与读型 POST 风险契约、WP06 旧证据独立技术状态、WP07 可信 attempt/版本归因、WP09 未见行为 holdout 与真实知识收益、WP12 端到端试点对账。这些无法用更多文档或候选条数替代，须在授权范围内以真实请求→有效实验→可信判定→知识收益推进，故本方案按 §15.119 三条交付线持续进行、不整体关账。
+
 | 包 | 已具备基础 | 尚需完成的验收 |
 |---|---|---|
-| WP01 | 目标/Program/派发/认领、候选30及ledger200补页、**D09累计硬上限与预算审批人工化已上线**（§15.127，change `20261009-d09-budget-cap`） | 业务进展停止信号、完整候选轮转、C3按真实剩余量处置；C2/C3 已超累计额度，恢复须经人批新额度，勿恢复无界运行 |
+| WP01 | 目标/Program/派发/认领、候选30及ledger200补页；**D09 的两个子项（累计硬上限 + 预算审批人工化，含缺额任务延后/提请口径统一）已上线**（§15.127，change `20261009-d09-review-fix`） | **D09 未整项完成**：无有效进展停止条件、扩容依据业务收益仍未做；完整候选轮转、C3按真实剩余量处置亦待办；C2/C3 已超累计额度，恢复须经人批新额度，勿恢复无界运行 |
 | WP02 | 受控HTTP、owner-only读取、可信capsule/confirm、身份前检及单账号2组匿名边界阴性 | 更多真实适用实验及单账号判定自动接线；其余Oracle弱信号/故障正负样例、属性重放，禁止自报替代技术真值 |
 | WP03 | claim/run/ACK、busy补偿、在飞预留、请求usage和估算 | 完整fencing/多进程恢复、共享请求预算/429退避、D07进程清理、F06死信/投影；最终账单及历史精确洗账不再必需 |
 | WP04 | HAR/被动捕获、正式HTTP接线、18种匿名请求及单账号5种新接口、响应前置已上线 | 20–50份不同且适用的业务模板（不能用失败/空列表凑数），method/body/身份/对象归集、读型POST风险契约及HAR健康判定，B09参数队列执行确认 |
@@ -1982,11 +1999,14 @@ fixture-runner-v3新增有界authz-read-v2，候选必须实际请求owner/low�
 |---|---|---|
 | 跨域 import | 扫描 `dsh-plugin-sec-domain-*` 的非测试 import | 仅 `domain-endpoint → ./har.js`（同域被动采集同伴模块，测试组装随附），无跨域直连；跨域仍只经 QueryGateway/DispatchGateway |
 | owns × 沙箱交叉断言 | 生产 `sec-owns-sandbox-check.mjs`（SEC_BASE_DIR=/opt/silkspool/dsh） | `violations: 0`（域 owned 数据对 bwrap 可写白名单不可写） |
-| 命令/查询契约矩阵 | 本地全域契约 `sec-contract-test-local.sh` | 802/802 fail=0；actor 白名单、schema 严格、状态机、幂等重放、分页 `meta.paged` 均有断言 |
+| 命令/查询契约矩阵 | 本地全域契约 `sec-contract-test-local.sh`（评审修复后） | 806/806 fail=0；actor 白名单、schema 严格、状态机、幂等重放、分页 `meta.paged` 均有断言。**说明**：806 通过≠逐命令矩阵完整（见文末未覆盖）。 |
 | 新增表归属 | 检索 doc-27 新表在两域的声明与 `owns` | `endpoint_requests`/`hypothesis_queue`/`task_run_costs`/`task_cost_evidence`/`task_budget_reservations`/`task_bill_items`/`task_cost_watch`/`vuln_technical_verdicts`/`know_adoptions` 均在属主域 manifest/后端；随 asset-graph.db 纳入 41 库备份 |
-| 悬空工具引用 | 生产 `discipline-audit.py`（/tmp 只读副本） | prompt 资产 0 悬空、旧别名引用 0、prompt 读取 0 错误；仅 task objective 中 49 处 `asset_enum` 被误报——该 token 是 task kind/`source=asset_enum` 标签而非工具，已加入 `NON_TOOL_TOKENS` 豁免（本地已修，未部署） |
+| 悬空工具引用 | 生产 `discipline-audit.py`（/tmp 只读副本） | prompt 资产 0 悬空、旧别名引用 0、prompt 读取 0 错误；仅 task objective 中 49 处 `asset_enum` 被误报——该 token 是 task kind/`source=asset_enum` 标签而非工具，已加入 `NON_TOOL_TOKENS` 豁免（仓库 + 管理机 bundle 已修；审计脚本非生产运行时，未单独安装） |
 | 查询纯读 | 复核 doc-27 新增读面（`exec.http_result`/`endpoint.request_get`/`vuln.technical_verdict` 等） | 未发现主链写副作用；已知例外仍是已声明的 `know_coverage(refresh)`/`ledger_coverage_report(materialize)` 治理物化 |
 | 时间口径 | 存储/展示口径 | 新增表时间列沿用 UTC epoch 毫秒；北京时间仅用于展示/文档 |
+| 预算判定位置 | 复核认领预算判定所在层 | 评审前在后端 `reserveTaskBudget` 内直接决定是否放行（违反 §12.1）；**已修**：判定移入 task 域 `claimBudgetDeficit`，后端仅保留 `consumptionUsage`/`campaignUsage` 查询与 `insertBudgetReservation` 原子预留；同事务读-判-留无竞态 |
+| approval actor 一致 | 复核 09 号 §1.3.2 与 manifest | 评审前代码保留 35 号补丁的 `system` 裁决（与正文冲突）；**已修**：`approval_decide` actor 收紧为 `{dashboard, human}`，正文/代码/manifest 一致 |
+| 契约版本治理缺口 | 复核语义变更 vs manifest `version` | 窗口→累计、审批收紧属 §15.1 应 bump 的语义变更，但总线 R6 以 `MANIFEST_SCHEMA_VERSION=1` 为硬上限且拒绝版本回退（会阻断文件级回退）。**未 bump**：改在 05/09 契约显式标注语义变更；「域契约版本与总线 manifest schema 版本解耦」列为待治理缺口 |
 
 未覆盖：后端三实现全矩阵逐命令能力声明、跨进程 fencing、以及全部历史 batch 的逐行注释核对；这些仍以各自契约测试与运行验收为准，不由本表代替。
 
@@ -2005,4 +2025,4 @@ fixture-runner-v3新增有界authz-read-v2，候选必须实际请求owner/low�
 | 覆盖/排除 | routine 覆盖 /opt/silkspool/dsh + 3 工作区 + maintenance/current；排除 .cache/.pnpm-cache/data/backups 与浏览器登录态 | 与 18 号契约一致 |
 | 本地清理 | `cleanup` 干跑：无待轮转/待删；本地图快照保持 2 份；dsh-upgrades 有 32 个日期目录（archive-release 为人工触发，非自动清理） | 无异常增长；<80% 容量 |
 
-> 结论：备份/恢复功能正常，保留数量与时间符合契约；唯一待处理项是 10-05 遗留的 pending 快照。人工 routine 快照（prepare-change）与计划快照共用 `routine` 标签并计入 keep_last=8，因此频繁变更会缩短计划快照的实际保留窗口——是否将 prepare-change 单独打标属 18 号策略取舍，本表仅记录现象。
+> 结论：备份/恢复功能正常，保留数量与时间符合契约。10-05 遗留的 `routine-pending` 快照已在本轮清理（仓库现为 8 routine + 1 release-archive + 0 pending），无待处理项。人工 routine 快照（prepare-change）与计划快照共用 `routine` 标签并计入 keep_last=8，因此频繁变更会缩短计划快照的实际保留窗口——是否将 prepare-change 单独打标属 18 号策略取舍，本表仅记录现象。另需说清：本表只证明 SQLite 恢复/哈希/完整性通过（drill），不证明完整应用灾备恢复；发布侧 1.36 秒仅「停止→启动」操作耗时，另有约 38 秒启动就绪窗口。

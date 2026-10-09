@@ -562,21 +562,12 @@ function createRepo(db) {
       const marks = claimed.map(() => '?').join(',')
       return db.prepare(`SELECT * FROM tasks WHERE id IN (${marks})`).all(...claimed).map((r) => ({ ...r }))
     },
-    reserveTaskBudget(task, nowTs, programLimit) {
-      const tokens = task.budget_tokens ?? 150000
-      if (!Number.isSafeInteger(tokens) || tokens <= 0) return 'E_TASK_BUDGET_REQUIRED'
-      const periodDays = Number(repo.settingGet('budget_period_days')) || 7
-      if (repo.consumptionUsage('program_id', task.program_id, nowTs - periodDays * 86400000).committed_tokens + tokens > programLimit) return 'E_TASK_BUDGET_EXHAUSTED'
-      if (task.campaign_id != null) {
-        const c = repo.getCampaign(task.campaign_id)
-        if (!c || c.status !== 'active') return 'E_CAMPAIGN_STATE'
-        const usage = repo.campaignUsage(c.id, nowTs - c.budget_window_days * 86400000)
-        if (c.budget_tokens == null || Math.max(usage.committed_tokens,
-          usage.lifetime_spent_tokens + usage.reserved_tokens) + tokens > c.budget_tokens) return 'E_CAMPAIGN_BUDGET_LOW'
-      }
+    // D09：后端只提供原子预留原语（业务判定在 task 域 claim handler 内完成；
+    // 命令经网关 BEGIN IMMEDIATE 单事务，读消费→判定→预留同事务，无跨进程竞态）。
+    insertBudgetReservation(taskId, claimStartedAt, tokens, nowTs) {
       db.prepare('INSERT INTO task_budget_reservations(task_id,claim_started_at,tokens,created_at) VALUES(?,?,?,?)')
-        .run(task.id, nowTs, tokens, nowTs)
-      return null
+        .run(Number(taskId), Number(claimStartedAt), Number(tokens), Number(nowTs))
+      return true
     },
     getBudgetReservation(taskId, claim) {
       return db.prepare('SELECT * FROM task_budget_reservations WHERE task_id=? AND claim_started_at=?').get(taskId, claim) || null

@@ -80,7 +80,7 @@ test('27 D09: a system actor cannot approve campaign spending but a human can', 
   assert.equal(r.ok, true, r.error?.message)
   const denied = await bus.dispatch('approval', 'decide',
     { id: r.data.request_id, decision: 'approve', operator: 'auto-campaign-budget' }, { actor: 'system' })
-  assert.equal(denied.error?.code, 'E_APPROVAL_BUDGET_HUMAN_REQUIRED')
+  assert.equal(denied.error?.code, 'E_ACTOR_FORBIDDEN', 'D09 起 system 不再是 approval_decide 白名单 actor')
   const db = bus._internal.db()
   assert.equal(db.prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(c.data.campaign_id).budget_tokens, 100000)
   const approved = await bus.dispatch('approval', 'decide',
@@ -88,6 +88,25 @@ test('27 D09: a system actor cannot approve campaign spending but a human can', 
   assert.equal(approved.ok, true, approved.error?.message)
   assert.equal(db.prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(c.data.campaign_id).budget_tokens, 110000)
   assert.equal(db.prepare('SELECT status FROM campaigns WHERE id=?').get(c.data.campaign_id).status, 'reviewing')
+})
+
+test('27 D09: system cannot decide any budget approval kind (task-budget-extend / task-budget-config)', async t => {
+  const { bus } = makeEnvWithTask()
+  t.after(() => bus._internal.close())
+  const task = await bus.dispatch('task', 'create', { program_id: 'example-src', objective: '预算延长对象' }, { actor: 'dashboard' })
+  assert.equal(task.ok, true, task.error?.message)
+  const specs = [
+    { kind: 'task-budget-extend', subject: '任务预算延长', requestActor: 'scheduler', payload: { task_id: task.data.task_id } },
+    { kind: 'task-budget-config', subject: 'per-program 预算闸', requestActor: 'system', payload: { max_tokens: 1000000 } },
+  ]
+  for (const s of specs) {
+    const req = await bus.dispatch('approval', 'request', { kind: s.kind, subject: s.subject, evidence: 'bounded request evidence for the contract test', payload: s.payload }, { actor: s.requestActor })
+    assert.equal(req.ok, true, `${s.kind}: ${req.error?.message}`)
+    const denied = await bus.dispatch('approval', 'decide', { id: req.data.request_id, decision: 'approve', operator: 'auto' }, { actor: 'system' })
+    assert.equal(denied.error?.code, 'E_ACTOR_FORBIDDEN', `${s.kind} system 裁决应被网关拒绝`)
+    const human = await bus.dispatch('approval', 'decide', { id: req.data.request_id, decision: 'approve', operator: 'owner' }, { actor: 'human' })
+    assert.equal(human.ok, true, `${s.kind} 人工批准应成功: ${human.error?.message}`)
+  }
 })
 
 function readEvents(dir) {
@@ -658,12 +677,11 @@ test('27 D09: legacy automatic campaign approvals are rejected for system and mo
   bus._internal.db().prepare("UPDATE campaigns SET spent_tokens=900 WHERE id=?").run(c.data.campaign_id)
   const r = await bus.dispatch('approval', 'request', { kind: 'campaign-budget-extend', subject: 'camp-auto', evidence: '80% 水位自动爬坡测试（模拟 Supervisor 提请）', payload: { add_tokens: 1000 } }, { actor: 'scheduler' })
   assert.equal(r.ok, true, r.error?.message)
-  // model 仍不可裁决（自动批准只能走 system，模型不自批自）
+  // D09 起 model 与 system 都不在 approval_decide 白名单，均被网关拒绝。
   const dm = await bus.dispatch('approval', 'decide', { id: r.data.request_id, decision: 'approve', operator: 'x' }, { actor: 'model' })
   assert.equal(dm.ok, false)
   assert.equal(dm.error.code, 'E_ACTOR_FORBIDDEN')
-  // The old system actor path must not change the approved limit.
   const d = await bus.dispatch('approval', 'decide', { id: r.data.request_id, decision: 'approve', operator: 'auto-campaign-budget' }, { actor: 'system' })
-  assert.equal(d.error?.code, 'E_APPROVAL_BUDGET_HUMAN_REQUIRED')
+  assert.equal(d.error?.code, 'E_ACTOR_FORBIDDEN')
   assert.equal(bus._internal.db().prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(c.data.campaign_id).budget_tokens, 1000)
 })

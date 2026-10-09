@@ -363,9 +363,9 @@ export const APPROVAL_MANIFEST = {
       deprecated: false,
     },
     approval_decide: {
-      // System decisions remain available for other workflows; spending increases
-      // require a human/dashboard actor in decideValid.
-      actor: ['dashboard', 'human', 'system'],
+      // 契约 §1.3.2 actor：dashboard(operator 必填)/human。审批裁决是模型/系统禁入区
+      // （宪法 §三）；D09 起 Superviso 自动批准路径已删除，system 不再裁决任何 kind。
+      actor: ['dashboard', 'human'],
       schema: schema({
         id: int(),
         decision: en(['approve', 'reject']),
@@ -552,10 +552,8 @@ function makeHandlers(opts) {
       const row = repo.getRequest(args.id)
       if (!row) return { code: 'E_NOT_FOUND', message: `请求不存在: ${args.id}`, hint: '核对 request_id（approval_list 可查）', retryable: false }
       if (row.status !== 'pending') return { code: 'E_STATE', message: `请求 #${args.id} 已终态（${row.status}）`, hint: '勿重复决策', retryable: false }
-      if (args.decision === 'approve' && ['campaign-budget-extend', 'task-budget-extend', 'task-budget-config'].includes(row.kind)
-        && !['human', 'dashboard'].includes(ctx.actor)) {
-        return { code: 'E_APPROVAL_BUDGET_HUMAN_REQUIRED', message: '预算扩展须由人明确批准，系统提请不能自行扩额', retryable: false }
-      }
+      // D09：actor 白名单已收紧为 dashboard/human，system/model 在网关层即被 E_ACTOR_FORBIDDEN 拒绝，
+      // 无需按 kind 特判——所有审批（含预算类）都须人裁决。
       return null
     },
     withdrawValid: async (args, repo, ctx) => {

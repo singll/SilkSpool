@@ -713,4 +713,4 @@ ApprovalRepo.listEffects(request_id) -> rows
 
 2026-10-08冷启动统计优化（本地785项通过，未部署）：审批统计只选kind/status/created_at和note前五字符，索引覆盖时间范围及撤回分类，避免SELECT *加载证据和payload。30天窗口、撤回类别、最老pending年龄不变。隔离复现和性能边界见27号§15.116。
 
-2026-10-09 D09 预算审批人工化（已部署）：`campaign-budget-extend` / `task-budget-extend` / `task-budget-config` 三类预算审批的 `decide(approve)` 要求 actor ∈ {human, dashboard}；`system`（含旧 Supervisor 自动批准路径）提请方不能自行批准自己的扩额，返回 `E_APPROVAL_BUDGET_HUMAN_REQUIRED`。`system` actor 仍可用于其它 kind 的裁决。移除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 隐含语义。change `20261009-d09-budget-cap` 已随 task 模块同批上线（approval 模块同为 6f019d0）；见 27 号 §15.127。
+2026-10-09 D09 预算审批人工化（已部署）：`approval_decide` actor 白名单收紧为 **{dashboard, human}**——`system`/`scheduler` 与 `model` 一样在网关层被 `E_ACTOR_FORBIDDEN` 拒绝，不再能裁决任何 kind（与 §1.3.2「actor：dashboard(operator 必填)/human，model/system/scheduler/approval 一律不可裁决」一致，消除 35 号补丁遗留的契约前后矛盾）。task 域删除 Supervisor 自动批准（`SEC_CAMPAIGN_BUDGET_AUTO_APPROVE`）路径：80% 水位只**提请**，扩额一律人工放行。change `20261009-d09-budget-cap` 已随 task 模块同批上线（approval 模块同为 `6f019d0`）；见 27 号 §15.127。

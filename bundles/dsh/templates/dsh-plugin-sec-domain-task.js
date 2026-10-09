@@ -366,9 +366,10 @@ export const TASK_MANIFEST = {
       actor: ['scheduler'],
       schema: schema({ now: int() }, ['now']),
       idempotent: 'none',
-      events: ['task.claimed', 'task.blocked'],
+      // D09：认领跳过缺额任务并延后回队，新增 task.deferred；上限与 maxScan（≤64）对齐，防事件风暴闸。
+      events: ['task.claimed', 'task.blocked', 'task.deferred'],
       // 36 号补丁：与认领上限（默认 12，env 上限 32）对齐——旧值 4 在 36 号提额后触发事件风暴闸 E_BUS_EVENT_TOO_LARGE，认领整体失败静默空转
-      event_limit: 32,
+      event_limit: 64,
       invariants: [],
       timeout_ms: 60000,
       agent_note: '调度认领：原子抢占到期任务（上限 SEC_SCHEDULER_CLAIM_LIMIT，默认 12；内部，不向模型注册）。',
@@ -848,6 +849,7 @@ export const TASK_MANIFEST = {
     'task.claimed': { payload: { type: 'object' }, redact: [] },
     'task.finished': { payload: { type: 'object' }, redact: [] },
     'task.blocked': { payload: { type: 'object' }, redact: [] },
+    'task.deferred': { payload: { type: 'object' }, redact: [] },
     'task.cancelled': { payload: { type: 'object' }, redact: [] },
     // 22 号方案 §9.1：Campaign 事件
     'task.campaign.created': { payload: { type: 'object' }, redact: [] },
@@ -1418,15 +1420,43 @@ function makeHandlers(opts) {
     return String(d?.campaign_role || parseJsonSafe(d?.goal_delta, {}).role || '') === 'verify'
   }
 
-  // budget_low 回升判据：窗口用量 < 80% 预算（与 budget_extend 80% 水位线对称）——
-  // 20% 缓冲足够跑若干 tick 派生，振荡概率极低；用闸判据（用量+预估≤预算）会在
-  // 91–100% 水位与降级死锁（永远升不回）。budget_tokens 未设则不可回升。
+  // budget_low 回升判据：累计口径（窗口已记与全周期已记+在飞取大）< 80% 预算——
+  // D09 起预算为累计硬上限，回升必须同时不超累计额度（否则窗口滚动会误升回 active）。
+  // budget_tokens 未设则不可回升。
   function budgetUsageLow(c, repo) {
     if (c.budget_tokens == null || Number(c.budget_tokens) <= 0) return false
     const windowMs = (Number(c.budget_window_days) || 7) * 86400000
     const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
     return { low: Number(usage.committed_tokens) < Number(c.budget_tokens) * 0.8
       && Number(usage.lifetime_spent_tokens) + Number(usage.reserved_tokens) < Number(c.budget_tokens), usage }
+  }
+
+  // D09：认领预算判定（业务规则集中在 task 域；后端只提供消费查询与原子预留）。
+  // 返回 null = 可预留；否则 { code, deferred, defer_ms }。
+  // 区分「在飞预留暂占」（等预留结算/释放即可放行，短延后重试）与「累计已耗额度不足」
+  // （须人批新额度，长延后重试）；两者都延后回队而非永久 blocked，避免条件变化后无法恢复。
+  function claimBudgetDeficit(repo, t, nowTs, programLimit) {
+    const tokens = t.budget_tokens ?? 150000
+    if (!Number.isSafeInteger(tokens) || tokens <= 0) return { code: 'E_TASK_BUDGET_REQUIRED', deferred: false }
+    const periodDays = Number(repo.settingGet('budget_period_days')) || 7
+    if (repo.consumptionUsage('program_id', t.program_id, nowTs - periodDays * 86400000).committed_tokens + tokens > programLimit) {
+      return { code: 'E_TASK_BUDGET_EXHAUSTED', deferred: false }
+    }
+    if (t.campaign_id != null) {
+      const c = repo.getCampaign(t.campaign_id)
+      if (!c || c.status !== 'active') return { code: 'E_CAMPAIGN_STATE', deferred: false }
+      if (c.budget_tokens == null) return { code: 'E_CAMPAIGN_BUDGET_DEFERRED', deferred: true, defer_ms: 60000 }
+      const windowMs = (Number(c.budget_window_days) || 7) * 86400000
+      const usage = repo.campaignUsage(c.id, nowTs - windowMs)
+      const cap = Math.max(Number(usage.committed_tokens), Number(usage.lifetime_spent_tokens) + Number(usage.reserved_tokens))
+      if (cap + tokens > Number(c.budget_tokens)) {
+        const exhaustedBySpend = Number(usage.lifetime_spent_tokens) + tokens > Number(c.budget_tokens)
+        return exhaustedBySpend
+          ? { code: 'E_CAMPAIGN_BUDGET_EXHAUSTED', deferred: true, defer_ms: 300000 }
+          : { code: 'E_CAMPAIGN_BUDGET_DEFERRED', deferred: true, defer_ms: 60000 }
+      }
+    }
+    return null
   }
 
   // 最近一次降级事件：{ reason, at }；降级后的 llm_restored 视为恢复起点。
@@ -1951,16 +1981,21 @@ function makeHandlers(opts) {
     if (!goalStopped && (c.status === 'active' || c.status === 'reviewing') && c.budget_tokens != null && Number(c.budget_tokens) > 0) {
       const windowMs = (Number(c.budget_window_days) || 7) * 86400000
       const usage = repo.campaignUsage(c.id, Date.now() - windowMs)
-      if (c.status === 'active' && Math.max(Number(usage.committed_tokens),
-        Number(usage.lifetime_spent_tokens) + Number(usage.reserved_tokens)) >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
+      // D09：停止、提请、恢复、展示统一用累计口径（窗口已记+在飞 vs 全周期已记+在飞，取大）。
+      // 旧实现只按窗口 spent 判 80%，会导致「全部消费在窗口外、累计已耗尽」时停止命中却无提请，
+      // 看板拿不到 pending，「等待批准即可恢复」不成立。
+      const consumed = Math.max(Number(usage.committed_tokens), Number(usage.lifetime_spent_tokens) + Number(usage.reserved_tokens))
+      if (c.status === 'active' && consumed >= Number(c.budget_tokens)) actions.push({ kind: 'stop_condition', reason: 'budget_exhausted' })
       // 23 号方案 §3.6 步骤 1.5：达 80% 水位自动提请 campaign-budget-extend（平滑爬坡，零人工介入；
       // 提请幂等由 12h checkpoint 防抖 + approval 同 (kind,subject) pending 去重双保险）
       // 38 号补丁：policy.auto_extend=false 的专项（如「候选验证清空」用多余额度）不自动爬坡——
       // 预算耗尽即 stop_condition→reviewing，避免自动翻倍覆盖人工设置的额度上限。
-      else if (Number(usage.spent_tokens) >= Number(c.budget_tokens) * 0.8
+      // D09：提请仍只是提请——D09 起审批须人放行，Supervisor 不能自批。
+      else if (consumed >= Number(c.budget_tokens) * 0.8
         && autoExtendEnabled(c)
         && !hasRecentCheckpoint(repo, c.id, 'budget_extend_request', 12 * 3600000)) {
-        actions.push({ kind: 'budget_extend', add: Number(c.budget_tokens), spent: Number(usage.spent_tokens) })
+        actions.push({ kind: 'budget_extend', add: Number(c.budget_tokens), spent: consumed,
+          lifetime: Number(usage.lifetime_spent_tokens), reserved: Number(usage.reserved_tokens) })
       }
     }
     return actions
@@ -2124,13 +2159,15 @@ function makeHandlers(opts) {
           // 23 号方案 §3.6：Supervisor 自动提请预算延长（request_actors 含 scheduler，tick 路径合规）
           try {
             if (!dispatchRef) throw new Error('总线 dispatch 不可达')
+            const post = Number(c.budget_tokens) + Number(a.add)
+            const remainingAfter = post - Number(a.spent)
             const r = await dispatchRef('approval', 'request', {
               kind: 'campaign-budget-extend', subject: c.name,
               payload: { campaign_id: c.id, add_tokens: a.add },
-              evidence: `专项 #${c.id}「${c.name}」窗口预算已用 ${a.spent}/${c.budget_tokens}（≥80%），自动提请延长 +${a.add} tokens（≤原预算×2），批准后平滑爬坡至下一档。`,
+              evidence: `专项 #${c.id}「${c.name}」累计已用 ${a.lifetime}、在飞预留 ${a.reserved}，窗口/在飞消耗合计 ${a.spent}/${c.budget_tokens}（≥80%）。自动提请延长 +${a.add}（≤原预算×2）→ 拟批总额 ${post}，批准后剩余 ≈ ${remainingAfter} token${remainingAfter < 0 ? '（仍不足以覆盖已发生的累计消耗，需再次提请或人工评估）' : ''}，须人工批准。`,
             }, { actor: 'scheduler' })
             if (r && r.ok) {
-              const cp = writeCheckpoint(repo, c.id, 'budget_extend_request', `预算达 80% 水位，已自动提请 campaign-budget-extend（+${a.add} tokens）`, { add_tokens: a.add, spent: a.spent, request_id: r.data?.request_id ?? null })
+              const cp = writeCheckpoint(repo, c.id, 'budget_extend_request', `累计/在飞预算达 80% 水位，已自动提请 campaign-budget-extend（+${a.add} tokens，须人批准）`, { add_tokens: a.add, spent: a.spent, lifetime_spent: a.lifetime, reserved: a.reserved, proposed_total: post, remaining_after: remainingAfter, request_id: r.data?.request_id ?? null })
               events.push(...cp.events)
               // D09: a budget request is not authorization to spend more. The old
               // AUTO_APPROVE env no longer lets the supervisor approve its own request.
@@ -2887,40 +2924,58 @@ function makeHandlers(opts) {
       // 36 号补丁：每 tick 认领上限 env 可调（默认 12，与 exec worker 池匹配，防 MAX_WORKERS 忙导致回 queued 空转）
       const limit = Math.min(Math.max(Number(process.env.SEC_SCHEDULER_CLAIM_LIMIT) || 12, 1), 32)
       const free = Math.max(0, Math.min(limit, Number(process.env.SEC_EXEC_MAX_WORKERS) || 12) - repo.budgetSlotCount())
-      const claimed = free ? repo.claimDueTasks(Number(args.now), free) : []
-      const tasks = [], blocked = []
-      for (const t of claimed) {
-        const intent = { ...parseJsonSafe(t.intent_spec, {}), program_id: t.program_id }
-        let checked = { ok: true }
-        if (t.campaign_id != null) {
-          const c = parseCampaign(repo.getCampaign(t.campaign_id))
-          checked = !c || c.status !== 'active' ? { ok: false, code: 'E_CAMPAIGN_STATE', message: '专项当前不可执行' } : await validateCampaignIntent(c, intent)
-        } else if (intent.kind) {
-          checked = await validateFindingIntent(intent)
-          if (checked.ok) checked = await campaignSituationOk(t.program_id, checked.draft.host)
-        }
-        if (!checked.ok) {
-          const reason = `${checked.code}: ${checked.message}`
-          repo.transitionTask(t.id, { status: 'blocked', blocked_reason: reason, started_at: null }, 'running')
-          blocked.push({ task_id: t.id, reason })
-        } else {
-          const reason = repo.reserveTaskBudget(t, Number(args.now), budgetConfigOf(repo).max_tokens)
-          if (reason) {
-            // D09：专项累计/在飞额度暂时不足属可恢复条件（在飞预留结算或窗口消费到期后即可放行），
-            // 不应把子任务永久 blocked；退回 queued 让后续 tick 在额度释放后重新认领。
-            // 每-program 硬预算耗尽仍需人工配置放行，保持 blocked。
-            if (reason === 'E_CAMPAIGN_BUDGET_LOW') {
-              repo.transitionTask(t.id, { status: 'queued', started_at: null }, 'running')
-            } else {
-              repo.transitionTask(t.id, { status: 'blocked', blocked_reason: reason, started_at: null }, 'running')
+      const now = Number(args.now)
+      const programLimit = budgetConfigOf(repo).max_tokens
+      const tasks = [], blocked = [], deferred = []
+      if (free) {
+        // D09：认领须跳过缺额/阻塞任务继续找可运行任务，否则队首一个缺额任务会挡住后面全部任务
+        // （并发=1 时尤为明显）。最多扫描 maxScan 项；被延后的任务写 next_run_at，下一 tick 不会再选中，
+        // 故跨 tick 会持续推进而不空转。
+        const maxScan = Math.min(Math.max(free * 4, 8), 64)
+        const tried = new Set()
+        let scanned = 0
+        while (tasks.length < free && scanned < maxScan) {
+          const batch = repo.claimDueTasks(now, free - tasks.length).filter((t) => !tried.has(t.id))
+          if (!batch.length) break
+          for (const t of batch) {
+            tried.add(t.id); scanned++
+            const intent = { ...parseJsonSafe(t.intent_spec, {}), program_id: t.program_id }
+            let checked = { ok: true }
+            if (t.campaign_id != null) {
+              const c = parseCampaign(repo.getCampaign(t.campaign_id))
+              checked = !c || c.status !== 'active' ? { ok: false, code: 'E_CAMPAIGN_STATE', message: '专项当前不可执行' } : await validateCampaignIntent(c, intent)
+            } else if (intent.kind) {
+              checked = await validateFindingIntent(intent)
+              if (checked.ok) checked = await campaignSituationOk(t.program_id, checked.draft.host)
             }
-            blocked.push({ task_id: t.id, reason })
-          } else tasks.push(t)
+            if (!checked.ok) {
+              const reason = `${checked.code}: ${checked.message}`
+              repo.transitionTask(t.id, { status: 'blocked', blocked_reason: reason, started_at: null }, 'running')
+              blocked.push({ task_id: t.id, reason })
+              continue
+            }
+            const deficit = claimBudgetDeficit(repo, t, now, programLimit)
+            if (!deficit) {
+              repo.insertBudgetReservation(t.id, now, t.budget_tokens ?? 150000, now)
+              tasks.push(t)
+            } else if (deficit.deferred) {
+              // 延后回队（非永久 blocked）：写 next_run_at 使本轮不再选中，额度释放/获批后自动重认领。
+              const retryAt = now + Number(deficit.defer_ms || 60000)
+              repo.transitionTask(t.id, { status: 'queued', started_at: null, next_run_at: retryAt, blocked_reason: null }, 'running')
+              deferred.push({ task_id: t.id, reason: deficit.code, retry_at: retryAt })
+            } else {
+              repo.transitionTask(t.id, { status: 'blocked', blocked_reason: deficit.code, started_at: null }, 'running')
+              blocked.push({ task_id: t.id, reason: deficit.code })
+            }
+            if (tasks.length >= free) break
+          }
         }
       }
       return {
-        data: { claimed: tasks.map((t) => Number(t.id)), count: tasks.length, blocked },
-        events: tasks.map((t) => ({ name: 'task.claimed', payload: { task_id: Number(t.id), program_id: t.program_id, phase: t.phase, goal: t.goal || '', priority: t.priority, claimed_at: Number(args.now), worker_slot: 1 } })).concat(blocked.map(b => ({ name: 'task.blocked', payload: { task_id: b.task_id, blocked_reason: b.reason } }))),
+        data: { claimed: tasks.map((t) => Number(t.id)), count: tasks.length, blocked, deferred },
+        events: tasks.map((t) => ({ name: 'task.claimed', payload: { task_id: Number(t.id), program_id: t.program_id, phase: t.phase, goal: t.goal || '', priority: t.priority, claimed_at: now, worker_slot: 1 } }))
+          .concat(blocked.map(b => ({ name: 'task.blocked', payload: { task_id: b.task_id, blocked_reason: b.reason } })))
+          .concat(deferred.map(d => ({ name: 'task.deferred', payload: { task_id: d.task_id, reason: d.reason, retry_at: d.retry_at } }))),
         after: { count: tasks.length },
       }
     },

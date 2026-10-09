@@ -1526,12 +1526,14 @@ Program创建门禁、专项派发、规划剩余额度、预算停止及自动�
 
 真实HTTP/签封/入库/旧队列派发及篡改边界联合176项通过。生产15原件分类准确，33条已确认业务失败且未分配task的草稿按可重建授权留完整回执后清理，队列68→35；剩余队列未被声明全部可测。原Campaign暂停及200M/200M/50M保持。7e00291消费窗口与在飞预算统一已合批上线；D09默认自动扩额缺累计上限仍未完成，不据本批恢复Campaign。详见27号§15.121–124。
 
-### 7.42 2026-10-09 · D09 专项累计预算硬上限与预算批准人工化（已部署）
+### 7.42 2026-10-09 · D09 专项累计预算硬上限与预算批准人工化（已部署；评审修复后）
 
-专项预算从「窗口滚动可重复用」改为**累计硬上限**：统一消费口径 = `max(窗口已记费用+未结预留, 全周期已记费用+未结预留)`，即窗口滚动不返还累计额度。认领准入（`reserveTaskBudget`）、派发预算检查、规划剩余额度、预算停止与自动恢复、`campaign_activate`/`campaign_autonomy_apply` 全部改用该口径（`campaignUsage` 新增 `lifetime_spent_tokens`）。累计及在飞已达批准额度的专项不能激活/升档，窗口过期也不会被自动恢复复活。
+专项预算从「窗口滚动可重复用」改为**累计硬上限**：统一消费口径 = `max(窗口已记费用+未结预留, 全周期已记费用+未结预留)`，即窗口滚动不返还累计额度。派发预算检查、规划剩余额度、预算停止与自动恢复、`campaign_activate`/`campaign_autonomy_apply` 全部改用该口径（`campaignUsage` 提供 `lifetime_spent_tokens`）。累计及在飞已达批准额度的专项不能激活/升档，窗口过期也不会被自动恢复复活。
 
-`campaign-budget-extend` 等预算类审批不再允许 `system` 自动批准：`decideValid` 要求 `human`/`dashboard` actor，移除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 自动批准路径（Supervisor 仍可在 80% 水位提请，但须人工放行）。`campaign-budget-extend` effect 增加安全整数与「≤ 原预算×2」校验。
+**预算判定归位（评审修复）**：认领时的预算判定从后端 `reserveTaskBudget` 移入 task 域 `claimBudgetDeficit`；后端只保留消费查询（`consumptionUsage`/`campaignUsage`）与原子预留（`insertBudgetReservation`），命令经网关单事务读-判-留，符合 00 号 §12.1。
 
-专项额度**暂时**不足（在飞预留未结或窗口消费到期）时，认领**延后回 queued** 而非永久 `blocked`，待额度释放后由后续 tick 重新认领；每-program 硬预算耗尽与专项停用仍保持 `blocked`。
+**预算审批人工化**：task 域移除 `SEC_CAMPAIGN_BUDGET_AUTO_APPROVE` 自动批准；`approval_decide` actor 收紧为 `{dashboard, human}`（移除 35 号补丁遗留的 `system`），与 09 号 §1.3.2 一致。`campaign-budget-extend` effect 增加安全整数与「≤ 原预算×2」校验；提请证据/回执补记累计已用、在飞预留、拟批总额与批准后剩余。
 
-task/approval 167 项、全域 802/802 通过。**2026-10-09 已按同版本快速发布部署**：change `20261009-d09-budget-cap`、固定 `6f019d0`、DSH 0.1.7-rc.2；更新 task/backend-task-sqlite/approval 三模块各「源模板+已安装插件」共 6 落点，停写到启动 1.36 秒，旧源码存 `dsh-upgrades/20261009-d09-budget-cap/previous/`。生产冒烟：六服务 active/NRestarts0、bus.status 12ms、dashboard stats 20ms、`task.campaign_get` 返回含 `lifetime_spent_tokens`、Campaign 全 paused、无运行任务/worker、quick_check ok。启动就绪约 38 秒（10:29:33 active → 10:30:11 监听），期间浏览器轮询出现 13 次 502，属既有冷启动现象，非本批回归。见 27 号 §15.127。
+**认领延后（评审修复）**：专项额度不足时认领**延后回 queued**（在飞预留暂占 60s、累计已耗不足 300s）而非永久 `blocked`，并**循环扫描**继续找可运行任务（不再被队首缺额任务饿死）；延后发 `task.deferred`（含 `reason`/`retry_at`）、`data.deferred`，不再错发 `task.blocked`。停止/提请/恢复/展示统一累计口径（修复"窗口外耗尽时停止命中却无提请"）。
+
+task/approval 171 项、全域 806/806 通过。**已两次同版本快速发布**：初始 change `20261009-d09-budget-cap`（`6f019d0`，停写→启动 1.36 秒）；评审修复 change `20261009-d09-review-fix`（停写→启动 3.13 秒，首次阻塞式 stop 超 90s 在替换前退出、文件未改、服务当即恢复；改用 `--no-block` 轮询后重装成功）。三模块各「源模板+已安装插件」6 落点，旧源码存各自 change 目录 `previous/`。生产冒烟：六服务 active/NRestarts0、`bus.status`278.9ms(冷)/`stats`25.2ms、`task.campaign_get` 含 `lifetime_spent_tokens`、Campaign 全 paused、无运行任务/worker、quick_check ok；约 38 秒启动就绪及浏览器轮询 502 属既有冷启动，非本批回归。**D09 未整项完成**：无有效进展停止条件、扩容依据业务收益仍未做。见 27 号 §15.127。
