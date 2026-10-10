@@ -2081,6 +2081,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
   - 具体：每轮输入 ~41–49k token（tool_bytes ~112KB + history ~112KB + message ~33–49KB），模型输出极小（~83 token/轮），6 轮未收敛即触顶。**新失败原因仍是预算耗尽**（`dsh-bill: sessions in inactive context` 为伴随噪声）。
 - **结论**：域粒度裁剪无效；瓶颈是每轮 40k+ 输入的上下文（工具面+历史）与模型未收敛。需 **verb 级工具面收敛**（know/task 仅暴露 worker 面向动词）、**persona/历史瘦身**，或改用更适合工具编排的模型。单任务预算再加也治标不治本（每轮 45k）。
 - 本试点累计 ~1.5M token，无 finding；campaign 4 已暂停、autonomy 1，无在飞。**未关账**。
+- **模型诊断（2026-10-10，读 worker 会话转录）**：worker 用 `pool-secagent-heavy`（Bellkeeper 组，主路由 `opencode-go/deepseek-v4.1-flash` w8）。转录显示模型**正常工作**：按纪律经 `skill` 加载 sec-verification/sec-pipeline/sec-runtime-discipline、执行 `fact_search`/`exp_search`/`kb_search` 三步检索，6 步共 12 次工具调用（单轮输出 ~83 token 只是助手文本+紧凑 tool-call，非退化）。**「~83 token/轮」非异常，模型适合工具编排；瓶颈不是模型**，而是每轮 ~45k 输入的上下文（工具 schema ~112KB + 历史 ~112KB）使 400k 预算只够 ~6 步，尚在开局准备即触顶。→ 应走 **verb 级工具面收敛 + persona/历史瘦身**（选项 1+2），或大幅提高单任务预算（~800k+）作权宜。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
