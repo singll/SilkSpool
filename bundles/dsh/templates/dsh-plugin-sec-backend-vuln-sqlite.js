@@ -74,10 +74,12 @@ const V5_COLS = [
   ['applicability_key', 'applicability_key TEXT'],
   ['queue_hold_reason', 'queue_hold_reason TEXT'],
   ['queue_hold_until', 'queue_hold_until INTEGER'],
+  // 27 WP05/E15：同根因聚合——dup 判定必须指回被重复 finding（根因根），多 URL 只计一个新增
+  ['dup_of', 'dup_of INTEGER'],
 ]
 
 const LIST_COLS = `id, title, severity, host, url, source, status, program_id, session_id,
-  vuln_type, bounty, vendor_status, noise, claimed_by, created_at, confidence, fgs_node_id, discovery_step`
+  vuln_type, bounty, vendor_status, noise, claimed_by, created_at, confidence, fgs_node_id, discovery_step, dup_of, evidence`
 
 const POOL_COLS = `${LIST_COLS}, claimed_at, updated_at, detector_version, applicability_key`
 

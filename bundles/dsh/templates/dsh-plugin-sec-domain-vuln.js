@@ -589,6 +589,12 @@ export const VULN_MANIFEST = {
       predicates: [],
       agent_note: '同目标/同类型历史查重（host 或 vuln_type 至少其一）。提交前必查，防平台判重。',
     },
+    vuln_root_causes: {
+      actor: ['model', 'dashboard', 'human'],
+      params: schema({ program_id: str({ default: '' }), limit: int({ minimum: 1, maximum: 2000, default: 500 }) }, []),
+      predicates: [],
+      agent_note: '（27 WP05/E15）按技术根因聚合 findings：dup 归入其 dup_of 根。返回各组根/成员/证据数及 independent_new（按根因去重的新增数）。',
+    },
     vuln_submission_queue: {
       actor: ['model', 'dashboard', 'human'],
       params: schema({
@@ -1219,6 +1225,8 @@ function makeHandlers(opts) {
       }
       const status = args.reassessment && ['submitted', 'accepted', 'dup', 'ignored'].includes(row.status) ? row.status : args.verdict
       const set = { status, claimed_by: null, claimed_at: null, updated_at: Date.now(), queue_hold_reason: null, queue_hold_until: null }
+      // 27 WP05/E15：dup 落库根因引用（dup_of），供同根因聚合把多 URL 折为一个新增
+      if (args.verdict === 'dup' && Number.isInteger(args.dup_of)) set.dup_of = args.dup_of
       // 重复/忽略是处理结果，不能撤销已有技术确认；反证才改变技术置信标记。
       if (args.verdict === 'false_positive' || (args.verdict === 'dup' && row.confidence !== 'confirmed')) set.confidence = args.verdict
       const changed = repo.transitionFinding(args.finding_id, args.reassessment ? row.status : ['new', 'confirmed', 'submitted'], set)
@@ -1679,6 +1687,37 @@ function makeHandlers(opts) {
       if (!host && !vulnType) throwErr('E_SCHEMA', 'vuln_dedup_check 需至少提供 host 或 vuln_type', '补 host（精确匹配）或 vuln_type（同类型去重）后再查', false)
       const { rows, total } = repo.listDedup({ host, vuln_type: vulnType, exclude_id: args.exclude_id || null }, args.limit || 10)
       return { rows, total, meta: { limit: args.limit || 10 } }
+    },
+    vuln_root_causes: async (args, repo) => {
+      const programId = String(args.program_id || '').trim()
+      const pred = programId ? { program_id: programId, visibility: 'all' } : { visibility: 'all' }
+      const rows = repo.listFindingsWhere(pred, { sort: 'created_at', dir: 'asc' }, args.limit || 500, 0)
+      const byId = new Map(rows.map((r) => [r.id, r]))
+      // dup 归入 dup_of 所指根因；dup_of 也 dup 时上溯（带环/自环保护），保证多条 URL 折到同一根。
+      const rootOf = (r) => {
+        let cur = r, guard = 0
+        while (cur && cur.status === 'dup' && Number.isInteger(cur.dup_of) && guard++ < 64) {
+          const p = byId.get(cur.dup_of)
+          if (!p || p.id === cur.id) break
+          cur = p
+        }
+        return cur || r
+      }
+      const groups = new Map()
+      for (const r of rows) {
+        const root = rootOf(r)
+        const key = root.id
+        if (!groups.has(key)) groups.set(key, { root_id: key, host: root.host || '', url: root.url || '', vuln_type: root.vuln_type || null,
+          severity: root.severity || null, status: root.status, members: [], evidence_count: 0 })
+        const g = groups.get(key)
+        g.members.push(r.id)
+        if (r.evidence) g.evidence_count += 1
+      }
+      const out = [...groups.values()].map((g) => ({ ...g, member_count: g.members.length,
+        distinct_hosts: new Set(g.members.map((id) => byId.get(id)?.host || '')).size }))
+        .sort((a, b) => b.member_count - a.member_count || a.root_id - b.root_id)
+      const independent_new = out.filter((g) => !['dup', 'false_positive', 'ignored'].includes(g.status)).length
+      return { rows: out, total: out.length, meta: { program_id: programId, findings: rows.length, related: rows.length - out.length, independent_new } }
     },
     vuln_submission_queue: async (args, repo) => {
       if (typeof repo.listSubmissionQueue !== 'function') throwErr('E_BACKEND_UNAVAILABLE', '当前后端不支持提交队列（需 sqlite-local）', '切回 sqlite-local 后端或改用 vuln_list', true)
