@@ -33,7 +33,8 @@
 - 快速发布 7 模块 15 文件（源模板 + 已安装插件；view-vuln client 双落点），停写→启动 **3.41 秒**；15 落点摘要一致、六服务 active/NRestarts0/journal err0、无 running task/worker。生效核验：`ledger.coverage_metrics.vulnclass.indeterminate_classes` 已返回、`know.hit_matrix` 可查。Campaign 全 paused（放量须人工批预算），未做发布后 NAS 恢复；不含浏览器/代理（另一会话）。
 - 续推 **WP02 E08/E04**（`971977d`）：file 类不再借用 `unauthz_diff`（改未注册 `file_probe` 能力缺口）；SQLi 布尔差分补健康基线稳定性与非注入对照。rules 50/50、全域 816/816。change `20261009-rules-oracle` 快速发布（1 模块 2 落点），服务 active/NRestarts0，`bus.status` 冷 1.66s/stats 19ms；见 27 号 §15.133。
 - 续推 **WP03 D04 全局请求预算**（`ab4c2d0`）：run_cli 按 scope 速率/并发注入工具 `{{rate}}`（并发×每工具 ≤ scope rate_limit_qps），httpx 清单补 `-rl`。exec 95/95、全域 817/817。change `20261009-exec-rate` 快速发布（停写→启动 2.62s）；`exec.manifest_list(httpx)` 现含 `rate`；服务 active/NRestarts0。见 27 号 §15.134。
-- 仍待：WP02 属性重放、WP03 fencing/工具内部并发/429 退避/F06、WP05 H3/根因去重/分页饥饿、WP07 独立样本/真实收益、WP10 其余视图 unknown。详见 27 号 §15.128–134/§16。
+- 续推 **WP05 E15 + C12**（`3d97479`/`e6200f4`）：E15 同 URL 不同请求上下文（endpoint_ref：method/身份/对象）保留为独立观察；C12 H3 卡片引用须解析为真实卡（know 可用时校验）。vuln 91/91、task 144/144、全域 819/819。change `20261009-e15-h3` 快速发布（3 模块 6 落点，停写→启动 2.87s）；服务 active/NRestarts0。见 27 号 §15.135。
+- 仍待：WP02 属性重放、WP03 fencing/工具内部并发/429 退避/F06、WP05 H3 生成器/根因聚合/分页饥饿、WP07 独立样本/真实收益、WP10 其余视图 unknown。详见 27 号 §15.128–135/§16。
 
 ## 三、维护规则（通用，必须遵守）
 
