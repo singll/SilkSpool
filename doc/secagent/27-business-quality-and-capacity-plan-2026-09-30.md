@@ -2030,6 +2030,13 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **生效核验**：`ledger.coverage_metrics.vulnclass` 返回新字段 `indeterminate_classes`；`know.hit_matrix` 可查（0 行，暂无 `know_scores` 源）；RPC 正常。
 - **边界**：Campaign 仍全 paused（放量须人工批预算）；未做发布后 NAS 恢复；不宣称真实漏洞产出或学习收益。
 
+### 15.133 WP02 E08/E04 加固与 rules 模块快速发布（2026-10-09）
+
+- **E08**：类别→Oracle 路由中 `file` 不再借用 `unauthz_diff`（文件读取/上传/下载授权/路径约束无专用验证器），改为**未注册的 `file_probe` 标记**——Planner/派发按「不注册的 Oracle 不派发」处理为**验证能力缺口**，不借相邻类判 `confirmed`（`rules-hypothesis.js` `CAMPAIGN_ORACLE`）。
+- **E04**：`oracleSqliDiff` 补「**健康基线稳定性**（重复基线样本须≈基线）」与「**非注入对照**须≈基线」；任一偏离基线则 `inconclusive`（页面动态/响应随任意输入变化，差分不可归因）。
+- 验证：rules 50/50、全域 **816/816**。
+- **发布**：change `20261009-rules-oracle`，固定 DSH 0.1.7-rc.2，1 模块 2 落点（源模板 + 已安装插件），旧源码入 `dsh-upgrades/20261009-rules-oracle/previous/`。安装脚本记录停写→启动 **92.64s**（同期 systemd 实际 `Stopping→Deactivated` 仅 1s，92s 属宿主负载/首次停写偏长，非新代码引入）；服务 active、NRestarts0、journal err0；`bus.status` 冷 1.66s、`dashboard.stats` 19ms；`coverage_metrics.vulnclass.indeterminate_classes` 仍在。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
@@ -2039,7 +2046,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 | 包 | 已具备基础 | 尚需完成的验收 |
 |---|---|---|
 | WP01 | 目标/Program/派发/认领、候选30及ledger200补页；**D09 的两个子项（累计硬上限 + 预算审批人工化，含缺额任务延后/提请口径统一）已上线**（§15.127，change `20261009-d09-review-fix`） | **D09 未整项完成**：无有效进展停止条件、扩容依据业务收益仍未做；完整候选轮转、C3按真实剩余量处置亦待办；C2/C3 已超累计额度，恢复须经人批新额度，勿恢复无界运行 |
-| WP02 | 受控HTTP、可信 capsule/confirm；**E03–E07 非越权弱判据已加固**（E07 公开邮箱排除/公开端点降级；E05 多轮时间盲注；E06 OOB 健康+窗口，§15.129） | **越权/IDOR 读取链（双账号）经 §15.128 决定不做**（保留代码不验收，E02 移出）；其余非越权 Oracle 故障正负样例、属性重放继续；禁止自报替代技术真值 |
+| WP02 | 受控HTTP、可信 capsule/confirm；**E03–E08 非越权弱判据已加固**（E04 基线稳定+非注入对照、E07 公开邮箱排除/公开端点降级、E05 多轮时间盲注、E06 OOB 健康+窗口、E08 file 类不借相邻 Oracle，§15.129/§15.133） | **越权/IDOR 读取链（双账号）经 §15.128 决定不做**（保留代码不验收，E02 移出）；属性重放与更多 Oracle 故障正负样例继续；禁止自报替代技术真值 |
 | WP03 | claim/run/ACK、busy补偿、在飞预留、请求usage和估算 | 完整fencing/多进程恢复、共享请求预算/429退避、D07进程清理、F06死信/投影；最终账单及历史精确洗账不再必需 |
 | WP04 | HAR/被动捕获、正式HTTP接线、18种匿名请求及单账号5种新接口、响应前置已上线 | **双账号/登录态对照经 §15.128 决定不做**；聚焦匿名/单账号：更多适用业务模板（不用失败/空列表凑数）、method/body/对象归集、读型POST风险契约、HAR健康判定、B09参数队列执行确认 |
 | WP05 | 全量H2持久队列/事务派发/有限失败重试；**H1 指纹→路径探测假设已接线**（§15.130）；**vulnclass unknown/inconclusive 条件重开**（§15.131，仅 verified/rejected 才关闭） | H3 业务关系、旧分页饥饿、独立观察/根因去重、TTL/配额与技术标签分离 |
