@@ -52,6 +52,9 @@ const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 // 22 号方案：单条派生草稿的预算预估（tokens，环境变量可调；用于 campaign 窗口预算闸）
 // 23 号方案 §3.6：默认随统一额度面调为 30000（worker 未上报 token 前的保守估算）
 const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 30000)
+// 27 试点：campaign 派生 worker 的单任务 token 预算（旧硬编码 150k，工具面大时两轮即耗尽）。
+// 可由 campaign.policy.task_budget_tokens 覆盖。
+const CAMPAIGN_TASK_BUDGET_TOKENS = Number(process.env.SEC_CAMPAIGN_TASK_BUDGET_TOKENS || 400000)
 const CAMPAIGN_KINDS = DISCOVERY_TASK_KINDS
 // 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
 const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000
@@ -439,6 +442,8 @@ export const TASK_MANIFEST = {
         // Path A：worker 侧模型指定（provider+model 成对，落 tasks 表后由调度器传给 spawn_worker）
         provider: str({ default: '' }),
         model: str({ default: '' }),
+        // 27 试点：派生 worker 的单任务 token 预算（缺省 150k）
+        budget_tokens: int({ minimum: 0 }),
       }, ['program_id', 'kind', 'host']),
       // 幂等由 handler 内 strategy_dedupe 表自治（返回 deduped:true / 黑名单丢弃）；
       // 不用 bus 层 natural 幂等——回放会吞掉 deduped 语义并绕过黑名单判定
@@ -2144,6 +2149,7 @@ function makeHandlers(opts) {
         vuln_class: d.vuln_class, level: d.level, rationale: d.rationale,
         oracle: d.oracle, strategy_key: d.strategy_key,
         campaign_id: c.id, campaign_role: d.campaign_role, task_class: d.task_class,
+        budget_tokens: Number(c.policy?.task_budget_tokens) > 0 ? Number(c.policy.task_budget_tokens) : CAMPAIGN_TASK_BUDGET_TOKENS,
         // worker 侧经 exec.spawn_worker 的 model-patch 指定模型（provider+model 成对）
         ...(pathModel ? { model_hint: pathModel, model_channel: hint ? hint.channel : '', model_reason: hint ? hint.reason : 'class_group', provider: CAMPAIGN_MODEL_PROVIDER, model: pathModel } : {}),
       }
@@ -3172,7 +3178,7 @@ function makeHandlers(opts) {
         intent_spec: { kind: args.kind, host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '', program_id: args.program_id,
           ...(args.request_id ? { request_id: args.request_id } : {}), method: args.method || '', param_location: args.param_location || '',
           ...(args.finding_id ? { finding_id: args.finding_id } : {}) },
-        budget_tokens: 150000,
+        budget_tokens: Number(args.budget_tokens) > 0 ? Number(args.budget_tokens) : 150000,
         ...(args.campaign_id != null ? { campaign_id: args.campaign_id } : {}),
         ...(args.campaign_role ? { campaign_role: args.campaign_role } : {}),
         strategy_key: bare,

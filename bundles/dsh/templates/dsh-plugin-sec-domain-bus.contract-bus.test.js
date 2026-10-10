@@ -1374,6 +1374,26 @@ test('挂载矩阵: headless+phase=vuln 只注册 phase 域（vuln 与代理诊�
   assert.ok(names.includes('bus_status'), '跨 phase 基础设施 bus 恒可见')
 })
 
+test('27 试点: headless+phase=vuln 剔除 ledger/approval/report 工具面（保留 bus/proxy）', () => {
+  const dir = tmpDir()
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false, profile: 'headless', phase: 'vuln' })
+  bus.registry.register({ manifest: makeVulnManifest(), handlers: makeVulnHandlers(), backend: makeVulnBackend() })
+  const registered = []
+  bus._internal.setToolsCtx({ tools: { register: (def) => registered.push(def) } })
+  const mk = (domain, verb) => ({ domain, version: 1, service: `secDomain.${domain}`, description: domain, owns: { tables: [], files: [] },
+    commands: { [`${domain}_${verb}`]: { actor: ['model'], schema: { type: 'object', properties: {}, additionalProperties: false }, idempotent: 'none', events: [], invariants: [], timeout_ms: 60000, agent_note: 'x', deprecated: false } },
+    events: {}, subscribes: {}, backend: 'repository-v1' })
+  bus.registry.register({ manifest: mk('ledger', 'mark'), handlers: {}, backend: { name: 'stub', capabilities: {}, factory: () => ({}) } })
+  bus.registry.register({ manifest: mk('report', 'gen'), handlers: {}, backend: { name: 'stub', capabilities: {}, factory: () => ({}) } })
+  bus.registry.register({ manifest: makeProxyManifest(), handlers: { proxy_refresh: async () => ({ data: {} }) }, backend: { factory: () => ({}), capabilities: {} } })
+  bus._internal.registerTools({ tools: { register: (def) => registered.push(def) } })
+  const names = registered.map((t) => t.name)
+  assert.ok(names.includes('proxy_refresh'), 'vuln phase 保留 proxy 诊断面')
+  assert.ok(names.includes('bus_status'), '跨 phase 基础设施 bus 恒可见')
+  assert.ok(!names.includes('ledger_mark'), 'vuln phase 剔除 ledger（记账由事件/专项承担）')
+  assert.ok(!names.includes('report_gen'), 'vuln phase 剔除 report')
+})
+
 test('挂载矩阵: headless 未声明 phase → 全量投影（fail-open）', () => {
   const dir = tmpDir()
   const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false, profile: 'headless', phase: '' })

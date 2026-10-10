@@ -71,6 +71,11 @@ export const PHASE_DOMAINS = {
   intranet: ['asset', 'endpoint', 'vuln'],
 }
 
+// 27 试点：worker 不使用的域按 phase 从子集剔除（降低工具面/上下文，不改 bus/proxy 诊断面）。
+const PHASE_EXCLUDE_DOMAINS = {
+  vuln: ['ledger', 'approval', 'report'],
+}
+
 const log = (msg) => { try { process.stderr.write(`[sec-domain-bus] ${msg}\n`) } catch { /* noop */ } }
 
 // ---------------------------------------------------------------------------
@@ -843,9 +848,14 @@ export function createBus(opts = {}) {
   const dispatcherStartDelayMs = opts.dispatcherStartDelayMs ?? 3000
   const startDispatcherTimer = opts.startDispatcherTimer !== false
   // 挂载矩阵：仅 headless 面 + 显式声明 phase 时裁剪；phase 空/未知 → 全量（fail-open）。
-  const mountSubset = profile === 'headless' && Object.hasOwn(PHASE_DOMAINS, workerPhase)
+  // 27 试点：worker 工具面过大（vuln 子集约 285 工具/125KB）→ 单轮输入 45k+ token 迅速耗尽
+  // worker 预算。对确认 worker 不使用的域按 phase 额外剔除（ledger 记账/approval 审批/report 报告
+  // 均由事件或专用角色承担，vuln-hunt worker 不调用），降低上下文同时不动 bus/proxy（诊断必需）。
+  const mountSet = profile === 'headless' && Object.hasOwn(PHASE_DOMAINS, workerPhase)
     ? new Set([...CROSS_CUTTING_DOMAINS, ...(PHASE_DOMAINS[workerPhase] || [])])
     : null
+  if (mountSet) for (const d of (PHASE_EXCLUDE_DOMAINS[workerPhase] || [])) mountSet.delete(d)
+  const mountSubset = mountSet
   const mountSubsetNames = mountSubset ? [...mountSubset] : null
 
 const now = () => clock()

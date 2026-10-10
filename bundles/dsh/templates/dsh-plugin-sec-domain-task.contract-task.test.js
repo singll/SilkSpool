@@ -1433,6 +1433,21 @@ test('27 试点: 派生按主机名匹配 scope，非默认端口 host 不被误
   assert.equal(d.data.derived, 1, 'host:port 应能按主机名通过 scope 校验（剥离端口）')
 })
 
+test('27 试点: campaign 派生任务带单任务 token 预算（默认 400k，可 policy 覆盖）', async () => {
+  const { bus } = makeEnv()
+  const draft = (sk) => ({ kind: 'hypothesis', host: 'a.example.com', path: '/x', vuln_class: 'idor', param: 'id', level: 'H2', strategy_key: sk })
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'bud', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] }, policy: { task_budget_tokens: 250000 } }, { actor: 'model' })
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: c.data.campaign_id }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: c.data.campaign_id, drafts: [draft('a.example.com|/x|id|idor')] }, { actor: 'model' })
+  const t = bus._internal.db().prepare('SELECT budget_tokens FROM tasks WHERE campaign_id=?').get(c.data.campaign_id)
+  assert.equal(t.budget_tokens, 250000, 'policy.task_budget_tokens 覆盖默认')
+  const c2 = await bus.dispatch('task', 'campaign_create', { name: 'bud2', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: c2.data.campaign_id }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: c2.data.campaign_id, drafts: [draft('a.example.com|/y|id|idor')] }, { actor: 'model' })
+  const t2 = bus._internal.db().prepare('SELECT budget_tokens FROM tasks WHERE campaign_id=?').get(c2.data.campaign_id)
+  assert.equal(t2.budget_tokens, 400000, '默认单任务预算 400k')
+})
+
 test('22 C26/INV-C3/C8: campaign_record_decision 证据铁律 + 一任务一验收', async () => {
   const { bus } = makeEnv()
   const c = await bus.dispatch('task', 'campaign_create', { name: 'rev', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
