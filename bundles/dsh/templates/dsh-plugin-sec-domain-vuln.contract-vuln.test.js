@@ -869,6 +869,24 @@ test('27: 同 host/title 不同 URL 保留为独立候选观察', async () => {
   assert.notEqual(a1.data.id, a2.data.id, '不同 URL 在验证前不得合并')
 })
 
+test('27 WP05 E15: 同 URL 不同 endpoint_ref（身份/对象/方法）保留为独立观察', async () => {
+  const { bus } = makeEnv()
+  const base = { title: 'a.example.com 被动审计候选：xray', severity: 'high', host: 'a.example.com', url: 'https://a.example.com/orders/1', source: 'xray-webhook' }
+  const a1 = await bus.dispatch('vuln', 'register_candidate', { ...base, endpoint_ref: 'identity:A|method:GET' }, { actor: 'webhook' })
+  const a2 = await bus.dispatch('vuln', 'register_candidate', { ...base, endpoint_ref: 'identity:B|method:GET' }, { actor: 'webhook' })
+  assert.equal(a1.ok, true, a1.error?.message)
+  assert.equal(a2.ok, true, a2.error?.message)
+  assert.equal(a2.data.dup, false)
+  assert.notEqual(a1.data.id, a2.data.id, '同 URL 不同身份/对象须为独立观察，不得折叠为 dup')
+  // register_signal 同样按 endpoint_ref 区分
+  const sig = { title: '完整测试信号一二三四五六七', severity: 'high', host: 's.example.com', url: 'https://s.example.com/x', reproduction_steps: 'a', impact: 'b' }
+  const r1 = await bus.dispatch('vuln', 'register_signal', { ...sig, evidence: 'run_x', endpoint_ref: 'user:1' }, { actor: 'model' })
+  const r2 = await bus.dispatch('vuln', 'register_signal', { ...sig, evidence: 'run_y', endpoint_ref: 'user:2' }, { actor: 'model' })
+  assert.equal(r1.ok, true, r1.error?.message)
+  assert.equal(r2.ok, true, r2.error?.message)
+  assert.notEqual(r1.data.id, r2.data.id, '信号同 URL 不同身份须独立')
+})
+
 // ---------------------------------------------------------------------------
 // 7. 并发（两进程同时 claim/confirm 同一候选 → 一成一败，最终状态一致）
 // ---------------------------------------------------------------------------
@@ -1485,7 +1503,7 @@ test('27 E14: suppression separates Program/version/conditions and deduplicates 
     let explorationHost
     for (let i = 0; i < 1000; i++) {
       const host = `explore${i}.example.com`
-      const fp = crypto.createHash('sha1').update(JSON.stringify(['observation-v2', 'test-src', host, 'Versioned Template', 'https://a.example.com/login'])).digest('hex')
+      const fp = crypto.createHash('sha1').update(JSON.stringify(['observation-v2', 'test-src', host, 'Versioned Template', 'https://a.example.com/login', ''])).digest('hex')
       if (parseInt(fp.slice(0, 8), 16) % 10 === 0) { explorationHost = host; break }
     }
     assert.ok(explorationHost)

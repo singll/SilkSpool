@@ -74,8 +74,8 @@ function noiseWhitelisted(source, category) {
   return list.includes(String(source)) || list.includes(`${source}|${category}`)
 }
 
-function explorationSample(program, host, title, url) {
-  return parseInt(fpObservation(program, host, title, url).slice(0, 8), 16) % 10 === 0
+function explorationSample(program, host, title, url, ref = '') {
+  return parseInt(fpObservation(program, host, title, url, ref).slice(0, 8), 16) % 10 === 0
 }
 
 /** Suppression requires same Program, detector version and applicability; raw finding counts are not independent trials. */
@@ -193,7 +193,7 @@ export const VULN_MANIFEST = {
         task_id: int({ description: '（可选）产生该发现的 task id——归因→连败拉黑/学习闭环' }),
       }, ['title', 'severity', 'host', 'evidence', 'reproduction_steps', 'impact']),
       idempotent: 'natural',
-      idempotent_natural: ['program_id', 'host', 'title', 'url'],
+      idempotent_natural: ['program_id', 'host', 'title', 'url', 'endpoint_ref'],
       events: ['vuln.signal.registered', 'vuln.candidate.promoted'],
       event_limit: 2,
       invariants: ['signalComplete'],
@@ -214,11 +214,12 @@ export const VULN_MANIFEST = {
         vuln_type: str({ minLength: 1, maxLength: 80, description: '待验证的漏洞类型；仅路由元数据，不表示技术确认' }),
         detector_version: str({ minLength: 1, maxLength: 128 }),
         applicability_key: str({ minLength: 1, maxLength: 256 }),
+        endpoint_ref: str({ default: '', description: '（E15）请求上下文引用（method/身份/对象）——同URL不同上下文保留为独立观察' }),
         external_id: str({ maxLength: 128, description: '上游系统稳定 id（跨源去重优先键）' }),
         task_id: int({ description: '（可选）产生该候选的 task id——归因→学习闭环' }),
       }, ['title', 'severity', 'host', 'source']),
       idempotent: 'auto',
-      idempotent_fields: ['program_id', 'title', 'host', 'url', 'source', 'external_id', 'evidence', 'vuln_type', 'detector_version', 'applicability_key'],
+      idempotent_fields: ['program_id', 'title', 'host', 'url', 'source', 'external_id', 'evidence', 'vuln_type', 'detector_version', 'applicability_key', 'endpoint_ref'],
       events: ['vuln.candidate.registered', 'vuln.candidate.suppressed', 'vuln.candidate.reopened'],
       event_limit: 1,
       invariants: [],
@@ -650,14 +651,16 @@ function hostOf(urlStr) {
 function fpWeak(host, title) { return sha1(`${normalizeHost(host)}|${String(title).trim()}`) }
 function fpStrong(host, title, url) { return sha1(`${normalizeHost(host)}|${String(title).trim()}|${url || ''}`) }
 
-// 存储去重只消除同项目、同 URL 的重复观察，不在验证前猜测共同根因。
-function fpObservation(programId, host, title, url) {
-  return sha1(JSON.stringify(['observation-v2', String(programId || ''), normalizeHost(host), String(title).trim(), String(url || '')]))
+// 存储去重只消除同项目、同 URL、同请求上下文（method/身份/对象引用 endpoint_ref）的重复观察，
+// 不在验证前猜测共同根因。E15：同 URL 但身份/对象/方法不同须保留为**独立观察**，不得折叠成 dup。
+function fpObservation(programId, host, title, url, ref = '') {
+  return sha1(JSON.stringify(['observation-v2', String(programId || ''), normalizeHost(host), String(title).trim(), String(url || ''), String(ref || '')]))
 }
-function findObservation(repo, programId, host, title, url) {
-  for (const fp of [fpObservation(programId, host, title, url), fpStrong(host, title, url), fpWeak(host, title)]) {
+function findObservation(repo, programId, host, title, url, ref = '') {
+  for (const fp of [fpObservation(programId, host, title, url, ref), fpStrong(host, title, url), fpWeak(host, title)]) {
     const row = repo.getFindingByFingerprint(fp)
-    if (row && String(row.program_id || '') === String(programId || '') && String(row.url || '') === String(url || '')) return row
+    if (row && String(row.program_id || '') === String(programId || '') && String(row.url || '') === String(url || '')
+      && String(row.endpoint_ref || '') === String(ref || '')) return row
   }
   return null
 }
@@ -998,7 +1001,8 @@ function makeHandlers(opts) {
       const host = normalizeHost(args.host)
       const title = String(args.title).trim()
       const url = String(args.url || '')
-      const strong = fpObservation(args.program_id, host, title, url)
+      const ref = String(args.endpoint_ref || '').trim()
+      const strong = fpObservation(args.program_id, host, title, url, ref)
       const now = Date.now()
       // 同项目/host/URL 内 external_id 优先：标题变化不重复导入，其他入口保留。
       const extId = String(args.external_id || '').trim()
@@ -1013,7 +1017,7 @@ function makeHandlers(opts) {
           }
         }
       }
-      const existing = findObservation(repo, args.program_id, host, title, url)
+      const existing = findObservation(repo, args.program_id, host, title, url, ref)
       const dup = existing && !(existing.noise === 1 && existing.status === 'new') ? existing : null
       if (dup) {
         if (ctx.session_id) repo.backfillSession(dup.id, ctx.session_id)
@@ -1074,7 +1078,8 @@ function makeHandlers(opts) {
       const host = normalizeHost(args.host)
       const title = String(args.title).trim()
       const url = String(args.url || '')
-      const fingerprint = fpObservation(args.program_id, host, title, url)
+      const ref = String(args.endpoint_ref || '').trim()
+      const fingerprint = fpObservation(args.program_id, host, title, url, ref)
       const now = Date.now()
       const extId = String(args.external_id || '').trim()
       const reopen = row => {
@@ -1093,13 +1098,13 @@ function makeHandlers(opts) {
           return { data: { id: byExt.id, dup: true, reopened: changed.reopened, noise: byExt.noise === 1, status: changed.status, dedup_reason: 'external_id' }, events: changed.events, before: { status: byExt.status, noise: byExt.noise }, after: { status: changed.status, noise: byExt.noise } }
         }
       }
-      const dup = findObservation(repo, args.program_id, host, title, url)
+      const dup = findObservation(repo, args.program_id, host, title, url, ref)
       if (dup) {
         const changed = reopen(dup)
         if (ctx.session_id && !dup.session_id) repo.backfillSession(dup.id, ctx.session_id)
         appendObservationEvidence(repo, dup, args.evidence)
         return {
-          data: { id: dup.id, dup: true, reopened: changed.reopened, noise: dup.noise === 1, status: changed.status, dedup_reason: 'same_program_host_title_url' },
+          data: { id: dup.id, dup: true, reopened: changed.reopened, noise: dup.noise === 1, status: changed.status, dedup_reason: 'same_program_host_title_url_context' },
           events: changed.events,
           before: { status: dup.status, noise: dup.noise }, after: { status: changed.status, noise: dup.noise },
         }
@@ -1108,7 +1113,7 @@ function makeHandlers(opts) {
       const category = findingCategory(source, title)
       // 43 号补丁：类别拒绝率学习 + 来源日配额（fail-open、白名单可豁免、抑制行仍入库留审计）
       const decision = noiseCategoryDecision(repo, source, category, args)
-      const exploration = decision.suppress && explorationSample(args.program_id, host, title, url)
+      const exploration = decision.suppress && explorationSample(args.program_id, host, title, url, ref)
       if (exploration) decision.suppress = false
       const quota = decision.suppress ? { exceeded: false, used: 0, quota: 0 } : noiseSourceQuota(repo, source)
       const suppressed = decision.suppress || quota.exceeded
@@ -1124,7 +1129,7 @@ function makeHandlers(opts) {
         task_id: taskId,
         detector_version: args.detector_version || null, applicability_key: args.applicability_key || null,
         queue_hold_reason: suppressReason, queue_hold_until: suppressed ? now + 86400000 : null,
-        vuln_type: args.vuln_type || null, cwe: null, endpoint_ref: null, preconditions: null,
+        vuln_type: args.vuln_type || null, cwe: null, endpoint_ref: ref || null, preconditions: null,
         reproduction_steps: null, impact: null, recommendation: null,
         noise: 1, status: suppressed ? 'ignored' : 'new', confidence: 'tentative',
         fgs_node_id: null, discovery_step: null,
