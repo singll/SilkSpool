@@ -1993,3 +1993,24 @@ test('27 WP04 host-bound anonymous HTTP uses the admitted DNS answer once withou
   assert.equal((await request(changed)).ok, false)
   assert.equal(connections.length, 1, 'failed bindings must cause no CONNECT or fallback')
 })
+
+test('27 试点: 内网授权IP在未指定出口时自动直连，显式 default 仍走外池', async t => {
+  const server = http.createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('ok:' + req.url) })
+  await new Promise(r => server.listen(0, '127.0.0.1', r))
+  t.after(() => new Promise(r => server.close(r)))
+  const port = server.address().port
+  // 使用内置默认池（8899，测试环境无该服务）：内网目标若不自动直连会失败。
+  const savedEnv = process.env.SEC_EGRESS_PROXY
+  delete process.env.SEC_EGRESS_PROXY
+  t.after(() => { if (savedEnv !== undefined) process.env.SEC_EGRESS_PROXY = savedEnv })
+  const { bus, dataDir } = makeEnv()
+  t.after(() => bus._internal.close())
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: "test-src"\n    scope:\n      - "127.0.0.1"\n')
+  const auto = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url: `http://127.0.0.1:${port}/auto`, method: 'GET' }, { actor: 'model' })
+  assert.equal(auto.ok, true, auto.error?.message)
+  assert.equal(auto.data.state, 'observed', '内网授权目标未指定出口时应自动直连')
+  assert.equal(auto.data.status, 200)
+  const forced = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url: `http://127.0.0.1:${port}/forced`, method: 'GET', proxy: 'default' }, { actor: 'model' })
+  assert.equal(forced.ok, true, forced.error?.message)
+  assert.notEqual(forced.data.state, 'observed', '显式 default 不得被自动改写为直连')
+})

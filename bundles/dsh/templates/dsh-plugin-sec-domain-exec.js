@@ -935,7 +935,12 @@ function makeHandlers(opts) {
     const started = Date.now(), deadline = started + (args.timeout_ms || 10000), maxBytes = args.max_bytes || 1048576
     // Validate initial target before creating an execution record; subsequent guards are
     // captured as blocked evidence because a previous hop may already have run.
-    await guardedAddress(url, args.program_id, method, deadline, bound, Boolean(permit))
+    const initialAddress = await guardedAddress(url, args.program_id, method, deadline, bound, Boolean(permit))
+    // 27 试点：保留/内网地址（已由 guardedAddress 按 Program 显式授权校验）无法经内置外部池（8899）到达——
+    // 仅在未显式配置 egressProxy（使用内置默认池）且调用方未指定出口时对这些目标自动直连，
+    // 避免默认池对内网恒 transport_error；显式配置的代理保持原语义（可能自身可达内网）。
+    const usesBuiltinPool = opts.egressProxy == null && process.env.SEC_EGRESS_PROXY == null
+    if (!bound && usesBuiltinPool && args.proxy === undefined && initialAddress && ipInReserved(ipToInt(initialAddress))) selectedProxy = ''
     const permitUse = permit ? (recheckPermit(), reserveReadPermit(permit)) : null
     const { runId, runDir } = repo.createRunDir('r'), hops = []
     let response = { state: 'blocked', status: null, body: '', headers: {} }
