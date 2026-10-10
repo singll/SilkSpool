@@ -81,7 +81,7 @@ target_param: target
 sandbox: false
 requires: [subdomains]
 produces: [live_hosts, fingerprints]
-args_template: "-u {{target}} -json -silent -duc"
+args_template: "-u {{target}} -json -silent -duc -rl {{rate|50}}"
 env_proxy: true
 parser: jsonl
 summarize: head

@@ -1525,6 +1525,15 @@ function makeHandlers(opts) {
       if (resolvedViolation) throwErr('E_EXEC_RESERVED_IP', `scope-guard 解析后校验拒绝: ${resolvedViolation}`, '若确属授权资产，scope 条目须以 CIDR 形式显式授权')
       if (RISK_ORDER.indexOf(String(manifest.risk || 'passive')) >= RISK_ORDER.indexOf('active')) await throttleQps()
 
+      // 27 WP03/D04：全局请求预算——工具启动令牌只约束「工具调用次数」，不约束工具内部请求速率
+      // （nuclei/httpx 各自默认 ~50 QPS，多 worker 并发会超发）。若工具模板引用 {{rate}} 且调用方未显式
+      // 指定，则按 scope 速率 / 最大并发计算每工具上限，使「并发工具数 × 每工具速率 ≤ scope rate_limit_qps」。
+      if (!('rate' in params) && /\{\{\s*rate\b/.test(String(manifest.args_template || ''))) {
+        const scopeRate = Math.max(1, Number(loadScope().defaults?.rate_limit_qps) || 50)
+        const maxWorkers = Math.max(1, Number(process.env.SEC_EXEC_MAX_WORKERS) || 12)
+        params.rate = Math.max(1, Math.floor(scopeRate / maxWorkers))
+      }
+
       let argv
       try { argv = shellSplit(cleanRenderedCmd(renderTemplate(String(manifest.args_template || ''), params, runDir, runId))) } catch (e) { throwErr('E_EXEC_TEMPLATE_PARAM', `参数渲染失败: ${e.message}`, '检查必填参数') }
       if (String(manifest.risk || 'passive') === 'passive') {

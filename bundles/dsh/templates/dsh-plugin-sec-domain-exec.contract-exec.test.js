@@ -385,6 +385,20 @@ test('渲染后兜底：模板协议前缀叠加模型传入的完整 URL 不产
   assert.match(cmd2, /-u https:\/\/b\.example\.com\/FUZZ -w \/tmp\/wl\.txt/)
 })
 
+test('27 WP03 D04: run_cli 按 scope 速率/并发注入 {{rate}}，显式传参不覆盖', async t => {
+  const { dataDir, bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  writeManifest(dataDir, 'rl-tool', 'name: rl-tool\nbinary: /bin/echo\nstage: vuln\nrisk: passive\nsandbox: false\ntimeout: 30\ntarget_param: target\nargs_template: "-u {{target}} -rl {{rate|50}}"\n')
+  const r = await bus.dispatch('exec', 'run_cli', { tool: 'rl-tool', params: { target: 'a.example.com' } }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const cmd = fs.readFileSync(path.join(dataDir, 'results', r.data.run_id, 'cmd.txt'), 'utf8')
+  assert.match(cmd, /-rl 4\b/, 'scope 50 / 并发 12 → 每工具 4 QPS（并发×每工具≤50）')
+  const r2 = await bus.dispatch('exec', 'run_cli', { tool: 'rl-tool', params: { target: 'a.example.com', rate: 30 } }, { actor: 'model' })
+  assert.equal(r2.ok, true, r2.error?.message)
+  const cmd2 = fs.readFileSync(path.join(dataDir, 'results', r2.data.run_id, 'cmd.txt'), 'utf8')
+  assert.match(cmd2, /-rl 30\b/, '显式 rate 不得被覆盖')
+})
+
 test('CLI 退出不伪造 tool:name 打法链反馈，也不产生后台 E_SCHEMA', async () => {
   const { dir, dataDir, bus } = makeEnv()
   assert.equal(bus.registry.register(buildKnowDomain({ dataDir })).ok, true)
