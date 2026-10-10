@@ -2623,3 +2623,20 @@ test('L23: 打法链统计仅取现役存储的playbook子集，生命周期不�
   assert.equal(h.data.exp.total,12)
   assert.deepEqual(h.data.playbooks,{total:6,active:1,candidate:1,cooling:1,deprecated:1,archived:1})
 })
+
+test('27 试点层1: exp_search scenario/takeaway 出摘要，exp_get 回全文', async () => {
+  const { bus } = makeEnv()
+  const long = `longneedle ${'x'.repeat(500)}`
+  const st = await bus.dispatch('know', 'exp_store', { scenario: long, takeaway: `take ${'y'.repeat(500)}`, justification: JUST }, { actor: 'dashboard' })
+  assert.equal(st.ok, true, st.error?.message)
+  const s = await bus.query('know', 'exp_search', { q: 'longneedle' }, { actor: 'model' })
+  assert.equal(s.ok, true, s.error?.message)
+  const row = s.rows.find((r) => r.id === st.data.id)
+  assert.ok(row, '搜索命中')
+  assert.equal(row.scenario.length, 241, '摘要 ≤240 字 + 省略号')
+  assert.ok(row.scenario.endsWith('…'))
+  assert.equal(s.snip, true, '标注摘要')
+  const g = await bus.query('know', 'exp_get', { id: st.data.id }, { actor: 'model' })
+  assert.equal(g.ok, true, g.error?.message)
+  assert.equal(g.data.scenario, long, 'exp_get 回全文')
+})

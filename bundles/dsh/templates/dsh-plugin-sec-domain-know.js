@@ -2592,12 +2592,16 @@ function makeHandlers(opts) {
         .filter(c => !args.tags?.length || args.tags.every(tag => JSON.parse(c.tags || '[]').includes(tag)))
       const projected = []
       for (const c of eligible) projected.push(await currentExpScore(repo, c))
+      // 层1：检索返回摘要——scenario/takeaway 仅回前 240 字（长文随历史累积挤占预算），全文用 exp_get。
+      let snip = false
+      const SNIP_N = 240
+      const cut = (s) => { const t = String(s || ''); if (t.length > SNIP_N) { snip = true; return t.slice(0, SNIP_N) + '…' } return t }
       const items = projected
         .map((c) => {
           let rank = (c._score || 0) * 10 + (vecScore.get(c.id) || 0) * 20 + (SRC_RANK[c.source] || 0) * 3 + (CONF_RANK[c.confidence] || 0) + (c.score || 0) * 2
           if (c.status === 'candidate') rank *= 0.5
           if (c.status === 'cooling') rank *= 0.7
-          const item = { id: c.id, scenario: c.scenario, takeaway: c.takeaway, source: c.source, confidence: c.confidence, status: c.status || 'active', score: c.score, legacy_score: c.legacy_score, score_basis: c.score_basis, learning: c.learning, tags: c.tags ? JSON.parse(c.tags) : [], _rank: rank,
+          const item = { id: c.id, scenario: cut(c.scenario), takeaway: cut(c.takeaway), source: c.source, confidence: c.confidence, status: c.status || 'active', score: c.score, legacy_score: c.legacy_score, score_basis: c.score_basis, learning: c.learning, tags: c.tags ? JSON.parse(c.tags) : [], _rank: rank,
             _updated: c.last_validated_at || c.created_at || 0, _uses: c.uses || 0 }
           if (c.status === 'cooling') item._cooling = true
           if (c.status === 'candidate') item._candidate = true
@@ -2606,7 +2610,7 @@ function makeHandlers(opts) {
         .sort((x, y) => (args.sort === 'updated_at' ? y._updated - x._updated
           : args.sort === 'uses' ? y._uses - x._uses : y._rank - x._rank) || y.id - x.id)
         .map(({ _rank, _updated, _uses, ...rest }) => rest)
-      return { rows: items, total: items.length }
+      return { rows: items, total: items.length, ...(snip ? { meta: { snip: true, note: `scenario/takeaway 为摘要（≤${SNIP_N} 字）；全文用 exp_get({id})` } } : {}) }
     },
     exp_get: async (args, repo, ctx) => {
       const r = repo.getExpCard(args.id)
