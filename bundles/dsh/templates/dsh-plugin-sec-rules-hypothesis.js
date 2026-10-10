@@ -633,9 +633,12 @@ export function distillEpisode(ep = {}) {
 export const CAMPAIGN_CLASS_PRIORITY = { idor: 5, sqli: 5, authz: 5, ssrf: 4, file: 3, xss: 2, info_disclosure: 1 }
 
 // vuln_class → oracle 路由（machine oracle 五件套，见 §2-1）
+// 27 WP02/E08：类别→Oracle 路由。file 类（文件读取/上传/下载授权/路径约束）没有对应的
+// 专用验证器，不得借用相邻类（unauthz_diff）判 confirmed——用未注册的 `file_probe` 标记，
+// Planner/派发按「不注册的 Oracle 不派发」处理为验证能力缺口，而非错判。
 export const CAMPAIGN_ORACLE = {
   idor: 'idor_diff', authz: 'idor_diff', sqli: 'sqli_diff', xss: 'xss_echo',
-  ssrf: 'ssrf_oob', info_disclosure: 'info_disclosure_diff', file: 'unauthz_diff',
+  ssrf: 'ssrf_oob', info_disclosure: 'info_disclosure_diff', file: 'file_probe',
 }
 
 function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }

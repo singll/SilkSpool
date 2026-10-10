@@ -8,7 +8,7 @@ import {
   oracleSqliDiff, oracleSqliTime, oracleXssEcho, oracleSsrfOob,
   fenceUntrusted, detectInjectionPatterns, compileSituation, strategyKey, simhashDistance,
   routeFlowsSignal, visionTriageRubric, decontextualize, distillEpisode,
-  compileCampaignPlan, CAMPAIGN_CLASS_PRIORITY, CAMPAIGN_ORACLE, hitMatrixKey,
+  compileCampaignPlan, CAMPAIGN_CLASS_PRIORITY, CAMPAIGN_ORACLE, hitMatrixKey, ORACLES,
   classifyTaskClass, decideThrottle, selectCampaignModel, memberSupplyState, CAMPAIGN_TASK_CLASSES,
 } from '../index.js'
 
@@ -88,6 +88,14 @@ test('taintRoute: should_auth=yes ∧ public → 未授权假设最高优先', (
 })
 test('taintRoute: 无参数 → 空（H2 不出假设，退 H1）', () => {
   assert.equal(taintRoute({ path: '/x', params: [] }).length, 0)
+})
+test('27 WP02/E08: file 类不借用相邻 Oracle，标为未注册的 file_probe（验证能力缺口）', () => {
+  assert.equal(CAMPAIGN_ORACLE.file, 'file_probe')
+  assert.ok(!ORACLES.file_probe, 'file_probe 不得注册为可用验证器（否则会错判 confirmed）')
+  for (const [cls, or] of Object.entries(CAMPAIGN_ORACLE)) {
+    if (cls === 'file') continue
+    assert.ok(ORACLES[or], `${cls}→${or} 应映射到已注册 Oracle`)
+  }
 })
 test('h1Hypotheses: 指纹命中 + 通用保底（任何资产必有产出）', () => {
   const spring = h1Hypotheses({ tech: ['Spring Boot'] })
