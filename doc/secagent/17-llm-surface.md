@@ -13,7 +13,7 @@
 | 项 | 值 |
 |---|---|
 | 本体 | 无独立插件。工具面的物理载体是 `@silksec/sec-domain-bus` 的 **ToolProjector**（01 §2.2.6）；本文定义它的投影规则、挂载矩阵与 prompt 侧对接 |
-| 挂载面 | web 工具面（宿主会话）与 headless 工具面（worker）——**两面的模型可见工具集完全一致**（worker 要干活，宿主会话也要干活；差异只在非工具面服务：RPC/webhook/调度/后台单例仅 web） |
+| 挂载面 | web 工具面（宿主会话）= **全量**；headless 工具面（worker）= **phase 域子集 × worker 面向 verb 白名单**（§1.6）。**两面工具集不相等**（此前"两面完全一致"的表述已更正，见 §1.6）；差异同时在非工具面服务：RPC/webhook/调度/后台单例仅 web |
 | 投影零改名 | 工具名 = 契约动词名 = 命令名（宪法 §二：投影零改名）；schema = manifest 命令 schema 直投；描述 = manifest `agent_note` |
 | 模型层 | **零改动**：settings.yaml / Bellkeeper 默认路由 / dsh-model-failover 两级熔断 / dsh-bill 计费全部不动。工具面是模型与领域世界的**唯一交互面**（DSH `ctx.tools.register` 契约），无 MCP、无第二通道 |
 
@@ -159,7 +159,9 @@ agent_note 必须枚举**合法值域**（六态枚举、useful/adopted/wrong/ou
 | bus_status / events_tail | ✅ | ✅ | ✅ | ✅ | — |
 | bus_replay / bus_prune / audit_tail | ❌ | ❌ | ✅ | ✅ | human / system |
 
-**phase 动态子集（已定，§2.5 phase→域映射为唯一注册边界）**：headless worker 按任务 `phase` 只注册该 phase 域集合的动词（spawn_worker 的 task 描述声明 phase，ToolProjector 据此裁剪注册集）；web 会话保持全量。这样 worker 会话的 token 开销从 ~68-72k 降到单 phase 域集合的 ~10-20k，且模型在任务内"物理看不见"越界域工具（负向保障强化）。跨界需求走 review phase 或显式声明 phase 集合。
+**phase 动态子集（已定，§2.5 phase→域映射为唯一注册边界）**：headless worker 按任务 `phase` 只注册该 phase 域集合的动词（spawn_worker 的 task 描述声明 phase，ToolProjector 据此裁剪注册集）；web 会话保持全量。且模型在任务内"物理看不见"越界域工具（负向保障强化）。跨界需求走 review phase 或显式声明 phase 集合。
+
+**worker 面向 verb 白名单（27 试点，2026-10-10 增补）**：在 `PHASE_DOMAINS` 域子集之上，`WORKER_TOOL_VERBS`（[bus.js](bundles/dsh/templates/dsh-plugin-sec-domain-bus.js) `WORKER_TOOL_VERBS`）对 know/task/exec/vuln/endpoint/asset/fact/scope/bus/proxy 仅投影 worker 面向动词（未列该域 → fail-open 全量），并用 `PHASE_EXCLUDE_DOMAINS.vuln` 剔除 ledger/approval/report。**实测**：vuln phase 工具面由 ~200 降到 ~**120 个工具**、工具 schema ~**112KB→67KB**（原文 ~10-20k token 的估计偏乐观，以 `bus_status` 实测为准）。**此为试点措施**：后续应改为**声明式任务能力集**（按任务所需能力集投影，保证"探索→取证→判定→收尾"完整），新增域/动词须过投影评审，避免白名单在总线硬编码造成扩散风险。
 
 治理生命周期类的订阅执行（memcore lifecycle、eval 回流）由总线从订阅回调注入 actor=`reactor`（宪法 §三）。
 
@@ -289,7 +291,7 @@ prompt 资产中另有一件 `data/AUTHORITY.md`（操作员授权声明，防�
 |---|---|---|
 | 工具数 | ≈119（+观察期别名 ~20） | v4.x 约 67 → 接近翻倍；来源是 know 域动词显式化，非功能膨胀 |
 | 每工具上下文开销 | description ≤240 字（≈360 token）+ schema（≈150-400 token）≈ **500-700 token** | |
-| 工具面总开销 | web 全量 ≈119 × 600 ≈ **69-73k token/会话**；headless worker 按 phase 子集 ≈ **10-20k token/会话**（已定，§1.6） | web 会话靠 DSH/pi-ai prompt caching（工具 schema 在 system 段，缓存命中后边际成本低）+ AGENTS.md 速查表只列动词名不复制全文；worker 靠 phase 动态子集物理降本 |
+| 工具面总开销 | web 全量 ≈119 × 600 ≈ **69-73k token/会话**；headless worker = phase 域子集 ∩ worker 面向 verb 白名单，**实测 ~120 工具 / 工具 schema ~67KB**（§1.6；原文 ~10-20k 估计偏乐观） | web 会话靠 DSH/pi-ai prompt caching（工具 schema 在 system 段，缓存命中后边际成本低）+ AGENTS.md 速查表只列动词名不复制全文；worker 靠 phase 子集 + verb 白名单物理降本 |
 | 投影耗时 | 注册期一次性 <100ms（15 个 manifest、146 个动词遍历） | 运行期零开销（execute 直转 dispatch） |
 | 查询后补发 | 每检索 +1 次 dispatch（<5ms，异步不阻塞返回） | 仅 exp_search 一处 |
 

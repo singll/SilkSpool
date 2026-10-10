@@ -2093,17 +2093,9 @@ function makeHandlers(opts) {
       return { rows, total: rows.length }
     },
     // 21 号方案 §2-1：oracle 纯函数判定（零 IO；模型只能提交对照特征，判定归代码）
-    // 27 试点：签封原件不动，仅限制回给模型的正文体量（大正文整包回灌会撑爆对话历史，
-    // 使 worker 每轮输入线性膨胀、预算迅速耗尽）。完整正文用 exec_page_result/exec_grep_result 取。
-    exec_http_result: async (args) => {
-      const rec = readSealed(args.run_id, 'http-record.json')
-      const resp = rec && rec.response
-      const body = resp && typeof resp.body === 'string' ? resp.body : ''
-      const MAX_RETURN_BYTES = 8192
-      if (!body || body.length <= MAX_RETURN_BYTES) return rec
-      return { ...rec, response: { ...resp, body: body.slice(0, MAX_RETURN_BYTES), body_truncated: true, body_bytes: body.length,
-        body_note: '正文已截断（仅回 8KB 供研判）；完整正文用 exec_page_result/exec_grep_result 按 run_id 取' } }
-    },
+    // 权威读取：返回签封 HTTP 记录（含完整正文）。模型侧体量控制由压缩/裁剪层承担，
+    // 不在此处静默截断（截断会破坏权威读取契约，且本查询对 model/script/dashboard 共用）。
+    exec_http_result: async (args) => readSealed(args.run_id, 'http-record.json'),
     exec_authz_preflight: async (args) => readPreflight(args.preflight_id),
     exec_authz_decision: async (args) => readDecision(args.decision_id),
     exec_authz_evidence: async (args) => readDecisionEvidence(args.decision_id),
