@@ -1999,10 +1999,7 @@ test('27 试点: 内网授权IP在未指定出口时自动直连，显式 defaul
   await new Promise(r => server.listen(0, '127.0.0.1', r))
   t.after(() => new Promise(r => server.close(r)))
   const port = server.address().port
-  // 使用内置默认池（8899，测试环境无该服务）：内网目标若不自动直连会失败。
-  const savedEnv = process.env.SEC_EGRESS_PROXY
-  delete process.env.SEC_EGRESS_PROXY
-  t.after(() => { if (savedEnv !== undefined) process.env.SEC_EGRESS_PROXY = savedEnv })
+  // 未程序化配置 egressProxy（走部署级默认池，测试环境无该服务）：内网目标若不自动直连会失败。
   const { bus, dataDir } = makeEnv()
   t.after(() => bus._internal.close())
   fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: "test-src"\n    scope:\n      - "127.0.0.1"\n')

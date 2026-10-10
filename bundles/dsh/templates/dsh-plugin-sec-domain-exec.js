@@ -936,11 +936,12 @@ function makeHandlers(opts) {
     // Validate initial target before creating an execution record; subsequent guards are
     // captured as blocked evidence because a previous hop may already have run.
     const initialAddress = await guardedAddress(url, args.program_id, method, deadline, bound, Boolean(permit))
-    // 27 试点：保留/内网地址（已由 guardedAddress 按 Program 显式授权校验）无法经内置外部池（8899）到达——
-    // 仅在未显式配置 egressProxy（使用内置默认池）且调用方未指定出口时对这些目标自动直连，
-    // 避免默认池对内网恒 transport_error；显式配置的代理保持原语义（可能自身可达内网）。
-    const usesBuiltinPool = opts.egressProxy == null && process.env.SEC_EGRESS_PROXY == null
-    if (!bound && usesBuiltinPool && args.proxy === undefined && initialAddress && ipInReserved(ipToInt(initialAddress))) selectedProxy = ''
+    // 27 试点：保留/内网地址（已由 guardedAddress 按 Program 显式授权校验）无法经外部出口池到达——
+    // 仅在宿主未程序化配置 egressProxy（生产用部署级池，如 env SEC_EGRESS_PROXY=8899）且调用方未指定
+    // 出口时对这些目标自动直连，避免默认池对内网恒 transport_error；显式程序化配置的固定代理保持原
+    // 语义（可能是可达内网的自建隧道，WP02 fail-closed 不得直连回退）。
+    const usesDeploymentPool = opts.egressProxy == null
+    if (!bound && usesDeploymentPool && args.proxy === undefined && initialAddress && ipInReserved(ipToInt(initialAddress))) selectedProxy = ''
     const permitUse = permit ? (recheckPermit(), reserveReadPermit(permit)) : null
     const { runId, runDir } = repo.createRunDir('r'), hops = []
     let response = { state: 'blocked', status: null, body: '', headers: {} }
