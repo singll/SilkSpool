@@ -769,7 +769,7 @@ export const KNOW_MANIFEST = {
       agent_note: '检索经验卡（关键词+标签+置信度，FTS+向量融合）。开局三步检索第二步：动手前查历史打法。',
     },
     exp_get: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'reactor'],
       params: schema({ id: int() }, ['id']),
       predicates: [],
       agent_note: '读经验卡全文（scenario/takeaway/chain/证据链/评分分项/exportable）。',
@@ -838,7 +838,7 @@ export const KNOW_MANIFEST = {
       agent_note: '先验规程库全文（路径穿越防护，禁 .. /绝对路径）。',
     },
     vc_get: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'reactor'],
       params: schema({ id: str({ minLength: 1 }), q: str(), program_id: str(), family: str(), surface: str(),
         reader: en(['task', 'review']) }, ['id']),
       predicates: [],

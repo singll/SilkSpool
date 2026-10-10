@@ -3031,6 +3031,28 @@ function makeHandlers(opts) {
       const checked = await validateFindingIntent(args)
       if (!checked.ok) throwErr(checked.code, checked.message, '核对 finding 归属和真实主机')
       args = checked.draft
+      // C12：H3 语义假设引用的卡片必须**真实存在且未退出任务使用面**（非空字符串不够）。
+      // know 域可用时逐条解析（数字=经验卡 exp_get，其余=漏洞卡 vc_get）；域未挂载时不阻断，不凭卡名伪造。
+      if (args.level === 'H3' && Array.isArray(args.h3?.card_refs) && args.h3.card_refs.length && queryRef) {
+        const unresolved = []
+        for (const raw of args.h3.card_refs) {
+          const ref = String(raw || '').trim()
+          if (!ref) continue
+          let g
+          try {
+            g = /^\d+$/.test(ref)
+              ? await queryRef('know', 'exp_get', { id: Number(ref) }, { actor: 'reactor' })
+              : await queryRef('know', 'vc_get', { id: ref, program_id: args.program_id }, { actor: 'reactor' })
+          } catch (e) {
+            if (/E_BUS_DOMAIN_UNKNOWN|E_BACKEND_UNAVAILABLE/.test(String(e?.code || ''))) continue
+            unresolved.push(ref); continue
+          }
+          const code = String(g?.error?.code || '')
+          if (/E_BUS_DOMAIN_UNKNOWN|E_BACKEND_UNAVAILABLE/.test(code)) continue
+          if (!g || g.ok === false) unresolved.push(ref)
+        }
+        if (unresolved.length) throwErr('E_TASK_H3_REJECTED', `H3 卡片引用无法解析（不存在/已退出使用面）：${unresolved.join(', ')}`, '引用真实存在且适用的知识卡 ID；原创假设走 H2/H1 有界探索，不伪造卡 ID（§3.2/C12）', false)
+      }
       const bare = args.strategy_key || (args.finding_id ? `${args.kind === 'verify_candidate' ? 'verify' : 'review'}|${args.finding_id}`
         : `${['auth_prepare', 'explore'].includes(args.kind) ? args.kind + '|' : ''}${strategyKey({ host: args.host, path: args.path || '', param: args.param || '', vuln_class: args.vuln_class || '' })}`)
       // 22 号方案 §5.5：专项维度去重键（连败黑名单仍按裸 key 判定——打法属性非专项属性）

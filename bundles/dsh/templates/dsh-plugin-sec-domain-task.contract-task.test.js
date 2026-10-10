@@ -285,6 +285,32 @@ test('21 §3-2/§6.1: H3 语义假设局面编译——缺卡片引用/过短/�
   assert.ok(row.objective.includes('EXP-IDOR-001'))
 })
 
+test('27 WP05 C12: H3 卡片引用在 know 可用时须解析为真实卡（非空字符串不够）', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const knowStub = {
+    manifest: { domain: 'know', version: 1, service: 'secDomain.know', description: '桩', owns: { tables: [], files: [] }, commands: {},
+      queries: {
+        exp_get: { actor: ['model', 'dashboard', 'human', 'reactor'], params: { type: 'object', additionalProperties: false, properties: { id: { type: 'integer' } } }, agent_note: '桩' },
+        vc_get: { actor: ['model', 'dashboard', 'human', 'reactor'], params: { type: 'object', additionalProperties: false, properties: { id: { type: 'string' }, program_id: { type: 'string' } } }, agent_note: '桩' },
+      }, events: {}, subscribes: {}, backend: 'repository-v1' },
+    handlers: { commands: {}, queries: {
+      exp_get: async (a) => { if (Number(a.id) === 42) return { id: 42, status: 'active' }; const e = new Error('卡不存在'); e.code = 'E_NOT_FOUND'; throw e },
+      vc_get: async (a) => { if (String(a.id).toUpperCase() === 'VC-OK') return { id: 'VC-OK', status: 'active' }; const e = new Error('卡无适用版本'); e.code = 'E_NOT_FOUND'; throw e },
+    }, invariants: {}, subscribers: {} },
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  }
+  assert.equal(bus.registry.register(knowStub).ok, true, 'know 桩应注册成功')
+  const base = { program_id: 'test-src', kind: 'hypothesis', host: 'c12.example.com', path: '/pay', vuln_class: 'sqli', level: 'H3' }
+  const bad = await bus.dispatch('task', 'derive_intent', { ...base, h3: { card_refs: ['999999'], vuln_class: 'sqli', hypothesis: '引用不存在的经验卡应被拒绝的语义假设文本' } }, { actor: 'reactor' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error?.code, 'E_TASK_H3_REJECTED')
+  const good = await bus.dispatch('task', 'derive_intent', { ...base, h3: { card_refs: ['42'], vuln_class: 'sqli', hypothesis: '引用真实存在经验卡的语义假设文本需要足够长度' } }, { actor: 'reactor' })
+  assert.equal(good.ok, true, good.error?.message)
+  const goodVc = await bus.dispatch('task', 'derive_intent', { ...base, path: '/pay2', h3: { card_refs: ['VC-OK'], vuln_class: 'sqli', hypothesis: '引用真实存在漏洞卡的语义假设文本需要足够长度' } }, { actor: 'reactor' })
+  assert.equal(goodVc.ok, true, goodVc.error?.message)
+})
+
 test('27 WP05: endpoint 查询失败保留事件重试，不伪装无参数已处理', async () => {
   const { bus, domain } = makeEnv()
   // 有数值参数 → IDOR + XSS + SQLi（≤3 条）
