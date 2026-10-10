@@ -54,7 +54,7 @@ const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 30000)
 // 27 试点：campaign 派生 worker 的单任务 token 预算（旧硬编码 150k，工具面大时两轮即耗尽）。
 // 可由 campaign.policy.task_budget_tokens 覆盖。
-const CAMPAIGN_TASK_BUDGET_TOKENS = Number(process.env.SEC_CAMPAIGN_TASK_BUDGET_TOKENS || 400000)
+const CAMPAIGN_TASK_BUDGET_TOKENS = Number(process.env.SEC_CAMPAIGN_TASK_BUDGET_TOKENS || 600000)
 const CAMPAIGN_KINDS = DISCOVERY_TASK_KINDS
 // 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
 const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000

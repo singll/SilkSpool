@@ -1445,7 +1445,7 @@ test('27 试点: campaign 派生任务带单任务 token 预算（默认 400k，
   await bus.dispatch('task', 'campaign_activate', { campaign_id: c2.data.campaign_id }, { actor: 'dashboard' })
   await bus.dispatch('task', 'campaign_dispatch', { campaign_id: c2.data.campaign_id, drafts: [draft('a.example.com|/y|id|idor')] }, { actor: 'model' })
   const t2 = bus._internal.db().prepare('SELECT budget_tokens FROM tasks WHERE campaign_id=?').get(c2.data.campaign_id)
-  assert.equal(t2.budget_tokens, 400000, '默认单任务预算 400k')
+  assert.equal(t2.budget_tokens, 600000, '默认单任务预算 600k')
 })
 
 test('22 C26/INV-C3/C8: campaign_record_decision 证据铁律 + 一任务一验收', async () => {
