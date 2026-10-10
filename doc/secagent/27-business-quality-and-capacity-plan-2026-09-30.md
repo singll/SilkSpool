@@ -2132,8 +2132,11 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
     config: { thresholdChars: 4096, headChars: 2048, tailChars: 512 }
   ```
   约束满足 `retainRatio < thresholdRatio`；`maxTokens` 封顶摘要调用输出（默认可达 65536，会自耗预算）。经 `--dump-config --patch` 确认合并为上述值。**该 headless 补丁由 `spool sync`（`hosts/<host>/dsh/headless.cordis.patch.yml`，不在本仓库）管理；缺失才由 `headless-failover-setup.sh` 写默认。**
-- **未采用原因（遵循用户要求）**：须先**用固定历史回放证明阈值/裁剪事件/压缩后有效上下文/恢复能力且不丢关键状态**，再做少量有预算上限的真实对照。隔离基座：`dsh-upgrade-worker-smoke.py`（本地流式 fixture 模型 + 真实 headless worker + 捕获请求），可经 `--patch` 注入覆盖并观察大结果是否被裁剪/压缩。
-- 参数非"取窗口百分比"的经济策略——须据实际 token meter 与不可压缩固定上下文（工具面 ~67KB≈17k token + persona/system）联合标定；摘要请求开销与收尾预留须显式约束。**未部署、未改生产 headless 配置。**
+- **未采用原因（遵循用户要求）**：须先证明阈值/裁剪事件/压缩后有效上下文/恢复能力且不丢关键状态，再做少量有预算上限的真实对照。
+- **机制厘清（读源码，纠正此前"误读"）**：`tool-result-pruner.pruneSession()` **无自身压力门控**，但对 `tool/result` 内容按阈值裁剪；其**调用者 `compaction-basic` 有门控**——仅当 `measurement.totalTokens ≥ thresholdTokens`（=`contextWindow×thresholdRatio`）**或 context-overflow** 时才调用 `pruner.pruneSession()`。默认 `thresholdRatio 0.8`×1M=838k → **永不触发** → 结果不被裁（此前从会话日志看到的 14.6/16KB 是**原件**；模型面裁剪与否取决于是否触发）。→ **激活裁剪/压缩的关键杠杆是降低 `compaction-basic.thresholdRatio`**（`tool-result-pruner.thresholdChars` 是次级，决定裁到多小）。
+- **节点级验证（真实模块，无 worker/无 LLM）**：直接调用 `dsh-compaction-tool-result-pruner` 的 `pruneContent`（原型方法 + 我的覆盖）——14560 字符输入：默认配置→**5159**（4096+marker+1024）、覆盖 `thresholdChars:4096`→**2599**（2048+marker+512），均含 `PRUNE_MARKER`，且该插件**引用被裁节点（`compaction/prune` 影子事件 + shadowedSeqs），完整事件可回放恢复，只替换 content**——即**不丢证据、可恢复**。
+- **结论**：裁剪逻辑与覆盖正确（已验证）；激活靠降 `compaction-basic.thresholdRatio`。候选 `thresholdRatio:0.08`（激活点 ≈84k token）可 `--dump-config` 合并（已验证）。
+- **未采用/待办**：完整**端到端 worker 回放**需在**隔离副本**（`dsh-upgrade-worker-smoke.py` 要求 `isolation.json` 隔离启动器，不得在生产 csai 直接跑——会改 headless settings/profile、起 worker）进行；参数非"取窗口百分比"，须据实际 token meter 与固定上下文（工具面 ~67KB≈17k token + persona/system）+ 摘要开销上限 + 收尾预留联合标定。**当前未部署、未改生产 headless 配置。**
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
