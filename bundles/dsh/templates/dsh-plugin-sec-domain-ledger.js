@@ -689,6 +689,17 @@ function makeHandlers(opts) {
       const state = coverageLatest(repo, program)
       const gaps = []
       const truncatedDims = []
+      // 27 WP05/旧分页饥饿：上限按维度独立计费（原用全局 gaps.length，前序维度可耗尽预算，
+      // 使 vulnclass/param/auth 等后序维度永久饥饿、offset 也够不到）。
+      const perDimCap = Number(process.env.SEC_LEDGER_MAX_GAPS_PER_DIM) > 0 ? Number(process.env.SEC_LEDGER_MAX_GAPS_PER_DIM) : LEDGER_MAX_GAPS_PER_DIM
+      const dimCounts = new Map()
+      const addGap = (g) => {
+        const n = dimCounts.get(g.dim) || 0
+        if (n >= perDimCap) return false
+        dimCounts.set(g.dim, n + 1)
+        gaps.push(g)
+        return true
+      }
       // 资产面缺口：web 资产中未爬取成功的 host（分页全量）
       if (!dimFilter || dimFilter === 'crawl') {
         const page = await queryPages('asset', 'host_page', { type: 'web', program_id: program }, LEDGER_MAX_ASSET_ROWS)
@@ -699,8 +710,7 @@ function makeHandlers(opts) {
             const h = r.host
             if (!h || seen.has(h) || done.has(h)) continue
             seen.add(h)
-            if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('crawl'); break }
-            gaps.push({ dim: 'crawl', key: h, strategy_key: `crawl|${h}`, priority: 50, reason: 'web 资产未爬取成功' })
+            if (!addGap({ dim: 'crawl', key: h, strategy_key: `crawl|${h}`, priority: 50, reason: 'web 资产未爬取成功' })) { truncatedDims.push('crawl'); break }
           }
         }
       }
@@ -717,8 +727,7 @@ function makeHandlers(opts) {
             const st = state.get(`asset|${root}`)
             const freshMs = st && st.mark === 'enum_fresh' ? Date.parse(st.ts || '') : NaN
             if (!(Number.isFinite(freshMs) && nowMs - freshMs <= ASSET_ENUM_STALE_MS)) {
-              if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('asset'); break }
-              gaps.push({ dim: 'asset', key: root, strategy_key: `asset|${root}`, mark: 'enum_stale', priority: 45, reason: `根域 ${root} 资产枚举超窗（>${Math.round(ASSET_ENUM_STALE_MS / 86400000)} 天未 enum_fresh 记账）` })
+              if (!addGap({ dim: 'asset', key: root, strategy_key: `asset|${root}`, mark: 'enum_stale', priority: 45, reason: `根域 ${root} 资产枚举超窗（>${Math.round(ASSET_ENUM_STALE_MS / 86400000)} 天未 enum_fresh 记账）` })) { truncatedDims.push('asset'); break }
             }
           }
         }
@@ -732,13 +741,12 @@ function makeHandlers(opts) {
           const nowMs = Date.now()
           for (const r of page.rows) {
             if (nowMs - Number(r.created_at || 0) <= staleMs) continue
-            if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('review'); break }
             const sevBonus = { critical: 5, high: 4, medium: 2, low: 1 }[String(r.severity || '').toLowerCase()] || 1
-            gaps.push({
+            if (!addGap({
               dim: 'review', key: String(r.id), strategy_key: `review|${r.id}`, mark: 'pending_review',
               host: String(r.host || ''), path: String(r.url || ''), value: sevBonus,
               priority: 35, reason: `存量 finding #${r.id}（${String(r.vuln_type || r.title || '').slice(0, 40)}）超 ${Math.round(staleMs / 3600000)}h 未分诊`,
-            })
+            })) { truncatedDims.push('review'); break }
           }
         }
       }
@@ -758,14 +766,12 @@ function makeHandlers(opts) {
           const closedAt = closedMark ? Date.parse(pst.ts || '') : NaN
           const cooldown = Number.isFinite(closedAt) && (Date.now() - closedAt) < PARAM_GAP_COOLDOWN_MS
           if ((!dimFilter || dimFilter === 'param') && !hasParams && !phantom && !cooldown) {
-            if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('param'); break }
-            gaps.push({ dim: 'param', key: `${r.host}|${r.path}`, strategy_key: `param|${r.host}|${r.path}`, priority: 30, reason: '端点无参数（arjun/flows/JS 补全候选）' })
+            if (!addGap({ dim: 'param', key: `${r.host}|${r.path}`, strategy_key: `param|${r.host}|${r.path}`, priority: 30, reason: '端点无参数（arjun/flows/JS 补全候选）' })) { truncatedDims.push('param'); break }
           }
           if ((!dimFilter || dimFilter === 'auth') && (r.auth_state === 'login_required' || r.auth_state === 'role_required')) {
             const tested = state.get(`auth|${r.host}|${r.path}`)
             if (!tested || tested.mark === 'untested') {
-              if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('auth'); break }
-              gaps.push({ dim: 'auth', key: `${r.host}|${r.path}`, strategy_key: `auth|${r.host}|${r.path}`, priority: 40, reason: `登录态端点未做登录态测试（${r.auth_state}）` })
+              if (!addGap({ dim: 'auth', key: `${r.host}|${r.path}`, strategy_key: `auth|${r.host}|${r.path}`, priority: 40, reason: `登录态端点未做登录态测试（${r.auth_state}）` })) { truncatedDims.push('auth'); break }
             }
           }
         }
@@ -784,11 +790,10 @@ function makeHandlers(opts) {
               const determinate = st && VULNCLASS_DETERMINATE.has(st.mark)
               const expired = determinate && Number.isFinite(closedAt) && (Date.now() - closedAt) > VULNCLASS_REOPEN_MS
               if (!st || st.mark === 'untested' || (st.mark && !determinate) || expired) {
-                if (gaps.length >= LEDGER_MAX_GAPS_PER_DIM) { truncatedDims.push('vulnclass'); break outer }
-                const reason = (!st || st.mark === 'untested') ? `漏洞类 ${cls} 未测`
-                  : expired ? `漏洞类 ${cls} 判定超期重开（>${Math.round(VULNCLASS_REOPEN_MS / 86400000)} 天）`
-                    : `漏洞类 ${cls} 结论不明确（${st.mark}）需重开`
-                gaps.push({ dim: 'vulnclass', key, strategy_key: `vulnclass|${key}`, priority: CLASS_PRIORITY[cls] ?? 25, reason })
+              const reason = (!st || st.mark === 'untested') ? `漏洞类 ${cls} 未测`
+                : expired ? `漏洞类 ${cls} 判定超期重开（>${Math.round(VULNCLASS_REOPEN_MS / 86400000)} 天）`
+                  : `漏洞类 ${cls} 结论不明确（${st.mark}）需重开`
+              if (!addGap({ dim: 'vulnclass', key, strategy_key: `vulnclass|${key}`, priority: CLASS_PRIORITY[cls] ?? 25, reason })) { truncatedDims.push('vulnclass'); break outer }
               }
             }
           }

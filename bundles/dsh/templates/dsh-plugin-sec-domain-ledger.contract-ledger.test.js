@@ -577,3 +577,27 @@ test('coverage_gaps: review 维——超龄未分诊 finding 出缺口，新鲜�
   assert.equal(gap.host, 'a.example.com')
   assert.equal(gap.path, '/u')
 })
+
+test('27 WP05/旧分页饥饿: 覆盖缺口按维度独立计费，前序维度不饿死后序维度', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const props = { program_id: { type: 'string' }, type: { type: 'string' }, auth_state: { type: 'string' }, limit: { type: 'integer' }, offset: { type: 'integer' } }
+  const stub = (domain, qm) => ({
+    manifest: { domain, version: 1, service: `secDomain.${domain}`, description: 'stub', owns: { tables: [], files: [] }, commands: {},
+      queries: Object.fromEntries(qm.map(([n, f]) => [`${domain}_${n}`, { actor: ['reactor', 'model', 'dashboard', 'human'], params: { type: 'object', additionalProperties: false, properties: props }, agent_note: 'stub', ...(f.rows ? { __rows: true } : {}) }])),
+      events: {}, subscribes: {}, backend: 'repository-v1' },
+    handlers: { commands: {}, queries: Object.fromEntries(qm.map(([n, f]) => [n, async () => f])), invariants: {}, subscribers: {} },
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  })
+  assert.equal(bus.registry.register(stub('asset', [['host_page', { rows: [{ host: 'a.example.com', root: 'example.com' }, { host: 'b.example.com', root: 'example.com' }], total: 2 }]])).ok, true)
+  assert.equal(bus.registry.register(stub('endpoint', [['lite_page', { rows: [{ host: 'c.example.com', path: '/x', params: null, auth_state: 'public' }], total: 1 }]])).ok, true)
+  process.env.SEC_LEDGER_MAX_GAPS_PER_DIM = '1'
+  try {
+    const g = await bus.query('ledger', 'coverage_gaps', { program: 'test-src' }, { actor: 'model' })
+    assert.equal(g.ok, true, g.error?.message)
+    const dims = new Set((g.data.gaps || []).map((x) => x.dim))
+    assert.ok(dims.has('crawl'), 'crawl 维度应出现（占满自身名额）')
+    assert.ok(dims.has('vulnclass'), 'vulnclass 不应被 crawl 的全局额度饿死')
+    assert.ok((g.data.truncated?.dims || []).includes('crawl'), 'crawl 触顶应报截断')
+  } finally { delete process.env.SEC_LEDGER_MAX_GAPS_PER_DIM }
+})
