@@ -2115,7 +2115,9 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 
 **option 2 分层上下文控制——层 1 起步（已上线）**：
 - `fbc3b9f` change `20261010-layer1-manifestlist`：`exec_manifest_list` 无 `name` 时只回**精简视图**（名称/阶段/风险/参数名，`meta.compact`+note），按 `name` 精确查询才回全量 schema。此前无过滤列表逐工具展开全量参数产生 **~16KB** 结果、随对话历史累积。全域 828/828。
-- **待做（层 1 其余）**：`know.exp_search`(14.6KB)/`kb_search`(15.4KB) 的 `scenario/takeaway` 正文投影为摘要+引用（`exp_get`/`kb_read` 取全文）——须先核对既有测试对字段的依赖，谨慎改。
+- `695cc4b` change `20261010-layer1-expsnip`：`know.exp_search` 的 `scenario/takeaway` 仅回前 **240 字**（>240 才截断+`…`，`meta.snip` 标注），全文用 `exp_get`。全域 829/829。
+  - **顺带修正发布漂移**：已部署 know（`c97a9d96`）**缺** `6a569ce` 的 `exp_search` actor 补 `reactor` 改动（H3 生成器会因此 `E_ACTOR_FORBIDDEN`）；本次部署（新 `139786c9`）一并补齐。→ 再次印证「部署须核对实际安装文件、非仅模板」。
+- **待做（层 1 其余）**：`kb_search` 行已精简（`doc_id/title/url/...`），其体积来自结果条数（总线默认 limit 50）——如需要再限默认条数。
 - **待做（层 2）**：headless worker 的 `compaction-basic`/`tool-result-pruner` 参数（`thresholdRatio` 与 `retainRatio/retainTokens` 联合约束、`headroomTokens`/`maxTokens`、**摘要请求开销上限**与收尾预留），须先定位 headless 生效配置链（`bundles → headless/cordis.patch.yml → --patch`）并在**隔离 worker 配置**用固定历史回放验证，不改共享 web 配置。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
