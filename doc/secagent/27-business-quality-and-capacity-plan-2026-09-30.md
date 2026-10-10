@@ -2120,6 +2120,21 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **待做（层 1 其余）**：`kb_search` 行已精简（`doc_id/title/url/...`），其体积来自结果条数（总线默认 limit 50）——如需要再限默认条数。
 - **待做（层 2）**：headless worker 的 `compaction-basic`/`tool-result-pruner` 参数（`thresholdRatio` 与 `retainRatio/retainTokens` 联合约束、`headroomTokens`/`maxTokens`、**摘要请求开销上限**与收尾预留），须先定位 headless 生效配置链（`bundles → headless/cordis.patch.yml → --patch`）并在**隔离 worker 配置**用固定历史回放验证，不改共享 web 配置。
 
+### 15.140 option 2 层 2：headless 压缩配置链定位与候选覆盖（2026-10-10，未采用）
+
+- **配置链定位（已确证）**：headless worker（`--profile headless`）的生效配置 = `headless/package.json` 的 `dsh.profile.bundles`（含 `@deepseek-ai/dsh-base`、`@deepseek-ai/dsh-headless` …）→ `headless/cordis.patch.yml` → CLI `--patch`。压缩组件由 **`dsh-base/cordis.patch.yml`** 注册：`compaction-basic`（无配置→默认 `thresholdRatio:0.8`、`retainRatio:0.16`、`headroomTokens:65536`）与 `tool-result-pruner`（`thresholdChars:8192, headChars:4096, tailChars:1024`）。故此前"headless 无压缩组件"的判断**不成立**（组件已注册；未触发是因默认阈值 0.8×上下文窗(1M)=838k token 远高于实际用量 + 裁剪器受整体上下文压力门控）。
+- **只读验证机制**：`dsh --profile headless --dump-config`（无 LLM）导出生效配置；`--patch <file> --dump-config` 可**只读验证覆盖是否合并**。
+- **候选覆盖（验证合并通过，未采用）**：写入 `headless/cordis.patch.yml`（headless-only，非共享 web）：
+  ```yaml
+  - id: compaction-basic
+    config: { thresholdRatio: 0.08, retainRatio: 0.02, headroomTokens: 16384, maxTokens: 8192 }
+  - id: tool-result-pruner
+    config: { thresholdChars: 4096, headChars: 2048, tailChars: 512 }
+  ```
+  约束满足 `retainRatio < thresholdRatio`；`maxTokens` 封顶摘要调用输出（默认可达 65536，会自耗预算）。经 `--dump-config --patch` 确认合并为上述值。**该 headless 补丁由 `spool sync`（`hosts/<host>/dsh/headless.cordis.patch.yml`，不在本仓库）管理；缺失才由 `headless-failover-setup.sh` 写默认。**
+- **未采用原因（遵循用户要求）**：须先**用固定历史回放证明阈值/裁剪事件/压缩后有效上下文/恢复能力且不丢关键状态**，再做少量有预算上限的真实对照。隔离基座：`dsh-upgrade-worker-smoke.py`（本地流式 fixture 模型 + 真实 headless worker + 捕获请求），可经 `--patch` 注入覆盖并观察大结果是否被裁剪/压缩。
+- 参数非"取窗口百分比"的经济策略——须据实际 token meter 与不可压缩固定上下文（工具面 ~67KB≈17k token + persona/system）联合标定；摘要请求开销与收尾预留须显式约束。**未部署、未改生产 headless 配置。**
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
