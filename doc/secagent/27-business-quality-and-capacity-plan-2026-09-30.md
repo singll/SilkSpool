@@ -2108,6 +2108,16 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **范围偏差**：最新任务目标仍为 `[假设 H2] … authz`，而 §15.128 已定**暂不做越权/双账号**；此类任务应从试点派发排除，并核查生成器是否仍产出不适用假设。
 - **待办（用户建议的三阶段，不在此轮执行）**：① 建可信基线（发布生效核验+实际提示词/配置/工具/范围核对+报告口径修正）→ ② 用固定历史回放证明压缩有效且不丢关键状态，再做少量有上限的真实对照 → ③ 已知正负样例验流程、再跑真实假设，据**完整样本**定预算（不默认 1.2M）。当前优先：**发布生效核验 + 分层上下文控制 + 有证据的任务收尾**。
 
+### 15.139 控制通道诊断与分层上下文控制起步（2026-10-10）
+
+**控制通道（维护 RPC）诊断——未修复**：本地维护客户端需 journal 里的 `dsh web: …/?token=<launchToken>` 启动行，但重启后该行**始终不再打印**（`printUrl` 默认 true、`StandardOutput=journal` 正确；`dsh-web-app` 的 `announceReady()` 因 `loader.await()` 的 `.catch(()=>{})` 静默吞错而未触达）。改用**持久签名 cookie** 绕过：cookie 由 `data/.credentials.yaml` 的 `client-connection/browser-session` 密钥（base64url 解码为 32 字节）按 `v1.<b64(json{version,authority,issuedAt,expiresAt})>.<b64(hmac)>` 派生。**自校验通过**（签名/authority/有效期）但运行中的服务对多种 authority/时效/Origin 变体一律 **401** → 服务端密钥或鉴权路径与磁盘不一致。30 分钟未决，**按约转 option 2**；未做风险性 DSH 内部改动。
+- **影响**：域 RPC 不可用，无法创建/派发/查询任务做受控实验；只读核对、隔离调用、单测、部署仍可用。
+
+**option 2 分层上下文控制——层 1 起步（已上线）**：
+- `fbc3b9f` change `20261010-layer1-manifestlist`：`exec_manifest_list` 无 `name` 时只回**精简视图**（名称/阶段/风险/参数名，`meta.compact`+note），按 `name` 精确查询才回全量 schema。此前无过滤列表逐工具展开全量参数产生 **~16KB** 结果、随对话历史累积。全域 828/828。
+- **待做（层 1 其余）**：`know.exp_search`(14.6KB)/`kb_search`(15.4KB) 的 `scenario/takeaway` 正文投影为摘要+引用（`exp_get`/`kb_read` 取全文）——须先核对既有测试对字段的依赖，谨慎改。
+- **待做（层 2）**：headless worker 的 `compaction-basic`/`tool-result-pruner` 参数（`thresholdRatio` 与 `retainRatio/retainTokens` 联合约束、`headroomTokens`/`maxTokens`、**摘要请求开销上限**与收尾预留），须先定位 headless 生效配置链（`bundles → headless/cordis.patch.yml → --patch`）并在**隔离 worker 配置**用固定历史回放验证，不改共享 web 配置。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
