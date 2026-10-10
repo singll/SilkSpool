@@ -2136,7 +2136,13 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **机制厘清（读源码，纠正此前"误读"）**：`tool-result-pruner.pruneSession()` **无自身压力门控**，但对 `tool/result` 内容按阈值裁剪；其**调用者 `compaction-basic` 有门控**——仅当 `measurement.totalTokens ≥ thresholdTokens`（=`contextWindow×thresholdRatio`）**或 context-overflow** 时才调用 `pruner.pruneSession()`。默认 `thresholdRatio 0.8`×1M=838k → **永不触发** → 结果不被裁（此前从会话日志看到的 14.6/16KB 是**原件**；模型面裁剪与否取决于是否触发）。→ **激活裁剪/压缩的关键杠杆是降低 `compaction-basic.thresholdRatio`**（`tool-result-pruner.thresholdChars` 是次级，决定裁到多小）。
 - **节点级验证（真实模块，无 worker/无 LLM）**：直接调用 `dsh-compaction-tool-result-pruner` 的 `pruneContent`（原型方法 + 我的覆盖）——14560 字符输入：默认配置→**5159**（4096+marker+1024）、覆盖 `thresholdChars:4096`→**2599**（2048+marker+512），均含 `PRUNE_MARKER`，且该插件**引用被裁节点（`compaction/prune` 影子事件 + shadowedSeqs），完整事件可回放恢复，只替换 content**——即**不丢证据、可恢复**。
 - **结论**：裁剪逻辑与覆盖正确（已验证）；激活靠降 `compaction-basic.thresholdRatio`。候选 `thresholdRatio:0.08`（激活点 ≈84k token）可 `--dump-config` 合并（已验证）。
-- **未采用/待办**：完整**端到端 worker 回放**需在**隔离副本**（`dsh-upgrade-worker-smoke.py` 要求 `isolation.json` 隔离启动器，不得在生产 csai 直接跑——会改 headless settings/profile、起 worker）进行；参数非"取窗口百分比"，须据实际 token meter 与固定上下文（工具面 ~67KB≈17k token + persona/system）+ 摘要开销上限 + 收尾预留联合标定。**当前未部署、未改生产 headless 配置。**
+- **采用 + 固定历史回放验证（2026-10-10，已部署 + 已验证）**：
+  - **采用**：把候选覆盖写入 sync 源 `hosts/csai/dsh/headless.cordis.patch.yml` 并同步到 csai 已部署 `data/profiles/headless/cordis.patch.yml`（headless-only）；`dsh --profile headless --dump-config` 确认生效（`thresholdRatio:0.08` 等）。**仅 headless worker 受影响，web 会话不变。**
+  - **回放（隔离、无外网 LLM）**：本地 fixture 流式模型（`contextWindow:1048576`，与生产同口径）+ 真实 headless worker（`--patch` 指向 fixture + 关后台插件），任务连续 6 轮各 `read` 同一大文件（每结果 ~58037 字符）。对照两配置：
+    - **A（覆盖 0.08）**：req3–5 累积到 total ~196k 字符；**req6 触发裁剪**——已累积结果全被裁到 **2658** 字符、total 回落到 32725；worker 正常完成（exit 0）。
+    - **B（对照 0.8）**：结果全程 58037、total 线性膨胀到 **371116**，**无裁剪**。
+  - **结论**：覆盖**确实激活裁剪**并**约束上下文（平台化/回落）**；裁剪只替换 content 且引用被裁节点（可回放恢复），**不丢证据/状态**，worker 正常收尾。机制验证通过。
+  - **边界/待办**：回放用重复大 `read` 构造；真实任务的收益取决于其工具结果体量与到达阈值的时机——真实对照（有预算上限、含收尾预留）仍待，且需修复维护 RPC 控制通道以便派单与观测。参数（`thresholdRatio 0.08`/`retainRatio 0.02`/`headroomTokens`/`maxTokens 8192`）为首版，后续据实际 token meter 标定。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
