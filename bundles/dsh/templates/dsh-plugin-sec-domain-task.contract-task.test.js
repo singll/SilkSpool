@@ -565,6 +565,27 @@ test('invariant: intrusive interval 被拒', async () => {
   assert.equal(r.error.code, 'E_TASK_INTRUSIVE_INTERVAL')
 })
 
+test('invariant: 否定语境的 intrusive 词不误触发 interval 拒绝', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.dispatch('task', 'create', {
+    program_id: 'test-src',
+    objective: '仅匿名 GET 被动探测 cAdvisor；禁止越权/双账号与 intrusive；严格不出 scope',
+    schedule: { kind: 'interval', every_seconds: 86400 },
+  }, { actor: 'model' })
+  assert.equal(r.ok, true, `禁止语境不应命中间隔拒绝：${r.error?.message || ''}`)
+})
+
+test('invariant: 禁止写入后另起子句仍有 intrusive 意图则仍拒', async () => {
+  const { bus } = makeEnv()
+  const r = await bus.dispatch('task', 'create', {
+    program_id: 'test-src',
+    objective: '不得越权；对目标主动利用 getshell',
+    schedule: { kind: 'interval', every_seconds: 86400 },
+  }, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_TASK_INTRUSIVE_INTERVAL')
+})
+
 test('invariant: program 缺失且无 cwd → E_TASK_PROGRAM_UNRESOLVED', async () => {
   const { bus } = makeEnv()
   const r = await bus.dispatch('task', 'create', { objective: '无归属' }, { actor: 'model' })

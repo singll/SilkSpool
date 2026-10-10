@@ -145,6 +145,18 @@ const SCHEDULER_TICK_MS = 60000
 const SCHEDULER_TASK_TIMEOUT_SEC = 3600
 const WORKER_DEDUPE_WINDOW_MS = 30 * 60 * 1000
 const INTRUSIVE_WORDS = /(intrusive|主动利用|getshell|写入|破坏性)/i
+// 否定/禁止语境整句豁免：objective 里「禁止 … intrusive」「不得写入」「避免破坏性」等是在声明红线，
+// 不得被关键词启发式误判为 intrusive 目标（否则周期任务被 E_TASK_INTRUSIVE_INTERVAL 误拒）。
+const NEGATION_CONTEXT = /(禁止|严禁|不得|勿|不要|避免|杜绝|禁用|不可|不做|no\b|not\b|avoid|forbid|without)/i
+function hasIntrusiveIntent(objective) {
+  const text = String(objective || '')
+  if (!text) return false
+  for (const clause of text.split(/[；;，,。.！!\n]/)) {
+    if (NEGATION_CONTEXT.test(clause)) continue
+    if (INTRUSIVE_WORDS.test(clause)) return true
+  }
+  return false
+}
 
 // ---------------------------------------------------------------------------
 // manifest（05-task §1.2/§1.4/§1.5 的机器形态）
@@ -2352,7 +2364,7 @@ function makeHandlers(opts) {
     },
     intrusiveInterval: async (args, repo) => {
       const s = args.schedule
-      if (s && String(s.kind) === 'interval' && INTRUSIVE_WORDS.test(String(args.objective || ''))) {
+      if (s && String(s.kind) === 'interval' && hasIntrusiveIntent(args.objective)) {
         return { code: 'E_TASK_INTRUSIVE_INTERVAL', message: 'intrusive 级目标禁止 interval', hint: '改用 once 单次执行，或拆出被动采集部分做周期任务', retryable: false }
       }
       return null
