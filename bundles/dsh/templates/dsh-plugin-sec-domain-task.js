@@ -189,6 +189,14 @@ export const TASK_MANIFEST = {
       idempotent: 'none', events: [], invariants: [], timeout_ms: 60000,
       agent_note: '（内部）每批最多三条假设转为任务；任务创建与队列确认同事务，能力/授权/预算失败保留待办并延后。', deprecated: false,
     },
+    // 27 WP05/H3：业务关系→H3 语义假设生成器（引用真实知识卡；无匹配卡不伪造，原创走 H2/H1）。
+    task_h3_enqueue: {
+      actor: ['reactor', 'model', 'dashboard', 'system'],
+      schema: schema({ program_id: str({ minLength: 1 }), host: str({ minLength: 1 }), request_id: str({ minLength: 1 }),
+        path: str({ default: '' }), card_ref: str({ default: '' }), vuln_class: str({ default: '' }), hypothesis: str({ default: '' }) }, ['program_id', 'host', 'request_id']),
+      idempotent: 'none', events: [], invariants: [], timeout_ms: 60000,
+      agent_note: '（27 WP05/H3）从带业务关系（主体/对象/动作）的请求观测派生 H3 语义假设并入队；必须引用真实知识卡（显式 card_ref 或按动作/路径检索适用卡），无匹配卡不伪造（返回 no_applicable_card）。', deprecated: false,
+    },
     task_create: {
       actor: ['model', 'dashboard', 'script', 'approval', 'system', 'reactor'],
       schema: schema({
@@ -2593,6 +2601,38 @@ function makeHandlers(opts) {
       const drafts = [...h2, ...h1]
       const added = repo.enqueueHypotheses(drafts)
       return { data: { added, total: drafts.length, h2: h2.length, h1: h1.length }, after: { added } }
+    },
+
+    // 27 WP05/H3：业务关系→H3 语义假设生成器。主体/对象/动作取自请求观测；必须引用真实知识卡
+    // （显式 card_ref 或按动作/路径检索适用卡），无匹配卡不伪造（返回 no_applicable_card）。
+    task_h3_enqueue: async (args, repo) => {
+      const r = await queryRef?.('endpoint', 'request_get', { request_id: args.request_id }, { actor: 'reactor' })
+      if (!r?.ok || !r.data) throwErr(r?.error?.code || 'E_NOT_FOUND', '请求观测不可读取', null, true)
+      const obs = r.data
+      if (obs.program_id !== args.program_id || obs.host !== args.host) throwErr('E_INVARIANT', '观测与目标项目/主机不一致', null, false)
+      const subject = String(obs.subject_ref || '').trim()
+      const objects = Array.isArray(obs.object_refs) ? obs.object_refs.filter(Boolean) : []
+      const action = String(obs.action || '').trim()
+      if (!subject || !objects.length) return { data: { added: 0, reason: 'no_business_relation', request_id: args.request_id }, after: { added: 0 } }
+      const path = obs.path || args.path || ''
+      const cls = String(args.vuln_class || inferVulnClass(`${action} ${path}`) || 'authz')
+      let cardRef = String(args.card_ref || '').trim()
+      if (!cardRef && queryRef) {
+        try {
+          const s = await queryRef('know', 'exp_search', { q: `${action} ${path}`.trim(), limit: 5 }, { actor: 'reactor' })
+          const cards = (s?.rows || s?.data?.rows || []).filter((c) => c && c.id != null && String(c.kind) !== 'playbook')
+          if (cards.length) cardRef = String(cards[0].id)
+        } catch { /* know 不可用：无匹配卡则不产 H3 */ }
+      }
+      if (!cardRef) return { data: { added: 0, reason: 'no_applicable_card', request_id: args.request_id }, after: { added: 0 } }
+      const hypothesis = String(args.hypothesis || '').trim()
+        || `主体「${subject}」经 ${obs.method || 'GET'} ${path} 对对象「${objects[0]}」执行「${action || '操作'}」，可能违反经验卡 #${cardRef} 所述适用边界（业务关系/状态校验）`
+      const draft = { program_id: args.program_id, kind: 'hypothesis', host: args.host, path, method: obs.method || 'GET',
+        request_id: args.request_id, vuln_class: cls, level: 'H3',
+        h3: { card_refs: [cardRef], vuln_class: cls, hypothesis },
+        strategy_key: `h3|${args.host}|${path}|${cls}|${cardRef}|h3-v1` }
+      const added = repo.enqueueHypotheses([draft])
+      return { data: { added, card_ref: cardRef, vuln_class: cls, request_id: args.request_id }, after: { added } }
     },
 
     task_hypotheses_dispatch: async (args, repo, ctx) => {

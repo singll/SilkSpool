@@ -755,7 +755,7 @@ export const KNOW_MANIFEST = {
   },
   queries: {
     exp_search: {
-      actor: ['model', 'dashboard', 'human'],
+      actor: ['model', 'dashboard', 'human', 'reactor'],
       params: schema({
         q: str({ default: '' }),
         tags: { type: 'array', items: { type: 'string' } },

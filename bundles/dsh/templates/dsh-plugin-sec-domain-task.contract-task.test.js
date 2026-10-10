@@ -311,6 +311,42 @@ test('27 WP05 C12: H3 卡片引用在 know 可用时须解析为真实卡（非�
   assert.equal(goodVc.ok, true, goodVc.error?.message)
 })
 
+test('27 WP05 H3: 业务关系观测派生 H3（引用检索到的真实卡；无关系/无卡不伪造）', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const mkStub = (domain, queries, handlers) => ({
+    manifest: { domain, version: 1, service: `secDomain.${domain}`, description: '桩', owns: { tables: [], files: [] }, commands: {}, queries, events: {}, subscribes: {}, backend: 'repository-v1' },
+    handlers: { commands: {}, queries: handlers, invariants: {}, subscribers: {} },
+    backend: { name: 'stub', capabilities: {}, factory: () => ({}) },
+  })
+  const qprops = { type: 'object', additionalProperties: false, properties: { request_id: { type: 'string' }, q: { type: 'string' }, limit: { type: 'integer' } } }
+  const endpointStub = mkStub('endpoint', { request_get: { actor: ['reactor', 'model', 'dashboard', 'human'], params: qprops, agent_note: '桩' } }, {
+    request_get: async (a) => {
+      if (a.request_id === 'req-rel-1') return { request_id: 'req-rel-1', program_id: 'test-src', host: 'h3.example.com', path: '/orders/1', method: 'POST', subject_ref: 'user:1', object_refs: ['order:1001'], action: 'cancel', evidence_state: 'intact' }
+      if (a.request_id === 'req-norel') return { request_id: 'req-norel', program_id: 'test-src', host: 'h3.example.com', path: '/page', method: 'GET', evidence_state: 'intact' }
+      const e = new Error('nf'); e.code = 'E_NOT_FOUND'; throw e
+    },
+  })
+  const knowStub = mkStub('know', { exp_search: { actor: ['reactor', 'model', 'dashboard', 'human'], params: qprops, agent_note: '桩' } }, {
+    exp_search: async () => ({ rows: [{ id: 7, kind: 'card', scenario: '业务状态校验' }], total: 1 }),
+  })
+  assert.equal(bus.registry.register(endpointStub).ok, true)
+  assert.equal(bus.registry.register(knowStub).ok, true)
+  const r = await bus.dispatch('task', 'h3_enqueue', { program_id: 'test-src', host: 'h3.example.com', request_id: 'req-rel-1' }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  assert.equal(r.data.added, 1)
+  assert.equal(r.data.card_ref, '7')
+  const drafts = bus._internal.db().prepare('SELECT draft FROM hypothesis_queue').all().map((x) => JSON.parse(x.draft))
+  assert.ok(drafts.some((d) => d.level === 'H3' && d.h3?.card_refs?.[0] === '7'), '应入队 H3 且引用真实卡')
+  // 重复入队按稳定 strategy_key 幂等
+  const again = await bus.dispatch('task', 'h3_enqueue', { program_id: 'test-src', host: 'h3.example.com', request_id: 'req-rel-1' }, { actor: 'model' })
+  assert.equal(again.data.added, 0)
+  // 无业务关系不产 H3
+  const norel = await bus.dispatch('task', 'h3_enqueue', { program_id: 'test-src', host: 'h3.example.com', request_id: 'req-norel' }, { actor: 'model' })
+  assert.equal(norel.data.added, 0)
+  assert.equal(norel.data.reason, 'no_business_relation')
+})
+
 test('27 WP05: endpoint 查询失败保留事件重试，不伪装无参数已处理', async () => {
   const { bus, domain } = makeEnv()
   // 有数值参数 → IDOR + XSS + SQLi（≤3 条）
