@@ -1420,6 +1420,19 @@ test('22 C25/INV-C5/C7: campaign_dispatch 经唯一派生通道落子任务；in
   assert.equal(dd.error.code, 'E_CAMPAIGN_STATE')
 })
 
+test('27 试点: 派生按主机名匹配 scope，非默认端口 host 不被误判越界', async () => {
+  const { bus } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'port', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const d = await bus.dispatch('task', 'campaign_dispatch', {
+    campaign_id: cid,
+    drafts: [{ kind: 'hypothesis', host: 'a.example.com:8080', path: '/x', vuln_class: 'idor', param: 'id', level: 'H2', strategy_key: 'a.example.com:8080|/x|id|idor' }],
+  }, { actor: 'model' })
+  assert.equal(d.ok, true, d.error?.message)
+  assert.equal(d.data.derived, 1, 'host:port 应能按主机名通过 scope 校验（剥离端口）')
+})
+
 test('22 C26/INV-C3/C8: campaign_record_decision 证据铁律 + 一任务一验收', async () => {
   const { bus } = makeEnv()
   const c = await bus.dispatch('task', 'campaign_create', { name: 'rev', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })

@@ -1096,10 +1096,18 @@ function makeHandlers(opts) {
     }
     return programs
   }
+  // 27 试点：授权按主机名（不含端口）。覆盖缺口/端点 host 常带非默认端口（如 host:7001），
+  // 与 scope 模式（bare host）比对前须剥离端口，否则非默认端口目标被误判越界、全量草稿被丢。
+  function stripHostPort(host) {
+    let h = String(host || '').trim().toLowerCase()
+    if (h.startsWith('[')) { const i = h.indexOf(']'); return i > 0 ? h.slice(1, i) : h } // 括号 IPv6
+    const i = h.lastIndexOf(':')
+    return i > 0 && h.indexOf(':') === i ? h.slice(0, i) : h // 仅剥离单个 :port（裸 IPv6 保留）
+  }
   function hostInPatterns(host, patterns) {
-    const h = String(host || '').trim().toLowerCase()
+    const h = stripHostPort(host)
     for (const p of patterns) {
-      const bare = String(p).replace(/^\*\./, '')
+      const bare = stripHostPort(String(p).replace(/^\*\./, ''))
       if (!bare) continue
       if (bare === h || h.endsWith('.' + bare)) return true
     }
