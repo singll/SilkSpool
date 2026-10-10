@@ -2144,6 +2144,17 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
   - **结论**：覆盖**确实激活裁剪**并**约束上下文（平台化/回落）**；裁剪只替换 content 且引用被裁节点（可回放恢复），**不丢证据/状态**，worker 正常收尾。机制验证通过。
   - **边界/待办**：回放用重复大 `read` 构造；真实任务的收益取决于其工具结果体量与到达阈值的时机——真实对照（有预算上限、含收尾预留）仍待，且需修复维护 RPC 控制通道以便派单与观测。参数（`thresholdRatio 0.08`/`retainRatio 0.02`/`headroomTokens`/`maxTokens 8192`）为首版，后续据实际 token meter 标定。
 
+### 15.141 web UI 「工作区不显示会话」根因：hmr chokidar 被 root 备份文件 EACCES 卡死（2026-10-10，已修复）
+
+**症状**：约 10:52 起，csai web UI 不再打印 `dsh web: …?token=` 启动行；重启后 3080/3081 一律 401、工作区加载不出任何会话。§15.139「控制通道未修复」实为**同因**（非 DSH 内部 bug）。
+
+**根因（运行时插桩确证）**：`@deepseek-ai/dsh-hmr`（`[Service.init]`）会 chokidar watch profile 补丁文件所在目录（`data/profiles/web`、`data`，`depth:0`）。11:13 事故回滚时在 `data/profiles/web/` 留下 **root:root 0600** 的 `cordis.patch.yml.bak-20261010111317`；chokidar 对该文件 `EACCES` → 永不 `ready` → `watchConfig()` 挂起 → `hmr` fiber 停在未激活态且 `fiber.inertia` 永不 settle → `loader.await()` 不返回 → `boot()` 卡在 `auditStartupEntries` 之前、`web-app` 的 `announceReady()` 永不执行。故**无 token、无警告、无 crash**，服务「active」但半初始化。
+- 关键证据：`loader.await()` 的 `.then` 从不触发（`DBG4-SETTLED-RESOLVED` 缺失）；`hmr` entry `state≠2`、`hasInertia=true`、`inject:[timer,loader]` 均存在；`watchConfig` 停在 `await ready.promise`；直接跑 chokidar 复现 `EACCES: … cordis.patch.yml.bak-20261010111317`；移除该文件后 chokidar 立即 `READY`，token 行恢复打印、`NRestarts=0`。
+
+**修复（生产已执行）**：把该孤儿备份移出被 watch 目录（`data/profiles/web/` → `data/backups/web-cordis.patch.yml.bak-20261010111317`，chown silkspool）。无需改 DSH/插件源码，无数据变更。
+
+**纪律**：profile 目录（`data/profiles/<profile>/`）是 hmr 的 watch 范围，**任何备份/临时文件不得落在此目录**（尤其 owner/权限与运行时用户不一致会触发 chokidar `EACCES` 挂起）。回滚用 `cp 覆盖` 原地原子替换即可，备份放 `data/backups/`。`hmr` 停摆是**静默**故障（`.catch(()=>{})` + 卡在 loader settle 前），健康检查须包含「最新 `dsh web:` token 行存在 + loader settle」而非仅 `systemctl is-active`。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
