@@ -2068,6 +2068,20 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **生效核验**（生产 RPC）：`vuln.root_causes` 返回 ok（total 500、rows 50）；`task.h3_enqueue` 已注册（bogus request_id → `E_NOT_FOUND`，非 `E_BUS_VERB_UNKNOWN`）；`ledger.coverage_gaps` 返回 ok；`bus.status` 370ms、`dashboard.stats` 21ms、无 running session/worker。
 - **边界**：不改 Campaign（全 paused，另会话处理浏览器/代理）；不宣称真实漏洞产出/学习收益。
 
+### 15.137 WP05/WP12 真实业务输入试点：vulhub L2 闭环（2026-10-10，进行中，阻塞于 worker 上下文）
+
+用户授权在 scope 内跑「知识驱动语义闭环」真实业务输入。以自托管靶标 `vulhub`（`vulhub.singll.net`，WebLogic 7001/8080/8090 等）做首个受控试点，全程未产生 finding（未伪造）。
+
+- **egress**（`dc70030`/`e5e83bd`）：`exec.http_request` 目标解析为已授权保留/内网地址、宿主用部署级默认池（未程序化配置 `opts.egressProxy`）且调用方未指定出口时自动直连。上线 change `20261010-pilot-egress-direct-2`；生产验证不带 `proxy` 打 7001 → `observed 404`，显式 `default` 仍走池。
+- **scope 端口**（`75c1664`）：覆盖缺口 host 带非默认端口（`host:7001`）被派生 scope 校验误判越界致全量草稿丢弃；`hostInPatterns` 比对前剥离端口。上线 `20261010-pilot-scope-port`；L2 tick 由 0→5 派生。
+- **L2 闭环**：`vulhub-pilot`(campaign 4) 经 `campaign-autonomy` 审批升 L2。观察：`campaign_pause`/`resume` 为 `auto` 幂等键（按 campaign_id），重复调用会 **replay 不执行**——须传显式 `idempotency_key` 才能重跑；失败率会 L2→L1 自动降级。
+- **worker 阻塞**（`64d08bd` 已上线 `20261010-pilot-worker-face-budget`）：worker 实执行但 `E_WORKER_BUDGET_EXHAUSTED`：
+  - 收窄 `PHASE_DOMAINS.vuln` 工具面（`PHASE_EXCLUDE_DOMAINS` 剔除 ledger/approval/report，保留 bus/proxy）：工具数 223→200，tool_bytes 125→112KB（**降幅有限**，因 task 59/know 60/exec 23 等 worker 必需域占大头）。
+  - campaign 派生任务单任务预算 150k→**400k**（`campaign.policy.task_budget_tokens` 可覆盖）：轮次 2→6，仍耗尽。
+  - 具体：每轮输入 ~41–49k token（tool_bytes ~112KB + history ~112KB + message ~33–49KB），模型输出极小（~83 token/轮），6 轮未收敛即触顶。**新失败原因仍是预算耗尽**（`dsh-bill: sessions in inactive context` 为伴随噪声）。
+- **结论**：域粒度裁剪无效；瓶颈是每轮 40k+ 输入的上下文（工具面+历史）与模型未收敛。需 **verb 级工具面收敛**（know/task 仅暴露 worker 面向动词）、**persona/历史瘦身**，或改用更适合工具编排的模型。单任务预算再加也治标不治本（每轮 45k）。
+- 本试点累计 ~1.5M token，无 finding；campaign 4 已暂停、autonomy 1，无在飞。**未关账**。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
