@@ -2083,6 +2083,12 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - 本试点累计 ~1.5M token，无 finding；campaign 4 已暂停、autonomy 1，无在飞。**未关账**。
 - **模型诊断（2026-10-10，读 worker 会话转录）**：worker 用 `pool-secagent-heavy`（Bellkeeper 组，主路由 `opencode-go/deepseek-v4.1-flash` w8）。转录显示模型**正常工作**：按纪律经 `skill` 加载 sec-verification/sec-pipeline/sec-runtime-discipline、执行 `fact_search`/`exp_search`/`kb_search` 三步检索，6 步共 12 次工具调用（单轮输出 ~83 token 只是助手文本+紧凑 tool-call，非退化）。**「~83 token/轮」非异常，模型适合工具编排；瓶颈不是模型**，而是每轮 ~45k 输入的上下文（工具 schema ~112KB + 历史 ~112KB）使 400k 预算只够 ~6 步，尚在开局准备即触顶。→ 应走 **verb 级工具面收敛 + persona/历史瘦身**（选项 1+2），或大幅提高单任务预算（~800k+）作权宜。
 
+- **选项 1+2 实施与验证（2026-10-10，已上线）**：
+  - `c0f9d8d`（bus+host-compat）**verb 级工具面收敛**：`WORKER_TOOL_VERBS` 白名单，headless worker 仅投影 worker 面向动词（know 60→~17、task 59→6、exec 23→10 …）→ **工具数 200→120、tool_bytes 112→67KB**。调度提示增「纪律已内联，避免重复加载大块技能；大响应走 grep/page_result」。
+  - `39d6f0f`（exec+task）`exec_http_result` 大正文截断（>8KB 只回 8KB + `body_truncated`，签封原件不变）+ campaign 单任务预算默认 600k。
+  - **效果**：worker 现**真实推进闭环**——加载技能→三步检索→scope→`exec_http_request` 差分探测（如发现 `?id=1` 与 `/` 响应相同、8080 探到 Shiro），非退化。但**仍未跑完**：600k（11 轮）/700k（14 轮）均 `E_WORKER_BUDGET_EXHAUSTED`；每轮输入 52k→112k，**增幅来自多轮探测结果的累积**（非单次大正文），故正文截断收益有限。
+  - **量化结论**：一个假设的完整闭环需 ~**15–20 轮**、每轮 50–110k 输入 → ~**1–1.5M token/假设**。域/verb 工具面裁剪与正文截断是必要但不充分；真正瓶颈是**对话历史的线性累积**与**强制开局步数**（技能+三步检索约占 3 轮）。下一步可行：① 砍强制开局步（技能正文改为内联或按需、三步检索合并）；② 运行期历史压缩/淘汰（DSH 运行时能力）；③ 换更省 token 的编排模型；④ 接受 ~1M/假设的预算。**仍未关账。**
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
