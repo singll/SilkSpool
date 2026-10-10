@@ -2090,6 +2090,11 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
   - **量化结论**：一个假设的完整闭环需 ~**15–20 轮**、每轮 50–110k 输入 → ~**1–1.5M token/假设**。域/verb 工具面裁剪与正文截断是必要但不充分；真正瓶颈是**对话历史的线性累积**与**强制开局步数**（技能+三步检索约占 3 轮）。下一步可行：① 砍强制开局步（技能正文改为内联或按需、三步检索合并）；② 运行期历史压缩/淘汰（DSH 运行时能力）；③ 换更省 token 的编排模型；④ 接受 ~1M/假设的预算。**仍未关账。**
   - **选项 1（砍开局步）实测：prompt 层无效**（`1260462` host-compat）。在调度提示中**强令『严禁开局加载技能』**并降检索为按需后重跑，worker 仍于 step1 加载 3 个技能（"mandatory skills"）——**技能 frontmatter 的「强制/必须使用」压过了 persona 指令**，turn1 输入不变（52273）。技能目录（`data/skills`）为**全站共享**（web 会话同用），改其描述会波及 web 纪律，不宜轻动。**结论：选项 1 无可用的安全杠杆且收益有限（技能约省 1 轮 + 20KB/轮，占比小）；真正决定性的是预算/历史压缩。**
   - **积极面**：新工具面下 worker 已能**跑出真实业务分析**（在 `vulhub:8081` 识别出 cAdvisor，判定其容器 API 匿名可达＝信息泄露线索，并做 soft-404 基线对照），只是 ~10 轮即耗尽预算、未及登记。即**知识驱动语义闭环在机制上已端到端跑通真实输入**，开放问题是每假设的经济成本（~1–1.5M token）。
+  - **选项 2（DSH 运行期压缩）实测：未能在 headless worker 生效**（2026-10-10）。DSH 确有压缩组件（`dsh-compaction-basic` + `dsh-compaction-tool-result-pruner`，默认 `thresholdRatio=0.8`、pruner `thresholdChars=8192`），且在 web profile patch 与 agent presets 中都有挂载；但 headless worker 实测**未压缩**：每轮输入 52k→110k 线性增长，`exp_search`(14.6KB)/`kb_search`(15.4KB)/`manifest_list`(16.2KB)/`http_result`(10.7KB) 均超 8192 阈值却未被 pruner 裁剪 → **压缩组件在 headless worker 实际未加载/未触发**。默认阈值 0.8×上下文窗(1M)=838k token，远高于实际用量。
+    - 尝试给 `data/.agent-presets/*/agent.cordis.yml` 的 `compaction-basic` 加 `thresholdRatio: 0.05` → **无效果**（worker 不读该 preset 作压缩配置）。
+    - 尝试给 `data/profiles/web/cordis.patch.yml` 加同配置 → **YAML 深层嵌套缩进写坏，服务解析失败进入重启循环**；已从带时间戳备份**立即回滚并恢复**（服务 active、NRestarts 记录、无数据丢失）；随后撤回 agent-presets 的尝试性补丁，恢复干净状态。
+    - **结论**：DSH headless worker 的有效压缩配置来源未定位；改动风险高（本次已触发一次服务中断并经备份恢复）。应作为**独立的 DSH 配置专项**：先定位 headless profile 的生效配置、用规范 YAML 工具改动并做暂存验证，再上线。当前不建议继续盲试。
+  - **建议**：先在 **选项 4**（预算提到 ~1.2M）让 vulhub 跑完一个 finding 拿到端到端证据；压缩/成本优化作为后续独立专项。已核：campaign 全 paused、服务 active、vulhub 无 finding；本试点累计 ~3.2M token。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
