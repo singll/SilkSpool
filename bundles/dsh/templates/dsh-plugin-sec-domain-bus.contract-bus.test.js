@@ -1394,6 +1394,25 @@ test('27 试点: headless+phase=vuln 剔除 ledger/approval/report 工具面（�
   assert.ok(!names.includes('report_gen'), 'vuln phase 剔除 report')
 })
 
+test('27 试点: headless+phase=vuln 仅投影 worker 面向 verb（know 收敛，策展/写入剔除）', () => {
+  const dir = tmpDir()
+  const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false, profile: 'headless', phase: 'vuln' })
+  const reg = []
+  bus._internal.setToolsCtx({ tools: { register: (d) => reg.push(d) } })
+  const mk = (domain, verbs) => ({ domain, version: 1, service: `secDomain.${domain}`, description: domain, owns: { tables: [], files: [] },
+    commands: Object.fromEntries(verbs.map((v) => [v, { actor: ['model'], schema: { type: 'object', properties: {}, additionalProperties: false }, idempotent: 'none', events: [], invariants: [], timeout_ms: 60000, agent_note: 'x', deprecated: false }])),
+    queries: {}, events: {}, subscribes: {}, backend: 'repository-v1' })
+  const knowVerbs = ['exp_search', 'kb_search', 'kb_import', 'exp_store', 'know_revision_publish']
+  const rr = bus.registry.register({ manifest: mk('know', knowVerbs), handlers: Object.fromEntries(knowVerbs.map((v) => [v, async () => ({ data: {} })])), backend: { name: 'stub', capabilities: {}, factory: () => ({}) } })
+  assert.equal(rr.ok, true, `know stub 注册: ${rr.error?.message || ''}`)
+  bus._internal.registerTools({ tools: { register: (d) => reg.push(d) } })
+  const names = reg.map((t) => t.name)
+  assert.ok(names.includes('exp_search') && names.includes('kb_search'), 'worker 面向检索动词保留')
+  assert.ok(!names.includes('kb_import'), '策展/导入类剔除')
+  assert.ok(!names.includes('exp_store'), '知识写入类剔除')
+  assert.ok(!names.includes('know_revision_publish'), '发布类剔除')
+})
+
 test('挂载矩阵: headless 未声明 phase → 全量投影（fail-open）', () => {
   const dir = tmpDir()
   const bus = createBus({ dataDir: dir, dbFile: path.join(dir, 'asset-graph.db'), aliasesFile: path.join(dir, 'bus.aliases.yaml'), auditFile: path.join(dir, 'audit.jsonl'), eventsDir: path.join(dir, 'events'), sidecars: false, startDispatcherTimer: false, profile: 'headless', phase: '' })

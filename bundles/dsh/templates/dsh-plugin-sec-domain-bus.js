@@ -76,6 +76,28 @@ const PHASE_EXCLUDE_DOMAINS = {
   vuln: ['ledger', 'approval', 'report'],
 }
 
+// 27 试点：域内 verb 级 worker 面向白名单。headless worker 挂载时，仅投影这些动词（未列域 → 全量 fail-open）。
+// 目的：把 200 工具/~112KB 的工具 schema 压到 ~100 工具/~40KB，降低每轮输入 token（模型本身正常，瓶颈是上下文）。
+const WORKER_TOOL_VERBS = {
+  know: ['exp_search', 'exp_get', 'exp_rank', 'exp_list', 'hit_matrix', 'kb_search', 'kb_list', 'kb_read',
+    'rule_list', 'rule_read', 'vc_get', 'vc_list', 'know_retrieval_explain', 'exp_feedback', 'exp_record_usage',
+    'kb_record_usage', 'know_gap_record'],
+  task: ['task_get', 'task_runs', 'task_list', 'task_next', 'task_update_note', 'task_hypotheses'],
+  exec: ['exec_manifest_list', 'exec_run_cli', 'exec_grep_result', 'exec_page_result', 'exec_http_request',
+    'exec_http_result', 'exec_oracle_judge', 'exec_report_bad_proxy', 'exec_flow_triage', 'exec_plan_chain'],
+  vuln: ['vuln_register_signal', 'vuln_register_candidate', 'vuln_confirm', 'vuln_reject', 'vuln_oracle_capsule',
+    'vuln_note', 'vuln_evidence_put', 'vuln_evidence_attach', 'vuln_claim', 'vuln_release', 'vuln_attach_fgs',
+    'vuln_list', 'vuln_get', 'vuln_candidates', 'vuln_stats', 'vuln_evidence_flags', 'vuln_by_asset',
+    'vuln_dedup_check', 'vuln_root_causes'],
+  endpoint: ['endpoint_observe_request', 'endpoint_request_get', 'endpoint_requests', 'endpoint_list',
+    'endpoint_lite_page', 'endpoint_param_stats', 'endpoint_auth_summary', 'endpoint_hosts', 'endpoint_matrix'],
+  asset: ['fp_record', 'asset_list', 'asset_get', 'asset_family', 'asset_overview', 'asset_inventory', 'fp_query', 'asset_host_page'],
+  fact: ['fact_upsert', 'fact_link', 'fact_record_signal', 'fact_search', 'fact_get', 'fact_graph', 'fact_stats', 'neg_check'],
+  scope: ['cred_add', 'scope_check', 'scope_list', 'program_list', 'cred_query'],
+  bus: ['bus_status', 'bus_audit_tail'],
+  proxy: ['proxy_refresh', 'proxy_report_bad', 'proxy_stats'],
+}
+
 const log = (msg) => { try { process.stderr.write(`[sec-domain-bus] ${msg}\n`) } catch { /* noop */ } }
 
 // ---------------------------------------------------------------------------
@@ -1869,12 +1891,18 @@ const now = () => clock()
     try { const c = exec && exec.agent && exec.agent.session && exec.agent.session.header && exec.agent.session.header.cwd; return c ? String(c) : null } catch { return null }
   }
 
+  // worker 面向 verb 白名单判定：未列该域 → 全量（fail-open）；列了 → 仅白名单动词。
+  const workerVerbAllowed = (domain, full) => {
+    const allow = WORKER_TOOL_VERBS[domain]
+    return !allow || allow.includes(full)
+  }
   function registerTools(ctx) {
     if (!ctx || typeof ctx.tools?.register !== 'function') return { registered: 0 }
     let count = 0
     for (const [d, entry] of domains.entries()) {
       if (mountSubset && !mountSubset.has(d)) continue
       for (const [full, def] of Object.entries(entry.manifest.commands)) {
+        if (mountSubset && !workerVerbAllowed(d, full)) continue
         if (!Array.isArray(def.actor) || !def.actor.includes('model')) continue
         if (def.deprecated && !mountDeprecated) continue
         const verb = stripDomainPrefix(full, d)
@@ -1892,6 +1920,7 @@ const now = () => clock()
         count++
       }
       for (const [full, def] of Object.entries(entry.manifest.queries)) {
+        if (mountSubset && !workerVerbAllowed(d, full)) continue
         if (!Array.isArray(def.actor) || !def.actor.includes('model')) continue
         const name = stripDomainPrefix(full, d)
         if (registeredToolNames.has(full)) continue
