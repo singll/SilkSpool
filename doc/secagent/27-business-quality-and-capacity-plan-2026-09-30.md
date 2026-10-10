@@ -2057,6 +2057,15 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **发布**：change `20261009-e15-h3`，3 模块 6 落点（vuln/task/know 源模板+已安装插件），旧源码入 `dsh-upgrades/20261009-e15-h3/previous/`；停写→启动 2.87s；摘要一致、服务 active/NRestarts0/journal err0；`bus.status` 350ms、`stats` 20ms。
 - **未完成**：H3 业务关系**生成器**（从主体/对象请求观测自动派生 H3）与知识驱动的语义假设闭环仍待；根因聚合（同根因多 URL 计一个新增）与旧分页饥饿、TTL/配额分离部分仍待。
 
+### 15.136 WP05 H3 生成器 + 根因聚合 + 旧分页饥饿（2026-10-10，本地验收）
+
+- **H3 生成器**（`6a569ce`）：新增 `task_h3_enqueue`（task 域，actor reactor/model/dashboard）——读 `endpoint.request_get` 观测取主体/对象/动作；**显式 `card_ref` 或按动作/路径经 `know.exp_search` 选真实卡**，无匹配卡返回 `no_applicable_card`（不伪造），无业务关系返回 `no_business_relation`；确定性拼 H3 文本、稳定 `strategy_key`（重复入队幂等），入持久假设队列，经既有 `task_hypotheses_dispatch`→`derive_intent`（C12 校验卡）闭环。`exp_search` actor 补 `reactor`。
+- **根因聚合**（`cdcca8c`）：backend findings 增 `dup_of` 列（ensureCol）；`vuln_reject` verdict=dup 落库根因引用。新增只读查询 `vuln_root_causes`——按技术根因把 `status=dup` 的 finding 归入其 `dup_of` 根（带自环/环上溯保护），返回每组根/成员/证据计数，及 `independent_new`（按根因去重的新增数）、`related`（被折叠的重复数）。同根因多 URL 折为一个新增、证据全保留。
+- **旧分页饥饿**（`0d3b544`）：`ledger_coverage_gaps` 原用**全局** `gaps.length` 对比 `LEDGER_MAX_GAPS_PER_DIM`，前序维度（crawl/asset/review）可耗尽全部额度，使 vulnclass/param/auth 永久饥饿且 offset 够不到；改为**按维度独立计费**（`dimCounts`+`addGap`），支持 `SEC_LEDGER_MAX_GAPS_PER_DIM` 覆盖。
+- 验证：task 145/145（H3）、vuln 92/92（根因）、ledger 33/33（饥饿）、全域 **822/822**。
+- **TTL/配额与技术标签分离（E14/E17）**：复核确认核心已实现——`expireCandidates`/`ignoreCandidateIds` 落 `queue_hold_reason`+`queue_hold_until`（24h），`reopenHeldCandidates` 到期恢复 `new`、`reopenChangedHold` 版本/条件变化重开，保留活跃认领与正式技术记录；噪声抑制分母为**技术反证**（`technical_false_positive`/`technical_confirmed`），ignored/dup 不充当反证（§15.95/§15.111/§15.112）。**剩余**：旧积压无原因 ignored 的历史取证迁移（刻意保守，不自动翻案）与真实探索收益未做。
+- **边界**：本批尚未部署上线；不改 Campaign（全 paused）；不宣称真实漏洞产出/学习收益。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
@@ -2069,7 +2078,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 | WP02 | 受控HTTP、可信 capsule/confirm；**E03–E08 非越权弱判据已加固**（E04 基线稳定+非注入对照、E07 公开邮箱排除/公开端点降级、E05 多轮时间盲注、E06 OOB 健康+窗口、E08 file 类不借相邻 Oracle，§15.129/§15.133） | **越权/IDOR 读取链（双账号）经 §15.128 决定不做**（保留代码不验收，E02 移出）；属性重放与更多 Oracle 故障正负样例继续；禁止自报替代技术真值 |
 | WP03 | claim/run/ACK、busy补偿、在飞预留、请求usage和估算；**D04 全局请求预算（按 scope/并发注入工具 `{{rate}}`、httpx 补 `-rl`）已上线**（§15.134） | 完整fencing/多进程恢复、工具内部并发/进程外多实例与 429 退避联动、D07进程清理、F06死信/投影；最终账单及历史精确洗账不再必需 |
 | WP04 | HAR/被动捕获、正式HTTP接线、18种匿名请求及单账号5种新接口、响应前置已上线 | **双账号/登录态对照经 §15.128 决定不做**；聚焦匿名/单账号：更多适用业务模板（不用失败/空列表凑数）、method/body/对象归集、读型POST风险契约、HAR健康判定、B09参数队列执行确认 |
-| WP05 | 全量H2持久队列/事务派发/有限失败重试；**H1 指纹接线**（§15.130）；**vulnclass 条件重开**（§15.131）；**E15 同 URL 不同请求上下文保留独立观察**（§15.135）；**C12 H3 卡片引用须解析为真实卡**（§15.135） | H3 业务关系**生成器**与知识驱动语义闭环、旧分页饥饿、根因聚合（同根因多URL计一）、TTL/配额与技术标签分离 |
+| WP05 | 全量H2持久队列/事务派发/有限失败重试；**H1 指纹接线**（§15.130）；**vulnclass 条件重开**（§15.131）；**E15 同 URL 不同请求上下文保留独立观察**（§15.135）；**C12 H3 卡片引用须解析为真实卡**（§15.135）；**H3 生成器 `task_h3_enqueue`、根因聚合 `vuln_root_causes`、覆盖缺口按维独立计费**（§15.136，未上线） | TTL/配额分离核心已实现，剩余旧积压无原因 ignored 的历史取证迁移与真实探索收益；知识驱动语义闭环的真实业务输入仍待 |
 | WP06 | 47项复核队列和多批原件追溯 | 独立技术状态投影、来源计数及新证据引用；旧原件剩18项转历史未知、无新线索不重查，不计训练/技术产出，不伪判无洞 |
 | WP07 | 版本/采用/episode框架；vendor 去污、可信 attempt 去重、真 artifact 引用、撤回/重算、版本/作用域统一已在前批（§15.73–117）落地；**hit_matrix 已改读版本化 attempt 投影 `know_scores`**（§15.129） | 独立样本/真实收益归因仍待；不得据 artifact 级过渡分宣称真实收益 |
 | WP08 | 既有fact/exp/kb/rules检索 | 统一适用召回、元数据/生命周期、具体可执行方法、真实gap闭环及memcore入口契约 |
