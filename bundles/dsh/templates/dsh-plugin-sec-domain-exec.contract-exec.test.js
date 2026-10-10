@@ -554,6 +554,17 @@ test('explicit_only: 无 key 每次独立执行；同 key 同参 replay', async 
 // 5. 查询
 // ---------------------------------------------------------------------------
 
+test('27 试点层1: manifest_list 列表精简、按名全量', async () => {
+  const { bus } = makeEnv()
+  const all = await bus.query('exec', 'manifest_list', {}, { actor: 'model' })
+  assert.equal(all.compact, true, '无 name → 精简视图')
+  const row = all.rows.find((r) => r.name === 'httpx')
+  assert.ok(row && Array.isArray(row.required_params) && row.params === undefined, '精简行不含全量 params')
+  const one = await bus.query('exec', 'manifest_list', { name: 'httpx' }, { actor: 'model' })
+  assert.equal(one.compact, undefined, '按名 → 全量')
+  assert.ok(Array.isArray(one.rows[0].params), '全量行含 params')
+})
+
 test('query: grep_result / page_result / manifest_list / plan_chain', async () => {
   const { dir, dataDir, bus } = makeEnv()
   const fixture = path.join(dir, 'httpx.jsonl')

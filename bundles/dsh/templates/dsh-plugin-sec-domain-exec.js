@@ -2088,9 +2088,17 @@ function makeHandlers(opts) {
           paramMap.set(match[1], { name: match[1], required, default: required ? null : match[3] })
         }
         const params = [...paramMap.values()]
-        rows.push({ name: nm, params, timeout_sec: Math.min(Number(m.timeout) || 300, 3600), stage: m.stage || null, risk: m.risk || null, target_param: m.target_param || null, requires: m.requires || [], produces: m.produces || [], parser: m.parser || null, domain: m.domain || null, sandbox: m.sandbox !== false, deprecated_store: m.store || null })
+        const timeoutSec = Math.min(Number(m.timeout) || 300, 3600)
+        // 27 试点层1：列表默认精简（仅名称/阶段/风险/参数名）——全量 schema 逐工具展开会产生
+        // 十余 KB 结果、随历史累积挤占 worker 预算；按 name 精确查询才回全量。
+        if (args.name) {
+          rows.push({ name: nm, params, timeout_sec: timeoutSec, stage: m.stage || null, risk: m.risk || null, target_param: m.target_param || null, requires: m.requires || [], produces: m.produces || [], parser: m.parser || null, domain: m.domain || null, sandbox: m.sandbox !== false, deprecated_store: m.store || null })
+        } else {
+          rows.push({ name: nm, timeout_sec: timeoutSec, stage: m.stage || null, risk: m.risk || null, domain: m.domain || null, target_param: m.target_param || null,
+            required_params: params.filter((p) => p.required).map((p) => p.name), optional_params: params.filter((p) => !p.required).map((p) => p.name) })
+        }
       }
-      return { rows, total: rows.length }
+      return { rows, total: rows.length, ...(args.name ? {} : { meta: { compact: true, note: '精简列表；某工具全量 schema 用 exec_manifest_list({name:"<工具>"})' } }) }
     },
     // 21 号方案 §2-1：oracle 纯函数判定（零 IO；模型只能提交对照特征，判定归代码）
     // 权威读取：返回签封 HTTP 记录（含完整正文）。模型侧体量控制由压缩/裁剪层承担，
