@@ -149,6 +149,12 @@ test('oracleSqliDiff / oracleSqliTime: 内容差分与单次时延观测', () =>
   assert.equal(oracleSqliTime({ baseline_ms: 100, sleep_ms: 3000, requested_delay_ms: 5000 }).verdict, 'inconclusive')
   assert.equal(oracleSqliTime({ baseline_ms: 100, sleep_ms: 500 }).verdict, 'rejected')
 })
+test('27 WP02/E04: SQLi 布尔差分需基线稳定 + 非注入对照一致', () => {
+  const base = 'x'.repeat(500)
+  assert.equal(oracleSqliDiff({ baseline_body: base, true_body: base, false_body: 'y'.repeat(500), repeat_baseline_body: 'z'.repeat(500) }).verdict, 'inconclusive')
+  assert.equal(oracleSqliDiff({ baseline_body: base, true_body: base, false_body: 'y'.repeat(500), control_body: 'z'.repeat(500) }).verdict, 'inconclusive')
+  assert.equal(oracleSqliDiff({ baseline_body: base, true_body: base, false_body: 'y'.repeat(500), repeat_baseline_body: base, control_body: base }).verdict, 'verified')
+})
 test('oracleXssEcho: 回显仅为线索，转义/无回显是本次观测阴性', () => {
   assert.equal(oracleXssEcho({ marker: 'svx7a9c2', response_body: '<div>svx7a9c2</div>' }).verdict, 'inconclusive')
   assert.equal(oracleXssEcho({ marker: 'svx7a9c2', response_body: '<input value="svx7a9c2">' }).evidence.context, 'attribute')

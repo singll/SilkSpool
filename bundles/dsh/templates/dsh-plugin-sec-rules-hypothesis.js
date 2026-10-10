@@ -354,8 +354,16 @@ function bodyClose(a = '', b = '') {
   return same / length >= 0.9
 }
 
-export function oracleSqliDiff({ baseline_body = '', true_body = '', false_body = '' } = {}) {
+export function oracleSqliDiff({ baseline_body = '', true_body = '', false_body = '', repeat_baseline_body = '', control_body = '' } = {}) {
   if (![baseline_body, true_body, false_body].every((body) => String(body).trim())) return ok('inconclusive', '基线或布尔对照响应为空')
+  // E04：健康基线——重复基线样本须≈基线；否则页面动态，布尔差分不可信。
+  if (String(repeat_baseline_body).trim() && !bodyClose(baseline_body, repeat_baseline_body)) {
+    return ok('inconclusive', '重复基线样本与基线显著偏离——响应随请求动态变化，布尔差分不可信', { baseline_stable: false })
+  }
+  // E04：非注入对照（无副作用的良性扰动）须≈基线；否则响应随任意输入变化，差异不可归因于注入。
+  if (String(control_body).trim() && !bodyClose(baseline_body, control_body)) {
+    return ok('inconclusive', '非注入对照已偏离基线——响应随任意输入变化，差分不可归因于注入', { control_stable: false })
+  }
   const trueClose = bodyClose(baseline_body, true_body)
   const falseClose = bodyClose(baseline_body, false_body)
   if (trueClose && !falseClose) {
