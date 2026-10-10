@@ -27,12 +27,13 @@
 
 ## 二、最近进度结果
 
-### 2026-10-10 · WP05 H3 生成器 + 根因聚合 + 旧分页饥饿（本地验收，未上线）
+### 2026-10-10 · WP05 H3 生成器 + 根因聚合 + 旧分页饥饿（已上线）
 
 - **H3 生成器**（`6a569ce`）：新增 `task_h3_enqueue`——从 `endpoint` 请求观测的业务关系（主体/对象/动作）派生 H3；引用真实知识卡（显式 `card_ref` 或按动作/路径 `know.exp_search` 选卡），无匹配卡/无业务关系不伪造；稳定 `strategy_key` 幂等入队，经 `derive_intent`（C12）闭环。task 145/145。
 - **根因聚合**（`cdcca8c`）：findings 增 `dup_of` 列，`vuln_reject` verdict=dup 落根因引用；新增查询 `vuln_root_causes` 按技术根因折叠（带上溯/环保护），返回 `independent_new`/`related`，同根因多 URL 折一个新增、证据全保留。vuln 92/92。
 - **旧分页饥饿**（`0d3b544`）：`ledger_coverage_gaps` 原全局额度被前序维度耗尽致后序维度永久饥饿，改按维度独立计费（`SEC_LEDGER_MAX_GAPS_PER_DIM` 可覆盖）。ledger 33/33。
-- 全域 **822/822**；三项均**未部署上线**。TTL/配额分离核心经复核已实现（§15.112/15.95），剩余旧积压无原因 ignored 的历史取证迁移（刻意保守）与真实探索收益。详见 27 号 §15.136。
+- 全域 **822/822**；change `20261010-wp05-h3-rootcause-ledger` 快速发布（4 模块 8 落点，停写→启动 2.43s，摘要一致、服务 active/NRestarts0/journal err0）。生效核验：`vuln.root_causes` ok、`task.h3_enqueue` 已注册、`ledger.coverage_gaps` ok；bus.status 370ms/stats 21ms、无 running。详见 27 号 §15.136。
+- **TTL/配额与技术标签分离（E14/E17）经复核判为已完成**（用户 2026-10-10 确认）：核心（expireCandidates/reopenHeldCandidates/抑制分母）已实现，不作旧积压历史取证迁移。WP05 剩余仅知识驱动语义闭环的真实业务输入。
 
 ### 2026-10-09 · 非越权合批部署（已上线）
 
@@ -41,7 +42,7 @@
 - 续推 **WP02 E08/E04**（`971977d`）：file 类不再借用 `unauthz_diff`（改未注册 `file_probe` 能力缺口）；SQLi 布尔差分补健康基线稳定性与非注入对照。rules 50/50、全域 816/816。change `20261009-rules-oracle` 快速发布（1 模块 2 落点），服务 active/NRestarts0，`bus.status` 冷 1.66s/stats 19ms；见 27 号 §15.133。
 - 续推 **WP03 D04 全局请求预算**（`ab4c2d0`）：run_cli 按 scope 速率/并发注入工具 `{{rate}}`（并发×每工具 ≤ scope rate_limit_qps），httpx 清单补 `-rl`。exec 95/95、全域 817/817。change `20261009-exec-rate` 快速发布（停写→启动 2.62s）；`exec.manifest_list(httpx)` 现含 `rate`；服务 active/NRestarts0。见 27 号 §15.134。
 - 续推 **WP05 E15 + C12**（`3d97479`/`e6200f4`）：E15 同 URL 不同请求上下文（endpoint_ref：method/身份/对象）保留为独立观察；C12 H3 卡片引用须解析为真实卡（know 可用时校验）。vuln 91/91、task 144/144、全域 819/819。change `20261009-e15-h3` 快速发布（3 模块 6 落点，停写→启动 2.87s）；服务 active/NRestarts0。见 27 号 §15.135。
-- 仍待：WP02 属性重放、WP03 fencing/工具内部并发/429 退避/F06、WP05 知识驱动语义闭环真实业务输入/TTL 旧积压取证迁移、WP07 独立样本/真实收益、WP10 其余视图 unknown。WP05 的 H3 生成器/根因聚合/旧分页饥饿已完成待上线（见上）。详见 27 号 §15.128–136/§16。
+- 仍待：WP02 属性重放、WP03 fencing/工具内部并发/429 退避/F06、WP07 独立样本/真实收益、WP10 其余视图 unknown；WP05 仅剩知识驱动语义闭环的真实业务输入（H3 生成器/根因聚合/旧分页饥饿/TTL 分离均已完成，见上）。详见 27 号 §15.128–136/§16。
 
 ## 三、维护规则（通用，必须遵守）
 
