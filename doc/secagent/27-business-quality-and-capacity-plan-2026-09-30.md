@@ -2037,6 +2037,18 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - 验证：rules 50/50、全域 **816/816**。
 - **发布**：change `20261009-rules-oracle`，固定 DSH 0.1.7-rc.2，1 模块 2 落点（源模板 + 已安装插件），旧源码入 `dsh-upgrades/20261009-rules-oracle/previous/`。安装脚本记录停写→启动 **92.64s**（同期 systemd 实际 `Stopping→Deactivated` 仅 1s，92s 属宿主负载/首次停写偏长，非新代码引入）；服务 active、NRestarts0、journal err0；`bus.status` 冷 1.66s、`dashboard.stats` 19ms；`coverage_metrics.vulnclass.indeterminate_classes` 仍在。
 
+### 15.134 WP03 D04 全局请求预算（2026-10-09，已上线）
+
+**缺口**：exec 的 QPS 令牌桶只约束「工具调用次数」（每次工具启动取一个令牌），而**工具自身速率不受控**——nuclei `-rl` 默认 50、httpx 无速率上限；多 worker 并发时目标实际 QPS 可达 并发×50。
+
+**修复**（`ab4c2d0`）：
+- `exec_run_cli`：若工具模板引用 `{{rate}}` 且调用方未显式指定，注入 `max(1, floor(scope rate_limit_qps / SEC_EXEC_MAX_WORKERS))`，使「并发工具数 × 每工具速率 ≤ scope rate_limit_qps」，不再各自默认超发。
+- `seed-manifests.sh` httpx 模板补 `-rl {{rate|50}}`（此前无速率上限）；远端 `data/tools.d/httpx.yaml` 同步（`loadManifest` 每次读文件、无缓存，即时生效）。
+
+验证：exec 95/95、全域 **817/817**。发布 change `20261009-exec-rate`，1 模块 2 落点，停写→启动 2.62s；`exec.manifest_list(httpx)` 现含 `rate` 参数；服务 active/NRestarts0；`bus.status` 298ms、`stats` 21ms。
+
+**未完成**：工具内部 `-c/-threads` 并发、进程外多实例、429 退避联动、以及「工具调用≤X/s ≠ 目标请求≤X QPS」的完整逐请求计量仍待。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
@@ -2047,7 +2059,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 |---|---|---|
 | WP01 | 目标/Program/派发/认领、候选30及ledger200补页；**D09 的两个子项（累计硬上限 + 预算审批人工化，含缺额任务延后/提请口径统一）已上线**（§15.127，change `20261009-d09-review-fix`） | **D09 未整项完成**：无有效进展停止条件、扩容依据业务收益仍未做；完整候选轮转、C3按真实剩余量处置亦待办；C2/C3 已超累计额度，恢复须经人批新额度，勿恢复无界运行 |
 | WP02 | 受控HTTP、可信 capsule/confirm；**E03–E08 非越权弱判据已加固**（E04 基线稳定+非注入对照、E07 公开邮箱排除/公开端点降级、E05 多轮时间盲注、E06 OOB 健康+窗口、E08 file 类不借相邻 Oracle，§15.129/§15.133） | **越权/IDOR 读取链（双账号）经 §15.128 决定不做**（保留代码不验收，E02 移出）；属性重放与更多 Oracle 故障正负样例继续；禁止自报替代技术真值 |
-| WP03 | claim/run/ACK、busy补偿、在飞预留、请求usage和估算 | 完整fencing/多进程恢复、共享请求预算/429退避、D07进程清理、F06死信/投影；最终账单及历史精确洗账不再必需 |
+| WP03 | claim/run/ACK、busy补偿、在飞预留、请求usage和估算；**D04 全局请求预算（按 scope/并发注入工具 `{{rate}}`、httpx 补 `-rl`）已上线**（§15.134） | 完整fencing/多进程恢复、工具内部并发/进程外多实例与 429 退避联动、D07进程清理、F06死信/投影；最终账单及历史精确洗账不再必需 |
 | WP04 | HAR/被动捕获、正式HTTP接线、18种匿名请求及单账号5种新接口、响应前置已上线 | **双账号/登录态对照经 §15.128 决定不做**；聚焦匿名/单账号：更多适用业务模板（不用失败/空列表凑数）、method/body/对象归集、读型POST风险契约、HAR健康判定、B09参数队列执行确认 |
 | WP05 | 全量H2持久队列/事务派发/有限失败重试；**H1 指纹→路径探测假设已接线**（§15.130）；**vulnclass unknown/inconclusive 条件重开**（§15.131，仅 verified/rejected 才关闭） | H3 业务关系、旧分页饥饿、独立观察/根因去重、TTL/配额与技术标签分离 |
 | WP06 | 47项复核队列和多批原件追溯 | 独立技术状态投影、来源计数及新证据引用；旧原件剩18项转历史未知、无新线索不重查，不计训练/技术产出，不伪判无洞 |
