@@ -2213,6 +2213,13 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **跨进程共享令牌桶（新增，`7e08774`）**：`qpsBucket` 原为进程内，多 worker 进程各自按 scope 全速出站会聚合超发。改为 `dataDir/.exec-qps.json` 共享桶——`O_EXCL` 锁文件 + 陈旧锁(>2s)窃取做读-改-写，聚合出站 ≤ scope `rate_limit_qps`；不可加锁则退回进程内桶（fail-open）。契约测试：scope QPS=1 → 串行请求按桶间隔、状态文件创建。
 - **仍未办（独立增强，非本轮可廉价闭合）**：`run_cli` 侧 429 联动（工具自吞 429，宿主不可见）；工具内部并发的**逐请求计量**（当前为上限注入 + 共享桶聚合限速，非逐请求计数）。
 
+### 15.147 WP12 端到端对账 + finding→task 归属补全（2026-10-11）
+
+- **样本全链对账** finding #1435（cAdvisor 未授权，CWE-306）：请求（exec runs `rmv3dqph…`/`rmv3d8wh…`）→ 信号（#1435 `status=new`，source agent）→ **技术结论缺失**（`vuln.technical_verdict(1435)=null`，无独立验证器）→ **知识回流未发生**（`learning_episodes` outcome=`inconclusive`：task_done / http_200_no_verdict）。
+- **断链 ①（已修，`15df8d6`）**：`finding.task_id=NULL`——worker 未传 `task_id` 且 `ctx.task_id` 未注入 → 断「任务→假设→实验→结论」归因（L02）。修复：`vuln_register_signal`/`register_candidate` 增 `resolveTaskId`——按 `ctx.session_id` 经 `task.active_by_session` 反查运行中任务补全 `task_id`（best-effort，失败不阻断）。契约测试覆盖。
+- **断链 ②（外部契约项，未修）**：无可信技术结论 → 无知识收益。信息泄露类无 owner-only 验证器（能力缺口，severity 亦被评级闸降级），须 WP02 验证契约或 WP12 独立审校通道；不伪造。
+- **发布坑（重申 §15.138 落点纪律）**：本轮仅推插件源码、未同步 root 测试文件 → 远端旧测试（90 项）与当前插件不匹配，E14 假失败；同步 `*.contract-vuln.test.js` 后 93/93。**根 `dsh-plugin-*.js` 与对应 `*.test.js` 必须一并同步。**
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
@@ -2232,7 +2239,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 | WP09 | 有界候选执行、7类授权行为/故障新对象holdout、无卡/删策略对照、成本和固定报告引用已生产验收 | 其它漏洞族/技术栈、真正未见行为holdout、实际方法采用与真实发现收益；目前仅受控授权协议，不作全项完成 |
 | WP10 | kbList schema/完整分页、证据/阻塞可见；**stats 来源失败时 unknown 以 null 呈现（不再显示 0）**（§15.129）；**维护 RPC 只读验证：技术统计/unknown 各视图 ok、unknown=null 无缺陷**（§15.145） | 真实技术统计/unknown 显示的其余视图与实际 RPC 验证继续 |
 | WP11 | 已有索引/FTS基础；**生产只读实测：热态主查询全部 <~100ms，仅首调冷启动偏高（asset.overview 1.85s 等），无持续瓶颈 → 实测退出、不做无依据虚拟化**（§15.129） | 后续仅在测到新瓶颈时再优化 |
-| WP12 | 本地链路与生产只读验收；**§15.142：调度 worker 首个真实 finding 已登记（`#1435` cAdvisor 未授权，single sample）** | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填；finding 仅到 `new`，可信判定/知识回流与多样本预算标定仍待 |
+| WP12 | 本地链路与生产只读验收；**§15.142：调度 worker 首个真实 finding 已登记（`#1435` cAdvisor 未授权，single sample）**；**§15.147：finding→task 归属补全（`15df8d6`）+ 端到端对账** | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填；finding 仅到 `new`，**可信判定/知识回流**（#1435 断链②）与多样本预算标定仍待 |
 
 ## 17. 原子域合规复核（2026-10-09，只读）
 
