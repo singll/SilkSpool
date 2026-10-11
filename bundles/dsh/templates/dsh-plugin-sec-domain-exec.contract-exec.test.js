@@ -399,6 +399,21 @@ test('27 WP03 D04: run_cli 按 scope 速率/并发注入 {{rate}}，显式传参
   assert.match(cmd2, /-rl 30\b/, '显式 rate 不得被覆盖')
 })
 
+test('27 WP03 D04: run_cli 注入 {{threads}}/{{concurrency}}（工具内部并发 ≤ scope）', async t => {
+  const { dataDir, bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  writeManifest(dataDir, 'conc-tool', 'name: conc-tool\nbinary: /bin/echo\nstage: vuln\nrisk: passive\nsandbox: false\ntimeout: 30\ntarget_param: target\nargs_template: "-u {{target}} -t {{threads|20}} -c {{concurrency|20}}"\n')
+  const r = await bus.dispatch('exec', 'run_cli', { tool: 'conc-tool', params: { target: 'a.example.com' } }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const cmd = fs.readFileSync(path.join(dataDir, 'results', r.data.run_id, 'cmd.txt'), 'utf8')
+  assert.match(cmd, /-t 4\b/, 'threads 注入为 scope/并发 = 4')
+  assert.match(cmd, /-c 4\b/, 'concurrency 注入为 scope/并发 = 4')
+  const r2 = await bus.dispatch('exec', 'run_cli', { tool: 'conc-tool', params: { target: 'a.example.com', threads: 8 } }, { actor: 'model' })
+  assert.equal(r2.ok, true, r2.error?.message)
+  const cmd2 = fs.readFileSync(path.join(dataDir, 'results', r2.data.run_id, 'cmd.txt'), 'utf8')
+  assert.match(cmd2, /-t 8\b/, '显式 threads 不被覆盖')
+})
+
 test('CLI 退出不伪造 tool:name 打法链反馈，也不产生后台 E_SCHEMA', async () => {
   const { dir, dataDir, bus } = makeEnv()
   assert.equal(bus.registry.register(buildKnowDomain({ dataDir })).ok, true)
