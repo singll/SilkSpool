@@ -2068,7 +2068,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **生效核验**（生产 RPC）：`vuln.root_causes` 返回 ok（total 500、rows 50）；`task.h3_enqueue` 已注册（bogus request_id → `E_NOT_FOUND`，非 `E_BUS_VERB_UNKNOWN`）；`ledger.coverage_gaps` 返回 ok；`bus.status` 370ms、`dashboard.stats` 21ms、无 running session/worker。
 - **边界**：不改 Campaign（全 paused，另会话处理浏览器/代理）；不宣称真实漏洞产出/学习收益。
 
-### 15.137 WP05/WP12 真实业务输入试点：vulhub L2 闭环（2026-10-10，进行中，阻塞于 worker 上下文）
+### 15.137 WP05/WP12 真实业务输入试点：vulhub L2 闭环（2026-10-10，进行中；worker 上下文阻塞的根因与修复见 §15.142）
 
 用户授权在 scope 内跑「知识驱动语义闭环」真实业务输入。以自托管靶标 `vulhub`（`vulhub.singll.net`，WebLogic 7001/8080/8090 等）做首个受控试点，全程未产生 finding（未伪造）。
 
@@ -2120,7 +2120,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **待做（层 1 其余）**：`kb_search` 行已精简（`doc_id/title/url/...`），其体积来自结果条数（总线默认 limit 50）——如需要再限默认条数。
 - **待做（层 2）**：headless worker 的 `compaction-basic`/`tool-result-pruner` 参数（`thresholdRatio` 与 `retainRatio/retainTokens` 联合约束、`headroomTokens`/`maxTokens`、**摘要请求开销上限**与收尾预留），须先定位 headless 生效配置链（`bundles → headless/cordis.patch.yml → --patch`）并在**隔离 worker 配置**用固定历史回放验证，不改共享 web 配置。
 
-### 15.140 option 2 层 2：headless 压缩配置链定位与候选覆盖（2026-10-10，未采用）
+### 15.140 option 2 层 2：headless 压缩配置链定位与候选覆盖（2026-10-10，采用并回放验证；真实标定见 §15.142）
 
 - **配置链定位（已确证）**：headless worker（`--profile headless`）的生效配置 = `headless/package.json` 的 `dsh.profile.bundles`（含 `@deepseek-ai/dsh-base`、`@deepseek-ai/dsh-headless` …）→ `headless/cordis.patch.yml` → CLI `--patch`。压缩组件由 **`dsh-base/cordis.patch.yml`** 注册：`compaction-basic`（无配置→默认 `thresholdRatio:0.8`、`retainRatio:0.16`、`headroomTokens:65536`）与 `tool-result-pruner`（`thresholdChars:8192, headChars:4096, tailChars:1024`）。故此前"headless 无压缩组件"的判断**不成立**（组件已注册；未触发是因默认阈值 0.8×上下文窗(1M)=838k token 远高于实际用量 + 裁剪器受整体上下文压力门控）。
 - **只读验证机制**：`dsh --profile headless --dump-config`（无 LLM）导出生效配置；`--patch <file> --dump-config` 可**只读验证覆盖是否合并**。
@@ -2155,6 +2155,20 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 
 **纪律**：profile 目录（`data/profiles/<profile>/`）是 hmr 的 watch 范围，**任何备份/临时文件不得落在此目录**（尤其 owner/权限与运行时用户不一致会触发 chokidar `EACCES` 挂起）。回滚用 `cp 覆盖` 原地原子替换即可，备份放 `data/backups/`。`hmr` 停摆是**静默**故障（`.catch(()=>{})` + 卡在 loader settle 前），健康检查须包含「最新 `dsh web:` token 行存在 + loader settle」而非仅 `systemctl is-active`。
 
+### 15.142 worker 成本闸三修复 + dsh-bill + 流程守卫 + vulhub 首个调度 finding（2026-10-11，已部署 / 已生产验证）
+
+承接 §15.140（分层上下文控制）与 §15.137/§15.138（worker 预算耗尽、不收敛）的推进线。本轮对「worker 永远跑不完」做根因定位并修复，最终让 vulhub 假设在**调度 worker** 上跑完并登记首个 finding。全部改动经本地与生产（csai）契约/冒烟验证。
+
+- **准入估算器高估 ~2×（根因之一，`85697c8`）**：`worker-runtime.js` 对整包用 `bytes/2`（≈2 B/tok），而 JSON 工具声明实测 ~4 B/tok、文本/历史 ~3.6 B/tok；120 工具 schema 并集（~67KB）每轮被高估约 33k token → worker 在仅耗 ~62% 预算时第 4 轮即 `E_WORKER_BUDGET_EXHAUSTED`（#103419 `wmv2u59qic00a`：charged 93,690/150,000）。改为工具声明 `bytes/4`、system+messages `bytes/3.5`；`estimator` 升 `utf8-tool-union-plus-system-v3`。生产实测 est/actual 由 ~2.0 收敛到 **1.0–1.05**，同代码路径轮次 3→10+。补 schema 重请求 admission 回归用例。
+- **worker 输出上限过小（根因之二，`fdb5991`）**：`worker-runtime.js:206` 把**所有**请求 `maxTokens` 硬顶 2048；`reasoningEffort=max` 的重模型（glm-5.2）思考即吃满输出，收尾的大工具调用（`fgs_complete`/`vuln_register_signal`）被截断为 `finish_kind=max-tokens` 致进程 `exit 1`（#103419 `wmv3bncq1c219` 第 13 轮输出正好 2048）。放宽到 **8192**（仍以 `budget.state.limit` 封顶，单请求成本有界）。
+- **dsh-bill 回填噪声（§15.137 曾判「伴随噪声」，实为可修）**：headless worker 的 `sessions` 服务不活跃，`dsh-bill` 每次 boot 的历史回填逐会话抛 cordis `reflect.ts:160` 的 `cannot get required service "sessions" in inactive context`（一 run 上千行）；web 长驻进程不受影响（0 条）。上游 0.21.0 同样无防护。修复 = host 配置 `data/profiles/headless/cordis.patch.yml` 增 `- id: bill` + `config: {backfillTimeoutMs: 1}`（headless-only，行 id 是 `bill` 非 `dsh-bill`，经 `--dump-config` 合并校验）：worker 只保留实时计费捕获，历史导入交 web。实测该 run **per-session 报错 0**、仅 1 行正常 `stopped at the budget`。属 host 配置（gitignore），未入库。
+- **流程守卫误判（本轮新发现，独立问题，`0df1c73`）**：INV-T6 对 interval 且 `data/pipeline/<program>` 存在的任务，经 `ledger.task_proof` 校验三产物（`attempts-<program>.tsv` 24h 增量 / `card_usage-*.jsonl` 24h / `handoff-<北京日期>.md`）。三产物出自 **model 工具** `ledger_log_attempt`/`ledger_log_card_usage`/`ledger_handoff_write`，但 `buildScheduledPrompt` 只讲 FGS+vuln+task_update_note，从未指示 worker 调用 → 任务技术收口（finding 已登记）仍判 `task_runs.ok=0` + 红条。修复 = 调度 prompt 增 `[台账纪律·守卫必须]` 段（三工具断点、六态枚举、必填约束）；host-compat 测试 11/11 通过。**待新 run 验证生效。**
+- **分层上下文控制采用 + 真实标定（承接 §15.140）**：阈值由候选 0.08 下调并按真实任务标定——**0.05** 时上下文在 ~22k↔53k 振荡（每 2 轮压一次、摘要开销偏多）；**0.065（采用）** 时首次压缩在 ~68k、此后收敛，压缩频率减半。生产真跑观测：`msgB 158,620 → 84,069` 一次压缩后 worker 正常收尾（无 `max-tokens` 截断）。仅 headless worker 受影响，web 不变。
+- **vulhub 假设端到端闭环（承接 §15.137/§15.138 选项 4）**：`#103419`（工作区 vulhub、阶段 vuln）在 **1.2M** 预算下 **worker `done`**（charged 868,040、21 轮、denied 0），**登记 `findings#1435`**「cAdvisor 容器监控 API 未授权访问导致主机与容器元数据泄露」（host `vulhub.singll.net`、url `http://vulhub.singll.net:8081/api/v1.3/machine`、CWE-306、severity **low**〈medium 被评级闸降级〉、status `new`、source `agent`）。为本试点**首个真实调度 worker 登记的 finding**（此前 §15.137 记录「无 finding」已过期）。
+- **口径与边界（不夸大）**：仍为**单样本**；finding 仅到 `new`，**未做可信判定/确认/知识回流**；`task_runs.ok` 字段时序问题已由 prompt 修复、尚未复跑验证；维护 RPC 控制通道（§15.139）**仍未修复**——本轮以 DB 等价的 `task_run_now`（写 `next_run_at`）触发实验，未走域命令；§16 WP01–WP12 其余验收与「可信判定→知识收益」**未关账**。
+- **治理动作**：`#103419` 已取消（finding 已登记，停每日 interval 重复消耗）；其 `budget_tokens` 改值属一次性 ops，非域命令。
+- **本轮提交**：`6a52299`（intrusive interval 关键词豁免否定语境——创建任务即被误拒的独立修复）/`85697c8`（估算器分密度计价）/`fdb5991`（输出上限 8192）/`0df1c73`（台账纪律 prompt）。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
@@ -2174,7 +2188,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 | WP09 | 有界候选执行、7类授权行为/故障新对象holdout、无卡/删策略对照、成本和固定报告引用已生产验收 | 其它漏洞族/技术栈、真正未见行为holdout、实际方法采用与真实发现收益；目前仅受控授权协议，不作全项完成 |
 | WP10 | kbList schema/完整分页、证据/阻塞可见；**stats 来源失败时 unknown 以 null 呈现（不再显示 0）**（§15.129） | 真实技术统计/unknown 显示的其余视图与实际 RPC 验证继续 |
 | WP11 | 已有索引/FTS基础；**生产只读实测：热态主查询全部 <~100ms，仅首调冷启动偏高（asset.overview 1.85s 等），无持续瓶颈 → 实测退出、不做无依据虚拟化**（§15.129） | 后续仅在测到新瓶颈时再优化 |
-| WP12 | 本地链路与生产只读验收 | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填 |
+| WP12 | 本地链路与生产只读验收；**§15.142：调度 worker 首个真实 finding 已登记（`#1435` cAdvisor 未授权，single sample）** | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填；finding 仅到 `new`，可信判定/知识回流与多样本预算标定仍待 |
 
 ## 17. 原子域合规复核（2026-10-09，只读）
 
