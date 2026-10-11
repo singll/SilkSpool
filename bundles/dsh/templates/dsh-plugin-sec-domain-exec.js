@@ -721,6 +721,9 @@ function makeHandlers(opts) {
   const httpEgressBinding = opts.httpEgressBinding ? structuredClone(opts.httpEgressBinding) : null
   let httpBindingConsumed = false
   const qpsBucket = { tokens: Infinity, cap: 50, last: 0 }
+  // 429 退避按 origin 隔离：只暂停被限流的那个目标，不影响其它主机/程序（http_request 可控；
+  // run_cli 内嵌工具看不到逐请求 429，不在联动范围）。
+  const rateBackoff = new Map()
   let currentTool = null
 
   function throwErr(code, message, hint, retryable = false) { throw Object.assign(new Error(message), { code, hint, retryable }) }
@@ -948,7 +951,7 @@ function makeHandlers(opts) {
     for (let hop = 0; hop <= 3; hop++) {
       try {
         const address = await guardedAddress(url, args.program_id, currentMethod, deadline, bound, Boolean(permit))
-        await throttleQps(deadline)
+        await throttleQps(deadline, new URL(url).origin)
         recheckPermit()
         if (bound) await guardedAddress(url, args.program_id, currentMethod, deadline, true)
         const remaining = deadline - Date.now()
@@ -956,6 +959,7 @@ function makeHandlers(opts) {
         response = await guardedWorkerExecution(ctx, workerClaim, signal => httpHop({
           url, method: currentMethod, headers, body, proxy: selectedProxy, proxyAuthorization, address, timeoutMs: remaining, maxBytes, signal }))
         hops.push({ url, method: currentMethod, address, status: response.status, state: response.state, identity_digest: sha256(JSON.stringify(headers)) })
+        if (response.status === 429) applyRateBackoff(new URL(url).origin, response.status, response.headers)
         if (!followRedirects || response.state !== 'observed' || ![301, 302, 303, 307, 308].includes(response.status) || !response.headers.location) break
         if (hop === 3) { response = { ...response, state: 'redirect_limit', body: '' }; break }
         const next = new URL(response.headers.location, url)
@@ -1082,6 +1086,30 @@ function makeHandlers(opts) {
     }
     return null
   }
+  // 429 自适应退避（D04 联动，按 origin 隔离）：观察到 429 时按 Retry-After（缺省 5s，1s–60s 夹逼）
+  // 暂停该 origin 的后续出站；仅影响同源，不波及其它主机。
+  function applyRateBackoff(origin, status, headers) {
+    if (!origin || Number(status) !== 429) return 0
+    let ms = 5000
+    const ra = headers && (headers['retry-after'] ?? headers['Retry-After'])
+    if (ra != null) {
+      const secs = Number(ra)
+      if (Number.isFinite(secs) && secs >= 0) ms = secs * 1000
+      else { const t = Date.parse(String(ra)); if (!Number.isNaN(t)) ms = Math.max(0, t - Date.now()) }
+    }
+    ms = Math.min(Math.max(ms, 1000), 60000)
+    rateBackoff.set(origin, Math.max(rateBackoff.get(origin) || 0, Date.now() + ms))
+    return ms
+  }
+  function waitForBackoff(deadline, origin) {
+    if (!origin) return 0
+    const until = rateBackoff.get(origin) || 0
+    const now = Date.now()
+    if (now >= until) { if (until) rateBackoff.delete(origin); return 0 }
+    const wait = until - now
+    if (now + wait > deadline) throwErr('E_EXEC_HTTP_TIMEOUT', '429 退避超过请求期限', null)
+    return wait
+  }
   function acquireQpsToken() {
     const qps = Math.max(1, Number(loadScope().defaults?.rate_limit_qps) || 50)
     const now = Date.now()
@@ -1094,8 +1122,14 @@ function makeHandlers(opts) {
     qpsBucket.tokens = 0
     return waitMs
   }
-  async function throttleQps(deadline = Infinity) {
-    for (;;) { const w = acquireQpsToken(); if (w <= 0) break; if (Date.now() + w > deadline) throwErr('E_EXEC_HTTP_TIMEOUT', 'QPS 等待超过请求期限', null); await new Promise((r) => setTimeout(r, w)) }
+  async function throttleQps(deadline = Infinity, origin = null) {
+    for (;;) {
+      const b = waitForBackoff(deadline, origin)
+      if (b > 0) { await new Promise((r) => setTimeout(r, b)); continue }
+      const w = acquireQpsToken(); if (w <= 0) break
+      if (Date.now() + w > deadline) throwErr('E_EXEC_HTTP_TIMEOUT', 'QPS 等待超过请求期限', null)
+      await new Promise((r) => setTimeout(r, w))
+    }
   }
   function bwrapAvailable() { try { return fs.existsSync(BWRAP_BIN) } catch { return false } }
   // M6：沙箱凭据隔离。不再整目录读写挂载 $HOME（会暴露 .ssh/id_ed25519、.config/fofa.conf

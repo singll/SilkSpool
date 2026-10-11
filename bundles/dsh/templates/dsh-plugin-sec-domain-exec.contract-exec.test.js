@@ -974,6 +974,28 @@ for (const mode of ['vulnerable', 'patched', 'public']) {
   })
 }
 
+test('D04: http_request 429 按 Retry-After 自适应退避（按 origin 隔离）', async t => {
+  const { bus, dataDir } = makeEnv()
+  t.after(() => bus._internal.close())
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'programs:\n  - name: test-src\n    scope:\n      - 127.0.0.1\n')
+  let first = true
+  const server = http.createServer((req, res) => {
+    if (first) { first = false; res.statusCode = 429; res.setHeader('retry-after', '1'); res.end('{}'); return }
+    res.setHeader('content-type', 'application/json'); res.end('{"ok":true}')
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => server.close(resolve)))
+  const url = `http://127.0.0.1:${server.address().port}/x`
+  const r1 = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url, proxy: 'direct' }, { actor: 'model' })
+  assert.equal(r1.ok, true, r1.error?.message)
+  assert.equal(r1.data.status, 429)
+  const t0 = Date.now()
+  const r2 = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url, proxy: 'direct' }, { actor: 'model' })
+  const elapsed = Date.now() - t0
+  assert.equal(r2.data.status, 200)
+  assert.ok(elapsed >= 900, `第二次请求应被 429 退避延迟（Retry-After 1s），实际 ${elapsed}ms`)
+})
+
 for (const mode of ['denied', 'public', 'identity_changed', 'empty', 'rate_limited', 'denied_with_data', 'credentialed_control']) {
   test(`WP02 single-account signed denial review ${mode}: actual responses → decision → learning`, async t => {
     const { bus, dataDir } = makeEnv()
