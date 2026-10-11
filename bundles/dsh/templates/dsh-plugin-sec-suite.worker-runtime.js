@@ -52,10 +52,20 @@ function estimateWorkerInput(options) {
   for (const update of options.toolHistory?.updates || []) for (const tool of update.additions || []) add(tool)
   const tools = [...declarations.values()]
   const bytes = value => Buffer.byteLength(JSON.stringify(value), 'utf8')
-  const payload = { system: options.system, messages: options.messages || [], tools }
-  return { estimated_input_tokens: Math.ceil(bytes(payload) / 2) + 2048,
-    system_bytes: bytes(options.system ?? ''), message_bytes: bytes(payload.messages),
-    tool_bytes: bytes(tools), tool_count: tools.length,
+  const systemBytes = bytes(options.system ?? '')
+  const messageBytes = bytes(options.messages || [])
+  const toolBytes = bytes(tools)
+  // Byte→token density is not uniform. A flat bytes/2 assumed ~2 B/tok, which is only
+  // safe for dense CJK; for schema/JSON-heavy payloads the real density is ~3.6 B/tok,
+  // so the constant tool-declaration union (~67KB for 120 tools) alone was overcharged
+  // ~33k tok/request and admission fired at ~62% of budget (E_WORKER_BUDGET_EXHAUSTED,
+  // prod task #103419 run wmv2u59qic00a). Price the two kinds separately with a small
+  // conservative margin: tool declarations (English JSON) ~4 B/tok, prose/history ~3.5.
+  const textTokens = Math.ceil((systemBytes + messageBytes) / 3.5)
+  const toolTokens = Math.ceil(toolBytes / 4)
+  return { estimated_input_tokens: textTokens + toolTokens + 2048,
+    system_bytes: systemBytes, message_bytes: messageBytes,
+    tool_bytes: toolBytes, tool_count: tools.length,
     history_bytes: bytes(options.toolHistory || {}) }
 }
 
@@ -188,7 +198,7 @@ export function installWorkerSessionReporter(ctx, dataDir) {
     const journal = createWorkerRequestJournal(runDir, { run_id: runId, nonce, pid: process.pid })
     const budget = createWorkerBudget(Number(process.env.SEC_WORKER_BUDGET_TOKENS), state => {
       const tmp = path.join(runDir, `worker-budget.json.tmp-${process.pid}`)
-      fs.writeFileSync(tmp, JSON.stringify({ ...state, run_id: runId, nonce, estimator: 'utf8-tool-union-plus-system-v2' }), { mode: 0o600 })
+      fs.writeFileSync(tmp, JSON.stringify({ ...state, run_id: runId, nonce, estimator: 'utf8-tool-union-plus-system-v3' }), { mode: 0o600 })
       fs.renameSync(tmp, path.join(runDir, 'worker-budget.json'))
     }, journal)
     ctx.on('agent/request', async (_payload, next) => {

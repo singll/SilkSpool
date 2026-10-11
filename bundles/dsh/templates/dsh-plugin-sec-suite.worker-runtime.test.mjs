@@ -151,6 +151,21 @@ test('WP03 default budget completes a two-step request with folded tool history'
   assert.equal(budget.state.reserved, 0)
 })
 
+test('WP03 schema-heavy request is admitted once tool declarations are priced at the real density', async () => {
+  // Regression: flat bytes/2 overcharged the constant tool-schema union ~2x, so the
+  // provider call was denied at ~62% of budget (prod #103419 / wmv2u59qic00a). With
+  // tools priced ~4 B/tok this request fits a 40k budget; the old formula needed >65k.
+  const budget = createWorkerBudget(40000)
+  const tools = [{ name: 'fixture', description: 'x'.repeat(122000), parameters: { type: 'object' } }]
+  const options = { ...request('hi'), tools, maxTokens: 2048 }
+  await drain(budget.stream(options, async function* () {
+    yield { type: 'usage', usage: { inputTokens: 30500, outputTokens: 40 } }
+  }))
+  assert.equal(budget.state.charged, 30540)
+  assert.equal(budget.state.reserved, 0)
+  assert.equal(budget.state.denied, 0)
+})
+
 test('WP03 independent system prompt and historical tool additions remain budgeted', async () => {
   let calls = 0
   const next = () => { calls++; return [] }
