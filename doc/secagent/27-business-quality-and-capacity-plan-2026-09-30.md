@@ -2110,7 +2110,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 
 ### 15.139 控制通道诊断与分层上下文控制起步（2026-10-10）
 
-**控制通道（维护 RPC）诊断——未修复**：本地维护客户端需 journal 里的 `dsh web: …/?token=<launchToken>` 启动行，但重启后该行**始终不再打印**（`printUrl` 默认 true、`StandardOutput=journal` 正确；`dsh-web-app` 的 `announceReady()` 因 `loader.await()` 的 `.catch(()=>{})` 静默吞错而未触达）。改用**持久签名 cookie** 绕过：cookie 由 `data/.credentials.yaml` 的 `client-connection/browser-session` 密钥（base64url 解码为 32 字节）按 `v1.<b64(json{version,authority,issuedAt,expiresAt})>.<b64(hmac)>` 派生。**自校验通过**（签名/authority/有效期）但运行中的服务对多种 authority/时效/Origin 变体一律 **401** → 服务端密钥或鉴权路径与磁盘不一致。30 分钟未决，**按约转 option 2**；未做风险性 DSH 内部改动。
+**控制通道（维护 RPC）诊断——未修复（2026-10-11 已修复并验证，见 §15.143）**：本地维护客户端需 journal 里的 `dsh web: …/?token=<launchToken>` 启动行，但重启后该行**始终不再打印**（`printUrl` 默认 true、`StandardOutput=journal` 正确；`dsh-web-app` 的 `announceReady()` 因 `loader.await()` 的 `.catch(()=>{})` 静默吞错而未触达）。改用**持久签名 cookie** 绕过：cookie 由 `data/.credentials.yaml` 的 `client-connection/browser-session` 密钥（base64url 解码为 32 字节）按 `v1.<b64(json{version,authority,issuedAt,expiresAt})>.<b64(hmac)>` 派生。**自校验通过**（签名/authority/有效期）但运行中的服务对多种 authority/时效/Origin 变体一律 **401** → 服务端密钥或鉴权路径与磁盘不一致。30 分钟未决，**按约转 option 2**；未做风险性 DSH 内部改动。
 - **影响**：域 RPC 不可用，无法创建/派发/查询任务做受控实验；只读核对、隔离调用、单测、部署仍可用。
 
 **option 2 分层上下文控制——层 1 起步（已上线）**：
@@ -2165,9 +2165,21 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **流程守卫误判（本轮新发现，独立问题，`0df1c73` + `cb871a9`）**：INV-T6 对 interval 且 `data/pipeline/<program>` 存在的任务，经 `ledger.task_proof` 校验三产物（`attempts-<program>.tsv` 24h 增量 / `card_usage-*.jsonl` 24h / `handoff-<北京日期>.md`）。三产物出自 **model 工具** `ledger_log_attempt`/`ledger_log_card_usage`/`ledger_handoff_write`。两处根因：① `buildScheduledPrompt` 只讲 FGS+vuln+task_update_note，从未指示 worker 调用（`0df1c73` 补 `[台账纪律·守卫必须]` 段）；② **§15.137 为省 token 把 `ledger` 域从 vuln phase worker 工具面整体剔除**（`PHASE_EXCLUDE_DOMAINS.vuln`），worker 根本无 ledger 工具可调 → 守卫不可满足（`cb871a9` 改为 vuln 仅剔除 approval/report；契约测试原 stub 缺 handler/queries 致域拒载、断言空过，补全后 58/58）。**复跑验证通过（2026-10-11）**：`#103419` 复跑 run `wmv3hfrd871d0` → **`task_runs.ok=1`**（notes 无 `[流程守卫缺失]`），worker 实写 `attempts-vulhub.tsv`（1 行，card `EXP-38`/CONFIRMED）、`card_usage-2026-10-11.jsonl`、`handoff-2026-10-11.md`；spent 915,028、279s。
 - **分层上下文控制采用 + 真实标定（承接 §15.140）**：阈值由候选 0.08 下调并按真实任务标定——**0.05** 时上下文在 ~22k↔53k 振荡（每 2 轮压一次、摘要开销偏多）；**0.065（采用）** 时首次压缩在 ~68k、此后收敛，压缩频率减半。生产真跑观测：`msgB 158,620 → 84,069` 一次压缩后 worker 正常收尾（无 `max-tokens` 截断）。仅 headless worker 受影响，web 不变。
 - **vulhub 假设端到端闭环（承接 §15.137/§15.138 选项 4）**：`#103419`（工作区 vulhub、阶段 vuln）在 **1.2M** 预算下 **worker `done`**（charged 868,040、21 轮、denied 0），**登记 `findings#1435`**「cAdvisor 容器监控 API 未授权访问导致主机与容器元数据泄露」（host `vulhub.singll.net`、url `http://vulhub.singll.net:8081/api/v1.3/machine`、CWE-306、severity **low**〈medium 被评级闸降级〉、status `new`、source `agent`）。为本试点**首个真实调度 worker 登记的 finding**（此前 §15.137 记录「无 finding」已过期）。
-- **口径与边界（不夸大）**：仍为**单样本**；finding 仅到 `new`，**未做可信判定/确认/知识回流**；`task_runs.ok` 问题已由 prompt+工具面修复并**复跑验证通过（`wmv3hfrd871d0` ok=1）**；维护 RPC 控制通道（§15.139）**仍未修复**——本轮以 DB 等价的 `task_run_now`（写 `next_run_at`）触发实验，未走域命令；§16 WP01–WP12 其余验收与「可信判定→知识收益」**未关账**。
+- **口径与边界（不夸大）**：仍为**单样本**；finding 仅到 `new`，**未做可信判定/确认/知识回流**；`task_runs.ok` 问题已由 prompt+工具面修复并**复跑验证通过（`wmv3hfrd871d0` ok=1）**；维护 RPC 控制通道（§15.139）**已修复并验证（见 §15.143）**——本实验触发当时通道未恢复，用了 DB 等价的 `task_run_now`（写 `next_run_at`）；§16 WP01–WP12 其余验收与「可信判定→知识收益」**未关账**。
 - **治理动作**：`#103419` 已取消（finding 已登记，停每日 interval 重复消耗）；其 `budget_tokens` 改值属一次性 ops，非域命令。
 - **本轮提交**：`6a52299`（intrusive interval 关键词豁免否定语境——创建任务即被误拒的独立修复）/`85697c8`（估算器分密度计价）/`fdb5991`（输出上限 8192）/`0df1c73`（台账纪律 prompt）/`cb871a9`（vuln phase 恢复 ledger 域，守卫可满足）。
+
+### 15.143 维护 RPC 控制通道恢复验证（2026-10-11，已修复并验证）
+
+§15.139 记录的「维护 RPC 不可用、无法创建/派发/查询任务做受控实验」经 §15.141 定位为**同一 hmr chokidar EACCES 根因**（`loader.await()` 永不 settle → 无 `dsh web: …?token=` 启动行 → 维护客户端无法完成认证）。§15.141 把孤儿 root 备份移出 `data/profiles/web/` 后，token 行恢复打印。
+
+**本轮验证（2026-10-11，csai，只读）**：
+- 启动 token 行恢复：`journalctl -u silksecagent` 见 `dsh web: http://127.0.0.1:3081/?token=…`（06:34、07:08 两次重启各一行）。
+- 维护客户端 `dsh-upgrade-local-client.py`：`{"ok":true,"native":{"sessions":1945,"running":0},"browser_auth_source":"journal","users_restored":true,"logged_out":true}`——走正式临时账号密码登录 + journal 启动凭据兑换，结束恢复 `auth/users.yaml` 并 logout。
+- 域 RPC（`/silksec-domain`，actor=dashboard，authority=loopback）只读调用全部成功：`bus.status`（15 域注册、mount=full）、`scope.check`（vulhub allow）、`task.get`（#103419 cancelled / budget 1,000,000）、`task.list`、`vuln.stats`。
+- **影响**：受控实验（创建/派发/查询任务）可走正式维护 RPC，替代 §15.142 的 DB 直写（`run_now` 等价操作）。**写路径冒烟也通过**：`task.create`（program=vulhub、无 schedule）→ task_id 103420 `queued`；`task.cancel` → `cancelled`（无 worker、无 token 消耗）。故 create/run_now/cancel 等写命令经 `/silksec-domain`（actor=dashboard）已可用。
+
+边界：本轮为只读 + 一次无副作用写冒烟；维护客户端会临时改写 `auth/users.yaml`（设计如此，结束即恢复）。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
