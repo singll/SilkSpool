@@ -764,10 +764,11 @@ const BUS_MANIFEST = {
         since: { type: 'integer', description: 'epoch ms，默认 24h 前' },
         domains: { type: 'array', items: { type: 'string' } },
         subscriber: { type: 'string' },
+        source: { type: 'string', enum: ['both', 'events', 'outbox'], description: '重放源：both(默认)/events(仅事件日志)/outbox(仅 pending+dead_letter，用于死信定向重建)' },
         dry_run: { type: 'boolean' },
         limit: { type: 'integer', maximum: 10000 },
       }, additionalProperties: false },
-      idempotent: 'auto', idempotent_fields: ['since', 'subscriber', 'dry_run', 'limit', 'domains'],
+      idempotent: 'auto', idempotent_fields: ['since', 'subscriber', 'source', 'dry_run', 'limit', 'domains'],
       events: ['bus.replay.completed'], invariants: [],
       side_effects: { rows: true, events: true }, timeout_ms: 60000,
       agent_note: '按事件日志重放弱联动订阅者（灾备/调试）。只重放 mode:async 订阅者；dry_run 只输出将要重放的 (event, subscriber) 对。',
@@ -1614,13 +1615,16 @@ const now = () => clock()
       const limit = Number.isInteger(args.limit) ? args.limit : 1000
       const domainsFilter = Array.isArray(args.domains) ? new Set(args.domains) : null
       const subFilter = args.subscriber ? String(args.subscriber) : null
+      // F06：源选择——'both'(默认) / 'events'(仅事件 jsonl) / 'outbox'(仅 pending+dead_letter)。
+      // 'outbox' 用于死信定向重建，避免为清旧死信而重扫全部历史事件。
+      const source = ['both', 'events', 'outbox'].includes(args.source) ? args.source : 'both'
       const scanned = []
       const results = []
       let redispatched = 0
       let skippedSync = 0
       // 源 1：事件 jsonl
       let files = []
-      try { files = fs.readdirSync(eventsDir).filter((f) => f.endsWith('.jsonl')) } catch { files = [] }
+      if (source !== 'outbox') { try { files = fs.readdirSync(eventsDir).filter((f) => f.endsWith('.jsonl')) } catch { files = [] } }
       for (const f of files) {
         const d = f.replace(/\.jsonl$/, '')
         if (domainsFilter && !domainsFilter.has(d)) continue
@@ -1649,9 +1653,11 @@ const now = () => clock()
       }
       // 源 2：outbox pending/dead_letter
       let pending = []
-      try {
-        pending = plainAll(db.prepare(`SELECT * FROM event_outbox WHERE status IN ('pending','dead_letter') AND producer_ts >= ? LIMIT 500`).all(since))
-      } catch { pending = [] }
+      if (source !== 'events') {
+        try {
+          pending = plainAll(db.prepare(`SELECT * FROM event_outbox WHERE status IN ('pending','dead_letter') AND producer_ts >= ? LIMIT 500`).all(since))
+        } catch { pending = [] }
+      }
       for (const row of pending) {
         let env = null
         try { env = JSON.parse(row.payload) } catch { continue }

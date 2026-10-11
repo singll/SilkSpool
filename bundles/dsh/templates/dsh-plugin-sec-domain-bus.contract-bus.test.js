@@ -866,7 +866,7 @@ test('F06: bus_replay 重放成功后把 outbox 死信置回 delivered（有审�
   const env = { id: 'evt_dead_1', name: 'fixture.resolved', ts: Date.now(), actor: 'reactor', payload: {} }
   db.prepare(`INSERT INTO event_outbox(event_id,domain,name,payload,producer_ts,status,retry_count,created_at) VALUES(?,?,?,?,?,?,?,?)`)
     .run('evt_dead_1', 'fixture', 'fixture.resolved', JSON.stringify(env), Date.now(), 'dead_letter', 9, Date.now())
-  const r = await bus.dispatch('bus', 'replay', { since: 0 }, { actor: 'human' })
+  const r = await bus.dispatch('bus', 'replay', { since: 0, source: 'outbox' }, { actor: 'dashboard' })
   assert.equal(r.ok, true)
   assert.ok(calls >= 1, '订阅者被重放投递')
   const row = db.prepare("SELECT status, last_error FROM event_outbox WHERE event_id='evt_dead_1'").get()
