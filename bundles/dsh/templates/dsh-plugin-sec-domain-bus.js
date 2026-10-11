@@ -72,8 +72,12 @@ export const PHASE_DOMAINS = {
 }
 
 // 27 试点：worker 不使用的域按 phase 从子集剔除（降低工具面/上下文，不改 bus/proxy 诊断面）。
+// 注意：ledger 不得剔除——INV-T6 流程守卫对 interval 任务校验 ledger 三产物
+// （attempts/card_usage/handoff），而三产物只能由 worker 调 ledger_log_attempt /
+// ledger_log_card_usage / ledger_handoff_write 产生；剔除 ledger 会让守卫永久不可满足
+// （prod #103419 vuln 任务反复 [流程守卫缺失] ok=0 的根因，见 §15.142）。仅剔除确实不使用的域。
 const PHASE_EXCLUDE_DOMAINS = {
-  vuln: ['ledger', 'approval', 'report'],
+  vuln: ['approval', 'report'],
 }
 
 // 27 试点：域内 verb 级 worker 面向白名单。headless worker 挂载时，仅投影这些动词（未列域 → 全量 fail-open）。
