@@ -1011,6 +1011,24 @@ test('D04: http_request 429 按 Retry-After 自适应退避（按 origin 隔离�
   assert.ok(elapsed >= 900, `第二次请求应被 429 退避延迟（Retry-After 1s），实际 ${elapsed}ms`)
 })
 
+test('D04: 跨进程共享令牌桶（dataDir 状态文件），scope QPS=1 时串行请求按桶间隔', async t => {
+  const { bus, dataDir } = makeEnv()
+  t.after(() => bus._internal.close())
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), 'defaults:\n  rate_limit_qps: 1\nprograms:\n  - name: test-src\n    scope:\n      - 127.0.0.1\n')
+  const server = http.createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}') })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise(resolve => server.close(resolve)))
+  const url = `http://127.0.0.1:${server.address().port}/q`
+  const r1 = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url, proxy: 'direct' }, { actor: 'model' })
+  assert.equal(r1.ok, true, r1.error?.message)
+  const t0 = Date.now()
+  const r2 = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url, proxy: 'direct' }, { actor: 'model' })
+  const elapsed = Date.now() - t0
+  assert.equal(r2.ok, true, r2.error?.message)
+  assert.ok(elapsed >= 700, `QPS=1 时第二次应等待 ≈1s（共享桶），实际 ${elapsed}ms`)
+  assert.ok(fs.existsSync(path.join(dataDir, '.exec-qps.json')), '共享桶状态文件已创建（跨进程共享依据）')
+})
+
 for (const mode of ['denied', 'public', 'identity_changed', 'empty', 'rate_limited', 'denied_with_data', 'credentialed_control']) {
   test(`WP02 single-account signed denial review ${mode}: actual responses → decision → learning`, async t => {
     const { bus, dataDir } = makeEnv()

@@ -1122,11 +1122,41 @@ function makeHandlers(opts) {
     qpsBucket.tokens = 0
     return waitMs
   }
+  // 跨进程共享令牌桶（进程外多实例）：多 worker 进程共享 dataDir 下的 .exec-qps.json，
+  // 用 O_EXCL 锁文件 + 陈旧锁(>2s)窃取做读-改-写，使聚合出站 ≤ scope rate_limit_qps。
+  // 不可加锁（只读盘/竞争超时）则退回进程内 qpsBucket（fail-open，不阻断执行）。
+  const QPS_STATE_FILE = path.join(dataDir, '.exec-qps.json')
+  const QPS_LOCK_FILE = path.join(dataDir, '.exec-qps.lock')
+  function computeSharedWait(qps) {
+    const now = Date.now()
+    let state = { tokens: qps, last: now }
+    try { const raw = JSON.parse(fs.readFileSync(QPS_STATE_FILE, 'utf8')); if (Number.isFinite(raw.tokens) && Number.isFinite(raw.last)) state = raw } catch { /* 首次或读失败：满桶 */ }
+    state.tokens = Math.min(qps, state.tokens + Math.max(0, (now - state.last) / 1000) * qps)
+    state.last = now
+    let wait = 0
+    if (state.tokens >= 1) state.tokens -= 1
+    else { wait = Math.ceil(((1 - state.tokens) / qps) * 1000); state.tokens = 0 }
+    try { fs.writeFileSync(QPS_STATE_FILE, JSON.stringify(state)) } catch { /* 写失败：本次放行 */ }
+    return wait
+  }
+  async function acquireRateToken() {
+    const qps = Math.max(1, Number(loadScope().defaults?.rate_limit_qps) || 50)
+    const budget = Date.now() + 1500
+    for (;;) {
+      try {
+        const fd = fs.openSync(QPS_LOCK_FILE, 'wx', 0o600)
+        try { return computeSharedWait(qps) } finally { fs.closeSync(fd); try { fs.unlinkSync(QPS_LOCK_FILE) } catch { /* */ } }
+      } catch (e) { if (e.code !== 'EEXIST') return acquireQpsToken() }
+      try { const st = fs.statSync(QPS_LOCK_FILE); if (Date.now() - st.mtimeMs > 2000) { try { fs.unlinkSync(QPS_LOCK_FILE) } catch { /* */ }; continue } } catch { /* 锁刚消失 */ }
+      if (Date.now() > budget) return acquireQpsToken()
+      await new Promise((r) => setTimeout(r, 5))
+    }
+  }
   async function throttleQps(deadline = Infinity, origin = null) {
     for (;;) {
       const b = waitForBackoff(deadline, origin)
       if (b > 0) { await new Promise((r) => setTimeout(r, b)); continue }
-      const w = acquireQpsToken(); if (w <= 0) break
+      const w = await acquireRateToken(); if (w <= 0) break
       if (Date.now() + w > deadline) throwErr('E_EXEC_HTTP_TIMEOUT', 'QPS 等待超过请求期限', null)
       await new Promise((r) => setTimeout(r, w))
     }
