@@ -858,6 +858,22 @@ test('重放: bus_replay 重放 async 订阅者，二次重放零副作用', asy
   assert.equal(replay2.data.scanned, replay.data.scanned)
 })
 
+test('F06: bus_replay 重放成功后把 outbox 死信置回 delivered（有审计，不静默删）', async () => {
+  const { bus } = makeBus()
+  let calls = 0
+  bus.events.subscribe('fixture.resolved', async () => { calls++; return { ok: true, data: {} } }, { mode: 'async', as: 'reactor' })
+  const db = bus._internal.db()
+  const env = { id: 'evt_dead_1', name: 'fixture.resolved', ts: Date.now(), actor: 'reactor', payload: {} }
+  db.prepare(`INSERT INTO event_outbox(event_id,domain,name,payload,producer_ts,status,retry_count,created_at) VALUES(?,?,?,?,?,?,?,?)`)
+    .run('evt_dead_1', 'fixture', 'fixture.resolved', JSON.stringify(env), Date.now(), 'dead_letter', 9, Date.now())
+  const r = await bus.dispatch('bus', 'replay', { since: 0 }, { actor: 'human' })
+  assert.equal(r.ok, true)
+  assert.ok(calls >= 1, '订阅者被重放投递')
+  const row = db.prepare("SELECT status, last_error FROM event_outbox WHERE event_id='evt_dead_1'").get()
+  assert.equal(row.status, 'delivered', '全订阅者成功后死信置回 delivered')
+  assert.equal(row.last_error, null)
+})
+
 // ---------------------------------------------------------------------------
 // 12b. 多订阅者同模式：不同 source 的订阅者各自独立投递（bus_subscription 键 source::pattern）
 // ---------------------------------------------------------------------------

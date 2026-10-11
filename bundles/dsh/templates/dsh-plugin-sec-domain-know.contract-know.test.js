@@ -2224,6 +2224,19 @@ test('21 §4-3: onCoverageGap——覆盖缺口态 → know_gaps（已测格点�
   assert.equal(tested.data.skipped, true)
 })
 
+test('27 F06: onCoverageGap 长 key 不超 q 上限（防订阅者 E_SCHEMA 死信）', async () => {
+  const { bus, domain } = makeEnv()
+  const longKey = 'https://a.example.com/' + 'x'.repeat(600) + '?id=1'
+  const r = await domain.handlers.subscribers.onCoverageGap({
+    id: 'evt_gap_long', name: 'ledger.coverage.marked', actor: 'reactor', ts: Date.now(),
+    payload: { program: 'test-src', dim: 'param', key: longKey, mark: 'no_params' },
+  })
+  assert.equal(r.ok, true, JSON.stringify(r.error))
+  const gap = bus._internal.db().prepare("SELECT q FROM know_gaps WHERE surface='coverage:param'").get()
+  assert.ok(gap, '长 key 缺口仍登记（不再因 q 超限被拒）')
+  assert.ok(gap.q.length <= 500, `q 必须 ≤500，实际 ${gap.q.length}`)
+})
+
 // 22 号方案 §11.2-L2：episode 归因加 campaign 维度（幂等加列 + 查询过滤）
 test('22 L2: know_episode_record 带 campaign_id 落账 + episode_list campaign_id 过滤', async () => {
   const { bus } = makeEnv()

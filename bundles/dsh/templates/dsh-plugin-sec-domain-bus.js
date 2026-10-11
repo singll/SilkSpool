@@ -757,7 +757,9 @@ const BUS_MANIFEST = {
   owns: { tables: ['idempotency', 'bus_meta', 'event_outbox', 'bus_subscription'], files: ['data/audit.jsonl', 'data/events/', 'data/bus.aliases.yaml'] },
   commands: {
     bus_replay: {
-      actor: ['human', 'system'],
+      // 27 F06：加 dashboard——维护/操作面（审批/预算/scope 已由 dashboard 治理）需能执行
+      // 有审计的定向重放来消解 outbox 死信；命令幂等、写 bus.replay.completed 与审计。
+      actor: ['human', 'system', 'dashboard'],
       schema: { type: 'object', properties: {
         since: { type: 'integer', description: 'epoch ms，默认 24h 前' },
         domains: { type: 'array', items: { type: 'string' } },
@@ -1654,6 +1656,7 @@ const now = () => clock()
         let env = null
         try { env = JSON.parse(row.payload) } catch { continue }
         const matched = matchSubscribers(env.name).filter((s) => s.mode === 'async' && (!subFilter || s.pattern === subFilter))
+        let rowAllOk = matched.length > 0
         for (const sub of matched) {
           if (dryRun) { results.push({ event_id: env.id, subscriber: subKey(sub), ok: null, dry_run: true }); continue }
           try {
@@ -1665,10 +1668,17 @@ const now = () => clock()
               redispatched++
               db.prepare(`INSERT OR REPLACE INTO bus_subscription(event_id,subscriber,mode,status,attempt,last_error,consumed_at) VALUES(?,?,?,?,?,?,?)`)
                 .run(env.id, subKey(sub), 'async', 'delivered', 0, null, now())
-            }
+            } else { rowAllOk = false }
           } catch (e) {
+            rowAllOk = false
             results.push({ event_id: env.id, subscriber: subKey(sub), ok: false, error_code: 'E_INTERNAL', error: String(e?.message || e) })
           }
+        }
+        // F06：全（异步）订阅者重放成功后，把 outbox 死信/挂起置回 delivered（写审计），
+        // 使 bus.status 的 dead_letter 计数反映真实解决状态；定向(busFilter)重放不动整行。禁止静默删除死信。
+        if (!dryRun && !subFilter && rowAllOk) {
+          db.prepare(`UPDATE event_outbox SET status='delivered', last_error=NULL WHERE event_id=?`).run(row.event_id)
+          auditBestEffort({ ts: now(), kind: 'event_resolved', event_id: row.event_id, name: env.name, prev_status: row.status })
         }
       }
       const maxTs = scanned.reduce((m, e) => Math.max(m, e.ts || 0), 0)

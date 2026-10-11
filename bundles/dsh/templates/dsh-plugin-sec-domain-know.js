@@ -3453,8 +3453,16 @@ function makeHandlers(opts) {
       const mark = String(p.mark || '')
       if (!(gapStates[p.dim] || []).includes(mark)) return { ok: true, data: { skipped: true, reason: `${p.dim}=${mark} 非缺口态` } }
       if (!dispatchRef) return { ok: false, error: { code: 'E_BACKEND_UNAVAILABLE', message: 'no dispatch ref' } }
+      // 契约：know_gap_record.q ≤ 500（本域 schema）。coverage key 可为长 URL/端点，
+      // 直接拼接会超限 → 订阅者 E_SCHEMA → 9 次重试后进 outbox 死信（27 号 F06）。
+      // 超限时保留前缀 + 全量 q 的短哈希（确定性、幂等键稳定），保证 q ≤ 500。
+      const gapSuffix = ` 缺口（program=${p.program}，mark=${mark}）——补建走 ledger_coverage_gaps 队列派生或收割清单`
+      const rawQ = `coverage:${p.dim}:${p.key}${gapSuffix}`
+      const gapQ = rawQ.length <= 500
+        ? rawQ
+        : `coverage:${p.dim}:${String(p.key)}#${sha1(rawQ).slice(0, 8)}${gapSuffix}`.slice(0, 500)
       const r = await dispatchRef('know', 'gap_record', {
-        q: `coverage:${p.dim}:${p.key} 缺口（program=${p.program}，mark=${mark}）——补建走 ledger_coverage_gaps 队列派生或收割清单`,
+        q: gapQ,
         program_id: String(p.program), surface: `coverage:${p.dim}`, hits: 0,
       }, { actor: 'reactor', cause: envelope })
       if (r && r.ok) return { ok: true, data: r.data }

@@ -74,7 +74,7 @@ cordis 容器
 
 | 动词 | 一句话职责 | actor 白名单 | 幂等策略 |
 |---|---|---|---|
-| `bus_replay` | 按事件日志重放弱联动订阅者（灾备/调试） | human, system | 自动指纹 |
+| `bus_replay` | 按事件日志重放弱联动订阅者（灾备/调试） | human, system, dashboard | 自动指纹 |
 | `bus_prune` | 立即执行保留窗口清理（幂等表 + outbox delivered 按 7天/2万行取大裁剪，subscription 级联 + 事件轮转检查） | human, system | 无幂等（每次真实执行） |
 
 ### 1.3 命令逐个详述
