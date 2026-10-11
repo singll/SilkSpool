@@ -832,6 +832,20 @@ function makeHandlers(opts) {
   const dispatchRef = opts.dispatch
   const queryRef = opts.query
 
+  // WP12/L02 归属补全：worker 常不传 task_id 且 ctx.task_id 未注入；按会话反查运行中任务，
+  // 使 finding 归因到产生它的调度任务（连败拉黑/学习闭环）。best-effort，不阻断登记。
+  async function resolveTaskId(args, ctx) {
+    if (args.task_id != null) return Number(args.task_id)
+    if (ctx && ctx.task_id != null) return Number(ctx.task_id)
+    const sessionId = ctx && ctx.session_id
+    if (!sessionId || !queryRef) return null
+    try {
+      const at = await queryRef('task', 'active_by_session', { session_id: sessionId }, { actor: 'system' })
+      if (at && at.ok && at.data && Number.isInteger(at.data.task_id)) return at.data.task_id
+    } catch { /* 归属失败不阻断登记 */ }
+    return null
+  }
+
   async function controlledHttp(args, ctx = {}) {
     const r = await dispatchRef?.('exec', 'http_request', args, { actor: 'script', session_id: ctx.session_id || null, signal: ctx.signal })
     if (!r?.ok) throwErr(r?.error?.code || 'E_BACKEND_UNAVAILABLE', r?.error?.message || '受控 HTTP 执行域不可用', r?.error?.hint, r?.error?.retryable)
@@ -1033,7 +1047,7 @@ function makeHandlers(opts) {
           before: { status: dup.status, noise: dup.noise }, after: { status: dup.status, noise: dup.noise },
         }
       }
-      const signalTaskId = args.task_id != null ? Number(args.task_id) : (ctx.task_id != null ? Number(ctx.task_id) : null)
+      const signalTaskId = await resolveTaskId(args, ctx)
       const cand = existing
       if (cand && cand.noise === 1 && cand.status === 'new') {
         const merged = repo.mergeCandidate(cand.id, {
@@ -1127,7 +1141,7 @@ function makeHandlers(opts) {
       const note = suppressed
         ? `${args.evidence || ''}\n[auto-suppressed ${iso16()} reason=${suppressReason} category=${category} rate=${decision.rate} sample=${decision.sample}${quota.exceeded ? ` used=${quota.used}/${quota.quota}` : ''}]`.trim()
         : (args.evidence || '')
-      const taskId = args.task_id != null ? Number(args.task_id) : (ctx.task_id != null ? Number(ctx.task_id) : null)
+      const taskId = await resolveTaskId(args, ctx)
       const row = repo.insertFinding({
         fingerprint, title, severity: args.severity || 'info', host, url,
         evidence: note, source,

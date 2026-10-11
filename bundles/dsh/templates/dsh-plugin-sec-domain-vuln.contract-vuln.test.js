@@ -137,6 +137,20 @@ async function seedSignal(bus, extra = {}) {
   }, { actor: 'model', session_id: 'sess_1' })
 }
 
+test('WP12/L02: register_signal 未传 task_id 时按会话补全归属', async () => {
+  const { bus } = makeEnv()
+  const stub = {
+    domain: 'task', version: 1, service: 'secDomain.task', description: 'stub', owns: { tables: [], files: [] },
+    commands: {}, queries: { task_active_by_session: { actor: ['system'], params: { type: 'object', properties: { session_id: { type: 'string' } }, additionalProperties: false }, agent_note: 'stub' } },
+    events: {}, subscribes: {}, backend: 'repository-v1',
+  }
+  const reg = bus.registry.register({ manifest: stub, handlers: { queries: { task_active_by_session: async () => ({ task_id: 999, program_id: 'test-src' }) } }, backend: { name: 'stub', capabilities: {}, factory: () => ({}) } })
+  const r = await seedSignal(bus, { title: '归属补全测试信号：cAdvisor 未授权', program_id: 'test-src' })
+  assert.equal(r.ok, true, r.error?.message)
+  const row = bus._internal.db().prepare('SELECT task_id, program_id, session_id FROM findings WHERE id=?').get(r.data.id)
+  assert.equal(row.task_id, 999, '按会话反查补全 task_id')
+})
+
 async function seedCandidate(bus, extra = {}) {
   return bus.dispatch('vuln', 'register_candidate', {
     title: extra.title || 'a.example.com 被动审计候选：xray',
