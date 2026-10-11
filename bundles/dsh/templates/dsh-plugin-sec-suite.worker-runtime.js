@@ -203,7 +203,11 @@ export function installWorkerSessionReporter(ctx, dataDir) {
     }, journal)
     ctx.on('agent/request', async (_payload, next) => {
       const config = await next()
-      return { ...config, maxTokens: Math.min(config.maxTokens || 2048, 2048, budget.state.limit) }
+      // Output headroom: a max-reasoning model spends output on thinking before it can
+      // emit a tool call; the old 2048 cap truncated the final register/handoff call
+      // mid-stream (finish_kind=max-tokens, exit 1 — #103419 run wmv3bncq1c219). 8192
+      // still bounds per-request cost while leaving room to finish one tool call.
+      return { ...config, maxTokens: Math.min(config.maxTokens || 8192, 8192, budget.state.limit) }
     }, { global: true, prepend: true })
     ctx.on('llm/stream', (options, next) => (async function* () {
       const deadline = Date.now() + 15000
