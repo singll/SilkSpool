@@ -800,13 +800,18 @@ function makeHandlers(opts) {
       if (!dispatchRef) return { ok: true, data: { skipped: true } }
       const p = envelope?.payload || {}
       const tool = p.tool || 'cli'
-      const host = p.host || p.target || 'unknown'
+      // payload.host 可能是超长 URL（run_cli 目标）——直接入 summary(≤300)/fact_key 会 E_SCHEMA
+      // → 订阅者失败进 outbox 死信（27 号 F06）。截断 + 短哈希：身份确定、可落库。
+      const hostRaw = String(p.host || p.target || 'unknown')
+      const host = hostRaw.length <= 200 ? hostRaw : hostRaw.slice(0, 160) + '…' + crypto.createHash('sha1').update(hostRaw).digest('hex').slice(0, 8)
       const r = await dispatchRef('fact', 'upsert', {
         program_id: p.program_id || '__legacy__', fact_key: `note/fail-${tool}-${host}`,
-        category: 'note', summary: `run_cli 失败：${tool} @ ${host}`, body: `run_id=${p.run_id || ''} tool=${tool} target=${host} cause=${p.cause || ''} duration_ms=${p.duration_ms || ''}`,
+        category: 'note', summary: `run_cli 失败：${tool} @ ${host}`.slice(0, 300), body: `run_id=${p.run_id || ''} tool=${tool} target=${host} cause=${p.cause || ''} duration_ms=${p.duration_ms || ''}`.slice(0, 4000),
         confidence: 'tentative', source: 'auto:runcli-fail',
       }, { actor: 'reactor' })
-      return { ok: !!r.ok, data: { skipped: false } }
+      // 透传失败原因（此前吞掉错误码，总线只见 E_INTERNAL，无法归因）。
+      return r && r.ok ? { ok: true, data: { skipped: false } }
+        : { ok: false, error: r?.error || { code: 'E_INTERNAL', message: 'fact upsert 失败' }, data: { skipped: false } }
     },
     onApprovalApproved: async (envelope) => {
       if (!dispatchRef) return { ok: true, data: { skipped: true } }

@@ -46,6 +46,19 @@ function readEvents(dir) {
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
 
+test('27 F06: onExecRunFailed 超长 host 截断落库（防 summary 超限致死信）', async () => {
+  const calls = []
+  const domain = buildFactDomain({ dataDir: tmpDir(), dispatch: async (d, v, a) => { calls.push(a); return { ok: true, data: { created: 1 } } } })
+  const r = await domain.handlers.subscribers.onExecRunFailed({
+    id: 'e1', name: 'exec.run.failed', actor: 'reactor', ts: Date.now(),
+    payload: { run_id: 'r1', tool: 'arjun', host: 'https://a.example.com/' + 'a'.repeat(3000), program_id: 'p1', cause: '超时' },
+  })
+  assert.equal(r.ok, true, JSON.stringify(r.error))
+  assert.equal(calls.length, 1)
+  assert.ok(calls[0].summary.length <= 300, `summary ≤300，实际 ${calls[0].summary.length}`)
+  assert.ok(calls[0].fact_key.length < 300, 'fact_key 已截断')
+})
+
 test('fact_search 工具输出可无损往返 JSON（包括非 cooling 的事实）', async () => {
   const { bus } = makeEnv()
   const created = await bus.dispatch('fact', 'upsert', {

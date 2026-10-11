@@ -754,25 +754,28 @@ function makeHandlers(opts) {
       const runId = String(payload.run_id || envelope?.cause?.run_id || '')
       let registered = 0
       let failed = 0
+      // F06：把失败项具体化（哪一批/哪个信号/什么错误），供死信归因到受影响投影；
+      // 此前只回 {registered,failed,partial}，总线只知"partial"，无法定位坏数据。
+      const failedDetails = []
       try {
         if (Array.isArray(p.assets) && p.assets.length) {
           for (let i = 0; i < p.assets.length; i += 500) {
             const r = await dispatchRef('asset', 'upsert_bulk', { rows: p.assets.slice(i, i + 500), proposal_ref: runId }, { actor: 'script', session_id: payload.session_id || null, run_id: runId })
-            if (r.ok) registered += (r.data?.created || 0); else failed++
+            if (r.ok) registered += (r.data?.created || 0); else { failed++; failedDetails.push({ part: 'assets', offset: i, error: r.error?.code || r.error?.message || 'unknown' }) }
           }
         }
         if (Array.isArray(p.fingerprints) && p.fingerprints.length) {
           const r = await dispatchRef('asset', 'fp_record_bulk', { rows: p.fingerprints, proposal_ref: runId }, { actor: 'script', session_id: payload.session_id || null, run_id: runId })
-          if (r.ok) registered += (r.data?.created || 0); else failed++
+          if (r.ok) registered += (r.data?.created || 0); else { failed++; failedDetails.push({ part: 'fingerprints', error: r.error?.code || r.error?.message || 'unknown' }) }
         }
         for (const s of (Array.isArray(p.state_signals) ? p.state_signals : [])) {
           try {
             const r = await dispatchRef('asset', 'state', { host: s.host, type: s.type || 'host', signal: s.signal, evidence: runId }, { actor: 'script', session_id: payload.session_id || null, run_id: runId })
-            if (r.ok) registered++; else failed++
-          } catch { failed++ }
+            if (r.ok) registered++; else { failed++; failedDetails.push({ part: 'state', host: s.host, error: r.error?.code || r.error?.message || 'unknown' }) }
+          } catch (e) { failed++; failedDetails.push({ part: 'state', host: s.host, error: String(e?.message || e) }) }
         }
-      } catch { failed++ }
-      return { ok: true, data: { registered, failed, partial: failed > 0 } }
+      } catch (e) { failed++; failedDetails.push({ part: 'fatal', error: String(e?.message || e) }) }
+      return { ok: true, data: { registered, failed, partial: failed > 0, failed_details: failedDetails.slice(0, 20) } }
     },
   }
 
