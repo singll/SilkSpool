@@ -2196,6 +2196,14 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **提交**：`177fa77` / `c508416` / `e30bf74` / `5fa19e8`（另含 §15.143 维护 RPC、§15.142 worker 成本闸等本轮项）。
 - **边界**：F06 关闭仅指死信/投影契约与消解机制；WP03 其余（完整 fencing/多进程恢复、工具内部并发与进程外多实例、429 退避联动、D07 进程清理）仍待办。
 
+### 15.145 WP10/WP06 维护 RPC 只读验证（2026-10-11）
+
+借 §15.143 恢复的维护 RPC 做只读核对（actor=dashboard）。
+
+- **WP10（发现可见性）**：实际 RPC 校验技术统计/unknown 视图——`vuln.stats`、`know.health`、`know.coverage`、`asset.overview`、`task.stats`(需 program_id)、`ledger.discipline_stats`、`vuln.root_causes`、`vuln.evidence_flags` 全部 ok；**unknown 以 null 呈现**（`know.health.exp.tainted=null`、`vuln.technical_verdict(#1435)=null`），未见「unknown 伪装 0」缺陷（承接 §15.129）。
+- **WP06（技术成果/旧证据）**：独立技术状态投影 `vuln.technical_verdict` 可用，对无独立判定的 finding（如 #1435 仅到 `new`）返回 null（不伪造）。**剩余**：47 项复核队列的逐条独立技术状态 / 来源计数 / 新证据引用，仍须以原始证据核实（取证/数据工作，非代码）；旧 18 项转历史未知、无新线索不重查。
+- 边界：本轮为只读验证，未改数据、未宣称新增真实漏洞。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
@@ -2213,7 +2221,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 | WP07 | 版本/采用/episode框架；vendor 去污、可信 attempt 去重、真 artifact 引用、撤回/重算、版本/作用域统一已在前批（§15.73–117）落地；**hit_matrix 已改读版本化 attempt 投影 `know_scores`**（§15.129） | 独立样本/真实收益归因仍待；不得据 artifact 级过渡分宣称真实收益 |
 | WP08 | 既有fact/exp/kb/rules检索 | 统一适用召回、元数据/生命周期、具体可执行方法、真实gap闭环及memcore入口契约 |
 | WP09 | 有界候选执行、7类授权行为/故障新对象holdout、无卡/删策略对照、成本和固定报告引用已生产验收 | 其它漏洞族/技术栈、真正未见行为holdout、实际方法采用与真实发现收益；目前仅受控授权协议，不作全项完成 |
-| WP10 | kbList schema/完整分页、证据/阻塞可见；**stats 来源失败时 unknown 以 null 呈现（不再显示 0）**（§15.129） | 真实技术统计/unknown 显示的其余视图与实际 RPC 验证继续 |
+| WP10 | kbList schema/完整分页、证据/阻塞可见；**stats 来源失败时 unknown 以 null 呈现（不再显示 0）**（§15.129）；**维护 RPC 只读验证：技术统计/unknown 各视图 ok、unknown=null 无缺陷**（§15.145） | 真实技术统计/unknown 显示的其余视图与实际 RPC 验证继续 |
 | WP11 | 已有索引/FTS基础；**生产只读实测：热态主查询全部 <~100ms，仅首调冷启动偏高（asset.overview 1.85s 等），无持续瓶颈 → 实测退出、不做无依据虚拟化**（§15.129） | 后续仅在测到新瓶颈时再优化 |
 | WP12 | 本地链路与生产只读验收；**§15.142：调度 worker 首个真实 finding 已登记（`#1435` cAdvisor 未授权，single sample）** | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填；finding 仅到 `new`，可信判定/知识回流与多样本预算标定仍待 |
 
