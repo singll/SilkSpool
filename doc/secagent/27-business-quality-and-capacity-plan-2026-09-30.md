@@ -2209,7 +2209,8 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **D07 进程组清理（已统一，核验）**：CLI（`run_cli`）与 headless worker 共用 `executeManagedProcess`（`worker-runtime.js:270`）——`spawn(detached:true)`（独立进程组）+ `process.kill(-pgid, SIGTERM→SIGKILL)`（`graceMs` 升级）+ 组残留扫描 `workerGroupMembers` 再收（`E_WORKER_RESIDUAL_PROCESS`）。故 §D07 所述「CLI child.kill vs worker 进程组治理不一致」**已消除**；worker-runtime 契约测试覆盖 cancel/timeout 回收忽略 TERM 的子孙进程。
 - **fencing / 多进程恢复（已存在，核验）**：claim token=`claim_started_at` + `tasks.active_run_id`；`task_worker_register` 经 `bindClaimedWorker` 拒绝越权绑定（`E_TASK_CLAIM_SUPERSEDED`「旧事件不得覆盖当前 active_run_id」）；`task_finish` 对错位 claim / 晚到结果只入执行史、不改当前 run；预算预留按 claim 绑定/关闭；调度器文件锁单例；boot reap + `worker_reap` 承担重启对账。
 - **D04 429 自适应退避（新增，`e382e48`）**：此前 429 仅分类为 `rate_limited` 不退避。新增**按 origin 的退避表**：观察到 429 时按 `Retry-After`（缺省 5s，1s–60s 夹逼）暂停同源后续出站，`throttleQps` 取令牌前先等；按 origin 隔离，不波及其它主机。契约测试：`Retry-After: 1` → 二次请求延迟 ≥900ms。
-- **仍未办（本域内不可廉价闭合）**：工具**内部**并发（`nuclei -c` / `ffuf -t` 等自持线程）的逐请求计量；**进程外多实例**的全局速率（`qpsBucket` 为进程内）；`run_cli` 侧 429 联动（工具自吞 429，宿主不可见）。§D04 的全局请求预算 / `{{rate}}` 注入已具基础，上述为独立增强，需逐工具参数映射与跨进程状态。
+- **工具内部并发注入（新增，`1a72c89`）**：把 `{{rate}}` 单点注入推广到 `rate/concurrency/threads`——模板引用且调用方未显式指定时，按 `scope rate_limit_qps / SEC_EXEC_MAX_WORKERS` 注入每工具上限（覆盖 ffuf `-t`、nuclei `-c` 等自持并发），使「并发工具数 × 每工具(速率|线程) ≤ scope QPS」。契约测试覆盖注入与「显式不覆盖」。
+- **仍未办（独立增强，非本轮可廉价闭合）**：**进程外多实例的全局速率**（`qpsBucket` 为进程内，需跨进程共享令牌桶）；`run_cli` 侧 429 联动（工具自吞 429，宿主不可见）；工具内部并发的**逐请求计量**（当前为上限注入，非逐请求计数）。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
