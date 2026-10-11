@@ -1643,7 +1643,7 @@ const now = () => clock()
               const subEnv = await sub.handler(env)
               const partial = !!(subEnv && subEnv.data && subEnv.data.partial === true)
               const ok = !!(subEnv && subEnv.ok === true) && !partial
-              results.push({ event_id: env.id, subscriber: subKey(sub), ok, error_code: ok ? null : (partial ? 'E_PARTIAL' : subEnv?.error?.code || 'E_INTERNAL') })
+            results.push({ event_id: env.id, subscriber: subKey(sub), ok, error_code: ok ? null : (partial ? 'E_PARTIAL' : subEnv?.error?.code || 'E_INTERNAL'), error: ok ? null : (partial ? JSON.stringify(subEnv.data).slice(0, 300) : (subEnv?.error?.message || subEnv?.error?.hint || '')) })
               if (ok) redispatched++
             } catch (e) {
               results.push({ event_id: env.id, subscriber: subKey(sub), ok: false, error_code: 'E_INTERNAL', error: String(e?.message || e) })
@@ -1669,7 +1669,7 @@ const now = () => clock()
             const subEnv = await sub.handler(env)
             const partial = !!(subEnv && subEnv.data && subEnv.data.partial === true)
             const ok = !!(subEnv && subEnv.ok === true) && !partial
-            results.push({ event_id: env.id, subscriber: subKey(sub), ok, error_code: ok ? null : (partial ? 'E_PARTIAL' : subEnv?.error?.code || 'E_INTERNAL') })
+            results.push({ event_id: env.id, subscriber: subKey(sub), ok, error_code: ok ? null : (partial ? 'E_PARTIAL' : subEnv?.error?.code || 'E_INTERNAL'), error: ok ? null : (partial ? JSON.stringify(subEnv.data).slice(0, 300) : (subEnv?.error?.message || subEnv?.error?.hint || '')) })
             if (ok) {
               redispatched++
               db.prepare(`INSERT OR REPLACE INTO bus_subscription(event_id,subscriber,mode,status,attempt,last_error,consumed_at) VALUES(?,?,?,?,?,?,?)`)

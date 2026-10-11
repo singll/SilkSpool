@@ -765,8 +765,12 @@ function makeHandlers(opts) {
           }
         }
         if (Array.isArray(p.fingerprints) && p.fingerprints.length) {
-          const r = await dispatchRef('asset', 'fp_record_bulk', { rows: p.fingerprints, proposal_ref: runId }, { actor: 'script', session_id: payload.session_id || null, run_id: runId })
-          if (r.ok) registered += (r.data?.created || 0); else { failed++; failedDetails.push({ part: 'fingerprints', error: r.error?.code || r.error?.message || 'unknown' }) }
+          // fp_record_bulk 有 bulkRowLimit ≤500；>500 必须分批，否则整批 E_SCHEMA →
+          // 订阅者 partial → outbox 死信（生产 exec.run.completed 死信根因，27 号 F06）。
+          for (let i = 0; i < p.fingerprints.length; i += 500) {
+            const r = await dispatchRef('asset', 'fp_record_bulk', { rows: p.fingerprints.slice(i, i + 500), proposal_ref: runId }, { actor: 'script', session_id: payload.session_id || null, run_id: runId })
+            if (r.ok) registered += (r.data?.created || 0); else { failed++; failedDetails.push({ part: 'fingerprints', offset: i, error: r.error?.code || r.error?.message || 'unknown' }) }
+          }
         }
         for (const s of (Array.isArray(p.state_signals) ? p.state_signals : [])) {
           try {
