@@ -53,8 +53,9 @@ const CAMPAIGN_TICK_LIMIT = Number(process.env.SEC_CAMPAIGN_TICK_LIMIT || 10)
 // 23 号方案 §3.6：默认随统一额度面调为 30000（worker 未上报 token 前的保守估算）
 const CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT = Number(process.env.SEC_CAMPAIGN_ESTIMATE_TOKENS_PER_DRAFT || 30000)
 // 27 试点：campaign 派生 worker 的单任务 token 预算（旧硬编码 150k，工具面大时两轮即耗尽）。
-// 可由 campaign.policy.task_budget_tokens 覆盖。
-const CAMPAIGN_TASK_BUDGET_TOKENS = Number(process.env.SEC_CAMPAIGN_TASK_BUDGET_TOKENS || 600000)
+// 27 §15.150/15.152：H2 探测任务实测需 ~1.2–1.5M（run1 常在 1.2M 前后才收尾）；默认提到 1.5M
+// （budget 为上限，轻任务不会多耗）。可由 campaign.policy.task_budget_tokens 覆盖。
+const CAMPAIGN_TASK_BUDGET_TOKENS = Number(process.env.SEC_CAMPAIGN_TASK_BUDGET_TOKENS || 1500000)
 const CAMPAIGN_KINDS = DISCOVERY_TASK_KINDS
 // 22 号方案运行期：rework 后策略重开冷却（默认 6h；rejected 不回写重开）
 const CAMPAIGN_REWORK_REOPEN_MS = Number(process.env.SEC_CAMPAIGN_REWORK_REOPEN_HOURS || 6) * 3600000
