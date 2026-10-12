@@ -2272,6 +2272,26 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **验证（本地 + 生产）**：task 契约 **150/150**（原 149 + 新增红例）：新例「active 达 80% 但窗口内无进展 → 不写 `budget_extend_request`、不误停」，原 80% 爬坡用例补 `accepted` 进展后仍须提请，`AUTO_APPROVE=off` 用例补进展以继续验证「只提请不批准」。生产发布 change `20261012-d09-progress-extend`：只替换 `domain-task` 的「源模板 + 已安装插件」两落点（旧源码存 `/opt/silkspool/dsh/changes/20261012-d09-progress-extend/previous/`），目标机 `sec-task-domain-plugin-setup.sh` 契约 150/150 全绿、`--dump-config` web/headless 均含 `sec-domain-task`；`spool restart csai silksecagent` 后 NRestarts0、`dsh web:` token 行恢复、journal 无 error；维护 RPC 只读 `bus.status`139ms / `task.campaign_list`21ms / `stats`173ms，Campaign 全 paused（4）、running task/worker 0。
 - **残留**：本项只收口「平滑爬坡依据业务收益」；D09 的无有效进展停止（C11）已于 §15.129 完成。两者共同使「扩容/停止」由真实进展驱动，但**不改变** C2/C3 已超累计额度、须经人批新额度才能恢复的现状（§16 WP01）。提交见本次 commit。
 
+### 15.154 WP12 多样本预算标定：1.5M 单次收尾验证（2026-10-12）
+
+- **动机**：§15.152 代码治本（`7bd7cae`，campaign 默认单任务预算 600k→1.5M）预期让 H2 只读探测任务「单次收尾」。本项以多样本真实 run 验证：1.5M 是否消除「run1 触顶 + run2 廉价收尾」两段式。
+- **改动（无代码）**：仅验证；无源码/模板/契约变更。生产目标机 `dsh-plugin-sec-domain-task.js` md5 `6597e6…00` == 仓库模板，`CAMPAIGN_TASK_BUDGET_TOKENS=1500000` 已生效（7bd7cae 已部署）。
+- **方法**：维护 RPC（actor=dashboard）`task.create`（program=vulhub、phase=vuln、budget_tokens=1500000、once）→ `task.run_now`；轮询 `task.get`/`task.runs` 至 run 完成，读 `results/<run_id>/worker-budget.json` 取 `charged/requests/code`；每样本完成即 `task.cancel`。前置 `assert_idle` 通过（native running=0；DB tasks running/queued=0、workers running=0、campaigns active=0、4 paused；scope.check allow=true）。只读、单主机单端口、匿名 GET，固定路径集 ≤8（含 1 条对照 404 基线），禁越权/intrusive/写。
+- **样本清单**：
+
+| # | 目标 | task_id | run_id | run1 ok | charged | requests | code | task 终态 | 判定 |
+|---|---|---|---|---|---|---|---|---|---|
+| s1 | vulhub.singll.net:8090（Spring） | 103430 | wmv5awrq07be9 | **1** | **1,049,049** | 19 | — | done | 单次收尾 ✅ |
+| s3 | vulhub.singll.net:8083（Apache/PHP） | 103432 | wmv5bavuq8769 | **1** | **1,332,993** | 24 | — | done | 单次收尾 ✅ |
+| s2 | vulhub.singll.net:8082（Struts2/Jetty） | 103433 | wmv5bvglk5520 | 0 | 1,480,768 | 25 | `E_WORKER_BUDGET_EXHAUSTED` | failed | **run1 触顶** |
+| s2′（无效） | vulhub.singll.net:8082 | 103431 | wmv5b9lk77576 | 0 | 0 | 0 | spawn 事件超限 `8199>8192：exec.worker.spawned` | failed | 派生前失败，非预算问题 |
+
+- **业务产出（只读范围内，如实记录）**：s1 复验 8090 `TESTED_CLEAN`（无新 finding，仅刷新 neg 事实）；s3 登记 finding **#1437**（`vulhub.singll.net:8083` ThinkPHP 5.0.23 + Apache/PHP 版本经匿名异常页泄露，info_disclosure/CWE-200/low/new）；s2 run 在触顶前登记 finding **#1438**（8082 Struts2 Showcase/OGNL WebConsole 静态页 + Jetty 9.2.11.v20150529 EOL 版本指纹，low/new）。均仅确证**暴露面 + 版本指纹**，未做利用/写（与 §15.149「webconsole 是静态资源、DebuggingInterceptor 未启用」一致——此处只记静态页可达 + EOL 版本，不主张 OGNL 可利用）。
+- **判定**：**多数（2/3）有效样本 run1 即 ok=1 且 charged<1.5M**（8090 1.05M/19 请求、8083 1.33M/24 请求）→ 1.5M **对多数单目标 H2 任务消除两段式，治本方向成立**。但**非普适**：8082 在 1.5M/25 请求仍于收尾前触顶（1.48M）→ 与 §15.150「H2 任务 ≥1.5M」建议一致——1.5M 是必要量级，重目标（请求更多/每回合 context 更大）仍可能触顶。**同目标纵向对照最直接**：8090 在 1.2M 下稳定「run1 触顶（1.13–1.18M）+ run2 廉价收尾」（§15.150/§15.151），1.5M 下 run1 一次收尾（1.05M）。
+- **每回合 context（8082 触顶样本）**：run1 25 请求，`estimated_input_tokens` 24.6k–76.7k/回合（均值 ~59k），固定 `tool_bytes≈75.6k`、`history_bytes≈75.6k`、`message_bytes` 随探测累积至 195k；第 26 请求被 `denied`（`E_WORKER_BUDGET_EXHAUSTED`）。烧点在**每回合固定的工具面/历史 context（各 ~75k）叠加累积消息**，而非单条请求——与 §15.152 诊断一致，进一步治本仍指向裁剪工具面/历史。
+- **残留/边界**：s2 首跑暴露一个**非预算缺陷**：objective 过长使 `exec.worker.spawned` 事件体超 8192（`8199>8192`）于派生前失败、0 成本；精简 objective（-133 utf-8 字节）后复跑即正常进入 worker（列待办：长 objective 截断/事件体上限）。本项只回答「预算是否足以单次收尾」；**可信判定/知识回流**（断链②，§15.147）不受影响、仍待。
+- **提交**：见本次 commit。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
@@ -2291,7 +2311,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 | WP09 | 有界候选执行、7类授权行为/故障新对象holdout、无卡/删策略对照、成本和固定报告引用已生产验收 | 其它漏洞族/技术栈、真正未见行为holdout、实际方法采用与真实发现收益；目前仅受控授权协议，不作全项完成 |
 | WP10 | kbList schema/完整分页、证据/阻塞可见；**stats 来源失败时 unknown 以 null 呈现（不再显示 0）**（§15.129）；**维护 RPC 只读验证：技术统计/unknown 各视图 ok、unknown=null 无缺陷**（§15.145） | 真实技术统计/unknown 显示的其余视图与实际 RPC 验证继续 |
 | WP11 | 已有索引/FTS基础；**生产只读实测：热态主查询全部 <~100ms，仅首调冷启动偏高（asset.overview 1.85s 等），无持续瓶颈 → 实测退出、不做无依据虚拟化**（§15.129） | 后续仅在测到新瓶颈时再优化 |
-| WP12 | 本地链路与生产只读验收；**§15.142：调度 worker 首个真实 finding 已登记（`#1435` cAdvisor 未授权）**；**§15.147：finding→task 归属补全（`15df8d6`）+ 端到端对账**；**§15.148：第二个真实 finding `#1436`（WebLogic 7001 暴露面），全程维护 RPC 驱动、归属正确** | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填；finding 仅到 `new`，**可信判定/知识回流**（#1435/#1436 断链②）与多样本预算标定仍待 |
+| WP12 | 本地链路与生产只读验收；**§15.142：调度 worker 首个真实 finding 已登记（`#1435` cAdvisor 未授权）**；**§15.147：finding→task 归属补全（`15df8d6`）+ 端到端对账**；**§15.148：第二个真实 finding `#1436`（WebLogic 7001 暴露面），全程维护 RPC 驱动、归属正确** | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填；finding 仅到 `new`，**可信判定/知识回流**（#1435/#1436 断链②）仍待；**多样本预算标定已做**（§15.154：1.5M 下 2/3 单目标 run1 单次收尾——8090 1.05M、8083 1.33M；8082 仍于 1.48M/25 请求触顶；同目标 8090 由 1.2M 两段→1.5M 单次） |
 
 ## 17. 原子域合规复核（2026-10-09，只读）
 
