@@ -2244,6 +2244,8 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **硬收尾窗（已实现，`0a8f220`）**：软提示实测被模型忽略。新增硬收尾窗——worker-runtime 在 `charged+reserved ≥ 上限 85%` 时置 `SEC_WORKER_WRAPUP=1`；exec 域 `exec_run_cli`/`exec_http_request` 入口据此拒绝新增探测（`E_EXEC_WRAPUP_WINDOW`），只放行 ledger/fgs/vuln/task 收尾工具，避免探测耗尽预算致 ok=0。仅 worker 进程生效（`SEC_WORKER_RUN_ID`）；契约测试覆盖。
 - **硬收尾窗验证（task #103426，单目标 vulhub:8090，budget 1.2M）**：run1 `wmv4ssjeqe8bc` ok=0（1.16M）——**写全三产物**（`handoff-2026-10-12.md` + `card_usage-2026-10-12.jsonl` + attempts 8 行）后**未停**，继续验证/读回致预算耗尽；重试 run2 `wmv4teea2f932` **ok=1**（1.04M，FGS done + handoff + 明日队列，收尾完整）。**两轮均 0 条 `E_EXEC_WRAPUP_WINDOW`**——模型在 85% 前已自行转入收尾，硬窗未被迫触发（安全网未演练到）。8090 结论 `TESTED_CLEAN`（无 finding）。
 - **残留缺口（模型行为）**：run1「写完后不停」→ 建议再加一条「**wrap-up 已落账即结束**」的提示，或由 worker-runtime 检测到 handoff/ledger 已写且 ≥85% 后强提示收尾停止。软/硬提示已能促成收尾，但**「该停」**仍靠模型自律。
+- **「落账即停」提示复验（`304ca48`，task #103427，同目标 8090，budget 1.2M）**：run1 `wmv52kzk29c07` ok=0（1.18M）——**预算烧在 FGS 记账/分析回合**（每回合 ~56k × 21 回合），非探测；`E_EXEC_WRAPUP_WINDOW` 触发 **0**（窗口只拦探测，对 FGS/分析回合无效）；run2 `wmv531p2c1bb6` **ok=1**（837k，handoff 五段+fgs_export+FGS 收口完整）。**结论**：软/硬收尾提示与窗口均为 best-effort，**决定性机制是「重试复用进度」（run1 触顶 → run2 快速收尾）**；单次成功率取决于模型自律与 FGS 回合开销。8090 两轮结论均 `TESTED_CLEAN`（无 finding）。
+- **成本建议（据此更新）**：H2 探测任务单次预算应 **≥1.5M**（或减少 FGS/persona 回合开销），否则稳定走「run1 触顶 + run2 重试」两段，单任务 ~2M token。
 - **本会话 B/C 真实输入累计**：finding `#1436`（WebLogic 7001 暴露）+ 负结论（Struts2 webconsole 静态）+ 一次无结论（多端口），成本 ~4M token。均无越权/intrusive（只读）。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
