@@ -58,6 +58,25 @@ const ROE_BLOCK = [
   '5. 只读工具打写动词路径会被 S5 拒绝；确需写操作用 active/intrusive 工具并走审批。',
 ].join('\n')
 
+// §15.154 残留缺陷：exec.worker.spawned 是强联动事件，携带 fullTask（objective+RoE）。
+// bus 对事件信封有 8192 字节硬上限（EVENT_MAX_BYTES），超限时 publishInTx 抛
+// E_BUS_EVENT_TOO_LARGE；该 emit 在 onSpawn 内被 worker-runtime 捕获→杀进程组，
+// 表现为「派生前 0 成本失败」（长 objective 尤其容易触发）。事件侧 task 只供 task 域
+// 写 workers.task（其自身 slice(0,2000)），故按 UTF-8 字节有界化不丢语义。
+const SPAWN_EVENT_TASK_MAX_BYTES = 2000
+function boundUtf8Bytes(s, maxBytes) {
+  const text = String(s == null ? '' : s)
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
+}
+
 const BWRAP_BIN = process.env.SEC_BWRAP_BIN || '/usr/bin/bwrap'
 const SANDBOX_DISABLED = process.env.SEC_NO_SANDBOX === '1'
 const HOME_DIR = process.env.HOME || '/home/silkspool'
@@ -1791,7 +1810,7 @@ function makeHandlers(opts) {
         result = await executeWorkerProcess({ node: NODE_BIN, args: dshArgs, env, cwd: workCwd, runDir, runId, timeoutMs,
           signal: ctx.signal, persistence: opts.getSessionPersistence?.(),
           onSpawn: ({ pid }) => ctx.emit({ name: 'exec.worker.spawned', payload: {
-            run_id: runId, dedupe_key: dedupeKey, task: fullTask, cwd: workCwd, run_dir: runDir,
+            run_id: runId, dedupe_key: dedupeKey, task: boundUtf8Bytes(fullTask, SPAWN_EVENT_TASK_MAX_BYTES), cwd: workCwd, run_dir: runDir,
             timeout_sec: Math.round(timeoutMs / 1000), pid, origin_session_id: originSessionId,
             task_id: Number.isInteger(args.task_id) ? args.task_id : null,
             claim_started_at: args.claim_started_at ?? null,

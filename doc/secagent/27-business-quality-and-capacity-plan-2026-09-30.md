@@ -2289,7 +2289,17 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **业务产出（只读范围内，如实记录）**：s1 复验 8090 `TESTED_CLEAN`（无新 finding，仅刷新 neg 事实）；s3 登记 finding **#1437**（`vulhub.singll.net:8083` ThinkPHP 5.0.23 + Apache/PHP 版本经匿名异常页泄露，info_disclosure/CWE-200/low/new）；s2 run 在触顶前登记 finding **#1438**（8082 Struts2 Showcase/OGNL WebConsole 静态页 + Jetty 9.2.11.v20150529 EOL 版本指纹，low/new）。均仅确证**暴露面 + 版本指纹**，未做利用/写（与 §15.149「webconsole 是静态资源、DebuggingInterceptor 未启用」一致——此处只记静态页可达 + EOL 版本，不主张 OGNL 可利用）。
 - **判定**：**多数（2/3）有效样本 run1 即 ok=1 且 charged<1.5M**（8090 1.05M/19 请求、8083 1.33M/24 请求）→ 1.5M **对多数单目标 H2 任务消除两段式，治本方向成立**。但**非普适**：8082 在 1.5M/25 请求仍于收尾前触顶（1.48M）→ 与 §15.150「H2 任务 ≥1.5M」建议一致——1.5M 是必要量级，重目标（请求更多/每回合 context 更大）仍可能触顶。**同目标纵向对照最直接**：8090 在 1.2M 下稳定「run1 触顶（1.13–1.18M）+ run2 廉价收尾」（§15.150/§15.151），1.5M 下 run1 一次收尾（1.05M）。
 - **每回合 context（8082 触顶样本）**：run1 25 请求，`estimated_input_tokens` 24.6k–76.7k/回合（均值 ~59k），固定 `tool_bytes≈75.6k`、`history_bytes≈75.6k`、`message_bytes` 随探测累积至 195k；第 26 请求被 `denied`（`E_WORKER_BUDGET_EXHAUSTED`）。烧点在**每回合固定的工具面/历史 context（各 ~75k）叠加累积消息**，而非单条请求——与 §15.152 诊断一致，进一步治本仍指向裁剪工具面/历史。
-- **残留/边界**：s2 首跑暴露一个**非预算缺陷**：objective 过长使 `exec.worker.spawned` 事件体超 8192（`8199>8192`）于派生前失败、0 成本；精简 objective（-133 utf-8 字节）后复跑即正常进入 worker（列待办：长 objective 截断/事件体上限）。本项只回答「预算是否足以单次收尾」；**可信判定/知识回流**（断链②，§15.147）不受影响、仍待。
+- **残留/边界**：s2 首跑暴露一个**非预算缺陷**：objective 过长使 `exec.worker.spawned` 事件体超 8192（`8199>8192`）于派生前失败、0 成本；精简 objective（-133 utf-8 字节）后复跑即正常进入 worker（列待办：长 objective 截断/事件体上限，**已由 §15.155 修复**）。本项只回答「预算是否足以单次收尾」；**可信判定/知识回流**（断链②，§15.147）不受影响、仍待。
+- **提交**：见本次 commit。
+
+### 15.155 修：长 objective 使 exec.worker.spawned 事件超 8192 致派生前失败（2026-10-12，已上线）
+
+- **动机**：§15.154 残留缺陷——长 objective 让 `exec.worker.spawned` 事件体达 `8199>8192`，在 spawn 强联动注册前被 bus `publishInTx` 以 `E_BUS_EVENT_TOO_LARGE` 拒绝；该 `ctx.emit` 在 `onSpawn` 内被 worker-runtime 捕获即 `stop()` 杀进程组，表现为**派生前 0 成本失败**（objective 稍短即可绕过，是确定性工程缺口，非预算问题）。
+- **根因**：`exec_spawn_worker` 的 spawned 载荷携带 `task: fullTask`（objective + 注入的 RoE 块）**未做任何有界化**；bus 对**事件信封**（含 name/domain/ts 等）有 8192B 硬上限（`EVENT_MAX_BYTES`），长 objective 直接撞顶。task 域消费时只把 `task` 存 `workers.task` 且自身 `slice(0,2000)`——即事件里超 2000 的 `task` 从不被使用，纯冗余却触发致命拒绝。
+- **修复**（`dsh-plugin-sec-domain-exec.js`）：新增 `boundUtf8Bytes(s,maxBytes)`（UTF-8 字节安全二分截断，不切多字节字符），spawned 载荷 `task` 改为 `boundUtf8Bytes(fullTask, 2000)`。与 task 域存储口径（截 2000）一致，**不丢任何被使用的语义**；`meta.json` 仍写完整 `fullTask`（文件系统，不受事件上限约束）。口径同 approval 域既有 `boundedEventPayload`（事件侧深截断不丢语义）。
+- **契约测试**（新增红例）：构造 `>8192B` 的 objective → 断言 `spawn_worker` 派发不再因事件超限丢失 `exec.worker.spawned`；事件信封 `≤8192`、`payload.task` 字节数 `≤2000`、保留开头语义、`finished` 事件仍发布。**修复前**该例在 `onSpawn` 即失败（spawned 事件缺失）；**修复后**通过。
+- **验证（本地 + 生产）**：本地 `sec-contract-test-local.sh exec` **102/102**（原 101 + 新增红例）；生产 change `20261012-exec-spawn-event-bound`——只替换 exec 域「源模板 + 已安装插件 + 契约测试」两落点（旧源码存 `/opt/silkspool/dsh/changes/20261012-exec-spawn-event-bound/previous/`），目标机 `sec-exec-domain-plugin-setup.sh` 重新组装并跑 **102/102 全绿**、`--dump-config` web/headless 均含 `sec-domain-exec`；`spool restart csai silksecagent` 后 NRestarts0、active/running、`[sec-domain-exec] exec 域注册成功`、`dsh web:` token 行恢复、journal 无 error；重启前 `assert_idle`（tasks running/queued=0、workers running=0、campaigns active=0、paused 4）。
+- **边界/未夸大**：本项只消除「长 objective → 事件超限 → 派生前失败」这一确定性工程缺口；**不改**预算/收尾策略（§15.150–15.154 议题），**不涉**可信判定/知识回流（断链②，§15.147）。属「无真实 run 强依赖」的 A 类闭环（契约测试即充分判据），未做真实 run 复现（保持环境空转）。同类风险根因是「事件载荷未按 8192 信封上限有界化」，本次仅修 exec.worker.spawned；其余域事件若引入超长字符串仍需各自有界化。
 - **提交**：见本次 commit。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
@@ -2311,7 +2321,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 | WP09 | 有界候选执行、7类授权行为/故障新对象holdout、无卡/删策略对照、成本和固定报告引用已生产验收 | 其它漏洞族/技术栈、真正未见行为holdout、实际方法采用与真实发现收益；目前仅受控授权协议，不作全项完成 |
 | WP10 | kbList schema/完整分页、证据/阻塞可见；**stats 来源失败时 unknown 以 null 呈现（不再显示 0）**（§15.129）；**维护 RPC 只读验证：技术统计/unknown 各视图 ok、unknown=null 无缺陷**（§15.145） | 真实技术统计/unknown 显示的其余视图与实际 RPC 验证继续 |
 | WP11 | 已有索引/FTS基础；**生产只读实测：热态主查询全部 <~100ms，仅首调冷启动偏高（asset.overview 1.85s 等），无持续瓶颈 → 实测退出、不做无依据虚拟化**（§15.129） | 后续仅在测到新瓶颈时再优化 |
-| WP12 | 本地链路与生产只读验收；**§15.142：调度 worker 首个真实 finding 已登记（`#1435` cAdvisor 未授权）**；**§15.147：finding→task 归属补全（`15df8d6`）+ 端到端对账**；**§15.148：第二个真实 finding `#1436`（WebLogic 7001 暴露面），全程维护 RPC 驱动、归属正确** | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填；finding 仅到 `new`，**可信判定/知识回流**（#1435/#1436 断链②）仍待；**多样本预算标定已做**（§15.154：1.5M 下 2/3 单目标 run1 单次收尾——8090 1.05M、8083 1.33M；8082 仍于 1.48M/25 请求触顶；同目标 8090 由 1.2M 两段→1.5M 单次） |
+| WP12 | 本地链路与生产只读验收；**§15.142：调度 worker 首个真实 finding 已登记（`#1435` cAdvisor 未授权）**；**§15.147：finding→task 归属补全（`15df8d6`）+ 端到端对账**；**§15.148：第二个真实 finding `#1436`（WebLogic 7001 暴露面），全程维护 RPC 驱动、归属正确**；**§15.155：修「长 objective 使 `exec.worker.spawned` 事件超 8192 致派生前 0 成本失败」（exec 域 spawned 载荷 `task` UTF-8 有界化，已上线）** | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填；finding 仅到 `new`，**可信判定/知识回流**（#1435/#1436 断链②）仍待；**多样本预算标定已做**（§15.154：1.5M 下 2/3 单目标 run1 单次收尾——8090 1.05M、8083 1.33M；8082 仍于 1.48M/25 请求触顶；同目标 8090 由 1.2M 两段→1.5M 单次） |
 
 ## 17. 原子域合规复核（2026-10-09，只读）
 

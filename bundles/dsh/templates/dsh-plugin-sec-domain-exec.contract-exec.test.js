@@ -615,6 +615,25 @@ test('spawn_worker: 伪 worker 完成 + worker.spawned/finished 事件', async (
   assert.ok(readEvents(dir).find((e) => e.name === 'exec.worker.finished' && e.payload.status === 'done'))
 })
 
+// §15.154 残留缺陷：长 objective 使 exec.worker.spawned 事件体超 8192 致派生前失败。
+// 事件信封硬上限（bus EVENT_MAX_BYTES=8192）在 spawn 强联动注册前校验，超限即
+// E_BUS_EVENT_TOO_LARGE、0 成本 fail、worker 起不来。修复=事件内 task 载荷字节有界化
+// （task 域只把 task 存 workers.task 且截 2000，故有界化不丢语义）。
+test('§15.154: 超长 objective 的 worker.spawned 事件仍 ≤ 8192，且派发成功', async () => {
+  const { dir, bus } = makeEnv()
+  const longTask = '把下列授权目标纳入只读探测（逐字、不可指代）：\n' + '示例目标说明 '.repeat(2000)
+  assert.ok(Buffer.byteLength(longTask, 'utf8') > 8192, '前置：构造的 objective 本身已超事件上限')
+  const r = await bus.dispatch('exec', 'spawn_worker', { task: longTask, timeout: 5 }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const spawned = readEvents(dir).find((e) => e.name === 'exec.worker.spawned')
+  assert.ok(spawned, '长 objective 不应再使 spawn 事件超限而丢失（应已发布）')
+  const size = Buffer.byteLength(JSON.stringify(spawned), 'utf8')
+  assert.ok(size <= 8192, `spawned 事件信封 ${size} 应 ≤ 8192`)
+  assert.ok(Buffer.byteLength(spawned.payload.task, 'utf8') <= 2000, '事件内 task 应被 UTF-8 字节有界化（≤2000）')
+  assert.ok(spawned.payload.task.startsWith('把下列授权目标纳入只读探测'), '有界化保留开头语义')
+  assert.ok(readEvents(dir).find((e) => e.name === 'exec.worker.finished'), 'finished 事件仍发布')
+})
+
 // ---------------------------------------------------------------------------
 // 6b. L6（学习专项 §10 调度器切换）：spawn_worker cwd/task_id——调度器派单契约
 // ---------------------------------------------------------------------------

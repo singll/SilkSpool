@@ -161,7 +161,7 @@ renderTemplate → shellSplit → spawn
 4. 被拒后不换姿势重试，改走审批（scope-guard 是 fail-closed 硬校验）。
 5. 只读工具打写动词路径会被 S5 拒绝；确需写操作用 active/intrusive 工具并走审批。
 
-**事件**：spawn 落地后发 `exec.worker.spawned`（L6 起载荷含 `task_id`（可空）与 `cwd`）；进程收尾后发 `exec.worker.finished`。
+**事件**：spawn 落地后发 `exec.worker.spawned`（L6 起载荷含 `task_id`（可空）与 `cwd`）；进程收尾后发 `exec.worker.finished`。spawned 载荷内的 `task`（objective+RoE）经 UTF-8 字节有界化（≤2000B，与 task 域 `workers.task` 存储口径一致）——事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），长 objective 不得因事件超限而于派生前失败（§15.155）。
 **错误**：`E_EXEC_WORKER_BUSY`（并发满，retryable）/ `E_EXEC_WORKER_IN_PROGRESS`（同任务在跑，非错误路径返回 in_progress 信封）/ `E_EXEC_WORKER_START_FAILED`（spawn 异常）/ `E_EXEC_CWD_FORBIDDEN`（cwd 仅调度器可用）/ `E_EXEC_CWD_INVALID`（cwd 不存在或非目录）。
 **actor**：model, dashboard, scheduler（task 域调度循环）。
 
@@ -337,7 +337,7 @@ page/grep 结果读取拒绝文件/目录符号链接、硬链接与非常规文
 | `exec.run.started` | run_cli 通过守卫链、spawn 前 | `run_id, tool, stage, risk, targets(≤10), program_id` | 弱 |
 | `exec.run.failed` | run 落盘且 exit_code≠0；2026-10-06本地增量移除Program必填条件，待发布 | `run_id, tool, host, exit_code, error, program_id` | 弱（fact记故障；本地增量know记infra_error）|
 | `exec.run.completed` | run 落盘 + 后处理 ①② 之后 | 见 1.5.2 | 弱（asset/endpoint/vuln 订阅入库；可重放） |
-| `exec.worker.spawned` | worker 注册表登记成功 | `run_id, dedupe_key, cwd, timeout_sec, pid, origin_session_id` | **强（sync）**——task 域注册行丢失=dedupe 失效=重复 spawn |
+| `exec.worker.spawned` | worker 注册表登记成功 | `run_id, dedupe_key, cwd, timeout_sec, pid, origin_session_id`（另含 `task`（UTF-8 有界化 ≤2000B）、`run_dir, task_id, claim_started_at, budget_tokens`） | **强（sync）**——task 域注册行丢失=dedupe 失效=重复 spawn |
 | `exec.worker.finished` | worker 收尾（done/failed/killed） | `run_id, status, exit_code, duration_ms` | **强（sync）**——终态是 dedupe 真相的一部分；孤儿兜底由 task 域 reap 对账 |
 | `exec.flow.appended` | flow 落盘后 | `flow_file, host, title` | 弱（vuln 候选登记） |
 | `exec.import.completed` | burp 等导入落盘后 | `import_id, kind, records, hosts(≤20)` | 弱（endpoint/vuln 入库） |
