@@ -2228,6 +2228,14 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **成本**：task 累计 ~1.0M token（含 1 次失败重试）。任务已取消（finding 已登记，停每日 interval）。
 - **意义**：WP05「知识驱动语义闭环真实输入」+ WP12 端到端（请求→假设→实验→登记）再取一真实样本，且**首次全程走正式 RPC**；可信判定/知识回流仍待验证器（断链②，§15.147）。
 
+### 15.149 真实业务输入第三轮：Struts2 8082（负结论）+ 收尾预算问题（2026-10-11）
+
+- `task #103424`（维护 RPC 驱动，program=vulhub、budget 800k）：目标 `vulhub.singll.net:8082` Struts2 `/struts/webconsole.html?debug=console` 只读核验。
+- **产出决定性负结论**（可解释的 clean）：`/struts/webconsole.html` **无 debug 参数也返回同一 OGNL Console body** → 是 struts2-core **静态资源**、非 DebuggingInterceptor 生成；`/index.action?debug=console|browser|xml` 均返回普通 Fileupload 页 → **DebuggingInterceptor 未启用**（devMode 未暴露）。如实记入 task_runs note，**未登记 finding**。
+- **问题**：两轮复跑（`wmv4obiu2f4ab` 723k、`wmv4oodspd95b` 760k）均在**收尾（ledger/handoff）前**耗尽预算 → `ok=0`；累计 ~1.48M。已取消以控成本。
+- **成本观察（待办）**：H2 探测任务普遍在 ~75 万 token 才到收尾前，**收尾（attempts/card_usage/handoff）预留不足**——#103423 靠重试复用进度（219k）才 ok=1，#103424 两轮重试均未收尾。建议：worker 提示/预算策略**为收尾预留**（如剩余 X% 前强制写 handoff/ledger），或提高默认预算。列为成本优化待办。
+- **意义**：WP09/WP12 得到一条**带证据的负结果**（非「无发现」而是「已证伪的暴露假设」）；同时暴露收尾预算策略缺口。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
