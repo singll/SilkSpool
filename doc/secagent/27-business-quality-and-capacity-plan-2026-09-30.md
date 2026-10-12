@@ -2240,7 +2240,8 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 
 - **新增 worker 预算感知收尾提示**（`b970753`）：`charged+reserved ≥ 上限 75%` 时，向该回合注入一次性系统提示（停止新增探测、优先 `ledger_log_attempt`/`ledger_handoff_write`/`fgs_export` 收尾），弥补 wall-clock「最后5分钟」与 token 预算不对齐。
 - **实测**（`task #103425`，vulhub `8080/8083/8084/8090` 只读暴露面，budget 800k）：两轮均 `E_WORKER_BUDGET_EXHAUSTED`（`wmv4p9bk59ed3` 756k / `wmv4pngiu6d76` 785k，累计 1.54M，无 finding）。**提示确已注入**（会话投影 `session-2722f3b8…` 与 FGS 快照含 `预算提醒`），**但模型未遵守**（继续探测）→ 软提示对重推理模型**不足**。
-- **经验（成本）**：① 多端口单任务**过宽不收敛**（对比 §15.148 单目标 WebLogic 成功）；② H2 任务默认 800k 偏紧，建议 **~1.2M**（#103419 WebLogic 1.2M 时 868k 完成；#103423 靠重试累计 ~1.0M 完成）；③ 软提示保留为 best-effort，后续可考虑「硬收尾窗」（剩余 X% 时收尾专用工具白名单放行、其余拒绝）。
+- **经验（成本）**：① 多端口单任务**过宽不收敛**（对比 §15.148 单目标 WebLogic 成功）；② H2 任务默认 800k 偏紧，建议 **~1.2M**（#103419 WebLogic 1.2M 时 868k 完成；#103423 靠重试累计 ~1.0M 完成）；③ 软提示保留为 best-effort。
+- **硬收尾窗（已实现，`0a8f220`）**：软提示实测被模型忽略。新增硬收尾窗——worker-runtime 在 `charged+reserved ≥ 上限 85%` 时置 `SEC_WORKER_WRAPUP=1`；exec 域 `exec_run_cli`/`exec_http_request` 入口据此拒绝新增探测（`E_EXEC_WRAPUP_WINDOW`），只放行 ledger/fgs/vuln/task 收尾工具，避免探测耗尽预算致 ok=0。仅 worker 进程生效（`SEC_WORKER_RUN_ID`）；契约测试覆盖。**待真实任务验证生效。**
 - **本会话 B/C 真实输入累计**：finding `#1436`（WebLogic 7001 暴露）+ 负结论（Struts2 webconsole 静态）+ 一次无结论（多端口），成本 ~4M token。均无越权/intrusive（只读）。
 
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
