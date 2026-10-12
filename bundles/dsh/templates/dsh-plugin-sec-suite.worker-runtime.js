@@ -202,6 +202,7 @@ export function installWorkerSessionReporter(ctx, dataDir) {
       fs.renameSync(tmp, path.join(runDir, 'worker-budget.json'))
     }, journal)
     let wrapupNudged = false
+    let wrapupHardNotified = false
     ctx.on('agent/request', async (_payload, next) => {
       const config = await next()
       // Output headroom: a max-reasoning model spends output on thinking before it can
@@ -231,7 +232,13 @@ export function installWorkerSessionReporter(ctx, dataDir) {
             if (!wrapupNudged && used >= st.limit * 0.75 && Array.isArray(options.messages)) {
               wrapupNudged = true
               const pct = Math.round((used / st.limit) * 100)
-              const note = `[预算提醒] worker 预算已用约 ${pct}%（${used}/${st.limit}）。立即停止新增网络探测，本回合优先收尾：ledger_log_attempt（本轮已做的探测各补一条）→ ledger_handoff_write（五段）→ fgs_export；证据不足用 vuln_note 记 inconclusive。到 85% 起 exec 探测工具将被硬拒绝，只剩收尾工具可用。`
+              const note = `[预算提醒] worker 预算已用约 ${pct}%（${used}/${st.limit}）。立即停止新增网络探测，本回合优先收尾：ledger_log_attempt（本轮已做的探测各补一条）→ ledger_handoff_write（五段）→ fgs_export；证据不足用 vuln_note 记 inconclusive。到 85% 起 exec 探测工具将被硬拒绝。收尾三产物落账后必须立即结束本回合、不再调用任何工具（否则耗尽预算致 run ok=0）。`
+              options.messages.push({ role: 'system', content: [{ type: 'text', text: note }] })
+            }
+            // 硬收尾窗提示（一次性）：≥85% 明确「落账即停」，避免写完后继续验证/读回耗尽预算（§15.150 run1）。
+            if (!wrapupHardNotified && used >= st.limit * 0.85 && Array.isArray(options.messages)) {
+              wrapupHardNotified = true
+              const note = `[硬收尾窗] worker 预算已达约 ${Math.round((used / st.limit) * 100)}%：新增探测（run_cli/http_request）已被硬拒绝（E_EXEC_WRAPUP_WINDOW）。若 ledger_log_attempt / ledger_log_card_usage / ledger_handoff_write 已写入，立即结束本回合——不要再调用任何工具（含验证/读回）；未写完则先补齐这三项再结束。不要重试被拒的探测。`
               options.messages.push({ role: 'system', content: [{ type: 'text', text: note }] })
             }
           }
