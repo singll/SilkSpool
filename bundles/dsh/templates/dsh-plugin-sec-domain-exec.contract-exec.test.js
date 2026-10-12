@@ -1029,6 +1029,24 @@ test('D04: 跨进程共享令牌桶（dataDir 状态文件），scope QPS=1 时�
   assert.ok(fs.existsSync(path.join(dataDir, '.exec-qps.json')), '共享桶状态文件已创建（跨进程共享依据）')
 })
 
+test('§15.150: worker 收尾窗硬拒绝探测工具（run_cli/http_request），清除后恢复', async t => {
+  const { dataDir, bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  process.env.SEC_WORKER_RUN_ID = 'wtestwrapup'
+  process.env.SEC_WORKER_WRAPUP = '1'
+  t.after(() => { delete process.env.SEC_WORKER_RUN_ID; delete process.env.SEC_WORKER_WRAPUP })
+  const r1 = await bus.dispatch('exec', 'run_cli', { tool: 'echo-test', params: { msg: 'x' } }, { actor: 'model' })
+  assert.equal(r1.ok, false)
+  assert.equal(r1.error?.code, 'E_EXEC_WRAPUP_WINDOW')
+  const r2 = await bus.dispatch('exec', 'http_request', { program_id: 'test-src', url: 'http://127.0.0.1:1/', proxy: 'direct' }, { actor: 'model' })
+  assert.equal(r2.ok, false)
+  assert.equal(r2.error?.code, 'E_EXEC_WRAPUP_WINDOW')
+  delete process.env.SEC_WORKER_WRAPUP
+  delete process.env.SEC_WORKER_RUN_ID
+  const r3 = await bus.dispatch('exec', 'run_cli', { tool: 'echo-test', params: { msg: 'ok' } }, { actor: 'model' })
+  assert.equal(r3.ok, true, r3.error?.message)
+})
+
 for (const mode of ['denied', 'public', 'identity_changed', 'empty', 'rate_limited', 'denied_with_data', 'credentialed_control']) {
   test(`WP02 single-account signed denial review ${mode}: actual responses → decision → learning`, async t => {
     const { bus, dataDir } = makeEnv()

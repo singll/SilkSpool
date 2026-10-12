@@ -727,6 +727,14 @@ function makeHandlers(opts) {
   let currentTool = null
 
   function throwErr(code, message, hint, retryable = false) { throw Object.assign(new Error(message), { code, hint, retryable }) }
+  // 硬收尾窗（§15.150）：worker 预算接近上限时 worker-runtime 置 SEC_WORKER_WRAPUP=1，
+  // 禁止新增网络探测（run_cli/http_request），只放行 ledger/fgs/vuln/task 等收尾工具，
+  // 确保任务能收尾落账（不因探测耗尽预算而 ok=0）。仅 worker 进程生效（SEC_WORKER_RUN_ID）。
+  function assertNotWrapupWindow() {
+    if (process.env.SEC_WORKER_RUN_ID && process.env.SEC_WORKER_WRAPUP === '1') {
+      throwErr('E_EXEC_WRAPUP_WINDOW', 'worker 预算已进入收尾窗：禁止新增探测（run_cli/http_request）', '立即 ledger_log_attempt/ledger_log_card_usage/ledger_handoff_write/fgs_export 收尾；不重试探测', false)
+    }
+  }
   function pidAlive(pid) { try { process.kill(pid, 0); return true } catch { return false } }
 
   // Host-owned signing key is outside results/evidence and never exposed by queries.
@@ -1478,6 +1486,7 @@ function makeHandlers(opts) {
         after: { decision_id: decisionId, outcome: record.outcome } }
     },
     exec_http_request: async (args, repo, ctx) => {
+      assertNotWrapupWindow()
       const r = await executeHttp(args, repo, ctx, selectProxy(args.proxy), args.follow_redirects !== false)
       const data = { run_id: r.run_id, state: r.response.state, status: r.response.status, elapsed_ms: r.elapsed_ms, hops: r.hops.length }
       return { data, events: [{ name: 'exec.http.completed', payload: { ...data, program_id: args.program_id } }] }
@@ -1531,6 +1540,7 @@ function makeHandlers(opts) {
       return { data: record, events: [{ name: 'exec.authz.preflighted', payload: { preflight_id: runId, request_id: args.request_id, program_id: args.program_id, state: record.state, requests: batch.runs.length } }] }
     },
     exec_run_cli: async (args, repo, ctx) => {
+      assertNotWrapupWindow()
       const toolName = String(args.tool || '')
       const params = { ...(args.params || {}) }
       const manifest = repo.loadManifest(toolName)

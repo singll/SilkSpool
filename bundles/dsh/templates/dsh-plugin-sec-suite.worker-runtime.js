@@ -220,21 +220,22 @@ export function installWorkerSessionReporter(ctx, dataDir) {
         await delay(25)
       }
       yield* (async function* () {
-        // 预算感知收尾提示（一次性）：wall-clock「最后5分钟」与 token 预算不对齐——H2 探测常在
-        // ~75 万 token 才到收尾前、预算先耗尽（§15.149）。charged+reserved ≥ 上限 75% 时向本回合
-        // 注入系统提示，令模型停止新增探测、优先完成 ledger/handoff 收尾。
-        if (!wrapupNudged) {
-          try {
-            const st = budget.state
-            const used = st.charged + st.reserved
-            if (st.limit > 0 && used >= st.limit * 0.75 && Array.isArray(options.messages)) {
+        try {
+          const st = budget.state
+          const used = st.charged + st.reserved
+          if (st.limit > 0) {
+            // 硬收尾窗（§15.150）：≥85% 置 env 旗标——exec 域据此拒绝新增探测（run_cli/http_request），
+            // 只放行 ledger/fgs/vuln/task 收尾工具，确保任务能收尾落账（不因探测耗尽预算 ok=0）。
+            if (used >= st.limit * 0.85) process.env.SEC_WORKER_WRAPUP = '1'
+            // 软提示（一次性）：≥75% 注入系统提醒，给模型一个收尾缓冲带。
+            if (!wrapupNudged && used >= st.limit * 0.75 && Array.isArray(options.messages)) {
               wrapupNudged = true
               const pct = Math.round((used / st.limit) * 100)
-              const note = `[预算提醒] worker 预算已用约 ${pct}%（${used}/${st.limit}）。立即停止新增网络探测，本回合优先收尾：ledger_log_attempt（本轮已做的探测各补一条）→ ledger_handoff_write（五段）→ fgs_export；证据不足用 vuln_note 记 inconclusive。不要再发起新探测。`
+              const note = `[预算提醒] worker 预算已用约 ${pct}%（${used}/${st.limit}）。立即停止新增网络探测，本回合优先收尾：ledger_log_attempt（本轮已做的探测各补一条）→ ledger_handoff_write（五段）→ fgs_export；证据不足用 vuln_note 记 inconclusive。到 85% 起 exec 探测工具将被硬拒绝，只剩收尾工具可用。`
               options.messages.push({ role: 'system', content: [{ type: 'text', text: note }] })
             }
-          } catch { /* 提示失败不阻断 */ }
-        }
+          }
+        } catch { /* 提示失败不阻断 */ }
         yield* budget.stream(options, next)
       })()
     })(), { global: true, prepend: true })
