@@ -2083,7 +2083,7 @@ test('23 §3.4: campaign_list 带供给徽章（llm_throttled → slow）', asyn
   assert.equal(list.rows[0].supply.factor, 0.4)
 })
 
-test('23 §3.6: Supervisor 预算达 80% 自动提请 campaign-budget-extend', async () => {
+test('23 §3.6 + 27 D09: Supervisor 预算达 80% 且有业务进展时自动提请 campaign-budget-extend', async () => {
   const { bus } = makeEnv()
   const appReg = registerApprovalStub(bus)
   assert.equal(appReg.reg.ok, true, JSON.stringify(appReg.reg.error))
@@ -2097,9 +2097,36 @@ test('23 §3.6: Supervisor 预算达 80% 自动提请 campaign-budget-extend', a
   // 直接注入一笔已达 85% 的窗口用量（tasks.spent_tokens）
   bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, spent_tokens, campaign_id) VALUES ('test-src', '用量', 5, '', 'done', ?, ?, 85000, ?)")
     .run(Date.now(), Date.now(), cid)
+  // 27 D09：注入窗口内 accepted 业务进展——扩容须依据有效业务面，而非仅水位
+  const ptid = bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, campaign_id) VALUES ('test-src', '进展', 5, '', 'done', ?, ?, ?)")
+    .run(Date.now(), Date.now(), cid).lastInsertRowid
+  bus._internal.db().prepare("INSERT INTO campaign_decisions(campaign_id,task_id,verdict,evidence,goal_delta,decided_by,created_at) VALUES(?,?,'accepted','run:r1','{}','reviewer',?)")
+    .run(cid, ptid, Date.now())
   const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
   assert.equal(tk.ok, true, tk.error?.message)
-  assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_extend_request'").get(cid), '应自动提请预算延长并留痕')
+  assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_extend_request'").get(cid), '有业务进展时应自动提请预算延长并留痕')
+})
+
+test('27 WP01/D09: active 达 80% 但窗口内无业务进展 → 不自动扩容（不得只依据水位）', async t => {
+  const { bus } = makeEnv()
+  t.after(() => bus._internal.close())
+  const appReg = registerApprovalStub(bus)
+  assert.equal(appReg.reg.ok, true, JSON.stringify(appReg.reg.error))
+  assert.equal(registerLedgerStub(bus, [{ program: 'test-src', dim: 'crawl', key: 'z2.example.com', mark: 'not_crawled' }]).ok, true)
+  const c = await bus.dispatch('task', 'campaign_create', {
+    name: '无进展爬坡', program_ids: ['test-src'], autonomy: 2, approval_id: 1, budget_tokens: 100000,
+    goal_spec: { stop_conditions: ['done'] }, policy: { derive_cap_per_tick: 1 },
+  }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  // 85% 用量，但无任何 accepted/milestone 进展
+  bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, spent_tokens, campaign_id) VALUES ('test-src', '用量', 5, '', 'done', ?, ?, 85000, ?)")
+    .run(Date.now(), Date.now(), cid)
+  const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
+  assert.equal(tk.ok, true, tk.error?.message)
+  assert.equal(bus._internal.db().prepare("SELECT COUNT(*) n FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_extend_request'").get(cid).n, 0, '无业务进展不得自动扩容')
+  assert.equal(appReg.requests.length, 0, '无业务进展不得自动提请')
+  assert.equal(bus._internal.db().prepare('SELECT status FROM campaigns WHERE id=?').get(cid).status, 'active', '未达累计耗尽不得误停')
 })
 
 test('27 D09: Supervisor cannot approve its own budget increase, including the old default', async () => {
@@ -2316,8 +2343,14 @@ test('35 号补丁: SEC_CAMPAIGN_BUDGET_AUTO_APPROVE=off 时只提请不批准',
     await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
     bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, spent_tokens, campaign_id) VALUES ('test-src', '用量', 5, '', 'done', ?, ?, 85000, ?)")
       .run(Date.now(), Date.now(), cid)
+    // 27 D09：须有业务进展才会自动提请；本用例验证「只提请不批准」
+    const ptid = bus._internal.db().prepare("INSERT INTO tasks (program_id, objective, priority, assignee, status, created_at, updated_at, campaign_id) VALUES ('test-src', '进展', 5, '', 'done', ?, ?, ?)")
+      .run(Date.now(), Date.now(), cid).lastInsertRowid
+    bus._internal.db().prepare("INSERT INTO campaign_decisions(campaign_id,task_id,verdict,evidence,goal_delta,decided_by,created_at) VALUES(?,?,'accepted','run:r1','{}','reviewer',?)")
+      .run(cid, ptid, Date.now())
     const tk = await bus.dispatch('task', 'campaign_tick', { campaign_id: cid }, { actor: 'scheduler' })
     assert.equal(tk.ok, true, tk.error?.message)
+    assert.ok(bus._internal.db().prepare("SELECT 1 FROM campaign_checkpoints WHERE campaign_id=? AND kind='budget_extend_request'").get(cid), '有进展须提请')
     assert.equal(appReg.stub.decisions.length, 0, '关闭自动批准后须保留人工审批')
   } finally { delete process.env.SEC_CAMPAIGN_BUDGET_AUTO_APPROVE }
 })

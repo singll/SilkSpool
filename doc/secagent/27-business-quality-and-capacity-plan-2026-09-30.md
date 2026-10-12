@@ -2264,6 +2264,14 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **结论（治本路线修正）**：prompt 层能改的已改（FGS 精简确降了重试成本 837k→324k：**简化“做什么/记什么”有效，强制“怎么做/何时停”无效**）。**可靠杠杆是”提预算“**：H2/campaign 任务单次预算设 **≥1.5M**（避开两段式），或接受“run1 触顶 + run2 廉价收尾”（现总 ~1.45M）。进一步降每回合 context（工具面/历史裁剪）亦为候选。
 - **代码治本（`7bd7cae`）**：`CAMPAIGN_TASK_BUDGET_TOKENS` 默认 **600k → 1.5M**（campaign 派单单任务预算；`campaign.policy.task_budget_tokens` / env `SEC_CAMPAIGN_TASK_BUDGET_TOKENS` 可覆盖），使 H2 探测任务有机会**单次收尾**。契约测试更新至 1.5M（task 149/149）。
 
+### 15.153 WP01/D09 收口：平滑爬坡依据有效业务进展（2026-10-12，已部署）
+
+- **动机**：D09 原要求「扩容依据有效业务面/证据收益，不能只依据花到 80%」（§15.127「未完成」明确列出，§16 WP01「尚需完成的验收」）。此前 `superviseCampaign` 只要 `active` 且累计达 80% 水位、`policy.auto_extend` 非 false、12h 未提请，就自动提请 `campaign-budget-extend`——与有效业务进展无关。
+- **改动**（`bundles/dsh/templates/dsh-plugin-sec-domain-task.js`）：新增 `hasBusinessProgress(repo, c, nowTs)`——窗口内存在 `accepted` 验收或 `milestone` 检查点即为「有效业务进展」；窗口口径同 C11 无进展停止（`policy.progress_window_ms`，缺省 120h），**不以 `created_at` 为基线**（「创建后从未产出」不算进展）。`active` 专项的 80% 平滑爬坡加入该门槛：无进展则不自动扩容，让其累计耗尽 `stop_condition→reviewing` 由人工评估，而非自动翻倍覆盖上限。`reviewing` 分支（§15.127 的人工可见 pending 提请通道）**保持不变**——是否加额度由人判断。
+- **未越界**：不改自动批准（D09 已人工化）、不改累计硬上限、不引入外部 accepted/赏金反馈；进展信号复用 C11（`campaign_decisions.accepted` + `milestone`）。
+- **验证（本地 + 生产）**：task 契约 **150/150**（原 149 + 新增红例）：新例「active 达 80% 但窗口内无进展 → 不写 `budget_extend_request`、不误停」，原 80% 爬坡用例补 `accepted` 进展后仍须提请，`AUTO_APPROVE=off` 用例补进展以继续验证「只提请不批准」。生产发布 change `20261012-d09-progress-extend`：只替换 `domain-task` 的「源模板 + 已安装插件」两落点（旧源码存 `/opt/silkspool/dsh/changes/20261012-d09-progress-extend/previous/`），目标机 `sec-task-domain-plugin-setup.sh` 契约 150/150 全绿、`--dump-config` web/headless 均含 `sec-domain-task`；`spool restart csai silksecagent` 后 NRestarts0、`dsh web:` token 行恢复、journal 无 error；维护 RPC 只读 `bus.status`139ms / `task.campaign_list`21ms / `stats`173ms，Campaign 全 paused（4）、running task/worker 0。
+- **残留**：本项只收口「平滑爬坡依据业务收益」；D09 的无有效进展停止（C11）已于 §15.129 完成。两者共同使「扩容/停止」由真实进展驱动，但**不改变** C2/C3 已超累计额度、须经人批新额度才能恢复的现状（§16 WP01）。提交见本次 commit。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
@@ -2272,7 +2280,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 
 | 包 | 已具备基础 | 尚需完成的验收 |
 |---|---|---|
-| WP01 | 目标/Program/派发/认领、候选30及ledger200补页；**D09 的两个子项（累计硬上限 + 预算审批人工化，含缺额任务延后/提请口径统一）已上线**（§15.127，change `20261009-d09-review-fix`）；**C11「无有效进展停止」已实现且有契约测试**（task.js:2050 `no_progress`→reviewing，§15.147 对账核对） | **D09 剩余**：扩容依据业务收益（当前仍按 80% 水位 `budget_extend`，非业务进展驱动）；完整候选轮转、C3按真实剩余量处置亦待办；C2/C3 已超累计额度，恢复须经人批新额度，勿恢复无界运行 |
+| WP01 | 目标/Program/派发/认领、候选30及ledger200补页；**D09 的两个子项（累计硬上限 + 预算审批人工化，含缺额任务延后/提请口径统一）已上线**（§15.127，change `20261009-d09-review-fix`）；**C11「无有效进展停止」已实现且有契约测试**（task.js:2050 `no_progress`→reviewing，§15.147 对账核对）；**D09「扩容依据有效业务进展」已实现并上线**（§15.153，change `20261012-d09-progress-extend`：active 平滑爬坡须窗口内有 accepted/milestone 进展，`reviewing` 人工提请通道保留） | **D09 余项已收口**；剩余为**完整候选轮转、C3按真实剩余量处置**；C2/C3 已超累计额度，恢复须经人批新额度，勿恢复无界运行 |
 | WP02 | 受控HTTP、可信 capsule/confirm；**E03–E08 非越权弱判据已加固**（E04 基线稳定+非注入对照、E07 公开邮箱排除/公开端点降级、E05 多轮时间盲注、E06 OOB 健康+窗口、E08 file 类不借相邻 Oracle，§15.129/§15.133） | **越权/IDOR 读取链（双账号）经 §15.128 决定不做**（保留代码不验收，E02 移出）；属性重放与更多 Oracle 故障正负样例继续；禁止自报替代技术真值 |
 | WP03 | claim/run/ACK、busy补偿、在飞预留、请求usage和估算；**D04 全局请求预算（`{{rate}}` 注入、httpx `-rl`）+ 429 自适应退避 + `{{threads}}/{{concurrency}}` 工具内部并发注入 + 跨进程共享令牌桶**（§15.134/§15.146）；**F06 死信/投影已关闭**（§15.144：生产 `dead_letter 9→0`）；**D07 进程组统一 + fencing 核验**（§15.146） | 仅剩 `run_cli` 侧 429 联动与「逐请求计量」（工具自吞 429，宿主不可见）；最终账单及历史精确洗账不再必需 |
 | WP04 | HAR/被动捕获、正式HTTP接线、18种匿名请求及单账号5种新接口、响应前置已上线 | **双账号/登录态对照经 §15.128 决定不做**；聚焦匿名/单账号：更多适用业务模板（不用失败/空列表凑数）、method/body/对象归集、读型POST风险契约、HAR健康判定、B09参数队列执行确认 |

@@ -1111,6 +1111,7 @@ Task ─1:1─ Run/worker（exec 域，零改动）
 - 无新表：调速历史全部走 `campaign_checkpoints`，新增 kind `llm_throttled` / `llm_restored` / `llm_probe_failed` / `budget_extend_request`（payload 存成员健康快照）；factor=0 首次发 `task.campaign.escalated`（幂等防抖）。
 - **任务级选模型（§3.7）**：派生草稿/子任务带 `task_class`（lite/std/heavy，`compileCampaignPlan` 与 `sanitizeDraft` 自动分档）；`SEC_CAMPAIGN_MODEL_SELECTOR=dsh` 时另带 `model_hint`（Path A）。默认 `bellkeeper`（Path B，纯标注交 Bellkeeper 侧策略路由）。`SEC_CAMPAIGN_MODEL_STRATEGY=weight` 一键回退纯权重链。
 - **预算自动爬坡（§3.6 步骤 1.5）**：Supervisor 在窗口用量达 80% 水位时经 `approval_request(kind=campaign-budget-extend)` 自动提请延长（`+budget`，≤原预算×2），12h checkpoint 防抖 + approval 同 (kind,subject) pending 去重双保险。
+  - **D09 进展门槛（2026-10-12）**：`active` 专项的平滑爬坡**另须窗口内有有效业务进展**（`accepted` 验收或 `milestone` 检查点，窗口口径同 C11：`policy.progress_window_ms`，缺省 120h），不能只依据「花到 80%」——无进展不自动扩容，让其耗尽停为 `reviewing` 由人工评估。`reviewing` 分支（预算耗尽后的人工可见提请通道，§15.127）不受此门槛限制。
 - 看板：`campaign_list` / `campaign_get` 行附 `supply` 徽章（normal/slow/stop/probe_failed/unknown，从最近供给 checkpoint 反推）。
 
 #### 7.10.4 统一额度面（§3.6，dsh `.env` 单区块）
@@ -1516,7 +1517,7 @@ Campaign费用改由任务费用账本投影，Reviewer的goal_delta不能再凭
 
 `budgetUsage`、`campaignUsage`和认领准入共用消费计算：任务累计费用减去有真实消费时间且已在窗口外的账单金额，逐任务计算后求和；没有消费时间的历史费用继续保留，不能因任务创建时间过窗而消失。`tasks_created`仍单独按创建时间统计。查询增加`reserved_tokens`（reserved/unknown预留减同run已记费用）、`committed_tokens`（已记费用＋未结预留）、`unplaced_tokens`（无法归窗费用）和`lifetime_spent_tokens`。
 
-Program创建门禁、专项派发、规划剩余额度、预算停止及自动恢复按已记费用与未结预留合计判断，认领保持同事务预留。修复旧任务本期消费漏算导致reviewing错误恢复active；不提高既有预算、不恢复已暂停专项。自动续费累计上限/有效业务进展仍属于D09待办，本次未完成；费用接受估算，不要求追补供应商最终账单。
+Program创建门禁、专项派发、规划剩余额度、预算停止及自动恢复按已记费用与未结预留合计判断，认领保持同事务预留。修复旧任务本期消费漏算导致reviewing错误恢复active；不提高既有预算、不恢复已暂停专项。自动续费累计上限已在本批完成；「扩容依据有效业务进展」仍属于 D09 待办，本次未完成；费用接受估算，不要求追补供应商最终账单。
 
 两项回归先失败再通过，task域133项和全域787/787通过（147.25秒，fingerprint `a04ff0237280ae487d89ee1c2657de7f46020c5ba232b1c083bc712e96fe15fd`）。首版辅助函数重名导致整域失败的日志保留，修正后最终全域通过。本项不在固定56bca28发布包中，见27号§15.118。
 
@@ -1537,3 +1538,9 @@ Program创建门禁、专项派发、规划剩余额度、预算停止及自动�
 **认领延后（评审修复）**：专项额度不足时认领**延后回 queued**（在飞预留暂占 60s、累计已耗不足 300s）而非永久 `blocked`，并**循环扫描**继续找可运行任务（不再被队首缺额任务饿死）；延后发 `task.deferred`（含 `reason`/`retry_at`）、`data.deferred`，不再错发 `task.blocked`。停止/提请/恢复/展示统一累计口径（修复"窗口外耗尽时停止命中却无提请"）。
 
 task/approval 171 项、全域 806/806 通过。**已两次同版本快速发布**：初始 change `20261009-d09-budget-cap`（`6f019d0`，停写→启动 1.36 秒）；评审修复 change `20261009-d09-review-fix`（停写→启动 3.13 秒，首次阻塞式 stop 超 90s 在替换前退出、文件未改、服务当即恢复；改用 `--no-block` 轮询后重装成功）。三模块各「源模板+已安装插件」6 落点，旧源码存各自 change 目录 `previous/`。生产冒烟：六服务 active/NRestarts0、`bus.status`278.9ms(冷)/`stats`25.2ms、`task.campaign_get` 含 `lifetime_spent_tokens`、Campaign 全 paused、无运行任务/worker、quick_check ok；约 38 秒启动就绪及浏览器轮询 502 属既有冷启动，非本批回归。**D09 未整项完成**：无有效进展停止条件、扩容依据业务收益仍未做。见 27 号 §15.127。
+
+### 7.43 2026-10-12 · D09 平滑爬坡须依据有效业务进展（已部署）
+
+D09 剩余项「扩容依据有效业务面/证据收益，不能只依据花到 80%」落地。`superviseCampaign` 的 80% 水位平滑爬坡新增进展门槛：`active` 专项仅在窗口内存在**有效业务进展**（`accepted` 验收或 `milestone` 检查点；窗口口径同 C11 无进展停止，`policy.progress_window_ms` 缺省 120h）时才自动提请 `campaign-budget-extend`；无进展则不自动扩容，让其走到累计耗尽 `stop_condition→reviewing` 交人工评估（不自动翻倍覆盖上限）。进展判定**不以 `created_at` 为基线**——「创建后从未产出」不算进展，避免新专项永不满足门槛。`reviewing` 分支（§15.127 要求的「预算耗尽后人工可见的 pending 提请通道」）保持原状，不受门槛限制：是否加额度仍由人判断，系统不代替人做业务判断。
+
+`hasBusinessProgress(repo, c, nowTs)` 复用 C11 的真实进展信号（`repo.listCampaignDecisions('accepted')` + `milestone` checkpoint），不引入外部 accepted/赏金反馈。task 契约 150/150 通过（新增红例：`active` 达 80% 但窗口内无进展 → 不自动提请、不误停；原 80% 爬坡用例补 accepted 进展后仍须提请；`AUTO_APPROVE=off` 用例补进展以继续验证「只提请不批准」）。生产发布 change `20261012-d09-progress-extend`：只替换 `domain-task` 的「源模板 + 已安装插件」两落点，旧源码存 `/opt/silkspool/dsh/changes/20261012-d09-progress-extend/previous/`。生产冒烟：`sec-task-domain-plugin-setup.sh` 契约全绿、`--dump-config` web/headless 均含 `sec-domain-task`；`spool restart csai silksecagent` 后 NRestarts0、`dsh web:` token 行恢复、journal 无 error；维护 RPC 只读 `bus.status`139ms / `task.campaign_list`21ms / `stats`173ms，Campaign 全 paused、running task/worker 0。见 27 号 §15.153。

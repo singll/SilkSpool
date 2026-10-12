@@ -2001,6 +2001,26 @@ function makeHandlers(opts) {
     return t
   }
 
+  // 27 WP01/D09：窗口内是否有「有效业务进展」——存在 accepted 验收或 milestone 检查点。
+  // 扩容依据有效业务面/证据收益，不能只依据「花到 80%」：active 专项在无进展时不得自动
+  // 平滑爬坡扩容，让其走到预算耗尽停为 reviewing 由人工评估（而非自动翻倍覆盖上限）。
+  // 窗口口径与 C11 无进展停止一致（policy.progress_window_ms，缺省 120h）；窗口关闭=不约束。
+  // 注意：不把 created_at 计入基线——「创建后从未产出」不算进展（否则新专项永不满足门槛）。
+  function hasBusinessProgress(repo, c, nowTs) {
+    const limitMs = Number(c.policy?.progress_window_ms) > 0 ? Number(c.policy.progress_window_ms) : CAMPAIGN_NO_PROGRESS_MS
+    if (!(limitMs > 0)) return true
+    const cutoff = nowTs - limitMs
+    try {
+      for (const d of repo.listCampaignDecisions(c.id, 'accepted', 50, 0)) {
+        if ((Number(d.created_at) || 0) >= cutoff) return true
+      }
+      for (const cp of repo.listCheckpoints(c.id, 50)) {
+        if (cp.kind === 'milestone' && (Number(cp.created_at) || 0) >= cutoff) return true
+      }
+    } catch { return false }
+    return false
+  }
+
   function superviseCampaign(c, repo) {
     const actions = []
     const now = Date.now()
@@ -2041,8 +2061,13 @@ function makeHandlers(opts) {
       // 38 号补丁：policy.auto_extend=false 的专项（如「候选验证清空」用多余额度）不自动爬坡——
       // 预算耗尽即 stop_condition→reviewing，避免自动翻倍覆盖人工设置的额度上限。
       // D09：提请仍只是提请——D09 起审批须人放行，Supervisor 不能自批。
+      // 27 WP01/D09：active 平滑爬坡须有「有效业务进展」（窗口内 accepted/milestone），
+      // 不能只依据花到 80%——无进展则不再自动扩容，让其耗尽停为 reviewing 由人工评估。
+      // reviewing 分支（预算耗尽后的人工可见通道）保持原状：§15.127 要求累计口径下
+      // 耗尽仍生成 pending 供人工决策（是否加额度由人判断，不在此处代替人做业务判断）。
       else if (consumed >= Number(c.budget_tokens) * 0.8
         && autoExtendEnabled(c)
+        && (c.status !== 'active' || hasBusinessProgress(repo, c, now))
         && !hasRecentCheckpoint(repo, c.id, 'budget_extend_request', 12 * 3600000)) {
         actions.push({ kind: 'budget_extend', add: Number(c.budget_tokens), spent: consumed,
           lifetime: Number(usage.lifetime_spent_tokens), reserved: Number(usage.reserved_tokens) })
