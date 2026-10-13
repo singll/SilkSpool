@@ -426,6 +426,8 @@
 { "host": "api.example.com", "type": "web", "from": "stable", "to": "changed", "signal": "content_changed", "evidence": "run_01HZZZ" }
 ```
 
+> **事件载荷有界化（§15.157）**：bus 事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），超限使整条命令（含落账）失败。`asset_state` 的 `evidence`（schema 仅 `minLength`，无 `maxLength`）在**事件侧**做 UTF-8 字节有界化（≤2000B）；状态已落 `assets.state`，事件仅通知（无订阅方消费该字段），故不丢语义。
+
 #### `asset.fp.recorded`
 
 ```json

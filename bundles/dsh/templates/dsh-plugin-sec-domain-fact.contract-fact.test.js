@@ -59,6 +59,23 @@ test('27 F06: onExecRunFailed 超长 host 截断落库（防 summary 超限致�
   assert.ok(calls[0].fact_key.length < 300, 'fact_key 已截断')
 })
 
+// §15.157 同类残留（事件超限类）：fact_transition 的 fact.cooled/expired/archived 携带调用方提供的
+// reason（schema 仅 minLength、无 maxLength）；超长即撞 bus 8192B 事件信封上限（E_BUS_EVENT_TOO_LARGE），
+// 使生命周期治理命令整体失败。修复=事件侧 UTF-8 有界化（状态已落 facts/blackboard，事件仅通知）。
+test('§15.157: 超长 reason 的 fact_transition 事件仍 ≤8192 且状态迁移成功', async () => {
+  const { dir, bus } = makeEnv()
+  await bus.dispatch('fact', 'upsert', { program_id: 'test-src', fact_key: 'auth/bnd', summary: '边界事实' }, { actor: 'model' })
+  const longReason = '生命周期理由 ' + '填充'.repeat(4000)
+  assert.ok(Buffer.byteLength(longReason, 'utf8') > 8192, '前置：reason 本身已超事件上限')
+  const r = await bus.dispatch('fact', 'transition', { object: 'fact', program_id: 'test-src', fact_key: 'auth/bnd', to: 'cooling', reason: longReason }, { actor: 'system' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ev = readEvents(dir).find((e) => e.name === 'fact.cooled')
+  assert.ok(ev, '超长载荷不应使 fact.cooled 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'fact.cooled 事件信封应 ≤8192')
+  assert.ok(Buffer.byteLength(String(ev.payload.reason), 'utf8') <= 2000, '事件内 reason 应有界（≤2000B）')
+  assert.ok(String(ev.payload.reason).startsWith('生命周期理由'), '有界化保留开头语义')
+})
+
 test('fact_search 工具输出可无损往返 JSON（包括非 cooling 的事实）', async () => {
   const { bus } = makeEnv()
   const created = await bus.dispatch('fact', 'upsert', {

@@ -197,6 +197,8 @@
 **幂等**：自动指纹（object, program_id, fact_key, bb_key, to, reason）。
 **事务边界**：to=archived 时单事务完成"复制进 `*_archive`（+archived_at/archive_reason）+ 主表删除"；to=cooling 为状态列 UPDATE。全程留统一 audit（宪法 §九，替代 v4 memcore_events 的域内私账——memcore_events 表转只读历史，见 3.3）。
 **事件映射**：to=cooling → `fact.cooled`；to=archived 且 mem_class ∈ {ephemeral, timeline}（自然到期类）→ `fact.expired`；to=archived 其余 → `fact.archived`。
+
+> **事件载荷有界化（§15.157）**：bus 事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），超限使整条命令（含落账）失败。`fact_transition` 的 `reason`（schema 仅 `minLength`，无 `maxLength`）在**事件侧**做 UTF-8 字节有界化（≤2000B，涵盖 `fact.cooled`/`fact.expired`/`fact.archived`）；生命周期状态已落 `facts`/`blackboard`，事件仅通知（`know` 域的 `fact.expired`/`fact.archived` 订阅方为 no-op），故不丢语义。
 **agent_note（RoE）**：（治理通道，模型不注册）memcore sweep / 迁移脚本的生命周期降级流转：复验逾期→cooling、过期/超龄/cooling 超 30 天→archived。复活走 fact_record_validation。
 
 #### C8 · fact_record_signal

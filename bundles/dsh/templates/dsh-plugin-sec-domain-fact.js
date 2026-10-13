@@ -29,6 +29,25 @@ const DAY = 86400000
 
 const log = (msg) => { try { process.stderr.write(`[sec-domain-fact] ${msg}\n`) } catch { /* noop */ } }
 
+// §15.157 同类残留（事件超限类）：bus 对事件信封有 8192B 硬上限（EVENT_MAX_BYTES），超限时
+// publishInTx 抛 E_BUS_EVENT_TOO_LARGE，使整条命令（含落账）失败。fact_transition 的
+// fact.cooled/fact.expired/fact.archived 携带调用方提供的 reason（schema 仅 minLength，无
+// maxLength）；超长即撞顶。事件仅作通知（无订阅方消费 reason，状态已落 facts/blackboard），故事件侧
+// UTF-8 有界化不丢语义。口径同 fact_deprecate 既有的 slice(0,120) 与 task/exec 域 boundUtf8Bytes。
+const EVENT_REASON_MAX_BYTES = 2000
+function boundUtf8Bytes(s, maxBytes) {
+  const text = String(s == null ? '' : s)
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
+}
+
 const backendUrl = new URL('../sec-backend-fact-sqlite/index.js', import.meta.url)
 const { createFactSqliteBackend } = await import(backendUrl.href)
 
@@ -609,16 +628,16 @@ function makeHandlers(opts) {
       let event = null
       if (args.to === 'cooling') {
         if (isFact) repo.setFactStatus(args.program_id, args.fact_key, 'cooling', now)
-        event = { name: 'fact.cooled', payload: { object_kind: 'fact', id, from: 'active', reason: args.reason } }
+        event = { name: 'fact.cooled', payload: { object_kind: 'fact', id, from: 'active', reason: boundUtf8Bytes(args.reason, EVENT_REASON_MAX_BYTES) } }
       } else {
         if (isFact) {
           repo.archiveFact(args.program_id, args.fact_key, args.reason, now)
           const natural = row.mem_class === 'ephemeral' || row.mem_class === 'timeline'
-          event = { name: natural ? 'fact.expired' : 'fact.archived', payload: { object_kind: 'fact', program_id: args.program_id, fact_key: args.fact_key, mem_class: row.mem_class, from, reason: args.reason } }
+          event = { name: natural ? 'fact.expired' : 'fact.archived', payload: { object_kind: 'fact', program_id: args.program_id, fact_key: args.fact_key, mem_class: row.mem_class, from, reason: boundUtf8Bytes(args.reason, EVENT_REASON_MAX_BYTES) } }
         } else {
           repo.archiveBb(args.bb_key, args.reason, now)
           const natural = row.mem_class === 'ephemeral' || row.mem_class === 'timeline'
-          event = { name: natural ? 'fact.expired' : 'fact.archived', payload: { object_kind: 'bb', bb_key: args.bb_key, mem_class: row.mem_class, from, reason: args.reason } }
+          event = { name: natural ? 'fact.expired' : 'fact.archived', payload: { object_kind: 'bb', bb_key: args.bb_key, mem_class: row.mem_class, from, reason: boundUtf8Bytes(args.reason, EVENT_REASON_MAX_BYTES) } }
         }
       }
       return { data: { object: args.object, id, from, to: args.to }, events: [event], before: { status: from }, after: { status: args.to } }

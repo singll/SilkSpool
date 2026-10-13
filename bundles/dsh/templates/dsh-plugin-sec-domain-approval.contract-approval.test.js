@@ -685,3 +685,26 @@ test('27 D09: legacy automatic campaign approvals are rejected for system and mo
   assert.equal(d.error?.code, 'E_ACTOR_FORBIDDEN')
   assert.equal(bus._internal.db().prepare('SELECT budget_tokens FROM campaigns WHERE id=?').get(c.data.campaign_id).budget_tokens, 1000)
 })
+
+// §15.157 同类残留（事件超限类）：approval.requested 携带调用方提供的 payload（schema object、
+// 无上限）；decide 事件已用 boundedEventPayload 有界化，request 事件遗漏。超长即撞 bus 8192B
+// 事件信封上限（E_BUS_EVENT_TOO_LARGE），使提请整体失败。看板渲染数据源是 DB 表 approval_requests，
+// 非本事件，故事件侧有界化不丢语义。
+test('§15.157: 超长 payload 的 approval.requested 事件仍 ≤8192 且提请成功', async () => {
+  const { dir, bus } = makeEnv()
+  const big = 'x'.repeat(9000)
+  const r = await bus.dispatch('approval', 'request', {
+    kind: 'scope-domain', subject: 'sub.example.com', program_name: 'ghost-src',
+    evidence: '主体归属证据充分且可核证：含 CNAME 与内容同源判据的整段说明文字', payload: { blob: big },
+    equity_basis: '控股/全资', independent_src: '无',
+  }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const f = path.join(dir, 'events', 'approval.jsonl')
+  const events = fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  const ev = events.find((e) => e.name === 'approval.requested')
+  assert.ok(ev, '超长载荷不应使 approval.requested 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'approval.requested 事件信封应 ≤8192')
+  // 落库保真：DB approval_requests.payload 仍为全量
+  const row = bus._internal.db().prepare('SELECT payload FROM approval_requests WHERE id=?').get(r.data.request_id)
+  assert.equal(JSON.parse(row.payload).blob.length, 9000, '落库 payload 应为全量')
+})

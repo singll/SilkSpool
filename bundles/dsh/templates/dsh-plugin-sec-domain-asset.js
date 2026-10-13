@@ -34,6 +34,24 @@ const DEFAULT_DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const log = (msg) => { try { process.stderr.write(`[sec-domain-asset] ${msg}\n`) } catch { /* noop */ } }
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex')
 
+// §15.157 同类残留（事件超限类）：bus 对事件信封有 8192B 硬上限（EVENT_MAX_BYTES），超限时
+// publishInTx 抛 E_BUS_EVENT_TOO_LARGE，使整条命令（含落账）失败。asset.state.changed 携带调用方
+// 提供的 evidence（schema 仅 minLength，无 maxLength）；超长即撞顶。事件仅作通知（无订阅方消费该
+// 字段，状态已落 assets.state），故事件侧 UTF-8 有界化不丢语义。口径同 task/exec 域 boundUtf8Bytes。
+const EVENT_EVIDENCE_MAX_BYTES = 2000
+function boundUtf8Bytes(s, maxBytes) {
+  const text = String(s == null ? '' : s)
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
+}
+
 const backendUrl = new URL('../sec-backend-asset-sqlite/index.js', import.meta.url)
 const { createAssetSqliteBackend } = await import(backendUrl.href)
 
@@ -650,7 +668,7 @@ function makeHandlers(opts) {
       }
       return {
         data: { host, type, from, to, changed: t.changed },
-        events: t.changed ? [{ name: 'asset.state.changed', payload: { host, type, from, to, signal: args.signal, evidence: args.evidence } }] : [],
+        events: t.changed ? [{ name: 'asset.state.changed', payload: { host, type, from, to, signal: args.signal, evidence: boundUtf8Bytes(args.evidence, EVENT_EVIDENCE_MAX_BYTES) } }] : [],
         before: { state: from }, after: { state: to },
       }
     },

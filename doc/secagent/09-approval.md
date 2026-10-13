@@ -243,6 +243,8 @@ effect 失败重试通道：批准（decision）记录不动，只对 `status='f
     "requested_by": "sess_a1b2" } }
 ```
 
+> **事件载荷有界化（§15.157）**：bus 事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），超限使提请整体失败。`approval_request` 的 `payload` 与 `requested_by` 在**事件侧**有界化（`payload` 走既有 `boundedEventPayload` 深截断；`requested_by` ≤300 字符）。看板渲染数据源是 DB 表 `approval_requests`（非本事件），提请判据 `evidence` 也不在事件里，故不丢语义。`approval_decide`/`approval_withdraw` 的 `approval.approved`/`approval.rejected` 事件此前已有界化。
+
 订阅方：看板通知（弱——审批 tab 徽标 + 红条）、eval 域（弱——提请行为回流）。
 
 #### 1.5.2 `approval.approved` —— 全系统最重要的事件之一

@@ -54,6 +54,25 @@ const DAY = 86400000
 const log = (msg) => { try { process.stderr.write(`[sec-domain-know] ${msg}\n`) } catch { /* noop */ } }
 const sha1 = (s) => crypto.createHash('sha1').update(String(s)).digest('hex')
 
+// §15.157 同类残留（事件超限类）：bus 对事件信封有 8192B 硬上限（EVENT_MAX_BYTES），超限时
+// publishInTx 抛 E_BUS_EVENT_TOO_LARGE，使整条命令（含落账）失败。know 域事件携带调用方提供的
+// evidence/reason（exp_promote/know_adopt 的 evidence、know_transition 的 reason），schema 仅
+// minLength、无 maxLength；超长即撞顶。事件仅作通知（无订阅方消费这些字段，状态/采用已落
+// exp_cards/kb_docs/know_adoptions），故事件侧 UTF-8 有界化不丢语义。口径同 task/exec 域 boundUtf8Bytes。
+const EVENT_EVIDENCE_MAX_BYTES = 2000
+function boundUtf8Bytes(s, maxBytes) {
+  const text = String(s == null ? '' : s)
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
+}
+
 const backendSqliteUrl = new URL('../sec-backend-know-sqlite/index.js', import.meta.url)
 const backendFileUrl = new URL('../sec-backend-know-file/index.js', import.meta.url)
 const { createKnowSqliteBackend } = await import(backendSqliteUrl.href)
@@ -1660,7 +1679,7 @@ function makeHandlers(opts) {
       const score = repo.recomputeExpScore(args.id)
       return {
         data: { id: args.id, status: 'active', score },
-        events: [{ name: 'know.exp.promoted', payload: { id: args.id, from: 'draft', evidence: args.evidence } }],
+        events: [{ name: 'know.exp.promoted', payload: { id: args.id, from: 'draft', evidence: boundUtf8Bytes(args.evidence, EVENT_EVIDENCE_MAX_BYTES) } }],
         before: { status: 'draft' }, after: { status: 'active' },
       }
     },
@@ -1975,7 +1994,7 @@ function makeHandlers(opts) {
         })
         return {
           data: { target, release_id: release.release_id, content_digest: rev.content_digest, scope, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, status: 'published', adopted: true, source_cmd: 'know_revision_publish' },
-          events: adopted.created ? [{ name: 'know.adopted', payload: { target, release_id: release.release_id, content_digest: rev.content_digest, scope, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, eval_report_ref: args.eval_report_ref || rev.eval_report_ref || null, evidence: args.evidence } }] : [],
+          events: adopted.created ? [{ name: 'know.adopted', payload: { target, release_id: release.release_id, content_digest: rev.content_digest, scope, revision_id: rev.revision_id, artifact_kind: rev.artifact_kind, artifact_id: rev.artifact_id, eval_report_ref: args.eval_report_ref || rev.eval_report_ref || null, evidence: boundUtf8Bytes(args.evidence, EVENT_EVIDENCE_MAX_BYTES) } }] : [],
           before: null, after: { revision_id: rev.revision_id, status: 'published' },
         }
       }
@@ -1990,16 +2009,16 @@ function makeHandlers(opts) {
       }
       if (target === 'exp') {
         const adopted = await recordAdoption(repo, { artifact_kind: 'exp_card', artifact_id: String(payload.id), source_cmd: 'know_adopt:exp', source_event_id: adoptionKey, actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
-        return { data: { target, adopted_id: payload.id, source_cmd: 'exp_promote' }, events: adopted.created ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.id, source_cmd: 'exp_promote', evidence: args.evidence } }] : [], before: null, after: null }
+        return { data: { target, adopted_id: payload.id, source_cmd: 'exp_promote' }, events: adopted.created ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.id, source_cmd: 'exp_promote', evidence: boundUtf8Bytes(args.evidence, EVENT_EVIDENCE_MAX_BYTES) } }] : [], before: null, after: null }
       }
       if (target === 'kb') {
         const adopted = await recordAdoption(repo, { artifact_kind: 'kb_doc', artifact_id: String(payload.doc_id), source_cmd: 'know_adopt:kb', source_event_id: adoptionKey, actor: (ctx && ctx.actor) || null, outcome: 'adopted', note: String(args.evidence).slice(0, 200) })
-        return { data: { target, adopted_id: payload.doc_id, source_cmd: 'kb_import' }, events: adopted.created ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.doc_id, source_cmd: 'kb_import', evidence: args.evidence } }] : [], before: null, after: null }
+        return { data: { target, adopted_id: payload.doc_id, source_cmd: 'kb_import' }, events: adopted.created ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.doc_id, source_cmd: 'kb_import', evidence: boundUtf8Bytes(args.evidence, EVENT_EVIDENCE_MAX_BYTES) } }] : [], before: null, after: null }
       }
       if (target === 'rules') {
         if (!payload.path || !payload.content) throwErr('E_SCHEMA', 'rules 采纳需 payload.path + payload.content', null, false)
         const r = repo.ruleSeed(payload.path, payload.content)
-        return { data: { target, adopted_id: payload.path, source_cmd: 'rule_seed' }, events: r.changed ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.path, source_cmd: 'rule_seed', evidence: args.evidence } }] : [], before: null, after: null }
+        return { data: { target, adopted_id: payload.path, source_cmd: 'rule_seed' }, events: r.changed ? [{ name: 'know.adopted', payload: { target, adopted_id: payload.path, source_cmd: 'rule_seed', evidence: boundUtf8Bytes(args.evidence, EVENT_EVIDENCE_MAX_BYTES) } }] : [], before: null, after: null }
       }
       throwErr('E_SCHEMA', 'target 非法', 'target ∈ {exp, kb, rules}', false)
     },
@@ -2010,18 +2029,18 @@ function makeHandlers(opts) {
         const cur = repo.getExpCard(args.id)
         const from = cur.status || 'active'
         repo.archiveExp(args.id, args.reason, now)
-        return { data: { subrepo: 'exp', id: args.id, from, to: args.to }, events: [{ name: 'know.exp.archived', payload: { id: args.id, from, reason: args.reason } }], before: { status: from }, after: { status: 'archived' } }
+        return { data: { subrepo: 'exp', id: args.id, from, to: args.to }, events: [{ name: 'know.exp.archived', payload: { id: args.id, from, reason: boundUtf8Bytes(args.reason, EVENT_EVIDENCE_MAX_BYTES) } }], before: { status: from }, after: { status: 'archived' } }
       }
       const cur = repo.getKbDoc(args.doc_id)
       const from = cur.status || 'active'
       let event
       if (args.to === 'cooling') {
         repo.updateKbDoc(args.doc_id, { status: 'cooling', status_at: now })
-        event = { name: 'know.kb.cooled', payload: { doc_id: args.doc_id, from, reason: args.reason } }
+        event = { name: 'know.kb.cooled', payload: { doc_id: args.doc_id, from, reason: boundUtf8Bytes(args.reason, EVENT_EVIDENCE_MAX_BYTES) } }
       } else {
         repo.archiveKb(args.doc_id, args.reason, now)
         const natural = cur.status === 'cooling' || cur.revalidate_by
-        event = { name: natural ? 'know.kb.expired' : 'know.kb.archived', payload: { doc_id: args.doc_id, from, reason: args.reason } }
+        event = { name: natural ? 'know.kb.expired' : 'know.kb.archived', payload: { doc_id: args.doc_id, from, reason: boundUtf8Bytes(args.reason, EVENT_EVIDENCE_MAX_BYTES) } }
       }
       return { data: { subrepo: 'kb', id: args.doc_id, from, to: args.to }, events: [event], before: { status: from }, after: { status: args.to } }
     },

@@ -545,6 +545,8 @@
 | `know.harvest.ingested` | C19 | `{ count, drafts_path }` |
 | `know.adopted` | C20 | `{ target, adopted_id, source_cmd, evidence }` |
 | `know.episode.recorded` | C23 | `{ episode_id, source_event_id, source_event_name, outcome, program_id, exec_run_id }` |
+
+> **事件载荷有界化（§15.157）**：bus 事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），超限使整条命令（含落账）失败。本域事件中由调用方提供的自由文本——`exp_promote` 的 `evidence`、`know_adopt` 的 `evidence`、`know_transition` 的 `reason`（schema 均仅 `minLength`，无 `maxLength`）——在**事件侧**做 UTF-8 字节有界化（≤2000B，涵盖 `know.exp.promoted`/`know.adopted`/`know.exp.archived`/`know.kb.cooled`/`know.kb.expired`/`know.kb.archived`）；状态/采用已落 `exp_cards`/`kb_docs`/`know_adoptions`，事件仅通知，故不丢语义。
 | `know.revision.proposed` | C24 | `{ revision_id, artifact_kind, artifact_id, parent_revision_id, content_digest, source_kind, source_ref, change_note 摘要 }` |
 | `know.revision.assessed` | C25 | `{ revision_id, phase, from, to, eval_run_id, verdict, report_ref }` |
 | `know.revision.published` | C26 | `{ release_id, revision_id, artifact_kind, artifact_id, content_digest, scope_type, scope_id, auth_ref, supersedes }` |

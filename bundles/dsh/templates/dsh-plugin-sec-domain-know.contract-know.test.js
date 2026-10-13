@@ -2653,3 +2653,40 @@ test('27 试点层1: exp_search scenario/takeaway 出摘要，exp_get 回全文'
   assert.equal(g.ok, true, g.error?.message)
   assert.equal(g.data.scenario, long, 'exp_get 回全文')
 })
+
+// §15.157 同类残留（事件超限类）：know 域事件携带调用方提供的 evidence/reason（exp_promote/
+// know_adopt 的 evidence、know_transition 的 reason），schema 仅 minLength、无 maxLength；
+// 超长即撞 bus 8192B 事件信封上限（E_BUS_EVENT_TOO_LARGE），使命令整体失败。修复=事件侧
+// UTF-8 有界化（状态/采用已落 exp_cards/kb_docs/know_adoptions，事件仅通知）。
+test('§15.157: 超长 evidence/reason 的 know 事件仍 ≤8192 且命令成功', async () => {
+  const { dir, bus } = makeEnv()
+  const db = bus._internal.db()
+  const long = '证据理由 ' + '填充'.repeat(4000)
+  assert.ok(Buffer.byteLength(long, 'utf8') > 8192, '前置：文本本身已超事件上限')
+  // 1) exp_promote：draft → active
+  const exp = await bus.dispatch('know', 'exp_store', { scenario: SCEN, takeaway: TAKE, justification: JUST }, { actor: 'dashboard' })
+  assert.equal(exp.ok, true, exp.error?.message)
+  db.prepare("UPDATE exp_cards SET status='draft' WHERE id=?").run(exp.data.id)
+  const promo = await bus.dispatch('know', 'exp_promote', { id: exp.data.id, evidence: long }, { actor: 'dashboard' })
+  assert.equal(promo.ok, true, promo.error?.message)
+  // 2) know_adopt（legacy exp 路径）
+  const exp2 = await bus.dispatch('know', 'exp_store', { scenario: SCEN2, takeaway: TAKE2, justification: JUST }, { actor: 'dashboard' })
+  const adopt = await bus.dispatch('know', 'adopt', { target: 'exp', payload: { id: exp2.data.id }, evidence: long }, { actor: 'dashboard' })
+  assert.equal(adopt.ok, true, adopt.error?.message)
+  // 3) know_transition（kb → cooling）
+  const kb = await bus.dispatch('know', 'kb_import', { title: '边界文献', url: 'https://example.com/bnd157', body: '边界原因说明文献正文，用于生命周期迁移事件有界化回归。' }, { actor: 'model' })
+  assert.equal(kb.ok, true, kb.error?.message)
+  const trans = await bus.dispatch('know', 'transition', { subrepo: 'kb', doc_id: kb.data.doc_id, to: 'cooling', reason: long }, { actor: 'system' })
+  assert.equal(trans.ok, true, trans.error?.message)
+  const events = fs.readFileSync(path.join(dir, 'events', 'know.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  const promoted = events.find((e) => e.name === 'know.exp.promoted')
+  const adopted = events.find((e) => e.name === 'know.adopted')
+  const cooled = events.find((e) => e.name === 'know.kb.cooled')
+  for (const [n, e] of [['know.exp.promoted', promoted], ['know.adopted', adopted], ['know.kb.cooled', cooled]]) {
+    assert.ok(e, `${n} 事件应发布`)
+    assert.ok(Buffer.byteLength(JSON.stringify(e), 'utf8') <= 8192, `${n} 事件信封应 ≤8192`)
+  }
+  assert.ok(Buffer.byteLength(String(promoted.payload.evidence), 'utf8') <= 2000, 'promoted evidence 应有界')
+  assert.ok(Buffer.byteLength(String(adopted.payload.evidence), 'utf8') <= 2000, 'adopted evidence 应有界')
+  assert.ok(Buffer.byteLength(String(cooled.payload.reason), 'utf8') <= 2000, 'kb.cooled reason 应有界')
+})

@@ -444,6 +444,25 @@ test('event payload: asset.registered / asset.graded / asset.fp.recorded 载荷�
   assert.equal(reg.payload.source, 'httpx:run_1')
 })
 
+// §15.157 同类残留（事件超限类）：asset.state.changed 携带调用方提供的 evidence（schema 仅
+// minLength、无 maxLength）；超长即撞 bus 8192B 事件信封上限（E_BUS_EVENT_TOO_LARGE），使状态流转
+// 命令整体失败。修复=事件侧 UTF-8 有界化（状态已落 assets.state，事件仅通知）。
+test('§15.157: 超长 evidence 的 asset_state 事件仍 ≤8192 且状态流转成功', async () => {
+  const { dir, bus } = makeEnv()
+  await bus.dispatch('asset', 'upsert', { host: 'bnd.example.com' }, { actor: 'model' })
+  const longEvidence = 'run:' + '证据填充 '.repeat(3000)
+  assert.ok(Buffer.byteLength(longEvidence, 'utf8') > 8192, '前置：evidence 本身已超事件上限')
+  const r = await bus.dispatch('asset', 'state', { host: 'bnd.example.com', signal: 'content_changed', evidence: longEvidence }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ev = readEvents(dir).find((e) => e.name === 'asset.state.changed')
+  assert.ok(ev, '超长载荷不应使 state.changed 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'state.changed 事件信封应 ≤8192')
+  assert.ok(Buffer.byteLength(String(ev.payload.evidence), 'utf8') <= 2000, '事件内 evidence 应有界（≤2000B）')
+  assert.ok(String(ev.payload.evidence).startsWith('run:'), '有界化保留开头语义')
+  const row = bus._internal.db().prepare('SELECT state FROM assets WHERE host=?').get('bnd.example.com')
+  assert.equal(row.state, 'changed', '状态流转仍应落账')
+})
+
 test('concurrency: 并发 asset_upsert 同 host 只产生一行', async () => {
   const { bus } = makeEnv()
   await Promise.all([

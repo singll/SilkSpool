@@ -622,7 +622,10 @@ function makeHandlers(opts) {
           request_id: id, kind: args.kind, subject: args.subject, status: 'pending',
           payload, hint: '已提请人工审批（看板「审批」tab）。批准前目标仍被 fail-closed 拒绝，不要尝试打点。',
         },
-        events: [{ name: 'approval.requested', payload: { request_id: id, kind: args.kind, subject: args.subject, program_name: args.program_name || null, payload, requested_by: requestedBy } }],
+        // §15.157：approval.requested 同样携带调用方提供的 payload（无上限）；decide 事件已用
+        // boundedEventPayload 有界化，request 事件遗漏。看板渲染数据源是 DB 表 approval_requests，
+        // 非本事件，故事件侧有界化不丢语义。
+        events: [{ name: 'approval.requested', payload: { request_id: id, kind: args.kind, subject: args.subject, program_name: args.program_name || null, payload: boundedEventPayload(payload), requested_by: String(requestedBy == null ? '' : requestedBy).slice(0, 300) } }],
         after: { request_id: id, status: 'pending' },
         target: { kind: args.kind, subject: args.subject },
       }
