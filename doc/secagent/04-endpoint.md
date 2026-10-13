@@ -413,6 +413,8 @@ node /opt/silkspool/dsh/dsh-browser-capture.mjs \
 
 订阅方（**未实现/设计预留**）：vuln 域（endpoint.auth_marked → 越权测试候选提示；endpoint.queue.enqueued → param 喂料任务上下文）、ledger 域（endpoint.registered → 接口台账 TSV 联动，见 §2.3）、dashboard（endpoint.queue.consumed → 队列徽章）。当前 endpoint manifest `subscribes` 仅含 `exec.run.completed`（onRunProposal），上述对端在各域 manifest 中**均未声明**；按 00-conventions §六 只允许写对端已声明的订阅，故此处标注为设计预留，待各域实现后回填。
 
+> **事件载荷有界化（§15.158）**：bus 事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），超限使整条命令（含落账）失败。endpoint 域事件的 `path`（`endpoint_observe_request.url` 派生，schema `str({minLength:1})` 无 maxLength）、`source`/`program_id`/`run_id`/`operator`（schema 仅 minLength 或来自 ctx）、`evidence`（`endpoint_mark_auth` schema `str()` 无 maxLength）、`roles_seen` 数组在**事件侧**做 UTF-8 字节有界化（`path`/`evidence` ≤2000B；短文本 ≤500B；数组超 1000B 退化为 `{_truncated}` 串，见 `boundUtf8Bytes`/`boundedEventJson`）。业务事实仍全量落 `endpoints`/`endpoint_requests` 表与 `param-queue`/`param-seen` 文件，**不丢语义**（事件仅通知）。边界：`endpoint.registered`/`changed` 的异步订阅方 `onEndpointRegistered` 读取 `payload.path` 做自动语义建议，超长 path 被有界化后该次弱联动建议可能落空（失败已被吞、不阻断入库），此为有界化换取的确定性代价。
+
 ### 1.6 模型工具面投影（工具名 = 命令/查询名）
 
 | 工具名 | 描述全文（manifest agent_note 逐字投影） |

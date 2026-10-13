@@ -36,6 +36,39 @@ const DEFAULT_DATA_DIR = process.env.SEC_DATA_DIR || '/opt/silkspool/dsh/data'
 const log = (msg) => { try { process.stderr.write(`[sec-domain-endpoint] ${msg}\n`) } catch { /* noop */ } }
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex')
 
+// §15.158 同类残留（复发过的事件超限类）：bus 对事件信封有 8192B 硬上限（EVENT_MAX_BYTES），
+// publishInTx 超限即抛 E_BUS_EVENT_TOO_LARGE，使整条命令（含落账）失败。endpoint 域多个事件的
+// 载荷由调用方文本/URL 派生（path/source/evidence/run_id/program_id/roles_seen 等，schema 仅
+// minLength、无 maxLength），超长即撞顶。事件仅通知（业务事实已落 endpoints/endpoint_requests
+// 表、param-queue/param-seen 文件），故事件侧 UTF-8 有界化不丢语义。口径同 task/asset/fact/know 域。
+const EVENT_EVIDENCE_MAX_BYTES = 2000
+const EVENT_PATH_MAX_BYTES = 2000
+const EVENT_TEXT_MAX_BYTES = 500
+const EVENT_OBJECT_MAX_BYTES = 1000
+function boundUtf8Bytes(s, maxBytes) {
+  const text = String(s == null ? '' : s)
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
+}
+// 可空文本有界化：null/undefined 保持 null，其余按 UTF-8 字节截断。
+function boundTextOrNull(v, maxBytes) { return v == null ? null : boundUtf8Bytes(v, maxBytes) }
+// 对象载荷有界化：能放下则原样保留（保真），超限退化为 UTF-8 有界 JSON 串标记。
+function boundedEventJson(value, maxBytes = EVENT_OBJECT_MAX_BYTES) {
+  if (value == null) return value
+  let s
+  try { s = JSON.stringify(value) } catch { return null }
+  if (s == null) return null
+  if (Buffer.byteLength(s, 'utf8') <= maxBytes) return value
+  return { _truncated: boundUtf8Bytes(s, maxBytes) }
+}
+
 const backendUrl = new URL('../sec-backend-endpoint-sqlite/index.js', import.meta.url)
 const { createEndpointBackend } = await import(backendUrl.href)
 
@@ -671,12 +704,12 @@ function makeHandlers(opts) {
       const changed = (row.params != null && stableJson(row.params) !== stableJson(previousParams))
         || (row.program_id != null && row.program_id !== existing.program_id)
       return { ok: true, created: false, host: row.host, method: row.method.toUpperCase(), path: row.path,
-        event: changed ? { name: 'endpoint.changed', payload: { host: row.host, method: row.method.toUpperCase(), path: row.path, program_id: row.program_id ?? existing.program_id, source: row.source || '' } } : null }
+        event: changed ? { name: 'endpoint.changed', payload: { host: row.host, method: row.method.toUpperCase(), path: boundUtf8Bytes(row.path, EVENT_PATH_MAX_BYTES), program_id: boundTextOrNull(row.program_id ?? existing.program_id, EVENT_TEXT_MAX_BYTES), source: boundUtf8Bytes(row.source || '', EVENT_TEXT_MAX_BYTES) } } : null }
     }
     const r = repo.insertEndpoint(row)
     return {
       ok: true, created: r.created, host: row.host, method: row.method.toUpperCase(), path: row.path,
-      event: r.created ? { name: 'endpoint.registered', payload: { host: row.host, method: row.method.toUpperCase(), path: row.path, program_id: row.program_id ?? null, source: row.source || '' } } : null,
+      event: r.created ? { name: 'endpoint.registered', payload: { host: row.host, method: row.method.toUpperCase(), path: boundUtf8Bytes(row.path, EVENT_PATH_MAX_BYTES), program_id: boundTextOrNull(row.program_id, EVENT_TEXT_MAX_BYTES), source: boundUtf8Bytes(row.source || '', EVENT_TEXT_MAX_BYTES) } } : null,
     }
   }
 
@@ -751,7 +784,7 @@ function makeHandlers(opts) {
       spec.request_id = sha256(stableJson(spec))
       const created = repo.recordRequest(spec)
       return { data: { request_id: spec.request_id, shape_id: spec.shape_id, created },
-        events: created ? [{ name: 'endpoint.request.observed', payload: { request_id: spec.request_id, shape_id: spec.shape_id, program_id: spec.program_id, host, method: spec.method, path: spec.path, transport_state: spec.transport_state } }] : [],
+        events: created ? [{ name: 'endpoint.request.observed', payload: { request_id: spec.request_id, shape_id: spec.shape_id, program_id: boundTextOrNull(spec.program_id, EVENT_TEXT_MAX_BYTES), host, method: spec.method, path: boundUtf8Bytes(spec.path, EVENT_PATH_MAX_BYTES), transport_state: spec.transport_state } }] : [],
         after: { request_id: spec.request_id, created } }
     },
     endpoint_upsert: async (args, repo) => {
@@ -837,7 +870,7 @@ function makeHandlers(opts) {
       const paths = repo.queuePaths(program)
       return {
         data: { program, new_urls: fresh.length, pool: stat.seen_lines, queue: paths.queue, hint: `dalfox file ${paths.queue} / sqlmap -m ${paths.queue} --batch --level 1 --risk 1` },
-        events: fresh.length ? [{ name: 'endpoint.queue.enqueued', payload: { program, new_urls: fresh.length, pool: stat.seen_lines, source: args.source } }] : [],
+        events: fresh.length ? [{ name: 'endpoint.queue.enqueued', payload: { program: boundUtf8Bytes(program, EVENT_TEXT_MAX_BYTES), new_urls: fresh.length, pool: stat.seen_lines, source: boundUtf8Bytes(args.source, EVENT_TEXT_MAX_BYTES) } }] : [],
         before: null, after: { new_urls: fresh.length },
       }
     },
@@ -866,7 +899,7 @@ function makeHandlers(opts) {
       }
       return {
         data: { program, consumed, remaining: remaining.length, not_in_queue: notInQueue, scanner: args.scanner, run_id: args.run_id },
-        events: consumed ? [{ name: 'endpoint.queue.consumed', payload: { program, consumed, remaining: remaining.length, scanner: args.scanner, run_id: args.run_id } }] : [],
+        events: consumed ? [{ name: 'endpoint.queue.consumed', payload: { program: boundUtf8Bytes(program, EVENT_TEXT_MAX_BYTES), consumed, remaining: remaining.length, scanner: args.scanner, run_id: boundUtf8Bytes(args.run_id, EVENT_TEXT_MAX_BYTES) } }] : [],
         before: { queue_lines: queue.length }, after: { queue_lines: remaining.length },
       }
     },
@@ -892,10 +925,10 @@ function makeHandlers(opts) {
         events: [{
           name: 'endpoint.auth_marked',
           payload: {
-            host, method, path: p,
-            from: { auth_required: before?.auth_required ?? null, roles_seen: (() => { try { return JSON.parse(before?.roles_seen || '[]') } catch { return [] } })() },
-            to: { auth_required: r.after?.auth_required ?? null, roles_seen: roles },
-            evidence: args.evidence ?? null,
+            host, method, path: boundUtf8Bytes(p, EVENT_PATH_MAX_BYTES),
+            from: { auth_required: before?.auth_required ?? null, roles_seen: boundedEventJson((() => { try { return JSON.parse(before?.roles_seen || '[]') } catch { return [] } })()) },
+            to: { auth_required: r.after?.auth_required ?? null, roles_seen: boundedEventJson(roles) },
+            evidence: boundTextOrNull(args.evidence, EVENT_EVIDENCE_MAX_BYTES),
           },
         }],
         before: before ? { auth_required: before.auth_required, roles_seen: before.roles_seen } : null,
@@ -916,7 +949,7 @@ function makeHandlers(opts) {
         data: { host, method, path: p, auth_state: verdict.auth_state, confidence: verdict.confidence, reasons: verdict.reasons },
         events: [{
           name: 'endpoint.auth_classified',
-          payload: { host, method, path: p, from: before?.auth_state ?? null, to: verdict.auth_state, confidence: verdict.confidence, run_id: String(args.run_id), program_id: before?.program_id ?? null },
+          payload: { host, method, path: boundUtf8Bytes(p, EVENT_PATH_MAX_BYTES), from: before?.auth_state ?? null, to: verdict.auth_state, confidence: verdict.confidence, run_id: boundUtf8Bytes(String(args.run_id), EVENT_TEXT_MAX_BYTES), program_id: boundTextOrNull(before?.program_id, EVENT_TEXT_MAX_BYTES) },
         }],
         before: before ? { auth_state: before.auth_state ?? null } : null,
         after: { auth_state: r.after?.auth_state ?? null },
@@ -952,7 +985,7 @@ function makeHandlers(opts) {
         },
         events: [{
           name: 'endpoint.semantics_annotated',
-          payload: { host, method, path: p, from: before?.should_auth ?? null, to: after?.should_auth ?? shouldAuth, source: after?.should_auth_source ?? source, applied: r.changed === true, program_id: before?.program_id ?? null, operator: ctx?.operator || null },
+          payload: { host, method, path: boundUtf8Bytes(p, EVENT_PATH_MAX_BYTES), from: before?.should_auth ?? null, to: after?.should_auth ?? shouldAuth, source: boundUtf8Bytes(after?.should_auth_source ?? source, EVENT_TEXT_MAX_BYTES), applied: r.changed === true, program_id: boundTextOrNull(before?.program_id, EVENT_TEXT_MAX_BYTES), operator: boundTextOrNull(ctx?.operator || null, EVENT_TEXT_MAX_BYTES) },
         }],
         before: before ? { should_auth: before.should_auth ?? null, source: before.should_auth_source ?? null } : null,
         after: { should_auth: after?.should_auth ?? null, source: after?.should_auth_source ?? null },

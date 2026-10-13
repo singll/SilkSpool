@@ -58,6 +58,12 @@ function readAudit(dir) {
   return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
 }
 
+function readEvents(dir) {
+  const f = path.join(dir, 'events', 'endpoint.jsonl')
+  if (!fs.existsSync(f)) return []
+  return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+}
+
 function harEntry(method = 'POST', url = 'https://api.example.com/orders?tag=a&tag=b') {
   return { startedDateTime: '2026-10-02T12:00:00Z',
     request: { method, url, headers: [{ name: 'Authorization', value: 'Bearer PRIVATE-TOKEN' }],
@@ -606,6 +612,43 @@ test('event payload: endpoint.registered / endpoint.auth_marked / endpoint.queue
   assert.ok(names.includes('endpoint.registered'))
   assert.ok(names.includes('endpoint.auth_marked'))
   assert.ok(names.includes('endpoint.queue.enqueued'))
+})
+
+// §15.158 同类残留（事件超限类）：bus 对事件信封有 8192B 硬上限（E_BUS_EVENT_TOO_LARGE），
+// 超限时 publishInTx 抛错，使整条命令（含落账）失败。endpoint 域多个事件载荷由调用方文本/
+// URL 派生（schema 无 maxLength）。修复=事件侧 UTF-8 有界化（业务事实仍落 endpoints/
+// endpoint_requests 表与 param-queue 文件），事件仅作通知。
+test('§15.158: 超长 evidence 的 endpoint.auth_marked 事件仍 ≤8192 且标注成功', async () => {
+  const { dir, bus } = makeEnv()
+  await bus.dispatch('endpoint', 'upsert', { rows: [{ host: 'api.example.com', path: '/v1' }] }, { actor: 'model' })
+  const longEvidence = 'run:' + '证据填充 '.repeat(3000)
+  assert.ok(Buffer.byteLength(longEvidence, 'utf8') > 8192, '前置：evidence 本身已超事件上限')
+  const r = await bus.dispatch('endpoint', 'mark_auth', { host: 'api.example.com', method: 'GET', path: '/v1', auth_required: 'no', evidence: longEvidence }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ev = readEvents(dir).find((e) => e.name === 'endpoint.auth_marked')
+  assert.ok(ev, '超长载荷不应使 auth_marked 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'auth_marked 事件信封应 ≤8192')
+  assert.ok(Buffer.byteLength(String(ev.payload.evidence), 'utf8') <= 2000, '事件内 evidence 应有界（≤2000B）')
+  assert.ok(String(ev.payload.evidence).startsWith('run:'), '有界化保留开头语义')
+  const row = bus._internal.db().prepare('SELECT auth_required FROM endpoints WHERE host=? AND path=?').get('api.example.com', '/v1')
+  assert.equal(row.auth_required, 'no', '鉴权标注仍应落账')
+})
+
+test('§15.158: 超长 path 的 endpoint.request.observed 事件仍 ≤8192 且观测落账', async () => {
+  const { dir, bus, dataDir } = makeEnv()
+  const evidence = 'results/run_test_20260910_000000/request.json'
+  fs.writeFileSync(path.join(dataDir, evidence), '{}')
+  const longQuery = 'q'.repeat(9000)
+  const req = { program_id: 'test-src', url: `https://api.example.com/orders?a=${longQuery}`, method: 'GET',
+    parameters: [{ name: 'a', in: 'query', value: '1' }], evidence_path: evidence, run_id: 'run_test_20260910_000000', response_status: 200 }
+  const r = await bus.dispatch('endpoint', 'observe_request', req, { actor: 'script' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ev = readEvents(dir).find((e) => e.name === 'endpoint.request.observed')
+  assert.ok(ev, '超长 path 不应使 request.observed 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'request.observed 事件信封应 ≤8192')
+  assert.ok(Buffer.byteLength(String(ev.payload.path), 'utf8') <= 2000, '事件内 path 应有界（≤2000B）')
+  const stored = await bus.query('endpoint', 'request_get', { request_id: r.data.request_id }, { actor: 'reactor' })
+  assert.equal(stored.data.path, `/orders?a=${longQuery}`, '观测落账仍存全量 path')
 })
 
 // ---------------------------------------------------------------------------
