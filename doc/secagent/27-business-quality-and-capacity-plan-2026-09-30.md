@@ -2302,6 +2302,17 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 - **边界/未夸大**：本项只消除「长 objective → 事件超限 → 派生前失败」这一确定性工程缺口；**不改**预算/收尾策略（§15.150–15.154 议题），**不涉**可信判定/知识回流（断链②，§15.147）。属「无真实 run 强依赖」的 A 类闭环（契约测试即充分判据），未做真实 run 复现（保持环境空转）。同类风险根因是「事件载荷未按 8192 信封上限有界化」，本次仅修 exec.worker.spawned；其余域事件若引入超长字符串仍需各自有界化。
 - **提交**：见本次 commit。
 
+### 15.156 修：task 域事件载荷按 8192 信封上限有界化（reviewed/escalated 等，2026-10-12，已上线）
+
+- **动机**：§15.155 残留的同类缺口——「事件载荷未按 8192 信封上限有界化」复发过 3 次。本次落点为 task 域：`task.campaign.reviewed` / `task.campaign.escalated` 载荷携带调用方提供的 `evidence`（`task.js` schema `str({minLength:1})` 无 maxLength）与 `goal_delta`（`{type:'object'}` 无界），`campaign_checkpoint` 的 `payload` 亦为无界 object。
+- **根因**：`decisionEvents` 把 `recordDecision` 的全量 `evidence`/`goal_delta` 原样塞进事件；bus `publishInTx` 对事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），超限即抛，使**整条 `campaign_record_decision` 命令（含落账）失败**——与 §15.155 同源（确定性工程缺口，非预算/策略问题）。
+- **扫描收口**：对 task 域全部事件载荷字段做「字段 × 8192」系统扫描，确认其余同类无界项并一并有界化：`task.cancelled` 的 `note`、`task.intent.derived` 的 `host`/`path`/`param`/`strategy_key`、`task.campaign.status.changed` 的 `cause`（`campaign_pause`/`campaign_archive` 的 `note`）。其余字段（`objective_head`、`task.finished.note`、`fgs_snapshot`、`blocked_reason`、枚举 goal/phase 等）已有界或枚举，无残余。
+- **修复**（`dsh-plugin-sec-domain-task.js`）：新增模块级 `boundUtf8Bytes(s,maxBytes)`（UTF-8 字节安全二分截断，不切多字节字符）与 `boundedEventJson(value,maxBytes)`（对象能放下则保真，超限退化为 `{_truncated: <有界 JSON 串>}`）。事件侧应用：`evidence ≤2000B`、对象 `≤4000B`、短文本（note/cause/host/path/param/strategy_key）`≤500B`。落账（`campaign_decisions`/`campaign_checkpoints`/`tasks.result`）仍存全量，**不丢语义**（事件仅通知，无订阅方消费这些业务字段）。
+- **契约测试**（新增 2 红例）：① 构造 `>8192B` 的 `evidence` + 大 `goal_delta` → 断言 `campaign_record_decision` 不再因事件超限失败、reviewed/escalated 事件信封 `≤8192`、`payload.evidence ≤2000B` 且保留前缀语义、落账 `evidence`/`goal_delta` 仍为全量；② cancel/intent/status/checkpoint 四类事件同断言（各自信封 ≤8192、字段有界、落账全量）。**修复前**红例在 `publishInTx` 即抛 `事件超限 48364>8192：task.campaign.reviewed`、命令整体失败。
+- **验证（本地 + 生产）**：本地 `sec-contract-test-local.sh task` **152/152**（原 150 + 新增 2 红例）、全域 **843/843**；生产 change `20261012-task-event-payload-bound`——只替换 task 域「源模板 + 已安装插件 + 契约测试」两落点（旧源码存 `/opt/silkspool/dsh/changes/20261012-task-event-payload-bound/previous/`），目标机 `sec-task-domain-plugin-setup.sh` 重新组装并跑 **152/152 全绿**、`--dump-config` web/headless 均含 `sec-domain-task`；`spool restart csai silksecagent` 后 NRestarts0、active/running、`[sec-domain-task] task 域注册成功`、`dsh web:` token 行恢复、journal 无 error；重启前后 `assert_idle`（native running=0；campaigns 全 paused 4；tasks 无 running/queued）。
+- **边界/未夸大**：本项只消除「task 域事件载荷超长 → 事件超限 → 命令整体失败」的确定性工程缺口；**不改**预算/收尾策略（§15.150–15.154），**不涉**可信判定/知识回流（断链②，§15.147）。属「无真实 run 强依赖」的 A 类闭环（契约测试即充分判据），保持环境空转。exec 域已由 §15.155 修复；其余域（approval 已有 `boundedEventPayload`；asset/fact/fgs/know 等仍有个别 `evidence`/`reason` 直传）若引入超长字符串仍需各自有界化，列后续候选。
+- **提交**：见本次 commit。
+
 ## 16. 当前剩余验收入口（2026-10-09，持续更新）
 
 本表是工作队列索引，不替代§5–6每项验收。历史实现已在§15保留；只有代码、相应运行/故障样例和契约一致才可关项。费用范围按§15.27收缩；执行优先级及旧数据处置按§15.119，历史未知不阻塞新发现闭环。
@@ -2321,7 +2332,7 @@ change `20261009-nonbrowser-batch`，固定 DSH 0.1.7-rc.2，源基线 `f008376`
 | WP09 | 有界候选执行、7类授权行为/故障新对象holdout、无卡/删策略对照、成本和固定报告引用已生产验收 | 其它漏洞族/技术栈、真正未见行为holdout、实际方法采用与真实发现收益；目前仅受控授权协议，不作全项完成 |
 | WP10 | kbList schema/完整分页、证据/阻塞可见；**stats 来源失败时 unknown 以 null 呈现（不再显示 0）**（§15.129）；**维护 RPC 只读验证：技术统计/unknown 各视图 ok、unknown=null 无缺陷**（§15.145） | 真实技术统计/unknown 显示的其余视图与实际 RPC 验证继续 |
 | WP11 | 已有索引/FTS基础；**生产只读实测：热态主查询全部 <~100ms，仅首调冷启动偏高（asset.overview 1.85s 等），无持续瓶颈 → 实测退出、不做无依据虚拟化**（§15.129） | 后续仅在测到新瓶颈时再优化 |
-| WP12 | 本地链路与生产只读验收；**§15.142：调度 worker 首个真实 finding 已登记（`#1435` cAdvisor 未授权）**；**§15.147：finding→task 归属补全（`15df8d6`）+ 端到端对账**；**§15.148：第二个真实 finding `#1436`（WebLogic 7001 暴露面），全程维护 RPC 驱动、归属正确**；**§15.155：修「长 objective 使 `exec.worker.spawned` 事件超 8192 致派生前 0 成本失败」（exec 域 spawned 载荷 `task` UTF-8 有界化，已上线）** | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填；finding 仅到 `new`，**可信判定/知识回流**（#1435/#1436 断链②）仍待；**多样本预算标定已做**（§15.154：1.5M 下 2/3 单目标 run1 单次收尾——8090 1.05M、8083 1.33M；8082 仍于 1.48M/25 请求触顶；同目标 8090 由 1.2M 两段→1.5M 单次） |
+| WP12 | 本地链路与生产只读验收；**§15.142：调度 worker 首个真实 finding 已登记（`#1435` cAdvisor 未授权）**；**§15.147：finding→task 归属补全（`15df8d6`）+ 端到端对账**；**§15.148：第二个真实 finding `#1436`（WebLogic 7001 暴露面），全程维护 RPC 驱动、归属正确**；**§15.155：修「长 objective 使 `exec.worker.spawned` 事件超 8192 致派生前 0 成本失败」（exec 域 spawned 载荷 `task` UTF-8 有界化，已上线）**；**§15.156：task 域事件载荷（reviewed/escalated 的 evidence/goal_delta、checkpoint payload、cancel note、intent host/path/param、status cause）按 8192 信封上限有界化，同类扫描收口，已上线** | **不含越权/双账号**（§15.128）：匿名/单账号端到端对账（请求→假设→有效实验→技术结论→知识收益）、持续观察、发布/恢复及正式契约逐项回填；finding 仅到 `new`，**可信判定/知识回流**（#1435/#1436 断链②）仍待；**多样本预算标定已做**（§15.154：1.5M 下 2/3 单目标 run1 单次收尾——8090 1.05M、8083 1.33M；8082 仍于 1.48M/25 请求触顶；同目标 8090 由 1.2M 两段→1.5M 单次） |
 
 ## 17. 原子域合规复核（2026-10-09，只读）
 

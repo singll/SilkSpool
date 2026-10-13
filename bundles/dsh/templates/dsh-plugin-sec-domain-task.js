@@ -126,6 +126,37 @@ const BUDGET_PERIOD_MS = Number(process.env.SEC_TASK_BUDGET_PERIOD_DAYS || 7) * 
 const BUDGET_MAX_TOKENS = Number(process.env.SEC_TASK_BUDGET_MAX_TOKENS || 2000000)
 const BUDGET_MAX_TASKS = Number(process.env.SEC_TASK_BUDGET_MAX_TASKS || 500)
 
+// §15.156 同类残留（复发过的事件超限类）：bus 对事件信封有 8192B 硬上限（EVENT_MAX_BYTES），
+// 超限时 publishInTx 抛 E_BUS_EVENT_TOO_LARGE，使整条命令（含落账）失败。
+// task.campaign.reviewed/escalated 携带调用方提供的 evidence 与 goal_delta（schema 仅
+// minLength/object，无上限），campaign_checkpoint 的 payload 亦为无界 object；超长即撞顶。
+// 事件仅作通知（无订阅方消费这些业务字段；落账走 campaign_decisions/campaign_checkpoints 表），
+// 故事件侧 UTF-8 有界化不丢语义。口径同 exec 域 boundUtf8Bytes、approval 域 boundedEventPayload。
+const EVENT_EVIDENCE_MAX_BYTES = 2000
+const EVENT_OBJECT_MAX_BYTES = 4000
+const EVENT_TEXT_MAX_BYTES = 500
+function boundUtf8Bytes(s, maxBytes) {
+  const text = String(s == null ? '' : s)
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
+}
+// 对象载荷有界化：能放下则原样保留（保真），超限则退化为 UTF-8 有界 JSON 串标记。
+function boundedEventJson(value, maxBytes = EVENT_OBJECT_MAX_BYTES) {
+  if (value == null) return value
+  let s
+  try { s = JSON.stringify(value) } catch { return null }
+  if (s == null) return null
+  if (Buffer.byteLength(s, 'utf8') <= maxBytes) return value
+  return { _truncated: boundUtf8Bytes(s, maxBytes) }
+}
+
 // 34 号补丁：per-program 预算闸在线化——DB（task_settings）优先，env 仅初始值。
 // 调整走 approval（task-budget-config kind）→ effect task_budget_config 落库，无需重启。
 const BUDGET_SETTING_KEYS = ['max_tasks', 'max_tokens', 'period_days']
@@ -1315,7 +1346,7 @@ function makeHandlers(opts) {
   function writeCheckpoint(repo, campaignId, kind, summary, payload) {
     const id = repo.insertCheckpoint({ campaign_id: campaignId, kind, summary, payload })
     const events = []
-    if (kind === 'escalation') events.push({ name: 'task.campaign.escalated', payload: { campaign_id: campaignId, kind, summary: String(summary || '').slice(0, 300), payload: payload || null, checkpoint_id: id } })
+    if (kind === 'escalation') events.push({ name: 'task.campaign.escalated', payload: { campaign_id: campaignId, kind, summary: String(summary || '').slice(0, 300), payload: boundedEventJson(payload), checkpoint_id: id } })
     return { id, events }
   }
 
@@ -1937,10 +1968,10 @@ function makeHandlers(opts) {
     return { id, delta, verdict, task_id: Number(task_id), campaign_id: Number(campaign_id), evidence, decided_by: decided_by || 'reviewer' }
   }
   function decisionEvents(rd) {
-    const events = [{ name: 'task.campaign.reviewed', payload: { campaign_id: rd.campaign_id, task_id: rd.task_id, verdict: rd.verdict, evidence: rd.evidence, goal_delta: rd.delta, decided_by: rd.decided_by } }]
+    const events = [{ name: 'task.campaign.reviewed', payload: { campaign_id: rd.campaign_id, task_id: rd.task_id, verdict: rd.verdict, evidence: boundUtf8Bytes(rd.evidence, EVENT_EVIDENCE_MAX_BYTES), goal_delta: boundedEventJson(rd.delta), decided_by: rd.decided_by } }]
     if (rd.verdict === 'escalated') {
       const cid = rd.campaign_id
-      events.push({ name: 'task.campaign.escalated', payload: { campaign_id: cid, kind: 'escalation', summary: `子任务 #${rd.task_id} 无法判定，升级人工`, payload: { task_id: rd.task_id, evidence: rd.evidence } } })
+      events.push({ name: 'task.campaign.escalated', payload: { campaign_id: cid, kind: 'escalation', summary: `子任务 #${rd.task_id} 无法判定，升级人工`, payload: { task_id: rd.task_id, evidence: boundUtf8Bytes(rd.evidence, EVENT_EVIDENCE_MAX_BYTES) } } })
     }
     return events
   }
@@ -2879,7 +2910,7 @@ function makeHandlers(opts) {
       repo.transitionTask(Number(args.task_id), { result: tail })
       return {
         data: { task_id: Number(args.task_id), status: 'cancelled' },
-        events: [{ name: 'task.cancelled', payload: { task_id: Number(args.task_id), program_id: t.program_id, from_status: t.status, note } }],
+        events: [{ name: 'task.cancelled', payload: { task_id: Number(args.task_id), program_id: t.program_id, from_status: t.status, note: boundUtf8Bytes(note, EVENT_TEXT_MAX_BYTES) } }],
         after: { task_id: Number(args.task_id), status: 'cancelled' },
       }
     },
@@ -3236,7 +3267,7 @@ function makeHandlers(opts) {
       repo.acknowledgeHypothesisKey(bare, taskId)
       return {
         data: { deduped: false, strategy_key: bare, task_id: taskId, kind: args.kind, level: args.level || 'H2' },
-        events: [{ name: 'task.intent.derived', payload: { strategy_key: bare, task_id: taskId, program_id: args.program_id, kind: args.kind, level: args.level || 'H2', vuln_class: args.vuln_class || null, host: args.host, path: args.path || '', param: args.param || '', campaign_id: args.campaign_id ?? null, campaign_role: args.campaign_role ?? null, cause: ctx?.cause ? 'event' : 'manual' } }],
+        events: [{ name: 'task.intent.derived', payload: { strategy_key: boundUtf8Bytes(bare, EVENT_TEXT_MAX_BYTES), task_id: taskId, program_id: args.program_id, kind: args.kind, level: args.level || 'H2', vuln_class: args.vuln_class || null, host: boundUtf8Bytes(args.host, EVENT_TEXT_MAX_BYTES), path: boundUtf8Bytes(args.path || '', EVENT_TEXT_MAX_BYTES), param: boundUtf8Bytes(args.param || '', EVENT_TEXT_MAX_BYTES), campaign_id: args.campaign_id ?? null, campaign_role: args.campaign_role ?? null, cause: ctx?.cause ? 'event' : 'manual' } }],
         after: { task_id: taskId, strategy_key: bare },
       }
     },
@@ -3291,7 +3322,7 @@ function makeHandlers(opts) {
       if (!c) throwErr('E_CAMPAIGN_STATE', `专项不存在: ${args.campaign_id}`, '核对 campaign_list 里的 id')
       if (c.status !== 'active') throwErr('E_CAMPAIGN_STATE', `专项 #${c.id} 当前 ${c.status}，仅 active 可暂停`, '状态机：active → paused')
       repo.updateCampaign(c.id, { status: 'paused' }, 'active')
-      const events = [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: 'active', to: 'paused', cause: args.note || 'manual' } }]
+      const events = [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: 'active', to: 'paused', cause: boundUtf8Bytes(args.note || 'manual', EVENT_TEXT_MAX_BYTES) } }]
       return { data: { campaign_id: c.id, status: 'paused' }, events }
     },
 
@@ -3318,7 +3349,7 @@ function makeHandlers(opts) {
       }
       return {
         data: { campaign_id: c.id, status: 'archived', cancelled_queued: cancelled },
-        events: [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: c.status, to: 'archived', cause: args.note || 'archive' } }],
+        events: [{ name: 'task.campaign.status.changed', payload: { campaign_id: c.id, from: c.status, to: 'archived', cause: boundUtf8Bytes(args.note || 'archive', EVENT_TEXT_MAX_BYTES) } }],
       }
     },
 

@@ -503,6 +503,8 @@ once 分支：`status = ok ? 'done' : 'failed'`，`finished_at=now`。
 | `task.campaign.escalated` | campaign_checkpoint（kind=escalation）/ 供给停派 | `{campaign_id, kind, summary, payload, checkpoint_id}` |
 | `task.campaign.autonomy.changed` | campaign_autonomy_apply（31 号） | `{campaign_id, autonomy, cause}`（只落 autonomy 不动 status 时发） |
 
+> **事件载荷有界化（§15.156）**：bus 事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），超限使整条命令（含落账）失败。task 域事件中由调用方提供的文本/对象——`campaign_record_decision` 的 `evidence`/`goal_delta`、`campaign_checkpoint` 的 `payload`、`task_cancel` 的 `note`、`task_derive_intent` 的 `host`/`path`/`param`/`strategy_key`、`campaign_pause`/`campaign_archive` 的 `cause`——在**事件侧**做 UTF-8 字节有界化（evidence ≤2000B；对象超 4000B 退化为 `{_truncated}` 串；短文本 ≤500B）；落账（`campaign_decisions`/`campaign_checkpoints`/`tasks.result`）仍存全量，不丢语义。
+
 **task.finished 是下游触发器**（本域只发事件，不做跨域写）：
 
 | 订阅方 | 模式 | 动作 |

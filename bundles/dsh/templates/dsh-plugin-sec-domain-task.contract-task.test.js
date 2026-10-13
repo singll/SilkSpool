@@ -1491,6 +1491,76 @@ test('22 C26/INV-C3/C8: campaign_record_decision 证据铁律 + 一任务一验�
   assert.equal(n, 1)
 })
 
+// §15.156 同类残留：task.campaign.reviewed/escalated 事件载荷携带调用方提供的 evidence/goal_delta，
+// schema 仅约束 minLength/object（无上限）；超长即撞 bus 8192B 事件信封上限（E_BUS_EVENT_TOO_LARGE），
+// 使整条验收命令失败。修复=事件侧 UTF-8 有界化（落账 campaign_decisions 仍存全量 evidence/goal_delta）。
+test('§15.156: 超长 evidence/goal_delta 的 campaign_record_decision 事件仍 ≤8192 且验收成功', async () => {
+  const { dir, bus } = makeEnv()
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'bnd', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  await bus.dispatch('task', 'campaign_dispatch', { campaign_id: cid, drafts: [{ kind: 'hypothesis', host: 'a.example.com', vuln_class: 'idor', strategy_key: 'a.example.com|||idor' }] }, { actor: 'model' })
+  const tid = bus._internal.db().prepare('SELECT id FROM tasks WHERE campaign_id=?').get(cid).id
+  const longEvidence = 'run:' + '证据填充 '.repeat(3000)
+  const bigDelta = { accepted: 1, note: 'x'.repeat(9000) }
+  assert.ok(Buffer.byteLength(longEvidence, 'utf8') > 8192, '前置：evidence 本身已超事件上限')
+  const ok = await bus.dispatch('task', 'campaign_record_decision', { campaign_id: cid, task_id: tid, verdict: 'escalated', evidence: longEvidence, goal_delta: bigDelta }, { actor: 'reactor' })
+  assert.equal(ok.ok, true, ok.error?.message)
+  const evs = readEvents(dir)
+  const reviewed = evs.find((e) => e.name === 'task.campaign.reviewed' && e.payload.task_id === tid)
+  assert.ok(reviewed, '超长载荷不应使 reviewed 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(reviewed), 'utf8') <= 8192, 'reviewed 事件信封应 ≤8192')
+  assert.ok(Buffer.byteLength(String(reviewed.payload.evidence), 'utf8') <= 2000, '事件内 evidence 应有界（≤2000B）')
+  assert.ok(String(reviewed.payload.evidence).startsWith('run:'), '有界化保留开头语义')
+  const escalated = evs.find((e) => e.name === 'task.campaign.escalated' && e.payload.kind === 'escalation' && e.payload.campaign_id === cid)
+  assert.ok(escalated, 'escalated 事件应发布')
+  assert.ok(Buffer.byteLength(JSON.stringify(escalated), 'utf8') <= 8192, 'escalated 事件信封应 ≤8192')
+  // 落账保真：事件侧有界化不改变账本（全量 evidence/goal_delta 仍在 campaign_decisions）
+  const dec = bus._internal.db().prepare('SELECT evidence, goal_delta FROM campaign_decisions WHERE task_id=?').get(tid)
+  assert.equal(dec.evidence, longEvidence, '落账 evidence 应为全量')
+  assert.equal(JSON.parse(dec.goal_delta).note.length, 9000, '落账 goal_delta 应为全量')
+})
+
+// §15.156 扫描收口：task 域其余事件载荷同源（调用方文本无上限）——cancel note /
+// intent.derived host·path·param·strategy_key / campaign status.changed cause /
+// checkpoint escalation payload；均按事件信封上限有界化（事件仅通知，落账不受影响）。
+test('§15.156: task 域其余事件载荷（cancel/intent/status/checkpoint）同样有界化', async () => {
+  const { dir, bus } = makeEnv()
+  const big = 'X'.repeat(9000)
+  const mid = 'X'.repeat(1000)
+  const t = await bus.dispatch('task', 'create', { program_id: 'test-src', objective: '边界任务' }, { actor: 'model' })
+  const cxl = await bus.dispatch('task', 'cancel', { task_id: t.data.task_id, note: big }, { actor: 'model' })
+  assert.equal(cxl.ok, true, cxl.error?.message)
+  const di = await bus.dispatch('task', 'derive_intent', {
+    program_id: 'test-src', kind: 'hypothesis', host: 'a.example.com', path: '/' + mid,
+    vuln_class: 'idor', param: mid, level: 'H2', oracle: 'idor_diff',
+  }, { actor: 'reactor' })
+  assert.equal(di.ok, true, di.error?.message)
+  const c = await bus.dispatch('task', 'campaign_create', { name: 'bnd2', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
+  const cid = c.data.campaign_id
+  await bus.dispatch('task', 'campaign_activate', { campaign_id: cid }, { actor: 'dashboard' })
+  const pause = await bus.dispatch('task', 'campaign_pause', { campaign_id: cid, note: big }, { actor: 'dashboard' })
+  assert.equal(pause.ok, true, pause.error?.message)
+  const cp = await bus.dispatch('task', 'campaign_checkpoint', { campaign_id: cid, kind: 'escalation', summary: '边界升级', payload: { blob: big } }, { actor: 'dashboard' })
+  assert.equal(cp.ok, true, cp.error?.message)
+  const evs = readEvents(dir)
+  const cancelled = evs.find((e) => e.name === 'task.cancelled')
+  const intent = evs.find((e) => e.name === 'task.intent.derived')
+  const paused = evs.find((e) => e.name === 'task.campaign.status.changed' && e.payload.to === 'paused')
+  const escalated = evs.find((e) => e.name === 'task.campaign.escalated' && e.payload.kind === 'escalation')
+  for (const [n, e] of [['task.cancelled', cancelled], ['task.intent.derived', intent], ['task.campaign.status.changed', paused], ['task.campaign.escalated', escalated]]) {
+    assert.ok(e, `${n} 事件应发布`)
+    assert.ok(Buffer.byteLength(JSON.stringify(e), 'utf8') <= 8192, `${n} 事件信封应 ≤8192`)
+  }
+  assert.ok(Buffer.byteLength(String(cancelled.payload.note), 'utf8') <= 500, 'cancel note 应有界')
+  assert.ok(Buffer.byteLength(String(intent.payload.path), 'utf8') <= 500, 'intent path 应有界')
+  assert.ok(Buffer.byteLength(String(intent.payload.param), 'utf8') <= 500, 'intent param 应有界')
+  assert.ok(Buffer.byteLength(String(paused.payload.cause), 'utf8') <= 500, 'status cause 应有界')
+  // 落账保真：cancel 的 result 证据链仍存全量 note（仅事件侧有界化）
+  const row = bus._internal.db().prepare('SELECT result FROM tasks WHERE id=?').get(t.data.task_id)
+  assert.ok(String(row.result).includes('X'.repeat(1000)), '落账 result 应保留完整 note')
+})
+
 test('27 Reviewer: self-reported oracle verdict cannot create technical success or lose actual costs', async () => {
   const { bus, domain } = makeEnv()
   const c = await bus.dispatch('task', 'campaign_create', { name: 'rv', program_ids: ['test-src'], goal_spec: { stop_conditions: ['done'] } }, { actor: 'model' })
