@@ -601,3 +601,66 @@ test('27 WP05/旧分页饥饿: 覆盖缺口按维度独立计费，前序维度�
     assert.ok((g.data.truncated?.dims || []).includes('crawl'), 'crawl 触顶应报截断')
   } finally { delete process.env.SEC_LEDGER_MAX_GAPS_PER_DIM }
 })
+
+// ---------------------------------------------------------------------------
+// §15.159 同类残留（复发过的事件超限类）：bus 对事件信封有 8192B 硬上限
+// （E_BUS_EVENT_TOO_LARGE），publishInTx 超限即抛，使整条命令（含落账）失败。ledger 多个
+// 事件载荷由调用方自由文本派生（schema 无 maxLength），修复=事件侧 UTF-8 有界化；业务事实
+// （attempts tsv / coverage-ledger jsonl / card_usage jsonl）仍存全量。
+// ---------------------------------------------------------------------------
+
+test('§15.159: 超长 reason 的 ledger.attempt.logged 事件仍 ≤8192 且台账落全量', async () => {
+  const { dir, dataDir, bus } = makeEnv()
+  const longReason = '原因说明 ' + '证据链细节 '.repeat(3000)
+  assert.ok(Buffer.byteLength(longReason, 'utf8') > 8192, '前置：reason 本身已超事件上限')
+  const r = await bus.dispatch('ledger', 'log_attempt', {
+    program: 'test-src', asset: 'a.example.com', card_id: 'VC-034', card_ver: 2, tool: 'curl+js',
+    result: 'TESTED_CLEAN', reason: longReason, evidence_path: 'evidence/probe.txt', run_id: 'r8x1k2ab',
+  }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ev = readEvents(dir).find((e) => e.name === 'ledger.attempt.logged')
+  assert.ok(ev, '超长载荷不应使 attempt.logged 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'attempt.logged 事件信封应 ≤8192')
+  assert.ok(Buffer.byteLength(String(ev.payload.reason), 'utf8') <= 2000, '事件内 reason 应有界（≤2000B）')
+  assert.ok(String(ev.payload.reason).startsWith('原因说明'), '有界化保留开头语义')
+  const content = fs.readFileSync(attemptsFile(dataDir), 'utf8')
+  assert.ok(content.includes(longReason), '台账 TSV 仍应存全量 reason')
+})
+
+test('§15.159: 超长 key/source 的 ledger.coverage.marked 事件仍 ≤8192 且账本落全量', async () => {
+  const { dir, dataDir, bus } = makeEnv()
+  const longKey = 'a.example.com|' + 'p'.repeat(9000)
+  const longSource = 'src-' + 'x'.repeat(9000)
+  assert.ok(Buffer.byteLength(longKey, 'utf8') > 8192, '前置：key 本身已超事件上限')
+  const r = await bus.dispatch('ledger', 'coverage_mark', {
+    program: 'test-src', dim: 'param', key: longKey, mark: 'params_enriched', source: longSource,
+  }, { actor: 'script' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ev = readEvents(dir).find((e) => e.name === 'ledger.coverage.marked')
+  assert.ok(ev, '超长载荷不应使 coverage.marked 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'coverage.marked 事件信封应 ≤8192')
+  assert.ok(Buffer.byteLength(String(ev.payload.key), 'utf8') <= 2000, '事件内 key 应有界（≤2000B）')
+  assert.ok(Buffer.byteLength(String(ev.payload.source), 'utf8') <= 500, '事件内 source 应有界（≤500B）')
+  const f = path.join(dataDir, 'pipeline', 'test-src', 'coverage-ledger.jsonl')
+  const rec = fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((x) => x.key && x.key.startsWith('a.example.com|'))
+  assert.equal(rec.key, longKey, '覆盖账本仍应存全量 key')
+  assert.equal(rec.source, longSource, '覆盖账本仍应存全量 source')
+})
+
+test('§15.159: 超长 deviation 的 ledger.card_usage.logged 事件仍 ≤8192 且卡使用落全量', async () => {
+  const { dir, dataDir, bus } = makeEnv()
+  const longDeviation = '偏差 ' + '卡第3步端点实际 404 '.repeat(2000)
+  assert.ok(Buffer.byteLength(longDeviation, 'utf8') > 8192, '前置：deviation 本身已超事件上限')
+  const r = await bus.dispatch('ledger', 'log_card_usage', {
+    program: 'test-src', card_id: 'VC-1', card_version: 1, asset: 'a.example.com', outcome: 'deviated', deviation: longDeviation,
+  }, { actor: 'model' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ev = readEvents(dir).find((e) => e.name === 'ledger.card_usage.logged')
+  assert.ok(ev, '超长载荷不应使 card_usage.logged 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'card_usage.logged 事件信封应 ≤8192')
+  assert.ok(Buffer.byteLength(String(ev.payload.deviation), 'utf8') <= 2000, '事件内 deviation 应有界（≤2000B）')
+  const dirPath = path.join(dataDir, 'pipeline', 'test-src')
+  const file = fs.readdirSync(dirPath).find((n) => n.startsWith('card_usage-') && n.endsWith('.jsonl'))
+  const rec = fs.readFileSync(path.join(dirPath, file), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))[0]
+  assert.equal(rec.deviation, longDeviation, '卡使用 jsonl 仍应存全量 deviation')
+})

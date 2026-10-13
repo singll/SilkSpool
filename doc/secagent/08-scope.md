@@ -724,3 +724,5 @@ http-remote 全列 unsupported 的理由：**授权白名单与凭据引用是�
 | 独立升级 | 支持单域替换；scope 是全局安全依赖，升级必须全量受影响域冒烟，不能只跑本域测试。 |
 
 > 2026-09-22 22 号方案回填：`cred_query` actor 白名单补 `reactor`——ledger `ledger_login_blindspot` 经 reactor 跨域只读凭据引用（登录盲区摘要）。只读，不返回明文，不扩写权。
+
+> **事件载荷有界化（§15.159）**：bus 事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），超限使整条命令（含落账）失败。本域事件载荷携带调用方条目数组/规则对象/工作区路径——`scope.granted` 的 `entries`/`removed_excludes`/`subject`/`domain`、`scope.revoked`/`scope.excluded` 的 `entries`（每个最长 200 条且条目无 maxLength）、`scope.rules.changed` 的 `patch`/`before`/`after`（`allow_intrusive_tools_add`/`remove` 数组完全无界）、`scope.program.bound` 的 `workspace_path`——在**事件侧**做 UTF-8 有界化（数组 ≤2000B 退化为 `{_truncated}`；短文本 ≤500B）。授权事实仍全量落 `scope.yml`（真相源）与 `programs` 镜像，事件仅通知，故不丢语义。**关键约束**：`rules.changed` 采用逐字段有界化（非整体对象截断），确保订阅方 task `onScopeChanged` 读 `patch.max_risk` 判授权漂移（fail-closed 暂停专项）的行为不变——标量键 `max_risk` 原样保留，仅工具/风险数组按大小截断。边界：`scope.granted` 的订阅方 task `onScopeGranted` 读 `subject`/`domain` 作为种子任务 host；超长 host（>500B）被有界化后该次种子任务 host 为前缀——合法 host 远小于上限，实际不发生。

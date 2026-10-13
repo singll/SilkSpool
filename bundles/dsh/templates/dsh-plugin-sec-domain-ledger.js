@@ -87,6 +87,36 @@ function canonicalize(obj) {
   return JSON.stringify(norm(obj))
 }
 
+// §15.159 同类残留（复发过的事件超限类）：bus 对事件信封有 8192B 硬上限（EVENT_MAX_BYTES），
+// publishInTx 超限即抛 E_BUS_EVENT_TOO_LARGE，使整条命令（含落账）失败。ledger 多个事件的载荷由
+// 调用方自由文本派生（reason/asset/card_id/deviation/key/source/run_id 等，schema 仅 minLength、
+// 无 maxLength），超长即撞顶。事件仅通知（业务事实已落 attempts tsv/card_usage jsonl/
+// coverage-ledger jsonl/radar-queue.jsonl/handoff md），故事件侧 UTF-8 有界化不丢语义。
+// 口径同 task/asset/fact/know/endpoint 域。
+const EVENT_LONG_TEXT_MAX_BYTES = 2000
+const EVENT_TEXT_MAX_BYTES = 500
+function boundUtf8Bytes(s, maxBytes) {
+  const text = String(s == null ? '' : s)
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
+}
+function boundTextOrNull(v, maxBytes) { return v == null ? null : boundUtf8Bytes(v, maxBytes) }
+function boundedEventJson(value, maxBytes = EVENT_LONG_TEXT_MAX_BYTES) {
+  if (value == null) return value
+  let s
+  try { s = JSON.stringify(value) } catch { return null }
+  if (s == null) return null
+  if (Buffer.byteLength(s, 'utf8') <= maxBytes) return value
+  return { _truncated: boundUtf8Bytes(s, maxBytes) }
+}
+
 // ---------------------------------------------------------------------------
 // manifest（11-ledger §1.2/§1.4/§1.5 的机器形态）
 // ---------------------------------------------------------------------------
@@ -494,8 +524,11 @@ function makeHandlers(opts) {
         repo.nowIso(), args.asset, args.card_id, String(args.card_ver ?? ''), args.tool,
         args.result, args.reason || '', args.evidence_path || '', runId,
       ])
-      const payload = { program: args.program, asset: args.asset, card_id: args.card_id, result: args.result, run_id: runId }
-      if (args.reason) payload.reason = args.reason
+      const payload = {
+        program: boundUtf8Bytes(args.program, EVENT_TEXT_MAX_BYTES), asset: boundUtf8Bytes(args.asset, EVENT_TEXT_MAX_BYTES),
+        card_id: boundUtf8Bytes(args.card_id, EVENT_TEXT_MAX_BYTES), result: args.result, run_id: boundUtf8Bytes(runId, EVENT_TEXT_MAX_BYTES),
+      }
+      if (args.reason) payload.reason = boundUtf8Bytes(args.reason, EVENT_LONG_TEXT_MAX_BYTES)
       return {
         data: { file: r.file, row_ts: r.row_ts, run_id: runId },
         events: [{ name: 'ledger.attempt.logged', payload }],
@@ -510,10 +543,10 @@ function makeHandlers(opts) {
       if (args.deviation) rec.deviation = args.deviation
       if (args.suggest) rec.suggest = args.suggest
       const r = repo.appendCardUsage(args.program, rec)
-      const payload = { program: args.program, card_id: args.card_id, card_version: args.card_version,
-        outcome: args.outcome, run_id: runId, asset: args.asset }
+      const payload = { program: boundUtf8Bytes(args.program, EVENT_TEXT_MAX_BYTES), card_id: boundUtf8Bytes(args.card_id, EVENT_TEXT_MAX_BYTES), card_version: boundUtf8Bytes(args.card_version ?? '', EVENT_TEXT_MAX_BYTES),
+        outcome: args.outcome, run_id: boundUtf8Bytes(runId, EVENT_TEXT_MAX_BYTES), asset: boundUtf8Bytes(args.asset, EVENT_TEXT_MAX_BYTES) }
       if (args.artifact_kind) payload.artifact_kind = args.artifact_kind
-      if (args.deviation) payload.deviation = args.deviation
+      if (args.deviation) payload.deviation = boundUtf8Bytes(args.deviation, EVENT_LONG_TEXT_MAX_BYTES)
       return {
         data: { file: r.file, card_id: args.card_id, outcome: args.outcome },
         events: [{ name: 'ledger.card_usage.logged', payload }],
@@ -528,7 +561,7 @@ function makeHandlers(opts) {
       const digest = sha256(canonicalize({ program: args.program, type: args.type, payload: args.payload })).slice(0, 16)
       return {
         data: { program: args.program, type: args.type, file: r.file },
-        events: [{ name: 'ledger.radar.pushed', payload: { program: args.program, type: args.type, digest } }],
+        events: [{ name: 'ledger.radar.pushed', payload: { program: boundUtf8Bytes(args.program, EVENT_TEXT_MAX_BYTES), type: args.type, digest } }],
         after: { type: args.type },
       }
     },
@@ -537,7 +570,7 @@ function makeHandlers(opts) {
       const events = repo.drainRadar(args.program)
       return {
         data: { program: args.program, count: events.length, events, drained: true },
-        events: [{ name: 'ledger.radar.drained', payload: { program: args.program, count: events.length } }],
+        events: [{ name: 'ledger.radar.drained', payload: { program: boundUtf8Bytes(args.program, EVENT_TEXT_MAX_BYTES), count: events.length } }],
         after: { count: events.length },
       }
     },
@@ -556,7 +589,7 @@ function makeHandlers(opts) {
       const r = repo.writeHandoff(args.program, date, content)
       return {
         data: { program: args.program, date, file: r.file, prev_saved: r.prevSaved },
-        events: [{ name: 'ledger.handoff.written', payload: { program: args.program, date, file: r.file } }],
+        events: [{ name: 'ledger.handoff.written', payload: { program: boundUtf8Bytes(args.program, EVENT_TEXT_MAX_BYTES), date, file: boundUtf8Bytes(r.file, EVENT_LONG_TEXT_MAX_BYTES) } }],
         after: { date, file: r.file },
       }
     },
@@ -571,7 +604,7 @@ function makeHandlers(opts) {
       const r = repo.appendCoverage(args.program, rec)
       return {
         data: { program: args.program, dim: args.dim, key: args.key, mark: args.mark, file: r.file },
-        events: [{ name: 'ledger.coverage.marked', payload: { program: args.program, dim: args.dim, key: args.key, mark: args.mark, source: rec.source } }],
+        events: [{ name: 'ledger.coverage.marked', payload: { program: boundUtf8Bytes(args.program, EVENT_TEXT_MAX_BYTES), dim: args.dim, key: boundUtf8Bytes(args.key, EVENT_LONG_TEXT_MAX_BYTES), mark: boundUtf8Bytes(args.mark, EVENT_TEXT_MAX_BYTES), source: boundUtf8Bytes(rec.source, EVENT_TEXT_MAX_BYTES) } }],
         after: { dim: args.dim, key: args.key, mark: args.mark },
       }
     },
@@ -597,7 +630,7 @@ function makeHandlers(opts) {
       repo.writeRotation(args.program, next)
       return {
         data: { program: args.program, empty_rounds: next.empty_rounds, circle: next.circle, stall_allowed: stallAllowed, quality_gain: gain },
-        events: [{ name: 'ledger.rotation.ticked', payload: { program: args.program, empty_rounds: next.empty_rounds, circle: next.circle, stall_allowed: stallAllowed, quality_gain: gain } }],
+        events: [{ name: 'ledger.rotation.ticked', payload: { program: boundUtf8Bytes(args.program, EVENT_TEXT_MAX_BYTES), empty_rounds: next.empty_rounds, circle: next.circle, stall_allowed: stallAllowed, quality_gain: gain } }],
         after: { circle: next.circle, empty_rounds: next.empty_rounds },
       }
     },

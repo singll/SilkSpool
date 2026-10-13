@@ -621,3 +621,5 @@ hasHandoff(program, date) → boolean
 2026-10-07发布回填：card_usage事件保留run/asset/artifact_kind，know消费者只对合法现役版本记录采用已上线；工具名、缺版本和blocked/na保留原经历而不计采用。来源引用不冒充已完成task/attempt和成本归属。 固定557ffd8累计25项50落点，完整发布/恢复证据见27号§15.93；本次覆盖的历史“待发布”增量以此状态为准。
 
 2026-10-08发布状态：固定1cce966累计包生产stats超过10秒，已完整回退dfd3b11，不能将本地终态审校/Reviewer/历史评测/解析归属及后续增量标记为上线。六服务七timer与原预算/Scope保持，回退后新NAS4145419c…（41库55.71秒/恢复6.55秒）、UI80/80通过；详情见27号§15.115。
+
+> **事件载荷有界化（§15.159）**：bus 事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），超限使整条命令（含落账）失败。本域事件中由调用方自由文本派生的字段——`ledger.attempt.logged` 的 `reason`/`asset`/`card_id`/`run_id`、`ledger.card_usage.logged` 的 `deviation`/`card_version`/`asset`/`card_id`、`ledger.coverage.marked` 的 `key`/`source`、`ledger.handoff.written` 的 `file`、各事件的 `program`——在**事件侧**做 UTF-8 字节有界化（`reason`/`deviation`/`key`/`file` ≤2000B；短文本 ≤500B）。业务事实仍全量落 `attempts-*.tsv`/`card_usage-*.jsonl`/`coverage-ledger.jsonl`/`radar-queue.jsonl`/`handoff-*.md`，事件仅通知，故不丢语义（`ledger.radar.pushed` 的 `digest` 为 16 位哈希、`type` 为枚举，复核已有界不改）。边界：`ledger.coverage.marked` 的订阅方 know `onCoverageGap`/task `onCoverageMarked` 读 `key` 派生缺口；超长 key（>2000B）被有界化后，缺口身份按有界前缀派生（幂等键仍稳定），账本全量 key 不受影响——此为有界化换取的确定性代价。

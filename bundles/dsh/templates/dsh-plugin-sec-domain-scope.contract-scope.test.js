@@ -337,3 +337,46 @@ test('时效: scope_rules_apply 续期/清除 + scope_expiring 巡检', async ()
   const exp1 = await bus.query('scope', 'expiring', { within_days: 30 }, { actor: 'dashboard' })
   assert.equal(exp1.expired, 0)
 })
+
+// ---------------------------------------------------------------------------
+// §15.159 同类残留（复发过的事件超限类）：bus 对事件信封有 8192B 硬上限
+// （E_BUS_EVENT_TOO_LARGE），publishInTx 超限即抛，使整条命令（含落账）失败。scope 事件载荷
+// 携带调用方条目数组/规则对象（entries 每个最长 200 条且条目无 maxLength；工具数组无界），
+// 修复=事件侧 UTF-8 有界化；授权事实仍全量落 scope.yml（真相源）。
+// ---------------------------------------------------------------------------
+
+test('§15.159: 超长 entries 的 scope.granted 事件仍 ≤8192 且 scope.yml 落全量', async () => {
+  const { dir, bus } = makeEnv()
+  const entries = Array.from({ length: 200 }, (_, i) => `h${String(i).padStart(3, '0')}-${'x'.repeat(40)}.example.com`)
+  const bulk = entries.join('')
+  assert.ok(Buffer.byteLength(bulk, 'utf8') > 8192, '前置：entries 合并后已超事件上限')
+  const r = await bus.dispatch('scope', 'grant', { program_name: 'big-src', entries }, { actor: 'dashboard' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ev = readEvents(dir).find((e) => e.name === 'scope.granted')
+  assert.ok(ev, '超长载荷不应使 scope.granted 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'scope.granted 事件信封应 ≤8192')
+  const f = ev.payload.entries
+  const fBytes = f && f._truncated ? Buffer.byteLength(f._truncated, 'utf8') : Buffer.byteLength(JSON.stringify(f), 'utf8')
+  assert.ok(fBytes <= 2000, '事件内 entries 应有界（≤2000B）')
+  assert.ok(readScope(dir).includes(entries[entries.length - 1]), 'scope.yml 仍应存全量条目')
+})
+
+test('§15.159: 无界工具数组的 scope.rules.changed 事件仍 ≤8192 且保留 patch.max_risk', async () => {
+  const { dir, bus } = makeEnv(SEED)
+  const tools = Array.from({ length: 200 }, (_, i) => `tool-${String(i).padStart(3, '0')}-${'t'.repeat(45)}`)
+  const bulk = tools.join('')
+  assert.ok(Buffer.byteLength(bulk, 'utf8') > 8192, '前置：工具数组合并后已超事件上限')
+  const r = await bus.dispatch('scope', 'rules_apply', {
+    target: 'program', program_name: 'example-src', max_risk: 'passive', allow_intrusive_tools_add: tools,
+  }, { actor: 'dashboard' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ev = readEvents(dir).find((e) => e.name === 'scope.rules.changed')
+  assert.ok(ev, '超长载荷不应使 scope.rules.changed 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'scope.rules.changed 事件信封应 ≤8192')
+  // 有界化不得丢失订阅方判授权漂移所需的标量键（task.onScopeChanged 读 patch.max_risk）
+  assert.equal(ev.payload.patch.max_risk, 'passive', '事件 patch.max_risk 应保留（供 fail-closed 漂移判定）')
+  const toolsField = ev.payload.patch.allow_intrusive_tools_add
+  const tBytes = toolsField && toolsField._truncated ? Buffer.byteLength(toolsField._truncated, 'utf8') : Buffer.byteLength(JSON.stringify(toolsField), 'utf8')
+  assert.ok(tBytes <= 2000, '事件内工具数组应有界（≤2000B）')
+  assert.ok(readScope(dir).includes(tools[tools.length - 1]), 'scope.yml 仍应存全量工具白名单')
+})

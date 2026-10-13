@@ -39,6 +39,50 @@ const REF_FORMAT_RE = /^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/
 
 function sha1(str) { return crypto.createHash('sha1').update(String(str)).digest('hex') }
 
+// §15.159 同类残留（复发过的事件超限类）：bus 对事件信封有 8192B 硬上限（EVENT_MAX_BYTES），
+// publishInTx 超限即抛 E_BUS_EVENT_TOO_LARGE，使整条命令（含落账）失败。scope 多个事件的载荷携带
+// 调用方条目数组/规则对象/工作区路径（entries 每个最长 200 条且条目无 maxLength；rules 的
+// allow_intrusive_tools_add/remove 数组完全无界；workspace 为无界字符串），超长即撞顶。
+// 授权事实仍全量落 scope.yml（真相源）与 programs 镜像，事件仅通知，故事件侧 UTF-8 有界化不丢语义。
+// 口径同 task/asset/fact/know/endpoint 域。
+const EVENT_LONG_TEXT_MAX_BYTES = 2000
+const EVENT_TEXT_MAX_BYTES = 500
+const EVENT_OBJECT_MAX_BYTES = 2000
+function boundUtf8Bytes(s, maxBytes) {
+  const text = String(s == null ? '' : s)
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
+}
+function boundTextOrNull(v, maxBytes) { return v == null ? null : boundUtf8Bytes(v, maxBytes) }
+function boundedEventJson(value, maxBytes = EVENT_OBJECT_MAX_BYTES) {
+  if (value == null) return value
+  let s
+  try { s = JSON.stringify(value) } catch { return null }
+  if (s == null) return null
+  if (Buffer.byteLength(s, 'utf8') <= maxBytes) return value
+  return { _truncated: boundUtf8Bytes(s, maxBytes) }
+}
+// 逐字段有界化（rules.changed 的 patch/before/after 用）：字符串按 textBytes、数组按
+// boundedEventJson(arrayBytes) 截断，其他标量（max_risk 等枚举/数值/布尔）原样保留——
+// 保证 task 域订阅方 onScopeChanged 读 patch.max_risk 判授权漂移的行为不变。
+function boundEventFields(obj, textBytes = EVENT_TEXT_MAX_BYTES, arrayBytes = EVENT_OBJECT_MAX_BYTES) {
+  if (!obj || typeof obj !== 'object') return obj
+  const out = {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === 'string') out[k] = boundUtf8Bytes(v, textBytes)
+    else if (Array.isArray(v)) out[k] = boundedEventJson(v, arrayBytes)
+    else out[k] = v
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 // 目标归一化与条目匹配（§1.4.1 规范定义——唯一实现放本域，scope_check 与守卫共用）
 // ---------------------------------------------------------------------------
@@ -520,8 +564,8 @@ function makeHandlers(opts) {
         events: [{
           name: 'scope.granted',
           payload: {
-            program_name: args.program_name, program_id: args.program_name, program_created: programCreated,
-            subject, domain: subject, entries: granted, removed_excludes: removedExcludes,
+            program_name: boundUtf8Bytes(args.program_name, EVENT_TEXT_MAX_BYTES), program_id: boundUtf8Bytes(args.program_name, EVENT_TEXT_MAX_BYTES), program_created: programCreated,
+            subject: boundUtf8Bytes(subject, EVENT_TEXT_MAX_BYTES), domain: boundUtf8Bytes(subject, EVENT_TEXT_MAX_BYTES), entries: boundedEventJson(granted), removed_excludes: boundedEventJson(removedExcludes),
             request_id: args.request_id ?? null,
           },
         }],
@@ -547,7 +591,7 @@ function makeHandlers(opts) {
       syncPrograms(repo, snapshot)
       return {
         data: { program_name: args.program_name, revoked: args.entries, program_removed: programRemoved, programs_archived: programRemoved },
-        events: [{ name: 'scope.revoked', payload: { program_name: args.program_name, entries: args.entries, program_removed: programRemoved, programs_archived: programRemoved } }],
+        events: [{ name: 'scope.revoked', payload: { program_name: boundUtf8Bytes(args.program_name, EVENT_TEXT_MAX_BYTES), entries: boundedEventJson(args.entries), program_removed: programRemoved, programs_archived: programRemoved } }],
         after: { program_name: args.program_name, program_removed: programRemoved },
         target: { program_name: args.program_name },
       }
@@ -566,7 +610,7 @@ function makeHandlers(opts) {
       syncPrograms(repo, snapshot)
       return {
         data: { program_name: args.program_name, excluded: added, exclude_size: program.exclude.length },
-        events: [{ name: 'scope.excluded', payload: { program_name: args.program_name, entries: added } }],
+        events: [{ name: 'scope.excluded', payload: { program_name: boundUtf8Bytes(args.program_name, EVENT_TEXT_MAX_BYTES), entries: boundedEventJson(added) } }],
         after: { program_name: args.program_name, excluded: added },
         target: { program_name: args.program_name },
       }
@@ -604,7 +648,7 @@ function makeHandlers(opts) {
       syncPrograms(repo, snapshot)
       return {
         data: { target: level, program_name: args.program_name || null, before, after },
-        events: [{ name: 'scope.rules.changed', payload: { level, program_name: args.program_name || null, patch, before, after } }],
+        events: [{ name: 'scope.rules.changed', payload: { level, program_name: args.program_name ? boundUtf8Bytes(args.program_name, EVENT_TEXT_MAX_BYTES) : null, patch: boundEventFields(patch), before: boundEventFields(before), after: boundEventFields(after) } }],
         after: { target: level, after },
         target: { target: level, program_name: args.program_name || null },
       }
@@ -622,7 +666,7 @@ function makeHandlers(opts) {
       repo.bindWorkspace(args.program_name, workspaceId, workspacePath)
       return {
         data: { program_name: args.program_name, workspace_id: workspaceId, workspace_path: workspacePath, unbound: workspaceId === null },
-        events: [{ name: 'scope.program.bound', payload: { program_name: args.program_name, workspace_id: workspaceId, workspace_path: workspacePath, unbound: workspaceId === null } }],
+        events: [{ name: 'scope.program.bound', payload: { program_name: boundUtf8Bytes(args.program_name, EVENT_TEXT_MAX_BYTES), workspace_id: boundTextOrNull(workspaceId, EVENT_TEXT_MAX_BYTES), workspace_path: boundTextOrNull(workspacePath, EVENT_LONG_TEXT_MAX_BYTES), unbound: workspaceId === null } }],
         after: { program_name: args.program_name, workspace_id: workspaceId },
         target: { program_name: args.program_name },
       }
