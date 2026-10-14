@@ -43,6 +43,48 @@ const REPORT_ROW_LIMIT = 10000
 
 function sha1(str) { return crypto.createHash('sha1').update(String(str)).digest('hex') }
 
+// §15.160 同类残留（复发过的事件超限类）：bus 对事件信封有 8192B 硬上限（E_BUS_EVENT_TOO_LARGE），
+// publishInTx 超限即抛，使整条命令（含落账）失败。report_build 的 program_id 为 schema 无界字符串
+// （调用方自由文本；programExists 不变量仅软校验——scope 域不可达/查询失败时降级放行），随
+// filters.program_id 与 program 原样进 report.built 事件，超长即撞顶。报告正文/frontmatter/reports
+// 索引仍写全量（业务事实），事件仅通知（当前零订阅者），故事件侧 UTF-8 有界化不丢语义。
+// 口径同 task/asset/fact/know/endpoint/ledger/scope 域。
+const EVENT_LONG_TEXT_MAX_BYTES = 2000
+const EVENT_TEXT_MAX_BYTES = 500
+const EVENT_OBJECT_MAX_BYTES = 2000
+function boundUtf8Bytes(s, maxBytes) {
+  const text = String(s == null ? '' : s)
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
+}
+function boundedEventJson(value, maxBytes = EVENT_OBJECT_MAX_BYTES) {
+  if (value == null) return value
+  let s
+  try { s = JSON.stringify(value) } catch { return null }
+  if (s == null) return null
+  if (Buffer.byteLength(s, 'utf8') <= maxBytes) return value
+  return { _truncated: boundUtf8Bytes(s, maxBytes) }
+}
+// 逐字段有界化（report.built 的 filters 用）：字符串按 textBytes、数组/嵌套对象按 boundedEventJson
+// 截断，其他标量（since_days 数值、枚举等）原样保留。
+function boundEventFields(obj, textBytes = EVENT_TEXT_MAX_BYTES, objectBytes = EVENT_OBJECT_MAX_BYTES) {
+  if (!obj || typeof obj !== 'object') return obj
+  const out = {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === 'string') out[k] = boundUtf8Bytes(v, textBytes)
+    else if (Array.isArray(v) || (v && typeof v === 'object')) out[k] = boundedEventJson(v, objectBytes)
+    else out[k] = v
+  }
+  return out
+}
+
 // ---------------------------------------------------------------------------
 // 时间口径（北京时间）
 // ---------------------------------------------------------------------------
@@ -374,7 +416,11 @@ function makeHandlers(opts) {
         },
         events: [{
           name: 'report.built',
-          payload: { report_id: reportId, file: fileName, program: programId || '', total: filtered.length, by_severity: bySev, filters, actor },
+          payload: {
+            report_id: reportId, file: fileName, program: boundUtf8Bytes(programId, EVENT_TEXT_MAX_BYTES),
+            total: filtered.length, by_severity: boundedEventJson(bySev), filters: boundEventFields(filters),
+            actor: boundUtf8Bytes(actor, EVENT_TEXT_MAX_BYTES),
+          },
         }],
         before: null,
         after: { report_id: reportId, file: fileName, total: filtered.length },

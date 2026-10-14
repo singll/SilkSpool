@@ -352,6 +352,21 @@ test('alias: proxy_pool_refresh → trigger_collect / proxy_pool_get → sticky_
 // 6. 总线集成
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// §15.160 复核：proxy.sticky.bound 的 sticky_key 并非「无界」残余——schema 已 maxLength:128，
+// 总线 dispatch 入口 validateSchema 硬拒（E_SCHEMA），超长值不进 handler、不进事件。此例锁定该边界，
+// 防后续误改 schema 回退为无界（同 §15.159 对 ledger.radar.pushed digest/type 的已有界复核）。
+// ---------------------------------------------------------------------------
+
+test('§15.160 复核: 超长 sticky_key 在入口被 schema 拒（sticky_key 已有界，非事件超限残余）', async () => {
+  const { bus } = makeEnv()
+  const longKey = 'k'.repeat(9000)
+  assert.ok(Buffer.byteLength(longKey, 'utf8') > 8192, '前置：key 本身已超事件上限')
+  const r = await bus.dispatch('proxy', 'sticky_bind', { sticky_key: longKey }, { actor: 'model' })
+  assert.equal(r.ok, false)
+  assert.equal(r.error.code, 'E_SCHEMA', 'schema maxLength:128 应在入口拒绝超长 sticky_key')
+})
+
 test('总线集成: bus_status proxy registered:true + 命令/查询计数', async () => {
   const { bus } = makeEnv()
   const st = await bus.query('bus', 'status', {}, { actor: 'dashboard' })

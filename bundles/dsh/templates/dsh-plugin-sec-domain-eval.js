@@ -73,6 +73,48 @@ function sha1(str) { return crypto.createHash('sha1').update(String(str)).digest
 function sha256hex(str) { return crypto.createHash('sha256').update(String(str)).digest('hex') }
 function makeRunId(prefix = 'evalrun') { return `${prefix}_${Date.now().toString(36)}${crypto.randomBytes(4).toString('hex')}` }
 
+// §15.160 同类残留（复发过的事件超限类）：bus 对事件信封有 8192B 硬上限（E_BUS_EVENT_TOO_LARGE），
+// publishInTx 超限即抛，使整条命令（含落账）失败。eval_run_finish 的 gain 为 schema 无界 object
+// （{type:'object'}，收尾由执行器经 actor=system 回填），随 eval.report.built 事件原样进总线，超大即
+// 撞顶致收尾落账失败（run 卡 running + 报告已落盘）。报告文件/run 记录仍写全量（业务事实），事件仅
+// 通知（know 侧订阅 kind=candidate 锚点），故事件侧 UTF-8 有界化不丢语义——candidate 锚点为短 ID/
+// digest，gain 超限退化为 {_truncated}。口径同 task/asset/fact/know/endpoint/ledger/scope 域。
+const EVENT_LONG_TEXT_MAX_BYTES = 2000
+const EVENT_TEXT_MAX_BYTES = 500
+const EVENT_OBJECT_MAX_BYTES = 2000
+function boundUtf8Bytes(s, maxBytes) {
+  const text = String(s == null ? '' : s)
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= maxBytes) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
+}
+function boundedEventJson(value, maxBytes = EVENT_OBJECT_MAX_BYTES) {
+  if (value == null) return value
+  let s
+  try { s = JSON.stringify(value) } catch { return null }
+  if (s == null) return null
+  if (Buffer.byteLength(s, 'utf8') <= maxBytes) return value
+  return { _truncated: boundUtf8Bytes(s, maxBytes) }
+}
+// 逐字段有界化（eval.report.built 的收尾载荷用）：字符串按 textBytes，数组/嵌套对象（gain 等）按
+// boundedEventJson 截断，其他标量（pass_rate 数值、枚举 kind/status）原样保留。
+function boundEventFields(obj, textBytes = EVENT_TEXT_MAX_BYTES, objectBytes = EVENT_OBJECT_MAX_BYTES) {
+  if (!obj || typeof obj !== 'object') return obj
+  const out = {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === 'string') out[k] = boundUtf8Bytes(v, textBytes)
+    else if (Array.isArray(v) || (v && typeof v === 'object')) out[k] = boundedEventJson(v, objectBytes)
+    else out[k] = v
+  }
+  return out
+}
+
 function canonicalize(obj) {
   const norm = (v) => {
     if (v === null || typeof v !== 'object') return v
@@ -656,7 +698,13 @@ function makeHandlers(opts) {
       }
       return {
         data: { run_id: args.run_id, status: args.outcome, report_file: reportFile },
-        events: [{ name: 'eval.report.built', payload: { run_id: args.run_id, kind: run.kind, status: args.outcome, file: reportFile, pass_rate: args.pass_rate ?? null, gain: args.gain ?? null, ...candidateExtra } }],
+        events: [{
+          name: 'eval.report.built',
+          payload: boundEventFields({
+            run_id: args.run_id, kind: run.kind, status: args.outcome, file: reportFile,
+            pass_rate: args.pass_rate ?? null, gain: args.gain ?? null, ...candidateExtra,
+          }),
+        }],
         after: { run_id: args.run_id, status: args.outcome },
       }
     },

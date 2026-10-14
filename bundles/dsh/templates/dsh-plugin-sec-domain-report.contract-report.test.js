@@ -276,6 +276,60 @@ test('report_read: 全文读取 + 不存在 + 路径穿越', async () => {
 })
 
 // ---------------------------------------------------------------------------
+// §15.160 同类残留（复发过的事件超限类）：bus 对事件信封有 8192B 硬上限
+// （E_BUS_EVENT_TOO_LARGE），publishInTx 超限即抛，使整条 report_build（含落账）失败。
+// report_build 的 program_id 为 schema 无界字符串；programExists 不变量仅软校验——
+// scope 域不可达/查询失败时降级放行，此时超长 program_id 随 filters 进 report.built 事件。
+// 修复=事件侧 UTF-8 有界化；报告正文/frontmatter/reports 索引仍存全量。
+// ---------------------------------------------------------------------------
+
+// scope 域不注册（模拟 scope 不可达 → programExists 软校验降级放行），仅注册 vuln + report。
+function makeEnvNoScope() {
+  const dir = tmpDir()
+  const dataDir = path.join(dir, 'data')
+  fs.mkdirSync(dataDir, { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'scope.yml'), SCOPE_SEED)
+  const bus = createBus({
+    dataDir,
+    dbFile: path.join(dir, 'asset-graph.db'),
+    aliasesFile: path.join(dir, 'bus.aliases.yaml'),
+    auditFile: path.join(dir, 'audit.jsonl'),
+    eventsDir: path.join(dir, 'events'),
+    sidecars: false,
+    startDispatcherTimer: false,
+  })
+  const vuln = buildVulnDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c) })
+  assert.equal(bus.registry.register(vuln).ok, true, 'vuln 域应注册成功')
+  const report = buildReportDomain({ dataDir, dispatch: (d, v, a, c) => bus.dispatch(d, v, a, c), query: (d, n, a, c) => bus.query(d, n, a, c) })
+  assert.equal(bus.registry.register(report).ok, true, 'report 域应注册成功')
+  return { dir, dataDir, bus }
+}
+
+test('§15.160: scope 不可达时超长 program_id 的 report.built 仍 ≤8192 且索引落全量', async () => {
+  const env = makeEnvNoScope()
+  await env.bus.query('vuln', 'list', {}, { actor: 'dashboard' }) // 触发 vuln factories 建表
+  const db = env.bus._internal.db()
+  db.prepare(`
+    INSERT INTO findings (fingerprint, title, severity, host, url, evidence, source, status, created_at, program_id, session_id, vuln_type, noise)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run('fp-long', 'SQL 注入', 'high', 'a.example.com', 'https://a.example.com/x', 'req', 'agent', 'confirmed', Date.now(), 'prog', null, 'sqli', 0)
+
+  const longPid = 'p'.repeat(9000)
+  assert.ok(Buffer.byteLength(longPid, 'utf8') > 8192, '前置：program_id 本身已超事件上限')
+  const r = await env.bus.dispatch('report', 'build', { program_id: longPid }, { actor: 'dashboard' })
+  assert.equal(r.ok, true, r.error?.message)
+  const ev = readEvents(env.dir).find((e) => e.name === 'report.built')
+  assert.ok(ev, '超长 program_id 不应使 report.built 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'report.built 事件信封应 ≤8192')
+  assert.ok(Buffer.byteLength(String(ev.payload.filters.program_id), 'utf8') <= 500, '事件内 filters.program_id 应有界（≤500B）')
+  assert.ok(String(ev.payload.filters.program_id).startsWith('ppp'), '有界化保留开头语义')
+  assert.ok(Buffer.byteLength(String(ev.payload.program), 'utf8') <= 500, '事件内 program 应有界（≤500B）')
+  // 索引仍存全量 program_id（业务事实不丢）
+  const row = db.prepare('SELECT filters, program FROM reports ORDER BY generated_at DESC LIMIT 1').get()
+  assert.equal(JSON.parse(row.filters).program_id, longPid, 'reports 索引仍应存全量 program_id')
+})
+
+// ---------------------------------------------------------------------------
 // 5. 总线集成
 // ---------------------------------------------------------------------------
 

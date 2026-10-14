@@ -538,3 +538,5 @@ systemctlIsActive(unit) / systemctlStartNoBlock(unit)   // 系统调用封装
 代理池/8899服务和定时刷新一直存在；先前浏览器经7777 xray的webscan配置未接池，module.xray.yaml中Client.proxy不影响该命令。平台修复现在将扫描/转发出口明确指定8899，并关闭全部xray插件、启用http.passive_mode，不向proxy域五文件直写，不扩展Scope。详见10号§2.7与PROGRESS本批记录。
 
 生产HTTPS回显证明两跳链可用且观测出口与direct不同，不证明任意目标健康。免费随机池实际页面仍出现CDN资源错误与导航超时；本批不修改原-r1/rotate-on-error语义，不声称会话固定或内部尝试可计量。验证码error_code7以及本机同样失败不能证明IP封禁；不得将换出口当作受限目标重试机制。后续登录会话需要固定可信出口，受控测试仍须保持目标预算和退避。
+
+> **事件载荷复核（§15.160）**：`proxy.sticky.bound` 的 `sticky_key` **不是**「事件载荷无界」残余——`proxy_sticky_bind` schema 已 `sticky_key: str({minLength:1,maxLength:128})`，总线 dispatch 入口 `validateSchema` 硬拒超长值（E_SCHEMA，实测 `9000` 字符 key 返回「最多 128 字符」），超长值不进 handler、不进事件；事件其余字段（`proxy` 代理 URL、`reused` 布尔）皆派生/有界。故本域无可复现的 8192B 超限路径，不新增代码，仅加 1 条边界锁定用例（proxy 17→18）防 schema 误改回退为无界。

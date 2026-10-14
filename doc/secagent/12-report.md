@@ -414,3 +414,5 @@ statReportFile(relPath)      // mtime/size/sha
 | 独立升级 | 支持单域替换；须与 vuln、scope、dashboard 联测。 |
 
 > 2026-09-26 42 号补丁回填：`report_list` limit/offset 落到 SQL（缺省 50、后端封顶 500），`total` 走独立 COUNT（旧实现全量返回由总线事后切片）；处理器标记 `meta.paged=true`。契约 report 12/12 全绿；部署验收待执行。
+
+> **事件载荷有界化（§15.160）**：bus 事件信封有 8192B 硬上限（`E_BUS_EVENT_TOO_LARGE`），超限使整条 `report_build`（含落账）失败。`report_build` 的 `program_id` 为 schema 无界字符串（调用方自由文本），随 `filters.program_id` 与 `program` 原样进 `report.built` 事件。**可达路径**：`programExists` 不变量仅软校验——scope 域不可达/查询失败（catch 降级）时放行；合法 program 名受 scope `PROGRAM_NAME_RE`（≤63 字符）约束，故 scope 正常时超长 `program_id` 先被不变量拒（E_NOT_FOUND），仅降级窗口可撞顶。修复：**事件侧** UTF-8 有界化（`program`/`filters` 字符串 ≤500B，对象/数组 ≤2000B）；报告正文/frontmatter/`reports` 索引仍存全量，事件仅通知（当前零订阅者），不丢语义。契约新增 1 红例（report 12→13）。

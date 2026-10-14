@@ -1458,3 +1458,31 @@ test('27 L22: discovery metrics read later pages, and source failure stays an er
   assert.equal(last.total, 507)
   assert.equal(last.rows.length, 7)
 })
+
+// ---------------------------------------------------------------------------
+// §15.160 同类残留（复发过的事件超限类）：bus 对事件信封有 8192B 硬上限
+// （E_BUS_EVENT_TOO_LARGE），publishInTx 超限即抛，使整条收尾命令（含落账）失败。eval_run_finish 的
+// gain 为 schema 无界 object（{type:'object'}，收尾由执行器经 actor=system 回填），随
+// eval.report.built 事件原样进总线，超大即撞顶致 run 卡 running。修复=事件侧有界化；报告文件/run 记录
+// 仍存全量。candidate 锚点（短 ID/digest）行为不变。
+// ---------------------------------------------------------------------------
+
+test('§15.160: 超长 gain 的 eval.report.built 事件仍 ≤8192，run 收尾不因事件超限失败', async () => {
+  const env = makeEnv({
+    executor: {
+      runFp: async () => ({ status: 'done', report_file: 'fp-report.json', gain: { detail: 'g'.repeat(9000) } }),
+      runContract: async () => ({ status: 'done', report_file: 'contract-report.json' }),
+    },
+  })
+  const r = await env.bus.dispatch('eval', 'run_fp', {}, { actor: 'script' })
+  assert.equal(r.ok, true, r.error?.message)
+  await env.scheduled[env.scheduled.length - 1]() // 触发异步收尾 → run_finish
+  const rec = readRunRec(env.evalDir, r.data.run_id)
+  assert.equal(rec.status, 'done', 'run 收尾落账成功（不因 gain 事件超限卡 running）')
+  const ev = readEvalEvents(env.bus).find((e) => e.name === 'eval.report.built' && e.payload.run_id === r.data.run_id)
+  assert.ok(ev, '超长 gain 不应使 eval.report.built 事件超限丢失')
+  assert.ok(Buffer.byteLength(JSON.stringify(ev), 'utf8') <= 8192, 'eval.report.built 事件信封应 ≤8192')
+  assert.ok(ev.payload.gain && typeof ev.payload.gain === 'object', 'gain 有界化后仍为对象')
+  assert.ok(ev.payload.gain._truncated, 'gain 超限退化为 {_truncated}')
+  assert.ok(Buffer.byteLength(String(ev.payload.gain._truncated), 'utf8') <= 2000, '事件内 gain 截断串应有界（≤2000B）')
+})
