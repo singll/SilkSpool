@@ -14,6 +14,14 @@
 | [api.md](api.md) | API 参考：Go 包文档 |
 | [bundle-development.md](bundle-development.md) | Bundle 开发：创建、测试、部署新 Bundle |
 
+## 专项运维
+
+| 文档 | 说明 |
+|------|------|
+| [RDP-GUARD.md](RDP-GUARD.md) | RDP 安全网关架构、部署与安全审查 |
+| [RDP-WIN11-RECOVERY.md](RDP-WIN11-RECOVERY.md) | Win10→Win11 重装后的 RDP 恢复与 SilkSpool 控制节点重建 |
+| [rdp-win11-recovery.ps1](rdp-win11-recovery.ps1) | Win11 一键恢复 RDP / NLA / TCP-only / IPv6 稳定化脚本 |
+
 ## SilkSecAgent（csai）
 
 | 入口 | 内容 |

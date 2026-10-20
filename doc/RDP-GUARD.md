@@ -42,6 +42,8 @@
 > 4. **Tier2 可选实验（默认不做）**：想找回 UDP 顺滑可降 Win10 网卡 MTU → ~1400（`netsh interface ipv4 set subinterface "以太网" mtu=1400 store=persistent`）让 RDP-UDP 端到端塞进 1492，再补回 v4 DNAT 的 UDP + Win10 UDP；~25ms 同省下增益边际，故以 TCP-only 为默认。
 
 > **v3.7.2 AVC444 花屏回退（2026-08-01）**：启用 `AVC444ModePreferred=1` 后实测——RDP 下**选中/反色文字等高对比突变会间歇触发整帧品红/紫色块花屏**（仍可操作、偶尔看不清，属 NVENC 的 AVC444 双流「色度平面」损坏，非稳定复现）。**处置**：`AVC444ModePreferred=0` 回退到**硬件 AVC420**（仍走 GPU/NVENC、仍锐利，花屏消失）。想保 4:4:4 三选一：① 升级 NVIDIA 驱动后再开；② 用**软件 AVC444**（`AVCHardwareEncodePreferred=0`，稳但吃 CPU、弃 NVENC）；③ 维持 AVC420（**推荐**）。花屏当场清除：最小化再还原 / 拉伸 RDP 窗口强制整帧刷新。`rdp-win10-hardening.ps1` §4c 与 `rdp-win10-tuning.ps1` 已默认 AVC420。
+>
+> **v3.8 Win11 重装恢复（2026-10-20）**：目标机由 Win10 重装为 Win11、内网 IP/MAC 可能变化，且原控制节点的 SilkSpool 丢失。Windows 侧改用 [rdp-win11-recovery.ps1](rdp-win11-recovery.ps1)（Win11 Home 检测、IPv6 EUI-64 稳定化、RDP/NLA/TCP-only/GPU/防火墙）；云侧优先在 iStoreOS 做 DHCP 静态租约保留 `192.168.7.129`，否则改 txhk `GW_TARGET` 与 iStoreOS `90-rdp4-dnat.nft`，MAC 变化还需改 agent `RDP6_WIN10_MAC`。SilkSpool 重建与新控制节点步骤见 [RDP-WIN11-RECOVERY.md](RDP-WIN11-RECOVERY.md)。
 
 > **目标**：让「装不了 Tailscale 的临时设备」通过原生 RDP（mstsc）安全连接家里内网的 Win10（192.168.7.129）。
 > **架构**：**双路径** —— 快车道 A（IPv6 端到端直连，公司侧有 v6 时启用，最低延迟）+ 兜底 B（txhk 香港公网中转，任意 IPv4 客户端永远可用）。
