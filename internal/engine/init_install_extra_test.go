@@ -104,3 +104,28 @@ func TestInitManagerStructDefaults(t *testing.T) {
 		t.Errorf("sshPub = %q", m.sshPub)
 	}
 }
+
+func TestBuildInitScriptRootSkipsSudoers(t *testing.T) {
+	m := &InitManager{}
+	script := m.buildInitScript("root", "ssh-ed25519 AAAKEY root@host")
+	if !strings.Contains(script, `target user is root; no sudoers entry needed`) {
+		t.Error("root target should skip sudoers setup")
+	}
+	if !strings.Contains(script, "mkdir -p /etc/sudoers.d") {
+		t.Error("non-root sudoers setup should create /etc/sudoers.d for OpenWrt/iStoreOS")
+	}
+	if !strings.Contains(script, `chmod 700 "$TARGET_HOME/.ssh"`) {
+		t.Error("script should tighten .ssh permissions")
+	}
+}
+
+func TestBuildInitScriptDropbearAuthorizedKeys(t *testing.T) {
+	m := &InitManager{}
+	script := m.buildInitScript("root", "ssh-ed25519 AAAKEY root@host")
+	if !strings.Contains(script, "/etc/dropbear/authorized_keys") {
+		t.Error("script should also deploy the key for Dropbear on OpenWrt/iStoreOS")
+	}
+	if !strings.Contains(script, `grep -qF "$PUBKEY"`) {
+		t.Error("script should avoid duplicating the same public key")
+	}
+}

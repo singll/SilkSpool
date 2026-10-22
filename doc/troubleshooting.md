@@ -135,3 +135,34 @@ Check SSH connection manually:
 ```bash
 ssh -i keys/id_silkspool -v user@host
 ```
+
+## "spool init" fails on OpenWrt / iStoreOS
+
+**Symptom**:
+
+```text
+tee: /etc/sudoers.d/root: No such file or directory
+Error: SSH initialization failed: exit status 1
+```
+
+**Cause**:
+- OpenWrt/iStoreOS 没有 `/etc/sudoers.d`；旧脚本无条件写入该目录。
+- 目标用户是 `root` 时也不需要 sudoers。
+- iStoreOS 使用 Dropbear，除 `~/.ssh/authorized_keys` 外通常还读取 `/etc/dropbear/authorized_keys`。
+
+**Solution**:
+- 升级到包含修复的 `spool`（root 跳过 sudoers；非 root 先 `mkdir -p /etc/sudoers.d`）。
+- 新脚本会同时写入 `/root/.ssh/authorized_keys` 和 `/etc/dropbear/authorized_keys`。
+- 已初始化过但仍提示 `Permission denied (publickey)` 时，在 iStoreOS 控制台确认公钥在：
+
+```sh
+cat /root/.ssh/authorized_keys
+cat /etc/dropbear/authorized_keys
+```
+
+并把 `/opt/SilkSpool/keys/id_silkspool.pub` 的内容追加到缺少的那一个，然后：
+
+```sh
+chmod 700 /root/.ssh
+chmod 600 /root/.ssh/authorized_keys /etc/dropbear/authorized_keys
+```

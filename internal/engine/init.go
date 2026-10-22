@@ -15,7 +15,7 @@ import (
 
 // InitManager 处理主机初始化
 type InitManager struct {
-	baseDir  string
+	baseDir string
 	sshKey  string
 	sshPub  string
 	reader  *bufio.Reader
@@ -34,9 +34,9 @@ func NewInitManager(baseDir string) (*InitManager, error) {
 
 	return &InitManager{
 		baseDir: baseDir,
-		sshKey: sshKey,
-		sshPub: sshPub,
-		reader: bufio.NewReader(os.Stdin),
+		sshKey:  sshKey,
+		sshPub:  sshPub,
+		reader:  bufio.NewReader(os.Stdin),
 	}, nil
 }
 
@@ -236,6 +236,7 @@ if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
 fi
 
 TARGET_USER='%s'
+PUBKEY='%s'
 
 echo '[*] Creating user if not exists...'
 if ! id "$TARGET_USER" >/dev/null 2>&1; then
@@ -251,8 +252,15 @@ else
 fi
 
 echo '[*] Ensuring sudoers (NOPASSWD)...'
-echo "$TARGET_USER ALL=(ALL) NOPASSWD: ALL" | $SUDO tee /etc/sudoers.d/"$TARGET_USER" >/dev/null
-$SUDO chmod 440 /etc/sudoers.d/"$TARGET_USER"
+if [ "$TARGET_USER" = "root" ]; then
+    echo '[SKIP] target user is root; no sudoers entry needed'
+else
+    # OpenWrt/iStoreOS 默认没有 /etc/sudoers.d，需要先创建目录。
+    $SUDO mkdir -p /etc/sudoers.d
+    echo "$TARGET_USER ALL=(ALL) NOPASSWD: ALL" | $SUDO tee /etc/sudoers.d/"$TARGET_USER" >/dev/null
+    $SUDO chmod 440 /etc/sudoers.d/"$TARGET_USER"
+    echo '[OK] sudoers configured'
+fi
 
 echo '[*] Configuring Docker permissions...'
 if command -v docker >/dev/null 2>&1; then
@@ -268,9 +276,23 @@ TARGET_HOME=$(eval echo ~"$TARGET_USER" 2>/dev/null || echo "/home/$TARGET_USER"
 [ "$TARGET_USER" = "root" ] && TARGET_HOME="/root"
 
 $SUDO mkdir -p "$TARGET_HOME/.ssh"
-echo '%s' | $SUDO tee -a "$TARGET_HOME/.ssh/authorized_keys" >/dev/null
+if ! $SUDO grep -qF "$PUBKEY" "$TARGET_HOME/.ssh/authorized_keys" 2>/dev/null; then
+    echo "$PUBKEY" | $SUDO tee -a "$TARGET_HOME/.ssh/authorized_keys" >/dev/null
+fi
+$SUDO chmod 700 "$TARGET_HOME/.ssh"
 $SUDO chmod 600 "$TARGET_HOME/.ssh/authorized_keys"
 $SUDO chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.ssh"
+
+# OpenWrt/iStoreOS 使用 Dropbear，通常还会读取 /etc/dropbear/authorized_keys。
+# 两个位置都写入，避免只写 ~/.ssh 后 Dropbear 不认。
+if command -v dropbear >/dev/null 2>&1 || [ -d /etc/dropbear ]; then
+    $SUDO mkdir -p /etc/dropbear
+    if ! $SUDO grep -qF "$PUBKEY" /etc/dropbear/authorized_keys 2>/dev/null; then
+        echo "$PUBKEY" | $SUDO tee -a /etc/dropbear/authorized_keys >/dev/null
+    fi
+    $SUDO chmod 600 /etc/dropbear/authorized_keys
+    echo '[OK] Dropbear authorized_keys updated'
+fi
 
 echo '[OK] SSH key deployed'
 echo '[OK] Initialization complete!'
@@ -278,6 +300,7 @@ echo '[OK] Initialization complete!'
 
 	return script
 }
+
 // recordAllHostKeyTypes 用 ssh-keyscan 补齐该主机全部 host key 类型到 known_hosts。
 // 已存在的 (host, key-type) 组合跳过，避免重复堆积。
 func (m *InitManager) recordAllHostKeyTypes(host, port, knownHosts string) {
