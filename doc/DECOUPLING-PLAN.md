@@ -1,8 +1,9 @@
 # SilkSpool 解耦与集成改进方案（评审后修订版）
 
-> 状态: Draft
+> 状态: Revised（P1 施工蓝图）
 > 日期: 2026-10-23
 > 依据: 对《SilkSpool 解耦与集成设计》的评审意见，以及对 Kamal、Komodo、Dockge、Uncloud、Timoni、deploy-rs 公开文档的核对
+> 修订: 2026-10-23，按二次评审修正 outputs 拓扑语义、备份 hook、组件健康、锁粒度与 plan 语义
 > 结论: 继续优化 SilkSpool；不引入平台化运行时。范围收缩为 **Resource 统一模型 + Bundle 轻契约 + 两层集成接口**。
 
 ---
@@ -201,10 +202,14 @@ spec:
       post_upgrade: scripts/post-upgrade.sh
 
   backup:
+    # 产品方提供的一致性备份入口；DB dump、应用导出等由产品自己实现
+    hook: scripts/backup.sh
     assets:
       - type: volume
         source: kp-bellkeeper-uploads
 ```
+
+`backup.hook` 在 `spool backup` 和 `backup-then-recreate` 升级前执行，wiring 注入的 DB/缓存凭据对它可用；spool 通过 `SPOOL_BACKUP_DIR` 指定产物目录，通过 `SPOOL_GENERATION` 传入当前 generation。`backup.assets` 只负责卷/目录等无一致性语义的对象。若产品无法提供 hook，可用 `type: exec` 作为通用逃生口，但必须显式声明命令和组件。
 
 **明确不放入契约的东西**
 
@@ -249,6 +254,7 @@ spec:
       irreversible: false
 
   backup:
+    hook: scripts/backup.sh
     assets:
       - type: volume
         source: kp-bellkeeper-uploads
@@ -268,7 +274,11 @@ spec:
     data:
       bundle: silkdata
       version: 1.2.0
+      host: silkdata          # provider 所在主机；用于解析 endpoint 拓扑
       source: { type: dir, path: bundles/silkdata }
+      health:
+        command: ["pg_isready", "-U", "bellkeeper"]
+        timeout: 30s
 
     bellkeeper:
       bundle: bellkeeper
@@ -278,25 +288,33 @@ spec:
         repo: https://github.com/singll/Bellkeeper.git
         path: deploy
         commit: <pinned-sha>
+      after: [data]           # per-component 依赖，不是整个 composition 的顶层属性
+      health:
+        http: http://127.0.0.1:8080/api/health
 
     n8n:
       image: docker.n8n.io/n8nio/n8n:1.62.1@sha256:...
       config: components/n8n/
+      health:
+        http: http://127.0.0.1:5678/healthz
 
     memos:
       image: neosmemo/memos:0.22.3@sha256:...
+      health:
+        http: http://127.0.0.1:5230/healthz
 
     rsshub:
       image: diygod/rsshub:2025-01-01@sha256:...
-
-  after: [data]          # 只表达启动顺序，不做能力解析
+      optional: true          # 失败只告警，不触发整栈回滚；仍然会被部署
+      health:
+        http: http://127.0.0.1:1200/
 
   wiring:
     bellkeeper:
-      DB_HOST: "${bundles.data.outputs.postgres_host}"
-      DB_PORT: "${bundles.data.outputs.postgres_port}"
-      REDIS_URL: "${bundles.data.outputs.redis_url}"
-      MEILI_URL: "${bundles.data.outputs.search_url}"
+      DB_HOST: "${bundles.data.outputs.postgres.host}"
+      DB_PORT: "${bundles.data.outputs.postgres.port}"
+      REDIS_URL: "redis://:${secrets.redis_password}@${bundles.data.outputs.redis.host}:${bundles.data.outputs.redis.port}/0"
+      MEILI_URL: "http://${bundles.data.outputs.search.host}:${bundles.data.outputs.search.port}"
     n8n:
       N8N_ENCRYPTION_KEY: "${secrets.n8n_encryption_key}"
 ```
@@ -315,11 +333,40 @@ spec:
     driver: compose
     templates: [10-redis.yaml, 12-meilisearch.yaml, 15-nats.yaml, 40-couchdb.yaml, 50-postgres.yaml]
 
+  # endpoint 是逻辑输出，不把地址写死在 provider 里；
+  # spool 按 consumer 与 provider 的拓扑位置决定 host/port。
   outputs:
-    postgres_host: "${host.address}"
-    postgres_port: "5432"
-    redis_url: "redis://:${secrets.redis_password}@${host.address}:6379/0"
-    search_url: "http://${host.address}:7700"
+    postgres:
+      kind: endpoint
+      service: bellkeeper-db
+      port: 5432
+      published_port: 5432
+      remote: "${host.magicdns}"
+      protocol: postgres
+    redis:
+      kind: endpoint
+      service: redis
+      port: 6379
+      published_port: 6379
+      remote: "${host.magicdns}"
+    search:
+      kind: endpoint
+      service: meilisearch
+      port: 7700
+      published_port: 7700
+      remote: "${host.magicdns}"
+    queue:
+      kind: endpoint
+      service: nats
+      port: 4222
+      published_port: 4222
+      remote: "${host.magicdns}"
+    couchdb:
+      kind: endpoint
+      service: couchdb
+      port: 5984
+      published_port: 5984
+      remote: "${host.magicdns}"
 ```
 
 **关键点**
@@ -327,7 +374,11 @@ spec:
 - composition 不写 `requires`，只写 `components` 和 `wiring`。
 - 所有版本都是精确版本或 digest；没有 `^2.4` 这类范围，避免引入 solver。
 - `source` 是显式的：`dir` 或 `git`（P1 只支持这两种）。
-- `after` 只影响 apply 顺序，不参与版本解析。
+- `after` 是 **per-component** 的，只影响 apply 顺序，不参与版本解析。
+- `health` 支持 `http` / `tcp` / `command`；未声明时退化为“容器 running”检查。
+- `optional: true` 表示“失败不阻塞整栈”，不是“不部署”，也不是 profiles 的替代品。
+- endpoint 的 `remote` 可省略：依次回退 `host.magicdns`、`host.address`；跨机时两者都缺失则 plan 失败。
+- 含 `${secrets.*}` 的 wiring 自动视为 sensitive，plan 输出用 `secret://...` 占位。
 
 **表达式命名空间**
 
@@ -336,14 +387,18 @@ spec:
 | `${input.<key>}` | host/bundle 输入 | `${input.public_url}` |
 | `${host.name}` | 目标 host 别名 | `keeper` |
 | `${host.address}` | 目标 host 网络地址（去掉 SSH 用户前缀） | `192.168.7.231` |
+| `${host.magicdns}` | 目标 host 的 Headscale MagicDNS 名；跨机解析优先使用 | `silkdata` |
 | `${host.ssh}` | 目标 host 的 SSH 地址 | `silkspool@192.168.7.231` |
 | `${outputs.<key>}` | 当前 bundle 自己的输出 | `${outputs.health}` |
-| `${bundles.<name>.outputs.<key>}` | 同一 host 上另一个 bundle 的输出 | `${bundles.data.outputs.postgres_host}` |
+| `${outputs.<key>.host}` / `.port` | endpoint 输出按拓扑解析后的地址/端口 | `${outputs.postgres.host}` |
+| `${bundles.<name>.outputs.<key>}` | 显式引用的另一个 bundle 输出 | `${bundles.data.outputs.postgres.host}` |
 | `${secrets.<key>}` | secret provider | `${secrets.n8n_encryption_key}` |
 
 只做字符串插值，不执行任意表达式或 shell；未解析的引用在 plan 阶段直接报错。
 
-`outputs` 可标记 `sensitive: true`，此时 `inventory`/API 只返回 `***` 或引用，不返回明文。`lock` 只保存 secret 引用和哈希，不保存 secret 值。
+**不支持** `${hosts.<h>.bundles...}` 这类隐式跨 host 引用。跨机依赖必须由 composition 显式声明 `host`、`input` 或 MagicDNS，避免把整张主机图变成隐式全局变量。
+
+`outputs` 可标记 `sensitive: true`，此时 `inventory`/API 只返回 `***` 或引用，不返回明文。含 `${secrets.*}` 的 wiring 自动视为 sensitive。`lock` 只保存 secret 引用和哈希，不保存 secret 值；plan 阶段对 sensitive 表达式只渲染 `secret://...` 占位，不要求 secret provider 在线。
 
 ### 4.5 Resolver 语义（保持简单）
 
@@ -351,8 +406,8 @@ spec:
 
 1. 读取目标 host 的 composition manifest。
 2. 解析 `components` 里的 `source` 和精确版本。
-3. 检查 `wiring` 引用的 `bundles.<name>.outputs.<key>` 是否存在。
-4. 用 DFS 检查循环引用（只检查 composition → component 的 `after`/引用）。
+3. 检查 `wiring` 引用的 `bundles.<name>.outputs.<key>` 是否存在；endpoint 输出按 `component.host` 与 consumer host 的拓扑关系解析为服务名或 MagicDNS/地址。
+4. 用 DFS 检查 **per-component `after`** 形成的 DAG，拒绝循环。
 5. 渲染最终 compose/env/override。
 6. 生成 lock 快照。
 
@@ -373,24 +428,48 @@ bundle: knowledge-stack
 inputs_hash: sha256:...
 resolved:
   data:
+    host: silkdata
     source: {type: dir, path: bundles/silkdata}
     version: 1.2.0
     outputs:
-      postgres_host: silkdata
-      postgres_port: 5432
+      # consumer=keeper, provider=silkdata → 跨机，解析为 MagicDNS
+      postgres: {kind: endpoint, host: silkdata, port: 5432}
+      redis:    {kind: endpoint, host: silkdata, port: 6379}
+      search:   {kind: endpoint, host: silkdata, port: 7700}
   bellkeeper:
+    host: keeper
     source: {type: git, repo: ..., commit: abc123}
     version: 2.4.0
     image: ghcr.io/singll/bellkeeper@sha256:...
   n8n:
+    host: keeper
     image: docker.n8n.io/n8nio/n8n:1.62.1@sha256:...
 rendered:
   compose_sha256: ...
 ```
 
+> 如果 consumer 与 provider 在同一 host、同一 compose project/network，`postgres.host` 会解析为服务名（如 `bellkeeper-db`），而不是 MagicDNS 地址。lock 记录的是**本次拓扑下的解析结果**，不是 provider 的固有属性。
+
 `spool apply --locked` 只使用 lock 中的 resolved 结果；如果 plan 结果与 lock 不一致则拒绝执行。这样可以复现上一次部署，但不引入 solver。
 
-### 4.6 跨机 wiring
+**online / offline plan**
+
+- `spool plan` 默认 online：SSH 读取远端实际状态，产出 desired vs actual diff；有 diff 时退出码 3。
+- `spool plan --offline`：只做静态校验（schema、引用存在性、循环、渲染），不连接远端，不产出 drift diff；退出码 0（合法）或 2（非法）。
+- CI 可在 PR 阶段用 `--offline` 做契约校验，在部署门禁阶段用 online plan。
+- 两种模式都对 sensitive 表达式输出 `secret://...` 占位，不要求 secret provider 在线。
+
+### 4.6 跨机 wiring 与拓扑解析
+
+endpoint 输出不是固定地址，解析结果取决于 consumer 与 provider 的拓扑位置：
+
+| 场景 | `host` | `port` | 说明 |
+|---|---|---|---|
+| 同 host + 同 compose project/network | 服务名（如 `bellkeeper-db`） | 容器端口（5432） | 不发布宿主端口，避免 hairpin NAT |
+| 同 host + 不同 compose project | 共享网络的 service alias；否则 `host.address` | 容器端口或 `published_port` | 优先配置共享网络；否则宿主 IP + 发布端口 |
+| 跨 host | `remote`（MagicDNS）或 `host.address` | `published_port` | 端口只绑定 tailnet/私网 |
+
+拓扑信息在 **plan 时**由 `component.host`（缺省为目标 host）与 consumer host 比较得到，不做运行时 discovery。composition 默认把同 host 的 components 渲染进同一个 compose project/网络；如果显式拆成不同 project，则走“不同 project”分支。没有 `host.magicdns` 时，跨机解析回退到显式地址；两者都没有则 plan 失败。
 
 **优先级**
 
@@ -401,7 +480,8 @@ rendered:
 **渲染方式**
 
 - 生成 `.env` 或 `docker-compose.spool.yaml` override。
-- 不再手写 `extra_hosts`；如果必须用 `extra_hosts`，由 spool 根据 outputs 生成。
+- 同机同 project 不发布端口；同机不同 project 优先共享网络；跨机才使用 `published_port`。
+- 不再手写 `extra_hosts`；如果必须用 `extra_hosts`，由 spool 根据解析后的 endpoint 生成。
 - 跨机端口默认只绑定 tailnet/私网地址；公网暴露必须显式声明。
 
 **IP 漂移**
@@ -435,17 +515,20 @@ bundle_sources:
 ```text
 .spool/
 ├── lock/<host>/<bundle>.yaml      # 可复现的 resolved 快照
-├── state/<host>/<bundle>.yaml     # 缓存：资源 ID、generation、compose hash
+├── state/<host>/<bundle>.yaml     # 本地索引：资源 ID、当前 generation、compose hash
 ├── cache/bundles/<name>/<ref>/    # git/dir source 缓存
-└── deploy.lock                    # 防并发部署
+└── locks/<host>.lock              # 每主机一把部署锁
+
+/opt/silkspool/<bundle>/           # 远端
+└── .spool-gen/<n>/                # compose/env/digest 快照，回滚以远端为准
 ```
 
 **真相顺序**
 
 1. manifest（bundle 声明）
-2. 远端 compose/override 文件
+2. 远端 compose/override 文件与 `.spool-gen` 快照
 3. 远端资源标签
-4. `.spool/state`（缓存，可重建）
+4. `.spool/state`（本地缓存，可重建；控制机重装不会丢失回滚能力）
 
 ### 5.2 资源标签
 
@@ -479,6 +562,7 @@ labels:
 ├── docker-compose.yaml          # bundle 原始模板（人类可读、可直接 docker compose）
 ├── docker-compose.spool.yaml    # spool 生成：labels、env、extra_hosts、digest
 ├── .env                         # 该 bundle 的变量
+├── .spool-gen/<n>/              # 历史 generation 快照（compose/env/digest）
 └── ...
 ```
 
@@ -503,7 +587,7 @@ docker compose -f docker-compose.yaml -f docker-compose.spool.yaml up -d
 
 ```bash
 spool inventory --json
-spool plan <bundle> <host> --json
+spool plan <bundle> <host> [--offline] --json
 spool apply <bundle> <host> [--locked] [--dry-run] [--yes]
 spool rollback <bundle> <host> [generation]
 spool bundle outputs <name> --json
@@ -513,9 +597,17 @@ spool bundle render <name> <host>
 旧命令映射：
 
 - `bundle <name> setup <host>` → `apply`
-- `bundle <name> up <host>` → `apply --skip-plan`（兼容）
+- `bundle <name> up <host>` → `apply`；无 diff 时自动继续，有 diff 时打印摘要并要求 `--yes`。`--skip-plan` 保留但输出弃用警告。
 - `bundle <name> status <host>` → `status --json` 的人类输出
 - `upgrade <host>` → 保留，内部调用 `apply`
+
+**script driver 的 plan 语义**
+
+脚本副作用不可预知，`script` 驱动的 `Plan` 返回 `unsupported`（或仅做静态校验：模板存在、引用合法）。`apply` 直接执行，但必须：
+
+- 在输出中标注 `未经 diff 确认`；
+- 非交互/CI 环境要求显式 `--yes`；
+- 不把 script driver 的“成功”当作 health gate 已通过；仍要求 `lifecycle.health` 或人工确认。
 
 ---
 
@@ -526,17 +618,25 @@ spool bundle render <name> <host>
 ### 6.1 流程
 
 ```text
-plan
-  → acquire deploy.lock
-  → snapshot（state/compose/env + 必要的数据备份标记）
+plan（online 读 actual；offline 仅静态校验）
+  → acquire locks/<host>.lock
+  → snapshot（远端 .spool-gen/<n> + 必要的数据备份）
   → pull image by digest
   → render override
   → apply（docker compose up -d / systemctl restart）
-  → health gate（HTTP/TCP/command + timeout）
+  → health gate（所有非 optional 组件：HTTP/TCP/command + timeout）
   → confirm（SSH 回连 + 可选人工确认窗口）
   → success：写 state + generation++
   → failure：自动 rollback 到上一 generation，再健康检查
 ```
+
+**composition 健康聚合**
+
+- 每个组件独立声明 `health`；未声明时退化为“容器 running”。
+- composition 健康 = 所有 **非 optional** 组件健康的逻辑与。
+- `optional: true` 组件失败只告警，不触发整栈回滚；它仍然会被部署。
+- 单组件 `health` 超时默认 60s；整个 composition 的 gate 超时可配置。
+- script driver 没有可观测 health 时，必须人工确认，不能默认成功。
 
 ### 6.2 不可逆迁移
 
@@ -544,22 +644,27 @@ plan
 
 - manifest 声明 `lifecycle.upgrade.irreversible: true`。
 - 为 true 时：
-  - 必须先生成数据备份（`backup` assets）。
+  - 必须先生成数据备份：调用产品方 `backup.hook`，并处理 `backup.assets`。
   - `apply` 在健康检查失败后**不自动回滚**，而是停在 `needs_attention`，输出回滚命令和备份位置。
   - 必须显式 `--allow-irreversible` 才允许执行迁移。
 - 为 false 时：允许自动回滚。
+
+DB dump、应用导出等一致性备份由产品方 hook 负责；spool 不猜测数据库凭据，也不假设 bellkeeper 容器内有 PG 客户端。这与“整装应用生命周期由产品方负责”的原则一致。
 
 这是对“magic rollback”承诺的必要修正，避免给用户错误的安全感。
 
 ### 6.3 保留与清理
 
-- 默认保留最近 2 个 generation 的 compose/env/digest 元数据。
+- generation 快照存放在**远端** bundle 目录的 `.spool-gen/<n>/`（compose/env/digest/meta），本地 `.spool/state` 只保存索引。
+- 默认保留最近 2 个 generation；控制机重装后仍可从远端回滚。
 - 旧镜像/容器按 Kamal 的 `retain_containers` 思路保留 N 个，避免回滚时重新拉取。
 - GC 只清理 spool 标签匹配且超过保留期的资源。
+- digest 固定后的更新流转：P2 提供 `spool bundle check-updates` 列出可更新镜像；可用 Renovate/Dependabot 或人工修改 manifest 后重新 plan/apply。不能只依赖“记得改 digest”。
 
 ### 6.4 并发控制
 
-- `.spool/deploy.lock` 文件锁；同一 host 同时只允许一个 apply。
+- `.spool/locks/<host>.lock` 文件锁；同一 host 同时只允许一个 apply，不同 host 可并行。
+- `spool serve` 的 job 在开始时 acquire 对应 host 锁；同 host 的 job 排队，而不是直接失败。
 - 失败/中断后锁自动释放；`spool unlock <host>` 手动恢复。
 
 ---
@@ -585,11 +690,12 @@ plan
 - stdout 只放 JSON；日志/进度到 stderr。
 - 统一退出码：
   - `0` 成功
-  - `2` 参数/配置错误
-  - `3` plan 有 diff（可用于 CI 门禁）
+  - `2` 参数/配置错误（含 offline plan 非法）
+  - `3` **online** plan 有 diff（可用于 CI 门禁；`--offline` 不返回 3）
   - `4` 执行失败
   - `5` 需要审批/不可逆操作未确认
 - `spool inventory --json` 是其他工具的首选只读入口。
+- sensitive 表达式在 plan 中渲染为 `secret://...` 占位；只有 apply 才解析 secret provider。
 
 ### 7.2 L2：`spool serve --socket`
 
@@ -636,6 +742,8 @@ GET /v1/jobs/job_01J...
 }
 ```
 
+Job 生命周期：`queued → running → succeeded/failed`。同 host 的 job 通过 `locks/<host>.lock` 排队；不同 host 并行。相同 `idempotency_key` 在未完成期间复用同一个 job。
+
 安全：
 
 - Unix socket 文件权限 `0600`，默认只允许当前用户。
@@ -655,7 +763,7 @@ GET /v1/jobs/job_01J...
 |---|---|---|
 | Bellkeeper | Product bundle + `/v1/actions` + `outputs` | 自己发布 bundle；不直接 SSH |
 | n8n | HTTP 节点调用 `/v1/actions` | 带 `Idempotency-Key`；轮询 job |
-| CI/CD | `spool plan --json` + `spool apply --locked` | 退出码 3 表示有 diff |
+| CI/CD | `spool plan --json`（PR 用 `--offline`）+ `spool apply --locked` | 仅 online plan 的退出码 3 表示有 drift |
 | Grafana/Prometheus | `spool inventory --json` | 或读取资源标签做发现 |
 | SilkSecAgent | 只读 scope 的 inventory | 不返回 secret 明文 |
 | SilkRDP | DNS/Site/Bundle action | 通过同一 action API |
@@ -688,17 +796,18 @@ SilkSpool 仓库
 
 - `bellkeeper`：只声明镜像/digest、输入、输出、health、migration、backup。
 - `silkdata`：只声明 Postgres/Redis/Meili/NATS/CouchDB 的 outputs。
-- `knowledge-stack`：只声明 components、`after`、wiring；不包含 Bellkeeper 内部配置。
+- `knowledge-stack`：只声明 components、per-component `after`、wiring；不包含 Bellkeeper 内部配置。
 - `keeper` 作为 `knowledge-stack` 的兼容别名保留一个版本，输出弃用警告。
 - 删除 `keeper` 模板中重复的数据服务定义和所有跨机 IP。
 
 ### 8.3 验收标准
 
 1. 修改 Bellkeeper 不需要改 SilkSpool 仓库：Bellkeeper 通过 `source: git` 发布自己的 bundle。
-2. `knowledge-stack` 模板中零 IP、零容器名硬编码；只出现 `outputs` 引用和 Headscale MagicDNS 名称。
+2. `knowledge-stack` 模板中零 IP、零容器名硬编码；同机 endpoint 解析为服务名，跨机解析为 Headscale MagicDNS。
 3. `spool plan` 能输出 desired vs actual diff；`spool apply --locked` 能复现上一次部署。
-4. 健康检查失败时 `spool rollback` 能恢复到上一 generation。
-5. 远端 `docker compose -f docker-compose.yaml -f docker-compose.spool.yaml up -d` 仍可手动执行。
+4. 健康检查失败时 `spool rollback` 能恢复到上一 generation（含远端 `.spool-gen` 快照）。
+5. 不可逆迁移升级前，产品 `backup.hook` 被调用且备份产物可定位。
+6. 远端 `docker compose -f docker-compose.yaml -f docker-compose.spool.yaml up -d` 仍可手动执行。
 
 ---
 
@@ -720,10 +829,13 @@ SilkSpool 仓库
 ### P1（2-3 周）：轻契约 + plan/apply + rollback
 
 - 增加 `apiVersion/class/outputs/wiring/lifecycle/backup` 字段，兼容旧 manifest。
-- 实现 `plan`/`apply`/`rollback`，lock 快照 + `--locked`。
+- 实现 `plan`（online/offline）/`apply`/`rollback`，lock 快照 + `--locked`。
+- endpoint outputs 的拓扑解析：同机服务名 / 跨机 MagicDNS；per-component `after` DAG。
 - 用 Compose 多文件 `-f` + override 替代 `deepMerge`。
 - `bundle_sources: dir | git`（git 固定 commit）。
-- magic rollback + deploy lock + health gate + generation 保留。
+- magic rollback + per-host deploy lock + 组件级 health gate + 远端 generation 快照。
+- 产品 `backup.hook` 在 `backup-then-recreate` / 不可逆迁移前执行。
+- script driver 的 plan 返回 unsupported/静态校验，apply 要求显式确认。
 - `pkg/driver` 公开 `BundleDriver`；`internal/engine` 继续持有实现。
 - Resource adapter：Bundle、Service、DNSRecord、Site 接入 `inventory/status`。
 
@@ -734,11 +846,12 @@ SilkSpool 仓库
 - 按第 8 节拆分 keeper。
 - Bellkeeper 仓库发布 `deploy/bundle.yaml`。
 - Headscale MagicDNS wiring；移除 `extra_hosts` IP。
-- `spool serve --socket`：inventory、outputs、actions、jobs。
+- `spool serve --socket`：inventory、outputs、actions、jobs；job 按 host 锁排队。
+- `spool bundle check-updates`：列出固定 digest 的可更新版本；接入 Renovate/Dependabot 或人工更新。
 - 消费方示例：n8n HTTP、Bellkeeper action、CI plan/apply。
 - 文档：bundle-development、DEPLOYMENT、api 更新。
 
-**退出标准**：第 8.3 的 5 条全部满足；n8n/Bellkeeper 不直接 SSH 即可触发部署与读取状态。
+**退出标准**：第 8.3 的 6 条全部满足；n8n/Bellkeeper 不直接 SSH 即可触发部署与读取状态。
 
 ### P3（按需）：不提前建设
 
@@ -774,7 +887,12 @@ SilkSpool 仓库
 | 风险 | 缓解 |
 |---|---|
 | 跨机 output 漂移 | 优先 MagicDNS；plan 显示 diff；静态地址集中在 host 配置，不进模板 |
-| 不可逆迁移被自动回滚误导 | `irreversible: true` 禁止自动回滚；强制备份 + 显式确认 |
+| 同机 hairpin NAT / 不必要端口暴露 | endpoint 拓扑解析：同机同 project 用服务名且不发布端口；不同 project 优先共享网络 |
+| 不可逆迁移被自动回滚误导 | `irreversible: true` 禁止自动回滚；强制 `backup.hook` + 显式确认 |
+| `backup.hook` 缺失或失败 | `backup-then-recreate` / 不可逆迁移在 plan 阶段拒绝；apply 前再次校验 |
+| digest 固定后长期不更新 | P2 `check-updates` + Renovate/Dependabot/人工更新流程 |
+| offline plan 被误当 drift 门禁 | 明确 `--offline` 只做静态校验，永不返回退出码 3 |
+| script driver 无真实 diff | plan 返回 unsupported；apply 标注“未经 diff 确认”并要求 `--yes` |
 | CUE 学习/维护成本 | 只做 spike；P0/P1 用 YAML + JSON Schema + Compose 原生 merge |
 | Resource 抽象过度 | 只包装现有 manager；接口保持 3-4 个方法；不支持的动词明确报错 |
 | 公开 `pkg/driver` 破坏兼容 | 接口加版本/能力协商；internal 实现可自由重构 |
@@ -789,15 +907,17 @@ SilkSpool 仓库
 
 | 现有位置 | 改动 |
 |---|---|
-| `internal/engine/compose_driver.go` | 删除 `bellkeeper` 特判；改为读取 lifecycle/health；生成 override |
-| `internal/engine/bundle.go` | 删除 `resolveDeployPath` 反推；读 state/manifest 显式路径 |
-| `internal/engine/bundle_manifest.go` | 增加 `apiVersion/class/outputs/wiring/lifecycle/backup`，保留旧字段 |
+| `internal/engine/compose_driver.go` | 删除 `bellkeeper` 特判；读取 lifecycle/health；生成 override；注入组件标签 |
+| `internal/engine/bundle.go` | 删除 `resolveDeployPath` 反推；读 state/manifest 显式路径；per-host lock |
+| `internal/engine/bundle_manifest.go` | 增加 `apiVersion/class/outputs/wiring/lifecycle/backup`、组件 `health/optional`，保留旧字段 |
+| `internal/engine/resolver.go`（新增） | endpoint 拓扑解析、per-component `after` DAG、lock 生成 |
+| `internal/engine/backup.go` | 调用产品 `backup.hook`；远端 generation 快照 |
 | `internal/engine/bundle_driver.go` | 迁到 `pkg/driver`；编译期注册 |
-| `internal/engine/script_driver.go` | 保留为逃生口；升级走统一 lifecycle |
+| `internal/engine/script_driver.go` | 保留为逃生口；Plan 返回 unsupported/静态校验；apply 显式确认 |
 | `internal/engine/stack_driver.go` | 服务清单改用 manifest，host.Stack 仅作兼容 |
 | `internal/engine/sync.go` | bundle 级 sync；失败返回错误 |
 | `internal/config/types.go` | `host.services`/`host.backups` 标记 legacy；新配置进 bundle |
-| `internal/cli/*` | 增加 `--json`、`plan/apply/rollback/inventory/serve` |
+| `internal/cli/*` | 增加 `--json`、`plan --offline`、`apply/rollback/inventory/serve` |
 | `bundles/keeper/*` | P2 拆为 `knowledge-stack` + `silkdata` + 外部 `bellkeeper` |
 | `bundles/silkdata/*` | 增加 outputs 声明；作为 capability |
 | `Makefile` | 把 `bundles/` 作为示例/本地源；支持外部 source 缓存 |
@@ -852,3 +972,22 @@ P1/P2 未开始：`plan/apply/rollback`、magic rollback、`bundle_sources`、ke
 ## 15. 一句话总结
 
 > 不是把 SilkSpool 做成迷你 Crossplane，而是把它做成一个**agentless 的资源编排内核**：容器 bundle 用轻契约和显式 wiring，非容器资源复用现有 manager 并接入统一 inventory；其他工具只通过 `--json` 和本地 socket API 使用它，不直接 SSH。
+
+---
+
+## 16. 二次评审修订记录
+
+| 评审项 | 修订位置 | 处理 |
+|---|---|---|
+| outputs 缺少网络上下文 | 4.4、4.5、4.6 | endpoint 输出 + plan 时拓扑解析；同机服务名、跨机 MagicDNS |
+| 数据库备份能力被砍丢 | 4.3、4.4、6.2 | 产品方 `backup.hook` + `backup.assets`；不可逆迁移强制备份 |
+| composition 组件无健康定义 | 4.4、6.1 | 组件级 `health` / `optional`；非 optional 的与运算 |
+| `deploy.lock` 全局 vs per-host | 5.1、6.4 | 改为 `locks/<host>.lock`；同 host 排队、不同 host 并行 |
+| `after` 顶层语义错误 | 4.4、4.5 | 移到 per-component，按组件构建 DAG |
+| plan online/offline 未定义 | 4.5、5.4、7.1 | 默认 online；`--offline` 仅静态校验，永不返回 3 |
+| generation 快照位置 | 5.1、6.3 | 远端 `.spool-gen/<n>/`；本地只存索引 |
+| digest 更新流转缺失 | 6.3、P2 | `check-updates` + Renovate/Dependabot/人工流程 |
+| script driver plan 语义 | 5.4 | Plan unsupported/静态校验；apply 显式确认 |
+| `bundle up` 绕过 plan | 5.4 | 映射为 `apply`；有 diff 要求 `--yes`；`--skip-plan` 弃用警告 |
+| sensitive 在 CI plan 失败 | 4.5、7.1 | plan 渲染 `secret://...` 占位，仅 apply 求值 |
+| 跨 host 隐式引用 | 4.4 表达式表 | 明确不支持 `${hosts.<h>.bundles...}`，只走 input/MagicDNS |
