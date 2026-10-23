@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +47,28 @@ func TestDomainToName(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("domainToName(%q) = %q, want %q", tt.domain, got, tt.want)
 		}
+	}
+}
+
+func TestSyncHostReturnsErrorOnMissingLocalFile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "silkspool.yaml"), `global:
+  ssh_key_path: "./keys/id_test"
+hosts:
+  testhost:
+    address: "user@10.0.0.2"
+    sync_rules:
+      - local: "missing.conf"
+        remote: "/tmp/missing.conf"
+`)
+
+	mgr, err := NewSyncManager(dir)
+	if err != nil {
+		t.Fatalf("NewSyncManager: %v", err)
+	}
+	if err := mgr.SyncHost("testhost", "push"); err == nil {
+		t.Fatal("expected sync error for missing local file")
+	} else if !strings.Contains(err.Error(), "missing.conf") {
+		t.Fatalf("error = %q, should mention missing.conf", err.Error())
 	}
 }

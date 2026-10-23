@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/singll/silkspool/internal/config"
 	"github.com/singll/silkspool/pkg/utils"
@@ -232,6 +234,11 @@ func (d *ComposeDriver) pushAndMerge(host string, hostCfg *config.HostConfig, de
 			return fmt.Errorf("YAML merge failed: %w", err)
 		}
 
+		merged, err = injectSpoolLabels(merged, host, d.bundleName, manifest.Version)
+		if err != nil {
+			return fmt.Errorf("inject spool labels failed: %w", err)
+		}
+
 		remotePath := filepath.Join(deployPath, "docker-compose.yaml")
 		client, err := globalPool.Get(hostCfg.Address, d.sshKey)
 		if err != nil {
@@ -243,6 +250,71 @@ func (d *ComposeDriver) pushAndMerge(host string, hostCfg *config.HostConfig, de
 	}
 
 	return nil
+}
+
+// injectSpoolLabels 为 compose services 注入统一资源标签。
+// 兼容 labels 为 map 或 list 两种写法；已有 io.silkspool.* 标签会被覆盖。
+func injectSpoolLabels(merged []byte, host, bundle, version string) ([]byte, error) {
+	var doc map[string]interface{}
+	if err := yaml.Unmarshal(merged, &doc); err != nil {
+		return nil, err
+	}
+
+	services, ok := doc["services"].(map[string]interface{})
+	if !ok {
+		return merged, nil
+	}
+
+	for name, raw := range services {
+		svc, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		desired := map[string]string{
+			"io.silkspool.managed":   "true",
+			"io.silkspool.host":      host,
+			"io.silkspool.bundle":    bundle,
+			"io.silkspool.component": name,
+		}
+		if version != "" {
+			desired["io.silkspool.version"] = version
+		}
+
+		switch existing := svc["labels"].(type) {
+		case map[string]interface{}:
+			for k, v := range desired {
+				existing[k] = v
+			}
+			svc["labels"] = existing
+		case []interface{}:
+			filtered := make([]interface{}, 0, len(existing)+len(desired))
+			for _, item := range existing {
+				s, ok := item.(string)
+				if ok && strings.HasPrefix(s, "io.silkspool.") {
+					continue
+				}
+				filtered = append(filtered, item)
+			}
+			keys := make([]string, 0, len(desired))
+			for k := range desired {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				filtered = append(filtered, fmt.Sprintf("%s=%s", k, desired[k]))
+			}
+			svc["labels"] = filtered
+		default:
+			labels := make(map[string]interface{}, len(desired))
+			for k, v := range desired {
+				labels[k] = v
+			}
+			svc["labels"] = labels
+		}
+	}
+
+	return yaml.Marshal(doc)
 }
 
 // mergeYAMLFiles 合并多个 YAML 文件

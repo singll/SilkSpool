@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,10 +14,10 @@ import (
 
 // SyncManager 同步管理器
 type SyncManager struct {
-	baseDir       string
-	sshKey        string
-	knownHosts    string
-	sops          *SOPSManager
+	baseDir    string
+	sshKey     string
+	knownHosts string
+	sops       *SOPSManager
 }
 
 // NewSyncManager 创建同步管理器
@@ -67,6 +68,7 @@ func (m *SyncManager) SyncHost(host string, direction string) error {
 
 	utils.Step("Syncing config: %s (%s)", host, direction)
 
+	var errs []error
 	// 遍历同步规则
 	for _, rule := range hostCfg.SyncRules {
 		localPath := joinLocalRulePath(m.baseDir, host, rule.Local)
@@ -75,6 +77,7 @@ func (m *SyncManager) SyncHost(host string, direction string) error {
 		if direction == "pull" {
 			if err := m.pullFile(hostCfg, remotePath, localPath); err != nil {
 				utils.Error("Pull failed: %s (%v)", rule.Local, err)
+				errs = append(errs, fmt.Errorf("pull %s: %w", rule.Local, err))
 			} else {
 				utils.Success("Pulled: %s", rule.Local)
 			}
@@ -86,6 +89,7 @@ func (m *SyncManager) SyncHost(host string, direction string) error {
 			}
 			if err := m.pushFile(hostCfg, localPath, remotePath); err != nil {
 				utils.Error("Push failed: %s (%v)", rule.Local, err)
+				errs = append(errs, fmt.Errorf("push %s: %w", rule.Local, err))
 			} else {
 				utils.Success("Pushed: %s", rule.Local)
 				// 执行 post-push hooks
@@ -94,7 +98,7 @@ func (m *SyncManager) SyncHost(host string, direction string) error {
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // SyncAll 同步所有主机
