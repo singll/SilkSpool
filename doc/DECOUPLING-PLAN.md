@@ -826,6 +826,29 @@ SilkSpool 仓库
 
 ---
 
-## 14. 一句话总结
+## 14. 实施进度（2026-10-23）
+
+P0 已完成：
+
+- [x] 删除 `compose_driver.go` 中 `svc == "bellkeeper"` 硬编码
+- [x] manifest 支持显式 `deploy_path`，删除 sync-rule 路径反推
+- [x] `spool inventory [--json] [--probe]`，输出主机/Bundle/服务/部署路径
+- [x] manifest 增加 `apiVersion/kind/class/version/owner/labels` 字段
+- [x] compose 渲染时注入 `io.silkspool.*` 资源标签（兼容 map/list labels）
+- [x] `SyncHost` 聚合失败并返回 error，不再静默成功
+- [x] `go test ./...`、`go vet ./...` 通过
+
+P0 待完成：
+
+- [ ] 所有读命令统一 `--json` envelope（目前 `inventory` 已支持）
+- [ ] per-bundle `.env` 与 bundle 级 `sync_rules`
+- [ ] keeper/silkdata/observability 镜像固定 digest
+- [ ] `docker-compose.spool.yaml` override 替代 `deepMerge`（P1 起点）
+
+P1/P2 未开始：`plan/apply/rollback`、magic rollback、`bundle_sources`、keeper 拆分、`spool serve`。
+
+---
+
+## 15. 一句话总结
 
 > 不是把 SilkSpool 做成迷你 Crossplane，而是把它做成一个**agentless 的资源编排内核**：容器 bundle 用轻契约和显式 wiring，非容器资源复用现有 manager 并接入统一 inventory；其他工具只通过 `--json` 和本地 socket API 使用它，不直接 SSH。
