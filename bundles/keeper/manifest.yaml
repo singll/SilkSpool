@@ -1,5 +1,11 @@
 name: keeper
 type: compose
+config_root: bundle
+sync_rules:
+  - local: n8n-workflows/
+    remote: ${deploy_path}/n8n-workflows/
+  - local: couchdb/
+    remote: ${deploy_path}/couchdb/
 features:
   docker_log_rotation: true
   git_clone:

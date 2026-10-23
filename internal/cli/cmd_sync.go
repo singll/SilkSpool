@@ -6,7 +6,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/singll/silkspool/internal/engine"
-	"github.com/singll/silkspool/pkg/utils"
 )
 
 func (a *App) addSyncCmd(root *cobra.Command) {
@@ -65,17 +64,4 @@ func (a *App) runSyncPull(cmd *cobra.Command, args []string) error {
 
 func (a *App) runSyncPush(cmd *cobra.Command, args []string) error {
 	return a.runSync(cmd, append([]string{"push"}, args...))
-}
-
-func (a *App) runDNSList(mgr *engine.DNSManager) error {
-	records, err := mgr.ListDNSRecords()
-	if err != nil {
-		return fmt.Errorf("failed to list DNS records: %w", err)
-	}
-
-	utils.Info("DNS Records:")
-	for _, r := range records {
-		utils.Info("  %s -> %s", r.Domain, r.IP)
-	}
-	return nil
 }

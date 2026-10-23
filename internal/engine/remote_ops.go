@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -126,73 +127,150 @@ func (re *RemoteExecutor) CleanupDocker(mode string) error {
 
 // ==================== Docker Compose 操作 ====================
 
-// ComposePull docker compose pull
-func (re *RemoteExecutor) ComposePull(composeFile string) error {
-	utils.Info("Pulling images...")
+// composeArgs 生成 "docker compose -f base [-f override...]" 的命令片段。
+func composeArgs(composeCmd string, files []string) string {
+	parts := []string{composeCmd}
+	for _, f := range files {
+		if strings.TrimSpace(f) == "" {
+			continue
+		}
+		parts = append(parts, "-f", f)
+	}
+	return strings.Join(parts, " ")
+}
+
+func (re *RemoteExecutor) composeRun(files []string, args string) (string, error) {
+	if len(files) == 0 {
+		return "", fmt.Errorf("no compose files")
+	}
 	dc := re.GetComposeCmd()
-	cmd := fmt.Sprintf("cd $(dirname %s) && %s -f %s pull", composeFile, dc, composeFile)
-	_, err := re.client.Execute(cmd)
+	cmd := fmt.Sprintf("cd $(dirname %s) && %s %s", files[0], composeArgs(dc, files), args)
+	return re.client.Execute(cmd)
+}
+
+// ComposePull docker compose pull
+func (re *RemoteExecutor) ComposePull(composeFile string, overrideFiles ...string) error {
+	utils.Info("Pulling images...")
+	files := append([]string{composeFile}, overrideFiles...)
+	_, err := re.composeRun(files, "pull")
 	return err
 }
 
 // ComposeBuild docker compose build
 func (re *RemoteExecutor) ComposeBuild(composeFile string, services ...string) error {
+	return re.ComposeBuildFiles([]string{composeFile}, services...)
+}
+
+// ComposeBuildFiles docker compose build（支持多文件）
+func (re *RemoteExecutor) ComposeBuildFiles(files []string, services ...string) error {
 	utils.Info("Building images...")
-	dc := re.GetComposeCmd()
-	var svcArg string
-	if len(services) > 0 {
-		svcArg = strings.Join(services, " ")
-	}
-	cmd := fmt.Sprintf("cd $(dirname %s) && %s -f %s build %s", composeFile, dc, composeFile, svcArg)
-	_, err := re.client.Execute(cmd)
+	svcArg := strings.Join(services, " ")
+	_, err := re.composeRun(files, strings.TrimSpace("build "+svcArg))
 	return err
 }
 
 // ComposeUp docker compose up -d --remove-orphans
-func (re *RemoteExecutor) ComposeUp(composeFile string) error {
+func (re *RemoteExecutor) ComposeUp(composeFile string, overrideFiles ...string) error {
 	utils.Info("Starting services...")
-	dc := re.GetComposeCmd()
-	cmd := fmt.Sprintf("cd $(dirname %s) && %s -f %s up -d --remove-orphans", composeFile, dc, composeFile)
-	_, err := re.client.Execute(cmd)
+	files := append([]string{composeFile}, overrideFiles...)
+	_, err := re.composeRun(files, "up -d --remove-orphans")
 	return err
 }
 
 // ComposeDown docker compose down
-func (re *RemoteExecutor) ComposeDown(composeFile string) error {
+func (re *RemoteExecutor) ComposeDown(composeFile string, overrideFiles ...string) error {
 	utils.Info("Stopping services...")
-	dc := re.GetComposeCmd()
-	cmd := fmt.Sprintf("cd $(dirname %s) && %s -f %s down", composeFile, dc, composeFile)
-	_, err := re.client.Execute(cmd)
+	files := append([]string{composeFile}, overrideFiles...)
+	_, err := re.composeRun(files, "down")
 	return err
 }
 
 // ComposePS docker compose ps
-func (re *RemoteExecutor) ComposePS(composeFile string) (string, error) {
-	dc := re.GetComposeCmd()
-	cmd := fmt.Sprintf("cd $(dirname %s) && %s -f %s ps", composeFile, dc, composeFile)
-	return re.client.Execute(cmd)
+func (re *RemoteExecutor) ComposePS(composeFile string, overrideFiles ...string) (string, error) {
+	files := append([]string{composeFile}, overrideFiles...)
+	return re.composeRun(files, "ps")
+}
+
+// composePSJSONEntry 是 docker compose ps --format json 的条目。
+type composePSJSONEntry struct {
+	Name    string `json:"Name"`
+	Service string `json:"Service"`
+	State   string `json:"State"`
+	Health  string `json:"Health"`
+	Status  string `json:"Status"`
+	Image   string `json:"Image"`
+}
+
+// ComposePSJSON 返回结构化状态；若远端不支持 --format json，则保留原始输出。
+func (re *RemoteExecutor) ComposePSJSON(files ...string) ([]BundleServiceStatus, string, error) {
+	out, err := re.composeRun(files, "ps --format json")
+	if err != nil {
+		// 兼容旧版 compose：退回人类可读输出，由调用方决定如何使用。
+		raw, rawErr := re.composeRun(files, "ps")
+		if rawErr != nil {
+			return nil, "", err
+		}
+		return nil, raw, nil
+	}
+
+	var entries []composePSJSONEntry
+	parsed := true
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &entries); err != nil {
+		parsed = false
+		// 有些版本逐行输出 JSON 对象。
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var entry composePSJSONEntry
+			if json.Unmarshal([]byte(line), &entry) == nil {
+				entries = append(entries, entry)
+				parsed = true
+			}
+		}
+	}
+	if !parsed {
+		if strings.TrimSpace(out) == "" {
+			return []BundleServiceStatus{}, "", nil
+		}
+		return nil, out, nil
+	}
+
+	statuses := make([]BundleServiceStatus, 0, len(entries))
+	for _, e := range entries {
+		statuses = append(statuses, BundleServiceStatus{
+			Name:    e.Name,
+			Service: e.Service,
+			State:   e.State,
+			Health:  e.Health,
+			Status:  e.Status,
+			Image:   e.Image,
+		})
+	}
+	return statuses, "", nil
 }
 
 // ComposeService 对单个服务执行操作 (up/down/build/logs/restart)
-func (re *RemoteExecutor) ComposeService(composeFile, service, action string) error {
-	dc := re.GetComposeCmd()
-	var cmd string
+func (re *RemoteExecutor) ComposeService(composeFile, service, action string, overrideFiles ...string) error {
+	files := append([]string{composeFile}, overrideFiles...)
+	var args string
 	switch action {
 	case "up":
-		cmd = fmt.Sprintf("cd $(dirname %s) && %s -f %s up -d --no-deps --build %s", composeFile, dc, composeFile, service)
+		args = fmt.Sprintf("up -d --no-deps --build %s", service)
 	case "down":
-		cmd = fmt.Sprintf("cd $(dirname %s) && %s -f %s stop %s", composeFile, dc, composeFile, service)
+		args = fmt.Sprintf("stop %s", service)
 	case "build":
-		cmd = fmt.Sprintf("cd $(dirname %s) && %s -f %s build --no-cache %s", composeFile, dc, composeFile, service)
+		args = fmt.Sprintf("build --no-cache %s", service)
 	case "logs":
 		logTail := config.DefaultInt(re.defaults.LogLines, 100)
-		cmd = fmt.Sprintf("cd $(dirname %s) && %s -f %s logs -f --tail=%d %s", composeFile, dc, composeFile, logTail, service)
+		args = fmt.Sprintf("logs -f --tail=%d %s", logTail, service)
 	case "restart":
-		cmd = fmt.Sprintf("cd $(dirname %s) && %s -f %s restart %s", composeFile, dc, composeFile, service)
+		args = fmt.Sprintf("restart %s", service)
 	default:
 		return fmt.Errorf("unknown service action: %s", action)
 	}
-	_, err := re.client.Execute(cmd)
+	_, err := re.composeRun(files, args)
 	return err
 }
 

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/singll/silkspool/internal/config"
@@ -84,18 +83,14 @@ func (d *ComposeDriver) Setup(host string, hostCfg *config.HostConfig, deployPat
 		}
 	}
 
-	// 6. 推送配置 + 合并 YAML
-	if err := d.pushAndMerge(host, hostCfg, deployPath, manifest); err != nil {
+	// 6. 推送配置 + 生成 compose override
+	if err := d.pushConfig(host, hostCfg, deployPath, manifest); err != nil {
 		return err
 	}
 
 	// 7. Compose build + up
-	composeFile := filepath.Join(deployPath, "docker-compose.yaml")
-	if err := re.ComposeBuild(composeFile); err != nil {
-		return fmt.Errorf("compose build failed: %w", err)
-	}
-	if err := re.ComposeUp(composeFile); err != nil {
-		return fmt.Errorf("compose up failed: %w", err)
+	if err := d.composeBuildAndUp(re, deployPath); err != nil {
+		return err
 	}
 
 	// 8. 特性：Docker 清理
@@ -120,6 +115,10 @@ func (d *ComposeDriver) Up(host string, hostCfg *config.HostConfig, deployPath s
 		return err
 	}
 
+	if err := re.EnsureDir(deployPath); err != nil {
+		return err
+	}
+
 	// 1. 特性：Git 拉取
 	if manifest.Features.GitClone != nil {
 		targetPath := filepath.Join(deployPath, manifest.Features.GitClone.Path)
@@ -128,21 +127,13 @@ func (d *ComposeDriver) Up(host string, hostCfg *config.HostConfig, deployPath s
 		}
 	}
 
-	// 2. 推送配置 + 合并 YAML
-	if err := d.pushAndMerge(host, hostCfg, deployPath, manifest); err != nil {
+	// 2. 推送配置 + 生成 compose override
+	if err := d.pushConfig(host, hostCfg, deployPath, manifest); err != nil {
 		return err
 	}
 
 	// 3. Compose build + up
-	composeFile := filepath.Join(deployPath, "docker-compose.yaml")
-	if err := re.ComposeBuild(composeFile); err != nil {
-		return fmt.Errorf("compose build failed: %w", err)
-	}
-	if err := re.ComposeUp(composeFile); err != nil {
-		return fmt.Errorf("compose up failed: %w", err)
-	}
-
-	return nil
+	return d.composeBuildAndUp(re, deployPath)
 }
 
 // Down 停止服务
@@ -151,8 +142,8 @@ func (d *ComposeDriver) Down(host string, hostCfg *config.HostConfig, deployPath
 	if err != nil {
 		return err
 	}
-	composeFile := filepath.Join(deployPath, "docker-compose.yaml")
-	return re.ComposeDown(composeFile)
+	files := d.composeFiles(re, deployPath)
+	return re.ComposeDown(files[0], files[1:]...)
 }
 
 // Status 查看服务状态
@@ -161,8 +152,8 @@ func (d *ComposeDriver) Status(host string, hostCfg *config.HostConfig, deployPa
 	if err != nil {
 		return err
 	}
-	composeFile := filepath.Join(deployPath, "docker-compose.yaml")
-	out, err := re.ComposePS(composeFile)
+	files := d.composeFiles(re, deployPath)
+	out, err := re.ComposePS(files[0], files[1:]...)
 	if err != nil {
 		return err
 	}
@@ -190,7 +181,6 @@ func (d *ComposeDriver) Service(host string, hostCfg *config.HostConfig, deployP
 	if err != nil {
 		return err
 	}
-	composeFile := filepath.Join(deployPath, "docker-compose.yaml")
 
 	// 通过 git_clone 构建的服务，在单独 up 前先拉取更新
 	manifest, _ := d.loadManifest()
@@ -201,7 +191,8 @@ func (d *ComposeDriver) Service(host string, hostCfg *config.HostConfig, deployP
 		}
 	}
 
-	return re.ComposeService(composeFile, svc, action)
+	files := d.composeFiles(re, deployPath)
+	return re.ComposeService(files[0], svc, action, files[1:]...)
 }
 
 // ==================== 内部方法 ====================
@@ -212,155 +203,147 @@ func (d *ComposeDriver) loadManifest() (*BundleManifest, error) {
 	return loader.Load(d.bundleName)
 }
 
-// pushAndMerge 推送配置并合并 YAML 模板
-func (d *ComposeDriver) pushAndMerge(host string, hostCfg *config.HostConfig, deployPath string, manifest *BundleManifest) error {
+func (d *ComposeDriver) composeFile(deployPath string) string {
+	return filepath.Join(deployPath, "docker-compose.yaml")
+}
+
+func (d *ComposeDriver) overrideFile(deployPath string) string {
+	return filepath.Join(deployPath, "docker-compose.spool.yaml")
+}
+
+func (d *ComposeDriver) composeBuildAndUp(re *RemoteExecutor, deployPath string) error {
+	files := d.composeFiles(re, deployPath)
+	if err := re.ComposeBuildFiles(files); err != nil {
+		return fmt.Errorf("compose build failed: %w", err)
+	}
+	if err := re.ComposeUp(files[0], files[1:]...); err != nil {
+		return fmt.Errorf("compose up failed: %w", err)
+	}
+	return nil
+}
+
+// composeFiles 返回实际存在的 compose 文件；兼容尚未生成 override 的旧部署。
+func (d *ComposeDriver) composeFiles(re *RemoteExecutor, deployPath string) []string {
+	files := []string{d.composeFile(deployPath)}
+	override := d.overrideFile(deployPath)
+	if out, err := re.Exec(fmt.Sprintf("test -f %q && echo yes || true", override)); err == nil && strings.Contains(out, "yes") {
+		files = append(files, override)
+	}
+	return files
+}
+
+// pushConfig 推送主机配置、bundle 配置与模板，并生成 override。
+// 文件即真相：模板保持原样，spool 注入项只写 docker-compose.spool.yaml。
+func (d *ComposeDriver) pushConfig(host string, hostCfg *config.HostConfig, deployPath string, manifest *BundleManifest) error {
 	syncMgr, err := NewSyncManager(d.baseDir)
 	if err != nil {
 		return err
 	}
 	if err := syncMgr.SyncHost(host, "push"); err != nil {
-		return fmt.Errorf("push config failed: %w", err)
+		return fmt.Errorf("push host config failed: %w", err)
+	}
+	if err := syncMgr.SyncBundle(host, d.bundleName, deployPath); err != nil {
+		return fmt.Errorf("push bundle config failed: %w", err)
 	}
 
-	if len(manifest.Templates) > 0 {
-		bundleRoot := filepath.Join(d.baseDir, "bundles", d.bundleName)
-		templateFiles := make([]string, 0, len(manifest.Templates))
-		for _, t := range manifest.Templates {
-			templateFiles = append(templateFiles, filepath.Join(bundleRoot, "templates", t))
-		}
+	if len(manifest.Templates) == 0 {
+		return nil
+	}
 
-		merged, err := d.mergeYAMLFiles(templateFiles)
+	client, err := globalPool.Get(hostCfg.Address, d.sshKey)
+	if err != nil {
+		return fmt.Errorf("SSH connect failed: %w", err)
+	}
+	bundleRoot := filepath.Join(d.baseDir, "bundles", d.bundleName)
+	templateData := make([][]byte, 0, len(manifest.Templates))
+	for _, t := range manifest.Templates {
+		data, err := os.ReadFile(filepath.Join(bundleRoot, "templates", t))
 		if err != nil {
-			return fmt.Errorf("YAML merge failed: %w", err)
+			return fmt.Errorf("read template %s failed: %w", t, err)
 		}
+		templateData = append(templateData, data)
+		// 模板与 compose 入口位于同一目录，保证 include 的每个应用模型
+		// 都以 deployPath 为 project directory（相对挂载/构建路径不变）。
+		remotePath := filepath.Join(deployPath, filepath.Base(t))
+		if err := client.Upload(string(data), remotePath); err != nil {
+			return fmt.Errorf("upload template %s failed: %w", t, err)
+		}
+	}
 
-		merged, err = injectSpoolLabels(merged, host, d.bundleName, manifest.Version)
-		if err != nil {
-			return fmt.Errorf("inject spool labels failed: %w", err)
-		}
+	base, err := renderComposeBase(manifest.Templates, templateData)
+	if err != nil {
+		return fmt.Errorf("render docker-compose.yaml failed: %w", err)
+	}
+	if err := client.Upload(string(base), d.composeFile(deployPath)); err != nil {
+		return fmt.Errorf("upload docker-compose.yaml failed: %w", err)
+	}
 
-		remotePath := filepath.Join(deployPath, "docker-compose.yaml")
-		client, err := globalPool.Get(hostCfg.Address, d.sshKey)
-		if err != nil {
-			return fmt.Errorf("SSH connect failed: %w", err)
-		}
-		if err := client.Upload(string(merged), remotePath); err != nil {
-			return fmt.Errorf("upload docker-compose.yaml failed: %w", err)
-		}
+	override, err := renderSpoolOverride(templateData, host, d.bundleName, manifest.Version)
+	if err != nil {
+		return fmt.Errorf("render docker-compose.spool.yaml failed: %w", err)
+	}
+	if err := client.Upload(string(override), d.overrideFile(deployPath)); err != nil {
+		return fmt.Errorf("upload docker-compose.spool.yaml failed: %w", err)
 	}
 
 	return nil
 }
 
-// injectSpoolLabels 为 compose services 注入统一资源标签。
-// 兼容 labels 为 map 或 list 两种写法；已有 io.silkspool.* 标签会被覆盖。
-func injectSpoolLabels(merged []byte, host, bundle, version string) ([]byte, error) {
-	var doc map[string]interface{}
-	if err := yaml.Unmarshal(merged, &doc); err != nil {
-		return nil, err
+// renderComposeBase 生成人类可读的入口文件：
+//   - 单模板：原样复制
+//   - 多模板：使用 Compose include，多文件语义交给 docker compose 自己处理
+func renderComposeBase(names []string, data [][]byte) ([]byte, error) {
+	if len(data) == 1 {
+		return data[0], nil
 	}
 
-	services, ok := doc["services"].(map[string]interface{})
-	if !ok {
-		return merged, nil
+	type includeFile struct {
+		Name    string   `yaml:"name,omitempty"`
+		Include []string `yaml:"include"`
+	}
+	includes := make([]string, 0, len(names))
+	for _, name := range names {
+		includes = append(includes, filepath.ToSlash(filepath.Base(name)))
 	}
 
-	for name, raw := range services {
-		svc, ok := raw.(map[string]interface{})
-		if !ok {
-			continue
+	// include 会忽略被包含文件里的顶层 name；从模板中提取并写到入口文件，
+	// 避免项目名漂移导致旧容器被当成孤儿。
+	var projectName string
+	for _, item := range data {
+		var doc struct {
+			Name string `yaml:"name"`
 		}
-
-		desired := map[string]string{
-			"io.silkspool.managed":   "true",
-			"io.silkspool.host":      host,
-			"io.silkspool.bundle":    bundle,
-			"io.silkspool.component": name,
-		}
-		if version != "" {
-			desired["io.silkspool.version"] = version
-		}
-
-		switch existing := svc["labels"].(type) {
-		case map[string]interface{}:
-			for k, v := range desired {
-				existing[k] = v
-			}
-			svc["labels"] = existing
-		case []interface{}:
-			filtered := make([]interface{}, 0, len(existing)+len(desired))
-			for _, item := range existing {
-				s, ok := item.(string)
-				if ok && strings.HasPrefix(s, "io.silkspool.") {
-					continue
-				}
-				filtered = append(filtered, item)
-			}
-			keys := make([]string, 0, len(desired))
-			for k := range desired {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				filtered = append(filtered, fmt.Sprintf("%s=%s", k, desired[k]))
-			}
-			svc["labels"] = filtered
-		default:
-			labels := make(map[string]interface{}, len(desired))
-			for k, v := range desired {
-				labels[k] = v
-			}
-			svc["labels"] = labels
+		if err := yaml.Unmarshal(item, &doc); err == nil && doc.Name != "" {
+			projectName = doc.Name
+			break
 		}
 	}
-
-	return yaml.Marshal(doc)
+	return yaml.Marshal(includeFile{Name: projectName, Include: includes})
 }
 
-// mergeYAMLFiles 合并多个 YAML 文件
-func (d *ComposeDriver) mergeYAMLFiles(files []string) ([]byte, error) {
-	var result map[string]interface{}
+// renderSpoolOverride 生成 docker-compose.spool.yaml，只包含 spool 注入项。
+func renderSpoolOverride(templates [][]byte, host, bundle, version string) ([]byte, error) {
+	services := make(map[string]interface{})
 
-	for _, file := range files {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read %s: %w", file, err)
-		}
-
+	for _, data := range templates {
 		var doc map[string]interface{}
 		if err := yaml.Unmarshal(data, &doc); err != nil {
-			return nil, fmt.Errorf("failed to parse %s: %w", file, err)
+			return nil, err
 		}
-
-		result = deepMerge(result, doc)
-	}
-
-	return yaml.Marshal(result)
-}
-
-// deepMerge 深度合并两个 map
-func deepMerge(base, overlay map[string]interface{}) map[string]interface{} {
-	if base == nil {
-		return overlay
-	}
-	if overlay == nil {
-		return base
-	}
-
-	result := make(map[string]interface{})
-	for k, v := range base {
-		result[k] = v
-	}
-	for k, v := range overlay {
-		if existing, ok := result[k]; ok {
-			if baseMap, ok1 := existing.(map[string]interface{}); ok1 {
-				if overlayMap, ok2 := v.(map[string]interface{}); ok2 {
-					result[k] = deepMerge(baseMap, overlayMap)
-					continue
-				}
+		rawServices, _ := doc["services"].(map[string]interface{})
+		for name := range rawServices {
+			labels := map[string]string{
+				"io.silkspool.managed":   "true",
+				"io.silkspool.host":      host,
+				"io.silkspool.bundle":    bundle,
+				"io.silkspool.component": name,
 			}
+			if version != "" {
+				labels["io.silkspool.version"] = version
+			}
+			services[name] = map[string]interface{}{"labels": labels}
 		}
-		result[k] = v
 	}
-	return result
+
+	return yaml.Marshal(map[string]interface{}{"services": services})
 }

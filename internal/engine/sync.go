@@ -101,6 +101,80 @@ func (m *SyncManager) SyncHost(host string, direction string) error {
 	return errors.Join(errs...)
 }
 
+// SyncBundle 推送 bundle 自带的配置文件（manifest.sync_rules + 自动 .env）。
+// 失败会聚合返回，不再静默成功。
+func (m *SyncManager) SyncBundle(host, bundleName, deployPath string) error {
+	cfg, err := config.LoadConfig(m.baseDir)
+	if err != nil {
+		return err
+	}
+	hostCfg := cfg.GetHost(host)
+	if hostCfg == nil {
+		return fmt.Errorf("host %s not found", host)
+	}
+
+	manifest, err := NewManifestLoader(m.baseDir).Load(bundleName)
+	if err != nil {
+		return fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
+	}
+
+	configDir := BundleConfigDir(m.baseDir, host, bundleName, manifest)
+	legacyDir := filepath.Join(m.baseDir, "hosts", host)
+	rules := append([]BundleSyncRule(nil), manifest.SyncRules...)
+
+	// 默认将 .env 推到 deploy_path/.env；显式规则优先。
+	hasEnvDefault := false
+	for _, def := range manifest.Defaults {
+		if filepath.Clean(def.Path) == ".env" {
+			hasEnvDefault = true
+			break
+		}
+	}
+	if hasEnvDefault {
+		explicit := false
+		for _, rule := range rules {
+			if filepath.Clean(rule.Local) == ".env" {
+				explicit = true
+				break
+			}
+		}
+		if !explicit {
+			rules = append(rules, BundleSyncRule{Local: ".env", Remote: "${deploy_path}/.env"})
+		}
+	}
+
+	var errs []error
+	for _, rule := range rules {
+		if strings.TrimSpace(rule.Local) == "" || strings.TrimSpace(rule.Remote) == "" {
+			errs = append(errs, fmt.Errorf("bundle %s: invalid sync rule %q -> %q", bundleName, rule.Local, rule.Remote))
+			continue
+		}
+
+		localPath := joinBundleRulePath(configDir, rule.Local)
+		if _, statErr := os.Stat(strings.TrimSuffix(localPath, "/")); statErr != nil && manifest.ConfigRootOrDefault() == "bundle" {
+			legacyPath := joinBundleRulePath(legacyDir, rule.Local)
+			if _, legacyErr := os.Stat(strings.TrimSuffix(legacyPath, "/")); legacyErr == nil {
+				localPath = legacyPath
+			}
+		}
+		if _, statErr := os.Stat(strings.TrimSuffix(localPath, "/")); statErr != nil {
+			errs = append(errs, fmt.Errorf("bundle %s sync %s: local file not found: %s", bundleName, rule.Local, localPath))
+			continue
+		}
+
+		remotePath := strings.ReplaceAll(rule.Remote, "${deploy_path}", deployPath)
+		remotePath = strings.ReplaceAll(remotePath, "${host}", host)
+		if err := m.pushFile(hostCfg, localPath, remotePath); err != nil {
+			utils.Error("Bundle push failed: %s (%v)", rule.Local, err)
+			errs = append(errs, fmt.Errorf("push %s: %w", rule.Local, err))
+			continue
+		}
+		utils.Success("Pushed: %s", remotePath)
+	}
+
+	return errors.Join(errs...)
+}
+
 // SyncAll 同步所有主机
 func (m *SyncManager) SyncAll(direction string) error {
 	cfg, err := config.LoadConfig(m.baseDir)
@@ -108,13 +182,15 @@ func (m *SyncManager) SyncAll(direction string) error {
 		return err
 	}
 
+	var errs []error
 	for host := range cfg.Hosts {
 		if err := m.SyncHost(host, direction); err != nil {
 			utils.Warn("Sync %s failed: %v", host, err)
+			errs = append(errs, fmt.Errorf("sync %s: %w", host, err))
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 // pullFile 拉取远程文件到本地
@@ -263,6 +339,15 @@ func (m *SyncManager) SyncHostFile(host, direction, localPath string) error {
 // 丢失斜杠会在远程形成双层嵌套（tools/ → tools/tools）
 func joinLocalRulePath(baseDir, host, ruleLocal string) string {
 	p := filepath.Join(baseDir, "hosts", host, ruleLocal)
+	if strings.HasSuffix(ruleLocal, "/") && !strings.HasSuffix(p, "/") {
+		p += "/"
+	}
+	return p
+}
+
+// joinBundleRulePath 拼接 bundle 配置根目录与规则路径，保留目录规则的尾部斜杠。
+func joinBundleRulePath(root, ruleLocal string) string {
+	p := filepath.Join(root, ruleLocal)
 	if strings.HasSuffix(ruleLocal, "/") && !strings.HasSuffix(p, "/") {
 		p += "/"
 	}

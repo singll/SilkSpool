@@ -29,7 +29,7 @@ Actions:
   ./spool bundle keeper up keeper
   ./spool bundle csai upgrade csai
   ./spool bundle keeper service keeper bellkeeper up`,
-	RunE: a.runBundle,
+		RunE: a.runBundle,
 	}
 	cmd.Flags().Bool("yes", false, "跳过危险操作 (down/cleanup) 的二次确认")
 	cmd.Flags().Bool("force", false, "upgrade: 强制重装（即使已是最新版本）")
@@ -47,7 +47,15 @@ func (a *App) runBundle(cmd *cobra.Command, args []string) error {
 
 	if action == "down" || action == "cleanup" {
 		assumeYes, _ := cmd.Flags().GetBool("yes")
+		if jsonFlag && !assumeYes {
+			return newExitError(ExitApproval, "approval_required",
+				fmt.Errorf("destructive action %q requires --yes in JSON mode", action))
+		}
 		if !engine.ConfirmDestructive(action, fmt.Sprintf("bundle %s on %s", name, host), assumeYes) {
+			if jsonFlag {
+				return newExitError(ExitApproval, "approval_required",
+					fmt.Errorf("destructive action %q was not confirmed", action))
+			}
 			utils.Warn("Aborted")
 			return nil
 		}
@@ -58,19 +66,55 @@ func (a *App) runBundle(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to init bundle manager: %w", err)
 	}
 
+	if action == "status" && jsonFlag {
+		status, err := mgr.BundleStatus(name, host)
+		if err != nil {
+			return err
+		}
+		return writeJSON(cmd.OutOrStdout(), status, nil)
+	}
+
 	if action == "service" {
 		if len(args) < 5 {
 			return fmt.Errorf("usage: spool bundle <name> service <host> <service> <action>")
 		}
 		svc := args[3]
 		svcAction := args[4]
-		return mgr.SetupBundleService(name, host, svc, svcAction)
+		if err := mgr.SetupBundleService(name, host, svc, svcAction); err != nil {
+			return err
+		}
+		return a.bundleActionJSON(cmd, name, host, action, map[string]interface{}{
+			"service": svc,
+			"command": svcAction,
+		})
 	}
 
 	if action == "upgrade" {
 		force, _ := cmd.Flags().GetBool("force")
-		return mgr.UpgradeBundle(name, host, force)
+		if err := mgr.UpgradeBundle(name, host, force); err != nil {
+			return err
+		}
+		return a.bundleActionJSON(cmd, name, host, action, map[string]interface{}{"force": force})
 	}
 
-	return mgr.SetupBundle(name, host, action)
+	if err := mgr.SetupBundle(name, host, action); err != nil {
+		return err
+	}
+	return a.bundleActionJSON(cmd, name, host, action, nil)
+}
+
+func (a *App) bundleActionJSON(cmd *cobra.Command, name, host, action string, extra map[string]interface{}) error {
+	if !jsonFlag {
+		return nil
+	}
+	data := map[string]interface{}{
+		"bundle": name,
+		"host":   host,
+		"action": action,
+		"ok":     true,
+	}
+	for k, v := range extra {
+		data[k] = v
+	}
+	return writeJSON(cmd.OutOrStdout(), data, nil)
 }

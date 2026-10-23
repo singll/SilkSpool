@@ -1,6 +1,6 @@
 services:
   n8n:
-    image: docker.n8n.io/n8nio/n8n:latest
+    image: docker.n8n.io/n8nio/n8n:1.62.1@sha256:49082daed743802dcdbb01c9a70b87d42acee1ecbca75867739dc858dacdbc2c
     container_name: ${APP_PREFIX:-sp-}n8n
     restart: unless-stopped
     user: root

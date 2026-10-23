@@ -54,15 +54,36 @@ func (a *App) runNAS(cmd *cobra.Command, args []string) error {
 	case "rpc":
 		return manager.CmdMaintenanceRPC(args[1], json.RawMessage(args[2]))
 	case "info":
+		if jsonFlag {
+			info, err := manager.SystemInfo()
+			if err != nil {
+				return err
+			}
+			return writeJSON(cmd.OutOrStdout(), info, nil)
+		}
 		return manager.CmdInfo()
 	case "pool":
 		if len(args) > 1 && args[1] == "list" {
+			if jsonFlag {
+				pools, err := manager.Pools()
+				if err != nil {
+					return err
+				}
+				return writeJSON(cmd.OutOrStdout(), map[string]interface{}{"pools": pools}, nil)
+			}
 			return manager.CmdPoolList()
 		}
 		nasHelp()
 		return nil
 	case "dataset":
 		if len(args) > 1 && args[1] == "list" {
+			if jsonFlag {
+				datasets, err := manager.Datasets()
+				if err != nil {
+					return err
+				}
+				return writeJSON(cmd.OutOrStdout(), map[string]interface{}{"datasets": datasets}, nil)
+			}
 			return manager.CmdDatasetList()
 		}
 		nasHelp()
@@ -72,6 +93,13 @@ func (a *App) runNAS(cmd *cobra.Command, args []string) error {
 			pool := ""
 			if len(args) > 2 {
 				pool = args[2]
+			}
+			if jsonFlag {
+				snapshots, err := manager.Snapshots(pool)
+				if err != nil {
+					return err
+				}
+				return writeJSON(cmd.OutOrStdout(), map[string]interface{}{"snapshots": snapshots}, nil)
 			}
 			return manager.CmdSnapshotList(pool)
 		}

@@ -68,24 +68,33 @@ func (a *App) runService(cmd *cobra.Command, args []string) error {
 	switch action {
 	case "status":
 		if service == "" {
-			return a.runServiceList(mgr, host)
+			return a.runServiceList(cmd, mgr, host)
 		}
-		return a.runServiceStatus(mgr, host, service)
+		return a.runServiceStatus(cmd, mgr, host, service)
 	case "start":
 		if service == "" {
 			return fmt.Errorf("usage: spool service <host> start <service>")
 		}
-		return mgr.StartService(host, service)
+		if err := mgr.StartService(host, service); err != nil {
+			return err
+		}
+		return a.serviceActionJSON(cmd, host, service, action)
 	case "stop":
 		if service == "" {
 			return fmt.Errorf("usage: spool service <host> stop <service>")
 		}
-		return mgr.StopService(host, service)
+		if err := mgr.StopService(host, service); err != nil {
+			return err
+		}
+		return a.serviceActionJSON(cmd, host, service, action)
 	case "restart":
 		if service == "" {
 			return fmt.Errorf("usage: spool service <host> restart <service>")
 		}
-		return mgr.RestartService(host, service)
+		if err := mgr.RestartService(host, service); err != nil {
+			return err
+		}
+		return a.serviceActionJSON(cmd, host, service, action)
 	case "logs":
 		if service == "" {
 			return fmt.Errorf("usage: spool service <host> logs <service> [lines]")
@@ -99,6 +108,14 @@ func (a *App) runService(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to get logs: %w", err)
 		}
+		if jsonFlag {
+			return writeJSON(cmd.OutOrStdout(), map[string]interface{}{
+				"host":    host,
+				"service": service,
+				"lines":   lines,
+				"logs":    output,
+			}, nil)
+		}
 		fmt.Print(output)
 		return nil
 	default:
@@ -106,10 +123,24 @@ func (a *App) runService(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func (a *App) runServiceList(mgr *engine.ServiceManager, host string) error {
+func (a *App) runServiceList(cmd *cobra.Command, mgr *engine.ServiceManager, host string) error {
 	services, err := mgr.GetHostServices(host)
 	if err != nil {
 		return fmt.Errorf("failed to list services: %w", err)
+	}
+
+	if jsonFlag {
+		out := make([]inventoryService, 0, len(services))
+		for _, s := range services {
+			out = append(out, inventoryService{
+				Alias:   s.Alias,
+				Type:    s.Type,
+				Name:    s.Name,
+				Status:  s.Status,
+				Healthy: s.Healthy,
+			})
+		}
+		return writeJSON(cmd.OutOrStdout(), map[string]interface{}{"host": host, "services": out}, nil)
 	}
 
 	utils.Info("Services on %s:", host)
@@ -123,13 +154,33 @@ func (a *App) runServiceList(mgr *engine.ServiceManager, host string) error {
 	return nil
 }
 
-func (a *App) runServiceStatus(mgr *engine.ServiceManager, host, service string) error {
+func (a *App) runServiceStatus(cmd *cobra.Command, mgr *engine.ServiceManager, host, service string) error {
 	status, err := mgr.GetServiceStatus(host, service)
 	if err != nil {
 		return err
 	}
+	if jsonFlag {
+		return writeJSON(cmd.OutOrStdout(), map[string]interface{}{
+			"host":    host,
+			"service": service,
+			"status":  status,
+			"healthy": status == "running" || status == "Up" || status == "active",
+		}, nil)
+	}
 	utils.Info("%s: %s", service, status)
 	return nil
+}
+
+func (a *App) serviceActionJSON(cmd *cobra.Command, host, service, action string) error {
+	if !jsonFlag {
+		return nil
+	}
+	return writeJSON(cmd.OutOrStdout(), map[string]interface{}{
+		"host":    host,
+		"service": service,
+		"action":  action,
+		"ok":      true,
+	}, nil)
 }
 
 func (a *App) runStatus(cmd *cobra.Command, args []string) error {

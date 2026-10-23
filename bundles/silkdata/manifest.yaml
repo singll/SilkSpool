@@ -1,5 +1,6 @@
 name: silkdata
 type: compose
+config_root: bundle
 # 数据层 bundle：从 keeper 剥离出的有状态服务（PG / Meilisearch / Redis / NATS / CouchDB）
 # 与 keeper(应用层)分离部署，独立生命周期 + 独立备份。
 # 无 git_clone —— 数据层不需要 Bellkeeper 源码。

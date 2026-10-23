@@ -19,10 +19,30 @@ type BundleManifest struct {
 	Owner      string            `yaml:"owner"`
 	Labels     map[string]string `yaml:"labels"`
 	DeployPath string            `yaml:"deploy_path"` // 远程部署目录；空则使用 global.defaults.deploy_path/<bundle>
-	Features   BundleFeatures    `yaml:"features"`
-	Defaults   []BundleDefault   `yaml:"defaults"`
-	Templates  []string          `yaml:"templates"`
-	Services   []string          `yaml:"services"`
+	// ConfigRoot 决定 defaults 的本地根目录：
+	//   host   -> hosts/<host>/<path>（旧行为，默认）
+	//   bundle -> hosts/<host>/<bundle>/<path>（推荐，多个 bundle 可共存）
+	ConfigRoot string           `yaml:"config_root"`
+	Features   BundleFeatures   `yaml:"features"`
+	Defaults   []BundleDefault  `yaml:"defaults"`
+	SyncRules  []BundleSyncRule `yaml:"sync_rules"`
+	Templates  []string         `yaml:"templates"`
+	Services   []string         `yaml:"services"`
+}
+
+// BundleSyncRule 定义 bundle 自带的同步规则。
+// Local 相对于 bundle 的配置根目录；Remote 支持 ${deploy_path} / ${host} 占位。
+type BundleSyncRule struct {
+	Local  string `yaml:"local"`
+	Remote string `yaml:"remote"`
+}
+
+// ConfigRootOrDefault 返回配置根目录语义（host | bundle）。
+func (m *BundleManifest) ConfigRootOrDefault() string {
+	if m.ConfigRoot == "" {
+		return "host"
+	}
+	return m.ConfigRoot
 }
 
 // BundleFeatures 定义 bundle 的启用特性

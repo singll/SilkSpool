@@ -11,6 +11,11 @@ func main() {
 	defer engine.CloseGlobalPool()
 	root := cli.NewRootCmd()
 	if err := root.Execute(); err != nil {
-		os.Exit(1)
+		if cli.JSONMode() {
+			cli.ReportError(root.OutOrStdout(), err)
+		} else {
+			cli.ReportError(root.ErrOrStderr(), err)
+		}
+		os.Exit(cli.ExitCode(err))
 	}
 }

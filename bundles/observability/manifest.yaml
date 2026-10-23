@@ -1,5 +1,13 @@
 name: observability
 type: compose
+config_root: bundle
+sync_rules:
+  - local: prometheus.yml
+    remote: ${deploy_path}/prometheus.yml
+  - local: loki-config.yml
+    remote: ${deploy_path}/loki-config.yml
+  - local: grafana/
+    remote: ${deploy_path}/grafana/
 # 中心观测栈（仅 silkdata）：Prometheus(指标) + Loki(日志) + Grafana(看板)
 # agent(cAdvisor+Promtail)在 mon-agent bundle，落到每台被监控机。
 # 配置文件(prometheus.yml/loki-config.yml/grafana provisioning/.env)经 silkdata sync_rules 下发，

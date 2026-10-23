@@ -6,7 +6,7 @@
 
 services:
   loki:
-    image: grafana/loki:2.9.8
+    image: grafana/loki:2.9.8@sha256:8b5bd7748d0e4da66cd741ac276e485517514af0bea32167e27c0e1a95bcf8aa
     container_name: ${APP_PREFIX:-sp-}loki
     restart: unless-stopped
     volumes:

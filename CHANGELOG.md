@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- 所有读命令支持 `--json` 统一 envelope：`service status`、`bundle status`、`dns list`、`n8n list`、`nas info/pool/dataset/snapshot`、`key status`、`logs`、`version`
+- 统一 CLI 退出码：`2` 参数/配置错误、`3` online plan diff（预留）、`4` 执行失败、`5` 需要审批；JSON 模式下 stdout 只输出 envelope
+- Bundle manifest 新增 `config_root` 与 `sync_rules`：支持 per-bundle `.env`、显式同步规则与旧 `hosts/<host>/` 布局自动回退
+
 ### Changed
+
+- Compose 渲染不再 deepMerge 模板：模板原样落盘，spool 注入项写入 `docker-compose.spool.yaml`；多模板使用 Compose 原生 `include`
+- keeper / silkdata / observability 第三方镜像固定为精确 tag + digest；本地构建的 bellkeeper 使用显式版本 tag
+- Bundle 配置同步失败不再静默成功，`sync`/`bundle up` 会返回错误
 
 - 将 SilkRDP（`rdp-gateway` / `rdp6-agent`）拆分为独立仓库 `singll/SilkRDP`
 - 将 SilkSecAgent（DSH bundle 与设计文档）拆分为独立项目目录

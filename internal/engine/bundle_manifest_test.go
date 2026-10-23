@@ -21,6 +21,12 @@ owner: example
 labels:
   io.silkspool.product: test
 deploy_path: /opt/test-bundle
+config_root: bundle
+sync_rules:
+  - local: .env
+    remote: ${deploy_path}/.env
+  - local: config/
+    remote: /etc/app/
 features:
   docker_log_rotation: true
   docker_prune: false
@@ -66,6 +72,15 @@ services:
 	}
 	if manifest.DeployPath != "/opt/test-bundle" {
 		t.Errorf("DeployPath = %q, want %q", manifest.DeployPath, "/opt/test-bundle")
+	}
+	if manifest.ConfigRootOrDefault() != "bundle" {
+		t.Errorf("ConfigRoot = %q, want bundle", manifest.ConfigRootOrDefault())
+	}
+	if len(manifest.SyncRules) != 2 {
+		t.Fatalf("SyncRules count = %d, want 2", len(manifest.SyncRules))
+	}
+	if manifest.SyncRules[0].Local != ".env" || manifest.SyncRules[0].Remote != "${deploy_path}/.env" {
+		t.Errorf("unexpected sync rule: %+v", manifest.SyncRules[0])
 	}
 	if manifest.Labels["io.silkspool.product"] != "test" {
 		t.Errorf("Labels[io.silkspool.product] = %q, want %q", manifest.Labels["io.silkspool.product"], "test")

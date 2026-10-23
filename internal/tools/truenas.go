@@ -369,6 +369,26 @@ func (m *TrueNASManager) Close() error {
 	return nil
 }
 
+// SystemInfo 返回结构化系统信息（用于 --json）。
+func (m *TrueNASManager) SystemInfo() (*TrueNASSystemInfo, error) {
+	return m.client.GetSystemInfo()
+}
+
+// Pools 返回结构化存储池列表（用于 --json）。
+func (m *TrueNASManager) Pools() ([]TrueNASPool, error) {
+	return m.client.ListPools()
+}
+
+// Datasets 返回结构化数据集列表（用于 --json）。
+func (m *TrueNASManager) Datasets() ([]TrueNASDataset, error) {
+	return m.client.ListDatasets()
+}
+
+// Snapshots 返回结构化快照列表（用于 --json）。
+func (m *TrueNASManager) Snapshots(pool string) ([]TrueNASSnapshot, error) {
+	return m.client.ListSnapshots(pool)
+}
+
 // CmdInfo 显示系统信息
 func (m *TrueNASManager) CmdInfo() error {
 	info, err := m.client.GetSystemInfo()

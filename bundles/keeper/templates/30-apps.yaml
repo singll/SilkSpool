@@ -1,6 +1,6 @@
 services:
   memos:
-    image: neosmemo/memos:stable
+    image: neosmemo/memos:0.22.3@sha256:87efa7fc67b216c9506ffa46bc3c77d86bf1284bfb99af3819712026e4a06279
     container_name: ${APP_PREFIX:-sp-}memos
     restart: unless-stopped
     ports:
@@ -14,7 +14,7 @@ services:
       - kp-network
 
   rsshub:
-    image: diygod/rsshub:latest
+    image: diygod/rsshub:2025-01-01@sha256:74daabd51c2121eae161e1d149233d63d43591335794fd62d4cf0004a294fd3f
     container_name: ${APP_PREFIX:-sp-}rsshub
     restart: unless-stopped
     ports:

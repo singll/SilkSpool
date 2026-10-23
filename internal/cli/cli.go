@@ -10,6 +10,7 @@ import (
 
 	"github.com/singll/silkspool/internal/config"
 	"github.com/singll/silkspool/internal/engine"
+	"github.com/singll/silkspool/pkg/utils"
 )
 
 var (
@@ -67,9 +68,16 @@ func NewRootCmd() *cobra.Command {
   - SSH 管控密钥轮换 (key rotate/status)
 
 使用 ./spool --help 查看完整帮助`,
-		SilenceUsage: true,
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			app.BaseDir = resolveBaseDir()
+			// JSON 模式下 stdout 只放数据，日志全部走 stderr。
+			if jsonFlag {
+				utils.DefaultLogger.SetOutput(os.Stderr)
+			} else {
+				utils.DefaultLogger.SetOutput(os.Stdout)
+			}
 			knownHosts := filepath.Join(app.BaseDir, "known_hosts")
 			sshKey, err := app.SSHKeyPath()
 			sshTimeout := 30 * time.Second
@@ -98,6 +106,14 @@ func NewRootCmd() *cobra.Command {
 		Use:   "version",
 		Short: "显示版本信息",
 		Run: func(cmd *cobra.Command, args []string) {
+			if jsonFlag {
+				_ = writeJSON(cmd.OutOrStdout(), map[string]string{
+					"version":    Version,
+					"build_time": BuildTime,
+					"git_commit": GitCommit,
+				}, nil)
+				return
+			}
 			fmt.Printf("SilkSpool %s\n", Version)
 			fmt.Printf("  Build: %s (%s)\n", GitCommit, BuildTime)
 		},

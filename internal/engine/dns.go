@@ -34,7 +34,7 @@ func NewDNSManager(baseDir string) (*DNSManager, error) {
 		gatewayHost:   cfg.Global.DNSGatewayHost,
 		headscaleHost: cfg.Global.DNSHeadscaleHost,
 		defaultIP:     cfg.Global.DNSGatewayIP,
-		headscaleDNS:   cfg.Global.DNSHeadscaleServer,
+		headscaleDNS:  cfg.Global.DNSHeadscaleServer,
 		defaultDomain: cfg.Global.DefaultDomain,
 		sshKey:        filepath.Join(baseDir, cfg.Global.SSHKeyPath),
 	}, nil
@@ -44,8 +44,8 @@ func NewDNSManager(baseDir string) (*DNSManager, error) {
 
 // DNSRecord DNS 记录
 type DNSRecord struct {
-	Domain string
-	IP     string
+	Domain string `json:"domain"`
+	IP     string `json:"ip"`
 }
 
 // ListDNSRecords 列出所有 DNS 记录

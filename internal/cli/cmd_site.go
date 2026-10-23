@@ -46,6 +46,9 @@ func (a *App) runSite(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to list sites: %w", err)
 		}
+		if jsonFlag {
+			return writeJSON(cmd.OutOrStdout(), map[string]interface{}{"sites": sites}, nil)
+		}
 		utils.Info("Configured sites:")
 		for _, s := range sites {
 			utils.Info("  %s -> %s", s.Domain, s.Backend)

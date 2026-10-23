@@ -6,8 +6,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestInjectSpoolLabels(t *testing.T) {
-	input := `services:
+func TestRenderSpoolOverride(t *testing.T) {
+	template := `services:
   web:
     image: nginx
     labels:
@@ -20,62 +20,101 @@ func TestInjectSpoolLabels(t *testing.T) {
       - existing=keep
       - io.silkspool.bundle=old
 `
-	merged, err := injectSpoolLabels([]byte(input), "keeper", "knowledge-stack", "1.2.3")
+	override, err := renderSpoolOverride([][]byte{[]byte(template)}, "keeper", "knowledge-stack", "1.2.3")
 	if err != nil {
-		t.Fatalf("injectSpoolLabels error: %v", err)
+		t.Fatalf("renderSpoolOverride error: %v", err)
 	}
 
 	var doc map[string]interface{}
-	if err := yaml.Unmarshal(merged, &doc); err != nil {
-		t.Fatalf("unmarshal merged: %v", err)
+	if err := yaml.Unmarshal(override, &doc); err != nil {
+		t.Fatalf("unmarshal override: %v", err)
 	}
 	services := doc["services"].(map[string]interface{})
 
-	webLabels := services["web"].(map[string]interface{})["labels"].(map[string]interface{})
-	if webLabels["existing"] != "keep" {
-		t.Errorf("web existing label = %v, want keep", webLabels["existing"])
-	}
-	assertSpoolLabels(t, webLabels, "keeper", "knowledge-stack", "web", "1.2.3")
-
-	dbLabels := services["db"].(map[string]interface{})["labels"].(map[string]interface{})
-	assertSpoolLabels(t, dbLabels, "keeper", "knowledge-stack", "db", "1.2.3")
-
-	cacheLabels := services["cache"].(map[string]interface{})["labels"].([]interface{})
-	got := make(map[string]string, len(cacheLabels))
-	for _, item := range cacheLabels {
-		s := item.(string)
-		for i := 0; i < len(s); i++ {
-			if s[i] == '=' {
-				got[s[:i]] = s[i+1:]
-				break
-			}
+	for _, name := range []string{"web", "db", "cache"} {
+		raw, ok := services[name].(map[string]interface{})
+		if !ok {
+			t.Fatalf("service %s missing from override", name)
 		}
+		labels := raw["labels"].(map[string]interface{})
+		assertSpoolLabels(t, labels, "keeper", "knowledge-stack", name, "1.2.3")
 	}
-	if got["existing"] != "keep" {
-		t.Errorf("cache existing label = %q, want keep", got["existing"])
-	}
-	if got["io.silkspool.bundle"] != "knowledge-stack" {
-		t.Errorf("cache bundle label = %q, want knowledge-stack", got["io.silkspool.bundle"])
-	}
-	if got["io.silkspool.component"] != "cache" {
-		t.Errorf("cache component label = %q, want cache", got["io.silkspool.component"])
+
+	// override 只包含 spool 注入项，不复制 image/labels 等原字段。
+	web := services["web"].(map[string]interface{})
+	if _, ok := web["image"]; ok {
+		t.Error("override should not copy image")
 	}
 }
 
-func TestInjectSpoolLabelsNoServices(t *testing.T) {
-	input := "name: demo\n"
-	merged, err := injectSpoolLabels([]byte(input), "keeper", "demo", "")
+func TestRenderSpoolOverrideNoServices(t *testing.T) {
+	override, err := renderSpoolOverride([][]byte{[]byte("name: demo\n")}, "keeper", "demo", "")
 	if err != nil {
-		t.Fatalf("injectSpoolLabels error: %v", err)
+		t.Fatalf("renderSpoolOverride error: %v", err)
 	}
-	if string(merged) == "" {
-		t.Error("merged output should not be empty")
+	var doc map[string]interface{}
+	if err := yaml.Unmarshal(override, &doc); err != nil {
+		t.Fatalf("unmarshal override: %v", err)
+	}
+	if _, ok := doc["services"]; !ok {
+		t.Error("override should contain an empty services map")
 	}
 }
 
-func TestInjectSpoolLabelsInvalidYAML(t *testing.T) {
-	if _, err := injectSpoolLabels([]byte("{{invalid"), "keeper", "demo", ""); err == nil {
+func TestRenderSpoolOverrideInvalidYAML(t *testing.T) {
+	if _, err := renderSpoolOverride([][]byte{[]byte("{{invalid")}, "keeper", "demo", ""); err == nil {
 		t.Error("expected error for invalid YAML")
+	}
+}
+
+func TestRenderComposeBaseSingle(t *testing.T) {
+	data := []byte("services:\n  web:\n    image: nginx\n")
+	base, err := renderComposeBase([]string{"00-base.yaml"}, [][]byte{data})
+	if err != nil {
+		t.Fatalf("renderComposeBase error: %v", err)
+	}
+	if string(base) != string(data) {
+		t.Error("single template should be copied verbatim")
+	}
+}
+
+func TestRenderComposeBaseMultipleUsesInclude(t *testing.T) {
+	base, err := renderComposeBase([]string{"00-base.yaml", "10-app.yaml"}, [][]byte{[]byte("x: 1"), []byte("y: 2")})
+	if err != nil {
+		t.Fatalf("renderComposeBase error: %v", err)
+	}
+	var doc struct {
+		Name    string   `yaml:"name"`
+		Include []string `yaml:"include"`
+	}
+	if err := yaml.Unmarshal(base, &doc); err != nil {
+		t.Fatalf("unmarshal base: %v", err)
+	}
+	if len(doc.Include) != 2 || doc.Include[0] != "00-base.yaml" || doc.Include[1] != "10-app.yaml" {
+		t.Errorf("unexpected include list: %v", doc.Include)
+	}
+	if doc.Name != "" {
+		t.Errorf("name should be empty when no template declares one, got %q", doc.Name)
+	}
+}
+
+func TestRenderComposeBasePreservesProjectName(t *testing.T) {
+	base, err := renderComposeBase(
+		[]string{"00-base.yaml", "10-app.yaml"},
+		[][]byte{[]byte("name: keeper\nnetworks: {}\n"), []byte("services:\n  app:\n    image: nginx\n")},
+	)
+	if err != nil {
+		t.Fatalf("renderComposeBase error: %v", err)
+	}
+	var doc struct {
+		Name    string   `yaml:"name"`
+		Include []string `yaml:"include"`
+	}
+	if err := yaml.Unmarshal(base, &doc); err != nil {
+		t.Fatalf("unmarshal base: %v", err)
+	}
+	if doc.Name != "keeper" {
+		t.Errorf("project name = %q, want keeper", doc.Name)
 	}
 }
 

@@ -9,7 +9,8 @@ services:
     build:
       context: ./bellkeeper
       dockerfile: docker/Dockerfile
-    image: bellkeeper:latest
+    # 本地构建镜像：用显式版本 tag 代替 latest；发布为 product artifact 后改由 digest 固定（P1/P2）。
+    image: bellkeeper:2.4.0
     container_name: ${APP_PREFIX:-sp-}bellkeeper
     restart: unless-stopped
     ports:

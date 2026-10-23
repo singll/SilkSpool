@@ -1,6 +1,6 @@
 services:
   meilisearch:
-    image: getmeili/meilisearch:v1.7
+    image: getmeili/meilisearch:v1.7@sha256:010341a778fe82592cff7a4f85d05eb89d2618141defea005616a476064fa56a
     container_name: ${APP_PREFIX:-sp-}meilisearch
     restart: unless-stopped
     environment:

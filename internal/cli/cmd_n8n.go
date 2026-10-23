@@ -66,7 +66,7 @@ func (a *App) runN8N(cmd *cobra.Command, args []string) error {
 
 	switch args[0] {
 	case "list":
-		return a.runN8NList(ctx, manager, args[1:])
+		return a.runN8NList(cmd, ctx, manager, args[1:])
 	case "import", "push-import":
 		return a.runN8NImport(ctx, manager, args[1:])
 	case "export":
@@ -85,32 +85,52 @@ func (a *App) runN8N(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func (a *App) runN8NList(ctx context.Context, m *tools.N8NManager, args []string) error {
+func (a *App) runN8NList(cmd *cobra.Command, ctx context.Context, m *tools.N8NManager, args []string) error {
 	workflowDir, err := tools.GetN8NWorkflowDir(a.BaseDir)
 	if err != nil {
 		return fmt.Errorf("failed to get workflow dir: %w", err)
 	}
 
-	utils.Info("Local workflow files (%s):", workflowDir)
+	var warnings []string
+	localFiles := []string{}
+	if !jsonFlag {
+		utils.Info("Local workflow files (%s):", workflowDir)
+	}
 	files, err := m.ListLocalWorkflows(workflowDir)
 	if err != nil {
 		utils.Error("Failed to list local workflows: %v", err)
+		warnings = append(warnings, fmt.Sprintf("list local workflows: %v", err))
 	} else {
 		for _, f := range files {
-			utils.Info("  - %s", filepath.Base(f))
+			localFiles = append(localFiles, filepath.Base(f))
+			if !jsonFlag {
+				utils.Info("  - %s", filepath.Base(f))
+			}
 		}
 	}
 
+	workflows := []tools.N8NWorkflow{}
 	client, err := tools.NewN8NClient(a.BaseDir, "", &engineSSHProvider{})
 	if err != nil {
 		utils.Warn("Failed to create n8n client: %v", err)
-		return nil
+		warnings = append(warnings, fmt.Sprintf("create n8n client: %v", err))
+	} else {
+		workflows, err = client.ListWorkflows(ctx)
+		if err != nil {
+			utils.Error("Failed to list n8n workflows: %v", err)
+			warnings = append(warnings, fmt.Sprintf("list n8n workflows: %v", err))
+			workflows = []tools.N8NWorkflow{}
+		}
 	}
-	workflows, err := client.ListWorkflows(ctx)
-	if err != nil {
-		utils.Error("Failed to list n8n workflows: %v", err)
-		return nil
+
+	if jsonFlag {
+		return writeJSON(cmd.OutOrStdout(), map[string]interface{}{
+			"workflow_dir": workflowDir,
+			"local_files":  localFiles,
+			"workflows":    workflows,
+		}, warnings)
 	}
+
 	utils.Info("\nWorkflows in n8n:")
 	for _, wf := range workflows {
 		status := "Inactive"

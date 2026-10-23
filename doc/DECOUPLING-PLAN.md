@@ -1028,12 +1028,21 @@ P0 已完成：
 - [x] `SyncHost` 聚合失败并返回 error，不再静默成功
 - [x] `go test ./...`、`go vet ./...` 通过
 
-P0 待完成：
+P0 已完成（2026-10-23 收尾）：
 
-- [ ] 所有读命令统一 `--json` envelope（目前 `inventory` 已支持）
-- [ ] per-bundle `.env` 与 bundle 级 `sync_rules`
-- [ ] keeper/silkdata/observability 镜像固定 digest
-- [ ] `docker-compose.spool.yaml` override 替代 `deepMerge`（P1 起点）
+- [x] 所有读命令统一 `--json` envelope（`inventory` / `service status` / `status` /
+  `bundle status` / `dns list` / `site list` / `n8n list` /
+  `nas info|pool|dataset|snapshot` / `key status` / `logs` / `version`）
+- [x] 统一退出码：`0` 成功、`2` 参数/配置错误、`3` online plan diff（预留）、
+  `4` 执行失败、`5` 需要审批；`main` 负责输出 JSON error envelope
+- [x] per-bundle `.env`（`config_root: bundle`）与 bundle 级 `sync_rules`；
+  旧 `hosts/<host>/.env` 自动回退，同步失败聚合返回 error
+- [x] keeper/silkdata/observability 第三方镜像固定精确 tag + digest；
+  `bellkeeper` 本地构建镜像使用显式版本 tag（发布为 product artifact 后再固定 digest）
+- [x] `docker-compose.spool.yaml` override 替代 `deepMerge`；多模板使用 Compose
+  原生 `include`，标签只写入 override
+- [x] 补测试：JSON envelope/退出码、override 渲染、per-bundle 配置与旧布局回退
+- [x] `go test ./...`、`go vet ./...` 通过
 
 P1/P2 未开始：`plan/apply/rollback`、magic rollback、`bundle_sources`、keeper 拆分、`spool serve`。
 

@@ -289,41 +289,75 @@ func (m *KeyManager) Decommission(host string, opts DecommissionOptions) error {
 	return nil
 }
 
-// Status 报告每台主机是否已授权当前 canonical 公钥。
-func (m *KeyManager) Status(hosts []string) error {
+// KeyStatus 描述单台主机的公钥授权状态。
+type KeyStatus struct {
+	Host       string `json:"host"`
+	Address    string `json:"address,omitempty"`
+	Authorized bool   `json:"authorized"`
+	Error      string `json:"error,omitempty"`
+}
+
+// CheckStatus 返回每台主机的公钥授权状态（结构化，用于 --json）。
+func (m *KeyManager) CheckStatus(hosts []string) ([]KeyStatus, error) {
 	if len(hosts) == 0 {
 		hosts = m.hostAliases()
 	}
 	if len(hosts) == 0 {
-		utils.Warn("No managed hosts in config")
-		return nil
+		return []KeyStatus{}, nil
 	}
 	body, err := pubKeyBody(m.sshPub)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	utils.Step("Checking spool key authorization (key: %s)", m.sshPub)
+
+	results := make([]KeyStatus, 0, len(hosts))
 	for _, h := range hosts {
 		hc := m.cfg.GetHost(h)
 		if hc == nil {
-			utils.Warn("  %-12s unknown host", h)
+			results = append(results, KeyStatus{Host: h, Error: "unknown host"})
 			continue
 		}
+		result := KeyStatus{Host: h, Address: hc.Address}
 		client, err := NewSSHClient(hc.Address, m.sshKey, m.clientOptsFor(hc)...)
 		if err != nil {
-			utils.Error("  %-12s connect failed: %v", h, err)
+			result.Error = fmt.Sprintf("connect failed: %v", err)
+			results = append(results, result)
 			continue
 		}
 		out, exErr := client.Execute(buildCheckKeyScript(body))
 		client.Close()
 		if exErr != nil {
-			utils.Error("  %-12s unreachable: %v", h, exErr)
+			result.Error = fmt.Sprintf("unreachable: %v", exErr)
+			results = append(results, result)
 			continue
 		}
-		if strings.Contains(out, "PRESENT") {
-			utils.Success("  %-12s authorized (%s)", h, hc.Address)
-		} else {
-			utils.Warn("  %-12s reachable but key NOT in authorized_keys (%s)", h, hc.Address)
+		result.Authorized = strings.Contains(out, "PRESENT")
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+// Status 报告每台主机是否已授权当前 canonical 公钥。
+func (m *KeyManager) Status(hosts []string) error {
+	results, err := m.CheckStatus(hosts)
+	if err != nil {
+		return err
+	}
+	if len(results) == 0 {
+		utils.Warn("No managed hosts in config")
+		return nil
+	}
+	utils.Step("Checking spool key authorization (key: %s)", m.sshPub)
+	for _, result := range results {
+		switch {
+		case result.Error == "unknown host":
+			utils.Warn("  %-12s unknown host", result.Host)
+		case result.Error != "":
+			utils.Error("  %-12s %s", result.Host, result.Error)
+		case result.Authorized:
+			utils.Success("  %-12s authorized (%s)", result.Host, result.Address)
+		default:
+			utils.Warn("  %-12s reachable but key NOT in authorized_keys (%s)", result.Host, result.Address)
 		}
 	}
 	return nil

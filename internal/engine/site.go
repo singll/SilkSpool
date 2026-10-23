@@ -26,11 +26,11 @@ type SiteManager struct {
 
 // Site 站点信息
 type Site struct {
-	Domain  string
-	Backend string
-	Name    string
-	Desc    string
-	Icon    string
+	Domain  string `json:"domain"`
+	Backend string `json:"backend"`
+	Name    string `json:"name"`
+	Desc    string `json:"desc,omitempty"`
+	Icon    string `json:"icon,omitempty"`
 }
 
 // NewSiteManager 创建站点管理器

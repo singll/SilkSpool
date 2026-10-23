@@ -65,6 +65,13 @@ func (a *App) runKey(cmd *cobra.Command, args []string) error {
 		if all, _ := cmd.Flags().GetBool("all"); !all && len(args) > 1 {
 			hosts = args[1:]
 		}
+		if jsonFlag {
+			statuses, err := mgr.CheckStatus(hosts)
+			if err != nil {
+				return err
+			}
+			return writeJSON(cmd.OutOrStdout(), map[string]interface{}{"hosts": statuses}, nil)
+		}
 		return mgr.Status(hosts)
 	default:
 		_ = cmd.Help()

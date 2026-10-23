@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/singll/silkspool/internal/engine"
+	"github.com/singll/silkspool/pkg/utils"
 )
 
 func (a *App) addDNSCmd(root *cobra.Command) {
@@ -46,7 +47,18 @@ func (a *App) runDNS(cmd *cobra.Command, args []string) error {
 
 	switch args[0] {
 	case "list", "ls":
-		return a.runDNSList(mgr)
+		records, err := mgr.ListDNSRecords()
+		if err != nil {
+			return fmt.Errorf("failed to list DNS records: %w", err)
+		}
+		if jsonFlag {
+			return writeJSON(cmd.OutOrStdout(), map[string]interface{}{"records": records}, nil)
+		}
+		utils.Info("DNS Records:")
+		for _, r := range records {
+			utils.Info("  %s -> %s", r.Domain, r.IP)
+		}
+		return nil
 	case "add":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: dns add <domain> [ip]")
