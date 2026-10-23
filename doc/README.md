@@ -13,6 +13,7 @@
 | [troubleshooting.md](troubleshooting.md) | 故障排除：常见错误及解决方案 |
 | [api.md](api.md) | API 参考：Go 包文档 |
 | [bundle-development.md](bundle-development.md) | Bundle 开发：创建、测试、部署新 Bundle |
+| [DECOUPLING-PLAN.md](DECOUPLING-PLAN.md) | 解耦与集成改进方案：Resource 模型、Bundle 轻契约、P0-P3 路线图 |
 
 ## 相关项目
 
