@@ -180,8 +180,8 @@ func TestTrueNASSystemInfoExtended(t *testing.T) {
 	if parsed.Version != info.Version {
 		t.Errorf("Version = %q, want %q", parsed.Version, info.Version)
 	}
-	if parsed.Uptime != info.Uptime {
-		t.Errorf("Uptime = %d, want %d", parsed.Uptime, info.Uptime)
+	if formatUptime(parsed.Uptime) != formatUptime(info.Uptime) {
+		t.Errorf("Uptime = %q, want %q", formatUptime(parsed.Uptime), formatUptime(info.Uptime))
 	}
 	if parsed.MemTotal != info.MemTotal {
 		t.Errorf("MemTotal = %d, want %d", parsed.MemTotal, info.MemTotal)
@@ -401,10 +401,10 @@ func TestRPCResponseStructExtended(t *testing.T) {
 
 func TestTrueNASClientWebSocketURLConversion(t *testing.T) {
 	tests := []struct {
-		name     string
-		apiURL   string
-		wantWS   string
-		wantErr  bool
+		name    string
+		apiURL  string
+		wantWS  string
+		wantErr bool
 	}{
 		{"https to wss", "https://truenas.local/api/current", "wss://truenas.local/api/current", false},
 		{"http to ws", "http://truenas.local/api/current", "ws://truenas.local/api/current", false},

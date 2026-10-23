@@ -471,6 +471,10 @@ func formatUptime(u any) string {
 	switch v := u.(type) {
 	case string:
 		return v
+	case int:
+		return formatUptime(float64(v))
+	case int64:
+		return formatUptime(float64(v))
 	case float64:
 		seconds := int64(v)
 		days := seconds / 86400
