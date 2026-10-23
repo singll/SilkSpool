@@ -10,20 +10,27 @@ import (
 
 // BundleManifest 定义 bundle 的元数据
 type BundleManifest struct {
-	Name      string            `yaml:"name"`
-	Type      string            `yaml:"type"`       // compose | stack
-	Features  BundleFeatures    `yaml:"features"`
-	Defaults  []BundleDefault   `yaml:"defaults"`
-	Templates []string          `yaml:"templates"`
-	Services  []string          `yaml:"services"`
+	APIVersion string            `yaml:"apiVersion"`
+	Kind       string            `yaml:"kind"`
+	Name       string            `yaml:"name"`
+	Type       string            `yaml:"type"`  // compose | stack | script
+	Class      string            `yaml:"class"` // product | composition | capability | infrastructure | tool
+	Version    string            `yaml:"version"`
+	Owner      string            `yaml:"owner"`
+	Labels     map[string]string `yaml:"labels"`
+	DeployPath string            `yaml:"deploy_path"` // 远程部署目录；空则使用 global.defaults.deploy_path/<bundle>
+	Features   BundleFeatures    `yaml:"features"`
+	Defaults   []BundleDefault   `yaml:"defaults"`
+	Templates  []string          `yaml:"templates"`
+	Services   []string          `yaml:"services"`
 }
 
 // BundleFeatures 定义 bundle 的启用特性
 type BundleFeatures struct {
-	DockerLogRotation bool        `yaml:"docker_log_rotation"`
-	GitClone          *GitClone   `yaml:"git_clone"`
-	DockerPrune       bool        `yaml:"docker_prune"`
-	CreateNetwork     string      `yaml:"create_network"`
+	DockerLogRotation bool      `yaml:"docker_log_rotation"`
+	GitClone          *GitClone `yaml:"git_clone"`
+	DockerPrune       bool      `yaml:"docker_prune"`
+	CreateNetwork     string    `yaml:"create_network"`
 }
 
 // GitClone 定义 git 克隆配置

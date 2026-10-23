@@ -50,8 +50,8 @@ func NewRootCmd() *cobra.Command {
 	app := &App{}
 
 	root := &cobra.Command{
-		Use:          "spool",
-		Short:        "SilkSpool - 云基础设施编排 CLI 工具",
+		Use:   "spool",
+		Short: "SilkSpool - 云基础设施编排 CLI 工具",
 		Long: `SilkSpool (丝轴) - 云基础设施编排工具
 基于 Go 重构，提供跨平台支持
 
@@ -92,6 +92,7 @@ func NewRootCmd() *cobra.Command {
 
 	root.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "verbose output")
 	root.PersistentFlags().StringVar(&configFlag, "config", "", "config file path (default: silkspool.yaml)")
+	root.PersistentFlags().BoolVar(&jsonFlag, "json", false, "以 JSON 格式输出")
 
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
@@ -102,6 +103,7 @@ func NewRootCmd() *cobra.Command {
 		},
 	})
 
+	app.addInventoryCmd(root)
 	app.addInitCmd(root)
 	app.addSyncCmd(root)
 	app.addDNSCmd(root)
@@ -123,6 +125,7 @@ func NewRootCmd() *cobra.Command {
 var (
 	verboseFlag bool
 	configFlag  string
+	jsonFlag    bool
 )
 
 func resolveBaseDir() string {

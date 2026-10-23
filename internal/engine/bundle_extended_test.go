@@ -5,11 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/singll/silkspool/internal/config"
 )
 
-func TestBundleManagerResolveDeployPathWithSyncRule(t *testing.T) {
+func TestBundleManagerResolveDeployPathIgnoresSyncRules(t *testing.T) {
 	dir := t.TempDir()
 	yamlContent := `global:
   ssh_key_path: "./keys/id_rsa"
@@ -18,20 +16,15 @@ hosts:
     address: "user@10.0.0.2"
     sync_rules:
       - local: "keeper/"
-        remote: "/opt/silkspool/keeper"
+        remote: "/opt/silkspool/keeper/.env"
 `
 	os.WriteFile(filepath.Join(dir, "silkspool.yaml"), []byte(yamlContent), 0644)
 
 	m := &BundleManager{baseDir: dir}
-	hostCfg := &config.HostConfig{
-		SyncRules: []config.SyncRule{
-			{Local: "keeper/", Remote: "/opt/silkspool/keeper"},
-		},
-	}
 
-	path := m.resolveDeployPath("keeper", "testhost", hostCfg)
-	if path != "/opt/silkspool" {
-		t.Errorf("resolveDeployPath = %q, want /opt/silkspool", path)
+	path := m.resolveDeployPath("keeper")
+	if path != "/opt/silkspool/keeper" {
+		t.Errorf("resolveDeployPath = %q, want /opt/silkspool/keeper", path)
 	}
 }
 
@@ -48,11 +41,33 @@ hosts:
 	os.WriteFile(filepath.Join(dir, "silkspool.yaml"), []byte(yamlContent), 0644)
 
 	m := &BundleManager{baseDir: dir}
-	hostCfg := &config.HostConfig{}
 
-	path := m.resolveDeployPath("myapp", "testhost", hostCfg)
-	if !strings.Contains(path, "myapp") {
-		t.Errorf("resolveDeployPath = %q, should contain myapp", path)
+	path := m.resolveDeployPath("myapp")
+	if path != "/opt/custom/myapp" {
+		t.Errorf("resolveDeployPath = %q, want /opt/custom/myapp", path)
+	}
+}
+
+func TestBundleManagerResolveDeployPathExplicitManifest(t *testing.T) {
+	dir := t.TempDir()
+	yamlContent := `global:
+  ssh_key_path: "./keys/id_rsa"
+  defaults:
+    deploy_path: "/opt/custom"
+hosts: {}
+`
+	os.WriteFile(filepath.Join(dir, "silkspool.yaml"), []byte(yamlContent), 0644)
+
+	bundleDir := filepath.Join(dir, "bundles", "bili")
+	if err := os.MkdirAll(bundleDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(bundleDir, "manifest.yaml"), []byte("name: bili\ntype: compose\ndeploy_path: /opt/bili-suite\n"), 0644)
+
+	m := &BundleManager{baseDir: dir}
+	path := m.resolveDeployPath("bili")
+	if path != "/opt/bili-suite" {
+		t.Errorf("resolveDeployPath = %q, want /opt/bili-suite", path)
 	}
 }
 

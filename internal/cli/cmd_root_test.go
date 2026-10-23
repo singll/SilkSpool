@@ -61,6 +61,11 @@ func TestRootCommandHasPersistentFlags(t *testing.T) {
 	if configFlag == nil {
 		t.Error("root command should have config flag")
 	}
+
+	jsonFlagDef := cmd.PersistentFlags().Lookup("json")
+	if jsonFlagDef == nil {
+		t.Error("root command should have json flag")
+	}
 }
 
 func TestRootCommandHelp(t *testing.T) {

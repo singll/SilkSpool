@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/singll/silkspool/internal/config"
 	"github.com/singll/silkspool/pkg/utils"
@@ -99,7 +98,7 @@ func (m *BundleManager) SetupBundle(bundleName, host, action string) error {
 	}
 
 	// 解析部署路径
-	deployPath := m.resolveDeployPath(bundleName, host, hostCfg)
+	deployPath := m.resolveDeployPath(bundleName)
 
 	utils.Step("Running Bundle: %s | Host: %s | Action: %s", bundleName, host, action)
 
@@ -150,7 +149,7 @@ func (m *BundleManager) UpgradeBundle(bundleName, host string, force bool) error
 		return fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
 	}
 
-	deployPath := m.resolveDeployPath(bundleName, host, hostCfg)
+	deployPath := m.resolveDeployPath(bundleName)
 
 	utils.Step("Upgrading Bundle: %s | Host: %s | Force: %v", bundleName, host, force)
 
@@ -180,7 +179,7 @@ func (m *BundleManager) SetupBundleService(bundleName, host, svc, action string)
 		return fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
 	}
 
-	deployPath := m.resolveDeployPath(bundleName, host, hostCfg)
+	deployPath := m.resolveDeployPath(bundleName)
 
 	driver, err := GetDriver(manifest.Type, m.baseDir, m.sshKey, bundleName, cfg.Global.Defaults)
 	if err != nil {
@@ -190,21 +189,24 @@ func (m *BundleManager) SetupBundleService(bundleName, host, svc, action string)
 	return driver.Service(host, hostCfg, deployPath, svc, action)
 }
 
-// resolveDeployPath 解析部署路径
-func (m *BundleManager) resolveDeployPath(bundleName, host string, hostCfg *config.HostConfig) string {
+// DeployPath 返回 bundle 的远程部署目录。
+func (m *BundleManager) DeployPath(bundleName string) string {
+	return m.resolveDeployPath(bundleName)
+}
+
+// resolveDeployPath 解析部署路径：
+// 1. bundle manifest 显式 deploy_path
+// 2. global.defaults.deploy_path/<bundle>
+func (m *BundleManager) resolveDeployPath(bundleName string) string {
 	cfg, err := config.LoadConfig(m.baseDir)
 	defaultBase := "/opt/silkspool"
 	if err == nil {
 		defaultBase = config.DefaultString(cfg.Global.Defaults.DeployPath, "/opt/silkspool")
 	}
-	defaultPath := fmt.Sprintf("%s/%s", defaultBase, bundleName)
 
-	// 从同步规则中查找
-	for _, rule := range hostCfg.SyncRules {
-		if strings.Contains(rule.Remote, bundleName) {
-			return filepath.Dir(rule.Remote)
-		}
+	if manifest, err := NewManifestLoader(m.baseDir).Load(bundleName); err == nil && manifest.DeployPath != "" {
+		return manifest.DeployPath
 	}
 
-	return defaultPath
+	return filepath.Join(defaultBase, bundleName)
 }

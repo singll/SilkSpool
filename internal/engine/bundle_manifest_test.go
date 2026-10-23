@@ -11,8 +11,16 @@ import (
 func TestManifestLoaderLoad(t *testing.T) {
 	dir := t.TempDir()
 
-	manifestYAML := `name: test-bundle
+	manifestYAML := `apiVersion: spool/v1alpha1
+kind: Bundle
+name: test-bundle
 type: compose
+class: product
+version: 1.2.3
+owner: example
+labels:
+  io.silkspool.product: test
+deploy_path: /opt/test-bundle
 features:
   docker_log_rotation: true
   docker_prune: false
@@ -49,6 +57,18 @@ services:
 	}
 	if manifest.Type != "compose" {
 		t.Errorf("Type = %q, want %q", manifest.Type, "compose")
+	}
+	if manifest.Class != "product" {
+		t.Errorf("Class = %q, want %q", manifest.Class, "product")
+	}
+	if manifest.Version != "1.2.3" {
+		t.Errorf("Version = %q, want %q", manifest.Version, "1.2.3")
+	}
+	if manifest.DeployPath != "/opt/test-bundle" {
+		t.Errorf("DeployPath = %q, want %q", manifest.DeployPath, "/opt/test-bundle")
+	}
+	if manifest.Labels["io.silkspool.product"] != "test" {
+		t.Errorf("Labels[io.silkspool.product] = %q, want %q", manifest.Labels["io.silkspool.product"], "test")
 	}
 	if !manifest.Features.DockerLogRotation {
 		t.Error("DockerLogRotation should be true")

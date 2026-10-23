@@ -190,10 +190,10 @@ func (d *ComposeDriver) Service(host string, hostCfg *config.HostConfig, deployP
 	}
 	composeFile := filepath.Join(deployPath, "docker-compose.yaml")
 
-	// 对于 build 操作，如果是 bellkeeper 先拉取更新
+	// 通过 git_clone 构建的服务，在单独 up 前先拉取更新
 	manifest, _ := d.loadManifest()
 	if action == "up" && manifest != nil && manifest.Features.GitClone != nil {
-		if manifest.Features.GitClone.Path != "" && (svc == "bellkeeper" || svc == manifest.Features.GitClone.Path) {
+		if manifest.Features.GitClone.Path != "" && svc == manifest.Features.GitClone.Path {
 			targetPath := filepath.Join(deployPath, manifest.Features.GitClone.Path)
 			re.GitPull(targetPath)
 		}

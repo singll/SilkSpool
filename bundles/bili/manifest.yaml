@@ -1,5 +1,6 @@
 name: bili
 type: compose
+deploy_path: /opt/bili-suite
 features:
   docker_log_rotation: true
 defaults:

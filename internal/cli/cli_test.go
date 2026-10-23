@@ -150,6 +150,7 @@ func TestNewRootCmdHasSubcommands(t *testing.T) {
 	cmd := NewRootCmd()
 	expectedCommands := []string{
 		"version",
+		"inventory",
 		"init",
 		"sync",
 		"dns",
