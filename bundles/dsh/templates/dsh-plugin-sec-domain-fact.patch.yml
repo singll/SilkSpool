@@ -1,4 +1,0 @@
-# silksec-sec-domain-fact bundle layer
-- insert:
-    - id: sec-domain-fact
-      name: '@silksec/sec-domain-fact'

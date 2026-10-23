@@ -1,4 +1,0 @@
-# silksec-sec-domain-bus bundle layer
-- insert:
-    - id: sec-domain-bus
-      name: '@silksec/sec-domain-bus'

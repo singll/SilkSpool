@@ -1,4 +1,0 @@
-# silksec-sec-domain-approval bundle layer
-- insert:
-    - id: sec-domain-approval
-      name: '@silksec/sec-domain-approval'

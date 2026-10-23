@@ -82,17 +82,6 @@ Common problems and solutions.
 3. Ensure the gateway host has dnsmasq or OpenClash configured
 4. Verify SSH connection to gateway host works
 
-## "RDP gateway won't start" / RDP 网关无法启动
-
-**Symptom**: RDP gateway container exits immediately
-
-**Solution**:
-- All environment variables must be set in `hosts/<host>/.env`:
-  - `RDP_GATEWAY_TOKEN` — authentication token
-  - `RDP_AGENT_URL` — agent endpoint
-  - `RDP_AGENT_TOKEN` — shared secret with agent
-- No fallback defaults; explicit configuration required
-
 ## "Bundle init failed" / Bundle 初始化失败
 
 **Symptom**: `failed to load manifest for <bundle>`

@@ -22,7 +22,7 @@ Configuration loading and type definitions.
 | `InstallSource` | Release source: `Alias`, `Repo`, `Pattern`, `ServiceName`, `DefaultVersion`. |
 | `N8NConfig` | n8n integration: `Host`, `Container`, `WorkflowDir`, `APIURL`. |
 | `TrueNASConfig` | TrueNAS integration: `Host`, `APIURL`, `Username`. |
-| `TimeoutConfig` | Timeouts: `SSHConnect`, `HTTPClient`, `AgentHTTP`, `AgentRetry`. |
+| `TimeoutConfig` | Timeouts: `SSHConnect`, `HTTPClient`. |
 | `DefaultsConfig` | Defaults: `LogLines`, `DockerLogMax`, `DockerLogNum`, `DeployPath`, `ComposeVer`. |
 | `ConfigLoader` | Loads config via viper. Search paths: baseDir, baseDir/.., /etc/silkspool. |
 

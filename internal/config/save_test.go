@@ -444,8 +444,6 @@ func TestTimeoutConfigUnmarshal(t *testing.T) {
   timeouts:
     ssh_connect: "10s"
     http_client: "15s"
-    agent_http: "3s"
-    agent_retry: "2s"
 hosts: {}
 `
 	path := filepath.Join(dir, "silkspool.yaml")
@@ -463,12 +461,6 @@ hosts: {}
 	}
 	if cfg.Global.Timeouts.HTTPClient != "15s" {
 		t.Errorf("HTTPClient = %q, want %q", cfg.Global.Timeouts.HTTPClient, "15s")
-	}
-	if cfg.Global.Timeouts.AgentHTTP != "3s" {
-		t.Errorf("AgentHTTP = %q, want %q", cfg.Global.Timeouts.AgentHTTP, "3s")
-	}
-	if cfg.Global.Timeouts.AgentRetry != "2s" {
-		t.Errorf("AgentRetry = %q, want %q", cfg.Global.Timeouts.AgentRetry, "2s")
 	}
 }
 

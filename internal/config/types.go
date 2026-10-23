@@ -65,8 +65,6 @@ type BackupRule struct {
 type TimeoutConfig struct {
 	SSHConnect string `yaml:"ssh_connect"     mapstructure:"ssh_connect"` // SSH 连接超时 (默认 30s)
 	HTTPClient string `yaml:"http_client"     mapstructure:"http_client"` // HTTP 客户端超时 (默认 30s)
-	AgentHTTP  string `yaml:"agent_http"      mapstructure:"agent_http"`  // RDP Agent HTTP 超时 (默认 5s)
-	AgentRetry string `yaml:"agent_retry"     mapstructure:"agent_retry"` // RDP Agent 重试间隔 (默认 3s)
 }
 
 // DefaultsConfig 定义默认值配置

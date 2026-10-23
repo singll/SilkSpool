@@ -52,16 +52,6 @@ spool version                             # 验证
 
 > 完整部署与升级说明见 [doc/DEPLOYMENT.md](doc/DEPLOYMENT.md)。
 
-## SilkSecAgent 变更前备份（每次会话必须遵守）
-
-备份机制和操作顺序以 [18号备份与维护](doc/secagent/18-backup-and-maintenance.md) 为唯一正式手册；旧迁移历史在 `doc/secagent/archive/migration-v4-to-v5.md`。
-
-- **2026-10-08用户调整优先级**：质量和速度优先，现有SilkSecAgent业务数据与实现可以舍弃或重建。此授权替代“每批完整冻结/恢复/新旧应用预演”和“每次写入前新NAS备份”的一刀切要求；不扩展到其他服务、目标授权、凭据或新产生的验收证据。
-- 按18号§2分级：普通代码/可重建投影变更，保留固定包、受影响范围的回退或重建方案，完成相关测试与生产冒烟；不复制整树、不重复灾备预演、不因续接会话重新备份。涉及必须保留数据的破坏性迁移、运行时大版本或恢复机制本身，才执行对应范围的备份/恢复验证。
-- 选用 `prepare-change` 时仍须退出0、核对同快照回执；锁冲突75和失败不能冒充成功。历史回执只能如实记录为复用基线，不能伪称本次新备份。已有工具强制重流程时，明确选择适用的同版本发布路径，不篡改回执。
-- 相关修复合批；同一源码与环境的通过结果复用，只有受影响项及最终集成需要重验。生产停写只覆盖安装/必要迁移/启动验收；耗时诊断和测试放在停写窗口外。同一故障无新证据不重复整个发布循环。
-- 本地编辑、只读巡检、失败应急恢复无需递归备份；例行NAS维护继续。常规发布后不立即再跑一次全量NAS/恢复；服务重建按本次明确范围授权处理。
-
 ## 自动提交规则
 
 当你完成一次**完整的修改任务**后，且本次消息产生了至少一个**未被 `.gitignore` 忽略**的文件变更时，必须自动执行 git commit + push。
@@ -133,9 +123,11 @@ spool version                             # 验证
 
 | 目录 | 仓库 |
 |------|------|
-| `/home/ubuntu/SilkSpool` | singll/SilkSpool |
-| `/home/ubuntu/SingllLive` | singll/SingllLive |
-| `/home/ubuntu/Bellkeeper` | singll/Bellkeeper |
+| `/home/dev/SilkSpool` | singll/SilkSpool |
+| `/home/dev/SilkRDP` | singll/SilkRDP |
+| `/home/dev/SilkSecAgent` | 独立仓库（远程待建） |
+| `/home/dev/SingllLive` | singll/SingllLive |
+| `/home/dev/Bellkeeper` | singll/Bellkeeper |
 
 ## n8n 工作流命名规则
 

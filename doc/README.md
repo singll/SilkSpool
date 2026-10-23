@@ -14,21 +14,13 @@
 | [api.md](api.md) | API 参考：Go 包文档 |
 | [bundle-development.md](bundle-development.md) | Bundle 开发：创建、测试、部署新 Bundle |
 
-## 专项运维
+## 相关项目
 
-| 文档 | 说明 |
+| 项目 | 说明 |
 |------|------|
-| [RDP-GUARD.md](RDP-GUARD.md) | RDP 安全网关架构、部署与安全审查 |
-| [RDP-WIN11-RECOVERY.md](RDP-WIN11-RECOVERY.md) | Win10→Win11 重装后的 RDP 恢复与 SilkSpool 控制节点重建 |
-| [rdp-win11-recovery.ps1](rdp-win11-recovery.ps1) | Win11 一键恢复 RDP / NLA / TCP-only / IPv6 稳定化脚本 |
-
-## SilkSecAgent（csai）
-
-| 入口 | 内容 |
-|---|---|
-| [文档导航](secagent/README.md) | 入口与结构（模块契约 / 进度 / 归档） |
-| [模块契约 00–19](secagent/README.md) · [进度与更新](secagent/PROGRESS.md) | 当前领域契约；唯一滚动进度与更新日志 |
-| [历史归档](secagent/archive/) | 旧架构、历次升级方案与完整记录、会话模板 |
+| SilkSecAgent | 漏洞发现平台，已拆分为独立项目 |
+| [SilkRDP](https://github.com/singll/SilkRDP) | RDP 双路径安全接入网关，独立仓库 |
+| [Bellkeeper](../../Bellkeeper/doc/) | 知识管理系统，独立仓库 |
 
 ## 架构决策记录 (ADR)
 
@@ -42,5 +34,5 @@
 
 ## 文档维护规则
 
-1. **SilkSpool** 保存 IaC 工具文档及本仓库 bundle 的配套设计；SilkSecAgent 以 [模块契约 00–19](secagent/) 为架构真相源，进度与更新统一在 [PROGRESS](secagent/PROGRESS.md) 滚动维护，历史归档在 [archive/](secagent/archive/)
-2. **Bellkeeper** 相关文档（知识系统、n8n、Matrix、存储等）位于同级仓库的 [Bellkeeper/doc](../../Bellkeeper/doc/)
+1. **SilkSpool** 只保存 IaC 工具文档、通用 bundle 开发指南和本仓库的能力说明。
+2. 产品项目的代码与文档（SilkSecAgent、SilkRDP、Bellkeeper）由各自仓库维护；本仓库只保留外部链接。

@@ -5,6 +5,14 @@ All notable changes to SilkSpool will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- 将 SilkRDP（`rdp-gateway` / `rdp6-agent`）拆分为独立仓库 `singll/SilkRDP`
+- 将 SilkSecAgent（DSH bundle 与设计文档）拆分为独立项目目录
+- SilkSpool 移除产品代码、产品文档和产品专属配置字段，仅保留通用 SSH / 同步 / 备份 / 服务控制 / bundle 引擎能力
+
 ## [1.2.0] - 2026-07-02
 
 ### Added

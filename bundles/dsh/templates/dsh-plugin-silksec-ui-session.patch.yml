@@ -1,4 +1,0 @@
-# silksec-ui-session bundle layer：把会话内绑定套件宿主半面挂进安装它的 profile
-- insert:
-    - id: silksec-ui-session
-      name: '@silksec/ui-session'

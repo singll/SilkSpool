@@ -1,9 +1,0 @@
-# silksec-sec-memcore bundle layer
-- insert:
-    - id: sec-memcore
-      name: '@silksec/sec-memcore'
-      config:
-        sweeper: true
-        agentsMd: true
-        intervalHours: 6
-        vaultExport: true

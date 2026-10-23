@@ -30,12 +30,6 @@ global:
   # HTTP 客户端超时
   # http_client: "30s"
 
-  # RDP Agent HTTP 超时
-  # agent_http: "5s"
-
-  # RDP Agent 重试间隔
-  # agent_retry: "3s"
-
   # -------------------- 默认值 --------------------
   # defaults:
   #   log_lines: 50
