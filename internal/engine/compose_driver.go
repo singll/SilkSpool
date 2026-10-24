@@ -257,7 +257,7 @@ func (d *ComposeDriver) pushConfig(host string, hostCfg *config.HostConfig, depl
 	bundleRoot := filepath.Join(d.baseDir, "bundles", d.bundleName)
 	templateData := make([][]byte, 0, len(manifest.Templates))
 	for _, t := range manifest.Templates {
-		data, err := os.ReadFile(filepath.Join(bundleRoot, "templates", t))
+		data, err := os.ReadFile(templateFilePath(bundleRoot, t))
 		if err != nil {
 			return fmt.Errorf("read template %s failed: %w", t, err)
 		}

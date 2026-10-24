@@ -24,6 +24,11 @@ Actions:
   status            查看服务状态
   upgrade           升级到最新版本 (需 bundle 提供 *-upgrade.sh 模板)
   service <svc> <action>  管理单个服务
+  backup            执行 bundle/product backup.hook
+  restore [ref]     执行 restore.hook（缺省时标记人工恢复）
+
+子命令:
+  check-updates <name>  列出固定 digest 镜像的可更新版本
 
 兼容选项:
   --skip-plan          弃用：跳过 apply 前的 online plan
@@ -42,6 +47,7 @@ Actions:
 	cmd.Flags().Bool("skip-plan", false, "弃用：跳过 apply 前的 online plan")
 	cmd.Flags().Bool("locked", false, "apply: 使用本地 lock 快照")
 	cmd.Flags().Bool("allow-irreversible", false, "apply: 允许不可逆迁移")
+	cmd.AddCommand(a.newBundleCheckUpdatesCmd())
 	root.AddCommand(cmd)
 }
 
@@ -88,6 +94,51 @@ func (a *App) runBundle(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		return writeJSON(cmd.OutOrStdout(), status, nil)
+	}
+
+	if action == "backup" {
+		manager, err := a.newDeployManager(name, host)
+		if err != nil {
+			return err
+		}
+		path, err := manager.Backup(context.Background(), name, host, nil, nil)
+		if err != nil {
+			return newExitError(ExitFailed, "execution_failed", err)
+		}
+		if jsonFlag {
+			return writeJSON(cmd.OutOrStdout(), map[string]string{"bundle": name, "host": host, "backup_dir": path}, nil)
+		}
+		fmt.Printf("backup %s @ %s: %s\n", name, host, path)
+		return nil
+	}
+
+	if action == "restore" {
+		manager, err := a.newDeployManager(name, host)
+		if err != nil {
+			return err
+		}
+		ref := ""
+		if len(args) >= 4 {
+			ref = args[3]
+		}
+		result, err := manager.Restore(context.Background(), name, host, ref)
+		if err != nil {
+			if manual, ok := err.(*engine.ManualRestoreError); ok {
+				if jsonFlag {
+					_ = writeJSON(cmd.OutOrStdout(), map[string]interface{}{
+						"bundle": name, "host": host, "status": "manual", "backup_dirs": manual.BackupDirs,
+					}, []string{err.Error()})
+					return &ExitError{Code: ExitApproval, Kind: "manual_restore_required", Err: err, Silent: true}
+				}
+				return &ExitError{Code: ExitApproval, Kind: "manual_restore_required", Err: err}
+			}
+			return newExitError(ExitFailed, "execution_failed", err)
+		}
+		if jsonFlag {
+			return writeJSON(cmd.OutOrStdout(), result, result.Warnings)
+		}
+		fmt.Printf("restore %s @ %s: %s\n", name, host, result.Status)
+		return nil
 	}
 
 	if action == "service" {

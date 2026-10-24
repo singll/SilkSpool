@@ -85,6 +85,7 @@ type ResolvedOutput struct {
 	Port      int    `yaml:"port,omitempty"`
 	Protocol  string `yaml:"protocol,omitempty"`
 	Value     string `yaml:"value,omitempty"`
+	Service   string `yaml:"service,omitempty"`
 	Sensitive bool   `yaml:"sensitive,omitempty"`
 }
 
@@ -104,20 +105,33 @@ type ServiceSpec struct {
 	Component string `yaml:"component,omitempty"`
 }
 
+// ComponentLifecycle 保存组件的生命周期契约与执行上下文。
+type ComponentLifecycle struct {
+	Key     string
+	Root    string
+	Backup  BundleBackup
+	Restore BundleRestore
+	Upgrade BundleUpgrade
+	Hooks   BundleHooks
+	Env     map[string]string
+}
+
 // ResolvedPlan 是 resolver 的完整输出。
 type ResolvedPlan struct {
-	Lock       *LockSnapshot
-	Manifest   *BundleManifest
-	BundleRoot string
-	DeployPath string
-	Components []string
-	Services   []ServiceSpec
-	Compose    []byte
-	Override   []byte
-	Env        map[string]string
-	Uploads    map[string][]byte
-	Warnings   []string
-	LockPath   string
+	Lock         *LockSnapshot
+	Manifest     *BundleManifest
+	BundleRoot   string
+	DeployPath   string
+	Components   []string
+	Services     []ServiceSpec
+	Compose      []byte
+	Override     []byte
+	Env          map[string]string
+	Uploads      map[string][]byte
+	Warnings     []string
+	LockPath     string
+	Lifecycles   map[string]ComponentLifecycle
+	AliasWarning string
 }
 
 // ResolveOptions 控制输入、secret 与是否写 lock。
@@ -133,6 +147,7 @@ type LoadedBundle struct {
 	Root     string
 	Manifest *BundleManifest
 	Source   BundleSource
+	AliasOf  string
 }
 
 // BundleRepository 负责本地 bundle 与 bundle_sources 解析（dir | git）。
@@ -147,13 +162,44 @@ func NewBundleRepository(baseDir string, cfg *config.Config) *BundleRepository {
 }
 
 // Load 依次尝试显式 source、本地 bundles/<name>、bundle_sources。
+// manifest.alias_of 会透明解析到目标 bundle，并保留弃用标记。
 func (r *BundleRepository) Load(ctx context.Context, name string, src *BundleSource) (*LoadedBundle, error) {
+	return r.load(ctx, name, src, 0)
+}
+
+func (r *BundleRepository) load(ctx context.Context, name string, src *BundleSource, depth int) (*LoadedBundle, error) {
+	if depth > 8 {
+		return nil, fmt.Errorf("bundle alias chain too deep at %s", name)
+	}
+	loaded, err := r.loadOne(ctx, name, src)
+	if err != nil {
+		return nil, err
+	}
+	if loaded.Manifest.AliasOf == "" {
+		return loaded, nil
+	}
+	target, err := r.load(ctx, loaded.Manifest.AliasOf, nil, depth+1)
+	if err != nil {
+		return nil, fmt.Errorf("bundle %s alias %s: %w", name, loaded.Manifest.AliasOf, err)
+	}
+	clone := *target.Manifest
+	clone.DeprecatedAlias = name
+	return &LoadedBundle{
+		Name:     name,
+		Root:     target.Root,
+		Manifest: &clone,
+		Source:   target.Source,
+		AliasOf:  name,
+	}, nil
+}
+
+func (r *BundleRepository) loadOne(ctx context.Context, name string, src *BundleSource) (*LoadedBundle, error) {
 	if src != nil {
 		return r.loadFromSource(ctx, name, src)
 	}
 
 	localRoot := ManifestBundleRoot(r.baseDir, name)
-	if _, err := os.Stat(filepath.Join(localRoot, "manifest.yaml")); err == nil {
+	if _, err := FindManifestFile(localRoot); err == nil {
 		manifest, err := LoadManifestFromDir(localRoot, name)
 		if err != nil {
 			return nil, err
@@ -180,7 +226,7 @@ func (r *BundleRepository) Load(ctx context.Context, name string, src *BundleSou
 					root = filepath.Join(r.baseDir, root)
 				}
 				root = filepath.Join(root, name)
-				if _, err := os.Stat(filepath.Join(root, "manifest.yaml")); err == nil {
+				if _, err := FindManifestFile(root); err == nil {
 					manifest, err := LoadManifestFromDir(root, name)
 					if err != nil {
 						return nil, err
@@ -204,10 +250,10 @@ func (r *BundleRepository) loadFromSource(ctx context.Context, name string, src 
 		if !filepath.IsAbs(root) {
 			root = filepath.Join(r.baseDir, root)
 		}
-		if _, err := os.Stat(filepath.Join(root, "manifest.yaml")); err != nil {
+		if _, err := FindManifestFile(root); err != nil {
 			// 允许 dir 指向包含多个 bundle 的父目录。
 			candidate := filepath.Join(root, name)
-			if _, err2 := os.Stat(filepath.Join(candidate, "manifest.yaml")); err2 == nil {
+			if _, err2 := FindManifestFile(candidate); err2 == nil {
 				root = candidate
 			} else {
 				return nil, fmt.Errorf("bundle source %s: manifest not found under %s: %w", name, root, err)
@@ -227,7 +273,7 @@ func (r *BundleRepository) loadFromSource(ctx context.Context, name string, src 
 			return nil, fmt.Errorf("bundle source %s: git repo is required", name)
 		}
 		cacheRoot := filepath.Join(r.baseDir, ".spool", "cache", "bundles", name, src.Commit)
-		if _, err := os.Stat(filepath.Join(cacheRoot, "manifest.yaml")); err != nil {
+		if _, err := FindManifestFile(cacheRoot); err != nil {
 			if err := os.MkdirAll(filepath.Dir(cacheRoot), 0755); err != nil {
 				return nil, err
 			}
@@ -255,10 +301,10 @@ func (r *BundleRepository) loadFromSource(ctx context.Context, name string, src 
 		if strings.TrimSpace(src.Path) != "" {
 			root = filepath.Join(cacheRoot, filepath.FromSlash(src.Path))
 		}
-		if _, err := os.Stat(filepath.Join(root, "manifest.yaml")); err != nil {
+		if _, err := FindManifestFile(root); err != nil {
 			// 允许 source.path 指向包含 bundle 的目录。
 			candidate := filepath.Join(root, name)
-			if _, err2 := os.Stat(filepath.Join(candidate, "manifest.yaml")); err2 == nil {
+			if _, err2 := FindManifestFile(candidate); err2 == nil {
 				root = candidate
 			} else {
 				return nil, fmt.Errorf("bundle source %s: manifest not found in git cache %s", name, root)
@@ -371,12 +417,13 @@ func ResolveBundle(ctx context.Context, baseDir string, cfg *config.Config, bund
 	if err := ValidatePinnedVersion("bundle", bundleName, manifest.Version); err != nil {
 		return nil, err
 	}
-	upgrade := manifest.Lifecycle.Upgrade
-	if upgrade.Strategy != "" && upgrade.Strategy != "recreate" && upgrade.Strategy != "rolling" && upgrade.Strategy != "backup-then-recreate" {
-		return nil, fmt.Errorf("bundle %s: unsupported upgrade strategy %q", bundleName, upgrade.Strategy)
+	if err := validateUpgradeStrategy(bundleName, manifest.Lifecycle.Upgrade); err != nil {
+		return nil, err
 	}
-	if (upgrade.Irreversible || upgrade.Strategy == "backup-then-recreate") && strings.TrimSpace(manifest.Backup.Hook) == "" {
-		return nil, fmt.Errorf("bundle %s: %s upgrade requires spec.backup.hook", bundleName, upgrade.Strategy)
+	aliasWarning := ""
+	if manifest.DeprecatedAlias != "" {
+		aliasWarning = fmt.Sprintf("bundle %s is a deprecated alias for %s; update commands to use %s",
+			manifest.DeprecatedAlias, manifest.Name, manifest.Name)
 	}
 
 	inputs := mergeStringMaps(manifest.Inputs, hostCfg.Inputs, opts.Inputs)
@@ -428,6 +475,16 @@ func ResolveBundle(ctx context.Context, baseDir string, cfg *config.Config, bund
 				data.services = services
 			}
 			data.images = images
+		}
+		if artifact := manifest.Delivery.Artifact; artifact != nil && artifact.Image != "" {
+			image := artifact.Image
+			if artifact.Digest != "" && !strings.Contains(image, "@") {
+				image = image + "@" + artifact.Digest
+			}
+			data.image = image
+			for _, svc := range data.services {
+				data.images[svc] = image
+			}
 		}
 		components[bundleName] = data
 	}
@@ -511,15 +568,37 @@ func ResolveBundle(ctx context.Context, baseDir string, cfg *config.Config, bund
 	}
 
 	plan := &ResolvedPlan{
-		Manifest:   manifest,
-		BundleRoot: loaded.Root,
-		DeployPath: ResolveDeployPath(baseDir, cfg, bundleName, manifest),
-		Components: order,
-		Uploads:    map[string][]byte{},
-		Env:        map[string]string{},
+		Manifest:     manifest,
+		BundleRoot:   loaded.Root,
+		DeployPath:   ResolveDeployPath(baseDir, cfg, bundleName, manifest),
+		Components:   order,
+		Uploads:      map[string][]byte{},
+		Env:          map[string]string{},
+		Lifecycles:   map[string]ComponentLifecycle{},
+		AliasWarning: aliasWarning,
+	}
+	if manifest.IsComposition() {
+		for _, key := range order {
+			comp := components[key]
+			plan.Lifecycles[key] = ComponentLifecycle{
+				Key:     key,
+				Root:    comp.root,
+				Backup:  comp.backup,
+				Restore: comp.restore,
+				Upgrade: comp.upgrade,
+				Hooks:   comp.hooks,
+				Env:     cloneStringMap(comp.env),
+			}
+		}
+	}
+	if err := validateEffectiveLifecycle(plan); err != nil {
+		return nil, err
 	}
 	if err := renderResolvedPlan(plan, host, manifest, components, baseCtx, dependencies); err != nil {
 		return nil, err
+	}
+	if aliasWarning != "" {
+		plan.Warnings = append(plan.Warnings, aliasWarning)
 	}
 
 	lock := buildLockSnapshot(host, bundleName, inputs, components, baseCtx.components, dependencies, baseCtx.dependencies, plan)
@@ -557,6 +636,10 @@ type componentData struct {
 	env           map[string]string
 	manifest      *BundleManifest
 	sharedNetwork bool
+	backup        BundleBackup
+	restore       BundleRestore
+	upgrade       BundleUpgrade
+	hooks         BundleHooks
 }
 
 type dependencyData struct {
@@ -584,6 +667,10 @@ func resolveComponent(ctx context.Context, repo *BundleRepository, cfg *config.C
 		execIn:        spec.ExecIn,
 		sharedNetwork: spec.SharedNetwork,
 		services:      []string{},
+		backup:        spec.Backup,
+		restore:       spec.Restore,
+		upgrade:       spec.Upgrade,
+		hooks:         spec.Hooks,
 	}
 	if err := ValidatePinnedVersion("component", key, spec.Version); err != nil {
 		return nil, err
@@ -614,6 +701,18 @@ func resolveComponent(ctx context.Context, repo *BundleRepository, cfg *config.C
 		}
 		if data.health == nil {
 			data.health = loaded.Manifest.Lifecycle.Health
+		}
+		if data.backup.Hook == "" && len(data.backup.Assets) == 0 {
+			data.backup = loaded.Manifest.Backup
+		}
+		if data.restore.Hook == "" {
+			data.restore = loaded.Manifest.Lifecycle.Restore
+		}
+		if data.upgrade == (BundleUpgrade{}) {
+			data.upgrade = loaded.Manifest.Lifecycle.Upgrade
+		}
+		if data.hooks == (BundleHooks{}) {
+			data.hooks = loaded.Manifest.Lifecycle.Hooks
 		}
 		data.templates = append([]string(nil), loaded.Manifest.Templates...)
 		if len(data.services) == 0 {
@@ -713,7 +812,7 @@ func loadTemplatesInfo(root string, templates []string) (map[string]string, []st
 	images := map[string]string{}
 	serviceSet := map[string]bool{}
 	for _, tmpl := range templates {
-		data, err := os.ReadFile(filepath.Join(root, "templates", tmpl))
+		data, err := os.ReadFile(templateFilePath(root, tmpl))
 		if err != nil {
 			return nil, nil, fmt.Errorf("read template %s failed: %w", tmpl, err)
 		}
@@ -804,17 +903,23 @@ func (c *resolveContext) interpolateExpr(expr string) (string, bool, error) {
 
 	case strings.HasPrefix(expr, "host."):
 		key := strings.TrimPrefix(expr, "host.")
-		if c.hostCfg == nil && key != "name" {
-			return "", false, fmt.Errorf("unresolved host reference ${%s}", expr)
-		}
 		switch key {
 		case "name":
 			return c.hostName, false, nil
 		case "address":
+			if c.hostCfg == nil {
+				return "", false, nil
+			}
 			return hostAddress(c.hostCfg), false, nil
 		case "magicdns":
+			if c.hostCfg == nil {
+				return "", false, nil
+			}
 			return c.hostCfg.MagicDNS, false, nil
 		case "ssh":
+			if c.hostCfg == nil {
+				return "", false, fmt.Errorf("unresolved host reference ${%s}", expr)
+			}
 			return c.hostCfg.Address, false, nil
 		default:
 			return "", false, fmt.Errorf("unknown host field ${%s}", expr)
@@ -978,6 +1083,7 @@ func resolveEndpointOutput(name string, decl BundleOutput, providerHost string, 
 		Kind:     "endpoint",
 		Protocol: decl.Protocol,
 		Port:     port,
+		Service:  service,
 	}
 	if decl.Sensitive {
 		resolved.Sensitive = true
@@ -1157,7 +1263,7 @@ func renderResolvedPlan(plan *ResolvedPlan, host string, manifest *BundleManifes
 				continue
 			}
 			for _, tmpl := range comp.templates {
-				data, err := os.ReadFile(filepath.Join(comp.root, "templates", tmpl))
+				data, err := os.ReadFile(templateFilePath(comp.root, tmpl))
 				if err != nil {
 					return fmt.Errorf("read component %s template %s failed: %w", key, tmpl, err)
 				}
@@ -1201,7 +1307,7 @@ func renderResolvedPlan(plan *ResolvedPlan, host string, manifest *BundleManifes
 		data := make([][]byte, 0, len(templates))
 		if !manifest.IsScriptManifest() {
 			for _, tmpl := range templates {
-				content, err := os.ReadFile(filepath.Join(plan.BundleRoot, "templates", tmpl))
+				content, err := os.ReadFile(templateFilePath(plan.BundleRoot, tmpl))
 				if err != nil {
 					return fmt.Errorf("read template %s failed: %w", tmpl, err)
 				}
@@ -1248,6 +1354,17 @@ func renderResolvedPlan(plan *ResolvedPlan, host string, manifest *BundleManifes
 			}
 		}
 	}
+	for name, image := range images {
+		if spec, ok := serviceMap[name]; ok && image != "" {
+			spec.Image = image
+			serviceMap[name] = spec
+		}
+	}
+	for i := range plan.Services {
+		if image := images[plan.Services[i].Name]; image != "" {
+			plan.Services[i].Image = image
+		}
+	}
 	// 单 bundle 的 wiring 可能直接以服务名为 key。
 	if !manifest.IsComposition() {
 		for key, values := range manifest.Wiring {
@@ -1267,13 +1384,29 @@ func renderResolvedPlan(plan *ResolvedPlan, host string, manifest *BundleManifes
 
 	extraHosts := map[string][]string{}
 	for _, depKey := range sortedKeys(dependencies) {
-		dep := dependencies[depKey]
-		address := dep.address
-		if address == "" || net.ParseIP(address) == nil {
+		seen := map[string]bool{}
+		var entries []string
+		for _, output := range ctx.dependencies[depKey] {
+			if output.Kind != "endpoint" || net.ParseIP(output.Host) == nil {
+				continue
+			}
+			alias := output.Service
+			if alias == "" {
+				alias = depKey
+			}
+			entry := alias + ":" + output.Host
+			if seen[entry] {
+				continue
+			}
+			seen[entry] = true
+			entries = append(entries, entry)
+		}
+		if len(entries) == 0 {
 			continue
 		}
+		sort.Strings(entries)
 		for _, svc := range names {
-			extraHosts[svc] = append(extraHosts[svc], depKey+":"+address)
+			extraHosts[svc] = append(extraHosts[svc], entries...)
 		}
 	}
 	for svc := range extraHosts {
@@ -1526,4 +1659,14 @@ func containsString(list []string, value string) bool {
 		}
 	}
 	return false
+}
+
+// SortedComponentKeys 返回稳定的 component key 列表。
+func SortedComponentKeys(m map[string]BundleComponent) []string {
+	return sortedKeys(m)
+}
+
+// SortedDependencyKeys 返回稳定的 dependency key 列表。
+func SortedDependencyKeys(m map[string]BundleDependency) []string {
+	return sortedKeys(m)
 }

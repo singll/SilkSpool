@@ -176,7 +176,7 @@ func (d *StackDriver) pushSystemdTemplates(host string, hostCfg *config.HostConf
 			continue
 		}
 
-		localPath := filepath.Join(bundleRoot, "templates", t)
+		localPath := templateFilePath(bundleRoot, t)
 		data, err := os.ReadFile(localPath)
 		if err != nil {
 			return fmt.Errorf("read template %s failed: %w", t, err)

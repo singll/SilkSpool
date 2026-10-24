@@ -36,6 +36,11 @@ type BundleManifest struct {
 	Templates  []string         `yaml:"templates"`
 	Services   []string         `yaml:"services"`
 
+	// AliasOf 让旧 bundle 名作为新 bundle 的兼容别名；加载时透明解析到目标 manifest。
+	AliasOf string `yaml:"alias_of,omitempty"`
+	// DeprecatedAlias 由加载器在跟随 alias_of 时填充，仅用于输出弃用提示。
+	DeprecatedAlias string `yaml:"-"`
+
 	Metadata *BundleMetadata `yaml:"metadata,omitempty"`
 	Spec     *BundleSpec     `yaml:"spec,omitempty"`
 
@@ -233,6 +238,11 @@ type BundleComponent struct {
 	ExecIn        string                  `yaml:"exec_in,omitempty"`
 	Outputs       map[string]BundleOutput `yaml:"outputs,omitempty"`
 	SharedNetwork bool                    `yaml:"shared_network,omitempty"`
+	// 组件级生命周期；未声明时从被引用的 product bundle 继承。
+	Backup  BundleBackup  `yaml:"backup,omitempty"`
+	Restore BundleRestore `yaml:"restore,omitempty"`
+	Upgrade BundleUpgrade `yaml:"upgrade,omitempty"`
+	Hooks   BundleHooks   `yaml:"hooks,omitempty"`
 }
 
 // BundleDependency 是已在别处部署、只读 outputs 的依赖。
@@ -366,9 +376,25 @@ func LoadManifestFile(path, bundleName string) (*BundleManifest, error) {
 	return &manifest, nil
 }
 
-// LoadManifestFromDir 从 bundle 根目录加载 manifest.yaml。
+// FindManifestFile 返回 bundle 根目录下的 manifest 文件。
+// 兼容标准 manifest.yaml 与产品仓库的 bundle.yaml。
+func FindManifestFile(root string) (string, error) {
+	for _, name := range []string{"manifest.yaml", "bundle.yaml"} {
+		path := filepath.Join(root, name)
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("manifest.yaml or bundle.yaml not found under %s", root)
+}
+
+// LoadManifestFromDir 从 bundle 根目录加载 manifest。
 func LoadManifestFromDir(root, bundleName string) (*BundleManifest, error) {
-	return LoadManifestFile(filepath.Join(root, "manifest.yaml"), bundleName)
+	path, err := FindManifestFile(root)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
+	}
+	return LoadManifestFile(path, bundleName)
 }
 
 // LoadManifest 从 bundles/<name>/manifest.yaml 加载
@@ -381,15 +407,35 @@ func NewManifestLoader(baseDir string) *ManifestLoader {
 	return &ManifestLoader{baseDir: baseDir}
 }
 
-// Load 加载指定 bundle 的 manifest
+// Load 加载指定 bundle 的 manifest；alias_of 会透明解析到目标 bundle。
 func (ml *ManifestLoader) Load(bundleName string) (*BundleManifest, error) {
-	manifestPath := filepath.Join(ml.baseDir, "bundles", bundleName, "manifest.yaml")
+	return ml.load(bundleName, map[string]bool{}, 0)
+}
 
-	manifest, err := LoadManifestFile(manifestPath, bundleName)
+func (ml *ManifestLoader) load(bundleName string, seen map[string]bool, depth int) (*BundleManifest, error) {
+	if depth > 8 {
+		return nil, fmt.Errorf("bundle alias chain too deep at %s", bundleName)
+	}
+	if seen[bundleName] {
+		return nil, fmt.Errorf("bundle alias cycle detected at %s", bundleName)
+	}
+	seen[bundleName] = true
+
+	manifest, err := LoadManifestFromDir(filepath.Join(ml.baseDir, "bundles", bundleName), bundleName)
 	if err != nil {
 		return nil, err
 	}
-	return manifest, nil
+	if manifest.AliasOf == "" {
+		return manifest, nil
+	}
+
+	target, err := ml.load(manifest.AliasOf, seen, depth+1)
+	if err != nil {
+		return nil, fmt.Errorf("bundle %s alias %s: %w", bundleName, manifest.AliasOf, err)
+	}
+	clone := *target
+	clone.DeprecatedAlias = bundleName
+	return &clone, nil
 }
 
 // ManifestBundleRoot 返回本地 bundle 根目录。
@@ -400,4 +446,14 @@ func ManifestBundleRoot(baseDir, bundleName string) string {
 // IsScriptManifest 判断是否为 script 驱动。
 func (m *BundleManifest) IsScriptManifest() bool {
 	return strings.EqualFold(m.Type, "script")
+}
+
+// templateFilePath 解析模板路径：优先 bundle 根目录（product 的 deploy/compose.yaml），
+// 回退到传统的 templates/<name>。
+func templateFilePath(root, name string) string {
+	direct := filepath.Join(root, filepath.FromSlash(name))
+	if _, err := os.Stat(direct); err == nil {
+		return direct
+	}
+	return filepath.Join(root, "templates", filepath.FromSlash(name))
 }

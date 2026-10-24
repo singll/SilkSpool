@@ -75,8 +75,8 @@ vim out/silkspool.yaml
 ./out/spool sync pull keeper
 
 # 4. Deploy bundles
-./out/spool bundle keeper init keeper
-./out/spool bundle keeper up keeper
+./out/spool plan knowledge-stack keeper --offline
+./out/spool apply knowledge-stack keeper --yes
 ```
 
 ### Command Reference
@@ -91,6 +91,11 @@ vim out/silkspool.yaml
 | `dns list/add/remove/push` | Manage DNS records |
 | `site list/deploy/push` | Quick site deployment |
 | `bundle <name> <init\|up\|down\|status>` | Bundle orchestration |
+| `plan <bundle> <host> [--offline]` | Desired vs actual diff / static validation |
+| `apply <bundle> <host> [--locked]` | Reproducible single-host apply |
+| `rollback <bundle> <host> [gen]` | Roll back to remote generation |
+| `bundle check-updates <name>` | Suggest pinned image updates |
+| `serve --socket <path>` | Optional local HTTP/JSON API |
 | `service <host> <status\|start\|stop\|restart\|logs>` | Service control |
 | `n8n list/import/export` | n8n workflow management |
 | `nas info/pool/dataset/snapshot` | TrueNAS management |
@@ -213,8 +218,8 @@ vim out/silkspool.yaml
 ./out/spool sync pull keeper
 
 # 4. 部署 Bundle
-./out/spool bundle keeper init keeper
-./out/spool bundle keeper up keeper
+./out/spool plan knowledge-stack keeper --offline
+./out/spool apply knowledge-stack keeper --yes
 ```
 
 ### 命令手册
@@ -229,6 +234,11 @@ vim out/silkspool.yaml
 | `dns list/add/remove/push` | DNS 记录管理 |
 | `site list/deploy/push` | 快速站点部署 |
 | `bundle <名称> <init\|up\|down\|status>` | Bundle 编排 |
+| `plan <bundle> <主机> [--offline]` | 期望/实际 diff 或静态校验 |
+| `apply <bundle> <主机> [--locked]` | 单主机可复现部署 |
+| `rollback <bundle> <主机> [代]` | 回滚到远端 generation |
+| `bundle check-updates <名称>` | 建议固定镜像更新 |
+| `serve --socket <路径>` | 可选本地 HTTP/JSON API |
 | `service <主机> <status\|start\|stop\|restart\|logs>` | 服务控制 |
 | `n8n list/import/export` | n8n 工作流管理 |
 | `nas info/pool/dataset/snapshot` | TrueNAS 管理 |

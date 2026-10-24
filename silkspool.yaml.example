@@ -99,55 +99,49 @@ hosts:
   keeper:
     address: "silkspool@192.168.7.230"
     app_prefix: "sp-"
-    bundles: ["keeper"]
-    sync_rules:
-      - local: ".env"
-        remote: "/opt/silkspool/keeper/.env"
-      - local: "n8n-workflows/"
-        remote: "/opt/silkspool/keeper/n8n-workflows/"
-      - local: "couchdb/"
-        remote: "/opt/silkspool/keeper/couchdb/"
+    # Headscale MagicDNS 名；跨机 wiring 优先使用，缺失时回退 address。
+    magicdns: "keeper"
+    # knowledge-stack = components(bellkeeper/n8n/memos/rsshub) + dependency silkdata。
+    # 旧的 keeper 名称保留一个版本作为 alias，plan/apply 会输出弃用警告。
+    bundles: ["knowledge-stack"]
     services:
-      - alias: "redis"
-        type: "docker"
-        name: "sp-redis"
-      - alias: "n8n"
-        type: "docker"
-        name: "sp-n8n"
       - alias: "bellkeeper"
         type: "docker"
         name: "sp-bellkeeper"
-      - alias: "bellkeeper-db"
+      - alias: "n8n"
         type: "docker"
-        name: "sp-bellkeeper-db"
+        name: "sp-n8n"
       - alias: "memos"
         type: "docker"
         name: "sp-memos"
       - alias: "rsshub"
         type: "docker"
         name: "sp-rsshub"
-      - alias: "couchdb"
+
+  # =========================================================================
+  # 数据层 (capability silkdata)：被 knowledge-stack 作为 dependency 只读引用
+  # =========================================================================
+  silkdata:
+    address: "silkspool@192.168.7.231"
+    app_prefix: "sp-"
+    magicdns: "silkdata"
+    bundles: ["silkdata"]
+    services:
+      - alias: "postgres"
         type: "docker"
-        name: "sp-couchdb"
-      - alias: "nats"
+        name: "sp-postgres"
+      - alias: "redis"
         type: "docker"
-        name: "sp-nats"
+        name: "sp-redis"
       - alias: "meilisearch"
         type: "docker"
         name: "sp-meilisearch"
-    backups:
-      - type: "volume"
-        source: "kp-n8n-data"
-        name: "n8n-backup"
-      - type: "volume"
-        source: "kp-memos-data"
-        name: "memos-backup"
-      - type: "volume"
-        source: "kp-bellkeeper-db"
-        name: "bellkeeper-pg"
-      - type: "volume"
-        source: "kp-couchdb-data"
-        name: "couchdb-backup"
+      - alias: "nats"
+        type: "docker"
+        name: "sp-nats"
+      - alias: "couchdb"
+        type: "docker"
+        name: "sp-couchdb"
 
   # =========================================================================
   # TXHK 远程 VPS 服务器
@@ -298,6 +292,18 @@ hosts:
       - type: "dir"
         source: "/opt/bili-suite/robot/config"
         name: "robot-cfg"
+
+# -------------------- 外部 bundle 来源 --------------------
+# Bellkeeper 自己的仓库发布 deploy/bundle.yaml；固定 commit，升级必须显式改这里。
+bundle_sources:
+  - name: bellkeeper
+    type: git
+    repo: https://github.com/singll/Bellkeeper.git
+    path: deploy
+    commit: c243797fc78911af49c8d70858ed94e499960f01
+  - name: local
+    type: dir
+    path: ./bundles
 
 # -------------------- 安装源定义 (用于 stack/install) --------------------
 install_sources:

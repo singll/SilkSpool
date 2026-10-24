@@ -139,6 +139,7 @@ func NewRootCmd() *cobra.Command {
 	app.addUpgradeCmd(root)
 	app.addKeyCmd(root)
 	app.addDecommissionCmd(root)
+	app.addServeCmd(root)
 
 	return root
 }

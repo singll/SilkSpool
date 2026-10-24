@@ -1,6 +1,6 @@
 # SilkSpool 解耦与集成改进方案（评审后修订版）
 
-> 状态: P1 complete（2026-10-24）；下一阶段 P2
+> 状态: P2 complete（2026-10-24）；下一阶段 P3（按需）
 > 日期: 2026-10-23
 > 依据: 对《SilkSpool 解耦与集成设计》的评审意见，以及对 Kamal、Komodo、Dockge、Uncloud、Timoni、deploy-rs 公开文档的核对
 > 修订: 2026-10-23，按二次评审修正 outputs 拓扑语义、备份 hook、组件健康、锁粒度与 plan 语义；按三次评审拆分 components/dependencies、明确 health 执行上下文与 restore 契约
@@ -1071,10 +1071,40 @@ P1 已完成（2026-10-24，单 host）：
 
 P1 已知边界（按计划不阻塞退出）：
 
-- `DNSRecord`/`Site` Resource adapter 裁剪到 P2；`Dataset`/`Key` 留待 P3。
+- `DNSRecord`/`Site` Resource adapter 已按 P2 补齐；`Dataset`/`Key` 留待 P3。
 - legacy `host.services`/`host.backups` 仍可用，但标记为兼容路径。
-- `spool serve --socket`、`bundle check-updates`、keeper 拆分属于 P2。
+- `spool serve --socket`、`bundle check-updates`、keeper 拆分已在 P2 完成。
 - 跨主机 apply 编排、OCI/CUE/Events 属于 P3，不提前实现。
+
+P2 已完成（2026-10-24）：
+
+- [x] `bundles/knowledge-stack`（composition）：components = bellkeeper/n8n/memos/rsshub，
+  dependencies = data(silkdata)；wiring 全部使用 `${components.*}` / `${dependencies.*}`；
+  模板零跨机 IP、零 `container_name` 硬编码，extra_hosts 仅在地址回退时由 spool 生成
+- [x] `bundles/silkdata` 保持 capability，补齐 postgres/redis/search/queue/couchdb endpoint outputs；
+  Postgres 服务名改为 `postgres`
+- [x] `bundles/keeper` 保留为 `alias_of: knowledge-stack` 一个版本；plan/apply 输出弃用警告；
+  旧数据服务模板与跨机 IP 已删除
+- [x] Bellkeeper 仓库新增 `deploy/bundle.yaml`（product）：镜像/digest、outputs、health、
+  backup-then-recreate、backup.hook/assets、restore.hook；SilkSpool 通过 bundle_sources git 固定 commit
+- [x] 组件级生命周期聚合：product 的 backup/restore/upgrade/hooks 在 composition apply 中生效
+- [x] Headscale MagicDNS wiring：同机服务名、跨机 MagicDNS、address 回退、缺地址 plan 失败
+- [x] `spool serve --socket`：inventory / bundle / outputs / actions / jobs；Unix socket 0600、
+  per-host 排队、idempotency_key、可选 token、JSONL 审计日志
+- [x] `spool bundle check-updates <name> [--json]`：registry tag 比较，仅建议；不改 manifest、不 apply
+- [x] Resource adapter：`DNSRecord`、`Site` 接入 Status/Plan/Apply；`Dataset`/`Key` 留待 P3
+- [x] 消费方文档：n8n HTTP action、Bellkeeper Product bundle + outputs、CI offline/online plan
+- [x] 测试：knowledge-stack/alias/零硬编码、product 契约、git 固定 commit、MagicDNS、
+  serve（socket 权限、幂等、同 host 排队/不同 host 并行、失败 job）、check-updates fake registry
+- [x] `go test -count=1 ./...`、`go vet ./...` 通过
+
+P2 已知边界（按计划不阻塞退出）：
+
+- `serve` 的 scope 裁剪为单 token（等价 admin）；危险动作仍需 `yes: true` 或 `X-Spool-Approval`。
+- 未提供 OpenAPI 生成 SDK（P3）；未引入 Events/SSE/Webhook。
+- `spool serve` 是可选本地进程，不是常驻 Core；同 host 排队通过进程内锁 + `.spool/locks/<host>.lock`。
+- `check-updates` 只比较 tag，不自动解析新 digest；更新后仍需人工/Renovate 固定 digest 并重新 plan/apply。
+- 跨主机 apply 编排、OCI artifact/cosign、CUE spike、`spool adopt` 留待 P3。
 
 ---
 

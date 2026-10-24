@@ -201,6 +201,93 @@ bundle_sources:
     commit: <pinned-sha>   # 必须固定 commit，不能写分支/latest
 ```
 
+### Product bundle：由产品仓库自己发布（P2）
+
+产品仓库推荐布局（Bellkeeper 示例）：
+
+```text
+Bellkeeper/
+└── deploy/
+    ├── bundle.yaml       # class: product；也可叫 manifest.yaml
+    ├── compose.yaml      # delivery.templates 可直接引用 bundle 根目录文件
+    └── scripts/
+        ├── backup.sh
+        └── restore.sh
+```
+
+`bundle.yaml` 与 `manifest.yaml` 等价；加载器优先 `manifest.yaml`，否则 `bundle.yaml`。
+`templates` / `delivery.templates` 中的相对路径先按 bundle 根目录解析，找不到再回退
+`templates/<name>`，因此产品仓库不需要把 compose 文件塞进 `templates/` 子目录。
+
+SilkSpool 通过 `bundle_sources` 固定 commit 使用产品 bundle：
+
+```yaml
+bundle_sources:
+  - name: bellkeeper
+    type: git
+    repo: https://github.com/singll/Bellkeeper.git
+    path: deploy
+    commit: c243797fc78911af49c8d70858ed94e499960f01
+```
+
+产品 bundle 可声明 `delivery.artifact.image/digest`、`outputs`、`lifecycle.health/upgrade/restore`
+与 `backup.hook/assets`。composition 引用 product 时，未在 component 上覆盖的 lifecycle/backup
+会从 product manifest 继承；apply 在 `backup-then-recreate` / `irreversible` 时执行组件
+`backup.hook`，`spool restore` / `spool bundle <name> restore` 对称执行 `restore.hook`。
+
+### Composition 的组件目录（P2）
+
+`knowledge-stack` 把每个独立组件放在自己的子目录，并在 manifest 中用 `source: dir` 显式引用：
+
+```text
+bundles/knowledge-stack/
+├── manifest.yaml
+└── components/
+    ├── n8n/{manifest.yaml,compose.yaml}
+    ├── memos/{manifest.yaml,compose.yaml}
+    └── rsshub/{manifest.yaml,compose.yaml}
+```
+
+```yaml
+spec:
+  components:
+    n8n:
+      bundle: n8n
+      version: 1.62.1
+      source: {type: dir, path: bundles/knowledge-stack/components/n8n}
+      after: [bellkeeper]
+```
+
+规则：
+
+- components 全部部署在 apply 的目标 host；dependencies 只读 outputs。
+- 组件模板不要写 `container_name` 或跨机 IP；同机服务名与跨机 MagicDNS 由 resolver 解析。
+- 需要保留数据卷时用显式卷名（如 `name: kp-n8n-data`），不要依赖 project 前缀。
+- 组件级 `backup/restore/upgrade/hooks` 可直接写在 component 上，未写则继承被引用 bundle。
+
+### 兼容别名
+
+旧 bundle 可用 `alias_of` 保留一个版本：
+
+```yaml
+apiVersion: spool/v1alpha1
+kind: Bundle
+metadata: {name: keeper, class: composition}
+alias_of: knowledge-stack
+```
+
+plan/apply 会输出弃用警告，并透明解析到目标 manifest；alias 的 deploy_path 仍按请求名/
+目标 manifest 决定，便于沿用旧远端目录。
+
+### check-updates
+
+```bash
+spool bundle check-updates <name> [--json]
+```
+
+只扫描固定 digest 镜像并比较 registry tag，输出建议；不修改 manifest，也不自动 apply。
+更新后重新 `plan --offline`、online plan、`apply --locked`。
+
 ---
 
 ## Compose Template Variables / 模板变量

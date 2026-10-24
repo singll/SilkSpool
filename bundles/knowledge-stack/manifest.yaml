@@ -1,0 +1,179 @@
+apiVersion: spool/v1alpha1
+kind: Bundle
+metadata:
+  name: knowledge-stack
+  class: composition
+  version: 1.0.0
+  owner: singll/SilkSpool
+  labels:
+    io.silkspool.composition: knowledge-stack
+name: knowledge-stack
+type: compose
+# 迁移期沿用旧 keeper 部署目录，避免 sp-n8n 等固定容器名冲突与数据卷漂移。
+deploy_path: /opt/silkspool/keeper
+# 沿用旧 hosts/<host>/.env，平滑迁移；新部署也可改回 bundle。
+config_root: host
+features:
+  docker_log_rotation: true
+  docker_prune: true
+defaults:
+  - path: .env
+    content: |
+      # ==============================================================================
+      #  Knowledge Stack Environment Variables
+      #  密钥由 spool apply 从本文件解析；plan/lock 只保存 secret:// 引用。
+      # ==============================================================================
+      APP_PREFIX=sp-
+      # Bellkeeper 知识库绑定路径（product compose 用 .env 插值）
+      BELLKEEPER_KNOWLEDGE_PATH=/mnt/NAS/data/knowledge
+
+      # --- n8n ---
+      N8N_OWNER_EMAIL=CHANGE_ME_owner_email
+      N8N_OWNER_FIRSTNAME=Owner
+      N8N_PASSWORD=CHANGE_ME_n8n_password
+      N8N_ENCRYPTION_KEY=CHANGE_ME_generate_random_string
+      N8N_API_KEY=
+
+      # --- Bellkeeper ---
+      BELLKEEPER_DB_PASSWORD=CHANGE_ME_bellkeeper_db_password
+      BELLKEEPER_API_KEY=CHANGE_ME_bellkeeper_api_key
+      BELLKEEPER_CREDENTIAL_KEY=CHANGE_ME_bellkeeper_credential_key
+
+      # --- silkdata ---
+      REDIS_PASSWORD=CHANGE_ME_redis_password
+      MEILI_MASTER_KEY=CHANGE_ME_meili_master_key
+      COUCHDB_USER=admin
+      COUCHDB_PASSWORD=CHANGE_ME_couchdb_password
+      COUCHDB_SECRET=CHANGE_ME_couchdb_secret
+
+      # --- Memos ---
+      MEMOS_API_TOKEN=CHANGE_ME_memos_api_token
+sync_rules:
+  - local: n8n-workflows/
+    remote: ${deploy_path}/n8n-workflows/
+templates: []
+services:
+  - bellkeeper
+  - n8n
+  - memos
+  - rsshub
+spec:
+  compatibility:
+    spool: ">=1.2"
+  # components：由本 composition 部署，全部位于 apply 的目标 host。
+  components:
+    bellkeeper:
+      bundle: bellkeeper
+      version: 2.4.0
+      health:
+        http: http://localhost:8080/api/health
+        from: container
+        timeout: 120s
+      outputs:
+        internal:
+          kind: endpoint
+          service: bellkeeper
+          port: 8080
+          remote: "${host.magicdns}"
+
+    n8n:
+      bundle: n8n
+      version: 1.62.1
+      source:
+        type: dir
+        path: bundles/knowledge-stack/components/n8n
+      after: [bellkeeper]
+      health:
+        http: http://localhost:5678/healthz
+        from: container
+        timeout: 60s
+      outputs:
+        internal:
+          kind: endpoint
+          service: n8n
+          port: 5678
+          remote: "${host.magicdns}"
+
+    memos:
+      bundle: memos
+      version: 0.22.3
+      source:
+        type: dir
+        path: bundles/knowledge-stack/components/memos
+      health:
+        http: http://localhost:5230/
+        from: container
+        timeout: 60s
+      outputs:
+        internal:
+          kind: endpoint
+          service: memos
+          port: 5230
+          remote: "${host.magicdns}"
+
+    rsshub:
+      bundle: rsshub
+      version: 2025-01-01
+      source:
+        type: dir
+        path: bundles/knowledge-stack/components/rsshub
+      optional: true
+      health:
+        http: http://localhost:1200/
+        from: container
+        timeout: 60s
+      outputs:
+        internal:
+          kind: endpoint
+          service: rsshub
+          port: 1200
+          remote: "${host.magicdns}"
+
+  # dependencies：已在别处部署，只读 outputs；不 apply、不升级、不回滚。
+  dependencies:
+    data:
+      bundle: silkdata
+      version: 1.2.0
+      host: silkdata
+      outputs: [postgres, redis, search, queue, couchdb]
+
+  wiring:
+    bellkeeper:
+      BELLKEEPER_SERVER_MODE: release
+      BELLKEEPER_DATABASE_DRIVER: postgres
+      BELLKEEPER_DATABASE_HOST: "${dependencies.data.outputs.postgres.host}"
+      BELLKEEPER_DATABASE_PORT: "${dependencies.data.outputs.postgres.port}"
+      BELLKEEPER_DATABASE_NAME: bellkeeper
+      BELLKEEPER_DATABASE_USER: bellkeeper
+      BELLKEEPER_DATABASE_PASSWORD: "${secrets.bellkeeper_db_password}"
+      BELLKEEPER_SERVER_API_KEY: "${secrets.bellkeeper_api_key}"
+      BELLKEEPER_CREDENTIAL_KEY: "${secrets.bellkeeper_credential_key}"
+      BELLKEEPER_N8N_WEBHOOK_BASE_URL: "http://${components.n8n.outputs.internal.host}:${components.n8n.outputs.internal.port}/webhook"
+      BELLKEEPER_N8N_API_BASE_URL: "http://${components.n8n.outputs.internal.host}:${components.n8n.outputs.internal.port}/api/v1"
+      BELLKEEPER_N8N_API_KEY: "${secrets.n8n_api_key}"
+      REDIS_HOST: "${dependencies.data.outputs.redis.host}"
+      REDIS_PORT: "${dependencies.data.outputs.redis.port}"
+      REDIS_DB: "0"
+      REDIS_PASSWORD: "${secrets.redis_password}"
+      NATS_URL: "nats://${dependencies.data.outputs.queue.host}:${dependencies.data.outputs.queue.port}"
+      MEILI_URL: "http://${dependencies.data.outputs.search.host}:${dependencies.data.outputs.search.port}"
+      MEILI_MASTER_KEY: "${secrets.meili_master_key}"
+      MEILI_HEALTH_URL: "http://${dependencies.data.outputs.search.host}:${dependencies.data.outputs.search.port}/health"
+      MEMOS_URL: "http://${components.memos.outputs.internal.host}:${components.memos.outputs.internal.port}"
+      RSSHUB_URL: "http://${components.rsshub.outputs.internal.host}:${components.rsshub.outputs.internal.port}"
+      COUCHDB_URL: "http://${dependencies.data.outputs.couchdb.host}:${dependencies.data.outputs.couchdb.port}/_up"
+      REDIS_HOSTPORT: "${dependencies.data.outputs.redis.host}:${dependencies.data.outputs.redis.port}"
+      NATS_HOSTPORT: "${dependencies.data.outputs.queue.host}:${dependencies.data.outputs.queue.port}"
+      POSTGRES_HOSTPORT: "${dependencies.data.outputs.postgres.host}:${dependencies.data.outputs.postgres.port}"
+
+    n8n:
+      N8N_ENCRYPTION_KEY: "${secrets.n8n_encryption_key}"
+      N8N_OWNER_EMAIL: "${secrets.n8n_owner_email}"
+      N8N_OWNER_FIRSTNAME: "${secrets.n8n_owner_firstname}"
+      N8N_PASSWORD: "${secrets.n8n_password}"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      BELLKEEPER_URL: "http://${components.bellkeeper.outputs.internal.host}:${components.bellkeeper.outputs.internal.port}"
+      BELLKEEPER_INTERNAL_URL: "http://${components.bellkeeper.outputs.internal.host}:${components.bellkeeper.outputs.internal.port}"
+
+    rsshub:
+      REDIS_URL: "redis://:${secrets.redis_password}@${dependencies.data.outputs.redis.host}:${dependencies.data.outputs.redis.port}/"

@@ -1,0 +1,9 @@
+services:
+  rsshub:
+    image: diygod/rsshub:2025-01-01@sha256:74daabd51c2121eae161e1d149233d63d43591335794fd62d4cf0004a294fd3f
+    restart: unless-stopped
+    ports:
+      - "1200:1200"
+    environment:
+      NODE_ENV: production
+      CACHE_TYPE: redis

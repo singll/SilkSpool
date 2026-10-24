@@ -271,13 +271,68 @@ bundle_sources:
     type: git
     repo: https://github.com/singll/Bellkeeper.git
     path: deploy
-    commit: 0123456789abcdef0123456789abcdef01234567
+    commit: c243797fc78911af49c8d70858ed94e499960f01
   - name: local
     type: dir
     path: ./bundles
 ```
 
 `git` 必须固定 commit（禁止 `latest`/分支）；缓存写入 `.spool/cache/bundles/<name>/<ref>/`。
+Bellkeeper 在自己的仓库维护 `deploy/bundle.yaml`，升级 Bellkeeper 只需改这里固定的 commit，
+不需要修改 SilkSpool 的 knowledge-stack 模板。
+
+### knowledge-stack（P2）
+
+`knowledge-stack` 是 composition，`spool apply knowledge-stack keeper` 只操作 keeper 上的
+components：
+
+| 角色 | 内容 |
+|---|---|
+| components | bellkeeper（来自 Bellkeeper 仓库的 product bundle）、n8n、memos、rsshub |
+| dependencies | data → silkdata（只读 outputs，绝不 apply/升级/回滚） |
+| wiring | `${components.<key>.outputs.*}` / `${dependencies.data.outputs.*}` |
+
+拓扑解析：
+
+- 同机 n8n → bellkeeper 的 `internal` endpoint 解析为服务名 `bellkeeper:8080`。
+- 跨机 bellkeeper → silkdata 解析为 `hosts.silkdata.magicdns`；未配置时回退 `address`；
+  两者都缺失则 plan 失败。
+- MagicDNS 可用时不生成 `extra_hosts`；仅地址回退时由 spool 根据解析结果生成。
+- 模板中零 IP、零 `container_name` 硬编码。
+
+迁移期 `keeper` 仍是 `knowledge-stack` 的兼容别名，plan/apply 会输出弃用警告；新命令统一用
+`knowledge-stack`。
+
+> Bellkeeper 的 `deploy/bundle.yaml` 中 digest 目前是发布占位值。正式 apply 前必须先发布镜像
+> 并把 `delivery.artifact.digest` 换成真实 manifest digest；`spool bundle check-updates` 可用于
+> 后续提醒。不要在未替换占位 digest 时对真实主机执行 apply。
+
+### spool serve --socket（P2）
+
+可选的本地 HTTP/JSON 服务，不是常驻 Core：
+
+```bash
+spool serve --socket /run/spool.sock
+# 可选：--token <admin-token>、--audit-log .spool/audit.log
+```
+
+- socket 权限固定 `0600`；`--token` 设置后所有请求需 `Authorization: Bearer <token>`。
+- 危险动作（`bundle.apply` / `bundle.rollback`）必须 `options.yes=true`，或带
+  `X-Spool-Approval: <token>`（token 与服务 token 相同）。
+- job 状态：`queued → running → succeeded/failed`；同 host 串行、不同 host 并行；
+  未完成期间相同 `idempotency_key` 复用同一个 job。
+- 审计日志为 JSON Lines，记录 actor、action、target、idempotency_key、结果。
+- 端点与调用示例见 [api.md](api.md)。
+
+### bundle check-updates（P2）
+
+```bash
+spool bundle check-updates knowledge-stack --json
+```
+
+列出固定 digest 镜像的 registry tag 对比结果；**只建议，不修改 manifest、不自动 apply**。
+更新流程：Renovate/Dependabot 或人工修改 tag/digest → `spool plan --offline` →
+online plan → `spool apply --locked --yes`。
 
 ---
 
@@ -291,13 +346,20 @@ spool init keeper
 spool sync push keeper
 spool sync pull keeper
 
-# Bundle 操作
-spool bundle keeper init keeper
-spool plan keeper keeper --offline
-spool bundle keeper up keeper            # 兼容层：映射到 apply；有 diff 需 --yes
-spool apply keeper keeper --locked --yes
-spool rollback keeper keeper
-spool status keeper keeper --json
+# Bundle 操作（knowledge-stack；keeper 为兼容 alias）
+spool plan knowledge-stack keeper --offline
+spool plan knowledge-stack keeper
+spool apply knowledge-stack keeper --locked --yes
+spool rollback knowledge-stack keeper
+spool status knowledge-stack keeper --json
+spool bundle check-updates knowledge-stack --json
+
+# data 层独立部署/升级（不会被 knowledge-stack apply 触碰）
+spool plan silkdata silkdata --offline
+spool apply silkdata silkdata --yes
+
+# 本地 API（可选）
+spool serve --socket /run/spool.sock
 
 # 服务管理
 spool service keeper status
@@ -315,4 +377,4 @@ spool backup keeper
 
 ---
 
-*部署模型: 自包含二进制目录 + PATH 软链 | 最后更新: 2026-10-24*
+*部署模型: 自包含二进制目录 + PATH 软链 | 最后更新: 2026-10-24（P2）*

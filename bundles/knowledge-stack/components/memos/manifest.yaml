@@ -1,0 +1,13 @@
+apiVersion: spool/v1alpha1
+kind: Bundle
+metadata:
+  name: memos
+  class: product
+  version: 0.22.3
+  owner: usememos/memos
+name: memos
+type: compose
+templates:
+  - compose.yaml
+services:
+  - memos

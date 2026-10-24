@@ -173,24 +173,24 @@ func (m *Manager) Apply(ctx context.Context, bundleName, host string, opts Apply
 	result.Generation = generation
 	result.Status = "applying"
 
-	irreversible := plan.Manifest.Lifecycle.Upgrade.Irreversible
+	irreversible := plan.IsIrreversibleEffective()
 	if irreversible && !opts.AllowIrreversible {
 		return result, fmt.Errorf("%w: lifecycle.upgrade.irreversible=true requires --allow-irreversible", ErrApprovalRequired)
 	}
-	needBackup := irreversible || plan.Manifest.Lifecycle.Upgrade.Strategy == "backup-then-recreate"
 	backupDir := ""
-	if needBackup {
-		if strings.TrimSpace(plan.Manifest.Backup.Hook) == "" {
-			return result, fmt.Errorf("backup-then-recreate/irreversible upgrade requires spec.backup.hook")
+	if currentGen > 0 && plan.NeedsBackupBeforeApply() {
+		specs := plan.BackupHooks()
+		if len(specs) == 0 {
+			return result, fmt.Errorf("backup-then-recreate/irreversible upgrade requires a backup hook")
 		}
-		backupDir, err = m.runBackupHook(ctx, plan, generation)
+		backupDir, err = m.runBackupHooks(ctx, plan, generation, specs, secrets)
 		if err != nil {
 			return result, fmt.Errorf("backup hook failed: %w", err)
 		}
 		result.BackupDir = backupDir
 	}
 
-	if err := m.runLifecycleHook(ctx, plan, plan.Manifest.Lifecycle.Hooks.PreUpgrade, generation, "pre_upgrade"); err != nil {
+	if err := m.runUpgradeHooks(ctx, plan, "pre_upgrade", generation, "", secrets); err != nil {
 		return result, err
 	}
 
@@ -243,7 +243,7 @@ func (m *Manager) Apply(ctx context.Context, bundleName, host string, opts Apply
 	if err := m.writeGenerationMeta(plan.DeployPath, generation, meta); err != nil {
 		return result, err
 	}
-	if err := m.runLifecycleHook(ctx, plan, plan.Manifest.Lifecycle.Hooks.PostUpgrade, generation, "post_upgrade"); err != nil {
+	if err := m.runUpgradeHooks(ctx, plan, "post_upgrade", generation, "", secrets); err != nil {
 		return result, err
 	}
 	if err := m.pruneGenerations(ctx, plan.DeployPath, generation); err != nil {
@@ -293,7 +293,7 @@ func (m *Manager) applyScript(ctx context.Context, plan *ResolvedPlan, opts Appl
 		return result, err
 	}
 	for _, tmpl := range plan.Manifest.Templates {
-		data, err := os.ReadFile(filepath.Join(plan.BundleRoot, "templates", tmpl))
+		data, err := os.ReadFile(templateFilePath(plan.BundleRoot, tmpl))
 		if err != nil {
 			return result, fmt.Errorf("read script template %s: %w", tmpl, err)
 		}
@@ -499,7 +499,7 @@ func (m *Manager) Restore(ctx context.Context, bundleName, host, ref string) (*R
 		return nil, err
 	}
 	result := &RestoreResult{Bundle: bundleName, Host: host, BackupDir: ref, Warnings: []string{}}
-	if strings.TrimSpace(plan.Manifest.Lifecycle.Restore.Hook) == "" {
+	if len(plan.RestoreHooks()) == 0 {
 		dirs := m.listBackupDirs(plan.DeployPath)
 		result.Warnings = append(result.Warnings, "no lifecycle.restore.hook; manual restore required")
 		return result, &ManualRestoreError{BackupDirs: dirs}
@@ -520,7 +520,8 @@ func (m *Manager) Restore(ctx context.Context, bundleName, host, ref string) (*R
 		ref = filepath.Join(plan.DeployPath, "backups", dirs[len(dirs)-1])
 		result.BackupDir = ref
 	}
-	if err := m.runRestoreHook(ctx, plan, ref); err != nil {
+	secrets := LoadSecrets(m.BaseDir, host, bundleName)
+	if err := m.runRestoreHooks(ctx, plan, ref, secrets); err != nil {
 		return result, err
 	}
 	if err := m.healthGate(ctx, plan, &ApplyResult{Bundle: bundleName, Host: host}); err != nil {
@@ -898,18 +899,25 @@ func joinQuoted(values []string) string {
 	return strings.Join(parts, " ")
 }
 
-func (m *Manager) runBackupHook(ctx context.Context, plan *ResolvedPlan, generation int) (string, error) {
-	hook := plan.Manifest.Backup.Hook
+func (m *Manager) runBackupHooks(ctx context.Context, plan *ResolvedPlan, generation int, specs []HookSpec, secrets map[string]string) (string, error) {
 	backupDir := filepath.Join(plan.DeployPath, "backups", fmt.Sprintf("gen-%d-%s", generation, time.Now().UTC().Format("20060102T150405Z")))
 	if _, err := m.Runner.Exec("mkdir -p " + shellQuote(backupDir)); err != nil {
 		return "", err
 	}
-	if err := m.runHookFile(ctx, plan, hook, generation, backupDir, "backup"); err != nil {
-		return "", err
-	}
-	for _, asset := range plan.Manifest.Backup.Assets {
-		if err := m.backupAsset(plan, backupDir, asset); err != nil {
+	for _, spec := range specs {
+		scopeDir := filepath.Join(backupDir, sanitizeHookScope(spec.Scope))
+		if _, err := m.Runner.Exec("mkdir -p " + shellQuote(scopeDir)); err != nil {
 			return "", err
+		}
+		if strings.TrimSpace(spec.Path) != "" {
+			if err := m.runHookFile(ctx, plan.DeployPath, spec, generation, scopeDir, "", "backup", secrets); err != nil {
+				return "", err
+			}
+		}
+		for _, asset := range spec.Assets {
+			if err := m.backupAsset(plan, scopeDir, asset); err != nil {
+				return "", err
+			}
 		}
 	}
 	return backupDir, nil
@@ -934,69 +942,98 @@ func (m *Manager) backupAsset(plan *ResolvedPlan, backupDir string, asset Bundle
 	}
 }
 
-func (m *Manager) runLifecycleHook(ctx context.Context, plan *ResolvedPlan, hook string, generation int, name string) error {
-	if strings.TrimSpace(hook) == "" {
-		return nil
+func (m *Manager) runUpgradeHooks(ctx context.Context, plan *ResolvedPlan, phase string, generation int, backupDir string, secrets map[string]string) error {
+	for _, spec := range plan.UpgradeHooks(phase) {
+		if err := m.runHookFile(ctx, plan.DeployPath, spec, generation, backupDir, "", phase, secrets); err != nil {
+			return err
+		}
 	}
-	return m.runHookFile(ctx, plan, hook, generation, "", name)
+	return nil
 }
 
-func (m *Manager) runHookFile(ctx context.Context, plan *ResolvedPlan, hook string, generation int, backupDir, name string) error {
-	if strings.TrimSpace(hook) == "" {
-		return nil
-	}
-	localPath := hook
-	if !filepath.IsAbs(localPath) {
-		localPath = filepath.Join(plan.BundleRoot, hook)
-	}
-	data, err := os.ReadFile(localPath)
-	if err != nil {
-		return fmt.Errorf("%s hook %s: %w", name, hook, err)
-	}
-	remotePath := filepath.Join(plan.DeployPath, ".spool-hooks", filepath.Base(hook))
-	if _, err := m.Runner.Exec("mkdir -p " + shellQuote(filepath.Dir(remotePath))); err != nil {
-		return err
-	}
-	if err := m.Runner.Upload(string(data), remotePath); err != nil {
-		return err
-	}
-	if _, err := m.Runner.Exec("chmod +x " + shellQuote(remotePath)); err != nil {
-		return err
-	}
-	env := fmt.Sprintf("SPOOL_GENERATION=%s", shellQuote(strconv.Itoa(generation)))
-	if backupDir != "" {
-		env += " SPOOL_BACKUP_DIR=" + shellQuote(backupDir)
-	}
-	cmd := fmt.Sprintf("cd %s && %s bash %s", shellQuote(plan.DeployPath), env, shellQuote(remotePath))
-	_, err = m.Runner.Exec(cmd)
-	return err
-}
-
-func (m *Manager) runRestoreHook(ctx context.Context, plan *ResolvedPlan, ref string) error {
-	hook := plan.Manifest.Lifecycle.Restore.Hook
-	localPath := hook
-	if !filepath.IsAbs(localPath) {
-		localPath = filepath.Join(plan.BundleRoot, hook)
-	}
-	data, err := os.ReadFile(localPath)
-	if err != nil {
-		return fmt.Errorf("restore hook %s: %w", hook, err)
-	}
-	remotePath := filepath.Join(plan.DeployPath, ".spool-hooks", filepath.Base(hook))
-	if _, err := m.Runner.Exec("mkdir -p " + shellQuote(filepath.Dir(remotePath))); err != nil {
-		return err
-	}
-	if err := m.Runner.Upload(string(data), remotePath); err != nil {
-		return err
-	}
-	if _, err := m.Runner.Exec("chmod +x " + shellQuote(remotePath)); err != nil {
-		return err
-	}
+func (m *Manager) runRestoreHooks(ctx context.Context, plan *ResolvedPlan, ref string, secrets map[string]string) error {
 	current, _ := m.currentGeneration(plan.DeployPath)
-	cmd := fmt.Sprintf("cd %s && SPOOL_BACKUP_DIR=%s SPOOL_RESTORE_REF=%s SPOOL_GENERATION=%s bash %s",
-		shellQuote(plan.DeployPath), shellQuote(ref), shellQuote(ref), shellQuote(strconv.Itoa(current)), shellQuote(remotePath))
+	for _, spec := range plan.RestoreHooks() {
+		specRef := ref
+		if spec.Scope != "bundle" {
+			candidate := filepath.Join(ref, sanitizeHookScope(spec.Scope))
+			if _, err := m.Runner.Exec("test -d " + shellQuote(candidate)); err == nil {
+				specRef = candidate
+			}
+		}
+		if err := m.runHookFile(ctx, plan.DeployPath, spec, current, "", specRef, "restore", secrets); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) runHookFile(ctx context.Context, deployPath string, spec HookSpec, generation int, backupDir, restoreRef, name string, secrets map[string]string) error {
+	if strings.TrimSpace(spec.Path) == "" {
+		return nil
+	}
+	localPath := spec.Path
+	if !filepath.IsAbs(localPath) {
+		localPath = filepath.Join(spec.Root, filepath.FromSlash(localPath))
+	}
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		return fmt.Errorf("%s hook %s: %w", name, spec.Path, err)
+	}
+	remotePath := filepath.Join(deployPath, ".spool-hooks", sanitizeHookScope(spec.Scope)+"-"+filepath.Base(spec.Path))
+	if _, err := m.Runner.Exec("mkdir -p " + shellQuote(filepath.Dir(remotePath))); err != nil {
+		return err
+	}
+	if err := m.Runner.Upload(string(data), remotePath); err != nil {
+		return err
+	}
+	if _, err := m.Runner.Exec("chmod +x " + shellQuote(remotePath)); err != nil {
+		return err
+	}
+
+	envParts := []string{
+		"SPOOL_GENERATION=" + shellQuote(strconv.Itoa(generation)),
+		"SPOOL_SCOPE=" + shellQuote(spec.Scope),
+	}
+	if backupDir != "" {
+		envParts = append(envParts, "SPOOL_BACKUP_DIR="+shellQuote(backupDir))
+	}
+	if restoreRef != "" {
+		envParts = append(envParts, "SPOOL_RESTORE_REF="+shellQuote(restoreRef))
+		envParts = append(envParts, "SPOOL_BACKUP_DIR="+shellQuote(restoreRef))
+	}
+	for _, key := range sortedKeys(spec.Env) {
+		value, err := renderHookValue(spec.Env[key], secrets)
+		if err != nil {
+			return fmt.Errorf("%s hook env %s: %w", name, key, err)
+		}
+		envParts = append(envParts, key+"="+shellQuote(value))
+	}
+	cmd := fmt.Sprintf("cd %s && %s bash %s", shellQuote(deployPath), strings.Join(envParts, " "), shellQuote(remotePath))
 	_, err = m.Runner.Exec(cmd)
 	return err
+}
+
+func renderHookValue(value string, secrets map[string]string) (string, error) {
+	matches := secretPlaceholderPattern.FindAllStringSubmatch(value, -1)
+	result := value
+	for _, match := range matches {
+		secretValue, ok := secrets[match[1]]
+		if !ok {
+			return "", fmt.Errorf("secret %q is not available for hook", match[1])
+		}
+		result = strings.ReplaceAll(result, match[0], secretValue)
+	}
+	return result, nil
+}
+
+func sanitizeHookScope(scope string) string {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return "bundle"
+	}
+	replacer := strings.NewReplacer("/", "-", "\\", "-", " ", "-", ":", "-")
+	return replacer.Replace(scope)
 }
 
 func (m *Manager) listBackupDirs(deployPath string) []string {

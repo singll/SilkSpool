@@ -1,0 +1,14 @@
+services:
+  memos:
+    image: neosmemo/memos:0.22.3@sha256:87efa7fc67b216c9506ffa46bc3c77d86bf1284bfb99af3819712026e4a06279
+    restart: unless-stopped
+    ports:
+      - "5230:5230"
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - memos-data:/var/opt/memos
+
+volumes:
+  memos-data:
+    name: kp-memos-data

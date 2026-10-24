@@ -1,5 +1,186 @@
 # API Reference / API 参考
 
+---
+
+# 本地 HTTP/JSON API（spool serve，P2）
+
+> 完整端点、安全与消费方示例；Go package 参考在本文后半部分。
+
+## 概览
+
+`spool serve` 是可选的本地 HTTP/JSON 服务，用于让 n8n、Bellkeeper、CI 等消费方在不直接 SSH
+的前提下读取 inventory、触发 plan/apply/rollback 并轮询 job。
+
+```bash
+spool serve --socket /run/spool.sock
+# 可选
+spool serve --socket /run/spool.sock --token "$SPOOL_TOKEN" --audit-log /var/log/spool-audit.log
+```
+
+---
+
+## 安全模型
+
+| 项 | 行为 |
+|---|---|
+| socket | 固定 `0600`，默认只允许当前用户 |
+| token | 可选；设置后所有端点（除 `/healthz`）要求 `Authorization: Bearer <token>` |
+| scope | P2 裁剪为单 token（等价 `admin`）；不实现 read/deploy/admin 多 token |
+| 危险动作 | `bundle.apply` / `bundle.rollback` 必须 `options.yes=true`，或带 `X-Spool-Approval: <token>` |
+| actor | 审计 actor 取 `X-Spool-Actor`；缺省 `local`（有 token 时为 `token`） |
+| 审计 | JSON Lines，记录 actor、action、target、idempotency_key、job_id、state、error |
+
+> P2 不提供 OpenAPI 生成 SDK、Events/SSE/Webhook；这些属于 P3，仅有真实订阅者时再做。
+
+---
+
+## 端点
+
+### GET /healthz
+
+```json
+{"status":"ok"}
+```
+
+### GET /v1/inventory
+
+返回主机、bundle、服务以及资源适配器（Bundle/Service/DNSRecord/Site）状态。
+
+### GET /v1/hosts/{host}/bundles/{bundle}
+
+返回 bundle manifest 摘要、components/dependencies、逻辑 outputs、lock 中的 resolved outputs、
+本地 state/generation。
+
+### GET /v1/hosts/{host}/bundles/{bundle}/outputs
+
+默认返回逻辑声明（endpoint 的 service/port 等）；加 `?resolved=true` 返回 lock 中的拓扑解析结果。
+
+```json
+{
+  "host": "keeper",
+  "bundle": "knowledge-stack",
+  "resolved": true,
+  "outputs": {
+    "components.bellkeeper.internal": "bellkeeper:8080",
+    "dependencies.data.postgres": "silkdata-magic:5432"
+  }
+}
+```
+
+### POST /v1/actions
+
+```json
+{
+  "action": "bundle.apply",
+  "target": {"host": "keeper", "bundle": "knowledge-stack"},
+  "options": {"locked": true, "yes": true},
+  "idempotency_key": "deploy-2026-10-23-001"
+}
+```
+
+支持 action：
+
+| action | 说明 |
+|---|---|
+| `bundle.plan` | `options.offline=true` 时只做静态校验；否则 SSH online diff |
+| `bundle.apply` | 单 host、components only；dependencies 只读 outputs |
+| `bundle.rollback` | `options.generation` 可选，缺省回滚到 current-1 |
+
+响应 `202 Accepted`：
+
+```json
+{"job_id":"job_ab12cd34ef56","state":"queued"}
+```
+
+相同 `idempotency_key` 在 job 未完成（queued/running）时复用同一 job，并返回
+`"idempotent_reuse": true`。完成后同 key 可创建新 job。
+
+### GET /v1/jobs/{id}
+
+```json
+{
+  "id": "job_ab12cd34ef56",
+  "action": "bundle.apply",
+  "target": {"host": "keeper", "bundle": "knowledge-stack"},
+  "state": "succeeded",
+  "started_at": "2026-10-24T10:00:00Z",
+  "finished_at": "2026-10-24T10:01:12Z",
+  "result": {"generation": 7, "status": "healthy"}
+}
+```
+
+状态：`queued → running → succeeded/failed`。失败时 `error` 为错误文本。
+
+---
+
+## 并发与锁
+
+- 同 host job 通过进程内队列串行；`bundle.apply` 同时使用 `.spool/locks/<host>.lock`，
+  与其他 spool 进程互斥（serve 内 apply 等待上限 10 分钟）。
+- 不同 host 并行。
+- job 失败/中断后锁释放；必要时 `spool unlock <host>`。
+
+---
+
+## 消费方示例
+
+### n8n HTTP 节点
+
+1. `POST /v1/actions`，Header `Idempotency-Key: {{ $execution.id }}`（或固定部署 key），
+   body 使用 `bundle.apply` + `options.yes=true`。
+2. 读取响应 `job_id`。
+3. 轮询 `GET /v1/jobs/{job_id}`，直到 `succeeded` / `failed`；失败时把 `error` 写入告警。
+
+> n8n 只需要挂载/访问 Unix socket，不必持有 SSH 私钥。
+
+### Bellkeeper
+
+- Bellkeeper 仓库发布 `deploy/bundle.yaml`（product），在 `silkspool.yaml` 的
+  `bundle_sources` 固定 commit。
+- 读取契约：`GET /v1/hosts/keeper/bundles/bellkeeper/outputs?resolved=true`。
+- 触发部署：`POST /v1/actions` `bundle.apply`，不要直接 SSH。
+- 产品自身健康/备份/恢复由 product manifest 声明，spool 调用其 hook。
+
+### CI/CD
+
+```bash
+# PR：只做静态校验（合法 0，非法 2，永不返回 3）
+spool plan knowledge-stack keeper --offline --json
+
+# 部署门禁：online plan 有 drift 时退出 3
+spool plan knowledge-stack keeper --json
+
+# 可复现部署
+spool apply knowledge-stack keeper --locked --yes
+
+# 或通过本地 API
+curl --unix-socket /run/spool.sock -H 'Content-Type: application/json' \
+  -d '{"action":"bundle.apply","target":{"host":"keeper","bundle":"knowledge-stack"},"options":{"locked":true,"yes":true},"idempotency_key":"ci-'$GITHUB_RUN_ID'"}' \
+  http://localhost/v1/actions
+```
+
+---
+
+## 错误格式
+
+```json
+{"error":{"code":"approval_required","message":"dangerous action requires options.yes=true or approval token"}}
+```
+
+| code | HTTP | 说明 |
+|---|---|---|
+| `unauthorized` | 401 | token 缺失/错误 |
+| `approval_required` | 403 | 危险动作缺少 yes/审批 token |
+| `invalid_request` | 400 | action/target/body 非法 |
+| `unknown_host` | 404 | 主机不存在 |
+| `unknown_bundle` | 404 | bundle 不存在 |
+| `job_not_found` | 404 | job 不存在 |
+
+
+---
+
+
+
 Go package documentation for SilkSpool internals.
 
 ---
@@ -14,7 +195,7 @@ Configuration loading and type definitions.
 |------|-------------|
 | `Config` | Root structure for `silkspool.yaml`. Contains `Global`, `Hosts`, `InstallSources`, `N8N`, `TrueNAS`. |
 | `GlobalConfig` | Global settings: `SSHKeyPath`, `AgeKeyPath`, `DefaultDomain`, `BackupDir`, `DNSGatewayIP`, `DNSGatewayHost`, `DNSHeadscaleHost`, `DNSHeadscaleServer`, `Timeouts`, `Defaults`. |
-| `HostConfig` | Per-host configuration: `Address`, `SSHPort`, `AppPrefix`, `Bundles`, `SyncRules`, `Services`, `PostPushHooks`, `Backups`, `Stack`. |
+| `HostConfig` | Per-host configuration: `Address`, `SSHPort`, `AppPrefix`, `MagicDNS`, `Inputs`, `Bundles`, `SyncRules`, `Services`, `PostPushHooks`, `Backups`, `Stack`. |
 | `SyncRule` | Sync mapping: `Local` (relative path) ↔ `Remote` (absolute path). |
 | `ServiceEntry` | Service registration: `Alias`, `Type` (docker/systemd/initd/openwrt), `Name`. |
 | `PostPushHook` | Push hook: `Pattern` (file match), `Command` (remote command). |
@@ -96,7 +277,8 @@ Core orchestration logic: SSH, sync, DNS, bundles, services, key management, bac
 | `BundleDriver` | Interface: `Setup`, `Up`, `Down`, `Status`, `Cleanup`, `Service` |
 | `ComposeDriver` | Docker Compose driver. Renders templates, uploads files, runs compose. |
 | `StackDriver` | Binary stack driver. Installs releases, pushes systemd units. |
-| `BundleManifest` | Bundle metadata: `Name`, `Type`, `Features`, `Defaults`, `Templates`, `Services`. |
+| `BundleManifest` | Bundle metadata: `Name/Class/Version`, `Delivery/Outputs/Lifecycle/Backup`, `Components/Dependencies/Wiring`, `AliasOf`. |
+| `ResolvedPlan` | Resolver output: components/dependencies, rendered compose/override, lock, component lifecycles. |
 | `BundleFeatures` | Feature flags: `DockerLogRotation`, `GitClone`, `DockerPrune`, `CreateNetwork`. |
 
 ### Driver Registry
@@ -180,6 +362,11 @@ CLI command registration and application bootstrap.
 | `cmd_dns.go` | `dns list/add/remove/push` | DNS management |
 | `cmd_site.go` | `site list/deploy/push` | Site management |
 | `cmd_bundle.go` | `bundle <name> <action> <host>` | Bundle orchestration |
+| `cmd_bundle_updates.go` | `bundle check-updates <name>` | Pinned image update suggestions |
+| `cmd_plan.go` | `plan <bundle> <host> [--offline]` | Static validation / online diff |
+| `cmd_apply.go` | `apply <bundle> <host> [--locked]` | Apply components on one host |
+| `cmd_rollback.go` | `rollback <bundle> <host> [gen]` | Restore remote generation |
+| `cmd_serve.go` | `serve --socket <path>` | Optional local Unix-socket API |
 | `cmd_stack.go` | `stack install <host> <app>` | Binary installation |
 | `cmd_service.go` | `service <host> <action> <svc>` | Service control |
 | `cmd_n8n.go` | `n8n list/import/export/update` | n8n workflows |

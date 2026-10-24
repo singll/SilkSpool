@@ -1,0 +1,13 @@
+apiVersion: spool/v1alpha1
+kind: Bundle
+metadata:
+  name: n8n
+  class: product
+  version: 1.62.1
+  owner: n8n-io/n8n
+name: n8n
+type: compose
+templates:
+  - compose.yaml
+services:
+  - n8n

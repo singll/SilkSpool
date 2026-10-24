@@ -50,6 +50,13 @@ type ResourceOptions struct {
 	Locked            bool
 	AllowIrreversible bool
 	Action            string
+	Domain            string
+	IP                string
+	Backend           string
+	Name              string
+	Description       string
+	Icon              string
+	Delete            bool
 }
 
 // BackupRef 指向一次备份产物。
@@ -243,11 +250,15 @@ func (m *Manager) Backup(ctx context.Context, bundleName, host string, inputs, s
 	if m.Runner == nil {
 		return "", fmt.Errorf("backup requires a remote runner")
 	}
-	if plan.Manifest.Backup.Hook == "" {
+	specs := plan.BackupHooks()
+	if len(specs) == 0 {
 		return "", &UnsupportedError{Kind: "Bundle", Op: "backup (no backup.hook declared)"}
 	}
+	if secrets == nil {
+		secrets = LoadSecrets(m.BaseDir, host, bundleName)
+	}
 	current, _ := m.currentGeneration(plan.DeployPath)
-	return m.runBackupHook(ctx, plan, current)
+	return m.runBackupHooks(ctx, plan, current, specs, secrets)
 }
 
 // ManifestLogicalOutputs 返回未解析的逻辑 outputs（用于 inventory）。
@@ -329,6 +340,43 @@ func ListResourceStatuses(baseDir string, cfg *config.Config, manager *Manager) 
 			statuses = append(statuses, status)
 		}
 	}
+	gatewayHost := cfg.Global.DNSGatewayHost
+	if gatewayHost == "" {
+		gatewayHost = "local"
+	}
+	if dnsManager, err := NewDNSManager(baseDir); err == nil {
+		if records, err := dnsManager.ListDNSRecords(); err == nil {
+			seen := map[string]bool{}
+			for _, record := range records {
+				if seen[record.Domain] {
+					continue
+				}
+				seen[record.Domain] = true
+				statuses = append(statuses, ResourceStatus{
+					Kind:    "DNSRecord",
+					Name:    record.Domain,
+					Host:    gatewayHost,
+					Status:  "present",
+					Labels:  map[string]string{},
+					Outputs: map[string]string{"ip": record.IP},
+				})
+			}
+		}
+	}
+	if siteManager, err := NewSiteManager(baseDir); err == nil {
+		if sites, err := siteManager.ListSites(); err == nil {
+			for _, site := range sites {
+				statuses = append(statuses, ResourceStatus{
+					Kind:    "Site",
+					Name:    site.Domain,
+					Host:    gatewayHost,
+					Status:  "present",
+					Labels:  map[string]string{},
+					Outputs: map[string]string{"backend": site.Backend, "name": site.Name},
+				})
+			}
+		}
+	}
 	sort.Slice(statuses, func(i, j int) bool {
 		if statuses[i].Host != statuses[j].Host {
 			return statuses[i].Host < statuses[j].Host
@@ -339,4 +387,205 @@ func ListResourceStatuses(baseDir string, cfg *config.Config, manager *Manager) 
 		return statuses[i].Name < statuses[j].Name
 	})
 	return statuses
+}
+
+// DNSRecordResource 包装 DNSManager。
+type DNSRecordResource struct {
+	BaseDir string
+	Host    string
+	Domain  string
+	IP      string
+}
+
+// NewDNSRecordResource 创建 DNS 资源。
+func NewDNSRecordResource(baseDir, host, domain, ip string) *DNSRecordResource {
+	return &DNSRecordResource{BaseDir: baseDir, Host: host, Domain: domain, IP: ip}
+}
+
+// Kind 返回资源类型。
+func (r *DNSRecordResource) Kind() string { return "DNSRecord" }
+
+// Name 返回域名。
+func (r *DNSRecordResource) Name() string { return r.Domain }
+
+// Status 查询本地 DNS provider 配置。
+func (r *DNSRecordResource) Status(ctx context.Context) (ResourceStatus, error) {
+	manager, err := NewDNSManager(r.BaseDir)
+	if err != nil {
+		return ResourceStatus{}, err
+	}
+	records, err := manager.ListDNSRecords()
+	if err != nil {
+		return ResourceStatus{}, err
+	}
+	status := ResourceStatus{Kind: r.Kind(), Name: r.Domain, Host: r.Host, Status: "absent", Labels: map[string]string{}, Outputs: map[string]string{}}
+	for _, record := range records {
+		if record.Domain == r.Domain {
+			status.Status = "present"
+			status.Outputs["ip"] = record.IP
+			break
+		}
+	}
+	return status, nil
+}
+
+// Plan 输出 DNS 记录的 desired/actual diff。
+func (r *DNSRecordResource) Plan(ctx context.Context, opts ResourceOptions) (*PlanResult, error) {
+	status, err := r.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	desiredIP := opts.IP
+	if desiredIP == "" {
+		desiredIP = r.IP
+	}
+	result := &PlanResult{Bundle: "dns", Host: r.Host, Mode: "offline", Diff: []DiffEntry{}}
+	result.Desired.Components = []string{r.Domain}
+	result.Desired.LockHash = "dns:" + desiredIP
+	result.Actual.LockHash = status.Outputs["ip"]
+	result.Actual.Status = status.Status
+	if status.Status == "absent" {
+		result.Diff = append(result.Diff, DiffEntry{Field: "dns." + r.Domain, Desired: desiredIP, Actual: "absent"})
+	} else if desiredIP != "" && status.Outputs["ip"] != desiredIP {
+		result.Diff = append(result.Diff, DiffEntry{Field: "dns." + r.Domain, Desired: desiredIP, Actual: status.Outputs["ip"]})
+	}
+	return result, nil
+}
+
+// Apply 添加/删除 DNS 记录。
+func (r *DNSRecordResource) Apply(ctx context.Context, opts ResourceOptions) (*ApplyResult, error) {
+	manager, err := NewDNSManager(r.BaseDir)
+	if err != nil {
+		return nil, err
+	}
+	domain := r.Domain
+	if domain == "" {
+		domain = opts.Domain
+	}
+	if domain == "" {
+		return nil, fmt.Errorf("dns apply: domain is required")
+	}
+	if opts.Delete {
+		if err := manager.RemoveDomain(domain); err != nil {
+			return nil, err
+		}
+	} else {
+		ip := opts.IP
+		if ip == "" {
+			ip = r.IP
+		}
+		if err := manager.AddDomain(domain, ip); err != nil {
+			return nil, err
+		}
+	}
+	return &ApplyResult{Bundle: "dns", Host: r.Host, Status: "succeeded", Warnings: []string{}}, nil
+}
+
+// Backup 明确 unsupported。
+func (r *DNSRecordResource) Backup(ctx context.Context, opts ResourceOptions) (BackupRef, error) {
+	return BackupRef{}, &UnsupportedError{Kind: r.Kind(), Op: "backup"}
+}
+
+// Restore 明确 unsupported。
+func (r *DNSRecordResource) Restore(ctx context.Context, ref BackupRef) error {
+	return &UnsupportedError{Kind: r.Kind(), Op: "restore"}
+}
+
+// SiteResource 包装 SiteManager。
+type SiteResource struct {
+	BaseDir string
+	Host    string
+	Domain  string
+}
+
+// NewSiteResource 创建站点资源。
+func NewSiteResource(baseDir, host, domain string) *SiteResource {
+	return &SiteResource{BaseDir: baseDir, Host: host, Domain: domain}
+}
+
+// Kind 返回资源类型。
+func (r *SiteResource) Kind() string { return "Site" }
+
+// Name 返回域名。
+func (r *SiteResource) Name() string { return r.Domain }
+
+// Status 查询本地 Caddy/Homepage 配置。
+func (r *SiteResource) Status(ctx context.Context) (ResourceStatus, error) {
+	manager, err := NewSiteManager(r.BaseDir)
+	if err != nil {
+		return ResourceStatus{}, err
+	}
+	sites, err := manager.ListSites()
+	if err != nil {
+		return ResourceStatus{}, err
+	}
+	status := ResourceStatus{Kind: r.Kind(), Name: r.Domain, Host: r.Host, Status: "absent", Labels: map[string]string{}, Outputs: map[string]string{}}
+	for _, site := range sites {
+		if site.Domain == r.Domain {
+			status.Status = "present"
+			status.Outputs["backend"] = site.Backend
+			status.Outputs["name"] = site.Name
+			break
+		}
+	}
+	return status, nil
+}
+
+// Plan 输出站点 desired/actual diff。
+func (r *SiteResource) Plan(ctx context.Context, opts ResourceOptions) (*PlanResult, error) {
+	status, err := r.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	backend := opts.Backend
+	result := &PlanResult{Bundle: "site", Host: r.Host, Mode: "offline", Diff: []DiffEntry{}}
+	result.Desired.Components = []string{r.Domain}
+	result.Desired.LockHash = "site:" + backend
+	result.Actual.LockHash = status.Outputs["backend"]
+	result.Actual.Status = status.Status
+	if status.Status == "absent" {
+		result.Diff = append(result.Diff, DiffEntry{Field: "site." + r.Domain, Desired: backend, Actual: "absent"})
+	} else if backend != "" && status.Outputs["backend"] != backend {
+		result.Diff = append(result.Diff, DiffEntry{Field: "site." + r.Domain, Desired: backend, Actual: status.Outputs["backend"]})
+	}
+	return result, nil
+}
+
+// Apply 添加/删除站点配置。
+func (r *SiteResource) Apply(ctx context.Context, opts ResourceOptions) (*ApplyResult, error) {
+	manager, err := NewSiteManager(r.BaseDir)
+	if err != nil {
+		return nil, err
+	}
+	domain := r.Domain
+	if domain == "" {
+		domain = opts.Domain
+	}
+	if domain == "" {
+		return nil, fmt.Errorf("site apply: domain is required")
+	}
+	if opts.Delete {
+		if err := manager.RemoveSite(domain); err != nil {
+			return nil, err
+		}
+	} else {
+		name := opts.Name
+		if name == "" {
+			name = domain
+		}
+		if err := manager.AddSite(domain, opts.Backend, name, opts.Description, opts.Icon); err != nil {
+			return nil, err
+		}
+	}
+	return &ApplyResult{Bundle: "site", Host: r.Host, Status: "succeeded", Warnings: []string{}}, nil
+}
+
+// Backup 明确 unsupported。
+func (r *SiteResource) Backup(ctx context.Context, opts ResourceOptions) (BackupRef, error) {
+	return BackupRef{}, &UnsupportedError{Kind: r.Kind(), Op: "backup"}
+}
+
+// Restore 明确 unsupported。
+func (r *SiteResource) Restore(ctx context.Context, ref BackupRef) error {
+	return &UnsupportedError{Kind: r.Kind(), Op: "restore"}
 }

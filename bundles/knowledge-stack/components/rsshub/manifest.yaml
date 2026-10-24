@@ -1,0 +1,13 @@
+apiVersion: spool/v1alpha1
+kind: Bundle
+metadata:
+  name: rsshub
+  class: product
+  version: 2025-01-01
+  owner: DIYgod/RSSHub
+name: rsshub
+type: compose
+templates:
+  - compose.yaml
+services:
+  - rsshub

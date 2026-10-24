@@ -246,7 +246,7 @@ func (d *ScriptDriver) pushTemplates(re *RemoteExecutor, deployPath string, mani
 	bundleRoot := filepath.Join(d.baseDir, "bundles", d.bundleName)
 
 	for _, t := range manifest.Templates {
-		localPath := filepath.Join(bundleRoot, "templates", t)
+		localPath := templateFilePath(bundleRoot, t)
 		data, err := os.ReadFile(localPath)
 		if err != nil {
 			return fmt.Errorf("read template %s failed: %w", t, err)

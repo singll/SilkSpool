@@ -1,12 +1,12 @@
 # ==============================================================================
-#  PostgreSQL - Bellkeeper 主库（从 keeper 的 50-bellkeeper.yaml 抽出，独立到数据层）
-#  分离后对 LAN 发布 5432，供 keeper 上的 sp-bellkeeper 经 extra_hosts 跨机连接。
+#  PostgreSQL - 数据层统一服务名 postgres（消费方通过 outputs 或 MagicDNS 连接）
+#  分离后对 LAN 发布 5432；跨机地址由 spool 的 endpoint 拓扑解析注入。
 # ==============================================================================
 
 services:
-  bellkeeper-db:
+  postgres:
     image: postgres:16-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36
-    container_name: ${APP_PREFIX:-sp-}bellkeeper-db
+    container_name: ${APP_PREFIX:-sp-}postgres
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai

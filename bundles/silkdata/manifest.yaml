@@ -1,8 +1,17 @@
+apiVersion: spool/v1alpha1
+kind: Bundle
+metadata:
+  name: silkdata
+  class: capability
+  version: 1.2.0
+  owner: singll/SilkSpool
+  labels:
+    io.silkspool.capability: data
 name: silkdata
 type: compose
 config_root: bundle
 # 数据层 bundle：从 keeper 剥离出的有状态服务（PG / Meilisearch / Redis / NATS / CouchDB）
-# 与 keeper(应用层)分离部署，独立生命周期 + 独立备份。
+# 与 knowledge-stack(应用层)分离部署，独立生命周期 + 独立备份。
 # 无 git_clone —— 数据层不需要 Bellkeeper 源码。
 features:
   docker_log_rotation: true
@@ -12,7 +21,7 @@ defaults:
     content: |
       # ==============================================================================
       #  Silkdata Stack Environment Variables（数据层）
-      #  注意：这些密钥必须与 keeper(应用层) .env 完全一致，
+      #  注意：这些密钥必须与 knowledge-stack(应用层) .env 完全一致，
       #        否则应用连不上库 / Meili key 不匹配。部署时由 hosts/silkdata/.env 覆盖。
       # ==============================================================================
       APP_PREFIX=sp-
@@ -30,8 +39,45 @@ templates:
   - 40-couchdb.yaml
   - 50-postgres.yaml
 services:
-  - bellkeeper-db
+  - postgres
   - meilisearch
   - redis
   - nats
   - couchdb
+spec:
+  outputs:
+    postgres:
+      kind: endpoint
+      service: postgres
+      port: 5432
+      published_port: 5432
+      protocol: postgres
+      remote: "${host.magicdns}"
+    redis:
+      kind: endpoint
+      service: redis
+      port: 6379
+      published_port: 6379
+      protocol: redis
+      remote: "${host.magicdns}"
+    search:
+      kind: endpoint
+      service: meilisearch
+      port: 7700
+      published_port: 7700
+      protocol: http
+      remote: "${host.magicdns}"
+    queue:
+      kind: endpoint
+      service: nats
+      port: 4222
+      published_port: 4222
+      protocol: nats
+      remote: "${host.magicdns}"
+    couchdb:
+      kind: endpoint
+      service: couchdb
+      port: 5984
+      published_port: 5984
+      protocol: http
+      remote: "${host.magicdns}"
