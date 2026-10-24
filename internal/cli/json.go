@@ -37,6 +37,8 @@ type ExitError struct {
 	Code int
 	Kind string
 	Err  error
+	// Silent 表示命令已经输出结果（例如 plan diff），main 不再重复打印错误。
+	Silent bool
 }
 
 func (e *ExitError) Error() string {
@@ -134,6 +136,10 @@ func JSONMode() bool { return jsonFlag }
 // ReportError writes the final CLI error, using the JSON envelope when --json is active.
 func ReportError(w io.Writer, err error) {
 	if err == nil {
+		return
+	}
+	var exitErr *ExitError
+	if errors.As(err, &exitErr) && exitErr.Silent {
 		return
 	}
 	if jsonFlag {

@@ -10,7 +10,8 @@ import (
 )
 
 type inventory struct {
-	Hosts []inventoryHost `json:"hosts"`
+	Hosts     []inventoryHost         `json:"hosts"`
+	Resources []engine.ResourceStatus `json:"resources"`
 }
 
 type inventoryHost struct {
@@ -25,22 +26,31 @@ type inventoryHost struct {
 }
 
 type inventoryBundle struct {
+	Kind       string            `json:"kind"`
 	Name       string            `json:"name"`
+	Host       string            `json:"host"`
 	Class      string            `json:"class,omitempty"`
 	Version    string            `json:"version,omitempty"`
 	Driver     string            `json:"driver,omitempty"`
 	DeployPath string            `json:"deploy_path,omitempty"`
 	Services   []string          `json:"services,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
+	Status     string            `json:"status,omitempty"`
+	Generation int               `json:"generation,omitempty"`
+	Outputs    map[string]string `json:"outputs,omitempty"`
 	Error      string            `json:"error,omitempty"`
 }
 
 type inventoryService struct {
-	Alias   string `json:"alias"`
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	Status  string `json:"status,omitempty"`
-	Healthy bool   `json:"healthy,omitempty"`
+	Kind    string            `json:"kind"`
+	Alias   string            `json:"alias"`
+	Type    string            `json:"type"`
+	Name    string            `json:"name"`
+	Host    string            `json:"host"`
+	Status  string            `json:"status,omitempty"`
+	Healthy bool              `json:"healthy,omitempty"`
+	Labels  map[string]string `json:"labels,omitempty"`
+	Outputs map[string]string `json:"outputs,omitempty"`
 }
 
 func (a *App) addInventoryCmd(root *cobra.Command) {
@@ -96,9 +106,12 @@ func (a *App) runInventory(cmd *cobra.Command, probe bool) error {
 
 		for _, bundleName := range hostCfg.Bundles {
 			ib := inventoryBundle{
+				Kind:       "Bundle",
 				Name:       bundleName,
+				Host:       name,
 				Driver:     "compose",
 				DeployPath: mgr.DeployPath(bundleName),
+				Status:     "declared",
 			}
 			manifest, err := engine.NewManifestLoader(a.BaseDir).Load(bundleName)
 			if err != nil {
@@ -112,15 +125,27 @@ func (a *App) runInventory(cmd *cobra.Command, probe bool) error {
 				ib.Version = manifest.Version
 				ib.Services = manifest.Services
 				ib.Labels = manifest.Labels
+				ib.Outputs = engine.ManifestLogicalOutputs(manifest)
+			}
+			if state, err := engine.ReadLocalState(a.BaseDir, name, bundleName); err == nil {
+				ib.Status = state.Status
+				ib.Generation = state.Generation
+			}
+			if lock, err := engine.LoadLock(a.BaseDir, name, bundleName); err == nil {
+				ib.Outputs = engine.LockOutputs(lock)
 			}
 			ih.Bundles = append(ih.Bundles, ib)
 		}
 
 		for _, svc := range hostCfg.Services {
 			ih.Services = append(ih.Services, inventoryService{
-				Alias: svc.Alias,
-				Type:  svc.Type,
-				Name:  svc.Name,
+				Kind:    "Service",
+				Alias:   svc.Alias,
+				Type:    svc.Type,
+				Name:    svc.Name,
+				Host:    name,
+				Labels:  map[string]string{},
+				Outputs: map[string]string{},
 			})
 		}
 
@@ -149,8 +174,10 @@ func (a *App) runInventory(cmd *cobra.Command, probe bool) error {
 		hosts = append(hosts, ih)
 	}
 
+	deployManager := engine.NewManager(a.BaseDir, a.Config, nil)
+	resources := engine.ListResourceStatuses(a.BaseDir, a.Config, deployManager)
 	if jsonFlag {
-		return writeJSON(cmd.OutOrStdout(), inventory{Hosts: hosts}, warnings)
+		return writeJSON(cmd.OutOrStdout(), inventory{Hosts: hosts, Resources: resources}, warnings)
 	}
 
 	out := cmd.OutOrStdout()

@@ -30,3 +30,6 @@ out/
 __pycache__/
 *.pyc
 *.pyo
+
+# --- 7. SilkSpool 本地运行状态（lock/state/cache，不提交） ---
+.spool/

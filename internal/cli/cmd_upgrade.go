@@ -24,6 +24,8 @@ func (a *App) addUpgradeCmd(root *cobra.Command) {
 		RunE: a.runUpgrade,
 	}
 	cmd.Flags().Bool("force", false, "强制重装（即使已是最新版本）")
+	cmd.Flags().Bool("locked", false, "compose: 使用本地 lock 快照")
+	cmd.Flags().Bool("allow-irreversible", false, "compose: 允许不可逆迁移")
 	root.AddCommand(cmd)
 }
 
@@ -48,9 +50,28 @@ func (a *App) runUpgrade(cmd *cobra.Command, args []string) error {
 	}
 
 	force, _ := cmd.Flags().GetBool("force")
+	bundle := hostCfg.Bundles[0]
+	manifest, err := engine.NewManifestLoader(a.BaseDir).Load(bundle)
+	if err != nil || manifest.Type == "compose" {
+		locked, _ := cmd.Flags().GetBool("locked")
+		allowIrreversible, _ := cmd.Flags().GetBool("allow-irreversible")
+		result, err := a.applyForBundle(bundle, host, engine.ApplyOptions{
+			Locked:            locked,
+			Yes:               true,
+			AllowIrreversible: allowIrreversible,
+		})
+		if err != nil {
+			return applyError(err, result)
+		}
+		if jsonFlag {
+			return writeJSON(cmd.OutOrStdout(), result, result.Warnings)
+		}
+		printApply(result)
+		return nil
+	}
 	mgr, err := engine.NewBundleManager(a.BaseDir)
 	if err != nil {
 		return fmt.Errorf("failed to init bundle manager: %w", err)
 	}
-	return mgr.UpgradeBundle(hostCfg.Bundles[0], host, force)
+	return mgr.UpgradeBundle(bundle, host, force)
 }

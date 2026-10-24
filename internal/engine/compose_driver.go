@@ -320,30 +320,3 @@ func renderComposeBase(names []string, data [][]byte) ([]byte, error) {
 	}
 	return yaml.Marshal(includeFile{Name: projectName, Include: includes})
 }
-
-// renderSpoolOverride 生成 docker-compose.spool.yaml，只包含 spool 注入项。
-func renderSpoolOverride(templates [][]byte, host, bundle, version string) ([]byte, error) {
-	services := make(map[string]interface{})
-
-	for _, data := range templates {
-		var doc map[string]interface{}
-		if err := yaml.Unmarshal(data, &doc); err != nil {
-			return nil, err
-		}
-		rawServices, _ := doc["services"].(map[string]interface{})
-		for name := range rawServices {
-			labels := map[string]string{
-				"io.silkspool.managed":   "true",
-				"io.silkspool.host":      host,
-				"io.silkspool.bundle":    bundle,
-				"io.silkspool.component": name,
-			}
-			if version != "" {
-				labels["io.silkspool.version"] = version
-			}
-			services[name] = map[string]interface{}{"labels": labels}
-		}
-	}
-
-	return yaml.Marshal(map[string]interface{}{"services": services})
-}

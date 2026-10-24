@@ -224,6 +224,63 @@ spool version
 
 ---
 
+## Plan / Apply / Rollback（P1）
+
+单 host 部署主链路：
+
+```bash
+# 1. 静态校验（CI/PR，不连远端；合法 0，非法 2，永不返回 3）
+spool plan knowledge-stack keeper --offline --json
+
+# 2. online diff（SSH 读取远端实际状态；有 diff 退出 3）
+spool plan knowledge-stack keeper --json
+
+# 3. 应用（--locked 复现上一次 lock 快照；script 驱动必须 --yes）
+spool apply knowledge-stack keeper --yes
+spool apply knowledge-stack keeper --locked --yes
+
+# 4. 回滚（不传 generation 时回滚到 current-1）
+spool rollback knowledge-stack keeper
+spool rollback knowledge-stack keeper 3
+
+# 5. 显式 restore（未声明 lifecycle.restore.hook 时只输出人工恢复产物路径）
+spool restore knowledge-stack keeper
+```
+
+约定：
+
+- `.spool/lock/<host>/<bundle>.yaml` 保存 resolved 快照与渲染结果；`.spool/state/` 可删除重建。
+- 远端 `/opt/silkspool/<bundle>/.spool-gen/<n>/` 保存 compose/env/digest/meta；
+  默认保留 current 与上一代，控制机重装后仍可从远端回滚。
+- `.spool/locks/<host>.lock` 是 per-host 部署锁：同 host 串行，不同 host 可并行。
+- `dependencies` 只读 outputs，不会被 apply/升级/回滚；`components` 才部署到目标 host。
+- 含 `${secrets.*}` 的 wiring 在 plan/lock 中写 `secret://...` 占位；apply 时才从
+  `hosts/<host>/<bundle>/.env` 与 `hosts/<host>/.env` 解析。
+- `lifecycle.upgrade.irreversible: true` 必须先声明 `spec.backup.hook`，执行时必须带
+  `--allow-irreversible`；健康失败不自动回滚，状态停在 `needs_attention`。
+- 远端仍可直接手动执行：
+  `docker compose -f docker-compose.yaml -f docker-compose.spool.yaml up -d`
+
+### bundle_sources
+
+`silkspool.yaml` 可声明外部 bundle 来源（P1 只支持 `dir` / `git`）：
+
+```yaml
+bundle_sources:
+  - name: bellkeeper
+    type: git
+    repo: https://github.com/singll/Bellkeeper.git
+    path: deploy
+    commit: 0123456789abcdef0123456789abcdef01234567
+  - name: local
+    type: dir
+    path: ./bundles
+```
+
+`git` 必须固定 commit（禁止 `latest`/分支）；缓存写入 `.spool/cache/bundles/<name>/<ref>/`。
+
+---
+
 ## 常用命令
 
 ```bash
@@ -236,7 +293,11 @@ spool sync pull keeper
 
 # Bundle 操作
 spool bundle keeper init keeper
-spool bundle keeper up keeper
+spool plan keeper keeper --offline
+spool bundle keeper up keeper            # 兼容层：映射到 apply；有 diff 需 --yes
+spool apply keeper keeper --locked --yes
+spool rollback keeper keeper
+spool status keeper keeper --json
 
 # 服务管理
 spool service keeper status
@@ -254,4 +315,4 @@ spool backup keeper
 
 ---
 
-*部署模型: 自包含二进制目录 + PATH 软链 | 最后更新: 2026-05-31*
+*部署模型: 自包含二进制目录 + PATH 软链 | 最后更新: 2026-10-24*

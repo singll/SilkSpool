@@ -24,15 +24,17 @@ type GlobalConfig struct {
 
 // HostConfig 定义单个主机的完整配置
 type HostConfig struct {
-	Address       string         `yaml:"address"        mapstructure:"address"`          // 用户名@IP
-	SSHPort       string         `yaml:"ssh_port"       mapstructure:"ssh_port"`         // SSH 端口 (默认 22)
-	AppPrefix     string         `yaml:"app_prefix"     mapstructure:"app_prefix"`       // 容器名前缀
-	Bundles       []string       `yaml:"bundles"        mapstructure:"bundles"`          // 关联的 bundle
-	SyncRules     []SyncRule     `yaml:"sync_rules"     mapstructure:"sync_rules"`       // 同步规则
-	Services      []ServiceEntry `yaml:"services"       mapstructure:"services"`         // 服务注册
-	PostPushHooks []PostPushHook `yaml:"post_push_hooks" mapstructure:"post_push_hooks"` // 推送后钩子
-	Backups       []BackupRule   `yaml:"backups"        mapstructure:"backups"`          // 备份规则
-	Stack         []string       `yaml:"stack"          mapstructure:"stack"`            // 二进制安装列表
+	Address       string            `yaml:"address"        mapstructure:"address"`          // 用户名@IP
+	SSHPort       string            `yaml:"ssh_port"       mapstructure:"ssh_port"`         // SSH 端口 (默认 22)
+	AppPrefix     string            `yaml:"app_prefix"     mapstructure:"app_prefix"`       // 容器名前缀
+	MagicDNS      string            `yaml:"magicdns"       mapstructure:"magicdns"`         // Headscale MagicDNS 名称（跨机 wiring）
+	Inputs        map[string]string `yaml:"inputs"         mapstructure:"inputs"`           // bundle 输入（覆盖 manifest.inputs）
+	Bundles       []string          `yaml:"bundles"        mapstructure:"bundles"`          // 关联的 bundle
+	SyncRules     []SyncRule        `yaml:"sync_rules"     mapstructure:"sync_rules"`       // 同步规则
+	Services      []ServiceEntry    `yaml:"services"       mapstructure:"services"`         // 服务注册
+	PostPushHooks []PostPushHook    `yaml:"post_push_hooks" mapstructure:"post_push_hooks"` // 推送后钩子
+	Backups       []BackupRule      `yaml:"backups"        mapstructure:"backups"`          // 备份规则（legacy，建议迁移到 bundle backup）
+	Stack         []string          `yaml:"stack"          mapstructure:"stack"`            // 二进制安装列表
 }
 
 // SyncRule 定义单个同步规则
@@ -142,7 +144,7 @@ type N8NConfig struct {
 // TrueNASConfig 定义 TrueNAS 集成配置
 type TrueNASConfig struct {
 	Host     string `yaml:"host"     mapstructure:"host"`     // 主机别名
-	APIURL   string `yaml:"api_url" mapstructure:"api_url"` // API 地址
+	APIURL   string `yaml:"api_url" mapstructure:"api_url"`   // API 地址
 	Username string `yaml:"username" mapstructure:"username"` // 用户名
 	Insecure bool   `yaml:"insecure" mapstructure:"insecure"` // 跳过 TLS 证书校验（自签证书无 IP SAN 时）
 	// APIKey 从 hosts/<host>/.env 动态读取
@@ -150,11 +152,21 @@ type TrueNASConfig struct {
 
 // ==================== 根配置 ====================
 
+// BundleSourceConfig 声明外部 bundle 来源（P1 仅 dir | git）。
+type BundleSourceConfig struct {
+	Name   string `yaml:"name"   mapstructure:"name"`   // 来源名，通常与 bundle 名一致
+	Type   string `yaml:"type"   mapstructure:"type"`   // dir | git
+	Path   string `yaml:"path"   mapstructure:"path"`   // dir: 本地目录；git: 仓库内子目录
+	Repo   string `yaml:"repo"   mapstructure:"repo"`   // git 仓库
+	Commit string `yaml:"commit" mapstructure:"commit"` // git 固定 commit（禁止分支/latest）
+}
+
 // Config 是 silkspool.yaml 的根结构
 type Config struct {
 	Global         GlobalConfig          `yaml:"global"          mapstructure:"global"`
 	Hosts          map[string]HostConfig `yaml:"hosts"           mapstructure:"hosts"`
 	InstallSources []InstallSource       `yaml:"install_sources" mapstructure:"install_sources"`
+	BundleSources  []BundleSourceConfig  `yaml:"bundle_sources"  mapstructure:"bundle_sources"`
 	N8N            N8NConfig             `yaml:"n8n"             mapstructure:"n8n"`
 	TrueNAS        TrueNASConfig         `yaml:"truenas"         mapstructure:"truenas"`
 }

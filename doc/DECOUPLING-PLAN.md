@@ -1,6 +1,6 @@
 # SilkSpool 解耦与集成改进方案（评审后修订版）
 
-> 状态: Revised（P1 施工蓝图）
+> 状态: P1 complete（2026-10-24）；下一阶段 P2
 > 日期: 2026-10-23
 > 依据: 对《SilkSpool 解耦与集成设计》的评审意见，以及对 Kamal、Komodo、Dockge、Uncloud、Timoni、deploy-rs 公开文档的核对
 > 修订: 2026-10-23，按二次评审修正 outputs 拓扑语义、备份 hook、组件健康、锁粒度与 plan 语义；按三次评审拆分 components/dependencies、明确 health 执行上下文与 restore 契约
@@ -1044,7 +1044,37 @@ P0 已完成（2026-10-23 收尾）：
 - [x] 补测试：JSON envelope/退出码、override 渲染、per-bundle 配置与旧布局回退
 - [x] `go test ./...`、`go vet ./...` 通过
 
-P1/P2 未开始：`plan/apply/rollback`、magic rollback、`bundle_sources`、keeper 拆分、`spool serve`。
+P1 已完成（2026-10-24，单 host）：
+
+- [x] 轻契约 manifest：兼容旧扁平字段，新增 `metadata/spec`、`class/version/owner/labels`、
+  `delivery`、`outputs`、`lifecycle.health/upgrade/hooks/restore`、`backup.hook/assets`；
+  composition 支持 `components/dependencies/wiring`（组件 `source/version/health/optional/after/exec_in`）
+- [x] `internal/engine/resolver.go`：components 仅在目标 host 部署；dependencies 只读 outputs；
+  精确版本/digest 校验；字符串插值；endpoint 拓扑（同 project 服务名 / 同 host 地址 /
+  跨机 MagicDNS→address）；per-component `after` DFS；`.spool/lock/<host>/<bundle>.yaml`
+- [x] `spool plan <bundle> <host> [--offline] [--json]`：online 输出 desired vs actual diff
+  （有 diff 退出 3）；offline 仅静态校验（合法 0 / 非法 2 / 永不 3）
+- [x] `spool apply`：per-host `flock`、远端 `.spool-gen/<n>/` 快照（保留 current 与上一代）、
+  Compose 多文件 override（labels/env/extra_hosts/digest）、组件 health gate、
+  SSH 回连确认、失败自动回滚；不可逆迁移要求 `backup.hook` + `--allow-irreversible`，
+  健康失败停在 `needs_attention`
+- [x] `spool rollback`：基于远端 generation 恢复 compose/env 并再次健康检查
+- [x] 产品 `backup.hook` / `restore.hook`；无 restore hook 时明确人工恢复并列出产物路径
+- [x] `bundle_sources: dir|git`（git 固定 commit，缓存 `.spool/cache/`）；`.spool/` 已加入 `.gitignore`
+- [x] script driver：plan unsupported；apply 标注“未经 diff 确认”且必须显式 `--yes`
+- [x] `pkg/driver` 公开 `BundleDriver`（协议版本 + 能力协商）；`internal/engine` 编译期注册适配器
+- [x] Resource adapter：`Bundle`、`Service` 支持 Status/Plan/Apply/Backup/Restore（不支持动词明确报错）；
+  `inventory --json` 增加 `kind/name/host/labels/status/outputs` 与 `resources`
+- [x] 兼容层：`bundle setup/up` 映射 apply（diff 要求 `--yes`，`--skip-plan` 弃用警告）；
+  `upgrade <host>` 对 compose bundle 内部调用 apply；新增 `status <bundle> <host>`
+- [x] 测试：resolver/plan/apply/rollback/script/driver/resource；`go test ./...`、`go vet ./...` 通过
+
+P1 已知边界（按计划不阻塞退出）：
+
+- `DNSRecord`/`Site` Resource adapter 裁剪到 P2；`Dataset`/`Key` 留待 P3。
+- legacy `host.services`/`host.backups` 仍可用，但标记为兼容路径。
+- `spool serve --socket`、`bundle check-updates`、keeper 拆分属于 P2。
+- 跨主机 apply 编排、OCI/CUE/Events 属于 P3，不提前实现。
 
 ---
 

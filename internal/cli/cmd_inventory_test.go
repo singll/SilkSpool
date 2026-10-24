@@ -61,8 +61,20 @@ func TestInventoryCommandJSON(t *testing.T) {
 	if bundle.DeployPath != "/opt/demo" {
 		t.Errorf("deploy_path = %q, want /opt/demo", bundle.DeployPath)
 	}
+	if bundle.Kind != "Bundle" || bundle.Host != "testhost" {
+		t.Errorf("kind/host = %q/%q", bundle.Kind, bundle.Host)
+	}
+	if bundle.Status != "declared" {
+		t.Errorf("status = %q, want declared", bundle.Status)
+	}
 	if len(host.Services) != 1 || host.Services[0].Alias != "demo" {
 		t.Errorf("unexpected services: %+v", host.Services)
+	}
+	if host.Services[0].Kind != "Service" || host.Services[0].Host != "testhost" {
+		t.Errorf("service kind/host = %q/%q", host.Services[0].Kind, host.Services[0].Host)
+	}
+	if len(inv.Resources) == 0 {
+		t.Error("resources should include bundle/service adapters")
 	}
 }
 

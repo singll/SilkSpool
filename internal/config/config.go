@@ -63,6 +63,11 @@ func (cl *ConfigLoader) Load() (*Config, error) {
 		cfg.InstallSources = []InstallSource{}
 	}
 
+	// 解析 bundle 来源配置
+	if err := v.UnmarshalKey("bundle_sources", &cfg.BundleSources); err != nil {
+		cfg.BundleSources = []BundleSourceConfig{}
+	}
+
 	// 解析 n8n 配置
 	if err := v.UnmarshalKey("n8n", &cfg.N8N); err != nil {
 		cfg.N8N = N8NConfig{}

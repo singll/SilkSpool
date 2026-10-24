@@ -72,6 +72,137 @@ services:                         # Service names for status reporting
 | `compose` | `ComposeDriver` | Docker Compose deployment. Templates are YAML compose files. |
 | `stack` | `StackDriver` | Binary installation from GitHub releases. Templates are systemd unit files. |
 
+## 轻契约 Manifest（P1）
+
+新 bundle 推荐使用以下结构；旧扁平字段（`name/type/templates/services/features/defaults`）继续兼容。
+
+```yaml
+apiVersion: spool/v1alpha1
+kind: Bundle
+metadata:
+  name: bellkeeper
+  class: product          # product | composition | capability | infrastructure | tool
+  version: 2.4.0          # 精确版本或 digest，禁止 latest/范围
+  owner: singll/Bellkeeper
+  labels:
+    io.silkspool.product: bellkeeper
+spec:
+  delivery:
+    driver: compose       # compose | stack | script
+    templates: [compose.yaml]
+
+  outputs:
+    health: "${input.public_url}/api/health"
+    internal:
+      kind: endpoint
+      service: bellkeeper
+      port: 8080
+      remote: "${host.magicdns}"
+
+  lifecycle:
+    health:
+      http: "${outputs.health}"
+      from: container     # container | host
+      exec_in: bellkeeper # command 时在哪个容器内执行
+      timeout: 60s
+    upgrade:
+      strategy: recreate  # recreate | rolling | backup-then-recreate
+      irreversible: false
+    hooks:
+      pre_upgrade: scripts/pre-upgrade.sh
+      post_upgrade: scripts/post-upgrade.sh
+    restore:
+      hook: scripts/restore.sh   # 可选；缺省时 restore 为人工流程
+
+  backup:
+    hook: scripts/backup.sh      # 一致性备份入口；SPOOL_BACKUP_DIR/SPOOL_GENERATION
+    assets:
+      - type: volume
+        source: kp-bellkeeper-uploads
+```
+
+### composition：components vs dependencies
+
+- `components`：由本 composition 部署，**全部位于 apply 的目标 host**。
+- `dependencies`：已在别处部署，只读 `outputs`；绝不 apply/升级/回滚。
+- `wiring` 只能引用 `components.<key>.outputs.*` / `dependencies.<key>.outputs.*`；
+  未解析引用在 plan 阶段直接失败。
+
+```yaml
+spec:
+  components:
+    bellkeeper:
+      bundle: bellkeeper
+      version: 2.4.0
+      source: {type: git, repo: https://github.com/singll/Bellkeeper.git, path: deploy, commit: <sha>}
+      health: {http: "http://127.0.0.1:8080/api/health", from: container}
+    n8n:
+      image: docker.n8n.io/n8nio/n8n:1.62.1@sha256:...
+      after: [bellkeeper]     # 只影响同 host 组件顺序，不参与依赖解析
+      optional: true          # 失败只告警，但仍会部署
+  dependencies:
+    data:
+      bundle: silkdata
+      version: 1.2.0
+      host: silkdata          # provider 主机，用于 endpoint 拓扑
+      outputs: [postgres, redis]
+  wiring:
+    n8n:
+      BELLKEEPER_URL: "http://${components.bellkeeper.outputs.internal.host}:${components.bellkeeper.outputs.internal.port}"
+      DB_HOST: "${dependencies.data.outputs.postgres.host}"
+      N8N_ENCRYPTION_KEY: "${secrets.n8n_encryption_key}"
+```
+
+endpoint 解析规则：
+
+| 场景 | host | port |
+|---|---|---|
+| 同 host + 同 compose project | 服务名 | 容器端口 |
+| 同 host + 不同 project | 共享网络时服务名，否则 `host.address` | 容器端口或 `published_port` |
+| 跨 host | `remote` → MagicDNS → `host.address` | `published_port` |
+
+`${host.magicdns}` 来自 `silkspool.yaml` 的 `hosts.<name>.magicdns`；跨机两者都缺失时 plan 失败。
+`secrets.*` 在 plan/lock 中只写 `secret://...` 占位，apply 时才从主机 `.env` 解析。
+
+### plan / apply / rollback
+
+```bash
+spool plan mybundle myhost --offline     # 静态校验：合法 0，非法 2
+spool plan mybundle myhost --json        # online diff：有 diff 退出 3
+spool apply mybundle myhost --yes
+spool apply mybundle myhost --locked --yes
+spool rollback mybundle myhost [generation]
+```
+
+部署后远端目录：
+
+```text
+/opt/silkspool/mybundle/
+├── docker-compose.yaml
+├── docker-compose.spool.yaml
+├── .env
+├── .spool-gen/<n>/        # compose/env/digest/meta/lock 快照（保留 current + 上一代）
+└── backups/               # backup.hook 产物
+```
+
+本地 `.spool/lock/`、`.spool/state/`、`.spool/cache/` 均为可重建缓存，已在 `.gitignore` 中。
+
+### bundle_sources
+
+```yaml
+bundle_sources:
+  - name: mybundle
+    type: dir              # dir | git
+    path: ./bundles
+  - name: bellkeeper
+    type: git
+    repo: https://github.com/singll/Bellkeeper.git
+    path: deploy
+    commit: <pinned-sha>   # 必须固定 commit，不能写分支/latest
+```
+
+---
+
 ## Compose Template Variables / 模板变量
 
 Templates are Docker Compose YAML files. Use these variables:
@@ -264,23 +395,30 @@ Placeholder expansion:
 
 ## Custom Drivers / 自定义驱动
 
-Register a custom bundle driver:
+P1 起公开接口位于 `pkg/driver`（协议版本 + 能力协商，编译期注册）：
 
 ```go
-engine.RegisterDriver("mydriver", func(baseDir, sshKey, bundleName string, defaults config.DefaultsConfig) engine.BundleDriver {
+driver.Register("mydriver", func(opts driver.Options) driver.BundleDriver {
     return &MyDriver{...}
 })
 ```
 
-The driver must implement `BundleDriver`:
+驱动必须声明协议版本与能力，并实现旧方法形态（参数为 `driver.HostConfig`）：
 
 ```go
 type BundleDriver interface {
-    Setup(host string, hostCfg *config.HostConfig, deployPath string) error
-    Up(host string, hostCfg *config.HostConfig, deployPath string) error
-    Down(host string, hostCfg *config.HostConfig, deployPath string) error
-    Status(host string, hostCfg *config.HostConfig, deployPath string) error
-    Cleanup(host string, hostCfg *config.HostConfig, deployPath string, mode string) error
-    Service(host string, hostCfg *config.HostConfig, deployPath string, svc string, action string) error
+    ProtocolVersion() string
+    Capabilities() []driver.Capability
+    Setup(host string, hostCfg *driver.HostConfig, deployPath string) error
+    Up(host string, hostCfg *driver.HostConfig, deployPath string) error
+    Down(host string, hostCfg *driver.HostConfig, deployPath string) error
+    Status(host string, hostCfg *driver.HostConfig, deployPath string) error
+    Cleanup(host string, hostCfg *driver.HostConfig, deployPath string, mode string) error
+    Service(host string, hostCfg *driver.HostConfig, deployPath string, svc string, action string) error
+    Upgrade(host string, hostCfg *driver.HostConfig, deployPath string, force bool) error
 }
 ```
+
+`internal/engine` 的 compose/stack/script 驱动在编译期注册自身适配器；旧调用
+（`engine.GetDriver` / `engine.RegisterDriver`）继续可用。不支持的动词必须返回明确的
+`unsupported`，不要静默成功。

@@ -284,3 +284,8 @@ func (d *ScriptDriver) pushTemplates(re *RemoteExecutor, deployPath string, mani
 
 	return nil
 }
+
+// Plan 仅做静态校验；脚本副作用不可预知，返回 unsupported。
+func (d *ScriptDriver) Plan() error {
+	return fmt.Errorf("plan is unsupported for script driver (bundle %s)", d.bundleName)
+}
