@@ -1,6 +1,6 @@
 # SilkSpool 解耦与集成改进方案（评审后修订版）
 
-> 状态: P2 complete（2026-10-24）；下一阶段 P3（按需）
+> 状态: P3 complete（2026-10-24，按需项见 §14）；不再生成下一阶段提示词
 > 日期: 2026-10-23
 > 依据: 对《SilkSpool 解耦与集成设计》的评审意见，以及对 Kamal、Komodo、Dockge、Uncloud、Timoni、deploy-rs 公开文档的核对
 > 修订: 2026-10-23，按二次评审修正 outputs 拓扑语义、备份 hook、组件健康、锁粒度与 plan 语义；按三次评审拆分 components/dependencies、明确 health 执行上下文与 restore 契约
@@ -1101,10 +1101,9 @@ P2 已完成（2026-10-24）：
 P2 已知边界（按计划不阻塞退出）：
 
 - `serve` 的 scope 裁剪为单 token（等价 admin）；危险动作仍需 `yes: true` 或 `X-Spool-Approval`。
-- 未提供 OpenAPI 生成 SDK（P3）；未引入 Events/SSE/Webhook。
 - `spool serve` 是可选本地进程，不是常驻 Core；同 host 排队通过进程内锁 + `.spool/locks/<host>.lock`。
 - `check-updates` 只比较 tag，不自动解析新 digest；更新后仍需人工/Renovate 固定 digest 并重新 plan/apply。
-- 跨主机 apply 编排、OCI artifact/cosign、CUE spike、`spool adopt` 留待 P3。
+- 跨主机 apply 编排、CUE spike、Events/SSE/Webhook 留待 P3（按需）；OCI artifact/cosign、OpenAPI、`spool adopt`、Dataset/Key adapter 已按 P3 完成。
 
 ---
 
@@ -1144,3 +1143,37 @@ P2 已知边界（按计划不阻塞退出）：
 | wiring 命名不一致 | 4.4、4.5、8.3 | 统一为 `${components.<key>...}` / `${dependencies.<key>...}` |
 | P1 工作量偏乐观 | 9 | 调整为 3-4 周；Resource adapter 可裁剪到 P2 |
 | `bundle outputs` 语义不清 | 5.4 | 默认返回逻辑声明；`--for <consumer>@<host>` 返回拓扑解析结果 |
+
+
+P3 已完成（2026-10-24，按需阶段）：
+
+- [x] OCI bundle artifact：`bundle_sources.type: oci`，固定 `digest`（或 `ref@sha256:...`）；
+  按 Timoni 布局读取 OCI manifest（config media type `application/vnd.timoni.config.v1+json`，
+  bundle tar+gzip layer），校验 manifest/layer digest 与 size，安全解包到
+  `.spool/cache/bundles/<name>/<digest>/`；保留 dir|git 兼容
+- [x] cosign 可选门禁：声明 `cosign` 块即强制验签；无 cosign 二进制、无签名或验签失败
+  一律明确报错，不静默降级；支持 `key` 或 `identity`+`issuer`
+- [x] OpenAPI：`api/openapi.yaml` 覆盖 `/v1/inventory`、bundle、outputs、actions、jobs、healthz；
+  `internal/openapigen` 从 spec 生成 `pkg/apiclient/client.gen.go`（`make openapi`），
+  不手写 SDK；`pkg/apiclient.NewUnixClient` 只配置 Unix socket transport
+- [x] `spool adopt <host>`：只读发现 compose project 的容器/卷/网络标签，生成
+  manifest/state/lock 与本地模板副本；支持 `--dry-run`、`--force`，默认不执行任何
+  容器 stop/start/recreate，也不修改远程文件
+- [x] TrueNAS/Key 统一 inventory：`Dataset`、`Key` Resource adapter 接入 Status/Plan/Apply；
+  dataset apply、key apply 与两者的 backup/restore 明确返回 `unsupported`；
+  `inventory --probe` / `GET /v1/inventory?probe=true` 才会连接 TrueNAS/SSH；
+  Key outputs 只返回 `secret://...` 引用
+- [x] 测试：OCI fake registry（digest 固定、layer 校验、cosign 成功/失败/缺失、路径穿越）、
+  OpenAPI 生成物一致性 + 端到端客户端、adopt dry-run/写入/覆盖保护/无重建命令、
+  Dataset/Key 契约与 unsupported 动词、inventory sensitive 占位
+- [x] `go test -count=1 ./...`、`go vet ./...` 通过
+
+P3 未启动项（按 §9 的“仅按需”要求，明确记录）：
+
+| 项 | 状态 | 判断依据 | 后续触发条件 |
+|---|---|---|---|
+| 跨主机 apply 编排 | 未启动 | 当前 `components` 仍限定单 host，`dependencies` 只读 outputs；没有找到明确、可测的消费方需要在一次事务中跨 ≥2 台 host 部署并定义部分失败回滚范围。硬做会改变 P1/P2 的单 host apply 语义。 | 出现至少一个真实 composition 需要跨 ≥2 host 部署，且消费方明确要求多 host 锁顺序、跨机 DAG 或部分失败回滚范围，并能写出验收测试。 |
+| CUE spike | 未启动 | 量化阈值：单 bundle >10 个 components 或引用深度 >3 层。当前 `knowledge-stack` 为 4 components + 1 dependency、引用深度 1；仓库内最大 composition 未超阈值，Compose 原生 `-f`/`include` 足够。 | 任一 composition 连续两个版本超过阈值，或出现 YAML 无法表达的类型/合并约束，且已有失败案例可复现。 |
+| Events/SSE/Webhook | 未启动 | 仓库内没有 `spool` 事件订阅者；现有消费方（n8n/Bellkeeper/CI）使用 `--json`、`/v1/actions` 和 job 轮询，尚无事件契约、审计/重放/去重需求。 | 出现至少一个真实订阅者，并明确事件 schema、审计、重放/去重语义；实现仍须保持 `spool serve` 为可选本地服务。 |
+
+> 以上未启动项不是遗漏；按 §9 P3“进入条件”保留为按需能力，达到触发条件后再实现。

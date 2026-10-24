@@ -1,0 +1,433 @@
+openapi: 3.0.3
+info:
+  title: SilkSpool Local API
+  version: 1.0.0
+  description: |
+    可选的本地 HTTP/JSON API，由 `spool serve --socket` 提供。
+    与 doc/api.md 保持同步；客户端由本文件生成，不手写 SDK。
+servers:
+  - url: http://localhost
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: 健康检查
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /v1/inventory:
+    get:
+      operationId: getInventory
+      summary: 统一资源清单
+      parameters:
+        - name: probe
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: 主机、Bundle、Service、DNS、Site、Dataset、Key 资源
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Inventory"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /v1/hosts/{host}/bundles/{bundle}:
+    get:
+      operationId: getBundle
+      summary: Bundle 详情
+      parameters:
+        - $ref: "#/components/parameters/Host"
+        - $ref: "#/components/parameters/Bundle"
+      responses:
+        "200":
+          description: Bundle manifest 摘要与 resolved outputs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BundleDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/hosts/{host}/bundles/{bundle}/outputs:
+    get:
+      operationId: getBundleOutputs
+      summary: Bundle outputs
+      parameters:
+        - $ref: "#/components/parameters/Host"
+        - $ref: "#/components/parameters/Bundle"
+        - name: resolved
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: 逻辑或拓扑解析后的 outputs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OutputsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/actions:
+    post:
+      operationId: submitAction
+      summary: 提交异步 action
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActionRequest"
+      responses:
+        "202":
+          description: 已进入 job 队列
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/jobs/{id}:
+    get:
+      operationId: getJob
+      summary: 查询 job
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: job 状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  parameters:
+    Host:
+      name: host
+      in: path
+      required: true
+      schema:
+        type: string
+    Bundle:
+      name: bundle
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: 请求非法
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: token 缺失或错误
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: 危险动作未确认
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: 目标不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+    Inventory:
+      type: object
+      required: [hosts, resources]
+      properties:
+        hosts:
+          type: array
+          items:
+            $ref: "#/components/schemas/HostInventory"
+        resources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResourceStatus"
+    HostInventory:
+      type: object
+      required: [name, bundles]
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        magicdns:
+          type: string
+        app_prefix:
+          type: string
+        bundles:
+          type: array
+          items:
+            $ref: "#/components/schemas/BundleSummary"
+        services:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceSummary"
+    BundleSummary:
+      type: object
+      required: [kind, name, host]
+      properties:
+        kind:
+          type: string
+        name:
+          type: string
+        host:
+          type: string
+        class:
+          type: string
+        version:
+          type: string
+        driver:
+          type: string
+        deploy_path:
+          type: string
+        services:
+          type: array
+          items:
+            type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        status:
+          type: string
+        generation:
+          type: integer
+        outputs:
+          type: object
+          additionalProperties:
+            type: string
+    ServiceSummary:
+      type: object
+      required: [kind, alias, type, name, host]
+      properties:
+        kind:
+          type: string
+        alias:
+          type: string
+        type:
+          type: string
+        name:
+          type: string
+        host:
+          type: string
+        status:
+          type: string
+    ResourceStatus:
+      type: object
+      required: [kind, name]
+      properties:
+        kind:
+          type: string
+        name:
+          type: string
+        host:
+          type: string
+        status:
+          type: string
+        generation:
+          type: integer
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        outputs:
+          type: object
+          additionalProperties:
+            type: string
+    BundleDetail:
+      type: object
+      required: [kind, name, host, deploy_path]
+      properties:
+        kind:
+          type: string
+        name:
+          type: string
+        host:
+          type: string
+        class:
+          type: string
+        version:
+          type: string
+        owner:
+          type: string
+        driver:
+          type: string
+        deploy_path:
+          type: string
+        alias_of:
+          type: string
+        deprecated_alias:
+          type: string
+        components:
+          type: array
+          items:
+            type: string
+        dependencies:
+          type: array
+          items:
+            type: string
+        services:
+          type: array
+          items:
+            type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        outputs:
+          type: object
+          additionalProperties:
+            type: string
+        resolved_outputs:
+          type: object
+          additionalProperties:
+            type: string
+        status:
+          type: string
+        generation:
+          type: integer
+    OutputsResponse:
+      type: object
+      required: [host, bundle, resolved, outputs]
+      properties:
+        host:
+          type: string
+        bundle:
+          type: string
+        resolved:
+          type: boolean
+        outputs:
+          type: object
+          additionalProperties:
+            type: string
+    Target:
+      type: object
+      required: [host, bundle]
+      properties:
+        host:
+          type: string
+        bundle:
+          type: string
+    ActionOptions:
+      type: object
+      properties:
+        offline:
+          type: boolean
+        dry_run:
+          type: boolean
+        locked:
+          type: boolean
+        yes:
+          type: boolean
+        allow_irreversible:
+          type: boolean
+        generation:
+          type: integer
+        inputs:
+          type: object
+          additionalProperties:
+            type: string
+    ActionRequest:
+      type: object
+      required: [action, target]
+      properties:
+        action:
+          type: string
+          enum: [bundle.plan, bundle.apply, bundle.rollback]
+        target:
+          $ref: "#/components/schemas/Target"
+        options:
+          $ref: "#/components/schemas/ActionOptions"
+        idempotency_key:
+          type: string
+    ActionAccepted:
+      type: object
+      required: [job_id, state]
+      properties:
+        job_id:
+          type: string
+        state:
+          type: string
+        idempotent_reuse:
+          type: boolean
+    Job:
+      type: object
+      required: [id, action, target, state]
+      properties:
+        id:
+          type: string
+        action:
+          type: string
+        target:
+          $ref: "#/components/schemas/Target"
+        options:
+          $ref: "#/components/schemas/ActionOptions"
+        state:
+          type: string
+          enum: [queued, running, succeeded, failed]
+        idempotency_key:
+          type: string
+        actor:
+          type: string
+        started_at:
+          type: string
+        finished_at:
+          type: string
+        result: {}
+        error:
+          type: string
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string

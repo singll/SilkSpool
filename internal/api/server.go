@@ -185,7 +185,8 @@ func (s *Server) handleInventory(w http.ResponseWriter, r *http.Request) {
 		inventory.Hosts = append(inventory.Hosts, host)
 	}
 	manager := engine.NewManager(s.BaseDir, s.Config, nil)
-	inventory.Resources = engine.ListResourceStatuses(s.BaseDir, s.Config, manager)
+	probe := r.URL.Query().Get("probe") == "true"
+	inventory.Resources = engine.ListResourceStatusesWithOptions(s.BaseDir, s.Config, manager, engine.ResourceInventoryOptions{Probe: probe})
 	writeJSON(w, http.StatusOK, inventory)
 }
 

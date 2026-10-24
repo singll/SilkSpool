@@ -30,7 +30,7 @@ spool serve --socket /run/spool.sock --token "$SPOOL_TOKEN" --audit-log /var/log
 | actor | 审计 actor 取 `X-Spool-Actor`；缺省 `local`（有 token 时为 `token`） |
 | 审计 | JSON Lines，记录 actor、action、target、idempotency_key、job_id、state、error |
 
-> P2 不提供 OpenAPI 生成 SDK、Events/SSE/Webhook；这些属于 P3，仅有真实订阅者时再做。
+> P3 提供 `api/openapi.yaml` 与生成的 `pkg/apiclient`；不提供 Events/SSE/Webhook（尚无真实订阅者）。
 
 ---
 
@@ -44,7 +44,12 @@ spool serve --socket /run/spool.sock --token "$SPOOL_TOKEN" --audit-log /var/log
 
 ### GET /v1/inventory
 
-返回主机、bundle、服务以及资源适配器（Bundle/Service/DNSRecord/Site）状态。
+返回主机、bundle、服务以及资源适配器（Bundle/Service/DNSRecord/Site/Dataset/Key）状态。
+`sensitive` 字段只返回 `secret://...` 引用，不返回明文。
+
+默认只读本地配置与 state（Dataset 返回 `declared` 占位，Key 返回 `declared`）。
+加 `?probe=true` 才会连接 TrueNAS/SSH 获取 Dataset/Key 实际状态；探测失败会以
+`status=error` 和 `outputs.error` 返回，不伪造成功。
 
 ### GET /v1/hosts/{host}/bundles/{bundle}
 
@@ -158,6 +163,41 @@ curl --unix-socket /run/spool.sock -H 'Content-Type: application/json' \
   -d '{"action":"bundle.apply","target":{"host":"keeper","bundle":"knowledge-stack"},"options":{"locked":true,"yes":true},"idempotency_key":"ci-'$GITHUB_RUN_ID'"}' \
   http://localhost/v1/actions
 ```
+
+---
+
+## OpenAPI 与生成客户端（P3）
+
+规范文件：`api/openapi.yaml`，覆盖：
+
+| Path | Operation |
+|---|---|
+| `GET /healthz` | `getHealth` |
+| `GET /v1/inventory` | `getInventory` |
+| `GET /v1/hosts/{host}/bundles/{bundle}` | `getBundle` |
+| `GET /v1/hosts/{host}/bundles/{bundle}/outputs` | `getBundleOutputs` |
+| `POST /v1/actions` | `submitAction` |
+| `GET /v1/jobs/{id}` | `getJob` |
+
+客户端由规范生成，不手写：
+
+```bash
+make openapi
+# 等价于：
+go run ./internal/openapigen/main -spec api/openapi.yaml -out pkg/apiclient/client.gen.go
+```
+
+生成物在 `pkg/apiclient/client.gen.go`。`pkg/apiclient.NewUnixClient` 只负责配置
+Unix socket transport，HTTP 方法/类型全部来自 OpenAPI 生成器，因此与本文档和
+`spool serve` 路由保持一致。示例：
+
+```go
+client := apiclient.NewUnixClient("/run/spool.sock")
+inventory, err := client.GetInventory(ctx, nil)
+job, err := client.GetJob(ctx, accepted.JobID)
+```
+
+CI 应运行 `go test ./internal/openapigen ./pkg/apiclient`；生成物过期会直接失败。
 
 ---
 
@@ -367,6 +407,7 @@ CLI command registration and application bootstrap.
 | `cmd_apply.go` | `apply <bundle> <host> [--locked]` | Apply components on one host |
 | `cmd_rollback.go` | `rollback <bundle> <host> [gen]` | Restore remote generation |
 | `cmd_serve.go` | `serve --socket <path>` | Optional local Unix-socket API |
+| `cmd_adopt.go` | `adopt <host>` | Read-only adoption of an existing compose stack |
 | `cmd_stack.go` | `stack install <host> <app>` | Binary installation |
 | `cmd_service.go` | `service <host> <action> <svc>` | Service control |
 | `cmd_n8n.go` | `n8n list/import/export/update` | n8n workflows |

@@ -192,14 +192,55 @@ spool rollback mybundle myhost [generation]
 ```yaml
 bundle_sources:
   - name: mybundle
-    type: dir              # dir | git
+    type: dir              # dir | git | oci
     path: ./bundles
   - name: bellkeeper
     type: git
     repo: https://github.com/singll/Bellkeeper.git
     path: deploy
     commit: <pinned-sha>   # 必须固定 commit，不能写分支/latest
+  - name: bellkeeper-oci
+    type: oci
+    ref: ghcr.io/singll/bellkeeper-bundle
+    digest: sha256:<pinned-manifest-digest>  # 必填；也可直接写 ref@sha256:...
+    path: deploy           # 可选：artifact 内子目录
+    # insecure: true       # 仅测试/内网 http registry
+    # username: robot
+    # password_env: SPOOL_OCI_PASSWORD
+    # cosign:
+    #   key: ./cosign.pub  # 或 identity + issuer（keyless）
 ```
+
+### OCI artifact 布局（P3）
+
+OCI source 按 Timoni 的 artifact 形态读取：OCI image manifest 的 config media type 为
+`application/vnd.timoni.config.v1+json`（也接受 `application/vnd.spool.bundle.config.v1+json`
+与 empty config），bundle 内容放在 tar/tar+gzip layer 中，layer 根目录包含
+`manifest.yaml`/`bundle.yaml` 及其模板文件。
+
+- `digest` 必填，且必须与拉取到的 manifest 内容一致；tag 仅作可读提示，不能单独使用。
+- layer digest/size 会逐一校验，内容安全解包到
+  `.spool/cache/bundles/<name>/<digest>/`，拒绝绝对路径和 `..` 穿越。
+- 声明 `cosign` 块即启用**强制**验签门禁：找不到 cosign、无签名或验签失败都会报错，
+  不会静默跳过。`key` 与 `identity`/`issuer` 二选一。
+- dir/git source 行为不变；三种 source 可以混用。
+
+### 纳管既有 stack：`spool adopt`
+
+```bash
+spool adopt keeper --dry-run              # 只展示发现结果，不写文件
+spool adopt keeper --bundle legacy-stack  # 生成 bundles/<name>/manifest.yaml + state/lock
+spool adopt keeper --bundle legacy-stack --force  # 覆盖已有输出
+```
+
+adopt 只执行只读 `docker ps/inspect` 与 `cat` 读取 compose 文件；不会 stop/start/recreate
+任何容器，也不修改远程文件。它按 `com.docker.compose.project` 分组，记录容器、卷、网络
+标签与 `io.silkspool.generation`，把远程 compose 文件复制到 `bundles/<name>/templates/`，
+并生成可重建的 state/lock。对于有挂载的容器，报告中标记 `stateful` 并原样保留；后续只有
+显式 `spool apply` 才会改变它们。
+
+> P3 未启动：跨主机 apply 编排、CUE、Events/SSE/Webhook。原因与触发条件见
+> [DECOUPLING-PLAN.md](DECOUPLING-PLAN.md) §14。
 
 ### Product bundle：由产品仓库自己发布（P2）
 

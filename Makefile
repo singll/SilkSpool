@@ -1,6 +1,6 @@
 .PHONY: all build init-out clean dist-clean \
        build-linux build-darwin build-windows \
-       test vet lint check
+       test vet lint check openapi
 
 BINARY_NAME := spool
 CMD_PATH := ./cmd/spool/
@@ -97,6 +97,12 @@ vet:
 lint:
 	@echo "==> Running golangci-lint..."
 	golangci-lint run ./...
+
+# Regenerate the typed API client from api/openapi.yaml
+openapi:
+	@echo "==> Generating pkg/apiclient/client.gen.go..."
+	go run ./internal/openapigen/main -spec api/openapi.yaml -out pkg/apiclient/client.gen.go
+	@echo "==> Generated."
 
 # Check = vet + test
 check: vet test

@@ -295,6 +295,7 @@ hosts:
 
 # -------------------- 外部 bundle 来源 --------------------
 # Bellkeeper 自己的仓库发布 deploy/bundle.yaml；固定 commit，升级必须显式改这里。
+# Bundle 来源：dir | git | oci。git 固定 commit；oci 固定 digest（cosign 可选但失败即报错）。
 bundle_sources:
   - name: bellkeeper
     type: git
@@ -304,6 +305,13 @@ bundle_sources:
   - name: local
     type: dir
     path: ./bundles
+  # - name: bellkeeper-oci
+  #   type: oci
+  #   ref: ghcr.io/singll/bellkeeper-bundle
+  #   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  #   path: deploy
+  #   cosign:
+  #     key: ./cosign.pub
 
 # -------------------- 安装源定义 (用于 stack/install) --------------------
 install_sources:

@@ -212,12 +212,25 @@ func (r *BundleRepository) loadOne(ctx context.Context, name string, src *Bundle
 			if candidate.Name != name {
 				continue
 			}
-			return r.loadFromSource(ctx, name, &BundleSource{
-				Type:   candidate.Type,
-				Repo:   candidate.Repo,
-				Path:   candidate.Path,
-				Commit: candidate.Commit,
-			})
+			source := &BundleSource{
+				Type:        candidate.Type,
+				Repo:        candidate.Repo,
+				Path:        candidate.Path,
+				Commit:      candidate.Commit,
+				Ref:         candidate.Ref,
+				Digest:      candidate.Digest,
+				Insecure:    candidate.Insecure,
+				Username:    candidate.Username,
+				PasswordEnv: candidate.PasswordEnv,
+			}
+			if candidate.Cosign != nil {
+				source.Cosign = &BundleCosign{
+					Key:      candidate.Cosign.Key,
+					Identity: candidate.Cosign.Identity,
+					Issuer:   candidate.Cosign.Issuer,
+				}
+			}
+			return r.loadFromSource(ctx, name, source)
 		}
 		for _, candidate := range r.cfg.BundleSources {
 			if strings.EqualFold(candidate.Type, "dir") {
@@ -316,8 +329,11 @@ func (r *BundleRepository) loadFromSource(ctx context.Context, name string, src 
 		}
 		return &LoadedBundle{Name: name, Root: root, Manifest: manifest, Source: *src}, nil
 
+	case "oci":
+		return r.loadFromOCI(ctx, name, src)
+
 	default:
-		return nil, fmt.Errorf("bundle source %s: unsupported type %q (P1 supports dir|git)", name, src.Type)
+		return nil, fmt.Errorf("bundle source %s: unsupported type %q (want dir|git|oci)", name, src.Type)
 	}
 }
 

@@ -217,12 +217,25 @@ func (c *CommandList) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// BundleSource 声明组件/依赖的来源（P1 仅 dir | git）。
+// BundleSource 声明组件/依赖的来源（dir | git | oci）。
 type BundleSource struct {
-	Type   string `yaml:"type"`             // dir | git
-	Repo   string `yaml:"repo,omitempty"`   // git
-	Path   string `yaml:"path,omitempty"`   // dir: 本地目录；git: 仓库子目录
-	Commit string `yaml:"commit,omitempty"` // git 固定 commit
+	Type        string        `yaml:"type"`                   // dir | git | oci
+	Repo        string        `yaml:"repo,omitempty"`         // git
+	Path        string        `yaml:"path,omitempty"`         // dir: 本地目录；git/oci: 包内子目录
+	Commit      string        `yaml:"commit,omitempty"`       // git 固定 commit
+	Ref         string        `yaml:"ref,omitempty"`          // oci: registry/repo[:tag]
+	Digest      string        `yaml:"digest,omitempty"`       // oci: 固定 manifest digest
+	Insecure    bool          `yaml:"insecure,omitempty"`     // oci: 允许 http registry（仅测试/内网）
+	Username    string        `yaml:"username,omitempty"`     // oci: basic auth 用户名
+	PasswordEnv string        `yaml:"password_env,omitempty"` // oci: 读取密码的环境变量名
+	Cosign      *BundleCosign `yaml:"cosign,omitempty"`       // oci: 可选验签门禁
+}
+
+// BundleCosign 配置 OCI artifact 的 cosign 验签门禁。
+type BundleCosign struct {
+	Key      string `yaml:"key,omitempty"`
+	Identity string `yaml:"identity,omitempty"`
+	Issuer   string `yaml:"issuer,omitempty"`
 }
 
 // BundleComponent 是本 composition 负责部署、且位于目标 host 的组件。

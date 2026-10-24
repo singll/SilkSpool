@@ -138,6 +138,8 @@ spool sync pull keeper     # 拉取远程配置到 /opt/SilkSpool/hosts/
 ```bash
 spool sync push keeper
 spool service keeper status
+spool adopt keeper --dry-run   # 可选：纳管既有 compose stack（只读发现）
+spool inventory --json
 spool exec keeper "docker ps"
 ```
 

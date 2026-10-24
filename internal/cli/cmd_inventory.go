@@ -175,7 +175,7 @@ func (a *App) runInventory(cmd *cobra.Command, probe bool) error {
 	}
 
 	deployManager := engine.NewManager(a.BaseDir, a.Config, nil)
-	resources := engine.ListResourceStatuses(a.BaseDir, a.Config, deployManager)
+	resources := engine.ListResourceStatusesWithOptions(a.BaseDir, a.Config, deployManager, engine.ResourceInventoryOptions{Probe: probe})
 	if jsonFlag {
 		return writeJSON(cmd.OutOrStdout(), inventory{Hosts: hosts, Resources: resources}, warnings)
 	}

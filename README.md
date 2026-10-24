@@ -96,6 +96,7 @@ vim out/silkspool.yaml
 | `rollback <bundle> <host> [gen]` | Roll back to remote generation |
 | `bundle check-updates <name>` | Suggest pinned image updates |
 | `serve --socket <path>` | Optional local HTTP/JSON API |
+| `adopt <host> [--dry-run]` | Adopt an existing compose stack without recreating containers |
 | `service <host> <status\|start\|stop\|restart\|logs>` | Service control |
 | `n8n list/import/export` | n8n workflow management |
 | `nas info/pool/dataset/snapshot` | TrueNAS management |
@@ -239,6 +240,7 @@ vim out/silkspool.yaml
 | `rollback <bundle> <主机> [代]` | 回滚到远端 generation |
 | `bundle check-updates <名称>` | 建议固定镜像更新 |
 | `serve --socket <路径>` | 可选本地 HTTP/JSON API |
+| `adopt <主机> [--dry-run]` | 纳管既有 compose stack（不重建容器） |
 | `service <主机> <status\|start\|stop\|restart\|logs>` | 服务控制 |
 | `n8n list/import/export` | n8n 工作流管理 |
 | `nas info/pool/dataset/snapshot` | TrueNAS 管理 |

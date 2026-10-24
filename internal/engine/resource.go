@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/singll/silkspool/internal/config"
+	"github.com/singll/silkspool/internal/tools"
 )
 
 // Resource 是统一资源模型的最小接口。
@@ -309,8 +311,20 @@ func formatResolvedOutput(output ResolvedOutput) string {
 	return output.Value
 }
 
+// ResourceInventoryOptions 控制资源清单是否探测远端以及测试注入。
+type ResourceInventoryOptions struct {
+	Probe         bool
+	DatasetLister DatasetLister
+	KeyChecker    KeyChecker
+}
+
 // ListResourceStatuses 返回主机上已注册 Bundle/Service 的统一状态。
 func ListResourceStatuses(baseDir string, cfg *config.Config, manager *Manager) []ResourceStatus {
+	return ListResourceStatusesWithOptions(baseDir, cfg, manager, ResourceInventoryOptions{})
+}
+
+// ListResourceStatusesWithOptions 返回 Bundle/Service/DNS/Site/Dataset/Key 的统一状态。
+func ListResourceStatusesWithOptions(baseDir string, cfg *config.Config, manager *Manager, opts ResourceInventoryOptions) []ResourceStatus {
 	if cfg == nil {
 		return nil
 	}
@@ -377,6 +391,8 @@ func ListResourceStatuses(baseDir string, cfg *config.Config, manager *Manager) 
 			}
 		}
 	}
+	statuses = append(statuses, keyResourceStatuses(baseDir, cfg, opts)...)
+	statuses = append(statuses, datasetResourceStatuses(baseDir, cfg, opts)...)
 	sort.Slice(statuses, func(i, j int) bool {
 		if statuses[i].Host != statuses[j].Host {
 			return statuses[i].Host < statuses[j].Host
@@ -587,5 +603,295 @@ func (r *SiteResource) Backup(ctx context.Context, opts ResourceOptions) (Backup
 
 // Restore 明确 unsupported。
 func (r *SiteResource) Restore(ctx context.Context, ref BackupRef) error {
+	return &UnsupportedError{Kind: r.Kind(), Op: "restore"}
+}
+
+func keyResourceStatuses(baseDir string, cfg *config.Config, opts ResourceInventoryOptions) []ResourceStatus {
+	hosts := make([]string, 0, len(cfg.Hosts))
+	for host := range cfg.Hosts {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+	statuses := make([]ResourceStatus, 0, len(hosts))
+	for _, host := range hosts {
+		status := ResourceStatus{
+			Kind:   "Key",
+			Name:   "canonical",
+			Host:   host,
+			Status: "declared",
+			Labels: map[string]string{"io.silkspool.key": "canonical"},
+			Outputs: map[string]string{
+				"public_key":      "secret://ssh/" + host + "/public_key",
+				"authorized_keys": "secret://ssh/" + host + "/authorized_keys",
+			},
+		}
+		if opts.Probe {
+			checker := opts.KeyChecker
+			if checker == nil {
+				if manager, err := NewKeyManager(baseDir); err == nil {
+					checker = manager
+				}
+			}
+			if checker == nil {
+				status.Status = "error"
+				status.Outputs["error"] = "key manager unavailable"
+			} else if results, err := checker.CheckStatus([]string{host}); err != nil {
+				status.Status = "error"
+				status.Outputs["error"] = err.Error()
+			} else if len(results) > 0 {
+				result := results[0]
+				switch {
+				case result.Error != "":
+					status.Status = "error"
+					status.Outputs["error"] = result.Error
+				case result.Authorized:
+					status.Status = "authorized"
+				default:
+					status.Status = "missing"
+				}
+			}
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
+}
+
+func datasetResourceStatuses(baseDir string, cfg *config.Config, opts ResourceInventoryOptions) []ResourceStatus {
+	if cfg.TrueNAS.Host == "" {
+		return nil
+	}
+	host := cfg.TrueNAS.Host
+	labels := map[string]string{"io.silkspool.provider": "truenas"}
+	if !opts.Probe {
+		return []ResourceStatus{{
+			Kind:    "Dataset",
+			Name:    "truenas",
+			Host:    host,
+			Status:  "declared",
+			Labels:  labels,
+			Outputs: map[string]string{"api_url": cfg.TrueNAS.APIURL},
+		}}
+	}
+	lister := opts.DatasetLister
+	if lister == nil {
+		if manager, err := tools.NewTrueNASManager(baseDir); err == nil {
+			defer manager.Close()
+			lister = manager
+		}
+	}
+	if lister == nil {
+		return []ResourceStatus{{Kind: "Dataset", Name: "truenas", Host: host, Status: "error", Labels: labels, Outputs: map[string]string{"error": "truenas manager unavailable"}}}
+	}
+	datasets, err := lister.Datasets()
+	if err != nil {
+		return []ResourceStatus{{Kind: "Dataset", Name: "truenas", Host: host, Status: "error", Labels: labels, Outputs: map[string]string{"error": err.Error()}}}
+	}
+	statuses := make([]ResourceStatus, 0, len(datasets))
+	for _, dataset := range datasets {
+		statuses = append(statuses, ResourceStatus{
+			Kind:   "Dataset",
+			Name:   dataset.Name,
+			Host:   host,
+			Status: "present",
+			Labels: labels,
+			Outputs: map[string]string{
+				"pool":            dataset.Pool,
+				"type":            dataset.Type,
+				"used_bytes":      strconv.FormatInt(dataset.UsedBytes, 10),
+				"available_bytes": strconv.FormatInt(dataset.AvailBytes, 10),
+			},
+		})
+	}
+	return statuses
+}
+
+// DatasetLister 抽象 TrueNAS dataset 查询，便于测试注入。
+type DatasetLister interface {
+	Datasets() ([]tools.TrueNASDataset, error)
+}
+
+// DatasetResource 包装 TrueNAS dataset。
+type DatasetResource struct {
+	BaseDir     string
+	Host        string
+	DatasetName string
+	Labels      map[string]string
+	Provider    DatasetLister
+}
+
+// NewDatasetResource 创建 TrueNAS dataset 资源。
+func NewDatasetResource(baseDir, host, name string, provider DatasetLister) *DatasetResource {
+	return &DatasetResource{BaseDir: baseDir, Host: host, DatasetName: name, Provider: provider, Labels: map[string]string{"io.silkspool.provider": "truenas"}}
+}
+
+// Kind 返回资源类型。
+func (r *DatasetResource) Kind() string { return "Dataset" }
+
+// Name 返回 dataset 名。
+func (r *DatasetResource) Name() string { return r.DatasetName }
+
+// Status 查询 dataset 是否存在。
+func (r *DatasetResource) Status(ctx context.Context) (ResourceStatus, error) {
+	if r.DatasetName == "" {
+		return ResourceStatus{}, fmt.Errorf("dataset name is required")
+	}
+	lister := r.Provider
+	if lister == nil {
+		if r.BaseDir == "" {
+			return ResourceStatus{}, fmt.Errorf("dataset provider is required")
+		}
+		manager, err := tools.NewTrueNASManager(r.BaseDir)
+		if err != nil {
+			return ResourceStatus{}, err
+		}
+		defer manager.Close()
+		lister = manager
+	}
+	datasets, err := lister.Datasets()
+	if err != nil {
+		return ResourceStatus{}, err
+	}
+	status := ResourceStatus{Kind: r.Kind(), Name: r.DatasetName, Host: r.Host, Status: "absent", Labels: r.Labels, Outputs: map[string]string{}}
+	for _, dataset := range datasets {
+		if dataset.Name != r.DatasetName {
+			continue
+		}
+		status.Status = "present"
+		status.Outputs["pool"] = dataset.Pool
+		status.Outputs["type"] = dataset.Type
+		status.Outputs["used_bytes"] = strconv.FormatInt(dataset.UsedBytes, 10)
+		status.Outputs["available_bytes"] = strconv.FormatInt(dataset.AvailBytes, 10)
+		break
+	}
+	return status, nil
+}
+
+// Plan 只做 presence diff；dataset 创建/删除不通过 spool apply 执行。
+func (r *DatasetResource) Plan(ctx context.Context, opts ResourceOptions) (*PlanResult, error) {
+	status, err := r.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	desired := "present"
+	if opts.Delete {
+		desired = "absent"
+	}
+	result := &PlanResult{Bundle: "dataset", Host: r.Host, Mode: "offline", Diff: []DiffEntry{}}
+	result.Desired.Components = []string{r.DatasetName}
+	result.Desired.LockHash = "dataset:" + desired
+	result.Actual.LockHash = status.Status
+	result.Actual.Status = status.Status
+	if status.Status != desired {
+		result.Diff = append(result.Diff, DiffEntry{Field: "dataset." + r.DatasetName, Desired: desired, Actual: status.Status})
+	}
+	return result, nil
+}
+
+// Apply 明确 unsupported：dataset 变更走 spool nas rpc 白名单。
+func (r *DatasetResource) Apply(ctx context.Context, opts ResourceOptions) (*ApplyResult, error) {
+	return nil, &UnsupportedError{Kind: r.Kind(), Op: "apply (use spool nas rpc pool.dataset.create)"}
+}
+
+// Backup 明确 unsupported。
+func (r *DatasetResource) Backup(ctx context.Context, opts ResourceOptions) (BackupRef, error) {
+	return BackupRef{}, &UnsupportedError{Kind: r.Kind(), Op: "backup"}
+}
+
+// Restore 明确 unsupported。
+func (r *DatasetResource) Restore(ctx context.Context, ref BackupRef) error {
+	return &UnsupportedError{Kind: r.Kind(), Op: "restore"}
+}
+
+// KeyChecker 抽象 SSH key 授权检查，便于测试注入。
+type KeyChecker interface {
+	CheckStatus(hosts []string) ([]KeyStatus, error)
+}
+
+// KeyResource 包装 spool canonical SSH key 在某台主机上的授权状态。
+type KeyResource struct {
+	BaseDir string
+	Host    string
+	KeyName string
+	Labels  map[string]string
+	Checker KeyChecker
+}
+
+// NewKeyResource 创建 Key 资源。
+func NewKeyResource(baseDir, host string, checker KeyChecker) *KeyResource {
+	return &KeyResource{BaseDir: baseDir, Host: host, KeyName: "canonical", Checker: checker, Labels: map[string]string{"io.silkspool.key": "canonical"}}
+}
+
+// Kind 返回资源类型。
+func (r *KeyResource) Kind() string { return "Key" }
+
+// Name 返回资源名。
+func (r *KeyResource) Name() string { return r.KeyName }
+
+// Status 检查 canonical 公钥是否已授权。
+func (r *KeyResource) Status(ctx context.Context) (ResourceStatus, error) {
+	checker := r.Checker
+	if checker == nil {
+		manager, err := NewKeyManager(r.BaseDir)
+		if err != nil {
+			return ResourceStatus{}, err
+		}
+		checker = manager
+	}
+	results, err := checker.CheckStatus([]string{r.Host})
+	if err != nil {
+		return ResourceStatus{}, err
+	}
+	status := ResourceStatus{
+		Kind:   r.Kind(),
+		Name:   r.KeyName,
+		Host:   r.Host,
+		Status: "missing",
+		Labels: r.Labels,
+		Outputs: map[string]string{
+			"public_key":      "secret://ssh/" + r.Host + "/public_key",
+			"authorized_keys": "secret://ssh/" + r.Host + "/authorized_keys",
+		},
+	}
+	if len(results) > 0 {
+		if results[0].Error != "" {
+			return ResourceStatus{}, fmt.Errorf("key status for %s: %s", r.Host, results[0].Error)
+		}
+		if results[0].Authorized {
+			status.Status = "authorized"
+		}
+	}
+	return status, nil
+}
+
+// Plan 输出 key 授权状态 diff。
+func (r *KeyResource) Plan(ctx context.Context, opts ResourceOptions) (*PlanResult, error) {
+	status, err := r.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	desired := "authorized"
+	result := &PlanResult{Bundle: "key", Host: r.Host, Mode: "offline", Diff: []DiffEntry{}}
+	result.Desired.Components = []string{r.KeyName}
+	result.Desired.LockHash = "key:" + desired
+	result.Actual.LockHash = status.Status
+	result.Actual.Status = status.Status
+	if status.Status != desired {
+		result.Diff = append(result.Diff, DiffEntry{Field: "key." + r.Host, Desired: desired, Actual: status.Status})
+	}
+	return result, nil
+}
+
+// Apply 明确 unsupported：密钥轮换走 spool key rotate。
+func (r *KeyResource) Apply(ctx context.Context, opts ResourceOptions) (*ApplyResult, error) {
+	return nil, &UnsupportedError{Kind: r.Kind(), Op: "apply (use spool key rotate)"}
+}
+
+// Backup 明确 unsupported。
+func (r *KeyResource) Backup(ctx context.Context, opts ResourceOptions) (BackupRef, error) {
+	return BackupRef{}, &UnsupportedError{Kind: r.Kind(), Op: "backup"}
+}
+
+// Restore 明确 unsupported。
+func (r *KeyResource) Restore(ctx context.Context, ref BackupRef) error {
 	return &UnsupportedError{Kind: r.Kind(), Op: "restore"}
 }

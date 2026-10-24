@@ -152,13 +152,27 @@ type TrueNASConfig struct {
 
 // ==================== 根配置 ====================
 
-// BundleSourceConfig 声明外部 bundle 来源（P1 仅 dir | git）。
+// BundleSourceConfig 声明外部 bundle 来源（dir | git | oci）。
 type BundleSourceConfig struct {
-	Name   string `yaml:"name"   mapstructure:"name"`   // 来源名，通常与 bundle 名一致
-	Type   string `yaml:"type"   mapstructure:"type"`   // dir | git
-	Path   string `yaml:"path"   mapstructure:"path"`   // dir: 本地目录；git: 仓库内子目录
-	Repo   string `yaml:"repo"   mapstructure:"repo"`   // git 仓库
-	Commit string `yaml:"commit" mapstructure:"commit"` // git 固定 commit（禁止分支/latest）
+	Name        string              `yaml:"name"         mapstructure:"name"`         // 来源名，通常与 bundle 名一致
+	Type        string              `yaml:"type"         mapstructure:"type"`         // dir | git | oci
+	Path        string              `yaml:"path"         mapstructure:"path"`         // dir: 本地目录；git/oci: 包内子目录
+	Repo        string              `yaml:"repo"         mapstructure:"repo"`         // git 仓库
+	Commit      string              `yaml:"commit"       mapstructure:"commit"`       // git 固定 commit（禁止分支/latest）
+	Ref         string              `yaml:"ref"          mapstructure:"ref"`          // oci: registry/repo[:tag]
+	Digest      string              `yaml:"digest"       mapstructure:"digest"`       // oci: 固定 manifest digest
+	Insecure    bool                `yaml:"insecure"     mapstructure:"insecure"`     // oci: 允许 http registry（仅测试/内网）
+	Username    string              `yaml:"username"     mapstructure:"username"`     // oci: basic auth 用户名
+	PasswordEnv string              `yaml:"password_env" mapstructure:"password_env"` // oci: 读取密码的环境变量名
+	Cosign      *BundleCosignConfig `yaml:"cosign"       mapstructure:"cosign"`       // oci: 可选验签门禁
+}
+
+// BundleCosignConfig 配置 OCI artifact 的 cosign 验签门禁。
+// 只要声明该块，验签就是强制门禁：缺少 cosign、无签名或验签失败都会报错。
+type BundleCosignConfig struct {
+	Key      string `yaml:"key"      mapstructure:"key"`      // 公钥路径；与 identity/issuer 二选一
+	Identity string `yaml:"identity" mapstructure:"identity"` // keyless: 证书 identity
+	Issuer   string `yaml:"issuer"   mapstructure:"issuer"`   // keyless: OIDC issuer
 }
 
 // Config 是 silkspool.yaml 的根结构
