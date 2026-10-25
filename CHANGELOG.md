@@ -9,12 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- P3：OCI bundle source（Timoni 布局、digest 固定、可选 cosign 强制门禁）；`spool adopt` 只读纳管既有 compose stack；`api/openapi.yaml` + 生成的 `pkg/apiclient`；TrueNAS `Dataset` / SSH `Key` Resource adapter 接入 `inventory`
+- P2：`knowledge-stack` composition + `silkdata` capability + Bellkeeper product bundle；MagicDNS wiring；`spool serve --socket`；`bundle check-updates`；DNSRecord/Site adapter
+- P1：Bundle 轻契约（`metadata/spec`、outputs/wiring/lifecycle/backup）、resolver、`plan/apply/rollback`、per-host lock、generation 快照、health gate、magic rollback、`bundle_sources: dir|git`
 - 所有读命令支持 `--json` 统一 envelope：`service status`、`bundle status`、`dns list`、`n8n list`、`nas info/pool/dataset/snapshot`、`key status`、`logs`、`version`
-- 统一 CLI 退出码：`2` 参数/配置错误、`3` online plan diff（预留）、`4` 执行失败、`5` 需要审批；JSON 模式下 stdout 只输出 envelope
+- 统一 CLI 退出码：`2` 参数/配置错误、`3` online plan diff、`4` 执行失败、`5` 需要审批；JSON 模式下 stdout 只输出 envelope
 - Bundle manifest 新增 `config_root` 与 `sync_rules`：支持 per-bundle `.env`、显式同步规则与旧 `hosts/<host>/` 布局自动回退
 
 ### Changed
 
+- 文档重整：现行架构/配置/部署/API/开发/排障六类文档；历史 P0–P3 方案移入 `doc/archive/`
+- Bellkeeper 文档切换到 `knowledge-stack` composition + product bundle 的部署方式，移除旧 `keeper` bundle / `extra_hosts` IP / `spool.sh` 说法
 - Compose 渲染不再 deepMerge 模板：模板原样落盘，spool 注入项写入 `docker-compose.spool.yaml`；多模板使用 Compose 原生 `include`
 - keeper / silkdata / observability 第三方镜像固定为精确 tag + digest；本地构建的 bellkeeper 使用显式版本 tag
 - Bundle 配置同步失败不再静默成功，`sync`/`bundle up` 会返回错误

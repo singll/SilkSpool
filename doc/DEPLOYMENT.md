@@ -1,4 +1,4 @@
-# SilkSpool 部署指南
+# SilkSpool 部署指南（现行）
 
 > 适用于: v1.0.0+
 > 部署模型: 自包含二进制目录（out/）+ 系统 PATH 软链
@@ -165,10 +165,11 @@ spool --config /etc/silkspool/silkspool.yaml sync push keeper
 ### 配置搜索顺序
 
 1. `--config` 命令行参数
-2. `SILKSPOOL_CONFIG` 环境变量
-3. 可执行文件所在目录（`/opt/SilkSpool/`）
-4. 当前工作目录（fallback，开发模式）
-5. `/etc/silkspool/`（系统级 fallback）
+2. 可执行文件所在目录（`/opt/SilkSpool/`）
+3. 当前工作目录（fallback，开发模式）
+4. `/etc/silkspool/`（系统级 fallback）
+
+配置字段与完整示例见 [configuration.md](configuration.md)。
 
 ---
 
@@ -205,16 +206,7 @@ spool version
 | `make build-linux` | 交叉编译 linux/amd64 |
 | `make build-darwin` | 交叉编译 darwin/arm64 |
 | `make build-windows` | 交叉编译 windows/amd64 |
-
----
-
-## 关于 ~/.silkspool（已移除）
-
-旧版本中 `~/.silkspool/` 是推荐的配置目录。从 v1.0.0+ 起，运行时模型已迁移到**二进制自包含目录**（`/opt/SilkSpool/`）。
-
-- 配置搜索顺序已收敛为 `baseDir → baseDir/.. → /etc/silkspool`，**不再回退到 `~/.silkspool/`**
-- 运行时唯一根目录是 `/opt/SilkSpool/`：`spool` 经 `os.Executable()` 自动解析，任意目录运行结果一致
-- 如机器上仍有遗留的 `~/.silkspool/`，可安全删除
+| `make openapi` | 从 `api/openapi.yaml` 重新生成 `pkg/apiclient/client.gen.go` |
 
 ---
 
@@ -226,7 +218,7 @@ spool version
 
 ---
 
-## Plan / Apply / Rollback（P1）
+## Plan / Apply / Rollback（单 host）
 
 单 host 部署主链路：
 
@@ -265,7 +257,7 @@ spool restore knowledge-stack keeper
 
 ### bundle_sources
 
-`silkspool.yaml` 可声明外部 bundle 来源（P1 只支持 `dir` / `git`）：
+`silkspool.yaml` 可声明外部 bundle 来源（支持 `dir` / `git` / `oci`）：
 
 ```yaml
 bundle_sources:
@@ -277,13 +269,20 @@ bundle_sources:
   - name: local
     type: dir
     path: ./bundles
+  - name: bellkeeper-oci
+    type: oci
+    ref: ghcr.io/singll/bellkeeper-bundle
+    digest: "sha256:<64-hex-manifest-digest>"
+    # cosign:
+    #   key: ./cosign.pub
 ```
 
-`git` 必须固定 commit（禁止 `latest`/分支）；缓存写入 `.spool/cache/bundles/<name>/<ref>/`。
+`git` 必须固定 commit（禁止 `latest`/分支）；`oci` 必须固定 digest；缓存写入 `.spool/cache/bundles/<name>/<ref>/`。
+OCI 布局与 cosign 门禁见 [bundle-development.md](bundle-development.md#oci-artifact-布局p3)。
 Bellkeeper 在自己的仓库维护 `deploy/bundle.yaml`，升级 Bellkeeper 只需改这里固定的 commit，
 不需要修改 SilkSpool 的 knowledge-stack 模板。
 
-### knowledge-stack（P2）
+### knowledge-stack（composition）
 
 `knowledge-stack` 是 composition，`spool apply knowledge-stack keeper` 只操作 keeper 上的
 components：
@@ -309,7 +308,7 @@ components：
 > 并把 `delivery.artifact.digest` 换成真实 manifest digest；`spool bundle check-updates` 可用于
 > 后续提醒。不要在未替换占位 digest 时对真实主机执行 apply。
 
-### spool serve --socket（P2）
+### spool serve --socket
 
 可选的本地 HTTP/JSON 服务，不是常驻 Core：
 
@@ -326,7 +325,7 @@ spool serve --socket /run/spool.sock
 - 审计日志为 JSON Lines，记录 actor、action、target、idempotency_key、结果。
 - 端点与调用示例见 [api.md](api.md)。
 
-### bundle check-updates（P2）
+### bundle check-updates
 
 ```bash
 spool bundle check-updates knowledge-stack --json
@@ -335,6 +334,53 @@ spool bundle check-updates knowledge-stack --json
 列出固定 digest 镜像的 registry tag 对比结果；**只建议，不修改 manifest、不自动 apply**。
 更新流程：Renovate/Dependabot 或人工修改 tag/digest → `spool plan --offline` →
 online plan → `spool apply --locked --yes`。
+
+### OCI / cosign（P3）
+
+```yaml
+bundle_sources:
+  - name: bellkeeper
+    type: oci
+    ref: ghcr.io/singll/bellkeeper-bundle
+    digest: "sha256:<64-hex-manifest-digest>"
+    path: deploy
+    cosign:
+      key: ./cosign.pub   # 或 identity + issuer
+```
+
+- digest 固定；tag 只作可读提示。
+- 声明 `cosign` 即强制验签：cosign 不存在、无签名或验签失败都会报错，不降级。
+- 拉取缓存 `.spool/cache/bundles/<name>/sha256-<digest>/`。
+
+### 纳管既有 stack：`spool adopt`（P3）
+
+```bash
+spool adopt keeper --dry-run
+spool adopt keeper --bundle legacy-stack
+spool adopt keeper --bundle legacy-stack --force
+```
+
+只执行只读 `docker ps/inspect` 与读取 compose 文件；不会 stop/start/recreate 容器，也不修改远程文件。
+`--dry-run` 不写任何文件；已有 manifest/state/lock 时必须 `--force` 才覆盖。
+
+### OpenAPI / 生成客户端（P3）
+
+```bash
+make openapi
+# 生成 pkg/apiclient/client.gen.go
+```
+
+规范在 `api/openapi.yaml`；Go 客户端通过 `apiclient.NewUnixClient("/run/spool.sock")` 使用。
+生成物过期会被 `go test ./internal/openapigen` 检测。
+
+### inventory（含 Dataset/Key）
+
+```bash
+spool inventory --json
+spool inventory --probe --json   # 连接 TrueNAS/SSH；默认不探测
+```
+
+`inventory --json` 返回 `kind/name/host/labels/status/outputs`；sensitive 只返回 `secret://` 引用。
 
 ---
 
@@ -348,7 +394,11 @@ spool init keeper
 spool sync push keeper
 spool sync pull keeper
 
-# Bundle 操作（knowledge-stack；keeper 为兼容 alias）
+# 资源清单 / 纳管
+spool inventory --json
+spool adopt keeper --dry-run
+
+# Bundle 操作（knowledge-stack；keeper 为兼容 alias，已弃用）
 spool plan knowledge-stack keeper --offline
 spool plan knowledge-stack keeper
 spool apply knowledge-stack keeper --locked --yes
@@ -360,8 +410,9 @@ spool bundle check-updates knowledge-stack --json
 spool plan silkdata silkdata --offline
 spool apply silkdata silkdata --yes
 
-# 本地 API（可选）
+# 本地 API / OpenAPI（可选）
 spool serve --socket /run/spool.sock
+make openapi
 
 # 服务管理
 spool service keeper status
@@ -379,4 +430,4 @@ spool backup keeper
 
 ---
 
-*部署模型: 自包含二进制目录 + PATH 软链 | 最后更新: 2026-10-24（P2）*
+*部署模型: 自包含二进制目录 + PATH 软链 | 最后更新: 2026-10-24（P3）*

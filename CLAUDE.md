@@ -30,17 +30,21 @@ spool version                             # 验证
 
 > ❌ **绝不** `cp -r out/ /opt/SilkSpool` 升级 —— 会清掉运行时的 `hosts/`、`keys/`、`silkspool.yaml`。整目录复制只用于首次部署到空目录。
 
-> ⚠️ **bundle 模板是运行时副本**：spool 读的是 `/opt/SilkSpool/bundles/`（不是仓库里的 `bundles/`）。改了仓库里的 bundle 模板/manifest 后，先 `rsync -a bundles/<name>/ /opt/SilkSpool/bundles/<name>/` 再 `spool bundle <name> setup <host>`，否则推送的是旧模板。
+> ⚠️ **bundle 模板是运行时副本**：spool 读的是 `/opt/SilkSpool/bundles/`（不是仓库里的 `bundles/`）。改了仓库里的 bundle 模板/manifest 后，先 `rsync -a bundles/<name>/ /opt/SilkSpool/bundles/<name>/` 再 `spool apply <bundle> <host> --yes`，否则推送的是旧模板。
 
 ### 常用命令速查
 
 | 命令 | 用途 |
 |------|------|
 | `spool exec <host> "<cmd>"` | 远程执行命令（运维首选） |
+| `spool serve --socket <path>` | 可选本地 API；OpenAPI 见 `api/openapi.yaml` |
 | `spool sync pull/push <host>` | 配置同步（注意：不推送 compose 模板，需手动 push） |
 | `spool service <host> status` / `spool restart <host> <svc>` | 服务控制 |
 | `spool logs <host> <svc> [lines]` | 查看日志 |
-| `spool bundle <name> <init\|up\|down\|status\|upgrade> <host>` | Bundle 编排 |
+| `spool plan/apply/rollback <bundle> <host>` | 单 host 部署主链路（推荐） |
+| `spool bundle <name> <init\|up\|down\|status\|upgrade> <host>` | Bundle 兼容命令（新脚本优先用 plan/apply） |
+| `spool inventory [--json] [--probe]` | 统一资源清单 |
+| `spool adopt <host> [--dry-run]` | 只读纳管既有 compose stack |
 | `spool upgrade <host> [--force]` | 业务包一键升级到最新版（如 csai） |
 | `spool n8n list/import/export` | n8n 工作流管理 |
 | `spool nas info/pool/dataset/snapshot` | TrueNAS 管理 |

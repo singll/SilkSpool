@@ -9,7 +9,6 @@ Common problems and solutions.
 **Solution**:
 - Run from BaseDir (where `spool` binary and `silkspool.yaml` are located)
 - Or use `--config /path/to/silkspool.yaml`
-- Or set `SILKSPOOL_CONFIG` environment variable
 
 ## "SSH connection failed" / SSH 连接失败
 
@@ -82,14 +81,15 @@ Common problems and solutions.
 3. Ensure the gateway host has dnsmasq or OpenClash configured
 4. Verify SSH connection to gateway host works
 
-## "Bundle init failed" / Bundle 初始化失败
+## "failed to load manifest" / Bundle 加载失败
 
-**Symptom**: `failed to load manifest for <bundle>`
+**Symptom**: `failed to load manifest for <bundle>` or `bundle <name> not found locally or in bundle_sources`
 
 **Solutions**:
-1. Ensure bundle directory exists: `bundles/<name>/manifest.yaml`
-2. Run `make all` to copy bundles to `out/bundles/`
-3. Check manifest YAML syntax
+1. `dir` source：确认 `bundles/<name>/manifest.yaml`（或 `bundle.yaml`）存在，必要时 `make all`。
+2. `git` source：确认 `commit` 是固定 7–40 位 sha；首次拉取需要网络，缓存位于 `.spool/cache/`。
+3. `oci` source：确认 `digest` 固定且与 registry manifest 一致；见下方 OCI 排查。
+4. 用 `spool plan <bundle> <host> --offline --json` 获取完整 schema/引用错误。
 
 ## "Service not found" / 服务未找到
 
@@ -155,3 +155,79 @@ cat /etc/dropbear/authorized_keys
 chmod 700 /root/.ssh
 chmod 600 /root/.ssh/authorized_keys /etc/dropbear/authorized_keys
 ```
+
+
+## "unresolved input reference" / 输入未提供
+
+**Symptom**: `unresolved input reference ${input.public_url}`
+
+**Solution**:
+
+在 `silkspool.yaml` 的目标 host 上提供输入：
+
+```yaml
+hosts:
+  keeper:
+    inputs:
+      public_url: "https://bellkeeper.example.com"
+```
+
+或用 `spool plan ... --json` 查看具体缺失的 key。
+
+## "cross-host endpoint ... needs MagicDNS or address"
+
+**Cause**: 依赖 provider 与 consumer 不在同一主机，且 provider 没有 `magicdns`/`address`。
+
+**Solution**:
+
+```yaml
+hosts:
+  silkdata:
+    address: "silkspool@192.168.7.231"
+    magicdns: "silkdata"
+```
+
+优先 MagicDNS；没有 Headscale 时使用显式地址。不要在模板里写 IP。
+
+## OCI 拉取 / cosign 失败
+
+| 错误 | 处理 |
+|---|---|
+| `digest is required` | 给 `bundle_sources` 补 `digest: sha256:...`，或写 `ref@sha256:...` |
+| `manifest digest mismatch` | `digest` 与 registry 内容不一致；重新获取 manifest digest |
+| `OCI blob digest mismatch` | artifact layer 损坏或被替换；重新发布/拉取 |
+| `unsupported OCI config media type` | 使用 Timoni/Spool 布局：config `application/vnd.timoni.config.v1+json` 或 empty config |
+| `cosign binary not found` | 安装 cosign，或设置 `SPOOL_COSIGN_BIN` 指向可执行文件 |
+| `cosign verification failed` | 无签名/签名不匹配/identity/issuer 不对；不会降级，必须修复签名或移除门禁 |
+
+OCI 缓存可安全删除：`.spool/cache/bundles/<name>/`；下次 plan/apply 会重新拉取。
+
+## "adopt: multiple compose projects found"
+
+**Cause**: 目标主机有多个 compose project，未指定要纳管哪一个。
+
+**Solution**:
+
+```bash
+spool adopt keeper --bundle <compose-project>
+```
+
+先 `spool adopt keeper --dry-run` 查看项目/容器/卷/网络。已有 manifest/state/lock 时加 `--force`。
+
+## plan 有 diff（退出码 3）但不知道改了什么
+
+```bash
+spool plan knowledge-stack keeper --json | jq '.data.diff'
+```
+
+- 退出码 `3` 只表示 online plan 有 drift；`--offline` 永不返回 `3`。
+- 首次部署也会显示 `deployed: false` 的 diff，这是正常的。
+- `--locked` apply 前先跑一次 online plan，确认 lock 与当前 manifest 一致。
+
+## 服务健康检查失败 / 自动回滚
+
+- `components` 中 `optional: false` 的服务会参与 health gate；任一失败会触发自动回滚（不可逆迁移除外）。
+- `optional: true` 只告警，不阻塞整栈。
+- 查看远端 generation：`.spool-gen/current`、`.spool-gen/<n>/meta.yaml`。
+- 手工恢复：`spool rollback <bundle> <host> [generation]`。
+- `irreversible: true` 时停在 `needs_attention`，需人工确认后处理。

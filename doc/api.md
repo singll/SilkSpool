@@ -2,7 +2,7 @@
 
 ---
 
-# 本地 HTTP/JSON API（spool serve，P2）
+# 本地 HTTP/JSON API（spool serve）
 
 > 完整端点、安全与消费方示例；Go package 参考在本文后半部分。
 
@@ -25,12 +25,12 @@ spool serve --socket /run/spool.sock --token "$SPOOL_TOKEN" --audit-log /var/log
 |---|---|
 | socket | 固定 `0600`，默认只允许当前用户 |
 | token | 可选；设置后所有端点（除 `/healthz`）要求 `Authorization: Bearer <token>` |
-| scope | P2 裁剪为单 token（等价 `admin`）；不实现 read/deploy/admin 多 token |
+| scope | 当前为单 token（等价 `admin`）；不实现 read/deploy/admin 多 token |
 | 危险动作 | `bundle.apply` / `bundle.rollback` 必须 `options.yes=true`，或带 `X-Spool-Approval: <token>` |
 | actor | 审计 actor 取 `X-Spool-Actor`；缺省 `local`（有 token 时为 `token`） |
 | 审计 | JSON Lines，记录 actor、action、target、idempotency_key、job_id、state、error |
 
-> P3 提供 `api/openapi.yaml` 与生成的 `pkg/apiclient`；不提供 Events/SSE/Webhook（尚无真实订阅者）。
+> 提供 `api/openapi.yaml` 与生成的 `pkg/apiclient`；不提供 Events/SSE/Webhook（尚无真实订阅者）。
 
 ---
 
@@ -141,7 +141,7 @@ spool serve --socket /run/spool.sock --token "$SPOOL_TOKEN" --audit-log /var/log
 ### Bellkeeper
 
 - Bellkeeper 仓库发布 `deploy/bundle.yaml`（product），在 `silkspool.yaml` 的
-  `bundle_sources` 固定 commit。
+  `bundle_sources` 固定 commit（或切换到 OCI + digest）。
 - 读取契约：`GET /v1/hosts/keeper/bundles/bellkeeper/outputs?resolved=true`。
 - 触发部署：`POST /v1/actions` `bundle.apply`，不要直接 SSH。
 - 产品自身健康/备份/恢复由 product manifest 声明，spool 调用其 hook。
@@ -320,6 +320,10 @@ Core orchestration logic: SSH, sync, DNS, bundles, services, key management, bac
 | `BundleManifest` | Bundle metadata: `Name/Class/Version`, `Delivery/Outputs/Lifecycle/Backup`, `Components/Dependencies/Wiring`, `AliasOf`. |
 | `ResolvedPlan` | Resolver output: components/dependencies, rendered compose/override, lock, component lifecycles. |
 | `BundleFeatures` | Feature flags: `DockerLogRotation`, `GitClone`, `DockerPrune`, `CreateNetwork`. |
+| `BundleRepository` | Local/git/OCI bundle source resolution with pinned commit/digest and cosign gate. |
+| `Manager` | `Plan`, `Apply`, `Rollback`, `Restore`, `Backup`, `Adopt`. |
+| `ResourceStatus` | Unified `kind/name/host/labels/status/outputs` for inventory. |
+| `DatasetResource` / `KeyResource` | TrueNAS dataset / SSH key adapters; unsupported verbs return `UnsupportedError`. |
 
 ### Driver Registry
 
@@ -408,6 +412,10 @@ CLI command registration and application bootstrap.
 | `cmd_rollback.go` | `rollback <bundle> <host> [gen]` | Restore remote generation |
 | `cmd_serve.go` | `serve --socket <path>` | Optional local Unix-socket API |
 | `cmd_adopt.go` | `adopt <host>` | Read-only adoption of an existing compose stack |
+| `cmd_inventory.go` | `inventory [--json] [--probe]` | Unified resource inventory |
+| `cmd_restore.go` | `restore <bundle> <host>` | Product restore hook or manual artifact listing |
+| `cmd_status.go` | `status <bundle> <host>` | Bundle status |
+| `cmd_upgrade.go` | `upgrade <host>` | Compose bundle upgrade via apply |
 | `cmd_stack.go` | `stack install <host> <app>` | Binary installation |
 | `cmd_service.go` | `service <host> <action> <svc>` | Service control |
 | `cmd_n8n.go` | `n8n list/import/export/update` | n8n workflows |
@@ -425,6 +433,34 @@ var Version   = "1.0.0"    // -X internal/cli.Version=...
 var BuildTime = "unknown"   // -X internal/cli.BuildTime=...
 var GitCommit = "unknown"   // -X internal/cli.GitCommit=...
 ```
+
+---
+
+## internal/api
+
+可选本地 Unix-socket HTTP/JSON 服务。
+
+| Type/Function | Description |
+|---------------|-------------|
+| `Server` | HTTP handler; inventory/bundle/outputs/actions/jobs endpoints |
+| `NewServer(baseDir, cfg, runner, token, audit)` | Build server with optional token/audit |
+| `EngineRunner` | Maps actions to `engine.Manager` |
+| `JobManager` | Queued/running/succeeded/failed jobs; per-host serialization |
+| `ListenUnix(path)` | Creates a 0600 Unix socket |
+| `ActionRequest` / `ActionOptions` / `Target` | Request contract |
+
+## pkg/apiclient
+
+Generated from `api/openapi.yaml` (do not edit by hand).
+
+| Type/Function | Description |
+|---------------|-------------|
+| `Client` | Typed HTTP client; `BaseURL`, `HTTPClient`, `Token` |
+| `NewUnixClient(socketPath)` | Unix-socket transport convenience |
+| `GetHealth/GetInventory/GetBundle/GetBundleOutputs/SubmitAction/GetJob` | Generated endpoint methods |
+| `WithToken(token)` | Returns a copy with bearer token |
+
+Regenerate with `make openapi`; `go test ./internal/openapigen` verifies the committed client is current.
 
 ---
 

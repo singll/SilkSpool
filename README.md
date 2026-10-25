@@ -37,17 +37,20 @@ It rejects the heaviness of K8s and the complex DSL of Ansible, returning to pur
 SilkSpool/                      # Git repository (source code)
 ├── cmd/spool/                  # CLI entry point (Go)
 ├── internal/                   # Core modules (Go)
-│   ├── engine/                 # Sync, DNS, Bundle, Service managers
-│   └── ssh/                    # SSH connection handling
-├── pkg/                        # Shared packages
+│   ├── engine/                 # Resolver, plan/apply/rollback, resources
+│   ├── api/                    # Optional local Unix-socket API
+│   └── openapigen/             # OpenAPI -> pkg/apiclient generator
+├── pkg/                        # Shared packages (driver, sops, apiclient)
+├── api/openapi.yaml            # Local API contract
 ├── bundles/                    # Bundle templates
-│   ├── keeper/                # Bellkeeper + n8n + Meilisearch + Memos
+│   ├── knowledge-stack/       # composition: bellkeeper/n8n/memos/rsshub
+│   ├── silkdata/               # capability: Postgres/Redis/Meili/NATS/CouchDB
 │   ├── gateway/                # Caddy + Homepage + DNS
 │   ├── server/                # Headscale + Conduit + ntfy
 │   ├── bili/                  # BiliRecorder + BiliRobot
 │   └── aigateway/             # NewAPI + Redis
 ├── silkspool.yaml.example      # Configuration template
-└── Makefile                   # Build scripts
+└── Makefile                    # Build scripts
 
 out/                            # Self-contained runtime (gitignored)
 ├── spool                       # Binary executable
@@ -59,6 +62,8 @@ out/                            # Self-contained runtime (gitignored)
 ```
 
 ### Quick Start
+
+配置与完整示例见 [doc/configuration.md](doc/configuration.md)，架构见 [doc/architecture.md](doc/architecture.md)。
 
 ```bash
 # 1. Build from source
@@ -90,12 +95,14 @@ vim out/silkspool.yaml
 | `sync pull/push <host>` | Sync configs between local and remote |
 | `dns list/add/remove/push` | Manage DNS records |
 | `site list/deploy/push` | Quick site deployment |
-| `bundle <name> <init\|up\|down\|status>` | Bundle orchestration |
+| `bundle <name> <init\|up\|down\|status>` | Compatibility commands (prefer plan/apply/rollback) |
 | `plan <bundle> <host> [--offline]` | Desired vs actual diff / static validation |
 | `apply <bundle> <host> [--locked]` | Reproducible single-host apply |
 | `rollback <bundle> <host> [gen]` | Roll back to remote generation |
 | `bundle check-updates <name>` | Suggest pinned image updates |
 | `serve --socket <path>` | Optional local HTTP/JSON API |
+| `inventory [--json] [--probe]` | Unified resource inventory (Bundle/Service/DNS/Site/Dataset/Key) |
+| `restore <bundle> <host>` | Invoke product restore hook or list manual artifacts |
 | `adopt <host> [--dry-run]` | Adopt an existing compose stack without recreating containers |
 | `service <host> <status\|start\|stop\|restart\|logs>` | Service control |
 | `n8n list/import/export` | n8n workflow management |
@@ -107,7 +114,9 @@ vim out/silkspool.yaml
 
 | Bundle | Components | Description |
 |--------|-----------|-------------|
-| `keeper` | Bellkeeper, n8n, Meilisearch, Memos, CouchDB, RSSHub, NATS | Knowledge management system |
+| `knowledge-stack` | Bellkeeper, n8n, Memos, RSSHub | Knowledge app composition (dependencies: `silkdata`) |
+| `silkdata` | PostgreSQL, Redis, Meilisearch, NATS, CouchDB | Data-layer capability |
+| `bellkeeper` | Bellkeeper | Product bundle, published from the Bellkeeper repo |
 | `gateway` | Caddy, Homepage, dnsmasq, OpenClash | Router gateway |
 | `server` | Headscale, Conduit, ntfy | Binary services for VPS |
 | `bili` | BiliRecorder, BiliRobot, Dozzle | Bilibili live/chat tools |
@@ -146,7 +155,7 @@ Notes:
 - Missing a required command on the target (`curl`, a decompressor, or `sha256sum` when a checksum is set) produces a clear error with the package to install; spool never installs packages on the target itself.
 - Archives locate the binary via `binary_path` → match by `alias` → largest ELF.
 - Install is idempotent: a `/usr/local/bin/.spool-<alias>.version` marker is compared against the resolved tag (`latest` resolved first for GitHub). Use `--force` to reinstall, `--dry-run` to preview (still probes the remote for its architecture; it just skips the install itself).
-- Install places the binary and writes a systemd unit but never enables or starts it — starting a service is `spool restart` / bundle `up`, kept separate from install.
+- Install places the binary and writes a systemd unit but never enables or starts it — starting a service is `spool restart` / `spool apply`, kept separate from install.
 
 ---
 
@@ -181,11 +190,14 @@ Notes:
 SilkSpool/                      # Git 仓库 (源码)
 ├── cmd/spool/                  # CLI 入口 (Go)
 ├── internal/                   # 核心模块 (Go)
-│   ├── engine/                 # Sync/DNS/Bundle/Service 管理器
-│   └── ssh/                    # SSH 连接处理
-├── pkg/                        # 共享包
+│   ├── engine/                 # Resolver、plan/apply/rollback、资源适配器
+│   ├── api/                    # 可选本地 Unix socket API
+│   └── openapigen/             # OpenAPI -> pkg/apiclient 生成器
+├── pkg/                        # 共享包 (driver/sops/apiclient)
+├── api/openapi.yaml            # 本地 API 契约
 ├── bundles/                    # Bundle 模板
-│   ├── keeper/                 # Bellkeeper + n8n + Meilisearch + Memos
+│   ├── knowledge-stack/        # composition：bellkeeper/n8n/memos/rsshub
+│   ├── silkdata/               # capability：Postgres/Redis/Meili/NATS/CouchDB
 │   ├── gateway/                # Caddy + Homepage + DNS
 │   ├── server/                 # Headscale + Conduit + ntfy
 │   ├── bili/                   # BiliRecorder + BiliRobot
@@ -203,6 +215,8 @@ out/                            # 自包含运行时 (gitignored)
 ```
 
 ### 快速开始
+
+配置与完整示例见 [doc/configuration.md](doc/configuration.md)，架构见 [doc/architecture.md](doc/architecture.md)。
 
 ```bash
 # 1. 从源码构建
@@ -234,12 +248,14 @@ vim out/silkspool.yaml
 | `sync pull/push <主机>` | 本地与远程同步配置 |
 | `dns list/add/remove/push` | DNS 记录管理 |
 | `site list/deploy/push` | 快速站点部署 |
-| `bundle <名称> <init\|up\|down\|status>` | Bundle 编排 |
+| `bundle <名称> <init\|up\|down\|status>` | 兼容命令（优先 plan/apply/rollback） |
 | `plan <bundle> <主机> [--offline]` | 期望/实际 diff 或静态校验 |
 | `apply <bundle> <主机> [--locked]` | 单主机可复现部署 |
 | `rollback <bundle> <主机> [代]` | 回滚到远端 generation |
 | `bundle check-updates <名称>` | 建议固定镜像更新 |
 | `serve --socket <路径>` | 可选本地 HTTP/JSON API |
+| `inventory [--json] [--probe]` | 统一资源清单（Bundle/Service/DNS/Site/Dataset/Key） |
+| `restore <bundle> <主机>` | 调用产品 restore hook，或列出人工恢复产物 |
 | `adopt <主机> [--dry-run]` | 纳管既有 compose stack（不重建容器） |
 | `service <主机> <status\|start\|stop\|restart\|logs>` | 服务控制 |
 | `n8n list/import/export` | n8n 工作流管理 |
@@ -251,7 +267,9 @@ vim out/silkspool.yaml
 
 | Bundle | 组件 | 说明 |
 |--------|------|------|
-| `keeper` | Bellkeeper, n8n, Meilisearch, Memos, CouchDB, RSSHub, NATS | 知识管理系统 |
+| `knowledge-stack` | Bellkeeper, n8n, Memos, RSSHub | 知识应用 composition（依赖 `silkdata`） |
+| `silkdata` | PostgreSQL, Redis, Meilisearch, NATS, CouchDB | 数据层 capability |
+| `bellkeeper` | Bellkeeper | product bundle，由 Bellkeeper 仓库发布 |
 | `gateway` | Caddy, Homepage, dnsmasq, OpenClash | 路由器网关 |
 | `server` | Headscale, Conduit, ntfy | VPS 二进制服务 |
 | `bili` | BiliRecorder, BiliRobot, Dozzle | B站直播/弹幕工具 |

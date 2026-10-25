@@ -104,6 +104,9 @@ hosts:
     # knowledge-stack = components(bellkeeper/n8n/memos/rsshub) + dependency silkdata。
     # 旧的 keeper 名称保留一个版本作为 alias，plan/apply 会输出弃用警告。
     bundles: ["knowledge-stack"]
+    # Bellkeeper product 的对外 URL；单独 apply bellkeeper 时必填。
+    inputs:
+      public_url: "https://bellkeeper.singll.net"
     services:
       - alias: "bellkeeper"
         type: "docker"

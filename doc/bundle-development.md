@@ -1,6 +1,6 @@
 # Bundle Development / Bundle 开发指南
 
-How to create, test, and deploy a new bundle.
+How to create, test, and deploy a new bundle. 配置总览见 [configuration.md](configuration.md)。
 
 ---
 
@@ -61,7 +61,7 @@ services:                         # Service names for status reporting
   同一主机上不会互相覆盖 `.env`。
 - 若旧布局 `hosts/<host>/.env` 已存在，初始化会跳过 bundle 作用域副本，同步阶段
   自动回退到旧路径，保证平滑迁移。
-- `manifest.sync_rules` 由 `spool bundle up/setup` 自动推送，失败会让命令整体失败。
+- `manifest.sync_rules` 由 `spool apply` 内部执行同步，失败会让命令整体失败。
 - 声明了 `.env` default 时，spool 自动推送 `deploy_path/.env`，不需要在
   `silkspool.yaml` 里写 host 级 `sync_rules`。
 
@@ -72,7 +72,7 @@ services:                         # Service names for status reporting
 | `compose` | `ComposeDriver` | Docker Compose deployment. Templates are YAML compose files. |
 | `stack` | `StackDriver` | Binary installation from GitHub releases. Templates are systemd unit files. |
 
-## 轻契约 Manifest（P1）
+## 轻契约 Manifest
 
 新 bundle 推荐使用以下结构；旧扁平字段（`name/type/templates/services/features/defaults`）继续兼容。
 
@@ -240,9 +240,9 @@ adopt 只执行只读 `docker ps/inspect` 与 `cat` 读取 compose 文件；不�
 显式 `spool apply` 才会改变它们。
 
 > P3 未启动：跨主机 apply 编排、CUE、Events/SSE/Webhook。原因与触发条件见
-> [DECOUPLING-PLAN.md](DECOUPLING-PLAN.md) §14。
+> [archive/DECOUPLING-PLAN.md](archive/DECOUPLING-PLAN.md) §14。
 
-### Product bundle：由产品仓库自己发布（P2）
+### Product bundle：由产品仓库自己发布
 
 产品仓库推荐布局（Bellkeeper 示例）：
 
@@ -274,9 +274,9 @@ bundle_sources:
 产品 bundle 可声明 `delivery.artifact.image/digest`、`outputs`、`lifecycle.health/upgrade/restore`
 与 `backup.hook/assets`。composition 引用 product 时，未在 component 上覆盖的 lifecycle/backup
 会从 product manifest 继承；apply 在 `backup-then-recreate` / `irreversible` 时执行组件
-`backup.hook`，`spool restore` / `spool bundle <name> restore` 对称执行 `restore.hook`。
+`backup.hook`，`spool restore <bundle> <host>` 对称执行 `restore.hook`。
 
-### Composition 的组件目录（P2）
+### Composition 的组件目录
 
 `knowledge-stack` 把每个独立组件放在自己的子目录，并在 manifest 中用 `source: dir` 显式引用：
 
@@ -417,23 +417,31 @@ hosts:
 
 ## Bundle Lifecycle / 生命周期
 
+现行主链路：
+
 ```bash
-spool bundle mybundle init myhost     # Setup: create dirs, push templates, create .env
-spool bundle mybundle up myhost       # Start: docker compose up -d
-spool bundle mybundle status myhost   # Status: docker compose ps
-spool bundle mybundle down myhost     # Stop: docker compose down (⚠️ removes containers)
+spool plan mybundle myhost --offline   # 静态校验
+spool plan mybundle myhost             # online diff（有 drift 退出 3）
+spool apply mybundle myhost --yes      # 部署（自动 generation/health/rollback）
+spool apply mybundle myhost --locked --yes
+spool rollback mybundle myhost [gen]
+spool status mybundle myhost --json
 ```
 
-> **Warning**: `bundle down` stops and removes containers. For services with persistent data (n8n, databases), use `spool service <host> stop <svc>` instead.
+兼容命令 `spool bundle <name> setup|up <host>` 仍会映射到 apply，但会输出弃用语义；
+新脚本请直接用 `plan/apply/rollback`。
+
+> **Warning**: `spool bundle <name> down <host>` 会移除容器。有状态服务（n8n、数据库）优先用
+> `spool service <host> stop <svc>`，不要用 `down -v`。
 
 ## Testing a Bundle Locally / 本地测试
 
 1. Build and deploy:
    ```bash
    make all                                    # Copies bundles to out/
-   spool bundle mybundle init myhost            # Initialize on test host
-   spool bundle mybundle up myhost              # Start services
-   spool service myhost status                  # Check status
+   spool plan mybundle myhost --offline        # Static validation
+   spool apply mybundle myhost --yes           # Deploy with health gate
+   spool service myhost status                 # Check status
    ```
 
 2. Verify compose files on remote:
@@ -485,8 +493,8 @@ services:
 # bundles: ["hello"]
 
 make all
-spool bundle hello init myhost
-spool bundle hello up myhost
+spool plan hello myhost --offline
+spool apply hello myhost --yes
 spool logs myhost hello
 ```
 
@@ -523,7 +531,7 @@ Placeholder expansion:
 
 ## Custom Drivers / 自定义驱动
 
-P1 起公开接口位于 `pkg/driver`（协议版本 + 能力协商，编译期注册）：
+公开接口位于 `pkg/driver`（协议版本 + 能力协商，编译期注册）：
 
 ```go
 driver.Register("mydriver", func(opts driver.Options) driver.BundleDriver {
