@@ -1,0 +1,112 @@
+---
+apiVersion: spool/v1alpha1
+kind: Bundle
+metadata:
+  name: bili-robot
+  class: product
+  version: 1.1.23
+  owner: Hello-Moeka/BilibiliDanmuRobot
+  labels:
+    io.silkspool.product: bili-robot
+name: bili-robot
+type: compose
+deploy_path: /opt/silkspool/bili-robot
+config_root: bundle
+features:
+  docker_log_rotation: true
+defaults:
+  - path: bili.env
+    content: |
+      TZ=Asia/Shanghai
+      # 直播间短号/房间号：改成自己的房间号
+      BILI_ROOM_ID=3
+  - path: etc/bilidanmaku-api.yaml
+    content: |
+      # BilibiliDanmuRobot 维护版（Hello-Moeka/BilibiliDanmuRobot）
+      # 房间号通过 .env 的 BILI_ROOM_ID 注入；也可直接改成固定数字。
+      RoomId: ${BILI_ROOM_ID}
+      DanmuLen: 30
+      EntryMsg: "机器人已上线~"
+      PKNotice: true
+
+      # 关键词回复
+      KeywordReply: true
+      KeywordReplyList:
+        "查询": "发送【盲盒】可以查看本月成就哦~"
+
+      # 机器人昵称与对话
+      RobotName: "小簿向前冲"
+      TalkRobotCmd: "小簿"
+      FuzzyMatchCmd: false
+      RobotMode: QingYunKe
+
+      # 欢迎与答谢
+      InteractWord: true
+      WelcomeDanmu:
+        - "欢迎 {user} 回家~"
+        - "欢迎 {user}，来了就是一家人！"
+        - "哇！欢迎 {user} 空降直播间！"
+        - "欢迎 {user}，点点关注不迷路~"
+      InteractWordByTime: false
+      EntryEffect: true
+      WelcomeHighWealthy: true
+      WelcomeHighWealthyLevel: 30
+      ThanksFocus: true
+      ThanksShare: false
+      InteractSelf: false
+      InteractAnchor: false
+      FocusDanmu:
+        - "感谢关注！老板大气！"
+        - "谢谢宝子的关注，爱你哟~"
+      WelcomeSwitch: false
+      WelcomeString: {}
+      WelcomeBlacklistWide: []
+      WelcomeBlacklist: []
+      ThanksGift: true
+      ThanksGiftTimeout: 8
+      ThanksBlindBoxTimeout: 6
+      ThanksMinCost: 0
+      BlindBoxProfitLossStat: false
+      ThanksGiftUseAt: false
+
+      # 定时弹幕 / 抽奖 / 统计
+      CronDanmu: false
+      CronDanmuList: []
+      DrawByLot: true
+      SignInEnable: true
+      DanmuCntEnable: true
+      BlindBoxStat: true
+      LotteryEnable: false
+
+      # 数据与日志
+      DBPath: "./db"
+      DBName: "bili-robot.db"
+      CustomizeBullet: false
+      Log:
+        Encoding: plain
+        Level: info
+sync_rules:
+  - local: bili.env
+    remote: ${deploy_path}/bili.env
+  - local: etc/bilidanmaku-api.yaml
+    remote: ${deploy_path}/data/etc/bilidanmaku-api.yaml
+templates:
+  - 10-bili-robot.yaml
+services:
+  - bili-robot
+spec:
+  compatibility:
+    spool: ">=1.2"
+  delivery:
+    driver: compose
+    templates:
+      - 10-bili-robot.yaml
+  lifecycle:
+    health:
+      command: ["pgrep", "-f", "/usr/local/bin/bili-robot"]
+      from: container
+      exec_in: bili-robot
+      timeout: 60s
+    upgrade:
+      strategy: recreate
+      irreversible: false
