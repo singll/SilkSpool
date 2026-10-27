@@ -4,7 +4,7 @@ kind: Bundle
 metadata:
   name: bili-robot
   class: product
-  version: 1.1.23
+  version: 1.1.23-livegate
   owner: Hello-Moeka/BilibiliDanmuRobot
   labels:
     io.silkspool.product: bili-robot
