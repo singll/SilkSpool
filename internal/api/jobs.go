@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -38,13 +39,16 @@ type Job struct {
 
 // JobManager 负责排队、幂等与 per-host 串行。
 type JobManager struct {
-	mu        sync.Mutex
-	jobs      map[string]*Job
-	idem      map[string]string
-	hostLocks map[string]*sync.Mutex
-	runner    ActionRunner
-	audit     *AuditLogger
-	now       func() time.Time
+	// Timeout 限制单个 job 的执行时间；0 表示使用默认值。
+	Timeout         time.Duration
+	mu              sync.Mutex
+	jobs            map[string]*Job
+	idem            map[string]string
+	idemFingerprint map[string]string
+	hostLocks       map[string]*sync.Mutex
+	runner          ActionRunner
+	audit           *AuditLogger
+	now             func() time.Time
 }
 
 // NewJobManager 创建 job 管理器。
@@ -53,24 +57,41 @@ func NewJobManager(runner ActionRunner, audit *AuditLogger) *JobManager {
 		audit = NewAuditLogger(nil)
 	}
 	return &JobManager{
-		jobs:      map[string]*Job{},
-		idem:      map[string]string{},
-		hostLocks: map[string]*sync.Mutex{},
-		runner:    runner,
-		audit:     audit,
-		now:       time.Now,
+		jobs:            map[string]*Job{},
+		idem:            map[string]string{},
+		idemFingerprint: map[string]string{},
+		hostLocks:       map[string]*sync.Mutex{},
+		runner:          runner,
+		audit:           audit,
+		now:             time.Now,
 	}
 }
 
 // Submit 创建或复用 job。reused 为 true 表示 idempotency_key 命中了未完成 job。
 func (m *JobManager) Submit(request ActionRequest, actor string) (*Job, bool) {
 	m.mu.Lock()
+	fingerprint := requestFingerprint(request)
 	if request.IdempotencyKey != "" {
 		if id, ok := m.idem[request.IdempotencyKey]; ok {
 			if existing, ok := m.jobs[id]; ok && (existing.State == JobQueued || existing.State == JobRunning) {
-				clone := *existing
+				if m.idemFingerprint[request.IdempotencyKey] == fingerprint {
+					clone := *existing
+					m.mu.Unlock()
+					return &clone, true
+				}
+				// 同一个幂等键指向不同请求：返回显式冲突，不能静默复用或另起任务。
 				m.mu.Unlock()
-				return &clone, true
+				return &Job{
+					ID:             newJobID(),
+					Action:         request.Action,
+					Target:         request.Target,
+					Options:        request.Options,
+					State:          JobFailed,
+					IdempotencyKey: request.IdempotencyKey,
+					Actor:          actor,
+					FinishedAt:     m.now().UTC().Format(time.RFC3339Nano),
+					Error:          "idempotency_key conflict: key is already used by a different request",
+				}, false
 			}
 		}
 	}
@@ -88,6 +109,7 @@ func (m *JobManager) Submit(request ActionRequest, actor string) (*Job, bool) {
 	m.jobs[id] = job
 	if request.IdempotencyKey != "" {
 		m.idem[request.IdempotencyKey] = id
+		m.idemFingerprint[request.IdempotencyKey] = fingerprint
 	}
 	clone := *job
 	m.mu.Unlock()
@@ -124,6 +146,17 @@ func (m *JobManager) run(id string) {
 	actor := job.Actor
 	m.mu.Unlock()
 
+	timeout := m.Timeout
+	if timeout == 0 {
+		timeout = time.Hour
+	}
+	ctx := context.Background()
+	cancel := func() {}
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+
 	hostLock := m.hostLock(target.Host)
 	hostLock.Lock()
 	var (
@@ -133,7 +166,7 @@ func (m *JobManager) run(id string) {
 	if m.runner == nil {
 		err = fmt.Errorf("no action runner configured")
 	} else {
-		result, err = m.runner.Run(context.Background(), action, target, options)
+		result, err = m.runner.Run(ctx, action, target, options)
 	}
 	hostLock.Unlock()
 
@@ -148,11 +181,9 @@ func (m *JobManager) run(id string) {
 	}
 	state := job.State
 	jobErr := job.Error
-	if job.IdempotencyKey != "" && job.State == JobFailed {
+	if job.IdempotencyKey != "" && (job.State == JobFailed || job.State == JobSucceeded) {
 		delete(m.idem, job.IdempotencyKey)
-	}
-	if job.IdempotencyKey != "" && job.State == JobSucceeded {
-		delete(m.idem, job.IdempotencyKey)
+		delete(m.idemFingerprint, job.IdempotencyKey)
 	}
 	m.mu.Unlock()
 
@@ -218,4 +249,13 @@ func (l *AuditLogger) Log(entry AuditEntry) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	_ = json.NewEncoder(l.w).Encode(entry)
+}
+
+// requestFingerprint 为 action/target/options 生成稳定摘要，用于校验幂等键是否指向同一请求。
+func requestFingerprint(request ActionRequest) string {
+	normalized := request
+	normalized.IdempotencyKey = ""
+	data, _ := json.Marshal(normalized)
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }

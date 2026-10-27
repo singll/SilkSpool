@@ -135,7 +135,7 @@ func (m *Manager) Apply(ctx context.Context, bundleName, host string, opts Apply
 	}
 
 	if opts.DryRun {
-		actual, err := m.readActual(plan)
+		actual, err := m.readActual(ctx, plan)
 		if err != nil {
 			return result, err
 		}
@@ -150,19 +150,19 @@ func (m *Manager) Apply(ctx context.Context, bundleName, host string, opts Apply
 	}
 	defer release()
 
-	if !opts.Locked {
-		path, err := WriteLock(m.BaseDir, plan.Lock)
-		if err != nil {
-			return result, err
-		}
-		plan.LockPath = path
-		result.LockPath = path
+	// 审批和备份条件必须在任何远端写入之前完成。读取 actual 仅供 diff 使用。
+	actual, err := m.readActual(ctx, plan)
+	if err != nil {
+		return result, err
+	}
+	result.Diff = diffStates(desiredStateFromPlan(plan), *actual)
+	if len(result.Diff) > 0 && !opts.Yes {
+		return result, fmt.Errorf("%w: plan has %d change(s); re-run with --yes to apply", ErrApprovalRequired, len(result.Diff))
 	}
 
-	if m.SyncFunc != nil {
-		if err := m.SyncFunc(); err != nil {
-			return result, fmt.Errorf("sync config: %w", err)
-		}
+	irreversible := plan.IsIrreversibleEffective()
+	if irreversible && !opts.AllowIrreversible {
+		return result, fmt.Errorf("%w: lifecycle.upgrade.irreversible=true requires --allow-irreversible", ErrApprovalRequired)
 	}
 
 	currentGen, err := m.currentGeneration(plan.DeployPath)
@@ -173,17 +173,35 @@ func (m *Manager) Apply(ctx context.Context, bundleName, host string, opts Apply
 	result.Generation = generation
 	result.Status = "applying"
 
-	irreversible := plan.IsIrreversibleEffective()
-	if irreversible && !opts.AllowIrreversible {
-		return result, fmt.Errorf("%w: lifecycle.upgrade.irreversible=true requires --allow-irreversible", ErrApprovalRequired)
-	}
-	backupDir := ""
-	if currentGen > 0 && plan.NeedsBackupBeforeApply() {
-		specs := plan.BackupHooks()
-		if len(specs) == 0 {
+	// 接管既有部署（没有 generation 但已有 compose 文件）同样可能含历史数据。
+	hasExistingState := currentGen > 0 || actual.Deployed
+	needsBackup := plan.NeedsBackupBeforeApply() && hasExistingState
+	if needsBackup {
+		if len(plan.BackupHooks()) == 0 {
 			return result, fmt.Errorf("backup-then-recreate/irreversible upgrade requires a backup hook")
 		}
-		backupDir, err = m.runBackupHooks(ctx, plan, generation, specs, secrets)
+	}
+
+	if !opts.Locked {
+		path, err := WriteLock(m.BaseDir, plan.Lock)
+		if err != nil {
+			return result, err
+		}
+		plan.LockPath = path
+		result.LockPath = path
+	} else {
+		result.LockPath = plan.LockPath
+	}
+
+	if m.SyncFunc != nil {
+		if err := m.SyncFunc(); err != nil {
+			return result, fmt.Errorf("sync config: %w", err)
+		}
+	}
+
+	backupDir := ""
+	if needsBackup {
+		backupDir, err = m.runBackupHooks(ctx, plan, generation, plan.BackupHooks(), secrets)
 		if err != nil {
 			return result, fmt.Errorf("backup hook failed: %w", err)
 		}
@@ -200,10 +218,10 @@ func (m *Manager) Apply(ctx context.Context, bundleName, host string, opts Apply
 	}
 	envContent := readBundleEnv(m.BaseDir, host, bundleName, plan.Manifest)
 
-	if err := m.ensureDeployDirs(plan.DeployPath); err != nil {
+	if err := m.ensureDeployDirs(ctx, plan.DeployPath); err != nil {
 		return result, err
 	}
-	if err := m.uploadPlanFiles(plan, runtimeOverride, envContent); err != nil {
+	if err := m.uploadPlanFiles(ctx, plan, runtimeOverride, envContent); err != nil {
 		return result, err
 	}
 
@@ -218,21 +236,22 @@ func (m *Manager) Apply(ctx context.Context, bundleName, host string, opts Apply
 		CreatedAt:   nowUTC(m.Now),
 		BackupDir:   backupDir,
 		Services:    plan.Services,
+		Files:       managedFiles(plan, envContent),
 	}
-	if err := m.writeGenerationSnapshot(plan, generation, runtimeOverride, envContent, meta); err != nil {
+	if err := m.writeGenerationSnapshot(ctx, plan, generation, runtimeOverride, envContent, meta); err != nil {
 		return result, err
 	}
 
-	if err := m.composeBuild(plan); err != nil {
+	if err := m.composeBuild(ctx, plan); err != nil {
 		utils.Warn("compose build failed (continuing with prebuilt images): %v", err)
 	}
-	if err := m.composeUp(plan); err != nil {
+	if err := m.composeUp(ctx, plan); err != nil {
 		return m.handleApplyFailure(ctx, plan, result, currentGen, generation, backupDir, irreversible, fmt.Errorf("compose up failed: %w", err))
 	}
 	if err := m.healthGate(ctx, plan, result); err != nil {
 		return m.handleApplyFailure(ctx, plan, result, currentGen, generation, backupDir, irreversible, fmt.Errorf("health gate failed: %w", err))
 	}
-	if err := m.reconnectConfirm(); err != nil {
+	if err := m.reconnectConfirm(ctx); err != nil {
 		return m.handleApplyFailure(ctx, plan, result, currentGen, generation, backupDir, irreversible, fmt.Errorf("reconnect confirmation failed: %w", err))
 	}
 
@@ -289,7 +308,7 @@ func (m *Manager) applyScript(ctx context.Context, plan *ResolvedPlan, opts Appl
 			return result, fmt.Errorf("sync config: %w", err)
 		}
 	}
-	if err := m.ensureDeployDirs(plan.DeployPath); err != nil {
+	if err := m.ensureDeployDirs(ctx, plan.DeployPath); err != nil {
 		return result, err
 	}
 	for _, tmpl := range plan.Manifest.Templates {
@@ -303,13 +322,13 @@ func (m *Manager) applyScript(ctx context.Context, plan *ResolvedPlan, opts Appl
 			return result, fmt.Errorf("upload %s: %w", tmpl, err)
 		}
 		if strings.HasSuffix(tmpl, ".sh") {
-			if _, err := m.Runner.Exec("chmod +x " + shellQuote(remotePath)); err != nil {
+			if _, err := execRunner(ctx, m.Runner, "chmod +x "+shellQuote(remotePath)); err != nil {
 				return result, err
 			}
 		}
 	}
 	if containsString(plan.Manifest.Templates, "setup.sh") {
-		if _, err := m.Runner.Exec("cd " + shellQuote(plan.DeployPath) + " && bash setup.sh"); err != nil {
+		if _, err := execRunner(ctx, m.Runner, "cd "+shellQuote(plan.DeployPath)+" && bash setup.sh"); err != nil {
 			return result, fmt.Errorf("setup.sh failed: %w", err)
 		}
 	}
@@ -462,34 +481,136 @@ func (m *Manager) restoreGeneration(ctx context.Context, plan *ResolvedPlan, gen
 	if err != nil {
 		return fmt.Errorf("%w: generation %d has no override", ErrGenerationNotFound, generation)
 	}
-	env, _ := m.Runner.ReadFile(filepath.Join(genDir, ".env"))
-	if err := m.ensureDeployDirs(plan.DeployPath); err != nil {
+	env, envErr := m.Runner.ReadFile(filepath.Join(genDir, ".env"))
+	if envErr != nil {
+		env = ""
+	}
+
+	// 恢复健康/生命周期契约必须使用目标 generation 自己保存的锁定快照，
+	// 而不是当前（可能已变更）的 bundle 定义。
+	restorePlan := plan
+	restoreManifestName := plan.Manifest.Name
+	restoreHost := plan.Lock.Host
+	if lockData, err := m.Runner.ReadFile(filepath.Join(genDir, "lock.yaml")); err == nil {
+		var lock LockSnapshot
+		if err := yaml.Unmarshal([]byte(lockData), &lock); err == nil {
+			keys := make([]string, 0, len(lock.Resolved.Components))
+			for key := range lock.Resolved.Components {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			restorePlan = &ResolvedPlan{
+				Manifest:   plan.Manifest,
+				BundleRoot: plan.BundleRoot,
+				DeployPath: plan.DeployPath,
+				Components: keys,
+				Lock:       &lock,
+			}
+			restoreHost = lock.Host
+		}
+	}
+	if err := m.ensureDeployDirs(ctx, plan.DeployPath); err != nil {
 		return err
 	}
 	if err := m.Runner.Upload(compose, filepath.Join(plan.DeployPath, "docker-compose.yaml")); err != nil {
 		return err
 	}
-	if err := m.Runner.Upload(override, filepath.Join(plan.DeployPath, "docker-compose.spool.yaml")); err != nil {
+	overridePath := filepath.Join(plan.DeployPath, "docker-compose.spool.yaml")
+	if err := m.Runner.Upload(override, overridePath); err != nil {
+		return err
+	}
+	if _, err := execRunner(ctx, m.Runner, "chmod 600 "+shellQuote(overridePath)); err != nil {
 		return err
 	}
 	if env != "" {
-		if err := m.Runner.Upload(env, filepath.Join(plan.DeployPath, ".env")); err != nil {
+		envPath := filepath.Join(plan.DeployPath, ".env")
+		if err := m.Runner.Upload(env, envPath); err != nil {
+			return err
+		}
+		if _, err := execRunner(ctx, m.Runner, "chmod 600 "+shellQuote(envPath)); err != nil {
 			return err
 		}
 	}
+	// 目标 generation 不存在的受管理文件必须删除，避免新版 .env/模板残留。
+	if meta, err := m.readGenerationMeta(plan.DeployPath, generation); err == nil {
+		targetFiles := map[string]bool{}
+		for _, file := range meta.Files {
+			targetFiles[filepath.ToSlash(file)] = true
+		}
+		if len(targetFiles) == 0 {
+			// 兼容旧快照：目录里实际存在的文件即为目标文件集合。
+			if raw, err := execRunner(ctx, m.Runner, "cd "+shellQuote(genDir)+" && find files -type f 2>/dev/null; test -f .env && echo .env || true"); err == nil {
+				for _, line := range strings.Split(raw, "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+					targetFiles[strings.TrimPrefix(line, "files/")] = true
+				}
+			}
+			targetFiles["docker-compose.yaml"] = true
+			targetFiles["docker-compose.spool.yaml"] = true
+		}
+		// 当前 plan 与当前 generation 记录的文件都可能是残留；取并集清理。
+		currentSet := map[string]bool{}
+		for _, file := range managedFiles(plan, "") {
+			currentSet[filepath.ToSlash(file)] = true
+		}
+		if currentGen, err := m.currentGeneration(plan.DeployPath); err == nil && currentGen > 0 {
+			if currentMeta, err := m.readGenerationMeta(plan.DeployPath, currentGen); err == nil {
+				for _, file := range currentMeta.Files {
+					currentSet[filepath.ToSlash(file)] = true
+				}
+			}
+		}
+		currentFiles := make([]string, 0, len(currentSet))
+		for file := range currentSet {
+			currentFiles = append(currentFiles, file)
+		}
+		sort.Strings(currentFiles)
+		for _, file := range currentFiles {
+			if targetFiles[filepath.ToSlash(file)] {
+				continue
+			}
+			if _, err := execRunner(ctx, m.Runner, "rm -rf "+shellQuote(filepath.Join(plan.DeployPath, filepath.FromSlash(file)))); err != nil {
+				return err
+			}
+		}
+		if env == "" && !targetFiles[".env"] {
+			if _, err := execRunner(ctx, m.Runner, "rm -rf "+shellQuote(filepath.Join(plan.DeployPath, ".env"))); err != nil {
+				return err
+			}
+		}
+	}
 	// 恢复同一 generation 的组件模板（若快照包含）。
-	if _, err := m.Runner.Exec(fmt.Sprintf("cp -a %s/. %s/ 2>/dev/null || true",
+	if _, err := execRunner(ctx, m.Runner, fmt.Sprintf("cp -a %s/. %s/ 2>/dev/null || true",
 		shellQuote(filepath.Join(genDir, "files")), shellQuote(plan.DeployPath))); err != nil {
 		return err
 	}
-	if err := m.composeUp(plan); err != nil {
+	if err := m.composeUp(ctx, restorePlan); err != nil {
 		return fmt.Errorf("rollback compose up failed: %w", err)
 	}
-	result := &ApplyResult{Bundle: plan.Manifest.Name, Host: plan.Lock.Host, Warnings: []string{}}
-	if err := m.healthGate(ctx, plan, result); err != nil {
+	result := &ApplyResult{Bundle: restoreManifestName, Host: restoreHost, Warnings: []string{}}
+	if err := m.healthGate(ctx, restorePlan, result); err != nil {
 		return fmt.Errorf("rollback health gate failed: %w", err)
 	}
 	return nil
+}
+
+// managedFiles 返回 deploy_path 下由 spool 管理的文件（相对路径）。
+func managedFiles(plan *ResolvedPlan, envContent string) []string {
+	if plan == nil {
+		return nil
+	}
+	files := []string{"docker-compose.yaml", "docker-compose.spool.yaml"}
+	if envContent != "" {
+		files = append(files, ".env")
+	}
+	for path := range plan.Uploads {
+		files = append(files, filepath.ToSlash(path))
+	}
+	sort.Strings(files)
+	return files
 }
 
 // Restore 执行显式 restore hook；未声明时明确走人工流程。
@@ -500,7 +621,7 @@ func (m *Manager) Restore(ctx context.Context, bundleName, host, ref string) (*R
 	}
 	result := &RestoreResult{Bundle: bundleName, Host: host, BackupDir: ref, Warnings: []string{}}
 	if len(plan.RestoreHooks()) == 0 {
-		dirs := m.listBackupDirs(plan.DeployPath)
+		dirs := m.listBackupDirs(ctx, plan.DeployPath)
 		result.Warnings = append(result.Warnings, "no lifecycle.restore.hook; manual restore required")
 		return result, &ManualRestoreError{BackupDirs: dirs}
 	}
@@ -513,7 +634,7 @@ func (m *Manager) Restore(ctx context.Context, bundleName, host, ref string) (*R
 	}
 	defer release()
 	if ref == "" {
-		dirs := m.listBackupDirs(plan.DeployPath)
+		dirs := m.listBackupDirs(ctx, plan.DeployPath)
 		if len(dirs) == 0 {
 			return nil, fmt.Errorf("no backup artifacts found under %s", filepath.Join(plan.DeployPath, "backups"))
 		}
@@ -549,7 +670,7 @@ func desiredStateFromPlan(plan *ResolvedPlan) DesiredState {
 	}
 }
 
-func (m *Manager) ensureDeployDirs(deployPath string) error {
+func (m *Manager) ensureDeployDirs(ctx context.Context, deployPath string) error {
 	dirs := []string{
 		deployPath,
 		filepath.Join(deployPath, ".spool-gen"),
@@ -558,22 +679,30 @@ func (m *Manager) ensureDeployDirs(deployPath string) error {
 		filepath.Join(deployPath, ".spool", "components"),
 	}
 	for _, dir := range dirs {
-		if _, err := m.Runner.Exec("mkdir -p " + shellQuote(dir)); err != nil {
+		if _, err := execRunner(ctx, m.Runner, "mkdir -p "+shellQuote(dir)); err != nil {
 			return fmt.Errorf("mkdir %s: %w", dir, err)
 		}
 	}
 	return nil
 }
 
-func (m *Manager) uploadPlanFiles(plan *ResolvedPlan, override, envContent string) error {
+func (m *Manager) uploadPlanFiles(ctx context.Context, plan *ResolvedPlan, override, envContent string) error {
 	if err := m.Runner.Upload(string(plan.Compose), filepath.Join(plan.DeployPath, "docker-compose.yaml")); err != nil {
 		return err
 	}
-	if err := m.Runner.Upload(override, filepath.Join(plan.DeployPath, "docker-compose.spool.yaml")); err != nil {
+	overridePath := filepath.Join(plan.DeployPath, "docker-compose.spool.yaml")
+	if err := m.Runner.Upload(override, overridePath); err != nil {
+		return err
+	}
+	if _, err := execRunner(ctx, m.Runner, "chmod 600 "+shellQuote(overridePath)); err != nil {
 		return err
 	}
 	if envContent != "" {
-		if err := m.Runner.Upload(envContent, filepath.Join(plan.DeployPath, ".env")); err != nil {
+		envPath := filepath.Join(plan.DeployPath, ".env")
+		if err := m.Runner.Upload(envContent, envPath); err != nil {
+			return err
+		}
+		if _, err := execRunner(ctx, m.Runner, "chmod 600 "+shellQuote(envPath)); err != nil {
 			return err
 		}
 	}
@@ -584,7 +713,7 @@ func (m *Manager) uploadPlanFiles(plan *ResolvedPlan, override, envContent strin
 	sort.Strings(paths)
 	for _, path := range paths {
 		remotePath := filepath.Join(plan.DeployPath, filepath.FromSlash(path))
-		if _, err := m.Runner.Exec("mkdir -p " + shellQuote(filepath.Dir(remotePath))); err != nil {
+		if _, err := execRunner(ctx, m.Runner, "mkdir -p "+shellQuote(filepath.Dir(remotePath))); err != nil {
 			return err
 		}
 		if err := m.Runner.Upload(string(plan.Uploads[path]), remotePath); err != nil {
@@ -594,9 +723,9 @@ func (m *Manager) uploadPlanFiles(plan *ResolvedPlan, override, envContent strin
 	return nil
 }
 
-func (m *Manager) writeGenerationSnapshot(plan *ResolvedPlan, generation int, override, envContent string, meta *GenerationMeta) error {
+func (m *Manager) writeGenerationSnapshot(ctx context.Context, plan *ResolvedPlan, generation int, override, envContent string, meta *GenerationMeta) error {
 	genDir := GenerationDir(plan.DeployPath, generation)
-	if _, err := m.Runner.Exec("mkdir -p " + shellQuote(genDir)); err != nil {
+	if _, err := execRunner(ctx, m.Runner, "mkdir -p "+shellQuote(genDir)); err != nil {
 		return err
 	}
 	digest := digestFile(plan.Services)
@@ -621,11 +750,17 @@ func (m *Manager) writeGenerationSnapshot(plan *ResolvedPlan, generation int, ov
 	}
 	for name, content := range files {
 		target := filepath.Join(genDir, name)
-		if _, err := m.Runner.Exec("mkdir -p " + shellQuote(filepath.Dir(target))); err != nil {
+		if _, err := execRunner(ctx, m.Runner, "mkdir -p "+shellQuote(filepath.Dir(target))); err != nil {
 			return err
 		}
 		if err := m.Runner.Upload(content, target); err != nil {
 			return fmt.Errorf("snapshot %s: %w", name, err)
+		}
+		switch name {
+		case ".env", "docker-compose.spool.yaml", "lock.yaml":
+			if _, err := execRunner(ctx, m.Runner, "chmod 600 "+shellQuote(target)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -686,12 +821,12 @@ func (m *Manager) writeCurrentGeneration(deployPath string, generation int) erro
 }
 
 func (m *Manager) removeGeneration(ctx context.Context, deployPath string, generation int) error {
-	_, err := m.Runner.Exec("rm -rf " + shellQuote(GenerationDir(deployPath, generation)))
+	_, err := execRunner(ctx, m.Runner, "rm -rf "+shellQuote(GenerationDir(deployPath, generation)))
 	return err
 }
 
 func (m *Manager) pruneGenerations(ctx context.Context, deployPath string, current int) error {
-	out, err := m.Runner.Exec("ls -1 " + shellQuote(filepath.Join(deployPath, ".spool-gen")) + " 2>/dev/null || true")
+	out, err := execRunner(ctx, m.Runner, "ls -1 "+shellQuote(filepath.Join(deployPath, ".spool-gen"))+" 2>/dev/null || true")
 	if err != nil {
 		return err
 	}
@@ -717,25 +852,25 @@ func (m *Manager) pruneGenerations(ctx context.Context, deployPath string, curre
 	return nil
 }
 
-func (m *Manager) composeBuild(plan *ResolvedPlan) error {
-	files, err := m.remoteComposeFiles(plan.DeployPath)
+func (m *Manager) composeBuild(ctx context.Context, plan *ResolvedPlan) error {
+	files, err := m.remoteComposeFilesContext(ctx, plan.DeployPath)
 	if err != nil {
 		return err
 	}
-	_, err = m.Runner.Exec(composeCommand(plan.DeployPath, files, "build"))
+	_, err = execRunner(ctx, m.Runner, composeCommand(plan.DeployPath, files, "build"))
 	return err
 }
 
-func (m *Manager) composeUp(plan *ResolvedPlan) error {
-	files, err := m.remoteComposeFiles(plan.DeployPath)
+func (m *Manager) composeUp(ctx context.Context, plan *ResolvedPlan) error {
+	files, err := m.remoteComposeFilesContext(ctx, plan.DeployPath)
 	if err != nil {
 		return err
 	}
-	_, err = m.Runner.Exec(composeCommand(plan.DeployPath, files, "up -d --remove-orphans"))
+	_, err = execRunner(ctx, m.Runner, composeCommand(plan.DeployPath, files, "up -d --remove-orphans"))
 	return err
 }
 
-func (m *Manager) reconnectConfirm() error {
+func (m *Manager) reconnectConfirm(ctx context.Context) error {
 	if m.Runner == nil {
 		return fmt.Errorf("remote runner is nil")
 	}
@@ -744,12 +879,12 @@ func (m *Manager) reconnectConfirm() error {
 			return err
 		}
 	}
-	_, err := m.Runner.Exec("true")
+	_, err := execRunner(ctx, m.Runner, "true")
 	return err
 }
 
 func (m *Manager) healthGate(ctx context.Context, plan *ResolvedPlan, result *ApplyResult) error {
-	files, err := m.remoteComposeFiles(plan.DeployPath)
+	files, err := m.remoteComposeFilesContext(ctx, plan.DeployPath)
 	if err != nil {
 		return err
 	}
@@ -762,7 +897,7 @@ func (m *Manager) healthGate(ctx context.Context, plan *ResolvedPlan, result *Ap
 		if comp.Health != nil {
 			checkErr = m.waitComponentHealth(ctx, plan, key, comp, files)
 		} else {
-			checkErr = m.checkDefaultHealth(comp, files)
+			checkErr = m.checkDefaultHealth(ctx, comp, files)
 		}
 		if checkErr == nil {
 			continue
@@ -776,8 +911,8 @@ func (m *Manager) healthGate(ctx context.Context, plan *ResolvedPlan, result *Ap
 	return nil
 }
 
-func (m *Manager) checkDefaultHealth(comp ResolvedComponent, files []string) error {
-	running, err := m.runningServicesFromFiles(comp, files)
+func (m *Manager) checkDefaultHealth(ctx context.Context, comp ResolvedComponent, files []string) error {
+	running, err := m.runningServicesFromFiles(ctx, comp, files)
 	if err != nil {
 		return err
 	}
@@ -789,12 +924,12 @@ func (m *Manager) checkDefaultHealth(comp ResolvedComponent, files []string) err
 	return nil
 }
 
-func (m *Manager) runningServicesFromFiles(comp ResolvedComponent, files []string) ([]string, error) {
+func (m *Manager) runningServicesFromFiles(ctx context.Context, comp ResolvedComponent, files []string) ([]string, error) {
 	deployPath := ""
 	if len(files) > 0 {
 		deployPath = filepath.Dir(files[0])
 	}
-	out, err := m.Runner.Exec(composeCommand(deployPath, files, "ps --status running --services"))
+	out, err := execRunner(ctx, m.Runner, composeCommand(deployPath, files, "ps --status running --services"))
 	if err != nil {
 		return nil, err
 	}
@@ -811,7 +946,15 @@ func (m *Manager) waitComponentHealth(ctx context.Context, plan *ResolvedPlan, k
 	timeout := config.ParseDuration(comp.Health.Timeout, 60*time.Second)
 	deadline := time.Now().Add(timeout)
 	for {
-		err := m.runHealthCheck(comp, files)
+		var attemptCtx context.Context
+		var cancel context.CancelFunc
+		if timeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, time.Until(deadline))
+		} else {
+			attemptCtx, cancel = context.WithCancel(ctx)
+		}
+		err := m.runHealthCheck(attemptCtx, comp, files)
+		cancel()
 		if err == nil {
 			return nil
 		}
@@ -826,7 +969,7 @@ func (m *Manager) waitComponentHealth(ctx context.Context, plan *ResolvedPlan, k
 	}
 }
 
-func (m *Manager) runHealthCheck(comp ResolvedComponent, files []string) error {
+func (m *Manager) runHealthCheck(ctx context.Context, comp ResolvedComponent, files []string) error {
 	health := comp.Health
 	from := health.From
 	if from == "" {
@@ -841,17 +984,17 @@ func (m *Manager) runHealthCheck(comp ResolvedComponent, files []string) error {
 		switch {
 		case health.HTTP != "":
 			cmd := fmt.Sprintf("curl -fsS --max-time 5 %s >/dev/null 2>&1 || wget -q -O /dev/null %s", shellQuote(health.HTTP), shellQuote(health.HTTP))
-			_, err := m.Runner.Exec(cmd)
+			_, err := execRunner(ctx, m.Runner, cmd)
 			return err
 		case health.TCP != "":
 			host, port, err := net.SplitHostPort(health.TCP)
 			if err != nil {
 				return fmt.Errorf("invalid tcp health target %q: %w", health.TCP, err)
 			}
-			_, err = m.Runner.Exec(fmt.Sprintf("nc -z %s %s", shellQuote(host), shellQuote(port)))
+			_, err = execRunner(ctx, m.Runner, fmt.Sprintf("nc -z %s %s", shellQuote(host), shellQuote(port)))
 			return err
 		case len(health.Command) > 0:
-			_, err := m.Runner.Exec(joinQuoted(health.Command))
+			_, err := execRunner(ctx, m.Runner, joinQuoted(health.Command))
 			return err
 		default:
 			return fmt.Errorf("health check has no http/tcp/command")
@@ -870,7 +1013,7 @@ func (m *Manager) runHealthCheck(comp ResolvedComponent, files []string) error {
 		switch {
 		case health.HTTP != "":
 			inner := fmt.Sprintf("curl -fsS --max-time 5 %s >/dev/null 2>&1 || wget -q -O /dev/null %s", shellQuote(health.HTTP), shellQuote(health.HTTP))
-			_, err := m.Runner.Exec(composeCommand(deployPath, files, fmt.Sprintf("exec -T %s sh -c %s", shellQuote(service), shellQuote(inner))))
+			_, err := execRunner(ctx, m.Runner, composeCommand(deployPath, files, fmt.Sprintf("exec -T %s sh -c %s", shellQuote(service), shellQuote(inner))))
 			return err
 		case health.TCP != "":
 			host, port, err := net.SplitHostPort(health.TCP)
@@ -878,10 +1021,10 @@ func (m *Manager) runHealthCheck(comp ResolvedComponent, files []string) error {
 				return fmt.Errorf("invalid tcp health target %q: %w", health.TCP, err)
 			}
 			inner := fmt.Sprintf("nc -z %s %s", shellQuote(host), shellQuote(port))
-			_, err = m.Runner.Exec(composeCommand(deployPath, files, fmt.Sprintf("exec -T %s sh -c %s", shellQuote(service), shellQuote(inner))))
+			_, err = execRunner(ctx, m.Runner, composeCommand(deployPath, files, fmt.Sprintf("exec -T %s sh -c %s", shellQuote(service), shellQuote(inner))))
 			return err
 		case len(health.Command) > 0:
-			_, err := m.Runner.Exec(composeCommand(deployPath, files, "exec -T "+shellQuote(service)+" "+joinQuoted(health.Command)))
+			_, err := execRunner(ctx, m.Runner, composeCommand(deployPath, files, "exec -T "+shellQuote(service)+" "+joinQuoted(health.Command)))
 			return err
 		default:
 			return fmt.Errorf("health check has no http/tcp/command")
@@ -901,13 +1044,28 @@ func joinQuoted(values []string) string {
 
 func (m *Manager) runBackupHooks(ctx context.Context, plan *ResolvedPlan, generation int, specs []HookSpec, secrets map[string]string) (string, error) {
 	backupDir := filepath.Join(plan.DeployPath, "backups", fmt.Sprintf("gen-%d-%s", generation, time.Now().UTC().Format("20060102T150405Z")))
-	if _, err := m.Runner.Exec("mkdir -p " + shellQuote(backupDir)); err != nil {
+	if _, err := execRunner(ctx, m.Runner, "mkdir -p "+shellQuote(backupDir)); err != nil {
 		return "", err
 	}
+	type backupEntry struct {
+		Scope  string              `yaml:"scope"`
+		Dir    string              `yaml:"dir"`
+		Hook   string              `yaml:"hook,omitempty"`
+		Assets []BundleBackupAsset `yaml:"assets,omitempty"`
+	}
+	entries := make([]backupEntry, 0, len(specs))
+	manifestCreated := false
 	for _, spec := range specs {
 		scopeDir := filepath.Join(backupDir, sanitizeHookScope(spec.Scope))
-		if _, err := m.Runner.Exec("mkdir -p " + shellQuote(scopeDir)); err != nil {
+		if _, err := execRunner(ctx, m.Runner, "mkdir -p "+shellQuote(scopeDir)); err != nil {
 			return "", err
+		}
+		if !manifestCreated {
+			// 先占位，避免备份 hook 因目录不存在失败；内容在所有 scope 完成后写入。
+			if err := m.Runner.Upload("", filepath.Join(backupDir, "manifest.yaml")); err != nil {
+				return "", err
+			}
+			manifestCreated = true
 		}
 		if strings.TrimSpace(spec.Path) != "" {
 			if err := m.runHookFile(ctx, plan.DeployPath, spec, generation, scopeDir, "", "backup", secrets); err != nil {
@@ -915,27 +1073,43 @@ func (m *Manager) runBackupHooks(ctx context.Context, plan *ResolvedPlan, genera
 			}
 		}
 		for _, asset := range spec.Assets {
-			if err := m.backupAsset(plan, scopeDir, asset); err != nil {
+			if err := m.backupAsset(ctx, plan, scopeDir, asset); err != nil {
 				return "", err
 			}
+		}
+		entries = append(entries, backupEntry{
+			Scope:  spec.Scope,
+			Dir:    sanitizeHookScope(spec.Scope),
+			Hook:   spec.Path,
+			Assets: spec.Assets,
+		})
+	}
+	manifest := struct {
+		Bundle     string        `yaml:"bundle"`
+		Generation int           `yaml:"generation"`
+		Scopes     []backupEntry `yaml:"scopes"`
+	}{Bundle: plan.Manifest.Name, Generation: generation, Scopes: entries}
+	if data, err := yaml.Marshal(manifest); err == nil {
+		if err := m.Runner.Upload(string(data), filepath.Join(backupDir, "manifest.yaml")); err != nil {
+			return "", err
 		}
 	}
 	return backupDir, nil
 }
 
-func (m *Manager) backupAsset(plan *ResolvedPlan, backupDir string, asset BundleBackupAsset) error {
+func (m *Manager) backupAsset(ctx context.Context, plan *ResolvedPlan, backupDir string, asset BundleBackupAsset) error {
 	name := filepath.Base(asset.Source)
 	switch asset.Type {
 	case "volume":
 		cmd := fmt.Sprintf("docker run --rm -v %s:/data:ro -v %s:/backup alpine tar czf /backup/%s.tar.gz -C /data .",
 			shellQuote(asset.Source), shellQuote(backupDir), name)
-		_, err := m.Runner.Exec(cmd)
+		_, err := execRunner(ctx, m.Runner, cmd)
 		return err
 	case "dir":
 		parent := filepath.Dir(asset.Source)
 		cmd := fmt.Sprintf("tar czf %s -C %s %s",
 			shellQuote(filepath.Join(backupDir, name+".tar.gz")), shellQuote(parent), shellQuote(name))
-		_, err := m.Runner.Exec(cmd)
+		_, err := execRunner(ctx, m.Runner, cmd)
 		return err
 	default:
 		return fmt.Errorf("unknown backup asset type %q", asset.Type)
@@ -954,11 +1128,12 @@ func (m *Manager) runUpgradeHooks(ctx context.Context, plan *ResolvedPlan, phase
 func (m *Manager) runRestoreHooks(ctx context.Context, plan *ResolvedPlan, ref string, secrets map[string]string) error {
 	current, _ := m.currentGeneration(plan.DeployPath)
 	for _, spec := range plan.RestoreHooks() {
-		specRef := ref
-		if spec.Scope != "bundle" {
-			candidate := filepath.Join(ref, sanitizeHookScope(spec.Scope))
-			if _, err := m.Runner.Exec("test -d " + shellQuote(candidate)); err == nil {
-				specRef = candidate
+		// 备份时所有 scope 都写入 <backupRef>/<scope>，恢复必须使用同一映射。
+		specRef := filepath.Join(ref, sanitizeHookScope(spec.Scope))
+		if _, err := execRunner(ctx, m.Runner, "test -d "+shellQuote(specRef)); err != nil {
+			// 兼容旧备份：bundle scope 可能直接写在 backupRef 根目录。
+			if spec.Scope == "bundle" {
+				specRef = ref
 			}
 		}
 		if err := m.runHookFile(ctx, plan.DeployPath, spec, current, "", specRef, "restore", secrets); err != nil {
@@ -981,13 +1156,13 @@ func (m *Manager) runHookFile(ctx context.Context, deployPath string, spec HookS
 		return fmt.Errorf("%s hook %s: %w", name, spec.Path, err)
 	}
 	remotePath := filepath.Join(deployPath, ".spool-hooks", sanitizeHookScope(spec.Scope)+"-"+filepath.Base(spec.Path))
-	if _, err := m.Runner.Exec("mkdir -p " + shellQuote(filepath.Dir(remotePath))); err != nil {
+	if _, err := execRunner(ctx, m.Runner, "mkdir -p "+shellQuote(filepath.Dir(remotePath))); err != nil {
 		return err
 	}
 	if err := m.Runner.Upload(string(data), remotePath); err != nil {
 		return err
 	}
-	if _, err := m.Runner.Exec("chmod +x " + shellQuote(remotePath)); err != nil {
+	if _, err := execRunner(ctx, m.Runner, "chmod +x "+shellQuote(remotePath)); err != nil {
 		return err
 	}
 
@@ -1010,7 +1185,7 @@ func (m *Manager) runHookFile(ctx context.Context, deployPath string, spec HookS
 		envParts = append(envParts, key+"="+shellQuote(value))
 	}
 	cmd := fmt.Sprintf("cd %s && %s bash %s", shellQuote(deployPath), strings.Join(envParts, " "), shellQuote(remotePath))
-	_, err = m.Runner.Exec(cmd)
+	_, err = execRunner(ctx, m.Runner, cmd)
 	return err
 }
 
@@ -1036,7 +1211,7 @@ func sanitizeHookScope(scope string) string {
 	return replacer.Replace(scope)
 }
 
-func (m *Manager) listBackupDirs(deployPath string) []string {
+func (m *Manager) listBackupDirs(ctx context.Context, deployPath string) []string {
 	if m.Runner == nil {
 		return nil
 	}
@@ -1100,6 +1275,9 @@ func replaceSecretsInValue(value interface{}, secrets map[string]string) (interf
 			}
 			result = strings.ReplaceAll(result, match[0], secretValue)
 		}
+		// override 中写入的是最终字面值；Compose 会对 $ 再做一次插值，
+		// 因此必须转义，避免凭据被截断或意外展开。
+		result = strings.ReplaceAll(result, "$", "$$")
 		return result, nil
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(typed))
@@ -1126,9 +1304,10 @@ func replaceSecretsInValue(value interface{}, secrets map[string]string) (interf
 	}
 }
 
-// LoadSecrets 读取 hosts/<host>/<bundle>/.env 与 hosts/<host>/.env。
+// LoadSecrets 读取 hosts/<host>/.env 与 hosts/<host>/<bundle>/.env。
+// 后者覆盖前者；小写别名在合并完成后统一重建，避免 bundle 覆盖后仍读到主机旧值。
 func LoadSecrets(baseDir, host, bundle string) map[string]string {
-	secrets := map[string]string{}
+	merged := map[string]string{}
 	paths := []string{
 		filepath.Join(baseDir, "hosts", host, ".env"),
 		filepath.Join(baseDir, "hosts", host, bundle, ".env"),
@@ -1139,11 +1318,17 @@ func LoadSecrets(baseDir, host, bundle string) map[string]string {
 			continue
 		}
 		for key, value := range parseEnv(string(data)) {
-			secrets[key] = value
-			lower := strings.ToLower(key)
-			if _, exists := secrets[lower]; !exists {
-				secrets[lower] = value
-			}
+			merged[key] = value
+		}
+	}
+	secrets := make(map[string]string, len(merged)*2)
+	for key, value := range merged {
+		secrets[key] = value
+	}
+	for key, value := range merged {
+		lower := strings.ToLower(key)
+		if _, exists := merged[lower]; !exists {
+			secrets[lower] = value
 		}
 	}
 	return secrets
@@ -1175,7 +1360,20 @@ func parseEnv(content string) map[string]string {
 		if len(parts) != 2 {
 			continue
 		}
-		values[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		// dotenv 语法中的成对引号只是引用符，不属于凭据值。
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+				quote := value[0]
+				value = value[1 : len(value)-1]
+				if quote == '"' {
+					value = strings.ReplaceAll(value, `\"`, `"`)
+					value = strings.ReplaceAll(value, `\\`, `\`)
+				}
+			}
+		}
+		values[key] = value
 	}
 	return values
 }

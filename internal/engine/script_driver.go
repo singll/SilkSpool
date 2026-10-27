@@ -218,8 +218,7 @@ func (d *ScriptDriver) Service(host string, hostCfg *config.HostConfig, deployPa
 // ==================== 内部方法 ====================
 
 func (d *ScriptDriver) loadManifest() (*BundleManifest, error) {
-	loader := NewManifestLoader(d.baseDir)
-	return loader.Load(d.bundleName)
+	return LoadBundleManifest(d.baseDir, d.bundleName)
 }
 
 // serviceNames 服务清单：优先 manifest.Services，回退 hostCfg.Stack

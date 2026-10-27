@@ -407,3 +407,28 @@ func TestFailedJobAndApprovalAndToken(t *testing.T) {
 		t.Fatalf("approval token should allow rollback, got %d doc=%v", resp.StatusCode, doc)
 	}
 }
+
+func TestIdempotencyKeyRejectsDifferentRequest(t *testing.T) {
+	dir, cfg := apiFixture(t)
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	runner := &funcRunner{fn: func(ctx context.Context, action string, target Target, opts ActionOptions) (interface{}, error) {
+		started <- struct{}{}
+		<-release
+		return nil, nil
+	}}
+	server := newTestHTTPServer(t, dir, cfg, runner, "", nil)
+	first := ActionRequest{Action: "bundle.apply", Target: Target{Host: "h1", Bundle: "demo"}, Options: ActionOptions{Yes: true}, IdempotencyKey: "shared"}
+	resp1, _ := postAction(t, server.URL, first, nil)
+	if resp1.StatusCode != http.StatusAccepted {
+		t.Fatalf("first status = %d", resp1.StatusCode)
+	}
+	<-started
+	conflict := first
+	conflict.Options.DryRun = true
+	resp2, doc2 := postAction(t, server.URL, conflict, nil)
+	if resp2.StatusCode != http.StatusConflict {
+		t.Fatalf("conflict status = %d, body=%v", resp2.StatusCode, doc2)
+	}
+	close(release)
+}

@@ -113,7 +113,7 @@ func (a *App) runInventory(cmd *cobra.Command, probe bool) error {
 				DeployPath: mgr.DeployPath(bundleName),
 				Status:     "declared",
 			}
-			manifest, err := engine.NewManifestLoader(a.BaseDir).Load(bundleName)
+			manifest, err := engine.LoadBundleManifest(a.BaseDir, bundleName)
 			if err != nil {
 				ib.Error = err.Error()
 				warnings = append(warnings, fmt.Sprintf("%s: bundle %s: %v", name, bundleName, err))

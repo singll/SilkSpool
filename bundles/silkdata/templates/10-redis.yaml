@@ -3,11 +3,11 @@ services:
     image: redis:7-alpine@sha256:57e4255cc971b1c8d6f8a6ca283ac01bc3ecdd914273ef6bfaede87aaecd6541
     container_name: ${APP_PREFIX:-sp-}redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redispassword}
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     volumes:
       - kp-redis-data:/data
     ports:
-      - "6379:6379"          # 分离后对 LAN 发布，供 keeper 应用层跨机连接
+      - "${SILKDATA_BIND_ADDRESS:-127.0.0.1}:6379:6379"  # 默认仅本机；跨机部署必须显式设置私网/Tailnet 地址
     networks:
       - kp-network
     healthcheck:

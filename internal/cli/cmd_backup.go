@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -36,7 +37,11 @@ func (a *App) runBackup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
-	sshKey := filepath.Join(a.BaseDir, cfg.Global.SSHKeyPath)
+	sshKey, err := a.SSHKeyPath()
+	if err != nil {
+		return err
+	}
+	knownHosts := filepath.Join(a.BaseDir, "known_hosts")
 
 	runOne := func(host string, hostCfg *config.HostConfig) error {
 		if len(hostCfg.Backups) == 0 {
@@ -45,31 +50,38 @@ func (a *App) runBackup(cmd *cobra.Command, args []string) error {
 		}
 		mgr := engine.NewBackupManagerFromConfig(host, hostCfg)
 		sshTimeout := config.ParseDuration(cfg.Global.Timeouts.SSHConnect, 30*time.Second)
-		client, err := engine.NewSSHClient(hostCfg.Address, sshKey, engine.WithTimeout(sshTimeout))
+		opts := []engine.SSHClientOption{
+			engine.WithTimeout(sshTimeout),
+			engine.WithKnownHosts(knownHosts),
+		}
+		if hostCfg.SSHPort != "" {
+			opts = append(opts, engine.WithSSHPort(hostCfg.SSHPort))
+		}
+		client, err := engine.NewSSHClient(hostCfg.Address, sshKey, opts...)
 		if err != nil {
-			utils.Error("SSH client failed for %s: %v", host, err)
-			return nil
+			return fmt.Errorf("SSH client failed for %s: %w", host, err)
 		}
 		defer client.Close()
 		mgr.SetSSHClient(client)
 
 		results, err := mgr.Run(context.Background())
 		if err != nil {
-			utils.Error("Backup %s failed: %v", host, err)
-			return nil
+			return fmt.Errorf("backup %s: %w", host, err)
 		}
 		utils.Success("Backup %s -> %s (%d items)", host, mgr.LocalDir(), len(results))
 		return nil
 	}
 
 	if args[0] == "all" {
+		var errs []error
 		for host := range cfg.Hosts {
 			hc := cfg.GetHost(host)
 			if err := runOne(host, hc); err != nil {
-				return err
+				utils.Error("%v", err)
+				errs = append(errs, err)
 			}
 		}
-		return nil
+		return errors.Join(errs...)
 	}
 
 	hc := cfg.GetHost(args[0])

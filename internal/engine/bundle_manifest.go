@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -289,6 +290,7 @@ type BundleFeatures struct {
 	GitClone          *GitClone `yaml:"git_clone"`
 	DockerPrune       bool      `yaml:"docker_prune"`
 	CreateNetwork     string    `yaml:"create_network"`
+	Systemd           bool      `yaml:"systemd"`
 }
 
 // GitClone 定义 git 克隆配置
@@ -381,12 +383,50 @@ func LoadManifestFile(path, bundleName string) (*BundleManifest, error) {
 		return nil, fmt.Errorf("failed to read manifest for %s: %w", bundleName, err)
 	}
 
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("failed to parse manifest for %s: %w", bundleName, err)
+	}
+	stripExtensionKeys(&root)
+	normalized, err := yaml.Marshal(&root)
+	if err != nil {
+		return nil, fmt.Errorf("failed to normalize manifest for %s: %w", bundleName, err)
+	}
 	var manifest BundleManifest
-	if err := yaml.Unmarshal(data, &manifest); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(normalized))
+	// 严格解码：拼写错误的 lifecycle/backup 字段不能被静默忽略。
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&manifest); err != nil {
 		return nil, fmt.Errorf("failed to parse manifest for %s: %w", bundleName, err)
 	}
 	manifest.Normalize(bundleName)
 	return &manifest, nil
+}
+
+// stripExtensionKeys 移除所有以 x- 开头的扩展键（Kamal 风格），其余未知字段由严格解码拒绝。
+func stripExtensionKeys(node *yaml.Node) {
+	if node == nil {
+		return
+	}
+	if node.Kind == yaml.DocumentNode {
+		if len(node.Content) == 0 {
+			return
+		}
+		node = node.Content[0]
+	}
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+	// 只移除顶层 x- 扩展键；labels 等自由映射中的键不应被改写。
+	filtered := make([]*yaml.Node, 0, len(node.Content))
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if strings.HasPrefix(strings.ToLower(key.Value), "x-") {
+			continue
+		}
+		filtered = append(filtered, key, node.Content[i+1])
+	}
+	node.Content = filtered
 }
 
 // FindManifestFile 返回 bundle 根目录下的 manifest 文件。

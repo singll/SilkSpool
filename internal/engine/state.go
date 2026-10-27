@@ -22,6 +22,8 @@ type GenerationMeta struct {
 	CreatedAt   string        `yaml:"created_at"`
 	BackupDir   string        `yaml:"backup_dir,omitempty"`
 	Services    []ServiceSpec `yaml:"services,omitempty"`
+	// Files 记录该 generation 管理的部署文件（相对 deploy_path），用于回滚时清理新版残留。
+	Files []string `yaml:"files,omitempty"`
 }
 
 // LocalState 是控制机上的资源索引（可重建缓存）。

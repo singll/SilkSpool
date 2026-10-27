@@ -51,7 +51,7 @@ func (a *App) runUpgrade(cmd *cobra.Command, args []string) error {
 
 	force, _ := cmd.Flags().GetBool("force")
 	bundle := hostCfg.Bundles[0]
-	manifest, err := engine.NewManifestLoader(a.BaseDir).Load(bundle)
+	manifest, err := engine.LoadBundleManifest(a.BaseDir, bundle)
 	if err != nil || manifest.Type == "compose" {
 		locked, _ := cmd.Flags().GetBool("locked")
 		allowIrreversible, _ := cmd.Flags().GetBool("allow-irreversible")

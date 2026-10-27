@@ -41,7 +41,7 @@ func (a *App) runExec(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown host: %s", host)
 	}
 
-	sshKey := filepath.Join(a.BaseDir, cfg.Global.SSHKeyPath)
+	sshKey := config.ResolveSSHKeyPath(a.BaseDir, cfg.Global.SSHKeyPath)
 	sshTimeout := config.ParseDuration(cfg.Global.Timeouts.SSHConnect, 30*time.Second)
 	connectTimeout := int(sshTimeout.Seconds())
 	if connectTimeout <= 0 {

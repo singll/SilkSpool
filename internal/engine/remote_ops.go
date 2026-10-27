@@ -296,6 +296,7 @@ func (re *RemoteExecutor) GitPull(path string) error {
 
 // SetupSystemd 配置 Systemd 服务
 func (re *RemoteExecutor) SetupSystemd(unitName, unitContent string) error {
+	unitName = strings.TrimSuffix(unitName, ".service")
 	utils.Info("Setting up systemd service: %s", unitName)
 	cmd := fmt.Sprintf("cat > /tmp/%s.service << 'EOF_SYSTEMD'\n%s\nEOF_SYSTEMD\nsudo mv /tmp/%s.service /etc/systemd/system/\nsudo systemctl daemon-reload\nsudo systemctl enable %s", unitName, unitContent, unitName, unitName)
 	_, err := re.client.Execute(cmd)
@@ -304,6 +305,7 @@ func (re *RemoteExecutor) SetupSystemd(unitName, unitContent string) error {
 
 // Systemctl 执行 systemctl 操作
 func (re *RemoteExecutor) Systemctl(action, service string) error {
+	service = strings.TrimSuffix(service, ".service")
 	cmd := fmt.Sprintf("sudo systemctl %s %s", action, service)
 	_, err := re.client.Execute(cmd)
 	return err

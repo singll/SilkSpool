@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,48 @@ type SiteManager struct {
 	caddyPath     string // 本地 Caddyfile 路径
 	homepagePath  string // 本地 Homepage services.yaml 路径
 	dns           *DNSManager
+}
+
+// SiteStepResult 描述站点操作中单个步骤的结果。
+type SiteStepResult struct {
+	Step   string `json:"step"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// SiteOperationError 表示部分成功/失败的结构化错误。
+type SiteOperationError struct {
+	Operation string           `json:"operation"`
+	Steps     []SiteStepResult `json:"steps"`
+}
+
+func (e *SiteOperationError) Error() string {
+	parts := make([]string, 0, len(e.Steps))
+	for _, step := range e.Steps {
+		if step.Error != "" {
+			parts = append(parts, step.Step+"="+step.Status+" ("+step.Error+")")
+		} else {
+			parts = append(parts, step.Step+"="+step.Status)
+		}
+	}
+	return e.Operation + ": " + strings.Join(parts, ", ")
+}
+
+func (e *SiteOperationError) Unwrap() []error {
+	var errs []error
+	for _, step := range e.Steps {
+		if step.Error != "" {
+			errs = append(errs, fmt.Errorf("%s: %s", step.Step, step.Error))
+		}
+	}
+	return errs
+}
+
+func siteStep(step string, err error) SiteStepResult {
+	if err != nil {
+		return SiteStepResult{Step: step, Status: "failed", Error: err.Error()}
+	}
+	return SiteStepResult{Step: step, Status: "ok"}
 }
 
 // Site 站点信息
@@ -52,7 +95,7 @@ func NewSiteManager(baseDir string) (*SiteManager, error) {
 		headscaleHost: cfg.Global.DNSHeadscaleHost,
 		defaultIP:     cfg.Global.DNSGatewayIP,
 		defaultDomain: cfg.Global.DefaultDomain,
-		sshKey:        filepath.Join(baseDir, cfg.Global.SSHKeyPath),
+		sshKey:        config.ResolveSSHKeyPath(baseDir, cfg.Global.SSHKeyPath),
 		caddyPath:     filepath.Join(baseDir, "hosts", gw, "caddy", "Caddyfile"),
 		homepagePath:  filepath.Join(baseDir, "hosts", gw, "homepage", "services.yaml"),
 		dns:           dns,
@@ -75,21 +118,48 @@ func (m *SiteManager) AddSite(domain, backend, name, desc, icon string) error {
 
 	utils.Step("Adding site: %s -> %s", domain, backend)
 
-	// 1. DNS 记录 (dnsmasq + openclash + headscale)
-	if err := m.dns.AddDomain(domain, m.defaultIP); err != nil {
-		return fmt.Errorf("DNS add failed: %w", err)
+	steps := make([]SiteStepResult, 0, 5)
+	// 1. DNS 记录 (dnsmasq + openclash + headscale)，逐 provider 记录结果。
+	ip := m.defaultIP
+	if ip == "" {
+		ip = m.dns.defaultIP
+	}
+	dnsResults := m.dns.AddDomainDetailed(domain, ip)
+	var coreErrs []error
+	for _, result := range dnsResults {
+		var stepErr error
+		if result.Error != "" {
+			stepErr = fmt.Errorf("%s", result.Error)
+			utils.Warn("%s add failed: %v", result.Provider, stepErr)
+			if result.Provider == "dnsmasq" || result.Provider == "openclash" {
+				coreErrs = append(coreErrs, fmt.Errorf("%s: %w", result.Provider, stepErr))
+			}
+		}
+		steps = append(steps, siteStep("dns."+result.Provider, stepErr))
+	}
+	var dnsErr error
+	if len(coreErrs) == len(dnsResults)-1 && len(coreErrs) > 0 {
+		dnsErr = fmt.Errorf("core DNS providers failed; run 'spool sync pull %s' first: %v", m.gatewayHost, errors.Join(coreErrs...))
+		steps = append(steps, SiteStepResult{Step: "dns", Status: "failed", Error: dnsErr.Error()})
 	}
 
 	// 2. Caddy 反向代理
-	if err := m.caddyAddSite(domain, backend); err != nil {
-		utils.Warn("Caddy add failed: %v", err)
+	caddyErr := m.caddyAddSite(domain, backend)
+	steps = append(steps, siteStep("caddy", caddyErr))
+	if caddyErr != nil {
+		utils.Warn("Caddy add failed: %v", caddyErr)
 	}
 
 	// 3. Homepage 仪表盘入口
-	if err := m.homepageAddSite(domain, name, desc, icon, "Services"); err != nil {
-		utils.Warn("Homepage add failed: %v", err)
+	homepageErr := m.homepageAddSite(domain, name, desc, icon, "Services")
+	steps = append(steps, siteStep("homepage", homepageErr))
+	if homepageErr != nil {
+		utils.Warn("Homepage add failed: %v", homepageErr)
 	}
 
+	if dnsErr != nil || caddyErr != nil || homepageErr != nil {
+		return &SiteOperationError{Operation: "site add", Steps: steps}
+	}
 	utils.Success("Site config generated: %s", domain)
 	return nil
 }
@@ -102,14 +172,15 @@ func (m *SiteManager) RemoveSite(domain string) error {
 
 	utils.Step("Removing site: %s", domain)
 
-	if err := m.dns.RemoveDomain(domain); err != nil {
-		utils.Warn("DNS remove failed: %v", err)
-	}
-	if err := m.caddyRemoveSite(domain); err != nil {
-		utils.Warn("Caddy remove failed: %v", err)
-	}
-	if err := m.homepageRemoveSite(domain); err != nil {
-		utils.Warn("Homepage remove failed: %v", err)
+	steps := make([]SiteStepResult, 0, 3)
+	dnsErr := m.dns.RemoveDomain(domain)
+	steps = append(steps, siteStep("dns", dnsErr))
+	caddyErr := m.caddyRemoveSite(domain)
+	steps = append(steps, siteStep("caddy", caddyErr))
+	homepageErr := m.homepageRemoveSite(domain)
+	steps = append(steps, siteStep("homepage", homepageErr))
+	if dnsErr != nil || caddyErr != nil || homepageErr != nil {
+		return &SiteOperationError{Operation: "site remove", Steps: steps}
 	}
 
 	utils.Success("Site removed: %s", domain)
@@ -129,7 +200,9 @@ func (m *SiteManager) DeploySite(domain, backend, name, desc, icon string) error
 	}
 
 	utils.Step("Step 3/3: Restarting services...")
-	m.restartSiteServices()
+	if err := m.restartSiteServices(); err != nil {
+		return err
+	}
 
 	utils.Success("Site deploy complete: %s (https://%s)", name, domain)
 	return nil
@@ -148,10 +221,10 @@ func (m *SiteManager) PushSites() error {
 		return fmt.Errorf("push to %s failed: %w", m.gatewayHost, err)
 	}
 
-	// Headscale 配置存在则一并推送
+	// Headscale 配置存在则一并推送（可选步骤失败也要上报）
 	if m.headscaleConfigExists() {
 		if err := syncMgr.SyncHost(m.headscaleHost, "push"); err != nil {
-			utils.Warn("push to %s failed: %v", m.headscaleHost, err)
+			return fmt.Errorf("push to %s failed: %w", m.headscaleHost, err)
 		}
 	}
 
@@ -208,14 +281,45 @@ func (m *SiteManager) caddyAddSite(domain, backend string) error {
 	}
 	content := string(data)
 
-	// 已存在则跳过
-	if regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(domain) + `\s*\{`).MatchString(content) {
-		utils.Info("Caddy: site %s already exists", domain)
-		return nil
-	}
-
 	if !strings.HasPrefix(backend, "http") {
 		backend = "http://" + backend
+	}
+
+	// 已存在则按期望状态更新 reverse_proxy，而不是保留旧 backend。
+	if regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(domain) + `\s*\{`).MatchString(content) {
+		lines := strings.Split(content, "\n")
+		startRe := regexp.MustCompile(`^` + regexp.QuoteMeta(domain) + `\s*\{`)
+		inBlock := false
+		updated := false
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if !inBlock && startRe.MatchString(trimmed) {
+				inBlock = true
+				continue
+			}
+			if !inBlock {
+				continue
+			}
+			if strings.HasPrefix(trimmed, "reverse_proxy ") {
+				if strings.TrimSpace(strings.TrimPrefix(trimmed, "reverse_proxy ")) != backend {
+					lines[i] = "    reverse_proxy " + backend
+					updated = true
+				}
+				break
+			}
+			if trimmed == "}" {
+				break
+			}
+		}
+		if updated {
+			if err := os.WriteFile(m.caddyPath, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+				return err
+			}
+			utils.Success("Caddy: updated %s -> %s", domain, backend)
+			return nil
+		}
+		utils.Info("Caddy: site %s already exists", domain)
+		return nil
 	}
 
 	block := fmt.Sprintf("\n%s {\n    import common\n    reverse_proxy %s\n}\n", domain, backend)
@@ -362,24 +466,32 @@ func (m *SiteManager) homepageRemoveSite(domain string) error {
 // ==================== 内部辅助 ====================
 
 // restartSiteServices 重启站点相关服务 (DNS + Caddy + Homepage + Headscale)
-func (m *SiteManager) restartSiteServices() {
+func (m *SiteManager) restartSiteServices() error {
 	svcMgr, err := NewServiceManager(m.baseDir)
 	if err != nil {
-		utils.Warn("Failed to init service manager: %v", err)
-		return
+		return fmt.Errorf("failed to init service manager: %w", err)
 	}
 
+	steps := make([]SiteStepResult, 0, 5)
 	for _, svc := range []string{"dnsmasq", "openclash", "caddy", "homepage"} {
-		if err := svcMgr.RestartService(m.gatewayHost, svc); err != nil {
-			utils.Warn("Restart %s failed: %v", svc, err)
-		}
+		err := svcMgr.RestartService(m.gatewayHost, svc)
+		steps = append(steps, siteStep("restart."+svc, err))
+		utils.Warn("Restart %s failed: %v", svc, err)
 	}
 
 	if m.headscaleConfigExists() {
-		if err := svcMgr.RestartService(m.headscaleHost, "headscale"); err != nil {
+		err := svcMgr.RestartService(m.headscaleHost, "headscale")
+		steps = append(steps, siteStep("restart.headscale", err))
+		if err != nil {
 			utils.Warn("Restart headscale failed: %v", err)
 		}
 	}
+	for _, step := range steps {
+		if step.Error != "" {
+			return &SiteOperationError{Operation: "site restart", Steps: steps}
+		}
+	}
+	return nil
 }
 
 func (m *SiteManager) headscaleConfigExists() bool {

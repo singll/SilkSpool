@@ -10,6 +10,14 @@ import (
 	"github.com/spf13/viper"
 )
 
+// explicitConfigFile 是 --config 指定的配置文件；为空时沿用 baseDir 搜索。
+var explicitConfigFile string
+
+// SetConfigFile 指定显式配置文件路径（空字符串恢复默认搜索）。
+func SetConfigFile(path string) {
+	explicitConfigFile = path
+}
+
 // ConfigLoader 负责加载和解析配置
 type ConfigLoader struct {
 	baseDir string
@@ -25,19 +33,26 @@ func NewConfigLoader(baseDir string) *ConfigLoader {
 func (cl *ConfigLoader) Load() (*Config, error) {
 	v := viper.New()
 
-	// 设置配置文件名和类型
-	v.SetConfigName("silkspool")
-	v.SetConfigType("yaml")
+	if explicitConfigFile != "" {
+		if _, err := os.Stat(explicitConfigFile); err != nil {
+			return nil, fmt.Errorf("failed to read config %s: %w", explicitConfigFile, err)
+		}
+		v.SetConfigFile(explicitConfigFile)
+	} else {
+		// 设置配置文件名和类型
+		v.SetConfigName("silkspool")
+		v.SetConfigType("yaml")
 
-	// 搜索路径: 当前目录、项目根目录、系统目录
-	searchPaths := []string{
-		cl.baseDir,
-		cl.baseDir + "/..",
-		"/etc/silkspool",
-	}
+		// 搜索路径: 当前目录、项目根目录、系统目录
+		searchPaths := []string{
+			cl.baseDir,
+			cl.baseDir + "/..",
+			"/etc/silkspool",
+		}
 
-	for _, p := range searchPaths {
-		v.AddConfigPath(p)
+		for _, p := range searchPaths {
+			v.AddConfigPath(p)
+		}
 	}
 
 	// 尝试读取配置
@@ -57,25 +72,26 @@ func (cl *ConfigLoader) Load() (*Config, error) {
 		return nil, fmt.Errorf("failed to parse hosts config: %w", err)
 	}
 
-	// 解析安装源配置
-	if err := v.UnmarshalKey("install_sources", &cfg.InstallSources); err != nil {
-		// 安装源是可选的
-		cfg.InstallSources = []InstallSource{}
+	// 可选段允许缺失，但存在时解析错误必须暴露，不能静默清空。
+	if v.IsSet("install_sources") {
+		if err := v.UnmarshalKey("install_sources", &cfg.InstallSources); err != nil {
+			return nil, fmt.Errorf("failed to parse install_sources config: %w", err)
+		}
 	}
-
-	// 解析 bundle 来源配置
-	if err := v.UnmarshalKey("bundle_sources", &cfg.BundleSources); err != nil {
-		cfg.BundleSources = []BundleSourceConfig{}
+	if v.IsSet("bundle_sources") {
+		if err := v.UnmarshalKey("bundle_sources", &cfg.BundleSources); err != nil {
+			return nil, fmt.Errorf("failed to parse bundle_sources config: %w", err)
+		}
 	}
-
-	// 解析 n8n 配置
-	if err := v.UnmarshalKey("n8n", &cfg.N8N); err != nil {
-		cfg.N8N = N8NConfig{}
+	if v.IsSet("n8n") {
+		if err := v.UnmarshalKey("n8n", &cfg.N8N); err != nil {
+			return nil, fmt.Errorf("failed to parse n8n config: %w", err)
+		}
 	}
-
-	// 解析 TrueNAS 配置
-	if err := v.UnmarshalKey("truenas", &cfg.TrueNAS); err != nil {
-		cfg.TrueNAS = TrueNASConfig{}
+	if v.IsSet("truenas") {
+		if err := v.UnmarshalKey("truenas", &cfg.TrueNAS); err != nil {
+			return nil, fmt.Errorf("failed to parse truenas config: %w", err)
+		}
 	}
 
 	// 展开路径中的 ~ 和环境变量

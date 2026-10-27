@@ -191,7 +191,19 @@ func (r *BundleRepository) loadFromOCI(ctx context.Context, name string, src *Bu
 
 	cacheDigest := strings.ReplaceAll(ref.Digest, ":", "-")
 	cacheRoot := filepath.Join(r.baseDir, ".spool", "cache", "bundles", name, cacheDigest)
+	source := BundleSource{
+		Type:        "oci",
+		Ref:         ref.Name(),
+		Digest:      ref.Digest,
+		Path:        src.Path,
+		Insecure:    src.Insecure,
+		Username:    src.Username,
+		PasswordEnv: src.PasswordEnv,
+		Cosign:      src.Cosign,
+	}
 	if loaded, err := loadOCIFromCache(name, cacheRoot, src); err == nil {
+		// 命中缓存与首次拉取必须生成相同的来源信息，否则同一制品会产生不同锁。
+		loaded.Source = source
 		return loaded, nil
 	}
 
@@ -202,16 +214,7 @@ func (r *BundleRepository) loadFromOCI(ctx context.Context, name string, src *Bu
 	if err != nil {
 		return nil, err
 	}
-	loaded.Source = BundleSource{
-		Type:        "oci",
-		Ref:         ref.Name(),
-		Digest:      ref.Digest,
-		Path:        src.Path,
-		Insecure:    src.Insecure,
-		Username:    src.Username,
-		PasswordEnv: src.PasswordEnv,
-		Cosign:      src.Cosign,
-	}
+	loaded.Source = source
 	return loaded, nil
 }
 

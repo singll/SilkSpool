@@ -335,6 +335,10 @@ func (s *Server) handleActions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, reused := s.Jobs.Submit(request, s.actor(r))
+	if !reused && job.State == JobFailed && job.StartedAt == "" && job.IdempotencyKey != "" {
+		writeError(w, http.StatusConflict, "idempotency_conflict", job.Error)
+		return
+	}
 	response := map[string]interface{}{"job_id": job.ID, "state": job.State}
 	if reused {
 		response["idempotent_reuse"] = true

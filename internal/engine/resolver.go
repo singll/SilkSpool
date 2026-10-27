@@ -40,6 +40,7 @@ type LockSnapshot struct {
 	Version    int              `yaml:"version"`
 	Host       string           `yaml:"host"`
 	Bundle     string           `yaml:"bundle"`
+	DeployPath string           `yaml:"deploy_path,omitempty"`
 	InputsHash string           `yaml:"inputs_hash"`
 	LockHash   string           `yaml:"lock_hash,omitempty"`
 	Resolved   ResolvedSnapshot `yaml:"resolved"`
@@ -68,6 +69,8 @@ type ResolvedComponent struct {
 	Templates []string                  `yaml:"templates,omitempty"`
 	Services  []string                  `yaml:"services,omitempty"`
 	Env       map[string]string         `yaml:"wiring,omitempty"`
+	// HooksHash 锁定影响执行的生命周期配置和 hook 脚本内容。
+	HooksHash string `yaml:"hooks_sha256,omitempty"`
 }
 
 // ResolvedDependency 是只读 outputs 的外部依赖。
@@ -482,7 +485,7 @@ func ResolveBundle(ctx context.Context, baseDir string, cfg *config.Config, bund
 			images:    map[string]string{},
 			manifest:  manifest,
 		}
-		if !manifest.IsScriptManifest() {
+		if manifest.Type == "compose" {
 			images, services, err := loadTemplatesInfo(loaded.Root, manifest.Templates)
 			if err != nil {
 				return nil, err
@@ -706,6 +709,10 @@ func resolveComponent(ctx context.Context, repo *BundleRepository, cfg *config.C
 		data.root = loaded.Root
 		data.source = loaded.Source
 		data.manifest = loaded.Manifest
+		if data.version != "" && loaded.Manifest.Version != "" && data.version != loaded.Manifest.Version {
+			return nil, fmt.Errorf("component %s: requested version %s does not match loaded bundle %s version %s",
+				key, data.version, spec.Bundle, loaded.Manifest.Version)
+		}
 		if data.version == "" {
 			data.version = loaded.Manifest.Version
 			if err := ValidatePinnedVersion("component", key, data.version); err != nil {
@@ -785,6 +792,10 @@ func resolveDependency(ctx context.Context, repo *BundleRepository, cfg *config.
 		return nil, fmt.Errorf("dependency %s: %w", key, err)
 	}
 	version := spec.Version
+	if version != "" && loaded.Manifest.Version != "" && version != loaded.Manifest.Version {
+		return nil, fmt.Errorf("dependency %s: requested version %s does not match loaded bundle %s version %s",
+			key, version, spec.Bundle, loaded.Manifest.Version)
+	}
 	if version == "" {
 		version = loaded.Manifest.Version
 		if err := ValidatePinnedVersion("dependency", key, version); err != nil {
@@ -1254,6 +1265,20 @@ func topoSortComponents(components map[string]*componentData) ([]string, error) 
 }
 
 func renderResolvedPlan(plan *ResolvedPlan, host string, manifest *BundleManifest, components map[string]*componentData, ctx *resolveContext, dependencies map[string]*dependencyData) error {
+	// stack/script 没有 Compose 渲染；模板由各自驱动处理。
+	if manifest.Type != "compose" {
+		services := append([]string(nil), manifest.Services...)
+		sort.Strings(services)
+		plan.Services = make([]ServiceSpec, 0, len(services))
+		for _, name := range services {
+			plan.Services = append(plan.Services, ServiceSpec{Name: name, Component: name})
+		}
+		plan.Compose = nil
+		plan.Override = nil
+		plan.Uploads = map[string][]byte{}
+		plan.Env = map[string]string{}
+		return nil
+	}
 	serviceMap := map[string]ServiceSpec{}
 	uploads := map[string][]byte{}
 	var base []byte
@@ -1429,6 +1454,28 @@ func renderResolvedPlan(plan *ResolvedPlan, host string, manifest *BundleManifes
 		sort.Strings(extraHosts[svc])
 	}
 
+	// after 必须表达为实际启动依赖，而不仅是 plan 中的排序。
+	dependsOn := map[string][]string{}
+	for _, key := range plan.Components {
+		comp := components[key]
+		if len(comp.after) == 0 {
+			continue
+		}
+		for _, depKey := range comp.after {
+			dep := components[depKey]
+			if dep == nil {
+				continue
+			}
+			for _, svc := range comp.services {
+				dependsOn[svc] = append(dependsOn[svc], dep.services...)
+			}
+		}
+	}
+	for svc := range dependsOn {
+		sort.Strings(dependsOn[svc])
+		dependsOn[svc] = dedupeStrings(dependsOn[svc])
+	}
+
 	override, err := renderSpoolOverrideWithOptions(overrideOptions{
 		Host:       host,
 		Bundle:     manifest.Name,
@@ -1437,6 +1484,7 @@ func renderResolvedPlan(plan *ResolvedPlan, host string, manifest *BundleManifes
 		Env:        envByService,
 		ExtraHosts: extraHosts,
 		Images:     images,
+		DependsOn:  dependsOn,
 	})
 	if err != nil {
 		return err
@@ -1465,6 +1513,7 @@ func buildLockSnapshot(host, bundle string, inputs map[string]string, components
 		Version:    LockVersion,
 		Host:       host,
 		Bundle:     bundle,
+		DeployPath: plan.DeployPath,
 		InputsHash: hashInputs(inputs),
 		Resolved: ResolvedSnapshot{
 			Components:   map[string]ResolvedComponent{},
@@ -1498,6 +1547,7 @@ func buildLockSnapshot(host, bundle string, inputs map[string]string, components
 			Templates: append([]string(nil), comp.templates...),
 			Services:  append([]string(nil), comp.services...),
 			Env:       cloneStringMap(comp.env),
+			HooksHash: lifecycleHookDigest(plan, comp),
 		}
 	}
 	for key, dep := range dependencies {
@@ -1521,6 +1571,7 @@ func computeLockHash(lock *LockSnapshot) string {
 		Version    int              `yaml:"version"`
 		Host       string           `yaml:"host"`
 		Bundle     string           `yaml:"bundle"`
+		DeployPath string           `yaml:"deploy_path,omitempty"`
 		InputsHash string           `yaml:"inputs_hash"`
 		Resolved   ResolvedSnapshot `yaml:"resolved"`
 	}
@@ -1528,6 +1579,7 @@ func computeLockHash(lock *LockSnapshot) string {
 		Version:    lock.Version,
 		Host:       lock.Host,
 		Bundle:     lock.Bundle,
+		DeployPath: lock.DeployPath,
 		InputsHash: lock.InputsHash,
 		Resolved:   lock.Resolved,
 	})
@@ -1685,4 +1737,74 @@ func SortedComponentKeys(m map[string]BundleComponent) []string {
 // SortedDependencyKeys 返回稳定的 dependency key 列表。
 func SortedDependencyKeys(m map[string]BundleDependency) []string {
 	return sortedKeys(m)
+}
+
+// lifecycleHookDigest 计算 manifest 与组件生命周期中会影响执行的配置和脚本摘要。
+// 凭证不写入锁；只记录文件路径与内容摘要。
+func lifecycleHookDigest(plan *ResolvedPlan, comp *componentData) string {
+	if plan == nil || plan.Manifest == nil {
+		return ""
+	}
+	type entry struct {
+		Name string `yaml:"name"`
+		Path string `yaml:"path"`
+		Hash string `yaml:"hash"`
+	}
+	var entries []entry
+	add := func(name, root, path string) {
+		record := entry{Name: name, Path: path}
+		if strings.TrimSpace(path) != "" {
+			local := path
+			if !filepath.IsAbs(local) {
+				local = filepath.Join(root, filepath.FromSlash(local))
+			}
+			if data, err := os.ReadFile(local); err == nil {
+				record.Hash = "sha256:" + hashBytes(data)
+			} else {
+				record.Hash = "missing"
+			}
+		}
+		entries = append(entries, record)
+	}
+	m := plan.Manifest
+	add("bundle.backup", plan.BundleRoot, m.Backup.Hook)
+	add("bundle.restore", plan.BundleRoot, m.Lifecycle.Restore.Hook)
+	add("bundle.pre_upgrade", plan.BundleRoot, m.Lifecycle.Hooks.PreUpgrade)
+	add("bundle.post_upgrade", plan.BundleRoot, m.Lifecycle.Hooks.PostUpgrade)
+	if comp != nil {
+		add("component.backup", comp.root, comp.backup.Hook)
+		add("component.restore", comp.root, comp.restore.Hook)
+		add("component.pre_upgrade", comp.root, comp.hooks.PreUpgrade)
+		add("component.post_upgrade", comp.root, comp.hooks.PostUpgrade)
+	}
+	meta := map[string]interface{}{
+		"entries": entries,
+		"bundle_upgrade": map[string]interface{}{
+			"strategy":     m.Lifecycle.Upgrade.Strategy,
+			"irreversible": m.Lifecycle.Upgrade.Irreversible,
+		},
+		"bundle_backup_assets": m.Backup.Assets,
+	}
+	if comp != nil {
+		meta["component_upgrade"] = map[string]interface{}{
+			"strategy":     comp.upgrade.Strategy,
+			"irreversible": comp.upgrade.Irreversible,
+		}
+		meta["component_backup_assets"] = comp.backup.Assets
+	}
+	data, _ := yaml.Marshal(meta)
+	return "sha256:" + hashBytes(data)
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	out := values[:1]
+	for _, value := range values[1:] {
+		if value != out[len(out)-1] {
+			out = append(out, value)
+		}
+	}
+	return out
 }

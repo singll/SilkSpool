@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,10 +16,10 @@ import (
 )
 
 type BackupManager struct {
-	sshClient *SSHClient
-	host      string
+	sshClient  *SSHClient
+	host       string
 	hostConfig *config.HostConfig
-	localDir  string
+	localDir   string
 }
 
 func NewBackupManagerFromConfig(host string, hostConfig *config.HostConfig) *BackupManager {
@@ -66,6 +68,7 @@ func (m *BackupManager) Run(ctx context.Context) ([]BackupResult, error) {
 	}
 
 	var results []BackupResult
+	var errs []error
 
 	for _, rule := range m.hostConfig.Backups {
 		result := m.backupRule(ctx, rule)
@@ -73,12 +76,13 @@ func (m *BackupManager) Run(ctx context.Context) ([]BackupResult, error) {
 
 		if result.Error != nil {
 			utils.Warn("Backup failed: %s - %v", result.Name, result.Error)
+			errs = append(errs, fmt.Errorf("%s: %w", result.Name, result.Error))
 		} else {
 			utils.Success("Backup completed: %s", result.Name)
 		}
 	}
 
-	return results, nil
+	return results, errors.Join(errs...)
 }
 
 func (m *BackupManager) backupRule(ctx context.Context, rule config.BackupRule) BackupResult {
@@ -93,24 +97,26 @@ func (m *BackupManager) backupRule(ctx context.Context, rule config.BackupRule) 
 	switch rule.Type {
 	case "volume":
 		cmd = fmt.Sprintf(
-			"docker run --rm -v %s:/data -v /tmp:/backup alpine tar czf /backup/%s -C /data .",
-			rule.Source, filepath.Base(remoteTmp),
+			"docker run --rm -v %s:/data:ro -v /tmp:/backup alpine tar czf %s -C /data .",
+			shellQuote(rule.Source), shellQuote("/backup/"+filepath.Base(remoteTmp)),
 		)
 	case "dir":
 		dir := rule.Source
 		base := filepath.Base(dir)
 		parent := filepath.Dir(dir)
-		cmd = fmt.Sprintf("tar czf %s -C %s %s", remoteTmp, parent, base)
+		cmd = fmt.Sprintf("tar czf %s -C %s %s", shellQuote(remoteTmp), shellQuote(parent), shellQuote(base))
 	case "db-mysql":
-		cmd = fmt.Sprintf(
-			"docker exec %s mysqldump -u root -p${MYSQL_ROOT_PASSWORD} --all-databases 2>/dev/null | gzip > %s",
-			rule.Source, remoteTmp,
+		inner := fmt.Sprintf(
+			"docker exec %s mysqldump -u root -p${MYSQL_ROOT_PASSWORD} --all-databases | gzip > %s",
+			shellQuote(rule.Source), shellQuote(remoteTmp),
 		)
+		cmd = "bash -o pipefail -c " + shellQuote(inner)
 	case "db-pg":
-		cmd = fmt.Sprintf(
-			"docker exec %s pg_dumpall -U postgres 2>/dev/null | gzip > %s",
-			rule.Source, remoteTmp,
+		inner := fmt.Sprintf(
+			"docker exec %s pg_dumpall -U postgres | gzip > %s",
+			shellQuote(rule.Source), shellQuote(remoteTmp),
 		)
+		cmd = "bash -o pipefail -c " + shellQuote(inner)
 	default:
 		result.Error = fmt.Errorf("unknown backup type: %s", rule.Type)
 		return result
@@ -127,6 +133,17 @@ func (m *BackupManager) backupRule(ctx context.Context, rule config.BackupRule) 
 	if err := m.sshClient.Download(remoteTmp, localPath); err != nil {
 		result.Error = fmt.Errorf("download failed: %w", err)
 		return result
+	}
+	if info, err := os.Stat(localPath); err != nil || info.Size() == 0 {
+		result.Error = fmt.Errorf("backup artifact is empty or missing: %s", localPath)
+		return result
+	}
+	if data, err := os.ReadFile(localPath); err == nil {
+		sum := sha256.Sum256(data)
+		if err := os.WriteFile(localPath+".sha256", []byte(fmt.Sprintf("%x  %s\n", sum, filepath.Base(localPath))), 0644); err != nil {
+			result.Error = fmt.Errorf("write checksum: %w", err)
+			return result
+		}
 	}
 
 	// Cleanup remote temp file

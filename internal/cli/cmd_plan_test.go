@@ -113,7 +113,7 @@ func (offlineActualRunner) ReadFile(remotePath string) (string, error) {
 func TestPlanOnlineDiffExitThree(t *testing.T) {
 	dir := writePlanFixture(t, true)
 	old := runnerFactory
-	runnerFactory = func(address, sshKey string) (engine.RemoteRunner, error) {
+	runnerFactory = func(address, sshKey, sshPort, knownHosts string) (engine.RemoteRunner, error) {
 		return offlineActualRunner{}, nil
 	}
 	defer func() { runnerFactory = old }()

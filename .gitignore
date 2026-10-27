@@ -33,3 +33,11 @@ __pycache__/
 
 # --- 7. SilkSpool 本地运行状态（lock/state/cache，不提交） ---
 .spool/
+
+# --- 8. 仓库根目录直接运行时的敏感运行时文件 ---
+# 默认 out/ 布局已被忽略；以下规则保护在仓库根目录使用时的同名运行文件。
+/hosts/
+/keys/
+/backups/
+/known_hosts
+/silkspool.yaml

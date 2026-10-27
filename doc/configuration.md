@@ -227,7 +227,7 @@ spec:
 - `components` 只部署在 apply 的目标 host；`dependencies` 只读 outputs，不 apply/升级/回滚。
 - 同机 endpoint 解析为服务名（`bellkeeper:8080`）；跨机解析为 `silkdata` 的 MagicDNS → address。
 - `optional: true` 表示失败不阻塞整栈，不是“不部署”。
-- `after` 只影响同 host 组件顺序，不能跨 dependencies。
+- `after` 只影响同 host 组件，不能跨 dependencies；apply 会把组件级 `after` 渲染为 Compose `depends_on`（`service_started`），保证实际启动顺序，而不仅是 plan 排序。
 
 ---
 
@@ -344,7 +344,7 @@ spool plan knowledge-stack keeper
 spool apply knowledge-stack keeper --locked --yes
 ```
 
-失败会自动回滚到上一 generation；`irreversible: true` 时不会自动回滚，需人工确认。
+失败时控制端会尽力回滚到上一 generation（控制端在线为前提）；`irreversible: true` 时不会自动回滚，需人工确认。
 
 ### 7.2 备份与恢复
 

@@ -199,8 +199,7 @@ func (d *ComposeDriver) Service(host string, hostCfg *config.HostConfig, deployP
 
 // loadManifest 加载当前 bundle 的 manifest (使用命令行指定的 bundle 名，而非 hostCfg.Bundles[0])
 func (d *ComposeDriver) loadManifest() (*BundleManifest, error) {
-	loader := NewManifestLoader(d.baseDir)
-	return loader.Load(d.bundleName)
+	return LoadBundleManifest(d.baseDir, d.bundleName)
 }
 
 func (d *ComposeDriver) composeFile(deployPath string) string {

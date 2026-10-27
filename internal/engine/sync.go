@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -27,10 +28,7 @@ func NewSyncManager(baseDir string) (*SyncManager, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	sshKey := filepath.Join(baseDir, cfg.Global.SSHKeyPath)
-	if !filepath.IsAbs(sshKey) {
-		sshKey = filepath.Join(baseDir, sshKey)
-	}
+	sshKey := config.ResolveSSHKeyPath(baseDir, cfg.Global.SSHKeyPath)
 
 	knownHosts := filepath.Join(baseDir, "known_hosts")
 
@@ -83,7 +81,12 @@ func (m *SyncManager) SyncHost(host string, direction string) error {
 			}
 		} else {
 			// 优先处理 SOPS 加密文件 (<local>.enc)，否则常规推送
-			if m.tryPushEncrypted(hostCfg, host, rule) {
+			if handled, err := m.tryPushEncrypted(hostCfg, host, rule); handled {
+				if err != nil {
+					utils.Error("Encrypted push failed: %s (%v)", rule.Local, err)
+					errs = append(errs, fmt.Errorf("push encrypted %s: %w", rule.Local, err))
+					continue
+				}
 				m.runPostPushHooks(host, hostCfg, rule.Local)
 				continue
 			}
@@ -113,10 +116,11 @@ func (m *SyncManager) SyncBundle(host, bundleName, deployPath string) error {
 		return fmt.Errorf("host %s not found", host)
 	}
 
-	manifest, err := NewManifestLoader(m.baseDir).Load(bundleName)
+	loaded, err := NewBundleRepository(m.baseDir, cfg).Load(context.Background(), bundleName, nil)
 	if err != nil {
 		return fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
 	}
+	manifest := loaded.Manifest
 
 	configDir := BundleConfigDir(m.baseDir, host, bundleName, manifest)
 	legacyDir := filepath.Join(m.baseDir, "hosts", host)
@@ -389,23 +393,21 @@ func (m *SyncManager) ensureRemoteDir(hostCfg *config.HostConfig, dir string) {
 }
 
 // tryPushEncrypted 若存在 <local>.enc 加密文件，则解密并上传到远程。
-// 返回 true 表示该规则已被处理(无论成功失败)，不应再走明文推送。
-func (m *SyncManager) tryPushEncrypted(hostCfg *config.HostConfig, host string, rule config.SyncRule) bool {
+// handled 表示该规则应走加密路径（无论成功失败）；错误必须向上传播。
+func (m *SyncManager) tryPushEncrypted(hostCfg *config.HostConfig, host string, rule config.SyncRule) (bool, error) {
 	encPath := filepath.Join(m.baseDir, "hosts", host, rule.Local+".enc")
 	if _, err := os.Stat(encPath); err != nil {
-		return false
+		return false, nil
 	}
 
 	if m.sops == nil {
-		utils.Warn("Found %s.enc but SOPS age key not configured, skipping", rule.Local)
-		return true
+		return true, fmt.Errorf("found %s.enc but SOPS age key is not configured", rule.Local)
 	}
 
 	utils.Info("Decrypting and pushing: %s.enc -> %s", rule.Local, rule.Remote)
 	plaintext, err := m.sops.Decrypt(encPath)
 	if err != nil {
-		utils.Error("Decrypt %s.enc failed: %v", rule.Local, err)
-		return true
+		return true, fmt.Errorf("decrypt %s.enc: %w", rule.Local, err)
 	}
 
 	sshPort := hostCfg.SSHPort
@@ -419,19 +421,16 @@ func (m *SyncManager) tryPushEncrypted(hostCfg *config.HostConfig, host string, 
 		WithKnownHosts(m.knownHosts),
 	)
 	if err != nil {
-		utils.Error("SSH connect failed for pushing %s: %v", rule.Local, err)
-		return true
+		return true, fmt.Errorf("ssh client for %s: %w", rule.Local, err)
 	}
 	defer client.Close()
 	if err := client.Connect(); err != nil {
-		utils.Error("SSH connect failed for pushing %s: %v", rule.Local, err)
-		return true
+		return true, fmt.Errorf("ssh connect for %s: %w", rule.Local, err)
 	}
 	if err := client.Upload(string(plaintext), rule.Remote); err != nil {
-		utils.Error("Upload decrypted %s failed: %v", rule.Local, err)
-		return true
+		return true, fmt.Errorf("upload decrypted %s: %w", rule.Local, err)
 	}
 
 	utils.Success("Pushed (decrypted): %s", rule.Local)
-	return true
+	return true, nil
 }

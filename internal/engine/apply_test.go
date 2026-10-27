@@ -419,3 +419,26 @@ func TestApplyOptionalComponentFailureOnlyWarns(t *testing.T) {
 		t.Errorf("expected optional warning, got %v", result.Warnings)
 	}
 }
+
+func TestComposeApplyRequiresApprovalWhenChangesExist(t *testing.T) {
+	dir, cfg := resolverFixture(t)
+	runner := newFakeRunner()
+	manager := NewManager(dir, cfg, runner)
+	if _, err := manager.Apply(context.Background(), "knowledge-stack", "keeper", ApplyOptions{}); !errors.Is(err, ErrApprovalRequired) {
+		t.Fatalf("expected approval error, got %v", err)
+	}
+	if runner.commandContains("up -d") {
+		t.Fatal("compose up must not run before approval")
+	}
+}
+
+func TestRenderRuntimeOverrideEscapesLiteralDollar(t *testing.T) {
+	input := []byte("services:\n  web:\n    environment:\n      TOKEN: secret://token\n")
+	override, err := renderRuntimeOverride(input, map[string]string{"token": "abc$UNSET"}, 1, "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(override, "abc$$UNSET") {
+		t.Fatalf("literal $ must be escaped for Compose interpolation: %s", override)
+	}
+}

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,7 +37,7 @@ func NewDNSManager(baseDir string) (*DNSManager, error) {
 		defaultIP:     cfg.Global.DNSGatewayIP,
 		headscaleDNS:  cfg.Global.DNSHeadscaleServer,
 		defaultDomain: cfg.Global.DefaultDomain,
-		sshKey:        filepath.Join(baseDir, cfg.Global.SSHKeyPath),
+		sshKey:        config.ResolveSSHKeyPath(baseDir, cfg.Global.SSHKeyPath),
 	}, nil
 }
 
@@ -109,6 +110,35 @@ func (m *DNSManager) listOpenClashRecords() []DNSRecord {
 
 // ==================== DNS 操作 ====================
 
+// DNSProviderResult 记录单个 DNS provider 的执行结果。
+type DNSProviderResult struct {
+	Provider string `json:"provider"`
+	Status   string `json:"status"`
+	Error    string `json:"error,omitempty"`
+}
+
+// AddDomainDetailed 分别执行并返回每个 DNS provider 的结果。
+func (m *DNSManager) AddDomainDetailed(domain, ip string) []DNSProviderResult {
+	if ip == "" {
+		ip = m.defaultIP
+	}
+	results := []DNSProviderResult{
+		{Provider: "dnsmasq", Status: "ok"},
+		{Provider: "openclash", Status: "ok"},
+		{Provider: "headscale", Status: "ok"},
+	}
+	dnsmasqErr := m.addDnsmasqRecord(domain, ip)
+	openclashErr := m.addOpenClashRecord(domain, ip)
+	headscaleErr := m.addHeadscaleRecord(domain, ip)
+	for i, err := range []error{dnsmasqErr, openclashErr, headscaleErr} {
+		if err != nil {
+			results[i].Status = "failed"
+			results[i].Error = err.Error()
+		}
+	}
+	return results
+}
+
 // AddDomain 添加 DNS 记录
 func (m *DNSManager) AddDomain(domain, ip string) error {
 	if ip == "" {
@@ -117,9 +147,22 @@ func (m *DNSManager) AddDomain(domain, ip string) error {
 
 	utils.Step("Adding DNS record: %s -> %s", domain, ip)
 
-	dnsmasqErr := m.addDnsmasqRecord(domain, ip)
-	openclashErr := m.addOpenClashRecord(domain, ip)
-	headscaleErr := m.addHeadscaleRecord(domain, ip)
+	results := m.AddDomainDetailed(domain, ip)
+	var dnsmasqErr, openclashErr, headscaleErr error
+	for _, result := range results {
+		var err error
+		if result.Error != "" {
+			err = errors.New(result.Error)
+		}
+		switch result.Provider {
+		case "dnsmasq":
+			dnsmasqErr = err
+		case "openclash":
+			openclashErr = err
+		case "headscale":
+			headscaleErr = err
+		}
+	}
 
 	// dnsmasq + openclash 为核心 provider，二者皆失败通常意味着本地配置缺失
 	if dnsmasqErr != nil && openclashErr != nil {
@@ -394,7 +437,7 @@ func (m *DNSManager) PushDNS() error {
 	if m.headscaleConfigExists() {
 		utils.Step("Pushing to %s...", m.headscaleHost)
 		if err := syncMgr.SyncHost(m.headscaleHost, "push"); err != nil {
-			utils.Warn("push to %s failed: %v", m.headscaleHost, err)
+			return fmt.Errorf("push to %s failed: %w", m.headscaleHost, err)
 		}
 	}
 
@@ -416,9 +459,11 @@ func (m *DNSManager) PullDNS() error {
 		return fmt.Errorf("pull from %s failed: %w", m.gatewayHost, err)
 	}
 
-	utils.Step("Pulling from %s...", m.headscaleHost)
-	if err := syncMgr.SyncHost(m.headscaleHost, "pull"); err != nil {
-		utils.Warn("pull from %s failed: %v", m.headscaleHost, err)
+	if m.headscaleConfigExists() {
+		utils.Step("Pulling from %s...", m.headscaleHost)
+		if err := syncMgr.SyncHost(m.headscaleHost, "pull"); err != nil {
+			return fmt.Errorf("pull from %s failed: %w", m.headscaleHost, err)
+		}
 	}
 
 	utils.Success("DNS config pulled to local")
@@ -438,29 +483,34 @@ func (m *DNSManager) DeployDomain(domain, ip string) error {
 	}
 
 	utils.Step("Step 3/3: Restarting DNS services...")
-	m.restartDNSServices()
+	if err := m.restartDNSServices(); err != nil {
+		return err
+	}
 
 	utils.Success("DNS deploy complete: %s -> %s", domain, ip)
 	return nil
 }
 
 // restartDNSServices 重启网关 DNS 服务 (dnsmasq, openclash) 及 Headscale
-func (m *DNSManager) restartDNSServices() {
+func (m *DNSManager) restartDNSServices() error {
 	svcMgr, err := NewServiceManager(m.baseDir)
 	if err != nil {
-		utils.Warn("Failed to init service manager: %v", err)
-		return
+		return fmt.Errorf("failed to init service manager: %w", err)
 	}
 
+	var errs []error
 	for _, svc := range []string{"dnsmasq", "openclash"} {
 		if err := svcMgr.RestartService(m.gatewayHost, svc); err != nil {
 			utils.Warn("Restart %s failed: %v", svc, err)
+			errs = append(errs, fmt.Errorf("restart %s: %w", svc, err))
 		}
 	}
 
 	if m.headscaleConfigExists() {
 		if err := svcMgr.RestartService(m.headscaleHost, "headscale"); err != nil {
 			utils.Warn("Restart headscale failed: %v", err)
+			errs = append(errs, fmt.Errorf("restart headscale: %w", err))
 		}
 	}
+	return errors.Join(errs...)
 }

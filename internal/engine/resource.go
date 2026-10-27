@@ -111,7 +111,7 @@ func (r *BundleResource) Status(ctx context.Context) (ResourceStatus, error) {
 	if r.Manager == nil {
 		return status, nil
 	}
-	if manifest, err := NewManifestLoader(r.Manager.BaseDir).Load(r.Bundle); err == nil {
+	if manifest, err := LoadBundleManifest(r.Manager.BaseDir, r.Bundle); err == nil {
 		status.Labels = manifest.Labels
 	}
 	state, err := ReadLocalState(r.Manager.BaseDir, r.Host, r.Bundle)
@@ -121,7 +121,7 @@ func (r *BundleResource) Status(ctx context.Context) (ResourceStatus, error) {
 	}
 	if lock, err := LoadLock(r.Manager.BaseDir, r.Host, r.Bundle); err == nil {
 		status.Outputs = LockOutputs(lock)
-	} else if manifest, err := NewManifestLoader(r.Manager.BaseDir).Load(r.Bundle); err == nil {
+	} else if manifest, err := LoadBundleManifest(r.Manager.BaseDir, r.Bundle); err == nil {
 		status.Outputs = ManifestLogicalOutputs(manifest)
 	}
 	return status, nil

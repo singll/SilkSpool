@@ -61,7 +61,7 @@ func (a *App) runBundle(cmd *cobra.Command, args []string) error {
 	host := args[2]
 
 	if action == "setup" || action == "up" {
-		manifest, err := engine.NewManifestLoader(a.BaseDir).Load(name)
+		manifest, err := engine.LoadBundleManifest(a.BaseDir, name)
 		if err != nil || manifest.Type == "compose" {
 			return a.runBundleApply(cmd, name, host)
 		}

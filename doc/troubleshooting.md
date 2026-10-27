@@ -226,7 +226,7 @@ spool plan knowledge-stack keeper --json | jq '.data.diff'
 
 ## 服务健康检查失败 / 自动回滚
 
-- `components` 中 `optional: false` 的服务会参与 health gate；任一失败会触发自动回滚（不可逆迁移除外）。
+- `components` 中 `optional: false` 的服务会参与 health gate；任一失败会在控制端在线时尽力自动回滚（不可逆迁移除外）。控制端退出或失联时不保证恢复。
 - `optional: true` 只告警，不阻塞整栈。
 - 查看远端 generation：`.spool-gen/current`、`.spool-gen/<n>/meta.yaml`。
 - 手工恢复：`spool rollback <bundle> <host> [generation]`。

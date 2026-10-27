@@ -25,6 +25,8 @@ defaults:
       #        否则应用连不上库 / Meili key 不匹配。部署时由 hosts/silkdata/.env 覆盖。
       # ==============================================================================
       APP_PREFIX=sp-
+      # 默认仅绑定本机；跨机部署必须改成私网/Tailnet 地址（如 192.168.7.231 或 MagicDNS IP）
+      SILKDATA_BIND_ADDRESS=127.0.0.1
       REDIS_PASSWORD=CHANGE_ME_redis_password
       MEILI_MASTER_KEY=CHANGE_ME_meili_master_key
       BELLKEEPER_DB_PASSWORD=CHANGE_ME_bellkeeper_db_password

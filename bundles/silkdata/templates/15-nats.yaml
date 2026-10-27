@@ -7,7 +7,7 @@ services:
     volumes:
       - kp-nats-data:/data
     ports:
-      - "4222:4222"          # 分离后对 LAN 发布，供 keeper 应用层跨机连接
+      - "${SILKDATA_BIND_ADDRESS:-127.0.0.1}:4222:4222"  # 默认仅本机；跨机部署必须显式设置私网/Tailnet 地址
     networks:
       - kp-network
     healthcheck:

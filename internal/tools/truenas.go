@@ -197,11 +197,17 @@ func (c *TrueNASClient) Call(method string, params interface{}) (json.RawMessage
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	if c.timeout > 0 {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(c.timeout))
+	}
 	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		return nil, fmt.Errorf("failed to send: %w", err)
 	}
 
-	// 读取响应
+	// 读取响应；必须设置截止时间，避免单次调用永久阻塞。
+	if c.timeout > 0 {
+		_ = c.conn.SetReadDeadline(time.Now().Add(c.timeout))
+	}
 	_, respData, err := c.conn.ReadMessage()
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive: %w", err)

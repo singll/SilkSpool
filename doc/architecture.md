@@ -159,8 +159,10 @@ spec:
 resolve → plan/offline 校验 → lock 快照 → per-host flock
         → 远端 generation 快照 → compose up → health gate
         → SSH 回连确认 → 写 state/generation
-        → 失败：自动回滚上一 generation（不可逆迁移除外）
+        → 失败：控制端在线时尽力回滚上一 generation（不可逆迁移除外）
 ```
+
+> 自动回滚由控制端进程执行，不是目标端自主回滚。控制端退出、网络中断或 SSH 配置被新版本破坏时，恢复动作无法保证；当前能力应表述为“控制端在线时尽力自动回滚”。
 
 - `components` 才部署；`dependencies` 只用于渲染 wiring。
 - `spool apply --locked` 只使用本地 lock，plan 不一致则拒绝。

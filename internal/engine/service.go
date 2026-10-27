@@ -22,10 +22,7 @@ func NewServiceManager(baseDir string) (*ServiceManager, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	sshKey := filepath.Join(baseDir, cfg.Global.SSHKeyPath)
-	if !filepath.IsAbs(sshKey) {
-		sshKey = filepath.Join(baseDir, sshKey)
-	}
+	sshKey := config.ResolveSSHKeyPath(baseDir, cfg.Global.SSHKeyPath)
 
 	return &ServiceManager{
 		baseDir: baseDir,
@@ -54,18 +51,13 @@ func (m *ServiceManager) GetHostServices(host string) ([]ServiceInfo, error) {
 		return nil, fmt.Errorf("host %s not found", host)
 	}
 
-	client, err := globalPool.Get(hostCfg.Address, m.sshKey)
-	if err != nil {
-		return nil, fmt.Errorf("SSH connect failed: %w", err)
-	}
-
 	var services []ServiceInfo
 
 	for _, svc := range hostCfg.Services {
 		status := "unknown"
 		cmd := m.buildStatusCommand(svc.Type, svc.Name)
 		if cmd != "" {
-			if out, err := client.Execute(cmd); err == nil {
+			if out, err := m.execute(hostCfg, cmd); err == nil {
 				status = m.parseStatus(svc.Type, out)
 			}
 		}
@@ -104,7 +96,7 @@ func (m *ServiceManager) GetServiceStatus(host, serviceAlias string) (string, er
 		return "", fmt.Errorf("unknown service type: %s", svc.Type)
 	}
 
-	output, err := SSHExecute(hostCfg.Address, m.sshKey, cmd)
+	output, err := m.execute(hostCfg, cmd)
 	if err != nil {
 		return "", err
 	}
@@ -135,7 +127,7 @@ func (m *ServiceManager) StartService(host, serviceAlias string) error {
 	}
 
 	utils.Step("Starting %s on %s", serviceAlias, host)
-	_, err = SSHExecute(hostCfg.Address, m.sshKey, cmd)
+	_, err = m.execute(hostCfg, cmd)
 	return err
 }
 
@@ -162,7 +154,7 @@ func (m *ServiceManager) StopService(host, serviceAlias string) error {
 	}
 
 	utils.Step("Stopping %s on %s", serviceAlias, host)
-	_, err = SSHExecute(hostCfg.Address, m.sshKey, cmd)
+	_, err = m.execute(hostCfg, cmd)
 	return err
 }
 
@@ -189,7 +181,7 @@ func (m *ServiceManager) RestartService(host, serviceAlias string) error {
 	}
 
 	utils.Step("Restarting %s on %s", serviceAlias, host)
-	_, err = SSHExecute(hostCfg.Address, m.sshKey, cmd)
+	_, err = m.execute(hostCfg, cmd)
 	return err
 }
 
@@ -215,7 +207,21 @@ func (m *ServiceManager) GetServiceLogs(host, serviceAlias string, lines int) (s
 		return "", fmt.Errorf("unknown service type: %s", svc.Type)
 	}
 
-	return SSHExecute(hostCfg.Address, m.sshKey, cmd)
+	return m.execute(hostCfg, cmd)
+}
+
+// execute 使用 host 级别的 SSH 端口与 known_hosts，避免不同命令连接不同端口。
+func (m *ServiceManager) execute(hostCfg *config.HostConfig, cmd string) (string, error) {
+	opts := []SSHClientOption{WithKnownHosts(filepath.Join(m.baseDir, "known_hosts"))}
+	if hostCfg.SSHPort != "" {
+		opts = append(opts, WithSSHPort(hostCfg.SSHPort))
+	}
+	client, err := NewSSHClient(hostCfg.Address, m.sshKey, opts...)
+	if err != nil {
+		return "", fmt.Errorf("SSH client failed: %w", err)
+	}
+	defer client.Close()
+	return client.Execute(cmd)
 }
 
 // ==================== 命令构建 ====================

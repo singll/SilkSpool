@@ -123,7 +123,7 @@ func NewN8NClient(baseDir string, hostAlias string, sshProvider SSHProvider) (*N
 		return nil, fmt.Errorf("host %s not found", cfg.N8N.Host)
 	}
 
-	sshKey := filepath.Join(baseDir, cfg.Global.SSHKeyPath)
+	sshKey := config.ResolveSSHKeyPath(baseDir, cfg.Global.SSHKeyPath)
 
 	httpTimeout := config.ParseDuration(cfg.Global.Timeouts.HTTPClient, 30*time.Second)
 
@@ -322,21 +322,38 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
-// ListWorkflows 列出所有工作流
+// ListWorkflows 列出所有工作流（按 nextCursor 逐页读取）
 func (c *N8NClient) ListWorkflows(ctx context.Context) ([]N8NWorkflow, error) {
-	data, err := c.doRequest(ctx, "GET", "/workflows", nil)
-	if err != nil {
-		return nil, err
-	}
+	var workflows []N8NWorkflow
+	cursor := ""
+	seen := map[string]bool{}
+	for {
+		endpoint := "/workflows"
+		if cursor != "" {
+			endpoint += "?cursor=" + neturl.QueryEscape(cursor)
+		}
+		data, err := c.doRequest(ctx, "GET", endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
 
-	var result struct {
-		Data []N8NWorkflow `json:"data"`
+		var result struct {
+			Data       []N8NWorkflow `json:"data"`
+			NextCursor string        `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(data, &result); err != nil {
+			return nil, fmt.Errorf("failed to parse response: %w", err)
+		}
+		workflows = append(workflows, result.Data...)
+		if result.NextCursor == "" {
+			return workflows, nil
+		}
+		if seen[result.NextCursor] {
+			return nil, fmt.Errorf("pagination cursor repeated: %s", result.NextCursor)
+		}
+		seen[result.NextCursor] = true
+		cursor = result.NextCursor
 	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	return result.Data, nil
 }
 
 // GetWorkflow 获取单个工作流

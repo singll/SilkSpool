@@ -12,11 +12,11 @@ services:
       - TZ=Asia/Shanghai
       - POSTGRES_DB=bellkeeper
       - POSTGRES_USER=bellkeeper
-      - POSTGRES_PASSWORD=${BELLKEEPER_DB_PASSWORD:-bellkeeper123}
+      - POSTGRES_PASSWORD=${BELLKEEPER_DB_PASSWORD:?BELLKEEPER_DB_PASSWORD is required}
     volumes:
       - kp-bellkeeper-db:/var/lib/postgresql/data
     ports:
-      - "5432:5432"          # 分离后对 LAN 发布，供 keeper 应用层跨机连接
+      - "${SILKDATA_BIND_ADDRESS:-127.0.0.1}:5432:5432"  # 默认仅本机；跨机部署必须显式设置私网/Tailnet 地址
     networks:
       - kp-network
     healthcheck:

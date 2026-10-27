@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -31,11 +30,11 @@ func AcquireHostLock(baseDir, host string, timeout time.Duration) (func(), error
 
 	deadline := time.Now().Add(timeout)
 	for {
-		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err = tryLockFile(f)
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+		if !errors.Is(err, errLockBusy) {
 			_ = f.Close()
 			return nil, fmt.Errorf("acquire host lock %s: %w", path, err)
 		}
@@ -51,7 +50,7 @@ func AcquireHostLock(baseDir, host string, timeout time.Duration) (func(), error
 	_ = f.Sync()
 
 	release := func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(f)
 		_ = f.Close()
 	}
 	return release, nil

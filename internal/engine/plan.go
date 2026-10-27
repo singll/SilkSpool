@@ -139,7 +139,7 @@ func (m *Manager) Plan(ctx context.Context, bundleName, host string, opts PlanOp
 		return nil, fmt.Errorf("online plan requires a remote runner")
 	}
 
-	actual, err := m.readActual(plan)
+	actual, err := m.readActual(ctx, plan)
 	if err != nil {
 		return nil, fmt.Errorf("read actual state: %w", err)
 	}
@@ -148,42 +148,89 @@ func (m *Manager) Plan(ctx context.Context, bundleName, host string, opts PlanOp
 	return result, nil
 }
 
-func (m *Manager) readActual(plan *ResolvedPlan) (*ActualState, error) {
+func (m *Manager) readActual(ctx context.Context, plan *ResolvedPlan) (*ActualState, error) {
 	actual := &ActualState{Services: []ServiceState{}}
 	baseFile := filepath.Join(plan.DeployPath, "docker-compose.yaml")
-	if _, err := m.Runner.ReadFile(baseFile); err != nil {
+	compose, err := readFileContext(ctx, m.Runner, baseFile)
+	if err != nil {
+		// 区分"未部署"与 SSH/读取失败：连接仍可用时再确认文件是否真的不存在。
+		if _, liveErr := execRunner(ctx, m.Runner, "true"); liveErr != nil {
+			return nil, fmt.Errorf("read %s: %w", baseFile, liveErr)
+		}
+		probe, probeErr := execRunner(ctx, m.Runner, "test -f "+shellQuote(baseFile)+" && echo yes || true")
+		if probeErr != nil {
+			return nil, fmt.Errorf("read %s: %w", baseFile, probeErr)
+		}
+		if strings.TrimSpace(probe) == "yes" {
+			return nil, fmt.Errorf("read %s: %w", baseFile, err)
+		}
 		return actual, nil
 	}
 	actual.Deployed = true
 
-	currentRaw, err := m.Runner.ReadFile(RemoteGenerationCurrentPath(plan.DeployPath))
+	// 以远端真实文件内容计算摘要，而不是只信任 generation 元数据。
+	override, _ := readFileContext(ctx, m.Runner, filepath.Join(plan.DeployPath, "docker-compose.spool.yaml"))
+	uploads := map[string][]byte{}
+	for path := range plan.Uploads {
+		remotePath := filepath.Join(plan.DeployPath, filepath.FromSlash(path))
+		data, err := readFileContext(ctx, m.Runner, remotePath)
+		if err != nil {
+			uploads[path] = nil
+			continue
+		}
+		uploads[path] = []byte(data)
+	}
+	actual.ComposeHash = hashRendered([]byte(compose), uploads, []byte(override))
+
+	remoteImages := map[string]string{}
+	if parsed, parseErr := parseComposeServices([]byte(compose)); parseErr == nil {
+		for name, image := range parsed {
+			if image != "" {
+				remoteImages[name] = image
+			}
+		}
+	}
+	for _, data := range uploads {
+		if parsed, parseErr := parseComposeServices(data); parseErr == nil {
+			for name, image := range parsed {
+				if image != "" {
+					remoteImages[name] = image
+				}
+			}
+		}
+	}
+
+	currentRaw, err := readFileContext(ctx, m.Runner, RemoteGenerationCurrentPath(plan.DeployPath))
 	if err == nil {
 		if gen, err := strconv.Atoi(strings.TrimSpace(currentRaw)); err == nil {
 			actual.Generation = gen
 		}
 	}
 	if actual.Generation > 0 {
-		metaRaw, err := m.Runner.ReadFile(filepath.Join(GenerationDir(plan.DeployPath, actual.Generation), "meta.yaml"))
+		metaRaw, err := readFileContext(ctx, m.Runner, filepath.Join(GenerationDir(plan.DeployPath, actual.Generation), "meta.yaml"))
 		if err == nil {
 			if meta, err := ParseGenerationMeta([]byte(metaRaw)); err == nil {
 				actual.LockHash = meta.LockHash
-				actual.ComposeHash = meta.ComposeHash
 				actual.Status = meta.Status
 				images := map[string]string{}
 				for _, svc := range meta.Services {
 					images[svc.Name] = svc.Image
 				}
-				running, err := m.runningServices(plan.DeployPath)
+				running, err := m.runningServices(ctx, plan.DeployPath)
 				if err == nil {
 					for _, name := range running {
-						actual.Services = append(actual.Services, ServiceState{Name: name, Image: images[name], State: "running"})
+						image := images[name]
+						if remote, ok := remoteImages[name]; ok {
+							image = remote
+						}
+						actual.Services = append(actual.Services, ServiceState{Name: name, Image: image, State: "running"})
 					}
 				}
 			}
 		}
 	}
 	if len(actual.Services) == 0 {
-		running, err := m.runningServices(plan.DeployPath)
+		running, err := m.runningServices(ctx, plan.DeployPath)
 		if err == nil {
 			for _, name := range running {
 				actual.Services = append(actual.Services, ServiceState{Name: name, State: "running"})
@@ -194,15 +241,15 @@ func (m *Manager) readActual(plan *ResolvedPlan) (*ActualState, error) {
 	return actual, nil
 }
 
-func (m *Manager) runningServices(deployPath string) ([]string, error) {
+func (m *Manager) runningServices(ctx context.Context, deployPath string) ([]string, error) {
 	if m.Runner == nil {
 		return nil, fmt.Errorf("remote runner is nil")
 	}
-	files, err := m.remoteComposeFiles(deployPath)
+	files, err := m.remoteComposeFilesContext(ctx, deployPath)
 	if err != nil {
 		return nil, err
 	}
-	out, err := m.Runner.Exec(composeCommand(deployPath, files, "ps --status running --services"))
+	out, err := execRunner(ctx, m.Runner, composeCommand(deployPath, files, "ps --status running --services"))
 	if err != nil {
 		return nil, err
 	}
@@ -218,13 +265,17 @@ func (m *Manager) runningServices(deployPath string) ([]string, error) {
 }
 
 func (m *Manager) remoteComposeFiles(deployPath string) ([]string, error) {
+	return m.remoteComposeFilesContext(context.Background(), deployPath)
+}
+
+func (m *Manager) remoteComposeFilesContext(ctx context.Context, deployPath string) ([]string, error) {
 	base := filepath.Join(deployPath, "docker-compose.yaml")
-	if _, err := m.Runner.ReadFile(base); err != nil {
+	if _, err := readFileContext(ctx, m.Runner, base); err != nil {
 		return nil, fmt.Errorf("docker-compose.yaml not found at %s", deployPath)
 	}
 	files := []string{base}
 	override := filepath.Join(deployPath, "docker-compose.spool.yaml")
-	if _, err := m.Runner.ReadFile(override); err == nil {
+	if _, err := readFileContext(ctx, m.Runner, override); err == nil {
 		files = append(files, override)
 	}
 	return files, nil

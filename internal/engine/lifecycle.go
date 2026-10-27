@@ -25,17 +25,34 @@ func validateUpgradeStrategy(scope string, upgrade BundleUpgrade) error {
 }
 
 func validateEffectiveLifecycle(plan *ResolvedPlan) error {
-	needBackup := plan.NeedsBackupBeforeApply()
-	hasHook := strings.TrimSpace(plan.Manifest.Backup.Hook) != "" || len(plan.Manifest.Backup.Assets) > 0
+	if plan == nil || plan.Manifest == nil {
+		return nil
+	}
+	bundleBackup := strings.TrimSpace(plan.Manifest.Backup.Hook) != "" || len(plan.Manifest.Backup.Assets) > 0
+	hasAnyBackup := bundleBackup
 	for key, lifecycle := range plan.Lifecycles {
 		if err := validateUpgradeStrategy("component "+key, lifecycle.Upgrade); err != nil {
 			return err
 		}
 		if strings.TrimSpace(lifecycle.Backup.Hook) != "" || len(lifecycle.Backup.Assets) > 0 {
-			hasHook = true
+			hasAnyBackup = true
 		}
 	}
-	if needBackup && !hasHook {
+
+	// bundle 自身的不可逆迁移必须由 bundle 自身的备份 hook 覆盖。
+	if plan.Manifest.Lifecycle.Upgrade.Irreversible && !bundleBackup {
+		return fmt.Errorf("bundle %s: irreversible upgrade requires spec.backup.hook (bundle scope)", plan.Manifest.Name)
+	}
+	// 组件的不可逆迁移必须由该组件自己的备份 hook 覆盖；无关组件的备份不能替代。
+	for key, lifecycle := range plan.Lifecycles {
+		if !lifecycle.Upgrade.Irreversible {
+			continue
+		}
+		if strings.TrimSpace(lifecycle.Backup.Hook) == "" && len(lifecycle.Backup.Assets) == 0 {
+			return fmt.Errorf("bundle %s: component %s has irreversible upgrade but missing spec.backup.hook (component scope)", plan.Manifest.Name, key)
+		}
+	}
+	if plan.NeedsBackupBeforeApply() && !hasAnyBackup {
 		return fmt.Errorf("bundle %s: irreversible/backup-then-recreate upgrade requires spec.backup.hook (bundle or component)", plan.Manifest.Name)
 	}
 	return nil
@@ -165,9 +182,20 @@ func (p *ResolvedPlan) UpgradeHooks(phase string) []HookSpec {
 
 func (p *ResolvedPlan) lifecycleKeys() []string {
 	keys := make([]string, 0, len(p.Lifecycles))
-	for key := range p.Lifecycles {
-		keys = append(keys, key)
+	seen := map[string]bool{}
+	// plan.Components 已按 after 拓扑排序；hook 顺序必须与启动顺序一致。
+	for _, key := range p.Components {
+		if _, ok := p.Lifecycles[key]; ok && !seen[key] {
+			keys = append(keys, key)
+			seen[key] = true
+		}
 	}
-	sort.Strings(keys)
-	return keys
+	rest := make([]string, 0, len(p.Lifecycles)-len(keys))
+	for key := range p.Lifecycles {
+		if !seen[key] {
+			rest = append(rest, key)
+		}
+	}
+	sort.Strings(rest)
+	return append(keys, rest...)
 }

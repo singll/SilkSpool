@@ -68,7 +68,7 @@ func (d *StackDriver) Up(host string, hostCfg *config.HostConfig, deployPath str
 	if err != nil {
 		return err
 	}
-	for _, app := range hostCfg.Stack {
+	for _, app := range d.serviceNames(hostCfg) {
 		if err := re.Systemctl("start", app); err != nil {
 			utils.Warn("Failed to start %s: %v", app, err)
 		}
@@ -82,7 +82,7 @@ func (d *StackDriver) Down(host string, hostCfg *config.HostConfig, deployPath s
 	if err != nil {
 		return err
 	}
-	for _, app := range hostCfg.Stack {
+	for _, app := range d.serviceNames(hostCfg) {
 		if err := re.Systemctl("stop", app); err != nil {
 			utils.Warn("Failed to stop %s: %v", app, err)
 		}
@@ -96,7 +96,7 @@ func (d *StackDriver) Status(host string, hostCfg *config.HostConfig, deployPath
 	if err != nil {
 		return err
 	}
-	for _, app := range hostCfg.Stack {
+	for _, app := range d.serviceNames(hostCfg) {
 		cmd := fmt.Sprintf("systemctl is-active %s", app)
 		out, err := re.Exec(cmd)
 		if err != nil {
@@ -159,8 +159,15 @@ func (d *StackDriver) Service(host string, hostCfg *config.HostConfig, deployPat
 
 // loadManifest 加载当前 bundle 的 manifest (使用命令行指定的 bundle 名)
 func (d *StackDriver) loadManifest() (*BundleManifest, error) {
-	loader := NewManifestLoader(d.baseDir)
-	return loader.Load(d.bundleName)
+	return LoadBundleManifest(d.baseDir, d.bundleName)
+}
+
+// serviceNames 当前 bundle 的服务范围；manifest 未声明时回退 hostCfg.Stack。
+func (d *StackDriver) serviceNames(hostCfg *config.HostConfig) []string {
+	if manifest, err := d.loadManifest(); err == nil && len(manifest.Services) > 0 {
+		return manifest.Services
+	}
+	return hostCfg.Stack
 }
 
 // pushSystemdTemplates 推送 Systemd 服务模板

@@ -18,6 +18,7 @@ type overrideOptions struct {
 	Env        map[string]map[string]string
 	ExtraHosts map[string][]string
 	Images     map[string]string
+	DependsOn  map[string][]string
 }
 
 // renderSpoolOverrideWithOptions 生成只含 spool 注入项的 compose override。
@@ -60,6 +61,13 @@ func renderSpoolOverrideWithOptions(opts overrideOptions) ([]byte, error) {
 		}
 		if image := opts.Images[name]; image != "" {
 			entry["image"] = image
+		}
+		if deps := opts.DependsOn[name]; len(deps) > 0 {
+			depends := map[string]interface{}{}
+			for _, dep := range deps {
+				depends[dep] = map[string]string{"condition": "service_started"}
+			}
+			entry["depends_on"] = depends
 		}
 		services[name] = entry
 	}

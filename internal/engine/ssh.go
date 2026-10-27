@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -186,6 +187,11 @@ func (p *SSHClientPool) CloseAll() {
 }
 
 func (c *SSHClient) Execute(cmd string) (string, error) {
+	return c.ExecuteContext(context.Background(), cmd)
+}
+
+// ExecuteContext 执行远端命令；ctx 取消时关闭会话，避免命令无限期占住主机队列。
+func (c *SSHClient) ExecuteContext(ctx context.Context, cmd string) (string, error) {
 	if err := c.Connect(); err != nil {
 		return "", err
 	}
@@ -207,11 +213,20 @@ func (c *SSHClient) Execute(cmd string) (string, error) {
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 
-	if err := session.Run(cmd); err != nil {
-		return "", fmt.Errorf("command failed: %s (stderr: %s)", err, stderr.String())
-	}
+	done := make(chan error, 1)
+	go func() { done <- session.Run(cmd) }()
 
-	return stdout.String(), nil
+	select {
+	case err := <-done:
+		if err != nil {
+			return "", fmt.Errorf("command failed: %s (stderr: %s)", err, stderr.String())
+		}
+		return stdout.String(), nil
+	case <-ctx.Done():
+		_ = session.Close()
+		<-done
+		return "", ctx.Err()
+	}
 }
 
 func (c *SSHClient) ExecuteStdin(script string) (string, error) {

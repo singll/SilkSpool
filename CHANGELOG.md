@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 统一 CLI 退出码：`2` 参数/配置错误、`3` online plan diff、`4` 执行失败、`5` 需要审批；JSON 模式下 stdout 只输出 envelope
 - Bundle manifest 新增 `config_root` 与 `sync_rules`：支持 per-bundle `.env`、显式同步规则与旧 `hosts/<host>/` 布局自动回退
 
+### Fixed
+
+- 部署安全：apply 无 `--yes` 且存在 diff 时在远端写入前失败；配置同步移到审批/不可逆检查之后
+- 漂移与恢复：online plan 使用远端真实文件摘要；回滚使用目标 generation 的锁定健康契约并清理新版残留文件
+- 备份安全：不可逆组件必须有自己的备份 hook；bundle/component 恢复目录对称；旧备份命令传播规则失败、管道失败和空产物
+- 实例安全：升级 `x/crypto` 修复可达 SSH DoS；备份路径强制 known_hosts；silkdata 默认仅绑定本机并移除弱密码回退
+- 独立产品：外部 `bundle_sources` 可完成 resolve → defaults → sync → apply；OCI 缓存命中保留来源
+- 契约一致性：secret 覆盖/引号/`$` 转义、加密同步错误传播、manifest 严格字段校验、版本与 hook 内容纳入锁、`after` 生成 `depends_on`
+- 工具与平台：`--config` 指定文件生效、SSH 密钥/端口一致、SSH/健康检查/TrueNAS/API job 超时、systemd 服务名、n8n 分页、幂等键冲突、Site/DNS 部分失败反馈、凭据文件权限、Windows 构建
+
 ### Changed
 
 - 文档重整：现行架构/配置/部署/API/开发/排障六类文档；历史 P0–P3 方案移入 `doc/archive/`

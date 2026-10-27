@@ -71,6 +71,22 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if configFlag != "" {
+				path := configFlag
+				if !filepath.IsAbs(path) {
+					cwd, err := os.Getwd()
+					if err != nil {
+						return err
+					}
+					path = filepath.Join(cwd, path)
+				}
+				if _, err := os.Stat(path); err != nil {
+					return fmt.Errorf("config file not found: %s", path)
+				}
+				config.SetConfigFile(path)
+			} else {
+				config.SetConfigFile("")
+			}
 			app.BaseDir = resolveBaseDir()
 			// JSON 模式下 stdout 只放数据，日志全部走 stderr。
 			if jsonFlag {

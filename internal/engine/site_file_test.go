@@ -72,8 +72,8 @@ func TestCaddyAddSiteSkipExisting(t *testing.T) {
 
 	data, _ := os.ReadFile(caddyPath)
 	content := string(data)
-	if strings.Contains(content, "http://other") {
-		t.Error("existing site should not be modified")
+	if !strings.Contains(content, "reverse_proxy http://other") {
+		t.Errorf("existing site backend should be updated, got: %s", content)
 	}
 }
 

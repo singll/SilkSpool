@@ -1076,6 +1076,8 @@ P1 已知边界（按计划不阻塞退出）：
 - `spool serve --socket`、`bundle check-updates`、keeper 拆分已在 P2 完成。
 - 跨主机 apply 编排、OCI/CUE/Events 属于 P3，不提前实现。
 
+**2026-10-27 审计复核（R01–R26）**：上述 P1/P2/P3 勾选项补充验收状态。部署审批、远端文件漂移、不可逆备份门槛、按 generation 回滚、外部 bundle 同步、锁内容/OCI 缓存、`after` 启动依赖、配置/密钥/端口一致性、超时、systemd、n8n 分页、幂等冲突、Site/DNS 部分失败、凭据权限和 Windows 构建已修复并有回归用例。`magic rollback` 的准确能力为“控制端在线时尽力自动回滚”，目标端自主超时回滚尚未实现；实际部署、断网回滚和数据库恢复仍需隔离环境验收。
+
 P2 已完成（2026-10-24）：
 
 - [x] `bundles/knowledge-stack`（composition）：components = bellkeeper/n8n/memos/rsshub，

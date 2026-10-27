@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,10 +24,7 @@ func NewBundleManager(baseDir string) (*BundleManager, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	sshKey := filepath.Join(baseDir, cfg.Global.SSHKeyPath)
-	if !filepath.IsAbs(sshKey) {
-		sshKey = filepath.Join(baseDir, sshKey)
-	}
+	sshKey := config.ResolveSSHKeyPath(baseDir, cfg.Global.SSHKeyPath)
 
 	return &BundleManager{
 		baseDir: baseDir,
@@ -39,8 +37,7 @@ func NewBundleManager(baseDir string) (*BundleManager, error) {
 // InitBundleDefaults 初始化 Bundle 默认配置
 // 根据 manifest.yaml 中的 defaults 字段生成默认配置文件到 hosts/<host>/
 func (m *BundleManager) InitBundleDefaults(bundleName, host string) error {
-	loader := NewManifestLoader(m.baseDir)
-	manifest, err := loader.Load(bundleName)
+	manifest, err := LoadBundleManifest(m.baseDir, bundleName)
 	if err != nil {
 		// 如果没有 manifest.yaml，跳过
 		return nil
@@ -78,7 +75,11 @@ func (m *BundleManager) InitBundleDefaults(bundleName, host string) error {
 			}
 		}
 
-		if err := os.WriteFile(targetPath, []byte(def.Content), 0644); err != nil {
+		mode := os.FileMode(0644)
+		if filepath.Base(def.Path) == ".env" {
+			mode = 0600
+		}
+		if err := os.WriteFile(targetPath, []byte(def.Content), mode); err != nil {
 			utils.Warn("Failed to write %s: %v", def.Path, err)
 			continue
 		}
@@ -101,9 +102,8 @@ func (m *BundleManager) SetupBundle(bundleName, host, action string) error {
 		return fmt.Errorf("host %s not found", host)
 	}
 
-	// 加载 manifest
-	loader := NewManifestLoader(m.baseDir)
-	manifest, err := loader.Load(bundleName)
+	// 加载 manifest（支持 bundle_sources 外部来源）
+	manifest, err := LoadBundleManifest(m.baseDir, bundleName)
 	if err != nil {
 		return fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
 	}
@@ -154,8 +154,7 @@ func (m *BundleManager) UpgradeBundle(bundleName, host string, force bool) error
 		return fmt.Errorf("host %s not found", host)
 	}
 
-	loader := NewManifestLoader(m.baseDir)
-	manifest, err := loader.Load(bundleName)
+	manifest, err := LoadBundleManifest(m.baseDir, bundleName)
 	if err != nil {
 		return fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
 	}
@@ -184,8 +183,7 @@ func (m *BundleManager) SetupBundleService(bundleName, host, svc, action string)
 		return fmt.Errorf("host %s not found", host)
 	}
 
-	loader := NewManifestLoader(m.baseDir)
-	manifest, err := loader.Load(bundleName)
+	manifest, err := LoadBundleManifest(m.baseDir, bundleName)
 	if err != nil {
 		return fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
 	}
@@ -198,6 +196,19 @@ func (m *BundleManager) SetupBundleService(bundleName, host, svc, action string)
 	}
 
 	return driver.Service(host, hostCfg, deployPath, svc, action)
+}
+
+// LoadBundleManifest 通过 bundle 仓库（本地 + bundle_sources）加载 manifest。
+func LoadBundleManifest(baseDir, bundleName string) (*BundleManifest, error) {
+	cfg, err := config.LoadConfig(baseDir)
+	if err != nil {
+		return nil, err
+	}
+	loaded, err := NewBundleRepository(baseDir, cfg).Load(context.Background(), bundleName, nil)
+	if err != nil {
+		return nil, err
+	}
+	return loaded.Manifest, nil
 }
 
 // BundleConfigDir 返回 bundle 配置在控制机上的根目录。
@@ -240,7 +251,7 @@ func (m *BundleManager) BundleStatus(bundleName, host string) (*BundleStatus, er
 		return nil, fmt.Errorf("host %s not found", host)
 	}
 
-	manifest, err := NewManifestLoader(m.baseDir).Load(bundleName)
+	manifest, err := LoadBundleManifest(m.baseDir, bundleName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load manifest for %s: %w", bundleName, err)
 	}
@@ -274,7 +285,11 @@ func (m *BundleManager) BundleStatus(bundleName, host string) (*BundleStatus, er
 		if err != nil {
 			return nil, err
 		}
-		for _, app := range hostCfg.Stack {
+		apps := manifest.Services
+		if len(apps) == 0 {
+			apps = hostCfg.Stack
+		}
+		for _, app := range apps {
 			state := "unknown"
 			if out, err := re.Exec(fmt.Sprintf("systemctl is-active %s", app)); err == nil {
 				state = strings.TrimSpace(out)
@@ -315,7 +330,7 @@ func (m *BundleManager) resolveDeployPath(bundleName string) string {
 		defaultBase = config.DefaultString(cfg.Global.Defaults.DeployPath, "/opt/silkspool")
 	}
 
-	if manifest, err := NewManifestLoader(m.baseDir).Load(bundleName); err == nil && manifest.DeployPath != "" {
+	if manifest, err := LoadBundleManifest(m.baseDir, bundleName); err == nil && manifest.DeployPath != "" {
 		return manifest.DeployPath
 	}
 

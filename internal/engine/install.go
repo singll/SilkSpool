@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,10 +34,7 @@ func NewInstallManager(baseDir string) (*InstallManager, error) {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	sshKey := filepath.Join(baseDir, cfg.Global.SSHKeyPath)
-	if !filepath.IsAbs(sshKey) {
-		sshKey = filepath.Join(baseDir, sshKey)
-	}
+	sshKey := config.ResolveSSHKeyPath(baseDir, cfg.Global.SSHKeyPath)
 
 	return &InstallManager{
 		baseDir: baseDir,

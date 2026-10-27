@@ -169,17 +169,17 @@ Notes:
 
 ### v1.0.0 重大变更（第二代架构）
 
-* **Go 重构**: 单个跨平台二进制文件，无 Shell 依赖
+* **Go 重构**: 单个 Go 控制端程序，支持 Linux/macOS/Windows 构建；远端无需安装专用 Agent
 * **YAML 配置**: 用 `silkspool.yaml` 替代 `config.ini`
 * **自包含部署**: `out/` 目录模型，复制即运行
 * **命令简化**: `./spool` 替代 `./spool.sh`
 
 ### 核心特性
 
-* **零依赖**: 远程节点**无需 Agent**，仅需 Docker 和 SSH
+* **无专用 Agent**: 远程节点仅需 SSH + Docker/Compose 或 systemd；Git 来源、SOPS/age 加密同步等按功能需要对应工具
 * **动态前缀**: 每个主机独立容器命名 (`sp-redis` vs `redis`)
 * **Bundle 系统**: 多容器应用打包成可部署单元
-* **便携安全**: 敏感数据存于 `hosts/**/.env` (已 gitignore)
+* **便携安全**: 敏感数据存于 `hosts/**/.env`（运行目录/根目录规则见 `.gitignore`）
 * **全栈管理**: Docker 容器、二进制工具、配置同步
 * **DNS 与站点管理**: 一键管理 dnsmasq、OpenClash、Caddy
 * **LLM Proxy 集成**: 内置多渠道 LLM 路由 (Bellkeeper)

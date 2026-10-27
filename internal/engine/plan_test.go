@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -139,6 +140,9 @@ func seedDeployed(t *testing.T, runner *fakeRunner, plan *ResolvedPlan, generati
 	runner.setFile(GenerationDir(plan.DeployPath, generation)+"/meta.yaml", string(data))
 	runner.setFile(GenerationDir(plan.DeployPath, generation)+"/docker-compose.yaml", string(plan.Compose))
 	runner.setFile(GenerationDir(plan.DeployPath, generation)+"/docker-compose.spool.yaml", string(plan.Override))
+	for path, data := range plan.Uploads {
+		runner.setFile(plan.DeployPath+"/"+filepath.ToSlash(path), string(data))
+	}
 }
 
 func TestPlanScriptUnsupported(t *testing.T) {
@@ -163,5 +167,31 @@ services: [scripted]
 	}
 	if !result.Unsupported {
 		t.Error("online script plan should be unsupported")
+	}
+}
+
+func TestPlanOnlineDetectsRemoteFileDrift(t *testing.T) {
+	dir, cfg := resolverFixture(t)
+	resolved, err := ResolveBundle(context.Background(), dir, cfg, "knowledge-stack", "keeper", ResolveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	seedDeployed(t, runner, resolved, 1)
+	runner.execFn = func(cmd string) (string, error) {
+		if strings.Contains(cmd, "ps --status running --services") {
+			return "bellkeeper\nn8n\n", nil
+		}
+		return "", nil
+	}
+	// 直接修改远端 compose，但保持 generation 元数据不变。
+	runner.setFile(resolved.DeployPath+"/docker-compose.yaml", "services:\n  drifted:\n    image: example/drifted:9.9.9\n")
+	manager := NewManager(dir, cfg, runner)
+	result, err := manager.Plan(context.Background(), "knowledge-stack", "keeper", PlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Diff) == 0 {
+		t.Fatal("remote file drift must produce a non-empty diff")
 	}
 }

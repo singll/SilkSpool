@@ -1,7 +1,10 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,8 +56,8 @@ func TestN8NNodeStruct(t *testing.T) {
 		TypeVersion: 4.2,
 		Position:    []int{300, 400},
 		Parameters: map[string]interface{}{
-			"url":      "https://example.com",
-			"method":   "GET",
+			"url":    "https://example.com",
+			"method": "GET",
 		},
 	}
 
@@ -267,13 +270,13 @@ func TestWorkflowSettingsWithDefault(t *testing.T) {
 			expected: map[string]interface{}{"executionOrder": "v1"},
 		},
 		{
-			name: "settings without executionOrder",
-			input: map[string]interface{}{"saveManualExecutions": true},
+			name:     "settings without executionOrder",
+			input:    map[string]interface{}{"saveManualExecutions": true},
 			expected: map[string]interface{}{"saveManualExecutions": true, "executionOrder": "v1"},
 		},
 		{
-			name: "settings with executionOrder",
-			input: map[string]interface{}{"executionOrder": "v0"},
+			name:     "settings with executionOrder",
+			input:    map[string]interface{}{"executionOrder": "v0"},
 			expected: map[string]interface{}{"executionOrder": "v0"},
 		},
 	}
@@ -496,5 +499,24 @@ func TestWorkflowMatchesTargets(t *testing.T) {
 				t.Errorf("workflowMatchesTargets() = %v, want %v", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestListWorkflowsFollowsCursor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("cursor") == "page2" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": []map[string]string{{"id": "2", "name": "second"}}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": []map[string]string{{"id": "1", "name": "first"}}, "nextCursor": "page2"})
+	}))
+	defer server.Close()
+	client := &N8NClient{baseURL: server.URL, httpClient: server.Client()}
+	workflows, err := client.ListWorkflows(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workflows) != 2 {
+		t.Fatalf("got %d workflows, want 2", len(workflows))
 	}
 }

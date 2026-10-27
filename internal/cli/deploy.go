@@ -54,8 +54,19 @@ func (a *App) newDeployManager(bundle, host string) (*engine.Manager, error) {
 	return manager, nil
 }
 
-var runnerFactory = func(address, sshKey string) (engine.RemoteRunner, error) {
-	return engine.NewSSHRunnerForHost(address, sshKey)
+var runnerFactory = func(address, sshKey, sshPort, knownHosts string) (engine.RemoteRunner, error) {
+	opts := []engine.SSHClientOption{engine.WithKnownHosts(knownHosts)}
+	if sshPort != "" {
+		opts = append(opts, engine.WithSSHPort(sshPort))
+	}
+	client, err := engine.NewSSHClient(address, sshKey, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Connect(); err != nil {
+		return nil, err
+	}
+	return engine.NewSSHRunner(client), nil
 }
 
 func (a *App) newPlanManager(host string, offline bool) (*engine.Manager, error) {
@@ -73,7 +84,7 @@ func (a *App) newPlanManager(host string, offline bool) (*engine.Manager, error)
 	if err != nil {
 		return nil, err
 	}
-	runner, err := runnerFactory(hostCfg.Address, sshKey)
+	runner, err := runnerFactory(hostCfg.Address, sshKey, hostCfg.SSHPort, filepath.Join(a.BaseDir, "known_hosts"))
 	if err != nil {
 		return nil, fmt.Errorf("SSH connect failed: %w", err)
 	}
