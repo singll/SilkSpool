@@ -41,7 +41,8 @@ defaults:
       RobotMode: QingYunKe
 
       # 欢迎与答谢
-      InteractWord: true
+      # 关闭所有人的进场欢迎；EntryEffect + WelcomeHighWealthy 只欢迎舰长/高财富等级
+      InteractWord: false
       WelcomeDanmu:
         - "欢迎 {user} 回家~"
         - "欢迎 {user}，来了就是一家人！"
