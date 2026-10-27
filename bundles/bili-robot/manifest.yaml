@@ -44,10 +44,22 @@ defaults:
       # 关闭所有人的进场欢迎；EntryEffect + WelcomeHighWealthy 只欢迎舰长/高财富等级
       InteractWord: false
       WelcomeDanmu:
-        - "欢迎 {user} 回家~"
-        - "欢迎 {user}，来了就是一家人！"
-        - "哇！欢迎 {user} 空降直播间！"
-        - "欢迎 {user}，点点关注不迷路~"
+        - "欢迎 {user} 来到直播间，今天也一起开心看播吧~"
+        - "{user} 来啦，直播间一下子热闹起来了~"
+        - "欢迎 {user}，很高兴在这里见到你~"
+        - "{user} 好呀，愿你今天顺顺利利~"
+        - "欢迎 {user}，希望今天的内容你会喜欢~"
+        - "{user} 来了，先找个舒服的位置坐下吧~"
+        - "欢迎 {user}，愿每一次相遇都有好心情~"
+        - "{user} 你好呀，感谢你来到直播间~"
+        - "欢迎 {user}，一起度过一段轻松的时间吧~"
+        - "{user} 来了，今天的快乐值 +1~"
+        - "欢迎 {user}，这里永远给你留个位置~"
+        - "{user} 好呀，祝你今天有好运气~"
+        - "欢迎 {user}，慢慢看，不着急~"
+        - "欢迎 {user}，有你在我很开心~"
+        - "{user} 来啦，先喝口水休息一下~"
+        - "欢迎 {user}，愿今天的直播让你放松一点~"
       InteractWordByTime: false
       EntryEffect: true
       WelcomeHighWealthy: true
@@ -57,8 +69,16 @@ defaults:
       InteractSelf: false
       InteractAnchor: false
       FocusDanmu:
-        - "感谢关注！老板大气！"
-        - "谢谢宝子的关注，爱你哟~"
+        - "感谢关注，欢迎常来玩~"
+        - "谢谢关注，之后也会继续努力~"
+        - "感谢你的关注，愿每次见面都开心~"
+        - "收到关注啦，谢谢你~"
+        - "谢谢关注，祝你好运常伴~"
+        - "感谢关注，直播间因你更热闹~"
+        - "谢谢你的支持，慢慢熟悉起来吧~"
+        - "关注收到，欢迎下次再来~"
+        - "感谢关注，今天也要开心呀~"
+        - "谢谢关注，愿我们常常见面~"
       WelcomeSwitch: false
       WelcomeString: {}
       WelcomeBlacklistWide: []
@@ -71,8 +91,68 @@ defaults:
       ThanksGiftUseAt: false
 
       # 定时弹幕 / 抽奖 / 统计
-      CronDanmu: false
-      CronDanmuList: []
+      CronDanmu: true
+      CronDanmuList:
+        - Cron: "0 0 9 * * *"
+          Random: true
+          Danmu:
+            - "【报时】上午 9 点，早安，今天也要元气满满~"
+        - Cron: "0 0 10 * * *"
+          Random: true
+          Danmu:
+            - "【报时】上午 10 点，记得喝口水，活动一下~"
+        - Cron: "0 0 11 * * *"
+          Random: true
+          Danmu:
+            - "【报时】上午 11 点，工作学习之余也要注意休息~"
+        - Cron: "0 0 12 * * *"
+          Random: true
+          Danmu:
+            - "【报时】中午 12 点，午饭时间到，记得好好吃饭~"
+        - Cron: "0 0 13 * * *"
+          Random: true
+          Danmu:
+            - "【报时】下午 1 点，午休一下，下午更有精神~"
+        - Cron: "0 0 14 * * *"
+          Random: true
+          Danmu:
+            - "【报时】下午 2 点，新的一小时，继续加油~"
+        - Cron: "0 0 15 * * *"
+          Random: true
+          Danmu:
+            - "【报时】下午 3 点，来点小零食补充能量吧~"
+        - Cron: "0 0 16 * * *"
+          Random: true
+          Danmu:
+            - "【报时】下午 4 点，伸个懒腰，放松一下~"
+        - Cron: "0 0 17 * * *"
+          Random: true
+          Danmu:
+            - "【报时】下午 5 点，今天的辛苦快告一段落啦~"
+        - Cron: "0 0 18 * * *"
+          Random: true
+          Danmu:
+            - "【报时】傍晚 6 点，晚饭时间到，记得按时吃饭~"
+        - Cron: "0 0 19 * * *"
+          Random: true
+          Danmu:
+            - "【报时】晚上 7 点，欢迎来到晚间时光~"
+        - Cron: "0 0 20 * * *"
+          Random: true
+          Danmu:
+            - "【报时】晚上 8 点，黄金时间，一起开心看播吧~"
+        - Cron: "0 0 21 * * *"
+          Random: true
+          Danmu:
+            - "【报时】晚上 9 点，感谢你还在直播间陪伴~"
+        - Cron: "0 0 22 * * *"
+          Random: true
+          Danmu:
+            - "【报时】晚上 10 点，感谢大家今晚的陪伴和支持，也谢谢送礼物的朋友，理性消费，开心最重要~"
+        - Cron: "0 0 23 * * *"
+          Random: true
+          Danmu:
+            - "【报时】晚上 11 点，早点休息，明天见~"
       DrawByLot: true
       SignInEnable: true
       DanmuCntEnable: true
