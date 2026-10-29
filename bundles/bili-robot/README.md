@@ -13,3 +13,5 @@
 本次部署验证：Core 全量单元测试及 `go test -race ./...` 通过；CLI 构建、五场景真实模型预览、长昵称/组合 emoji 长度、过期取消、礼物合并和 token 范围检查通过。部署为 generation 7，容器健康且已收到自然触发的回复回显。备份保留在 prod 的 `/opt/silkspool/bili-robot/backups/persona-20261029T141706Z`。
 
 注意：当前 spool 的 plan 会把 apply 自动注入的 `io.silkspool.generation` 和 `io.silkspool.lock-hash` 标签计入 actual 摘要，因此更新后可能仍有 compose_sha256 差异。本次已逐项比较，基础 compose 一致，override 仅这两个标签不同；不应因此重复部署。
+
+2026-10-29 提示词更新（1.2.1-persona）：日常聊天通常不主动提主播，多数回复不用 emoji；爱心、口头禅和句式不按固定格式重复。同步调整共享人格、示例、冷场/报时提示和失败兜底。相关既有测试、CLI/镜像构建和六条连续模型预览通过，预览未发送到直播间。旧配置及数据保存在 `backups/natural-tone-20261029T143249Z`。

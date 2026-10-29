@@ -4,7 +4,7 @@ kind: Bundle
 metadata:
   name: bili-robot
   class: product
-  version: 1.2.0-persona
+  version: 1.2.1-persona
   owner: singll/BilibiliDanmuRobot
   labels:
     io.silkspool.product: bili-robot
