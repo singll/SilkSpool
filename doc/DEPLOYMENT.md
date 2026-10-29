@@ -30,6 +30,14 @@
 
 ---
 
+## 当前生产目标（2026-10-29 实测）
+
+- `prod`（192.168.7.128）：`prod-stack`（Bellkeeper/n8n）+ 独立 `proddata` 数据依赖；RSSHub 使用独立 `rsshub` bundle。
+- `txhk`：Matrix 服务为 `tuwunel`，配置 `/etc/tuwunel/tuwunel.toml`，不是已停用的 `conduit`。
+- 工作流与 secret 使用 `/opt/SilkSpool/hosts/prod/`；当前 n8n 卷为 `prod-n8n`，数据库为 PostgreSQL。
+- 下文 `keeper` / `knowledge-stack` / `silkdata` 是通用配置示例，不代表本机生产目标。生产应执行 `spool plan prod-stack prod`、`spool restart prod bellkeeper`、`spool service txhk status tuwunel`。
+- Matrix 房间、过滤与告警现状见 [Bellkeeper STATUS](../../Bellkeeper/doc/STATUS.md)，持久配置及重载边界见 [Bellkeeper DEPLOYMENT](../../Bellkeeper/doc/DEPLOYMENT.md)。
+
 ## 目录结构
 
 ### 项目源码（Git 管理）
@@ -431,3 +439,11 @@ spool backup keeper
 ---
 
 *部署模型: 自包含二进制目录 + PATH 软链 | 最后更新: 2026-10-24（P3）*
+
+## 2026-10-29 Matrix 与 RSSHub 接入
+
+prod 的 Bellkeeper 直接连接 txhk tuwunel，n8n 运行 9 个 B/K/O 工作流。房间入口、评分与告警策略见 [Bellkeeper 状态](../../Bellkeeper/doc/STATUS.md)。`rsshub` 是独立无状态 bundle，固定 GHCR digest；`spool apply rsshub prod --yes` 仅管理该服务，prod-net 内供 Bellkeeper 使用。内网反代后端为 `.128:1200`。
+
+当前 Bellkeeper 为不重建容器的持久卷补丁部署，运行时 entrypoint 为 `/app/data/bellkeeper-matrix`；部署新镜像前查阅 Bellkeeper DEPLOYMENT，升级到含修复版本后移除覆盖。凭证、实际 prod-stack 配置和二进制位于 `/opt/SilkSpool/hosts/prod/`，不提交。
+
+2026-10-29 已移除不可达的旧 Memos、RAGFlow、Firecrawl、MinIO、Grafana 首页/DNS/反代入口；原配置保存在私有接入备份目录，不能把旧主机地址当作当前服务。

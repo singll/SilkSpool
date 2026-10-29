@@ -46,7 +46,7 @@ SilkSpool/                      # Git repository (source code)
 │   ├── knowledge-stack/       # composition: bellkeeper/n8n/memos/rsshub
 │   ├── silkdata/               # capability: Postgres/Redis/Meili/NATS/CouchDB
 │   ├── gateway/                # Caddy + Homepage + DNS
-│   ├── server/                # Headscale + Conduit + ntfy
+│   ├── server/                # Headscale + tuwunel + ntfy
 │   ├── bili/                  # BiliRecorder + BiliRobot
 │   └── aigateway/             # NewAPI + Redis
 ├── silkspool.yaml.example      # Configuration template
@@ -118,7 +118,7 @@ vim out/silkspool.yaml
 | `silkdata` | PostgreSQL, Redis, Meilisearch, NATS, CouchDB | Data-layer capability |
 | `bellkeeper` | Bellkeeper | Product bundle, published from the Bellkeeper repo |
 | `gateway` | Caddy, Homepage, dnsmasq, OpenClash | Router gateway |
-| `server` | Headscale, Conduit, ntfy | Binary services for VPS |
+| `server` | Headscale, tuwunel, ntfy | Binary services for VPS |
 | `bili` | BiliRecorder, BiliRobot, Dozzle | Bilibili live/chat tools |
 | `aigateway` | NewAPI, Redis | LLM API gateway |
 
@@ -199,7 +199,7 @@ SilkSpool/                      # Git 仓库 (源码)
 │   ├── knowledge-stack/        # composition：bellkeeper/n8n/memos/rsshub
 │   ├── silkdata/               # capability：Postgres/Redis/Meili/NATS/CouchDB
 │   ├── gateway/                # Caddy + Homepage + DNS
-│   ├── server/                 # Headscale + Conduit + ntfy
+│   ├── server/                 # Headscale + tuwunel + ntfy
 │   ├── bili/                   # BiliRecorder + BiliRobot
 │   └── aigateway/              # NewAPI + Redis
 ├── silkspool.yaml.example      # 配置模板
@@ -271,7 +271,7 @@ vim out/silkspool.yaml
 | `silkdata` | PostgreSQL, Redis, Meilisearch, NATS, CouchDB | 数据层 capability |
 | `bellkeeper` | Bellkeeper | product bundle，由 Bellkeeper 仓库发布 |
 | `gateway` | Caddy, Homepage, dnsmasq, OpenClash | 路由器网关 |
-| `server` | Headscale, Conduit, ntfy | VPS 二进制服务 |
+| `server` | Headscale, tuwunel, ntfy | VPS 二进制服务 |
 | `bili` | BiliRecorder, BiliRobot, Dozzle | B站直播/弹幕工具 |
 | `aigateway` | NewAPI, Redis | LLM API 网关 |
 

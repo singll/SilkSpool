@@ -12,7 +12,7 @@
 
 ### 必须遵守
 
-- ✅ **运维远程主机一律用 PATH 中的 `spool`**（如 `spool exec keeper "..."`、`spool sync push keeper`、`spool restart keeper n8n`），无需 `cd`、无需 `./`
+- ✅ **运维远程主机一律用 PATH 中的 `spool`**（如 `spool exec prod "..."`、`spool sync push prod`、`spool restart prod bellkeeper`），无需 `cd`、无需 `./`
 - ❌ **不要为了运维去 `make build` / `go run ./cmd/spool` / 重新编译** —— 已部署的 `spool` 就是运维工具，编译只在改了 spool 源码后才做
 - ❌ **不要绕过 spool 写脚本或直接 SSH/curl 操作远程 Docker** —— 一切远程操作走 `spool exec`
 - ❌ **不要用 `go run` 跑运维命令** —— `go run` 仅用于开发/调试 spool 源码
@@ -96,8 +96,8 @@ spool version                             # 验证
 1. **禁止自行重建容器** — n8n/Memos/Bellkeeper 等有状态服务重建需用户批准
 2. **必须用 PATH 中的 `spool` 操作远程** — 禁止直接 SSH 手动操作 Docker（见上 §spool 运维工具使用规则）
 3. **禁止 `docker compose down`** — 会停全部服务
-4. **绝对禁止对 n8n 执行 `docker compose down -v` / `--volumes`** — 会删除 `kp-n8n-data` volume，工作流、凭证、API Key 永久丢失。n8n 重启只能用 `docker stop sp-n8n && docker start sp-n8n`
-5. **禁止 `git add -f`** — doc/hosts/config.ini/keys 在 .gitignore 中
+4. **绝对禁止对 n8n 执行 `docker compose down -v` / `--volumes`** — 会删除 当前 `prod-n8n` volume（旧环境为 `kp-n8n-data`），工作流、凭证、API Key 永久丢失。n8n 重启只能用 `docker stop sp-n8n && docker start sp-n8n`
+5. **禁止 `git add -f`** — 以 git check-ignore 为准；hosts/keys 中的 secret 不提交
 
 以下是**错误**示范：
 - 用户说"删除无用文件、优化字体、更新文档" → 删一个文件就提交一次 ❌
@@ -135,7 +135,7 @@ spool version                             # 验证
 
 ## n8n 工作流命名规则
 
-工作流文件位于 `hosts/keeper/n8n-workflows/`，命名必须遵循分层序号体系：
+工作流文件位于 `hosts/prod/n8n-workflows/`，命名必须遵循分层序号体系：
 
 | 前缀 | 含义 | 示例 |
 |------|------|------|
@@ -157,18 +157,18 @@ spool version                             # 验证
 
 ### 当前实现
 
-Matrix 控制平面已迁移到 **Bellkeeper Matrix Gateway**（`internal/matrix/gateway/`），由 Bellkeeper 直接使用 `mautrix-go` SDK 完成 sync、命令路由、通知发送。**n8n 不再轮询 Matrix**，仅在 M01-M03 工作流中作为命令处理器接收 webhook 转发。
+Matrix 控制平面已迁移到 **Bellkeeper Matrix Gateway**（`internal/matrix/gateway/`），由 Bellkeeper 直接使用 `mautrix-go` SDK 完成 sync、命令路由、通知发送。**n8n 不再轮询 Matrix**，仅在 业务工作流中承担调度与通知；M01-M03 已归档。
 
 **职责边界**:
 - **Bellkeeper**: Matrix Sync、Command Router、权限引擎、通知网关（NATS 队列 + 频道路由）、Admin API
-- **n8n M01-M03**: 接收 Bellkeeper 转发的命令 webhook，执行具体业务（Memos 待办、知识问答），结果回写 Bellkeeper `/api/matrix/notify`
+- **n8n B/K/O**：9 个当前工作流负责入队、调度、日报和告警；正常通知回写 `/api/matrix/notify`，B02 直连 Matrix 作为错误出口。
 
 ### 实现原则
 
 **必须遵守**:
 - ✅ 使用前缀命令模式（`!` 或 `！`），不使用 slash 命令（`/`）
 - ✅ Matrix 长连接 sync 由 Bellkeeper 承担，n8n 仅做命令业务处理
-- ✅ 创建/管理房间通过 Bellkeeper Admin API 或 `/api/matrix/admin/*` 端点
+- ✅ 先通过 homeserver API 创建房间和邀请，再通过 Bellkeeper `/api/matrix/admin/*` 登记房间、频道和权限
 
 **禁止操作**:
 - ❌ 不在 n8n 中重新引入 Matrix 轮询节点

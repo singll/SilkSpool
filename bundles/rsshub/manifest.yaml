@@ -1,0 +1,27 @@
+apiVersion: spool/v1alpha1
+kind: Bundle
+metadata:
+  name: rsshub
+  class: product
+  version: 2026-10-29
+  owner: DIYgod/RSSHub
+name: rsshub
+type: compose
+deploy_path: /opt/silkspool/rsshub
+templates: [compose.yaml]
+services: [rsshub]
+spec:
+  delivery:
+    driver: compose
+    templates: [compose.yaml]
+  outputs:
+    internal:
+      kind: endpoint
+      service: rsshub
+      port: 1200
+      published_port: 1200
+  lifecycle:
+    health:
+      http: http://127.0.0.1:1200/healthz
+      from: container
+      timeout: 120s

@@ -1,0 +1,25 @@
+services:
+  rsshub:
+    image: ghcr.io/diygod/rsshub@sha256:065482850ab87b4e03b6e38176c2e8f674891fbcb3d82b61992b59dae3d2b0bf
+    container_name: sp-rsshub
+    restart: unless-stopped
+    ports:
+      - "1200:1200"
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Shanghai
+      CACHE_TYPE: memory
+      CACHE_EXPIRE: "3600"
+      REQUEST_RETRY: "1"
+      REQUEST_TIMEOUT: "20000"
+    networks: [prod-net]
+    mem_limit: 768m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "2"
+networks:
+  prod-net:
+    external: true

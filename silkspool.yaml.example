@@ -158,8 +158,8 @@ hosts:
         remote: "/etc/caddy/Caddyfile"
       - local: "headscale/config.yaml"
         remote: "/etc/headscale/config.yaml"
-      - local: "conduit/conduit.toml"
-        remote: "/etc/conduit/conduit.toml"
+      - local: "tuwunel/tuwunel.toml"
+        remote: "/etc/tuwunel/tuwunel.toml"
       - local: "ntfy/server.yml"
         remote: "/etc/ntfy/server.yml"
       - local: "authelia/config.yml"
@@ -173,9 +173,9 @@ hosts:
       - alias: "headscale"
         type: "systemd"
         name: "headscale"
-      - alias: "conduit"
+      - alias: "tuwunel"
         type: "systemd"
-        name: "conduit"
+        name: "tuwunel"
       - alias: "ntfy"
         type: "systemd"
         name: "ntfy"
@@ -185,7 +185,7 @@ hosts:
     stack:
       - "caddy"
       - "headscale"
-      - "conduit"
+      - "tuwunel"
       - "ntfy"
       - "authelia"
     post_push_hooks:
@@ -330,13 +330,6 @@ install_sources:
     service_name: "headscale"
     default_version: "v0.22.3"
 
-  # GitLab 源：无法解析 latest，必须显式 pin default_version（否则报错）
-  - alias: "conduit"
-    repo: "gitlab:famedly/conduit"
-    pattern: "x86_64.*linux.*musl"
-    service_name: "conduit"
-    default_version: "v0.9.0"
-
   - alias: "ntfy"
     repo: "binwiederhier/ntfy"
     pattern: "linux_{ARCH}.tar.gz"
@@ -355,7 +348,7 @@ install_sources:
     repo: "matrix-construct/tuwunel"
     pattern: "tuwunel-{ARCH}-linux-musl.zst"
     service_name: "tuwunel"
-    default_version: "latest"
+    default_version: "v1.8.0"
     format: "zst"
     exec_args: "--config /etc/tuwunel/tuwunel.toml"
 
