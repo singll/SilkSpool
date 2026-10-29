@@ -33,6 +33,9 @@ defaults:
       COUCHDB_USER=admin
       COUCHDB_PASSWORD=CHANGE_ME_couchdb_password
       COUCHDB_SECRET=CHANGE_ME_couchdb_secret
+sync_rules:
+  - local: couchdb/10-livesync.ini
+    remote: ${deploy_path}/couchdb/10-livesync.ini
 templates:
   - 00-base.yaml
   - 10-redis.yaml

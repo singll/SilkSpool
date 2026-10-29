@@ -447,3 +447,11 @@ prod 的 Bellkeeper 直接连接 txhk tuwunel，n8n 运行 9 个 B/K/O 工作流
 当前 Bellkeeper 为不重建容器的持久卷补丁部署，运行时 entrypoint 为 `/app/data/bellkeeper-matrix`；部署新镜像前查阅 Bellkeeper DEPLOYMENT，升级到含修复版本后移除覆盖。凭证、实际 prod-stack 配置和二进制位于 `/opt/SilkSpool/hosts/prod/`，不提交。
 
 2026-10-29 已移除不可达的旧 Memos、RAGFlow、Firecrawl、MinIO、Grafana 首页/DNS/反代入口；原配置保存在私有接入备份目录，不能把旧主机地址当作当前服务。
+
+## prod NFS 与已有 Obsidian 库
+
+三条读写 NFS 均已实测：`/mnt/NAS/data/prod`、`/mnt/NAS/data/knowledge`、`/mnt/NAS/data/media/recordings`。录像复用 NAS 原数据集，新导出仅允许 prod /32，已写入 fstab。Bellkeeper 用直接 NFS volume 接入 knowledge；录像宿主挂载可供后续录像服务使用，本次没有迁移 `.108` 上的录像 Web 服务。
+
+CouchDB 复用 istoreos `https://couchdb.singll.net`，数据库 `obsidian-notes`。通用模板新增 `couchdb/10-livesync.ini` 和同步/挂载声明，实际 proddata 也同步更新；现有容器通过配置 API/持久 volume 修改后重启，未重建。健康端点 `/_up` 保留匿名探活，其余 API 认证。专用管理员密码在私有 `/opt/SilkSpool/hosts/prod/couchdb/obsidian-livesync.env`。
+
+[NFS 说明与写入验收](../../Bellkeeper/doc/ops/NFS-SETUP.md) · [已有 Vault 初始化步骤](../../Bellkeeper/doc/knowledge-base/setup/livesync-checklist.md)。先由已有本地 Vault 上传，后续设备从第一台导出的 Setup URI 接入；不要从空远端覆盖已有笔记，也不要把 NAS 原始文件直接写入 LiveSync JSON 数据库。

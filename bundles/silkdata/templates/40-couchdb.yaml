@@ -1,6 +1,6 @@
 # ==============================================================================
 #  CouchDB 配置 - Obsidian LiveSync 同步后端（随数据层迁到 silkdata）
-#  端口 5984 原本就对外发布，客户端同步地址由 keeper:5984 改为 silkdata:5984
+#  通用模板；当前 proddata 位于 prod，客户端复用 https://couchdb.singll.net。
 # ==============================================================================
 
 services:
@@ -14,6 +14,7 @@ services:
       - COUCHDB_PASSWORD=${COUCHDB_PASSWORD}
       - COUCHDB_SECRET=${COUCHDB_SECRET}
     volumes:
+      - ./couchdb/10-livesync.ini:/opt/couchdb/etc/local.d/10-livesync.ini:ro
       - kp-couchdb-data:/opt/couchdb/data
       - kp-couchdb-config:/opt/couchdb/etc/local.d
     ports:
