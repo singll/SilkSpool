@@ -4,8 +4,8 @@ kind: Bundle
 metadata:
   name: bili-robot
   class: product
-  version: 1.1.23-livegate
-  owner: Hello-Moeka/BilibiliDanmuRobot
+  version: 1.2.0-persona
+  owner: singll/BilibiliDanmuRobot
   labels:
     io.silkspool.product: bili-robot
 name: bili-robot
@@ -22,7 +22,7 @@ defaults:
       BILI_ROOM_ID=3
   - path: etc/bilidanmaku-api.yaml
     content: |
-      # BilibiliDanmuRobot 维护版（Hello-Moeka/BilibiliDanmuRobot）
+      # BilibiliDanmuRobot 人格维护版（singll/BilibiliDanmuRobot）
       # 房间号通过 .env 的 BILI_ROOM_ID 注入；也可直接改成固定数字。
       RoomId: ${BILI_ROOM_ID}
       DanmuLen: 30

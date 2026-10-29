@@ -3,7 +3,7 @@ name: bili-robot
 
 services:
   bili-robot:
-    image: bili-robot:1.1.23-livegate
+    image: bili-robot:1.2.0-persona
     container_name: ${APP_PREFIX:-sp-}bili-robot
     restart: unless-stopped
     working_dir: /app
@@ -17,22 +17,19 @@ services:
     build:
       context: .
       dockerfile_inline: |
-        FROM golang:1.24-alpine AS build
-
-        RUN apk add --no-cache git ca-certificates
+        FROM golang:1.24@sha256:d2d2bc1c84f7e60d7d2438a3836ae7d0c847f4888464e7ec9ba3a1339a1ee804 AS build
 
         ENV CGO_ENABLED=0 \
-            GOPROXY=https://proxy.golang.org,direct
+            GOPROXY=https://goproxy.cn,direct \
+            GONOPROXY=github.com/singll/BilibiliDanmuRobot-Core
 
         WORKDIR /src
-        # 仅在直播间开播时初始化逻辑并启动定时弹幕，避免未开播时整点报时
+        # 固定 fork 提交；主程序 go.mod 同时固定 Core 人格实现。
         RUN git init -q . \
-         && git remote add origin https://github.com/Hello-Moeka/BilibiliDanmuRobot.git \
-         && git fetch -q --depth 1 origin 1a2bf4a0fa7cc49442b1603f556a2c847eb3381a \
+         && git remote add origin https://github.com/singll/BilibiliDanmuRobot.git \
+         && git fetch -q --depth 1 origin 7976580d669dcc5992cba9283792781e0751dd57 \
          && git checkout -q FETCH_HEAD \
-         && echo 'ZGlmZiAtLWdpdCBhL2NsaS9iaWxpZGFubWFrdS5nbyBiL2NsaS9iaWxpZGFubWFrdS5nbwppbmRleCBjNzg0MGU3Li44NDk5MzI0IDEwMDY0NAotLS0gYS9jbGkvYmlsaWRhbm1ha3UuZ28KKysrIGIvY2xpL2JpbGlkYW5tYWt1LmdvCkBAIC0yMiw2ICsyMiw3IEBAIGltcG9ydCAoCiB2YXIgY29uZmlnRmlsZSA9IGZsYWcuU3RyaW5nKCJmIiwgImV0Yy9iaWxpZGFubWFrdS1hcGkueWFtbCIsICJ0aGUgY29uZmlnIGZpbGUiKQogdmFyIFZlcnNpb24gc3RyaW5nCiB2YXIgY2xzIGhhbmRsZXIuV3NIYW5kbGVyCit2YXIgbG9naWNTdGFydGVkIGJvb2wKIAogZnVuYyBtYWluKCkgewogCWZsYWcuUGFyc2UoKQpAQCAtODQsNyArODUsNiBAQCBmdW5jIG1haW4oKSB7CiAJfQogCWxvZ3guSW5mbygi5q2j5Zyo5qOA5rWL55u05pKt6Ze05piv5ZCm5byA5pKtLi4uIikKIAljbHMgPSBoYW5kbGVyLk5ld1dzSGFuZGxlcigpCi0JY2xzLkluaXRTdGFydFdzQ2xpZW50KCkKIAlmb3IgewogCQlzZWxlY3QgewogCkBAIC0xMTIsNiArMTEyLDEwIEBAIGZ1bmMgbWFpbigpIHsKIAkJCQkJdC5SZXNldChpbnRlcnZhbCkKIAkJCQkJY29udGludWUKIAkJCQl9CisJCQkJaWYgIWxvZ2ljU3RhcnRlZCB7CisJCQkJCWNscy5Jbml0U3RhcnRXc0NsaWVudCgpCisJCQkJCWxvZ2ljU3RhcnRlZCA9IHRydWUKKwkJCQl9CiAJCQkJZXJyIDo9IGNscy5TdGFydFdzQ2xpZW50KCkgLy8g5byA5ZCv5by55bmV5aesCiAJCQkJaWYgZXJyICE9IG5pbCB7CiAJCQkJCWxvZ3guRXJyb3IoZXJyKQo=' | base64 -d > /tmp/bili-live-gate.patch \
-         && git apply /tmp/bili-live-gate.patch \
-         && go build -trimpath -ldflags "-s -w" -o /out/bili-robot ./cli/bilidanmaku.go
+         && go build -trimpath -ldflags "-s -w -X main.Version=1.2.0-persona" -o /out/bili-robot ./cli
 
         FROM alpine:3.20
 
