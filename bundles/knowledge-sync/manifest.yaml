@@ -1,0 +1,28 @@
+apiVersion: spool/v1alpha1
+kind: Bundle
+metadata:
+  name: knowledge-sync
+  class: product
+  version: 2026-10-30
+  owner: singll/SilkSpool
+name: knowledge-sync
+type: compose
+config_root: bundle
+sync_rules:
+  - local: integration/bridge.cjs
+    remote: ${deploy_path}/integration/bridge.cjs
+  - local: integration/publish.cjs
+    remote: ${deploy_path}/integration/publish.cjs
+deploy_path: /opt/silkspool/knowledge-sync
+templates: [compose.yaml]
+services: [knowledge-sync]
+spec:
+  delivery:
+    driver: compose
+    templates: [compose.yaml]
+  lifecycle:
+    health:
+      command: [node, /integration/bridge.cjs, health]
+      from: container
+      exec_in: knowledge-sync
+      timeout: 180s

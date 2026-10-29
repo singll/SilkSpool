@@ -455,3 +455,10 @@ prod 的 Bellkeeper 直接连接 txhk tuwunel，n8n 运行 9 个 B/K/O 工作流
 CouchDB 复用 istoreos `https://couchdb.singll.net`，数据库 `obsidian-notes`。通用模板新增 `couchdb/10-livesync.ini` 和同步/挂载声明，实际 proddata 也同步更新；现有容器通过配置 API/持久 volume 修改后重启，未重建。健康端点 `/_up` 保留匿名探活，其余 API 认证。专用管理员密码在私有 `/opt/SilkSpool/hosts/prod/couchdb/obsidian-livesync.env`。
 
 [NFS 说明与写入验收](../../Bellkeeper/doc/ops/NFS-SETUP.md) · [已有 Vault 初始化步骤](../../Bellkeeper/doc/knowledge-base/setup/livesync-checklist.md)。先由已有本地 Vault 上传，后续设备从第一台导出的 Setup URI 接入；不要从空远端覆盖已有笔记，也不要把 NAS 原始文件直接写入 LiveSync JSON 数据库。
+
+
+## Knowledge 自动发布到 Obsidian（2026-10-30）
+
+现有两台 Obsidian 已完成加密同步，不再执行首次上传。独立 [knowledge-sync bundle](../bundles/knowledge-sync/README.md) 使用官方 LiveSync CLI 接入现有 `obsidian-notes`，把 TrueNAS `knowledge/vault/**/*.md` 发布到所有终端的 `20-PKB/Bellkeeper/`。NAS 局部 Vault 为 `knowledge/obsidian`，CLI 本地缓存和发布账本在 prod 系统盘，原始抓取稿和录像不进入此链路。
+
+固定目录按内容哈希去重，保留源原件；终端改动/删除受保护，源冲突记录清单。旧 Windows/SilkFiles 自动拉取不再是整理稿的默认入口。新服务单独 plan/apply，不重建 Bellkeeper、n8n 或 CouchDB。

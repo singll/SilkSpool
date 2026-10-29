@@ -1,0 +1,60 @@
+services:
+  knowledge-sync:
+    image: ghcr.io/vrtmrz/livesync-cli@sha256:0044b787488a3479fa23a22e27e203f7f689ee6b0d7025a9169c7e3de87d0620
+    container_name: sp-knowledge-sync
+    user: "1001:1001"
+    init: true
+    restart: unless-stopped
+    entrypoint: [node, /integration/bridge.cjs]
+    environment:
+      TZ: Asia/Shanghai
+      # NFS writes from Bellkeeper are not delivered through local inotify.
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "3000"
+      SOURCE_ROOT: /source/vault
+      VAULT_ROOT: /vault
+      TARGET_PREFIX: 20-PKB/Bellkeeper
+      STATE_ROOT: /data
+    volumes:
+      - type: bind
+        source: /opt/silkspool/knowledge-sync/integration
+        target: /integration
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /opt/silkspool/knowledge-sync/state
+        target: /data
+        bind:
+          create_host_path: false
+      - source-knowledge:/source:ro
+      - obsidian-vault:/vault
+    networks: [prod-net]
+    mem_limit: 1536m
+    cpus: 1.0
+    stop_grace_period: 45s
+    healthcheck:
+      test: [CMD, node, /integration/bridge.cjs, health]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  source-knowledge:
+    external: true
+    name: prod-knowledge
+  obsidian-vault:
+    name: prod-knowledge-obsidian
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=192.168.7.121,nfsvers=4.1,rw,hard,noatime,timeo=600,retrans=2
+      device: :/mnt/NAS/data/knowledge/obsidian
+networks:
+  prod-net:
+    external: true
