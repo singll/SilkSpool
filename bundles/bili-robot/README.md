@@ -15,3 +15,7 @@
 注意：当前 spool 的 plan 会把 apply 自动注入的 `io.silkspool.generation` 和 `io.silkspool.lock-hash` 标签计入 actual 摘要，因此更新后可能仍有 compose_sha256 差异。本次已逐项比较，基础 compose 一致，override 仅这两个标签不同；不应因此重复部署。
 
 2026-10-29 提示词更新（1.2.1-persona）：日常聊天通常不主动提主播，多数回复不用 emoji；爱心、口头禅和句式不按固定格式重复。同步调整共享人格、示例、冷场/报时提示和失败兜底。相关既有测试、CLI/镜像构建和六条连续模型预览通过，预览未发送到直播间。旧配置及数据保存在 `backups/natural-tone-20261029T143249Z`。
+
+2026-10-30 盲盒查询增强（1.2.3-persona）：支持 `10月盲盒` / `十月盲盒`、`本月盲盒`、`今日盲盒` / `今天盲盒`、`本周盲盒`，以及昨天、前天、上周、上月；`盲盒统计` 汇总全部已保存历史。按北京时间的自然日、周一开始的自然周和自然月计算，观众查自己、主播查全直播间，无须迁移数据库。结果改用 `今日数量282个，盈亏+1036.00元`；没有数据时显示 `今日暂无相关记录`。详见 [完整指令说明](https://github.com/singll/BilibiliDanmuRobot/blob/feat/persona-events/docs/blind-box-statistics.md)。
+
+版本固定主程序 `d99011ed656ac5c0f45174e3e1768a2bd2e07199`、Core `e8002bd2ecc0`。Core 全量测试、日期/权限/盈亏回归、Go 1.24 容器内全量 race、CLI 构建及配置校验通过；生产数据库只读副本核对了日/周/月/累计统计。上线前配置、token、SQLite 在线备份和旧镜像标识位于 prod 的 `/opt/silkspool/bili-robot/backups/blindbox-20261030T141010Z`。升级后应同时检查容器健康、WebSocket 鉴权和自然触发的弹幕回显；B 站 `msg=f` 只说明拒绝发送，不提供具体命中原因。

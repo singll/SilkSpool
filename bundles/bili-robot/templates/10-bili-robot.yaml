@@ -3,7 +3,7 @@ name: bili-robot
 
 services:
   bili-robot:
-    image: bili-robot:1.2.1-persona
+    image: bili-robot:1.2.3-persona
     container_name: ${APP_PREFIX:-sp-}bili-robot
     restart: unless-stopped
     working_dir: /app
@@ -27,9 +27,9 @@ services:
         # 固定 fork 提交；主程序 go.mod 同时固定 Core 人格实现。
         RUN git init -q . \
          && git remote add origin https://github.com/singll/BilibiliDanmuRobot.git \
-         && git fetch -q --depth 1 origin 94b6ce5d3e1ab551daf9c2158b49310fbb603575 \
+         && git fetch -q --depth 1 origin d99011ed656ac5c0f45174e3e1768a2bd2e07199 \
          && git checkout -q FETCH_HEAD \
-         && go build -trimpath -ldflags "-s -w -X main.Version=1.2.1-persona" -o /out/bili-robot ./cli
+         && go build -trimpath -ldflags "-s -w -X main.Version=1.2.3-persona" -o /out/bili-robot ./cli
 
         FROM alpine:3.20
 

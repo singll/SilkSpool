@@ -4,7 +4,7 @@ kind: Bundle
 metadata:
   name: bili-robot
   class: product
-  version: 1.2.1-persona
+  version: 1.2.3-persona
   owner: singll/BilibiliDanmuRobot
   labels:
     io.silkspool.product: bili-robot
@@ -32,7 +32,7 @@ defaults:
       # 关键词回复
       KeywordReply: true
       KeywordReplyList:
-        "查询": "发送【盲盒】可以查看本月成就哦~"
+        "查询": "发今日/本周/本月盲盒查盈亏，盲盒统计查累计"
 
       # 机器人昵称与对话
       RobotName: "小簿向前冲"
